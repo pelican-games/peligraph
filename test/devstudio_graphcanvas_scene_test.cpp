@@ -155,7 +155,9 @@ Json context(const Json &document) {
     return {{"source_digest", {{"hex", "source-a"}}},
             {"instances", std::move(instances)},
             {"nodes", std::move(nodes)},
-            {"definitions", document.at("definitions")}};
+            {"definitions", document.at("definitions")},
+            // N-6: the placement travels on the read that was already there.
+            {"layout", document.value("layout", Json::object())}};
 }
 
 // The fixture with one authored edge, so the root scope is a graph rather than
@@ -375,6 +377,96 @@ void typeKey(QWidget *widget, int key) {
     // The editor reports its decision from the event loop: it cannot delete
     // itself inside the event it is still dispatching.
     QCoreApplication::processEvents();
+}
+
+// Both instance inputs fed from the one producer, so the root scope holds two
+// edges -- the smallest graph a bundle can be made out of.
+Json twoEdgeDocument() {
+    auto document = fixtureDocument();
+    for (auto &node : document.at("nodes"))
+        if (node.at("id") == "left")
+            node["inputs"] = {{"gain", {{"node", "clock"}, {"port", "value"}}},
+                              {"bias", {{"node", "clock"}, {"port", "value"}}}};
+    return document;
+}
+
+// Two producers each feeding a node two columns away, with a node in between
+// that both of those edges have to fly over. Nothing smaller makes the
+// automatic placement keep a lane at all, and a lane is what "Auto layout"
+// turns into a control point.
+Json flyoverDocument() {
+    const auto input = [](const char *id, const char *name) {
+        return Json{{"id", id}, {"op", "value.input"},
+                    {"parameters", {{"name", name}}},
+                    {"outputs", Json::array({"value"})}};
+    };
+    const auto pair = [](const char *id, const char *op, const char *a,
+                         const char *b) {
+        return Json{{"id", id}, {"op", op},
+                    {"inputs", {{"a", {{"node", a}, {"port", "value"}}},
+                                {"b", {{"node", b}, {"port", "value"}}}}},
+                    {"outputs", Json::array({"value"})}};
+    };
+    return Json{{"schema", "pelican.graph"}, {"version", 1},
+                {"definitions", Json::object()}, {"outputs", Json::object()},
+                {"nodes", Json::array({input("src_a", "scene_time"),
+                                       input("src_b", "delta_time"),
+                                       pair("mid", "value.multiply", "src_a", "src_b"),
+                                       pair("gate_a", "value.add", "src_a", "mid"),
+                                       pair("gate_b", "value.add", "src_b", "mid")})}};
+}
+
+// Two dependencies between the same pair of nodes. The placement counts that
+// pair once, so both edges fly over the middle column in one lane -- and a
+// shared lane is exactly what a bundle is. This is the smallest graph "Auto
+// layout" makes one on.
+Json bundleDocument() {
+    return Json{{"schema", "pelican.graph"}, {"version", 1},
+                {"definitions", Json::object()}, {"outputs", Json::object()},
+                {"nodes", Json::array({
+        Json{{"id", "src"}, {"op", "value.input"},
+             {"parameters", {{"name", "scene_time"}}},
+             {"outputs", Json::array({"value"})}},
+        Json{{"id", "step"}, {"op", "value.curve"},
+             {"inputs", {{"time", {{"node", "src"}, {"port", "value"}}}}},
+             {"outputs", Json::array({"value"})}},
+        Json{{"id", "gate"}, {"op", "value.mix"},
+             {"inputs", {{"a", {{"node", "src"}, {"port", "value"}}},
+                         {"b", {{"node", "src"}, {"port", "value"}}},
+                         {"c", {{"node", "step"}, {"port", "value"}}}}},
+             {"outputs", Json::array({"value"})}}})}};
+}
+
+QGraphicsItem *controlItem(QGraphicsScene &scene, const char *kind,
+                           const QString &identity) {
+    for (QGraphicsItem *item : scene.items()) {
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() !=
+            QLatin1String{kind})
+            continue;
+        QString name = item->data(PelicanStudio::NodeGraphNameRole).toString();
+        const QString port =
+            item->data(PelicanStudio::GraphCanvasPortRole).toString();
+        if (!port.isEmpty()) name += QStringLiteral("/") + port;
+        if (name == identity) return item;
+    }
+    return nullptr;
+}
+
+QVector<QPointF> edgeBends(QGraphicsScene &scene, const QString &from,
+                           const QString &from_port, const QString &to,
+                           const QString &to_port) {
+    QGraphicsPathItem *line = edgeItem(scene, from, from_port, to, to_port);
+    REQUIRE(line != nullptr);
+    return PelicanStudio::nodeGraphBends(*line);
+}
+
+// The one `set_layout` a gesture produced, in the shape the document holds.
+Json takeLayoutEdit(GraphCanvasModel &model) {
+    const auto params = takeEdit(model);
+    const auto &ops = params.at("ops");
+    REQUIRE(ops.size() == 1);
+    REQUIRE(ops.at(0).at("op") == "set_layout");
+    return ops.at(0).at("layout");
 }
 
 qreal nodeHeight(QGraphicsScene &scene, const QString &name) {
@@ -1388,11 +1480,18 @@ TEST_CASE("Auto layout drops the moved positions of this scope only",
     sum->setPos(definition_moved);
     REQUIRE(model.leaveScope());
     scene.repopulate();
+    // N-6 changed what a drag costs: a place is kept now, so leaving the scope
+    // it happened in put one `set_layout` on the wire, naming that scope and
+    // nothing else. It is still not a change to the graph.
+    {
+        const auto written = takeEdit(model);
+        REQUIRE(written.at("ops").size() == 1);
+        CHECK(written.at("ops").at(0).at("op") == "set_layout");
+        CHECK(written.at("ops").at(0).at("scope") == "root");
+    }
 
     scene.autoLayout();
     REQUIRE(nodeItem(scene, QStringLiteral("left"))->pos() == laid_out);
-    // The document said nothing about any of this.
-    requireNoEdit(model);
 
     REQUIRE(model.enterInstance("left"));
     scene.repopulate();
@@ -1400,6 +1499,317 @@ TEST_CASE("Auto layout drops the moved positions of this scope only",
     scene.autoLayout();
     REQUIRE(nodeItem(scene, QStringLiteral("sum"))->pos() ==
             definition_laid_out);
+}
+
+// N-6 decision 1. The automatic placement used to be thrown away the moment a
+// person touched either end of an edge -- the hole N-4 recorded. A control
+// point is an absolute place the person put, so a node moving is exactly the
+// case it exists for.
+TEST_CASE("A control point is made by double-clicking an edge and survives a node drag",
+          "[devstudio][graph-canvas][scene][reroute]") {
+    (void)application();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    answer(model, connectedDocument());
+    scene.setModel(&model);
+    REQUIRE(model.canEdit());
+    REQUIRE(scene.layout().reroutes.empty());
+
+    QGraphicsPathItem *line =
+        edgeItem(scene, QStringLiteral("clock"), QStringLiteral("value"),
+                 QStringLiteral("left"), QStringLiteral("gain"));
+    REQUIRE(line != nullptr);
+    const QPointF middle = line->path().pointAtPercent(0.5);
+    click(scene, middle, QEvent::GraphicsSceneMouseDoubleClick);
+
+    REQUIRE(scene.layout().reroutes.size() == 1);
+    REQUIRE(scene.layout().reroutes.front().points.size() == 1);
+    CHECK(scene.layout().reroutes.front().edge.node == "left");
+    CHECK(scene.layout().reroutes.front().edge.port == "gain");
+    const QPointF control = scene.layout().reroutes.front().points.front();
+    // The canvas names it the way the automation surface does.
+    QGraphicsItem *dot = controlItem(scene, PelicanStudio::GraphCanvasRerouteItem,
+                                     QStringLiteral("left/gain/0"));
+    REQUIRE(dot != nullptr);
+    // And it is over the nodes, because a handle under one cannot be reached.
+    CHECK(dot->zValue() > nodeItem(scene, QStringLiteral("left"))->zValue());
+    // And the line is drawn through it.
+    REQUIRE(edgeBends(scene, QStringLiteral("clock"), QStringLiteral("value"),
+                      QStringLiteral("left"), QStringLiteral("gain"))
+                .contains(control));
+
+    // The drag. Before N-6 this threw the bend away; it is the mutation
+    // control for the whole decision.
+    QGraphicsItem *left = nodeItem(scene, QStringLiteral("left"));
+    REQUIRE(left != nullptr);
+    left->setPos(left->pos() + QPointF{40.0, 180.0});
+    CHECK(edgeBends(scene, QStringLiteral("clock"), QStringLiteral("value"),
+                    QStringLiteral("left"), QStringLiteral("gain"))
+              .contains(control));
+
+    // The canvas is ahead of the document between a gesture and its reply, and
+    // it stays ahead: a rebuild in that window must not put the older placement
+    // back over what was done since. (The scenario found this: a control point
+    // added right after a placement had been saved vanished on the next draw.)
+    scene.flushLayout();
+    auto saved = connectedDocument();
+    saved["layout"] = takeLayoutEdit(model);
+    finishEdit(model, saved,
+               Json{{"schema", "pelican.graph_catalog"},
+                    {"version", 1},
+                    {"modules", Json::array()}});
+    scene.repopulate();
+    REQUIRE(scene.layout().reroutes.size() == 1);
+    REQUIRE(scene.insertReroute(
+        PelicanStudio::GraphCanvasEdge{"clock", "value", "left", "gain"},
+        control + QPointF{30.0, 10.0}));
+    scene.repopulate();
+    CHECK(scene.layout().reroutes.size() == 1);
+    CHECK(scene.layout().reroutes.front().points.size() == 2);
+    // And back to one, so what follows is about the one point it started with.
+    scene.selectReroute(PelicanStudio::GraphCanvasEdgeKey{"left", "gain"}, 1, false);
+    pressKey(scene, Qt::Key_Delete);
+    REQUIRE(scene.layout().reroutes.size() == 1);
+    REQUIRE(scene.layout().reroutes.front().points.size() == 1);
+
+    // Picked and deleted, the control point goes and the line straightens.
+    scene.selectReroute(PelicanStudio::GraphCanvasEdgeKey{"left", "gain"}, 0, false);
+    REQUIRE(scene.selectedReroutes().size() == 1);
+    pressKey(scene, Qt::Key_Delete);
+    CHECK(scene.layout().reroutes.empty());
+    CHECK(edgeBends(scene, QStringLiteral("clock"), QStringLiteral("value"),
+                    QStringLiteral("left"), QStringLiteral("gain"))
+              .isEmpty());
+    // None of it was a change to the graph: a placement is not a document edit.
+    for (const auto &request : model.takeRpcRequests()) {
+        INFO("request " << request.method);
+        if (request.method != "edit_graph_document") continue;
+        REQUIRE(request.params.at("ops").at(0).at("op") == "set_layout");
+    }
+}
+
+// N-6 decision 2. Two lines carried side by side through one place.
+TEST_CASE("Two edges tie into one bundle, move together, and untie again",
+          "[devstudio][graph-canvas][scene][tie]") {
+    (void)application();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    answer(model, twoEdgeDocument());
+    scene.setModel(&model);
+    REQUIRE(scene.property("pelicanGraphEdgeCount").toULongLong() == 2);
+
+    const PelicanStudio::GraphCanvasEdge gain{"clock", "value", "left", "gain"};
+    const PelicanStudio::GraphCanvasEdge bias{"clock", "value", "left", "bias"};
+    scene.selectEdge(gain, false);
+    scene.selectEdge(bias, true);
+    REQUIRE(scene.selectedEdges().size() == 2);
+    REQUIRE(scene.tieSelection());
+    REQUIRE(scene.layout().ties.size() == 1);
+    REQUIRE(scene.layout().ties.front().edges.size() == 2);
+
+    const auto bundled = [&] {
+        return std::pair{
+            edgeBends(scene, QStringLiteral("clock"), QStringLiteral("value"),
+                      QStringLiteral("left"), QStringLiteral("gain")),
+            edgeBends(scene, QStringLiteral("clock"), QStringLiteral("value"),
+                      QStringLiteral("left"), QStringLiteral("bias"))};
+    };
+    auto [first, second] = bundled();
+    // Two points each, so each line runs level across the band -- which is what
+    // "parallel" means here -- and the two are one slot apart.
+    REQUIRE(first.size() == 2);
+    REQUIRE(second.size() == 2);
+    CHECK(first[0].y() == first[1].y());
+    CHECK(second[0].y() == second[1].y());
+    CHECK(std::abs(second[0].y() - first[0].y()) ==
+          PelicanStudio::GraphCanvasTieSpacing);
+    CHECK(first[0].x() == second[0].x());
+
+    // One drag moves the whole bundle.
+    QGraphicsItem *bar =
+        controlItem(scene, PelicanStudio::GraphCanvasTieItem, QStringLiteral("0"));
+    REQUIRE(bar != nullptr);
+    // A bundle's place is the middle of the lines it carries, and the middle
+    // of a line is often over a node. A handle drawn under a node cannot be
+    // taken hold of: the press reaches for the bundle and drags the node. So
+    // the handles are over everything they may come to lie on. (The scenario
+    // found this on the real window: the first drag of the bundle moved the
+    // node that was covering it, and the bundle did not move at all.)
+    CHECK(bar->zValue() > nodeItem(scene, QStringLiteral("left"))->zValue());
+    // While a hand is on it the canvas says so, and the owner waits: a redraw
+    // arriving mid-gesture would delete the item being held, and the drag would
+    // then move nothing. (The scenario found this on the real window.)
+    CHECK_FALSE(scene.dragging());
+    {
+        QGraphicsSceneMouseEvent press{QEvent::GraphicsSceneMousePress};
+        press.setScenePos(bar->sceneBoundingRect().center());
+        press.setButton(Qt::LeftButton);
+        press.setButtons(Qt::LeftButton);
+        QApplication::sendEvent(&scene, &press);
+        CHECK(scene.dragging());
+        QGraphicsSceneMouseEvent release{QEvent::GraphicsSceneMouseRelease};
+        release.setScenePos(bar->sceneBoundingRect().center());
+        release.setButton(Qt::LeftButton);
+        QApplication::sendEvent(&scene, &release);
+    }
+    const QPointF shift{25.0, -35.0};
+    bar->setPos(bar->pos() + shift);
+    const auto [moved_first, moved_second] = bundled();
+    CHECK(moved_first[0] == first[0] + shift);
+    CHECK(moved_second[0] == second[0] + shift);
+
+    // Double-clicking the band turns the order of the slots round.
+    const auto order = scene.layout().ties.front().edges;
+    click(scene, bar->sceneBoundingRect().center(),
+          QEvent::GraphicsSceneMouseDoubleClick);
+    REQUIRE(scene.layout().ties.size() == 1);
+    CHECK(scene.layout().ties.front().edges.front() == order.back());
+
+    // Untying leaves one control point per line, where its slot was.
+    scene.selectTie(0, false);
+    REQUIRE(scene.untieSelection());
+    CHECK(scene.layout().ties.empty());
+    REQUIRE(scene.layout().reroutes.size() == 2);
+    for (const auto &reroute : scene.layout().reroutes)
+        CHECK(reroute.points.size() == 1);
+}
+
+// N-6 decision 3. The placement is the document's, and the session table is
+// only what answers for a node the document has never placed.
+TEST_CASE("A drag is one placement edit, and the document is where it lives",
+          "[devstudio][graph-canvas][scene][layout-persistence]") {
+    (void)application();
+    REQUIRE(GraphCanvasScene::GraphCanvasLayoutDebounceMs == 300);
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    answer(model, connectedDocument());
+    scene.setModel(&model);
+
+    QGraphicsItem *left = nodeItem(scene, QStringLiteral("left"));
+    REQUIRE(left != nullptr);
+    const QPointF placed = left->pos() + QPointF{120.0, 90.0};
+    // Three moves, which is what one drag is made of.
+    left->setPos(left->pos() + QPointF{40.0, 30.0});
+    left->setPos(left->pos() + QPointF{40.0, 30.0});
+    left->setPos(placed);
+    REQUIRE(scene.layoutPending());
+    // Nothing has gone out yet: the wait is what makes a drag one edit.
+    requireNoEdit(model);
+
+    scene.flushLayout();
+    const auto written = takeLayoutEdit(model);
+    // Still marked: the canvas lets go of it when the document comes back
+    // carrying the same placement, not when the request leaves.
+    CHECK(scene.layoutPending());
+    REQUIRE(written.at("nodes").contains("left"));
+    CHECK(written.at("nodes").at("left").at("x") == placed.x());
+    CHECK(written.at("nodes").at("left").at("y") == placed.y());
+
+    // What the engine holds afterwards. A canvas that has never seen this
+    // session -- so its session table is empty -- draws the node there.
+    auto document = connectedDocument();
+    document["layout"] = written;
+    GraphCanvasModel reopened;
+    GraphCanvasScene fresh;
+    reopened.setConnected(true);
+    answer(reopened, document);
+    fresh.setModel(&reopened);
+    REQUIRE(nodeItem(fresh, QStringLiteral("left")) != nullptr);
+    CHECK(nodeItem(fresh, QStringLiteral("left"))->pos() == placed);
+    CHECK(fresh.layout().nodes.contains("left"));
+}
+
+// N-6 decision 1 and 2, the automatic half: the lanes the placement kept come
+// back as control points, and the ones running side by side as one bundle.
+TEST_CASE("Auto layout keeps the lanes it chose, as control points and bundles",
+          "[devstudio][graph-canvas][scene][layout][reroute]") {
+    (void)application();
+
+    SECTION("lines that share a lane come back as one bundle") {
+        GraphCanvasModel model;
+        GraphCanvasScene scene;
+        model.setConnected(true);
+        answer(model, bundleDocument());
+        scene.setModel(&model);
+        REQUIRE(scene.property("pelicanGraphNodeCount").toULongLong() == 3);
+        REQUIRE(scene.property("pelicanGraphEdgeCount").toULongLong() == 4);
+        // Nothing is kept until it is asked for.
+        REQUIRE(scene.layout().reroutes.empty());
+        REQUIRE(scene.layout().ties.empty());
+
+        scene.autoLayout();
+        const auto written = takeLayoutEdit(model);
+        // Every node it placed is in the placement it wrote.
+        CHECK(written.at("nodes").size() == 3);
+        CHECK(written.at("ties").size() == 1);
+        // The two dependencies that fly over the middle column share the lane
+        // the placement kept, so they come back as one bundle of two; the two
+        // edges that step a single column get nothing.
+        CHECK(scene.layout().reroutes.empty());
+        REQUIRE(scene.layout().ties.size() == 1);
+        REQUIRE(scene.layout().ties.front().edges.size() == 2);
+        CHECK(scene.layout().ties.front().edges.at(0) ==
+              PelicanStudio::GraphCanvasEdgeKey{"gate", "a"});
+        CHECK(scene.layout().ties.front().edges.at(1) ==
+              PelicanStudio::GraphCanvasEdgeKey{"gate", "b"});
+
+        // And they are drawn as two level lines, one slot apart.
+        const auto first = edgeBends(scene, QStringLiteral("src"),
+                                     QStringLiteral("value"),
+                                     QStringLiteral("gate"), QStringLiteral("a"));
+        const auto second = edgeBends(scene, QStringLiteral("src"),
+                                      QStringLiteral("value"),
+                                      QStringLiteral("gate"), QStringLiteral("b"));
+        REQUIRE(first.size() == 2);
+        REQUIRE(second.size() == 2);
+        CHECK(first[0].y() == first[1].y());
+        CHECK(second[0].y() - first[0].y() ==
+              PelicanStudio::GraphCanvasTieSpacing);
+
+        // Once it is kept, a node drag no longer straightens the lines.
+        QGraphicsItem *step = nodeItem(scene, QStringLiteral("step"));
+        REQUIRE(step != nullptr);
+        step->setPos(step->pos() + QPointF{0.0, 260.0});
+        CHECK(edgeBends(scene, QStringLiteral("src"), QStringLiteral("value"),
+                        QStringLiteral("gate"), QStringLiteral("a")) == first);
+    }
+
+    SECTION("a lane with nobody beside it stays a control point of its own") {
+        GraphCanvasModel model;
+        GraphCanvasScene scene;
+        model.setConnected(true);
+        answer(model, flyoverDocument());
+        scene.setModel(&model);
+        REQUIRE(scene.property("pelicanGraphNodeCount").toULongLong() == 5);
+        REQUIRE(scene.property("pelicanGraphEdgeCount").toULongLong() == 6);
+
+        scene.autoLayout();
+        const auto written = takeLayoutEdit(model);
+        CHECK(written.at("nodes").size() == 5);
+        // Here the two lanes run either side of the node they fly over, which
+        // is further apart than a node's own pitch -- so they are two lines
+        // going two ways, and the rule leaves them as two control points.
+        INFO("reroutes " << scene.layout().reroutes.size() << " ties "
+                         << scene.layout().ties.size());
+        CHECK(scene.layout().ties.empty());
+        REQUIRE(scene.layout().reroutes.size() == 2);
+        for (const auto &reroute : scene.layout().reroutes) {
+            // A lane is two points: the line runs level across the column it
+            // flies over, and only the gaps between columns slope.
+            CHECK(reroute.points.size() == 2);
+            CHECK(reroute.points.at(0).y() == reroute.points.at(1).y());
+        }
+        for (const auto &edge : {std::pair{"gate_a", "a"}, std::pair{"gate_b", "a"}}) {
+            const PelicanStudio::GraphCanvasEdgeKey key{edge.first, edge.second};
+            INFO("edge " << key.node << "." << key.port);
+            CHECK(std::ranges::any_of(
+                scene.layout().reroutes,
+                [&](const auto &reroute) { return reroute.edge == key; }));
+        }
+    }
 }
 
 // N-3 carried this over: the middle-button pan used to move the scroll bars,

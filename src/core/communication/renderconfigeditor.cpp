@@ -1286,7 +1286,7 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
     const std::string &base_digest, const std::string &operation,
     const std::function<std::optional<OrderedJson>(AuthoredRenderConfigDocument &)> &transform,
     std::span<const RenderConfigCandidateDocument> additional_documents,
-    std::optional<std::string> base_preset_digest) {
+    std::optional<std::string> base_preset_digest, bool source_only) {
     if (!isLowerHexDigest(base_digest))
         throw std::invalid_argument(operation + " base_source_digest must be 64 lowercase hex characters");
     const auto gate = gateSnapshot();
@@ -1366,6 +1366,7 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
         .operation = operation,
         .base_preset_digest = std::move(base_preset_digest),
         .edits_additional_documents = !additional_documents.empty(),
+        .source_only = source_only,
     });
     auto accepted = OrderedJson{
         {"ticket", ticket_id},
@@ -1839,7 +1840,12 @@ OrderedJson RenderConfigEditorService::getGraphInstances(const Json &params) con
         // name a producer that is already there, and has to avoid an id that
         // is already taken.
         {"nodes", std::move(nodes)},
-        {"definitions", root.value("definitions", Json::object())}};
+        {"definitions", root.value("definitions", Json::object())},
+        // N-6: the editor's own placement for the root scope. A definition's
+        // travels inside its body, so this is the one that needs naming, and
+        // reporting it here is what keeps the canvas from needing a read of
+        // its own for something the document already carries.
+        {"layout", root.value("layout", Json::object())}};
 }
 
 OrderedJson RenderConfigEditorService::editGraphInstances(const Json &params) {
@@ -1868,6 +1874,17 @@ OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
     if (!params.contains("ops") || !params.at("ops").is_array())
         return rejection("invalid_graph_document", "Provide an array of graph document ops");
     const auto &ops = params.at("ops");
+    // N-6: an op list that is nothing but placement changes nothing the engine
+    // evaluates. It still takes a ticket and the same CAS -- two editors must
+    // not both win -- but it is committed to the source without compiling or
+    // republishing a candidate, because there is no candidate: the composed
+    // graph, the catalog and the frame plan are the same ones as before.
+    const bool layout_only =
+        !ops.empty() &&
+        std::all_of(ops.begin(), ops.end(), [](const Json &operation) {
+            return operation.is_object() &&
+                   operation.value("op", std::string{}) == "set_layout";
+        });
     // One ticket, one CAS, one candidate: the same queue edit_graph_instances
     // uses, so two edits in the same frame cannot both win.
     return queueRootEdit(digest, method,
@@ -1885,6 +1902,11 @@ OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
                     edited.at("definitions") != source.value("definitions", Json{}))
                     candidate = candidate.withRootValue(
                         "definitions", edited.at("definitions").dump(2));
+                // And the root scope's own placement, on the same terms.
+                if (edited.value("layout", Json::object()) !=
+                    source.value("layout", Json::object()))
+                    candidate = candidate.withRootValue(
+                        "layout", edited.value("layout", Json::object()).dump(2));
                 return std::nullopt;
             } catch (const GraphRegistryError &error) {
                 return rejection(error.code(), error.what(),
@@ -1892,7 +1914,7 @@ OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
             } catch (const std::exception &error) {
                 return rejection("invalid_graph_document", error.what());
             }
-        });
+        }, {}, std::nullopt, layout_only);
 }
 
 OrderedJson RenderConfigEditorService::getGraphValues(const Json &params) const {
@@ -2902,6 +2924,33 @@ void RenderConfigEditorService::commitPending() noexcept {
                     {"source_digest",
                      digestJson(document_.sourceDigest())},
                     {"source_commit_called", false},
+                });
+                continue;
+            }
+
+            // N-6: an edit that only moved authored bytes the engine never
+            // reads. There is no candidate to compile and nothing to publish,
+            // so the source is written and the generation stays exactly where
+            // it was -- which is what makes moving a node on the canvas free.
+            if (ticket.source_only) {
+                if (!ticket.candidate_documents)
+                    throw std::logic_error(
+                        "render config edit ticket has no candidate document set");
+                auto receipt = commitRenderConfigCandidateDocuments(
+                    dependencies_.project_root, *ticket.candidate_documents);
+                (void)receipt;
+                document_ = std::move(ticket.candidate);
+                const auto runtime = dependencies_.runtime_snapshot();
+                finish(OrderedJson{
+                    {"ticket", ticket.id},
+                    {"status", "committed"},
+                    {"committed", true},
+                    // Said out loud, because it is the whole point: the drawn
+                    // graph was not recomposed for this edit.
+                    {"recomposed", false},
+                    {"published_generation", runtime.published_generation},
+                    {"source_digest", digestJson(document_.sourceDigest())},
+                    {"source_commit_called", true},
                 });
                 continue;
             }

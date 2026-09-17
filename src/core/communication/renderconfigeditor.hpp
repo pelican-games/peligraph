@@ -112,6 +112,10 @@ class RenderConfigEditorService {
         std::string fragment_reference;
         std::optional<std::string> base_preset_digest;
         bool edits_additional_documents = false;
+        // N-6: the edit changes authored bytes nothing in the engine reads, so
+        // there is no candidate to compile and nothing new to publish. It still
+        // takes a ticket and the same CAS; it simply does not go to the runtime.
+        bool source_only = false;
     };
 
     struct ManagedDocumentBaseline {
@@ -167,7 +171,8 @@ class RenderConfigEditorService {
         const std::string &base_digest, const std::string &operation,
         const std::function<std::optional<nlohmann::ordered_json>(AuthoredRenderConfigDocument &)> &transform,
         std::span<const RenderConfigCandidateDocument> additional_documents = {},
-        std::optional<std::string> base_preset_digest = std::nullopt);
+        std::optional<std::string> base_preset_digest = std::nullopt,
+        bool source_only = false);
     nlohmann::ordered_json rejection(
         std::string code, std::string message,
         nlohmann::ordered_json details = nlohmann::ordered_json::object()) const;

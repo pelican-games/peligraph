@@ -85,6 +85,7 @@ void GraphCanvasModel::clearContext() {
     digest_.clear();
     nodes_ = Json::array();
     definitions_ = Json::object();
+    layout_ = Json::object();
     definitions_reported_ = false;
     context_received_ = false;
     breadcrumb_ = {std::string{}};
@@ -409,6 +410,10 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         // is still the whole document the engine published. Say so and draw it.
         definitions_reported_ = definitions != response.end() && definitions->is_object();
         definitions_ = definitions_reported_ ? *definitions : Json::object();
+        // N-6: the root scope's placement. A reply from an engine that predates
+        // it simply says nothing, which reads as "no placement yet".
+        auto layout = response.value("layout", Json::object());
+        layout_ = layout.is_object() ? std::move(layout) : Json::object();
         nodes_ = std::move(nodes);
         digest_ = response.value("source_digest", Json::object()).value("hex", std::string{});
         context_received_ = true;
@@ -933,6 +938,22 @@ bool GraphCanvasModel::removeNode(const std::string &node) {
     if (!canEdit() || findNode(currentScope(), node) == nullptr) return false;
     return submitOps(Json::array({Json{
         {"op", "remove_node"}, {"scope", scopeToken()}, {"node", node}}}));
+}
+
+nlohmann::json GraphCanvasModel::scopeLayout(std::string_view scope) const {
+    if (scope.empty()) return layout_.is_object() ? layout_ : Json::object();
+    const auto found = definitions_.find(std::string{scope});
+    if (found == definitions_.end() || !found->is_object()) return Json::object();
+    auto layout = found->value("layout", Json::object());
+    return layout.is_object() ? layout : Json::object();
+}
+
+bool GraphCanvasModel::setLayout(const std::string &scope, const Json &layout) {
+    if (!canEdit()) return false;
+    return submitOps(Json::array({Json{
+        {"op", "set_layout"},
+        {"scope", scope.empty() ? std::string{"root"} : scope},
+        {"layout", layout}}}));
 }
 
 bool GraphCanvasModel::setNodeLabel(const std::string &node, const std::string &label) {

@@ -194,6 +194,9 @@ class GraphCanvasModel {
     std::string digest_;
     nlohmann::json nodes_ = nlohmann::json::array();
     nlohmann::json definitions_ = nlohmann::json::object();
+    // N-6: the root scope's own placement, as the document carries it. A
+    // definition's travels inside its body, so only this one needs a field.
+    nlohmann::json layout_ = nlohmann::json::object();
     bool definitions_reported_ = false;
     bool context_received_ = false;
 
@@ -404,6 +407,20 @@ class GraphCanvasModel {
     // never carried it. The socket resolver reads its traits and its optional
     // display declaration through here.
     const nlohmann::json *typeSchema(std::string_view id) const;
+    // N-6. The placement the document holds for one scope, in the shape
+    // `set_layout` writes: `{"nodes": {...}, "reroutes": [...], "ties": [...]}`,
+    // or an empty object when the document says nothing about it. This is the
+    // canvas's source of truth for where things are; the session table under it
+    // only answers for a node the document has never placed.
+    [[nodiscard]] nlohmann::json scopeLayout(std::string_view scope) const;
+    [[nodiscard]] nlohmann::json scopeLayout() const {
+        return scopeLayout(currentScope());
+    }
+    // One `set_layout`, naming the scope rather than taking the current one:
+    // a debounced write can land after the canvas has already moved on, and it
+    // must still be about the scope the gesture happened in.
+    bool setLayout(const std::string &scope, const nlohmann::json &layout);
+
     bool definitionsReported() const noexcept { return definitions_reported_; }
     bool contextReceived() const noexcept { return context_received_; }
     const std::string &digest() const noexcept { return digest_; }

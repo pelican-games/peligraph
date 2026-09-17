@@ -1,0 +1,277 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "graph_reroute_tie",
+  "description": "N-6: the wiring gets control points. Inside the definition body, an edge is given a reroute by double-clicking it, the node it lands on is dragged and the bend stays where it was put, the reroute and a second edge are tied into one bundle, the bundle is dragged, and the whole placement comes back out of a project the engine has re-read from disk.",
+  "tab": "graph",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the engine viewport answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the canvas has drawn the owned instance",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the document holds no placement yet",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "layout.$len",
+      "value": 0
+    },
+    {
+      "label": "descend into the definition, which is where the edges are",
+      "cmd": "double_click",
+      "name": "pelican.graphCanvasView::graph_node#left"
+    },
+    {
+      "label": "the canvas is inside the definition body",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasBreadcrumb",
+      "text": "root / gain_curve",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the body's three nodes are drawn",
+      "expect": "list_count",
+      "pattern": "pelican.graphCanvasView::graph_node#",
+      "value": 3
+    },
+    {
+      "label": "fire Auto layout, so the placement the canvas chose is the one on record",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.autoLayout"
+    },
+    {
+      "label": "the definition's placement reached the document",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "and it named the three nodes of the body",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.gain_curve.layout.nodes.$len",
+      "value": 3
+    },
+    {
+      "label": "double-click the bias edge, which gives it a control point",
+      "cmd": "double_click",
+      "name": "pelican.graphCanvasView::graph_edge#bias->sum"
+    },
+    {
+      "label": "the control point is drawn, and is named the way the reader was told",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_reroute#sum/b/0",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "where it sits, before anything is moved",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "graph_reroute#sum/b/0"
+      },
+      "path": "widgets[0].scene[1]",
+      "remember": "control_y"
+    },
+    {
+      "label": "drag the node the edge lands on, well away from where it was",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_node_header#sum"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_node_header#sum",
+        "point": [
+          60,
+          210
+        ]
+      },
+      "steps": 6
+    },
+    {
+      "label": "the node really moved",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "graph_node#sum"
+      },
+      "path": "widgets[0].scene[1]",
+      "remember": "sum_y"
+    },
+    {
+      "label": "the control point did not move with it: that is the whole of decision 1",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "graph_reroute#sum/b/0"
+      },
+      "path": "widgets[0].scene[1]",
+      "op": "eq",
+      "value_of": "control_y"
+    },
+    {
+      "label": "the drag reached the document as a placement, not as a graph edit",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick the control point",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_reroute#sum/b/0"
+    },
+    {
+      "label": "and the gain edge beside it",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_edge#gain->sum",
+      "modifiers": [
+        "ctrl"
+      ]
+    },
+    {
+      "label": "Tie together is switched on once two lines are picked",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.graphCanvas.tieTogether"
+      },
+      "path": "widgets[0].enabled",
+      "value": true
+    },
+    {
+      "label": "bundle them",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.tieTogether"
+    },
+    {
+      "label": "the bundle is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_tie#0",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "where the bundle sits",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "graph_tie#0"
+      },
+      "path": "widgets[0].scene[1]",
+      "remember": "tie_y"
+    },
+    {
+      "label": "take hold of the bundle",
+      "cmd": "press",
+      "name": "pelican.graphCanvasView::graph_tie#0"
+    },
+    {
+      "label": "carry it across the canvas, which carries both lines with it",
+      "cmd": "move",
+      "name": "pelican.graphCanvasView",
+      "point": [
+        120,
+        160
+      ]
+    },
+    {
+      "label": "and let go",
+      "cmd": "release",
+      "name": "pelican.graphCanvasView",
+      "point": [
+        120,
+        160
+      ]
+    },
+    {
+      "label": "it is somewhere else now",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "graph_tie#0"
+      },
+      "path": "widgets[0].scene[1]",
+      "op": "ne",
+      "value_of": "tie_y"
+    },
+    {
+      "label": "the placement reached the document again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the running engine holds one bundle of two lines",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.gain_curve.layout.ties[0].edges.$len",
+      "value": 2,
+      "retry_ms": 10000
+    },
+    {
+      "label": "open a second, untouched copy of the same fixture",
+      "cmd": "open_project",
+      "dir": "{other_project}"
+    },
+    {
+      "label": "the switched-to engine answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the untouched copy carries only nodes and outputs, so none of this is a memory of the session",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.gain_curve.$len",
+      "value": 2
+    },
+    {
+      "label": "come back to the edited project, which the engine re-reads from disk",
+      "cmd": "open_project",
+      "dir": "{project}"
+    },
+    {
+      "label": "the re-read engine answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the bundle survived the round trip through disk",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.gain_curve.layout.ties[0].edges.$len",
+      "value": 2
+    },
+    {
+      "label": "and the canvas draws the bundle it read back",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "a picture of the wired canvas for the reader of this report",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "graph_reroute_tie_canvas.png"
+    }
+  ]
+}

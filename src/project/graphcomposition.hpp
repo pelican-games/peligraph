@@ -84,12 +84,29 @@ ExpandedGraphDocument expandGraphDocument(const nlohmann::json &document);
 //   {"op":"set_input","node":"<id>","port":"<port>","source":{"node","port"}|null}
 //   {"op":"set_node_parameters","node":"<id>","parameters":{...}}
 //   {"op":"set_node_label","node":"<id>","label":"<text>"}   ("" clears)
+//   {"op":"set_layout","layout":{...}|null}                  (null clears)
 // applied in order to one candidate document, which is expanded once at the
 // end: either every op lands or the document is rejected whole. Failures that
 // an editor must tell apart are named -- graph.node_duplicate@1 /
 // graph.node_missing@1 / graph.input_unknown@1 / graph.input_referenced@1 /
 // graph.output_referenced@1 / graph.definition_immutable@1 /
-// graph.nested_instance@1 / graph.input_scope@1 -- as GraphRegistryError.
+// graph.nested_instance@1 / graph.input_scope@1 /
+// graph.layout_invalid@1 -- as GraphRegistryError.
+//
+// `set_layout` is the one op that writes nothing the engine reads. It replaces
+// the addressed scope's `layout` member -- where the editor put the nodes, the
+// control points its edges are drawn through, and the bundles that carry
+// several edges side by side -- which every loader, the expansion and the
+// composition carry without looking at. Its shape is
+//   {"nodes":    {"<id>": {"x":<number>,"y":<number>}, ...},
+//    "reroutes": [{"edge":{"node":"<id>","port":"<port>"},
+//                  "points":[[<x>,<y>], ...]}, ...],
+//    "ties":     [{"x":<number>,"y":<number>,
+//                  "edges":[{"node":"<id>","port":"<port>"}, ...]}, ...]}
+// where an edge is named by the *input* end it lands on, which is unique. Every
+// node and every edge it names has to be one the addressed scope holds: a
+// placement that points at nothing is graph.layout_invalid@1, because it would
+// come back as a drawing of a graph that is not there.
 nlohmann::json editGraphDocument(const nlohmann::json &document, const nlohmann::json &ops);
 
 // Edit owned root instances in the authoring document. References to removed

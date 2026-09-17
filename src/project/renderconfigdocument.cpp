@@ -416,8 +416,11 @@ RenderConfigSectionUnlocated::RenderConfigSectionUnlocated()
           "graph root render config has no rendering section object") {}
 
 bool isGraphRootKey(std::string_view key) {
+    // `layout` is the editor's own placement (N-6). It is a graph root member
+    // like the four that carry the graph itself, so it must not be written into
+    // the `rendering` section by a caller that reaches for withSectionValue.
     return key == "schema" || key == "version" || key == "definitions" ||
-           key == "nodes" || key == "outputs";
+           key == "nodes" || key == "outputs" || key == "layout";
 }
 
 RenderConfigCandidateDocumentSet::RenderConfigCandidateDocumentSet(

@@ -548,7 +548,23 @@ def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
             }
             if "timeout_ms" in step:
                 request["timeout_ms"] = step["timeout_ms"]
-            reply = run.call(request, timeout=float(step.get("wait_s", 180)))
+            # Some of what the engine holds arrives on its own clock: a
+            # placement edit waits out a debounce before it is even sent, so
+            # the first reading of it can be one edit behind.  `retry_ms` asks
+            # the same question again until it is answered or the time is up;
+            # without it the step is a single reading, as it always was.
+            deadline = time.monotonic() + float(step.get("retry_ms", 0)) / 1000.0
+            while True:
+                reply = run.call(request, timeout=float(step.get("wait_s", 180)))
+                if not reply.get("ok"):
+                    break
+                try:
+                    reading = follow(reply["result"]["result"], step["path"])
+                except (PathError, ValueError):
+                    reading = _MISSING
+                if equal(reading, step["value"]) or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.1)
             if not reply.get("ok"):
                 error = reply.get("error") or {}
                 return _fail(

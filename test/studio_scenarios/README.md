@@ -78,6 +78,12 @@ step green only when the command is refused with exactly that code; or an
 `path` walks the JSON reply: `nodes[1].parameters.gain`, and `$len` for the
 length of a list or object (`definitions.$len`).
 
+`rpc_equals` also takes `retry_ms`: it asks the same question again, a tenth of
+a second apart, until the answer is the expected one or the time is up. Use it
+for a reading the engine reaches on its own clock -- N-6's placement waits out
+a 300 ms debounce before it is even sent, so the first reading after a gesture
+can be one edit behind. Without `retry_ms` the step is a single reading.
+
 `result` is the general one: it sends any command and asks a question about the
 reply, which is how `view_state` and `menu_list` are checked.
 
@@ -124,6 +130,26 @@ menu is open. Actions are named the same way widgets are (`grep setObjectName
 src/devstudio/view`), `list` publishes them with `"class": "QAction"`, and
 `click` on one triggers it rather than pressing a point -- so a scenario reaches
 `pelican.view.theme.dark` without driving a popup.
+
+N-6 added two more drawn things to the graph canvas, named the same way. A
+control point on one edge is `graph_reroute#<node>/<port>/<index>` -- the edge
+is named by the *input* end it lands on, because that end is unique, and the
+index counts the control points of that edge from left to right. A bundle is
+`graph_tie#<index>`, counted in the order the document lists them. Both are
+draggable items, so `drag` moves them; `click` picks one, and `click` with
+`"modifiers": ["ctrl"]` adds to what is already picked, which is how the two
+lines a bundle is made of are chosen. Both are drawn over the nodes, so a
+gesture aimed at one reaches it even where it lies across a node -- a bundle
+sits in the middle of the lines it carries, and that is often over a box. The canvas menu's two new entries are
+named QActions like the others: `pelican.graphCanvas.tieTogether` and
+`pelican.graphCanvas.untie`, both switched off until enough is picked.
+
+The placement itself is document state, so a scenario reads it back with `rpc`:
+`get_graph_instances` carries the root scope's under `layout` and each
+definition's under `definitions.<name>.layout`, in the shape
+`{"nodes": {...}, "reroutes": [...], "ties": [...]}`. `graph_reroute_tie` is
+the example, and it is also where "a control point does not move when the node
+it is near does" is checked against a live window.
 
 The editor the canvas opens over a pill or a heading is a real widget carried by
 a drawn item, and is named the same way:

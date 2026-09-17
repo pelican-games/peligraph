@@ -18,6 +18,7 @@
 #include "../src/core/vkcore/renderer_config.hpp"
 #include "../src/core/watch/reloadgate.hpp"
 #include "../src/project/featurecompose.hpp"
+#include "../src/project/graphcomposition.hpp"
 #include "../src/project/rendercomponent.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "../src/project/vulkanviewplanning.hpp"
@@ -1140,6 +1141,185 @@ TEST_CASE("instance inputs change supply atomically and report what was drawn",
     }
 }
 
+// N-6 acceptance 1. The canvas's own placement -- where the nodes were put, the
+// control points its edges are drawn through and the bundles that carry several
+// side by side -- is authored state the engine carries and reads nothing of. It
+// goes in through one additive op, comes back on the read that was already
+// there, and costs no recompose: moving a node must not rebuild the frame.
+TEST_CASE("the graph document carries the editor's placement without recomposing",
+          "[render-config-editor][graph-layout]") {
+    const auto fixture_path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+        "fixtures" / "graph_instance_inputs" / "passes" / "main.json";
+    TemporaryConfig source{readBytes(fixture_path)};
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(readBytes(source.path));
+    auto service = makeService(source, runtime);
+    const auto edit = [&](Json ops) {
+        return service->editGraphDocument(
+            {{"base_source_digest", service->getGraphInstances(Json::object())
+                                        .at("source_digest").at("hex")},
+             {"ops", std::move(ops)}});
+    };
+    const auto commit = [&](const nlohmann::ordered_json &submission) {
+        REQUIRE(submission.at("status") == "accepted");
+        service->commitPending();
+        return service->getResult({{"ticket", submission.at("ticket")}});
+    };
+    const auto reportedLayout = [&] {
+        return Json(service->getGraphInstances(Json::object()).at("layout"));
+    };
+    const auto definitionLayout = [&] {
+        return Json(service->getGraphInstances(Json::object())
+                        .at("definitions").at("gain_curve")
+                        .value("layout", Json::object()));
+    };
+    // Two edges into the one instance, so there is something for a bundle to
+    // carry. An edge is named by the input end it lands on.
+    REQUIRE(commit(edit(Json::array({
+                Json{{"op", "set_input"}, {"node", "left"}, {"port", "gain"},
+                     {"source", {{"node", "clock"}, {"port", "value"}}}},
+                Json{{"op", "set_input"}, {"node", "left"}, {"port", "bias"},
+                     {"source", {{"node", "clock"}, {"port", "value"}}}}})))
+                .at("committed") == true);
+
+    const Json placement{
+        {"nodes", {{"clock", {{"x", 10.0}, {"y", 20.0}}},
+                   {"left", {{"x", 340.5}, {"y", -12.25}}}}},
+        {"reroutes", Json::array({Json{
+             {"edge", {{"node", "left"}, {"port", "gain"}}},
+             {"points", Json::array({Json::array({180.0, 44.0}),
+                                     Json::array({220.0, 44.0})})}}})},
+        {"ties", Json::array({Json{
+             {"x", 260.0}, {"y", 70.0},
+             {"edges", Json::array({Json{{"node", "left"}, {"port", "gain"}},
+                                    Json{{"node", "left"}, {"port", "bias"}}})}}})}};
+
+    SECTION("a placement lands, comes back, and no candidate is compiled for it") {
+        REQUIRE(reportedLayout() == Json::object());
+        const auto applies = runtime.apply_calls;
+        const auto generation = runtime.snapshot.published_generation;
+        const auto plan = runtime.frame_plan;
+        const auto catalog = Json(service->getGraphCatalog(Json::object()));
+
+        const auto result = commit(edit(Json::array({Json{
+            {"op", "set_layout"}, {"scope", "root"}, {"layout", placement}}})));
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        // The claim, said by the reply as well as by the numbers.
+        CHECK(result.at("recomposed") == false);
+        CHECK(runtime.apply_calls == applies);
+        CHECK(runtime.snapshot.published_generation == generation);
+        CHECK(result.at("published_generation") == generation);
+        CHECK(runtime.frame_plan == plan);
+        CHECK(Json(service->getGraphCatalog(Json::object())) == catalog);
+
+        // And it is really in the document, in the shape it was written.
+        CHECK(reportedLayout() == placement);
+        CHECK(Json::parse(readBytes(source.path)).at("layout") == placement);
+
+        // The document that came back still expands and still draws.
+        const auto saved = Json::parse(readBytes(source.path));
+        REQUIRE_NOTHROW(expandGraphDocument(saved));
+        const ValueGraph::Graph graph{readBytes(source.path)};
+        auto state = graph.createState();
+        REQUIRE_NOTHROW(graph.publish(GameContext{},
+            {{"time", 0.5}, {"delta_time", 0.5}, {"scene_time", 0.5}}, {},
+            [](std::string_view, std::span<const float>) { return true; },
+            {}, {}, &state));
+
+        // An edit that is about the graph does recompose -- which is the
+        // control for the three numbers above -- and carries the placement
+        // through untouched.
+        const auto layout_bytes = readBytes(source.path);
+        const auto member = layout_bytes.substr(layout_bytes.find("\"layout\""));
+        REQUIRE(commit(edit(Json::array({Json{{"op", "set_node_label"},
+            {"node", "clock"}, {"label", "scene clock"}}})))
+                .at("committed") == true);
+        CHECK(runtime.apply_calls == applies + 1);
+        CHECK(runtime.snapshot.published_generation == generation + 1);
+        CHECK(reportedLayout() == placement);
+        CHECK(readBytes(source.path).find(member) != std::string::npos);
+
+        // Clearing it is spelled with null. The member is left standing as an
+        // empty object rather than deleted: the root write-back replaces one
+        // member's bytes and has no way to take a member out, and "no
+        // placement" and "a placement that places nothing" are the same claim.
+        REQUIRE(commit(edit(Json::array({Json{{"op", "set_layout"},
+            {"layout", nullptr}}}))).at("committed") == true);
+        CHECK(Json::parse(readBytes(source.path)).at("layout") == Json::object());
+        CHECK(reportedLayout() == Json::object());
+    }
+
+    SECTION("a definition's placement travels inside its body") {
+        const Json inner{
+            {"nodes", {{"sum", {{"x", 4.0}, {"y", 8.0}}}}},
+            {"reroutes", Json::array({Json{
+                 {"edge", {{"node", "sum"}, {"port", "a"}}},
+                 {"points", Json::array({Json::array({1.0, 2.0})})}}})},
+            {"ties", Json::array()}};
+        const auto applies = runtime.apply_calls;
+        REQUIRE(commit(edit(Json::array({Json{{"op", "set_layout"},
+            {"scope", "gain_curve"}, {"layout", inner}}})))
+                .at("committed") == true);
+        CHECK(runtime.apply_calls == applies);
+        CHECK(definitionLayout() == inner);
+        // The root's own is untouched: the two are separate members.
+        CHECK(reportedLayout() == Json::object());
+        CHECK(Json::parse(readBytes(source.path))
+                  .at("definitions").at("gain_curve").at("layout") == inner);
+        REQUIRE_NOTHROW(expandGraphDocument(Json::parse(readBytes(source.path))));
+    }
+
+    SECTION("a placement that names nothing is refused by name") {
+        REQUIRE(commit(edit(Json::array({Json{{"op", "set_layout"},
+            {"layout", placement}}}))).at("committed") == true);
+        const auto saved = readBytes(source.path);
+        const auto reject = [&](Json layout, const char *code,
+                                const char *scope = nullptr) {
+            Json operation{{"op", "set_layout"}, {"layout", std::move(layout)}};
+            if (scope != nullptr) operation["scope"] = scope;
+            const auto result = edit(Json::array({std::move(operation)}));
+            INFO(result.dump());
+            REQUIRE(result.at("status") == "rejected");
+            CHECK(result.at("error").at("code") == code);
+            CHECK(readBytes(source.path) == saved);
+        };
+        // A node this scope does not hold.
+        reject(Json{{"nodes", {{"absent", {{"x", 0}, {"y", 0}}}}}},
+               "graph.layout_invalid@1");
+        // A port with no edge into it is not an edge.
+        reject(Json{{"reroutes", Json::array({Json{
+                   {"edge", {{"node", "clock"}, {"port", "value"}}},
+                   {"points", Json::array({Json::array({0.0, 0.0})})}}})}},
+               "graph.layout_invalid@1");
+        reject(Json{{"ties", Json::array({Json{
+                   {"x", 0}, {"y", 0},
+                   {"edges", Json::array({
+                        Json{{"node", "left"}, {"port", "gain"}},
+                        Json{{"node", "left"}, {"port", "missing"}}})}}})}},
+               "graph.layout_invalid@1");
+        // A coordinate that is not a finite number.
+        reject(Json{{"nodes", {{"clock", {{"x", "left"}, {"y", 0}}}}}},
+               "graph.layout_invalid@1");
+        // A member nobody declared: a placement the editor cannot read back is
+        // not a placement it should have been allowed to write.
+        reject(Json{{"columns", Json::array()}}, "graph.layout_invalid@1");
+        // The scope rules are the ones every other op is bound by. An instance
+        // path belongs to no single body...
+        reject(Json{{"nodes", {{"left/sum", {{"x", 0}, {"y", 0}}}}}},
+               "graph.definition_immutable@1");
+        // ...and a node that lives in a definition is not reachable from the
+        // root scope, which is a different fix from "there is no such node".
+        reject(Json{{"nodes", {{"sum", {{"x", 0}, {"y", 0}}}}}},
+               "graph.definition_immutable@1");
+        // A scope nobody declared is not a silent no-op either.
+        reject(Json{{"nodes", Json::object()}}, "invalid_graph_document",
+               "nowhere");
+        // The one that did land is still the one the document holds.
+        CHECK(reportedLayout() == placement);
+    }
+}
+
 // AG-3a acceptance 2 and 3. get_graph_values answers for one instance's input
 // ports; the nodes inside the definition it instantiates have no answer there
 // at all. This is that answer, taken from the same publish snapshot so reading
@@ -1651,6 +1831,13 @@ TEST_CASE("P-2a-4a section value edits address the graph root's rendering member
         CHECK(Json::parse(edited.bytes()).at("rendering").size() == 2);
         CHECK(isGraphRootKey("definitions"));
         CHECK(isGraphRootKey("outputs"));
+        // N-6: the editor's own placement is a root member too, so a caller
+        // that reaches for withSectionValue cannot bury it in `rendering`.
+        CHECK(isGraphRootKey("layout"));
+        CHECK(Json::parse(document.withSectionValue("layout", "{\"nodes\":{}}")
+                              .bytes())
+                  .at("layout")
+                  .at("nodes") == Json::object());
         CHECK_FALSE(isGraphRootKey("features"));
         CHECK_FALSE(isGraphRootKey("rendering_passes"));
     }
@@ -3033,6 +3220,12 @@ TEST_CASE("P-2a-4a root scope materialization rewrites the section and releases 
     writeBytes(project.root / "passes" / "bloom-source.json", bloom.dump(2));
 
     auto document = Json::parse(graphRootFixture("main"));
+    // N-6: the editor's own placement is a root member nothing composes. A
+    // materialization rewrites the whole `rendering` section, and the
+    // placement has to come back out of it exactly as it went in.
+    document["layout"] = Json{{"nodes", {{"clock", {{"x", 12.5}, {"y", -4.0}}}}},
+                              {"reroutes", Json::array()},
+                              {"ties", Json::array()}};
     auto &section = document.at("rendering");
     section.at("features").at(0) = "project://passes/bloom-source.json";
     for (auto &pass : section.at("rendering_passes").at(0).at("passes"))
@@ -3070,6 +3263,22 @@ TEST_CASE("P-2a-4a root scope materialization rewrites the section and releases 
     const auto after = readBytes(project.render_config);
     const auto after_document = Json::parse(after);
     REQUIRE(rootKeys(after_document) == rootKeys(Json::parse(before)));
+    // N-6 acceptance 1, the carrying half: the placement is the same object and
+    // the same bytes, which a reformatting write-back would not leave it.
+    CHECK(after_document.at("layout") == document.at("layout"));
+    {
+        const auto member = std::string{"\"layout\": "} +
+                            document.at("layout").dump(2);
+        // `before` is `document.dump(2)`, so the member is spelled the same way
+        // in both; finding it in `after` is the byte-for-byte claim.
+        const auto placed = before.find("\"layout\"");
+        REQUIRE(placed != std::string::npos);
+        const auto end = before.find("\n  \"rendering\"", placed);
+        REQUIRE(end != std::string::npos);
+        CHECK(after.find(before.substr(placed, end - placed)) !=
+              std::string::npos);
+        (void)member;
+    }
     const auto &after_section = after_document.at("rendering");
     // The owner reference moved in the section, not at the root.
     CHECK(after_section.at("features").at(0) ==

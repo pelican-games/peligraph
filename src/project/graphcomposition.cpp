@@ -350,6 +350,10 @@ struct EditScope {
     std::string name;
     Json *nodes = nullptr;
     const Json *outputs = nullptr;
+    // The object the scope's own members live on: the document for the root,
+    // the definition body otherwise. `set_layout` is the one op that writes
+    // beside `nodes` rather than into it.
+    Json *container = nullptr;
 };
 
 // A node named across an instance path belongs to no single body, so it is
@@ -391,6 +395,7 @@ EditScope resolveEditScope(Json &candidate, const Json &operation) {
         if (!scope.nodes->is_array()) throw std::invalid_argument("graph nodes must be an array");
         const auto outputs = candidate.find("outputs");
         if (outputs != candidate.end()) scope.outputs = &*outputs;
+        scope.container = &candidate;
         return scope;
     }
     const auto definitions = candidate.find("definitions");
@@ -407,6 +412,7 @@ EditScope resolveEditScope(Json &candidate, const Json &operation) {
         throw std::invalid_argument("graph nodes must be an array: " + name);
     const auto outputs = body.find("outputs");
     if (outputs != body.end()) scope.outputs = &*outputs;
+    scope.container = &body;
     return scope;
 }
 
@@ -457,6 +463,113 @@ std::set<std::string> declaredInstanceInputs(const Json &node, const Json &defin
         if (entry.value("op", std::string{}) == "graph.input")
             declared.insert(entry.value("id", std::string{}));
     return declared;
+}
+
+// --- set_layout. Nothing here is read by the engine; what is checked is that
+// every name the placement uses is one the addressed scope really holds. A
+// layout that points at a node or an edge that is not there would come back to
+// an editor as a drawing of a graph that does not exist, and the editor cannot
+// tell that apart from its own bug.
+
+GraphRegistryError layoutInvalid(const char *reason, Json detail) {
+    detail["reason"] = reason;
+    return GraphRegistryError("graph.layout_invalid@1", std::move(detail));
+}
+
+// The node one layout entry names, found under exactly the rules every other op
+// is bound by: an instance path belongs to no single body, and a node that lives
+// in a definition is not reachable from the root scope.
+const Json &locateLayoutNode(const EditScope &scope, const Json &definitions,
+                             const std::string &id) {
+    if (id.find('/') != std::string::npos)
+        throw GraphRegistryError("graph.definition_immutable@1",
+            {{"node", id}, {"reason", "instance_path"}});
+    for (const auto &node : *scope.nodes)
+        if (node.contains("id") && node.at("id") == id) return node;
+    if (scope.root)
+        for (const auto &[definition, body] : definitions.items())
+            for (const auto &node : body.value("nodes", Json::array()))
+                if (node.value("id", std::string{}) == id)
+                    throw GraphRegistryError("graph.definition_immutable@1",
+                        {{"node", id}, {"definition", definition}});
+    throw layoutInvalid("unknown_node",
+        {{"node", id}, {"scope", scope.root ? std::string{kRootScope} : scope.name}});
+}
+
+double layoutCoordinate(const Json &value, const char *what) {
+    if (!value.is_number() || !std::isfinite(value.get<double>()))
+        throw layoutInvalid("coordinate", {{"member", what}});
+    return value.get<double>();
+}
+
+void requireLayoutPoint(const Json &point) {
+    if (!point.is_array() || point.size() != 2)
+        throw layoutInvalid("point", {{"point", point}});
+    (void)layoutCoordinate(point.at(0), "x");
+    (void)layoutCoordinate(point.at(1), "y");
+}
+
+// An edge is named by the input end it lands on, which is unique: one port of
+// one node takes at most one edge. So the check is that the port is one this
+// node really has an edge into.
+void requireLayoutEdge(const EditScope &scope, const Json &definitions,
+                       const Json &edge) {
+    object(edge, "set_layout edge must be an object");
+    if (edge.size() != 2 || !edge.contains("node") || !edge.contains("port"))
+        throw std::invalid_argument("set_layout edge requires exactly node and port");
+    const auto id = opNodeName(edge.at("node"));
+    const auto port = identifier(edge.at("port"));
+    const Json &node = locateLayoutNode(scope, definitions, id);
+    const auto inputs = node.find("inputs");
+    if (inputs == node.end() || !inputs->is_object() || !inputs->contains(port))
+        throw layoutInvalid("unknown_edge", {{"node", id}, {"port", port}});
+}
+
+void requireLayout(const EditScope &scope, const Json &definitions, const Json &layout) {
+    object(layout, "set_layout requires a layout object or null");
+    for (const auto &[key, value] : layout.items()) {
+        (void)value;
+        if (key != "nodes" && key != "reroutes" && key != "ties")
+            throw layoutInvalid("unknown_key", {{"key", key}});
+    }
+    if (const auto nodes = layout.find("nodes"); nodes != layout.end()) {
+        object(*nodes, "set_layout nodes must be an object");
+        for (const auto &[id, place] : nodes->items()) {
+            (void)locateLayoutNode(scope, definitions, id);
+            if (!place.is_object() || !place.contains("x") || !place.contains("y"))
+                throw layoutInvalid("node_placement", {{"node", id}});
+            (void)layoutCoordinate(place.at("x"), "x");
+            (void)layoutCoordinate(place.at("y"), "y");
+        }
+    }
+    if (const auto reroutes = layout.find("reroutes"); reroutes != layout.end()) {
+        if (!reroutes->is_array())
+            throw std::invalid_argument("set_layout reroutes must be an array");
+        for (const auto &entry : *reroutes) {
+            object(entry, "set_layout reroute must be an object");
+            if (!entry.contains("edge") || !entry.contains("points"))
+                throw layoutInvalid("reroute", {{"reroute", entry}});
+            requireLayoutEdge(scope, definitions, entry.at("edge"));
+            const auto &points = entry.at("points");
+            if (!points.is_array())
+                throw std::invalid_argument("set_layout reroute points must be an array");
+            for (const auto &point : points) requireLayoutPoint(point);
+        }
+    }
+    if (const auto ties = layout.find("ties"); ties != layout.end()) {
+        if (!ties->is_array()) throw std::invalid_argument("set_layout ties must be an array");
+        for (const auto &tie : *ties) {
+            object(tie, "set_layout tie must be an object");
+            if (!tie.contains("x") || !tie.contains("y") || !tie.contains("edges"))
+                throw layoutInvalid("tie", {{"tie", tie}});
+            (void)layoutCoordinate(tie.at("x"), "x");
+            (void)layoutCoordinate(tie.at("y"), "y");
+            const auto &edges = tie.at("edges");
+            if (!edges.is_array())
+                throw std::invalid_argument("set_layout tie edges must be an array");
+            for (const auto &edge : edges) requireLayoutEdge(scope, definitions, edge);
+        }
+    }
 }
 
 void requireInstancePort(const Json &node, const Json &definitions, const std::string &port) {
@@ -578,6 +691,20 @@ nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
             auto &node = locateNode(scope, definitions, id);
             if (label.get_ref<const std::string &>().empty()) node.erase("label");
             else node["label"] = label;
+        } else if (kind == "set_layout") {
+            // Where the editor put things. The engine carries it and reads
+            // none of it, so this op touches nothing an evaluation depends on:
+            // it replaces one member beside `nodes` and leaves the rest of the
+            // scope exactly as it was.
+            const auto &layout = operation.at("layout");
+            if (scope.container == nullptr)
+                throw std::invalid_argument("graph document scope has no container");
+            if (layout.is_null()) {
+                scope.container->erase("layout");
+            } else {
+                requireLayout(scope, definitions, layout);
+                (*scope.container)["layout"] = layout;
+            }
         } else {
             throw std::invalid_argument("unknown graph document op: " + kind);
         }
