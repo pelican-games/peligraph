@@ -7,7 +7,6 @@
     "bloom_blur_v.frag",
     "bloom_blur_v.frag.spv",
     "bloom_composite.frag",
-    "bloom_composite.frag.spv",
     "bloom_highpass.frag",
     "bloom_highpass.frag.spv",
     "bloom_upsample.frag",

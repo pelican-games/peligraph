@@ -638,6 +638,12 @@ Json wp343GroupingAuthoredExample() {
     for (const auto &target : bloom.at("render_targets")) {
         authored.at("render_targets").push_back(target);
     }
+    // P-2a-2: the composite also reads the component's own `bloom.intensity`
+    // runtime_f32 buffer through a resource port, so the splice carries the
+    // buffer declarations too.
+    for (const auto &buffer : bloom.at("buffers")) {
+        authored["buffers"].push_back(buffer);
+    }
     for (const auto &entry : bloom.at("passes")) {
         authored.at("rendering_passes").at(0).at("passes").push_back(
             entry.at("pass"));

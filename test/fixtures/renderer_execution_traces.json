@@ -1271,7 +1271,9 @@
           }
         ],
         "blend": false,
-        "input_buffers": [],
+        "input_buffers": [
+          "bloom.intensity"
+        ],
         "inputs": [
           {
             "final_layout": "shader_read_only_optimal",
@@ -1526,7 +1528,9 @@
           }
         ],
         "blend": false,
-        "input_buffers": [],
+        "input_buffers": [
+          "bloom.intensity"
+        ],
         "inputs": [
           {
             "final_layout": "shader_read_only_optimal",
@@ -6623,7 +6627,9 @@
           }
         ],
         "blend": false,
-        "input_buffers": [],
+        "input_buffers": [
+          "bloom.intensity"
+        ],
         "inputs": [
           {
             "final_layout": "shader_read_only_optimal",
@@ -15692,7 +15698,9 @@
           }
         ],
         "blend": false,
-        "input_buffers": [],
+        "input_buffers": [
+          "bloom.intensity"
+        ],
         "inputs": [
           {
             "final_layout": "shader_read_only_optimal",

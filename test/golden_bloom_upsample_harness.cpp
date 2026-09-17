@@ -758,8 +758,10 @@ nlohmann::json wp357ProductionProbeConfig() {
         "main_rendering_config.json");
     const auto shipping_final =
         wp357ShippingPass(wp357BloomFeature(), "FinalBloomComposite");
+    // P-2a-2 added the third input: the feature's own `bloom.intensity`
+    // runtime_f32 buffer, which the composite reads through a resource port.
     const auto expected_inputs = nlohmann::json::array(
-        {"lit_color", "Bloom_Upsample_V_0_RT"});
+        {"lit_color", "Bloom_Upsample_V_0_RT", "bloom.intensity"});
     if (shipping_final.at("input") != expected_inputs) {
         throw std::runtime_error(
             "WP357 shipping FinalBloomComposite input contract changed: " +
@@ -877,6 +879,11 @@ nlohmann::json wp357TwoLevelBloomFeature(nlohmann::json feature) {
 // writes); `materialize` cuts a project derivative at those values and then
 // `derived_parameters` are the overrides written next to the *derivative*, the
 // edit that was refused before 1c.
+// P-2a-2: `graph_intensity` wraps the whole rendering config in a
+// `pelican.graph` document whose `render.scalar{target:"bloom.intensity"}` sink
+// writes that constant into the feature's buffer every frame.  `graph_sink`
+// false keeps the constant but deletes the sink -- the control that shows the
+// buffer's declared start value is what the frame falls back to.
 struct Wp357BloomVariant {
     bool two_level = false;
     bool materialize = false;
@@ -888,8 +895,31 @@ struct Wp357BloomVariant {
     bool graph_root = false;
     nlohmann::json engine_parameters = nlohmann::json::object();
     nlohmann::json derived_parameters = nlohmann::json::object();
+    std::optional<double> graph_intensity;
+    bool graph_sink = true;
     std::string label = "canonical";
 };
+
+nlohmann::json wp357GraphDrivenConfig(nlohmann::json config, double intensity,
+                                      bool with_sink) {
+    auto nodes = nlohmann::json::array({
+        nlohmann::json{{"id", "authored_intensity"}, {"op", "value.constant"},
+                       {"parameters", {{"value", intensity}}},
+                       {"outputs", nlohmann::json::array({"value"})}},
+    });
+    if (with_sink) {
+        nodes.push_back(nlohmann::json{
+            {"id", "bloom_intensity_sink"}, {"op", "render.scalar"},
+            {"parameters", {{"target", "bloom.intensity"}}},
+            {"inputs", {{"value", {{"node", "authored_intensity"}, {"port", "value"}}}}},
+            {"outputs", nlohmann::json::array()}});
+    }
+    return nlohmann::json{{"schema", "pelican.graph"},
+                          {"version", 1},
+                          {"nodes", std::move(nodes)},
+                          {"outputs", nlohmann::json::object()},
+                          {"rendering", std::move(config)}};
+}
 
 void wp357PointConfigAtDerivative(nlohmann::json &config,
                                   const nlohmann::json &derived_parameters) {
@@ -970,7 +1000,12 @@ void wp357WriteProductionProbeProject(
     }
     wp357WriteText(
         root / "passes" / "main.json",
-        (variant.graph_root ? wp357WrapGraphRoot(config) : config).dump(2));
+        (variant.graph_intensity
+             ? wp357GraphDrivenConfig(std::move(config), *variant.graph_intensity,
+                                      variant.graph_sink)
+             : (variant.graph_root ? wp357WrapGraphRoot(std::move(config))
+                                   : std::move(config)))
+            .dump(2));
 }
 
 CommonPolygonVertData wp357EmissiveQuad() {
@@ -1496,6 +1531,75 @@ void GoldenHarness::runBloomFeatureParameters() {
     } catch (const std::runtime_error &error) {
         TestSupport::skipIfVulkanDeviceUnavailable(
             error, "P-2a-1c bloom parameter GPU fixture unavailable");
+        throw;
+    }
+}
+
+
+// P-2a-2: `intensity` is `binding: buffer`.  Three legs, each with the control
+// that is supposed to erase it:
+//   (1) `set_parameters{intensity}` changes the buffer's declared start value
+//       -> pixels move.  Control: the same value, but written as the engine
+//       default, renders the canonical frame.
+//   (2) a `render.scalar{target:"bloom.intensity"}` sink in the rendering
+//       config's common graph writes the value every frame -> pixels move.
+//       Control: delete the sink and the frame returns to the start value.
+//   (3) the sink writing the declared default renders the canonical frame,
+//       which is what says the two routes meet at the same number.
+void GoldenHarness::runBloomRuntimeParameter() {
+    setupLogger();
+    try {
+        const auto canonical = wp357CaptureProductionComposite();
+
+        // (1) The initial value of the buffer, edited through the instance
+        // parameter `set_parameters` writes.
+        const auto lowered = wp357CaptureProductionComposite(
+            Wp357BloomVariant{.engine_parameters = {{"intensity", 0.25}},
+                              .label = "buffer_initial_0_25"});
+        const auto initial_changed =
+            wp357ChangedPixels(canonical.display, lowered.display, false);
+        CHECK(initial_changed > 0);
+
+        // (2) The common graph drives the same buffer from a constant.
+        const auto driven = wp357CaptureProductionComposite(
+            Wp357BloomVariant{.graph_intensity = 0.25, .label = "graph_0_25"});
+        const auto driven_changed =
+            wp357ChangedPixels(canonical.display, driven.display, false);
+        CHECK(driven_changed > 0);
+        // Same number by either route, so the same frame.
+        CHECK(wp357ChangedPixels(lowered.display, driven.display, false) == 0);
+
+        // (2) control: the sink is what carries it.  Without the sink the
+        // constant reaches nothing and the declared start value renders.
+        const auto unsunk = wp357CaptureProductionComposite(
+            Wp357BloomVariant{.graph_intensity = 0.25,
+                              .graph_sink = false,
+                              .label = "graph_no_sink"});
+        CHECK(wp357ChangedPixels(canonical.display, unsunk.display, false) == 0);
+
+        // (3) The sink writing the declared default is invisible.
+        const auto neutral = wp357CaptureProductionComposite(
+            Wp357BloomVariant{.graph_intensity = 2.0, .label = "graph_default"});
+        CHECK(wp357ChangedPixels(canonical.display, neutral.display, false) == 0);
+
+        const auto center = [](const RenderTargetReadback &readback) {
+            const auto storage = wp357CenterStorage(readback);
+            return std::to_string(storage[0]) + ',' +
+                   std::to_string(storage[1]) + ',' +
+                   std::to_string(storage[2]) + ',' +
+                   std::to_string(storage[3]);
+        };
+        std::cout << "P2A2_BLOOM_RUNTIME_INTENSITY"
+                  << " canonicalCenter=" << center(canonical.display)
+                  << " bufferInitialChangedPixels=" << initial_changed
+                  << " bufferInitialCenter=" << center(lowered.display)
+                  << " graphDrivenChangedPixels=" << driven_changed
+                  << " graphDrivenCenter=" << center(driven.display)
+                  << " graphWithoutSinkChangedPixels=0"
+                  << " graphAtDefaultChangedPixels=0" << '\n';
+    } catch (const std::runtime_error &error) {
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "P-2a-2 bloom runtime parameter GPU fixture unavailable");
         throw;
     }
 }

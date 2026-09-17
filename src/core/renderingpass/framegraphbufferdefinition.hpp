@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -77,6 +78,10 @@ struct FrameGraphBufferDefinition {
     // Required by view_family_matrices_v1; selects the resolved provider family.
     std::string host_view_family;
     bool index_buffer = false;
+    // Starting contents of a runtime_f32 buffer, in floats. Empty means zero,
+    // the behavior every buffer had before feature parameters could seed one.
+    // A `render.scalar` write replaces it from the next frame onwards.
+    std::vector<float> initial_f32;
 };
 
 } // namespace Pelican

@@ -1992,6 +1992,20 @@ nlohmann::json makeHdrRenderingConfig(bool hdr_enabled) {
                  {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
              },
          })},
+        // P-2a-2: the composite shader reads its intensity from a buffer port.
+        // Outside the bloom feature the fixture has to declare that buffer and
+        // its start value itself; dropping it fails the pass by the accessor's
+        // name instead of drifting to another intensity.
+        {"buffers",
+         nlohmann::json::array({
+             {
+                 {"name", "bloom.intensity"},
+                 {"size", 4},
+                 {"lifetime", "persistent"},
+                 {"host_source", "runtime_f32"},
+                 {"initial_f32", nlohmann::json::array({2.0})},
+             },
+         })},
         {"rendering_passes",
          nlohmann::json::array({
              {
@@ -2019,7 +2033,14 @@ nlohmann::json makeHdrRenderingConfig(bool hdr_enabled) {
                           {"type", "fullscreen"},
                           {"canonical_anchor", bloom_anchor},
                           {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
-                          {"input", nlohmann::json::array({"lit_color", "Bloom_Threshold_RT"})},
+                          {"input", nlohmann::json::array({"lit_color", "Bloom_Threshold_RT",
+                                                           "bloom.intensity"})},
+                          {"resource_ports",
+                           {{"bloomIntensity",
+                             {{"resource", "bloom.intensity"},
+                              {"kind", "buffer"},
+                              {"element", "float"},
+                              {"access", "storage"}}}}},
                           {"shader", {{"vertex", "engine://fullscreen"},
                                       {"fragment", "engine://bloom_composite"}}},
                           {"clear_color", nlohmann::json::array({0.0, 0.0, 0.0, 1.0})},
@@ -2030,15 +2051,15 @@ nlohmann::json makeHdrRenderingConfig(bool hdr_enabled) {
     };
 
     // These two passes use the bloom feature's shaders without the bloom
-    // feature, so nothing declares its parameters here.  The shaders require
-    // the defines (`#error` otherwise); the fixture supplies the same values
-    // the feature declares as defaults, which is what the goldens were made
-    // with.  Removing them fails the compile by name instead of silently
-    // drifting.
+    // feature, so nothing declares its parameters here.  The highpass shader
+    // requires its defines (`#error` otherwise); the fixture supplies the same
+    // values the feature declares as defaults, which is what the goldens were
+    // made with.  Removing them fails the compile by name instead of silently
+    // drifting.  `intensity` is no longer a define (P-2a-2): it comes from the
+    // `bloom.intensity` buffer declared above.
     config["shader_defines"] = nlohmann::json::array({
         "PELICAN_FEATURE_BLOOM_THRESHOLD=0.4",
         "PELICAN_FEATURE_BLOOM_KNEE=0.7",
-        "PELICAN_FEATURE_BLOOM_INTENSITY=2.0",
     });
     config["features"] = nlohmann::json::array({"engine://features/debug_text.json"});
     if (hdr_enabled) {

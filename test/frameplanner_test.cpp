@@ -84,6 +84,12 @@ nlohmann::json shippingBloomConfig() {
     for (const auto &target : feature.at("render_targets")) {
         config.at("render_targets").push_back(target);
     }
+    // P-2a-2: the composite also reads the feature's own `bloom.intensity`
+    // runtime_f32 buffer, so the splice has to carry the buffer declarations
+    // too or the pass input resolves as a missing render target.
+    for (const auto &buffer : feature.at("buffers")) {
+        config["buffers"].push_back(buffer);
+    }
     auto &passes = config.at("rendering_passes").at(0).at("passes");
     for (const auto *name : {"HighLuminanceExtraction", "HorizontalBlur_0",
                              "VerticalBlur_0", "HorizontalBlur_1",

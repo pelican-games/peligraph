@@ -421,7 +421,32 @@ void validatePlan(const Json &plan,
     requireArray(plan, "subgraph_replacements", "physical_target_plan");
     requireStringArray(plan, "required_physical_features",
                        "physical_target_plan");
-    requireArray(plan, "decisions", "physical_target_plan");
+    const auto &plan_decisions =
+        requireArray(plan, "decisions", "physical_target_plan");
+    // A logical resource the planner has no Vulkan resource for (a frame-graph
+    // buffer a pass reads, for instance) stays in the lowering graph and is
+    // recorded as elided instead of being planned. Those names are the one
+    // legitimate difference between the lowering resources, the caller's
+    // logical resource set, and the planned physical resources.
+    std::set<std::string, std::less<>> elided_resources;
+    for (const auto &decision : plan_decisions) {
+        if (!decision.is_object()) continue;
+        const auto id = decision.find("id");
+        if (id == decision.end() || !id->is_string() ||
+            id->get_ref<const std::string &>() !=
+                "pelican.plan.semantic_resource_elided@1") {
+            continue;
+        }
+        const auto subject = decision.find("subject");
+        if (subject != decision.end() && subject->is_string()) {
+            elided_resources.insert(subject->get<std::string>());
+        }
+    }
+    const auto withoutElided =
+        [&elided_resources](std::set<std::string, std::less<>> names) {
+            for (const auto &name : elided_resources) names.erase(name);
+            return names;
+        };
     requireObject(plan, "view_execution_plan", "physical_target_plan");
 
     const auto &backend =
@@ -502,7 +527,8 @@ void validatePlan(const Json &plan,
     if (!external_context.logical_resources.empty()) {
         requireUniqueStrings(external_context.logical_resources,
                              "logical resource context");
-        requireSameSet(resource_names, external_context.logical_resources,
+        requireSameSet(resource_names,
+                       withoutElided(toSet(external_context.logical_resources)),
                        "physical resources");
     }
 
@@ -550,7 +576,7 @@ void validatePlan(const Json &plan,
                  "duplicate lowering resource '" + name + "'");
         }
     }
-    if (lowering_resource_names != resource_names) {
+    if (withoutElided(lowering_resource_names) != resource_names) {
         fail("physical_plan_missing_reference",
              "lowering graph resources do not match physical resources");
     }

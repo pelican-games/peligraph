@@ -22,10 +22,19 @@
         "name": "intensity",
         "type": "float",
         "range": [0.0, 8.0],
-        "default": 2.0
+        "default": 2.0,
+        "binding": "buffer"
       }
     ]
   },
+  "buffers": [
+    {
+      "name": "bloom.intensity",
+      "size": 4,
+      "lifetime": "persistent",
+      "host_source": "runtime_f32"
+    }
+  ],
   "render_targets": [
     {
       "name": "Bloom_Threshold_RT",
@@ -384,7 +393,15 @@
           "color": ["swapchain"],
           "depth": null
         },
-        "input": ["lit_color", "Bloom_Upsample_V_0_RT"],
+        "input": ["lit_color", "Bloom_Upsample_V_0_RT", "bloom.intensity"],
+        "resource_ports": {
+          "bloomIntensity": {
+            "resource": "bloom.intensity",
+            "kind": "buffer",
+            "element": "float",
+            "access": "storage"
+          }
+        },
         "shader": {
           "vertex": "engine://fullscreen",
           "fragment": "engine://bloom_composite"

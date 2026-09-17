@@ -1992,6 +1992,20 @@ std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson
         if (definition.host_source == FrameGraphHostBufferSource::runtime_f32 &&
             (definition.command_layout || definition.size % sizeof(float) != 0))
             throw std::runtime_error(context + " runtime_f32 requires a float-aligned data buffer");
+        if (entry.contains("initial_f32")) {
+            const auto &initial = entry.at("initial_f32");
+            if (!initial.is_array())
+                throw std::runtime_error(context + " initial_f32 must be a float array");
+            for (const auto &value : initial) {
+                if (!value.is_number())
+                    throw std::runtime_error(context + " initial_f32 must be a float array");
+                definition.initial_f32.push_back(value.get<float>());
+            }
+            if (definition.host_source != FrameGraphHostBufferSource::runtime_f32 ||
+                definition.initial_f32.size() * sizeof(float) != definition.size)
+                throw std::runtime_error(
+                    context + " initial_f32 requires host_source 'runtime_f32' and one float per declared byte quad");
+        }
         if (definition.host_source == FrameGraphHostBufferSource::view_family_matrices_v1) {
             definition.host_view_family = requireString(entry, "view_family", context);
             if (definition.host_view_family.empty() || definition.command_layout ||
@@ -2435,6 +2449,10 @@ void FrameGraphResourceContainer::registerBuffers(const std::vector<FrameGraphBu
             if (definition.command_layout || definition.size % sizeof(float) != 0)
                 throw std::invalid_argument("runtime_f32 requires a float-aligned data buffer");
             record.runtime_values.resize(definition.size / sizeof(float), 0.0f);
+            // The declared start value, if the document carries one. A
+            // `render.scalar` write replaces it on the frame it publishes.
+            std::copy(definition.initial_f32.begin(), definition.initial_f32.end(),
+                      record.runtime_values.begin());
             record.runtime_values_dirty = true;
         }
         const auto id = buffers.reg(std::move(record));

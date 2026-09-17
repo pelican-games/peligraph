@@ -17,7 +17,6 @@ constexpr auto registered_ids =
     "bloom_blur_v.frag",
     "bloom_blur_v.frag.spv",
     "bloom_composite.frag",
-    "bloom_composite.frag.spv",
     "bloom_highpass.frag",
     "bloom_highpass.frag.spv",
     "bloom_upsample.frag",
@@ -172,7 +171,6 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("bloom_blur_v.frag")
     PELICAN_ENGINE_RESOURCE("bloom_blur_v.frag.spv")
     PELICAN_ENGINE_RESOURCE("bloom_composite.frag")
-    PELICAN_ENGINE_RESOURCE("bloom_composite.frag.spv")
     PELICAN_ENGINE_RESOURCE("bloom_highpass.frag")
     PELICAN_ENGINE_RESOURCE("bloom_highpass.frag.spv")
     PELICAN_ENGINE_RESOURCE("bloom_upsample.frag")

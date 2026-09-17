@@ -48,5 +48,6 @@ void runGraphRootBloom();
 void runImportedRenderComponent();
 void runBloomLoadSemantics();
 void runBloomFeatureParameters();
+void runBloomRuntimeParameter();
 
 } // namespace Pelican::GoldenHarness

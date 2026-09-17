@@ -3582,13 +3582,14 @@ TEST_CASE("bundled TAA composes into the example pipeline as a two-pass history 
     REQUIRE(accum->at("history") == true);
 
     // P-2a-1c: the example pipeline's bloom is a feature with declared scalars,
-    // so its defines are in force alongside TAA's.  INTENSITY prints as "2"
-    // (std::to_chars general), which is why the bloom shaders wrap the define
-    // in float().
+    // so its defines are in force alongside TAA's.  THRESHOLD prints in
+    // std::to_chars general form, which is why the bloom shaders wrap the
+    // define in float().  P-2a-2: `intensity` is `binding: buffer`, so it emits
+    // no define at all; its value reaches the composite through the
+    // `bloom.intensity` buffer instead.
     REQUIRE(result.shader_defines == std::vector<std::string>{
         "PELICAN_FEATURE_BLOOM_THRESHOLD=0.400000006",
         "PELICAN_FEATURE_BLOOM_KNEE=0.699999988",
-        "PELICAN_FEATURE_BLOOM_INTENSITY=2",
         "PELICAN_FEATURE_TAA",
         "PELICAN_FEATURE_TAA_ALPHA=0.100000001",
         "PELICAN_FEATURE_TAA_DISOCCLUSION_TAU=0.100000001",
@@ -4439,6 +4440,125 @@ TEST_CASE("scalar feature parameter declaration and instance errors name feature
                      {{"name", "bad"}, {"type", "bool"}, {"range", {false, true}},
                       {"default", true}}}),
                  nlohmann::json::object(), "bad", "must not have range");
+}
+
+TEST_CASE("binding buffer scalars seed the feature's runtime_f32 buffer and refuse a define",
+          "[render-feature][binding][scalar-parameter][p2a2]") {
+    // P-2a-2. The feature declares one single-float runtime_f32 buffer named
+    // `<feature>.<scalar>`; the scalar is its start value and `render.scalar`
+    // overwrites it every frame.
+    const auto makeFeature = [](nlohmann::json scalar, nlohmann::json buffers) {
+        return nlohmann::json{
+            {"schema", "pelican.render_feature"},
+            {"version", 1},
+            {"name", "scalar_buffer"},
+            {"parameters", {
+                {"schema", "pelican.render_feature_parameters"},
+                {"version", 1},
+                {"scalars", nlohmann::json::array({std::move(scalar)})},
+            }},
+            {"buffers", std::move(buffers)},
+        };
+    };
+    const auto compose = [&](const nlohmann::json &feature, nlohmann::json values) {
+        auto config = baseConfigWithFeature("scalar_buffer.json");
+        config["features"] = nlohmann::json::array({nlohmann::json{
+            {"ref", "scalar_buffer.json"}, {"parameters", std::move(values)}}});
+        return composeRenderFeatureConfig(
+            config, RenderFeatureComposeDependencies{
+                        [text = feature.dump()](std::string_view) { return text; }, true});
+    };
+    const nlohmann::json declared_buffer = nlohmann::json::array({
+        {{"name", "scalar_buffer.level"}, {"size", 4},
+         {"lifetime", "persistent"}, {"host_source", "runtime_f32"}}});
+    const nlohmann::json scalar{{"name", "level"}, {"type", "float"},
+                                {"range", {0.0, 8.0}}, {"default", 2.0},
+                                {"binding", "buffer"}};
+    const auto bufferByName = [](const nlohmann::json &config, std::string_view name) {
+        const auto &buffers = config.at("buffers");
+        const auto found = std::find_if(buffers.begin(), buffers.end(), [&](const auto &entry) {
+            return entry.value("name", std::string{}) == name;
+        });
+        REQUIRE(found != buffers.end());
+        return *found;
+    };
+
+    const auto defaults = compose(makeFeature(scalar, declared_buffer), nlohmann::json::object());
+    // The declared default is the buffer's start value, and nothing is baked
+    // into a shader define: that is the whole point of `binding: buffer`.
+    CHECK(bufferByName(defaults.config, "scalar_buffer.level").at("initial_f32") ==
+          nlohmann::json::array({2.0}));
+    CHECK(defaults.shader_defines.empty());
+
+    // What `set_parameters` writes: the instance value replaces the start value.
+    const auto overridden = compose(makeFeature(scalar, declared_buffer), {{"level", 0.25}});
+    CHECK(bufferByName(overridden.config, "scalar_buffer.level").at("initial_f32") ==
+          nlohmann::json::array({0.25}));
+
+    // The derivative keeps the binding and the buffer declaration, and does not
+    // freeze the value into the buffer: compose regenerates it from
+    // bound_parameters.
+    const auto materialized = nlohmann::json::parse(
+        materializeRenderFeatureDocument(makeFeature(scalar, declared_buffer),
+                                         {{"level", 0.25}}, defaults.config)
+            .dump());
+    CHECK(materialized.at("parameters").at("scalars").at(0).at("binding") == "buffer");
+    CHECK(materialized.at("buffers").at(0).at("name") == "scalar_buffer.level");
+    CHECK_FALSE(materialized.at("buffers").at(0).contains("initial_f32"));
+    CHECK(materialized.at("bound_parameters").at("level") == 0.25);
+    auto derived_config = baseConfigWithFeature("scalar_buffer.json");
+    derived_config["features"] = nlohmann::json::array({"scalar_buffer.json"});
+    const auto recomposed = composeRenderFeatureConfig(
+        derived_config, RenderFeatureComposeDependencies{
+            [text = materialized.dump()](std::string_view) { return text; }, true});
+    CHECK(bufferByName(recomposed.config, "scalar_buffer.level").at("initial_f32") ==
+          nlohmann::json::array({0.25}));
+
+    const auto requireError = [&](const nlohmann::json &feature, std::string_view detail) {
+        try {
+            (void)compose(feature, nlohmann::json::object());
+            FAIL("expected a named rejection");
+        } catch (const std::exception &error) {
+            const std::string message = error.what();
+            REQUIRE(contains(message, "scalar_buffer"));
+            REQUIRE(contains(message, detail));
+        }
+    };
+    auto with_define = scalar;
+    with_define["shader_define"] = true;
+    requireError(makeFeature(with_define, declared_buffer),
+                 "binding 'buffer' cannot also emit a shader define");
+    auto unknown_binding = scalar;
+    unknown_binding["binding"] = "somewhere";
+    requireError(makeFeature(unknown_binding, declared_buffer),
+                 "unknown scalar binding: somewhere");
+    auto integral = scalar;
+    integral["type"] = "int";
+    integral["range"] = nlohmann::json::array({0, 8});
+    integral["default"] = 2;
+    requireError(makeFeature(integral, declared_buffer),
+                 "binding 'buffer' requires scalar type float");
+    requireError(makeFeature(scalar, nlohmann::json::array()),
+                 "requires the feature to declare a buffer named 'scalar_buffer.level'");
+    auto wrong_source = declared_buffer;
+    wrong_source[0]["host_source"] = "scene_lights_v2";
+    wrong_source[0]["size"] = 65568;
+    requireError(makeFeature(scalar, wrong_source),
+                 "host_source 'runtime_f32' and size 4");
+    auto authored_initial = declared_buffer;
+    authored_initial[0]["initial_f32"] = nlohmann::json::array({1.0});
+    requireError(makeFeature(scalar, authored_initial),
+                 "initial_f32 is derived from the scalar, not authored");
+
+    // The frame-graph parser is the second gate: an initial_f32 that does not
+    // fill the declared buffer is refused there, by name.
+    auto mismatched = defaults.config;
+    for (auto &entry : mismatched.at("buffers")) {
+        if (entry.value("name", std::string{}) != "scalar_buffer.level") continue;
+        entry["initial_f32"] = nlohmann::json::array({1.0, 2.0});
+    }
+    REQUIRE_THROWS_WITH(parseFrameGraphBufferDefinitionsFromJson(mismatched),
+        Catch::Matchers::ContainsSubstring("one float per declared byte quad"));
 }
 
 TEST_CASE("common graph buffer ports lower into native compute declarations", "[render-feature][graph-composition]") {

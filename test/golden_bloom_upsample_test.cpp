@@ -34,4 +34,10 @@ TEST_CASE(
     GoldenHarness::runBloomFeatureParameters();
 }
 
+TEST_CASE(
+    "P-2a-2 bloom intensity is a runtime buffer the common graph can drive",
+    "[golden][headless][p2a2][bloom][feature-parameters][render.scalar]") {
+    GoldenHarness::runBloomRuntimeParameter();
+}
+
 } // namespace Pelican

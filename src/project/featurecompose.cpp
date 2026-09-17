@@ -684,13 +684,30 @@ enum class ScalarParameterType {
     boolean,
 };
 
+// Where a scalar's value reaches the shader.  `define` bakes it into the
+// compiled shader, so changing it recompiles; `buffer` seeds the feature's own
+// runtime_f32 frame-graph buffer, which the common graph can then overwrite
+// every frame through `render.scalar`.
+enum class ScalarParameterBinding {
+    define,
+    buffer,
+};
+
 struct ScalarParameterDeclaration {
     std::string name;
     ScalarParameterType type = ScalarParameterType::floating;
     nlohmann::json default_value;
     std::optional<std::pair<nlohmann::json, nlohmann::json>> range;
     bool shader_define = true;
+    ScalarParameterBinding binding = ScalarParameterBinding::define;
 };
+
+// The frame-graph buffer a `binding: buffer` scalar initializes. The name is
+// derived, never authored twice: `render.scalar{target}` names the same string.
+std::string featureScalarBufferName(const std::string &feature_name,
+                                    const std::string &scalar_name) {
+    return feature_name + "." + scalar_name;
+}
 
 enum class ShaderAssetParameterStage {
     vertex,
@@ -915,7 +932,7 @@ FeatureParameterDeclarations parseFeatureParameters(
         for (auto field = scalar.begin(); field != scalar.end(); ++field) {
             if (field.key() != "name" && field.key() != "type" &&
                 field.key() != "range" && field.key() != "default" &&
-                field.key() != "shader_define") {
+                field.key() != "shader_define" && field.key() != "binding") {
                 throw std::runtime_error("render feature '" + feature_name +
                                          "' scalar parameter has unknown field: " + field.key());
             }
@@ -948,6 +965,37 @@ FeatureParameterDeclarations parseFeatureParameters(
             throwParameterError(
                 feature_name, name,
                 "shader_define must have type bool");
+        }
+        auto binding = ScalarParameterBinding::define;
+        if (scalar.contains("binding")) {
+            const auto binding_name =
+                requireStringField(scalar, "binding", "scalar parameter: " + name);
+            if (binding_name == "define") {
+                binding = ScalarParameterBinding::define;
+            } else if (binding_name == "buffer") {
+                binding = ScalarParameterBinding::buffer;
+            } else {
+                throwParameterError(feature_name, name,
+                                    "unknown scalar binding: " + binding_name);
+            }
+        }
+        // A buffer-bound scalar reaches the shader through a resource port, so
+        // it emits no define.  Asking for both is a contradiction, not a
+        // combination: the define would freeze the value the buffer exists to
+        // change.  The other direction (`binding: define` with
+        // `shader_define: false`) keeps its 1c meaning — a scalar that only
+        // feeds physical declarations such as `$resolution`.
+        if (binding == ScalarParameterBinding::buffer) {
+            if (scalar.value("shader_define", false)) {
+                throwParameterError(
+                    feature_name, name,
+                    "binding 'buffer' cannot also emit a shader define");
+            }
+            if (type != ScalarParameterType::floating) {
+                throwParameterError(
+                    feature_name, name,
+                    "binding 'buffer' requires scalar type float");
+            }
         }
 
         std::optional<std::pair<nlohmann::json, nlohmann::json>> range;
@@ -988,7 +1036,9 @@ FeatureParameterDeclarations parseFeatureParameters(
             name, type, scalar.at("default"),
             std::move(range),
             scalar.value(
-                "shader_define", true)};
+                "shader_define",
+                binding == ScalarParameterBinding::define),
+            binding};
         validateScalarValue(declaration.default_value, declaration, feature_name, "default");
         declarations.scalars.push_back(std::move(declaration));
     }
@@ -1417,6 +1467,8 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
         scalar_bindings;
     scalar_bindings.reserve(
         declarations.scalars.size());
+    // name of the feature's runtime_f32 buffer -> the value it starts at.
+    std::vector<std::pair<std::string, double>> buffer_scalar_values;
     for (const auto &declaration : declarations.scalars) {
         const auto supplied = instance_parameters.find(declaration.name);
         const auto *recorded = bound_value(declaration.name);
@@ -1438,6 +1490,11 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
             scalar_defines.push_back(feature_define_prefix +
                                      upperIdentifier(declaration.name, feature_name) + "=" +
                                      scalarDefineValue(value, declaration, feature_name));
+        }
+        if (declaration.binding == ScalarParameterBinding::buffer) {
+            buffer_scalar_values.emplace_back(
+                featureScalarBufferName(feature_name, declaration.name),
+                scalarFloatValue(value, feature_name, declaration.name, "value"));
         }
     }
 
@@ -1549,6 +1606,43 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
                 };
             }
         }
+    }
+    // A `binding: buffer` scalar is the initial value of the feature's own
+    // single-float runtime_f32 buffer.  The value is written into the composed
+    // buffer declaration (not into the derived document above, which keeps the
+    // declaration editable), so re-composing after `set_parameters` re-registers
+    // the buffer at the new value.  `render.scalar{target}` names the same
+    // buffer and overwrites it every frame.
+    for (const auto &[buffer_name, value] : buffer_scalar_values) {
+        nlohmann::json *entry = nullptr;
+        if (const auto buffers = feature.find("buffers");
+            buffers != feature.end() && buffers->is_array()) {
+            for (auto &candidate : *buffers) {
+                if (candidate.is_object() && candidate.value("name", std::string{}) == buffer_name) {
+                    entry = &candidate;
+                    break;
+                }
+            }
+        }
+        const auto parameter_name = buffer_name.substr(feature_name.size() + 1);
+        if (entry == nullptr) {
+            throwParameterError(feature_name, parameter_name,
+                                "binding 'buffer' requires the feature to declare a buffer named '" +
+                                    buffer_name + "'");
+        }
+        if (entry->value("host_source", std::string{}) != "runtime_f32" ||
+            !entry->contains("size") || !entry->at("size").is_number_integer() ||
+            entry->at("size").get<std::int64_t>() != static_cast<std::int64_t>(sizeof(float))) {
+            throwParameterError(feature_name, parameter_name,
+                                "binding 'buffer' requires buffer '" + buffer_name +
+                                    "' to declare host_source 'runtime_f32' and size 4");
+        }
+        if (entry->contains("initial_f32")) {
+            throwParameterError(feature_name, parameter_name,
+                                "buffer '" + buffer_name +
+                                    "' initial_f32 is derived from the scalar, not authored");
+        }
+        (*entry)["initial_f32"] = nlohmann::json::array({value});
     }
     // Exact "$name" scalar placeholders preserve the parameter's JSON type.
     // This lets one typed value configure both shader defines and physical

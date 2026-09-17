@@ -67,11 +67,11 @@ embed_shader(sprite.frag)
 embed_shader(bloom_blur_h.frag)
 embed_shader(bloom_blur_v.frag)
 # Defaults mirror src/core/resources/features/bloom.json parameters.scalars.
+# bloom_composite.frag is source-only (below): its `intensity` arrives through a
+# resource port, whose GLSL include is generated per pass at runtime.
 embed_shader(bloom_highpass.frag
     -DPELICAN_FEATURE_BLOOM_THRESHOLD=0.4
     -DPELICAN_FEATURE_BLOOM_KNEE=0.7)
-embed_shader(bloom_composite.frag
-    -DPELICAN_FEATURE_BLOOM_INTENSITY=2.0)
 embed_shader(bloom_upsample.frag)
 embed_shader(debug_texture.frag)
 embed_shader(shader_lab_hello.frag)

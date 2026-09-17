@@ -145,14 +145,22 @@ std::vector<std::string> renderComponentRequiredTargets(const Json &feature) {
         }
 
     std::set<std::string> declared;
-    const auto targets = feature.find("render_targets");
-    if (targets != feature.end() && targets->is_array())
-        for (const auto &target : *targets) {
-            if (target.is_string()) declared.insert(target.get<std::string>());
-            else if (target.is_object() && target.contains("name") &&
-                     target.at("name").is_string())
-                declared.insert(target.at("name").get<std::string>());
+    // A resource the feature declares itself is not part of the host contract.
+    // P-2a-2 made `bloom.intensity` such a resource: a `buffers[]` entry the
+    // feature owns, read by a pass through a resource port.  It reaches `used`
+    // through the pass input like a render target would, so the importing
+    // project must not be asked to provide it.
+    for (const auto *category : {"render_targets", "buffers"}) {
+        const auto declarations = feature.find(category);
+        if (declarations == feature.end() || !declarations->is_array()) continue;
+        for (const auto &declaration : *declarations) {
+            if (declaration.is_string())
+                declared.insert(declaration.get<std::string>());
+            else if (declaration.is_object() && declaration.contains("name") &&
+                     declaration.at("name").is_string())
+                declared.insert(declaration.at("name").get<std::string>());
         }
+    }
 
     std::vector<std::string> required;
     for (const auto &name : used)
