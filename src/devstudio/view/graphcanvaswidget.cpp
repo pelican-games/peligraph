@@ -33,6 +33,8 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMetaObject>
+#include <QMouseEvent>
+#include <QPolygonF>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
@@ -47,7 +49,10 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
+#include <functional>
 #include <limits>
+#include <optional>
 #include <map>
 #include <memory>
 #include <set>
@@ -165,7 +170,8 @@ bool isNodeSurface(const QString &kind) {
            kind == QLatin1String{GraphCanvasNodeHeaderItem} ||
            kind == QLatin1String{GraphCanvasCollapseItem} ||
            kind == QLatin1String{GraphCanvasSocketItem} ||
-           kind == QLatin1String{GraphCanvasValuePillItem};
+           kind == QLatin1String{GraphCanvasValuePillItem} ||
+           kind == QLatin1String{GraphCanvasValueBandItem};
 }
 
 // Enter confirms, Escape abandons, and losing the focus confirms the way a
@@ -471,7 +477,12 @@ void GraphCanvasScene::repopulate() {
             entry.outputs.push_back(DrawnRow{
                 qtext(output.port), qtext(output.port), qtext(output.type),
                 socketStyleFor(graphCanvasSocketFacts(*model_, output.type)),
-                {}, false, false});
+                // No source word on an output: there is only one place an
+                // output value can come from, and naming it every row would
+                // be a column of the same word.
+                output.has_value ? RowValue{numberText(output.value), {}}
+                                 : RowValue{},
+                false, false});
         for (const auto &port : node.inputs)
             entry.inputs.push_back(DrawnRow{
                 qtext(port.port), qtext(port.port), qtext(port.type),
@@ -485,9 +496,12 @@ void GraphCanvasScene::repopulate() {
                              12.0 +
                              row_metrics.horizontalAdvance(qtext(node.op)) +
                              14.0);
-        for (const auto &row : entry.outputs)
-            width = std::max(width,
-                             row_metrics.horizontalAdvance(row.label) + 34.0);
+        for (const auto &row : entry.outputs) {
+            qreal needed = row_metrics.horizontalAdvance(row.label) + 34.0;
+            if (row.value.shown())
+                needed += row_metrics.horizontalAdvance(pillText(row.value)) + 24.0;
+            width = std::max(width, needed);
+        }
         for (const auto &row : entry.inputs) {
             qreal needed = row_metrics.horizontalAdvance(row.label) + 34.0;
             if (row.value.shown())
@@ -717,6 +731,37 @@ void GraphCanvasScene::repopulate() {
             name->setData(GraphCanvasPortRole, drawn.port);
             // Half outside the right edge, which is where the edge meets it.
             socket(drawn, QPointF{width, centre_y}, "output");
+
+            // AG-3b: the published generation's value, on the left of the row
+            // because the port's own name is on the right. It is drawn for
+            // every scope: get_graph_node_values is the one report that
+            // answers for a node inside a definition body.
+            if (drawn.value.shown()) {
+                const QString text = drawn.value.text;
+                const qreal band_height = GraphCanvasSocketRowHeight - 6.0;
+                const qreal band_width =
+                    row_metrics.horizontalAdvance(text) + 14.0;
+                auto *band = new QGraphicsPathItem(
+                    roundedEntityPath(band_width, band_height,
+                                      band_height / 2.0),
+                    item);
+                band->setPos(10.0, centre_y - band_height / 2.0);
+                band->setBrush(theme.canvas.pill_bg);
+                band->setPen(QPen{theme.canvas.node_border, 0.8});
+                band->setToolTip(
+                    QObject::tr("%1 = %2 in the published generation (rendering)")
+                        .arg(drawn.label, text));
+                tag(band, GraphCanvasValueBandItem);
+                band->setData(GraphCanvasPortRole, drawn.port);
+                band->setData(GraphCanvasValueTextRole, text);
+                auto *value = new QGraphicsSimpleTextItem(text, band);
+                value->setFont(detail_font);
+                value->setBrush(theme.canvas.heading_text);
+                value->setPos(7.0, (band_height - row_metrics.height()) / 2.0);
+                tag(value, GraphCanvasValueBandItem);
+                value->setData(GraphCanvasPortRole, drawn.port);
+                value->setData(GraphCanvasValueTextRole, text);
+            }
             cursor_y += GraphCanvasSocketRowHeight;
         }
         for (const auto &drawn : inputs) {
@@ -1530,6 +1575,172 @@ void GraphCanvasScene::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) {
     QGraphicsScene::mouseDoubleClickEvent(event);
 }
 
+namespace {
+
+// AG-3b, 決定 3: the read-only time strip under the canvas.
+//
+// Everything it draws is client-side. AG-3a publishes a snapshot of the
+// current generation and no history at all, so the only honest strip over time
+// is what this session watched go by -- which is why the buffer lives in the
+// model and this widget only draws it. The one thing it writes is the scrub:
+// a press on the axis is a time, and a time is set_time plus one drawn frame.
+class GraphTimelineStrip final : public QWidget {
+  public:
+    using Scrub = std::function<void(double time)>;
+
+    explicit GraphTimelineStrip(const GraphCanvasModel &model, Scrub scrub,
+                                QWidget *parent = nullptr)
+        : QWidget{parent}, model_{model}, scrub_{std::move(scrub)} {
+        setObjectName(QStringLiteral("pelican.graphTimeline"));
+        setMinimumHeight(96);
+        setToolTip(tr("Scene time, left to right. Drag to go to a time."));
+    }
+
+    // The window the strip draws, in scene seconds. Empty buffer: nothing has
+    // been watched, so there is no span and no scrub.
+    [[nodiscard]] bool span(double *from, double *to) const {
+        const auto &samples = model_.timelineSamples();
+        if (samples.empty()) return false;
+        *from = samples.front().time;
+        *to = samples.back().time;
+        // A run that has not moved yet is one point, and a point has no
+        // inside: give it a second of width so the strip is drivable rather
+        // than dividing by zero.
+        if (!(*to > *from)) *to = *from + 1.0;
+        return true;
+    }
+
+    // What one x in this widget means. Public so a test can ask the strip what
+    // it would do rather than deducing it from the pixels.
+    [[nodiscard]] std::optional<double> timeAt(int x) const {
+        double from = 0;
+        double to = 0;
+        if (!span(&from, &to) || width() <= 1) return std::nullopt;
+        const double ratio =
+            std::clamp(static_cast<double>(x) / static_cast<double>(width() - 1),
+                       0.0, 1.0);
+        return from + ratio * (to - from);
+    }
+
+  protected:
+    void mousePressEvent(QMouseEvent *event) override {
+        if (event->button() != Qt::LeftButton) {
+            QWidget::mousePressEvent(event);
+            return;
+        }
+        emitScrub(event);
+    }
+    void mouseMoveEvent(QMouseEvent *event) override {
+        if ((event->buttons() & Qt::LeftButton) == 0) {
+            QWidget::mouseMoveEvent(event);
+            return;
+        }
+        emitScrub(event);
+    }
+
+    void paintEvent(QPaintEvent *) override {
+        const StudioTheme &theme = currentStudioTheme();
+        QPainter painter{this};
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.fillRect(rect(), theme.canvas.node_body);
+        painter.setPen(QPen{theme.canvas.node_border, 1.0});
+        painter.drawRect(rect().adjusted(0, 0, -1, -1));
+
+        const auto &samples = model_.timelineSamples();
+        const auto &ports = model_.timelinePorts();
+        if (samples.size() < 2 || ports.empty()) {
+            painter.setPen(QPen{theme.canvas.dim_text});
+            painter.drawText(rect(), Qt::AlignCenter,
+                             model_.live()
+                                 ? tr("Waiting for readings...")
+                                 : tr("Turn Live on to follow a node over time."));
+            return;
+        }
+        double from = 0;
+        double to = 0;
+        if (!span(&from, &to)) return;
+
+        // The animation band sits along the bottom; the traces take the rest.
+        const qreal band_height = 14.0;
+        const QRectF plot{4.0, 4.0, width() - 8.0,
+                          height() - 8.0 - band_height - 4.0};
+        const QRectF band{4.0, plot.bottom() + 4.0, width() - 8.0, band_height};
+
+        double lowest = samples.front().values.front();
+        double highest = lowest;
+        for (const auto &sample : samples)
+            for (const double value : sample.values) {
+                lowest = std::min(lowest, value);
+                highest = std::max(highest, value);
+            }
+        // A flat trace is a fact about the graph, not a reason to divide by
+        // zero: it is drawn down the middle of the strip.
+        const double range = highest > lowest ? highest - lowest : 1.0;
+        const double base = highest > lowest ? lowest : lowest - 0.5;
+
+        const auto xOf = [&](double time) {
+            return plot.left() + plot.width() * (time - from) / (to - from);
+        };
+        for (std::size_t trace = 0; trace < ports.size(); ++trace) {
+            QPolygonF line;
+            line.reserve(static_cast<int>(samples.size()));
+            for (const auto &sample : samples) {
+                if (trace >= sample.values.size()) continue;
+                const double normalized = (sample.values[trace] - base) / range;
+                line.push_back(QPointF{
+                    xOf(sample.time),
+                    plot.bottom() - plot.height() * normalized});
+            }
+            painter.setPen(QPen{theme.domainTint(traceName(trace)), 1.6});
+            painter.drawPolyline(line);
+        }
+
+        // The sink band: the clip's phase, and the transition's progress when
+        // one is running. Both are already 0..1, so the band is their own
+        // scale rather than the traces'.
+        painter.setPen(Qt::NoPen);
+        for (const auto &sample : samples) {
+            if (!sample.has_phase && !sample.has_progress) continue;
+            const qreal x = xOf(sample.time);
+            const double height_ratio =
+                sample.has_progress ? sample.progress : sample.phase;
+            QColor tint = theme.domainTint(
+                sample.has_progress ? QStringLiteral("instance")
+                                    : QStringLiteral("animation"));
+            tint.setAlphaF(0.85F);
+            painter.fillRect(
+                QRectF{x, band.bottom() - band.height() * height_ratio, 2.0,
+                       band.height() * height_ratio},
+                tint);
+        }
+        painter.setPen(QPen{theme.canvas.node_border, 1.0});
+        painter.drawLine(band.topLeft(), band.topRight());
+    }
+
+  private:
+    // Four fixed hues, taken from the theme's own domain table so the strip
+    // belongs to the same palette as the nodes.
+    static QString traceName(std::size_t index) {
+        switch (index % 4) {
+        case 0: return QStringLiteral("values");
+        case 1: return QStringLiteral("rendering");
+        case 2: return QStringLiteral("animation");
+        default: return QStringLiteral("instance");
+        }
+    }
+
+    void emitScrub(QMouseEvent *event) {
+        const auto time = timeAt(static_cast<int>(event->position().x()));
+        if (time && scrub_) scrub_(*time);
+        event->accept();
+    }
+
+    const GraphCanvasModel &model_;
+    Scrub scrub_;
+};
+
+} // namespace
+
 struct GraphCanvasWidget::Impl {
     GraphCanvasWidget &view;
     GraphCanvasReadCapability graph;
@@ -1539,6 +1750,11 @@ struct GraphCanvasWidget::Impl {
     QComboBox *scopes = nullptr;
     QComboBox *value_instances = nullptr;
     QPushButton *refresh = nullptr;
+    QCheckBox *live = nullptr;
+    QPushButton *timeline_toggle = nullptr;
+    QLabel *timeline_summary = nullptr;
+    GraphTimelineStrip *timeline = nullptr;
+    QWidget *timeline_panel = nullptr;
     QLabel *breadcrumb = nullptr;
     QLabel *notice = nullptr;
     QTreeWidget *details = nullptr;
@@ -1569,6 +1785,14 @@ struct GraphCanvasWidget::Impl {
         value_instances = new QComboBox(&view);
         value_instances->setObjectName(QStringLiteral("pelican.graphCanvasValues"));
         controls->addWidget(value_instances);
+        // Live is the switch between "the overlay follows the document" and
+        // "the overlay follows the running engine". It reads on the report
+        // slots, so a number that is moving cannot delay or cancel an edit.
+        live = new QCheckBox(QObject::tr("Live"), &view);
+        live->setObjectName(QStringLiteral("pelican.graphCanvasLive"));
+        live->setToolTip(QObject::tr(
+            "Re-read the node values four times a second while the engine runs."));
+        controls->addWidget(live);
         refresh = new QPushButton(QObject::tr("Refresh"), &view);
         refresh->setObjectName(QStringLiteral("pelican.graphCanvasRefresh"));
         controls->addWidget(refresh);
@@ -1640,13 +1864,53 @@ struct GraphCanvasWidget::Impl {
         splitter->setStretchFactor(1, 2);
         layout->addWidget(splitter, 1);
 
+        // The Timeline, folded away until it is asked for: it is a second
+        // reading of the same numbers, and a panel that is always there would
+        // take height from the canvas for a strip most sessions never open.
+        auto *timeline_row = new QHBoxLayout;
+        timeline_toggle = new QPushButton(QObject::tr("Timeline"), &view);
+        timeline_toggle->setObjectName(
+            QStringLiteral("pelican.graphTimelineToggle"));
+        timeline_toggle->setCheckable(true);
+        timeline_row->addWidget(timeline_toggle);
+        timeline_summary = new QLabel(&view);
+        timeline_summary->setObjectName(
+            QStringLiteral("pelican.graphTimelineSummary"));
+        timeline_row->addWidget(timeline_summary, 1);
+        layout->addLayout(timeline_row);
+        timeline_panel = new QWidget(&view);
+        auto *timeline_layout = new QVBoxLayout(timeline_panel);
+        timeline_layout->setContentsMargins(0, 0, 0, 0);
+        timeline = new GraphTimelineStrip(model, [this](double time) {
+            if (model.scrub(time)) dispatch();
+        }, timeline_panel);
+        timeline_layout->addWidget(timeline);
+        timeline_panel->hide();
+        layout->addWidget(timeline_panel);
+        QObject::connect(timeline_toggle, &QPushButton::toggled, &view,
+                         [this](bool open) {
+                             timeline_panel->setVisible(open);
+                             synchronizeTimeline();
+                         });
+        QObject::connect(live, &QCheckBox::toggled, &view, [this](bool on) {
+            model.setLive(on);
+            dispatch();
+        });
+
         scene->setModel(&model);
         scene->scopeChanged = [this] {
             syncScopeControls();
             syncValueControls();
             showDetails();
         };
-        scene->selectionChanged = [this] { showDetails(); };
+        scene->selectionChanged = [this] {
+            // The Timeline follows the selection: the node a person is looking
+            // at is the node whose outputs they mean.
+            const auto &selected = scene->selectedNode();
+            model.setTimelineNode(selected ? *selected : std::string{});
+            showDetails();
+            synchronizeTimeline();
+        };
         // Every canvas gesture is applied the moment it finishes, so the only
         // thing left to do here is post what the model already built.
         scene->editSubmitted = [this] { dispatch(); };
@@ -1715,10 +1979,8 @@ struct GraphCanvasWidget::Impl {
 
         auto *poll = new QTimer(&view);
         poll->setInterval(250);
-        QObject::connect(poll, &QTimer::timeout, &view, [this] {
-            model.poll();
-            dispatch();
-        });
+        QObject::connect(poll, &QTimer::timeout, &view,
+                         [this] { view.poll(); });
         poll->start();
         synchronize();
     }
@@ -1755,6 +2017,17 @@ struct GraphCanvasWidget::Impl {
             else if (request.method == "get_graph_values" && graph.requestGraphValues)
                 transport = graph.requestGraphValues(
                     qtext(request.params.value("instance", std::string{})), &error);
+            else if (request.method == "get_graph_node_values" &&
+                     graph.requestGraphNodeValues)
+                transport = graph.requestGraphNodeValues(
+                    qtext(request.params.value("instance", std::string{})), &error);
+            else if (request.method == "get_status" && graph.requestStatus)
+                transport = graph.requestStatus(&error);
+            else if (request.method == "set_time" && graph.requestSetTime)
+                transport = graph.requestSetTime(
+                    request.params.value("t", 0.0), &error);
+            else if (request.method == "render_frame" && graph.requestRenderFrame)
+                transport = graph.requestRenderFrame(&error);
             else if (request.method == "edit_graph_document" &&
                      graph.requestEditGraphDocument)
                 transport = graph.requestEditGraphDocument(
@@ -1792,9 +2065,11 @@ struct GraphCanvasWidget::Impl {
 
     void syncValueControls() {
         const QSignalBlocker block{value_instances};
-        // get_graph_values answers for a root instance. Inside a definition
-        // body there is nothing it could report, so the control says so.
-        value_instances->setEnabled(model.currentScope().empty());
+        // The control reaches every scope now (AG-3b): get_graph_values still
+        // answers only for a root instance, but get_graph_node_values answers
+        // for that instance's definition body, which is what a person inside
+        // one is looking at. The instance names whose generation to read.
+        value_instances->setEnabled(true);
         const auto current = qtext(model.watchedInstance());
         value_instances->clear();
         value_instances->addItem(QObject::tr("(none)"), QString{});
@@ -1959,16 +2234,59 @@ struct GraphCanvasWidget::Impl {
             for (const auto &port : found->outputs) {
                 auto *entry = new QTreeWidgetItem(outputs);
                 entry->setText(0, qtext(port.port));
-                entry->setText(1, type_text(port.type));
+                entry->setText(1,
+                    port.has_value
+                        ? QStringLiteral("%1  ·  %2")
+                              .arg(type_text(port.type), numberText(port.value))
+                        : type_text(port.type));
             }
             outputs->setExpanded(true);
         }
     }
 
+    // One line that says what the strip is showing, so a reader -- and a
+    // scenario -- can ask the panel what it holds instead of judging pixels.
+    void synchronizeTimeline() {
+        const QSignalBlocker block{live};
+        live->setChecked(model.live());
+        const auto &samples = model.timelineSamples();
+        const auto &ports = model.timelinePorts();
+        QStringList traces;
+        for (const auto &port : ports)
+            traces.push_back(QStringLiteral("%1.%2")
+                                 .arg(qtext(model.timelineNode()), qtext(port)));
+        QString summary;
+        if (model.timelineNode().empty())
+            summary = QObject::tr("no node selected");
+        else if (samples.empty())
+            summary = QObject::tr("%1: 0 samples")
+                          .arg(qtext(model.timelineNode()));
+        else
+            summary = QObject::tr("%1: %2 samples · %3 · t %4 to %5")
+                          .arg(qtext(model.timelineNode()))
+                          .arg(samples.size())
+                          .arg(traces.join(QStringLiteral(", ")))
+                          .arg(numberText(samples.front().time),
+                               numberText(samples.back().time));
+        const auto sinks = model.animationSinks();
+        if (!sinks.empty()) {
+            const auto &sink = sinks.front();
+            summary += QObject::tr(" · sink %1 (%2)")
+                           .arg(qtext(sink.node), qtext(sink.source));
+        }
+        timeline_summary->setText(summary);
+        if (timeline_panel->isVisible()) timeline->update();
+    }
+
     void synchronize() {
         const bool content_changed = rendered_content != model.contentRevision();
         const bool report_changed = rendered_report != model.reportRevision();
-        if (content_changed || report_changed) {
+        // A redraw deletes the in-place editor, so it waits for the editor to
+        // close. Live reads four times a second (AG-3b); without this, typing
+        // a value while the overlay is following the engine would be
+        // impossible, and the reason would be invisible. Nothing is lost: the
+        // rendered marks are left behind, so the next tick draws it.
+        if ((content_changed || report_changed) && !scene->editingInline()) {
             rendered_content = model.contentRevision();
             rendered_report = model.reportRevision();
             scene->repopulate();
@@ -1988,6 +2306,7 @@ struct GraphCanvasWidget::Impl {
             notice->show();
         }
         refresh->setEnabled(model.canRefresh());
+        synchronizeTimeline();
     }
 };
 
@@ -2001,6 +2320,11 @@ GraphCanvasWidget::~GraphCanvasWidget() = default;
 
 void GraphCanvasWidget::refresh() {
     impl_->model.refresh();
+    impl_->dispatch();
+}
+
+void GraphCanvasWidget::poll() {
+    impl_->model.poll();
     impl_->dispatch();
 }
 

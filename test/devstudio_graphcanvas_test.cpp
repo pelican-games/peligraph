@@ -472,3 +472,287 @@ TEST_CASE("A refresh keeps the scope trail only while the definition is still th
     // allNodeKeys is what the scene prunes retained positions against.
     REQUIRE(h.model.allNodeKeys().size() == 2);
 }
+
+// --------------------------------------------------------------------------
+// AG-3b: the node values overlay, in both scopes.
+
+namespace {
+// What AG-3a answers. `instance` is echoed back: the empty string is the root
+// scope's question, and `node` is the id inside that scope while `expanded` is
+// the whole path.
+Json nodeValues(const std::string &instance, const Json &nodes,
+                bool published = true, double frame = 12) {
+    return {{"instance", instance}, {"generation", 4}, {"frame", frame},
+            {"published", published}, {"source", "rendering"},
+            {"nodes", nodes}};
+}
+
+Json reportedNode(const std::string &node, const std::string &expanded,
+                  const Json &outputs) {
+    return {{"node", node}, {"expanded", expanded}, {"outputs", outputs}};
+}
+
+// Answer whatever observation pair is in the air, so the next thing the test
+// asks for is asked rather than skipped: a question already outstanding is not
+// asked twice.
+void answerObservation(Harness &h,
+                       const std::vector<PelicanStudio::InspectorRpcRequest> &requests) {
+    for (const auto &request : requests) {
+        if (request.method == "get_status")
+            h.reply(request, {{"time", 0.0}, {"frame", 0},
+                              {"animation", {{"available", false}}}});
+        else if (request.method == "get_graph_node_values")
+            h.reply(request, {{"instance", request.params.value("instance", std::string{})},
+                              {"generation", 0}, {"frame", 0},
+                              {"published", false}, {"source", "rendering"},
+                              {"nodes", Json::array()}});
+    }
+}
+
+void settleObservation(Harness &h) {
+    answerObservation(h, h.model.takeRpcRequests());
+}
+
+const PelicanStudio::GraphCanvasOutput &output(const GraphCanvasNode &node,
+                                               const std::string &name) {
+    const auto found = std::ranges::find(
+        node.outputs, name, &PelicanStudio::GraphCanvasOutput::port);
+    REQUIRE(found != node.outputs.end());
+    return *found;
+}
+} // namespace
+
+TEST_CASE("The node values overlay reaches a definition body and the root scope",
+          "[studio][graph-canvas][ag3b]") {
+    Harness h;
+    h.open();
+    // Naming the instance is what turns the overlay on. Nothing is read for a
+    // canvas nobody asked to observe.
+    REQUIRE(h.model.takeRpcRequests().empty());
+    h.model.watchInstance("left");
+
+    SECTION("a definition body, read through the instance that owns it") {
+        // The root scope's question went out on the selection. Descending asks
+        // a different one, and only the newest answer of a kind is kept.
+        (void)h.model.takeRpcRequests();
+        REQUIRE(h.model.selectScope("gain_curve"));
+        const auto request = h.take("get_graph_node_values");
+        // The scope decides the question: a definition body is read through
+        // the instance, the root document through no instance at all.
+        REQUIRE(request.params == Json{{"instance", "left"}});
+        h.reply(request,
+                nodeValues("left", Json::array({
+                    reportedNode("gain", "left/gain", {{"value", 2.5}}),
+                    reportedNode("bias", "left/bias", {{"value", 5.0}}),
+                    reportedNode("sum", "left/sum", {{"value", 7.5}}),
+                    // A rendering-domain node has no value of its own. It is
+                    // listed with no outputs, which is not the same as absent.
+                    reportedNode("buffer", "left/buffer", Json::object())})));
+
+        REQUIRE(h.model.nodeValuesPublished());
+        REQUIRE(output(h.node("sum"), "value").has_value);
+        REQUIRE(output(h.node("sum"), "value").value == 7.5);
+        REQUIRE(output(h.node("gain"), "value").value == 2.5);
+        // outputs: {} is a node with no band, not a node with a zero.
+        REQUIRE_FALSE(output(h.node("buffer"), "resource").has_value);
+        REQUIRE(h.model.notice().kind == InspectorNoticeKind::None);
+    }
+
+    SECTION("the root scope, read with no instance at all") {
+        const auto request = h.take("get_graph_node_values");
+        REQUIRE(request.params == Json::object());
+        h.reply(request,
+                nodeValues("", Json::array({
+                    // A root node answers under its own id: node == expanded.
+                    reportedNode("clock", "clock", {{"value", 0.5}}),
+                    // The instance body is in the same reply, under the path
+                    // that reaches it. No canvas node is called that, so
+                    // nothing of the body leaks onto the root drawing.
+                    reportedNode("left/sum", "left/sum", {{"value", 7.5}})})));
+
+        REQUIRE(output(h.node("clock"), "value").has_value);
+        REQUIRE(output(h.node("clock"), "value").value == 0.5);
+        // `left` is a graph.instance: the expansion has no node by that name,
+        // so its declared outputs carry no band.
+        REQUIRE_FALSE(output(h.node("left"), "value").has_value);
+    }
+
+    SECTION("published: false says so and draws no band") {
+        (void)h.model.takeRpcRequests();
+        REQUIRE(h.model.selectScope("gain_curve"));
+        h.reply(h.take("get_graph_node_values"),
+                nodeValues("left", Json::array(), false));
+        REQUIRE_FALSE(h.model.nodeValuesPublished());
+        REQUIRE(h.model.notice().kind == InspectorNoticeKind::Information);
+        REQUIRE(h.model.notice().message.find("not published") != std::string::npos);
+        REQUIRE_FALSE(output(h.node("sum"), "value").has_value);
+    }
+
+    SECTION("an answer about another scope is not drawn against these nodes") {
+        (void)h.model.takeRpcRequests();
+        REQUIRE(h.model.selectScope("gain_curve"));
+        // The reply names the question it answered, and it is the root's.
+        h.reply(h.take("get_graph_node_values"),
+                nodeValues("", Json::array({
+                    reportedNode("sum", "sum", {{"value", 99.0}})})));
+        // The reply answers the root's question; the canvas is showing a
+        // definition body. A number drawn against the wrong node list is worse
+        // than no number.
+        REQUIRE_FALSE(output(h.node("sum"), "value").has_value);
+    }
+}
+
+TEST_CASE("Live reads on a clock and off it the overlay follows the document",
+          "[studio][graph-canvas][ag3b]") {
+    Harness h;
+    h.open();
+    h.model.watchInstance("left");
+    settleObservation(h);
+
+    // Off: polling asks for nothing. The catalog is already in hand and no
+    // edit is outstanding, so the slot stays empty.
+    h.model.poll();
+    h.model.poll();
+    REQUIRE(h.model.takeRpcRequests().empty());
+
+    // Every tick of the fake clock is one pair of reads, and the pair has to
+    // be answered before the next one goes out: a question already in the air
+    // is not asked again, so a slow engine cannot be made to queue reads.
+    const auto takePair = [&] {
+        auto requests = h.model.takeRpcRequests();
+        REQUIRE(requests.size() == 2);
+        REQUIRE(requests[0].method == "get_status");
+        REQUIRE(requests[1].method == "get_graph_node_values");
+        answerObservation(h, requests);
+    };
+    h.model.setLive(true);
+    takePair();
+    for (int tick = 0; tick < 3; ++tick) {
+        h.model.poll();
+        takePair();
+    }
+
+    // A tick while the previous pair is still unanswered asks nothing.
+    h.model.poll();
+    REQUIRE(h.model.takeRpcRequests().size() == 2);
+    h.model.poll();
+    REQUIRE(h.model.takeRpcRequests().empty());
+    settleObservation(h);
+
+    h.model.setLive(false);
+    (void)h.model.takeRpcRequests();
+    h.model.poll();
+    h.model.poll();
+    REQUIRE(h.model.takeRpcRequests().empty());
+}
+
+TEST_CASE("The Timeline buffers what Live watched go by",
+          "[studio][graph-canvas][ag3b]") {
+    Harness h;
+    h.open();
+    h.model.watchInstance("left");
+    REQUIRE(h.model.selectScope("gain_curve"));
+    h.model.setTimelineNode("sum");
+    settleObservation(h);
+    h.model.setLive(true);
+
+    const auto tick = [&](double time, double value) {
+        for (const auto &request : h.model.takeRpcRequests()) {
+            if (request.method == "get_status")
+                h.reply(request, {{"time", time}, {"frame", 3},
+                                  {"animation", {{"available", false}}}});
+            else if (request.method == "get_graph_node_values")
+                h.reply(request, nodeValues("left", Json::array({
+                    reportedNode("sum", "left/sum", {{"value", value}})})));
+        }
+        h.model.poll();
+    };
+    tick(0.25, 7.5);
+    tick(0.50, 8.0);
+    tick(0.75, 8.5);
+
+    REQUIRE(h.model.timelinePorts() == std::vector<std::string>{"value"});
+    const auto &samples = h.model.timelineSamples();
+    REQUIRE(samples.size() == 3);
+    REQUIRE(samples[0].time == 0.25);
+    REQUIRE(samples[0].values == std::vector<double>{7.5});
+    REQUIRE(samples[2].time == 0.75);
+    REQUIRE(samples[2].values == std::vector<double>{8.5});
+    REQUIRE_FALSE(samples[2].has_phase);
+
+    // A different node is a different strip: the lines would otherwise change
+    // what they meant halfway along.
+    h.model.setTimelineNode("gain");
+    REQUIRE(h.model.timelineSamples().empty());
+    REQUIRE(h.model.timelinePorts().empty());
+}
+
+TEST_CASE("A scrub is set_time and one drawn frame, in that order",
+          "[studio][graph-canvas][ag3b]") {
+    Harness h;
+    h.open();
+    h.model.watchInstance("left");
+    settleObservation(h);
+
+    REQUIRE(h.model.scrub(1.5));
+    // A second scrub while the first is in the air would race it.
+    REQUIRE_FALSE(h.model.scrub(2.0));
+    auto requests = h.model.takeRpcRequests();
+    REQUIRE(requests.size() == 2);
+    REQUIRE(requests[0].method == "set_time");
+    REQUIRE(requests[0].params == Json{{"t", 1.5}});
+    REQUIRE(requests[1].method == "render_frame");
+    REQUIRE(requests[1].params == Json::object());
+    // The scrub does not take the edit slot: a drag on the Timeline must not
+    // make the canvas look busy to an edit trying to land.
+    REQUIRE(h.model.canEdit());
+
+    // The frame that was asked for has been drawn; the values are read back.
+    h.model.receiveRpcResult(requests[1].request_id,
+                             Json{{"frame", 90}, {"time", 1.5}}.dump());
+    REQUIRE_FALSE(h.model.scrubbing());
+    auto after = h.model.takeRpcRequests();
+    REQUIRE(after.size() == 2);
+    REQUIRE(after[0].method == "get_status");
+    REQUIRE(after[1].method == "get_graph_node_values");
+}
+
+TEST_CASE("The animation band is drawn only for the watched instance owner",
+          "[studio][graph-canvas][ag3b]") {
+    Harness h;
+    h.open();
+    h.model.watchInstance("left");
+    // The fixture's `left` is owned by main/41.
+    const Json sinks = Json::array({
+        Json{{"owner", {{"scene", "main"}, {"object", 41}}},
+             {"node", "left/pose"}, {"source", "pose_graph_clip"},
+             {"cursors", Json::array({Json{{"clip", "Turn"},
+                                           {"time_seconds", 0.5},
+                                           {"normalized_phase", 0.25}}})},
+             {"transition", {{"active", true}, {"target", "walk"},
+                             {"progress", 0.4}}}},
+        Json{{"owner", {{"scene", "main"}, {"object", 99}}},
+             {"node", "other/pose"}, {"source", "component_clip"},
+             {"cursors", Json::array()}}});
+    for (const auto &request : h.model.takeRpcRequests())
+        if (request.method == "get_status")
+            h.reply(request, {{"time", 0.5}, {"frame", 30},
+                              {"animation", {{"available", true},
+                                             {"sinks", sinks}}}});
+
+    REQUIRE(h.model.animationAvailable());
+    const auto owned = h.model.animationSinks();
+    REQUIRE(owned.size() == 1);
+    REQUIRE(owned[0].node == "left/pose");
+    REQUIRE(owned[0].source == "pose_graph_clip");
+    REQUIRE(owned[0].cursors.size() == 1);
+    REQUIRE(owned[0].cursors[0].clip == "Turn");
+    REQUIRE(owned[0].cursors[0].normalized_phase == 0.25);
+    REQUIRE(owned[0].transition_active);
+    REQUIRE(owned[0].transition_progress == 0.4);
+
+    // Watching an instance the status has no sink for draws no band at all --
+    // which is not the same as "the engine reported none".
+    h.model.watchInstance("");
+    REQUIRE(h.model.animationSinks().empty());
+}

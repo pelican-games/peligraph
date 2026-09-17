@@ -41,6 +41,30 @@ GraphCanvasReadCapability graphCanvasReadCapability(EmbeddedViewport &viewport) 
                 QStringLiteral("get_graph_values"),
                 QJsonObject{{QStringLiteral("instance"), instance}}, error);
         },
+        .requestGraphNodeValues = [&viewport](const QString &instance,
+                                              QString *error) {
+            // The root scope asks the question without the parameter: an
+            // empty `instance` and an omitted one mean the same thing to the
+            // engine, and leaving it out is what the RPC's own contract says.
+            QJsonObject params;
+            if (!instance.isEmpty())
+                params.insert(QStringLiteral("instance"), instance);
+            return viewport.requestRpc(
+                QStringLiteral("get_graph_node_values"), params, error);
+        },
+        .requestStatus = [&viewport](QString *error) {
+            return viewport.requestRpc(QStringLiteral("get_status"),
+                                       QJsonObject{}, error);
+        },
+        .requestSetTime = [&viewport](double time, QString *error) {
+            return viewport.requestRpc(
+                QStringLiteral("set_time"),
+                QJsonObject{{QStringLiteral("t"), time}}, error);
+        },
+        .requestRenderFrame = [&viewport](QString *error) {
+            return viewport.requestRpc(QStringLiteral("render_frame"),
+                                       QJsonObject{}, error);
+        },
         .requestEditGraphDocument = [&viewport](const QString &digest,
                                                 const QByteArray &ops_json,
                                                 QString *error) {

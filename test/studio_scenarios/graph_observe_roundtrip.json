@@ -1,0 +1,367 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "graph_observe_roundtrip",
+  "description": "AG-3b's one path through the GUI: attach a graph to a scene object from the Inspector, edit a value on the canvas, watch what the running engine's published generation made of it, let the edit reach disk, and open the project again to find the same graph and the same number.",
+  "tab": "graph",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the engine viewport answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the canvas has drawn the document the fixture ships",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the document starts with two root nodes and one definition",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes.$len",
+      "value": 2
+    },
+
+    {
+      "label": "ATTACH -- pick the scene object the new graph will own, in the Outliner",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "Camera"
+    },
+    {
+      "label": "the Inspector's Attach button becomes usable for that object",
+      "cmd": "wait",
+      "name": "pelican.graphAttach",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "open the Attach dialog",
+      "cmd": "click",
+      "name": "pelican.graphAttach"
+    },
+    {
+      "label": "the dialog is up",
+      "cmd": "wait",
+      "name": "pelican.graphAttachmentDialog",
+      "visible": true,
+      "timeout_ms": 20000
+    },
+    {
+      "label": "the instance name the dialog suggests is the definition and the owner",
+      "expect": "text_equals",
+      "name": "pelican.graphInstanceId",
+      "value": "gain_curve_2"
+    },
+    {
+      "label": "type the initial gain",
+      "cmd": "type",
+      "name": "pelican.graphParameter.gain",
+      "text": "4"
+    },
+    {
+      "label": "type the initial bias",
+      "cmd": "type",
+      "name": "pelican.graphParameter.bias",
+      "text": "6"
+    },
+    {
+      "label": "Attach and save",
+      "cmd": "click",
+      "name": "pelican.graphAttachSave"
+    },
+    {
+      "label": "the Inspector reports the attachment saved",
+      "cmd": "wait",
+      "name": "pelican.graphNotice",
+      "contains": "saved",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the running engine holds three root nodes now",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes.$len",
+      "value": 3
+    },
+
+    {
+      "label": "bring the canvas up to the document the attach wrote",
+      "cmd": "click",
+      "name": "pelican.graphCanvasRefresh"
+    },
+    {
+      "label": "the canvas drew the instance that was just attached",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#gain_curve_2",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "OBSERVE -- descend into the definition body through the new instance",
+      "cmd": "double_click",
+      "name": "pelican.graphCanvasView::graph_node#gain_curve_2"
+    },
+    {
+      "label": "the canvas is inside the definition, reached through that instance",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasBreadcrumb",
+      "text": "root / gain_curve",
+      "timeout_ms": 20000
+    },
+    {
+      "label": "the sum inside the body carries the value the published generation left there",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_value_band#sum/value",
+      "text": "10",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "and the engine says the same thing when asked directly",
+      "expect": "rpc_equals",
+      "method": "get_graph_node_values",
+      "params": {"instance": "gain_curve_2"},
+      "path": "published",
+      "value": true
+    },
+    {
+      "label": "the node values name the scope's own node, not the expanded path",
+      "expect": "rpc_equals",
+      "method": "get_graph_node_values",
+      "params": {"instance": "gain_curve_2"},
+      "path": "nodes[2].node",
+      "value": "sum"
+    },
+    {
+      "label": "and its output is the 10 the band drew",
+      "expect": "rpc_equals",
+      "method": "get_graph_node_values",
+      "params": {"instance": "gain_curve_2"},
+      "path": "nodes[2].outputs.value",
+      "value": 10.0
+    },
+    {
+      "label": "the reply says which side of the engine produced it",
+      "expect": "rpc_equals",
+      "method": "get_graph_node_values",
+      "params": {"instance": "gain_curve_2"},
+      "path": "source",
+      "value": "rendering"
+    },
+
+    {
+      "label": "TIMELINE -- open the strip and turn Live on",
+      "cmd": "click",
+      "name": "pelican.graphTimelineToggle"
+    },
+    {
+      "label": "the strip is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphTimeline",
+      "visible": true,
+      "timeout_ms": 20000
+    },
+    {
+      "label": "select the node the strip should follow",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#sum"
+    },
+    {
+      "label": "turn Live on",
+      "cmd": "click",
+      "name": "pelican.graphCanvasLive"
+    },
+    {
+      "label": "the strip fills with readings of that node's output",
+      "cmd": "wait",
+      "name": "pelican.graphTimelineSummary",
+      "contains": "sum.value",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the animation module is there but this fixture owns no sink, so the strip draws no owner band",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "animation.sinks.$len",
+      "value": 0
+    },
+    {
+      "label": "three more round trips, so the strip has more than one reading to join up",
+      "expect": "rpc_equals",
+      "method": "get_graph_node_values",
+      "params": {"instance": "gain_curve_2"},
+      "path": "source",
+      "value": "rendering"
+    },
+    {
+      "label": "and again",
+      "expect": "rpc_equals",
+      "method": "get_graph_node_values",
+      "params": {"instance": "gain_curve_2"},
+      "path": "source",
+      "value": "rendering"
+    },
+    {
+      "label": "and again",
+      "expect": "rpc_equals",
+      "method": "get_graph_node_values",
+      "params": {"instance": "gain_curve_2"},
+      "path": "source",
+      "value": "rendering"
+    },
+    {
+      "label": "a picture of the canvas with the band and the Timeline",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "graph_observe_live.png"
+    },
+    {
+      "label": "turn Live off again so the edit below is read once, not four times a second",
+      "cmd": "click",
+      "name": "pelican.graphCanvasLive"
+    },
+
+    {
+      "label": "EDIT -- come back to the root scope, where the instance's own stored values are",
+      "cmd": "select",
+      "name": "pelican.graphCanvasScope",
+      "text": "root"
+    },
+    {
+      "label": "the pill shows the gain the attach stored",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_value_pill#gain_curve_2/gain",
+      "text": "4",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "click the gain pill, which opens the editor over it",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_value_pill#gain_curve_2/gain"
+    },
+    {
+      "label": "the editor opened over the pill",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_inline_editor#gain_curve_2/gain",
+      "visible": true,
+      "timeout_ms": 20000
+    },
+    {
+      "label": "type the new gain",
+      "cmd": "type",
+      "name": "pelican.graphCanvasView::graph_inline_editor#gain_curve_2/gain",
+      "text": "4.5"
+    },
+    {
+      "label": "Enter commits the edit",
+      "cmd": "key",
+      "name": "pelican.graphCanvasView::graph_inline_editor#gain_curve_2/gain",
+      "sequence": "Return"
+    },
+    {
+      "label": "the canvas reports the change saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+
+    {
+      "label": "OBSERVE THE EDIT -- back inside the body, the sum followed the gain",
+      "cmd": "double_click",
+      "name": "pelican.graphCanvasView::graph_node#gain_curve_2"
+    },
+    {
+      "label": "the band is the new number, so the overlay is the engine's and not a memory",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_value_band#sum/value",
+      "text": "10.5",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "and the engine agrees",
+      "expect": "rpc_equals",
+      "method": "get_graph_node_values",
+      "params": {"instance": "gain_curve_2"},
+      "path": "nodes[2].outputs.value",
+      "value": 10.5
+    },
+
+    {
+      "label": "SAVE -- the commit of the edit is the save: open the untouched copy first",
+      "cmd": "open_project",
+      "dir": "{other_project}"
+    },
+    {
+      "label": "the switched-to engine answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the untouched copy has no attachment at all, so none of this is session memory",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes.$len",
+      "value": 2
+    },
+    {
+      "label": "RELOAD -- come back to the edited project, which the engine re-reads from disk",
+      "cmd": "open_project",
+      "dir": "{project}"
+    },
+    {
+      "label": "the re-read engine answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the attachment survived the round trip through disk",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[2].definition",
+      "value": "gain_curve"
+    },
+    {
+      "label": "and so did the edit",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[2].parameters.gain",
+      "value": 4.5
+    },
+    {
+      "label": "the canvas drew the reloaded instance",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#gain_curve_2",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "descend into it again",
+      "cmd": "double_click",
+      "name": "pelican.graphCanvasView::graph_node#gain_curve_2"
+    },
+    {
+      "label": "the same value comes out of the reloaded project",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_value_band#sum/value",
+      "text": "10.5",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "a picture of the reloaded canvas for the reader of this report",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "graph_observe_reloaded.png"
+    }
+  ]
+}

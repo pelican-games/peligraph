@@ -7,6 +7,8 @@
 
 #include <QAction>
 #include <QAbstractButton>
+#include <QAbstractItemView>
+#include <QTreeView>
 #include <QAbstractScrollArea>
 #include <QAbstractSpinBox>
 #include <QAction>
@@ -28,6 +30,7 @@
 #include <QJsonObject>
 #include <QKeySequence>
 #include <QLineEdit>
+#include <QModelIndex>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPixmap>
@@ -48,6 +51,7 @@
 #include <QtTest/qtestspontaneevent.h>
 
 #include <algorithm>
+#include <functional>
 #include <vector>
 
 namespace PelicanStudio {
@@ -1219,6 +1223,110 @@ AutomationReply commandText(const AutomationHost &host,
     });
 }
 
+// AG-3b. Choosing a row of a list or an entry of a combo box.
+//
+// For an item view this is a real click: the row's own rectangle is asked for
+// and the press lands in it, so the view's selection model, its signals and
+// anything watching them run exactly as they do under a finger. For a combo
+// box it is not, and cannot be: the entries live in a popup, and a popup is a
+// modal event loop, which a command that owes a reply on this line cannot
+// enter -- the same reason `action` fires a menu entry rather than opening the
+// menu. setCurrentIndex emits the combo's own currentIndexChanged, which is
+// the signal a popup choice emits too, so the receiving code cannot tell the
+// two apart.
+AutomationReply commandSelect(const AutomationHost &host,
+                              const QJsonObject &request) {
+    const QString name = request.value(QStringLiteral("name")).toString();
+    if (name.isEmpty())
+        return AutomationReply::failure(BadRequest,
+                                        QStringLiteral("name is required"));
+    QWidget *widget = findWidget(host, name);
+    if (widget == nullptr)
+        return AutomationReply::failure(
+            WidgetMissing,
+            QStringLiteral("no widget is named \"%1\"").arg(name));
+    const QJsonValue text = request.value(QStringLiteral("text"));
+    const QJsonValue index = request.value(QStringLiteral("index"));
+    if (!text.isString() && !index.isDouble())
+        return AutomationReply::failure(
+            BadRequest, QStringLiteral("select needs text or index"));
+
+    if (auto *combo = qobject_cast<QComboBox *>(widget)) {
+        int row = index.isDouble() ? index.toInt(-1)
+                                   : combo->findText(text.toString());
+        if (row < 0 || row >= combo->count())
+            return AutomationReply::failure(
+                BadRequest,
+                QStringLiteral("\"%1\" has no entry %2")
+                    .arg(name, text.isString() ? text.toString()
+                                               : QString::number(index.toInt())));
+        combo->setCurrentIndex(row);
+        return AutomationReply::success(QJsonObject{
+            {QStringLiteral("name"), name},
+            {QStringLiteral("index"), row},
+            {QStringLiteral("text"), combo->itemText(row)},
+        });
+    }
+
+    auto *view = qobject_cast<QAbstractItemView *>(widget);
+    if (view == nullptr || view->model() == nullptr)
+        return AutomationReply::failure(
+            BadRequest,
+            QStringLiteral("\"%1\" is not a list, a tree or a combo box")
+                .arg(name));
+    // Every index the view can show, in the order it shows them, so `index`
+    // means the row a reader counts down the panel rather than a row of some
+    // one level of the tree.
+    // Only a tree has folded rows; a flat view's children are all there is.
+    auto *tree = qobject_cast<QTreeView *>(view);
+    std::vector<QModelIndex> rows;
+    const std::function<void(const QModelIndex &)> walk =
+        [&](const QModelIndex &parent) {
+            const int count = view->model()->rowCount(parent);
+            for (int row = 0; row < count; ++row) {
+                const QModelIndex child = view->model()->index(row, 0, parent);
+                if (!child.isValid()) continue;
+                rows.push_back(child);
+                if (tree != nullptr && tree->isExpanded(child)) walk(child);
+            }
+        };
+    walk(QModelIndex{});
+    QModelIndex chosen;
+    if (index.isDouble()) {
+        const int wanted = index.toInt(-1);
+        if (wanted >= 0 && wanted < static_cast<int>(rows.size()))
+            chosen = rows[static_cast<std::size_t>(wanted)];
+    } else {
+        for (const QModelIndex &row : rows)
+            if (row.data(Qt::DisplayRole).toString() == text.toString()) {
+                chosen = row;
+                break;
+            }
+    }
+    if (!chosen.isValid())
+        return AutomationReply::failure(
+            BadRequest,
+            QStringLiteral("\"%1\" holds no row %2")
+                .arg(name, text.isString() ? text.toString()
+                                           : QString::number(index.toInt())));
+    view->scrollTo(chosen);
+    const QRect rect = view->visualRect(chosen);
+    if (rect.isEmpty())
+        return AutomationReply::failure(
+            BadRequest,
+            QStringLiteral("the row \"%1\" of \"%2\" is not on screen")
+                .arg(chosen.data(Qt::DisplayRole).toString(), name));
+    const QPoint point = rect.center();
+    QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, point);
+    return AutomationReply::success(QJsonObject{
+        {QStringLiteral("name"), name},
+        {QStringLiteral("text"), chosen.data(Qt::DisplayRole).toString()},
+        {QStringLiteral("point"), QJsonArray{point.x(), point.y()}},
+        {QStringLiteral("selected"),
+         view->currentIndex() == chosen},
+    });
+}
+
 AutomationReply commandWait(const AutomationHost &host,
                             const QJsonObject &request) {
     const QString name = request.value(QStringLiteral("name")).toString();
@@ -1230,15 +1338,21 @@ AutomationReply commandWait(const AutomationHost &host,
     const QJsonValue text = request.value(QStringLiteral("text"));
     const QJsonValue contains = request.value(QStringLiteral("contains"));
     const QJsonValue missing = request.value(QStringLiteral("missing"));
+    // AG-3b: a button that is on screen but switched off is the ordinary way a
+    // panel says "not yet". A scenario that clicks it anyway does nothing and
+    // fails three steps later, naming the wrong thing.
+    const QJsonValue enabled = request.value(QStringLiteral("enabled"));
     if (!visible.isBool() && !text.isString() && !contains.isString() &&
-        !missing.isBool())
+        !missing.isBool() && !enabled.isBool())
         return AutomationReply::failure(
             BadRequest,
-            QStringLiteral("wait needs one of visible, text, contains or missing"));
+            QStringLiteral("wait needs one of visible, enabled, text, contains "
+                           "or missing"));
 
     QString last_text;
     bool last_visible = false;
     bool last_found = false;
+    bool last_enabled = false;
     QElapsedTimer elapsed;
     elapsed.start();
     for (;;) {
@@ -1246,9 +1360,13 @@ AutomationReply commandWait(const AutomationHost &host,
         last_found = target.valid();
         last_visible = last_found && targetVisible(target);
         last_text = last_found ? targetText(target) : QString{};
+        last_enabled = last_found && target.owner != nullptr &&
+                       target.owner->isEnabled();
         bool satisfied = true;
         if (missing.isBool()) satisfied = satisfied && (last_found != missing.toBool());
         if (visible.isBool()) satisfied = satisfied && last_visible == visible.toBool();
+        if (enabled.isBool())
+            satisfied = satisfied && last_enabled == enabled.toBool();
         if (text.isString()) satisfied = satisfied && last_found && last_text == text.toString();
         if (contains.isString())
             satisfied = satisfied && last_found &&
@@ -1258,6 +1376,7 @@ AutomationReply commandWait(const AutomationHost &host,
                 {QStringLiteral("name"), name},
                 {QStringLiteral("text"), last_text},
                 {QStringLiteral("visible"), last_visible},
+                {QStringLiteral("enabled"), last_enabled},
                 {QStringLiteral("waited_ms"),
                  static_cast<double>(elapsed.elapsed())},
             });
@@ -1267,11 +1386,12 @@ AutomationReply commandWait(const AutomationHost &host,
     return AutomationReply::failure(
         WaitTimeout,
         QStringLiteral("\"%1\" did not reach the expected state in %2 ms "
-                       "(found=%3 visible=%4 text=\"%5\")")
+                       "(found=%3 visible=%4 enabled=%5 text=\"%6\")")
             .arg(name)
             .arg(timeout)
             .arg(last_found ? QStringLiteral("true") : QStringLiteral("false"),
                  last_visible ? QStringLiteral("true") : QStringLiteral("false"),
+                 last_enabled ? QStringLiteral("true") : QStringLiteral("false"),
                  last_text));
 }
 
@@ -1476,7 +1596,8 @@ QStringList automationCommandNames() {
             QStringLiteral("wheel"),        QStringLiteral("move"),
             QStringLiteral("press"),        QStringLiteral("release"),
             QStringLiteral("key"),          QStringLiteral("type"),
-            QStringLiteral("text"),         QStringLiteral("action"),
+            QStringLiteral("text"),         QStringLiteral("select"),
+            QStringLiteral("action"),
             QStringLiteral("menu_list"),    QStringLiteral("view_state"),
             QStringLiteral("layout_stats"),
             QStringLiteral("wait"),         QStringLiteral("wait_engine"),
@@ -1510,6 +1631,7 @@ AutomationReply runAutomationCommand(const AutomationHost &host,
     if (command == QLatin1String("key")) return commandKey(host, request);
     if (command == QLatin1String("type")) return commandType(host, request);
     if (command == QLatin1String("text")) return commandText(host, request);
+    if (command == QLatin1String("select")) return commandSelect(host, request);
     if (command == QLatin1String("wait")) return commandWait(host, request);
     if (command == QLatin1String("wait_engine"))
         return commandWaitEngine(host, request);

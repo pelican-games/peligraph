@@ -19,6 +19,11 @@
 #include <QKeyEvent>
 #include <QRectF>
 #include <QScrollBar>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QLabel>
+#include <QMouseEvent>
+#include <QPushButton>
 #include <QWidget>
 #include <QPointF>
 #include <QString>
@@ -31,6 +36,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <functional>
 #include <vector>
 
 namespace {
@@ -304,16 +310,28 @@ void pressKey(QGraphicsScene &scene, int key) {
 }
 
 // The one edit_graph_document a gesture produced, accepted so the model moves
-// on to polling for its ticket.
+// on to polling for its ticket. Reads may be travelling beside it -- AG-3b's
+// observation pair goes out whenever the scope or the watched instance moves
+// -- and the question here is how many *edits* a gesture is, which is one.
 Json takeEdit(GraphCanvasModel &model) {
     auto requests = model.takeRpcRequests();
-    REQUIRE(requests.size() == 1);
-    REQUIRE(requests.front().method == "edit_graph_document");
-    const auto params = requests.front().params;
+    std::vector<PelicanStudio::InspectorRpcRequest> edits;
+    for (const auto &request : requests)
+        if (request.method == "edit_graph_document") edits.push_back(request);
+    REQUIRE(edits.size() == 1);
     model.receiveRpcResult(
-        requests.front().request_id,
+        edits.front().request_id,
         Json{{"status", "accepted"}, {"ticket", "graph-edit-1"}}.dump());
-    return params;
+    return edits.front().params;
+}
+
+// No gesture reached the document. Reads are not edits: a scope change asks
+// the engine what the new scope's values are, and that is not a change.
+void requireNoEdit(GraphCanvasModel &model) {
+    for (const auto &request : model.takeRpcRequests()) {
+        INFO("request " << request.method);
+        REQUIRE(request.method != "edit_graph_document");
+    }
 }
 
 void finishEdit(GraphCanvasModel &model, const Json &document,
@@ -745,7 +763,10 @@ TEST_CASE("Unconnected input rows carry the value, connected ones carry none",
     // number, and says where it came from.
     model.watchInstance("helmet_pulse");
     for (const auto &request : model.takeRpcRequests()) {
-        REQUIRE(request.method == "get_graph_values");
+        // Naming an instance asks three questions now (AG-3b): its inputs, its
+        // node values and the status the Timeline's axis is. This case is
+        // about the inputs.
+        if (request.method != "get_graph_values") continue;
         model.receiveRpcResult(
             request.request_id,
             Json{{"instance", "helmet_pulse"}, {"published", true},
@@ -844,7 +865,7 @@ TEST_CASE("The heading triangle folds the socket rows and the edges follow",
     REQUIRE(socketItem(scene, QStringLiteral("sum"), QStringLiteral("a"),
                        QStringLiteral("input")) != nullptr);
     // Nothing about folding is an edit: the document was never asked to change.
-    REQUIRE(model.takeRpcRequests().empty());
+    requireNoEdit(model);
 }
 
 TEST_CASE("A socket drag sends one set_input, and a mismatched type sends none",
@@ -906,7 +927,7 @@ TEST_CASE("A socket drag sends one set_input, and a mismatched type sends none",
         REQUIRE_FALSE(typed.canConnect("buffer", "resource", "sum", "a"));
         drag(typed_scene, buffer->sceneBoundingRect().center(),
              scalar->sceneBoundingRect().center());
-        REQUIRE(typed.takeRpcRequests().empty());
+        requireNoEdit(typed);
         // The same drag onto a port that does match is still allowed, so it is
         // the type and not the drag that was refused.
         REQUIRE(typed.canConnect("gain", "value", "sum", "b"));
@@ -1004,7 +1025,7 @@ TEST_CASE("A value pill opens in place and sends only the key that changed",
     scene.setInlineEditText(QStringLiteral("9.25"));
     typeKey(editorWidget(scene), Qt::Key_Escape);
     REQUIRE_FALSE(scene.editingInline());
-    REQUIRE(model.takeRpcRequests().empty());
+    requireNoEdit(model);
 
     // A connected port has no pill, so there is nothing there to open.
     REQUIRE(pillItem(scene, QStringLiteral("helmet_pulse"),
@@ -1371,7 +1392,7 @@ TEST_CASE("Auto layout drops the moved positions of this scope only",
     scene.autoLayout();
     REQUIRE(nodeItem(scene, QStringLiteral("left"))->pos() == laid_out);
     // The document said nothing about any of this.
-    REQUIRE(model.takeRpcRequests().empty());
+    requireNoEdit(model);
 
     REQUIRE(model.enterInstance("left"));
     scene.repopulate();
@@ -1418,4 +1439,320 @@ TEST_CASE("A pan moves the view even when the whole drawing fits",
     QCoreApplication::processEvents();
     const QRectF visible = view.mapToScene(view.viewport()->rect()).boundingRect();
     REQUIRE(visible.contains(QRectF{0.0, 0.0, 40.0, 30.0}));
+}
+
+// --------------------------------------------------------------------------
+// AG-3b: the value band on an output row, the Live switch, the Timeline strip
+// and the scrub -- driven the way the window drives them.
+
+namespace {
+Json ag3bNodeValues(const std::string &instance, const Json &nodes,
+                    bool published = true) {
+    return {{"instance", instance}, {"generation", 4}, {"frame", 12},
+            {"published", published}, {"source", "rendering"},
+            {"nodes", nodes}};
+}
+
+Json ag3bReportedNode(const std::string &node, const std::string &expanded,
+                      const Json &outputs) {
+    return {{"node", node}, {"expanded", expanded}, {"outputs", outputs}};
+}
+
+QGraphicsItem *bandItem(QGraphicsScene &scene, const QString &node,
+                        const QString &port) {
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+                QLatin1String{PelicanStudio::GraphCanvasValueBandItem} &&
+            item->data(PelicanStudio::NodeGraphNameRole).toString() == node &&
+            item->data(PelicanStudio::GraphCanvasPortRole).toString() == port &&
+            !item->data(PelicanStudio::GraphCanvasValueTextRole)
+                 .toString()
+                 .isEmpty())
+            return item;
+    return nullptr;
+}
+
+// The transport a GraphCanvasWidget is given in this test: every seam of the
+// capability records what it was asked for and answers with an id, so what the
+// widget is allowed to send is exactly what the test can see.
+struct RecordedCapability {
+    struct Call {
+        QString method;
+        QString instance;
+        double time = 0;
+    };
+    std::vector<Call> calls;
+    qint64 next = 1;
+    std::function<void(qint64, QByteArray)> deliver;
+
+    PelicanStudio::GraphCanvasReadCapability capability(bool node_values = true) {
+        PelicanStudio::GraphCanvasReadCapability seam;
+        const auto note = [this](QString method, QString instance = {},
+                                 double time = 0) {
+            calls.push_back(Call{std::move(method), std::move(instance), time});
+            return next++;
+        };
+        seam.ready = [](QObject *, auto handler) { handler(true, {}); };
+        seam.requestGraphInstances = [note](QString *) {
+            return note(QStringLiteral("get_graph_instances"));
+        };
+        seam.requestGraphCatalog = [note](QString *) {
+            return note(QStringLiteral("get_graph_catalog"));
+        };
+        seam.requestGraphValues = [note](const QString &instance, QString *) {
+            return note(QStringLiteral("get_graph_values"), instance);
+        };
+        if (node_values)
+            seam.requestGraphNodeValues = [note](const QString &instance,
+                                                 QString *) {
+                return note(QStringLiteral("get_graph_node_values"), instance);
+            };
+        seam.requestStatus = [note](QString *) {
+            return note(QStringLiteral("get_status"));
+        };
+        seam.requestSetTime = [note](double time, QString *) {
+            return note(QStringLiteral("set_time"), {}, time);
+        };
+        seam.requestRenderFrame = [note](QString *) {
+            return note(QStringLiteral("render_frame"));
+        };
+        seam.requestEditGraphDocument = [note](const QString &, const QByteArray &,
+                                               QString *) {
+            return note(QStringLiteral("edit_graph_document"));
+        };
+        seam.requestEditResult = [note](const QString &, QString *) {
+            return note(QStringLiteral("get_edit_result"));
+        };
+        seam.result = [this](QObject *, auto handler) { deliver = handler; };
+        seam.failure = [](QObject *, auto) {};
+        return seam;
+    }
+
+    // The transport id the nth call of this method was given.
+    [[nodiscard]] qint64 idOf(const QString &method, int occurrence = -1) const {
+        qint64 found = 0;
+        int seen = 0;
+        for (std::size_t index = 0; index < calls.size(); ++index) {
+            if (calls[index].method != method) continue;
+            ++seen;
+            if (occurrence < 0 || seen == occurrence + 1)
+                found = static_cast<qint64>(index) + 1;
+            if (occurrence >= 0 && seen == occurrence + 1) break;
+        }
+        return found;
+    }
+    [[nodiscard]] int countOf(const QString &method) const {
+        return static_cast<int>(std::ranges::count(calls, method, &Call::method));
+    }
+};
+} // namespace
+
+TEST_CASE("An output row carries the published value in a definition scope",
+          "[devstudio][graph-canvas][scene][ag3b]") {
+    (void)application();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    scene.setModel(&model);
+    model.setConnected(true);
+    answer(model, fixtureDocument(), visualCatalog());
+    model.watchInstance("left");
+    (void)model.takeRpcRequests();
+    REQUIRE(model.selectScope("gain_curve"));
+    for (const auto &request : model.takeRpcRequests())
+        if (request.method == "get_graph_node_values")
+            model.receiveRpcResult(
+                request.request_id,
+                ag3bNodeValues("left",
+                               Json::array({
+                                   ag3bReportedNode("sum", "left/sum",
+                                                    {{"value", 7.5}}),
+                                   // A rendering node: listed, with nothing on
+                                   // its ports.
+                                   ag3bReportedNode("buffer", "left/buffer",
+                                                    Json::object())}))
+                    .dump());
+    scene.repopulate();
+
+    QGraphicsItem *band = bandItem(scene, QStringLiteral("sum"),
+                                   QStringLiteral("value"));
+    REQUIRE(band != nullptr);
+    // The band files the number itself, which is what `text` answers with.
+    REQUIRE(band->data(PelicanStudio::GraphCanvasValueTextRole).toString() ==
+            QStringLiteral("7.5"));
+    // It sits on the left of the row, opposite the port's own name.
+    REQUIRE(band->pos().x() < PelicanStudio::GraphCanvasNodeMinimumWidth / 2.0);
+    // A node the report listed with no outputs has no band at all.
+    REQUIRE(bandItem(scene, QStringLiteral("buffer"),
+                     QStringLiteral("resource")) == nullptr);
+}
+
+TEST_CASE("The Graph tab's Live switch, Timeline and scrub go out through the capability",
+          "[devstudio][graph-canvas][scene][ag3b]") {
+    (void)application();
+    RecordedCapability transport;
+    PelicanStudio::GraphCanvasWidget widget{transport.capability()};
+    widget.resize(900, 600);
+    widget.show();
+    QCoreApplication::processEvents();
+
+    const auto answerRpc = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        REQUIRE(transport.deliver);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+    };
+    answerRpc(QStringLiteral("get_graph_instances"), context(fixtureDocument()));
+    answerRpc(QStringLiteral("get_graph_catalog"), visualCatalog());
+
+    auto *live = widget.findChild<QCheckBox *>(
+        QStringLiteral("pelican.graphCanvasLive"));
+    auto *toggle = widget.findChild<QPushButton *>(
+        QStringLiteral("pelican.graphTimelineToggle"));
+    auto *summary = widget.findChild<QLabel *>(
+        QStringLiteral("pelican.graphTimelineSummary"));
+    auto *strip = widget.findChild<QWidget *>(
+        QStringLiteral("pelican.graphTimeline"));
+    REQUIRE(live != nullptr);
+    REQUIRE(toggle != nullptr);
+    REQUIRE(summary != nullptr);
+    REQUIRE(strip != nullptr);
+
+    // Naming the instance in "Values from" is what starts the observation, in
+    // the root scope and -- through the same control -- inside a definition
+    // body. The combo is driven, not the model: this is the user's path.
+    auto *instances = widget.findChild<QComboBox *>(
+        QStringLiteral("pelican.graphCanvasValues"));
+    REQUIRE(instances != nullptr);
+    REQUIRE(instances->findData(QStringLiteral("left")) > 0);
+    instances->setCurrentIndex(instances->findData(QStringLiteral("left")));
+    QCoreApplication::processEvents();
+    REQUIRE(widget.model().watchedInstance() == "left");
+    REQUIRE(transport.countOf(QStringLiteral("get_graph_node_values")) > 0);
+    // Answer the pair that selection asked for. A question already in the air
+    // is not asked again, so every section below starts with free slots.
+    transport.deliver(transport.idOf(QStringLiteral("get_status")),
+                      QByteArray::fromStdString(
+                          Json{{"time", 0.25}, {"frame", 1},
+                               {"animation", {{"available", false}}}}
+                              .dump()));
+    transport.deliver(
+        transport.idOf(QStringLiteral("get_graph_node_values")),
+        QByteArray::fromStdString(
+            ag3bNodeValues("", Json::array({ag3bReportedNode(
+                                   "clock", "clock", {{"value", 1.0}})}))
+                .dump()));
+
+    // The strip follows the selection, and a strip that has watched nothing
+    // says so rather than drawing an empty box.
+    widget.scene().selectNode("left");
+    QCoreApplication::processEvents();
+    REQUIRE(summary->text().contains(QStringLiteral("left")));
+
+    SECTION("Live is what turns the periodic read on") {
+        REQUIRE_FALSE(widget.model().live());
+        const int before = transport.countOf(QStringLiteral("get_status"));
+        live->click();
+        QCoreApplication::processEvents();
+        REQUIRE(widget.model().live());
+        REQUIRE(transport.countOf(QStringLiteral("get_status")) > before);
+        live->click();
+        QCoreApplication::processEvents();
+        REQUIRE_FALSE(widget.model().live());
+    }
+
+    SECTION("the Timeline is folded away until it is asked for") {
+        auto *panel = strip->parentWidget();
+        REQUIRE(panel != nullptr);
+        REQUIRE_FALSE(panel->isVisible());
+        toggle->click();
+        QCoreApplication::processEvents();
+        REQUIRE(panel->isVisible());
+    }
+
+    SECTION("a drag on the Timeline is set_time then one drawn frame") {
+        // Two readings, so the strip has a span to map an x onto.
+        widget.scene().selectNode("clock");
+        QCoreApplication::processEvents();
+        live->click();
+        QCoreApplication::processEvents();
+        for (int tick = 0; tick < 2; ++tick) {
+            widget.poll();
+            const auto status = transport.idOf(QStringLiteral("get_status"));
+            const auto values =
+                transport.idOf(QStringLiteral("get_graph_node_values"));
+            transport.deliver(
+                status,
+                QByteArray::fromStdString(
+                    Json{{"time", 0.5 * (tick + 1)}, {"frame", tick},
+                         {"animation", {{"available", false}}}}
+                        .dump()));
+            transport.deliver(
+                values,
+                QByteArray::fromStdString(
+                    ag3bNodeValues("", Json::array({ag3bReportedNode(
+                                           "clock", "clock",
+                                           {{"value", 1.0 + tick}})}))
+                        .dump()));
+        }
+        REQUIRE(widget.model().timelineSamples().size() == 2);
+        toggle->click();
+        QCoreApplication::processEvents();
+
+        const int before_time = transport.countOf(QStringLiteral("set_time"));
+        const int before_frame = transport.countOf(QStringLiteral("render_frame"));
+        QMouseEvent press{QEvent::MouseButtonPress,
+                          QPointF{strip->width() / 2.0, 20.0},
+                          strip->mapToGlobal(QPointF{strip->width() / 2.0, 20.0}),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier};
+        QApplication::sendEvent(strip, &press);
+        QCoreApplication::processEvents();
+
+        REQUIRE(transport.countOf(QStringLiteral("set_time")) == before_time + 1);
+        REQUIRE(transport.countOf(QStringLiteral("render_frame")) ==
+                before_frame + 1);
+        // In that order, and nothing between them.
+        const auto &calls = transport.calls;
+        std::size_t index = calls.size();
+        while (index > 0 && calls[index - 1].method != QLatin1String("set_time"))
+            --index;
+        REQUIRE(index > 0);
+        REQUIRE(calls[index].method == QLatin1String("render_frame"));
+        // The time it asked for is inside the window the strip is showing.
+        REQUIRE(calls[index - 1].time >= 0.5);
+        REQUIRE(calls[index - 1].time <= 1.0);
+    }
+}
+
+TEST_CASE("Without the node values seam the canvas says which method it cannot issue",
+          "[devstudio][graph-canvas][scene][ag3b]") {
+    (void)application();
+    RecordedCapability transport;
+    // The control for the observation: the same widget, with that one seam of
+    // the capability left unfilled.
+    PelicanStudio::GraphCanvasWidget widget{transport.capability(false)};
+    widget.resize(900, 600);
+    widget.show();
+    QCoreApplication::processEvents();
+
+    const auto answerRpc = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+    };
+    answerRpc(QStringLiteral("get_graph_instances"), context(fixtureDocument()));
+    answerRpc(QStringLiteral("get_graph_catalog"), visualCatalog());
+    auto *instances = widget.findChild<QComboBox *>(
+        QStringLiteral("pelican.graphCanvasValues"));
+    REQUIRE(instances != nullptr);
+    instances->setCurrentIndex(instances->findData(QStringLiteral("left")));
+    QCoreApplication::processEvents();
+
+    REQUIRE(transport.countOf(QStringLiteral("get_graph_node_values")) == 0);
+    auto *notice = widget.findChild<QLabel *>(
+        QStringLiteral("pelican.graphCanvasNotice"));
+    REQUIRE(notice != nullptr);
+    // By name: a seam that is not there is reported as the method that could
+    // not leave, not as a blank overlay.
+    REQUIRE(notice->text().contains(QStringLiteral("get_graph_node_values")));
+    REQUIRE_FALSE(widget.model().nodeValuesReceived());
 }

@@ -201,6 +201,10 @@ void MainWindow::createWorkspace() {
         makeDock(this, tr("Project"), QStringLiteral("pelican.projectDock"), project_list_);
 
     outliner_ = new QTreeWidget(this);
+    // The tree itself is named, not only its dock: picking a scene object is
+    // the first step of every attach, and a scenario has to be able to name
+    // the thing it clicks in.
+    outliner_->setObjectName(QStringLiteral("pelican.outliner"));
     outliner_->setHeaderLabel(tr("Scene / Object"));
     outliner_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     outliner_->setDragDropMode(QAbstractItemView::NoDragDrop);

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -62,8 +63,22 @@ void GraphCanvasModel::request(RequestKind kind, std::string method, Json params
 
 void GraphCanvasModel::read(RequestKind kind, std::string method, Json params) {
     const auto id = next_request_++;
-    read_ = PendingRequest{id, kind};
+    // One slot per kind. Asking again replaces the slot, so the older answer
+    // is dropped when it arrives rather than overwriting the newer one.
+    std::erase_if(reads_, [kind](const PendingRequest &pending) {
+        return pending.kind == kind;
+    });
+    reads_.push_back(PendingRequest{id, kind});
     requests_.push_back({id, std::move(method), std::move(params)});
+}
+
+std::optional<GraphCanvasModel::PendingRequest>
+GraphCanvasModel::takeRead(std::uint64_t id) {
+    const auto found = std::ranges::find(reads_, id, &PendingRequest::id);
+    if (found == reads_.end()) return std::nullopt;
+    const auto pending = *found;
+    reads_.erase(found);
+    return pending;
 }
 
 void GraphCanvasModel::clearContext() {
@@ -76,15 +91,45 @@ void GraphCanvasModel::clearContext() {
     values_received_ = false;
     values_published_ = false;
     values_ = Json::array();
+    clearObservation();
     ++report_revision_;
     ++content_revision_;
+}
+
+void GraphCanvasModel::clearObservation() {
+    node_values_instance_.clear();
+    node_values_received_ = false;
+    node_values_published_ = false;
+    node_values_ = Json::array();
+    // The question in the air was about what is no longer on screen. Letting
+    // its slot stand would make the next ask look like a duplicate of it.
+    std::erase_if(reads_, [](const PendingRequest &pending) {
+        return pending.kind == RequestKind::NodeValues ||
+               pending.kind == RequestKind::Status;
+    });
+}
+
+void GraphCanvasModel::setWatchedInstance(std::string instance) {
+    values_instance_ = std::move(instance);
+    values_ = Json::array();
+    values_received_ = false;
+    values_published_ = false;
+    clearObservation();
+    clearTimeline();
+    ++report_revision_;
 }
 
 void GraphCanvasModel::setConnected(bool connected) {
     if (connected_ == connected) return;
     connected_ = connected;
     pending_.reset();
-    read_.reset();
+    reads_.clear();
+    scrubbing_ = false;
+    status_received_ = false;
+    status_time_ = 0;
+    animation_available_ = false;
+    animation_sinks_ = Json::array();
+    clearTimeline();
     requests_.clear();
     catalog_requested_ = false;
     catalog_received_ = false;
@@ -113,19 +158,86 @@ void GraphCanvasModel::requestValues() {
         read(RequestKind::Values, "get_graph_values", {{"instance", values_instance_}});
 }
 
+std::string GraphCanvasModel::nodeValuesInstance() const {
+    // The root document is the empty question; a definition body is read
+    // through the instance the "Values from" control names, because a
+    // definition on its own has no generation that fed it.
+    return currentScope().empty() ? std::string{} : values_instance_;
+}
+
+void GraphCanvasModel::requestObservation() {
+    // The overlay is what the user asked for by naming an instance. Without
+    // one, the canvas is the document's and nothing is read.
+    if (!connected_ || values_instance_.empty()) return;
+    // A pair already in the air is the answer to the same question. Asking
+    // again would only drop it: a Live tick on an engine slower than the tick
+    // must not build a queue of reads nobody will ever look at.
+    if (std::ranges::any_of(reads_, [](const PendingRequest &pending) {
+            return pending.kind == RequestKind::NodeValues;
+        }))
+        return;
+    const auto instance = nodeValuesInstance();
+    // The status goes first, and the order is load-bearing: one client, one
+    // pipe, replies in the order they were asked for. A Timeline sample is
+    // taken when the node values land, and it is stamped with the time the
+    // status just reported -- so the status has to be the earlier question or
+    // every sample would carry the previous tick's clock.
+    read(RequestKind::Status, "get_status", Json::object());
+    read(RequestKind::NodeValues, "get_graph_node_values",
+         instance.empty() ? Json::object() : Json{{"instance", instance}});
+}
+
 void GraphCanvasModel::watchInstance(std::string instance) {
     if (values_instance_ == instance) return;
-    values_instance_ = std::move(instance);
-    values_ = Json::array();
-    values_received_ = false;
-    values_published_ = false;
-    ++report_revision_;
+    setWatchedInstance(std::move(instance));
     requestValues();
+    requestObservation();
+}
+
+void GraphCanvasModel::setLive(bool live) {
+    if (live_ == live) return;
+    live_ = live;
+    ++report_revision_;
+    if (live_) requestObservation();
+}
+
+void GraphCanvasModel::setTimelineNode(std::string id) {
+    if (timeline_node_ == id) return;
+    timeline_node_ = std::move(id);
+    clearTimeline();
+    // No revision bump: which node the strip follows is the strip's business,
+    // and nothing on the canvas is drawn differently for it. Bumping here
+    // would redraw the canvas on every selection -- including the selection a
+    // click on a pill makes, which would delete the editor that same click
+    // just opened.
+}
+
+void GraphCanvasModel::clearTimeline() {
+    timeline_.clear();
+    timeline_ports_.clear();
+}
+
+bool GraphCanvasModel::scrub(double time) {
+    if (!connected_ || scrubbing_) return false;
+    if (!std::isfinite(time)) return false;
+    scrubbing_ = true;
+    // O-1: a scrub is the clock plus one drawn frame. The order is the whole
+    // of the rule -- rendering before the time is set draws the old moment --
+    // so the two go out as one pair, in it. Neither takes the edit slot: a
+    // scrub is not a change to the document, and must not make the canvas
+    // look busy to an edit that is trying to land.
+    requests_.push_back({next_request_++, "set_time", Json{{"t", time}}});
+    scrub_render_ = next_request_++;
+    requests_.push_back({scrub_render_, "render_frame", Json::object()});
+    return true;
 }
 
 void GraphCanvasModel::poll() {
     if (!connected_) return;
     requestCatalog();
+    // Live is the only thing that reads on a clock. Off, the overlay follows
+    // the document, which is what it did before the switch existed.
+    if (live_) requestObservation();
     // An accepted edit owns the request slot until the engine says what became
     // of it. Nothing else may take that slot in the meantime.
     if (!pending_ && !ticket_.empty())
@@ -137,9 +249,15 @@ std::vector<InspectorRpcRequest> GraphCanvasModel::takeRpcRequests() {
 }
 
 void GraphCanvasModel::receiveRpcFailure(std::uint64_t id, std::string message) {
-    if (read_ && read_->id == id) {
-        const auto kind = read_->kind;
-        read_.reset();
+    if (scrubbing_ && scrub_render_ == id) {
+        scrubbing_ = false;
+        scrub_render_ = 0;
+        failure_ = {InspectorNoticeKind::Error, std::move(message)};
+        ++report_revision_;
+        return;
+    }
+    if (const auto pending = takeRead(id)) {
+        const auto kind = pending->kind;
         if (kind == RequestKind::Catalog) catalog_requested_ = false;
         // The canvas keeps standing: a report that did not arrive removes an
         // overlay, never the graph the document already described.
@@ -169,9 +287,17 @@ void GraphCanvasModel::receiveRpcFailure(std::uint64_t id, std::string message) 
 }
 
 void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json) {
-    if (read_ && read_->id == id) {
-        const auto pending = *read_;
-        read_.reset();
+    if (scrubbing_ && scrub_render_ == id) {
+        // The frame the scrub asked for has been drawn; what it produced is
+        // read back the ordinary way, on the read slots.
+        scrubbing_ = false;
+        scrub_render_ = 0;
+        requestObservation();
+        ++report_revision_;
+        return;
+    }
+    if (const auto slot = takeRead(id)) {
+        const auto pending = *slot;
         try {
             const auto response = Json::parse(json);
             if (response.contains("error")) {
@@ -194,6 +320,26 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                 operations_ = std::move(operations);
                 types_ = std::move(types);
                 catalog_received_ = true;
+            } else if (pending.kind == RequestKind::Status) {
+                status_time_ = response.value("time", 0.0);
+                status_received_ = true;
+                const auto animation = response.find("animation");
+                animation_available_ =
+                    animation != response.end() && animation->is_object() &&
+                    animation->value("available", false);
+                animation_sinks_ = animation_available_
+                                       ? animation->value("sinks", Json::array())
+                                       : Json::array();
+            } else if (pending.kind == RequestKind::NodeValues) {
+                // The reply names what it answered for. A scope change in
+                // flight means the answer in hand is about the other scope,
+                // and a value drawn against the wrong node list is worse than
+                // no value at all.
+                node_values_instance_ = text(response, "instance");
+                node_values_ = response.value("nodes", Json::array());
+                node_values_published_ = response.value("published", false);
+                node_values_received_ = true;
+                appendTimelineSample(response.value("frame", std::uint64_t{0}));
             } else if (text(response, "instance") == values_instance_) {
                 values_ = response.value("inputs", Json::array());
                 values_published_ = response.value("published", false);
@@ -278,8 +424,10 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         values_ = Json::array();
         values_received_ = false;
         values_published_ = false;
+        clearObservation();
         ++report_revision_;
         requestValues();
+        requestObservation();
     } catch (const std::exception &error) {
         failure_ = {InspectorNoticeKind::Error, error.what()};
         ++content_revision_;
@@ -299,11 +447,21 @@ std::vector<GraphCanvasScope> GraphCanvasModel::scopes() const {
 bool GraphCanvasModel::selectScope(std::string_view scope) {
     if (scope.empty()) {
         breadcrumb_ = {std::string{}};
+        enteredScope();
         return true;
     }
     if (!definitions_.contains(std::string{scope})) return false;
     breadcrumb_ = {std::string{}, std::string{scope}};
+    enteredScope();
     return true;
+}
+
+void GraphCanvasModel::enteredScope() {
+    // The scope decides which instance the node values answer for, so the one
+    // in hand is about the scope that was left.
+    clearObservation();
+    ++report_revision_;
+    requestObservation();
 }
 
 bool GraphCanvasModel::canEnterInstance(std::string_view node_id) const {
@@ -315,14 +473,26 @@ bool GraphCanvasModel::canEnterInstance(std::string_view node_id) const {
 
 bool GraphCanvasModel::enterInstance(std::string_view node_id) {
     if (!canEnterInstance(node_id)) return false;
-    breadcrumb_.push_back(
-        text(*findNode(currentScope(), node_id), "definition"));
+    // Descending into an instance is also a choice of whose values to watch:
+    // the definition body on screen belongs to the instance that was opened.
+    // The watch is set before the scope moves and the reads go out after, so
+    // one descent is one question rather than the root's and then the body's.
+    const auto *node = findNode(currentScope(), node_id);
+    const auto definition = text(*node, "definition");
+    const bool watch = currentScope().empty() &&
+                       node->find("owner") != node->end() &&
+                       values_instance_ != node_id;
+    if (watch) setWatchedInstance(std::string{node_id});
+    breadcrumb_.push_back(definition);
+    enteredScope();
+    if (watch) requestValues();
     return true;
 }
 
 bool GraphCanvasModel::leaveScope() {
     if (breadcrumb_.size() <= 1) return false;
     breadcrumb_.pop_back();
+    enteredScope();
     return true;
 }
 
@@ -341,6 +511,107 @@ const Json *GraphCanvasModel::findNode(std::string_view scope, std::string_view 
     for (const auto &node : *nodes)
         if (node.is_object() && std::string_view{text(node, "id")} == id) return &node;
     return nullptr;
+}
+
+const Json *GraphCanvasModel::nodeOutputs(std::string_view scope,
+                                          std::string_view id) const {
+    if (!node_values_received_ || !node_values_published_) return nullptr;
+    // The reply answers one question. If the scope on screen would ask a
+    // different one, the answer in hand is not about these nodes.
+    const auto expected = scope.empty() ? std::string{} : values_instance_;
+    if (node_values_instance_ != expected) return nullptr;
+    for (const auto &reported : node_values_) {
+        if (!reported.is_object()) continue;
+        if (std::string_view{text(reported, "node")} != id) continue;
+        const auto outputs = reported.find("outputs");
+        if (outputs == reported.end() || !outputs->is_object()) return nullptr;
+        return &*outputs;
+    }
+    return nullptr;
+}
+
+void GraphCanvasModel::appendTimelineSample(std::uint64_t frame) {
+    if (!live_ || timeline_node_.empty()) return;
+    const auto *outputs = nodeOutputs(currentScope(), timeline_node_);
+    if (outputs == nullptr) return;
+    // The port list is fixed by the first sample of a run: a line that changed
+    // which port it meant halfway along would be two lines drawn as one.
+    if (timeline_ports_.empty())
+        for (const auto &[port, value] : outputs->items()) {
+            if (!value.is_number()) continue;
+            if (timeline_ports_.size() >= timelineTraceLimit) break;
+            timeline_ports_.push_back(port);
+        }
+    if (timeline_ports_.empty()) return;
+
+    GraphCanvasTimelineSample sample;
+    sample.time = status_time_;
+    sample.frame = frame;
+    sample.values.reserve(timeline_ports_.size());
+    for (const auto &port : timeline_ports_) {
+        const auto found = outputs->find(port);
+        sample.values.push_back(found != outputs->end() && found->is_number()
+                                    ? found->get<double>()
+                                    : 0.0);
+    }
+    // The animation band, when the watched instance owns a sink. The phase and
+    // the transition are the two readings that mean anything on a time axis.
+    for (const auto &sink : animationSinks()) {
+        if (!sink.cursors.empty()) {
+            sample.has_phase = true;
+            sample.phase = sink.cursors.front().normalized_phase;
+        }
+        if (sink.transition_active) {
+            sample.has_progress = true;
+            sample.progress = sink.transition_progress;
+        }
+        break;
+    }
+    timeline_.push_back(std::move(sample));
+    if (timeline_.size() > timelineCapacity)
+        timeline_.erase(timeline_.begin(),
+                        timeline_.begin() +
+                            static_cast<std::ptrdiff_t>(timeline_.size() -
+                                                        timelineCapacity));
+}
+
+std::vector<GraphCanvasAnimationSink> GraphCanvasModel::animationSinks() const {
+    std::vector<GraphCanvasAnimationSink> found;
+    if (!animation_available_ || values_instance_.empty()) return found;
+    // The owner is the instance's, read off the document. An instance with no
+    // owner owns no sink, so there is nothing to match against and nothing to
+    // draw -- which is not the same as "the engine reported none".
+    const auto *instance = findNode({}, values_instance_);
+    if (instance == nullptr) return found;
+    const auto owner = instance->find("owner");
+    if (owner == instance->end() || !owner->is_object()) return found;
+    const auto scene = text(*owner, "scene");
+    const auto object = owner->value("object", std::uint64_t{0});
+    for (const auto &reported : animation_sinks_) {
+        if (!reported.is_object()) continue;
+        const auto sink_owner = reported.find("owner");
+        if (sink_owner == reported.end() || !sink_owner->is_object()) continue;
+        if (text(*sink_owner, "scene") != scene) continue;
+        if (sink_owner->value("object", std::uint64_t{0}) != object) continue;
+        GraphCanvasAnimationSink sink;
+        sink.node = text(reported, "node");
+        sink.source = text(reported, "source");
+        sink.state = text(reported, "state");
+        const auto transition = reported.find("transition");
+        if (transition != reported.end() && transition->is_object()) {
+            sink.transition_active = transition->value("active", false);
+            sink.transition_target = text(*transition, "target");
+            sink.transition_progress = transition->value("progress", 0.0);
+        }
+        for (const auto &cursor : reported.value("cursors", Json::array())) {
+            if (!cursor.is_object()) continue;
+            sink.cursors.push_back(GraphCanvasAnimationSink::Cursor{
+                text(cursor, "clip"), cursor.value("time_seconds", 0.0),
+                cursor.value("normalized_phase", 0.0)});
+        }
+        found.push_back(std::move(sink));
+    }
+    return found;
 }
 
 const Json *GraphCanvasModel::operation(std::string_view op) const {
@@ -525,6 +796,17 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
                         drawn.outputs.push_back(
                             GraphCanvasOutput{output.get<std::string>(), {}});
         }
+
+        // AG-3b: what the published generation left on the outputs. This is
+        // the one report that reaches a definition body, so it is applied in
+        // every scope rather than only to a root instance.
+        if (const auto *outputs = nodeOutputs(scope, drawn.id))
+            for (auto &output : drawn.outputs) {
+                const auto found = outputs->find(output.port);
+                if (found == outputs->end() || !found->is_number()) continue;
+                output.has_value = true;
+                output.value = found->get<double>();
+            }
         result.push_back(std::move(drawn));
     }
     return result;
@@ -814,6 +1096,12 @@ InspectorNotice GraphCanvasModel::notice() const {
     if (!values_instance_.empty() && values_received_ && !values_published_)
         return {InspectorNoticeKind::Information,
                 values_instance_ + " is not published: no drawn generation has fed its inputs."};
+    // The node values are a separate report and can be unpublished on their
+    // own -- a definition scope has no instance inputs to be unpublished.
+    if (!values_instance_.empty() && node_values_received_ && !node_values_published_)
+        return {InspectorNoticeKind::Information,
+                values_instance_ +
+                    " is not published: no drawn generation has left node values."};
     return {};
 }
 

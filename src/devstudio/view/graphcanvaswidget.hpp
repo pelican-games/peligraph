@@ -57,6 +57,10 @@ inline constexpr auto GraphCanvasNodeLabelItem = "graph_node_label";
 inline constexpr auto GraphCanvasNodeHeaderItem = "graph_node_header";
 inline constexpr auto GraphCanvasSocketItem = "graph_socket";
 inline constexpr auto GraphCanvasValuePillItem = "graph_value_pill";
+// AG-3b: what the published generation left on an output port. It is a band
+// and not a pill because it is not editable: a pill is a number the document
+// stores and a click opens, this is a reading of what came out.
+inline constexpr auto GraphCanvasValueBandItem = "graph_value_band";
 inline constexpr auto GraphCanvasEdgeItem = "graph_edge";
 inline constexpr auto GraphCanvasEdgeArrowItem = "graph_edge_arrow";
 inline constexpr auto GraphCanvasBreadcrumbItem = "graph_breadcrumb";
@@ -236,6 +240,9 @@ class GraphCanvasWidget final : public QWidget {
     ~GraphCanvasWidget() override;
 
     void refresh();
+    // One tick of the tab's own clock: what the 250 ms timer does, named so a
+    // test can be the clock instead of waiting for one.
+    void poll();
     // Show one node of the root document: the Inspector's "Open the source"
     // names a producer, and this is where it lands.
     bool revealNode(const QString &node);

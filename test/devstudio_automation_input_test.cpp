@@ -25,11 +25,14 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMouseEvent>
+#include <QComboBox>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QString>
 #include <QStringList>
 #include <QVBoxLayout>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
 #include <QWheelEvent>
 #include <QWidget>
 
@@ -144,6 +147,13 @@ struct Fixture {
     QAction *toggle = nullptr;
     QAction *disabled = nullptr;
     QAction *nested_ping = nullptr;
+    // AG-3b: the two shapes `select` reaches -- a tree of rows, and a combo
+    // whose entries live in a popup this surface cannot open.
+    QTreeWidget *tree = nullptr;
+    QComboBox *combo = nullptr;
+    QPushButton *locked = nullptr;
+    QStringList tree_selections;
+    QStringList combo_selections;
     int pings = 0;
     int nested_pings = 0;
 
@@ -160,6 +170,38 @@ struct Fixture {
         button->setObjectName(QStringLiteral("pelican.testRefresh"));
         button->setShortcut(QKeySequence{QStringLiteral("Ctrl+R")});
         layout->addWidget(button);
+        // A panel that is on screen but not yet usable: what `wait enabled`
+        // is for.
+        locked = new QPushButton(QStringLiteral("Attach..."), central);
+        locked->setObjectName(QStringLiteral("pelican.testAttach"));
+        locked->setEnabled(false);
+        layout->addWidget(locked);
+        // Two rows under one scene, the shape the Outliner has.
+        tree = new QTreeWidget(central);
+        tree->setObjectName(QStringLiteral("pelican.testOutliner"));
+        tree->setHeaderLabel(QStringLiteral("Scene / Object"));
+        auto *scene_row = new QTreeWidgetItem(
+            tree, QStringList{QStringLiteral("default_scene")});
+        new QTreeWidgetItem(scene_row, QStringList{QStringLiteral("Anchor")});
+        new QTreeWidgetItem(scene_row, QStringList{QStringLiteral("Camera")});
+        tree->expandAll();
+        QObject::connect(tree, &QTreeWidget::currentItemChanged,
+                         [this](QTreeWidgetItem *current, QTreeWidgetItem *) {
+                             tree_selections.push_back(
+                                 current == nullptr ? QString{}
+                                                    : current->text(0));
+                         });
+        layout->addWidget(tree);
+        combo = new QComboBox(central);
+        combo->setObjectName(QStringLiteral("pelican.testScopes"));
+        combo->addItem(QStringLiteral("root"), QString{});
+        combo->addItem(QStringLiteral("gain_curve"),
+                       QStringLiteral("gain_curve"));
+        QObject::connect(combo, &QComboBox::currentIndexChanged,
+                         [this](int index) {
+                             combo_selections.push_back(combo->itemText(index));
+                         });
+        layout->addWidget(combo);
         window.setCentralWidget(central);
 
         QMenu *tools = window.menuBar()->addMenu(QStringLiteral("&Tools"));
@@ -234,7 +276,7 @@ TEST_CASE("Q-1b: every Q-1b command is a name the surface answers to",
     Fixture fixture;
     const QStringList names = automationCommandNames();
     for (const char *added : {"wheel", "move", "press", "release", "action",
-                              "menu_list", "view_state"}) {
+                              "menu_list", "view_state", "select"}) {
         INFO("command " << added);
         CHECK(names.contains(QString::fromLatin1(added)));
     }
@@ -607,4 +649,112 @@ TEST_CASE("N-4: layout_stats reads what the placement achieved",
                      QStringLiteral("pelican.testRefresh")}});
     CHECK_FALSE(refused.ok);
     CHECK(refused.code == QStringLiteral("automation.bad_request@1"));
+}
+
+// --------------------------------------------------------------------------
+// AG-3b: picking a row, picking an entry, and waiting for a panel to be usable.
+
+TEST_CASE("AG-3b: select picks a row of a tree with a real click",
+          "[devstudio][automation][ag3b]") {
+    Fixture fixture;
+
+    const QJsonObject picked = fixture.result(
+        QStringLiteral("select"),
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("pelican.testOutliner")},
+                    {QStringLiteral("text"), QStringLiteral("Camera")}});
+    CHECK(picked.value(QStringLiteral("text")).toString() ==
+          QStringLiteral("Camera"));
+    // The view's own selection moved, through its own signal: everything
+    // watching a person's click sees exactly what it would have seen.
+    CHECK(picked.value(QStringLiteral("selected")).toBool());
+    REQUIRE(fixture.tree->currentItem() != nullptr);
+    CHECK(fixture.tree->currentItem()->text(0) == QStringLiteral("Camera"));
+    CHECK(fixture.tree_selections ==
+          QStringList{QStringLiteral("Camera")});
+
+    // `index` counts the rows the way a reader counts them down the panel,
+    // parents included, not the rows of one level.
+    const QJsonObject by_index = fixture.result(
+        QStringLiteral("select"),
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("pelican.testOutliner")},
+                    {QStringLiteral("index"), 1}});
+    CHECK(by_index.value(QStringLiteral("text")).toString() ==
+          QStringLiteral("Anchor"));
+
+    // A row this tree does not hold is refused by code, with the name in it.
+    const AutomationReply missing = fixture.run(
+        QStringLiteral("select"),
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("pelican.testOutliner")},
+                    {QStringLiteral("text"), QStringLiteral("Hero")}});
+    CHECK_FALSE(missing.ok);
+    CHECK(missing.code == QStringLiteral("automation.bad_request@1"));
+    CHECK(missing.message.contains(QStringLiteral("Hero")));
+}
+
+TEST_CASE("AG-3b: select picks a combo entry without opening its popup",
+          "[devstudio][automation][ag3b]") {
+    Fixture fixture;
+
+    const QJsonObject picked = fixture.result(
+        QStringLiteral("select"),
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("pelican.testScopes")},
+                    {QStringLiteral("text"), QStringLiteral("gain_curve")}});
+    CHECK(picked.value(QStringLiteral("index")).toInt() == 1);
+    CHECK(fixture.combo->currentText() == QStringLiteral("gain_curve"));
+    // The combo emitted its own currentIndexChanged, which is the signal a
+    // choice made in the popup emits: the receiving code cannot tell the two
+    // apart, and no modal event loop was entered to get here.
+    CHECK(fixture.combo_selections ==
+          QStringList{QStringLiteral("gain_curve")});
+
+    const AutomationReply missing = fixture.run(
+        QStringLiteral("select"),
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("pelican.testScopes")},
+                    {QStringLiteral("text"), QStringLiteral("nowhere")}});
+    CHECK_FALSE(missing.ok);
+    CHECK(missing.code == QStringLiteral("automation.bad_request@1"));
+
+    // Something that is neither is refused rather than silently doing nothing.
+    const AutomationReply wrong = fixture.run(
+        QStringLiteral("select"),
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("pelican.testRefresh")},
+                    {QStringLiteral("text"), QStringLiteral("Refresh")}});
+    CHECK_FALSE(wrong.ok);
+    CHECK(wrong.code == QStringLiteral("automation.bad_request@1"));
+}
+
+TEST_CASE("AG-3b: wait answers for whether a thing is usable, not only on screen",
+          "[devstudio][automation][ag3b]") {
+    Fixture fixture;
+
+    // On screen and switched off: the ordinary way a panel says "not yet".
+    const AutomationReply not_yet = fixture.run(
+        QStringLiteral("wait"),
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("pelican.testAttach")},
+                    {QStringLiteral("enabled"), true},
+                    {QStringLiteral("timeout_ms"), 50}});
+    CHECK_FALSE(not_yet.ok);
+    CHECK(not_yet.code == QStringLiteral("automation.wait_timeout@1"));
+    CHECK(not_yet.message.contains(QStringLiteral("enabled=false")));
+    // And it is on screen, so "visible" would have said yes and the scenario
+    // would have clicked a button that does nothing.
+    CHECK(fixture.result(
+              QStringLiteral("wait"),
+              QJsonObject{{QStringLiteral("name"),
+                           QStringLiteral("pelican.testAttach")},
+                          {QStringLiteral("visible"), true},
+                          {QStringLiteral("timeout_ms"), 50}})
+              .value(QStringLiteral("visible"))
+              .toBool());
+
+    fixture.locked->setEnabled(true);
+    QApplication::processEvents();
+    CHECK(fixture.result(
+              QStringLiteral("wait"),
+              QJsonObject{{QStringLiteral("name"),
+                           QStringLiteral("pelican.testAttach")},
+                          {QStringLiteral("enabled"), true},
+                          {QStringLiteral("timeout_ms"), 2000}})
+              .value(QStringLiteral("enabled"))
+              .toBool());
 }

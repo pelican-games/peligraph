@@ -144,11 +144,12 @@ window the desktop happens to have activated.
 | `key`          | `sequence` (`"Return"`, `"Ctrl+A"`), `name?`, `route?` (`widget` \| `window`) |
 | `type`         | `text`, `name?`, `select_all?` (default true)                 |
 | `text`         | `name`                                                        |
+| `select`       | `name`, and `text` (the row or entry as a person reads it) or `index` |
 | `action`       | `name` \| `text`, `menu?` -- fires one menu or toolbar entry  |
 | `menu_list`    | `name?` (scope to one widget), `pattern?` -- the entries, with `text`, `shortcut`, `enabled`, `checked`, `menu` |
 | `view_state`   | `name` -- a QGraphicsView's `scale`, `transform`, `center`, `scroll`, `visible_scene`, `viewport` |
 | `layout_stats` | `name` -- what the automatic placement achieved on the scene a QGraphicsView shows: `crossings`, `overlaps`, `nodes`, `reversed_edges` |
-| `wait`         | `name`, one of `visible` / `text` / `contains` / `missing`, `timeout_ms?` |
+| `wait`         | `name`, one of `visible` / `enabled` / `text` / `contains` / `missing`, `timeout_ms?` |
 | `wait_engine`  | `timeout_ms?` -- until the viewport answers editor RPC         |
 | `rpc`          | `method`, `params?`, `timeout_ms?` -- straight to the engine   |
 | `open_project` | `dir`                                                         |
@@ -170,6 +171,27 @@ One example of each of the kinds Q-1b added:
     {"cmd": "view_state", "name": "pelican.graphCanvasView"}
     {"cmd": "key", "name": "pelican.graphCanvasView", "sequence": "Ctrl+T", "route": "window"}
 
+And the two AG-3b added:
+
+    {"cmd": "select", "name": "pelican.outliner", "text": "Camera"}
+    {"cmd": "wait",   "name": "pelican.graphAttach", "enabled": true, "timeout_ms": 60000}
+
+`select` picks a row of a list or tree, or an entry of a combo box. For an item
+view it is a real click: the row's own rectangle is asked for and the press
+lands in it, so the selection model, its signals and everything watching them
+run exactly as they do under a finger. For a combo box it cannot be -- the
+entries live in a popup and a popup is a modal event loop, which a command that
+owes a reply on this line cannot enter, the same reason `action` fires a menu
+entry rather than opening the menu -- so it sets the current index, which emits
+the combo's own `currentIndexChanged`, the signal a popup choice emits too.
+
+`enabled` on `wait` is how a scenario waits for a panel to be ready rather than
+guessing. A button that is on screen but switched off is the ordinary way a
+panel says "not yet": `pelican.graphAttach` is there from the first frame and
+only becomes usable once the Inspector has an owner and the attachment model
+has a digest. A scenario that clicks it early does nothing and fails three
+steps later, naming the wrong thing.
+
 Error codes: `automation.widget_missing@1`, `automation.bad_request@1`,
 `automation.unknown_command@1`, `automation.engine_not_ready@1`,
 `automation.rpc_failed@1`, `automation.wait_timeout@1`,
@@ -188,7 +210,10 @@ Three things worth knowing before writing a scenario:
 * `text` on a value pill answers with the stored value the document holds
   (`"2.5"`), not the glyph the canvas draws (`"2.5 · stored"`): the pill files
   the value under a data role, and that is what a scenario asking for a value
-  means.
+  means. A `graph_value_band` (AG-3b, on an *output* row) answers the same way,
+  and it is not a pill: a pill is a number the document stores and a click
+  opens, a band is a reading of what the published generation produced, and
+  clicking one opens nothing.
 * `screenshot` in the default `widget` mode renders the Qt widget tree, which
   does not include the embedded engine window (a foreign child window). Use
   `"mode": "screen"` when the picture has to show what the engine drew; that

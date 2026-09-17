@@ -52,6 +52,11 @@ struct GraphCanvasPort {
 struct GraphCanvasOutput {
     std::string port;
     std::string type;
+    // What the published generation's evaluation left on this port, read from
+    // get_graph_node_values. Unlike the input side, this reaches every scope:
+    // the node values answer for a definition body as well as for the root.
+    bool has_value = false;
+    double value = 0;
 
     bool operator==(const GraphCanvasOutput &) const = default;
 };
@@ -113,6 +118,45 @@ struct GraphCanvasCatalogEntry {
     bool operator==(const GraphCanvasCatalogEntry &) const = default;
 };
 
+// One animation sink `get_status.animation` reported for the owner the watched
+// instance names. Read-only: the Timeline draws it beside the value traces so
+// "what the pose side is doing" and "what the values partition produced" are
+// on one axis without either pretending to be the other.
+struct GraphCanvasAnimationSink {
+    struct Cursor {
+        std::string clip;
+        double time_seconds = 0;
+        double normalized_phase = 0;
+    };
+
+    std::string node;
+    // "pose_graph_clip" | "pose_graph_state_machine" | "component_graph" |
+    // "component_clip".
+    std::string source;
+    std::string state;
+    bool transition_active = false;
+    std::string transition_target;
+    double transition_progress = 0;
+    std::vector<Cursor> cursors;
+};
+
+// One reading the Timeline kept. The buffer is the client's: AG-3a publishes a
+// snapshot of the current generation and no history at all, so a strip over
+// time can only be what this session watched go by.
+struct GraphCanvasTimelineSample {
+    // get_status.time -- scene time, which is the Timeline's x axis.
+    double time = 0;
+    // The published generation the values came from, so a sample taken while
+    // the engine was paused is still distinguishable from a fresh one.
+    std::uint64_t frame = 0;
+    // One per port of timelinePorts(), in that order.
+    std::vector<double> values;
+    bool has_phase = false;
+    double phase = 0;
+    bool has_progress = false;
+    double progress = 0;
+};
+
 // Reads the common graph for a read-only node canvas. Qt-independent, in the
 // same request/read two-slot shape as GraphAttachmentModel: the caller drains
 // takeRpcRequests(), sends them over whatever transport it has, and feeds the
@@ -121,7 +165,15 @@ struct GraphCanvasCatalogEntry {
 // It only ever asks for the three reads the canvas can justify:
 // get_graph_instances, get_graph_catalog and get_graph_values.
 class GraphCanvasModel {
-    enum class RequestKind : std::uint8_t { Context, Catalog, Values, Submit, Result };
+    enum class RequestKind : std::uint8_t {
+        Context,
+        Catalog,
+        Values,
+        NodeValues,
+        Status,
+        Submit,
+        Result,
+    };
     struct PendingRequest {
         std::uint64_t id = 0;
         RequestKind kind = RequestKind::Context;
@@ -133,7 +185,11 @@ class GraphCanvasModel {
     // The document read and the reports run on separate slots: asking for
     // values never delays the next refresh, and a stale answer is dropped.
     std::optional<PendingRequest> pending_;
-    std::optional<PendingRequest> read_;
+    // One outstanding read per kind. They are separate slots for the same
+    // reason the document and the reports are: a Live tick asks two questions
+    // at once, and neither may cancel the other's answer. Re-asking a kind
+    // replaces its slot, which is how a stale reply is dropped.
+    std::vector<PendingRequest> reads_;
 
     std::string digest_;
     nlohmann::json nodes_ = nlohmann::json::array();
@@ -154,6 +210,33 @@ class GraphCanvasModel {
     bool values_published_ = false;
     nlohmann::json values_ = nlohmann::json::array();
 
+    // AG-3b. The node values overlay: the same question in both scopes, with
+    // the scope deciding which instance it is asked about.
+    bool live_ = false;
+    // The instance the reply in hand answers for. The root scope's question is
+    // the empty one, so this is compared against nodeValuesInstance() rather
+    // than against the watched instance.
+    std::string node_values_instance_;
+    bool node_values_received_ = false;
+    bool node_values_published_ = false;
+    nlohmann::json node_values_ = nlohmann::json::array();
+
+    bool status_received_ = false;
+    double status_time_ = 0;
+    bool animation_available_ = false;
+    nlohmann::json animation_sinks_ = nlohmann::json::array();
+
+    // The Timeline's ring buffer. Nothing in the engine keeps a history, so a
+    // strip over time is exactly what this session saw pass.
+    std::string timeline_node_;
+    std::vector<std::string> timeline_ports_;
+    std::vector<GraphCanvasTimelineSample> timeline_;
+    // One scrub at a time: the second set_time of a drag would race the first
+    // render_frame, and the value read back would belong to neither. The
+    // render is what ends it, so its id is the one that has to be watched for.
+    bool scrubbing_ = false;
+    std::uint64_t scrub_render_ = 0;
+
     InspectorNotice failure_;
     // What the last edit is doing or did. Kept apart from failure_ so a failed
     // report never reads as a failed edit, and the other way round.
@@ -168,8 +251,32 @@ class GraphCanvasModel {
 
     void request(RequestKind kind, std::string method, nlohmann::json params);
     void read(RequestKind kind, std::string method, nlohmann::json params);
+    // Take the pending read this id belongs to, if any. A reply whose slot has
+    // already been replaced by a newer question of the same kind is dropped.
+    std::optional<PendingRequest> takeRead(std::uint64_t id);
     void clearContext();
     void requestValues();
+    // The pair of reads the observation overlay runs on: the node values for
+    // the scope on screen, and the status the Timeline's axis and its
+    // animation band come from.
+    void requestObservation();
+    void clearObservation();
+    // Point the overlay at an instance without asking anything yet: descending
+    // into one changes both the watch and the scope, and asking in between
+    // would send a question about the scope being left.
+    void setWatchedInstance(std::string instance);
+    // The scope on screen changed: the overlay in hand is about the one that
+    // was left, and the question has to be asked again.
+    void enteredScope();
+    void appendTimelineSample(std::uint64_t frame);
+    // The `instance` the current scope's node values have to be asked for: the
+    // empty question for the root document, the watched instance for a
+    // definition body.
+    [[nodiscard]] std::string nodeValuesInstance() const;
+    // The outputs object get_graph_node_values reported for one node of the
+    // scope on screen, or null.
+    const nlohmann::json *nodeOutputs(std::string_view scope,
+                                      std::string_view id) const;
     const nlohmann::json *scopeNodes(std::string_view scope) const;
     const nlohmann::json *operation(std::string_view op) const;
     // The type leaving one port of a definition, followed through whatever the
@@ -237,6 +344,60 @@ class GraphCanvasModel {
         return values_received_ && values_published_;
     }
     bool valuesReceived() const noexcept { return values_received_; }
+
+    // --- AG-3b: observation.
+
+    // Live follows the running engine: while it is on, every poll asks the
+    // node values and the status again. Off, the overlay is read when the
+    // document moves and when the scope or the watched instance changes --
+    // which is what it did before this switch existed.
+    void setLive(bool live);
+    [[nodiscard]] bool live() const noexcept { return live_; }
+
+    [[nodiscard]] bool nodeValuesReceived() const noexcept {
+        return node_values_received_;
+    }
+    [[nodiscard]] bool nodeValuesPublished() const noexcept {
+        return node_values_received_ && node_values_published_;
+    }
+    // What the status said, for the Timeline's axis.
+    [[nodiscard]] bool statusReceived() const noexcept { return status_received_; }
+    [[nodiscard]] double statusTime() const noexcept { return status_time_; }
+    [[nodiscard]] bool animationAvailable() const noexcept {
+        return animation_available_;
+    }
+    // The sinks whose owner is the owner the watched instance names. An
+    // instance with no owner, or a status with no matching sink, answers with
+    // nothing: a band over the wrong object's animation is worse than no band.
+    [[nodiscard]] std::vector<GraphCanvasAnimationSink> animationSinks() const;
+
+    // Which node the Timeline follows. Its output ports are the traces, up to
+    // four of them; naming a different node starts the buffer again, because a
+    // strip whose lines changed meaning halfway along says nothing.
+    void setTimelineNode(std::string id);
+    [[nodiscard]] const std::string &timelineNode() const noexcept {
+        return timeline_node_;
+    }
+    [[nodiscard]] const std::vector<std::string> &timelinePorts() const noexcept {
+        return timeline_ports_;
+    }
+    [[nodiscard]] const std::vector<GraphCanvasTimelineSample> &
+    timelineSamples() const noexcept {
+        return timeline_;
+    }
+    void clearTimeline();
+    // How many readings the strip keeps. At the Live rate (one poll, 250 ms)
+    // this is ten minutes of scene time.
+    static constexpr std::size_t timelineCapacity = 2400;
+    // At most four lines: a strip with more of them is a wall, and the node
+    // that needed five wanted a graph of its own.
+    static constexpr std::size_t timelineTraceLimit = 4;
+
+    // Scrub: O-1's reading of "go to a time" -- set the clock, draw one frame,
+    // read the values back. Two writes and the pair of reads, in that order,
+    // and never two scrubs at once.
+    bool scrub(double time);
+    [[nodiscard]] bool scrubbing() const noexcept { return scrubbing_; }
 
     bool catalogReceived() const noexcept { return catalog_received_; }
     // The catalog's schema for one semantic type, or null when the catalog
