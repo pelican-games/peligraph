@@ -2528,6 +2528,9 @@ target_compile_definitions(pelican_test_renderconfigeditor_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
 )
 
+pelican_define_test(renderconfigtransactionreplace_test GROUP render_pipeline
+                    pelican_core)
+
 pelican_define_test(renderpipeline_resolve_test GROUP render_pipeline pelican_core)
 pelican_define_test(rendercompilerprogram_test GROUP render_pipeline pelican_core)
 target_compile_definitions(pelican_test_rendercompilerprogram_test PRIVATE

@@ -1,13 +1,31 @@
 #include "renderconfigtransaction.hpp"
 
+#include "../log.hpp"
+
 #include <algorithm>
+#include <chrono>
+#include <ctime>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <system_error>
 
 #ifdef _WIN32
 #include <Windows.h>
+
+#include <cstddef>
+#include <cstring>
+
+// Windows 10 RS1 named these. Spell out the values when the SDK in use
+// predates them, so the file still compiles and the call simply fails with
+// ERROR_INVALID_PARAMETER at runtime, which takes the named fallback below.
+#ifndef FILE_RENAME_FLAG_REPLACE_IF_EXISTS
+#define FILE_RENAME_FLAG_REPLACE_IF_EXISTS 0x00000001
+#endif
+#ifndef FILE_RENAME_FLAG_POSIX_SEMANTICS
+#define FILE_RENAME_FLAG_POSIX_SEMANTICS 0x00000002
+#endif
 #endif
 
 namespace Pelican {
@@ -44,6 +62,141 @@ void writeBytes(const std::filesystem::path &path, std::string_view bytes) {
     }
 }
 
+std::mutex &routeMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+RenderConfigAtomicReplaceRoutes &routeState() {
+    static RenderConfigAtomicReplaceRoutes state;
+    return state;
+}
+
+void notePosixRename() {
+    const std::lock_guard<std::mutex> guard{routeMutex()};
+    ++routeState().posix_renames;
+}
+
+void noteLegacyFallback(const std::filesystem::path &destination,
+                        const std::string &reason) {
+    {
+        const std::lock_guard<std::mutex> guard{routeMutex()};
+        auto &state = routeState();
+        ++state.legacy_fallbacks;
+        state.last_fallback_reason = reason;
+    }
+    if (logger != nullptr) {
+        LOG_WARNING(logger,
+                    "render authoring atomic replace fell back to MoveFileExW "
+                    "for {}: {}",
+                    destination.string(), reason);
+    }
+}
+
+#ifdef _WIN32
+std::string systemErrorMessage(DWORD code) {
+    const std::error_code error{static_cast<int>(code),
+                                std::system_category()};
+    return error.message() + " (" + std::to_string(code) + ")";
+}
+
+// A sharing handle another process holds may go away on its own.
+bool isTransientReplaceError(DWORD code) {
+    return code == ERROR_ACCESS_DENIED || code == ERROR_SHARING_VIOLATION ||
+           code == ERROR_LOCK_VIOLATION;
+}
+
+// FileRenameInfoEx is a Windows 10 RS1 information class that a pre-RS1 kernel
+// and a filesystem that does not implement it reject outright. These are the
+// answers that mean "this route does not exist here", not "this replacement
+// failed".
+bool isUnsupportedInformationClass(DWORD code) {
+    return code == ERROR_INVALID_PARAMETER || code == ERROR_NOT_SUPPORTED ||
+           code == ERROR_INVALID_FUNCTION || code == ERROR_CALL_NOT_IMPLEMENTED;
+}
+
+// Replace `destination` with `source` in one directory operation that
+// supersedes a destination another process still holds open.
+//
+// MoveFileExW(MOVEFILE_REPLACE_EXISTING) cannot do that. A real-time scanner
+// opens the file it is inspecting with FILE_SHARE_READ | FILE_SHARE_WRITE |
+// FILE_SHARE_DELETE -- sharing everything, precisely so it does not break the
+// application -- and the classic rename still refuses to supersede a target
+// that has any open handle, returning ERROR_ACCESS_DENIED for as long as that
+// handle lives. POSIX semantics changes that answer: the link is dropped from
+// the directory immediately, the superseded file stays alive under its open
+// handles, and later openers see the new file. It does not bypass the share
+// mode -- a holder that withheld FILE_SHARE_DELETE still yields
+// ERROR_SHARING_VIOLATION -- so the retry loop around this call stays.
+// "replaces a manifest a real-time scanner holds open" measures both halves.
+//
+// This does NOT close the intermittent "Access is denied" on manifest.json.
+// An interleaved A/B of the two routes under a saturated scanner (704 runs of
+// the same multi-section editor test each) failed 36 times on MoveFileExW and
+// 24 times on this route, always ERROR_ACCESS_DENIED on the destination after
+// the full retry window. Whatever is left is a second cause, and it is not a
+// memory-mapped destination (POSIX rename supersedes one of those) nor a
+// delete-pending one. The structural answer was to stop superseding a live
+// file for the transaction's own decision at all: the committed marker is now
+// a separate name published by linkExclusive below, manifest.json is written
+// once and never replaced, and the remaining callers of this route replace
+// authored documents rather than transaction metadata.
+bool posixReplace(const std::filesystem::path &source,
+                  const std::filesystem::path &destination,
+                  DWORD &last_error, bool &staged_open_failed) {
+    // Ask for exactly what a rename needs and nothing more. MoveFileExW opens
+    // its source with DELETE | SYNCHRONIZE, so this open cannot be refused
+    // anywhere that one would have succeeded -- which matters when the handle
+    // a scanner holds is on the staged file rather than on the destination.
+    // Widening this (FILE_WRITE_DATA, to flush the staged bytes and recover
+    // what MOVEFILE_WRITE_THROUGH stood for) would trade that guarantee away.
+    // The sharing flags are the other direction: granting all three only makes
+    // this open tolerate handles other processes already hold.
+    const HANDLE handle = CreateFileW(
+        source.c_str(), DELETE | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        // The staged file, not the destination. Say which, because the two
+        // read identically in a failure message and lead to different causes.
+        last_error = GetLastError();
+        staged_open_failed = true;
+        return false;
+    }
+
+    // FileRenameInfoEx wants a fully qualified target: RootDirectory is null,
+    // so a relative path would be resolved against nothing.
+    std::error_code absolute_error;
+    const auto target_path =
+        destination.is_absolute()
+            ? destination
+            : std::filesystem::absolute(destination, absolute_error);
+    if (absolute_error) {
+        CloseHandle(handle);
+        last_error = ERROR_BAD_PATHNAME;
+        return false;
+    }
+    const std::wstring target = target_path.wstring();
+    const std::size_t name_bytes = target.size() * sizeof(wchar_t);
+    std::vector<std::byte> storage(sizeof(FILE_RENAME_INFO) + name_bytes +
+                                   sizeof(wchar_t));
+    auto *info = reinterpret_cast<FILE_RENAME_INFO *>(storage.data());
+    info->Flags =
+        FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
+    info->RootDirectory = nullptr;
+    info->FileNameLength = static_cast<DWORD>(name_bytes);
+    std::memcpy(info->FileName, target.c_str(),
+                name_bytes + sizeof(wchar_t));
+
+    const BOOL renamed = SetFileInformationByHandle(
+        handle, FileRenameInfoEx, info,
+        static_cast<DWORD>(storage.size()));
+    if (!renamed) last_error = GetLastError();
+    CloseHandle(handle);
+    return renamed != FALSE;
+}
+#endif
+
 void atomicReplace(const std::filesystem::path &source,
                    const std::filesystem::path &destination,
                    std::string_view expected_digest = {}) {
@@ -52,7 +205,10 @@ void atomicReplace(const std::filesystem::path &source,
     // staged JSON file for longer than two seconds. Keep rechecking the CAS on
     // every attempt, but allow that bounded sharing lock up to ten seconds.
     constexpr unsigned int retry_count = 5000;
+    bool posix_available = true;
+    std::string fallback_reason;
     DWORD last_error = ERROR_SUCCESS;
+    const char *last_route = "FileRenameInfoEx";
     for (unsigned int attempt = 0; attempt < retry_count; ++attempt) {
         if (!expected_digest.empty()) {
             std::error_code state_error;
@@ -66,27 +222,58 @@ void atomicReplace(const std::filesystem::path &source,
                     destination.string()};
             }
         }
+        if (posix_available) {
+            DWORD posix_error = ERROR_SUCCESS;
+            bool staged_open_failed = false;
+            if (posixReplace(source, destination, posix_error,
+                             staged_open_failed)) {
+                notePosixRename();
+                return;
+            }
+            last_error = posix_error;
+            last_route = staged_open_failed
+                             ? "opening the staged file for rename"
+                             : "FileRenameInfoEx";
+            if (isTransientReplaceError(posix_error)) {
+                // A holder that withheld FILE_SHARE_DELETE. MoveFileExW cannot
+                // get past that either, so keep retrying this route rather
+                // than reporting a fallback that would not help.
+                Sleep(2);
+                continue;
+            }
+            // Anything else means this route is not usable here. Say so once,
+            // by name, and finish the replacement the old way.
+            posix_available = false;
+            fallback_reason =
+                (staged_open_failed
+                     ? "could not open the staged file for a POSIX rename: "
+                 : isUnsupportedInformationClass(posix_error)
+                     ? "FileRenameInfoEx is unavailable on this Windows or "
+                       "filesystem: "
+                     : "POSIX rename failed: ") +
+                systemErrorMessage(posix_error);
+        }
         if (MoveFileExW(source.c_str(), destination.c_str(),
                         MOVEFILE_REPLACE_EXISTING |
                             MOVEFILE_WRITE_THROUGH)) {
+            noteLegacyFallback(destination, fallback_reason);
             return;
         }
         last_error = GetLastError();
-        if (last_error != ERROR_ACCESS_DENIED &&
-            last_error != ERROR_SHARING_VIOLATION &&
-            last_error != ERROR_LOCK_VIOLATION) {
-            break;
-        }
+        last_route = "MoveFileExW";
+        if (!isTransientReplaceError(last_error)) break;
         // File watchers and virus scanners can briefly retain a sharing
         // handle after preflight. Rechecking the digest on every attempt
         // preserves the destination CAS while tolerating that transient.
         Sleep(2);
     }
-    const std::error_code error{static_cast<int>(last_error),
-                                std::system_category()};
+    std::string detail = systemErrorMessage(last_error);
+    if (!fallback_reason.empty()) {
+        detail += " [after fallback: " + fallback_reason + "]";
+    }
     throw std::runtime_error(
         "atomic render authoring replace failed for " +
-        destination.string() + ": " + error.message());
+        destination.string() + " via " + last_route + ": " + detail);
 #else
     std::error_code error;
     std::filesystem::rename(source, destination, error);
@@ -94,11 +281,26 @@ void atomicReplace(const std::filesystem::path &source,
         throw std::runtime_error("atomic render authoring replace failed: " +
                                  error.message());
     }
+    // rename(2) already has the semantics the Windows route had to ask for.
+    notePosixRename();
 #endif
 }
 
-void atomicCreate(const std::filesystem::path &source,
-                  const std::filesystem::path &destination) {
+// Create-if-absent, not replace. create_hard_link is the only Win32 primitive
+// that publishes a name and fails when it is already taken, in one operation:
+// it is the exclusive-create half of this transaction, so a destination that
+// appeared behind the editor's back is reported as an external modification
+// instead of being overwritten. A rename cannot express that -- neither
+// MoveFileExW without MOVEFILE_REPLACE_EXISTING (it is not atomic against a
+// concurrent creator on every filesystem) nor a POSIX rename, which replaces
+// by definition. Nothing is copied; only a directory entry appears.
+//
+// Because it never supersedes a live file, it also never has to ask the
+// question the replace route keeps losing under a saturated scanner: there is
+// no destination handle to break. That is why the transaction's own durable
+// decision is published through this primitive and not through a rename.
+void linkExclusive(const std::filesystem::path &source,
+                   const std::filesystem::path &destination) {
     std::error_code error;
     std::filesystem::create_hard_link(source, destination, error);
     if (error) {
@@ -106,6 +308,15 @@ void atomicCreate(const std::filesystem::path &source,
             "render authoring create destination is no longer missing: " +
             destination.string()};
     }
+}
+
+// linkExclusive plus the staging name's removal, for a caller that has not yet
+// made a durable decision and may still roll back: a staging file left behind
+// here would be a leak, so the failure is reported.
+void atomicCreate(const std::filesystem::path &source,
+                  const std::filesystem::path &destination) {
+    linkExclusive(source, destination);
+    std::error_code error;
     std::filesystem::remove(source, error);
     if (error) {
         throw std::runtime_error(
@@ -193,16 +404,103 @@ void requireExpectedState(const RenderConfigCandidateDocument &document) {
     }
 }
 
-void writeManifest(const std::filesystem::path &directory, const Json &manifest,
-                   bool replace_existing) {
+// The name of the transaction's durable decision. Its presence -- not a field
+// inside manifest.json -- is what makes a commit committed.
+constexpr const char *committedMarkerName = "committed";
+
+std::filesystem::path committedMarkerPath(
+    const std::filesystem::path &directory) {
+    return directory / committedMarkerName;
+}
+
+bool hasCommittedMarker(const std::filesystem::path &directory) {
+    std::error_code error;
+    const bool present =
+        std::filesystem::is_regular_file(committedMarkerPath(directory), error);
+    return present && !error;
+}
+
+// manifest.json is written exactly once, by exclusive create, and is never
+// superseded afterwards. Returns the digest of the bytes that were published,
+// which is what the committed marker binds itself to.
+std::string writeManifest(const std::filesystem::path &directory,
+                          const Json &manifest) {
     const auto destination = directory / "manifest.json";
     const auto temporary = directory / "manifest.next";
-    writeBytes(temporary, manifest.dump(2) + "\n");
-    if (replace_existing) {
-        atomicReplace(temporary, destination);
-    } else {
-        atomicCreate(temporary, destination);
+    const auto bytes = manifest.dump(2) + "\n";
+    writeBytes(temporary, bytes);
+    atomicCreate(temporary, destination);
+    return renderConfigSourceDigest(bytes);
+}
+
+std::string utcTimestamp() {
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t raw = std::chrono::system_clock::to_time_t(now);
+    std::tm utc{};
+#ifdef _WIN32
+    gmtime_s(&utc, &raw);
+#else
+    gmtime_r(&raw, &utc);
+#endif
+    char buffer[32] = {};
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &utc);
+    return buffer;
+}
+
+// The durable decision, published as a name that did not exist before. It
+// binds itself to the prepared manifest by digest, so a marker that belongs to
+// a different manifest is a named rejection at recovery rather than a silent
+// rollback of work that was already committed.
+//
+// The staging file's removal is deliberately best-effort here: once the link
+// exists the transaction is committed, and no failure after that point may
+// re-enter the prepared-state rollback path. The whole directory is removed
+// next anyway, and recovery removes it if that did not happen.
+void publishCommittedMarker(const std::filesystem::path &directory,
+                            std::string_view manifest_digest) {
+    const Json marker{
+        {"schema", "pelican.render_authoring_transaction_committed"},
+        {"version", 1},
+        {"manifest_digest", std::string{manifest_digest}},
+        {"committed_at", utcTimestamp()},
+    };
+    const auto temporary = directory / "committed.next";
+    writeBytes(temporary, marker.dump(2) + "\n");
+    linkExclusive(temporary, committedMarkerPath(directory));
+    std::error_code ignored;
+    std::filesystem::remove(temporary, ignored);
+}
+
+enum class TransactionDecision { prepared, committed };
+
+// What a transaction directory decided, read from disk. The marker answers
+// first; a manifest that still carries the superseded-in-place `status:
+// "committed"` of the previous format is read -- and only read -- so a
+// directory written before this change still recovers.
+TransactionDecision transactionDecision(
+    const std::filesystem::path &directory, const Json &manifest,
+    std::string_view manifest_bytes) {
+    if (hasCommittedMarker(directory)) {
+        const auto marker =
+            Json::parse(readBytes(committedMarkerPath(directory)));
+        const auto recorded =
+            marker.value("manifest_digest", std::string{});
+        const auto actual = renderConfigSourceDigest(manifest_bytes);
+        if (recorded != actual) {
+            throw RenderConfigExternalModification{
+                "render_authoring_manifest_mismatch@1: the committed marker in " +
+                directory.string() + " was written for manifest digest " +
+                recorded + " but manifest.json now digests " + actual};
+        }
+        return TransactionDecision::committed;
     }
+    const auto status = manifest.value("status", std::string{});
+    if (status == "committed") return TransactionDecision::committed;
+    if (status != "prepared") {
+        throw std::runtime_error(
+            "render authoring recovery manifest has unknown status");
+    }
+    return TransactionDecision::prepared;
 }
 
 struct RecoveryEntry {
@@ -251,6 +549,13 @@ std::vector<RecoveryEntry> recoveryEntries(
     return result;
 }
 
+// One of the two remaining replace routes, and the only one left that carries
+// a transaction outcome. It cannot be an exclusive create: rollback puts an
+// authored document that still exists back to its previous bytes, and there is
+// no free name to take. What it restores is content, not the decision -- the
+// decision was already made by the absence of the committed marker -- so an
+// intermittent failure here is reported and retried by the next recovery, not
+// silently reinterpreted.
 void restoreBytes(const std::filesystem::path &directory,
                   const std::filesystem::path &destination,
                   std::string_view bytes, std::size_t index,
@@ -354,10 +659,22 @@ void removeTransactionDirectory(const std::filesystem::path &directory) {
 #else
     constexpr unsigned int retry_count = 1;
 #endif
+    // Order matters, and this is the order. A removal that stops halfway must
+    // not leave a prepared manifest standing without its committed marker:
+    // recovery reads exactly that pair as a transaction to roll back, and
+    // would undo work that is already durable. The directory is enumerated in
+    // collation order, which puts `committed` before `manifest.json` -- the
+    // wrong one first -- and manifest.json is the entry a scanner is most
+    // likely to be holding, so that residue is the likely one, not a corner.
+    // Drop manifest.json first and the worst residue means nothing at all.
+    const auto manifest = directory / "manifest.json";
     for (unsigned int attempt = 0; attempt < retry_count; ++attempt) {
         error.clear();
-        std::filesystem::remove_all(directory, error);
-        if (!error) return;
+        std::filesystem::remove(manifest, error);
+        if (!error) {
+            std::filesystem::remove_all(directory, error);
+            if (!error) return;
+        }
 #ifdef _WIN32
         if (error.value() != ERROR_ACCESS_DENIED &&
             error.value() != ERROR_SHARING_VIOLATION &&
@@ -378,6 +695,17 @@ void removeTransactionDirectory(const std::filesystem::path &directory) {
 std::filesystem::path renderConfigTransactionDirectory(
     const std::filesystem::path &project_root) {
     return project_root / ".pelican" / "render-authoring.transaction";
+}
+
+RenderConfigAtomicReplaceRoutes renderConfigAtomicReplaceRoutesForTesting() {
+    const std::lock_guard<std::mutex> guard{routeMutex()};
+    return routeState();
+}
+
+void renderConfigAtomicReplaceForTesting(
+    const std::filesystem::path &source,
+    const std::filesystem::path &destination) {
+    atomicReplace(source, destination);
 }
 
 RenderConfigDocumentCommitReceipt commitRenderConfigCandidateDocuments(
@@ -401,11 +729,17 @@ RenderConfigDocumentCommitReceipt commitRenderConfigCandidateDocuments(
         }
         const auto existing_manifest =
             existing_directory / "manifest.json";
-        if (std::filesystem::is_regular_file(existing_manifest,
-                                             existing_error) &&
-            !existing_error &&
-            Json::parse(readBytes(existing_manifest))
-                    .value("status", std::string{}) == "committed") {
+        const bool has_manifest = std::filesystem::is_regular_file(
+                                      existing_manifest, existing_error) &&
+                                  !existing_error;
+        // The marker is the decision; the manifest's own status is read only
+        // for a directory written by the previous format. Recovery, not this
+        // guard, verifies the marker's digest, so a mismatch surfaces here by
+        // its name rather than as "another transaction is active".
+        if (has_manifest &&
+            (hasCommittedMarker(existing_directory) ||
+             Json::parse(readBytes(existing_manifest))
+                     .value("status", std::string{}) == "committed")) {
             recoverRenderConfigDocumentTransaction(project_root);
         } else {
             throw std::runtime_error(
@@ -522,7 +856,7 @@ RenderConfigDocumentCommitReceipt commitRenderConfigCandidateDocuments(
         for (const auto &document : documents.documents()) {
             requireExpectedState(document);
         }
-        writeManifest(directory, manifest, false);
+        const auto manifest_digest = writeManifest(directory, manifest);
 
         for (const auto &missing : missing_directories) {
             if (!std::filesystem::create_directory(missing, error) && error) {
@@ -532,6 +866,11 @@ RenderConfigDocumentCommitReceipt commitRenderConfigCandidateDocuments(
             }
         }
 
+        // Authored documents, not transaction metadata. A `replace` operation
+        // is a replacement by definition -- the user's file exists and has to
+        // end up holding other bytes -- so this is the one place in the commit
+        // path that still supersedes a live file, and a failure here is still
+        // a rollback because the decision has not been made yet.
         for (std::size_t index = 0; index < changed.size(); ++index) {
             const auto &document = *changed[index].document;
             requireExpectedState(document);
@@ -572,9 +911,21 @@ RenderConfigDocumentCommitReceipt commitRenderConfigCandidateDocuments(
         }
         // Complete every potentially-throwing receipt allocation before the
         // durable decision. Once this marker is visible, no failure may enter
-        // the prepared-state rollback path.
-        manifest["status"] = "committed";
-        writeManifest(directory, manifest, true);
+        // the prepared-state rollback path. The marker takes a name that did
+        // not exist; manifest.json stays exactly as it was published, so the
+        // decision never has to supersede a file a scanner holds open.
+        publishCommittedMarker(directory, manifest_digest);
+
+        // The terminal step of the fault seam: a fixture that stops the
+        // process here leaves the one on-disk state no document loop can
+        // produce -- committed, not yet cleaned up. A throw from it would
+        // re-enter rollback and invert a durable decision, so it cannot.
+        if (fault) {
+            try {
+                fault(changed.size(), *changed.back().document);
+            } catch (...) {
+            }
+        }
 
         // The committed marker is the durable decision. Failure to remove
         // metadata cannot turn it back into a rollback; startup/the next edit
@@ -663,16 +1014,21 @@ void recoverRenderConfigDocumentTransaction(
     }
     const auto manifest_path = directory / "manifest.json";
     if (!std::filesystem::is_regular_file(manifest_path, error) || error) {
-        // Destination mutation begins only after manifest.json exists.
+        // Either destination mutation never began -- it starts only after
+        // manifest.json exists -- or a finished transaction's cleanup got as
+        // far as removing it, which it does first. Both leave nothing to
+        // decide and nothing to undo; a marker left next to it says only that
+        // the decision was made, which is already reflected on disk.
         removeTransactionDirectory(directory);
         return;
     }
-    const auto manifest = Json::parse(readBytes(manifest_path));
-    const auto status = manifest.value("status", std::string{});
-    if (status == "prepared") {
+    const auto manifest_bytes = readBytes(manifest_path);
+    const auto manifest = Json::parse(manifest_bytes);
+    if (transactionDecision(directory, manifest, manifest_bytes) ==
+        TransactionDecision::prepared) {
         rollbackPrepared(project_root, directory, manifest);
         removeCreatedDirectories(project_root, manifest);
-    } else if (status == "committed") {
+    } else {
         for (const auto &entry : recoveryEntries(project_root, directory,
                                                   manifest)) {
             const bool exists = std::filesystem::exists(entry.destination, error);
@@ -691,9 +1047,6 @@ void recoverRenderConfigDocumentTransaction(
                     entry.destination.string()};
             }
         }
-    } else {
-        throw std::runtime_error(
-            "render authoring recovery manifest has unknown status");
     }
     removeTransactionDirectory(directory);
 }
