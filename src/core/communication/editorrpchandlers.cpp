@@ -205,6 +205,9 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("get_graph_values", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getGraphValues(params); });
     });
+    server.setHandler("get_graph_node_values", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getGraphNodeValues(params); });
+    });
     server.setHandler("get_graph_catalog", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getGraphCatalog(params); });
     });

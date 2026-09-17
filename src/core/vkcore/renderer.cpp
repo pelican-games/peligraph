@@ -5390,7 +5390,14 @@ void Renderer::renderLogicalFrame(
         // all.
         scene.publishGraphValues({.generation = runtime_generation->generation,
                                   .frame = engine_time.frameIndex(),
-                                  .inputs = std::move(published.instance_inputs)});
+                                  .inputs = std::move(published.instance_inputs),
+                                  // AG-3a: the same evaluation's node values,
+                                  // with the graph that names them. A reader
+                                  // that wants one node's value resolves the
+                                  // name itself rather than making the draw
+                                  // path build a map of them every frame.
+                                  .graph = frame_graph.value_graph,
+                                  .node_values = std::move(published.node_values)});
     }
     stageGraphPoseAttributes(frame_graph);
     modules.frame_graph_resources.uploadRuntimeValues();

@@ -179,6 +179,11 @@ class RenderConfigEditorService {
     nlohmann::ordered_json editGraphInstances(const nlohmann::json &params);
     nlohmann::ordered_json editGraphDocument(const nlohmann::json &params);
     nlohmann::ordered_json getGraphValues(const nlohmann::json &params) const;
+    // AG-3a. Every node in one scope of the published document with what the
+    // drawn frame's evaluation gave it -- the definition-scope values
+    // get_graph_values cannot answer for, since that one answers per instance
+    // input port. `instance` omitted or empty is the root scope.
+    nlohmann::ordered_json getGraphNodeValues(const nlohmann::json &params) const;
     nlohmann::ordered_json getGraphCatalog(const nlohmann::json &params) const;
     nlohmann::ordered_json getRayCallableRecords(const nlohmann::json &params) const;
     nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params);

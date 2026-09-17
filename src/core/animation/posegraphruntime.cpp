@@ -624,6 +624,17 @@ Status PoseGraphRuntime::Impl::evaluate(Attachment &attachment) {
                     status != Status::ok)
                     return status;
             }
+            // AG-3a. A clip_sample node keeps no cursor -- the service samples
+            // an absolute time and forgets it -- so where the clip stood is
+            // only observable if the frame that computed it writes it down.
+            // The phase is measured inside the clip's own bounds, which is the
+            // same span canonicalTime folded the time into just above.
+            {
+                const auto span = binding.metadata.end_seconds - binding.metadata.start_seconds;
+                attachment.trace.cursors.push_back(CursorTrace{node.clip,
+                    sample.time_seconds,
+                    span > 0.0 ? (sample.time_seconds - binding.metadata.start_seconds) / span : 0.0});
+            }
             poses.emplace(index, produced);
             break;
         }
@@ -646,7 +657,20 @@ Status PoseGraphRuntime::Impl::evaluate(Attachment &attachment) {
             produced.layout = staged.local_pose.layout;
             poses.emplace(index, produced);
             // The deterministic record of what the evaluator did this frame.
-            attachment.trace.state = binding.evaluator->getStatus().current_state;
+            // AG-3a takes the rest of the same snapshot: a wrapped machine
+            // already keeps its cursors and its transition, so nothing here is
+            // recomputed -- it is copied out of the one status read.
+            {
+                const auto status = binding.evaluator->getStatus();
+                attachment.trace.state = status.current_state;
+                attachment.trace.source = SinkSource::state_machine;
+                attachment.trace.transition_active = status.transition_active;
+                attachment.trace.transition_target = status.transition_target;
+                attachment.trace.transition_progress = status.transition_progress;
+                for (const auto &cursor : status.cursors)
+                    attachment.trace.cursors.push_back(CursorTrace{
+                        cursor.clip, cursor.time_seconds, cursor.normalized_phase});
+            }
             break;
         }
         case PoseGraphOp::blend: {
@@ -698,6 +722,12 @@ Status PoseGraphRuntime::Impl::evaluate(Attachment &attachment) {
             requireLayout(node, "pose", attachment.layout, input.layout);
             attachment.trace.sink = node.id;
             attachment.trace.node = graph.nodes()[node.pose_inputs.at("pose")].id;
+            // AG-3a. Who this sink writes, and what AG-2 is about to hand the
+            // object. Recorded before the transfer below, so a frame whose
+            // apply fails still says what it was going to move.
+            attachment.trace.owner = attachment.owner;
+            attachment.trace.root_motion = attachment.root_motion;
+            attachment.trace.root_delta = attachment.root_delta;
             attachment.trace.layout_identity = input.layout.identity;
             attachment.trace.layout_generation = input.layout.generation;
             attachment.trace.frame_revision = attachment.pending_revision;
@@ -879,6 +909,14 @@ void PoseGraphRuntime::synchronize(const std::shared_ptr<const PoseGraph> &graph
                 throw std::runtime_error("pose.state_machine tick rejected: " + compiled.id);
         }
     }
+}
+
+std::string_view PoseGraphRuntime::sinkSourceName(SinkSource source) noexcept {
+    switch (source) {
+    case SinkSource::clip: return "pose_graph_clip";
+    case SinkSource::state_machine: return "pose_graph_state_machine";
+    }
+    return "pose_graph_clip";
 }
 
 std::vector<PoseGraphRuntime::SinkTrace> PoseGraphRuntime::trace() const {

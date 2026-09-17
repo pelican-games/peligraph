@@ -1,6 +1,7 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include "rpcserver.hpp"
 #include "editorcommandservice.hpp"
+#include "animationstatus.hpp"
 #include "editorrpchandlers.hpp"
 #include "editorruntimefactory.hpp"
 #include "../startup.hpp"
@@ -1376,6 +1377,12 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                               {"save_method", "save_scene"}}},
             {"frame", modules.engine_time.frameIndex()},
             {"time", modules.engine_time.now()},
+            // AG-3a. What the frame that just ran drove, from what it
+            // recorded: a sink's frame_revision is that frame's, which is the
+            // one below `frame` here, since the RPC runs at the boundary after
+            // it. Absent the animation module the section is
+            // {"available": false} and nothing else.
+            {"animation", internal::animationStatusJson()},
             {"seed", GameContext{}.seed()},
             {"xr", openXrStatusJson(modules.launch_config)},
             {"renderdoc", renderdoc.status},

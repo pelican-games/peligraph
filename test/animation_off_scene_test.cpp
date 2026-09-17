@@ -6,6 +6,7 @@
 #include "../src/core/loader/resolvedscene.hpp"
 #include "../src/core/loader/scene.hpp"
 #include "../src/core/loader/sceneload.hpp"
+#include "../src/core/communication/animationstatus.hpp"
 #include "../src/core/log.hpp"
 #include "scene_load_test_support.hpp"
 
@@ -106,6 +107,18 @@ TEST_CASE("a build without the animation module refuses a scene that animates",
         "animated", GET_MODULE(ProjectBasicConfig).sceneProjectionState()));
     REQUIRE(std::get_if<PreCommitFailure>(&again) != nullptr);
     REQUIRE(loader.currentScene() == SceneId{"active"});
+}
+
+// AG-3a acceptance 1's control. The observation side of the same gate: the
+// section get_status carries says the module is absent, rather than reporting
+// an empty sink list -- which a tool would read as "the module is here and
+// nothing is animating", the one answer this build can never truthfully give.
+TEST_CASE("the animation status section says the module is absent",
+          "[animation-off][status]") {
+    const auto status = internal::animationStatusJson();
+    REQUIRE(status.at("available") == false);
+    // Nothing else: no sink list to mistake for an empty one.
+    REQUIRE(status.size() == 1);
 }
 
 } // namespace Pelican

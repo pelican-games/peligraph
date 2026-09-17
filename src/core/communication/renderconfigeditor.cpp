@@ -4,6 +4,7 @@
 #include "../../project/rasterrayquery.hpp"
 #include "../../project/rasterpass.hpp"
 #include "../../project/featurecompose.hpp"
+#include "../../project/graphcomposition.hpp"
 #include "../../project/graphpartition.hpp"
 #include "renderconfigtransaction.hpp"
 
@@ -15,6 +16,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <optional>
 #include <ranges>
 #include <set>
 #include <stdexcept>
@@ -1731,6 +1733,101 @@ OrderedJson RenderConfigEditorService::getGraphValues(const Json &params) const 
             {"generation", snapshot.generation},
             {"frame", snapshot.frame},
             {"inputs", std::move(inputs)}};
+}
+
+OrderedJson RenderConfigEditorService::getGraphNodeValues(const Json &params) const {
+    constexpr auto method = "get_graph_node_values";
+    requireOnly(params, {"instance"}, method);
+    // An omitted `instance` and an empty one are the same question: the root
+    // scope. Anything else must still be a string, so a caller that passes a
+    // number learns that instead of being quietly answered for the root.
+    std::string instance;
+    if (params.find("instance") != params.end())
+        instance = requireString(params, "instance", method);
+    // The same snapshot get_graph_values reads, and for the same reason:
+    // evaluating the graph here would advance its clocks and consume its
+    // events, so an unpublished graph reports no nodes rather than freshly
+    // invented ones.
+    const auto snapshot = dependencies_.graph_values ? dependencies_.graph_values()
+                                                     : ValueGraph::PublishedInstanceInputs{};
+    const auto reply = [&](OrderedJson nodes) {
+        return OrderedJson{{"instance", instance},
+                           {"generation", snapshot.generation},
+                           {"frame", snapshot.frame},
+                           {"published", snapshot.published},
+                           // These are the values the rendering evaluation of
+                           // the document used. The animation phase evaluates
+                           // the same document against its own state, so in a
+                           // document driven by events or triggers the two can
+                           // differ for good; naming the side here is what
+                           // keeps this from reading as "what animation ate".
+                           {"source", "rendering"},
+                           {"nodes", std::move(nodes)}};
+    };
+    if (!snapshot.published || !snapshot.graph) return reply(OrderedJson::array());
+    const auto root = Json::parse(document_.bytes());
+    if (root.value("schema", std::string{}) != "pelican.graph") return reply(OrderedJson::array());
+    // Node ids come from the authored document's expansion, so every node the
+    // canvas draws is listed -- including the rendering and animation domain
+    // nodes the values partition has no value for, which are listed with no
+    // outputs rather than left out. The lowering's own synthesised nodes
+    // ($upload/..., $binding/...) are not in the expansion and so cannot leak
+    // into a scope as a second source of truth.
+    ExpandedGraphDocument expanded;
+    try {
+        expanded = expandGraphDocument(root);
+    } catch (const std::exception &error) {
+        return rejection("invalid_graph_document", error.what());
+    }
+    // The published generation's node values, resolved by name once here
+    // rather than once per frame in the draw path.
+    const auto ids = snapshot.graph->nodeIds();
+    std::map<std::string, double, std::less<>> values;
+    for (std::size_t index = 0; index < ids.size() && index < snapshot.node_values.size(); ++index)
+        if (snapshot.node_values[index]) values.emplace(ids[index], *snapshot.node_values[index]);
+    const auto &output_nodes = snapshot.graph->outputNodes();
+    const auto outputValue = [&](const std::string &name) -> std::optional<double> {
+        const auto found = output_nodes.find(name);
+        if (found == output_nodes.end() || found->second.empty()) return std::nullopt;
+        const auto index = found->second.front();
+        if (index >= snapshot.node_values.size()) return std::nullopt;
+        return snapshot.node_values[index];
+    };
+    const auto prefix = instance.empty() ? std::string{} : instance + "/";
+    auto nodes = OrderedJson::array();
+    for (const auto &node : expanded.nodes) {
+        const auto id = node.at("id").get<std::string>();
+        const auto origin = expanded.origins.find(id);
+        if (origin == expanded.origins.end()) continue;
+        // The expansion tree, not the id's spelling: a node inside a nested
+        // instance belongs to the scope that contains it, and stays listed
+        // under the path that reaches it.
+        if (!origin->second.instance_path.starts_with(prefix)) continue;
+        auto outputs = OrderedJson::object();
+        // A values-domain node: the value the node itself produced, under each
+        // port it declares. Every such node declares one scalar port.
+        const auto declared = node.value("outputs", Json::array());
+        if (const auto value = values.find(id); value != values.end())
+            for (const auto &port : declared)
+                if (port.is_string()) outputs[port.get<std::string>()] = value->second;
+        // An animation-domain node produces no value of its own, but the
+        // scalars it consumed this frame are published by the values partition
+        // as `$pose/<node>/<port>`. Those are what an observer of a pose node
+        // can actually see, so they are listed under the port that took them.
+        // The object is bound first: items() borrows it, and a temporary would
+        // be gone before the loop reads a single port.
+        const auto inputs = node.value("inputs", Json::object());
+        for (const auto &[port, endpoint] : inputs.items()) {
+            (void)endpoint;
+            if (outputs.contains(port)) continue;
+            if (const auto value = outputValue(graphAnimationScalarOutput(id, port)))
+                outputs[port] = *value;
+        }
+        nodes.push_back(OrderedJson{{"node", id.substr(prefix.size())},
+                                    {"expanded", id},
+                                    {"outputs", std::move(outputs)}});
+    }
+    return reply(std::move(nodes));
 }
 
 OrderedJson RenderConfigEditorService::getGraphCatalog(const Json &params) const {

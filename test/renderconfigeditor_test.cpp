@@ -959,6 +959,147 @@ TEST_CASE("instance inputs change supply atomically and report what was drawn",
     }
 }
 
+// AG-3a acceptance 2 and 3. get_graph_values answers for one instance's input
+// ports; the nodes inside the definition it instantiates have no answer there
+// at all. This is that answer, taken from the same publish snapshot so reading
+// it cannot advance a clock or consume an event.
+TEST_CASE("node values report the definition scope the drawn frame evaluated",
+          "[render-config-editor][graph-node-values]") {
+    const auto fixture_path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+        "fixtures" / "graph_instance_inputs" / "passes" / "main.json";
+    TemporaryConfig source{readBytes(fixture_path)};
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(readBytes(source.path));
+    ValueGraph::PublishedInstanceInputs snapshot;
+    std::size_t evaluations = 0;
+    double scene_time = 0.5;
+    // The snapshot the draw path leaves behind, produced by really publishing
+    // the document under test.
+    const auto draw = [&] {
+        auto graph = std::make_shared<const ValueGraph::Graph>(readBytes(source.path));
+        auto state = graph->createState();
+        auto published = graph->publish(GameContext{},
+            {{"time", scene_time}, {"delta_time", 0.5}, {"scene_time", scene_time}}, {},
+            [](std::string_view, std::span<const float>) { return true; }, {}, {}, &state);
+        ++evaluations;
+        snapshot = {.published = true, .generation = 7, .frame = 11,
+                    .inputs = std::move(published.instance_inputs),
+                    .graph = std::move(graph),
+                    .node_values = std::move(published.node_values)};
+    };
+    auto service = makeService(source, runtime, {}, [&] { return snapshot; });
+    const auto edit = [&](Json ops) {
+        return service->editGraphDocument(
+            {{"base_source_digest", service->getGraphInstances(Json::object()).at("source_digest").at("hex")},
+             {"ops", std::move(ops)}});
+    };
+    const auto commit = [&](const nlohmann::ordered_json &submission) {
+        REQUIRE(submission.at("status") == "accepted");
+        service->commitPending();
+        return service->getResult({{"ticket", submission.at("ticket")}});
+    };
+    const auto nodeOf = [&](const nlohmann::ordered_json &reply, const char *id) {
+        for (const auto &node : reply.at("nodes"))
+            if (node.at("node") == id) return node;
+        FAIL("no reported node " + std::string{id});
+        return nlohmann::ordered_json{};
+    };
+
+    SECTION("nothing drawn yet is reported as nothing, not as zeroes") {
+        const auto reply = service->getGraphNodeValues({{"instance", "left"}});
+        REQUIRE(reply.at("published") == false);
+        REQUIRE(reply.at("nodes").empty());
+        REQUIRE(reply.at("source") == "rendering");
+    }
+
+    SECTION("a definition's nodes carry what the drawn frame gave them") {
+        draw();
+        const auto reply = service->getGraphNodeValues({{"instance", "left"}});
+        REQUIRE(reply.at("published") == true);
+        REQUIRE(reply.at("instance") == "left");
+        REQUIRE(reply.at("generation") == 7);
+        REQUIRE(reply.at("frame") == 11);
+        REQUIRE(reply.at("source") == "rendering");
+        // `sum` is value.add over the two instance parameters, and `clock` is
+        // connected to nothing in this document, so 2.5 + 5 is a constant. It
+        // is the constant the acceptance names, not an accident of the frame.
+        const auto sum = nodeOf(reply, "sum");
+        REQUIRE(sum.at("expanded") == "left/sum");
+        REQUIRE(sum.at("outputs").at("value") == 7.5);
+        REQUIRE(nodeOf(reply, "gain").at("outputs").at("value") == 2.5);
+        REQUIRE(nodeOf(reply, "bias").at("outputs").at("value") == 5);
+        // The rendering-domain node of the same definition is listed with no
+        // outputs at all: the values partition has no value for it, and a
+        // canvas that draws four nodes must not be told there are three.
+        const auto buffer = nodeOf(reply, "buffer");
+        REQUIRE(buffer.at("expanded") == "left/buffer");
+        REQUIRE(buffer.at("outputs").is_object());
+        REQUIRE(buffer.at("outputs").empty());
+        // Reading is a lookup in the snapshot. No number of reads evaluates
+        // anything, so two reads of an unstepped frame are the same bytes.
+        const auto drawn = evaluations;
+        REQUIRE(service->getGraphNodeValues({{"instance", "left"}}) == reply);
+        REQUIRE(evaluations == drawn);
+    }
+
+    SECTION("an omitted instance is the root scope, where the two ids agree") {
+        draw();
+        const auto omitted = service->getGraphNodeValues(Json::object());
+        REQUIRE(omitted.at("instance") == "");
+        REQUIRE(nodeOf(omitted, "clock").at("outputs").at("value") == 0.5);
+        for (const auto &node : omitted.at("nodes")) REQUIRE(node.at("node") == node.at("expanded"));
+        // An explicit empty string asks the same question.
+        REQUIRE(service->getGraphNodeValues({{"instance", ""}}) == omitted);
+    }
+
+    SECTION("connecting the clock makes the definition's sum move with the frame") {
+        // The control for the constant above: with an edge from the document's
+        // clock, `left/sum` is the frame's own number and two frames disagree.
+        REQUIRE(commit(edit(Json::array({Json{{"op", "set_input"}, {"node", "left"},
+            {"port", "gain"}, {"source", {{"node", "clock"}, {"port", "value"}}}}})))
+                .at("committed") == true);
+        draw();
+        const auto first = service->getGraphNodeValues({{"instance", "left"}});
+        REQUIRE(nodeOf(first, "sum").at("outputs").at("value") == 5.5);
+        scene_time = 2.25;
+        draw();
+        const auto second = service->getGraphNodeValues({{"instance", "left"}});
+        REQUIRE(nodeOf(second, "sum").at("outputs").at("value") == 7.25);
+        // A connected port leaves no node of its own behind in the expansion,
+        // so the value.parameter that carried it is gone rather than stale.
+        for (const auto &node : second.at("nodes")) REQUIRE(node.at("node") != "gain");
+    }
+
+    SECTION("an animation node reports the scalar the frame fed it") {
+        // Acceptance 3. A pose operation produces no value of its own, but the
+        // values partition publishes every scalar it consumes as
+        // `$pose/<node>/<port>` -- which is the only place the number an
+        // animation node ran on is observable at all.
+        const auto add = edit(Json::array({Json{{"op", "add_node"}, {"node",
+            {{"id", "pose"}, {"op", "pose.clip_sample"},
+             {"parameters", {{"rig", "project://character.gltf"}, {"clip", "Turn"}}},
+             {"inputs", {{"time", {{"node", "clock"}, {"port", "value"}}}}},
+             {"outputs", Json::array({"pose"})}}}}}));
+#if PELICAN_WITH_ANIMATION
+        REQUIRE(commit(add).at("committed") == true);
+        draw();
+        const auto reply = service->getGraphNodeValues(Json::object());
+        const auto pose = nodeOf(reply, "pose");
+        REQUIRE(pose.at("outputs").at("time") == 0.5);
+        scene_time = 1.5;
+        draw();
+        REQUIRE(nodeOf(service->getGraphNodeValues(Json::object()), "pose")
+                    .at("outputs").at("time") == 1.5);
+#else
+        // The control: without the animation module the operation is not
+        // registered, so the document carrying it never lands and there is no
+        // node to report a value for.
+        REQUIRE(add.at("status") == "rejected");
+        CHECK(add.at("error").at("code") == "graph.operation_unregistered@1");
+#endif
+    }
+}
+
 TEST_CASE("scene AS edits use render publication and source CAS", "[render-config-editor][rt7][scene-as]") {
     TemporaryConfig source{emptyHybridConfig()};
     const auto original = readBytes(source.path);

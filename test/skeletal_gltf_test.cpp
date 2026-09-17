@@ -2,6 +2,7 @@
 #include "../src/core/animation/animationservice.hpp"
 #include "../src/core/ecs/predefined/animationsystem.hpp"
 #include "../src/core/animation/posegraphruntime.hpp"
+#include "../src/core/communication/animationstatus.hpp"
 #include "../src/core/userpublic/components/animation.hpp"
 #include "../src/core/userpublic/components/modelview.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
@@ -1804,7 +1805,7 @@ TEST_CASE("a pose graph drives an object's skeletal sink", "[skeletal][graph-pos
                   "parameters":{"speed":0},
                   "states":[{"name":"idle","type":"clip","clip":"Turn","loop":true},
                             {"name":"walk","type":"clip","clip":"Step","loop":true}],
-                  "transitions":[{"from":"idle","to":"walk",
+                  "transitions":[{"from":"idle","to":"walk","duration":0.3,
                     "conditions":[{"parameter":"speed","op":">","value":0.5}]}],
                   "initial_state":"idle"})")}}},
             {"inputs", {{"time", {{"node", "time"}, {"port", "value"}}},
@@ -1950,6 +1951,12 @@ void main() {
     // the graph published this frame.
     std::vector<std::array<float, 4>> observed;
     bool left_rest = false;
+    // AG-3a acceptance 1: the phase the frame drew, frame by frame, and -- for
+    // a state machine -- whether a transition was ever caught in the middle
+    // rather than only at its two ends.
+    std::vector<double> phases;
+    bool saw_transition = false;
+    bool state_named_every_frame = true;
     for (int frame = 0; frame < 6; ++frame) {
         animate();
         const auto matrix = instances.animationNodeMatrix(instance, 2);
@@ -1959,6 +1966,16 @@ void main() {
         REQUIRE(std::abs(values[0] - (*matrix)[3].x) < 0.00001f);
         REQUIRE(std::abs(values[1] - (*matrix)[3].y) < 0.00001f);
         observed.push_back(values);
+        const auto observed_trace = Animation::poseGraphRuntime().trace();
+        if (observed_trace.empty()) continue;
+        const auto &sink = observed_trace.front();
+        if (!sink.cursors.empty()) phases.push_back(sink.cursors.front().normalized_phase);
+        if (state_machine) {
+            state_named_every_frame = state_named_every_frame && !sink.state.empty();
+            saw_transition = saw_transition ||
+                (sink.transition_active && sink.transition_progress >= 0.0 &&
+                 sink.transition_progress < 1.0);
+        }
     }
     REQUIRE(left_rest);
     // Determinism: one evaluation per frame revision, and the trace names the
@@ -1971,6 +1988,64 @@ void main() {
     REQUIRE(trace.front().frame_revision == time.frameIndex());
     REQUIRE(trace.front().layout_identity != 0);
     REQUIRE(trace.front().layout_generation != 0);
+    // AG-3a acceptance 1. The sink says which individual it writes and what
+    // kind of chain produced the pose, and it stands on a named clip at a
+    // named place inside it. None of this existed before: the clip path keeps
+    // no cursor of its own, so a frame that does not record what it sampled
+    // leaves nothing to observe.
+    REQUIRE(trace.front().owner.scene == "default_scene");
+    REQUIRE(trace.front().owner.object != 0);
+    REQUIRE_FALSE(trace.front().cursors.empty());
+    REQUIRE(phases.size() >= 2);
+    // Time moves, so the phase moves: a build that recorded the phase once at
+    // attach would show the same number on every frame.
+    REQUIRE(phases.front() != phases.back());
+    if (!state_machine) {
+        REQUIRE(std::string{Animation::PoseGraphRuntime::sinkSourceName(trace.front().source)} ==
+                "pose_graph_clip");
+        REQUIRE(trace.front().cursors.size() == 1);
+        REQUIRE(trace.front().cursors.front().clip == "Turn");
+        REQUIRE(trace.front().state.empty());
+        REQUIRE_FALSE(trace.front().root_motion);
+        // The measured number rather than the same formula spelled twice: put
+        // the clock on half a second and step once. `Turn` spans [0, 2] s, so
+        // half a second into it is a quarter of the way through.
+        time.setTime(0.5 - 0.25);
+        animate();
+        (void)render();
+        const auto at_half = Animation::poseGraphRuntime().trace();
+        REQUIRE(at_half.size() == 1);
+        REQUIRE(std::abs(at_half.front().cursors.front().time_seconds - 0.5) < 1e-3);
+        REQUIRE(std::abs(at_half.front().cursors.front().normalized_phase - 0.25) < 1e-3);
+    } else {
+        REQUIRE(std::string{Animation::PoseGraphRuntime::sinkSourceName(trace.front().source)} ==
+                "pose_graph_state_machine");
+        REQUIRE(state_named_every_frame);
+        REQUIRE(trace.front().state == (connect_parameter ? "walk" : "idle"));
+        // A machine that never leaves its initial state never transitions;
+        // the one whose parameter edge is connected is caught mid-transition,
+        // which is the half of the observation a start/end-only record loses.
+        REQUIRE(saw_transition == connect_parameter);
+    }
+    // The same frame through the section get_status carries, so the shape a
+    // tool reads is the shape a live pose graph actually produces -- not a
+    // hand-written example of it.
+    const auto status = internal::animationStatusJson();
+    REQUIRE(status.at("available") == true);
+    REQUIRE(status.at("sinks").size() == 1);
+    const auto &reported = status.at("sinks").at(0);
+    REQUIRE(reported.at("owner").at("scene") == "default_scene");
+    REQUIRE(reported.at("owner").at("object").get<std::uint64_t>() != 0);
+    REQUIRE(reported.at("node") == "render/source");
+    REQUIRE(reported.at("source") ==
+            (state_machine ? "pose_graph_state_machine" : "pose_graph_clip"));
+    REQUIRE_FALSE(reported.at("cursors").empty());
+    REQUIRE(reported.at("cursors").at(0).contains("normalized_phase"));
+    // Absent, not empty: this chain extracts no root motion, and a sink with
+    // no state machine has no transition to be between.
+    REQUIRE_FALSE(reported.contains("root_delta"));
+    REQUIRE(reported.contains("transition") == state_machine);
+    REQUIRE(reported.contains("state") == state_machine);
     // The individual follows the clip: the pose is not frozen at the rest pose
     // the sink-less document leaves behind.
     REQUIRE(observed.front() != observed.back());

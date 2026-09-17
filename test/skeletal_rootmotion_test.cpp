@@ -1,5 +1,6 @@
 #include "../src/core/animation/animationservice.hpp"
 #include "../src/core/animation/posegraphruntime.hpp"
+#include "../src/core/communication/animationstatus.hpp"
 #include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/core.hpp"
@@ -328,6 +329,35 @@ void main() {
     REQUIRE(trace.front().sink == "render/out");
     REQUIRE(trace.front().node == "render/source");
     REQUIRE(trace.front().frame_revision == time.frameIndex());
+    // AG-3a acceptance 1. What this frame handed the individual is observable,
+    // and only on a chain that asks for it. A document that does not extract
+    // reports no displacement rather than a zero that could mean either.
+    REQUIRE(trace.front().root_motion == extract);
+    if (mode == "extract") {
+        // The clip carries its root two metres in its one second, so one frame
+        // of it is two metres times this frame's step -- the amount applied,
+        // not the metre travelled since the clock started.
+        REQUIRE(std::abs(trace.front().root_delta[0] - 2.0 * step) < 1e-6);
+    }
+    if (!extract) REQUIRE(std::abs(trace.front().root_delta[0]) < 1e-12);
+    // The chain is one clip_sample, so the sink says so and names the clip it
+    // stands on.
+    REQUIRE(std::string{Animation::PoseGraphRuntime::sinkSourceName(trace.front().source)} ==
+            "pose_graph_clip");
+    REQUIRE(trace.front().cursors.size() == 1);
+    REQUIRE(trace.front().cursors.front().clip == "Advance");
+    REQUIRE(trace.front().owner.scene == "default_scene");
+    REQUIRE(trace.front().owner.object != 0);
+    // And the same numbers through the section get_status carries. root_delta
+    // is present exactly when the chain extracts one, so a tool cannot read
+    // "no extraction" and "a standing individual" as the same answer.
+    const auto status = internal::animationStatusJson();
+    REQUIRE(status.at("available") == true);
+    REQUIRE(status.at("sinks").size() == 1);
+    const auto &reported = status.at("sinks").at(0);
+    REQUIRE(reported.contains("root_delta") == extract);
+    if (mode == "extract")
+        REQUIRE(std::abs(reported.at("root_delta").at(0).get<double>() - 2.0 * step) < 1e-6);
     service.reset();
     Animation::poseGraphRuntime().clear();
 }

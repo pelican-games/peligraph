@@ -1563,6 +1563,11 @@ OrderedJson EditorCommandService::getGraphValues(const Json &params) const {
     return render_config_editor_->getGraphValues(params);
 }
 
+OrderedJson EditorCommandService::getGraphNodeValues(const Json &params) const {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->getGraphNodeValues(params);
+}
+
 OrderedJson EditorCommandService::getGraphCatalog(const Json &params) const {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->getGraphCatalog(params);
@@ -2540,6 +2545,10 @@ OrderedJson EditorCommandRpcAdapter::editGraphDocument(const Json &params) const
 
 OrderedJson EditorCommandRpcAdapter::getGraphValues(const Json &params) const {
     return service_.getGraphValues(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::getGraphNodeValues(const Json &params) const {
+    return service_.getGraphNodeValues(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getGraphCatalog(const Json &params) const {

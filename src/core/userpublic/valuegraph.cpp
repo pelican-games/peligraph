@@ -478,8 +478,16 @@ Outputs Graph::evaluateLowered(const Inputs &inputs, const ParameterValues &para
     return evaluateInternal(inputs, parameters, inactive, state);
 }
 
+std::vector<std::string> Graph::nodeIds() const {
+    std::vector<std::string> result;
+    result.reserve(nodes_.size());
+    for (const auto &node : nodes_) result.push_back(node.id);
+    return result;
+}
+
 Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &parameters, const InactiveScopes &inactive,
-                                EvaluationState *state) const {
+                                EvaluationState *state,
+                                std::vector<std::optional<double>> *node_values) const {
     if (state && state->graph_ != this) throw std::invalid_argument("evaluation state belongs to a different graph");
     auto triggers = state ? state->triggers_ : std::map<std::size_t, EvaluationState::Trigger>{};
     auto pending = state ? state->pending_ : std::map<std::size_t, std::vector<EvaluationState::Event>>{};
@@ -488,6 +496,10 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
         if (!std::isfinite(value)) throw std::invalid_argument("graph parameter must be finite: " + name);
     }
     std::vector<double> values(nodes_.size());
+    // Every node this evaluation actually ran, for a reader that wants the
+    // values behind the projection. A node the inactive scopes skip below is
+    // left absent rather than reported as the zero `values` was sized with.
+    if (node_values) node_values->assign(nodes_.size(), std::nullopt);
     for (const auto index : order_) {
         const auto &node = nodes_[index];
         if (!nodeActive(node.id, inactive)) {
@@ -562,6 +574,7 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
         }
         }
         if (!std::isfinite(value)) throw std::invalid_argument("non-finite value at graph node: " + node.id);
+        if (node_values) (*node_values)[index] = value;
     }
     Outputs result;
     for (const auto &[name, indices] : outputs_) {
@@ -597,7 +610,8 @@ PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
                              const ParameterValues &parameters, const InactiveScopes &inactive, EvaluationState *state,
                              const AudioEventWriter &audio_writer, const SoundResolver &sound_resolver,
                              const AudioValueWriter &audio_value_writer) const {
-    const auto outputs = evaluateInternal(inputs, parameters, inactive, state);
+    PublishResult result;
+    const auto outputs = evaluateInternal(inputs, parameters, inactive, state, &result.node_values);
     // Convert and validate every value before changing any service.
     std::vector<std::vector<float>> prepared;
     prepared.reserve(bindings_.size());
@@ -614,7 +628,6 @@ PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
             (binding.type == Target::sound_pitch && values[0] <= 0))
             throw std::invalid_argument("invalid audio graph output: " + binding.output);
     }
-    PublishResult result;
     // Keep the drawn generation's instance input values before any service is
     // touched. An inactive instance publishes no output, so its ports are
     // absent rather than stale.

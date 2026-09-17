@@ -23,9 +23,12 @@
 #include "../../renderingpass/graphmodelsource.hpp"
 #include "../../renderingpass/renderingpasscontainer.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <stdexcept>
 #include <variant>
+#include <utility>
 #include <vector>
 #include <map>
 #include <set>
@@ -54,6 +57,10 @@ struct AnimationSystemState {
     };
     Animation::AnimationAssetRegistry assets;
     std::vector<EntityId> candidates;
+    // AG-3a. `<model name>\0<clip reference>` -> the clip's own [start, end].
+    // A status read resolves a clip reference once; the bounds are a property
+    // of the asset, so a second read of the same clip is arithmetic only.
+    std::map<std::string, std::pair<double, double>> clip_bounds;
     std::unordered_map<EntityId, std::unique_ptr<GraphBinding>> graphs;
 
     AnimationGraph::EvaluatorV1 *currentEvaluator(EntityId entity) const {
@@ -369,6 +376,97 @@ void AnimationSystem::updatePoseGraphs() {
         runtime.synchronize(pose_graph, frame);
     }
 #endif
+}
+
+std::vector<AnimationComponentTrace> AnimationSystem::componentTrace() {
+    std::vector<AnimationComponentTrace> result;
+    if (state->candidates.empty()) return result;
+    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    auto &scene = GET_MODULE(SceneLoader);
+    auto &time = GET_MODULE(EngineTime);
+    // The clip path's own time map (sampleTime in animationjobs.cpp): shift by
+    // start_time, scale by speed, then wrap or clamp inside the clip's own
+    // [start, end]. Spelled here rather than recorded from the worker threads:
+    // the numbers are the same ones the frame sampled with, and a status read
+    // that never touches the ECS hot path cannot slow it down.
+    const auto sampled = [](double begin, double end, double now, double speed, bool loop,
+                            double start_time) {
+        const auto duration = end - begin;
+        auto local = (now - start_time) * speed + begin;
+        if (loop && duration > 0.0) {
+            local = std::fmod(local - begin, duration);
+            if (local < 0.0) local += duration;
+            local += begin;
+        } else {
+            local = std::clamp(local, begin, end);
+        }
+        return local;
+    };
+    // Resolving a clip reference walks the path resolver, so the answer is kept
+    // per model and clip: a tool polling this every frame must not turn a
+    // status read into filesystem work per frame.
+    for (const auto entity : state->candidates) {
+        const auto *animation = ecs.tryComponent<AnimationComponent>(entity);
+        if (animation == nullptr) continue;
+        AnimationComponentTrace trace;
+        trace.object = entity;
+        trace.object_name = scene.objectName(entity).value_or(std::string{});
+        trace.frame_revision = time.frameIndex();
+        if (!animation->graph.empty()) {
+            const auto found = state->graphs.find(entity);
+            if (found == state->graphs.end() || found->second->reference != animation->graph ||
+                !found->second->evaluator)
+                continue;
+            trace.graph = true;
+            trace.reference = animation->graph;
+            const auto status = found->second->evaluator->getStatus();
+            trace.state = status.current_state;
+            trace.cursors = status.cursors;
+            trace.transition_active = status.transition_active;
+            trace.transition_target = status.transition_target;
+            trace.transition_progress = status.transition_progress;
+            trace.frame_revision = status.frame_revision;
+        } else if (!animation->clip.empty()) {
+            const auto *view = ecs.tryComponent<SimpleModelViewComponent>(entity);
+            if (view == nullptr || !view->model_instance_id) continue;
+            if (models == nullptr || path_resolver == nullptr) continue;
+            const auto key = view->model_name + '\0' + animation->clip;
+            auto bounds = state->clip_bounds.find(key);
+            if (bounds == state->clip_bounds.end()) {
+                try {
+                    auto &model = models->getModelTemplateByName(view->model_name);
+                    if (!model.skeletal) continue;
+                    const auto resolved = path_resolver->resolveExistingFileReference(animation->clip);
+                    const auto *reference = std::get_if<ResolvedPathFragment>(&resolved);
+                    if (reference == nullptr || reference->fragment.kind != "animation") continue;
+                    const auto &clip = findAnimationClip(*model.skeletal, reference->fragment.path);
+                    bounds = state->clip_bounds.emplace(key,
+                        std::pair<double, double>{clip.start, clip.end}).first;
+                } catch (const std::exception &) {
+                    // An unresolvable clip is the frame's own error to raise;
+                    // observing the frame must not raise it a second time.
+                    continue;
+                }
+            }
+            const auto [begin, end] = bounds->second;
+            const auto at = sampled(begin, end, time.now(), animation->speed,
+                                    animation->loop != 0, animation->start_time);
+            const auto span = end - begin;
+            trace.reference = animation->clip;
+            trace.cursors.push_back(AnimationGraph::CursorStatusV1{
+                .clip = animation->clip, .time_seconds = at,
+                .normalized_phase = span > 0.0 ? (at - begin) / span : 0.0});
+        } else {
+            continue;
+        }
+        result.push_back(std::move(trace));
+    }
+    std::sort(result.begin(), result.end(), [](const auto &left, const auto &right) {
+        if (left.object_name != right.object_name) return left.object_name < right.object_name;
+        if (left.object.index != right.object.index) return left.object.index < right.object.index;
+        return left.object.generation < right.object.generation;
+    });
+    return result;
 }
 
 Animation::Status AnimationSystem::setGraphParameter(EntityId entity, std::string_view name, double value) {

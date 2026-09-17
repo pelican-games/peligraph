@@ -1,13 +1,18 @@
 #pragma once
 
+#include "../../project/graphinstanceowner.hpp"
+
 #include "posegraph.hpp"
 
+#include <array>
 #include <functional>
 #include <map>
 #include <memory>
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace Pelican::Animation {
 
@@ -79,6 +84,20 @@ class PoseGraphRuntime {
     void retainOnly(const std::set<const PoseGraph *> &live) noexcept;
     void clear() noexcept;
 
+    // What kind of chain produced this sink's pose. It decides where the
+    // cursors below come from: a wrapped state machine keeps its own, a
+    // clip_sample node has none of its own and the runtime records what it
+    // sampled.
+    enum class SinkSource : std::uint8_t { clip, state_machine };
+    static std::string_view sinkSourceName(SinkSource source) noexcept;
+    // Where one clip stood on the frame this trace records. `normalized_phase`
+    // is the position inside the clip's own [start, end], so a clip whose keys
+    // do not begin at zero still reports 0 at its first key and 1 at its last.
+    struct CursorTrace {
+        std::string clip;
+        double time_seconds = 0.0;
+        double normalized_phase = 0.0;
+    };
     struct SinkTrace {
         std::string sink;
         std::string node;
@@ -91,6 +110,25 @@ class PoseGraphRuntime {
         // is what says an edit kept the machine where it was instead of quietly
         // starting it over at the document's initial state.
         std::string state;
+        // AG-3a. The object this sink writes: the same owner the document
+        // named, so an observer can say which individual moved without holding
+        // the graph. It is the attachment's, not the trace's, so it is copied
+        // here rather than published as a second lookup.
+        GraphInstanceOwner owner;
+        SinkSource source = SinkSource::clip;
+        // One entry per clip the chain sampled this frame, in chain order for a
+        // clip_sample chain and in the evaluator's own order for a state
+        // machine (where a transition has two).
+        std::vector<CursorTrace> cursors;
+        bool transition_active = false;
+        std::string transition_target;
+        double transition_progress = 0.0;
+        // AG-2's displacement for this frame, present only on a chain that
+        // extracts root motion. It is the amount in the clip's own space --
+        // what the applier turns by the individual's rotation before adding it
+        // -- so on a rotated individual it is not the distance travelled.
+        bool root_motion = false;
+        std::array<double, 3> root_delta{};
     };
     // Deterministic record of the last evaluation: one entry per sink, in sink
     // order, carrying the node that produced the pose and the layout generation

@@ -234,6 +234,18 @@ void main(){ outColor=vec4(0.5,0.5,0.5,0.25); }
     const auto color_status = nlohmann::json::parse(third_line).at("result").at("color");
     REQUIRE(color_status.at("contract") == 2);
     REQUIRE(color_status.at("path") == (fallback ? "unorm_fallback" : "srgb"));
+    // AG-3a: the animation section is additive and reaches a caller over the
+    // real dispatch path. Nothing in this project animates, so an ON build
+    // reports an available module with no sinks -- which is a different answer
+    // from an OFF build's `{"available": false}`, not the same one twice.
+    const auto animation_status = nlohmann::json::parse(third_line).at("result").at("animation");
+#if PELICAN_WITH_ANIMATION
+    REQUIRE(animation_status.at("available") == true);
+    REQUIRE(animation_status.at("sinks").empty());
+#else
+    REQUIRE(animation_status.at("available") == false);
+    REQUIRE_FALSE(animation_status.contains("sinks"));
+#endif
     const auto module_status = nlohmann::json::parse(third_line).at("result").at("modules");
     REQUIRE(module_status.at("phase") == "booting");
     REQUIRE_FALSE(module_status.at("creation_frozen").get<bool>());

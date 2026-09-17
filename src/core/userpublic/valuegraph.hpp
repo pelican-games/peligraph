@@ -8,6 +8,7 @@
 #include <functional>
 #include <span>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -47,6 +48,7 @@ struct InstanceInputValue {
 };
 // Keyed by `<instance path>/<port>`.
 using InstanceInputValues = std::map<std::string, InstanceInputValue, std::less<>>;
+class Graph;
 struct PublishResult {
     std::size_t applied{};
     std::vector<std::string> unavailable;
@@ -55,6 +57,13 @@ struct PublishResult {
     // evaluating the graph a second time -- a second evaluation would advance
     // the clocks and consume the events (see EvaluationState).
     InstanceInputValues instance_inputs;
+    // Every node's value this evaluation, in the graph's own node order. The
+    // arithmetic is already done -- the evaluation computes every node before
+    // projecting the declared outputs -- so this costs one vector and no node
+    // names; resolving a name is the reader's job, once, rather than the draw
+    // path's, every frame. A node the frame's inactive scopes skipped has no
+    // value: absent, rather than a stale or invented zero.
+    std::vector<std::optional<double>> node_values;
 };
 // The same values, stamped with the draw generation that produced them, as one
 // engine-owned snapshot a tool can read.
@@ -65,9 +74,12 @@ struct PublishedInstanceInputs {
     // EngineTime::frameIndex(): the frame that evaluated these values.
     std::uint64_t frame = 0;
     InstanceInputValues inputs;
+    // The graph `node_values` is ordered by. Held, not borrowed: a reader that
+    // arrives after the drawn generation was replaced still has the names that
+    // make those values readable, and they are that generation's names.
+    std::shared_ptr<const Graph> graph;
+    std::vector<std::optional<double>> node_values;
 };
-
-class Graph;
 class EvaluationState {
     friend class Graph;
     explicit EvaluationState(const Graph *graph) : graph_(graph) {}
@@ -165,9 +177,24 @@ class PELICAN_API Graph {
                           const AudioValueWriter &audio_value_writer = {}) const;
 
     const GraphInstanceOwner *scopeOwner(std::string_view node) const noexcept;
+
+    // The nodes of the values partition, in the order publish() reports their
+    // values -- expanded ids, including the ones lowering synthesised. Built on
+    // demand: the draw path never spells these names, so a reader that wants
+    // them pays for them once per read instead of once per frame.
+    std::vector<std::string> nodeIds() const;
+    // Every output name this graph projects, authored and lowered alike, and
+    // the nodes each one reads. It is how a reader holding a publish snapshot
+    // resolves `$pose/<node>/<port>` -- the scalar an animation node consumed
+    // this frame -- without evaluating the graph a second time.
+    const std::map<std::string, std::vector<std::size_t>, std::less<>> &outputNodes() const noexcept {
+        return outputs_;
+    }
+
   private:
     Outputs evaluateInternal(const Inputs &inputs, const ParameterValues &parameters,
-                             const InactiveScopes &inactive, EvaluationState *state) const;
+                             const InactiveScopes &inactive, EvaluationState *state,
+                             std::vector<std::optional<double>> *node_values = nullptr) const;
     // The modules this graph compiled against; they must outlive it, and
     // re-lowering the saved document uses the same set.
     const GraphModuleRegistry *modules_ = nullptr;

@@ -32,6 +32,7 @@ target_sources(pelican_core PRIVATE
 endif()
 
 target_sources(pelican_core PRIVATE
+    animationstatus.cpp
     editorassetqueryruntime.cpp
     proceduralasseteditor.cpp
     proceduralassetpublication.cpp
