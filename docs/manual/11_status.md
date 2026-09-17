@@ -427,6 +427,7 @@ v0 は「**装着 → 編集 → 観測 → 保存 → 再読込**の往復を�
 | N-7 | パネルの文字を減らす | 済(`5865a6fd`) | 説明文は tooltip と `?` へ、notice は 1 行、検査は記号、フォントはテーマ表、可視文字の予算 test(Pass Editor 1592 → 352 など) | 画面が読める([第13章](13_editor.md)) |
 | N-6 | 配線の制御点と置き場所の永続化 | 済(`fd02e356`) | reroute / tie(結束バンド)、Auto layout が lane を制御点として出す、node 位置・reroute・tie を文書の `layout` に `set_layout`(再 compose 無し)で残す | 手で整えた図が残る([第13章](13_editor.md)) |
 | N-8 | Frame Plan のノード編集 | 済(`6c71c5af`) | canvas から接続 / 切断 / 帯 / 追加 / 削除を既存 RPC の丸ごと置換で、配置は `layout.frame_plan` に。legacy root の 4 project は配置を保存できない(磨きの一覧) | Frame Plan も図の上で編集できる([第13章](13_editor.md)) |
+| Q-2 | Studio の応答性 | 済(`cb76c164`) | 計測(`<作業ディレクトリ>/q2_perf_report.md`)→ idle RPC 56 → 0.5/秒、`get_frame_plan` 1 回 parse、canvas の background / grid cache(パン 1.9×)。最大要因は Debug build(Release で 6〜19×)。project を開いた直後の固まりは embed の `SetWindowLongPtr` 待ちと診断(Q-4) | 触った時の待ちが減る([第13章](13_editor.md)) |
 
 この 25 行のほかに **R-2(操作感)** があります —— これは**実装のない裁定**で、「render config 編集の複合 undo は v0 では約束しない」を決めたものです(下の §11.3「v0 で約束しないもの」)。
 

@@ -24260,6 +24260,35 @@ preset pass / feature pass の delete RPC / pass の rename / `render_targets`(e
 
 完了記録(2026-09-18、`6c71c5af`): 接続 = 出力ソケット → pass の通常ドラッグで `edit_preset_pass` 1 回(`input` +1、他 field は宣言どおり。task は `edit_compute_task` の `reads`)/ 切断 = 入力ソケットを空所へ or 辺を Delete / 帯 = shader stem と task の dispatch / Delete = `remove_authored_pass` `remove_compute_task` / 右クリック「Add fullscreen pass…」= Pass Editor を右クリック node の後ろ(engine の anchor 位置 1)に prefill、「Add compute task…」= 既存 dialog、double-click = 詳細 dialog / Shift ドラッグ不変(test 6744)。engine: `requireLayout` が `frame_plan` を形だけ検査、`get_graph_instances.root_schema`。test: Frame Plan 5 case(対照 M1 payload を空に / M5 理由を消す)、Pass Editor(M2 prefill を外す)、scene(M4 merge を外す)、RPC(M3 `frame_plan` の許可を外す。materialize / export の byte 一致に `frame_plan` を追加、layout だけの編集で generation / catalog 不変)、非 GPU 全数 1734/1734、シナリオ `frameplan_edit_roundtrip`(28 step、42.8 s: 接続 → engine の plan に読みが出る → 切断 → drag → `layout.frame_plan` に位置 → Add で Pass Editor の位置 1 → 別複製は空 → 再読込で残る)。
 
+### Q-2: Studio の応答性 —— 計ってから直す(利用者指摘 2026-09-18「GUI の挙動が少しもっさりしている」)
+
+**§4 規則 11 下段(Studio 内。engine は触らない)。実装者: Claude(Opus)。まず計測(`<作業ディレクトリ>/q2_perf_report.md`)、次に上位 3 つを直して before / after を同じ方法で計る。**
+
+#### 計測で分かった原因(Debug build、実測)
+| 原因 | 数字 |
+|---|---|
+| Debug build(Qt も CRT も debug 版)| パン 1 回 53 ms → Release 2.8 ms、ホイール 82 → 13 ms、Frame Plan 更新 575 → 44 ms、example を開く 11.8 s → 1.2 s |
+| idle でも 60 Hz の `get_modal_transform` polling | idle で 65 RPC/秒(うち 60 がこれ)。engine の描画スレッドで毎フレーム捌く |
+| `get_frame_plan`(128〜181 KB)を UI スレッドで 3 回 parse | QJsonDocument → 再 serialize → nlohmann、その後 scene 再構築 |
+| QGraphicsView に cache mode / optimization flag が無く、grid を毎 paint 再生成 | — |
+Vulkan validation は原因ではない(headless `step_frame` +34% のみ)。
+
+#### 決定
+1. **idle polling をやめる**: `get_modal_transform` は gesture / modal 中(16 ms)か engine 窓が foreground の keyboard focus を持つ間(100 ms)だけ、それ以外は停止。`scene_tree` は `scene_revision` が動かなければ 250 → 2000 ms に後退。`get_gpu_timing` は panel が見えていて engine が対応するときだけ。Graph / attachment / Inspector の clock は request pump でもあるので止めず、model 側の poll を述語(`pollWanted` 等)で絞る
+2. **`get_frame_plan` は 1 回 parse**: `EngineProcess::routeRpcResponse` が reply 行を 1 回走査して `result` の bytes をそのまま渡す(DOM 無し)。`serializeJsonValue` を削除
+3. **QGraphicsView**: `CacheBackground` + `DontSavePainterState`、grid の `QVector<QLineF>` を rect + theme で使い回し、テーマ切替で破棄。`DontAdjustForAntialiasing` は付けない(部分再描画に残像が出る)
+4. **診断のみ**: Studio から `example` を開くと engine が RPC-ready にならない件
+
+#### 受け入れ
+1. idle RPC ≤ 2/秒(before 56〜58/秒)。test: `Devstudio asks for the modal transform only while one could be happening` ほか 4 本(gizmo / attachment / canvas / inspector の述語)
+2. reply 到着 → scene ready の UI スレッド時間が減る(`Engine process hands on the reply's result bytes without parsing them` + 多重化 test の byte 等価)
+3. パン / ズームの gesture 時間が減り、antialias は保つ(`The canvas caches its ground without giving up antialiasing`。スクリーンショットの差 ≤ 2.6% 画素、高コントラスト画素の変化 1/501)
+4. 既存 Studio test 全数緑、非 GPU 全数緑
+
+実装時の裁定(2026-09-18、`agent/n2`): (1) idle: Graph tab 56.0 → **0.5 RPC/秒**、Frame Plan 58.0 → **1.5**(`get_gpu_timing` は本物の live 読み)。`get_modal_transform` の「engine 窓が focus を持つ」判定は `GetGUIThreadInfo(0)`(child thread を渡すと常に「持つ」になり 9/秒残った)。Graph / attachment / Inspector の timer は一度止めて `graph_observe_roundtrip` が赤になり戻した(それらは request pump で、`enterInstance` / `revealNode` / `beginWidgetEdit` 等は自分で flush しない。止めるには mutating path 全部に flush が要る = 別 slice)。(2) `get_frame_plan`: reply 到着 → scene ready は playground_pose 426 → 380 ms、example 616 → 580 ms(Debug)。残り ~85% は `populate()`(tree 6 本 + scene 再構築)なので worker thread 化は見送り(次の標的)。最初の probe は削った 2 pass の後に置いてあり差が出なかった → 位置を直して再計測。(3) view: Frame Plan パン 66.3 → **34.6 ms**、Graph パン 44.1 → 32.4、ズームはほぼ不変(viewport 全体を invalidate するため)。(4) **診断: Studio から example を開くと固まるのは engine でも handshake でもなく、`NativeWindowHost::embed()` の `SetWindowLongPtrW(GWL_STYLE)` が engine 窓の thread に WM_STYLECHANGING を send して、その thread が main loop 開始(`loop.cpp:390`)まで message を pump しないので UI thread が model load の残り時間だけ block する**(窓は 0.19 s で見えるのに `SendMessageW(WM_NULL)` が 14.8 s 後に返る)。Release でも 1.1〜1.4 s 固まる。直しは embed を「窓 thread が pump している」まで遅らせ、`WindowDiscoveryTimeoutMs = 15000` の kill を「まだ load 中」で再基準化し、文言も変える = 2 file の 3 変更(**Q-4**)。**穴**: Release の before / after は未計測(私の release Studio が link 対象を掴んでいた)/ idle の往復 p95(~8 ms)は変わらず(効いたのは engine 側の描画 thread の 19 ms/秒と reply 処理 60 回/秒)/ `pointer_focus_timer_` は 200 Hz のまま(RPC 無し。gesture 開始の遅延に効くので残置)/ Studio は `--vulkan-validation` を渡さないので Debug engine は常に validation + sync validation あり / `canvas_zoom_pan` と `graph_edit_roundtrip` の赤は既存(Q-3)。
+
+完了記録(2026-09-18、`cb76c164`): `gizmomodel`(`gizmoModalPollIntervalMs`)、`mainwindow`(`updateModalTransformPolling`、`engineInputActiveChanged`)、`inspectormodel` / `graphattachmentmodel` / `graphcanvasmodel`(poll 述語)、`frameplanwidget`(gpu timing の gate)、`engineprocess`(reply 行の 1 回走査、`result` bytes をそのまま)、`embeddedviewport`(`serializeJsonValue` 削除、`engineInputActiveChanged`)、`nativewindowhost`、`nodegraphics`(`CacheBackground` + `DontSavePainterState`、grid cache)。test 6 本 + `rpc-envelope` fixture mode(`process_fixture_child.cpp`)。非 GPU 全数 1734/1734。計測: `<作業ディレクトリ>/q2_perf_report.md`、driver は `<作業ディレクトリ>/bench/`。Release 版 Studio の launcher `<作業ディレクトリ>/studio_rel.cmd`(別 build tree `<作業ディレクトリ>/n2/build_rel`、`PELICAN_STUDIO_PLAYER` で RelWithDebInfo の player を指す)。
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
