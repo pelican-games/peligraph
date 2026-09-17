@@ -374,7 +374,7 @@
     "docs/source-code-guide/01_architecture_and_build.md|../../src/devcli/CMakeLists.txt|`src/devcli/CMakeLists.txt`": "set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PELICAN_INSTALL_DIR})",
     "docs/source-code-guide/01_architecture_and_build.md|../../src/devcli/main.cpp|`src/devcli/main.cpp`": "int main(int argc, char *argv[]) {",
     "docs/source-code-guide/01_architecture_and_build.md|../../src/devcli/main.cpp|`src/devcli/main.cpp`|#1": "int main(int argc, char *argv[]) {",
-    "docs/source-code-guide/01_architecture_and_build.md|../../src/devcli/main.cpp|usage文字列": "std::cerr << \"usage: pelican_cli <assets|bake-camera|import|dist-config|project|dump-lowered-material|vrm|graph-catalog> ...\"",
+    "docs/source-code-guide/01_architecture_and_build.md|../../src/devcli/main.cpp|usage文字列": "std::cerr << \"usage: pelican_cli <assets|bake-camera|import|dist-config|package|project|dump-lowered-material|vrm|graph-catalog> ...\"",
     "docs/source-code-guide/01_architecture_and_build.md|../../src/devcli/processrunner.hpp|`src/devcli/processrunner.hpp`": "ProcessResult runProcess(const ProcessOptions &options);",
     "docs/source-code-guide/01_architecture_and_build.md|../../src/devcli/projectinit.cpp|`rendering_config_json`": "constexpr std::string_view rendering_config_json = R\"json({",
     "docs/source-code-guide/01_architecture_and_build.md|../../src/devcli/projectinit.cpp|`templateFiles()`": "const std::vector<TemplateFile> &templateFiles() {",
