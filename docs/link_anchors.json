@@ -2378,7 +2378,7 @@
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/view/mainwindow.cpp|`MainWindow::MainWindow()`": "MainWindow::MainWindow() : MainWindow(applicationConfigDirectory()) {}",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/view/mainwindow.cpp|`MainWindow::populateOutliner()`": "void MainWindow::populateOutliner() {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/view/mainwindow.hpp|`MainWindow`": "class MainWindow : public QMainWindow {",
-    "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/view/uimain.cpp|`uimain()`": "int uimain(int argc, char **argv) {",
+    "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/view/uimain.cpp|`uimain()`": "int uimain(int argc, char **argv, LaunchOptions options) {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/viewport/embeddedviewport.hpp|`EmbeddedViewport`": "class EmbeddedViewport final : public QWidget {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/viewport/enginelogbuffer.hpp|`EngineLogBuffer`": "class EngineLogBuffer {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/devstudio/viewport/engineprocess.hpp|`EngineProcess`": "class EngineProcess final : public QObject {",
