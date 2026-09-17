@@ -23721,6 +23721,80 @@ Studio UI(AG-3b)/ event の観測・注入 / 時間軸 RPC / scrub の新規則 
 
 #### やらないこと
 IK / event / state_machine の demo / 外部定義参照(P-2b-2)/ example の移行(P-2a-4b)/ owner id の永続化 / root motion の demo / Studio の新 UI(AG-3b)。
+
+### P-2a-4b: `projects/example` を `pelican.graph` root に移す(出荷 project の意図した変更。v2)
+
+**§4 規則 11 上段。実装者: Claude(Fable + Opus)。設計レビュー 1 巡(Opus、`<作業ディレクトリ>/dr_r_p2a4b.md` 致命 4・大 12)で v2、打ち切り。前提: P-2a-4a(`5100be5f`)、P-2a-2(`62f09ce0`)。事実: `<作業ディレクトリ>/facts_p2a34.md` §6 + レビューの検算。**
+
+#### 前提(検算済み)
+- root 形を読む 25 箇所 / 11 file のうち **7 グループは文書を書き換える**(`authored["features"] = …` 等)= 読み helper では閉じない。`wp364/parent_manifest.json:220-223` は HEAD blob の sha256 + 5492 byte を pin。`featurecompose_test.cpp:3239` は fixture の**定義**(`graph_root.at("rendering") == legacy example`)を assert。`parseFrameGraphDefinitionsFromConfigJson`([frameplanner.cpp:1745-1756])は graph root で **throw せず空を返す**。`run_devcli_project_init.cmake:68-75` の禁止 key 検査は graph root で**真空で通る**。`run_preset_project_headless.cmake` は animgraph_demo 専用(example の代理条件ではない)。
+- `get_render_authoring_context.config_kind` は root 形に依存せず Studio の分岐も不変。example の root key は `forbid` に当たらない。`passfieldownership` の identity は不変。出荷 file へ書く test は無い。
+- web プロファイル(`docs/manual/09_web.md:23-30`)は「web で開ける ⊆ pelican で開ける、形式拡張は engine 先行、web は無視 → 対応の順に追随」。
+
+#### 決定
+1. `projects/example/passes/main_rendering_config.json` を `pelican.graph` root に。**包み方は関数 1 つ**(`src/project/renderconfigsection.*` の `wrapLegacyRenderingConfig(json)`、production 側に置き `devcli project init` と test helper が同じ関数を呼ぶ)。fixture `graph_root_example/passes/main.json` は example と **同じ関数で生成されたことを test が assert**(`featurecompose_test.cpp:3239` の定義 test は「fixture の `rendering` == example の `rendering`」に書き換え)。
+2. **test の追随は 3 種**: (a) 読み側 → `renderingSectionOf(json)`(production の locator)、(b) **書き側 7 グループ** → `renderingSectionOf(json)` の参照に書く(`authored["rendering"]["features"] = …` を helper `sectionOf(authored)["features"]` で)、(c) digest / plan の再凍結(`wp364/parent_manifest.json` の blob、`test/fixtures/devstudio/example_frame_plan.json`(P-2a-2 分も同時)、理由を commit message に)。`git grep -E 'config\.at\("(features|render_targets|rendering_passes)"\)' test/` が 0(root 直読みが残らない)。
+3. **production の parser 呼び手の棚卸し**: `parseFrameGraphDefinitionsFromConfigJson` を含め「rendering config の root を直接読む production 関数」を grep で列挙し、graph root では `rendering` 節を読むか **名前付きで拒否**する(空を返す関数を残さない)。列挙と各判定を完了記録に。
+4. `devcli project init` の template も graph root(`wrapLegacyRenderingConfig`)。`run_devcli_project_init.cmake` の禁止 key 検査は `rendering` 節の中で行う(真空化しない)。
+5. **manual**: `06_rendering.md` に「rendering config の 2 つの root」節、`03_project_format.md` の rendering config 説明を更新、`render.scalar{target}` と `binding: buffer` の 1 段落(P-2a-2 の欠落)。**`09_web.md` の対応範囲表に「`schema: pelican.graph` root は web 未対応 = 明示的に拒否」の 1 行**(サブセット原則。`my_webpage` 側の追随は記録)。
+6. example に graph node は入れない(画素不変)。README に「Inspector から `bloom.intensity` に曲線を繋ぐ手順」。他 4 project は legacy root のまま(凍結一覧に「2 つの root」)。
+
+#### 受け入れ(§4 規約 10)
+1. example の composed / pass / RT / frame plan / execution trace / golden 2 種 / `wp73_rgba8_hashes.json` bytes 不変。**対照**: `rendering` の外に `features` を残す包み方 → 4a の `render_config_section_unlocated` か composed の差で赤。
+2. root 直読みの grep が 0、25 箇所の test が緑、fixture == example の `rendering`。
+3. 棚卸し: 列挙した production parser で graph root に空を返すものが 0(test で `rendering` 節の値が出る、または名前付き)。
+4. `project init` が graph root、`run_devcli_project_init.cmake` の禁止 key 検査が `rendering` 節で効く(対照: 節に `render_targets` を入れると赤)。
+5. Studio: Features dock に bloom / ui(4a の widget test の形)。出荷 4 project bytes 不変。manual 4 箇所。
+
+#### やらないこと
+他 4 project の移行 / example への node 追加 / posegraph_demo の変更 / web 側の実装(記録のみ)。
+
+### R-1: 二つの正本の整理 —— 撤去 / 維持の表を閉じ、安い穴を塞ぐ(R 群。v2)
+
+**§4 規則 11 中段。実装者: Claude(Fable + Opus)。設計レビュー 1 巡(Opus、`<作業ディレクトリ>/dr_r_p2a4b.md`: 致命 4 / 大 8 / 小 9 / 事実誤認 12)で v2、打ち切り。事実: `<作業ディレクトリ>/facts_r.md`(訂正: `basicconfig.cpp:851` は scene import の fault 注入点で config の legacy field ではない / `shader_lab_*` は 8 本の family で `engine_resources.json` は web ミラー test の正本 / `--start-time 1e17` は今日 overflow しない)。**
+
+#### 撤去 / 維持の表(v1 計画 R 群「表の各行を『撤去 / 維持(理由)』で閉じる」。全部 `docs/v0_freeze.md`(R-3)に転記)
+
+| 行 | 裁定 | 理由 |
+|---|---|---|
+| 1 `pelican.value_graph` 直書き parse 分岐 | **維持** | 直書き形は `pelican.graph` の lowering 結果の **真上位集合**(`element_count == 2` の render_buffer binding、`SoundBindings` key を target にする audio binding は lowering が作れない)で、bindings decode の名前付き検査 7 種はこの形の test でしか到達しない。production の `Graph` 構築点は 1 箇所([renderingpassconfigregistration.cpp:833-835])で `pelican.graph` のみ。凍結一覧に「`pelican.value_graph` は **内部 IR + test 面**、外部契約ではない」と書く |
+| 2 `bindings` 配列 | **維持** | 1 と同じ(IR) |
+| 3 `AnimationComponent::graph` + `pelican.anim_graph` 2 本 / 4 `parameters` / 5 `setGraphParameter` `forceGraphState` | **維持** | AG-1b で「一本化」を v0 から撤回、parity が v0 の約束。凍結一覧に「2 つの装着様式は v0 の契約(owner 単位で排他)」 |
+| 6 `status == "committed"` の読み取り互換 | **維持(v0)** | 読み手は 2 箇所([renderconfigtransaction.cpp:498] と `:740-742`)。消すと legacy dir のある project が **二度と commit できない wedge**、「prepared 扱いで rollback」は committed 済み編集を消す破壊操作。v1 で両読み手を同時に消す(記録) |
+| 7 `withRootValue("nodes")` ×2 | **維持** | graph root key の書き手。N-2 が `definitions` を足す |
+| 8 `compute_tasks` の root 分岐 | **維持** | 1 規則(locator)。graph root では lowering が forbid = 到達不能、記録済み |
+| 9 `bloom_composite.frag` の `.spv` 非対称 / `shader_lab_*` family | **維持(記録)** | source-only は P-2a-2 の裁定。`shader_lab_*` は 8 本 family、`engine_resources.json` は web ミラー test の正本なので触らない |
+| 10 `docs/ci.md:48` の `pelican_golden_gpu` | **撤去(docs)** | code は `pelican_gpu` に統合済み |
+| 11 overlay の semantic 流儀 vs authoring の byte 流儀 | **維持(記録)** | overlay は起動時の一時合成で文書に書き戻さない |
+
+→ **code の撤去は 0 行**。この WP の実体は「維持の理由を凍結一覧に固定する」+ 下の安い穴。
+
+#### 安い穴(同 WP で閉じる)
+- RPC OFF build: `raytracing_rt3_1_production_test.cpp` の **2 TEST_CASE**(`:702` "RT6 multiple geometry BLAS preserve per-geometry records and refit" の `if (edit_space)` 内 :818-831、`:1706` "RT6 GPU generated indirect ray dimensions reach every 3D lane" の :1793-1883)の RPC 区間を `#if PELICAN_WITH_RPC` + **`SKIP(...)`**(同 file `:1888-1890` の型)で囲む。受け入れ: OFF build で 2 件が SKIP と報告され、**ON build の assertion 数が不変**(build できる、は代理条件なので採らない)。
+- export の `.tmp-<pid>`: 次の `export_render_feature` が同 `user://components/` 配下の `*.tmp-*` を掃除(自分の pid 以外)。
+- temp dir 共有で並列に赤になる `renderconfigeditor` 6 件に一意な temp root(`TemporaryDirectory` helper)。受け入れ: `-j16` ×3 連続緑。
+- `structfieldjson.hpp:783` の呼び手無し複製(`schemaRangeJson` の `StructFieldRange` 版)を削除。
+- owner 不一致: **frame ではなく graph 世代の同期時に 1 回**([scenegraphruntime.cpp:56-76] `synchronizeGraphRuntime` の変化検出)、`LOG_WARNING`(quill、`std::cerr` 直書きはしない)、「一度も解決したことがない scope」に限る(個体削除・再生成の一時状態は鳴らさない)。名前は log の文言のみ(RPC rejection / `@1` の流儀に第三の流儀を足さない)。
+- `--start-time` の overflow は今日起きないので **外す**(事実誤認、記録)。
+
+#### 受け入れ(§4 規約 10)
+1. 表 11 行が `docs/v0_freeze.md` に理由付きで載る(R-3 と同時着地。R-1 単独では台帳のこの表)。
+2. RPC OFF: `-DPELICAN_WITH_RPC=OFF` build で 2 件 SKIP、ON の assertion 数不変(ctest の出力で数える)。
+3. `.tmp-*` の掃除、temp root の一意化、複製削除、owner 警告 1 回(scene 再読込で 1 行、frame で 0 行)を各 test で。
+4. 出荷 5 project bytes 不変、golden 不変、非 GPU 全数。
+
+### R-2: 操作感 —— render config 編集の undo は v0 では約束しない(裁定のみ、v2)
+
+**裁定(実装無し)**: journal / undo は scene 編集 12 op だけ([editorjournal.cpp:2914-2933])。render config 編集は CAS + transaction で「失敗したら何も変わらない」が契約。**正しい理由(レビューで訂正)**: 文書単位の inverse は既にある(`RenderConfigDocumentCommitReceipt` + `rollbackCommittedRenderConfigDocuments`、graph 編集は `nodes` 1 key)。無いのは **scene journal と render config の編集を 1 本の undo stack に束ねる「複合 undo」**で、これは v1 計画の項目そのもの。v0 は「CAS + atomic commit + 文書単位 rollback(内部)」だけを約束し、複合 undo は「約束しないもの」に置く(理由: 4 シナリオに要らない、editor journal の既知の弱点 `:17468, :17469, :18420, :20061` を先に片付ける必要がある)。新 dialog の実操作は AG-3b の GUI e2e が 1 経路で見る。
+
+### R-3: サンプル・凍結一覧・v0 tag(v2。**P-2b 着地の後**)
+
+1. **学習サンプル**: 6 本(example / sprite_demo / animgraph_demo / posegraph_demo(P-2b) / vrm_xr_demo / raytracing_demo)。`docs/manual/02_getting_started.md` の索引に raytracing_demo と posegraph_demo を足し「3 つ」を「5 つ」に、`01_overview.md:112` の tree に 2 本を足す。README は 6 本とも「読む順序 / 何を変えると何が起きるか」の 2 節に揃える(既存内容を節に分けるだけ)。posegraph_demo の索引行と README は **P-2b の受け入れ**に移す(doclink gate)。
+2. **代表ゲーム**: `example` を代表とする。**物理 query / 音 / save-load の追加はしない**(scene に collider 0、repo に音声 file 0、`example_assets.md:8` が新規 binary を禁じ、`playSound` は AUDIO=OFF で throw = 「外す」と衝突、観測面も無い)。凍結一覧の「v0 の既知の穴」に「代表ゲームは入力 / ECS / VRM 表情 / light animation までで、物理 query・音・save-load・UI 操作・behavior のサンプルは v1」と記録。
+3. **凍結一覧 `docs/v0_freeze.md`**(正本): v1 計画の 5 行表を実物の名前に展開(文書 schema と version、RPC 名と params、`pelican.graph` の op / 型 / sink = **ON build の `pelican_cli graph-catalog` 出力**を貼り「OFF build では `pelican.pose` module が無い」と注記、ABI: `abi_v1.hpp` + `pose_staging_v1.hpp` の capability bits、`PELICAN_GAME_LOGIC_ABI_VERSION = 2`、`current_engine_version = "0.1.0"`、package manifest の最小形、2 つの root(legacy / `pelican.graph`)、2 つの装着様式)+ R-1 の表 + 「約束しないもの」(R-2 を含む)+ 「v0 の既知の穴」(facts_r §7)+ 末尾に「v0 で入ったもの」(AG-0 〜 R 群の SHA 一覧)。test: 既存 `run_devcli_graph_catalog.cmake` を「doc の op 表 == ON の集合、⊇ OFF の集合」に拡張。
+4. **v0 tag**: 全数(GPU 込み)1 回 → `docs/v0_freeze.md` と索引を commit → **`git tag -a v0.1.0 -m "pelican v0 (format 0.1.0)"`**(`current_engine_version` と一致させる。tag は release marker、format 互換の正本は [projectformat.hpp:23]、と freeze doc に 1 行)。
+
+受け入れ: 索引 2 行 + 数と tree の訂正 / README 6 本が 2 節 / `docs/v0_freeze.md` の catalog 部分が拡張 test で ON == / OFF ⊇ / tag の手順は記録のみ。
 ### AG-2: root motion —— clip の根の移動を個体の transform に渡す(v0「作る」の段 5。v2)
 
 **§4 規則 11 上段。実装者: Claude(Fable + Opus)。設計レビュー第 1 巡(Opus、`<作業ディレクトリ>/dr_ag2.md`: 致命 5 / 大 10)で v1 の「第二の sink」「pose handle の sideband」「dt からの差分」を全部撤回 → v2。第 2 巡 1 回で打ち切り。事実: `<作業ディレクトリ>/facts_ag2.md`。**
