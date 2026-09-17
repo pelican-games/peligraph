@@ -23538,6 +23538,8 @@ journal / undo(R 群)/ component 欄(P-1b)/ feature parameter / definition 内�
 
 受け入れ: golden 2 種 + trace が bytes 不変 / `bloom.json` を消すと `example` は `unknown_render_feature` / WP357 oracle 2 本が feature の pass を読んで緑(config 名読みに戻す変異で `WP357 shipping pass not found`)/ materialize → 派生の段数編集で画素が変わり `bloom.json` 不変 / `example` 以外の出荷 3 project bytes 不変
 
+実装時の裁定と完了記録(2026-09-18、`a1233ddd`): 15 file。13 pass + 9 RT は `src/core/resources/features/bloom.json` へ逐語移設(anchor は 1a のまま `post_ldr`、`insert: after:post_ldr`)、`example` は `features: [bloom, ui]`。golden 2 種 + `canonical_frame_plan_trace.txt` + `renderer_execution_traces.json` は bytes 不変(実装者の実測)。裁定: (1) `get_render_features` は pass 一覧を返さない(reference と parameter 面だけ)。「内部を見る」は engine 参照の feature 文書を読むことで足りるとし、RPC は増やさない。(2) feature 文書が無いときの `example` の失敗は `unknown_render_feature` ではなく engine resource registry の `Unknown engine resource id`。受け入れの文言はこの実測に合わせる。(3) `devstudio_fullscreen_pass_test` は `example_frame_plan.json` の Bloom の形の対照を失った(config から Bloom が消えたため。記録)。(4) `graphvariantpolicy` の substring heuristic が `bloom.json` を見るようになった(挙動変化なし)。(5) materialize → 派生の段数を 2 に編集で 3600 画素が変わり engine の `bloom.json` は不変。**着地 gate は利用者指示(2026-09-18「どんどん進めて後でテスト」)により build + 非 GPU 55 件だけ**。GPU 込みの全数は P-2 を閉じるときに 1 回。WP364 の `parent_manifest.json` は post-1b の blob に更新済み。
+
 #### P-2a-1c: Bloom の parameter(define)と materialize 後の編集(中。1b の後)
 
 1. `bloom.json` に `scalars`: `threshold`(float [0,4] 0.4)/ `knee`(float [0,1] 0.7)/ `intensity`(float [0,8] 2.0)。shader は `PELICAN_FEATURE_BLOOM_*` の define を読み、**define が無ければ `#error`**(前例どおり)。`hdr_on` / `hdr_off` の合成 fixture は `shader_defines` で同じ値を与える(`#ifndef` 既定値は作らない)
