@@ -759,7 +759,7 @@ RPC と CLI にだけあります。
 **Graph タブ**は共通グラフ(`pelican.graph` root の `nodes` と `definitions`)のノードキャンバスです。
 上段に `Scope:`(root と definition)とパンくず、右に `Values from:` と `Refresh`。左がキャンバス、右が
 選択ノードの詳細表で、**この 2 面構成は上の Logical graph と同じ形**です。`Values from:` で選ぶのは
-「どの instance の入力 port に実測値を重ねるか」だけで、`get_graph_values` を重ねます ——
+「どの instance の値を重ねるか」で、入力 port には `get_graph_values`、**出力 port には `get_graph_node_values`**(AG-3b。definition の中でも効きます)を重ねます。`Live` を入れると 250 ms ごとに読み直し、`Timeline` を開くと選択ノードの出力と owner の animation 状態が時間軸に貯まり、左ドラッグで scrub(`set_time` + 読むだけの描画)できます ——
 definition の中のノードの値は `get_graph_node_values`(AG-3a)で engine からは取れますが、
 **Studio 側の表示は AG-3b 待ちです**。ソケットの形が port の型を表し、形と色の既定表は
 [`graph_socket_styles.json`](../../src/devstudio/resources/graph_socket_styles.json#L1) —— 新しい型を足すのに

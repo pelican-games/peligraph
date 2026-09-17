@@ -23689,13 +23689,37 @@ install / export / find_package / `user://` や cross-project の解決 / graph 
 #### やらないこと
 Studio UI(AG-3b)/ event の観測・注入 / 時間軸 RPC / scrub の新規則 / pose 側 snapshot / 定義の編集(N-2)。
 
-### AG-3b: 観測の Studio 面 —— 時間軸 view、定義 scope の node 値、GUI の 1 経路(別 session pelican2-3e が起票・実装する。ここは契約の受け皿)
+### AG-3b: 観測の Studio 面 —— 定義 scope の node 値、時間軸 view、GUI の 1 経路(v1 = 最終。実装セッション pelican2-56 の AG-3a と対)
 
-**§4 規則 11 中段(Studio 内、engine は AG-3a の RPC のみ)。実装者: pelican2-3e(GUI track)。v1 計画 AG-3 行の受け入れ「GUI から 装着 → 編集 → 観測 → 保存 → 再読込 を 1 経路」は **この節が持つ**(AG-3a は RPC の unit と GPU まで)。**
+**§4 規則 11 中段(Studio 内。engine は AG-3a の RPC のみ消費)。実装者: Claude(Opus)。v1 計画 AG-3 行の受け入れ「GUI から 装着 → 編集 → 観測 → 保存 → 再読込 を 1 経路」はこの節が持つ。**
 
-- 消費する契約: `get_status.animation`(AG-3a 決定 1)、`get_graph_node_values{instance?}`(決定 2、`source: "rendering"`)、既存 `get_graph_instances` / `get_graph_values` / `edit_graph_document` / `edit_graph_instances` / `get_edit_result`。
-- 期待する中身(pelican2-3e が節を書き換えてよい): N-1 の canvas に definition scope の node 値を重ねる(`get_graph_node_values`)/ 時間軸の read-only view(`get_status.frame / time / animation` を frame ごとに読む。scrub は `set_time` + 1 frame の O-1 裁定に従う)/ 実 engine を起動する Studio e2e test 1 本(装着 → 編集 → 観測 → 保存 → 再読込)。
-- 記録: Studio は今日 `get_status` を呼ばない。実 engine 起動の Studio e2e test は repo に無い(canned-reply Harness と mock 往復だけ)。
+#### 前提
+- AG-3a(`9862ebdd`): `get_status.animation{available, sinks[]{owner, node, source, cursors[], frame_revision, pose_hash, state?, transition?, root_delta?}}`、`get_graph_node_values{instance?}` → `{instance, generation, frame, published, source, nodes[]{node, expanded, outputs{port: value}}}`(publish 時の snapshot。`instance` 省略で root の展開木全体。rendering / animation の node は `outputs: {}`)
+- N-2(`02a3d285`): canvas は root / 定義 scope の読み書き。`Values from` は root scope の instance 入力にだけ効く(`get_graph_values`)。`GraphCanvasReadCapability` は method を列挙で絞る(`get_graph_node_values` は未登録)
+- Studio は今日 `get_status` を呼ばない。実 engine を起動する Studio test は `devstudio_engine_*`(GPU)に前例がある(要確認)。O-1 裁定: scrub = `set_time{t}` + 1 frame(temporal history は reset される)
+
+#### 決定
+1. **どの scope でも値を重ねる**: `Values from` の instance を選ぶと、定義 scope では `get_graph_node_values{instance}` の `nodes[]` を node id で引き、**出力行**に値の帯(`7.5`)、root scope では `get_graph_node_values{}` で root node の出力にも帯。入力側の帯(N-1b、stored / connected)はそのまま。`published: false` は「not published」、`outputs: {}` の node は帯無し
+2. **Live**: Graph tab に「Live」toggle。ON の間は 250 ms ごとに `get_graph_node_values` を読み直す(read slot、edit の CAS に乗らない)。OFF は revision 変化時だけ(今日どおり)
+3. **時間軸 view(read-only)**: Graph tab の下に折り畳める帯「Timeline」。x = `get_status.time`(scene time)、選択 node の出力 port を最大 4 本まで折れ線で描く(Live 中に client 側の ring buffer に貯める。engine 側の履歴は作らない)。owner 付き instance を選んでいれば `get_status.animation` のその owner の sink(state / transition.progress / cursors の normalized_phase)を同じ軸に帯で描く。**scrub**: 時間軸をドラッグ → `set_time{t}` → `render_frame`(O-1 の読むだけの描画)→ 値を読み直す。再生は engine の時計に任せる(Studio から advance しない)
+4. **1 経路の e2e**(GPU、統合側で直列): 実 engine を起動し、Inspector で instance を **装着** → canvas で辺を繋ぎ帯を **編集** → `get_graph_node_values` と Timeline で **観測**(値が変わる)→ **保存**(既存の保存経路)→ project を **再読込** → 同じ graph と値が出る。`devstudio_engine_*` の形に倣う。**対照**: 保存を抜くと再読込で編集が消える / `get_graph_node_values` の method を capability から外すと観測が「not available」になる
+5. `GraphCanvasReadCapability` に `get_graph_node_values` と `get_status` を足す(読み 2 本)。`set_time` / `render_frame` は scrub 用に別 seam(write 側 2 本、明示)
+
+#### 受け入れ
+1. model test: 定義 scope で `get_graph_node_values{instance: left}` の reply → `sum` の出力行に値、`published: false` → notice。root scope で reply(instance 省略)→ root node の出力に値。対照: overlay を外す変異で赤
+2. scene test: Live ON で read が周期的に出る(fake clock)、OFF で止まる / Timeline に 2 本の折れ線が貯まり、scrub で `set_time` → `render_frame` の順に 1 回ずつ / `get_status.animation` の sink 帯が owner 一致のときだけ出る
+3. e2e(決定 4)1 本、GPU。既存の Studio test 全数不変、非 GPU 全数緑
+4. 実物: playground を Live にして `helmet_pulse` の値が脈打つのを見る(利用者)
+
+#### やらないこと
+engine 側の履歴 / 再生制御(play・pause は engine の時計)/ 曲線の専用エディタ(送り)/ 2D。
+
+#### N-2 の残り(利用者レビュー 3 巡目で優先を決める backlog)
+palette に `parameter_dependent` op(`render.*`)を足す parameter form / 種の定数の自動掃除 / 必須入力の切断時の再挿入 / undo / 定義の新規作成・削除・複製(`copy_definition`、P-2b-2)/ Features dock の export・import UI(P-2a-3 の RPC)/ 長い名前の省略 / node 面に定義名を出す
+
+実装時の裁定(2026-09-17、`agent/n1`): root scope の観測は「watch している instance がある」ことを gate にした(決定 1 の文言どおり。owner 付き instance の無い root だけの文書では出力の帯が出ない。外すなら `requestObservation` の条件 1 つ、記録)。`enterInstance` は降りた先の instance(owner 付き)を自動で watch する(挙動変更。scene test の「request が出ない」assertion 3 つを「edit が出ない」に書き換え)。Live 中に inline editor が開いていると repopulate を飛ばして次 tick で追いつく(editor を消さないため)。`get_status` → `get_graph_node_values` の順で同じ tick の時計を刻む。同時に飛ぶ pair は 1 組まで(遅い engine で queue を作らない)。scrub は edit slot にも read slot にも乗せない。`select`(automation)は combo では index を直接置く(popup は modal loop で、返事を持つ命令からは入れない。item view は本物の click)。**e2e が示した事実**: graph の永続化は `save_scene` ではなく `edit_graph_instances` / `edit_graph_document` の commit(`commitRenderConfigCandidateDocuments` が `passes/main.json` を promote)。**穴**: animation sink の e2e が無い(`studio_automation_graph` に pose sink が無い。model test のみ)/ scrub の GPU 検証無し(model と widget のみ。temporal history を reset するので永続化の経路の途中に置かなかった)/ docs の Graph tab 記述(manual 10 :760、13 :515-521、:629)は AG-3b の docs commit で追随。
+
+完了記録(2026-09-17、`5d64bd6e`): model(`graphcanvasmodel`)に node 値の overlay(`get_graph_node_values{instance?}`、定義 scope は instance 経由、root は instance 省略)、Live、Timeline の ring buffer(2400 sample、`time` / `frame` / 選択 node の数値 port ≤4 / owner 一致 sink の `phase` `progress`。instance・node・scope・接続が変わると空にする)、scrub(`set_time{t}` → `render_frame{}`)、animation sink の owner filter。capability に `requestGraphNodeValues` / `requestStatus`(読み)と `requestSetTime` / `requestRenderFrame`(書き、明示)。view に出力行の `graph_value_band`、`Live` checkbox、折り畳みの `Timeline` 帯(`GraphTimelineStrip`、左 press / drag で scrub)、`GraphCanvasWidget::poll()`(250 ms、test が時計になれる)。automation に `select` と `wait{enabled}`。test: model 5 case(対照: overlay を外す / Live の request を外す / scrub の順序を入れ替える / owner 比較を外す)、scene 3 case(帯の描画 / Live・Timeline・scrub の widget 経路 / capability から `get_graph_node_values` を外すと名前入りの notice)、automation 3 case、非 GPU 全数 1716/1716、**シナリオ `graph_observe_roundtrip`(54 step、32 s、実 engine)**: Outliner で `Camera` を `select` → Inspector の Attach dialog で `gain_curve_2` を装着 → canvas で降りて `sum/value` の帯 = 10(RPC でも 10)→ Timeline を開き Live で sample が貯まる → 帯を 4.5 に編集 → 帯 = 10.5 → 別複製を開くと 2 node(session の記憶ではない)→ 戻すと 3 node・gain 4.5・帯 10.5。対照: capability から外すと step 19 が `wait_timeout` / 永続化(`atomicReplace` の promote)を飛ばすと再読込で `nodes.$len expected 3, got 2`。8 シナリオ全部緑。v1 計画 AG-3 行の受け入れ「GUI から 装着 → 編集 → 観測 → 保存 → 再読込 を 1 経路」はこのシナリオが持つ。
 
 ### P-2b: posegraph_demo —— 姿勢の blend を曲線で駆動する学習 project(v0「作る」の実物。v2)
 

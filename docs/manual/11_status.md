@@ -421,7 +421,9 @@ v0 は「**装着 → 編集 → 観測 → 保存 → 再読込**の往復を�
 | Q-1 | Studio の自動操作面 | 済(`06829720`) | `pelican_studio --automation <名前>` の `QLocalServer` と `tools/studio_drive.py`、`test/studio_scenarios/*.json` を 1 本の e2e 経路にした | GUI を外から駆動して検査できる([第13章](13_editor.md) の「Studio の自動化面」・[第10章](10_tools.md) §10.7) |
 | N-3 | Frame Plan が共有のノード描画をまとう | 済(`dd088c2a`) | Frame Plan のノードをグラフキャンバスと同じ描画に寄せ、両キャンバスに zoom / pan / fit を入れた | 2 つのキャンバスの見た目と操作が揃う([第13章](13_editor.md)) |
 | Q-1b | 自動化面のポインタとメニュー | 済(`026268ee`) | `wheel` / `move` / `press` / `release` / `action` / `menu_list` / `view_state` の 7 命令を足し、`drag` に `button`、`key` に `route` を足した。ポインタ系は scroll area の viewport へ配送する | ホイール・押したままの移動・ボタン別ドラッグ・メニュー項目とショートカットまでシナリオで書ける([第10章](10_tools.md) §10.7・[第13章](13_editor.md)) |
+| N-4 | ノードの自動配置とパン | 済(`af6e335f`) | Qt 非依存の層配置(最長経路の列、dummy lane、重心法、isotonic regression の行)を両キャンバスが呼ぶ。example の Frame Plan で交差 133 → 44、node を横切る辺 41 → 0。右クリック「Auto layout」、パンは描画が収まっていても動く | 図が読める配置になる([第13章](13_editor.md)) |
 | N-5 | Studio のテーマ(ライト / ダーク) | 済(`43f032b1`) | 色を 1 枚の表(`studio_themes.json` + `StudioTheme`)に集め、View ▸ Theme で切り替え、QSettings `studio/theme` に保存。両キャンバスが listener で描き直す | エディタの明暗をノードキャンバスと揃えられる。再起動不要、既定は `dark`([第13章](13_editor.md)) |
+| AG-3b | 観測の Studio 面 | 済(`5d64bd6e`) | どの scope でも出力 port に `get_graph_node_values` の公開値、Live、Timeline 帯(選択 node の port と owner の animation 状態、scrub)。装着 → 編集 → 観測 → 保存 → 再読込 を実 engine のシナリオ `graph_observe_roundtrip` が 1 経路で通す | Studio で観測しながら編集できる([第13章](13_editor.md) §13.5) |
 
 この 25 行のほかに **R-2(操作感)** があります —— これは**実装のない裁定**で、「render config 編集の複合 undo は v0 では約束しない」を決めたものです(下の §11.3「v0 で約束しないもの」)。
 

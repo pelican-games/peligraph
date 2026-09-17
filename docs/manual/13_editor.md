@@ -519,9 +519,7 @@ Inspector の導線(次節)は専用の RPC を持たず、**普通の `ops` を
 1. **scope を選ぶ** —— `root` は文書そのもの、definition 名はその本体です。root の `graph.instance` ノードを
    **ダブルクリック**すると、その definition の中へ降ります。パンくずで戻ります。
 2. **値を重ねる** —— `Values from:` で owner を持つ root instance を選ぶと、その instance の入力 port に
-   `get_graph_values` の値と供給元が重なります。`(none)` で外れます。**definition の中では選べません** ——
-   `get_graph_values` は instance に対して答えるもので、definition の本体に答えられる値がないからです
-   ([その理由](../../src/devstudio/view/graphcanvaswidget.cpp#L1795))。
+   `get_graph_values` の値と供給元が重なり、**出力 port には `get_graph_node_values` の公開値が帯で重なります**(✅AG-3b。definition の中に降りても、その instance 経由の値が出ます)。`(none)` で外れます。`Live` で 250 ms ごとに読み直し(同時に飛ぶ読みは 1 組まで)、`Timeline` 帯を開くと選択ノードの数値 port(≤4)と owner の animation の phase / progress が貯まり、左ドラッグで `set_time` → `render_frame` の scrub です。
 3. **ノードを読む** —— ノードは見出し帯 + ソケット行です。見出しにはラベル(無ければ id)と、右に小さく型名(`op`)。
    見出し左の三角でソケット欄を**折り畳め**ます(tooltip は `Fold the sockets away` / `Show the sockets`)。
    折り畳んだノードでは、辺は見出し帯の左右中央の 1 点に集まります。辺の tooltip は
@@ -628,7 +626,7 @@ QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L25) に
 widget ではないので、`<view の objectName>::<種類>#<ノード id>[/<port>]` の合成名で指します ——
 例: `pelican.graphCanvasView::graph_value_pill#left/gain`([名前の生成](../../src/devstudio/automation/automationcommands.cpp#L99))。
 `list` は widget 名と合成名の両方を返すので、**ソースを読まずに一覧からシナリオを書けます**。
-`type` / `key` / `text` は item が抱えている埋め込み widget へ届きます([経路](../../src/devstudio/automation/automationcommands.cpp#L242))。
+`type` / `key` / `text` は item が抱えている埋め込み widget へ届きます。`select{name, text|index}` は item view の行を本物の click で、combo は index を直接置いて選び、`wait{enabled}` は有効化を待ちます(AG-3b)。出力 port の帯は `graph_value_band#<node>/<port>`([経路](../../src/devstudio/automation/automationcommands.cpp#L242))。
 
 **✅Q-1b で 7 個増えました** —— `wheel` / `move` / `press` / `release` と `action` / `menu_list` / `view_state` です
 (`drag` は `button` を取れるようになりました)。`press` / `move` / `release` は「いまどの button を押しているか」を
@@ -907,7 +905,7 @@ with PelicanRpc(["pelican_player", "--headless", "--rpc", "--project", "mygame"]
 | Studio の自動化面(`--automation` + シナリオ + report。**実物の窓と engine を通す e2e**) | ✅Q-1 `06829720` |
 | Frame Plan のノードの見た目を共通グラフと揃える / 2 つのキャンバス共通のズーム・パン・fit | ✅N-3 `dd088c2a` |
 | Studio のテーマ(View ▸ Theme のライト / ダーク。両キャンバスが追随、QSettings `studio/theme` に保存) | ✅N-5 `43f032b1` |
-| 時間軸 view・definition scope の値表示 | 🚧AG-3b(**未着地**。Studio は `get_status` を呼びません) |
+| 時間軸 view・definition scope の値表示 | ✅AG-3b(`5d64bd6e`。出力 port の帯、Live、Timeline 帯と scrub。シナリオ `graph_observe_roundtrip`) |
 | グラフ編集の undo / redo | 📐未実装(journal に載せない、が v0 の決定です) |
 
 Qt Inspectorは再帰schemaのListを行IDと値の一覧で表示します。`Add`で行の値をJSON入力し、`Edit`で選択行の値を変更、`Remove`で削除、`Up`/`Down`で順序を変えます。`$row`や`next_id`を入力する必要はありません。移動は同じ行IDを保持し、通常のUndo/Redoと保存を使用します。省略されたListにも行を追加できます。generated・pending・read-onlyのcomponentとList内部のネストしたListは編集対象外です。
