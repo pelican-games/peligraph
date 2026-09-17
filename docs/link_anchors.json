@@ -158,7 +158,6 @@
     "docs/manual/06_rendering.md|../../src/project/graphcomposition.cpp|:90": "if (!active_instances.insert(id).second) throw std::invalid_argument(\"cyclic subgraph connection: \" + id);",
     "docs/manual/06_rendering.md|../../src/project/graphcomposition.cpp|graphcomposition.cpp:100": "throw std::invalid_argument(\"graph owner requires scene and positive authoring object id\");",
     "docs/manual/06_rendering.md|../../src/project/graphcomposition.cpp|graphcomposition.cpp:323": "throw std::invalid_argument(\"unconnected graph input: \" + id + \".\" + port);",
-    "docs/manual/06_rendering.md|../../src/project/graphcomposition.cpp|graphcomposition.cpp:361": "throw GraphRegistryError(\"graph.definition_immutable@1\",",
     "docs/manual/06_rendering.md|../../src/project/graphcomposition.cpp|graphcomposition.cpp:48": "// edge > parameters > default. A parameter under an edge is not a",
     "docs/manual/06_rendering.md|../../src/project/graphcomposition.cpp|graphcomposition.cpp:88": "instantiate = [&](const std::string &id) -> const Json & {",
     "docs/manual/06_rendering.md|../../src/project/graphcomposition.cpp|graphcomposition.cpp:93": "if (!definitions.contains(ref)) throw std::invalid_argument(\"unknown graph definition: \" + ref);",
@@ -5065,6 +5064,7 @@
     "docs/source-code-guide/README.md|../../src/core/vkcore/renderer.cpp|`Renderer::render()`|#1": "void Renderer::render(",
     "docs/source-code-guide/README.md|../../src/core/vkcore/renderer.cpp|`Renderer::renderLogicalFrame()`": "void Renderer::renderLogicalFrame(",
     "docs/source-code-guide/README.md|../../src/core/vkcore/renderer.cpp|`Renderer::renderLogicalFrame()`|#1": "void Renderer::renderLogicalFrame(",
-    "docs/source-code-guide/README.md|../../src/player/main.cpp|`main()`": "int main(int argc, char *argv[]) {"
+    "docs/source-code-guide/README.md|../../src/player/main.cpp|`main()`": "int main(int argc, char *argv[]) {",
+    "docs/manual/06_rendering.md|../../src/project/graphcomposition.cpp|graphcomposition.cpp:363": "Json &locateNode(const EditScope &scope, const Json &definitions, const std::string &id) {"
   }
 }

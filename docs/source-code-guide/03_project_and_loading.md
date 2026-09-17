@@ -1143,6 +1143,7 @@ instance の入力ポートがどこから値を取るかは `edge > parameters 
 | `set_input` | [.cpp](../../src/project/graphcomposition.cpp#L653) | `source` は `{node, port}` ちょうど2キー、または `null`（切断） |
 | `set_node_parameters` | [.cpp](../../src/project/graphcomposition.cpp#L672) | 空オブジェクトは `parameters` キーごと削除 |
 | `set_node_label` | [.cpp](../../src/project/graphcomposition.cpp#L683) | 人が付ける表示名。識別子ではないので、消すのは空文字列で表す |
+| `set_layout` | [.cpp](../../src/project/graphcomposition.cpp#L683) | scope の editor 用 `layout`(node 位置 / reroute / tie)を丸ごと置換。`null` で消す。名指した node / 辺が無い、座標が非有限、未知 key は `graph.layout_invalid@1`。layout だけの op 列は再 compose しない(N-6) |
 
 各opは任意で **`scope`** を取ります。省略（または根の名前）なら根の `nodes`、定義名なら `definitions.<名前>.nodes` を編集対象にします（[`resolveEditScope()`](../../src/project/graphcomposition.cpp#L385)）。scope は op ごとに解決し直します —— 同じ並びの前のopが定義の中身を変えている可能性があるからです。定義の中に居る id を根から触ろうとすると `graph.definition_immutable@1` です。
 
