@@ -3107,11 +3107,14 @@ TEST_CASE("startup feature overlay is explicit, additive, and purgeable",
     const auto before_gpu_timing =
         apply_editor(editor_before_gpu_timing);
     const auto effective = apply_editor(editor_overlay);
-    REQUIRE(base.at("features") == nlohmann::json::array(
-                                      {"engine://features/ui.json"}));
+    REQUIRE(base.at("features") ==
+            nlohmann::json::array(
+                {"engine://features/bloom.json",
+                 "engine://features/ui.json"}));
     REQUIRE(effective.at("features") ==
             nlohmann::json::array(
-                {"engine://features/ui.json",
+                {"engine://features/bloom.json",
+                 "engine://features/ui.json",
                  "engine://features/gizmo.json",
                  "engine://features/picking.json",
                  "engine://features/gpu_timing.json"}));
@@ -3121,9 +3124,10 @@ TEST_CASE("startup feature overlay is explicit, additive, and purgeable",
     const auto enabled = composeRenderFeatureConfig(
         effective,
         RenderFeatureComposeDependencies{loadEngineFeature, true});
-    REQUIRE(baseline.feature_names == std::vector<std::string>{"ui"});
+    REQUIRE(baseline.feature_names ==
+            std::vector<std::string>{"bloom", "ui"});
     REQUIRE(enabled.feature_names ==
-            std::vector<std::string>{"ui", "gizmo", "picking",
+            std::vector<std::string>{"bloom", "ui", "gizmo", "picking",
                                      "gpu_timing"});
 
     struct FramePlanTopology {
@@ -3400,8 +3404,9 @@ TEST_CASE("bundled TAA composes into the example pipeline as a two-pass history 
 
     const auto result = composeRenderFeatureConfig(
         config, RenderFeatureComposeDependencies{loadEngineFeature, true});
+    // P-2a-1b: the example's own bloom is the first feature it composes.
     REQUIRE(result.feature_names ==
-            std::vector<std::string>{"ui", "velocity", "taa"});
+            std::vector<std::string>{"bloom", "ui", "velocity", "taa"});
     REQUIRE(result.projection_jitter == nlohmann::json{
         {"provider", "taa"}, {"pattern", "halton23"}, {"phases", 8}});
 

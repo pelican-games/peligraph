@@ -7,6 +7,7 @@
 #include "../src/core/fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/material/materialcontainer.hpp"
@@ -20,6 +21,7 @@
 #include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
+#include "../src/project/featurecompose.hpp"
 
 #include <algorithm>
 #include <array>
@@ -201,31 +203,39 @@ void wp357WriteProjectShell(const std::filesystem::path &root,
         R"json({"schema":"pelican.ui","version":1,"key":"wp357","revision":"1","direction":"ltr","root":{"id":"root","type":"panel","children":[]}})json");
 }
 
-nlohmann::json wp357ShippingPass(const nlohmann::json &shipping,
+// P-2a-1b moved the 13 bloom passes and their 9 render targets out of the
+// shipping project and into engine://features/bloom.json. The oracle reads
+// the *unexpanded* feature document: `insert` is a sibling key of `pass`, and
+// no `$` binding appears inside the pass objects, so the declarations below
+// are byte-identical to what the project used to author.
+nlohmann::json wp357BloomFeature() {
+    return wp357ReadJson(
+        wp357SourceRoot() / "src" / "core" / "resources" / "features" /
+        "bloom.json");
+}
+
+nlohmann::json wp357ShippingPass(const nlohmann::json &feature,
                                  std::string_view name) {
-    for (const auto &rendering_pass : shipping.at("rendering_passes")) {
-        for (const auto &pass : rendering_pass.at("passes")) {
-            if (pass.value("name", std::string{}) == name) return pass;
-        }
+    for (const auto &entry : feature.at("passes")) {
+        const auto &pass = entry.at("pass");
+        if (pass.value("name", std::string{}) == name) return pass;
     }
-    throw std::runtime_error("WP357 shipping pass not found: " +
+    throw std::runtime_error("WP357 bloom feature pass not found: " +
                              std::string{name});
 }
 
-nlohmann::json wp357ShippingTarget(const nlohmann::json &shipping,
+nlohmann::json wp357ShippingTarget(const nlohmann::json &feature,
                                    std::string_view name) {
-    for (const auto &target : shipping.at("render_targets")) {
+    for (const auto &target : feature.at("render_targets")) {
         if (target.value("name", std::string{}) == name) return target;
     }
-    throw std::runtime_error("WP357 shipping target not found: " +
+    throw std::runtime_error("WP357 bloom feature target not found: " +
                              std::string{name});
 }
 
 nlohmann::json wp357BloomConfig(bool hdr,
                                 std::optional<std::size_t> peeled_stage) {
-    const auto shipping = wp357ReadJson(
-        wp357SourceRoot() / "projects" / "example" / "passes" /
-        "main_rendering_config.json");
+    const auto shipping = wp357BloomFeature();
     nlohmann::json targets = nlohmann::json::array();
     for (std::size_t level = 0; level < 4; ++level) {
         auto working = wp357ShippingTarget(shipping, wp357LevelTargets[level]);
@@ -721,25 +731,24 @@ void wp357RunBloomFormat(bool hdr) {
     }
 }
 
-void wp357AddTransferSource(nlohmann::json &config,
-                            std::string_view target_name) {
-    auto &targets = config.at("render_targets");
-    const auto target = std::find_if(
-        targets.begin(), targets.end(),
-        [&](const auto &candidate) {
-            return candidate.value("name", std::string{}) ==
-                   target_name;
-        });
-    if (target == targets.end()) {
-        throw std::runtime_error(
-            "WP357 production target not found: " +
-            std::string{target_name});
-    }
-    auto &usage = (*target)["usage"];
-    if (std::find(usage.begin(), usage.end(), "TRANSFER_SRC") ==
-        usage.end()) {
-        usage.push_back("TRANSFER_SRC");
-    }
+// The bloom render targets belong to the feature now, so the probe cannot
+// edit them in place. A trailing project feature that only carries
+// `render_target_overrides` adds the readback usage after the bloom feature
+// has declared the targets -- the same shape the punctual shadow goldens use.
+constexpr const char *wp357ProbeFeatureFile =
+    "features/wp357_production_probe.json";
+
+nlohmann::json wp357ProductionProbeFeature() {
+    return nlohmann::json{
+        {"schema", "pelican.render_feature"},
+        {"version", 1},
+        {"name", "wp357_production_probe"},
+        {"render_target_overrides",
+         {{"Bloom_Downsample_H_0_RT",
+           {{"usage", nlohmann::json::array({"TRANSFER_SRC"})}}},
+          {"Bloom_Upsample_V_0_RT",
+           {{"usage", nlohmann::json::array({"TRANSFER_SRC"})}}}}},
+    };
 }
 
 nlohmann::json wp357ProductionProbeConfig() {
@@ -747,7 +756,7 @@ nlohmann::json wp357ProductionProbeConfig() {
         wp357SourceRoot() / "projects" / "example" / "passes" /
         "main_rendering_config.json");
     const auto shipping_final =
-        wp357ShippingPass(config, "FinalBloomComposite");
+        wp357ShippingPass(wp357BloomFeature(), "FinalBloomComposite");
     const auto expected_inputs = nlohmann::json::array(
         {"lit_color", "Bloom_Upsample_V_0_RT"});
     if (shipping_final.at("input") != expected_inputs) {
@@ -755,23 +764,137 @@ nlohmann::json wp357ProductionProbeConfig() {
             "WP357 shipping FinalBloomComposite input contract changed: " +
             shipping_final.at("input").dump());
     }
+    const auto &features = config.at("features");
+    if (std::find(features.begin(), features.end(),
+                  nlohmann::json("engine://features/bloom.json")) ==
+        features.end()) {
+        throw std::runtime_error(
+            "WP357 shipping project no longer uses the bloom feature: " +
+            features.dump());
+    }
 
     // TRANSFER_SRC is observational only. Every authored format, extent,
     // format_class, feature and shipping pass stays unchanged in the
     // canonical execution leg.
-    wp357AddTransferSource(config, "Bloom_Downsample_H_0_RT");
-    wp357AddTransferSource(config, "Bloom_Upsample_V_0_RT");
+    config.at("features").push_back(
+        "project://" + std::string{wp357ProbeFeatureFile});
 
     return config;
 }
 
+// P-2a-1b, part operation of "derive for the project": run the same compose
+// seam `materialize` uses (`materialized_feature`) to obtain the concrete
+// bloom document at its binding position, cut it to two levels by hand, and
+// point the project at the derivative. The engine document is never written.
+constexpr const char *wp357LocalBloomFeatureFile =
+    "features/wp357_bloom_local.json";
+
+std::filesystem::path wp357BloomFeatureSourcePath() {
+    return wp357SourceRoot() / "src" / "core" / "resources" / "features" /
+           "bloom.json";
+}
+
+nlohmann::json wp357MaterializeBloomFeature(
+    const std::filesystem::path &root,
+    const nlohmann::json &config) {
+    std::optional<nlohmann::json> materialized;
+    composeRenderFeatureConfig(
+        config,
+        RenderFeatureComposeDependencies{
+            .load_feature_json =
+                [&root](std::string_view reference) -> std::string {
+                    if (reference.starts_with("engine://")) {
+                        return engineResourceOrThrow(reference.substr(9));
+                    }
+                    if (reference.starts_with("project://")) {
+                        return wp357ReadText(
+                            root / std::string{reference.substr(10)});
+                    }
+                    throw std::runtime_error(
+                        "WP357 unexpected feature reference: " +
+                        std::string{reference});
+                },
+            .runtime_shader_compiler_enabled = true,
+            .materialized_feature =
+                [&materialized](std::string_view reference,
+                                const nlohmann::json &feature) {
+                    if (reference == "engine://features/bloom.json") {
+                        materialized = feature;
+                    }
+                },
+        });
+    if (!materialized) {
+        throw std::runtime_error(
+            "WP357 bloom feature was not composed from the shipping config");
+    }
+    return *materialized;
+}
+
+nlohmann::json wp357TwoLevelBloomFeature(nlohmann::json feature) {
+    constexpr std::array<std::string_view, 6> dropped_passes{
+        "HorizontalBlur_2", "VerticalBlur_2", "HorizontalBlur_3",
+        "VerticalBlur_3", "UpsampleBlend_3", "UpsampleBlend_2"};
+    constexpr std::array<std::string_view, 4> dropped_targets{
+        "Bloom_Downsample_H_2_RT", "Bloom_Upsample_V_2_RT",
+        "Bloom_Downsample_H_3_RT", "Bloom_Upsample_V_3_RT"};
+    auto passes = nlohmann::json::array();
+    for (const auto &entry : feature.at("passes")) {
+        const auto name =
+            entry.at("pass").value("name", std::string{});
+        if (std::find(dropped_passes.begin(), dropped_passes.end(), name) !=
+            dropped_passes.end()) {
+            continue;
+        }
+        passes.push_back(entry);
+    }
+    if (passes.size() + dropped_passes.size() !=
+        feature.at("passes").size()) {
+        throw std::runtime_error(
+            "WP357 derived bloom feature did not drop two levels of passes");
+    }
+    auto targets = nlohmann::json::array();
+    for (const auto &target : feature.at("render_targets")) {
+        const auto name = target.value("name", std::string{});
+        if (std::find(dropped_targets.begin(), dropped_targets.end(), name) !=
+            dropped_targets.end()) {
+            continue;
+        }
+        targets.push_back(target);
+    }
+    if (targets.size() + dropped_targets.size() !=
+        feature.at("render_targets").size()) {
+        throw std::runtime_error(
+            "WP357 derived bloom feature did not drop two levels of targets");
+    }
+    feature["passes"] = std::move(passes);
+    feature["render_targets"] = std::move(targets);
+    return feature;
+}
+
 void wp357WriteProductionProbeProject(
-    const std::filesystem::path &root) {
+    const std::filesystem::path &root,
+    bool derive_two_level_bloom = false) {
     wp357WriteProjectShell(
         root, "WP357 shipping bloom composite", "main_render");
     wp357WriteText(
-        root / "passes" / "main.json",
-        wp357ProductionProbeConfig().dump(2));
+        root / wp357ProbeFeatureFile,
+        wp357ProductionProbeFeature().dump(2));
+    auto config = wp357ProductionProbeConfig();
+    if (derive_two_level_bloom) {
+        wp357WriteText(
+            root / wp357LocalBloomFeatureFile,
+            wp357TwoLevelBloomFeature(
+                wp357MaterializeBloomFeature(root, config))
+                .dump(2));
+        for (auto &entry : config.at("features")) {
+            if (entry == "engine://features/bloom.json") {
+                entry = "project://" +
+                        std::string{wp357LocalBloomFeatureFile};
+            }
+        }
+    }
+    wp357WriteText(
+        root / "passes" / "main.json", config.dump(2));
 }
 
 CommonPolygonVertData wp357EmissiveQuad() {
@@ -841,10 +964,14 @@ struct Wp357ProductionCapture {
     RenderTargetReadback display;
 };
 
-Wp357ProductionCapture wp357CaptureProductionComposite() {
-    const auto root = wp357TempProject("production_final_v0");
+Wp357ProductionCapture wp357CaptureProductionComposite(
+    bool derive_two_level_bloom = false) {
+    const auto root = wp357TempProject(
+        derive_two_level_bloom ? "production_final_v0_two_level"
+                               : "production_final_v0");
     try {
-        wp357WriteProductionProbeProject(root);
+        wp357WriteProductionProbeProject(
+            root, derive_two_level_bloom);
         Wp357ProductionCapture capture;
         {
             FastModuleContainer modules;
@@ -916,6 +1043,36 @@ std::array<std::uint32_t, 4> wp357CenterStorage(
         result[channel] = wp357StorageAt(readback, x, y, channel);
     }
     return result;
+}
+
+// P-2a-1b operation "derive for the project": the engine feature is the
+// component, the project keeps a derivative of it, and only the derivative
+// changes the frame. Removing the hand edit (or pointing the project back at
+// engine://features/bloom.json) makes the two captures equal.
+void wp357RequireDerivedBloomFeatureChangesPixels() {
+    const auto engine_document =
+        wp357ReadText(wp357BloomFeatureSourcePath());
+    const auto canonical = wp357CaptureProductionComposite(false);
+    const auto derived = wp357CaptureProductionComposite(true);
+    // The component the derivative was cut from is untouched, byte for byte.
+    REQUIRE(wp357ReadText(wp357BloomFeatureSourcePath()) ==
+            engine_document);
+
+    // Levels 2 and 3 only feed the upsample chain, so the first downsample is
+    // identical and the composited chain output is not.
+    REQUIRE(wp357ChangedPixels(canonical.h0, derived.h0, false) == 0);
+    const auto changed =
+        wp357ChangedPixels(canonical.v0, derived.v0, false);
+    REQUIRE(changed > 0);
+    const auto canonical_v0 = wp357CenterStorage(canonical.v0);
+    const auto derived_v0 = wp357CenterStorage(derived.v0);
+    std::cout << "WP357_DERIVED levels=2 changedPixels=" << changed
+              << " canonicalV0=" << canonical_v0[0] << ','
+              << canonical_v0[1] << ',' << canonical_v0[2] << ','
+              << canonical_v0[3]
+              << " derivedV0=" << derived_v0[0] << ','
+              << derived_v0[1] << ',' << derived_v0[2] << ','
+              << derived_v0[3] << '\n';
 }
 
 void wp357RequireProductionComposite() {
@@ -1066,6 +1223,7 @@ void GoldenHarness::runBloomUpsampleOracle() {
     setupLogger();
     try {
         wp357RequireProductionComposite();
+        wp357RequireDerivedBloomFeatureChangesPixels();
         wp357RunBloomFormat(false);
         wp357RunBloomFormat(true);
     } catch (const std::runtime_error &error) {

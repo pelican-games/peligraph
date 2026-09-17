@@ -627,6 +627,22 @@ Json wp343GroupingAuthoredExample() {
         std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
         "example" / "passes" / "main_rendering_config.json");
 
+    // P-2a-1b moved the 13 bloom passes and their 9 render targets into
+    // engine://features/bloom.json. This fixture needs them as authored
+    // project passes -- it clears `features` below and depends on one convex
+    // block of 19 adjacent authored render nodes -- so splice the component's
+    // declarations back in at the position the project used to hold them.
+    const Json bloom = readJson(
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "src" / "core" /
+        "resources" / "features" / "bloom.json");
+    for (const auto &target : bloom.at("render_targets")) {
+        authored.at("render_targets").push_back(target);
+    }
+    for (const auto &entry : bloom.at("passes")) {
+        authored.at("rendering_passes").at(0).at("passes").push_back(
+            entry.at("pass"));
+    }
+
     // Keep 19 production-authored render passes in one convex block. The
     // shipped UI feature supplies the nineteenth render node after engine
     // anchors, while the two snapshot copies sit between project render

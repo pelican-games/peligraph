@@ -48,6 +48,7 @@ constexpr auto registered_ids =
     "features/ui.json",
     "features/sprite.json",
     "features/gpu_timing.json",
+    "features/bloom.json",
     "features/clustered_lighting.json",
     "features/cube_capture.json",
     "features/hdr.json",
@@ -223,6 +224,7 @@ std::optional<std::string_view> engineResource(std::string_view id) {
         static const std::string feature = b::embed<"features/gpu_timing.json">().str();
         return std::string_view{feature};
     }
+    PELICAN_ENGINE_RESOURCE("features/bloom.json")
     PELICAN_ENGINE_RESOURCE("features/clustered_lighting.json")
     PELICAN_ENGINE_RESOURCE("features/cube_capture.json")
     PELICAN_ENGINE_RESOURCE("features/hdr.json")

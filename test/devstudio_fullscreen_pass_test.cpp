@@ -785,9 +785,13 @@ TEST_CASE(
         config.at("rendering_passes").at(0).at("name").get<std::string>();
 
     RefreshHarness refresh;
+    // P-2a-1b moved the bloom passes into engine://features/bloom.json, so
+    // the authored config no longer declares HorizontalBlur_0. The second
+    // sample stays an authored fullscreen pass whose declaration carries keys
+    // the form does not own (resource_ports, clear_color).
     for (const std::string_view pass_name :
          std::array{std::string_view{"ssao_pass"},
-                    std::string_view{"HorizontalBlur_0"}}) {
+                    std::string_view{"ssao_blur_pass"}}) {
         const Json &declaration = findPass(config, graph, pass_name);
         FullscreenPassWidget form{refresh.driver()};
         form.receiveAuthoringConfig(
@@ -2048,7 +2052,9 @@ TEST_CASE(
     auto &position = required<QSpinBox>(
         form, "pelican.fullscreenPass.position");
     REQUIRE(position.value() == static_cast<int>(authored_count));
-    REQUIRE(position.value() == 20);
+    // Seven authored passes remain after P-2a-1b moved the 13 bloom passes
+    // into engine://features/bloom.json; the runtime plan still has 30 nodes.
+    REQUIRE(position.value() == 7);
     REQUIRE(position.value() != static_cast<int>(plan.at("nodes").size()));
 }
 

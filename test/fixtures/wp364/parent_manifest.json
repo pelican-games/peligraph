@@ -219,8 +219,8 @@
     {
      "path": "projects/example/passes/main_rendering_config.json",
      "eol": "lf",
-     "blob_sha256": "e663b303ac68cb416855830890598b2847f3b0210c201e1012b16c16080a3591",
-     "blob_bytes": 13285
+     "blob_sha256": "1b872c30056dc5bc73318e6d61589fb35d4051838ebe16db28eb39f0a7989c46",
+     "blob_bytes": 5492
     },
     {
      "path": "projects/example/project.json",

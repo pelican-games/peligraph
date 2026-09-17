@@ -38,6 +38,7 @@
     "features/ui.json",
     "features/sprite.json",
     "features/gpu_timing.json",
+    "features/bloom.json",
     "features/clustered_lighting.json",
     "features/cube_capture.json",
     "features/hdr.json",

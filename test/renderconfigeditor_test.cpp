@@ -2241,6 +2241,89 @@ TEST_CASE("Feature materialization saves the concrete feature and switches its o
     }
 }
 
+TEST_CASE("The shipping bloom component is readable from the project and derives without touching the engine document",
+          "[render-config-editor][feature-materialize-edit][bloom][p2a1b]") {
+    TemporaryAnimgraphProject project;
+    // The shipping project is the subject: P-2a-1b made its bloom an engine
+    // component instead of 13 authored passes.
+    writeBytes(project.render_config,
+               readBytes(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                         "projects" / "example" / "passes" /
+                         "main_rendering_config.json"));
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+
+    // Operation 1, "look inside": the project names the component by its
+    // engine reference, and that reference resolves to the 13 bloom passes.
+    const auto features = service->getRenderFeatures(Json::object());
+    const auto &instances = features.at("feature_instances");
+    const auto bloom = std::find_if(
+        instances.begin(), instances.end(), [](const auto &instance) {
+            return instance.at("reference") ==
+                   "engine://features/bloom.json";
+        });
+    REQUIRE(bloom != instances.end());
+    CHECK(bloom->at("scope") == "root");
+    CHECK(bloom->at("materializable") == true);
+    const auto engine_bytes =
+        engineResourceOrThrow("features/bloom.json");
+    CHECK(bloom->at("feature_document_digest").at("hex") ==
+          renderConfigSourceDigest(engine_bytes));
+    const auto engine_document = Json::parse(engine_bytes);
+    std::vector<std::string> pass_names;
+    for (const auto &entry : engine_document.at("passes")) {
+        pass_names.push_back(
+            entry.at("pass").at("name").get<std::string>());
+    }
+    CHECK(pass_names ==
+          std::vector<std::string>{
+              "HighLuminanceExtraction", "HorizontalBlur_0",
+              "VerticalBlur_0", "HorizontalBlur_1", "VerticalBlur_1",
+              "HorizontalBlur_2", "VerticalBlur_2", "HorizontalBlur_3",
+              "VerticalBlur_3", "UpsampleBlend_3", "UpsampleBlend_2",
+              "UpsampleBlend_1", "FinalBloomComposite"});
+    CHECK(engine_document.at("render_targets").size() == 9);
+
+    // Operation 2, "derive for the project": root-scope materialization writes
+    // the concrete document into the project and repoints the owner. The
+    // engine copy in the repository is not a write target.
+    const auto engine_source =
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "src" / "core" /
+        "resources" / "features" / "bloom.json";
+    const auto engine_source_before = readBytes(engine_source);
+    const auto index = bloom->at("index").get<std::size_t>();
+    const auto accepted = service->editRenderFeatures(
+        {{"base_source_digest",
+          features.at("source_digest").at("hex")},
+         {"operations",
+          Json::array({Json{
+              {"op", "materialize"},
+              {"scope", "root"},
+              {"index", index},
+              {"destination_reference",
+               "project://passes/bloom-local.json"},
+              {"base_feature_digest",
+               bloom->at("feature_document_digest").at("hex")}}})}});
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    service->commitPending();
+    REQUIRE(service->getResult({{"ticket", accepted.at("ticket")}})
+                .at("committed") == true);
+
+    const auto derived = Json::parse(
+        readBytes(project.root / "passes" / "bloom-local.json"));
+    CHECK(derived.at("name") == "bloom");
+    CHECK(derived.at("passes") == engine_document.at("passes"));
+    CHECK(derived.at("render_targets") ==
+          engine_document.at("render_targets"));
+    CHECK(Json::parse(readBytes(project.render_config))
+              .at("features")
+              .at(index) == "project://passes/bloom-local.json");
+    CHECK(readBytes(engine_source) == engine_source_before);
+}
+
 TEST_CASE("Pipeline fork saves the original preset and switches the root atomically",
           "[render-config-editor][preset-fork]") {
     TemporaryAnimgraphProject project;

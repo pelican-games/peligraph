@@ -800,10 +800,15 @@ TEST_CASE(
     const Json hybrid = readJson(
         root / "src" / "core" / "resources" / "render_pipelines" /
         "hybrid_v1.json");
-    const std::array<Json, 4> target_documents{
+    // P-2a-1b moved the example's nine Bloom_* targets into the engine bloom
+    // feature. They are still part of the shipping corpus, just declared by
+    // the component the project now names instead of by the project.
+    const std::array<Json, 5> target_documents{
         hybrid.at("config"),
         readJson(root / "projects" / "example" / "passes" /
                  "main_rendering_config.json"),
+        readJson(root / "src" / "core" / "resources" / "features" /
+                 "bloom.json"),
         readJson(root / "projects" / "sprite_demo" / "passes" /
                  "main.json"),
         readJson(root / "projects" / "vrm_xr_demo" / "passes" /

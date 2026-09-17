@@ -54,6 +54,49 @@ bool contains(std::string_view haystack, std::string_view needle) {
     return haystack.find(needle) != std::string_view::npos;
 }
 
+// WP357's production oracle reads the bloom passes and render targets from
+// the engine feature that now owns them (P-2a-1b). The pass objects live
+// unexpanded under `passes[i].pass`; `insert` is a sibling key, so the pass
+// itself is the same authored declaration the project used to carry.
+std::filesystem::path bloomFeaturePath() {
+    return sourceRoot() / "src" / "core" / "resources" / "features" /
+           "bloom.json";
+}
+
+nlohmann::json bloomFeaturePass(const nlohmann::json &feature,
+                                std::string_view name) {
+    for (const auto &entry : feature.at("passes")) {
+        const auto &pass = entry.at("pass");
+        if (pass.value("name", std::string{}) == name) return pass;
+    }
+    throw std::runtime_error(
+        "WP357 bloom feature pass not found: " + std::string{name});
+}
+
+// The shipping project keeps `lit_color` and the scene passes; the feature
+// supplies the 13 bloom passes and their 9 render targets. Splicing the two
+// reproduces exactly the pass set the project authored before P-2a-1b, so the
+// planner assertions below still describe the shipping frame.
+nlohmann::json shippingBloomConfig() {
+    auto config = readJson(sourceRoot() / "projects" / "example" / "passes" /
+                           "main_rendering_config.json");
+    const auto feature = readJson(bloomFeaturePath());
+    for (const auto &target : feature.at("render_targets")) {
+        config.at("render_targets").push_back(target);
+    }
+    auto &passes = config.at("rendering_passes").at(0).at("passes");
+    for (const auto *name : {"HighLuminanceExtraction", "HorizontalBlur_0",
+                             "VerticalBlur_0", "HorizontalBlur_1",
+                             "VerticalBlur_1", "HorizontalBlur_2",
+                             "VerticalBlur_2", "HorizontalBlur_3",
+                             "VerticalBlur_3", "UpsampleBlend_3",
+                             "UpsampleBlend_2", "UpsampleBlend_1",
+                             "FinalBloomComposite"}) {
+        passes.push_back(bloomFeaturePass(feature, name));
+    }
+    return config;
+}
+
 void requirePlanFixture(const nlohmann::json &actual, const std::filesystem::path &path) {
     const char *update = std::getenv("PELICAN_UPDATE_FRAMEPLAN_FIXTURES");
     if (update != nullptr && std::string{update} == "1") {
@@ -1026,9 +1069,7 @@ TEST_CASE("frame planner example plan JSON matches fixture", "[frameplanner]") {
 TEST_CASE(
     "WP357 production bloom attachment loads own the destination dependency",
     "[frameplanner][attachment-operations][wp357][shipping]") {
-    const auto shipping =
-        readJson(sourceRoot() / "projects" / "example" / "passes" /
-                 "main_rendering_config.json");
+    const auto shipping = shippingBloomConfig();
     const std::array stages{
         std::array<std::string_view, 4>{
             "UpsampleBlend_3", "VerticalBlur_2",

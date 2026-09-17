@@ -661,19 +661,6 @@ TEST_CASE(
     }
     const std::vector<std::string> expected_identities{
         "projects/example/passes/example_renderingpass_data.json::lighting_pass",
-        "projects/example/passes/main_rendering_config.json::FinalBloomComposite",
-        "projects/example/passes/main_rendering_config.json::HighLuminanceExtraction",
-        "projects/example/passes/main_rendering_config.json::HorizontalBlur_0",
-        "projects/example/passes/main_rendering_config.json::HorizontalBlur_1",
-        "projects/example/passes/main_rendering_config.json::HorizontalBlur_2",
-        "projects/example/passes/main_rendering_config.json::HorizontalBlur_3",
-        "projects/example/passes/main_rendering_config.json::UpsampleBlend_1",
-        "projects/example/passes/main_rendering_config.json::UpsampleBlend_2",
-        "projects/example/passes/main_rendering_config.json::UpsampleBlend_3",
-        "projects/example/passes/main_rendering_config.json::VerticalBlur_0",
-        "projects/example/passes/main_rendering_config.json::VerticalBlur_1",
-        "projects/example/passes/main_rendering_config.json::VerticalBlur_2",
-        "projects/example/passes/main_rendering_config.json::VerticalBlur_3",
         "projects/example/passes/main_rendering_config.json::lighting_pass",
         "projects/example/passes/main_rendering_config.json::ssao_blur_pass",
         "projects/example/passes/main_rendering_config.json::ssao_pass",
@@ -681,6 +668,19 @@ TEST_CASE(
         "projects/sprite_demo/passes/main.json::lighting_pass",
         "projects/vrm_xr_demo/passes/main.json::lighting_pass",
         "projects/vrm_xr_demo/passes/main.json::ssao_clear",
+        "src/core/resources/features/bloom.json::FinalBloomComposite",
+        "src/core/resources/features/bloom.json::HighLuminanceExtraction",
+        "src/core/resources/features/bloom.json::HorizontalBlur_0",
+        "src/core/resources/features/bloom.json::HorizontalBlur_1",
+        "src/core/resources/features/bloom.json::HorizontalBlur_2",
+        "src/core/resources/features/bloom.json::HorizontalBlur_3",
+        "src/core/resources/features/bloom.json::UpsampleBlend_1",
+        "src/core/resources/features/bloom.json::UpsampleBlend_2",
+        "src/core/resources/features/bloom.json::UpsampleBlend_3",
+        "src/core/resources/features/bloom.json::VerticalBlur_0",
+        "src/core/resources/features/bloom.json::VerticalBlur_1",
+        "src/core/resources/features/bloom.json::VerticalBlur_2",
+        "src/core/resources/features/bloom.json::VerticalBlur_3",
         "src/core/resources/features/cube_capture.json::cube_capture_lighting",
         "src/core/resources/features/cube_capture.json::cube_capture_ssao",
         "src/core/resources/features/cube_capture.json::cube_capture_ssao_blur",
@@ -700,15 +700,15 @@ TEST_CASE(
     REQUIRE(identities == expected_identities);
 
     const std::array<std::string_view, 3> bloom_upsample_identities{
-        "projects/example/passes/main_rendering_config.json::UpsampleBlend_1",
-        "projects/example/passes/main_rendering_config.json::UpsampleBlend_2",
-        "projects/example/passes/main_rendering_config.json::UpsampleBlend_3",
+        "src/core/resources/features/bloom.json::UpsampleBlend_1",
+        "src/core/resources/features/bloom.json::UpsampleBlend_2",
+        "src/core/resources/features/bloom.json::UpsampleBlend_3",
     };
     const std::array<std::string_view, 5> load_without_clear_identities{
-        "projects/example/passes/main_rendering_config.json::FinalBloomComposite",
-        "projects/example/passes/main_rendering_config.json::UpsampleBlend_1",
-        "projects/example/passes/main_rendering_config.json::UpsampleBlend_2",
-        "projects/example/passes/main_rendering_config.json::UpsampleBlend_3",
+        "src/core/resources/features/bloom.json::FinalBloomComposite",
+        "src/core/resources/features/bloom.json::UpsampleBlend_1",
+        "src/core/resources/features/bloom.json::UpsampleBlend_2",
+        "src/core/resources/features/bloom.json::UpsampleBlend_3",
         "src/core/resources/features/hdr.json::hdr_tonemap",
     };
     REQUIRE(
