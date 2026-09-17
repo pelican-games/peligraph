@@ -2258,7 +2258,7 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 | `render_config.section_unlocated@1` | 同じ理由で `--feature-overlay` の適用先が見つからない([renderfeatureoverlay.cpp:142](../../src/project/renderfeatureoverlay.cpp#L142)) |
 | `graph.operation_unregistered@1` `{node, op}` | ノードの `op` をどの module も登録していない。綴り間違いのほか、**`PELICAN_WITH_ANIMATION=OFF` の build で `pose.*` を書いた**ときもこれ([graphmodule.cpp:199](../../src/project/graphmodule.cpp#L199)。§6.17) |
 | `graph.operation_unexecutable@1` `{backend, op, node}` | op は登録されているのに、それを実行する backend がこの build に無い。rendering 側は `backend: "pelican.render"` で、lowering できる 6 op 以外を rendering 区画に置いたときに出ます([rendergraphcomposition.cpp:58](../../src/project/rendergraphcomposition.cpp#L58))。姿勢側・値側にも同名の拒否があります([posegraph.cpp:91](../../src/core/animation/posegraph.cpp#L91) / [valuegraph.cpp:289](../../src/core/userpublic/valuegraph.cpp#L289)) |
-| `graph.node_duplicate@1` / `graph.node_missing@1` / `graph.input_unknown@1` / `graph.input_referenced@1` / `graph.output_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1` / `graph.definition_immutable@1` | `edit_graph_document` の **8 つ**の名前付き拒否(重複 id / 不在 node / 不明な入力 port / まだ供給されている `graph.input` の削除 / まだ参照されている node の削除 / definition の中の `graph.instance` / root の `graph.input` / 編集できない scope)。正は [`editGraphDocument()` の宣言コメント](../../src/project/graphcomposition.hpp#L89)(8 つ全部を列挙しています)と throw 箇所([graphcomposition.cpp:361](../../src/project/graphcomposition.cpp#L361) 〜 [:534](../../src/project/graphcomposition.cpp#L534))。一覧は [第13章](13_editor.md) |
+| `graph.node_duplicate@1` / `graph.node_missing@1` / `graph.input_unknown@1` / `graph.input_referenced@1` / `graph.output_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1` / `graph.definition_immutable@1` | `edit_graph_document` の **8 つ**の名前付き拒否(重複 id / 不在 node / 不明な入力 port / まだ供給されている `graph.input` の削除 / まだ参照されている node の削除 / definition の中の `graph.instance` / root の `graph.input` / 編集できない scope)。正は [`editGraphDocument()` の宣言コメント](../../src/project/graphcomposition.hpp#L90)(8 つ全部を列挙しています)と throw 箇所([graphcomposition.cpp:361](../../src/project/graphcomposition.cpp#L361) 〜 [:534](../../src/project/graphcomposition.cpp#L640))。一覧は [第13章](13_editor.md) |
 | `graph.override_shadowed@1` `{parameter}` | edge が供給している入力に `setGraphParameter` で実行時の上書きをかけた。**黙って消えない**([scenegraphruntime.cpp:123](../../src/core/loader/scenegraphruntime.cpp#L123)。§6.17) |
 | `unconnected graph input: <node>.<port>` / `unconnected subgraph input: <名前>` | 必須入力に edge も `parameters` も `default` も無い([graphcomposition.cpp:323](../../src/project/graphcomposition.cpp#L323)、[:59](../../src/project/graphcomposition.cpp#L59)) |
 | `unknown graph definition: <名前>` / `recursive graph definition: <名前>` / `cyclic subgraph connection: <id>` | `graph.instance.definition` の綴り違い / 定義の再帰 / インスタンス同士の循環([graphcomposition.cpp:93](../../src/project/graphcomposition.cpp#L93) / [:108](../../src/project/graphcomposition.cpp#L108) / [:90](../../src/project/graphcomposition.cpp#L90)) |
@@ -2658,7 +2658,7 @@ rendering config のファイルは **2 つの root 形**のどちらかです�
 
 - `buffers` と `compute_tasks` は `pelican.graph` root では **グラフが所有します**。`rendering` 節に書くと lowering が名前付きで拒否します。
 - Studio と RPC の authoring(`get_render_features` / `edit_render_features` / `materialize` / `--feature-overlay`)は、どちらの root でも同じ 1 つの locator([`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L37))を通って `rendering` 節を読み書きします。graph root なのに `rendering` が無い(あるいは object でない)文書への編集は、黙って root にキーを作らず `render_config_section_unlocated` で拒否されます。
-- **ただし「1 箇所」なのは読み書きの locator までです。**byte-lossless の書き込み経路は同じ規則を鍵の側から判定していて、上の 5 キーかどうかを [`isGraphRootKey()`](../../src/project/renderconfigdocument.cpp#L418) で見てから root と節を振り分けます([withSectionValue()](../../src/project/renderconfigdocument.cpp#L655))。さらにレイトレの読み出しは**同じ規則をその場で書き直しており**、`rendering` が無いときは例外ではなく**空 object** として続行します([raygrouplayout.cpp:1465](../../src/core/shader/raygrouplayout.cpp#L1465))—— つまり「節が無い」ときの振る舞いは経路によって違います。
+- **ただし「1 箇所」なのは読み書きの locator までです。**byte-lossless の書き込み経路は同じ規則を鍵の側から判定していて、上の 5 キーかどうかを [`isGraphRootKey()`](../../src/project/renderconfigdocument.cpp#L418) で見てから root と節を振り分けます([withSectionValue()](../../src/project/renderconfigdocument.cpp#L658))。さらにレイトレの読み出しは**同じ規則をその場で書き直しており**、`rendering` が無いときは例外ではなく**空 object** として続行します([raygrouplayout.cpp:1465](../../src/core/shader/raygrouplayout.cpp#L1465))—— つまり「節が無い」ときの振る舞いは経路によって違います。
 - 新規プロジェクト(`pelican_cli project init`、[第10章](10_tools.md))が生成する config は `pelican.graph` root です。
 - 既存の legacy root を移すには、ファイル全体を `rendering` の値にして上の 5 キーを足すだけです。`test/fixtures/graph_root_example/` が実物の対比(出荷 `example` の節と、preset を選ぶ `animgraph_demo` の節)を持っています。
 - web ビューアは `pelican.graph` root をまだ読めません([第9章](09_web.md) §9.3)。
@@ -2689,17 +2689,17 @@ op は **module** が登録します。登録済み module はエンジンに 4 
 
 ### op の契約 — `domain` / `evaluation` / `change`
 
-どの op も、ポートの型のほかに 3 つの分類を宣言します(それぞれ別の enum です: [domain](../../src/project/graphcomposition.hpp#L111) / [evaluation](../../src/project/graphcomposition.hpp#L115) / [change](../../src/project/graphcomposition.hpp#L119))。
+どの op も、ポートの型のほかに 3 つの分類を宣言します(それぞれ別の enum です: [domain](../../src/project/graphcomposition.hpp#L128) / [evaluation](../../src/project/graphcomposition.hpp#L132) / [change](../../src/project/graphcomposition.hpp#L136))。
 
 | 分類 | 値 | 意味 |
 |---|---|---|
-| `domain` | `values` / `rendering` / `animation` | **どの実行段が評価するか**。`animation` は同じフレームの中で `values` より **1 段早く**走ります。だから **姿勢の op は「今フレームのスカラー」を読めて、逆向きは無い**(一方向)([graphcomposition.hpp:102](../../src/project/graphcomposition.hpp#L106)) |
+| `domain` | `values` / `rendering` / `animation` | **どの実行段が評価するか**。`animation` は同じフレームの中で `values` より **1 段早く**走ります。だから **姿勢の op は「今フレームのスカラー」を読めて、逆向きは無い**(一方向)([graphcomposition.hpp:102](../../src/project/graphcomposition.hpp#L123)) |
 | `evaluation` | `direct` / `replay` / `baked` / `recorded` | **評価をまたいで結果がどう作られるか**。`direct` は毎回同じ入力から同じ出力。`replay` は状態を持ち、「ここまでの経過」が要る(時計、ステートマシン、root motion の抽出) |
 | `change` | `value` / `recompile` / `rebuild` | **ノードの `parameters` を変えたときの代償**。`value` は値が変わるだけ、`rebuild` はノードを作り直す |
 
 `evaluation` はノード単位で **強い方へ上げられます**(引き下げは採られません)。実物は `pose.clip_sample` で、`root_motion: "extract"` を書いたノードだけが `direct` → `replay` に上がります([posegraphmodule.cpp:179](../../src/project/posegraphmodule.cpp#L179))。v0 で実際に現れるのは `direct` と `replay` の 2 つだけで、`baked` / `recorded` を宣言する同梱 op はありません。
 
-`ports` は `declared`(op が固定のポート一覧を持つ)か `parameter_dependent`(ノード自身の書きぶりから決まる)です。catalog が `parameter_dependent` と書く条件は「factory を持ち、**かつ宣言コントラクトの `inputs` / `outputs` が両方とも空**」で([graphmodule.cpp:123](../../src/project/graphmodule.cpp#L123))、これに当たるのは **`render.*` の 6 本だけ**です。`pose.state_machine` は包む文書に従ってポートが増えますが、`pose` 出力を宣言しているので catalog の `ports` は **`declared`** です —— 増えた入力ポートは解決後にしか見えません。Studio のキャンバスもこのフィールドで分岐します([graphcanvasmodel.cpp:434](../../src/devstudio/model/graphcanvasmodel.cpp#L705))。
+`ports` は `declared`(op が固定のポート一覧を持つ)か `parameter_dependent`(ノード自身の書きぶりから決まる)です。catalog が `parameter_dependent` と書く条件は「factory を持ち、**かつ宣言コントラクトの `inputs` / `outputs` が両方とも空**」で([graphmodule.cpp:123](../../src/project/graphmodule.cpp#L123))、これに当たるのは **`render.*` の 6 本だけ**です。`pose.state_machine` は包む文書に従ってポートが増えますが、`pose` 出力を宣言しているので catalog の `ports` は **`declared`** です —— 増えた入力ポートは解決後にしか見えません。Studio のキャンバスもこのフィールドで分岐します([graphcanvasmodel.cpp:434](../../src/devstudio/model/graphcanvasmodel.cpp#L710))。
 
 ### op 一覧
 

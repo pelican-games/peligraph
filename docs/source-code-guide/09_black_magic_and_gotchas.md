@@ -1899,13 +1899,13 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **素朴に読むと**: `pelican.graph` root の `rendering` 節を編集するなら、JSON を parse して部分木を取り出し、書き換えて dump し直せばよい、と読めます。
 
-**実際は**: 編集は最後まで **byte 列のまま**行われます。[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288) は root のメンバを字句走査する [`locateObjectMembers()`](../../src/project/renderconfigdocument.cpp#L194) を 2 回使い、まず root で `rendering` の値スパンを見つけ、その位置から同じ走査を節の中へ入れ直します。要点は**入れ子にしても offset を相対化しないこと**で、ヘッダのコメントがそれを規範として書いています — 「同じ bytes の中に位置づけるので、offset は絶対のまま、文書 digest は file 全体を覆い続ける」([コメント](../../src/project/renderconfigdocument.cpp#L286))。この性質があるので、節を編集しても CAS の単位([`renderConfigSourceDigest()`](../../src/project/renderconfigdocument.cpp#L410))は文書全体のままで変わりません。書き手は [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L655) 1 本で、legacy root と graph root 自身のキーは [`withRootValue()`](../../src/project/renderconfigdocument.cpp#L634) へ落ちます。
+**実際は**: 編集は最後まで **byte 列のまま**行われます。[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288) は root のメンバを字句走査する [`locateObjectMembers()`](../../src/project/renderconfigdocument.cpp#L194) を 2 回使い、まず root で `rendering` の値スパンを見つけ、その位置から同じ走査を節の中へ入れ直します。要点は**入れ子にしても offset を相対化しないこと**で、ヘッダのコメントがそれを規範として書いています — 「同じ bytes の中に位置づけるので、offset は絶対のまま、文書 digest は file 全体を覆い続ける」([コメント](../../src/project/renderconfigdocument.cpp#L286))。この性質があるので、節を編集しても CAS の単位([`renderConfigSourceDigest()`](../../src/project/renderconfigdocument.cpp#L410))は文書全体のままで変わりません。書き手は [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L658) 1 本で、legacy root と graph root 自身のキーは [`withRootValue()`](../../src/project/renderconfigdocument.cpp#L637) へ落ちます。
 
 読み手と書き手の非対称も意図です。[`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L37) は節が無ければ `RenderConfigSectionUnlocated` を投げ、[`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L47) は空 object を返します。**読みは節が無くても失敗せず、編集だけが `render_config_section_unlocated` という名前で拒否されます**([拒否の実例](../../src/core/communication/renderconfigeditor.cpp#L887))。
 
 **不変条件**: 節の中の offset を「節の先頭からの相対」に変えないこと(digest が節だけを覆う別物になり、CAS の意味が変わります)。読みの経路に `renderingSectionOf()` を使わないこと — 節を持たない graph root を読んだだけで例外になります。authored key の住所判定を各 caller が `if (graph)` で持たないこと。
 
-**読む場所**: [`renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L13) → [`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288) → [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L655)。
+**読む場所**: [`renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L13) → [`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288) → [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L658)。
 
 ### 難所 — 排他 create の committed marker
 
@@ -1941,7 +1941,7 @@ marker は自分が属する manifest に digest で縛られます。[`transact
 
 評価分類を実際に強制するのは値バックエンドで、状態を渡されずに replay 系の op を評価しようとすると [`graph.evaluation_requires_state@1` の送出](../../src/core/userpublic/valuegraph.cpp#L49) で拒否します。対象は `audio.playback` / `value.event_clock` / `value.trigger_clock` の 3 つ([拒否点](../../src/core/userpublic/valuegraph.cpp#L529))で、**op 名は authored 文書の綴り**で返ります(lowering がモジュール名前空間を落とすので、拒否を読む側がその事情を知らなくて済むように、という取り決めです)。
 
-**不変条件**: factory で `evaluation` を下げないこと。分類の順序(`direct < replay < baked < recorded`)を [`graphcomposition.hpp`](../../src/project/graphcomposition.hpp#L115) の enum 順と別に持たないこと。拒否に lowering 後の綴りを載せないこと。
+**不変条件**: factory で `evaluation` を下げないこと。分類の順序(`direct < replay < baked < recorded`)を [`graphcomposition.hpp`](../../src/project/graphcomposition.hpp#L132) の enum 順と別に持たないこと。拒否に lowering 後の綴りを載せないこと。
 
 **読む場所**: [`GraphOperationRegistration`](../../src/project/graphmodule.hpp#L25) → [`resolveOperation()`](../../src/project/graphmodule.cpp#L195) → [`statelessEvaluationRejected()`](../../src/core/userpublic/valuegraph.cpp#L48)。
 

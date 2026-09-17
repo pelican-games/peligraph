@@ -292,12 +292,12 @@ selection の硬いエラーは `error.data.code` でも判別できます。宣
 `import_scene_snapshot` の result に `committed` / `effect_errors`、`get_components` の各
 component に `resolution_error`。
 
-2026-09 の追加(AG-3a、`9862ebdd`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L2010)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L168))。読み取り専用で `edit_*` の CAS には乗らない。
+2026-09 の追加(AG-3a、`9862ebdd`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L2032)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L168))。読み取り専用で `edit_*` の CAS には乗らない。
 
 **`get_graph_values` と `get_graph_node_values` は問いが違います。**前者は `instance` 必須で、その
 **instance の入力 port だけ**を `{port, value, source, connected|parameter}` として返します(`source` は
 `connected` / `parameter` / `default` / `override`)。後者は**展開木のノードを全部**並べ、各ノードの出力値を
-`outputs` に入れます([実装](../../src/core/communication/renderconfigeditor.cpp#L1929))。両方とも
+`outputs` に入れます([実装](../../src/core/communication/renderconfigeditor.cpp#L1951))。両方とも
 **同じ publish snapshot を読むだけ**で再評価しません —— 再評価は graph の時計を進め event を二重に消費するためです。
 `source: "rendering"` は「これは描画側の評価が使った値だ」という明示で、animation phase は同じ文書を
 自分の state で評価するため、event や trigger で駆動される文書では両者が恒久的に違いうることを表します。
@@ -627,7 +627,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 変わりません。listen できたときだけ `automation listening: <endpoint>` を標準出力に出します
 ([その 1 行](../../src/devstudio/view/uimain.cpp#L55))。開けなかったときは理由を出して **終了コード 3** です。
 
-回す側は [`tools/studio_drive.py`](../../tools/studio_drive.py#L876)(`uv run`、標準ライブラリだけ)です。
+回す側は [`tools/studio_drive.py`](../../tools/studio_drive.py#L892)(`uv run`、標準ライブラリだけ)です。
 Studio を `--automation --project --tab` で起動し、シナリオ JSON(`test/studio_scenarios/<名前>.json`)の step を
 順に送り、期待を検査して `report.json` を書きます。
 
@@ -640,7 +640,7 @@ uv run tools/studio_drive.py --studio dist_debug/pelican_studio.exe \
 ```
 
 report は `verdict`(`green` / `red`)・`summary`(step ごとに 1 行)・`failures`(送受信・理由・失敗時の
-スクリーンショット)・`studio_log` を持ちます([組み立て](../../tools/studio_drive.py#L990))。
+スクリーンショット)・`studio_log` を持ちます([組み立て](../../tools/studio_drive.py#L1006))。
 `studio_exit_code` は記録されますが**判定には入りません**(Studio は終了時に異常終了コードを残す既知の穴)。
 書式・命令表・名前の付け方は [README](../../test/studio_scenarios/README.md#L1) と
 [第13章](13_editor.md) §13.5「Studio の自動化面」が正です。

@@ -1198,9 +1198,9 @@ OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメー
 
 **小さな例**: UI のスライダを 1 フレームに 60 回動かすとします。`value` のパラメータなら毎回そのまま適用してよく、`rebuild` のパラメータなら操作が終わるまで適用を遅らせるのが正解です。分類が無いと、どちらも同じ扱いになり、前者は不必要に重く、後者は 1 秒間に 60 回の再構築になります。
 
-**使用場所**: [`GraphOperationEvaluation`](../../src/project/graphcomposition.hpp#L115) / [`GraphParameterChange`](../../src/project/graphcomposition.hpp#L119) / 状態無しで `replay` を評価しようとしたときの拒否 [`graph.evaluation_requires_state@1` の送出](../../src/core/userpublic/valuegraph.cpp#L49)
+**使用場所**: [`GraphOperationEvaluation`](../../src/project/graphcomposition.hpp#L132) / [`GraphParameterChange`](../../src/project/graphcomposition.hpp#L136) / 状態無しで `replay` を評価しようとしたときの拒否 [`graph.evaluation_requires_state@1` の送出](../../src/core/userpublic/valuegraph.cpp#L49)
 
-**このコードベースでの注意**: 分類はノードごとに**強い方へ引き上げられます**(§9.24「per-node の評価分類は `max()` でしか動かない」)。また費用側の既定は op ごとの 1 値ですが、パラメータ単位の表(`parameter_changes`)も持てます([宣言](../../src/project/graphcomposition.hpp#L127))。
+**このコードベースでの注意**: 分類はノードごとに**強い方へ引き上げられます**(§9.24「per-node の評価分類は `max()` でしか動かない」)。また費用側の既定は op ごとの 1 値ですが、パラメータ単位の表(`parameter_changes`)も持てます([宣言](../../src/project/graphcomposition.hpp#L144))。
 
 ### 排他 create を「決定」の primitive にする(O_EXCL / hard link)
 

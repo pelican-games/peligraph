@@ -252,7 +252,7 @@ flowchart LR
 同じ rendering config が、2 通りの入れ物で出荷されます。
 
 - **legacy root** — `features` / `render_targets` / `rendering_passes` … がそのまま最上位にある従来の形。
-- **`pelican.graph` root** — 共通グラフ文書(`schema` / `version` / `definitions` / `nodes` / `outputs` の 5 キー)の `rendering` メンバの下に、legacy config が丸ごと入る形。`graph.instance` を書けるのはこの root の下だけです(legacy root には `nodes` / `definitions` 自体が無いので置き場が無い、というだけで、parse 時に名前付きで拒否されるわけではありません。`graph.nested_instance@1` / `graph.input_scope@1` は [`editGraphDocument()`](../../src/project/graphcomposition.cpp#L472) の編集経路にしか存在しません)。
+- **`pelican.graph` root** — 共通グラフ文書(`schema` / `version` / `definitions` / `nodes` / `outputs` の 5 キー)の `rendering` メンバの下に、legacy config が丸ごと入る形。`graph.instance` を書けるのはこの root の下だけです(legacy root には `nodes` / `definitions` 自体が無いので置き場が無い、というだけで、parse 時に名前付きで拒否されるわけではありません。`graph.nested_instance@1` / `graph.input_scope@1` は [`editGraphDocument()`](../../src/project/graphcomposition.cpp#L585) の編集経路にしか存在しません)。
 
 出荷 project では [`projects/example/passes/main_rendering_config.json`](../../projects/example/passes/main_rendering_config.json) と [`projects/posegraph_demo/passes/main.json`](../../projects/posegraph_demo/passes/main.json) の **2 本**が graph root で、残りは legacy root です。
 
@@ -265,7 +265,7 @@ flowchart LR
 | [`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L47) | **読み取り専用の寛容版**。節が無ければ空 object を返す |
 | [`wrapLegacyRenderingConfig()`](../../src/project/renderconfigsection.hpp#L62) | legacy config を graph root で包む唯一の場所。`devcli project init` も fixture も出荷 config も同じ規則を通る |
 
-つまり **読みは節が無くても失敗せず、編集だけが名前付きで拒否される**という非対称が意図です。編集側の入口は [`AuthoredRenderConfigDocument::withSectionValue()`](../../src/project/renderconfigdocument.cpp#L655) で、byte を保ったまま `rendering.<key>` を差し替えます(graph root 自身のキーは root に書きます)。その byte 正確な locator の読みどころは [第9章 §9.24](09_black_magic_and_gotchas.md) の難所「byte 正確な節 locator と絶対 offset」にあります。
+つまり **読みは節が無くても失敗せず、編集だけが名前付きで拒否される**という非対称が意図です。編集側の入口は [`AuthoredRenderConfigDocument::withSectionValue()`](../../src/project/renderconfigdocument.cpp#L658) で、byte を保ったまま `rendering.<key>` を差し替えます(graph root 自身のキーは root に書きます)。その byte 正確な locator の読みどころは [第9章 §9.24](09_black_magic_and_gotchas.md) の難所「byte 正確な節 locator と絶対 offset」にあります。
 
 ### feature のスカラーパラメータ: `binding: define` と `binding: buffer`(P-2a-2)
 

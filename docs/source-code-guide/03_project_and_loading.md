@@ -1098,7 +1098,7 @@ ABI側では [`AnimationClipKindV1`](../../src/core/userpublic/animation/abi_v1.
 | legacy root | `rendering` 相当の中身を最上位に直接書く | animgraph_demo / sprite_demo / vrm_xr_demo / raytracing_demo |
 | `pelican.graph` root | 共通グラフ文書の `rendering` キーの下に、同じ中身が丸ごと入る | example / posegraph_demo（`devcli project init` の雛形もこちら） |
 
-`graph.instance` を書けるのは後者の根の下だけです。ただし legacy root へ書こうとしたときに名前付きで断られるわけではなく、単に `nodes` / `definitions` という置き場が無いだけです(`graph.nested_instance@1` / `graph.input_scope@1` は [`editGraphDocument()`](../../src/project/graphcomposition.cpp#L472) の編集経路だけの拒否で、definition の中と root の取り違えを指します)。
+`graph.instance` を書けるのは後者の根の下だけです。ただし legacy root へ書こうとしたときに名前付きで断られるわけではなく、単に `nodes` / `definitions` という置き場が無いだけです(`graph.nested_instance@1` / `graph.input_scope@1` は [`editGraphDocument()`](../../src/project/graphcomposition.cpp#L585) の編集経路だけの拒否で、definition の中と root の取り違えを指します)。
 
 **「authored な `rendering` キーがどこにあるか」を決める場所は1つ**で、[`src/project/renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L13) の小さなヘッダに全部入っています。読み手も書き手も生成器もここを呼ぶ規約で、各所が自前の `if (graph)` を育てないためです。
 
@@ -1110,7 +1110,7 @@ ABI側では [`AnimationClipKindV1`](../../src/core/userpublic/animation/abi_v1.
 
 **包み方も1本**です。[`wrapLegacyRenderingConfig()`](../../src/project/renderconfigsection.hpp#L62) が `schema` / `version` / `definitions` / `nodes` / `outputs` の5キーを付けて、渡された legacy 設定を `rendering` へ丸ごと入れます。`devcli project init` の雛形（[第1章 §1.2](01_architecture_and_build.md)）も、graph root のfixtureも、出荷プロジェクトも同じ関数を通るので、「fixtureと出荷設定が同じ規則で包まれている」ことを慣習ではなく**値の比較**で確かめられます。すでに `pelican.graph` のものを渡すと `invalid_argument` です。
 
-編集側の唯一の書き手は [`AuthoredRenderConfigDocument::withSectionValue()`](../../src/project/renderconfigdocument.cpp#L655) で、legacy root と graph root 自身の5キー（`schema` / `version` / `definitions` / `nodes` / `outputs`）は根へ、それ以外は `rendering.<key>` へ書きます。この関数はJSONを組み直さず、元のバイト列の中で該当メンバの範囲を差し替えます（[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288)）。理由は digest がファイル全体のバイト列に対して取られるためで、詳細は[第6章](06_rendering_vulkan_shader.md)にあります。
+編集側の唯一の書き手は [`AuthoredRenderConfigDocument::withSectionValue()`](../../src/project/renderconfigdocument.cpp#L658) で、legacy root と graph root 自身の5キー（`schema` / `version` / `definitions` / `nodes` / `outputs`）は根へ、それ以外は `rendering.<key>` へ書きます。この関数はJSONを組み直さず、元のバイト列の中で該当メンバの範囲を差し替えます（[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288)）。理由は digest がファイル全体のバイト列に対して取られるためで、詳細は[第6章](06_rendering_vulkan_shader.md)にあります。
 
 ## 3.15 共通グラフ文書 `pelican.graph` ✅実装済み（AG-0 / P-1）
 
@@ -1124,7 +1124,7 @@ ABI側では [`AnimationClipKindV1`](../../src/core/userpublic/animation/abi_v1.
 - `definitions` — 名前付きの部分グラフ。中に `graph.input`（境界ポート）を置けます。
 - `graph.instance` — 定義を根へ1個体として置くノード。`definition` と `owner`（`{scene, object}`）を持ちます。
 
-この2つの構造用opは置ける側が決まっていて、`graph.instance` を定義の中へ入れると `graph.nested_instance@1`、`graph.input` を根へ置くと `graph.input_scope@1` で拒否されます（[`editGraphDocument()` 内](../../src/project/graphcomposition.cpp#L504)）。
+この2つの構造用opは置ける側が決まっていて、`graph.instance` を定義の中へ入れると `graph.nested_instance@1`、`graph.input` を根へ置くと `graph.input_scope@1` で拒否されます（[`editGraphDocument()` 内](../../src/project/graphcomposition.cpp#L617)）。
 
 ### 展開 — `expandGraphDocument()`
 
@@ -1134,23 +1134,23 @@ instance の入力ポートがどこから値を取るかは `edge > parameters 
 
 ### 編集 — `editGraphDocument()`
 
-[`editGraphDocument()`](../../src/project/graphcomposition.hpp#L93) は op の並びを1本の候補文書へ順に適用し、**最後に1回だけ展開**します。途中で1つでも落ちれば候補ごと捨てられ、呼び手の文書は無傷です。受け付ける op は5種で、**宣言の上のコメントがその5種と8つの名前付き拒否を列挙しています**（`40099e3f` で `set_node_label` と残りの拒否名が追記され、コメントと実装が揃いました）。
+[`editGraphDocument()`](../../src/project/graphcomposition.hpp#L110) は op の並びを1本の候補文書へ順に適用し、**最後に1回だけ展開**します。途中で1つでも落ちれば候補ごと捨てられ、呼び手の文書は無傷です。受け付ける op は5種で、**宣言の上のコメントがその5種と8つの名前付き拒否を列挙しています**（`40099e3f` で `set_node_label` と残りの拒否名が追記され、コメントと実装が揃いました）。
 
 | op | 実装 | 断り方 |
 |---|---|---|
-| `add_node` | [.cpp](../../src/project/graphcomposition.cpp#L492) | `graph.node_duplicate@1` / `graph.nested_instance@1` / `graph.input_scope@1` |
-| `remove_node` | [.cpp](../../src/project/graphcomposition.cpp#L513) | `graph.output_referenced@1`（出力や他ノードがまだ指している） |
-| `set_input` | [.cpp](../../src/project/graphcomposition.cpp#L540) | `source` は `{node, port}` ちょうど2キー、または `null`（切断） |
-| `set_node_parameters` | [.cpp](../../src/project/graphcomposition.cpp#L559) | 空オブジェクトは `parameters` キーごと削除 |
-| `set_node_label` | [.cpp](../../src/project/graphcomposition.cpp#L570) | 人が付ける表示名。識別子ではないので、消すのは空文字列で表す |
+| `add_node` | [.cpp](../../src/project/graphcomposition.cpp#L605) | `graph.node_duplicate@1` / `graph.nested_instance@1` / `graph.input_scope@1` |
+| `remove_node` | [.cpp](../../src/project/graphcomposition.cpp#L626) | `graph.output_referenced@1`（出力や他ノードがまだ指している） |
+| `set_input` | [.cpp](../../src/project/graphcomposition.cpp#L653) | `source` は `{node, port}` ちょうど2キー、または `null`（切断） |
+| `set_node_parameters` | [.cpp](../../src/project/graphcomposition.cpp#L672) | 空オブジェクトは `parameters` キーごと削除 |
+| `set_node_label` | [.cpp](../../src/project/graphcomposition.cpp#L683) | 人が付ける表示名。識別子ではないので、消すのは空文字列で表す |
 
-各opは任意で **`scope`** を取ります。省略（または根の名前）なら根の `nodes`、定義名なら `definitions.<名前>.nodes` を編集対象にします（[`resolveEditScope()`](../../src/project/graphcomposition.cpp#L381)）。scope は op ごとに解決し直します —— 同じ並びの前のopが定義の中身を変えている可能性があるからです。定義の中に居る id を根から触ろうとすると `graph.definition_immutable@1` です。
+各opは任意で **`scope`** を取ります。省略（または根の名前）なら根の `nodes`、定義名なら `definitions.<名前>.nodes` を編集対象にします（[`resolveEditScope()`](../../src/project/graphcomposition.cpp#L385)）。scope は op ごとに解決し直します —— 同じ並びの前のopが定義の中身を変えている可能性があるからです。定義の中に居る id を根から触ろうとすると `graph.definition_immutable@1` です。
 
-[`editGraphInstances()`](../../src/project/graphcomposition.hpp#L99)（instance の着脱）は、自分で文書を触らず**上のopへ翻訳してから** `editGraphDocument()` を呼びます。2つの入口が「何が妥当な編集か」で食い違えないようにするためです。
+[`editGraphInstances()`](../../src/project/graphcomposition.hpp#L116)（instance の着脱）は、自分で文書を触らず**上のopへ翻訳してから** `editGraphDocument()` を呼びます。2つの入口が「何が妥当な編集か」で食い違えないようにするためです。
 
 ### 分割 — `partitionGraphDocument()`
 
-[`partitionGraphDocument()`](../../src/project/graphpartition.hpp#L28) は文書全体を検証してから、[`GraphExecutionPartitions`](../../src/project/graphpartition.hpp#L7) の3つへ分けます。どのopがどの領域かは、opを登録したモジュールが宣言します（[`GraphExecutionDomain`](../../src/project/graphcomposition.hpp#L111)）。CPUのスカラopを1つ足しても、分割側に新しいop名を教える必要はありません。
+[`partitionGraphDocument()`](../../src/project/graphpartition.hpp#L28) は文書全体を検証してから、[`GraphExecutionPartitions`](../../src/project/graphpartition.hpp#L7) の3つへ分けます。どのopがどの領域かは、opを登録したモジュールが宣言します（[`GraphExecutionDomain`](../../src/project/graphcomposition.hpp#L128)）。CPUのスカラopを1つ足しても、分割側に新しいop名を教える必要はありません。
 
 ```text
 values     … CPUのスカラ評価（value.* / audio.* / render.scalar）

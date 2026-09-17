@@ -210,7 +210,7 @@ v0（共通グラフ・姿勢グラフ・package）で増えた入口は次の�
 | 場所 | 内容 |
 |---|---|
 | [`project/graphmodule.hpp`](../../src/project/graphmodule.hpp#L44) | [`GraphModuleManifest`](../../src/project/graphmodule.hpp#L35) と `GraphModuleRegistry`。共通グラフの語彙（型・op・sink）の登録口（§1.5） |
-| [`project/graphcomposition.hpp`](../../src/project/graphcomposition.hpp#L62) | `pelican.graph` 文書の展開（`ExpandedGraphDocument`）と [`editGraphDocument()`](../../src/project/graphcomposition.hpp#L93)（[第3章 §3.15](03_project_and_loading.md)） |
+| [`project/graphcomposition.hpp`](../../src/project/graphcomposition.hpp#L62) | `pelican.graph` 文書の展開（`ExpandedGraphDocument`）と [`editGraphDocument()`](../../src/project/graphcomposition.hpp#L110)（[第3章 §3.15](03_project_and_loading.md)） |
 | [`project/graphpartition.hpp`](../../src/project/graphpartition.hpp#L7) | 検証してから `values` / `rendering` / `animation` の3実行領域へ分割 |
 | [`project/posegraphmodule.hpp`](../../src/project/posegraphmodule.hpp#L22) | `pelican.pose` module の登録と、clip 再生パラメータ既定値の唯一の置き場（[第5章](05_gameplay_and_services.md)） |
 | [`project/renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L37) | authored な `rendering` key の在処を決める唯一の場所（[第3章 §3.14](03_project_and_loading.md)） |

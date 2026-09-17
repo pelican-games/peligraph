@@ -196,7 +196,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 | `list_assets` | `{store?}` | アセット一覧(id / 種別 / パス / 状態) |
 | `query_journal` | `{after_transaction_id?}` | 編集履歴(undo の種) |
 | `can_edit` / `can_preview` | `{}` | 編集・プレビューの可否と理由 |
-| `get_graph_instances` | `{}` | 共通グラフ文書の `source_reference` / `source_digest` / `instances[]`(`graph.instance` だけ)/ root の `nodes[]` 全体 / `definitions` 本体([get_graph_instances の実装](../../src/core/communication/renderconfigeditor.cpp#L1825)) |
+| `get_graph_instances` | `{}` | 共通グラフ文書の `source_reference` / `source_digest` / `instances[]`(`graph.instance` だけ)/ root の `nodes[]` 全体 / `definitions` 本体([get_graph_instances の実装](../../src/core/communication/renderconfigeditor.cpp#L1826)) |
 | `get_graph_catalog` | `{}` | 登録済みグラフモジュールのカタログ(`pelican.graph_catalog` v1。`pelican_cli graph-catalog` と同じ値 — [第10章](10_tools.md) §10.4) |
 | `get_graph_values` | `{instance}` | その instance の入力 port の実効値 `{port, value, source, connected\|parameter}` と `published` / `generation` / `frame`。**publish 時の snapshot を読むだけで再評価しません** |
 | `get_graph_node_values` | `{instance?}` | 展開木の全ノードの出力値(`{node, expanded, outputs}`)と `source:"rendering"`。`instance` 省略で root から |
@@ -265,7 +265,7 @@ typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化�
 | `add_compute_task` | `base_source_digest`・`destination_reference`・`task`で新規project featureにtaskを作り、rootのfeaturesへ追加する |
 | `remove_compute_task` | `base_source_digest`・`base_task_source_digest`・`task_name`で元文書からtaskを削除する |
 | `edit_graph_document` | `base_source_digest`と`ops[]`で共通グラフ文書を編集する(§13.5「グラフの装着を編集する」)。ops は順に候補文書へ当て、最後に 1 回だけ展開する — **全部通るか、文書ごと拒否か**のどちらか |
-| `edit_graph_instances` | `base_source_digest`・`attach[]`・`detach[]`。owner を持つ root instance の装着 / 取り外しだけを扱い、中身は `edit_graph_document` の ops へ翻訳される([edit_graph_instances の実装](../../src/core/communication/renderconfigeditor.cpp#L1845)) |
+| `edit_graph_instances` | `base_source_digest`・`attach[]`・`detach[]`。owner を持つ root instance の装着 / 取り外しだけを扱い、中身は `edit_graph_document` の ops へ翻訳される([edit_graph_instances の実装](../../src/core/communication/renderconfigeditor.cpp#L1851)) |
 | `export_render_feature` | `scope`(`root` / `preset`)と`index`で feature 1 つを `user://components/<name>/` へ書き出す。`engine://` の feature は `render_component_engine_reference` で拒否([export の実装](../../src/core/communication/renderconfigeditor.cpp#L893)) |
 | `import_render_feature` | `base_source_digest`・`source_dir`(project 外の絶対パス)・`destination_reference`(未作成の`project://`)。component が要求する render target を project が宣言していなければ `render_component_requires_missing` |
 | `install_package` | `source_dir`(project 外の絶対パス)。`<project>/packages/<namespace>/` へ複製して`project.json`に記録し、catalog を作り直す。返すのは`namespace`・`package_version`・`sha256`・`feature_references`・`feature_names` |
@@ -412,11 +412,11 @@ Frame Planの **Order nodes...** で現在のgraphのノードをUp/Downで並�
 書き込み側は同じ規則を [`isGraphRootKey()`](../../src/project/renderconfigdocument.cpp#L418) として
 鍵の側から持っています。[第6章](06_rendering.md) §6.16)。したがって初期化は `rendering.features` に
 `[]` を書き、**root 直下に `features` を生やしません**
-([`initialize()`](../../src/project/renderconfigdocument.cpp#L587))。
+([`initialize()`](../../src/project/renderconfigdocument.cpp#L590))。
 `rendering` オブジェクトそのものが無い graph root は、書き込む場所が無いので
 **名前付きで断られます** —— 受付の応答は `render_config_section_unlocated`
 (**編集 op の経路だけ `{method}` が付きます** —— [renderconfigeditor.cpp:1325](../../src/core/communication/renderconfigeditor.cpp#L1325)。
-pipeline の preflight([:887](../../src/core/communication/renderconfigeditor.cpp#L887))と fork([:1753](../../src/core/communication/renderconfigeditor.cpp#L1753))は
+pipeline の preflight([:887](../../src/core/communication/renderconfigeditor.cpp#L887))と fork([:1753](../../src/core/communication/renderconfigeditor.cpp#L1754))は
 同じ code を data 無しで返します)、
 engine 内部の例外名は
 [`RenderConfigSectionUnlocated`](../../src/project/renderconfigdocument.cpp#L414) です。
@@ -437,7 +437,7 @@ engine 内部の例外名は
 
 - 編集: `edit_graph_document{base_source_digest, ops[]}` と `edit_graph_instances{base_source_digest, attach[], detach[]}`。
   後者は owner 付き root instance の装着・取り外し専用で、**中では同じ `editGraphDocument()` の ops に翻訳されます**
-  ([翻訳](../../src/project/graphcomposition.cpp#L591))。検証を 2 度書かないための構造です。
+  ([翻訳](../../src/project/graphcomposition.cpp#L718))。検証を 2 度書かないための構造です。
 - 読み: `get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `get_graph_node_values`(§13.5 の読み取り表)。
 
 #### `ops[]` の 5 種と `scope`
@@ -450,10 +450,10 @@ engine 内部の例外名は
 | `set_node_parameters` | `node`, `parameters`(object) | **merge ではなく置換**です。1 つだけ変えたいときも全体を読んで送り直します。空 object を送ると `parameters` が消えます |
 | `set_node_label` | `node`, `label`(string) | 人が付けた表示名。識別子ではないので、**空文字が「消す」**です(専用の op は作られていません) |
 
-**全 op が任意の `scope` を取ります**([解決](../../src/project/graphcomposition.cpp#L381))。既定は `"root"`(root 文書の `nodes`)、
+**全 op が任意の `scope` を取ります**([解決](../../src/project/graphcomposition.cpp#L385))。既定は `"root"`(root 文書の `nodes`)、
 definition 名を書くとその `definitions[<名前>].nodes` が対象です。**`root` は root scope の予約語**なので、
 `root` という名前の definition は指せません。op は**順に**候補文書へ当たり、**最後に 1 回だけ展開**されます
-([適用ループ](../../src/project/graphcomposition.cpp#L486)、[最後の 1 回の展開](../../src/project/graphcomposition.cpp#L587))。つまり `ops` は**全部通るか、文書ごと拒否か**のどちらかで、
+([適用ループ](../../src/project/graphcomposition.cpp#L599)、[最後の 1 回の展開](../../src/project/graphcomposition.cpp#L714))。つまり `ops` は**全部通るか、文書ごと拒否か**のどちらかで、
 途中まで書かれた文書は残りません。
 
 #### 名前付きの拒否
@@ -461,16 +461,16 @@ definition 名を書くとその `definitions[<名前>].nodes` が対象です�
 | code | いつ |
 |---|---|
 | `graph.node_duplicate@1` | 同じ scope に同じ id を追加した |
-| `graph.node_missing@1` | 無い node を指した(正は throw 箇所 [graphcomposition.cpp:373](../../src/project/graphcomposition.cpp#L373)。[宣言コメント](../../src/project/graphcomposition.hpp#L89)も `40099e3f` 以降は 8 つ全部を挙げていて、この表と一致します) |
+| `graph.node_missing@1` | 無い node を指した(正は throw 箇所 [graphcomposition.cpp:373](../../src/project/graphcomposition.cpp#L377)。[宣言コメント](../../src/project/graphcomposition.hpp#L90)も `40099e3f` 以降は 8 つ全部を挙げていて、この表と一致します) |
 | `graph.input_unknown@1` | instance の definition が宣言していない port を `set_input` / `set_node_parameters` した |
 | `graph.output_referenced@1` | 他ノードの入力、またはその scope の `outputs` が指しているノードを削除した |
 | `graph.input_referenced@1` | **instance がまだ値を供給している `graph.input`** を definition の中から削除した |
 | `graph.nested_instance@1` | definition の中に `graph.instance` を足した(instance は root に立つもの) |
 | `graph.input_scope@1` | root に `graph.input` を足した(境界 port は definition の中のもの) |
-| `graph.definition_immutable@1` | id に `/` を含むノード(instance path 越しの指定)を **どの op でも**指した(`{reason: "instance_path"}`)。root scope の op が definition の中にいるノードを名指したときも同じ code で、`{definition}` が「どの scope を開けばよいか」を返します([`locateNode()`](../../src/project/graphcomposition.cpp#L359)) |
+| `graph.definition_immutable@1` | id に `/` を含むノード(instance path 越しの指定)を **どの op でも**指した(`{reason: "instance_path"}`)。root scope の op が definition の中にいるノードを名指したときも同じ code で、`{definition}` が「どの scope を開けばよいか」を返します([`locateNode()`](../../src/project/graphcomposition.cpp#L363)) |
 
 `graph.input_referenced@1` が要るのは、**その値が編集中の body の外にある**からです —— definition を開いている
-キャンバスからは、その port に値を入れている instance が見えません([走査](../../src/project/graphcomposition.cpp#L416))。
+キャンバスからは、その port に値を入れている instance が見えません([走査](../../src/project/graphcomposition.cpp#L422))。
 op の形が壊れているだけのもの(`ops` が配列でない、`source` の鍵が違う、未知の `op` 名)は名前付きにならず、
 `invalid_graph_document` として理由の文字列で返ります。
 
@@ -484,7 +484,7 @@ op の形が壊れているだけのもの(`ops` が配列でない、`source` �
   どちらも**何も書きません**。
 - **1 操作 = 1 op 列 = 1 チケット**。同じフレームに 2 本目を投げても、後から来た方が CAS で落ちます。
   結果は `get_edit_result`(ヘッドレスなら `step_frame` の `edit_results[]`)で受け取ります。
-- 書き戻しは root の `nodes` が常に、`definitions` は**変化したときだけ**です([definitions の書き戻し](../../src/core/communication/renderconfigeditor.cpp#L1884))。
+- 書き戻しは root の `nodes` が常に、`definitions` は**変化したときだけ**です([definitions の書き戻し](../../src/core/communication/renderconfigeditor.cpp#L1901))。
   root だけを触った編集は、definition のバイト列を 1 文字も動かしません。
 
 ⚠ **`add_node` / `remove_node` で owner 付きの `graph.instance` を直接足す・消すことはできます。**
@@ -512,7 +512,7 @@ Inspector の導線(次節)は専用の RPC を持たず、**普通の `ops` を
 `pelican_studio --project <dir> --tab graph`([第10章](10_tools.md) §10.7)。
 
 **上段の操作列**(左から): `Scope:` のコンボ(`root` と definition 名)、その右のパンくず、右端に
-`Values from:` のコンボ、`Refresh`([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L1779))。
+`Values from:` のコンボ、`Refresh`([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L2616))。
 その下に必要なときだけ 1 行の notice が出ます。本体は左がキャンバス、右が選択ノードの詳細表(`Field` / `Value`)で、
 詳細表の上に `Label:` の入力欄・**Rename**・**Add node...** が並びます。
 
@@ -532,7 +532,7 @@ Inspector の導線(次節)は専用の RPC を持たず、**普通の `ops` を
    [`graph_socket_styles.json`](../../src/devstudio/resources/graph_socket_styles.json#L1)(`pelican.studio.socket_styles` v1)で、
    **新しい型に形を与えるのに C++ を触る必要はありません** —— この JSON に名前を 1 行足すだけです。
 5. **右の詳細表** —— `label` / `type` / `domain` / `evaluation` / `id` / `sink` と、あれば `definition` /
-   `parameters` / `inputs` / `outputs`([組み立て](../../src/devstudio/view/graphcanvaswidget.cpp#L2207))。
+   `parameters` / `inputs` / `outputs`([組み立て](../../src/devstudio/view/graphcanvaswidget.cpp#L3058))。
    port の型が宣言されていなければ `(not declared)`、カタログをまだ取れていなければ `domain` / `evaluation` が
    `(catalog not fetched)` です。入力行の tooltip は、その port を**カタログが宣言した**(`declared by the catalog`)のか、
    **文書から読んだ**(`read from the document`)のかを区別します。
@@ -549,12 +549,12 @@ Inspector の導線(次節)は専用の RPC を持たず、**普通の `ops` を
 | ノードを選んで `Delete` | `remove_node` |
 
 型が合わないソケットには吸着しません —— **どちらかの型が宣言されていなければ通し、両方宣言されていれば
-同じ型のときだけ**通します([判定](../../src/devstudio/model/graphcanvasmodel.cpp#L884))。
+同じ型のときだけ**通します([判定](../../src/devstudio/model/graphcanvasmodel.cpp#L889))。
 
 ⚠ **2 つの注意。**
 (1) **必須の scalar 入力を持つ op を足すと、種の定数も一緒に足されます。**未接続の必須入力を持つ文書は engine が
 受け取らないので、パレットは必須の scalar 入力ごとに `value.constant` を**同じ ops 列で先に**足し、そこへ繋いだ
-状態のノードを作ります([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L976))。1 操作 1 チケットは保たれます。
+状態のノードを作ります([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L997))。1 操作 1 チケットは保たれます。
 後で本物の producer を繋いでも、**この定数は自動では消えません**(手で消します)。
 (2) **必須入力の切断は送られ、engine が断ります。**Studio は黙って定数を挿し直したりしません ——
 `set_input{null}` をそのまま送り、`unconnected graph input` の拒否を notice に出します。値を持つ instance の port は
@@ -567,7 +567,7 @@ revision が変わって消えたノードの位置は捨てられます。初�
 倍率は **0.25〜4.0** で止まります([ホイール](../../src/devstudio/view/nodegraphics.cpp#L537))。パンは**中ボタン**ドラッグ、
 または **Space を押しながら左**ドラッグ([判定](../../src/devstudio/view/nodegraphics.cpp#L638))。**`F`** キーと
 右クリックメニューの **Fit view** で内容全体が view に収まります(Graph タブの右クリックは「Add node... / Fit view」の
-2 項目です。[メニュー](../../src/devstudio/view/graphcanvaswidget.cpp#L1195))。この 3 つの操作は共有部品
+2 項目です。[メニュー](../../src/devstudio/view/graphcanvaswidget.cpp#L1981))。この 3 つの操作は共有部品
 [`NodeCanvasView`](../../src/devstudio/view/nodegraphics.hpp#L195) が 1 か所で持っていて、**Graph タブも Frame Plan の
 Logical graph も同じ view** です。**まだ見ていない scope は自動で fit** され、戻ってきた scope は離れたときの倍率と
 スクロール位置に復帰します([`showScope()`](../../src/devstudio/view/nodegraphics.cpp#L611)) —— 倍率も位置も文書には
@@ -591,7 +591,7 @@ QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L26) に
 ([定義](../../src/devstudio/view/graphcanvasreadcapability.hpp#L31))は「汎用の RPC メソッド」を表現できない形をしていて、
 `get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` / `get_edit_result` の
 5 つだけを名前で持ちます。それ以外を要求すると `The graph canvas cannot issue <method>.` になります
-([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L2053))。キャンバスから preset を fork したり pass を触ったりは
+([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L2904))。キャンバスから preset を fork したり pass を触ったりは
 **できない**、というのが型で保証されています。
 
 ### Studio の自動化面(`--automation`)
@@ -648,13 +648,13 @@ objectName が付いていて(`pelican.file.*` / `pelican.view.panels.*` / `peli
 `"probe_no_automation": true` を書くと、**先に flag 無しの Studio を起こして socket が無いことを確かめて**から本番を起動します。
 最初の失敗で run は止まります。
 
-**回し方**: [`tools/studio_drive.py`](../../tools/studio_drive.py#L876)(`uv run`、標準ライブラリだけ)が Studio を
+**回し方**: [`tools/studio_drive.py`](../../tools/studio_drive.py#L892)(`uv run`、標準ライブラリだけ)が Studio を
 `--automation --project --tab` で起動し、step を順に送り、`report.json` を書きます。ctest からは
 `studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L2781)) —— **実物の窓が要るので
 `QT_QPA_PLATFORM=offscreen` は掛けません**。fixture の project は temp に 2 つ複製されるので、シナリオは
 文書を書き換えてよく、「ディスクから読み直す」も試せます([複製](../../test/run_studio_scenario.cmake#L30))。
 
-**report.json は AI が読む形です**([組み立て](../../tools/studio_drive.py#L990)): `verdict`(`green` / `red`)と
+**report.json は AI が読む形です**([組み立て](../../tools/studio_drive.py#L1006)): `verdict`(`green` / `red`)と
 `ok` / `failed_steps`、`summary`(step ごとに 1 行)、`failures`(送った命令・返ってきた応答・言葉での理由・
 **失敗した瞬間のスクリーンショット**)、`steps`(全文)、`studio_log`(Studio と engine の console 出力)。
 `studio_exit_code` も記録されますが**判定には入りません** —— Studio は終了時に異常終了コードを残すことが
@@ -678,7 +678,7 @@ drag で動かし、`view_state` で結果を読む)、`menu_actions`(popup を�
 **この面が最初の往復で本物のバグを見つけました。**値の帯を click → type → Enter すると「Graph change saved.」と
 出るのに古い値が保存される —— `QDoubleSpinBox` の `keyboardTracking=false` と、editor の filter が Enter を先に
 消費する組合せで、scene test の合成 Enter では通っていました。修正は `commitInlineEdit()` で `interpretText()` を
-呼ぶことです([修正](../../src/devstudio/view/graphcanvaswidget.cpp#L1446)) —— **`--automation` 無しでも挙動が変わる
+呼ぶことです([修正](../../src/devstudio/view/graphcanvaswidget.cpp#L2232)) —— **`--automation` 無しでも挙動が変わる
 唯一の変更**で、手で編集したときの取りこぼしもこれで直っています。
 
 ### Inspector のグラフ装着
