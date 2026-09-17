@@ -23639,6 +23639,11 @@ sink の追加 / `root_delta` port / state_machine・blend の root motion / 回
 6. `Graph::evaluate(nullptr)` で clock 3 op が `graph.evaluation_requires_state@1`。
 7. 既存 headless 連番、golden、catalog smoke、input replay test bytes 不変。
 
+
+実装時の裁定(v3、2026-09-18。実装者が v2 の代替案を提示: `renderLogicalFrame` の末尾は無条件に temporal history を進める([renderer.cpp:6028-6044](../src/core/vkcore/renderer.cpp#L6028))ので「読むだけの描画」は game 状態と音に限って定義できる / `publish()` は audio writer 無しだと `unavailable` を積む / process 間 bytes 一致の前例は `run_input_record_replay_headless.cmake` 1 本だけで出荷規模の決定性は未測定 / `builtinGraphModuleRegistry()` は固定で test module は production に届かない):
+- **採る**: (a) `--at` を撤回し **`--start-time <秒>` + `--frames N`**。`start_frames = llround(t·fps)` を parse 時に整数へ落とす(t は fps 格子に量子化、記録)。frame 0 から `start_frames` 回 advance + render(capture 無し)→ 以後 N 枚を出力。headless 以外での `--start-time` は名前付き error。格子外の `setTime` サンプルは撤回。(b) **決定性 gate を先に測る**: corpus project 1 本を `--headless --frames 121 --fps 60` で別 process 2 回 → 全 PNG bytes 一致。不一致なら O-1 を止めて決定性の穴を先に起票(連鎖上限 1)。(c) **評価分類の強制(`recorded` / `baked`)は v0 では作らない**: 宣言者が無く test module は production に届かないので印にしかならない。最初に `recorded` を宣言する op の WP が検査を足す(台帳 O-1 行の「記録が要るノードには named reject」はこの裁定で v0 から外す)。無名の stateless 拒否 3 箇所の `graph.evaluation_requires_state@1` への改名は行う。(d) **条件付き**: `RenderIntent{step, read}` で `render_frame` を read(value graph の publish を `EvaluationState` のコピーで行い、audio writer は捨てる writer、`PublishedInstanceInputs` は更新しない。`flushPendingTransforms` / `seq_player` / temporal history は今日どおり)— 小さく収まり既存 gate(`run_rpc_headless` / catalog smoke editor lane / `run_gpu_timing_headless` / golden)が緑のときだけ。
+- **採らない**: `pelican_cli render` subcommand と manifest(送り)。
+- 受け入れは (1) 決定性 gate 121 枚 × 2 process、(2) `--start-time 2.0 --frames 1 --fps 60` の `0001` == `--frames 120` の `0120`(対照: `floor(t·fps − ε)` に壊す変異で `0119` 側に落ちる / 非 headless で名前付き error)、(3) read の `render_frame` ×2 で `get_graph_values` の frame と clock 値が不変(対照: read → step)、(4) 既存 gate と出荷 4 project bytes 不変、(5) 改名した拒否の unit。
 #### やらないこと
 jump / 複数 t / EXR / 音のオフライン出力 / `pelican_cli` の描画 subcommand / baked の実装 / read-only render / game code・component 経路の分類。
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
