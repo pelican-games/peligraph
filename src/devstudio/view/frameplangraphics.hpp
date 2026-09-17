@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../model/frameplanmodel.hpp"
+#include "nodegraphics.hpp"
 
 #include <QGraphicsScene>
 #include <QPointF>
@@ -24,15 +25,15 @@ namespace PelicanStudio {
 // Data roles make the rendered scene inspectable without coupling callers to
 // private QGraphicsItem subclasses.  Node identity always occupies the graph
 // and name roles together.
-inline constexpr int FramePlanItemKindRole = Qt::UserRole + 3060;
-inline constexpr int FramePlanGraphRole = Qt::UserRole + 3061;
-inline constexpr int FramePlanNameRole = Qt::UserRole + 3062;
+inline constexpr int FramePlanItemKindRole = NodeGraphItemKindRole;
+inline constexpr int FramePlanGraphRole = NodeGraphGraphRole;
+inline constexpr int FramePlanNameRole = NodeGraphNameRole;
 inline constexpr int FramePlanSourceRole = Qt::UserRole + 3063;
 inline constexpr int FramePlanColorRole = Qt::UserRole + 3064;
 inline constexpr int FramePlanAnchorRole = Qt::UserRole + 3065;
 inline constexpr int FramePlanMembersRole = Qt::UserRole + 3066;
-inline constexpr int FramePlanFromNameRole = Qt::UserRole + 3067;
-inline constexpr int FramePlanToNameRole = Qt::UserRole + 3068;
+inline constexpr int FramePlanFromNameRole = NodeGraphFromNameRole;
+inline constexpr int FramePlanToNameRole = NodeGraphToNameRole;
 inline constexpr int FramePlanEdgeRecordsRole = Qt::UserRole + 3069;
 inline constexpr int FramePlanResourcesRole = Qt::UserRole + 3070;
 inline constexpr int FramePlanInternalEdgeRecordsRole = Qt::UserRole + 3071;

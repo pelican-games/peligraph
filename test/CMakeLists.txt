@@ -364,6 +364,9 @@ endif()
 
 if(TARGET pelican_studio_inspector_model)
   pelican_define_test(devstudio_graphattachment_test pelican_studio_inspector_model)
+  pelican_define_test(devstudio_graphcanvas_test pelican_studio_inspector_model)
+  target_compile_definitions(pelican_test_devstudio_graphcanvas_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   pelican_define_test(devstudio_inspector_test
     pelican_studio_inspector_model
     pelican_studio_gizmo_model
@@ -434,7 +437,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   target_sources(pelican_test_devstudio_engine_failure_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanwidget.cpp)
   target_sources(pelican_test_devstudio_engine_failure_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplangraphics.cpp)
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplangraphics.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp)
   target_include_directories(pelican_test_devstudio_engine_failure_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view)
   set(pelican_wp298_example_project
@@ -464,6 +468,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   target_sources(pelican_test_devstudio_frameplan_graph_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanwidget.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplangraphics.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/taskconnectiongraphics.cpp
   )
   target_include_directories(pelican_test_devstudio_frameplan_graph_test PRIVATE
@@ -475,6 +480,23 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
     PELICAN_WITH_OPENXR=$<BOOL:${PELICAN_WITH_OPENXR}>
+  )
+
+  pelican_define_test(devstudio_graphcanvas_scene_test QT QT_OFFSCREEN
+    pelican_studio_inspector_model
+    pelican_project
+    Qt6::Core
+    Qt6::Widgets
+  )
+  target_sources(pelican_test_devstudio_graphcanvas_scene_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaswidget.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
+  )
+  target_include_directories(pelican_test_devstudio_graphcanvas_scene_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view
+  )
+  target_compile_definitions(pelican_test_devstudio_graphcanvas_scene_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
   )
 
   pelican_define_test(devstudio_fullscreen_pass_test QT QT_OFFSCREEN

@@ -1,6 +1,7 @@
 #include "mainwindow.hpp"
 #include "frameplanwidget.hpp"
 #include "fullscreenpasswidget.hpp"
+#include "graphcanvaswidget.hpp"
 #include "inspectorwidget.hpp"
 #include "renderfeatureswidget.hpp"
 #include "../viewport/embeddedviewport.hpp"
@@ -224,13 +225,20 @@ void MainWindow::createWorkspace() {
     docks_[EngineLogDock] = makeDock(
         this, tr("Engine Log"), QStringLiteral("pelican.engineLogDock"), engine_log_);
     auto *render_tabs = new QTabWidget(this);
+    render_tabs_ = render_tabs;
     render_tabs->setObjectName(
         QStringLiteral("pelican.renderTools"));
     frame_plan_ = new FramePlanWidget(viewport_, render_tabs);
     render_features_ = new RenderFeaturesWidget(
         viewport_, render_tabs);
+    graph_canvas_ = new GraphCanvasWidget(
+        graphCanvasReadCapability(*viewport_), render_tabs);
     render_tabs->addTab(frame_plan_, tr("Frame Plan"));
     render_tabs->addTab(render_features_, tr("Features"));
+    // The common graph is a third tab of the render tools, not a new dock:
+    // one more dock would be a new place to lose, and this is a read-only view
+    // of the same render configuration the other two tabs already describe.
+    render_tabs->addTab(graph_canvas_, tr("Graph"));
     docks_[FramePlanDock] = makeDock(
         this, tr("Frame Plan"), QStringLiteral("pelican.framePlanDock"),
         render_tabs);
@@ -432,6 +440,23 @@ void MainWindow::createMenus() {
         tr("Scale"), GizmoMode::Scale,
         tr("Scale the selection along one axis"));
     gizmo_mode_actions_[0]->setChecked(true);
+}
+
+QStringList MainWindow::renderToolsTabIds() {
+    return {QStringLiteral("frame_plan"), QStringLiteral("render_features"),
+            QStringLiteral("graph")};
+}
+
+bool MainWindow::showRenderToolsTab(const QString &id) {
+    QWidget *tab = nullptr;
+    if (id == QLatin1String{"frame_plan"}) tab = frame_plan_;
+    else if (id == QLatin1String{"render_features"}) tab = render_features_;
+    else if (id == QLatin1String{"graph"}) tab = graph_canvas_;
+    if (tab == nullptr || render_tabs_ == nullptr) return false;
+    docks_[FramePlanDock]->show();
+    docks_[FramePlanDock]->raise();
+    render_tabs_->setCurrentWidget(tab);
+    return true;
 }
 
 void MainWindow::chooseProject() {

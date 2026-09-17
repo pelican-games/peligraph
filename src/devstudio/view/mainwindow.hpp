@@ -24,6 +24,7 @@ class QMenu;
 class QPlainTextEdit;
 class QString;
 class QTreeWidget;
+class QTabWidget;
 class QTreeWidgetItem;
 class QTimer;
 
@@ -31,6 +32,7 @@ namespace PelicanStudio {
 
 class EmbeddedViewport;
 class FramePlanWidget;
+class GraphCanvasWidget;
 class FullscreenPassWidget;
 class InspectorWidget;
 class RenderFeaturesWidget;
@@ -40,6 +42,11 @@ class MainWindow : public QMainWindow {
     MainWindow();
     explicit MainWindow(const QString &application_config_directory);
     void openProject(const QString &path);
+    // The render-tools tabs, by the id the command line uses. Kept here so the
+    // launcher can reject an unknown name before a window exists.
+    static QStringList renderToolsTabIds();
+    // Bring one of them to the front, showing the dock that holds them.
+    bool showRenderToolsTab(const QString &id);
 
   protected:
     void closeEvent(QCloseEvent *event) override;
@@ -66,6 +73,8 @@ class MainWindow : public QMainWindow {
     InspectorWidget *inspector_ = nullptr;
     FramePlanWidget *frame_plan_ = nullptr;
     RenderFeaturesWidget *render_features_ = nullptr;
+    GraphCanvasWidget *graph_canvas_ = nullptr;
+    QTabWidget *render_tabs_ = nullptr;
     FullscreenPassWidget *fullscreen_pass_ = nullptr;
     QMenu *restore_layout_menu_ = nullptr;
     QMenu *delete_layout_menu_ = nullptr;

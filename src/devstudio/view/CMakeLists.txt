@@ -5,6 +5,8 @@ add_library(pelican_studio_view STATIC
     frameplanwidget.hpp
     frameplangraphics.cpp
     frameplangraphics.hpp
+    nodegraphics.cpp
+    nodegraphics.hpp
     frameplanreadcapability.cpp
     frameplanreadcapability.hpp
     renderpassauthoringcapability.cpp
@@ -15,6 +17,10 @@ add_library(pelican_studio_view STATIC
     inspectorwidget.hpp
     graphattachmentwidget.cpp
     graphattachmentwidget.hpp
+    graphcanvaswidget.cpp
+    graphcanvaswidget.hpp
+    graphcanvasreadcapability.cpp
+    graphcanvasreadcapability.hpp
     proceduralassetdialog.cpp
     proceduralassetdialog.hpp
     taskconnectiongraphics.cpp

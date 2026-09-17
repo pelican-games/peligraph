@@ -38,20 +38,20 @@
 namespace PelicanStudio {
 namespace {
 
-constexpr qreal NodeWidth = 240.0;
-constexpr qreal NodeHeight = 64.0;
+constexpr qreal NodeWidth = NodeGraphNodeWidth;
+constexpr qreal NodeHeight = NodeGraphNodeHeight;
 constexpr qreal GroupWidth = 260.0;
 constexpr qreal GroupHeight = 96.0;
 constexpr qreal BoundaryStubWidth = 210.0;
 constexpr qreal BoundaryStubHeight = 54.0;
-constexpr qreal HorizontalGap = 88.0;
-constexpr qreal VerticalGap = 74.0;
-constexpr qreal StaggerOffset = 132.0;
-constexpr qreal EdgeLabelHeight = 24.0;
-constexpr qreal EdgeLabelMinimumWidth = 120.0;
+constexpr qreal HorizontalGap = NodeGraphHorizontalGap;
+constexpr qreal VerticalGap = NodeGraphVerticalGap;
+constexpr qreal StaggerOffset = NodeGraphStaggerOffset;
+constexpr qreal EdgeLabelHeight = NodeGraphEdgeLabelHeight;
+constexpr qreal EdgeLabelMinimumWidth = NodeGraphEdgeLabelMinimumWidth;
 constexpr qreal GroupWarningWidth = 680.0;
 constexpr qreal GroupWarningHeight = 54.0;
-constexpr qreal BreadcrumbHeight = 34.0;
+constexpr qreal BreadcrumbHeight = NodeGraphBreadcrumbHeight;
 constexpr qreal PhysicalPanelGap = 74.0;
 constexpr qreal PhysicalPanelMinimumWidth = 760.0;
 constexpr qreal PhysicalHeaderHeight = 76.0;
@@ -159,27 +159,6 @@ struct PhysicalOverlaySummary {
     std::size_t not_adopted_alias_count = 0;
 };
 
-class MovableNodeItem final : public QGraphicsPathItem {
-  public:
-    using Moved = std::function<void(const QPointF &)>;
-
-    MovableNodeItem(QPainterPath path, Moved moved)
-        : QGraphicsPathItem{std::move(path)}, moved_{std::move(moved)} {}
-
-  protected:
-    QVariant itemChange(GraphicsItemChange change,
-                        const QVariant &value) override {
-        QVariant result = QGraphicsPathItem::itemChange(change, value);
-        if (change == QGraphicsItem::ItemPositionHasChanged && moved_) {
-            moved_(pos());
-        }
-        return result;
-    }
-
-  private:
-    Moved moved_;
-};
-
 class BreadcrumbItem final : public QGraphicsRectItem {
   public:
     using Clicked = std::function<void()>;
@@ -228,6 +207,19 @@ QString qtext(const std::string &value) {
 
 QString itemKind(const QGraphicsItem &item) {
     return item.data(FramePlanItemKindRole).toString();
+}
+
+// The item kinds the shared routing has to know about for this scene: which
+// items can hold an edge endpoint, and which artifacts follow an edge.
+const NodeGraphKinds &framePlanKinds() {
+    static const NodeGraphKinds kinds{
+        QStringList{QString::fromLatin1(FramePlanNodeItem),
+                    QString::fromLatin1(FramePlanGroupItem),
+                    QString::fromLatin1(FramePlanBoundaryStubItem)},
+        QString::fromLatin1(FramePlanEdgeItem),
+        QString::fromLatin1(FramePlanEdgeArrowItem),
+        QString::fromLatin1(FramePlanEdgeLabelItem)};
+    return kinds;
 }
 
 bool isAnchor(const FramePlanNode &node) {
@@ -888,30 +880,12 @@ bool containsResource(const std::vector<std::string> &resources,
 std::map<std::string, int, std::less<>> subtreeNodeColumns(
     const FramePlanModel &model,
     const std::set<std::string, std::less<>> &visible) {
-    std::map<std::string, int, std::less<>> columns;
-    for (const auto &name : visible) {
-        columns.emplace(name, 0);
+    std::vector<NodeGraphEdgeKey> edges;
+    edges.reserve(model.dependencies.size());
+    for (const auto &dependency : model.dependencies) {
+        edges.push_back(NodeGraphEdgeKey{dependency.from, dependency.to});
     }
-    // Relaxation terminates because the dependency relation is acyclic; the
-    // bound keeps a malformed payload from spinning here.
-    for (std::size_t pass = 0; pass < visible.size(); ++pass) {
-        bool changed = false;
-        for (const auto &dependency : model.dependencies) {
-            const auto from = columns.find(dependency.from);
-            const auto to = columns.find(dependency.to);
-            if (from == columns.end() || to == columns.end()) {
-                continue;
-            }
-            if (to->second < from->second + 1) {
-                to->second = from->second + 1;
-                changed = true;
-            }
-        }
-        if (!changed) {
-            break;
-        }
-    }
-    return columns;
+    return longestPathColumns(edges, visible);
 }
 
 std::set<std::string, std::less<>> subtreeNodeNames(
@@ -946,30 +920,6 @@ std::set<std::string, std::less<>> subtreeNodeNames(
         resource_frontier = std::move(next_resources);
     }
     return visible;
-}
-
-QPainterPath nodePath(bool anchor) {
-    QPainterPath path;
-    if (anchor) {
-        const QPointF center{18.0, NodeHeight / 2.0};
-        QPolygonF diamond;
-        diamond << QPointF{center.x(), center.y() - 16.0}
-                << QPointF{center.x() + 16.0, center.y()}
-                << QPointF{center.x(), center.y() + 16.0}
-                << QPointF{center.x() - 16.0, center.y()};
-        path.addPolygon(diamond);
-        path.closeSubpath();
-    } else {
-        path.addRoundedRect(QRectF{0.0, 0.0, NodeWidth, NodeHeight}, 9.0,
-                            9.0);
-    }
-    return path;
-}
-
-QPainterPath roundedEntityPath(qreal width, qreal height, qreal radius) {
-    QPainterPath path;
-    path.addRoundedRect(QRectF{0.0, 0.0, width, height}, radius, radius);
-    return path;
 }
 
 void applyGpuTimingLabel(QGraphicsSimpleTextItem &label,
@@ -1241,142 +1191,6 @@ void publishBarrierCoverage(QGraphicsScene &scene,
                       static_cast<qulonglong>(coverage.outside_window));
     scene.setProperty("pelicanBarrierCoverage",
                       barrierCoverageText(coverage));
-}
-
-struct CurveGeometry {
-    QPainterPath path;
-    QPolygonF arrow;
-    QPointF label_center;
-};
-
-CurveGeometry curveGeometry(const QRectF &from, const QRectF &to) {
-    QPointF start;
-    QPointF tip;
-    QPointF control_one;
-    QPointF control_two;
-
-    const qreal horizontal_distance =
-        std::abs(from.center().x() - to.center().x());
-    if (horizontal_distance < 20.0) {
-        const qreal direction = to.center().y() >= from.center().y() ? 1.0
-                                                                     : -1.0;
-        start = direction > 0.0
-                    ? QPointF{from.center().x(), from.bottom()}
-                    : QPointF{from.center().x(), from.top()};
-        tip = direction > 0.0 ? QPointF{to.center().x(), to.top()}
-                              : QPointF{to.center().x(), to.bottom()};
-        const qreal control_distance =
-            std::max<qreal>(52.0, std::abs(tip.y() - start.y()) * 0.45);
-        control_one = start + QPointF{0.0, direction * control_distance};
-        control_two = tip - QPointF{0.0, direction * control_distance};
-    } else {
-        const qreal direction = to.center().x() >= from.center().x() ? 1.0
-                                                                     : -1.0;
-        start = direction > 0.0 ? QPointF{from.right(), from.center().y()}
-                                : QPointF{from.left(), from.center().y()};
-        tip = direction > 0.0 ? QPointF{to.left(), to.center().y()}
-                              : QPointF{to.right(), to.center().y()};
-        const qreal control_distance =
-            std::max<qreal>(58.0, std::abs(tip.x() - start.x()) * 0.45);
-        control_one = start + QPointF{direction * control_distance, 0.0};
-        control_two = tip - QPointF{direction * control_distance, 0.0};
-    }
-
-    QPainterPath path{start};
-    path.cubicTo(control_one, control_two, tip);
-
-    QLineF tangent{control_two, tip};
-    if (tangent.length() < 0.001) {
-        tangent = QLineF{start, tip};
-    }
-    if (tangent.length() < 0.001) {
-        tangent = QLineF{QPointF{0.0, 0.0}, QPointF{1.0, 0.0}};
-    }
-    const QPointF unit{tangent.dx() / tangent.length(),
-                       tangent.dy() / tangent.length()};
-    const QPointF perpendicular{-unit.y(), unit.x()};
-    const QPointF base = tip - unit * 11.0;
-    QPolygonF arrow;
-    arrow << tip << base + perpendicular * 5.0
-          << base - perpendicular * 5.0;
-
-    const QPointF label_center = path.pointAtPercent(0.5);
-    return CurveGeometry{std::move(path), std::move(arrow), label_center};
-}
-
-QGraphicsItem *findNodeItem(QGraphicsScene &scene, const QString &graph,
-                            const QString &name) {
-    for (QGraphicsItem *item : scene.items()) {
-        const QString kind = itemKind(*item);
-        if ((kind == QLatin1String{FramePlanNodeItem} ||
-             kind == QLatin1String{FramePlanGroupItem} ||
-             kind == QLatin1String{FramePlanBoundaryStubItem}) &&
-            item->data(FramePlanGraphRole).toString() == graph &&
-            item->data(FramePlanNameRole).toString() == name) {
-            return item;
-        }
-    }
-    return nullptr;
-}
-
-QGraphicsItem *findEndpointArtifact(QGraphicsScene &scene,
-                                    const QString &kind_value,
-                                    const QString &graph,
-                                    const QString &from,
-                                    const QString &to) {
-    for (QGraphicsItem *item : scene.items()) {
-        if (itemKind(*item) == kind_value &&
-            item->data(FramePlanGraphRole).toString() == graph &&
-            item->data(FramePlanFromNameRole).toString() == from &&
-            item->data(FramePlanToNameRole).toString() == to) {
-            return item;
-        }
-    }
-    return nullptr;
-}
-
-void routeLogicalBundle(QGraphicsScene &scene, QGraphicsPathItem &edge) {
-    const QString graph = edge.data(FramePlanGraphRole).toString();
-    const QString from_name = edge.data(FramePlanFromNameRole).toString();
-    const QString to_name = edge.data(FramePlanToNameRole).toString();
-    QGraphicsItem *from = findNodeItem(scene, graph, from_name);
-    QGraphicsItem *to = findNodeItem(scene, graph, to_name);
-    if (from == nullptr || to == nullptr) {
-        return;
-    }
-
-    const CurveGeometry geometry =
-        curveGeometry(from->sceneBoundingRect(), to->sceneBoundingRect());
-    edge.setPath(geometry.path);
-    if (auto *arrow = dynamic_cast<QGraphicsPolygonItem *>(
-            findEndpointArtifact(scene,
-                                 QLatin1String{FramePlanEdgeArrowItem}, graph,
-                                 from_name, to_name))) {
-        arrow->setPolygon(geometry.arrow);
-    }
-    if (QGraphicsItem *label = findEndpointArtifact(
-            scene, QLatin1String{FramePlanEdgeLabelItem}, graph, from_name,
-            to_name)) {
-        const QRectF bounds = label->boundingRect();
-        label->setPos(geometry.label_center - bounds.center());
-    }
-}
-
-void rerouteConnectedBundles(QGraphicsScene &scene, const std::string &graph,
-                             const std::string &node) {
-    const QString expected_graph = qtext(graph);
-    const QString expected_node = qtext(node);
-    for (QGraphicsItem *item : scene.items()) {
-        if (itemKind(*item) != QLatin1String{FramePlanEdgeItem} ||
-            item->data(FramePlanGraphRole).toString() != expected_graph ||
-            (item->data(FramePlanFromNameRole).toString() != expected_node &&
-             item->data(FramePlanToNameRole).toString() != expected_node)) {
-            continue;
-        }
-        if (auto *edge = dynamic_cast<QGraphicsPathItem *>(item)) {
-            routeLogicalBundle(scene, *edge);
-        }
-    }
 }
 
 QString lifetimeText(const FramePlanLifetime &lifetime) {
@@ -2295,7 +2109,8 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                         return;
                     }
                     session_node_positions_[position_key] = moved_position;
-                    rerouteConnectedBundles(*this, routing_key.graph,
+                    rerouteConnectedBundles(*this, framePlanKinds(),
+                                            routing_key.graph,
                                             routing_key.name);
                     // Growing the scene rect from inside itemChange re-enters
                     // this handler through Qt's view update, which recurses
@@ -2518,7 +2333,7 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         label->setPos((label_width - text_bounds.width()) / 2.0,
                       (EdgeLabelHeight - text_bounds.height()) / 2.0);
 
-        routeLogicalBundle(*this, *edge);
+        routeLogicalBundle(*this, *edge, framePlanKinds());
         ++bundle_order;
     }
 
