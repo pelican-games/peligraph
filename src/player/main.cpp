@@ -1,5 +1,6 @@
 #include <argparse/argparse.hpp>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -270,6 +271,34 @@ void configureExplicitProject(ParsedLaunchConfig &parsed, const std::string &val
     parsed.project_explicit = true;
 }
 
+// Every way `--start-time` can fail to name a frame shares one code: a
+// misspelled time and a negative time have the same answer, which is that no
+// such frame exists. Reading it as text rather than letting the parser scan a
+// double is what keeps "later" and "-1" under the same name instead of under
+// argparse's wording.
+//
+// The time becomes a frame number here and nowhere else. `llround` is the
+// quantization: a time between two frames names the nearer one, and the engine
+// is never handed a time that falls between steps.
+std::uint64_t parseStartFrame(const std::string &text, double fps) {
+    double seconds = 0.0;
+    std::size_t consumed = 0;
+    try {
+        seconds = std::stod(text, &consumed);
+    } catch (const std::exception &) {
+        consumed = 0;
+    }
+    if (consumed != text.size() || !std::isfinite(seconds) || seconds < 0.0) {
+        throw std::runtime_error(
+            "offline.time_invalid@1: --start-time must be a finite, non-negative time in seconds: " + text);
+    }
+    const auto frame = std::llround(seconds * fps);
+    if (frame < 0) {
+        throw std::runtime_error("offline.time_invalid@1: --start-time does not land on a frame: " + text);
+    }
+    return static_cast<std::uint64_t>(frame);
+}
+
 ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     argparse::ArgumentParser program("Pelican Player");
     program.add_argument("--headless").flag().help("run without a window");
@@ -284,6 +313,10 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .default_value(3)
         .scan<'i', int>()
         .help("headless frame count; an explicit value also limits windowed runs");
+    program.add_argument("--start-time")
+        .default_value(std::string{})
+        .metavar("seconds")
+        .help("headless: replay up to this time, then render --frames frames from there");
     program.add_argument("--size").default_value(std::string{"1280x720"}).metavar("WxH").help("headless render size");
     program.add_argument("--render-out").default_value(std::string{}).metavar("path").help("render output path");
     program.add_argument("--dump-frame-plan").flag().help("dump the resolved frame plan JSON to stderr");
@@ -479,6 +512,30 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
                 throw std::runtime_error("--bake-camera-output requires --headless and --replay");
             }
             config.camera_bake_output = std::filesystem::path{camera_bake_output};
+        }
+
+        // `--start-time` counts frames on the fixed-step timeline, which only
+        // exists in a headless run, and it decides where the run's frames come
+        // from, so anything else that supplies them is a conflict rather than a
+        // combination. Saying so by name keeps a caller from reading a silently
+        // ignored flag as an honoured one.
+        const auto start_time = program.get<std::string>("--start-time");
+        if (!start_time.empty()) {
+            if (!config.headless) {
+                throw std::runtime_error("offline.headless_required@1: --start-time requires --headless");
+            }
+            const std::pair<const char *, bool> conflicts[]{
+                {"--rpc", config.rpc},
+                {"--replay", config.input_replay_path.has_value()},
+                {"--record-input", config.input_record.has_value()},
+                {"--bake-camera-output", config.camera_bake_output.has_value()},
+            };
+            for (const auto &[flag, used] : conflicts) {
+                if (!used) continue;
+                throw std::runtime_error(
+                    std::string{"offline.mode_conflict@1: --start-time cannot be combined with "} + flag);
+            }
+            config.start_frames = parseStartFrame(start_time, config.fps);
         }
 
         const auto play_seq = program.get<std::string>("--play-seq");

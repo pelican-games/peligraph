@@ -2390,6 +2390,18 @@ add_test(
 )
 pelican_gpu_test_properties(compute_buffer_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
 
+# O-1: a headless run started at a named time draws the same frame a plain run
+# draws at that step.
+add_test(
+    NAME offline_start_time_headless_player
+    COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/offline_start_time_headless
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_offline_start_time_headless.cmake
+)
+pelican_gpu_test_properties(offline_start_time_headless_player 300)
+
 pelican_define_test(importmanifest_test GROUP project_formats pelican_project)
 pelican_define_test(importrules_test GROUP project_formats pelican_project)
 pelican_define_test(assetdataformat_test GROUP project_formats pelican_project)

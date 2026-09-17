@@ -938,3 +938,48 @@ TEST_CASE("curve input rejects ambiguous keys and invalid playback settings", "[
     settings.duration = 0;
     REQUIRE_THROWS_AS(sampleCurve(curve, settings, 0), std::invalid_argument);
 }
+
+TEST_CASE("evaluating a clock without state is refused by name",
+          "[curve][graph-composition][offline]") {
+    using namespace Pelican;
+    // The three operations that carry state between evaluations. Each one names
+    // itself and the node, so a caller reading the rejection knows which node of
+    // which document it has to give a state to.
+    const std::vector<std::pair<std::string, std::string>> clocks{
+        {"trigger_clock", "value.trigger_clock"},
+        {"event_clock", "value.event_clock"},
+        {"audio_playback", "audio.playback"},
+    };
+    for (const auto &[lowered, op] : clocks) {
+        // Spelled in the lowered schema so the document names the node itself.
+        nlohmann::json document{{"schema", "pelican.value_graph"}, {"version", 1},
+            {"nodes", nlohmann::json::array({
+                {{"id", "now"}, {"op", "input"}, {"name", "time"}},
+                {{"id", "gate"}, {"op", "constant"}, {"value", 1}},
+                {{"id", "commands"}, {"op", "event_input"}}})},
+            {"outputs", {{"elapsed", nlohmann::json::array({"clocked"})}}},
+            {"bindings", nlohmann::json::array()}};
+        if (lowered == "trigger_clock")
+            document["nodes"].push_back({{"id", "clocked"}, {"op", "trigger_clock"},
+                {"time", "now"}, {"trigger", "gate"}});
+        else if (lowered == "event_clock")
+            document["nodes"].push_back({{"id", "clocked"}, {"op", "event_clock"},
+                {"time", "now"}, {"events", "commands"}});
+        else
+            document["nodes"].push_back({{"id", "clocked"}, {"op", "audio_playback"},
+                {"time", "now"}, {"events", "commands"}, {"asset", "project://tone.wav"}});
+        const ValueGraph::Graph graph{document.dump()};
+        try {
+            graph.evaluate({{"time", 1.0}});
+            FAIL("a stateful operation evaluated without state: " + op);
+        } catch (const GraphRegistryError &error) {
+            REQUIRE(error.code() == "graph.evaluation_requires_state@1");
+            REQUIRE(error.detail().at("node") == "clocked");
+            REQUIRE(error.detail().at("op") == op);
+        }
+        // The same document, given a state, is not refused: the name marks the
+        // one thing the backend cannot do, not the operation itself.
+        auto state = graph.createState();
+        REQUIRE_NOTHROW(graph.evaluate({{"time", 1.0}}, {}, {}, &state));
+    }
+}

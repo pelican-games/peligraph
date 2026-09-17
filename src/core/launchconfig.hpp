@@ -55,6 +55,15 @@ DECLARE_MODULE(EngineLaunchConfig) {
     uint32_t headless_frames = 3;
     bool headless_frames_explicit = false;
     std::optional<std::filesystem::path> render_out;
+    // Offline output. The fixed-step frame the run's first capture belongs to,
+    // counted from 1; 0 means the run starts at the beginning as it always did.
+    // The command line names a time in seconds and the parser quantizes it to
+    // the frame grid once, here, so the rest of the engine never has to ask
+    // whether a time falls between two frames. The frames before this one are
+    // replayed, not skipped: the state that decides what a frame looks like --
+    // graph clocks, game systems, animation components -- is not a function of
+    // the clock alone.
+    std::uint64_t start_frames = 0;
     double fps = 60.0;
     bool shader_hot_reload = true;
     bool allow_absolute_paths = false;

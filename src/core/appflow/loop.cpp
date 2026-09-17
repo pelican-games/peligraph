@@ -43,6 +43,7 @@
 
 #include <filesystem>
 #include <chrono>
+#include <cstdint>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -398,12 +399,11 @@ void Loop::run() {
 
         const auto render_out_pattern =
             launch_config.render_out ? parseRenderOutPattern(*launch_config.render_out) : RenderOutPattern{};
-        const auto replay_frames = input_sequence.isReplaying() ? input_sequence.replayFrameCount() : 0;
-        const auto frame_limit = input_sequence.isReplaying() && !launch_config.headless_frames_explicit
-                                     ? static_cast<uint32_t>(replay_frames)
-                                     : launch_config.headless_frames;
-        for (uint32_t frame = 0; frame_limit == 0 || frame < frame_limit;
-             ++frame) {
+        // One headless frame, spelled once. Offline output replays the same
+        // frame the frame-count loop runs -- advance, update, render -- because
+        // a warm-up that skipped any of the three would leave the clocks, the
+        // game systems and the temporal history somewhere the real run never is.
+        const auto headlessFrame = [&](bool capture, uint32_t frame_number) {
             if (!input_sequence.isReplaying()) {
                 input_state.clear();
             }
@@ -423,11 +423,36 @@ void Loop::run() {
                     0.0,
                 });
             }
-            if (launch_config.render_out && render_out_pattern.has_frame_token) {
+            if (capture) {
                 resolveOutputRenderTarget()
                     .captureLastFrameToPng(formatRenderOutPath(*launch_config.render_out, render_out_pattern,
-                                                               frame + 1));
+                                                               frame_number));
             }
+        };
+        // `--start-time`: the run's first captured frame is the fixed-step frame
+        // that lands on that time, so the frames before it are replayed rather
+        // than skipped. There is no jump: the state that decides what a frame
+        // looks like is not reachable from the clock alone -- graph clocks only
+        // advance inside render(), project game systems integrate their own dt,
+        // and an animation component's evaluator is not consulted at all -- so
+        // the only honest way to be at a time is to have been at every step
+        // before it. The replayed frames run the same three calls the captured
+        // ones do; only the capture is left out.
+        if (launch_config.start_frames > 0) {
+            const auto replay = launch_config.start_frames - 1;
+            std::cerr << "offline: start_time="
+                      << static_cast<double>(launch_config.start_frames) / timeline_fps
+                      << " start_frame=" << launch_config.start_frames
+                      << " replay=" << replay << " frames=" << launch_config.headless_frames << std::endl;
+            for (std::uint64_t step = 0; step < replay; ++step) headlessFrame(false, 0u);
+        }
+        const auto replay_frames = input_sequence.isReplaying() ? input_sequence.replayFrameCount() : 0;
+        const auto frame_limit = input_sequence.isReplaying() && !launch_config.headless_frames_explicit
+                                     ? static_cast<uint32_t>(replay_frames)
+                                     : launch_config.headless_frames;
+        for (uint32_t frame = 0; frame_limit == 0 || frame < frame_limit;
+             ++frame) {
+            headlessFrame(launch_config.render_out && render_out_pattern.has_frame_token, frame + 1);
         }
         if (launch_config.render_out && !render_out_pattern.has_frame_token && launch_config.headless_frames > 0) {
             resolveOutputRenderTarget().captureLastFrameToPng(*launch_config.render_out);

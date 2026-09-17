@@ -39,6 +39,17 @@ bool active(const ScopeDependencies &dependencies, std::string_view name, const 
         [&](const auto &scope) { return inactive.contains(scope); });
 }
 
+// The three operations whose result depends on what earlier evaluations did.
+// Evaluating one without state is not a missing argument, it is the one thing
+// this backend cannot do -- so it says so under a name, with the node that
+// asked and the operation spelled the way an authored document spells it (the
+// lowered schema drops the module namespace; a caller reading the rejection
+// should not have to know that).
+GraphRegistryError statelessEvaluationRejected(std::string_view op, const std::string &node) {
+    return GraphRegistryError("graph.evaluation_requires_state@1",
+        {{"node", node}, {"op", std::string{op}}});
+}
+
 InstanceInputSource instanceInputSourceOf(GraphInstanceInputSource source) {
     switch (source) {
     case GraphInstanceInputSource::connected: return InstanceInputSource::connected;
@@ -503,11 +514,11 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
         case Op::curve: value = node.curve->sample(values[node.dependencies[0]]); break;
         case Op::event_input: break;
         case Op::audio_playback:
-            if (!state) throw std::invalid_argument("audio playback requires evaluation state: " + node.id);
+            if (!state) throw statelessEvaluationRejected("audio.playback", node.id);
             value = values[node.dependencies[0]];
             break;
         case Op::event_clock: {
-            if (!state) throw std::invalid_argument("event clock requires evaluation state: " + node.id);
+            if (!state) throw statelessEvaluationRejected("value.event_clock", node.id);
             auto &clock = triggers[index].clock;
             const auto time = values[node.dependencies[0]];
             auto &queue = pending[index];
@@ -526,7 +537,7 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
             break;
         }
         case Op::trigger_clock: {
-            if (!state) throw std::invalid_argument("trigger clock requires evaluation state: " + node.id);
+            if (!state) throw statelessEvaluationRejected("value.trigger_clock", node.id);
             auto &trigger = triggers[index];
             const auto time = values[node.dependencies[0]];
             const bool high = values[node.dependencies[1]] != 0;
