@@ -23598,6 +23598,17 @@ journal / undo(R 群)/ component 欄(P-1b)/ feature parameter / definition 内�
 5. factory 解決後の契約が `extract` で `replay`、`none` で `direct`。catalog dump は不変。
 6. 既存 `posegraph_test` / `skeletal_gltf_test` / golden(skeletal 系)bytes 不変。OFF build。
 
+
+第 2 巡の裁定(v3、2026-09-18、`<作業ディレクトリ>/dr_ag2_r2.md`: 第 1 巡の F1〜F4 / G2 / G5 / G6 / G8 / G9 は閉、新規 致命 4 / 大 8。以下で確定、これ以上の設計レビューは行わない):
+- **N3(決定 5)**: `resolveOperation` は factory の分類を「登録より緩い方向には採らない」= `resolved.evaluation = max(registered, factory)`(direct < replay < baked < recorded)。拒否は作らない(`graph.evaluation_relaxed@1` は撤回。`pose.state_machine` の factory は既定 direct を返すので拒否にすると全 state_machine が落ちる)。
+- **N1(受け入れ 3)**: `time_set_revision` の比較と更新は **attachment 単位で毎 frame**(evaluator の有無に関係なく)。受け入れ 3 は「seek の次の 1 frame で跳ばない」に加えて **その後 30 frame でさらに +1.0 進む**(revision を毎 frame 捨てる故障を赤にする)。
+- **N2(決定 3)**: `root_node` の layout index は **attach 時に 1 回**解決して cache する(`pose_staging_v1.hpp` に additive な `resolve_rig_source_node{rig(layout), source_node} → layout index` を足す。staged_frame に依存しない)。root(start) / root(end) は既存 `sample_pose_at` を start_seconds / end_seconds で呼び、cache した index の translation を読む(追加 entry `sample_source_node_translation` は不要、撤回)。
+- **N4(決定 4)**: `extract` node は **ちょうど 1 つの sink の chain にだけ**属すること(別 owner の sink からも辿れる graph は compile で `pose.root_motion_shared@1`)。適用は attachment(= owner の sink)ごとに 1 frame 1 回。
+- **N9**: owner → GameObjectId は attach 時に名前で解決し cache する。解決できない / `LocalTransformComponent` が無い → `pose.root_motion_no_transform@1`(attach 時)。fixture の scene は projects が使うのと同じ key で local transform component を宣言する(実装者は実際の component key を報告)。親付き個体の 1 frame ずれは記録(hierarchy 参加者にしか自動で付かない相補性も記録)。
+- **N6 / N8**: clip の duration が 0 → `pose.root_motion_unsupported@1`。`root_node` に translation channel が無い clip は、bind 時に channel 一覧が取れるなら同じ名前で拒否、取れなければ「delta 恒久 0」を記録して通す(実装者が報告)。
+- **N7**: 末尾 key を先頭 key と同じにした「継ぎ目無し」clip は net 変位 0 = root motion 無し。これは clip の規約(net 変位は末尾 key に残す)として manual に 1 行。
+- **N10**: 受け入れ 5 の分類は unit(production の消費者は O-1)。**N12**: O-1 の格子外 `setTime` では seek 扱いで最後の部分 delta(t − k/fps 分)が落ちる。記録。
+- 事実訂正: 共有 fixture `writeGltf` を使う file は 18 ではなく 4。
 #### やらないこと
 sink の追加 / `root_delta` port / state_machine・blend の root motion / 回転量 / movement・physics step / transform の writer token / VRMA hips の自動解釈 / Studio UI。
 
