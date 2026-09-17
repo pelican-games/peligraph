@@ -9,7 +9,11 @@ lane.
 
 The test copies `test/fixtures/studio_automation_graph` to
 `build/test_artifacts/studio_scenarios/<name>/project` (and a second, untouched
-copy beside it) and runs `tools/studio_drive.py` against the copy. Everything
+copy beside it) and runs `tools/studio_drive.py` against the copy. A scenario
+that needs a document of its own puts it in `test/fixtures/studio_<name>/` and
+gets that copied instead -- `frameplan_edit_roundtrip` does, because it edits a
+project pass and adding one to the shared fixture would change what every other
+scenario is looking at. Everything
 the run produced is in that directory: `report.json`, `studio.log`, and the
 screenshots.
 
@@ -150,6 +154,24 @@ definition's under `definitions.<name>.layout`, in the shape
 `{"nodes": {...}, "reroutes": [...], "ties": [...]}`. `graph_reroute_tie` is
 the example, and it is also where "a control point does not move when the node
 it is near does" is checked against a live window.
+
+N-8 made the Frame Plan canvas an editing surface, and its drawn things are
+named the same way. A pass or task is `node#<pass name>`. A socket is
+`node_socket#<pass name>/out:<resource>` or `.../in:<resource>` -- the side is
+part of the name because one pass can read and write the same target. An
+in-place band is `node_inline_field#<pass name>/<field>`, where the field is
+`shader.vertex`, `shader.fragment` or `dispatch`, and the editor it opens is
+the widget `pelican.framePlanInlineEditor`. A band takes the press that lands
+on it, so a scenario that means "move this node" drags it by its heading,
+`node_header#<pass name>`, the way a person does. A plain drag from an output socket
+onto a pass connects; a plain drag off an input socket into open canvas cuts;
+Shift-drag still opens the dialogs, as it always did. The canvas menu's two
+insert entries are named QActions like the placement ones:
+`pelican.framePlan.addFullscreenPass` and `pelican.framePlan.addComputeTask`,
+both acting after the node that is picked. The placement the canvas keeps is
+the `frame_plan` member of the same root `layout` the Graph tab writes, so
+`get_graph_instances` carries it at `layout.frame_plan.<graph>.nodes.<pass>`;
+`frameplan_edit_roundtrip` is the example.
 
 The editor the canvas opens over a pill or a heading is a real widget carried by
 a drawn item, and is named the same way:

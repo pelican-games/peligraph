@@ -44,6 +44,11 @@ class FullscreenPassWidget final : public QWidget {
     // arrives only through RenderPassAuthoringCapability.
     void setCommittedAction(std::function<void()> action);
     void editPresetPass(const QString &graph, const QString &pass_name);
+    // N-8. "Add fullscreen pass..." on the Frame Plan canvas: the same form,
+    // opened for a new pass, with the insert position already standing after
+    // the node the user right-clicked. Nothing else is filled in -- the name
+    // and the shaders are the author's.
+    void insertAuthoredPassAfter(const QString &graph, const QString &after_pass);
     void editPresetPassConnection(const QString &graph, const QString &pass_name, const QStringList &outputs);
     void receiveResult(const QByteArray &result_json);
     void receiveAuthoringConfig(const QByteArray &config_json);

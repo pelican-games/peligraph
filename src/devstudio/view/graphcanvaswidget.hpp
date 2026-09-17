@@ -227,6 +227,15 @@ class GraphCanvasScene final : public QGraphicsScene {
     // the number, not about a timer being involved.
     static constexpr int GraphCanvasLayoutDebounceMs = 300;
 
+    // N-8. `set_layout` replaces the whole `layout` member, so a second panel
+    // that keeps a placement in it cannot write on its own without erasing
+    // this one. It hands its member here instead: one debounce, one write, both
+    // halves. Members this canvas does not understand are read off the document
+    // and carried forward untouched, so an older Studio never silently drops
+    // the Frame Plan's placement by drawing a graph.
+    [[nodiscard]] nlohmann::json layoutMember(const std::string &key) const;
+    void setLayoutMember(const std::string &key, nlohmann::json value);
+
     // One more control point on this edge, at this scene position. This is what
     // a double-click on an edge does.
     bool insertReroute(const GraphCanvasEdge &edge, const QPointF &at);
@@ -322,6 +331,10 @@ class GraphCanvasScene final : public QGraphicsScene {
     // placement (one that says "nothing is placed"), and a document that has
     // never carried one must not read as "the canvas has caught up".
     nlohmann::json layout_sent_;
+    // N-8: the members of the same `layout` object that belong to another
+    // panel. Read back from the document on every load and sent again on every
+    // write, so this canvas never has to understand them to preserve them.
+    nlohmann::json layout_foreign_ = nlohmann::json::object();
     bool layout_dirty_ = false;
     QTimer *layout_timer_ = nullptr;
     // What the automatic placement chose on the last draw: the boxes, and the

@@ -1250,6 +1250,98 @@ TEST_CASE("the graph document carries the editor's placement without recomposing
         CHECK(reportedLayout() == Json::object());
     }
 
+    // N-8 acceptance 4. The Frame Plan canvas draws passes and resources, and
+    // neither is a node of this document: the member is checked for shape and
+    // its names are deliberately not looked up.
+    SECTION("the frame plan's placement rides in the same layout member") {
+        const Json frame_plan{
+            {"main_render",
+             {{"nodes", {{"ssao_pass", {{"x", 40.0}, {"y", -8.5}}},
+                         {"deferred_lighting", {{"x", 300.0}, {"y", 12.0}}}}},
+              {"reroutes", Json::array({Json{
+                   {"edge", {{"node", "deferred_lighting"},
+                             {"resource", "ssao_blur"}}},
+                   {"points", Json::array({Json::array({180.0, 4.0})})}}})},
+              {"ties", Json::array({Json{
+                   {"x", 220.0}, {"y", 30.0},
+                   {"edges", Json::array({
+                        Json{{"node", "deferred_lighting"},
+                             {"resource", "ssao_blur"}},
+                        Json{{"node", "deferred_lighting"},
+                             {"resource", "gbuffer_albedo"}}})}}})},
+              {"groups", Json::array({Json{{"id", "session-1"},
+                                           {"members", Json::array({"ssao_pass"})}}})}}}};
+        Json both = placement;
+        both["frame_plan"] = frame_plan;
+        const auto applies = runtime.apply_calls;
+        const auto generation = runtime.snapshot.published_generation;
+        const auto plan = runtime.frame_plan;
+        const auto catalog = Json(service->getGraphCatalog(Json::object()));
+
+        const auto result = commit(edit(Json::array({Json{
+            {"op", "set_layout"}, {"scope", "root"}, {"layout", both}}})));
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        // The same claim `nodes`/`reroutes`/`ties` make: nothing is recomposed.
+        CHECK(result.at("recomposed") == false);
+        CHECK(runtime.apply_calls == applies);
+        CHECK(runtime.snapshot.published_generation == generation);
+        CHECK(runtime.frame_plan == plan);
+        CHECK(Json(service->getGraphCatalog(Json::object())) == catalog);
+        CHECK(reportedLayout() == both);
+        CHECK(Json::parse(readBytes(source.path)).at("layout") == both);
+        REQUIRE_NOTHROW(expandGraphDocument(Json::parse(readBytes(source.path))));
+
+        const auto saved = readBytes(source.path);
+        const auto reject = [&](Json member, const char *code) {
+            Json layout = placement;
+            layout["frame_plan"] = std::move(member);
+            const auto rejected = edit(Json::array({Json{
+                {"op", "set_layout"}, {"layout", std::move(layout)}}}));
+            INFO(rejected.dump());
+            REQUIRE(rejected.at("status") == "rejected");
+            CHECK(rejected.at("error").at("code") == code);
+            CHECK(readBytes(source.path) == saved);
+        };
+        // Shape, and only shape.
+        reject(Json::array(), "invalid_graph_document");
+        reject(Json{{"main_render", {{"columns", Json::array()}}}},
+               "graph.layout_invalid@1");
+        reject(Json{{"main_render",
+                     {{"nodes", {{"ssao_pass", {{"x", "left"}, {"y", 0}}}}}}}},
+               "graph.layout_invalid@1");
+        reject(Json{{"main_render",
+                     {{"reroutes", Json::array({Json{
+                          {"edge", {{"node", "ssao_pass"}, {"port", "input"}}},
+                          {"points", Json::array()}}})}}}},
+               "graph.layout_invalid@1");
+        reject(Json{{"main_render",
+                     {{"ties", Json::array({Json{{"x", 0}, {"y", 0}}})}}}},
+               "graph.layout_invalid@1");
+        reject(Json{{"main_render",
+                     {{"groups", Json::array({Json{{"id", "g"}}})}}}},
+               "graph.layout_invalid@1");
+
+        // And the names really are not looked up: a pass this document has
+        // never heard of is a perfectly good placement, because pass names are
+        // decided in the preset and the features, not here. `nodes` above it
+        // still refuses the same name, which is the control for that claim.
+        Json unmatched = placement;
+        unmatched["frame_plan"] = Json{
+            {"a_graph_nobody_declared",
+             {{"nodes", {{"a_pass_nobody_declared", {{"x", 1.0}, {"y", 2.0}}}}}}}};
+        REQUIRE(commit(edit(Json::array({Json{
+                    {"op", "set_layout"}, {"layout", unmatched}}})))
+                    .at("committed") == true);
+        CHECK(reportedLayout() == unmatched);
+        const auto refused = edit(Json::array({Json{
+            {"op", "set_layout"},
+            {"layout", Json{{"nodes", {{"a_pass_nobody_declared",
+                                        {{"x", 1.0}, {"y", 2.0}}}}}}}}}));
+        REQUIRE(refused.at("status") == "rejected");
+        CHECK(refused.at("error").at("code") == "graph.layout_invalid@1");
+    }
+
     SECTION("a definition's placement travels inside its body") {
         const Json inner{
             {"nodes", {{"sum", {{"x", 4.0}, {"y", 8.0}}}}},
@@ -3223,9 +3315,17 @@ TEST_CASE("P-2a-4a root scope materialization rewrites the section and releases 
     // N-6: the editor's own placement is a root member nothing composes. A
     // materialization rewrites the whole `rendering` section, and the
     // placement has to come back out of it exactly as it went in.
-    document["layout"] = Json{{"nodes", {{"clock", {{"x", 12.5}, {"y", -4.0}}}}},
-                              {"reroutes", Json::array()},
-                              {"ties", Json::array()}};
+    // N-8 adds `frame_plan` to the same member -- the Frame Plan canvas's own
+    // placement -- so it is carried through by the same claim.
+    document["layout"] = Json{
+        {"nodes", {{"clock", {{"x", 12.5}, {"y", -4.0}}}}},
+        {"reroutes", Json::array()},
+        {"ties", Json::array()},
+        {"frame_plan",
+         {{"main_render",
+           {{"nodes", {{"ssao_pass", {{"x", 64.0}, {"y", 18.0}}}}},
+            {"reroutes", Json::array()},
+            {"ties", Json::array()}}}}}};
     auto &section = document.at("rendering");
     section.at("features").at(0) = "project://passes/bloom-source.json";
     for (auto &pass : section.at("rendering_passes").at(0).at("passes"))

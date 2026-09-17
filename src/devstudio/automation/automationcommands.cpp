@@ -1,6 +1,7 @@
 #include "automationcommands.hpp"
 #include "automationserver.hpp"
 
+#include "../view/frameplangraphics.hpp"
 #include "../view/graphcanvaswidget.hpp"
 #include "../view/nodegraphics.hpp"
 #include "../viewport/embeddedviewport.hpp"
@@ -101,7 +102,25 @@ QString sceneItemName(const QGraphicsView &view, const QGraphicsItem &item,
     const QString kind = itemKind(item);
     if (kind.isEmpty()) return {};
     QString identity = item.data(NodeGraphNameRole).toString();
-    const QString port = item.data(GraphCanvasPortRole).toString();
+    QString port = item.data(GraphCanvasPortRole).toString();
+    // N-8: a Frame Plan socket belongs to a resource AND to a side -- one pass
+    // can read and write the same target -- so the side travels in the port
+    // half of the name. A band names the field it retypes.
+    if (port.isEmpty()) {
+        const QString resource = item.data(FramePlanPortRole).toString();
+        if (!resource.isEmpty()) {
+            const QString side =
+                item.data(FramePlanSocketDirectionRole).toString();
+            port = side.isEmpty()
+                       ? resource
+                       : (side == QLatin1String{"output"}
+                              ? QStringLiteral("out:")
+                              : QStringLiteral("in:")) +
+                             resource;
+        } else {
+            port = item.data(FramePlanInlineFieldRole).toString();
+        }
+    }
     if (!port.isEmpty()) {
         identity = identity.isEmpty() ? port
                                       : identity + QStringLiteral("/") + port;

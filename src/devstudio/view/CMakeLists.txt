@@ -5,6 +5,10 @@ add_library(pelican_studio_view STATIC
     frameplanwidget.hpp
     frameplangraphics.cpp
     frameplangraphics.hpp
+    frameplanedit.cpp
+    frameplanedit.hpp
+    frameplaneditcapability.cpp
+    frameplaneditcapability.hpp
     nodegraphics.cpp
     nodegraphics.hpp
     nodelayout.cpp

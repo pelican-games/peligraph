@@ -2166,3 +2166,70 @@ TEST_CASE("Without the node values seam the canvas says which method it cannot i
     REQUIRE(notice->text().contains(QStringLiteral("get_graph_node_values")));
     REQUIRE_FALSE(widget.model().nodeValuesReceived());
 }
+
+// N-8. `set_layout` replaces the whole `layout` object, so the Frame Plan
+// canvas's own placement has to travel with this canvas's. It hands its member
+// over; one debounce, one write, both halves -- and a member this canvas has
+// never heard of survives a drag rather than being deleted by it.
+TEST_CASE("One set_layout carries both this canvas's placement and the Frame Plan's",
+          "[devstudio][graph-canvas][scene][layout-persistence][n8]") {
+    (void)application();
+    // A document that already carries the other panel's member.
+    auto document = connectedDocument();
+    const Json frame_plan{
+        {"main_render",
+         {{"nodes", {{"ssao_pass", {{"x", 12.0}, {"y", 34.0}}}}}}}};
+    document["layout"] = Json{{"nodes", Json::object()},
+                              {"reroutes", Json::array()},
+                              {"ties", Json::array()},
+                              {"frame_plan", frame_plan}};
+
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    answer(model, document);
+    scene.setModel(&model);
+    // It was read back, untouched, without this canvas understanding it.
+    CHECK(scene.layoutMember("frame_plan") == frame_plan);
+
+    QGraphicsItem *left = nodeItem(scene, QStringLiteral("left"));
+    REQUIRE(left != nullptr);
+    const QPointF placed = left->pos() + QPointF{80.0, 60.0};
+    left->setPos(placed);
+    REQUIRE(scene.layoutPending());
+    scene.flushLayout();
+    {
+        const auto written = takeLayoutEdit(model);
+        REQUIRE(written.at("nodes").contains("left"));
+        CHECK(written.at("nodes").at("left").at("x") == placed.x());
+        // The control for the whole arrangement: a drag on THIS canvas did not
+        // delete the other panel's member, because the one write carries both.
+        CHECK(written.at("frame_plan") == frame_plan);
+    }
+
+    // The other direction, on a canvas of its own because one model carries one
+    // edit at a time: the Frame Plan moves something, and the one write that
+    // goes out still carries this canvas's placement with it.
+    const Json moved{
+        {"main_render",
+         {{"nodes", {{"ssao_pass", {{"x", 90.0}, {"y", -5.0}}}}}}}};
+    GraphCanvasModel second;
+    GraphCanvasScene fresh;
+    second.setConnected(true);
+    answer(second, document);
+    fresh.setModel(&second);
+    QGraphicsItem *other = nodeItem(fresh, QStringLiteral("left"));
+    REQUIRE(other != nullptr);
+    const QPointF elsewhere = other->pos() + QPointF{25.0, 15.0};
+    other->setPos(elsewhere);
+    fresh.setLayoutMember("frame_plan", moved);
+    REQUIRE(fresh.layoutPending());
+    fresh.flushLayout();
+    {
+        const auto written = takeLayoutEdit(second);
+        CHECK(written.at("frame_plan") == moved);
+        REQUIRE(written.at("nodes").contains("left"));
+        CHECK(written.at("nodes").at("left").at("x") == elsewhere.x());
+    }
+    CHECK(fresh.layoutMember("frame_plan") == moved);
+}

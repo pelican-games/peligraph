@@ -1,6 +1,8 @@
 #include "frameplanwidget.hpp"
 
+#include "frameplanedit.hpp"
 #include "frameplangraphics.hpp"
+#include "jsonrpcrequest.hpp"
 #include "panelhelp.hpp"
 #include "../model/frameplanmodel.hpp"
 #include "../viewport/embeddedviewport.hpp"
@@ -30,6 +32,7 @@
 #include <QPlainTextEdit>
 #include <QPainter>
 #include <QPushButton>
+#include <QShowEvent>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
@@ -45,6 +48,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <map>
 #include <utility>
 #include <fstream>
 #include <iterator>
@@ -192,6 +196,8 @@ void addToolTab(QTabWidget &tabs, QWidget *page, const QString &id,
     page->setProperty(ToolTabIdProperty, id);
     tabs.addTab(page, label);
 }
+
+using Json = nlohmann::json;
 
 QString text(const std::string &value) {
     return QString::fromStdString(value);
@@ -360,6 +366,24 @@ struct FramePlanWidget::Impl {
     qint64 pending_request = 0;
     qint64 pending_gpu_timing_request = 0;
 
+    // --- N-8: editing on the canvas.
+    FramePlanEditCapability edit;
+    FramePlanLayoutCapability placement;
+    std::function<void(const QString &, const QString &)> pass_insert_action;
+    std::function<void()> task_insert_action;
+    FramePlanAuthoring authoring;
+    FramePlanTaskAuthoring task_authoring;
+    qint64 pending_authoring_request = 0;
+    qint64 pending_task_request = 0;
+    qint64 pending_edit_request = 0;
+    qint64 pending_ticket_request = 0;
+    QString pending_ticket;
+    bool edit_signals_connected = false;
+    // The graph the placement on screen belongs to. A placement written against
+    // a graph that is no longer shown would name passes that are not there.
+    std::string placement_graph;
+    bool placement_loaded = false;
+
     Impl(FramePlanWidget &widget, EmbeddedViewport &embedded_viewport)
         : owner{widget}, viewport{embedded_viewport} {
         shader_source_open_action = [](const std::filesystem::path &path) {
@@ -496,6 +520,58 @@ struct FramePlanWidget::Impl {
             else
                 showStatus(owner.tr("Select an authored task or editable preset pass"), owner.tr("Select an authored task or editable preset pass as the destination."));
         };
+        // N-8: the plain gestures. Shift-drag above is untouched; these are the
+        // ones that finish as an authoring RPC rather than as a dialog.
+        logical_scene->resourceEdgeRequested =
+            [this](const FramePlanNodeKey &consumer,
+                   const QStringList &resources, bool connect) {
+                changeResourceEdge(consumer, resources, connect);
+            };
+        logical_scene->nodeRemoveRequested =
+            [this](const FramePlanNodeKey &node) { removeNode(node); };
+        logical_scene->inlineFieldCommitted =
+            [this](const FramePlanNodeKey &node, const QString &field,
+                   const QString &value) {
+                commitInlineField(node, field, value);
+            };
+        logical_scene->inlineFieldProvider =
+            [this](const FramePlanNodeKey &node) {
+                std::vector<FramePlanInlineBand> bands;
+                if (!model) return bands;
+                for (const auto &field : framePlanInlineFields(
+                         authoring, task_authoring, node.graph, node.name,
+                         authoredTask(node.name)))
+                    bands.push_back(FramePlanInlineBand{
+                        text(field.field), text(field.label),
+                        text(field.value)});
+                return bands;
+            };
+        // Double-click is the way to the detailed editors: everything the
+        // bands do not carry lives in the two forms that already exist.
+        logical_scene->nodeEditRequested =
+            [this](const FramePlanNodeKey &node) {
+                const auto task = authoredTask(node.name);
+                if (!task.empty()) {
+                    if (task_edit_action) task_edit_action(text(task));
+                    return;
+                }
+                if (preset_pass_edit_action)
+                    preset_pass_edit_action(text(node.graph), text(node.name));
+            };
+        logical_scene->nodeAddRequested =
+            [this](const FramePlanNodeKey &after, bool task) {
+                if (task) {
+                    if (task_insert_action) task_insert_action();
+                    else showStatus(owner.tr("Adding a compute task is unavailable."));
+                    return;
+                }
+                if (!pass_insert_action) {
+                    showStatus(owner.tr("Adding a pass is unavailable."));
+                    return;
+                }
+                pass_insert_action(text(after.graph), text(after.name));
+            };
+        logical_scene->placementChanged = [this] { writePlacement(); };
         logical = new FramePlanGraphicsView(logical_scene, logical_splitter);
         logical->setObjectName(QStringLiteral("pelican.framePlanLogicalView"));
         logical->setToolTip(owner.tr("Shift-drag: connect resources"));
@@ -530,6 +606,39 @@ struct FramePlanWidget::Impl {
         QObject::connect(fit_view, &QAction::triggered, &owner,
                          [this] { logical->fitView(); });
         logical_scene->setMenuActions(auto_layout, fit_view);
+        // N-8: the two insert entries, named for the same reason the placement
+        // ones are -- a command that owes a reply cannot open a popup.
+        auto *add_pass = new QAction(
+            QStringLiteral("Add fullscreen pass..."), &owner);
+        add_pass->setObjectName(
+            QStringLiteral("pelican.framePlan.addFullscreenPass"));
+        owner.addAction(add_pass);
+        QObject::connect(add_pass, &QAction::triggered, &owner, [this] {
+            const auto anchor = logical_scene->insertAnchor();
+            if (!anchor) {
+                showStatus(owner.tr(
+                    "Select the node the new pass should follow first."));
+                return;
+            }
+            if (logical_scene->nodeAddRequested)
+                logical_scene->nodeAddRequested(*anchor, false);
+        });
+        auto *add_task = new QAction(
+            QStringLiteral("Add compute task..."), &owner);
+        add_task->setObjectName(
+            QStringLiteral("pelican.framePlan.addComputeTask"));
+        owner.addAction(add_task);
+        QObject::connect(add_task, &QAction::triggered, &owner, [this] {
+            const auto anchor = logical_scene->insertAnchor();
+            if (logical_scene->nodeAddRequested)
+                logical_scene->nodeAddRequested(
+                    anchor ? *anchor
+                           : FramePlanNodeKey{model ? model->graph
+                                                    : std::string{},
+                                              std::string{}},
+                    true);
+        });
+        logical_scene->setInsertActions(add_pass, add_task);
         auto *leave_group = new QAction(&owner);
         leave_group->setObjectName(
             QStringLiteral("pelican.framePlanLeaveGroup"));
@@ -645,6 +754,19 @@ struct FramePlanWidget::Impl {
                              model.reset();
                              clearTrees();
                              logical_scene->setGpuTiming({});
+                             // N-8: a different engine is a different project.
+                             // What it says about who may be edited, and where
+                             // it drew things last time, are both its own -- so
+                             // they are asked for again rather than carried in.
+                             authoring = {};
+                             task_authoring = {};
+                             pending_authoring_request = 0;
+                             pending_task_request = 0;
+                             pending_edit_request = 0;
+                             pending_ticket_request = 0;
+                             pending_ticket.clear();
+                             placement_loaded = false;
+                             placement_graph.clear();
                              requestRefresh();
                              requestGpuTiming();
                              gpu_timing_poll->start();
@@ -790,6 +912,342 @@ struct FramePlanWidget::Impl {
         setPanelNotice(status, line, detail.isEmpty() ? line : detail);
     }
 
+    // --- N-8. Every canvas gesture ends here: one authoring RPC, or one line
+    // that names the pass and says why there is no RPC to send.
+
+    // The authored task behind a node, or empty when the node is a pass.
+    std::string authoredTask(const std::string &name) const {
+        if (!model) return {};
+        const auto found = std::ranges::find(model->nodes, name,
+                                             &FramePlanNode::name);
+        if (found == model->nodes.end() || found->kind != "compute") return {};
+        return found->authored_name;
+    }
+
+    void connectEditSignals() {
+        if (edit_signals_connected) return;
+        edit_signals_connected = true;
+        if (edit.result)
+            edit.result(&owner, [this](qint64 id, const QByteArray &bytes) {
+                receiveEditResult(id, bytes);
+            });
+        if (edit.failure)
+            edit.failure(&owner, [this](qint64 id, const QString &message) {
+                receiveEditFailure(id, message);
+            });
+    }
+
+    // A panel nobody is looking at asks the engine nothing. The Frame Plan has
+    // always been a snapshot the user refreshes; N-8 added two reads to it, and
+    // they follow the same rule -- a tab behind another one must not put
+    // traffic on the editor channel, or take work from the panel in front.
+    // They are asked for again the moment this one is shown.
+    void requestAuthoringContext() {
+        if (!edit.requestAuthoringContext || pending_authoring_request != 0 ||
+            !owner.isVisible())
+            return;
+        QString error;
+        pending_authoring_request = edit.requestAuthoringContext(&error);
+        if (pending_authoring_request == 0 && !error.isEmpty())
+            showStatus(oneLine(error), error);
+    }
+
+    void requestTaskAuthoring() {
+        if (!edit.requestTaskAuthoring || pending_task_request != 0 ||
+            !owner.isVisible())
+            return;
+        QString error;
+        pending_task_request = edit.requestTaskAuthoring(&error);
+        if (pending_task_request == 0 && !error.isEmpty())
+            showStatus(oneLine(error), error);
+    }
+
+    void submit(const FramePlanEditRequest &request) {
+        if (!request.sendable()) {
+            const QString reason = text(request.refusal.empty()
+                                            ? std::string{"Nothing to change."}
+                                            : request.refusal);
+            showStatus(oneLine(reason), reason);
+            return;
+        }
+        if (pending_edit_request != 0 || !pending_ticket.isEmpty()) {
+            showStatus(owner.tr("Wait for the current change to finish."));
+            return;
+        }
+        const auto method = text(request.method);
+        const auto sender =
+            request.method == "edit_preset_pass"     ? edit.editPresetPass
+            : request.method == "remove_authored_pass" ? edit.removeAuthoredPass
+            : request.method == "edit_compute_task"  ? edit.editComputeTask
+            : request.method == "remove_compute_task" ? edit.removeComputeTask
+                                                      : nullptr;
+        if (!sender) {
+            showStatus(owner.tr("Canvas editing is unavailable: %1").arg(method));
+            return;
+        }
+        QJsonObject params;
+        try {
+            params = exactJsonRpcObject(request.params);
+        } catch (const std::exception &error) {
+            const QString message = QString::fromUtf8(error.what());
+            showStatus(oneLine(message), message);
+            return;
+        }
+        QString error;
+        pending_edit_request = sender(params, &error);
+        if (pending_edit_request == 0) {
+            showStatus(oneLine(error), error);
+            return;
+        }
+        status->setStyleSheet({});
+        showStatus(owner.tr("%1: submitting...").arg(method));
+    }
+
+    void requestTicketResult() {
+        if (!edit.requestEditResult || pending_ticket.isEmpty() ||
+            pending_ticket_request != 0)
+            return;
+        QString error;
+        pending_ticket_request = edit.requestEditResult(pending_ticket, &error);
+        if (pending_ticket_request == 0) {
+            pending_ticket.clear();
+            showStatus(oneLine(error), error);
+        }
+    }
+
+    bool receiveEditResult(qint64 request_id, const QByteArray &bytes) {
+        if (request_id != 0 && request_id == pending_authoring_request) {
+            pending_authoring_request = 0;
+            try {
+                authoring = framePlanAuthoringFromContext(
+                    Json::parse(bytes.constData(),
+                                bytes.constData() + bytes.size()));
+            } catch (const std::exception &) {
+                authoring = {};
+            }
+            if (model) populate();
+            return true;
+        }
+        if (request_id != 0 && request_id == pending_task_request) {
+            pending_task_request = 0;
+            try {
+                task_authoring = framePlanTaskAuthoringFromCatalog(
+                    Json::parse(bytes.constData(),
+                                bytes.constData() + bytes.size()));
+            } catch (const std::exception &) {
+                task_authoring = {};
+            }
+            if (model) populate();
+            return true;
+        }
+        if (request_id != 0 && request_id == pending_edit_request) {
+            pending_edit_request = 0;
+            consumeSubmission(bytes);
+            return true;
+        }
+        if (request_id != 0 && request_id == pending_ticket_request) {
+            pending_ticket_request = 0;
+            consumeTicket(bytes);
+            return true;
+        }
+        return false;
+    }
+
+    static QString responseError(const Json &response) {
+        const auto code = response.value("code", std::string{});
+        const auto message = response.value("message", std::string{});
+        if (!message.empty())
+            return text(code.empty() ? message : code + ": " + message);
+        return text(response.dump());
+    }
+
+    void consumeSubmission(const QByteArray &bytes) {
+        try {
+            const Json response = Json::parse(
+                bytes.constData(), bytes.constData() + bytes.size());
+            const auto status_text = response.value("status", std::string{});
+            if (status_text != "accepted" || !response.contains("ticket") ||
+                !response.at("ticket").is_string()) {
+                const QString message = responseError(response);
+                status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+                showStatus(oneLine(message), message);
+                return;
+            }
+            pending_ticket = text(response.at("ticket").get<std::string>());
+            showStatus(owner.tr("accepted; waiting for the engine..."));
+            QTimer::singleShot(0, &owner, [this] { requestTicketResult(); });
+        } catch (const std::exception &error) {
+            const QString message = QString::fromUtf8(error.what());
+            status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+            showStatus(oneLine(message), message);
+        }
+    }
+
+    void consumeTicket(const QByteArray &bytes) {
+        try {
+            const Json response = Json::parse(
+                bytes.constData(), bytes.constData() + bytes.size());
+            const auto status_text = response.value("status", std::string{});
+            if (status_text == "pending") {
+                QTimer::singleShot(25, &owner,
+                                   [this] { requestTicketResult(); });
+                return;
+            }
+            pending_ticket.clear();
+            if (status_text != "committed" ||
+                !response.value("committed", false)) {
+                const QString message = responseError(response);
+                status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+                showStatus(oneLine(message), message);
+                return;
+            }
+            status->setStyleSheet({});
+            // The refresh first, so its own "requesting..." line does not land
+            // on top of the answer the user is waiting for. The summary line
+            // replaces this one when the new plan arrives, which is the right
+            // order: "committed" is what happened, the summary is what is now.
+            requestAuthoringContext();
+            requestTaskAuthoring();
+            requestRefresh();
+            status->setStyleSheet({});
+            showStatus(owner.tr("Canvas change committed."));
+        } catch (const std::exception &error) {
+            pending_ticket.clear();
+            const QString message = QString::fromUtf8(error.what());
+            status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+            showStatus(oneLine(message), message);
+        }
+    }
+
+    bool receiveEditFailure(qint64 request_id, const QString &message) {
+        if (request_id == 0) return false;
+        if (request_id == pending_authoring_request) {
+            pending_authoring_request = 0;
+            authoring = {};
+            return true;
+        }
+        if (request_id == pending_task_request) {
+            pending_task_request = 0;
+            task_authoring = {};
+            return true;
+        }
+        if (request_id != pending_edit_request &&
+            request_id != pending_ticket_request)
+            return false;
+        pending_edit_request = 0;
+        pending_ticket_request = 0;
+        pending_ticket.clear();
+        status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+        showStatus(oneLine(message), message);
+        return true;
+    }
+
+    // One drag, or one Delete on an edge.
+    void changeResourceEdge(const FramePlanNodeKey &consumer,
+                            const QStringList &resources, bool connect) {
+        if (!model || consumer.graph != model->graph) return;
+        std::vector<std::string> names;
+        for (const QString &resource : resources)
+            names.push_back(resource.toStdString());
+        const auto task = authoredTask(consumer.name);
+        submit(task.empty()
+                   ? framePlanPassResourceRequest(authoring, model->graph,
+                                                  consumer.name, names, connect)
+                   : framePlanTaskResourceRequest(task_authoring, task, names,
+                                                  connect));
+    }
+
+    void commitInlineField(const FramePlanNodeKey &node, const QString &field,
+                           const QString &value) {
+        if (!model || node.graph != model->graph) return;
+        const auto task = authoredTask(node.name);
+        if (!task.empty()) {
+            submit(framePlanTaskDispatchRequest(task_authoring, task,
+                                                value.toStdString()));
+            return;
+        }
+        const auto stage = field.startsWith(QStringLiteral("shader."))
+                               ? field.mid(7).toStdString()
+                               : std::string{};
+        if (stage.empty()) return;
+        submit(framePlanPassShaderRequest(authoring, model->graph, node.name,
+                                          stage, value.toStdString()));
+    }
+
+    void removeNode(const FramePlanNodeKey &node) {
+        if (!model || node.graph != model->graph) return;
+        const auto task = authoredTask(node.name);
+        submit(task.empty()
+                   ? framePlanPassRemoveRequest(authoring, model->graph,
+                                                node.name)
+                   : framePlanTaskRemoveRequest(task_authoring, task));
+    }
+
+    // --- The placement. One member of the document's root `layout`, written
+    // through the common canvas's debounce so the two halves travel together.
+
+    void loadPlacement() {
+        if (!placement.read || !model) return;
+        Json frame_plan;
+        try {
+            frame_plan = placement.read();
+        } catch (const std::exception &) {
+            return;
+        }
+        if (!frame_plan.is_object()) return;
+        const auto graph = frame_plan.find(model->graph);
+        if (graph == frame_plan.end() || !graph->is_object()) return;
+        const auto nodes = graph->find("nodes");
+        if (nodes == graph->end() || !nodes->is_object()) return;
+        std::map<std::string, QPointF> positions;
+        for (const auto &[name, place] : nodes->items()) {
+            if (!place.is_object() || !place.contains("x") ||
+                !place.contains("y") || !place.at("x").is_number() ||
+                !place.at("y").is_number())
+                continue;
+            positions.emplace(name, QPointF{place.at("x").get<double>(),
+                                            place.at("y").get<double>()});
+        }
+        if (positions.empty()) return;
+        logical_scene->setPlacement(model->graph, positions);
+    }
+
+    void writePlacement() {
+        if (!model) return;
+        if (!placement.write) {
+            showStatus(owner.tr(
+                "Node positions are not saved: this panel has no document to "
+                "write them to."));
+            return;
+        }
+        Json frame_plan;
+        try {
+            frame_plan = placement.read ? placement.read() : Json::object();
+        } catch (const std::exception &) {
+            frame_plan = Json::object();
+        }
+        if (!frame_plan.is_object()) frame_plan = Json::object();
+        auto &graph = frame_plan[model->graph];
+        if (!graph.is_object()) graph = Json::object();
+        auto nodes = Json::object();
+        for (const auto &[name, position] :
+             logical_scene->placement(model->graph))
+            nodes[name] = {{"x", position.x()}, {"y", position.y()}};
+        if (nodes.empty()) graph.erase("nodes");
+        else graph["nodes"] = std::move(nodes);
+        // A graph the canvas has nothing to say about at all leaves the
+        // member rather than writing an empty object into the document.
+        if (graph.empty()) frame_plan.erase(model->graph);
+        QString reason;
+        if (!placement.write(frame_plan, &reason)) {
+            const QString message =
+                reason.isEmpty()
+                    ? owner.tr("Node positions are not saved for this project.")
+                    : reason;
+            showStatus(oneLine(message), message);
+        }
+    }
+
     void requestRefresh() {
         if (pending_request != 0) {
             return;
@@ -890,6 +1348,17 @@ struct FramePlanWidget::Impl {
             }
             target->setEnabled(!targets.empty());
             populate();
+            // N-8: the placement the document keeps for the graph now on
+            // screen, and the context the bands and the refusals need. Loading
+            // the placement once per graph is what keeps a refresh from
+            // putting the document's older positions back over a live drag.
+            if (!placement_loaded || placement_graph != model->graph) {
+                placement_graph = model->graph;
+                placement_loaded = true;
+                loadPlacement();
+            }
+            requestAuthoringContext();
+            requestTaskAuthoring();
             if (!requested_hit_group.isEmpty()) {
                 const auto group = std::exchange(requested_hit_group, QString{});
                 owner.openTasksForHitGroup(group);
@@ -1791,6 +2260,43 @@ void FramePlanWidget::setTaskEditAction(std::function<void(const QString &)> act
 
 void FramePlanWidget::setPresetPassEditAction(std::function<void(const QString &, const QString &)> action) {
     impl_->preset_pass_edit_action = std::move(action);
+}
+
+void FramePlanWidget::setEditCapability(FramePlanEditCapability capability) {
+    impl_->edit = std::move(capability);
+    impl_->connectEditSignals();
+    impl_->requestAuthoringContext();
+    impl_->requestTaskAuthoring();
+}
+
+void FramePlanWidget::setLayoutCapability(FramePlanLayoutCapability capability) {
+    impl_->placement = std::move(capability);
+    impl_->placement_loaded = false;
+    if (impl_->model) impl_->loadPlacement();
+}
+
+void FramePlanWidget::setPassInsertAction(
+    std::function<void(const QString &, const QString &)> action) {
+    impl_->pass_insert_action = std::move(action);
+}
+
+void FramePlanWidget::setTaskInsertAction(std::function<void()> action) {
+    impl_->task_insert_action = std::move(action);
+}
+
+void FramePlanWidget::showEvent(QShowEvent *event) {
+    QWidget::showEvent(event);
+    // Now that it is in front, it may ask. Nothing is lost by having waited:
+    // both reads are cheap and the canvas draws its bands the moment they land.
+    impl_->requestAuthoringContext();
+    impl_->requestTaskAuthoring();
+    if (impl_->model) impl_->loadPlacement();
+}
+
+void FramePlanWidget::refreshAuthoringContext() {
+    impl_->requestAuthoringContext();
+    impl_->requestTaskAuthoring();
+    impl_->loadPlacement();
 }
 
 void FramePlanWidget::setShaderSourceOpenAction(

@@ -2789,4 +2789,76 @@ TEST_CASE("Inspector instance inputs show their supply and switch one to a curve
     REQUIRE(lastParams().at("base_source_digest") == std::string(64, 'b'));
 }
 
+
+// N-8 acceptance 3, the Pass Editor's half. "Add fullscreen pass..." on the
+// Frame Plan canvas opens this form for a NEW pass with the insert position
+// already standing at the engine's own anchor after the node the gesture named
+// -- not at the end of the graph, which is where it stands otherwise.
+TEST_CASE("The Frame Plan canvas opens the Pass Editor after the node it names",
+          "[devstudio][fullscreen-pass][preset-pass-edit][n8]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    const auto pass = [](const char *name) {
+        return Json{{"name", name},
+                    {"type", "fullscreen"},
+                    {"output", {{"color", Json::array({std::string{name} + "_out"})},
+                                {"depth", nullptr}}},
+                    {"shader", {{"vertex", "engine://fullscreen"},
+                                {"fragment", "engine://fullscreen"}}}};
+    };
+    Json graph{{"name", "insert_graph"},
+               {"passes", Json::array({
+                    Json{{"name", "first"}, {"declaration", pass("first")}},
+                    Json{{"name", "second"}, {"declaration", pass("second")}},
+                    Json{{"name", "third"}, {"declaration", pass("third")}}})},
+               {"anchor_candidates", Json::array({
+                    Json{{"position", 0}, {"insert", "before:first"}},
+                    Json{{"position", 1}, {"insert", "after:first"}},
+                    Json{{"position", 2}, {"insert", "after:second"}},
+                    Json{{"position", 3}, {"insert", "after:third"}}})}};
+    const Json context{{"source_digest", {{"hex", std::string(64, 'a')}}},
+                       {"pipeline_preset",
+                        {{"source_digest", {{"hex", std::string(64, 'b')}}}}},
+                       {"graphs", Json::array({graph})}};
+    authoring.succeed(authoring.requests.back().id, context);
+    const Json plan = minimalFramePlan(
+        "insert_graph", Json::array({resource("first_out"), resource("second_out"),
+                                     resource("third_out")}));
+    form.receiveResult(QByteArray::fromStdString(plan.dump()));
+    auto &position = required<QSpinBox>(form, "pelican.fullscreenPass.position");
+    // Without a named node the form stands at the end of the graph.
+    const int end_of_graph = position.value();
+    CHECK(end_of_graph == 3);
+
+    form.insertAuthoredPassAfter(QStringLiteral("insert_graph"),
+                                 QStringLiteral("first"));
+    authoring.succeed(authoring.requests.back().id, context);
+    refresh.succeed(refresh.requests.back(),
+                    QByteArray::fromStdString(plan.dump()));
+    // The engine's anchor for "after:first", not the end. This is the control
+    // for the prefill: with it removed the form stands at end_of_graph.
+    CHECK(position.value() == 1);
+    CHECK(position.value() != end_of_graph);
+    // The name and the shaders are still the author's to fill in.
+    CHECK(required<QLineEdit>(form, "pelican.fullscreenPass.name").text().isEmpty());
+
+    // A different node moves it again, on the same rule.
+    form.insertAuthoredPassAfter(QStringLiteral("insert_graph"),
+                                 QStringLiteral("second"));
+    authoring.succeed(authoring.requests.back().id, context);
+    refresh.succeed(refresh.requests.back(),
+                    QByteArray::fromStdString(plan.dump()));
+    CHECK(position.value() == 2);
+
+    // A node the engine offers no anchor for leaves the default alone rather
+    // than guessing a position.
+    form.insertAuthoredPassAfter(QStringLiteral("insert_graph"),
+                                 QStringLiteral("nobody_declared_this"));
+    authoring.succeed(authoring.requests.back().id, context);
+    refresh.succeed(refresh.requests.back(),
+                    QByteArray::fromStdString(plan.dump()));
+    CHECK(position.value() == end_of_graph);
+}
 } // namespace PelicanStudio

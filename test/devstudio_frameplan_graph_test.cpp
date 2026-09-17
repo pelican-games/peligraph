@@ -19,6 +19,8 @@
 #include "embeddedviewport.hpp"
 #undef private
 
+#include "frameplanedit.hpp"
+#include "frameplaneditcapability.hpp"
 #include "frameplangraphics.hpp"
 #include "frameplanwidget.hpp"
 #include "jsonrpcrequest.hpp"
@@ -6849,4 +6851,517 @@ TEST_CASE("Frame Plan Shift drag requests a connection without moving nodes and 
     CHECK(second->pos() == secondPosition);
 }
 
+
+// --- N-8. Editing on the Frame Plan canvas.
+
+namespace {
+
+// The closed set of authoring calls the canvas is allowed to make, recorded.
+// A test reads the method name and the exact payload, which is the whole point
+// of building the payload outside the dialogs.
+struct FramePlanEditRecorder {
+    qint64 next_id = 1000;
+    qint64 context_id = 0;
+    qint64 task_id = 0;
+    qint64 submit_id = 0;
+    qint64 ticket_id = 0;
+    QString method;
+    QJsonObject params;
+    int submits = 0;
+    FramePlanEditCapability::ResultHandler result;
+    FramePlanEditCapability::FailureHandler failure;
+
+    FramePlanEditCapability capability() {
+        FramePlanEditCapability capability;
+        capability.requestAuthoringContext = [this](QString *) {
+            context_id = next_id++;
+            return context_id;
+        };
+        capability.requestTaskAuthoring = [this](QString *) {
+            task_id = next_id++;
+            return task_id;
+        };
+        const auto record = [this](const char *name) {
+            return [this, name](const QJsonObject &sent, QString *) {
+                method = QString::fromLatin1(name);
+                params = sent;
+                ++submits;
+                submit_id = next_id++;
+                return submit_id;
+            };
+        };
+        capability.editPresetPass = record("edit_preset_pass");
+        capability.removeAuthoredPass = record("remove_authored_pass");
+        capability.editComputeTask = record("edit_compute_task");
+        capability.removeComputeTask = record("remove_compute_task");
+        capability.requestEditResult = [this](const QString &, QString *) {
+            ticket_id = next_id++;
+            return ticket_id;
+        };
+        capability.result = [this](QObject *,
+                                   FramePlanEditCapability::ResultHandler h) {
+            result = std::move(h);
+        };
+        capability.failure = [this](QObject *,
+                                    FramePlanEditCapability::FailureHandler h) {
+            failure = std::move(h);
+        };
+        return capability;
+    }
+};
+
+constexpr auto RootDigest =
+    "1111111111111111111111111111111111111111111111111111111111111111";
+constexpr auto PresetDigest =
+    "2222222222222222222222222222222222222222222222222222222222222222";
+constexpr auto TaskDigest =
+    "3333333333333333333333333333333333333333333333333333333333333333";
+
+// The declaration the WP343 fixture's feature really carries for one pass, so
+// the payload the canvas sends can be compared against it field by field.
+Json mixedPassDeclaration(std::size_t index) {
+    const std::string name{MixedFeatureNodes[index]};
+    Json declaration{
+        {"name", name},
+        {"type", "fullscreen"},
+        {"output", {{"color", name + "_output"}, {"depth", nullptr}}},
+        {"shader", {{"vertex", "engine://fullscreen"},
+                    {"fragment", "engine://fullscreen"}}}};
+    if (index != 0)
+        declaration["input"] = Json::array(
+            {std::string{MixedFeatureNodes[index - 1]} + "_output"});
+    return declaration;
+}
+
+// One authoring context over the WP343 graph: `a` is an editable project
+// preset pass, `c` is a managed authored fragment with no editable
+// declaration, `d` comes from a feature that has not been materialized.
+Json mixedAuthoringContext(const std::string &graph) {
+    auto passes = Json::array();
+    for (std::size_t index = 0; index < MixedFeatureNodes.size(); ++index) {
+        const std::string name{MixedFeatureNodes[index]};
+        Json pass{{"name", name},
+                  {"declaration_index", index},
+                  {"declaration", mixedPassDeclaration(index)},
+                  {"editable_preset_pass", false},
+                  {"editable_feature_pass", false}};
+        if (name == "wp343_mixed_a") {
+            pass["editable_preset_pass"] = true;
+            pass["preset_declaration"] = mixedPassDeclaration(index);
+            pass["provenance"] = {{"source", "preset"},
+                                  {"provider_feature", ""},
+                                  {"provider_reference", ""}};
+        } else if (name == "wp343_mixed_c") {
+            pass["provenance"] = {
+                {"source", "feature"},
+                {"provider_feature", "wp343_mixed_membership"},
+                {"provider_reference", "project://passes/mixed.json"}};
+            pass["managed"] = true;
+        } else if (name == "wp343_mixed_d") {
+            pass["provenance"] = {
+                {"source", "feature"},
+                {"provider_feature", "wp343_mixed_membership"},
+                {"provider_reference", "engine://features/mixed.json"}};
+        }
+        passes.push_back(std::move(pass));
+    }
+    auto anchors = Json::array();
+    anchors.push_back({{"position", 0},
+                       {"insert", "before:" +
+                                      std::string{MixedFeatureNodes.front()}}});
+    for (std::size_t index = 0; index < MixedFeatureNodes.size(); ++index)
+        anchors.push_back(
+            {{"position", static_cast<int>(index) + 1},
+             {"insert", "after:" + std::string{MixedFeatureNodes[index]}}});
+    return Json{
+        {"source_digest", {{"hex", RootDigest}}},
+        {"pipeline_preset",
+         {{"reference", "project://passes/preset.json"},
+          {"source_digest", {{"hex", PresetDigest}}}}},
+        {"graphs", Json::array({Json{{"name", graph},
+                                     {"passes", std::move(passes)},
+                                     {"anchor_candidates", std::move(anchors)}}})}};
+}
+
+Json authoredTaskCatalog(Json reads = Json::array()) {
+    Json declaration{{"name", "authored_consumer"},
+                     {"shader", "project://shaders/consume.comp"},
+                     {"resource_ports", Json::object()},
+                     {"reads", std::move(reads)},
+                     {"dispatch", {{"groups", Json::array({1, 1, 1})}}}};
+    return Json{{"source_digest", {{"hex", RootDigest}}},
+                {"tasks", Json::array({Json{
+                     {"name", "authored_consumer"},
+                     {"kind", "compute"},
+                     {"source_reference", "project://passes/task.json"},
+                     {"editable", true},
+                     {"declaration", std::move(declaration)},
+                     {"source_digest", {{"hex", TaskDigest}}}}})},
+                {"resources", Json::array()}};
+}
+
+QGraphicsItem *socketItem(QGraphicsScene &value, const QString &node,
+                          const QString &resource, const QString &direction) {
+    for (QGraphicsItem *item : itemsOfKind(value, FramePlanSocketItem)) {
+        if (item->data(FramePlanNameRole).toString() == node &&
+            item->data(FramePlanPortRole).toString() == resource &&
+            item->data(FramePlanSocketDirectionRole).toString() == direction)
+            return item;
+    }
+    return nullptr;
+}
+
+QGraphicsItem *bandItem(QGraphicsScene &value, const QString &node,
+                        const QString &field) {
+    for (QGraphicsItem *item : itemsOfKind(value, FramePlanInlineFieldItem)) {
+        if (item->data(FramePlanNameRole).toString() == node &&
+            item->data(FramePlanInlineFieldRole).toString() == field)
+            return item;
+    }
+    return nullptr;
+}
+
+QString statusText(FramePlanWidget &widget) {
+    auto *status = widget.findChild<QLabel *>(
+        QStringLiteral("pelican.framePlanStatus"));
+    return status == nullptr ? QString{} : status->text();
+}
+
+// The WP343 fixture with `wp343_mixed_b` standing in for an authored compute
+// task, exactly as the Shift-drag test arranges it.
+Json mixedEditingWire() {
+    Json wire = mixedMembershipFramePlan(false);
+    for (auto &node : wire["nodes"]) {
+        if (node.at("name") == "wp343_mixed_b") {
+            node["kind"] = "compute";
+            node["authored_name"] = "authored_consumer";
+        }
+    }
+    return wire;
+}
+
+struct EditingFixture {
+    EmbeddedViewport viewport;
+    FramePlanEditRecorder recorder;
+    FramePlanWidget widget{&viewport};
+    Json wire = mixedEditingWire();
+    Json catalog = authoredTaskCatalog();
+    std::string graph;
+
+    void open() {
+        widget.resize(1400, 900);
+        widget.show();
+        widget.setEditCapability(recorder.capability());
+        widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+        graph = wire.at("graph").get<std::string>();
+        targetSelector(widget).setCurrentText("wp343_mixed_d_output");
+        subtreeDepth(widget).setValue(64);
+        QApplication::processEvents();
+        REQUIRE(recorder.result);
+        const auto context = mixedAuthoringContext(graph);
+        recorder.result(recorder.context_id,
+                        QByteArray::fromStdString(context.dump()));
+        recorder.result(recorder.task_id,
+                        QByteArray::fromStdString(catalog.dump()));
+        QApplication::processEvents();
+    }
+
+    FramePlanGraphicsScene &logical() {
+        return dynamic_cast<FramePlanGraphicsScene &>(scene(widget));
+    }
+
+    // One plain drag: press on a socket, move, release over a destination.
+    void dragSocket(const QString &node, const QString &resource,
+                    const QString &direction, QGraphicsItem *destination) {
+        auto &view = logicalView(widget);
+        QGraphicsItem *socket =
+            socketItem(logical(), node, resource, direction);
+        REQUIRE(socket != nullptr);
+        const QRectF span =
+            destination == nullptr
+                ? socket->sceneBoundingRect().adjusted(-600, -400, 600, 400)
+                : socket->sceneBoundingRect().united(
+                      destination->sceneBoundingRect());
+        view.fitInView(span.adjusted(-60, -60, 60, 60), Qt::KeepAspectRatio);
+        QApplication::processEvents();
+        const QPoint start =
+            view.mapFromScene(socket->sceneBoundingRect().center());
+        const QPoint end =
+            destination == nullptr
+                ? QPoint{view.viewport()->rect().right() - 4,
+                         view.viewport()->rect().bottom() - 4}
+                : view.mapFromScene(
+                      destination->sceneBoundingRect().center());
+        REQUIRE(view.viewport()->rect().contains(start));
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier,
+                          start);
+        QTest::mouseMove(view.viewport(), (start + end) / 2, 1);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier,
+                            end);
+        QApplication::processEvents();
+    }
+};
+
+} // namespace
+
+TEST_CASE("N-8 a plain drag between sockets edits the declaration through one RPC",
+          "[devstudio][frame-plan][n8][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    fixture.open();
+    auto &logical = fixture.logical();
+    REQUIRE(nodeItem(logical, "wp343_mixed_a") != nullptr);
+    REQUIRE(nodeItem(logical, "wp343_mixed_d") != nullptr);
+
+    SECTION("an editable pass gains exactly one input and keeps every other field") {
+        fixture.dragSocket(QStringLiteral("wp343_mixed_d"),
+                           QStringLiteral("wp343_mixed_d_output"),
+                           QStringLiteral("output"),
+                           nodeItem(logical, "wp343_mixed_a"));
+        REQUIRE(fixture.recorder.submits == 1);
+        CHECK(fixture.recorder.method == QStringLiteral("edit_preset_pass"));
+        const auto sent = Json::parse(
+            QJsonDocument(fixture.recorder.params).toJson().toStdString());
+        CHECK(sent.at("graph") == fixture.graph);
+        CHECK(sent.at("pass_name") == "wp343_mixed_a");
+        CHECK(sent.at("base_source_digest") == RootDigest);
+        CHECK(sent.at("base_preset_digest") == PresetDigest);
+        // One more input than the declaration had, and it is the dragged one.
+        const auto declaration = mixedPassDeclaration(0);
+        CHECK(sent.at("input") == Json::array({"wp343_mixed_d_output"}));
+        // The control: everything else is the current declaration, verbatim.
+        CHECK(sent.at("output") == declaration.at("output"));
+        CHECK(sent.at("shader") == declaration.at("shader"));
+        CHECK_FALSE(sent.contains("draw"));
+        CHECK_FALSE(sent.contains("raster_state"));
+
+        // The reply path: accepted, then committed, then a refresh.
+        fixture.recorder.result(
+            fixture.recorder.submit_id,
+            QByteArray::fromStdString(
+                Json{{"status", "accepted"}, {"ticket", "t-1"}}.dump()));
+        QApplication::processEvents();
+        REQUIRE(fixture.recorder.ticket_id != 0);
+        fixture.recorder.result(
+            fixture.recorder.ticket_id,
+            QByteArray::fromStdString(
+                Json{{"status", "committed"}, {"committed", true}}.dump()));
+        QApplication::processEvents();
+        CHECK(statusText(fixture.widget).contains(QStringLiteral("committed")));
+    }
+
+    SECTION("a pass that cannot be edited refuses by name and sends nothing") {
+        fixture.dragSocket(QStringLiteral("wp343_mixed_a"),
+                           QStringLiteral("wp343_mixed_a_output"),
+                           QStringLiteral("output"),
+                           nodeItem(logical, "wp343_mixed_d"));
+        CHECK(fixture.recorder.submits == 0);
+        const auto notice = statusText(fixture.widget);
+        CHECK(notice.contains(QStringLiteral("wp343_mixed_d")));
+        CHECK(notice.contains(QStringLiteral("materialize")));
+    }
+
+    SECTION("an input socket dragged into open canvas reaches that pass") {
+        fixture.dragSocket(QStringLiteral("wp343_mixed_d"),
+                           QStringLiteral("wp343_mixed_c_output"),
+                           QStringLiteral("input"), nullptr);
+        // wp343_mixed_d is not editable, so the cut is refused by name -- the
+        // gesture reached the right pass, which is what this asserts.
+        CHECK(fixture.recorder.submits == 0);
+        CHECK(statusText(fixture.widget)
+                  .contains(QStringLiteral("wp343_mixed_d")));
+    }
+
+    SECTION("a drag onto an authored compute task edits the task once") {
+        fixture.dragSocket(QStringLiteral("wp343_mixed_a"),
+                           QStringLiteral("wp343_mixed_a_output"),
+                           QStringLiteral("output"),
+                           nodeItem(logical, "wp343_mixed_b"));
+        REQUIRE(fixture.recorder.submits == 1);
+        CHECK(fixture.recorder.method == QStringLiteral("edit_compute_task"));
+        const auto sent = Json::parse(
+            QJsonDocument(fixture.recorder.params).toJson().toStdString());
+        CHECK(sent.at("task_name") == "authored_consumer");
+        CHECK(sent.at("base_task_source_digest") == TaskDigest);
+        CHECK(sent.at("task").at("reads") ==
+              Json::array({"wp343_mixed_a_output"}));
+        // Everything else in the task declaration is the one that was read.
+        CHECK(sent.at("task").at("shader") == "project://shaders/consume.comp");
+        CHECK(sent.at("task").at("dispatch") ==
+              Json{{"groups", Json::array({1, 1, 1})}});
+    }
+}
+
+TEST_CASE("N-8 Delete on a picked edge cuts every resource it carries in one RPC",
+          "[devstudio][frame-plan][n8][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    // The task already reads the resource, so Delete has something to cut.
+    fixture.catalog = authoredTaskCatalog(Json::array({"wp343_mixed_a_output"}));
+    fixture.open();
+    auto &logical = fixture.logical();
+    logical.selectEdge(FramePlanEdgeSelection{
+        fixture.graph, "wp343_mixed_b",
+        std::vector<std::string>{"wp343_mixed_a_output"}});
+    REQUIRE(logical.selectedEdge().has_value());
+    auto &view = logicalView(fixture.widget);
+    view.setFocus();
+    QTest::keyClick(&view, Qt::Key_Delete);
+    QApplication::processEvents();
+    REQUIRE(fixture.recorder.submits == 1);
+    CHECK(fixture.recorder.method == QStringLiteral("edit_compute_task"));
+    const auto sent = Json::parse(
+        QJsonDocument(fixture.recorder.params).toJson().toStdString());
+    CHECK(sent.at("task_name") == "authored_consumer");
+    CHECK(sent.at("task").at("reads") == Json::array());
+}
+
+TEST_CASE("N-8 the in-place band replaces one shader stem and nothing else",
+          "[devstudio][frame-plan][n8][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    fixture.open();
+    auto &logical = fixture.logical();
+    // Only a pass that can be edited offers bands.
+    CHECK(bandItem(logical, QStringLiteral("wp343_mixed_d"),
+                   QStringLiteral("shader.vertex")) == nullptr);
+    QGraphicsItem *band = bandItem(logical, QStringLiteral("wp343_mixed_a"),
+                                   QStringLiteral("shader.fragment"));
+    REQUIRE(band != nullptr);
+    CHECK(band->data(FramePlanInlineValueRole).toString() ==
+          QStringLiteral("engine://fullscreen"));
+
+    auto &view = logicalView(fixture.widget);
+    view.fitInView(band->sceneBoundingRect().adjusted(-200, -200, 200, 200),
+                   Qt::KeepAspectRatio);
+    QApplication::processEvents();
+    const QPoint at = view.mapFromScene(band->sceneBoundingRect().center());
+    REQUIRE(view.viewport()->rect().contains(at));
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, at);
+    QApplication::processEvents();
+    REQUIRE(logical.editingInline());
+    logical.setInlineEditText(QStringLiteral("project://shaders/tint.frag"));
+    REQUIRE(logical.commitInlineEdit());
+    QApplication::processEvents();
+
+    REQUIRE(fixture.recorder.submits == 1);
+    CHECK(fixture.recorder.method == QStringLiteral("edit_preset_pass"));
+    const auto sent = Json::parse(
+        QJsonDocument(fixture.recorder.params).toJson().toStdString());
+    const auto declaration = mixedPassDeclaration(0);
+    CHECK(sent.at("shader").at("fragment") == "project://shaders/tint.frag");
+    // The control: the stem that was not typed, and every other field, are the
+    // declaration's own.
+    CHECK(sent.at("shader").at("vertex") ==
+          declaration.at("shader").at("vertex"));
+    CHECK(sent.at("output") == declaration.at("output"));
+    CHECK(sent.at("input") == Json::array());
+}
+
+TEST_CASE("N-8 add and delete reach the right form and the right RPC",
+          "[devstudio][frame-plan][n8][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    fixture.open();
+    auto &logical = fixture.logical();
+
+    SECTION("Add fullscreen pass names the node the new pass follows") {
+        QString graph;
+        QString after;
+        fixture.widget.setPassInsertAction(
+            [&](const QString &g, const QString &a) { graph = g; after = a; });
+        QGraphicsItem *anchor = nodeItem(logical, "wp343_mixed_c");
+        REQUIRE(anchor != nullptr);
+        anchor->setSelected(true);
+        QApplication::processEvents();
+        auto *action = fixture.widget.findChild<QAction *>(
+            QStringLiteral("pelican.framePlan.addFullscreenPass"));
+        REQUIRE(action != nullptr);
+        action->trigger();
+        QApplication::processEvents();
+        CHECK(graph.toStdString() == fixture.graph);
+        CHECK(after == QStringLiteral("wp343_mixed_c"));
+    }
+
+    SECTION("Delete removes a managed fragment and refuses a preset pass by name") {
+        QGraphicsItem *managed = nodeItem(logical, "wp343_mixed_c");
+        REQUIRE(managed != nullptr);
+        managed->setSelected(true);
+        QApplication::processEvents();
+        auto &view = logicalView(fixture.widget);
+        view.setFocus();
+        QTest::keyClick(&view, Qt::Key_Delete);
+        QApplication::processEvents();
+        REQUIRE(fixture.recorder.submits == 1);
+        CHECK(fixture.recorder.method == QStringLiteral("remove_authored_pass"));
+        const auto sent = Json::parse(
+            QJsonDocument(fixture.recorder.params).toJson().toStdString());
+        CHECK(sent.at("fragment_reference") == "project://passes/mixed.json");
+        CHECK(sent.at("base_source_digest") == RootDigest);
+
+        QGraphicsItem *preset = nodeItem(logical, "wp343_mixed_a");
+        REQUIRE(preset != nullptr);
+        managed->setSelected(false);
+        preset->setSelected(true);
+        QApplication::processEvents();
+        QTest::keyClick(&view, Qt::Key_Delete);
+        QApplication::processEvents();
+        CHECK(fixture.recorder.submits == 1);
+        const auto notice = statusText(fixture.widget);
+        CHECK(notice.contains(QStringLiteral("wp343_mixed_a")));
+    }
+}
+
+TEST_CASE("N-8 a node drag writes one frame_plan placement, and a legacy root writes none",
+          "[devstudio][frame-plan][n8][placement]") {
+    application();
+    EditingFixture fixture;
+    Json stored = Json::object();
+    int writes = 0;
+    bool allowed = true;
+    fixture.widget.setLayoutCapability(FramePlanLayoutCapability{
+        .read = [&] { return stored; },
+        .write = [&](const nlohmann::json &frame_plan, QString *reason) {
+            if (!allowed) {
+                if (reason != nullptr)
+                    *reason = QStringLiteral(
+                        "Node positions are not saved: passes/main.json is a "
+                        "legacy rendering document.");
+                return false;
+            }
+            stored = frame_plan;
+            ++writes;
+            return true;
+        }});
+    fixture.open();
+    auto &logical = fixture.logical();
+    QGraphicsItem *node = nodeItem(logical, "wp343_mixed_a");
+    REQUIRE(node != nullptr);
+    node->setPos(QPointF{321.0, -47.5});
+    QApplication::processEvents();
+
+    REQUIRE(writes >= 1);
+    REQUIRE(stored.contains(fixture.graph));
+    const auto &placed = stored.at(fixture.graph).at("nodes");
+    REQUIRE(placed.contains("wp343_mixed_a"));
+    CHECK(placed.at("wp343_mixed_a").at("x") == 321.0);
+    CHECK(placed.at("wp343_mixed_a").at("y") == -47.5);
+
+    // What the document holds is what the canvas draws next time.
+    logical.setPlacement(fixture.graph,
+                         {{"wp343_mixed_a", QPointF{12.0, 34.0}}});
+    QApplication::processEvents();
+    CHECK(nodeItem(logical, "wp343_mixed_a")->pos() == QPointF{12.0, 34.0});
+
+    // A legacy root: nothing is written, and the notice says which file and
+    // why -- a refusal a user can tell from a failed write.
+    allowed = false;
+    const int before = writes;
+    nodeItem(logical, "wp343_mixed_a")->setPos(QPointF{99.0, 99.0});
+    QApplication::processEvents();
+    CHECK(writes == before);
+    const auto notice = statusText(fixture.widget);
+    CHECK(notice.contains(QStringLiteral("legacy")));
+    CHECK(notice.contains(QStringLiteral("main.json")));
+}
 } // namespace PelicanStudio

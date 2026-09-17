@@ -1,0 +1,201 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "frameplan_edit_roundtrip",
+  "description": "N-8: connect a resource on the Frame Plan canvas by dragging one socket onto a pass, watch the read appear, cut it again by dragging the input away, move a node and follow the placement out through set_layout and back in from disk, then open the Pass Editor after a named node.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the engine viewport answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the first frame plan has arrived",
+      "cmd": "wait",
+      "name": "pelican.framePlanStatus",
+      "timeout_ms": 180000,
+      "contains": "main_render"
+    },
+    {
+      "label": "look at the authored pass's own target",
+      "cmd": "select",
+      "name": "pelican.framePlanTarget",
+      "text": "n8_probe_output"
+    },
+    {
+      "label": "and at everything that reaches it",
+      "cmd": "type",
+      "name": "pelican.framePlanDepth",
+      "text": "64"
+    },
+    {
+      "label": "the canvas has drawn the authored pass",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#n8_probe_pass",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "show the whole graph so both ends of the drag are on screen",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
+    },
+    {
+      "label": "the authored pass's own input socket is drawn, named by side and resource",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#n8_probe_pass/in:lit_color",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "and so is the output socket the drag will start from",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#ssao_blur_pass/out:ssao_blur",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the authored pass does not read ssao_blur yet",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#n8_probe_pass/in:ssao_blur",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "drag the ssao_blur output socket onto the authored pass",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.framePlanLogicalView::node_socket#ssao_blur_pass/out:ssao_blur"
+      },
+      "to": {
+        "name": "pelican.framePlanLogicalView::node#n8_probe_pass"
+      },
+      "steps": 8
+    },
+    {
+      "label": "the engine's own frame plan now reads it, which is what draws the socket",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#n8_probe_pass/in:ssao_blur",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "fit the view again over the redrawn graph",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
+    },
+    {
+      "label": "drag that input socket off its node, which cuts the read",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.framePlanLogicalView::node_socket#n8_probe_pass/in:ssao_blur"
+      },
+      "to": {
+        "name": "pelican.framePlanLogicalView::node#gbuffer_pass"
+      },
+      "steps": 8
+    },
+    {
+      "label": "the read is gone from the canvas again",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#n8_probe_pass/in:ssao_blur",
+      "missing": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "fit the view once more before moving a node",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
+    },
+    {
+      "label": "move the authored pass by its heading, away from where it was placed",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.framePlanLogicalView::node_header#n8_probe_pass"
+      },
+      "to": {
+        "name": "pelican.framePlanLogicalView::node#ssao_pass"
+      },
+      "steps": 8
+    },
+    {
+      "label": "the placement reached the document through set_layout, after the debounce",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "layout.frame_plan.main_render.nodes.n8_probe_pass.$len",
+      "value": 2,
+      "retry_ms": 60000
+    },
+    {
+      "label": "and the graph canvas's own half of the same member is still there",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "layout.frame_plan.$len",
+      "value": 1
+    },
+    {
+      "label": "pick the first pass of the graph",
+      "cmd": "click",
+      "name": "pelican.framePlanLogicalView::node#gbuffer_pass"
+    },
+    {
+      "label": "Add fullscreen pass, fired by name rather than through a popup",
+      "cmd": "action",
+      "name": "pelican.framePlan.addFullscreenPass"
+    },
+    {
+      "label": "the Pass Editor stands at the engine's anchor after the first pass, not at the end",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.position",
+      "text": "1",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "open a second, untouched copy of the same fixture",
+      "cmd": "open_project",
+      "dir": "{other_project}"
+    },
+    {
+      "label": "the switched-to engine answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the untouched copy keeps no placement, so this is not a memory of the session",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "layout.$len",
+      "value": 0
+    },
+    {
+      "label": "come back to the edited project, which the engine re-reads from disk",
+      "cmd": "open_project",
+      "dir": "{project}"
+    },
+    {
+      "label": "the re-read engine answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the placement survived the round trip through disk",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "layout.frame_plan.main_render.nodes.n8_probe_pass.$len",
+      "value": 2,
+      "retry_ms": 60000
+    },
+    {
+      "label": "a picture of the Frame Plan canvas for the reader of this report",
+      "expect": "screenshot",
+      "name": "pelican.framePlan",
+      "path": "frameplan_edit_roundtrip_canvas.png"
+    }
+  ]
+}

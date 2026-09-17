@@ -192,6 +192,12 @@ class GraphCanvasModel {
     std::vector<PendingRequest> reads_;
 
     std::string digest_;
+    // N-8: what the root rendering document actually is, and which file it is.
+    // A legacy rendering root has nowhere to put a `layout`, and a panel that
+    // keeps one has to be able to say that in those words -- naming the file --
+    // rather than letting the user read a refused write as a bug.
+    std::string root_schema_;
+    std::string source_reference_;
     nlohmann::json nodes_ = nlohmann::json::array();
     nlohmann::json definitions_ = nlohmann::json::object();
     // N-6: the root scope's own placement, as the document carries it. A
@@ -424,6 +430,13 @@ class GraphCanvasModel {
     bool definitionsReported() const noexcept { return definitions_reported_; }
     bool contextReceived() const noexcept { return context_received_; }
     const std::string &digest() const noexcept { return digest_; }
+    // N-8. Empty until a document has arrived. "pelican.graph" is the root that
+    // can carry a placement; anything else is a legacy rendering root.
+    const std::string &rootSchema() const noexcept { return root_schema_; }
+    const std::string &sourceReference() const noexcept {
+        return source_reference_;
+    }
+    bool graphRoot() const noexcept { return root_schema_ == "pelican.graph"; }
 
     // One line for the panel. An error the user has to see outranks the two
     // "this view is incomplete, and here is why" notices, which outrank the

@@ -6,9 +6,12 @@
 #include <QGraphicsScene>
 #include <QPointF>
 
+#include <QString>
+
 #include <map>
 #include <functional>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -77,6 +80,14 @@ inline constexpr int FramePlanPortRole = Qt::UserRole + 3109;
 // "input" | "output" -- the same resource can be read and written by one pass,
 // so the side is part of a socket's identity.
 inline constexpr int FramePlanSocketDirectionRole = Qt::UserRole + 3110;
+// N-8: the in-place band. The field id is what the edit means
+// ("shader.vertex", "shader.fragment", "dispatch"); the value is what is in it
+// now, so a test can read the band without measuring its text.
+inline constexpr int FramePlanInlineFieldRole = Qt::UserRole + 3111;
+inline constexpr int FramePlanInlineValueRole = Qt::UserRole + 3112;
+// The edge the user picked. Delete acts on it, so it has to be visible as a
+// fact about the item and not only as a thicker line.
+inline constexpr int FramePlanEdgePickedRole = Qt::UserRole + 3113;
 // Nothing else is published: a socket's type, shape and a node's kind are
 // what the canvas DRAWS (the socket path, its colour, the kind text), and a
 // role restating them would be a second answer nothing reads.
@@ -104,6 +115,10 @@ inline constexpr auto FramePlanNodeHeaderItem = "node_header";
 inline constexpr auto FramePlanNodeKindLabelItem = "node_kind_label";
 inline constexpr auto FramePlanSocketItem = "node_socket";
 inline constexpr auto FramePlanRowLabelItem = "node_row_label";
+// N-8: one retypeable field of an editable node, drawn as a band under the
+// heading. A node that cannot be edited draws none: a band that refused on
+// Enter would be an invitation that is not one.
+inline constexpr auto FramePlanInlineFieldItem = "node_inline_field";
 
 // A node's height follows its resource count rather than a constant, so the
 // numbers the scene draws with are published for the scene test to name.
@@ -122,6 +137,26 @@ inline constexpr qreal FramePlanNodeCornerRadius = 9.0;
 SocketTypeFacts framePlanSocketFacts(const FramePlanModel &model,
                                      const std::string &resource,
                                      bool history);
+
+// N-8. One band the canvas offers on a node, supplied by the owner because
+// only the owner has the authoring context that says whether the field can be
+// written at all.
+struct FramePlanInlineBand {
+    QString field;
+    QString label;
+    QString value;
+};
+
+// The edge the user picked, named by the end that is unique: one input of one
+// node takes one bundle. Delete on it disconnects every resource it carries,
+// in one request.
+struct FramePlanEdgeSelection {
+    std::string graph;
+    std::string to_node;
+    std::vector<std::string> resources;
+
+    auto operator<=>(const FramePlanEdgeSelection &) const = default;
+};
 
 struct FramePlanGpuTimingRow {
     std::uint32_t view_index = 0;
@@ -170,6 +205,60 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     // the entries rather than building a throwaway one per right-click.
     void setMenuActions(QAction *auto_layout, QAction *fit_view);
     void setGpuTiming(FramePlanGpuTimingSnapshot snapshot);
+
+    // --- N-8: editing on the canvas.
+
+    // A plain drag from an output socket onto a node asks for a connection; a
+    // plain drag off an input socket, or Delete on a picked edge, asks for the
+    // cut. Shift-drag is untouched and still opens the dialogs.
+    std::function<void(const FramePlanNodeKey &consumer,
+                       const QStringList &resources, bool connect)>
+        resourceEdgeRequested;
+    // Delete on a picked node.
+    std::function<void(const FramePlanNodeKey &)> nodeRemoveRequested;
+    // Double-click on a node body: the detailed editor for everything the
+    // bands do not carry.
+    std::function<void(const FramePlanNodeKey &)> nodeEditRequested;
+    // "Add fullscreen pass..." / "Add compute task...", with the node the
+    // right-click landed on, so the new one goes after it.
+    std::function<void(const FramePlanNodeKey &after, bool task)>
+        nodeAddRequested;
+    // A band was retyped and committed with Enter.
+    std::function<void(const FramePlanNodeKey &, const QString &field,
+                       const QString &value)>
+        inlineFieldCommitted;
+    // What bands a node offers. Asked once per node per draw.
+    std::function<std::vector<FramePlanInlineBand>(const FramePlanNodeKey &)>
+        inlineFieldProvider;
+    // A node was moved, or the placement was dropped. The owner writes it.
+    std::function<void()> placementChanged;
+    // The two insert entries, named so the automation surface can fire them
+    // without driving a popup -- the same arrangement N-4 made for placement.
+    void setInsertActions(QAction *add_pass, QAction *add_task);
+    // The node the last right-click landed on, or the current selection.
+    [[nodiscard]] std::optional<FramePlanNodeKey> insertAnchor() const;
+
+    // The placement the document holds for one graph, and the one the canvas
+    // is drawing. Positions the user has moved live here; everything else is
+    // the automatic placement and is not written.
+    void setPlacement(const std::string &graph,
+                      const std::map<std::string, QPointF> &nodes);
+    [[nodiscard]] std::map<std::string, QPointF> placement(
+        const std::string &graph) const;
+
+    bool beginInlineEdit(const FramePlanNodeKey &node, const QString &field);
+    [[nodiscard]] bool editingInline() const noexcept;
+    [[nodiscard]] QString inlineEditText() const;
+    void setInlineEditText(const QString &text);
+    bool commitInlineEdit();
+    void cancelInlineEdit();
+
+    [[nodiscard]] const std::optional<FramePlanEdgeSelection> &selectedEdge()
+        const noexcept {
+        return selected_edge_;
+    }
+    // Picking an edge without a mouse: the same thing a click on it does.
+    void selectEdge(const FramePlanEdgeSelection &edge);
 
     // These are the state-changing operations used by the scene's context
     // menu, double-click, breadcrumb, and Escape handlers. Group ids are read
@@ -253,7 +342,23 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     std::optional<FramePlanNodeKey> connection_source_;
     QGraphicsLineItem *connection_line_ = nullptr;
     bool connection_gesture_ = false;
+    // N-8. A plain drag that started on a socket. Shift-drag leaves this unset
+    // and keeps its own path through the dialogs.
+    struct SocketGesture {
+        FramePlanNodeKey node;
+        std::string resource;
+        bool output = true;
+    };
+    std::optional<SocketGesture> socket_gesture_;
+    std::optional<FramePlanEdgeSelection> selected_edge_;
+    struct InlineEditor;
+    std::unique_ptr<InlineEditor> inline_editor_;
+    QAction *add_pass_action_ = nullptr;
+    QAction *add_task_action_ = nullptr;
+    std::optional<FramePlanNodeKey> context_node_;
     void clearConnectionGesture();
+    void applyEdgeSelection();
+    void closeInlineEditor();
     bool rebuilding_ = false;
     bool scene_rect_update_queued_ = false;
     // The theme table's registration, dropped in the destructor.

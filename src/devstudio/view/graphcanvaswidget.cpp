@@ -627,6 +627,34 @@ void GraphCanvasScene::loadLayout(const std::string &scope) {
     }
     layout_scope_ = scope;
     layout_ = graphCanvasLayoutFromJson(document);
+    // Everything in the document's `layout` this canvas has no opinion about.
+    // It travels back out on the next write; dropping it would make a node drag
+    // here erase the Frame Plan's placement over there.
+    layout_foreign_ = nlohmann::json::object();
+    if (document.is_object())
+        for (const auto &[key, value] : document.items())
+            if (key != "nodes" && key != "reroutes" && key != "ties")
+                layout_foreign_[key] = value;
+}
+
+nlohmann::json GraphCanvasScene::layoutMember(const std::string &key) const {
+    const auto found = layout_foreign_.find(key);
+    return found == layout_foreign_.end() ? nlohmann::json::object() : *found;
+}
+
+void GraphCanvasScene::setLayoutMember(const std::string &key,
+                                       nlohmann::json value) {
+    const bool drop = value.is_null() ||
+                      (value.is_object() && value.empty());
+    if (drop) {
+        if (layout_foreign_.find(key) == layout_foreign_.end()) return;
+        layout_foreign_.erase(key);
+    } else {
+        const auto found = layout_foreign_.find(key);
+        if (found != layout_foreign_.end() && *found == value) return;
+        layout_foreign_[key] = std::move(value);
+    }
+    noteLayoutChange();
 }
 
 void GraphCanvasScene::pruneLayout() {
@@ -677,6 +705,10 @@ void GraphCanvasScene::noteLayoutChange() {
 void GraphCanvasScene::flushLayout() {
     if (!layout_dirty_ || model_ == nullptr) return;
     auto payload = graphCanvasLayoutToJson(layout_);
+    // The other panel's members ride along: one `set_layout` replaces the whole
+    // object, so leaving them out here is the same as deleting them.
+    for (const auto &[key, value] : layout_foreign_.items())
+        payload[key] = value;
     // Busy with the last edit, or no digest to hold the document still yet.
     // The change is kept rather than dropped: losing it would lose the drag.
     if (!model_->canEdit() || !model_->setLayout(layout_scope_, payload)) {

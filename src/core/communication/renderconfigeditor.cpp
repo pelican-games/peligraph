@@ -1834,6 +1834,12 @@ OrderedJson RenderConfigEditorService::getGraphInstances(const Json &params) con
             if (node.at("op") == "graph.instance") instances.push_back(node);
     }
     return {{"source_reference", dependencies_.source_reference},
+        // N-8: what the root document actually is. A legacy rendering root has
+        // nowhere to put a `layout`, and an editor must be able to say that in
+        // those words rather than discover it as a failed write -- an empty
+        // `nodes` array does not separate the two, because a graph root is
+        // allowed to hold none.
+        {"root_schema", root.value("schema", std::string{})},
         {"source_digest", digestJson(document_.sourceDigest())},
         {"instances", std::move(instances)},
         // The whole root array too: an editor that connects an input has to

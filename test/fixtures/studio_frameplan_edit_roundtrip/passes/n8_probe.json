@@ -1,0 +1,39 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "n8_canvas_probe",
+  "render_targets": [
+    {
+      "name": "n8_probe_output",
+      "extent_scale": 1.0,
+      "format": "B8G8R8A8_UNORM",
+      "format_class": "scene",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED"
+      ]
+    }
+  ],
+  "passes": [
+    {
+      "insert": "after:lighting_pass",
+      "pass": {
+        "name": "n8_probe_pass",
+        "type": "fullscreen",
+        "input": [
+          "lit_color"
+        ],
+        "output": {
+          "color": [
+            "n8_probe_output"
+          ],
+          "depth": null
+        },
+        "shader": {
+          "vertex": "engine://fullscreen",
+          "fragment": "engine://fullscreen"
+        }
+      }
+    }
+  ]
+}

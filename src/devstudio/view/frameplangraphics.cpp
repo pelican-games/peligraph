@@ -10,12 +10,14 @@
 #include <QFontMetricsF>
 #include <QGraphicsPathItem>
 #include <QGraphicsPolygonItem>
+#include <QGraphicsProxyWidget>
 #include <QGraphicsRectItem>
 #include <QGraphicsSceneContextMenuEvent>
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsSimpleTextItem>
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QLineEdit>
 #include <QLineF>
 #include <QMenu>
 #include <QMetaObject>
@@ -31,6 +33,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <queue>
 #include <set>
@@ -1038,6 +1041,8 @@ struct NodeBodyLayout {
     qreal height = FramePlanHeaderHeight;
     std::vector<DrawnRow> outputs;
     std::vector<DrawnRow> inputs;
+    // N-8: the retypeable fields, between the heading and the sockets.
+    std::vector<FramePlanInlineBand> bands;
 };
 
 DrawnRow framePlanRow(const FramePlanModel &model,
@@ -1049,8 +1054,10 @@ DrawnRow framePlanRow(const FramePlanModel &model,
 }
 
 NodeBodyLayout nodeBodyLayout(const FramePlanModel &model,
-                              const FramePlanNode &node) {
+                              const FramePlanNode &node,
+                              std::vector<FramePlanInlineBand> bands = {}) {
     NodeBodyLayout layout;
+    layout.bands = std::move(bands);
     // Sorted, not in declaration order: WP318 fixes that the scene ignores the
     // order of every input array, and a row's y position is scene geometry.
     std::vector<std::string> written{node.writes.begin(), node.writes.end()};
@@ -1081,10 +1088,16 @@ NodeBodyLayout nodeBodyLayout(const FramePlanModel &model,
     };
     for (const auto &row : layout.outputs) widen(row);
     for (const auto &row : layout.inputs) widen(row);
+    for (const auto &band : layout.bands)
+        layout.width = std::max<qreal>(
+            layout.width,
+            row_metrics.horizontalAdvance(band.label + ": " + band.value) +
+                34.0);
     layout.width = std::min(layout.width, FramePlanNodeMaximumWidth);
 
     const auto rows = static_cast<qreal>(layout.outputs.size() +
-                                         layout.inputs.size());
+                                         layout.inputs.size() +
+                                         layout.bands.size());
     // The GPU-timing line keeps its own row: it is published for every node,
     // including an anchor that has no resource of its own.
     layout.height = FramePlanHeaderHeight + FramePlanSectionPadding +
@@ -1261,6 +1274,35 @@ void addNodeBody(QGraphicsPathItem &item, const FramePlanNode &node,
 
     qreal cursor_y = FramePlanHeaderHeight + FramePlanSectionPadding +
                      FramePlanSocketRowHeight;
+    // N-8: the retypeable fields. They are drawn before the sockets because
+    // they are about the node itself rather than about what flows through it,
+    // and a click on one opens an editor over exactly this rectangle.
+    for (const auto &band : layout.bands) {
+        auto *plate = new QGraphicsRectItem(
+            QRectF{6.0, cursor_y + 1.0, layout.width - 12.0,
+                   FramePlanSocketRowHeight - 2.0},
+            &item);
+        plate->setBrush(currentStudioTheme().canvas.node_body.lighter(122));
+        plate->setPen(QPen{currentStudioTheme().canvas.edge, 0.8});
+        tag(plate, FramePlanInlineFieldItem);
+        plate->setData(FramePlanInlineFieldRole, band.field);
+        plate->setData(FramePlanInlineValueRole, band.value);
+        plate->setToolTip(
+            QStringLiteral("%1: %2\nClick to retype; Enter saves.")
+                .arg(band.label, band.value));
+        const QString shown = row_metrics.elidedText(
+            band.label + QStringLiteral(": ") + band.value, Qt::ElideMiddle,
+            layout.width - 24.0);
+        auto *text = new QGraphicsSimpleTextItem(shown, plate);
+        text->setFont(row_font);
+        text->setBrush(QColor{QStringLiteral("#e4ecf3")});
+        text->setPos(12.0, cursor_y + 1.0 +
+                               (FramePlanSocketRowHeight - 2.0 -
+                                row_metrics.height()) /
+                                   2.0);
+        text->setAcceptedMouseButtons(Qt::NoButton);
+        cursor_y += FramePlanSocketRowHeight;
+    }
     for (const auto &row : layout.outputs) {
         const qreal centre_y = cursor_y + FramePlanSocketRowHeight / 2.0;
         const QString text = row_metrics.elidedText(
@@ -1779,6 +1821,9 @@ FramePlanGraphicsScene::FramePlanGraphicsScene(QObject *parent)
 
 FramePlanGraphicsScene::~FramePlanGraphicsScene() {
     removeStudioThemeListener(theme_listener_);
+    // The in-place editor is a widget this scene owns through a proxy item;
+    // clear() below would delete the proxy under the unique_ptr.
+    closeInlineEditor();
     // QGraphicsScene clears selected items in its base destructor. Do it while
     // this class's selection members still exist, with the signal handler
     // guarded, because a multiple selection otherwise emits during teardown.
@@ -1788,6 +1833,9 @@ FramePlanGraphicsScene::~FramePlanGraphicsScene() {
 
 void FramePlanGraphicsScene::resetGraph() {
     clearConnectionGesture();
+    closeInlineEditor();
+    selected_edge_.reset();
+    context_node_.reset();
     rebuilding_ = true;
     clear();
     selected_node_.reset();
@@ -1927,10 +1975,27 @@ void FramePlanGraphicsScene::pruneGroupState() {
 
 void FramePlanGraphicsScene::renderCurrentGraph() {
     clearConnectionGesture();
+    // The editor is a widget in the scene; a redraw deletes every item, so it
+    // has to go first or its proxy is deleted twice.
+    closeInlineEditor();
     if (!current_model_) {
         return;
     }
     const FramePlanModel &model = *current_model_;
+    // N-8: what each node lets the user retype, asked once per node per draw.
+    // The answer needs the authoring context, which only the owner has.
+    std::map<std::string, std::vector<FramePlanInlineBand>, std::less<>>
+        inline_bands;
+    const auto bandsFor = [&](const std::string &name)
+        -> const std::vector<FramePlanInlineBand> & {
+        const auto found = inline_bands.find(name);
+        if (found != inline_bands.end()) return found->second;
+        auto bands = inlineFieldProvider
+                         ? inlineFieldProvider(
+                               FramePlanNodeKey{model.graph, name})
+                         : std::vector<FramePlanInlineBand>{};
+        return inline_bands.emplace(name, std::move(bands)).first->second;
+    };
     const int normalized_depth = current_depth_;
     const std::vector<GroupDefinition> groups =
         discoverGroups(model, session_groups_);
@@ -2370,8 +2435,8 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         if (entity.group) return std::pair{GroupWidth, GroupHeight};
         if (entity.boundary_stub)
             return std::pair{BoundaryStubWidth, BoundaryStubHeight};
-        const NodeBodyLayout body =
-            nodeBodyLayout(model, *nodes_by_name.at(entity.key));
+        const NodeBodyLayout body = nodeBodyLayout(
+            model, *nodes_by_name.at(entity.key), bandsFor(entity.key));
         return std::pair{body.width, body.height};
     };
     std::vector<LayoutNode> layout_nodes;
@@ -2406,7 +2471,8 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
             const NodeBodyLayout body =
                 entity->group || entity->boundary_stub
                     ? NodeBodyLayout{}
-                    : nodeBodyLayout(model, *nodes_by_name.at(entity->key));
+                    : nodeBodyLayout(model, *nodes_by_name.at(entity->key),
+                                     bandsFor(entity->key));
             const qreal width =
                 entity->group
                     ? GroupWidth
@@ -2458,6 +2524,9 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                         return;
                     }
                     session_node_positions_[position_key] = moved_position;
+                    // N-8: the document keeps the placement now. The owner
+                    // debounces; this only says that something moved.
+                    if (placementChanged) placementChanged();
                     rerouteFramePlanBundles(*this, routing_key.graph,
                                             routing_key.name);
                     // Growing the scene rect from inside itemChange re-enters
@@ -2833,6 +2902,11 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
     setSceneRect(itemsBoundingRect().adjusted(-30.0, -30.0, 30.0, 30.0));
     rebuilding_ = false;
     applyEdgeEmphasis();
+    // N-8: the picked edge is still picked after a redraw, unless the graph it
+    // was in is no longer the one on screen.
+    if (selected_edge_ && selected_edge_->graph != model.graph)
+        selected_edge_.reset();
+    applyEdgeSelection();
 
     setProperty("pelicanGraph", qtext(model.graph));
     setProperty("pelicanTarget",
@@ -3112,9 +3186,14 @@ bool FramePlanGraphicsScene::removeSessionGroup(const QString &group_id) {
 void FramePlanGraphicsScene::autoLayout() {
     if (!current_model_) return;
     const std::string graph = current_model_->graph;
+    const auto before = session_node_positions_.size();
     std::erase_if(session_node_positions_, [&](const auto &entry) {
         return std::get<0>(entry.first) == graph;
     });
+    // Dropping what the user moved is itself a placement change: the document
+    // holds those positions, so it has to hear that they are gone.
+    if (before != session_node_positions_.size() && placementChanged)
+        placementChanged();
     renderCurrentGraph();
 }
 
@@ -3122,6 +3201,73 @@ void FramePlanGraphicsScene::setMenuActions(QAction *auto_layout,
                                             QAction *fit_view) {
     auto_layout_action_ = auto_layout;
     fit_view_action_ = fit_view;
+}
+
+void FramePlanGraphicsScene::setInsertActions(QAction *add_pass,
+                                              QAction *add_task) {
+    add_pass_action_ = add_pass;
+    add_task_action_ = add_task;
+}
+
+std::optional<FramePlanNodeKey> FramePlanGraphicsScene::insertAnchor() const {
+    return context_node_ ? context_node_ : selected_node_;
+}
+
+void FramePlanGraphicsScene::setPlacement(
+    const std::string &graph, const std::map<std::string, QPointF> &nodes) {
+    std::erase_if(session_node_positions_, [&](const auto &entry) {
+        return std::get<0>(entry.first) == graph &&
+               std::get<1>(entry.first) == std::string{FramePlanNodeItem};
+    });
+    for (const auto &[name, position] : nodes)
+        session_node_positions_.insert_or_assign(
+            std::tuple{graph, std::string{FramePlanNodeItem}, name}, position);
+    renderCurrentGraph();
+}
+
+std::map<std::string, QPointF> FramePlanGraphicsScene::placement(
+    const std::string &graph) const {
+    std::map<std::string, QPointF> nodes;
+    for (const auto &[key, position] : session_node_positions_) {
+        if (std::get<0>(key) != graph ||
+            std::get<1>(key) != std::string{FramePlanNodeItem})
+            continue;
+        nodes.emplace(std::get<2>(key), position);
+    }
+    return nodes;
+}
+
+// The picked edge is drawn heavier; nothing else about it changes, because the
+// colour of a frame-plan edge already says what the dependency is.
+void FramePlanGraphicsScene::applyEdgeSelection() {
+    for (QGraphicsItem *item : items()) {
+        if (itemKind(*item) != QLatin1String{FramePlanEdgeItem}) continue;
+        auto *edge = dynamic_cast<QGraphicsPathItem *>(item);
+        if (edge == nullptr) continue;
+        std::vector<std::string> resources;
+        for (const QString &resource :
+             edge->data(FramePlanResourcesRole).toStringList())
+            resources.push_back(resource.toStdString());
+        const bool picked =
+            selected_edge_.has_value() &&
+            edge->data(FramePlanGraphRole).toString().toStdString() ==
+                selected_edge_->graph &&
+            edge->data(FramePlanToNameRole).toString().toStdString() ==
+                selected_edge_->to_node &&
+            resources == selected_edge_->resources;
+        const bool already = edge->data(FramePlanEdgePickedRole).toBool();
+        if (picked == already) continue;
+        QPen pen = edge->pen();
+        pen.setWidthF(picked ? pen.widthF() + 1.6
+                             : std::max<qreal>(0.5, pen.widthF() - 1.6));
+        edge->setPen(pen);
+        edge->setData(FramePlanEdgePickedRole, picked);
+    }
+}
+
+void FramePlanGraphicsScene::selectEdge(const FramePlanEdgeSelection &edge) {
+    selected_edge_ = edge;
+    applyEdgeSelection();
 }
 
 void FramePlanGraphicsScene::contextMenuEvent(
@@ -3145,11 +3291,17 @@ void FramePlanGraphicsScene::contextMenuEvent(
     const QString group_id =
         on_entity ? semantic_item->data(FramePlanGroupIdRole).toString()
                   : QString{};
+    context_node_.reset();
     if (on_entity && kind == QLatin1String{FramePlanNodeItem}) {
         const FramePlanNodeKey clicked{
             semantic_item->data(FramePlanGraphRole).toString().toStdString(),
             semantic_item->data(FramePlanNameRole).toString().toStdString(),
         };
+        // N-8: the two insert entries act after the node under the cursor, so
+        // the cursor's node is remembered for the named actions as well.
+        context_node_ = clicked;
+        if (add_pass_action_ != nullptr) menu.addAction(add_pass_action_);
+        if (add_task_action_ != nullptr) menu.addAction(add_task_action_);
         if (selected_nodes_.size() >= 2 &&
             selected_nodes_.contains(clicked)) {
             QAction *create = menu.addAction(
@@ -3270,10 +3422,156 @@ std::optional<FramePlanNodeKey> connectionNodeAt(QGraphicsScene &scene, QPointF 
 }
 }
 
+namespace {
+// The socket the point landed on, with everything the gesture needs: which
+// node, which resource, and which side. A socket is a child of its node, so
+// this is also how the node is found.
+struct SocketHit {
+    FramePlanNodeKey node;
+    std::string resource;
+    bool output = true;
+};
+
+std::optional<SocketHit> socketAt(QGraphicsScene &scene, QPointF point) {
+    for (QGraphicsItem *item : scene.items(point, Qt::IntersectsItemShape,
+                                           Qt::DescendingOrder)) {
+        if (itemKind(*item) != QLatin1String{FramePlanSocketItem}) continue;
+        return SocketHit{
+            FramePlanNodeKey{
+                item->data(FramePlanGraphRole).toString().toStdString(),
+                item->data(FramePlanNameRole).toString().toStdString()},
+            item->data(FramePlanPortRole).toString().toStdString(),
+            item->data(FramePlanSocketDirectionRole).toString() ==
+                QLatin1String{"output"}};
+    }
+    return std::nullopt;
+}
+
+QGraphicsItem *inlineFieldAt(QGraphicsScene &scene, QPointF point) {
+    for (QGraphicsItem *item : scene.items(point, Qt::IntersectsItemShape,
+                                           Qt::DescendingOrder))
+        if (itemKind(*item) == QLatin1String{FramePlanInlineFieldItem})
+            return item;
+    return nullptr;
+}
+
+std::optional<FramePlanEdgeSelection> edgeAt(QGraphicsScene &scene,
+                                             QPointF point) {
+    for (QGraphicsItem *item : scene.items(point, Qt::IntersectsItemShape,
+                                           Qt::DescendingOrder)) {
+        if (itemKind(*item) != QLatin1String{FramePlanEdgeItem}) continue;
+        FramePlanEdgeSelection edge;
+        edge.graph = item->data(FramePlanGraphRole).toString().toStdString();
+        edge.to_node =
+            item->data(FramePlanToNameRole).toString().toStdString();
+        for (const QString &resource :
+             item->data(FramePlanResourcesRole).toStringList())
+            edge.resources.push_back(resource.toStdString());
+        if (edge.resources.empty()) continue; // an ordering-only dependency
+        return edge;
+    }
+    return std::nullopt;
+}
+} // namespace
+
+// The line edit that sits over one band while it is being retyped. It is a
+// widget in the scene rather than a dialog: the value is one string, and a
+// dialog for one string is a place to lose the drawing.
+struct FramePlanGraphicsScene::InlineEditor {
+    FramePlanNodeKey node;
+    QString field;
+    QGraphicsProxyWidget *proxy = nullptr;
+    QLineEdit *edit = nullptr;
+};
+
+bool FramePlanGraphicsScene::editingInline() const noexcept {
+    return inline_editor_ != nullptr;
+}
+
+QString FramePlanGraphicsScene::inlineEditText() const {
+    return inline_editor_ && inline_editor_->edit
+               ? inline_editor_->edit->text()
+               : QString{};
+}
+
+void FramePlanGraphicsScene::setInlineEditText(const QString &text) {
+    if (inline_editor_ && inline_editor_->edit)
+        inline_editor_->edit->setText(text);
+}
+
+void FramePlanGraphicsScene::closeInlineEditor() {
+    if (!inline_editor_) return;
+    auto editor = std::move(inline_editor_);
+    inline_editor_.reset();
+    if (editor->proxy == nullptr) return;
+    // Closing usually happens from inside the line edit's own returnPressed,
+    // so the widget must outlive this call. Taking the proxy out of the scene
+    // first is what keeps a later clear() from deleting it a second time.
+    if (editor->edit != nullptr) editor->edit->disconnect(this);
+    removeItem(editor->proxy);
+    editor->proxy->deleteLater();
+}
+
+void FramePlanGraphicsScene::cancelInlineEdit() { closeInlineEditor(); }
+
+bool FramePlanGraphicsScene::commitInlineEdit() {
+    if (!inline_editor_) return false;
+    const FramePlanNodeKey node = inline_editor_->node;
+    const QString field = inline_editor_->field;
+    const QString value = inlineEditText();
+    closeInlineEditor();
+    if (!inlineFieldCommitted) return false;
+    // Queued: committing sends an RPC, whose reply redraws this scene, and a
+    // redraw from inside a key event takes the items out from under Qt.
+    QMetaObject::invokeMethod(
+        this,
+        [this, node, field, value] {
+            if (inlineFieldCommitted) inlineFieldCommitted(node, field, value);
+        },
+        Qt::QueuedConnection);
+    return true;
+}
+
+bool FramePlanGraphicsScene::beginInlineEdit(const FramePlanNodeKey &node,
+                                             const QString &field) {
+    closeInlineEditor();
+    QGraphicsItem *band = nullptr;
+    for (QGraphicsItem *item : items()) {
+        if (itemKind(*item) != QLatin1String{FramePlanInlineFieldItem} ||
+            item->data(FramePlanGraphRole).toString().toStdString() !=
+                node.graph ||
+            item->data(FramePlanNameRole).toString().toStdString() !=
+                node.name ||
+            item->data(FramePlanInlineFieldRole).toString() != field)
+            continue;
+        band = item;
+        break;
+    }
+    if (band == nullptr) return false;
+    auto editor = std::make_unique<InlineEditor>();
+    editor->node = node;
+    editor->field = field;
+    editor->edit = new QLineEdit;
+    editor->edit->setObjectName(
+        QStringLiteral("pelican.framePlanInlineEditor"));
+    editor->edit->setText(band->data(FramePlanInlineValueRole).toString());
+    editor->edit->selectAll();
+    editor->proxy = addWidget(editor->edit);
+    const QRectF bounds = band->sceneBoundingRect();
+    editor->proxy->setGeometry(bounds);
+    editor->proxy->setZValue(1200.0);
+    connect(editor->edit, &QLineEdit::returnPressed, this,
+            [this] { commitInlineEdit(); });
+    inline_editor_ = std::move(editor);
+    inline_editor_->edit->setFocus();
+    return true;
+}
+
 void FramePlanGraphicsScene::clearConnectionGesture() {
     delete connection_line_;
     connection_line_ = nullptr;
     connection_source_.reset();
+    socket_gesture_.reset();
     connection_gesture_ = false;
 }
 
@@ -3286,6 +3584,62 @@ bool FramePlanGraphicsScene::cancelConnectionGesture() {
 
 void FramePlanGraphicsScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
     if (event->button() != Qt::LeftButton || !(event->modifiers() & Qt::ShiftModifier)) {
+        // N-8. A plain press is still a press: it drags nodes, it rubber-bands,
+        // it selects. What is new is that a press that lands on a socket, on a
+        // band, or on an edge means that thing rather than the node under it.
+        if (event->button() == Qt::LeftButton &&
+            event->modifiers() == Qt::NoModifier) {
+            // A press inside the open editor belongs to the editor: it is how
+            // a caret is placed. Only a press outside it closes it.
+            if (inline_editor_ && inline_editor_->proxy != nullptr &&
+                inline_editor_->proxy->sceneBoundingRect().contains(
+                    event->scenePos())) {
+                QGraphicsScene::mousePressEvent(event);
+                return;
+            }
+            if (editingInline()) closeInlineEditor();
+            if (QGraphicsItem *band = inlineFieldAt(*this, event->scenePos());
+                band != nullptr) {
+                const FramePlanNodeKey node{
+                    band->data(FramePlanGraphRole).toString().toStdString(),
+                    band->data(FramePlanNameRole).toString().toStdString()};
+                const QString field =
+                    band->data(FramePlanInlineFieldRole).toString();
+                event->accept();
+                beginInlineEdit(node, field);
+                return;
+            }
+            if (const auto socket = socketAt(*this, event->scenePos())) {
+                clearConnectionGesture();
+                connection_gesture_ = true;
+                socket_gesture_ =
+                    SocketGesture{socket->node, socket->resource,
+                                  socket->output};
+                connection_source_ = socket->node;
+                connection_line_ = addLine(
+                    QLineF(event->scenePos(), event->scenePos()),
+                    QPen(QColor{70, 200, 150}, 3, Qt::DashLine));
+                connection_line_->setZValue(1000);
+                connection_line_->setAcceptedMouseButtons(Qt::NoButton);
+                event->accept();
+                return;
+            }
+            // An edge is picked only where it runs over open canvas. A line
+            // that happens to cross a box must not take the press away from
+            // the box: dragging a node is the commoner gesture by far.
+            if (!connectionNodeAt(*this, event->scenePos())) {
+                if (const auto edge = edgeAt(*this, event->scenePos())) {
+                    selected_edge_ = edge;
+                    applyEdgeSelection();
+                    event->accept();
+                    return;
+                }
+            }
+            if (selected_edge_) {
+                selected_edge_.reset();
+                applyEdgeSelection();
+            }
+        }
         QGraphicsScene::mousePressEvent(event);
         return;
     }
@@ -3312,9 +3666,38 @@ void FramePlanGraphicsScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) 
     delete connection_line_;
     connection_line_ = nullptr;
     const auto from = connection_source_;
+    const auto socket = socket_gesture_;
     const auto to = connectionNodeAt(*this, event->scenePos());
     clearConnectionGesture();
     event->accept();
+    // N-8: the plain gesture. It carries one named resource, so it edits the
+    // declaration directly instead of opening a form to pick one.
+    if (socket) {
+        if (!resourceEdgeRequested) {
+            if (connectionFeedback)
+                connectionFeedback(tr("Resource connection editing is unavailable."));
+            return;
+        }
+        const QStringList resources{qtext(socket->resource)};
+        if (socket->output) {
+            if (to && to->graph == socket->node.graph &&
+                *to != socket->node) {
+                resourceEdgeRequested(*to, resources, true);
+            } else if (connectionFeedback) {
+                connectionFeedback(
+                    tr("Drop on another pass or task in the same graph to "
+                       "connect %1.")
+                        .arg(qtext(socket->resource)));
+            }
+            return;
+        }
+        // An input socket dragged away from its node cuts the connection; one
+        // dropped back on the node it belongs to does nothing, because that is
+        // how a gesture is abandoned.
+        if (to && *to == socket->node) return;
+        resourceEdgeRequested(socket->node, resources, false);
+        return;
+    }
     if (from && to && from->graph == to->graph && *from != *to) {
         if (connectionRequested) connectionRequested(*from, *to);
         else if (connectionFeedback) connectionFeedback(tr("Resource connection editing is unavailable."));
@@ -3332,6 +3715,21 @@ void FramePlanGraphicsScene::mouseDoubleClickEvent(
         semantic_item = semantic_item->parentItem();
     }
     if (semantic_item == nullptr) {
+        // N-8: not a group, so it may be a node -- and a double-click on a node
+        // is the way to everything the bands do not carry (attachments, raster
+        // state, the draw, the material settings): the existing editors.
+        if (const auto node = connectionNodeAt(*this, event->scenePos());
+            node && nodeEditRequested) {
+            event->accept();
+            const FramePlanNodeKey key = *node;
+            QMetaObject::invokeMethod(
+                this,
+                [this, key] {
+                    if (nodeEditRequested) nodeEditRequested(key);
+                },
+                Qt::QueuedConnection);
+            return;
+        }
         QGraphicsScene::mouseDoubleClickEvent(event);
         return;
     }
@@ -3349,9 +3747,50 @@ void FramePlanGraphicsScene::mouseDoubleClickEvent(
 }
 
 void FramePlanGraphicsScene::keyPressEvent(QKeyEvent *event) {
+    if (event->key() == Qt::Key_Escape && editingInline()) {
+        event->accept();
+        cancelInlineEdit();
+        return;
+    }
     if (event->key() == Qt::Key_Escape && cancelConnectionGesture()) {
         event->accept();
         return;
+    }
+    // N-8. Delete cuts the picked edge, or removes the picked node. The edge
+    // comes first: it is the smaller of the two, and it is what the user just
+    // clicked on.
+    if ((event->key() == Qt::Key_Delete ||
+         event->key() == Qt::Key_Backspace) &&
+        !editingInline()) {
+        if (selected_edge_ && resourceEdgeRequested) {
+            const FramePlanNodeKey consumer{selected_edge_->graph,
+                                            selected_edge_->to_node};
+            QStringList resources;
+            for (const auto &resource : selected_edge_->resources)
+                resources.push_back(qtext(resource));
+            selected_edge_.reset();
+            applyEdgeSelection();
+            event->accept();
+            QMetaObject::invokeMethod(
+                this,
+                [this, consumer, resources] {
+                    if (resourceEdgeRequested)
+                        resourceEdgeRequested(consumer, resources, false);
+                },
+                Qt::QueuedConnection);
+            return;
+        }
+        if (selected_node_ && nodeRemoveRequested) {
+            const FramePlanNodeKey node = *selected_node_;
+            event->accept();
+            QMetaObject::invokeMethod(
+                this,
+                [this, node] {
+                    if (nodeRemoveRequested) nodeRemoveRequested(node);
+                },
+                Qt::QueuedConnection);
+            return;
+        }
     }
     if (event->key() == Qt::Key_Escape && current_group_scope_) {
         event->accept();

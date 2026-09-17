@@ -450,6 +450,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   target_sources(pelican_test_devstudio_engine_failure_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanwidget.cpp)
   target_sources(pelican_test_devstudio_engine_failure_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplangraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodelayout.cpp
@@ -484,6 +485,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   )
   target_sources(pelican_test_devstudio_frameplan_graph_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanwidget.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplangraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodelayout.cpp
@@ -2792,6 +2794,17 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
         foreach(pelican_studio_scenario IN LISTS pelican_studio_scenario_files)
             get_filename_component(pelican_studio_scenario_name
                 "${pelican_studio_scenario}" NAME_WE)
+            # Most scenarios share one fixture, because sharing it is what keeps
+            # them comparable. A scenario that needs a document of its own --
+            # N-8 needs a project pass it may edit, and adding one to the shared
+            # fixture would change what every other scenario is looking at --
+            # names its fixture beside the shared one and gets that instead.
+            set(pelican_studio_scenario_fixture
+                "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_automation_graph")
+            if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_${pelican_studio_scenario_name}/project.json")
+                set(pelican_studio_scenario_fixture
+                    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_${pelican_studio_scenario_name}")
+            endif()
             add_test(
                 NAME studio_scenario_${pelican_studio_scenario_name}
                 COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
@@ -2799,7 +2812,7 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
                     -DPLAYER=$<TARGET_FILE:pelican_player>
                     -DDRIVER=${CMAKE_SOURCE_DIR}/tools/studio_drive.py
                     -DSCENARIO=${pelican_studio_scenario}
-                    -DFIXTURE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_automation_graph
+                    -DFIXTURE_DIR=${pelican_studio_scenario_fixture}
                     -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/studio_scenarios
                     -DUV=${PELICAN_UV_EXECUTABLE}
                     -DQT_BIN_DIR=$<TARGET_FILE_DIR:Qt6::Core>

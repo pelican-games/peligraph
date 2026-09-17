@@ -1,4 +1,5 @@
 #include "mainwindow.hpp"
+#include "frameplaneditcapability.hpp"
 #include "frameplanwidget.hpp"
 #include "fullscreenpasswidget.hpp"
 #include "graphcanvaswidget.hpp"
@@ -290,6 +291,48 @@ void MainWindow::createWorkspace() {
         fullscreen_pass_->editPresetPassConnection(graph, pass, outputs);
         docks_[FullscreenPassDock]->show();
         docks_[FullscreenPassDock]->raise();
+    });
+    // N-8. The canvas edits through the authoring RPCs that already exist, and
+    // keeps its placement in the same `layout` member the Graph tab writes --
+    // through that tab's debounce, because `set_layout` replaces the whole
+    // object and two writers would erase each other.
+    frame_plan_->setEditCapability(framePlanEditCapability(*viewport_));
+    frame_plan_->setLayoutCapability(FramePlanLayoutCapability{
+        .read = [this] { return graph_canvas_->scene().layoutMember("frame_plan"); },
+        .write = [this](const nlohmann::json &frame_plan, QString *reason) {
+            const GraphCanvasModel &model = graph_canvas_->model();
+            if (!model.contextReceived()) {
+                if (reason != nullptr)
+                    *reason = tr("Node positions are not saved yet: the "
+                                 "rendering document has not been read.");
+                return false;
+            }
+            if (!model.graphRoot()) {
+                if (reason != nullptr)
+                    *reason = tr("Node positions are not saved: %1 is a legacy "
+                                 "rendering document (its root is not "
+                                 "pelican.graph), so it has nowhere to keep "
+                                 "them.")
+                                  .arg(QString::fromStdString(
+                                      model.sourceReference().empty()
+                                          ? std::string{"the rendering document"}
+                                          : model.sourceReference()));
+                return false;
+            }
+            graph_canvas_->scene().setLayoutMember("frame_plan", frame_plan);
+            return true;
+        },
+    });
+    frame_plan_->setPassInsertAction(
+        [this](const QString &graph, const QString &after) {
+            fullscreen_pass_->insertAuthoredPassAfter(graph, after);
+            docks_[FullscreenPassDock]->show();
+            docks_[FullscreenPassDock]->raise();
+        });
+    frame_plan_->setTaskInsertAction([this, render_tabs] {
+        docks_[FramePlanDock]->show();
+        docks_[FramePlanDock]->raise();
+        render_tabs->setCurrentWidget(render_features_);
     });
     connect(viewport_, &EmbeddedViewport::engineOutputReceived, this,
             [this](const QString &output) { appendEngineOutput(output); });

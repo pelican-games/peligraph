@@ -525,13 +525,113 @@ void requireLayoutEdge(const EditScope &scope, const Json &definitions,
         throw layoutInvalid("unknown_edge", {{"node", id}, {"port", port}});
 }
 
+// N-8. The Frame Plan canvas draws passes and resources, and neither of those
+// is a node of this document: a pass name comes from the rendering preset, a
+// feature, or an authored fragment, and it can be renamed there without this
+// document hearing about it. So this member is checked for SHAPE only --
+// finite coordinates, objects where objects are expected -- and no name in it
+// is looked up. `locateLayoutNode` deliberately never runs over it: a pass the
+// document cannot see is not a broken placement, it is a placement about
+// something else.
+void requireFramePlanEdge(const Json &edge) {
+    object(edge, "set_layout frame_plan edge must be an object");
+    if (edge.size() != 2 || !edge.contains("node") || !edge.contains("resource"))
+        throw layoutInvalid("frame_plan_edge", {{"edge", edge}});
+    for (const auto *member : {"node", "resource"})
+        if (!edge.at(member).is_string() ||
+            edge.at(member).get_ref<const std::string &>().empty())
+            throw layoutInvalid("frame_plan_edge", {{"member", member}});
+}
+
+void requireFramePlanLayout(const Json &frame_plan) {
+    object(frame_plan, "set_layout frame_plan must be an object");
+    for (const auto &[graph, placement] : frame_plan.items()) {
+        object(placement, "set_layout frame_plan graph must be an object");
+        for (const auto &[key, value] : placement.items()) {
+            (void)value;
+            if (key != "nodes" && key != "reroutes" && key != "ties" &&
+                key != "groups")
+                throw layoutInvalid("frame_plan_unknown_key",
+                                    {{"graph", graph}, {"key", key}});
+        }
+        if (const auto nodes = placement.find("nodes"); nodes != placement.end()) {
+            object(*nodes, "set_layout frame_plan nodes must be an object");
+            for (const auto &[name, place] : nodes->items()) {
+                if (!place.is_object() || !place.contains("x") ||
+                    !place.contains("y"))
+                    throw layoutInvalid("frame_plan_node_placement",
+                                        {{"graph", graph}, {"node", name}});
+                (void)layoutCoordinate(place.at("x"), "x");
+                (void)layoutCoordinate(place.at("y"), "y");
+            }
+        }
+        if (const auto reroutes = placement.find("reroutes");
+            reroutes != placement.end()) {
+            if (!reroutes->is_array())
+                throw std::invalid_argument(
+                    "set_layout frame_plan reroutes must be an array");
+            for (const auto &entry : *reroutes) {
+                object(entry, "set_layout frame_plan reroute must be an object");
+                if (!entry.contains("edge") || !entry.contains("points"))
+                    throw layoutInvalid("frame_plan_reroute",
+                                        {{"graph", graph}, {"reroute", entry}});
+                requireFramePlanEdge(entry.at("edge"));
+                if (!entry.at("points").is_array())
+                    throw std::invalid_argument(
+                        "set_layout frame_plan reroute points must be an array");
+                for (const auto &point : entry.at("points"))
+                    requireLayoutPoint(point);
+            }
+        }
+        if (const auto ties = placement.find("ties"); ties != placement.end()) {
+            if (!ties->is_array())
+                throw std::invalid_argument(
+                    "set_layout frame_plan ties must be an array");
+            for (const auto &tie : *ties) {
+                object(tie, "set_layout frame_plan tie must be an object");
+                if (!tie.contains("x") || !tie.contains("y") ||
+                    !tie.contains("edges"))
+                    throw layoutInvalid("frame_plan_tie",
+                                        {{"graph", graph}, {"tie", tie}});
+                (void)layoutCoordinate(tie.at("x"), "x");
+                (void)layoutCoordinate(tie.at("y"), "y");
+                if (!tie.at("edges").is_array())
+                    throw std::invalid_argument(
+                        "set_layout frame_plan tie edges must be an array");
+                for (const auto &edge : tie.at("edges"))
+                    requireFramePlanEdge(edge);
+            }
+        }
+        if (const auto groups = placement.find("groups"); groups != placement.end()) {
+            if (!groups->is_array())
+                throw std::invalid_argument(
+                    "set_layout frame_plan groups must be an array");
+            for (const auto &group : *groups) {
+                object(group, "set_layout frame_plan group must be an object");
+                if (!group.contains("id") || !group.at("id").is_string() ||
+                    !group.contains("members") || !group.at("members").is_array())
+                    throw layoutInvalid("frame_plan_group",
+                                        {{"graph", graph}, {"group", group}});
+                for (const auto &member : group.at("members"))
+                    if (!member.is_string())
+                        throw layoutInvalid("frame_plan_group",
+                                            {{"graph", graph}, {"member", member}});
+            }
+        }
+    }
+}
+
 void requireLayout(const EditScope &scope, const Json &definitions, const Json &layout) {
     object(layout, "set_layout requires a layout object or null");
     for (const auto &[key, value] : layout.items()) {
         (void)value;
-        if (key != "nodes" && key != "reroutes" && key != "ties")
+        if (key != "nodes" && key != "reroutes" && key != "ties" &&
+            key != "frame_plan")
             throw layoutInvalid("unknown_key", {{"key", key}});
     }
+    if (const auto frame_plan = layout.find("frame_plan");
+        frame_plan != layout.end())
+        requireFramePlanLayout(*frame_plan);
     if (const auto nodes = layout.find("nodes"); nodes != layout.end()) {
         object(*nodes, "set_layout nodes must be an object");
         for (const auto &[id, place] : nodes->items()) {

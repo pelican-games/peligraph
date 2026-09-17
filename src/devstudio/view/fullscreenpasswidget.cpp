@@ -152,6 +152,9 @@ struct FullscreenPassWidget::Impl {
     QComboBox *input_candidate = nullptr;
     QLabel *connection_hint = nullptr;
     std::optional<QStringList> input_filter;
+    // N-8: "after this node", from the Frame Plan canvas. It survives context
+    // refreshes so the position is still right when the anchors arrive.
+    std::optional<std::string> requested_insert_after;
     QPushButton *add_input = nullptr;
     QPushButton *add_history_input = nullptr;
     QListWidget *inputs = nullptr;
@@ -1525,6 +1528,7 @@ struct FullscreenPassWidget::Impl {
             return;
         }
         input_filter = std::move(outputs);
+        requested_insert_after.reset();
         populateRoleCandidates();
         editing_preset_pass = std::pair{graph_name.toStdString(), pass_name.toStdString()};
         load_edit_requested = true;
@@ -1884,6 +1888,9 @@ struct FullscreenPassWidget::Impl {
                                         "and published."));
                 updateAuthoringButtons();
                 if (editing_preset_pass) { load_edit_requested = true; authoring_available = false; }
+                // N-8: the canvas's "after this node" is spent once the pass
+                // is in; the next open defaults to the end of the graph again.
+                requested_insert_after.reset();
                 requestAuthoringContext();
                 requestRefresh();
                 if (committed_action) committed_action();
@@ -2040,7 +2047,42 @@ struct FullscreenPassWidget::Impl {
         const auto capped = std::min<std::size_t>(
             last, static_cast<std::size_t>(std::numeric_limits<int>::max()));
         position->setRange(0, static_cast<int>(capped));
-        position->setValue(static_cast<int>(capped));
+        int value = static_cast<int>(capped);
+        // N-8: the canvas asked for a pass after a named node, so the position
+        // is the engine's own anchor for "after that one" rather than the end
+        // of the graph. The engine's anchor list is what decides; a name it
+        // does not offer leaves the default alone rather than guessing.
+        if (requested_insert_after && plan && authoring_available) {
+            const auto graph_anchors = anchors.find(plan->graph);
+            if (graph_anchors != anchors.end()) {
+                const std::string token = "after:" + *requested_insert_after;
+                const auto found = std::ranges::find(graph_anchors->second,
+                                                     token, &Anchor::insert);
+                if (found != graph_anchors->second.end())
+                    value = found->position;
+            }
+        }
+        position->setValue(value);
+    }
+
+    void beginAuthoredPassInsert(const QString &graph_name,
+                                 const QString &after_pass) {
+        if (pending_authoring_request || !pending_ticket.isEmpty()) {
+            authoringError(owner.tr(
+                "Finish the current request before adding a pass."));
+            return;
+        }
+        input_filter.reset();
+        populateRoleCandidates();
+        editing_preset_pass.reset();
+        load_edit_requested = false;
+        requested_insert_after = after_pass.toStdString();
+        (void)graph_name;
+        clearDraft();
+        authoring_available = false;
+        requestAuthoringContext();
+        requestRefresh();
+        updateDraft();
     }
 
     void invalidateFramePlanContext() {
@@ -2348,6 +2390,11 @@ void FullscreenPassWidget::editPresetPass(const QString &graph, const QString &p
 void FullscreenPassWidget::editPresetPassConnection(const QString &graph, const QString &pass_name,
                                                    const QStringList &outputs) {
     impl_->beginPresetPassEdit(graph, pass_name, outputs);
+}
+
+void FullscreenPassWidget::insertAuthoredPassAfter(const QString &graph,
+                                                   const QString &after_pass) {
+    impl_->beginAuthoredPassInsert(graph, after_pass);
 }
 
 void FullscreenPassWidget::receiveResult(const QByteArray &result_json) {

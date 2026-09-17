@@ -415,6 +415,11 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         auto layout = response.value("layout", Json::object());
         layout_ = layout.is_object() ? std::move(layout) : Json::object();
         nodes_ = std::move(nodes);
+        // N-8: an engine that predates this says nothing, which reads as "not a
+        // graph root" -- the safe answer, because the placement is then not
+        // written rather than written where it cannot be kept.
+        root_schema_ = response.value("root_schema", std::string{});
+        source_reference_ = response.value("source_reference", std::string{});
         digest_ = response.value("source_digest", Json::object()).value("hex", std::string{});
         context_received_ = true;
         failure_ = {};
