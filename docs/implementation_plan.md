@@ -24050,6 +24050,31 @@ Frame Plan と Graph の統合キャンバス / Frame Plan の操作変更 / 位
 
 完了記録(2026-09-18、`dd088c2a`): `nodegraphics` に `SocketStyle::outline_width` と共有の `NodeCanvasView`(カーソル中心ホイールズーム 0.25〜4.0、中ボタン / Space+左のパン、`F` = fit、`showScope()` = 未見の scope は fit・再訪は復元)、`frameplangraphics` の node を見出し帯 + GPU 計時行 + 出力行 + 入力行に、`framePlanSocketFacts()`(resource 種別 → `frame_plan.image / buffer / acceleration_structure / swapchain / history`、`graph_socket_styles.json` に 5 entry 追加)、ソケット間の辺配線、辺ラベルは tooltip へ、選択で無関係の辺を薄く、context menu「Fit view」、`frameplanwidget` と `graphcanvaswidget` は同じ view を使う。test: `devstudio_frameplan_graph_test` に 4 case 追加(3 段 / 型別ソケット / 辺の端点 = ソケット中心 / zoom・pan・fit)、対照 4 種(辺を node 矩形に戻す / `frame_plan.*` を表から消す / 未見 scope を fit しない / ソケット起点の drag を止める)で赤を実測。**変えた既存 assertion は全部 appearance**(quotient の drop 一覧に sub-item を追加 / 「shape 1 + label 1」→「shape 1 + label ≥1」×11 / 辺ラベル text → tooltip / WP318 drag test の label 期待を撤去 / Shift drag の request 数 1→2 はソケット起点の gesture が先に増えたため)。model / RPC / 位置 key / group / breadcrumb / 計時 / convex hull の assertion は不変。Frame Plan 50/50、fullscreen 26/26、非 GPU 全数 1678/1678。
 
+### Q-1b: 自動化面の入力の穴 —— ホイール、マウス移動、ボタン別ドラッグ、メニュー / ショートカット(利用者質問 2026-09-18「マウス操作・キーボード入力・ショートカットを表現できてる?」への答えから)
+
+**§4 規則 11 下段(Studio の automation のみ)。実装者: Claude(Opus)。Q-1 着地後、`<作業ディレクトリ>/n2` で。N-3 のズーム(ホイール)/ パン(中ボタン)のシナリオに必要。**
+
+#### 今日できること / できないこと
+- できる: `click{button, modifiers}`(左 / 右 / 中 + Ctrl / Shift / Alt / Meta)、`double_click`、`drag`(**左ボタンのみ** + modifiers、press → move → release)、`key{sequence}`(`QKeySequence` の portable text: `Return` / `Ctrl+S` / `F` / `Delete`)、`type{text}`
+- できない: **ホイール**(ズーム)/ **マウス移動だけ**(hover、tooltip)/ **中・右ボタンのドラッグ**(パン)/ **press と release を分けた保持**(ドラッグ中の状態を見る)/ **メニューの action を名前で起動**(QMenu の popup と QAction は objectName で引けない: 右クリック menu「Auto layout」「Fit view」、View menu「Theme」)/ ショートカットの**登録一覧**の取得
+
+#### 決定
+1. `wheel{name|point, delta, modifiers?}`(`QWheelEvent` を合成。delta は縦、正 = 前)/ `move{name|point}`(`QTest::mouseMove`)/ `drag` に `button?`(left | middle | right)/ `press{...}` `release{...}`(保持)。
+2. `action{name|text, menu?}`: `QAction::objectName` かメニュー文字列で `trigger()`(popup を開かずに直接。context menu の action には objectName を付ける: `pelican.graphCanvas.autoLayout` など)/ `menu_list{name?}`: menu bar と context menu の action 一覧(text / objectName / shortcut / enabled / checked)。**ショートカットの検査**は `key{sequence}` を widget に当てて `menu_list` の checked / 状態変化で確かめる形(実際のキー経路を通す)
+3. `list` の entry に `shortcut`(QAction / QAbstractButton の shortcut)を足す
+4. シナリオ 2 本: `canvas_zoom_pan`(N-3: wheel でズーム → `F` で fit → 中ボタン drag でパン、view の transform を `text`/専用 `view_state{name}` で読む)/ `menu_actions`(context menu の action を `action` で起動し、`menu_list` に shortcut が載る)。`view_state{name}` = QGraphicsView の scale / scroll を返す読み
+
+#### 受け入れ
+1. 各命令に unit(automation の command test、Qt offscreen で widget を作って合成 → 受け側の event 記録で確認)。対照: 命令を外すと `automation.unknown_command@1`
+2. `canvas_zoom_pan` と `menu_actions` が GPU lane で緑(N-3 着地後)。対照: N-3 のズームを無効化する変異で `view_state.scale` が 1 のまま赤
+3. 既存シナリオ 2 本と非 GPU 全数不変
+
+実装時の裁定(2026-09-18、`agent/n2`): `key` に `route: widget | window` を足した(既定 widget は Q-1 どおりで shortcut map に届かない。window route が人のキー経路 = QAction の shortcut を実際に鳴らす)。**Q-1 の穴を 1 つ直した**: pointer 系の event が `QAbstractScrollArea` の frame に投げられて捨てられていた(`click{name: <QGraphicsView>}` は無音で何もしなかった)→ 全 pointer 命令が `pointerReceiver()` で viewport に写す。`QTest::mouseMove` はボタン無しだと event を出さないので、`move` / `press` / `release` / `drag` は保持ボタン状態を持った `QMouseEvent` を自前で合成する(パンは `buttons()` を読むため)。`move` は OS カーソルを動かさないので `underMouse()` / tooltip は検査できない(記録)。context menu は popup ごとに stack-local `QMenu` を作るので action を名前で引けない(Frame Plan と Graph の「Fit view」「Add node…」は `action` の対象外。名前付き QAction に変えるのは N-4 の「Auto layout」と一緒に)。Qt offscreen test で `QApplication` より先に widget を作ると MSVC の modal dialog で CTest が timeout まで無音で止まる(記録)。
+
+完了記録(2026-09-18、`026268ee`): 命令 `wheel / move / press / release / drag{button} / action{name|text, menu?} / menu_list{name?, pattern?} / view_state{name}`、`list` に `shortcut`、`key` に `route`。menu bar / dock toggle / gizmo toolbar の QAction に objectName(`pelican.file.*` / `pelican.view.panels.*` / `pelican.gizmo.*`)。test: `devstudio_automation_input_test`(Qt offscreen、11 case / 115 assertions。対照: `wheel` を dispatch から外す変異で `automation.unknown_command@1` ×3)。シナリオ: `canvas_zoom_pan`(Frame Plan: wheel で 400% / 25% の clamp を production の zoom label で照合、middle drag でパン、`view_state`)/ `menu_actions`(`menu_list` の shortcut `Ctrl+S` / `Esc`、`action` で gizmo と dock toggle、disabled は `bad_request`)/ `graph_canvas_zoom_pan`(N-3 の Graph canvas: wheel → `scale` 増、middle drag → `center` 移動、`F` → fit)。対照: `FramePlanGraphicsView::wheelEvent` の scale を消す変異で `canvas_zoom_pan` step 6 が `scale 1 is not gt 1` で赤。非 GPU 全数 1686/1686。着地前に 5 シナリオを GPU lane で直列実行して緑を確認。
+
+着地前の実測(2026-09-18): 5 シナリオを GPU lane で直列実行。有効化した `graph_canvas_zoom_pan` が 1 度赤 = **N-3 のパンは scroll bar 経由で、内容が view に収まっていると動かない**(使い勝手の穴。N-4 で view transform の平行移動に直す)。シナリオは「2 notch ズームしてからパン」に並べ替えて緑。
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
