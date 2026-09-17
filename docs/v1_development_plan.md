@@ -141,7 +141,7 @@ v0 は機能の総数ではなく、**約束する制作体験**で切る。
 ## Studio 側(別 session pelican2-3e が所有、予定順)
 1. N-3 Frame Plan が共有の node 描画(heading + 型付き socket 行)を採用 + zoom / pan / fit(両 canvas)— 実装中(`<作業ディレクトリ>/n3_spec.md`) **→ 着地 `dd088c2a`**
 2. Q-1 Studio automation surface(`pelican_studio --automation <pipe>`: list/click/drag/type/key/text/wait/wait_engine/rpc/open_project/screenshot、driver `tools/studio_drive.py`、cmake test `studio_scenario_*`(GPU lane)、最初の scenario は graph_read / graph_edit_roundtrip)— 実装中(`<作業ディレクトリ>/q1_spec.md`)。利用者の裁定: GUI の検証は AI がこの面で行い、人は使い勝手だけを見る **→ 着地 `06829720`**(初回の実 GUI 往復で Enter の保存漏れを発見・修正。Opus が driver を回して緑 / 赤を判定できることを実演)。Q-1b(wheel / move / ボタン別 drag / action / menu_list / view_state)着地 `026268ee`
-3. N-5 Studio theme light/dark(StudioTheme JSON preset、View menu、QSettings、canvas は色を theme から)— N-3 の後(`<作業ディレクトリ>/n5_spec.md`)
+3. N-5 Studio theme light/dark(StudioTheme JSON preset、View menu、QSettings、canvas は色を theme から)— N-3 の後(`<作業ディレクトリ>/n5_spec.md`) **→ 着地 `43f032b1`**
 4. N-4 auto-layout(Sugiyama: longest-path layer、dummy node、barycenter、"Auto layout" menu、Qt 無し unit test で交差 / 重なりの指標)— N-3 の後(`<作業ディレクトリ>/n4_spec.md`)
 5. AG-3b 観測(任意 scope の値 = `get_graph_node_values`、Live toggle、`get_status.animation` の Timeline strip、scrub = `set_time` + `render_frame`、実 engine の e2e 装着→編集→観測→保存→再読込 を Q-1 の scenario で)(`<作業ディレクトリ>/ag3b_spec.md`)
 - backlog(未予定、利用者が決める): parameter_dependent な render.* op の palette form / seed constant の自動掃除 / 必須入力の disconnect UX / graph 編集の undo / definition の create・delete・copy(P-2b-2)/ Features dock の export・import UI(P-2a-3 の RPC)と package feature / node の text elision / Studio の exit crash(139)

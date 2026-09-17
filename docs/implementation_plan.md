@@ -24075,6 +24075,33 @@ Frame Plan と Graph の統合キャンバス / Frame Plan の操作変更 / 位
 
 着地前の実測(2026-09-18): 5 シナリオを GPU lane で直列実行。有効化した `graph_canvas_zoom_pan` が 1 度赤 = **N-3 のパンは scroll bar 経由で、内容が view に収まっていると動かない**(使い勝手の穴。N-4 で view transform の平行移動に直す)。シナリオは「2 notch ズームしてからパン」に並べ替えて緑。
 
+### N-5: Studio のテーマ —— ライト / ダークの切り替え(利用者指示 2026-09-18「ノードの色が黒いのにエディタが白い。ミスマッチなので切り替えが欲しい」)
+
+**§4 規則 11 下段(Studio 内。engine は触らない)。実装者: Claude(Opus)。N-3 の後(同じ描画 file)。**
+
+#### 前提
+- Studio の widget は Qt 既定(ライト)の palette。N-1b の node は Blender 風の暗い body(固定色)、Frame Plan は `sourceColor` の固定色、キャンバス背景は固定。テーマの概念が無い
+- 台帳 :5276 の表: パネル配置は「人の好み」で QSettings に名前付き preset。テーマも同じ区分(人の好み、project には書かない)
+
+#### 決定
+1. **`StudioTheme`**(`src/devstudio/view/studiotheme.{hpp,cpp}`): 1 か所の色表 `{name, palette(QPalette), canvas{background, grid, edge, edge_selected, node_body, node_border, heading_text, dim_text, pill_bg}, domain_tint{values, rendering, animation, instance, input, structural}, source_tint{project, feature, engine}}`。preset は **`light` / `dark`** の 2 つ(JSON 1 file `src/devstudio/resources/studio_themes.json`、増やすのに C++ を触らない)。ダークは Fusion style + 暗い QPalette、ライトは既定 palette + 明るい node body(見出し帯の tint は同じ hue で明度だけ変える)
+2. **切り替え**: View menu「Theme ▸ Light / Dark」+ 現在値を QSettings(`studio/theme`)に保持し起動時に適用。切り替えは再起動不要(`qApp->setPalette` + scene の再描画: `GraphCanvasScene` / `FramePlanGraphicsScene` は色を `StudioTheme::current()` から引き、`themeChanged` signal で repopulate)
+3. **ソケット色**: `graph_socket_styles.json` の fill はそのまま(型の識別色)、outline と未知型の白はテーマの `node_border` / `heading_text` に置き換える(暗い body に白縁、明るい body に黒縁)。値の帯・辺・grid もテーマから
+4. Q-1 のシナリオに `theme_light` / `theme_dark` のスクリーンショット 1 枚ずつを足す(AI の目視用)
+
+#### 受け入れ
+1. scene test: テーマを `dark` にして populate → node body / 背景 / 辺の色が theme 表の値、`light` で明るい値に変わる。対照: `themeChanged` で repopulate しない変異で色が古いまま
+2. widget test: View menu の切り替えで QSettings に書かれ、次回起動(test 内で MainWindow を作り直す)で同じテーマが当たる。対照: 保存を外す変異で既定に戻る
+3. Frame Plan / Graph / Inspector の既存 test 全数緑(色を直接 assert している箇所は一覧)
+4. 実物: 両テーマのスクリーンショットを Q-1 で撮り AI が確認、利用者が好みを見る
+
+#### やらないこと
+テーマの自作 UI / OS の設定への追随 / engine viewport の色(engine 側)。
+
+実装時の裁定(2026-09-18、`agent/n1`): 既定テーマは **`dark`**(表の `default`。dark のキャンバス値は着地前の色と byte 一致 → 既存の色 assertion は 1 つも変えていない)、`light` は palette 無し = Qt 既定 + 明るいキャンバス。listener は Qt signal ではなく素の関数表(scene test の target が AUTOMOC 無しで view を compile するため)。`list` / `click` が名前付き `QAction` に届くようにした(menu 項目は widget を持たない。Q-1b の `action` と重なるが `click` で自然に書ける)。`unknown` 型のソケット fill / outline は表から外しテーマの `heading_text` / `node_border` に。**穴**: Graph canvas の node rim は `node_border`、Frame Plan の rim は `heading_text`(N-3 の「同じ見た目」が pen まで届いていない。記録)/ Frame Plan のテーマ追随は scene test 無し / Frame Plan の warning・coverage・group・breadcrumb と logical edge の色、status label と inline editor の stylesheet はまだ固定色 / light の platform style 復元は `QStyleFactory::keys()` の名前一致という推定 / シナリオ `theme_switch` は開発者の実 QSettings を書く(最後に既定 `dark` に戻す。`--settings-dir` の redirect は後)。
+
+完了記録(2026-09-18、`43f032b1`): `studiotheme.{hpp,cpp}`(`StudioTheme{name, label, style, palette, canvas, domain_tint, source_tint}`、`currentStudioTheme` / `setCurrentStudioTheme` / listener / `applyStudioThemeToApplication` / QSettings `studio/theme`)、`studio_themes.json`(b_embed)、View ▸ Theme menu(`pelican.view.theme.<name>`、checkable・排他、起動時に保存値を適用)、Graph canvas と Frame Plan が body / rim / text / pill / edge / grid をテーマから読み切替で再描画、`NodeCanvasView::drawBackground` が両キャンバスの背景と grid。test: scene test「テーマの色で描き切替に追随」(対照: listener を外す変異で `scene_test.cpp:1287` が赤)/ widget test「View menu で切替 → QSettings → 次の窓が引き継ぐ」(対照: `storeStudioThemeName` を外す変異で `layoutpreset_test.cpp:523` が赤)/ 非 GPU 全数 1682/1682 / シナリオ `theme_switch`(dark と light のスクリーンショット)を含む 3 本緑。
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
