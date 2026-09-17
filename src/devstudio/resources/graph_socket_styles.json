@@ -7,8 +7,11 @@
     "named here -- adding one needs no C++. A module that declares display{}",
     "on its own type schema outranks this table; a type named nowhere falls",
     "through to the trait rules below and then to `unknown`.",
-    "Entries take shape (circle | diamond | square | hexagon), fill, outline",
-    "and size; anything they leave out keeps the `unknown` entry's value."
+    "Entries take shape (circle | diamond | square | hexagon), fill, outline,",
+    "outline_width and size; anything they leave out keeps the `unknown`",
+    "entry's value. The frame_plan.* ids are the Frame Plan's resource kinds:",
+    "the canvas names them itself, because a frame-plan resource carries a",
+    "kind rather than a semantic type id."
   ],
 
   "unknown": {"shape": "circle", "fill": "#f4f7fa", "outline": "#11161b"},
@@ -18,7 +21,16 @@
     "pelican.audio.voice@1": {"shape": "hexagon", "fill": "#4fb08a"},
     "pelican.event.playback_control@1": {"shape": "square", "fill": "#9c6bd0"},
     "pelican.pose@1": {"shape": "diamond", "fill": "#e08b3c"},
-    "pelican.rig@1": {"shape": "square", "fill": "#e08b3c"}
+    "pelican.rig@1": {"shape": "square", "fill": "#e08b3c"},
+
+    "frame_plan.image": {"shape": "circle", "fill": "#4a86c8"},
+    "frame_plan.buffer": {"shape": "square", "fill": "#4fb08a"},
+    "frame_plan.acceleration_structure": {"shape": "diamond",
+                                          "fill": "#c8a05a"},
+    "frame_plan.swapchain": {"shape": "hexagon", "fill": "#d2704a"},
+    "frame_plan.history": {"shape": "circle", "fill": "#8d72bd",
+                           "outline": "#e4dcf5", "outline_width": 3.0,
+                           "size": 12.0}
   },
 
   "prefixes": [

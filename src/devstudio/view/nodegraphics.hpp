@@ -2,12 +2,15 @@
 
 #include <QColor>
 #include <QGraphicsPathItem>
+#include <QGraphicsView>
 #include <QPainterPath>
+#include <QPoint>
 #include <QPointF>
 #include <QPolygonF>
 #include <QRectF>
 #include <QString>
 #include <QStringList>
+#include <QTransform>
 #include <Qt>
 
 #include <functional>
@@ -19,6 +22,9 @@
 
 class QGraphicsItem;
 class QGraphicsScene;
+class QKeyEvent;
+class QMouseEvent;
+class QWheelEvent;
 
 namespace PelicanStudio {
 
@@ -93,6 +99,9 @@ struct SocketStyle {
     QColor fill;
     QColor outline;
     qreal size = 11.0;
+    // A thick rim is the one variation left once shape and colour are spent.
+    // The Frame Plan spends it on "this read is last frame's value".
+    qreal outline_width = 1.1;
 };
 
 // Everything the one resolver is allowed to know about a port's type. The
@@ -159,5 +168,68 @@ struct NodeGraphEdgeKey {
 std::map<std::string, int, std::less<>> longestPathColumns(
     const std::vector<NodeGraphEdgeKey> &edges,
     const std::set<std::string, std::less<>> &visible);
+
+// One viewing behaviour for every node canvas in Studio. Both canvases draw
+// graphs bigger than the pane, so both need the same three gestures -- zoom at
+// the cursor, drag to pan, and one key that puts the whole thing back on
+// screen -- and neither should invent its own numbers for them.
+class NodeCanvasView : public QGraphicsView {
+  public:
+    // scale, and "minimum"/"maximum"/"" for the clamp the wheel just hit.
+    using ZoomObserver = std::function<void(qreal, const QString &)>;
+
+    // The Frame Plan shipped these limits (WP318) and its test fixes the upper
+    // one; the common graph adopts them rather than the two canvases zooming
+    // differently.
+    static constexpr qreal DefaultMinimumZoom = 0.25;
+    static constexpr qreal DefaultMaximumZoom = 4.0;
+
+    explicit NodeCanvasView(QGraphicsScene *scene, QWidget *parent = nullptr);
+
+    void setZoomObserver(ZoomObserver observer) {
+        zoom_observer_ = std::move(observer);
+    }
+
+    // Put the whole content on screen, within the zoom clamp.
+    void fitView();
+
+    // The canvas is now showing this scope. A scope seen for the first time
+    // (which includes the first draw after a project is opened) is fitted; one
+    // being returned to gets back the zoom and scroll it was left at.
+    void showScope(const QString &scope);
+
+    [[nodiscard]] qreal zoomScale() const { return transform().m11(); }
+    [[nodiscard]] bool panning() const noexcept { return panning_; }
+
+  protected:
+    void wheelEvent(QWheelEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
+    void keyReleaseEvent(QKeyEvent *event) override;
+
+  private:
+    struct ViewState {
+        QTransform transform;
+        int horizontal = 0;
+        int vertical = 0;
+    };
+
+    void applyZoom(qreal requested);
+    void publishZoom(qreal scale, const QString &boundary);
+    void rememberScope();
+
+    ZoomObserver zoom_observer_;
+    std::map<QString, ViewState> session_views_;
+    QString scope_;
+    bool scope_known_ = false;
+    bool panning_ = false;
+    bool space_held_ = false;
+    QPoint pan_origin_;
+    Qt::MouseButton pan_button_ = Qt::NoButton;
+    DragMode pan_previous_mode_ = QGraphicsView::NoDrag;
+    std::size_t fit_count_ = 0;
+};
 
 } // namespace PelicanStudio

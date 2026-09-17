@@ -77,6 +77,10 @@ TEST_CASE("Studio RPC preserves record values or refuses lossy integer transport
 #include <QGraphicsSimpleTextItem>
 #include <QGraphicsView>
 #include <QMenu>
+#include <QCursor>
+#include <QEnterEvent>
+#include <QMouseEvent>
+#include <QScrollBar>
 #include <QPainterPath>
 #include <QPen>
 #include <QLabel>
@@ -1611,8 +1615,14 @@ SceneItemSet quotientSceneItems(const SceneItemSet &expanded,
         return members.contains(name) ? group_name : name;
     };
     for (SceneItemIdentity item : expanded) {
+        // N-3: a node is a heading band over resource rows, and every piece of
+        // it carries the node's own name. Collapsing the node takes them all.
         if ((item.kind == FramePlanNodeItem ||
-             item.kind == FramePlanNodeLabelItem) &&
+             item.kind == FramePlanNodeLabelItem ||
+             item.kind == FramePlanNodeHeaderItem ||
+             item.kind == FramePlanNodeKindLabelItem ||
+             item.kind == FramePlanSocketItem ||
+             item.kind == FramePlanRowLabelItem) &&
             members.contains(item.name)) {
             continue;
         }
@@ -1660,6 +1670,27 @@ std::vector<QGraphicsItem *> namedShapesAndLabels(
     return result;
 }
 
+// N-3: an entity is no longer exactly one shape plus one label. A node is a
+// shape carrying a heading band, the name, the kind, and one labelled row per
+// resource -- all of them under the same FramePlanNameRole. What every caller
+// of the "== 2" assertion was actually fixing is unchanged and asserted here:
+// the entity is drawn exactly once as a top-level shape, and it carries
+// visible text. The check stays independent of FramePlanItemKindRole, so a
+// mutation that clears an item's kind still has to keep the shape and label.
+void requireDrawnOnce(QGraphicsScene &value, std::string_view name) {
+    std::size_t shapes = 0;
+    std::size_t labels = 0;
+    for (QGraphicsItem *item : namedShapesAndLabels(value, name)) {
+        if (dynamic_cast<QGraphicsSimpleTextItem *>(item) != nullptr) {
+            ++labels;
+        } else if (item->parentItem() == nullptr) {
+            ++shapes;
+        }
+    }
+    REQUIRE(shapes == 1);
+    REQUIRE(labels >= 1);
+}
+
 std::vector<QGraphicsItem *> edgeShapesAndLabels(
     QGraphicsScene &value, std::string_view from, std::string_view to) {
     const QString expected_from = QString::fromUtf8(
@@ -1681,18 +1712,24 @@ std::vector<QGraphicsItem *> edgeShapesAndLabels(
     return result;
 }
 
+// N-3 removed the label box painted in the middle of every edge, so the words
+// that distinguished one dependency from another now reach the user as the
+// edge's tooltip. The callers fix that the words differ, and that is read
+// where the words now are; that the LINE itself also differs is asserted at
+// the call site, on the pen.
 QString edgeVisibleText(QGraphicsScene &value, std::string_view from,
                         std::string_view to) {
-    QStringList labels;
+    QStringList summaries;
     for (QGraphicsItem *item : edgeShapesAndLabels(value, from, to)) {
-        if (const auto *text =
-                dynamic_cast<const QGraphicsSimpleTextItem *>(item);
-            text != nullptr && text->isVisible()) {
-            labels.push_back(text->text());
+        if (dynamic_cast<const QGraphicsPathItem *>(item) == nullptr ||
+            !item->isVisible()) {
+            continue;
         }
+        summaries.push_back(item->toolTip());
     }
-    REQUIRE(labels.size() == 1);
-    return labels.front();
+    REQUIRE(summaries.size() == 1);
+    REQUIRE_FALSE(summaries.front().isEmpty());
+    return summaries.front();
 }
 
 bool visibleSceneTextContains(QGraphicsScene &value,
@@ -1773,32 +1810,18 @@ EdgeSet transitiveReachability(const StringSet &nodes,
     return result;
 }
 
+// N-3 removed the label box drawn in the middle of every edge: both ends now
+// carry the resource name on their own rows, so the box said it a third time.
+// The dependency summary it printed is the edge's tooltip, which is where this
+// reads it -- the same string, from the same summary.
 QString edgeLabelText(QGraphicsScene &value, std::string_view from,
                       std::string_view to) {
-    QGraphicsItem *box = nullptr;
-    const QString expected_from = QString::fromUtf8(
-        from.data(), static_cast<qsizetype>(from.size()));
-    const QString expected_to = QString::fromUtf8(
-        to.data(), static_cast<qsizetype>(to.size()));
-    for (QGraphicsItem *candidate :
-         itemsOfKind(value, FramePlanEdgeLabelItem)) {
-        if (candidate->data(FramePlanFromNameRole).toString() ==
-                expected_from &&
-            candidate->data(FramePlanToNameRole).toString() ==
-                expected_to) {
-            REQUIRE(box == nullptr);
-            box = candidate;
-        }
-    }
-    REQUIRE(box != nullptr);
-    QStringList labels;
-    for (QGraphicsItem *child : box->childItems()) {
-        if (auto *text = dynamic_cast<QGraphicsSimpleTextItem *>(child)) {
-            labels.push_back(text->text());
-        }
-    }
-    REQUIRE(labels.size() == 1);
-    return labels.front();
+    REQUIRE(itemsOfKind(value, FramePlanEdgeLabelItem).empty());
+    QGraphicsItem *edge = edgeItem(value, from, to);
+    REQUIRE(edge != nullptr);
+    const QString summary = edge->toolTip();
+    REQUIRE_FALSE(summary.isEmpty());
+    return summary;
 }
 
 FramePlanNode groupingNode(std::string name, std::size_t order,
@@ -2876,7 +2899,7 @@ TEST_CASE(
     REQUIRE(itemsOfKind(without_scene, FramePlanGroupItem).empty());
     REQUIRE(itemsOfKind(without_scene, FramePlanGroupLabelItem).empty());
     for (const auto &member : members) {
-        REQUIRE(namedShapesAndLabels(without_scene, member).size() == 2);
+        requireDrawnOnce(without_scene, member);
     }
 
     // This conditional is a mutation sentinel. In production it is inert.
@@ -2925,7 +2948,7 @@ TEST_CASE(
     REQUIRE(itemsOfKind(with_scene, FramePlanGroupItem).empty());
     REQUIRE(itemsOfKind(with_scene, FramePlanGroupLabelItem).empty());
     for (const auto &member : members) {
-        REQUIRE(namedShapesAndLabels(with_scene, member).size() == 2);
+        requireDrawnOnce(with_scene, member);
     }
 
     QGraphicsItem *collapse_member =
@@ -3131,8 +3154,8 @@ TEST_CASE(
     REQUIRE(strings(singleGroupItem(logical)->data(
                 FramePlanMembersRole)) ==
             StringSet{"wp343_mixed_c", "wp343_mixed_d"});
-    REQUIRE(namedShapesAndLabels(logical, "wp343_mixed_a").size() == 2);
-    REQUIRE(namedShapesAndLabels(logical, "wp343_mixed_b").size() == 2);
+    requireDrawnOnce(logical, "wp343_mixed_a");
+    requireDrawnOnce(logical, "wp343_mixed_b");
 
     const auto warnings =
         itemsOfKind(logical, FramePlanGroupWarningItem);
@@ -3207,7 +3230,7 @@ TEST_CASE(
             StringSet{"alpha_peer", "beta_peer", "feature_peer",
                       "overlap"});
     for (const auto &name : sceneNodeNames(logical)) {
-        REQUIRE(namedShapesAndLabels(logical, name).size() == 2);
+        requireDrawnOnce(logical, name);
         REQUIRE(nodeItem(logical, name)
                     ->data(FramePlanGroupIdRole)
                     .toString()
@@ -3257,8 +3280,8 @@ TEST_CASE(
         inside_a->data(FramePlanGroupCollapsibleRole).toBool());
     REQUIRE_FALSE(logical.collapseGroup(group_id));
     REQUIRE(itemsOfKind(logical, FramePlanGroupItem).empty());
-    REQUIRE(namedShapesAndLabels(logical, "inside_a").size() == 2);
-    REQUIRE(namedShapesAndLabels(logical, "inside_b").size() == 2);
+    requireDrawnOnce(logical, "inside_a");
+    requireDrawnOnce(logical, "inside_b");
 
     const auto warnings =
         itemsOfKind(logical, FramePlanGroupWarningItem);
@@ -3355,7 +3378,7 @@ TEST_CASE(
     REQUIRE(logical_scene != nullptr);
 
     for (const auto &member : members) {
-        REQUIRE(namedShapesAndLabels(logical, member).size() == 2);
+        requireDrawnOnce(logical, member);
     }
 
     // These searches are deliberately independent of FramePlanItemKindRole.
@@ -3367,6 +3390,18 @@ TEST_CASE(
         logical, Wp347Producer, Wp347Ordered);
     REQUIRE_FALSE(barrier_items.empty());
     REQUIRE_FALSE(order_items.empty());
+    // The canvas distinction that replaced the two label boxes: an order-only
+    // dependency is a dashed grey line, a barrier is a solid coloured one.
+    auto *barrier_edge = dynamic_cast<QGraphicsPathItem *>(
+        edgeItem(logical, Wp347Producer, Wp347Consumer));
+    auto *order_edge = dynamic_cast<QGraphicsPathItem *>(
+        edgeItem(logical, Wp347Producer, Wp347Ordered));
+    REQUIRE(barrier_edge != nullptr);
+    REQUIRE(order_edge != nullptr);
+    REQUIRE(order_edge->pen().style() == Qt::DashLine);
+    REQUIRE(barrier_edge->pen().style() != Qt::DashLine);
+    REQUIRE(barrier_edge->pen().color() != order_edge->pen().color());
+
     const QString barrier_text = edgeVisibleText(
         logical, Wp347Producer, Wp347Consumer);
     const QString order_text = edgeVisibleText(
@@ -3902,14 +3937,7 @@ TEST_CASE(
     REQUIRE(itemsOfKind(logical, FramePlanGroupLabelItem).empty());
     REQUIRE(std::ranges::includes(expanded_node_names, members));
     for (const auto &member : members) {
-        const auto actual_items = namedShapesAndLabels(logical, member);
-        REQUIRE(actual_items.size() == 2);
-        REQUIRE(std::ranges::any_of(actual_items, [](QGraphicsItem *item) {
-            return dynamic_cast<QGraphicsPathItem *>(item) != nullptr;
-        }));
-        REQUIRE(std::ranges::any_of(actual_items, [](QGraphicsItem *item) {
-            return dynamic_cast<QGraphicsSimpleTextItem *>(item) != nullptr;
-        }));
+        requireDrawnOnce(logical, member);
     }
     QGraphicsItem *collapse_member =
         nodeItem(logical, "taa_resolve");
@@ -4483,8 +4511,8 @@ TEST_CASE(
     REQUIRE(strings(proposals.front()->data(
                 FramePlanConvexHullMissingMembersRole)) ==
             StringSet{"wp343_mixed_b"});
-    REQUIRE(namedShapesAndLabels(logical, "wp343_mixed_a").size() == 2);
-    REQUIRE(namedShapesAndLabels(logical, "wp343_mixed_c").size() == 2);
+    requireDrawnOnce(logical, "wp343_mixed_a");
+    requireDrawnOnce(logical, "wp343_mixed_c");
 
     REQUIRE(logical.acceptConvexHullProposal());
     REQUIRE(itemsOfKind(logical, FramePlanConvexHullProposalItem).empty());
@@ -4609,7 +4637,7 @@ TEST_CASE(
                 .isEmpty());
     REQUIRE(itemsOfKind(logical, FramePlanGroupItem).empty());
     REQUIRE(nodeItem(logical, "wp343_mixed_d") == nullptr);
-    REQUIRE(namedShapesAndLabels(logical, "wp343_mixed_c").size() == 2);
+    requireDrawnOnce(logical, "wp343_mixed_c");
 }
 
 TEST_CASE(
@@ -5315,7 +5343,8 @@ TEST_CASE(
     }
     auto *arrow_polygon = dynamic_cast<QGraphicsPolygonItem *>(arrow);
     REQUIRE(arrow_polygon != nullptr);
-    REQUIRE(label != nullptr);
+    // N-3: no edge label box is drawn any more.
+    REQUIRE(label == nullptr);
     QGraphicsItem *node_label = nodeLabelItem(logical, "HorizontalBlur_0");
     REQUIRE(node_label != nullptr);
 
@@ -5330,9 +5359,6 @@ TEST_CASE(
     REQUIRE(arrow_polygon->polygon() != old_arrow);
     REQUIRE(QLineF{arrow_polygon->mapToScene(arrow_polygon->polygon().first()),
                    edge->mapToScene(edge->path().currentPosition())}
-                .length() < 0.01);
-    REQUIRE(QLineF{label->sceneBoundingRect().center(),
-                   edge->mapToScene(edge->path().pointAtPercent(0.5))}
                 .length() < 0.01);
     REQUIRE(node_label->scenePos() != old_node_label);
 
@@ -5483,6 +5509,366 @@ TEST_CASE(
     REQUIRE(view.property("pelicanZoomBoundary").toString() ==
             QStringLiteral("minimum"));
     REQUIRE(zoom_status->text().contains(QStringLiteral("minimum")));
+}
+
+// ---------------------------------------------------------------------------
+// N-3: the Frame Plan draws the node the common graph draws -- a heading band
+// over an output section and an input section, with one typed socket per
+// resource -- and every edge ends on a socket centre.
+// ---------------------------------------------------------------------------
+
+TEST_CASE(
+    "N-3 frame plan pass nodes are a heading band over resource rows and their "
+    "edges end on socket centres",
+    "[devstudio][frame-plan][node-visual][n3]") {
+    (void)application();
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.receiveResult(QByteArray::fromStdString(
+        capturedRuntimeFramePlan().dump()));
+    targetSelector(widget).setCurrentText(
+        QStringLiteral("Bloom_Threshold_RT"));
+    subtreeDepth(widget).setValue(2);
+    QApplication::processEvents();
+    QGraphicsScene &logical = scene(widget);
+
+    const auto part = [&](const char *item_kind, std::string_view node,
+                          const QString &port, const QString &direction) {
+        const QString expected = QString::fromUtf8(
+            node.data(), static_cast<qsizetype>(node.size()));
+        std::vector<QGraphicsItem *> matches;
+        for (QGraphicsItem *item : itemsOfKind(logical, item_kind)) {
+            if (item->data(FramePlanNameRole).toString() != expected) continue;
+            if (!port.isNull() &&
+                item->data(FramePlanPortRole).toString() != port)
+                continue;
+            if (!direction.isNull() &&
+                item->data(FramePlanSocketDirectionRole).toString() !=
+                    direction)
+                continue;
+            matches.push_back(item);
+        }
+        INFO("node " << node << " part " << item_kind);
+        REQUIRE(matches.size() == 1);
+        return matches.front();
+    };
+
+    // HighLuminanceExtraction reads lit_color and writes Bloom_Threshold_RT,
+    // so the node is the band, the GPU-timing line, one output row and one
+    // input row -- three rows, not a fixed 64px box.
+    QGraphicsItem *node = nodeItem(logical, "HighLuminanceExtraction");
+    REQUIRE(node != nullptr);
+    auto *node_path = dynamic_cast<QGraphicsPathItem *>(node);
+    REQUIRE(node_path != nullptr);
+    const QRectF body = node_path->path().boundingRect();
+    REQUIRE(body.topLeft() == QPointF{0.0, 0.0});
+    REQUIRE(body.width() >= FramePlanNodeMinimumWidth);
+    REQUIRE(body.width() <= FramePlanNodeMaximumWidth);
+    REQUIRE(std::abs(body.height() -
+                     (FramePlanHeaderHeight + FramePlanSectionPadding +
+                      3.0 * FramePlanSocketRowHeight +
+                      FramePlanSectionPadding)) < 0.001);
+
+    // (a) the heading band: the source colour, the pass name in bold, the kind
+    QGraphicsItem *band =
+        part(FramePlanNodeHeaderItem, "HighLuminanceExtraction", {}, {});
+    auto *band_path = dynamic_cast<QGraphicsPathItem *>(band);
+    REQUIRE(band_path != nullptr);
+    REQUIRE(band->parentItem() == node);
+    const QRectF band_bounds = band_path->path().boundingRect();
+    REQUIRE(std::abs(band_bounds.height() - FramePlanHeaderHeight) < 0.001);
+    REQUIRE(std::abs(band_bounds.width() - body.width()) < 0.001);
+    REQUIRE(band_path->brush().color() ==
+            QColor{QStringLiteral("#3978a8")});
+    auto *heading = dynamic_cast<QGraphicsSimpleTextItem *>(
+        nodeLabelItem(logical, "HighLuminanceExtraction"));
+    REQUIRE(heading != nullptr);
+    REQUIRE(heading->parentItem() == band);
+    REQUIRE(heading->text() == QStringLiteral("HighLuminanceExtraction"));
+    REQUIRE(heading->font().bold());
+    auto *kind_text = dynamic_cast<QGraphicsSimpleTextItem *>(
+        part(FramePlanNodeKindLabelItem, "HighLuminanceExtraction", {}, {}));
+    REQUIRE(kind_text != nullptr);
+    REQUIRE(kind_text->text() == QStringLiteral("render"));
+    REQUIRE_FALSE(kind_text->font().bold());
+
+    // (b) the output row is the target the pass writes, socket on the right
+    auto *out_row = dynamic_cast<QGraphicsSimpleTextItem *>(
+        part(FramePlanRowLabelItem, "HighLuminanceExtraction",
+             QStringLiteral("Bloom_Threshold_RT"),
+             QStringLiteral("output")));
+    REQUIRE(out_row != nullptr);
+    REQUIRE(out_row->text().contains(QStringLiteral("Bloom_Threshold_RT")));
+    auto *out_socket = dynamic_cast<QGraphicsPathItem *>(
+        part(FramePlanSocketItem, "HighLuminanceExtraction",
+             QStringLiteral("Bloom_Threshold_RT"),
+             QStringLiteral("output")));
+    REQUIRE(out_socket != nullptr);
+    REQUIRE(std::abs(out_socket->pos().x() - body.width()) < 0.001);
+    // A render target is drawn as the table's blue circle.
+    REQUIRE(out_socket->path() ==
+            socketPath(SocketShape::circle, FramePlanSocketSize));
+    REQUIRE(out_socket->brush().color() ==
+            QColor{QStringLiteral("#4a86c8")});
+
+    // (c) the input row is the resource the pass reads, socket on the left
+    auto *in_socket = dynamic_cast<QGraphicsPathItem *>(
+        part(FramePlanSocketItem, "HighLuminanceExtraction",
+             QStringLiteral("lit_color"), QStringLiteral("input")));
+    REQUIRE(in_socket != nullptr);
+    REQUIRE(std::abs(in_socket->pos().x()) < 0.001);
+    REQUIRE(in_socket->pos().y() > out_socket->pos().y());
+    (void)part(FramePlanRowLabelItem, "HighLuminanceExtraction",
+               QStringLiteral("lit_color"), QStringLiteral("input"));
+
+    // (d) the edge leaves the output socket's centre and arrives at the input
+    // socket's centre -- not at the node's outline.
+    auto *edge = dynamic_cast<QGraphicsPathItem *>(edgeItem(
+        logical, "HighLuminanceExtraction", "HorizontalBlur_0"));
+    REQUIRE(edge != nullptr);
+    QGraphicsItem *downstream =
+        part(FramePlanSocketItem, "HorizontalBlur_0",
+             QStringLiteral("Bloom_Threshold_RT"), QStringLiteral("input"));
+    REQUIRE(edge->path().elementCount() > 0);
+    const QPointF start =
+        edge->mapToScene(QPointF{edge->path().elementAt(0)});
+    REQUIRE(QLineF{start, out_socket->sceneBoundingRect().center()}
+                .length() < 0.01);
+    REQUIRE(QLineF{edge->mapToScene(edge->path().currentPosition()),
+                   downstream->sceneBoundingRect().center()}
+                .length() < 0.01);
+    // The node outline is no longer an endpoint: the socket sits on a row, so
+    // the two answers really are different.
+    REQUIRE(QLineF{start, QPointF{node->sceneBoundingRect().right(),
+                                  node->sceneBoundingRect().center().y()}}
+                .length() > 1.0);
+
+    // Nothing draws an edge label any more; the summary is the edge's tooltip.
+    REQUIRE(itemsOfKind(logical, FramePlanEdgeLabelItem).empty());
+    REQUIRE_FALSE(edge->toolTip().isEmpty());
+}
+
+TEST_CASE(
+    "N-3 the frame plan socket shape follows the resource kind and the shipped "
+    "table is what answers",
+    "[devstudio][frame-plan][node-visual][socket-style][n3]") {
+    (void)application();
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.receiveResult(QByteArray::fromStdString(
+        capturedRuntimeFramePlan().dump()));
+    targetSelector(widget).setCurrentText(QStringLiteral("swapchain"));
+    subtreeDepth(widget).setValue(1);
+    QApplication::processEvents();
+    QGraphicsScene &logical = scene(widget);
+
+    const auto socket = [&](const QString &port, const QString &direction) {
+        std::vector<QGraphicsPathItem *> matches;
+        for (QGraphicsItem *item : itemsOfKind(logical, FramePlanSocketItem)) {
+            if (item->data(FramePlanNameRole).toString() !=
+                    QStringLiteral("output_transform") ||
+                item->data(FramePlanPortRole).toString() != port ||
+                item->data(FramePlanSocketDirectionRole).toString() !=
+                    direction)
+                continue;
+            matches.push_back(dynamic_cast<QGraphicsPathItem *>(item));
+        }
+        REQUIRE(matches.size() == 1);
+        REQUIRE(matches.front() != nullptr);
+        return matches.front();
+    };
+
+    // output_transform reads `display` (a render target) and writes
+    // `swapchain` (the frame target). Two kinds, two shapes.
+    QGraphicsPathItem *image = socket(QStringLiteral("display"),
+                                      QStringLiteral("input"));
+    QGraphicsPathItem *frame = socket(QStringLiteral("swapchain"),
+                                      QStringLiteral("output"));
+    REQUIRE(image->path() ==
+            socketPath(SocketShape::circle, FramePlanSocketSize));
+    REQUIRE(image->brush().color() == QColor{QStringLiteral("#4a86c8")});
+    REQUIRE(frame->path() ==
+            socketPath(SocketShape::hexagon, FramePlanSocketSize));
+    REQUIRE(frame->brush().color() == QColor{QStringLiteral("#d2704a")});
+    REQUIRE(frame->toolTip().contains(
+        QStringLiteral("frame_plan.swapchain")));
+
+    // The control: with the shipped default table emptied, no frame_plan.*
+    // entry can be answering, and every socket falls back to the white circle.
+    const auto redraw = [&] {
+        subtreeDepth(widget).setValue(2);
+        subtreeDepth(widget).setValue(1);
+        QApplication::processEvents();
+    };
+    setSocketStyleDefaults("{}");
+    redraw();
+    const auto sockets = itemsOfKind(logical, FramePlanSocketItem);
+    REQUIRE_FALSE(sockets.empty());
+    for (QGraphicsItem *item : sockets) {
+        auto *path = dynamic_cast<QGraphicsPathItem *>(item);
+        REQUIRE(path != nullptr);
+        REQUIRE(path->path() ==
+                socketPath(SocketShape::circle, FramePlanSocketSize));
+        REQUIRE(path->brush().color() == QColor{QStringLiteral("#f4f7fa")});
+    }
+    resetSocketStyleDefaults();
+    redraw();
+    REQUIRE(socket(QStringLiteral("swapchain"), QStringLiteral("output"))
+                ->path() ==
+            socketPath(SocketShape::hexagon, FramePlanSocketSize));
+}
+
+TEST_CASE(
+    "N-3 the shared canvas view zooms at the cursor, fits on F and pans with "
+    "the middle button",
+    "[devstudio][frame-plan][zoom][fit][n3]") {
+    (void)application();
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.resize(900, 640);
+    widget.show();
+    widget.receiveResult(QByteArray::fromStdString(
+        capturedRuntimeFramePlan().dump()));
+    targetSelector(widget).setCurrentText(
+        QStringLiteral("Bloom_Threshold_RT"));
+    subtreeDepth(widget).setValue(2);
+    QApplication::processEvents();
+    QGraphicsScene &logical = scene(widget);
+    QGraphicsView &view = logicalView(widget);
+    QWidget *const port = view.viewport();
+    REQUIRE(port != nullptr);
+    REQUIRE(port->isVisible());
+
+    // (a) the wheel changes the magnification, anchored at the cursor. That the
+    // anchored point really does stay still is measured on the shared view
+    // itself, below, where the scene rect cannot clamp the scroll.
+    const QPoint cursor = port->rect().center() + QPoint{70, 45};
+    REQUIRE(view.transformationAnchor() ==
+            QGraphicsView::AnchorUnderMouse);
+    const qreal before_scale = view.transform().m11();
+    QWheelEvent wheel{QPointF{cursor}, QPointF{cursor}, QPoint{},
+                      QPoint{0, 240}, Qt::NoButton, Qt::NoModifier,
+                      Qt::NoScrollPhase, false};
+    QApplication::sendEvent(port, &wheel);
+    QApplication::processEvents();
+    REQUIRE(view.transform().m11() > before_scale);
+
+    // (b) F fits: the whole content is inside what the viewport shows.
+    view.setFocus();
+    QTest::keyClick(&view, Qt::Key_F);
+    QApplication::processEvents();
+    const QRectF visible = view.mapToScene(port->rect()).boundingRect();
+    REQUIRE(view.transform().m11() >
+            NodeCanvasView::DefaultMinimumZoom + 0.000001);
+    REQUIRE(visible.contains(logical.itemsBoundingRect()));
+
+    // (c) the middle button pans, and moves nothing in the scene. Zoom in
+    // first: with everything fitted there is nothing left to scroll to, so a
+    // pan that worked would still look like a pan that did not.
+    for (int turn = 0; turn < 6; ++turn) {
+        QWheelEvent in{QPointF{cursor},  QPointF{cursor}, QPoint{},
+                       QPoint{0, 240},   Qt::NoButton,    Qt::NoModifier,
+                       Qt::NoScrollPhase, false};
+        QApplication::sendEvent(port, &in);
+    }
+    QApplication::processEvents();
+    REQUIRE(view.horizontalScrollBar()->maximum() >
+            view.horizontalScrollBar()->minimum());
+    // Centred first, so the scroll bars have room in both directions and a
+    // clamp at one end cannot look like a pan that did nothing.
+    view.centerOn(logical.itemsBoundingRect().center());
+    QApplication::processEvents();
+    const auto positions = sceneNodePositions(logical);
+    const QPoint pan_from = port->rect().center();
+    const QPoint pan_to = pan_from + QPoint{60, 40};
+    const QPointF centre_before = view.mapToScene(pan_from);
+    const auto send = [&](QEvent::Type type, const QPoint &at,
+                          Qt::MouseButton button, Qt::MouseButtons held) {
+        QMouseEvent event{type,
+                          QPointF{at},
+                          QPointF{at},
+                          port->mapToGlobal(QPointF{at}),
+                          button,
+                          held,
+                          Qt::NoModifier};
+        QApplication::sendEvent(port, &event);
+    };
+    send(QEvent::MouseButtonPress, pan_from, Qt::MiddleButton,
+         Qt::MiddleButton);
+    send(QEvent::MouseMove, pan_to, Qt::NoButton, Qt::MiddleButton);
+    send(QEvent::MouseButtonRelease, pan_to, Qt::MiddleButton,
+         Qt::NoButton);
+    QApplication::processEvents();
+    REQUIRE(sceneNodePositions(logical) == positions);
+    REQUIRE(QLineF{view.mapToScene(pan_from), centre_before}.length() > 1.0);
+}
+
+TEST_CASE(
+    "N-3 the shared canvas view fits a scope it has not shown before and "
+    "restores one it has",
+    "[devstudio][canvas-view][fit][scope][n3]") {
+    (void)application();
+    QGraphicsScene canvas;
+    // Small enough that fitting it stays inside the shared zoom clamp: the
+    // clamp is the clamp, and this test is about the fit, not the limit.
+    canvas.addRect(QRectF{0.0, 0.0, 800.0, 500.0});
+    NodeCanvasView view{&canvas};
+    view.resize(420, 320);
+    view.show();
+    QApplication::processEvents();
+
+    // The wheel magnifies, and it magnifies around the cursor: Qt's
+    // AnchorUnderMouse is what fixes the point under the pointer, and it is
+    // gated on a real pointer being inside the widget, which the offscreen
+    // platform cannot establish. The anchor itself is asserted instead of a
+    // pixel that would only be measuring the test harness.
+    canvas.setSceneRect(QRectF{-20000.0, -20000.0, 40000.0, 40000.0});
+    REQUIRE(view.transformationAnchor() == QGraphicsView::AnchorUnderMouse);
+    const QPoint cursor = view.viewport()->rect().center() + QPoint{80, 55};
+    const qreal before_wheel = view.transform().m11();
+    QWheelEvent wheel{QPointF{cursor},   QPointF{cursor}, QPoint{},
+                      QPoint{0, 240},    Qt::NoButton,    Qt::NoModifier,
+                      Qt::NoScrollPhase, false};
+    QApplication::sendEvent(view.viewport(), &wheel);
+    QApplication::processEvents();
+    REQUIRE(view.transform().m11() > before_wheel);
+    QWheelEvent out{QPointF{cursor},   QPointF{cursor}, QPoint{},
+                    QPoint{0, -240},   Qt::NoButton,    Qt::NoModifier,
+                    Qt::NoScrollPhase, false};
+    QApplication::sendEvent(view.viewport(), &out);
+    QApplication::processEvents();
+    REQUIRE(std::abs(view.transform().m11() - before_wheel) < 0.000001);
+    canvas.setSceneRect(QRectF{});
+
+    view.showScope(QStringLiteral("root"));
+    const QRectF root_visible =
+        view.mapToScene(view.viewport()->rect()).boundingRect();
+    REQUIRE(root_visible.contains(canvas.itemsBoundingRect()));
+    const qreal root_scale = view.transform().m11();
+    REQUIRE(view.property("pelicanFitCount").toULongLong() == 1);
+
+    // A different scope, whose content is nowhere near the previous one: this
+    // is the control for the fit. Without it the view keeps looking where it
+    // was, and the visible rect does not even intersect the new content.
+    canvas.clear();
+    canvas.addRect(QRectF{6000.0, 5000.0, 300.0, 220.0});
+    canvas.setSceneRect(canvas.itemsBoundingRect().adjusted(-4000.0, -4000.0,
+                                                            30.0, 30.0));
+    QApplication::processEvents();
+    const QRectF unfitted =
+        view.mapToScene(view.viewport()->rect()).boundingRect();
+    REQUIRE_FALSE(unfitted.intersects(canvas.itemsBoundingRect()));
+    view.showScope(QStringLiteral("inner"));
+    const QRectF inner_visible =
+        view.mapToScene(view.viewport()->rect()).boundingRect();
+    REQUIRE(inner_visible.contains(canvas.itemsBoundingRect()));
+    REQUIRE(view.property("pelicanFitCount").toULongLong() == 2);
+
+    // Coming back to a scope the session has already shown restores the zoom
+    // it was left at rather than fitting again.
+    view.showScope(QStringLiteral("root"));
+    REQUIRE(std::abs(view.transform().m11() - root_scale) < 0.000001);
+    REQUIRE(view.property("pelicanFitCount").toULongLong() == 2);
 }
 
 TEST_CASE(
@@ -6407,15 +6793,46 @@ TEST_CASE("Frame Plan Shift drag requests a connection without moving nodes and 
     CHECK(requests == 1);
     CHECK(first->pos() == firstPosition);
     CHECK(second->pos() == secondPosition);
+
+    // N-3: a socket is part of the node it hangs on, so starting the same
+    // gesture on the output socket rather than on the body does the same
+    // thing. The socket is what the user will aim at now that there is one.
+    QGraphicsItem *socket = nullptr;
+    for (QGraphicsItem *item : itemsOfKind(logical, FramePlanSocketItem)) {
+        if (item->data(FramePlanNameRole).toString() ==
+                QStringLiteral("wp343_mixed_a") &&
+            item->data(FramePlanSocketDirectionRole).toString() ==
+                QStringLiteral("output")) {
+            socket = item;
+            break;
+        }
+    }
+    REQUIRE(socket != nullptr);
+    REQUIRE(socket->parentItem() == first);
+    const QPoint from_socket =
+        view.mapFromScene(socket->sceneBoundingRect().center());
+    REQUIRE(view.viewport()->rect().contains(from_socket));
+    REQUIRE(logical.itemAt(socket->sceneBoundingRect().center(),
+                           view.transform()) == socket);
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::ShiftModifier,
+                      from_socket);
+    QTest::mouseMove(view.viewport(), (from_socket + end) / 2, 1);
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::ShiftModifier,
+                        end);
+    QApplication::processEvents();
+    CHECK(requests == 2);
+    CHECK(first->pos() == firstPosition);
+    CHECK(second->pos() == secondPosition);
+
     gesture(end, true);
-    CHECK(requests == 1);
+    CHECK(requests == 2);
     gesture(start, false);
-    CHECK(requests == 1);
+    CHECK(requests == 2);
     QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::ShiftModifier, end);
     QTest::mouseMove(view.viewport(), (start + end) / 2, 1);
     QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::ShiftModifier, start);
     QApplication::processEvents();
-    CHECK(requests == 1); // A raster pass is not an editable task destination.
+    CHECK(requests == 2); // A raster pass is not an editable task destination.
     int pass_requests = 0;
     widget.setPresetPassConnectionAction([&](const QString &graph, const QString &pass, const QStringList &outputs) {
         CHECK(graph.toStdString() == wire.at("graph").get<std::string>());

@@ -1,6 +1,7 @@
 #include "graphcanvaswidget.hpp"
 
 #include <QAbstractSpinBox>
+#include <QAction>
 #include <QBrush>
 #include <QByteArray>
 #include <QCheckBox>
@@ -23,6 +24,8 @@
 #include <QHBoxLayout>
 #include <QHash>
 #include <QKeyEvent>
+#include <QKeySequence>
+#include <QMenu>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -785,6 +788,7 @@ void GraphCanvasScene::repopulate() {
     setProperty("pelicanGraphNotice", qtext(model_->notice().message));
     rebuilding_ = false;
     applySceneRectNow();
+    if (repopulated) repopulated();
 }
 
 void GraphCanvasScene::applyEdgeEmphasis() {
@@ -1016,12 +1020,40 @@ void GraphCanvasScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
 
 void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     context_position_ = event->scenePos();
+    QMenu menu;
+    // Both handlers run from the event loop rather than from inside the menu's
+    // own: the palette is a modal dialog, and opening one while the menu is
+    // still dispatching nests two modal loops.
     if (addNodeRequested) {
-        event->accept();
-        addNodeRequested(context_position_);
+        QAction *add = menu.addAction(QObject::tr("Add node..."));
+        QObject::connect(add, &QAction::triggered, this, [this] {
+            const QPointF at = context_position_;
+            QMetaObject::invokeMethod(
+                this,
+                [this, at] {
+                    if (addNodeRequested) addNodeRequested(at);
+                },
+                Qt::QueuedConnection);
+        });
+    }
+    if (fitViewRequested) {
+        QAction *fit = menu.addAction(QObject::tr("Fit view"));
+        fit->setShortcut(QKeySequence{Qt::Key_F});
+        QObject::connect(fit, &QAction::triggered, this, [this] {
+            QMetaObject::invokeMethod(
+                this,
+                [this] {
+                    if (fitViewRequested) fitViewRequested();
+                },
+                Qt::QueuedConnection);
+        });
+    }
+    if (menu.actions().isEmpty()) {
+        QGraphicsScene::contextMenuEvent(event);
         return;
     }
-    QGraphicsScene::contextMenuEvent(event);
+    event->accept();
+    menu.exec(event->screenPos());
 }
 
 // One editor at a time, over the thing it edits. It owns nothing the scene
@@ -1394,7 +1426,7 @@ struct GraphCanvasWidget::Impl {
     GraphCanvasReadCapability graph;
     GraphCanvasModel model;
     GraphCanvasScene *scene = nullptr;
-    QGraphicsView *canvas = nullptr;
+    NodeCanvasView *canvas = nullptr;
     QComboBox *scopes = nullptr;
     QComboBox *value_instances = nullptr;
     QPushButton *refresh = nullptr;
@@ -1439,7 +1471,7 @@ struct GraphCanvasWidget::Impl {
 
         auto *splitter = new QSplitter(Qt::Horizontal, &view);
         scene = new GraphCanvasScene(&view);
-        canvas = new QGraphicsView(scene, splitter);
+        canvas = new NodeCanvasView(scene, splitter);
         canvas->setObjectName(QStringLiteral("pelican.graphCanvasView"));
         canvas->setDragMode(QGraphicsView::RubberBandDrag);
         canvas->setRenderHint(QPainter::Antialiasing, true);
@@ -1486,6 +1518,13 @@ struct GraphCanvasWidget::Impl {
         // thing left to do here is post what the model already built.
         scene->editSubmitted = [this] { dispatch(); };
         scene->addNodeRequested = [this](const QPointF &) { openPalette(); };
+        scene->fitViewRequested = [this] { canvas->fitView(); };
+        // A scope shown for the first time -- which includes the first draw
+        // after a document arrives -- is fitted; one being returned to keeps
+        // the zoom and scroll it was left at.
+        scene->repopulated = [this] {
+            canvas->showScope(qtext(model.currentScope()));
+        };
 
         QObject::connect(refresh, &QPushButton::clicked, &view, [this] {
             model.refresh();

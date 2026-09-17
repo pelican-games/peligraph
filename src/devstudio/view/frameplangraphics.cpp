@@ -12,6 +12,7 @@
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsSimpleTextItem>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QLineF>
 #include <QMenu>
 #include <QMetaObject>
@@ -38,8 +39,6 @@
 namespace PelicanStudio {
 namespace {
 
-constexpr qreal NodeWidth = NodeGraphNodeWidth;
-constexpr qreal NodeHeight = NodeGraphNodeHeight;
 constexpr qreal GroupWidth = 260.0;
 constexpr qreal GroupHeight = 96.0;
 constexpr qreal BoundaryStubWidth = 210.0;
@@ -47,8 +46,6 @@ constexpr qreal BoundaryStubHeight = 54.0;
 constexpr qreal HorizontalGap = NodeGraphHorizontalGap;
 constexpr qreal VerticalGap = NodeGraphVerticalGap;
 constexpr qreal StaggerOffset = NodeGraphStaggerOffset;
-constexpr qreal EdgeLabelHeight = NodeGraphEdgeLabelHeight;
-constexpr qreal EdgeLabelMinimumWidth = NodeGraphEdgeLabelMinimumWidth;
 constexpr qreal GroupWarningWidth = 680.0;
 constexpr qreal GroupWarningHeight = 54.0;
 constexpr qreal BreadcrumbHeight = NodeGraphBreadcrumbHeight;
@@ -218,8 +215,86 @@ const NodeGraphKinds &framePlanKinds() {
                     QString::fromLatin1(FramePlanBoundaryStubItem)},
         QString::fromLatin1(FramePlanEdgeItem),
         QString::fromLatin1(FramePlanEdgeArrowItem),
-        QString::fromLatin1(FramePlanEdgeLabelItem)};
+        // The edge labels are gone (N-3): the node rows name both ends.
+        QString{}};
     return kinds;
+}
+
+QGraphicsItem *findFramePlanSocket(QGraphicsScene &scene, const QString &graph,
+                                   const QString &node,
+                                   const QString &resource,
+                                   const QString &direction) {
+    for (QGraphicsItem *item : scene.items()) {
+        if (item->data(FramePlanItemKindRole).toString() !=
+                QLatin1String{FramePlanSocketItem} ||
+            item->data(FramePlanGraphRole).toString() != graph ||
+            item->data(FramePlanNameRole).toString() != node ||
+            item->data(FramePlanPortRole).toString() != resource ||
+            item->data(FramePlanSocketDirectionRole).toString() != direction)
+            continue;
+        return item;
+    }
+    return nullptr;
+}
+
+// An edge runs socket centre to socket centre, for the resource the bundle is
+// about. A bundle whose ends draw no matching socket -- a collapsed group, a
+// boundary stub, an ordering dependency that names no resource -- falls back
+// to the node boxes, so a missing socket degrades the line rather than losing
+// it.
+void routeFramePlanBundle(QGraphicsScene &scene, QGraphicsPathItem &edge) {
+    const QString graph = edge.data(FramePlanGraphRole).toString();
+    const QString from_name = edge.data(FramePlanFromNameRole).toString();
+    const QString to_name = edge.data(FramePlanToNameRole).toString();
+    QGraphicsItem *from =
+        findNodeItem(scene, framePlanKinds(), graph, from_name);
+    QGraphicsItem *to = findNodeItem(scene, framePlanKinds(), graph, to_name);
+    if (from == nullptr || to == nullptr) {
+        return;
+    }
+
+    QGraphicsItem *from_socket = nullptr;
+    QGraphicsItem *to_socket = nullptr;
+    for (const QString &resource :
+         edge.data(FramePlanResourcesRole).toStringList()) {
+        QGraphicsItem *out = findFramePlanSocket(
+            scene, graph, from_name, resource, QStringLiteral("output"));
+        QGraphicsItem *in = findFramePlanSocket(
+            scene, graph, to_name, resource, QStringLiteral("input"));
+        if (out != nullptr && in != nullptr) {
+            from_socket = out;
+            to_socket = in;
+            break;
+        }
+    }
+
+    const CurveGeometry geometry =
+        from_socket != nullptr && to_socket != nullptr
+            ? curveGeometryBetween(from_socket->sceneBoundingRect().center(),
+                                   to_socket->sceneBoundingRect().center())
+            : curveGeometry(from->sceneBoundingRect(),
+                            to->sceneBoundingRect());
+    edge.setPath(geometry.path);
+    if (auto *arrow = dynamic_cast<QGraphicsPolygonItem *>(
+            findEndpointArtifact(scene, framePlanKinds().arrow, graph,
+                                 from_name, to_name)))
+        arrow->setPolygon(geometry.arrow);
+}
+
+void rerouteFramePlanBundles(QGraphicsScene &scene, const std::string &graph,
+                             const std::string &node) {
+    const QString expected_graph = qtext(graph);
+    const QString expected_node = qtext(node);
+    for (QGraphicsItem *item : scene.items()) {
+        if (item->data(FramePlanItemKindRole).toString() !=
+                QLatin1String{FramePlanEdgeItem} ||
+            item->data(FramePlanGraphRole).toString() != expected_graph ||
+            (item->data(FramePlanFromNameRole).toString() != expected_node &&
+             item->data(FramePlanToNameRole).toString() != expected_node))
+            continue;
+        if (auto *edge = dynamic_cast<QGraphicsPathItem *>(item))
+            routeFramePlanBundle(scene, *edge);
+    }
 }
 
 bool isAnchor(const FramePlanNode &node) {
@@ -922,9 +997,105 @@ std::set<std::string, std::less<>> subtreeNodeNames(
     return visible;
 }
 
+QFont framePlanHeadingFont() {
+    QFont font;
+    font.setBold(true);
+    return font;
+}
+
+QFont framePlanRowFont() {
+    QFont font;
+    font.setPointSizeF(font.pointSizeF() - 0.5);
+    return font;
+}
+
+// One line of a node's output or input section: the resource the pass writes
+// or reads, and the socket its edges attach to.
+struct DrawnRow {
+    QString resource;
+    QString type;
+    SocketStyle style;
+    bool history = false;
+};
+
+struct NodeBodyLayout {
+    qreal width = FramePlanNodeMinimumWidth;
+    qreal height = FramePlanHeaderHeight;
+    std::vector<DrawnRow> outputs;
+    std::vector<DrawnRow> inputs;
+};
+
+DrawnRow framePlanRow(const FramePlanModel &model,
+                      const std::string &resource, bool history) {
+    const SocketTypeFacts facts =
+        framePlanSocketFacts(model, resource, history);
+    return DrawnRow{qtext(resource), qtext(facts.type),
+                    socketStyleFor(facts), history};
+}
+
+NodeBodyLayout nodeBodyLayout(const FramePlanModel &model,
+                              const FramePlanNode &node) {
+    NodeBodyLayout layout;
+    // Sorted, not in declaration order: WP318 fixes that the scene ignores the
+    // order of every input array, and a row's y position is scene geometry.
+    std::vector<std::string> written{node.writes.begin(), node.writes.end()};
+    std::ranges::sort(written);
+    for (const auto &resource : written)
+        layout.outputs.push_back(framePlanRow(model, resource, false));
+    std::vector<std::string> read{node.reads.begin(), node.reads.end()};
+    std::ranges::sort(read);
+    for (const auto &resource : read)
+        layout.inputs.push_back(framePlanRow(model, resource, false));
+    std::vector<std::string> history{node.history_reads.begin(),
+                                     node.history_reads.end()};
+    std::ranges::sort(history);
+    for (const auto &resource : history)
+        layout.inputs.push_back(framePlanRow(model, resource, true));
+
+    const QFontMetricsF heading_metrics{framePlanHeadingFont()};
+    const QFontMetricsF row_metrics{framePlanRowFont()};
+    const QString heading = qtext(node.name);
+    const QString kind = qtext(node.kind);
+    layout.width = std::max<qreal>(
+        FramePlanNodeMinimumWidth,
+        14.0 + heading_metrics.horizontalAdvance(heading) + 14.0 +
+            row_metrics.horizontalAdvance(kind) + 12.0);
+    const auto widen = [&](const DrawnRow &row) {
+        layout.width = std::max<qreal>(
+            layout.width, row_metrics.horizontalAdvance(row.resource) + 40.0);
+    };
+    for (const auto &row : layout.outputs) widen(row);
+    for (const auto &row : layout.inputs) widen(row);
+    layout.width = std::min(layout.width, FramePlanNodeMaximumWidth);
+
+    const auto rows = static_cast<qreal>(layout.outputs.size() +
+                                         layout.inputs.size());
+    // The GPU-timing line keeps its own row: it is published for every node,
+    // including an anchor that has no resource of its own.
+    layout.height = FramePlanHeaderHeight + FramePlanSectionPadding +
+                    FramePlanSocketRowHeight +
+                    rows * FramePlanSocketRowHeight + FramePlanSectionPadding;
+    return layout;
+}
+
+// The heading band shares the node's rounded top corners and squares off where
+// the socket sections begin.
+QPainterPath framePlanHeaderPath(qreal width) {
+    QPainterPath path;
+    const qreal radius = FramePlanNodeCornerRadius;
+    path.moveTo(0.0, FramePlanHeaderHeight);
+    path.lineTo(0.0, radius);
+    path.quadTo(0.0, 0.0, radius, 0.0);
+    path.lineTo(width - radius, 0.0);
+    path.quadTo(width, 0.0, width, radius);
+    path.lineTo(width, FramePlanHeaderHeight);
+    path.closeSubpath();
+    return path;
+}
+
 void applyGpuTimingLabel(QGraphicsSimpleTextItem &label,
                          const FramePlanGpuTimingSnapshot &snapshot,
-                         std::string_view node_name, bool anchor) {
+                         std::string_view node_name, const QPointF &position) {
     label.setData(FramePlanGpuTimingBodyMsRole, QVariant{});
     label.setData(FramePlanGpuTimingBarriersMsRole, QVariant{});
     label.setData(FramePlanGpuTimingSampleCountRole, QVariant{});
@@ -991,35 +1162,122 @@ void applyGpuTimingLabel(QGraphicsSimpleTextItem &label,
     label.setData(FramePlanGpuTimingStateRole, state);
     label.setText(text);
     label.setToolTip(text);
-    const QRectF bounds = label.boundingRect();
-    label.setPos(anchor ? 43.0 : (NodeWidth - bounds.width()) / 2.0,
-                 34.0);
+    label.setPos(position);
 }
 
-void addNodeLabel(QGraphicsPathItem &item, const FramePlanNode &node,
-                  const std::string &graph,
-                  const FramePlanGpuTimingSnapshot &gpu_timing) {
-    auto *label = new QGraphicsSimpleTextItem(qtext(node.name), &item);
+// The node the user reads: a heading band carrying the pass name and its kind,
+// then one line per written target and one per read resource, each with the
+// socket its edges attach to. Shape and colour of the socket are the resource's
+// kind, resolved by the one shared resolver.
+void addNodeBody(QGraphicsPathItem &item, const FramePlanNode &node,
+                 const NodeBodyLayout &layout, const std::string &graph,
+                 const QColor &heading_color,
+                 const FramePlanGpuTimingSnapshot &gpu_timing) {
+    const QFont heading_font = framePlanHeadingFont();
+    const QFont row_font = framePlanRowFont();
+    const QFontMetricsF heading_metrics{heading_font};
+    const QFontMetricsF row_metrics{row_font};
+    const QString node_name = qtext(node.name);
+
+    const auto tag = [&](QGraphicsItem *child, const char *kind) {
+        child->setData(FramePlanItemKindRole, QString::fromLatin1(kind));
+        child->setData(FramePlanGraphRole, qtext(graph));
+        child->setData(FramePlanNameRole, node_name);
+        // Everything inside the node is decoration: a press on it must reach
+        // the node itself, which is what drags and selects.
+        child->setAcceptedMouseButtons(Qt::NoButton);
+    };
+
+    auto *band =
+        new QGraphicsPathItem(framePlanHeaderPath(layout.width), &item);
+    band->setBrush(heading_color);
+    band->setPen(Qt::NoPen);
+    tag(band, FramePlanNodeHeaderItem);
+
+    auto *label = new QGraphicsSimpleTextItem(node_name, band);
+    label->setFont(heading_font);
     label->setBrush(QColor{QStringLiteral("#f7f9fb")});
-    QFont font = label->font();
-    font.setBold(true);
-    label->setFont(font);
-    const QRectF bounds = label->boundingRect();
-    if (isAnchor(node)) {
-        label->setPos(43.0, 7.0);
-    } else {
-        label->setPos((NodeWidth - bounds.width()) / 2.0,
-                      7.0);
-    }
+    label->setPos(14.0,
+                  (FramePlanHeaderHeight - heading_metrics.height()) / 2.0);
     annotateIdentity(*label, FramePlanNodeLabelItem, graph, node.name);
+    label->setAcceptedMouseButtons(Qt::NoButton);
+
+    // The kind stays visible beside the name: an anchor now looks like every
+    // other node, so the word is the only thing that says what it is.
+    const QString kind_text = qtext(node.kind);
+    auto *kind = new QGraphicsSimpleTextItem(kind_text, band);
+    kind->setFont(row_font);
+    kind->setBrush(QColor{QStringLiteral("#dbe6f0")});
+    kind->setOpacity(0.78);
+    kind->setPos(layout.width - 12.0 -
+                     row_metrics.horizontalAdvance(kind_text),
+                 (FramePlanHeaderHeight - row_metrics.height()) / 2.0);
+    tag(kind, FramePlanNodeKindLabelItem);
 
     auto *timing = new QGraphicsSimpleTextItem(&item);
     timing->setBrush(QColor{QStringLiteral("#d6e8b5")});
     QFont timing_font = timing->font();
     timing_font.setPointSizeF(8.0);
     timing->setFont(timing_font);
-    timing->setData(FramePlanGpuTimingNodeNameRole, qtext(node.name));
-    applyGpuTimingLabel(*timing, gpu_timing, node.name, isAnchor(node));
+    timing->setData(FramePlanGpuTimingNodeNameRole, node_name);
+    timing->setAcceptedMouseButtons(Qt::NoButton);
+    applyGpuTimingLabel(
+        *timing, gpu_timing, node.name,
+        QPointF{14.0, FramePlanHeaderHeight + FramePlanSectionPadding + 2.0});
+
+    const auto socket = [&](const DrawnRow &row, const QPointF &centre,
+                            const char *direction) {
+        auto *dot = new QGraphicsPathItem(
+            socketPath(row.style.shape, row.style.size), &item);
+        dot->setPos(centre);
+        dot->setZValue(1.0);
+        dot->setBrush(row.style.fill);
+        dot->setPen(QPen{row.style.outline, row.style.outline_width});
+        dot->setToolTip(row.type.isEmpty()
+                            ? QStringLiteral("%1 (kind not declared)")
+                                  .arg(row.resource)
+                            : QStringLiteral("%1 : %2")
+                                  .arg(row.resource, row.type));
+        tag(dot, FramePlanSocketItem);
+        dot->setData(FramePlanPortRole, row.resource);
+        dot->setData(FramePlanSocketDirectionRole,
+                     QString::fromLatin1(direction));
+    };
+
+    qreal cursor_y = FramePlanHeaderHeight + FramePlanSectionPadding +
+                     FramePlanSocketRowHeight;
+    for (const auto &row : layout.outputs) {
+        const qreal centre_y = cursor_y + FramePlanSocketRowHeight / 2.0;
+        const QString text = row_metrics.elidedText(
+            row.resource, Qt::ElideMiddle, layout.width - 30.0);
+        auto *name = new QGraphicsSimpleTextItem(text, &item);
+        name->setFont(row_font);
+        name->setBrush(QColor{QStringLiteral("#e4ecf3")});
+        name->setPos(layout.width - 14.0 - row_metrics.horizontalAdvance(text),
+                     centre_y - row_metrics.height() / 2.0);
+        tag(name, FramePlanRowLabelItem);
+        name->setData(FramePlanPortRole, row.resource);
+        name->setData(FramePlanSocketDirectionRole,
+                      QStringLiteral("output"));
+        socket(row, QPointF{layout.width, centre_y}, "output");
+        cursor_y += FramePlanSocketRowHeight;
+    }
+    for (const auto &row : layout.inputs) {
+        const qreal centre_y = cursor_y + FramePlanSocketRowHeight / 2.0;
+        const QString text = row_metrics.elidedText(
+            row.history ? QStringLiteral("%1 (history)").arg(row.resource)
+                        : row.resource,
+            Qt::ElideMiddle, layout.width - 30.0);
+        auto *name = new QGraphicsSimpleTextItem(text, &item);
+        name->setFont(row_font);
+        name->setBrush(QColor{QStringLiteral("#c6d3de")});
+        name->setPos(14.0, centre_y - row_metrics.height() / 2.0);
+        tag(name, FramePlanRowLabelItem);
+        name->setData(FramePlanPortRole, row.resource);
+        name->setData(FramePlanSocketDirectionRole, QStringLiteral("input"));
+        socket(row, QPointF{0.0, centre_y}, "input");
+        cursor_y += FramePlanSocketRowHeight;
+    }
 }
 
 QGraphicsSimpleTextItem *addCenteredLabel(QGraphicsPathItem &item,
@@ -1458,6 +1716,41 @@ PhysicalOverlaySummary addPhysicalOverlay(
 
 } // namespace
 
+SocketTypeFacts framePlanSocketFacts(const FramePlanModel &model,
+                                     const std::string &resource,
+                                     bool history) {
+    SocketTypeFacts facts;
+    // A history read is a different thing from the resource it names: it is
+    // last frame's copy. The shape says so before the row text does.
+    if (history) {
+        facts.type = "frame_plan.history";
+        return facts;
+    }
+    const auto found = std::ranges::find(model.resources, resource,
+                                         &FramePlanResource::name);
+    // A resource the plan never declared is a state to draw, not one to guess
+    // at: an empty type falls through to the table's `unknown` entry.
+    if (found == model.resources.end()) return facts;
+    if (found->usage)
+        for (const auto &usage : *found->usage)
+            if (usage.find("ACCELERATION_STRUCTURE") !=
+                    std::string::npos ||
+                usage.find("acceleration_structure") !=
+                    std::string::npos) {
+                facts.type = "frame_plan.acceleration_structure";
+                return facts;
+            }
+    if (found->kind == "buffer") {
+        facts.type = "frame_plan.buffer";
+    } else if (found->kind == "frame_target") {
+        // The frame target is the swapchain image the frame ends on.
+        facts.type = "frame_plan.swapchain";
+    } else if (found->kind == "render_target") {
+        facts.type = "frame_plan.image";
+    }
+    return facts;
+}
+
 FramePlanGraphicsScene::FramePlanGraphicsScene(QObject *parent)
     : QGraphicsScene{parent} {
     setItemIndexMethod(QGraphicsScene::NoIndex);
@@ -1533,13 +1826,11 @@ void FramePlanGraphicsScene::setGpuTiming(
         if (label == nullptr) {
             continue;
         }
-        const bool anchor =
-            label->parentItem() != nullptr &&
-            label->parentItem()->data(FramePlanAnchorRole).toBool();
-        applyGpuTimingLabel(
-            *label, gpu_timing_,
-            node_name.toString().toStdString(),
-            anchor);
+        // The label keeps the row the node body gave it: only the text and
+        // the published numbers change when a new snapshot arrives.
+        applyGpuTimingLabel(*label, gpu_timing_,
+                            node_name.toString().toStdString(),
+                            label->pos());
     }
 }
 
@@ -2063,14 +2354,21 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         qreal row_y = wave;
         qreal widest_entity = 0.0;
         for (VisibleEntity *entity : level_entities) {
+            // A node is as tall as the resources it touches, so the row pitch
+            // is what this entity actually needs rather than one constant.
+            const NodeBodyLayout body =
+                entity->group || entity->boundary_stub
+                    ? NodeBodyLayout{}
+                    : nodeBodyLayout(model, *nodes_by_name.at(entity->key));
             const qreal width =
                 entity->group
                     ? GroupWidth
-                    : entity->boundary_stub ? BoundaryStubWidth : NodeWidth;
+                    : entity->boundary_stub ? BoundaryStubWidth : body.width;
             const qreal height =
                 entity->group
                     ? GroupHeight
-                    : entity->boundary_stub ? BoundaryStubHeight : NodeHeight;
+                    : entity->boundary_stub ? BoundaryStubHeight
+                                            : body.height;
             widest_entity = std::max(widest_entity, width);
             const std::string position_kind =
                 entity->group ? FramePlanGroupItem : FramePlanNodeItem;
@@ -2101,7 +2399,8 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                 const QPainterPath path =
                     entity->group
                         ? roundedEntityPath(GroupWidth, GroupHeight, 13.0)
-                        : nodePath(entity->anchor);
+                        : roundedEntityPath(width, height,
+                                            FramePlanNodeCornerRadius);
                 item = new MovableNodeItem(
                     path, [this, position_key,
                            routing_key](const QPointF &moved_position) {
@@ -2109,8 +2408,7 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                         return;
                     }
                     session_node_positions_[position_key] = moved_position;
-                    rerouteConnectedBundles(*this, framePlanKinds(),
-                                            routing_key.graph,
+                    rerouteFramePlanBundles(*this, routing_key.graph,
                                             routing_key.name);
                     // Growing the scene rect from inside itemChange re-enters
                     // this handler through Qt's view update, which recurses
@@ -2123,13 +2421,21 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
             entity->item = item;
             item->setPos(position);
             item->setZValue(2.0);
+            // The heading band carries the source colour; the body stays
+            // neutral so a pass that touches ten resources is not a wall of
+            // one hue. FramePlanColorRole still answers with the source
+            // colour, which is the fact the canvas publishes about a node.
             const QColor fill =
                 entity->group
                     ? QColor{QStringLiteral("#7653a6")}
                     : entity->boundary_stub
                           ? QColor{QStringLiteral("#34404b")}
                           : sourceColor(entity->source);
-            item->setBrush(fill);
+            item->setBrush(entity->boundary_stub
+                               ? fill
+                               : entity->group
+                                     ? QColor{QStringLiteral("#2d2838")}
+                                     : QColor{QStringLiteral("#272e36")});
             QPen outline{entity->anchor
                              ? QColor{QStringLiteral("#d8e3ec")}
                              : entity->boundary_stub
@@ -2190,6 +2496,26 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                         "%1\nDouble-click to enter this group. "
                         "Right-click to expand it.")
                         .arg(visible_label));
+                // A collapsed group reads like a node with its rows folded
+                // away: the same heading band, with "group" where a node
+                // carries its kind, over the label that says how many nodes
+                // are inside. The label text itself is unchanged.
+                auto *group_band = new QGraphicsPathItem(
+                    framePlanHeaderPath(GroupWidth), item);
+                group_band->setBrush(QColor{QStringLiteral("#7653a6")});
+                group_band->setPen(Qt::NoPen);
+                group_band->setAcceptedMouseButtons(Qt::NoButton);
+                const QFontMetricsF group_metrics{framePlanRowFont()};
+                auto *group_kind = new QGraphicsSimpleTextItem(
+                    QStringLiteral("group"), group_band);
+                group_kind->setFont(framePlanRowFont());
+                group_kind->setBrush(QColor{QStringLiteral("#ece4f8")});
+                group_kind->setAcceptedMouseButtons(Qt::NoButton);
+                group_kind->setPos(
+                    GroupWidth - 12.0 -
+                        group_metrics.horizontalAdvance(
+                            QStringLiteral("group")),
+                    (FramePlanHeaderHeight - group_metrics.height()) / 2.0);
                 addCenteredEntityLabel(
                     *item, visible_label, GroupWidth, GroupHeight,
                     FramePlanGroupLabelItem, model.graph, entity->key);
@@ -2236,7 +2562,8 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                     tooltip += QStringLiteral("\n%1").arg(legacy_notice);
                 }
                 item->setToolTip(tooltip);
-                addNodeLabel(*item, node, model.graph, gpu_timing_);
+                addNodeBody(*item, node, body, model.graph,
+                            sourceColor(entity->source), gpu_timing_);
                 node_items.emplace(node.name, item);
             }
             row_y += height + VerticalGap;
@@ -2256,19 +2583,6 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                 : has_fused_barrier
                       ? QColor{QStringLiteral("#8d72bd")}
                       : QColor{QStringLiteral("#3f83b5")};
-        const QColor label_outline =
-            order_only
-                ? QColor{QStringLiteral("#9aa7b4")}
-                : has_fused_barrier
-                      ? QColor{QStringLiteral("#8d72bd")}
-                      : QColor{QStringLiteral("#4f8fb9")};
-        const QColor label_fill =
-            order_only
-                ? QColor{QStringLiteral("#f5f7f9")}
-                : has_fused_barrier
-                      ? QColor{QStringLiteral("#f2ecfb")}
-                      : QColor{QStringLiteral("#eaf4fb")};
-
         auto *edge = addPath(QPainterPath{});
         edge->setZValue(0.0);
         QPen edge_pen{edge_color};
@@ -2308,32 +2622,11 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                        static_cast<qulonglong>(bundle_order));
         publish_dependency_data(*arrow);
 
-        const QString &label_text = summary.label;
-        QFont label_font;
-        label_font.setPointSizeF(8.5);
-        const qreal label_width = std::max(
-            EdgeLabelMinimumWidth,
-            QFontMetricsF{label_font}.horizontalAdvance(label_text) + 14.0);
-        auto *label_box = addRect(
-            QRectF{0.0, 0.0, label_width, EdgeLabelHeight},
-            QPen{label_outline}, QBrush{label_fill});
-        label_box->setZValue(1.0);
-        annotateIdentity(*label_box, FramePlanEdgeLabelItem, model.graph,
-                         endpoints.first + "->" + endpoints.second);
-        annotateEndpoints(*label_box, endpoints);
-        label_box->setData(FramePlanBundleOrderRole,
-                           static_cast<qulonglong>(bundle_order));
-        publish_dependency_data(*label_box);
-        auto *label = new QGraphicsSimpleTextItem(label_text, label_box);
-        label->setFont(label_font);
-        label->setBrush(QColor{QStringLiteral("#263441")});
-        annotateEndpoints(*label, endpoints);
-        publish_dependency_data(*label);
-        const QRectF text_bounds = label->boundingRect();
-        label->setPos((label_width - text_bounds.width()) / 2.0,
-                      (EdgeLabelHeight - text_bounds.height()) / 2.0);
-
-        routeLogicalBundle(*this, *edge, framePlanKinds());
+        // No edge label box any more (N-3): the resource names are on the
+        // node rows at both ends now, so a box in the middle of every line
+        // said the same thing a third time. The summary stays on the edge's
+        // tooltip, and the records stay on FramePlanEdgeRecordsRole.
+        routeFramePlanBundle(*this, *edge);
         ++bundle_order;
     }
 
@@ -2470,6 +2763,7 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
 
     setSceneRect(itemsBoundingRect().adjusted(-30.0, -30.0, 30.0, 30.0));
     rebuilding_ = false;
+    applyEdgeEmphasis();
 
     setProperty("pelicanGraph", qtext(model.graph));
     setProperty("pelicanTarget",
@@ -2836,6 +3130,16 @@ void FramePlanGraphicsScene::contextMenuEvent(
                         Qt::QueuedConnection);
                 });
     }
+    if (fitViewRequested) {
+        if (!menu.actions().isEmpty()) menu.addSeparator();
+        QAction *fit = menu.addAction(QStringLiteral("Fit view"));
+        fit->setShortcut(QKeySequence{Qt::Key_F});
+        connect(fit, &QAction::triggered, this, [this] {
+            QMetaObject::invokeMethod(
+                this, [this] { if (fitViewRequested) fitViewRequested(); },
+                Qt::QueuedConnection);
+        });
+    }
     if (menu.actions().isEmpty()) {
         QGraphicsScene::contextMenuEvent(event);
         return;
@@ -2950,6 +3254,29 @@ void FramePlanGraphicsScene::keyPressEvent(QKeyEvent *event) {
     QGraphicsScene::keyPressEvent(event);
 }
 
+void FramePlanGraphicsScene::applyEdgeEmphasis() {
+    // Dimming the rest, rather than recolouring the chosen ones, is what keeps
+    // the dependency colours (order-only / barrier / fused) readable.
+    const bool anything_selected = !selected_nodes_.empty();
+    for (QGraphicsItem *item : items()) {
+        const QString kind = itemKind(*item);
+        if (kind != QLatin1String{FramePlanEdgeItem} &&
+            kind != QLatin1String{FramePlanEdgeArrowItem}) {
+            continue;
+        }
+        bool touches = false;
+        for (const auto &node : selected_nodes_) {
+            const QString name = qtext(node.name);
+            if (item->data(FramePlanFromNameRole).toString() == name ||
+                item->data(FramePlanToNameRole).toString() == name) {
+                touches = true;
+                break;
+            }
+        }
+        item->setOpacity(!anything_selected || touches ? 1.0 : 0.38);
+    }
+}
+
 void FramePlanGraphicsScene::applySceneRectNow() {
     scene_rect_update_queued_ = false;
     setSceneRect(itemsBoundingRect().adjusted(-30.0, -30.0, 30.0, 30.0));
@@ -3002,6 +3329,7 @@ void FramePlanGraphicsScene::recordSelection() {
         // primary node is deterministic instead of depending on Qt item order.
         selected_node_ = *selected_nodes_.begin();
     }
+    applyEdgeEmphasis();
     publishStateProperties();
 }
 

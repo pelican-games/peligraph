@@ -70,6 +70,15 @@ inline constexpr int FramePlanGpuTimingSampleCountRole = Qt::UserRole + 3105;
 inline constexpr int FramePlanGpuTimingFrameCountRole = Qt::UserRole + 3106;
 inline constexpr int FramePlanGpuTimingWindowSizeRole = Qt::UserRole + 3107;
 inline constexpr int FramePlanGpuTimingNodeNameRole = Qt::UserRole + 3108;
+// N-3: the node is drawn as a heading band over an output section and an input
+// section, the way the common graph draws one. These name the pieces.
+inline constexpr int FramePlanPortRole = Qt::UserRole + 3109;
+// "input" | "output" -- the same resource can be read and written by one pass,
+// so the side is part of a socket's identity.
+inline constexpr int FramePlanSocketDirectionRole = Qt::UserRole + 3110;
+// Nothing else is published: a socket's type, shape and a node's kind are
+// what the canvas DRAWS (the socket path, its colour, the kind text), and a
+// role restating them would be a second answer nothing reads.
 
 inline constexpr auto FramePlanNodeItem = "node";
 inline constexpr auto FramePlanGroupItem = "group";
@@ -88,6 +97,31 @@ inline constexpr auto FramePlanResourceLifetimeItem = "resource_lifetime";
 inline constexpr auto FramePlanAliasOverlayItem = "alias_overlay";
 inline constexpr auto FramePlanPhysicalSelectionItem = "physical_selection";
 inline constexpr auto FramePlanLogicalUnavailableItem = "logical_unavailable";
+// The heading band, one socket, and one resource-row name. They carry the node
+// they belong to in FramePlanNameRole, exactly as the node label does.
+inline constexpr auto FramePlanNodeHeaderItem = "node_header";
+inline constexpr auto FramePlanNodeKindLabelItem = "node_kind_label";
+inline constexpr auto FramePlanSocketItem = "node_socket";
+inline constexpr auto FramePlanRowLabelItem = "node_row_label";
+
+// A node's height follows its resource count rather than a constant, so the
+// numbers the scene draws with are published for the scene test to name.
+inline constexpr qreal FramePlanNodeMinimumWidth = NodeGraphNodeWidth;
+inline constexpr qreal FramePlanNodeMaximumWidth = 360.0;
+inline constexpr qreal FramePlanHeaderHeight = 34.0;
+inline constexpr qreal FramePlanSocketRowHeight = 21.0;
+inline constexpr qreal FramePlanSectionPadding = 7.0;
+inline constexpr qreal FramePlanSocketSize = 11.0;
+inline constexpr qreal FramePlanNodeCornerRadius = 9.0;
+
+// What the shared socket resolver is told about one frame-plan resource. A
+// frame-plan resource carries a kind, not a semantic type id, so the canvas
+// names the type itself -- "frame_plan.image" and friends -- and the default
+// table answers for those names like any other.
+SocketTypeFacts framePlanSocketFacts(const FramePlanModel &model,
+                                     const std::string &resource,
+                                     bool history);
+
 struct FramePlanGpuTimingRow {
     std::uint32_t view_index = 0;
     std::string node_kind;
@@ -123,6 +157,9 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     bool cancelConnectionGesture();
     std::function<void(const FramePlanNodeKey &, const FramePlanNodeKey &)> connectionRequested;
     std::function<void(const QString &)> connectionFeedback;
+    // The scene's context menu offers "Fit view"; only the view can perform
+    // it, so the owner wires this to the view that shows this scene.
+    std::function<void()> fitViewRequested;
     void setGpuTiming(FramePlanGpuTimingSnapshot snapshot);
 
     // These are the state-changing operations used by the scene's context
@@ -210,6 +247,10 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     bool scene_rect_update_queued_ = false;
 
     void renderCurrentGraph();
+    // Only the edges that touch a selected node stay at full strength. The
+    // edge's own colour still says what the dependency is; the emphasis is
+    // applied on top of it so a selection never hides that fact.
+    void applyEdgeEmphasis();
     void pruneGroupState();
     bool installSessionGroup(std::vector<std::string> members);
     void recordSelection();

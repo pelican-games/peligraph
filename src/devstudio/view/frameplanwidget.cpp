@@ -316,66 +316,11 @@ QString resourceLabel(const FramePlanModel &model, const std::string &name) {
     return QStringLiteral("%1  [%2]").arg(text(name), text(resource->format));
 }
 
-class FramePlanGraphicsView final : public QGraphicsView {
-  public:
-    using ZoomObserver = std::function<void(qreal, const QString &)>;
-
-    FramePlanGraphicsView(QGraphicsScene *scene, QWidget *parent)
-        : QGraphicsView{scene, parent} {
-        setProperty("pelicanZoomScale", 1.0);
-        setProperty("pelicanZoomMinimum", MinimumZoom);
-        setProperty("pelicanZoomMaximum", MaximumZoom);
-        setProperty("pelicanZoomBoundary", QString{});
-    }
-
-    void setZoomObserver(ZoomObserver observer) {
-        observer_ = std::move(observer);
-    }
-
-  protected:
-    void wheelEvent(QWheelEvent *event) override {
-        int delta = event->angleDelta().y();
-        if (delta == 0) {
-            delta = event->pixelDelta().y();
-        }
-        if (delta == 0) {
-            QGraphicsView::wheelEvent(event);
-            return;
-        }
-
-        const qreal current = transform().m11();
-        const qreal requested =
-            current * std::pow(1.0015, static_cast<qreal>(delta));
-        const qreal bounded = std::clamp(requested, MinimumZoom, MaximumZoom);
-        QString boundary;
-        if (requested < MinimumZoom) {
-            boundary = QStringLiteral("minimum");
-        } else if (requested > MaximumZoom) {
-            boundary = QStringLiteral("maximum");
-        }
-        if (std::abs(bounded - current) > 0.000001) {
-            scale(bounded / current, bounded / current);
-        }
-        setProperty("pelicanZoomScale", bounded);
-        setProperty("pelicanZoomBoundary", boundary);
-        setAccessibleDescription(
-            boundary.isEmpty()
-                ? QStringLiteral("Frame-plan zoom %1 percent")
-                      .arg(qRound(bounded * 100.0))
-                : QStringLiteral("Frame-plan zoom %1 limit reached at %2 percent")
-                      .arg(boundary)
-                      .arg(qRound(bounded * 100.0)));
-        if (observer_) {
-            observer_(bounded, boundary);
-        }
-        event->accept();
-    }
-
-  private:
-    static constexpr qreal MinimumZoom = 0.25;
-    static constexpr qreal MaximumZoom = 4.0;
-    ZoomObserver observer_;
-};
+// The zoom, pan and fit behaviour this view used to define alone now lives
+// in NodeCanvasView (nodegraphics), so the common graph canvas behaves the
+// same way. The limits and the published pelicanZoom* properties are the
+// ones this view shipped.
+using FramePlanGraphicsView = PelicanStudio::NodeCanvasView;
 
 } // namespace
 
@@ -548,6 +493,10 @@ struct FramePlanWidget::Impl {
         logical->setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
         logical->setResizeAnchor(QGraphicsView::AnchorViewCenter);
         logical->setBackgroundBrush(QColor{QStringLiteral("#20262d")});
+        logical->setFocusPolicy(Qt::StrongFocus);
+        // "Fit view" is offered by the scene's context menu, but only the view
+        // can carry it out.
+        logical_scene->fitViewRequested = [this] { logical->fitView(); };
         auto *leave_group = new QAction(&owner);
         leave_group->setObjectName(
             QStringLiteral("pelican.framePlanLeaveGroup"));
@@ -940,6 +889,15 @@ struct FramePlanWidget::Impl {
                 : std::optional<FramePlanNodeKey>{FramePlanNodeKey{
                       model->graph, target->currentText().toStdString()}};
         logical_scene->populate(*model, selected_target, depth->value());
+        // The graph, and the group the canvas has descended into, are what the
+        // Frame Plan calls a scope. A scope the session has not shown before --
+        // which includes the first plan after a project is opened -- is fitted;
+        // a scope being returned to keeps the zoom and scroll it was left at.
+        logical->showScope(
+            QStringLiteral("%1\x1f%2")
+                .arg(text(model->graph),
+                     logical_scene->property("pelicanCurrentGroupScope")
+                         .toString()));
         populateLogicalDetails();
         populatePasses();
         populateResources();

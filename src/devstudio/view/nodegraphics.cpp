@@ -5,8 +5,12 @@
 #include <QGraphicsItem>
 #include <QGraphicsPolygonItem>
 #include <QGraphicsScene>
+#include <QKeyEvent>
 #include <QLineF>
+#include <QMouseEvent>
+#include <QScrollBar>
 #include <QVariant>
+#include <QWheelEvent>
 
 #include <nlohmann/json.hpp>
 
@@ -54,6 +58,9 @@ void applyEntry(SocketStyle &style, const Json &entry) {
     }
     if (const auto size = entry.find("size"); size != entry.end() && size->is_number())
         style.size = std::clamp(size->get<qreal>(), 5.0, 24.0);
+    if (const auto width = entry.find("outline_width");
+        width != entry.end() && width->is_number())
+        style.outline_width = std::clamp(width->get<qreal>(), 0.5, 6.0);
 }
 
 // The one place the shipped table lives once it is parsed. A malformed
@@ -396,6 +403,175 @@ std::map<std::string, int, std::less<>> longestPathColumns(
         }
     }
     return columns;
+}
+
+NodeCanvasView::NodeCanvasView(QGraphicsScene *scene, QWidget *parent)
+    : QGraphicsView{scene, parent} {
+    // Zooming has to keep the point under the cursor still: that is what makes
+    // a wheel feel like a magnifier rather than a scrollbar.
+    setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
+    setResizeAnchor(QGraphicsView::AnchorViewCenter);
+    setProperty("pelicanZoomScale", 1.0);
+    setProperty("pelicanZoomMinimum", DefaultMinimumZoom);
+    setProperty("pelicanZoomMaximum", DefaultMaximumZoom);
+    setProperty("pelicanZoomBoundary", QString{});
+    setProperty("pelicanFitCount", 0);
+    setProperty("pelicanViewScope", QString{});
+}
+
+void NodeCanvasView::publishZoom(qreal scale, const QString &boundary) {
+    setProperty("pelicanZoomScale", scale);
+    setProperty("pelicanZoomBoundary", boundary);
+    if (zoom_observer_) zoom_observer_(scale, boundary);
+}
+
+void NodeCanvasView::applyZoom(qreal requested) {
+    const qreal current = transform().m11();
+    const qreal bounded =
+        std::clamp(requested, DefaultMinimumZoom, DefaultMaximumZoom);
+    QString boundary;
+    if (requested < DefaultMinimumZoom) {
+        boundary = QStringLiteral("minimum");
+    } else if (requested > DefaultMaximumZoom) {
+        boundary = QStringLiteral("maximum");
+    }
+    if (std::abs(bounded - current) > 0.000001)
+        scale(bounded / current, bounded / current);
+    publishZoom(bounded, boundary);
+}
+
+void NodeCanvasView::wheelEvent(QWheelEvent *event) {
+    int delta = event->angleDelta().y();
+    if (delta == 0) delta = event->pixelDelta().y();
+    if (delta == 0) {
+        QGraphicsView::wheelEvent(event);
+        return;
+    }
+    applyZoom(transform().m11() *
+              std::pow(1.0015, static_cast<qreal>(delta)));
+    event->accept();
+}
+
+void NodeCanvasView::fitView() {
+    if (scene() == nullptr) return;
+    QRectF content = scene()->itemsBoundingRect();
+    if (!content.isValid() || content.width() <= 0.0 ||
+        content.height() <= 0.0)
+        return;
+    content.adjust(-24.0, -24.0, 24.0, 24.0);
+    fitInView(content, Qt::KeepAspectRatio);
+    // fitInView answers with whatever scale the content needs; the clamp is
+    // still the clamp, so a huge graph stops shrinking at the minimum.
+    const qreal reached = transform().m11();
+    const qreal bounded =
+        std::clamp(reached, DefaultMinimumZoom, DefaultMaximumZoom);
+    if (std::abs(bounded - reached) > 0.000001)
+        scale(bounded / reached, bounded / reached);
+    ++fit_count_;
+    setProperty("pelicanFitCount", static_cast<qulonglong>(fit_count_));
+    publishZoom(transform().m11(), QString{});
+}
+
+void NodeCanvasView::rememberScope() {
+    if (!scope_known_) return;
+    session_views_[scope_] =
+        ViewState{transform(), horizontalScrollBar()->value(),
+                  verticalScrollBar()->value()};
+}
+
+void NodeCanvasView::showScope(const QString &scope) {
+    if (scope_known_ && scope == scope_) {
+        // The same scope redrawn: the user's zoom and scroll are theirs.
+        rememberScope();
+        return;
+    }
+    rememberScope();
+    scope_ = scope;
+    scope_known_ = true;
+    setProperty("pelicanViewScope", scope);
+    const auto seen = session_views_.find(scope);
+    if (seen == session_views_.end()) {
+        // Never looked at: neither the previous scope's zoom nor a default 1.0
+        // says anything about this content, so show all of it.
+        fitView();
+        rememberScope();
+        return;
+    }
+    setTransform(seen->second.transform);
+    horizontalScrollBar()->setValue(seen->second.horizontal);
+    verticalScrollBar()->setValue(seen->second.vertical);
+    publishZoom(transform().m11(), QString{});
+}
+
+void NodeCanvasView::mousePressEvent(QMouseEvent *event) {
+    const bool pan_gesture =
+        event->button() == Qt::MiddleButton ||
+        (event->button() == Qt::LeftButton && space_held_);
+    if (pan_gesture) {
+        panning_ = true;
+        pan_button_ = event->button();
+        pan_origin_ = event->position().toPoint();
+        pan_previous_mode_ = dragMode();
+        setDragMode(QGraphicsView::NoDrag);
+        setCursor(Qt::ClosedHandCursor);
+        event->accept();
+        return;
+    }
+    QGraphicsView::mousePressEvent(event);
+}
+
+void NodeCanvasView::mouseMoveEvent(QMouseEvent *event) {
+    if (!panning_) {
+        QGraphicsView::mouseMoveEvent(event);
+        return;
+    }
+    const QPoint position = event->position().toPoint();
+    const QPoint delta = position - pan_origin_;
+    pan_origin_ = position;
+    horizontalScrollBar()->setValue(horizontalScrollBar()->value() -
+                                    delta.x());
+    verticalScrollBar()->setValue(verticalScrollBar()->value() - delta.y());
+    event->accept();
+}
+
+void NodeCanvasView::mouseReleaseEvent(QMouseEvent *event) {
+    if (panning_ && event->button() == pan_button_) {
+        panning_ = false;
+        pan_button_ = Qt::NoButton;
+        setDragMode(pan_previous_mode_);
+        unsetCursor();
+        event->accept();
+        return;
+    }
+    QGraphicsView::mouseReleaseEvent(event);
+}
+
+void NodeCanvasView::keyPressEvent(QKeyEvent *event) {
+    // An open in-place editor owns the keyboard: "F" is a letter there.
+    const bool editing = scene() != nullptr && scene()->focusItem() != nullptr;
+    if (!editing && event->key() == Qt::Key_F &&
+        event->modifiers() == Qt::NoModifier) {
+        fitView();
+        event->accept();
+        return;
+    }
+    if (!editing && event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
+        space_held_ = true;
+        setCursor(Qt::OpenHandCursor);
+        event->accept();
+        return;
+    }
+    QGraphicsView::keyPressEvent(event);
+}
+
+void NodeCanvasView::keyReleaseEvent(QKeyEvent *event) {
+    if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
+        space_held_ = false;
+        if (!panning_) unsetCursor();
+        event->accept();
+        return;
+    }
+    QGraphicsView::keyReleaseEvent(event);
 }
 
 } // namespace PelicanStudio

@@ -110,6 +110,11 @@ class GraphCanvasScene final : public QGraphicsScene {
     // The canvas was right-clicked at this scene position; the owner opens the
     // palette. The scene keeps the position so the new node lands there.
     std::function<void(const QPointF &)> addNodeRequested;
+    // "Fit view" from the same menu. Only the view can carry it out.
+    std::function<void()> fitViewRequested;
+    // The scene finished drawing a scope. The view needs this to know when a
+    // scope it has never shown is on screen, so it can fit it.
+    std::function<void()> repopulated;
 
     [[nodiscard]] const std::optional<std::string> &selectedNode() const noexcept {
         return selected_node_;
