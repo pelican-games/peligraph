@@ -23705,6 +23705,41 @@ sink の追加 / `root_delta` port / state_machine・blend の root motion / 回
 - 受け入れは (1) 決定性 gate 121 枚 × 2 process、(2) `--start-time 2.0 --frames 1 --fps 60` の `0001` == `--frames 120` の `0120`(対照: `floor(t·fps − ε)` に壊す変異で `0119` 側に落ちる / 非 headless で名前付き error)、(3) read の `render_frame` ×2 で `get_graph_values` の frame と clock 値が不変(対照: read → step)、(4) 既存 gate と出荷 4 project bytes 不変、(5) 改名した拒否の unit。
 #### やらないこと
 jump / 複数 t / EXR / 音のオフライン出力 / `pelican_cli` の描画 subcommand / baked の実装 / read-only render / game code・component 経路の分類。
+### N-1: 共通グラフのノードキャンバス(読む)—— `pelican.graph` の定義と root を Studio で見る
+
+**§4 規則 11 中段(Studio 内で閉じる。RPC は既存 4 本の読みだけ。D0: Studio は project + rpc しか link しない)。実装者: Claude(Fable + Opus)。設計レビューは省略(事実は Explore 済み)。見積: 中。**
+**規範: `v1_development_plan.md`「一つのグラフモデルは意味の共通化であり、一枚のキャンバスではない」(:121)、AG-3 行(定義を見ているのか instance の評価結果を見ているのかを区別)。位置の置き場は Frame Plan と同じ「セッション内保持、disk に書かない」(台帳 :5278 の未設計は据え置き)。**
+
+#### 前提(確認した事実)
+- `get_graph_instances`(引数無し)は `source_digest` / `instances` / **root の `nodes` 全部** / **`definitions` の本体(nodes, outputs)** を返す([renderconfigeditor.cpp:1382](../src/core/communication/renderconfigeditor.cpp#L1382))。定義の中身を別に読む RPC は無く、要らない
+- `get_graph_values{instance}` は **instance の入力 port だけ**(`port` / `value` / `source: connected|parameter|default|override` / `connected{node,port}`)。定義内の node port の値は返らない(AG-3 で新 RPC。N-1 では instance 入力にだけ重ねる)
+- `get_graph_catalog` は `operations[]{op, domain, evaluation, change, sink, ports: declared|parameter_dependent, inputs[]{port, required, accepted_type}, outputs[]{port, type}}`([graphmodule.cpp:111](../src/project/graphmodule.cpp#L111))。`parameter_dependent` の op は port 一覧が無い → node 自身の `inputs` の key と `outputs` から描く
+- 文書: node `{id, op, parameters?, outputs?, inputs{port: {node, port}}}`、定義 `{nodes[], outputs{}}`、`graph.input` は定義の port、`graph.instance{definition, owner?, parameters?, inputs?}`([graphcomposition.cpp](../src/project/graphcomposition.cpp))
+- Frame Plan の再利用部品は全部 anonymous namespace([frameplangraphics.cpp:39-1645](../src/devstudio/view/frameplangraphics.cpp#L39)): `MovableNodeItem`(:162)、`curveGeometry`(:1252)、`routeLogicalBundle` / `rerouteConnectedBundles`(:1338-1381)、`nodePath` / `roundedEntityPath`(:951-973)、配置定数(:41-63)、`subtreeNodeColumns`(:888、`FramePlanModel` に結合)。`session_node_positions_`(hpp:171-178)
+- Studio の RPC は `EmbeddedViewport::requestRpc` の非同期 + signal。Inspector 内の `GraphAttachmentModel` は `InspectorRpcRequest` の queue を `takeRpcRequests` / `receiveRpcResult` で回し、Qt 無しで test できる([devstudio_graphattachment_test.cpp:27-43](../test/devstudio_graphattachment_test.cpp#L27))。Frame Plan dock は `QTabWidget`(`pelican.renderTools`)に Frame Plan / Render Features の 2 tab([mainwindow.cpp:226-236](../src/devstudio/view/mainwindow.cpp#L226))
+- 実物の `pelican.graph` root を持つ project は `test/fixtures/graph_instance_inputs`(定義 `gain_curve` 4 node、root に `clock` と owner 付き instance `left`)と `test/graph_composition_fixture.hpp`。出荷 project には無い(P-2a-4)
+
+#### 決定
+1. **model**: `src/devstudio/model/graphcanvasmodel.{hpp,cpp}`(`GraphAttachmentModel` の隣。同じ request/read の 2 slot と `takeRpcRequests` / `receiveRpcResult` / `poll`)。RPC は `get_graph_instances` / `get_graph_catalog` / `get_graph_values` の 3 本だけ。提供するもの: scope 一覧(`root` + 定義名)、scope の node 一覧(`id` / `op` / catalog から `domain` `evaluation` `sink` / 入力 port(catalog の declared か node の `inputs` key)/ 出力 port)、辺一覧(`inputs` から)、root scope の `graph.instance` node には `get_graph_values` の入力 port 値と source を重ねる、`contentRevision` / `reportRevision`
+2. **共有部品の抽出**: `src/devstudio/view/nodegraphics.{hpp,cpp}` に `MovableNodeItem` / `CurveGeometry` `curveGeometry` / `routeLogicalBundle` `rerouteConnectedBundles` `findNodeItem` `findEndpointArtifact` / `nodePath` `roundedEntityPath` / 配置定数 / **model 非依存の最長経路 column 関数**(辺の列を受ける)を移し、Frame Plan はそれを使う。**Frame Plan の挙動は変えない**(`devstudio_frameplan_graph_test` 全数不変が対照)
+3. **view**: `src/devstudio/view/graphcanvaswidget.{hpp,cpp}` + `GraphCanvasScene`(QGraphicsScene)。上に scope の combo(`root` + 定義)と breadcrumb、Refresh、「値を見る instance」の combo(root scope のとき、owner 付き instance)。左 = キャンバス、右 = 選択 node の詳細(op / domain / evaluation / sink / parameters の key-value / 各 port の source と値)= Logical graph の 2 pane と同じ形(manual 10 :575)。node の色は domain で分ける(values / rendering / animation、`graph.instance` と `graph.input` は別色)。`graph.instance` node の double-click で定義 scope へ、breadcrumb で戻る。**読み取り専用**(編集は N-2)。位置: 最長経路 column + 行、動かした位置は `(scope, node id)` でセッション内保持、revision で node が消えたら捨てる
+4. **置き場**: `pelican.renderTools` の tab に「Graph」として 3 枚目に足す(dock を増やさない)。`rpcRequested` は Frame Plan と同じく MainWindow が `viewport.requestRpc` に繋ぐ(`FramePlanReadCapability` 型の絞り込み struct を 1 つ作る: 3 method 以外は出せない)
+5. `SKIP_DEVSTUDIO=ON` には影響ゼロ(studio 内で閉じる)。engine / RPC 側は触らない
+
+#### 受け入れ(§4 規約 10)
+1. model test(Qt 無し、`devstudio_graphattachment_test` の Harness と同型): `graph_instance_inputs` の文書を canned reply にして、root scope = 2 node 1 辺、`gain_curve` = 4 node 3 辺、port は catalog の declared から、`parameter_dependent` op(例: `graph.instance`)は node の key から。**対照**: reply から `definitions` を落とす → scope は root だけで notice(落ちない)/ catalog を返さない → port は node の key だけで描き「catalog 未取得」の notice
+2. 値の重ね: `get_graph_values{instance: left}` の reply で `left` の入力 port に value と source が出る / `published: false` → 「not published」/ 値 RPC が失敗 → notice、キャンバスは残る
+3. scene test(Qt offscreen、`devstudio_frameplan_graph_test` と同じ登録): 辺は全部 column(from) < column(to) / node を動かして refresh(同 revision)→ 位置保持 / node が消えた revision → その位置は捨てる / instance の double-click で scope が定義に変わり breadcrumb で戻る
+4. `devstudio_frameplan_graph_test` と `devstudio_fullscreen_pass_test` が抽出後も全数緑(Frame Plan の挙動不変の対照)/ `SKIP_DEVSTUDIO=OFF` build 緑 / 非 GPU 全数緑
+5. 実物: `pelican_studio` で `test/fixtures/graph_instance_inputs` を開き Graph tab に 2 scope が出る(統合側が目視。スクリーンショットを利用者に見せる)
+
+#### やらないこと
+編集(N-2)/ 定義内 port の値(AG-3 の RPC)/ 位置の永続化 / Frame Plan との統合キャンバス / pose graph の view。
+
+実装時の裁定(2026-09-18、`agent/n1`): 値の重ねは `get_graph_values` が返す **instance の入力 port だけ**(定義内の node port の値は AG-3 の RPC 待ち)。`GraphCanvasReadCapability`(3 method に絞る struct)の `ready` handler は widget の `Impl` 構築中に同期で呼ばれるため、`Impl` 直接に配線した(`setConnected` 経由は null 参照で落ちる)。scope 切替(breadcrumb / double-click)は Qt が dispatch 中の item を消すので `QMetaObject::invokeMethod` で遅延。`--tab` は `openProject` の **後**に当てる(project を開くと tool layout が復元されて tab が戻るため)。`repopulate()` が refresh ごとに選択を消す(N-2 で直す。記録)/ catalog の読みは 1 回だけで失敗時に再試行しない(`GraphAttachmentModel` と同じ、記録)。
+
+完了記録(2026-09-18、`2c6828e4`): model `graphcanvasmodel`、共有部品 `nodegraphics`、view `graphcanvaswidget` + `GraphCanvasScene`、`graphcanvasreadcapability`、`pelican.renderTools` の 3 枚目 tab「Graph」、`pelican_studio --project <dir> --tab frame_plan|render_features|graph`。test: `devstudio_graphcanvas_test`(model、139 assertions、対照 = definitions 無し / catalog 無し / overlay 撤去の変異)、`devstudio_graphcanvas_scene_test`(Qt offscreen、62 assertions、対照 = column 固定 / 位置保持撤去 / prune 撤去 / double-click 撤去の変異)。Frame Plan の既存 test(`devstudio_frameplan_graph_test` 2133 / `devstudio_fullscreen_pass_test` 803)は抽出後も全数緑。着地 gate は build + Studio 系の非 GPU test(速度優先の運用)。実物: `<作業ディレクトリ>/playground`(`example` を `pelican.graph` root に変換した repo 外の project)を `--project` で開き、root と 2 定義が描けることを目視。**Studio は `projects/raytracing_demo` を開けない**(engine が `Renderer logical frame requires a compiled render pipeline` で exit 1。既知の穴、R 群候補、実装セッションが記録済み)。
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
