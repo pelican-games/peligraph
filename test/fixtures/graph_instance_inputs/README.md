@@ -4,7 +4,7 @@ A rendering document in the `pelican.graph` form with one sub-graph definition
 and one owned attachment, used by the tests for instance input supply (mode,
 value and origin).
 
-None of the four shipped projects has a `pelican.graph` document, so the
+None of the five shipped projects has a `pelican.graph` document, so the
 acceptance for that work is taken here instead. Moving a shipped project to the
 graph form is the learning-sample work, not this one.
 

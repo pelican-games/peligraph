@@ -1,5 +1,6 @@
 #include "bloom_upsample_oracle.hpp"
 #include "golden_harness.hpp"
+#include "../src/project/rendercomponent.hpp"
 #include "vulkan_test_support.hpp"
 
 #include "../src/core/appflow/enginetime.hpp"
@@ -879,6 +880,12 @@ nlohmann::json wp357TwoLevelBloomFeature(nlohmann::json feature) {
 struct Wp357BloomVariant {
     bool two_level = false;
     bool materialize = false;
+    // P-2a-3: publish the two-level derivative as a shared component outside
+    // the project, then take it back as a copy.
+    bool imported = false;
+    // P-2a-4a: the same project, authored as a `pelican.graph` root with the
+    // whole rendering config under `rendering`.
+    bool graph_root = false;
     nlohmann::json engine_parameters = nlohmann::json::object();
     nlohmann::json derived_parameters = nlohmann::json::object();
     std::string label = "canonical";
@@ -902,6 +909,17 @@ void wp357PointConfigAtDerivative(nlohmann::json &config,
     }
 }
 
+nlohmann::json wp357WrapGraphRoot(nlohmann::json config) {
+    return nlohmann::json{
+        {"schema", "pelican.graph"},
+        {"version", 1},
+        {"definitions", nlohmann::json::object()},
+        {"nodes", nlohmann::json::array()},
+        {"outputs", nlohmann::json::object()},
+        {"rendering", std::move(config)},
+    };
+}
+
 void wp357WriteProductionProbeProject(
     const std::filesystem::path &root,
     const Wp357BloomVariant &variant = {}) {
@@ -920,7 +938,24 @@ void wp357WriteProductionProbeProject(
             }
         }
     }
-    if (variant.two_level) {
+    if (variant.imported) {
+        // The bytes travel through the production component writer and reader:
+        // digest, manifest envelope and directory rename included.
+        const auto derived = wp357TwoLevelBloomFeature(
+            wp357MaterializeBloomFeature(root, config));
+        const auto library = wp357TempProject("component_library");
+        const auto component = buildRenderComponent(
+            derived.dump(2), "project://features/wp357_bloom_local.json",
+            "wp357_probe");
+        writeRenderComponent(library / component.name, component);
+        const auto reopened = readRenderComponent(library / component.name);
+        wp357WriteText(root / wp357LocalBloomFeatureFile,
+                       reopened.feature_bytes);
+        // The control for "copy, not a link": the published component is gone
+        // before the frame is drawn.
+        std::filesystem::remove_all(library);
+        wp357PointConfigAtDerivative(config, variant.derived_parameters);
+    } else if (variant.two_level) {
         wp357WriteText(
             root / wp357LocalBloomFeatureFile,
             wp357TwoLevelBloomFeature(
@@ -934,7 +969,8 @@ void wp357WriteProductionProbeProject(
         wp357PointConfigAtDerivative(config, variant.derived_parameters);
     }
     wp357WriteText(
-        root / "passes" / "main.json", config.dump(2));
+        root / "passes" / "main.json",
+        (variant.graph_root ? wp357WrapGraphRoot(config) : config).dump(2));
 }
 
 CommonPolygonVertData wp357EmissiveQuad() {
@@ -1114,6 +1150,60 @@ void wp357RequireDerivedBloomFeatureChangesPixels() {
               << derived_v0[3] << '\n';
 }
 
+// P-2a-4a acceptance 3 and 6, measured on the device: the graph root draws
+// the legacy frame, and the derivative cut to two levels still changes it.
+void wp357RequireGraphRootBloom() {
+    const auto legacy = wp357CaptureProductionComposite();
+    const auto graph_root = wp357CaptureProductionComposite(
+        Wp357BloomVariant{.graph_root = true, .label = "graph_root"});
+    REQUIRE(wp357ChangedPixels(legacy.h0, graph_root.h0, false) == 0);
+    REQUIRE(wp357ChangedPixels(legacy.v0, graph_root.v0, false) == 0);
+    REQUIRE(wp357ChangedPixels(legacy.display, graph_root.display, false) == 0);
+    REQUIRE(graph_root.final_fragment_ref == legacy.final_fragment_ref);
+    REQUIRE(graph_root.final_uses_h0 == legacy.final_uses_h0);
+
+    const auto derived = wp357CaptureProductionComposite(
+        Wp357BloomVariant{.two_level = true,
+                          .graph_root = true,
+                          .label = "graph_root_two_level"});
+    REQUIRE(wp357ChangedPixels(graph_root.h0, derived.h0, false) == 0);
+    const auto changed =
+        wp357ChangedPixels(graph_root.v0, derived.v0, false);
+    REQUIRE(changed > 0);
+    const auto canonical_v0 = wp357CenterStorage(graph_root.v0);
+    const auto derived_v0 = wp357CenterStorage(derived.v0);
+    std::cout << "P2A4A_GRAPH_ROOT levels=2 changedPixels=" << changed
+              << " graphRootV0=" << canonical_v0[0] << ','
+              << canonical_v0[1] << ',' << canonical_v0[2] << ','
+              << canonical_v0[3] << " derivedV0=" << derived_v0[0] << ','
+              << derived_v0[1] << ',' << derived_v0[2] << ','
+              << derived_v0[3] << '\n';
+}
+
+// P-2a-3 acceptance 1 on the device: the imported component draws the frame
+// the exporting project drew, and it keeps drawing it after the published
+// component is deleted.
+void wp357RequireImportedComponentDrawsTheSameFrame() {
+    const auto canonical = wp357CaptureProductionComposite();
+    const auto derived = wp357CaptureProductionComposite(
+        Wp357BloomVariant{.two_level = true, .label = "component_source"});
+    const auto imported = wp357CaptureProductionComposite(
+        Wp357BloomVariant{.imported = true, .label = "component_imported"});
+    // The component is what draws: its frame is not the canonical one.
+    const auto moved =
+        wp357ChangedPixels(canonical.v0, imported.v0, false);
+    REQUIRE(moved > 0);
+    // And it is the same component the exporting project renders.
+    REQUIRE(wp357ChangedPixels(derived.h0, imported.h0, false) == 0);
+    REQUIRE(wp357ChangedPixels(derived.v0, imported.v0, false) == 0);
+    REQUIRE(wp357ChangedPixels(derived.display, imported.display, false) == 0);
+    const auto imported_v0 = wp357CenterStorage(imported.v0);
+    std::cout << "P2A3_IMPORTED changedFromCanonical=" << moved
+              << " importedV0=" << imported_v0[0] << ','
+              << imported_v0[1] << ',' << imported_v0[2] << ','
+              << imported_v0[3] << '\n';
+}
+
 void wp357RequireProductionComposite() {
     const auto canonical = wp357CaptureProductionComposite();
     const auto require_physical = [](const auto &capture) {
@@ -1268,6 +1358,28 @@ void GoldenHarness::runBloomUpsampleOracle() {
     } catch (const std::runtime_error &error) {
         TestSupport::skipIfVulkanDeviceUnavailable(
             error, "WP357 bloom upsample GPU oracle unavailable");
+        throw;
+    }
+}
+
+void GoldenHarness::runGraphRootBloom() {
+    setupLogger();
+    try {
+        wp357RequireGraphRootBloom();
+    } catch (const std::runtime_error &error) {
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "P-2a-4a graph root bloom GPU oracle unavailable");
+        throw;
+    }
+}
+
+void GoldenHarness::runImportedRenderComponent() {
+    setupLogger();
+    try {
+        wp357RequireImportedComponentDrawsTheSameFrame();
+    } catch (const std::runtime_error &error) {
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "P-2a-3 imported component GPU oracle unavailable");
         throw;
     }
 }

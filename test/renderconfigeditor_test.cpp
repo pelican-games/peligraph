@@ -17,6 +17,7 @@
 #include "../src/core/vkcore/renderer_config.hpp"
 #include "../src/core/watch/reloadgate.hpp"
 #include "../src/project/featurecompose.hpp"
+#include "../src/project/rendercomponent.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "../src/project/vulkanviewplanning.hpp"
 
@@ -427,6 +428,36 @@ class TemporaryAnimgraphProject {
         const TemporaryAnimgraphProject &) = delete;
 };
 
+class TemporaryDirectory {
+  public:
+    std::filesystem::path path;
+
+    explicit TemporaryDirectory(std::string_view label) {
+        static std::atomic<std::uint64_t> next{1};
+        const auto seed = static_cast<std::uint64_t>(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        for (std::uint64_t attempt = 0; attempt < 100; ++attempt) {
+            path = std::filesystem::temp_directory_path() /
+                   ("pelican-" + std::string{label} + "-" +
+                    std::to_string(seed) + "-" +
+                    std::to_string(next.fetch_add(1)));
+            std::error_code error;
+            if (std::filesystem::create_directory(path, error)) return;
+            path.clear();
+        }
+        throw std::runtime_error("failed to allocate a temporary directory");
+    }
+
+    ~TemporaryDirectory() {
+        if (path.empty()) return;
+        std::error_code ignored;
+        std::filesystem::remove_all(path, ignored);
+    }
+
+    TemporaryDirectory(const TemporaryDirectory &) = delete;
+    TemporaryDirectory &operator=(const TemporaryDirectory &) = delete;
+};
+
 std::unique_ptr<RenderConfigEditorService> makeService(
     TemporaryConfig &source, ActualCpuRenderRuntime &runtime,
     std::function<RenderConfigEditorGateObservation()> gate = {},
@@ -581,6 +612,52 @@ bool containsName(const std::vector<std::string> &values,
                   std::string_view name) {
     return std::find(values.begin(), values.end(), name) !=
            values.end();
+}
+
+std::string graphRootFixture(std::string_view stem) {
+    return readBytes(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+                     "fixtures" / "graph_root_example" / "passes" /
+                     (std::string{stem} + ".json"));
+}
+
+std::vector<std::string> rootKeys(const Json &document) {
+    std::vector<std::string> keys;
+    for (auto entry = document.begin(); entry != document.end(); ++entry)
+        keys.push_back(entry.key());
+    return keys;
+}
+
+// P-2a-4a acceptance 2: the edit landed in `rendering.<key>`, no root member
+// was added, and every other byte of the document is where it was.  The byte
+// half matters: a semantic-only check passes for a document that was
+// reformatted, and a root-fixed locator would be caught only by the key set.
+void requireOnlySectionKeyChanged(const std::string &before,
+                                  const std::string &after,
+                                  const char *key) {
+    const auto before_document = Json::parse(before);
+    const auto after_document = Json::parse(after);
+    INFO("after: " << after);
+    REQUIRE(rootKeys(after_document) == rootKeys(before_document));
+    REQUIRE(after_document.contains("rendering"));
+    auto before_section = before_document.at("rendering");
+    auto after_section = after_document.at("rendering");
+    REQUIRE(after_section.at(key) != before_section.value(key, Json()));
+    before_section.erase(key);
+    after_section.erase(key);
+    REQUIRE(after_section == before_section);
+    for (const auto *root_key : {"schema", "version", "definitions", "nodes",
+                                 "outputs"}) {
+        REQUIRE(after_document.at(root_key) == before_document.at(root_key));
+    }
+    const auto shared = static_cast<std::size_t>(
+        std::mismatch(before.begin(), before.end(), after.begin(), after.end())
+            .first -
+        before.begin());
+    // Everything up to the section member -- the graph's own keys included --
+    // is byte-identical, so the change cannot have been made at the root.
+    const auto section_member = before.find("\"rendering\"");
+    REQUIRE(section_member != std::string::npos);
+    REQUIRE(shared > section_member);
 }
 
 std::string emptyHybridConfig() {
@@ -1187,6 +1264,100 @@ TEST_CASE("authored render root value edits preserve unrelated lexical bytes",
         }
         CHECK_THROWS_AS(document.withRootValue("features", "null"), std::invalid_argument);
         CHECK(document.bytes() == original);
+    }
+}
+
+TEST_CASE("P-2a-4a section value edits address the graph root's rendering member",
+          "[renderconfig][document][graph-root][p2a4a]") {
+    const std::string original =
+        "{\r\n  \"schema\": \"pelican.graph\",\r\n  \"version\": 1,\r\n"
+        "  \"nodes\": [],\r\n"
+        "  \"rendering\" : {\r\n    \"features\" : [ \"engine://features/ui.json\" ],\r\n"
+        "    \"frame_node_order\" : { \"main_render\": [\"a\"] }\r\n  }\r\n}\r\n";
+    const auto document = AuthoredRenderConfigDocument::parse(original);
+    REQUIRE(document.isGraphRoot());
+    REQUIRE(document.hasRenderingSection());
+    REQUIRE(document.hasFeaturesArray());
+    REQUIRE(document.featureReferences() ==
+            std::vector<std::string>{"engine://features/ui.json"});
+
+    SECTION("an existing section member is replaced in place") {
+        const auto edited =
+            document.withSectionValue("frame_node_order", "{\"main_render\":[\"b\"]}");
+        auto expected = original;
+        const std::string old_value = "{ \"main_render\": [\"a\"] }";
+        expected.replace(expected.find(old_value), old_value.size(),
+                         "{\"main_render\":[\"b\"]}");
+        CHECK(edited.bytes() == expected);
+        CHECK(Json::parse(edited.bytes()).contains("rendering"));
+        CHECK_FALSE(Json::parse(edited.bytes()).contains("frame_node_order"));
+    }
+    SECTION("an absent section member is inserted with the section's indent") {
+        const auto edited = document.withSectionValue("pipeline", "{}");
+        CHECK(edited.bytes() ==
+              "{\r\n  \"schema\": \"pelican.graph\",\r\n  \"version\": 1,\r\n"
+              "  \"nodes\": [],\r\n"
+              "  \"rendering\" : {\r\n    \"features\" : [ \"engine://features/ui.json\" ],\r\n"
+              "    \"frame_node_order\" : { \"main_render\": [\"a\"] },\r\n"
+              "    \"pipeline\": {}\r\n  }\r\n}\r\n");
+    }
+    SECTION("the graph's own keys stay at the root") {
+        const auto edited = document.withSectionValue("nodes", "[1]");
+        CHECK(Json::parse(edited.bytes()).at("nodes") == Json::array({1}));
+        CHECK(Json::parse(edited.bytes()).at("rendering").size() == 2);
+        CHECK(isGraphRootKey("definitions"));
+        CHECK(isGraphRootKey("outputs"));
+        CHECK_FALSE(isGraphRootKey("features"));
+        CHECK_FALSE(isGraphRootKey("rendering_passes"));
+    }
+    SECTION("features are added and removed inside the section") {
+        const auto added = document.withFeatureAdded("project://features/x.json");
+        CHECK(added.bytes().find("\"features\" : [ \"engine://features/ui.json\", \"project://features/x.json\" ]") !=
+              std::string::npos);
+        CHECK_FALSE(Json::parse(added.bytes()).contains("features"));
+        const auto removed = added.withFeatureRemoved("project://features/x.json");
+        CHECK(removed.bytes() == original);
+    }
+    SECTION("a legacy root keeps writing at the root") {
+        const auto legacy = AuthoredRenderConfigDocument::parse(
+            "{\"features\":[],\"rendering\":{\"features\":[]}}");
+        CHECK_FALSE(legacy.isGraphRoot());
+        CHECK(legacy.withSectionValue("shader_defines", "[]").bytes() ==
+              "{\"features\":[],\"rendering\":{\"features\":[]}, \"shader_defines\": []}");
+    }
+    SECTION("initialize creates the features array in the section") {
+        const auto initialized = AuthoredRenderConfigDocument::initialize(
+            "{\"schema\": \"pelican.graph\", \"rendering\": {\"shader_defines\": []}}");
+        CHECK(initialized.bytes() ==
+              "{\"schema\": \"pelican.graph\", \"rendering\": {\"shader_defines\": [], \"features\": []}}");
+        CHECK(initialized.hasFeaturesArray());
+        CHECK_FALSE(Json::parse(initialized.bytes()).contains("features"));
+    }
+    SECTION("a graph root without a section refuses every write") {
+        const std::string sectionless =
+            "{\"schema\": \"pelican.graph\", \"nodes\": []}";
+        const auto inspected =
+            AuthoredRenderConfigDocument::inspect(sectionless);
+        CHECK(inspected.isGraphRoot());
+        CHECK_FALSE(inspected.hasRenderingSection());
+        CHECK_FALSE(inspected.hasFeaturesArray());
+        CHECK(inspected.featureReferences().empty());
+        CHECK_THROWS_AS(inspected.withSectionValue("features", "[]"),
+                        RenderConfigSectionUnlocated);
+        CHECK_THROWS_AS(AuthoredRenderConfigDocument::initialize(sectionless),
+                        RenderConfigSectionUnlocated);
+        CHECK_THROWS_AS(AuthoredRenderConfigDocument::parse(sectionless),
+                        RenderConfigSectionUnlocated);
+        CHECK_THROWS_AS(
+            AuthoredRenderConfigDocument::inspect(
+                "{\"schema\": \"pelican.graph\", \"rendering\": 7}")
+                .withSectionValue("features", "[]"),
+            RenderConfigSectionUnlocated);
+        // A graph root's own keys are still addressable without a section:
+        // `edit_graph_document` keeps working on a document that has no
+        // rendering config yet.
+        CHECK(inspected.withRootValue("nodes", "[1]").bytes() ==
+              "{\"schema\": \"pelican.graph\", \"nodes\": [1]}");
     }
 }
 
@@ -2243,6 +2414,335 @@ TEST_CASE("Feature materialization saves the concrete feature and switches its o
     }
 }
 
+TEST_CASE("P-2a-4a authoring reads and writes the rendering section of a graph root",
+          "[render-config-editor][graph-root][p2a4a]") {
+    TemporaryAnimgraphProject project;
+    writeBytes(project.render_config, graphRootFixture("main"));
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    // Two compute tasks from a project feature: a graph root may not declare
+    // compute_tasks in its section (the lowering owns them), so the frame node
+    // order test needs nodes that come from a feature.
+    Json tasks = Json::array();
+    for (const auto *name : {"order_first", "order_second"})
+        tasks.push_back({{"name", name}, {"shader", "project://shaders/probe"},
+                         {"dispatch", {{"groups", {1, 1, 1}}}}, {"schedule", "per_frame"}});
+    writeBytes(project.root / "passes" / "order_tasks.json",
+               Json{{"schema", "pelican.render_feature"}, {"version", 1},
+                    {"name", "order_tasks"}, {"compute_tasks", tasks}}.dump(2));
+    {
+        auto document = Json::parse(readBytes(project.render_config));
+        document.at("rendering").at("features").push_back(
+            "project://passes/order_tasks.json");
+        writeBytes(project.render_config, document.dump(2) + "\n");
+    }
+    const auto before = readBytes(project.render_config);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+
+    // Acceptance 1: the dock sees what the composer sees.
+    const auto features = service->getRenderFeatures(Json::object());
+    INFO(features.dump());
+    REQUIRE(features.at("features") ==
+            Json::array({"engine://features/bloom.json",
+                         "engine://features/ui.json",
+                         "project://passes/order_tasks.json"}));
+    REQUIRE(features.at("feature_instances").size() == 3);
+    CHECK(features.at("feature_instances").at(0).at("reference") ==
+          "engine://features/bloom.json");
+    CHECK(features.at("feature_instances").at(0).at("scope") == "root");
+    CHECK(features.at("feature_instances").at(0).at("materializable") == true);
+    CHECK(features.at("has_uneditable_feature_entries") == false);
+
+    const auto commit = [&](const nlohmann::ordered_json &submission) {
+        INFO(submission.dump());
+        REQUIRE(submission.at("status") == "accepted");
+        service->commitPending();
+        const auto result =
+            service->getResult({{"ticket", submission.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        return readBytes(project.render_config);
+    };
+    const auto sourceDigest = [&] {
+        return service->getRenderFeatures(Json::object())
+            .at("source_digest")
+            .at("hex")
+            .get<std::string>();
+    };
+
+    SECTION("feature instance parameters are written into the section") {
+        const auto after = commit(service->editRenderFeatures(
+            {{"base_source_digest", sourceDigest()},
+             {"operations",
+              Json::array({Json{{"op", "set_parameters"},
+                                {"scope", "root"},
+                                {"index", 0},
+                                {"parameters", {{"intensity", 3.5}}}}})}}));
+        requireOnlySectionKeyChanged(before, after, "features");
+        CHECK(Json::parse(after).at("rendering").at("features").at(0) ==
+              Json{{"ref", "engine://features/bloom.json"},
+                   {"parameters", {{"intensity", 3.5}}}});
+        // The CAS is unchanged by the move: the digest still covers the whole
+        // document, so a stale base is still refused.
+        const auto stale = service->editRenderFeatures(
+            {{"base_source_digest", renderConfigSourceDigest(before)},
+             {"operations", Json::array()}});
+        CHECK(stale.at("status") == "rejected");
+        CHECK(stale.at("error").at("code") == "external_modification");
+    }
+
+    SECTION("an authored pass adds its managed fragment to the section") {
+        const Json pass{
+            {"name", "p2a4a_authored_probe"},
+            {"type", "fullscreen"},
+            {"input", Json::array({"gbuffer_normal"})},
+            {"output", {{"color", Json::array({"ssao_output"})}, {"depth", nullptr}}},
+            {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://fullscreen"}}}};
+        const auto accepted = service->addAuthoredPass(
+            {{"base_source_digest", sourceDigest()},
+             {"graph", "main_render"},
+             {"insert", "after:ssao_pass"},
+             {"pass", pass}});
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        const auto reference =
+            accepted.at("fragment_reference").get<std::string>();
+        service->commitPending();
+        REQUIRE(service->getResult({{"ticket", accepted.at("ticket")}})
+                    .at("committed") == true);
+        const auto after = readBytes(project.render_config);
+        requireOnlySectionKeyChanged(before, after, "features");
+        const auto section_features =
+            Json::parse(after).at("rendering").at("features");
+        CHECK(section_features.back() == reference);
+        CHECK(std::ranges::any_of(
+            runtime.frame_plan.at("nodes"), [](const auto &node) {
+                return node.value("name", std::string{}) ==
+                       "p2a4a_authored_probe";
+            }));
+        // The managed fragment is reachable from the section, so its baseline
+        // is loaded and an external edit is still detected.
+        service.reset();
+        service = makeProjectService(project, resolver, runtime);
+        const auto context =
+            service->getRenderAuthoringContext(Json::object());
+        const auto fragments = context.at("managed_fragments");
+        REQUIRE(fragments.size() == 1);
+        CHECK(fragments.at(0).at("reference") == reference);
+    }
+
+    SECTION("a new compute task feature is referenced from the section") {
+        const Json task{{"name", "p2a4a_task"},
+                        {"shader", "project://shaders/probe"},
+                        {"dispatch", {{"groups", {1, 1, 1}}}},
+                        {"schedule", "per_frame"}};
+        const auto after = commit(service->addComputeTask(
+            {{"base_source_digest", sourceDigest()},
+             {"destination_reference", "project://passes/p2a4a_task.json"},
+             {"task", task}}));
+        requireOnlySectionKeyChanged(before, after, "features");
+        CHECK(Json::parse(after).at("rendering").at("features").back() ==
+              "project://passes/p2a4a_task.json");
+    }
+
+    SECTION("frame node order is written into the section and reorders the plan") {
+        const auto position = [&](std::string_view name) {
+            const auto &nodes = runtime.frame_plan.at("nodes");
+            const auto found = std::find_if(
+                nodes.begin(), nodes.end(), [&](const auto &node) {
+                    return node.at("name").template get_ref<const std::string &>() == name;
+                });
+            REQUIRE(found != nodes.end());
+            return found - nodes.begin();
+        };
+        REQUIRE(position("order_first") < position("order_second"));
+        REQUIRE(service->getFrameNodeOrder(Json::object()).at("orders").empty());
+        const Json orders{{"main_render", {"order_second", "order_first"}}};
+        const auto after = commit(service->editFrameNodeOrder(
+            {{"base_source_digest",
+              service->getFrameNodeOrder(Json::object()).at("source_digest").at("hex")},
+             {"orders", orders}}));
+        requireOnlySectionKeyChanged(before, after, "frame_node_order");
+        CHECK(Json::parse(after).at("rendering").at("frame_node_order") == orders);
+        CHECK(position("order_second") < position("order_first"));
+        service.reset();
+        service = makeProjectService(project, resolver, runtime);
+        CHECK(service->getFrameNodeOrder(Json::object()).at("orders") == orders);
+    }
+
+    SECTION("scene acceleration structure definitions are written into the section") {
+        const auto context =
+            service->getSceneAccelerationStructures(Json::object());
+        REQUIRE(context.at("definitions") == Json::array());
+        const Json definitions =
+            Json::array({{{"name", "p2a4a_probe_as"}, {"instance_mask", 1}}});
+        const auto after = commit(service->editSceneAccelerationStructures(
+            {{"base_source_digest", context.at("source_digest").at("hex")},
+             {"definitions", definitions}}));
+        requireOnlySectionKeyChanged(before, after,
+                                     "scene_acceleration_structures");
+        CHECK(Json::parse(after).at("rendering").at("scene_acceleration_structures") ==
+              definitions);
+        service.reset();
+        service = makeProjectService(project, resolver, runtime);
+        CHECK(service->getSceneAccelerationStructures(Json::object())
+                  .at("definitions") == definitions);
+    }
+}
+
+TEST_CASE("P-2a-4a a graph root without a rendering section is refused by name",
+          "[render-config-editor][graph-root][p2a4a]") {
+    auto document = Json::parse(graphRootFixture("main"));
+    document.erase("rendering");
+    TemporaryConfig source{document.dump(2)};
+    ActualCpuRenderRuntime runtime;
+    auto service = makeService(source, runtime);
+    const auto before = readBytes(source.path);
+
+    // Reading answers "nothing authored here" instead of inventing a root.
+    const auto features = service->getRenderFeatures(Json::object());
+    CHECK(features.at("features") == Json::array());
+    CHECK(features.at("feature_instances").empty());
+
+    const auto digest = features.at("source_digest").at("hex").get<std::string>();
+    const auto rejected = service->editRenderFeatures(
+        {{"base_source_digest", digest},
+         {"operations", operation("add", buildAvailableReference)}});
+    INFO(rejected.dump());
+    CHECK(rejected.at("status") == "rejected");
+    CHECK(rejected.at("error").at("code") == "render_config_section_unlocated");
+    const auto order_rejected = service->editFrameNodeOrder(
+        {{"base_source_digest", digest}, {"orders", Json::object()}});
+    CHECK(order_rejected.at("status") == "rejected");
+    CHECK(order_rejected.at("error").at("code") ==
+          "render_config_section_unlocated");
+    CHECK(readBytes(source.path) == before);
+}
+
+TEST_CASE("P-2a-4a a preset under a graph root forks and takes features in its section",
+          "[render-config-editor][graph-root][p2a4a][preset]") {
+    TemporaryAnimgraphProject project;
+    writeBytes(project.render_config, graphRootFixture("preset_main"));
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    const auto before = readBytes(project.render_config);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto commit = [&](const nlohmann::ordered_json &submission) {
+        INFO(submission.dump());
+        REQUIRE(submission.at("status") == "accepted");
+        service->commitPending();
+        const auto result =
+            service->getResult({{"ticket", submission.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        return readBytes(project.render_config);
+    };
+
+    const auto context = service->getRenderAuthoringContext(Json::object());
+    REQUIRE(context.at("config_kind") == "preset");
+    REQUIRE(context.at("pipeline_preset").at("name") == "hybrid_v1");
+
+    SECTION("the forked preset reference replaces the section's pipeline") {
+        const auto after = commit(service->forkRenderPipeline(
+            {{"base_source_digest", context.at("source_digest").at("hex")},
+             {"base_preset_digest",
+              context.at("pipeline_preset").at("source_digest").at("hex")},
+             {"destination_reference", "project://passes/local-pipeline.json"}}));
+        requireOnlySectionKeyChanged(before, after, "pipeline");
+        CHECK(Json::parse(after).at("rendering").at("pipeline").at("preset") ==
+              "project://passes/local-pipeline.json");
+        CHECK(std::filesystem::exists(project.root / "passes" /
+                                      "local-pipeline.json"));
+    }
+
+    SECTION("features are removed from and added back to the section") {
+        const auto removed = commit(service->editRenderFeatures(
+            {{"base_source_digest",
+              service->getRenderFeatures(Json::object()).at("source_digest").at("hex")},
+             {"operations", operation("remove", buildAvailableReference)}}));
+        requireOnlySectionKeyChanged(before, removed, "features");
+        CHECK(Json::parse(removed).at("rendering").at("features").size() == 2);
+        const auto added = commit(service->editRenderFeatures(
+            {{"base_source_digest",
+              service->getRenderFeatures(Json::object()).at("source_digest").at("hex")},
+             {"operations", operation("add", buildAvailableReference)}}));
+        requireOnlySectionKeyChanged(removed, added, "features");
+        CHECK(Json::parse(added).at("rendering").at("features").size() == 3);
+        CHECK(Json::parse(added).at("rendering").at("features").back() ==
+              std::string{buildAvailableReference});
+    }
+}
+
+TEST_CASE("P-2a-4a root scope materialization rewrites the section and releases its regions",
+          "[render-config-editor][graph-root][p2a4a][feature-materialize-edit]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    // A project copy of the shipping bloom component whose composite pass
+    // carries a region tag, so materializing it must release the request the
+    // section holds -- the graph-root twin of the preset release path.
+    auto bloom = Json::parse(resolver.loadText("engine://features/bloom.json"));
+    auto &bloom_passes = bloom.at("passes");
+    bloom_passes.back().at("pass")["regions"] = Json::array({"region.bloom"});
+    writeBytes(project.root / "passes" / "bloom-source.json", bloom.dump(2));
+
+    auto document = Json::parse(graphRootFixture("main"));
+    auto &section = document.at("rendering");
+    section.at("features").at(0) = "project://passes/bloom-source.json";
+    for (auto &pass : section.at("rendering_passes").at(0).at("passes"))
+        if (pass.at("name") == "ssao_pass")
+            pass["regions"] = Json::array({"region.ssao"});
+    section.at("rendering_passes").at(0)["region_replacements"] = Json::array({
+        {{"region", "region.bloom"}, {"provider", "builtin.identity_v1"}},
+        {{"region", "region.ssao"}, {"provider", "builtin.identity_v1"}}});
+    writeBytes(project.render_config, document.dump(2) + "\n");
+    const auto before = readBytes(project.render_config);
+
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto features = service->getRenderFeatures(Json::object());
+    const auto &instance = features.at("feature_instances").at(0);
+    REQUIRE(instance.at("reference") == "project://passes/bloom-source.json");
+    REQUIRE(instance.at("materializable") == true);
+    const auto accepted = service->editRenderFeatures(
+        {{"base_source_digest", features.at("source_digest").at("hex")},
+         {"operations",
+          Json::array({Json{{"op", "materialize"},
+                            {"scope", "root"},
+                            {"index", 0},
+                            {"destination_reference",
+                             "project://passes/bloom-local.json"},
+                            {"base_feature_digest",
+                             instance.at("feature_document_digest").at("hex")}}})}});
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    service->commitPending();
+    const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("committed") == true);
+
+    const auto after = readBytes(project.render_config);
+    const auto after_document = Json::parse(after);
+    REQUIRE(rootKeys(after_document) == rootKeys(Json::parse(before)));
+    const auto &after_section = after_document.at("rendering");
+    // The owner reference moved in the section, not at the root.
+    CHECK(after_section.at("features").at(0) ==
+          "project://passes/bloom-local.json");
+    // The released region is gone from the section's own graph; the unrelated
+    // request is still there.  Without the section locator this whole edit is
+    // a no-op (the root has no rendering_passes to look at).
+    CHECK(after_section.at("rendering_passes").at(0).at("region_replacements") ==
+          Json::array({{{"region", "region.ssao"},
+                        {"provider", "builtin.identity_v1"}}}));
+    const auto derived = Json::parse(
+        readBytes(project.root / "passes" / "bloom-local.json"));
+    CHECK(derived.at("name") == "bloom");
+    CHECK(derived.at("passes").size() == bloom.at("passes").size());
+    CHECK(derived.contains("bound_parameters"));
+}
+
 TEST_CASE("The shipping bloom component is readable from the project and derives without touching the engine document",
           "[render-config-editor][feature-materialize-edit][bloom][p2a1b]") {
     TemporaryAnimgraphProject project;
@@ -2366,6 +2866,269 @@ TEST_CASE("The shipping bloom component is readable from the project and derives
     CHECK(Json::parse(readBytes(project.render_config)).at("features").at(index) ==
           Json{{"ref", "project://passes/bloom-local.json"},
                {"parameters", {{"intensity", 5.0}}}});
+}
+
+TEST_CASE("P-2a-3 a derived feature is published as a component and copied into another project",
+          "[render-config-editor][render-component][p2a3]") {
+    TemporaryDirectory user_root{"p2a3-user"};
+    TemporaryAnimgraphProject source_project;
+    writeBytes(source_project.render_config, graphRootFixture("main"));
+    PathResolver source_resolver;
+    source_resolver.setup(source_project.root, false,
+                          readBytes(source_project.root / "project.json"),
+                          user_root.path);
+    ActualCpuRenderRuntime source_runtime;
+    auto source_service =
+        makeProjectService(source_project, source_resolver, source_runtime);
+
+    // Only a derivative is shareable, so the export starts where P-2a-1b ends.
+    const auto before = source_service->getRenderFeatures(Json::object());
+    const auto &engine_bloom = before.at("feature_instances").at(0);
+    REQUIRE(engine_bloom.at("reference") == "engine://features/bloom.json");
+    const auto materialized = source_service->editRenderFeatures(
+        {{"base_source_digest", before.at("source_digest").at("hex")},
+         {"operations",
+          Json::array({Json{{"op", "materialize"},
+                            {"scope", "root"},
+                            {"index", 0},
+                            {"destination_reference",
+                             "project://passes/bloom-local.json"},
+                            {"base_feature_digest",
+                             engine_bloom.at("feature_document_digest").at("hex")}}})}});
+    INFO(materialized.dump());
+    REQUIRE(materialized.at("status") == "accepted");
+    source_service->commitPending();
+    REQUIRE(source_service->getResult({{"ticket", materialized.at("ticket")}})
+                .at("committed") == true);
+    source_service.reset();
+    source_service =
+        makeProjectService(source_project, source_resolver, source_runtime);
+    const auto derived_bytes =
+        readBytes(source_project.root / "passes" / "bloom-local.json");
+    const auto project_before = readBytes(source_project.render_config);
+
+    // An engine feature is already shared; the component is the derivative.
+    const auto engine_export =
+        source_service->exportRenderFeature({{"scope", "root"}, {"index", 1}});
+    CHECK(engine_export.at("status") == "rejected");
+    CHECK(engine_export.at("error").at("code") ==
+          "render_component_engine_reference");
+
+    const auto exported =
+        source_service->exportRenderFeature({{"scope", "root"}, {"index", 0}});
+    INFO(exported.dump());
+    REQUIRE(exported.at("status") == "exported");
+    CHECK(exported.at("component_reference") == "user://components/bloom");
+    const auto component_dir = user_root.path / "components" / "bloom";
+    REQUIRE(std::filesystem::is_regular_file(component_dir / "feature.json"));
+    REQUIRE(std::filesystem::is_regular_file(component_dir / "component.json"));
+    CHECK(readBytes(component_dir / "feature.json") == derived_bytes);
+    const auto manifest = Json::parse(readBytes(component_dir / "component.json"));
+    CHECK(manifest.at("schema") == "pelican.render_component");
+    CHECK(manifest.at("version") == 1);
+    CHECK(manifest.at("name") == "bloom");
+    CHECK(manifest.at("sha256") == renderConfigSourceDigest(derived_bytes));
+    CHECK(manifest.at("source").at("reference") ==
+          "project://passes/bloom-local.json");
+    // The host contract: bloom reads the project's lit_color and writes the
+    // engine's swapchain. Neither is in the feature's own render_targets.
+    CHECK(manifest.at("requires").at("render_targets") ==
+          Json::array({"lit_color", "swapchain"}));
+    // Publishing is a read of the project.
+    CHECK(readBytes(source_project.render_config) == project_before);
+    // No staging directory survives a finished export.
+    for (const auto &entry :
+         std::filesystem::directory_iterator{user_root.path / "components"}) {
+        CHECK(entry.path().filename().string() == "bloom");
+    }
+    const auto repeated =
+        source_service->exportRenderFeature({{"scope", "root"}, {"index", 0}});
+    CHECK(repeated.at("status") == "rejected");
+    CHECK(repeated.at("error").at("code") ==
+          "render_component_destination_exists");
+
+    TemporaryDirectory destination_user_root{"p2a3-user2"};
+    TemporaryAnimgraphProject destination_project;
+    auto destination_document = Json::parse(graphRootFixture("main"));
+    destination_document.at("rendering").at("features") =
+        Json::array({"engine://features/ui.json"});
+    writeBytes(destination_project.render_config,
+               destination_document.dump(2) + "\n");
+    PathResolver destination_resolver;
+    destination_resolver.setup(
+        destination_project.root, false,
+        readBytes(destination_project.root / "project.json"),
+        destination_user_root.path);
+    ActualCpuRenderRuntime destination_runtime;
+    auto destination_service = makeProjectService(
+        destination_project, destination_resolver, destination_runtime);
+    const auto destination_digest = [&] {
+        return destination_service->getRenderFeatures(Json::object())
+            .at("source_digest")
+            .at("hex")
+            .get<std::string>();
+    };
+    const auto hasBloomPasses = [](const Json &plan) {
+        return std::ranges::any_of(plan.at("nodes"), [](const auto &node) {
+            return node.value("name", std::string{}) == "FinalBloomComposite";
+        });
+    };
+    REQUIRE_FALSE(hasBloomPasses(destination_runtime.frame_plan));
+
+    SECTION("the imported component is a copy the source no longer owns") {
+        const auto accepted = destination_service->importRenderFeature(
+            {{"base_source_digest", destination_digest()},
+             {"source_dir", component_dir.string()},
+             {"destination_reference", "project://passes/bloom-imported.json"}});
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        destination_service->commitPending();
+        REQUIRE(destination_service
+                    ->getResult({{"ticket", accepted.at("ticket")}})
+                    .at("committed") == true);
+        const auto imported_path =
+            destination_project.root / "passes" / "bloom-imported.json";
+        CHECK(readBytes(imported_path) == derived_bytes);
+        const auto saved = Json::parse(readBytes(destination_project.render_config));
+        CHECK(saved.at("rendering").at("features") ==
+              Json::array({"engine://features/ui.json",
+                           "project://passes/bloom-imported.json"}));
+        CHECK_FALSE(saved.contains("features"));
+        CHECK(hasBloomPasses(destination_runtime.frame_plan));
+
+        // The control for "copy": deleting the published component leaves the
+        // importing project drawing the same frame.
+        const auto plan_before = destination_runtime.frame_plan;
+        std::filesystem::remove_all(component_dir);
+        destination_service.reset();
+        destination_service = makeProjectService(
+            destination_project, destination_resolver, destination_runtime);
+        CHECK(destination_runtime.frame_plan == plan_before);
+        CHECK(hasBloomPasses(destination_runtime.frame_plan));
+
+        // A second import of the same destination is refused by name.
+        std::filesystem::create_directories(component_dir);
+        writeBytes(component_dir / "feature.json", derived_bytes);
+        writeBytes(component_dir / "component.json",
+                   Json{{"schema", "pelican.render_component"},
+                        {"version", 1},
+                        {"name", "bloom"},
+                        {"feature", "feature.json"},
+                        {"sha256", renderConfigSourceDigest(derived_bytes)},
+                        {"requires", {{"render_targets", Json::array({"lit_color", "swapchain"})}}}}
+                       .dump(2));
+        const auto again = destination_service->importRenderFeature(
+            {{"base_source_digest", destination_digest()},
+             {"source_dir", component_dir.string()},
+             {"destination_reference", "project://passes/bloom-imported.json"}});
+        CHECK(again.at("status") == "rejected");
+        CHECK(again.at("error").at("code") == "feature_destination_exists");
+    }
+
+    SECTION("a component that does not survive the trip is refused by name") {
+        const auto project_bytes = readBytes(destination_project.render_config);
+        const auto refuse = [&](const std::filesystem::path &source) {
+            return destination_service->importRenderFeature(
+                {{"base_source_digest", destination_digest()},
+                 {"source_dir", source.string()},
+                 {"destination_reference",
+                  "project://passes/bloom-imported.json"}});
+        };
+
+        TemporaryDirectory tampered{"p2a3-tampered"};
+        const auto tampered_component = tampered.path / "bloom";
+        std::filesystem::create_directories(tampered_component);
+        writeBytes(tampered_component / "feature.json", derived_bytes + " ");
+        writeBytes(tampered_component / "component.json",
+                   readBytes(component_dir / "component.json"));
+        const auto mismatched = refuse(tampered_component);
+        CHECK(mismatched.at("status") == "rejected");
+        CHECK(mismatched.at("error").at("code") ==
+              "render_component_digest_mismatch");
+
+        std::filesystem::remove(tampered_component / "component.json");
+        const auto invalid = refuse(tampered_component);
+        CHECK(invalid.at("status") == "rejected");
+        CHECK(invalid.at("error").at("code") == "render_component_invalid");
+
+        const auto inside = refuse(destination_project.root / "passes");
+        CHECK(inside.at("status") == "rejected");
+        CHECK(inside.at("error").at("code") ==
+              "render_component_source_inside_project");
+
+        // Nothing above reached a transaction.
+        CHECK(readBytes(destination_project.render_config) == project_bytes);
+        CHECK_FALSE(std::filesystem::exists(destination_project.root / "passes" /
+                                            "bloom-imported.json"));
+    }
+}
+
+TEST_CASE("P-2a-3 a component states the host contract it cannot carry",
+          "[render-config-editor][render-component][p2a3]") {
+    // The shipping project:// feature: four project shader references, so the
+    // one candidate the shipped projects offer is refused by name instead of
+    // producing a component that cannot be built anywhere else.
+    const auto spheres = readBytes(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                                   "projects" / "raytracing_demo" / "features" /
+                                   "spheres.json");
+    try {
+        (void)buildRenderComponent(spheres, "project://features/spheres.json",
+                                   "raytracing_demo");
+        FAIL("spheres.json carries project:// shaders and is not shareable");
+    } catch (const RenderComponentError &error) {
+        CHECK(error.code() == "render_component_project_reference");
+        CHECK(std::string{error.what()}.find("project://shaders/") !=
+              std::string::npos);
+    }
+
+    // A project that declares none of the render targets the component reads
+    // is told which names are missing rather than composing into a failure.
+    TemporaryDirectory user_root{"p2a3-minimal-user"};
+    TemporaryAnimgraphProject project;
+    const auto minimal = Json::parse(R"json({
+      "schema": "pelican.graph", "version": 1,
+      "definitions": {}, "nodes": [], "outputs": {},
+      "rendering": {
+        "features": [],
+        "render_targets": [],
+        "rendering_passes": [{"name": "main_render", "passes": [{
+          "name": "present", "type": "fullscreen", "input": [],
+          "shader": {"vertex": "engine://fullscreen", "fragment": "engine://fullscreen"},
+          "output": {"color": "swapchain", "depth": null}}]}]
+      }})json");
+    writeBytes(project.render_config, minimal.dump(2) + "\n");
+    PathResolver resolver;
+    resolver.setup(project.root, false,
+                   readBytes(project.root / "project.json"), user_root.path);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+
+    TemporaryDirectory library{"p2a3-library"};
+    const auto component = library.path / "bloom";
+    const auto feature = engineResourceOrThrow("features/bloom.json");
+    std::filesystem::create_directories(component);
+    writeBytes(component / "feature.json", feature);
+    writeBytes(component / "component.json",
+               Json{{"schema", "pelican.render_component"},
+                    {"version", 1},
+                    {"name", "bloom"},
+                    {"feature", "feature.json"},
+                    {"sha256", renderConfigSourceDigest(feature)},
+                    {"requires",
+                     {{"render_targets", Json::array({"lit_color", "swapchain"})}}}}
+                   .dump(2));
+    const auto rejected = service->importRenderFeature(
+        {{"base_source_digest",
+          service->getRenderFeatures(Json::object()).at("source_digest").at("hex")},
+         {"source_dir", component.string()},
+         {"destination_reference", "project://passes/bloom-imported.json"}});
+    INFO(rejected.dump());
+    CHECK(rejected.at("status") == "rejected");
+    CHECK(rejected.at("error").at("code") == "render_component_requires_missing");
+    // swapchain is the engine's own output and is never missing.
+    CHECK(rejected.at("error").at("render_targets") == Json::array({"lit_color"}));
+    CHECK_FALSE(std::filesystem::exists(project.root / "passes" /
+                                        "bloom-imported.json"));
 }
 
 TEST_CASE("Pipeline fork saves the original preset and switches the root atomically",

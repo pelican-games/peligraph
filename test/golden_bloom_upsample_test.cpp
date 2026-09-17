@@ -11,6 +11,18 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "P-2a-4a a pelican.graph root draws the legacy frame and its derivative still changes it",
+    "[golden][headless][p2a4a][graph-root][bloom]") {
+    GoldenHarness::runGraphRootBloom();
+}
+
+TEST_CASE(
+    "P-2a-3 an imported render component draws the frame its exporting project drew",
+    "[golden][headless][p2a3][render-component][bloom]") {
+    GoldenHarness::runImportedRenderComponent();
+}
+
+TEST_CASE(
     "WP357 attachment Load differs from explicit zero Clear in a minimal graph",
     "[golden][headless][wp357][bloom][load]") {
     GoldenHarness::runBloomLoadSemantics();

@@ -24,6 +24,8 @@ struct FeatureElementToken {
     std::string reference;
 };
 
+constexpr std::string_view renderingSectionKey = "rendering";
+
 class JsonCursor {
     std::string_view bytes_;
     std::size_t position_ = 0;
@@ -56,6 +58,11 @@ class JsonCursor {
             position_ = 3;
         }
     }
+
+    // Re-enters the same bytes at a nested value: the section scan reuses the
+    // root scan instead of becoming a second lexer.
+    JsonCursor(std::string_view bytes, std::size_t position)
+        : bytes_{bytes}, position_{position} {}
 
     std::size_t position() const noexcept { return position_; }
     bool atEnd() const noexcept { return position_ == bytes_.size(); }
@@ -181,9 +188,11 @@ struct RootLocation {
     std::size_t selected_end = 0;
 };
 
-RootLocation locateRootMembers(std::string_view bytes,
-    std::optional<std::string_view> selected_key = std::nullopt) {
-    JsonCursor cursor{bytes};
+// Scans one JSON object's members lexically. `cursor` is positioned at the
+// object's opening brace; `require_end` is true only for the document root,
+// where trailing bytes are an error.
+RootLocation locateObjectMembers(JsonCursor cursor, bool require_end,
+    std::optional<std::string_view> selected_key) {
     cursor.skipWhitespace();
     RootLocation result;
     result.root_open = cursor.position();
@@ -262,11 +271,28 @@ RootLocation locateRootMembers(std::string_view bytes,
         }
     }
     cursor.skipWhitespace();
-    if (!cursor.atEnd()) {
+    if (require_end && !cursor.atEnd()) {
         throw std::invalid_argument(
             "render config has trailing bytes after its root object");
     }
     return result;
+}
+
+RootLocation locateRootMembers(std::string_view bytes,
+    std::optional<std::string_view> selected_key = std::nullopt) {
+    return locateObjectMembers(JsonCursor{bytes}, true, selected_key);
+}
+
+// The `rendering` section of a graph root, located in the same bytes so every
+// offset stays absolute and the document digest keeps covering the whole file.
+RootLocation locateSectionMembers(std::string_view bytes,
+    std::optional<std::string_view> selected_key = std::nullopt) {
+    const auto root = locateRootMembers(bytes, renderingSectionKey);
+    if (!root.selected_found) throw RenderConfigSectionUnlocated{};
+    JsonCursor cursor{bytes, root.selected_begin};
+    cursor.skipWhitespace();
+    if (cursor.peek() != '{') throw RenderConfigSectionUnlocated{};
+    return locateObjectMembers(cursor, false, selected_key);
 }
 
 std::string encodedJsonString(std::string_view value) {
@@ -385,6 +411,15 @@ std::string renderConfigSourceDigest(std::string_view bytes) {
     return picosha2::hash256_hex_string(bytes.begin(), bytes.end());
 }
 
+RenderConfigSectionUnlocated::RenderConfigSectionUnlocated()
+    : std::invalid_argument(
+          "graph root render config has no rendering section object") {}
+
+bool isGraphRootKey(std::string_view key) {
+    return key == "schema" || key == "version" || key == "definitions" ||
+           key == "nodes" || key == "outputs";
+}
+
 RenderConfigCandidateDocumentSet::RenderConfigCandidateDocumentSet(
     std::string root_normalized_reference,
     std::vector<RenderConfigCandidateDocument> documents)
@@ -488,12 +523,28 @@ AuthoredRenderConfigDocument::AuthoredRenderConfigDocument(
         if (!semantic.is_object()) {
             throw std::invalid_argument("render config root must be an object");
         }
-        if (semantic.contains("features") &&
-            !semantic.at("features").is_array()) {
+        graph_root_ =
+            semantic.value("schema", std::string{}) == "pelican.graph";
+        // A graph root keeps the authored rendering config one level down.
+        // Everything below reads and writes that object, so `features` at the
+        // root of a graph document is not this document's features array.
+        const auto *section = &semantic;
+        if (graph_root_) {
+            const auto found = semantic.find(
+                std::string{renderingSectionKey});
+            if (found == semantic.end() || !found->is_object()) {
+                if (require_features) throw RenderConfigSectionUnlocated{};
+                return;
+            }
+            section = &*found;
+        }
+        section_located_ = true;
+        if (section->contains("features") &&
+            !section->at("features").is_array()) {
             throw std::invalid_argument(
                 "render config requires a top-level features array");
         }
-        if (require_features && !semantic.contains("features")) {
+        if (require_features && !section->contains("features")) {
             throw std::invalid_argument(
                 "render config requires a top-level features array");
         }
@@ -501,8 +552,10 @@ AuthoredRenderConfigDocument::AuthoredRenderConfigDocument(
         throw std::invalid_argument(
             std::string{"render config is not valid JSON: "} + error.what());
     }
+    if (!section_located_) return;
 
-    const auto location = locateRootMembers(bytes_);
+    const auto location = graph_root_ ? locateSectionMembers(bytes_)
+                                      : locateRootMembers(bytes_);
     if (!location.found) {
         if (require_features) {
             throw std::invalid_argument(
@@ -532,13 +585,27 @@ AuthoredRenderConfigDocument::AuthoredRenderConfigDocument(
 
 AuthoredRenderConfigDocument
 AuthoredRenderConfigDocument::initialize(std::string bytes) {
+    bool graph_root = false;
     try {
         const auto semantic = nlohmann::json::parse(bytes);
         if (!semantic.is_object()) {
             throw std::invalid_argument(
                 "render config root must be an object");
         }
-        if (semantic.contains("features")) {
+        graph_root =
+            semantic.value("schema", std::string{}) == "pelican.graph";
+        const auto *section = &semantic;
+        if (graph_root) {
+            const auto found = semantic.find(
+                std::string{renderingSectionKey});
+            // The features array belongs in the section the composer reads.
+            // Without one there is no silent root member to fall back on.
+            if (found == semantic.end() || !found->is_object()) {
+                throw RenderConfigSectionUnlocated{};
+            }
+            section = &*found;
+        }
+        if (section->contains("features")) {
             return parse(std::move(bytes));
         }
     } catch (const nlohmann::json::exception &error) {
@@ -547,7 +614,8 @@ AuthoredRenderConfigDocument::initialize(std::string bytes) {
             error.what());
     }
 
-    const auto location = locateRootMembers(bytes);
+    const auto location = graph_root ? locateSectionMembers(bytes)
+                                     : locateRootMembers(bytes);
     const auto insertion = missingRootMemberInsertion(bytes, location, "\"features\": []");
     bytes.insert(insertion.offset, insertion.bytes);
     return parse(std::move(bytes));
@@ -573,6 +641,29 @@ AuthoredRenderConfigDocument AuthoredRenderConfigDocument::withRootValue(
     value_cursor.skipValue();
     const auto value = json_value.substr(value_begin, value_cursor.position() - value_begin);
     const auto location = locateRootMembers(bytes_, key);
+    auto edited = bytes_;
+    if (location.selected_found) {
+        edited.replace(location.selected_begin, location.selected_end - location.selected_begin, value);
+    } else {
+        const auto member = encodedJsonString(key) + ": " + std::string{value};
+        const auto insertion = missingRootMemberInsertion(bytes_, location, member);
+        edited.insert(insertion.offset, insertion.bytes);
+    }
+    return inspect(std::move(edited));
+}
+
+AuthoredRenderConfigDocument AuthoredRenderConfigDocument::withSectionValue(
+    std::string_view key, std::string_view json_value) const {
+    if (!graph_root_ || isGraphRootKey(key))
+        return withRootValue(key, json_value);
+    if (!nlohmann::json::accept(json_value))
+        throw std::invalid_argument("render config section replacement must be one valid JSON value");
+    JsonCursor value_cursor{json_value};
+    value_cursor.skipWhitespace();
+    const auto value_begin = value_cursor.position();
+    value_cursor.skipValue();
+    const auto value = json_value.substr(value_begin, value_cursor.position() - value_begin);
+    const auto location = locateSectionMembers(bytes_, key);
     auto edited = bytes_;
     if (location.selected_found) {
         edited.replace(location.selected_begin, location.selected_end - location.selected_begin, value);

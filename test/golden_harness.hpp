@@ -44,6 +44,8 @@ void runSsaoBlurPlanarOracle();
 void runSsaoBlurCrossFamilyOracle();
 void runSsaoBlurIntegrationSmoke();
 void runBloomUpsampleOracle();
+void runGraphRootBloom();
+void runImportedRenderComponent();
 void runBloomLoadSemantics();
 void runBloomFeatureParameters();
 

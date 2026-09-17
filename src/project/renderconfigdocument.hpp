@@ -2,11 +2,25 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace Pelican {
+
+// P-2a-4a: a `pelican.graph` root owns five keys of its own and keeps the
+// whole legacy rendering config under `rendering`. One predicate decides
+// where a key lives so no caller grows its own `if (graph)`.
+bool isGraphRootKey(std::string_view key);
+
+// A graph root without an object `rendering` member has nowhere to put an
+// authored key. Authoring says so by name instead of writing a member the
+// composer never reads.
+class RenderConfigSectionUnlocated : public std::invalid_argument {
+  public:
+    RenderConfigSectionUnlocated();
+};
 
 // WP331's byte-lossless authoring contract is deliberately separate from the
 // scene document's semantic encoder.  The root bytes remain authoritative;
@@ -21,6 +35,8 @@ class AuthoredRenderConfigDocument {
 
     std::string bytes_;
     std::string digest_;
+    bool graph_root_ = false;
+    bool section_located_ = false;
     bool has_features_array_ = false;
     std::size_t features_open_ = 0;
     std::size_t features_close_ = 0;
@@ -54,7 +70,17 @@ class AuthoredRenderConfigDocument {
         return features_close_;
     }
 
+    // True when the root is `pelican.graph`; the section is then `rendering`.
+    bool isGraphRoot() const noexcept { return graph_root_; }
+    // A legacy root is its own section, so this is false only for a graph
+    // root whose `rendering` member is missing or not an object.
+    bool hasRenderingSection() const noexcept { return section_located_; }
+
     AuthoredRenderConfigDocument withRootValue(
+        std::string_view key, std::string_view json_value) const;
+    // Writes the key where the composer reads it: the root for a legacy
+    // document or for a graph root's own keys, `rendering.<key>` otherwise.
+    AuthoredRenderConfigDocument withSectionValue(
         std::string_view key, std::string_view json_value) const;
 
     bool containsFeature(std::string_view reference) const noexcept;

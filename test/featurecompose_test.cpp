@@ -3225,6 +3225,142 @@ TEST_CASE("startup feature overlay is explicit, additive, and purgeable",
                 nlohmann::json("engine://features/gizmo.json")) == 1);
 }
 
+TEST_CASE("P-2a-4a a pelican.graph root composes like its legacy twin and takes overlays in its section",
+          "[render-feature][graph-root][overlay][p2a4a]") {
+    const auto source_root = std::filesystem::path{PELICAN_TEST_SOURCE_DIR};
+    const auto graph_root =
+        readJson(source_root / "test" / "fixtures" / "graph_root_example" /
+                 "passes" / "main.json");
+    const auto legacy = readJson(source_root / "projects" / "example" /
+                                 "passes" / "main_rendering_config.json");
+    // The fixture is the shipping config, moved verbatim under `rendering`.
+    // If the shipping project changes, this says so instead of quietly
+    // comparing two different configs below.
+    REQUIRE(graph_root.at("rendering") == legacy);
+    REQUIRE(graph_root.at("schema") == "pelican.graph");
+
+    struct Topology {
+        std::set<std::tuple<std::string, std::string>> nodes;
+        std::set<std::tuple<std::string, std::string, std::string,
+                            std::string>> edges;
+    };
+    const auto compose = [](const nlohmann::json &document) {
+        return composeRenderFeatureConfig(
+            document,
+            RenderFeatureComposeDependencies{loadEngineFeature, true});
+    };
+    const auto topology = [](const RenderFeatureComposeResult &composition) {
+        const auto graphs =
+            parseFrameGraphDefinitionsFromConfigJson(composition.config);
+        REQUIRE(graphs.size() == 1);
+        const auto plan = planFrameGraph(graphs.front());
+        const auto execution = compileFrameExecutionPlan(
+            graphs.front(), plan,
+            ExecutionEndpoint{
+                .id = "device:0",
+                .endpoint_class = ExecutionEndpointClass::device,
+                .backend = "vulkan",
+            });
+        Topology result;
+        for (const auto &node : plan.nodes)
+            result.nodes.emplace(node.name, framePlanNodeKindName(node.kind));
+        for (const auto &edge : execution.dependencies)
+            result.edges.emplace(edge.from, edge.to, edge.reason, edge.resource);
+        return result;
+    };
+
+    const auto legacy_composition = compose(legacy);
+    const auto graph_composition = compose(graph_root);
+    const auto passNames = [](const RenderFeatureComposeResult &composition) {
+        std::vector<std::string> names;
+        for (const auto &family : composition.config.at("rendering_passes"))
+            for (const auto &pass : family.at("passes"))
+                names.push_back(pass.value("name", std::string{}));
+        return names;
+    };
+    const auto targetNames = [](const RenderFeatureComposeResult &composition) {
+        std::vector<std::string> names;
+        for (const auto &target : composition.config.at("render_targets"))
+            names.push_back(target.value("name", std::string{}));
+        return names;
+    };
+    REQUIRE(graph_composition.feature_names ==
+            legacy_composition.feature_names);
+    REQUIRE(graph_composition.feature_names ==
+            std::vector<std::string>{"bloom", "ui"});
+    REQUIRE(passNames(graph_composition) == passNames(legacy_composition));
+    REQUIRE(targetNames(graph_composition) == targetNames(legacy_composition));
+    // The graph lowering adds its own (empty) buffer and compute_task arrays;
+    // everything the frame is built from is the same document.
+    auto graph_config = graph_composition.config;
+    auto legacy_config = legacy_composition.config;
+    for (const auto *key : {"buffers", "compute_tasks"}) {
+        if (graph_config.value(key, nlohmann::json::array()).empty())
+            graph_config.erase(key);
+        if (legacy_config.value(key, nlohmann::json::array()).empty())
+            legacy_config.erase(key);
+    }
+    REQUIRE(graph_config == legacy_config);
+    const auto legacy_topology = topology(legacy_composition);
+    REQUIRE(topology(graph_composition).nodes == legacy_topology.nodes);
+    REQUIRE(topology(graph_composition).edges == legacy_topology.edges);
+
+    // A preset under a graph root resolves the same way (no test existed, and
+    // P-2a-4b moves a preset project first).
+    const auto preset_graph_root =
+        readJson(source_root / "test" / "fixtures" / "graph_root_example" /
+                 "passes" / "preset_main.json");
+    const auto preset_legacy = readJson(source_root / "projects" /
+                                        "animgraph_demo" / "passes" / "main.json");
+    REQUIRE(preset_graph_root.at("rendering") == preset_legacy);
+    const auto preset_legacy_composition = compose(preset_legacy);
+    const auto preset_graph_composition = compose(preset_graph_root);
+    REQUIRE(preset_graph_composition.feature_names ==
+            preset_legacy_composition.feature_names);
+    REQUIRE(passNames(preset_graph_composition) ==
+            passNames(preset_legacy_composition));
+    REQUIRE(targetNames(preset_graph_composition) ==
+            targetNames(preset_legacy_composition));
+    REQUIRE(preset_graph_composition.pipeline_preset.has_value());
+    REQUIRE(preset_graph_composition.pipeline_preset->reference ==
+            preset_legacy_composition.pipeline_preset->reference);
+
+    // The startup overlay lands in the section the composer reads.  Adding it
+    // at the root is exactly the silent loss this work removes.
+    const std::vector<std::string> overlays{
+        std::string{editorFeatureOverlayReference}};
+    const auto overlaid =
+        applyRenderFeatureOverlays(graph_root, overlays, loadEngineFeature);
+    REQUIRE_FALSE(overlaid.contains("features"));
+    REQUIRE(overlaid.at("rendering").at("features") ==
+            nlohmann::json::array({"engine://features/bloom.json",
+                                   "engine://features/ui.json",
+                                   "engine://features/gizmo.json",
+                                   "engine://features/picking.json",
+                                   "engine://features/gpu_timing.json"}));
+    REQUIRE(compose(overlaid).feature_names ==
+            std::vector<std::string>{"bloom", "ui", "gizmo", "picking",
+                                     "gpu_timing"});
+    // Everything else in the document is untouched.
+    auto without_features = overlaid;
+    without_features.at("rendering").at("features") =
+        graph_root.at("rendering").at("features");
+    REQUIRE(without_features == graph_root);
+
+    // A graph root with no place to put them says so by name.
+    auto sectionless = graph_root;
+    sectionless.erase("rendering");
+    REQUIRE_THROWS_WITH(
+        applyRenderFeatureOverlays(sectionless, overlays, loadEngineFeature),
+        Catch::Matchers::ContainsSubstring(
+            "render_config.section_unlocated@1"));
+    sectionless["rendering"] = 7;
+    REQUIRE_THROWS_WITH(
+        applyRenderFeatureOverlays(sectionless, overlays, loadEngineFeature),
+        Catch::Matchers::ContainsSubstring(
+            "render_config.section_unlocated@1"));
+}
+
 TEST_CASE("startup feature overlay accepts only its strict v1 envelope",
           "[render-feature][overlay][format][wp289]") {
     const auto base = nlohmann::json{{"features", nlohmann::json::array()}};

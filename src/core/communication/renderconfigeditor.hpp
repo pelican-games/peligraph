@@ -203,6 +203,12 @@ class RenderConfigEditorService {
         const nlohmann::json &params) const;
     nlohmann::ordered_json editRenderFeatures(
         const nlohmann::json &params);
+    // P-2a-3: publish one materialized feature as a shared component under
+    // `user://components/<name>/`, and take one back into another project.
+    nlohmann::ordered_json exportRenderFeature(
+        const nlohmann::json &params);
+    nlohmann::ordered_json importRenderFeature(
+        const nlohmann::json &params);
     nlohmann::ordered_json getRenderAuthoringContext(
         const nlohmann::json &params) const;
     nlohmann::ordered_json addAuthoredPass(

@@ -1,5 +1,6 @@
 #include "../shader/raygrouplayout.hpp"
 #include "renderconfigeditor.hpp"
+#include "../../project/rendercomponent.hpp"
 #include "../../project/rasterrayquery.hpp"
 #include "../../project/rasterpass.hpp"
 #include "../../project/featurecompose.hpp"
@@ -196,13 +197,38 @@ std::string primaryReason(const std::vector<std::string> &reasons) {
                            : reasons.front();
 }
 
+// P-2a-4a: one place decides where an authored key lives. A legacy root is
+// its own section; a `pelican.graph` root keeps the authored rendering config
+// under `rendering`. Every reader and writer goes through these two, so no
+// caller grows its own `if (graph)` and no edit addresses the root by accident.
+template <class JsonLike>
+JsonLike &renderingSectionOf(JsonLike &root) {
+    if (root.value("schema", std::string{}) != "pelican.graph") return root;
+    const auto found = root.find("rendering");
+    if (found == root.end() || !found->is_object())
+        throw RenderConfigSectionUnlocated{};
+    return *found;
+}
+
+// Reads answer "nothing authored here" for a graph root without a section;
+// only an edit is refused by name.
+const Json &renderingSectionOrEmpty(const Json &root) {
+    static const Json empty = Json::object();
+    try {
+        return renderingSectionOf(root);
+    } catch (const RenderConfigSectionUnlocated &) {
+        return empty;
+    }
+}
+
 constexpr std::string_view managedFragmentDirectory =
     "project://passes/authoring/";
 constexpr std::string_view managedMarkerField =
     "pelican_editor_managed";
 
 std::vector<std::string> allFeatureReferences(std::string_view bytes) {
-    const auto root = Json::parse(bytes);
+    const auto document = Json::parse(bytes);
+    const auto &root = renderingSectionOrEmpty(document);
     std::vector<std::string> result;
     const auto features = root.find("features");
     if (features == root.end()) return result;
@@ -285,6 +311,28 @@ std::string provenanceSourceName(RenderPipelineProvenanceSource source) {
     case RenderPipelineProvenanceSource::engine: return "engine";
     }
     return "engine";
+}
+
+// P-2a-3: an imported component is read from outside the project.  A path
+// inside it is refused by name so the one way to reference a document in the
+// project stays `project://`.
+bool isWithinDirectory(const std::filesystem::path &root,
+                       const std::filesystem::path &candidate) {
+    std::error_code error;
+    const auto canonical_root = std::filesystem::weakly_canonical(root, error);
+    if (error) return false;
+    const auto canonical_candidate =
+        std::filesystem::weakly_canonical(candidate, error);
+    if (error) return false;
+    auto root_it = canonical_root.begin();
+    auto candidate_it = canonical_candidate.begin();
+    for (; root_it != canonical_root.end(); ++root_it, ++candidate_it) {
+        if (candidate_it == canonical_candidate.end() ||
+            *root_it != *candidate_it) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool isManagedFragmentPath(const std::filesystem::path &project_root,
@@ -577,7 +625,8 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
         instances.push_back(std::move(instance));
     }
     };
-    append_instances(root.value("features", Json::array()), "root", dependencies_.source_reference, document_.sourceDigest(), true);
+    append_instances(renderingSectionOrEmpty(root).value("features", Json::array()), "root",
+                     dependencies_.source_reference, document_.sourceDigest(), true);
     if (dependencies_.resolve_authoring_context) {
         const auto current = dependencies_.resolve_authoring_context(currentDocumentSet());
         if (current.pipeline_preset && current.pipeline_preset_bytes) {
@@ -651,7 +700,8 @@ OrderedJson RenderConfigEditorService::materializeRenderFeature(const std::strin
         } else if (operation.contains("base_preset_digest")) {
             throw std::invalid_argument("Root feature materialization does not take base_preset_digest");
         }
-        auto &config = scope == "preset" ? source.at("config") : source;
+        auto &config = scope == "preset" ? source.at("config")
+                                         : renderingSectionOf(source);
         auto &features = config.at("features");
         const auto index = operation.at("index").get<std::size_t>();
         if (index >= features.size()) return rejection("feature_not_found", "Feature instance index is out of range");
@@ -726,7 +776,8 @@ OrderedJson RenderConfigEditorService::materializeRenderFeature(const std::strin
         };
         // Persist removal of the selected regions, so later compiles cannot
         // replace the newly editable nodes with their former fused implementation.
-        const bool root_regions_changed = scope == "root" && release_replacements(source);
+        const bool root_regions_changed =
+            scope == "root" && release_replacements(renderingSectionOf(source));
         std::optional<OrderedJson> preset;
         if (scope == "preset") preset = source;
         else if (current.pipeline_preset_bytes) preset = OrderedJson::parse(*current.pipeline_preset_bytes);
@@ -747,10 +798,179 @@ OrderedJson RenderConfigEditorService::materializeRenderFeature(const std::strin
         }
         return queueRootEdit(base_digest, "materialize_render_feature",
             [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
-                if (scope == "root") candidate = candidate.withRootValue("features", features.dump(2));
-                if (root_regions_changed) candidate = candidate.withRootValue("rendering_passes", source.at("rendering_passes").dump(2));
+                if (scope == "root") candidate = candidate.withSectionValue("features", features.dump(2));
+                if (root_regions_changed)
+                    candidate = candidate.withSectionValue(
+                        "rendering_passes",
+                        renderingSectionOf(source).at("rendering_passes").dump(2));
                 return std::nullopt;
             }, additional, preset_digest);
+    } catch (const RenderConfigSectionUnlocated &error) {
+        return rejection("render_config_section_unlocated", error.what());
+    } catch (const std::exception &error) {
+        return rejection("render_pipeline_preflight_failed", error.what());
+    }
+}
+
+OrderedJson RenderConfigEditorService::exportRenderFeature(const Json &params) {
+    constexpr auto method = "export_render_feature";
+    requireOnly(params, {"scope", "index"}, method);
+    const auto scope = params.value("scope", std::string{"root"});
+    if ((scope != "root" && scope != "preset") || !params.contains("index") ||
+        !params.at("index").is_number_integer() || params.at("index") < 0) {
+        throw std::invalid_argument(
+            "export_render_feature requires root/preset scope and a nonnegative feature index");
+    }
+    if (!dependencies_.resolve_document_path) {
+        return rejection("method_unavailable",
+                         "Feature export requires the project document resolver");
+    }
+    try {
+        Json features = Json::array();
+        if (scope == "preset") {
+            if (!dependencies_.resolve_authoring_context) {
+                return rejection("method_unavailable",
+                                 "Preset feature export requires the authoring context resolver");
+            }
+            const auto current =
+                dependencies_.resolve_authoring_context(currentDocumentSet());
+            if (!current.pipeline_preset_bytes) {
+                return rejection("pipeline_preset_required",
+                                 "The current rendering config does not select a preset");
+            }
+            features = Json::parse(*current.pipeline_preset_bytes)
+                           .at("config")
+                           .value("features", Json::array());
+        } else {
+            const auto root = Json::parse(document_.bytes());
+            features =
+                renderingSectionOrEmpty(root).value("features", Json::array());
+        }
+        const auto index = params.at("index").get<std::size_t>();
+        if (index >= features.size())
+            return rejection("feature_not_found", "Feature instance index is out of range");
+        const auto &entry = features.at(index);
+        const auto reference = entry.is_string()
+                                   ? entry.get<std::string>()
+                                   : entry.at("ref").get<std::string>();
+        if (reference.starts_with("engine://")) {
+            return rejection(
+                "render_component_engine_reference",
+                "Engine features are already shared; derive a project copy first",
+                {{"reference", reference}});
+        }
+        const auto component = buildRenderComponent(
+            readFileBytes(dependencies_.resolve_document_path(reference)),
+            reference, dependencies_.project_root.filename().string());
+        const auto destination_reference =
+            "user://components/" + component.name;
+        writeRenderComponent(
+            dependencies_.resolve_document_path(destination_reference),
+            component);
+        return {{"status", "exported"},
+                {"component_reference", destination_reference},
+                {"name", component.name},
+                {"feature_digest", digestJson(component.feature_digest)},
+                {"requires",
+                 {{"render_targets", component.required_render_targets}}},
+                {"source_reference", reference}};
+    } catch (const RenderComponentError &error) {
+        return rejection(error.code(), error.what());
+    } catch (const std::exception &error) {
+        return rejection("render_pipeline_preflight_failed", error.what());
+    }
+}
+
+OrderedJson RenderConfigEditorService::importRenderFeature(const Json &params) {
+    constexpr auto method = "import_render_feature";
+    requireOnly(params, {"base_source_digest", "source_dir", "destination_reference"}, method);
+    const auto base_digest = requireString(params, "base_source_digest", method);
+    const auto source_dir = requireString(params, "source_dir", method);
+    const auto destination = requireString(params, "destination_reference", method);
+    if (!dependencies_.resolve_document_path || !dependencies_.normalize_reference) {
+        return rejection("method_unavailable",
+                         "Feature import requires the project document resolver");
+    }
+    if (!destination.starts_with("project://") ||
+        destination.find('#') != std::string::npos) {
+        return rejection("invalid_feature_destination",
+                         "Choose a new project:// feature file");
+    }
+    try {
+        const std::filesystem::path source{source_dir};
+        if (!source.is_absolute()) {
+            return rejection("render_component_invalid",
+                             "source_dir must be an absolute path to a component directory");
+        }
+        if (isWithinDirectory(dependencies_.project_root, source)) {
+            return rejection(
+                "render_component_source_inside_project",
+                "A document inside the project is referenced with project://, not imported");
+        }
+        const auto component = readRenderComponent(source);
+        // The host contract: every render target the component reads or writes
+        // without declaring it has to be declared here.  `swapchain` is the
+        // engine's own output and is always present.
+        std::set<std::string, std::less<>> declared{"swapchain"};
+        const auto collect = [&declared](const Json &config) {
+            for (const auto &target : config.value("render_targets", Json::array())) {
+                if (target.is_string()) declared.insert(target.get<std::string>());
+                else if (target.is_object() && target.contains("name") &&
+                         target.at("name").is_string())
+                    declared.insert(target.at("name").get<std::string>());
+            }
+        };
+        const auto root = Json::parse(document_.bytes());
+        collect(renderingSectionOrEmpty(root));
+        if (dependencies_.resolve_authoring_context) {
+            const auto current =
+                dependencies_.resolve_authoring_context(currentDocumentSet());
+            if (current.pipeline_preset_bytes)
+                collect(Json::parse(*current.pipeline_preset_bytes).at("config"));
+        }
+        auto missing = Json::array();
+        std::string missing_names;
+        for (const auto &name : component.required_render_targets) {
+            if (declared.contains(name)) continue;
+            if (!missing_names.empty()) missing_names += ", ";
+            missing_names += name;
+            missing.push_back(name);
+        }
+        if (!missing.empty()) {
+            return rejection(
+                "render_component_requires_missing",
+                "This project does not declare the render targets the component reads: " +
+                    missing_names,
+                {{"render_targets", missing}});
+        }
+        const auto path = dependencies_.resolve_document_path(destination);
+        if (std::filesystem::exists(path)) {
+            return rejection("feature_destination_exists",
+                             "The destination already exists: " + destination);
+        }
+        const std::array documents{RenderConfigCandidateDocument{
+            .reference = destination,
+            .normalized_reference = dependencies_.normalize_reference(destination),
+            .path = path,
+            .operation = RenderConfigDocumentOperation::create,
+            .expected = {RenderConfigDocumentExistence::missing, {}},
+            .bytes = component.feature_bytes}};
+        auto result = queueRootEdit(
+            base_digest, method,
+            [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+                if (!candidate.hasFeaturesArray())
+                    candidate = AuthoredRenderConfigDocument::initialize(candidate.bytes());
+                candidate = candidate.withFeatureAdded(destination);
+                return std::nullopt;
+            },
+            documents);
+        if (result.at("status") == "accepted") {
+            result["feature_reference"] = destination;
+            result["name"] = component.name;
+        }
+        return result;
+    } catch (const RenderComponentError &error) {
+        return rejection(error.code(), error.what());
     } catch (const std::exception &error) {
         return rejection("render_pipeline_preflight_failed", error.what());
     }
@@ -832,9 +1052,10 @@ OrderedJson RenderConfigEditorService::editRenderFeatures(
                     requireOnly(operation, {"op", "scope", "index", "parameters"}, "edit_render_features operation");
                     if (operation.value("scope", std::string{"root"}) != "root")
                         return rejection("invalid_feature_parameters", "Feature parameter scope must be root or preset");
-                    auto features = Json::parse(candidate.bytes()).value("features", Json::array());
+                    const auto parsed = Json::parse(candidate.bytes());
+                    auto features = renderingSectionOrEmpty(parsed).value("features", Json::array());
                     if (const auto rejected = patch_parameters(features, operation)) return rejected;
-                    candidate = candidate.withRootValue("features", features.dump(2));
+                    candidate = candidate.withSectionValue("features", features.dump(2));
                     return std::nullopt;
                 }
                 requireOnly(operation, {"op", "feature"}, "edit_render_features operation");
@@ -914,7 +1135,12 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
     }
 
     auto candidate = document_;
-    if (auto rejected = transform(candidate)) return *rejected;
+    try {
+        if (auto rejected = transform(candidate)) return *rejected;
+    } catch (const RenderConfigSectionUnlocated &error) {
+        return rejection("render_config_section_unlocated", error.what(),
+                         {{"method", operation}});
+    }
     const auto ticket_id =
         "render-config-edit-" + std::to_string(next_ticket_++);
     auto candidate_documents = currentDocumentSet().documents();
@@ -970,8 +1196,9 @@ OrderedJson RenderConfigEditorService::getRayCallableRecords(const Json &params)
     requireOnly(params, {}, "get_ray_callable_records");
     const auto root = Json::parse(document_.bytes());
     const auto config = dependencies_.resolve_authoring_context
-        ? dependencies_.resolve_authoring_context(currentDocumentSet()).config : root;
-    const auto overrides = root.value("ray_task_callable_records", Json::object());
+        ? dependencies_.resolve_authoring_context(currentDocumentSet()).config
+        : renderingSectionOrEmpty(root);
+    const auto overrides = renderingSectionOrEmpty(root).value("ray_task_callable_records", Json::object());
     auto tasks = Json::array();
     for (const auto &task : config.value("compute_tasks", Json::array())) {
         if (!task.contains("ray_tracing")) continue;
@@ -1010,7 +1237,7 @@ OrderedJson RenderConfigEditorService::editRayCallableRecords(const Json &params
                     return rejection("invalid_callable_records", error.what());
                 }
             }
-            candidate = candidate.withRootValue("ray_task_callable_records", params.at("task_records").dump(2));
+            candidate = candidate.withSectionValue("ray_task_callable_records", params.at("task_records").dump(2));
             return std::nullopt;
         });
 }
@@ -1020,8 +1247,9 @@ OrderedJson RenderConfigEditorService::getSceneAccelerationStructures(const Json
     const auto root = Json::parse(document_.bytes());
     Json connections = Json::array();
     const auto config = dependencies_.resolve_authoring_context
-        ? dependencies_.resolve_authoring_context(currentDocumentSet()).config : root;
-    const auto overrides = root.value("ray_task_acceleration_structures", Json::object());
+        ? dependencies_.resolve_authoring_context(currentDocumentSet()).config
+        : renderingSectionOrEmpty(root);
+    const auto overrides = renderingSectionOrEmpty(root).value("ray_task_acceleration_structures", Json::object());
     for (const auto &task : config.value("compute_tasks", Json::array())) {
         if (!task.contains("ray_tracing") && !task.contains("ray_query")) continue;
         const auto name = task.at("name").get<std::string>();
@@ -1035,7 +1263,7 @@ OrderedJson RenderConfigEditorService::getSceneAccelerationStructures(const Json
             {"task_connections", connections},
             {"triangle_geometry", geometrySpaceDocument(config, dependencies_).info},
             {"procedural_geometry", geometrySpaceDocument(config, dependencies_, true).info},
-            {"definitions", root.value("scene_acceleration_structures", Json::array())}};
+            {"definitions", renderingSectionOrEmpty(root).value("scene_acceleration_structures", Json::array())}};
 }
 
 OrderedJson RenderConfigEditorService::editSceneAccelerationStructures(const Json &params) {
@@ -1053,8 +1281,10 @@ OrderedJson RenderConfigEditorService::editSceneAccelerationStructures(const Jso
             const auto digest = requireString(params, "base_layout_digest", "edit_scene_acceleration_structures");
             if (!isLowerHexDigest(digest))
                 return rejection(error_code, "base_layout_digest must be a SHA-256 digest");
+            const auto parsed = Json::parse(document_.bytes());
             const auto config = dependencies_.resolve_authoring_context
-                ? dependencies_.resolve_authoring_context(currentDocumentSet()).config : Json::parse(document_.bytes());
+                ? dependencies_.resolve_authoring_context(currentDocumentSet()).config
+                : renderingSectionOrEmpty(parsed);
             auto layout = geometrySpaceDocument(config, dependencies_, params.contains("procedural_space"));
             if (!layout.info.at("editable").get<bool>())
                 return rejection(params.contains("procedural_space") ? "procedural_space_not_editable" : "triangle_space_not_editable", layout.info.value("reason", std::string{"Ray group layout is not editable"}));
@@ -1106,9 +1336,9 @@ OrderedJson RenderConfigEditorService::editSceneAccelerationStructures(const Jso
                         [&](const auto &definition) { return definition.at("name") == target; }))
                         return rejection("invalid_task_connections", "Unknown scene acceleration structure: " + target);
                 }
-                candidate = candidate.withRootValue("ray_task_acceleration_structures", connections.dump(2));
+                candidate = candidate.withSectionValue("ray_task_acceleration_structures", connections.dump(2));
             }
-            candidate = candidate.withRootValue("scene_acceleration_structures", params.at("definitions").dump(2));
+            candidate = candidate.withSectionValue("scene_acceleration_structures", params.at("definitions").dump(2));
             return std::nullopt;
         }, layout_documents);
 }
@@ -1327,13 +1557,16 @@ OrderedJson RenderConfigEditorService::forkRenderPipeline(const Json &params) {
         }};
         auto result = queueRootEdit(base_digest, "fork_render_pipeline",
             [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
-                auto pipeline = Json::parse(candidate.bytes()).at("pipeline");
+                const auto parsed = Json::parse(candidate.bytes());
+                auto pipeline = renderingSectionOf(parsed).at("pipeline");
                 pipeline["preset"] = destination;
-                candidate = candidate.withRootValue("pipeline", pipeline.dump(2));
+                candidate = candidate.withSectionValue("pipeline", pipeline.dump(2));
                 return std::nullopt;
             }, documents, preset_digest);
         if (result.at("status") == "accepted") result["preset_reference"] = destination;
         return result;
+    } catch (const RenderConfigSectionUnlocated &error) {
+        return rejection("render_config_section_unlocated", error.what());
     } catch (const std::exception &error) {
         return rejection("render_pipeline_preflight_failed", error.what());
     }
@@ -1366,7 +1599,7 @@ OrderedJson RenderConfigEditorService::getComputeTaskAuthoring(const Json &param
                     : readFileBytes(dependencies_.resolve_document_path(reference));
                 auto source = OrderedJson::parse(bytes);
                 const auto &config = from_feature ? featureSourceFragment(source, provenance->provider_feature)
-                    : from_preset ? source.at("config") : source;
+                    : from_preset ? source.at("config") : renderingSectionOf(source);
                 const auto declarations = config.find("compute_tasks");
                 if (declarations == config.end()) throw std::runtime_error("The task is generated, not declared in this document");
                 const auto original = std::find_if(declarations->begin(), declarations->end(),
@@ -1401,7 +1634,8 @@ OrderedJson RenderConfigEditorService::getFrameNodeOrder(const Json &params) con
     requireOnly(params, {}, "get_frame_node_order");
     return {{"source_digest", digestJson(document_.sourceDigest())},
             {"published_generation", dependencies_.runtime_snapshot().published_generation},
-            {"orders", Json::parse(document_.bytes()).value("frame_node_order", Json::object())}};
+            {"orders", renderingSectionOrEmpty(Json::parse(document_.bytes()))
+                           .value("frame_node_order", Json::object())}};
 }
 
 OrderedJson RenderConfigEditorService::getGraphInstances(const Json &params) const {
@@ -1512,7 +1746,7 @@ OrderedJson RenderConfigEditorService::editFrameNodeOrder(const Json &params) {
         return rejection("invalid_frame_node_order", "Provide an object mapping graph names to node arrays");
     return queueRootEdit(digest, method,
         [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
-            candidate = candidate.withRootValue("frame_node_order", params.at("orders").dump(2));
+            candidate = candidate.withSectionValue("frame_node_order", params.at("orders").dump(2));
             return std::nullopt;
         });
 }
@@ -1591,7 +1825,7 @@ OrderedJson RenderConfigEditorService::changeComputeTask(const Json &params, boo
         const bool preset = source.value("schema", std::string{}) == "pelican.render_pipeline";
         auto &config = source.value("schema", std::string{}) == "pelican.render_feature"
             ? featureSourceFragment(source, selected->at("provider_feature").get<std::string>())
-            : preset ? source.at("config") : source;
+            : preset ? source.at("config") : renderingSectionOf(source);
         auto &declarations = config.at("compute_tasks");
         const auto original = std::find_if(declarations.begin(), declarations.end(), [&](const auto &entry) { return entry.at("name") == name; });
         if (original == declarations.end()) return rejection("compute_task_not_editable", "The source task is absent");
@@ -1600,7 +1834,7 @@ OrderedJson RenderConfigEditorService::changeComputeTask(const Json &params, boo
         if (root) {
             return queueRootEdit(base_digest, method,
                 [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
-                    candidate = candidate.withRootValue("compute_tasks", declarations.dump(2));
+                    candidate = candidate.withSectionValue("compute_tasks", declarations.dump(2));
                     return std::nullopt;
                 });
         }
