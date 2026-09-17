@@ -5,6 +5,7 @@
 #include "physicaltargetplanwire.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
+#include "../src/project/renderconfigsection.hpp"
 #include "../src/project/renderpipeline.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -803,10 +804,14 @@ TEST_CASE(
     // P-2a-1b moved the example's nine Bloom_* targets into the engine bloom
     // feature. They are still part of the shipping corpus, just declared by
     // the component the project now names instead of by the project.
+    // P-2a-4b: `projects/example` is a `pelican.graph` root, so its render
+    // targets live in the `rendering` section. The other four documents are
+    // legacy-shaped and the locator returns them unchanged.
+    const Json shipping_example = readJson(
+        root / "projects" / "example" / "passes" / "main_rendering_config.json");
     const std::array<Json, 5> target_documents{
         hybrid.at("config"),
-        readJson(root / "projects" / "example" / "passes" /
-                 "main_rendering_config.json"),
+        Pelican::renderingSectionOf(shipping_example),
         readJson(root / "src" / "core" / "resources" / "features" /
                  "bloom.json"),
         readJson(root / "projects" / "sprite_demo" / "passes" /

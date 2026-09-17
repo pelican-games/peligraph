@@ -7,6 +7,7 @@
 #include "../../project/featurecompose.hpp"
 #include "../../project/graphcomposition.hpp"
 #include "../../project/graphpartition.hpp"
+#include "../../project/renderconfigsection.hpp"
 #include "renderconfigtransaction.hpp"
 
 #include "../loader/engineresources.hpp"
@@ -200,29 +201,11 @@ std::string primaryReason(const std::vector<std::string> &reasons) {
                            : reasons.front();
 }
 
-// P-2a-4a: one place decides where an authored key lives. A legacy root is
-// its own section; a `pelican.graph` root keeps the authored rendering config
-// under `rendering`. Every reader and writer goes through these two, so no
-// caller grows its own `if (graph)` and no edit addresses the root by accident.
-template <class JsonLike>
-JsonLike &renderingSectionOf(JsonLike &root) {
-    if (root.value("schema", std::string{}) != "pelican.graph") return root;
-    const auto found = root.find("rendering");
-    if (found == root.end() || !found->is_object())
-        throw RenderConfigSectionUnlocated{};
-    return *found;
-}
-
-// Reads answer "nothing authored here" for a graph root without a section;
-// only an edit is refused by name.
-const Json &renderingSectionOrEmpty(const Json &root) {
-    static const Json empty = Json::object();
-    try {
-        return renderingSectionOf(root);
-    } catch (const RenderConfigSectionUnlocated &) {
-        return empty;
-    }
-}
+// P-2a-4a decided where an authored key lives; P-2a-4b moved the rule out to
+// `project/renderconfigsection.hpp` (same namespace) so the engine-side
+// parsers, the overlay, `devcli project init` and the tests all read the one
+// locator instead of each keeping a copy. The unqualified calls below resolve
+// to it.
 
 constexpr std::string_view managedFragmentDirectory =
     "project://passes/authoring/";

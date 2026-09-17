@@ -59,6 +59,7 @@
 #include "../src/core/vkcore/rendertiming.hpp"
 #include "../src/core/vkcore/util.hpp"
 #include "../src/project/materialformat.hpp"
+#include "../src/project/renderconfigsection.hpp"
 #include "../src/project/materiallowering.hpp"
 #include "../src/project/importmanifest.hpp"
 #include "../src/project/gpudrawtiming.hpp"
@@ -8699,9 +8700,13 @@ void writeWp338SsaoProject(
 
     nlohmann::json config;
     if (contract.example_config) {
-        config = nlohmann::json::parse(readTextFile(
+        // P-2a-4b: the shipping project is a `pelican.graph` root. This
+        // harness synthesizes a legacy-root project of its own, so it takes
+        // the shipping `rendering` section through the production locator.
+        const auto shipping = nlohmann::json::parse(readTextFile(
             sourceRoot() / "projects" / "example" /
             "passes" / "main_rendering_config.json"));
+        config = renderingSectionOf(shipping);
     } else {
         config = nlohmann::json::parse(
                      engineResourceOrThrow(
@@ -9274,10 +9279,15 @@ nlohmann::json wp339ScenePresentPass(
 }
 
 nlohmann::json wp339BaseConfig(bool example_config) {
-    auto config = example_config
+    // P-2a-4b: the shipping project is a `pelican.graph` root; this fixture
+    // builds a legacy-root project, so it takes the `rendering` section.
+    const auto shipping = example_config
         ? nlohmann::json::parse(readTextFile(
               sourceRoot() / "projects" / "example" /
               "passes" / "main_rendering_config.json"))
+        : nlohmann::json{};
+    auto config = example_config
+        ? renderingSectionOf(shipping)
         : nlohmann::json::parse(
               engineResourceOrThrow(
                   "render_pipelines/hybrid_v1.json"))

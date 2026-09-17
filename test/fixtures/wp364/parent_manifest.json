@@ -105,8 +105,8 @@
     {
      "path": "projects/example/README.md",
      "eol": "lf",
-     "blob_sha256": "5affa377677afcdfc670205d776f2365dcb53d111c73ea8a938c879278f76c8d",
-     "blob_bytes": 1710
+     "blob_sha256": "647829f4180759da604cbdc95385da9a837de0ad763170470ae335ea74fb5f62",
+     "blob_bytes": 4086
     },
     {
      "path": "projects/example/assets.manifest.json",
@@ -219,8 +219,8 @@
     {
      "path": "projects/example/passes/main_rendering_config.json",
      "eol": "lf",
-     "blob_sha256": "1b872c30056dc5bc73318e6d61589fb35d4051838ebe16db28eb39f0a7989c46",
-     "blob_bytes": 5492
+     "blob_sha256": "d52b322bcf64547f000664c6a84bee43bb2e5a26451525b0662ffdbacda378ac",
+     "blob_bytes": 5981
     },
     {
      "path": "projects/example/project.json",

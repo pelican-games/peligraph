@@ -2717,7 +2717,7 @@
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/renderingpass/computetask.hpp|`computetask.hpp`|#1": "VulkanResourceViewLayout physical_view =",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/renderingpass/framegraphruntime.cpp|`registerExecutionPlan()`": "void FrameGraphRuntimeContainer::registerExecutionPlan(RenderingPassId rendering_pass_id,",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/renderingpass/framegraphruntime.hpp|`framegraphruntime.hpp`": "DECLARE_MODULE(FrameGraphRuntimeContainer) {",
-    "docs/source-code-guide/08_class_interface_index.md|../../src/core/renderingpass/frameplanner.cpp|`parseFrameGraphDefinitionsFromConfigJson()`": "std::vector<FrameGraphDefinition> parseFrameGraphDefinitionsFromConfigJson(const nlohmann::json &config_json) {",
+    "docs/source-code-guide/08_class_interface_index.md|../../src/core/renderingpass/frameplanner.cpp|`parseFrameGraphDefinitionsFromConfigJson()`": "std::vector<FrameGraphDefinition> parseFrameGraphDefinitionsFromConfigJson(const nlohmann::json &document) {",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/renderingpass/frameplanner.cpp|`planFrameGraph()`": "FramePlan planFrameGraph(const FrameGraphDefinition &definition) {",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/renderingpass/frameplanner.hpp|`frameplanner.hpp`": "struct FrameGraphDefinition {",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/renderingpass/frameplanner.hpp|`frameplanner.hpp`|#1": "LogicalReadFootprintKind::arbitrary,",

@@ -10,6 +10,7 @@
 #include "subgraphreplacementregistry.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../shader/raygrouplayout.hpp"
+#include "../../project/renderconfigsection.hpp"
 
 #include <algorithm>
 #include <array>
@@ -944,8 +945,14 @@ class DefaultVulkanRenderCompilerProgram final
                 compileDefaultVulkanVariant(
                     input, backend, request));
         }
-        if (const auto order = input.rendering_config.find("frame_node_order");
-            order != input.rendering_config.end()) {
+        // P-2a-4b: `input.rendering_config` is the authored document, so a
+        // `pelican.graph` root keeps `frame_node_order` in its `rendering`
+        // section. Reading the root here made the cross-variant unknown-graph
+        // rejection vacuous for every graph-root project.
+        const auto &authored_section =
+            renderingSectionOrEmpty(input.rendering_config);
+        if (const auto order = authored_section.find("frame_node_order");
+            order != authored_section.end()) {
             if (!order->is_object())
                 throw std::runtime_error("frame_node_order must be an object");
             std::unordered_set<std::string> graph_names;

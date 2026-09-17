@@ -26,7 +26,7 @@
 | `scenes/*.scene.json` | シーン定義(pelican.scene v1) | `basic_config.scene_data_json` |
 | `assets/asset_data.json` | モデル登録表 | `basic_config.asset_data_json` |
 | `assets/models/`, `assets/textures/`, `assets/audio/` | バイナリアセット置き場(規約) | asset_data.json 等から相対参照 |
-| `passes/*.json` | レンダリングパイプライン定義 | `basic_config.rendering_config_json` |
+| `passes/*.json` | レンダリングパイプライン定義(rendering config。root 形は 2 つ、下記) | `basic_config.rendering_config_json` |
 | `input/actions.json` | 入力アクション定義 | `basic_config.input_actions_json` |
 | `input/profiles/*.json` | バインディングプロファイル | `basic_config.input_profiles` |
 | `ui/*.json` | UI ドキュメント(pelican.ui v1) | `basic_config.ui_config_json` |
@@ -115,8 +115,8 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
 | `default_scene_id` | string | `"default_scene"` | 起動時にロードするシーン ID |
 | `scene_data_json` | 参照 | `"scenes/main.scene.json"` | シーン定義 JSON への参照 |
 | `asset_data_json` | 参照 | `"assets/asset_data.json"` | アセット登録 JSON への参照 |
-| `rendering_config_json` | 参照 | `"passes/main_rendering_config.json"` | レンダリング構成への参照 |
-| `default_rendering_pass` | string | `"main_render"` | rendering config 内で使う `rendering_passes[].name` |
+| `rendering_config_json` | 参照 | `"passes/main_rendering_config.json"` | レンダリング構成への参照(下記「rendering config の 2 つの root」) |
+| `default_rendering_pass` | string | `"main_render"` | rendering config 内で使う `rendering_passes[].name`(graph root では `rendering.rendering_passes[].name`) |
 | `ui_config_json` | 参照 | `"ui/ui_overlay.json"` | UI ドキュメント(pelican.ui)への参照 |
 | `input_actions_json` | 参照 | **既定なし(任意)** | 入力アクション定義。未指定ならアクション層は未構成 |
 | `input_profiles` | object | — | バインディングプロファイルの辞書(名前 → ファイル参照。✅WP91 — [第7章](07_input_ui.md)) |
@@ -127,6 +127,23 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
 `camera` は glTF のカメラ定義と同形です。`type` は `"perspective"`(既定)か `"orthographic"` のみ。perspective は `yfov`(**ラジアン**)/`znear`/`zfar` 必須・`aspect` 任意、orthographic は `xmag`/`ymag`/`znear`/`zfar` 必須です。
 
 > **設計決定(fail-fast):** 旧キー名 `fov_y` / `near` / `far` は「黙って無視」ではなく `'fov_y' is not supported in v1; use 'yfov' (radians)` という**移行先を案内する名指しエラー**で拒否される(WP63)。「読めるふりをしない」— 警告止まりだと『動いたように見えて新機能の挙動だけ壊れる』事故になるため。互換受理の追加はプロジェクト規則で禁止されており、旧形式の変換は外部ツールの仕事。
+
+### rendering config の 2 つの root(✅P-2a-4a/4b)
+
+`rendering_config_json` が指すファイルは、**2 つの root 形**のどちらかです。どちらもエンジンが受理し、v0 の間はどちらも消えません。
+
+- **legacy root**: `features` / `render_targets` / `rendering_passes` などがファイルの最上位に並ぶ形。出荷 `animgraph_demo` / `sprite_demo` / `vrm_xr_demo` / `raytracing_demo` がこの形です。
+- **`pelican.graph` root**: 最上位は共通グラフの 5 キー(`schema` / `version` / `definitions` / `nodes` / `outputs`)**だけ**で、rendering config 全体が `rendering` の下に入ります。出荷 `example` と `pelican_cli project init` が生成する新規プロジェクトがこの形です。
+
+```json
+{ "schema": "pelican.graph", "version": 1,
+  "definitions": {}, "nodes": [], "outputs": {},
+  "rendering": { "features": [...], "render_targets": [...], "rendering_passes": [...] } }
+```
+
+規則は 1 つです —— 上の 5 キーは共通グラフが所有し、**それ以外の rendering config のキーは全部 `rendering` 節に属します**。`rendering` 節の中身が同じなら描画結果は同じで、違いは「共通グラフのノードを同じファイルに持てるかどうか」だけです(legacy root は持てません)。キーごとの所有と移行手順は [第6章 §6.16](06_rendering.md) が正です。
+
+`pelican.graph` root は web ビューア未対応です([第9章](09_web.md) §9.3)。
 
 ## 3.3 パス参照と PathResolver
 

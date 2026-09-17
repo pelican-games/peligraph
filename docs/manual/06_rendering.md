@@ -59,6 +59,8 @@ project.json ──rendering_config_json──▶ rendering config JSON
 
 このほか `target_planning`(§6.6)、`vulkan_plan_pins` / `vulkan_physical_fragments`(§6.6)、`xr`(§6.12)もトップレベルキーです。
 
+> **root は 2 つあります。** 上の表は **legacy root**(キーがファイルの最上位に並ぶ形)の説明です。`"schema": "pelican.graph"` を名乗るファイルでは、**上の表のキーは全部 `rendering` の下に入り**、最上位には共通グラフ自身の 5 キーだけが並びます。出荷 `projects/example` はこちらです。どちらが何を所有するかは **§6.16** を読んでください。
+
 名前の重複(RT・パス・バッファ)はすべて hard error です。
 
 ### render_targets
@@ -164,7 +166,7 @@ cube targetのface出力も同じ形式です。`layer`は0〜5のface indexで�
 
 ### type 別の要点
 
-- **`material`** — シーン内のモデルを描く material パス。`material_outputs` を省略した従来設定は、既定の 5 枚 G-buffer（または forward の scene color 1 枚）をそのまま使います。この 5 枚の内訳を決めるのはエンジンではなくプロジェクトの config とシェーダで、example では `gbuffer_albedo` / `gbuffer_normal` / `gbuffer_material` / `gbuffer_worldpos` / `g_emissive` です([main_rendering_config.json:155](../../projects/example/passes/main_rendering_config.json#L92))。明示した場合は**順序・枚数・数値型を任意に定義**でき、`material_output_states`でfield別のblend/write-maskも指定できます。固定のエンジン上限はなく、実行デバイスの `maxColorAttachments` と各 format/sample capability が物理上限です。詳しくは §6.7。
+- **`material`** — シーン内のモデルを描く material パス。`material_outputs` を省略した従来設定は、既定の 5 枚 G-buffer（または forward の scene color 1 枚）をそのまま使います。この 5 枚の内訳を決めるのはエンジンではなくプロジェクトの config とシェーダで、example では `gbuffer_albedo` / `gbuffer_normal` / `gbuffer_material` / `gbuffer_worldpos` / `g_emissive` です([main_rendering_config.json:155](../../projects/example/passes/main_rendering_config.json#L98))。明示した場合は**順序・枚数・数値型を任意に定義**でき、`material_output_states`でfield別のblend/write-maskも指定できます。固定のエンジン上限はなく、実行デバイスの `maxColorAttachments` と各 format/sample capability が物理上限です。詳しくは §6.7。
 - **`fullscreen`** — 全画面 1 枚描き。`shader: { "vertex": <stem>, "fragment": <stem> }` **必須**。`input` の画像は通常 `resource_ports` で名前を付け、fragment shaderからgenerated `pelican_sample_<port>()`で読む。**入力枚数にエンジン固定の上限はありません**(✅WP238b で `Fullscreen pass has too many inputs` の per-pass 拒否を撤去。残った 8 は descriptor pool のサイズ見積もりで、実上限は選択されたデバイスと pipeline layout が持ちます)。1つのinput resourceへ複数portは割り当てず、mip/layerを変える場合も1 portの`subresource`で選ぶ。raw shaderだけは従来どおりset 1へ配列順でbindする。`uses_light_data: true` と `push_constants`(`"none"` / `"camera_position"` / `"projection_view"`)は**互換キー**として受理されますが、GPU への実際の供給元は常に set 0 の FrameUBO / LightUBO です(§6.4)。任意の`raster_state`で1枚のcolor attachmentのblend/write-maskとtopology/cull/front-faceを書けます。深度状態は受理しません。
 - **`raster`** — 汎用ラスタパス(✅WP238b)。シーンのモデルにも全画面 quad にも依らず、`draw` で描画コマンドを、`raster_state` で固定機能状態を直接宣言します。後述の専用項を参照。
 - **`output_transform`** — リニア → 表示エンコードの終端ノード。**自動付加されるため通常は書きません**(§6.3)。内部契約は`fullscreen`と同じ`raster_state`所有表を共有し、blend/write-mask等を同じ経路で解決します。自動生成される既定ノードは`raster_state`を省略します。
@@ -475,6 +477,22 @@ feature は**パラメータ化**できます。`features` 配列は文字列の
   ```
 
   `"$resolution"` は int の `resolution` に、`"$cascade_count"` は int の `cascade_count` に置換されるため、`{"cascade_count": 4, "resolution": 2048}` を渡すだけで 2048×2048 の 4 layer array target になります。文字列の一部としての `$名前` は置換対象ではありません(RT 名の named binding だけが `$scene_color@history` のような接尾辞付き参照を扱います)。
+- `scalars` は `binding` も宣言できます(`"define"` | `"buffer"`、既定 `"define"`)。**`binding: "buffer"`** にしたスカラーは define ではなく、feature 自身が `buffers[]` に宣言した `host_source: "runtime_f32"` の 4 byte バッファ 1 本の**初期値**になります。バッファ名は **`<feature 名>.<パラメータ名>`** 固定で、シェーダは define ではなく `resource_ports` の port で読みます。同梱 `bloom.json` の `intensity` が実物です:
+
+  ```json
+  "parameters": { "scalars": [
+    { "name": "intensity", "type": "float", "range": [0.0, 8.0], "default": 2.0, "binding": "buffer" } ] },
+  "buffers": [
+    { "name": "bloom.intensity", "size": 4, "lifetime": "persistent", "host_source": "runtime_f32" } ],
+  "passes": [ { "pass": {
+      "name": "FinalBloomComposite",
+      "input": ["lit_color", "Bloom_Upsample_V_0_RT", "bloom.intensity"],
+      "resource_ports": { "bloomIntensity": {
+          "resource": "bloom.intensity", "kind": "buffer", "element": "float", "access": "storage" } } } } ]
+  ```
+
+  `binding: "buffer"` を宣言したのに同名の `runtime_f32` バッファが無い/型が違う、`binding: "buffer"` と `shader_define: true` の併記、float 以外、`initial_f32` の手書き、未知の binding 名 —— どれも名前付きの compose エラーです。
+- **`binding: "buffer"` の値は毎フレーム書き換えられます。** `pelican.graph` root(§6.16)の `render.scalar` ノードに `parameters.target` としてバッファ名を書き、その `value` 入力に曲線などを繋ぐと、publish のたびにその値が GPU バッファへ載ります(パスが読む前に書かれます)。`target` は宣言済みのフレームグラフバッファ名に解決され、無ければ `unbound frame graph output: <名前>` の hard error、サイズ/`host_source` が合わなければ `incompatible frame graph output buffer: <名前>` です —— 綴り間違いが「動かない曲線」になることはありません。`set_parameters` で初期値を変えるのは再 compose を伴う編集操作、`render.scalar` は再 compose なしの毎フレーム駆動、と役割が分かれます。**legacy root ではグラフを持てない**ので、この駆動は `pelican.graph` root のプロジェクトだけの話です。
 - `scalars` の `shader_define`(bool・既定 `true`)を `false` にすると、そのパラメータは値付き define を**出しません**。物理 planning や runtime adapter から UBO へ送る値に付けます — `true` のままだと値を変えるたびにシェーダキャッシュキーが変わり、**全シェーダが再コンパイル**されます。同梱では `cube_capture.json` の 6 スカラー全部、`planar_reflection.json` の `prefilter_radius` 以外、`shadow_directional.json` の `cascade_count` 以外、および `sky_ambient.json` の 5 スカラー全部が `false` です。
 - `shader_assets`は`shader`の型付きslotだけへ完全一致の`$name`として置けます。compute taskの文字列`shader`、またはgraphics passの`shader.vertex|skinned_vertex|fragment|compute`と宣言stageが一致しなければcompose時に拒否します。`skinned_vertex`は`vertex` stageです。instance値は`engine://`にも`project://`にもでき、feature JSONを複製せずalgorithm assetだけを交換できます。
 - `shader_define: true` のスカラーは **`PELICAN_FEATURE_<FEATURE名>_<PARAM名>=<値>`** の値付き define に lower され、graphics/fullscreen/computeの全shader recipeへ渡ります(float は 9 桁 round-trip 表記。値を変えるとシェーダキャッシュキーも変わる = 正しく再コンパイル)。
@@ -2585,6 +2603,42 @@ geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation
 ### 移植プロファイルとの相互作用
 
 layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1519))。
+
+## 6.16 rendering config の 2 つの root —— legacy root と `pelican.graph` root(✅P-2a-4a/4b)
+
+rendering config のファイルは **2 つの root 形**のどちらかです。どちらもエンジンが受理し、v0 の間はどちらも消えません。
+
+| | legacy root | `pelican.graph` root |
+|---|---|---|
+| 最上位のキー | §6.2 の表のキーがそのまま並ぶ | `schema` / `version` / `definitions` / `nodes` / `outputs` の **5 つだけ** |
+| §6.2 の表のキー | 最上位 | **`rendering` の下**(`rendering.features`、`rendering.render_targets`、…) |
+| 共通グラフ(ノード)を持てるか | **持てない** | 持てる |
+| 出荷プロジェクト | `animgraph_demo` / `sprite_demo` / `vrm_xr_demo` / `raytracing_demo` | `example` |
+
+```json
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "features": ["engine://features/bloom.json", "engine://features/ui.json"],
+    "render_targets": [ ... ],
+    "rendering_passes": [ ... ]
+  }
+}
+```
+
+**規則は 1 つだけです**: `schema` / `version` / `definitions` / `nodes` / `outputs` は共通グラフが所有し、**それ以外の rendering config のキーは全部 `rendering` 節に属します**。エンジンはこの形を composer の入口で legacy 形へ lower してからパスを組むので、`rendering` 節の中身が同じなら **描画結果は完全に同じ**です(`projects/example` の移行はピクセル不変)。
+
+- `buffers` と `compute_tasks` は `pelican.graph` root では **グラフが所有します**。`rendering` 節に書くと lowering が名前付きで拒否します。
+- Studio と RPC の authoring(`get_render_features` / `edit_render_features` / `materialize` / `--feature-overlay`)は、どちらの root でも同じ 1 つの locator を通って `rendering` 節を読み書きします。graph root なのに `rendering` が無い(あるいは object でない)文書への編集は、黙って root にキーを作らず `render_config_section_unlocated` で拒否されます。
+- 新規プロジェクト(`pelican_cli project init`、[第10章](10_tools.md))が生成する config は `pelican.graph` root です。
+- 既存の legacy root を移すには、ファイル全体を `rendering` の値にして上の 5 キーを足すだけです。`test/fixtures/graph_root_example/` が実物の対比(出荷 `example` の節と、preset を選ぶ `animgraph_demo` の節)を持っています。
+- web ビューアは `pelican.graph` root をまだ読めません([第9章](09_web.md) §9.3)。
+
+`nodes` に何を書けるか(`value.*` / `render.*` / `graph.instance` のノード語彙、`definitions` の使い方、owner の宣言)は共通グラフ側の話題で、[第13章 エディタ](13_editor.md) の graph attachment と `projects/example/README.md` の手順を参照してください。
 
 ## 関連文書
 

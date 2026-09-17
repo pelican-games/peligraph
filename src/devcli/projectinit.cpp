@@ -1,6 +1,9 @@
 #include "projectinit.hpp"
 
+#include "../project/renderconfigsection.hpp"
+
 #include <argparse/argparse.hpp>
+#include <nlohmann/json.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -190,14 +193,26 @@ constexpr std::string_view input_keyboard_profile_json = R"json({
 }
 )json";
 
+// P-2a-4b: a new project is authored as a `pelican.graph` root, the same
+// shape `projects/example` ships. The literal below is what goes in the
+// `rendering` section; the wrap is the single production function every
+// generator shares, so nothing here re-states where `rendering` goes.
 constexpr std::string_view rendering_config_json = R"json({
   "pipeline": { "preset": "engine://render_pipelines/hybrid_v1.json" },
   "features": [
     "engine://features/shadow_directional.json",
     "engine://features/sky_ambient.json"
   ]
+})json";
+
+const std::string &renderingConfigJson() {
+    static const std::string value =
+        wrapLegacyRenderingConfig(
+            nlohmann::ordered_json::parse(rendering_config_json))
+            .dump(2) +
+        "\n";
+    return value;
 }
-)json";
 
 constexpr std::string_view ui_overlay_json = R"json({
   "images": []
@@ -281,7 +296,7 @@ const std::vector<TemplateFile> &templateFiles() {
         {"assets/audio/.gitkeep", gitkeep},
         {"input/actions.json", input_actions_json},
         {"input/profiles/keyboard.json", input_keyboard_profile_json},
-        {"passes/main_rendering_config.json", rendering_config_json},
+        {"passes/main_rendering_config.json", renderingConfigJson()},
         {"ui/ui_overlay.json", ui_overlay_json},
         {"code/CMakeLists.txt", code_cmake},
         {"code/game.cpp", game_cpp},

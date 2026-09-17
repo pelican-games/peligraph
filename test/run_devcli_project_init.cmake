@@ -43,19 +43,34 @@ foreach(path IN ITEMS
 endforeach()
 
 file(READ "${project_dir}/passes/main_rendering_config.json" rendering_config)
+# P-2a-4b: the generated config is a `pelican.graph` root, so every authored
+# key below is read inside the `rendering` section. Check the root shape first
+# -- otherwise a section that went missing would make the forbidden-member
+# check below pass vacuously instead of failing.
+string(JSON generated_schema ERROR_VARIABLE schema_error
+    GET "${rendering_config}" schema)
+string(JSON generated_section_type ERROR_VARIABLE section_error
+    TYPE "${rendering_config}" rendering)
+if(NOT schema_error STREQUAL "NOTFOUND" OR
+   NOT generated_schema STREQUAL "pelican.graph" OR
+   NOT section_error STREQUAL "NOTFOUND" OR
+   NOT generated_section_type STREQUAL "OBJECT")
+    message(FATAL_ERROR
+        "generated rendering config is not a pelican.graph root with an object rendering section\n${rendering_config}")
+endif()
 string(JSON generated_preset ERROR_VARIABLE preset_error
-    GET "${rendering_config}" pipeline preset)
+    GET "${rendering_config}" rendering pipeline preset)
 if(NOT preset_error STREQUAL "NOTFOUND" OR
    NOT generated_preset STREQUAL "engine://render_pipelines/hybrid_v1.json")
     message(FATAL_ERROR
         "generated rendering config does not select hybrid_v1\n${rendering_config}")
 endif()
 string(JSON generated_feature_count ERROR_VARIABLE feature_count_error
-    LENGTH "${rendering_config}" features)
+    LENGTH "${rendering_config}" rendering features)
 string(JSON generated_shadow_feature ERROR_VARIABLE shadow_feature_error
-    GET "${rendering_config}" features 0)
+    GET "${rendering_config}" rendering features 0)
 string(JSON generated_sky_feature ERROR_VARIABLE sky_feature_error
-    GET "${rendering_config}" features 1)
+    GET "${rendering_config}" rendering features 1)
 if(NOT feature_count_error STREQUAL "NOTFOUND" OR
    NOT shadow_feature_error STREQUAL "NOTFOUND" OR
    NOT sky_feature_error STREQUAL "NOTFOUND" OR
@@ -65,9 +80,12 @@ if(NOT feature_count_error STREQUAL "NOTFOUND" OR
     message(FATAL_ERROR
         "generated rendering config does not select the default feature set\n${rendering_config}")
 endif()
+# The preset owns these; the project must not. P-2a-4b reads them inside the
+# section: a graph root has no `render_targets` at the top level, so the old
+# root-level check could never have failed again.
 foreach(forbidden_member IN ITEMS render_targets rendering_passes)
     string(JSON ignored ERROR_VARIABLE member_error
-        TYPE "${rendering_config}" "${forbidden_member}")
+        TYPE "${rendering_config}" rendering "${forbidden_member}")
     if(member_error STREQUAL "NOTFOUND")
         message(FATAL_ERROR
             "generated preset config unexpectedly owns ${forbidden_member}\n${rendering_config}")

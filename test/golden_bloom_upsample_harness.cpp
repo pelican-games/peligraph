@@ -1,6 +1,7 @@
 #include "bloom_upsample_oracle.hpp"
 #include "golden_harness.hpp"
 #include "../src/project/rendercomponent.hpp"
+#include "../src/project/renderconfigsection.hpp"
 #include "vulkan_test_support.hpp"
 
 #include "../src/core/appflow/enginetime.hpp"
@@ -753,9 +754,13 @@ nlohmann::json wp357ProductionProbeFeature() {
 }
 
 nlohmann::json wp357ProductionProbeConfig() {
-    auto config = wp357ReadJson(
+    // P-2a-4b: the shipping project is a `pelican.graph` root. This probe
+    // writes its own legacy-root project (and `wp357WrapGraphRoot` re-wraps
+    // it for the graph-root leg), so take the shipping `rendering` section.
+    const auto shipping = wp357ReadJson(
         wp357SourceRoot() / "projects" / "example" / "passes" /
         "main_rendering_config.json");
+    auto config = renderingSectionOf(shipping);
     const auto shipping_final =
         wp357ShippingPass(wp357BloomFeature(), "FinalBloomComposite");
     // P-2a-2 added the third input: the feature's own `bloom.intensity`
@@ -939,15 +944,10 @@ void wp357PointConfigAtDerivative(nlohmann::json &config,
     }
 }
 
-nlohmann::json wp357WrapGraphRoot(nlohmann::json config) {
-    return nlohmann::json{
-        {"schema", "pelican.graph"},
-        {"version", 1},
-        {"definitions", nlohmann::json::object()},
-        {"nodes", nlohmann::json::array()},
-        {"outputs", nlohmann::json::object()},
-        {"rendering", std::move(config)},
-    };
+nlohmann::json wp357WrapGraphRoot(const nlohmann::json &config) {
+    // P-2a-4b: one wrap, shared with `devcli project init` and the shipping
+    // project, so this leg cannot drift from the shape the engine ships.
+    return wrapLegacyRenderingConfig(config);
 }
 
 void wp357WriteProductionProbeProject(

@@ -13,6 +13,7 @@
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
 #include "../src/project/renderconfigdocument.hpp"
+#include "../src/project/renderconfigsection.hpp"
 #include "../src/project/rasterrayquery.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -724,6 +725,47 @@ TEST_CASE("Frame node orders are scoped to their compiled graph variants",
         fixture.config["frame_node_order"]["main"] = {"gpu_geometry", "gpu_geometry"};
         REQUIRE_THROWS_WITH(runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), fixture.input()),
                             Catch::Matchers::ContainsSubstring("frame_node_order duplicate node"));
+    }
+}
+
+// P-2a-4b: `rendering_config` is the authored document, so a `pelican.graph`
+// root keeps `frame_node_order` in its `rendering` section. Reading the
+// document root made this cross-variant check vacuous for every graph-root
+// project instead of rejecting an unknown graph by name.
+TEST_CASE("P-2a-4b frame_node_order is read in a pelican.graph root's rendering section",
+          "[rendercompiler][node-order][graph-root][p2a4b]") {
+    ProgramInputFixture fixture;
+    auto section = readJsonFixture(
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+        "test/production_fixtures/pass_field_ownership/gpu_draw_material.json");
+    // A graph root reserves `buffers` and `compute_tasks` for the graph
+    // itself, so this fixture drops them and the GPU draw source that reads
+    // them; the two passes and their targets are otherwise the shipping ones.
+    section.erase("buffers");
+    section.erase("compute_tasks");
+    auto &passes = section.at("rendering_passes").at(0).at("passes");
+    REQUIRE(passes.at(0).at("name") == "gpu_geometry");
+    passes.at(0).erase("gpu_draw_source");
+    section["frame_node_order"] = {{"main", {"gpu_geometry", "present"}}};
+
+    fixture.backend_context = VulkanRenderCompilerBackendContext{
+        vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
+        VulkanRenderCompilerDevicePlanningMode::compiler_only};
+    fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat}};
+    fixture.config = wrapLegacyRenderingConfig(section);
+    REQUIRE_FALSE(fixture.config.contains("frame_node_order"));
+
+    SECTION("a known graph order is accepted through the section") {
+        const auto output = runRenderCompilerProgram(
+            defaultVulkanRenderCompilerProgram(), fixture.input());
+        REQUIRE(output.variants.front().frame_plans.contains("main"));
+    }
+    SECTION("an unknown graph is still rejected by name") {
+        renderingSectionOf(fixture.config)["frame_node_order"]["unknown"] =
+            nlohmann::json::array();
+        REQUIRE_THROWS_WITH(
+            runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), fixture.input()),
+            Catch::Matchers::ContainsSubstring("frame_node_order unknown graph: unknown"));
     }
 }
 

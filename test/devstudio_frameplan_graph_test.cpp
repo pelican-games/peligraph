@@ -26,6 +26,7 @@
 #include "taskresourceconnections.hpp"
 
 #include "../src/core/loader/engineresources.hpp"
+#include "../src/project/renderconfigsection.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/render_algorithms/cube_capture/cubecaptureview.hpp"
 #include "../src/core/renderingpass/frameexecutionadapter.hpp"
@@ -324,16 +325,19 @@ Json animgraphFramePlan(
 }
 
 Json exampleFramePlan(bool ui_enabled) {
+    // P-2a-4b: the shipping project is a `pelican.graph` root, so the edits
+    // below go through the production section locator. The document handed to
+    // `resolveRenderPipeline` stays a graph root -- that is the shipping shape.
     Json authored = readJson(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
                              "projects" / "example" / "passes" /
                              "main_rendering_config.json");
 #if PELICAN_RUNTIME_SHADER_COMPILER
     if (!ui_enabled) {
-        authored["features"] = Json::array();
+        Pelican::renderingSectionOf(authored)["features"] = Json::array();
     }
 #else
     (void)ui_enabled;
-    authored["features"] = Json::array();
+    Pelican::renderingSectionOf(authored)["features"] = Json::array();
 #endif
     auto resolved = Pelican::resolveRenderPipeline(
         Pelican::RenderPipelineRequest{
@@ -358,7 +362,8 @@ const Json &taaGroupingFramePlan() {
         Json authored = readJson(
             std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
             "example" / "passes" / "main_rendering_config.json");
-        auto &targets = authored.at("render_targets");
+        auto &section = Pelican::renderingSectionOf(authored);
+        auto &targets = section.at("render_targets");
         const auto lit_color = std::ranges::find_if(
             targets, [](const Json &target) {
                 return target.value("name", std::string{}) == "lit_color";
@@ -368,7 +373,7 @@ const Json &taaGroupingFramePlan() {
                 "TAA grouping fixture has no lit_color target");
         }
         (*lit_color)["format_class"] = "scene";
-        authored["features"] = Json::array(
+        section["features"] = Json::array(
             {"engine://features/velocity.json",
              "engine://features/taa.json"});
 
@@ -610,8 +615,11 @@ std::string describeWp348Invocation(
 }
 #endif
 
-Json &authoredRenderingPass(Json &authored, std::string_view name) {
-    for (auto &group : authored.at("rendering_passes")) {
+Json &authoredRenderingPass(Json &document, std::string_view name) {
+    // P-2a-4b: callers pass the shipping `pelican.graph` root, so the passes
+    // are looked up through the production section locator.
+    for (auto &group :
+         Pelican::renderingSectionOf(document).at("rendering_passes")) {
         for (auto &pass : group.at("passes")) {
             if (pass.value("name", std::string{}) == name) {
                 return pass;
@@ -623,9 +631,14 @@ Json &authoredRenderingPass(Json &authored, std::string_view name) {
 }
 
 Json wp343GroupingAuthoredExample() {
-    Json authored = readJson(
+    // P-2a-4b: start from the shipping `rendering` section through the
+    // production locator and keep this fixture a legacy root -- the splice
+    // below adds `buffers`, which a `pelican.graph` root reserves for the
+    // graph itself (the lowering refuses `rendering.buffers` by name).
+    const Json shipping = readJson(
         std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
         "example" / "passes" / "main_rendering_config.json");
+    Json authored = Pelican::renderingSectionOf(shipping);
 
     // P-2a-1b moved the 13 bloom passes and their 9 render targets into
     // engine://features/bloom.json. This fixture needs them as authored
@@ -896,7 +909,7 @@ Json resolvedMixedMembershipFramePlan(
         "example" / "passes" / "main_rendering_config.json");
     constexpr std::string_view feature_reference =
         "engine://features/wp343_mixed_membership.json";
-    authored["features"] =
+    Pelican::renderingSectionOf(authored)["features"] =
         Json::array({std::string{feature_reference}});
 
     const std::string label =
@@ -996,7 +1009,7 @@ const Json &wp350LargeHullFramePlan() {
             "example" / "passes" / "main_rendering_config.json");
         constexpr std::string_view feature_reference =
             "engine://features/wp350_large_hull.json";
-        authored["features"] =
+        Pelican::renderingSectionOf(authored)["features"] =
             Json::array({std::string{feature_reference}});
         auto resolved = Pelican::resolveRenderPipeline(
             Pelican::RenderPipelineRequest{
@@ -1106,7 +1119,7 @@ const Json &wp347BarrierFramePlan() {
             "example" / "passes" / "main_rendering_config.json");
         constexpr std::string_view feature_reference =
             "engine://features/wp347_barrier_visibility.json";
-        authored["features"] =
+        Pelican::renderingSectionOf(authored)["features"] =
             Json::array({std::string{feature_reference}});
 
         auto resolved = Pelican::resolveRenderPipeline(

@@ -2,6 +2,7 @@
 #include "featurecompose.hpp"
 #include "passfieldownership.hpp"
 #include "rasterpass.hpp"
+#include "renderconfigsection.hpp"
 #include "renderresourcename.hpp"
 
 #include <algorithm>
@@ -1032,8 +1033,12 @@ ResolvedRenderPipeline resolveRenderPipeline(
         throw std::runtime_error("Rendering config must be an object: " +
                                  request.source_name);
     }
+    // P-2a-4b: this is the one pre-compose read of the authored document. A
+    // `pelican.graph` root keeps `rendering_passes` in its `rendering`
+    // section, so reading the root here would skip pass-field-ownership
+    // validation for every graph-root project without saying so.
     validatePassFieldOwnershipInConfig(
-        request.authored_config,
+        renderingSectionOrEmpty(request.authored_config),
         capabilities.pass_field_ownership,
         request.source_name);
 

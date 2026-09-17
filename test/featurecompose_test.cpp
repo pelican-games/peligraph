@@ -2,6 +2,7 @@
 #include "../src/project/graphpartition.hpp"
 #include "../src/project/rendergraphcomposition.hpp"
 #include "../src/core/renderingpass/computetask.hpp"
+#include "../src/project/renderconfigsection.hpp"
 #include "../src/project/renderfeatureoverlay.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "../src/core/loader/engineresources.hpp"
@@ -3074,9 +3075,13 @@ TEST_CASE("velocity feature is purgeable and occupies the scene-to-post boundary
 
 TEST_CASE("startup feature overlay is explicit, additive, and purgeable",
           "[render-feature][overlay][editor][wp289][wp351]") {
+    // P-2a-4b: the shipping project is a `pelican.graph` root, so this is
+    // the first e2e that puts an overlay on the shipping document; the
+    // feature list it must edit lives in the `rendering` section.
     const auto base = readJson(
         std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
         "example" / "passes" / "main_rendering_config.json");
+    REQUIRE(base.at("schema") == "pelican.graph");
     const std::vector<std::string> no_overlays;
     bool loader_called = false;
     const auto unchanged = applyRenderFeatureOverlays(
@@ -3120,11 +3125,11 @@ TEST_CASE("startup feature overlay is explicit, additive, and purgeable",
     const auto before_gpu_timing =
         apply_editor(editor_before_gpu_timing);
     const auto effective = apply_editor(editor_overlay);
-    REQUIRE(base.at("features") ==
+    REQUIRE(renderingSectionOf(base).at("features") ==
             nlohmann::json::array(
                 {"engine://features/bloom.json",
                  "engine://features/ui.json"}));
-    REQUIRE(effective.at("features") ==
+    REQUIRE(renderingSectionOf(effective).at("features") ==
             nlohmann::json::array(
                 {"engine://features/bloom.json",
                  "engine://features/ui.json",
@@ -3215,13 +3220,16 @@ TEST_CASE("startup feature overlay is explicit, additive, and purgeable",
     REQUIRE(has_target(enabled.config, "picking_id"));
 
     auto project_already_uses_gizmo = base;
-    project_already_uses_gizmo.at("features").push_back(
-        "engine://features/gizmo.json");
+    renderingSectionOf(project_already_uses_gizmo)
+        .at("features")
+        .push_back("engine://features/gizmo.json");
     const auto deduplicated = applyRenderFeatureOverlays(
         project_already_uses_gizmo, overlays, loadEngineFeature);
+    const auto &deduplicated_features =
+        renderingSectionOf(deduplicated).at("features");
     REQUIRE(std::count(
-                deduplicated.at("features").begin(),
-                deduplicated.at("features").end(),
+                deduplicated_features.begin(),
+                deduplicated_features.end(),
                 nlohmann::json("engine://features/gizmo.json")) == 1);
 }
 
@@ -3231,13 +3239,18 @@ TEST_CASE("P-2a-4a a pelican.graph root composes like its legacy twin and takes 
     const auto graph_root =
         readJson(source_root / "test" / "fixtures" / "graph_root_example" /
                  "passes" / "main.json");
-    const auto legacy = readJson(source_root / "projects" / "example" /
-                                 "passes" / "main_rendering_config.json");
-    // The fixture is the shipping config, moved verbatim under `rendering`.
-    // If the shipping project changes, this says so instead of quietly
-    // comparing two different configs below.
-    REQUIRE(graph_root.at("rendering") == legacy);
+    const auto shipping = readJson(source_root / "projects" / "example" /
+                                   "passes" / "main_rendering_config.json");
+    // P-2a-4b: the shipping project is itself a `pelican.graph` root now, so
+    // the fixture's definition is "the same section, wrapped by the same one
+    // production function". Comparing the section alone would not catch a
+    // fixture whose root keys drifted, so compare the wrap too.
     REQUIRE(graph_root.at("schema") == "pelican.graph");
+    REQUIRE(shipping.at("schema") == "pelican.graph");
+    REQUIRE(graph_root.at("rendering") == renderingSectionOf(shipping));
+    REQUIRE(graph_root ==
+            wrapLegacyRenderingConfig(renderingSectionOf(shipping)));
+    const auto legacy = renderingSectionOf(shipping);
 
     struct Topology {
         std::set<std::tuple<std::string, std::string>> nodes;
@@ -3525,8 +3538,11 @@ TEST_CASE("gizmo feature owns a purgeable output overlay pass",
 
 TEST_CASE("bundled TAA composes into the example pipeline as a two-pass history graph",
           "[render-feature][temporal][taa]") {
-    auto config = readJson(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
-                           "projects/example/passes/main_rendering_config.json");
+    auto document = readJson(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                             "projects/example/passes/main_rendering_config.json");
+    // P-2a-4b: edit the shipping document through the section locator; the
+    // composer then takes the graph root exactly as the engine does.
+    auto &config = renderingSectionOf(document);
     // TAA's named binding intentionally requires the dynamic scene format
     // class. The example itself pins float16 because its forward material ABI
     // consumes scene-linear HDR without enabling the optional HDR feature.
@@ -3552,7 +3568,7 @@ TEST_CASE("bundled TAA composes into the example pipeline as a two-pass history 
     });
 
     const auto result = composeRenderFeatureConfig(
-        config, RenderFeatureComposeDependencies{loadEngineFeature, true});
+        document, RenderFeatureComposeDependencies{loadEngineFeature, true});
     // P-2a-1b: the example's own bloom is the first feature it composes.
     REQUIRE(result.feature_names ==
             std::vector<std::string>{"bloom", "ui", "velocity", "taa"});

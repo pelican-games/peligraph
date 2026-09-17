@@ -10,6 +10,7 @@
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/renderconfigcandidate.hpp"
+#include "../src/project/renderconfigsection.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
@@ -3107,9 +3108,12 @@ TEST_CASE("The shipping bloom component is readable from the project and derives
     CHECK(derived.at("passes") == engine_document.at("passes"));
     CHECK(derived.at("render_targets") ==
           engine_document.at("render_targets"));
-    CHECK(Json::parse(readBytes(project.render_config))
-              .at("features")
-              .at(index) == "project://passes/bloom-local.json");
+    // P-2a-4b: the subject is the shipping `pelican.graph` root, so the
+    // editor wrote the reference into its `rendering` section. Reading the
+    // document root here would be reading where the composer never looks.
+    const auto derived_root = Json::parse(readBytes(project.render_config));
+    CHECK(renderingSectionOf(derived_root).at("features").at(index) ==
+          "project://passes/bloom-local.json");
     CHECK(readBytes(engine_source) == engine_source_before);
 
     // P-2a-1c, operation 3 "keep tuning the derivative": the derived document
@@ -3150,7 +3154,8 @@ TEST_CASE("The shipping bloom component is readable from the project and derives
     service->commitPending();
     REQUIRE(service->getResult({{"ticket", edited.at("ticket")}})
                 .at("committed") == true);
-    CHECK(Json::parse(readBytes(project.render_config)).at("features").at(index) ==
+    const auto tuned_root = Json::parse(readBytes(project.render_config));
+    CHECK(renderingSectionOf(tuned_root).at("features").at(index) ==
           Json{{"ref", "project://passes/bloom-local.json"},
                {"parameters", {{"intensity", 5.0}}}});
 }

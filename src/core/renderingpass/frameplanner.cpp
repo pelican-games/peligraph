@@ -9,6 +9,7 @@
 #include "../../project/renderresourcename.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "../../project/materialscreeninput.hpp"
+#include "../../project/renderconfigsection.hpp"
 #include <algorithm>
 #include <limits>
 #include <optional>
@@ -1742,10 +1743,17 @@ FrameGraphDefinition parseFrameGraphDefinitionFromJson(const nlohmann::json &gra
     return graph;
 }
 
-std::vector<FrameGraphDefinition> parseFrameGraphDefinitionsFromConfigJson(const nlohmann::json &config_json) {
-    if (!config_json.is_object()) {
+std::vector<FrameGraphDefinition> parseFrameGraphDefinitionsFromConfigJson(const nlohmann::json &document) {
+    if (!document.is_object()) {
         throw std::runtime_error("Frame graph config must be an object");
     }
+    // P-2a-4b: a `pelican.graph` root keeps the rendering config under
+    // `rendering`. Without this the planner read a root that has none of its
+    // keys and returned an empty plan set -- a shipping project would have
+    // silently planned zero frames. A graph root that cannot name its section
+    // is refused (`RenderConfigSectionUnlocated`) rather than answered with
+    // "no frame graphs".
+    const nlohmann::json &config_json = renderingSectionOf(document);
 
     std::vector<FrameGraphDefinition> graphs;
     if (!config_json.contains("rendering_passes")) {

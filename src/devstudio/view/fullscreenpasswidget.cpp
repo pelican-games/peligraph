@@ -5,6 +5,7 @@
 #include "../model/frameplanresourcekind.hpp"
 
 #include "passfieldownership.hpp"
+#include "renderconfigsection.hpp"
 #include "passshapepolicy.hpp"
 #include "rasterpass.hpp"
 
@@ -2108,13 +2109,16 @@ struct FullscreenPassWidget::Impl {
             source_digest.clear();
             anchors.clear();
             remove_fragment->clear();
-            const Json root = Json::parse(
+            const Json document = Json::parse(
                 config_json.constData(),
                 config_json.constData() + config_json.size());
-            if (!root.is_object()) {
+            if (!document.is_object()) {
                 throw std::runtime_error(
                     "rendering config must be a JSON object");
             }
+            // P-2a-4b: the authored passes of a `pelican.graph` root live in
+            // its `rendering` section, not at the root.
+            const Json &root = renderingSectionOf(document);
             const auto graphs = root.find("rendering_passes");
             if (graphs == root.end() || !graphs->is_array()) {
                 throw std::runtime_error(

@@ -6,6 +6,7 @@
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/loader/basicconfig.hpp"
+#include "../src/project/renderconfigsection.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/scene.hpp"
@@ -112,7 +113,13 @@ void copyExampleProject(const fs::path &source, const fs::path &destination) {
 
 void removeForwardTransparentPass(const fs::path &config_path) {
     nlohmann::json config = nlohmann::json::parse(readText(config_path));
-    auto &passes = config.at("rendering_passes").at(0).at("passes");
+    // P-2a-4b: the shipping project is a `pelican.graph` root, so the pass to
+    // remove lives in its `rendering` section. The document is written back
+    // whole, root keys included.
+    auto &passes = Pelican::renderingSectionOf(config)
+                       .at("rendering_passes")
+                       .at(0)
+                       .at("passes");
     const auto original_size = passes.size();
     passes.erase(
         std::remove_if(passes.begin(), passes.end(), [](const auto &pass) {

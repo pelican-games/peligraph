@@ -3,6 +3,7 @@
 #include "../src/core/renderingpass/logicalframegraphadapter.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/project/featurecompose.hpp"
+#include "../src/project/renderconfigsection.hpp"
 #include "../src/core/renderingpass/renderingpassconfigjsonparser.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
@@ -78,8 +79,13 @@ nlohmann::json bloomFeaturePass(const nlohmann::json &feature,
 // reproduces exactly the pass set the project authored before P-2a-1b, so the
 // planner assertions below still describe the shipping frame.
 nlohmann::json shippingBloomConfig() {
-    auto config = readJson(sourceRoot() / "projects" / "example" / "passes" /
-                           "main_rendering_config.json");
+    // P-2a-4b: the shipping project is a `pelican.graph` root, so the splice
+    // starts from its `rendering` section through the production locator. The
+    // result is a legacy-root config on purpose: the splice adds `buffers`,
+    // which a graph root reserves for the graph itself.
+    const auto document = readJson(sourceRoot() / "projects" / "example" /
+                                   "passes" / "main_rendering_config.json");
+    auto config = renderingSectionOf(document);
     const auto feature = readJson(bloomFeaturePath());
     for (const auto &target : feature.at("render_targets")) {
         config.at("render_targets").push_back(target);
@@ -145,7 +151,10 @@ void normalizeDisplayAlias(nlohmann::json &value) {
     }
 }
 
-nlohmann::json legacyPassProjection(const nlohmann::json &config) {
+nlohmann::json legacyPassProjection(const nlohmann::json &document) {
+    // P-2a-4b: called with both a composed (legacy) config and the shipping
+    // graph root, so it asks the production locator where the section is.
+    const auto &config = renderingSectionOrEmpty(document);
     auto projected = nlohmann::json::array();
     for (const auto &pass : config.at("rendering_passes").at(0).at("passes")) {
         const auto type = pass.value("type", std::string{});
@@ -162,7 +171,8 @@ nlohmann::json legacyPassProjection(const nlohmann::json &config) {
     return projected;
 }
 
-nlohmann::json legacyTargetProjection(const nlohmann::json &config) {
+nlohmann::json legacyTargetProjection(const nlohmann::json &document) {
+    const auto &config = renderingSectionOrEmpty(document);
     auto projected = nlohmann::json::array();
     for (const auto &target : config.at("render_targets")) {
         if (target.value("name", std::string{}) == "display") {
@@ -213,10 +223,17 @@ std::vector<ConfigCase> staticRenderingConfigCases() {
                 continue;
             }
             const auto json = readJson(entry.path());
-            if (json.is_object() && json.contains("rendering_passes")) {
+            if (!json.is_object()) {
+                continue;
+            }
+            // P-2a-4b: `projects/example` is a `pelican.graph` root now. Its
+            // passes live in the `rendering` section, and the shadow cases
+            // below are legacy-shaped configs, so take the section.
+            const auto &section = renderingSectionOrEmpty(json);
+            if (section.contains("rendering_passes")) {
                 cases.push_back(ConfigCase{
                     std::filesystem::relative(entry.path(), sourceRoot()).generic_string(),
-                    json,
+                    section,
                 });
             }
         }
@@ -239,9 +256,11 @@ std::vector<ConfigCase> goldenRenderingConfigCases() {
         if (mode == "stem_fullscreen") {
             cases.push_back(ConfigCase{"test/golden/" + entry.path().filename().string(), stemGoldenRenderingConfig()});
         } else if (mode == "vat_playback") {
+            const auto document = readJson(
+                sourceRoot() / "projects" / "example" / "passes" / "main_rendering_config.json");
             cases.push_back(ConfigCase{
                 "test/golden/" + entry.path().filename().string(),
-                readJson(sourceRoot() / "projects" / "example" / "passes" / "main_rendering_config.json"),
+                renderingSectionOf(document),
             });
         }
     }
@@ -1324,7 +1343,9 @@ TEST_CASE("canonical C1b frame-plan diff preserves every legacy pass and target 
     auto legacy = readJson(sourceRoot() / "projects" / "example" / "passes" /
                            "main_rendering_config.json");
     // This C1b fixture isolates the color rewrite; feature insertion has its own gates.
-    legacy.erase("features");
+    // P-2a-4b: the edit lands in the section of the graph root, and both the
+    // planner and the composer read it there.
+    renderingSectionOf(legacy).erase("features");
     const auto old_graphs = parseFrameGraphDefinitionsFromConfigJson(legacy);
     REQUIRE(old_graphs.size() == 1);
     const auto old_plan = planFrameGraph(old_graphs.front());

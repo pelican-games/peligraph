@@ -7,6 +7,7 @@
 #include "graphcomposition.hpp"
 #include "passfieldownership.hpp"
 #include "passshapepolicy.hpp"
+#include "renderconfigsection.hpp"
 #include "renderpipeline.hpp"
 #include "rasterpass.hpp"
 #include "renderingpass/frameplanner.hpp"
@@ -433,9 +434,12 @@ Json projectToKeys(const Json &declaration, const StringSet &keys) {
     return result;
 }
 
-const Json &findPass(const Json &config, std::string_view graph,
+const Json &findPass(const Json &document, std::string_view graph,
                      std::string_view name) {
-    for (const auto &graph_entry : config.at("rendering_passes")) {
+    // P-2a-4b: called with the shipping `pelican.graph` root as well as with
+    // legacy-root projects; the production locator answers for both.
+    for (const auto &graph_entry :
+         Pelican::renderingSectionOf(document).at("rendering_passes")) {
         if (std::string_view{
                 graph_entry.at("name").get_ref<const std::string &>()} !=
             graph) {
@@ -781,8 +785,11 @@ TEST_CASE(
             root / "test" / "fixtures" / "devstudio" /
             "example_frame_plan.json")
             .dump());
-    const std::string graph =
-        config.at("rendering_passes").at(0).at("name").get<std::string>();
+    const std::string graph = Pelican::renderingSectionOf(config)
+                                  .at("rendering_passes")
+                                  .at(0)
+                                  .at("name")
+                                  .get<std::string>();
 
     RefreshHarness refresh;
     // P-2a-1b moved the bloom passes into engine://features/bloom.json, so
@@ -1550,8 +1557,11 @@ TEST_CASE(
             source_root / "test" / "fixtures" / "devstudio" /
             "example_frame_plan.json")
             .dump());
-    const std::string graph =
-        config.at("rendering_passes").at(0).at("name").get<std::string>();
+    const std::string graph = Pelican::renderingSectionOf(config)
+                                  .at("rendering_passes")
+                                  .at(0)
+                                  .at("name")
+                                  .get<std::string>();
     const Json &declaration = findPass(config, graph, "ssao_pass");
 
     QTemporaryDir isolation;
@@ -2041,8 +2051,11 @@ TEST_CASE(
     const Json plan = readRuntimeFramePlan(
         root / "test" / "fixtures" / "devstudio" /
         "example_frame_plan.json");
-    const std::size_t authored_count =
-        config.at("rendering_passes").at(0).at("passes").size();
+    const std::size_t authored_count = Pelican::renderingSectionOf(config)
+                                           .at("rendering_passes")
+                                           .at(0)
+                                           .at("passes")
+                                           .size();
     REQUIRE(plan.at("nodes").size() != authored_count);
 
     RefreshHarness refresh;

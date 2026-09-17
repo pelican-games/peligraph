@@ -3,6 +3,7 @@
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/project/featurecompose.hpp"
+#include "../src/project/renderconfigsection.hpp"
 #include "../src/project/renderpipeline.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -175,6 +176,42 @@ void publishGenerationProbe(
 }
 
 } // namespace
+
+TEST_CASE(
+    "P-2a-4b a pelican.graph root is validated in its rendering section "
+    "before its preset is resolved",
+    "[render-pipeline][graph-root][pass-field-ownership][p2a4b]") {
+    // `resolveRenderPipeline` reads the authored document once before compose
+    // (pass field ownership) and the lowered one again inside compose. A graph
+    // root keeps `rendering_passes` in its section, so reading the document
+    // root skips the authored check without saying so -- and the lowered check
+    // still fires, which is why "it is still rejected" proves nothing. The
+    // observable difference is the order: preset resolution happens between
+    // the two, so for a document the authored check rejects, the preset loader
+    // must never be reached.
+    auto legacy = baseConfig();
+    legacy["pipeline"] = Json{{"preset", "engine://render_pipelines/unreachable.json"}};
+    legacy.at("rendering_passes").at(0).at("passes").at(0)["push_constants"] =
+        "projection_view";
+    const auto document = wrapLegacyRenderingConfig(legacy);
+    REQUIRE(document.at("schema") == "pelican.graph");
+    REQUIRE_FALSE(document.contains("rendering_passes"));
+
+    bool loader_called = false;
+    const auto loader = [&loader_called](std::string_view) -> std::string {
+        loader_called = true;
+        throw std::runtime_error("preset loader was reached");
+    };
+    REQUIRE_THROWS_WITH(
+        resolveRenderPipeline(
+            RenderPipelineRequest{document, "p2a4b/graph_root.json"},
+            RenderEnvironmentCapabilities{
+                true, RenderPipelineGraphVariant::flat},
+            RenderPipelineResolveDependencies{loader, loader}),
+        Catch::Matchers::ContainsSubstring(
+            "does not own field 'push_constants'"));
+    CHECK_FALSE(loader_called);
+}
 
 TEST_CASE(
     "WP218 material routing carries one output schema across graph variants",
