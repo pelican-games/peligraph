@@ -151,7 +151,7 @@ WP172 で **第3の variant「preview」** が加わりました。同じ `loadR
 > **骨子**:
 > ```text
 > 最終配列 = [scene passes...]
->            __anchor_sprite [b0]  __anchor_post_main  [b1]   ← HDR 時の bloom
+>            __anchor_sprite [b0]  __anchor_post_main  [b1]   ← HDR 時の swapchain writer(anchor 無し)
 >            __anchor_tonemap [b2] __anchor_post_ldr   [b3]   ← 非 HDR 時の終端
 >            __anchor_pelican_ui [b4] __anchor_debug_draw [b5]
 >            __anchor_debug_text [b6] __anchor_imgui [b7]
