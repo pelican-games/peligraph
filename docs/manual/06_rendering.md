@@ -392,7 +392,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 | feature | 内容 |
 |---|---|
 | `hdr.json` | `format_class: scene` の RT を float16 化(切替はエンジンの色リゾルバが feature の有無で行う)し、`scene_ldr_in` を挟んでトーンマップパスを `after:tonemap` アンカーに挿入 |
-| `bloom.json` | `example` から移した 13 pass + 9 RT(`Bloom_*`、`format_class: scene`、`extent_scale` 付き)を `after:post_ldr` に挿入する後処理 bloom(P-2a-1b)。parameter は P-2a-1c で。hdr on との併用は未対応(anchor が `post_ldr` 固定。hdr on で組むなら派生して `post_main` に) |
+| `bloom.json` | `example` から移した 13 pass + 9 RT(`Bloom_*`、`format_class: scene`、`extent_scale` 付き)を `after:post_ldr` に挿入する後処理 bloom(P-2a-1b)。parameter `threshold` [0,4] 0.4 / `knee` [0,1] 0.7 / `intensity` [0,8] 2.0(define、P-2a-1c)。materialize した派生も parameter を編集できる(1c)。hdr on との併用は未対応(anchor が `post_ldr` 固定。hdr on で組むなら派生して `post_main` に) |
 | `clustered_lighting.json` | computeでViewFamily/view別のcluster index/list bufferを構築し、standard lighting passへtyped buffer resourceとして注入。planar reflection併用時はreflection-local selectorも自動合成 |
 | `shadow_directional.json` | 既定2048×2048・1 cascadeのdirectional shadow。1〜8 cascade、解像度、距離、split、安定化をパラメータ化し、`shadow_depth` と受光入力を追加 |
 | `rt_shadow_mask.json` | `pelican.vulkan.ray_query@1` を要求し、被覆付き `gbuffer_worldpos` と `gbuffer_normal` から TLAS へ法線方向 bias 付き hard shadow ray を飛ばして、`R8_UNORM` マスクへ出力。静的・skin・morph・VAT に対応。対象 0 件は全面可視。既定無効。TLAS は set 0、fullscreen 入力は set 1 |
