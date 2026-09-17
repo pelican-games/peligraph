@@ -1,0 +1,87 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "theme_switch",
+  "description": "N-5: the View menu's theme entries are real actions a driver can trigger, and the Graph canvas redraws itself in the theme that was chosen. The two pictures are the deliverable: a reader compares them and sees the window chrome and the canvas agree in both.",
+  "tab": "graph",
+  "steps": [
+    {
+      "label": "the engine viewport answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the Graph tab is the one on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvas",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the canvas has drawn the owned instance",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "both themes are offered by name",
+      "expect": "list_count",
+      "pattern": "pelican.view.theme.",
+      "value": 2
+    },
+    {
+      "label": "switch to the dark theme",
+      "cmd": "click",
+      "name": "pelican.view.theme.dark"
+    },
+    {
+      "label": "the canvas is still drawn after the switch",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the Graph canvas in the dark theme",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "theme_dark.png"
+    },
+    {
+      "label": "switch to the light theme",
+      "cmd": "click",
+      "name": "pelican.view.theme.light"
+    },
+    {
+      "label": "the canvas survived the second switch too",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the Graph canvas in the light theme",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "theme_light.png"
+    },
+    {
+      "label": "the stored gain is still on the pill: a theme changes colour, not content",
+      "expect": "text_equals",
+      "name": "pelican.graphCanvasView::graph_value_pill#left/gain",
+      "value": "2.5"
+    },
+    {
+      "label": "a theme nothing offers is refused, by code",
+      "cmd": "click",
+      "name": "pelican.view.theme.solar",
+      "expect_error": "automation.widget_missing@1"
+    },
+    {
+      "label": "leave the machine in the theme a fresh Studio starts in",
+      "cmd": "click",
+      "name": "pelican.view.theme.dark"
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 #include "graphcanvaswidget.hpp"
+#include "studiotheme.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -1221,4 +1222,109 @@ TEST_CASE("A refresh keeps the node the user was working on selected",
     answer(model, without, visualCatalog());
     scene.repopulate();
     REQUIRE_FALSE(scene.selectedNode().has_value());
+}
+
+// N-5. The theme table is the one place the canvas takes colour from, and a
+// scene follows a switch by drawing itself again: every item holds the brush
+// it was built with, so nothing short of a repopulate can change it. The
+// control is the repopulate: take the listener out of the scene's constructor
+// and these colours stay at the theme the scene was built in.
+TEST_CASE("The canvas draws in the theme's colours and follows a switch",
+          "[devstudio][graph-canvas][scene][theme]") {
+    (void)application();
+    PelicanStudio::resetStudioThemeTable();
+    PelicanStudio::resetSocketStyleDefaults();
+    REQUIRE(PelicanStudio::setCurrentStudioTheme(QStringLiteral("dark")));
+
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    answer(model, connectedDocument(), visualCatalog());
+    scene.setModel(&model);
+    REQUIRE(model.enterInstance("left"));
+    scene.repopulate();
+
+    const auto body = [&](const QString &name) {
+        auto *item = dynamic_cast<QGraphicsPathItem *>(nodeItem(scene, name));
+        REQUIRE(item != nullptr);
+        return item;
+    };
+    const auto anyEdge = [&] {
+        const auto edges =
+            itemsOfKind(scene, PelicanStudio::GraphCanvasEdgeItem);
+        REQUIRE_FALSE(edges.empty());
+        auto *item = dynamic_cast<QGraphicsPathItem *>(edges.front());
+        REQUIRE(item != nullptr);
+        return item;
+    };
+
+    const PelicanStudio::StudioTheme &dark = PelicanStudio::currentStudioTheme();
+    REQUIRE(dark.name == QStringLiteral("dark"));
+    REQUIRE(body(QStringLiteral("sum"))->brush().color() == dark.canvas.node_body);
+    REQUIRE(body(QStringLiteral("sum"))->pen().color() == dark.canvas.node_border);
+    REQUIRE(anyEdge()->pen().color() == dark.canvas.edge);
+    // The socket's rim and the no-claim fill are the theme's; the type fills
+    // in the table are identity and must not move with it.
+    QGraphicsItem *socket = socketItem(scene, QStringLiteral("sum"),
+                                       QStringLiteral("a"),
+                                       QStringLiteral("input"));
+    REQUIRE(socket != nullptr);
+    auto *socket_path = dynamic_cast<QGraphicsPathItem *>(socket);
+    REQUIRE(socket_path != nullptr);
+    REQUIRE(socket_path->pen().color() == dark.canvas.node_border);
+
+    const QColor dark_body = dark.canvas.node_body;
+    const QColor dark_edge = dark.canvas.edge;
+
+    // The switch alone -- nobody calls repopulate() here.
+    REQUIRE(PelicanStudio::setCurrentStudioTheme(QStringLiteral("light")));
+    const PelicanStudio::StudioTheme &light =
+        PelicanStudio::currentStudioTheme();
+    REQUIRE(light.name == QStringLiteral("light"));
+    REQUIRE(light.canvas.node_body != dark_body);
+    REQUIRE(light.canvas.edge != dark_edge);
+
+    REQUIRE(body(QStringLiteral("sum"))->brush().color() == light.canvas.node_body);
+    REQUIRE(body(QStringLiteral("sum"))->pen().color() == light.canvas.node_border);
+    REQUIRE(anyEdge()->pen().color() == light.canvas.edge);
+    socket_path = dynamic_cast<QGraphicsPathItem *>(
+        socketItem(scene, QStringLiteral("sum"), QStringLiteral("a"),
+                   QStringLiteral("input")));
+    REQUIRE(socket_path != nullptr);
+    REQUIRE(socket_path->pen().color() == light.canvas.node_border);
+    REQUIRE(socket_path->brush().color() ==
+            PelicanStudio::socketStyleFor(
+                PelicanStudio::SocketTypeFacts{"pelican.value.scalar@1"}).fill);
+
+    // And back, so the switch is not a one-way door.
+    REQUIRE(PelicanStudio::setCurrentStudioTheme(QStringLiteral("dark")));
+    REQUIRE(body(QStringLiteral("sum"))->brush().color() == dark_body);
+
+    // A name the table does not carry changes nothing.
+    REQUIRE_FALSE(PelicanStudio::setCurrentStudioTheme(QStringLiteral("solar")));
+    REQUIRE(PelicanStudio::currentStudioThemeName() == QStringLiteral("dark"));
+    REQUIRE(body(QStringLiteral("sum"))->brush().color() == dark_body);
+}
+
+// The table is data: a Studio whose resource will not parse still draws, in
+// the built-in dark values, and still answers every drawing site.
+TEST_CASE("A theme table that says nothing leaves the built-in dark values",
+          "[devstudio][graph-canvas][scene][theme]") {
+    (void)application();
+    PelicanStudio::setStudioThemeTable("{ this is not json");
+    REQUIRE(PelicanStudio::studioThemeNames() ==
+            QStringList{QStringLiteral("dark")});
+    const PelicanStudio::StudioTheme &theme =
+        PelicanStudio::currentStudioTheme();
+    REQUIRE(theme.canvas.node_body == QColor{QStringLiteral("#272e36")});
+    REQUIRE(theme.domainTint(QStringLiteral("rendering")) ==
+            QColor{QStringLiteral("#3f5d86")});
+    // A domain and a source the table never named still answer.
+    REQUIRE(theme.domainTint(QStringLiteral("nobody")) ==
+            theme.domainTint(QStringLiteral("structural")));
+    REQUIRE(theme.sourceTint(QStringLiteral("nobody")) ==
+            theme.sourceTint(QStringLiteral("unknown")));
+    PelicanStudio::resetStudioThemeTable();
+    REQUIRE(PelicanStudio::setCurrentStudioTheme(
+        PelicanStudio::defaultStudioThemeName()));
 }

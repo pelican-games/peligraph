@@ -5,6 +5,7 @@
 #include "../view/nodegraphics.hpp"
 #include "../viewport/embeddedviewport.hpp"
 
+#include <QAction>
 #include <QAbstractButton>
 #include <QAbstractScrollArea>
 #include <QAbstractSpinBox>
@@ -126,6 +127,35 @@ std::vector<QWidget *> namedWidgets() {
                          return a->isVisible() && !b->isVisible();
                      });
     return found;
+}
+
+// A menu entry is a QAction, not a widget: it has no place on screen until
+// the menu is open, so a scenario that "clicks" one means "do what it does".
+// Actions are named the way widgets are, so the same `name` field reaches both.
+std::vector<QAction *> namedActions(const AutomationHost &host) {
+    std::vector<QAction *> found;
+    const auto collect = [&found](QWidget *root) {
+        if (root == nullptr) return;
+        for (QAction *action : root->findChildren<QAction *>())
+            if (action != nullptr && !action->objectName().isEmpty())
+                found.push_back(action);
+    };
+    collect(host.window);
+    for (QWidget *widget : QApplication::topLevelWidgets())
+        if (widget != host.window) collect(widget);
+    std::stable_sort(found.begin(), found.end(),
+                     [](const QAction *a, const QAction *b) {
+                         return a->objectName() < b->objectName();
+                     });
+    found.erase(std::unique(found.begin(), found.end()), found.end());
+    return found;
+}
+
+QAction *findAction(const AutomationHost &host, const QString &name) {
+    if (name.isEmpty()) return nullptr;
+    for (QAction *action : namedActions(host))
+        if (action->objectName() == name) return action;
+    return nullptr;
 }
 
 QWidget *findWidget(const AutomationHost &host, const QString &name) {
@@ -630,6 +660,18 @@ AutomationReply commandList(const AutomationHost &host,
             });
         }
     }
+    for (QAction *action : namedActions(host)) {
+        if (!matches(action->objectName())) continue;
+        entries.push_back(QJsonObject{
+            {QStringLiteral("name"), action->objectName()},
+            {QStringLiteral("class"), QStringLiteral("QAction")},
+            {QStringLiteral("visible"), action->isVisible()},
+            {QStringLiteral("enabled"), action->isEnabled()},
+            {QStringLiteral("geometry"), rectJson(QRect{})},
+            {QStringLiteral("checked"), action->isChecked()},
+            {QStringLiteral("text"), action->text()},
+        });
+    }
     return AutomationReply::success(QJsonObject{
         {QStringLiteral("count"), static_cast<int>(entries.size())},
         {QStringLiteral("widgets"), entries},
@@ -638,6 +680,24 @@ AutomationReply commandList(const AutomationHost &host,
 
 AutomationReply commandClick(const AutomationHost &host,
                              const QJsonObject &request, bool double_click) {
+    // A named action is done, not pressed: the menu it lives in need not be
+    // open, and a scenario should not have to drive a popup to reach it.
+    const QString named = request.value(QStringLiteral("name")).toString();
+    if (!named.isEmpty() && findWidget(host, named) == nullptr) {
+        if (QAction *action = findAction(host, named)) {
+            if (!action->isEnabled())
+                return AutomationReply::failure(
+                    BadRequest,
+                    QStringLiteral("the action named \"%1\" is disabled")
+                        .arg(named));
+            action->trigger();
+            return AutomationReply::success(QJsonObject{
+                {QStringLiteral("action"), named},
+                {QStringLiteral("text"), action->text()},
+                {QStringLiteral("checked"), action->isChecked()},
+            });
+        }
+    }
     Target target;
     AutomationReply rejected;
     if (!gestureTarget(host, request, &target, &rejected)) return rejected;

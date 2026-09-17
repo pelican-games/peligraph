@@ -103,6 +103,12 @@ class MainWindow : public QMainWindow {
 
     void createWorkspace();
     void createMenus();
+    // View > Theme. One entry per theme in the table, each carrying the
+    // objectName a scenario triggers (`pelican.view.theme.<name>`).
+    void createThemeMenu(QMenu *view_menu);
+    void chooseTheme(const QString &name);
+    // The stored preference, applied before the first widget is built.
+    void applyStoredTheme();
     void chooseProject();
     void populateOutliner();
     void requestOutlinerRefresh();

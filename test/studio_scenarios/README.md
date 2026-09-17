@@ -119,6 +119,12 @@ has no widget of its own and is named
 kinds of name, so a scenario can be written by reading a listing rather than by
 reading the source.
 
+A menu entry is a `QAction`, not a widget: it has no place on screen until the
+menu is open. Actions are named the same way widgets are (`grep setObjectName
+src/devstudio/view`), `list` publishes them with `"class": "QAction"`, and
+`click` on one triggers it rather than pressing a point -- so a scenario reaches
+`pelican.view.theme.dark` without driving a popup.
+
 The editor the canvas opens over a pill or a heading is a real widget carried by
 a drawn item, and is named the same way:
 `pelican.graphCanvasView::graph_inline_editor#left/gain`. `type`, `key` and

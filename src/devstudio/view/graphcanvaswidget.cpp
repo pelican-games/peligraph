@@ -1,5 +1,7 @@
 #include "graphcanvaswidget.hpp"
 
+#include "studiotheme.hpp"
+
 #include <QAbstractSpinBox>
 #include <QAction>
 #include <QBrush>
@@ -84,12 +86,14 @@ class BreadcrumbItem final : public QGraphicsRectItem {
 // two structural operations are coloured apart from it on purpose: a boundary
 // port and an instance are not "some values node".
 QColor nodeColor(const GraphCanvasNode &node) {
-    if (node.op == "graph.instance") return QColor{QStringLiteral("#7653a6")};
-    if (node.op == "graph.input") return QColor{QStringLiteral("#2f6f7a")};
-    if (node.domain == "rendering") return QColor{QStringLiteral("#3f5d86")};
-    if (node.domain == "animation") return QColor{QStringLiteral("#7a5a34")};
-    if (node.domain == "values") return QColor{QStringLiteral("#3d6b4d")};
-    return QColor{QStringLiteral("#4a5560")};
+    const StudioTheme &theme = currentStudioTheme();
+    if (node.op == "graph.instance")
+        return theme.domainTint(QStringLiteral("instance"));
+    if (node.op == "graph.input")
+        return theme.domainTint(QStringLiteral("input"));
+    if (node.domain.empty())
+        return theme.domainTint(QStringLiteral("structural"));
+    return theme.domainTint(QString::fromStdString(node.domain));
 }
 
 QString portSummary(const GraphCanvasPort &port) {
@@ -318,7 +322,12 @@ SocketTypeFacts graphCanvasSocketFacts(const GraphCanvasModel &model,
     return facts;
 }
 
-GraphCanvasScene::GraphCanvasScene(QObject *parent) : QGraphicsScene{parent} {}
+GraphCanvasScene::GraphCanvasScene(QObject *parent) : QGraphicsScene{parent} {
+    // Every item holds the colour it was built with, so following a theme is
+    // drawing the scope again -- not walking the items and guessing which of
+    // their brushes came from the table.
+    theme_listener_ = addStudioThemeListener([this] { repopulate(); });
+}
 
 void GraphCanvasScene::setModel(GraphCanvasModel *model) {
     model_ = model;
@@ -363,6 +372,7 @@ void GraphCanvasScene::toggleCollapsed(const std::string &id) {
 }
 
 void GraphCanvasScene::repopulate() {
+    const StudioTheme &theme = currentStudioTheme();
     ++rebuild_generation_;
     rebuilding_ = true;
     // An open editor belongs to items that are about to be deleted.
@@ -503,8 +513,8 @@ void GraphCanvasScene::repopulate() {
         item->setZValue(2.0);
         // The body is neutral; the heading band carries the domain colour, so
         // a long port list does not turn into a wall of one hue.
-        item->setBrush(QColor{QStringLiteral("#272e36")});
-        item->setPen(QPen{QColor{QStringLiteral("#0f1418")}, 1.2});
+        item->setBrush(theme.canvas.node_body);
+        item->setPen(QPen{theme.canvas.node_border, 1.2});
         item->setFlag(QGraphicsItem::ItemIsMovable, true);
         item->setFlag(QGraphicsItem::ItemIsSelectable, true);
         item->setFlag(QGraphicsItem::ItemSendsGeometryChanges, true);
@@ -564,7 +574,7 @@ void GraphCanvasScene::repopulate() {
         arrow.closeSubpath();
         auto *collapse = new QGraphicsPathItem(arrow, band);
         collapse->setPos(9.5, GraphCanvasHeaderHeight / 2.0);
-        collapse->setBrush(QColor{QStringLiteral("#e8eef4")});
+        collapse->setBrush(theme.canvas.heading_text);
         collapse->setPen(QPen{Qt::NoPen});
         tag(collapse, GraphCanvasCollapseItem);
         collapse->setData(GraphCanvasHeadingRole, true);
@@ -574,7 +584,7 @@ void GraphCanvasScene::repopulate() {
 
         auto *title = new QGraphicsSimpleTextItem(heading, band);
         title->setFont(heading_font);
-        title->setBrush(QColor{QStringLiteral("#f6f9fc")});
+        title->setBrush(theme.canvas.heading_text);
         title->setPos(18.0, (GraphCanvasHeaderHeight -
                              heading_metrics.height()) / 2.0);
         tag(title, GraphCanvasNodeLabelItem);
@@ -586,7 +596,7 @@ void GraphCanvasScene::repopulate() {
         // node must never hide what it actually is.
         auto *kind = new QGraphicsSimpleTextItem(type_name, band);
         kind->setFont(detail_font);
-        kind->setBrush(QColor{QStringLiteral("#cfdae4")});
+        kind->setBrush(theme.canvas.dim_text);
         kind->setOpacity(0.78);
         kind->setPos(width - 10.0 - row_metrics.horizontalAdvance(type_name),
                      (GraphCanvasHeaderHeight - row_metrics.height()) / 2.0);
@@ -623,8 +633,8 @@ void GraphCanvasScene::repopulate() {
                     socketPath(SocketShape::circle, GraphCanvasSocketSize), item);
                 dot->setPos(centre);
                 dot->setZValue(1.0);
-                dot->setBrush(QColor{QStringLiteral("#c3ccd6")});
-                dot->setPen(QPen{QColor{QStringLiteral("#1b2229")}, 1.1});
+                dot->setBrush(theme.canvas.dim_text);
+                dot->setPen(QPen{theme.canvas.node_border, 1.1});
                 tag(dot, GraphCanvasSocketItem);
                 dot->setData(GraphCanvasPortRole, QString{});
                 dot->setData(GraphCanvasSocketDirectionRole,
@@ -642,7 +652,7 @@ void GraphCanvasScene::repopulate() {
             const qreal centre_y = cursor_y + GraphCanvasSocketRowHeight / 2.0;
             auto *name = new QGraphicsSimpleTextItem(drawn.label, item);
             name->setFont(detail_font);
-            name->setBrush(QColor{QStringLiteral("#dbe4ec")});
+            name->setBrush(theme.canvas.dim_text);
             name->setPos(width - 14.0 - row_metrics.horizontalAdvance(drawn.label),
                          centre_y - row_metrics.height() / 2.0);
             tag(name, GraphCanvasNodeLabelItem);
@@ -655,8 +665,12 @@ void GraphCanvasScene::repopulate() {
             const qreal centre_y = cursor_y + GraphCanvasSocketRowHeight / 2.0;
             auto *name = new QGraphicsSimpleTextItem(drawn.label, item);
             name->setFont(detail_font);
-            name->setBrush(QColor{drawn.declared ? QStringLiteral("#dbe4ec")
-                                                 : QStringLiteral("#b3c0cb")});
+            // A port the catalog never declared is dimmer than one it did,
+            // and "dimmer" has to survive both themes: it is the theme's own
+            // dim colour, faded, rather than a second fixed grey.
+            QColor undeclared = theme.canvas.dim_text;
+            undeclared.setAlphaF(0.72F);
+            name->setBrush(drawn.declared ? theme.canvas.dim_text : undeclared);
             name->setPos(14.0, centre_y - row_metrics.height() / 2.0);
             tag(name, GraphCanvasNodeLabelItem);
             name->setData(GraphCanvasPortRole, drawn.port);
@@ -673,15 +687,15 @@ void GraphCanvasScene::repopulate() {
                     item);
                 pill->setPos(width - 10.0 - pill_width,
                              centre_y - pill_height / 2.0);
-                pill->setBrush(QColor{QStringLiteral("#3a444f")});
-                pill->setPen(QPen{QColor{QStringLiteral("#596776")}, 0.8});
+                pill->setBrush(theme.canvas.pill_bg);
+                pill->setPen(QPen{theme.canvas.node_border, 0.8});
                 tag(pill, GraphCanvasValuePillItem);
                 pill->setData(GraphCanvasPortRole, drawn.port);
                 pill->setData(GraphCanvasValueTextRole, drawn.value.text);
                 pill->setData(GraphCanvasValueSourceRole, drawn.value.source);
                 auto *value = new QGraphicsSimpleTextItem(text, pill);
                 value->setFont(detail_font);
-                value->setBrush(QColor{QStringLiteral("#e6edf4")});
+                value->setBrush(theme.canvas.heading_text);
                 value->setPos(7.0, (pill_height - row_metrics.height()) / 2.0);
                 tag(value, GraphCanvasValuePillItem);
                 value->setData(GraphCanvasPortRole, drawn.port);
@@ -696,7 +710,7 @@ void GraphCanvasScene::repopulate() {
         auto *line = new QGraphicsPathItem;
         addItem(line);
         line->setZValue(0.0);
-        line->setPen(QPen{QColor{QStringLiteral("#8fa3b4")}, 1.6});
+        line->setPen(QPen{theme.canvas.edge, 1.6});
         line->setData(NodeGraphItemKindRole, QString::fromLatin1(GraphCanvasEdgeItem));
         line->setData(GraphCanvasScopeRole, scope_text);
         line->setData(NodeGraphFromNameRole, qtext(edge.from_node));
@@ -707,7 +721,7 @@ void GraphCanvasScene::repopulate() {
         auto *arrow = new QGraphicsPolygonItem;
         addItem(arrow);
         arrow->setZValue(1.0);
-        arrow->setBrush(QColor{QStringLiteral("#8fa3b4")});
+        arrow->setBrush(theme.canvas.edge);
         arrow->setPen(Qt::NoPen);
         arrow->setData(NodeGraphItemKindRole,
                        QString::fromLatin1(GraphCanvasEdgeArrowItem));
@@ -762,8 +776,8 @@ void GraphCanvasScene::repopulate() {
         addItem(crumb);
         crumb->setPos(0.0, -NodeGraphBreadcrumbHeight - 18.0 + top);
         crumb->setZValue(3.0);
-        crumb->setBrush(QColor{QStringLiteral("#2a3440")});
-        crumb->setPen(QPen{QColor{QStringLiteral("#7f8f9d")}, 1.0});
+        crumb->setBrush(theme.canvas.pill_bg);
+        crumb->setPen(QPen{theme.canvas.edge, 1.0});
         crumb->setAcceptedMouseButtons(Qt::LeftButton);
         crumb->setData(NodeGraphItemKindRole,
                        QString::fromLatin1(GraphCanvasBreadcrumbItem));
@@ -771,7 +785,7 @@ void GraphCanvasScene::repopulate() {
         auto *crumb_label = new QGraphicsSimpleTextItem(
             QStringLiteral("%1   (click to leave)").arg(text), crumb);
         crumb_label->setFont(label_font);
-        crumb_label->setBrush(QColor{QStringLiteral("#e6eef5")});
+        crumb_label->setBrush(theme.canvas.heading_text);
         crumb_label->setPos(12.0, 8.0);
         crumb_label->setData(NodeGraphItemKindRole,
                              QString::fromLatin1(GraphCanvasBreadcrumbItem));
@@ -819,9 +833,10 @@ void GraphCanvasScene::applyEdgeEmphasis() {
                   qtext(selected_edge_->from_port) &&
               item->data(GraphCanvasToPortRole).toString() ==
                   qtext(selected_edge_->to_port)));
-        const QColor colour{picked      ? QStringLiteral("#f2c14e")
-                            : touches   ? QStringLiteral("#e4eef8")
-                                        : QStringLiteral("#7b8d9d")};
+        const StudioTheme &theme = currentStudioTheme();
+        const QColor colour = picked    ? theme.canvas.edge_selected
+                              : touches ? theme.canvas.heading_text
+                                        : theme.canvas.edge;
         if (edge) {
             if (auto *line = dynamic_cast<QGraphicsPathItem *>(item))
                 line->setPen(QPen{colour, picked ? 3.0 : touches ? 2.2 : 1.6});
@@ -891,7 +906,7 @@ void GraphCanvasScene::beginConnection(const QGraphicsItem &socket) {
     pending_edge_ = new QGraphicsPathItem;
     addItem(pending_edge_);
     pending_edge_->setZValue(4.0);
-    pending_edge_->setPen(QPen{QColor{QStringLiteral("#f2c14e")}, 1.8,
+    pending_edge_->setPen(QPen{currentStudioTheme().canvas.edge_selected, 1.8,
                                Qt::DashLine});
     pending_edge_->setData(NodeGraphItemKindRole,
                            QString::fromLatin1(GraphCanvasPendingEdgeItem));
@@ -1071,6 +1086,7 @@ struct GraphCanvasScene::InlineEditor {
 };
 
 GraphCanvasScene::~GraphCanvasScene() {
+    removeStudioThemeListener(theme_listener_);
     // The filter outlives nothing: an editor still open when the scene goes
     // must not be left watching a widget the base class is about to delete.
     if (editor_ && editor_->widget != nullptr && editor_->filter)

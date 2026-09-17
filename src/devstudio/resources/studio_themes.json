@@ -1,0 +1,100 @@
+{
+  "schema": "pelican.studio.themes",
+  "version": 1,
+
+  "description": [
+    "Studio's colour table. One entry here is one theme; adding a third needs",
+    "no C++. `default` names the theme a Studio with no stored preference",
+    "starts in -- the dark one, because the node canvases have always drawn",
+    "dark and a light window around them is the mismatch this table fixes.",
+    "A theme may declare `style` (a Qt style to install; empty keeps the",
+    "platform's) and `palette` (the window chrome). A theme that declares no",
+    "palette keeps Qt's own, which is what `light` wants.",
+    "`canvas` is what every node canvas draws with, `domain_tint` is the",
+    "heading band of a common-graph node (by the operation's domain), and",
+    "`source_tint` is the heading band of a Frame Plan node (by where the",
+    "resource came from). A key a theme leaves out keeps the built-in value,",
+    "and a colour Qt cannot parse is ignored rather than drawn as black."
+  ],
+
+  "default": "dark",
+
+  "themes": {
+    "dark": {
+      "label": "Dark",
+      "style": "Fusion",
+      "palette": {
+        "window": "#2b3138",
+        "window_text": "#e6edf4",
+        "base": "#22272d",
+        "alternate_base": "#2f363e",
+        "text": "#e6edf4",
+        "button": "#333b44",
+        "button_text": "#e6edf4",
+        "bright_text": "#ff6b6b",
+        "highlight": "#3f6ea8",
+        "highlighted_text": "#f6f9fc",
+        "tool_tip_base": "#22272d",
+        "tool_tip_text": "#e6edf4",
+        "placeholder_text": "#8b97a3",
+        "link": "#6fb3e0",
+        "disabled_text": "#717c87"
+      },
+      "canvas": {
+        "background": "#20262d",
+        "grid": "#2a313a",
+        "edge": "#8fa3b4",
+        "edge_selected": "#f2c14e",
+        "node_body": "#272e36",
+        "node_border": "#11161b",
+        "heading_text": "#f4f7fa",
+        "dim_text": "#cfdae4",
+        "pill_bg": "#3a444f"
+      },
+      "domain_tint": {
+        "values": "#3d6b4d",
+        "rendering": "#3f5d86",
+        "animation": "#7a5a34",
+        "instance": "#7653a6",
+        "input": "#2f6f7a",
+        "structural": "#4a5560"
+      },
+      "source_tint": {
+        "project": "#3978a8",
+        "feature": "#c47b25",
+        "engine": "#66717e",
+        "unknown": "#806f68"
+      }
+    },
+
+    "light": {
+      "label": "Light",
+      "style": "",
+      "canvas": {
+        "background": "#f2f4f7",
+        "grid": "#e3e7ec",
+        "edge": "#5c6a78",
+        "edge_selected": "#b07d0a",
+        "node_body": "#e7edf3",
+        "node_border": "#93a1ae",
+        "heading_text": "#10161c",
+        "dim_text": "#3a4650",
+        "pill_bg": "#d3dce5"
+      },
+      "domain_tint": {
+        "values": "#9fcbaf",
+        "rendering": "#a7bcdc",
+        "animation": "#dcbf95",
+        "instance": "#c3a7e2",
+        "input": "#9ccbd4",
+        "structural": "#bcc5ce"
+      },
+      "source_tint": {
+        "project": "#96c2e3",
+        "feature": "#eec292",
+        "engine": "#c1cad3",
+        "unknown": "#cabbb3"
+      }
+    }
+  }
+}

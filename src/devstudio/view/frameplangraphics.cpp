@@ -1,5 +1,7 @@
 #include "frameplangraphics.hpp"
 
+#include "studiotheme.hpp"
+
 #include <QAction>
 #include <QBrush>
 #include <QColor>
@@ -304,16 +306,17 @@ bool isAnchor(const FramePlanNode &node) {
 }
 
 QColor sourceColor(const std::string &source) {
+    const StudioTheme &theme = currentStudioTheme();
     if (source == "project") {
-        return QColor{QStringLiteral("#3978a8")};
+        return theme.sourceTint(QStringLiteral("project"));
     }
     if (source.starts_with("feature:")) {
-        return QColor{QStringLiteral("#c47b25")};
+        return theme.sourceTint(QStringLiteral("feature"));
     }
     if (source == "engine") {
-        return QColor{QStringLiteral("#66717e")};
+        return theme.sourceTint(QStringLiteral("engine"));
     }
-    return QColor{QStringLiteral("#806f68")};
+    return theme.sourceTint(QStringLiteral("unknown"));
 }
 
 std::string recordIdentity(const DependencyRecord &dependency) {
@@ -1196,7 +1199,7 @@ void addNodeBody(QGraphicsPathItem &item, const FramePlanNode &node,
 
     auto *label = new QGraphicsSimpleTextItem(node_name, band);
     label->setFont(heading_font);
-    label->setBrush(QColor{QStringLiteral("#f7f9fb")});
+    label->setBrush(currentStudioTheme().canvas.heading_text);
     label->setPos(14.0,
                   (FramePlanHeaderHeight - heading_metrics.height()) / 2.0);
     annotateIdentity(*label, FramePlanNodeLabelItem, graph, node.name);
@@ -1207,7 +1210,7 @@ void addNodeBody(QGraphicsPathItem &item, const FramePlanNode &node,
     const QString kind_text = qtext(node.kind);
     auto *kind = new QGraphicsSimpleTextItem(kind_text, band);
     kind->setFont(row_font);
-    kind->setBrush(QColor{QStringLiteral("#dbe6f0")});
+    kind->setBrush(currentStudioTheme().canvas.dim_text);
     kind->setOpacity(0.78);
     kind->setPos(layout.width - 12.0 -
                      row_metrics.horizontalAdvance(kind_text),
@@ -1284,7 +1287,7 @@ QGraphicsSimpleTextItem *addCenteredLabel(QGraphicsPathItem &item,
                                           const QString &text, qreal width,
                                           qreal height) {
     auto *label = new QGraphicsSimpleTextItem(text, &item);
-    label->setBrush(QColor{QStringLiteral("#f7f9fb")});
+    label->setBrush(currentStudioTheme().canvas.heading_text);
     QFont font = label->font();
     font.setBold(true);
     label->setFont(font);
@@ -1754,12 +1757,16 @@ SocketTypeFacts framePlanSocketFacts(const FramePlanModel &model,
 FramePlanGraphicsScene::FramePlanGraphicsScene(QObject *parent)
     : QGraphicsScene{parent} {
     setItemIndexMethod(QGraphicsScene::NoIndex);
+    // The items hold the colours they were built with: following the theme is
+    // drawing the current graph again.
+    theme_listener_ = addStudioThemeListener([this] { renderCurrentGraph(); });
     connect(this, &QGraphicsScene::selectionChanged, this,
             [this] { recordSelection(); });
     resetGraph();
 }
 
 FramePlanGraphicsScene::~FramePlanGraphicsScene() {
+    removeStudioThemeListener(theme_listener_);
     // QGraphicsScene clears selected items in its base destructor. Do it while
     // this class's selection members still exist, with the signal handler
     // guarded, because a multiple selection otherwise emits during teardown.
@@ -2431,16 +2438,22 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                     : entity->boundary_stub
                           ? QColor{QStringLiteral("#34404b")}
                           : sourceColor(entity->source);
+            const StudioTheme &theme = currentStudioTheme();
             item->setBrush(entity->boundary_stub
                                ? fill
                                : entity->group
-                                     ? QColor{QStringLiteral("#2d2838")}
-                                     : QColor{QStringLiteral("#272e36")});
+                                     ? theme.domainTint(
+                                           QStringLiteral("instance"))
+                                           .darker(220)
+                                     : theme.canvas.node_body);
+            // The rim is what lifts the node off the canvas, so it is the
+            // theme's text colour rather than its border colour: a dark body
+            // gets a light rim and a light body a dark one.
             QPen outline{entity->anchor
-                             ? QColor{QStringLiteral("#d8e3ec")}
+                             ? theme.canvas.dim_text
                              : entity->boundary_stub
-                                   ? QColor{QStringLiteral("#aeb9c3")}
-                                   : QColor{QStringLiteral("#edf2f6")}};
+                                   ? theme.canvas.edge
+                                   : theme.canvas.heading_text};
             outline.setWidthF(entity->group ? 2.0 : 1.3);
             if (entity->anchor || entity->boundary_stub) {
                 outline.setStyle(Qt::DashLine);

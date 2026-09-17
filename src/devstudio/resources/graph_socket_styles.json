@@ -9,12 +9,14 @@
     "through to the trait rules below and then to `unknown`.",
     "Entries take shape (circle | diamond | square | hexagon), fill, outline,",
     "outline_width and size; anything they leave out keeps the `unknown`",
-    "entry's value. The frame_plan.* ids are the Frame Plan's resource kinds:",
+    "entry's value. The `unknown` entry names no colour on purpose: the rim",
+    "and the no-claim fill come from the Studio theme, so they follow a",
+    "light or dark canvas instead of fixing one. The frame_plan.* ids are the Frame Plan's resource kinds:",
     "the canvas names them itself, because a frame-plan resource carries a",
     "kind rather than a semantic type id."
   ],
 
-  "unknown": {"shape": "circle", "fill": "#f4f7fa", "outline": "#11161b"},
+  "unknown": {"shape": "circle"},
 
   "types": {
     "pelican.value.scalar@1": {"shape": "circle", "fill": "#a9b4bf"},

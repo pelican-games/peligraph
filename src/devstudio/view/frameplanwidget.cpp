@@ -492,7 +492,8 @@ struct FramePlanWidget::Impl {
         logical->setDragMode(QGraphicsView::RubberBandDrag);
         logical->setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
         logical->setResizeAnchor(QGraphicsView::AnchorViewCenter);
-        logical->setBackgroundBrush(QColor{QStringLiteral("#20262d")});
+        // The canvas ground and its grid are the theme's: NodeCanvasView
+        // paints them, so a theme switch does not have to find this line.
         logical->setFocusPolicy(Qt::StrongFocus);
         // "Fit view" is offered by the scene's context menu, but only the view
         // can carry it out.

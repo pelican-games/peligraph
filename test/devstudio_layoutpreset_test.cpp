@@ -1,10 +1,12 @@
 #include "layoutpreset.hpp"
 #include "frameplanwidget.hpp"
 #include "mainwindow.hpp"
+#include "studiotheme.hpp"
 #include "toollayoutpreset.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QAction>
 #include <QApplication>
 #include <QDir>
 #include <QDockWidget>
@@ -14,6 +16,7 @@
 #include <QMainWindow>
 #include <QMenu>
 #include <QSet>
+#include <QSettings>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTabBar>
@@ -468,4 +471,73 @@ TEST_CASE("Devstudio layout names cannot escape their storage directory", "[devs
     QString error;
     REQUIRE_FALSE(manager.savePreset(QStringLiteral("\n"), snapshot, &error));
     REQUIRE_FALSE(error.isEmpty());
+}
+
+// N-5. A theme is a person's taste, filed the way a panel layout is: the
+// window writes it the moment it is chosen and reads it back before it draws
+// anything. The control is the write: drop `storeStudioThemeName` from
+// MainWindow::chooseTheme and the second window comes up in the default.
+TEST_CASE("The View menu switches the theme and the next window keeps it",
+          "[devstudio][studio][theme]") {
+    (void)application();
+
+    // The preference must not reach the developer's real settings, so this
+    // test gives QSettings a file of its own.
+    QTemporaryDir settings_directory;
+    REQUIRE(settings_directory.isValid());
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
+                       settings_directory.path());
+    QCoreApplication::setOrganizationName(QStringLiteral("PelicanThemeTest"));
+    QCoreApplication::setApplicationName(QStringLiteral("Studio"));
+
+    PelicanStudio::resetStudioThemeTable();
+    REQUIRE(PelicanStudio::setCurrentStudioTheme(
+        PelicanStudio::defaultStudioThemeName()));
+    REQUIRE(PelicanStudio::defaultStudioThemeName() == QStringLiteral("dark"));
+
+    const auto themeAction = [](PelicanStudio::MainWindow &window,
+                                const char *name) {
+        QAction *action =
+            window.findChild<QAction *>(QString::fromLatin1(name));
+        REQUIRE(action != nullptr);
+        return action;
+    };
+
+    QTemporaryDir application_config;
+    REQUIRE(application_config.isValid());
+    {
+        PelicanStudio::MainWindow window{application_config.path()};
+        REQUIRE(PelicanStudio::currentStudioThemeName() ==
+                QStringLiteral("dark"));
+        REQUIRE(themeAction(window, "pelican.view.theme.dark")->isChecked());
+
+        themeAction(window, "pelican.view.theme.light")->trigger();
+        REQUIRE(PelicanStudio::currentStudioThemeName() ==
+                QStringLiteral("light"));
+        REQUIRE(themeAction(window, "pelican.view.theme.light")->isChecked());
+        REQUIRE_FALSE(themeAction(window, "pelican.view.theme.dark")->isChecked());
+
+        QSettings settings;
+        REQUIRE(settings.value(QStringLiteral("studio/theme")).toString() ==
+                QStringLiteral("light"));
+    }
+
+    // A fresh process starts at the table's default; the window is what puts
+    // the stored preference back.
+    REQUIRE(PelicanStudio::setCurrentStudioTheme(
+        PelicanStudio::defaultStudioThemeName()));
+    REQUIRE(PelicanStudio::currentStudioThemeName() == QStringLiteral("dark"));
+    {
+        PelicanStudio::MainWindow window{application_config.path()};
+        REQUIRE(PelicanStudio::currentStudioThemeName() ==
+                QStringLiteral("light"));
+        REQUIRE(themeAction(window, "pelican.view.theme.light")->isChecked());
+    }
+
+    // Leave the process in the theme every other case expects.
+    QSettings settings;
+    settings.remove(QStringLiteral("studio/theme"));
+    settings.sync();
+    REQUIRE(PelicanStudio::setCurrentStudioTheme(QStringLiteral("dark")));
 }

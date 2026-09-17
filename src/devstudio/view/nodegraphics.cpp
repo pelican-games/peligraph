@@ -1,5 +1,7 @@
 #include "nodegraphics.hpp"
 
+#include "studiotheme.hpp"
+
 #include "battery/embed.hpp"
 
 #include <QGraphicsItem>
@@ -8,7 +10,10 @@
 #include <QKeyEvent>
 #include <QLineF>
 #include <QMouseEvent>
+#include <QPainter>
+#include <QPen>
 #include <QScrollBar>
+#include <QVector>
 #include <QVariant>
 #include <QWheelEvent>
 
@@ -97,10 +102,14 @@ void resetSocketStyleDefaults() {
 SocketStyle socketStyleFor(const SocketTypeFacts &facts) {
     const Json &table = socketDefaultsTable();
     // The last resort, and the base every rule below only overrides parts of:
-    // a white circle says "this canvas has no claim about the type".
+    // a socket in the theme's own two colours says "this canvas has no claim
+    // about the type". The fills below are type identity and stay put in both
+    // themes; the rim and the no-claim fill are the theme's, so a dark body
+    // and a light one both keep the socket legible.
     SocketStyle style;
-    style.fill = QColor{QStringLiteral("#f4f7fa")};
-    style.outline = QColor{QStringLiteral("#11161b")};
+    const StudioTheme &theme = currentStudioTheme();
+    style.fill = theme.canvas.heading_text;
+    style.outline = theme.canvas.node_border;
     applyEntry(style, table.value("unknown", Json::object()));
 
     // (i) The module declared its own look. It wins outright: a type's owner
@@ -417,6 +426,27 @@ NodeCanvasView::NodeCanvasView(QGraphicsScene *scene, QWidget *parent)
     setProperty("pelicanZoomBoundary", QString{});
     setProperty("pelicanFitCount", 0);
     setProperty("pelicanViewScope", QString{});
+}
+
+void NodeCanvasView::drawBackground(QPainter *painter, const QRectF &rect) {
+    if (painter == nullptr) return;
+    const StudioTheme &theme = currentStudioTheme();
+    painter->fillRect(rect, theme.canvas.background);
+    // The grid is what tells the eye the canvas is panning rather than the
+    // nodes moving, so its pitch is in scene units and not in pixels.
+    constexpr qreal pitch = 48.0;
+    QPen pen{theme.canvas.grid};
+    pen.setCosmetic(true);
+    pen.setWidthF(1.0);
+    painter->setPen(pen);
+    const qreal left = std::floor(rect.left() / pitch) * pitch;
+    const qreal top = std::floor(rect.top() / pitch) * pitch;
+    QVector<QLineF> lines;
+    for (qreal x = left; x < rect.right(); x += pitch)
+        lines.push_back(QLineF{x, rect.top(), x, rect.bottom()});
+    for (qreal y = top; y < rect.bottom(); y += pitch)
+        lines.push_back(QLineF{rect.left(), y, rect.right(), y});
+    painter->drawLines(lines);
 }
 
 void NodeCanvasView::publishZoom(qreal scale, const QString &boundary) {

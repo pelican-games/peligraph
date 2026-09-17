@@ -7,6 +7,8 @@ add_library(pelican_studio_view STATIC
     frameplangraphics.hpp
     nodegraphics.cpp
     nodegraphics.hpp
+    studiotheme.cpp
+    studiotheme.hpp
     frameplanreadcapability.cpp
     frameplanreadcapability.hpp
     renderpassauthoringcapability.cpp

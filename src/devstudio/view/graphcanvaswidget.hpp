@@ -193,6 +193,9 @@ class GraphCanvasScene final : public QGraphicsScene {
     // dispatch. Anything that ran before it must not then read the new items
     // as if they were the ones the user pressed on.
     std::uint64_t rebuild_generation_ = 0;
+    // The theme table's registration, dropped in the destructor: a listener
+    // that outlived its scene would repopulate a deleted one.
+    int theme_listener_ = 0;
 
     void leaveCurrentScope();
     void enterInstanceScope(const std::string &id);

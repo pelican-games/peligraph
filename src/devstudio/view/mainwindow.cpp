@@ -4,6 +4,7 @@
 #include "graphcanvaswidget.hpp"
 #include "inspectorwidget.hpp"
 #include "renderfeatureswidget.hpp"
+#include "studiotheme.hpp"
 #include "../viewport/embeddedviewport.hpp"
 
 #include <QAction>
@@ -151,6 +152,10 @@ MainWindow::MainWindow(const QString &application_config_directory)
     setDockNestingEnabled(true);
     setTabPosition(Qt::AllDockWidgetAreas, QTabWidget::North);
 
+    // The theme is the person's taste, like a panel layout: it is stored
+    // beside the window and applied before anything is drawn, so a Studio
+    // opens in the theme it was closed in rather than in the table's default.
+    applyStoredTheme();
     createWorkspace();
     createMenus();
     restoreLastPanelLayout();
@@ -351,6 +356,46 @@ void MainWindow::createWorkspace() {
             [this] { requestOutlinerRefresh(); });
 }
 
+void MainWindow::applyStoredTheme() {
+    const QString stored = storedStudioThemeName();
+    if (!stored.isEmpty()) setCurrentStudioTheme(stored);
+    applyStudioThemeToApplication();
+}
+
+void MainWindow::createThemeMenu(QMenu *view_menu) {
+    QMenu *theme_menu = view_menu->addMenu(tr("&Theme"));
+    theme_menu->setObjectName(QStringLiteral("pelican.themeMenu"));
+    auto *group = new QActionGroup(theme_menu);
+    group->setExclusive(true);
+    const QString current = currentStudioThemeName();
+    for (const QString &name : studioThemeNames()) {
+        QAction *action = theme_menu->addAction(
+            name.left(1).toUpper() + name.mid(1));
+        // The name a scenario triggers. It is the theme's own id, so a third
+        // theme in the table is addressable without touching this code.
+        action->setObjectName(QStringLiteral("pelican.view.theme.") + name);
+        action->setCheckable(true);
+        action->setChecked(name == current);
+        group->addAction(action);
+        connect(action, &QAction::triggered, this,
+                [this, name] { chooseTheme(name); });
+    }
+}
+
+void MainWindow::chooseTheme(const QString &name) {
+    if (!setCurrentStudioTheme(name)) return;
+    applyStudioThemeToApplication();
+    // Written the moment it is chosen: a Studio that is killed rather than
+    // closed must still come back in the theme the user picked.
+    storeStudioThemeName(name);
+    for (QAction *action : findChildren<QAction *>()) {
+        const QString prefix = QStringLiteral("pelican.view.theme.");
+        if (!action->objectName().startsWith(prefix)) continue;
+        action->setChecked(action->objectName().mid(prefix.size()) == name);
+    }
+    statusBar()->showMessage(tr("Theme: %1").arg(name), 3000);
+}
+
 void MainWindow::createMenus() {
     // Every action a scenario may have to fire carries an objectName, the way
     // every widget does. A menu entry has no place on screen until its popup
@@ -382,6 +427,7 @@ void MainWindow::createMenus() {
 
     QMenu *view_menu = menuBar()->addMenu(tr("&View"));
     view_menu->setObjectName(QStringLiteral("pelican.viewMenu"));
+    createThemeMenu(view_menu);
     QMenu *panels_menu = view_menu->addMenu(tr("&Panels"));
     panels_menu->setObjectName(QStringLiteral("pelican.panelsMenu"));
     for (QDockWidget *dock : docks_) {

@@ -24,6 +24,7 @@ class QGraphicsItem;
 class QGraphicsScene;
 class QKeyEvent;
 class QMouseEvent;
+class QPainter;
 class QWheelEvent;
 
 namespace PelicanStudio {
@@ -202,6 +203,10 @@ class NodeCanvasView : public QGraphicsView {
     [[nodiscard]] bool panning() const noexcept { return panning_; }
 
   protected:
+    // The ground both canvases stand on: the theme's canvas colour and one
+    // grid at a fixed scene pitch. A view that painted its own background
+    // would be a second place a theme has to be taught about.
+    void drawBackground(QPainter *painter, const QRectF &rect) override;
     void wheelEvent(QWheelEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;

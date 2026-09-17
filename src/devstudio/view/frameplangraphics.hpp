@@ -245,6 +245,8 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     void clearConnectionGesture();
     bool rebuilding_ = false;
     bool scene_rect_update_queued_ = false;
+    // The theme table's registration, dropped in the destructor.
+    int theme_listener_ = 0;
 
     void renderCurrentGraph();
     // Only the edges that touch a selected node stay at full strength. The
