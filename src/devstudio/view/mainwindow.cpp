@@ -352,13 +352,23 @@ void MainWindow::createWorkspace() {
 }
 
 void MainWindow::createMenus() {
+    // Every action a scenario may have to fire carries an objectName, the way
+    // every widget does. A menu entry has no place on screen until its popup
+    // opens, so a name is the only handle a test has on it -- and firing it by
+    // name is what lets a test skip the popup, which is a modal event loop.
+    menuBar()->setObjectName(QStringLiteral("pelican.menuBar"));
     QMenu *file_menu = menuBar()->addMenu(tr("&File"));
+    file_menu->setObjectName(QStringLiteral("pelican.fileMenu"));
     QAction *exit_action = file_menu->addAction(tr("E&xit"));
+    exit_action->setObjectName(QStringLiteral("pelican.file.exit"));
     connect(exit_action, &QAction::triggered, this, &QWidget::close);
     QAction *open_project_action = file_menu->addAction(tr("&Open Project..."));
+    open_project_action->setObjectName(
+        QStringLiteral("pelican.file.openProject"));
     connect(open_project_action, &QAction::triggered, this,
             [this]() { chooseProject(); });
     QAction *save_scene_action = file_menu->addAction(tr("&Save Scene"));
+    save_scene_action->setObjectName(QStringLiteral("pelican.file.saveScene"));
     save_scene_action->setShortcut(QKeySequence::Save);
     connect(save_scene_action, &QAction::triggered, this, [this] {
         if (inspector_->saveScene()) {
@@ -371,22 +381,42 @@ void MainWindow::createMenus() {
     });
 
     QMenu *view_menu = menuBar()->addMenu(tr("&View"));
+    view_menu->setObjectName(QStringLiteral("pelican.viewMenu"));
     QMenu *panels_menu = view_menu->addMenu(tr("&Panels"));
     panels_menu->setObjectName(QStringLiteral("pelican.panelsMenu"));
     for (QDockWidget *dock : docks_) {
-        panels_menu->addAction(dock->toggleViewAction());
+        QAction *toggle = dock->toggleViewAction();
+        // `pelican.projectDock` is the dock; `pelican.view.panels.projectDock`
+        // is the menu entry that shows and hides it. One name per thing, so a
+        // scenario that fires the entry and then asks whether the dock is on
+        // screen is asking about two different objects, as it should be.
+        QString leaf = dock->objectName();
+        if (leaf.startsWith(QStringLiteral("pelican.")))
+            leaf = leaf.mid(QStringLiteral("pelican.").size());
+        if (!leaf.isEmpty())
+            toggle->setObjectName(
+                QStringLiteral("pelican.view.panels.") + leaf);
+        panels_menu->addAction(toggle);
     }
 
     QMenu *layout_menu = menuBar()->addMenu(tr("&Layout"));
+    layout_menu->setObjectName(QStringLiteral("pelican.layoutMenu"));
     QAction *save_action = layout_menu->addAction(tr("&Save Layout As..."));
+    save_action->setObjectName(QStringLiteral("pelican.layout.saveAs"));
     connect(save_action, &QAction::triggered, this, [this]() { saveLayoutPreset(); });
 
     restore_layout_menu_ = layout_menu->addMenu(tr("&Restore Layout"));
+    restore_layout_menu_->setObjectName(
+        QStringLiteral("pelican.layout.restoreMenu"));
     delete_layout_menu_ = layout_menu->addMenu(tr("&Delete Layout"));
+    delete_layout_menu_->setObjectName(
+        QStringLiteral("pelican.layout.deleteMenu"));
     connect(layout_menu, &QMenu::aboutToShow, this, [this]() { refreshLayoutMenus(); });
 
     layout_menu->addSeparator();
     QAction *default_action = layout_menu->addAction(tr("Reset to &Default"));
+    default_action->setObjectName(
+        QStringLiteral("pelican.layout.resetDefault"));
     connect(default_action, &QAction::triggered, this, [this]() {
         applyDefaultLayout();
         statusBar()->showMessage(tr("Default layout restored"), 3000);
@@ -395,17 +425,26 @@ void MainWindow::createMenus() {
     layout_menu->addSeparator();
     QMenu *tool_layout_menu =
         layout_menu->addMenu(tr("&Frame Plan Layout"));
+    tool_layout_menu->setObjectName(QStringLiteral("pelican.layout.toolMenu"));
     save_tool_layout_action_ =
         tool_layout_menu->addAction(tr("&Save Tool Layout As..."));
+    save_tool_layout_action_->setObjectName(
+        QStringLiteral("pelican.layout.tool.saveAs"));
     connect(save_tool_layout_action_, &QAction::triggered, this,
             [this]() { saveToolLayoutPreset(); });
     restore_tool_layout_menu_ =
         tool_layout_menu->addMenu(tr("&Restore Tool Layout"));
+    restore_tool_layout_menu_->setObjectName(
+        QStringLiteral("pelican.layout.tool.restoreMenu"));
     delete_tool_layout_menu_ =
         tool_layout_menu->addMenu(tr("&Delete Tool Layout"));
+    delete_tool_layout_menu_->setObjectName(
+        QStringLiteral("pelican.layout.tool.deleteMenu"));
     tool_layout_menu->addSeparator();
     QAction *default_tool_action =
         tool_layout_menu->addAction(tr("Reset Tool Layout to &Default"));
+    default_tool_action->setObjectName(
+        QStringLiteral("pelican.layout.tool.resetDefault"));
     connect(default_tool_action, &QAction::triggered, this, [this]() {
         frame_plan_->applyDefaultToolLayout();
         statusBar()->showMessage(tr("Default Frame Plan layout restored"),
@@ -429,9 +468,10 @@ void MainWindow::createMenus() {
     gizmo_toolbar->setMovable(true);
     auto *gizmo_group = new QActionGroup(gizmo_toolbar);
     gizmo_group->setExclusive(true);
-    const auto add_mode = [&](const QString &label, GizmoMode mode,
-                              const QString &tool_tip) {
+    const auto add_mode = [&](const QString &label, const QString &object_name,
+                              GizmoMode mode, const QString &tool_tip) {
         QAction *action = gizmo_toolbar->addAction(label);
+        action->setObjectName(object_name);
         action->setCheckable(true);
         action->setToolTip(tool_tip);
         gizmo_group->addAction(action);
@@ -440,13 +480,13 @@ void MainWindow::createMenus() {
         return action;
     };
     gizmo_mode_actions_[0] = add_mode(
-        tr("Move"), GizmoMode::Translate,
+        tr("Move"), QStringLiteral("pelican.gizmo.move"), GizmoMode::Translate,
         tr("Move the selection along one world axis"));
     gizmo_mode_actions_[1] = add_mode(
-        tr("Rotate"), GizmoMode::Rotate,
+        tr("Rotate"), QStringLiteral("pelican.gizmo.rotate"), GizmoMode::Rotate,
         tr("Rotate the selection around one world axis"));
     gizmo_mode_actions_[2] = add_mode(
-        tr("Scale"), GizmoMode::Scale,
+        tr("Scale"), QStringLiteral("pelican.gizmo.scale"), GizmoMode::Scale,
         tr("Scale the selection along one axis"));
     gizmo_mode_actions_[0]->setChecked(true);
 }

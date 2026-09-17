@@ -1,0 +1,196 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "canvas_zoom_pan",
+  "description": "Drive a Studio canvas with the gestures Q-1b added -- a wheel, a bare move, a button held across moves, a middle-button drag -- and read where the canvas ended up looking with view_state. The canvas here is the Frame Plan's logical view, because that is the one whose wheel already zooms; the Graph canvas answers the same view_state reading, and gets the zoom and pan half of this file when N-3 gives it one.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the Frame Plan canvas is the one on screen",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the canvas opens unzoomed",
+      "expect": "result",
+      "command": {"cmd": "view_state", "name": "pelican.framePlanLogicalView"},
+      "path": "scale",
+      "value": 1.0,
+      "remember": "scale_start"
+    },
+    {
+      "label": "view_state reads the viewport, not a remembered number",
+      "expect": "result",
+      "command": {"cmd": "view_state", "name": "pelican.framePlanLogicalView"},
+      "path": "viewport[0]",
+      "op": "gt",
+      "value": 0
+    },
+    {
+      "label": "a wheel forward over the canvas",
+      "cmd": "wheel",
+      "name": "pelican.framePlanLogicalView",
+      "point": [60, 50],
+      "delta": 480
+    },
+    {
+      "label": "the wheel zoomed the view in",
+      "expect": "result",
+      "command": {"cmd": "view_state", "name": "pelican.framePlanLogicalView"},
+      "path": "scale",
+      "op": "gt",
+      "value_of": "scale_start",
+      "remember": "scale_zoomed"
+    },
+    {
+      "label": "the toolbar the production wheel handler writes agrees the view zoomed",
+      "expect": "result",
+      "command": {"cmd": "text", "name": "pelican.framePlanZoomStatus"},
+      "path": "text",
+      "op": "ne",
+      "value": "Zoom: 100%"
+    },
+    {
+      "label": "a wheel back the other way",
+      "cmd": "wheel",
+      "name": "pelican.framePlanLogicalView",
+      "point": [60, 50],
+      "delta": -480
+    },
+    {
+      "label": "the zoom came back down",
+      "expect": "result",
+      "command": {"cmd": "view_state", "name": "pelican.framePlanLogicalView"},
+      "path": "scale",
+      "op": "lt",
+      "value_of": "scale_zoomed"
+    },
+    {
+      "label": "a wheel far past what the canvas allows",
+      "cmd": "wheel",
+      "name": "pelican.framePlanLogicalView",
+      "point": [60, 50],
+      "delta": 20000
+    },
+    {
+      "label": "the canvas stopped at its own maximum rather than at ours",
+      "expect": "result",
+      "command": {"cmd": "view_state", "name": "pelican.framePlanLogicalView"},
+      "path": "scale",
+      "op": "le",
+      "value": 4.0
+    },
+    {
+      "label": "and it really reached that maximum",
+      "expect": "result",
+      "command": {"cmd": "view_state", "name": "pelican.framePlanLogicalView"},
+      "path": "scale",
+      "op": "ge",
+      "value": 3.99
+    },
+    {
+      "label": "the canvas says out loud which limit it hit",
+      "expect": "text_equals",
+      "name": "pelican.framePlanZoomStatus",
+      "value": "Zoom: 400% (maximum limit)"
+    },
+    {
+      "label": "a wheel far past the other end",
+      "cmd": "wheel",
+      "name": "pelican.framePlanLogicalView",
+      "point": [60, 50],
+      "delta": -20000
+    },
+    {
+      "label": "the canvas stopped at its own minimum too",
+      "expect": "text_equals",
+      "name": "pelican.framePlanZoomStatus",
+      "value": "Zoom: 25% (minimum limit)"
+    },
+    {
+      "label": "where the zoom stands before a held gesture",
+      "expect": "result",
+      "command": {"cmd": "view_state", "name": "pelican.framePlanLogicalView"},
+      "path": "scale",
+      "remember": "scale_before_hold"
+    },
+    {
+      "label": "a hover: a move with nothing held",
+      "cmd": "move",
+      "name": "pelican.framePlanLogicalView",
+      "point": [80, 60]
+    },
+    {
+      "label": "hold the middle button down",
+      "cmd": "press",
+      "name": "pelican.framePlanLogicalView",
+      "point": [80, 60],
+      "button": "middle"
+    },
+    {
+      "label": "and move while it is held -- the moves a pan reads",
+      "cmd": "move",
+      "name": "pelican.framePlanLogicalView",
+      "point": [160, 120]
+    },
+    {
+      "label": "let the button go",
+      "cmd": "release",
+      "name": "pelican.framePlanLogicalView",
+      "point": [160, 120],
+      "button": "middle"
+    },
+    {
+      "label": "a held gesture this canvas does not use left the zoom alone",
+      "expect": "result",
+      "command": {"cmd": "view_state", "name": "pelican.framePlanLogicalView"},
+      "path": "scale",
+      "value_of": "scale_before_hold"
+    },
+    {
+      "label": "the same gesture as one drag, by button",
+      "cmd": "drag",
+      "from": {"name": "pelican.framePlanLogicalView", "point": [60, 50]},
+      "to": {"name": "pelican.framePlanLogicalView", "point": [170, 130]},
+      "button": "middle",
+      "steps": 6
+    },
+    {
+      "label": "a button this surface does not know is refused, by code",
+      "cmd": "press",
+      "name": "pelican.framePlanLogicalView",
+      "button": "thumb",
+      "expect_error": "automation.bad_request@1"
+    },
+    {
+      "label": "a wheel with no canvas under it is refused, by code",
+      "cmd": "wheel",
+      "name": "pelican.thereIsNoSuchCanvas",
+      "delta": 120,
+      "expect_error": "automation.widget_missing@1"
+    },
+    {
+      "label": "view_state on something that is not a canvas is refused, by code",
+      "cmd": "view_state",
+      "name": "pelican.framePlanZoomStatus",
+      "expect_error": "automation.bad_request@1"
+    },
+    {
+      "label": "the Graph canvas answers the same reading, ready for N-3's zoom",
+      "expect": "result",
+      "command": {"cmd": "view_state", "name": "pelican.graphCanvasView"},
+      "path": "scale",
+      "op": "gt",
+      "value": 0
+    },
+    {
+      "label": "a picture of the canvas for the reader of this report",
+      "expect": "screenshot",
+      "name": "pelican.framePlan",
+      "path": "canvas_zoom_pan.png"
+    }
+  ]
+}

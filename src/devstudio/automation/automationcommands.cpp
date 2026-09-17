@@ -6,7 +6,9 @@
 #include "../viewport/embeddedviewport.hpp"
 
 #include <QAbstractButton>
+#include <QAbstractScrollArea>
 #include <QAbstractSpinBox>
+#include <QAction>
 #include <QApplication>
 #include <QComboBox>
 #include <QDir>
@@ -25,16 +27,24 @@
 #include <QJsonObject>
 #include <QKeySequence>
 #include <QLineEdit>
+#include <QMenu>
+#include <QMouseEvent>
 #include <QPixmap>
 #include <QPoint>
 #include <QPointer>
+#include <QPointingDevice>
 #include <QRect>
 #include <QScreen>
+#include <QScrollBar>
+#include <QSet>
 #include <QTimer>
+#include <QTransform>
 #include <QVariant>
+#include <QWheelEvent>
 #include <QWidget>
 #include <QWindow>
 #include <QtTest/QTest>
+#include <QtTest/qtestspontaneevent.h>
 
 #include <algorithm>
 #include <vector>
@@ -303,6 +313,80 @@ Qt::MouseButton parseButton(const QJsonValue &value, bool *ok) {
     return Qt::LeftButton;
 }
 
+// --------------------------------------------------------------------------
+// Synthesis
+//
+// QTest answers `click` and `key`, but not the three gestures Q-1b adds. Its
+// `mouseMove` for widgets takes a shortcut when no button is down -- it moves
+// the real cursor and delivers nothing -- and it has no wheel for a widget at
+// all. So press / move / release / wheel are built here, on one piece of state:
+// which buttons this surface is holding down. That state is what makes a
+// held gesture a gesture: the moves between a press and a release carry
+// `buttons()`, which is the only thing a panning view looks at.
+Qt::MouseButtons &heldButtons() {
+    static Qt::MouseButtons held = Qt::NoButton;
+    return held;
+}
+
+QJsonArray buttonNames(Qt::MouseButtons buttons) {
+    QJsonArray names;
+    if (buttons & Qt::LeftButton) names.push_back(QStringLiteral("left"));
+    if (buttons & Qt::MiddleButton) names.push_back(QStringLiteral("middle"));
+    if (buttons & Qt::RightButton) names.push_back(QStringLiteral("right"));
+    return names;
+}
+
+void sendMouse(QWidget *widget, QEvent::Type type, const QPoint &position,
+               Qt::MouseButton button, Qt::KeyboardModifiers modifiers) {
+    if (type == QEvent::MouseButtonPress)
+        heldButtons() |= button;
+    else if (type == QEvent::MouseButtonRelease)
+        heldButtons() &= ~static_cast<Qt::MouseButtons>(button);
+    QMouseEvent event(type, QPointF{position},
+                      widget->mapToGlobal(QPointF{position}), button,
+                      heldButtons(), modifiers,
+                      QPointingDevice::primaryPointingDevice());
+    QSpontaneKeyEvent::setSpontaneous(&event);
+    QApplication::sendEvent(widget, &event);
+}
+
+void sendWheel(QWidget *widget, const QPoint &position, const QPoint &angle,
+               Qt::KeyboardModifiers modifiers) {
+    QWheelEvent event(QPointF{position}, widget->mapToGlobal(QPointF{position}),
+                      QPoint{}, angle, heldButtons(), modifiers,
+                      Qt::NoScrollPhase, false);
+    QSpontaneKeyEvent::setSpontaneous(&event);
+    QApplication::sendEvent(widget, &event);
+}
+
+// Where a pointer event has to be posted for a scroll area to see it: the
+// viewport, never the frame. QAbstractScrollArea leaves mouse and wheel events
+// that arrive at the frame alone, because on a real desktop they arrive at the
+// viewport under the cursor; from there the area's own filter carries them to
+// QGraphicsView::mousePressEvent and ::wheelEvent, which is where a canvas puts
+// its rule. Naming the view and naming a drawn item inside it therefore reach
+// the same receiver, and `point` is carried across with it.
+QWidget *pointerReceiver(const Target &target, QPoint *point) {
+    auto *area = qobject_cast<QAbstractScrollArea *>(target.widget);
+    if (area == nullptr || area->viewport() == nullptr) return target.widget;
+    *point = area->viewport()->mapFrom(area, *point);
+    return area->viewport();
+}
+
+QString shortcutText(const QKeySequence &sequence) {
+    return sequence.isEmpty() ? QString{}
+                              : sequence.toString(QKeySequence::PortableText);
+}
+
+// What `list` publishes for a widget. Only QAbstractButton and its kin carry a
+// shortcut property; everything else answers with nothing rather than with a
+// guess.
+QString widgetShortcut(const QWidget &widget) {
+    const QVariant value = widget.property("shortcut");
+    if (!value.isValid() || !value.canConvert<QKeySequence>()) return {};
+    return shortcutText(value.value<QKeySequence>());
+}
+
 int timeoutOf(const QJsonObject &request, int fallback = DefaultTimeoutMs) {
     const QJsonValue value = request.value(QStringLiteral("timeout_ms"));
     if (!value.isDouble()) return fallback;
@@ -374,6 +458,113 @@ bool gestureTarget(const AutomationHost &host, const QJsonObject &request,
     return true;
 }
 
+// --------------------------------------------------------------------------
+// Menus
+//
+// A QAction is not a widget: it has no place on screen until a popup opens over
+// it, and `list` cannot see it. These read and fire the actions of the menu bar,
+// the toolbars and the context menus without opening any popup -- a popup is a
+// modal event loop, which a command that has to answer on this line cannot
+// enter.
+
+struct ActionEntry {
+    QAction *action = nullptr;
+    QString menu;
+};
+
+QString withoutMnemonic(QString text) {
+    text.remove(QLatin1Char('&'));
+    return text.trimmed();
+}
+
+// "View/Panels" for an action in the Panels submenu. An action knows the menus
+// it was added to; a menu knows the action that opens it; that action knows its
+// own menu. Walking that chain names the path a person would read off the menu
+// bar.
+QString menuPathOf(const QAction *action) {
+    QStringList path;
+    const QAction *current = action;
+    for (int depth = 0; depth < 8 && current != nullptr; ++depth) {
+        const QWidget *owner = nullptr;
+        for (QObject *object : current->associatedObjects()) {
+            if (auto *widget = qobject_cast<QWidget *>(object)) {
+                owner = widget;
+                break;
+            }
+        }
+        if (owner == nullptr) break;
+        QString label;
+        if (const auto *menu = qobject_cast<const QMenu *>(owner)) {
+            label = withoutMnemonic(menu->title());
+            if (label.isEmpty()) label = menu->objectName();
+            current = menu->menuAction();
+        } else {
+            label = owner->windowTitle();
+            if (label.isEmpty()) label = owner->objectName();
+            label = withoutMnemonic(label);
+            current = nullptr;
+        }
+        if (!label.isEmpty()) path.prepend(label);
+    }
+    return path.join(QLatin1Char('/'));
+}
+
+std::vector<ActionEntry> collectActions(const AutomationHost &host,
+                                        QWidget *root) {
+    std::vector<QWidget *> roots;
+    if (root != nullptr) {
+        roots.push_back(root);
+    } else {
+        if (host.window != nullptr) roots.push_back(host.window);
+        for (QWidget *widget : QApplication::topLevelWidgets())
+            if (widget != host.window) roots.push_back(widget);
+    }
+    std::vector<ActionEntry> found;
+    QSet<const QAction *> seen;
+    const auto take = [&](QAction *action) {
+        if (action == nullptr || action->isSeparator()) return;
+        if (seen.contains(action)) return;
+        seen.insert(action);
+        found.push_back(ActionEntry{action, menuPathOf(action)});
+    };
+    for (QWidget *widget : roots) {
+        if (widget == nullptr) continue;
+        // `actions()` is what this widget answers shortcuts with; the children
+        // are the menus and toolbars it built, which own theirs.
+        for (QAction *action : widget->actions()) take(action);
+        for (QAction *action : widget->findChildren<QAction *>()) take(action);
+    }
+    return found;
+}
+
+// The name a listing publishes and `action` accepts back. An entry that opens a
+// submenu is a QAction nobody names -- what gets a name is the QMenu behind it,
+// and that is the name a person grepping the source will find, so it is the one
+// the row carries.
+QString actionName(const QAction &action) {
+    if (!action.objectName().isEmpty()) return action.objectName();
+    if (action.menu() != nullptr) return action.menu()->objectName();
+    return {};
+}
+
+QJsonObject actionJson(const ActionEntry &entry) {
+    const QAction &action = *entry.action;
+    return QJsonObject{
+        {QStringLiteral("name"), actionName(action)},
+        {QStringLiteral("text"), withoutMnemonic(action.text())},
+        {QStringLiteral("shortcut"), shortcutText(action.shortcut())},
+        {QStringLiteral("enabled"), action.isEnabled()},
+        {QStringLiteral("visible"), action.isVisible()},
+        {QStringLiteral("checkable"), action.isCheckable()},
+        {QStringLiteral("checked"), action.isChecked()},
+        {QStringLiteral("menu"), entry.menu},
+        // An entry that opens a submenu is listed, because a scenario reading
+        // the menu bar should see the same rows a person does -- but firing it
+        // opens a popup, which is not what `action` is for.
+        {QStringLiteral("submenu"), action.menu() != nullptr},
+    };
+}
+
 QJsonValue parseRpcPayload(const QByteArray &payload) {
     // The viewport serialises a bare JSON value; wrap it so QJsonDocument can
     // parse a scalar reply as readily as an object one.
@@ -410,6 +601,7 @@ AutomationReply commandList(const AutomationHost &host,
                 {QStringLiteral("enabled"), widget->isEnabled()},
                 {QStringLiteral("geometry"), rectJson(globalRect(target))},
                 {QStringLiteral("text"), widgetText(*widget)},
+                {QStringLiteral("shortcut"), widgetShortcut(*widget)},
             });
         }
         // Drawn items are addressable too: a value pill has no widget of its
@@ -434,6 +626,7 @@ AutomationReply commandList(const AutomationHost &host,
                  QJsonArray{item->sceneBoundingRect().center().x(),
                             item->sceneBoundingRect().center().y()}},
                 {QStringLiteral("text"), itemText(*item)},
+                {QStringLiteral("shortcut"), QString{}},
             });
         }
     }
@@ -462,10 +655,11 @@ AutomationReply commandClick(const AutomationHost &host,
     QPoint point;
     if (!pointFor(request, target, &point, &rejected)) return rejected;
     const QRect where = globalRect(target);
+    QWidget *receiver = pointerReceiver(target, &point);
     if (double_click)
-        QTest::mouseDClick(target.widget, button, modifiers, point);
+        QTest::mouseDClick(receiver, button, modifiers, point);
     else
-        QTest::mouseClick(target.widget, button, modifiers, point);
+        QTest::mouseClick(receiver, button, modifiers, point);
     return AutomationReply::success(QJsonObject{
         {QStringLiteral("point"), QJsonArray{point.x(), point.y()}},
         {QStringLiteral("geometry"), rectJson(where)},
@@ -507,6 +701,11 @@ AutomationReply commandDrag(const AutomationHost &host,
             BadRequest,
             QStringLiteral("a drag must start and end in the same widget"));
     bool ok = false;
+    const Qt::MouseButton button =
+        parseButton(request.value(QStringLiteral("button")), &ok);
+    if (!ok)
+        return AutomationReply::failure(
+            BadRequest, QStringLiteral("button must be left, right or middle"));
     const Qt::KeyboardModifiers modifiers =
         parseModifiers(request.value(QStringLiteral("modifiers")), &ok);
     if (!ok)
@@ -514,20 +713,261 @@ AutomationReply commandDrag(const AutomationHost &host,
             BadRequest, QStringLiteral("unknown keyboard modifier"));
     const int steps =
         std::clamp(request.value(QStringLiteral("steps")).toInt(8), 1, 200);
-    QWidget *widget = from_target.widget;
-    QTest::mousePress(widget, Qt::LeftButton, modifiers, from);
+    QWidget *widget = pointerReceiver(from_target, &from);
+    pointerReceiver(to_target, &to);
+    sendMouse(widget, QEvent::MouseButtonPress, from, button, modifiers);
     for (int step = 1; step <= steps; ++step) {
         const QPoint interpolated{
             from.x() + (to.x() - from.x()) * step / steps,
             from.y() + (to.y() - from.y()) * step / steps};
-        QTest::mouseMove(widget, interpolated);
+        sendMouse(widget, QEvent::MouseMove, interpolated, Qt::NoButton,
+                  modifiers);
     }
-    QTest::mouseRelease(widget, Qt::LeftButton, modifiers, to);
+    sendMouse(widget, QEvent::MouseButtonRelease, to, button, modifiers);
     return AutomationReply::success(QJsonObject{
         {QStringLiteral("from"), QJsonArray{from.x(), from.y()}},
         {QStringLiteral("to"), QJsonArray{to.x(), to.y()}},
+        {QStringLiteral("button"),
+         request.value(QStringLiteral("button")).toString(
+             QStringLiteral("left"))},
         {QStringLiteral("steps"), steps},
     });
+}
+
+// `wheel`, `move`, `press` and `release`: the gestures a canvas is driven with.
+// A zoom is a wheel, a pan is a button held across moves, and a hover is a move
+// with nothing held -- none of which `click` and `drag` could say before.
+AutomationReply commandWheel(const AutomationHost &host,
+                             const QJsonObject &request) {
+    Target target;
+    AutomationReply rejected;
+    if (!gestureTarget(host, request, &target, &rejected)) return rejected;
+    const QJsonValue delta_value = request.value(QStringLiteral("delta"));
+    const QJsonValue delta_x_value = request.value(QStringLiteral("delta_x"));
+    if (!delta_value.isDouble() && !delta_x_value.isDouble())
+        return AutomationReply::failure(
+            BadRequest,
+            QStringLiteral("delta is required (one notch forward is 120)"));
+    bool ok = false;
+    const Qt::KeyboardModifiers modifiers =
+        parseModifiers(request.value(QStringLiteral("modifiers")), &ok);
+    if (!ok)
+        return AutomationReply::failure(
+            BadRequest, QStringLiteral("unknown keyboard modifier"));
+    QPoint point;
+    if (!pointFor(request, target, &point, &rejected)) return rejected;
+    QWidget *receiver = pointerReceiver(target, &point);
+    const QPoint angle{delta_x_value.toInt(0), delta_value.toInt(0)};
+    sendWheel(receiver, point, angle, modifiers);
+    return AutomationReply::success(QJsonObject{
+        {QStringLiteral("point"), QJsonArray{point.x(), point.y()}},
+        {QStringLiteral("delta"), angle.y()},
+        {QStringLiteral("delta_x"), angle.x()},
+        {QStringLiteral("target"), receiver->objectName()},
+        {QStringLiteral("class"),
+         QString::fromLatin1(receiver->metaObject()->className())},
+    });
+}
+
+enum class PointerAction { move, press, release };
+
+AutomationReply commandPointer(const AutomationHost &host,
+                               const QJsonObject &request,
+                               PointerAction action) {
+    Target target;
+    AutomationReply rejected;
+    if (!gestureTarget(host, request, &target, &rejected)) return rejected;
+    bool ok = false;
+    Qt::MouseButton button = Qt::NoButton;
+    if (action != PointerAction::move) {
+        button = parseButton(request.value(QStringLiteral("button")), &ok);
+        if (!ok)
+            return AutomationReply::failure(
+                BadRequest,
+                QStringLiteral("button must be left, right or middle"));
+    }
+    const Qt::KeyboardModifiers modifiers =
+        parseModifiers(request.value(QStringLiteral("modifiers")), &ok);
+    if (!ok)
+        return AutomationReply::failure(
+            BadRequest, QStringLiteral("unknown keyboard modifier"));
+    QPoint point;
+    if (!pointFor(request, target, &point, &rejected)) return rejected;
+    const QEvent::Type type = action == PointerAction::move
+                                  ? QEvent::MouseMove
+                                  : (action == PointerAction::press
+                                         ? QEvent::MouseButtonPress
+                                         : QEvent::MouseButtonRelease);
+    QWidget *receiver = pointerReceiver(target, &point);
+    sendMouse(receiver, type, point, button, modifiers);
+    return AutomationReply::success(QJsonObject{
+        {QStringLiteral("point"), QJsonArray{point.x(), point.y()}},
+        {QStringLiteral("buttons"), buttonNames(heldButtons())},
+        {QStringLiteral("target"), receiver->objectName()},
+        {QStringLiteral("visible"), targetVisible(target)},
+    });
+}
+
+AutomationReply commandViewState(const AutomationHost &host,
+                                 const QJsonObject &request) {
+    const QString name = request.value(QStringLiteral("name")).toString();
+    if (name.isEmpty())
+        return AutomationReply::failure(BadRequest,
+                                        QStringLiteral("name is required"));
+    const Target target = resolveTarget(host, name);
+    if (!target.valid())
+        return AutomationReply::failure(
+            WidgetMissing,
+            QStringLiteral("no widget or drawn item is named \"%1\"").arg(name));
+    QGraphicsView *view = target.view;
+    if (view == nullptr)
+        return AutomationReply::failure(
+            BadRequest,
+            QStringLiteral("\"%1\" is a %2, not a QGraphicsView")
+                .arg(name, QString::fromLatin1(
+                               target.owner->metaObject()->className())));
+    const QTransform transform = view->transform();
+    const QScrollBar *horizontal = view->horizontalScrollBar();
+    const QScrollBar *vertical = view->verticalScrollBar();
+    const QRect viewport = view->viewport()->rect();
+    const QPointF centre = view->mapToScene(viewport.center());
+    const QRectF visible = view->mapToScene(viewport).boundingRect();
+    const QRectF scene_rect =
+        view->scene() != nullptr ? view->scene()->sceneRect() : QRectF{};
+    return AutomationReply::success(QJsonObject{
+        {QStringLiteral("name"), name},
+        // What a zoom moves. The two axes are reported apart so a view that
+        // scales them differently cannot hide behind one number.
+        {QStringLiteral("scale"), transform.m11()},
+        {QStringLiteral("scale_y"), transform.m22()},
+        {QStringLiteral("transform"),
+         QJsonArray{transform.m11(), transform.m12(), transform.m21(),
+                    transform.m22(), transform.dx(), transform.dy()}},
+        // What a pan moves. `center` is the scene point in the middle of the
+        // viewport: it answers for a pan however the view implements one --
+        // scrollbars, a translated transform, or a changed scene rect.
+        {QStringLiteral("center"), QJsonArray{centre.x(), centre.y()}},
+        {QStringLiteral("scroll"),
+         QJsonObject{
+             {QStringLiteral("x"), horizontal->value()},
+             {QStringLiteral("y"), vertical->value()},
+             {QStringLiteral("x_min"), horizontal->minimum()},
+             {QStringLiteral("x_max"), horizontal->maximum()},
+             {QStringLiteral("y_min"), vertical->minimum()},
+             {QStringLiteral("y_max"), vertical->maximum()},
+         }},
+        {QStringLiteral("visible_scene"),
+         QJsonArray{visible.x(), visible.y(), visible.width(),
+                    visible.height()}},
+        {QStringLiteral("scene_rect"),
+         QJsonArray{scene_rect.x(), scene_rect.y(), scene_rect.width(),
+                    scene_rect.height()}},
+        {QStringLiteral("viewport"),
+         QJsonArray{viewport.width(), viewport.height()}},
+        {QStringLiteral("items"),
+         view->scene() != nullptr
+             ? static_cast<int>(view->scene()->items().size())
+             : 0},
+    });
+}
+
+AutomationReply commandMenuList(const AutomationHost &host,
+                                const QJsonObject &request) {
+    QWidget *root = nullptr;
+    const QString name = request.value(QStringLiteral("name")).toString();
+    if (!name.isEmpty()) {
+        const Target target = resolveTarget(host, name);
+        if (!target.valid() || target.owner == nullptr)
+            return AutomationReply::failure(
+                WidgetMissing,
+                QStringLiteral("no widget is named \"%1\"").arg(name));
+        root = target.owner;
+    }
+    const QString pattern = request.value(QStringLiteral("pattern")).toString();
+    QJsonArray entries;
+    for (const ActionEntry &entry : collectActions(host, root)) {
+        if (!pattern.isEmpty() &&
+            !actionName(*entry.action).contains(pattern, Qt::CaseInsensitive) &&
+            !withoutMnemonic(entry.action->text())
+                 .contains(pattern, Qt::CaseInsensitive))
+            continue;
+        entries.push_back(actionJson(entry));
+    }
+    return AutomationReply::success(QJsonObject{
+        {QStringLiteral("count"), static_cast<int>(entries.size())},
+        {QStringLiteral("actions"), entries},
+    });
+}
+
+AutomationReply commandAction(const AutomationHost &host,
+                              const QJsonObject &request) {
+    const QString name = request.value(QStringLiteral("name")).toString();
+    const QString text = request.value(QStringLiteral("text")).toString();
+    const QString menu = request.value(QStringLiteral("menu")).toString();
+    if (name.isEmpty() && text.isEmpty())
+        return AutomationReply::failure(
+            BadRequest, QStringLiteral("name or text is required"));
+    const std::vector<ActionEntry> all = collectActions(host, nullptr);
+    const auto in_menu = [&menu](const ActionEntry &entry) {
+        return menu.isEmpty() || entry.menu.contains(menu, Qt::CaseInsensitive);
+    };
+    std::vector<ActionEntry> matched;
+    for (const ActionEntry &entry : all) {
+        if (!in_menu(entry)) continue;
+        if (!name.isEmpty()) {
+            if (actionName(*entry.action) == name) matched.push_back(entry);
+            continue;
+        }
+        if (withoutMnemonic(entry.action->text())
+                .compare(text, Qt::CaseInsensitive) == 0)
+            matched.push_back(entry);
+    }
+    // An exact label is the first question; a person who typed half of one gets
+    // the same answer as long as only one row can be meant.
+    if (matched.empty() && name.isEmpty()) {
+        for (const ActionEntry &entry : all) {
+            if (!in_menu(entry)) continue;
+            if (withoutMnemonic(entry.action->text())
+                    .contains(text, Qt::CaseInsensitive))
+                matched.push_back(entry);
+        }
+    }
+    if (matched.empty())
+        return AutomationReply::failure(
+            WidgetMissing,
+            QStringLiteral("no menu action answers to \"%1\"%2")
+                .arg(name.isEmpty() ? text : name,
+                     menu.isEmpty() ? QString{}
+                                    : QStringLiteral(" under \"%1\"").arg(menu)));
+    if (matched.size() > 1) {
+        QStringList names;
+        for (const ActionEntry &entry : matched)
+            names.push_back(QStringLiteral("%1 (%2)")
+                                .arg(withoutMnemonic(entry.action->text()),
+                                     actionName(*entry.action).isEmpty()
+                                         ? entry.menu
+                                         : actionName(*entry.action)));
+        return AutomationReply::failure(
+            BadRequest,
+            QStringLiteral("\"%1\" names %2 actions: %3")
+                .arg(name.isEmpty() ? text : name)
+                .arg(matched.size())
+                .arg(names.join(QStringLiteral(", "))));
+    }
+    const ActionEntry &entry = matched.front();
+    if (!entry.action->isEnabled())
+        return AutomationReply::failure(
+            BadRequest, QStringLiteral("the action \"%1\" is disabled")
+                            .arg(withoutMnemonic(entry.action->text())));
+    const bool was_checked = entry.action->isChecked();
+    // Fired where it lives, with no popup in between: opening the menu would
+    // enter a modal event loop, and this command has a reply to finish writing.
+    entry.action->trigger();
+    QCoreApplication::processEvents();
+    QJsonObject result = actionJson(entry);
+    result.insert(QStringLiteral("was_checked"), was_checked);
+    result.insert(QStringLiteral("triggered"), true);
+    return AutomationReply::success(result);
 }
 
 // The widget a keystroke goes to when the request does not name one: whatever
@@ -577,13 +1017,40 @@ AutomationReply commandKey(const AutomationHost &host,
         return AutomationReply::failure(
             BadRequest,
             QStringLiteral("\"%1\" is not a key sequence").arg(sequence));
+    // Two routes, because they reach different code. Straight to the widget is
+    // what an editor sees, and it does not depend on which window the desktop
+    // has activated -- that is why `graph_edit_roundtrip` can press Return into
+    // a drawn editor at all. Through the window is the desktop's own route: it
+    // is the one that passes the shortcut map, so it is the only one that can
+    // fire a QAction by its shortcut.
+    const QString route =
+        request.value(QStringLiteral("route")).toString(QStringLiteral("widget"));
+    if (route != QLatin1String("widget") && route != QLatin1String("window"))
+        return AutomationReply::failure(
+            BadRequest, QStringLiteral("route must be widget or window"));
+    QWindow *handle = nullptr;
+    if (route == QLatin1String("window")) {
+        QWidget *top = widget->window();
+        handle = top != nullptr ? top->windowHandle() : nullptr;
+        if (handle == nullptr)
+            return AutomationReply::failure(
+                WidgetMissing,
+                QStringLiteral("\"%1\" is in no window the desktop knows, so "
+                               "keys cannot take the shortcut route")
+                    .arg(widget->objectName()));
+    }
     for (int index = 0; index < parsed.count(); ++index) {
         const QKeyCombination combination = parsed[index];
-        QTest::keyClick(widget, combination.key(),
-                        combination.keyboardModifiers());
+        if (handle != nullptr)
+            QTest::keyClick(handle, combination.key(),
+                            combination.keyboardModifiers());
+        else
+            QTest::keyClick(widget, combination.key(),
+                            combination.keyboardModifiers());
     }
     return AutomationReply::success(QJsonObject{
         {QStringLiteral("sequence"), parsed.toString(QKeySequence::PortableText)},
+        {QStringLiteral("route"), route},
         {QStringLiteral("target"), widget->objectName()},
         {QStringLiteral("class"),
          QString::fromLatin1(widget->metaObject()->className())},
@@ -905,11 +1372,14 @@ AutomationReply commandScreenshot(const AutomationHost &host,
 QStringList automationCommandNames() {
     return {QStringLiteral("list"),         QStringLiteral("click"),
             QStringLiteral("double_click"), QStringLiteral("drag"),
+            QStringLiteral("wheel"),        QStringLiteral("move"),
+            QStringLiteral("press"),        QStringLiteral("release"),
             QStringLiteral("key"),          QStringLiteral("type"),
-            QStringLiteral("text"),         QStringLiteral("wait"),
-            QStringLiteral("wait_engine"),  QStringLiteral("rpc"),
-            QStringLiteral("open_project"), QStringLiteral("screenshot"),
-            QStringLiteral("quit")};
+            QStringLiteral("text"),         QStringLiteral("action"),
+            QStringLiteral("menu_list"),    QStringLiteral("view_state"),
+            QStringLiteral("wait"),         QStringLiteral("wait_engine"),
+            QStringLiteral("rpc"),          QStringLiteral("open_project"),
+            QStringLiteral("screenshot"),   QStringLiteral("quit")};
 }
 
 AutomationReply runAutomationCommand(const AutomationHost &host,
@@ -921,6 +1391,18 @@ AutomationReply runAutomationCommand(const AutomationHost &host,
     if (command == QLatin1String("double_click"))
         return commandClick(host, request, true);
     if (command == QLatin1String("drag")) return commandDrag(host, request);
+    if (command == QLatin1String("wheel")) return commandWheel(host, request);
+    if (command == QLatin1String("move"))
+        return commandPointer(host, request, PointerAction::move);
+    if (command == QLatin1String("press"))
+        return commandPointer(host, request, PointerAction::press);
+    if (command == QLatin1String("release"))
+        return commandPointer(host, request, PointerAction::release);
+    if (command == QLatin1String("action")) return commandAction(host, request);
+    if (command == QLatin1String("menu_list"))
+        return commandMenuList(host, request);
+    if (command == QLatin1String("view_state"))
+        return commandViewState(host, request);
     if (command == QLatin1String("key")) return commandKey(host, request);
     if (command == QLatin1String("type")) return commandType(host, request);
     if (command == QLatin1String("text")) return commandText(host, request);

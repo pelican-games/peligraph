@@ -507,6 +507,20 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
   )
 
+  # Q-1b: the input kinds of the automation surface, checked against the widget
+  # that receives them. No socket, no engine, no window on a screen -- the
+  # command layer is called the way the pipe calls it and the widget is asked
+  # what it got.
+  if(TARGET pelican_studio_automation)
+    pelican_define_test(devstudio_automation_input_test QT QT_OFFSCREEN
+      pelican_studio_automation
+      pelican_studio_viewport
+      Qt6::Core
+      Qt6::Test
+      Qt6::Widgets
+    )
+  endif()
+
   pelican_define_test(devstudio_fullscreen_pass_test QT QT_OFFSCREEN
     pelican_studio_view
     pelican_studio_viewport

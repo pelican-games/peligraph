@@ -72,10 +72,26 @@ step green only when the command is refused with exactly that code; or an
 | `text_equals` | `name`, `value`                    | the named thing reads exactly `value`         |
 | `visible`     | `name`, `value` (default `true`)   | the named thing is/is not on screen           |
 | `list_count`  | `pattern`, `value`                 | `list` matched exactly `value` things         |
+| `result`      | `command`, `path`, and see below   | the command's own reply has what `path` says  |
 | `screenshot`  | `name?`, `path?`, `mode?`          | always -- it only saves the picture           |
 
 `path` walks the JSON reply: `nodes[1].parameters.gain`, and `$len` for the
 length of a list or object (`definitions.$len`).
+
+`result` is the general one: it sends any command and asks a question about the
+reply, which is how `view_state` and `menu_list` are checked.
+
+    {"expect": "result", "command": {"cmd": "view_state", "name": "pelican.framePlanLogicalView"},
+     "path": "scale", "remember": "before"}
+    {"expect": "result", "command": {"cmd": "view_state", "name": "pelican.framePlanLogicalView"},
+     "path": "scale", "op": "gt", "value_of": "before"}
+
+* `value` is a literal; `value_of` is what an earlier step wrote down with
+  `remember`. With neither, the step only reads (and remembers), and passes.
+* `op` is `eq` (the default), `ne`, `gt`, `ge`, `lt`, `le` or `contains`.
+* A gesture is judged by which way a number moved, not by where it landed: the
+  scale a view chooses is the view's business, and a scenario that hard-codes it
+  is checking arithmetic instead of checking the gesture.
 
 `{project}`, `{artifacts}` and any `--var NAME=VALUE` are substituted into every
 string of a step, so a scenario can name the temp copy it was given.
@@ -111,19 +127,41 @@ window the desktop happens to have activated.
 
 | command        | fields                                                       |
 |----------------|--------------------------------------------------------------|
-| `list`         | `pattern?` (case-insensitive substring of the name)           |
+| `list`         | `pattern?` (case-insensitive substring of the name); each entry carries `name`, `class`, `visible`, `enabled`, `geometry`, `text`, `shortcut` |
 | `click`        | `name` \| `point`, plus `scene?`, `point?`, `button?`, `modifiers?` |
 | `double_click` | the same                                                      |
-| `drag`         | `from`, `to` (a name, or `{name, point?/scene?}`), `modifiers?`, `steps?` |
-| `key`          | `sequence` (`"Return"`, `"Ctrl+A"`), `name?`                  |
+| `drag`         | `from`, `to` (a name, or `{name, point?/scene?}`), `button?`, `modifiers?`, `steps?` |
+| `wheel`        | `name` \| `point`, `delta` (a notch is 120, positive is forward), `delta_x?`, `scene?`, `point?`, `modifiers?` |
+| `move`         | `name` \| `point`, `scene?`, `point?`, `modifiers?` -- a move with whatever this surface is holding down |
+| `press`        | the same, plus `button?` -- and it stays down                 |
+| `release`      | the same                                                      |
+| `key`          | `sequence` (`"Return"`, `"Ctrl+A"`), `name?`, `route?` (`widget` \| `window`) |
 | `type`         | `text`, `name?`, `select_all?` (default true)                 |
 | `text`         | `name`                                                        |
+| `action`       | `name` \| `text`, `menu?` -- fires one menu or toolbar entry  |
+| `menu_list`    | `name?` (scope to one widget), `pattern?` -- the entries, with `text`, `shortcut`, `enabled`, `checked`, `menu` |
+| `view_state`   | `name` -- a QGraphicsView's `scale`, `transform`, `center`, `scroll`, `visible_scene`, `viewport` |
 | `wait`         | `name`, one of `visible` / `text` / `contains` / `missing`, `timeout_ms?` |
 | `wait_engine`  | `timeout_ms?` -- until the viewport answers editor RPC         |
 | `rpc`          | `method`, `params?`, `timeout_ms?` -- straight to the engine   |
 | `open_project` | `dir`                                                         |
 | `screenshot`   | `path`, `name?`, `mode?` (`widget` \| `screen`)               |
 | `quit`         | --                                                            |
+
+One example of each of the kinds Q-1b added:
+
+    {"cmd": "wheel",  "name": "pelican.framePlanLogicalView", "point": [60, 50], "delta": 480}
+    {"cmd": "move",   "name": "pelican.framePlanLogicalView", "point": [80, 60]}
+    {"cmd": "press",  "name": "pelican.framePlanLogicalView", "point": [80, 60], "button": "middle"}
+    {"cmd": "release","name": "pelican.framePlanLogicalView", "point": [160, 120], "button": "middle"}
+    {"cmd": "drag",   "from": {"name": "pelican.graphCanvasView", "point": [200, 150]},
+                      "to":   {"name": "pelican.graphCanvasView", "point": [80, 150]},
+                      "button": "middle", "steps": 8}
+    {"cmd": "action", "name": "pelican.gizmo.rotate"}
+    {"cmd": "action", "text": "Ping", "menu": "More"}
+    {"cmd": "menu_list", "pattern": "pelican.file."}
+    {"cmd": "view_state", "name": "pelican.graphCanvasView"}
+    {"cmd": "key", "name": "pelican.graphCanvasView", "sequence": "Ctrl+T", "route": "window"}
 
 Error codes: `automation.widget_missing@1`, `automation.bad_request@1`,
 `automation.unknown_command@1`, `automation.engine_not_ready@1`,
@@ -148,3 +186,61 @@ Three things worth knowing before writing a scenario:
   does not include the embedded engine window (a foreign child window). Use
   `"mode": "screen"` when the picture has to show what the engine drew; that
   mode needs the window to be unobstructed.
+
+## Gestures a canvas is driven with
+
+`press`, `move` and `release` share one piece of state: which buttons this
+surface is holding down. That is what makes a held gesture a gesture -- the
+moves between a press and a release carry `buttons()`, which is the only thing a
+panning view looks at. `drag` is the three of them in a row, and takes the same
+`button`. A `move` with nothing held is a hover: it delivers a mouse move to the
+widget, but it does not move the desktop's own cursor, so it does not raise
+`enterEvent`, `underMouse()` or a tooltip.
+
+Every pointer gesture -- `click`, `drag`, `wheel`, `move`, `press`, `release` --
+is delivered to a scroll area's *viewport*, never to its frame. A
+`QAbstractScrollArea` leaves alone a mouse or wheel event that arrives at the
+frame, because on a real desktop such an event arrives at the viewport under the
+cursor; from there the area's own filter carries it to
+`QGraphicsView::mousePressEvent` and `::wheelEvent`, which is where a canvas
+puts its rule. Naming the view and naming a drawn item inside it therefore reach
+the same receiver, and a gesture aimed at a canvas by the view's own objectName
+now lands (before Q-1b it was posted to the frame and silently did nothing).
+
+`view_state` is the reading that answers what a zoom or a pan did: `scale` for
+the first, `center` (the scene point in the middle of the viewport) for the
+second. `center` answers however the view implements a pan -- scrollbars, a
+translated transform, or a changed scene rect -- which is why it, not `scroll`,
+is what a scenario should compare.
+
+## Menus and shortcuts
+
+A `QAction` is not a widget: it has no place on screen until a popup opens over
+it, and `list` cannot see it. `menu_list` is the listing and `action` is the
+gesture, and neither opens a popup -- a popup is a modal event loop, which a
+command that owes a reply on this line cannot enter.
+
+Entries are named the way widgets are (`grep setObjectName src/devstudio/view`):
+`pelican.file.saveScene`, `pelican.gizmo.rotate`,
+`pelican.view.panels.outputDock`, `pelican.framePlanLeaveGroup`. An entry that
+opens a submenu carries the submenu's own objectName
+(`pelican.layout.toolMenu`) and says `"submenu": true`. `action` also takes the
+label a person reads (`"text": "Rotate"`), narrowed by `"menu"` when one label
+appears in two menus; two matches with nothing to tell them apart is
+`automation.bad_request@1`, and so is an entry the window has switched off.
+
+Whether a *binding* is real is a different question from whether a handler
+works, and `key` answers it with `"route": "window"`: keys sent that way go the
+desktop's own way, through the shortcut map, which is the only route that can
+fire a `QAction` by its shortcut. The default route delivers straight to the
+named widget instead -- that is what lets `graph_edit_roundtrip` press Return
+into an editor drawn inside a canvas without depending on which window the
+machine decided to activate.
+
+## Scenarios that are here but not registered
+
+`pending/` is globbed by nothing: CTest registers `studio_scenarios/*.json` and
+stops there. A scenario written against a change that has not landed yet waits
+in `pending/` with a note saying what it is waiting for, and is moved up one
+directory when that arrives. `pending/graph_canvas_zoom_pan.json` is waiting for
+N-3's zoom and pan on the Graph canvas; every command it uses exists today.

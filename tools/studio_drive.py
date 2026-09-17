@@ -317,6 +317,33 @@ def equal(left: Any, right: Any) -> bool:
     return left == right
 
 
+_MISSING = object()
+
+
+def compare(op: str, actual: Any, expected: Any) -> bool:
+    """The comparisons a `result` step can ask for.
+
+    `eq` is the one every other expectation uses.  The rest exist because a
+    gesture is judged by which way a number moved, not by where it landed.
+    """
+
+    if op == "eq":
+        return equal(actual, expected)
+    if op == "ne":
+        return not equal(actual, expected)
+    if op == "contains":
+        return expected in actual
+    if op in {"gt", "ge", "lt", "le"}:
+        left, right = float(actual), float(expected)
+        return {
+            "gt": left > right,
+            "ge": left >= right,
+            "lt": left < right,
+            "le": left <= right,
+        }[op]
+    raise ValueError(f'unknown comparison "{op}"')
+
+
 # ---------------------------------------------------------------------------
 # The run
 
@@ -330,6 +357,11 @@ class Run:
         self.failures: list[dict[str, Any]] = []
         self.screenshots: list[str] = []
         self.channel: Channel | None = None
+        # What a `result` step wrote down for a later step to compare against.
+        # A zoom is "bigger than it was", not "1.35": the number a view lands on
+        # is the view's business, and a scenario that hard-codes it is testing
+        # the arithmetic instead of the gesture.
+        self.remembered: dict[str, Any] = {}
 
     # -- recording -----------------------------------------------------------
 
@@ -553,6 +585,91 @@ def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
                 request=request,
                 response={"path": step["path"], "value": actual},
                 detail=f"{step['method']} {step['path']} == {json.dumps(actual)}",
+                started=started,
+            )
+            return True
+
+        if kind == "result":
+            # The general shape: send any command, walk into its result, and
+            # either write the value down or judge it.  `view_state` and
+            # `menu_list` answer with readings rather than with text, and this
+            # is how a scenario asks a question about one.
+            request = dict(step.get("command") or {})
+            if not request.get("cmd"):
+                return _fail(
+                    run, kind, label, step, None, "a result step needs a command", started
+                )
+            reply = run.call(request, timeout=float(step.get("wait_s", 120)))
+            if not reply.get("ok"):
+                error = reply.get("error") or {}
+                return _fail(
+                    run,
+                    kind,
+                    label,
+                    request,
+                    reply,
+                    f"{error.get('code', 'error')}: {error.get('message', '')}",
+                    started,
+                )
+            path = str(step.get("path", ""))
+            try:
+                actual = follow(reply["result"], path)
+            except (PathError, ValueError) as error:
+                return _fail(run, kind, label, request, reply, f"{path}: {error}", started)
+            if step.get("remember"):
+                run.remembered[str(step["remember"])] = actual
+            has_expectation = "value" in step or "value_of" in step
+            if not has_expectation:
+                run.record(
+                    "expect",
+                    label,
+                    ok=True,
+                    request=request,
+                    response={"path": path, "value": actual},
+                    detail=f"{request['cmd']} {path} = {json.dumps(actual)}"
+                    + (f", remembered as {step['remember']}" if step.get("remember") else ""),
+                    started=started,
+                )
+                return True
+            if "value" in step:
+                expected = step["value"]
+                shown = json.dumps(expected)
+            else:
+                expected = run.remembered.get(str(step["value_of"]), _MISSING)
+                if expected is _MISSING:
+                    return _fail(
+                        run,
+                        kind,
+                        label,
+                        request,
+                        reply,
+                        f"no earlier step remembered \"{step['value_of']}\"",
+                        started,
+                    )
+                shown = f"{step['value_of']} ({json.dumps(expected)})"
+            op = str(step.get("op", "eq"))
+            try:
+                satisfied = compare(op, actual, expected)
+            except (ValueError, TypeError) as error:
+                return _fail(run, kind, label, request, reply, str(error), started)
+            if not satisfied:
+                return _fail(
+                    run,
+                    kind,
+                    label,
+                    request,
+                    reply,
+                    f"{request['cmd']} {path}: {json.dumps(actual)} is not "
+                    f"{op} {shown}",
+                    started,
+                )
+            run.record(
+                "expect",
+                label,
+                ok=True,
+                request=request,
+                response={"path": path, "value": actual},
+                detail=f"{request['cmd']} {path} {op} {shown} ({json.dumps(actual)})",
                 started=started,
             )
             return True

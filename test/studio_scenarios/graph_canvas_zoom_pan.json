@@ -1,0 +1,140 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "graph_canvas_zoom_pan",
+  "description": "N-3's half of canvas_zoom_pan: the Graph canvas zooms on the wheel, fits to F, and pans on a held middle button. This file is not registered as a test -- CTest globs test/studio_scenarios/*.json and this directory is one level down. Move it up when NodeCanvasView lands and the steps below should pass as written; nothing in it depends on anything Q-1b did not already ship.",
+  "tab": "graph",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the engine viewport answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the canvas has drawn the owned instance",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the canvas opens unzoomed",
+      "expect": "result",
+      "command": {
+        "cmd": "view_state",
+        "name": "pelican.graphCanvasView"
+      },
+      "path": "scale",
+      "value": 1.0,
+      "remember": "scale_start"
+    },
+    {
+      "label": "two wheel notches forward over the canvas, so the drawing outgrows the view",
+      "cmd": "wheel",
+      "name": "pelican.graphCanvasView",
+      "point": [
+        120,
+        90
+      ],
+      "delta": 720
+    },
+    {
+      "label": "N-3's wheel zoomed the canvas in",
+      "expect": "result",
+      "command": {
+        "cmd": "view_state",
+        "name": "pelican.graphCanvasView"
+      },
+      "path": "scale",
+      "op": "gt",
+      "value_of": "scale_start",
+      "remember": "scale_zoomed"
+    },
+    {
+      "label": "where the canvas is looking before a pan",
+      "expect": "result",
+      "command": {
+        "cmd": "view_state",
+        "name": "pelican.graphCanvasView"
+      },
+      "path": "center[0]",
+      "remember": "center_x"
+    },
+    {
+      "label": "hold the middle button and drag -- N-3's pan",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView",
+        "point": [
+          200,
+          150
+        ]
+      },
+      "to": {
+        "name": "pelican.graphCanvasView",
+        "point": [
+          80,
+          150
+        ]
+      },
+      "button": "middle",
+      "steps": 8
+    },
+    {
+      "label": "the canvas is looking somewhere else",
+      "expect": "result",
+      "command": {
+        "cmd": "view_state",
+        "name": "pelican.graphCanvasView"
+      },
+      "path": "center[0]",
+      "op": "gt",
+      "value_of": "center_x"
+    },
+    {
+      "label": "a wheel back the other way brings it down again",
+      "cmd": "wheel",
+      "name": "pelican.graphCanvasView",
+      "point": [
+        120,
+        90
+      ],
+      "delta": -360
+    },
+    {
+      "label": "the zoom came back down",
+      "expect": "result",
+      "command": {
+        "cmd": "view_state",
+        "name": "pelican.graphCanvasView"
+      },
+      "path": "scale",
+      "op": "lt",
+      "value_of": "scale_zoomed"
+    },
+    {
+      "label": "F fits the drawing back into the view",
+      "cmd": "key",
+      "name": "pelican.graphCanvasView",
+      "sequence": "F"
+    },
+    {
+      "label": "and a fit is a scale the canvas chose, not the one it started with",
+      "expect": "result",
+      "command": {
+        "cmd": "view_state",
+        "name": "pelican.graphCanvasView"
+      },
+      "path": "scale",
+      "op": "gt",
+      "value": 0
+    },
+    {
+      "label": "a picture of the canvas for the reader of this report",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "graph_canvas_zoom_pan.png"
+    }
+  ]
+}

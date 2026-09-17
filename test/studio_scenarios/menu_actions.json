@@ -1,0 +1,150 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "menu_actions",
+  "description": "Read the menu bar without opening it, fire entries by the name the source gives them, and watch the window change. A menu entry has no place on screen until its popup opens, so before Q-1b a scenario could not see one at all; menu_list is the listing and action is the gesture, and both stay out of the modal event loop a popup would start.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the window has finished building",
+      "cmd": "wait",
+      "name": "pelican.framePlan",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the File menu holds the three entries the source puts there",
+      "expect": "result",
+      "command": {"cmd": "menu_list", "pattern": "pelican.file."},
+      "path": "count",
+      "value": 3
+    },
+    {
+      "label": "Save Scene is listed under File, by the path a person reads",
+      "expect": "result",
+      "command": {"cmd": "menu_list", "pattern": "pelican.file.saveScene"},
+      "path": "actions[0].menu",
+      "op": "contains",
+      "value": "File"
+    },
+    {
+      "label": "and its shortcut is on the entry -- decision 3",
+      "expect": "result",
+      "command": {"cmd": "menu_list", "pattern": "pelican.file.saveScene"},
+      "path": "actions[0].shortcut",
+      "value": "Ctrl+S"
+    },
+    {
+      "label": "an action that belongs to a widget rather than to a menu is listed too",
+      "expect": "result",
+      "command": {"cmd": "menu_list", "name": "pelican.framePlan", "pattern": "pelican.framePlanLeaveGroup"},
+      "path": "actions[0].name",
+      "value": "pelican.framePlanLeaveGroup"
+    },
+    {
+      "label": "with the key it is bound to",
+      "expect": "result",
+      "command": {"cmd": "menu_list", "name": "pelican.framePlan", "pattern": "pelican.framePlanLeaveGroup"},
+      "path": "actions[0].shortcut",
+      "value": "Esc"
+    },
+    {
+      "label": "the gizmo toolbar offers three modes",
+      "expect": "result",
+      "command": {"cmd": "menu_list", "pattern": "pelican.gizmo."},
+      "path": "count",
+      "value": 3
+    },
+    {
+      "label": "Move is the mode the window starts in",
+      "expect": "result",
+      "command": {"cmd": "menu_list", "pattern": "pelican.gizmo.move"},
+      "path": "actions[0].checked",
+      "value": true
+    },
+    {
+      "label": "fire Rotate by name, with no popup in between",
+      "cmd": "action",
+      "name": "pelican.gizmo.rotate"
+    },
+    {
+      "label": "Rotate is now the checked mode",
+      "expect": "result",
+      "command": {"cmd": "menu_list", "pattern": "pelican.gizmo.rotate"},
+      "path": "actions[0].checked",
+      "value": true
+    },
+    {
+      "label": "and Move is not, because the group is exclusive",
+      "expect": "result",
+      "command": {"cmd": "menu_list", "pattern": "pelican.gizmo.move"},
+      "path": "actions[0].checked",
+      "value": false
+    },
+    {
+      "label": "fire Move back by the label a person would read",
+      "cmd": "action",
+      "text": "Move"
+    },
+    {
+      "label": "the label route reached the same action as the name route",
+      "expect": "result",
+      "command": {"cmd": "menu_list", "pattern": "pelican.gizmo.move"},
+      "path": "actions[0].checked",
+      "value": true
+    },
+    {
+      "label": "the Output dock is on screen to begin with",
+      "expect": "visible",
+      "name": "pelican.outputDock",
+      "value": true
+    },
+    {
+      "label": "the View > Panels entry that hides it",
+      "cmd": "action",
+      "name": "pelican.view.panels.outputDock"
+    },
+    {
+      "label": "the dock the entry names went away",
+      "expect": "visible",
+      "name": "pelican.outputDock",
+      "value": false
+    },
+    {
+      "label": "the same entry brings it back",
+      "cmd": "action",
+      "name": "pelican.view.panels.outputDock"
+    },
+    {
+      "label": "and it is on screen again",
+      "expect": "visible",
+      "name": "pelican.outputDock",
+      "value": true
+    },
+    {
+      "label": "an entry that opens a submenu says so instead of pretending to be one",
+      "expect": "result",
+      "command": {"cmd": "menu_list", "pattern": "pelican.layout.toolMenu"},
+      "path": "actions[0].submenu",
+      "value": true
+    },
+    {
+      "label": "an entry the window has switched off is refused, by code",
+      "cmd": "action",
+      "name": "pelican.layout.tool.saveAs",
+      "expect_error": "automation.bad_request@1"
+    },
+    {
+      "label": "a name no entry carries is refused, by code",
+      "cmd": "action",
+      "name": "pelican.view.theme.thereIsNoSuchTheme",
+      "expect_error": "automation.widget_missing@1"
+    },
+    {
+      "label": "a picture of the window for the reader of this report",
+      "expect": "screenshot",
+      "path": "menu_actions_window.png"
+    }
+  ]
+}
