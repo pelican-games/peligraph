@@ -272,6 +272,7 @@ sweep が実行時に名前付き skip する project の DLL まで作ろうと
 この build が満たせない要求を持つ project では `pelican_add_catalog_game_logic()` を呼ばないこと
 (skip の語彙は `run_project_catalog_smoke.cmake` の表と同じ `{animation}` → `PELICAN_WITH_<NAME>` を使う。
 CMake 側で 2 つ目の表を作らないため、語彙の置き場は 1 箇所に寄せる)。
+| `studio_scenario_graph_edit_roundtrip` が赤(帯の editor が ~500 ms で閉じる)| 根本は N-2 `02a3d285` の `FocusOut` 規則。この機械では導入 commit `06829720` から一度も緑でなかった(Q-1 の記録は別 tree)。`83645084` の全数 1947 はこのシナリオを含まない。**Q-3 `9be4113f` で修正**(環境依存の timing ではなく実欠陥) |
 
 ## 5. v0 で入ったもの
 
@@ -310,6 +311,7 @@ CMake 側で 2 つ目の表を作らないため、語彙の置き場は 1 箇�
 | N-6 配線の制御点と置き場所の永続化 | `fd02e356` |
 | N-8 Frame Plan のノード編集 | `6c71c5af` |
 | Q-2 Studio の応答性(idle polling / parse 1 回 / canvas cache) | `cb76c164` |
+| Q-3 帯の inline editor の focus 規則(窓の瞬きで閉じない) | `9be4113f` |
 
 ## 6. v0.1.0 tag の手順(2026-09-17: engine 側の全数 1947 / 1947 緑 @ `83645084`。tag は Studio 側(N 系 / AG-3b)が入り利用者が v0 を閉じるまで打たない)
 
