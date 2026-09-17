@@ -1,6 +1,6 @@
 # 第1章 エンジン全体像
 
-対象: pelican2(2026-07-21 に全域再確認、2026-09-04 に §1.5 の進捗を更新)/ このマニュアルはコードを正とする
+対象: pelican2(HEAD=`990b9eaa`・2026-09-17。2026-07-21 に全域再確認、2026-09-04 に §1.5 の進捗を更新、2026-09-17 に v0 の段(共通グラフ / 姿勢 / package / 共有部品)を §1.0・§1.5・§1.6 に反映)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -26,6 +26,13 @@
 | **決定的**(deterministic) | 同じ入力からは常に同じ結果が出ること。エンジン内部の判定に壁時計・`std::rand` を使わず、固定ループ順序・入力スナップショット・固定ステップ時刻で担保します(下記 設計決定 5、[第8章](08_gameplay.md) §8.10)。 |
 | **named reject**(名指し拒否) | 受理できない入力を黙って無視も推測もせず、**何がどう悪いかを名前(エラーコード・キー名・登録済み id 一覧)付きで**拒否すること(下記 設計決定 1)。 |
 | **purgeable**(パージ可能) | 参照を書いたときだけ機構が存在すること。書かなければ初期化も実行もされず、挙動もコストも変わりません(下記 設計決定 3)。 |
+| **共通グラフ**(`pelican.graph` v1) | 値・描画・姿勢を **1 つの文書のノードと辺**で繋ぐ機構。`definitions`(再利用する部分グラフ)/ `nodes`(root のノード列)/ `outputs` を持ち、op は module が登録します(下記 設計決定 12)。ノード語彙は [第6章 §6.17](06_rendering.md)、編集操作は [第13章 §13.5](13_editor.md)、凍結された op 一覧は [../v0_freeze.md](../v0_freeze.md) §1.3。パーサは [graphcomposition.cpp](../../src/project/graphcomposition.cpp)。 |
+| **姿勢(pose)グラフ** | 共通グラフのうち `pelican.pose` module の op(`pose.clip_sample` / `pose.blend` / `pose.state_machine` / `pose.retarget`)で姿勢を作り、sink `pose.skeletal` で個体へ書く部分。型 `pelican.pose@1` が port を流れます(bytes ではなく stage handle + layout 世代)。書き方は [第8章 §8.13](08_gameplay.md)、装着の排他は [第4章 §4.2](04_scene_ecs.md)。`PELICAN_WITH_ANIMATION=OFF` の build には module ごと存在しません。 |
+| **`graph.instance`(装着)** | 共通グラフの定義を 1 つ実体化するノード。`owner: {scene, object}` を書くとその個体に結び付き、入力 port の値は **辺 > `parameters` > 定義の既定値**の優先で決まります([第4章 §4.1](04_scene_ecs.md))。 |
+| **package**(`pelican.package` v1) | 本体ツリーの外で作った部品一式(feature / graph / component / code)を 1 ディレクトリにまとめたもの。使うときは project へ**複製(vendoring)**します([第3章 §3.11](03_project_format.md))。 |
+| **共有部品(render component)** | materialize 済みの feature 1 本を `user://components/<name>/` へ書き出し、別 project へ取り込める形にしたもの(`pelican.render_component` v1)。[第3章 §3.12](03_project_format.md)。 |
+| **`rendering` 節** | rendering config が `pelican.graph` root の下に入るときの置き場所。文書の最上位は共通グラフが所有し、rendering config のキーは全部 `rendering` の下に来ます([第3章 §3.2](03_project_format.md)・[第6章 §6.16](06_rendering.md))。 |
+| **root motion** | clip に焼かれた「根の移動」を、姿勢ではなく**個体の transform** に渡すこと。`pose.clip_sample{root_motion: "extract", root_node}` で有効になり、owner の local 位置に加算されます([第4章 §4.2](04_scene_ecs.md)・[第8章 §8.13](08_gameplay.md))。 |
 
 ## 1.1 Pelican2 とは
 
@@ -36,7 +43,7 @@ Pelican2 は **C++20 / Vulkan(vulkan.hpp)/ Windows(MSVC)** のゲームエンジ
 | 実行物 | 役割 |
 |---|---|
 | `pelican_player` | ゲームランタイム。ウィンドウ / ヘッドレス / JSON-RPC 駆動([第2章](02_getting_started.md)・[第10章](10_tools.md))。JSON-RPC はヘッドレス(blocking)とウィンドウ(フレーム境界処理)の両方で使えます ✅WP156 |
-| `pelican_cli` | 開発 CLI。7 サブコマンド系統(`assets` / `bake-camera` / `import` / `dist-config` / `project` / `dump-lowered-material` / `vrm` — [main.cpp](../../src/devcli/main.cpp))。エンジン本体にリンクしない |
+| `pelican_cli` | 開発 CLI。9 サブコマンド系統(`assets` / `bake-camera` / `import` / `dist-config` / `package` / `project` / `dump-lowered-material` / `vrm` / `graph-catalog` — [main.cpp](../../src/devcli/main.cpp#L43))。エンジン本体にリンクしない |
 | `pelican_studio` | Qt6 製エディタ 🚧。別 process の player を埋め込み、**その JSON-RPC を実際に呼びます** —— Outliner 選択、Inspector、gizmo、保存、Frame Plan(= フレームグラフを解決した実行計画。[用語集](14_glossary.md))、そして `features[]` の編集と再起動なしの反映([第2章](02_getting_started.md) §2.7・[第10章](10_tools.md) §10.7・[第13章](13_editor.md)) |
 | `pelican-spv-link` | `PELICAN_WITH_SPIRV_LINK=ON`時だけ作るexperimental SPIR-V リンカ CLI([spvlink/main.cpp](../../src/spvlink/main.cpp)・[第10章](10_tools.md)) 🚧 |
 | web ビューア | 別リポジトリ `my_webpage` の WebGPU「Shader Dock」。**同じプロジェクトファイルをブラウザで開く**([第9章](09_web.md)) |
@@ -151,9 +158,9 @@ vkcore(Vulkan 低層)
 
 > **設計決定 6(二層モデル — アセット):** エンジンが読む形式は閉じた小集合(ランタイム層 = glb/VRM・PNG/JPG・EXR・WAV・JSON/JSONL・SPIR-V/GLSL)。FBX/PSD 等(ソース層)はエンジンに 1 バイトも入れず、**外部ツール**(`pelican_cli import` や import-tools)で変換し、`imports/` にファイルとして着地させる(隠れインポートキャッシュは作らない。一覧と手順は [第5章](05_assets.md) §5.1)。
 
-> **設計決定 7(プロジェクト読み取り専有):** エンジン実行時、プロジェクトディレクトリには何も書かない。**例外は利用者が明示的に行う編集の保存だけ**(シーンの保存、`features[]` の編集。[第13章](13_editor.md))。書き込み先は `user://` に分離(複数インスタンス並行起動の安全根拠)。パス解決は cwd を使わず、常にプロジェクトルート基準+脱出禁止([第3章](03_project_format.md))。
+> **設計決定 7(プロジェクト読み取り専有):** エンジン実行時、プロジェクトディレクトリには何も書かない。**例外は利用者が明示的に行う編集の保存だけ**で、書き込みはすべて名前の付いた操作から始まります。書き込み先は `user://` に分離(複数インスタンス並行起動の安全根拠)。パス解決は cwd を使わず、常にプロジェクトルート基準+脱出禁止([第3章](03_project_format.md))。※**「編集の保存」の範囲は v0 で広がりました**: シーンの保存と `features[]` の編集([第13章](13_editor.md))に加えて、`install_package`(`project://packages/<ns>/` への複製 + `project.json` の `packages` への記録 — [第3章 §3.11](03_project_format.md))、`uninstall_package`(その取り消し)、`import_render_feature`(`project://` に feature ファイルを 1 本新規作成 — [第3章 §3.12](03_project_format.md))、`materialize`(engine 参照の feature を project 側の派生として保存 — [第6章](06_rendering.md))が project に書きます。どれも利用者が明示的に呼んだときだけで、エンジンが自発的に書くものはありません。`export_render_feature` の書き先は project ではなく `user://components/` です。
 
-> **設計決定 8(schema + version ゲート):** 新しい交換形式の JSON には必ず `schema` と `version` を付け、不一致は hard error(規約 R10)。`asset_data.json` は `pelican.asset_data` v1 として strict v1 化済み。※歴史的経緯で ui_overlay.json / rendering config には未適用。
+> **設計決定 8(schema + version ゲート):** 新しい交換形式の JSON には必ず `schema` と `version` を付け、不一致は hard error(規約 R10)。`asset_data.json` は `pelican.asset_data` v1 として strict v1 化済み。凍結対象の schema 一覧は [../v0_freeze.md](../v0_freeze.md) §1.1(31 種)。※ui_overlay.json と **legacy root の** rendering config には歴史的経緯で未適用です。rendering config を `pelican.graph` root で書いた場合は文書の最上位が共通グラフ文書なので `schema: pelican.graph` / `version: 1` を厳密に検査します(出荷 `example` と `posegraph_demo`、`pelican_cli project init` の雛形がこの形 — [第3章 §3.2](03_project_format.md))。
 
 > **設計決定 9(API ではなくデータ契約):** 外部ツール(DCC・DAM・エディタ)との統合はプラグイン API ではなくファイル契約(glTF ハブ、pelican.import、asset store)と JSON-RPC で行う。エディタ(devstudio)にも特権はない(D0: 編集操作はまず rpc メソッドとして定義される)。※WP149〜172 でこの原則が実装に落ちた: 編集 / undo / redo / 保存 / プレビューはすべて JSON-RPC メソッドとして定義され、player 内の ImGui Inspector も rpc と**同じ `EditorCommandService`** を呼ぶ([editorcommandservice.hpp](../../src/core/communication/editorcommandservice.hpp) / [inspector.cpp](../../src/core/imgui/inspector.cpp))。詳細は [第13章](13_editor.md)。
 
@@ -161,12 +168,16 @@ vkcore(Vulkan 低層)
 
 > **設計決定 11(feature 層 = ユーザー空間・2026-07-12 決定):** エンジンが持つのは版付きの**機構語彙**(anchor / history / snapshot / format_class など)だけ。feature・カメラコントローラ・flipbook・moveAndSlide 等の「機能」はユーザー空間で、**同梱のものも特権なしの標準ライブラリ**にすぎない(コピーして改造したら自分のもの)。エンジンが名前入りエラーで守るのは invariant(anchor の全順序・色契約・決定性ゲート)だけ([第11章](11_status.md) §11.2)。
 
+> **設計決定 12(module 登録契約 — 共通グラフの op も「同梱の標準ライブラリ」・✅AG-0/AG-1a):** 共通グラフのノードの語彙は、コードに埋め込まれた表ではなく **module の manifest**([GraphModuleManifest](../../src/project/graphmodule.hpp#L35): 名前空間・版・提供する型・op の契約・sink)で決まります。`registerModule` が登録し、`resolveOperation` が文書のノードを契約へ引き当てます([graphmodule.hpp:51](../../src/project/graphmodule.hpp#L51))。エンジン同梱の 4 module(`pelican.value` / `pelican.audio` / `pelican.render` / `pelican.pose`)も**この入口を通るだけ**で、特権はありません([makeBuiltinGraphModuleRegistry()](../../src/project/graphmodule.cpp#L253))—— 設計決定 11 と同じ形が、feature 層だけでなくノード語彙にも適用されています。
+>
+> 帰結は 2 つです。**(a) 登録されていない op は名指しで拒否される** —— `graph.operation_unregistered@1{node, op}`([graphmodule.cpp:199](../../src/project/graphmodule.cpp#L199))。`PELICAN_WITH_ANIMATION=OFF` の build は `pelican.pose` module を登録しないので、`pose.*` を書いた文書はこの名前で止まります(黙って無視されません)。**(b) 契約はあるが実行 backend が無い op も別の名前で拒否される** —— `graph.operation_unexecutable@1{node, op, backend}`([valuegraph.cpp:289](../../src/core/userpublic/valuegraph.cpp#L289))。「語彙に載っている」と「動く」は別の事実として扱われます。manifest の二重登録も同様に名前付き(`graph.module_duplicate@1` / `graph.operation_duplicate@1` / `graph.type_duplicate@1` / `graph.sink_unregistered@1` — [graphmodule.hpp:51](../../src/project/graphmodule.hpp#L51))で、**拒否された manifest は何も登録しないので、登録順で意味が変わることはありません**。登録済みの語彙は `pelican_cli graph-catalog` で一覧でき([第10章](10_tools.md))、その出力は [../v0_freeze.md](../v0_freeze.md) §1.3 の表と test で照合されています。
+
 ## 1.6 開発体制と文書の読み方
 
 このリポジトリは**マルチエージェント開発**で作られています([../agent_operations.md](../agent_operations.md)):
 
 - **ユーザー(enjoyoriori)** = 意思決定。**Claude** = 設計文書・WP(Work Package)指示書・レビュー・マージ。**codex** = 実装・監査・敵対レビュー。
-- 作業単位は WP。**1 WP = 1 ブランチ = 1 マージ**で、受け入れ基準 = マージ基準。2026-09-04 時点で **WP385 まで**が着地しています(番号は連番ではなく、`380a` `380a-fix` のような枝番が付きます。**行単位の正は [../implementation_plan.md](../implementation_plan.md)** で、[第11章](11_status.md) の表は WP238e までしか転記していません。今後の候補は [../roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md))。
+- 作業単位は WP。**1 WP = 1 ブランチ = 1 マージ**で、受け入れ基準 = マージ基準。番号は連番ではなく、`380a` `380a-fix` のような枝番が付きます。**2026-09-16〜17 の v0 の段は通し番号ではなく記号 ID**(`AG-0` / `AG-1a` / `AG-1b` / `P-1` / `P-2a-1a〜4b` / `AG-2` / `AG-3a` / `O-1` / `X-1` / `P-2b` / `R-1` / `R-2` / `R-3` / `R1-2` / `N-1` / `N-1b` / `N-2`)で登録されており、これも同じ「1 段 = 1 ブランチ = 1 マージ」です。**行単位の正は [../implementation_plan.md](../implementation_plan.md)**、v0 の段の SHA 一覧は [第11章 §11.1](11_status.md) の v0 表と [../v0_freeze.md](../v0_freeze.md) §5 にあります([第11章](11_status.md) の通し番号の表は WP238e + WP375c〜385 までの転記です)。今後の候補は [../roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md) と [../v1_development_plan.md](../v1_development_plan.md)。
 - 統合ブランチは `codex/render-target-runtime-slice`(事実上の開発本線)。
 
 文書の優先順位(矛盾したときの規則):

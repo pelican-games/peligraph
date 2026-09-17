@@ -75,17 +75,21 @@ struct ExpandedGraphDocument {
 // source of truth; expanded IDs and provenance are derived, not saved back.
 ExpandedGraphDocument expandGraphDocument(const nlohmann::json &document);
 
-// Apply an ordered op list to the root `nodes` array of an authoring document.
-// `ops` is an array of
+// Apply an ordered op list to the `nodes` array of an authoring document.
+// Each op edits the root by default; an optional `"scope":"<definition>"` key
+// aims it at that definition body instead (resolved per op, since an earlier
+// op in the same list may have changed the body). `ops` is an array of
 //   {"op":"add_node","node":{...}}
 //   {"op":"remove_node","node":"<id>"}
 //   {"op":"set_input","node":"<id>","port":"<port>","source":{"node","port"}|null}
 //   {"op":"set_node_parameters","node":"<id>","parameters":{...}}
+//   {"op":"set_node_label","node":"<id>","label":"<text>"}   ("" clears)
 // applied in order to one candidate document, which is expanded once at the
 // end: either every op lands or the document is rejected whole. Failures that
 // an editor must tell apart are named -- graph.node_duplicate@1 /
-// graph.node_missing@1 / graph.input_unknown@1 / graph.output_referenced@1 /
-// graph.definition_immutable@1 -- as GraphRegistryError.
+// graph.node_missing@1 / graph.input_unknown@1 / graph.input_referenced@1 /
+// graph.output_referenced@1 / graph.definition_immutable@1 /
+// graph.nested_instance@1 / graph.input_scope@1 -- as GraphRegistryError.
 nlohmann::json editGraphDocument(const nlohmann::json &document, const nlohmann::json &ops);
 
 // Edit owned root instances in the authoring document. References to removed

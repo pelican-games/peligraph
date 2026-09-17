@@ -670,7 +670,7 @@ teardown の最終段は phase で分岐します。
 | preview graph(第3 variant) | 🚧実装済みだが CPU 模式ラスタ(WP172)。隔離契約が本体で、見た目の忠実度は保証しない | [`previewgraph.hpp`](../../src/core/renderingpass/previewgraph.hpp#L15) |
 | RenderDoc capture | 🚧受動のみ(WP140)。**エンジンは RenderDoc をロードしない** | [`renderdoccapture.hpp`](../../src/core/renderdoc/renderdoccapture.hpp#L66) |
 | VRMA decode / retarget / AnimationSource | ✅実装済み(WP176 / 177 / 178) | [`vrmadecoder.hpp`](../../src/core/loader/vrmadecoder.hpp) / [`vrmaretarget.hpp`](../../src/core/animation/vrmaretarget.hpp) |
-| `.vrma` の root motion 抽出 | 📐設計スロットのみ。`VrmaRootMotionPolicy` は `preserve_hips_translation` の 1 値だけ | [`VrmaRootMotionPolicy`](../../src/core/animation/vrmaretarget.hpp#L21) |
+| `.vrma` の root motion 抽出(容器側) | 📐設計スロットのみ。`VrmaRootMotionPolicy` は `preserve_hips_translation` の 1 値だけ。**ただし root motion 自体は v0 で出荷済み**で、容器ではなく共通グラフ側の `pose.clip_sample{root_motion: "extract"}` が担います(AG-2)。抽出・pin・オブジェクトへの加算は §9.24 の難所「unwrapped time から作る root delta」 | [`VrmaRootMotionPolicy`](../../src/core/animation/vrmaretarget.hpp#L21) / [`poseClipSampleExtractsRootMotion()`](../../src/project/posegraphmodule.hpp#L45) / [`extractRootMotion()`](../../src/core/animation/posegraphruntime.cpp#L269) |
 | authoring 側のオブジェクト宣言 identity | ✅実装済み(WP360)。raw viewとstageは [`AuthoringSceneAuthority`](../../src/core/loader/authoringsceneauthority.hpp#L35) に隔離し、runtime読者はidentityを保存した単一の [`ResolvedScene`](../../src/core/loader/resolvedscene.hpp#L250) を読む | [`SceneProjectionState`](../../src/core/loader/resolvedscene.hpp#L308) |
 
 optional build feature には stub 実装もあります。たとえば SeqPlayer/VAT/RPC/audio/physics/renderdoc は build option により実装または disabled behavior が選ばれます。header が同じでも build artifact の能力は [`build_features.hpp`](../../src/core/build_features.hpp#L1) と各 `*_stub.cpp` を確認してください。
@@ -1890,6 +1890,144 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 - **表示用文字列は identity ではありません。** [`displayObjectName()`](../../src/core/loader/scene.cpp#L254) の `<unnamed>` のような値は診断出力の見た目で、同一性の判定には使いません。identity 側は §9.22「identity / canonical key / lease の三層」を参照してください。
 
 なお **「機械判定できる subset を先に固定する」**(`docs/design_raytracing.md` §4 / §4-P の規範表。「決定論的適合部分集合」という語自体は文書にありません)という考え方 — GPU や数値の非決定性を避けるため、形状と数値範囲を先に制限してから比較する — は RT だけのものではありません。physics の tie-break(§9.23.15)、draw order の tie-break(§9.23.4 の `declaration_ordinal`)にも同じ発想が現れます。
+
+## 9.24 v0 で足した機構の難所(共通グラフ・package・節 locator・オフライン時刻)
+
+ここに並ぶ 11 件は、v0(AG / P / O / X / R 群)で入った機構のうち、**素朴に読むと逆の結論に着地する**箇所です。他章の `🧩 難所` ブロックと同じ役割なので、書式もそれに合わせて「素朴に読むと / 実際は / 不変条件 / 読む場所」の 4 つで書いてあります。**この節だけは実装が新しいぶん、既存の設計文書側に説明が無い**ものが多く、根拠はすべてコードとヘッダのコメントです。
+
+### 難所 — byte 正確な節 locator と絶対 offset
+
+**素朴に読むと**: `pelican.graph` root の `rendering` 節を編集するなら、JSON を parse して部分木を取り出し、書き換えて dump し直せばよい、と読めます。
+
+**実際は**: 編集は最後まで **byte 列のまま**行われます。[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288) は root のメンバを字句走査する [`locateObjectMembers()`](../../src/project/renderconfigdocument.cpp#L194) を 2 回使い、まず root で `rendering` の値スパンを見つけ、その位置から同じ走査を節の中へ入れ直します。要点は**入れ子にしても offset を相対化しないこと**で、ヘッダのコメントがそれを規範として書いています — 「同じ bytes の中に位置づけるので、offset は絶対のまま、文書 digest は file 全体を覆い続ける」([コメント](../../src/project/renderconfigdocument.cpp#L286))。この性質があるので、節を編集しても CAS の単位([`renderConfigSourceDigest()`](../../src/project/renderconfigdocument.cpp#L410))は文書全体のままで変わりません。書き手は [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L655) 1 本で、legacy root と graph root 自身のキーは [`withRootValue()`](../../src/project/renderconfigdocument.cpp#L634) へ落ちます。
+
+読み手と書き手の非対称も意図です。[`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L37) は節が無ければ `RenderConfigSectionUnlocated` を投げ、[`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L47) は空 object を返します。**読みは節が無くても失敗せず、編集だけが `render_config_section_unlocated` という名前で拒否されます**([拒否の実例](../../src/core/communication/renderconfigeditor.cpp#L887))。
+
+**不変条件**: 節の中の offset を「節の先頭からの相対」に変えないこと(digest が節だけを覆う別物になり、CAS の意味が変わります)。読みの経路に `renderingSectionOf()` を使わないこと — 節を持たない graph root を読んだだけで例外になります。authored key の住所判定を各 caller が `if (graph)` で持たないこと。
+
+**読む場所**: [`renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L13) → [`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288) → [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L655)。
+
+### 難所 — 排他 create の committed marker
+
+**素朴に読むと**: transaction が commit されたかどうかは `manifest.json` の `status` を読めば分かる、と読めます。
+
+**実際は**: 決定は**別ファイルの存在**です。`manifest.json` は [`writeManifest()`](../../src/core/communication/renderconfigtransaction.cpp#L426) が**一度だけ**書いて二度と上書きせず、commit の印は [`publishCommittedMarker()`](../../src/core/communication/renderconfigtransaction.cpp#L459) が `committed.next` → `committed` の hard link で公開します。使う primitive は [`linkExclusive()`](../../src/core/communication/renderconfigtransaction.cpp#L302) で、「名前を公開し、既に取られていれば失敗する」を 1 操作で行います。rename にしなかった理由はコメントが規範で、**生きたファイルを置き換えないので、置き換え側が飽和した scanner の下で負け続けていた問い(宛先のハンドルを壊せるか)を訊かずに済む**からです。
+
+marker は自分が属する manifest に digest で縛られます。[`transactionDecision()`](../../src/core/communication/renderconfigtransaction.cpp#L480) は marker を先に見て、記録された digest と現在の `manifest.json` の digest が食い違えば `render_authoring_manifest_mismatch@1` で[名前付きに落とします](../../src/core/communication/renderconfigtransaction.cpp#L489) — 既に durable な編集を黙って rollback しないためです。旧形式の `status == "committed"` は**読み取りだけ**互換で残っています([読む側](../../src/core/communication/renderconfigtransaction.cpp#L497))。消すと、legacy なディレクトリを持つ project が二度と commit できない wedge になります(`docs/v0_freeze.md` §2 行 6)。
+
+掃除の順序も難所です。[`removeTransactionDirectory()`](../../src/core/communication/renderconfigtransaction.cpp#L655) は `manifest.json` を**明示的に先に**消します。ディレクトリの列挙順は照合順で `committed` が `manifest.json` より先に来るため、素直に `remove_all` へ任せると「marker だけ消えて prepared な manifest が残る」= 復旧が「rollback すべき transaction」と読む最悪の残骸ができるからです([順序のコメント](../../src/core/communication/renderconfigtransaction.cpp#L662))。
+
+**不変条件**: marker が見えたら rollback 経路に入らないこと。marker の公開を rename 系に戻さないこと。`manifest.json` を後から書き換えないこと(digest の束縛が切れます)。掃除で `manifest.json` を最初に消す順序を変えないこと。
+
+**読む場所**: [`linkExclusive()`](../../src/core/communication/renderconfigtransaction.cpp#L302) → [`publishCommittedMarker()`](../../src/core/communication/renderconfigtransaction.cpp#L459) → [`transactionDecision()`](../../src/core/communication/renderconfigtransaction.cpp#L480) → [commit 前の guard](../../src/core/communication/renderconfigtransaction.cpp#L739)。
+
+### 難所 — unwrapped time から作る root delta(AG-2)
+
+**素朴に読むと**: root motion は「今フレームの root 位置 − 前フレームの root 位置」で足りるように見えます。
+
+**実際は**: clip の時刻は境界で折り返されるので、そのままの差分はループのたびにクリップ先頭へ飛び戻ります。[`extractRootMotion()`](../../src/core/animation/posegraphruntime.cpp#L269) は**折り返す前の時刻**(`unwrapped`)を受け取り、`R(u) = loops(u)·(root(end) − root(start)) + root(canonical(u))` を作ります([式のコメント](../../src/core/animation/posegraphruntime.cpp#L306))。`loops` は[非ループ clip では 0](../../src/core/animation/posegraphruntime.cpp#L312) で、この項があるおかげで「負の速度」も「1 フレームで複数ループ」も同じ算術に収まります。clip 定数(`root_start` と 1 ループ分の移動量)は binding ごとに 1 回だけサンプルし、**そのフレームの姿勢を一時的に使って測ってから元に戻します**([サンプル部](../../src/core/animation/posegraphruntime.cpp#L282))。
+
+フレーム差分は `R(u) − R(u_prev)` で、`set_time` を観測したフレームは [`drop_root_previous`](../../src/core/animation/posegraphruntime.cpp#L319) によって前回値を捨てます — 時刻のカットは移動ではないからです。再バインドでも同じく状態を捨てます([rebind 時の reset](../../src/core/animation/posegraphruntime.cpp#L236))。最後に **pin**: 公開する姿勢の root translation を `root_start` へ戻し([pin](../../src/core/animation/posegraphruntime.cpp#L329))、移動はオブジェクトの transform 側からだけ出ていくようにします。回転の抽出は v0 にありません。
+
+**不変条件**: `canonical` 済みの時刻から delta を作らないこと(ループごとに逆向きの跳ねが出ます)。pin を外したまま変位も足さないこと(二重に動きます)。`set_time` / 再バインドで前回値を残さないこと。
+
+**読む場所**: [`canonicalTime()`](../../src/core/animation/posegraphruntime.cpp#L35) → [`extractRootMotion()`](../../src/core/animation/posegraphruntime.cpp#L269) → [変位をオブジェクトへ渡す所](../../src/core/animation/posegraphruntime.cpp#L745)。適用側は[第4章 §4.13](04_ecs_deep_dive.md)。
+
+### 難所 — per-node の評価分類は `max()` でしか動かない
+
+**素朴に読むと**: 「この op の評価分類」はモジュールが登録時に宣言した 1 値で、node ごとには変わらない、と読めます。
+
+**実際は**: ports を authored parameters から作る factory は、**分類を引き上げることだけ**ができます。[`resolveOperation()`](../../src/project/graphmodule.cpp#L195) は factory の結果に対して `contract.evaluation = std::max(...)` を取り([該当行](../../src/project/graphmodule.cpp#L214))、`direct < replay < baked < recorded` の順で強い方を採ります。理由は AG-2 で現物が出ました — root motion を抽出する `pose.clip_sample` は前フレームの変位を保持するので `replay` で、抽出しない同じ op は `direct` です。`max` なので**カタログの宣言より弱くはなれず**、catalog と実際の node が食い違いません。[`domain`](../../src/project/graphmodule.cpp#L205) / [`parameter_change`](../../src/project/graphmodule.cpp#L215) / [`parameter_changes`](../../src/project/graphmodule.cpp#L216) の 3 つは、factory の値を捨てて登録側の値へ戻します。
+
+評価分類を実際に強制するのは値バックエンドで、状態を渡されずに replay 系の op を評価しようとすると [`graph.evaluation_requires_state@1` の送出](../../src/core/userpublic/valuegraph.cpp#L49) で拒否します。対象は `audio.playback` / `value.event_clock` / `value.trigger_clock` の 3 つ([拒否点](../../src/core/userpublic/valuegraph.cpp#L529))で、**op 名は authored 文書の綴り**で返ります(lowering がモジュール名前空間を落とすので、拒否を読む側がその事情を知らなくて済むように、という取り決めです)。
+
+**不変条件**: factory で `evaluation` を下げないこと。分類の順序(`direct < replay < baked < recorded`)を [`graphcomposition.hpp`](../../src/project/graphcomposition.hpp#L115) の enum 順と別に持たないこと。拒否に lowering 後の綴りを載せないこと。
+
+**読む場所**: [`GraphOperationRegistration`](../../src/project/graphmodule.hpp#L25) → [`resolveOperation()`](../../src/project/graphmodule.cpp#L195) → [`statelessEvaluationRejected()`](../../src/core/userpublic/valuegraph.cpp#L48)。
+
+### 難所 — package の SDK は「転送ヘッダのディレクトリ」そのもの
+
+**素朴に読むと**: package のコードが public SDK だけを使っていることは、レビューか命名規約で守るものに見えます。
+
+**実際は**: **include path で守られています**。[`pelican_package_sdk_include_dir()`](../../src/player/CMakeLists.txt#L159) が build ディレクトリの下に、public SDK が公開するヘッダ 1 本につき 1 行だけの転送ヘッダ([`package_sdk_header.hpp.in`](../../src/player/package_sdk_header.hpp.in))を生成します。対象は `src/core/userpublic/**`、`src/core/ecs/**`、`handle.hpp`、`phys/physquery.hpp`。[`pelican_package_sources()`](../../src/player/CMakeLists.txt#L203) が作る package target の include path には **`src/core` が入りません**([その省略に付いたコメント](../../src/player/CMakeLists.txt#L230))。したがってエンジン内部ヘッダを include した package コードは、規約違反ではなく**コンパイルエラー**になります。コピーではなく転送なので、実ヘッダは自分の相対 include を自分で解決でき、内容が腐りません。
+
+呼ぶ順序も強制されます。[`pelican_packages()`](../../src/player/CMakeLists.txt#L260) は project の `packages/*/package.json` を名前順に舐め、`code/CMakeLists.txt` を持つものだけを `add_subdirectory` し、生成された OBJECT ライブラリを project の game logic DLL へ足します。DLL がまだ無ければ [`FATAL_ERROR`](../../src/player/CMakeLists.txt#L308) で「`pelican_game_sources(...)` の後に呼べ」と言います。中断した install が残した [`.tmp-` 付きディレクトリは読み飛ばし](../../src/player/CMakeLists.txt#L277)ます。
+
+**不変条件**: package target の include path に `src/core` を足さないこと。転送ヘッダの生成対象を「SDK が公開するもの」以外へ広げないこと。`pelican_packages()` を `pelican_game_sources()` より前に置かないこと。
+
+**読む場所**: [`package_sdk_header.hpp.in`](../../src/player/package_sdk_header.hpp.in) → [`pelican_package_sources()`](../../src/player/CMakeLists.txt#L203) → [`pelican_packages()`](../../src/player/CMakeLists.txt#L260)。
+
+### 難所 — publish snapshot の `node_values` は「グラフを持った」ベクタ
+
+**素朴に読むと**: 評価結果は名前付きの map で返る、あるいは名前を持たない値の配列を受け取って後からグラフに問い合わせればよい、と読めます。
+
+**実際は**: [`PublishResult::node_values`](../../src/core/userpublic/valuegraph.hpp#L66) は**グラフ自身の node 順に並んだ `optional<double>` のベクタ**です。名前は載りません — 名前の解決は「読む側が 1 回だけ払う」もので、描画経路が毎フレーム払うものではない、という判断です。非活性スコープで飛ばされた node は 0 ではなく**不在**になります。
+
+スナップショット側の [`PublishedInstanceInputs`](../../src/core/userpublic/valuegraph.hpp#L70) が重要で、**順序を決めたグラフを `shared_ptr` で保持します**([コメント](../../src/core/userpublic/valuegraph.hpp#L77))。借用ではないので、描かれた世代が差し替わった後に到着した読み手も、その世代の名前で値を読めます。公開の唯一の入口は [`publishGraphValues()`](../../src/core/loader/scenegraphruntime.cpp#L138) で、ここで `published = true` が立ちます。したがって **ベクタだけを持ち回る reader は、再 publish 後に別の展開へ index することになります**。
+
+**不変条件**: `node_values` をグラフと切り離して保持しないこと。欠けている値を 0 で埋めないこと(「評価されなかった」と「0 だった」は別)。値を読むために再評価しないこと — 再評価は clock を進め、イベントを消費します([コメント](../../src/core/userpublic/valuegraph.hpp#L55))。
+
+**読む場所**: [`PublishResult`](../../src/core/userpublic/valuegraph.hpp#L52) → [`PublishedInstanceInputs`](../../src/core/userpublic/valuegraph.hpp#L70) → [`publishGraphValues()`](../../src/core/loader/scenegraphruntime.cpp#L138)。
+
+### 難所 — `$pose/` のスカラー橋と 2 つの EvaluationState
+
+**素朴に読むと**: 1 つの文書なのだから評価状態も 1 つで、animation 側と rendering 側が同じ状態を共有すればよい、と読めます。
+
+**実際は**: 同じ文書が 2 つの区画に分かれ、**同じフレームの中で 1 段ずれて**評価されます。[`GraphExecutionPartitions`](../../src/project/graphpartition.hpp#L7) の `animation` は values より 1 段早く走る、という順序の宣言です([宣言とコメント](../../src/project/graphpartition.hpp#L10))。ただしこれは runtime の受け渡しではありません。animation フェーズは values 区画を**自分の `EvaluationState` で自分で評価し直し**([`evaluateLowered()` の呼び出し](../../src/core/ecs/predefined/animationsystem.cpp#L368))、その出力から `$pose/<node>/<port>` という名前を拾います。この名前は区画分割のときに values 側の出力として作られる**宣言上の名前**で([分割側](../../src/project/graphpartition.cpp#L93))、綴りは両側が [`graphAnimationScalarOutput()`](../../src/project/graphpartition.cpp#L168) の 1 箇所を呼びます(instance 入力側は同じ理由で [`graphInstanceInputOutput()`](../../src/project/graphpartition.cpp#L172) の `$value/<入力>`)。**供給は一方向**で、逆流はありません。
+
+その帰結として、`SceneLoader` は 1 つの文書に対して評価状態を 2 つ持ちます — [`graphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L143) と [`poseGraphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L147)。共有すると、replay 系の op(`value.trigger_clock` など)が 1 フレームに 2 回進みます。2 つは必ず一緒に動きます: 世代が変わるときは[両方を移送](../../src/core/loader/scenegraphruntime.cpp#L216)し、owner が変わったスコープは[両方を reset](../../src/core/loader/scenegraphruntime.cpp#L94) します。片方だけ残すと、姿勢側の clock だけが巻き戻ります。
+
+**不変条件**: 2 つの評価状態を 1 本にまとめないこと。移送と reset を片側だけで行わないこと。animation 側から values 側へ値を書き戻す経路を作らないこと。
+
+**読む場所**: [`graphpartition.hpp`](../../src/project/graphpartition.hpp#L7) → [`poseGraphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L147) → [消費側](../../src/core/ecs/predefined/animationsystem.cpp#L366)。
+
+### 難所 — `--start-time` は「量子化された frame 番号」でしか engine に入らない
+
+**素朴に読むと**: 「この時刻から出力する」なので、engine には秒が渡ってどこかで seek する、と読めます。
+
+**実際は**: 秒が frame 番号になるのは [`parseStartFrame()`](../../src/player/main.cpp#L283) の 1 箇所だけで、`llround(seconds * fps)` が量子化です([規範コメント](../../src/player/main.cpp#L274))。**engine はフレームの間の時刻を渡されません**。parse 自体は [`std::stod()`](../../src/player/main.cpp#L287) を呼びますが、**消費した文字数を突き合わせる**ので([検査](../../src/player/main.cpp#L291))、綴り間違い・非有限・負のすべてが同じ [`offline.time_invalid@1` のメッセージ](../../src/player/main.cpp#L293) になります(「そのようなフレームは無い」という 1 つの答えだから、という理由がコメントにあります)。
+
+seek が無い代わりに置かれているのが **replay prologue** です。[`loop.cpp` の該当分岐](../../src/core/appflow/loop.cpp#L441)が `start_frames − 1` フレームを capture 無しで回し、`offline: start_time=… start_frame=… replay=… frames=…` を stderr に出してから通常の capture ループへ入ります。理由はコメントが規範で、**フレームの見た目を決める状態は時計だけからは到達できない**(グラフの clock は `render()` の中でしか進まず、project のシステムは自分で dt を積分する)からです。
+
+**不変条件**: 量子化を `floor` などへ変えないこと(同じ時刻指定が別のフレームを指し、連番出力の byte 比較が壊れます)。replay フレームで capture 以外の処理を省かないこと。3 つの失敗を別々の名前に分けないこと。既知の穴として、`llround` の overflow は検査の前に溢れます(溢れるのは `seconds * fps` が 9.223e18 を超えるときなので、既定の **fps=60 でおよそ 1.54e17 秒**。`--fps` は[利用者が指定できます](../../src/player/main.cpp#L472))(`docs/v0_freeze.md` §4)。
+
+**読む場所**: [`parseStartFrame()`](../../src/player/main.cpp#L283) → [`--start-time` の宣言](../../src/player/main.cpp#L316) → [replay prologue](../../src/core/appflow/loop.cpp#L441)。
+
+### 難所 — 解決できない owner は無音で inactive、警告は 1 回だけ
+
+**素朴に読むと**: `graph.instance` が指すオブジェクトが見つからなければ、毎フレーム警告が出るかエラーになる、と読めます。
+
+**実際は**: **静かに inactive になります**。[`inactiveGraphScopes()`](../../src/core/loader/scenegraphruntime.cpp#L283) は解決できなかったスコープを非活性集合に入れるだけで、何も言いません。これは描画経路で毎フレーム呼ばれるからで、オブジェクトが再公開されている最中の正常な状態と区別が付かないためです。代わりに、グラフ世代の同期時に [`reportUnresolvedGraphOwners()`](../../src/core/loader/scenegraphruntime.cpp#L54) が「このシーンで一度も解決したことのないスコープ」だけを 1 回警告します。2 度目を出さないのは [`graph_owner_reported_scopes`](../../src/core/loader/scenegraphruntime.cpp#L65) への `emplace` の戻り値で、両方のメモはシーンのロードでだけクリアされます([理由のコメント](../../src/core/loader/scenegraphruntime.cpp#L70))。
+
+これが v0 で最も踏みやすい無音の失敗です。既知の穴「`graph.instance.owner` の authoring object id が非永続(保存 → 再読込を跨ぐと別個体を指しうる)」と組み合わさると、**グラフはロードされているのに何も起きない**という形で出ます(`docs/v0_freeze.md` §4)。
+
+**不変条件**: 描画経路側で警告を出さないこと。メモをフレーム境界でクリアしないこと。「解決できない」を評価時のエラーへ格上げしないこと(再公開中の正常状態を殺します)。
+
+**読む場所**: [`graphOwnerObject()`](../../src/core/loader/scenegraphruntime.cpp#L35) → [`reportUnresolvedGraphOwners()`](../../src/core/loader/scenegraphruntime.cpp#L54) → [`inactiveGraphScopes()`](../../src/core/loader/scenegraphruntime.cpp#L283)。
+
+### 難所 — `pelican.pose@1` は意図して不透明
+
+**素朴に読むと**: port を流れる型なのだから、姿勢のバイト列(joint の TRS 配列)が流れている、と読めます。
+
+**実際は**: 流れるのは **staged pose のハンドルと、それが作られた `PoseLayout` の世代・フレーム revision** です([型の説明](../../src/project/posegraphmodule.hpp#L11))。バイトでないからこそ、別の layout 世代で作られた 2 つの姿勢を `memcpy` で混ぜる代わりに、名前で `pose.layout_mismatch@1` として弾けます([宣言](../../src/core/animation/posegraph.hpp#L86))。判定の材料はトレースにも出ており、sink ごとに `layout_identity` / `layout_generation` が記録されます([`SinkTrace`](../../src/core/animation/posegraphruntime.hpp#L101))。`pelican.rig@1` は、op が clip と出力 layout を解決するための rig 同一性です。
+
+契約(型と op)が `src/project` 側にあるのも同じ理由です — カタログ、エディタ、そして**アニメーションバックエンドを外した build** の 3 者が同じ宣言を見るためで、評価だけが `src/core/animation` の仕事です。
+
+**不変条件**: `pelican.pose@1` に bytes の意味を与えないこと。layout 世代の比較を「等しいはず」として省かないこと。契約を評価側へ移さないこと(OFF build とカタログが食い違います)。
+
+**読む場所**: [`posegraphmodule.hpp`](../../src/project/posegraphmodule.hpp#L7) → [`PoseGraph::raiseLayoutMismatch()`](../../src/core/animation/posegraph.hpp#L86) → [`SinkTrace`](../../src/core/animation/posegraphruntime.hpp#L101)。
+
+### 難所 — 再生パラメータの既定値を本当に持つのは 2 関数だけ
+
+**素朴に読むと**: `speed` / `start_time` / `loop` の既定値は、契約側と評価側の両方に書いてある(あるいは構造体の初期化子が正)と読めます。
+
+**実際は**: project 層の 4 関数が入口ですが、**既定値そのものを持っているのは 2 つ**です — [`poseClipSampleLoop()`](../../src/project/posegraphmodule.hpp#L35) が `true`、[`poseClipSampleExtractsRootMotion()`](../../src/project/posegraphmodule.hpp#L45) が `false`。[`poseClipSampleNumber()`](../../src/project/posegraphmodule.hpp#L33) は `double fallback` を**引数で受け取る**ので、`speed = 1.0` / `start_time = 0.0` のリテラルは呼び出し側に書かれています([契約側](../../src/project/posegraphmodule.cpp#L166) と[評価側](../../src/core/animation/posegraph.cpp#L107) の 2 か所)。[`poseClipSampleRootNode()`](../../src/project/posegraphmodule.hpp#L49) には既定値がなく、不在・負・過大はすべて `pose.root_node_unknown@1` です。アニメーションバックエンドも同じ関数を通るので、node が「カタログにとっての意味」と「評価器にとっての意味」を持ち分けることはできません。`PoseGraphNode` 側のメンバ初期化子は同じ値を持っていますが、コメントが「既定値は `posegraphmodule.hpp` にある。ここでは言い直さない」と明記しています([`PoseGraphNode` のコメント](../../src/core/animation/posegraph.hpp#L35))。
+
+エラーの使い分けも意図的です。`root_motion` に `"none"` / `"extract"` 以外を書いたときは**素の `invalid_argument`** で、名前付きの拒否は「rig と clip とオブジェクトが揃って初めて分かるもの」に予約されています([コメントの規範](../../src/project/posegraphmodule.hpp#L36))。`pose.root_node_unknown@1` は後者で、範囲外も layout に無いのも同じ名前です。
+
+**不変条件**: 既定値を評価側やスキーマ側で言い直さないこと。文書だけで決まる誤りに名前付きコードを与えないこと(逆に、rig / clip / オブジェクトを要する誤りを素の例外にしないこと)。
+
+**読む場所**: [`posegraphmodule.hpp`](../../src/project/posegraphmodule.hpp#L28) → [`PoseGraphNode` の 3 メンバ](../../src/core/animation/posegraph.hpp#L37) → [rig 依存の拒否](../../src/core/animation/posegraph.hpp#L101)。
 
 ---
 

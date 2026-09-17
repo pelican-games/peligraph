@@ -33,6 +33,7 @@ sequenceDiagram
 - windowedかheadlessか
 - RPCを使うか（`--rpc`）
 - headlessの解像度・フレーム数・固定FPS
+- headlessの開始時刻（`--start-time`、[引数宣言](../../src/player/main.cpp#L316)。後述）
 - project rootと`project.json`
 - asset検証をstrictにするか
 - render出力、frame plan dump（`--dump-frame-plan`）
@@ -47,6 +48,16 @@ sequenceDiagram
 > **設計決定:** `--rpc` は `--headless` を要求しません（WP156。以後この文書に出る `WP<番号>` は work package = 台帳 [`docs/implementation_plan.md`](../implementation_plan.md) が「独立に依頼できる単位」として採番した作業の番号で、`-fix` / `a` / `b` は同じ作業の分割・追補です。[用語集](../manual/14_glossary.md)）。ヘルプ文言そのものが現在の契約です — `enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)`（[`main.cpp`](../../src/player/main.cpp#L305)）。headlessではRPCがフレーム進行を所有し、windowedではフレーム境界でだけdispatchされます。両者の違いは §2.4 で分解します。
 
 `--project` がなければ、実行ファイルの祖先から `projects/example/project.json` を探索します（[`configureImplicitProject()`](../../src/player/main.cpp#L230)）。明示projectなら、directoryまたは`project.json`そのものを受け付けます（[`configureExplicitProject()`](../../src/player/main.cpp#L244)）。
+
+#### `--start-time`: 秒はここでフレーム番号になる ✅実装済み（O-1）
+
+`--start-time <秒>` は「その時刻から `--frames` 枚を出す」オフライン出力用の引数です。押さえる点は3つあります。
+
+**engineは frame 番号しか受け取りません。** 変換は [`parseStartFrame()`](../../src/player/main.cpp#L283) 1箇所だけで、`llround(seconds * fps)` によって固定ステップのタイムライン上のフレーム番号に落ちます（フレームとフレームの間の時刻は近い方のフレームへ丸められ、engineへ渡ることはありません）。結果は [`EngineLaunchConfig::start_frames`](../../src/core/launchconfig.hpp#L66) に入ります。非常に大きな秒数では `llround` が溢れますが、これは台帳 O-1 が既知の穴として記録している範囲で、実用的な入力では起きません。
+
+**失敗は全部ひとつの名前になります。** argparse に `double` としてscanさせず、テキストのまま `std::stod` で読んで「文字を全部消費したか・有限か・非負か」を自分で確かめます（[検査](../../src/player/main.cpp#L292)）。綴り間違いも負の時刻も同じ `offline.time_invalid@1` で、理由は「そんなフレームは存在しない」の一言に畳めるからです。
+
+**組み合わせの衝突は黙って無視しません。** 固定ステップのタイムラインが存在するのは headless だけなので、`--headless` が無ければ `offline.headless_required@1`。そして「このrunのフレームがどこから来るか」を決める引数なので、同じことを決める `--rpc` / `--replay` / `--record-input` / `--bake-camera-output` との併用は [`offline.mode_conflict@1`](../../src/player/main.cpp#L535) で、どのフラグと衝突したかを名前で返します。
 
 ### 段階B: `run()` 前に共有moduleへ起動情報を注入
 
@@ -69,6 +80,7 @@ sequenceDiagram
 3. **XR activationを決定**: [`resolveXrActivation()`](../../src/core/xractivation.hpp) がheadless/RPC/replay等のforced-offとOpenXR discovery hookから `launch_config.xr_active` を確定。
 4. constructorへ渡されたsettings JSONを`ProjectSource`の上書きsourceへ設定し、[`watch::ReloadGate.configureFromLaunch()`](../../src/core/watch/reloadgate.hpp) を呼ぶ。
 5. [`recoverRenderConfigDocumentTransaction()`](../../src/core/userpublic/pelican_core.cpp#L108) — プロセスのクラッシュをまたいだrender-authoring documentのtransactionを、`ProjectBasicConfig` や `Renderer` がdocument setのどれかを観測する**前**に決着させます。ここでいう document set は「rendering config の root 文書と、それが参照する feature JSON 断片を、1つのtransactionでまとめて書き換える単位」です（[`RenderConfigCandidateDocumentSet`](../../src/project/renderconfigdocument.hpp#L130)。ヘッダのコメントが `A render-authoring candidate is a document set, not a replacement string for the root document.` と書いています）。root だけ新版で断片が旧版、という中途半端な組み合わせを誰にも観測させないために、この復旧が最初に来ます。
+   復旧が読む「このtransactionはcommit済みか」の答えは、`manifest.json` の中のフィールドではなく **`committed` という別ファイルが在るかどうか**です（[`committedMarkerName`](../../src/core/communication/renderconfigtransaction.cpp#L409)、判定は [`transactionDecision()`](../../src/core/communication/renderconfigtransaction.cpp#L480)）。commit側は `committed.next` を書いてから [`linkExclusive()`](../../src/core/communication/renderconfigtransaction.cpp#L302) で `committed` という**それまで存在しなかった名前**を作ります。生きているファイルを上書きしないので、「途中まで書けた commit 済み印」という状態が原理的に作れません（R1-2）。marker は自分が属する manifest の digest を持っていて、`manifest.json` が別物にすり替わっていれば [`render_authoring_manifest_mismatch@1`](../../src/core/communication/renderconfigtransaction.cpp#L491) で名前付きに落ちます —— 黙って rollback すると commit 済みの編集を消す破壊操作になるためです。旧形式の `manifest.json` が持つ `status: "committed"` も[読むだけは受け付けます](../../src/core/communication/renderconfigtransaction.cpp#L498)。この読み取り互換を外すと、旧形式のディレクトリが残ったプロジェクトが二度と commit できなくなります。
 6. `Persistence`からsettingsを読み、audio設定を適用。
 7. [`configureRayLayoutModeBeforeComponentRegistration()`](../../src/core/userpublic/pelican_core.cpp#L38) — rendering configから ray layout の意味モードを求めて [`RayLayoutRuntimeState`](../../src/core/shader/raygrouplayout.hpp#L171) へ固定します。意味モードは `LegacyNoLayout` / `LayoutV1Q` / `LayoutV2` / `LayoutV3` の4値で（[`RayLayoutSemanticMode`](../../src/core/shader/raygrouplayout.hpp#L72)）、「ray layout 文書をどの版の意味規則で読むか」を表します — ray layout 文書が無い（`LegacyNoLayout`）／ある（`LayoutV1Q` / `LayoutV2` / `LayoutV3`）の区別と、その版差です。どの値になるかは次の3つの判定だけで決まります。(1) rendering config の root に `ray_group_layout` key が無ければ [`loadRayTracingProjectConfig()` が空を返し](../../src/core/shader/raygrouplayout.cpp#L1471)、[`rayLayoutSemanticMode()` の `config == nullptr` 枝](../../src/core/shader/raygrouplayout.cpp#L761)が `LegacyNoLayout` を返します（`ray_bindings` だけ書くと `pelican.ray_tracing.bindings_without_layout@1` で拒否）。(2) key があれば参照先の layout 文書を [`parseRayGroupLayout()`](../../src/core/shader/raygrouplayout.cpp#L821) が読み、[v1〜v3 の意味モード選択](../../src/core/shader/raygrouplayout.cpp#L864)で `version` が 1 なら `LayoutV1Q`、2 なら `LayoutV2`、3 なら `LayoutV3` になります。(3) `version` がそれ以外なら[対応版以外は schema エラー](../../src/core/shader/raygrouplayout.cpp#L838)になります。組み込みComponent登録より前に置くのは、`pelican_ray_instance` の登録可否がこのモードで決まるためです（[`builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L180) が真になるのは `LayoutV2` または `LayoutV3` のとき。§3.11）。プロセス寿命の間このモードは変えられません（変更しようとすると `pelican.ray_layout_mode_change_requires_restart@1`）。
 8. [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L22) で組み込みComponent/Systemを登録。
@@ -306,7 +318,19 @@ InputState::clear（replay中はスキップ）
 → 必要ならPNG capture
 ```
 
-`headless_frames == 0`なら無制限です。replay時はフレーム数をreplayから導出します（[loop.cpp](../../src/core/appflow/loop.cpp#L396)）。出力パスに`%d`または`%0Nd`があればフレームごとに保存し、なければ最後のフレームだけ保存します（[`parseRenderOutPattern()`](../../src/core/appflow/loop.cpp#L74)）。
+#### `--start-time` の replay prologue（O-1）
+
+`--start-time` が指定されると、上のループの**前**にもう1本のループが走ります（[replay prologue の本体](../../src/core/appflow/loop.cpp#L441)）。`start_frames - 1` 枚を、captureだけ外して同じ3呼び出し（`advance` → `updateFrameState` → `render`）で回してから、本番のフレームへ入ります。
+
+```text
+offline: start_time=<秒> start_frame=<番号> replay=<枚数> frames=<枚数>   ← stderr へ1行
+（replay 枚数だけ headlessFrame(capture=false)）
+→ 通常の headless ループ（--frames 枚、capture あり）
+```
+
+**時刻を飛ばさないのは手抜きではなく、飛ばせないからです。** 1フレームの見た目を決める状態は時計から再構成できません —— 共通グラフのクロックは `render()` の中でしか進まず、プロジェクトのゲームSystemは自分で `dt` を積分し、animation componentの評価器に至っては「時刻tのポーズをくれ」と聞ける相手ではありません（[その理由を書いたコメント](../../src/core/appflow/loop.cpp#L432)）。したがって時刻tに居る唯一の正直な方法は、その手前の全ステップを通ってくることです。stderr の1行に `replay=` を出すのは、「何枚ぶん先に回したか」が出力の再現条件そのものだからです。
+
+`headless_frames == 0`なら無制限です。入力replay時はフレーム数をreplayから導出します（[入力replayからのフレーム数導出](../../src/core/appflow/loop.cpp#L450)）。出力パスに`%d`または`%0Nd`があればフレームごとに保存し、なければ最後のフレームだけ保存します（[`parseRenderOutPattern()`](../../src/core/appflow/loop.cpp#L74)）。
 
 ### headless RPC
 
@@ -375,6 +399,19 @@ ECSCore::update()
 ```
 
 フェーズ後には `CameraBakeRecorder` が（有効時のみ）フレームを記録します（[framephase.cpp](../../src/core/appflow/framephase.cpp#L188)）。
+
+### 共通グラフは1フレームに二度評価される
+
+`pelican.graph` を持つプロジェクトで**かつ条件が揃ったとき**、同じ文書のスカラ側（values 分割）が**1フレームに2回**評価されます。片方は上の `update_game` の中、もう片方は §2.8 の `render()` の中です。条件は3つで、`PELICAN_WITH_ANIMATION` が ON の build であること（[`#if`](../../src/core/ecs/predefined/animationsystem.cpp#L254)）、その program が空でない pose graph と value graph を持つこと（[両方の検査](../../src/core/ecs/predefined/animationsystem.cpp#L278)）、pose graph が[スカラ出力を宣言していること](../../src/core/ecs/predefined/animationsystem.cpp#L365)です。`pose.*` を一切持たない `projects/example` は `pelican.graph` root ですが、評価は `render()` の1回だけです。
+
+| 走る場所 | 誰が | 何のために | 使う state |
+|---|---|---|---|
+| `update_game`（animation） | [`AnimationSystem::updatePoseGraphs()`](../../src/core/ecs/predefined/animationsystem.cpp#L253) | animation 分割の node が今フレーム消費するスカラを集める | [`poseGraphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L147) |
+| `render()` | [`Renderer` の publish](../../src/core/vkcore/renderer.cpp#L5368) | rendering 分割の sink（バッファ、音声、RT値）へ実際に書く | [`graphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L143) |
+
+**2回評価するのに state を分けているのが要点**です。`value.trigger_clock` のような「前回の評価が何をしたか」に依存する op は state を進めるので、1つの state を共有させると1フレームで2回進んでしまいます。だから `SceneLoader` は同じ文書に対して2つの `EvaluationState` を持ち、グラフ世代の切り替えでも両方を一緒に移送します（片方だけ置いていくと、描画側は走り続けたまま姿勢側のクロックだけが巻き戻ります）。順序は固定で、animation 分割は values 分割の1段後ろに置かれます（[分割の順序](../../src/project/graphpartition.hpp#L10) / [段の定義](../../src/project/graphcomposition.hpp#L108)）。ただし animation 側が描画側の評価結果を受け取っているわけではありません —— animation フェーズは**自分の state で values 分割を自分で評価し直します**（[`evaluateLowered()` の呼び出し](../../src/core/ecs/predefined/animationsystem.cpp#L368)）。2つの state が「同じ入力で1フレームに1回ずつ進む」ので、姿勢側と描画側は互いのクロックを進めないまま同じ数値を読みます（[コメントの規範](../../src/core/ecs/predefined/animationsystem.cpp#L355)）。
+
+描画側の評価結果は、描いたその場で [`publishGraphValues()`](../../src/core/loader/scenegraphruntime.cpp#L138) がスナップショットとして置いていきます。読み手が自分でもう一度評価すると**クロックが進みイベントが消費される**ので、値を持ち出せるのはこの1点だけです。詳細は[第3章 §3.5](03_project_and_loading.md)。
 
 ### `freeze_actions` とImGuiゲートの後始末
 

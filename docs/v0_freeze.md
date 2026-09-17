@@ -54,13 +54,13 @@ project が持てる文書と、parser が受ける version。`schema` と `vers
 stdio JSON-RPC の枠組み(`jsonrpc` / `id` / `method` / `params`、名前付き error)が凍結対象で、
 **params と戻り値の表は [docs/manual/10_tools.md](manual/10_tools.md) が正本**(ここでは重複させない)。
 
-基盤 28 本(`src/core/communication/rpcserver.cpp` の登録):
+基盤 29 本(`src/core/communication/rpcserver.cpp` の登録):
 
-`ack_modal_transform`, `cancel_modal_transform`, `capture`, `capture_gpu`, `get_frame_plan`, `get_gpu_timing`, `get_modal_transform`, `get_status`, `inject_event`, `inject_input`, `load_gltf`, `load_scene`, `pick_object`, `query_gizmo_drag_basis`, `query_gizmo_handle`, `raycast`, `render_frame`, `set_camera`, `set_gizmo`, `set_input_profile`, `set_seed`, `set_time`, `start_input_record`, `start_input_replay`, `step_frame`, `stop_input_record`, `stop_input_replay`, `update_transforms`
+`ack_modal_transform`, `cancel_modal_transform`, `capture`, `capture_gpu`, `get_frame_plan`, `get_gpu_timing`, `get_modal_transform`, `get_status`, `inject_event`, `inject_input`, `load_gltf`, `load_scene`, `pick_object`, `query_gizmo_drag_basis`, `query_gizmo_handle`, `raycast`, `reload_game_logic`, `render_frame`, `set_camera`, `set_gizmo`, `set_input_profile`, `set_seed`, `set_time`, `start_input_record`, `start_input_replay`, `step_frame`, `stop_input_record`, `stop_input_replay`, `update_transforms`
 
-エディタ拡張 59 本(`src/core/communication/editorrpchandlers.cpp` の登録。詳細は [docs/manual/13_editor.md](manual/13_editor.md)):
+エディタ拡張 60 本(`src/core/communication/editorrpchandlers.cpp` の登録。詳細は [docs/manual/13_editor.md](manual/13_editor.md)):
 
-`abort_preview`, `add_authored_pass`, `add_compute_task`, `can_edit`, `can_preview`, `commit_preview`, `edit`, `edit_compute_task`, `edit_frame_node_order`, `edit_graph_document`, `edit_graph_instances`, `edit_preset_pass`, `edit_procedural_asset`, `edit_ray_callable_records`, `edit_region_replacement`, `edit_render_features`, `edit_scene_acceleration_structures`, `eval_preview`, `export_render_feature`, `export_scene_snapshot`, `fork_render_pipeline`, `get_component_add_candidates`, `get_components`, `get_compute_task_authoring`, `get_edit_result`, `get_frame_node_order`, `get_graph_catalog`, `get_graph_instances`, `get_graph_node_values`, `get_graph_values`, `get_preview_result`, `get_procedural_assets`, `get_ray_callable_records`, `get_ray_occurrences`, `get_render_authoring_context`, `get_render_features`, `get_scene_acceleration_structures`, `get_scene_revision`, `import_render_feature`, `install_package`, `list_assets`, `list_render_features`, `open_editor_session`, `open_preview`, `query_journal`, `redo`, `remove_authored_pass`, `remove_compute_task`, `render_preview`, `resolve_ray_occurrence`, `resume_editor_session`, `save_scene`, `scene_tree`, `set_prefab_parameter`, `undo`, `uninstall_package`, `unpack_prefab`, `unset_prefab_parameter`, `update_preview`
+`abort_preview`, `add_authored_pass`, `add_compute_task`, `can_edit`, `can_preview`, `commit_preview`, `edit`, `edit_compute_task`, `edit_frame_node_order`, `edit_graph_document`, `edit_graph_instances`, `edit_preset_pass`, `edit_procedural_asset`, `edit_ray_callable_records`, `edit_region_replacement`, `edit_render_features`, `edit_scene_acceleration_structures`, `eval_preview`, `export_render_feature`, `export_scene_snapshot`, `fork_render_pipeline`, `get_component_add_candidates`, `get_components`, `get_compute_task_authoring`, `get_edit_result`, `get_frame_node_order`, `get_graph_catalog`, `get_graph_instances`, `get_graph_node_values`, `get_graph_values`, `get_preview_result`, `get_procedural_assets`, `get_ray_callable_records`, `get_ray_occurrences`, `get_render_authoring_context`, `get_render_features`, `get_scene_acceleration_structures`, `get_scene_revision`, `import_render_feature`, `import_scene_snapshot`, `install_package`, `list_assets`, `list_render_features`, `open_editor_session`, `open_preview`, `query_journal`, `redo`, `remove_authored_pass`, `remove_compute_task`, `render_preview`, `resolve_ray_occurrence`, `resume_editor_session`, `save_scene`, `scene_tree`, `set_prefab_parameter`, `undo`, `uninstall_package`, `unpack_prefab`, `unset_prefab_parameter`, `update_preview`
 
 ### 1.3 共通グラフ: module / op / 型 / sink
 
@@ -108,8 +108,12 @@ catalog は 3 module / 21 op になり、下表の `pose.*` 6 本(`pose.blend` /
 | `value.trigger_clock` | pelican.value | values | replay | value | — | declared | `paused`?, `reset`?, `time`, `trigger` | `value`: pelican.value.scalar@1 |
 <!-- graph-op-table:end -->
 
-port を流れる型(semantic)は 4 つ: `pelican.value.scalar@1` / `pelican.pose@1` /
-`pelican.audio.voice@1` / `pelican.event.playback_control@1`。
+登録されている型(semantic)は 11: `pelican.value.scalar@1` / `pelican.audio.voice@1` /
+`pelican.event.playback_control@1` / `pelican.render.*` 6 種(`storage_buffer` / `attribute` /
+`color_signal` / `depth` / `legacy_opaque_image` / `legacy_opaque_resource`) /
+`pelican.pose@1` / `pelican.rig@1`。値・姿勢・音の port を流れるのは前の 4 つで、
+`render.*` の op は解決時に `pelican.render.*` を自分の port に載せる(上表の parameter_dependent)。
+`pelican.rig@1` は登録だけで、どの port にも現れない(node の `parameters.rig` が指す同一性)。
 `pelican.pose@1` は **handle と layout 世代**が流れるのであって bytes ではない。
 sink は 5 本(`audio.pitch` / `audio.volume` / `render.scalar` / `pose.skeletal` / `pose.transform`)で、
 pose の sink は **owner 単位の単一 writer**(二重 writer は `pose.sink_conflict@1`)。
@@ -168,12 +172,12 @@ loader が解決する epoch anchor。project.json に記録される `sha256` �
 
 - **legacy root** — `rendering` を最上位に持つ従来の render config。出荷 project の多くはこちら。
 - **`pelican.graph` root** — 共通グラフ文書の `rendering` key の下に同じ render config が入る形。
-  出荷では posegraph_demo がこの形。`graph.instance` を書けるのはこの root の下だけ。
+  出荷では `example`(P-2a-4b で graph root 化)と `posegraph_demo` の 2 本がこの形。残り 4 本は legacy root のまま(`wrapLegacyRenderingConfig` が読み時に包む)。`graph.instance` を書けるのは graph root の下だけ。
 
 **姿勢の装着様式も 2 つある**。owner 単位で**排他**(同じ owner に両方は付かない):
 
 - **animation component** — `AnimationComponent` の `clip` XOR `graph`(`pelican.anim_graph` 文書)。
-  出荷は animgraph_demo と vrm_xr_demo の `movement.anim_graph.json` 2 本。
+  出荷の scene.json に `animation` component を持つ project は無い。`animgraph_demo` は同じ状態機械を game code の `EvaluatorV1` から直接駆動し、`movement.anim_graph.json` 2 本(animgraph_demo / vrm_xr_demo)はどの scene / code からも参照されない。この様式の実物は test fixture と componentcodec の受理規則(`clip` XOR `graph`)にある。
   API は `setGraphParameter` / `forceGraphState`。
 - **`graph.instance`** — 共通グラフの `pose.*` op を `pose.skeletal` / `pose.transform` sink へ繋ぐ形。
   出荷は posegraph_demo。
@@ -251,9 +255,9 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 | `--start-time` の `llround` overflow(≈1e17 s。今日は起きない) | `### O-1:` |
 | **`requires` は test 時の sweep しか読まない**: `PELICAN_TEST_PROJECTS_DIR` を向けた `PELICAN_WITH_ANIMATION=OFF` build は、skip される project の game logic DLL を configure 時に作り、link に失敗する(下の段落) | `### R-3:` |
 | `dist_debug/` が source tree 直下なので、同じ worktree の ON build と OFF build が `pelican_cli` / `pelican_studio` を上書きし合う(catalog の module 数を取り違える) | `### R-3:` |
-
 | `pelican_studio` が window close で exit 139(SIGSEGV)する(X button でも `CloseMainWindow` でも。実害は `pelican_player.exe` の孤児化。別 session の GUI backlog、未調査)| GUI session の報告(N-1b / N-2) |
 | `test/gpu_lease_run.cpp:94` が GPU lease の log を消さず `%TEMP%` に `pelican_gpu_lease_v1.<pid>.log` が数千個積もる(R-1 の temp dir flake の真の候補)| `### R-1:` の完了記録 |
+| N-3 のパンは scroll bar 経由なので、**描画が view に収まっている間は中ボタンドラッグが何も動かさない**(使い勝手の穴。view transform の平行移動へ直す分は N-4 に畳んだ)| `### Q-1b:` の着地前の実測(2026-09-18)|
 **`requires` を読まない configure 時の game logic 目標**(R-3 で見つけ、R-3 では直さない)。
 corpus の game logic DLL 目標は `test/CMakeLists.txt` の
 `file(GLOB_RECURSE pelican_catalog_project_manifests CONFIGURE_DEPENDS ... "${pelican_catalog_projects_dir}/*/project.json")`
@@ -296,8 +300,12 @@ CMake 側で 2 つ目の表を作らないため、語彙の置き場は 1 箇�
 | N-1b 見出しとソケット欄 | `373f62ee` |
 | N-2 canvas の編集 op | `02a3d285` |
 | R-3 サンプル索引と本文書 | `979b40f7` |
+| Q-1 Studio automation surface | `06829720` |
+| N-3 Frame Plan の共有 node 描画 + zoom / pan / fit | `dd088c2a` |
+| Q-1b 自動化面の pointer / menu / view_state | `026268ee` |
+| N-5 Studio theme light / dark | `43f032b1` |
 
-## 6. v0.1.0 tag の手順(2026-09-18: engine 側の全数 1947 / 1947 緑 @ `83645084`。tag は Studio 側(N 系 / AG-3b)が入り利用者が v0 を閉じるまで打たない)
+## 6. v0.1.0 tag の手順(2026-09-17: engine 側の全数 1947 / 1947 緑 @ `83645084`。tag は Studio 側(N 系 / AG-3b)が入り利用者が v0 を閉じるまで打たない)
 
 1. 全数(GPU 込み)を **1 回**通す。
 2. `docs/v0_freeze.md` と索引の変更を commit する。

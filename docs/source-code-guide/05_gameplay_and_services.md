@@ -614,7 +614,9 @@ audioと同じく、persistenceも「用意」と「書き込み」に割れて�
 - [`color.hpp`](../../src/core/userpublic/color.hpp)
 - [`animation/vrm_application_v1.hpp`](../../src/core/userpublic/animation/vrm_application_v1.hpp)（VRM expression/application sink、WP123b）
 - [`animation/abi_v1.hpp`](../../src/core/userpublic/animation/abi_v1.hpp#L1)（animation provider ABI v1。[`AnimationSourceHandle`](../../src/core/userpublic/animation/abi_v1.hpp#L39) と `claim_source` / `release_source` / `handoff_source` / `sample_animation_source_at`、WP178）
-- [`animation/animgraph.hpp`](../../src/core/userpublic/animation/animgraph.hpp#L1)（`pelican.anim_graph` v1 の `DocumentV1` / `EvaluatorV1`）
+- [`animation/animgraph.hpp`](../../src/core/userpublic/animation/animgraph.hpp#L1)（`pelican.anim_graph` v1 の `DocumentV1` / `EvaluatorV1`）。これは姿勢を駆動する**2つの装着様式の片方**です（§5.16）
+- [`animation/pose_staging_v1.hpp`](../../src/core/userpublic/animation/pose_staging_v1.hpp#L91)（staged pose を読む追加交渉面。`animation/abi_v1.hpp` は凍結のまま、こちらがcapability bitで伸びます。§5.17）
+- [`valuegraph.hpp`](../../src/core/userpublic/valuegraph.hpp#L101)（共通グラフの values 分割の評価器。プロジェクトが書く文書形式ではなく内部IRなので、[第3章 §3.15](03_project_and_loading.md) を先に読んでください）
 
 > 🧩 **難所 — N-way ブレンドの符号正準化**([`blendQuaternions()`](../../src/core/animation/animationprobe.cpp#L401) / [`blendNormal()`](../../src/core/animation/animationjobs.cpp#L313))
 >
@@ -1032,3 +1034,95 @@ outboxのentryは呼び出しごとに1件ではありません。
 - manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L167)）
 
 結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L51)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+
+## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
+
+骨のあるモデルへ姿勢を書く方法は、v0では**2つ**あります。どちらも契約で、片方が旧式なわけではありません。そして**同じオブジェクトに両方は付きません**（owner 単位で排他）。
+
+| 様式 | 何を書くか | 出荷例 |
+|---|---|---|
+| animation component | オブジェクトの `AnimationComponent` に `clip` **か** `graph`（`pelican.anim_graph` 文書）のどちらか。APIは `setGraphParameter` / `forceGraphState` | animgraph_demo / vrm_xr_demo |
+| `graph.instance` | 共通グラフの `pose.*` opを組み、`pose.skeletal` / `pose.transform` sink へ繋ぐ。owner は文書の `{scene, object}` | posegraph_demo |
+
+v0が約束するのは「2つの経路の**parity**」（loop / speed / start_time、位相、状態の移送が一致すること）と、owner単位の排他です。1本化はv0からは撤回されています。二重に書こうとした場合は黙って上書きせず、名前付きで落ちます —— サービス側の奪い合いは `Status::authority_conflict`、共通グラフ側は `pose.sink_conflict@1` です（同一文書に2つのsinkがある場合と、[animation component が既にそのフレームを publish 済みの場合](../../src/core/animation/posegraphruntime.cpp#L866)の両方で同じ名前）。
+
+以降は後者（共通グラフ側）の3ファイルを、**契約 → コンパイル → 評価**の順で読みます。
+
+### 契約: `pelican.pose` module（`src/project/posegraphmodule.hpp`）
+
+opの契約はprojectの層に置かれます（[`registerPoseGraphModule()`](../../src/project/posegraphmodule.hpp#L22)）。エンジンのanimationバックエンドが無いビルドでも catalog とエディタが同じ契約を見るためで、評価だけが `src/core/animation` の仕事です。
+
+- **op は6本** —— `pose.clip_sample` / `pose.blend` / `pose.state_machine` / `pose.retarget` と、sink の `pose.skeletal` / `pose.transform`（[manifest](../../src/project/posegraphmodule.cpp#L186)）。sink 宣言はこの2本だけです。
+- **型は2つ** —— [`builtinPoseTypeSchemas()`](../../src/project/posegraphmodule.hpp#L21) が `pelican.pose@1`（ポートを流れる姿勢）と `pelican.rig@1`（opがclipと出力レイアウトを解決する相手のrig identity）を登録します。
+- **`pelican.pose@1` は意図的に不透明です。** ポートが運ぶのは `PoseStageHandle` と、それが作られた PoseLayout の世代・frame revision であって**バイト列ではありません**。だからレイアウト世代の違う2つの姿勢は、memcpyで混ざる代わりに `pose.layout_mismatch@1` という名前で区別できます（[`posegraphmodule.hpp` 冒頭のコメント](../../src/project/posegraphmodule.hpp#L11)が規範）。
+- **再生パラメータは契約の検証もバックエンドの読み出しも同じ関数を通ります**。ただし**既定値そのものを持っているのは 2 関数**で、[`poseClipSampleLoop()`](../../src/project/posegraphmodule.hpp#L35) の `true` と [`poseClipSampleExtractsRootMotion()`](../../src/project/posegraphmodule.hpp#L45) の `false` だけです。[`poseClipSampleNumber()`](../../src/project/posegraphmodule.hpp#L33) は `fallback` を引数で受けるため、`speed = 1` / `start_time = 0`（animation component が持つのと同じ値）のリテラルは[契約側](../../src/project/posegraphmodule.cpp#L166)と[評価側](../../src/core/animation/posegraph.cpp#L107)の呼び出しに書かれています。ノードが「catalogにとっての意味」と「評価器にとっての意味」を持てないようにする作りです。
+- **エラーの使い分けに規則があります。** `root_motion` に `none` / `extract` 以外を書いたような「その場で分かる」不正は素の `invalid_argument`、rig と clip とオブジェクトが揃って初めて分かるものだけが名前付き（`pose.root_node_unknown@1` など）です（[`poseClipSampleExtractsRootMotion()` のコメント](../../src/project/posegraphmodule.hpp#L36)）。
+- **AG-2の副作用**: root motion を抽出する `pose.clip_sample` は前フレームの変位を覚えるので、素のサンプラより1段強い `replay` になります。契約の分類は「モジュールが宣言した値と、ノードごとに解決した値の**強い方**」で決まり（[`graphmodule.cpp` の `max()`](../../src/project/graphmodule.cpp#L214)）、factoryは引き上げられても緩められません。catalog とノードが食い違わないための片側制約です。
+
+### コンパイル: `PoseGraph`（`src/core/animation/posegraph.hpp`）
+
+[`PoseGraph`](../../src/core/animation/posegraph.hpp#L61) のコンストラクタが **fail-fastの場所**です。パラメータが使えないop、循環、ownerの無い連鎖、1オブジェクトに2人目の書き手 —— これらはここで落ち、フレームには到達しません。
+
+各 [`PoseGraphNode`](../../src/core/animation/posegraph.hpp#L26) は `owner`（sink の連鎖上の全ノードが共有する宛先）、`rig` / `clip` / `profile`、再生3パラメータ、root motion の2つ、そして2種類の入力を持ちます。
+
+```text
+scalar_inputs : port -> values 分割が publish する出力名（$pose/<node>/<port>）
+pose_inputs   : port -> nodes() の添字        ← 姿勢はポートをバイト列として流れない
+resolved_rig  : 連鎖をさかのぼって求めた「この姿勢がどのrig用か」
+```
+
+`resolved_rig` を連鎖で解決しておくのは、違うrig用の姿勢どうしをblendできないようにするためです（[`raiseLayoutMismatch()`](../../src/core/animation/posegraph.hpp#L86)）。root motion に関する断り方も全部ここに名前付きで並びます —— blendや状態機械の先へ渡すなど「1つの変位を1つのオブジェクトへ渡せない」形は `pose.root_motion_unsupported@1`、消費者が2人なら `pose.root_motion_shared@1`、sinkの書くオブジェクトが local transform を取れないなら `pose.root_motion_no_transform@1` です。clipに関わるもの以外は、フレームが1枚も走る前に判定できます。
+
+### 評価: `PoseGraphRuntime`（`src/core/animation/posegraphruntime.hpp`）
+
+[`PoseGraphRuntime`](../../src/core/animation/posegraphruntime.hpp#L62) は、コンパイル済みグラフを生きたオブジェクトへ**attach**し、animationフェーズの中で評価します。入口は2本です。
+
+- [`synchronize(graph, frame)`](../../src/core/animation/posegraphruntime.hpp#L69) —— フェーズより前、オーナースレッドで走ります。生きたものをbindし、そうでないものをreleaseし、グラフ1本につき1枚のスナップショットを取ります。フレーム側が渡す [`PoseGraphFrame`](../../src/core/animation/posegraphruntime.hpp#L23) は「グラフが知らない今フレームの事実」の束です（オブジェクトが生きているか・名前・animation componentが既に書いていないか・values分割が出したスカラ）。
+- [`retainOnly(live)`](../../src/core/animation/posegraphruntime.hpp#L84) —— 公開されていない世代のattachmentを外します。**ここが状態機械の世代またぎの場所**でもあり、退役するattachmentの `EvaluatorV1` は破棄せず脇に置かれ、同じownerと同じノードidと同じ `anim_graph` 文書をbindする次のattachmentが `rebind()` で引き取ります。現在の状態・clipカーソル・遷移の進み具合がそのまま続き、文書の初期状態へ戻りません。誰も引き取らなければ次回で解放されます。
+
+評価結果は [`trace()`](../../src/core/animation/posegraphruntime.hpp#L136) から sink 順で読めます。1件が [`SinkTrace`](../../src/core/animation/posegraphruntime.hpp#L101) で、pose を作ったノード、レイアウトのidentityと世代、`owner`、状態機械の現在状態、遷移の有無と進み具合、そして clip ごとの [`CursorTrace`](../../src/core/animation/posegraphruntime.hpp#L96)（clip名・秒・**正規化位相**）が入ります。正規化位相は clip 自身の `[start, end]` の中の位置なので、キーが0秒から始まらないclipでも最初のキーで0・最後のキーで1になります。この trace が `get_status.animation` の材料です（[第7章](07_tools_rpc_tests.md)）。
+
+> 🧩 **難所 — 巻き戻らない時刻で根の差分を取る**（[`extractRootMotion()`](../../src/core/animation/posegraphruntime.cpp#L269)）
+>
+> **何をする所か**: `root_motion: "extract"` の `pose.clip_sample` が、clipの根の移動を「オブジェクトの変位」に変換し、姿勢側の根を固定します。
+>
+> **素朴に読むと**: 「今フレームの根の位置 − 前フレームの根の位置」を足せばよさそうに見えます。しかしclipがループすると、根の位置はclipの末尾から先頭へ**戻る**ので、その差分は1周ぶんの後ろ向きジャンプになります。実際の式は折り返す前の時刻 `u`（unwrapped time）を使った `R(u) = loops(u)·(root(end) − root(start)) + root(canonical(u))` で、`loops` の項が「clipの末尾を越えたことを、先頭への巻き戻しではなく継続として数える」役です。この形にしておくと、負のspeedも1フレームで複数周するのも同じ算術で済みます。ループしないclipはclampされるので何も越えません。変位は `R(u) − R(u_prev)` で、オブジェクト側では**その個体自身の向きで回してから**加算されます（スケールは意図的に掛けません。大きさを変えた個体が同じclipで違う距離を進んでしまうため。[適用側](../../src/core/ecs/predefined/animationsystem.cpp#L317)）。
+>
+> **骨子**:
+> ```text
+> 初回のみ: root_start = sample(begin) の根、root_span = sample(end) の根 − root_start
+>           （サンプルは今フレームぶんに戻してから返す）
+> loops   = loop ? floor((u − begin) / (end − begin)) : 0
+> current = 根(canonical(u)) + loops · root_span
+> delta  += current − previous        （previous が無い最初のフレームは加算しない）
+> pin     : pose.translations[root] = root_start     ← メッシュは個体の中で滑らない
+> ```
+>
+> **手がかり**: 状態が捨てられる経路は2つあります。rebindしたとき（[`unbind()` 内](../../src/core/animation/posegraphruntime.cpp#L232)。レイアウト添字・clipの根サンプル・オブジェクトtokenを取り直すので、パラメータ編集と同じ再出発になります）と、`set_time` を観測したとき（`drop_root_previous`。**時刻の飛びは移動ではない**ので、2つの時刻の間の距離をオブジェクトに請求しません）。pinするのはtranslationだけで、回転の抽出はv0にありません。`SinkTrace::root_delta` に出るのは**clip自身の空間での量**なので、回転した個体では実際に進んだ距離と一致しません。
+>
+> **不変条件**: 差分は折り返し前の時刻で取る（canonical時刻の差を取らない）。適用は個体の回転のみを通し、スケールは通さない。`set_time` の直後のフレームは変位を出さない。
+
+### `PELICAN_WITH_ANIMATION=OFF` の顔
+
+OFFビルドではこの3ファイルがビルドに入らず、`pelican.pose` module も登録されません。残るのは交渉入口だけで、3つとも out 引数が null なら `invalid_argument`、そうでなければ `unsupported_version` です（[`animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L18)）。`get_status.animation` は `{"available": false}` だけを返し、**空のsink一覧は返しません** —— 「モジュールはあるが誰も動かしていない」と読めてしまうためです。ビルド側の帰結の一覧は[第1章 §1.6](01_architecture_and_build.md)にあります。
+
+## 5.17 pose staging service v1（追加交渉面） ✅実装済み（AG-1a / AG-2）
+
+`animation/abi_v1.hpp` は**凍結**されていて、フィールドを足せません。そこで「今フレームstagingされた姿勢を読む」ための面は別ヘッダ [`pose_staging_v1.hpp`](../../src/core/userpublic/animation/pose_staging_v1.hpp#L91) に分けてあり、[`getPoseStagingServiceV1()`](../../src/core/userpublic/animation/pose_staging_v1.hpp#L110) で交渉します。
+
+伸ばし方に規則があります。**service version は上げず、capability bit で entry を足す**。version を上げると「既に 1 で交渉を済ませたクライアント」が全員落ちるためです。bitは現在4本で、4本目がAG-2で入りました。
+
+| bit | 値 | 意味 |
+|---|---|---|
+| `pose_staging_deferred_commit` | `1 << 0` | staged pose の commit を後段へ遅らせる |
+| `pose_staging_mutable_local_pose` | `1 << 1` | staged local pose を書き換えられる |
+| `pose_staging_source_node_mapping` | `1 << 2` | **staged frame** に対する glTF node → layout index |
+| `pose_staging_rig_source_node_mapping` | `1 << 3` | **rig** に対する同じ写像 ＋ clip の channel kind |
+
+構造体の末尾 `resolve_rig_source_node` は、この4本目のbitが立っているときだけ存在する**加算的な尾**です（[宣言](../../src/core/userpublic/animation/pose_staging_v1.hpp#L104)）。
+
+4本目が要る理由がそのまま使い方です。`pose.clip_sample` は自分の `root_node`（glTF の node index）を**attach時に1回だけ**layout indexへ解決しますが、その時点ではまだ何もstagingされていません。staged frame 経由では聞けないうえ、この写像はそもそもフレームの性質ではなく **rig の性質**です。実装は [`resolveRigSourceNode()`](../../src/core/animation/animationservice.cpp#L994) で、`rig.original_to_layout` を1回引くだけです（layoutに載らないnodeの印は `uint32` の最大値で、これは `not_found`）。
+
+`clip` ハンドルも一緒に渡すと、そのclipがそのnodeで駆動している **channel kind のビットマスク**が返ります（[集計](../../src/core/animation/animationservice.cpp#L1024)）。これで「あなたがrootと呼んだnode 3を、このclipは一度も平行移動させない」を**1度もサンプルせずに**答えられます。そうでなければ、症状は「常に0の変位」という気付きにくい形になります。
+
+生成側（`resolve_rig_source_node` を埋める箇所）は [`getPoseStagingServiceV1()` の実装](../../src/core/animation/animationservice.cpp#L1942)です。呼び手の `struct_size` を超えて書かないよう `min(caller_size, sizeof)` でコピーするので、古いクライアントは末尾を見ないまま安全に使えます。

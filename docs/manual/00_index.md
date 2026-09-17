@@ -1,17 +1,20 @@
 # Pelican2 マニュアル
 
-対象: pelican2(HEAD=`d146b8bd`・2026-09-04、branch
+対象: pelican2(HEAD=`990b9eaa`・2026-09-17、branch
 `codex/render-target-runtime-slice`)/ 初版 2026-07-10、WP64〜111 反映
 2026-07-16、WP112〜137 反映 2026-07-17、WP138〜179 の状態差分を
 2026-07-19 に同期、WP180〜238e(レンダラ再構築)を 2026-07-31、
 WP375c〜385(scene load transaction / game DLL ABI / 宣言 schema v3 /
-GPU lease)を 2026-09-04 に反映
+GPU lease)を 2026-09-04、**v0 の段(AG-0 〜 R-3 と Studio 側の N-1 〜 N-3 / N-5 / Q-1 / Q-1b。共通グラフ / 姿勢グラフ /
+package / 共有部品 / オフライン出力 / ノードキャンバスと自動操作面)を 2026-09-17** に反映
 
 > ⚠ **章ごとに鮮度が違います。**各章の冒頭「対象:」行がその章の基準です。
 > **WP239〜374(2026-08)は [第11章 §11.1](11_status.md) の WP 表に行として転記されていません** ——
 > WP 単位の記録の正(食い違ったときに従う唯一の基準)は [../implementation_plan.md](../implementation_plan.md) です。
 >
-> **WP**(Work Package)= 開発の作業単位です。台帳 [../implementation_plan.md](../implementation_plan.md) に 1 行として登録され、**1 WP = 1 ブランチ = 1 マージ**で進みます。番号の読み方と状態の一覧は [第11章 §11.1](11_status.md)、そのほかの記号と基本語は [第1章 §1.0](01_overview.md) と [第14章 用語集](14_glossary.md) にまとめてあります。
+> **WP**(Work Package)= 開発の作業単位です。台帳 [../implementation_plan.md](../implementation_plan.md) に 1 行として登録され、**1 WP = 1 ブランチ = 1 マージ**で進みます。**番号は 2 系統あります** —— WP386 までの**通し番号**(`WP380a` のような枝番付き)と、v0 の段に使われた**記号 ID**(`AG-0` / `AG-1b` / `P-2a-1c` / `X-1` / `R1-2` / `N-2` …。段の系統 + 番号)です。本文のバッジも同じ規則で `✅WP382a` / `✅P-2a-3` のように書きます。状態の一覧は [第11章 §11.1](11_status.md)(v0 の段は末尾の表)、そのほかの記号と基本語は [第1章 §1.0](01_overview.md) と [第14章 用語集](14_glossary.md) にまとめてあります。
+>
+> **v0 で凍結した面(文書 schema・RPC 名・共通グラフの op / 型 / sink・ABI・package manifest)の正本は [../v0_freeze.md](../v0_freeze.md)** です。本マニュアルはその面の「使い方」を書きます。
 
 より深いクラス単位のコード解説は姉妹文書 [../source-code-guide/](../source-code-guide/README.md) にあります(本マニュアル = 使い方と現状、source-code-guide = 内部構造の深掘り)。
 
@@ -26,18 +29,20 @@ Pelican2 の**使い方と設計を人間向けに解説する公式マニュア
 |---|---|
 | [第1章 エンジン全体像](01_overview.md) | Pelican2 とは何か。リポジトリ地図・レイヤ規則・横断的な設計原則・開発体制 |
 | [第2章 ビルドと起動](02_getting_started.md) | 必要環境、ビルド、example の起動、最初のプロジェクト作成、ヘッドレス実行、テスト |
-| [第3章 プロジェクト形式](03_project_format.md) | project.json のスキーマ、PathResolver(project:// / engine:// / user:// / #フラグメント)、asset store |
+| [第3章 プロジェクト形式](03_project_format.md) | project.json のスキーマ(`requires` = 機能ユニットの要求を含む)、PathResolver(project:// / engine:// / user:// / #フラグメント)、asset store、**package**(外から持ち込んで project に複製する)、**共有部品(render component)**の export / import |
 | [第4章 シーンと ECS](04_scene_ecs.md) | pelican.scene v1、コンポーネント全種、シーンロードの流れ、ECS の要点、シーン遷移 |
 | [第5章 アセットパイプライン](05_assets.md) | 二層モデル、asset_data.json、DCC 連携(import / transform_seq / VAT)、対応形式一覧 |
-| [第6章 レンダリング](06_rendering.md) | rendering config、パス種別、feature、フレームグラフ、シェーダ基盤(stem / ホットリロード / set 規約) |
+| [第6章 レンダリング](06_rendering.md) | rendering config(2 つの root)、パス種別、feature、フレームグラフ、シェーダ基盤(stem / ホットリロード / set 規約)、**共通グラフのノード語彙**(§6.17) |
 | [第7章 入力と UI](07_input_ui.md) | 入力四層、actions.json、アクションセットスタック、UI の現状、debug_text HUD |
 | [第8章 ゲームロジック](08_gameplay.md) | ゲームコードの書き方(システムと **オブジェクト behavior**)、GameContext、イベント、カメラ、物理クエリ、決定性、オーディオ、永続化 |
 | [第9章 Web プロファイル](09_web.md) | サブセット原則、web ビューアでの開き方、シェーダ stem と WGSL、web 互換チェックリスト |
-| [第10章 ツールリファレンス](10_tools.md) | pelican_player 全 CLI、JSON-RPC 全メソッド、pelican_cli、配布ビルド、Studio、テスト基盤、`tools/` の保守スクリプト |
+| [第10章 ツールリファレンス](10_tools.md) | pelican_player 全 CLI(オフライン出力の `--start-time` を含む)、JSON-RPC 全メソッド(graph 系 6 本・package 2 本・共有部品 2 本を含む)、pelican_cli(`package` / `graph-catalog` を含む)、配布ビルド、Studio、テスト基盤、`tools/` の保守スクリプト |
 | [第11章 実装状況と文書マップ](11_status.md) | WP 全台帳、設計文書⇔章の対応表、既知の食い違い一覧、本マニュアルの更新ルール |
 | [第12章 コード読解ガイド](12_codemap.md) | **技術解説書**。リポジトリ地図、起動〜1フレームの追跡ルート、JSON→パーサ対応表、実装パターン(ソースへのジャンプリンク付き) |
-| [第13章 エディタとエディタ RPC](13_editor.md) | 実行中のシーンを編集する API(オーサリング文書・チケット・undo/redo・プレビュー・保存)、ImGui のインスペクタ、Python クライアント |
-| [第14章 用語集](14_glossary.md) | 本マニュアルに出る用語と記号の索引(WP / D0 / codec / transaction / JSON-RPC / `name@1` など。基本語だけなら [第1章 §1.0](01_overview.md)) |
+| [第13章 エディタとエディタ RPC](13_editor.md) | 実行中のシーンを編集する API(オーサリング文書・チケット・undo/redo・プレビュー・保存)、**グラフの装着を編集する**(ノードキャンバスと Inspector)、ImGui のインスペクタ、Python クライアント |
+| [第14章 用語集](14_glossary.md) | 本マニュアルに出る用語と記号の索引(WP / D0 / codec / transaction / JSON-RPC / `name@1` / 共通グラフ / pose / instance / package など。基本語だけなら [第1章 §1.0](01_overview.md)) |
+
+> **共通グラフ(`pelican.graph`)に専用の章はありません。**値・描画・姿勢を 1 つの文書で繋ぐこの機構は 3 か所に分かれて書かれています —— **ノード語彙と入力の 4 mode は [第6章 §6.17「共通グラフのノード語彙」](06_rendering.md)**、**装着の編集操作(ノードキャンバスと Inspector)は [第13章 §13.5「グラフの装着を編集する」](13_editor.md)**、**語の定義は [第14章 §14.7「共通グラフと姿勢の語」](14_glossary.md)**(package / `requires` / component は §14.2)です。姿勢グラフの書き方は [第8章 §8.13](08_gameplay.md)、`graph.instance` の owner は [第4章 §4.1](04_scene_ecs.md)、文書がどの root に入るかは [第3章 §3.2](03_project_format.md) と [第6章 §6.16](06_rendering.md) にあります。
 
 ## 読み方の目安
 
@@ -48,6 +53,8 @@ Pelican2 の**使い方と設計を人間向けに解説する公式マニュア
 - **「これって使えるの?」と思ったら**: 第11章の WP 台帳とバッジを確認してください。
 - **エンジンのソースを読む人**: 第12章。どのファイルから読み始めるか・JSON がどこで読まれるかの地図です。
 - **エディタ・自動化ツールを書く人**: 第13章。実行中のエンジンを外から編集する API の全体像です。
+- **グラフでパラメータや姿勢を動かす人**: 第6章 §6.17(ノード語彙)→ 第13章(装着の編集)→ 第8章 §8.13(姿勢)。実物は [projects/posegraph_demo](../../projects/posegraph_demo)。
+- **部品を配る・もらう人**: 第3章 §3.11(package)と §3.12(共有部品)。
 - **語や記号が分からないとき**: 第14章の用語集(頻出の基本語だけなら [第1章 §1.0](01_overview.md))。
 
 ## 表記の約束
@@ -59,4 +66,6 @@ Pelican2 の**使い方と設計を人間向けに解説する公式マニュア
 
 ## 更新について
 
-更新ルール(バッジの更新タイミング・章の追加方法・食い違い台帳の運用)は [第11章 §11.4](11_status.md) にあります。直近では、**チケットプレビューの対象拡大・`render_preview` の実描画化・GUI と RPC の同居**([第13章](13_editor.md) §13.12)、および HR2-I / U3(ホットリロードの残件)のマージ時に該当章の書き換えが必要です。加えて、**WP382b(可変長宣言の行編集)が着地したら [第13章](13_editor.md) §13.3 の「行は作れない」注記**を、**WP386 が着地したら [第9章](09_web.md) §9.7 の `procedural_geometry` 記述と [第5章](05_assets.md) の asset 種別**を書き換えてください。
+更新ルール(バッジの更新タイミング・章の追加方法・食い違い台帳の運用)は [第11章 §11.4](11_status.md) にあります。直近では、**チケットプレビューの対象拡大・`render_preview` の実描画化・GUI と RPC の同居**([第13章](13_editor.md) §13.12)、および HR2-I / U3(ホットリロードの残件)のマージ時に該当章の書き換えが必要です。
+
+**v0(2026-09-16〜17)の段は全部着地しました**(SHA の一覧は [第11章 §11.1](11_status.md) の v0 表と [../v0_freeze.md](../v0_freeze.md) §5)。残るのは **`v0.1.0` tag の付与**で、手順は [../v0_freeze.md](../v0_freeze.md) §6 にあります(engine 側の全数は 1947 / 1947 緑 @ `83645084`。tag は Studio 側が入って利用者が v0 を閉じるまで打ちません)。なお **WP382b(可変長宣言の行編集、`6e44120e`)と WP386a(手続き幾何、`b7cb1825`)は 2026-09-04〜05 に着地済み**です —— 旧版のこの節にあった「着地したら書き換える」予告はその時点のもので、該当章([第13章](13_editor.md) §13.3・[第5章](05_assets.md)・[第9章](09_web.md) §9.7)の追随状況は各章の「対象:」行で確認してください。

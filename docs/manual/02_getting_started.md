@@ -1,6 +1,6 @@
 # 第2章 ビルドと起動
 
-対象: pelican2(2026-07-21 時点)/ このマニュアルはコードを正とする
+対象: pelican2(HEAD=`990b9eaa`・2026-09-17。2026-07-21 の全域調査に、v0 の段(`PELICAN_WITH_ANIMATION` / `requires` / `--start-time` / package)を 2026-09-17 に反映)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -81,6 +81,7 @@ cmake . -B build -DSKIP_DEVSTUDIO=ON
 | `PELICAN_WITH_VAT` | `pelican.vat`(GLB)再生 |
 | `PELICAN_WITH_EXR` | EXR 読み込み |
 | `PELICAN_WITH_AUDIO` | WAV SE 再生 |
+| `PELICAN_WITH_ANIMATION` | スケルタルアニメーションの評価器と `pelican.pose` グラフ module(✅AG-1a。[pelican_feature_registry.cmake:146](../../cmake/pelican_feature_registry.cmake#L146)、`SMOKE_ID animation`) |
 | `PELICAN_WITH_IMGUI` | ImGui 開発者 UI(F1 トグル・Plan Viewer)。配布では dist-config が常時 OFF([第10章](10_tools.md)) |
 | `PELICAN_WITH_OPENXR` | OpenXR(PCVR)ランタイム。開発既定 ON・**配布は `dist-config --with openxr` を指定した時だけ ON** |
 | `PELICAN_WITH_RENDERDOC` | 注入済みRenderDocの受動検出とF11/RPC capture。binary/import libraryはリンクせず、配布では常にOFF |
@@ -96,6 +97,27 @@ OFFでも対応feature自体は利用できます。その場合はfeatureのsha
 planar reflectionでは標準camera providerも除外されるため、caller-authored
 `$reflection/planar` ViewFamilyまたはsource buildしたhost providerも必要です。汎用ViewFamily
 resolver、graph compiler、scheduler、backendは残ります。
+
+#### `PELICAN_WITH_ANIMATION=OFF` のときに何が消えるか(✅AG-1a/AG-1b/P-2b)
+
+ビルドユニットの「消え方」を 1 つ具体的に見ておきます。`-DPELICAN_WITH_ANIMATION=OFF` にすると:
+
+- **消えるもの**: `src/core/animation/*` のソース一式(clip サンプラ・state machine 評価器 `EvaluatorV1`・`AnimationSystem`・pose graph の runtime。[src/core/animation/CMakeLists.txt:1](../../src/core/animation/CMakeLists.txt#L1))と、共通グラフの `pelican.pose` module(登録呼び出し自体が `#if` の中 — [makeBuiltinGraphModuleRegistry()](../../src/project/graphmodule.cpp#L253))。`pelican_cli graph-catalog` は 4 module 27 op ではなく **3 module 21 op** を返します([../v0_freeze.md](../v0_freeze.md) §1.3)。
+- **残るもの**: 凍結ヘッダ(`abi_v1.hpp` / `pose_staging_v1.hpp`)と、その**交渉入口**(`getApiV1` / `getPoseStagingServiceV1` / `Vrm::getApplicationServiceV1`)。ゲーム DLL はこれらをリンクするので、入口は残したまま **`unsupported_version` を返す stub** に差し替わります([animation_disabled.cpp:13](../../src/core/animation/animation_disabled.cpp#L13))。「関数が無くてロードできない」ではなく「名前で『この build には無い』と答える」形です。**skinning の compute 側(palette / `skinned.vert` / `ray_deform.comp`)も残ります** —— 姿勢を受け取る側であって、姿勢を作る側ではないからです。
+- **使おうとしたときの見え方**: `animation` コンポーネントを持つシーンは scene load の prepare で `animation.module_unavailable@1`(→ トランザクションなので旧シーンが保たれます。[scene.cpp:74](../../src/core/loader/scene.cpp#L74)・[第4章 §4.3](04_scene_ecs.md))。`pose.*` を書いた共通グラフ文書は `graph.operation_unregistered@1`。`project.json` に `requires: ["animation"]` を書いてあるプロジェクトは、**そこまで行く前に** project の parse で止まります(下記)。
+
+**project 側からの宣言(`requires`)。** `project.json` に `"requires": ["animation"]` と書いておくと、OFF build でそのプロジェクトを開いた時点で `animation.module_unavailable@1: this build has PELICAN_WITH_ANIMATION=OFF, so project.json's requires: ["animation"] cannot be satisfied` を出して `pelican_player` が exit 1 します(ノードを 1 つずつ拒否させて原因を探させない、という判断です)。出荷では `animgraph_demo` / `vrm_xr_demo` / `posegraph_demo` の 3 つが宣言しています。同じ値を**コーパスを舐める側**も読むので、OFF build のスモークはそれらを止まらずに名前付きで飛ばします:
+
+```
+skip posegraph_demo: requires animation (PELICAN_WITH_ANIMATION=OFF)
+```
+
+この 1 行は宣言したプロジェクトごとに出るので、OFF build では `animgraph_demo` / `posegraph_demo` /
+`vrm_xr_demo` の **3 行**が並びます([run_project_catalog_smoke.cmake:128](../../test/run_project_catalog_smoke.cmake#L128))。
+飛ばされたプロジェクトがエディタ経路のレーンを持っていた場合は `skip editor lane: <project> requires …` が続き
+([:317](../../test/run_project_catalog_smoke.cmake#L317))、最後に「何件中何件を飛ばしたか」の要約が 1 行出ます。
+
+語彙・検証規則は [第3章 §3.2](03_project_format.md) の「機能ユニットの要求(`requires`)」にあります。
 
 ビルドユニットではありませんが、同じ [CMakeLists.txt](../../CMakeLists.txt) には次のオプションもあります:
 
@@ -188,14 +210,17 @@ mygame/
 ├── assets/{models,textures,audio}/   # 置き場(assets/ 自身を含め .gitkeep 入り)
 ├── input/actions.json                # 入力アクション定義
 ├── input/profiles/keyboard.json      # バインディングプロファイル(第7章)
-├── passes/main_rendering_config.json # レンダリングパイプライン定義(deferred 構成)
+├── passes/main_rendering_config.json # レンダリングパイプライン定義(`pelican.graph` root)
 ├── ui/ui_overlay.json                # 2D オーバーレイ(空)
-├── code/CMakeLists.txt               # pelican_game_sources(game.cpp)
+├── code/CMakeLists.txt               # pelican_game_sources(game.cpp) + pelican_packages()
 ├── code/game.cpp                     # StarterSystem(空のゲームシステム)
 ├── .gitattributes / .gitignore / README.md
 ```
 
-生成されるファイルは全 16 エントリで、一覧は [projectinit.cpp](../../src/devcli/projectinit.cpp) の `templateFiles()` が正本です。
+生成されるファイルは全 16 エントリで、一覧は [projectinit.cpp](../../src/devcli/projectinit.cpp) の `templateFiles()` が正本です。2 点だけ、生成物の形に約束があります(✅P-2a-4b / X-1):
+
+- **`passes/main_rendering_config.json` は `pelican.graph` root で生成されます** —— 最上位が `{"schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {}, "rendering": { … }}` で、pipeline preset と features は `rendering` 節の中です([renderingConfigJson()](../../src/devcli/projectinit.cpp#L208) が `wrapLegacyRenderingConfig` で包みます)。最初から共通グラフのノードを同じファイルに書ける形、ということです(2 つの root の違いは [第3章 §3.2](03_project_format.md))。
+- **`code/CMakeLists.txt` は 2 行**です —— `pelican_game_sources(game.cpp)` の**後に** `pelican_packages()`([projectinit.cpp:226](../../src/devcli/projectinit.cpp#L226))。`pelican_packages()` は `packages/*/` に複製済みで code を持つ package を build してゲームロジック DLL に合流させるので、**順序が意味を持ちます**(合流先の DLL が先に定義されている必要があります)。package を使わないうちは何もしません。
 
 生成される `project.json`(実物・`src/devcli/projectinit.cpp` が出力):
 
@@ -282,7 +307,41 @@ pelican_player --headless --project mygame --frames 10 --render-out out/%04d.png
 
 ヘッドレス時は時刻が**固定ステップ**(dt = 1/fps、`--fps` で変更、既定 60)になり、実行が決定的になります。固定ステップとは「壁時計を読まず、1 フレームあたりの進み幅を定数にする」ことで、実行速度やマシン性能が結果に混ざらないため、同じ入力からは同じフレーム列が出ます([第1章 §1.0](01_overview.md) の「決定的」)。`--camera "px,py,pz,tx,ty,tz,fov_deg"` でカメラを上書きできます。
 
+### 時刻 t から出力する(`--start-time`)✅O-1
+
+「2 秒時点の絵が欲しい」ときは `--start-time <秒>` を使います(**ヘッドレス専用**):
+
+```sh
+# t=2.0 秒の frame から 2 枚出す(--fps 60 なら 0001 が通常 run の 0120、0002 が 0121 と同じ絵)
+pelican_player --headless --project mygame --start-time 2.0 --frames 2 --fps 60 --render-out out/%04d.png
+```
+
+- 秒はコマンドラインで **1 回だけ frame 番号に量子化**されます(`llround(秒 × fps)`。エンジンには「フレームの間の時刻」が渡りません — [parseStartFrame()](../../src/player/main.cpp#L283))。
+- **飛ばすのではなく、そこまで回します。** `start_frame − 1` 枚を capture 無しで実行(warm-up)し、**最初に capture される frame が t の frame** です([loop.cpp:441](../../src/core/appflow/loop.cpp#L441))。グラフの時計・ゲームシステムの積分・アニメーションの評価器は時刻から逆算できないので、「その時刻に居た」と言える唯一の方法が全ステップを通ることだからです。`--start-time 0` は通常の run と同一です。
+- 実行時に stderr へ 1 行出ます: `offline: start_time=2 start_frame=120 replay=119 frames=2`。
+- **`--frames` とは併用できます**(枚数の指定)。**併用できないのは** `--rpc` / `--replay` / `--record-input` / `--bake-camera-output` の 4 つで、これらは「どの frame を出すか」を自分で決める経路だからです。
+- 名前付きの拒否は 3 つ: `offline.time_invalid@1`(負・非有限・数でない)/ `offline.headless_required@1`(`--headless` 無し)/ `offline.mode_conflict@1`(上の 4 フラグとの併用)。いずれも**コマンドライン解析の時点**で決まり、GPU まで届きません。
+
 さらに `--rpc --headless` で JSON-RPC による外部制御モードになります([第10章](10_tools.md))。
+
+## 2.5b package を 1 つ入れて試す(✅X-1)
+
+外から持ち込んだ部品(feature / グラフ / code)を使う最短手順です。package は **project に複製してから**使います(engine は project の外を探しません。形式と規則は [第3章 §3.11](03_project_format.md)):
+
+```sh
+# 1. 雛形を本体ツリーの外へ複製する(package は repo の外にあってよい)
+cp -r test/fixtures/package_template /tmp/glowkit
+
+# 2. project へ install(= packages/<namespace>/ への複製 + project.json への記録)
+dist_debug/pelican_cli.exe package install /tmp/glowkit --project mygame
+
+# 3. 入ったか確認する(sha256 を再計算して照合します)
+dist_debug/pelican_cli.exe package list --project mygame
+```
+
+install が終わると `mygame/packages/acme.glowkit/` ができ、`project.json` に `{"namespace": "acme.glowkit", "package_version": …, "sha256": …}` が 1 行増えます。package が提供する feature は **`<namespace>.<名前>`**(例 `acme.glowkit.glow`)という名前で RPC `list_render_features` のカタログに `source: "package"` として現れ、`project://packages/acme.glowkit/features/glow.json` で参照できます。使うには rendering config の `features[]` に足します([第6章](06_rendering.md))。
+
+複製元(`/tmp/glowkit`)を消してもプロジェクトは動きます。取り消しは `uninstall_package`(RPC)で、どこかがまだ参照していれば `package_in_use` で**何も消さずに**止まります。
 
 ## 2.6 テストを実行する
 

@@ -153,3 +153,26 @@ SBT の byte layout は [`shaderbindingtable.cpp`](../../src/core/shader/shaderb
 - ray query は opaque ray flag を使います。material/shadow-caster の条件は raster 側と対象集合が異なります。
 
 このため raster shadow との比較テストは同一性ではなく、同じ scene で raster の暗化画素が存在すること、ray mask と重なる画素が存在すること、かつ異なる画素も存在することを検証します。一方、ray query 版と RT pipeline 版の比較は前述のとおり完全一致です。
+
+## AS 宣言を編集する RPC は「節 locator」を通る
+
+`scene_acceleration_structures` を読み書きする 2 本の RPC — [`getSceneAccelerationStructures()`](../../src/core/communication/renderconfigeditor.cpp#L1429) と [`editSceneAccelerationStructures()`](../../src/core/communication/renderconfigeditor.cpp#L1453) — は、rendering config の root を直接触りません。読みは [`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L47)、書きは [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L655) を通します。したがって **legacy root では最上位の `scene_acceleration_structures`、`pelican.graph` root では `rendering.scene_acceleration_structures`** が同じ 1 本の RPC で扱われ、呼び手はどちらの root かを知りません(root の 2 形は[第6章 §6.1](06_rendering_vulkan_shader.md) の「rendering config の root は 2 つある」)。
+
+read が返すのは 6 キーです。
+
+| キー | 中身 |
+|---|---|
+| `source_reference` / `source_digest` | 編集の CAS に使う文書参照とダイジェスト |
+| `definitions` | 節の `scene_acceleration_structures` 配列そのまま |
+| `task_connections` | ray を使う compute task ごとの `{name, authored_acceleration_structure, acceleration_structure}` |
+| `triangle_geometry` / `procedural_geometry` | ray group layout 側の座標空間情報(`editable` と `source_digest` を含む) |
+
+`task_connections` の 2 本立てが読みどころです。task が文書に書いた名前(省略時は `"scene"`)が `authored_acceleration_structure`、それを節の [`ray_task_acceleration_structures`](../../src/core/communication/renderconfigeditor.cpp#L1436) が上書きした結果が `acceleration_structure` で、**上書きは task の宣言を書き換えずに別のキーへ積まれます**。編集側も同じ形で、[接続の検査](../../src/core/communication/renderconfigeditor.cpp#L1507)が「知らない ray task」と「知らない AS 名」を別々の拒否にしてから `ray_task_acceleration_structures` を書きます([書き込み](../../src/core/communication/renderconfigeditor.cpp#L1523))。ただしこの 1 本目は `task_connections` を渡したときだけで、省くと [`scene_acceleration_structures` の書き込み](../../src/core/communication/renderconfigeditor.cpp#L1525)だけが走ります。
+
+もう一段の読みどころは、この 1 回の編集が**2 種類の文書**を跨ぐことです。`triangle_space` / `procedural_space` を渡すと ray group layout 文書側の `acceleration_structure.triangle_space` / `procedural_space` を書き換えることになるため、rendering config の `base_source_digest` とは別に [`base_layout_digest`](../../src/core/communication/renderconfigeditor.cpp#L1461) が必須になり(片方だけ渡すと拒否)、layout 文書は候補文書として同じ transaction に積まれます([候補の構築](../../src/core/communication/renderconfigeditor.cpp#L1490))。空間を書き換えた bytes は保存前に [`parseRayGroupLayout()` で往復検証](../../src/core/communication/renderconfigeditor.cpp#L1489)されます。`definitions` 自体は「その値だけを持つ config を compile してみる」という形で検証され([検証](../../src/core/communication/renderconfigeditor.cpp#L1500))、通らなければ `invalid_scene_acceleration_structures` です。
+
+## 出荷サンプル `projects/raytracing_demo` と、Studio で開けない穴
+
+この章の内容を最小構成で読める出荷 project が [`projects/raytracing_demo`](../../projects/raytracing_demo) です。配置・半径 / AABB・shader record・交点・陰影・表示までが 1 プロジェクトに収まっており、rendering config は **legacy root** で、[`rendering.json`](../../projects/raytracing_demo/rendering.json) の先頭 3 キーが `ray_group_layout` / `ray_bindings` / `features`(`project://features/spheres.json` — 出荷 6 project で唯一の project 側 feature)です。文書の版は [`ray_layout.json`](../../projects/raytracing_demo/ray_layout.json) が `pelican.ray_group_layout` v3、[`ray_bindings.json`](../../projects/raytracing_demo/ray_bindings.json) が `pelican.ray_bindings` v2 で、いずれもこの形式で出荷されている唯一の実例です(版の一覧は [`docs/v0_freeze.md`](../v0_freeze.md) §1.1)。
+
+**既知の穴**: この project は Studio では開けません。埋め込み engine が起動直後に [`Renderer logical frame requires a compiled render pipeline`](../../src/core/vkcore/renderer.cpp#L4869) で exit 1 します。同じ binary でも headless と `--rpc` 付きの起動は走るので、原因は Studio が接続後に行う要求の側にあります(台帳 `### WP386: RT3-2` の記録、および [`docs/v0_freeze.md`](../v0_freeze.md) §4 の「v0 の既知の穴」。未修正)。RT の宣言面を Studio 上で触りたい場合、v0 の時点では `example` など他の project で確認してください。

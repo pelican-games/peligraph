@@ -1,13 +1,13 @@
 # 第10章 ツールリファレンス
 
-対象: pelican2(2026-09-04 時点、HEAD=`d146b8bd`)/ このマニュアルはコードを正とする
+対象: pelican2(2026-09-17 時点、HEAD=`990b9eaa`)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
-- `pelican_player` の全 CLI 引数(**29 個**。正は [main.cpp](../../src/player/main.cpp) の `add_argument` 群)
+- `pelican_player` の全 CLI 引数(**30 個**。正は [main.cpp](../../src/player/main.cpp) の `add_argument` 群)
 - JSON-RPC(stdio)による外部制御 — 基盤メソッド、エディタ拡張、実セッション例
   - **JSON-RPC** は外部プロセスからエンジンを操る制御プロトコル、**stdio** はその通り道です: 起動した `pelican_player --rpc` の標準入力へリクエスト行を書き、標準出力から応答行を読みます(1 行 = 1 リクエスト / 1 応答の NDJSON。詳細は §10.3)
-- `pelican_cli` の **7 サブコマンド系統**(`project init` / `import` / `dist-config` / `assets` / `bake-camera` / `dump-lowered-material` / `vrm`)
+- `pelican_cli` の **9 サブコマンド系統**(`assets` / `bake-camera` / `import` / `dist-config` / `package` / `project` / `dump-lowered-material` / `vrm` / `graph-catalog`。正は [main.cpp の usage](../../src/devcli/main.cpp#L43))
 - ホットリロード(シェーダ・テクスチャ・マテリアル・モデル・ゲーム DLL)と起動高速化
 - ImGui 開発者 UI(F1)と Frame Plan Viewer
 - 配布ビルド、Pelican Studio の現状、テスト基盤
@@ -20,7 +20,7 @@
 | `pelican_player` | exe | build ツリー内(`build/src/player/<Config>/`) | ゲームランタイム。ウィンドウ / ヘッドレス / RPC の 3 モード |
 | `pelican_game_logic` | **DLL**(`PELICAN_PROJECT` 指定時) | player と同ディレクトリ | プロジェクトの `code/` のビルド産物(✅WP90 で静的リンクから移行) |
 | `pelican_cli` | exe | `dist/`(Debug は `dist_debug/`) | 開発 CLI。**エンジン(pelican_core)にリンクしない** |
-| `pelican_studio` | exe(Qt6) | `dist/`(同上) | Widgets エディタ shell + 別 process engine viewport(§10.7) |
+| `pelican_studio` | exe(Qt6) | `dist/`(同上) | Widgets エディタ shell + 別 process engine viewport。render-tools dock は **3 タブ**(Frame Plan / Features / Graph)で、Inspector にグラフ装着欄がある(§10.7) |
 | `pelican-spv-link` | exe | build 内 | `PELICAN_WITH_SPIRV_LINK=ON`時だけ作るexperimental SPIR-V リンカ CLI([第6章](06_rendering.md) §6.7) |
 | `pelican_project` | 静的 lib | build 内 | 解釈レイヤ(JSON パース/検証の純ロジック) |
 | `pelican_core` | 静的 lib | build 内+`dist/lib` | エンジン本体。公開ヘッダは `dist/lib/include` へコピー |
@@ -39,6 +39,7 @@
 | `--size WxH` | 1280x720 | ヘッドレスの描画サイズ |
 | `--render-out <path>` | なし | PNG 出力先(sRGB エンコード)。`%04d` 等で毎フレーム連番 |
 | `--fps <f>` | 60.0 | ヘッドレス固定ステップのレート(dt = 1/fps) |
+| `--start-time <秒>` | なし | **ヘッドレス専用**。この時刻の frame から `--frames` 枚を出す(✅O-1)。`llround(秒 × fps)` で **parse 時に frame 番号へ量子化**され、engine には「frame の間の時刻」が渡りません([parseStartFrame()](../../src/player/main.cpp#L283))。`--headless` が無ければ `offline.headless_required@1`、負・非有限・数でない綴りは**すべて** `offline.time_invalid@1`、`--rpc` / `--replay` / `--record-input` / `--bake-camera-output` との併用は `offline.mode_conflict@1`([検査](../../src/player/main.cpp#L517))。`--frames` は併用です |
 | `--dump-frame-plan` | off | 解決済みフレームプラン JSON を **stderr** へ出力([第6章](06_rendering.md)) |
 | `--gpu-labels` | off | Vulkan debug object 名と command label を有効化。validation layer の選択とは独立([第6章](06_rendering.md) §6.14) |
 | `--vulkan-validation <off\|on>` | `_DEBUG`: on / それ以外: off | Khronos validation layer と synchronization validation を一体で選択。要求時に `VK_LAYER_KHRONOS_validation` が無ければ名前付き hard error |
@@ -84,6 +85,11 @@ pelican_player --project mygame --vulkan-validation=on                      # �
 `project.json` / scene / user 層には保存されず、overlay から追加された target と pass もその process の
 寿命にだけ存在します。
 
+**`pelican.graph` root では overlay も 1 段下に着きます。**root が `schema: "pelican.graph"` のとき、
+overlay は `rendering.features` に積まれます —— root 直下に積んでも lowering が読まないからです。
+`rendering` オブジェクトを持たない graph root は名前付きで断られます
+(`render_config.section_unlocated@1`。[分岐](../../src/project/renderfeatureoverlay.cpp#L138))。
+
 `--input-action-overlay` が読む文書は、厳密な `pelican.input_action_overlay` v1 envelope
 (`schema` / `version` / `name` / `actions` / 任意の `profile`)です。`actions` は
 `pelican.input_actions` v1、`profile` はその actions だけを参照する `pelican.input_profile` v1
@@ -104,6 +110,13 @@ URI は `ProjectBasicConfig` に入らず、保存・再読み込みの対象に
 だからです。初期注視点は開始 camera の視線上 5 world units 先です。scene object を追加せず、
 選択物へのフォーカスも行いません。未知の preset 名はエラーです。`--input-profile` は project 側、
 free-camera preset は overlay 側を選ぶため、両者は併用できます。
+
+`--start-time` は**飛びません。**指定した frame までの `start_frames − 1` frame を、capture だけ抜いて
+**普通に回します**([replay prologue](../../src/core/appflow/loop.cpp#L441))。graph の時計は `render()` の中でしか
+進まず、game system は自分で dt を積むので、「その時刻にいる」唯一の正直な方法が「そこまでの全 step を通ること」
+だからです。開始時に stderr へ 1 行 `offline: start_time=… start_frame=… replay=… frames=…` が出ます。
+最初に capture される frame が指定時刻の frame で、`--start-time 2.0 --frames 2 --fps 60` の `0001` は
+通常起動の 120 枚目と同じ画です(`--start-time 0` は通常起動と同一)。
 
 ※ `--play-seq` / `--seq-mesh` の相対パスは現状 cwd 基準で解決されます(既知の食い違い。[第11章](11_status.md))。
 
@@ -270,6 +283,8 @@ selection の硬いエラーは `error.data.code` でも判別できます。宣
 | チケットプレビュー | `open_preview` / `update_preview` / `commit_preview` / `abort_preview` / `get_preview_result` |
 | 隔離プレビュー | `eval_preview` / `render_preview` |
 | 保存 | `save_scene` |
+| 共通グラフ | `get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `get_graph_node_values` / `edit_graph_document` / `edit_graph_instances` |
+| 共有部品と package | `export_render_feature` / `import_render_feature` / `install_package` / `uninstall_package` |
 
 既存メソッドの変化: `get_status` に `scene_source`(シーンは**ホットリロード対象外**・保存は `save_scene`)が追加、`step_frame` の応答に `edit_results[]` が追加、`load_scene` / `reload_game_logic` / `start_input_replay` は進行中のプレビューを強制中止します。
 2026-09 の追加(詳細は [第13章](13_editor.md) §13.13): `get_status` に `participants.game_logic`
@@ -277,7 +292,21 @@ selection の硬いエラーは `error.data.code` でも判別できます。宣
 `import_scene_snapshot` の result に `committed` / `effect_errors`、`get_components` の各
 component に `resolution_error`。
 
-2026-09 の追加(AG-3a、`9862ebdd`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering / animation domain の node は `outputs: {}`、publish 前は `published: false`)。読み取り専用で `edit_*` の CAS には乗らない。
+2026-09 の追加(AG-3a、`9862ebdd`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L2010)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L168))。読み取り専用で `edit_*` の CAS には乗らない。
+
+**`get_graph_values` と `get_graph_node_values` は問いが違います。**前者は `instance` 必須で、その
+**instance の入力 port だけ**を `{port, value, source, connected|parameter}` として返します(`source` は
+`connected` / `parameter` / `default` / `override`)。後者は**展開木のノードを全部**並べ、各ノードの出力値を
+`outputs` に入れます([実装](../../src/core/communication/renderconfigeditor.cpp#L1929))。両方とも
+**同じ publish snapshot を読むだけ**で再評価しません —— 再評価は graph の時計を進め event を二重に消費するためです。
+`source: "rendering"` は「これは描画側の評価が使った値だ」という明示で、animation phase は同じ文書を
+自分の state で評価するため、event や trigger で駆動される文書では両者が恒久的に違いうることを表します。
+
+2026-09 の追加(グラフ・共有部品・package): `get_graph_instances` / `get_graph_catalog` / `get_graph_values` /
+`edit_graph_document` / `edit_graph_instances`([登録](../../src/core/communication/editorrpchandlers.cpp#L202))、
+`export_render_feature` / `import_render_feature`(`user://components/<name>/` 経由の共有部品)、
+`install_package` / `uninstall_package`(`project://packages/<ns>/` への vendoring)。params と返り値、
+`ops` の 5 種と `scope`、名前付きの拒否は [第13章](13_editor.md) §13.5 が正です。
 
 ### 実セッション例
 
@@ -383,7 +412,7 @@ AuthoringObjectId は scratch session 内で新しく採番されます。採用
 ## 10.4 pelican_cli リファレンス
 
 ```
-pelican_cli <assets|bake-camera|import|dist-config|project|dump-lowered-material|vrm> ...
+pelican_cli <assets|bake-camera|import|dist-config|package|project|dump-lowered-material|vrm|graph-catalog> ...
 ```
 
 エラーは stderr+終了コード -1、成功は 1 行サマリ+終了コード 0。
@@ -391,6 +420,19 @@ pelican_cli <assets|bake-camera|import|dist-config|project|dump-lowered-material
 ### `pelican_cli project init <dir>`(✅WP57)
 
 空(または未存在)ディレクトリに雛形一式を生成します。生成直後に `pelican_player --project <dir>` でそのまま起動できます。詳細は [第2章](02_getting_started.md)。
+
+生成される `passes/main_rendering_config.json` は **`pelican.graph` root** です。著作した内容
+(`pipeline.preset` = `engine://render_pipelines/hybrid_v1.json`、`features` = `shadow_directional` と
+`sky_ambient` の 2 本)は `rendering` オブジェクトの中に入り、包む処理は
+[`wrapLegacyRenderingConfig()`](../../src/project/renderconfigsection.hpp#L62) の 1 箇所だけです
+([呼び出し側](../../src/devcli/projectinit.cpp#L208)。著作した文字列そのものは [:200](../../src/devcli/projectinit.cpp#L200))。`render_targets` / `rendering_passes` は preset が持つので
+project は書きません —— `run_devcli_project_init.cmake` は**まず root が `pelican.graph` で `rendering` が
+object であることを確かめてから**、節の中に禁止メンバが無いことを見ます
+([検査](../../test/run_devcli_project_init.cmake#L45)。順序が逆だと、節ごと消えたときに検査が素通りします)。
+
+生成される `code/CMakeLists.txt` は 2 行で、`pelican_game_sources(game.cpp)` の**後に**
+`pelican_packages()` を呼びます([template](../../src/devcli/projectinit.cpp#L225))。順序が意味を持ちます ——
+package の object は、その前に作られたゲームロジック DLL へ合流するからです。
 
 ### `pelican_cli import ...`(✅WP21/79/84)
 
@@ -445,6 +487,57 @@ VRM 1.0(`VRMC_vrm`)の humanoid / expressions / lookAt を検証して canonical
 (レンダラへの適用はしません)。引数は `dump` と 1 ファイルちょうどで、それ以外は usage を出して失敗します。
 詳細は [第5章](05_assets.md)。
 
+### `pelican_cli package install|list|inspect`(✅X-1)
+
+package は `pelican.package` v1 の `package.json` を持つ**ディレクトリ 1 つ**です。作る場所はどこでもよく、
+install がその中身ごと `<project>/packages/<namespace>/` へ複製します。**複製した時点で「どこから来たか」は
+意味を失います** —— engine が project の外の package を解決する経路はありません
+([契約](../../src/project/packagemanifest.hpp#L13))。
+
+```sh
+pelican_cli package install <dir> --project <project>   # 複製 + project.json への記録
+pelican_cli package list --project <project>            # 記録した digest を実バイトと照合
+pelican_cli package inspect <dir>                       # install せずに manifest を読む
+```
+
+- **`install`** —— 検査は全部**最初の 1 byte を書く前**に終わります(manifest 不在 / 不正、engine が古い、
+  依存 package が無い、feature 文書が不正、同名が install 済み、SDK ABI 不一致)。複製は staging ディレクトリを
+  作ってから rename します。**namespace は文書に入ります** —— vendoring のとき feature の `name` が
+  `<namespace>.<元の名前>` に書き換えられるので、名前を比べるすべての場所が同じ名前を見ます。
+  成功すると `{status, namespace, package_version, sha256, destination, feature_references, feature_names}` を
+  JSON で出します([実装](../../src/devcli/packagecommand.cpp#L88))。
+- **`list`** —— `project.json` の `packages[]` を読み、**実ファイルの sha256 を計算し直して**比べます。
+  ディレクトリごと無ければ `status: "missing"`、中身が書き換わっていれば `status: "modified"` で、
+  どちらかがあれば stderr に `package_digest_mismatch` を出して非 0 終了です
+  ([照合](../../src/devcli/packagecommand.cpp#L140))。digest を「書くだけ」にしないための本番経路です。
+- **`inspect`** —— manifest を検証して **10 鍵**をそのまま出します: `schema` / `version` / `namespace` /
+  `package_version` / `description` / `requires` / `dependencies` / `provides`(`features` / `graphs` /
+  `components` / `code`)に、読んだ場所の `directory` と、この engine が期待する `sdk_abi_expected` が足されます
+  ([組み立て](../../src/devcli/packagecommand.cpp#L64)、[足す 2 鍵](../../src/devcli/packagecommand.cpp#L179))。
+  agent が「この package が何を持ち込むか」を install 前に読むための口です。
+
+拒否は `PackageError` が code を運ぶので、CLI も RPC も理由を組み立て直しません
+(`package_manifest_missing` / `package_manifest_invalid` / `package_namespace_invalid` /
+`package_path_invalid` / `package_in_use` など)。Studio 側に package の UI はありません ——
+install した feature は `list_render_features` の catalog に `source: "package"` として現れるだけです
+([第13章](13_editor.md) §13.5)。
+
+### `pelican_cli graph-catalog`(✅AG-0)
+
+引数を取りません。**登録済みグラフモジュールのカタログ**を `pelican.graph_catalog` v1 の JSON で stdout に出します
+([実装](../../src/devcli/graphcatalogcommand.cpp#L10))。モジュール作者が engine のソースを読まずに
+型・操作・sink を知るための口で、`get_graph_catalog` RPC が返すのと同じ値です。
+
+```sh
+pelican_cli graph-catalog
+```
+
+モジュールは既定 build で **4 本**(`pelican.value` / `pelican.audio` / `pelican.render` / `pelican.pose`)、
+`PELICAN_WITH_ANIMATION=OFF` では `pelican.pose` が消えて **3 本**です。この個数と、各操作が
+`domain` / `evaluation` / `change` / `sink` を持つことは
+[`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake#L23)(ctest 名 `devcli_graph_catalog`)が
+固定しています。出力はモジュール名・操作名・型・sink のどれも**名前順**です([catalog()](../../src/project/graphmodule.cpp#L227) が名前を鍵にした `std::map` を走り、型と sink は明示的に sort します)。登録順に依存しません。
+
 ## 10.5 ホットリロード(✅WP90/96〜110/147/162/178)
 
 保存すれば動いたまま反映される、が現在の開発体験です。基盤は [src/core/watch/](../../src/core/watch)(FileWatcher + ReloadService。デバウンス 200ms、適用は**次フレーム先頭で一括**、mid-frame 差し替えなし)。
@@ -458,7 +551,7 @@ VRM 1.0(`VRMC_vrm`)の humanoid / expressions / lookAt を検証して canonical
 | VRMA source/profile | 部分✅WP178 | generation/stale/rebind entry pointは済。FileWatcher/loaderからの自動配線は未 |
 | ゲームロジック DLL | ✅WP90/162 | 下記。candidateを旧DLLと並存side-decodeしてから切替 |
 | input actions / profile(HR2-I)、pelican.ui(U3) | 📐 | backlog Tier 1 |
-| rendering config | ✅ | ディスク経由は `pelican.render_pipeline` 参加者が拾う。加えて Studio から `features[]` を編集して再起動なしで反映できる(§13.5) |
+| rendering config | ✅ | ディスク経由は `pelican.render_pipeline` 参加者が拾う。加えて Studio から `features[]`・feature の scalar パラメータ・**共通グラフ文書**(`nodes` / `definitions`)を編集して再起動なしで反映できる(§13.5)。どれも engine がファイルを所有し、編集側は触りません |
 | scene JSON / project.json | 対象外 | 設計上の決定(再起動) |
 
 - **有効条件**: ウィンドウモードのみ(既定 ON・専用フラグなし)。リプレイ / `--strict-assets` / rpc 駆動中は中央ゲートで無効。headless では自動監視しません。
@@ -499,10 +592,65 @@ behavior paramsをside-decodeします。不適合なら旧DLL/runtimeを一切�
 ## 10.7 Pelican Studio(devstudio)
 
 **現状 🚧: Qt Widgets の editor shell、別 process engine viewport、Outliner と viewport の
-選択同期、Frame Plan パネル(9 タブ・並べ替え可・ノード詳細ペイン)、
-ワークスペース配置の永続化、fullscreen パスの下書きフォーム、
-そして `features[]` の編集と再起動なしの反映まで実装済み。**
+選択同期、render-tools dock(Frame Plan 9 タブ・Features・Graph の 3 タブ)、
+ワークスペース配置の永続化、pass の著作フォーム(fullscreen / material / raster と preset pass の保存)、
+`features[]` とその scalar パラメータの編集・materialize、共通グラフの閲覧と編集、
+Inspector からのグラフ装着まで実装済み。**
 起動は `cmake --build ./build --target run_studio`。
+
+### `pelican_studio` の CLI
+
+引数は **3 つだけ**です([main.cpp](../../src/devstudio/main.cpp#L7))。
+
+```sh
+pelican_studio --project <dir>                 # 起動時にこの project を開く
+pelican_studio --project <dir> --tab graph     # render-tools dock のタブを前に出す
+pelican_studio --automation <名前>             # test 用の自動化チャネルを開く(Q-1)
+```
+
+`--tab` が取るのは `frame_plan` / `render_features` / `graph` の 3 つ
+([一覧](../../src/devstudio/view/mainwindow.cpp#L540))。**未知の名前は window を作る前に console へ
+理由を出して終了コード 2** です([検査](../../src/devstudio/main.cpp#L36)) —— window を開いて「たまたま前にあった
+タブ」を見せると、綴り間違いが成功に見えるためです。`--tab` は `openProject` の**後**に適用されます
+([順序](../../src/devstudio/view/uimain.cpp#L62)) —— project を開くとその project のツール配置が復元され、
+どのタブが前かが変わるからです。
+
+見た目は **View ▸ Theme ▸ Light / Dark** で切り替えます(✅N-5。CLI の引数ではありません)。選択は QSettings の
+`studio/theme` に残り、**再起動なしで**窓と 2 つのノードキャンバスに当たります([第13章 §13.5](13_editor.md))。
+
+`--automation <名前>` は **GUI を外から駆動するための口**です(Q-1)。指定すると `QLocalServer`(Windows では
+`\\.\pipe\<名前>`)が開き、**改行区切りの JSON 1 行 = 1 命令**で `list` / `click` / `double_click` / `drag` /
+`wheel` / `move` / `press` / `release` / `key` / `type` / `text` / `action` / `menu_list` / `view_state` /
+`wait` / `wait_engine` / `rpc` / `open_project` / `screenshot` / `quit` の **20 命令**を受けます
+([一覧](../../src/devstudio/automation/automationcommands.cpp#L1432))。**flag が無い起動では server object が
+作られないので socket は存在しません**([構築](../../src/devstudio/view/uimain.cpp#L36)) —— 出荷時の挙動は
+変わりません。listen できたときだけ `automation listening: <endpoint>` を標準出力に出します
+([その 1 行](../../src/devstudio/view/uimain.cpp#L55))。開けなかったときは理由を出して **終了コード 3** です。
+
+回す側は [`tools/studio_drive.py`](../../tools/studio_drive.py#L876)(`uv run`、標準ライブラリだけ)です。
+Studio を `--automation --project --tab` で起動し、シナリオ JSON(`test/studio_scenarios/<名前>.json`)の step を
+順に送り、期待を検査して `report.json` を書きます。
+
+```sh
+uv run tools/studio_drive.py --studio dist_debug/pelican_studio.exe \
+  --player build/src/player/Debug/pelican_player.exe \
+  --scenario test/studio_scenarios/graph_read.json \
+  --project <project の複製> --var other_project=<もう 1 つの複製> \
+  --artifacts out/graph_read --report out/graph_read/report.json
+```
+
+report は `verdict`(`green` / `red`)・`summary`(step ごとに 1 行)・`failures`(送受信・理由・失敗時の
+スクリーンショット)・`studio_log` を持ちます([組み立て](../../tools/studio_drive.py#L990))。
+`studio_exit_code` は記録されますが**判定には入りません**(Studio は終了時に異常終了コードを残す既知の穴)。
+書式・命令表・名前の付け方は [README](../../test/studio_scenarios/README.md#L1) と
+[第13章](13_editor.md) §13.5「Studio の自動化面」が正です。
+
+✅Q-1b で命令が 7 個増えました(`wheel` / `move` / `press` / `release` / `action` / `menu_list` / `view_state`。
+`drag` は `button` を取ります)。`press` / `move` / `release` は押している button を面で共有するので掴んだままの
+pan が書け、`key` は `route`(`widget` 既定 / `window`)を取って **`window` のときだけ shortcut map を通ります**。
+`list` の各項目は `shortcut` を返し、メニューバー・dock・gizmo の `QAction` は `pelican.file.*` /
+`pelican.view.panels.*` / `pelican.gizmo.*` という objectName を持ちます —— `QAction` は widget ではないので
+一覧は `menu_list`、発火は `action` です。シナリオは 5 本になりました(下表)。
 
 > **設計決定(D0: エディタ特権の禁止・2026-07-08):** devstudio は公開契約(rpc / pelican_project / データ形式)の上に建つ 1 クライアントであり、エンジン内部への裏口 API を持たない。編集操作はまず rpc メソッドとして定義し、devstudio はそれを呼ぶだけ。
 
@@ -536,6 +684,14 @@ viewport の左クリックは child client の物理 pixel 座標を `pick_obje
 使わないため、無名 object も別々に選択できます。WP264 の時点では枠線や gizmo を描きませんでしたが、
 現在は選択と toolbar の Move / Rotate / Scale モードを `set_gizmo` で player へ送ります。
 
+Inspector の `Add component...` / `Ray geometry...` の下、properties の一覧より**上**には **Attached graphs** グループが
+あります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L193))。選択オブジェクトを owner とする
+`graph.instance` の一覧と **Attach...** / **Detach** / **Refresh**、選択した instance の **Instance inputs**
+(port ごとに mode / 著作された値 / 実際に使われた値の 3 列)、そして port ごとの 4 導線 ——
+**Control with a curve** / **Connect to another output** / **Open the source** / **Disconnect** です。
+**Open the source** は Graph タブを前に出して該当ノードを選択します。手順と RPC は
+[第13章](13_editor.md) §13.5「Inspector のグラフ装着」。
+
 Inspectorの各componentにある「Remove component」で、選択objectからcomponentを削除できます。
 削除は既存の編集journalを通り、Undo／Redoで取り消し・再実行できます。シーンファイルへの
 書き出しにはSaveを使います。生成されたcomponentは対象外で、編集不可・処理待ち・他の編集中は
@@ -562,7 +718,10 @@ abort します。handle 以外を押した場合は通常の object pick へ移
 その後にシーンを開き直しても gizmo 編集は残ります。gizmo の描画機能自体は Studio 起動時の editor
 overlay が用意しますが、overlay の feature 一覧を scene や project へ書き戻す経路はありません。
 
-`View > Panels > Frame Plan` の dock には **Frame Plan と Features の 2 つのタブ**が同居します。
+`View > Panels > Frame Plan` の dock(`pelican.framePlanDock`)には **Frame Plan・Features・Graph の
+3 つのタブ**が同居します(タブ widget の object name は `pelican.renderTools`。
+[構築](../../src/devstudio/view/mainwindow.cpp#L241))。**Graph は新しい dock ではなくこの dock の 3 枚目**です ——
+dock を増やすことは「見失う場所」を増やすことなので、同じレンダー設定を語る 3 つの見方を 1 箇所に置いています。
 
 **Frame Plan タブ**は実行中 player の公開 `get_frame_plan` を読む調査面で、**9 枚のタブ**を持ちます ——
 logical graph / passes / resources / physical plan / decisions / backends / barriers / materials / raw JSON。
@@ -576,10 +735,46 @@ Resources、Barriers、Materials では writer/reader、hazard edge、公開さ�
 
 **Logical graph は左右 2 面**です。左のキャンバスでノードを選ぶと、右の詳細ペインにそのパスの行が出ます。
 境目は掴んで動かせ、位置は保存されます。
+**ノードの見た目は Graph タブと同じです(N-3)** —— 見出し帯(名前と種別)+ GPU 計時の行 + 書く target の行 +
+読む resource の行で、行の端のソケットは resource の種類ごとに形が違います(image = 丸 / buffer = 四角 /
+acceleration structure = 菱形 / swapchain = 六角 / history = 縁の太い丸)。辺はソケット中心をつなぎ、
+ラベルは tooltip になりました。**ホイールでカーソル中心のズーム(0.25〜4.0)、中ボタンまたは Space + 左でパン、
+`F` と右クリックの Fit view** は 2 つのキャンバス共通です(詳細は[第13章](13_editor.md) §13.5)。
 
 **Features タブが編集面です。**著作 config の `features[]` を読み、engine が返したカタログから選んで
 足す・外すができ、**再起動なしで反映されます**。カタログは engine が可用性を判定して返すので、
-モジュールの動的生成が要る feature は理由付きで断られます(§6.5)。RPC の契約は §13.5。
+モジュールの動的生成が要る feature は理由付きで断られます(§6.5)。カタログの各項目には
+`source`(`engine` / `package`)が付き、install した package の feature も同じ一覧に並びます。RPC の契約は §13.5。
+
+ボタンは 3 段です。著作一覧の下の行が **Remove selected** / **Parameters...** / **Make editable...**、
+カタログの下が **Add selected**、最下段が **Refresh** / **Procedural assets...** / **Tasks...** /
+**Fork preset...** / **Region replacements...** / **Callable Records...** / **Scene AS...** / **Apply**
+([構築](../../src/devstudio/view/renderfeatureswidget.cpp#L1848))。**Parameters...** は選択 feature の
+scalar パラメータを編集し、**Make editable...** は materialize(具体値へ展開した派生を新しい
+`project://` ファイルに作り、元の参照をそれに差し替える)です。どちらも詳細は
+[第13章](13_editor.md) §13.5。**この dock に export / import や package の UI はありません** ——
+`export_render_feature` / `import_render_feature` / `install_package` / `uninstall_package` は
+RPC と CLI にだけあります。
+
+**Graph タブ**は共通グラフ(`pelican.graph` root の `nodes` と `definitions`)のノードキャンバスです。
+上段に `Scope:`(root と definition)とパンくず、右に `Values from:` と `Refresh`。左がキャンバス、右が
+選択ノードの詳細表で、**この 2 面構成は上の Logical graph と同じ形**です。`Values from:` で選ぶのは
+「どの instance の入力 port に実測値を重ねるか」だけで、`get_graph_values` を重ねます ——
+definition の中のノードの値は `get_graph_node_values`(AG-3a)で engine からは取れますが、
+**Studio 側の表示は AG-3b 待ちです**。ソケットの形が port の型を表し、形と色の既定表は
+[`graph_socket_styles.json`](../../src/devstudio/resources/graph_socket_styles.json#L1) —— 新しい型を足すのに
+C++ を触りません。読むだけでなく**編集もここで完結します**(ソケット間ドラッグで接続、`Delete` で切断・削除、
+値の帯のその場編集、見出しのダブルクリックで rename、右クリックでノード追加)。操作の一覧と注意は
+[第13章](13_editor.md) §13.5。
+
+このタブが engine へ出せる RPC は型で絞られています。`GraphCanvasReadCapability`
+([定義](../../src/devstudio/view/graphcanvasreadcapability.hpp#L20))は汎用の RPC メソッドを**表現できない**形で、
+`get_graph_instances` / `get_graph_catalog` / `get_graph_values` の 3 つの読みと、編集の
+`edit_graph_document`、結果引き取りの `get_edit_result` だけを名前で持ちます。それ以外を要求すると
+`The graph canvas cannot issue <method>.` になります。Frame Plan 側も同じ作りで、
+`FramePlanReadCapability` と `RenderPassAuthoringCapability`
+([pass 著作側](../../src/devstudio/view/renderpassauthoringcapability.hpp#L19))に分かれています。
+**D0(§10.7 冒頭)を「気をつける」ではなく型で守るのがこの 3 つの struct です。**
 
 plan は player の RPC 接続直後に1回取得し、それ以後は `Refresh` を押した時だけ更新します。実測で
 6,000 行を超える応答を毎 frame 転送・parse・tree 再構築すると editor 自身が診断対象を重くするためです。
@@ -591,8 +786,34 @@ CAS/journal、undo/redo、atomic save、snapshot import、watch、isolated previ
 process/window 結線は WP251、汎用 ID バッファ picking + RPC は WP262、Studio の選択同期は
 WP264、Frame Plan パネルは WP269 で入りました。engine の汎用 gizmo feature/RPC は WP274 で入り、
 Studio の preview lease を使うドラッグ接続は WP275 で入りました。複数 client WebSocket は
-未接続です。起動主体が宣言する editor feature overlay は WP289 で入りました。ツール自作の入口は
+未接続です。起動主体が宣言する editor feature overlay は WP289 で入りました。2026-09 の作業単位は
+記号 ID です: Inspector のグラフ装着と 4 導線は P-1(`b960edf7`)、feature パラメータと materialize は
+P-2a-1c(`9e4081b4`)、graph root の節を読む authoring 面と共有部品の export / import は
+P-2a-4a + P-2a-3(`5100be5f`)、package は X-1(`3f72b71d`)、`get_status.animation` と
+`get_graph_node_values` は AG-3a(`9862ebdd`)、Graph タブは N-1(`2c6828e4`)/ N-1b(`373f62ee`)/
+N-2(`02a3d285`)、自動化面は Q-1(`06829720`)、Frame Plan のノードの見た目と 2 つのキャンバス共通の
+ズーム・パン・fit は N-3(`dd088c2a`)で入りました。ツール自作の入口は
 `pelican_project`、JSON-RPC/`pelican_rpc.py`、ImGui の三つです。
+
+**まだ無いもの(名前で書きます)。**
+
+- **時間軸の view と、definition scope のノード値表示はありません**(AG-3b)。engine 側の RPC
+  (`get_graph_node_values`)は先に着地しています。
+- **Studio は `get_status` を呼びません。**したがって `get_status.animation` を Studio の画面で見る経路は
+  まだありません。
+- **画素の一致では見ていません。**シナリオが保存するスクリーンショットは AI と人が見るためのもので、
+  hash 比較も録画もありません。`widget` モードの絵に**埋め込まれた engine の窓は写りません**(別 HWND)。
+- **`--automation` の口に認証はありません。**flag を付けた起動でだけ開きます。
+
+**自動操作面はもうあります(Q-1)。**`pelican_studio --automation <名前>` + `tools/studio_drive.py` +
+`test/studio_scenarios/*.json` で、**実物の窓と実物の engine を使った GUI の e2e** が回ります(上記)。
+したがって「装着 → 編集 → 観測 → 保存 → 再読込を実 engine で 1 経路通すテストが無い」も**過去の記述**です ——
+`studio_scenario_graph_edit_roundtrip` が値の帯の編集からディスク経由の再読込までを 1 本で通します。
+canned reply のハーネスと mock を使う Studio テスト群はそのまま残っています(§10.9)。
+
+**既知の穴: Studio は `projects/raytracing_demo` を開けません。**子 process の player が
+`Renderer logical frame requires a compiled render pipeline` で終了します(N-1 の完了記録が記録した穴)。
+他の出荷 project と、`pelican.graph` root に変換した project は開けます。
 
 ## 10.8 クラッシュシンボルの退避
 
@@ -632,8 +853,18 @@ HEAD が動くと configure が再実行される。
 - 単体テスト: Catch2 v3(`pelican_define_test`)。**GPU 必須テストは Vulkan デバイス列挙失敗時に `SKIP()`**。
 - **GPU テストの直列化(WP385)**: `gpu` label の付く CTest は launcher `pelican_gpu_lease_run`(`test/gpu_lease_run.cpp`)経由で起動し、Windows では machine-wide(`Global\` 名前空間)の lease を 1 本だけ取ります。CTest の `RESOURCE_LOCK pelican_gpu` は 1 つの `ctest` 実行の中しか直列化しないので、**別 worktree の `ctest` と同時に走っても GPU が重ならない**のはこの lease の側です。lease 待ちが締め切りを越えたら skip ではなく失敗(`gpu_lease_timeout@1{holder_pid, waited_seconds}`、exit 124)で、worktree ごとの configure / build / test は [`tools/worktree.sh`](../../tools/worktree.sh) が担当します(§10.10)。既定の lease 名は `pelican_gpu_lease_v1`、既定の待ち時間は **1200 秒**で、`PELICAN_GPU_LEASE_NAME` / `PELICAN_GPU_LEASE_TIMEOUT_SECONDS` で変えられます。**`PELICAN_GPU_LEASE=off` を置くと lease を取らずに素通し**します(対照実験用。off だと 2 process の GPU 区間が実際に重なります)。launcher は子プロセスを Job Object(kill-on-close)に入れてから resume するので、**孫プロセスが取り残されません**。
 - 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。2026-07-10 以降の追加: `run_devcli_assets`(WP66)/ `run_event_schema_compile`(WP71)/ `run_dump_lowered_material`(WP76)/ `run_devcli_gltf_extract`(WP79)/ `run_spvlink_golden`(WP80)/ `run_devcli_rules_import`(WP84)/ `run_devcli_bake_camera` + `run_input_record_replay_headless`(WP89)/ `run_ui_u2_rpc_replay`(WP93)など。
+- 2026-09 の追加: [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake)(ctest 名 `devcli_graph_catalog`。`pelican_cli graph-catalog` の出力を検査し、**さらに `docs/v0_freeze.md` の操作表と突き合わせます** —— 表は `<!-- graph-op-table:begin -->` / `:end` のコメントで区切られていて、誰も比べない写しを 2 つ目の正にしないための仕掛けです)、`package_install_smoke`(X-1。install → カタログ → 描画 → uninstall を実 player で。`gpu` ラベル)、[`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(出荷 project の走査。`project.json` の `requires` が満たせない project は**名前を出して skip** し、player の中で落ちません)。
+- **Studio のシナリオ(Q-1)**: `test/studio_scenarios/*.json` は 1 本が 1 つの ctest `studio_scenario_<名前>` になり
+([登録](../../test/CMakeLists.txt#L2744))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
+実物の player が埋まるので `QT_QPA_PLATFORM=offscreen` は掛けません。`uv` が見つからない build と
+`SKIP_DEVSTUDIO=ON` では**登録されません**(「緑だが走っていない」になる形なので、Studio を触ったら Studio 入りの
+build で見ます)。[`run_studio_scenario.cmake`](../../test/run_studio_scenario.cmake#L30) が fixture
+`test/fixtures/studio_automation_graph` を temp に 2 つ複製し、Qt を PATH に置いて driver を起動します。
+現在は **6 本**(`graph_read` / `graph_edit_roundtrip`、✅Q-1b の `canvas_zoom_pan` / `menu_actions` /
+`graph_canvas_zoom_pan`、✅N-5 の `theme_switch`)で、成果物(`report.json`、
+`studio.log`、スクリーンショット)は `build/test_artifacts/studio_scenarios/<名前>/` に残ります。
 - ゴールデンイメージテスト(**`inventory.json` の `cases[]` に登録されたものだけが対象。ディレクトリを置くだけでは走らない**。件数は [第6章](06_rendering.md) §6.10 が正)。
-- ctest 非登録のスモーク: `run_build_units_smoke.cmake`(IMGUI / PHYSICS 系を含む単独 OFF ビルド検証)、`run_project_code_smoke.cmake`。
+- ctest 非登録のスモーク: `run_build_units_smoke.cmake`(IMGUI / PHYSICS 系を含む単独 OFF ビルド検証。`PELICAN_WITH_ANIMATION=OFF` は [`run_animation_smoke()`](../../test/run_build_units_smoke.cmake#L950) が回し、[`verify_animation_absent()`](../../test/run_build_units_smoke.cmake#L883) が「消えているべきものが消えている」を確かめます)、`run_project_code_smoke.cmake`、`run_package_template_smoke.cmake`(X-1。package 入りの一時 project を configure から build して headless で走らせるので、**primary worktree の依存ソースを** `-DPELICAN_PACKAGE_TEMPLATE_SMOKE_DEPS=<primary>/build/_deps` で渡します)。
 - **CI(✅WP137/165)**: push/PRのWindows CPU gateに加え、手動/週次の
   build-unit OFF/Jolt/project-code/clean-clone matrixがあります。GPU testは
   `gpu` labelで除外し、`SKIP`はexact allowlist、retryなし。GPU CI2は未。

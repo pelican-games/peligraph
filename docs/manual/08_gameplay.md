@@ -1,6 +1,6 @@
 # 第8章 ゲームロジック
 
-対象: pelican2(2026-09-04 時点、HEAD=`d146b8bd`)/ このマニュアルはコードを正とする
+対象: pelican2(2026-09-17 に §8.4 の API 表と §8.13(アニメーション)を全面更新。HEAD=`990b9eaa`)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -10,7 +10,8 @@
 - イベント層(emit と購読、フレーム境界配送)
 - シーン遷移・カメラ(コントローラ含む)・物理クエリ(shapeCast / moveAndSlide)の使い方
 - 決定性(固定ループ順序・決定的乱数・シード)— 「なぜ毎回同じ結果になるのか」
-- オーディオ・永続化(設定/セーブ)・アニメーション・2D スプライトの操作
+- オーディオ・永続化(設定/セーブ)・2D スプライトの操作
+- アニメーション — **姿勢の 2 つの装着様式**(`animation` コンポーネント / 共通グラフの `graph.instance` + `pose.*`)、root motion、観測、`PELICAN_WITH_ANIMATION=OFF` の見え方
 
 (本文の `✅WP155` のような `WP<数字>` は、エンジン側の作業単位(work package)に付く通し番号です — [用語集](14_glossary.md)。「どの作業で入った機能か」の目印として添えています)
 
@@ -153,8 +154,14 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 | ライト | `setDirectionalLightDirection(name, dir)` / `setDirectionalLightIntensity(name, f)` / `setPointLightPosition(name, pos)` / `setSpotLightDirection(name, dir)` — いずれも→bool | ✅WP142。[第4章](04_scene_ecs.md) §4.2 の light をオブジェクト `name` で指す。未知名は例外ではなく **false** が返る |
 | HUD | `debugText(x, y, text, color, scale)` | colorはRGBA、scaleは整数倍率。省略時は白・等倍。debug_text feature 未参照時は no-op([第7章](07_input_ui.md)) |
 | イベント | `emit(const Event&)` | §8.6 |
+| アニメーション | `setGraphParameter(object, parameter, value)`→bool | **共通グラフ(pass 文書)の `graph.instance`** の入力を実行時に上書きする。`std::nullopt` で上書きを取り消す。edge が供給しているポートを狙うと `graph.override_shadowed@1`([gamecontext.hpp:110](../../src/core/userpublic/gamecontext.hpp#L110)。[第6章](06_rendering.md) §6.17) |
+| | `setAnimationGraphParameter(object, name, value)`→`Animation::Status` / `forceAnimationGraphState(object, state)`→`Animation::Status` | **`animation` コンポーネントの `graph`**(`pelican.anim_graph`)に装着された評価器を動かす。初回装着の前と取り外し後は `not_found`、シーンのロード/破棄トランザクション中は `phase_order_error`([gamecontext.hpp:116](../../src/core/userpublic/gamecontext.hpp#L116)) |
 
-アニメーション操作の API は GameContext に**ありません** — クリップは宣言的コンポーネント([第4章](04_scene_ecs.md))、グラフは独立した公開評価器(§8.13)です。評価器を `GameContext` に載せると標準の評価器だけが特権を持ってしまい、「評価器ごと自作できる」という設計が空文になるためです([../design_animation_graph.md](../design_animation_graph.md))。
+> **この 3 本は「アニメーションの API」ですが、対象が 2 つに分かれていて互いに委譲しません(✅AG-1b 決定 5)。** `setGraphParameter` が触るのは **pass 文書の `graph.instance`** の入力ポート、`setAnimationGraphParameter` / `forceAnimationGraphState` が触るのは **シーンの `animation` コンポーネント**が持つ評価器です(`setGraphParameter` は [gamecontext.cpp:428](../../src/core/userpublic/gamecontext.cpp#L428) で `SceneLoader` へ、`setAnimationGraphParameter` / `forceAnimationGraphState` は [:341](../../src/core/userpublic/gamecontext.cpp#L341) / [:351](../../src/core/userpublic/gamecontext.cpp#L351) で `AnimationSystem` へ行きます)。**姿勢の装着様式が 2 つある**(§8.13)ことがそのまま API に出ています。同じ owner に両方は付かないので、「どちらを呼ぶか」は装着の仕方で決まります。
+>
+> 同じ `graph.instance` 側には `emitGraphEvent(object, input, command)` もあります。`input` は **`event.playback` ノードの(展開後の)id** で、そこから `value.event_clock` / `audio.playback` の `events` ポートへ再生制御イベントが流れます([valuegraph.cpp:302](../../src/core/userpublic/valuegraph.cpp#L302))。
+>
+> 一方、**姿勢の評価器そのものは `GameContext` に載っていません** — 評価器を載せると標準の評価器だけが特権を持ってしまい、「評価器ごと自作できる」という設計が空文になるためです([../design_animation_graph.md](../design_animation_graph.md))。自作評価器は凍結 C-ABI 経由です(§8.13)。
 
 ### actionPose(✅WP132 — XR 姿勢入力)
 
@@ -574,12 +581,29 @@ auto slots  = ctx.listSaves();                           // {slot, timestamp} �
 - 書き込みはすべて atomic(tmp + rename)。削除 API(`deleteSave`)や rpc 経由の永続化メソッドはまだありません。
 - **シーンロード中に書くと、ディスクへの反映はロードの成功後**です(§8.4 の囲み)。同じロードの中では `loadData` が書いた値を返し、`listSaves()` にも並びますが、その `timestamp` は **0**(まだファイルが無い)です。`onDestroy` から書いた場合、失敗しても例外にはならず `effect_errors` に記録されます。
 
-## 8.13 アニメーション再生(✅WP38/94/97/101/102/176〜178)
+## 8.13 アニメーション再生(✅WP38/94/97/101/102/176〜178、AG-1a/1b/2)
 
-3 つのレベルがあります。
+### 姿勢の 2 つの装着様式
 
-1. **宣言的クリップ再生(WP38)** — シーン JSON の `animation` コンポーネント([第4章](04_scene_ecs.md) §4.2)。ゲームコード不要。時刻源は EngineTime(決定的)。
-2. **アニメーショングラフ(WP101/102)** — `pelican.anim_graph` v1 のデータアセット + **非特権の公開評価器**。エンジン特権なしで `#include <animation/animgraph.hpp>` だけで動きます。
+**個体(owner)に骨格の姿勢を付ける書き方は 2 つ**あり、v0 ではどちらも契約です。
+
+| | (1) animation コンポーネント | (2) `graph.instance` + `pose.*` |
+|---|---|---|
+| 書く場所 | シーン JSON の `animation`([第4章](04_scene_ecs.md) §4.2) | rendering config(`pelican.graph` root)の `nodes`([第6章](06_rendering.md) §6.17) |
+| 中身 | **`clip` XOR `graph`**(クリップ 1 本か、`pelican.anim_graph` v1 文書か。どちらか片方**ちょうど 1 つ**が必須) | `pose.clip_sample` / `pose.blend` / `pose.state_machine` を `pose.skeletal` sink へ繋ぐ |
+| ゲームコードからの操作 | `setAnimationGraphParameter` / `forceAnimationGraphState`(§8.4) | `setGraphParameter` / `emitGraphEvent`(§8.4) |
+| 出荷の実物 | **宣言は無い**(`movement.anim_graph.json` は animgraph_demo のゲームコードが自分で読み込みます) | `projects/posegraph_demo` |
+
+**この 2 つは同じ owner に共存しません。** 同じ個体に 2 本目の writer が来ると **`pose.sink_conflict@1`** で名前付きに落ちます —— 黙って上書きすることはありません。検査は二段で、文書レベルの proxy(`component_writer`)と、publish 時の **owner ごとの writer token**(フレーム改訂付き)の両方が見ています([posegraph.cpp:40](../../src/core/animation/posegraph.cpp#L40))。
+
+> **「姿勢の正本を 1 本にまとめる」は v0 では撤回されました(✅AG-1b)。** 一本化には「シーンが持つ派生プログラムの置き場」と「評価器の状態を写す API」が先に要り、v0 にはどちらもありません。**v0 が約束するのは 2 つの経路の parity**(`loop` / `speed` / `start_time` の意味、位相、パラメータ編集をまたいだ状態の保持)**と owner 単位の排他**の 2 つだけです([docs/v0_freeze.md](../v0_freeze.md) §1.6)。
+
+`animation` コンポーネントの受理キーは `name` / `clip` / `graph` / `parameters` / `speed` / `loop` / `start_time` の 7 つですが、**`graph` を書いた場合 `speed` / `loop` / `start_time` は拒否されます**(`field 'animation.<鍵>' is clip-only; graph states define their playback clocks`)。逆に `parameters`(グラフの初期パラメータ)は `graph` のときだけ書けます([componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L990))。
+
+### ゲームコードから見た層
+
+1. **宣言的クリップ再生(WP38)** — シーン JSON の `animation` コンポーネントの `clip`([第4章](04_scene_ecs.md) §4.2)。ゲームコード不要。時刻源は EngineTime(決定的)。
+2. **アニメーショングラフ(WP101/102)** — `pelican.anim_graph` v1 のデータアセット + **非特権の公開評価器**。**装着の仕方が 2 通り**あります: シーンの `animation.graph` に書けば**エンジンが評価器を束縛してくれ**(`setAnimationGraphParameter` / `forceAnimationGraphState` が効く相手はこれです)、ゲームコードが `#include <animation/animgraph.hpp>` で `EvaluatorV1` を自分で持つこともできます。後者はエンジン特権なしで動きます。
 
 グラフ JSON(実物: [../../projects/animgraph_demo/movement.anim_graph.json](../../projects/animgraph_demo/movement.anim_graph.json) 全文):
 
@@ -623,7 +647,7 @@ void update(Pelican::GameContext &ctx) {
 }
 ```
 
-グラフを使うオブジェクトには `animation` コンポーネントを**付けません**(評価器が pose sink を claim します)。`forceState` / `getStatus()`(現在ステート・遷移・semantic pose hash)も公開されています。v1 の語彙は clip + blend1d + crossfade + interrupt("never" / "higher_priority" / "always")のみで、layer・2D blend は v2 予約(キーを書くとエラー)。
+**この「ゲームコードが `EvaluatorV1` を自分で持つ」書き方をするオブジェクトには、`animation` コンポーネントを付けません** —— 評価器が自分で pose sink を claim するので、コンポーネントを付けると 2 本目の writer になります(上の排他と同じ話です)。一方、**シーンの `animation.graph` に同じ文書を書く**書き方なら、束縛も再束縛もエンジンがやります。`forceState` / `getStatus()`(現在ステート・遷移・semantic pose hash)も公開されています。v1 の語彙は clip + blend1d + crossfade + interrupt("never" / "higher_priority" / "always")のみで、layer・2D blend は v2 予約(キーを書くとエラー)。
 
 3. **自作評価器(上級・WP94/102)** — 凍結 C-ABI([../animation_abi_v1.md](../animation_abi_v1.md) が正)+ versioned service table。ゲーム DLL が公開ヘッダのみで pose sampling / blend / commit を駆動できます(標準評価器自体がこの面の dogfood)。
 
@@ -660,8 +684,79 @@ pose を `stale_generation` にします。`EvaluatorV1::rebind()` は新 rig/pr
 
 制限: native clip path は joint 128 / 補間 LINEAR・STEP、morph の weight 駆動は
 VRM expression service 経由のみ(通常クリップの weights channel は非対応)。
-VRMA を含め IK・root motion の object-transform 適用はありません。決定性は
+**IK はありません。** **root motion(クリップの根の移動を個体の transform へ渡すこと)は ✅AG-2 で入りました** —— 下の小節です。ただし VRMA の hips を自動で root motion として解釈することはしません。決定性は
 「同一ビルドで byte 一致」です。
+
+### 姿勢グラフ(`pelican.pose`)
+
+装着様式 (2) の中身です。ノード語彙そのもの(module / 型 / 契約の読み方)は [第6章](06_rendering.md) §6.17 にあり、ここでは**アニメーション側の規則**だけを書きます。
+
+| op | パラメータ / ポート |
+|---|---|
+| `pose.clip_sample` | `parameters`: `rig`(必須)/ `clip`(必須)/ `speed`(既定 1)/ `loop`(既定 true)/ `start_time`(既定 0)/ `root_motion`(`"none"`(既定)か `"extract"`)/ `root_node`(`extract` のとき必須)。入力 `time`(スカラー)→ 出力 `pose` |
+| `pose.blend` | 入力 `a` / `b`(pose)と `weight`(スカラー)→ 出力 `pose` |
+| `pose.state_machine` | `parameters`: `rig`(必須)/ `graph`(`pelican.anim_graph` v1 文書を**そのまま埋め込む**)。**文書の `parameters` の名前がそのまま入力ポートになります**(`time` は予約済みで、同名のパラメータは拒否)→ 出力 `pose` |
+| `pose.retarget` | `parameters`: `profile`(必須)。入力 `pose` → 出力 `pose`(同じ姿勢をそのまま渡すので root motion の経路に挟めます) |
+| `pose.skeletal` | **sink**。入力 `pose`。owner 個体の姿勢としてコミットする |
+| `pose.transform` | **sink**。catalog には載りますが **v0 では装着時に必ず拒否されます**(`pose.transform has no root writer yet`。[posegraphruntime.cpp:374](../../src/core/animation/posegraphruntime.cpp#L374)) |
+
+規則:
+
+- **pose の op は `owner` 付きの `graph.instance` の中にしか置けません。** owner の無い場所の pose ノードは書き込む先が無いので、`pose operation requires an owned graph instance: <id>` で断られます([posegraph.cpp:100](../../src/core/animation/posegraph.cpp#L100))。
+- **pose ノードが読めるスカラー以外の入力はありません。** pose 以外のノードから来る edge は `value` ポートだけが許され、それ以外は `pose operations read scalar inputs only` です。評価は **animation phase** で、同じフレームの値評価より 1 段早く走ります —— つまり **スカラー → 姿勢の一方向**で、逆向きはありません([第6章](06_rendering.md) §6.17)。
+- **ポートを流れる型は `pelican.pose@1`(opaque)だけ**です —— **staged pose のハンドル + レイアウト世代 + フレーム改訂**であって骨の bytes ではありません。レイアウトの食い違いは評価時に `pose.layout_mismatch@1` で名前が付きます。pose のコントラクトはこの `pose` とスカラーの `time` / `weight` だけで組まれています([posegraphmodule.cpp:114](../../src/project/posegraphmodule.cpp#L114))。`pelican.rig@1` も opaque な型として登録されていますが、**どのポートにも現れません** —— リグは各ノードの `parameters.rig`(必須の文字列)で指す**同一性**であって、運ばれる値ではないからです([posegraphmodule.cpp:142](../../src/project/posegraphmodule.cpp#L142)、[posegraphmodule.hpp:15](../../src/project/posegraphmodule.hpp#L15))。
+- **`pose.state_machine` の出力は、`pose.skeletal` sink ちょうど 1 本にしか繋げません。** 包んだ評価器が自分の個体の writer を持っているので、2 本目に渡すのも `pose.skeletal` 以外の op に渡すのも `pose.sink_conflict@1` です。繋ぎ先が 1 本も無い文書も拒否されます([posegraph.cpp:207](../../src/core/animation/posegraph.cpp#L207))。
+
+**parity(装着様式 (1) と同じ挙動になること)の中身**は次の 4 つです(✅AG-1b):
+
+1. **`loop: false` は clamp** です。クリップの外へ出た時刻は先頭/末尾に貼り付き、wrap しません([posegraphruntime.cpp:38](../../src/core/animation/posegraphruntime.cpp#L38))。
+2. **キーが 0 秒から始まらないクリップの位相ずれ**は animation service 側で揃えており、`time_seconds` は **絶対クリップ時刻**として報告されます(この 1 本は実装を読んだ範囲での理解で、装着様式をまたいだ数値比較までは未確認です)。
+3. **instance のパラメータを変えても、ステートマシンの現在ステートとクリップのカーソルは保たれます。** 退役するプログラムの評価器を donor として取っておき、**owner + ノード id + 埋め込んだ `anim_graph` 文書が一致すれば `rebind()` で引き継ぐ**からです([posegraphruntime.cpp:404](../../src/core/animation/posegraphruntime.cpp#L404))。
+4. 逆に **`graph` の文書そのものを変えて再公開したときは引き継ぎません** —— 一致条件に文書が入っているので、新しい評価器が `initial_state` から始まります。シーンの読み直しでも初期化されます。
+
+### root motion(✅AG-2)
+
+`pose.clip_sample` に `root_motion: "extract"` と `root_node`(glTF のノード index)を書くと、**クリップが根のノードに書いている移動が、姿勢の中ではなく owner 個体の transform へ出て行きます**。
+
+- **差分は「折り返す前の時刻」で取ります。** ノードの時刻写像を u = (`time` − `start_time`)·`speed` + クリップ開始 とし、R(u) = loops(u)·(root(末尾) − root(先頭)) + root(canonical(u))、移動量 = R(今フレーム) − R(前フレーム)。この 1 本の式で **`speed < 0` も、1 フレームに 1 周以上進む場合も、境界ちょうども**同じように扱えます([posegraphruntime.cpp:312](../../src/core/animation/posegraphruntime.cpp#L312))。
+- **`set_time`(シーク)は移動ではありません。** 時刻が外から差し替えられたフレームは前回値を捨て、その 1 フレームの移動量は 0 になります。一方、**`value.curve` のキーで `time` が跳んだ場合は「移動」として扱われます** —— この経路には「不連続だ」と知らせる信号が無いためです。カットを作りたいなら `set_time` を使ってください。
+- **適用先は owner の `localtransform`** です。`local.pos += local.rotation * delta` で足し込みます(**スケールは掛けません** —— 掛けると拡大した個体が同じクリップで違う距離を進んでしまうため)。姿勢の側では根ノードの translation が **クリップ先頭の値に固定(pin)**されるので、メッシュが個体の中で滑ることはありません。**回転量の抽出は v0 の射程外**です。
+- **名前付きの拒否は 4 種類**です。
+  - `pose.root_motion_unsupported@1` — 抽出ノードの下流に `pose.blend` / `pose.state_machine` がある(`pose.retarget` は挟めます)/ クリップの長さが 0 / 根ノードに translation チャンネルが無い
+  - `pose.root_node_unknown@1` — `root_node` が無い・負・範囲外・リグのレイアウトに無い
+  - `pose.root_motion_no_transform@1` — sink が書く個体に `localtransform` が無い(**黙って無効化しません**)
+  - `pose.root_motion_shared@1` — 1 つの抽出ノードの姿勢を 2 つの消費者が受け取っている(1 本のクリップで 2 個体が動くことになるため)
+- **末尾キーを先頭キーと同じにした「継ぎ目のない」クリップは、1 周の正味変位が 0 なので動きません。** 移動させたいなら**正味の変位を末尾キーに残す**のがクリップ側の規約です。
+- `localtransform` は **親子関係に参加する個体にしか自動で付きません**。単独の個体には自分で宣言する必要があります。また **親を持つ個体は 1 フレーム遅れます**(同じフレームでは local をそのまま world として描き、次のフレームに `LocalTransformSystem` が world を組み直すため)。
+- 出荷プロジェクトに `root_motion` の宣言はありません。実物は `test/root_motion_fixture.hpp` と `skeletal_rootmotion_test` です。
+
+### 走っている姿勢を観測する(✅AG-3a)
+
+`get_status` の `animation` キーが、そのフレームに姿勢を書いた sink を並べます([第10章](10_tools.md))。`PELICAN_WITH_ANIMATION=OFF` の build では `{"available": false}` だけです。
+
+```json
+{"available": true, "sinks": [
+  {"owner": {"scene": "default_scene", "object": 1}, "node": "hero_walk_run/out",
+   "source": "pose_graph_clip",
+   "cursors": [{"clip": "Walk", "time_seconds": 0.5, "normalized_phase": 0.5}],
+   "frame_revision": 42, "pose_hash": 12345}]}
+```
+
+- **`source` は 4 値**です: `pose_graph_clip` / `pose_graph_state_machine`(装着様式 (2))と `component_graph` / `component_clip`(装着様式 (1))。**両方の装着様式が同じ 1 つの表に出ます** —— コンポーネントで動いているシーンが「アニメーションの無いシーン」に見えないためです(pose graph 側は [animationstatus.cpp:54](../../src/core/communication/animationstatus.cpp#L54)、コンポーネント側の 2 値は [:87](../../src/core/communication/animationstatus.cpp#L87))。
+- `cursors[].normalized_phase` は **[0, 1] に正規化した位置**で、キーが 0 秒から始まらないクリップでも最初のキーで 0、最後のキーで 1 になります。ただし**これはクリップごとの値ではなく、ステートの位相**です —— ステートの中に複数クリップがあると、位相はリーダークリップの尺で進み([animgraph.cpp:591](../../src/core/userpublic/animation/animgraph.cpp#L591))、**同じステートのすべてのクリップが同じ値を報告します**([:894](../../src/core/userpublic/animation/animgraph.cpp#L894))。クリップ個別の位置が要るときは `time_seconds` を見てください。
+- `state` と `transition`(`{active, target, progress}`)は **ステートマシンを含む chain にだけ**出ます。キーごと無いので、「遷移していない」と「そもそもステートマシンが無い」を取り違えません。
+- `root_delta` は **root motion を抽出している chain にだけ**出ます。値は**クリップ自身の空間での移動量**で、個体の回転を掛ける前の数字です(実際に進んだ距離ではありません)。
+- 観測は**読むだけ**です。`get_status` を同じフレームで何度呼んでも時計は進みません。
+
+### `PELICAN_WITH_ANIMATION=OFF` の見え方
+
+アニメーションはビルド機能ユニットなので、外した build が存在します([第2章](02_getting_started.md))。そのとき何が起きるかは**全部名前が付いています**。
+
+- プロジェクトが `project.json` に `requires: ["animation"]` を書いていれば、**プロジェクトを読む時点で** `animation.module_unavailable@1` になり、player は名前を出して exit 1 します([第3章](03_project_format.md))。
+- `animation` コンポーネントを含むシーンは **prepare で** `animation.module_unavailable@1`。prepare の失敗なので rollback 契約に乗り、**古いシーンがそのまま残ります**([第4章](04_scene_ecs.md) §4.3)。
+- グラフ文書に `pose.*` を書いていれば `graph.operation_unregistered@1` です —— `pelican.pose` module がそもそも登録されないためです([第6章](06_rendering.md) §6.17)。
+- **ゲーム DLL はリンクできて、ロードもできます。** 凍結 ABI の交渉入口(`getApiV1` / `getPoseStagingServiceV1` / VRM の `getApplicationServiceV1`)は stub として残り、**`unsupported_version` を返します** —— SDK に対してビルドした DLL が「このバイナリにはアニメーションランタイムが無い」ことを**名前で知る**ためです([animation_disabled.cpp:13](../../src/core/animation/animation_disabled.cpp#L13))。
+- `GameContext` 側では `setAnimationGraphParameter` / `forceAnimationGraphState` が `not_found` を返します(§8.4)。
 
 ## 8.14 2D スプライトの操作(✅WP103/106)
 
@@ -699,4 +794,7 @@ walk.apply(ctx, id, local_time);   // local_time はゲームが管理(例: 接�
 - [../design_determinism_services.md](../design_determinism_services.md) — 決定的乱数とシード規約
 - [../design_audio.md](../design_audio.md) — オーディオ
 - [../design_persistence.md](../design_persistence.md) — user:// と設定/セーブ三区分
+- [../design_animation_graph.md](../design_animation_graph.md) — アニメーショングラフと公開評価器の設計(§8.13)
+- [../animation_abi_v1.md](../animation_abi_v1.md) — 凍結 C-ABI(自作評価器の面)の正
+- [../v0_freeze.md](../v0_freeze.md) — v0 の凍結一覧。§1.6 が「2 つの root と 2 つの装着様式」、§1.3 が共通グラフの op / 型 / sink
 - [第4章 シーンと ECS](04_scene_ecs.md) / [第7章 入力と UI](07_input_ui.md) / [第10章 ツールリファレンス](10_tools.md) / [第13章 エディタ](13_editor.md)

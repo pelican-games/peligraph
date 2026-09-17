@@ -73,6 +73,17 @@ playerは `ENABLE_EXPORTS` と `/WHOLEARCHIVE:pelican_core` でSDKシンボル�
 
 ゲームSystemの静的自動登録はDLLロード時に走り、[`RegistrationOwner`](../../src/core/userpublic/details/reload/registrationowner.hpp#L11) 単位で [`unregisterGameSystems()`](../../src/core/userpublic/details/system/registerer.hpp#L143) により登録解除できます。これが実行中ホットリロードの基盤です。
 
+### packageのビルド: `pelican_package_sources()` と `pelican_packages()`（X-1）
+
+package は「エンジンのツリーの外で書かれ、プロジェクトへvendorされるディレクトリ」です（形式は [第3章 §3.16](03_project_and_loading.md)）。コードを持つ package のビルドは、同じ [`src/player/CMakeLists.txt`](../../src/player/CMakeLists.txt#L1) の中の2関数で閉じています。
+
+- [`pelican_packages()`](../../src/player/CMakeLists.txt#L260) — プロジェクトの `code/CMakeLists.txt` から呼びます。`<project>/packages/*/package.json` をglobしてソート（configure順を名前順に固定）し、`code/CMakeLists.txt` を持つものだけを `add_subdirectory()` します。install が中断して残った `.tmp-` 付きディレクトリは名前で飛ばします。引数は取りません。
+- [`pelican_package_sources()`](../../src/player/CMakeLists.txt#L203) — package 自身の `code/CMakeLists.txt` から呼びます。その package 用の **OBJECT ライブラリ**を作り、ソースを足します。package 単独のDLLは作らず、objectはプロジェクトのgame logic DLLへ合流します。
+
+呼ぶ場所を間違えると configure が名前付きで止まります。`pelican_package_sources()` を package の外から呼ぶと「`pelican_packages()` がそのディレクトリを足すのだ」という [`FATAL_ERROR`](../../src/player/CMakeLists.txt#L208)、`pelican_packages()` を `pelican_game_sources(...)` より**前**に呼ぶと「package の object が合流すべきDLLがまだ無い」という [`FATAL_ERROR`](../../src/player/CMakeLists.txt#L309) です。`devcli project init` の雛形が2行を必ずこの順で書くのはこのためです。
+
+**forwarding-header SDK**。project code の DLL は include path に `src/core` を持つので、エンジン内部ヘッダへ手が届きます。package は外から来たコードなので、「公開SDKだけ」を約束ではなく**判定できる性質**にしてあります。[`pelican_package_sdk_include_dir()`](../../src/player/CMakeLists.txt#L159) が `PELICAN_AUTO_STAGE_SDK` の公開範囲（`src/core/userpublic/**`、`src/core/ecs/**`、`handle.hpp`、`phys/physquery.hpp`）と同じ集合について、[`package_sdk_header.hpp.in`](../../src/player/package_sdk_header.hpp.in) から1行だけの転送ヘッダ（`#include "<本物のヘッダ>"`）を `configure_file()` で生成し、そのディレクトリを package ターゲットへ渡します（[`target_include_directories`](../../src/player/CMakeLists.txt#L232) が渡すのは SDK 転送ヘッダ・`src/schema`・package 自身の 2 ディレクトリの計4つで、**`src/core` が無いこと自体が仕掛け**です。そう書いたコメントが[直前](../../src/player/CMakeLists.txt#L230)にあります）。コピーではなく転送なので、本物のヘッダは自分の相対includeを自分で解決し、内容が古くなりません。公開範囲の外のヘッダはこのディレクトリに入口が無いので、package からのincludeはコンパイルエラーになります。
+
 ### `pelican_openxr`
 
 [`src/core/openxr/CMakeLists.txt`](../../src/core/openxr/CMakeLists.txt#L1) が作る独立のstaticライブラリで、OpenXRのdiscovery/session/action/composition/mirrorを担います。`pelican_core` へPRIVATEにリンクされます（[同 L28](../../src/core/openxr/CMakeLists.txt#L28)）。
@@ -84,18 +95,30 @@ playerは `ENABLE_EXPORTS` と `/WHOLEARCHIVE:pelican_core` でSDKシンボル�
 
 ### `pelican_cli`
 
-[`src/devcli/CMakeLists.txt`](../../src/devcli/CMakeLists.txt#L1) が作る配布支援CLIです。サブコマンドは `assets`、`bake-camera`、`import`、`dist-config`、`package`(X-1: install / list / inspect)、`project`、`dump-lowered-material`、`vrm`、`graph-catalog`(共通グラフの module / op / 型の一覧、AG-0) の7種です（[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L14) の分岐と [usage文字列](../../src/devcli/main.cpp#L43)）。Vulkan実行時全体ではなく `pelican_project` と必要な純粋処理を中心にリンクします。
+[`src/devcli/CMakeLists.txt`](../../src/devcli/CMakeLists.txt#L1) が作る配布支援CLIです。サブコマンドは `assets`、`bake-camera`、`import`、`dist-config`、`package`(X-1: install / list / inspect)、`project`、`dump-lowered-material`、`vrm`、`graph-catalog`(共通グラフの module / op / 型の一覧、AG-0) の**9系統**です（[`src/devcli/main.cpp` の分岐](../../src/devcli/main.cpp#L15) と [usage文字列](../../src/devcli/main.cpp#L43)。`main()` は9本の `if` を上から並べるだけで、どれにも一致しなければ usage を出して `-1` を返します）。Vulkan実行時全体ではなく `pelican_project` と必要な純粋処理を中心にリンクします。
 
 `project init` が書き出す雛形は、[`templateFiles()`](../../src/devcli/projectinit.cpp#L288) が返すファイル名と文字列定数の対で全量が決まります。「新規プロジェクトの既定形」を知りたいときはここだけ読めば足ります。
 
-このうち `passes/main_rendering_config.json` の内容 [`rendering_config_json`](../../src/devcli/projectinit.cpp#L200) は、WP240a（`d58f841`）で111行の手書き宣言からpresetを指す2キーへ置き換わりました。
+このうち `passes/main_rendering_config.json` の内容は二段で決まります。WP240a（`d58f841`）で111行の手書き宣言からpresetを指す2キーへ置き換わり、さらにP-2a-4bで**`pelican.graph` root で包む**形になりました。文字列定数 [`rendering_config_json`](../../src/devcli/projectinit.cpp#L200) が持つのは `rendering` 節の中身だけで、外側は [`renderingConfigJson()`](../../src/devcli/projectinit.cpp#L208) が [`wrapLegacyRenderingConfig()`](../../src/project/renderconfigsection.hpp#L62) を1回通して作ります（[第3章 §3.14](03_project_and_loading.md)）。雛形が書き出す実物は次の形です。
 
 ```json
 {
-  "pipeline": { "preset": "engine://render_pipelines/hybrid_v1.json" },
-  "features": ["engine://features/shadow_directional.json"]
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "pipeline": { "preset": "engine://render_pipelines/hybrid_v1.json" },
+    "features": [
+      "engine://features/shadow_directional.json",
+      "engine://features/sky_ambient.json"
+    ]
+  }
 }
 ```
+
+雛形の `code/CMakeLists.txt` は [`code_cmake`](../../src/devcli/projectinit.cpp#L225) の2行で、`pelican_game_sources(game.cpp)` の**後**に `pelican_packages()` を呼びます（順序の理由は次の「packageのビルド」）。
 
 読む順序は次の3点です。
 
@@ -127,7 +150,7 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 
 | ディレクトリ | 責務 | 中心となる型/関数 |
 |---|---|---|
-| [`animation/`](../../src/core/animation) | アニメーション評価フェーズ、VRM application service | [`AnimationService`](../../src/core/animation/animationservice.hpp)、[`vrmapplication.hpp`](../../src/core/animation/vrmapplication.hpp) |
+| [`animation/`](../../src/core/animation) | アニメーション評価フェーズ、VRM application service、**共通グラフの `pose.*` backend**。`PELICAN_WITH_ANIMATION=OFF` ではこのディレクトリの実装が丸ごと外れ、交渉入口だけを残す [`animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L1) に差し替わります（[`src/core/animation/CMakeLists.txt`](../../src/core/animation/CMakeLists.txt#L1)） | [`AnimationService`](../../src/core/animation/animationservice.hpp)、[`vrmapplication.hpp`](../../src/core/animation/vrmapplication.hpp)、[`PoseGraph`](../../src/core/animation/posegraph.hpp#L61)、[`PoseGraphRuntime`](../../src/core/animation/posegraphruntime.hpp#L62) |
 | [`appflow/`](../../src/core/appflow) | 時刻、フレームフェーズ、loop、終了処理 | [`Loop`](../../src/core/appflow/loop.hpp#L7)、[`EngineTime`](../../src/core/appflow/enginetime.hpp#L10) |
 | [`gamelogic/`](../../src/core/gamelogic) | game DLLのロード・ホットリロード | [`gamelogicreload.hpp`](../../src/core/gamelogic/gamelogicreload.hpp) |
 | [`geomhelper/`](../../src/core/geomhelper) | 幾何ヘルパ（header only） | [`geomhelper.hpp`](../../src/core/geomhelper/geomhelper.hpp) |
@@ -182,6 +205,25 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 | [`userpublic/details/schema/`](../../src/core/userpublic/details/schema) | [`StructFieldSchema`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L52)、[`structFields()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L845)、JSON codec |
 | [`src/devcli/processrunner.hpp`](../../src/devcli/processrunner.hpp#L34) | プロセスグループkill付きの子プロセス実行 |
 
+v0（共通グラフ・姿勢グラフ・package）で増えた入口は次のとおりです。`src/project` 側が「形式と契約」、`src/core` 側が「それを走らせる実体」という分担で、同じ話題が2箇所に現れます。
+
+| 場所 | 内容 |
+|---|---|
+| [`project/graphmodule.hpp`](../../src/project/graphmodule.hpp#L44) | [`GraphModuleManifest`](../../src/project/graphmodule.hpp#L35) と `GraphModuleRegistry`。共通グラフの語彙（型・op・sink）の登録口（§1.5） |
+| [`project/graphcomposition.hpp`](../../src/project/graphcomposition.hpp#L62) | `pelican.graph` 文書の展開（`ExpandedGraphDocument`）と [`editGraphDocument()`](../../src/project/graphcomposition.hpp#L93)（[第3章 §3.15](03_project_and_loading.md)） |
+| [`project/graphpartition.hpp`](../../src/project/graphpartition.hpp#L7) | 検証してから `values` / `rendering` / `animation` の3実行領域へ分割 |
+| [`project/posegraphmodule.hpp`](../../src/project/posegraphmodule.hpp#L22) | `pelican.pose` module の登録と、clip 再生パラメータ既定値の唯一の置き場（[第5章](05_gameplay_and_services.md)） |
+| [`project/renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L37) | authored な `rendering` key の在処を決める唯一の場所（[第3章 §3.14](03_project_and_loading.md)） |
+| [`project/rendercomponent.hpp`](../../src/project/rendercomponent.hpp#L33) | `pelican.render_component` v1（export / import される描画部品） |
+| [`project/packagemanifest.hpp`](../../src/project/packagemanifest.hpp#L60) | `pelican.package` v1 と install / uninstall（[第3章 §3.16](03_project_and_loading.md)） |
+| [`core/animation/posegraph.hpp`](../../src/core/animation/posegraph.hpp#L61) / [`posegraphruntime.hpp`](../../src/core/animation/posegraphruntime.hpp#L62) | `pose.*` のコンパイルと評価。`PELICAN_WITH_ANIMATION=ON` のときだけビルドされます |
+| [`core/animation/animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L1) | OFFビルドの顔。交渉入口だけ残し、out 引数が null なら `invalid_argument`、それ以外は `unsupported_version` を返します |
+| [`core/loader/scenegraphruntime.cpp`](../../src/core/loader/scenegraphruntime.cpp#L54) | `graph.instance` の owner 解決、評価stateの世代移送、publish snapshot（[第3章 §3.5](03_project_and_loading.md)） |
+| [`core/userpublic/valuegraph.hpp`](../../src/core/userpublic/valuegraph.hpp#L101) | lowered IR とその評価器（[第3章 §3.15](03_project_and_loading.md)） |
+| [`core/communication/animationstatus.hpp`](../../src/core/communication/animationstatus.hpp#L18) | `get_status.animation` のJSON化（AG-3a） |
+| [`devcli/packagecommand.hpp`](../../src/devcli/packagecommand.hpp#L16) / [`graphcatalogcommand.hpp`](../../src/devcli/graphcatalogcommand.hpp#L8) | `pelican_cli package` と `pelican_cli graph-catalog` |
+| [`player/package_sdk_header.hpp.in`](../../src/player/package_sdk_header.hpp.in) | package 用転送ヘッダの雛形（§1.2） |
+
 ## 1.4 依存方向
 
 理想化すると、依存は次の方向です。
@@ -198,7 +240,7 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 
 ## 1.5 Pelicanでいう「インターフェース」の種類
 
-Pelicanは継承ベースのinterfaceを多用しません。実際には次の六形式があります。
+Pelicanは継承ベースのinterfaceを多用しません。実際には次の七形式があります。
 
 | 形式 | 例 | 目的 |
 |---|---|---|
@@ -208,12 +250,15 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 | `std::variant` | [`PassInfo`](../../src/core/renderingpass/renderingpass.hpp#L321)、[`phys::Shape`](../../src/core/phys/physquery.hpp#L41) | 閉じた型集合を安全に分岐 |
 | 関数コールバック | [`RenderFeatureComposeDependencies`](../../src/project/featurecompose.hpp#L15)、[`RpcServer::MethodHandler`](../../src/core/communication/rpcserver.hpp#L57) | I/Oやdispatchだけを注入 |
 | サービスロケータ | [`DECLARE_MODULE` / `GET_MODULE`](../../src/core/container.hpp#L15) | プロセス内の共有モジュールを遅延生成 |
+| module マニフェスト登録 | [`GraphModuleManifest`](../../src/project/graphmodule.hpp#L35) / [`GraphOperationRegistration`](../../src/project/graphmodule.hpp#L25) | 共通グラフの語彙（semantic型・op・sink）を1本の登録で持ち込む |
 
-型の設計を読むときは「基底クラスがないからinterfaceがない」と判断せず、依存構造体・Concept・variant・コールバックも契約として読みます。
+最後の形式だけ少し毛色が違うので補足します。共通グラフの「何が書けるか」は C++ の型ではなく **[`GraphModuleRegistry::registerModule()`](../../src/project/graphmodule.hpp#L55) に渡された manifest の集合**で決まります。1つの manifest が名前空間・semantic 型・op・そのうちどれが sink かを持ち込み、`registerModule()` は壊れた manifest を `graph.module_duplicate@1` / `graph.operation_duplicate@1` / `graph.type_duplicate@1` / `graph.sink_unregistered@1` などの名前付きで丸ごと拒否します（部分登録は残りません）。エンジン自身の `pelican.value` / `pelican.audio` / `pelican.render` / `pelican.pose` も [`makeBuiltinGraphModuleRegistry()`](../../src/project/graphmodule.hpp#L70) の中で同じ関数を通るだけで、**op 名を特別扱いする分岐はどこにもありません**。未登録の op を書いた文書は `graph.operation_unregistered@1` で拒否されます（[`resolveOperation()`](../../src/project/graphmodule.hpp#L60)）。catalog も登録順ではなく名前順に出るので、module を足す順序が文書の意味を変えることはありません。
+
+型の設計を読むときは「基底クラスがないからinterfaceがない」と判断せず、依存構造体・Concept・variant・コールバック・module manifest も契約として読みます。
 
 ## 1.6 ビルド機能フラグ
 
-機能フラグの定義は [`NAME PELICAN_RUNTIME_SHADER_COMPILER` 以下のregistry](../../cmake/pelican_feature_registry.cmake#L103) です。トップレベルはregistryからCMake optionを宣言します。現在の登録は15件で、下表の13件に加えて [`NAME PELICAN_WITH_SPIRV_LINK`](../../cmake/pelican_feature_registry.cmake#L110) と [`NAME SKIP_DEVSTUDIO`](../../cmake/pelican_feature_registry.cmake#L215) が入ります。
+機能フラグの定義は [`NAME PELICAN_RUNTIME_SHADER_COMPILER` 以下のregistry](../../cmake/pelican_feature_registry.cmake#L103) です。トップレベルはregistryからCMake optionを宣言します。現在の登録は16件です。下表のうちregistry由来は12件（`PELICAN_ENABLE_ASAN` だけはregistryではなくトップレベルの [`option()`](../../CMakeLists.txt#L45) なので別枠）で、残りは [`NAME PELICAN_WITH_SPIRV_LINK`](../../cmake/pelican_feature_registry.cmake#L110)、[`NAME SKIP_DEVSTUDIO`](../../cmake/pelican_feature_registry.cmake#L215)、そして後述の従属option 2件です。
 
 registryの各行が持つキーのうち、この節で効くのは2つです。`BASELINE` は**対照ビルドの基準になる値**（WPごとの対照matrixは、この基準から対象フラグだけを動かして作られます）で、同時に**`OPTION_DEFAULT` が明示されていなければCMake optionの既定値も兼ねます**。`OPTION_DEFAULT` はその兼務を切り離し、既定値だけを別に指定するキーです（registry冒頭のコメントが規範）。
 
@@ -226,6 +271,7 @@ registryの各行が持つキーのうち、この節で効くのは2つです�
 | `PELICAN_WITH_VAT` | VAT parser/player、VAT shaderをリンク | GLBにVAT extrasがあれば明示エラー、playerはstub |
 | `PELICAN_WITH_EXR` | tinyexrでEXRロード | EXR指定時に明示エラー |
 | `PELICAN_WITH_RPC` | stdio RPC server | [`rpcserver_stub.cpp`](../../src/core/communication/rpcserver_stub.cpp#L1) |
+| [`PELICAN_WITH_ANIMATION`](../../cmake/pelican_feature_registry.cmake#L146) | skeletal animation評価器と `pelican.pose` graph module | `src/core/animation` の実装が外れて [`animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L1) だけになり、`pelican_project` から [`posegraphmodule.cpp` が外れます](../../src/project/CMakeLists.txt#L62)。帰結は4つ（下の段落） |
 | `PELICAN_WITH_SEQPLAYER` | transform sequence parser/player | [`seqplayer_stub.cpp`](../../src/core/playback/seqplayer_stub.cpp#L1) |
 | `PELICAN_WITH_IMGUI` | 開発者UI（ImGui）をリンク | imguiモジュールなし |
 | `PELICAN_WITH_PHYSICS` | 物理クエリサービスとcollider world | [`physicsservice_stub.cpp`](../../src/core/phys/physicsservice_stub.cpp)、sceneにcolliderがあると明示エラー（[`scene.cpp`](../../src/core/loader/scene.cpp#L150)） |
@@ -233,6 +279,15 @@ registryの各行が持つキーのうち、この節で効くのは2つです�
 | `PELICAN_WITH_RENDERDOC` | **既に注入済みの**RenderDoc APIを受動利用（F11キャプチャ、`capture_gpu` RPC） | [`renderdoccapture_stub.cpp`](../../src/core/renderdoc/renderdoccapture_stub.cpp) をリンクし、`RenderDocCapture` は常に `unavailable`（理由 `renderdoc_build_disabled`）。キャプチャ要求は理由付きで拒否 |
 | `PELICAN_WITH_STANDARD_RENDER_ALGORITHMS` | 差し替え可能な標準render algorithmパッケージ [`src/core/render_algorithms/`](../../src/core/render_algorithms) と、その専用engine resourceを含める（[`PELICAN_STANDARD_RENDER_ALGORITHM_RESOURCES`](../../src/core/resources/render_algorithms/standard_algorithms.cmake#L6)） | サブディレクトリごと [`add_subdirectory(render_algorithms)`](../../src/core/CMakeLists.txt#L51) から外れ、[`registerStandardRenderAlgorithmProviders()`](../../src/core/renderer/viewfamilyproviderregistry.cpp#L71) の呼び出しも `#if` で消える。グラフ／コンパイラ／provider機構そのものは残るので、プロジェクト側で自前のViewFamily実装を差せる |
 | `PELICAN_ENABLE_ASAN` | ASan用compile/link option | 追加なし |
+
+`PELICAN_WITH_ANIMATION=OFF` の帰結は、実装が消えることより「**何が名前付きで断るか**」で捉えるのが正確です。
+
+1. **catalog から `pelican.pose` が消える** — [`makeBuiltinGraphModuleRegistry()`](../../src/project/graphmodule.cpp#L253) が `registerPoseGraphModule()` を呼ばないので、`pelican_cli graph-catalog` の出力は4 moduleから3 moduleになり、`pose.blend` / `pose.clip_sample` / `pose.retarget` / `pose.skeletal` / `pose.state_machine` / `pose.transform` の6 opだけが落ちます。これを検査するのが [`test/run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake#L117) です。2 本の catalog を突き合わせるのではなく、**1 本の catalog を `WITH_ANIMATION` の期待値に照らします**（module 数は [3 + ON なら 1](../../test/run_devcli_graph_catalog.cmake#L23)、名前空間と pose op の有無は [期待値の組み立て](../../test/run_devcli_graph_catalog.cmake#L74)）。同じ実行が [`docs/v0_freeze.md` の op 表とも突き合わせ](../../test/run_devcli_graph_catalog.cmake#L113)、OFF build で欠けてよいのは `pose.*` だけ、という形で差を固定します。
+2. **`pose.*` を書いた文書は `graph.operation_unregistered@1`** — op 名の特別扱いが無いので、未登録という一般の理由でそのまま落ちます（§1.5）。
+3. **`requires: ["animation"]` を書いたprojectは開く前に落ちる** — 語彙は `animation` 1語だけで（[`knownProjectRequirements()`](../../src/project/projectformat.hpp#L52)）、封筒のパース時点で `animation.module_unavailable@1` を投げます（[`parseProjectEnvelopeJson()` 内](../../src/project/projectformat.cpp#L180)）。node を1つずつ辿って気付く、という発見の仕方をさせないための前倒しです。
+4. **scene に animation component があれば prepare で落ちる** — [`validateResolvedSceneFeatureBindings()`](../../src/core/loader/scene.cpp#L62) が同じ `animation.module_unavailable@1` を、objectの名前を添えて投げます。componentのcodec自体は残るのでOFFビルドのツールでもsceneを読み書きでき、[`AnimationSystem` の登録だけが消えます](../../src/core/ecs/predefined.cpp#L54)（「登録されているが何もしない」ではありません）。
+
+ABIの交渉入口（`getApiV1` / `getPoseStagingServiceV1` / `getApplicationServiceV1`）はOFFでもexportされ続けます。3つとも、out 引数が null なら `invalid_argument`、そうでなければ `unsupported_version` です（[`animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L13)）。SDKに対してビルドされたgame DLLが**ロードはできて、名前で「このバイナリにはアニメーションが無い」と分かる**ようにするためです。
 
 このほか `PELICAN_AUTO_STAGE_SDK`（既定OFF、`dist*` へのSDK staging）と `PELICAN_LEAN_TEST_ARTIFACTS`（既定ON、テスト実行ファイルのPDB削減）は機能ではなくビルド成果物の量を決めるoptionです。
 
@@ -338,8 +393,10 @@ tools/worktree.sh test      <worktree> [-R ...]
 
 | プロジェクト | 用途 |
 |---|---|
-| [`projects/example`](../../projects/example) | 標準の検証プロジェクト。rendering configは `render_targets` / `rendering_passes` を自分で並べる従来形（[`main_rendering_config.json`](../../projects/example/passes/main_rendering_config.json)） |
-| [`projects/animgraph_demo`](../../projects/animgraph_demo) | アニメーショングラフのデモ。WP240aでrendering configがpreset形へ移行済みで、`project init` の既定と同じ2キーだけになっています（[`passes/main.json`](../../projects/animgraph_demo/passes/main.json)）。preset形と従来形を見比べるならこの2プロジェクトです |
+| [`projects/example`](../../projects/example) | 標準の検証プロジェクト。rendering configはP-2a-4bで **`pelican.graph` root** へ移り、`render_targets` / `rendering_passes` を自分で並べる従来の中身がその `rendering` 節に丸ごと入っています（[`main_rendering_config.json`](../../projects/example/passes/main_rendering_config.json)。`nodes` は空配列） |
+| [`projects/animgraph_demo`](../../projects/animgraph_demo) | アニメーショングラフ（`pelican.anim_graph` をanimation componentから指す様式）のデモ。WP240aでrendering configがpreset形へ移行済みで、root は legacy のまま2キーだけです（[`passes/main.json`](../../projects/animgraph_demo/passes/main.json)） |
+| [`projects/posegraph_demo`](../../projects/posegraph_demo) | 共通グラフの姿勢経路（`graph.instance` + `pose.*`）のデモ。`project.json` に `"requires": ["animation"]` を書く3つ（他はanimgraph_demoとvrm_xr_demo）のひとつで、rendering configは `pelican.graph` root に `definitions` / `nodes` と `rendering` 節を同居させた形（[`passes/main.json`](../../projects/posegraph_demo/passes/main.json)）。2つの装着様式を見比べるならanimgraph_demoとこの2つです |
+| [`projects/raytracing_demo`](../../projects/raytracing_demo) | ray query / 加速構造のデモ（[第11章](11_ray_query_acceleration_structures.md)）。rendering configは legacy root で、`ray_group_layout` / `ray_bindings` を持つのはこのprojectだけです（[`rendering.json`](../../projects/raytracing_demo/rendering.json)） |
 | [`projects/sprite_demo`](../../projects/sprite_demo) | 2Dスプライトのデモ |
 | [`projects/vrm_xr_demo`](../../projects/vrm_xr_demo) | VRM + XRのデモ |
 

@@ -1,6 +1,6 @@
 # 第14章 用語集
 
-対象: pelican2(HEAD=`d146b8bd`・2026-09-04、branch
+対象: pelican2(HEAD=`990b9eaa`・2026-09-17、branch
 `codex/render-target-runtime-slice`)/ このマニュアルはコードを正とする
 
 ## この用語集の使い方
@@ -13,7 +13,7 @@
 
 ## 14.1 全体・体制・品質の語
 
-**WP(Work Package)** — 実装作業の単位で、`WP1`〜`WP386` の通し番号が振られます。本マニュアルの `✅WP155/162/167` のようなバッジは「その機能がどの WP で入ったか」を指します。番号ごとの状態の正は台帳 [../implementation_plan.md](../implementation_plan.md) で、本マニュアルの WP 表は転記です。初出: [第11章 §11.1](11_status.md#111-wp-全台帳)。
+**WP(Work Package)** — 実装作業の単位。**識別子は 2 系統**あります: `WP1`〜`WP386` の**通し番号**(`WP380a` のような枝番が付く)と、2026-09-16〜17 の v0 で使われた**記号 ID**(`AG-0` / `AG-1b` / `P-2a-1c` / `X-1` / `O-1` / `R1-2` / `N-2` …。「系統 + 段」で読み、`AG` = アニメーションと共通グラフ、`P` = パラメータと部品、`X` = 持ち出し、`O` = オフライン出力、`R` = 整理と凍結、`N` = ノードキャンバス)。どちらも **1 単位 = 1 ブランチ = 1 マージ**で、本マニュアルの `✅WP155/162/167` や `✅P-2a-3` のようなバッジは「その機能がどの単位で入ったか」を指します。状態の正は台帳 [../implementation_plan.md](../implementation_plan.md) で、本マニュアルの表は転記です。初出: [第11章 §11.1](11_status.md#111-wp-全台帳)。
 
 **台帳** — `docs/implementation_plan.md` のこと。未完了 WP の指示と、共通・運用規則が載ります(完了済み WP の逐語記録は `docs/implementation_archive.md` へ移されます)。章と食い違ったら台帳が正です。初出: [第11章 §11.1](11_status.md#111-wp-全台帳)。
 
@@ -68,6 +68,16 @@
 **authoring / runtime** — 同じシーンの 2 つの表現。**authoring** は編集の正本(`AuthoringSceneDocument`)で、オブジェクトの順序や `AuthoringObjectId` を保ち、rename / reorder しても参照が切れないようにします。**runtime** はエンジンが実際に動かす ECS 側の姿です。エディタは authoring を編集し、その結果が runtime へ投影されます。初出: [第3章 §3.9](03_project_format.md#39-シーンドキュメントと保存エディタ経路wp149158166168)。([AuthoringSceneDocument](../../src/core/loader/authoringscenedocument.hpp#L90))
 
 **3 段合成** — `basic_config` の値を「エンジン既定 → `project.json` → `.pelican/local.json`」の 3 段で重ねて決めること。deep merge ではなく**パス単位で問い合わせる**方式なので、どの段が勝ったかを後から言えます。初出: [第3章 basic_config と「3 段合成」](03_project_format.md#basic_config-と3-段合成)。
+
+**`requires`(project.json の)** — **このプロジェクトが動くために必要なビルド機能ユニットの名前**の配列。今日の語彙は `["animation"]`(= `PELICAN_WITH_ANIMATION`)の 1 語だけで、未知の名前は `project.requires_unknown@1`、満たせないビルドで開くと `animation.module_unavailable@1` になります。**同じ綴りの `requires` が 3 か所にあり、全部別の語彙です**: (1) project.json = ビルド機能ユニット名の配列、(2) package manifest = `{engine_min_version, sdk_abi, capabilities}` の object、(3) feature の `integrations[].requires` = 他の feature の名前。初出: [第3章 §3.2](03_project_format.md#機能ユニットの要求requiresp-2b)。([projectformat.cpp:80](../../src/project/projectformat.cpp#L80))
+
+**component(3 つの別の語)** — 綴りが同じで中身が違う語が 3 つあります。**(1) ECS のコンポーネント** = シーン JSON の `{"name": "transform", …}` 1 レコード([第4章](04_scene_ecs.md))。**(2) render component**(`pelican.render_component` v1)= materialize 済みの feature 1 本 + その宿主への要求を 1 ディレクトリにまとめた**共有部品**([第3章 §3.12](03_project_format.md#312-共有部品render-component-feature-1-本を持ち出して別-project-へ入れるp-2a-3))。**(3) package manifest の `provides.components`** = (2) のディレクトリを指すパスの配列([第3章 §3.11](03_project_format.md#311-package--本体ツリーの外から持ち込むx-1))。文脈で読み分けてください。([rendercomponent.hpp:16](../../src/project/rendercomponent.hpp#L16))
+
+**package(`pelican.package` v1)** — `package.json` を持つ 1 ディレクトリ。feature / グラフ文書 / 共有部品 / C++ コードをまとめて配れます。エンジンは**プロジェクトの外にある package を解決しません**。初出: [第3章 §3.11](03_project_format.md#311-package--本体ツリーの外から持ち込むx-1)。([packagemanifest.hpp:19](../../src/project/packagemanifest.hpp#L19))
+
+**vendoring(ベンダリング)** — 外から持ち込んだものを**参照ではなく複製として自分のプロジェクトに取り込む**こと。`install_package` は package ディレクトリを丸ごと `project://packages/<namespace>/` へ copy し、`project.json.packages` に `{namespace, package_version, sha256}` を記録します。複製元が消えてもプロジェクトは動きます。**名前空間は文書の中にも入ります** —— 複製時に feature 文書の `name` が `<namespace>.<名前>` に書き換えられるので、名前を比較するすべての経路が同じ名前を見ます。初出: [第3章 §3.11](03_project_format.md#namespace-は文書の中に入る)。
+
+**section locator(`rendering` 節)** — rendering config が `pelican.graph` root の下に入るとき、「rendering config のキーはどこにあるか」を 1 箇所で決める仕組み。最上位が共通グラフの 5 キーなら `rendering` の下、そうでなければ最上位(legacy root)、と判定し([renderingSectionOf()](../../src/project/renderconfigsection.hpp#L37))、**バイト正確な編集**はその節の中で行います([`isGraphRootKey`](../../src/project/renderconfigdocument.hpp#L15) / [`withSectionValue`](../../src/project/renderconfigdocument.hpp#L83))。読み取りと書き込みが同じ locator を通るので、2 つの root 形に対して規則が 1 つで済みます。節を見つけられない文書は `render_config_section_unlocated`(RPC の拒否では `render_config.section_unlocated@1`)。初出: [第3章 §3.2](03_project_format.md#rendering-config-の-2-つの-rootp-2a-4a4b)・[第6章 §6.16](06_rendering.md)。
 
 ---
 
@@ -171,7 +181,9 @@
 
 **SSAO(screen-space ambient occlusion)** — 深度と法線から「くぼみの暗さ」を画面空間で近似する定番手法。pelican2 では feature ではなく**同梱シェーダ**(`engine://ssao` / `engine://ssao_blur`)で、プロジェクトの rendering config が自分でパスを組みます。初出: [第6章 §6.4](06_rendering.md#64-シェーダ基盤shader-freedom-kit-wp101519--m2bwp70)。([ssao.frag](../../src/core/resources/ssao.frag))
 
-**bloom(ブルーム)** — 明るい部分をにじませて眩しさを表現する後処理。P-2a-1b(`a1233ddd`)から同梱 feature `engine://features/bloom.json`(13 pass + 9 RT を `post_ldr` の後に挿入。shader は `bloom_highpass` / `bloom_blur_h` / `bloom_blur_v` / `bloom_upsample` / `bloom_composite`)。しきい値・膝・強度は feature の parameter(`threshold` / `knee` / `intensity`、P-2a-1c)。初出: [第6章 §6.4](06_rendering.md#64-シェーダ基盤shader-freedom-kit-wp101519--m2bwp70)。([bloom_highpass.frag](../../src/core/resources/bloom_highpass.frag))
+**bloom(ブルーム)** — 明るい部分をにじませて眩しさを表現する後処理。P-2a-1b(`a1233ddd`)から同梱 feature `engine://features/bloom.json`(13 pass + 9 RT を `post_ldr` の後に挿入。shader は `bloom_highpass` / `bloom_blur_h` / `bloom_blur_v` / `bloom_upsample` / `bloom_composite`)。しきい値・膝・強度は feature の parameter(`threshold` / `knee` / `intensity`、P-2a-1c)ですが、**供給のされ方が 2 通りある**点に注意してください: `threshold` と `knee` は shader の define(`PELICAN_FEATURE_BLOOM_*`)として焼かれ、**`intensity` だけは `binding: "buffer"`**(P-2a-2、`bloom.json:26`)—— feature 自身が持つ `bloom.intensity` バッファ(`size: 4` / `host_source: runtime_f32`)を通る**実行時の値**で、`set_parameters` でも共通グラフの `render.scalar` sink でも毎フレーム書き換えられます。初出: [第6章 §6.4](06_rendering.md#64-シェーダ基盤shader-freedom-kit-wp101519--m2bwp70)。([bloom_highpass.frag](../../src/core/resources/bloom_highpass.frag))
+
+**materialize(マテリアライズ)** — エンジン同梱の feature(`engine://features/*.json`)を**プロジェクト側の派生としてファイルに保存し、以後そちらを参照する**操作。以後は自分のものなので自由に編集できます([第1章](01_overview.md) 設計決定 11)。`parameters` の宣言は**残したまま**、確定した値が `bound_parameters` として書かれます —— **宣言は消えません**。`$name` の置換とスカラーの define は合成のたびに再生成されるので、古い値の define が残ることもありません([featurecompose.cpp:2850](../../src/project/featurecompose.cpp#L2850) のコメントが理由の正本)。値の優先順位は **instance の上書き > `bound_parameters` > 宣言の既定値**([featurecompose.cpp:1393](../../src/project/featurecompose.cpp#L1393))。同じ feature を 2 度 materialize することはできません(`is already materialized`)。初出: [第6章 §6.5](06_rendering.md#65-feature--パージ可能な-gpu-機能wp2831548788104226)。
 
 **TAA(temporal anti-aliasing)** — 毎フレーム少しずらして描いた結果を、前フレームの履歴と混ぜてジャギーを消す手法。pelican2 では `taa.json` feature が resolve + composite の 2 パスと jitter provider を持ちます。履歴・速度・jitter はユーザー空間側の道具立てで、エンジンは機構だけを持ちます。初出: [第6章 標準 TAA](06_rendering.md#標準-taawp113)。
 
@@ -204,6 +216,23 @@
 **名前付き mutex(named mutex)** — 名前でプロセスをまたいで待ち合わせられる排他オブジェクト。`Global\` を付けるとマシン全体が範囲になります。pelican2 では GPU を使うテストを 1 本ずつ走らせる lease に使い、前の保持者が異常終了した場合(`WAIT_ABANDONED`)も取得成功として扱います(GPU が永久にロックされないため)。初出: [source-code-guide 第10章 §10.4](../source-code-guide/10_background_knowledge.md#windows-の名前付き-mutex-と-global-名前空間machine-wide-の相互排他)。([gpu_lease_run.cpp:157](../../test/gpu_lease_run.cpp#L157))
 
 **doclink** — 文書中の `#L<行番号>` リンクが指す先を追跡し続けるためのツール(`tools/doclink.py`)。`update` で行番号を貼り直し、`check` で古くなったリンクを検出します。行番号はキャッシュで、本体は「その行に何が書いてあったか」というアンカーです。初出: [第10章 §10.10](10_tools.md#1010-リポジトリ保守スクリプトtools)。
+
+---
+
+## 14.7 共通グラフと姿勢の語
+
+**共通グラフ(`pelican.graph` v1)** — **値(スカラー)・描画・姿勢を 1 つのノード語彙で繋ぐ**機構、およびその文書形式。文書は `definitions`(名前付きの部分グラフ)/ `nodes`(root のノード列)/ `outputs` を持ち、rendering config は同じ文書の `rendering` 節に同居します。「共通」は「1 本の曲線の値を GPU バッファにも姿勢のブレンド率にも送れる」という意味です。ノード語彙は [第6章 §6.17](06_rendering.md)、編集操作は [第13章 §13.5](13_editor.md)、凍結された op の一覧は [../v0_freeze.md](../v0_freeze.md) §1.3。初出: [第6章 §6.16](06_rendering.md)。([graphcomposition.cpp](../../src/project/graphcomposition.cpp))
+※ 紛らわしい別物として **`pelican.value_graph`** があります。これは共通グラフを lowering した結果の**内部 IR + テスト面**であって、**外部に約束された契約ではありません**([../v0_freeze.md](../v0_freeze.md) §2 行 1)。プロジェクトが書くのは `pelican.graph` です。
+
+**`graph.instance`(装着)** — 定義(`definitions` の 1 つ)を 1 回実体化するノード。`owner: {scene, object}` を書くと**シーンの個体に結び付き**、owner が解決できないときは**エラーではなく無音の inactive**(警告 1 行)になります。入力 port の値の決まり方は 4 通りで、これを **mode** と呼びます: `connected`(辺が繋がっている)/ `parameter`(`parameters` に書いた固定値)/ `default`(定義側の既定値)/ `override`(実行時に `setGraphParameter` で上書き)。優先は **辺 > `parameters` > 既定値**で、辺を外しても `parameters` は残るので**元の固定値に戻れます**。接続済みの入力に実行時上書きをかけると `graph.override_shadowed@1`(黙って消えません)。初出: [第4章 §4.1](04_scene_ecs.md#authoring-object-id-と-graphinstanceownerag-1ap-1p-2b)。
+
+**姿勢グラフ / `pelican.pose`** — 共通グラフの姿勢用 module。op は `pose.clip_sample`(クリップを時刻でサンプルする)/ `pose.blend`(2 つの姿勢を weight で混ぜる)/ `pose.state_machine`(`pelican.anim_graph` 文書を包む)/ `pose.retarget`、sink は `pose.skeletal`。port を流れる `pelican.pose@1` は**バイト列ではなく**、staged pose のハンドル + レイアウト世代 + フレーム revision です。評価は描画ではなく**アニメーションのフェーズ**で走り、スカラー → 姿勢の**一方向**です(姿勢 → スカラーはありません)。`PELICAN_WITH_ANIMATION=OFF` のビルドには module ごと存在しません。初出: [第8章 §8.13](08_gameplay.md)・[第4章 §4.2](04_scene_ecs.md#姿勢の-2-つの装着様式ag-1aag-1b)。
+
+**単一 writer / writer token** — 「1 つの個体の姿勢を書けるのは 1 本だけ」という規則と、その実行時の担保。文書レベルでは装着時に `pose.sink_conflict@1` で弾き、公開レベルでは `publishAnimationFrame` が **owner ごとの writer token**(フレーム revision 付き)を持ち、同じ revision に別の writer が来れば `authority_conflict`、同じ writer が 2 回来れば `duplicate_revision` を返します。文書の検査だけだと「検査をすり抜けた経路」が黙って二重書きになるため、公開側にも砦があります。初出: [第4章 §4.2](04_scene_ecs.md#姿勢の-2-つの装着様式ag-1aag-1b)。([PoseGraph::raiseSinkConflict()](../../src/core/animation/posegraph.cpp#L40))
+
+**root motion** — クリップに焼かれた「根(root)の移動」を、姿勢としてではなく**個体の移動**として使うこと。`pose.clip_sample{root_motion: "extract", root_node}` で有効になり、移動量は owner の `localtransform` に加算され、staged pose 側の根はクリップ先頭の位置に固定(pin)されます。移動量は**巻き戻す前の時刻(unwrapped time)の差**で取るので、`speed < 0` でも 1 フレームに 1 周以上進んでも同じ 1 つの式です。`set_time`(シーク)は移動ではないと扱われ、その 1 フレームの移動量は 0 になります。**回転量の抽出は v0 の射程外**。末尾キーを先頭キーと同じにした「継ぎ目無し」クリップは正味の移動が 0 = 動きません。初出: [第4章 §4.2](04_scene_ecs.md#localtransform)・[第8章 §8.13](08_gameplay.md)。
+
+**catalog(2 系統)** — 「今このビルドで何が使えるか」の一覧。**(1) グラフのカタログ** = 登録済み module / 型 / op / sink の語彙(`pelican_cli graph-catalog` と RPC `get_graph_catalog`。`PELICAN_WITH_ANIMATION` の ON / OFF で 4 module 27 op / 3 module 21 op と変わります)。**(2) feature のカタログ** = 使える render feature の一覧(RPC `list_render_features`。エンジン同梱と install 済み package が載り、`source` でどちらか分かります)。**(2) にプロジェクト内の素の `project://` feature は載りません**。初出: [第10章](10_tools.md)・[第3章 §3.11](03_project_format.md#311-package--本体ツリーの外から持ち込むx-1)。
 
 ---
 

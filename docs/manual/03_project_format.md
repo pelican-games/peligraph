@@ -1,6 +1,6 @@
 # 第3章 プロジェクト形式
 
-対象: pelican2(2026-07-21 に全域再確認、2026-09-04 に §3.7 の「エンジン先行」段落と §3.10(宣言スキーマ v3)を追記。HEAD=`d146b8bd`)/ このマニュアルはコードを正とする
+対象: pelican2(HEAD=`990b9eaa`・2026-09-17。2026-07-21 に全域再確認、2026-09-04 に §3.7 の「エンジン先行」段落と §3.10(宣言スキーマ v3)を追記、2026-09-17 に §3.2 の `requires` と §3.12(共有部品)を追記)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -92,9 +92,37 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
 | `name` | 実装上は任意 | `user://` スキームの project_id になる。無いと `user://` が使えない ※設計文書 [PF] §4 では必須と規定されているが、現行実装は検証しない |
 | `generator` | 任意 | パーサは読まない(生成元の記録用メタデータ) |
 | `engine_min_version` | 任意 | `"X.Y.Z"`。エンジン現行版(`0.1.0`)より新しければ起動拒否。`--ignore-engine-version` で WARN に降格可 |
+| `requires` | 任意 | **このプロジェクトが動くために必要なビルド機能ユニットの名前の配列**(下記「機能ユニットの要求」)。語彙は現在 `["animation"]` の 1 語だけ。未知の名前は `project.requires_unknown@1`、OFF ビルドで開くと `animation.module_unavailable@1` |
 | `basic_config` | 任意 | 省略したキーは既定値で埋まる(次節) |
 | `asset_stores` | 任意 | asset store 宣言(§3.4) |
 | `packages` | 任意 | install 済み package の記録 `{namespace, package_version, sha256}` の配列(§3.11)。`pelican_cli package install` が書く |
+
+### 機能ユニットの要求(`requires`)✅P-2b
+
+> **設計決定:** 「このプロジェクトはエンジンのどの部分が無いと成立しないか」を **project.json に 1 行で宣言する**。判定はプロジェクトを開いた瞬間(parse)に済ませ、足りなければ**そのエンジンが既に使っている名前**で止める。新しい名前を 3 本目として作らない。
+
+```json
+{ "schema": "pelican.project", "version": 1, "name": "Pose Graph Demo",
+  "requires": ["animation"] }
+```
+
+読み方と規則:
+
+| 事項 | 中身 |
+|---|---|
+| 語彙 | **ビルド機能ユニットのレジストリに載っている名前**です。`animation` は `PELICAN_WITH_ANIMATION` を指します([第2章 §2.2](02_getting_started.md))。今日の表は 1 行だけ([projectformat.cpp:80](../../src/project/projectformat.cpp#L80))で、`knownProjectRequirements()` がその一覧を返します |
+| 検証の時 | **parse 時**。[parseProjectRequirements()](../../src/project/projectformat.cpp#L110)が配列であること・非空文字列であること・表にある名前であることを見ます |
+| 未知の名前 | `project.requires_unknown@1: project.json requires 'physics', which this engine does not know; known requirements: animation` —— **既知の一覧を添えて**拒否します |
+| 満たせないビルド | 名前は新設せず、そのユニットが既に使っている `animation.module_unavailable@1` を出します([projectformat.cpp:181](../../src/project/projectformat.cpp#L181))。`pelican_player` はこれを捕まえて 1 行表示して exit 1 します |
+| コーパス側 | **プロジェクト群を舐めるテスト・スモークも同じ値を読みます**。満たせない要求を持つプロジェクトは失敗ではなく**名前付きの skip**(`skip posegraph_demo: requires animation (PELICAN_WITH_ANIMATION=OFF)`)になります。OFF build では宣言した 3 つ分の行と、必要なら `skip editor lane: …`、最後に件数の要約が出ます([第2章 §2.2](02_getting_started.md)) |
+| 出荷での宣言 | `animgraph_demo` / `vrm_xr_demo` / `posegraph_demo` の 3 つ |
+
+> **3 つの `requires` は別物です(混同注意):**
+> 1. **project.json の `requires`**(この節)= **ビルド機能ユニット**の名前の配列。
+> 2. **package manifest の `requires`**(§3.11)= `{engine_min_version, sdk_abi, capabilities}` という object。エンジン版と SDK エポックの要求で、機能ユニットの名前ではありません。
+> 3. **feature 文書の `integrations[].requires`**([第6章](06_rendering.md))= その統合を適用する条件としての**他の feature の名前**。
+>
+> 綴りが同じだけで、語彙も検証者も別です。
 
 ### basic_config と「3 段合成」
 
@@ -132,8 +160,8 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
 
 `rendering_config_json` が指すファイルは、**2 つの root 形**のどちらかです。どちらもエンジンが受理し、v0 の間はどちらも消えません。
 
-- **legacy root**: `features` / `render_targets` / `rendering_passes` などがファイルの最上位に並ぶ形。出荷 `animgraph_demo` / `sprite_demo` / `vrm_xr_demo` / `raytracing_demo` がこの形です。
-- **`pelican.graph` root**: 最上位は共通グラフの 5 キー(`schema` / `version` / `definitions` / `nodes` / `outputs`)**だけ**で、rendering config 全体が `rendering` の下に入ります。出荷 `example` と `pelican_cli project init` が生成する新規プロジェクトがこの形です。
+- **legacy root**: `features` / `render_targets` / `rendering_passes` などがファイルの最上位に並ぶ形。出荷 `animgraph_demo` / `sprite_demo` / `vrm_xr_demo` / `raytracing_demo` の 4 つがこの形です。
+- **`pelican.graph` root**: 最上位は共通グラフの 5 キー(`schema` / `version` / `definitions` / `nodes` / `outputs`)**だけ**で、rendering config 全体が `rendering` の下に入ります。出荷 **`example`(`passes/main_rendering_config.json`)と `posegraph_demo`(`passes/main.json`)**、および `pelican_cli project init` が生成する新規プロジェクトがこの形です。共通グラフのノード(`graph.instance` を含む)を書けるのは**この root の下だけ**なので、姿勢グラフを装着する `posegraph_demo` はこの形である必要があります([第4章 §4.1](04_scene_ecs.md))。
 
 ```json
 { "schema": "pelican.graph", "version": 1,
@@ -411,7 +439,7 @@ struct CarrierParams {
 
 > WP382dで`pelican_ray_instance.overrides`が`List`の利用者になりました。geometryごとの上書きを行ID付きで保存し、行を削除するとobject/layoutの値へ戻ります([第6章](06_rendering.md) §6.15)。
 
-## 3.11 package — 本体ツリーの外から持ち込む(✅WP X-1)
+## 3.11 package — 本体ツリーの外から持ち込む(✅X-1)
 
 > **設計決定:** 外から持ち込んだ部品は **project に複製(vendoring)してから使う**。engine は project の外を探しません。`packages/<namespace>/` に丸ごと複製し、`project.json.packages` に `{namespace, package_version, sha256}` を記録します。複製元を消してもプロジェクトは動きます。
 
@@ -522,7 +550,7 @@ engine 同梱 shader は `PELICAN_FEATURE_BLOOM_THRESHOLD` のように**自分�
 
 ### code を持つ package
 
-`code/CMakeLists.txt` は `pelican_package_sources(...)` を呼びます。ホスト project 側の `code/CMakeLists.txt` は `pelican_packages()` を 1 行呼ぶだけです(`pelican_cli project init` の雛形はこの 2 行を最初から書きます)。
+`code/CMakeLists.txt` は `pelican_package_sources(...)` を呼びます。ホスト project 側の `code/CMakeLists.txt` は `pelican_packages()` を 1 行呼ぶだけです(`pelican_cli project init` の雛形はこの 2 行を最初から書きます)。この 3 つの関数は `cmake/` ではなく **[src/player/CMakeLists.txt](../../src/player/CMakeLists.txt#L106)** にあります(`pelican_game_sources` :106 / [`pelican_package_sources`](../../src/player/CMakeLists.txt#L203) :203 / [`pelican_packages`](../../src/player/CMakeLists.txt#L260) :260)。
 
 ```cmake
 # <project>/code/CMakeLists.txt
@@ -555,8 +583,84 @@ RPC `uninstall_package{namespace}` は `packages/<ns>/` を消し、`project.jso
 - catalog に載るのは **engine 同梱 + install 済み package** だけです。project 内の素の `project://features/*.json`(出荷 `raytracing_demo/features/spheres.json` を含む)は今日も載りません。
 - pass 名・render target 名には namespace が付きません。同じ pass 名を持つ package が 2 つ入ると合成で衝突します。
 - `sha256` は `package list` が再計算して照合します。エンジン起動時には照合しません。
-- `provides.components` は複製されるだけで、engine 側の消費者はまだありません(P-2a-3 の `pelican.render_component` は `import_render_feature` が読みます)。
+- `provides.components` は複製されるだけで、engine 側の消費者はまだありません。この `components` は **`pelican.render_component`**(§3.12)のディレクトリを指す語で、**ECS のコンポーネント([第4章](04_scene_ecs.md))とも、`project.json` の他の語とも無関係**です。今日それを読むのは `import_render_feature` だけで、package 経由では読まれません。
+- **install が途中で死ぬと `packages/<namespace>.tmp-<pid>` が残ります**。install 自体は失敗時に自分の staging を消しますが、プロセスごと消えた場合の残骸を**誰も掃除しません**(export 側の `user://components/*.tmp-*` は次の export が掃除します — §3.12。install 側にその機構はありません)。残骸は `pelican_packages()` が飛ばすのでビルドは壊れませんが、手で消す必要があります —— **glob(`packages/*/package.json`)自体は残骸も拾い**、拾ってから `if(package_name MATCHES "\\.tmp-") continue()` で落とす形です([src/player/CMakeLists.txt:277](../../src/player/CMakeLists.txt#L277))。
+- `uninstall_package` が「まだ使われているか」を見るのは **rendering config の root 文書と、その preset だけ**です([renderconfigeditor.cpp:1119](../../src/core/communication/renderconfigeditor.cpp#L1119))。他の feature 文書の中から `project://packages/<ns>/` を参照していても検出されません。
 - shader を持ち込む package は未対応です(feature が `engine://` shader だけを参照できる範囲)。
+
+## 3.12 共有部品(render component)— feature 1 本を持ち出して別 project へ入れる(✅P-2a-3)
+
+> **設計決定:** 部品を共有するとは「バイトを copy すること」ではない。feature の文書だけを渡しても、**それが宿主のプロジェクトに何を要求するか**(自分で宣言していないレンダーターゲット)が分からないので、**feature 文書 + 要求の契約**を 1 つのディレクトリに揃えて初めて持ち出せる形になる。持ち出し先は project の外(`user://`)で、取り込み先は project の中。
+
+§3.11 の package が「部品一式のディストリビューション」なのに対し、**render component は feature 1 本の持ち出し**です。使う場面は「自分の project で materialize して手を入れた feature を、別の project でも使いたい」。正本は [rendercomponent.hpp](../../src/project/rendercomponent.hpp#L16)(`pelican.render_component` v1)です。
+
+### 書き出す(export)
+
+RPC [`export_render_feature{scope, index}`](../../src/core/communication/renderconfigeditor.cpp#L893)(`scope` は `"root"` か `"preset"`、`index` は `features[]` の何番目か)が 1 本を書き出します。書き先は**固定で `user://components/<name>/`**([renderconfigeditor.cpp:944](../../src/core/communication/renderconfigeditor.cpp#L944))、`<name>` は feature 文書の `name` です。プロジェクトには 1 バイトも書きません(設計決定 7 — [第1章 §1.5](01_overview.md))。
+
+ディレクトリの中身は 2 ファイルです(以下は例):
+
+```
+user://components/glow_bloom/
+├── feature.json     # 元の feature 文書のバイトそのまま
+└── component.json   # 封筒 + 契約
+```
+
+```json
+{
+  "schema": "pelican.render_component",
+  "version": 1,
+  "name": "glow_bloom",
+  "feature": "feature.json",
+  "sha256": "…",
+  "source": { "project": "mygame", "reference": "project://features/glow_bloom.json" },
+  "requires": { "render_targets": ["lit_color", "swapchain"] }
+}
+```
+
+| キー | 意味 |
+|---|---|
+| `name` | feature 文書の `name`。ディレクトリ名 1 つとして使える文字であること(`/` `\` `:` `.` を含むと `render_component_invalid`) |
+| `feature` | 隣のファイル名(常に `feature.json`) |
+| `sha256` | `feature.json` のダイジェスト。読み戻すときに照合します |
+| `source` | どのプロジェクトのどの参照から出たか(**記録**であって、取り込み側の解決には使いません) |
+| `requires.render_targets` | **この feature が読み書きするのに自分では宣言していないレンダーターゲット**。宿主に対する要求です([renderComponentRequiredTargets()](../../src/project/rendercomponent.hpp#L46)) |
+
+`requires.render_targets` の出し方は「使っている名前 − 自分が宣言している名前」です。feature 自身の `render_targets` と `buffers` の宣言は差し引かれます(P-2a-2 の `bloom.intensity` のように feature が持つバッファは宿主の義務ではないため)。**`swapchain` は列挙されますが、取り込み側は常に存在するものとして扱います**(エンジンの出力先なので、不足として報告されることはありません)。
+
+**書き出しは公開の瞬間まで見えません。** `<name>.tmp-<pid>` に 2 ファイルを書き、**ディレクトリごと rename** して初めて本来の名前になります([writeRenderComponent()](../../src/project/rendercomponent.hpp#L59))。途中で死ねば `.tmp-<pid>` が残るだけで、半分書けた component は存在しません。残骸は**次の export が掃除します**(同じ親ディレクトリの `*.tmp-<数字>` のうち、自分の pid のものは実行中かもしれないので残す — [removeStaleStagingDirectories()](../../src/project/rendercomponent.cpp#L134)。✅R-1)。
+
+### 取り込む(import)
+
+RPC [`import_render_feature{base_source_digest, source_dir, destination_reference}`](../../src/core/communication/renderconfigeditor.cpp#L962) が、component ディレクトリを読んで **`destination_reference`(`project://…` の新規ファイル)に feature 文書を作り、`rendering.features` に足す**ところまでを **1 つのトランザクション**で行います(`base_source_digest` は CAS。[第13章](13_editor.md))。`source_dir` は**絶対パス**でなければならず、`destination_reference` は `project://` で始まる**新規**ファイル(`#` フラグメント不可)です。**この 3 つは別々の code で断られます** —— `project://` でない / `#` を含むは `invalid_feature_destination`([renderconfigeditor.cpp:974](../../src/core/communication/renderconfigeditor.cpp#L974))、`source_dir` が絶対でないのは `render_component_invalid`([:980](../../src/core/communication/renderconfigeditor.cpp#L980))、宛先が既にあるのは `feature_destination_exists`([:1026](../../src/core/communication/renderconfigeditor.cpp#L1026))です。
+
+**複製であって参照ではありません** —— 取り込んだ後は component ディレクトリを消してもプロジェクトは描けます。
+
+契約の検査は取り込みの前に走ります。`component.json` の `requires.render_targets` のうち、**取り込み先の rendering config(`rendering` 節)とその preset が宣言していない**ものがあれば、名前を列挙して拒否します。他の feature が作る RT は数えません(保守的側に倒しています)。
+
+### 名前付きの拒否(10 種)
+
+`render_component_*` が 8 種、取り込み先(destination)の 2 種が別系統です。
+
+| コード | いつ |
+|---|---|
+| `render_component_engine_reference` | `engine://` の feature を export しようとした(共有済み。まず project 側の派生を作る) |
+| `render_component_project_reference` | feature 文書の**どこかの文字列**が `project://` を指したまま(全文字列を走査します — [rendercomponent.cpp:237](../../src/project/rendercomponent.cpp#L237))。持ち出した先で解決できない参照を含む部品は作らせません |
+| `render_component_invalid` | 封筒・`name`・JSON・`requires.render_targets` の形が不正 |
+| `render_component_destination_exists` | `user://components/<name>/` が既にある(上書きしません) |
+| `render_component_digest_mismatch` | `feature.json` が `sha256` と一致しない |
+| `render_component_source_inside_project` | `source_dir` が取り込み先プロジェクトの中(それは `project://` で参照するものであって import ではありません) |
+| `render_component_requires_missing` | 宿主が宣言していない RT がある(`render_targets` に不足を列挙 — [renderconfigeditor.cpp:1019](../../src/core/communication/renderconfigeditor.cpp#L1019)) |
+| `render_component_write_failed` | staging ディレクトリの作成・2 ファイルの書き込み・公開 rename のどれかが失敗した([rendercomponent.cpp:37](../../src/project/rendercomponent.cpp#L37)、[:282](../../src/project/rendercomponent.cpp#L282))。受付では export / import の両方が `RenderComponentError` をそのままの code で返します([renderconfigeditor.cpp:955](../../src/core/communication/renderconfigeditor.cpp#L955)、[:1050](../../src/core/communication/renderconfigeditor.cpp#L1050)) |
+| `invalid_feature_destination` | `destination_reference` が `project://` で始まらない、または `#` を含む(取り込み先の 2 種の 1 つ) |
+| `feature_destination_exists` | `destination_reference` のファイルが既にある(同上) |
+
+### 記録(v0 で閉じていないこと)
+
+- `requires.render_targets` は pass の入出力と `render_target_overrides` から作ります。**compute / ray の image binding は見ていません**。
+- preset を併用する `pelican.graph` root では、`rendering.rendering_passes[i].region_replacements` が合成に届かない既存の挙動があります([第11章 §11.3](11_status.md))。
+- package の `provides.components`(§3.11)はこの形式のディレクトリを指す想定ですが、**複製されるだけで engine 側の消費者はまだありません**。今日 component を読むのは `import_render_feature` だけです。
+- **package が持ち込んだ feature は export できません。**vendoring が feature の `name` を `<namespace>.<元の名前>` に書き換えるのに([qualifiedPackageFeatureName()](../../src/project/packagemanifest.cpp#L320))、export 側は「1 つのディレクトリ名として使える名前」しか受けず **`.` を禁じている**ためです([rendercomponent.cpp:231](../../src/project/rendercomponent.cpp#L231))。持ち出したければ、まず `.` を含まない名前で派生を作ります。
 
 ## 関連文書
 

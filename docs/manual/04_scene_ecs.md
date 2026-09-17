@@ -1,6 +1,6 @@
 # 第4章 シーンと ECS
 
-対象: pelican2(2026-09-04 時点、HEAD=`d146b8bd`)/ このマニュアルはコードを正とする
+対象: pelican2(HEAD=`990b9eaa`・2026-09-17。2026-09-04 の内容に、v0 の段(`animation` の受理規則の訂正、姿勢の 2 つの装着様式、`graph.instance.owner`、root motion)を 2026-09-17 に反映)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -92,6 +92,26 @@
 
 (例 — 実物のネガティブ検証は `test/fixtures/project_format/invalid/scene_{unknown_parent,ambiguous_parent,parent_cycle}.json`)
 
+### authoring object id と `graph.instance.owner`(✅AG-1a/P-1/P-2b)
+
+共通グラフの装着(`graph.instance`)は、**シーンのオブジェクトを番号で指します**。rendering config(`pelican.graph` root)側にこう書きます:
+
+```json
+{ "id": "hero_walk_run", "op": "graph.instance", "definition": "walk_run",
+  "owner": { "scene": "default_scene", "object": 1 },
+  "parameters": { "weight": 0.0 } }
+```
+
+| 事項 | 中身 |
+|---|---|
+| 形 | `{scene: <シーン ID の文字列>, object: <正の整数>}` の **2 キーちょうど**。欠けても増えても `graph owner requires scene and positive authoring object id`([graphcomposition.cpp:97](../../src/project/graphcomposition.cpp#L97)) |
+| `object` の正体 | **authoring object id** = シーン文書をロードしたときに**宣言順に振る通し番号**([authoringscenedocument.cpp:39](../../src/core/loader/authoringscenedocument.cpp#L39))。`scene.json` のどこにも**書かれていません**。開始値は既定 1 の引数で([authoringscenedocument.hpp:110](../../src/core/loader/authoringscenedocument.hpp#L110))、**番号は文書内のシーンをまたいで連番**です —— `scenes` の 1 つ目が 31 個なら、2 つ目のシーンの先頭は 1 ではなく 32 になります。つまり「`objects` 配列の何番目か」で数えてよいのは**最初のシーンだけ**です |
+| 解決 | ロード後の束縛表を線形に走査し、その id を持つ生きたオブジェクトを探します([SceneLoader::graphOwnerObject()](../../src/core/loader/scenegraphruntime.cpp#L35)) |
+| 見つからないとき | **エラーではなく inactive**。その instance の scope は評価されず、`LOG_WARNING` が出ます(`graph instance owner does not match any object in this scene: <scope>, <scope>, …`)。**1 行にまとまります** —— そのとき初めて報告する scope を `", "` で連ねて 1 回だけ出し、同じ scope は二度言いません([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L61))。「言った」という記憶は**シーンのロードで消えます**([scene.cpp:1152](../../src/core/loader/scene.cpp#L1152))ので、次のシーンでは同じ scope がまた 1 回報告されます。姿勢では「rest pose のまま動かない」に見えます |
+| 別のオブジェクトを指したとき | id が**実在する別のオブジェクト**だった場合は黙って**そちらに適用**されます。姿勢の sink のように適用できない相手(カメラなど)なら、オブジェクト名入りで失敗します(`pose graph sink resolution for Camera failed with animation status …` — [posegraphruntime.cpp:181](../../src/core/animation/posegraphruntime.cpp#L181)) |
+
+> ⚠ **既知の穴(v0):** この id は**永続識別子ではありません**。シーンにオブジェクトを挿入して保存すると、以降の番号が 1 つずつずれ、**装着先が別の個体に移ります**(不一致なら無音の inactive、実在すれば黙ってそちらへ)。永続オブジェクト id(`design_object_identity.md` の ID-1〜4)は未実装で、v0 の穴として台帳に記録されています([第11章 §11.3](11_status.md))。当面は「装着を持つシーンでは、オブジェクトを**末尾に足す**」のが安全です。
+
 > **設計決定(コンポーネント名 = 登録名):** シーン形式が定義するのは「`name` + 任意パラメータのレコード列」まで。コンポーネントの語彙は ECS の登録名(+バインダの特別扱い)で決まり、新コンポーネント追加にシーン形式仕様の改訂は不要。未知の名前は `component_unknown@1{"name":"X"}` で fail-fast。
 
 > **設計決定(ファイルパス禁止):** コンポーネントのパラメータにファイルパスを直接書くことは禁止。モデルは必ず `asset_data.json` の登録名(`model: "sotai"`)経由で参照する。パス解決規則の適用面を asset_data.json に限定し、シーン検証をエンジン・web・外部ツールで安価にするため。
@@ -123,6 +143,10 @@ codec の表には 8 個目として `pelican_ray_instance` が並んでいま�
 ### localtransform(✅)
 
 `pos` / `rotation` / `scale`(すべて必須)。毎フレーム値が `transform` へ反映されます。親子階層はオブジェクト直下の `parent` キー(§4.1)で宣言します — localtransform コンポーネント自体に親を書くフィールドはありません。
+
+**root motion の着地点でもあります(✅AG-2)。** クリップに焼かれた「根の移動」を個体の移動として使う(`pose.clip_sample{root_motion: "extract", root_node}` — [第8章 §8.13](08_gameplay.md))と、エンジンは毎フレームの移動量を **この localtransform に加算**します(`local.pos += local.rotation * delta`。スケールは掛けません。書き手は [GameObjects::setLocalTransform()](../../src/core/userpublic/gameobjects.cpp#L67) で、姿勢の評価フェーズの中、姿勢を stage する直前に呼ばれます)。したがって **root motion を使う個体には `localtransform` の宣言が要ります**。無い個体に `extract` を装着すると、黙って移動が消えるのではなく装着時に `pose.root_motion_no_transform@1` で拒否されます。
+
+注意が 2 つあります。**(a) `localtransform` が自動で付くのは親子階層に参加するオブジェクトだけ**です(§4.1)。単独のオブジェクトには自動注入されないので、自分で宣言してください(出荷プロジェクトで root motion を宣言しているものは今日ありません。`posegraph_demo` の `Hero` は `transform` と同じ TRS を `localtransform` にも書いています)。**(b) 親を持つ個体は 1 フレームずれます** —— ワールド変換の再合成は次フレームの `LocalTransformSystem` が行うためです。
 
 ### camera(✅)
 
@@ -188,15 +212,45 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 { "name": "animation", "clip": "character.glb#animation/Turn", "speed": 1.0, "loop": true, "start_time": 0.0 }
 ```
 
+同じコンポーネントで、**クリップ 1 本の再生**か、**ステートマシン文書(`pelican.anim_graph`)の再生**かのどちらかを宣言します。受理するキーは `name` を除いて 6 つで、**`clip` と `graph` はちょうど一方**でなければなりません(両方書いても、どちらも書かなくても `field 'animation' requires exactly one of clip or graph` — [componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L990))。メッセージの `field '<path>' ` という前置きは検査側が付けるもので([structfieldjson.hpp:56](../../src/core/userpublic/details/schema/structfieldjson.hpp#L56))、ロード時にはさらに `animation.schema_validation` の legacy 拒否として包み直されます([componentcodec.cpp:1537](../../src/core/loader/componentcodec.cpp#L1537))。以下で引用するのは**その中の一節**です。
+
+(`graph` 装着の形。[skeletal_gltf_test.cpp:1074](../../test/skeletal_gltf_test.cpp#L1074) の実物から):
+
+```json
+{ "name": "animation", "graph": "turn.json",
+  "parameters": { "$list": {"v": 1, "next_id": 2},
+                   "rows": [ {"$row": {"id": 1, "v": 1}, "parameter": "go", "value": 1} ] } }
+```
+
 | フィールド | 必須? | 既定 | 規則 |
 |---|---|---|---|
-| `clip` | **必須** | — | **`<glb>#animation/<クリップ名>` フラグメント参照**。モデルと**同一 glb** でないと実行時エラー |
-| `speed` | 任意 | 1.0 | 再生速度 |
-| `loop` | 任意 | true | 非 bool は名指しエラー |
-| `start_time` | 任意 | 0.0 | 開始オフセット秒 |
-| `graph` | 禁止 | — | v1 予約キー(存在するだけでエラー)。グラフ再生は C++ API — [第8章](08_gameplay.md) |
+| `clip` | **`graph` と排他で必須** | — | **`<glb>#animation/<クリップ名>` フラグメント参照**。モデルと**同一 glb** でないと実行時エラー |
+| `graph` | **`clip` と排他で必須** | — | `pelican.anim_graph` 文書への参照(ステートマシン)。**v0 の契約として維持されます**(AG-1b で「装着の一本化」は v0 から撤回されました) |
+| `parameters` | 任意 | — | **`graph` のときだけ**書けます(`clip` と併記すると `field 'animation.parameters' requires a graph`)。ステートマシンの初期パラメータを `List`(`$list` / `$row` の行封筒 — §3.10)で並べます。名前は非空・一意 |
+| `speed` | 任意 | 1.0 | 再生速度。**`clip` のときだけ** |
+| `loop` | 任意 | true | 非 bool は名指しエラー。**`clip` のときだけ** |
+| `start_time` | 任意 | 0.0 | 開始オフセット秒。**`clip` のときだけ** |
 
-制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、joint 上限 128。モーフターゲットは描画対応 ✅WP121(初期 weight で表示)ですが、**クリップの `weights` チャネルは v1 非対応**(表情などの weight 駆動は [第8章](08_gameplay.md) §8.13 の VRM service 経由)。時刻源は `EngineTime`(rpc `set_time` と同一経路 = 決定的)。
+`graph` と一緒に `speed` / `loop` / `start_time` を書くと拒否されます —— メッセージは**書いた鍵を名指し**するので、`field 'animation.speed' is clip-only; graph states define their playback clocks` のほか `field 'animation.loop' …` / `field 'animation.start_time' …` の形も出ます([componentcodec.cpp:1009](../../src/core/loader/componentcodec.cpp#L1009))—— ステートマシンでは再生時計を各ステートが決めるからで、黙って無視はされません。実行時にパラメータを動かす API は [第8章 §8.13](08_gameplay.md)(`setAnimationGraphParameter` / `forceAnimationGraphState`)です。**出荷プロジェクトの scene.json には、今日 `animation` コンポーネント自体がありません**(2026-09-17 実測)。`animgraph_demo` は同じ形のステートマシンを**ゲームコードから**駆動しており(`code/` の `EvaluatorV1`)、`animgraph_demo` / `vrm_xr_demo` の `movement.anim_graph.json` はどちらの scene からも参照されていません。姿勢をデータだけで装着する実物は `posegraph_demo`(様式 (2)、下記)です。
+
+制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、joint 上限 128。モーフターゲットは描画対応 ✅WP121(初期 weight で表示)ですが、**クリップの `weights` チャネルは v1 非対応**(表情などの weight 駆動は [第8章](08_gameplay.md) §8.13 の VRM service 経由)。時刻源は `EngineTime`(rpc `set_time` と同一経路 = 決定的)。`PELICAN_WITH_ANIMATION=OFF` のビルドでは、このコンポーネントを持つシーンは**ロードの prepare 段で** `animation.module_unavailable@1` になります(§4.3)。
+
+### 姿勢の 2 つの装着様式(✅AG-1a/AG-1b)
+
+個体に姿勢を書く方法は **2 つ**あり、**同じオブジェクトに両方は付きません**。
+
+| 様式 | 書く場所 | 中身 |
+|---|---|---|
+| **(1) animation コンポーネント** | シーン JSON(この節) | `clip` 1 本、または `graph`(`pelican.anim_graph` のステートマシン) |
+| **(2) `graph.instance` + `pose.*`** | rendering config の `pelican.graph` root(§4.1) | 共通グラフの姿勢ノード(`pose.clip_sample` / `pose.blend` / `pose.state_machine` / `pose.retarget`)を sink `pose.skeletal` へ繋ぐ |
+
+> **設計決定(owner 単位の排他):** 1 つのオブジェクトの姿勢を書けるのは **1 本の writer だけ**。同じオブジェクトに (1) と (2) の両方があれば `pose.sink_conflict@1{owner, first, second}` で拒否します([PoseGraph::raiseSinkConflict()](../../src/core/animation/posegraph.cpp#L40))。同じ文書で 1 つの owner に sink を 2 本書いた場合も同じ名前です。**v0 が約束するのは 2 経路の一本化ではなく、(a) 両者の挙動が揃っていること(parity)と (b) この排他**です([../v0_freeze.md](../v0_freeze.md) §1.6)。
+
+排他は 2 段構えです。**(a) 文書レベル**: グラフの装着時に、その owner に animation コンポーネントの装着があるかを見て拒否します。**(b) 公開レベル**: 実際に姿勢フレームを公開する `publishAnimationFrame` が **owner ごとの writer token** を持ち、同じ revision に別の writer が来れば `authority_conflict`、同じ writer が 2 回来れば `duplicate_revision` を返します。(a) だけだと「(a) が見落とした経路」が黙って二重書きになるため、公開側にも砦が置かれています。
+
+どちらの様式でも、**parity** として次が揃います(✅AG-1b): `loop: false` は末尾で clamp する / `clip.start != 0` のクリップでも位相が一致する(`time_seconds` は絶対クリップ時刻) / パラメータを変えてもステートとクリップの再生位置は保たれる(文書そのものを変えて再公開したときは初期ステートに戻ります)。
+
+書き方(ノードとパラメータ)は [第8章 §8.13](08_gameplay.md)、ノードの語彙は [第6章 §6.17](06_rendering.md)、装着の編集操作は [第13章 §13.5](13_editor.md) にあります。
 
 ### sprite_view(✅WP103/104/106)— 2D スプライト
 
@@ -297,6 +351,8 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 9. **finish**: 生成済み entity のトークンを確定します。
 
 2〜9 の 8 段が [SceneLoadPhase](../../src/core/loader/sceneload.hpp#L27) の 8 値(`prepare` / `early_publish` / `publish` / `activate` / `commit_metadata` / `retire` / `flush` / `finish`)にそのまま対応します(1 は executor に入る前の解釈レイヤなので phase ではありません)。ロード結果に付く phase trace は内部の順序検証(と fault injection)のためのもので、rpc には出ていません。
+
+> **ビルドから外した機能を要求するシーンは prepare で止まります(✅AG-1b)。** `PELICAN_WITH_ANIMATION=OFF` のビルドで `animation` コンポーネントを含むシーンをロードすると、**2 の prepare 段**で `animation.module_unavailable@1`(オブジェクト名入り)になります([scene.cpp:74](../../src/core/loader/scene.cpp#L74))。commit 前なので**ロールバックの契約に乗り**、稼働中の旧シーンはそのまま残ります —— 「読めたが誰も評価しないので rest pose のまま動かない」という状態を作りません。コンポーネントの **codec は OFF でも残る**ので、ツールは同じビルドでシーンを読み書きできます(読めることと動かせることを分けています)。
 
 ### ロード中の「作用」はトランザクションに溜まる(✅WP380b〜e)
 
@@ -438,6 +494,13 @@ DECLARE_COMPONENT(MyComponent, 61);   // 0..63 の空き番号(エンジンは 0
 | `ListContainerMissing` / `RowEnvelopeMissing` / `DuplicateRowId` | `List` フィールドを素の配列で書いた・`$list`/`$row` 欠落・行 id 重複(§4.4) |
 | `SceneTransactionMutationRejected{api: create}` | シーンロード中に `GameObjects::*` を直接呼んだ(§4.3) |
 | `scene not found in committed projection: <id>` | 旧シーンの `onDestroy` から、新シーンに無い名前で `loadScene` した(§4.3) |
+| `field 'animation' requires exactly one of clip or graph` | `animation` に `clip` と `graph` を両方書いた / どちらも書かなかった(§4.2) |
+| `field 'animation.<鍵>' is clip-only; graph states define their playback clocks` | `graph` 装着に `speed` / `loop` / `start_time` を書いた。`<鍵>` は書いた鍵そのもの(§4.2) |
+| `animation.module_unavailable@1` | `PELICAN_WITH_ANIMATION=OFF` のビルドで、`animation` コンポーネントを含むシーンをロードした(§4.3)/ `requires: ["animation"]` のプロジェクトを開いた([第3章 §3.2](03_project_format.md)) |
+| `project.requires_unknown@1` | `project.json` の `requires` に、このエンジンが知らない名前を書いた(既知の一覧がメッセージに付きます — [第3章 §3.2](03_project_format.md)) |
+| `pose.sink_conflict@1{owner, first, second}` | 同じオブジェクトに姿勢の writer が 2 つある(animation コンポーネント + `pose.skeletal`、または sink 2 本。§4.2) |
+| `pose.root_motion_no_transform@1{owner, node, object}` | `root_motion: "extract"` の装着先に `localtransform` が無い(§4.2 の localtransform) |
+| `graph.operation_unregistered@1{node, op}` | 文書が、この build に登録されていない op を使っている(OFF ビルドでの `pose.*` など。[第1章 §1.5](01_overview.md) 設計決定 12) |
 
 ## 4.6 既知の注意点
 

@@ -1,6 +1,6 @@
 # 第11章 実装状況と文書マップ
 
-対象: pelican2(HEAD=`d146b8bd`・2026-09-04、branch
+対象: pelican2(HEAD=`990b9eaa`・2026-09-17、branch
 `codex/render-target-runtime-slice`)/ このマニュアルはコードを正とする
 
 > **この章の鮮度:** §11.1 の**行単位の WP 表は 2026-07-31・WP238e までしか転記していません**。
@@ -8,9 +8,10 @@
 > [../implementation_plan.md](../implementation_plan.md) の完了記録が唯一の正です
 > (他章は個別に追随しており、例えば WP240c / 248 / 262 / 274 / 275 / 289 / 297 は
 > [第5章](05_assets.md)・[第6章](06_rendering.md)・[第10章](10_tools.md)・[第13章](13_editor.md) に出てきます)。
-> **2026-09-03〜04 に統合された分だけ**は §11.1 末尾の追補表に転記してあります。
+> **2026-09-03〜04 に統合された分**と、**2026-09-16〜17 の v0 の段**は §11.1 末尾の 2 つの追補表に転記してあります。
 
 - **WP 番号の読み方**: WP(Work Package)は開発の作業単位で、**1 WP = 1 ブランチ = 1 マージ**です。番号は連番とは限らず、`238e` `380a-fix` のような枝番が付きます([第1章 §1.0](01_overview.md))。
+- **記号 ID(v0 の段)**: 2026-09-16〜17 の v0 では、通し番号ではなく **`AG-0` / `AG-1a` / `P-2a-1c` / `X-1` / `R1-2` / `N-2` のような記号 ID** が作業単位の名前として使われました。読み方は「系統 + 段」で、`AG` = アニメーション / 共通グラフ、`P` = パラメータと部品(`P-2a` はその Bloom パイロット、`P-2b` はサンプル project)、`X` = 持ち出し(package)、`O` = オフライン出力、`R` = 整理と凍結、`N` = ノードキャンバス(Studio)です。枝番の規則は WP と同じで、`AG-1a` → `AG-1b` は同じ段の前後を表します。本文のバッジも `✅AG-1b` / `✅P-2a-3` のように書きます。一覧は下の v0 表、面の凍結は [../v0_freeze.md](../v0_freeze.md)。
 - **表の見方**: 表は 3 列(WP / 内容 / 状態)か 5 列(WP / タイトル / 状態 / 1行説明 / ユーザーから見える面)で、状態の凡例は §11.1 の冒頭にあります。「いま使えるか」は**状態**の列だけで判断してください。
 - **タイトルの `U1` `C1a` `F0` `RPE2` `VRM-S1` などは WP 番号ではなくトラック記号**(設計文書側で決めた「どの系統の第何段か」)です。よく出るものの凡例:
   - `U1`〜`U4` — プレファブの出荷単位([../design_prefabs.md](../design_prefabs.md) §7)。`U1` = leaf library + ProjectEnvelope の prefabs 保持 + ResolvedScene seam + version 2 ゲート、以降 `U2` unpack、`U3` authoring transaction、`U4` `ctx.spawn`。→ [第13章](13_editor.md)
@@ -379,7 +380,7 @@ WP240c(project material)= [第5章](05_assets.md) §5.2 / WP248(`pelican_project
 | 382c / 382d | 統合済み(382d: `4ce4117d`) | occurrence inventory/RPCと行別overridesを接続。scene/editorのpublish/rollbackと同じplanを使う。Web専用拒否は別repoへの引き継ぎ |
 | 386 | 起票済み・仕様レビュー待ち | RT3-2。static AABB + `.rint`(手続き幾何)。`pelican.asset_data` の `procedural_geometry` と hit group `type: "procedural"` は**まだ存在しません** |
 
-全数の基準は **1633 / 1633**(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列。WP382a / WP385 の完了記録)。
+全数の基準は 2026-09-04 時点で **1633 / 1633**(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列。WP382a / WP385 の完了記録)。**2026-09-17 の v0 着地後は 1947 / 1947 @ `83645084`**(engine 側。[../v0_freeze.md](../v0_freeze.md) §6)。
 
 WP 番号外の 2026-07-15 リファクタ群(design_reviews/ にレポートあり): module access hardening、PhysQuery 決定的クエリ基盤、purgeable physics provider boundary + provider DLL lifecycle。
 
@@ -390,15 +391,52 @@ reload)と VRMA watcher 配線、唯一残った負債 CI2、anim_graph v2 / cli
 いずれも着手されていません。XR2b は WP203a〜c のローカル実装まで済み、現実装の
 Simulator/物理 HMD と対象 GPU 実測 gate が active です。
 
+### v0(2026-09-16〜17)—— 共通グラフ・姿勢・パラメータ・持ち出し・オフライン出力・整理
+
+v0 は「**装着 → 編集 → 観測 → 保存 → 再読込**の往復を、値・描画・姿勢の 1 つの機構(共通グラフ)で閉じる」ための段です。作業単位は通し番号ではなく**記号 ID**(上の凡例)。commit は統合ブランチの squash で、**行単位の正は [../implementation_plan.md](../implementation_plan.md) の各節の完了記録**、凍結した面の正は [../v0_freeze.md](../v0_freeze.md) です。
+
+| 段 | タイトル | 状態 | 1行説明 | ユーザーから見える面 |
+|---|---|---|---|---|
+| AG-0 | 共通グラフの module 登録契約と purge ゲート | 済(`adb73793`) | op / 型 / sink の語彙を [`GraphModuleManifest`](../../src/project/graphmodule.hpp#L35) に載せ、静的表とハードコード分岐を撤去。契約に `domain` / `evaluation` / parameter ごとの `change` を持たせた | 未登録の op は `graph.operation_unregistered@1`、backend が無い op は `graph.operation_unexecutable@1`(以前は散文の例外)。`pelican_cli graph-catalog` で語彙が一覧できる |
+| AG-1a | pose module —— `pelican.pose@1` を登録型にする | 済(`5bc79586`) | `pelican.pose` module(`pose.clip_sample` / `blend` / `state_machine` / `retarget` と sink)と新 domain `animation`。既存の評価器をノードで包む。`PELICAN_WITH_ANIMATION` を機能ユニットとして登録 | 共通グラフから姿勢を組めるようになった。OFF ビルドでは module ごと消え、`pose.*` の文書は名指しで拒否([第2章 §2.2](02_getting_started.md)) |
+| AG-1b | pose graph 経路を component 経路と揃え、owner 単位で排他する | 済(`945ad8aa`) | `clip_sample` に `speed` / `loop` / `start_time`、位相ずれの是正、パラメータ編集での状態移送、`publishAnimationFrame` の writer token | 2 つの装着様式が同じ挙動になり、同じ owner への二重装着は `pose.sink_conflict@1`([第4章 §4.2](04_scene_ecs.md))。OFF ビルドでは animation コンポーネントを含むシーンが prepare で止まる |
+| P-1 | パラメータの供給元(mode)と由来 | 済(`b960edf7`) | `graph.instance` の入力を **辺 > `parameters` > 既定値**の優先に(二重指定の拒否を撤回)。`edit_graph_document` と `get_graph_catalog`、publish 経路での値の退避 | Inspector とグラフが同じ辺を編集する。`get_graph_values` が再評価せずに由来(`connected` / `parameter` / `default` / `override`)を返す。接続済み入力への実行時上書きは `graph.override_shadowed@1` |
+| P-2a-1a | anchor の明示とハードコード撤去 | 済(`70982870`) | `example` の 13 pass に `canonical_anchor: post_ldr` を書き、`featurecompose.cpp` の Bloom 名判定を撤去 | パス名の特権が消えた(画素は不変) |
+| P-2a-1b | Bloom を feature にする | 済(`a1233ddd`) | 13 pass + 9 RT を `engine://features/bloom.json` へ逐語移設し、`example` は `features: [bloom, ui]` | Bloom が「同梱の feature 1 本」になり、materialize して派生を作れる([第6章](06_rendering.md)) |
+| P-2a-1c | Bloom の parameter(define)と materialize 後の編集 | 済(`9e4081b4`) | `threshold` / `knee` / `intensity` を feature の parameter に。materialize 後も宣言を残し、値は `bound_parameters` に持つ | 部品のパラメータを project 側で変えられる |
+| P-2a-2 | runtime 値(`binding: buffer`) | 済(`62f09ce0`) | `intensity` を毎フレーム書き換えられる値に(feature 自身が持つ `bloom.intensity` バッファ経由) | グラフや RPC から強度を動かせる([第6章 §6.5](06_rendering.md)) |
+| P-2a-3 + P-2a-4a | 共有部品の公開 / graph root の `rendering` 節 | 済(`5100be5f`) | `src/project/rendercomponent.*` と `export_render_feature` / `import_render_feature`。オーサリング面の読み書きを `rendering` 節の locator 1 本に通した | feature 1 本を `user://components/<name>/` へ出し、別 project へ入れられる([第3章 §3.12](03_project_format.md))。graph root の config でも編集 RPC が効く |
+| X-1 | 持ち出し —— package manifest と vendoring | 済(`3f72b71d`) | `pelican.package` v1、`install_package` / `uninstall_package`、`pelican_cli package install\|list\|inspect`、`pelican_packages()` | 本体ツリーの外で作った部品一式を project に複製して使える([第3章 §3.11](03_project_format.md))。package の feature は `<namespace>.<名前>` でカタログに出る |
+| AG-3a | 観測の engine 面 | 済(`9862ebdd`) | `get_status.animation`(sink ごとの owner / source / cursor / transition / `root_delta`)と `get_graph_node_values{instance?}`(展開木の全ノードの出力値) | 外部から「今どのクリップのどこを再生しているか」「各ノードが何を出しているか」を読める。値は**描画側の publish スナップショット**なので `source: "rendering"` を必ず返す(姿勢側のスナップショットは v0 では無い) |
+| AG-2 | root motion | 済(`584afc15`) | `pose.clip_sample{root_motion, root_node}`。unwrapped time の差で移動量を取り、staged pose の根を pin して owner の local に加算 | クリップの移動が個体の移動になる([第4章 §4.2](04_scene_ecs.md))。拒否は `pose.root_motion_unsupported@1` / `pose.root_node_unknown@1` / `pose.root_motion_no_transform@1` / `pose.root_motion_shared@1` |
+| O-1 | オフライン出力(`--start-time`) | 済(`405cd319`) | 秒を `llround(t·fps)` で frame に量子化し、`start_frame − 1` を warm-up してから capture | `pelican_player --headless --start-time <秒>` で「その時刻の frame」から連番出力できる([第2章 §2.5](02_getting_started.md))。`offline.time_invalid@1` / `offline.headless_required@1` / `offline.mode_conflict@1` |
+| P-2b | posegraph_demo —— 姿勢の blend を曲線で駆動する | 済(`393f9d30`) | 新プロジェクト 1 本(`pelican.graph` root + `pose.clip_sample` 2 本 + `pose.blend`、weight を `value.curve` で駆動)と `project.json` の `requires` | 6 本目の学習サンプル。`requires: ["animation"]` の検証と、コーパスの名前付き skip([第3章 §3.2](03_project_format.md)) |
+| P-2a-4b | `projects/example` を `pelican.graph` root に移す | 済(`d236822b` + Studio hotfix `2f2aadce`) | 包み方を `wrapLegacyRenderingConfig()` 1 関数に固定し、root を直読みする production parser 3 つを節読みへ。`project init` の雛形も graph root | 出荷 `example` と新規プロジェクトの rendering config が graph root になった(画素は不変。[第3章 §3.2](03_project_format.md)) |
+| R-1 | 二つの正本の整理と安い穴 | 済(`aa56a1af`) | 「撤去 / 維持」11 行の裁定(**code の撤去は 0 行**)+ RPC OFF ビルドの 2 test を SKIP 化、export の `.tmp-*` 掃除、per-process の temp root、owner 不一致の警告 1 回 | 装着先の無い `graph.instance` がログに 1 行出る。中断した export の残骸を次の export が掃除する |
+| R1-2 | committed marker を排他 create で別ファイルに置く | 済(`edf4bd43`) | `committed` marker を hard link の排他 create にし、`manifest.json` を上書きしない。`removeTransactionDirectory` の削除順も是正 | 編集の保存が `Access is denied` で間欠的に落ちる経路が閉じた(飽和負荷で 33/704 → 0/704) |
+| R-3 | サンプル索引・凍結一覧・v0 tag の手順 | 済(`979b40f7`) | [../v0_freeze.md](../v0_freeze.md) を新規作成(schema 31 種 / RPC 89(基盤 29 + エディタ 60)/ catalog の op 表 / ABI / package / 2 つの root と 2 つの装着様式 / 撤去・維持 / 約束しないもの / 既知の穴 / SHA)。`animgraph_demo` と `vrm_xr_demo` に `requires` | 学習サンプルが 6 本に揃い、README が「読む順序 / 何を変えると何が起きるか」の 2 節に統一された。凍結面の正本ができた |
+| N-1 | 共通グラフのノードキャンバス(読む) | 済(`2c6828e4`) | Studio に `pelican.graph` の定義と root を読むキャンバス | グラフを図として見られる([第13章](13_editor.md)) |
+| N-1b | ノードの見た目(見出しとソケット欄) | 済(`373f62ee`) | 見出し(型名 + `label`)とソケット欄を分け、未接続で値のある port に値の帯を出す | ノードの中身が読める |
+| N-2 | ノードキャンバス(繋ぐ・書く) | 済(`02a3d285`) | 折り畳み・ソケット間ドラッグで接続 / 切断・値の帯のその場編集・ノードの追加 / 削除・`set_node_label`、そして **`edit_graph_document` の全 op に `scope`**(定義の中も編集可) | GUI からグラフを編集できる。1 操作 = `edit_graph_document` 1 回([第13章 §13.5](13_editor.md)) |
+| Q-1 | Studio の自動操作面 | 済(`06829720`) | `pelican_studio --automation <名前>` の `QLocalServer` と `tools/studio_drive.py`、`test/studio_scenarios/*.json` を 1 本の e2e 経路にした | GUI を外から駆動して検査できる([第13章](13_editor.md) の「Studio の自動化面」・[第10章](10_tools.md) §10.7) |
+| N-3 | Frame Plan が共有のノード描画をまとう | 済(`dd088c2a`) | Frame Plan のノードをグラフキャンバスと同じ描画に寄せ、両キャンバスに zoom / pan / fit を入れた | 2 つのキャンバスの見た目と操作が揃う([第13章](13_editor.md)) |
+| Q-1b | 自動化面のポインタとメニュー | 済(`026268ee`) | `wheel` / `move` / `press` / `release` / `action` / `menu_list` / `view_state` の 7 命令を足し、`drag` に `button`、`key` に `route` を足した。ポインタ系は scroll area の viewport へ配送する | ホイール・押したままの移動・ボタン別ドラッグ・メニュー項目とショートカットまでシナリオで書ける([第10章](10_tools.md) §10.7・[第13章](13_editor.md)) |
+| N-5 | Studio のテーマ(ライト / ダーク) | 済(`43f032b1`) | 色を 1 枚の表(`studio_themes.json` + `StudioTheme`)に集め、View ▸ Theme で切り替え、QSettings `studio/theme` に保存。両キャンバスが listener で描き直す | エディタの明暗をノードキャンバスと揃えられる。再起動不要、既定は `dark`([第13章](13_editor.md)) |
+
+この 25 行のほかに **R-2(操作感)** があります —— これは**実装のない裁定**で、「render config 編集の複合 undo は v0 では約束しない」を決めたものです(下の §11.3「v0 で約束しないもの」)。
+
+v0 の段の SHA は [../v0_freeze.md](../v0_freeze.md) §5 と同じものです(あちらは着地順ではなく段の順)。**`v0.1.0` tag はまだ打っていません**(手順は同 §6)。
+
 web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照してください。
 
 ## 11.2 設計文書マップ(docs/ ⇔ 本マニュアル)
 
 矛盾時の優先順位: **凍結済み > ドラフト、設計文書 > 指示書**。
 実装状態はレンダリング系が 2026-07-31、それ以外が 2026-07-19 の
-コード・test・完了レポート基準です。**WP239 以降(2026-08〜09)の着地は下の表に
+コード・test・完了レポート基準です。**WP239 以降(2026-08)の着地は下の表に
 反映していません** —— 例えば `design_object_identity.md` / `design_declaration_carrier.md` /
 `design_raytracing.md` は表に行がありませんが、WP374〜386 の規範として実際に使われています。
+**2026-09-17 に、v0 の規範となった 3 文書([v0_freeze.md](../v0_freeze.md) / [design_graph_composition.md](../design_graph_composition.md) / [v1_development_plan.md](../v1_development_plan.md))だけを表に足しました。**
 
 ### 凍結・規範文書
 
@@ -410,6 +448,7 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 | [design_shader_freedom_kit.md](../design_shader_freedom_kit.md) [SF] | — | シェーダ基盤(実装済み) | [第6章](06_rendering.md) |
 | [design_headless_rendering.md](../design_headless_rendering.md) [HL] | — | ヘッドレス描画(実装済み) | [第2章](02_getting_started.md)・[第6章](06_rendering.md) |
 | [animation_abi_v1.md](../animation_abi_v1.md) | **Frozen / normative** | アニメーション ABI v1(正本 header = `abi_v1.hpp`) | [第8章](08_gameplay.md) |
+| [v0_freeze.md](../v0_freeze.md) | **v0 凍結一覧(正本)・2026-09-17** | 「v0 で動かさないと約束する面」の実名一覧: 文書 schema 31 種 / RPC 89 method(基盤 29 + エディタ 60) / 共通グラフの module・op・型・sink / ABI と版 / package manifest の最小形 / 2 つの root と 2 つの装着様式。加えて撤去・維持の裁定、約束しないもの、既知の穴、各段の SHA | 全章(面ごとの詳細は各章。RPC の params は [第10章](10_tools.md) が正本) |
 
 ### ドラフト(実装済み or 実装中)
 
@@ -437,7 +476,8 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 | [design_ui_2d_foundation.md](../design_ui_2d_foundation.md) | ✅ v8 Accept・U0/U1/U2 実装済み(WP75/87/93) | [第7章](07_input_ui.md) |
 | [design_2d_game_layer.md](../design_2d_game_layer.md) | ✅ v2.4・S2D-0a〜2 実装済み(WP103/104/106/107/109) | [第4章](04_scene_ecs.md)・[第6章](06_rendering.md)・[第8章](08_gameplay.md) |
 | [design_event_payload_schema.md](../design_event_payload_schema.md) | ✅ v2 Accept・WP71 で実装 | [第8章](08_gameplay.md) |
-| [design_animation_graph.md](../design_animation_graph.md) | ✅ v2.1・A0〜A2 + VRM application + VRMA-C0/R0/I0 実装済み(WP94〜102/111/121〜134/176〜178)。graph v2/live/SpringBone は未 | [第8章](08_gameplay.md) |
+| [design_animation_graph.md](../design_animation_graph.md) | ✅ v2.1・A0〜A2 + VRM application + VRMA-C0/R0/I0 実装済み(WP94〜102/111/121〜134/176〜178)+ §1 機構語彙 / §3 単一 writer は AG-1a/1b の規範。graph v2/live/SpringBone は未 | [第8章](08_gameplay.md)・[第4章 §4.2](04_scene_ecs.md) |
+| [design_graph_composition.md](../design_graph_composition.md) | ✅ 共通グラフ `pelican.graph` の設計(定義と instance、入力 parameter、装着編集)。AG-0 / AG-1a / AG-1b / P-1 / N-2 の規範。**P-1 で「入力の二重指定は拒否」が「辺 > `parameters` > 既定値」に訂正されました**(文書側も同じ commit で訂正済み)。event(ノード出力からの発行)は v0 の後 | [第6章 §6.17](06_rendering.md)・[第13章](13_editor.md)・[第4章 §4.1](04_scene_ecs.md) |
 | [design_asset_hot_reload.md](../design_asset_hot_reload.md) | ✅ v2.1・HR0〜HR2-G、targeted animation generation(WP147)、VRMA reload entry(WP178)実装済み。HR2-I/U3/VRMA watcher配線は未 | [第10章](10_tools.md) |
 | [design_text_hud.md](../design_text_hud.md) | ✅ WP54 | [第7章](07_input_ui.md) |
 | [design_game_logic_native.md](../design_game_logic_native.md) | ✅ G1/G2 + behavior attachment/edit + two-generation reload(WP90/155/162/167) | [第8章](08_gameplay.md) |
@@ -465,7 +505,8 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 
 | 文書 | 内容 |
 |---|---|
-| [implementation_plan.md](../implementation_plan.md) | WP 詳細・受け入れ基準・共通規則(§0)。110KB 超 — 分割は backlog 登録済み |
+| [implementation_plan.md](../implementation_plan.md) | WP 詳細・受け入れ基準・共通規則(§0)。110KB 超 — 分割は backlog 登録済み。**v0 の段(記号 ID)の完了記録もここが正**(§11.1 の v0 表は転記) |
+| [v1_development_plan.md](../v1_development_plan.md) | v1 の現況・残件・開発運用。v0 の段(AG / P / X / O / R / N)の**出所**であり、「v0 で凍結するもの / 広く約束しないもの」の 5 行表を持つ(その表を実名に展開したのが [v0_freeze.md](../v0_freeze.md)) |
 | [roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md) | 今後の候補 47 件・6 ティア + D-P / SA トラック(セッション引き継ぎ用。ウェーブ表は 2026-07-16 夜時点) |
 | [adding_features.md](../adding_features.md) | 機能追加レシピ集 |
 | [agent_operations.md](../agent_operations.md) | マルチエージェント運用 |
@@ -515,12 +556,36 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 
 - **transform_seq は `rot`、scene / rpc は `rotation`**(意図的な別スキーマ判定)。
 - **カメラの `yfov` はラジアン、ライトのコーン角は度、`--camera` の fov も度**。
-- **schema/version エンベロープの有無が形式ごとに異なる**: scene / asset_data / input_actions / import / material / render_feature / frame_plan / ui / anim_graph / atlas / input_seq / settings にはあり、rendering config にはない。
+- **schema/version エンベロープの有無が形式ごとに異なる**: scene / asset_data / input_actions / import / material / render_feature / frame_plan / ui / anim_graph / atlas / input_seq / settings にはあり、**legacy root の** rendering config にはない。※`pelican.graph` root で書いた rendering config は文書の最上位が共通グラフ文書なので `schema` / `version` を持ち、厳密に検査されます(出荷 `example` / `posegraph_demo` と `project init` の雛形。[第3章 §3.2](03_project_format.md))。**「rendering config にエンベロープが無い」は legacy root についてだけ正しい**、と読んでください。
+- **3 つの `requires` は別の語彙**: project.json の `requires`(ビルド機能ユニットの名前の配列)/ package manifest の `requires`(`{engine_min_version, sdk_abi, capabilities}`)/ feature の `integrations[].requires`(他の feature 名)。[第3章 §3.2](03_project_format.md) に対照表があります。
+- **3 つの `component` も別の語彙**: ECS のコンポーネント([第4章](04_scene_ecs.md))/ `pelican.render_component` = 共有部品([第3章 §3.12](03_project_format.md))/ package manifest の `provides.components`(= その共有部品のディレクトリを指す配列。[第3章 §3.11](03_project_format.md))。
+
+### v0 の既知の穴(2026-09-17)
+
+**約束の内側にあるが、今日は塞がっていないもの**です。正本は [../v0_freeze.md](../v0_freeze.md) §4(そこから台帳の該当節を引けます)。マニュアルの読者に影響が出るものだけをここに挙げます:
+
+1. **`graph.instance.owner` の authoring object id が永続でない** —— シーンにオブジェクトを挿入して保存すると装着先がずれます。不一致は**無音で inactive**(警告ログが 1 回出るだけ)、実在する別のオブジェクトを指してしまった場合は黙ってそちらに適用されます([第4章 §4.1](04_scene_ecs.md))。永続オブジェクト id(`design_object_identity.md` の ID-1〜4)は未実装。
+2. **姿勢側の値スナップショットが無い** —— `get_graph_values` / `get_graph_node_values` が返すのは**描画側で publish した値**で、`source: "rendering"` を必ず返します。姿勢の評価は別の評価状態で走るので、event / trigger で駆動するノードがある文書では姿勢側が実際に食った値と**恒久的にずれ得ます**(event の無い文書ではずれません)。
+3. **values パーティションは 1 フレームに 2 回評価されます** —— 描画側と姿勢側がそれぞれ評価するためです。入力が同じなので値は同じですが、**状態を持つノード(`value.trigger_clock` / `value.event_clock` / `audio.playback`)は 2 つの状態を並走させます**。1 回に束ねるのは v0 の後。
+4. **`get_graph_values` は入れ子の instance を返しません**(root の instance の入力 port だけ)。展開木の全ノードが要るときは `get_graph_node_values` を使います。
+5. **frame graph の buffer エントリは未知キーを拒否しません** —— `initial_f32` を綴り間違えると、名指しのエラーではなく**無音で 0 始まり**になります(P-2a-2 の完了記録)。
+6. **pass 名とレンダーターゲット名に名前空間がありません** —— 同じ pass 名を持つ package が 2 つ入ると合成で衝突します([第3章 §3.11](03_project_format.md))。
+7. **`.spv` しか無いエンジンシェーダは、define 付き feature からは使えません**(per-pass 生成のヘッダを include するシェーダは事前コンパイルできないため source-only。`bloom_composite.frag` / `ssao.frag` がこの形)。package が自前のシェーダを持てないのも同じ理由です。
+8. **`PELICAN_WITH_ANIMATION=OFF` のビルドで `PELICAN_TEST_PROJECTS_DIR` を出荷コーパスに向けると、configure 時の glob が `requires` を読まないため、skip されるはずのプロジェクトのゲームロジック DLL まで作ろうとしてリンクに失敗します** —— **ビルドが赤になるのはテストが skip を決めるより前**なので、`requires`(実行時の宣言)では防げません。直し方は同じ glob の中で `requires` を読むこと([../v0_freeze.md](../v0_freeze.md) §4 末尾)。
+
+### v0 で約束しないもの(2026-09-17)
+
+「まだ無い」ではなく、**v0 の契約として約束しない**と決めたものです(正本は [../v0_freeze.md](../v0_freeze.md) §3):
+
+- **複合 undo** —— journal / undo の対象は**シーン編集の 12 op だけ**です(それ以外は `method_unavailable`)。rendering config の編集が約束するのは **CAS + トランザクション**、つまり「失敗したら何も変わらない」まで。文書単位の巻き戻しは内部にありますが、**シーンの undo スタックと rendering config の編集を 1 本に束ねる複合 undo は v0 の外**です(`### R-2:` の裁定)。グラフの編集(`edit_graph_document`)も journal に載らないので undo できません。
+- **代表ゲームの射程** —— 代表は `projects/example` で、触るのは入力・ECS 生成と `setLocalTransform`・VRM 表情・ライトアニメーションまでです。**物理クエリ・音・save/load・UI 操作・behavior のサンプルは v1**(example のシーンに collider は 0、リポジトリに音声ファイルは 0、[../example_assets.md](../example_assets.md) が新規バイナリを禁じ、`playSound` は `PELICAN_WITH_AUDIO=OFF` で throw するため「外せる」と両立しません)。
+- そのほか v1 計画から: 全ドメインの高度な最適化と完全な seek / 任意の式言語と双方向 bind / 全 RT 機能の方式間互換 / native ABI の永久互換 / 稼働中の任意 module の unload。
 
 ### 文書の鮮度の問題
 
 - `design_asset_format_policy.md` の状態列(VAT/EXR/音声/import/KTX2
   「未実装」)はすべて実装済み。
+- **§11.4 ルール 6 が v0 の段で守られなかった(2026-09-17 に一括で解消)。** ルール 6 は「RPC メソッドを足したら [第10章](10_tools.md) の表に(編集系なら [第13章](13_editor.md) にも)、CLI 引数を足したら第10章 §10.2 の表に足す」ですが、v0 の各段(AG-0 〜 R-3 と Studio 側の N-1 〜 N-3 / N-5 / Q-1 / Q-1b)は**着地の時点ではマニュアルへ転記されませんでした**。対象は RPC 10 本(`get_graph_catalog` / `get_graph_instances` / `get_graph_values` / `get_graph_node_values` / `edit_graph_document` / `edit_graph_instances` / `export_render_feature` / `import_render_feature` / `install_package` / `uninstall_package`)、CLI 2 系統(`pelican_cli package` / `graph-catalog`)、player の `--start-time`、および v0 で増えた名前付きコード(`graph.*` / `pose.*` / `offline.*` / `project.requires_unknown@1` / `render_config.section_unlocated@1`)です。**2026-09-17 の更新でこれらを各章へ転記しました**。再発防止として、段の完了記録に「マニュアルのどの表に足したか」を書く運用が要ります(台帳側の課題)。
 
 ## 11.4 このマニュアルの更新ルール
 
@@ -531,14 +596,17 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 = merge を除く)**を反映しました。**2026-09-04 に WP375c〜385(scene load transaction /
 game DLL ABI / 宣言 schema v3 / GPU lease)を §11.1 の追補表として足しました** ——
 このとき **WP239〜374 は行として転記していません**(§11.1 冒頭の注記が正)。
+**2026-09-17 に v0 の段(AG-0 〜 R-3 と Studio 側の N-1 〜 N-3 / N-5 / Q-1 / Q-1b。共通グラフ・姿勢・パラメータ・package・共有部品・
+オフライン出力)を §11.1 の v0 表として足し、同時に第1〜4章・第6章・第8章・第10章・第13章・
+第14章へ本文を転記しました**(上の §11.3「文書の鮮度の問題」の 2 つ目も参照)。
 維持のためのルール:
 
 1. **コードが正。** 設計文書と食い違ったら、実装を確認してマニュアルを実装に合わせる(意図の説明として設計文書を引用するのは可)。
 2. **実装状況バッジを守る。** ✅実装済み / 🚧実装中 / 📐設計のみ(未実装)。WP がマージされたら該当章のバッジと §11.1 の台帳を更新する。設計文書にしかない機能を「使える」と書かない。
-3. **JSON 例は実物から。** `projects/example/`・`projects/sprite_demo/`・`projects/animgraph_demo/`・`test/fixtures/`・`src/core/resources/` の実ファイル、またはパーサ実装で検証した形だけを載せる。創作例には「(例)」と明記。
+3. **JSON 例は実物から。** `projects/example/`・`projects/sprite_demo/`・`projects/animgraph_demo/`・`projects/posegraph_demo/`・`test/fixtures/`・`src/core/resources/` の実ファイル、またはパーサ実装で検証した形だけを載せる。創作例には「(例)」と明記。
 4. **章の追加**: `NN_slug.md` で採番し、[00_index.md](00_index.md) の目次と、関係する章の相互リンクを更新する。章の冒頭形式(タイトル → 対象行 → 「この章で学ぶこと」→ 末尾「関連文書」)を踏襲する。
 5. **バッジ更新のタイミング**: 形式(スキーマ)に触れる WP・strict 化 WP・機能追加 WP のマージ時。直近では HR2-I・U3・VRMA watcher・CI2 の着地時、**XR2b(WP203c)/ WP204 / WP216 / WP217 は外部 gate を通過した時点**で関係章を書き換える。加えて WP211 `dist-bake` の着地時に第2章・第10章を、**WP238 系の公開 game-DLL ABI が凍結された時点**で第6章を書き換える(それまで NativeScope を「使える」と書かない)。
-6. **一緒に直すもの(再発防止)**: golden ケースを足したら `test/golden/inventory.json` にも登録する(件数の自動発見はもう無い)。RPC メソッドを足したら [第10章](10_tools.md) の表と、編集系なら [第13章](13_editor.md) にも書く。CLI 引数を足したら第10章 §10.2 の表に足す。
+6. **一緒に直すもの(再発防止)**: golden ケースを足したら `test/golden/inventory.json` にも登録する(件数の自動発見はもう無い)。RPC メソッドを足したら [第10章](10_tools.md) の表と、編集系なら [第13章](13_editor.md) にも書く。CLI 引数を足したら第10章 §10.2 の表に足す。**名前付きコード(`name@1`)を足したら、それを踏む利用者が読む章のエラー表**([第4章 §4.5](04_scene_ecs.md) / [第13章 §13.6](13_editor.md) / 該当章)**にも足す**。ビルド機能ユニット(`PELICAN_WITH_*`)を足したら [第2章 §2.2](02_getting_started.md) の表と、project の `requires` の語彙([第3章 §3.2](03_project_format.md))を確認する。
 7. **§11.3 の食い違い一覧は「解消したら消す」**。設計文書側が改訂されたか、実装が設計に追いついたら該当行を削除する。
 
 ## 関連文書

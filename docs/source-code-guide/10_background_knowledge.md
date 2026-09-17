@@ -4,6 +4,7 @@
 (§10.1 末尾の 5 項目 — cube イメージ / subresource range / mip 数の上限 / タイル常駐 / dynamic rendering local read — のみ 2026-07-31 / 基準コミット `5a4f95e`)
 (§10.4 の 2 項目 — PE の import directory / 名前付き mutex と `Global\` 名前空間 — のみ 2026-09-04 / 基準コミット `d146b8b`)
 (§10.1 の swapchain 4 項目 — maxImageCount の 0 / currentExtent の特別値 / sharing mode / vulkan-hpp の戻り値規約 — のみ 2026-07-31 / 基準コミット `eeaaaaa`。frame target が surface/swapchain の世代管理へ作り替わったのに合わせて書き直したもの)
+(**§10.8 の 6 項目 — 2026-09-17 / 基準コミット `990b9eaa`。** v0 で入った共通グラフ・package・オフライン時刻の周りで、「エンジン固有の設計」ではなく**一般的な作法**にあたる話をまとめたものです。本文は他の 2026-09-04 項目と同じ「使用場所」書式で、行番号はリンクに寄せてあります)
 (§10.1 の「色空間と伝達関数」と §10.5 の 3 項目 — Floyd–Warshall 法 / GJK と EPA / JSON-RPC 2.0 の予約エラーコード — のみ 2026-09-04 / 基準コミット `00074608`。他章から「第10章へ委譲」と書かれていた一般知識を後から補ったもの)
 (**2026-09-04 に足した 70 項目と、既存項目への「追記」段落 — 基準コミット `170e58f8`。** src を初読した読み手が「一般知識が足りなくて読めない」と挙げた 109 件を既存項目と突き合わせ、重複を除いた残りです。**この 70 項目と追記段落だけは markdown リンクで書かれており、[`tools/doclink.py`](../../tools/doclink.py) が行番号を追従させます** — 下の「行番号は追従されません」は、それ以前に書かれた 73 項目の本文にかかります)
 
@@ -28,7 +29,7 @@
 
 ## この章の索引
 
-全 143 項目。分類ごとに知識名だけを並べます(節そのものへの見出しリンクは張っていません — ブラウザの検索で名前を引いてください)。
+全 149 項目。分類ごとに知識名だけを並べます(節そのものへの見出しリンクは張っていません — ブラウザの検索で名前を引いてください)。
 
 **10.1 Vulkan の仕様と作法**(34 項目)
 
@@ -193,6 +194,15 @@
 - swapchain image の acquire → wait → release 契約
 - XR_TIMEOUT_EXPIRED は正常系(失敗ではない)
 - XR_KHR_composition_layer_depth(深度をランタイムへ渡す)
+
+**10.8 宣言的なグラフと拡張の作法**(6 項目)
+
+- レジストリと登録順(登録順が文書の意味を変えない、という条件)
+- semantic type と logical type(不透明な型がハンドルを運ぶ理由)
+- 評価の分類(direct / replay / baked / recorded)と変更の費用(value / recompile / rebuild)
+- 排他 create を「決定」の primitive にする(O_EXCL / hard link)
+- 内容アドレスによる vendoring(sha256 が同一性、ABI の本当の gate は別)
+- 連続時刻を固定ステップのタイムラインへ量子化する
 
 ## 10.1 Vulkan の仕様と作法
 
@@ -1155,6 +1165,70 @@ OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメー
 `XR_KHR_composition_layer_depth` は、projection layer の各ビューに深度イメージを添える拡張です。`XrCompositionLayerProjectionView::next` に `XrCompositionLayerDepthInfoKHR` を繋いで渡し、ランタイムはこれを再投影(late-stage reprojection / space warp)に使います。ここで 2 種類の値を混同しないことが重要で、`minDepth` / `maxDepth` は**深度イメージに書かれている値の範囲**(通常 0.0 と 1.0)、`nearZ` / `farZ` はその 2 つの値が対応する**メートル単位の距離**です。逆投影(reverse-Z)や無限遠平面を使っている場合、`nearZ` > `farZ` や `farZ = INFINITY` を渡すことになるので、投影行列の作り方と一致させる必要があります。
 
 **使用場所**: [XrCompositionTarget::Impl::endLogicalFrame()](../../src/core/openxr/openxrcompositiontarget.cpp#L1270)(ビューごとの `XrCompositionLayerDepthInfoKHR` を組んで `projection_views[view].next` に繋ぐ)
+
+## 10.8 宣言的なグラフと拡張の作法
+
+この節は、v0 で入った共通グラフ・package・オフライン出力の周りで**一般的な作法**にあたる 6 つを集めたものです。どれも pelican 固有の発明ではなく、プラグイン機構・ファイルシステム・タイムラインを扱うソフトウェアが繰り返し採ってきた形です。エンジン固有の難しさの側は [第9章 §9.24](09_black_magic_and_gotchas.md) にあります。
+
+### レジストリと登録順(登録順が文書の意味を変えない、という条件)
+
+プラグイン的な機構は「モジュールが自分の型と操作を登録し、文書はその名前を使う」という形をとります。ここで設計上の分かれ目になるのが **登録順が意味に影響するかどうか**です。影響する設計(後から登録したものが前を上書きする、名前が衝突したら後勝ち)は書きやすい代わりに、モジュールを 1 つ足すだけで既存文書の意味が変わりえます。影響しない設計にするには、条件が 3 つ要ります — (a) 名前の衝突を**上書きではなく拒否**にする、(b) 登録の失敗が**部分的なモジュール**を残さない(原子的な登録)、(c) 列挙する API が登録順ではなく**名前順**で返す。
+
+**小さな例**: モジュール A が `value.add` を、モジュール B も `value.add` を登録したとします。後勝ちの設計なら、`A → B` の順で登録したビルドと `B → A` のビルドで同じ文書が別の計算をします。「重複は拒否」にすると、どちらの順でも同じエラーになり、**壊れ方が順序に依存しません**。同じく、カタログを登録順で出力すると、モジュールの追加が既存の出力の差分を汚します。名前順で出せば追加行だけが増えます。
+
+**使用場所**: [`GraphModuleRegistry::registerModule()`](../../src/project/graphmodule.hpp#L55)(`graph.module_duplicate@1` / `graph.operation_duplicate@1` などで拒否し、拒否されたモジュールは何も変えない)/ [`GraphModuleManifest` のコメント](../../src/project/graphmodule.hpp#L33)(「登録順は文書の意味を変えない」が宣言されている場所)/ [`catalog()`](../../src/project/graphmodule.hpp#L64)(名前順で出力)
+
+### semantic type と logical type(不透明な型がハンドルを運ぶ理由)
+
+型付きのデータフローでは、しばしば型が 2 段になります。**semantic type** は「何であるか」の名前(`pelican.value.scalar@1` のような名前空間 + 名前 + メジャー版)、**logical type** はそこへ構成子(image / buffer / value …)と引数を載せて**同値判定できる形**にしたものです。名前だけで比較すると「同じ名前だが解像度が違う画像」を同一視し、実体で比較すると「同じものを別の経路で作った」だけで別物になります。2 段にすると、前者を semantic、後者を引数付きの logical が受け持てます。
+
+もう 1 つの定石が、**ポートを流れる値を不透明にする**ことです。バイト列ではなく「ハンドル + その世代」を流すと、受け手は中身を知らないまま「これは私が期待した世代のものか」だけを検査でき、世代違いを `memcpy` してしまう事故が型の側で消えます。代償として、その型は汎用のコピーやシリアライズができません — それは欠点ではなく、**意図した制限**です。
+
+**小さな例**: 姿勢(スケルトンのポーズ)をバイト列で流すと、別のスケルトン向けに作られたポーズをブレンドしても「配列長が同じなら」通ってしまいます。ハンドル + layout 世代にしておけば、ブレンド演算の入口で世代不一致を名前付きで拒否できます。
+
+**使用場所**: [`SemanticTypeId`](../../src/project/logicalrendertype.hpp#L24) / [`SemanticTypeSchema`](../../src/project/logicalrendertype.hpp#L108) / [`LogicalType`](../../src/project/logicalrendertype.hpp#L128)(構成子 + semantic + 引数)/ [`LogicalTypeRegistry::canonicalize()`](../../src/project/logicalrendertype.hpp#L146) / 不透明型の実例は [`pelican.pose@1` の説明](../../src/project/posegraphmodule.hpp#L11)
+
+**このコードベースでの注意**: 登録されている semantic は 11 種です。値・音・イベントの 3 つ(`pelican.value.scalar@1` / `pelican.audio.voice@1` / `pelican.event.playback_control@1`)に加えて、`pelican.render` module が 6 つ(`storage_buffer@1` / `attribute@1` / `color_signal@1` / `depth@1` / `legacy_opaque_image@1` / `legacy_opaque_resource@1`、[`logicalrendertype.cpp`](../../src/project/logicalrendertype.cpp#L580) を [`graphmodule.cpp`](../../src/project/graphmodule.cpp#L331) が登録し、[`renderPorts()`](../../src/project/graphmodule.cpp#L55) 経由でポートに現れます)、pose module が 2 つ(`pelican.pose@1` / `pelican.rig@1`、[`posegraphmodule.cpp`](../../src/project/posegraphmodule.cpp#L74))です。`opaque` を持つのは姿勢とリグの 2 つで、ただし `pelican.rig@1` はポートには現れません(ノードの parameter として名前で指定します)。Studio 側は**型名にソケットの形を割り当てる表**を JSON で持っており、新しい型は C++ を書かずに [`graph_socket_styles.json`](../../src/devstudio/resources/graph_socket_styles.json) へ名前を足すだけで絵が付きます。
+
+### 評価の分類(direct / replay / baked / recorded)と変更の費用(value / recompile / rebuild)
+
+同じ「1 つの値を計算するノード」でも、**過去に何が起きたかに依存するか**で扱いが変わります。よく使われる 4 分類が、入力だけで決まる `direct`、前回までの評価に依存する `replay`(クロック、イベント消費、積分器)、事前に焼いた結果を読む `baked`、外部から記録された列を再生する `recorded` です。この分類が要るのは、**「もう一度評価してよいか」が分類ごとに違う**からです。`direct` は何度評価しても同じ、`replay` は 2 回評価すると時計が 2 回進みます。
+
+対になるのが**パラメータを変えたときの費用**の分類で、値だけ差し替えれば済む `value`、シェーダなどの再コンパイルが要る `recompile`、資源ごと作り直す `rebuild` の 3 つです。エディタはこれを見て「触った瞬間に反映してよいか、確定してから作り直すか」を決められます。
+
+**小さな例**: UI のスライダを 1 フレームに 60 回動かすとします。`value` のパラメータなら毎回そのまま適用してよく、`rebuild` のパラメータなら操作が終わるまで適用を遅らせるのが正解です。分類が無いと、どちらも同じ扱いになり、前者は不必要に重く、後者は 1 秒間に 60 回の再構築になります。
+
+**使用場所**: [`GraphOperationEvaluation`](../../src/project/graphcomposition.hpp#L115) / [`GraphParameterChange`](../../src/project/graphcomposition.hpp#L119) / 状態無しで `replay` を評価しようとしたときの拒否 [`graph.evaluation_requires_state@1` の送出](../../src/core/userpublic/valuegraph.cpp#L49)
+
+**このコードベースでの注意**: 分類はノードごとに**強い方へ引き上げられます**(§9.24「per-node の評価分類は `max()` でしか動かない」)。また費用側の既定は op ごとの 1 値ですが、パラメータ単位の表(`parameter_changes`)も持てます([宣言](../../src/project/graphcomposition.hpp#L127))。
+
+### 排他 create を「決定」の primitive にする(O_EXCL / hard link)
+
+「一時ファイルに書いて rename で置き換える」は原子的置換の定石です(§10.4 の該当項目)。しかしそれは **既にあるファイルを置き換える**操作で、「この決定は初めて下された」ことは表現できません。もう 1 つの primitive が **排他 create** — POSIX の `open(O_CREAT|O_EXCL)`、`link()`、Windows の `CreateHardLink` のように、**名前を公開し、既に取られていれば失敗する**操作です。これは 1 操作で「作成」と「重複検出」を兼ね、しかも生きたファイルのハンドルを壊さないので、他プロセスがそのファイルを開いていても負けません。
+
+**小さな例**: 「作業が完了した」ことをディレクトリに残したいとします。`state.json` の `status` を `"prepared"` → `"committed"` に書き換える設計は、(a) 書き換えの途中でクラッシュすると状態が読めない、(b) ウイルススキャナがそのファイルを開いていると置き換えに失敗しうる、という 2 つの弱点があります。**別名 `committed` を排他 create する**設計なら、書き換えは一度も起きず、「存在するかどうか」だけが決定になります。掃除の順序だけは考える必要があって、「決定の印」より先に「やることリスト」を消すのが安全側です — 逆順に消して途中で止まると、完了済みの作業が未完了に見えます。
+
+**使用場所**: [`linkExclusive()`](../../src/core/communication/renderconfigtransaction.cpp#L302)(hard link で名前を公開し、失敗は外部改変として報告)/ [`publishCommittedMarker()`](../../src/core/communication/renderconfigtransaction.cpp#L459) / [掃除の順序](../../src/core/communication/renderconfigtransaction.cpp#L662)
+
+### 内容アドレスによる vendoring(sha256 が同一性、ABI の本当の gate は別)
+
+依存を「どこから取ってきたか」ではなく「中身そのもの」で同定する方式を content-addressed(内容アドレス)と呼びます。配布物をプロジェクトの中へコピーして固定することを vendoring と言い、この 2 つを組み合わせると「**外の世界が変わっても、このプロジェクトが読むものは変わらない**」が成立します。記録すべきは名前・版・**インストールしたバイト列全体のダイジェスト**で、ダイジェストは書きっぱなしにせず、**普通の操作の中で再計算して照合する**のが要点です(照合しないダイジェストは、壊れているかどうかを誰も知りません)。
+
+もう 1 つの定石が、**宣言された ABI 版と、実際に強制される gate を混同しない**ことです。マニフェストに「SDK 版 2 が要る」と書いても、それは install 時の検査にすぎません。実際にプロセスを守るのは、ライブラリを読み込むときにローダが解決する印(シンボルの epoch など)です。前者は親切な早期拒否、後者が本物の強制です。
+
+**小さな例**: パッケージ `acme.glowkit` を入れ、`project.json` に `{namespace, package_version, sha256}` を記録します。誰かが `packages/acme.glowkit/` の中のファイルを手で書き換えると、一覧表示のたびにダイジェストが再計算されて食い違いが出ます。逆に、記録を `package_version` だけにしていたら、同じ版番号のまま中身が違う 2 つの状態を区別できません。
+
+**使用場所**: [`packageTreeDigest()`](../../src/project/packagemanifest.hpp#L100)(ソートした相対パス順に全ファイルを digest。`package list` が再計算する)/ [`InstalledPackage`](../../src/project/packagemanifest.hpp#L70) / [`packageSdkAbiVersion()` のコメント](../../src/project/packagemanifest.hpp#L76)(「本当の gate はローダが解決する epoch anchor」)
+
+### 連続時刻を固定ステップのタイムラインへ量子化する
+
+「t 秒から出力したい」という要求を、固定ステップで進むシステムへ渡すときは、**どこで frame 番号へ落とすか**を 1 箇所に決めるのが定石です。境界で `round(t·fps)` して以降は整数だけを運ぶと、システムの内部に「ステップの間の時刻」が入り込みません。丸め方は選択で、`round` は「最も近いフレーム」、`floor` は「その時刻を過ぎていないフレーム」を意味します。**どちらでも動くが結果は 1 フレームずれる**ので、連番出力の byte 比較のような検証を持つなら先に決めて固定します。
+
+もう 1 つ、**時刻を指定することと seek できることは別**です。フレームの見た目が「その時刻までに何が起きたか」に依存する(クロックが評価のたびに進む、システムが自分で dt を積分する)なら、任意の時刻へ飛ぶことは原理的にできません。この場合の正直な実装は、**そこまでを実際に回してから出力を始める**ことです。
+
+**小さな例**: `fps = 60` で `t = 2.0` を指定すると frame 120 になります。`--frames 2` なら出力される 2 枚は、通常実行の 120 枚目・121 枚目と**バイト単位で一致**していなければおかしい。ここで丸めを `floor(t·fps − ε)` に変えると 119 が選ばれ、この一致が壊れます(壊れ方がテストで見えるので、丸めの選択はテストで固定できます)。
+
+**使用場所**: [`parseStartFrame()`](../../src/player/main.cpp#L283)(`llround(seconds * fps)`。テキストとして parse し、綴り違い・非有限・負を 1 つの名前へ集約)/ [replay prologue](../../src/core/appflow/loop.cpp#L441)(`start_frames − 1` フレームを capture 無しで回してから出力を始める)
 
 ## 関連文書
 

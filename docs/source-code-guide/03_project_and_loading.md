@@ -37,6 +37,14 @@ Runtime object
 
 `project.json` のschema/version/`engine_min_version`ゲートは、まず [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L226) が検証します。`--ignore-engine-version`で継続する場合も純粋層はログを出さずwarning文字列を返し、engine adapterだけがそれをquillへ渡します。検証規則の正本はこの関数だけで、`basicconfig.cpp`やdevcliに写しはありません。
 
+[`ProjectEnvelope`](../../src/project/projectformat.hpp#L14) が持つのは `name` / `engine_min_version` / `requirements` / `basic_config` / `asset_stores` / `prefabs` の6つです。このうち `requirements` は P-2b で入った **`requires`** キーで（`requires` はC++のキーワードなのでフィールド名だけずらしてあります）、「このプロジェクトが無いと動かないビルド機能」を宣言します。
+
+- 語彙は [`knownProjectRequirements()`](../../src/project/projectformat.hpp#L52) の1箇所だけが持ち、現在は **`animation` の1語**です（`PELICAN_WITH_ANIMATION` のregistry名と同じ綴り）。知らない名前は黙って無視せず `project.requires_unknown@1` で拒否します（[`parseProjectRequirements()`](../../src/project/projectformat.cpp#L110)）。
+- このビルドが満たせない要求を書いたプロジェクトは、封筒のパースの時点で `animation.module_unavailable@1` を投げて止まります（[検査](../../src/project/projectformat.cpp#L181)）。ノードを1つずつ辿って「そんなopは知らない」と言われるより前に、名前で答えるためです。
+- 失敗させずに「このビルドでは開けない」だけ知りたい呼び手（`projects/` を舐めるテスト等）のために、[`unsatisfiedProjectRequirement()`](../../src/project/projectformat.hpp#L65) が最初の未充足要求を返す形も用意されています。
+
+もう一つ、X-1で `project.json` に増えた **`packages`** キーは `ProjectEnvelope` には入りません。読むのは [`readInstalledPackagesJson()`](../../src/project/packagemanifest.hpp#L103) で、1エントリは `{namespace, package_version, sha256}` の [`InstalledPackage`](../../src/project/packagemanifest.hpp#L70) です（§3.16）。封筒のパーサとvendoringの台帳を別の関数に分けてあるので、package を知らない読み手は `packages` を素通りできます。
+
 [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L633) は検証済み封筒の`basic_config`を含む次の三sourceを [`JsonLoader`](../../src/core/loader/basicconfig.cpp#L61) へ渡します。
 
 1. `raw_data` — API/起動時の上書き
@@ -414,6 +422,18 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 >
 > **不変条件**: setterの定義をヘッダへ書かない（inlineでも）。test-onlyのTUを `pelican_core` のソースへ足さない。`default_fault_injector_for_testing` の既定値をnullptr以外にしない。
 
+### load 後: sceneが抱えるグラフ runtime ✅実装済み（P-1 / P-2b）
+
+`pelican.graph` 文書の `graph.instance` ノードは `{scene, object}` という **authoring 上の宛先**（[`GraphInstanceOwner`](../../src/project/graphinstanceowner.hpp#L9)）を持ちます。これをこのフレームの生きたオブジェクトへ結び付けるのが [`src/core/loader/scenegraphruntime.cpp`](../../src/core/loader/scenegraphruntime.cpp#L35) で、無名名前空間の小さな補助 [`parameterValues()`](../../src/core/loader/scenegraphruntime.cpp#L16) を除けば `SceneLoader` のメンバ関数だけが並ぶファイルです。scene側が持つのはグラフ本体ではなく、**グラフ1本あたりの runtime**（評価state 2つ、パラメータ上書き、鳴っている音）です。
+
+**owner の解決**。[`graphOwnerObject()`](../../src/core/loader/scenegraphruntime.cpp#L35) は、今のsceneに属し、かつ `authoring_object_id` が一致して生きているオブジェクトを探します。見つからない scope は [`inactiveGraphScopes()`](../../src/core/loader/scenegraphruntime.cpp#L283) に入り、その scope に依存するノードは**そのフレームだけ評価されません**（エラーにはなりません。オブジェクトが再publishされる最中は正常な状態だからです）。
+
+> ⚠️ ただし「この文書が指すオブジェクトはこのsceneに存在しない」は別の話で、こちらは静かに沈む種類の失敗です。[`reportUnresolvedGraphOwners()`](../../src/core/loader/scenegraphruntime.cpp#L54) が、一度も解決できていない scope を**グラフ世代の同期時に1回だけ**警告します（描画パス側で言うと、republish 中の正常な状態までログに流れるため）。記憶は `graph_owner_reported_scopes` に残り、scene load でだけクリアされます。v0 の既知の穴「authoring object id は保存 → 再読込をまたぐと別個体を指しうる」と組み合わさると、**警告1行のほかは何も起きずアニメーションだけが動かない**という形になるので、`graph.instance` が効かないときはまずこの警告を探してください。
+
+**評価stateが2つある理由**は [第2章 §2.5](02_runtime_lifecycle.md) に書いたとおりです。[`graphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L143)（描画側）と [`poseGraphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L147)（姿勢側）は同じ `GraphRuntime` の別メンバで、[`prepareGraphRuntimeTransfer()`](../../src/core/loader/scenegraphruntime.cpp#L201) はグラフ世代が変わるとき両方をまとめて移送します（片方だけ置いていくと、描画側が走り続けたまま姿勢側のクロックだけが初期状態へ戻ります）。owner が変わった scope は移送後に `resetState()` で落とされます。
+
+**publish snapshot**。描画側の評価が実際に各instance入力ポートへ何を流したかは、[`publishGraphValues()`](../../src/core/loader/scenegraphruntime.cpp#L138) が `graph_values`（[`PublishedInstanceInputs`](../../src/core/userpublic/valuegraph.hpp#L70)）として置いていきます。読み手がグラフを評価し直すとクロックが進みイベントが消費されるので、**描いた世代の値を読む道はこの1本だけ**です。snapshot は値の並び順を決めた `Graph` を `shared_ptr` で**保持**します（借用ではありません）—— 世代が入れ替わった後に読んだ人でも、その値に対応する名前が手元にあるようにするためです。
+
 ## 3.6 即時loadと要求load
 
 - `SceneLoader::load(SceneLoadRequest)`はその場で全sceneを置換（commit まで到達した場合。§3.5 の 3）。production の root は startup（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L133)）/ RPC `load_scene`（[`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L1666)）/ pending apply / snapshot import（[`importSceneDocument()` からの `Owned` request](../../src/core/loader/basicconfig.cpp#L858)）で、いずれも [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L485) で `PreCommitFailure` を従来どおりの例外へ戻します。
@@ -596,6 +616,23 @@ instances.publishModelInstance(std::move(staged_instance));
 `SceneLoader` には [`transient_models`](../../src/core/loader/scene.hpp#L57) / [`runtime_only_changes`](../../src/core/loader/scene.hpp#L59) / [`releaseTransientModels()`](../../src/core/loader/scene.hpp#L118) / [`hasRuntimeOnlyChanges()`](../../src/core/loader/scene.hpp#L181) が追加されています。`runtime_only_changes` は編集RPC側で「これはruntime専用の変更なので保存できない」と判定するために使います。
 
 ## 3.9 その他の純粋形式
+
+プロジェクトが持てる文書は「`schema` と `version` の**厳密一致**で受け、知らない組は名前付きで拒否する」という1つの規則で揃っています。全量（31行）は [`docs/v0_freeze.md` §1.1](../v0_freeze.md) が正本なので、ここでは本章で扱う代表と、v0で増えた分を並べます。
+
+| schema | version | パーサ | 位置づけ |
+|---|---|---|---|
+| `pelican.project` | 1 | [`projectformat.cpp`](../../src/project/projectformat.cpp#L226) | `project.json`。`engine_min_version` と `requires`（§3.2） |
+| `pelican.scene` | 1〜2 | [`sceneformat.cpp`](../../src/project/sceneformat.cpp#L203) | 書き出しは2。prefabはv2が前提 |
+| `pelican.graph` | 1 | [`graphcomposition.cpp`](../../src/project/graphcomposition.cpp#L172) | 共通グラフ。`definitions` / `nodes` / `outputs`（§3.15） |
+| `pelican.render_feature` | 1 | [`featurecompose.cpp`](../../src/project/featurecompose.cpp#L2905) | 本節「render feature」 |
+| `pelican.render_pipeline` | 1 | [`renderpipeline.cpp`](../../src/project/renderpipeline.cpp#L667) | preset（`hybrid_v1` など） |
+| `pelican.render_component` | 1 | [`rendercomponent.hpp`](../../src/project/rendercomponent.hpp#L16) | export / import される描画部品（§3.16） |
+| `pelican.package` | 1 | [`packagemanifest.hpp`](../../src/project/packagemanifest.hpp#L19) | vendoringされるディレクトリの封筒（§3.16） |
+| `pelican.graph_catalog` | 1 | [`graphmodule.cpp`](../../src/project/graphmodule.cpp#L228) | `pelican_cli graph-catalog` の出力（module / op / 型の一覧） |
+| `pelican.material` / `pelican.material_bindings` | 1 | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744) / [`parsePrimitiveMaterialBindingJson()`](../../src/project/materialformat.cpp#L767) | 本節「material / surface」 |
+| `pelican.import` / `pelican.import_rules` | 1 | [`importmanifest.cpp`](../../src/project/importmanifest.cpp#L244) / [`parseImportRulesJson()`](../../src/project/importrules.cpp#L196) | 本節「import manifest / import rules」 |
+
+1つだけ性格の違うものがあります。**`pelican.value_graph` はプロジェクトが書く形式ではありません。** `pelican.graph` の values 分割を評価器向けに落とした**内部IR**で、[`ValueGraph::Graph`](../../src/core/userpublic/valuegraph.hpp#L101) のコンストラクタが受ける文字列がこの形です。直書きのIRを読む経路が残っているのはテストのためで（IR側はlowering結果の真上位集合なので、bindings decodeの名前付き拒否はこの形でしか到達できません）、production で `Graph` を作るのは [`renderingpassconfigregistration.cpp` の構築点](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L835) の1箇所、入力は `pelican.graph` だけです。プロジェクト側の文書としては扱わないでください（§3.15）。
 
 > 🧩 **難所 — 端数は先頭から配る**([`distribute()`](../../src/core/ui/layout.cpp#L93))
 >
@@ -1004,13 +1041,15 @@ WP176〜WP178で入った、アニメーションクリップの交換形式で�
 [`VrmaInterpolation`](../../src/core/model/vrmaanimation.hpp#L12) は `linear` / `step` / `cubic_spline` です。値はxyzw格納で、translationは `component_count == 3`、rotationは `4`。cubic splineの接線は `in_tangents` / `out_tangents` として別配列に保たれ、glTFのアニメーションデータを落としません。
 
 > **設計決定:** ヘッダのコメントが規範です — VRMA-C0 は decode/storage のみを持ち、root motion delta も target-rig / application state も**意図的に存在しません**。hips translationは通常のbody channelのままです。
+>
+> ここで「無い」のは**この容器の話**である点に注意してください。root motion 自体はv0で出荷済みで、置き場が違います —— 共通グラフの `pose.clip_sample` ノードに `root_motion: "extract"` と `root_node` を書くと、clipの根の移動が個体のtransformへ渡ります（AG-2。パラメータの受理は [`poseClipSampleExtractsRootMotion()`](../../src/project/posegraphmodule.hpp#L45)、抽出の実装は [`extractRootMotion()`](../../src/core/animation/posegraphruntime.cpp#L269)、読み方は[第5章](05_gameplay_and_services.md)）。`.vrma` のretargetプロファイルとは別の層です。
 
 ### retarget
 
 [`retargetVrmaClip()`](../../src/core/animation/vrmaretarget.hpp#L124) が、target rigのローカル座標系へ写した中間クリップを作ります。
 
 - プロファイルはバージョン付きです（[`vrmaRetargetProfileVersion = 1`](../../src/core/animation/vrmaretarget.hpp#L16)）。
-- [`VrmaRootMotionPolicy`](../../src/core/animation/vrmaretarget.hpp#L21) は現在 `preserve_hips_translation` のみです。抽出モードを持たないのは、後のプロファイルがv1データを読み替えずに方針を足せるようにするための、意図的な空きスロットです。
+- [`VrmaRootMotionPolicy`](../../src/core/animation/vrmaretarget.hpp#L21) は現在 `preserve_hips_translation` のみです。抽出モードを持たないのは、後のプロファイルがv1データを読み替えずに方針を足せるようにするための、意図的な空きスロットです。**「Pelicanにroot motionが無い」わけではありません** —— 抽出は上の設計決定で触れたとおり `pose.clip_sample{root_motion: "extract"}` 側に実装されており、ここで空いているのは *retargetプロファイルが抽出方針を宣言する枠*だけです。
 - 出力 [`VrmaRetargetedClip`](../../src/core/animation/vrmaretarget.hpp#L108) は provenance（[`VrmaRetargetProvenance`](../../src/core/animation/vrmaretarget.hpp#L41) の `source_rig_sha256` / `target_rig_sha256` / `profile_version`）と、警告 [`VrmaRetargetWarningKind`](../../src/core/animation/vrmaretarget.hpp#L29)（`missing_optional_target_bone` / `missing_target_expression`）を持ちます。
 
 > **設計決定:** これは**不変のtarget-rig-local中間クリップ**であり、この型自体は `AnimationSource` ではありません。「不変」は、`retargetVrmaClip()` の戻り値が `std::shared_ptr<const VrmaRetargetedClip>` で、作った後は誰も書き換えないことを指します（`sample()` はconstで、毎回新しい `VrmaRetargetSample` を返すだけです）。「中間」は、decode（source rigのlocal）と実行時の再生の**間**に置かれた段という意味で、座標系をtarget rigのlocalへ移すところまでしかやらず、再生位置・速度・blend状態のような実行時の状態は持ちません。`retargetVrmaClip()` は instance / graph / renderer / ABI のどこへもpublishせず、publishは次項のWP178 APIが担います。交換形式の取り込みと、実行時のアニメーション再生を別の層に保つための境界です。
@@ -1049,5 +1088,126 @@ ABI側では [`AnimationClipKindV1`](../../src/core/userpublic/animation/abi_v1.
 > **設計決定:** skeletal clipと別語彙を作らず、`AnimationClipKindV1` とprovenanceフィールドで区別しています。ゲームコードから見たClip/Cursorの扱いは`.vrma`由来かどうかで変わらず、reloadは論理identityを保ったままgenerationだけを進めます。ABIの追加は既存フィールドの後ろへの加算なので、古い呼び出し側は `reserved2` までで読み止められます。
 
 テストは [`test/vrmadecoder_test.cpp`](../../test/vrmadecoder_test.cpp) / [`test/vrmaretarget_test.cpp`](../../test/vrmaretarget_test.cpp) / [`test/vrmasource_test.cpp`](../../test/vrmasource_test.cpp)（GPU）、fixtureは [`test/vrma_fixture_writer.cpp`](../../test/vrma_fixture_writer.cpp) + [`test/vrma_fixture.hpp`](../../test/vrma_fixture.hpp) が生成します。
+
+## 3.14 rendering configの根は2つある ✅実装済み（P-2a-4a / P-2a-4b）
+
+`rendering_config_json` が指すファイルの**根**は、v0では2形あります。どちらも契約で、片方が旧式なわけではありません。
+
+| 根 | 形 | 出荷プロジェクト |
+|---|---|---|
+| legacy root | `rendering` 相当の中身を最上位に直接書く | animgraph_demo / sprite_demo / vrm_xr_demo / raytracing_demo |
+| `pelican.graph` root | 共通グラフ文書の `rendering` キーの下に、同じ中身が丸ごと入る | example / posegraph_demo（`devcli project init` の雛形もこちら） |
+
+`graph.instance` を書けるのは後者の根の下だけです。ただし legacy root へ書こうとしたときに名前付きで断られるわけではなく、単に `nodes` / `definitions` という置き場が無いだけです(`graph.nested_instance@1` / `graph.input_scope@1` は [`editGraphDocument()`](../../src/project/graphcomposition.cpp#L472) の編集経路だけの拒否で、definition の中と root の取り違えを指します)。
+
+**「authored な `rendering` キーがどこにあるか」を決める場所は1つ**で、[`src/project/renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L13) の小さなヘッダに全部入っています。読み手も書き手も生成器もここを呼ぶ規約で、各所が自前の `if (graph)` を育てないためです。
+
+- [`isRenderGraphRoot()`](../../src/project/renderconfigsection.hpp#L23) — `schema == "pelican.graph"` かどうかだけ。`nlohmann::json` 用と [`ordered_json` 用](../../src/project/renderconfigsection.hpp#L28)の 2 定義があるので、このヘッダは**4 つの名前 / 5 定義**です。
+- [`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L37) — legacy root なら**自分自身**を、graph root なら `rendering` メンバを返します。graph root なのに `rendering` オブジェクトが無ければ [`RenderConfigSectionUnlocated`](../../src/project/renderconfigdocument.hpp#L20)（メッセージは `graph root render config has no rendering section object`）を投げます。
+- [`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L47) — 同じ判定の**読み取り用**。節が無ければ空オブジェクトを返します。
+
+この2本の使い分けが不変条件です。**読みは節が無くても失敗せず（「ここには何も書かれていない」と答える）、編集だけが名前付きで断る。** graph root に `rendering` を持たない文書は正当（グラフだけを書いた文書）なので、読むたびに落ちては困る一方、そこへ authored な値を書こうとするのは行き先が無い操作だからです。
+
+**包み方も1本**です。[`wrapLegacyRenderingConfig()`](../../src/project/renderconfigsection.hpp#L62) が `schema` / `version` / `definitions` / `nodes` / `outputs` の5キーを付けて、渡された legacy 設定を `rendering` へ丸ごと入れます。`devcli project init` の雛形（[第1章 §1.2](01_architecture_and_build.md)）も、graph root のfixtureも、出荷プロジェクトも同じ関数を通るので、「fixtureと出荷設定が同じ規則で包まれている」ことを慣習ではなく**値の比較**で確かめられます。すでに `pelican.graph` のものを渡すと `invalid_argument` です。
+
+編集側の唯一の書き手は [`AuthoredRenderConfigDocument::withSectionValue()`](../../src/project/renderconfigdocument.cpp#L655) で、legacy root と graph root 自身の5キー（`schema` / `version` / `definitions` / `nodes` / `outputs`）は根へ、それ以外は `rendering.<key>` へ書きます。この関数はJSONを組み直さず、元のバイト列の中で該当メンバの範囲を差し替えます（[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288)）。理由は digest がファイル全体のバイト列に対して取られるためで、詳細は[第6章](06_rendering_vulkan_shader.md)にあります。
+
+## 3.15 共通グラフ文書 `pelican.graph` ✅実装済み（AG-0 / P-1）
+
+`pelican.graph` は「スカラ・描画・姿勢をまたぐ1本の宣言グラフ」の文書形式です。純粋層だけで**展開 → 検証 → 実行領域への分割**まで進み、GPUにもECSにも触れません。
+
+### 文書の形
+
+根が持つのは `definitions` / `nodes` / `outputs`（と `schema` / `version`、rendering config を兼ねる場合は `rendering`）です。
+
+- `nodes` — 根のノード列。各要素は `id` と `op`、任意で `inputs` / `parameters` / `outputs` / `label`。
+- `definitions` — 名前付きの部分グラフ。中に `graph.input`（境界ポート）を置けます。
+- `graph.instance` — 定義を根へ1個体として置くノード。`definition` と `owner`（`{scene, object}`）を持ちます。
+
+この2つの構造用opは置ける側が決まっていて、`graph.instance` を定義の中へ入れると `graph.nested_instance@1`、`graph.input` を根へ置くと `graph.input_scope@1` で拒否されます（[`editGraphDocument()` 内](../../src/project/graphcomposition.cpp#L504)）。
+
+### 展開 — `expandGraphDocument()`
+
+[`expandGraphDocument()`](../../src/project/graphcomposition.hpp#L76) が instance を実体化し、[`ExpandedGraphDocument`](../../src/project/graphcomposition.hpp#L62) を返します。ここで大事なのは**元の文書が正本のまま**という点で、展開後のIDや由来（`origins`）は導出物であって書き戻されません。
+
+instance の入力ポートがどこから値を取るかは `edge > parameters > default` の順で決まり、結果は [`GraphInstanceInput`](../../src/project/graphcomposition.hpp#L44) に記録されます。edge で繋がれたポートは**展開後にノードを残しません**（定義の中の消費側が外の生産者を直接指す）ので、この由来は「展開中の authoring 文書」からしか読めません。
+
+### 編集 — `editGraphDocument()`
+
+[`editGraphDocument()`](../../src/project/graphcomposition.hpp#L93) は op の並びを1本の候補文書へ順に適用し、**最後に1回だけ展開**します。途中で1つでも落ちれば候補ごと捨てられ、呼び手の文書は無傷です。受け付ける op は5種で、**宣言の上のコメントがその5種と8つの名前付き拒否を列挙しています**（`40099e3f` で `set_node_label` と残りの拒否名が追記され、コメントと実装が揃いました）。
+
+| op | 実装 | 断り方 |
+|---|---|---|
+| `add_node` | [.cpp](../../src/project/graphcomposition.cpp#L492) | `graph.node_duplicate@1` / `graph.nested_instance@1` / `graph.input_scope@1` |
+| `remove_node` | [.cpp](../../src/project/graphcomposition.cpp#L513) | `graph.output_referenced@1`（出力や他ノードがまだ指している） |
+| `set_input` | [.cpp](../../src/project/graphcomposition.cpp#L540) | `source` は `{node, port}` ちょうど2キー、または `null`（切断） |
+| `set_node_parameters` | [.cpp](../../src/project/graphcomposition.cpp#L559) | 空オブジェクトは `parameters` キーごと削除 |
+| `set_node_label` | [.cpp](../../src/project/graphcomposition.cpp#L570) | 人が付ける表示名。識別子ではないので、消すのは空文字列で表す |
+
+各opは任意で **`scope`** を取ります。省略（または根の名前）なら根の `nodes`、定義名なら `definitions.<名前>.nodes` を編集対象にします（[`resolveEditScope()`](../../src/project/graphcomposition.cpp#L381)）。scope は op ごとに解決し直します —— 同じ並びの前のopが定義の中身を変えている可能性があるからです。定義の中に居る id を根から触ろうとすると `graph.definition_immutable@1` です。
+
+[`editGraphInstances()`](../../src/project/graphcomposition.hpp#L99)（instance の着脱）は、自分で文書を触らず**上のopへ翻訳してから** `editGraphDocument()` を呼びます。2つの入口が「何が妥当な編集か」で食い違えないようにするためです。
+
+### 分割 — `partitionGraphDocument()`
+
+[`partitionGraphDocument()`](../../src/project/graphpartition.hpp#L28) は文書全体を検証してから、[`GraphExecutionPartitions`](../../src/project/graphpartition.hpp#L7) の3つへ分けます。どのopがどの領域かは、opを登録したモジュールが宣言します（[`GraphExecutionDomain`](../../src/project/graphcomposition.hpp#L111)）。CPUのスカラopを1つ足しても、分割側に新しいop名を教える必要はありません。
+
+```text
+values     … CPUのスカラ評価（value.* / audio.* / render.scalar）
+rendering  … 描画資源とパス（render.*）
+animation  … 姿勢（pose.*）。同じフレームの values より 1 段 前 に走る
+```
+
+**`animation` が values の1段前に走るのに、animationのノードは values のスカラを読みます。** 矛盾しないのは、animation フェーズが values 分割を**自分の `EvaluationState` で自分で評価し直す**からです（[`evaluateLowered()` の呼び出し](../../src/core/ecs/predefined/animationsystem.cpp#L368)）。runtime で値を手渡しているのではなく、分割のときに「animationノードが必要とするスカラ」へ専用の出力名が付いており、animation 側はその名前で自分の評価結果から拾います。名前は [`graphAnimationScalarOutput()`](../../src/project/graphpartition.cpp#L168) が決める **`$pose/<node>/<port>`** で、両側がこの1関数を呼びます。2つの状態は同じ入力で1フレームに1回ずつ進むので、どちらも相手のクロックを進めません（[コメントの規範](../../src/core/ecs/predefined/animationsystem.cpp#L355)）。流れは values → animation の一方向で、逆はありません。同じ仕組みで instance 入力ポートの値も **`$value/<instance path>/<port>`**（[`graphInstanceInputOutput()`](../../src/project/graphpartition.cpp#L172)）として出力に現れます —— edge で繋がれたポートは自分のノードを持たないので、展開が出力として名付けて初めて「描いたフレームが何を使ったか」を観測できるためです。
+
+### lowered IR と評価器（`ValueGraph`）
+
+values 分割を評価器向けに落とした形が `pelican.value_graph`（§3.9 のとおり**内部IR**）で、[`ValueGraph::Graph`](../../src/core/userpublic/valuegraph.hpp#L101) がそれを読んで評価します。
+
+- 文書は不変で、状態を持つopは外の [`EvaluationState`](../../src/core/userpublic/valuegraph.hpp#L83) を更新します。`evaluate()` はサービスへ何も publish しません。
+- 状態を渡さずに状態依存opを評価しようとした場合は「引数が足りない」ではなく、**このバックエンドに唯一できないこと**として名前で断ります —— `graph.evaluation_requires_state@1` に、聞いたノードと**authoring文書の綴りの**op名を添えます（[`statelessEvaluationRejected()`](../../src/core/userpublic/valuegraph.cpp#L48)。lowered schema はモジュール名前空間を落とすので、拒否を読む側にその事情を知らせない配慮です）。
+- [`publish()`](../../src/core/userpublic/valuegraph.hpp#L170) は評価に加えてサービスへの書き込みまで行い、[`PublishResult`](../../src/core/userpublic/valuegraph.hpp#L52) を返します。`instance_inputs` は各instance入力ポートが実際に何を食べたか、`node_values` は**全ノードの値**（グラフ自身のノード順、そのフレームで非活性だったノードは値なし＝0を捏造しない）です。全ノードの計算は宣言出力を射影する前に済んでいるので、これを持ち帰る費用はvector 1本ぶんです。
+
+runtime 側の持ち方（誰がどの `EvaluationState` を使うか、snapshot をどこへ置くか）は §3.5 の「load 後: sceneが抱えるグラフ runtime」です。
+
+## 3.16 package と render component ✅実装済み（X-1 / P-2a-3）
+
+この2つは「プロジェクトの外へ部品を持ち出す／持ち込む」ための形式で、対になっています。
+
+### `pelican.package` v1
+
+package は **`package.json` を持つ1ディレクトリ**です（[`packagemanifest.hpp`](../../src/project/packagemanifest.hpp#L13)）。著者はツリーの外のどこで書いてもよく、install は `<project>/packages/<namespace>/` への**コピー**です。エンジンはプロジェクトの外の package を解決しないので、vendorされた瞬間に「どこから来たか」は効かなくなります。
+
+manifest が持つのは名前空間と版、必要なengine / SDK、依存、提供物です（[`PackageManifest`](../../src/project/packagemanifest.hpp#L60)）。
+
+```json
+{
+  "schema": "pelican.package", "version": 1,
+  "namespace": "acme.glowkit", "package_version": "1.0.0",
+  "requires": { "engine_min_version": "0.1.0", "sdk_abi": 2, "capabilities": [] },
+  "dependencies": [],
+  "provides": { "features": [], "graphs": [], "components": [], "code": false }
+}
+```
+
+- `provides` のパスは package 内の相対のみで、絶対・`..`・バックスラッシュ・scheme付きは `package_path_invalid` です。壊れた封筒は `package_manifest_invalid`、名前空間がドット区切り識別子でなければ `package_namespace_invalid`（[`parsePackageManifestJson()`](../../src/project/packagemanifest.hpp#L84)）。
+- [`installPackage()`](../../src/project/packagemanifest.hpp#L126) は**1バイトもコピーする前に**全検査を済ませ、コピー自体はstagingディレクトリのrenameで公開します。`project.json` の `packages` に `{namespace, package_version, sha256}` を記録します。
+- `sha256` は [`packageTreeDigest()`](../../src/project/packagemanifest.hpp#L100)、つまり**インストール済みの全ファイルを相対パス順に並べたバイト列**のdigestです。`pelican_cli package list` がこれを再計算するので、記録した値は書きっぱなしではなく本番経路で検算されます。
+- feature 文書は vendor されると `<namespace>.<元の名前>` という名前を持ちます（[`qualifiedPackageFeatureName()`](../../src/project/packagemanifest.hpp#L93)）。名前を比較する箇所は全部「文書自身の `name`」を読むので、名前空間はカタログではなく文書の中に居る必要があります。
+- [`uninstallPackage()`](../../src/project/packagemanifest.hpp#L133) は、まだ参照が残っていれば `package_in_use` で何も消しません。誰が掴んでいるかは [`PackageError::names()`](../../src/project/packagemanifest.hpp#L37) が列挙します。
+- `requires.sdk_abi` は install 時に `PELICAN_GAME_LOGIC_ABI_VERSION` と突き合わせます（[`packageSdkAbiVersion()`](../../src/project/packagemanifest.hpp#L79)）。ただし**本当のgateはこれではなく**、DLLをロードするときにloaderが解決するepoch anchorです（[第1章 §1.2](01_architecture_and_build.md)）。manifestの数値は「早く気付くための印」で、強制ではありません。
+
+コードを持つ package のビルド（`pelican_package_sources()` / `pelican_packages()` と転送ヘッダSDK）は[第1章 §1.2](01_architecture_and_build.md)です。
+
+### `pelican.render_component` v1
+
+render component は「materialize済みの feature 文書1本 + それをホストするプロジェクトに要求する契約」の組です（[`rendercomponent.hpp`](../../src/project/rendercomponent.hpp#L12)）。ディレクトリに `feature.json` と `component.json` の2枚が入り、**必ず一緒に**書かれ、一緒に読まれます。「バイト列をコピーする」だけでは操作が終わらない、というのがこの形式の要点です。
+
+- [`buildRenderComponent()`](../../src/project/rendercomponent.hpp#L53) が2枚を作ります。可搬性の検査は文書の**全文字列値の走査**で、`project://` が1つでも残っていれば `render_component_project_reference`、共有済みのengine featureを書き出そうとすれば `render_component_engine_reference` です。shader / include / `shader_assets` / `ray_tracing` / `integrations` / `pass_overrides` を列挙する代わりに全走査するのは、参照の置き場が増えても取りこぼさないためです。
+- `component.json` 側の契約は [`renderComponentRequiredTargets()`](../../src/project/rendercomponent.hpp#L46) が求める **`requires.render_targets`** です。feature のパスが読み書きするRTのうち、feature 自身が宣言していないものを並べます（`swapchain` はエンジン所有ですが、他と同じように要求として報告されます）。
+- [`writeRenderComponent()`](../../src/project/rendercomponent.hpp#L59) は **ディレクトリのrename**で公開します。中断すると `<行き先>.tmp-<pid>` が残るだけで、半端に書けたcomponentは公開されません。
+- [`readRenderComponent()`](../../src/project/rendercomponent.hpp#L65) は封筒（`render_component_invalid`）と `feature.json` のdigest（`render_component_digest_mismatch`）の両方を確かめます。
+
+RPCからの使い方（`export_render_feature` / `import_render_feature`、書き先が `user://components/<name>/` に固定されること）は[第7章](07_tools_rpc_tests.md)です。
 
 次章では、sceneの中心にあるECSの実体をメモリ配置から追います。

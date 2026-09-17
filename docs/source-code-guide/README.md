@@ -41,7 +41,7 @@ Pelican が「こう呼んでいる」基本語(scene、asset、feature、render
 | [第7章 ツール・RPC・テスト](07_tools_rpc_tests.md) | devcli、Studio、JSON-RPC、テストの種類と読み方 | ツール/CIを触る人 |
 | [第8章 クラス・インターフェース索引](08_class_interface_index.md) | 主要型を責務別に引ける宣言/実装/テスト索引 | 名前から探したい人 |
 | [第9章 黒魔術・制約・変更時の注意](09_black_magic_and_gotchas.md) | マクロ展開、型消去、静的初期化、寿命、現在の未実装点 | 深い改修をする人 |
-| [第10章 前提知識の補足](10_background_knowledge.md) | このコードが当然としている一般知識(Vulkan / glTF / C++ / OS / アルゴリズム / 座標と数値) | コードは素直なのに読めないとき |
+| [第10章 前提知識の補足](10_background_knowledge.md) | このコードが当然としている一般知識(Vulkan / glTF / C++ / OS / アルゴリズム / 座標と数値 / 宣言的グラフと拡張の作法) | コードは素直なのに読めないとき |
 | [第11章 Ray query / RT pipeline 用加速構造](11_ray_query_acceleration_structures.md) | 静的限定 BLAS / TLAS、AS 行の identity(`MaterialRowIdentity`)、2 種の shadow mask、SBT(shader binding table — RT pipeline が raygen / miss / hit の各 shader group handle を引くための GPU バッファ)、set 0 契約、raster shadow との差 | ray query / RT pipeline の土台や shadow feature を変更する人 |
 
 ## 難所インデックス(詰まったときの逆引き)
@@ -54,15 +54,15 @@ Pelican が「こう呼んでいる」基本語(scene、asset、feature、render
 | [第3章](03_project_and_loading.md) | 保存の TOCTOU 窓 / preserve-world の逆算 / 128 枚の結合 palette / closure が identity を運ぶ / 二段公開と巻き戻し順 / rest 差分の回転移送 |
 | [第4章](04_ecs_deep_dive.md) | 生成 transaction の三段構え / deinit を呼ぶ経路と呼ばない経路 / 型パックと indices の位置対応 / hazard 検出と計画の決定性 / generation 0 を跨がない台帳 / 移行 publish の relocate 舞踏 / publish を落とさない reserve |
 | [第5章](05_gameplay_and_services.md) | provider 索引の再マップ / ε クラスタの全順序 / GJK 最近点の全列挙 / 保守的前進で TOI を出す / EPA の四面体と面選択 / 差分は 1 パスのマージ / 滑りと skin の引き算 / one-way 足場の進入側 / N-way ブレンドの符号正準化 / 親 index < 子 index / publish しない publish / 割り込みとスナップショット / schema の指紋を採る / 不完全型のまま consteval / 3 回舐めてから swap |
-| [第6章](06_rendering_vulkan_shader.md) | preview 除外は 1 語差 / canonical bucket の番兵 / anchor 挿入と暗黙 after / format_class が format を上書き / writes-writes の曖昧検出 / barrier は後追いで作る / 決定性は set のキー / level は order で回す / `@history` は edge を作らない / sprite anchor の逆順スキャン / 量子化するのはアンカーだけ / 消さないための空呼び出し / リンクの向きは二方向 / push の先頭 64 byte / reload の swap は 3 回 / ジッタは w 倍で足す / epoch ペアが reset 信号 |
+| [第6章](06_rendering_vulkan_shader.md) | preview 除外は 1 語差 / canonical bucket の番兵 / anchor 挿入と暗黙 after / format_class が format を上書き / writes-writes の曖昧検出 / barrier は後追いで作る / 決定性は set のキー / level は order で回す / `@history` は edge を作らない / sprite anchor の逆順スキャン / 量子化するのはアンカーだけ / 消さないための空呼び出し / リンクの向きは二方向 / push の先頭 64 byte / reload の swap は 3 回 / ジッタは w 倍で足す / epoch ペアが reset 信号 / `binding: buffer` は 5 つの宣言が噛み合って初めて成立する |
 | [第7章](07_tools_rpc_tests.md) | 曖昧な重なり判定 / `edit` の逐次プリフライト / undo 前提の三段検証 / preview lease の状態機械 / preview の状態不変性検証 |
-| [第9章](09_black_magic_and_gotchas.md) | 遅延生成の 49 行 / handle の CRTP と穴 / generation は 0 を跨がない / `struct_size` の 3 段ルール / `decltype` で catalog を掃く / void payload の消し方 / 捕まるものと捕まらないものが逆に見える |
+| [第9章](09_black_magic_and_gotchas.md) | 遅延生成の 49 行 / handle の CRTP と穴 / generation は 0 を跨がない / `struct_size` の 3 段ルール / `decltype` で catalog を掃く / void payload の消し方 / 捕まるものと捕まらないものが逆に見える / **§9.24**: byte 正確な節 locator と絶対 offset / 排他 create の committed marker / unwrapped time から作る root delta / per-node の評価分類は `max()` でしか動かない / package の SDK は転送ヘッダのディレクトリ / publish snapshot の `node_values` はグラフを持ったベクタ / `$pose/` のスカラー橋と 2 つの EvaluationState / 量子化された `--start-time` / 未解決 owner は無音で inactive / `pelican.pose@1` は意図して不透明 / 再生パラメータの既定値を本当に持つのは 2 関数だけ |
 
 この表に並ぶのは**中身の要約ではなく目印**です(「生成の逆順」「publish を落とさない」のように、そのブロックで一番間違えやすい一点を短く名指ししてあります)。タイトルから内容は復元できないので、章を開いて `難所 —` で検索し、該当ブロックを読んでください。表は各章の代表を拾ったものなので、その章の全件が要るときも同じ検索が要ります。
 
 一般的でない専門用語(Floyd–Warshall・SFINAE・ADL・TOI・MTD・GJK/EPA・CAS・TOCTOU・ABA・Halton 列など)は、**その語が実際に出てくる章の初出箇所で 1〜2 文の説明を添えてあります**(この索引には用語表を置きません)。どの章に出るかは語ごとに違う — たとえば Floyd–Warshall は frame graph の推移閉包を扱う[第6章](06_rendering_vulkan_shader.md)、SFINAE と ADL は登録マクロを扱う[第9章](09_black_magic_and_gotchas.md)です — ので、横断して引くときは `rg '<語>' docs/source-code-guide` が最短です。Pelican 固有の基本語は [`docs/manual/14_glossary.md`](../manual/14_glossary.md)、一般知識の側は[第10章](10_background_knowledge.md)にまとまっています。
 
-難所ブロックが「このコードベース固有の難しさ」を扱うのに対して、**コード自体は素直なのに仕様や定番イディオムを知らなくて読めない**ときは [第10章 前提知識の補足](10_background_knowledge.md) を引いてください(Vulkan・glTF・C++・OS・アルゴリズム・座標と数値・OpenXR の 143 項目。章の冒頭に分類ごとの索引があります)。
+難所ブロックが「このコードベース固有の難しさ」を扱うのに対して、**コード自体は素直なのに仕様や定番イディオムを知らなくて読めない**ときは [第10章 前提知識の補足](10_background_knowledge.md) を引いてください(Vulkan・glTF・C++・OS・アルゴリズム・座標と数値・OpenXR・宣言的グラフと拡張の作法の 149 項目。章の冒頭に分類ごとの索引があります)。
 
 ## 最短の読解ルート
 
