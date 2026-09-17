@@ -23570,6 +23570,61 @@ journal / undo(R 群)/ component 欄(P-1b)/ feature parameter / definition 内�
 
 
 
+
+### P-2a-4a: authoring 面が graph root の `rendering` 節を読む(出荷 project を `pelican.graph` に移す前段。v2)
+
+**§4 規則 11 上段。実装者: Claude(Fable + Opus)。設計レビュー 1 巡(Opus、`<作業ディレクトリ>/dr_p2a34.md`: 致命 4 / 大 7 / 小 6)で v2、打ち切り。事実: `<作業ディレクトリ>/facts_p2a34.md`。**
+
+#### 前提(レビューで検算済み)
+- `pelican.graph` root では legacy config 全体が root key `rendering` の下に入り([rendergraphcomposition.cpp:21-24](../src/project/rendergraphcomposition.cpp#L21))、composer / preset merge / ray config([raygrouplayout.cpp:1464-1468](../src/core/shader/raygrouplayout.cpp#L1464))は対応済み。preset + graph root も whitelist を通る([featurecompose.cpp:2794-2806](../src/project/featurecompose.cpp#L2794) が preset 解決前に 4 key を erase する。test は無い)。
+- authoring 面は root しか見ない。`withRootValue` の呼び手は **11 箇所**([renderconfigeditor.cpp:750, :751, :837, :1013, :1109, :1111, :1332, :1438, :1460, :1515, :1603](../src/core/communication/renderconfigeditor.cpp#L750)): `features` / `rendering_passes` / ray 3 key / `frame_node_order` / `pipeline` / `nodes` / `definitions`。root `features` の書き手は 4 経路(`materialize`、`editRenderFeatures`、`createAuthoredPass` :1958-1962、`editComputeTask` :1557-1559 の `withFeatureAdded`)、読み手に `loadManagedDocumentBaselines`(:417)と materialize の region 解除(:712、graph root では無音 no-op)。`--feature-overlay` は lowering 前の root に足す([renderfeatureoverlay.cpp:131-140](../src/project/renderfeatureoverlay.cpp#L131))ので graph root では **無音で捨てられる**(Studio は常に `editor.json` を渡す)。`AuthoredRenderConfigDocument::initialize` は graph root に root `features: []` を**無音で挿入**する。
+- 節付き byte locator は実装可能(digest は文書全体なので CAS 不変)。`nodes` / `definitions` は root 固定が正(N-2 が触る。衝突しない)。
+- `projects/example` の scene は gitignored。fixture の前例は「config だけ copy + 合成 scene」([golden_harness.cpp:1690-1712](../test/golden_harness.cpp#L1690))。
+- value graph は graph root でしか作られない。`render.scalar{target}` は宣言済み buffer 名を要求し、無ければ hard error([renderingpassconfigregistration.cpp:1088-1092](../src/core/renderingpass/renderingpassconfigregistration.cpp#L1088))。`bloom.intensity` の dot は合法。
+- RPC の rejection code は plain snake_case(29 個)、`@1` は engine 層 throw の流儀。
+
+#### 決定
+1. **key の所属を 1 つの述語に**: `isGraphRootKey(key)` = `{schema, version, definitions, nodes, outputs}`。それ以外の key(`features` / `rendering_passes` / `render_targets` / `pipeline` / `ray_group_layout` / `ray_bindings` / `ray_*` / `frame_node_order` / `region_replacements` / `shader_defines` …)は graph root では `rendering` 節に属する。`AuthoredRenderConfigDocument` に **節付き locator**(`withSectionValue(key, …)` = legacy root では root、graph root では `rendering.<key>` を byte 正確に)を足し、`withRootValue` の 11 箇所のうち `nodes` / `definitions` 以外の **9 箇所**を全部これに通す。`withFeatureAdded` / `hasFeaturesArray` / `featureReferences` / `initialize` も節付きに(graph root に root `features` を作る経路は消える)。読み手 `getRenderFeatures` / `allFeatureReferences` / `loadManagedDocumentBaselines` / materialize の region 解除 / `editRenderFeatures` は同じ `renderingSection(document)` を読む。
+2. **名前付き拒否**: graph root で `rendering` が無い / object でない文書に対する authoring は rejection `render_config_section_unlocated`(RPC の流儀に合わせ plain snake_case)。`--feature-overlay` は graph root では `rendering.features` に足し、`rendering` が無ければ engine 層で throw(`render_config.section_unlocated@1`、無音で捨てない)。
+3. **fixture project `test/fixtures/graph_root_example/`**: example の config を [headless_render_test.cpp:11111-11127](../test/headless_render_test.cpp#L11111) の形で包み、scene は golden の合成 scene(gitignored corpus は使わない)。加えて preset + graph root の fixture(animgraph_demo の config を包んだもの)を compose の test に 1 本。**`projects/example` 自体は移さない**(P-2a-4b: 25 箇所 / 11 file の追随 + `parent_manifest`、`devcli project init` の template も同時)。
+4. **`render.scalar` の GPU 受け入れは P-2a-2 側**(P-2a-2 が先に着地したら P-2a-4a の fixture で、後なら P-2a-2 が 4a の fixture で取る。どちらが後に着地しても 1 本の test で閉じる)。
+
+#### 受け入れ(§4 規約 10)
+1. fixture で `get_render_features` が 2 feature を返す。**対照**: locator を root 固定に戻す変異で空。
+2. `edit_render_features{add / remove / set_parameters}`、`create_authored_pass`、`edit_compute_task`(`withFeatureAdded` 経由)、`edit_frame_node_order`、ray 系 RPC が **`rendering.<key>` を byte 正確に**編集し root に新 key が現れない(文書の他 bytes 不変、`source_digest` の CAS が今日どおり効く)。**対照**: 節付き locator を外すと root に `features` が挿入される。
+3. root scope `materialize` が bloom を `project://` に派生し `rendering.features[index]` を書き換え、region 解除も `rendering` 側に効く。段数編集で画素が変わる(GPU)。
+4. `--feature-overlay engine://features/editor.json` を graph root fixture に当てると composed の feature 一覧に editor が入る。**対照**: overlay を root 固定に戻すと入らない。`rendering` 無し文書は名前付き。
+5. preset + graph root fixture が compose を通り、legacy の同 config と composed が一致。
+6. composed(pass / RT / feature 一覧と execution trace)が legacy example と一致。出荷 5 project bytes 不変、golden 不変、graph_instance_inputs の既存 test 不変。
+
+#### やらないこと
+`projects/example` の移行(P-2a-4b)/ `devcli project init` の template 変更(4b と同時)/ `edit_graph_document` の拡張(N-2)/ Studio UI / manual(4b で `pelican.graph` root の章を書く。今は無い、記録)。
+
+### P-2a-3: 共有部品の公開 —— materialize 済み feature を project の外へ export し、別 project へ import する(v2)
+
+**§4 規則 11 上段。実装者: Claude(Fable + Opus)。設計レビュー 1 巡(Opus、`<作業ディレクトリ>/dr_p2a34.md`)で v2、打ち切り。P-2a-4a の後。事実: `<作業ディレクトリ>/facts_p2a34.md` §4-5。**
+
+#### 前提(レビューで検算済み)
+- `user://` root は project 名ごと、`--user-dir` は player 専用、transaction は project root 内に構造的に閉じる([renderconfigtransaction.cpp:424-431, :761](../src/core/communication/renderconfigtransaction.cpp#L424))。`atomicCreate` は無名 namespace で非公開(:316)。
+- 出荷 5 project で `project://` の feature は `raytracing_demo/features/spheres.json` 1 本だけで、`project://shaders/*` を 4 箇所参照する。**v0 の生きた経路は「materialize してから export」だけ**。
+- 非可搬性は shader 参照だけではない: `bound_parameters` の RT 名、`shader_assets`、`compute_tasks[].shader` / `ray_tracing.*`、`integrations[].fragment.*`、`pass_overrides`。shader 参照を列挙する helper は無い。bloom は host の `lit_color` を `input` に取る(host 契約)。
+- import の create + replace の 1 transaction は成立(materialize が同形)。
+
+#### 決定
+1. **export の書き先は `user://components/<name>/`** に固定(exporting project の user root の中。任意の絶対 path には書かない。resolver の escape guard がそのまま効く)。RPC `export_render_feature{scope, index}`。書き方: `<dir>.tmp-<pid>` に `feature.json` → `component.json` の順で書き、**directory rename で公開**(既存なら rejection `render_component_destination_exists`。中断は tmp が残るだけで公開されない = wedge 無し)。`atomicCreate` は公開 helper に昇格しない(不要)。
+2. **可搬性の検査は全文字列走査**: feature 文書の全 string 値に `project://` があれば rejection `render_component_project_reference`(shader / include / shader_assets / ray_tracing / integrations / pass_overrides を取りこぼさない)。`engine://` の feature は rejection `render_component_engine_reference`(既に共有)。
+3. **`component.json` は host 契約を持つ**: `{schema: "pelican.render_component", version: 1, name, feature: "feature.json", sha256, source: {project, reference}, requires: {render_targets: [...]}}`。`requires.render_targets` = feature の pass が読む / 書く RT 名のうち feature 自身の `render_targets` に無いもの(bloom なら `lit_color` と swapchain 系)。
+4. **RPC `import_render_feature{source_dir, destination_reference}`**: `source_dir` は絶対 path で **project root の外**(中なら `project://` を使わせる: rejection `render_component_source_inside_project`)、読むだけ。`component.json` の schema / version を検証(`render_component_invalid`)、`feature.json` の sha256 を検算(`render_component_digest_mismatch`)、`requires.render_targets` を import 先の `rendering`(または root)の `render_targets` + preset の宣言と照合し、無ければ rejection `render_component_requires_missing`(名前を列挙)。通れば `destination_reference`(`project://…`、既存なら `feature_destination_exists`)へ transaction の create + `features` への追加(P-2a-4a の節付き locator)を 1 transaction で。
+5. Studio UI / CLI は無し(記録)。
+
+#### 受け入れ(§4 規約 10)
+1. graph root fixture(4a)で bloom を materialize → export → **`lit_color` を宣言する第二の fixture project** へ import → composed に同じ 13 pass + 9 RT、同じ合成 scene で画素が export 元と一致(GPU)。**対照**: import 後に export 先の `feature.json` を消しても import 先は描ける(複製)。
+2. 名前付き: `feature.json` 1 byte 改変 → `render_component_digest_mismatch` / `component.json` 無し → `render_component_invalid` / `lit_color` を宣言しない project へ → `render_component_requires_missing`(`lit_color` を列挙)/ 既存宛先 → `feature_destination_exists` / 既存 export → `render_component_destination_exists` / `engine://` feature → `render_component_engine_reference` / `raytracing_demo` の `spheres.json` → `render_component_project_reference`(死んだ分岐にしない)/ project 内の `source_dir` → `render_component_source_inside_project`。
+3. export は project root 内の bytes を変えない。import の digest 不一致は transaction に入る前に拒否される(rollback は主張しない)。
+4. 出荷 5 project bytes 不変、既存 RPC test 不変。
+
+#### やらないこと
+`user://` への materialize / `--user-dir` の Studio 対応 / shader を含む pack と cross-project の解決(X-1)/ Studio UI / CLI / manual(X-1 でまとめて)。
 ### AG-2: root motion —— clip の根の移動を個体の transform に渡す(v0「作る」の段 5。v2)
 
 **§4 規則 11 上段。実装者: Claude(Fable + Opus)。設計レビュー第 1 巡(Opus、`<作業ディレクトリ>/dr_ag2.md`: 致命 5 / 大 10)で v1 の「第二の sink」「pose handle の sideband」「dt からの差分」を全部撤回 → v2。第 2 巡 1 回で打ち切り。事実: `<作業ディレクトリ>/facts_ag2.md`。**
