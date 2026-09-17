@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QColor>
 #include <QGraphicsPathItem>
 #include <QPainterPath>
 #include <QPointF>
@@ -13,6 +14,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 class QGraphicsItem;
@@ -75,6 +77,54 @@ struct CurveGeometry {
 };
 
 CurveGeometry curveGeometry(const QRectF &from, const QRectF &to);
+
+// The same curve between two exact points rather than two boxes. A socket is
+// a point on the node's edge, so an edge that leaves one has no rectangle to
+// be clipped against: it starts and ends where the socket is drawn.
+CurveGeometry curveGeometryBetween(const QPointF &start, const QPointF &tip);
+
+// A socket says what type flows through it, by shape as well as by colour: a
+// canvas the user can add types to cannot spend a hue per type, and shape
+// survives both colour blindness and a dark theme.
+enum class SocketShape { circle, diamond, square, hexagon };
+
+struct SocketStyle {
+    SocketShape shape = SocketShape::circle;
+    QColor fill;
+    QColor outline;
+    qreal size = 11.0;
+};
+
+// Everything the one resolver is allowed to know about a port's type. The
+// canvas reads these off the catalog; the resolver never reads the catalog
+// itself, so the same call answers for a test's hand-built type and for a
+// module that shipped one.
+struct SocketTypeFacts {
+    // The semantic type id, e.g. "pelican.value.scalar@1". Empty when the
+    // catalog never declared a type for the port -- which is a state to draw,
+    // not a reason to guess.
+    std::string type;
+    // (i) The catalog's type schema declared its own look.
+    bool has_display = false;
+    std::string display_shape;
+    std::string display_color;
+    // (iii) The traits the catalog's type schema carries.
+    std::vector<std::string> traits;
+};
+
+// The single resolver. Order: the module's own declaration, then the Studio
+// default table, then the traits, then the table's "unknown" entry.
+SocketStyle socketStyleFor(const SocketTypeFacts &facts);
+
+// The default table (ii), parsed from the embedded JSON resource on first use.
+// Replacing it is how the control runs: an empty table must send every type
+// through the traits rule and the built-in fallback.
+void setSocketStyleDefaults(std::string_view json_text);
+void resetSocketStyleDefaults();
+
+// The socket's outline, centred on the origin so the caller positions it by
+// the point the edges attach to.
+QPainterPath socketPath(SocketShape shape, qreal size);
 
 QPainterPath nodePath(bool anchor);
 QPainterPath roundedEntityPath(qreal width, qreal height, qreal radius);

@@ -38,6 +38,19 @@ std::vector<std::string> definitionInputs(const Json &definition) {
             ports.push_back(text(node, "id"));
     return ports;
 }
+
+// A logical type and a logical type pattern both name the semantic type under
+// the same key. That name is the whole of what the socket needs.
+std::string semanticTypeName(const Json &owner, const char *key) {
+    const auto found = owner.find(key);
+    if (found == owner.end() || !found->is_object()) return {};
+    return text(*found, "semantic");
+}
+
+// graph.input is structural: no module registers it, so the catalog cannot
+// declare its type. Composition expands it into value.parameter, whose output
+// is the scalar -- so that, and not "unknown", is what leaves its port.
+constexpr auto kGraphInputType = "pelican.value.scalar@1";
 } // namespace
 
 void GraphCanvasModel::request(RequestKind kind, std::string method, Json params) {
@@ -75,6 +88,7 @@ void GraphCanvasModel::setConnected(bool connected) {
     catalog_requested_ = false;
     catalog_received_ = false;
     operations_ = Json::object();
+    types_ = Json::object();
     failure_ = {};
     clearContext();
     refresh();
@@ -146,11 +160,17 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             }
             if (pending.kind == RequestKind::Catalog) {
                 auto operations = Json::object();
-                for (const auto &module : response.value("modules", Json::array()))
+                auto types = Json::object();
+                for (const auto &module : response.value("modules", Json::array())) {
                     for (const auto &operation : module.value("operations", Json::array()))
                         if (operation.is_object() && operation.contains("op"))
                             operations[text(operation, "op")] = operation;
+                    for (const auto &schema : module.value("types", Json::array()))
+                        if (schema.is_object() && schema.contains("id"))
+                            types[text(schema, "id")] = schema;
+                }
                 operations_ = std::move(operations);
+                types_ = std::move(types);
                 catalog_received_ = true;
             } else if (text(response, "instance") == values_instance_) {
                 values_ = response.value("inputs", Json::array());
@@ -267,6 +287,38 @@ const Json *GraphCanvasModel::operation(std::string_view op) const {
     return found == operations_.end() ? nullptr : &*found;
 }
 
+const Json *GraphCanvasModel::typeSchema(std::string_view id) const {
+    const auto found = types_.find(std::string{id});
+    return found == types_.end() ? nullptr : &*found;
+}
+
+std::string GraphCanvasModel::definitionOutputType(std::string_view definition,
+                                                   std::string_view port,
+                                                   int depth) const {
+    if (depth <= 0) return {};
+    const auto body = definitions_.find(std::string{definition});
+    if (body == definitions_.end()) return {};
+    const auto outputs = body->find("outputs");
+    if (outputs == body->end() || !outputs->is_object()) return {};
+    const auto endpoint = outputs->find(std::string{port});
+    if (endpoint == outputs->end() || !endpoint->is_object()) return {};
+    const auto producer = text(*endpoint, "node");
+    const auto producer_port = text(*endpoint, "port");
+    const auto *node = findNode(definition, producer);
+    if (node == nullptr) return {};
+    const auto op = text(*node, "op");
+    if (op == "graph.input") return kGraphInputType;
+    if (op == "graph.instance")
+        return definitionOutputType(text(*node, "definition"), producer_port,
+                                    depth - 1);
+    const auto *contract = operation(op);
+    if (contract == nullptr) return {};
+    for (const auto &output : contract->value("outputs", Json::array()))
+        if (text(output, "port") == producer_port)
+            return semanticTypeName(output, "type");
+    return {};
+}
+
 std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) const {
     std::vector<GraphCanvasNode> result;
     const auto *nodes = scopeNodes(scope);
@@ -277,6 +329,7 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
         GraphCanvasNode drawn;
         drawn.id = text(node, "id");
         drawn.op = text(node, "op");
+        drawn.label = text(node, "label");
         drawn.definition = text(node, "definition");
         drawn.instance = drawn.op == "graph.instance";
         const auto parameters = node.find("parameters");
@@ -302,7 +355,8 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
             authored_inputs != node.end() && authored_inputs->is_object();
 
         std::vector<GraphCanvasPort> ports;
-        const auto add_port = [&](std::string name, bool from_contract) {
+        const auto add_port = [&](std::string name, bool from_contract,
+                                  std::string type = {}) {
             if (name.empty()) return;
             if (std::ranges::any_of(ports, [&](const auto &existing) {
                     return existing.port == name;
@@ -311,6 +365,7 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
             GraphCanvasPort port;
             port.port = std::move(name);
             port.declared = from_contract;
+            port.type = std::move(type);
             ports.push_back(std::move(port));
         };
 
@@ -319,7 +374,7 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
             // ports for it, so the definition's own graph.input nodes are the
             // port list, in the order the definition declares them.
             for (auto &port : definitionInputs(definitions_.at(drawn.definition)))
-                add_port(std::move(port), false);
+                add_port(std::move(port), false, kGraphInputType);
         } else if (declared) {
             for (const auto &input : contract->value("inputs", Json::array())) {
                 GraphCanvasPort port;
@@ -328,6 +383,7 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
                 port.declared = true;
                 port.required = input.value("required", false);
                 if (input.contains("accepted_type")) port.accepted_type = input.at("accepted_type").dump();
+                port.type = semanticTypeName(input, "accepted_type");
                 ports.push_back(std::move(port));
             }
         } else if (drawn.parameters.is_object()) {
@@ -386,18 +442,27 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
             if (outputs != definition.end() && outputs->is_object())
                 for (const auto &[name, target] : outputs->items()) {
                     (void)target;
-                    drawn.outputs.push_back(name);
+                    drawn.outputs.push_back(GraphCanvasOutput{
+                        name, definitionOutputType(drawn.definition, name, 8)});
                 }
+        } else if (drawn.op == "graph.input") {
+            // The structural boundary port. Its single output is the scalar
+            // the expansion produces, which no catalog entry can say.
+            drawn.outputs.push_back(GraphCanvasOutput{"value", kGraphInputType});
         } else if (declared) {
             for (const auto &output : contract->value("outputs", Json::array())) {
                 const auto name = text(output, "port");
-                if (!name.empty()) drawn.outputs.push_back(name);
+                if (!name.empty())
+                    drawn.outputs.push_back(
+                        GraphCanvasOutput{name, semanticTypeName(output, "type")});
             }
         } else {
             const auto authored = node.find("outputs");
             if (authored != node.end() && authored->is_array())
                 for (const auto &output : *authored)
-                    if (output.is_string()) drawn.outputs.push_back(output.get<std::string>());
+                    if (output.is_string())
+                        drawn.outputs.push_back(
+                            GraphCanvasOutput{output.get<std::string>(), {}});
         }
         result.push_back(std::move(drawn));
     }

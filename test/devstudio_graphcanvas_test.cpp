@@ -57,13 +57,30 @@ Json operation(const std::string &op, const std::string &domain,
             {"inputs", inputs}, {"outputs", outputs}};
 }
 
-Json declaredInput(const std::string &port, bool required = true) {
+// The shapes the engine really publishes: a logical type pattern and a logical
+// type both name the semantic type under "semantic".
+Json declaredInput(const std::string &port, bool required = true,
+                   const std::string &type = "pelican.value.scalar@1") {
     return {{"port", port}, {"required", required},
-            {"accepted_type", {{"id", "pelican.value.scalar@1"}}}};
+            {"accepted_type", {{"semantic", type},
+                               {"required_traits", Json::array()},
+                               {"predicates", Json::array()}}}};
 }
 
-Json declaredOutput(const std::string &port) {
-    return {{"port", port}, {"type", {{"id", "pelican.value.scalar@1"}}}};
+Json declaredOutput(const std::string &port,
+                    const std::string &type = "pelican.value.scalar@1") {
+    return {{"port", port},
+            {"type", {{"schema", "pelican.logical_type"}, {"version", 1},
+                      {"constructor", "value"}, {"semantic", type},
+                      {"arguments", Json::array()}}}};
+}
+
+Json typeSchema(const std::string &id, const Json &traits,
+                const Json &display = Json{}) {
+    Json schema{{"id", id}, {"constructor", "value"}, {"traits", traits},
+                {"parameters", Json::array()}};
+    if (!display.is_null()) schema["display"] = display;
+    return schema;
 }
 
 // The catalog the builtin registry publishes for the operations the fixture
@@ -73,7 +90,9 @@ Json catalog() {
     return {{"schema", "pelican.graph_catalog"}, {"version", 1},
         {"modules", Json::array({
             {{"namespace", "value"}, {"version", 1}, {"description", ""},
-             {"types", Json::array()}, {"sinks", Json::array()},
+             {"types", Json::array({
+                 typeSchema("pelican.value.scalar@1", Json::array({"numeric"}))})},
+             {"sinks", Json::array()},
              {"operations", Json::array({
                  operation("value.input", "values", Json::array(),
                            Json::array({declaredOutput("value")})),
@@ -87,11 +106,16 @@ Json catalog() {
                   {"evaluation", "direct"}, {"sink", false},
                   {"ports", "parameter_dependent"}}})}},
             {{"namespace", "render"}, {"version", 1}, {"description", ""},
-             {"types", Json::array()}, {"sinks", Json::array()},
+             {"types", Json::array({
+                 typeSchema("pelican.render.storage_buffer@1",
+                            Json::array({"shader_storage"}))})},
+             {"sinks", Json::array()},
              {"operations", Json::array({
                  operation("render.buffer", "rendering",
                            Json::array({declaredInput("value")}),
-                           Json::array({declaredOutput("resource")}), true)})}}})}};
+                           Json::array({declaredOutput(
+                               "resource", "pelican.render.storage_buffer@1")}),
+                           true)})}}})}};
 }
 
 struct Harness {
@@ -166,7 +190,13 @@ TEST_CASE("The graph canvas reads root and definition scopes out of one document
     REQUIRE(clock.domain == "values");
     REQUIRE(clock.evaluation == "direct");
     REQUIRE_FALSE(clock.sink);
-    REQUIRE(clock.outputs == std::vector<std::string>{"value"});
+    REQUIRE(clock.outputs.size() == 1);
+    REQUIRE(clock.outputs[0].port == "value");
+    // The socket's type is the catalog's, read off the declared contract.
+    REQUIRE(clock.outputs[0].type == "pelican.value.scalar@1");
+    // A node with no authored label is headed by its id, not by an empty band.
+    REQUIRE(clock.label.empty());
+    REQUIRE(clock.heading() == "clock");
 
     // graph.instance is parameter_dependent, so its ports come from the node
     // and its definition, and they are not labelled as declared.
@@ -181,7 +211,13 @@ TEST_CASE("The graph canvas reads root and definition scopes out of one document
     REQUIRE(left.inputs[0].source_node == "clock");
     REQUIRE(left.inputs[1].has_parameter);
     REQUIRE(left.inputs[1].parameter == 5);
-    REQUIRE(left.outputs == std::vector<std::string>{"value"});
+    REQUIRE(left.outputs.size() == 1);
+    REQUIRE(left.outputs[0].port == "value");
+    // An instance's ports are the definition's boundary: its inputs are the
+    // graph.input scalars, and its output follows the definition's own
+    // outputs map down to the node that really produces it.
+    REQUIRE(left.inputs[0].type == "pelican.value.scalar@1");
+    REQUIRE(left.outputs[0].type == "pelican.value.scalar@1");
 
     // Descending into the instance shows the definition body.
     REQUIRE(h.model.enterInstance("left"));
@@ -196,11 +232,30 @@ TEST_CASE("The graph canvas reads root and definition scopes out of one document
     REQUIRE(sum.inputs[0].declared);
     REQUIRE(sum.inputs[0].connected);
     REQUIRE(sum.inputs[0].source_node == "gain");
+    REQUIRE(sum.label.empty());
+    REQUIRE(sum.heading() == "sum");
+    REQUIRE(sum.op == "value.add");
+    // graph.input is structural: no module registers it, so its scalar output
+    // comes from what composition expands it into, not from the catalog.
+    const auto &gain_input = h.node("gain");
+    REQUIRE(gain_input.outputs.size() == 1);
+    REQUIRE(gain_input.outputs[0].port == "value");
+    REQUIRE(gain_input.outputs[0].type == "pelican.value.scalar@1");
     const auto &buffer = h.node("buffer");
     REQUIRE(buffer.domain == "rendering");
+    // The document's own `label` is what the heading shows; the type name is
+    // still the op, so a renamed node never hides what it is.
+    REQUIRE(buffer.label == "pulse buffer");
+    REQUIRE(buffer.heading() == "pulse buffer");
+    REQUIRE(buffer.op == "render.buffer");
     REQUIRE(buffer.sink);
     REQUIRE(port(buffer, "value").declared);
-    REQUIRE(buffer.outputs == std::vector<std::string>{"resource"});
+    REQUIRE(buffer.outputs.size() == 1);
+    REQUIRE(buffer.outputs[0].port == "resource");
+    REQUIRE(buffer.outputs[0].type == "pelican.render.storage_buffer@1");
+    // The catalog's type schemas came across with the operations.
+    REQUIRE(h.model.typeSchema("pelican.render.storage_buffer@1") != nullptr);
+    REQUIRE(h.model.typeSchema("pelican.pose@1") == nullptr);
 
     REQUIRE(h.model.leaveScope());
     REQUIRE(h.model.currentScope().empty());
@@ -252,12 +307,20 @@ TEST_CASE("Without the catalog the canvas draws the document's own keys and says
     REQUIRE(sum.inputs.size() == 2);
     REQUIRE_FALSE(sum.inputs[0].declared);
     REQUIRE_FALSE(sum.inputs[1].declared);
-    REQUIRE(sum.outputs == std::vector<std::string>{"value"});
-    // `gain` declares neither inputs nor outputs in the document, so without a
-    // contract it draws with no ports rather than invented ones.
+    REQUIRE(sum.outputs.size() == 1);
+    REQUIRE(sum.outputs[0].port == "value");
+    // Without a contract there is no type to put on the socket, and the canvas
+    // says so rather than picking one.
+    REQUIRE(sum.outputs[0].type.empty());
+    REQUIRE(sum.inputs[0].type.empty());
+    // `gain` declares no inputs in the document, so without a contract it
+    // draws with none rather than invented ones. Its single output is the one
+    // thing a graph.input always has, which is a fact about composition and
+    // not about the catalog.
     const auto &gain = h.node("gain");
     REQUIRE(gain.inputs.empty());
-    REQUIRE(gain.outputs.empty());
+    REQUIRE(gain.outputs.size() == 1);
+    REQUIRE(gain.outputs[0].port == "value");
     // The edges are the document's, so the shape of the graph is unchanged.
     REQUIRE(h.model.edges().size() == 3);
 }

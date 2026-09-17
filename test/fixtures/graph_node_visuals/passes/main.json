@@ -1,0 +1,74 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+
+  "definitions": {
+    "gain_curve": {
+      "nodes": [
+        {"id": "time", "op": "graph.input"},
+        {"id": "gain", "op": "graph.input", "default": 2},
+        {"id": "bias", "op": "graph.input"},
+        {"id": "shape", "op": "value.curve",
+         "inputs": {"time": {"node": "time", "port": "value"}},
+         "parameters": {"keys": [{"time": 0, "value": 0},
+                                 {"time": 1, "value": 1},
+                                 {"time": 2, "value": 0}]},
+         "outputs": ["value"]},
+        {"id": "scaled", "op": "value.multiply",
+         "inputs": {"a": {"node": "shape", "port": "value"},
+                    "b": {"node": "gain", "port": "value"}},
+         "outputs": ["value"]},
+        {"id": "sum", "op": "value.add",
+         "label": "gain + bias",
+         "inputs": {"a": {"node": "scaled", "port": "value"},
+                    "b": {"node": "bias", "port": "value"}},
+         "outputs": ["value"]}
+      ],
+      "outputs": {"value": {"node": "sum", "port": "value"}}
+    },
+
+    "half_of": {
+      "nodes": [
+        {"id": "amount", "op": "graph.input", "default": 1},
+        {"id": "half", "op": "value.constant",
+         "parameters": {"value": 0.5}, "outputs": ["value"]},
+        {"id": "scaled", "op": "value.multiply",
+         "inputs": {"a": {"node": "amount", "port": "value"},
+                    "b": {"node": "half", "port": "value"}},
+         "outputs": ["value"]}
+      ],
+      "outputs": {"value": {"node": "scaled", "port": "value"}}
+    }
+  },
+
+  "nodes": [
+    {"id": "clock", "op": "value.input",
+     "parameters": {"name": "scene_time"}, "outputs": ["value"]},
+
+    {"id": "helmet_pulse", "op": "graph.instance", "definition": "gain_curve",
+     "label": "Helmet pulse",
+     "owner": {"scene": "default_scene", "object": 2},
+     "inputs": {"time": {"node": "clock", "port": "value"}},
+     "parameters": {"time": 0, "gain": 2.5, "bias": 0.5}},
+
+    {"id": "bloom_trim", "op": "graph.instance", "definition": "half_of",
+     "parameters": {"amount": 1.5}},
+
+    {"id": "pulse_buffer", "op": "render.buffer",
+     "inputs": {"value": {"node": "helmet_pulse", "port": "value"}},
+     "parameters": {"element": "float"},
+     "outputs": ["resource"]},
+
+    {"id": "trim_buffer", "op": "render.buffer",
+     "inputs": {"value": {"node": "bloom_trim", "port": "value"}},
+     "parameters": {"element": "float"},
+     "outputs": ["resource"]}
+  ],
+
+  "outputs": {},
+
+  "rendering": {
+    "pipeline": {"preset": "engine://render_pipelines/hybrid_v1.json"},
+    "features": []
+  }
+}

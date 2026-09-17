@@ -54,6 +54,9 @@ target_link_libraries(pelican_studio PRIVATE
 # subdirs
 add_subdirectory(model)
 add_subdirectory(view)
+# After view: the embed proxy links into pelican_studio_view, which that
+# directory defines.
+add_subdirectory(resources)
 
 include(${CMAKE_SOURCE_DIR}/cmake/devstudio_link_boundary.cmake)
 pelican_collect_directory_targets(${CMAKE_SOURCE_DIR}/src/core pelican_engine_targets)

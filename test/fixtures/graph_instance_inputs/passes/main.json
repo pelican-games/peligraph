@@ -11,6 +11,7 @@
                     "b": {"node": "bias", "port": "value"}},
          "outputs": ["value"]},
         {"id": "buffer", "op": "render.buffer",
+         "label": "pulse buffer",
          "inputs": {"value": {"node": "sum", "port": "value"}},
          "parameters": {"element": "float"},
          "outputs": ["resource"]}

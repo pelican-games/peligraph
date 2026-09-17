@@ -93,6 +93,121 @@ QString portSummary(const GraphCanvasPort &port) {
     return text;
 }
 
+QString numberText(double value) {
+    return QString::number(value, 'g', 6);
+}
+
+// What a Blender-style row shows on its right: the value the port is standing
+// on while nothing is connected to it. A connected port has no pill, because
+// the edge is the answer.
+struct RowValue {
+    QString text;
+    QString source;
+    [[nodiscard]] bool shown() const { return !text.isEmpty(); }
+};
+
+RowValue rowValue(const GraphCanvasPort &port) {
+    if (port.connected) return {};
+    // A published generation outranks the authored number: it is what the
+    // port was actually fed, overrides included.
+    if (port.has_value)
+        return RowValue{numberText(port.value), qtext(port.value_source)};
+    if (port.has_parameter)
+        return RowValue{qtext(port.parameter.dump()),
+                        QStringLiteral("stored")};
+    return {};
+}
+
+QString pillText(const RowValue &value) {
+    if (value.source.isEmpty()) return value.text;
+    return QStringLiteral("%1 · %2").arg(value.text, value.source);
+}
+
+QPainterPath headerBandPath(qreal width, qreal height, qreal radius) {
+    // The band has to share the node's rounded top corners and square off
+    // where the socket sections begin.
+    QPainterPath path;
+    path.moveTo(0.0, height);
+    path.lineTo(0.0, radius);
+    path.quadTo(0.0, 0.0, radius, 0.0);
+    path.lineTo(width - radius, 0.0);
+    path.quadTo(width, 0.0, width, radius);
+    path.lineTo(width, height);
+    path.closeSubpath();
+    return path;
+}
+
+// Everything that belongs to a node's body: a press anywhere on it selects
+// the node, the way a press on the node rectangle used to.
+bool isNodeSurface(const QString &kind) {
+    return kind == QLatin1String{GraphCanvasNodeItem} ||
+           kind == QLatin1String{GraphCanvasNodeLabelItem} ||
+           kind == QLatin1String{GraphCanvasNodeHeaderItem} ||
+           kind == QLatin1String{GraphCanvasSocketItem} ||
+           kind == QLatin1String{GraphCanvasValuePillItem};
+}
+
+QGraphicsItem *findSocket(QGraphicsScene &scene, const QString &scope,
+                          const QString &node, const QString &port,
+                          const QString &direction) {
+    for (QGraphicsItem *item : scene.items()) {
+        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasSocketItem} ||
+            item->data(GraphCanvasScopeRole).toString() != scope ||
+            item->data(NodeGraphNameRole).toString() != node ||
+            item->data(GraphCanvasPortRole).toString() != port ||
+            item->data(GraphCanvasSocketDirectionRole).toString() != direction)
+            continue;
+        return item;
+    }
+    return nullptr;
+}
+
+// An edge runs socket centre to socket centre. Only a port the canvas could
+// not draw a socket for falls back to the node box, so a missing contract
+// degrades the line rather than losing it.
+void routeGraphCanvasEdge(QGraphicsScene &scene, QGraphicsPathItem &edge) {
+    const QString scope = edge.data(GraphCanvasScopeRole).toString();
+    const QString from_name = edge.data(NodeGraphFromNameRole).toString();
+    const QString to_name = edge.data(NodeGraphToNameRole).toString();
+    QGraphicsItem *from = findNodeItem(scene, graphCanvasKinds(), scope, from_name);
+    QGraphicsItem *to = findNodeItem(scene, graphCanvasKinds(), scope, to_name);
+    if (from == nullptr || to == nullptr) return;
+
+    QGraphicsItem *from_socket =
+        findSocket(scene, scope, from_name,
+                   edge.data(GraphCanvasFromPortRole).toString(),
+                   QStringLiteral("output"));
+    QGraphicsItem *to_socket =
+        findSocket(scene, scope, to_name,
+                   edge.data(GraphCanvasToPortRole).toString(),
+                   QStringLiteral("input"));
+
+    const CurveGeometry geometry =
+        from_socket != nullptr && to_socket != nullptr
+            ? curveGeometryBetween(from_socket->sceneBoundingRect().center(),
+                                   to_socket->sceneBoundingRect().center())
+            : curveGeometry(from->sceneBoundingRect(), to->sceneBoundingRect());
+    edge.setPath(geometry.path);
+    if (auto *arrow = dynamic_cast<QGraphicsPolygonItem *>(findEndpointArtifact(
+            scene, graphCanvasKinds().arrow, scope, from_name, to_name)))
+        arrow->setPolygon(geometry.arrow);
+}
+
+void rerouteGraphCanvasEdges(QGraphicsScene &scene, const std::string &scope,
+                             const std::string &node) {
+    const QString expected_scope = qtext(scope);
+    const QString expected_node = qtext(node);
+    for (QGraphicsItem *item : scene.items()) {
+        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasEdgeItem} ||
+            item->data(GraphCanvasScopeRole).toString() != expected_scope ||
+            (item->data(NodeGraphFromNameRole).toString() != expected_node &&
+             item->data(NodeGraphToNameRole).toString() != expected_node))
+            continue;
+        if (auto *edge = dynamic_cast<QGraphicsPathItem *>(item))
+            routeGraphCanvasEdge(scene, *edge);
+    }
+}
+
 } // namespace
 
 const NodeGraphKinds &graphCanvasKinds() {
@@ -100,8 +215,32 @@ const NodeGraphKinds &graphCanvasKinds() {
         QStringList{QString::fromLatin1(GraphCanvasNodeItem)},
         QString::fromLatin1(GraphCanvasEdgeItem),
         QString::fromLatin1(GraphCanvasEdgeArrowItem),
-        QString::fromLatin1(GraphCanvasEdgeLabelItem)};
+        // The edge labels are gone: the socket rows carry the port names, so
+        // a box in the middle of every line said the same thing twice.
+        QString{}};
     return kinds;
+}
+
+SocketTypeFacts graphCanvasSocketFacts(const GraphCanvasModel &model,
+                                       const std::string &type) {
+    SocketTypeFacts facts;
+    facts.type = type;
+    const auto *schema = type.empty() ? nullptr : model.typeSchema(type);
+    if (schema == nullptr) return facts;
+    const auto display = schema->find("display");
+    if (display != schema->end() && display->is_object()) {
+        facts.has_display = true;
+        facts.display_shape = display->value("shape", std::string{});
+        facts.display_color = display->value("color", std::string{});
+        // A display object that names neither is not a declaration.
+        if (facts.display_shape.empty() && facts.display_color.empty())
+            facts.has_display = false;
+    }
+    const auto traits = schema->find("traits");
+    if (traits != schema->end() && traits->is_array())
+        for (const auto &trait : *traits)
+            if (trait.is_string()) facts.traits.push_back(trait.get<std::string>());
+    return facts;
 }
 
 GraphCanvasScene::GraphCanvasScene(QObject *parent) : QGraphicsScene{parent} {}
@@ -161,20 +300,80 @@ void GraphCanvasScene::repopulate() {
     label_font.setPointSizeF(label_font.pointSizeF() - 0.5);
     QFont detail_font = label_font;
     detail_font.setPointSizeF(detail_font.pointSizeF() - 0.5);
+    QFont heading_font = label_font;
+    heading_font.setBold(true);
+    const QFontMetricsF heading_metrics{heading_font};
+    const QFontMetricsF row_metrics{detail_font};
 
     const qreal top = model_->breadcrumb().size() > 1
                           ? NodeGraphBreadcrumbHeight + 18.0
                           : 0.0;
-    std::map<int, int> rows_in_column;
     std::map<std::string, QGraphicsPathItem *, std::less<>> items;
+    // A node's height now follows its port count, so a fixed row pitch would
+    // overlap a tall node with the one under it. Each column advances by what
+    // it has actually placed.
+    std::map<int, qreal> column_cursor;
     for (const auto &node : nodes) {
+        const QString node_name = qtext(node.id);
+        const QString heading = qtext(node.heading());
+        const QString type_name = qtext(node.op);
+
+        // The rows first: the node is as wide as its widest row and as tall as
+        // the number of ports, the way a socket list has to be.
+        struct DrawnRow {
+            QString port;
+            QString label;
+            QString type;
+            SocketStyle style;
+            RowValue value;
+            bool connected = false;
+            bool declared = false;
+        };
+        std::vector<DrawnRow> outputs;
+        std::vector<DrawnRow> inputs;
+        for (const auto &output : node.outputs)
+            outputs.push_back(DrawnRow{
+                qtext(output.port), qtext(output.port), qtext(output.type),
+                socketStyleFor(graphCanvasSocketFacts(*model_, output.type)),
+                {}, false, false});
+        for (const auto &port : node.inputs)
+            inputs.push_back(DrawnRow{
+                qtext(port.port), qtext(port.port), qtext(port.type),
+                socketStyleFor(graphCanvasSocketFacts(*model_, port.type)),
+                rowValue(port), port.connected, port.declared});
+
+        qreal width = GraphCanvasNodeMinimumWidth;
+        width = std::max(width, 18.0 + heading_metrics.horizontalAdvance(heading) +
+                                    12.0 + row_metrics.horizontalAdvance(type_name) +
+                                    14.0);
+        for (const auto &row : outputs)
+            width = std::max(width,
+                             row_metrics.horizontalAdvance(row.label) + 34.0);
+        for (const auto &row : inputs) {
+            qreal needed = row_metrics.horizontalAdvance(row.label) + 34.0;
+            if (row.value.shown())
+                needed += row_metrics.horizontalAdvance(pillText(row.value)) + 24.0;
+            width = std::max(width, needed);
+        }
+        width = std::min(width, GraphCanvasNodeMaximumWidth);
+
+        const qreal rows_top = GraphCanvasHeaderHeight + GraphCanvasSectionPadding;
+        const auto row_count = static_cast<qreal>(outputs.size() + inputs.size());
+        const qreal height =
+            rows_top + row_count * GraphCanvasSocketRowHeight +
+            GraphCanvasSectionPadding;
+
         const auto column_entry = columns.find(node.id);
         const int column = column_entry == columns.end() ? 0 : column_entry->second;
-        const int row = rows_in_column[column]++;
+        const auto placed = column_cursor.find(column);
+        if (placed == column_cursor.end())
+            column_cursor.emplace(
+                column,
+                top + (column % 2 == 1 ? NodeGraphStaggerOffset * 0.25 : 0.0));
+        auto &cursor = column_cursor.at(column);
         const QPointF laid_out{
-            column * (NodeGraphNodeWidth + NodeGraphHorizontalGap),
-            top + row * (NodeGraphNodeHeight + NodeGraphVerticalGap) +
-                (column % 2 == 1 ? NodeGraphStaggerOffset * 0.25 : 0.0)};
+            column * (NodeGraphNodeWidth + NodeGraphHorizontalGap), cursor};
+        cursor += height + NodeGraphVerticalGap;
         const auto position_key = std::pair{scope, node.id};
         QPointF position = laid_out;
         if (const auto retained = session_node_positions_.find(position_key);
@@ -183,11 +382,11 @@ void GraphCanvasScene::repopulate() {
         }
 
         auto *item = new MovableNodeItem(
-            nodePath(false), [this, position_key, scope](const QPointF &moved) {
+            roundedEntityPath(width, height, GraphCanvasNodeCornerRadius),
+            [this, position_key, scope](const QPointF &moved) {
                 if (rebuilding_) return;
                 session_node_positions_[position_key] = moved;
-                rerouteConnectedBundles(*this, graphCanvasKinds(), scope,
-                                        position_key.second);
+                rerouteGraphCanvasEdges(*this, scope, position_key.second);
                 // Growing the scene rect from inside itemChange re-enters this
                 // handler through Qt's view update. Defer it to the event loop.
                 scheduleSceneRectUpdate();
@@ -195,14 +394,17 @@ void GraphCanvasScene::repopulate() {
         addItem(item);
         item->setPos(position);
         item->setZValue(2.0);
-        item->setBrush(nodeColor(node));
+        // The body is neutral; the heading band carries the domain colour, so
+        // a long port list does not turn into a wall of one hue.
+        item->setBrush(QColor{QStringLiteral("#272e36")});
         item->setPen(QPen{QColor{QStringLiteral("#0f1418")}, 1.2});
         item->setFlag(QGraphicsItem::ItemIsMovable, true);
         item->setFlag(QGraphicsItem::ItemIsSelectable, true);
         item->setFlag(QGraphicsItem::ItemSendsGeometryChanges, true);
         item->setData(NodeGraphItemKindRole, QString::fromLatin1(GraphCanvasNodeItem));
         item->setData(GraphCanvasScopeRole, scope_text);
-        item->setData(NodeGraphNameRole, qtext(node.id));
+        item->setData(NodeGraphNameRole, node_name);
+        item->setData(GraphCanvasLabelRole, heading);
         item->setData(GraphCanvasOpRole, qtext(node.op));
         item->setData(GraphCanvasDomainRole, qtext(node.domain));
         item->setData(GraphCanvasEvaluationRole, qtext(node.evaluation));
@@ -216,48 +418,130 @@ void GraphCanvasScene::repopulate() {
             if (port.declared) declared_ports.push_back(qtext(port.port));
         }
         QStringList output_ports;
-        for (const auto &output : node.outputs) output_ports.push_back(qtext(output));
+        for (const auto &output : node.outputs)
+            output_ports.push_back(qtext(output.port));
         item->setData(GraphCanvasInputPortsRole, input_ports);
         item->setData(GraphCanvasDeclaredPortsRole, declared_ports);
         item->setData(GraphCanvasOutputPortsRole, output_ports);
         items.emplace(node.id, item);
 
-        auto *title = new QGraphicsSimpleTextItem(qtext(node.id), item);
-        title->setFont(label_font);
-        title->setBrush(QColor{QStringLiteral("#f2f6fa")});
-        title->setPos(12.0, 9.0);
-        title->setData(NodeGraphItemKindRole,
-                       QString::fromLatin1(GraphCanvasNodeLabelItem));
-        title->setData(GraphCanvasScopeRole, scope_text);
-        title->setData(NodeGraphNameRole, qtext(node.id));
+        const auto tag = [&](QGraphicsItem *child, const char *kind) {
+            child->setData(NodeGraphItemKindRole, QString::fromLatin1(kind));
+            child->setData(GraphCanvasScopeRole, scope_text);
+            child->setData(NodeGraphNameRole, node_name);
+        };
 
-        QString subtitle = qtext(node.op);
-        if (!node.definition.empty())
-            subtitle += QStringLiteral(" · %1").arg(qtext(node.definition));
-        if (!node.domain.empty())
-            subtitle += QStringLiteral(" · %1").arg(qtext(node.domain));
-        if (node.sink) subtitle += QStringLiteral(" · sink");
-        auto *detail = new QGraphicsSimpleTextItem(subtitle, item);
-        detail->setFont(detail_font);
-        detail->setBrush(QColor{QStringLiteral("#c8d4de")});
-        detail->setPos(12.0, 30.0);
-        detail->setData(NodeGraphItemKindRole,
-                        QString::fromLatin1(GraphCanvasNodeLabelItem));
-        detail->setData(GraphCanvasScopeRole, scope_text);
-        detail->setData(NodeGraphNameRole, qtext(node.id));
-
-        auto *ports = new QGraphicsSimpleTextItem(
-            QStringLiteral("in %1 · out %2")
-                .arg(input_ports.size())
-                .arg(output_ports.size()),
+        auto *band = new QGraphicsPathItem(
+            headerBandPath(width, GraphCanvasHeaderHeight,
+                           GraphCanvasNodeCornerRadius),
             item);
-        ports->setFont(detail_font);
-        ports->setBrush(QColor{QStringLiteral("#9fb0bd")});
-        ports->setPos(12.0, 45.0);
-        ports->setData(NodeGraphItemKindRole,
-                       QString::fromLatin1(GraphCanvasNodeLabelItem));
-        ports->setData(GraphCanvasScopeRole, scope_text);
-        ports->setData(NodeGraphNameRole, qtext(node.id));
+        band->setBrush(nodeColor(node));
+        band->setPen(Qt::NoPen);
+        tag(band, GraphCanvasNodeHeaderItem);
+
+        // The collapse arrow is drawn but inert in this version: the section
+        // it would fold is what N-2 makes editable.
+        QPainterPath arrow;
+        arrow.moveTo(0.0, -4.0);
+        arrow.lineTo(5.0, 0.0);
+        arrow.lineTo(0.0, 4.0);
+        arrow.closeSubpath();
+        auto *collapse = new QGraphicsPathItem(arrow, band);
+        collapse->setPos(9.0, GraphCanvasHeaderHeight / 2.0);
+        collapse->setBrush(QColor{QStringLiteral("#e8eef4")});
+        collapse->setPen(Qt::NoPen);
+        tag(collapse, GraphCanvasNodeHeaderItem);
+
+        auto *title = new QGraphicsSimpleTextItem(heading, band);
+        title->setFont(heading_font);
+        title->setBrush(QColor{QStringLiteral("#f6f9fc")});
+        title->setPos(18.0, (GraphCanvasHeaderHeight -
+                             heading_metrics.height()) / 2.0);
+        tag(title, GraphCanvasNodeLabelItem);
+        title->setData(GraphCanvasLabelRole, heading);
+
+        // The operation type stays visible next to the chosen name: renaming a
+        // node must never hide what it actually is.
+        auto *kind = new QGraphicsSimpleTextItem(type_name, band);
+        kind->setFont(detail_font);
+        kind->setBrush(QColor{QStringLiteral("#cfdae4")});
+        kind->setOpacity(0.78);
+        kind->setPos(width - 10.0 - row_metrics.horizontalAdvance(type_name),
+                     (GraphCanvasHeaderHeight - row_metrics.height()) / 2.0);
+        tag(kind, GraphCanvasNodeLabelItem);
+        kind->setData(GraphCanvasOpRole, type_name);
+
+        const auto socket = [&](const DrawnRow &drawn, const QPointF &centre,
+                                const char *direction) {
+            auto *dot = new QGraphicsPathItem(
+                socketPath(drawn.style.shape, drawn.style.size), item);
+            dot->setPos(centre);
+            dot->setZValue(1.0);
+            dot->setBrush(drawn.style.fill);
+            dot->setPen(QPen{drawn.style.outline, 1.1});
+            dot->setToolTip(drawn.type.isEmpty()
+                                ? QObject::tr("%1 (type not declared)").arg(drawn.label)
+                                : QStringLiteral("%1 : %2").arg(drawn.label, drawn.type));
+            tag(dot, GraphCanvasSocketItem);
+            dot->setData(GraphCanvasPortRole, drawn.port);
+            dot->setData(GraphCanvasPortTypeRole, drawn.type);
+            dot->setData(GraphCanvasSocketDirectionRole,
+                         QString::fromLatin1(direction));
+            dot->setData(GraphCanvasSocketShapeRole,
+                         static_cast<int>(drawn.style.shape));
+        };
+
+        qreal cursor_y = rows_top;
+        for (const auto &drawn : outputs) {
+            const qreal centre_y = cursor_y + GraphCanvasSocketRowHeight / 2.0;
+            auto *name = new QGraphicsSimpleTextItem(drawn.label, item);
+            name->setFont(detail_font);
+            name->setBrush(QColor{QStringLiteral("#dbe4ec")});
+            name->setPos(width - 14.0 - row_metrics.horizontalAdvance(drawn.label),
+                         centre_y - row_metrics.height() / 2.0);
+            tag(name, GraphCanvasNodeLabelItem);
+            name->setData(GraphCanvasPortRole, drawn.port);
+            // Half outside the right edge, which is where the edge meets it.
+            socket(drawn, QPointF{width, centre_y}, "output");
+            cursor_y += GraphCanvasSocketRowHeight;
+        }
+        for (const auto &drawn : inputs) {
+            const qreal centre_y = cursor_y + GraphCanvasSocketRowHeight / 2.0;
+            auto *name = new QGraphicsSimpleTextItem(drawn.label, item);
+            name->setFont(detail_font);
+            name->setBrush(QColor{drawn.declared ? QStringLiteral("#dbe4ec")
+                                                 : QStringLiteral("#b3c0cb")});
+            name->setPos(14.0, centre_y - row_metrics.height() / 2.0);
+            tag(name, GraphCanvasNodeLabelItem);
+            name->setData(GraphCanvasPortRole, drawn.port);
+            socket(drawn, QPointF{0.0, centre_y}, "input");
+
+            if (drawn.value.shown()) {
+                const QString text = pillText(drawn.value);
+                const qreal pill_height = GraphCanvasSocketRowHeight - 6.0;
+                const qreal pill_width =
+                    row_metrics.horizontalAdvance(text) + 14.0;
+                auto *pill = new QGraphicsPathItem(
+                    roundedEntityPath(pill_width, pill_height,
+                                      pill_height / 2.0),
+                    item);
+                pill->setPos(width - 10.0 - pill_width,
+                             centre_y - pill_height / 2.0);
+                pill->setBrush(QColor{QStringLiteral("#3a444f")});
+                pill->setPen(QPen{QColor{QStringLiteral("#596776")}, 0.8});
+                tag(pill, GraphCanvasValuePillItem);
+                pill->setData(GraphCanvasPortRole, drawn.port);
+                pill->setData(GraphCanvasValueTextRole, drawn.value.text);
+                pill->setData(GraphCanvasValueSourceRole, drawn.value.source);
+                auto *value = new QGraphicsSimpleTextItem(text, pill);
+                value->setFont(detail_font);
+                value->setBrush(QColor{QStringLiteral("#e6edf4")});
+                value->setPos(7.0, (pill_height - row_metrics.height()) / 2.0);
+                tag(value, GraphCanvasValuePillItem);
+                value->setData(GraphCanvasPortRole, drawn.port);
+            }
+            cursor_y += GraphCanvasSocketRowHeight;
+        }
     }
 
     const QFontMetricsF metrics{detail_font};
@@ -285,34 +569,11 @@ void GraphCanvasScene::repopulate() {
         arrow->setData(NodeGraphFromNameRole, qtext(edge.from_node));
         arrow->setData(NodeGraphToNameRole, qtext(edge.to_node));
 
-        const QString label_text = QStringLiteral("%1 -> %2")
-                                       .arg(qtext(edge.from_port),
-                                            qtext(edge.to_port));
-        const qreal label_width =
-            std::max<qreal>(NodeGraphEdgeLabelMinimumWidth,
-                            metrics.horizontalAdvance(label_text) + 18.0);
-        auto *label_box = new QGraphicsPathItem{
-            roundedEntityPath(label_width, NodeGraphEdgeLabelHeight, 7.0)};
-        addItem(label_box);
-        label_box->setZValue(1.0);
-        label_box->setBrush(QColor{QStringLiteral("#dbe5ee")});
-        label_box->setPen(QPen{QColor{QStringLiteral("#9fb0bd")}, 0.8});
-        label_box->setData(NodeGraphItemKindRole,
-                           QString::fromLatin1(GraphCanvasEdgeLabelItem));
-        label_box->setData(GraphCanvasScopeRole, scope_text);
-        label_box->setData(NodeGraphFromNameRole, qtext(edge.from_node));
-        label_box->setData(NodeGraphToNameRole, qtext(edge.to_node));
-        label_box->setData(GraphCanvasFromPortRole, qtext(edge.from_port));
-        label_box->setData(GraphCanvasToPortRole, qtext(edge.to_port));
-        auto *label = new QGraphicsSimpleTextItem(label_text, label_box);
-        label->setFont(detail_font);
-        label->setBrush(QColor{QStringLiteral("#263441")});
-        const QRectF bounds = label->boundingRect();
-        label->setPos((label_width - bounds.width()) / 2.0,
-                      (NodeGraphEdgeLabelHeight - bounds.height()) / 2.0);
-
-        routeLogicalBundle(*this, *line, graphCanvasKinds());
+        // No edge label: the socket rows already name both ends, and a box in
+        // the middle of every line repeated them.
+        routeGraphCanvasEdge(*this, *line);
     }
+    applyEdgeEmphasis();
 
     if (model_->breadcrumb().size() > 1) {
         QStringList trail;
@@ -361,6 +622,32 @@ void GraphCanvasScene::repopulate() {
     applySceneRectNow();
 }
 
+void GraphCanvasScene::applyEdgeEmphasis() {
+    // Which edges touch the selected node is the one thing the canvas says
+    // about a selection, so it is applied in one pass over every edge rather
+    // than remembered per item.
+    const QString selected =
+        selected_node_ ? qtext(*selected_node_) : QString{};
+    for (QGraphicsItem *item : items()) {
+        const QString kind = nodeGraphItemKind(*item);
+        const bool edge = kind == QLatin1String{GraphCanvasEdgeItem};
+        const bool arrow = kind == QLatin1String{GraphCanvasEdgeArrowItem};
+        if (!edge && !arrow) continue;
+        const bool touches =
+            !selected.isEmpty() &&
+            (item->data(NodeGraphFromNameRole).toString() == selected ||
+             item->data(NodeGraphToNameRole).toString() == selected);
+        const QColor colour{touches ? QStringLiteral("#e4eef8")
+                                    : QStringLiteral("#7b8d9d")};
+        if (edge) {
+            if (auto *line = dynamic_cast<QGraphicsPathItem *>(item))
+                line->setPen(QPen{colour, touches ? 2.2 : 1.6});
+        } else if (auto *head = dynamic_cast<QGraphicsPolygonItem *>(item)) {
+            head->setBrush(colour);
+        }
+    }
+}
+
 void GraphCanvasScene::scheduleSceneRectUpdate() {
     if (scene_rect_update_queued_) return;
     scene_rect_update_queued_ = true;
@@ -381,11 +668,10 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
     // The press went to the breadcrumb and the scene is a different one now.
     if (generation != rebuild_generation_) return;
     for (QGraphicsItem *item : items(event->scenePos())) {
-        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeItem} &&
-            nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeLabelItem})
-            continue;
+        if (!isNodeSurface(nodeGraphItemKind(*item))) continue;
         selected_node_ = item->data(NodeGraphNameRole).toString().toStdString();
         setProperty("pelicanGraphSelectedNode", item->data(NodeGraphNameRole));
+        applyEdgeEmphasis();
         if (selectionChanged) selectionChanged();
         return;
     }
@@ -406,10 +692,7 @@ void GraphCanvasScene::enterInstanceScope(const std::string &id) {
 void GraphCanvasScene::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) {
     if (model_ != nullptr && event->button() == Qt::LeftButton) {
         for (QGraphicsItem *item : items(event->scenePos())) {
-            const QString kind = nodeGraphItemKind(*item);
-            if (kind != QLatin1String{GraphCanvasNodeItem} &&
-                kind != QLatin1String{GraphCanvasNodeLabelItem})
-                continue;
+            if (!isNodeSurface(nodeGraphItemKind(*item))) continue;
             const auto id = item->data(NodeGraphNameRole).toString().toStdString();
             if (!model_->canEnterInstance(id)) break;
             event->accept();
@@ -630,14 +913,21 @@ struct GraphCanvasWidget::Impl {
             item->setText(1, value);
             return item;
         };
-        row(QObject::tr("id"), qtext(found->id));
-        row(QObject::tr("op"), qtext(found->op));
+        // The heading first, in the order the canvas shows it: the chosen name,
+        // then what the node actually is. Editing the label is N-2.
+        row(QObject::tr("label"),
+            found->label.empty()
+                ? QObject::tr("%1  (no label: the id is the heading)")
+                      .arg(qtext(found->id))
+                : qtext(found->label));
+        row(QObject::tr("type"), qtext(found->op));
         row(QObject::tr("domain"),
             found->contract_known ? qtext(found->domain)
                                   : QObject::tr("(catalog not fetched)"));
         row(QObject::tr("evaluation"),
             found->contract_known ? qtext(found->evaluation)
                                   : QObject::tr("(catalog not fetched)"));
+        row(QObject::tr("id"), qtext(found->id));
         row(QObject::tr("sink"),
             found->sink ? QObject::tr("yes") : QObject::tr("no"));
         if (!found->definition.empty())
@@ -651,12 +941,19 @@ struct GraphCanvasWidget::Impl {
             }
             parameters->setExpanded(true);
         }
+        // The port table: name, type, where the supply comes from, and what it
+        // is. The type column is the same fact the socket's shape encodes.
+        const auto type_text = [](const std::string &type) {
+            return type.empty() ? QObject::tr("(not declared)") : qtext(type);
+        };
         if (!found->inputs.empty()) {
             auto *inputs = row(QObject::tr("inputs"), {});
             for (const auto &port : found->inputs) {
                 auto *entry = new QTreeWidgetItem(inputs);
                 entry->setText(0, qtext(port.port));
-                entry->setText(1, portSummary(port));
+                entry->setText(1, QStringLiteral("%1  ·  %2")
+                                      .arg(type_text(port.type),
+                                           portSummary(port)));
                 entry->setToolTip(0, port.declared
                                          ? QObject::tr("declared by the catalog")
                                          : QObject::tr("read from the document"));
@@ -667,7 +964,8 @@ struct GraphCanvasWidget::Impl {
             auto *outputs = row(QObject::tr("outputs"), {});
             for (const auto &port : found->outputs) {
                 auto *entry = new QTreeWidgetItem(outputs);
-                entry->setText(0, qtext(port));
+                entry->setText(0, qtext(port.port));
+                entry->setText(1, type_text(port.type));
             }
             outputs->setExpanded(true);
         }

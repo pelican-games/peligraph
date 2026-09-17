@@ -33,16 +33,44 @@ inline constexpr int GraphCanvasOutputPortsRole = Qt::UserRole + 3127;
 inline constexpr int GraphCanvasDeclaredPortsRole = Qt::UserRole + 3128;
 inline constexpr int GraphCanvasFromPortRole = Qt::UserRole + 3129;
 inline constexpr int GraphCanvasToPortRole = Qt::UserRole + 3130;
+inline constexpr int GraphCanvasPortRole = Qt::UserRole + 3131;
+// "input" | "output" -- which side of the node the socket belongs to, so the
+// same port name on both sides stays two distinct endpoints.
+inline constexpr int GraphCanvasSocketDirectionRole = Qt::UserRole + 3132;
+inline constexpr int GraphCanvasPortTypeRole = Qt::UserRole + 3133;
+inline constexpr int GraphCanvasSocketShapeRole = Qt::UserRole + 3134;
+inline constexpr int GraphCanvasLabelRole = Qt::UserRole + 3135;
+inline constexpr int GraphCanvasValueTextRole = Qt::UserRole + 3136;
+inline constexpr int GraphCanvasValueSourceRole = Qt::UserRole + 3137;
 inline constexpr int GraphCanvasScopeRole = NodeGraphGraphRole;
 
 inline constexpr auto GraphCanvasNodeItem = "graph_node";
 inline constexpr auto GraphCanvasNodeLabelItem = "graph_node_label";
+inline constexpr auto GraphCanvasNodeHeaderItem = "graph_node_header";
+inline constexpr auto GraphCanvasSocketItem = "graph_socket";
+inline constexpr auto GraphCanvasValuePillItem = "graph_value_pill";
 inline constexpr auto GraphCanvasEdgeItem = "graph_edge";
 inline constexpr auto GraphCanvasEdgeArrowItem = "graph_edge_arrow";
-inline constexpr auto GraphCanvasEdgeLabelItem = "graph_edge_label";
 inline constexpr auto GraphCanvasBreadcrumbItem = "graph_breadcrumb";
 
+// The node is a heading band over two socket sections, so its height follows
+// its port count rather than a constant. The numbers are here so the scene
+// test can name the same geometry the canvas draws.
+inline constexpr qreal GraphCanvasNodeMinimumWidth = 196.0;
+inline constexpr qreal GraphCanvasNodeMaximumWidth = 340.0;
+inline constexpr qreal GraphCanvasHeaderHeight = 32.0;
+inline constexpr qreal GraphCanvasSocketRowHeight = 21.0;
+inline constexpr qreal GraphCanvasSectionPadding = 7.0;
+inline constexpr qreal GraphCanvasSocketSize = 11.0;
+inline constexpr qreal GraphCanvasNodeCornerRadius = 8.0;
+
 const NodeGraphKinds &graphCanvasKinds();
+
+// What the socket resolver is told about one port's type, read off the
+// catalog the model holds. Separated so the resolution order is testable
+// against a real catalog reply rather than a hand-built fact struct.
+SocketTypeFacts graphCanvasSocketFacts(const GraphCanvasModel &model,
+                                       const std::string &type);
 
 // Read-only canvas over one scope of the common graph. Editing is N-2; this
 // scene changes nothing but which scope is being looked at and where the nodes
@@ -87,6 +115,8 @@ class GraphCanvasScene final : public QGraphicsScene {
 
     void leaveCurrentScope();
     void enterInstanceScope(const std::string &id);
+    // Only the edges that touch the selected node are lit.
+    void applyEdgeEmphasis();
     void pruneSessionPositions();
     void scheduleSceneRectUpdate();
     void applySceneRectNow();

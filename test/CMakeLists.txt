@@ -439,6 +439,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   target_sources(pelican_test_devstudio_engine_failure_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplangraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp)
+  target_link_libraries(pelican_test_devstudio_engine_failure_test PRIVATE
+    pelican_studio_resources)
   target_include_directories(pelican_test_devstudio_engine_failure_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view)
   set(pelican_wp298_example_project
@@ -471,6 +473,10 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/taskconnectiongraphics.cpp
   )
+  # nodegraphics carries the socket default table, so a target that compiles it
+  # needs the same embedded resource the application links.
+  target_link_libraries(pelican_test_devstudio_frameplan_graph_test PRIVATE
+    pelican_studio_resources)
   target_include_directories(pelican_test_devstudio_frameplan_graph_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view
   )
@@ -492,6 +498,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaswidget.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
   )
+  target_link_libraries(pelican_test_devstudio_graphcanvas_scene_test PRIVATE
+    pelican_studio_resources)
   target_include_directories(pelican_test_devstudio_graphcanvas_scene_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view
   )

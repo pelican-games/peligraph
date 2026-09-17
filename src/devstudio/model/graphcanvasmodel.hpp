@@ -19,6 +19,10 @@ namespace PelicanStudio {
 // second is the first.
 struct GraphCanvasPort {
     std::string port;
+    // The semantic type id the catalog says flows through this port, e.g.
+    // "pelican.value.scalar@1". Empty when nothing declared one -- which the
+    // canvas draws as the unknown socket rather than guessing a type.
+    std::string type;
     // The operation catalog declared this port; otherwise it was read from the
     // authored document (the node's own inputs/parameters, or, for an
     // instance, the definition's graph.input nodes).
@@ -43,9 +47,21 @@ struct GraphCanvasPort {
     std::string value_connected_port;
 };
 
+// One output port as the canvas draws it: the name the document connects to
+// and, when the catalog declared it, the type that leaves it.
+struct GraphCanvasOutput {
+    std::string port;
+    std::string type;
+
+    bool operator==(const GraphCanvasOutput &) const = default;
+};
+
 struct GraphCanvasNode {
     std::string id;
     std::string op;
+    // The authored, human-chosen name for this node. Any node may carry a
+    // `label`; when it does not, the heading falls back to the id.
+    std::string label;
     // From the catalog. Empty when the catalog has not arrived or does not
     // know the operation -- which is a visible state, not a default.
     std::string domain;
@@ -60,7 +76,13 @@ struct GraphCanvasNode {
     std::uint64_t owner_object = 0;
     nlohmann::json parameters = nlohmann::json::object();
     std::vector<GraphCanvasPort> inputs;
-    std::vector<std::string> outputs;
+    std::vector<GraphCanvasOutput> outputs;
+
+    // What the heading shows in bold. The id is the fallback, not a second
+    // label: a node without one is named by its id.
+    [[nodiscard]] const std::string &heading() const noexcept {
+        return label.empty() ? id : label;
+    }
 };
 
 struct GraphCanvasEdge {
@@ -110,6 +132,9 @@ class GraphCanvasModel {
     bool catalog_received_ = false;
     // op -> catalog entry, flattened across modules.
     nlohmann::json operations_ = nlohmann::json::object();
+    // semantic type id -> type schema, flattened the same way. The sockets are
+    // drawn from these: the traits, and a module's own display declaration.
+    nlohmann::json types_ = nlohmann::json::object();
 
     std::string values_instance_;
     bool values_received_ = false;
@@ -130,6 +155,11 @@ class GraphCanvasModel {
     void requestValues();
     const nlohmann::json *scopeNodes(std::string_view scope) const;
     const nlohmann::json *operation(std::string_view op) const;
+    // The type leaving one port of a definition, followed through whatever the
+    // definition's outputs map names. Bounded: a definition whose output is
+    // another instance's output can nest, and a malformed chain must not spin.
+    std::string definitionOutputType(std::string_view definition,
+                                     std::string_view port, int depth) const;
     const nlohmann::json *findNode(std::string_view scope,
                                    std::string_view id) const;
 
@@ -186,6 +216,10 @@ class GraphCanvasModel {
     bool valuesReceived() const noexcept { return values_received_; }
 
     bool catalogReceived() const noexcept { return catalog_received_; }
+    // The catalog's schema for one semantic type, or null when the catalog
+    // never carried it. The socket resolver reads its traits and its optional
+    // display declaration through here.
+    const nlohmann::json *typeSchema(std::string_view id) const;
     bool definitionsReported() const noexcept { return definitions_reported_; }
     bool contextReceived() const noexcept { return context_received_; }
     const std::string &digest() const noexcept { return digest_; }

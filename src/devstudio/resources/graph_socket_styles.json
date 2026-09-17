@@ -1,0 +1,33 @@
+{
+  "schema": "pelican.studio.socket_styles",
+  "version": 1,
+
+  "description": [
+    "Studio's default socket table. A new semantic type gets a socket by being",
+    "named here -- adding one needs no C++. A module that declares display{}",
+    "on its own type schema outranks this table; a type named nowhere falls",
+    "through to the trait rules below and then to `unknown`.",
+    "Entries take shape (circle | diamond | square | hexagon), fill, outline",
+    "and size; anything they leave out keeps the `unknown` entry's value."
+  ],
+
+  "unknown": {"shape": "circle", "fill": "#f4f7fa", "outline": "#11161b"},
+
+  "types": {
+    "pelican.value.scalar@1": {"shape": "circle", "fill": "#a9b4bf"},
+    "pelican.audio.voice@1": {"shape": "hexagon", "fill": "#4fb08a"},
+    "pelican.event.playback_control@1": {"shape": "square", "fill": "#9c6bd0"},
+    "pelican.pose@1": {"shape": "diamond", "fill": "#e08b3c"},
+    "pelican.rig@1": {"shape": "square", "fill": "#e08b3c"}
+  },
+
+  "prefixes": [
+    {"prefix": "pelican.render.", "shape": "circle", "fill": "#4a86c8"}
+  ],
+
+  "traits": [
+    {"trait": "opaque", "shape": "diamond", "fill": "#c8a05a"},
+    {"trait": "event", "shape": "square", "fill": "#9c6bd0"},
+    {"trait": "numeric", "shape": "circle", "fill": "#a9b4bf"}
+  ]
+}

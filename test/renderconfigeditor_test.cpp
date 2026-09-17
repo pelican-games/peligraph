@@ -838,6 +838,28 @@ TEST_CASE("instance inputs change supply atomically and report what was drawn",
         REQUIRE(portValue("gain").at("source") == "override");
     }
 
+    SECTION("an authored node label survives the loader and a commit") {
+        // Studio's node canvas heads a node with its `label` (N-1b). The
+        // engine has to carry the key without knowing it: this whole case
+        // already loads, composes and publishes a document whose definition
+        // node holds one, and an edit must not drop it on the way back out.
+        const auto labelOf = [&](const char *id) {
+            const auto document = Json::parse(readBytes(source.path));
+            for (const auto &node : document.at("definitions").at("gain_curve").at("nodes"))
+                if (node.at("id") == id) return node.value("label", std::string{});
+            FAIL("no such definition node: " + std::string{id});
+            return std::string{};
+        };
+        REQUIRE(labelOf("buffer") == "pulse buffer");
+        REQUIRE(commit(edit(Json::array({Json{{"op", "set_input"}, {"node", "left"},
+            {"port", "bias"}, {"source", {{"node", "clock"}, {"port", "value"}}}}})))
+                .at("committed") == true);
+        REQUIRE(labelOf("buffer") == "pulse buffer");
+        // And the document that came back still draws.
+        draw();
+        REQUIRE(portValue("bias").at("source") == "connected");
+    }
+
     SECTION("control with a curve lands as one op list and comes back off it") {
         // The four ops the Inspector's "control with a curve" sends: reuse the
         // document's scene clock, a playback, a constant two-key curve, and the
