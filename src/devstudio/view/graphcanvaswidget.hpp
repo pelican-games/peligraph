@@ -314,6 +314,16 @@ class GraphCanvasScene final : public QGraphicsScene {
         QPointF origin;
     };
     struct InlineEditor;
+    // An open in-place editor, said in terms that outlive the items it sits
+    // on. A rebuild deletes every item, the proxy included, so the editor is
+    // opened again over the new ones rather than taken out from under the
+    // person typing into it -- and what they had typed comes with it.
+    struct CarriedInlineEdit {
+        bool label = false;
+        std::string node;
+        std::string port;
+        QString text;
+    };
 
     GraphCanvasModel *model_ = nullptr;
     // Editor session state: node positions never reach disk, and they are
@@ -394,6 +404,9 @@ class GraphCanvasScene final : public QGraphicsScene {
     void finishConnection(const QPointF &position);
     void clearPendingConnection();
     void closeEditor();
+    // The two halves of carrying an editor across a rebuild.
+    [[nodiscard]] std::optional<CarriedInlineEdit> carryInlineEdit() const;
+    void restoreInlineEdit(const CarriedInlineEdit &carried);
     void placeNewNode(const std::string &id);
     void afterEdit(bool submitted);
 };

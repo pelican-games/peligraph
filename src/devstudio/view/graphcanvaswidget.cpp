@@ -16,6 +16,7 @@
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QEvent>
+#include <QFocusEvent>
 #include <QFont>
 #include <QFontMetricsF>
 #include <QGraphicsPathItem>
@@ -215,7 +216,18 @@ class InlineEditFilter final : public QObject {
                 return true;
             }
         } else if (event->type() == QEvent::FocusOut) {
-            finish(true);
+            // Losing the focus to another widget is a person saying "done
+            // here" -- the spreadsheet rule. Losing the *window* is not: the
+            // reasons below are Qt saying the whole application went to the
+            // back, or a popup took the keyboard for a moment. Alt-Tabbing
+            // away while typing a value must not silently end the edit, and
+            // on Windows a native child window handing the keyboard to its
+            // parent produces exactly this blink -- which is how a value the
+            // canvas had just opened for editing used to vanish on its own.
+            const auto reason = static_cast<QFocusEvent *>(event)->reason();
+            if (reason != Qt::ActiveWindowFocusReason &&
+                reason != Qt::PopupFocusReason)
+                finish(true);
         }
         return QObject::eventFilter(watched, event);
     }
@@ -1011,8 +1023,13 @@ bool GraphCanvasScene::deleteControlSelection() {
 void GraphCanvasScene::repopulate() {
     const StudioTheme &theme = currentStudioTheme();
     ++rebuild_generation_;
+    // An open editor belongs to items that are about to be deleted -- so what
+    // it is and what it holds is taken down first, and opened again over the
+    // items this draw produces. A refresh, a theme switch or an observation
+    // reply arriving mid-edit is not a reason to throw away what somebody is
+    // in the middle of typing.
+    const auto carried = rebuilding_ ? std::nullopt : carryInlineEdit();
     rebuilding_ = true;
-    // An open editor belongs to items that are about to be deleted.
     closeEditor();
     clearPendingConnection();
     // A refresh is not a deselection: the node the user is working on stays
@@ -1680,6 +1697,10 @@ void GraphCanvasScene::repopulate() {
                 static_cast<qulonglong>(layout.reversed_edges.size()));
     rebuilding_ = false;
     applySceneRectNow();
+    // The editor goes back over the thing it was editing. A node or port the
+    // draw no longer holds simply has nothing to open over, and the edit ends
+    // there -- the one case where a rebuild may take it away.
+    if (carried) restoreInlineEdit(*carried);
     if (repopulated) repopulated();
 }
 
@@ -2054,6 +2075,24 @@ GraphCanvasScene::~GraphCanvasScene() {
 namespace {
 QString editorText(const QWidget *widget);
 } // namespace
+
+std::optional<GraphCanvasScene::CarriedInlineEdit>
+GraphCanvasScene::carryInlineEdit() const {
+    if (!editor_) return std::nullopt;
+    return CarriedInlineEdit{editor_->kind == InlineEditor::Kind::label,
+                             editor_->node, editor_->port,
+                             editorText(editor_->widget)};
+}
+
+void GraphCanvasScene::restoreInlineEdit(const CarriedInlineEdit &carried) {
+    const bool opened = carried.label
+                            ? beginLabelEdit(carried.node)
+                            : beginValueEdit(carried.node, carried.port);
+    if (!opened) return;
+    setInlineEditText(carried.text);
+    if (editor_ && editor_->widget != nullptr)
+        editor_->widget->setFocus(Qt::OtherFocusReason);
+}
 
 void GraphCanvasScene::closeEditor() {
     if (!editor_) return;

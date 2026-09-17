@@ -8,6 +8,7 @@
 #include <QApplication>
 #include <QColor>
 #include <QCoreApplication>
+#include <QFocusEvent>
 #include <QFont>
 #include <QGraphicsItem>
 #include <QGraphicsPathItem>
@@ -1125,6 +1126,120 @@ TEST_CASE("A value pill opens in place and sends only the key that changed",
     REQUIRE(pillItem(scene, QStringLiteral("helmet_pulse"),
                      QStringLiteral("time")) == nullptr);
     REQUIRE_FALSE(scene.beginValueEdit("helmet_pulse", "time"));
+}
+
+// Q-3. The in-place editor used to end on any FocusOut at all, and on
+// Windows the Studio blinks inactive for one trip through the event loop when
+// the keyboard moves between the embedded engine viewport's native window and
+// the main window -- which is what opening this very editor does. Qt reports
+// that blink as FocusOut(ActiveWindowFocusReason), so the editor committed and
+// deleted itself a few hundred milliseconds after it opened, before anything
+// could be typed into it. The same blink is what a person causes by Alt-Tabbing
+// away mid-edit.
+TEST_CASE("An in-place editor survives the window going inactive, and still "
+          "ends when the focus really leaves it",
+          "[devstudio][graph-canvas][scene][graph-edit]") {
+    (void)application();
+    PelicanStudio::resetSocketStyleDefaults();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    const auto document = readFixture("graph_node_visuals");
+    answer(model, document, visualCatalog());
+    scene.setModel(&model);
+
+    QGraphicsItem *pill =
+        pillItem(scene, QStringLiteral("helmet_pulse"), QStringLiteral("gain"));
+    REQUIRE(pill != nullptr);
+    click(scene, pill->sceneBoundingRect().center());
+    REQUIRE(scene.editingInline());
+    scene.setInlineEditText(QStringLiteral("3.75"));
+
+    // The application went to the back and came forward again. Nothing about
+    // the edit changed: the editor is still there, still holding what was
+    // typed, and still the thing the keyboard reaches.
+    QWidget *editing = editorWidget(scene);
+    REQUIRE(editing != nullptr);
+    QFocusEvent away{QEvent::FocusOut, Qt::ActiveWindowFocusReason};
+    QApplication::sendEvent(editing, &away);
+    QCoreApplication::processEvents();
+    REQUIRE(scene.editingInline());
+    REQUIRE(scene.inlineEditText().toDouble() == 3.75);
+    REQUIRE(editorWidget(scene) == editing);
+    requireNoEdit(model);
+    QFocusEvent back{QEvent::FocusIn, Qt::ActiveWindowFocusReason};
+    QApplication::sendEvent(editing, &back);
+    QCoreApplication::processEvents();
+    REQUIRE(scene.editingInline());
+
+    // A popup taking the keyboard is the same kind of loan, and is refused the
+    // same way.
+    QFocusEvent popup{QEvent::FocusOut, Qt::PopupFocusReason};
+    QApplication::sendEvent(editing, &popup);
+    QCoreApplication::processEvents();
+    REQUIRE(scene.editingInline());
+    requireNoEdit(model);
+
+    // The control: the focus really leaving for another widget is a person
+    // saying "done here", and that still commits -- the spreadsheet rule the
+    // editor was built on.
+    QFocusEvent elsewhere{QEvent::FocusOut, Qt::MouseFocusReason};
+    QApplication::sendEvent(editing, &elsewhere);
+    QCoreApplication::processEvents();
+    REQUIRE_FALSE(scene.editingInline());
+    const auto edit = takeEdit(model);
+    REQUIRE(edit.at("ops").at(0).at("parameters").at("gain") == 3.75);
+}
+
+// The other half of the same rule: the canvas is redrawn four times a second
+// while Live is on (AG-3b), and a redraw deletes every item. The editor is
+// carried over the rebuild rather than deleted with them.
+TEST_CASE("A redraw under an open editor re-opens it with what was typed",
+          "[devstudio][graph-canvas][scene][graph-edit]") {
+    (void)application();
+    PelicanStudio::resetSocketStyleDefaults();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    const auto document = readFixture("graph_node_visuals");
+    answer(model, document, visualCatalog());
+    scene.setModel(&model);
+
+    QGraphicsItem *pill =
+        pillItem(scene, QStringLiteral("helmet_pulse"), QStringLiteral("gain"));
+    REQUIRE(pill != nullptr);
+    click(scene, pill->sceneBoundingRect().center());
+    REQUIRE(scene.editingInline());
+    scene.setInlineEditText(QStringLiteral("6.25"));
+
+    scene.repopulate();
+    REQUIRE(scene.editingInline());
+    REQUIRE(scene.inlineEditText().toDouble() == 6.25);
+    // The editor is over the pill the new draw made, not a dangling proxy from
+    // the old one, and Enter still reaches it.
+    QWidget *reopened = editorWidget(scene);
+    REQUIRE(reopened != nullptr);
+    requireNoEdit(model);
+    typeKey(reopened, Qt::Key_Return);
+    REQUIRE_FALSE(scene.editingInline());
+    const auto edit = takeEdit(model);
+    REQUIRE(edit.at("ops").at(0).at("parameters").at("gain") == 6.25);
+
+    // The control: a redraw that no longer holds the port has nothing to open
+    // over, and the edit ends there rather than hanging on a name that is gone.
+    finishEdit(model, document, visualCatalog());
+    QGraphicsItem *again =
+        pillItem(scene, QStringLiteral("helmet_pulse"), QStringLiteral("gain"));
+    REQUIRE(again != nullptr);
+    click(scene, again->sceneBoundingRect().center());
+    REQUIRE(scene.editingInline());
+    auto without = document;
+    for (auto &node : without.at("nodes"))
+        if (node.at("id") == "helmet_pulse") node.at("id") = "helmet_gone";
+    model.refresh();
+    answer(model, without, visualCatalog());
+    scene.repopulate();
+    REQUIRE_FALSE(scene.editingInline());
 }
 
 TEST_CASE("The palette adds a node and Delete takes one away",
