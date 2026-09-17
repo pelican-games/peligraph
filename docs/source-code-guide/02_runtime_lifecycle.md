@@ -82,7 +82,7 @@ sequenceDiagram
 16. [`internal::runTerminalShutdown(teardown)`](../../src/core/userpublic/pelican_core.cpp#L64) — `teardown.run()` でruntime資源を順序付き解放し、続けて `shutdownConfiguredGameLogic()`。
 17. 関数を抜けるとmodule containerがmoduleを生成逆順に破棄。
 
-16番はtry-catchの**外**にあります（[呼び出し箇所](../../src/core/userpublic/pelican_core.cpp#L169)）。この2手を [`terminalshutdown.hpp`](../../src/core/terminalshutdown.hpp#L10) の `noexcept` 関数1本にまとめてあるのはWP379aで、ヘッダのコメントが規範です — playerとlifecycleの受け入れテストが**同じ終了順序**を共有します（テスト側の呼び出しは [`raytracing_rt3_1_production_test.cpp` 内](../../test/raytracing_rt3_1_production_test.cpp#L4363)）。順序が2箇所に書かれていれば、テストだけが正しい順で終わる状態を作れてしまいます。
+16番はtry-catchの**外**にあります（[呼び出し箇所](../../src/core/userpublic/pelican_core.cpp#L169)）。この2手を [`terminalshutdown.hpp`](../../src/core/terminalshutdown.hpp#L10) の `noexcept` 関数1本にまとめてあるのはWP379aで、ヘッダのコメントが規範です — playerとlifecycleの受け入れテストが**同じ終了順序**を共有します（テスト側の呼び出しは [`raytracing_rt3_1_production_test.cpp` 内](../../test/raytracing_rt3_1_production_test.cpp#L4377)）。順序が2箇所に書かれていれば、テストだけが正しい順で終わる状態を作れてしまいます。
 
 `RuntimeTeardownGuard` は関数冒頭（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L85)）で `RuntimeTeardownMode::terminal_shutdown` として作られ、`FastModuleContainer::beginShutdown()` はguardの外ではなく [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) の内部で、8段階の解放へ入る直前に呼ばれます（[`teardown.cpp` 内](../../src/core/appflow/teardown.cpp#L158)）。したがって初期化途中で例外が出ても、同じ「新規module生成を閉じてから順序解放」という経路を通ります。
 
@@ -532,7 +532,7 @@ game DLL側でこれを**必ず**importさせるのが [`gamelogic_entry.cpp`](.
 | game system | [`pelican_register_system_v2`](../../src/core/userpublic/details/system/registerer.hpp#L96) | — | 常にv2 |
 | event emit | [`pelican_emit_v2`](../../src/core/userpublic/details/event/registerer.hpp#L119) | — | 常にv2 |
 
-判定の実体は [`schemaRequiresV3()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L823) で、`Flags` か `List` のフィールドが1つでもあれば真です（§3.11 の `SchemaNode`）。v3経路では平坦な `StructFieldSchema` 列ではなく [`materializeSchemaNode()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L944) の再帰記述子と、その [fingerprint](../../src/core/userpublic/details/schema/structfieldjson.hpp#L1012) を一緒に渡します。v2側のfingerprint関数には [`static_assert(!schemaRequiresV3(...))`](../../src/core/userpublic/details/behavior/registerer.hpp#L185) が置いてあり、再帰schemaがv2入口へ落ちるとコンパイルエラーです。
+判定の実体は [`schemaRequiresV3()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L823) で、`Flags` か `List` のフィールドが1つでもあれば真です（§3.11 の `SchemaNode`）。v3経路では平坦な `StructFieldSchema` 列ではなく [`materializeSchemaNode()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L926) の再帰記述子と、その [fingerprint](../../src/core/userpublic/details/schema/structfieldjson.hpp#L994) を一緒に渡します。v2側のfingerprint関数には [`static_assert(!schemaRequiresV3(...))`](../../src/core/userpublic/details/behavior/registerer.hpp#L185) が置いてあり、再帰schemaがv2入口へ落ちるとコンパイルエラーです。
 
 > **設計決定:** epoch anchorは `v2` のままで、schemaの入口だけが `v3` です。二つを別の軸にしてあるので、再帰schemaを使わないDLLは再ビルド無しで動き続けます。診断側もこの二軸をそのまま持ちます — [`diagnoseGameLogicImports()`](../../src/core/gamelogic/gamelogicimports.cpp#L559) の `expected_epoch` と `host_schema_entrance`（既定 `3`、[宣言](../../src/core/gamelogic/gamelogicimports.hpp#L69)）は別の引数です。
 

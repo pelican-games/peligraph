@@ -801,7 +801,7 @@ WP144〜WP172 で、変更のプロトコルがコードベース全体で統一
 
 > **設計決定:** 新しい adapter を足すときは **prepare / rollback / publish の三点セットを必ず作ってください**。「途中まで適用された状態」を許す実装を1つ混ぜるだけで、その adapter だけでなく、**同じ `commit()` が束ねる transaction 全体**(= 編集・reload・scene 遷移が共有するこのプロトコル)の原子性が崩れます。他の adapter が正しく rollback できても、その 1 つが戻らなければ transaction は半端な状態で終わるからです。
 
-`load_gltf` の単一公開点がわかりやすい実例です([`instances.publishModelInstance()`](../../src/core/loader/scene.cpp#L1533))。
+`load_gltf` の単一公開点がわかりやすい実例です([`instances.publishModelInstance()`](../../src/core/loader/scene.cpp#L1538))。
 
 ```cpp
 // No operation below allocates: this is the single publication point for
@@ -845,7 +845,7 @@ behavior コールバック実行中 / DLL リロード中の追加ゲートは 
 
 [`EditorCommandErrorCode`](../../src/core/communication/editorcommandservice.hpp#L29) は 13 種です。特に注意すべきものを挙げます。
 
-- **`RuntimeOnlyData`**: [`SceneLoader::hasRuntimeOnlyChanges()`](../../src/core/loader/scene.hpp#L169) が真のとき、つまり `load_gltf` で持ち込んだ transient モデルがあるときに出ます。「RPC で読み込んだモデルは保存できない」という意味です。
+- **`RuntimeOnlyData`**: [`SceneLoader::hasRuntimeOnlyChanges()`](../../src/core/loader/scene.hpp#L181) が真のとき、つまり `load_gltf` で持ち込んだ transient モデルがあるときに出ます。「RPC で読み込んだモデルは保存できない」という意味です。
 - `ExternalModification`: ディスク上の scene が外部で書き換わっていた。
 - 上限は [`maxSceneSnapshotBytes = 64 MiB`](../../src/core/communication/editorcommandservice.hpp#L27)、JSON 整数の安全上限は [`maxExactEditorJsonInteger = 9007199254740991`](../../src/core/communication/editorcommandservice.hpp#L26)。
 
@@ -978,8 +978,8 @@ skip が緑を汚さない以上、`ctest` の exit code だけでは検出で�
 
 | 行 | 理由 |
 |---|---|
-| [`phase_trace.record(SceneLoadPhase::flush)`](../../src/core/loader/scene.cpp#L1174) | 直後の `pending_scene_id.swap()` は participant 型を持たない |
-| [`phase_trace.record(SceneLoadPhase::finish)`](../../src/core/loader/scene.cpp#L1185) | **退役 batch 自体が 1 人の participant**。entity 0 件の scene でも `finish` を観測できるようにする |
+| [`phase_trace.record(SceneLoadPhase::flush)`](../../src/core/loader/scene.cpp#L1179) | 直後の `pending_scene_id.swap()` は participant 型を持たない |
+| [`phase_trace.record(SceneLoadPhase::finish)`](../../src/core/loader/scene.cpp#L1190) | **退役 batch 自体が 1 人の participant**。entity 0 件の scene でも `finish` を観測できるようにする |
 
 逆向きの例も1つあります。[`PreparedEffectTransaction::flush()`](../../src/core/loader/effecttransaction.cpp#L492) は `phase_trace` を受け取りながら `(void)phase_trace;` で**使いません**。コメントが理由を書いています — `flush` の印は `EventOutbox` が1つだけ持つ、という取り決めです。「引数にあるのだから記録すべきだ」と足すと、`record()` の重複抑止に助けられて症状は出ないまま、印の所有者が2人になります。
 
@@ -993,13 +993,13 @@ skip が緑を汚さない以上、`ctest` の exit code だけでは検出で�
 
 scene load 中に game DLL のコールバック(component の JSON loader を含む)が `playSound()` や `saveData()` を呼ぶと、それは即時実行ではなく [`PreparedEffectTransaction`](../../src/core/loader/effecttransaction.hpp#L27) に溜まります。scope を張る位置が要点で、[`EffectTransactionScope`](../../src/core/loader/scene.cpp#L756) は **early publish より前**、prepare が終わった直後に張られます。コメントが規範です — 「early publication が呼ぶ component JSON loader を含め、**すべての game-DLL コールバックが同じ transaction-local な effect を観測**しなければならない」。
 
-したがって「publish の直前で張れば十分」という縮め方は誤りです。prepare 中の loader が本物の audio / persistence を直接叩き、rollback しても戻らない副作用が残ります。逆側の端は [`effect_transaction->flush(...)`](../../src/core/loader/scene.cpp#L1181) で、commit 後の noexcept tail の中にあります。
+したがって「publish の直前で張れば十分」という縮め方は誤りです。prepare 中の loader が本物の audio / persistence を直接叩き、rollback しても戻らない副作用が残ります。逆側の端は [`effect_transaction->flush(...)`](../../src/core/loader/scene.cpp#L1186) で、commit 後の noexcept tail の中にあります。
 
 ### `noexcept` の commit tail の中で文字列や JSON を作らない
 
 metadata の commit 以降は「失敗しない尾部」です。executor はその区間の全操作が `noexcept` であることを [`static_assert` の列](../../src/core/loader/scene.cpp#L1122)で固定しています。ここで `std::string` を組んだり `nlohmann::json` を作ったりすると、`bad_alloc` が `noexcept` 関数から伝播して `std::terminate` になります。
 
-実装はその制約を明示しています。effect のエラーは固定長 record([`FixedText<512>` / `FixedText<384>`](../../src/core/loader/effecttransaction.hpp#L102))に詰めておき、**公開用の文字列と JSON は tail を抜けてから**作ります([`effectErrors()` の呼び出し](../../src/core/loader/scene.cpp#L1191) の直前のコメントが「deliberately materialized only after the noexcept commit tail」)。同じ理由で `SceneLoadPhaseTrace` も固定長です。
+実装はその制約を明示しています。effect のエラーは固定長 record([`FixedText<512>` / `FixedText<384>`](../../src/core/loader/effecttransaction.hpp#L102))に詰めておき、**公開用の文字列と JSON は tail を抜けてから**作ります([`effectErrors()` の呼び出し](../../src/core/loader/scene.cpp#L1196) の直前のコメントが「deliberately materialized only after the noexcept commit tail」)。同じ理由で `SceneLoadPhaseTrace` も固定長です。
 
 ### `createObject()` は基底の `GameContext` から呼んでも defer される
 
@@ -1053,7 +1053,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: 「戻せないのに失敗しうる」状態を作らないため、コミット点以降に呼ぶ全関数が throw しないことを **20 個の `static_assert(noexcept(...))`** でコンパイル時に固定する。「確保もしない」の側は static_assert では固定できないので、報告構造を固定長にすることで担保する。
 
-**どこに出るか**: [`scene.cpp` の static_assert 群](../../src/core/loader/scene.cpp#L1032) が publish/finish/retire/flush を固定し、不可逆点は [`metadata.commit()`](../../src/core/loader/scene.cpp#L1146) の単一 metadata swap 1 点。公開用の文字列と JSON は [tail を抜けてから materialize](../../src/core/loader/scene.cpp#L1189) します。ECS 側の同じ宣言は [archetypemigration.hpp のヘッダコメント](../../src/core/ecs/archetypemigration.hpp#L44)、`noexcept` の中で確保しないための固定長報告は [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36)、同じ理由の固定長診断が [`PreparedEffectTransaction::errors_`](../../src/core/loader/effecttransaction.hpp#L125)。
+**どこに出るか**: [`scene.cpp` の static_assert 群](../../src/core/loader/scene.cpp#L1032) が publish/finish/retire/flush を固定し、不可逆点は [`metadata.commit()`](../../src/core/loader/scene.cpp#L1146) の単一 metadata swap 1 点。公開用の文字列と JSON は [tail を抜けてから materialize](../../src/core/loader/scene.cpp#L1194) します。ECS 側の同じ宣言は [archetypemigration.hpp のヘッダコメント](../../src/core/ecs/archetypemigration.hpp#L44)、`noexcept` の中で確保しないための固定長報告は [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36)、同じ理由の固定長診断が [`PreparedEffectTransaction::errors_`](../../src/core/loader/effecttransaction.hpp#L125)。
 
 **読むときの手順**: `PreCommitFailure` が取りうる phase 値の集合を先に見てください。prepare / early_publish / activate の 3 つしかないこと自体が、「それ以降は失敗しない」の裏返しです(→ §9.21 の「`noexcept` の commit tail の中で文字列や JSON を作らない」)。
 
@@ -1149,7 +1149,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [`create_object` ラムダ](../../src/core/loader/scene.cpp#L823) | prepareCreate → publish → finish | 三段の不変式 | → §9.22「三段トランザクション」/ [第4章「生成transactionの三段構え」](04_ecs_deep_dive.md) |
 | [`markComponentChanged`](../../src/core/loader/scene.cpp#L911) | 親を書いた直後の版上げ | なぜ手動で呼ぶのか | `tryComponent<T>()` は生ポインタを返すだけで版を上げない(版を上げるのは [`setComponent()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L373) 側)。`local->parent` を直接書いた経路では手動で上げないと change detection が親リンクの変化を見落とす |
 | [`loadColliderComponent()`](../../src/core/loader/scene.cpp#L283) | `runtime_codec` の null 検査 | なぜ `logic_error` なのか | resolver が具体 component に codec を必ず付ける契約なので、null は authoring の誤りではなく内部不整合。同関数の `ResolutionFailureException` 経路(= 作者の誤り)と行き先を分けている |
-| [`loadTransientGltf()`](../../src/core/loader/scene.cpp#L1445) | 二重予約と `owns_resources` | なぜ 2 回予約するのか | ハッシュノードとバケット成長を**パース・GPU staging より前**に確保し(コメントが明言)、entity 生成後の公開が確保できない = transaction を割れないようにする。容量拒否は副作用の無い [`inspect()`(WP110)](../../src/core/loader/scene.cpp#L1484) + `preflightModelInstance` で先に行う |
+| [`loadTransientGltf()`](../../src/core/loader/scene.cpp#L1450) | 二重予約と `owns_resources` | なぜ 2 回予約するのか | ハッシュノードとバケット成長を**パース・GPU staging より前**に確保し(コメントが明言)、entity 生成後の公開が確保できない = transaction を割れないようにする。容量拒否は副作用の無い [`inspect()`(WP110)](../../src/core/loader/scene.cpp#L1489) + `preflightModelInstance` で先に行う |
 | [`displayObjectName()`](../../src/core/loader/scene.cpp#L254) | 診断用の表示名 | 常に `<unnamed>` に見える | 空のときだけ `<unnamed>` を返す 1 行。identity ではなく**表示**なので、同一性の判定に使わない |
 | [`scenePersistenceBaseline()`](../../src/core/loader/basicconfig.cpp#L374) | prefab closure と read-set | baseline が何の複合か | scene ファイルの digest + resolve が実際に読んだ prefab 集合(name/path/digest)。registry に無い prefab が closure にあれば `logic_error` |
 | [`SceneMetadataState`](../../src/core/loader/basicconfig.hpp#L104) | 3 本の番号の役割分担 | revision / generation / object_id の違い | revision = authoring document の改訂、resolver generation = 解決結果の世代(読み手のキャッシュ無効化)、next_authoring_object_id = 宣言 ID の払い出し高水位(scene をまたいで再利用しない) |
@@ -1830,7 +1830,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [候補 DLL の検証](../../src/core/gamelogic/gamelogicreload.cpp#L392) / [Windows 固有の import 診断](../../src/core/gamelogic/gamelogicreload.cpp#L330) / [active の有無での分岐](../../src/core/gamelogic/gamelogicreload.cpp#L423) | ロード前の関門 | 入口の全体像 | 上記 `diagnoseGameLogicImports` と reloadTransaction の入口。詳細は**未執筆** |
 | [`appendThunkImports()`](../../src/core/gamelogic/gamelogicimports.cpp#L306) | ordinal_flag と終端判定 | PE の読み方 | PE Import Table の仕様そのもの(→ [第10章](10_background_knowledge.md)) |
 | [`recursive()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L160) | Flags / List で true | v2/v3 分岐の判定 | v3 の記述子は所有型の再帰ツリーで、**Flags と List はフラットな V2 `StructFieldSchema` では表現できない唯一のタグ**(語彙と行 struct という子構造を持つ)。`recursive()` はそれらを部分木に含むかを返す |
-| [`schemaNodeFingerprint()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L1012) | 指紋が JSON dump そのもの | hash にしない理由 | 用途は schema 同一性の厳密比較で、**正準 JSON dump は全順序かつ自己記述的なので、不一致時にどのフィールドが変わったかをそのまま diff でき、ハッシュ衝突を仮定する必要もない** |
+| [`schemaNodeFingerprint()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L994) | 指紋が JSON dump そのもの | hash にしない理由 | 用途は schema 同一性の厳密比較で、**正準 JSON dump は全順序かつ自己記述的なので、不一致時にどのフィールドが変わったかをそのまま diff でき、ハッシュ衝突を仮定する必要もない** |
 | [Flags の文字列配列表現](../../src/core/userpublic/details/schema/structfieldjson.hpp#L305) | ビットを名前で書く | 数値にしない理由 | 語彙を持つタグの JSON 表現。数値ビットを直接書かせないことで語彙変更に耐える |
 | [`Flags`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L194) | enum を unsigned storage へ | 変換の理由 | **未執筆**(flag ビット操作の正当性という以上の根拠がコードにない) |
 | event 側の 3 分岐(`has_descriptor` / `recursive_descriptor` / `json_serializable`)と `EventSchemaState` | 登録時の分類 | 組み合わせ表 | **未執筆**(3 条件の組み合わせ表が要る) |

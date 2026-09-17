@@ -780,24 +780,6 @@ nlohmann::ordered_json encodeStructObject(
 
 namespace internal {
 
-inline nlohmann::ordered_json schemaRangeJson(const StructFieldRange &range) {
-    return std::visit(
-        [](const auto &value) -> nlohmann::ordered_json {
-            using Range = std::remove_cvref_t<decltype(value)>;
-            if constexpr (std::same_as<Range, std::monostate>) return nullptr;
-            else if constexpr (std::same_as<Range, std::pair<double, double>>) {
-                // JSON has one zero.  A descriptor fingerprint must not depend
-                // on the IEEE sign bit of a zero range endpoint.
-                const auto canonical = [](double endpoint) {
-                    return endpoint == 0.0 ? 0.0 : endpoint;
-                };
-                return nlohmann::ordered_json::array(
-                    {canonical(value.first), canonical(value.second)});
-            } else return nlohmann::ordered_json::array({value.first, value.second});
-        },
-        range);
-}
-
 inline nlohmann::ordered_json schemaRangeJson(
     const StructFieldRangeDescriptor &range) {
     switch (range.kind) {

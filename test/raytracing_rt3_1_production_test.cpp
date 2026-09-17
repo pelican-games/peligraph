@@ -815,6 +815,7 @@ TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
     const auto first = sample(false);
     CHECK(first.blas_update_count == 0);
     if (edit_space) {
+#if PELICAN_WITH_RPC
         auto service = makeEditorRuntimeService(EditorRuntimeServiceOptions{.render_config_editing = true});
         std::uint64_t rpc_id = 71000;
         for (const std::string space : {"geometry", "world"}) {
@@ -843,6 +844,12 @@ TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
             CHECK(Json::parse(readWp374aText(project.path / "ray_layout.json"))["acceleration_structure"]["triangle_space"] == space);
         }
         return;
+#else
+        // The editor-driven half of this section needs the RPC service.  Report
+        // the section as skipped instead of silently running the non-editor
+        // body under a name that promises an editor round trip.
+        SKIP("RT6 world coordinate space editor edits require PELICAN_WITH_RPC");
+#endif
     }
     if (deformed) {
         auto &instances = GET_MODULE(PolygonInstanceContainer);
@@ -1790,6 +1797,7 @@ void main() {
         }
     };
     check_lanes(2, 3, 2);
+#if PELICAN_WITH_RPC
     auto service = makeEditorRuntimeService(EditorRuntimeServiceOptions{.render_config_editing = true});
     std::uint64_t rpc_id = 93000;
     const auto edit_task = [&](const std::string &name, const std::function<void(Json &)> &modify) {
@@ -1885,6 +1893,12 @@ void main() { pelican_resource_args.values[0] = uvec4(0u, 1u, 2u, 1u); }
     CHECK(order_result.at("committed") == false);
     CHECK(readWp374aText(project.path / "hybrid.json") == ordered_root);
     CHECK(execution_position("wp386_trace") < execution_position("scene_present"));
+#else
+    // Everything after the first lane check drives the renderer through the
+    // editor RPC service; report the case as skipped rather than passing on the
+    // one remaining check.
+    SKIP("RT6 indirect ray dimension editor edits require PELICAN_WITH_RPC");
+#endif
 #else
     SKIP("RT6 indirect production shader fixture requires the runtime compiler");
 #endif

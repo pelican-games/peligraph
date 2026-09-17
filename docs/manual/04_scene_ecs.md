@@ -319,7 +319,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 retire 中の `onDestroy` は「自分の最終状態」を読めます。entity はもう unpublish されていますが、`ctx.localTransform(self)` / `ctx.spriteView(self)` は**破棄トークンが持つスナップショット**を返します([retiredComponent](../../src/core/loader/effecttransaction.cpp#L462))。書き込み側(`setLocalTransform` / `setSpriteView` / `setSpriteTexture`)は throw せず **false** を返し、`SceneRetiredObjectMutationRejected` として `effect_errors` に積まれます([rejectRetiredMutation](../../src/core/loader/effecttransaction.cpp#L473))。
 
 - `onDestroy` は `noexcept` なので、この段の fallible API(`playSound` / `saveData` など)は**例外を投げずに `effect_errors` へ**回されます。呼び出し側のゲームコードは戻り値だけ見ればよく、握りつぶしではなく記録されます。
-- retire 中の `loadScene(name)` は、**commit 済みのシーン集合**に対して解決されます([requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1231))。旧シーンにしか無い名前を書くと `scene not found in committed projection: X` になり、`scene_retire_load_rejected@1` として記録されます。
+- retire 中の `loadScene(name)` は、**commit 済みのシーン集合**に対して解決されます([requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1236))。旧シーンにしか無い名前を書くと `scene not found in committed projection: X` になり、`scene_retire_load_rejected@1` として記録されます。
 
 ### commit したのに作用が失敗したとき
 

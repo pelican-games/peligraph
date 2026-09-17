@@ -45,7 +45,7 @@ ctest --test-dir build -C Debug -LE gpu -j16 --output-on-failure
 
 `-j16` は測定に基づく。この tier は直列で 124 秒、`-j16` で 43.8 秒である。
 GPU を含む全数は `-j4`(674 秒 → 346 秒)。それ以上は
-`pelican_golden_gpu` の resource lock が臨界経路になるため伸びず、
+`pelican_gpu` の resource lock が臨界経路になるため伸びず、
 `-j64` では GPU が SEGFAULT した。
 
 GPU 対象だけを確認する場合は `ctest --test-dir build -C Debug -L gpu -N` を使う。

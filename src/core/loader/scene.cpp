@@ -1146,6 +1146,11 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
     metadata.commit(phase_trace);
     scene_start_time = candidate_scene_start_time;
     graph_runtime.clear();
+    // The unmatched-owner memos belong to the scene that was live, not to the
+    // one being committed: a document that could not bind an object there says
+    // nothing about what this scene has.
+    graph_owner_resolved_scopes.clear();
+    graph_owner_reported_scopes.clear();
 
     effect_transaction->setRetiredObjects(destroyed_entities);
     behavior_candidate->finish(phase_trace);

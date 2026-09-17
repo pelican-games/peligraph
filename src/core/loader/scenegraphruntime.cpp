@@ -2,6 +2,7 @@
 #include "../../project/graphcomposition.hpp"
 #include "../appflow/enginetime.hpp"
 #include "../ecs/core.hpp"
+#include "../log.hpp"
 #include "../userpublic/gamecontext.hpp"
 #if PELICAN_WITH_AUDIO
 #include "../audio/audio.hpp"
@@ -50,11 +51,41 @@ std::map<std::string, GameObjectId> SceneLoader::graphOwnerObjects(const ValueGr
     return owners;
 }
 
+void SceneLoader::reportUnresolvedGraphOwners(
+    const ValueGraph::Graph &graph,
+    const std::map<std::string, GameObjectId> &owners) {
+    for (const auto &[scope, object] : owners) {
+        (void)object;
+        graph_owner_resolved_scopes.emplace(scope);
+    }
+    std::string names;
+    for (const auto &[scope, owner] : graph.instanceOwners()) {
+        (void)owner;
+        if (graph_owner_resolved_scopes.contains(scope)) continue;
+        if (!graph_owner_reported_scopes.emplace(scope).second) continue;
+        if (!names.empty()) names += ", ";
+        names += scope;
+    }
+    if (names.empty() || logger == nullptr) return;
+    // Said at graph generation synchronization, not per frame.
+    // `inactiveGraphScopes` is read on the drawing path, so naming it there
+    // would spam the log with a state that is normal while an object is being
+    // republished.  A scope that has never resolved in this scene is different:
+    // the document points at an object the scene does not have, and it stays
+    // that way until someone edits it.  Both memos are cleared by a scene load
+    // and only then, so a removed object's republished graph stays quiet while
+    // a freshly loaded scene still reports what it cannot bind.
+    LOG_WARNING(logger,
+                "graph instance owner does not match any object in this scene: {}",
+                names);
+}
+
 SceneLoader::GraphRuntime &SceneLoader::synchronizeGraphRuntime(
     const std::shared_ptr<const ValueGraph::Graph> &graph) {
     std::erase_if(graph_runtime, [](const auto &entry) { return entry.first.expired(); });
     auto &runtime = graph_runtime.try_emplace(graph, *graph).first->second;
     auto owners = graphOwnerObjects(*graph);
+    reportUnresolvedGraphOwners(*graph, owners);
     ValueGraph::InactiveScopes changed;
     for (const auto &[scope, object] : runtime.owners) {
         const auto next = owners.find(scope);

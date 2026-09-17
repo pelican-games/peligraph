@@ -810,7 +810,7 @@ ECS の関わり方には、読み間違えやすい非対称があります。
 | [`ECSEntityMutationToken::finish(phase_trace)`](../../src/core/ecs/archetypemigration.cpp#L991) | `SceneLoadPhase::finish` |
 | 退役 batch の [`RetirementState::enqueue()`](../../src/core/loader/scene.cpp#L168) | `SceneLoadPhase::retire` |
 
-本番の executor は、生成した entity に対して**trace 無しの `finish()` を呼びます**（[`for (auto &token : created_entities) token.finish();`](../../src/core/loader/scene.cpp#L1186)）。`finish` を trace へ書くのは、その直前に executor が明示的に置いた [`phase_trace.record(SceneLoadPhase::finish)`](../../src/core/loader/scene.cpp#L1185) の1行です。コメントが理由を書いています — **batch 自体が1人の participant** であり、entity が0件の scene でも `finish` が観測できる必要がある一方、token 個々の完了は batch の実装詳細だからです。
+本番の executor は、生成した entity に対して**trace 無しの `finish()` を呼びます**（[`for (auto &token : created_entities) token.finish();`](../../src/core/loader/scene.cpp#L1191)）。`finish` を trace へ書くのは、その直前に executor が明示的に置いた [`phase_trace.record(SceneLoadPhase::finish)`](../../src/core/loader/scene.cpp#L1190) の1行です。コメントが理由を書いています — **batch 自体が1人の participant** であり、entity が0件の scene でも `finish` が観測できる必要がある一方、token 個々の完了は batch の実装詳細だからです。
 
 `early_publish` も同じ考え方です。ECS の3行（`entity_liveness` / `component_values` / `component_versions`）は [participant manifest](../../src/core/loader/sceneparticipantmanifest.cpp#L72) 上で `early_publish` の participant として宣言されていますが、`publish()` 自体は trace を触りません。executor 側で `early_publish` が現れるのは失敗経路の [`fail(SceneLoadPhase::early_publish, ...)`](../../src/core/loader/scene.cpp#L1027) と、同じ段で走る [`PolygonInstanceContainer` 側の記録](../../src/core/renderer/polygoninstancecontainer.cpp#L537) です。
 

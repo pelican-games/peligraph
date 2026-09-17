@@ -939,7 +939,7 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 この節が扱うのは**平坦な**フィールド宣言（v2の `StructFieldSchema` 列）です。`Flags` と `List` を含む宣言は再帰的な `SchemaNode` へ起こされ、`$list` / `$row` の封筒付きJSONを使い、登録もv3入口へ回ります。その形と受理規則は[第3章 §3.11](03_project_and_loading.md) に、DLL境界での入口選択は [§2.11](02_runtime_lifecycle.md) にあります。
 
-> 🧩 **難所 — 3 回舐めてから swap**([`decodeBehaviorParams()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L1019))
+> 🧩 **難所 — 3 回舐めてから swap**([`decodeBehaviorParams()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L1001))
 >
 > **何をする所か**: JSON を `Params` へ復元します。失敗した場合は destination を**一切書き換えません**。成功時の反映は `swap` 1 回で、これが behavior のライブ params 差し替えの原子性そのものです。
 >
@@ -990,7 +990,7 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 ### 退役済みobjectのsnapshot view
 
-`retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1150)）、2つの向きに使います。
+`retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1155)）、2つの向きに使います。
 
 - **読み**: [`retiredComponent(id, component_id)`](../../src/core/loader/effecttransaction.cpp#L462) が destroy token の中のcomponentを返し、`GameContext::localTransform()` / `spriteView()` がそれを**先に**引きます（[`GameContext::localTransform()`](../../src/core/userpublic/gamecontext.cpp#L119)）。だから `onDestroy` から自分の最後のtransformを読めます。
 - **書き**: [`rejectRetiredMutation(api, id)`](../../src/core/loader/effecttransaction.cpp#L473) が同じ列を引き、当たれば `SceneRetiredObjectMutationRejected` を診断へ1件積んで `true` を返します。呼び手のsetterは `false` を返すだけで**throwしません**（`onDestroy` は `noexcept` です）。

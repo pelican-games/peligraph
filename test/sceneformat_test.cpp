@@ -1,16 +1,22 @@
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/componentinfo.hpp"
+#include "../src/core/ecs/predefined.hpp"
 #include "../src/core/loader/authoringscenedocument.hpp"
 #include "../src/core/loader/basicconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/scene.hpp"
+#include "../src/core/userpublic/gameobjects.hpp"
 #include "scene_load_test_support.hpp"
 #include "../src/project/sceneformat.hpp"
 #include "../src/core/log.hpp"
 #include "authoringscenetestsupport.hpp"
+#include "graph_composition_fixture.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <quill/Frontend.h>
+#include <quill/Logger.h>
+#include <quill/sinks/Sink.h>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -19,10 +25,13 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -805,6 +814,196 @@ TEST_CASE("SceneLoader reports the common typed cause for unknown component name
         throw;
     }
 
+    std::filesystem::remove_all(temp_dir);
+}
+
+namespace {
+
+// The engine logs through quill, so the only honest way to assert "one line"
+// is to read the sink.  This one collects the formatted messages of whatever
+// logger `Pelican::logger` points at while it is alive.
+class CapturingLogSink final : public quill::Sink {
+  public:
+    void write_log(quill::MacroMetadata const *, std::uint64_t, std::string_view,
+                   std::string_view, std::string const &, std::string_view,
+                   quill::LogLevel, std::string_view, std::string_view,
+                   std::vector<std::pair<std::string, std::string>> const *,
+                   std::string_view log_message, std::string_view) override {
+        const std::lock_guard<std::mutex> guard{mutex_};
+        lines_.emplace_back(log_message);
+    }
+    void flush_sink() override {}
+
+    std::vector<std::string> lines() const {
+        const std::lock_guard<std::mutex> guard{mutex_};
+        return lines_;
+    }
+
+  private:
+    mutable std::mutex mutex_;
+    std::vector<std::string> lines_;
+};
+
+class CapturedLog {
+  public:
+    explicit CapturedLog(const std::string &name) {
+        sink_ = std::static_pointer_cast<CapturingLogSink>(
+            quill::Frontend::create_or_get_sink<CapturingLogSink>(name));
+        capture_ = quill::Frontend::create_or_get_logger(name, sink_);
+        previous_ = logger;
+        logger = capture_;
+    }
+    ~CapturedLog() { logger = previous_; }
+    CapturedLog(const CapturedLog &) = delete;
+    CapturedLog &operator=(const CapturedLog &) = delete;
+
+    std::vector<std::string> lines() const {
+        capture_->flush_log();
+        return sink_->lines();
+    }
+
+  private:
+    std::shared_ptr<CapturingLogSink> sink_;
+    quill::Logger *capture_ = nullptr;
+    quill::Logger *previous_ = nullptr;
+};
+
+constexpr std::string_view unmatched_owner_message =
+    "graph instance owner does not match any object in this scene";
+
+std::size_t countUnmatchedOwnerLines(const CapturedLog &log) {
+    std::size_t count = 0;
+    for (const auto &line : log.lines())
+        count += contains(line, unmatched_owner_message) ? 1 : 0;
+    return count;
+}
+
+} // namespace
+
+TEST_CASE("an unmatched graph instance owner is named once per graph generation",
+          "[scene][graph-owner]") {
+    ensureLogger();
+    auto temp_dir = makeTempProjectDir();
+    try {
+        writeText(temp_dir / "scene.json", R"json({
+  "schema": "pelican.scene", "version": 1,
+  "scenes": {
+    "default_scene": {"objects": [
+      {"name": "Left", "components": [
+        {"name": "transform", "pos": [0,0,0], "rotation": [0,0,0,1], "scale": [1,1,1]}]}]},
+    "other_scene": {"objects": [
+      {"name": "Other", "components": [
+        {"name": "transform", "pos": [0,0,0], "rotation": [0,0,0,1], "scale": [1,1,1]}]}]}
+  }
+})json");
+        writeText(temp_dir / "passes/main_rendering_config.json", "{}");
+        const auto project = nlohmann::json{
+            {"schema", "pelican.project"}, {"version", 1},
+            {"name", "graph-owner-test"}, {"engine_min_version", "0.1.0"},
+            {"basic_config", {{"default_scene_id", "default_scene"},
+                              {"scene_data_json", "scene.json"}}}};
+
+        FastModuleContainer modules;
+        GET_MODULE(PathResolver).setup(temp_dir, false);
+        GET_MODULE(ProjectSource).setProjectData(project.dump());
+        GET_MODULE(ECSPredefinedRegistration).reg();
+        auto &loader = GET_MODULE(SceneLoader);
+        test_support::loadScene(loader, SceneId{"default_scene"});
+        const auto left = loader.objectId("Left");
+        REQUIRE(left);
+        std::uint64_t authored_left = 0;
+        for (const auto &binding : loader.runtimeObjectBindings())
+            if (binding.object_id == *left)
+                authored_left = binding.authoring_object_id.value;
+        REQUIRE(authored_left != 0);
+
+        // Each block needs a scope name of its own: the memo that decides
+        // "named already" is scene-scoped, so reusing one id would make the
+        // second block silent for the first block's reason.
+        const auto owned = [&](std::uint64_t left_object,
+                               std::uint64_t right_object,
+                               const std::string &right_id) {
+            auto document = parameterGraphCompositionFixture();
+            document["nodes"][4]["id"] = right_id;
+            document["outputs"]["right"]["node"] = right_id;
+            document["nodes"][3]["owner"] =
+                {{"scene", "default_scene"}, {"object", left_object}};
+            document["nodes"][4]["owner"] =
+                {{"scene", "default_scene"}, {"object", right_object}};
+            return std::make_shared<const ValueGraph::Graph>(document.dump());
+        };
+
+        // Control: every scope resolves, so the synchronization says nothing.
+        {
+            const CapturedLog log{"graph_owner_matched"};
+            const auto matched =
+                owned(authored_left, authored_left, "right_matched");
+            for (int frame = 0; frame < 5; ++frame)
+                (void)loader.graphParameterValues(matched);
+            CHECK(countUnmatchedOwnerLines(log) == 0);
+        }
+
+        // One scope points at an object this scene does not have.  It is named
+        // once, and stepping frames adds nothing.
+        {
+            const CapturedLog log{"graph_owner_unmatched"};
+            const auto unmatched =
+                owned(authored_left, 4242, "right_unmatched");
+            (void)loader.graphParameterValues(unmatched);
+            const auto after_first = log.lines();
+            const auto named = std::count_if(
+                after_first.begin(), after_first.end(), [](const auto &line) {
+                    return contains(line, unmatched_owner_message);
+                });
+            REQUIRE(named == 1);
+            for (const auto &line : after_first)
+                if (contains(line, unmatched_owner_message))
+                    CHECK(contains(line, "right_unmatched"));
+            for (int frame = 0; frame < 30; ++frame)
+                (void)loader.graphParameterValues(unmatched);
+            CHECK(countUnmatchedOwnerLines(log) == 1);
+
+            // Republishing the document makes a new graph generation.  The
+            // scope is the same one already named, so the new generation adds
+            // no second line.
+            const auto republished =
+                owned(authored_left, 4242, "right_unmatched");
+            for (int frame = 0; frame < 30; ++frame)
+                (void)loader.graphParameterValues(republished);
+            CHECK(countUnmatchedOwnerLines(log) == 1);
+        }
+
+        // A scope that resolved once and then stopped is the ordinary state of
+        // an object being destroyed and republished.  It stays silent, across
+        // graph generations as well as frames.
+        {
+            const CapturedLog log{"graph_owner_went_quiet"};
+            const auto resolving =
+                owned(authored_left, authored_left, "right_quiet");
+            (void)loader.graphParameterValues(resolving);
+            REQUIRE(countUnmatchedOwnerLines(log) == 0);
+            REQUIRE(GameObjects::remove(*left));
+            for (int frame = 0; frame < 30; ++frame)
+                (void)loader.graphParameterValues(resolving);
+            CHECK(countUnmatchedOwnerLines(log) == 0);
+            const auto republished =
+                owned(authored_left, authored_left, "right_quiet");
+            for (int frame = 0; frame < 30; ++frame)
+                (void)loader.graphParameterValues(republished);
+            CHECK(countUnmatchedOwnerLines(log) == 0);
+
+            // A scene load clears the memo, because what the previous scene
+            // could bind says nothing about this one.  The same graph is named
+            // once for the new scene and then stays quiet for every frame.
+            test_support::loadScene(loader, SceneId{"other_scene"});
+            for (int frame = 0; frame < 30; ++frame)
+                (void)loader.graphParameterValues(resolving);
+            CHECK(countUnmatchedOwnerLines(log) == 1);
+        }
+    } catch (...) {
+        std::filesystem::remove_all(temp_dir);
+        throw;
+    }
     std::filesystem::remove_all(temp_dir);
 }
 

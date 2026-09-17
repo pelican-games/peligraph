@@ -24,6 +24,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -53,6 +59,57 @@ namespace Pelican {
 namespace {
 
 using Json = nlohmann::json;
+
+// The component staging directory is named after the exporting process, so the
+// sweep test has to say which pid is "ours" the same way the writer does.
+std::string currentProcessIdText() {
+#ifdef _WIN32
+    return std::to_string(static_cast<long long>(_getpid()));
+#else
+    return std::to_string(static_cast<long long>(getpid()));
+#endif
+}
+
+// Every fixture below used to create its directory straight in the system temp
+// directory -- the one parent every concurrently running test process shares,
+// and the one that accumulates thousands of entries between cleanups.  One root
+// per process keeps the create/remove traffic of a `-j16` run inside a
+// directory nobody else is touching, and leaves a single entry behind if a
+// process dies before its destructors run.
+class TemporaryRoot {
+  public:
+    std::filesystem::path path;
+
+    TemporaryRoot() {
+        const auto seed = static_cast<std::uint64_t>(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        for (std::uint64_t attempt = 0; attempt < 100; ++attempt) {
+            path = std::filesystem::temp_directory_path() /
+                   ("pelican-renderconfigeditor-" + currentProcessIdText() +
+                    "-" + std::to_string(seed) + "-" +
+                    std::to_string(attempt));
+            std::error_code error;
+            if (std::filesystem::create_directory(path, error)) return;
+            path.clear();
+        }
+        throw std::runtime_error(
+            "failed to allocate the renderconfigeditor temporary root");
+    }
+
+    ~TemporaryRoot() {
+        if (path.empty()) return;
+        std::error_code ignored;
+        std::filesystem::remove_all(path, ignored);
+    }
+
+    TemporaryRoot(const TemporaryRoot &) = delete;
+    TemporaryRoot &operator=(const TemporaryRoot &) = delete;
+};
+
+const std::filesystem::path &temporaryRoot() {
+    static const TemporaryRoot root;
+    return root.path;
+}
 
 constexpr std::string_view skyReference =
     "engine://features/sky_ambient.json";
@@ -110,8 +167,7 @@ class TemporaryConfig {
             std::chrono::steady_clock::now()
                 .time_since_epoch()
                 .count());
-        const auto root =
-            std::filesystem::temp_directory_path();
+        const auto &root = temporaryRoot();
         for (std::uint64_t attempt = 0; attempt < 100; ++attempt) {
             directory_ = root /
                          ("pelican-wp331-" +
@@ -390,7 +446,7 @@ class TemporaryAnimgraphProject {
                 .time_since_epoch()
                 .count());
         for (std::uint64_t attempt = 0; attempt < 100; ++attempt) {
-            directory_ = std::filesystem::temp_directory_path() /
+            directory_ = temporaryRoot() /
                          ("pelican-wp334b-animgraph-" +
                           std::to_string(seed) + "-" +
                           std::to_string(next.fetch_add(1)));
@@ -438,7 +494,7 @@ class TemporaryDirectory {
         const auto seed = static_cast<std::uint64_t>(
             std::chrono::steady_clock::now().time_since_epoch().count());
         for (std::uint64_t attempt = 0; attempt < 100; ++attempt) {
-            path = std::filesystem::temp_directory_path() /
+            path = temporaryRoot() /
                    ("pelican-" + std::string{label} + "-" +
                     std::to_string(seed) + "-" +
                     std::to_string(next.fetch_add(1)));
@@ -3206,6 +3262,24 @@ TEST_CASE("P-2a-3 a derived feature is published as a component and copied into 
     CHECK(engine_export.at("error").at("code") ==
           "render_component_engine_reference");
 
+    // An export that dies between staging and rename leaves `<name>.tmp-<pid>`
+    // behind.  The next export sweeps the ones another process left; a staging
+    // directory this process owns may belong to an export still in flight, and
+    // a component whose own name merely contains ".tmp-" is not a staging
+    // directory at all.
+    const auto components_dir = user_root.path / "components";
+    std::filesystem::create_directories(components_dir);
+    const auto own_staging =
+        components_dir / ("in_flight.tmp-" + currentProcessIdText());
+    const std::filesystem::path planted[] = {
+        components_dir / "bloom.tmp-999999999",
+        components_dir / "abandoned.tmp-1", own_staging,
+        components_dir / "not-a-staging.tmp-x"};
+    for (const auto &directory : planted) {
+        std::filesystem::create_directories(directory);
+        writeBytes(directory / "feature.json", "{}");
+    }
+
     const auto exported =
         source_service->exportRenderFeature({{"scope", "root"}, {"index", 0}});
     INFO(exported.dump());
@@ -3228,11 +3302,18 @@ TEST_CASE("P-2a-3 a derived feature is published as a component and copied into 
           Json::array({"lit_color", "swapchain"}));
     // Publishing is a read of the project.
     CHECK(readBytes(source_project.render_config) == project_before);
-    // No staging directory survives a finished export.
+    // No staging directory of this export survives it, and the two that other
+    // processes abandoned are gone with it.
+    std::set<std::string> remaining;
     for (const auto &entry :
-         std::filesystem::directory_iterator{user_root.path / "components"}) {
-        CHECK(entry.path().filename().string() == "bloom");
+         std::filesystem::directory_iterator{components_dir}) {
+        remaining.insert(entry.path().filename().string());
     }
+    CHECK(remaining ==
+          std::set<std::string>{"bloom", own_staging.filename().string(),
+                                "not-a-staging.tmp-x"});
+    std::filesystem::remove_all(own_staging);
+    std::filesystem::remove_all(components_dir / "not-a-staging.tmp-x");
     const auto repeated =
         source_service->exportRenderFeature({{"scope", "root"}, {"index", 0}});
     CHECK(repeated.at("status") == "rejected");

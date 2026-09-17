@@ -11,8 +11,10 @@
 #include <filesystem>
 #include <glm/ext/quaternion_float.hpp>
 #include <glm/glm.hpp>
+#include <map>
 #include <optional>
 #include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -83,6 +85,16 @@ DECLARE_MODULE(SceneLoader) {
     GraphRuntimes graph_runtime;
     ValueGraph::PublishedInstanceInputs graph_values;
     GraphRuntime &synchronizeGraphRuntime(const std::shared_ptr<const ValueGraph::Graph> &graph);
+    // Scopes whose graph instance owner has resolved to a live object at least
+    // once in the scene that is loaded now, and the scopes already named in the
+    // log.  Both are scene-scoped rather than graph-generation-scoped on
+    // purpose: removing an object and republishing the document makes a new
+    // generation every time, and a memo that reset with it would re-announce
+    // the same scope on every republish -- the spam this exists to avoid.
+    std::set<std::string, std::less<>> graph_owner_resolved_scopes;
+    std::set<std::string, std::less<>> graph_owner_reported_scopes;
+    void reportUnresolvedGraphOwners(const ValueGraph::Graph &graph,
+                                     const std::map<std::string, GameObjectId> &owners);
     bool ownsGraphParameter(const ValueGraph::Graph &graph, GameObjectId object,
                             std::string_view parameter) const;
     bool ownsGraphOwner(const GraphInstanceOwner *owner, GameObjectId object) const;

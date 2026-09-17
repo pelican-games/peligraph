@@ -110,13 +110,48 @@ void collectPassTargets(const Json &fragment, std::set<std::string> &names) {
     }
 }
 
-std::string temporaryDirectoryName(const std::filesystem::path &destination) {
+std::string currentProcessIdText() {
 #ifdef _WIN32
     const auto pid = static_cast<long long>(_getpid());
 #else
     const auto pid = static_cast<long long>(getpid());
 #endif
-    return destination.filename().string() + ".tmp-" + std::to_string(pid);
+    return std::to_string(pid);
+}
+
+constexpr std::string_view staging_marker = ".tmp-";
+
+std::string temporaryDirectoryName(const std::filesystem::path &destination) {
+    return destination.filename().string() + std::string{staging_marker} +
+           currentProcessIdText();
+}
+
+// An export that dies between `create_directories` and `rename` leaves its
+// `<name>.tmp-<pid>` staging directory behind, and nothing ever reads it again.
+// The next export sweeps the leftovers of other processes out of the same
+// parent.  A staging directory carrying this process's own pid is left alone:
+// it can only belong to an export still in flight here.
+void removeStaleStagingDirectories(const std::filesystem::path &parent) {
+    const auto own_suffix = std::string{staging_marker} + currentProcessIdText();
+    std::error_code listing;
+    std::filesystem::directory_iterator entries{parent, listing};
+    if (listing) return;
+    for (const auto &entry : entries) {
+        const auto name = entry.path().filename().string();
+        const auto marker = name.rfind(staging_marker);
+        if (marker == std::string::npos) continue;
+        // Only a trailing all-digit pid counts as a staging directory, so a
+        // component whose own name happens to contain ".tmp-" is never swept.
+        const auto pid = name.substr(marker + staging_marker.size());
+        if (pid.empty() ||
+            pid.find_first_not_of("0123456789") != std::string::npos)
+            continue;
+        if (name.ends_with(own_suffix)) continue;
+        std::error_code kind;
+        if (!entry.is_directory(kind) || kind) continue;
+        std::error_code ignored;
+        std::filesystem::remove_all(entry.path(), ignored);
+    }
 }
 
 } // namespace
@@ -237,6 +272,7 @@ void writeRenderComponent(const std::filesystem::path &destination,
             "render_component_destination_exists",
             "the component directory already exists: " + destination.string());
     }
+    removeStaleStagingDirectories(destination.parent_path());
     const auto staging =
         destination.parent_path() / temporaryDirectoryName(destination);
     std::filesystem::remove_all(staging, error);

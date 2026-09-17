@@ -665,13 +665,13 @@ C++ のムーブは、移動元を「有効だが未規定の状態」にしま�
 
 `std::variant` の中身で分岐する定型は、`std::visit` に総称ラムダを渡し、その中で `using T = std::decay_t<decltype(value)>;` として `if constexpr (std::same_as<T, X>)` で枝を書く形です。`std::visit` は全ての候補型を扱えることをコンパイル時に要求するので、型を足したときに「その枝を書き忘れた」がコンパイルエラーになります(`switch` の default と違って取りこぼせません)。`std::monostate` は「値が入っていない」を表すための空の型で、必ず別扱いの枝が要ります。総称ラムダの中で `if constexpr` を使うと、偽の枝は実体化されないので、その型に無いメンバを参照する枝も書けます。これは同じ理由でテンプレート引数ごとのコード生成一般に使われ、依存名の中でメンバーテンプレートを呼ぶときは `obj.template f<...>()` の `.template` 修飾が要ります(パーサに「これはテンプレート」と教えるため)。
 
-**使用場所**: [schemaRangeJson()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L783) / [freezeJournalOperation()](../../src/core/communication/editorjournal.cpp#L3264) / [PipelineFactory::rebuildPrepared()](../../src/core/shader/pipelinefactory.cpp#L1868) / [appendBehaviorEventHandlerAt()](../../src/core/userpublic/details/behavior/registerer.hpp#L137)(`if constexpr` の枝と `lookup.template operator()<Index>()`)
+**使用場所**: [numericRange()](../../src/core/imgui/inspector.cpp#L38) / [freezeJournalOperation()](../../src/core/communication/editorjournal.cpp#L3264) / [PipelineFactory::rebuildPrepared()](../../src/core/shader/pipelinefactory.cpp#L1868) / [appendBehaviorEventHandlerAt()](../../src/core/userpublic/details/behavior/registerer.hpp#L137)(`if constexpr` の枝と `lookup.template operator()<Index>()`)
 
 ### fold 式と std::apply(タプルライク型の全要素処理)
 
 C++17 の fold 式は、パラメータパックを 1 つの式に畳み込みます。`(f(args), ...)` はカンマ fold で、**左から右へ順に評価されることが規格で保証されます**(通常の関数引数の評価順は未規定なので、順序が意味を持つ処理はこちらで書く必要があります)。`(pred(args) && ...)` は全称判定で、短絡も効きます。要素が `std::tuple` に入っているときは `std::apply(f, t)` で全要素を一度に受け取り、その中で fold にかけるのが定型です。スキーマ宣言のように「宣言順が結果の順序になる」処理は、この評価順の保証に依存しています。
 
-**使用場所**: [collectBehaviorEventHandlers()](../../src/core/userpublic/details/behavior/registerer.hpp#L148)(カンマ fold で全 Index を順に処理) / [materializeSchemaNode()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L944)(`std::apply` + fold) / [decodeStructObject()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L711) / [materializeBehaviorParamsSchemaFingerprint()](../../src/core/userpublic/details/behavior/registerer.hpp#L184)
+**使用場所**: [collectBehaviorEventHandlers()](../../src/core/userpublic/details/behavior/registerer.hpp#L148)(カンマ fold で全 Index を順に処理) / [materializeSchemaNode()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L926)(`std::apply` + fold) / [decodeStructObject()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L711) / [materializeBehaviorParamsSchemaFingerprint()](../../src/core/userpublic/details/behavior/registerer.hpp#L184)
 
 ### consteval とコンパイル時の throw
 
