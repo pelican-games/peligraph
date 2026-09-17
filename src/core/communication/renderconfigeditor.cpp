@@ -1691,9 +1691,18 @@ OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
     return queueRootEdit(digest, method,
         [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
             try {
-                const auto edited = Pelican::editGraphDocument(Json::parse(candidate.bytes()), ops);
+                const auto source = Json::parse(candidate.bytes());
+                const auto edited = Pelican::editGraphDocument(source, ops);
                 (void)partitionGraphDocument(edited);
                 candidate = candidate.withRootValue("nodes", edited.at("nodes").dump(2));
+                // An op may now address a definition body. The root `nodes`
+                // write-back alone would drop that edit on the floor, so the
+                // definitions travel too -- and only when they moved, so a
+                // root-only edit still leaves those bytes exactly as authored.
+                if (edited.contains("definitions") &&
+                    edited.at("definitions") != source.value("definitions", Json{}))
+                    candidate = candidate.withRootValue(
+                        "definitions", edited.at("definitions").dump(2));
                 return std::nullopt;
             } catch (const GraphRegistryError &error) {
                 return rejection(error.code(), error.what(),

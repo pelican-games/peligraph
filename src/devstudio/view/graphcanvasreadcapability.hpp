@@ -12,9 +12,11 @@ namespace PelicanStudio {
 
 class EmbeddedViewport;
 
-// The read-only, asynchronous surface the common-graph canvas needs. It names
-// the three reads it is allowed to make and deliberately cannot express a
-// generic RPC method, so no edit can leave through this seam.
+// The asynchronous surface the common-graph canvas needs. It names the three
+// reads and the one edit it is allowed to make and deliberately cannot express
+// a generic RPC method, so nothing else can leave through this seam. The edit
+// is edit_graph_document alone: the canvas cannot attach an instance, fork a
+// preset or touch a pass from here.
 struct GraphCanvasReadCapability {
     using ReadyHandler =
         std::function<void(bool available, const QString &reason)>;
@@ -28,6 +30,13 @@ struct GraphCanvasReadCapability {
     std::function<qint64(QString *error)> requestGraphCatalog;
     std::function<qint64(const QString &instance, QString *error)>
         requestGraphValues;
+    // One gesture, one op list, one CAS. `ops_json` is the serialised array the
+    // model built; the digest is the document it was built against.
+    std::function<qint64(const QString &base_source_digest,
+                         const QByteArray &ops_json, QString *error)>
+        requestEditGraphDocument;
+    std::function<qint64(const QString &ticket, QString *error)>
+        requestEditResult;
     std::function<void(QObject *context, ResultHandler handler)> result;
     std::function<void(QObject *context, FailureHandler handler)> failure;
 };

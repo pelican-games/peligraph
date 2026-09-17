@@ -2,19 +2,29 @@
 
 #include <QBrush>
 #include <QByteArray>
+#include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QDoubleSpinBox>
+#include <QEvent>
 #include <QFont>
 #include <QFontMetricsF>
 #include <QGraphicsPathItem>
 #include <QGraphicsPolygonItem>
+#include <QGraphicsProxyWidget>
 #include <QGraphicsRectItem>
+#include <QGraphicsSceneContextMenuEvent>
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsSimpleTextItem>
 #include <QGraphicsView>
 #include <QHBoxLayout>
 #include <QHash>
+#include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
 #include <QMetaObject>
 #include <QPainter>
 #include <QPainterPath>
@@ -32,6 +42,7 @@
 #include <algorithm>
 #include <limits>
 #include <map>
+#include <memory>
 #include <set>
 #include <string_view>
 #include <utility>
@@ -143,8 +154,57 @@ bool isNodeSurface(const QString &kind) {
     return kind == QLatin1String{GraphCanvasNodeItem} ||
            kind == QLatin1String{GraphCanvasNodeLabelItem} ||
            kind == QLatin1String{GraphCanvasNodeHeaderItem} ||
+           kind == QLatin1String{GraphCanvasCollapseItem} ||
            kind == QLatin1String{GraphCanvasSocketItem} ||
            kind == QLatin1String{GraphCanvasValuePillItem};
+}
+
+// Enter confirms, Escape abandons, and losing the focus confirms the way a
+// spreadsheet cell does. The decision is reported back rather than acted on
+// here: the widget being watched is still dispatching the event that produced
+// it, so it cannot be deleted from inside this call.
+class InlineEditFilter final : public QObject {
+  public:
+    using Done = std::function<void(bool commit)>;
+
+    explicit InlineEditFilter(Done done) : done_{std::move(done)} {}
+
+  protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        if (event->type() == QEvent::KeyPress) {
+            auto *key = static_cast<QKeyEvent *>(event);
+            if (key->key() == Qt::Key_Escape) {
+                finish(false);
+                return true;
+            }
+            if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
+                finish(true);
+                return true;
+            }
+        } else if (event->type() == QEvent::FocusOut) {
+            finish(true);
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+  private:
+    void finish(bool commit) {
+        if (!done_) return;
+        auto done = std::exchange(done_, {});
+        done(commit);
+    }
+    Done done_;
+};
+
+// What kind of editor one stored value asks for. The current value is the only
+// evidence there is: no schema says what a node's parameter is allowed to be.
+enum class ValueEditorKind { number, boolean, text, json };
+
+ValueEditorKind editorKindFor(const nlohmann::json &value) {
+    if (value.is_boolean()) return ValueEditorKind::boolean;
+    if (value.is_number()) return ValueEditorKind::number;
+    if (value.is_string()) return ValueEditorKind::text;
+    return ValueEditorKind::json;
 }
 
 QGraphicsItem *findSocket(QGraphicsScene &scene, const QString &scope,
@@ -162,6 +222,17 @@ QGraphicsItem *findSocket(QGraphicsScene &scene, const QString &scope,
     return nullptr;
 }
 
+// A folded node has no socket rows, so its edges gather on one point per side,
+// drawn at the middle of the heading band. That anchor carries the empty port
+// name: it stands for every port at once, which is exactly what folding says.
+QGraphicsItem *findSocketOrAnchor(QGraphicsScene &scene, const QString &scope,
+                                  const QString &node, const QString &port,
+                                  const QString &direction) {
+    if (QGraphicsItem *exact = findSocket(scene, scope, node, port, direction))
+        return exact;
+    return findSocket(scene, scope, node, QString{}, direction);
+}
+
 // An edge runs socket centre to socket centre. Only a port the canvas could
 // not draw a socket for falls back to the node box, so a missing contract
 // degrades the line rather than losing it.
@@ -174,13 +245,13 @@ void routeGraphCanvasEdge(QGraphicsScene &scene, QGraphicsPathItem &edge) {
     if (from == nullptr || to == nullptr) return;
 
     QGraphicsItem *from_socket =
-        findSocket(scene, scope, from_name,
-                   edge.data(GraphCanvasFromPortRole).toString(),
-                   QStringLiteral("output"));
+        findSocketOrAnchor(scene, scope, from_name,
+                           edge.data(GraphCanvasFromPortRole).toString(),
+                           QStringLiteral("output"));
     QGraphicsItem *to_socket =
-        findSocket(scene, scope, to_name,
-                   edge.data(GraphCanvasToPortRole).toString(),
-                   QStringLiteral("input"));
+        findSocketOrAnchor(scene, scope, to_name,
+                           edge.data(GraphCanvasToPortRole).toString(),
+                           QStringLiteral("input"));
 
     const CurveGeometry geometry =
         from_socket != nullptr && to_socket != nullptr
@@ -244,13 +315,14 @@ SocketTypeFacts graphCanvasSocketFacts(const GraphCanvasModel &model,
 }
 
 GraphCanvasScene::GraphCanvasScene(QObject *parent) : QGraphicsScene{parent} {}
-GraphCanvasScene::~GraphCanvasScene() = default;
 
 void GraphCanvasScene::setModel(GraphCanvasModel *model) {
     model_ = model;
     session_node_positions_.clear();
+    session_collapsed_.clear();
     pruned_revision_.reset();
     selected_node_.reset();
+    selected_edge_.reset();
     repopulate();
 }
 
@@ -265,13 +337,40 @@ void GraphCanvasScene::pruneSessionPositions() {
     std::erase_if(session_node_positions_, [&](const auto &entry) {
         return !present.contains(entry.first);
     });
+    std::erase_if(session_collapsed_, [&](const auto &entry) {
+        return !present.contains(entry.first);
+    });
+}
+
+bool GraphCanvasScene::collapsed(const std::string &id) const {
+    if (model_ == nullptr) return false;
+    const auto found = session_collapsed_.find({model_->currentScope(), id});
+    return found != session_collapsed_.end() && found->second;
+}
+
+void GraphCanvasScene::setCollapsed(const std::string &id, bool folded) {
+    if (model_ == nullptr) return;
+    session_collapsed_[{model_->currentScope(), id}] = folded;
+    repopulate();
+}
+
+void GraphCanvasScene::toggleCollapsed(const std::string &id) {
+    setCollapsed(id, !collapsed(id));
 }
 
 void GraphCanvasScene::repopulate() {
     ++rebuild_generation_;
     rebuilding_ = true;
+    // An open editor belongs to items that are about to be deleted.
+    closeEditor();
+    clearPendingConnection();
+    // A refresh is not a deselection: the node the user is working on stays
+    // selected as long as the document still holds it (N-1's recorded hole).
+    const auto previous_node = selected_node_;
+    const auto previous_edge = selected_edge_;
     clear();
     selected_node_.reset();
+    selected_edge_.reset();
     setProperty("pelicanGraphScope", QVariant{});
     setProperty("pelicanGraphBreadcrumb", QVariant{});
     setProperty("pelicanGraphNodeCount", QVariant{});
@@ -357,11 +456,15 @@ void GraphCanvasScene::repopulate() {
         }
         width = std::min(width, GraphCanvasNodeMaximumWidth);
 
+        // A folded node is its heading band and nothing else: the rows are not
+        // drawn small, they are not drawn.
+        const bool folded = collapsed(node.id);
         const qreal rows_top = GraphCanvasHeaderHeight + GraphCanvasSectionPadding;
         const auto row_count = static_cast<qreal>(outputs.size() + inputs.size());
         const qreal height =
-            rows_top + row_count * GraphCanvasSocketRowHeight +
-            GraphCanvasSectionPadding;
+            folded ? GraphCanvasHeaderHeight
+                   : rows_top + row_count * GraphCanvasSocketRowHeight +
+                         GraphCanvasSectionPadding;
 
         const auto column_entry = columns.find(node.id);
         const int column = column_entry == columns.end() ? 0 : column_entry->second;
@@ -411,6 +514,7 @@ void GraphCanvasScene::repopulate() {
         item->setData(GraphCanvasSinkRole, node.sink);
         item->setData(GraphCanvasColumnRole, column);
         item->setData(GraphCanvasDefinitionRole, qtext(node.definition));
+        item->setData(GraphCanvasCollapsedRole, folded);
         QStringList input_ports;
         QStringList declared_ports;
         for (const auto &port : node.inputs) {
@@ -438,19 +542,31 @@ void GraphCanvasScene::repopulate() {
         band->setBrush(nodeColor(node));
         band->setPen(Qt::NoPen);
         tag(band, GraphCanvasNodeHeaderItem);
+        band->setData(GraphCanvasHeadingRole, true);
 
-        // The collapse arrow is drawn but inert in this version: the section
-        // it would fold is what N-2 makes editable.
+        // The triangle folds the socket sections away. It points down while
+        // the node is open and right while it is folded, which is the one
+        // place the state is visible without counting rows.
         QPainterPath arrow;
-        arrow.moveTo(0.0, -4.0);
-        arrow.lineTo(5.0, 0.0);
-        arrow.lineTo(0.0, 4.0);
+        if (folded) {
+            arrow.moveTo(-2.0, -4.5);
+            arrow.lineTo(3.5, 0.0);
+            arrow.lineTo(-2.0, 4.5);
+        } else {
+            arrow.moveTo(-4.5, -2.0);
+            arrow.lineTo(4.5, -2.0);
+            arrow.lineTo(0.0, 3.5);
+        }
         arrow.closeSubpath();
         auto *collapse = new QGraphicsPathItem(arrow, band);
-        collapse->setPos(9.0, GraphCanvasHeaderHeight / 2.0);
+        collapse->setPos(9.5, GraphCanvasHeaderHeight / 2.0);
         collapse->setBrush(QColor{QStringLiteral("#e8eef4")});
-        collapse->setPen(Qt::NoPen);
-        tag(collapse, GraphCanvasNodeHeaderItem);
+        collapse->setPen(QPen{Qt::NoPen});
+        tag(collapse, GraphCanvasCollapseItem);
+        collapse->setData(GraphCanvasHeadingRole, true);
+        collapse->setData(GraphCanvasCollapsedRole, folded);
+        collapse->setToolTip(folded ? QObject::tr("Show the sockets")
+                                    : QObject::tr("Fold the sockets away"));
 
         auto *title = new QGraphicsSimpleTextItem(heading, band);
         title->setFont(heading_font);
@@ -459,6 +575,8 @@ void GraphCanvasScene::repopulate() {
                              heading_metrics.height()) / 2.0);
         tag(title, GraphCanvasNodeLabelItem);
         title->setData(GraphCanvasLabelRole, heading);
+        title->setData(GraphCanvasHeadingRole, true);
+        title->setToolTip(QObject::tr("Double-click to rename"));
 
         // The operation type stays visible next to the chosen name: renaming a
         // node must never hide what it actually is.
@@ -470,6 +588,7 @@ void GraphCanvasScene::repopulate() {
                      (GraphCanvasHeaderHeight - row_metrics.height()) / 2.0);
         tag(kind, GraphCanvasNodeLabelItem);
         kind->setData(GraphCanvasOpRole, type_name);
+        kind->setData(GraphCanvasHeadingRole, true);
 
         const auto socket = [&](const DrawnRow &drawn, const QPointF &centre,
                                 const char *direction) {
@@ -490,6 +609,29 @@ void GraphCanvasScene::repopulate() {
             dot->setData(GraphCanvasSocketShapeRole,
                          static_cast<int>(drawn.style.shape));
         };
+
+        if (folded) {
+            // One point per side, at the middle of the band: every edge that
+            // entered a row now arrives here, and leaves from the other one.
+            const qreal centre_y = GraphCanvasHeaderHeight / 2.0;
+            const auto anchor = [&](const QPointF &centre, const char *direction) {
+                auto *dot = new QGraphicsPathItem(
+                    socketPath(SocketShape::circle, GraphCanvasSocketSize), item);
+                dot->setPos(centre);
+                dot->setZValue(1.0);
+                dot->setBrush(QColor{QStringLiteral("#c3ccd6")});
+                dot->setPen(QPen{QColor{QStringLiteral("#1b2229")}, 1.1});
+                tag(dot, GraphCanvasSocketItem);
+                dot->setData(GraphCanvasPortRole, QString{});
+                dot->setData(GraphCanvasSocketDirectionRole,
+                             QString::fromLatin1(direction));
+                dot->setData(GraphCanvasCollapsedRole, true);
+                dot->setToolTip(QObject::tr("%1 (folded)").arg(heading));
+            };
+            if (!inputs.empty()) anchor(QPointF{0.0, centre_y}, "input");
+            if (!outputs.empty()) anchor(QPointF{width, centre_y}, "output");
+            continue;
+        }
 
         qreal cursor_y = rows_top;
         for (const auto &drawn : outputs) {
@@ -569,10 +711,32 @@ void GraphCanvasScene::repopulate() {
         arrow->setData(NodeGraphFromNameRole, qtext(edge.from_node));
         arrow->setData(NodeGraphToNameRole, qtext(edge.to_node));
 
+        line->setToolTip(
+            QObject::tr("%1.%2 -> %3.%4  (select and press Delete to cut)")
+                .arg(qtext(edge.from_node), qtext(edge.from_port),
+                     qtext(edge.to_node), qtext(edge.to_port)));
+
         // No edge label: the socket rows already name both ends, and a box in
         // the middle of every line repeated them.
         routeGraphCanvasEdge(*this, *line);
     }
+
+    // The selection survives the rebuild when what it named is still here.
+    if (previous_node &&
+        std::ranges::any_of(nodes, [&](const GraphCanvasNode &drawn) {
+            return drawn.id == *previous_node;
+        }))
+        selected_node_ = previous_node;
+    if (previous_edge &&
+        std::ranges::any_of(edges, [&](const GraphCanvasEdge &drawn) {
+            return drawn.from_node == previous_edge->from_node &&
+                   drawn.from_port == previous_edge->from_port &&
+                   drawn.to_node == previous_edge->to_node &&
+                   drawn.to_port == previous_edge->to_port;
+        }))
+        selected_edge_ = previous_edge;
+    setProperty("pelicanGraphSelectedNode",
+                selected_node_ ? qtext(*selected_node_) : QString{});
     applyEdgeEmphasis();
 
     if (model_->breadcrumb().size() > 1) {
@@ -637,11 +801,25 @@ void GraphCanvasScene::applyEdgeEmphasis() {
             !selected.isEmpty() &&
             (item->data(NodeGraphFromNameRole).toString() == selected ||
              item->data(NodeGraphToNameRole).toString() == selected);
-        const QColor colour{touches ? QStringLiteral("#e4eef8")
-                                    : QStringLiteral("#7b8d9d")};
+        // The picked edge is the one Delete would cut, so it is louder than an
+        // edge that merely touches the picked node.
+        const bool picked =
+            selected_edge_ &&
+            item->data(NodeGraphFromNameRole).toString() ==
+                qtext(selected_edge_->from_node) &&
+            item->data(NodeGraphToNameRole).toString() ==
+                qtext(selected_edge_->to_node) &&
+            (!edge ||
+             (item->data(GraphCanvasFromPortRole).toString() ==
+                  qtext(selected_edge_->from_port) &&
+              item->data(GraphCanvasToPortRole).toString() ==
+                  qtext(selected_edge_->to_port)));
+        const QColor colour{picked      ? QStringLiteral("#f2c14e")
+                            : touches   ? QStringLiteral("#e4eef8")
+                                        : QStringLiteral("#7b8d9d")};
         if (edge) {
             if (auto *line = dynamic_cast<QGraphicsPathItem *>(item))
-                line->setPen(QPen{colour, touches ? 2.2 : 1.6});
+                line->setPen(QPen{colour, picked ? 3.0 : touches ? 2.2 : 1.6});
         } else if (auto *head = dynamic_cast<QGraphicsPolygonItem *>(item)) {
             head->setBrush(colour);
         }
@@ -661,7 +839,143 @@ void GraphCanvasScene::applySceneRectNow() {
     setSceneRect(bounds.adjusted(-60.0, -60.0, 60.0, 60.0));
 }
 
+void GraphCanvasScene::selectNode(const std::string &id) {
+    selected_node_ = id;
+    selected_edge_.reset();
+    setProperty("pelicanGraphSelectedNode", qtext(id));
+    applyEdgeEmphasis();
+    if (selectionChanged) selectionChanged();
+}
+
+void GraphCanvasScene::selectEdge(const GraphCanvasEdge &edge) {
+    selected_edge_ = edge;
+    selected_node_.reset();
+    setProperty("pelicanGraphSelectedNode", QString{});
+    applyEdgeEmphasis();
+    if (selectionChanged) selectionChanged();
+}
+
+void GraphCanvasScene::afterEdit(bool submitted) {
+    if (!submitted) return;
+    // The request is in the model's outbox; only the owner can post it.
+    if (editSubmitted) editSubmitted();
+}
+
+void GraphCanvasScene::clearPendingConnection() {
+    pending_connection_.reset();
+    if (pending_edge_ != nullptr) {
+        removeItem(pending_edge_);
+        delete pending_edge_;
+        pending_edge_ = nullptr;
+    }
+}
+
+void GraphCanvasScene::beginConnection(const QGraphicsItem &socket) {
+    const auto direction = socket.data(GraphCanvasSocketDirectionRole).toString();
+    const auto port = socket.data(GraphCanvasPortRole).toString();
+    // A folded node's anchor stands for every port at once: there is no one
+    // port a drag from it could mean, so it does not start one.
+    if (port.isEmpty()) return;
+    clearPendingConnection();
+    PendingConnection pending;
+    pending.node = socket.data(NodeGraphNameRole).toString().toStdString();
+    pending.port = port.toStdString();
+    pending.from_output = direction == QLatin1String{"output"};
+    pending.origin = socket.sceneBoundingRect().center();
+    pending_connection_ = std::move(pending);
+    pending_edge_ = new QGraphicsPathItem;
+    addItem(pending_edge_);
+    pending_edge_->setZValue(4.0);
+    pending_edge_->setPen(QPen{QColor{QStringLiteral("#f2c14e")}, 1.8,
+                               Qt::DashLine});
+    pending_edge_->setData(NodeGraphItemKindRole,
+                           QString::fromLatin1(GraphCanvasPendingEdgeItem));
+    pending_edge_->setData(NodeGraphNameRole,
+                           qtext(pending_connection_->node));
+    pending_edge_->setData(GraphCanvasPortRole, port);
+    pending_edge_->setPath(
+        curveGeometryBetween(pending_connection_->origin,
+                             pending_connection_->origin).path);
+}
+
+void GraphCanvasScene::finishConnection(const QPointF &position) {
+    if (!pending_connection_ || model_ == nullptr) {
+        clearPendingConnection();
+        return;
+    }
+    const auto pending = *pending_connection_;
+    clearPendingConnection();
+    const QString wanted = pending.from_output ? QStringLiteral("input")
+                                               : QStringLiteral("output");
+    for (QGraphicsItem *item : items(position)) {
+        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasSocketItem}) continue;
+        if (item->data(GraphCanvasSocketDirectionRole).toString() != wanted) continue;
+        const auto port = item->data(GraphCanvasPortRole).toString();
+        if (port.isEmpty()) return; // A folded node names no single port.
+        const auto node = item->data(NodeGraphNameRole).toString().toStdString();
+        const auto from_node = pending.from_output ? pending.node : node;
+        const auto from_port = pending.from_output ? pending.port : port.toStdString();
+        const auto to_node = pending.from_output ? node : pending.node;
+        const auto to_port = pending.from_output ? port.toStdString() : pending.port;
+        // A drag that does not type-check does not land: the socket is simply
+        // not one this edge can end on.
+        afterEdit(model_->connectInput(to_node, to_port, from_node, from_port));
+        return;
+    }
+    // Dropped on nothing. From an input socket that is standing on an edge,
+    // that is how the edge is cut; from an output socket it means nothing.
+    if (pending.from_output) return;
+    const auto drawn = model_->nodes();
+    const auto owner = std::ranges::find(drawn, pending.node, &GraphCanvasNode::id);
+    if (owner == drawn.end()) return;
+    const auto port = std::ranges::find(owner->inputs, pending.port,
+                                        &GraphCanvasPort::port);
+    if (port == owner->inputs.end() || !port->connected) return;
+    afterEdit(model_->disconnectInput(pending.node, pending.port));
+}
+
 void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
+    if (event->button() == Qt::LeftButton) {
+        for (QGraphicsItem *item : items(event->scenePos())) {
+            const QString kind = nodeGraphItemKind(*item);
+            if (kind == QLatin1String{GraphCanvasEditorItem}) break;
+            if (kind == QLatin1String{GraphCanvasCollapseItem}) {
+                event->accept();
+                // Folding rebuilds the scene, which deletes the item this
+                // press is standing on. Same reason as the breadcrumb: do it
+                // from the event loop, not from inside the dispatch.
+                const auto id = item->data(NodeGraphNameRole).toString().toStdString();
+                QMetaObject::invokeMethod(
+                    this, [this, id] { toggleCollapsed(id); },
+                    Qt::QueuedConnection);
+                return;
+            }
+            if (kind == QLatin1String{GraphCanvasSocketItem}) {
+                event->accept();
+                selectNode(item->data(NodeGraphNameRole).toString().toStdString());
+                beginConnection(*item);
+                return;
+            }
+            if (kind == QLatin1String{GraphCanvasValuePillItem}) {
+                event->accept();
+                const auto node = item->data(NodeGraphNameRole).toString().toStdString();
+                selectNode(node);
+                beginValueEdit(node, item->data(GraphCanvasPortRole).toString().toStdString());
+                return;
+            }
+            if (kind == QLatin1String{GraphCanvasEdgeItem} ||
+                kind == QLatin1String{GraphCanvasEdgeArrowItem}) {
+                event->accept();
+                selectEdge(GraphCanvasEdge{
+                    item->data(NodeGraphFromNameRole).toString().toStdString(),
+                    item->data(GraphCanvasFromPortRole).toString().toStdString(),
+                    item->data(NodeGraphToNameRole).toString().toStdString(),
+                    item->data(GraphCanvasToPortRole).toString().toStdString()});
+                return;
+            }
+            if (isNodeSurface(kind)) break;
+        }
+    }
     const auto generation = rebuild_generation_;
     QGraphicsScene::mousePressEvent(event);
     if (event->button() != Qt::LeftButton) return;
@@ -669,12 +983,363 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
     if (generation != rebuild_generation_) return;
     for (QGraphicsItem *item : items(event->scenePos())) {
         if (!isNodeSurface(nodeGraphItemKind(*item))) continue;
-        selected_node_ = item->data(NodeGraphNameRole).toString().toStdString();
-        setProperty("pelicanGraphSelectedNode", item->data(NodeGraphNameRole));
-        applyEdgeEmphasis();
-        if (selectionChanged) selectionChanged();
+        selectNode(item->data(NodeGraphNameRole).toString().toStdString());
         return;
     }
+}
+
+void GraphCanvasScene::mouseMoveEvent(QGraphicsSceneMouseEvent *event) {
+    if (pending_connection_ && pending_edge_ != nullptr) {
+        event->accept();
+        pending_edge_->setPath(
+            curveGeometryBetween(pending_connection_->from_output
+                                     ? pending_connection_->origin
+                                     : event->scenePos(),
+                                 pending_connection_->from_output
+                                     ? event->scenePos()
+                                     : pending_connection_->origin)
+                .path);
+        return;
+    }
+    QGraphicsScene::mouseMoveEvent(event);
+}
+
+void GraphCanvasScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
+    if (pending_connection_) {
+        event->accept();
+        finishConnection(event->scenePos());
+        return;
+    }
+    QGraphicsScene::mouseReleaseEvent(event);
+}
+
+void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
+    context_position_ = event->scenePos();
+    if (addNodeRequested) {
+        event->accept();
+        addNodeRequested(context_position_);
+        return;
+    }
+    QGraphicsScene::contextMenuEvent(event);
+}
+
+// One editor at a time, over the thing it edits. It owns nothing the scene
+// owns: the proxy is an item like any other, and clearing the scene ends it.
+struct GraphCanvasScene::InlineEditor {
+    enum class Kind { label, value };
+
+    Kind kind = Kind::label;
+    std::string node;
+    std::string port;
+    ValueEditorKind value_kind = ValueEditorKind::number;
+    QGraphicsProxyWidget *proxy = nullptr;
+    QWidget *widget = nullptr;
+    std::unique_ptr<InlineEditFilter> filter;
+};
+
+GraphCanvasScene::~GraphCanvasScene() {
+    // The filter outlives nothing: an editor still open when the scene goes
+    // must not be left watching a widget the base class is about to delete.
+    if (editor_ && editor_->widget != nullptr && editor_->filter)
+        editor_->widget->removeEventFilter(editor_->filter.get());
+}
+
+namespace {
+QString editorText(const QWidget *widget);
+} // namespace
+
+void GraphCanvasScene::closeEditor() {
+    if (!editor_) return;
+    auto editor = std::move(editor_);
+    if (editor->widget != nullptr && editor->filter)
+        editor->widget->removeEventFilter(editor->filter.get());
+    if (editor->proxy != nullptr) {
+        removeItem(editor->proxy);
+        // The editor is often closed from inside its own event handler, so it
+        // outlives this call by one trip through the event loop.
+        editor->proxy->deleteLater();
+    }
+}
+
+namespace {
+// The item the editor has to cover, found by kind and by what it names.
+QGraphicsItem *findHeadingLabel(QGraphicsScene &scene, const QString &node) {
+    for (QGraphicsItem *item : scene.items()) {
+        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeLabelItem}) continue;
+        if (item->data(NodeGraphNameRole).toString() != node) continue;
+        if (!item->data(GraphCanvasHeadingRole).toBool()) continue;
+        if (item->data(GraphCanvasLabelRole).toString().isEmpty()) continue;
+        return item;
+    }
+    return nullptr;
+}
+
+QGraphicsItem *findPill(QGraphicsScene &scene, const QString &node,
+                        const QString &port) {
+    for (QGraphicsItem *item : scene.items()) {
+        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasValuePillItem}) continue;
+        if (item->data(NodeGraphNameRole).toString() != node) continue;
+        if (item->data(GraphCanvasPortRole).toString() != port) continue;
+        if (item->data(GraphCanvasValueTextRole).toString().isEmpty()) continue;
+        return item;
+    }
+    return nullptr;
+}
+
+QString editorText(const QWidget *widget) {
+    if (const auto *line = qobject_cast<const QLineEdit *>(widget)) return line->text();
+    if (const auto *spin = qobject_cast<const QDoubleSpinBox *>(widget))
+        return QString::number(spin->value(), 'g', 10);
+    if (const auto *check = qobject_cast<const QCheckBox *>(widget))
+        return check->isChecked() ? QStringLiteral("true") : QStringLiteral("false");
+    return {};
+}
+
+void setEditorText(QWidget *widget, const QString &text) {
+    if (auto *line = qobject_cast<QLineEdit *>(widget)) {
+        line->setText(text);
+        return;
+    }
+    if (auto *spin = qobject_cast<QDoubleSpinBox *>(widget)) {
+        spin->setValue(text.toDouble());
+        return;
+    }
+    if (auto *check = qobject_cast<QCheckBox *>(widget))
+        check->setChecked(text.compare(QLatin1String{"true"},
+                                       Qt::CaseInsensitive) == 0 ||
+                          text == QLatin1String{"1"});
+}
+} // namespace
+
+bool GraphCanvasScene::beginLabelEdit(const std::string &id) {
+    if (model_ == nullptr || !model_->canEdit()) return false;
+    const auto drawn = model_->nodes();
+    const auto found = std::ranges::find(drawn, id, &GraphCanvasNode::id);
+    if (found == drawn.end()) return false;
+    closeEditor();
+    QGraphicsItem *anchor = findHeadingLabel(*this, qtext(id));
+    if (anchor == nullptr) return false;
+
+    auto editor = std::make_unique<InlineEditor>();
+    editor->kind = InlineEditor::Kind::label;
+    editor->node = id;
+    auto *line = new QLineEdit;
+    // The current label, not the heading: an unlabelled node starts empty, so
+    // pressing Enter on it leaves it unlabelled rather than freezing its id in.
+    line->setText(qtext(found->label));
+    line->setPlaceholderText(qtext(found->id));
+    line->selectAll();
+    editor->widget = line;
+
+    auto *proxy = addWidget(line);
+    proxy->setZValue(6.0);
+    const QRectF area = anchor->sceneBoundingRect();
+    line->resize(std::max<int>(140, static_cast<int>(area.width() + 80)),
+                 static_cast<int>(GraphCanvasHeaderHeight - 8.0));
+    proxy->setPos(area.left() - 2.0, area.center().y() - line->height() / 2.0);
+    proxy->setData(NodeGraphItemKindRole,
+                   QString::fromLatin1(GraphCanvasEditorItem));
+    proxy->setData(NodeGraphNameRole, qtext(id));
+    editor->proxy = proxy;
+    editor->filter = std::make_unique<InlineEditFilter>([this](bool commit) {
+        // The widget is still dispatching the event that ended the edit.
+        QMetaObject::invokeMethod(
+            this, [this, commit] {
+                if (commit) commitInlineEdit();
+                else cancelInlineEdit();
+            },
+            Qt::QueuedConnection);
+    });
+    line->installEventFilter(editor->filter.get());
+    editor_ = std::move(editor);
+    line->setFocus();
+    return true;
+}
+
+bool GraphCanvasScene::beginValueEdit(const std::string &id, const std::string &port) {
+    if (model_ == nullptr || !model_->canEdit() || port.empty()) return false;
+    const auto drawn = model_->nodes();
+    const auto found = std::ranges::find(drawn, id, &GraphCanvasNode::id);
+    if (found == drawn.end()) return false;
+    const auto entry = std::ranges::find(found->inputs, port, &GraphCanvasPort::port);
+    if (entry == found->inputs.end() || entry->connected) return false;
+    closeEditor();
+    QGraphicsItem *anchor = findPill(*this, qtext(id), qtext(port));
+    if (anchor == nullptr) return false;
+
+    // What is being edited is the stored value, even when the pill is showing
+    // the number a published generation fed the port: the document is the only
+    // thing an edit can change.
+    const nlohmann::json current =
+        entry->has_parameter ? entry->parameter
+        : entry->has_value   ? nlohmann::json(entry->value)
+                             : nlohmann::json(0.0);
+    auto editor = std::make_unique<InlineEditor>();
+    editor->kind = InlineEditor::Kind::value;
+    editor->node = id;
+    editor->port = port;
+    editor->value_kind = editorKindFor(current);
+    switch (editor->value_kind) {
+    case ValueEditorKind::boolean: {
+        auto *check = new QCheckBox;
+        check->setChecked(current.get<bool>());
+        editor->widget = check;
+        break;
+    }
+    case ValueEditorKind::number: {
+        auto *spin = new QDoubleSpinBox;
+        spin->setDecimals(6);
+        spin->setRange(-1.0e9, 1.0e9);
+        spin->setValue(current.get<double>());
+        spin->setKeyboardTracking(false);
+        editor->widget = spin;
+        break;
+    }
+    case ValueEditorKind::text: {
+        auto *line = new QLineEdit;
+        line->setText(qtext(current.get<std::string>()));
+        line->selectAll();
+        editor->widget = line;
+        break;
+    }
+    case ValueEditorKind::json: {
+        auto *line = new QLineEdit;
+        line->setText(qtext(current.dump()));
+        line->selectAll();
+        editor->widget = line;
+        break;
+    }
+    }
+
+    auto *proxy = addWidget(editor->widget);
+    proxy->setZValue(6.0);
+    const QRectF area = anchor->sceneBoundingRect();
+    editor->widget->resize(
+        std::max<int>(96, static_cast<int>(area.width() + 40)),
+        std::max<int>(18, static_cast<int>(area.height() + 6.0)));
+    proxy->setPos(area.right() - editor->widget->width(),
+                  area.center().y() - editor->widget->height() / 2.0);
+    proxy->setData(NodeGraphItemKindRole,
+                   QString::fromLatin1(GraphCanvasEditorItem));
+    proxy->setData(NodeGraphNameRole, qtext(id));
+    proxy->setData(GraphCanvasPortRole, qtext(port));
+    editor->proxy = proxy;
+    editor->filter = std::make_unique<InlineEditFilter>([this](bool commit) {
+        QMetaObject::invokeMethod(
+            this, [this, commit] {
+                if (commit) commitInlineEdit();
+                else cancelInlineEdit();
+            },
+            Qt::QueuedConnection);
+    });
+    editor->widget->installEventFilter(editor->filter.get());
+    editor_ = std::move(editor);
+    editor_->widget->setFocus();
+    return true;
+}
+
+QString GraphCanvasScene::inlineEditText() const {
+    return editor_ ? editorText(editor_->widget) : QString{};
+}
+
+void GraphCanvasScene::setInlineEditText(const QString &text) {
+    if (editor_) setEditorText(editor_->widget, text);
+}
+
+void GraphCanvasScene::cancelInlineEdit() { closeEditor(); }
+
+bool GraphCanvasScene::commitInlineEdit() {
+    if (!editor_ || model_ == nullptr) return false;
+    const auto kind = editor_->kind;
+    const auto node = editor_->node;
+    const auto port = editor_->port;
+    const auto value_kind = editor_->value_kind;
+    const auto text = editorText(editor_->widget);
+    closeEditor();
+    if (kind == InlineEditor::Kind::label) {
+        const bool submitted = model_->setNodeLabel(node, text.toStdString());
+        afterEdit(submitted);
+        return submitted;
+    }
+    nlohmann::json value;
+    switch (value_kind) {
+    case ValueEditorKind::boolean:
+        value = text == QLatin1String{"true"};
+        break;
+    case ValueEditorKind::number: {
+        bool numeric = false;
+        const double parsed = text.toDouble(&numeric);
+        if (!numeric) return false;
+        value = parsed;
+        break;
+    }
+    case ValueEditorKind::text:
+        value = text.toStdString();
+        break;
+    case ValueEditorKind::json: {
+        const auto bytes = text.toStdString();
+        if (!nlohmann::json::accept(bytes)) return false;
+        value = nlohmann::json::parse(bytes);
+        break;
+    }
+    }
+    const bool submitted = model_->setNodeParameter(node, port, value);
+    afterEdit(submitted);
+    return submitted;
+}
+
+void GraphCanvasScene::placeNewNode(const std::string &id) {
+    if (model_ == nullptr || id.empty()) return;
+    // Beside the selected node when there is one, otherwise where the canvas
+    // was right-clicked. Either way it is session state, like every position.
+    QPointF position = context_position_;
+    if (selected_node_) {
+        if (const auto found = session_node_positions_.find(
+                {model_->currentScope(), *selected_node_});
+            found != session_node_positions_.end()) {
+            position = found->second +
+                       QPointF{NodeGraphNodeWidth + NodeGraphHorizontalGap, 0.0};
+        } else if (QGraphicsItem *item = findNodeItem(
+                       *this, graphCanvasKinds(), qtext(model_->currentScope()),
+                       qtext(*selected_node_))) {
+            position = item->pos() +
+                       QPointF{NodeGraphNodeWidth + NodeGraphHorizontalGap, 0.0};
+        }
+    }
+    session_node_positions_[{model_->currentScope(), id}] = position;
+}
+
+bool GraphCanvasScene::addFromPalette(const std::string &op,
+                                      const std::string &definition) {
+    if (model_ == nullptr || !model_->canEdit()) return false;
+    // The id the model is about to choose is the one the position is filed
+    // under: asking twice would answer differently once the node exists.
+    const auto ops = model_->addNodeOps(op, definition);
+    if (ops.empty()) return false;
+    const auto &added = ops.back();
+    if (!model_->addNode(op, definition)) return false;
+    placeNewNode(added.at("node").value("id", std::string{}));
+    afterEdit(true);
+    return true;
+}
+
+bool GraphCanvasScene::deleteSelection() {
+    if (model_ == nullptr) return false;
+    if (selected_edge_)
+        return model_->disconnectInput(selected_edge_->to_node, selected_edge_->to_port);
+    if (selected_node_) return model_->removeNode(*selected_node_);
+    return false;
+}
+
+void GraphCanvasScene::keyPressEvent(QKeyEvent *event) {
+    if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) {
+        if (deleteSelection()) {
+            event->accept();
+            afterEdit(true);
+            return;
+        }
+    }
+    QGraphicsScene::keyPressEvent(event);
 }
 
 void GraphCanvasScene::leaveCurrentScope() {
@@ -691,6 +1356,15 @@ void GraphCanvasScene::enterInstanceScope(const std::string &id) {
 
 void GraphCanvasScene::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) {
     if (model_ != nullptr && event->button() == Qt::LeftButton) {
+        // The heading is the node's name, so double-clicking it renames the
+        // node. Anywhere else on the node still means "show me what is in it".
+        for (QGraphicsItem *item : items(event->scenePos())) {
+            if (nodeGraphItemKind(*item) == QLatin1String{GraphCanvasEditorItem}) break;
+            if (!item->data(GraphCanvasHeadingRole).toBool()) continue;
+            event->accept();
+            beginLabelEdit(item->data(NodeGraphNameRole).toString().toStdString());
+            return;
+        }
         for (QGraphicsItem *item : items(event->scenePos())) {
             if (!isNodeSurface(nodeGraphItemKind(*item))) continue;
             const auto id = item->data(NodeGraphNameRole).toString().toStdString();
@@ -719,6 +1393,9 @@ struct GraphCanvasWidget::Impl {
     QLabel *breadcrumb = nullptr;
     QLabel *notice = nullptr;
     QTreeWidget *details = nullptr;
+    QLineEdit *label_edit = nullptr;
+    QPushButton *apply_label = nullptr;
+    QPushButton *add_node = nullptr;
     QHash<qint64, quint64> transport_requests;
     std::uint64_t rendered_content = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t rendered_report = std::numeric_limits<std::uint64_t>::max();
@@ -758,13 +1435,34 @@ struct GraphCanvasWidget::Impl {
         canvas->setObjectName(QStringLiteral("pelican.graphCanvasView"));
         canvas->setDragMode(QGraphicsView::RubberBandDrag);
         canvas->setRenderHint(QPainter::Antialiasing, true);
+        // Delete has to reach the scene, and a right-click on the canvas has to
+        // reach the scene's own handler rather than the view's context menu.
+        canvas->setFocusPolicy(Qt::StrongFocus);
+        canvas->setContextMenuPolicy(Qt::DefaultContextMenu);
         splitter->addWidget(canvas);
-        details = new QTreeWidget(splitter);
+        auto *side = new QWidget(splitter);
+        auto *side_layout = new QVBoxLayout(side);
+        side_layout->setContentsMargins(0, 0, 0, 0);
+        auto *label_row = new QHBoxLayout;
+        label_row->addWidget(new QLabel(QObject::tr("Label:"), side));
+        label_edit = new QLineEdit(side);
+        label_edit->setObjectName(QStringLiteral("pelican.graphCanvasLabel"));
+        label_edit->setPlaceholderText(QObject::tr("(no label: the id is the heading)"));
+        label_row->addWidget(label_edit, 1);
+        apply_label = new QPushButton(QObject::tr("Rename"), side);
+        apply_label->setObjectName(QStringLiteral("pelican.graphCanvasRename"));
+        label_row->addWidget(apply_label);
+        add_node = new QPushButton(QObject::tr("Add node..."), side);
+        add_node->setObjectName(QStringLiteral("pelican.graphCanvasAddNode"));
+        label_row->addWidget(add_node);
+        side_layout->addLayout(label_row);
+        details = new QTreeWidget(side);
         details->setObjectName(QStringLiteral("pelican.graphCanvasDetails"));
         details->setColumnCount(2);
         details->setHeaderLabels({QObject::tr("Field"), QObject::tr("Value")});
         details->setRootIsDecorated(true);
-        splitter->addWidget(details);
+        side_layout->addWidget(details, 1);
+        splitter->addWidget(side);
         splitter->setStretchFactor(0, 3);
         splitter->setStretchFactor(1, 2);
         layout->addWidget(splitter, 1);
@@ -776,6 +1474,10 @@ struct GraphCanvasWidget::Impl {
             showDetails();
         };
         scene->selectionChanged = [this] { showDetails(); };
+        // Every canvas gesture is applied the moment it finishes, so the only
+        // thing left to do here is post what the model already built.
+        scene->editSubmitted = [this] { dispatch(); };
+        scene->addNodeRequested = [this](const QPointF &) { openPalette(); };
 
         QObject::connect(refresh, &QPushButton::clicked, &view, [this] {
             model.refresh();
@@ -801,6 +1503,18 @@ struct GraphCanvasWidget::Impl {
                     value_instances->itemData(index).toString().toStdString());
                 dispatch();
             });
+        // The same rename the heading's double-click performs, for a node that
+        // is easier to reach in the list than on the canvas.
+        const auto rename = [this] {
+            const auto &selected = scene->selectedNode();
+            if (!selected) return;
+            if (model.setNodeLabel(*selected, label_edit->text().toStdString()))
+                dispatch();
+        };
+        QObject::connect(apply_label, &QPushButton::clicked, &view, rename);
+        QObject::connect(label_edit, &QLineEdit::returnPressed, &view, rename);
+        QObject::connect(add_node, &QPushButton::clicked, &view,
+                         [this] { openPalette(); });
 
         // ready() reports the current state synchronously, which happens while
         // the widget's pointer to this Impl is still null. Every handler works
@@ -861,6 +1575,16 @@ struct GraphCanvasWidget::Impl {
             else if (request.method == "get_graph_values" && graph.requestGraphValues)
                 transport = graph.requestGraphValues(
                     qtext(request.params.value("instance", std::string{})), &error);
+            else if (request.method == "edit_graph_document" &&
+                     graph.requestEditGraphDocument)
+                transport = graph.requestEditGraphDocument(
+                    qtext(request.params.value("base_source_digest", std::string{})),
+                    QByteArray::fromStdString(
+                        request.params.value("ops", nlohmann::json::array()).dump()),
+                    &error);
+            else if (request.method == "get_edit_result" && graph.requestEditResult)
+                transport = graph.requestEditResult(
+                    qtext(request.params.value("ticket", std::string{})), &error);
             else
                 error = QObject::tr("The graph canvas cannot issue %1.")
                             .arg(qtext(request.method));
@@ -900,13 +1624,102 @@ struct GraphCanvasWidget::Impl {
         value_instances->setCurrentIndex(index < 0 ? 0 : index);
     }
 
+    // The "Add node..." palette: the catalog, narrowed by domain and by what
+    // the user types, and an instance also needs the definition it stands on.
+    void openPalette() {
+        if (!model.canEdit()) return;
+        QDialog dialog{&view};
+        dialog.setObjectName(QStringLiteral("pelican.graphCanvasPalette"));
+        dialog.setWindowTitle(QObject::tr("Add node"));
+        auto *layout = new QVBoxLayout(&dialog);
+        auto *filters = new QHBoxLayout;
+        auto *domains = new QComboBox(&dialog);
+        domains->setObjectName(QStringLiteral("pelican.graphCanvasPaletteDomain"));
+        domains->addItem(QObject::tr("all domains"), QString{});
+        for (const auto &domain : model.paletteDomains())
+            domains->addItem(qtext(domain), qtext(domain));
+        filters->addWidget(domains);
+        auto *search = new QLineEdit(&dialog);
+        search->setObjectName(QStringLiteral("pelican.graphCanvasPaletteFilter"));
+        search->setPlaceholderText(QObject::tr("filter by name"));
+        filters->addWidget(search, 1);
+        layout->addLayout(filters);
+        auto *list = new QListWidget(&dialog);
+        list->setObjectName(QStringLiteral("pelican.graphCanvasPaletteList"));
+        layout->addWidget(list, 1);
+        auto *definitions = new QComboBox(&dialog);
+        definitions->setObjectName(
+            QStringLiteral("pelican.graphCanvasPaletteDefinition"));
+        for (const auto &scope : model.scopes())
+            if (!scope.root) definitions->addItem(qtext(scope.label), qtext(scope.id));
+        definitions->hide();
+        layout->addWidget(definitions);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
+                                                 QDialogButtonBox::Cancel,
+                                             &dialog);
+        layout->addWidget(buttons);
+        QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+        const auto reload = [&] {
+            list->clear();
+            for (const auto &entry : model.paletteOperations(
+                     search->text().toStdString(),
+                     domains->currentData().toString().toStdString())) {
+                auto *row = new QListWidgetItem(
+                    entry.structural
+                        ? QStringLiteral("%1   (structure)").arg(qtext(entry.op))
+                        : QStringLiteral("%1   (%2)").arg(qtext(entry.op),
+                                                          qtext(entry.domain)),
+                    list);
+                row->setData(Qt::UserRole, qtext(entry.op));
+            }
+            if (list->count() > 0) list->setCurrentRow(0);
+        };
+        const auto syncDefinition = [&] {
+            auto *row = list->currentItem();
+            definitions->setVisible(
+                row != nullptr &&
+                row->data(Qt::UserRole).toString() == QLatin1String{"graph.instance"});
+        };
+        QObject::connect(search, &QLineEdit::textChanged, &dialog, [&] {
+            reload();
+            syncDefinition();
+        });
+        QObject::connect(domains, &QComboBox::currentIndexChanged, &dialog, [&] {
+            reload();
+            syncDefinition();
+        });
+        QObject::connect(list, &QListWidget::currentRowChanged, &dialog,
+                         [&] { syncDefinition(); });
+        QObject::connect(list, &QListWidget::itemDoubleClicked, &dialog,
+                         &QDialog::accept);
+        reload();
+        syncDefinition();
+        if (dialog.exec() != QDialog::Accepted) return;
+        auto *row = list->currentItem();
+        if (row == nullptr) return;
+        scene->addFromPalette(row->data(Qt::UserRole).toString().toStdString(),
+                              definitions->currentData().toString().toStdString());
+    }
+
     void showDetails() {
         details->clear();
         const auto &selected = scene->selectedNode();
-        if (!selected) return;
+        label_edit->setEnabled(selected.has_value() && model.canEdit());
+        apply_label->setEnabled(selected.has_value() && model.canEdit());
+        add_node->setEnabled(model.canEdit());
+        if (!selected) {
+            label_edit->clear();
+            return;
+        }
         const auto nodes = model.nodes();
         const auto found = std::ranges::find(nodes, *selected, &GraphCanvasNode::id);
-        if (found == nodes.end()) return;
+        if (found == nodes.end()) {
+            label_edit->clear();
+            return;
+        }
+        label_edit->setText(qtext(found->label));
         const auto row = [this](const QString &field, const QString &value) {
             auto *item = new QTreeWidgetItem(details);
             item->setText(0, field);
@@ -914,7 +1727,8 @@ struct GraphCanvasWidget::Impl {
             return item;
         };
         // The heading first, in the order the canvas shows it: the chosen name,
-        // then what the node actually is. Editing the label is N-2.
+        // then what the node actually is. The field above the table is where it
+        // is edited; this row is what the canvas is currently showing.
         row(QObject::tr("label"),
             found->label.empty()
                 ? QObject::tr("%1  (no label: the id is the heading)")
@@ -1008,6 +1822,24 @@ GraphCanvasWidget::~GraphCanvasWidget() = default;
 void GraphCanvasWidget::refresh() {
     impl_->model.refresh();
     impl_->dispatch();
+}
+
+bool GraphCanvasWidget::revealNode(const QString &node) {
+    const auto id = node.toStdString();
+    // The Inspector names a producer in the root document, so the trail comes
+    // back to the root before the node is looked for.
+    impl_->model.selectScope({});
+    const auto nodes = impl_->model.nodes();
+    if (std::ranges::none_of(nodes, [&](const GraphCanvasNode &drawn) {
+            return drawn.id == id;
+        }))
+        return false;
+    impl_->scene->repopulate();
+    impl_->scene->selectNode(id);
+    impl_->syncScopeControls();
+    impl_->syncValueControls();
+    impl_->showDetails();
+    return true;
 }
 
 void GraphCanvasWidget::setConnected(bool connected) {

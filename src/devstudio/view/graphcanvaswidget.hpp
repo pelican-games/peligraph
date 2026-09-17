@@ -15,7 +15,9 @@
 #include <string>
 #include <utility>
 
+class QGraphicsSceneContextMenuEvent;
 class QGraphicsSceneMouseEvent;
+class QKeyEvent;
 
 namespace PelicanStudio {
 
@@ -42,6 +44,11 @@ inline constexpr int GraphCanvasSocketShapeRole = Qt::UserRole + 3134;
 inline constexpr int GraphCanvasLabelRole = Qt::UserRole + 3135;
 inline constexpr int GraphCanvasValueTextRole = Qt::UserRole + 3136;
 inline constexpr int GraphCanvasValueSourceRole = Qt::UserRole + 3137;
+// True on the heading band and on everything drawn inside it. A double-click
+// there renames the node; anywhere else on the node it descends an instance,
+// and one flag keeps that split from depending on which child was hit.
+inline constexpr int GraphCanvasHeadingRole = Qt::UserRole + 3138;
+inline constexpr int GraphCanvasCollapsedRole = Qt::UserRole + 3139;
 inline constexpr int GraphCanvasScopeRole = NodeGraphGraphRole;
 
 inline constexpr auto GraphCanvasNodeItem = "graph_node";
@@ -52,6 +59,14 @@ inline constexpr auto GraphCanvasValuePillItem = "graph_value_pill";
 inline constexpr auto GraphCanvasEdgeItem = "graph_edge";
 inline constexpr auto GraphCanvasEdgeArrowItem = "graph_edge_arrow";
 inline constexpr auto GraphCanvasBreadcrumbItem = "graph_breadcrumb";
+// The fold triangle in the heading band. Its own kind, because a press on it
+// must fold the node rather than start dragging it.
+inline constexpr auto GraphCanvasCollapseItem = "graph_node_collapse";
+// The line that follows the cursor between grabbing a socket and dropping on
+// one. It is not an edge: nothing in the document answers for it yet.
+inline constexpr auto GraphCanvasPendingEdgeItem = "graph_pending_edge";
+// The in-place editor a pill or a heading opens.
+inline constexpr auto GraphCanvasEditorItem = "graph_inline_editor";
 
 // The node is a heading band over two socket sections, so its height follows
 // its port count rather than a constant. The numbers are here so the scene
@@ -72,40 +87,101 @@ const NodeGraphKinds &graphCanvasKinds();
 SocketTypeFacts graphCanvasSocketFacts(const GraphCanvasModel &model,
                                        const std::string &type);
 
-// Read-only canvas over one scope of the common graph. Editing is N-2; this
-// scene changes nothing but which scope is being looked at and where the nodes
-// sit inside this session.
+// Editable canvas over one scope of the common graph. Every gesture that
+// changes the document goes out as exactly one edit_graph_document the moment
+// it finishes: there is no Apply button, and no undo (v0).
 class GraphCanvasScene final : public QGraphicsScene {
   public:
     explicit GraphCanvasScene(QObject *parent = nullptr);
     ~GraphCanvasScene() override;
 
     void setModel(GraphCanvasModel *model);
-    // Draw the model's current scope. Positions the user moved are kept for
-    // (scope, node id) and survive a refresh that leaves the node in place.
+    // Draw the model's current scope. Positions the user moved, the nodes they
+    // folded and the selection are kept for (scope, node id) and survive a
+    // refresh that leaves the node in place.
     void repopulate();
 
     // The scene changed which scope is shown (a double-click descended into a
     // definition, or the breadcrumb came back out).
     std::function<void()> scopeChanged;
     std::function<void()> selectionChanged;
+    // A gesture produced an edit: the owner has to drain the model's requests.
+    std::function<void()> editSubmitted;
+    // The canvas was right-clicked at this scene position; the owner opens the
+    // palette. The scene keeps the position so the new node lands there.
+    std::function<void(const QPointF &)> addNodeRequested;
 
     [[nodiscard]] const std::optional<std::string> &selectedNode() const noexcept {
         return selected_node_;
     }
+    // The edge the user picked, so Delete knows which input to clear.
+    [[nodiscard]] const std::optional<GraphCanvasEdge> &selectedEdge() const noexcept {
+        return selected_edge_;
+    }
+    void selectNode(const std::string &id);
+
+    // Folding is session state, filed exactly like a moved position: the
+    // document says nothing about how a node is being looked at.
+    [[nodiscard]] bool collapsed(const std::string &id) const;
+    void setCollapsed(const std::string &id, bool collapsed);
+    void toggleCollapsed(const std::string &id);
+
+    // Delete: an edge clears the input it lands on, a node is removed.
+    bool deleteSelection();
+
+    // In-place editing. begin* opens the editor over the thing it edits;
+    // commit sends one edit_graph_document, cancel sends nothing.
+    bool beginLabelEdit(const std::string &id);
+    bool beginValueEdit(const std::string &id, const std::string &port);
+    [[nodiscard]] bool editingInline() const noexcept { return editor_ != nullptr; }
+    // What the open editor currently holds, and a way to set it without a
+    // keyboard: the same text the user would have typed.
+    [[nodiscard]] QString inlineEditText() const;
+    void setInlineEditText(const QString &text);
+    bool commitInlineEdit();
+    void cancelInlineEdit();
+
+    // Add one operation from the palette, at the position the right-click
+    // named (or beside the selection when it came from elsewhere).
+    bool addFromPalette(const std::string &op, const std::string &definition = {});
+    [[nodiscard]] const QPointF &lastContextPosition() const noexcept {
+        return context_position_;
+    }
 
   protected:
     void mousePressEvent(QGraphicsSceneMouseEvent *event) override;
+    void mouseMoveEvent(QGraphicsSceneMouseEvent *event) override;
+    void mouseReleaseEvent(QGraphicsSceneMouseEvent *event) override;
     void mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) override;
+    void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
 
   private:
+    // One socket grabbed and not yet dropped. A drag that starts on an input
+    // and ends nowhere is how an edge is cut.
+    struct PendingConnection {
+        std::string node;
+        std::string port;
+        bool from_output = true;
+        QPointF origin;
+    };
+    struct InlineEditor;
+
     GraphCanvasModel *model_ = nullptr;
     // Editor session state: node positions never reach disk, and they are
     // filed under the scope so the same node id in two definitions does not
     // share one position.
     std::map<std::pair<std::string, std::string>, QPointF> session_node_positions_;
+    std::map<std::pair<std::string, std::string>, bool> session_collapsed_;
     std::optional<std::uint64_t> pruned_revision_;
     std::optional<std::string> selected_node_;
+    std::optional<GraphCanvasEdge> selected_edge_;
+    std::optional<PendingConnection> pending_connection_;
+    QGraphicsPathItem *pending_edge_ = nullptr;
+    std::unique_ptr<InlineEditor> editor_;
+    QPointF context_position_;
+    // Where the next added node goes, when the palette was opened over empty
+    // canvas rather than beside a selected node.
     bool rebuilding_ = false;
     bool scene_rect_update_queued_ = false;
     // A breadcrumb click rebuilds the scene from inside the base class's event
@@ -120,6 +196,13 @@ class GraphCanvasScene final : public QGraphicsScene {
     void pruneSessionPositions();
     void scheduleSceneRectUpdate();
     void applySceneRectNow();
+    void selectEdge(const GraphCanvasEdge &edge);
+    void beginConnection(const QGraphicsItem &socket);
+    void finishConnection(const QPointF &position);
+    void clearPendingConnection();
+    void closeEditor();
+    void placeNewNode(const std::string &id);
+    void afterEdit(bool submitted);
 };
 
 // The Graph tab of the render tools dock.
@@ -133,6 +216,9 @@ class GraphCanvasWidget final : public QWidget {
     ~GraphCanvasWidget() override;
 
     void refresh();
+    // Show one node of the root document: the Inspector's "Open the source"
+    // names a producer, and this is where it lands.
+    bool revealNode(const QString &node);
     // The same ingestion boundary the production RPC callback uses.
     void receiveResult(qint64 request_id, const QByteArray &result_json);
     void receiveFailure(qint64 request_id, const QString &message);

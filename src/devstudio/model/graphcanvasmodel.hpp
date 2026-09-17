@@ -100,6 +100,19 @@ struct GraphCanvasScope {
     bool root = false;
 };
 
+// One operation the "Add node..." palette can offer in the current scope.
+// `structural` marks graph.input and graph.instance: the catalog does not
+// declare their ports, and each belongs to one side of the scope boundary.
+struct GraphCanvasCatalogEntry {
+    std::string op;
+    std::string domain;
+    std::string evaluation;
+    bool sink = false;
+    bool structural = false;
+
+    bool operator==(const GraphCanvasCatalogEntry &) const = default;
+};
+
 // Reads the common graph for a read-only node canvas. Qt-independent, in the
 // same request/read two-slot shape as GraphAttachmentModel: the caller drains
 // takeRpcRequests(), sends them over whatever transport it has, and feeds the
@@ -108,7 +121,7 @@ struct GraphCanvasScope {
 // It only ever asks for the three reads the canvas can justify:
 // get_graph_instances, get_graph_catalog and get_graph_values.
 class GraphCanvasModel {
-    enum class RequestKind : std::uint8_t { Context, Catalog, Values };
+    enum class RequestKind : std::uint8_t { Context, Catalog, Values, Submit, Result };
     struct PendingRequest {
         std::uint64_t id = 0;
         RequestKind kind = RequestKind::Context;
@@ -142,6 +155,10 @@ class GraphCanvasModel {
     nlohmann::json values_ = nlohmann::json::array();
 
     InspectorNotice failure_;
+    // What the last edit is doing or did. Kept apart from failure_ so a failed
+    // report never reads as a failed edit, and the other way round.
+    InspectorNotice edit_notice_;
+    std::string ticket_;
     std::uint64_t content_revision_ = 0;
     std::uint64_t report_revision_ = 0;
 
@@ -162,6 +179,12 @@ class GraphCanvasModel {
                                      std::string_view port, int depth) const;
     const nlohmann::json *findNode(std::string_view scope,
                                    std::string_view id) const;
+    // One gesture is one op list, one ticket and one CAS: two edits in the same
+    // frame cannot both land.
+    bool submitOps(nlohmann::json ops);
+    // The scope token the engine understands: the root document is "root", a
+    // definition body is its own name.
+    [[nodiscard]] std::string scopeToken() const;
 
   public:
     void setConnected(bool connected);
@@ -231,8 +254,56 @@ class GraphCanvasModel {
 
     auto contentRevision() const noexcept { return content_revision_; }
     auto reportRevision() const noexcept { return report_revision_; }
-    bool busy() const noexcept { return pending_.has_value(); }
+    bool busy() const noexcept { return pending_.has_value() || !ticket_.empty(); }
     bool canRefresh() const noexcept { return connected_ && !busy(); }
+    // An edit needs a digest to compare against: without one there is nothing
+    // to hold the document still between the read and the write.
+    bool canEdit() const noexcept { return canRefresh() && !digest_.empty(); }
+
+    // --- Editing. Each call is one gesture on the canvas and, when it returns
+    // true, exactly one edit_graph_document carrying one op list. Every op
+    // names the scope the canvas is showing, so a definition body is edited in
+    // place rather than through its instances.
+
+    // The authored parameters object of a node in the current scope. The pill
+    // editor reads the whole of it and sends it back with one key replaced,
+    // because set_node_parameters replaces rather than merges.
+    nlohmann::json nodeParameters(std::string_view id) const;
+    // Whether the canvas should let this drag land: a port that declares no
+    // accepted type takes anything, and so does a producer whose type the
+    // catalog never named. Two declared types have to be the same one.
+    bool canConnect(std::string_view from_node, std::string_view from_port,
+                    std::string_view to_node, std::string_view to_port) const;
+
+    bool connectInput(const std::string &node, const std::string &port,
+                      const std::string &source_node, const std::string &source_port);
+    bool disconnectInput(const std::string &node, const std::string &port);
+    // One key of one node's parameters. For an instance port this is the
+    // stored value the port returns to; elsewhere it is the node's own setting.
+    bool setNodeParameter(const std::string &node, const std::string &key,
+                          const nlohmann::json &value);
+    bool removeNode(const std::string &node);
+    bool setNodeLabel(const std::string &node, const std::string &label);
+    // Add one catalog operation to the current scope. Required inputs are
+    // seeded with their own value.constant in the same op list, because a node
+    // whose required input is unconnected is not a document the engine loads.
+    bool addNode(const std::string &op, const std::string &definition = {});
+    // The ops addNode would send, so the same list can be read back in a test
+    // and replayed over the RPC.
+    nlohmann::json addNodeOps(const std::string &op, const std::string &definition = {}) const;
+
+    // What the palette offers here, filtered by a case-insensitive substring of
+    // the operation name and, when non-empty, by domain.
+    std::vector<GraphCanvasCatalogEntry> paletteOperations(
+        std::string_view text = {}, std::string_view domain = {}) const;
+    std::vector<std::string> paletteDomains() const;
+    // An id no node in this scope is using, derived from the operation name.
+    std::string suggestNodeId(std::string_view op) const;
+    // The stored values an instance of this definition has to start with: one
+    // per graph.input, its declared default or zero.
+    nlohmann::json definitionDefaults(std::string_view definition) const;
+
+    const InspectorNotice &editNotice() const noexcept { return edit_notice_; }
 };
 
 } // namespace PelicanStudio

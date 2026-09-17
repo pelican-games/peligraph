@@ -941,6 +941,130 @@ TEST_CASE("instance inputs change supply atomically and report what was drawn",
         REQUIRE(readBytes(source.path) == saved);
     }
 
+    SECTION("a definition body is edited in its own scope") {
+        // N-2: every edit op may name a scope. Without one it still means the
+        // root document, so the four ops that existed before keep their reach,
+        // and `definitions` now travels back out with the edit.
+        // The reply is a value: a range-for over `reply.at(...)` would iterate
+        // a destroyed temporary, so the whole of it is bound first.
+        const auto definitionBody = [&] {
+            return Json(service->getGraphInstances(Json::object())
+                            .at("definitions")
+                            .at("gain_curve"));
+        };
+        const auto definitionNode = [&](const char *id) {
+            const auto body = definitionBody();
+            for (const auto &node : body.at("nodes"))
+                if (node.at("id") == id) return Json(node);
+            FAIL("no such definition node: " + std::string{id});
+            return Json{};
+        };
+        const auto scoped = [](Json op) {
+            op["scope"] = "gain_curve";
+            return Json::array({std::move(op)});
+        };
+
+        // add_node lands inside the definition, not beside it in the root.
+        REQUIRE(commit(edit(scoped({{"op", "add_node"},
+            {"node", {{"id", "knob"}, {"op", "value.constant"},
+                      {"parameters", {{"value", 1}}},
+                      {"outputs", Json::array({"value"})}}}})))
+                .at("committed") == true);
+        REQUIRE(commit(edit(scoped({{"op", "add_node"},
+            {"node", {{"id", "scaled"}, {"op", "value.multiply"},
+                      {"inputs", {{"a", {{"node", "sum"}, {"port", "value"}}},
+                                  {"b", {{"node", "knob"}, {"port", "value"}}}}},
+                      {"outputs", Json::array({"value"})}}}})))
+                .at("committed") == true);
+        REQUIRE(definitionNode("scaled").at("op") == "value.multiply");
+        // The root document did not grow a node of its own.
+        REQUIRE(service->getGraphInstances(Json::object()).at("nodes").size() == 2);
+
+        // set_input rewires one edge inside the body.
+        REQUIRE(commit(edit(scoped({{"op", "set_input"}, {"node", "buffer"},
+            {"port", "value"}, {"source", {{"node", "scaled"}, {"port", "value"}}}})))
+                .at("committed") == true);
+        REQUIRE(definitionNode("buffer").at("inputs").at("value").at("node") == "scaled");
+
+        // set_node_parameters replaces that node's own settings -- it is not a
+        // merge, so the whole object goes out and comes back.
+        REQUIRE(definitionNode("knob").at("parameters").at("value") == 1);
+        REQUIRE(commit(edit(scoped({{"op", "set_node_parameters"}, {"node", "knob"},
+            {"parameters", {{"value", 3}}}}))).at("committed") == true);
+        REQUIRE(definitionNode("knob").at("parameters").at("value") == 3);
+
+        // set_node_label writes the authored name, and the empty string clears
+        // it -- there is no second op for "unname this".
+        REQUIRE(commit(edit(scoped({{"op", "set_node_label"}, {"node", "sum"},
+            {"label", "gain + bias"}}))).at("committed") == true);
+        REQUIRE(definitionNode("sum").at("label") == "gain + bias");
+        REQUIRE(commit(edit(scoped({{"op", "set_node_label"}, {"node", "buffer"},
+            {"label", ""}}))).at("committed") == true);
+        REQUIRE_FALSE(definitionNode("buffer").contains("label"));
+        // The same op reaches a root node with no scope at all.
+        REQUIRE(commit(edit(Json::array({Json{{"op", "set_node_label"},
+            {"node", "clock"}, {"label", "scene clock"}}}))).at("committed") == true);
+        const auto root_nodes = Json(service->getGraphInstances(Json::object()).at("nodes"));
+        for (const auto &node : root_nodes)
+            if (node.at("id") == "clock") REQUIRE(node.at("label") == "scene clock");
+
+        // remove_node takes the node back out of the body it was added to.
+        REQUIRE(commit(edit(scoped({{"op", "set_input"}, {"node", "buffer"},
+            {"port", "value"}, {"source", {{"node", "sum"}, {"port", "value"}}}})))
+                .at("committed") == true);
+        REQUIRE(commit(edit(scoped({{"op", "remove_node"}, {"node", "scaled"}})))
+                .at("committed") == true);
+        REQUIRE(commit(edit(scoped({{"op", "remove_node"}, {"node", "knob"}})))
+                .at("committed") == true);
+        const auto remaining = definitionBody();
+        for (const auto &node : remaining.at("nodes")) {
+            CHECK(node.at("id") != "scaled");
+            CHECK(node.at("id") != "knob");
+        }
+
+        // And what came back is still a document that loads and draws.
+        draw();
+        REQUIRE(portValue("gain").at("value") == 2.5);
+    }
+
+    SECTION("the scope boundary is refused by name in both directions") {
+        const auto saved = readBytes(source.path);
+        const auto reject = [&](Json ops, const char *code) {
+            const auto result = edit(std::move(ops));
+            REQUIRE(result.at("status") == "rejected");
+            CHECK(result.at("error").at("code") == code);
+            CHECK(readBytes(source.path) == saved);
+        };
+        // The definition's outputs map still names `sum`.
+        reject(Json::array({Json{{"op", "remove_node"}, {"scope", "gain_curve"},
+            {"node", "sum"}}}), "graph.output_referenced@1");
+        // `left` stores a value for both boundary ports, so neither can go.
+        reject(Json::array({Json{{"op", "remove_node"}, {"scope", "gain_curve"},
+            {"node", "gain"}}}), "graph.input_referenced@1");
+        reject(Json::array({Json{{"op", "remove_node"}, {"scope", "gain_curve"},
+            {"node", "bias"}}}), "graph.input_referenced@1");
+        // An instance belongs to the root document; a boundary port does not.
+        reject(Json::array({Json{{"op", "add_node"}, {"scope", "gain_curve"},
+            {"node", {{"id", "inner"}, {"op", "graph.instance"},
+                      {"definition", "gain_curve"}}}}}), "graph.nested_instance@1");
+        reject(Json::array({Json{{"op", "add_node"},
+            {"node", {{"id", "knob"}, {"op", "graph.input"}, {"default", 1}}}}}),
+            "graph.input_scope@1");
+        // The control for the whole feature: without a scope, a definition node
+        // is exactly as unreachable as it was before N-2.
+        reject(Json::array({Json{{"op", "set_node_label"}, {"node", "sum"},
+            {"label", "renamed"}}}), "graph.definition_immutable@1");
+        reject(Json::array({Json{{"op", "set_input"}, {"node", "buffer"},
+            {"port", "value"}, {"source", {{"node", "gain"}, {"port", "value"}}}}}),
+            "graph.definition_immutable@1");
+        // A scope nobody declared is not a silent no-op either.
+        const auto unknown = edit(Json::array({Json{{"op", "set_node_label"},
+            {"scope", "nowhere"}, {"node", "sum"}, {"label", "x"}}}));
+        REQUIRE(unknown.at("status") == "rejected");
+        CHECK(unknown.at("error").at("code") == "invalid_graph_document");
+        REQUIRE(readBytes(source.path) == saved);
+    }
+
     SECTION("the operation catalog reaches the editor over the same service") {
         const auto catalog = service->getGraphCatalog(Json::object());
         REQUIRE(catalog.at("schema") == "pelican.graph_catalog");

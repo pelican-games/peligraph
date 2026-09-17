@@ -35,6 +35,10 @@ class InspectorWidget final : public QWidget {
     void finishGizmoEdit(std::string_view field_key, bool commit);
     bool saveScene();
     void setRayGroupAction(std::function<void(const QString &)> action);
+    // Where "Open the source" on a graph input row goes. The Inspector names
+    // the producing node; the composition root decides which view shows it.
+    void setGraphSourceRevealAction(
+        std::function<void(const QString &node, const QString &port)> action);
 
   protected:
     bool eventFilter(QObject *watched, QEvent *event) override;

@@ -11,8 +11,11 @@
 #include <QGraphicsItem>
 #include <QGraphicsPathItem>
 #include <QGraphicsScene>
+#include <QGraphicsProxyWidget>
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsSimpleTextItem>
+#include <QKeyEvent>
+#include <QWidget>
 #include <QPointF>
 #include <QString>
 #include <QStringList>
@@ -269,6 +272,93 @@ void click(QGraphicsScene &scene, const QPointF &position,
     event.setButtons(Qt::LeftButton);
     QApplication::sendEvent(&scene, &event);
     QCoreApplication::processEvents();
+}
+
+// Press on one point, move, release on another: the whole of a socket drag,
+// which is the only gesture on this canvas that spans three events.
+void drag(QGraphicsScene &scene, const QPointF &from, const QPointF &to) {
+    QGraphicsSceneMouseEvent press{QEvent::GraphicsSceneMousePress};
+    press.setScenePos(from);
+    press.setButton(Qt::LeftButton);
+    press.setButtons(Qt::LeftButton);
+    QApplication::sendEvent(&scene, &press);
+    QGraphicsSceneMouseEvent move{QEvent::GraphicsSceneMouseMove};
+    move.setScenePos(to);
+    move.setButtons(Qt::LeftButton);
+    QApplication::sendEvent(&scene, &move);
+    QGraphicsSceneMouseEvent release{QEvent::GraphicsSceneMouseRelease};
+    release.setScenePos(to);
+    release.setButton(Qt::LeftButton);
+    QApplication::sendEvent(&scene, &release);
+    QCoreApplication::processEvents();
+}
+
+void pressKey(QGraphicsScene &scene, int key) {
+    QKeyEvent event{QEvent::KeyPress, key, Qt::NoModifier};
+    QApplication::sendEvent(&scene, &event);
+    QCoreApplication::processEvents();
+}
+
+// The one edit_graph_document a gesture produced, accepted so the model moves
+// on to polling for its ticket.
+Json takeEdit(GraphCanvasModel &model) {
+    auto requests = model.takeRpcRequests();
+    REQUIRE(requests.size() == 1);
+    REQUIRE(requests.front().method == "edit_graph_document");
+    const auto params = requests.front().params;
+    model.receiveRpcResult(
+        requests.front().request_id,
+        Json{{"status", "accepted"}, {"ticket", "graph-edit-1"}}.dump());
+    return params;
+}
+
+void finishEdit(GraphCanvasModel &model, const Json &document,
+                const Json &catalog) {
+    for (const auto &request : model.takeRpcRequests()) {
+        REQUIRE(request.method == "get_edit_result");
+        model.receiveRpcResult(
+            request.request_id,
+            Json{{"status", "committed"}, {"committed", true}}.dump());
+    }
+    answer(model, document, catalog);
+}
+
+QGraphicsItem *kindItem(QGraphicsScene &scene, const char *kind,
+                        const QString &node) {
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+                QLatin1String{kind} &&
+            item->data(PelicanStudio::NodeGraphNameRole).toString() == node)
+            return item;
+    return nullptr;
+}
+
+// The in-place editor as a widget, so the keyboard path -- Enter confirms,
+// Escape abandons -- can be driven the way a user drives it.
+QWidget *editorWidget(QGraphicsScene &scene) {
+    for (QGraphicsItem *item : scene.items()) {
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() !=
+            QLatin1String{PelicanStudio::GraphCanvasEditorItem})
+            continue;
+        if (auto *proxy = dynamic_cast<QGraphicsProxyWidget *>(item))
+            return proxy->widget();
+    }
+    return nullptr;
+}
+
+void typeKey(QWidget *widget, int key) {
+    REQUIRE(widget != nullptr);
+    QKeyEvent event{QEvent::KeyPress, key, Qt::NoModifier};
+    QApplication::sendEvent(widget, &event);
+    // The editor reports its decision from the event loop: it cannot delete
+    // itself inside the event it is still dispatching.
+    QCoreApplication::processEvents();
+}
+
+qreal nodeHeight(QGraphicsScene &scene, const QString &name) {
+    auto *item = dynamic_cast<QGraphicsPathItem *>(nodeItem(scene, name));
+    REQUIRE(item != nullptr);
+    return item->path().boundingRect().height();
 }
 } // namespace
 
@@ -679,4 +769,456 @@ TEST_CASE("Unconnected input rows carry the value, connected ones carry none",
     REQUIRE(port(model, "helmet_pulse", "time").has_value);
     REQUIRE(pillItem(scene, QStringLiteral("helmet_pulse"),
                      QStringLiteral("time")) == nullptr);
+}
+
+TEST_CASE("The heading triangle folds the socket rows and the edges follow",
+          "[devstudio][graph-canvas][scene][graph-edit]") {
+    (void)application();
+    PelicanStudio::resetSocketStyleDefaults();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    answer(model, connectedDocument(), visualCatalog());
+    scene.setModel(&model);
+    REQUIRE(model.enterInstance("left"));
+    scene.repopulate();
+
+    const qreal open_height = nodeHeight(scene, QStringLiteral("sum"));
+    REQUIRE(open_height > PelicanStudio::GraphCanvasHeaderHeight + 1.0);
+    REQUIRE_FALSE(scene.collapsed("sum"));
+    REQUIRE(socketItem(scene, QStringLiteral("sum"), QStringLiteral("a"),
+                       QStringLiteral("input")) != nullptr);
+
+    QGraphicsItem *arrow = kindItem(
+        scene, PelicanStudio::GraphCanvasCollapseItem, QStringLiteral("sum"));
+    REQUIRE(arrow != nullptr);
+    click(scene, arrow->sceneBoundingRect().center());
+
+    REQUIRE(scene.collapsed("sum"));
+    // The node is its heading band and nothing else.
+    REQUIRE(std::abs(nodeHeight(scene, QStringLiteral("sum")) -
+                     PelicanStudio::GraphCanvasHeaderHeight) < 0.01);
+    // The per-port sockets are gone; one anchor stands for all of them.
+    REQUIRE(socketItem(scene, QStringLiteral("sum"), QStringLiteral("a"),
+                       QStringLiteral("input")) == nullptr);
+    QGraphicsItem *anchor = socketItem(scene, QStringLiteral("sum"), QString{},
+                                       QStringLiteral("input"));
+    REQUIRE(anchor != nullptr);
+    QGraphicsItem *folded = nodeItem(scene, QStringLiteral("sum"));
+    REQUIRE(std::abs(anchor->sceneBoundingRect().center().y() -
+                     (folded->pos().y() +
+                      PelicanStudio::GraphCanvasHeaderHeight / 2.0)) < 0.01);
+
+    // Both edges into the folded node now end on that one point.
+    for (const auto &wire : {std::pair{"gain", "a"}, std::pair{"bias", "b"}}) {
+        QGraphicsPathItem *edge = edgeItem(
+            scene, QString::fromLatin1(wire.first), QStringLiteral("value"),
+            QStringLiteral("sum"), QString::fromLatin1(wire.second));
+        REQUIRE(edge != nullptr);
+        const QPainterPath path = edge->path();
+        const QPointF tip{path.elementAt(path.elementCount() - 1).x,
+                          path.elementAt(path.elementCount() - 1).y};
+        REQUIRE(tip == anchor->sceneBoundingRect().center());
+    }
+
+    // A refresh that lands on the same document keeps the fold, exactly as it
+    // keeps a moved position.
+    model.refresh();
+    answer(model, connectedDocument(), visualCatalog());
+    scene.repopulate();
+    REQUIRE(scene.collapsed("sum"));
+    REQUIRE(std::abs(nodeHeight(scene, QStringLiteral("sum")) -
+                     PelicanStudio::GraphCanvasHeaderHeight) < 0.01);
+
+    // And unfolding puts the rows back.
+    click(scene, kindItem(scene, PelicanStudio::GraphCanvasCollapseItem,
+                          QStringLiteral("sum"))
+                     ->sceneBoundingRect()
+                     .center());
+    REQUIRE_FALSE(scene.collapsed("sum"));
+    REQUIRE(nodeHeight(scene, QStringLiteral("sum")) == open_height);
+    REQUIRE(socketItem(scene, QStringLiteral("sum"), QStringLiteral("a"),
+                       QStringLiteral("input")) != nullptr);
+    // Nothing about folding is an edit: the document was never asked to change.
+    REQUIRE(model.takeRpcRequests().empty());
+}
+
+TEST_CASE("A socket drag sends one set_input, and a mismatched type sends none",
+          "[devstudio][graph-canvas][scene][graph-edit]") {
+    (void)application();
+    PelicanStudio::resetSocketStyleDefaults();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    answer(model, readFixture("graph_node_visuals"), visualCatalog());
+    scene.setModel(&model);
+    REQUIRE(model.enterInstance("helmet_pulse"));
+    scene.repopulate();
+
+    SECTION("output to input") {
+        QGraphicsItem *from =
+            socketItem(scene, QStringLiteral("shape"), QStringLiteral("value"),
+                       QStringLiteral("output"));
+        QGraphicsItem *to = socketItem(scene, QStringLiteral("sum"),
+                                       QStringLiteral("b"),
+                                       QStringLiteral("input"));
+        REQUIRE(from != nullptr);
+        REQUIRE(to != nullptr);
+        drag(scene, from->sceneBoundingRect().center(),
+             to->sceneBoundingRect().center());
+
+        const auto edit = takeEdit(model);
+        REQUIRE(edit.at("base_source_digest") == "source-a");
+        REQUIRE(edit.at("ops").size() == 1);
+        REQUIRE(edit.at("ops").at(0) ==
+                Json{{"op", "set_input"},
+                     {"scope", "gain_curve"},
+                     {"node", "sum"},
+                     {"port", "b"},
+                     {"source", {{"node", "shape"}, {"port", "value"}}}});
+    }
+
+    SECTION("a drag onto a port of another type does not land") {
+        // The definition body types everything as a scalar, so the mismatch
+        // has to come from the fixture that has a buffer in it.
+        GraphCanvasModel typed;
+        GraphCanvasScene typed_scene;
+        typed.setConnected(true);
+        answer(typed, connectedDocument(), visualCatalog());
+        typed_scene.setModel(&typed);
+        REQUIRE(typed.enterInstance("left"));
+        typed_scene.repopulate();
+
+        QGraphicsItem *buffer =
+            socketItem(typed_scene, QStringLiteral("buffer"),
+                       QStringLiteral("resource"), QStringLiteral("output"));
+        QGraphicsItem *scalar =
+            socketItem(typed_scene, QStringLiteral("sum"), QStringLiteral("a"),
+                       QStringLiteral("input"));
+        REQUIRE(buffer != nullptr);
+        REQUIRE(scalar != nullptr);
+        REQUIRE(buffer->data(PelicanStudio::GraphCanvasPortTypeRole).toString() ==
+                QStringLiteral("pelican.render.storage_buffer@1"));
+        REQUIRE_FALSE(typed.canConnect("buffer", "resource", "sum", "a"));
+        drag(typed_scene, buffer->sceneBoundingRect().center(),
+             scalar->sceneBoundingRect().center());
+        REQUIRE(typed.takeRpcRequests().empty());
+        // The same drag onto a port that does match is still allowed, so it is
+        // the type and not the drag that was refused.
+        REQUIRE(typed.canConnect("gain", "value", "sum", "b"));
+    }
+
+    SECTION("dragging a connected input onto nothing cuts the edge") {
+        QGraphicsItem *to = socketItem(scene, QStringLiteral("sum"),
+                                       QStringLiteral("b"),
+                                       QStringLiteral("input"));
+        REQUIRE(to != nullptr);
+        drag(scene, to->sceneBoundingRect().center(),
+             to->sceneBoundingRect().center() + QPointF{0.0, -600.0});
+        const auto edit = takeEdit(model);
+        REQUIRE(edit.at("ops").size() == 1);
+        REQUIRE(edit.at("ops").at(0) == Json{{"op", "set_input"},
+                                             {"scope", "gain_curve"},
+                                             {"node", "sum"},
+                                             {"port", "b"},
+                                             {"source", nullptr}});
+    }
+}
+
+TEST_CASE("Selecting an edge and pressing Delete clears the input it lands on",
+          "[devstudio][graph-canvas][scene][graph-edit]") {
+    (void)application();
+    PelicanStudio::resetSocketStyleDefaults();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    answer(model, readFixture("graph_node_visuals"), visualCatalog());
+    scene.setModel(&model);
+    REQUIRE(model.enterInstance("helmet_pulse"));
+    scene.repopulate();
+
+    QGraphicsPathItem *edge =
+        edgeItem(scene, QStringLiteral("bias"), QStringLiteral("value"),
+                 QStringLiteral("sum"), QStringLiteral("b"));
+    REQUIRE(edge != nullptr);
+    click(scene, edge->path().pointAtPercent(0.5));
+    REQUIRE(scene.selectedEdge().has_value());
+    REQUIRE(scene.selectedEdge()->to_node == "sum");
+    REQUIRE(scene.selectedEdge()->to_port == "b");
+    REQUIRE_FALSE(scene.selectedNode().has_value());
+
+    pressKey(scene, Qt::Key_Delete);
+    const auto edit = takeEdit(model);
+    REQUIRE(edit.at("ops").size() == 1);
+    REQUIRE(edit.at("ops").at(0) == Json{{"op", "set_input"},
+                                         {"scope", "gain_curve"},
+                                         {"node", "sum"},
+                                         {"port", "b"},
+                                         {"source", nullptr}});
+}
+
+TEST_CASE("A value pill opens in place and sends only the key that changed",
+          "[devstudio][graph-canvas][scene][graph-edit]") {
+    (void)application();
+    PelicanStudio::resetSocketStyleDefaults();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    const auto document = readFixture("graph_node_visuals");
+    answer(model, document, visualCatalog());
+    scene.setModel(&model);
+
+    QGraphicsItem *pill =
+        pillItem(scene, QStringLiteral("helmet_pulse"), QStringLiteral("gain"));
+    REQUIRE(pill != nullptr);
+    click(scene, pill->sceneBoundingRect().center());
+    REQUIRE(scene.editingInline());
+    // The editor starts on the stored value, spelled the way the pill does.
+    REQUIRE(scene.inlineEditText().toDouble() == 2.5);
+    scene.setInlineEditText(QStringLiteral("4.5"));
+    // Enter is what confirms it -- not a button, and not an Apply somewhere.
+    typeKey(editorWidget(scene), Qt::Key_Return);
+    REQUIRE_FALSE(scene.editingInline());
+
+    const auto edit = takeEdit(model);
+    REQUIRE(edit.at("ops").size() == 1);
+    // set_node_parameters replaces the object, so the whole of it goes out --
+    // with exactly one key different from what the document holds.
+    REQUIRE(edit.at("ops").at(0) ==
+            Json{{"op", "set_node_parameters"},
+                 {"scope", "root"},
+                 {"node", "helmet_pulse"},
+                 {"parameters", {{"time", 0}, {"gain", 4.5}, {"bias", 0.5}}}});
+    finishEdit(model, document, visualCatalog());
+
+    // Escape is the control: the same editor, abandoned, sends nothing.
+    QGraphicsItem *again =
+        pillItem(scene, QStringLiteral("helmet_pulse"), QStringLiteral("gain"));
+    REQUIRE(again != nullptr);
+    click(scene, again->sceneBoundingRect().center());
+    REQUIRE(scene.editingInline());
+    scene.setInlineEditText(QStringLiteral("9.25"));
+    typeKey(editorWidget(scene), Qt::Key_Escape);
+    REQUIRE_FALSE(scene.editingInline());
+    REQUIRE(model.takeRpcRequests().empty());
+
+    // A connected port has no pill, so there is nothing there to open.
+    REQUIRE(pillItem(scene, QStringLiteral("helmet_pulse"),
+                     QStringLiteral("time")) == nullptr);
+    REQUIRE_FALSE(scene.beginValueEdit("helmet_pulse", "time"));
+}
+
+TEST_CASE("The palette adds a node and Delete takes one away",
+          "[devstudio][graph-canvas][scene][graph-edit]") {
+    (void)application();
+    PelicanStudio::resetSocketStyleDefaults();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    const auto document = readFixture("graph_node_visuals");
+    answer(model, document, visualCatalog());
+    scene.setModel(&model);
+
+    SECTION("what the palette offers depends on which side of the boundary it is on") {
+        const auto root = model.paletteOperations();
+        REQUIRE(std::ranges::any_of(root, [](const auto &entry) {
+            return entry.op == "graph.instance" && entry.structural;
+        }));
+        REQUIRE(std::ranges::none_of(
+            root, [](const auto &entry) { return entry.op == "graph.input"; }));
+        REQUIRE(model.enterInstance("helmet_pulse"));
+        const auto body = model.paletteOperations();
+        REQUIRE(std::ranges::any_of(body, [](const auto &entry) {
+            return entry.op == "graph.input" && entry.structural;
+        }));
+        REQUIRE(std::ranges::none_of(body, [](const auto &entry) {
+            return entry.op == "graph.instance";
+        }));
+        // The text filter is a substring of the operation name.
+        const auto filtered = model.paletteOperations("multi");
+        REQUIRE(filtered.size() == 1);
+        REQUIRE(filtered.front().op == "value.multiply");
+        REQUIRE(model.paletteOperations({}, "rendering").size() == 1);
+    }
+
+    SECTION("an operation with no required input arrives on its own") {
+        REQUIRE(model.enterInstance("helmet_pulse"));
+        scene.repopulate();
+        REQUIRE(scene.addFromPalette("value.constant"));
+        const auto edit = takeEdit(model);
+        REQUIRE(edit.at("ops").size() == 1);
+        REQUIRE(edit.at("ops").at(0) ==
+                Json{{"op", "add_node"},
+                     {"scope", "gain_curve"},
+                     {"node", {{"id", "value_constant"},
+                               {"op", "value.constant"},
+                               {"outputs", Json::array({"value"})}}}});
+    }
+
+    SECTION("an operation with required inputs arrives standing on its own values") {
+        REQUIRE(model.enterInstance("helmet_pulse"));
+        scene.repopulate();
+        REQUIRE(scene.addFromPalette("value.multiply"));
+        const auto edit = takeEdit(model);
+        // One gesture is still one call: the seeds and the node travel
+        // together, because a node whose required input is unconnected is not
+        // a document the engine would load.
+        REQUIRE(edit.at("ops").size() == 3);
+        REQUIRE(edit.at("ops").at(0).at("node").at("id") == "value_multiply__a");
+        REQUIRE(edit.at("ops").at(0).at("node").at("op") == "value.constant");
+        REQUIRE(edit.at("ops").at(2).at("node").at("id") == "value_multiply");
+        REQUIRE(edit.at("ops").at(2).at("node").at("inputs") ==
+                Json{{"a", {{"node", "value_multiply__a"}, {"port", "value"}}},
+                     {"b", {{"node", "value_multiply__b"}, {"port", "value"}}}});
+        for (const auto &op : edit.at("ops")) REQUIRE(op.at("scope") == "gain_curve");
+    }
+
+    SECTION("a selected node is removed by name") {
+        REQUIRE(model.enterInstance("helmet_pulse"));
+        scene.repopulate();
+        QGraphicsItem *node = nodeItem(scene, QStringLiteral("shape"));
+        REQUIRE(node != nullptr);
+        click(scene, node->sceneBoundingRect().center());
+        REQUIRE(scene.selectedNode() == std::optional<std::string>{"shape"});
+        pressKey(scene, Qt::Key_Delete);
+        const auto edit = takeEdit(model);
+        REQUIRE(edit.at("ops").size() == 1);
+        REQUIRE(edit.at("ops").at(0) == Json{{"op", "remove_node"},
+                                             {"scope", "gain_curve"},
+                                             {"node", "shape"}});
+    }
+}
+
+TEST_CASE("Double-clicking a heading renames, and below it still descends",
+          "[devstudio][graph-canvas][scene][graph-edit]") {
+    (void)application();
+    PelicanStudio::resetSocketStyleDefaults();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    const auto document = readFixture("graph_node_visuals");
+    answer(model, document, visualCatalog());
+    scene.setModel(&model);
+
+    QGraphicsItem *node = nodeItem(scene, QStringLiteral("helmet_pulse"));
+    REQUIRE(node != nullptr);
+    click(scene,
+          QPointF{node->sceneBoundingRect().center().x(),
+                  node->pos().y() +
+                      PelicanStudio::GraphCanvasHeaderHeight / 2.0},
+          QEvent::GraphicsSceneMouseDoubleClick);
+    REQUIRE(scene.editingInline());
+    // The field starts on the authored label, not on the heading fallback.
+    REQUIRE(scene.inlineEditText() == QStringLiteral("Helmet pulse"));
+    // The scope did not change: a rename is not a descent.
+    REQUIRE(model.currentScope().empty());
+    scene.setInlineEditText(QStringLiteral("Visor pulse"));
+    REQUIRE(scene.commitInlineEdit());
+    const auto edit = takeEdit(model);
+    REQUIRE(edit.at("ops").size() == 1);
+    REQUIRE(edit.at("ops").at(0) == Json{{"op", "set_node_label"},
+                                         {"scope", "root"},
+                                         {"node", "helmet_pulse"},
+                                         {"label", "Visor pulse"}});
+    finishEdit(model, document, visualCatalog());
+
+    // The empty string is how a label is taken off again.
+    REQUIRE(scene.beginLabelEdit("helmet_pulse"));
+    scene.setInlineEditText(QString{});
+    REQUIRE(scene.commitInlineEdit());
+    REQUIRE(takeEdit(model).at("ops").at(0).at("label") == "");
+    finishEdit(model, document, visualCatalog());
+
+    // Below the heading, a double-click still means show me what is in it.
+    scene.repopulate();
+    QGraphicsItem *again = nodeItem(scene, QStringLiteral("helmet_pulse"));
+    click(scene,
+          QPointF{again->sceneBoundingRect().center().x(),
+                  again->pos().y() +
+                      PelicanStudio::GraphCanvasHeaderHeight + 12.0},
+          QEvent::GraphicsSceneMouseDoubleClick);
+    REQUIRE_FALSE(scene.editingInline());
+    REQUIRE(model.currentScope() == "gain_curve");
+}
+
+TEST_CASE("A CAS mismatch keeps the notice, drops the gesture and reads again",
+          "[devstudio][graph-canvas][scene][graph-edit]") {
+    (void)application();
+    PelicanStudio::resetSocketStyleDefaults();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    const auto document = readFixture("graph_node_visuals");
+    answer(model, document, visualCatalog());
+    scene.setModel(&model);
+
+    QGraphicsItem *pill =
+        pillItem(scene, QStringLiteral("helmet_pulse"), QStringLiteral("gain"));
+    REQUIRE(pill != nullptr);
+    click(scene, pill->sceneBoundingRect().center());
+    scene.setInlineEditText(QStringLiteral("4.5"));
+    REQUIRE(scene.commitInlineEdit());
+
+    auto requests = model.takeRpcRequests();
+    REQUIRE(requests.size() == 1);
+    REQUIRE(requests.front().method == "edit_graph_document");
+    // The engine read a different document than the canvas did.
+    model.receiveRpcResult(
+        requests.front().request_id,
+        Json{{"status", "rejected"},
+             {"error",
+              {{"code", "external_modification"},
+               {"message", "render config base digest no longer matches"}}}}
+            .dump());
+
+    REQUIRE(model.notice().kind == PelicanStudio::InspectorNoticeKind::Error);
+    REQUIRE(model.notice().message.find("external_modification") !=
+            std::string::npos);
+    // The gesture is gone and the canvas asks for the document again rather
+    // than standing on the one it had.
+    auto after = model.takeRpcRequests();
+    REQUIRE(after.size() == 1);
+    REQUIRE(after.front().method == "get_graph_instances");
+    model.receiveRpcResult(after.front().request_id, context(document).dump());
+    scene.repopulate();
+    REQUIRE(pillItem(scene, QStringLiteral("helmet_pulse"),
+                     QStringLiteral("gain"))
+                ->data(PelicanStudio::GraphCanvasValueTextRole)
+                .toString() == QStringLiteral("2.5"));
+    // And the canvas can be edited again: the failure did not wedge it.
+    REQUIRE(model.canEdit());
+}
+
+TEST_CASE("A refresh keeps the node the user was working on selected",
+          "[devstudio][graph-canvas][scene][graph-edit]") {
+    (void)application();
+    PelicanStudio::resetSocketStyleDefaults();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    answer(model, connectedDocument(), visualCatalog());
+    scene.setModel(&model);
+
+    QGraphicsItem *left = nodeItem(scene, QStringLiteral("left"));
+    REQUIRE(left != nullptr);
+    click(scene, left->sceneBoundingRect().center());
+    REQUIRE(scene.selectedNode() == std::optional<std::string>{"left"});
+
+    model.refresh();
+    answer(model, connectedDocument(), visualCatalog());
+    scene.repopulate();
+    REQUIRE(scene.selectedNode() == std::optional<std::string>{"left"});
+    REQUIRE(scene.property("pelicanGraphSelectedNode").toString() ==
+            QStringLiteral("left"));
+
+    // A revision that no longer holds it drops the selection with it.
+    auto without = connectedDocument();
+    auto nodes = Json::array();
+    for (const auto &node : without.at("nodes"))
+        if (node.at("id") != "left") nodes.push_back(node);
+    without["nodes"] = nodes;
+    model.refresh();
+    answer(model, without, visualCatalog());
+    scene.repopulate();
+    REQUIRE_FALSE(scene.selectedNode().has_value());
 }

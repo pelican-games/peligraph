@@ -1,6 +1,7 @@
 #include "graphcanvasmodel.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -90,6 +91,8 @@ void GraphCanvasModel::setConnected(bool connected) {
     operations_ = Json::object();
     types_ = Json::object();
     failure_ = {};
+    edit_notice_ = {};
+    ticket_.clear();
     clearContext();
     refresh();
     requestCatalog();
@@ -123,6 +126,10 @@ void GraphCanvasModel::watchInstance(std::string instance) {
 void GraphCanvasModel::poll() {
     if (!connected_) return;
     requestCatalog();
+    // An accepted edit owns the request slot until the engine says what became
+    // of it. Nothing else may take that slot in the meantime.
+    if (!pending_ && !ticket_.empty())
+        request(RequestKind::Result, "get_edit_result", {{"ticket", ticket_}});
 }
 
 std::vector<InspectorRpcRequest> GraphCanvasModel::takeRpcRequests() {
@@ -141,7 +148,22 @@ void GraphCanvasModel::receiveRpcFailure(std::uint64_t id, std::string message) 
         return;
     }
     if (!pending_ || pending_->id != id) return;
+    const auto kind = pending_->kind;
     pending_.reset();
+    if (kind == RequestKind::Result) {
+        // A poll that did not arrive cancels neither the engine's ticket nor
+        // the wait for it: the next poll asks again.
+        edit_notice_ = {InspectorNoticeKind::Error, std::move(message)};
+        ++report_revision_;
+        return;
+    }
+    if (kind == RequestKind::Submit) {
+        edit_notice_ = {InspectorNoticeKind::Error, std::move(message)};
+        ticket_.clear();
+        // The gesture is gone; the document the canvas shows may not be.
+        refresh();
+        return;
+    }
     failure_ = {InspectorNoticeKind::Error, std::move(message)};
     ++content_revision_;
 }
@@ -187,7 +209,46 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         return;
     }
     if (!pending_ || pending_->id != id) return;
+    const auto kind = pending_->kind;
     pending_.reset();
+    if (kind == RequestKind::Submit || kind == RequestKind::Result) {
+        try {
+            const auto response = Json::parse(json);
+            if (response.contains("error")) {
+                // A CAS mismatch and a named refusal arrive the same way: the
+                // gesture is discarded, the reason is shown, and the canvas
+                // reads the document again rather than keeping a stale one.
+                ticket_.clear();
+                edit_notice_ = {InspectorNoticeKind::Error, diagnostic(response)};
+                refresh();
+                return;
+            }
+            if (kind == RequestKind::Submit) {
+                if (response.at("status") != "accepted")
+                    throw std::invalid_argument("The engine did not accept the graph edit.");
+                ticket_ = response.at("ticket").get<std::string>();
+                if (ticket_.empty())
+                    throw std::invalid_argument("The engine returned no graph edit ticket.");
+                poll();
+                return;
+            }
+            const auto status = response.at("status").get<std::string>();
+            // Still queued. Nothing on the canvas has changed, so nothing is
+            // redrawn: a poll every quarter second must not throw away the
+            // drag or the editor the user is in the middle of.
+            if (status == "pending") return;
+            ticket_.clear();
+            if (status != "committed")
+                throw std::invalid_argument("The graph edit did not commit: " + status);
+            edit_notice_ = {InspectorNoticeKind::Success, "Graph change saved."};
+            refresh();
+        } catch (const std::exception &error) {
+            ticket_.clear();
+            edit_notice_ = {InspectorNoticeKind::Error, error.what()};
+            refresh();
+        }
+        return;
+    }
     try {
         const auto response = Json::parse(json);
         if (response.contains("error")) {
@@ -514,8 +575,235 @@ std::vector<std::string> GraphCanvasModel::valueInstances() const {
     return instances;
 }
 
+std::string GraphCanvasModel::scopeToken() const {
+    const auto &scope = currentScope();
+    // The engine spells the root document "root"; the canvas spells it with the
+    // empty id so a definition named "root" is still a scope of its own.
+    return scope.empty() ? std::string{"root"} : scope;
+}
+
+bool GraphCanvasModel::submitOps(Json ops) {
+    if (!canEdit()) return false;
+    if (!ops.is_array() || ops.empty()) return false;
+    edit_notice_ = {InspectorNoticeKind::Information, "Saving the graph change..."};
+    request(RequestKind::Submit, "edit_graph_document",
+            {{"base_source_digest", digest_}, {"ops", std::move(ops)}});
+    return true;
+}
+
+Json GraphCanvasModel::nodeParameters(std::string_view id) const {
+    const auto *node = findNode(currentScope(), id);
+    if (node == nullptr) return Json::object();
+    const auto found = node->find("parameters");
+    if (found == node->end() || !found->is_object()) return Json::object();
+    return *found;
+}
+
+bool GraphCanvasModel::canConnect(std::string_view from_node, std::string_view from_port,
+                                  std::string_view to_node, std::string_view to_port) const {
+    if (from_node.empty() || to_node.empty() || from_node == to_node) return false;
+    const auto drawn = nodes(currentScope());
+    const auto producer = std::ranges::find(drawn, std::string{from_node}, &GraphCanvasNode::id);
+    const auto consumer = std::ranges::find(drawn, std::string{to_node}, &GraphCanvasNode::id);
+    if (producer == drawn.end() || consumer == drawn.end()) return false;
+    const auto output = std::ranges::find(producer->outputs, std::string{from_port},
+                                          &GraphCanvasOutput::port);
+    const auto input = std::ranges::find(consumer->inputs, std::string{to_port},
+                                         &GraphCanvasPort::port);
+    if (output == producer->outputs.end() || input == consumer->inputs.end()) return false;
+    // A port that declares no accepted type takes anything, and a producer the
+    // catalog never typed cannot be refused on a type it does not have.
+    if (output->type.empty() || input->type.empty()) return true;
+    return output->type == input->type;
+}
+
+bool GraphCanvasModel::connectInput(const std::string &node, const std::string &port,
+                                    const std::string &source_node,
+                                    const std::string &source_port) {
+    if (!canEdit()) return false;
+    if (!canConnect(source_node, source_port, node, port)) return false;
+    return submitOps(Json::array({Json{
+        {"op", "set_input"}, {"scope", scopeToken()}, {"node", node}, {"port", port},
+        {"source", Json{{"node", source_node}, {"port", source_port}}}}}));
+}
+
+bool GraphCanvasModel::disconnectInput(const std::string &node, const std::string &port) {
+    if (!canEdit() || findNode(currentScope(), node) == nullptr) return false;
+    return submitOps(Json::array({Json{
+        {"op", "set_input"}, {"scope", scopeToken()}, {"node", node}, {"port", port},
+        {"source", nullptr}}}));
+}
+
+bool GraphCanvasModel::setNodeParameter(const std::string &node, const std::string &key,
+                                        const Json &value) {
+    if (!canEdit() || findNode(currentScope(), node) == nullptr) return false;
+    if (key.empty()) return false;
+    // set_node_parameters replaces the object, so the whole of it is read back
+    // and sent again with this one key changed.
+    auto parameters = nodeParameters(node);
+    parameters[key] = value;
+    return submitOps(Json::array({Json{
+        {"op", "set_node_parameters"}, {"scope", scopeToken()}, {"node", node},
+        {"parameters", std::move(parameters)}}}));
+}
+
+bool GraphCanvasModel::removeNode(const std::string &node) {
+    if (!canEdit() || findNode(currentScope(), node) == nullptr) return false;
+    return submitOps(Json::array({Json{
+        {"op", "remove_node"}, {"scope", scopeToken()}, {"node", node}}}));
+}
+
+bool GraphCanvasModel::setNodeLabel(const std::string &node, const std::string &label) {
+    if (!canEdit() || findNode(currentScope(), node) == nullptr) return false;
+    return submitOps(Json::array({Json{
+        {"op", "set_node_label"}, {"scope", scopeToken()}, {"node", node},
+        {"label", label}}}));
+}
+
+Json GraphCanvasModel::definitionDefaults(std::string_view definition) const {
+    Json parameters = Json::object();
+    const auto body = definitions_.find(std::string{definition});
+    if (body == definitions_.end()) return parameters;
+    for (const auto &node : body->value("nodes", Json::array())) {
+        if (!node.is_object() || text(node, "op") != "graph.input") continue;
+        const auto id = text(node, "id");
+        if (id.empty()) continue;
+        const auto declared = node.find("default");
+        parameters[id] = declared != node.end() && declared->is_number() ? *declared : Json(0.0);
+    }
+    return parameters;
+}
+
+std::string GraphCanvasModel::suggestNodeId(std::string_view op) const {
+    std::string base{op};
+    // The op name is the honest starting point, but a node id is an identifier
+    // the document points at: the dots go.
+    std::ranges::replace(base, '.', '_');
+    if (base.empty()) base = "node";
+    const auto taken = [&](const std::string &candidate) {
+        return findNode(currentScope(), candidate) != nullptr;
+    };
+    if (!taken(base)) return base;
+    for (int suffix = 2; suffix < 10000; ++suffix) {
+        auto candidate = base + "_" + std::to_string(suffix);
+        if (!taken(candidate)) return candidate;
+    }
+    return base;
+}
+
+Json GraphCanvasModel::addNodeOps(const std::string &op, const std::string &definition) const {
+    Json ops = Json::array();
+    if (op.empty()) return ops;
+    const auto scope = scopeToken();
+    const bool root = currentScope().empty();
+    const auto id = suggestNodeId(op);
+    Json node{{"id", id}, {"op", op}};
+    if (op == "graph.input") {
+        if (root) return Json::array();
+        // A boundary port every instance can already stand on: without a value
+        // to fall back to, the instances that exist stop expanding.
+        node["default"] = 0.0;
+        ops.push_back(Json{{"op", "add_node"}, {"scope", scope}, {"node", std::move(node)}});
+        return ops;
+    }
+    if (op == "graph.instance") {
+        if (!root || definition.empty() || !definitions_.contains(definition))
+            return Json::array();
+        node["definition"] = definition;
+        node["parameters"] = definitionDefaults(definition);
+        ops.push_back(Json{{"op", "add_node"}, {"scope", scope}, {"node", std::move(node)}});
+        return ops;
+    }
+    const auto *contract = operation(op);
+    if (contract == nullptr || text(*contract, "ports") != "declared") return Json::array();
+    auto outputs = Json::array();
+    for (const auto &output : contract->value("outputs", Json::array())) {
+        const auto name = text(output, "port");
+        if (!name.empty()) outputs.push_back(name);
+    }
+    node["outputs"] = std::move(outputs);
+    Json inputs = Json::object();
+    for (const auto &input : contract->value("inputs", Json::array())) {
+        const auto port = text(input, "port");
+        if (port.empty() || !input.value("required", false)) continue;
+        // A required input with nothing on it is not a document the engine
+        // loads, so the node arrives standing on its own constant -- which is
+        // also the number the row's pill then edits.
+        if (semanticTypeName(input, "accepted_type") != kGraphInputType) continue;
+        const auto seed = id + "__" + port;
+        ops.push_back(Json{{"op", "add_node"}, {"scope", scope},
+            {"node", Json{{"id", seed}, {"op", "value.constant"},
+                          {"parameters", Json{{"value", 0.0}}},
+                          {"outputs", Json::array({"value"})}}}});
+        inputs[port] = Json{{"node", seed}, {"port", "value"}};
+    }
+    if (!inputs.empty()) node["inputs"] = std::move(inputs);
+    ops.push_back(Json{{"op", "add_node"}, {"scope", scope}, {"node", std::move(node)}});
+    return ops;
+}
+
+bool GraphCanvasModel::addNode(const std::string &op, const std::string &definition) {
+    if (!canEdit()) return false;
+    auto ops = addNodeOps(op, definition);
+    if (ops.empty()) return false;
+    return submitOps(std::move(ops));
+}
+
+std::vector<GraphCanvasCatalogEntry> GraphCanvasModel::paletteOperations(
+    std::string_view text_filter, std::string_view domain) const {
+    const auto lowered = [](std::string_view value) {
+        std::string result{value};
+        std::ranges::transform(result, result.begin(), [](unsigned char letter) {
+            return static_cast<char>(std::tolower(letter));
+        });
+        return result;
+    };
+    const auto needle = lowered(text_filter);
+    const auto matches = [&](const GraphCanvasCatalogEntry &entry) {
+        if (!domain.empty() && entry.domain != domain) return false;
+        return needle.empty() || lowered(entry.op).find(needle) != std::string::npos;
+    };
+    std::vector<GraphCanvasCatalogEntry> result;
+    for (const auto &[op, declaration] : operations_.items()) {
+        // The two structural operations are added below, on the side of the
+        // boundary each belongs to, and never taken from the catalog.
+        if (op == "graph.input" || op == "graph.instance") continue;
+        // An operation whose ports follow its parameters cannot be authored
+        // from a name alone: the palette does not pretend otherwise.
+        if (text(declaration, "ports") != "declared") continue;
+        GraphCanvasCatalogEntry entry{op, text(declaration, "domain"),
+                                      text(declaration, "evaluation"),
+                                      declaration.value("sink", false), false};
+        if (matches(entry)) result.push_back(std::move(entry));
+    }
+    std::ranges::sort(result, {}, &GraphCanvasCatalogEntry::op);
+    // A boundary port belongs to a definition body; an instance stands in the
+    // root document. Offering either on the wrong side would only earn a named
+    // refusal from the engine.
+    if (currentScope().empty()) {
+        if (!definitions_.empty()) {
+            GraphCanvasCatalogEntry entry{"graph.instance", "structure", "direct", false, true};
+            if (matches(entry)) result.push_back(std::move(entry));
+        }
+    } else {
+        GraphCanvasCatalogEntry entry{"graph.input", "structure", "direct", false, true};
+        if (matches(entry)) result.push_back(std::move(entry));
+    }
+    return result;
+}
+
+std::vector<std::string> GraphCanvasModel::paletteDomains() const {
+    std::set<std::string> domains;
+    for (const auto &entry : paletteOperations()) domains.insert(entry.domain);
+    return {domains.begin(), domains.end()};
+}
+
 InspectorNotice GraphCanvasModel::notice() const {
+    // An edit the user just attempted outranks everything: it is the one thing
+    // they are waiting to hear about.
+    if (edit_notice_.kind == InspectorNoticeKind::Error) return edit_notice_;
     if (failure_.kind != InspectorNoticeKind::None) return failure_;
+    if (edit_notice_.kind != InspectorNoticeKind::None) return edit_notice_;
     if (context_received_ && !catalog_received_)
         return {InspectorNoticeKind::Information,
                 "Operation catalog not fetched: ports and domains come from the "

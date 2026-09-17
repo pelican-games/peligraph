@@ -254,6 +254,15 @@ void MainWindow::createWorkspace() {
         render_features_->editFrameNodeOrder(graph, names, generation);
     });
     frame_plan_->setTaskEditAction([this](const QString &task) { render_features_->editComputeTask(task); });
+    // "Open the source" in the Inspector lands on the same node in the Graph
+    // tab: the producer it names is a root node of the common graph.
+    inspector_->setGraphSourceRevealAction(
+        [this, render_tabs](const QString &node, const QString &) {
+            docks_[FramePlanDock]->show();
+            docks_[FramePlanDock]->raise();
+            render_tabs->setCurrentWidget(graph_canvas_);
+            graph_canvas_->revealNode(node);
+        });
     inspector_->setRayGroupAction([this, render_tabs](const QString &group) {
         docks_[FramePlanDock]->show();
         docks_[FramePlanDock]->raise();

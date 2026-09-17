@@ -109,6 +109,7 @@ struct InspectorWidget::Impl {
     QLabel *ray_notice = nullptr;
     QPushButton *ray_tasks = nullptr;
     std::function<void(const QString &)> ray_group_action;
+    std::function<void(const QString &, const QString &)> graph_source_reveal_action;
     std::optional<Json> displayed_ray_payload;
     QPointer<QDialog> add_component_dialog;
     QComboBox *component_types = nullptr;
@@ -200,6 +201,12 @@ struct InspectorWidget::Impl {
                 else
                     graph_attachments->receiveRpcFailure(id, error);
             });
+        QObject::connect(graph_attachments,
+                         &GraphAttachmentWidget::sourceRevealRequested, &owner,
+                         [this](const QString &node, const QString &port) {
+                             if (graph_source_reveal_action)
+                                 graph_source_reveal_action(node, port);
+                         });
 
         notice_label = new QLabel(&owner);
         notice_label->setObjectName(QStringLiteral("pelican.inspectorNotice"));
@@ -1533,6 +1540,11 @@ InspectorWidget::InspectorWidget(EmbeddedViewport *viewport, QWidget *parent)
 }
 
 InspectorWidget::~InspectorWidget() = default;
+
+void InspectorWidget::setGraphSourceRevealAction(
+    std::function<void(const QString &, const QString &)> action) {
+    impl_->graph_source_reveal_action = std::move(action);
+}
 
 void InspectorWidget::setRayGroupAction(std::function<void(const QString &)> action) {
     impl_->ray_group_action = std::move(action);

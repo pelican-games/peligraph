@@ -337,23 +337,108 @@ std::string_view graphInstanceInputSourceName(GraphInstanceInputSource source) {
 }
 
 namespace {
-// Only the root `nodes` array is editable in v0. A node inside a definition,
-// or named across an instance path, is refused by name rather than reported as
-// missing, because the two call for different fixes.
-Json &locateRootNode(Json &nodes, const Json &definitions, const std::string &id) {
+// The scope token that names the root document. "root" and an absent `scope`
+// are the same thing; a definition that is itself called "root" is therefore
+// unaddressable, which is the price of a default that reads.
+constexpr auto kRootScope = "root";
+
+// Which body an op addresses: the root `nodes` array, or one definition's. The
+// outputs map travels with it, because "this node is still the scope's output"
+// is a property of the scope, not of the document.
+struct EditScope {
+    bool root = true;
+    std::string name;
+    Json *nodes = nullptr;
+    const Json *outputs = nullptr;
+};
+
+// A node named across an instance path belongs to no single body, so it is
+// refused by name rather than reported as missing: the two call for different
+// fixes. Inside the root scope a node that lives in a definition is named as
+// exactly that, so the caller learns which scope to address instead.
+Json &locateNode(const EditScope &scope, const Json &definitions, const std::string &id) {
     if (id.find('/') != std::string::npos)
         throw GraphRegistryError("graph.definition_immutable@1",
             {{"node", id}, {"reason", "instance_path"}});
-    const auto found = std::find_if(nodes.begin(), nodes.end(), [&](const Json &node) {
+    const auto found = std::find_if(scope.nodes->begin(), scope.nodes->end(), [&](const Json &node) {
         return node.contains("id") && node.at("id") == id;
     });
-    if (found != nodes.end()) return *found;
-    for (const auto &[definition, body] : definitions.items())
-        for (const auto &node : body.value("nodes", Json::array()))
-            if (node.value("id", std::string{}) == id)
-                throw GraphRegistryError("graph.definition_immutable@1",
-                    {{"node", id}, {"definition", definition}});
-    throw GraphRegistryError("graph.node_missing@1", {{"node", id}});
+    if (found != scope.nodes->end()) return *found;
+    if (scope.root) {
+        for (const auto &[definition, body] : definitions.items())
+            for (const auto &node : body.value("nodes", Json::array()))
+                if (node.value("id", std::string{}) == id)
+                    throw GraphRegistryError("graph.definition_immutable@1",
+                        {{"node", id}, {"definition", definition}});
+        throw GraphRegistryError("graph.node_missing@1", {{"node", id}});
+    }
+    throw GraphRegistryError("graph.node_missing@1",
+        {{"node", id}, {"scope", scope.name}});
+}
+
+// Resolve one op's `scope` against the candidate. The definition body has to be
+// looked up per op: an earlier op in the same list may have changed it.
+EditScope resolveEditScope(Json &candidate, const Json &operation) {
+    std::string name = kRootScope;
+    if (const auto found = operation.find("scope"); found != operation.end() && !found->is_null()) {
+        if (!found->is_string())
+            throw std::invalid_argument("graph document op scope must be a string");
+        name = found->get<std::string>();
+    }
+    if (name.empty() || name == kRootScope) {
+        EditScope scope;
+        scope.nodes = &candidate.at("nodes");
+        if (!scope.nodes->is_array()) throw std::invalid_argument("graph nodes must be an array");
+        const auto outputs = candidate.find("outputs");
+        if (outputs != candidate.end()) scope.outputs = &*outputs;
+        return scope;
+    }
+    const auto definitions = candidate.find("definitions");
+    if (definitions == candidate.end() || !definitions->is_object() ||
+        !definitions->contains(name))
+        throw std::invalid_argument("unknown graph definition scope: " + name);
+    auto &body = definitions->at(name);
+    object(body, "graph definition must be an object");
+    EditScope scope;
+    scope.root = false;
+    scope.name = name;
+    scope.nodes = &body.at("nodes");
+    if (!scope.nodes->is_array())
+        throw std::invalid_argument("graph nodes must be an array: " + name);
+    const auto outputs = body.find("outputs");
+    if (outputs != body.end()) scope.outputs = &*outputs;
+    return scope;
+}
+
+// Every `graph.instance` in the document that stands on this definition and
+// supplies this boundary port -- with a stored parameter or with an edge. A
+// nested instance inside another definition counts the same as a root one.
+void requireInputUnreferenced(const Json &candidate, const std::string &definition,
+                              const std::string &input) {
+    const auto check = [&](const Json &nodes) {
+        for (const auto &node : nodes) {
+            if (!node.is_object() || node.value("op", std::string{}) != "graph.instance" ||
+                node.value("definition", std::string{}) != definition)
+                continue;
+            const auto supplies = [&](const char *key) {
+                const auto found = node.find(key);
+                return found != node.end() && found->is_object() && found->contains(input);
+            };
+            if (!supplies("parameters") && !supplies("inputs")) continue;
+            throw GraphRegistryError("graph.input_referenced@1",
+                {{"definition", definition}, {"input", input},
+                 {"instance", node.value("id", std::string{})}});
+        }
+    };
+    const auto nodes = candidate.find("nodes");
+    if (nodes != candidate.end() && nodes->is_array()) check(*nodes);
+    const auto definitions = candidate.find("definitions");
+    if (definitions == candidate.end() || !definitions->is_object()) return;
+    for (const auto &[name, body] : definitions->items()) {
+        (void)name;
+        const auto body_nodes = body.find("nodes");
+        if (body_nodes != body.end() && body_nodes->is_array()) check(*body_nodes);
+    }
 }
 
 std::string opNodeName(const Json &value) {
@@ -387,13 +472,23 @@ void requireInstancePort(const Json &node, const Json &definitions, const std::s
 nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
     if (!ops.is_array()) throw std::invalid_argument("graph document ops must be an array");
     auto candidate = document;
-    auto &nodes = candidate.at("nodes");
-    if (!nodes.is_array()) throw std::invalid_argument("graph nodes must be an array");
-    const auto definitions = candidate.value("definitions", Json::object());
-    object(definitions, "graph definitions must be an object");
+    if (!candidate.at("nodes").is_array())
+        throw std::invalid_argument("graph nodes must be an array");
+    if (const auto found = candidate.find("definitions"); found != candidate.end())
+        object(*found, "graph definitions must be an object");
+    // The definition bodies are read fresh for every op: one op in the list can
+    // change what the next one is allowed to do.
+    static const Json no_definitions = Json::object();
+    const auto definitionsOf = [&]() -> const Json & {
+        const auto found = candidate.find("definitions");
+        return found == candidate.end() ? no_definitions : *found;
+    };
     for (const auto &operation : ops) {
         object(operation, "graph document op must be an object");
         const auto kind = operation.value("op", std::string{});
+        const auto scope = resolveEditScope(candidate, operation);
+        auto &nodes = *scope.nodes;
+        const auto &definitions = definitionsOf();
         if (kind == "add_node") {
             const auto &node = operation.at("node");
             object(node, "add_node requires a node object");
@@ -401,6 +496,15 @@ nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
             if (id.find('/') != std::string::npos)
                 throw GraphRegistryError("graph.definition_immutable@1",
                     {{"node", id}, {"reason", "instance_path"}});
+            const auto op = node.value("op", std::string{});
+            // The two structural operations belong to one side each: an
+            // instance stands in the root document, a boundary port inside a
+            // definition. Nesting one in the wrong body is refused by name.
+            if (op == "graph.instance" && !scope.root)
+                throw GraphRegistryError("graph.nested_instance@1",
+                    {{"node", id}, {"scope", scope.name}});
+            if (op == "graph.input" && scope.root)
+                throw GraphRegistryError("graph.input_scope@1", {{"node", id}});
             if (std::any_of(nodes.begin(), nodes.end(), [&](const Json &existing) {
                     return existing.contains("id") && existing.at("id") == id;
                 }))
@@ -408,10 +512,16 @@ nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
             nodes.push_back(node);
         } else if (kind == "remove_node") {
             const auto id = opNodeName(operation.at("node"));
-            (void)locateRootNode(nodes, definitions, id);
+            const auto removed_op = locateNode(scope, definitions, id).value("op", std::string{});
+            // A boundary port an instance is still supplying is that instance's
+            // port. It is named first because it is the reference the canvas
+            // cannot show: the value lives outside the body being edited.
+            if (!scope.root && removed_op == "graph.input")
+                requireInputUnreferenced(candidate, scope.name, id);
             // items() borrows its container, so the object has to outlive the
             // loop rather than be a temporary from value().
-            const auto outputs = candidate.value("outputs", Json::object());
+            const auto outputs =
+                scope.outputs != nullptr && scope.outputs->is_object() ? *scope.outputs : Json::object();
             for (const auto &[port, endpoint] : outputs.items())
                 if (endpoint.is_object() && endpoint.value("node", std::string{}) == id)
                     throw GraphRegistryError("graph.output_referenced@1",
@@ -430,7 +540,7 @@ nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
         } else if (kind == "set_input") {
             const auto id = opNodeName(operation.at("node"));
             const auto port = identifier(operation.at("port"));
-            auto &node = locateRootNode(nodes, definitions, id);
+            auto &node = locateNode(scope, definitions, id);
             requireInstancePort(node, definitions, port);
             const auto &source = operation.at("source");
             if (source.is_null()) {
@@ -450,13 +560,24 @@ nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
             const auto id = opNodeName(operation.at("node"));
             const auto &parameters = operation.at("parameters");
             object(parameters, "set_node_parameters requires a parameters object");
-            auto &node = locateRootNode(nodes, definitions, id);
+            auto &node = locateNode(scope, definitions, id);
             for (const auto &[name, value] : parameters.items()) {
                 (void)value;
                 requireInstancePort(node, definitions, name);
             }
             if (parameters.empty()) node.erase("parameters");
             else node["parameters"] = parameters;
+        } else if (kind == "set_node_label") {
+            // The authored, human-chosen name. It is not an identifier: nothing
+            // refers to it, so clearing it is spelled as the empty string
+            // rather than as a separate op.
+            const auto id = opNodeName(operation.at("node"));
+            const auto &label = operation.at("label");
+            if (!label.is_string())
+                throw std::invalid_argument("set_node_label requires a string label");
+            auto &node = locateNode(scope, definitions, id);
+            if (label.get_ref<const std::string &>().empty()) node.erase("label");
+            else node["label"] = label;
         } else {
             throw std::invalid_argument("unknown graph document op: " + kind);
         }
