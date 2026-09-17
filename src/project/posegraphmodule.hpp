@@ -33,5 +33,19 @@ std::vector<std::string> poseStateMachineParameterPorts(const nlohmann::json &do
 double poseClipSampleNumber(const nlohmann::json &parameters, const char *key, double fallback,
                             const std::string &node);
 bool poseClipSampleLoop(const nlohmann::json &parameters, const std::string &node);
+// AG-2 root motion. `root_motion` is "none" (the default) or "extract"; with
+// "extract" the node stops letting the clip's root translation slide the mesh
+// inside the instance and hands the per-frame difference to the owning object's
+// transform instead. `root_node` is the glTF node index whose translation is
+// that root -- the same number space `render.attribute{pose_node}` uses -- and
+// it is required when extracting. A value that is neither "none" nor "extract"
+// is a plain invalid_argument, like every other clip_sample parameter: the
+// named rejections are reserved for what an author can only discover once the
+// rig, the clip and the object are known.
+bool poseClipSampleExtractsRootMotion(const nlohmann::json &parameters, const std::string &node);
+// pose.root_node_unknown@1 when `extract` is asked for without a usable
+// `root_node`. Out of range and absent from the layout are the same name,
+// raised at attach time where the rig is known.
+std::uint32_t poseClipSampleRootNode(const nlohmann::json &parameters, const std::string &node);
 
 } // namespace Pelican

@@ -65,6 +65,24 @@ struct PoseGraphRuntime::Impl {
         ClipMetadataV1 metadata{};
         CursorHandle cursor{};
         std::unique_ptr<AnimationGraph::EvaluatorV1> evaluator;
+        // AG-2 root motion, on the clip_sample nodes that asked for it.
+        bool root_motion = false;
+        // The layout index of the node the document called the root, resolved
+        // once at attach: it is a property of the rig, not of a frame.
+        std::uint32_t root_layout_node = 0;
+        // The clip's own root translation at its first and last key. The span
+        // between them is what one loop of the clip advances by; the first key
+        // is what the pose is pinned to, so the mesh stops sliding inside the
+        // instance. Both are clip constants, sampled on the first evaluation
+        // and kept.
+        bool root_samples_ready = false;
+        std::array<double, 3> root_start{};
+        std::array<double, 3> root_span{};
+        // R(u) as of the previous frame. Absent on the first frame and after a
+        // seek: a set_time is a cut, not a movement, so the frame that observes
+        // it contributes no displacement.
+        bool has_root_previous = false;
+        std::array<double, 3> root_previous{};
     };
     struct Attachment {
         Impl *runtime = nullptr;
@@ -98,6 +116,16 @@ struct PoseGraphRuntime::Impl {
         double delta_seconds = 0.0;
         std::map<std::string, double, std::less<>> scalars;
         SinkTrace trace;
+        // AG-2. True when some node in this chain extracts root motion; then
+        // the object token is resolved at attach and the applier is the one the
+        // owner thread handed over. The displacement is summed across the chain
+        // and written once, just before the sink publishes.
+        bool root_motion = false;
+        std::uint64_t root_object = 0;
+        bool (*apply_root_translation)(std::uint64_t, const double *) = nullptr;
+        std::array<double, 3> root_delta{};
+        // Dropped for every node in this chain on the frame a set_time lands.
+        bool drop_root_previous = false;
     };
 
     // A wrapped state machine whose attachment retired, waiting for the
@@ -201,6 +229,14 @@ struct PoseGraphRuntime::Impl {
         attachment.source = {};
         attachment.bound = false;
         attachment.tick_pending = false;
+        // The root-motion state lives on the bindings that just went away. A
+        // rebind resolves the layout index, the clip's root samples and the
+        // object token again, and starts with no previous displacement -- the
+        // same restart a parameter edit causes, for the same reason.
+        attachment.root_motion = false;
+        attachment.root_object = 0;
+        attachment.apply_root_translation = nullptr;
+        attachment.root_delta = {};
     }
 
     // Producers reachable from one sink, in the graph's dependency order.
@@ -222,7 +258,79 @@ struct PoseGraphRuntime::Impl {
 
     void bind(Attachment &attachment, const PoseGraphFrame &frame);
     Status evaluate(Attachment &attachment);
+    // Turns the clip's root translation into a displacement for the object and
+    // pins the pose's own root, in that order. `pose` is the pose this node
+    // just produced, already sampled at the canonical time; `unwrapped` is the
+    // same time before the clip's bounds folded it.
+    static Status extractRootMotion(Attachment &attachment, NodeBinding &binding,
+                                    const PoseGraphNode &node, PoseViewV1 &pose, double unwrapped);
 };
+
+Status PoseGraphRuntime::Impl::extractRootMotion(Attachment &attachment, NodeBinding &binding,
+                                                 const PoseGraphNode &node, PoseViewV1 &pose,
+                                                 double unwrapped) {
+    auto &service = attachment.service;
+    const auto begin = binding.metadata.start_seconds;
+    const auto end = binding.metadata.end_seconds;
+    // bind() refused anything else, so there is a whole loop to divide by.
+    const auto duration = end - begin;
+    const auto read = [&](std::array<double, 3> &out) {
+        const auto &value = pose.translations[binding.root_layout_node];
+        out = {static_cast<double>(value.x), static_cast<double>(value.y),
+               static_cast<double>(value.z)};
+    };
+    if (!binding.root_samples_ready) {
+        // Two clip constants: where the root starts and how far one whole loop
+        // carries it. Sampling them into the pose this node just produced costs
+        // no extra arena storage, happens once per binding, and the frame's own
+        // sample is put back before anything reads it.
+        auto sample = descriptor<SamplePoseAtDescV1>();
+        sample.clip = binding.clip;
+        sample.output_pose = pose.pose;
+        sample.time_seconds = begin;
+        if (const auto status = service.sample_pose_at(service.context, &sample); status != Status::ok)
+            return status;
+        read(binding.root_start);
+        std::array<double, 3> last{};
+        sample.time_seconds = end;
+        if (const auto status = service.sample_pose_at(service.context, &sample); status != Status::ok)
+            return status;
+        read(last);
+        for (std::size_t axis = 0; axis < 3; ++axis)
+            binding.root_span[axis] = last[axis] - binding.root_start[axis];
+        sample.time_seconds = canonicalTime(unwrapped, begin, end, node.loop);
+        if (const auto status = service.sample_pose_at(service.context, &sample); status != Status::ok)
+            return status;
+        binding.root_samples_ready = true;
+    }
+    // R(u) = loops(u) * (root(end) - root(start)) + root(canonical(u)). The
+    // canonical term is the sample already in `pose`; the loops term is what
+    // makes crossing the end of the clip a continuation rather than a jump back
+    // to its start, and it is also what makes a negative speed and more than one
+    // loop in a frame the same arithmetic. A clip that does not loop is clamped,
+    // so it crosses nothing.
+    const auto loops = node.loop ? std::floor((unwrapped - begin) / duration) : 0.0;
+    std::array<double, 3> current{};
+    read(current);
+    for (std::size_t axis = 0; axis < 3; ++axis) current[axis] += loops * binding.root_span[axis];
+    // A set_time is a cut, not a movement. The frame that observes one starts
+    // over from where the clip now is instead of charging the object for the
+    // distance between the two times.
+    if (attachment.drop_root_previous) binding.has_root_previous = false;
+    if (binding.has_root_previous)
+        for (std::size_t axis = 0; axis < 3; ++axis)
+            attachment.root_delta[axis] += current[axis] - binding.root_previous[axis];
+    binding.root_previous = current;
+    binding.has_root_previous = true;
+    // The pin. The clip's root translation stops sliding the mesh inside the
+    // instance -- what the individual shows is the clip's first key -- and the
+    // movement leaves through the object's transform instead. Rotation is
+    // untouched: extracting a turn is not in v0.
+    pose.translations[binding.root_layout_node].x = static_cast<float>(binding.root_start[0]);
+    pose.translations[binding.root_layout_node].y = static_cast<float>(binding.root_start[1]);
+    pose.translations[binding.root_layout_node].z = static_cast<float>(binding.root_start[2]);
+    return Status::ok;
+}
 
 Status PoseGraphRuntime::Impl::phase(void *user, const AnimationPhaseContextV1 *context) noexcept {
     if (!user || !context || context->phase != Phase::base_pose_and_root_modifier)
@@ -326,8 +434,62 @@ void PoseGraphRuntime::Impl::bind(Attachment &attachment, const PoseGraphFrame &
         if (const auto status = attachment.service.get_clip_metadata(attachment.service.context, &binding.metadata);
             status != Status::ok)
             statusFailure("clip metadata for " + compiled.clip, status);
+        if (compiled.root_motion) {
+            // A clip with no duration has no "one loop", so loops(u) has no
+            // denominator: R(u) would be an infinity times a zero span. It is a
+            // real shape -- a single-keyframe clip -- so it is named rather
+            // than divided by.
+            if (!(binding.metadata.end_seconds > binding.metadata.start_seconds))
+                PoseGraph::raiseRootMotionUnsupported(compiled.id,
+                    "root motion needs a clip with a duration",
+                    Json{{"clip", compiled.clip}});
+            auto staging = descriptor<PoseStagingServiceV1>();
+            if (const auto status = getPoseStagingServiceV1(poseStagingServiceVersionV1, &staging);
+                status != Status::ok)
+                statusFailure("pose staging negotiation for " + compiled.id, status);
+            if ((staging.capability_bits & pose_staging_rig_source_node_mapping) == 0 ||
+                !staging.resolve_rig_source_node)
+                statusFailure("pose staging has no rig source node mapping for " + compiled.id,
+                              Status::unsupported_version);
+            auto source_node = descriptor<ResolveRigSourceNodeDescV1>();
+            source_node.rig = binding.rig;
+            source_node.clip = binding.clip;
+            source_node.source_node_index = compiled.root_node;
+            // Out of range and absent from the layout arrive here as the same
+            // not_found, and they are the same thing to the author.
+            if (const auto status =
+                    staging.resolve_rig_source_node(staging.context, &source_node);
+                status != Status::ok)
+                PoseGraph::raiseRootNodeUnknown(compiled.id, compiled.root_node);
+            // The root is what the clip translates. A clip that never
+            // translates the node the document called the root would extract a
+            // delta that is permanently zero, which reads as "root motion did
+            // nothing" rather than "this clip has no root motion in it".
+            if ((source_node.channel_kind_mask &
+                 (1u << static_cast<std::uint32_t>(ChannelKind::translation))) == 0)
+                PoseGraph::raiseRootMotionUnsupported(compiled.id,
+                    "the clip has no translation channel on the root node",
+                    Json{{"clip", compiled.clip}, {"root_node", compiled.root_node}});
+            binding.root_motion = true;
+            binding.root_layout_node = source_node.layout_node_index;
+            attachment.root_motion = true;
+        }
         if (!(binding.metadata.end_seconds > binding.metadata.start_seconds))
             throw std::runtime_error("pose.clip_sample needs a nonzero duration: " + compiled.id);
+    }
+    if (attachment.root_motion) {
+        // The displacement lands on the object this sink writes -- compile
+        // already made sure exactly one sink can reach the extracting node --
+        // and the token is resolved here, once, because the callback that
+        // resolves it belongs to the owner thread's frame and the write happens
+        // in the phase.
+        const auto object = frame.root_transform_object
+            ? frame.root_transform_object(attachment.owner) : std::optional<std::uint64_t>{};
+        if (!object || !frame.apply_root_translation)
+            PoseGraph::raiseRootMotionNoTransform(attachment.owner,
+                graph.nodes()[attachment.sink].id, attachment.object_name);
+        attachment.root_object = *object;
+        attachment.apply_root_translation = frame.apply_root_translation;
     }
 
     const auto &sink_node = graph.nodes()[attachment.sink];
@@ -377,6 +539,7 @@ Status PoseGraphRuntime::Impl::evaluate(Attachment &attachment) {
     // Beginning an arena frame retires what this owner staged earlier in the
     // same phase run, so a chain that only reads a staged pose must never open
     // one. The arena opens on the first operation that actually needs storage.
+    attachment.root_delta = {};
     auto begin = descriptor<BeginPoseArenaFrameDescV1>();
     bool arena_open = false;
     const auto openArena = [&] {
@@ -446,13 +609,21 @@ Status PoseGraphRuntime::Impl::evaluate(Attachment &attachment) {
             // absolute clip time, which is what sample_pose_at now takes -- the
             // service no longer wraps a second time, so a clip whose keyframes
             // do not begin at 0 keeps its phase.
-            sample.time_seconds = canonicalTime(
-                (scalar(node, "time", attachment.time) - node.start_time) * node.speed +
-                    binding.metadata.start_seconds,
-                binding.metadata.start_seconds, binding.metadata.end_seconds, node.loop);
+            // The node's own time map, before the clip's bounds fold it: seek,
+            // wrap and a negative speed are three readings of the same number.
+            const auto unwrapped = (scalar(node, "time", attachment.time) - node.start_time) *
+                                       node.speed + binding.metadata.start_seconds;
+            sample.time_seconds = canonicalTime(unwrapped, binding.metadata.start_seconds,
+                                                binding.metadata.end_seconds, node.loop);
             sample.output_pose = produced.view.pose;
             if (const auto status = service.sample_pose_at(service.context, &sample); status != Status::ok)
                 return status;
+            if (binding.root_motion) {
+                if (const auto status = extractRootMotion(attachment, binding, node, produced.view,
+                                                          unwrapped);
+                    status != Status::ok)
+                    return status;
+            }
             poses.emplace(index, produced);
             break;
         }
@@ -535,6 +706,19 @@ Status PoseGraphRuntime::Impl::evaluate(Attachment &attachment) {
             hash = fnv1a(hash, input.view.rotations, input.view.joint_count * sizeof(QuatfV1));
             hash = fnv1a(hash, input.view.scales, input.view.joint_count * sizeof(Vec4fV1));
             attachment.trace.pose_hash = hash;
+            // AG-2: animation, then root motion, then the publish -- all three
+            // in this one function, so the order cannot drift. The individual
+            // moves by what the clip's root advanced this frame; the pose that
+            // is about to be published has already had that root pinned, so the
+            // two do not both move it. There is no movement or physics step in
+            // the engine to place between them yet.
+            if (attachment.root_motion) {
+                if (!attachment.apply_root_translation ||
+                    !attachment.apply_root_translation(attachment.root_object,
+                                                       attachment.root_delta.data()))
+                    PoseGraph::raiseRootMotionNoTransform(attachment.owner, node.id,
+                                                          attachment.object_name);
+            }
             // A state machine already published its object's frame; the sink
             // only records that this graph declared the writer.
             if (attachment.evaluator_writes) break;
@@ -666,6 +850,15 @@ void PoseGraphRuntime::synchronize(const std::shared_ptr<const PoseGraph> &graph
         attachment->scalars = frame.scalars;
         attachment->pending_revision = frame.frame_revision;
         attachment->tick_pending = true;
+        // Whether the clock was set since this attachment last looked is a
+        // property of the attachment, not of the nodes inside it. Reading and
+        // writing it in the loop below would leave an attachment with no
+        // wrapped state machine -- every clip_sample chain -- at revision 0
+        // forever, so the first set_time would make every later frame look like
+        // a fresh seek and root motion would stop for good.
+        const bool time_was_set = attachment->time_set_revision != frame.time_set_revision;
+        attachment->time_set_revision = frame.time_set_revision;
+        attachment->drop_root_previous = time_was_set;
         for (auto &[node, binding] : attachment->bindings) {
             if (!binding.evaluator) continue;
             const auto &compiled = graph->nodes()[node];
@@ -678,10 +871,8 @@ void PoseGraphRuntime::synchronize(const std::shared_ptr<const PoseGraph> &graph
                     status != Status::ok)
                     throw std::runtime_error("pose.state_machine parameter rejected: " + parameter);
             }
-            if (attachment->time_set_revision != frame.time_set_revision) {
-                attachment->time_set_revision = frame.time_set_revision;
+            if (time_was_set)
                 (void)binding.evaluator->notify(AnimationNotificationKind::set_time, frame.time);
-            }
             if (const auto status = binding.evaluator->prepareTick(frame.time, frame.delta_seconds,
                                                                    frame.frame_revision);
                 status != Status::ok)

@@ -1575,6 +1575,8 @@ pelican_define_test(skeletal_gltf_test GROUP skeletal_gltf_runtime GPU RUNTIME_S
                     pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(morph_gltf_test GROUP skeletal_gltf_runtime GPU RUNTIME_SHADER
                     pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+pelican_define_test(skeletal_rootmotion_test GROUP skeletal_gltf_runtime GPU RUNTIME_SHADER
+                    pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 endif()
 pelican_define_test(vrmfirstperson_test pelican_core glm)
 if(PELICAN_WITH_ANIMATION)

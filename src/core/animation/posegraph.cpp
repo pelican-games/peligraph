@@ -50,6 +50,29 @@ void PoseGraph::raiseLayoutMismatch(const std::string &node, const std::string &
          {"observed", std::move(observed)}});
 }
 
+void PoseGraph::raiseRootMotionUnsupported(const std::string &node, const std::string &reason,
+                                           Json detail) {
+    throw GraphRegistryError("pose.root_motion_unsupported@1",
+        {{"node", node}, {"reason", reason}, {"detail", std::move(detail)}});
+}
+
+void PoseGraph::raiseRootMotionShared(const std::string &node, const std::string &first,
+                                      const std::string &second) {
+    throw GraphRegistryError("pose.root_motion_shared@1",
+        {{"node", node}, {"first", first}, {"second", second}});
+}
+
+void PoseGraph::raiseRootNodeUnknown(const std::string &node, std::uint32_t root_node) {
+    throw GraphRegistryError("pose.root_node_unknown@1",
+        {{"node", node}, {"root_node", root_node}});
+}
+
+void PoseGraph::raiseRootMotionNoTransform(const GraphInstanceOwner &owner, const std::string &node,
+                                           const std::string &object) {
+    throw GraphRegistryError("pose.root_motion_no_transform@1",
+        {{"owner", ownerJson(owner)}, {"node", node}, {"object", object}});
+}
+
 PoseGraph::PoseGraph(const Json &authored) : PoseGraph(authored, builtinGraphModuleRegistry()) {}
 
 PoseGraph::PoseGraph(const Json &authored, const GraphModuleRegistry &modules) {
@@ -84,6 +107,8 @@ void PoseGraph::compile(const Json &authored, const GraphModuleRegistry &modules
             compiled.speed = poseClipSampleNumber(parameters, "speed", 1.0, id);
             compiled.start_time = poseClipSampleNumber(parameters, "start_time", 0.0, id);
             compiled.loop = poseClipSampleLoop(parameters, id);
+            compiled.root_motion = poseClipSampleExtractsRootMotion(parameters, id);
+            if (compiled.root_motion) compiled.root_node = poseClipSampleRootNode(parameters, id);
             break;
         case PoseGraphOp::state_machine:
             compiled.rig = requiredName(parameters, "rig", id);
@@ -184,6 +209,40 @@ void PoseGraph::compile(const Json &authored, const GraphModuleRegistry &modules
     for (std::size_t i = 0; i < nodes_.size(); ++i)
         if (nodes_[i].op == PoseGraphOp::state_machine && !state_machine_consumers.contains(i))
             throw std::invalid_argument("pose.state_machine requires a pose.skeletal sink: " + nodes_[i].id);
+    // AG-2. An extracting clip_sample moves one object by one displacement, so
+    // its pose has to reach exactly one pose.skeletal sink and nothing may mix
+    // another pose into it on the way. pose.retarget hands the same pose on
+    // unchanged, so it may sit in between; a blend or a state machine would
+    // produce a pose whose root came from somewhere else than the delta, and a
+    // second consumer would make one clip's root move two objects. Both are
+    // decidable here, before any object is live.
+    std::map<std::size_t, std::vector<std::size_t>> pose_consumers;
+    for (std::size_t i = 0; i < nodes_.size(); ++i)
+        for (const auto &[port, source] : nodes_[i].pose_inputs) {
+            (void)port;
+            pose_consumers[source].push_back(i);
+        }
+    for (std::size_t i = 0; i < nodes_.size(); ++i) {
+        if (!nodes_[i].root_motion) continue;
+        // The cycle check above ran already, so following single consumers
+        // terminates.
+        for (auto node = i;;) {
+            const auto found = pose_consumers.find(node);
+            if (found == pose_consumers.end() || found->second.empty())
+                raiseRootMotionUnsupported(nodes_[i].id,
+                    "root motion needs a pose.skeletal sink downstream", Json{{"open", nodes_[node].id}});
+            if (found->second.size() > 1)
+                raiseRootMotionShared(nodes_[i].id, nodes_[found->second[0]].id,
+                                      nodes_[found->second[1]].id);
+            node = found->second.front();
+            if (nodes_[node].op == PoseGraphOp::retarget) continue;
+            if (nodes_[node].op != PoseGraphOp::skeletal_sink)
+                raiseRootMotionUnsupported(nodes_[i].id,
+                    "root motion reaches an operation that cannot carry it",
+                    Json{{"consumer", nodes_[node].id}});
+            break;
+        }
+    }
     std::sort(scalar_outputs_.begin(), scalar_outputs_.end());
     scalar_outputs_.erase(std::unique(scalar_outputs_.begin(), scalar_outputs_.end()),
                           scalar_outputs_.end());

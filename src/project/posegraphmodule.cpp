@@ -1,6 +1,7 @@
 #include "posegraphmodule.hpp"
 
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -41,6 +42,30 @@ bool poseClipSampleLoop(const nlohmann::json &parameters, const std::string &nod
     if (!found->is_boolean())
         throw std::invalid_argument("pose.clip_sample loop must be a boolean: " + node);
     return found->get<bool>();
+}
+
+bool poseClipSampleExtractsRootMotion(const nlohmann::json &parameters, const std::string &node) {
+    const auto found = parameters.find("root_motion");
+    if (found == parameters.end()) return false;
+    if (!found->is_string())
+        throw std::invalid_argument("pose.clip_sample root_motion must be a string: " + node);
+    const auto &value = found->get_ref<const std::string &>();
+    if (value == "none") return false;
+    if (value == "extract") return true;
+    throw std::invalid_argument("pose.clip_sample root_motion must be none or extract: " + node);
+}
+
+std::uint32_t poseClipSampleRootNode(const nlohmann::json &parameters, const std::string &node) {
+    const auto found = parameters.find("root_node");
+    // Absent, negative or fractional are all "this document does not name a
+    // root", which is the same thing to the author as naming one the rig does
+    // not have. One name covers all of them.
+    if (found == parameters.end() || !found->is_number_integer() ||
+        found->get<std::int64_t>() < 0 ||
+        found->get<std::int64_t>() > std::numeric_limits<std::uint32_t>::max())
+        throw GraphRegistryError("pose.root_node_unknown@1",
+            {{"node", node}, {"root_node", found == parameters.end() ? Json{} : *found}});
+    return found->get<std::uint32_t>();
 }
 
 std::vector<SemanticTypeSchema> builtinPoseTypeSchemas() {
@@ -144,6 +169,17 @@ void registerPoseGraphModule(GraphModuleRegistry &registry) {
         GraphOperationContract contract;
         contract.inputs.emplace("time", time);
         contract.outputs.emplace("pose", pose);
+        // Sampling a clip at a time is a pure function of that time; extracting
+        // root motion is not. The node then carries the previous frame's root
+        // displacement, so replaying it means replaying the frames that led
+        // here. The registration stays `direct` because that is what the
+        // operation costs by default; resolveOperation takes the stronger of
+        // the two, so a node can raise its own classification and never relax
+        // the one the module declared.
+        if (poseClipSampleExtractsRootMotion(parameters, id)) {
+            (void)poseClipSampleRootNode(parameters, id);
+            contract.evaluation = GraphOperationEvaluation::replay;
+        }
         return contract;
     };
 

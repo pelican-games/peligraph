@@ -15,6 +15,9 @@
 #if PELICAN_WITH_ANIMATION
 #include "../../animation/posegraphruntime.hpp"
 #endif
+#include "../../geomhelper/geomhelper.hpp"
+#include "../../userpublic/components/localtransform.hpp"
+#include "../../userpublic/gameobjects.hpp"
 #include "../../renderingpass/framegraphruntime.hpp"
 #include "../../renderingpass/graphinputs.hpp"
 #include "../../renderingpass/graphmodelsource.hpp"
@@ -286,6 +289,45 @@ void AnimationSystem::updatePoseGraphs() {
             // resolveGraphModelSource already names the mismatch between a
             // graph's declared asset and the owner's live model.
             (void)resolveGraphModelSource(instance, rig, node);
+        };
+        // AG-2. Where a root-motion displacement lands, and how. The object is
+        // resolved by name once, at attach, and kept on the attachment as a
+        // token: this lambda captures this function's locals and is gone long
+        // before the animation phases run. The applier below captures nothing
+        // for the same reason -- it is the one callback the pose graph keeps.
+        frame.root_transform_object =
+            [&](const GraphInstanceOwner &instance) -> std::optional<std::uint64_t> {
+            const auto object = scene.graphOwnerObject(instance);
+            if (!object || !ecs.isAlive(*object)) return std::nullopt;
+            // Root motion writes a local transform. An object without one has
+            // nowhere to put the movement; the graph names that rather than
+            // extracting a displacement nobody applies. `localtransform` is
+            // added automatically only to an object that takes part in a
+            // parent/child scene, so a standalone individual has to declare it.
+            if (!ecs.tryComponent<LocalTransformComponent>(*object)) return std::nullopt;
+            return (static_cast<std::uint64_t>(object->index) << 32) | object->generation;
+        };
+        frame.apply_root_translation = [](std::uint64_t token, const double *delta) {
+            const GameObjectId object{static_cast<std::uint32_t>(token >> 32),
+                                      static_cast<std::uint32_t>(token & 0xffffffffull)};
+            auto &objects = GET_MODULE(ECSCore).getTemplatePublicModule();
+            if (!objects.isAlive(object)) return false;
+            const auto *local = objects.tryComponent<LocalTransformComponent>(object);
+            if (!local) return false;
+            // The clip's root moves in the individual's own frame, so its
+            // orientation turns the displacement before it is added. Scale is
+            // deliberately not applied: a scaled individual would otherwise
+            // cover a different distance for the same clip.
+            const auto offset = to_glm(local->rotation) *
+                glm::vec3{static_cast<float>(delta[0]), static_cast<float>(delta[1]),
+                          static_cast<float>(delta[2])};
+            auto moved = *local;
+            moved.pos = vec3{local->pos.x + offset.x, local->pos.y + offset.y,
+                             local->pos.z + offset.z};
+            // Throws inside a scene effect transaction; that reaches the phase
+            // as callback_failed and stops the frame rather than moving an
+            // individual the transaction was about to replace.
+            return GameObjects::setLocalTransform(object, moved);
         };
         frame.component_writer = [&](const GraphInstanceOwner &instance) {
             // Not "the object carries an animation component" but "the clip

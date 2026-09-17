@@ -34,6 +34,18 @@ struct PoseGraphFrame {
     // from the rig whose layout the chain was checked against.
     std::function<void(const GraphInstanceOwner &, const std::string &rig,
                        const std::string &node)> verify_rig;
+    // AG-2. The object a root-motion displacement lands on, as an opaque token
+    // the ECS side packs and unpacks; empty when the owner has no live object
+    // or that object cannot take a local transform. Asked once, at attach, and
+    // the answer is kept on the attachment: this callback captures the owner
+    // thread's locals and is gone by the time the phase runs.
+    std::function<std::optional<std::uint64_t>(const GraphInstanceOwner &)> root_transform_object;
+    // Adds `delta` (in the object's own local frame, before its rotation) to
+    // that object's local translation. A function pointer on purpose: unlike
+    // everything above it is called from the phase callback, long after the
+    // owner thread's frame locals have died, so it must not be able to capture
+    // them. Returns false when the object can no longer take the write.
+    bool (*apply_root_translation)(std::uint64_t object, const double *delta) = nullptr;
     std::map<std::string, double, std::less<>> scalars;
 };
 

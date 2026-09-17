@@ -203,7 +203,15 @@ GraphOperationContract GraphModuleRegistry::resolveOperation(const nlohmann::jso
     if (registration.factory) {
         // The module declares the classification once; a factory supplies ports.
         contract.domain = registration.contract.domain;
-        contract.evaluation = registration.contract.evaluation;
+        // AG-2: one node of an operation can cost more than the operation does
+        // -- a pose.clip_sample that extracts root motion keeps the previous
+        // frame's displacement and is `replay` where the plain sampler is
+        // `direct`. So the resolved classification is the stronger of the two
+        // (direct < replay < baked < recorded): a factory may raise it and can
+        // never relax it. A factory that leaves `evaluation` alone gets the
+        // registration's value back, which is what every factory but that one
+        // does today.
+        contract.evaluation = std::max(registration.contract.evaluation, contract.evaluation);
         contract.parameter_change = registration.contract.parameter_change;
         contract.parameter_changes = registration.contract.parameter_changes;
     }

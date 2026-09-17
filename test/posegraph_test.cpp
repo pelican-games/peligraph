@@ -288,3 +288,152 @@ TEST_CASE("a state machine's parameters become graph input ports", "[posegraph][
         REQUIRE(error.detail().at("first") == "hero/brain");
     }
 }
+
+// AG-2. Root motion is two node parameters on pose.clip_sample, and they change
+// what the node costs to evaluate: a sampler that reports how far the root moved
+// since the previous frame carries that frame with it, so replaying it means
+// replaying the frames that led here.
+TEST_CASE("root motion is a clip_sample parameter with its own classification",
+          "[posegraph][graph-module][root-motion]") {
+    using namespace Pelican;
+    const auto node = [](Json parameters) {
+        return Json{{"id", "walk"}, {"op", "pose.clip_sample"}, {"parameters", std::move(parameters)}};
+    };
+    const Json base{{"rig", "models/hero.glb"}, {"clip", "Advance"}};
+    // The default is unchanged in every respect a document can observe.
+    REQUIRE(builtinGraphModuleRegistry().resolveOperation(node(base)).evaluation ==
+            GraphOperationEvaluation::direct);
+    auto none = base;
+    none["root_motion"] = "none";
+    REQUIRE(builtinGraphModuleRegistry().resolveOperation(node(none)).evaluation ==
+            GraphOperationEvaluation::direct);
+    auto extract = base;
+    extract["root_motion"] = "extract";
+    extract["root_node"] = 0;
+    const auto resolved = builtinGraphModuleRegistry().resolveOperation(node(extract));
+    REQUIRE(resolved.evaluation == GraphOperationEvaluation::replay);
+    // The ports are the ones the module declared; only the classification moved.
+    REQUIRE(resolved.inputs.size() == 1);
+    REQUIRE(resolved.inputs.contains("time"));
+    REQUIRE(resolved.outputs.size() == 1);
+    REQUIRE(resolved.outputs.contains("pose"));
+    REQUIRE(resolved.parameter_change == GraphParameterChange::rebuild);
+    REQUIRE(resolved.domain == GraphExecutionDomain::animation);
+
+    // A factory may raise its node's classification and may never relax it. The
+    // operation that would notice is the one whose registration already declares
+    // more than its factory does.
+    REQUIRE(builtinGraphModuleRegistry().resolveOperation(
+                Json{{"id", "brain"}, {"op", "pose.state_machine"},
+                     {"parameters", {{"rig", "models/hero.glb"}, {"graph", animGraphDocument()}}}})
+                .evaluation == GraphOperationEvaluation::replay);
+
+    auto unusable = base;
+    unusable["root_motion"] = "sideways";
+    REQUIRE_THROWS_AS(builtinGraphModuleRegistry().resolveOperation(node(unusable)),
+                      std::invalid_argument);
+    // Extracting without saying from which node is the same thing to the author
+    // as naming a node the rig does not have, so it is the same name.
+    auto nameless = base;
+    nameless["root_motion"] = "extract";
+    try {
+        (void)builtinGraphModuleRegistry().resolveOperation(node(nameless));
+        FAIL("root motion was extracted from no node at all");
+    } catch (const GraphRegistryError &error) {
+        REQUIRE(error.code() == "pose.root_node_unknown@1");
+        REQUIRE(error.detail().at("node") == "walk");
+    }
+    auto negative = nameless;
+    negative["root_node"] = -1;
+    REQUIRE_THROWS_AS(builtinGraphModuleRegistry().resolveOperation(node(negative)),
+                      GraphRegistryError);
+
+    // The backend reads the same two through the same two functions.
+    auto nodes = clipSampleChain();
+    nodes[1]["parameters"]["root_motion"] = "extract";
+    nodes[1]["parameters"]["root_node"] = 3;
+    const Animation::PoseGraph graph{poseInstanceDocument(nodes)};
+    const Animation::PoseGraphNode *sampler = nullptr;
+    for (const auto &candidate : graph.nodes())
+        if (candidate.op == Animation::PoseGraphOp::clip_sample) sampler = &candidate;
+    REQUIRE(sampler != nullptr);
+    REQUIRE(sampler->root_motion);
+    REQUIRE(sampler->root_node == 3);
+}
+
+// AG-2. One clip's root moves one object. The compile point is where that is
+// decidable: the extracting node's pose has to arrive at exactly one skeletal
+// sink, and nothing on the way may mix another pose into it.
+TEST_CASE("root motion reaches exactly one skeletal sink",
+          "[posegraph][graph-module][root-motion]") {
+    using namespace Pelican;
+    const auto extracting = [](Json nodes) {
+        nodes[1]["parameters"]["root_motion"] = "extract";
+        nodes[1]["parameters"]["root_node"] = 0;
+        return nodes;
+    };
+    // The plain chain, and the same chain with a pass-through retarget, are the
+    // two shapes that work.
+    REQUIRE_NOTHROW(Animation::PoseGraph{poseInstanceDocument(extracting(clipSampleChain()))});
+    auto retargeted = extracting(clipSampleChain());
+    retargeted[2]["inputs"]["pose"] = {{"node", "profile"}, {"port", "pose"}};
+    retargeted.push_back(Json::parse(R"({"id":"profile","op":"pose.retarget",
+      "parameters":{"profile":"profiles/humanoid.json"},
+      "inputs":{"pose":{"node":"walk","port":"pose"}},"outputs":["pose"]})"));
+    REQUIRE_NOTHROW(Animation::PoseGraph{poseInstanceDocument(retargeted)});
+
+    // A blend produces a pose whose root came from somewhere other than the
+    // extracted delta, so the individual and its mesh would disagree.
+    auto blended = extracting(clipSampleChain());
+    blended[2]["inputs"]["pose"] = {{"node", "mix"}, {"port", "pose"}};
+    blended.push_back(Json::parse(R"({"id":"idle","op":"pose.clip_sample",
+      "parameters":{"rig":"models/hero.glb","clip":"Turn"},
+      "inputs":{"time":{"node":"time","port":"value"}},"outputs":["pose"]})"));
+    blended.push_back(Json::parse(R"({"id":"mix","op":"pose.blend",
+      "inputs":{"a":{"node":"walk","port":"pose"},"b":{"node":"idle","port":"pose"},
+                "weight":{"node":"time","port":"value"}},"outputs":["pose"]})"));
+    try {
+        const Animation::PoseGraph graph{poseInstanceDocument(blended)};
+        FAIL("root motion was blended");
+    } catch (const GraphRegistryError &error) {
+        REQUIRE(error.code() == "pose.root_motion_unsupported@1");
+        REQUIRE(error.detail().at("node") == "hero/walk");
+        REQUIRE(error.detail().at("detail").at("consumer") == "hero/mix");
+    }
+
+    // Two consumers: one clip's root would move more than one object, and
+    // nothing says which. The same shape is what a second owner's sink reading
+    // this node produces.
+    auto shared = extracting(clipSampleChain());
+    shared.push_back(Json::parse(R"({"id":"profile","op":"pose.retarget",
+      "parameters":{"profile":"profiles/humanoid.json"},
+      "inputs":{"pose":{"node":"walk","port":"pose"}},"outputs":["pose"]})"));
+    try {
+        const Animation::PoseGraph graph{poseInstanceDocument(shared)};
+        FAIL("one clip root motion was shared");
+    } catch (const GraphRegistryError &error) {
+        REQUIRE(error.code() == "pose.root_motion_shared@1");
+        REQUIRE(error.detail().at("node") == "hero/walk");
+    }
+
+    // A chain that ends before it reaches a sink has no object to move.
+    auto open = extracting(clipSampleChain());
+    open[2]["inputs"]["pose"] = {{"node", "idle"}, {"port", "pose"}};
+    open.push_back(Json::parse(R"({"id":"idle","op":"pose.clip_sample",
+      "parameters":{"rig":"models/hero.glb","clip":"Turn"},
+      "inputs":{"time":{"node":"time","port":"value"}},"outputs":["pose"]})"));
+    open.push_back(Json::parse(R"({"id":"profile","op":"pose.retarget",
+      "parameters":{"profile":"profiles/humanoid.json"},
+      "inputs":{"pose":{"node":"walk","port":"pose"}},"outputs":["pose"]})"));
+    try {
+        const Animation::PoseGraph graph{poseInstanceDocument(open)};
+        FAIL("root motion reached no sink");
+    } catch (const GraphRegistryError &error) {
+        REQUIRE(error.code() == "pose.root_motion_unsupported@1");
+        REQUIRE(error.detail().at("detail").at("open") == "hero/profile");
+    }
+
+    // The same document without root motion compiles, so every rejection above
+    // is about the extraction and not about the shape.
+    REQUIRE_NOTHROW(Animation::PoseGraph{poseInstanceDocument(clipSampleChain())});
+}

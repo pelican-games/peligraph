@@ -983,6 +983,52 @@ struct AnimationServiceRuntime::Impl {
         return Status::ok;
     }
 
+    // The rig-scoped twin of resolveStagedSourceNode. A caller that has not
+    // staged anything yet -- a pose.clip_sample node resolving its root_node at
+    // attach -- cannot go through the staged frame, and the mapping it needs is
+    // a property of the rig, not of any one frame. With a clip handle it also
+    // reports which channel kinds that clip drives on the node, so "you called
+    // node 3 the root and this clip never translates node 3" is answerable
+    // before the first sample instead of showing up as a delta that is always
+    // zero.
+    static Status resolveRigSourceNode(void *context,
+                                       ResolveRigSourceNodeDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (desc->struct_size < sizeof(*desc)) return Status::invalid_argument;
+        if (desc->version != poseStagingDescriptorVersionV1)
+            return Status::unsupported_version;
+        if (desc->reserved0 != 0 || desc->reserved1 != 0 || desc->reserved2 != 0)
+            return Status::reserved_not_zero;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        ObjectRecord *object{};
+        if (const auto status = runtime->resolveRigResource(desc->rig, object);
+            status != Status::ok)
+            return status;
+        const auto &rig = object->asset->rig;
+        if (desc->source_node_index >= rig.original_to_layout.size())
+            return Status::not_found;
+        const auto mapped = rig.original_to_layout[desc->source_node_index];
+        if (mapped == std::numeric_limits<std::uint32_t>::max())
+            return Status::not_found;
+        desc->layout_node_index = mapped;
+        desc->channel_kind_mask = 0;
+        if (!isValid(desc->clip)) return Status::ok;
+        std::pair<ObjectRecord *, const AnimationClipResource *> *clip{};
+        if (const auto status = runtime->resolveClipResource(desc->clip, clip);
+            status != Status::ok)
+            return status;
+        if (clip->first != object) return Status::incompatible_layout;
+        if (clip->second == nullptr || clip->second->source == nullptr)
+            return Status::not_found;
+        for (const auto &channel : clip->second->source->channels)
+            if (channel.node >= 0 &&
+                static_cast<std::uint32_t>(channel.node) == desc->source_node_index)
+                desc->channel_kind_mask |=
+                    1u << static_cast<std::uint32_t>(channel.path);
+        return Status::ok;
+    }
+
     static Status apiAdvance(void *context, const AdvanceDescV1 *desc,
                              IntervalResultV1 *result) noexcept {
         if (!context || !desc || !result) return Status::invalid_argument;
@@ -1893,6 +1939,8 @@ Status getPoseStagingServiceV1(
             AnimationServiceRuntime::Impl::acquireStagedPose;
         produced.resolve_source_node =
             AnimationServiceRuntime::Impl::resolveStagedSourceNode;
+        produced.resolve_rig_source_node =
+            AnimationServiceRuntime::Impl::resolveRigSourceNode;
         std::memcpy(out_service, &produced,
                     std::min<std::size_t>(caller_size, sizeof(produced)));
         return Status::ok;
