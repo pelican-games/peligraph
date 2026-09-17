@@ -585,6 +585,8 @@ QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L25) に
 言えないソケットの色)。既定は `dark` で、`dark` のキャンバスの色は N-5 以前の色と同じ値です(完了記録
 `43f032b1`)。
 
+**Auto layout(✅N-4)**: Graph と Frame Plan の右クリック menu「Auto layout」(`pelican.graphCanvas.autoLayout` / `pelican.framePlan.autoLayout`)で、その scope の手置き位置を捨てて層配置(最長経路の列、辺は lane を通って node を横切らない、列内の並びは重心法、行は最小間隔で重ならない)に戻します。動かした node は通常の refresh では保持されます。中ボタンのパンは描画が view に収まっていても動きます。
+
 **このタブが出せる RPC は 5 本だけです。**`GraphCanvasReadCapability`
 ([定義](../../src/devstudio/view/graphcanvasreadcapability.hpp#L20))は「汎用の RPC メソッド」を表現できない形をしていて、
 `get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` / `get_edit_result` の

@@ -257,7 +257,7 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 | `dist_debug/` が source tree 直下なので、同じ worktree の ON build と OFF build が `pelican_cli` / `pelican_studio` を上書きし合う(catalog の module 数を取り違える) | `### R-3:` |
 | `pelican_studio` が window close で exit 139(SIGSEGV)する(X button でも `CloseMainWindow` でも。実害は `pelican_player.exe` の孤児化。別 session の GUI backlog、未調査)| GUI session の報告(N-1b / N-2) |
 | `test/gpu_lease_run.cpp:94` が GPU lease の log を消さず `%TEMP%` に `pelican_gpu_lease_v1.<pid>.log` が数千個積もる(R-1 の temp dir flake の真の候補)| `### R-1:` の完了記録 |
-| N-3 のパンは scroll bar 経由なので、**描画が view に収まっている間は中ボタンドラッグが何も動かさない**(使い勝手の穴。view transform の平行移動へ直す分は N-4 に畳んだ)| `### Q-1b:` の着地前の実測(2026-09-18)|
+| N-3 のパンは scroll bar 経由なので、**描画が view に収まっている間は中ボタンドラッグが何も動かさない**(使い勝手の穴。view transform の平行移動へ直す分は N-4 に畳んだ)| `### Q-1b:` の着地前の実測(2026-09-17)|
 **`requires` を読まない configure 時の game logic 目標**(R-3 で見つけ、R-3 では直さない)。
 corpus の game logic DLL 目標は `test/CMakeLists.txt` の
 `file(GLOB_RECURSE pelican_catalog_project_manifests CONFIGURE_DEPENDS ... "${pelican_catalog_projects_dir}/*/project.json")`
