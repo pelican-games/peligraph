@@ -317,6 +317,13 @@ class GraphCanvasModel {
     // Nothing here holds a ticket, so polling only picks up the one read the
     // canvas still owes: the catalog it could not ask for while disconnected.
     void poll();
+    // True while a poll would actually ask the engine something: the catalog
+    // has still to be fetched, Live is on, or an edit ticket is outstanding.
+    // False the rest of the time -- and then nothing has to wake up for it.
+    [[nodiscard]] bool pollWanted() const noexcept {
+        if (!connected_) return false;
+        return !catalog_requested_ || live_ || (!pending_ && !ticket_.empty());
+    }
 
     std::vector<InspectorRpcRequest> takeRpcRequests();
     void receiveRpcResult(std::uint64_t id, std::string_view json);

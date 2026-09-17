@@ -40,6 +40,14 @@ long long rpcIntegerField(const std::string &request,
     return std::stoll(request.substr(begin + prefix.size()));
 }
 
+// Q-2. One `result` member whose bytes a document round trip would not
+// preserve: the escaped quote, the braces inside the string, the trailing
+// fraction and the member order all survive only if the reply is handed on as
+// the bytes it arrived as.
+const char *envelopeTrickyResult() {
+    return R"json({"text":"a\"b{}[],:","nested":[{"}":"]"}],"n":1.5,"b":true})json";
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -98,6 +106,36 @@ int main(int argc, char *argv[]) {
                           << ",\"jsonrpc\":\"2.0\",\"result\":{}}\n"
                           << std::flush;
             }
+        }
+        return 0;
+    }
+    // Q-2: replies shaped the way the single-pass envelope scanner has to
+    // survive -- braces and brackets and an escaped quote inside a string,
+    // spaces around every token, members in an order nobody promised, and a
+    // line that begins like a reply but is not one.
+    if (argc >= 2 && std::string_view{argv[1]} == "rpc-envelope") {
+        std::string request;
+        while (std::getline(std::cin, request)) {
+            const long long id = rpcIntegerField(request, "id");
+            if (id == 1) {
+                std::cout << R"json({ "result" : )json"
+                          << envelopeTrickyResult()
+                          << R"json( , "jsonrpc" : "2.0" , "id" : 1 })json"
+                          << '\n' << std::flush;
+                continue;
+            }
+            if (id == 2) {
+                std::cout
+                    << R"json({"jsonrpc":"2.0","id":2,"result":{"a":[1,2})json"
+                    << '\n' << std::flush;
+                std::cout
+                    << R"json({"jsonrpc":"2.0","id":2,"error":{"code":-32001,"message":"envelope probe"}})json"
+                    << '\n' << std::flush;
+                continue;
+            }
+            std::cout << R"json({"jsonrpc":"2.0","id":)json" << id
+                      << R"json(,"result":null})json" << '\n'
+                      << std::flush;
         }
         return 0;
     }

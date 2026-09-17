@@ -484,6 +484,21 @@ NodeCanvasView::NodeCanvasView(QGraphicsScene *scene, QWidget *parent)
     // a wheel feel like a magnifier rather than a scrollbar.
     setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     setResizeAnchor(QGraphicsView::AnchorViewCenter);
+    // Q-2. The ground is a flat fill and a grid: the same picture every paint
+    // until the view moves, so Qt keeps it as a pixmap and scrolls it instead
+    // of asking for it again.
+    setCacheMode(QGraphicsView::CacheBackground);
+    // The view saved and restored the painter state around every item it
+    // drew. Nothing here needs that: no item in either canvas overrides
+    // paint(), so every one of them is a stock Qt shape that sets the pen and
+    // brush it draws with. Antialiasing itself stays on -- this is the
+    // bookkeeping around the drawing, not the drawing.
+    //
+    // `DontAdjustForAntialiasing` is deliberately *not* set beside it. Those
+    // same stock items pad their boundingRect by the pen width alone, and an
+    // antialiased edge reaches past that; dropping Qt's margin would leave
+    // trails on a partial repaint, which is what a pan is made of.
+    setOptimizationFlag(QGraphicsView::DontSavePainterState);
     setProperty("pelicanZoomScale", 1.0);
     setProperty("pelicanZoomMinimum", DefaultMinimumZoom);
     setProperty("pelicanZoomMaximum", DefaultMaximumZoom);
@@ -503,14 +518,37 @@ void NodeCanvasView::drawBackground(QPainter *painter, const QRectF &rect) {
     pen.setCosmetic(true);
     pen.setWidthF(1.0);
     painter->setPen(pen);
-    const qreal left = std::floor(rect.left() / pitch) * pitch;
-    const qreal top = std::floor(rect.top() / pitch) * pitch;
-    QVector<QLineF> lines;
-    for (qreal x = left; x < rect.right(); x += pitch)
-        lines.push_back(QLineF{x, rect.top(), x, rect.bottom()});
-    for (qreal y = top; y < rect.bottom(); y += pitch)
-        lines.push_back(QLineF{rect.left(), y, rect.right(), y});
-    painter->drawLines(lines);
+    // Q-2: the same exposed rect under the same theme produces the same lines.
+    // Building them again was an allocation of up to ~180 QLineF on every
+    // repaint, and a repaint is what a pan is made of.
+    if (grid_rect_ != rect || grid_colour_ != theme.canvas.grid) {
+        grid_rect_ = rect;
+        grid_colour_ = theme.canvas.grid;
+        grid_lines_.clear();
+        const qreal left = std::floor(rect.left() / pitch) * pitch;
+        const qreal top = std::floor(rect.top() / pitch) * pitch;
+        for (qreal x = left; x < rect.right(); x += pitch)
+            grid_lines_.push_back(QLineF{x, rect.top(), x, rect.bottom()});
+        for (qreal y = top; y < rect.bottom(); y += pitch)
+            grid_lines_.push_back(QLineF{rect.left(), y, rect.right(), y});
+    }
+    painter->drawLines(grid_lines_);
+}
+
+void NodeCanvasView::changeEvent(QEvent *event) {
+    QGraphicsView::changeEvent(event);
+    if (event == nullptr) return;
+    const QEvent::Type type = event->type();
+    if (type != QEvent::PaletteChange &&
+        type != QEvent::ApplicationPaletteChange &&
+        type != QEvent::StyleChange) {
+        return;
+    }
+    // Both caches hold the old theme's ground. Without this a theme switch
+    // repaints the nodes and leaves the canvas standing on the colour it had.
+    grid_rect_ = {};
+    grid_lines_.clear();
+    resetCachedContent();
 }
 
 void NodeCanvasView::publishZoom(qreal scale, const QString &boundary) {

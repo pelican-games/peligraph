@@ -137,6 +137,11 @@ class InspectorModel {
     void receiveRpcFailure(std::uint64_t request_id, std::string message);
     void pollPendingOperations();
     void pollExternalChanges();
+    // Whether either poll has anything to ask. A panel with no edit in flight
+    // and nothing selected has nothing to ask about, and then nothing needs to
+    // wake up 25 times a second to find that out.
+    [[nodiscard]] bool pendingPollWanted() const noexcept;
+    [[nodiscard]] bool externalWatchWanted() const noexcept;
 
     bool beginWidgetEdit(std::string_view field_key);
     bool stageWidgetValue(std::string_view field_key,

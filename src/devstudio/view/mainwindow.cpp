@@ -31,6 +31,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QScopeGuard>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QStandardPaths>
@@ -59,6 +60,14 @@ namespace {
 
 constexpr int SceneIdRole = Qt::UserRole;
 constexpr int DeclarationIndexRole = Qt::UserRole + 1;
+
+// `scene_tree` carries the engine's own `scene_revision`, so a reply that did
+// not move it is an answer Studio already had. The outliner keeps the quick
+// cadence while the scene is moving and doubles its way back to the slow one
+// while it is not, rather than paying for four full scene trees a second to
+// watch nothing happen.
+constexpr int OutlinerRefreshMinimumIntervalMs = 250;
+constexpr int OutlinerRefreshMaximumIntervalMs = 2000;
 
 const QString &lastPanelLayoutName() {
     static const QString name = QStringLiteral("Last panel session");
@@ -364,22 +373,23 @@ void MainWindow::createWorkspace() {
     connect(viewport_, &EmbeddedViewport::engineRpcBecameAvailable, this,
             [this] {
                 pending_outliner_request_ = 0;
+                setOutlinerRefreshInterval(OutlinerRefreshMinimumIntervalMs);
                 outliner_refresh_timer_->start();
                 requestOutlinerRefresh();
                 pending_gizmo_requests_.clear();
                 gizmo_model_.startSession();
-                modal_transform_timer_->start();
                 dispatchGizmoModel();
             });
     connect(viewport_, &EmbeddedViewport::engineRpcBecameUnavailable, this,
             [this](const QString &) {
                 outliner_refresh_timer_->stop();
                 pending_outliner_request_ = 0;
-                modal_transform_timer_->stop();
                 pending_gizmo_requests_.clear();
                 gizmo_model_.stopSession();
                 dispatchGizmoModel();
             });
+    connect(viewport_, &EmbeddedViewport::engineInputActiveChanged, this,
+            [this](bool) { updateModalTransformPolling(); });
     connect(viewport_, &EmbeddedViewport::inspectorRpcSucceeded, this,
             [this](qint64 request_id, const QByteArray &result_json) {
                 completeOutlinerRpc(request_id, result_json);
@@ -391,16 +401,44 @@ void MainWindow::createWorkspace() {
                 failGizmoRpc(request_id, message);
             });
     modal_transform_timer_ = new QTimer(this);
-    modal_transform_timer_->setInterval(16);
+    modal_transform_timer_->setObjectName(
+        QStringLiteral("pelican.modalTransformPollTimer"));
+    modal_transform_timer_->setInterval(GizmoModalActivePollIntervalMs);
     connect(modal_transform_timer_, &QTimer::timeout, this, [this] {
         gizmo_model_.pollModalTransform(
             inspector_->gizmoTransformBinding());
         dispatchGizmoModel();
     });
     outliner_refresh_timer_ = new QTimer(this);
-    outliner_refresh_timer_->setInterval(250);
+    outliner_refresh_timer_->setObjectName(
+        QStringLiteral("pelican.outlinerRefreshTimer"));
+    outliner_refresh_interval_ms_ = OutlinerRefreshMinimumIntervalMs;
+    outliner_refresh_timer_->setInterval(outliner_refresh_interval_ms_);
     connect(outliner_refresh_timer_, &QTimer::timeout, this,
             [this] { requestOutlinerRefresh(); });
+}
+
+void MainWindow::updateModalTransformPolling() {
+    // Selection and toolbar work runs while the window is still being built,
+    // before the clock this decides about exists.
+    if (modal_transform_timer_ == nullptr || viewport_ == nullptr) return;
+    const int interval = gizmoModalPollIntervalMs(
+        viewport_->rpcReady(), gizmo_model_.gestureActive(),
+        viewport_->engineInputActive());
+    if (interval == 0) {
+        modal_transform_timer_->stop();
+        return;
+    }
+    if (modal_transform_timer_->interval() != interval) {
+        modal_transform_timer_->setInterval(interval);
+    }
+    if (!modal_transform_timer_->isActive()) modal_transform_timer_->start();
+}
+
+void MainWindow::setOutlinerRefreshInterval(int interval_ms) {
+    if (outliner_refresh_interval_ms_ == interval_ms) return;
+    outliner_refresh_interval_ms_ = interval_ms;
+    outliner_refresh_timer_->setInterval(interval_ms);
 }
 
 void MainWindow::applyStoredTheme() {
@@ -699,7 +737,16 @@ void MainWindow::completeOutlinerRpc(
         const auto result = nlohmann::json::parse(std::string{
             result_json.constData(),
             static_cast<std::size_t>(result_json.size())});
-        if (!project_model_->updateSceneTree(result)) return;
+        if (!project_model_->updateSceneTree(result)) {
+            // The engine answered with the revision Studio already has. Ask
+            // again, but less often: a scene that is not moving does not need
+            // to be asked about four times a second.
+            setOutlinerRefreshInterval(
+                std::min(outliner_refresh_interval_ms_ * 2,
+                         OutlinerRefreshMaximumIntervalMs));
+            return;
+        }
+        setOutlinerRefreshInterval(OutlinerRefreshMinimumIntervalMs);
         const auto selected = selection_model_.selected();
         if (selected && project_model_->findObject(*selected) == nullptr) {
             (void)selection_model_.selectFromOutliner(std::nullopt);
@@ -832,6 +879,11 @@ void MainWindow::failGizmoRpc(qint64 request_id, const QString &message) {
 }
 
 void MainWindow::dispatchGizmoModel() {
+    // Whatever this dispatch does to the gizmo, the poll has to follow it:
+    // a gesture that just began needs asking about, and one that just ended
+    // does not.
+    const auto follow_with_poll_decision = qScopeGuard(
+        [this] { updateModalTransformPolling(); });
     std::unordered_set<std::uint64_t> rejected_gestures;
     for (;;) {
         bool progressed = false;

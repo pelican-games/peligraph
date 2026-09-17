@@ -32,6 +32,7 @@ struct GraphAttachmentWidget::Impl {
     QPushButton *add;
     QPushButton *remove;
     QPushButton *refresh;
+    QTimer *poll_timer = nullptr;
     QLabel *notice;
     QGroupBox *ports;
     QFormLayout *port_rows;
@@ -51,6 +52,21 @@ struct GraphAttachmentWidget::Impl {
     bool submitted = false;
 
     explicit Impl(GraphAttachmentWidget &widget) : view(widget) {
+        // Q-2 looked at stopping this clock while there is no ticket to chase,
+        // and left it running: it is not only a poll. Watching an instance
+        // queues reads on the model from inside synchronize(), which does not
+        // flush them -- the tick does, through dispatch(). Idle it asks the
+        // engine for nothing (the model guards the poll), so the cost is
+        // UI-thread wakeups, not RPC.
+        poll_timer = new QTimer(&view);
+        poll_timer->setObjectName(
+            QStringLiteral("pelican.graphAttachmentPollTimer"));
+        poll_timer->setInterval(100);
+        QObject::connect(poll_timer, &QTimer::timeout, &view, [this] {
+            model.poll();
+            dispatch();
+        });
+        poll_timer->start();
         auto *layout = new QVBoxLayout(&view);
         layout->setContentsMargins(0, 0, 0, 0);
         auto *group = new QGroupBox(view.tr("Attached graphs"), &view);
@@ -102,13 +118,6 @@ struct GraphAttachmentWidget::Impl {
             synchronize();
             dispatch();
         });
-        auto *poll = new QTimer(&view);
-        poll->setInterval(100);
-        QObject::connect(poll, &QTimer::timeout, &view, [this] {
-            model.poll();
-            dispatch();
-        });
-        poll->start();
         synchronize();
     }
 

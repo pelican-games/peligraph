@@ -37,6 +37,8 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QTabBar>
+#include <QHideEvent>
+#include <QShowEvent>
 #include <QTabWidget>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
@@ -365,6 +367,10 @@ struct FramePlanWidget::Impl {
     std::function<void(const QString &, const QStringList &, quint64)> node_order_action;
     qint64 pending_request = 0;
     qint64 pending_gpu_timing_request = 0;
+    // Half of what gates the GPU timing clock: whether the engine still has
+    // anything to report. The other half is whether anyone is looking at the
+    // panel, and either can change without the other.
+    bool gpu_timing_reportable = true;
 
     // --- N-8: editing on the canvas.
     FramePlanEditCapability edit;
@@ -768,8 +774,9 @@ struct FramePlanWidget::Impl {
                              placement_loaded = false;
                              placement_graph.clear();
                              requestRefresh();
+                             gpu_timing_reportable = true;
                              requestGpuTiming();
-                             gpu_timing_poll->start();
+                             updateGpuTimingPoll();
                          });
         QObject::connect(
             &viewport, &EmbeddedViewport::engineRpcBecameUnavailable, &owner,
@@ -796,8 +803,9 @@ struct FramePlanWidget::Impl {
 
         if (viewport.rpcReady()) {
             requestRefresh();
+            gpu_timing_reportable = true;
             requestGpuTiming();
-            gpu_timing_poll->start();
+            updateGpuTimingPoll();
         } else {
             showUnavailable(owner.tr(
                 "pelican_player is not running. Open a project to start the "
@@ -1269,6 +1277,15 @@ struct FramePlanWidget::Impl {
         showStatus(owner.tr("Requesting the current frame plan..."));
     }
 
+    void updateGpuTimingPoll() {
+        if (gpu_timing_reportable && viewport.rpcReady() &&
+            owner.isVisible()) {
+            if (!gpu_timing_poll->isActive()) gpu_timing_poll->start();
+            return;
+        }
+        gpu_timing_poll->stop();
+    }
+
     void requestGpuTiming() {
         if (pending_gpu_timing_request != 0 ||
             !viewport.rpcReady()) {
@@ -1300,8 +1317,14 @@ struct FramePlanWidget::Impl {
 
     void consumeGpuTimingResult(const QByteArray &result_json) {
         try {
-            logical_scene->setGpuTiming(
-                parseGpuTimingResult(result_json));
+            const auto snapshot = parseGpuTimingResult(result_json);
+            // A project that did not turn GPU timing on cannot start
+            // reporting it while it is loaded, so there is nothing left to
+            // ask. The poll is armed again when the engine comes back, which
+            // is the only moment that answer can become a different one.
+            gpu_timing_reportable = snapshot.enabled && snapshot.supported;
+            updateGpuTimingPoll();
+            logical_scene->setGpuTiming(snapshot);
         } catch (const std::exception &error) {
             logical_scene->setGpuTiming(FramePlanGpuTimingSnapshot{
                 .received = true,
@@ -2179,6 +2202,24 @@ FramePlanWidget::FramePlanWidget(EmbeddedViewport *viewport, QWidget *parent)
 
 FramePlanWidget::~FramePlanWidget() = default;
 
+void FramePlanWidget::showEvent(QShowEvent *event) {
+    QWidget::showEvent(event);
+    // Coming back into view is a moment the numbers are stale, so ask once
+    // now and let the clock take over.
+    impl_->requestGpuTiming();
+    impl_->updateGpuTimingPoll();
+    // Now that it is in front, it may ask. Nothing is lost by having waited:
+    // both reads are cheap and the canvas draws its bands the moment they land.
+    impl_->requestAuthoringContext();
+    impl_->requestTaskAuthoring();
+    if (impl_->model) impl_->loadPlacement();
+}
+
+void FramePlanWidget::hideEvent(QHideEvent *event) {
+    QWidget::hideEvent(event);
+    impl_->updateGpuTimingPoll();
+}
+
 void FramePlanWidget::receiveResult(const QByteArray &result_json) {
     impl_->consumeResult(result_json);
 }
@@ -2282,15 +2323,6 @@ void FramePlanWidget::setPassInsertAction(
 
 void FramePlanWidget::setTaskInsertAction(std::function<void()> action) {
     impl_->task_insert_action = std::move(action);
-}
-
-void FramePlanWidget::showEvent(QShowEvent *event) {
-    QWidget::showEvent(event);
-    // Now that it is in front, it may ask. Nothing is lost by having waited:
-    // both reads are cheap and the canvas draws its bands the moment they land.
-    impl_->requestAuthoringContext();
-    impl_->requestTaskAuthoring();
-    if (impl_->model) impl_->loadPlacement();
 }
 
 void FramePlanWidget::refreshAuthoringContext() {

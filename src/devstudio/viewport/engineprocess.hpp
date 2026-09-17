@@ -54,7 +54,9 @@ class EngineProcess final : public QObject {
     void processFailed(const QString &message);
     void outputReceived(const QString &output);
     void standardErrorReceived(const QString &output);
-    void rpcResultReceived(qint64 request_id, const QJsonValue &result);
+    // The `result` member exactly as the engine wrote it. Bytes, not a
+    // document: the reply is parsed once, by whoever needs its contents.
+    void rpcResultReceived(qint64 request_id, const QByteArray &result_json);
     void rpcErrorReceived(qint64 request_id, int code,
                           const QString &message, const QJsonValue &data);
     void rpcTransportFailed(qint64 request_id, const QString &message);

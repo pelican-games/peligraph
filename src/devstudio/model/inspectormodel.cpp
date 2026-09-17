@@ -1577,7 +1577,19 @@ void InspectorModel::receiveRpcFailure(std::uint64_t request_id,
     impl_->handleFailure(state, std::move(message));
 }
 
+bool InspectorModel::pendingPollWanted() const noexcept {
+    return !impl_->pending_edits.empty() ||
+           (impl_->preview &&
+            !impl_->preview->outstanding_request.empty());
+}
+
+bool InspectorModel::externalWatchWanted() const noexcept {
+    return impl_->connected && impl_->actor_id.has_value() &&
+           impl_->selection.has_value();
+}
+
 void InspectorModel::pollPendingOperations() {
+    if (!pendingPollWanted()) return;
     for (auto &pending : impl_->pending_edits) {
         if (pending.poll_in_flight) {
             continue;
@@ -1602,9 +1614,7 @@ void InspectorModel::pollPendingOperations() {
 }
 
 void InspectorModel::pollExternalChanges() {
-    if (!impl_->connected || !impl_->actor_id || !impl_->selection) {
-        return;
-    }
+    if (!externalWatchWanted()) return;
     if (impl_->refreshSuppressed()) {
         impl_->watch_poll_pending = true;
         return;

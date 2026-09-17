@@ -321,3 +321,44 @@ TEST_CASE("Unconfirmed graph edit poll replies retain the accepted ticket", "[st
     REQUIRE_FALSE(h.model.busy());
     REQUIRE(h.model.canRefresh());
 }
+
+// Q-2. The panel's 100 ms clock exists to chase an outstanding edit ticket.
+// It keeps running -- it is also what flushes the model's request queue -- so
+// what matters is that a tick with no ticket to chase asks the engine for
+// nothing at all. That is this predicate, and it is the reason the panel costs
+// zero RPC per second while idle.
+TEST_CASE("Graph attachment polls only while an edit ticket is outstanding",
+          "[studio][graph-attachment][poll][idle][negative-contrast][q2]") {
+    Harness h;
+    // Disconnected, nothing selected: nothing to ask anyone.
+    REQUIRE_FALSE(h.model.pollWanted());
+    h.open();
+    // Connected and showing an attachment, but no edit in flight.
+    REQUIRE_FALSE(h.model.pollWanted());
+    REQUIRE(h.model.takeRpcRequests().empty());
+    h.model.poll();
+    REQUIRE(h.model.takeRpcRequests().empty());
+
+    REQUIRE(h.model.setInstanceParameter("left", "gain", 6));
+    const auto edit = h.take("edit_graph_document");
+    // The edit is in flight: its own slot is taken, so the poll still has
+    // nothing to add.
+    REQUIRE_FALSE(h.model.pollWanted());
+    h.reply(edit, {{"status", "accepted"}, {"ticket", "edit-1"}});
+    // Accepting the edit asks after the ticket once, straight away. That one
+    // holds the slot, so there is still nothing for a clock to do.
+    REQUIRE_FALSE(h.model.pollWanted());
+    const auto first = h.take("get_edit_result");
+    REQUIRE(first.params == Json{{"ticket", "edit-1"}});
+    h.reply(first, {{"status", "pending"}});
+    // Still pending: the ticket outlived the one question asked about it, and
+    // asking again is exactly what the clock is for.
+    REQUIRE(h.model.pollWanted());
+    h.model.poll();
+    const auto chase = h.take("get_edit_result");
+    REQUIRE(chase.params == Json{{"ticket", "edit-1"}});
+    h.reply(chase, {{"status", "committed"}});
+    h.reply(h.take("get_graph_instances"), context());
+    // Committed: the clock has nothing left to chase and stops again.
+    REQUIRE_FALSE(h.model.pollWanted());
+}

@@ -2634,12 +2634,28 @@ struct GraphCanvasWidget::Impl {
     QAction *fit_view_action = nullptr;
     QAction *tie_action = nullptr;
     QAction *untie_action = nullptr;
+    QTimer *poll_timer = nullptr;
     QHash<qint64, quint64> transport_requests;
     std::uint64_t rendered_content = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t rendered_report = std::numeric_limits<std::uint64_t>::max();
 
     explicit Impl(GraphCanvasWidget &owner, GraphCanvasReadCapability capability)
         : view{owner}, graph{std::move(capability)} {
+        // Q-2 looked at stopping this clock while there is nothing to poll
+        // for, and put it back: it is not only a poll. Descending into a
+        // definition, leaving a scope, choosing one from the combo and
+        // revealing a node all queue reads on the model and none of them
+        // flushes the queue itself -- the tick does, through dispatch(). The
+        // clock costs no RPC while idle (the model's own poll() asks for
+        // nothing then); making it stoppable means first giving every one of
+        // those paths a flush of its own, which is a change of its own.
+        poll_timer = new QTimer(&view);
+        poll_timer->setObjectName(
+            QStringLiteral("pelican.graphCanvasPollTimer"));
+        poll_timer->setInterval(250);
+        QObject::connect(poll_timer, &QTimer::timeout, &view,
+                         [this] { view.poll(); });
+        poll_timer->start();
         view.setFont(studioPanelFont());
         auto *layout = new QVBoxLayout(&view);
         layout->setContentsMargins(6, 6, 6, 6);
@@ -2872,11 +2888,6 @@ struct GraphCanvasWidget::Impl {
                 dispatch();
             });
 
-        auto *poll = new QTimer(&view);
-        poll->setInterval(250);
-        QObject::connect(poll, &QTimer::timeout, &view,
-                         [this] { view.poll(); });
-        poll->start();
         synchronize();
     }
 

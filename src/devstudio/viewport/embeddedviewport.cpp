@@ -138,16 +138,6 @@ QString awarenessName(int awareness) {
     }
 }
 
-QByteArray serializeJsonValue(const QJsonValue &value) {
-    QByteArray wrapper =
-        QJsonDocument(QJsonArray{value}).toJson(QJsonDocument::Compact);
-    if (wrapper.size() >= 2 && wrapper.front() == '[' &&
-        wrapper.back() == ']') {
-        return wrapper.sliced(1, wrapper.size() - 2);
-    }
-    return {};
-}
-
 } // namespace
 
 QStringList studioPlayerArguments(QStringList configured,
@@ -265,6 +255,7 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                 primary_pointer_was_down_ = false;
                 primary_pointer_owned_ = false;
                 last_primary_pointer_position_.reset();
+                setEngineInputActive(false);
                 rpc_ready_ = false;
                 child_window_ = 0;
                 last_requested_extent_ = {};
@@ -304,6 +295,7 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
         primary_pointer_was_down_ = false;
         primary_pointer_owned_ = false;
         last_primary_pointer_position_.reset();
+        setEngineInputActive(false);
         rpc_ready_ = false;
         restart_button_->setText(tr("Retry Engine"));
         restart_button_->setEnabled(true);
@@ -321,14 +313,16 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                 emit engineStandardErrorReceived(output);
             });
     connect(&process_, &EngineProcess::rpcResultReceived, this,
-            [this](qint64 request_id, const QJsonValue &result) {
+            [this](qint64 request_id, const QByteArray &result_json) {
+                // Passed straight through. The reply was walked once by
+                // EngineProcess and is parsed once by whichever model wants
+                // its contents; nothing in between takes a copy of it as a
+                // document.
                 if (!pending_pick_requests_.remove(request_id)) {
-                    emit inspectorRpcSucceeded(request_id,
-                                               serializeJsonValue(result));
+                    emit inspectorRpcSucceeded(request_id, result_json);
                     return;
                 }
-                emit pickObjectSucceeded(request_id,
-                                         serializeJsonValue(result));
+                emit pickObjectSucceeded(request_id, result_json);
             });
     connect(&process_, &EngineProcess::rpcErrorReceived, this,
             [this](qint64 request_id, int code, const QString &message,
@@ -661,6 +655,20 @@ void EmbeddedViewport::pollPointerFocus() {
         last_primary_pointer_position_.reset();
     }
     primary_pointer_was_down_ = primary_pointer.button_down;
+
+    // A modal transform begins with a key, and a key goes to whatever holds
+    // the keyboard focus -- so the engine window holding it is exactly the
+    // condition under which one can begin. Hovering is not enough, and a drag
+    // that the gizmo claimed is a gesture, which is tracked separately.
+    // Reported as a change, not as a reading: the 5 ms poll must not turn into
+    // 200 signals a second.
+    setEngineInputActive(child_window_ != 0 && primary_pointer.has_focus);
+}
+
+void EmbeddedViewport::setEngineInputActive(bool active) {
+    if (engine_input_active_ == active) return;
+    engine_input_active_ = active;
+    emit engineInputActiveChanged(active);
 }
 
 void EmbeddedViewport::setGizmoNotice(const QString &message) {

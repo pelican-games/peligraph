@@ -95,6 +95,7 @@ class MainWindow : public QMainWindow {
     std::array<QAction *, 3> gizmo_mode_actions_{};
     QTimer *modal_transform_timer_ = nullptr;
     QTimer *outliner_refresh_timer_ = nullptr;
+    int outliner_refresh_interval_ms_ = 0;
     qint64 pending_outliner_request_ = 0;
     QHash<qint64, ViewportPickToken> pending_pick_tokens_;
     QHash<qint64, quint64> pending_gizmo_requests_;
@@ -112,6 +113,12 @@ class MainWindow : public QMainWindow {
     void chooseProject();
     void populateOutliner();
     void requestOutlinerRefresh();
+    // The modal poll runs while, and only while, a modal transform could be
+    // under way. Called wherever one of the three facts it reads can move.
+    void updateModalTransformPolling();
+    // The outliner asks again quickly while the scene is moving and slows
+    // down while it is not, instead of asking four times a second forever.
+    void setOutlinerRefreshInterval(int interval_ms);
     void completeOutlinerRpc(qint64 request_id,
                              const QByteArray &result_json);
     void failOutlinerRpc(qint64 request_id, const QString &message);

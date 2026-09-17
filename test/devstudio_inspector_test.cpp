@@ -1444,3 +1444,50 @@ TEST_CASE("Studio Inspector ray occurrence catalog is tied to the current object
         CHECK_FALSE(harness.model.rayOccurrences());
     }
 }
+
+// Q-2. The Inspector's two clocks keep running -- they are also what flushes
+// the model's request queue after a widget edit begins or a value is previewed
+// -- so what matters is that a tick asks the engine for something only when
+// there is an edit to chase or a selection to watch. These are the two
+// questions the polls now ask themselves first, and they are the reason the
+// panel costs zero RPC per second while idle.
+TEST_CASE("Inspector polls only for an edit in flight and a watched selection",
+          "[devstudio][inspector][poll][idle][negative-contrast][q2]") {
+    InspectorHarness harness;
+    // Nothing open: no session, no selection, nothing to chase.
+    REQUIRE_FALSE(harness.model.pendingPollWanted());
+    REQUIRE_FALSE(harness.model.externalWatchWanted());
+    harness.model.pollPendingOperations();
+    REQUIRE(harness.model.takeRpcRequests().empty());
+
+    harness.open();
+    // A selection under an open session is what the watch exists for; there is
+    // still no edit to chase.
+    REQUIRE(harness.model.externalWatchWanted());
+    REQUIRE_FALSE(harness.model.pendingPollWanted());
+    harness.model.pollPendingOperations();
+    REQUIRE(harness.model.takeRpcRequests().empty());
+
+    // An accepted edit is exactly what the 25 ms clock is for.
+    const auto field_key = harness.field("transform", "pos").field_key;
+    REQUIRE(harness.model.commitWidgetValue(
+        field_key, Json::array({5.0, 2.0, 3.0})));
+    const auto edit = harness.take("edit");
+    REQUIRE_FALSE(harness.model.pendingPollWanted());
+    harness.reply(edit, {{"status", "accepted"}, {"ticket", "edit:poll"}});
+    REQUIRE(harness.model.pendingPollWanted());
+    harness.model.pollPendingOperations();
+    const auto chase = harness.take("get_edit_result");
+    REQUIRE(chase.params.at("ticket") == "edit:poll");
+    harness.reply(chase,
+                  {{"status", "committed"}, {"committed_revision", 2}});
+    (void)harness.model.takeRpcRequests();
+    // Committed: nothing left to chase, and the selection is still watched.
+    REQUIRE_FALSE(harness.model.pendingPollWanted());
+    REQUIRE(harness.model.externalWatchWanted());
+
+    // Losing the engine ends both.
+    harness.model.stopSession("engine stopped");
+    REQUIRE_FALSE(harness.model.externalWatchWanted());
+    REQUIRE_FALSE(harness.model.pendingPollWanted());
+}

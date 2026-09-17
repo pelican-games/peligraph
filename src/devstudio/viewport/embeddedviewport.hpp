@@ -42,6 +42,11 @@ class EmbeddedViewport final : public QWidget {
     qint64 requestRpc(const QString &method, const QJsonObject &params,
                       QString *error = nullptr);
     bool rpcReady() const noexcept { return rpc_ready_; }
+    // True while the engine viewport is where the user's input is going: the
+    // pointer is over it, or its window holds the keyboard focus. Only then
+    // can the engine begin a modal transform of its own, so only then does
+    // Studio have to ask it whether one has begun.
+    bool engineInputActive() const noexcept { return engine_input_active_; }
     void setPickingNotice(const QString &message);
     void setGizmoNotice(const QString &message);
 
@@ -60,6 +65,7 @@ class EmbeddedViewport final : public QWidget {
     void inspectorRpcSucceeded(qint64 request_id,
                                const QByteArray &result_json);
     void inspectorRpcFailed(qint64 request_id, const QString &message);
+    void engineInputActiveChanged(bool active);
 
   private:
     EngineProcess process_;
@@ -85,6 +91,7 @@ class EmbeddedViewport final : public QWidget {
     bool restart_after_stop_ = false;
     bool shutting_down_ = false;
     bool rpc_ready_ = false;
+    bool engine_input_active_ = false;
     QSize last_requested_extent_;
     QString project_root_;
     QSet<qint64> pending_pick_requests_;
@@ -99,6 +106,7 @@ class EmbeddedViewport final : public QWidget {
     void resizeEmbeddedWindow(const QSize &pixel_extent);
     void focusEmbeddedWindow();
     void pollPointerFocus();
+    void setEngineInputActive(bool active);
     void updateDiagnostics();
     void finishProcessShutdown(qint64 expected_process_id);
 };

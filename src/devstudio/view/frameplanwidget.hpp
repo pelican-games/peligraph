@@ -11,6 +11,7 @@
 #include <memory>
 
 class QByteArray;
+class QHideEvent;
 class QShowEvent;
 class QString;
 
@@ -67,11 +68,16 @@ class FramePlanWidget final : public QWidget {
   protected:
     // N-8: the two authoring reads the canvas needs are asked for when this
     // panel comes to the front, not while it is behind another tab.
-    void showEvent(QShowEvent *event) override;
 
   public:
     bool restoreToolLayout(const ToolLayoutSnapshot &snapshot);
     void applyDefaultToolLayout();
+
+  protected:
+    // GPU timing is a number on this panel. A panel nobody can see is not
+    // worth asking the engine's render thread about once a second.
+    void showEvent(QShowEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
 };
 
 } // namespace PelicanStudio

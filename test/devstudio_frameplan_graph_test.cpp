@@ -2789,6 +2789,46 @@ TEST_CASE(
     REQUIRE(poll->interval() == 1000);
     REQUIRE(widget.property("pelicanGpuTimingPollIntervalMs").toInt() ==
             1000);
+
+    // Q-2. Three facts decide whether the clock runs, and each one alone can
+    // stop it: an engine to ask, a panel on screen to show the answer on, and
+    // an engine that still has an answer worth having. A project that did not
+    // turn GPU timing on cannot begin reporting it while it is loaded, so
+    // once the engine has said so there is nothing left to ask.
+    viewport.rpc_ready_ = true;
+    widget.show();
+    QApplication::processEvents();
+    widget.receiveGpuTimingResult(response(
+        true, true, "enabled", Json::array()));
+    REQUIRE(poll->isActive());
+
+    // Nobody is looking at the panel: the numbers on it are not worth a
+    // round trip through the engine's render thread once a second.
+    widget.hide();
+    QApplication::processEvents();
+    REQUIRE_FALSE(poll->isActive());
+    widget.show();
+    QApplication::processEvents();
+    REQUIRE(poll->isActive());
+
+    widget.receiveGpuTimingResult(response(
+        false, false, "feature_not_enabled", Json::array(), 0));
+    REQUIRE_FALSE(poll->isActive());
+
+    widget.receiveGpuTimingResult(response(
+        true, false, "graphics_queue_timestamps_unsupported", Json::array(),
+        0));
+    REQUIRE_FALSE(poll->isActive());
+
+    // And with the engine gone there is nobody to ask at all.
+    widget.receiveGpuTimingResult(response(
+        true, true, "enabled", Json::array()));
+    REQUIRE(poll->isActive());
+    viewport.rpc_ready_ = false;
+    widget.hide();
+    widget.show();
+    QApplication::processEvents();
+    REQUIRE_FALSE(poll->isActive());
 }
 
 TEST_CASE(
@@ -2830,7 +2870,10 @@ TEST_CASE(
         QStringLiteral("pelican.gpuTimingPollTimer"));
     REQUIRE(poll != nullptr);
     REQUIRE(poll->interval() == 1000);
-    REQUIRE(poll->isActive());
+    // Not asserted active here: the fixture answers within the same event
+    // loop turn, and its answer -- neither enabled nor supported -- is what
+    // stops the clock. Whether it ran is settled below, by the request the
+    // fixture logged.
     QSignalSpy timeout_spy{poll, &QTimer::timeout};
 
     const QString fixture_reason =
@@ -2860,18 +2903,20 @@ TEST_CASE(
         return transport_log.count(
             QStringLiteral("method=get_gpu_timing"));
     };
-    (void)waitUntil(
-        [&] {
-            return timeout_spy.count() >= 1 &&
-                   gpu_request_count() >= 2;
-        },
-        3000);
+    // The routed reply says the feature is neither enabled nor supported, so
+    // Q-2 stops the clock: the one request that fetched that answer is the
+    // only one there is any point in making. Three seconds is three of the
+    // poll's old intervals.
+    const int answered_count = gpu_request_count();
+    REQUIRE(answered_count >= 1);
+    (void)waitUntil([&] { return gpu_request_count() > answered_count; },
+                    3000);
     INFO("QTimer timeout count=" << timeout_spy.count());
     INFO("observed get_gpu_timing request count="
          << gpu_request_count());
     INFO("fixture transport log=" << transport_log.toStdString());
-    REQUIRE(timeout_spy.count() >= 1);
-    REQUIRE(gpu_request_count() >= 2);
+    REQUIRE_FALSE(poll->isActive());
+    REQUIRE(gpu_request_count() == answered_count);
 }
 
 TEST_CASE(

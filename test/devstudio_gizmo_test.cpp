@@ -499,3 +499,83 @@ TEST_CASE("Devstudio refuses modal begin while the Inspector edit lease is busy"
     REQUIRE(busy_requests.front().method == "cancel_modal_transform");
     REQUIRE(accepted_edits.size() != busy_edits.size());
 }
+
+// Q-2. The 16 ms `get_modal_transform` poll ran from the moment the engine
+// answered until it went away: 60 of the 65 RPC per second Studio issued while
+// the user was doing nothing at all. What decides whether it runs now lives
+// here, as a function of the three facts Studio actually knows, so the table
+// can be read without a window.
+TEST_CASE("Devstudio asks for the modal transform only while one could be happening",
+          "[devstudio][gizmo][modal][poll][idle][negative-contrast][q2]") {
+    using PelicanStudio::GizmoModalActivePollIntervalMs;
+    using PelicanStudio::GizmoModalWatchPollIntervalMs;
+    using PelicanStudio::gizmoModalPollIntervalMs;
+
+    // Idle: engine up, no gesture, the user's input is somewhere else. This is
+    // the state Studio spends almost all of its life in, and the one that used
+    // to cost 60 RPC a second.
+    REQUIRE(gizmoModalPollIntervalMs(true, false, false) == 0);
+
+    // A gesture in flight -- a dragged handle, or a modal transform the engine
+    // has already reported -- is followed at the gesture rate.
+    REQUIRE(gizmoModalPollIntervalMs(true, true, false) ==
+            GizmoModalActivePollIntervalMs);
+    REQUIRE(gizmoModalPollIntervalMs(true, true, true) ==
+            GizmoModalActivePollIntervalMs);
+
+    // The pointer or the keyboard focus is inside the engine viewport: a key
+    // pressed now begins a modal transform the engine cannot announce, so the
+    // question is worth asking -- but at a tenth of the gesture rate.
+    REQUIRE(gizmoModalPollIntervalMs(true, false, true) ==
+            GizmoModalWatchPollIntervalMs);
+    REQUIRE(GizmoModalWatchPollIntervalMs > GizmoModalActivePollIntervalMs);
+
+    // No engine, no question, whatever the user is doing.
+    REQUIRE(gizmoModalPollIntervalMs(false, true, true) == 0);
+    REQUIRE(gizmoModalPollIntervalMs(false, false, true) == 0);
+    REQUIRE(gizmoModalPollIntervalMs(false, false, false) == 0);
+}
+
+// The gate above reads `gestureActive()`, so what that answers decides whether
+// a real gesture keeps being followed. A model that has only been opened is
+// not in a gesture; one the engine has reported a modal transform on is, and
+// stays so until the transform ends.
+TEST_CASE("Devstudio gizmo reports a gesture only between its start and its end",
+          "[devstudio][gizmo][modal][poll][idle][q2]") {
+    GizmoModel model;
+    openModel(model);
+    REQUIRE_FALSE(model.gestureActive());
+
+    model.pollModalTransform(transformBinding());
+    const auto poll = takeRpc(model, "get_modal_transform");
+    // An idle answer leaves the model outside a gesture: the poll that asked
+    // this question has no reason to be asked again.
+    model.receiveRpcResult(
+        poll.request_id,
+        modalResult("idle", 1, std::nullopt, true, {0.0, 0.0, 0.0})
+            .dump());
+    REQUIRE_FALSE(model.gestureActive());
+    // Whatever the idle answer queued for the display is not what this is
+    // about; clear the slot so the next poll is the only thing on it.
+    (void)model.takeEditActions();
+    (void)model.takeRpcRequests();
+
+    model.pollModalTransform(transformBinding());
+    const auto active = takeRpc(model, "get_modal_transform");
+    model.receiveRpcResult(
+        active.request_id,
+        modalResult("active", 2, 77, true, {0.25, 0.0, 0.0}).dump());
+    const auto begin = takeEdit(model, GizmoEditActionKind::Begin);
+    model.confirmEditStarted(begin.gesture_id, true);
+    (void)model.takeEditActions();
+    REQUIRE(model.gestureActive());
+
+    model.pollModalTransform(transformBinding());
+    const auto finished = takeRpc(model, "get_modal_transform");
+    model.receiveRpcResult(
+        finished.request_id,
+        modalResult("confirmed", 3, 77, true, {0.25, 0.0, 0.0}).dump());
+    (void)model.takeEditActions();
+    (void)takeRpc(model, "ack_modal_transform");
+    REQUIRE_FALSE(model.gestureActive());
+}

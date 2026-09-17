@@ -94,6 +94,12 @@ class GraphAttachmentModel {
     void selectOwner(std::optional<GraphAttachmentOwner> owner);
     void refresh();
     void poll();
+    // True while a poll would actually ask the engine something: an edit
+    // ticket is outstanding and its slot is free. False the rest of the time,
+    // which is most of the time -- and then nobody has to wake up for it.
+    [[nodiscard]] bool pollWanted() const noexcept {
+        return connected_ && !pending_ && !ticket_.empty();
+    }
     std::vector<InspectorRpcRequest> takeRpcRequests();
     void receiveRpcResult(std::uint64_t id, std::string_view json);
     void receiveRpcFailure(std::uint64_t id, std::string message);

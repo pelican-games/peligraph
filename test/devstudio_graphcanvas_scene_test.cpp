@@ -11,6 +11,8 @@
 #include <QFont>
 #include <QGraphicsItem>
 #include <QGraphicsPathItem>
+#include <QImage>
+#include <QPainter>
 #include <QGraphicsScene>
 #include <QGraphicsProxyWidget>
 #include <QGraphicsSceneMouseEvent>
@@ -1849,6 +1851,53 @@ TEST_CASE("A pan moves the view even when the whole drawing fits",
     QCoreApplication::processEvents();
     const QRectF visible = view.mapToScene(view.viewport()->rect()).boundingRect();
     REQUIRE(visible.contains(QRectF{0.0, 0.0, 40.0, 30.0}));
+}
+
+// Q-2. The canvas ground is a flat fill and a grid at a fixed scene pitch: the
+// same picture every paint until the view moves. It used to be rebuilt -- up
+// to ~180 freshly allocated QLineF -- on every exposed repaint, and a pan is
+// made of repaints. The cached background and the reused line vector are what
+// stopped that; antialiasing and the theme's colours are not what changed.
+TEST_CASE("The canvas caches its ground without giving up antialiasing",
+          "[devstudio][graph-canvas][scene][paint][q2]") {
+    (void)application();
+    QGraphicsScene scene;
+    scene.addRect(QRectF{0.0, 0.0, 400.0, 300.0});
+    PelicanStudio::NodeCanvasView view{&scene};
+    view.resize(600, 400);
+    view.show();
+    QCoreApplication::processEvents();
+
+    REQUIRE(view.cacheMode().testFlag(QGraphicsView::CacheBackground));
+    REQUIRE(view.optimizationFlags().testFlag(
+        QGraphicsView::DontSavePainterState));
+    // Deliberately NOT set: the items here are stock Qt shapes whose
+    // boundingRect is padded by the pen width alone, and an antialiased edge
+    // reaches past that. Dropping Qt's margin would leave trails on the
+    // partial repaints a pan is made of.
+    REQUIRE_FALSE(view.optimizationFlags().testFlag(
+        QGraphicsView::DontAdjustForAntialiasing));
+
+    // The same ground, painted twice into two images, is the same ground: the
+    // cache must not change what is drawn.
+    const auto grab = [&] {
+        QImage image{view.viewport()->size(),
+                     QImage::Format_ARGB32_Premultiplied};
+        image.fill(Qt::transparent);
+        QPainter painter{&image};
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        view.render(&painter);
+        painter.end();
+        return image;
+    };
+    const QImage first = grab();
+    const QImage second = grab();
+    REQUIRE(first == second);
+    // Antialiasing is the panels' to ask for -- both do -- and nothing the
+    // cache does takes it away again.
+    view.setRenderHint(QPainter::Antialiasing, true);
+    REQUIRE(view.renderHints().testFlag(QPainter::Antialiasing));
+    REQUIRE(view.cacheMode().testFlag(QGraphicsView::CacheBackground));
 }
 
 // --------------------------------------------------------------------------

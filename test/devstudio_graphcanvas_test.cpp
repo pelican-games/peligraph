@@ -756,3 +756,49 @@ TEST_CASE("The animation band is drawn only for the watched instance owner",
     h.model.watchInstance("");
     REQUIRE(h.model.animationSinks().empty());
 }
+
+// Q-2. The canvas's 250 ms clock keeps running -- it is also what flushes the
+// model's request queue after a scope change -- so what matters is that a tick
+// asks the engine for something only when one of the three things that read on
+// a clock is outstanding: the catalog, Live, or an edit ticket. That is this
+// predicate, and it is the reason the canvas costs zero RPC per second while
+// idle.
+TEST_CASE("The graph canvas polls only for the catalog, Live, or an edit ticket",
+          "[studio][graph-canvas][poll][idle][negative-contrast][q2]") {
+    Harness h;
+    // Disconnected: there is no one to ask.
+    REQUIRE_FALSE(h.model.pollWanted());
+
+    // Connecting asks for the document and the catalog itself, on their own
+    // slots -- the clock is not what fetches them.
+    h.model.setConnected(true);
+    auto requests = h.model.takeRpcRequests();
+    REQUIRE(requests.size() == 2);
+    std::uint64_t catalog_request = 0;
+    for (const auto &request : requests) {
+        if (request.method == "get_graph_instances")
+            h.model.receiveRpcResult(request.request_id, context().dump());
+        else if (request.method == "get_graph_catalog")
+            catalog_request = request.request_id;
+    }
+    REQUIRE(catalog_request != 0);
+
+    // A catalog that did not arrive is the one thing a clock has to retry.
+    h.model.receiveRpcFailure(catalog_request, "the engine dropped it");
+    REQUIRE(h.model.pollWanted());
+    h.model.poll();
+    h.model.receiveRpcResult(h.take("get_graph_catalog").request_id,
+                             catalog().dump());
+
+    // Catalog in hand, Live off, nothing edited: nothing left to ask, and the
+    // poll issues nothing even when it is called.
+    REQUIRE_FALSE(h.model.pollWanted());
+    h.model.poll();
+    REQUIRE(h.model.takeRpcRequests().empty());
+
+    // Live reads on a clock by definition.
+    h.model.setLive(true);
+    REQUIRE(h.model.pollWanted());
+    h.model.setLive(false);
+    REQUIRE_FALSE(h.model.pollWanted());
+}

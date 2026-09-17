@@ -335,6 +335,15 @@ struct InspectorWidget::Impl {
                 dispatchRequests();
             });
 
+        // Q-2 looked at stopping these two while there is nothing to poll for,
+        // and left them running: they are not only polls. Beginning a widget
+        // edit, previewing a value, asking for the component-add candidates
+        // and editing a schema list all queue requests on the model and none
+        // of them flushes the queue itself -- the ticks do, through
+        // dispatchRequests(). Idle they ask the engine for nothing (the model
+        // guards both polls), so the cost is UI-thread wakeups, not RPC;
+        // making them stoppable means first giving every one of those paths a
+        // flush of its own, which is a change of its own.
         pending_timer->start();
         watch_timer->start();
         rebuildProperties();

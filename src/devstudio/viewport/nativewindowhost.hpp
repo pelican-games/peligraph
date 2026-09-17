@@ -27,6 +27,11 @@ struct NativeViewportDiagnostics {
 struct NativePrimaryPointerState {
     bool button_down = false;
     bool over_child = false;
+    // The engine window (or a child of it) holds the keyboard focus, so a key
+    // pressed now lands in the engine and not in the editor. Read from the
+    // same GUITHREADINFO the hover test already asks for, so it costs no
+    // extra call.
+    bool has_focus = false;
     std::optional<QPoint> child_client_position;
 };
 

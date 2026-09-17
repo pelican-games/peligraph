@@ -249,6 +249,15 @@ NativeWindowHost::primaryPointerState(NativeWindowHandle child_handle) noexcept 
          IsChild(child, thread_info.hwndCapture))) {
         result.over_child = true;
     }
+    // Deliberately the FOREGROUND thread's focus, not the engine thread's.
+    // A thread always reports a focus window of its own, so asking the engine
+    // about itself answers "yes" whatever the user is looking at; only the
+    // foreground thread's focus says where a key pressed now would land.
+    GUITHREADINFO foreground_info{sizeof(GUITHREADINFO)};
+    if (GetGUIThreadInfo(0, &foreground_info)) {
+        result.has_focus = foreground_info.hwndFocus == child ||
+                           IsChild(child, foreground_info.hwndFocus);
+    }
     if (!ScreenToClient(child, &cursor)) {
         return result;
     }

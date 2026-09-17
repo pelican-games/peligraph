@@ -27,6 +27,23 @@ enum class GizmoAxis : std::uint8_t {
 
 std::string_view gizmoModeName(GizmoMode mode) noexcept;
 
+// How often Studio has to ask the engine for the modal transform state.
+//
+// A modal transform is begun by a key pressed inside the engine's own window,
+// so the engine cannot tell Studio about it -- Studio has to ask. But it only
+// has to ask while the answer can change: while a gesture is in flight, and
+// while the engine viewport is where the user's input is going and such a key
+// could land. With the engine window neither hovered nor focused and no
+// gesture running, nobody can begin a modal transform, and the question has
+// nothing to ask about.
+inline constexpr int GizmoModalActivePollIntervalMs = 16;
+inline constexpr int GizmoModalWatchPollIntervalMs = 100;
+
+// Milliseconds between `get_modal_transform` calls; 0 means "do not ask at
+// all".
+int gizmoModalPollIntervalMs(bool rpc_connected, bool gesture_active,
+                             bool viewport_input_active) noexcept;
+
 struct GizmoPixelPosition {
     int x = 0;
     int y = 0;

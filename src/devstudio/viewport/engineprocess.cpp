@@ -1,8 +1,9 @@
 #include "engineprocess.hpp"
 
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
-#include <QJsonParseError>
+#include <QJsonObject>
 #include <QTimer>
 
 #include <cmath>
@@ -25,6 +26,149 @@ constexpr qint64 MaximumExactJsonInteger = 9007199254740991LL;
 void setError(QString *error, const QString &message) {
     if (error != nullptr) {
         *error = message;
+    }
+}
+
+// One reply line, walked once.
+//
+// `get_frame_plan` answers with 128-181 KB. Building a QJsonDocument out of
+// that line only to hand the `result` back as bytes for the model to parse
+// again cost three full passes over it on the UI thread. These helpers walk
+// the line once and record where each top-level member's value lies, so the
+// big member can travel as the bytes it already is and be parsed exactly
+// once, by whoever actually needs its contents.
+
+qsizetype skipJsonWhitespace(const QByteArray &text, qsizetype index) {
+    while (index < text.size()) {
+        const char character = text[index];
+        if (character != ' ' && character != '\t' && character != '\n' &&
+            character != '\r') {
+            break;
+        }
+        ++index;
+    }
+    return index;
+}
+
+// One past the string literal beginning at `index`, or -1 if there is none.
+qsizetype scanJsonString(const QByteArray &text, qsizetype index) {
+    if (index >= text.size() || text[index] != '"') return -1;
+    ++index;
+    while (index < text.size()) {
+        const char character = text[index];
+        if (character == '\\') {
+            index += 2;
+            continue;
+        }
+        if (character == '"') return index + 1;
+        ++index;
+    }
+    return -1;
+}
+
+// One past the value beginning at `index` (leading whitespace already
+// skipped), or -1 if the text there is not a well-formed value. Containers are
+// checked for balance and for matching closers, so a line that is not a JSON
+// reply is still rejected here rather than passed on as if it were one.
+qsizetype scanJsonValue(const QByteArray &text, qsizetype index) {
+    if (index >= text.size()) return -1;
+    const char first = text[index];
+    if (first == '"') return scanJsonString(text, index);
+    if (first == '{' || first == '[') {
+        std::vector<char> closers;
+        while (index < text.size()) {
+            const char character = text[index];
+            if (character == '"') {
+                const qsizetype after = scanJsonString(text, index);
+                if (after < 0) return -1;
+                index = after;
+                continue;
+            }
+            if (character == '{') {
+                closers.push_back('}');
+            } else if (character == '[') {
+                closers.push_back(']');
+            } else if (character == '}' || character == ']') {
+                if (closers.empty() || closers.back() != character) return -1;
+                closers.pop_back();
+                if (closers.empty()) return index + 1;
+            }
+            ++index;
+        }
+        return -1;
+    }
+    // A number, true, false or null runs until the next structural character.
+    const qsizetype begin = index;
+    while (index < text.size()) {
+        const char character = text[index];
+        if (character == ',' || character == '}' || character == ']' ||
+            character == ' ' || character == '\t' || character == '\n' ||
+            character == '\r') {
+            break;
+        }
+        ++index;
+    }
+    return index > begin ? index : -1;
+}
+
+// The top-level members of one JSON-RPC reply line, each as the bytes it
+// already occupies in the line. `valid` is false for anything that is not one
+// well-formed JSON object filling the whole line -- an engine log line, say.
+struct JsonRpcEnvelope {
+    bool valid = false;
+    QByteArray id;
+    QByteArray jsonrpc;
+    QByteArray result;
+    QByteArray error;
+    bool has_result = false;
+    bool has_error = false;
+};
+
+JsonRpcEnvelope scanJsonRpcEnvelope(const QByteArray &line) {
+    JsonRpcEnvelope envelope;
+    qsizetype index = skipJsonWhitespace(line, 0);
+    if (index >= line.size() || line[index] != '{') return envelope;
+    ++index;
+    index = skipJsonWhitespace(line, index);
+    if (index < line.size() && line[index] == '}') {
+        envelope.valid = skipJsonWhitespace(line, index + 1) == line.size();
+        return envelope;
+    }
+    for (;;) {
+        index = skipJsonWhitespace(line, index);
+        const qsizetype key_begin = index;
+        const qsizetype key_end = scanJsonString(line, index);
+        if (key_end < 0) return envelope;
+        index = skipJsonWhitespace(line, key_end);
+        if (index >= line.size() || line[index] != ':') return envelope;
+        index = skipJsonWhitespace(line, index + 1);
+        const qsizetype value_begin = index;
+        const qsizetype value_end = scanJsonValue(line, index);
+        if (value_end < 0) return envelope;
+        const QByteArray key =
+            line.sliced(key_begin + 1, key_end - key_begin - 2);
+        const QByteArray value =
+            line.sliced(value_begin, value_end - value_begin);
+        if (key == "id") {
+            envelope.id = value;
+        } else if (key == "jsonrpc") {
+            envelope.jsonrpc = value;
+        } else if (key == "result") {
+            envelope.result = value;
+            envelope.has_result = true;
+        } else if (key == "error") {
+            envelope.error = value;
+            envelope.has_error = true;
+        }
+        index = skipJsonWhitespace(line, value_end);
+        if (index >= line.size()) return envelope;
+        if (line[index] == ',') {
+            ++index;
+            continue;
+        }
+        if (line[index] != '}') return envelope;
+        envelope.valid = skipJsonWhitespace(line, index + 1) == line.size();
+        return envelope;
     }
 }
 
@@ -331,22 +475,20 @@ void EngineProcess::drainStandardError() {
 }
 
 bool EngineProcess::routeRpcResponse(const QByteArray &line) {
-    QJsonParseError parse_error;
-    const QJsonDocument document =
-        QJsonDocument::fromJson(line, &parse_error);
-    if (parse_error.error != QJsonParseError::NoError ||
-        !document.isObject()) {
+    const JsonRpcEnvelope envelope = scanJsonRpcEnvelope(line);
+    if (!envelope.valid || envelope.id.isEmpty()) {
         return false;
     }
 
-    const QJsonObject response = document.object();
-    const QJsonValue id_value = response.value(QStringLiteral("id"));
-    if (!id_value.isDouble()) {
+    // An id has to be an exact positive integer. A quoted id is a string, not
+    // a number, and is not this transport's.
+    if (envelope.id.front() == '"') {
         return false;
     }
-    const double id_number = id_value.toDouble();
-    if (!std::isfinite(id_number) || std::trunc(id_number) != id_number ||
-        id_number <= 0.0 ||
+    bool id_parsed = false;
+    const double id_number = envelope.id.toDouble(&id_parsed);
+    if (!id_parsed || !std::isfinite(id_number) ||
+        std::trunc(id_number) != id_number || id_number <= 0.0 ||
         id_number > static_cast<double>(MaximumExactJsonInteger)) {
         return false;
     }
@@ -355,29 +497,31 @@ bool EngineProcess::routeRpcResponse(const QByteArray &line) {
         return false;
     }
 
-    if (response.value(QStringLiteral("jsonrpc")).toString() !=
-        QStringLiteral("2.0")) {
+    if (envelope.jsonrpc != "\"2.0\"") {
         emit rpcTransportFailed(
             request_id,
             tr("pelican_player returned an invalid JSON-RPC version."));
         return true;
     }
 
-    const bool has_result = response.contains(QStringLiteral("result"));
-    const bool has_error = response.contains(QStringLiteral("error"));
-    if (has_result == has_error) {
+    if (envelope.has_result == envelope.has_error) {
         emit rpcTransportFailed(
             request_id,
             tr("pelican_player RPC response must contain exactly one of result or error."));
         return true;
     }
-    if (has_result) {
-        emit rpcResultReceived(request_id,
-                               response.value(QStringLiteral("result")));
+    if (envelope.has_result) {
+        // The bytes the engine wrote, unchanged. Whoever needs the contents
+        // parses them once; nothing here parses them at all.
+        emit rpcResultReceived(request_id, envelope.result);
         return true;
     }
 
-    const QJsonValue error_value = response.value(QStringLiteral("error"));
+    // An error object is small, so the convenience of a document is free here.
+    const QJsonDocument error_document = QJsonDocument::fromJson(
+        "[" + envelope.error + "]");
+    const QJsonValue error_value =
+        error_document.isArray() ? error_document.array().at(0) : QJsonValue{};
     if (!error_value.isObject()) {
         emit rpcTransportFailed(
             request_id,

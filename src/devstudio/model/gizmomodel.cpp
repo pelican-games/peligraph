@@ -1153,6 +1153,14 @@ std::uint64_t GizmoModel::bindingRevision() const noexcept {
     return impl_->binding_revision;
 }
 
+int gizmoModalPollIntervalMs(bool rpc_connected, bool gesture_active,
+                             bool viewport_input_active) noexcept {
+    if (!rpc_connected) return 0;
+    if (gesture_active) return GizmoModalActivePollIntervalMs;
+    if (viewport_input_active) return GizmoModalWatchPollIntervalMs;
+    return 0;
+}
+
 bool GizmoModel::gestureActive() const noexcept {
     return impl_->pending_hit.has_value() || impl_->active.has_value() ||
            impl_->modal_active.has_value();

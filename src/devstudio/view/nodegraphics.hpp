@@ -1,6 +1,9 @@
 #pragma once
 
 #include <QColor>
+#include <QEvent>
+#include <QLineF>
+#include <QVector>
 #include <QGraphicsPathItem>
 #include <QGraphicsView>
 #include <QPainterPath>
@@ -229,6 +232,8 @@ class NodeCanvasView : public QGraphicsView {
     // grid at a fixed scene pitch. A view that painted its own background
     // would be a second place a theme has to be taught about.
     void drawBackground(QPainter *painter, const QRectF &rect) override;
+    // A theme switch changes the ground the cached background pixmap holds.
+    void changeEvent(QEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
@@ -254,6 +259,13 @@ class NodeCanvasView : public QGraphicsView {
     void growPanRoom();
 
     ZoomObserver zoom_observer_;
+    // The grid drawn last time, kept so an exposed rect the view has already
+    // ground out does not have to be ground out again. The theme colour is
+    // part of the key: the same rect under a different theme is a different
+    // grid.
+    QRectF grid_rect_;
+    QColor grid_colour_;
+    QVector<QLineF> grid_lines_;
     std::map<QString, ViewState> session_views_;
     QString scope_;
     bool scope_known_ = false;

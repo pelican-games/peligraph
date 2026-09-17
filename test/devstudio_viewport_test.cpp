@@ -10,7 +10,9 @@
 #include <QColor>
 #include <QCoreApplication>
 #include <QEventLoop>
+#include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QLabel>
 #include <QLayout>
 #include <QPalette>
@@ -329,16 +331,16 @@ TEST_CASE("Engine process multiplexes JSON-RPC replies without swallowing ordina
 
     EngineProcess process;
     QString output;
-    QJsonValue rpc_result;
+    QByteArray rpc_result;
     bool response_received = false;
     QEventLoop response_loop;
     QObject::connect(&process, &EngineProcess::outputReceived,
                      [&](const QString &text) { output += text; });
     QObject::connect(
         &process, &EngineProcess::rpcResultReceived,
-        [&](qint64 request_id, const QJsonValue &result) {
+        [&](qint64 request_id, const QByteArray &result_json) {
             REQUIRE(request_id == 1);
-            rpc_result = result;
+            rpc_result = result_json;
             response_received = true;
             response_loop.quit();
         });
@@ -358,16 +360,102 @@ TEST_CASE("Engine process multiplexes JSON-RPC replies without swallowing ordina
     QTimer::singleShot(5000, &response_loop, &QEventLoop::quit);
     response_loop.exec();
     REQUIRE(response_received);
-    REQUIRE(rpc_result.isObject());
-    REQUIRE(rpc_result.toObject().value(QStringLiteral("contract")).toInt() ==
+    // Q-2: the reply travels as the bytes the engine wrote. Byte equality
+    // with the fixture's own `result` member is what says nobody parsed it
+    // into a document and serialized it back out on the way here -- a
+    // re-serialized object would still carry the same meaning, but not the
+    // same bytes.
+    const QByteArray expected_pick_result{
+        R"json({"contract":1,"hit":null})json"};
+    REQUIRE(rpc_result == expected_pick_result);
+    const QJsonDocument parsed_once = QJsonDocument::fromJson(rpc_result);
+    REQUIRE(parsed_once.isObject());
+    REQUIRE(parsed_once.object().value(QStringLiteral("contract")).toInt() ==
             1);
-    REQUIRE(rpc_result.toObject().value(QStringLiteral("hit")).isNull());
+    REQUIRE(parsed_once.object().value(QStringLiteral("hit")).isNull());
     REQUIRE(process.waitForFinished(5000));
     REQUIRE(output.contains(QStringLiteral("ordinary-stdout-before-rpc")));
     REQUIRE(output.contains(QStringLiteral("ordinary-stderr-before-rpc")));
     REQUIRE(output.contains(QStringLiteral("\"method\":\"pick_object\"")));
     REQUIRE(output.contains(QStringLiteral("\"x\":12")));
     REQUIRE_FALSE(output.contains(QStringLiteral("\"jsonrpc\":\"2.0\",\"id\":1,\"result\"")));
+}
+
+// Q-2. `get_frame_plan` answers with 128-181 KB, and that reply used to be
+// parsed into a QJsonDocument here, serialized back to bytes in the viewport,
+// and parsed a third time by the model. The line is now walked once and the
+// `result` member travels as the bytes the engine wrote. This is the test that
+// the walk is a real one: braces and brackets inside strings, an escaped
+// quote, whitespace around every token, members in an order nobody promised,
+// and a line that begins like a reply but does not close -- which must stay
+// ordinary output rather than be routed as a result.
+TEST_CASE("Engine process hands on the reply's result bytes without parsing them",
+          "[devstudio][viewport][process][rpc][q2]") {
+    int argument_count = 1;
+    char application_name[] = "pelican_engine_process_envelope_test";
+    char *arguments[] = {application_name};
+    QCoreApplication application{argument_count, arguments};
+
+    EngineProcess process;
+    QString output;
+    QByteArray routed_result;
+    bool result_received = false;
+    int error_code = 0;
+    QString error_message;
+    bool error_received = false;
+    QEventLoop loop;
+    QObject::connect(&process, &EngineProcess::outputReceived,
+                     [&](const QString &text) { output += text; });
+    QObject::connect(&process, &EngineProcess::rpcResultReceived,
+                     [&](qint64 request_id, const QByteArray &result_json) {
+                         REQUIRE(request_id == 1);
+                         routed_result = result_json;
+                         result_received = true;
+                     });
+    QObject::connect(&process, &EngineProcess::rpcErrorReceived,
+                     [&](qint64 request_id, int code, const QString &message,
+                         const QJsonValue &) {
+                         REQUIRE(request_id == 2);
+                         error_code = code;
+                         error_message = message;
+                         error_received = true;
+                         loop.quit();
+                     });
+
+    QString error;
+    REQUIRE(process.start(
+        {fixtureExecutable(), {QStringLiteral("rpc-envelope")}, {}}, &error));
+    REQUIRE(error.isEmpty());
+    REQUIRE(process.waitForStarted(5000));
+    REQUIRE(process.requestRpc(QStringLiteral("get_frame_plan"),
+                               QJsonObject{}, &error) == 1);
+    REQUIRE(process.requestRpc(QStringLiteral("get_status"), QJsonObject{},
+                               &error) == 2);
+    REQUIRE(error.isEmpty());
+
+    QTimer::singleShot(5000, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    REQUIRE(result_received);
+    // Byte equality with what the fixture wrote. A document round trip would
+    // reorder the members and rewrite the number; these are the same bytes.
+    // (Kept out of the assertion macro: MSVC's preprocessor cannot stringize
+    // a raw string literal that contains an escape.)
+    const QByteArray expected_result{
+        R"json({"text":"a\"b{}[],:","nested":[{"}":"]"}],"n":1.5,"b":true})json"};
+    REQUIRE(routed_result == expected_result);
+
+    REQUIRE(error_received);
+    REQUIRE(error_code == -32001);
+    REQUIRE(error_message == QStringLiteral("envelope probe"));
+    // The unbalanced line was never a reply. It reached the log instead, and
+    // it did not consume request 2 -- the error that followed it did.
+    const QString unbalanced_line{
+        QStringLiteral(R"json("result":{"a":[1,2})json")};
+    REQUIRE(output.contains(unbalanced_line));
+
+    process.terminate();
+    (void)process.waitForFinished(5000);
 }
 
 #ifdef Q_OS_WIN

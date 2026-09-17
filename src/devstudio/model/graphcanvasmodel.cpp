@@ -234,7 +234,7 @@ bool GraphCanvasModel::scrub(double time) {
 }
 
 void GraphCanvasModel::poll() {
-    if (!connected_) return;
+    if (!pollWanted()) return;
     requestCatalog();
     // Live is the only thing that reads on a clock. Off, the overlay follows
     // the document, which is what it did before the switch existed.

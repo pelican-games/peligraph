@@ -110,7 +110,7 @@ void GraphAttachmentModel::refresh() {
 }
 
 void GraphAttachmentModel::poll() {
-    if (connected_ && !pending_ && !ticket_.empty())
+    if (pollWanted())
         request(RequestKind::Result, "get_edit_result", {{"ticket", ticket_}});
 }
 
