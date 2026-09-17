@@ -85,6 +85,8 @@ set(catalog_frame_names
     0001 0002 0003 0004 0005 0006 0007 0008 0009 0010)
 set(editor_project_dir "")
 set(skipped_projects)
+set(skipped_editor_projects)
+set(skipped_editor_requirement "")
 
 foreach(project_manifest IN LISTS project_manifests)
     get_filename_component(project_dir "${project_manifest}" DIRECTORY)
@@ -126,12 +128,29 @@ foreach(project_manifest IN LISTS project_manifests)
                         "skip ${project_relative}: requires animation "
                         "(PELICAN_WITH_ANIMATION=OFF)")
                     set(project_skipped TRUE)
+                    set(project_skipped_requirement "${requirement}")
                 endif()
             endforeach()
         endif()
     endif()
     if(project_skipped)
         list(APPEND skipped_projects "${project_relative}")
+        # The editor lane runs against whichever project declares it. If that
+        # project is the one `requires` just skipped, the lane has no target for
+        # a reason this run already named -- so read the declaration here, while
+        # the loop still has the file, and remember it. Below, that turns "the
+        # catalog has no editor declaration" into a named skip instead of a
+        # failure. A build with the module present never records anything here.
+        set(skipped_expectations_path "${project_dir}/catalog_smoke.json")
+        if(EXISTS "${skipped_expectations_path}")
+            file(READ "${skipped_expectations_path}" skipped_expectations)
+            string(JSON skipped_editor_type ERROR_VARIABLE skipped_editor_error
+                TYPE "${skipped_expectations}" editor)
+            if(NOT skipped_editor_error AND skipped_editor_type STREQUAL "OBJECT")
+                list(APPEND skipped_editor_projects "${project_relative}")
+                set(skipped_editor_requirement "${project_skipped_requirement}")
+            endif()
+        endif()
         continue()
     endif()
 
@@ -287,6 +306,26 @@ foreach(project_manifest IN LISTS project_manifests)
 endforeach()
 
 if(editor_project_dir STREQUAL "")
+    if(skipped_editor_projects)
+        # Named, not silent: the lane is gone because a project the build cannot
+        # run owned it, and the line says which project and which build feature.
+        # The corpus still has to declare the lane somewhere -- a corpus that
+        # declares it nowhere falls through to the error below, as before.
+        string(TOUPPER "${skipped_editor_requirement}" skipped_editor_feature)
+        foreach(skipped_editor_project IN LISTS skipped_editor_projects)
+            message(NOTICE
+                "skip editor lane: ${skipped_editor_project} requires "
+                "${skipped_editor_requirement} "
+                "(PELICAN_WITH_${skipped_editor_feature}=OFF)")
+        endforeach()
+        list(LENGTH skipped_projects skipped_count)
+        message(STATUS
+            "${skipped_count} of ${project_count} discovered projects were "
+            "skipped for unavailable build features: ${skipped_projects}")
+        message(STATUS
+            "all ${project_count} discovered projects passed headless smoke")
+        return()
+    endif()
     message(FATAL_ERROR
         "the selected project catalog has no editor smoke declaration")
 endif()

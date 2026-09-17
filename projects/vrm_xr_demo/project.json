@@ -3,6 +3,7 @@
   "version": 1,
   "name": "WP135 VRM XR Demo",
   "engine_min_version": "0.1.0",
+  "requires": ["animation"],
   "basic_config": {
     "window_title": "Pelican WP135 VRM XR Demo",
     "window_size": {"width": 960, "height": 540},

@@ -3,6 +3,7 @@
   "version": 1,
   "name": "WP101 Animation Graph Demo",
   "engine_min_version": "0.1.0",
+  "requires": ["animation"],
   "basic_config": {
     "window_title": "Pelican WP101 Animation Graph Demo",
     "window_size": {"width": 960, "height": 540},

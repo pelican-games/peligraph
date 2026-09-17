@@ -109,7 +109,8 @@ pelican2/
 │   ├── devcli/           # pelican_cli
 │   ├── devstudio/        # Pelican Studio(Qt)
 │   └── spvlink/          # pelican-spv-link CLI(experimental、build unitは既定OFF)
-├── projects/             # example / sprite_demo / animgraph_demo / vrm_xr_demo(JSON 例の出典)
+├── projects/             # example / sprite_demo / animgraph_demo / posegraph_demo /
+│                         #   vrm_xr_demo / raytracing_demo(JSON 例の出典)
 ├── docs/                 # 設計文書(索引: docs/README.md)+ 本マニュアル(manual/)+ コード解説(source-code-guide/)
 ├── tools/                # 開発者・エージェント用スクリプト(RPC クライアント / worktree ラッパ /
 │                         #   切り離し build / 公開 API inventory / doclink)。第10章 §10.10

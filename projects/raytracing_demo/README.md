@@ -13,7 +13,7 @@ Player が必要です。Player のプロジェクト指定でこのディレク
 .\build\src\player\Debug\pelican_player.exe --project projects/raytracing_demo
 ```
 
-読む順序:
+## 読む順序
 
 1. `scene.json`: 二つの物体の配置と procedural geometry コンポーネント。
 2. `assets.json`: ローカル座標の包囲箱 AABB、球の半径・中心。
@@ -22,6 +22,8 @@ Player が必要です。Player のプロジェクト指定でこのディレク
 5. `shaders/sphere.rint`: 二次方程式で球の交点を求める、編集可能な intersection shader。
 6. `shaders/spheres.*`: カメラのレイ、球の陰影、背景色。
 7. `rendering.json`: レイトレ出力画像を fullscreen パスで画面へ表示。
+
+## 何を変えると何が起きるか
 
 `scene.json` の `pos` を変更して再起動すると配置が変わります。半径を変える場合は
 `assets.json` の `record.radius` と、球全体を含む `aabb` を一緒に変更します。

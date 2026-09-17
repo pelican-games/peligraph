@@ -10,8 +10,8 @@
     {
      "path": "projects/animgraph_demo/README.md",
      "eol": "lf",
-     "blob_sha256": "bc345cefabb2061ca1202320f9be6099b3687102db5eda71d951566dfc4d9d25",
-     "blob_bytes": 1154
+     "blob_sha256": "e077ed1b8b29d05c8d42d623c7b14d4bce92a65b3415e380f314990491b78f9b",
+     "blob_bytes": 1217
     },
     {
      "path": "projects/animgraph_demo/assets/animgraph_demo.gltf",
@@ -82,8 +82,8 @@
     {
      "path": "projects/animgraph_demo/project.json",
      "eol": "lf",
-     "blob_sha256": "4e40c4502e1194e263ca8567b8b23b85e04cfc6c99c199281be588095946382e",
-     "blob_bytes": 806
+     "blob_sha256": "f1a5bc51650d3a2569518ffa058fd398e882a36cfb0888a3af700451622b53f2",
+     "blob_bytes": 835
     },
     {
      "path": "projects/animgraph_demo/scene.json",
@@ -105,8 +105,8 @@
     {
      "path": "projects/example/README.md",
      "eol": "lf",
-     "blob_sha256": "647829f4180759da604cbdc95385da9a837de0ad763170470ae335ea74fb5f62",
-     "blob_bytes": 4086
+     "blob_sha256": "a3a505c69b58dc40e0d5c85275d91fbadcace41992459a41875d745d28fcab77",
+     "blob_bytes": 4117
     },
     {
      "path": "projects/example/assets.manifest.json",
@@ -266,8 +266,8 @@
     {
      "path": "projects/sprite_demo/README.md",
      "eol": "lf",
-     "blob_sha256": "a5c2019fa35ed4595f525143a02592d9f46aca0d4ad67156f3cca24e1f64ad52",
-     "blob_bytes": 916
+     "blob_sha256": "be05180127eab3dc3037c63c9ac576d0eed63980d60f1dafbcc8a699da36c720",
+     "blob_bytes": 976
     },
     {
      "path": "projects/sprite_demo/assets.json",
@@ -361,8 +361,8 @@
     {
      "path": "projects/vrm_xr_demo/README.md",
      "eol": "lf",
-     "blob_sha256": "e7d449fbc0c8532b6f69052bd6d7959108e00fd5874ae68e34106beac7e5a05d",
-     "blob_bytes": 2537
+     "blob_sha256": "3ae217af31ef814ea74cacffd5405b1c2e036e90f61e51ffdb725061cfe8f137",
+     "blob_bytes": 2603
     },
     {
      "path": "projects/vrm_xr_demo/assets/asset_data.json",
@@ -439,8 +439,8 @@
     {
      "path": "projects/vrm_xr_demo/project.json",
      "eol": "lf",
-     "blob_sha256": "a2d521e20320257115eec6a8e03dbf85af069cec8571d7338478d2e1d7c95be6",
-     "blob_bytes": 858
+     "blob_sha256": "aeb3cd4dc9f4f288941ca46a6bd85925693f8ae276ea44a2ad49f577bb50dc2c",
+     "blob_bytes": 887
     },
     {
      "path": "projects/vrm_xr_demo/scene.json",

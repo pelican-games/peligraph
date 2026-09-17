@@ -109,3 +109,95 @@ endif()
 if(NOT render_buffer_change STREQUAL "rebuild")
   message(FATAL_ERROR "render.buffer parameters rebuild: ${render_buffer_change}")
 endif()
+
+# R-3: docs/v0_freeze.md is the freeze list, and its graph operation table is a
+# copy of this catalog.  A copy nobody compares is a second source of truth, so
+# the same run that reads the catalog reads the table: the documented set is
+# exactly what the ON build registers, and a superset of what the OFF build
+# does -- the difference being the pose operations the disabled module owns.
+# The table is delimited by comment markers rather than by a heading, so
+# reformatting the prose around it cannot silently empty the comparison.
+set(freeze_doc "${CMAKE_CURRENT_LIST_DIR}/../docs/v0_freeze.md")
+if(NOT EXISTS "${freeze_doc}")
+  message(FATAL_ERROR "the v0 freeze list is missing: ${freeze_doc}")
+endif()
+file(READ "${freeze_doc}" freeze_text)
+set(table_begin_marker "<!-- graph-op-table:begin -->")
+set(table_end_marker "<!-- graph-op-table:end -->")
+string(FIND "${freeze_text}" "${table_begin_marker}" table_begin_index)
+string(FIND "${freeze_text}" "${table_end_marker}" table_end_index)
+if(table_begin_index LESS 0 OR table_end_index LESS 0 OR
+   NOT table_end_index GREATER table_begin_index)
+  message(FATAL_ERROR
+    "docs/v0_freeze.md no longer delimits its operation table with "
+    "${table_begin_marker} and ${table_end_marker}")
+endif()
+string(LENGTH "${table_begin_marker}" table_begin_length)
+math(EXPR table_body_start "${table_begin_index} + ${table_begin_length}")
+math(EXPR table_body_length "${table_end_index} - ${table_body_start}")
+string(SUBSTRING "${freeze_text}" ${table_body_start} ${table_body_length} table_body)
+
+# One row per operation, the op name backquoted in the first column.
+string(REGEX MATCHALL "\n\\| `[a-z_]+\\.[a-z_]+` \\|" documented_rows "${table_body}")
+set(documented_operations "")
+foreach(documented_row IN LISTS documented_rows)
+  string(REGEX REPLACE "^\n\\| `([a-z_]+\\.[a-z_]+)` \\|$" "\\1"
+    documented_op "${documented_row}")
+  list(APPEND documented_operations "${documented_op}")
+endforeach()
+list(LENGTH documented_operations documented_count)
+if(documented_count EQUAL 0)
+  message(FATAL_ERROR
+    "docs/v0_freeze.md documents no graph operation between its table markers")
+endif()
+set(unique_documented_operations ${documented_operations})
+list(REMOVE_DUPLICATES unique_documented_operations)
+list(LENGTH unique_documented_operations unique_documented_count)
+if(NOT unique_documented_count EQUAL documented_count)
+  message(FATAL_ERROR
+    "docs/v0_freeze.md lists the same operation twice: ${documented_operations}")
+endif()
+
+set(undocumented_operations "")
+foreach(registered_op IN LISTS seen_operations)
+  if(NOT registered_op IN_LIST documented_operations)
+    list(APPEND undocumented_operations "${registered_op}")
+  endif()
+endforeach()
+if(undocumented_operations)
+  message(FATAL_ERROR
+    "the catalog registers operations docs/v0_freeze.md does not list: "
+    "${undocumented_operations}")
+endif()
+
+set(unregistered_operations "")
+foreach(documented_op IN LISTS documented_operations)
+  if(NOT documented_op IN_LIST seen_operations)
+    list(APPEND unregistered_operations "${documented_op}")
+  endif()
+endforeach()
+if(WITH_ANIMATION)
+  if(unregistered_operations)
+    message(FATAL_ERROR
+      "docs/v0_freeze.md lists operations this build does not register: "
+      "${unregistered_operations}")
+  endif()
+else()
+  # The freeze list claims exactly one difference for the OFF build.  Anything
+  # else missing means the table drifted from the catalog in a way the ON run
+  # would not have caught either.
+  foreach(documented_op IN LISTS unregistered_operations)
+    if(NOT documented_op MATCHES "^pose\\.")
+      message(FATAL_ERROR
+        "PELICAN_WITH_ANIMATION=OFF is missing ${documented_op}, which "
+        "docs/v0_freeze.md does not attribute to the pose module")
+    endif()
+  endforeach()
+  foreach(expected IN ITEMS pose.clip_sample pose.blend pose.state_machine
+                            pose.retarget pose.skeletal pose.transform)
+    if(NOT expected IN_LIST documented_operations)
+      message(FATAL_ERROR
+        "docs/v0_freeze.md no longer documents ${expected}")
+    endif()
+  endforeach()
+endif()

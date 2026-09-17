@@ -2,6 +2,8 @@
 
 This project is the default local example for `pelican_player --project`.
 
+## Read it in this order
+
 `shaders/toon.surface` and `materials/toon.material.json` are the B-layer
 source-material example. The surface declares its interface and versioned
 hooks; the material only references it and overrides authored values.
@@ -10,8 +12,6 @@ hooks; the material only references it and overrides authored values.
 surface with the exact OpenPBR 1.1.1 tag/commit recorded as material defines.
 The `openpbr_coat_sphere` golden applies those values to an analytic sphere so
 the base/specular response and coat highlight stay visible and deterministic.
-
-## The rendering config is a `pelican.graph` root
 
 `passes/main_rendering_config.json` is a **`pelican.graph` root**: the five
 keys `schema` / `version` / `definitions` / `nodes` / `outputs` belong to the
@@ -24,6 +24,8 @@ legacy roots, where the same keys sit at the top level. See
 The example ships with `nodes` empty, so the rendered pixels are identical to
 the legacy form. What the root buys is that a graph can now be attached
 without moving the file again.
+
+## What to change, and what happens
 
 ### Driving `bloom.intensity` from a curve
 
@@ -65,6 +67,8 @@ Then, in Studio:
 `render.scalar` resolves `target` against the declared frame graph buffers, so
 a misspelled name is a hard error at compile time (`unbound frame graph
 output: ...`) rather than a silently dead curve.
+
+### Binary assets
 
 Binary assets are intentionally not tracked in git. Their expected project-relative inventory is recorded in
 `assets.manifest.json`. The acquisition procedure, redistribution rules, and per-file provenance/license ledger are

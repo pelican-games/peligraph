@@ -8,7 +8,9 @@ UI feature, so the same project can activate the XR graph safely.
 
 ![Flat VRM character demo](screenshot.png)
 
-## Build and run (flat)
+## Read it in this order
+
+### Build and run (flat)
 
 ```powershell
 cmake -S . -B build-vrm-xr-demo -DSKIP_DEVSTUDIO=ON `
@@ -24,7 +26,9 @@ build-vrm-xr-demo\src\player\Debug\pelican_player.exe --project projects/vrm_xr_
 - Arrow keys (right stick) offset lookAt; without an offset the gaze follows
   the authored flat camera.
 
-## Quest 3 / OpenXR activation
+## What to change, and what happens
+
+### Quest 3 / OpenXR activation
 
 Make Meta Quest Link the active OpenXR runtime, connect Link or Air Link, then:
 
@@ -40,7 +44,7 @@ synthetic pose supplied by `xrLocateViews`. Both XR eyes use first-person
 visibility, so the head-weighted triangles are omitted in the HMD while the
 desktop flat view remains third-person.
 
-## Replace the synthetic character
+### Replace the synthetic character
 
 1. Copy a VRM **1.0** file into `assets/`.
 2. Change the `vrm_xr_character` path in `assets/asset_data.json`.
