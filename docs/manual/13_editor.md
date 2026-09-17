@@ -410,7 +410,7 @@ Frame Planの **Order nodes...** で現在のgraphのノードをUp/Downで並�
 [`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L37) で、
 **`rendering` オブジェクトの中**になります(読み書きの locator はこの 1 本ですが、byte-lossless の
 書き込み側は同じ規則を [`isGraphRootKey()`](../../src/project/renderconfigdocument.cpp#L418) として
-鍵の側から持っています。[第6章](06_rendering.md) §6.16)。したがって初期化は `rendering.features` に
+鍵の側から持っています。N-6 からは editor 用の `layout` も graph 側の root キーです。[第6章](06_rendering.md) §6.16)。したがって初期化は `rendering.features` に
 `[]` を書き、**root 直下に `features` を生やしません**
 ([`initialize()`](../../src/project/renderconfigdocument.cpp#L590))。
 `rendering` オブジェクトそのものが無い graph root は、書き込む場所が無いので
@@ -449,6 +449,7 @@ engine 内部の例外名は
 | `set_input` | `node`, `port`, `source`(`{node, port}` ちょうど 2 鍵、または `null`) | 入力の接続 / 切断。`null` は `inputs` からその port を消し、空になれば `inputs` ごと消す |
 | `set_node_parameters` | `node`, `parameters`(object) | **merge ではなく置換**です。1 つだけ変えたいときも全体を読んで送り直します。空 object を送ると `parameters` が消えます |
 | `set_node_label` | `node`, `label`(string) | 人が付けた表示名。識別子ではないので、**空文字が「消す」**です(専用の op は作られていません) |
+| `set_layout` | `layout`(object か `null`) | その scope の editor 用の置き場所(`nodes{id: {x, y}}` / `reroutes[]{edge{node, port}, points[]}` / `ties[]{x, y, edges[]}`)を丸ごと置換。**再 compose しない**(bytes だけ変わる)。名指した node / 辺が無ければ `graph.layout_invalid@1`(N-6) |
 
 **全 op が任意の `scope` を取ります**([解決](../../src/project/graphcomposition.cpp#L385))。既定は `"root"`(root 文書の `nodes`)、
 definition 名を書くとその `definitions[<名前>].nodes` が対象です。**`root` は root scope の予約語**なので、
@@ -545,6 +546,7 @@ Inspector の導線(次節)は専用の RPC を持たず、**普通の `ops` を
 | 辺を選んで `Delete` / 入力ソケットから空所へドラッグ | `set_input{source: null}` |
 | 値の帯(未接続で値のある port)をクリックしてその場編集 | `set_node_parameters`(既存の `parameters` を読み、1 鍵だけ差し替え) |
 | 見出しをダブルクリック / `Label:` + **Rename** | `set_node_label` |
+| node を drag / 辺を double-click(reroute)/ 制御点を選んで **Tie together** / **Untie** / **Auto layout** | `set_layout`(300 ms debounce で 1 回。N-6) |
 | 右クリックまたは **Add node...** でパレットから選ぶ | `add_node`(必要なら複数) |
 | ノードを選んで `Delete` | `remove_node` |
 
@@ -584,6 +586,8 @@ QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L26) に
 `43f032b1`)。
 
 **Auto layout(✅N-4)**: Graph と Frame Plan の右クリック menu「Auto layout」(`pelican.graphCanvas.autoLayout` / `pelican.framePlan.autoLayout`)で、その scope の手置き位置を捨てて層配置(最長経路の列、辺は lane を通って node を横切らない、列内の並びは重心法、行は最小間隔で重ならない)に戻します。動かした node は通常の refresh では保持されます。中ボタンのパンは描画が view に収まっていても動きます。
+
+**配線の制御点と置き場所(N-6)**: 辺の double-click で **reroute**(通過点)が入り、drag で動き、Delete で消えます。node を動かしても reroute は動きません。制御点や辺を 2 つ以上選んで右クリック **Tie together** で 1 つの **tie**(結束バンド)になり、辺は等間隔で平行に通ります(**Untie** で戻す、double-click で並びを反転)。**Auto layout** は lane を reroute と tie として出します。node の位置・reroute・tie は文書の scope ごとの `layout`(editor 用、engine は無視)に `set_layout` で残り、次に開いても同じ図です。Frame Plan の位置はまだセッション内です。
 
 **パネルの文字(✅N-7)**: 各パネルの既定状態に出るのは見出し・ラベル・値・1 行の状態だけです。仕組みの説明は control の tooltip か、パネル右上の `?`(この章の該当節を開く)にあります。検査の一覧は記号(✓ / ✗ / –)で、文は hover。notice は言うことが無いときは消えます。文字の大きさとフォントはテーマ表(`studio_themes.json` の `font`)から取り、`devstudio_paneltext_test` がパネルごとの可視文字の上限を固定します。
 

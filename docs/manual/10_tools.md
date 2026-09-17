@@ -769,7 +769,7 @@ C++ を触りません。読むだけでなく**編集もここで完結しま�
 
 このタブが engine へ出せる RPC は型で絞られています。`GraphCanvasReadCapability`
 ([定義](../../src/devstudio/view/graphcanvasreadcapability.hpp#L31))は汎用の RPC メソッドを**表現できない**形で、
-`get_graph_instances` / `get_graph_catalog` / `get_graph_values` の 3 つの読みと、編集の
+`get_graph_instances`(N-6 からは scope ごとの `layout` も返す)/ `get_graph_catalog` / `get_graph_values` の 3 つの読みと、編集の
 `edit_graph_document`、結果引き取りの `get_edit_result` だけを名前で持ちます。それ以外を要求すると
 `The graph canvas cannot issue <method>.` になります。Frame Plan 側も同じ作りで、
 `FramePlanReadCapability` と `RenderPassAuthoringCapability`

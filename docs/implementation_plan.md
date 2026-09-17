@@ -24193,6 +24193,38 @@ node の表示(別)/ 右 pane の再設計 / 文言の翻訳 / アイコンフ�
 
 完了記録(2026-09-17、`5865a6fd`): 可視文字(label / group title / button / tree、tooltip 除く)Pass Editor 約 1592 → 352(上限 400)、Render Features 約 371 → 167(300)、Frame Plan 約 580 → 258(300)、Inspector 約 160 → 119(200。dialog の説明 ≈540 字は tooltip へ)、Graph 右 pane 33 → 25。Pass Editor の Validation axes 8 文 → 記号 1 行 + tooltip、layout 復元の `QMessageBox` 2 つ → status bar 1 行、フォントは `StudioFonts{family, fallback, size, size_small}` をテーマ表に(`Segoe UI` / `Yu Gothic UI`、12 / 11)。test: `devstudio_paneltext_test`(予算 5 パネル、tooltip への移動、notice の hidden 規則、テーマ font。対照: 上限を半分で 4 case 赤 / `?` の tooltip を空で赤 / notice を常時表示で赤)、非 GPU 全数 1722/1722、シナリオ 8/8。before / after のスクリーンショット `<作業ディレクトリ>/n7_shots/`(repo 外)。
 
+### N-6: 配線の制御点 —— 自動配置の曲げを操作可能な reroute にし、似た曲げを「結束バンド」で束ね、配置を文書に残す(利用者指示 2026-09-17)
+
+**§4 規則 11 中段(Studio + `edit_graph_document` の additive op 1 つ)。実装者: Claude(Opus)。**
+
+#### 利用者の指摘(そのまま)
+- ノード配置時に配線を見やすく曲げてくれることがあるが、その曲げはノードをいじるとずれる。曲げをするなら**操作可能な制御点**として作れないか
+- 似たような曲げ方をする線は**結束バンドみたいな制御点**で並行にまとめられるときれい
+
+#### 前提
+- N-4 の層配置は複数層を跨ぐ辺に dummy lane を作り、辺はその折れ点(`NodeGraphBendsRole`、[graphcanvaswidget.cpp:279](../src/devstudio/view/graphcanvaswidget.cpp#L279))を通る。**辺のどちらかの node を drag した瞬間に bends は捨てられ直線に戻る**(:304。N-4 の記録した穴)
+- node の位置と bends はセッション内(`(scope, node id)` の表)。文書には無い。node の `label` は文書の editor 用 field として loader を通る(N-1b で確認)。`edit_graph_document` の op は `graphcomposition.cpp:570` の `set_node_label` の並びに足せる
+- Blender の Reroute node / Unreal の reroute pin が前例。結束バンド(tie)は複数の辺を 1 点で束ねて平行に通す
+
+#### 決定
+1. **Reroute(制御点)**: 辺の上の小さな丸。drag で動く(絶対座標。node を動かしても reroute は動かない = Blender と同じ)。辺は reroute を通る滑らかな曲線(既存の `curveGeometryThrough`)。**辺の double-click で挿入**、選択して Delete で除去、1 辺に複数可(順序は x で決める)。**N-4 の自動配置は dummy lane の折れ点を reroute として出す**(以後 node を動かしても曲げは残る)。node を drag しても bends を捨てない(:304 の撤去)
+2. **Tie(結束バンド)**: 複数の辺を束ねる制御点。位置 + 向き(縦の帯、v0 は縦のみ)+ 辺ごとの slot(並び順)を持ち、各辺は `tie.pos + slot × spacing`(帯に直交)を通る。drag で束ごと動く。作り方: reroute か辺を 2 つ以上選択 → 右クリック「Tie together」(選択の reroute を 1 つの tie に置き換え、slot は元の y 順)/ tie を選んで「Untie」で個別の reroute に戻す / tie の double-click で slot の並びを反転。**自動配置は同じ列を同じ向きに通る dummy lane を 1 つの tie にまとめる**(列内で隣接する dummy を束ねる。距離しきい値 = node 間隔)
+3. **配置の永続化(文書)**: root と各定義に editor 用 field **`layout`**: `{"nodes": {id: {"x", "y"}}, "reroutes": [{"edge": {"node", "port"}, "points": [[x,y],…]}], "ties": [{"x", "y", "edges": [{"node", "port"}, …]}]}`(辺は入力側 `{node, port}` で一意)。engine の loader / compose / expand は `layout` を無視して round-trip する(loader が拒否するなら named error を報告して止める)。書き込みは新 op **`set_layout{scope, layout}`**(`edit_graph_document` の並び。**再 compose しない**: `parameter_change` に触れず文書の bytes だけ変える。CAS は同じ)。Studio は drag 終了 / reroute・tie の操作ごとに 1 回送る(debounce 300 ms、同一 scope の連続操作は最後の 1 回)。読み: `get_graph_instances` は `nodes` / `definitions` に `layout` を含んで返るので追加 RPC 無し。**セッション表は「文書に無い node」の fallback**に格下げ(文書の layout が正)。「Auto layout」は結果を `set_layout` で書く(= 永続)。Frame Plan の位置は対象外(rendering 文書。別 WP、記録)
+4. Q-1 の automation: reroute / tie は `<view>::graph_reroute#<node>/<port>/<index>` / `graph_tie#<index>` で指せる。シナリオ `graph_reroute_tie`: Auto layout → reroute が出る → node を drag しても曲げが残る(辺の中間点が reroute を通ることを `view_state`/専用読みで確認)→ 2 本を Tie → 束の点を drag で両辺が動く → 再読込(別複製で無い / 戻して残る)
+
+#### 受け入れ(§4 規約 10)
+1. RPC: `set_layout{scope, layout}` が文書に載り `get_graph_instances` で返る / 再 compose が起きない(compile 回数か frame plan の generation が不変)/ 不正な layout(無い node / 無い辺)は名前付き `graph.layout_invalid@1` / 対照: op を外す変異で Studio の drag が永続しない
+2. scene test: node drag で reroute が残る(対照: :304 の撤去を戻す変異で消える)/ 辺 double-click で reroute 挿入、Delete で除去 / Tie で 2 辺が `spacing` 離れて平行に通る、drag で両方動く、Untie で戻る / Auto layout が lane を reroute と tie にする(fixture で数を固定)
+3. 永続化: drag → 300 ms → `set_layout` 1 回(連続 drag で 1 回)、reply 後の revision で同じ位置(セッション表は使われない)
+4. 既存 test 全数緑(位置の期待が変わる箇所は一覧)、非 GPU 全数緑、シナリオ 9 本緑
+
+#### やらないこと
+横向きの tie / Frame Plan の永続化 / 辺の直交配線 / reroute の自動整列 / undo。
+
+実装時の裁定(2026-09-17〜18、`agent/n2`): 辺は**入力側 `{node, port}`** で一意に名指す。`set_layout` は scope の `layout` member を丸ごと置換(`null` で消す)。検証は「名指した node / 辺がその scope に存在」「座標は有限」「未知 key 無し」で `graph.layout_invalid@1`、斜線 id や他定義の node は `graph.definition_immutable@1`、未知 scope は `invalid_graph_document`。**layout だけの op 列は `apply_candidate` を通さず文書を書く**(`Ticket::source_only`。再 compose 無しの実測: `recomposed:false`、`apply_calls` / `published_generation` / frame plan / catalog 不変。続く `set_node_label` は動かし、layout の bytes は保つ)。`renderconfigdocument.cpp` の `isGraphRootKey` に `layout` を足した(1 key)。自動配置は lane を 2 点の reroute にし、同じ列で node 間隔(74)以内の lane は 1 つの tie に(`bundleDocument`: reroute 0 / tie 1 of 2、`flyoverDocument`: reroute 2 / tie 0)。**シナリオが見つけたバグ**: tie は担う辺の平均 x に置かれ node の上に載ることがあるが z が node(2)より下(1.5)で、press が node を掴んでいた → 制御点を z 2.5 / 2.6 に(scene test に zValue の assert)。**穴**: 300 ms の debounce 中に project を切り替えると置き場所の編集が失われ得る(scope 変更は flush、context reset は未 flush)/ `set_layout{null}` は `withRootValue` が root key を消せないので `"layout": {}` が残る(挙動は同じ、bytes は非同一)/ `rpc_equals` に `retry_ms` を足した(debounce 後の観測。「Graph change saved.」は連番を持たないので gate にできない)/ Frame Plan の位置は対象外 / 別 Studio の変更は次の refresh で見える(push 無し)。
+
+完了記録(2026-09-18、`fd02e356`): engine = `graphcomposition.{hpp,cpp}`(`set_layout`、`graph.layout_invalid@1`、`EditScope::container`、op 一覧コメント更新: **6 op / 9 名前付き拒否**)、`renderconfigeditor.{hpp,cpp}`(`source_only` の commit 経路、`get_graph_instances` が scope ごとに `layout` を返す)、`renderconfigdocument.cpp`(`layout` を root key に)。Studio = `graphcanvasmodel`(`layout_` / `scopeLayout` / `setLayout`)、`graphcanvaswidget`(+≈1000: reroute item / tie item、`GraphCanvasLayout` の JSON 双方向、辺の double-click で挿入・Delete・Tie together・Untie・reverse、Ctrl 追加選択、auto layout が reroute / tie を出す、300 ms debounce で `set_layout` 1 回、文書が正でセッション表は fallback、node drag で bends を捨てる行の撤去)。test: `renderconfigeditor_test`(対照: op 撤去で 5 箇所赤 / `layout_only` を false にすると再 compose の assert 3 箇所赤)、scene test(対照: bends を捨てる行を戻すと `edgeBends(...).contains(control)` 赤 / drag をセッション表だけにすると `layoutPending()` 赤)、非 GPU 全数 1721/1721、シナリオ `graph_reroute_tie`(37 step、23.7 s: Auto layout → reroute が出る → node drag で曲げが残る → 2 本を Tie → 束を drag で両方動く → 別複製に無い / 戻すと残る)。
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
