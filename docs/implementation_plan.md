@@ -23690,6 +23690,35 @@ Studio UI(AG-3b)/ event の観測・注入 / 時間軸 RPC / scrub の新規則 
 - 消費する契約: `get_status.animation`(AG-3a 決定 1)、`get_graph_node_values{instance?}`(決定 2、`source: "rendering"`)、既存 `get_graph_instances` / `get_graph_values` / `edit_graph_document` / `edit_graph_instances` / `get_edit_result`。
 - 期待する中身(pelican2-3e が節を書き換えてよい): N-1 の canvas に definition scope の node 値を重ねる(`get_graph_node_values`)/ 時間軸の read-only view(`get_status.frame / time / animation` を frame ごとに読む。scrub は `set_time` + 1 frame の O-1 裁定に従う)/ 実 engine を起動する Studio e2e test 1 本(装着 → 編集 → 観測 → 保存 → 再読込)。
 - 記録: Studio は今日 `get_status` を呼ばない。実 engine 起動の Studio e2e test は repo に無い(canned-reply Harness と mock 往復だけ)。
+
+### P-2b: posegraph_demo —— 姿勢の blend を曲線で駆動する学習 project(v0「作る」の実物。v2)
+
+**§4 規則 11 上段(新 project、smoke corpus、OFF build の扱い)。実装者: Claude(Fable + Opus)。設計レビュー 1 巡(Opus、`<作業ディレクトリ>/dr_p2b.md`: 致命 5 / 大 11 / 小 7)で v2、打ち切り。前提: AG-1b、P-1、AG-2(`584afc15`)、P-2a-4a(`5100be5f`)。事実: `<作業ディレクトリ>/facts_ag2.md` §6、`<作業ディレクトリ>/facts_p2a34.md`、`<作業ディレクトリ>/facts_x1.md` §3・§7、レビューの実 decode。**
+
+#### 前提(レビューで検算済み)
+- `animgraph_demo.gltf`(3202 byte、base64 埋め込みの text で tracked): clip 長 1 s、key 0/0.25/0.5/0.75/1.0、**t=1 s は両 clip が identity のループ境界**。quat z = sin(10°) は半角なので **Walk は ±20°、Run は ±50°**。t=0.25 s で weight 0 / 0.5 / 1 → TipJoint の model 行列 `[0].y` = sin20° 0.342 / sin35° 0.574 / sin50° 0.766。
+- `graph.instance.owner.object` は **正の整数の authoring object id**([graphcomposition.cpp:97-100])で、scene.json には書かれず objects 配列順に 1 から採番される位置依存の値([authoringscenedocument.cpp:38-52])。scene 名は `default_scene`。owner が一致しないと **無音で inactive scope**([scenegraphruntime.cpp:33-38] → [renderingpassconfigregistration.cpp:844-846])。P-1 の「やらないこと」に owner id の永続化(既知の穴)。
+- `pose.clip_sample` は `rig` と `clip` の parameter が必須。`value.playback` は `loop` ではなく `wrap` / `duration`、入力 port は `elapsed`。P-1 の `curveControlOps` が作る曲線は現在値で平ら。
+- `requires` を project.json に足しても、`passfieldownership_test.cpp:479-529` が `projects/` を directory_iterator で舐めて `lowerRenderGraphDocument`(builtin registry で `partitionGraphDocument`)するので OFF build で `graph.operation_unregistered@1` が出る。catalog smoke は project.json を読まない(glob → dirname)。既存の名前 `animation.module_unavailable@1`(scene prepare、OFF)がある。
+- AG-2: extract node が `pose.blend` の上流なら `pose.root_motion_unsupported@1`。`Jump` は net 0(継ぎ目無し = 動かない)。
+- smoke の editor lane は 1 project 限定(vrm_xr_demo が占有)で `pelican_studio` は lane に居ない。`localtransform` を宣言すると `LocalTransformSystem` が毎 frame Transform を書く(AG-2 の fixture は同じ TRS を両方に宣言)。graph root + `pipeline.preset` は fixture と GPU test で既に通る。
+
+#### 決定
+1. **新 project `projects/posegraph_demo`**: glTF は animgraph_demo の copy。scene `default_scene`、objects は **`Hero` を先頭**(authoring id 1)= `transform` + `localtransform`(同じ TRS)+ `simplemodelview` + skinned model、Camera は 2 番目。rendering config は `pelican.graph` root、`rendering` は animgraph_demo の config(preset hybrid_v1 + shadow_directional / sky_ambient / ui)。`definitions.walk_run = { inputs: {weight}, nodes: clock = value.input{scene_time} → walk = pose.clip_sample{rig, clip: Walk, time ← clock} / run = pose.clip_sample{rig, clip: Run, time ← clock} → mix = pose.blend{a ← walk, b ← run, weight ← input} → out = pose.skeletal }`。root に `graph.instance{definition: walk_run, owner: {scene: "default_scene", object: 1}, parameters: {weight: 0.0}}`。README は「owner の object は scene.json の objects 順の 1 始まりの番号(永続 id は v0 の穴)」を書く。
+2. **曲線で駆動**: root に `value.input{scene_time} → value.playback{wrap, duration: 4} → value.curve{key 0→0, 1→1, 2→0 …}` を置き instance の `weight` に接続。README の「固定値に戻す / 曲線に戻す」は **`set_input` で edge を外す / 戻す**(Inspector の「切断」「接続」導線。`curveControlOps` の平らな曲線は使わない)。
+3. **OFF build**: `project.json` に `requires: ["animation"]`(値は build feature registry の名前 = `PELICAN_WITH_<NAME>`。X-1 の namespace とは別の語彙、記録)。parser は既知(`animation`)以外を `project.requires_unknown@1`。player は project load で `requires` を検証し、OFF なら **既存の `animation.module_unavailable@1`**(3 本目の名前は作らない)。**corpus を舐める側が `requires` を読む**: `passfieldownership_test` の `projects/` 走査と `run_project_catalog_smoke.cmake` の両方が project.json の `requires` を読み、無効化 module を要求する project は **名前付き skip 行**(stderr `skip posegraph_demo: requires animation (PELICAN_WITH_ANIMATION=OFF)`)。
+4. **smoke の anim 検査**は `*.anim_graph.json` の有無に加えて「rendering config が `pelican.graph` root で `pose.` op を含む」でも掛かる(frame 1 ≠ frame 10。ただし weight 固定でも Walk が scene_time で動くので、これは「動いている」の検査であって曲線の検査ではない、記録)。`catalog_smoke.json` の閾値は負対照から。
+5. **root motion の README 項目は外す**(Walk に水平移動が無く、extract node は blend の上流に置けない。「AG-2 の test を読む」の 1 行に置換)。Studio: 受け入れ 4 は editor lane ではなく **N-1 の widget test の形**(demo の文書を `get_graph_instances` の canned reply にして canvas が `walk_run` scope と instance を列挙)。実 engine の Studio e2e は AG-3b。
+
+#### 受け入れ(§4 規約 10)
+1. `project_catalog_headless_smoke` に posegraph_demo が入り緑(anim 検査が pose graph 文書にも掛かる)。
+2. GPU test(`skeletal_gltf_test` の形、demo の文書と scene を load): **t=0.25 s** で `render.attribute{pose_node: 2}` の model 行列 `[0].y` が曲線の weight(t=0.25 s で 0.5 になる key を置く)で **0.574 ± 1e-3**。**対照**: `weight` の edge を外す(`set_input` disconnect、parameter 0.0)→ **0.342**、parameter 1.0 → **0.766**。owner の object を 2(Camera)にすると instance が inactive で **0.342 のまま**(無音の穴を test で固定、記録)。
+3. `PELICAN_WITH_ANIMATION=OFF` build: player は `animation.module_unavailable@1`、`passfieldownership_test` と catalog smoke は名前付き skip 行で緑。`requires: ["physics"]` → `project.requires_unknown@1`。**対照**: `requires` を消すと OFF の `passfieldownership_test` が `graph.operation_unregistered@1` で赤(今日)。
+4. canvas の widget test(canned reply)が `walk_run` scope と instance `hero_walk_run` を列挙。
+5. 出荷 5 project bytes 不変、`catalog_smoke.json` v1、README に「読む順序」「何を変えると何が起きるか」の 2 節(Walk / Run の実角度、weight の意味、`set_input` の手順)。
+
+#### やらないこと
+IK / event / state_machine の demo / 外部定義参照(P-2b-2)/ example の移行(P-2a-4b)/ owner id の永続化 / root motion の demo / Studio の新 UI(AG-3b)。
 ### AG-2: root motion —— clip の根の移動を個体の transform に渡す(v0「作る」の段 5。v2)
 
 **§4 規則 11 上段。実装者: Claude(Fable + Opus)。設計レビュー第 1 巡(Opus、`<作業ディレクトリ>/dr_ag2.md`: 致命 5 / 大 10)で v1 の「第二の sink」「pose handle の sideband」「dt からの差分」を全部撤回 → v2。第 2 巡 1 回で打ち切り。事実: `<作業ディレクトリ>/facts_ag2.md`。**
