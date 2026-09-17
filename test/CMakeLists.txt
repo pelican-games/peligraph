@@ -1581,6 +1581,9 @@ pelican_define_test(modelinstance_slotmap_test GPU pelican_core VulkanMemoryAllo
 if(PELICAN_WITH_ANIMATION)
 pelican_define_test(skeletal_gltf_test GROUP skeletal_gltf_runtime GPU RUNTIME_SHADER
                     pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+# P-2b reads the shipped projects/posegraph_demo document and scene.
+target_compile_definitions(pelican_test_skeletal_gltf_test PRIVATE
+  PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 pelican_define_test(morph_gltf_test GROUP skeletal_gltf_runtime GPU RUNTIME_SHADER
                     pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(skeletal_rootmotion_test GROUP skeletal_gltf_runtime GPU RUNTIME_SHADER
@@ -2780,6 +2783,7 @@ if(TARGET pelican_test_studio_player_arguments)
             -DGAME_LOGIC_PREFIX=${CMAKE_SHARED_LIBRARY_PREFIX}
             -DGAME_LOGIC_SUFFIX=${CMAKE_SHARED_LIBRARY_SUFFIX}
             -DPROJECTS_DIR=${PELICAN_TEST_PROJECTS_DIR}
+            -DWITH_ANIMATION=$<BOOL:${PELICAN_WITH_ANIMATION}>
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/project_catalog_smoke
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_project_catalog_smoke.cmake
     )

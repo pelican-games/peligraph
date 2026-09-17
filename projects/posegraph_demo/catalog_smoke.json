@@ -1,0 +1,6 @@
+{
+  "schema": "pelican.project_catalog_smoke",
+  "version": 1,
+  "minimum_distinct_colors": 20,
+  "minimum_non_modal_ratio": 0.08
+}

@@ -7,6 +7,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
 using Json = nlohmann::json;
@@ -262,6 +263,64 @@ TEST_CASE("The graph canvas reads root and definition scopes out of one document
     REQUIRE_FALSE(h.model.leaveScope());
 
     REQUIRE(h.model.notice().kind == InspectorNoticeKind::None);
+}
+
+// P-2b acceptance 4. The shipped learning project's own rendering config, read
+// the way Studio reads one: a canned `get_graph_instances` reply. The canvas
+// has to find the definition scope and the owned instance in it, because that
+// is what a reader opens the demo to look at.
+TEST_CASE("The graph canvas lists the posegraph_demo scope and its instance",
+          "[studio][graph-canvas][posegraph-demo]") {
+    const auto path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
+                      "posegraph_demo" / "passes" / "main.json";
+    std::ifstream stream{path};
+    REQUIRE(stream.good());
+    std::stringstream buffer;
+    buffer << stream.rdbuf();
+    const auto document = Json::parse(buffer.str());
+    auto instances = Json::array();
+    for (const auto &node : document.at("nodes"))
+        if (node.at("op") == "graph.instance") instances.push_back(node);
+    const Json demo_context{{"source_reference", "projects/posegraph_demo/passes/main.json"},
+                            {"source_digest", {{"hex", "posegraph-demo"}}},
+                            {"instances", instances},
+                            {"nodes", document.at("nodes")},
+                            {"definitions", document.at("definitions")}};
+
+    Harness h;
+    h.open(demo_context);
+    auto scopes = h.model.scopes();
+    REQUIRE(scopes.size() == 2);
+    REQUIRE(scopes[0].root);
+    REQUIRE(scopes[1].id == "walk_run");
+
+    // The values side of the root: a clock, the playback that wraps it, the
+    // curve, and the instance the curve drives.
+    REQUIRE(h.model.nodes().size() == 4);
+    REQUIRE(h.model.edges().size() == 3);
+    const auto &hero = h.node("hero_walk_run");
+    REQUIRE(hero.instance);
+    REQUIRE(hero.definition == "walk_run");
+    REQUIRE(hero.inputs.size() == 1);
+    REQUIRE(hero.inputs[0].port == "weight");
+    REQUIRE(hero.inputs[0].connected);
+    REQUIRE(hero.inputs[0].source_node == "blend_curve");
+    // The parameter under the edge is the value the port returns to when the
+    // edge is taken away, which is the exercise the README sets.
+    REQUIRE(hero.inputs[0].has_parameter);
+    REQUIRE(hero.inputs[0].parameter == 0.0);
+
+    // Descending into the instance shows the pose chain itself.
+    REQUIRE(h.model.enterInstance("hero_walk_run"));
+    REQUIRE(h.model.currentScope() == "walk_run");
+    REQUIRE(h.model.breadcrumb() == std::vector<std::string>{"", "walk_run"});
+    REQUIRE(h.model.nodes().size() == 6);
+    const auto &mix = h.node("mix");
+    REQUIRE(port(mix, "a").source_node == "walk");
+    REQUIRE(port(mix, "b").source_node == "run");
+    REQUIRE(port(mix, "weight").source_node == "weight");
+    const auto &sink = h.node("out");
+    REQUIRE(port(sink, "pose").source_node == "mix");
 }
 
 TEST_CASE("A document without definitions leaves the root scope standing",

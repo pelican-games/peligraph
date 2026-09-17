@@ -1,0 +1,15 @@
+{
+  "schema":"pelican.scene",
+  "version":1,
+  "scenes":{"default_scene":{"objects":[
+    {"name":"Hero","components":[
+      {"name":"transform","pos":[0.0,-1.0,0.0],"rotation":[0.0,0.0,0.0,1.0],"scale":[1.0,1.0,1.0]},
+      {"name":"localtransform","pos":[0.0,-1.0,0.0],"rotation":[0.0,0.0,0.0,1.0],"scale":[1.0,1.0,1.0]},
+      {"name":"simplemodelview","model":"posegraph_demo"}
+    ]},
+    {"name":"Camera","components":[
+      {"name":"transform","pos":[0.0,1.0,5.0],"rotation":[0.0,1.0,0.0,0.0],"scale":[1.0,1.0,1.0]},
+      {"name":"camera"}
+    ]}
+  ]}}
+}

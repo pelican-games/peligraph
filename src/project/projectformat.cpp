@@ -63,6 +63,98 @@ int compareProjectVersions(std::string_view lhs, std::string_view rhs) {
     return 0;
 }
 
+namespace {
+
+// One row per build feature a project may name. `available` is decided at
+// compile time by the same macro the engine's own code reads, so a project
+// cannot be told a module is present by a build that left it out.
+struct ProjectRequirement {
+    std::string_view name;
+    std::string_view option;
+    // The name an OFF build already fails under, so requiring a module up
+    // front reuses that name instead of inventing a third one.
+    std::string_view unavailable_code;
+    bool available;
+};
+
+constexpr ProjectRequirement project_requirements[] = {
+    {"animation", "PELICAN_WITH_ANIMATION", "animation.module_unavailable@1",
+     static_cast<bool>(PELICAN_WITH_ANIMATION)},
+};
+
+const ProjectRequirement *findProjectRequirement(std::string_view name) {
+    for (const auto &requirement : project_requirements) {
+        if (requirement.name == name) {
+            return &requirement;
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
+std::vector<std::string> knownProjectRequirements() {
+    std::vector<std::string> names;
+    for (const auto &requirement : project_requirements) {
+        names.emplace_back(requirement.name);
+    }
+    return names;
+}
+
+std::string_view projectRequirementOption(std::string_view requirement) {
+    const auto *found = findProjectRequirement(requirement);
+    return found ? found->option : std::string_view{};
+}
+
+std::vector<std::string>
+parseProjectRequirements(const nlohmann::json &project) {
+    std::vector<std::string> requirements;
+    if (!project.is_object() || !project.contains("requires")) {
+        return requirements;
+    }
+    const auto &declared = project.at("requires");
+    if (!declared.is_array()) {
+        throw std::runtime_error(
+            "project.requires_unknown@1: project.json requires must be an "
+            "array of build feature names");
+    }
+    for (const auto &entry : declared) {
+        if (!entry.is_string() ||
+            entry.get_ref<const std::string &>().empty()) {
+            throw std::runtime_error(
+                "project.requires_unknown@1: project.json requires must name "
+                "build features as nonempty strings");
+        }
+        auto name = entry.get<std::string>();
+        if (findProjectRequirement(name) == nullptr) {
+            std::string known;
+            for (const auto &requirement : project_requirements) {
+                if (!known.empty()) {
+                    known += ", ";
+                }
+                known += std::string{requirement.name};
+            }
+            throw std::runtime_error(
+                "project.requires_unknown@1: project.json requires '" + name +
+                "', which this engine does not know; known requirements: " +
+                known);
+        }
+        requirements.push_back(std::move(name));
+    }
+    return requirements;
+}
+
+std::optional<std::string>
+unsatisfiedProjectRequirement(const nlohmann::json &project) {
+    for (const auto &name : parseProjectRequirements(project)) {
+        const auto *requirement = findProjectRequirement(name);
+        if (requirement != nullptr && !requirement->available) {
+            return name;
+        }
+    }
+    return std::nullopt;
+}
+
 ProjectEnvelopeParseResult
 parseProjectEnvelopeJson(const nlohmann::json &project,
                          const ProjectEnvelopeParseOptions &options) {
@@ -82,6 +174,18 @@ parseProjectEnvelopeJson(const nlohmann::json &project,
 
     ProjectEnvelopeParseResult result;
     result.envelope.name = optionalNonEmptyString(project, "name");
+    // A project that names a module this build left out stops here, with the
+    // name the animation module already uses when a scene needs it. Opening
+    // such a project is not a graph problem to be discovered node by node.
+    result.envelope.requirements = parseProjectRequirements(project);
+    if (const auto unsatisfied = unsatisfiedProjectRequirement(project)) {
+        const auto *requirement = findProjectRequirement(*unsatisfied);
+        throw std::runtime_error(
+            std::string{requirement->unavailable_code} + ": this build has " +
+            std::string{requirement->option} +
+            "=OFF, so project.json's requires: [\"" + *unsatisfied +
+            "\"] cannot be satisfied");
+    }
     result.envelope.basic_config =
         project.value("basic_config", nlohmann::json::object());
     result.envelope.asset_stores =

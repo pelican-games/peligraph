@@ -7,7 +7,7 @@ endif()
 
 foreach(required IN ITEMS PLAYER PNG_NONUNIFORM_CHECK STUDIO_ARGUMENTS_PROBE
                           GAME_LOGIC_DIR GAME_LOGIC_PREFIX GAME_LOGIC_SUFFIX
-                          OUT_DIR)
+                          OUT_DIR WITH_ANIMATION)
     if(NOT DEFINED ${required})
         message(FATAL_ERROR "${required} is required")
     endif()
@@ -84,6 +84,7 @@ set(catalog_frames 10)
 set(catalog_frame_names
     0001 0002 0003 0004 0005 0006 0007 0008 0009 0010)
 set(editor_project_dir "")
+set(skipped_projects)
 
 foreach(project_manifest IN LISTS project_manifests)
     get_filename_component(project_dir "${project_manifest}" DIRECTORY)
@@ -92,6 +93,47 @@ foreach(project_manifest IN LISTS project_manifests)
     string(REPLACE "\\" "_" output_stem "${output_stem}")
     string(REGEX REPLACE "[^A-Za-z0-9_]" "_"
         game_logic_stem "${project_relative}")
+
+    # `requires` in project.json names the build features the project cannot
+    # run without. The corpus is walked by the build that was configured, so
+    # the declaration is read here: a project that needs a module this build
+    # left out is skipped by name, rather than failing inside the player on
+    # operations the disabled module never registered.
+    file(READ "${project_manifest}" project_manifest_text)
+    set(project_skipped FALSE)
+    string(JSON requires_type ERROR_VARIABLE requires_error
+        TYPE "${project_manifest_text}" requires)
+    if(NOT requires_error)
+        if(NOT requires_type STREQUAL "ARRAY")
+            message(FATAL_ERROR
+                "project.requires_unknown@1: project '${project_relative}' "
+                "declares requires that is not an array")
+        endif()
+        string(JSON requires_length LENGTH "${project_manifest_text}" requires)
+        if(requires_length GREATER 0)
+            math(EXPR last_requirement "${requires_length} - 1")
+            foreach(requirement_index RANGE 0 ${last_requirement})
+                string(JSON requirement GET
+                    "${project_manifest_text}" requires ${requirement_index})
+                # The vocabulary is the one parseProjectRequirements knows.
+                if(NOT requirement STREQUAL "animation")
+                    message(FATAL_ERROR
+                        "project.requires_unknown@1: project "
+                        "'${project_relative}' requires '${requirement}'")
+                endif()
+                if(NOT WITH_ANIMATION)
+                    message(NOTICE
+                        "skip ${project_relative}: requires animation "
+                        "(PELICAN_WITH_ANIMATION=OFF)")
+                    set(project_skipped TRUE)
+                endif()
+            endforeach()
+        endif()
+    endif()
+    if(project_skipped)
+        list(APPEND skipped_projects "${project_relative}")
+        continue()
+    endif()
 
     set(expectations_path "${project_dir}/catalog_smoke.json")
     if(NOT EXISTS "${expectations_path}")
@@ -211,6 +253,25 @@ foreach(project_manifest IN LISTS project_manifests)
     # captures, rather than merely finding animation data in an asset.
     file(GLOB_RECURSE animation_declarations LIST_DIRECTORIES false
         "${project_dir}/*.anim_graph.json")
+    # A `pelican.graph` rendering config that carries pose operations is the
+    # same declaration in the other authoring form: the pose comes from the
+    # common graph rather than from a state-machine document. This says the
+    # project moves, not that a curve drives the blend -- a clip sampled
+    # against scene time moves whatever the weight does.
+    string(JSON rendering_config_reference ERROR_VARIABLE rendering_config_error
+        GET "${project_manifest_text}" basic_config rendering_config_json)
+    if(NOT rendering_config_error AND
+       EXISTS "${project_dir}/${rendering_config_reference}")
+        file(READ "${project_dir}/${rendering_config_reference}" rendering_config_text)
+        string(JSON rendering_config_schema ERROR_VARIABLE rendering_schema_error
+            GET "${rendering_config_text}" schema)
+        if(NOT rendering_schema_error AND
+           rendering_config_schema STREQUAL "pelican.graph" AND
+           rendering_config_text MATCHES "\"pose[.]")
+            list(APPEND animation_declarations
+                "${project_dir}/${rendering_config_reference}")
+        endif()
+    endif()
     if(animation_declarations)
         file(READ "${first_png}" first_hex HEX)
         file(READ "${final_png}" final_hex HEX)
@@ -416,4 +477,10 @@ message(STATUS
     "editor project '${editor_project_relative}' passed: scene_tree -> "
     "pick_object -> set_gizmo -> render_frame -> capture; selected and "
     "unselected captures differ")
+list(LENGTH skipped_projects skipped_count)
+if(skipped_count GREATER 0)
+    message(STATUS
+        "${skipped_count} of ${project_count} discovered projects were skipped "
+        "for unavailable build features: ${skipped_projects}")
+endif()
 message(STATUS "all ${project_count} discovered projects passed headless smoke")

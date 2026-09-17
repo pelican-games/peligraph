@@ -15,6 +15,7 @@
 #include <array>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <iterator>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -483,6 +484,21 @@ TEST_CASE(
         const auto project_file = entry.path() / "project.json";
         if (!entry.is_directory() ||
             !std::filesystem::is_regular_file(project_file)) {
+            continue;
+        }
+        // A project that declares `requires` names the build features it
+        // cannot run without. This corpus is the reason the declaration has to
+        // be read outside the player: without it, an OFF build reaches the
+        // operations the disabled module never registered and fails here with
+        // graph.operation_unregistered@1 instead of skipping by name.
+        const auto manifest = nlohmann::json::parse(readText(project_file));
+        if (const auto unsatisfied = unsatisfiedProjectRequirement(manifest)) {
+            const auto line = "skip " + entry.path().filename().string() +
+                              ": requires " + *unsatisfied + " (" +
+                              std::string{projectRequirementOption(
+                                  *unsatisfied)} + "=OFF)";
+            std::cerr << line << std::endl;
+            WARN(line);
             continue;
         }
         ++project_count;

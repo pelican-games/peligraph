@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace Pelican {
 namespace {
@@ -80,6 +81,57 @@ TEST_CASE("pelican.project envelope validation is engine independent",
     REQUIRE_THAT(
         ignored.warnings.front(),
         Catch::Matchers::ContainsSubstring("--ignore-engine-version"));
+}
+
+// P-2b: a project says up front which build features it cannot run without.
+// The name is read by the player and by every corpus that walks `projects/`,
+// so the vocabulary and the two failures live in one place.
+TEST_CASE("pelican.project requires names build features by a known vocabulary",
+          "[project-format][p2b][requires]") {
+    const auto base = nlohmann::json{
+        {"schema", "pelican.project"},
+        {"version", 1},
+        {"name", "fixture"},
+        {"basic_config", {{"scene_data_json", "scene.json"}}},
+    };
+    REQUIRE(parseProjectEnvelopeJson(base).envelope.requirements.empty());
+    REQUIRE_FALSE(unsatisfiedProjectRequirement(base));
+
+    // The vocabulary is one name in v0. `physics` is a real build option, and
+    // still not a requirement name: the module namespace is X-1's decision,
+    // and a parser that guessed would settle it here.
+    REQUIRE(knownProjectRequirements() == std::vector<std::string>{"animation"});
+    REQUIRE(std::string{projectRequirementOption("animation")} ==
+            "PELICAN_WITH_ANIMATION");
+    auto unknown = base;
+    unknown["requires"] = nlohmann::json::array({"physics"});
+    REQUIRE_THROWS_WITH(parseProjectRequirements(unknown),
+        Catch::Matchers::ContainsSubstring("project.requires_unknown@1"));
+    REQUIRE_THROWS_WITH(parseProjectEnvelopeJson(unknown),
+        Catch::Matchers::ContainsSubstring("project.requires_unknown@1"));
+    REQUIRE_THROWS_WITH(unsatisfiedProjectRequirement(unknown),
+        Catch::Matchers::ContainsSubstring("project.requires_unknown@1"));
+
+    auto malformed = base;
+    malformed["requires"] = "animation";
+    REQUIRE_THROWS_WITH(parseProjectEnvelopeJson(malformed),
+        Catch::Matchers::ContainsSubstring("project.requires_unknown@1"));
+
+    auto animation = base;
+    animation["requires"] = nlohmann::json::array({"animation"});
+    REQUIRE(parseProjectRequirements(animation) ==
+            std::vector<std::string>{"animation"});
+#if PELICAN_WITH_ANIMATION
+    REQUIRE_FALSE(unsatisfiedProjectRequirement(animation));
+    REQUIRE(parseProjectEnvelopeJson(animation).envelope.requirements ==
+            std::vector<std::string>{"animation"});
+#else
+    // An OFF build says so with the name the animation module already uses
+    // when a scene asks for it, rather than a third name for the same fact.
+    REQUIRE(unsatisfiedProjectRequirement(animation) == "animation");
+    REQUIRE_THROWS_WITH(parseProjectEnvelopeJson(animation),
+        Catch::Matchers::ContainsSubstring("animation.module_unavailable@1"));
+#endif
 }
 
 TEST_CASE("ProjectPathResolver returns diagnostics without an engine logger",

@@ -49,6 +49,8 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <optional>
 #include <nlohmann/json.hpp>
 
 namespace Pelican {
@@ -2445,6 +2447,231 @@ void main() {
     for (int frame = 0; frame < 10; ++frame) animate();
     REQUIRE(valueGraph() != carried_graph);
     REQUIRE(traced().state == "move");
+    service.reset();
+    Animation::poseGraphRuntime().clear();
+}
+
+
+// P-2b acceptance 2. The shipped learning project drives one object's pose
+// through `pose.blend`, and the weight of that blend comes from a curve on the
+// values side of the very same document. The document and the scene are the
+// ones in `projects/posegraph_demo`: the test copies the project, adds a probe
+// that reads the posed joint back off the GPU, and changes nothing else.
+// `t = 0.25 s` is the measurement point because both clips are at identity on
+// the 1 s loop boundary, where no weight can be told from another.
+TEST_CASE("the posegraph_demo curve drives the blend that poses the hero",
+          "[skeletal][graph-pose-sink][posegraph-demo]") {
+    setupLogger();
+    const auto mode = GENERATE(as<std::string>{}, "the shipped curve",
+                               "weight edge disconnected", "weight parameter set to one",
+                               "owner that matches no object", "owner that names the camera");
+    CAPTURE(mode);
+    const auto shipped_root = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                              "projects" / "posegraph_demo";
+    const auto root = std::filesystem::temp_directory_path() /
+        ("pelican_posegraph_demo_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    const TempDir guard{root};
+    std::filesystem::copy(shipped_root, root,
+        std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
+    std::filesystem::create_directories(root / "shaders");
+
+    // The shipped bytes, parsed and not rewritten: every edit below is one the
+    // README tells a reader to make, or the probe the acceptance needs.
+    std::ifstream shipped_stream{shipped_root / "passes" / "main.json", std::ios::binary};
+    REQUIRE(shipped_stream.good());
+    auto document = nlohmann::json::parse(std::string{
+        std::istreambuf_iterator<char>{shipped_stream}, std::istreambuf_iterator<char>{}});
+    REQUIRE(document.at("schema") == "pelican.graph");
+    // By id, never by position: a reordered document would otherwise be edited
+    // somewhere else and still pass.
+    const auto node_by_id = [](nlohmann::json &nodes, const std::string &id) -> nlohmann::json & {
+        for (auto &node : nodes)
+            if (node.at("id").get<std::string>() == id) return node;
+        FAIL("the shipped document has no node " << id);
+        return nodes.at(0);
+    };
+    const auto rig = node_by_id(document["definitions"]["walk_run"]["nodes"], "walk")
+                         .at("parameters").at("rig").get<std::string>();
+    if (mode == "weight edge disconnected" || mode == "weight parameter set to one") {
+        // `set_input` with a null source is what the Inspector's "disconnect"
+        // does; the port then falls back to the instance's own `parameters`.
+        document = editGraphDocument(document, nlohmann::json::array({
+            {{"op", "set_input"}, {"node", "hero_walk_run"}, {"port", "weight"}, {"source", nullptr}}}));
+        if (mode == "weight parameter set to one")
+            document = editGraphDocument(document, nlohmann::json::array({
+                {{"op", "set_node_parameters"}, {"node", "hero_walk_run"},
+                 {"parameters", {{"weight", 1.0}}}}}));
+    }
+    // Two ways to get the positional owner id wrong. `99` names nothing; `2`
+    // is the Camera, the off-by-one an author makes by putting the camera
+    // first in scene.json. Neither is rejected when the document is authored.
+    if (mode.starts_with("owner"))
+        node_by_id(document["nodes"], "hero_walk_run")["owner"]["object"] =
+            mode == "owner that matches no object" ? 99 : 2;
+
+    // The probe: one attribute inside the definition, and the compute that
+    // copies it into a host-readable buffer. The demo ships neither.
+    const bool probe = !mode.starts_with("owner");
+    if (probe) {
+        document["definitions"]["walk_run"]["nodes"].push_back(nlohmann::json{
+            {"id", "tip"}, {"op", "render.attribute"},
+            {"parameters", {{"element", "mat4"}, {"domain", "instance"},
+                            {"source", {{"asset", rig}, {"pose_node", 2}}}}},
+            {"outputs", {"resource"}}});
+        document["definitions"]["walk_run"]["outputs"]["tip"] = {{"node", "tip"}, {"port", "resource"}};
+        document["nodes"].push_back(nlohmann::json{{"id", "result"}, {"op", "render.buffer"},
+            {"parameters", {{"size", 16}, {"element", "float"}, {"host_source", "runtime_f32"}}},
+            {"outputs", {"resource"}}});
+        document["nodes"].push_back(nlohmann::json{{"id", "probe"}, {"op", "render.compute"},
+            {"parameters", {{"shader", "shaders/graph_probe"}, {"dispatch", {{"groups", {1, 1, 1}}}},
+                {"ports", {{"tip", {{"element", "mat4"}, {"domain", "instance"}, {"access", "read"}}},
+                           {"destination", {{"element", "float"}, {"access", "write"}}}}}}},
+            {"inputs", {{"tip", {{"node", "hero_walk_run"}, {"port", "tip"}}},
+                        {"destination", {{"node", "result"}, {"port", "resource"}}}}},
+            {"outputs", {"destination"}}});
+        document["outputs"]["gpu"] = {{"node", "probe"}, {"port", "destination"}};
+        writeText(root / "shaders/graph_probe.comp", R"(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
+void main() {
+    mat4 tip = pelican_load_tip(0);
+    pelican_store_destination(0, tip[0].y);
+    pelican_store_destination(1, tip[0].x);
+    pelican_store_destination(2, tip[3].y);
+    pelican_store_destination(3, tip[3].z);
+}
+)");
+    }
+    writeText(root / "passes/main_rendering_config.json", document.dump());
+
+    auto &service = Animation::animationServiceRuntime();
+    service.reset();
+    Animation::poseGraphRuntime().clear();
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(root, false);
+    // The shipped basic_config, minus the rendering config reference: the
+    // document under test is published below, and the UI overlay the demo's
+    // `ui` feature needs is the one the project names.
+    GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{{"basic_config", {
+        {"scene_data_json", "scene.json"}, {"asset_data_json", "assets/asset_data.json"},
+        {"ui_config_json", "ui/status_overlay.json"}}}}.dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16, 16};
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &scene = GET_MODULE(SceneLoader);
+    test_support::loadScene(scene, "default_scene");
+    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::fixed_step, 0.25);
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    const auto object = scene.objectId("Hero");
+    REQUIRE(object);
+    // The authoring id the shipped document names is positional. Naming it here
+    // is the only thing that keeps `owner.object: 1` true when the scene's
+    // object list is reordered.
+    std::optional<std::uint32_t> hero_authoring_id;
+    for (const auto &binding : scene.runtimeObjectBindings())
+        if (binding.object_id == *object) hero_authoring_id = binding.authoring_object_id.value;
+    REQUIRE(hero_authoring_id);
+    REQUIRE(*hero_authoring_id == 1);
+
+    const auto animate = [&] {
+        time.advance();
+        GET_MODULE(ECSCore).update();
+        service.synchronizeSceneObjects();
+        GET_MODULE(AnimationSystem).updateGraphs();
+        REQUIRE(service.runAllPhases(time.frameIndex()) == Animation::Status::ok);
+        scene.applyPendingLoad();
+    };
+    const auto *view = ecs.tryComponent<SimpleModelViewComponent>(*object);
+    REQUIRE(view);
+    REQUIRE(view->model_instance_id);
+    const auto instance = *view->model_instance_id;
+    animate();
+    const auto rest = instances.animationNodeMatrix(instance, 2);
+    REQUIRE(rest);
+    GET_MODULE(ProjectBasicConfig).publishRenderingConfigJson(document.dump());
+    animate();
+    auto &renderer = GET_MODULE(Renderer);
+    auto &core = GET_MODULE(VulkanManageCore);
+    const auto render = [&] {
+        renderer.render();
+        core.waitIdle();
+        const auto bytes = core.readBuf(GET_MODULE(FrameGraphResourceContainer).buffer("result"), sizeof(float) * 4);
+        std::array<float, 4> values;
+        std::memcpy(values.data(), bytes.data(), sizeof(values));
+        return values;
+    };
+
+    if (mode.starts_with("owner")) {
+        // Whatever the engine does with a misdirected owner, the one thing the
+        // reader sees is that the hero is not posed. Whether that arrives as a
+        // named failure or as silence is recorded, not assumed.
+        std::string named_failure;
+        try {
+            for (int frame = 0; frame < 4; ++frame) {
+                animate();
+                renderer.render();
+                core.waitIdle();
+            }
+        } catch (const std::exception &error) {
+            named_failure = error.what();
+        }
+        WARN("misdirected owner (" << mode << ") reported: "
+             << (named_failure.empty() ? std::string{"nothing at all"} : named_failure));
+        const auto matrix = instances.animationNodeMatrix(instance, 2);
+        REQUIRE(matrix);
+        REQUIRE(*matrix == *rest);
+        service.reset();
+        Animation::poseGraphRuntime().clear();
+        return;
+    }
+
+    // One frame is one fixed 0.25 s step, so the clip's own quarter-second
+    // key is a frame and not an interpolation of the test's making. Two more
+    // frames so the published program has reached the animation
+    // tick and the graph is attached; the values they carry are the curve at
+    // other points, which is what makes the measured frame a measurement and
+    // not a constant.
+    animate();
+    const auto warm = render();
+    animate();
+    (void)render();
+    // Then the clock goes back, so the frame that is measured is the quarter
+    // second after the scene start -- the point the acceptance names, and the
+    // one place in the first second where both clips are far from the loop
+    // boundary they share.
+    time.setTime(0.0);
+    animate();
+    const auto scene_time = time.now() - scene.sceneStartTime();
+    CAPTURE(scene_time);
+    REQUIRE(std::abs(scene_time - 0.25) < 1e-9);
+    const auto matrix = instances.animationNodeMatrix(instance, 2);
+    REQUIRE(matrix);
+    const auto values = render();
+    // The GPU read-back is the same number the published pose carries, so the
+    // assertion below is about the frame that was drawn.
+    REQUIRE(std::abs(values[0] - (*matrix)[0].y) < 0.00001f);
+    const auto measured = values[0];
+    CAPTURE(measured);
+    // The pose is not frozen: a frame at another point of the curve reads
+    // differently through the same probe.
+    REQUIRE(measured != warm[0]);
+    if (mode == "the shipped curve") {
+        // The curve is at 0.5 a quarter second in: Walk's +20 degrees and
+        // Run's +50 degrees blend to 35 degrees, so sin 35 is what the joint
+        // carries. sin 20 = 0.342 and sin 50 = 0.766 are the two controls.
+        REQUIRE(std::abs(measured - 0.5735765f) < 1e-3f);
+    } else if (mode == "weight edge disconnected") {
+        REQUIRE(std::abs(measured - 0.3420201f) < 1e-3f);
+    } else {
+        REQUIRE(std::abs(measured - 0.7660444f) < 1e-3f);
+    }
     service.reset();
     Animation::poseGraphRuntime().clear();
 }

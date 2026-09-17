@@ -603,12 +603,21 @@ int main(int argc, char *argv[]) {
     Pelican::FastModuleContainer::get<Pelican::EngineLaunchConfig>() = launch_config;
     auto &path_resolver = Pelican::FastModuleContainer::get<Pelican::PathResolver>();
     if (parsed_launch_config.project_json) {
-        const auto project = Pelican::parseProjectEnvelopeText(
-            *parsed_launch_config.project_json,
-            {.ignore_engine_version =
-                 parsed_launch_config.ignore_engine_version});
+        // A project.json that names a build feature this player was built
+        // without stops here by name (animation.module_unavailable@1), rather
+        // than as an unhandled exception on the way out of main.
+        std::optional<Pelican::ProjectEnvelopeParseResult> project;
+        try {
+            project = Pelican::parseProjectEnvelopeText(
+                *parsed_launch_config.project_json,
+                {.ignore_engine_version =
+                     parsed_launch_config.ignore_engine_version});
+        } catch (const std::exception &error) {
+            std::cerr << error.what() << std::endl;
+            return 1;
+        }
         path_resolver.setup(parsed_launch_config.project_root, launch_config.allow_absolute_paths,
-                            project.envelope,
+                            project->envelope,
                             parsed_launch_config.user_dir_override);
     } else {
         path_resolver.setup(parsed_launch_config.project_root, launch_config.allow_absolute_paths);
