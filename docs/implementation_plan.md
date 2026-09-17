@@ -23944,6 +23944,40 @@ jump / 複数 t / EXR / 音のオフライン出力 / `pelican_cli` の描画 su
 
 完了記録(2026-09-18、`373f62ee`): `nodegraphics` に `SocketShape` / `SocketStyle` / `socketStyleFor` / `socketPath` / `curveGeometryBetween` と既定表の読み込み、`graphcanvaswidget` の node item を見出し帯 + 出力欄 + 入力欄に、`src/devstudio/resources/graph_socket_styles.json`(既定表。型を足すのは JSON 編集)、`pelican_studio_resources` の embed proxy。test: scene test に 3 case(解決順 / 見出しとソケット中心 = 辺の端点 / 値の帯)、対照 5 種(既定表を空に / 辺を node 縁に戻す / 宣言を無視 / 見出しを id に / 接続済みを無視)で赤を実測、`renderconfigeditor_test` に「`label` が loader と commit を通る」節、fixture `test/fixtures/graph_node_visuals/`。Frame Plan 系 3 test 不変、非 GPU 全数 1646/1646。実物は playground で目視(利用者レビュー 2 巡目 → N-2 の 3 指摘)。
 
+### N-2: 共通グラフのノードキャンバス(繋ぐ・書く)—— 折り畳み、辺の接続 / 切断、値のその場編集、ノードの追加 / 削除、定義の中の編集
+
+**§4 規則 11 中段(Studio + `edit_graph_document` の additive 拡張 2 つ)。実装者: Claude(Opus)。利用者レビュー 2 巡目(2026-09-18)の指摘を優先順に: (1) 見出しの三角は飾りではなくソケット欄を折り畳む GUI にする / (2) 線の接続・切断ができるべき / (3) `1.5 · stored` の帯をクリックしても再入力できないのは微妙。**
+
+#### 前提
+- `edit_graph_document{base_source_digest, ops[]}`: `add_node` / `remove_node` / `set_input{node, port, source|null}` / `set_node_parameters{node, parameters}`。root の `nodes` のみ。定義内は `graph.definition_immutable@1`([graphcomposition.cpp:339-356](../src/project/graphcomposition.cpp#L339))。結果は ticket → `get_edit_result`。CAS は `base_source_digest`(ずれ = `external_modification`)
+- instance の入力 port の値は `graph.instance.parameters`(P-1 の mode: 辺 > parameter > default)。root / 定義内 node の `parameters` は op ごとの自由 object。値の帯(pill)は「未接続で値がある port」に出る(N-1b)
+- node の `label` は文書を通る(N-1b で確認)。書く op は無い
+- `graph.input` / `graph.instance` は catalog に無い(構造 op)
+- 実装セッション(A)と合意: `graphcomposition.cpp` の編集 op と `edit_graph_document` の `definitions` 書き戻しは B(この WP)が触る。A の P-2a-4a は `rendering` 節のみ。着地は後の側が rebase
+
+#### 決定
+1. **折り畳み(利用者 1)**: 見出しの三角で node のソケット欄を畳む。畳んだ node は見出し帯だけになり、辺は見出し帯の左右中央の 1 点(入力は左、出力は右)に集約して描く。状態は **セッション内**(位置と同じ `(scope, node id)` の表)。文書には書かない
+2. **辺の接続 / 切断(利用者 2)**: 出力ソケットからドラッグ → 入力ソケットで放す → `set_input{node, port, source}` を **即時に 1 回送る**(Apply ボタンは置かない。Blender と同じ即時反映。CAS ずれなら notice + 再取得、操作は捨てる)。型が合わない port には吸着しない(port 型は N-1b で持っている。`accepted_type` が無い = 何でも可)。辺を選んで Delete、または入力ソケットからドラッグして空所で放す → `set_input{source: null}`。undo は無し(v0、記録。graph 編集は journal 無し = P-1 の裁定)
+3. **値のその場編集(利用者 3)**: 値の帯をクリック → その場で入力欄(数値は spin、bool は toggle、文字列は line edit)→ Enter / focus out で確定 → instance の port なら `graph.instance.parameters[port]` を、それ以外は `node.parameters[key]` を **`set_node_parameters`** で送る(既存 parameters をまるごと読み、1 key だけ差し替えて送る。root / 定義内どちらでも)。Esc で取り消し。接続済み port の帯は出ない(今日どおり)。値の種類は現在値から推定
+4. **ノードの追加 / 削除**: キャンバス右クリック「Add node…」→ catalog パレット(op を domain と文字で絞る。`graph.input` は定義 scope だけ、`graph.instance` は root だけ)→ 選ぶと選択 node の右隣(無ければクリック位置)に `add_node`(id は op 名 + 連番で重複回避)。node を選んで Delete → `remove_node`(参照されていれば engine の名前付き拒否をそのまま notice に)
+5. **ラベルの編集**: 見出しをダブルクリック → line edit → `set_node_label{node, label}`(**新 op**、空文字で `label` を消す)。右 pane からも編集可
+6. **定義の中を編集する(engine、additive)**: 全 op に任意 `scope: "root" | "<定義名>"`(既定 root)。定義 scope では `definitions[<name>].nodes` を対象にし、同じ op が使える。新しい名前付き拒否: 定義の `outputs` が指す node の削除 → `graph.output_referenced@1`(既存)/ instance が値を持つ `graph.input` の削除 → `graph.input_referenced@1` / 定義 scope への `graph.instance` 追加 → `graph.nested_instance@1` / root scope への `graph.input` 追加 → `graph.input_scope@1`。`edit_graph_document` は `withRootValue("definitions", …)` も書き戻す。**P-2b-2 との関係**: 「定義内のその場編集」はここで引き受ける。`copy_definition` op、外部定義参照(`user://`)、instance の定義付け替えは P-2b-2 に残す
+7. **Inspector との整合**: Inspector の 4 導線(curve / connect / disconnect / reveal)は今日どおり。「ソースを開く」は Graph tab の該当 scope + node 選択へ飛ぶ。キャンバスの編集後は Inspector 側も同じ revision で再描画される(同じ文書、同じ CAS)
+8. **選択の保持**: refresh(revision 更新)で選択 node が残っていれば選択を保つ(N-1 の記録した穴)
+
+#### 受け入れ(§4 規約 10)
+1. RPC(非 GPU、`renderconfigeditor_test`): 定義 scope で `add_node` / `set_input` / `set_node_parameters` / `remove_node` / `set_node_label` が通り `get_graph_instances.definitions` に反映。**対照**: scope 省略で定義内 node を指すと今日どおり `graph.definition_immutable@1` / 4 つの新拒否が名前で出る / `set_node_label` を欠いた build では `label` が変えられない(op 追加を取り消す変異)
+2. scene test(Qt offscreen): 折り畳みで node の高さが見出しだけになり辺の端点が見出し帯の縁に移る、展開で戻る、位置と同じく refresh で保持 / ソケット間ドラッグで `edit_graph_document` が **1 回**、ops = `[set_input]`、型不一致の port には吸着しない / 辺 Delete → `set_input{null}` / 帯クリック → spin → Enter → `set_node_parameters` に **その key だけ変わった** parameters が乗る、Esc は送らない / パレットから `add_node`、Delete で `remove_node` / 見出し double-click → `set_node_label` / CAS ずれ(`external_modification` を返す fake)→ notice + 再取得 + 操作は破棄
+3. `devstudio_graphattachment_test`(Inspector)/ `devstudio_frameplan_graph_test` / `devstudio_fullscreen_pass_test` 全数不変、非 GPU 全数緑、`SKIP_DEVSTUDIO=ON` build 緑
+4. 実物: playground で `gain_curve` の中に `value.multiply` を足して繋ぎ、`gain` の帯を書き換え、ラベルを付け、保存 → 再読込で残る(利用者)
+
+#### やらないこと
+undo / 複数選択・矩形選択 / コピー & ペースト / `copy_definition` と外部定義参照(P-2b-2)/ instance の定義付け替え / 定義の新規作成と削除(次) / Features dock の export・import UI(次、P-2a-3 の RPC)。
+
+実装時の裁定(2026-09-18、`agent/n2`): (1) 必須入力を持つ op の追加は `add_node` 1 つでは通らない(`validateGraphPorts` が未接続の必須入力を拒否)ので、palette は必須 **scalar** 入力ごとに `value.constant` を同じ ops 列で先に足す(1 操作 1 ticket 1 CAS は保つ)。種の定数は後で本物を繋いでも残る(削除は手動、記録)。(2) 通常 node の必須入力の切断は `set_input{null}` を送り、engine が `unconnected graph input` で拒否するのを notice に出す(定数を再挿入して黙って通す方を取らなかった)。instance の port(値を持つ)は切断できる。(3) 必須の非 scalar 入力を持つ op(`value.event_clock.events` 等)は palette で弾かず engine の拒否をそのまま。(4) palette は `ports == declared` の op と構造 op 2 つだけ。`render.*` の `parameter_dependent` op は port が parameter で決まり、form が無いので足せない(次)。(5) `graph.input_scope@1` は format より狭い(root の `graph.input` は展開器が受けるが editor は拒否。既存文書は読める)。(6) 定義名 `root` は指せない(root の token)。(7) `SKIP_DEVSTUDIO=ON` build は未確認(engine 側は全 gate が通る同じ compile)。(8) undo 無し(v0)。
+
+完了記録(2026-09-18、`02a3d285`): engine = `graphcomposition.cpp`(全 edit op に `scope`、`set_node_label`、`graph.input_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1`、定義の `outputs` も `graph.output_referenced@1` の対象)、`renderconfigeditor.cpp`(`definitions` の書き戻し、変化したときだけ)。Studio = model に Submit/Result と 6 操作、view に折り畳み・ソケットドラッグ接続・辺選択 Delete・入力側ドラッグで切断・値の帯のその場編集・見出し double-click でラベル・右クリック palette・Delete で node 削除・選択保持、capability に `requestEditGraphDocument` / `requestEditResult`、Inspector「ソースを開く」→ Graph tab の該当 node。test: `renderconfigeditor_test` に定義 scope の 2 節(対照 M1 `set_node_label` 撤去 / M2 scope 無視 / M3 書き戻し撤去 で赤を実測)、scene test に 8 case(対照 M4 `canConnect` 常真 / M5 折り畳み無効 / M6 全 key 送信 で赤)、非 GPU 全数 1654/1654、Frame Plan / Inspector 系不変。1 操作 = 1 `edit_graph_document`(connect / disconnect / pill / add / remove / label の JSON は台帳の上の裁定と report に記録)。
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
