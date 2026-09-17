@@ -123,7 +123,7 @@ free-camera preset は overlay 側を選ぶため、両者は併用できます�
 
 | メソッド | params | 動作 |
 |---|---|---|
-| `get_status` | `{}` | `{instance_id, project_root, scene, frame, time, seed, renderdoc, diagnostics:{renderdoc:{...}}, debug_utils:{...}, vulkan_validation:{layer, available, enabled, synchronization, reason}, stores, input:{...}, reload:{...}, participants:{game_logic:{...}}, sprite:{...}, color:{...}, startup:{...}, xr:{active, reference_space, floor_semantics, ...}}` ※rpc は常に flat 駆動のため `xr.active=true` は rpc からは観測できない |
+| `get_status` | `{}` | `{instance_id, project_root, scene, frame, time, seed, renderdoc, diagnostics:{renderdoc:{...}}, debug_utils:{...}, vulkan_validation:{layer, available, enabled, synchronization, reason}, stores, input:{...}, reload:{...}, participants:{game_logic:{...}}, sprite:{...}, color:{...}, startup:{...}, xr:{active, reference_space, floor_semantics, ...}, animation:{available, sinks:[{owner, node, source, cursors:[{clip, time_seconds, normalized_phase}], frame_revision, pose_hash, state?, transition?, root_delta?}]}}`(`animation` は AG-3a。animation module の無い build では `{available: false}` だけ)※rpc は常に flat 駆動のため `xr.active=true` は rpc からは観測できない |
 | `set_seed` | `{seed}` | 決定的乱数のシード設定 |
 | `set_time` | `{t}` | 仮想時刻の直接設定(dt=0) |
 | `step_frame` | `{}` | 1 フレーム進める |
@@ -273,6 +273,8 @@ selection の硬いエラーは `error.data.code` でも判別できます。宣
 
 既存メソッドの変化: `get_status` に `scene_source`(シーンは**ホットリロード対象外**・保存は `save_scene`)が追加、`step_frame` の応答に `edit_results[]` が追加、`load_scene` / `reload_game_logic` / `start_input_replay` は進行中のプレビューを強制中止します。
 2026-09 の追加(詳細は [第13章](13_editor.md) §13.13): `get_status` に `participants.game_logic`
+
+2026-09 の追加(AG-3a、`9862ebdd`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering / animation domain の node は `outputs: {}`、publish 前は `published: false`)。読み取り専用で `edit_*` の CAS には乗らない。
 (`error_code` / `error_fields`。**起動時の初期化失敗も未試行の状態で出ます**)、`load_scene` と
 `import_scene_snapshot` の result に `committed` / `effect_errors`、`get_components` の各
 component に `resolution_error`。
