@@ -23527,6 +23527,8 @@ journal / undo(R 群)/ component 欄(P-1b)/ feature parameter / definition 内�
 
 実装時の裁定(2026-09-18、`agent/p2a1a`): 対照の実測は **trace が赤、画素は緑**(`hdr_off` で `HighLuminanceExtraction` が scene bucket に落ち、`Bloom_Threshold_RT` が SRGB → UNORM。`renderer_execution_traces.json` が捕まえ、`wp73_rgba8_hashes.json` と PNG は通った)。以後の P-2a の受け入れは「画素不変」に加えて **`canonical_frame_plan_trace.txt` と `renderer_execution_traces.json` の不変**を書く。`canonicalBucket` には **3 つ目の名前判定 `lighting_pass`**(:274-276)が残る(`example_renderingpass_data.json:67-70` の `lighting_pass` が swapchain を書くので死んでいない。射程外、記録)。受け入れ文の「bucket 0」は誤りで、anchor 無しの pass は **scene bucket**(`__anchor_sprite` より前)に並ぶ。
 
+完了記録(2026-09-18、`70982870`): 3 file(`example` の 13 pass に `canonical_anchor: post_ldr`、`featurecompose.cpp` の Bloom 名判定 2 箇所の撤去、`hdr_on` / `hdr_off` fixture の anchor と `format_class` 明示)。W1(触った面 + RT family、166 件)は 165 緑、赤は **RT6 named TLAS の `manifest.json: Access is denied`**(R1 の既知の穴。1a は transaction 経路を触らない)が飽和負荷下で 2 回連続 → **W1 を飛ばして squash**した(`land.sh` の `SKIP_W1=1`。この運用は R1-2 が着地するまで)。全数は着地後の統合 build で確認(下の進捗に反映)。WP364 の `parent_manifest.json` は config が 13285 → 13831 bytes になったので 1b が着地するまで赤(1b が post-1b の blob に更新する)。
+
 #### P-2a-1b: Bloom を `engine://features/bloom.json` に(中〜大。P-2a-1a の後)
 
 1. 13 pass + 9 RT を feature の `passes[].insert{after: post_ldr}` と `render_targets`(名前・`extent_scale`・`format_class: scene` をそのまま)に移す。**parameter はまだ宣言しない**(define 化は 1c)。shader は `engine://` のまま
