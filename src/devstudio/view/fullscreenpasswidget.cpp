@@ -2118,7 +2118,7 @@ struct FullscreenPassWidget::Impl {
             }
             // P-2a-4b: the authored passes of a `pelican.graph` root live in
             // its `rendering` section, not at the root.
-            const Json &root = renderingSectionOf(document);
+            const Json &root = Pelican::renderingSectionOf(document);
             const auto graphs = root.find("rendering_passes");
             if (graphs == root.end() || !graphs->is_array()) {
                 throw std::runtime_error(
