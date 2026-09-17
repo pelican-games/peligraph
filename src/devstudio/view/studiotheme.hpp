@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QColor>
+#include <QFont>
 #include <QPalette>
 #include <QString>
 #include <QStringList>
@@ -26,6 +27,18 @@ struct StudioCanvasColors {
     QColor pill_bg;
 };
 
+// What every Studio panel sets its text in. One table, so two panels cannot
+// drift into two sizes, and so "make the text smaller" is a data change.
+// `size` is the panel's own text and `size_small` its secondary rows; both
+// are pixels, which is what the platform default (9 pt at 96 dpi) already is.
+struct StudioFonts {
+    QString family;
+    // The face that carries Japanese when `family` does not.
+    QString fallback;
+    double size = 12.0;
+    double size_small = 11.0;
+};
+
 // One theme. `style` and `palette` are the window chrome; a theme that
 // declares no palette keeps Qt's own, which is what the light theme wants.
 struct StudioTheme {
@@ -35,6 +48,7 @@ struct StudioTheme {
     bool palette_declared = false;
     QPalette palette;
     StudioCanvasColors canvas;
+    StudioFonts font;
     // The heading band of a common-graph node, by the operation's domain.
     std::map<QString, QColor> domain_tint;
     // The heading band of a Frame Plan node, by where the resource came from.
@@ -49,6 +63,13 @@ struct StudioTheme {
 // The theme every drawing site reads. Never null: a malformed table leaves
 // the built-in dark values, which is exactly the control.
 const StudioTheme &currentStudioTheme();
+
+// The two fonts a panel is allowed to use, and the colour its secondary text
+// is drawn in. Panels read these instead of naming a face or a size, so the
+// table above is the only place a size exists.
+QFont studioPanelFont();
+QFont studioSmallFont();
+QColor studioDimTextColor();
 QString currentStudioThemeName();
 QStringList studioThemeNames();
 QString defaultStudioThemeName();

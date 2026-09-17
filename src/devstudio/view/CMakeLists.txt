@@ -9,6 +9,7 @@ add_library(pelican_studio_view STATIC
     nodegraphics.hpp
     nodelayout.cpp
     nodelayout.hpp
+    panelhelp.hpp
     studiotheme.cpp
     studiotheme.hpp
     frameplanreadcapability.cpp

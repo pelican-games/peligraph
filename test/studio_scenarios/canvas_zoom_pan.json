@@ -30,6 +30,13 @@
       "value": 0
     },
     {
+      "label": "the frame plan has populated the canvas -- the first draw of a scope fits the view, so a wheel before it is undone by that fit",
+      "cmd": "wait",
+      "name": "pelican.framePlanStatus",
+      "contains": "passes",
+      "timeout_ms": 120000
+    },
+    {
       "label": "a wheel forward over the canvas",
       "cmd": "wheel",
       "name": "pelican.framePlanLogicalView",

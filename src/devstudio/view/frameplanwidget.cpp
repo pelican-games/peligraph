@@ -1,6 +1,7 @@
 #include "frameplanwidget.hpp"
 
 #include "frameplangraphics.hpp"
+#include "panelhelp.hpp"
 #include "../model/frameplanmodel.hpp"
 #include "../viewport/embeddedviewport.hpp"
 #include "projectformat.hpp"
@@ -365,6 +366,7 @@ struct FramePlanWidget::Impl {
             return QDesktopServices::openUrl(QUrl::fromLocalFile(
                 QString::fromStdWString(path.wstring())));
         };
+        owner.setFont(studioPanelFont());
         auto *layout = new QVBoxLayout(&owner);
         layout->setContentsMargins(6, 6, 6, 6);
         layout->setSpacing(6);
@@ -386,7 +388,8 @@ struct FramePlanWidget::Impl {
             "the trees would stall the editor."));
         filter = new QLineEdit(&owner);
         filter->setObjectName(QStringLiteral("pelican.framePlanFilter"));
-        filter->setPlaceholderText(owner.tr(
+        filter->setPlaceholderText(owner.tr("Filter"));
+        filter->setToolTip(owner.tr(
             "Filter passes, resources, decisions, backends, or barriers"));
         filter->setClearButtonEnabled(true);
         toolbar->addWidget(refresh);
@@ -412,22 +415,23 @@ struct FramePlanWidget::Impl {
         zoom_status = new QLabel(owner.tr("Zoom: 100%"), &owner);
         zoom_status->setObjectName(
             QStringLiteral("pelican.framePlanZoomStatus"));
+        zoom_status->setFont(studioSmallFont());
         toolbar->addWidget(zoom_status);
-        toolbar->addWidget(new QLabel(owner.tr("Shift-drag: connect resources"), &owner));
-        auto *order_nodes = new QPushButton(owner.tr("Order nodes..."), &owner);
+        // N-7 rule 1: the gesture is described where the gesture is made.
+        auto *order_nodes = new QPushButton(owner.tr("Order..."), &owner);
         order_nodes->setObjectName(QStringLiteral("pelican.framePlanOrderNodes"));
         toolbar->addWidget(order_nodes);
         QObject::connect(order_nodes, &QPushButton::clicked, &owner, [this] {
             if (!model || !node_order_action) return;
             if (!model->runtime_generation || *model->runtime_generation == 0) {
-                status->setText(owner.tr("Node ordering requires a published runtime generation. Refresh the Frame Plan first."));
+                showStatus(owner.tr("Node ordering needs a published runtime generation"), owner.tr("Node ordering requires a published runtime generation. Refresh the Frame Plan first."));
                 return;
             }
             QStringList names;
             for (const auto &node : model->nodes) names.push_back(QString::fromStdString(node.name));
             node_order_action(QString::fromStdString(model->graph), names, *model->runtime_generation);
         });
-        auto *edit_task = new QPushButton(owner.tr("Edit task..."), &owner);
+        auto *edit_task = new QPushButton(owner.tr("Edit task"), &owner);
         edit_task->setObjectName(QStringLiteral("pelican.framePlanEditTask"));
         toolbar->addWidget(edit_task);
         QObject::connect(edit_task, &QPushButton::clicked, &owner, [this] {
@@ -435,12 +439,12 @@ struct FramePlanWidget::Impl {
             if (!selected || !model || !task_edit_action) return;
             const auto node = std::ranges::find(model->nodes, selected->name, &FramePlanNode::name);
             if (node == model->nodes.end() || node->kind != "compute" || node->authored_name.empty()) {
-                status->setText(owner.tr("Select a task with a source declaration to edit."));
+                showStatus(owner.tr("Select a task with a source declaration to edit."));
                 return;
             }
             task_edit_action(QString::fromStdString(node->authored_name));
         });
-        auto *edit_pass = new QPushButton(owner.tr("Edit pass..."), &owner);
+        auto *edit_pass = new QPushButton(owner.tr("Edit pass"), &owner);
         edit_pass->setObjectName(QStringLiteral("pelican.framePlanEditPresetPass"));
         toolbar->addWidget(edit_pass);
         QObject::connect(edit_pass, &QPushButton::clicked, &owner, [this] {
@@ -448,12 +452,18 @@ struct FramePlanWidget::Impl {
             if (selected && preset_pass_edit_action)
                 preset_pass_edit_action(QString::fromStdString(selected->graph), QString::fromStdString(selected->name));
         });
+        toolbar->addWidget(makePanelHelpButton(
+            &owner, "pelican.framePlan.help", ManualFramePlanAnchor,
+            owner.tr("Shift-drag: connect resources. The snapshot updates "
+                     "only when the engine connects or Refresh is pressed; "
+                     "it is not polled per frame.")));
         layout->addLayout(toolbar);
 
         status = new QLabel(&owner);
         status->setObjectName(QStringLiteral("pelican.framePlanStatus"));
         status->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        status->setWordWrap(true);
+        applyPanelNoticeStyle(status);
+        status->hide();
         layout->addWidget(status);
 
         tabs = new QTabWidget(&owner);
@@ -463,10 +473,10 @@ struct FramePlanWidget::Impl {
         logical_splitter->setObjectName(
             QStringLiteral("pelican.framePlanLogicalSplitter"));
         logical_scene = new FramePlanGraphicsScene(&owner);
-        logical_scene->connectionFeedback = [this](const QString &message) { status->setText(message); };
+        logical_scene->connectionFeedback = [this](const QString &message) { showStatus(oneLine(message), message); };
         logical_scene->connectionRequested = [this](const FramePlanNodeKey &from, const FramePlanNodeKey &to) {
             if (!model || (!task_connection_action && !pass_connection_action)) {
-                status->setText(owner.tr("Resource connection editing is unavailable."));
+                showStatus(owner.tr("Resource connection editing is unavailable."));
                 return;
             }
             const auto producer = std::find_if(model->nodes.begin(), model->nodes.end(), [&](const auto &node) { return node.name == from.name; });
@@ -474,7 +484,7 @@ struct FramePlanWidget::Impl {
             if (from.graph != model->graph || to.graph != model->graph ||
                 producer == model->nodes.end() || consumer == model->nodes.end() ||
                 producer->writes.empty()) {
-                status->setText(owner.tr("Drag from a node with resource outputs to a task or editable preset pass."));
+                showStatus(owner.tr("Drag from a node with resource outputs"), owner.tr("Drag from a node with resource outputs to a task or editable preset pass."));
                 return;
             }
             QStringList outputs;
@@ -484,10 +494,11 @@ struct FramePlanWidget::Impl {
             else if (consumer->kind == "render" && pass_connection_action)
                 pass_connection_action(QString::fromStdString(model->graph), QString::fromStdString(consumer->name), outputs);
             else
-                status->setText(owner.tr("Select an authored task or editable preset pass as the destination."));
+                showStatus(owner.tr("Select an authored task or editable preset pass"), owner.tr("Select an authored task or editable preset pass as the destination."));
         };
         logical = new FramePlanGraphicsView(logical_scene, logical_splitter);
         logical->setObjectName(QStringLiteral("pelican.framePlanLogicalView"));
+        logical->setToolTip(owner.tr("Shift-drag: connect resources"));
         logical->setRenderHint(QPainter::Antialiasing, true);
         logical->setDragMode(QGraphicsView::RubberBandDrag);
         logical->setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
@@ -743,9 +754,10 @@ struct FramePlanWidget::Impl {
         });
         refresh->setEnabled(false);
         status->setStyleSheet(QStringLiteral("color: #b36b00;"));
-        status->setText(owner.tr("Frame plan unavailable: %1 Start or restart "
-                                 "pelican_player, then press Refresh.")
-                            .arg(reason));
+        showStatus(owner.tr("Frame plan unavailable: %1").arg(oneLine(reason)),
+                   owner.tr("Frame plan unavailable: %1 Start or restart "
+                            "pelican_player, then press Refresh.")
+                       .arg(reason));
     }
 
     void showFailure(const QString &message) {
@@ -753,11 +765,12 @@ struct FramePlanWidget::Impl {
         refresh->setEnabled(viewport.rpcReady());
         tabs->setEnabled(model.has_value());
         status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
-        status->setText(model
-                            ? owner.tr("Frame plan refresh failed: %1 The previous "
-                                       "snapshot is still displayed.")
-                                  .arg(message)
-                            : owner.tr("Frame plan refresh failed: %1").arg(message));
+        showStatus(owner.tr("Frame plan refresh failed: %1").arg(oneLine(message)),
+                   model
+                       ? owner.tr("Frame plan refresh failed: %1 The previous "
+                                  "snapshot is still displayed.")
+                             .arg(message)
+                       : owner.tr("Frame plan refresh failed: %1").arg(message));
     }
 
     void showEngineFailure(const QString &fatal_error_line) {
@@ -768,7 +781,13 @@ struct FramePlanWidget::Impl {
         clearTrees();
         refresh->setEnabled(false);
         status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
-        status->setText(fatal_error_line);
+        showStatus(oneLine(fatal_error_line), fatal_error_line);
+    }
+
+    // N-7 rule 2: the panel has one status row. It is one line, it carries
+    // the long form as its tooltip, and an empty line takes the row with it.
+    void showStatus(const QString &line, const QString &detail = {}) {
+        setPanelNotice(status, line, detail.isEmpty() ? line : detail);
     }
 
     void requestRefresh() {
@@ -789,7 +808,7 @@ struct FramePlanWidget::Impl {
         }
         refresh->setEnabled(false);
         status->setStyleSheet({});
-        status->setText(owner.tr("Requesting the current frame plan..."));
+        showStatus(owner.tr("Requesting the current frame plan..."));
     }
 
     void requestGpuTiming() {
@@ -949,7 +968,7 @@ struct FramePlanWidget::Impl {
                                                  *model->runtime_generation))
                                        : QString{};
         const QString physical_summary = model->physical_plan.available()
-                                             ? owner.tr("physical available (profile %1, endpoint %2; %3 alias groups, %4 alias candidates)")
+                                             ? owner.tr("physical: %1/%2, %3 alias groups, %4 candidates")
                                                    .arg(text(model->physical_plan.planning_profile),
                                                         text(model->physical_plan.planning_endpoint))
                                                    .arg(static_cast<qulonglong>(model->physical_plan.alias_groups.size()))
@@ -969,13 +988,24 @@ struct FramePlanWidget::Impl {
                 : QStringLiteral("color: #b36b00;"));
         const QString target_summary =
             selected_target
-                ? owner.tr("target %1 at depth %2")
+                ? owner.tr("%1 @%2")
                       .arg(text(selected_target->name))
                       .arg(depth->value())
-                : owner.tr("no target selected");
+                : owner.tr("no target");
         const QString barrier_summary =
             logical_scene->property("pelicanBarrierCoverage").toString();
-        status->setText(
+        // N-7 rule 2: the line names what was loaded and what is on screen.
+        // Generation, physical and execution planning, the response size and
+        // the refresh time are facts a reader asks for, not facts that have
+        // to be read every time -- so they are the row's tooltip.
+        showStatus(
+            owner.tr("%1 \u00b7 %2 \u00b7 %3 passes (%4 compute) \u00b7 "
+                     "%5 resources \u00b7 %6")
+                .arg(text(model->graph), target_summary)
+                .arg(static_cast<qulonglong>(model->nodes.size()))
+                .arg(static_cast<qulonglong>(compute_count))
+                .arg(static_cast<qulonglong>(model->resources.size()))
+                .arg(barrier_summary),
             owner.tr("%1 | %2 | %3%4 passes/tasks (%5 compute), %6, "
                      "%7 resources | %8 | %9 | %10 response | "
                      "refreshed %11. Snapshot updates "
@@ -1015,12 +1045,12 @@ struct FramePlanWidget::Impl {
                     "the desktop could not open shader source: " +
                     path.string());
             }
-            status->setText(
-                owner.tr("Opened shader source %1")
-                    .arg(QString::fromStdString(logical_ref)));
+            showStatus(owner.tr("Opened shader source %1")
+                           .arg(QString::fromStdString(logical_ref)));
             status->setStyleSheet(QStringLiteral("color: #388e3c;"));
         } catch (const std::exception &error) {
-            status->setText(QString::fromUtf8(error.what()));
+            const QString reason = QString::fromUtf8(error.what());
+            showStatus(oneLine(reason), reason);
             status->setStyleSheet(QStringLiteral("color: #b00020;"));
         }
     }
@@ -1729,7 +1759,7 @@ void FramePlanWidget::openTasksForHitGroup(const QString &group) {
         authored_names.push_back(text(node.authored_name));
     }
     if (labels.empty()) {
-        impl_->status->setText(tr("No RT task using hit group %1 is present in the loaded Frame Plan. Refresh to update it.").arg(group));
+        impl_->showStatus(tr("No RT task uses hit group %1").arg(group), tr("No RT task using hit group %1 is present in the loaded Frame Plan. Refresh to update it.").arg(group));
         return;
     }
     int index = 0;

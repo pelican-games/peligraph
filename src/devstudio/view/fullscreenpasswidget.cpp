@@ -4,6 +4,7 @@
 #include "../model/frameplanmodel.hpp"
 #include "../model/frameplanresourcekind.hpp"
 
+#include "panelhelp.hpp"
 #include "passfieldownership.hpp"
 #include "renderconfigsection.hpp"
 #include "passshapepolicy.hpp"
@@ -239,8 +240,14 @@ struct FullscreenPassWidget::Impl {
         layout->setContentsMargins(6, 6, 6, 6);
         layout->setSpacing(6);
 
+        owner.setFont(studioPanelFont());
+
+        // N-7 rule 2: the two facts that used to be two paragraphs are one
+        // row -- what the frame plan is, and what the authoring context is.
+        // Everything that explained why is on the control it explains, or
+        // behind the `?` at the end of this row.
         auto *toolbar = new QHBoxLayout;
-        refresh = new QPushButton(owner.tr("Refresh frame plan"), &owner);
+        refresh = new QPushButton(owner.tr("Refresh"), &owner);
         refresh->setObjectName(
             QStringLiteral("pelican.fullscreenPass.refresh"));
         refresh->setToolTip(owner.tr(
@@ -248,35 +255,30 @@ struct FullscreenPassWidget::Impl {
         plan_status = new QLabel(&owner);
         plan_status->setObjectName(
             QStringLiteral("pelican.fullscreenPass.planStatus"));
-        plan_status->setWordWrap(true);
+        applyPanelNoticeStyle(plan_status);
+        authoring_status = new QLabel(&owner);
+        authoring_status->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.authoringStatus"));
+        applyPanelNoticeStyle(authoring_status);
         toolbar->addWidget(refresh);
-        toolbar->addWidget(plan_status, 1);
-        layout->addLayout(toolbar);
-
-        auto *scope = new QLabel(
+        toolbar->addWidget(plan_status);
+        toolbar->addWidget(authoring_status, 1);
+        toolbar->addWidget(makePanelHelpButton(
+            &owner, "pelican.fullscreenPass.help", ManualPassEditorAnchor,
             owner.tr("Save sends this draft to the engine. The engine owns "
                      "the project documents, validates the complete "
                      "candidate set, commits it, and publishes the new "
-                     "frame plan."),
-            &owner);
-        scope->setObjectName(
-            QStringLiteral("pelican.fullscreenPass.scopeNotice"));
-        scope->setWordWrap(true);
-        scope->setStyleSheet(QStringLiteral("color: #b36b00;"));
-        layout->addWidget(scope);
-
-        authoring_status = new QLabel(
-            owner.tr("Engine authoring context is unavailable."), &owner);
-        authoring_status->setObjectName(
-            QStringLiteral("pelican.fullscreenPass.authoringStatus"));
-        authoring_status->setWordWrap(true);
-        layout->addWidget(authoring_status);
+                     "frame plan.")));
+        layout->addLayout(toolbar);
+        setPanelNotice(
+            authoring_status, owner.tr("authoring context unavailable"),
+            owner.tr("Engine authoring context is unavailable."));
 
         form = new QFormLayout;
         graph = new QLabel(owner.tr("(no frame plan)"), &owner);
         graph->setObjectName(
             QStringLiteral("pelican.fullscreenPass.graph"));
-        form->addRow(owner.tr("Target graph"), graph);
+        form->addRow(owner.tr("Graph"), graph);
 
         type = new QLabel(
             text(Pelican::renderPassTypeName(
@@ -284,50 +286,55 @@ struct FullscreenPassWidget::Impl {
             &owner);
         type->setObjectName(
             QStringLiteral("pelican.fullscreenPass.type"));
-        form->addRow(owner.tr("Type (fixed)"), type);
+        type->setToolTip(owner.tr("Fixed by the pass kind being edited."));
+        form->addRow(owner.tr("Type"), type);
 
         position = new QSpinBox(&owner);
         position->setObjectName(
             QStringLiteral("pelican.fullscreenPass.position"));
         position->setRange(0, 0);
-        form->addRow(owner.tr("Expected passes[] position"), position);
+        position->setToolTip(
+            owner.tr("Expected passes[] position in the target graph."));
+        form->addRow(owner.tr("Position"), position);
 
         location = new QLabel(&owner);
         location->setObjectName(
             QStringLiteral("pelican.fullscreenPass.location"));
-        location->setWordWrap(true);
-        form->addRow(owner.tr("Paste destination"), location);
+        applyPanelNoticeStyle(location);
+        form->addRow(owner.tr("Destination"), location);
 
         name = new QLineEdit(&owner);
         name->setObjectName(
             QStringLiteral("pelican.fullscreenPass.name"));
-        form->addRow(owner.tr("Pass name"), name);
+        form->addRow(owner.tr("Name"), name);
 
         vertex_shader = new QLineEdit(&owner);
         vertex_shader->setObjectName(
             QStringLiteral("pelican.fullscreenPass.shader.vertex"));
         vertex_shader->setPlaceholderText(
             owner.tr("for example engine://fullscreen"));
-        form->addRow(owner.tr("Vertex shader stem"), vertex_shader);
+        form->addRow(owner.tr("Vertex"), vertex_shader);
 
         fragment_shader = new QLineEdit(&owner);
         fragment_shader->setObjectName(
             QStringLiteral("pelican.fullscreenPass.shader.fragment"));
         fragment_shader->setPlaceholderText(
             owner.tr("enter a stem; assets are not enumerated here"));
-        form->addRow(owner.tr("Fragment shader stem"), fragment_shader);
+        form->addRow(owner.tr("Fragment"), fragment_shader);
         skinned_vertex_shader = new QLineEdit(&owner);
         skinned_vertex_shader->setObjectName("pelican.fullscreenPass.shader.skinnedVertex");
         skinned_vertex_shader->setPlaceholderText(owner.tr("Blank uses the engine default"));
-        form->addRow(owner.tr("Skinned vertex shader stem"), skinned_vertex_shader);
+        form->addRow(owner.tr("Skinned vertex stem"), skinned_vertex_shader);
         form->setRowVisible(skinned_vertex_shader, false);
-        ray_query = new QCheckBox(owner.tr("Use scene ray query"), &owner);
+        ray_query = new QCheckBox(owner.tr("Scene ray query"), &owner);
         ray_query->setObjectName("pelican.fullscreenPass.rayQuery");
         form->addRow(ray_query);
         ray_query_scene = new QLineEdit("scene", &owner);
         ray_query_scene->setObjectName("pelican.fullscreenPass.rayQueryScene");
         ray_query_scene->setEnabled(false);
-        form->addRow(owner.tr("Scene acceleration structure"), ray_query_scene);
+        ray_query_scene->setToolTip(
+            owner.tr("The scene acceleration structure the ray query reads."));
+        form->addRow(owner.tr("Ray scene"), ray_query_scene);
 
         raster_state = new QPlainTextEdit(&owner);
         raster_state->setObjectName(
@@ -337,13 +344,12 @@ struct FullscreenPassWidget::Impl {
             "{\"color_attachments\":[{\"blend\":\"additive\"}]}"));
         raster_state->setLineWrapMode(QPlainTextEdit::NoWrap);
         raster_state->setMaximumHeight(92);
-        form->addRow(owner.tr("Raster state (JSON, optional)"),
-                     raster_state);
+        form->addRow(owner.tr("Raster state"), raster_state);
         draw = new QPlainTextEdit(&owner);
         draw->setObjectName("pelican.fullscreenPass.draw");
         draw->setPlaceholderText(owner.tr("{\"vertex_count\":3,\"instance_count\":1}"));
         draw->setMaximumHeight(92);
-        form->addRow(owner.tr("Draw settings (JSON)"), draw);
+        form->addRow(owner.tr("Draw"), draw);
         draw->hide();
         form->setRowVisible(draw, false);
         material_contract = new QComboBox(&owner);
@@ -351,30 +357,32 @@ struct FullscreenPassWidget::Impl {
         material_contract->addItem(owner.tr("Default (no explicit contract)"), QString{});
         for (const auto *contract : {"legacy_gbuffer_v1", "deferred_geometry_v1", "forward_opaque_v1", "forward_transparent_v1"})
             material_contract->addItem(QString::fromLatin1(contract), QString::fromLatin1(contract));
-        form->addRow(owner.tr("Material contract"), material_contract);
+        form->addRow(owner.tr("Contract"), material_contract);
         material_settings = new QPlainTextEdit(&owner);
         material_settings->setObjectName("pelican.fullscreenPass.materialSettings");
         material_settings->setMaximumHeight(140);
         material_settings->setPlaceholderText(owner.tr("Material selection, variant, outputs and resources (JSON object). Remove a key to use its default."));
-        form->addRow(owner.tr("Material settings (JSON)"), material_settings);
+        form->addRow(owner.tr("Material"), material_settings);
         material_routing = new QPlainTextEdit(&owner);
         material_routing->setObjectName("pelican.fullscreenPass.materialRouting");
         material_routing->setMaximumHeight(110);
         material_routing->setToolTip(owner.tr("Preset-wide routing shared by all graphs. Select distinct deferred_geometry, forward_opaque and forward_transparent passes using policy hybrid_auto_v1. Blank removes the routing table."));
-        form->addRow(owner.tr("Preset material routing (JSON)"), material_routing);
+        form->addRow(owner.tr("Routing"), material_routing);
         for (auto *field : std::array<QWidget *, 3>{material_contract, material_settings, material_routing})
             form->setRowVisible(field, false);
         layout->addLayout(form);
 
-        targets = new QGroupBox(owner.tr("Frame-plan targets"), &owner);
+        targets = new QGroupBox(owner.tr("Targets"), &owner);
         targets->setObjectName(
             QStringLiteral("pelican.fullscreenPass.targets"));
+        targets->setToolTip(owner.tr(
+            "The frame-plan resources this pass reads and writes."));
         auto *target_layout = new QGridLayout(targets);
-        target_layout->addWidget(new QLabel(owner.tr("Input sequence"), targets),
+        target_layout->addWidget(new QLabel(owner.tr("Inputs"), targets),
                                  0, 0);
-        target_layout->addWidget(new QLabel(owner.tr("Color outputs"), targets),
+        target_layout->addWidget(new QLabel(owner.tr("Color"), targets),
                                  0, 1);
-        target_layout->addWidget(new QLabel(owner.tr("Depth output"), targets),
+        target_layout->addWidget(new QLabel(owner.tr("Depth"), targets),
                                  0, 2);
 
         input_candidate = new QComboBox(targets);
@@ -382,20 +390,23 @@ struct FullscreenPassWidget::Impl {
             QStringLiteral("pelican.fullscreenPass.inputTarget"));
         input_candidate->setInsertPolicy(QComboBox::NoInsert);
         input_candidate->setPlaceholderText(owner.tr("Choose a resource"));
-        add_input = new QPushButton(owner.tr("Add input"), targets);
+        add_input = new QPushButton(owner.tr("Add"), targets);
         add_input->setObjectName(
             QStringLiteral("pelican.fullscreenPass.addInput"));
         add_history_input = new QPushButton(
-            owner.tr("Add history input"), targets);
+            owner.tr("Add @history"), targets);
         add_history_input->setObjectName(
             QStringLiteral("pelican.fullscreenPass.addHistoryInput"));
         add_history_input->setEnabled(false);
+        add_history_input->setToolTip(owner.tr(
+            "Reads the selected resource as it was left by the previous "
+            "frame."));
         inputs = new QListWidget(targets);
         inputs->setObjectName(
             QStringLiteral("pelican.fullscreenPass.inputs"));
         inputs->setSelectionMode(QAbstractItemView::SingleSelection);
         inputs->setMaximumHeight(96);
-        remove_input = new QPushButton(owner.tr("Remove selected"), targets);
+        remove_input = new QPushButton(owner.tr("Remove"), targets);
         remove_input->setObjectName(
             QStringLiteral("pelican.fullscreenPass.removeInput"));
 
@@ -404,7 +415,7 @@ struct FullscreenPassWidget::Impl {
             QStringLiteral("pelican.fullscreenPass.colorTarget"));
         color_candidate->setInsertPolicy(QComboBox::NoInsert);
         color_candidate->setPlaceholderText(owner.tr("Choose a resource"));
-        add_color = new QPushButton(owner.tr("Add color"), targets);
+        add_color = new QPushButton(owner.tr("Add"), targets);
         add_color->setObjectName(
             QStringLiteral("pelican.fullscreenPass.addColor"));
         colors = new QListWidget(targets);
@@ -412,7 +423,7 @@ struct FullscreenPassWidget::Impl {
             QStringLiteral("pelican.fullscreenPass.colors"));
         colors->setSelectionMode(QAbstractItemView::SingleSelection);
         colors->setMaximumHeight(96);
-        remove_color = new QPushButton(owner.tr("Remove selected"), targets);
+        remove_color = new QPushButton(owner.tr("Remove"), targets);
         remove_color->setObjectName(
             QStringLiteral("pelican.fullscreenPass.removeColor"));
 
@@ -421,7 +432,8 @@ struct FullscreenPassWidget::Impl {
             QStringLiteral("pelican.fullscreenPass.depthTarget"));
         depth->setInsertPolicy(QComboBox::NoInsert);
         depth->setPlaceholderText(owner.tr("No depth output"));
-        clear_depth = new QPushButton(owner.tr("Clear depth"), targets);
+        depth->setToolTip(owner.tr("No selection emits null."));
+        clear_depth = new QPushButton(owner.tr("Clear"), targets);
         clear_depth->setObjectName(
             QStringLiteral("pelican.fullscreenPass.clearDepth"));
 
@@ -433,16 +445,13 @@ struct FullscreenPassWidget::Impl {
         target_layout->addWidget(clear_depth, 2, 2);
         target_layout->addWidget(inputs, 3, 0);
         target_layout->addWidget(colors, 3, 1);
-        target_layout->addWidget(new QLabel(
-                                     owner.tr("No selection emits null."),
-                                     targets),
-                                 3, 2);
         target_layout->addWidget(remove_input, 4, 0);
         target_layout->addWidget(remove_color, 4, 1);
         target_layout->addWidget(add_history_input, 5, 0);
         connection_hint = new QLabel(targets);
         connection_hint->setObjectName("pelican.fullscreenPass.connectionHint");
-        connection_hint->setWordWrap(true);
+        applyPanelNoticeStyle(connection_hint);
+        connection_hint->hide();
         target_layout->addWidget(connection_hint, 8, 0, 1, 3);
         color_attachment_references = new QPlainTextEdit(targets);
         color_attachment_references->setObjectName(QStringLiteral(
@@ -453,21 +462,27 @@ struct FullscreenPassWidget::Impl {
             "match the selected color outputs in order."));
         color_attachment_references->setLineWrapMode(QPlainTextEdit::NoWrap);
         color_attachment_references->setMaximumHeight(92);
-        target_layout->addWidget(
-            new QLabel(owner.tr("Color attachment references (JSON, optional)"),
-                       targets),
-            6, 0, 1, 3);
+        auto *attachment_label =
+            new QLabel(owner.tr("output.color (JSON)"), targets);
+        attachment_label->setToolTip(owner.tr(
+            "Optional attachment objects for the selected color outputs, in "
+            "order."));
+        target_layout->addWidget(attachment_label, 6, 0, 1, 3);
         target_layout->addWidget(color_attachment_references, 7, 0, 1, 3);
         layout->addWidget(targets);
 
-        validation = new QGroupBox(owner.tr("Validation axes"), &owner);
+        // N-7 rule 3: eight sentences were eight lines. They are now eight
+        // marks on one line; the sentence each mark stands for is the tooltip
+        // of that mark, which is where a reader who wants it looks.
+        validation = new QGroupBox(owner.tr("Checks"), &owner);
         validation->setObjectName(
             QStringLiteral("pelican.fullscreenPass.validation"));
-        auto *validation_layout = new QVBoxLayout(validation);
+        auto *validation_layout = new QHBoxLayout(validation);
+        validation_layout->setSpacing(10);
         const auto make_axis = [&](const char *object_name) {
             auto *label = new QLabel(validation);
             label->setObjectName(QString::fromLatin1(object_name));
-            label->setWordWrap(true);
+            label->setFont(studioSmallFont());
             label->setTextInteractionFlags(Qt::TextSelectableByMouse);
             validation_layout->addWidget(label);
             return label;
@@ -488,12 +503,13 @@ struct FullscreenPassWidget::Impl {
             "pelican.fullscreenPass.axis.generationOrder");
         shader_resolution = make_axis(
             "pelican.fullscreenPass.axis.shaderResolution");
+        validation_layout->addStretch(1);
         layout->addWidget(validation);
 
         validation_summary = new QLabel(&owner);
         validation_summary->setObjectName(
             QStringLiteral("pelican.fullscreenPass.validationSummary"));
-        validation_summary->setWordWrap(true);
+        applyPanelNoticeStyle(validation_summary);
         validation_summary->setTextInteractionFlags(
             Qt::TextSelectableByMouse);
         layout->addWidget(validation_summary);
@@ -501,8 +517,9 @@ struct FullscreenPassWidget::Impl {
         omitted = new QLabel(&owner);
         omitted->setObjectName(
             QStringLiteral("pelican.fullscreenPass.omittedKeys"));
-        omitted->setWordWrap(true);
+        applyPanelNoticeStyle(omitted);
         omitted->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        omitted->hide();
         layout->addWidget(omitted);
 
         json = new QPlainTextEdit(&owner);
@@ -519,7 +536,7 @@ struct FullscreenPassWidget::Impl {
         layout->addWidget(copy_json);
 
         auto *authoring_controls = new QHBoxLayout;
-        save = new QPushButton(owner.tr("Save authored pass"), &owner);
+        save = new QPushButton(owner.tr("Save"), &owner);
         save->setObjectName(
             QStringLiteral("pelican.fullscreenPass.save"));
         save->setToolTip(authoredPassSaveToolTip());
@@ -528,8 +545,7 @@ struct FullscreenPassWidget::Impl {
             QStringLiteral("pelican.fullscreenPass.removeFragment"));
         remove_fragment->setPlaceholderText(
             owner.tr("Choose a managed fragment"));
-        remove_authored = new QPushButton(
-            owner.tr("Remove authored pass"), &owner);
+        remove_authored = new QPushButton(owner.tr("Remove"), &owner);
         remove_authored->setObjectName(
             QStringLiteral("pelican.fullscreenPass.remove"));
         remove_authored->setToolTip(owner.tr(
@@ -544,7 +560,7 @@ struct FullscreenPassWidget::Impl {
             editing_preset_pass.reset(); load_edit_requested = false;
             input_filter.reset(); populateRoleCandidates();
             name->setReadOnly(false); position->setEnabled(true); raster_state->setEnabled(true);
-            save->setText(owner.tr("Save authored pass"));
+            save->setText(owner.tr("Save"));
             clearDraft(); updateDraft();
         });
         authoring_controls->addWidget(remove_fragment, 1);
@@ -621,7 +637,8 @@ struct FullscreenPassWidget::Impl {
         refresh->setEnabled(false);
         save->setEnabled(false);
         remove_authored->setEnabled(false);
-        plan_status->setText(owner.tr("Frame plan unavailable."));
+        setPanelNotice(plan_status, owner.tr("no frame plan"),
+                       owner.tr("Frame plan unavailable."));
         updateDraft();
 
         frame_plan.result(
@@ -875,18 +892,47 @@ struct FullscreenPassWidget::Impl {
         return draft;
     }
 
+    // The short word an axis wears on the panel. The full name and the
+    // sentence stay in the tooltip, and in the summary when the axis is the
+    // reason a draft cannot be copied.
+    static QString axisWord(const QString &axis) {
+        static const std::map<QString, QString> words{
+            {QStringLiteral("Field ownership"), QStringLiteral("fields")},
+            {QStringLiteral("Same-graph name collision"),
+             QStringLiteral("name")},
+            {QStringLiteral("Target names"), QStringLiteral("targets")},
+            {QStringLiteral("Pass shape"), QStringLiteral("shape")},
+            {QStringLiteral("History input support"),
+             QStringLiteral("history")},
+            {QStringLiteral("Target usage compatibility"),
+             QStringLiteral("usage")},
+            {QStringLiteral("Input generation order"),
+             QStringLiteral("order")},
+            {QStringLiteral("Shader stem resolution"),
+             QStringLiteral("shader")},
+        };
+        const auto found = words.find(axis);
+        return found == words.end() ? axis : found->second;
+    }
+
     void setAxis(QLabel &label, const QString &axis, const char *state,
                  const QString &detail) {
+        const QString named = QString::fromLatin1(state);
         const QString state_text =
-            QString::fromLatin1(state) == QStringLiteral("valid")
+            named == QStringLiteral("valid")
                 ? owner.tr("Valid")
-                : QString::fromLatin1(state) == QStringLiteral("invalid")
+                : named == QStringLiteral("invalid")
                       ? owner.tr("Invalid")
                       : owner.tr("Not checked");
-        label.setProperty("pelicanValidationState",
-                          QString::fromLatin1(state));
-        label.setText(owner.tr("%1: %2 — %3")
-                          .arg(axis, state_text, detail));
+        const QString mark = named == QStringLiteral("valid")
+                                 ? QStringLiteral("✓")
+                                 : named == QStringLiteral("invalid")
+                                       ? QStringLiteral("✗")
+                                       : QStringLiteral("–");
+        label.setProperty("pelicanValidationState", named);
+        label.setText(QStringLiteral("%1 %2").arg(mark, axisWord(axis)));
+        label.setToolTip(owner.tr("%1: %2 — %3")
+                             .arg(axis, state_text, detail));
     }
 
     std::vector<ResourceReference> referencedResources() const {
@@ -918,17 +964,21 @@ struct FullscreenPassWidget::Impl {
 
     void updateOmitted(const Json &draft) {
         omitted->setProperty("pelicanOmittedKeys", QStringList{});
+        // N-7 rule 2: "nothing is known yet" is not something to act on, so
+        // the row is not there. The reason is still one hover away.
         if (!authoring_available) {
-            omitted->setText(owner.tr(
-                "Omitted keys: not known because no authored declaration is "
-                "available. The JSON still contains only fields represented "
-                "by this form."));
+            setPanelNotice(omitted, {},
+                           owner.tr("Omitted keys: not known because no "
+                                    "authored declaration is available. The "
+                                    "JSON still contains only fields "
+                                    "represented by this form."));
             return;
         }
         if (!plan) {
-            omitted->setText(owner.tr(
-                "Omitted keys: not known until a target graph is loaded. The "
-                "JSON still contains only fields represented by this form."));
+            setPanelNotice(omitted, {},
+                           owner.tr("Omitted keys: not known until a target "
+                                    "graph is loaded. The JSON still contains "
+                                    "only fields represented by this form."));
             return;
         }
         const auto graph_found = authored_passes.find(plan->graph);
@@ -938,10 +988,11 @@ struct FullscreenPassWidget::Impl {
                 : graph_found->second.find(name->text().toStdString());
         if (graph_found == authored_passes.end() ||
             pass_found == graph_found->second.end()) {
-            omitted->setText(owner.tr(
-                "Omitted keys: no existing declaration has this graph/name. "
-                "This is a new partial draft and only represented fields are "
-                "emitted."));
+            setPanelNotice(omitted, {},
+                           owner.tr("Omitted keys: no existing declaration "
+                                    "has this graph/name. This is a new "
+                                    "partial draft and only represented "
+                                    "fields are emitted."));
             return;
         }
 
@@ -954,7 +1005,11 @@ struct FullscreenPassWidget::Impl {
         }
         const QStringList reported = stringList(missing);
         omitted->setProperty("pelicanOmittedKeys", reported);
-        omitted->setText(
+        setPanelNotice(
+            omitted,
+            missing.empty() ? QString{}
+                            : owner.tr("omitted: %1")
+                                  .arg(reported.join(QStringLiteral(", "))),
             missing.empty()
                 ? owner.tr("Omitted keys: none for the matching authored "
                            "declaration. The output remains a form-owned "
@@ -997,13 +1052,19 @@ struct FullscreenPassWidget::Impl {
             (editingMaterialPass() ||
              (!vertex_shader->text().trimmed().isEmpty() &&
               (editingShadowPass() || !fragment_shader->text().trimmed().isEmpty())));
+        // N-7 rule 2: one line, and only when there is something to do about
+        // it. The sentence that says why is the tooltip; a draft with nothing
+        // wrong says nothing at all.
         if (!invalid.isEmpty()) {
             validation_summary->setProperty(
                 "pelicanValidationSummaryState",
                 QStringLiteral("invalid"));
             validation_summary->setStyleSheet(
                 QStringLiteral("color: #d94c3d;"));
-            validation_summary->setText(
+            setPanelNotice(
+                validation_summary,
+                owner.tr("cannot copy: %1")
+                    .arg(invalid.join(QStringLiteral(", "))),
                 owner.tr("Draft cannot be copied: Invalid axes — %1.")
                     .arg(invalid.join(QStringLiteral(", "))));
             copy_json->setEnabled(false);
@@ -1015,10 +1076,14 @@ struct FullscreenPassWidget::Impl {
                 QStringLiteral("incomplete"));
             validation_summary->setStyleSheet(
                 QStringLiteral("color: #b36b00;"));
-            validation_summary->setText(preservesPresetDeclaration() && !editingRasterPass()
-                ? owner.tr("Draft is incomplete; load a frame plan and provide a name before copying.")
-                : owner.tr("Draft is incomplete; load a frame plan and provide a name "
-                           "and both shader stems before copying."));
+            setPanelNotice(
+                validation_summary, owner.tr("incomplete draft"),
+                preservesPresetDeclaration() && !editingRasterPass()
+                    ? owner.tr("Draft is incomplete; load a frame plan and "
+                               "provide a name before copying.")
+                    : owner.tr("Draft is incomplete; load a frame plan and "
+                               "provide a name and both shader stems before "
+                               "copying."));
             copy_json->setEnabled(false);
             return;
         }
@@ -1028,7 +1093,13 @@ struct FullscreenPassWidget::Impl {
                 QStringLiteral("partial"));
             validation_summary->setStyleSheet(
                 QStringLiteral("color: #b36b00;"));
-            validation_summary->setText(
+            QStringList short_names;
+            for (const QString &axis_name : not_checked)
+                short_names.push_back(axisWord(axis_name));
+            setPanelNotice(
+                validation_summary,
+                owner.tr("partial: %1")
+                    .arg(short_names.join(QStringLiteral(", "))),
                 owner.tr("Partial draft: Not checked — %1. Copying is "
                          "available, but these named axes still require "
                          "engine-side review.")
@@ -1040,7 +1111,8 @@ struct FullscreenPassWidget::Impl {
         validation_summary->setProperty(
             "pelicanValidationSummaryState", QStringLiteral("valid"));
         validation_summary->setStyleSheet({});
-        validation_summary->setText(
+        setPanelNotice(
+            validation_summary, {},
             owner.tr("All displayed validation axes are Valid; copying is "
                      "available."));
         copy_json->setEnabled(true);
@@ -1069,9 +1141,13 @@ struct FullscreenPassWidget::Impl {
         const QString graph_name =
             plan ? text(plan->graph) : owner.tr("(no frame plan)");
         graph->setText(graph_name);
-        location->setText(
-            plan ? owner.tr("Graph '%1', passes[%2] "
-                            "(declaration_index %2)")
+        setPanelNotice(
+            location,
+            plan ? owner.tr("%1 passes[%2]")
+                       .arg(graph_name)
+                       .arg(position->value())
+                 : QStringLiteral("—"),
+            plan ? owner.tr("Graph '%1', passes[%2] (declaration_index %2)")
                        .arg(graph_name)
                        .arg(position->value())
                  : owner.tr("Load a frame plan to name the graph and "
@@ -1297,8 +1373,8 @@ struct FullscreenPassWidget::Impl {
     void authoringError(const QString &message) {
         authoring_status->setStyleSheet(
             QStringLiteral("color: #d94c3d;"));
-        authoring_status->setText(
-            owner.tr("Render authoring failed: %1").arg(message));
+        setPanelNotice(authoring_status, owner.tr("authoring failed"),
+                       owner.tr("Render authoring failed: %1").arg(message));
         updateAuthoringButtons();
     }
 
@@ -1326,7 +1402,8 @@ struct FullscreenPassWidget::Impl {
             return;
         }
         authoring_status->setStyleSheet({});
-        authoring_status->setText(
+        setPanelNotice(
+            authoring_status, owner.tr("requesting context..."),
             owner.tr("Requesting the engine-owned authoring context..."));
         updateAuthoringButtons();
     }
@@ -1375,7 +1452,8 @@ struct FullscreenPassWidget::Impl {
             return;
         }
         authoring_status->setStyleSheet({});
-        authoring_status->setText(
+        setPanelNotice(
+            authoring_status, owner.tr("submitting..."),
             owner.tr("Submitting the complete authored-pass candidate..."));
         updateAuthoringButtons();
     }
@@ -1534,7 +1612,7 @@ struct FullscreenPassWidget::Impl {
       }
       load_edit_requested = false;
       updating = false;
-      save->setText(editingFeaturePass() ? owner.tr("Save feature pass") : owner.tr("Save preset pass"));
+      save->setText(editingFeaturePass() ? owner.tr("Save feature") : owner.tr("Save preset"));
       save->setToolTip(editingFeaturePass()
           ? authoredPassSaveToolTip() + QStringLiteral("\n") +
                 owner.tr("Updates %1 wherever this feature is used.").arg(text(feature_pass_info.at(*editing_preset_pass).value("feature_source_reference", std::string{})))
@@ -1562,8 +1640,8 @@ struct FullscreenPassWidget::Impl {
         return;
       }
       authoring_status->setStyleSheet({});
-      authoring_status->setText(
-          owner.tr("Submitting the managed-fragment removal..."));
+      setPanelNotice(authoring_status, owner.tr("submitting removal..."),
+                     owner.tr("Submitting the managed-fragment removal..."));
       updateAuthoringButtons();
     }
 
@@ -1723,18 +1801,23 @@ struct FullscreenPassWidget::Impl {
         authoring_available = true;
         const auto kind = context.value("config_kind", std::string{"direct"});
         authoring_status->setStyleSheet({});
-        authoring_status->setText(
+        setPanelNotice(
+            authoring_status,
+            owner.tr("%1 · %2 graph(s)")
+                .arg(text(kind))
+                .arg(static_cast<qulonglong>(authored_passes.size())),
             owner.tr("Engine authoring context loaded (%1): %2 graph(s), "
                      "%3 managed fragment(s).")
-                .arg(text(kind))
-                .arg(static_cast<qulonglong>(authored_passes.size()))
-                .arg(remove_fragment->count()));
-        authoring_status->setToolTip(
-            provenance_summary.isEmpty()
-                ? owner.tr("The engine returned no pass provenance entries.")
-                : owner.tr("Resolved pass provenance: %1")
-                      .arg(provenance_summary.join(
-                          QStringLiteral(", "))));
+                    .arg(text(kind))
+                    .arg(static_cast<qulonglong>(authored_passes.size()))
+                    .arg(remove_fragment->count()) +
+                QStringLiteral("\n") +
+                (provenance_summary.isEmpty()
+                     ? owner.tr("The engine returned no pass provenance "
+                                "entries.")
+                     : owner.tr("Resolved pass provenance: %1")
+                           .arg(provenance_summary.join(
+                               QStringLiteral(", ")))));
         configurePosition();
         if (editing_preset_pass) load_edit_requested = true;
         loadPresetPass();
@@ -1772,9 +1855,10 @@ struct FullscreenPassWidget::Impl {
                 pending_ticket =
                     text(response.at("ticket").get_ref<const std::string &>());
                 authoring_status->setStyleSheet({});
-                authoring_status->setText(
-                    owner.tr("Candidate accepted; waiting for engine "
-                             "publication..."));
+                setPanelNotice(authoring_status,
+                               owner.tr("accepted; waiting..."),
+                               owner.tr("Candidate accepted; waiting for "
+                                        "engine publication..."));
                 updateAuthoringButtons();
                 QTimer::singleShot(
                     0, &owner, [this] { requestTicketResult(); });
@@ -1795,9 +1879,9 @@ struct FullscreenPassWidget::Impl {
                 }
                 pending_ticket.clear();
                 authoring_status->setStyleSheet({});
-                authoring_status->setText(
-                    owner.tr("Authored pass transaction committed and "
-                             "published."));
+                setPanelNotice(authoring_status, owner.tr("committed"),
+                               owner.tr("Authored pass transaction committed "
+                                        "and published."));
                 updateAuthoringButtons();
                 if (editing_preset_pass) { load_edit_requested = true; authoring_available = false; }
                 requestAuthoringContext();
@@ -1835,10 +1919,10 @@ struct FullscreenPassWidget::Impl {
         authored_pass_counts.clear();
         authoring_available = false;
         remove_fragment->clear();
-        authoring_status->setToolTip({});
         authoring_status->setStyleSheet(
             QStringLiteral("color: #b36b00;"));
-        authoring_status->setText(
+        setPanelNotice(
+            authoring_status, owner.tr("authoring context unavailable"),
             reason.isEmpty()
                 ? owner.tr("Engine authoring context is unavailable.")
                 : owner.tr("Engine authoring context is unavailable: %1")
@@ -1893,10 +1977,15 @@ struct FullscreenPassWidget::Impl {
             });
         }
         populateCandidates(*input_candidate, input_names);
-        connection_hint->setVisible(input_filter.has_value());
-        connection_hint->setText(input_names.empty()
-            ? owner.tr("The producer has no outputs usable as inputs in this graph. Existing inputs are unchanged.")
-            : owner.tr("Input choices are limited to the dragged producer. Add or remove inputs, then save the pass."));
+        setPanelNotice(
+            connection_hint,
+            !input_filter.has_value()
+                ? QString{}
+                : input_names.empty() ? owner.tr("no usable outputs")
+                                      : owner.tr("limited to the dragged producer"),
+            input_names.empty()
+                ? owner.tr("The producer has no outputs usable as inputs in this graph. Existing inputs are unchanged.")
+                : owner.tr("Input choices are limited to the dragged producer. Add or remove inputs, then save the pass."));
         populateCandidates(
             *color_candidate,
             candidatesForRole(
@@ -2016,7 +2105,13 @@ struct FullscreenPassWidget::Impl {
             refresh->setEnabled(refresh_available);
             plan_status->setStyleSheet(
                 changed ? QStringLiteral("color: #b36b00;") : QString{});
-            plan_status->setText(
+            setPanelNotice(
+                plan_status,
+                changed ? owner.tr("draft discarded")
+                        : owner.tr("%1 · %2 resources")
+                              .arg(text(plan->graph))
+                              .arg(static_cast<qulonglong>(
+                                  next_binding.resources.size())),
                 changed
                     ? owner.tr("Frame plan graph/resources changed; the old "
                                "draft was discarded. Draft restoration is "
@@ -2033,9 +2128,9 @@ struct FullscreenPassWidget::Impl {
             refresh->setEnabled(refresh_available);
             plan_status->setStyleSheet(
                 QStringLiteral("color: #d94c3d;"));
-            plan_status->setText(
-                owner.tr("Frame plan refresh failed: %1")
-                    .arg(QString::fromUtf8(error.what())));
+            setPanelNotice(plan_status, owner.tr("refresh failed"),
+                           owner.tr("Frame plan refresh failed: %1")
+                               .arg(QString::fromUtf8(error.what())));
         }
     }
 
@@ -2054,13 +2149,15 @@ struct FullscreenPassWidget::Impl {
             invalidateFramePlanContext();
             plan_status->setStyleSheet(
                 QStringLiteral("color: #d94c3d;"));
-            plan_status->setText(owner.tr("Frame plan refresh failed: %1")
-                                     .arg(error));
+            setPanelNotice(plan_status, owner.tr("refresh failed"),
+                           owner.tr("Frame plan refresh failed: %1")
+                               .arg(error));
             return;
         }
         refresh->setEnabled(false);
         plan_status->setStyleSheet({});
-        plan_status->setText(owner.tr("Requesting the current frame plan..."));
+        setPanelNotice(plan_status, owner.tr("requesting..."),
+                       owner.tr("Requesting the current frame plan..."));
     }
 
     void receiveRefreshResult(qint64 request_id,
@@ -2081,9 +2178,9 @@ struct FullscreenPassWidget::Impl {
         invalidateFramePlanContext();
         refresh->setEnabled(refresh_available);
         plan_status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
-        plan_status->setText(
-            owner.tr("Frame plan refresh failed: %1")
-                .arg(message));
+        setPanelNotice(plan_status, owner.tr("refresh failed"),
+                       owner.tr("Frame plan refresh failed: %1")
+                           .arg(message));
     }
 
     void setRefreshAvailable(bool available, const QString &reason) {
@@ -2092,13 +2189,15 @@ struct FullscreenPassWidget::Impl {
         refresh->setEnabled(available);
         if (available) {
             plan_status->setStyleSheet({});
-            plan_status->setText(
-                owner.tr("Frame plan RPC available; press Refresh frame plan."));
+            setPanelNotice(
+                plan_status, owner.tr("ready; press Refresh"),
+                owner.tr("Frame plan RPC available; press Refresh."));
             return;
         }
         invalidateFramePlanContext();
         plan_status->setStyleSheet(QStringLiteral("color: #b36b00;"));
-        plan_status->setText(
+        setPanelNotice(
+            plan_status, owner.tr("no frame plan"),
             reason.isEmpty()
                 ? owner.tr("Frame plan unavailable.")
                 : owner.tr("Frame plan unavailable: %1").arg(reason));
@@ -2176,23 +2275,26 @@ struct FullscreenPassWidget::Impl {
                 }
             }
             authoring_status->setStyleSheet({});
-            authoring_status->setText(
+            setPanelNotice(
+                authoring_status,
+                owner.tr("projection · %1 graph(s)")
+                    .arg(static_cast<qulonglong>(authored_passes.size())),
                 owner.tr("Projection-test authoring context loaded: %1 "
                          "graph(s), %2 pass(es). Saving remains disabled "
                          "without an engine digest and anchors.")
-                    .arg(static_cast<qulonglong>(authored_passes.size()))
-                    .arg(static_cast<qulonglong>(pass_count)));
-            authoring_status->setToolTip(
-                owner.tr("Authored graph/pass declarations: %1")
-                    .arg(authored_names.join(QStringLiteral(", "))));
+                        .arg(static_cast<qulonglong>(authored_passes.size()))
+                        .arg(static_cast<qulonglong>(pass_count)) +
+                    QStringLiteral("\n") +
+                    owner.tr("Authored graph/pass declarations: %1")
+                        .arg(authored_names.join(QStringLiteral(", "))));
         } catch (const std::exception &error) {
             authored_passes.clear();
             authored_pass_counts.clear();
             authoring_available = false;
-            authoring_status->setToolTip({});
             authoring_status->setStyleSheet(
                 QStringLiteral("color: #b36b00;"));
-            authoring_status->setText(
+            setPanelNotice(
+                authoring_status, owner.tr("authoring context unavailable"),
                 owner.tr("Authoring context unavailable: %1")
                     .arg(QString::fromUtf8(error.what())));
         }

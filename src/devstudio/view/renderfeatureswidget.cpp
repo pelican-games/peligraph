@@ -1,4 +1,5 @@
 #include "renderfeatureswidget.hpp"
+#include "panelhelp.hpp"
 #include "proceduralassetdialog.hpp"
 #include "jsonrpcrequest.hpp"
 #include "taskresourceconnections.hpp"
@@ -847,9 +848,8 @@ public:
             [this] { updateDispatch(); });
     connection_graph = new TaskConnectionGraphics(this);
     if (!outputs.isEmpty()) {
-      auto *hint = new QLabel(tr("Select a task port group, then an output from the dragged source node. Apply task validates and saves the connection."), this);
-      hint->setWordWrap(true);
-      layout->addWidget(hint);
+      // N-7 rule 1: the procedure is on the thing the procedure acts on.
+      connection_graph->setToolTip(tr("Select a task port group, then an output from the dragged source node. Apply task validates and saves the connection."));
       connection_graph->setTargetFilter(outputs);
     }
     layout->addWidget(connection_graph);
@@ -1401,11 +1401,9 @@ public:
     setWindowTitle(tr("Callable record initial values"));
     resize(600, 440);
     auto *layout = new QVBoxLayout(this);
-    auto *description = new QLabel(tr("Edit saved initial values. Live changes "
-                                      "made by game logic are not shown here."),
-                                   this);
-    description->setWordWrap(true);
-    layout->addWidget(description);
+    const QString records_help =
+        tr("Edit saved initial values. Live changes "
+           "made by game logic are not shown here.");
     task_box = new QComboBox(this);
     record_box = new QComboBox(this);
     task_box->setObjectName(QStringLiteral("pelican.callableRecords.task"));
@@ -1415,9 +1413,10 @@ public:
     fields = new QTableWidget(0, 2, this);
     fields->setHorizontalHeaderLabels({tr("Field / type"), tr("Value")});
     fields->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    fields->setToolTip(records_help);
     layout->addWidget(fields);
     notice = new QLabel(this);
-    notice->setWordWrap(true);
+    PelicanStudio::applyPanelNoticeStyle(notice);
     layout->addWidget(notice);
     auto *buttons = new QHBoxLayout;
     reset = new QPushButton(tr("Reset task"), this);
@@ -1675,19 +1674,15 @@ class SceneAccelerationStructuresDialog final : public QDialog {
         setWindowTitle(tr("Scene acceleration structures"));
         resize(560, 380);
         auto *layout = new QVBoxLayout(this);
-        auto *description = new QLabel(tr("Create named scene subsets using instance mask bits. The default scene includes all geometry."), this);
-        description->setWordWrap(true);
-        layout->addWidget(description);
+        const QString subsets_help = tr("Create named scene subsets using instance mask bits. The default scene includes all geometry.");
         triangle_space = new QComboBox(this);
         triangle_space->setObjectName(QStringLiteral("pelican.sceneAccelerationStructures.triangleSpace"));
         triangle_space->addItem(tr("Geometry space (per-instance transforms)"), QStringLiteral("geometry"));
         triangle_space->addItem(tr("World space (combine transformed triangles)"), QStringLiteral("world"));
+        triangle_space->setToolTip(tr("World space bakes object transforms into triangles so compatible instances can share a BLAS. Triangle object-space shader coordinates become world-space coordinates. Procedural AABBs are unchanged."));
         auto *geometry_form = new QFormLayout;
-        geometry_form->addRow(tr("Triangle coordinate space"), triangle_space);
+        geometry_form->addRow(tr("Triangles"), triangle_space);
         layout->addLayout(geometry_form);
-        auto *geometry_description = new QLabel(tr("World space bakes object transforms into triangles so compatible instances can share a BLAS. Triangle object-space shader coordinates become world-space coordinates. Procedural AABBs are unchanged."), this);
-        geometry_description->setWordWrap(true);
-        layout->addWidget(geometry_description);
         triangle_source = new QLabel(this);
         triangle_source->setObjectName(QStringLiteral("pelican.sceneAccelerationStructures.triangleSource"));
         triangle_source->setWordWrap(true);
@@ -1696,12 +1691,10 @@ class SceneAccelerationStructuresDialog final : public QDialog {
         procedural_space->setObjectName(QStringLiteral("pelican.sceneAccelerationStructures.proceduralSpace"));
         procedural_space->addItem(tr("Geometry space (per-instance transforms)"), QStringLiteral("geometry"));
         procedural_space->addItem(tr("World space (combine transformed AABBs)"), QStringLiteral("world"));
+        procedural_space->setToolTip(tr("World space combines compatible AABB instances. Shaders must use the procedural transform helpers to preserve local intersections. The layout must already declare procedural_transform; changing space preserves the shader record layout."));
         auto *procedural_form = new QFormLayout;
-        procedural_form->addRow(tr("AABB coordinate space"), procedural_space);
+        procedural_form->addRow(tr("AABBs"), procedural_space);
         layout->addLayout(procedural_form);
-        auto *procedural_description = new QLabel(tr("World space combines compatible AABB instances. Shaders must use the procedural transform helpers to preserve local intersections. The layout must already declare procedural_transform; changing space preserves the shader record layout."), this);
-        procedural_description->setWordWrap(true);
-        layout->addWidget(procedural_description);
         procedural_source = new QLabel(this);
         procedural_source->setObjectName(QStringLiteral("pelican.sceneAccelerationStructures.proceduralSource"));
         procedural_source->setWordWrap(true);
@@ -1709,6 +1702,7 @@ class SceneAccelerationStructuresDialog final : public QDialog {
         table = new QTableWidget(0, 2, this);
         table->setObjectName(QStringLiteral("pelican.sceneAccelerationStructures.table"));
         table->setHorizontalHeaderLabels({tr("Name"), tr("Instance mask (0-255)")});
+        table->setToolTip(subsets_help);
         table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
         table->setSelectionBehavior(QAbstractItemView::SelectRows);
         table->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -1824,17 +1818,22 @@ struct RenderFeaturesWidget::Impl {
         : owner{widget}, viewport{embedded_viewport} {
         owner.setObjectName(
             QStringLiteral("pelican.renderFeatures"));
+        owner.setFont(studioPanelFont());
         auto *layout = new QVBoxLayout(&owner);
 
-        auto *description = new QLabel(
-            owner.tr("Edit the authored render config features. Changes are preflighted and applied at a frame boundary."),
-            &owner);
-        description->setWordWrap(true);
-        layout->addWidget(description);
-
-        auto *current_label = new QLabel(
-            owner.tr("Current authored features"), &owner);
-        layout->addWidget(current_label);
+        // N-7 rule 1: the sentence that said what this panel does is behind
+        // the `?`; the panel shows the two lists and what it can do to them.
+        auto *heading = new QHBoxLayout;
+        auto *current_label = new QLabel(owner.tr("Features"), &owner);
+        current_label->setToolTip(owner.tr(
+            "Edit the authored render config features. Changes are "
+            "preflighted and applied at a frame boundary."));
+        heading->addWidget(current_label, 1);
+        heading->addWidget(makePanelHelpButton(
+            &owner, "pelican.renderFeatures.help", ManualRenderFeaturesAnchor,
+            owner.tr("Edit the authored render config features. Changes are "
+                     "preflighted and applied at a frame boundary.")));
+        layout->addLayout(heading);
         current = new QListWidget(&owner);
         current->setObjectName(
             QStringLiteral("pelican.renderFeatures.current"));
@@ -1845,23 +1844,24 @@ struct RenderFeaturesWidget::Impl {
         layout->addWidget(current, 1);
 
         auto *remove_row = new QHBoxLayout;
-        remove = new QPushButton(owner.tr("Remove selected"), &owner);
+        remove = new QPushButton(owner.tr("Remove"), &owner);
         remove->setObjectName(
             QStringLiteral("pelican.renderFeatures.remove"));
         remove_row->addWidget(remove);
-        parameters = new QPushButton(owner.tr("Parameters..."), &owner);
+        parameters = new QPushButton(owner.tr("Parameters"), &owner);
         parameters->setObjectName("pelican.renderFeatures.parameters");
         remove_row->addWidget(parameters);
         QObject::connect(parameters, &QPushButton::clicked, &owner, [this] { editParameters(); });
-        materialize = new QPushButton(owner.tr("Make editable..."), &owner);
+        materialize = new QPushButton(owner.tr("Make editable"), &owner);
         materialize->setObjectName("pelican.renderFeatures.materialize");
         remove_row->addWidget(materialize);
         QObject::connect(materialize, &QPushButton::clicked, &owner, [this] { stageMaterialize(); });
         remove_row->addStretch();
         layout->addLayout(remove_row);
 
-        auto *catalog_label = new QLabel(
-            owner.tr("Engine feature catalog"), &owner);
+        auto *catalog_label = new QLabel(owner.tr("Catalog"), &owner);
+        catalog_label->setToolTip(
+            owner.tr("The features this engine build offers."));
         layout->addWidget(catalog_label);
         catalog = new QTreeWidget(&owner);
         catalog->setObjectName(
@@ -1881,7 +1881,7 @@ struct RenderFeaturesWidget::Impl {
         layout->addWidget(catalog, 1);
 
         auto *add_row = new QHBoxLayout;
-        add = new QPushButton(owner.tr("Add selected"), &owner);
+        add = new QPushButton(owner.tr("Add"), &owner);
         add->setObjectName(
             QStringLiteral("pelican.renderFeatures.add"));
         add_row->addWidget(add);
@@ -1891,7 +1891,8 @@ struct RenderFeaturesWidget::Impl {
         notice = new QLabel(&owner);
         notice->setObjectName(
             QStringLiteral("pelican.renderFeatures.notice"));
-        notice->setWordWrap(true);
+        applyPanelNoticeStyle(notice);
+        notice->hide();
         layout->addWidget(notice);
 
         auto *actions = new QHBoxLayout;
@@ -1902,7 +1903,7 @@ struct RenderFeaturesWidget::Impl {
         apply->setObjectName(
             QStringLiteral("pelican.renderFeatures.apply"));
         actions->addWidget(refresh);
-        auto *procedural_assets = new QPushButton(owner.tr("Procedural assets..."), &owner);
+        auto *procedural_assets = new QPushButton(owner.tr("Assets"), &owner);
         procedural_assets->setObjectName(QStringLiteral("pelican.renderFeatures.proceduralAssets"));
         actions->addWidget(procedural_assets);
         QObject::connect(procedural_assets, &QPushButton::clicked, &owner, [this] {
@@ -1912,18 +1913,18 @@ struct RenderFeaturesWidget::Impl {
             });
             dialog->show();
         });
-        auto *tasks = new QPushButton(owner.tr("Tasks..."), &owner);
+        auto *tasks = new QPushButton(owner.tr("Tasks"), &owner);
         tasks->setObjectName(QStringLiteral("pelican.renderFeatures.tasks"));
         actions->addWidget(tasks);
         QObject::connect(tasks, &QPushButton::clicked, &owner, [this] { owner.editComputeTask({}); });
-        auto *fork_preset = new QPushButton(owner.tr("Fork preset..."), &owner);
+        auto *fork_preset = new QPushButton(owner.tr("Fork"), &owner);
         fork_preset->setObjectName(QStringLiteral("pelican.renderFeatures.forkPreset"));
         actions->addWidget(fork_preset);
         QObject::connect(fork_preset, &QPushButton::clicked, &owner, [this] {
             auto *dialog = new PresetEditDialog(viewport, &owner, [this] { requestRefresh(); });
             dialog->show();
         });
-        auto *region_replacements = new QPushButton(owner.tr("Region replacements..."), &owner);
+        auto *region_replacements = new QPushButton(owner.tr("Regions"), &owner);
         region_replacements->setObjectName(QStringLiteral("pelican.renderFeatures.regionReplacements"));
         actions->addWidget(region_replacements);
         QObject::connect(region_replacements, &QPushButton::clicked, &owner, [this] {
@@ -1933,8 +1934,8 @@ struct RenderFeaturesWidget::Impl {
             }, PresetEditDialog::Mode::Region);
             dialog->show();
         });
-        auto *scene_as = new QPushButton(owner.tr("Scene AS..."), &owner);
-        auto *callable_records = new QPushButton(owner.tr("Callable Records..."), &owner);
+        auto *scene_as = new QPushButton(owner.tr("Scene AS"), &owner);
+        auto *callable_records = new QPushButton(owner.tr("Records"), &owner);
         actions->addWidget(callable_records);
         QObject::connect(callable_records, &QPushButton::clicked, &owner, [this] {
             auto *dialog = new CallableRecordsDialog(viewport, &owner);
@@ -2020,22 +2021,24 @@ struct RenderFeaturesWidget::Impl {
         }
     }
 
+    // N-7 rule 2: one line, hidden when there is nothing to say. The whole
+    // message stays reachable as the row's tooltip, and the Output dock
+    // still receives everything the panel logs.
+    void showNotice(const QString &colour, const QString &message) {
+        notice->setStyleSheet(colour);
+        setPanelNotice(notice, oneLine(message), message);
+    }
+
     void showError(const QString &message) {
-        notice->setStyleSheet(
-            QStringLiteral("color: #d94c3d;"));
-        notice->setText(message);
+        showNotice(QStringLiteral("color: #d94c3d;"), message);
     }
 
     void showInformation(const QString &message) {
-        notice->setStyleSheet(
-            QStringLiteral("color: #4f7cac;"));
-        notice->setText(message);
+        showNotice(QStringLiteral("color: #4f7cac;"), message);
     }
 
     void showSuccess(const QString &message) {
-        notice->setStyleSheet(
-            QStringLiteral("color: #388e3c;"));
-        notice->setText(message);
+        showNotice(QStringLiteral("color: #388e3c;"), message);
     }
 
     qint64 request(RequestKind kind, const QString &method,
@@ -2115,15 +2118,14 @@ struct RenderFeaturesWidget::Impl {
         dialog.setObjectName("pelican.featureMaterialize");
         dialog.setWindowTitle(owner.tr("Make feature editable: %1").arg(display_name));
         auto *layout = new QVBoxLayout(&dialog);
-        auto *hint = new QLabel(owner.tr("Create a project feature with the current settings resolved into editable declarations. Apply in Render features to save and switch to it."), &dialog);
-        hint->setWordWrap(true);
-        layout->addWidget(hint);
+        const QString materialize_help = owner.tr("Create a project feature with the current settings resolved into editable declarations. Apply in Render features to save and switch to it.");
         auto *form = new QFormLayout;
         auto *destination = new QLineEdit(&dialog);
         destination->setObjectName("pelican.featureMaterialize.destination");
         auto filename = instance.value("reference").toString().section('/', -1);
         if (filename.endsWith(".json")) filename.chop(5);
         destination->setText("project://passes/" + filename + "_editable.json");
+        destination->setToolTip(materialize_help);
         form->addRow(owner.tr("New project file"), destination);
         layout->addLayout(form);
         auto *error = new QLabel(&dialog);
@@ -2169,7 +2171,8 @@ struct RenderFeaturesWidget::Impl {
         dialog.setObjectName("pelican.featureParameters");
         dialog.resize(560, 480);
         auto *layout = new QVBoxLayout(&dialog);
-        auto *hint = new QLabel(owner.tr("Enable an override to change its value. Uncheck it to use the feature default. Apply in Render features to save."), &dialog);
+        auto *hint = new QLabel(owner.tr("Overrides"), &dialog);
+        hint->setToolTip(owner.tr("Enable an override to change its value. Uncheck it to use the feature default. Apply in Render features to save."));
         hint->setWordWrap(true);
         layout->addWidget(hint);
         auto *scroll = new QScrollArea(&dialog);

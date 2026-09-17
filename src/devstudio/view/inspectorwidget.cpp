@@ -1,4 +1,6 @@
 #include "inspectorwidget.hpp"
+
+#include "panelhelp.hpp"
 #include "graphattachmentwidget.hpp"
 
 #include "../model/inspectormodel.hpp"
@@ -151,14 +153,22 @@ struct InspectorWidget::Impl {
         layout->setContentsMargins(6, 6, 6, 6);
         layout->setSpacing(6);
 
+        owner.setFont(studioPanelFont());
+
+        auto *selection_row = new QHBoxLayout;
         auto *selection_form = new QFormLayout;
         selection_label = new QLabel(owner.tr("None"), &owner);
         selection_label->setObjectName(
             QStringLiteral("pelican.inspectorSelection"));
         selection_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        selection_label->setWordWrap(true);
         selection_form->addRow(owner.tr("Selection"), selection_label);
-        layout->addLayout(selection_form);
+        selection_row->addLayout(selection_form, 1);
+        selection_row->addWidget(makePanelHelpButton(
+            &owner, "pelican.inspector.help", ManualInspectorAnchor,
+            owner.tr("Edit the declaration, then Add. Use registered asset "
+                     "names for asset fields; the engine validates the "
+                     "values.")));
+        layout->addLayout(selection_row);
 
         auto *toolbar = new QHBoxLayout;
         refresh_button = new QPushButton(owner.tr("Refresh"), &owner);
@@ -178,13 +188,13 @@ struct InspectorWidget::Impl {
         toolbar->addWidget(cancel_preview_button);
         toolbar->addStretch();
         layout->addLayout(toolbar);
-        add_component_button = new QPushButton(owner.tr("Add component..."), &owner);
+        add_component_button = new QPushButton(owner.tr("Add component"), &owner);
         add_component_button->setObjectName(QStringLiteral("pelican.inspectorAddComponent"));
         layout->addWidget(add_component_button);
         QObject::connect(add_component_button, &QPushButton::clicked, &owner, [this] {
             openComponentAddDialog();
         });
-        ray_occurrences_button = new QPushButton(owner.tr("Ray geometry..."), &owner);
+        ray_occurrences_button = new QPushButton(owner.tr("Ray geometry"), &owner);
         ray_occurrences_button->setObjectName(QStringLiteral("pelican.inspectorRayGeometry"));
         layout->addWidget(ray_occurrences_button);
         QObject::connect(ray_occurrences_button, &QPushButton::clicked, &owner, [this] {
@@ -211,7 +221,7 @@ struct InspectorWidget::Impl {
         notice_label = new QLabel(&owner);
         notice_label->setObjectName(QStringLiteral("pelican.inspectorNotice"));
         notice_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        notice_label->setWordWrap(true);
+        applyPanelNoticeStyle(notice_label);
         notice_label->hide();
         layout->addWidget(notice_label);
 
@@ -672,14 +682,16 @@ struct InspectorWidget::Impl {
                 QString::fromStdString(field.value("type", ""))));
         }
         confirm_add_component->setEnabled(ready);
-        QString description = owner.tr("Edit the declaration, then Add. Use registered asset names for asset fields; the engine validates the values.");
-        if (!fields.isEmpty()) description += (candidate.contains("behavior_type")
-            ? owner.tr(" Params fields: %1.") : owner.tr(" Fields: %1.")).arg(fields.join(", "));
+        component_declaration->setToolTip(owner.tr("Edit the declaration, then Add. Use registered asset names for asset fields; the engine validates the values."));
+        QString description;
+        if (!fields.isEmpty()) description = (candidate.contains("behavior_type")
+            ? owner.tr("Params: %1") : owner.tr("Fields: %1")).arg(fields.join(", "));
         if (!candidate.value("available", false))
             description += "\n" + QString::fromStdString(candidate.value("unavailable_reason", ""));
         if (model.notice().kind == InspectorNoticeKind::Error)
             description += "\n" + QString::fromStdString(model.notice().message);
-        component_description->setText(description);
+        setPanelNotice(component_description, oneLine(description),
+                       description);
     }
 
     void openRayOccurrences() {
@@ -710,20 +722,21 @@ struct InspectorWidget::Impl {
         ray_settings->horizontalHeader()->setStretchLastSection(true);
         ray_settings->setMaximumHeight(170);
         layout->addWidget(ray_settings);
-        layout->addWidget(plainLabel(owner.tr(
-            "Select geometry to inspect its settings. Omitted fields inherit; an explicit zero overrides. Layout v1 uses row q as custom index."), dialog));
-        layout->addWidget(plainLabel(owner.tr(
-            "Record fields show resolved scene-plan values. Per-frame dynamic record updates are not shown."), dialog));
-        layout->addWidget(plainLabel(owner.tr(
-            "Select geometry and a ray_instance destination to add an override. Edit its values in the Inspector list."), dialog));
+        // N-7 rule 1: three paragraphs, each on the control it is about.
+        ray_entries->setToolTip(owner.tr(
+            "Select geometry to inspect its settings. Omitted fields inherit; an explicit zero overrides. Layout v1 uses row q as custom index."));
+        ray_settings->setToolTip(owner.tr(
+            "Record fields show resolved scene-plan values. Per-frame dynamic record updates are not shown."));
         auto *actions = new QHBoxLayout;
         ray_destination = new QComboBox(dialog);
+        ray_destination->setToolTip(owner.tr(
+            "Select geometry and a ray_instance destination to add an override. Edit its values in the Inspector list."));
         ray_destination->setObjectName(QStringLiteral("pelican.rayGeometry.destination"));
         actions->addWidget(ray_destination, 1);
         ray_add = new QPushButton(owner.tr("Add override"), dialog);
         ray_add->setObjectName(QStringLiteral("pelican.rayGeometry.addOverride"));
         actions->addWidget(ray_add);
-        ray_tasks = new QPushButton(owner.tr("Related RT tasks..."), dialog);
+        ray_tasks = new QPushButton(owner.tr("RT tasks"), dialog);
         ray_tasks->setObjectName(QStringLiteral("pelican.rayGeometry.tasks"));
         actions->addWidget(ray_tasks);
         QObject::connect(ray_tasks, &QPushButton::clicked, dialog, [this] {
@@ -865,9 +878,12 @@ struct InspectorWidget::Impl {
         synchronizeRayDialog();
         add_component_button->setEnabled(model.canRequestComponentAddCandidates());
         synchronizeComponentAddDialog();
+        // N-7 rule 2: one line, hidden when there is nothing to act on; the
+        // whole message stays as the row's tooltip.
         const InspectorNotice &notice = model.notice();
-        notice_label->setText(QString::fromStdString(notice.message));
-        notice_label->setVisible(!notice.message.empty());
+        setPanelNotice(notice_label,
+                       oneLine(QString::fromStdString(notice.message)),
+                       QString::fromStdString(notice.message));
         switch (notice.kind) {
         case InspectorNoticeKind::Error:
             notice_label->setStyleSheet(
@@ -946,8 +962,9 @@ struct InspectorWidget::Impl {
         layout->setSpacing(8);
 
         if (!model.selection()) {
-            layout->addWidget(
-                plainLabel(owner.tr("No object selected."), contents));
+            auto *empty = plainLabel(owner.tr("No object selected"), contents);
+            empty->setFont(studioSmallFont());
+            layout->addWidget(empty);
         } else if (!model.snapshot()) {
             layout->addWidget(plainLabel(
                 owner.tr("Loading editable properties..."), contents));
@@ -1082,10 +1099,10 @@ struct InspectorWidget::Impl {
         dialog->setWindowTitle(row_id ? owner.tr("Edit row") : owner.tr("Add row"));
         dialog->resize(540, 440);
         auto *layout = new QVBoxLayout(dialog);
-        layout->addWidget(plainLabel(owner.tr(
-            "Enter row values as JSON. Row IDs are managed by the engine."), dialog));
         auto *editor = new QPlainTextEdit(dialog);
         editor->setObjectName(QStringLiteral("pelican.inspectorListRowJson"));
+        editor->setToolTip(owner.tr(
+            "Enter row values as JSON. Row IDs are managed by the engine."));
         value.erase("$row");
         editor->setPlainText(QString::fromStdString(value.dump(2)));
         layout->addWidget(editor, 1);

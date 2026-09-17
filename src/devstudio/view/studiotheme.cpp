@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 #include <vector>
 
@@ -47,6 +48,10 @@ StudioTheme builtInTheme() {
     theme.label = QStringLiteral("Dark");
     theme.style = QStringLiteral("Fusion");
     theme.canvas = builtInCanvas();
+    theme.font.family = QStringLiteral("Segoe UI");
+    theme.font.fallback = QStringLiteral("Yu Gothic UI");
+    theme.font.size = 12.0;
+    theme.font.size_small = 11.0;
     theme.domain_tint = {
         {QStringLiteral("values"), QColor{QStringLiteral("#3d6b4d")}},
         {QStringLiteral("rendering"), QColor{QStringLiteral("#3f5d86")}},
@@ -80,6 +85,27 @@ void readTints(const Json &entry, std::map<QString, QColor> *out) {
         const QColor colour{qtext(value.get<std::string>())};
         if (colour.isValid()) (*out)[qtext(key)] = colour;
     }
+}
+
+// A size the table spells as something other than a positive number says
+// nothing about size, and must not shrink the panel to nothing.
+void readFonts(const Json &entry, StudioFonts *out) {
+    if (!entry.is_object()) return;
+    const auto string = [&entry](const char *key, QString *value) {
+        const auto found = entry.find(key);
+        if (found != entry.end() && found->is_string())
+            *value = qtext(found->get<std::string>());
+    };
+    const auto size = [&entry](const char *key, double *value) {
+        const auto found = entry.find(key);
+        if (found == entry.end() || !found->is_number()) return;
+        const double read = found->get<double>();
+        if (read > 0.0) *value = read;
+    };
+    string("family", &out->family);
+    string("fallback", &out->fallback);
+    size("size", &out->size);
+    size("size_small", &out->size_small);
 }
 
 void readPalette(const Json &entry, StudioTheme *theme) {
@@ -140,6 +166,7 @@ StudioTheme themeFromJson(const QString &name, const Json &entry) {
         readColor(canvas, "dim_text", &theme.canvas.dim_text);
         readColor(canvas, "pill_bg", &theme.canvas.pill_bg);
     }
+    readFonts(entry.value("font", Json::object()), &theme.font);
     readTints(entry.value("domain_tint", Json::object()), &theme.domain_tint);
     readTints(entry.value("source_tint", Json::object()), &theme.source_tint);
     return theme;
@@ -258,6 +285,29 @@ const StudioTheme &currentStudioTheme() {
     if (state.current_index >= state.themes.size()) return fallbackTheme();
     return state.themes[state.current_index];
 }
+
+namespace {
+
+QFont fontOfSize(double pixels) {
+    const StudioTheme &theme = currentStudioTheme();
+    QFont font;
+    QStringList families;
+    if (!theme.font.family.isEmpty()) families.push_back(theme.font.family);
+    if (!theme.font.fallback.isEmpty()) families.push_back(theme.font.fallback);
+    if (!families.isEmpty()) font.setFamilies(families);
+    if (pixels > 0.0) font.setPixelSize(static_cast<int>(std::lround(pixels)));
+    return font;
+}
+
+} // namespace
+
+QFont studioPanelFont() { return fontOfSize(currentStudioTheme().font.size); }
+
+QFont studioSmallFont() {
+    return fontOfSize(currentStudioTheme().font.size_small);
+}
+
+QColor studioDimTextColor() { return currentStudioTheme().canvas.dim_text; }
 
 QString currentStudioThemeName() {
     loadIfNeeded();

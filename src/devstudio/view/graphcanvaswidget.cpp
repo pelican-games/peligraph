@@ -1,5 +1,7 @@
 #include "graphcanvaswidget.hpp"
 
+#include "panelhelp.hpp"
+
 #include "nodelayout.hpp"
 #include "studiotheme.hpp"
 
@@ -1769,6 +1771,7 @@ struct GraphCanvasWidget::Impl {
 
     explicit Impl(GraphCanvasWidget &owner, GraphCanvasReadCapability capability)
         : view{owner}, graph{std::move(capability)} {
+        view.setFont(studioPanelFont());
         auto *layout = new QVBoxLayout(&view);
         layout->setContentsMargins(6, 6, 6, 6);
 
@@ -1800,7 +1803,7 @@ struct GraphCanvasWidget::Impl {
 
         notice = new QLabel(&view);
         notice->setObjectName(QStringLiteral("pelican.graphCanvasNotice"));
-        notice->setWordWrap(true);
+        applyPanelNoticeStyle(notice);
         notice->hide();
         layout->addWidget(notice);
 
@@ -1841,17 +1844,26 @@ struct GraphCanvasWidget::Impl {
         auto *side_layout = new QVBoxLayout(side);
         side_layout->setContentsMargins(0, 0, 0, 0);
         auto *label_row = new QHBoxLayout;
-        label_row->addWidget(new QLabel(QObject::tr("Label:"), side));
+        auto *label_caption = new QLabel(QObject::tr("Label"), side);
+        label_caption->setFont(studioSmallFont());
+        label_row->addWidget(label_caption);
         label_edit = new QLineEdit(side);
         label_edit->setObjectName(QStringLiteral("pelican.graphCanvasLabel"));
-        label_edit->setPlaceholderText(QObject::tr("(no label: the id is the heading)"));
+        label_edit->setPlaceholderText(QObject::tr("(the id is the heading)"));
+        label_edit->setToolTip(
+            QObject::tr("A node with no label is drawn under its id."));
         label_row->addWidget(label_edit, 1);
         apply_label = new QPushButton(QObject::tr("Rename"), side);
         apply_label->setObjectName(QStringLiteral("pelican.graphCanvasRename"));
         label_row->addWidget(apply_label);
-        add_node = new QPushButton(QObject::tr("Add node..."), side);
+        add_node = new QPushButton(QObject::tr("Add"), side);
         add_node->setObjectName(QStringLiteral("pelican.graphCanvasAddNode"));
+        add_node->setToolTip(QObject::tr("Add a node from the catalog."));
         label_row->addWidget(add_node);
+        label_row->addWidget(makePanelHelpButton(
+            side, "pelican.graphCanvas.help", ManualGraphCanvasAnchor,
+            QObject::tr("Shift-drag a socket to connect; double-click an "
+                        "instance to descend into its definition.")));
         side_layout->addLayout(label_row);
         details = new QTreeWidget(side);
         details->setObjectName(QStringLiteral("pelican.graphCanvasDetails"));
@@ -2181,21 +2193,25 @@ struct GraphCanvasWidget::Impl {
             item->setText(1, value);
             return item;
         };
-        // The heading first, in the order the canvas shows it: the chosen name,
-        // then what the node actually is. The field above the table is where it
-        // is edited; this row is what the canvas is currently showing.
-        row(QObject::tr("label"),
-            found->label.empty()
-                ? QObject::tr("%1  (no label: the id is the heading)")
-                      .arg(qtext(found->id))
-                : qtext(found->label));
-        row(QObject::tr("type"), qtext(found->op));
-        row(QObject::tr("domain"),
-            found->contract_known ? qtext(found->domain)
-                                  : QObject::tr("(catalog not fetched)"));
-        row(QObject::tr("evaluation"),
-            found->contract_known ? qtext(found->evaluation)
-                                  : QObject::tr("(catalog not fetched)"));
+        // N-7 rule 4: the heading, the operation, the domain and the
+        // evaluation were four rows carrying one sentence. They are one row
+        // -- label, op and domain on one line -- and the evaluation, which no
+        // canvas gesture depends on, is that row's tooltip.
+        const QString unknown = QObject::tr("(catalog not fetched)");
+        const QString heading =
+            found->label.empty() ? qtext(found->id) : qtext(found->label);
+        const QString domain =
+            found->contract_known ? qtext(found->domain) : unknown;
+        const QString evaluation =
+            found->contract_known ? qtext(found->evaluation) : unknown;
+        auto *node_row = row(QObject::tr("node"),
+                             QStringLiteral("%1 \u00b7 %2 \u00b7 %3")
+                                 .arg(heading, qtext(found->op), domain));
+        node_row->setToolTip(
+            1, QObject::tr("label: %1\ntype: %2\ndomain: %3\n"
+                           "evaluation: %4\nid: %5")
+                   .arg(heading, qtext(found->op), domain, evaluation,
+                        qtext(found->id)));
         row(QObject::tr("id"), qtext(found->id));
         row(QObject::tr("sink"),
             found->sink ? QObject::tr("yes") : QObject::tr("no"));
@@ -2299,7 +2315,9 @@ struct GraphCanvasWidget::Impl {
             notice->clear();
             notice->hide();
         } else {
-            notice->setText(qtext(message.message));
+            const QString whole = qtext(message.message);
+            notice->setToolTip(whole);
+            notice->setText(oneLine(whole));
             notice->setStyleSheet(message.kind == InspectorNoticeKind::Error
                                       ? QStringLiteral("color: #c0392b;")
                                       : QStringLiteral("color: #7f8c8d;"));

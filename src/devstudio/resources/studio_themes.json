@@ -10,6 +10,9 @@
     "A theme may declare `style` (a Qt style to install; empty keeps the",
     "platform's) and `palette` (the window chrome). A theme that declares no",
     "palette keeps Qt's own, which is what `light` wants.",
+    "`font` is the text of every panel: `family` with `fallback` behind it for",
+    "Japanese, `size` for the panel's own text and `size_small` for its",
+    "secondary rows, both in pixels.",
     "`canvas` is what every node canvas draws with, `domain_tint` is the",
     "heading band of a common-graph node (by the operation's domain), and",
     "`source_tint` is the heading band of a Frame Plan node (by where the",
@@ -39,6 +42,12 @@
         "placeholder_text": "#8b97a3",
         "link": "#6fb3e0",
         "disabled_text": "#717c87"
+      },
+      "font": {
+        "family": "Segoe UI",
+        "fallback": "Yu Gothic UI",
+        "size": 12,
+        "size_small": 11
       },
       "canvas": {
         "background": "#20262d",
@@ -70,6 +79,12 @@
     "light": {
       "label": "Light",
       "style": "",
+      "font": {
+        "family": "Segoe UI",
+        "fallback": "Yu Gothic UI",
+        "size": 12,
+        "size_small": 11
+      },
       "canvas": {
         "background": "#f2f4f7",
         "grid": "#e3e7ec",

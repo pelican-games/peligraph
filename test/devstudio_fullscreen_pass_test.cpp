@@ -472,6 +472,18 @@ QString axisText(const FullscreenPassWidget &form, const char *object_name) {
     return label->text();
 }
 
+// N-7 rule 3: the axis label is a mark and a short word. The state word and
+// the sentence that explains it moved to the tooltip, which is what these
+// cases read when they are reading English rather than a state.
+QString axisTip(const FullscreenPassWidget &form, const char *object_name) {
+    const auto *label = qobject_cast<const QLabel *>(
+        &requiredWidget(form, object_name));
+    if (label == nullptr) {
+        throw std::runtime_error("validation axis is not a label");
+    }
+    return label->toolTip();
+}
+
 StringSet shapeViolations(const FullscreenPassWidget &form) {
     StringSet result;
     for (const auto &name :
@@ -1013,10 +1025,15 @@ TEST_CASE(
                     *form,
                     "pelican.fullscreenPass.axis.shaderResolution") ==
                 "not_checked");
-        REQUIRE(axisText(
+        REQUIRE(axisTip(
                     *form,
                     "pelican.fullscreenPass.axis.shaderResolution")
                     .contains(QStringLiteral("Shader stem resolution: Not checked")));
+        // N-7 rule 3: what the panel prints is a mark and a short word.
+        REQUIRE(axisText(
+                    *form,
+                    "pelican.fullscreenPass.axis.shaderResolution")
+                    .size() <= 10);
         REQUIRE(axisState(
                     *form,
                     "pelican.fullscreenPass.axis.fieldOwnership") ==
@@ -1035,8 +1052,8 @@ TEST_CASE(
                     *form,
                     "pelican.fullscreenPass.axis.targetUsage") ==
                 "not_checked");
-        REQUIRE(axisText(*form,
-                         "pelican.fullscreenPass.axis.targetUsage")
+        REQUIRE(axisTip(*form,
+                        "pelican.fullscreenPass.axis.targetUsage")
                     .contains(QStringLiteral(
                         "Target usage compatibility: Not checked")));
         REQUIRE(axisState(
@@ -1054,7 +1071,7 @@ TEST_CASE(
         *contrast_form, "pelican.fullscreenPass.copyJson");
     REQUIRE(summary.property("pelicanValidationSummaryState").toString() ==
             QStringLiteral("partial"));
-    REQUIRE(summary.text().contains(QStringLiteral("Not checked")));
+    REQUIRE(summary.toolTip().contains(QStringLiteral("Not checked")));
     REQUIRE(copy.isEnabled());
     const QString partial_summary = summary.text();
 
@@ -1065,7 +1082,7 @@ TEST_CASE(
     };
     for (const char *axis : unchecked_axes) {
         REQUIRE(axisState(*contrast_form, axis) == "not_checked");
-        REQUIRE(axisText(*contrast_form, axis)
+        REQUIRE(axisTip(*contrast_form, axis)
                     .contains(QStringLiteral("Not checked")));
     }
 
@@ -1521,10 +1538,16 @@ TEST_CASE(
                       "output");
     REQUIRE_FALSE(outputJson(form).empty());
 
-    const auto &scope = required<QLabel>(
-        form, "pelican.fullscreenPass.scopeNotice");
-    REQUIRE(scope.text().contains(QStringLiteral("engine"),
-                                  Qt::CaseInsensitive));
+    // N-7 rule 1: the sentence that said the engine owns the commit is no
+    // longer printed on the panel; it is the `?` button's tooltip.
+    REQUIRE(form.findChild<QLabel *>(
+                QStringLiteral("pelican.fullscreenPass.scopeNotice")) ==
+            nullptr);
+    const auto &help = required<QPushButton>(
+        form, "pelican.fullscreenPass.help");
+    REQUIRE(help.toolTip().contains(QStringLiteral("Save sends this draft")));
+    REQUIRE(help.toolTip().contains(QStringLiteral("engine"),
+                                    Qt::CaseInsensitive));
     REQUIRE_FALSE(required<QPushButton>(
                       form, "pelican.fullscreenPass.save")
                       .isEnabled());
@@ -1538,7 +1561,7 @@ TEST_CASE(
                  QStringLiteral("spy failure"));
     REQUIRE(required<QLabel>(
                 form, "pelican.fullscreenPass.planStatus")
-                .text()
+                .toolTip()
                 .contains(QStringLiteral("spy failure")));
 }
 
@@ -2104,7 +2127,7 @@ TEST_CASE(
         form.receiveResult(QByteArray::fromStdString(plan.dump()));
         REQUIRE(required<QLabel>(
                     form, "pelican.fullscreenPass.planStatus")
-                    .text()
+                    .toolTip()
                     .contains(QString::fromStdString(error_name)));
         REQUIRE(required<QComboBox>(
                     form, "pelican.fullscreenPass.inputTarget")
@@ -2180,7 +2203,7 @@ TEST_CASE(
     REQUIRE(axisState(
                 form, "pelican.fullscreenPass.axis.nameCollision") ==
             "not_checked");
-    REQUIRE(axisText(
+    REQUIRE(axisTip(
                 form, "pelican.fullscreenPass.axis.nameCollision")
                 .contains(QStringLiteral("no graph 'collision_graph'")));
 }
@@ -2249,13 +2272,13 @@ TEST_CASE(
     REQUIRE(axisState(
                 form, "pelican.fullscreenPass.axis.historySupport") ==
             "not_checked");
-    REQUIRE(axisText(
+    REQUIRE(axisTip(
                 form, "pelican.fullscreenPass.axis.historySupport")
                 .contains(QStringLiteral("no frame plan")));
-    REQUIRE(axisText(
+    REQUIRE(axisTip(
                 form, "pelican.fullscreenPass.axis.targetUsage")
                 .contains(QStringLiteral("no frame plan")));
-    REQUIRE(axisText(
+    REQUIRE(axisTip(
                 form, "pelican.fullscreenPass.axis.generationOrder")
                 .contains(QStringLiteral("no frame plan")));
 

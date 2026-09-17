@@ -1105,10 +1105,15 @@ void MainWindow::restoreLayoutPreset(const QString &name) {
         return;
     }
 
-    QMessageBox::warning(
-        this, tr("Layout Could Not Be Restored"),
-        tr("Layout '%1' could not be restored: %2\n\nThe default layout has been restored.")
-            .arg(name, error));
+    const QString message =
+        tr("Layout '%1' could not be restored: %2 The default layout was "
+           "restored.")
+            .arg(name, error);
+    qWarning().noquote() << message;
+    statusBar()->showMessage(tr("Layout '%1' not restored; default restored")
+                                 .arg(name),
+                             6000);
+    statusBar()->setToolTip(message);
 }
 
 void MainWindow::deleteLayoutPreset(const QString &name) {
@@ -1171,7 +1176,7 @@ void MainWindow::restoreLastPanelLayout() {
     }
     if (result == LayoutRestoreResult::DefaultMissing) {
         statusBar()->showMessage(
-            tr("No saved panel layout '%1'; the default panel layout was restored")
+            tr("No saved panel layout '%1'; default restored")
                 .arg(lastPanelLayoutName()));
         return;
     }
@@ -1180,7 +1185,10 @@ void MainWindow::restoreLastPanelLayout() {
         tr("Panel layout '%1' could not be restored: %2 The default panel layout was restored.")
             .arg(lastPanelLayoutName(), error);
     qWarning().noquote() << message;
-    statusBar()->showMessage(message);
+    statusBar()->showMessage(
+        tr("Panel layout '%1' not restored; default restored")
+            .arg(lastPanelLayoutName()));
+    statusBar()->setToolTip(message);
 }
 
 void MainWindow::saveToolLayoutPreset() {
@@ -1244,10 +1252,15 @@ void MainWindow::restoreToolLayoutPreset(const QString &name) {
         return;
     }
 
-    QMessageBox::warning(
-        this, tr("Tool Layout Could Not Be Restored"),
-        tr("Frame Plan layout '%1' could not be restored: %2\n\nThe default tool layout has been restored.")
-            .arg(name, error));
+    const QString message =
+        tr("Frame Plan layout '%1' could not be restored: %2 The default tool "
+           "layout was restored.")
+            .arg(name, error);
+    qWarning().noquote() << message;
+    statusBar()->showMessage(
+        tr("Frame Plan layout '%1' not restored; default restored").arg(name),
+        6000);
+    statusBar()->setToolTip(message);
 }
 
 void MainWindow::deleteToolLayoutPreset(const QString &name) {
@@ -1304,7 +1317,7 @@ QString MainWindow::restoreLastToolLayout() {
             .arg(lastToolLayoutName());
     }
     if (result == ToolLayoutRestoreResult::DefaultMissing) {
-        return tr("No saved Frame Plan layout '%1'; using the default tool layout.")
+        return tr("No saved Frame Plan layout '%1'; default tool layout")
             .arg(lastToolLayoutName());
     }
 
@@ -1312,7 +1325,9 @@ QString MainWindow::restoreLastToolLayout() {
         tr("Frame Plan layout '%1' could not be restored: %2 The default tool layout was restored.")
             .arg(lastToolLayoutName(), error);
     qWarning().noquote() << message;
-    return message;
+    statusBar()->setToolTip(message);
+    return tr("Frame Plan layout '%1' not restored; default restored")
+        .arg(lastToolLayoutName());
 }
 
 void MainWindow::applyDefaultLayout() {
