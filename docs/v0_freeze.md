@@ -306,6 +306,7 @@ CMake 側で 2 つ目の表を作らないため、語彙の置き場は 1 箇�
 | N-5 Studio theme light / dark | `43f032b1` |
 | N-4 自動配置(層配置)とパン | `af6e335f` |
 | AG-3b 観測の Studio 面(値の帯 / Live / Timeline / e2e) | `5d64bd6e` |
+| N-7 パネルの文字を減らす | `5865a6fd` |
 
 ## 6. v0.1.0 tag の手順(2026-09-17: engine 側の全数 1947 / 1947 緑 @ `83645084`。tag は Studio 側(N 系 / AG-3b)が入り利用者が v0 を閉じるまで打たない)
 

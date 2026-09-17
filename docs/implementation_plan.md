@@ -24157,6 +24157,42 @@ Frame Plan と Graph の統合キャンバス / Frame Plan の操作変更 / 位
 
 完了記録(2026-09-17、`af6e335f`): `nodelayout.{hpp,cpp}`(Qt 非依存 `layoutNodeGraph(nodes, edges, options) → boxes / columns / bends / reversed_edges / crossings`。段: 集約 → 層(最長経路、閉路は DFS の back edge を逆向き)→ dummy lane → 重心 sweep 4 往復(最良を保持、同点は id)→ isotonic regression の縦配置 4 pass → 層ごとの幅と `HorizontalGap`、bend は列の左右端 2 点で辺は列内で水平)。両キャンバスが呼ぶ。`autoLayout()` と名前付き QAction(`pelican.graphCanvas.autoLayout / fitView`、`pelican.framePlan.autoLayout / fitView`)、automation に `layout_stats`。test: `devstudio_nodelayout_test`(Qt 無し。fixture 4 つで旧規則を再実装して実測: posegraph_demo root 0→0、`walk_run` 辺の node 貫通 1→0、`graph_node_visuals` 0→0、**example Frame Plan 交差 133→44、貫通 41→0**、重なり 0、左→右、決定的。対照: sweep 0 回で 179 / dummy 無しで貫通 1 / 押し広げ無しで overlap 2 / pan を scroll に戻すと `19.0 > 79.0` が赤)、scene test 2 case(Auto layout は当該 scope の位置だけ捨てる、RPC は出ない)、Frame Plan 50 case / 2166 assertions で**幾何 assertion の変更ゼロ**、非 GPU 全数 1705/1705、シナリオ 7 本緑(`graph_auto_layout` 新規: drag → `action` で戻る、`layout_stats` 交差 0 / 重なり 0。`graph_canvas_zoom_pan` に倍率 1 でのパン step を追加)。
 
+### N-7: パネルの文字を減らす —— 説明文を消し、状態は 1 行、詳細は tooltip へ(利用者指示 2026-09-17「テキストで表示されてるものが多すぎる。ノードはまだいいが、他の tab や文字情報が乗りまくっている場所」)
+
+**§4 規則 11 下段(Studio 内。機能・RPC は不変、表示だけ)。実装者: Claude(Opus)。対象は node ではなく **パネル**。**
+
+#### 今日の実態(60 文字超の UI 文字列の数 / 文字数)
+`renderfeatureswidget.cpp` 16 / 1788、`inspectorwidget.cpp` 7 / 607、`fullscreenpasswidget.cpp`(Pass Editor)6 / 636、`mainwindow.cpp` 6 / 498、`frameplanwidget.cpp` 5 / 419。Pass Editor は既定状態で「Save sends this draft to the engine. The engine owns the project documents, validates…」「Engine authoring context is unavailable…」「Validation axes」の 8 行など、**操作していない時から説明文が数百文字**出ている。Frame Plan の Edit task / Render Features の dialog も同じ
+
+#### 規則(全パネル共通)
+1. **仕組みの説明文は画面に置かない**。関係する control の tooltip に移すか、パネル右上の `?`(manual の該当節を開く)に集約。既定状態のパネルに出てよい文字は「見出し・ラベル・値・1 行の状態」だけ
+2. **状態(notice)は 1 行、行動できるときだけ**。名前付き error は `code` + 1 文(詳細は tooltip と Output dock)。何も無いときは行そのものを隠す(空行を残さない)
+3. **検査の一覧(Validation axes 等)は記号 + 短い語**(✓ / ✗ / –、「未読込」など 4〜8 文字)。文は tooltip
+4. **同じ情報を 2 か所に出さない**(右 pane と node、dialog と親パネル)。残すのは操作に近い方
+5. **文字は theme の表から**(N-5 の `StudioTheme` に `font{family, size, size_small}` を足す。既定 `Segoe UI` 12 / 11、日本語 fallback `Yu Gothic UI`)。secondary は `dim_text`。パネル間で大きさと太さを揃える
+6. **文字の予算を test で固定**: 各パネルの既定状態(project を開いた直後、何も選んでいない)で可視な文字列の合計を数え、上限を置く(Pass Editor ≤ 400、Render Features ≤ 300、Inspector ≤ 200、Frame Plan の detail ≤ 300、Graph の右 pane ≤ 150)。tooltip は数えない
+
+#### 対象と要点
+- **Pass Editor(`fullscreenpasswidget`)**: 説明 3 文と Validation axes の文を消し、axes を記号行に。「Frame plan unavailable / Engine authoring context is unavailable」は 1 行の状態に統合
+- **Render Features(`renderfeatureswidget`)**: dialog の手順文(「Select a task port group, then…」等)を tooltip と `?` へ。連続する notice を 1 行に
+- **Inspector(`inspectorwidget`)**: component 追加 dialog の説明文を tooltip へ。「No object selected」の類は dim の 1 行
+- **Frame Plan(`frameplanwidget`)**: detail pane の説明文と physical の長い 1 行(`physical available (profile…)`)を短い状態 + tooltip に
+- **mainwindow**: layout 復元の message は status bar 1 行(dialog にしない)
+- **Graph の右 pane**: `Field / Value` は残すが、ラベル・型・domain・evaluation の 4 行を 1 行(`label · op · domain`)に
+
+#### 受け入れ
+1. widget test(offscreen): 各パネルを既定状態で作り、可視 `QLabel` / `QGroupBox` title / button text の合計文字数が上限以下(対照: 上限を半分にすると赤 = 予算が実測に基づくこと)。説明文は tooltip に移っていること(元の文の先頭 20 文字が tooltip のどこかにある)
+2. notice の test: 何も無いときは notice widget が hidden、error のときは `code` を含む 1 行
+3. 既存 Studio test 全数緑(文言を assert している箇所は一覧。挙動は不変)、非 GPU 全数緑、シナリオ 9 本緑(`text` で読む文言が変わった step は更新して一覧)
+4. Q-1 のスクリーンショット before / after(Pass Editor / Render Features / Inspector / Frame Plan)を利用者に見せる
+
+#### やらないこと
+node の表示(別)/ 右 pane の再設計 / 文言の翻訳 / アイコンフォント。
+
+実装時の裁定(2026-09-17、`agent/n1`): 説明文の移し先は「関係する control の tooltip」を第一、パネル右上の `?`(`panelhelp.hpp`、`QDesktopServices` で `docs/manual/13_editor.md#<anchor>` を開く)を第二にした。notice は `setPanelNotice` 1 経路(先頭の 1 文 ≤ 90 字 + 全文 tooltip、空なら hidden)。`graphattachmentwidget`(Inspector 内)は未予算(記録)。Graph 右 pane の上限 150 は実測 25 の 6 倍で拘束していない(記録)。manual の anchor は日本語見出しの slug で未検証、`.md` を editor で開くと fragment は無視される(記録)。着地前に見つけた既存の flake: `canvas_zoom_pan` が Frame Plan 取得前にホイールし、取得後の初回 fit で倍率が戻る競合(素の HEAD で 3/3 赤)→ `pelican.framePlanStatus` に `passes` が出るのを待つ step を wheel の直前に挿入(3/3 緑)。逆向きの競合(取得が 250 ms 以内に来ると `scale eq 1.0` が落ちる)は残る(記録)。
+
+完了記録(2026-09-17、`5865a6fd`): 可視文字(label / group title / button / tree、tooltip 除く)Pass Editor 約 1592 → 352(上限 400)、Render Features 約 371 → 167(300)、Frame Plan 約 580 → 258(300)、Inspector 約 160 → 119(200。dialog の説明 ≈540 字は tooltip へ)、Graph 右 pane 33 → 25。Pass Editor の Validation axes 8 文 → 記号 1 行 + tooltip、layout 復元の `QMessageBox` 2 つ → status bar 1 行、フォントは `StudioFonts{family, fallback, size, size_small}` をテーマ表に(`Segoe UI` / `Yu Gothic UI`、12 / 11)。test: `devstudio_paneltext_test`(予算 5 パネル、tooltip への移動、notice の hidden 規則、テーマ font。対照: 上限を半分で 4 case 赤 / `?` の tooltip を空で赤 / notice を常時表示で赤)、非 GPU 全数 1722/1722、シナリオ 8/8。before / after のスクリーンショット `<作業ディレクトリ>/n7_shots/`(repo 外)。
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**

@@ -424,6 +424,7 @@ v0 は「**装着 → 編集 → 観測 → 保存 → 再読込**の往復を�
 | N-4 | ノードの自動配置とパン | 済(`af6e335f`) | Qt 非依存の層配置(最長経路の列、dummy lane、重心法、isotonic regression の行)を両キャンバスが呼ぶ。example の Frame Plan で交差 133 → 44、node を横切る辺 41 → 0。右クリック「Auto layout」、パンは描画が収まっていても動く | 図が読める配置になる([第13章](13_editor.md)) |
 | N-5 | Studio のテーマ(ライト / ダーク) | 済(`43f032b1`) | 色を 1 枚の表(`studio_themes.json` + `StudioTheme`)に集め、View ▸ Theme で切り替え、QSettings `studio/theme` に保存。両キャンバスが listener で描き直す | エディタの明暗をノードキャンバスと揃えられる。再起動不要、既定は `dark`([第13章](13_editor.md)) |
 | AG-3b | 観測の Studio 面 | 済(`5d64bd6e`) | どの scope でも出力 port に `get_graph_node_values` の公開値、Live、Timeline 帯(選択 node の port と owner の animation 状態、scrub)。装着 → 編集 → 観測 → 保存 → 再読込 を実 engine のシナリオ `graph_observe_roundtrip` が 1 経路で通す | Studio で観測しながら編集できる([第13章](13_editor.md) §13.5) |
+| N-7 | パネルの文字を減らす | 済(`5865a6fd`) | 説明文は tooltip と `?` へ、notice は 1 行、検査は記号、フォントはテーマ表、可視文字の予算 test(Pass Editor 1592 → 352 など) | 画面が読める([第13章](13_editor.md)) |
 
 この 25 行のほかに **R-2(操作感)** があります —— これは**実装のない裁定**で、「render config 編集の複合 undo は v0 では約束しない」を決めたものです(下の §11.3「v0 で約束しないもの」)。
 
