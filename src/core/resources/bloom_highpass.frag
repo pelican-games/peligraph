@@ -4,13 +4,22 @@
 #include "pelican_sets.glsl"
 #include "pelican_frame.glsl"
 
+#ifndef PELICAN_FEATURE_BLOOM_THRESHOLD
+#error PELICAN_FEATURE_BLOOM_THRESHOLD must be defined for the bloom highpass shader
+#endif
+#ifndef PELICAN_FEATURE_BLOOM_KNEE
+#error PELICAN_FEATURE_BLOOM_KNEE must be defined for the bloom highpass shader
+#endif
+
 layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform sampler2D inputTexture;
 
 layout(location = 0) in vec2 inTexCoord;
 layout(location = 0) out vec4 outColor;
 
-const float threshold = 0.4; // 輝度閾値
-const float knee = 0.7;      // 膝領域の強度 (より滑らかなロールオフ用)
+// 輝度閾値と膝領域の強度 (より滑らかなロールオフ用)。
+// float() は define が "2" のような整数リテラルで届いた場合の保険。
+const float threshold = float(PELICAN_FEATURE_BLOOM_THRESHOLD);
+const float knee = float(PELICAN_FEATURE_BLOOM_KNEE);
 
 void main() {
     vec4 color = texture(inputTexture, inTexCoord);

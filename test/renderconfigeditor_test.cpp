@@ -2172,7 +2172,9 @@ TEST_CASE("Feature materialization saves the concrete feature and switches its o
                 INFO(result.dump());
                 REQUIRE(result.at("committed") == true);
                 auto saved = Json::parse(readBytes(destination));
-                CHECK_FALSE(saved.contains("parameters"));
+                // P-2a-1c: the derivative keeps the scalar declarations so its
+                // parameters stay editable after materialization.
+                CHECK(saved.at("parameters").at("scalars") == shadow.at("parameters").at("scalars"));
                 CHECK(saved.at("bound_parameters").at("color_r") == 0.7);
                 const auto owner = Json::parse(readBytes(owner_path));
                 CHECK((scope == "root" ? owner : owner.at("config")).at("features").at(0) == "project://passes/shadow-local.json");
@@ -2322,6 +2324,48 @@ TEST_CASE("The shipping bloom component is readable from the project and derives
               .at("features")
               .at(index) == "project://passes/bloom-local.json");
     CHECK(readBytes(engine_source) == engine_source_before);
+
+    // P-2a-1c, operation 3 "keep tuning the derivative": the derived document
+    // keeps the scalar declarations and records the values it was cut with, so
+    // the feature list still offers a schema for it and set_parameters is
+    // accepted.  Before 1c parameter_schema was null here, the instance was
+    // not editable, and composing an override threw.
+    CHECK(derived.at("parameters").at("scalars") ==
+          engine_document.at("parameters").at("scalars"));
+    CHECK(derived.at("bound_parameters").at("intensity") == 2.0);
+    // The scalar defines are regenerated at compose time from the declarations
+    // instead of being frozen into the document.
+    CHECK_FALSE(derived.contains("shader_defines"));
+
+    const auto after = service->getRenderFeatures(Json::object());
+    const auto &derived_instance = after.at("feature_instances").at(index);
+    CHECK(derived_instance.at("reference") == "project://passes/bloom-local.json");
+    CHECK(derived_instance.at("materializable") == false);
+    CHECK(derived_instance.at("editable") == true);
+    CHECK(derived_instance.at("bound_parameters").at("intensity") == 2.0);
+    const auto &derived_scalars =
+        derived_instance.at("parameter_schema").at("scalars");
+    const auto intensity = std::find_if(
+        derived_scalars.begin(), derived_scalars.end(),
+        [](const auto &declaration) { return declaration.at("name") == "intensity"; });
+    REQUIRE(intensity != derived_scalars.end());
+    CHECK(intensity->at("default") == 2.0);
+
+    const auto edited = service->editRenderFeatures(
+        {{"base_source_digest", after.at("source_digest").at("hex")},
+         {"operations",
+          Json::array({Json{{"op", "set_parameters"},
+                            {"scope", "root"},
+                            {"index", index},
+                            {"parameters", {{"intensity", 5.0}}}}})}});
+    INFO(edited.dump());
+    REQUIRE(edited.at("status") == "accepted");
+    service->commitPending();
+    REQUIRE(service->getResult({{"ticket", edited.at("ticket")}})
+                .at("committed") == true);
+    CHECK(Json::parse(readBytes(project.render_config)).at("features").at(index) ==
+          Json{{"ref", "project://passes/bloom-local.json"},
+               {"parameters", {{"intensity", 5.0}}}});
 }
 
 TEST_CASE("Pipeline fork saves the original preset and switches the root atomically",

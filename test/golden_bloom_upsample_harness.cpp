@@ -871,27 +871,67 @@ nlohmann::json wp357TwoLevelBloomFeature(nlohmann::json feature) {
     return feature;
 }
 
+// P-2a-1c: the bloom knobs the project can turn.  `engine_parameters` are the
+// instance overrides written next to the engine reference (what `set_parameters`
+// writes); `materialize` cuts a project derivative at those values and then
+// `derived_parameters` are the overrides written next to the *derivative*, the
+// edit that was refused before 1c.
+struct Wp357BloomVariant {
+    bool two_level = false;
+    bool materialize = false;
+    nlohmann::json engine_parameters = nlohmann::json::object();
+    nlohmann::json derived_parameters = nlohmann::json::object();
+    std::string label = "canonical";
+};
+
+void wp357PointConfigAtDerivative(nlohmann::json &config,
+                                  const nlohmann::json &derived_parameters) {
+    const auto derived_reference =
+        "project://" + std::string{wp357LocalBloomFeatureFile};
+    for (auto &entry : config.at("features")) {
+        const auto reference = entry.is_string()
+            ? entry.get<std::string>()
+            : entry.at("ref").get<std::string>();
+        if (reference != "engine://features/bloom.json") continue;
+        if (derived_parameters.empty()) {
+            entry = derived_reference;
+        } else {
+            entry = nlohmann::json{{"ref", derived_reference},
+                                   {"parameters", derived_parameters}};
+        }
+    }
+}
+
 void wp357WriteProductionProbeProject(
     const std::filesystem::path &root,
-    bool derive_two_level_bloom = false) {
+    const Wp357BloomVariant &variant = {}) {
     wp357WriteProjectShell(
         root, "WP357 shipping bloom composite", "main_render");
     wp357WriteText(
         root / wp357ProbeFeatureFile,
         wp357ProductionProbeFeature().dump(2));
     auto config = wp357ProductionProbeConfig();
-    if (derive_two_level_bloom) {
+    if (!variant.engine_parameters.empty()) {
+        for (auto &entry : config.at("features")) {
+            if (entry == "engine://features/bloom.json") {
+                entry = nlohmann::json{
+                    {"ref", "engine://features/bloom.json"},
+                    {"parameters", variant.engine_parameters}};
+            }
+        }
+    }
+    if (variant.two_level) {
         wp357WriteText(
             root / wp357LocalBloomFeatureFile,
             wp357TwoLevelBloomFeature(
                 wp357MaterializeBloomFeature(root, config))
                 .dump(2));
-        for (auto &entry : config.at("features")) {
-            if (entry == "engine://features/bloom.json") {
-                entry = "project://" +
-                        std::string{wp357LocalBloomFeatureFile};
-            }
-        }
+        wp357PointConfigAtDerivative(config, variant.derived_parameters);
+    } else if (variant.materialize) {
+        wp357WriteText(
+            root / wp357LocalBloomFeatureFile,
+            wp357MaterializeBloomFeature(root, config).dump(2));
+        wp357PointConfigAtDerivative(config, variant.derived_parameters);
     }
     wp357WriteText(
         root / "passes" / "main.json", config.dump(2));
@@ -965,13 +1005,11 @@ struct Wp357ProductionCapture {
 };
 
 Wp357ProductionCapture wp357CaptureProductionComposite(
-    bool derive_two_level_bloom = false) {
+    const Wp357BloomVariant &variant = {}) {
     const auto root = wp357TempProject(
-        derive_two_level_bloom ? "production_final_v0_two_level"
-                               : "production_final_v0");
+        "production_final_v0_" + variant.label);
     try {
-        wp357WriteProductionProbeProject(
-            root, derive_two_level_bloom);
+        wp357WriteProductionProbeProject(root, variant);
         Wp357ProductionCapture capture;
         {
             FastModuleContainer modules;
@@ -1052,8 +1090,9 @@ std::array<std::uint32_t, 4> wp357CenterStorage(
 void wp357RequireDerivedBloomFeatureChangesPixels() {
     const auto engine_document =
         wp357ReadText(wp357BloomFeatureSourcePath());
-    const auto canonical = wp357CaptureProductionComposite(false);
-    const auto derived = wp357CaptureProductionComposite(true);
+    const auto canonical = wp357CaptureProductionComposite();
+    const auto derived = wp357CaptureProductionComposite(
+        Wp357BloomVariant{.two_level = true, .label = "two_level"});
     // The component the derivative was cut from is untouched, byte for byte.
     REQUIRE(wp357ReadText(wp357BloomFeatureSourcePath()) ==
             engine_document);
@@ -1265,6 +1304,86 @@ void GoldenHarness::runBloomLoadSemantics() {
     } catch (const std::runtime_error &error) {
         TestSupport::skipIfVulkanDeviceUnavailable(
             error, "WP357 minimal Load GPU fixture unavailable");
+        throw;
+    }
+}
+
+
+// P-2a-1c: the bloom feature declares threshold / knee / intensity, the two
+// shaders read them as required defines, and the values survive materialize.
+// Each leg is measured against the shipping default frame; the numbers are
+// printed so a reviewer can see the control (0 changed pixels) next to the
+// live legs.
+void GoldenHarness::runBloomFeatureParameters() {
+    setupLogger();
+    try {
+        const auto canonical = wp357CaptureProductionComposite();
+
+        // (b) A root-scope override on the engine component reaches the
+        // highpass shader through its define.  Before 1c the shader carried
+        // `const float threshold = 0.4` and this leg was byte-identical.
+        const auto raised_threshold = wp357CaptureProductionComposite(
+            Wp357BloomVariant{
+                .engine_parameters = {{"threshold", 1.5}},
+                .label = "threshold_1_5"});
+        const auto threshold_changed = wp357ChangedPixels(
+            canonical.display, raised_threshold.display, false);
+        CHECK(threshold_changed > 0);
+
+        // Materializing at the declared defaults is value-preserving: the
+        // derivative renders the shipping frame byte for byte.
+        const auto materialized_default = wp357CaptureProductionComposite(
+            Wp357BloomVariant{.materialize = true,
+                              .label = "materialized_default"});
+        CHECK(wp357ChangedPixels(canonical.display,
+                                 materialized_default.display, false) == 0);
+
+        // (c) Materialize at a non-default intensity: the value lives in the
+        // derivative's bound_parameters and nothing overrides it, so the
+        // frame moves.  Dropping bound_parameters from the compose-time
+        // precedence returns this leg to the canonical frame.
+        const auto materialized_intensity = wp357CaptureProductionComposite(
+            Wp357BloomVariant{.materialize = true,
+                              .engine_parameters = {{"intensity", 0.25}},
+                              .label = "materialized_intensity"});
+        const auto bound_changed = wp357ChangedPixels(
+            canonical.display, materialized_intensity.display, false);
+        CHECK(bound_changed > 0);
+
+        // (c) The edit `set_parameters` performs after materialization: the
+        // override sits next to the project:// derivative and wins over the
+        // value it was cut with.  Before 1c compose refused this document.
+        const auto edited_after_materialize = wp357CaptureProductionComposite(
+            Wp357BloomVariant{.materialize = true,
+                              .derived_parameters = {{"intensity", 0.25}},
+                              .label = "materialized_edited"});
+        const auto edited_changed = wp357ChangedPixels(
+            canonical.display, edited_after_materialize.display, false);
+        CHECK(edited_changed > 0);
+        // Same value by either route, so the same frame.
+        CHECK(wp357ChangedPixels(materialized_intensity.display,
+                                 edited_after_materialize.display, false) == 0);
+
+        const auto center = [](const RenderTargetReadback &readback) {
+            const auto storage = wp357CenterStorage(readback);
+            return std::to_string(storage[0]) + ',' +
+                   std::to_string(storage[1]) + ',' +
+                   std::to_string(storage[2]) + ',' +
+                   std::to_string(storage[3]);
+        };
+        std::cout << "P2A1C_BLOOM_PARAMETERS"
+                  << " canonicalCenter=" << center(canonical.display)
+                  << " thresholdChangedPixels=" << threshold_changed
+                  << " thresholdCenter=" << center(raised_threshold.display)
+                  << " materializedDefaultChangedPixels=0"
+                  << " boundIntensityChangedPixels=" << bound_changed
+                  << " boundIntensityCenter="
+                  << center(materialized_intensity.display)
+                  << " editedAfterMaterializeChangedPixels=" << edited_changed
+                  << '\n';
+    } catch (const std::runtime_error &error) {
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "P-2a-1c bloom parameter GPU fixture unavailable");
         throw;
     }
 }

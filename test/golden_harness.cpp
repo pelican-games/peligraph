@@ -2029,6 +2029,17 @@ nlohmann::json makeHdrRenderingConfig(bool hdr_enabled) {
          })},
     };
 
+    // These two passes use the bloom feature's shaders without the bloom
+    // feature, so nothing declares its parameters here.  The shaders require
+    // the defines (`#error` otherwise); the fixture supplies the same values
+    // the feature declares as defaults, which is what the goldens were made
+    // with.  Removing them fails the compile by name instead of silently
+    // drifting.
+    config["shader_defines"] = nlohmann::json::array({
+        "PELICAN_FEATURE_BLOOM_THRESHOLD=0.4",
+        "PELICAN_FEATURE_BLOOM_KNEE=0.7",
+        "PELICAN_FEATURE_BLOOM_INTENSITY=2.0",
+    });
     config["features"] = nlohmann::json::array({"engine://features/debug_text.json"});
     if (hdr_enabled) {
         config["features"].push_back("engine://features/hdr.json");

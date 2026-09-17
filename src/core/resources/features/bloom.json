@@ -2,6 +2,30 @@
   "schema": "pelican.render_feature",
   "version": 1,
   "name": "bloom",
+  "parameters": {
+    "schema": "pelican.render_feature_parameters",
+    "version": 1,
+    "scalars": [
+      {
+        "name": "threshold",
+        "type": "float",
+        "range": [0.0, 4.0],
+        "default": 0.4
+      },
+      {
+        "name": "knee",
+        "type": "float",
+        "range": [0.0, 1.0],
+        "default": 0.7
+      },
+      {
+        "name": "intensity",
+        "type": "float",
+        "range": [0.0, 8.0],
+        "default": 2.0
+      }
+    ]
+  },
   "render_targets": [
     {
       "name": "Bloom_Threshold_RT",

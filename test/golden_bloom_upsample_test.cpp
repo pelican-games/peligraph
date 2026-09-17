@@ -16,4 +16,10 @@ TEST_CASE(
     GoldenHarness::runBloomLoadSemantics();
 }
 
+TEST_CASE(
+    "P-2a-1c bloom parameters reach the shader and survive materialization",
+    "[golden][headless][p2a1c][bloom][feature-parameters]") {
+    GoldenHarness::runBloomFeatureParameters();
+}
+
 } // namespace Pelican

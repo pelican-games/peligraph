@@ -1125,9 +1125,13 @@ TEST_CASE("Materialized shadow features preserve declarations and runtime parame
         original_root["features"] = Json::array({{{"ref", reference}, {"parameters", parameters}}});
         const auto original = composeRenderFeatureConfig(original_root, RenderFeatureComposeDependencies{loadEngineFeature, true});
         auto document = Json::parse(materializeRenderFeatureDocument(authored, parameters, base.config).dump());
-        CHECK_FALSE(document.contains("parameters"));
+        // P-2a-1c: the derivative keeps the scalar declarations it stays
+        // editable through, and the value it was cut with lives in
+        // bound_parameters instead of being frozen into the physical fields.
+        CHECK(document.at("parameters").at("scalars") == authored.at("parameters").at("scalars"));
+        CHECK_FALSE(document.at("parameters").contains("render_targets"));
         CHECK(document.at("bound_parameters").at("resolution") == 512);
-        CHECK(document.at("render_targets").at(0).at("width") == 512);
+        CHECK(document.at("render_targets").at(0).at("width") == "$resolution");
         auto materialized_root = root;
         materialized_root["features"] = Json::array({"project://features/editable_shadow.json"});
         const auto compose = [&] {
@@ -1152,8 +1156,17 @@ TEST_CASE("Materialized shadow features preserve declarations and runtime parame
         const auto target = std::find_if(targets.begin(), targets.end(), [&](const auto &value) { return value.at("name") == name; });
         REQUIRE(target != targets.end());
         CHECK(target->at("width") == 256);
-        materialized_root["features"] = Json::array({{{"ref", "project://features/editable_shadow.json"}, {"parameters", parameters}}});
-        CHECK_THROWS(compose());
+        // P-2a-1c: an instance override on a materialized feature is accepted
+        // and wins over the value it was cut with.  Before 1c this threw.
+        auto edited_parameters = parameters;
+        edited_parameters["resolution"] = 128;
+        materialized_root["features"] =
+            Json::array({{{"ref", "project://features/editable_shadow.json"}, {"parameters", edited_parameters}}});
+        const auto overridden = compose();
+        REQUIRE_FALSE(overridden.feature_instances.empty());
+        CHECK(overridden.feature_instances.back().at("parameters").at("resolution") == 128);
+        // Materializing a derivative again is still refused: the RPC offers it
+        // only for a document that has no bound_parameters.
         CHECK_THROWS(materializeRenderFeatureDocument(document, parameters, base.config));
     }
 }
@@ -3432,7 +3445,14 @@ TEST_CASE("bundled TAA composes into the example pipeline as a two-pass history 
     REQUIRE(accum != targets.end());
     REQUIRE(accum->at("history") == true);
 
+    // P-2a-1c: the example pipeline's bloom is a feature with declared scalars,
+    // so its defines are in force alongside TAA's.  INTENSITY prints as "2"
+    // (std::to_chars general), which is why the bloom shaders wrap the define
+    // in float().
     REQUIRE(result.shader_defines == std::vector<std::string>{
+        "PELICAN_FEATURE_BLOOM_THRESHOLD=0.400000006",
+        "PELICAN_FEATURE_BLOOM_KNEE=0.699999988",
+        "PELICAN_FEATURE_BLOOM_INTENSITY=2",
         "PELICAN_FEATURE_TAA",
         "PELICAN_FEATURE_TAA_ALPHA=0.100000001",
         "PELICAN_FEATURE_TAA_DISOCCLUSION_TAU=0.100000001",

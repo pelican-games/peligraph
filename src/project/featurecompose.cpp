@@ -1309,19 +1309,33 @@ void replaceBoundShaderAssetValues(
     }
 }
 
+// A materialized feature keeps the declarations it stays editable through and
+// records the chosen values in `bound_parameters`.  Those values are the
+// derived feature's own defaults: an instance override still wins, and a
+// parameter nobody ever bound falls back to the declaration default.
+// `materialized_document`, when asked for, receives the variant that keeps the
+// scalar declarations and leaves their `$name` placeholders unresolved, so a
+// later edit reaches the physical fields as well as the defines.
 nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
                                      const nlohmann::json &instance_parameters,
                                      const nlohmann::json &config,
                                      const std::string &feature_name,
                                      nlohmann::json &resolved_parameters,
-                                     std::vector<std::string> &scalar_defines) {
+                                     std::vector<std::string> &scalar_defines,
+                                     nlohmann::json *materialized_document = nullptr) {
+    const nlohmann::json *bound_parameters = nullptr;
     if (const auto bound = authored_feature.find("bound_parameters"); bound != authored_feature.end()) {
-        if (!bound->is_object() || authored_feature.contains("parameters") || !instance_parameters.empty())
+        if (!bound->is_object())
             throw std::runtime_error("Materialized render feature '" + feature_name +
-                "' requires a bound_parameters object and does not accept parameter declarations or overrides");
-        resolved_parameters = *bound;
-        return authored_feature;
+                "' requires a bound_parameters object");
+        bound_parameters = &*bound;
     }
+    const auto bound_value =
+        [bound_parameters](const std::string &name) -> const nlohmann::json * {
+        if (bound_parameters == nullptr) return nullptr;
+        const auto found = bound_parameters->find(name);
+        return found == bound_parameters->end() ? nullptr : &*found;
+    };
     const auto declarations = parseFeatureParameters(authored_feature, feature_name);
     std::unordered_map<std::string, const RenderTargetParameterDeclaration *> by_name;
     for (const auto &declaration : declarations.render_targets) {
@@ -1368,12 +1382,18 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
     }
 
     std::unordered_map<std::string, std::string> bindings;
-    resolved_parameters = nlohmann::json::object();
+    // Values bound at materialize time that no longer have a declaration (the
+    // render-target and shader-asset bindings materialize consumes) stay
+    // visible to the runtime through the resolved instance parameters.
+    resolved_parameters = bound_parameters != nullptr ? *bound_parameters : nlohmann::json::object();
     for (const auto &declaration : declarations.render_targets) {
         std::optional<std::string> target_name;
         if (const auto bound = instance_parameters.find(declaration.name);
             bound != instance_parameters.end()) {
             target_name = bound->get<std::string>();
+        } else if (const auto *recorded = bound_value(declaration.name);
+                   recorded != nullptr && recorded->is_string()) {
+            target_name = recorded->get<std::string>();
         } else {
             target_name = declaration.default_target;
         }
@@ -1399,11 +1419,18 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
         declarations.scalars.size());
     for (const auto &declaration : declarations.scalars) {
         const auto supplied = instance_parameters.find(declaration.name);
-        const auto &value = supplied != instance_parameters.end()
-                                ? supplied.value()
-                                : declaration.default_value;
-        validateScalarValue(value, declaration, feature_name,
-                            supplied != instance_parameters.end() ? "value" : "default");
+        const auto *recorded = bound_value(declaration.name);
+        const auto *origin = "default";
+        const nlohmann::json *selected = &declaration.default_value;
+        if (supplied != instance_parameters.end()) {
+            selected = &supplied.value();
+            origin = "value";
+        } else if (recorded != nullptr) {
+            selected = recorded;
+            origin = "bound value";
+        }
+        const auto &value = *selected;
+        validateScalarValue(value, declaration, feature_name, origin);
         resolved_parameters[declaration.name] = value;
         scalar_bindings.emplace(
             declaration.name, value);
@@ -1423,9 +1450,13 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
         const auto supplied =
             instance_parameters.find(
                 declaration.name);
+        const auto *recorded =
+            bound_value(declaration.name);
         const auto reference =
             supplied != instance_parameters.end()
                 ? supplied->get<std::string>()
+            : recorded != nullptr && recorded->is_string()
+                ? recorded->get<std::string>()
                 : declaration.default_reference;
         if (reference.empty() ||
             reference.front() == '$') {
@@ -1445,11 +1476,7 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
 
     auto feature = authored_feature;
     feature.erase("parameters");
-    // Exact "$name" scalar placeholders preserve the parameter's JSON type.
-    // This lets one typed value configure both shader defines and physical
-    // declarations such as fixed extent or array-layer count.
-    replaceBoundScalarValues(
-        feature, scalar_bindings);
+    feature.erase("bound_parameters");
     replaceBoundShaderAssetValues(
         feature, shader_asset_bindings,
         feature_name);
@@ -1506,6 +1533,28 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
         }
         feature["render_target_overrides"] = std::move(replaced);
     }
+    if (materialized_document != nullptr) {
+        // Captured before the scalar substitution: the derived document keeps
+        // its scalar declarations and its `$name` placeholders, so editing a
+        // bound scalar later still reaches every field it feeds.
+        *materialized_document = feature;
+        if (const auto parameters = authored_feature.find("parameters");
+            parameters != authored_feature.end()) {
+            if (const auto scalars = parameters->find("scalars");
+                scalars != parameters->end() && !scalars->empty()) {
+                (*materialized_document)["parameters"] = nlohmann::json{
+                    {"schema", std::string{feature_parameters_schema}},
+                    {"version", supported_feature_parameters_version},
+                    {"scalars", *scalars},
+                };
+            }
+        }
+    }
+    // Exact "$name" scalar placeholders preserve the parameter's JSON type.
+    // This lets one typed value configure both shader defines and physical
+    // declarations such as fixed extent or array-layer count.
+    replaceBoundScalarValues(
+        feature, scalar_bindings);
     return feature;
 }
 
@@ -2673,11 +2722,14 @@ void appendRequiredCapabilities(
     }
 }
 
+// Scalar defines are NOT baked here.  The derived document keeps the scalar
+// declarations, so compose regenerates the defines from the values in force at
+// that moment; baking them as well would leave a stale
+// `PELICAN_FEATURE_<F>_<N>=<old>` next to the regenerated one.
 nlohmann::json boundFeatureDocument(nlohmann::json feature,
-    const nlohmann::json &parameters, const std::vector<std::string> &scalar_defines) {
+    const nlohmann::json &parameters) {
     std::vector<std::string> defines;
     appendShaderDefines(defines, feature, "render feature");
-    appendUnique(defines, scalar_defines);
     if (!defines.empty()) feature["shader_defines"] = std::move(defines);
     feature["bound_parameters"] = parameters;
     return feature;
@@ -2692,11 +2744,15 @@ nlohmann::json materializeRenderFeatureDocument(
     const auto name = validateFeatureEnvelope(authored_feature, "materialize");
     if (!instance_parameters.is_object())
         throw std::invalid_argument("Render feature instance parameters must be an object");
+    if (authored_feature.contains("bound_parameters"))
+        throw std::runtime_error("Render feature '" + name +
+            "' is already materialized and cannot be materialized again");
     nlohmann::json parameters;
     std::vector<std::string> scalar_defines;
-    auto feature = bindFeatureParameters(authored_feature, instance_parameters,
-        config, name, parameters, scalar_defines);
-    return boundFeatureDocument(std::move(feature), parameters, scalar_defines);
+    nlohmann::json materialized;
+    bindFeatureParameters(authored_feature, instance_parameters,
+        config, name, parameters, scalar_defines, &materialized);
+    return boundFeatureDocument(std::move(materialized), parameters);
 }
 
 bool renderFeatureRequiresRuntimeShaderCompiler(
@@ -2862,12 +2918,16 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     for (const auto &loaded : loaded_features) {
         nlohmann::json resolved_parameters;
         std::vector<std::string> scalar_defines;
+        nlohmann::json materialized_document;
         const auto feature = bindFeatureParameters(loaded.feature, loaded.instance.parameters,
                                                    composed, loaded.name, resolved_parameters,
-                                                   scalar_defines);
+                                                   scalar_defines,
+                                                   dependencies.materialized_feature
+                                                       ? &materialized_document
+                                                       : nullptr);
         if (dependencies.materialized_feature)
             dependencies.materialized_feature(loaded.instance.ref,
-                boundFeatureDocument(feature, resolved_parameters, scalar_defines));
+                boundFeatureDocument(std::move(materialized_document), resolved_parameters));
         addRenderTargets(
             composed, feature, target_names,
             loaded.name, loaded.instance.ref,

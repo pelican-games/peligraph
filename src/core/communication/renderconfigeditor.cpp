@@ -64,7 +64,11 @@ OrderedJson &featureSourceFragment(OrderedJson &feature, std::string_view provid
 
 OrderedJson *findFeatureEditablePass(OrderedJson &feature, std::string_view name, std::string_view provider) {
     if (feature.value("schema", std::string{}) != "pelican.render_feature") return nullptr;
-    if (feature.contains("parameters"))
+    // A materialized feature keeps its scalar declarations (P-2a-1c) so its
+    // parameters stay editable, but its passes are already bound and are
+    // edited here.  Only an unbound declaration still has to be edited where
+    // it was authored.
+    if (feature.contains("parameters") && !feature.contains("bound_parameters"))
         throw std::runtime_error("Parameterized feature passes must be edited in their source document.");
     auto &fragment = featureSourceFragment(feature, provider);
     const auto entries = fragment.find("passes");
@@ -542,6 +546,27 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
             if (!source_editable) instance["materialize_reason"] = "Fork the engine preset into the project first.";
             else if (feature.contains("bound_parameters")) instance["materialize_reason"] = "This feature is already materialized in the project.";
             instance["parameter_schema"] = feature.value("parameters", Json(nullptr));
+            // A materialized feature keeps its declarations and carries the
+            // values it was cut with.  Those values are this derivative's
+            // defaults, so the schema reports them as such and readers that
+            // only know the schema (the Studio dialog) show the current value
+            // instead of the engine default.
+            if (const auto bound = feature.find("bound_parameters");
+                bound != feature.end() && bound->is_object()) {
+                instance["bound_parameters"] = *bound;
+                if (instance.at("parameter_schema").is_object()) {
+                    auto &schema = instance.at("parameter_schema");
+                    for (const auto *category : {"scalars", "render_targets", "shader_assets"}) {
+                        const auto declarations = schema.find(category);
+                        if (declarations == schema.end() || !declarations->is_array()) continue;
+                        for (auto &declaration : *declarations) {
+                            if (!declaration.is_object() || !declaration.contains("name")) continue;
+                            const auto value = bound->find(declaration.at("name").get<std::string>());
+                            if (value != bound->end()) declaration["default"] = *value;
+                        }
+                    }
+                }
+            }
             if (instance.at("parameter_schema").is_null())
                 instance["reason"] = "This feature does not declare editable parameters.";
             else if (!source_editable) instance["reason"] = "Fork the engine preset into the project before editing its feature parameters.";

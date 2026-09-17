@@ -1,10 +1,15 @@
 b_embed_proxy_target(pelican_core pelican_resources)
 
+# Extra arguments are passed to glslang verbatim.  A shader whose feature
+# parameters are required defines (`#error` when missing) cannot be compiled
+# ahead of time without them, so the build-time SPIR-V carries the declared
+# defaults from the feature document.
 function(embed_shader file_name)
     message(STATUS "embed shader code : ${file_name}")
     add_custom_command(
         COMMAND $ENV{VULKAN_SDK}/bin/glslang
             -I${CMAKE_CURRENT_SOURCE_DIR}/shaders/include
+            ${ARGN}
             ${CMAKE_CURRENT_SOURCE_DIR}/${file_name}
             -V
             --target-env ${PELICAN_SHADER_TARGET_ENV}
@@ -61,8 +66,12 @@ embed_shader(sprite.vert)
 embed_shader(sprite.frag)
 embed_shader(bloom_blur_h.frag)
 embed_shader(bloom_blur_v.frag)
-embed_shader(bloom_highpass.frag)
-embed_shader(bloom_composite.frag)
+# Defaults mirror src/core/resources/features/bloom.json parameters.scalars.
+embed_shader(bloom_highpass.frag
+    -DPELICAN_FEATURE_BLOOM_THRESHOLD=0.4
+    -DPELICAN_FEATURE_BLOOM_KNEE=0.7)
+embed_shader(bloom_composite.frag
+    -DPELICAN_FEATURE_BLOOM_INTENSITY=2.0)
 embed_shader(bloom_upsample.frag)
 embed_shader(debug_texture.frag)
 embed_shader(shader_lab_hello.frag)
