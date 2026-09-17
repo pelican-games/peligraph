@@ -1972,6 +1972,9 @@ void writeColliderDebugDrawProject(const std::filesystem::path &root) {
 }
 
 nlohmann::json makeHdrRenderingConfig(bool hdr_enabled) {
+    // The bloom passes declare where they belong instead of relying on their
+    // names: hdr on puts them before the tonemap anchor, hdr off after it.
+    const std::string bloom_anchor = hdr_enabled ? "post_main" : "post_ldr";
     auto config = nlohmann::json{
         {"render_targets",
          nlohmann::json::array({
@@ -1985,6 +1988,7 @@ nlohmann::json makeHdrRenderingConfig(bool hdr_enabled) {
                  {"name", "Bloom_Threshold_RT"},
                  {"extent_scale", 1.0},
                  {"format", "B8G8R8A8_UNORM"},
+                 {"format_class", "scene"},
                  {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
              },
          })},
@@ -2003,6 +2007,7 @@ nlohmann::json makeHdrRenderingConfig(bool hdr_enabled) {
                       {
                           {"name", "HighLuminanceExtraction"},
                           {"type", "fullscreen"},
+                          {"canonical_anchor", bloom_anchor},
                           {"output", {{"color", "Bloom_Threshold_RT"}, {"depth", nullptr}}},
                           {"input", nlohmann::json::array({"lit_color"})},
                           {"shader", {{"vertex", "engine://fullscreen"},
@@ -2012,6 +2017,7 @@ nlohmann::json makeHdrRenderingConfig(bool hdr_enabled) {
                       {
                           {"name", "FinalBloomComposite"},
                           {"type", "fullscreen"},
+                          {"canonical_anchor", bloom_anchor},
                           {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
                           {"input", nlohmann::json::array({"lit_color", "Bloom_Threshold_RT"})},
                           {"shader", {{"vertex", "engine://fullscreen"},

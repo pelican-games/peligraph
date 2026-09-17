@@ -744,6 +744,8 @@ sprite → post_main → tonemap → post_ldr → pelican_ui → debug_draw → 
 
 アンカーの全順序はエンジンの契約で、並べ替えはできません(挿すのは自由)。かつての「同梱 hdr が `before:present` を参照していて example で起動エラーになる」問題は、この標準化で解消済みです。
 
+アンカーは feature の挿入先だけでなく、**プロジェクトが直接書いたパス自身の置き場所**にも使えます。Bloom のような authored pass は `canonical_anchor` で bucket を選びます —— hdr on では `post_main`(tonemap の前)、hdr off では `post_ldr`(tonemap の後)。`projects/example` は hdr off なので 13 本の bloom パスが `"canonical_anchor": "post_ldr"` を持ちます。`canonical_anchor` を書かないパスは、swapchain を書くもの(hdr on で `post_main`、off で `post_ldr`)を除いてシーンパスとして `post_main` より前に並びます。パス名は置き場所に影響しません(✅P-2a-1a。それ以前は `HighLuminanceExtraction` などの名前と `Bloom_` 接頭辞がエンジン側にハードコードされていました)。
+
 シェーダ側の合流は従来どおり `#ifdef` バリアント方式(`PELICAN_FEATURE_SHADOW` 等)。feature を差し替えたいときは fragment をプロジェクト内にコピーして参照を書き換えます。
 
 ### ID バッファ picking(✅WP262)

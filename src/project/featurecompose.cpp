@@ -214,8 +214,7 @@ std::string inferFormatClass(const nlohmann::json &target) {
         name.find("depth") != std::string::npos || name.find("shadow") != std::string::npos) {
         return "data";
     }
-    if (name == "gbuffer_albedo" || name == "g_emissive" || name == "lit_color" ||
-        name.rfind("Bloom_", 0) == 0) {
+    if (name == "gbuffer_albedo" || name == "g_emissive" || name == "lit_color") {
         return "scene";
     }
     return "explicit(" + format + ")";
@@ -275,10 +274,7 @@ size_t canonicalBucket(const nlohmann::json &pass, bool hdr_enabled) {
     if (name == "lighting_pass") {
         return canonical_anchors.size();
     }
-    const bool bloom = name == "HighLuminanceExtraction" || name == "FinalBloomComposite" ||
-                       name.rfind("HorizontalBlur_", 0) == 0 || name.rfind("VerticalBlur_", 0) == 0 ||
-                       name.rfind("UpsampleBlend_", 0) == 0;
-    if (bloom || passWritesSwapchain(pass)) {
+    if (passWritesSwapchain(pass)) {
         return hdr_enabled ? 1 : 3;
     }
     return canonical_anchors.size(); // scene passes, before post_main

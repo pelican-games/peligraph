@@ -247,6 +247,7 @@
         {
           "name": "HighLuminanceExtraction",
           "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
           "output": { "color": ["Bloom_Threshold_RT"], "depth": null },
           "input": ["lit_color"],
           "shader": {
@@ -258,6 +259,7 @@
         {
           "name": "HorizontalBlur_0",
           "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
           "output": { "color": ["Bloom_Downsample_H_0_RT"], "depth": null },
           "input": ["Bloom_Threshold_RT"],
           "shader": {
@@ -269,6 +271,7 @@
         {
           "name": "VerticalBlur_0",
           "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
           "output": { "color": ["Bloom_Upsample_V_0_RT"], "depth": null },
           "input": ["Bloom_Downsample_H_0_RT"],
           "shader": {
@@ -280,6 +283,7 @@
         {
           "name": "HorizontalBlur_1",
           "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
           "output": { "color": ["Bloom_Downsample_H_1_RT"], "depth": null },
           "input": ["Bloom_Upsample_V_0_RT"],
           "shader": {
@@ -291,6 +295,7 @@
         {
           "name": "VerticalBlur_1",
           "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
           "output": { "color": ["Bloom_Upsample_V_1_RT"], "depth": null },
           "input": ["Bloom_Downsample_H_1_RT"],
           "shader": {
@@ -302,6 +307,7 @@
         {
           "name": "HorizontalBlur_2",
           "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
           "output": { "color": ["Bloom_Downsample_H_2_RT"], "depth": null },
           "input": ["Bloom_Upsample_V_1_RT"],
           "shader": {
@@ -313,6 +319,7 @@
         {
           "name": "VerticalBlur_2",
           "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
           "output": { "color": ["Bloom_Upsample_V_2_RT"], "depth": null },
           "input": ["Bloom_Downsample_H_2_RT"],
           "shader": {
@@ -324,6 +331,7 @@
         {
           "name": "HorizontalBlur_3",
           "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
           "output": { "color": ["Bloom_Downsample_H_3_RT"], "depth": null },
           "input": ["Bloom_Upsample_V_2_RT"],
           "shader": {
@@ -335,6 +343,7 @@
         {
           "name": "VerticalBlur_3",
           "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
           "output": { "color": ["Bloom_Upsample_V_3_RT"], "depth": null },
           "input": ["Bloom_Downsample_H_3_RT"],
           "shader": {
@@ -346,6 +355,7 @@
         {
           "name": "UpsampleBlend_3",
           "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
           "output": {
             "color": [
               { "target": "Bloom_Upsample_V_2_RT", "load_op": "Load" }
@@ -371,6 +381,7 @@
         {
           "name": "UpsampleBlend_2",
           "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
           "output": {
             "color": [
               { "target": "Bloom_Upsample_V_1_RT", "load_op": "Load" }
@@ -396,6 +407,7 @@
         {
           "name": "UpsampleBlend_1",
           "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
           "output": {
             "color": [
               { "target": "Bloom_Upsample_V_0_RT", "load_op": "Load" }
@@ -421,6 +433,7 @@
         {
           "name": "FinalBloomComposite",
           "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
           "output": { "color": ["swapchain"], "depth": null },
           "input": ["lit_color", "Bloom_Upsample_V_0_RT"],
           "shader": {
