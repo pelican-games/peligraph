@@ -23989,6 +23989,36 @@ undo / 複数選択・矩形選択 / コピー & ペースト / `copy_definition
 
 完了記録(2026-09-18、`02a3d285`): engine = `graphcomposition.cpp`(全 edit op に `scope`、`set_node_label`、`graph.input_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1`、定義の `outputs` も `graph.output_referenced@1` の対象)、`renderconfigeditor.cpp`(`definitions` の書き戻し、変化したときだけ)。Studio = model に Submit/Result と 6 操作、view に折り畳み・ソケットドラッグ接続・辺選択 Delete・入力側ドラッグで切断・値の帯のその場編集・見出し double-click でラベル・右クリック palette・Delete で node 削除・選択保持、capability に `requestEditGraphDocument` / `requestEditResult`、Inspector「ソースを開く」→ Graph tab の該当 node。test: `renderconfigeditor_test` に定義 scope の 2 節(対照 M1 `set_node_label` 撤去 / M2 scope 無視 / M3 書き戻し撤去 で赤を実測)、scene test に 8 case(対照 M4 `canConnect` 常真 / M5 折り畳み無効 / M6 全 key 送信 で赤)、非 GPU 全数 1654/1654、Frame Plan / Inspector 系不変。1 操作 = 1 `edit_graph_document`(connect / disconnect / pill / add / remove / label の JSON は台帳の上の裁定と report に記録)。
 
+### Q-1: Studio の自動化面 —— AI だけで GUI の動作確認を完結させる(利用者指示 2026-09-18「GUI の動作確認を AI のみで完結できないか。人だけで行うより確実」)
+
+**§4 規則 11 中段(Studio に test 用の入口を 1 つ足す。engine は触らない。D0: Studio は project + rpc しか link しない = 自動化面は Studio 内で閉じる)。実装者: Claude(Opus)。**
+
+#### 前提
+- Studio の widget には objectName が付いている(view 配下で 214 箇所: `pelican.graphCanvas` / `pelican.renderTools` / `pelican.graphAttachments` など)。Qt offscreen の scene test は operation ごとにあるが、**実 engine + 実窓** の e2e は無い
+- engine RPC は `EmbeddedViewport::requestRpc`(非同期 + signal)。Studio 自身には外から命令を入れる口が無い。`QT_QPA_PLATFORM=offscreen` を全体に被せると窓を埋め込む test が偽陰性になる(memory `ctest-qt-offscreen-trap`)→ e2e は実窓で GPU lane
+- `pelican_studio --project --tab` は N-1 で追加済み。Studio は終了時に exit 139 で落ちる(既知、backlog)
+
+#### 決定
+1. **`pelican_studio --automation <名前>`** で `QLocalServer`(named pipe)を開き、改行区切り JSON `{id, cmd, ...}` → `{id, ok, result | error{code, message}}` を受ける。flag 無しでは server を作らない(出荷挙動不変)。実装は `src/devstudio/automation/{automationserver, automationcommands}.{hpp,cpp}`
+2. **コマンド**(objectName で widget を指す。無ければ `automation.widget_missing@1`): `list{pattern?}`(objectName / class / visible / geometry / text)/ `click{name | point, button?, modifiers?}` / `double_click` / `drag{from, to, modifiers?, steps?}`(QGraphicsView 内はシーン座標も可: `{name, scene: [x, y]}`)/ `key{sequence}` / `type{name, text}` / `text{name}` / `wait{name, visible? | text?, timeout_ms}` / `wait_engine{timeout_ms}`(viewport の engine が ready)/ `rpc{method, params}`(`EmbeddedViewport` 経由で engine へ。reply をそのまま返す)/ `open_project{dir}` / `screenshot{path, name?}`(窓または widget を PNG に。`QWidget::grab`)/ `quit`。イベントは `QTest` の合成(pelican_studio に `Qt6::Test` を link。automation flag が無ければ経路は呼ばれない)
+3. **driver `tools/studio_drive.py`**(`uv run`): Studio を `--automation --project <dir> --tab` で起動 → シナリオ JSON(`steps[]{cmd…, expect?}`)を順に送る → 期待を検査(`rpc_equals{method, params, path, value}` / `text_equals{name, value}` / `visible{name}` / `screenshot{path}` は保存のみ)→ `report.json`(各 step の結果、所要、スクリーンショットの path)→ 失敗があれば非 0。**AI が読む形**: report は step ごとに 1 行の要約 + 失敗の理由 + 関連スクリーンショット
+4. **cmake test `studio_scenario_<name>`**: `test/studio_scenarios/<name>.json` ごとに登録(GPU lane、`pelican_gpu_lease_run`、実窓。project は fixture を temp に複製して開く)。最初の 2 本: `graph_read`(N-1: playground 相当の fixture を開き Graph tab の node 数と `get_graph_instances` の定義数を照合)/ `graph_edit_roundtrip`(N-2: pill を click → type → Enter → `rpc get_graph_instances` で値が変わる → 保存 → `open_project` で再読込 → 値が残る)
+5. **運用**: 以後の GUI WP はシナリオを 1 本以上添える。統合側は GPU lane で直列に回し、Opus の「GUI QA」agent が report とスクリーンショットを読んで判定する。人のレビューは使い勝手だけ
+
+#### 受け入れ(§4 規約 10)
+1. `--automation` 無しの起動で server が無い(pipe が存在しない)/ 有りで `list` が objectName を返す / 無い名前は `automation.widget_missing@1`
+2. `graph_read` シナリオ緑。対照: 期待値の node 数を 1 ずらすと driver が非 0 で、report に失敗 step と理由
+3. `graph_edit_roundtrip` 緑(実 engine)。対照: 「保存」step を抜くと再読込後の期待で赤 / `set_node_parameters` の送信を止める変異(N-2 の model)で pill 編集の期待が赤
+4. 非 GPU 全数不変、`SKIP_DEVSTUDIO=ON` build 不変(automation は devstudio 内)、既存 Studio test 全数緑
+5. Opus agent が driver を回して report を読み「緑 / 赤と理由」を返せる(統合側で 1 回実演)
+
+#### やらないこと
+画素の完全一致(スクリーンショットは保存と AI の目視用。hash 比較は後)/ 録画 / offscreen 化 / Studio 終了 crash の修正(別)。
+
+実装時の裁定(2026-09-18、`agent/n2`): キャンバス内の node / ソケット / 値の帯 / inline editor は widget ではないので `<view>::<kind>#<node>[/<port>]` の合成名で指し、`list` が列挙する。`type` / `key` は item 経由で埋め込み widget に届く(窓の activation に依存しない)。**この面が最初の往復で見つけた本物のバグ**: 値の帯を click → type → Enter で「Graph change saved.」と出るのに古い値が保存された(`QDoubleSpinBox` の `keyboardTracking=false` と、editor の filter が Enter を先に消費する組合せ。scene test の合成 Enter では通っていた)→ `commitInlineEdit` で `interpretText()` を呼ぶ修正(`--automation` 無しでも挙動が変わる唯一の変更)。「保存を抜くと赤」は成立しない(engine が最初の RPC 往復で commit する)→ 受け入れ 3 の対照は「`set_node_parameters` を送らない変異」と「保存待ちと値検査を両方外す」の 2 つで実測。Studio は `quit` 後に 0xC0000005 で落ちる(既知)ので driver は終了コードを見ない(report に `studio_exit_code_note`)。widget モードの screenshot では埋め込み engine viewport が黒(別 HWND、`mode: screen` は未検証)。pipe は無認証(flag 時のみ)。`SKIP_DEVSTUDIO=ON` は configure のみ確認(`studio_scenario_*` が 0 件)。
+
+完了記録(2026-09-18、`06829720`): `src/devstudio/automation/{automationserver, automationcommands}`(static lib、Qt6::Network + Qt6::Test。flag 無しでは構築しない)、`--automation <名前>`、命令 `list / click / double_click / drag / key / type / text / wait / wait_engine / rpc / open_project / screenshot / quit`、名前付き error `automation.widget_missing@1` ほか 9 種、`tools/studio_drive.py`(uv、stdlib のみ、`report.json` に verdict / step 要約 / 失敗理由 + 送受信 + screenshot)、`test/run_studio_scenario.cmake`(fixture を temp に 2 複製)、fixture `test/fixtures/studio_automation_graph/`、シナリオ `graph_read`(14 step、9 s)/ `graph_edit_roundtrip`(19 step、16 s、実 engine)。対照: node 数を 1 ずらす変異で step 8 が赤 / `setNodeParameter` を止める変異で step 10 の wait_timeout。非 GPU 全数 1674/1674。GPU lease の inventory gate 通過(264 gpu test)。**Opus agent が driver を回して report を読み「緑」と「変異は step 8 で赤(理由付き)」を返した = AI だけで GUI の動作確認が閉じる**(利用者指示)。
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
