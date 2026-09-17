@@ -23799,6 +23799,7 @@ IK / event / state_machine の demo / 外部定義参照(P-2b-2)/ example の移
 4. **v0 tag**: 全数(GPU 込み)1 回 → `docs/v0_freeze.md` と索引を commit → **`git tag -a v0.1.0 -m "pelican v0 (format 0.1.0)"`**(`current_engine_version` と一致させる。tag は release marker、format 互換の正本は [projectformat.hpp:23]、と freeze doc に 1 行)。
 
 受け入れ: 索引 2 行 + 数と tree の訂正 / README 6 本が 2 節 / `docs/v0_freeze.md` の catalog 部分が拡張 test で ON == / OFF ⊇ / tag の手順は記録のみ。
+追記(2026-09-18、P-2b の完了記録から): `animgraph_demo` と `vrm_xr_demo` は `*.anim_graph.json` を持つのに `requires` が無く、OFF build の smoke corpus で先に落ちる。R-3 で両 project の `project.json` に `requires: ["animation"]` を足す(出荷 bytes の意図した 1 行の変更。OFF build の smoke が 2 project を名前付き skip して残りを走る、が受け入れ)。
 ### AG-2: root motion —— clip の根の移動を個体の transform に渡す(v0「作る」の段 5。v2)
 
 **§4 規則 11 上段。実装者: Claude(Fable + Opus)。設計レビュー第 1 巡(Opus、`<作業ディレクトリ>/dr_ag2.md`: 致命 5 / 大 10)で v1 の「第二の sink」「pose handle の sideband」「dt からの差分」を全部撤回 → v2。第 2 巡 1 回で打ち切り。事実: `<作業ディレクトリ>/facts_ag2.md`。**
