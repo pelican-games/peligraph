@@ -158,6 +158,7 @@
     "docs/manual/06_rendering.md|../../src/project/graphcomposition.cpp|:90": "if (!active_instances.insert(id).second) throw std::invalid_argument(\"cyclic subgraph connection: \" + id);",
     "docs/manual/06_rendering.md|../../src/project/graphcomposition.cpp|graphcomposition.cpp:100": "throw std::invalid_argument(\"graph owner requires scene and positive authoring object id\");",
     "docs/manual/06_rendering.md|../../src/project/graphcomposition.cpp|graphcomposition.cpp:323": "throw std::invalid_argument(\"unconnected graph input: \" + id + \".\" + port);",
+    "docs/manual/06_rendering.md|../../src/project/graphcomposition.cpp|graphcomposition.cpp:363": "Json &locateNode(const EditScope &scope, const Json &definitions, const std::string &id) {",
     "docs/manual/06_rendering.md|../../src/project/graphcomposition.cpp|graphcomposition.cpp:48": "// edge > parameters > default. A parameter under an edge is not a",
     "docs/manual/06_rendering.md|../../src/project/graphcomposition.cpp|graphcomposition.cpp:88": "instantiate = [&](const std::string &id) -> const Json & {",
     "docs/manual/06_rendering.md|../../src/project/graphcomposition.cpp|graphcomposition.cpp:93": "if (!definitions.contains(ref)) throw std::invalid_argument(\"unknown graph definition: \" + ref);",
@@ -1540,6 +1541,7 @@
     "docs/source-code-guide/03_project_and_loading.md|../../src/project/graphcomposition.cpp|.cpp|#2": "} else if (kind == \"set_input\") {",
     "docs/source-code-guide/03_project_and_loading.md|../../src/project/graphcomposition.cpp|.cpp|#3": "} else if (kind == \"set_node_parameters\") {",
     "docs/source-code-guide/03_project_and_loading.md|../../src/project/graphcomposition.cpp|.cpp|#4": "} else if (kind == \"set_node_label\") {",
+    "docs/source-code-guide/03_project_and_loading.md|../../src/project/graphcomposition.cpp|.cpp|#5": "} // namespace",
     "docs/source-code-guide/03_project_and_loading.md|../../src/project/graphcomposition.cpp|`editGraphDocument()`": "nlohmann::json editGraphDocument(const Json &document, const Json &ops) {",
     "docs/source-code-guide/03_project_and_loading.md|../../src/project/graphcomposition.cpp|`editGraphDocument()` 内": "throw GraphRegistryError(\"graph.nested_instance@1\",",
     "docs/source-code-guide/03_project_and_loading.md|../../src/project/graphcomposition.cpp|`graphcomposition.cpp`": "if (document.at(\"schema\") != \"pelican.graph\" || document.at(\"version\") != 1)",
@@ -3922,6 +3924,7 @@
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/communication/editorjournal.hpp|`EditorGateReason`": "enum class EditorGateReason : std::uint32_t {",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/communication/editorruntimefactory.hpp|`internal::applyBehaviorEditConcurrencyGate()`": "EditorGateObservation applyBehaviorEditConcurrencyGate(",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/communication/renderconfigeditor.cpp|拒否の実例": "return rejection(\"render_config_section_unlocated\", error.what());",
+    "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/communication/renderconfigeditor.cpp|経路": "// evaluates. It still takes a ticket and the same CAS -- two editors must",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/communication/renderconfigtransaction.cpp|`linkExclusive()`": "void linkExclusive(const std::filesystem::path &source,",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/communication/renderconfigtransaction.cpp|`linkExclusive()`|#1": "void linkExclusive(const std::filesystem::path &source,",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/communication/renderconfigtransaction.cpp|`publishCommittedMarker()`": "void publishCommittedMarker(const std::filesystem::path &directory,",
@@ -5064,7 +5067,6 @@
     "docs/source-code-guide/README.md|../../src/core/vkcore/renderer.cpp|`Renderer::render()`|#1": "void Renderer::render(",
     "docs/source-code-guide/README.md|../../src/core/vkcore/renderer.cpp|`Renderer::renderLogicalFrame()`": "void Renderer::renderLogicalFrame(",
     "docs/source-code-guide/README.md|../../src/core/vkcore/renderer.cpp|`Renderer::renderLogicalFrame()`|#1": "void Renderer::renderLogicalFrame(",
-    "docs/source-code-guide/README.md|../../src/player/main.cpp|`main()`": "int main(int argc, char *argv[]) {",
-    "docs/manual/06_rendering.md|../../src/project/graphcomposition.cpp|graphcomposition.cpp:363": "Json &locateNode(const EditScope &scope, const Json &definitions, const std::string &id) {"
+    "docs/source-code-guide/README.md|../../src/player/main.cpp|`main()`": "int main(int argc, char *argv[]) {"
   }
 }

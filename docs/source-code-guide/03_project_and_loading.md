@@ -418,7 +418,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 > ctest wp380c_... : dumpbin /symbols で「入っていないこと」を検査
 > ```
 >
-> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L1937) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L29)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[SOURCES 内の TU 照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[production header の列挙](../../test/run_wp380c_no_production_fault_setter.cmake#L63)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
+> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L1939) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L29)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[SOURCES 内の TU 照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[production header の列挙](../../test/run_wp380c_no_production_fault_setter.cmake#L63)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
 >
 > **不変条件**: setterの定義をヘッダへ書かない（inlineでも）。test-onlyのTUを `pelican_core` のソースへ足さない。`default_fault_injector_for_testing` の既定値をnullptr以外にしない。
 
@@ -1098,7 +1098,7 @@ ABI側では [`AnimationClipKindV1`](../../src/core/userpublic/animation/abi_v1.
 | legacy root | `rendering` 相当の中身を最上位に直接書く | animgraph_demo / sprite_demo / vrm_xr_demo / raytracing_demo |
 | `pelican.graph` root | 共通グラフ文書の `rendering` キーの下に、同じ中身が丸ごと入る | example / posegraph_demo（`devcli project init` の雛形もこちら） |
 
-`graph.instance` を書けるのは後者の根の下だけです。ただし legacy root へ書こうとしたときに名前付きで断られるわけではなく、単に `nodes` / `definitions` という置き場が無いだけです(`graph.nested_instance@1` / `graph.input_scope@1` は [`editGraphDocument()`](../../src/project/graphcomposition.cpp#L585) の編集経路だけの拒否で、definition の中と root の取り違えを指します)。
+`graph.instance` を書けるのは後者の根の下だけです。ただし legacy root へ書こうとしたときに名前付きで断られるわけではなく、単に `nodes` / `definitions` という置き場が無いだけです(`graph.nested_instance@1` / `graph.input_scope@1` は [`editGraphDocument()`](../../src/project/graphcomposition.cpp#L685) の編集経路だけの拒否で、definition の中と root の取り違えを指します)。
 
 **「authored な `rendering` キーがどこにあるか」を決める場所は1つ**で、[`src/project/renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L13) の小さなヘッダに全部入っています。読み手も書き手も生成器もここを呼ぶ規約で、各所が自前の `if (graph)` を育てないためです。
 
@@ -1124,7 +1124,7 @@ ABI側では [`AnimationClipKindV1`](../../src/core/userpublic/animation/abi_v1.
 - `definitions` — 名前付きの部分グラフ。中に `graph.input`（境界ポート）を置けます。
 - `graph.instance` — 定義を根へ1個体として置くノード。`definition` と `owner`（`{scene, object}`）を持ちます。
 
-この2つの構造用opは置ける側が決まっていて、`graph.instance` を定義の中へ入れると `graph.nested_instance@1`、`graph.input` を根へ置くと `graph.input_scope@1` で拒否されます（[`editGraphDocument()` 内](../../src/project/graphcomposition.cpp#L617)）。
+この2つの構造用opは置ける側が決まっていて、`graph.instance` を定義の中へ入れると `graph.nested_instance@1`、`graph.input` を根へ置くと `graph.input_scope@1` で拒否されます（[`editGraphDocument()` 内](../../src/project/graphcomposition.cpp#L717)）。
 
 ### 展開 — `expandGraphDocument()`
 
@@ -1138,11 +1138,11 @@ instance の入力ポートがどこから値を取るかは `edge > parameters 
 
 | op | 実装 | 断り方 |
 |---|---|---|
-| `add_node` | [.cpp](../../src/project/graphcomposition.cpp#L605) | `graph.node_duplicate@1` / `graph.nested_instance@1` / `graph.input_scope@1` |
-| `remove_node` | [.cpp](../../src/project/graphcomposition.cpp#L626) | `graph.output_referenced@1`（出力や他ノードがまだ指している） |
-| `set_input` | [.cpp](../../src/project/graphcomposition.cpp#L653) | `source` は `{node, port}` ちょうど2キー、または `null`（切断） |
-| `set_node_parameters` | [.cpp](../../src/project/graphcomposition.cpp#L672) | 空オブジェクトは `parameters` キーごと削除 |
-| `set_node_label` | [.cpp](../../src/project/graphcomposition.cpp#L683) | 人が付ける表示名。識別子ではないので、消すのは空文字列で表す |
+| `add_node` | [.cpp](../../src/project/graphcomposition.cpp#L705) | `graph.node_duplicate@1` / `graph.nested_instance@1` / `graph.input_scope@1` |
+| `remove_node` | [.cpp](../../src/project/graphcomposition.cpp#L726) | `graph.output_referenced@1`（出力や他ノードがまだ指している） |
+| `set_input` | [.cpp](../../src/project/graphcomposition.cpp#L753) | `source` は `{node, port}` ちょうど2キー、または `null`（切断） |
+| `set_node_parameters` | [.cpp](../../src/project/graphcomposition.cpp#L772) | 空オブジェクトは `parameters` キーごと削除 |
+| `set_node_label` | [.cpp](../../src/project/graphcomposition.cpp#L783) | 人が付ける表示名。識別子ではないので、消すのは空文字列で表す |
 | `set_layout` | [.cpp](../../src/project/graphcomposition.cpp#L683) | scope の editor 用 `layout`(node 位置 / reroute / tie)を丸ごと置換。`null` で消す。名指した node / 辺が無い、座標が非有限、未知 key は `graph.layout_invalid@1`。layout だけの op 列は再 compose しない(N-6) |
 
 各opは任意で **`scope`** を取ります。省略（または根の名前）なら根の `nodes`、定義名なら `definitions.<名前>.nodes` を編集対象にします（[`resolveEditScope()`](../../src/project/graphcomposition.cpp#L385)）。scope は op ごとに解決し直します —— 同じ並びの前のopが定義の中身を変えている可能性があるからです。定義の中に居る id を根から触ろうとすると `graph.definition_immutable@1` です。

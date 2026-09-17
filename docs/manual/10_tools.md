@@ -292,12 +292,12 @@ selection の硬いエラーは `error.data.code` でも判別できます。宣
 `import_scene_snapshot` の result に `committed` / `effect_errors`、`get_components` の各
 component に `resolution_error`。
 
-2026-09 の追加(AG-3a、`9862ebdd`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L2032)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L168))。読み取り専用で `edit_*` の CAS には乗らない。
+2026-09 の追加(AG-3a、`9862ebdd`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L2038)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L168))。読み取り専用で `edit_*` の CAS には乗らない。
 
 **`get_graph_values` と `get_graph_node_values` は問いが違います。**前者は `instance` 必須で、その
 **instance の入力 port だけ**を `{port, value, source, connected|parameter}` として返します(`source` は
 `connected` / `parameter` / `default` / `override`)。後者は**展開木のノードを全部**並べ、各ノードの出力値を
-`outputs` に入れます([実装](../../src/core/communication/renderconfigeditor.cpp#L1951))。両方とも
+`outputs` に入れます([実装](../../src/core/communication/renderconfigeditor.cpp#L1957))。両方とも
 **同じ publish snapshot を読むだけ**で再評価しません —— 再評価は graph の時計を進め event を二重に消費するためです。
 `source: "rendering"` は「これは描画側の評価が使った値だ」という明示で、animation phase は同じ文書を
 自分の state で評価するため、event や trigger で駆動される文書では両者が恒久的に違いうることを表します。
@@ -609,7 +609,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 ```
 
 `--tab` が取るのは `frame_plan` / `render_features` / `graph` の 3 つ
-([一覧](../../src/devstudio/view/mainwindow.cpp#L544))。**未知の名前は window を作る前に console へ
+([一覧](../../src/devstudio/view/mainwindow.cpp#L587))。**未知の名前は window を作る前に console へ
 理由を出して終了コード 2** です([検査](../../src/devstudio/main.cpp#L36)) —— window を開いて「たまたま前にあった
 タブ」を見せると、綴り間違いが成功に見えるためです。`--tab` は `openProject` の**後**に適用されます
 ([順序](../../src/devstudio/view/uimain.cpp#L62)) —— project を開くとその project のツール配置が復元され、
@@ -622,7 +622,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 `\\.\pipe\<名前>`)が開き、**改行区切りの JSON 1 行 = 1 命令**で `list` / `click` / `double_click` / `drag` /
 `wheel` / `move` / `press` / `release` / `key` / `type` / `text` / `action` / `menu_list` / `view_state` /
 `wait` / `wait_engine` / `rpc` / `open_project` / `screenshot` / `quit` の **20 命令**を受けます
-([一覧](../../src/devstudio/automation/automationcommands.cpp#L1593))。**flag が無い起動では server object が
+([一覧](../../src/devstudio/automation/automationcommands.cpp#L1612))。**flag が無い起動では server object が
 作られないので socket は存在しません**([構築](../../src/devstudio/view/uimain.cpp#L36)) —— 出荷時の挙動は
 変わりません。listen できたときだけ `automation listening: <endpoint>` を標準出力に出します
 ([その 1 行](../../src/devstudio/view/uimain.cpp#L55))。開けなかったときは理由を出して **終了コード 3** です。
@@ -720,7 +720,7 @@ overlay が用意しますが、overlay の feature 一覧を scene や project 
 
 `View > Panels > Frame Plan` の dock(`pelican.framePlanDock`)には **Frame Plan・Features・Graph の
 3 つのタブ**が同居します(タブ widget の object name は `pelican.renderTools`。
-[構築](../../src/devstudio/view/mainwindow.cpp#L245))。**Graph は新しい dock ではなくこの dock の 3 枚目**です ——
+[構築](../../src/devstudio/view/mainwindow.cpp#L246))。**Graph は新しい dock ではなくこの dock の 3 枚目**です ——
 dock を増やすことは「見失う場所」を増やすことなので、同じレンダー設定を語る 3 つの見方を 1 箇所に置いています。
 
 **Frame Plan タブ**は実行中 player の公開 `get_frame_plan` を読む調査面で、**9 枚のタブ**を持ちます ——
@@ -855,7 +855,7 @@ HEAD が動くと configure が再実行される。
 - 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。2026-07-10 以降の追加: `run_devcli_assets`(WP66)/ `run_event_schema_compile`(WP71)/ `run_dump_lowered_material`(WP76)/ `run_devcli_gltf_extract`(WP79)/ `run_spvlink_golden`(WP80)/ `run_devcli_rules_import`(WP84)/ `run_devcli_bake_camera` + `run_input_record_replay_headless`(WP89)/ `run_ui_u2_rpc_replay`(WP93)など。
 - 2026-09 の追加: [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake)(ctest 名 `devcli_graph_catalog`。`pelican_cli graph-catalog` の出力を検査し、**さらに `docs/v0_freeze.md` の操作表と突き合わせます** —— 表は `<!-- graph-op-table:begin -->` / `:end` のコメントで区切られていて、誰も比べない写しを 2 つ目の正にしないための仕掛けです)、`package_install_smoke`(X-1。install → カタログ → 描画 → uninstall を実 player で。`gpu` ラベル)、[`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(出荷 project の走査。`project.json` の `requires` が満たせない project は**名前を出して skip** し、player の中で落ちません)。
 - **Studio のシナリオ(Q-1)**: `test/studio_scenarios/*.json` は 1 本が 1 つの ctest `studio_scenario_<名前>` になり
-([登録](../../test/CMakeLists.txt#L2781))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
+([登録](../../test/CMakeLists.txt#L2783))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
 実物の player が埋まるので `QT_QPA_PLATFORM=offscreen` は掛けません。`uv` が見つからない build と
 `SKIP_DEVSTUDIO=ON` では**登録されません**(「緑だが走っていない」になる形なので、Studio を触ったら Studio 入りの
 build で見ます)。[`run_studio_scenario.cmake`](../../test/run_studio_scenario.cmake#L30) が fixture
