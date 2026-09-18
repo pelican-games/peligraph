@@ -1535,41 +1535,57 @@ bool isPhysicalScopeAttachment(
                 rendering.depth_attachment.target.value);
 }
 
-void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
-                              const CompiledRenderingPass &rendering_pass,
-                              const CompiledFrameGraphExecution &frame_graph,
-                              RenderFrameModules &modules,
-                              const std::function<bool(const FrameRenderContext &, std::string_view)> &record_scene_as,
-                              vk::Format frame_target_format,
-                              RenderTargetLayoutTracker &layout_tracker,
-                              const RenderPassExecutorDependencies &pass_executor_dependencies,
-                              nlohmann::json *node_trace,
-                              std::uint64_t logical_frame,
-                              std::string_view graph_variant,
-                              std::uint32_t view_index,
-                              std::uint32_t logical_view_count,
-                              std::span<const LogicalFrameNodeInvocation>
-                                  authored_schedule = {},
-                              const std::function<void(
-                                  const LogicalFrameNodeInvocation &)>
-                                  &prepare_invocation = {},
-                              const ValueGraph::InactiveScopes &inactive_graph_scopes = {}) {
+// Everything one planned frame-graph execution needs from the caller that
+// planned it. The dependencies the caller has to build first
+// (RenderPassExecutorDependencies, the per-invocation view binding hook) stay
+// explicit parameters so that the request itself is pure input.
+// The reference members all name objects the caller already owns for the whole
+// execution; `record_scene_as` is held by value because callers pass a lambda,
+// which would otherwise bind the reference to a materialized temporary.
+struct FrameGraphExecutionRequest {
+    const FrameRenderContext &render_ctx;
+    const CompiledRenderingPass &rendering_pass;
+    const CompiledFrameGraphExecution &frame_graph;
+    RenderFrameModules &modules;
+    RenderTargetLayoutTracker &layout_tracker;
+    std::function<bool(const FrameRenderContext &,
+                       std::string_view)> record_scene_as;
+    const ValueGraph::InactiveScopes &inactive_graph_scopes;
+    vk::Format frame_target_format;
+    std::uint64_t logical_frame;
+    std::string_view graph_variant;
+    std::uint32_t view_index;
+    std::uint32_t logical_view_count;
+    std::span<const LogicalFrameNodeInvocation>
+        authored_schedule{};
+    nlohmann::json *trace_out = nullptr;
+};
+
+void executePlannedFrameGraph(
+    const FrameGraphExecutionRequest &request,
+    const RenderPassExecutorDependencies &pass_executor_dependencies,
+    const std::function<void(const LogicalFrameNodeInvocation &)>
+        &prepare_invocation) {
+    // The schedule is replaced by a locally built fallback when the caller
+    // supplied none, so it needs a mutable local of its own.
+    std::span<const LogicalFrameNodeInvocation> schedule =
+        request.authored_schedule;
     std::vector<LogicalFrameNodeInvocation>
         fallback_schedule;
-    if (authored_schedule.empty() &&
-        frame_graph.target_plan == nullptr) {
+    if (schedule.empty() &&
+        request.frame_graph.target_plan == nullptr) {
         fallback_schedule.reserve(
-            frame_graph.nodes.size());
+            request.frame_graph.nodes.size());
         for (std::size_t node_index = 0;
-             node_index < frame_graph.nodes.size();
+             node_index < request.frame_graph.nodes.size();
              ++node_index) {
             const auto &node =
-                frame_graph.nodes[node_index];
+                request.frame_graph.nodes[node_index];
             const bool main_family =
                 node.view_family ==
                 mainRenderViewFamilyId;
             if (!main_family &&
-                view_index != 0) {
+                request.view_index != 0) {
                 continue;
             }
             fallback_schedule.push_back(
@@ -1577,45 +1593,45 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                     .node_index = node_index,
                     .execution =
                         main_family &&
-                                logical_view_count > 1
+                                request.logical_view_count > 1
                             ? VulkanScopeViewExecution::
                                   sequential
                             : VulkanScopeViewExecution::
                                   single_view,
                     .logical_view_count =
                         main_family
-                            ? logical_view_count
+                            ? request.logical_view_count
                             : 1u,
-                    .view_index = view_index,
+                    .view_index = request.view_index,
                     .view_family =
                         node.view_family,
                 });
         }
-        authored_schedule = fallback_schedule;
+        schedule = fallback_schedule;
     }
     constexpr auto invalid_timing_query_index =
         std::numeric_limits<std::size_t>::max();
     std::vector<std::size_t>
         timing_query_index_by_node(
-            frame_graph.nodes.size(),
+            request.frame_graph.nodes.size(),
             invalid_timing_query_index);
     std::vector<std::size_t>
         timing_first_schedule_position(
-            frame_graph.nodes.size(),
+            request.frame_graph.nodes.size(),
             invalid_timing_query_index);
     std::vector<std::size_t>
         timing_last_schedule_position(
-            frame_graph.nodes.size(),
+            request.frame_graph.nodes.size(),
             invalid_timing_query_index);
     std::size_t next_timing_query_index = 0;
     for (std::size_t schedule_position = 0;
-         schedule_position < authored_schedule.size();
+         schedule_position < schedule.size();
          ++schedule_position) {
         const auto node_index =
-            authored_schedule[schedule_position]
+            schedule[schedule_position]
                 .node_index;
         if (node_index >=
-            frame_graph.nodes.size()) {
+            request.frame_graph.nodes.size()) {
             throw std::runtime_error(
                 "logical-frame view schedule references an invalid node");
         }
@@ -1629,16 +1645,16 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
         timing_last_schedule_position[node_index] =
             schedule_position;
     }
-    if (modules.render_timing != nullptr) {
-        modules.render_timing->beginGpuRange(
-            render_ctx.cmd_buf, render_ctx.in_flight_frame_index, view_index,
-            GpuTimingRangeIdentity{logical_frame, std::string{graph_variant}, view_index},
+    if (request.modules.render_timing != nullptr) {
+        request.modules.render_timing->beginGpuRange(
+            request.render_ctx.cmd_buf, request.render_ctx.in_flight_frame_index, request.view_index,
+            GpuTimingRangeIdentity{request.logical_frame, std::string{request.graph_variant}, request.view_index},
             plannedTimingNodes(
-                frame_graph, modules.sprite,
-                authored_schedule));
+                request.frame_graph, request.modules.sprite,
+                schedule));
     }
     const auto paired_storage_edges = pairedSrgbStorageEdges(
-        rendering_pass, frame_graph, modules.render_target_container);
+        request.rendering_pass, request.frame_graph, request.modules.render_target_container);
 
     bool rendering_scope_active = false;
     std::size_t active_rendering_scope =
@@ -1647,19 +1663,19 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
     std::size_t active_native_scope =
         std::numeric_limits<std::size_t>::max();
     std::vector<std::uint8_t> completed_nodes(
-        frame_graph.nodes.size(), 0);
+        request.frame_graph.nodes.size(), 0);
     GlobalRenderTargetId latest_scene_color =
         noRenderTargetId();
     GlobalRenderTargetId latest_scene_depth =
         noRenderTargetId();
 
     for (std::size_t schedule_position = 0;
-         schedule_position < authored_schedule.size();
+         schedule_position < schedule.size();
          ++schedule_position) {
         const auto &scheduled =
-            authored_schedule[schedule_position];
+            schedule[schedule_position];
         if (scheduled.node_index >=
-            frame_graph.nodes.size()) {
+            request.frame_graph.nodes.size()) {
             throw std::runtime_error(
                 "logical-frame view schedule references an invalid node");
         }
@@ -1674,14 +1690,14 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
         const bool ends_recorded_node =
             schedule_position ==
             timing_last_schedule_position[node_index];
-        if (modules.render_timing != nullptr &&
+        if (request.modules.render_timing != nullptr &&
             timing_query_index ==
                 invalid_timing_query_index) {
             throw std::logic_error(
                 "scheduled frame-graph node has no GPU timing query slot");
         }
         const auto &execution_node =
-            frame_graph.nodes[node_index];
+            request.frame_graph.nodes[node_index];
         if (scheduled.view_family !=
             execution_node.view_family) {
             throw std::runtime_error(
@@ -1691,48 +1707,48 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
         if (prepare_invocation) {
             prepare_invocation(scheduled);
         }
-        if (node_index >= frame_graph.plan.nodes.size() ||
-            frame_graph.plan.nodes[node_index].name != execution_node.name ||
-            frame_graph.plan.nodes[node_index].kind != execution_node.kind) {
+        if (node_index >= request.frame_graph.plan.nodes.size() ||
+            request.frame_graph.plan.nodes[node_index].name != execution_node.name ||
+            request.frame_graph.plan.nodes[node_index].kind != execution_node.kind) {
             throw std::runtime_error("Frame graph execution no longer matches frame plan");
         }
         const VulkanPhysicalScopePlan *physical_scope =
             nullptr;
         const PreparedVulkanNativeScopeExecutor
             *native_scope_executor = nullptr;
-        if (frame_graph.target_plan != nullptr) {
+        if (request.frame_graph.target_plan != nullptr) {
             if (scheduled.scope_index >=
-                frame_graph.target_plan->scopes.size()) {
+                request.frame_graph.target_plan->scopes.size()) {
                 throw std::runtime_error(
                     "logical-frame schedule references an invalid "
                     "physical scope");
             }
             physical_scope =
-                &frame_graph.target_plan
+                &request.frame_graph.target_plan
                      ->scopes[scheduled.scope_index];
-            if (frame_graph.native_scopes != nullptr) {
+            if (request.frame_graph.native_scopes != nullptr) {
                 native_scope_executor =
-                    frame_graph.native_scopes->find(
+                    request.frame_graph.native_scopes->find(
                         physical_scope->id);
             }
         }
-        if (frame_graph.value_graph &&
-            !frame_graph.value_graph->nodeActive(execution_node.name, inactive_graph_scopes)) {
+        if (request.frame_graph.value_graph &&
+            !request.frame_graph.value_graph->nodeActive(execution_node.name, request.inactive_graph_scopes)) {
             // Physical scopes have a single owner-lifetime condition, checked
             // at publication. Skip before beginning a scope: begin can clear
             // attachments even when no draw command is recorded.
-            if (modules.render_timing != nullptr) {
+            if (request.modules.render_timing != nullptr) {
                 for (const auto range : {GpuTimingSubrange::barriers, GpuTimingSubrange::body}) {
                     if (begins_recorded_node)
-                        modules.render_timing->writeNodeSubrangeStart(render_ctx.cmd_buf,
+                        request.modules.render_timing->writeNodeSubrangeStart(request.render_ctx.cmd_buf,
                             static_cast<std::uint32_t>(timing_query_index), range);
                     if (ends_recorded_node)
-                        modules.render_timing->writeNodeSubrangeEnd(render_ctx.cmd_buf,
+                        request.modules.render_timing->writeNodeSubrangeEnd(request.render_ctx.cmd_buf,
                             static_cast<std::uint32_t>(timing_query_index), range);
                 }
             }
-            if (node_trace != nullptr)
-                node_trace->push_back({{"name", execution_node.name},
+            if (request.trace_out != nullptr)
+                request.trace_out->push_back({{"name", execution_node.name},
                     {"kind", framePlanNodeKindName(execution_node.kind)}, {"order", node_index},
                     {"recorded", false}, {"view_index", scheduled.view_index},
                     {"logical_view_count", scheduled.logical_view_count}});
@@ -1742,7 +1758,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
         const CompiledPass *render_pass =
             execution_node.kind ==
                     FramePlanNodeKind::render
-                ? &rendering_pass.passes.at(
+                ? &request.rendering_pass.passes.at(
                       execution_node.index)
                 : nullptr;
         const bool fused_rendering_scope =
@@ -1752,7 +1768,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 .fused_rendering_scope;
         std::vector<std::uint8_t>
             starting_native_scope_nodes(
-                frame_graph.nodes.size(),
+                request.frame_graph.nodes.size(),
                 0);
         if (native_scope_executor != nullptr) {
             if (physical_scope == nullptr ||
@@ -1773,7 +1789,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                         physical_scope->nodes.size() ||
                     schedule_position +
                             scheduled.scope_node_count >
-                        authored_schedule.size()) {
+                        schedule.size()) {
                     throw std::runtime_error(
                         "NativeScope schedule is incomplete");
                 }
@@ -1782,7 +1798,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                      scheduled.scope_node_count;
                      ++offset) {
                     const auto &candidate =
-                        authored_schedule[
+                        schedule[
                             schedule_position + offset];
                     if (candidate.scope_index !=
                             scheduled.scope_index ||
@@ -1798,12 +1814,12 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                             "NativeScope schedule is not contiguous");
                     }
                     if (candidate.node_index >=
-                        frame_graph.nodes.size()) {
+                        request.frame_graph.nodes.size()) {
                         throw std::runtime_error(
                             "NativeScope schedule references an invalid "
                             "node");
                     }
-                    if (frame_graph
+                    if (request.frame_graph
                             .nodes[candidate.node_index]
                             .name !=
                         physical_scope->nodes[offset]) {
@@ -1829,7 +1845,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             starting_scope_passes;
         std::vector<std::uint8_t>
             starting_scope_nodes(
-                frame_graph.nodes.size(),
+                request.frame_graph.nodes.size(),
                 0);
         if (fused_rendering_scope &&
             scheduled.beginsScopeExecution()) {
@@ -1840,7 +1856,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             if (scheduled.scope_node_count < 2 ||
                 schedule_position +
                         scheduled.scope_node_count >
-                    authored_schedule.size()) {
+                    schedule.size()) {
                 throw std::runtime_error(
                     "fused physical rendering scope schedule is "
                     "incomplete");
@@ -1852,7 +1868,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                  scheduled.scope_node_count;
                  ++offset) {
                 const auto &candidate =
-                    authored_schedule[
+                    schedule[
                         schedule_position + offset];
                 if (candidate.scope_index !=
                         scheduled.scope_index ||
@@ -1869,7 +1885,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                         "contiguous");
                 }
                 const auto &candidate_node =
-                    frame_graph.nodes.at(
+                    request.frame_graph.nodes.at(
                         candidate.node_index);
                 if (candidate_node.kind !=
                     FramePlanNodeKind::render) {
@@ -1879,7 +1895,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                         candidate_node.name);
                 }
                 const auto &candidate_pass =
-                    rendering_pass.passes.at(
+                    request.rendering_pass.passes.at(
                         candidate_node.index);
                 if (!candidate_pass.rendering
                          .fused_rendering_scope ||
@@ -1913,26 +1929,26 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             native_runtime_invocation;
 
         std::string node_debug_name;
-        if (modules.debug_utils.commandLabelsEnabled()) {
+        if (request.modules.debug_utils.commandLabelsEnabled()) {
             node_debug_name = makeFrameGraphDebugLabel(FrameGraphDebugLabelIdentity{
-                logical_frame, graph_variant,
+                request.logical_frame, request.graph_variant,
                 scheduled.view_index, node_index,
                 framePlanNodeKindName(execution_node.kind), execution_node.name});
         }
-        ScopedCommandDebugLabel node_label{modules.debug_utils, render_ctx.cmd_buf,
+        ScopedCommandDebugLabel node_label{request.modules.debug_utils, request.render_ctx.cmd_buf,
                                            node_debug_name.c_str()};
-        if (modules.render_timing != nullptr &&
+        if (request.modules.render_timing != nullptr &&
             begins_recorded_node) {
-            modules.render_timing->writeNodeSubrangeStart(
-                render_ctx.cmd_buf,
+            request.modules.render_timing->writeNodeSubrangeStart(
+                request.render_ctx.cmd_buf,
                 static_cast<std::uint32_t>(
                     timing_query_index),
                 GpuTimingSubrange::barriers);
         }
         {
             ScopedCommandDebugLabel barrier_label{
-                modules.debug_utils,
-                render_ctx.cmd_buf, "barriers"};
+                request.modules.debug_utils,
+                request.render_ctx.cmd_buf, "barriers"};
             if (native_scope_executor != nullptr &&
                 scheduled.beginsScopeExecution()) {
                 if (begins_recorded_node) {
@@ -1941,17 +1957,17 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                          scheduled.scope_node_count;
                          ++offset) {
                         const auto &consumer =
-                            authored_schedule[
+                            schedule[
                                 schedule_position +
                                 offset];
                         const auto &consumer_node =
-                            frame_graph.nodes.at(
+                            request.frame_graph.nodes.at(
                                 consumer.node_index);
                         for (const auto &barrier :
                              consumer_node
                                  .incoming_barriers) {
                             if (barrier.from_node_index >=
-                                frame_graph.nodes.size()) {
+                                request.frame_graph.nodes.size()) {
                                 throw std::runtime_error(
                                     "Compiled frame graph barrier "
                                     "source is out of range");
@@ -1964,8 +1980,8 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                                 continue;
                             }
                             executeCompiledFrameGraphBarrier(
-                                render_ctx, frame_graph,
-                                modules, layout_tracker,
+                                request.render_ctx, request.frame_graph,
+                                request.modules, request.layout_tracker,
                                 consumer.node_index,
                                 barrier,
                                 completed_nodes);
@@ -1975,18 +1991,18 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 native_runtime_invocation.emplace(
                     beginVulkanNativeScopeRuntimeInvocation(
                         *native_scope_executor,
-                        render_ctx,
-                        frame_target_format,
+                        request.render_ctx,
+                        request.frame_target_format,
                         RenderPassViewInvocation{
                             scheduled
                                 .logical_view_count,
                             scheduled.view_index},
-                        modules
+                        request.modules
                             .render_target_container,
-                        modules
+                        request.modules
                             .frame_graph_resources,
-                        modules.vk_utils,
-                        layout_tracker));
+                        request.modules.vk_utils,
+                        request.layout_tracker));
                 native_scope_active = true;
                 active_native_scope =
                     scheduled.scope_index;
@@ -2000,18 +2016,18 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 if (begins_recorded_node) {
                     std::vector<std::uint8_t>
                         prior_scope_nodes(
-                            frame_graph.nodes.size(),
+                            request.frame_graph.nodes.size(),
                             0);
                     for (std::size_t offset = 0;
                          offset <
                          scheduled.scope_node_count;
                          ++offset) {
                         const auto &consumer =
-                            authored_schedule[
+                            schedule[
                                 schedule_position +
                                 offset];
                         const auto &consumer_node =
-                            frame_graph.nodes.at(
+                            request.frame_graph.nodes.at(
                                 consumer.node_index);
                         const auto &consumer_pass =
                             *starting_scope_passes[
@@ -2020,7 +2036,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                              consumer_node
                                  .incoming_barriers) {
                             if (barrier.from_node_index >=
-                                frame_graph.nodes.size()) {
+                                request.frame_graph.nodes.size()) {
                                 throw std::runtime_error(
                                     "Compiled frame graph barrier "
                                     "source is out of range");
@@ -2040,12 +2056,12 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                                 }
                                 if (passReadsBarrierAsLocalAttachment(
                                         consumer_pass,
-                                        frame_graph,
+                                        request.frame_graph,
                                         barrier) ||
                                     isPhysicalScopeAttachment(
                                         consumer_pass
                                             .rendering,
-                                        frame_graph,
+                                        request.frame_graph,
                                         barrier.resource)) {
                                     continue;
                                 }
@@ -2057,8 +2073,8 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                                     barrier.resource);
                             }
                             executeCompiledFrameGraphBarrier(
-                                render_ctx, frame_graph,
-                                modules, layout_tracker,
+                                request.render_ctx, request.frame_graph,
+                                request.modules, request.layout_tracker,
                                 consumer.node_index,
                                 barrier,
                                 completed_nodes);
@@ -2067,12 +2083,12 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                             consumer.node_index] = 1;
                     }
                 }
-                modules.pass_executor
+                request.modules.pass_executor
                     .beginRenderingScope(
-                        render_ctx,
+                        request.render_ctx,
                         starting_scope_passes,
                         pass_executor_dependencies,
-                        layout_tracker,
+                        request.layout_tracker,
                         RenderPassViewInvocation{
                             scheduled
                                 .logical_view_count,
@@ -2081,33 +2097,33 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 active_rendering_scope =
                     scheduled.scope_index;
             } else if (fused_rendering_scope) {
-                modules.pass_executor
+                request.modules.pass_executor
                     .renderingScopeDependency(
-                        render_ctx.cmd_buf);
+                        request.render_ctx.cmd_buf);
             } else if (begins_recorded_node) {
                 for (const auto &barrier :
                      execution_node.incoming_barriers) {
                     executeCompiledFrameGraphBarrier(
-                        render_ctx, frame_graph, modules,
-                        layout_tracker, node_index,
+                        request.render_ctx, request.frame_graph, request.modules,
+                        request.layout_tracker, node_index,
                         barrier, completed_nodes);
                 }
             }
         }
-        if (modules.render_timing != nullptr &&
+        if (request.modules.render_timing != nullptr &&
             begins_recorded_node) {
-            modules.render_timing->writeNodeSubrangeEnd(
-                render_ctx.cmd_buf,
+            request.modules.render_timing->writeNodeSubrangeEnd(
+                request.render_ctx.cmd_buf,
                 static_cast<std::uint32_t>(
                     timing_query_index),
                 GpuTimingSubrange::barriers);
         }
-        ScopedCommandDebugLabel body_label{modules.debug_utils, render_ctx.cmd_buf, "body"};
+        ScopedCommandDebugLabel body_label{request.modules.debug_utils, request.render_ctx.cmd_buf, "body"};
 
-        if (modules.render_timing != nullptr &&
+        if (request.modules.render_timing != nullptr &&
             begins_recorded_node) {
-            modules.render_timing->writeNodeSubrangeStart(
-                render_ctx.cmd_buf,
+            request.modules.render_timing->writeNodeSubrangeStart(
+                request.render_ctx.cmd_buf,
                 static_cast<std::uint32_t>(
                     timing_query_index),
                 GpuTimingSubrange::body);
@@ -2121,12 +2137,12 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 }
                 recordVulkanNativeScopeRuntimeInvocation(
                     *native_runtime_invocation,
-                    render_ctx,
-                    modules.frame_resources);
+                    request.render_ctx,
+                    request.modules.frame_resources);
                 endVulkanNativeScopeRuntimeInvocation(
                     *native_runtime_invocation,
-                    modules.render_target_container,
-                    layout_tracker);
+                    request.modules.render_target_container,
+                    request.layout_tracker);
             } else if (native_runtime_invocation) {
                 throw std::logic_error(
                     "NativeScope continuation prepared a second callback");
@@ -2146,8 +2162,8 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                             .output_depth;
                 }
             }
-            if (node_trace != nullptr) {
-                node_trace->push_back(
+            if (request.trace_out != nullptr) {
+                request.trace_out->push_back(
                     {
                         {"name", execution_node.name},
                         {"kind", "native_scope"},
@@ -2180,9 +2196,9 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
         } else if (execution_node.kind == FramePlanNodeKind::render) {
             const auto &pass = *render_pass;
             if (fused_rendering_scope) {
-                modules.pass_executor
+                request.modules.pass_executor
                     .executeRenderingScopePass(
-                        render_ctx, pass,
+                        request.render_ctx, pass,
                         pass_executor_dependencies,
                         RenderPassViewInvocation{
                             scheduled
@@ -2190,19 +2206,19 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                             scheduled.view_index});
                 if (scheduled
                         .endsScopeExecution()) {
-                    modules.pass_executor
+                    request.modules.pass_executor
                         .endRenderingScope(
-                            render_ctx.cmd_buf);
+                            request.render_ctx.cmd_buf);
                     rendering_scope_active = false;
                     active_rendering_scope =
                         std::numeric_limits<
                             std::size_t>::max();
                 }
             } else {
-                modules.pass_executor.execute(
-                    render_ctx, pass,
+                request.modules.pass_executor.execute(
+                    request.render_ctx, pass,
                     pass_executor_dependencies,
-                    layout_tracker,
+                    request.layout_tracker,
                     RenderPassViewInvocation{
                         scheduled.logical_view_count,
                         scheduled.view_index});
@@ -2217,37 +2233,37 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 latest_scene_depth =
                     pass.definition.output_depth;
             }
-            if (node_trace != nullptr) {
-                node_trace->push_back(renderNodeTrace(pass, node_index, modules.render_target_container,
-                                                      layout_tracker));
+            if (request.trace_out != nullptr) {
+                request.trace_out->push_back(renderNodeTrace(pass, node_index, request.modules.render_target_container,
+                                                      request.layout_tracker));
             }
         } else if (execution_node.kind == FramePlanNodeKind::acceleration_structure) {
-            const bool recorded = record_scene_as(render_ctx, execution_node.name);
-            if (node_trace != nullptr) {
-                node_trace->push_back({{"name", execution_node.name},
+            const bool recorded = request.record_scene_as(request.render_ctx, execution_node.name);
+            if (request.trace_out != nullptr) {
+                request.trace_out->push_back({{"name", execution_node.name},
                     {"kind", "acceleration_structure"}, {"order", node_index},
                     {"recorded", recorded}});
             }
         } else if (execution_node.kind == FramePlanNodeKind::compute) {
-            const auto &task = rendering_pass.compute_tasks.at(execution_node.index);
-            modules.compute_task_container.transitionResourcesForDispatch(
-                render_ctx.cmd_buf, task.task_id, modules.render_target_container, modules.vk_utils,
-                layout_tracker);
-            modules.compute_task_container.dispatch(
-                    render_ctx.cmd_buf, task.task_id,
-                    modules.frame_resources,
+            const auto &task = request.rendering_pass.compute_tasks.at(execution_node.index);
+            request.modules.compute_task_container.transitionResourcesForDispatch(
+                request.render_ctx.cmd_buf, task.task_id, request.modules.render_target_container, request.modules.vk_utils,
+                request.layout_tracker);
+            request.modules.compute_task_container.dispatch(
+                    request.render_ctx.cmd_buf, task.task_id,
+                    request.modules.frame_resources,
                     scheduled.view_index);
-            if (node_trace != nullptr) {
-                node_trace->push_back(computeNodeTrace(task, node_index, frame_graph,
-                                                       modules.render_target_container,
-                                                       layout_tracker));
-                node_trace->back()["recorded"] = true;
+            if (request.trace_out != nullptr) {
+                request.trace_out->push_back(computeNodeTrace(task, node_index, request.frame_graph,
+                                                       request.modules.render_target_container,
+                                                       request.layout_tracker));
+                request.trace_out->back()["recorded"] = true;
             }
         } else if (execution_node.kind == FramePlanNodeKind::anchor) {
-            if (node_trace != nullptr) {
-                node_trace->push_back(anchorNodeTrace(execution_node.name, node_index));
+            if (request.trace_out != nullptr) {
+                request.trace_out->push_back(anchorNodeTrace(execution_node.name, node_index));
             }
-            if (execution_node.name == "__anchor_sprite" && modules.sprite.scene != nullptr) {
+            if (execution_node.name == "__anchor_sprite" && request.modules.sprite.scene != nullptr) {
                 const auto color_id =
                     latest_scene_color;
                 const auto depth_id =
@@ -2258,9 +2274,9 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 PassDefinition sprite_attachments;
                 sprite_attachments.output_color = {color_id};
                 sprite_attachments.output_depth = depth_id;
-                transitionPassOutputsToAttachmentLayouts(render_ctx.cmd_buf, sprite_attachments,
-                                                          modules.render_target_container, modules.vk_utils,
-                                                          layout_tracker);
+                transitionPassOutputsToAttachmentLayouts(request.render_ctx.cmd_buf, sprite_attachments,
+                                                          request.modules.render_target_container, request.modules.vk_utils,
+                                                          request.layout_tracker);
                 const auto sequential_layer =
                     [&](std::uint32_t array_layers) {
                         return scheduled.execution ==
@@ -2273,39 +2289,39 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 const auto color_layer =
                     isConcreteRenderTarget(color_id)
                         ? sequential_layer(
-                              modules.render_target_container
+                              request.modules.render_target_container
                                   .getMetadata(color_id)
                                   .array_layers)
                         : scheduled.view_index;
                 const auto depth_layer =
                     sequential_layer(
-                        modules.render_target_container
+                        request.modules.render_target_container
                             .getMetadata(depth_id)
                             .array_layers);
                 const auto color_view =
                     isSwapchainRenderTarget(color_id)
-                        ? (!render_ctx.color_layer_attachments.empty()
-                               ? render_ctx.color_layer_attachments.at(
+                        ? (!request.render_ctx.color_layer_attachments.empty()
+                               ? request.render_ctx.color_layer_attachments.at(
                                      color_layer)
-                               : render_ctx.color_attachment)
-                        : modules.render_target_container
+                               : request.render_ctx.color_attachment)
+                        : request.modules.render_target_container
                               .getAttachmentImageLayerView(
                                   color_id, color_layer);
-                const auto &depth_meta = modules.render_target_container.getMetadata(depth_id);
+                const auto &depth_meta = request.modules.render_target_container.getMetadata(depth_id);
                 const auto color_format = isSwapchainRenderTarget(color_id)
-                                              ? frame_target_format
-                                              : modules.render_target_container.getMetadata(color_id).format;
+                                              ? request.frame_target_format
+                                              : request.modules.render_target_container.getMetadata(color_id).format;
                 const auto extent = isSwapchainRenderTarget(color_id)
-                                        ? render_ctx.extent
-                                        : modules.render_target_container.getMetadata(color_id).extent;
+                                        ? request.render_ctx.extent
+                                        : request.modules.render_target_container.getMetadata(color_id).extent;
                 if (depth_meta.extent != extent)
                     throw std::runtime_error("sprite color and depth attachments must have matching extents");
-                modules.sprite.renderer->render(
-                    render_ctx.cmd_buf,
+                request.modules.sprite.renderer->render(
+                    request.render_ctx.cmd_buf,
                     SpriteDrawRequest{
                         .color_view = color_view,
                         .depth_view =
-                            modules.render_target_container
+                            request.modules.render_target_container
                                 .getAttachmentImageLayerView(
                                     depth_id, depth_layer),
                         .extent = extent,
@@ -2313,69 +2329,69 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                         .depth_format = depth_meta.format,
                         .color_resolve_view =
                             isConcreteRenderTarget(color_id) &&
-                                    modules.render_target_container
+                                    request.modules.render_target_container
                                         .hasSeparateAttachment(color_id)
-                                ? modules.render_target_container
+                                ? request.modules.render_target_container
                                       .getImageLayerView(
                                           color_id, color_layer)
                                 : vk::ImageView{},
                         .depth_resolve_view =
-                            modules.render_target_container
+                            request.modules.render_target_container
                                     .hasSeparateAttachment(depth_id)
-                                ? modules.render_target_container
+                                ? request.modules.render_target_container
                                       .getImageLayerView(
                                           depth_id, depth_layer)
                                 : vk::ImageView{},
                         .samples =
                             isConcreteRenderTarget(color_id)
-                                ? modules.render_target_container
+                                ? request.modules.render_target_container
                                       .sampleCount(color_id)
                                 : vk::SampleCountFlagBits::e1,
                         .color_resolve_mode =
                             isConcreteRenderTarget(color_id)
-                                ? modules.render_target_container
+                                ? request.modules.render_target_container
                                       .resolveMode(color_id)
                                 : vk::ResolveModeFlagBits::eNone,
                         .depth_resolve_mode =
-                            modules.render_target_container
+                            request.modules.render_target_container
                                 .resolveMode(depth_id),
                     },
-                    SpriteRendererDependencies{*modules.sprite.scene, *modules.sprite.atlas,
-                                               modules.frame_resources});
-                if (node_trace != nullptr && isConcreteRenderTarget(color_id)) {
-                    node_trace->back()["sprite_draw"] = {
-                        {"color", modules.render_target_container.getMetadata(color_id).name},
+                    SpriteRendererDependencies{*request.modules.sprite.scene, *request.modules.sprite.atlas,
+                                               request.modules.frame_resources});
+                if (request.trace_out != nullptr && isConcreteRenderTarget(color_id)) {
+                    request.trace_out->back()["sprite_draw"] = {
+                        {"color", request.modules.render_target_container.getMetadata(color_id).name},
                         {"depth", depth_meta.name}, {"depth_test", true}, {"depth_write", false},
                         {"blend", "straight_alpha"},
-                        {"policy", modules.sprite.scene->statusJson()},
+                        {"policy", request.modules.sprite.scene->statusJson()},
                     };
                 }
             }
         } else if (execution_node.kind == FramePlanNodeKind::snapshot_copy) {
-            const auto &planned_node = frame_graph.plan.nodes.at(node_index);
+            const auto &planned_node = request.frame_graph.plan.nodes.at(node_index);
             if (planned_node.reads.size() != 1 || planned_node.writes.size() != 1) {
                 throw std::runtime_error("snapshot copy node requires exactly one source and destination: " +
                                          execution_node.name);
             }
             const auto source_id = boundRenderTarget(
-                frame_graph, planned_node.reads.front());
+                request.frame_graph, planned_node.reads.front());
             const auto destination_id = boundRenderTarget(
-                frame_graph, planned_node.writes.front());
+                request.frame_graph, planned_node.writes.front());
             if (!isConcreteRenderTarget(source_id) || !isConcreteRenderTarget(destination_id)) {
                 throw std::runtime_error("snapshot copy node references an unknown render target: " +
                                          execution_node.name);
             }
-            const auto source = modules.render_target_container.getMetadata(source_id);
-            const auto destination = modules.render_target_container.getMetadata(destination_id);
+            const auto source = request.modules.render_target_container.getMetadata(source_id);
+            const auto destination = request.modules.render_target_container.getMetadata(destination_id);
             if (source.format != destination.format || source.extent != destination.extent) {
                 throw std::runtime_error("snapshot copy source/destination mismatch: " +
                                          execution_node.name);
             }
-            layout_tracker.transition(render_ctx.cmd_buf, modules.render_target_container,
-                                      modules.vk_utils, source_id,
+            request.layout_tracker.transition(request.render_ctx.cmd_buf, request.modules.render_target_container,
+                                      request.modules.vk_utils, source_id,
                                       vk::ImageLayout::eTransferSrcOptimal);
-            layout_tracker.transition(render_ctx.cmd_buf, modules.render_target_container,
-                                      modules.vk_utils, destination_id,
+            request.layout_tracker.transition(request.render_ctx.cmd_buf, request.modules.render_target_container,
+                                      request.modules.vk_utils, destination_id,
                                       vk::ImageLayout::eTransferDstOptimal);
             vk::ImageCopy copy;
             const auto aspect = snapshotAspect(source.format);
@@ -2403,49 +2419,49 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             copy.dstSubresource = {
                 aspect, 0, copy_layer, 1};
             copy.extent = vk::Extent3D{source.extent.width, source.extent.height, 1};
-            render_ctx.cmd_buf.copyImage(modules.render_target_container.getImage(source_id).image.get(),
+            request.render_ctx.cmd_buf.copyImage(request.modules.render_target_container.getImage(source_id).image.get(),
                                          vk::ImageLayout::eTransferSrcOptimal,
-                                         modules.render_target_container.getImage(destination_id).image.get(),
+                                         request.modules.render_target_container.getImage(destination_id).image.get(),
                                          vk::ImageLayout::eTransferDstOptimal, copy);
-            layout_tracker.transition(render_ctx.cmd_buf, modules.render_target_container,
-                                      modules.vk_utils, destination_id,
+            request.layout_tracker.transition(request.render_ctx.cmd_buf, request.modules.render_target_container,
+                                      request.modules.vk_utils, destination_id,
                                       vk::ImageLayout::eShaderReadOnlyOptimal);
-            if (node_trace != nullptr) {
-                node_trace->push_back(snapshotCopyTrace(planned_node, source, destination));
+            if (request.trace_out != nullptr) {
+                request.trace_out->push_back(snapshotCopyTrace(planned_node, source, destination));
             }
         } else if (execution_node.kind == FramePlanNodeKind::output_transform) {
             const auto display_id =
-                boundRenderTarget(frame_graph, "display");
+                boundRenderTarget(request.frame_graph, "display");
             if (!isConcreteRenderTarget(display_id)) {
                 throw std::runtime_error("output_transform requires the canonical display target");
             }
-            const auto display = modules.render_target_container.getMetadata(display_id);
-            const auto source_old_layout = layout_tracker.currentLayout(display_id, false,
-                                                                         &modules.render_target_container);
+            const auto display = request.modules.render_target_container.getMetadata(display_id);
+            const auto source_old_layout = request.layout_tracker.currentLayout(display_id, false,
+                                                                         &request.modules.render_target_container);
             const auto output_pass = std::find_if(
-                rendering_pass.passes.begin(), rendering_pass.passes.end(),
+                request.rendering_pass.passes.begin(), request.rendering_pass.passes.end(),
                 [](const CompiledPass &pass) { return pass.definition.name == "output_transform"; });
-            if (output_pass == rendering_pass.passes.end()) {
+            if (output_pass == request.rendering_pass.passes.end()) {
                 throw std::runtime_error("output_transform fullscreen pass was not compiled");
             }
-            modules.pass_executor.execute(render_ctx, *output_pass,
-                                          pass_executor_dependencies, layout_tracker,
+            request.modules.pass_executor.execute(request.render_ctx, *output_pass,
+                                          pass_executor_dependencies, request.layout_tracker,
                                           RenderPassViewInvocation{
                                               scheduled.logical_view_count,
                                               scheduled.view_index});
-            if (node_trace != nullptr) {
-                node_trace->push_back(outputTransformTrace(node_index, source_old_layout,
-                                                           render_ctx.required_layout, display,
-                                                            frame_target_format,
+            if (request.trace_out != nullptr) {
+                request.trace_out->push_back(outputTransformTrace(node_index, source_old_layout,
+                                                           request.render_ctx.required_layout, display,
+                                                            request.frame_target_format,
                                                            paired_storage_edges));
             }
         } else {
             throw std::runtime_error("Unsupported frame graph execution node: " + execution_node.name);
         }
 
-        if (node_trace != nullptr &&
-            !node_trace->empty()) {
-            auto &trace = node_trace->back();
+        if (request.trace_out != nullptr &&
+            !request.trace_out->empty()) {
+            auto &trace = request.trace_out->back();
             trace["view_execution"] =
                 vulkanScopeViewExecutionName(
                     scheduled.execution);
@@ -2460,10 +2476,10 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             }
         }
 
-        if (modules.render_timing != nullptr &&
+        if (request.modules.render_timing != nullptr &&
             ends_recorded_node) {
-            modules.render_timing->writeNodeSubrangeEnd(
-                render_ctx.cmd_buf,
+            request.modules.render_timing->writeNodeSubrangeEnd(
+                request.render_ctx.cmd_buf,
                 static_cast<std::uint32_t>(
                     timing_query_index),
                 GpuTimingSubrange::body);
@@ -2485,27 +2501,13 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             "NativeScope remained active after the logical frame "
             "schedule");
     }
-    if (modules.render_timing != nullptr) modules.render_timing->endGpuRange();
+    if (request.modules.render_timing != nullptr) request.modules.render_timing->endGpuRange();
 }
 
-void executeRenderingPasses(const FrameRenderContext &render_ctx,
-                            const CompiledRenderingPass &rendering_pass,
-                            const CompiledFrameGraphExecution &frame_graph,
-                            RenderFrameModules &modules,
-                              const std::function<bool(const FrameRenderContext &, std::string_view)> &record_scene_as,
-                            std::span<const RenderViewFamilyExecutionState>
-                                view_family_states,
-                            vk::Format frame_target_format,
-                            RenderTargetLayoutTracker &layout_tracker,
-                            nlohmann::json *node_trace,
-                            std::uint64_t logical_frame,
-                            std::string_view graph_variant,
-                            std::uint32_t default_view_index,
-                            std::uint32_t logical_view_count,
-                            bool per_view_sort,
-                            std::span<const LogicalFrameNodeInvocation>
-                                authored_schedule = {},
-                            const ValueGraph::InactiveScopes &inactive_graph_scopes = {}) {
+void executeRenderingPasses(
+    const FrameGraphExecutionRequest &request,
+    std::span<const RenderViewFamilyExecutionState> view_family_states,
+    bool per_view_sort) {
     const auto &main_state =
         requireRenderViewFamilyExecutionState(
             view_family_states,
@@ -2513,8 +2515,8 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
     if (main_state.family == nullptr ||
         main_state.snapshots.empty() ||
         main_state.family->views.size() !=
-            logical_view_count ||
-        default_view_index >=
+            request.logical_view_count ||
+        request.view_index >=
             main_state.snapshots.size()) {
         throw std::runtime_error(
             "render execution view state is incomplete");
@@ -2524,28 +2526,28 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
     const auto &snapshots =
         main_state.snapshots;
     const auto &default_snapshot =
-        snapshots[default_view_index];
+        snapshots[request.view_index];
     MaterialRendererDependencies material_renderer_dependencies{
-        modules.instance_container,
-        modules.vert_buf_container,
-        modules.material_container,
-        modules.frame_resources,
-        modules.frame_graph_resources,
-        modules.light_container,
-        modules.camera,
+        request.modules.instance_container,
+        request.modules.vert_buf_container,
+        request.modules.material_container,
+        request.modules.frame_resources,
+        request.modules.frame_graph_resources,
+        request.modules.light_container,
+        request.modules.camera,
         default_snapshot.view_projection_jittered,
-        views[default_view_index].first_person_view,
-        per_view_sort ? default_view_index : 0u};
-    const FullscreenPassRendererDependencies fullscreen_pass_renderer_dependencies{modules.fullscreen_pass_container,
-                                                                                  modules.frame_resources};
+        views[request.view_index].first_person_view,
+        per_view_sort ? request.view_index : 0u};
+    const FullscreenPassRendererDependencies fullscreen_pass_renderer_dependencies{request.modules.fullscreen_pass_container,
+                                                                                  request.modules.frame_resources};
     std::optional<UiRendererDependencies> ui_renderer_dependencies;
-    if (modules.ui_renderer != nullptr && modules.ui_container != nullptr && modules.ui_module != nullptr)
-        ui_renderer_dependencies.emplace(*modules.ui_container, *modules.ui_module, modules.frame_resources);
+    if (request.modules.ui_renderer != nullptr && request.modules.ui_container != nullptr && request.modules.ui_module != nullptr)
+        ui_renderer_dependencies.emplace(*request.modules.ui_container, *request.modules.ui_module, request.modules.frame_resources);
     std::optional<glm::vec3> gizmo_world_position;
-    if (modules.gizmo != nullptr) {
-        if (const auto request = modules.gizmo->displayRequest()) {
+    if (request.modules.gizmo != nullptr) {
+        if (const auto gizmo_request = request.modules.gizmo->displayRequest()) {
             const auto target = resolveGizmoTargetTransform(
-                request->selection, GET_MODULE(ProjectBasicConfig),
+                gizmo_request->selection, GET_MODULE(ProjectBasicConfig),
                 GET_MODULE(SceneLoader), GET_MODULE(ECSCore));
             if (target) gizmo_world_position = target->position;
         }
@@ -2553,37 +2555,37 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
     const auto *window = FastModuleContainer::tryGet<Window>();
     const auto output_content_scale =
         window != nullptr
-            ? gizmoContentScale(render_ctx.extent, window->logicalExtent())
+            ? gizmoContentScale(request.render_ctx.extent, window->logicalExtent())
             : 1.0f;
     RenderPassDispatchDependencies pass_dispatch_dependencies{
-        modules.material_renderer,
+        request.modules.material_renderer,
         material_renderer_dependencies,
-        modules.fullscreen_pass_renderer,
+        request.modules.fullscreen_pass_renderer,
         fullscreen_pass_renderer_dependencies,
-        modules.shadow_depth_pass_container,
-        modules.velocity_pass_container,
-        modules.ui_renderer,
+        request.modules.shadow_depth_pass_container,
+        request.modules.velocity_pass_container,
+        request.modules.ui_renderer,
         ui_renderer_dependencies ? &*ui_renderer_dependencies : nullptr,
-        modules.debug_draw,
-        modules.gizmo,
-        modules.debug_text,
+        request.modules.debug_draw,
+        request.modules.gizmo,
+        request.modules.debug_text,
 #if PELICAN_WITH_IMGUI
-        modules.imgui_system,
+        request.modules.imgui_system,
 #endif
-        modules.frame_resources,
-        modules.camera,
+        request.modules.frame_resources,
+        request.modules.camera,
         default_snapshot.view_projection_jittered,
         default_snapshot.view_projection_non_jittered,
         gizmo_world_position,
         output_content_scale,
-        frame_target_format};
-    const RenderPassExecutorDependencies pass_executor_dependencies{modules.render_target_container, modules.vk_utils,
+        request.frame_target_format};
+    const RenderPassExecutorDependencies pass_executor_dependencies{request.modules.render_target_container, request.modules.vk_utils,
                                                                     pass_dispatch_dependencies};
 
     std::function<void(
         const LogicalFrameNodeInvocation &)>
         prepare_invocation;
-    if (!authored_schedule.empty()) {
+    if (!request.authored_schedule.empty()) {
         prepare_invocation =
             [&](const LogicalFrameNodeInvocation
                     &invocation) {
@@ -2656,14 +2658,14 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                             "secondary multiview family execution is not "
                             "implemented");
                     }
-                    modules.frame_resources
+                    request.modules.frame_resources
                         .selectMultiview(
-                            render_ctx
+                            request.render_ctx
                                 .in_flight_frame_index);
                 } else {
-                    modules.frame_resources
+                    request.modules.frame_resources
                         .selectSequentialView(
-                            render_ctx
+                            request.render_ctx
                                 .in_flight_frame_index,
                             family_state
                                     .sequential_slot_base +
@@ -2672,13 +2674,8 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
             };
     }
 
-    executePlannedFrameGraph(render_ctx, rendering_pass, frame_graph, modules, record_scene_as,
-                             frame_target_format, layout_tracker,
-                             pass_executor_dependencies, node_trace, logical_frame,
-                             graph_variant, default_view_index,
-                             logical_view_count,
-                             authored_schedule,
-                             prepare_invocation, inactive_graph_scopes);
+    executePlannedFrameGraph(request, pass_executor_dependencies,
+                             prepare_invocation);
 }
 
 void rebindFullscreenInputs(RenderFrameModules &modules) {
