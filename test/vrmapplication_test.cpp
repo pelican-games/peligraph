@@ -7,6 +7,7 @@
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/gltf.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
+#include "polygoninstancecontainer_testaccess.hpp"
 #include "../src/core/userpublic/animation/pose_staging_v1.hpp"
 #include "../src/core/userpublic/details/reload/registrationowner.hpp"
 #include "../src/core/vkcore/core.hpp"
@@ -493,8 +494,8 @@ TEST_CASE("bone lookAt stays staged through phase 300 and commits one final pale
     const auto expected = glm::angleAxis(glm::radians(5.0f),
                                          glm::vec3{0.0f, 1.0f, 0.0f});
     REQUIRE(std::abs(glm::dot(observed, expected)) == Catch::Approx(1.0f));
-    REQUIRE(instances.currentAnimationRevisionForTesting(polygon) == 55);
-    const auto &palette = instances.currentSkinPaletteForTesting(polygon);
+    REQUIRE(PolygonInstanceTestAccess::currentAnimationRevision(instances, polygon) == 55);
+    const auto &palette = PolygonInstanceTestAccess::currentSkinPalette(instances, polygon);
     REQUIRE(palette.size() == 4);
     REQUIRE(std::abs(glm::dot(glm::quat_cast(palette[2]), expected)) ==
             Catch::Approx(1.0f));
@@ -557,11 +558,11 @@ TEST_CASE("third-party DLL publishes a VRM 1.0 expression frame through the addi
     REQUIRE(std::string{result.expression_name} == "happy");
     REQUIRE(std::string{result.material_color_type} == "shadeColor");
 
-    const auto &morph = instances.morphWeightFrameForTesting(polygon);
+    const auto &morph = PolygonInstanceTestAccess::morphWeightFrame(instances, polygon);
     REQUIRE(morph.current_revision == 77);
     REQUIRE(morph.current == std::vector<float>{0.75f});
     const auto *material =
-        instances.materialAbsoluteOverrideFrameForTesting(polygon, 0);
+        PolygonInstanceTestAccess::materialAbsoluteOverrideFrame(instances, polygon, 0);
     REQUIRE(material != nullptr);
     REQUIRE(material->current_revision == 77);
     REQUIRE(material->current.base_color_factor.x == Catch::Approx(0.775f));

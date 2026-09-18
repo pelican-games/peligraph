@@ -3,15 +3,11 @@
 
 #include "../loader/engineresources.hpp"
 #include "../loader/imageloader.hpp"
-#include "../shader/pelican_sets.hpp"
 #include "../vkcore/core.hpp"
-#include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/util.hpp"
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -22,19 +18,6 @@ namespace Pelican {
 namespace {
 
 constexpr uint32_t maxDebugTextScale = 64;
-
-vk::UniqueDescriptorPool createDescriptorPool(vk::Device device) {
-    std::array<vk::DescriptorPoolSize, 2> pool_sizes{
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 32},
-        vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 32},
-    };
-
-    vk::DescriptorPoolCreateInfo create_info;
-    create_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    create_info.maxSets = 32;
-    create_info.setPoolSizes(pool_sizes);
-    return device.createDescriptorPoolUnique(create_info);
-}
 
 vk::UniqueSampler createFontSampler(vk::Device device) {
     vk::SamplerCreateInfo create_info;
@@ -96,14 +79,6 @@ vk::UniqueImageView createImageView(vk::Device device, const ImageWrapper &image
     return device.createImageViewUnique(create_info);
 }
 
-vk::DeviceSize nextCapacity(vk::DeviceSize required) {
-    vk::DeviceSize capacity = sizeof(DebugTextVertex) * 64;
-    while (capacity < required) {
-        capacity *= 2;
-    }
-    return capacity;
-}
-
 std::span<const std::byte> bytesOf(const std::string &data) {
     return std::span<const std::byte>{reinterpret_cast<const std::byte *>(data.data()), data.size()};
 }
@@ -130,17 +105,11 @@ DebugTextVertex makeVertex(float x, float y, float u, float v, glm::vec4 color) 
 DebugText::DebugText() = default;
 DebugText::~DebugText() = default;
 
-void DebugText::ensureDevice() {
-    if (!device) {
-        device = GET_MODULE(VulkanManageCore).getDevice();
-    }
-}
-
 void DebugText::ensureFontResources() {
-    ensureDevice();
     if (font_loaded) {
         return;
     }
+    const auto device = passes.device();
 
     font = ui::BitmapFont::bundledDebugFont();
 
@@ -154,78 +123,12 @@ void DebugText::ensureFontResources() {
     atlas_view = createImageView(device, atlas_image);
     atlas_sampler = createFontSampler(device);
     font_loaded = true;
-}
-
-void DebugText::ensureDescriptorPool() {
-    ensureDevice();
-    if (!descriptor_pool) {
-        descriptor_pool = createDescriptorPool(device);
-    }
-}
-
-void DebugText::ensureVertexCapacity(size_t vertex_count) {
-    const auto required_bytes =
-        static_cast<vk::DeviceSize>(vertex_count * sizeof(DebugTextVertex));
-    if (required_bytes <= vertex_buffer_bytes) {
-        return;
-    }
-
-    auto &vkcore = GET_MODULE(VulkanManageCore);
-    vertex_buffer_bytes = nextCapacity(required_bytes);
-    vertex_buffer = vkcore.allocBuf(vertex_buffer_bytes, vk::BufferUsageFlagBits::eStorageBuffer,
-                                    vma::MemoryUsage::eAutoPreferHost,
-                                    vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
-}
-
-void DebugText::ensureDescriptorSet(PassId pass_id, PipelineRecord &record) {
-    if (record.descriptor_set) {
-        return;
-    }
-
-    ensureDescriptorPool();
-    auto &pipeline_factory = GET_MODULE(PipelineFactory);
-    const auto layout = pipeline_factory.descriptorSetLayout(record.pipeline, PELICAN_SET_FREE);
-
-    vk::DescriptorSetAllocateInfo alloc_info;
-    alloc_info.descriptorPool = descriptor_pool.get();
-    alloc_info.descriptorSetCount = 1;
-    alloc_info.pSetLayouts = &layout;
-
-    auto descriptor_sets = device.allocateDescriptorSetsUnique(alloc_info);
-    if (descriptor_sets.empty()) {
-        throw std::runtime_error("DebugText descriptor set allocation failed");
-    }
-    record.descriptor_set = std::move(descriptor_sets.front());
-    (void)pass_id;
-}
-
-void DebugText::updateDescriptorSet(const PipelineRecord &record, vk::DeviceSize bytes) {
-    vk::DescriptorBufferInfo buffer_info;
-    buffer_info.buffer = vertex_buffer.buffer.get();
-    buffer_info.offset = 0;
-    buffer_info.range = bytes;
 
     vk::DescriptorImageInfo image_info;
     image_info.sampler = atlas_sampler.get();
     image_info.imageView = atlas_view.get();
     image_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-
-    std::array<vk::WriteDescriptorSet, 2> writes{};
-    writes[0].dstSet = record.descriptor_set.get();
-    writes[0].dstBinding = 0;
-    writes[0].dstArrayElement = 0;
-    writes[0].descriptorCount = 1;
-    writes[0].descriptorType = vk::DescriptorType::eStorageBuffer;
-    writes[0].pBufferInfo = &buffer_info;
-
-    writes[1].dstSet = record.descriptor_set.get();
-    writes[1].dstBinding = 1;
-    writes[1].dstArrayElement = 0;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    writes[1].pImageInfo = &image_info;
-
-    device.updateDescriptorSets(writes, {});
+    passes.setSampledImage(image_info);
 }
 
 void DebugText::buildVertices(vk::Extent2D target_extent) {
@@ -278,47 +181,14 @@ PassId DebugText::registerPass(vk::Format color_format, ShaderBundleId vert_shad
                                std::vector<std::string> shader_defines,
                                vk::SampleCountFlagBits samples,
                                bool ray_query, std::string acceleration_structure) {
-    ensureDevice();
     ensureFontResources();
-    registration_order.reserve(registration_order.size() + 1);
-    enabled = true;
-
-    GraphicsPipelineDesc desc;
-    desc.auxiliary_descriptor_contract = AuxiliaryDescriptorContract::text_atlas;
-    desc.allow_ray_query = ray_query;
-    desc.vert = vert_shader;
-    desc.frag = frag_shader;
-    desc.color_formats = {color_format};
-    desc.shader_defines = std::move(shader_defines);
-    desc.blend = true;
-    desc.src_color_blend_factor = vk::BlendFactor::eSrcAlpha;
-    desc.dst_color_blend_factor = vk::BlendFactor::eOneMinusSrcAlpha;
-    desc.src_alpha_blend_factor = vk::BlendFactor::eOne;
-    desc.dst_alpha_blend_factor = vk::BlendFactor::eOneMinusSrcAlpha;
-    desc.topology = vk::PrimitiveTopology::eTriangleList;
-    desc.rasterization_samples = samples;
-
-    if (next_pass_id == std::numeric_limits<int>::max()) {
-        throw std::runtime_error(
-            "DebugText pass handle table is exhausted");
-    }
-    const auto pass_id = PassId{next_pass_id++};
-    if (!pipelines
-             .emplace(
-                 pass_id,
-                 PipelineRecord{
-                     GET_MODULE(PipelineFactory).create(desc),
-                     {}, std::move(acceleration_structure)})
-             .second) {
-        throw std::runtime_error(
-            "DebugText pipeline table changed during registration");
-    }
-    registration_order.push_back(pass_id);
-    return pass_id;
+    return passes.registerPass(color_format, vert_shader, frag_shader,
+                               std::move(shader_defines), samples, ray_query,
+                               std::move(acceleration_structure));
 }
 
 void DebugText::text(int x, int y, std::string_view value, glm::vec4 color, int scale) {
-    if (!enabled || value.empty()) {
+    if (!passes.enabled() || value.empty()) {
         return;
     }
 
@@ -336,12 +206,12 @@ void DebugText::clear() {
 
 void DebugText::render(vk::CommandBuffer cmd_buf, PassId pass_id, vk::Extent2D target_extent,
                        const FrameResources &frame_resources) {
-    if (!enabled || queued_glyphs.empty()) {
+    if (!passes.enabled() || queued_glyphs.empty()) {
         return;
     }
 
-    auto found = pipelines.find(pass_id);
-    if (found == pipelines.end()) {
+    auto *record = passes.findPass(pass_id);
+    if (record == nullptr) {
         queued_glyphs.clear();
         throw std::runtime_error("DebugText pass pipeline not found");
     }
@@ -352,80 +222,9 @@ void DebugText::render(vk::CommandBuffer cmd_buf, PassId pass_id, vk::Extent2D t
         return;
     }
 
-    const auto bytes = static_cast<vk::DeviceSize>(vertices.size() * sizeof(DebugTextVertex));
-    ensureVertexCapacity(vertices.size());
-    ensureDescriptorSet(pass_id, found->second);
-    GET_MODULE(VulkanManageCore).writeBuf(vertex_buffer, vertices.data(), 0, bytes);
-    updateDescriptorSet(found->second, bytes);
-
-    auto &pipeline_factory = GET_MODULE(PipelineFactory);
-    cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics,
-                         pipeline_factory.pipeline(found->second.pipeline));
-    frame_resources.bindGraphics(cmd_buf, pipeline_factory.layout(found->second.pipeline),
-                                 found->second.acceleration_structure);
-    cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-                               pipeline_factory.layout(found->second.pipeline),
-                               PELICAN_SET_FREE, found->second.descriptor_set.get(), {});
-    cmd_buf.draw(static_cast<uint32_t>(vertices.size()), 1, 0, 0);
+    passes.drawVertices(cmd_buf, *record, vertices.data(), vertices.size(),
+                        frame_resources);
     vertices.clear();
-}
-
-DebugText::RegistrationCheckpoint
-DebugText::checkpointRegistrations() const noexcept {
-    return RegistrationCheckpoint{
-        registration_order.size(), enabled, next_pass_id};
-}
-
-void DebugText::rollbackRegistrations(
-    RegistrationCheckpoint checkpoint) {
-    if (checkpoint.registration_count >
-        registration_order.size()) {
-        throw std::runtime_error(
-            "DebugText registration checkpoint is invalid");
-    }
-    while (registration_order.size() >
-           checkpoint.registration_count) {
-        pipelines.erase(registration_order.back());
-        registration_order.pop_back();
-    }
-    enabled = checkpoint.enabled;
-    next_pass_id = checkpoint.next_pass_id;
-}
-
-std::vector<PassId> DebugText::registrationsSince(
-    RegistrationCheckpoint checkpoint) const {
-    if (checkpoint.registration_count >
-        registration_order.size()) {
-        throw std::runtime_error(
-            "DebugText registration checkpoint is invalid");
-    }
-    return {
-        registration_order.begin() +
-            static_cast<std::ptrdiff_t>(
-                checkpoint.registration_count),
-        registration_order.end()};
-}
-
-void DebugText::retireRegistrations(
-    const std::vector<PassId> &ids) noexcept {
-    for (const auto id : ids) {
-        const auto found = pipelines.find(id);
-        if (found != pipelines.end()) {
-            auto retired = std::move(found->second);
-            pipelines.erase(found);
-            try {
-                auto *queue =
-                    FastModuleContainer::tryGet<DeletionQueue>();
-                if (queue != nullptr &&
-                    queue->acceptingResources()) {
-                    queue->defer(std::move(retired));
-                }
-            } catch (...) {
-            }
-        }
-        std::erase(registration_order, id);
-    }
-    enabled = !registration_order.empty();
 }
 
 } // namespace Pelican

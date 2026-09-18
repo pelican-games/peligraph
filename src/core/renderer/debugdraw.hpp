@@ -3,10 +3,9 @@
 #include "../container.hpp"
 #include "../renderingpass/renderingpass.hpp"
 #include "../shader/pipelinefactory.hpp"
-#include "../vkcore/buf.hpp"
+#include "lineoverlaypassregistry.hpp"
 #include <glm/glm.hpp>
 #include <string>
-#include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -20,34 +19,21 @@ struct DebugDrawVertex {
 };
 
 DECLARE_MODULE(DebugDraw) {
-    struct PipelineRecord {
-        PipelineHandle pipeline;
-        vk::UniqueDescriptorSet descriptor_set;
-        std::string acceleration_structure = "scene";
-    };
-
-    vk::Device device;
-    bool enabled = false;
-    vk::UniqueDescriptorPool descriptor_pool;
-    BufferWrapper vertex_buffer;
-    vk::DeviceSize vertex_buffer_bytes = 0;
+    // The device, descriptor pool, vertex buffer and pass table are the same
+    // plumbing DebugText and Gizmo need; only the vertices below are ours.
+    LineOverlayPassRegistry passes{LineOverlayRegistryTraits{
+        .label = "DebugDraw",
+        .vertex_stride = sizeof(DebugDrawVertex),
+        .initial_vertex_count = 64,
+        .contract = AuxiliaryDescriptorContract::vertex_buffer,
+        .topology = vk::PrimitiveTopology::eLineList,
+        .sampled_image = false,
+        .tracks_enabled = true,
+    }};
     std::vector<DebugDrawVertex> vertices;
-    std::unordered_map<PassId, PipelineRecord, PassId::Hash> pipelines;
-    std::vector<PassId> registration_order;
-    int next_pass_id = 0;
-
-    void ensureDevice();
-    void ensureDescriptorPool();
-    void ensureVertexCapacity(size_t vertex_count);
-    void ensureDescriptorSet(PassId pass_id, PipelineRecord &record);
-    void updateDescriptorSet(const PipelineRecord &record, vk::DeviceSize bytes);
 
   public:
-    struct RegistrationCheckpoint {
-        std::size_t registration_count = 0;
-        bool enabled = false;
-        int next_pass_id = 0;
-    };
+    using RegistrationCheckpoint = LineOverlayPassRegistry::Checkpoint;
 
     DebugDraw();
     ~DebugDraw();
@@ -64,18 +50,26 @@ DECLARE_MODULE(DebugDraw) {
     void clear();
     void render(vk::CommandBuffer cmd_buf, PassId pass_id, const FrameResources &frame_resources);
 
-    bool isEnabledForTesting() const { return enabled; }
+    bool isEnabledForTesting() const { return passes.enabled(); }
     size_t queuedVertexCountForTesting() const { return vertices.size(); }
 
-    RegistrationCheckpoint checkpointRegistrations() const noexcept;
-    void rollbackRegistrations(RegistrationCheckpoint checkpoint);
+    RegistrationCheckpoint checkpointRegistrations() const noexcept {
+        return passes.checkpointRegistrations();
+    }
+    void rollbackRegistrations(RegistrationCheckpoint checkpoint) {
+        passes.rollbackRegistrations(checkpoint);
+    }
     std::vector<PassId>
-    registrationsSince(RegistrationCheckpoint checkpoint) const;
+    registrationsSince(RegistrationCheckpoint checkpoint) const {
+        return passes.registrationsSince(checkpoint);
+    }
     std::size_t registrationCount() const noexcept {
-        return registration_order.size();
+        return passes.registrationCount();
     }
     void retireRegistrations(
-        const std::vector<PassId> &ids) noexcept;
+        const std::vector<PassId> &ids) noexcept {
+        passes.retireRegistrations(ids);
+    }
 };
 
 } // namespace Pelican

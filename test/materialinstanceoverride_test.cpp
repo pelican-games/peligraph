@@ -4,6 +4,7 @@
 #include "../src/core/material/materialcontainer.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
+#include "polygoninstancecontainer_testaccess.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "vulkan_test_support.hpp"
 
@@ -149,8 +150,8 @@ TEST_CASE("material instance override frames are independent and preserve templa
     REQUIRE(instances.publishMaterialInstanceOverride(second, blue) ==
             Animation::Status::ok);
 
-    const auto *first_frame = instances.materialOverrideFrameForTesting(first);
-    const auto *second_frame = instances.materialOverrideFrameForTesting(second);
+    const auto *first_frame = PolygonInstanceTestAccess::materialOverrideFrame(instances, first);
+    const auto *second_frame = PolygonInstanceTestAccess::materialOverrideFrame(instances, second);
     REQUIRE(first_frame != nullptr);
     REQUIRE(second_frame != nullptr);
     REQUIRE(first_frame->current_revision == 7);
@@ -169,14 +170,14 @@ TEST_CASE("material instance override frames are independent and preserve templa
     auto green = overrideDesc(first_handle, 8, {0.1f, 1.0f, 0.2f, 1.0f});
     REQUIRE(instances.publishMaterialInstanceOverride(first, green) ==
             Animation::Status::ok);
-    first_frame = instances.materialOverrideFrameForTesting(first);
+    first_frame = PolygonInstanceTestAccess::materialOverrideFrame(instances, first);
     REQUIRE(first_frame->current_revision == 8);
     REQUIRE(first_frame->previous_revision == 7);
     REQUIRE(first_frame->previous.base_color_factor ==
             glm::vec4{1.0f, 0.15f, 0.1f, 1.0f});
 
     instances.resetTemporalHistory();
-    first_frame = instances.materialOverrideFrameForTesting(first);
+    first_frame = PolygonInstanceTestAccess::materialOverrideFrame(instances, first);
     REQUIRE(first_frame->previous_revision == first_frame->current_revision);
     REQUIRE(first_frame->previous.base_color_factor ==
             first_frame->current.base_color_factor);
@@ -213,7 +214,7 @@ TEST_CASE("material instance override validates atomically and reuses storage",
     invalid.values.uv_rotation = std::numeric_limits<float>::quiet_NaN();
     REQUIRE(instances.publishMaterialInstanceOverride(instance, invalid) ==
             Animation::Status::invalid_argument);
-    const auto *unchanged = instances.materialOverrideFrameForTesting(instance);
+    const auto *unchanged = PolygonInstanceTestAccess::materialOverrideFrame(instances, instance);
     REQUIRE(unchanged != nullptr);
     REQUIRE(unchanged->current_revision == 1000);
 
@@ -221,7 +222,7 @@ TEST_CASE("material instance override validates atomically and reuses storage",
     invalid.values.mask = materialOverrideAll | (1u << 31u);
     REQUIRE(instances.publishMaterialInstanceOverride(instance, invalid) ==
             Animation::Status::invalid_argument);
-    REQUIRE(instances.materialOverrideFrameForTesting(instance)->current_revision == 1000);
+    REQUIRE(PolygonInstanceTestAccess::materialOverrideFrame(instances, instance)->current_revision == 1000);
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
@@ -243,7 +244,7 @@ TEST_CASE("model reload resets material instance override generation",
             Animation::Status::ok);
 
     instances.rebuildModelInstances(model.asset_id, replacement);
-    REQUIRE(instances.materialOverrideFrameForTesting(instance) == nullptr);
+    REQUIRE(PolygonInstanceTestAccess::materialOverrideFrame(instances, instance) == nullptr);
     REQUIRE(instances.materialOverrideStorageEntryCountForTesting() == 0);
     REQUIRE(instances.animationInstance(instance).identity == old_handle.identity);
     REQUIRE(instances.animationInstance(instance).generation != old_handle.generation);
@@ -291,18 +292,18 @@ TEST_CASE("material absolute overrides are source-material scoped and temporal",
     REQUIRE(instances.publishMaterialInstanceAbsoluteOverride(first, green) ==
             Animation::Status::ok);
     REQUIRE(instances.materialAbsoluteOverrideStorageEntryCountForTesting() == 3);
-    REQUIRE(instances.materialAbsoluteOverrideFrameForTesting(first, 0)
+    REQUIRE(PolygonInstanceTestAccess::materialAbsoluteOverrideFrame(instances, first, 0)
                 ->current.base_color_factor ==
             glm::vec4{1.0f, 0.0f, 0.0f, 1.0f});
-    REQUIRE(instances.materialAbsoluteOverrideFrameForTesting(first, 0)
+    REQUIRE(PolygonInstanceTestAccess::materialAbsoluteOverrideFrame(instances, first, 0)
                 ->current.emissive_factor ==
             glm::vec4{0.3f, 0.0f, 0.0f, 1.0f});
-    REQUIRE(instances.materialAbsoluteOverrideFrameForTesting(first, 0)
+    REQUIRE(PolygonInstanceTestAccess::materialAbsoluteOverrideFrame(instances, first, 0)
                 ->current.uv_offset == glm::vec2{0.125f, -0.25f});
-    REQUIRE(instances.materialAbsoluteOverrideFrameForTesting(first, 1)
+    REQUIRE(PolygonInstanceTestAccess::materialAbsoluteOverrideFrame(instances, first, 1)
                 ->current.base_color_factor ==
             glm::vec4{0.0f, 1.0f, 0.0f, 1.0f});
-    REQUIRE(instances.materialAbsoluteOverrideFrameForTesting(second, 0)
+    REQUIRE(PolygonInstanceTestAccess::materialAbsoluteOverrideFrame(instances, second, 0)
                 ->current.base_color_factor ==
             glm::vec4{0.0f, 0.0f, 1.0f, 1.0f});
 
@@ -312,12 +313,12 @@ TEST_CASE("material absolute overrides are source-material scoped and temporal",
     REQUIRE(instances.publishMaterialInstanceAbsoluteOverride(first, red) ==
             Animation::Status::ok);
     const auto *first_frame =
-        instances.materialAbsoluteOverrideFrameForTesting(first, 0);
+        PolygonInstanceTestAccess::materialAbsoluteOverrideFrame(instances, first, 0);
     REQUIRE(first_frame->previous_revision == 1);
     REQUIRE(first_frame->previous.base_color_factor ==
             glm::vec4{1.0f, 0.0f, 0.0f, 1.0f});
     instances.resetTemporalHistory();
-    first_frame = instances.materialAbsoluteOverrideFrameForTesting(first, 0);
+    first_frame = PolygonInstanceTestAccess::materialAbsoluteOverrideFrame(instances, first, 0);
     REQUIRE(first_frame->previous_revision == first_frame->current_revision);
     REQUIRE(first_frame->previous.base_color_factor ==
             first_frame->current.base_color_factor);
@@ -342,7 +343,7 @@ TEST_CASE("material absolute overrides are source-material scoped and temporal",
         std::numeric_limits<float>::quiet_NaN();
     REQUIRE(instances.publishMaterialInstanceAbsoluteOverride(first, invalid) ==
             Animation::Status::invalid_argument);
-    REQUIRE(instances.materialAbsoluteOverrideFrameForTesting(first, 0)
+    REQUIRE(PolygonInstanceTestAccess::materialAbsoluteOverrideFrame(instances, first, 0)
                 ->current_revision == 1002);
     REQUIRE(sameBytes(materials.materialGpuRecordForTesting(first_material),
                       first_bytes));
@@ -371,7 +372,7 @@ TEST_CASE("model reload resets material absolute override generation",
             Animation::Status::ok);
 
     instances.rebuildModelInstances(model.asset_id, replacement);
-    REQUIRE(instances.materialAbsoluteOverrideFrameForTesting(instance, 0) ==
+    REQUIRE(PolygonInstanceTestAccess::materialAbsoluteOverrideFrame(instances, instance, 0) ==
             nullptr);
     REQUIRE(instances.materialAbsoluteOverrideStorageEntryCountForTesting() == 0);
     REQUIRE(instances.animationInstance(instance).identity == old_handle.identity);

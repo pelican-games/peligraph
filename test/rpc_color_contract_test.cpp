@@ -16,6 +16,7 @@
 #include "../src/core/renderer/camera.hpp"
 #include "../src/core/renderer/gizmo.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
+#include "polygoninstancecontainer_testaccess.hpp"
 #include "../src/core/userpublic/gameobjects.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "gltf_fragment_fixture.hpp"
@@ -135,7 +136,7 @@ TransientInventory transientInventory(std::string_view anchor_name) {
                                     .tryComponent<SimpleModelViewComponent>(*result.anchor_object);
         if (component != nullptr) result.anchor_instance = component->model_instance_id;
     }
-    for (const auto &entry : instances.drawItemsForTesting()) {
+    for (const auto &entry : PolygonInstanceTestAccess::drawItems(instances)) {
         result.commands.push_back(RenderCommandIdentity{
             .index_count = entry.indexed.index_count,
             .instance_count = entry.indexed.instance_count,

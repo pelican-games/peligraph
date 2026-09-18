@@ -548,16 +548,6 @@ bool PolygonInstanceContainer::isLive(ModelInstanceId id) const noexcept {
     return slots.instance_slots.isLive(id);
 }
 
-std::size_t
-PolygonInstanceContainer::liveModelInstanceCountForTesting() const noexcept {
-    std::size_t result = 0;
-    for (std::uint32_t index = 0;
-         index < slots.instance_slots.slotCount(); ++index) {
-        if (slots.instance_slots.alive(index)) ++result;
-    }
-    return result;
-}
-
 PolygonInstanceContainer::PreparedSceneState
 PolygonInstanceContainer::snapshotPreparedScene() const {
     return PreparedSceneState{
@@ -1726,16 +1716,6 @@ void PolygonInstanceContainer::rebuildModelInstances(
     rebuildModelInstances(std::span{&request, std::size_t{1}});
 }
 
-size_t PolygonInstanceContainer::instanceCountForAssetForTesting(ModelAssetId asset_id) const {
-    size_t count = 0;
-    for (std::size_t index = 0; index < slots.model_asset_ids.size(); ++index) {
-        if (slots.instance_slots.alive(static_cast<std::uint32_t>(index)) &&
-            slots.model_asset_ids[index] == asset_id)
-            ++count;
-    }
-    return count;
-}
-
 void PolygonInstanceContainer::setSkinningPalette(ModelInstanceId id,
                                                    std::span<const glm::mat4> palette) {
     const auto index = requireLive(id, "setSkinningPalette");
@@ -2263,35 +2243,10 @@ void PolygonInstanceContainer::setTrs(ModelInstanceId id, glm::vec3 pos,
     publishPreparedTrs(prepared);
 }
 
-ModelInstanceId
-PolygonInstanceContainer::modelInstanceIdForTesting(std::uint32_t index) const {
-    return slots.instance_slots.idAt(index);
-}
-
 std::optional<ModelInstanceId>
 PolygonInstanceContainer::modelInstanceIdAt(std::uint32_t index) const {
     if (!slots.instance_slots.alive(index)) return std::nullopt;
     return slots.instance_slots.idAt(index);
-}
-
-ModelInstanceId PolygonInstanceContainer::forceGenerationForTesting(
-    ModelInstanceId id, std::uint32_t generation) {
-    return slots.instance_slots.forceGeneration(id, generation);
-}
-
-void PolygonInstanceContainer::forceSceneEpochForTesting(std::uint64_t epoch) {
-    slots.instance_slots.forceSceneEpoch(epoch);
-}
-
-glm::mat4 PolygonInstanceContainer::currentModelMatrixForTesting(
-    ModelInstanceId id) const {
-    return slots.model_instances_data.at(requireLive(id, "currentModelMatrixForTesting"));
-}
-
-glm::mat4 PolygonInstanceContainer::previousModelMatrixForTesting(
-    ModelInstanceId id) const {
-    return slots.previous_model_instances_data.at(
-        requireLive(id, "previousModelMatrixForTesting"));
 }
 
 const BufferWrapper &PolygonInstanceContainer::getIndirectBuf() const { return indirect_buf; }
@@ -2724,94 +2679,6 @@ PolygonInstanceContainer::
                   transparent,
         0, visibility,
         material_filter);
-}
-
-std::size_t PolygonInstanceContainer::
-    viewFamilyDrawViewCountForTesting(
-        std::string_view family_id) const {
-    const auto found =
-        prepared_view_family_draws.find(
-            family_id);
-    return found ==
-                   prepared_view_family_draws.end()
-               ? 0
-               : found->second
-                     .visible_draw_counts.size();
-}
-
-std::size_t PolygonInstanceContainer::
-    viewFamilyVisibleDrawCountForTesting(
-        std::string_view family_id,
-        std::uint32_t view_index) const {
-    return prepared_view_family_draws
-        .at(std::string{family_id})
-        .visible_draw_counts.at(
-            view_index);
-}
-
-std::vector<std::uint32_t>
-PolygonInstanceContainer::
-    drawOrderForTesting(
-        MaterialPhase phase,
-        std::uint32_t sort_view_index) const {
-    const auto &items =
-        compiled_draw_queue
-            .queue(
-                phase ==
-                        MaterialPhase::opaque
-                    ? DrawQueuePhase::opaque
-                    : DrawQueuePhase::
-                          transparent,
-                sort_view_index)
-            .orderedItems();
-    std::vector<std::uint32_t> result;
-    result.reserve(items.size());
-    for (const auto &item : items) {
-        result.push_back(
-            item.stable_identity
-                .instance.index);
-    }
-    return result;
-}
-
-std::vector<std::uint32_t>
-PolygonInstanceContainer::
-    viewFamilyDrawOrderForTesting(
-        std::string_view family_id,
-        std::uint32_t view_index,
-        MaterialPhase phase) const {
-    const auto &prepared =
-        prepared_view_family_draws.at(
-            std::string{family_id});
-    if (view_index >=
-        prepared
-            .visible_draw_counts.size()) {
-        throw std::out_of_range(
-            "prepared view-family draw order index is out of range");
-    }
-    if (prepared.view_queues.empty()) {
-        return drawOrderForTesting(
-            phase, 0);
-    }
-    const auto &items =
-        prepared.view_queues
-            .at(view_index)
-            .queue(
-                phase ==
-                        MaterialPhase::opaque
-                    ? DrawQueuePhase::opaque
-                    : DrawQueuePhase::
-                          transparent,
-                0)
-            .orderedItems();
-    std::vector<std::uint32_t> result;
-    result.reserve(items.size());
-    for (const auto &item : items) {
-        result.push_back(
-            item.stable_identity
-                .instance.index);
-    }
-    return result;
 }
 
 SceneDrawCandidatesV1

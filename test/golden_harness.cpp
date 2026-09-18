@@ -37,6 +37,7 @@
 #include "../src/core/renderer/spriterenderer.hpp"
 #include "../src/core/renderer/spritescene.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
+#include "polygoninstancecontainer_testaccess.hpp"
 #include "../src/core/renderer/uicontainer.hpp"
 #include "../src/core/renderer/uirenderer.hpp"
 #include "../src/core/renderingpass/computetask.hpp"
@@ -5473,13 +5474,11 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
                     "than two eligible draw ranges");
             }
             const auto main_order =
-                instances
-                    .drawOrderForTesting(
+                PolygonInstanceTestAccess::drawOrder(instances,
                         MaterialPhase::
                             transparent);
             const auto reflection_order =
-                instances
-                    .viewFamilyDrawOrderForTesting(
+                PolygonInstanceTestAccess::viewFamilyDrawOrder(instances,
                         planarReflectionRenderViewFamilyId,
                         0,
                         MaterialPhase::
@@ -5587,14 +5586,12 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
         REQUIRE(
             unculled_draw_count >= 3);
         REQUIRE(
-            instances
-                .directionalShadowDrawViewCountForTesting() ==
+            PolygonInstanceTestAccess::directionalShadowDrawViewCount(instances) ==
             3);
         for (std::uint32_t layer = 0;
              layer < 3; ++layer) {
             const auto visible =
-                instances
-                    .directionalShadowVisibleDrawCountForTesting(
+                PolygonInstanceTestAccess::directionalShadowVisibleDrawCount(instances,
                         layer);
             INFO("cascade compacted draws "
                  << layer << ": "
@@ -5796,8 +5793,8 @@ void renderMaterialInstanceOverrideFrame(RenderTarget &render_target) {
     GET_MODULE(ECSCore).update();
 
     auto &instances = GET_MODULE(PolygonInstanceContainer);
-    const auto left_model = instances.modelInstanceIdForTesting(0);
-    const auto right_model = instances.modelInstanceIdForTesting(1);
+    const auto left_model = PolygonInstanceTestAccess::modelInstanceId(instances, 0);
+    const auto right_model = PolygonInstanceTestAccess::modelInstanceId(instances, 1);
     PublishMaterialInstanceOverrideDescV1 left;
     left.instance = instances.animationInstance(left_model);
     left.frame_revision = 1;
@@ -5837,8 +5834,8 @@ void renderMaterialAbsoluteOverrideFrame(RenderTarget &render_target) {
     GET_MODULE(ECSCore).update();
 
     auto &instances = GET_MODULE(PolygonInstanceContainer);
-    const auto bottom_model = instances.modelInstanceIdForTesting(0);
-    const auto top_model = instances.modelInstanceIdForTesting(1);
+    const auto bottom_model = PolygonInstanceTestAccess::modelInstanceId(instances, 0);
+    const auto top_model = PolygonInstanceTestAccess::modelInstanceId(instances, 1);
     PublishMaterialInstanceAbsoluteOverrideDescV2 bottom;
     bottom.instance = instances.animationInstance(bottom_model);
     bottom.frame_revision = 1;
@@ -5858,9 +5855,9 @@ void renderMaterialAbsoluteOverrideFrame(RenderTarget &render_target) {
     top.values.uv_scale = {1.2f, 0.7f};
     REQUIRE(instances.publishMaterialInstanceAbsoluteOverride(
                 top_model, top) == Animation::Status::ok);
-    REQUIRE(instances.materialAbsoluteOverrideFrameForTesting(
+    REQUIRE(PolygonInstanceTestAccess::materialAbsoluteOverrideFrame(instances,
                 bottom_model, 1) == nullptr);
-    REQUIRE(instances.materialAbsoluteOverrideFrameForTesting(
+    REQUIRE(PolygonInstanceTestAccess::materialAbsoluteOverrideFrame(instances,
                 top_model, 1) == nullptr);
 
     auto &camera = GET_MODULE(Camera);
@@ -5949,22 +5946,22 @@ void renderVrmExpressionFrame(RenderTarget &render_target, bool enabled) {
     REQUIRE(Animation::animationServiceRuntime().runAllPhases(revision) ==
             Animation::Status::ok);
     auto &instances = GET_MODULE(PolygonInstanceContainer);
-    const auto left_model = instances.modelInstanceIdForTesting(
+    const auto left_model = PolygonInstanceTestAccess::modelInstanceId(instances,
         static_cast<std::uint32_t>(left.identity - 1));
-    const auto right_model = instances.modelInstanceIdForTesting(
+    const auto right_model = PolygonInstanceTestAccess::modelInstanceId(instances,
         static_cast<std::uint32_t>(right.identity - 1));
     const auto &left_morph =
-        instances.morphWeightFrameForTesting(left_model);
+        PolygonInstanceTestAccess::morphWeightFrame(instances, left_model);
     const auto &right_morph =
-        instances.morphWeightFrameForTesting(right_model);
+        PolygonInstanceTestAccess::morphWeightFrame(instances, right_model);
     REQUIRE(left_morph.current_revision == revision);
     REQUIRE(right_morph.current_revision == revision);
     REQUIRE(left_morph.current.size() == 1);
     REQUIRE(right_morph.current.size() == 1);
     if (enabled) REQUIRE(left_morph.current != right_morph.current);
-    const auto *left_material = instances.materialAbsoluteOverrideFrameForTesting(
+    const auto *left_material = PolygonInstanceTestAccess::materialAbsoluteOverrideFrame(instances,
         left_model, 0);
-    const auto *right_material = instances.materialAbsoluteOverrideFrameForTesting(
+    const auto *right_material = PolygonInstanceTestAccess::materialAbsoluteOverrideFrame(instances,
         right_model, 0);
     REQUIRE(left_material != nullptr);
     REQUIRE(right_material != nullptr);
@@ -7117,12 +7114,10 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
                     readFrameGraphUint32Buffer(
                         "planar_reflection_light_selection"),
                 .prepared_view_count =
-                    instances
-                        .viewFamilyDrawViewCountForTesting(
+                    PolygonInstanceTestAccess::viewFamilyDrawViewCount(instances,
                             planarReflectionRenderViewFamilyId),
                 .visible_draw_count =
-                    instances
-                        .viewFamilyVisibleDrawCountForTesting(
+                    PolygonInstanceTestAccess::viewFamilyVisibleDrawCount(instances,
                             planarReflectionRenderViewFamilyId,
                             0),
             };
@@ -12130,8 +12125,7 @@ void GoldenHarness::runLogicalFrameStereo() {
     REQUIRE(GET_MODULE(RenderTargetContainer).historyFrameIndex() == 1);
     REQUIRE(GET_MODULE(PolygonInstanceContainer)
                 .temporalHistoryAdvanceCountForTesting() == 1);
-    REQUIRE(GET_MODULE(PolygonInstanceContainer)
-                .compiledDrawQueueForTesting()
+    REQUIRE(PolygonInstanceTestAccess::compiledDrawQueue(GET_MODULE(PolygonInstanceContainer))
                 .sortViewCount() == 1);
 
     REQUIRE(first_snapshots.size() == 2);
@@ -12152,7 +12146,7 @@ void GoldenHarness::runLogicalFrameStereo() {
 
     auto &instances = GET_MODULE(PolygonInstanceContainer);
     REQUIRE(instances.instanceCountForTesting() == 1);
-    const auto instance = instances.modelInstanceIdForTesting(0);
+    const auto instance = PolygonInstanceTestAccess::modelInstanceId(instances, 0);
     instances.setTrs(instance, {1.0f, 0.0f, 0.0f},
                      glm::quat{1.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f});
 
@@ -12170,8 +12164,8 @@ void GoldenHarness::runLogicalFrameStereo() {
     REQUIRE(GET_MODULE(DeletionQueue).currentFrameForTesting() == 2);
     REQUIRE(GET_MODULE(RenderTargetContainer).historyFrameIndex() == 0);
     REQUIRE(instances.temporalHistoryAdvanceCountForTesting() == 2);
-    REQUIRE(instances.previousModelMatrixForTesting(instance) ==
-            instances.currentModelMatrixForTesting(instance));
+    REQUIRE(PolygonInstanceTestAccess::previousModelMatrix(instances, instance) ==
+            PolygonInstanceTestAccess::currentModelMatrix(instances, instance));
 
     REQUIRE(second_snapshots.size() == 2);
     for (std::size_t view = 0; view < second_views.size(); ++view) {
@@ -12443,8 +12437,7 @@ void GoldenHarness::runOpenXrTaaTransition() {
     REQUIRE(xr_snapshots.size() == 2);
     REQUIRE(xr_snapshots[0].jitter_ndc == glm::vec2{0.0f});
     REQUIRE(xr_snapshots[1].jitter_ndc == glm::vec2{0.0f});
-    REQUIRE(GET_MODULE(PolygonInstanceContainer)
-                .compiledDrawQueueForTesting()
+    REQUIRE(PolygonInstanceTestAccess::compiledDrawQueue(GET_MODULE(PolygonInstanceContainer))
                 .sortViewCount() == 2);
     const auto &targets = GET_MODULE(RenderTargetContainer);
     const auto display = targets.getRenderTargetIdByName("display");
@@ -12616,14 +12609,14 @@ void GoldenHarness::runSetTimeSkinnedVelocity() {
     const auto initial_signal = maximumVelocitySignal(render_target.readbackLastFrameRGBA8());
 
     auto &instances = GET_MODULE(PolygonInstanceContainer);
-    const auto instance = instances.modelInstanceIdForTesting(0);
-    const auto model_before = instances.currentModelMatrixForTesting(instance);
+    const auto instance = PolygonInstanceTestAccess::modelInstanceId(instances, 0);
+    const auto model_before = PolygonInstanceTestAccess::currentModelMatrix(instances, instance);
     time.advance();
     time.setTime(0.5);
     GET_MODULE(ECSCore).update();
     renderer.render();
     const auto first_seek_signal = maximumVelocitySignal(render_target.readbackLastFrameRGBA8());
-    const auto model_after = instances.currentModelMatrixForTesting(instance);
+    const auto model_after = PolygonInstanceTestAccess::currentModelMatrix(instances, instance);
 
     time.advance();
     time.setTime(1.0);
@@ -12680,7 +12673,7 @@ void GoldenHarness::runMorphVelocity() {
         .weights = &on,
         .weight_count = 1,
     };
-    const auto instance = instances.modelInstanceIdForTesting(0);
+    const auto instance = PolygonInstanceTestAccess::modelInstanceId(instances, 0);
     REQUIRE(instances.publishMorphWeightFrame(instance, frame) ==
             Animation::Status::ok);
     renderer.render();
@@ -13464,9 +13457,9 @@ void GoldenHarness::runModelReloadGpuState() {
         renderer.render();
         const auto baseline = target.readbackLastFrameRGBA8();
         auto &instances = GET_MODULE(PolygonInstanceContainer);
-        const auto instance = instances.modelInstanceIdForTesting(0);
+        const auto instance = PolygonInstanceTestAccess::modelInstanceId(instances, 0);
         if (skin) {
-            auto palette = instances.currentSkinPaletteForTesting(instance);
+            auto palette = PolygonInstanceTestAccess::currentSkinPalette(instances, instance);
             REQUIRE_FALSE(palette.empty());
             for (auto &matrix : palette) matrix[3].x += 0.7f;
             instances.setSkinningPalette(instance, palette);

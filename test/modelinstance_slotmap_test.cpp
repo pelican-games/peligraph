@@ -5,6 +5,7 @@
 #include "../src/core/playback/seqplayer.hpp"
 #include "../src/core/renderer/indirectdrawlimits.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
+#include "polygoninstancecontainer_testaccess.hpp"
 #include "../src/core/userpublic/animation/abi_v1.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "vulkan_test_support.hpp"
@@ -133,10 +134,10 @@ TEST_CASE("ModelInstanceId rejects stale and double-remove handles without mutat
     REQUIRE_THROWS_WITH(instances.setSkinningPalette(stale, {}),
                         ContainsSubstring("setSkinningPalette") &&
                             ContainsSubstring(toString(stale)));
-    REQUIRE_THROWS_WITH(instances.currentModelMatrixForTesting(stale),
+    REQUIRE_THROWS_WITH(PolygonInstanceTestAccess::currentModelMatrix(instances, stale),
                         ContainsSubstring("currentModelMatrixForTesting") &&
                             ContainsSubstring(toString(stale)));
-    REQUIRE(instances.currentModelMatrixForTesting(live)[3].x == 4.0f);
+    REQUIRE(PolygonInstanceTestAccess::currentModelMatrix(instances, live)[3].x == 4.0f);
 
     PublishMorphWeightFrameDescV1 morph;
     REQUIRE(instances.publishMorphWeightFrame(stale, morph) ==
@@ -209,7 +210,7 @@ TEST_CASE("Publishing a prepared scene moves every per-slot array together",
 
     // Publication swaps the table as one value, so no array can stay one
     // publication behind the others.
-    const auto &published = instances.slotTableForTesting();
+    const auto &published = PolygonInstanceTestAccess::slotTable(instances);
     const auto published_counts = published.slotCounts();
     CHECK(published_counts == prepared_counts);
     for (const auto count : published_counts) {
@@ -221,7 +222,7 @@ TEST_CASE("Publishing a prepared scene moves every per-slot array together",
     CHECK(published.model_asset_ids.at(staged_id.index).value == prepared_asset);
     CHECK(published.morph_weight_frames.at(staged_id.index).instance_identity ==
           prepared_morph_identity);
-    CHECK(instances.currentModelMatrixForTesting(staged_id)[3].x == 3.0f);
+    CHECK(PolygonInstanceTestAccess::currentModelMatrix(instances, staged_id)[3].x == 3.0f);
 
     instances.enqueueSceneRetirement(std::move(retire_indices));
     instances.drainSceneRetirements();
@@ -264,14 +265,14 @@ TEST_CASE("ModelInstanceId retires generation wrap and rejects scene epoch wrap"
     auto &instances = GET_MODULE(PolygonInstanceContainer);
     const auto model = emptyModel();
     const auto first = instances.placeModelInstance(model);
-    const auto terminal = instances.forceGenerationForTesting(
+    const auto terminal = PolygonInstanceTestAccess::forceGeneration(instances,
         first, std::numeric_limits<std::uint32_t>::max());
     REQUIRE(instances.removeModelInstance(terminal));
     const auto next = instances.placeModelInstance(model);
     REQUIRE(next.index != terminal.index);
     REQUIRE(instances.removeModelInstance(next));
 
-    instances.forceSceneEpochForTesting(
+    PolygonInstanceTestAccess::forceSceneEpoch(instances,
         std::numeric_limits<std::uint64_t>::max());
     const auto at_terminal_epoch = instances.placeModelInstance(model);
     REQUIRE_THROWS_WITH(

@@ -12,6 +12,7 @@
 #include "polygoninstancecontainer.hpp"
 #include <algorithm>
 #include <optional>
+#include <span>
 
 namespace Pelican {
 
@@ -23,6 +24,47 @@ struct MaterialRange {
 
 bool isOutsideMaterialRange(uint32_t material_index, const MaterialRange &range) {
     return material_index < range.start || material_index - range.start >= range.count;
+}
+
+// Where one pass reads its indirect commands from, and which compiled draw
+// queue goes with them. Every pass renderer below asks the same question: a
+// secondary view of a family that prepared its own per-view region reads that
+// region, and everything else reads the canonical queue.
+struct ResolvedDrawSource {
+    const BufferWrapper *indirect_buf = nullptr;
+    vk::DeviceSize indirect_offset_bias = 0;
+    bool prepared_view_family = false;
+    std::span<const DrawIndirectInfo> draw_calls;
+};
+
+ResolvedDrawSource resolveDrawSource(
+    const MaterialRendererDependencies &dependencies,
+    std::optional<MaterialPhase> phase = std::nullopt,
+    std::optional<MaterialDrawTagFilterId> material_filter = std::nullopt) {
+    auto &instances = dependencies.instance_container;
+
+    ResolvedDrawSource source;
+    source.indirect_buf = &instances.getIndirectBuf();
+    if (dependencies.secondary_view_index) {
+        if (const auto offset = instances.viewFamilyDrawOffset(
+                dependencies.view_family,
+                *dependencies.secondary_view_index)) {
+            source.indirect_buf = &instances.viewFamilyIndirectBuffer();
+            source.indirect_offset_bias = *offset;
+            source.prepared_view_family = true;
+        }
+    }
+    source.draw_calls =
+        source.prepared_view_family
+            ? std::span<const DrawIndirectInfo>{
+                  instances.getViewFamilyDrawCalls(
+                      dependencies.view_family,
+                      *dependencies.secondary_view_index,
+                      dependencies.first_person_view, phase, material_filter)}
+            : std::span<const DrawIndirectInfo>{instances.getDrawCalls(
+                  dependencies.first_person_view, phase,
+                  dependencies.draw_sort_view_index, material_filter)};
+    return source;
 }
 
 void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
@@ -46,43 +88,13 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
                       .material_filter->id}
             : std::nullopt;
 
-    const BufferWrapper *indirect_buf =
-        &instance_container.getIndirectBuf();
-    vk::DeviceSize indirect_offset_bias = 0;
-    bool use_prepared_view_family_draws =
-        false;
-    if (dependencies.secondary_view_index) {
-        if (const auto offset =
-                instance_container
-                    .viewFamilyDrawOffset(
-                        dependencies.view_family,
-                        *dependencies
-                             .secondary_view_index)) {
-            indirect_buf =
-                &instance_container
-                     .viewFamilyIndirectBuffer();
-            indirect_offset_bias = *offset;
-            use_prepared_view_family_draws =
-                true;
-        }
-    }
-    const auto &draw_calls =
-        use_prepared_view_family_draws
-            ? instance_container
-                  .getViewFamilyDrawCalls(
-                      dependencies.view_family,
-                      *dependencies
-                           .secondary_view_index,
-                      dependencies
-                          .first_person_view,
-                      phase, material_filter)
-            : instance_container.getDrawCalls(
-                  dependencies
-                      .first_person_view,
-                  phase,
-                  dependencies
-                      .draw_sort_view_index,
-                  material_filter);
+    const auto source =
+        resolveDrawSource(dependencies, phase, material_filter);
+    const auto *indirect_buf = source.indirect_buf;
+    const auto indirect_offset_bias = source.indirect_offset_bias;
+    const auto use_prepared_view_family_draws =
+        source.prepared_view_family;
+    const auto &draw_calls = source.draw_calls;
     if (draw_calls.empty()) {
         return;
     }
@@ -360,41 +372,10 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
     auto &instance_container = dependencies.instance_container;
     const auto &vert_buf_container = dependencies.vert_buf_container;
 
-    const BufferWrapper *indirect_buf =
-        &instance_container.getIndirectBuf();
-    vk::DeviceSize indirect_offset_bias = 0;
-    bool use_prepared_view_family_draws =
-        false;
-    if (dependencies.secondary_view_index) {
-        if (const auto offset =
-                instance_container
-                    .viewFamilyDrawOffset(
-                        dependencies.view_family,
-                        *dependencies
-                             .secondary_view_index)) {
-            indirect_buf =
-                &instance_container
-                     .viewFamilyIndirectBuffer();
-            indirect_offset_bias = *offset;
-            use_prepared_view_family_draws =
-                true;
-        }
-    }
-    const auto &draw_calls =
-        use_prepared_view_family_draws
-            ? instance_container
-                  .getViewFamilyDrawCalls(
-                      dependencies.view_family,
-                      *dependencies
-                           .secondary_view_index,
-                      dependencies
-                          .first_person_view)
-            : instance_container.getDrawCalls(
-                  dependencies
-                      .first_person_view,
-                  std::nullopt,
-                  dependencies
-                      .draw_sort_view_index);
+    const auto source = resolveDrawSource(dependencies);
+    const auto *indirect_buf = source.indirect_buf;
+    const auto indirect_offset_bias = source.indirect_offset_bias;
+    const auto &draw_calls = source.draw_calls;
     if (draw_calls.empty()) {
         return;
     }
@@ -422,40 +403,10 @@ void renderVelocityDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
                          const VelocityPassContainer &velocity_pass_container,
                          const MaterialRendererDependencies &dependencies) {
     auto &instances = dependencies.instance_container;
-    const BufferWrapper *indirect =
-        &instances.getIndirectBuf();
-    vk::DeviceSize indirect_offset_bias = 0;
-    bool use_prepared_view_family_draws =
-        false;
-    if (dependencies.secondary_view_index) {
-        if (const auto offset =
-                instances.viewFamilyDrawOffset(
-                    dependencies.view_family,
-                    *dependencies
-                         .secondary_view_index)) {
-            indirect =
-                &instances
-                     .viewFamilyIndirectBuffer();
-            indirect_offset_bias = *offset;
-            use_prepared_view_family_draws =
-                true;
-        }
-    }
-    const auto &draw_calls =
-        use_prepared_view_family_draws
-            ? instances
-                  .getViewFamilyDrawCalls(
-                      dependencies.view_family,
-                      *dependencies
-                           .secondary_view_index,
-                      dependencies
-                          .first_person_view)
-            : instances.getDrawCalls(
-                  dependencies
-                      .first_person_view,
-                  std::nullopt,
-                  dependencies
-                      .draw_sort_view_index);
+    const auto source = resolveDrawSource(dependencies);
+    const auto *indirect = source.indirect_buf;
+    const auto indirect_offset_bias = source.indirect_offset_bias;
+    const auto &draw_calls = source.draw_calls;
     if (draw_calls.empty()) return;
     for (const auto &draw_call : draw_calls) {
         const auto layout = velocity_pass_container.pipelineLayout(pass_id, draw_call.skinned);

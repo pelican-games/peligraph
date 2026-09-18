@@ -81,6 +81,9 @@ DECLARE_MODULE(Camera) {
     std::uint64_t discontinuity_revision = 0;
 
     void rebuildProjectionMatrix();
+    // The project-config defaults both prepareSceneCameras overloads start
+    // from, with the projection matrix already rebuilt.
+    PreparedSceneState makeDefaultPreparedSceneState() const;
     void resetToConfigDefaults();
     void applySceneCamera(const SceneCamera &camera);
 

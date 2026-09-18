@@ -3,7 +3,7 @@
 #include "../container.hpp"
 #include "../renderingpass/renderingpass.hpp"
 #include "../shader/pipelinefactory.hpp"
-#include "../vkcore/buf.hpp"
+#include "lineoverlaypassregistry.hpp"
 #include <details/ecs/entity.hpp>
 
 #include <cstddef>
@@ -171,37 +171,26 @@ struct GizmoVertex {
 };
 
 DECLARE_MODULE(Gizmo) {
-    struct PipelineRecord {
-        PipelineHandle pipeline;
-        vk::UniqueDescriptorSet descriptor_set;
-        std::string acceleration_structure = "scene";
-    };
-
-    vk::Device device;
-    vk::UniqueDescriptorPool descriptor_pool;
-    BufferWrapper vertex_buffer;
-    vk::DeviceSize vertex_buffer_bytes = 0;
-    std::unordered_map<PassId, PipelineRecord, PassId::Hash> pipelines;
-    std::vector<PassId> registration_order;
-    int next_pass_id = 0;
+    // The device, descriptor pool, vertex buffer and pass table are the same
+    // plumbing DebugDraw and DebugText need; only the handle geometry below
+    // is ours.
+    LineOverlayPassRegistry passes{LineOverlayRegistryTraits{
+        .label = "Gizmo",
+        .vertex_stride = sizeof(GizmoVertex),
+        .initial_vertex_count = 256,
+        .contract = AuxiliaryDescriptorContract::vertex_buffer,
+        .topology = vk::PrimitiveTopology::eLineList,
+        .sampled_image = false,
+        .tracks_enabled = false,
+    }};
 
     mutable std::mutex display_mutex;
     // This process-memory-only request intentionally has no serialization
     // path: a runtime GameObjectId is not stable across executions.
     std::optional<GizmoDisplayRequest> display_request;
 
-    void ensureDevice();
-    void ensureDescriptorPool();
-    void ensureVertexCapacity(std::size_t vertex_count);
-    void ensureDescriptorSet(PassId pass_id, PipelineRecord &record);
-    void updateDescriptorSet(const PipelineRecord &record,
-                             vk::DeviceSize bytes);
-
   public:
-    struct RegistrationCheckpoint {
-        std::size_t registration_count = 0;
-        int next_pass_id = 0;
-    };
+    using RegistrationCheckpoint = LineOverlayPassRegistry::Checkpoint;
 
     Gizmo();
     ~Gizmo();
@@ -222,12 +211,18 @@ DECLARE_MODULE(Gizmo) {
                 const glm::mat4 &view_projection, vk::Extent2D extent,
                 float content_scale);
 
-    RegistrationCheckpoint checkpointRegistrations() const noexcept;
-    void rollbackRegistrations(RegistrationCheckpoint checkpoint);
+    RegistrationCheckpoint checkpointRegistrations() const noexcept {
+        return passes.checkpointRegistrations();
+    }
+    void rollbackRegistrations(RegistrationCheckpoint checkpoint) {
+        passes.rollbackRegistrations(checkpoint);
+    }
     std::vector<PassId>
-    registrationsSince(RegistrationCheckpoint checkpoint) const;
+    registrationsSince(RegistrationCheckpoint checkpoint) const {
+        return passes.registrationsSince(checkpoint);
+    }
     std::size_t registrationCount() const noexcept {
-        return registration_order.size();
+        return passes.registrationCount();
     }
     void retireRegistrations(const std::vector<PassId> &ids) noexcept;
 };

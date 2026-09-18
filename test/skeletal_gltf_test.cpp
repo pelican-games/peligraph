@@ -24,6 +24,7 @@
 #include "../src/core/model/gltf.hpp"
 #include "../src/core/watch/reloadservice.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
+#include "polygoninstancecontainer_testaccess.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
 #include "../src/core/vkcore/renderer_config.hpp"
@@ -519,7 +520,7 @@ void main() {
     const auto initial = instance_for(*object);
     const auto weight = [&](ModelInstanceId id, float value, std::uint64_t revision) {
         REQUIRE(instances.publishMorphWeightFrame(id, PublishMorphWeightFrameDescV1{
-            .layout_generation = instances.morphLayoutGenerationForTesting(id),
+            .layout_generation = PolygonInstanceTestAccess::morphLayoutGeneration(instances, id),
             .frame_revision = revision, .weights = &value, .weight_count = 1}) == Animation::Status::ok);
     };
     auto &renderer = GET_MODULE(Renderer);
@@ -646,7 +647,7 @@ void main() {
     const auto initial = instance_for(*object);
     const auto weight = [&](ModelInstanceId id, float value, std::uint64_t revision) {
         REQUIRE(instances.publishMorphWeightFrame(id, PublishMorphWeightFrameDescV1{
-            .layout_generation = instances.morphLayoutGenerationForTesting(id),
+            .layout_generation = PolygonInstanceTestAccess::morphLayoutGeneration(instances, id),
             .frame_revision = revision, .weights = &value, .weight_count = 1}) == Animation::Status::ok);
     };
     auto &renderer = GET_MODULE(Renderer);
@@ -854,7 +855,7 @@ void main() {
     };
     const auto verify_pose = [&](GameObjectId owner) {
         const auto id = instance_for(owner);
-        const auto &palette = instances.currentSkinPaletteForTesting(id);
+        const auto &palette = PolygonInstanceTestAccess::currentSkinPalette(instances, id);
         REQUIRE(palette.size() == 2);
         const auto tip = instances.animationNodeMatrix(id, 2);
         REQUIRE(tip);
@@ -913,7 +914,7 @@ void main() {
     // Palette-only publications cannot describe arbitrary hierarchy nodes.
     // Reject attachment before publishing a graph with unavailable pose data.
     const auto current = instance_for(*replacement);
-    const auto palette_only = instances.currentSkinPaletteForTesting(current);
+    const auto palette_only = PolygonInstanceTestAccess::currentSkinPalette(instances, current);
     instances.setSkinningPalette(current, palette_only);
     REQUIRE_FALSE(instances.animationNodeMatrix(current, 2));
     REQUIRE_THROWS_WITH(loadRenderGraphVariantsFromConfigData(document.dump()),
@@ -1008,16 +1009,16 @@ TEST_CASE("glTF skin and clips connect to animation component without ECS bones"
     time.advance();
     GET_MODULE(ECSCore).update();
     auto &instances = GET_MODULE(PolygonInstanceContainer);
-    const auto instance = instances.modelInstanceIdForTesting(0);
-    const auto first_revision = instances.currentAnimationRevisionForTesting(instance);
+    const auto instance = PolygonInstanceTestAccess::modelInstanceId(instances, 0);
+    const auto first_revision = PolygonInstanceTestAccess::currentAnimationRevision(instances, instance);
     REQUIRE(first_revision != 0);
-    REQUIRE(instances.previousAnimationRevisionForTesting(instance) == first_revision);
+    REQUIRE(PolygonInstanceTestAccess::previousAnimationRevision(instances, instance) == first_revision);
     instances.advanceTemporalHistoryAfterRender();
     time.setTime(0.75);
     time.advance();
     GET_MODULE(ECSCore).update();
-    REQUIRE(instances.currentAnimationRevisionForTesting(instance) > first_revision);
-    REQUIRE(instances.previousAnimationRevisionForTesting(instance) == first_revision);
+    REQUIRE(PolygonInstanceTestAccess::currentAnimationRevision(instances, instance) > first_revision);
+    REQUIRE(PolygonInstanceTestAccess::previousAnimationRevision(instances, instance) == first_revision);
     instances.triggerUpdate();
     REQUIRE(instances.getDrawCalls().size() == 1);
     REQUIRE(instances.getDrawCalls().front().skinned);
@@ -1105,11 +1106,11 @@ TEST_CASE("authored animation graphs publish and release real scene model poses"
     REQUIRE(named);
     frame();
     const auto instance = *ecs.tryComponent<SimpleModelViewComponent>(*named)->model_instance_id;
-    const auto first_palette = instances.currentSkinPaletteForTesting(instance);
+    const auto first_palette = PolygonInstanceTestAccess::currentSkinPalette(instances, instance);
     REQUIRE(first_palette.size() == 2);
-    REQUIRE(instances.currentAnimationRevisionForTesting(instance) == time.frameIndex());
+    REQUIRE(PolygonInstanceTestAccess::currentAnimationRevision(instances, instance) == time.frameIndex());
     frame();
-    REQUIRE(instances.currentSkinPaletteForTesting(instance) != first_palette);
+    REQUIRE(PolygonInstanceTestAccess::currentSkinPalette(instances, instance) != first_palette);
     auto unnamed = invalidEntityId;
     for (const auto entity : ecs.liveEntities()) {
         if (entity != *named && ecs.tryComponent<AnimationComponent>(entity)) unnamed = entity;
@@ -1117,26 +1118,26 @@ TEST_CASE("authored animation graphs publish and release real scene model poses"
     REQUIRE(unnamed != invalidEntityId);
     REQUIRE_FALSE(scene.objectName(unnamed));
     const auto unnamed_instance = *ecs.tryComponent<SimpleModelViewComponent>(unnamed)->model_instance_id;
-    REQUIRE(instances.currentAnimationRevisionForTesting(unnamed_instance) == time.frameIndex());
+    REQUIRE(PolygonInstanceTestAccess::currentAnimationRevision(instances, unnamed_instance) == time.frameIndex());
     // Shared graph, different authored initial values: only the named actor turns.
-    REQUIRE(std::abs(instances.currentSkinPaletteForTesting(unnamed_instance)[0][0][1]) < 0.0001f);
-    REQUIRE(std::abs(instances.currentSkinPaletteForTesting(instance)[0][0][1]) > 0.1f);
+    REQUIRE(std::abs(PolygonInstanceTestAccess::currentSkinPalette(instances, unnamed_instance)[0][0][1]) < 0.0001f);
+    REQUIRE(std::abs(PolygonInstanceTestAccess::currentSkinPalette(instances, instance)[0][0][1]) > 0.1f);
 
     GameContext context;
-    const auto turn_palette = instances.currentSkinPaletteForTesting(instance);
+    const auto turn_palette = PolygonInstanceTestAccess::currentSkinPalette(instances, instance);
     REQUIRE(std::abs(turn_palette[0][0][1]) > 0.1f);
     REQUIRE(context.animation().setParameter(*named, "go", 1) == Animation::Status::ok);
     frame();
-    REQUIRE(instances.currentSkinPaletteForTesting(instance) != turn_palette);
+    REQUIRE(PolygonInstanceTestAccess::currentSkinPalette(instances, instance) != turn_palette);
     // Step translates the tip only; a continuing Turn would still rotate the root.
-    REQUIRE(std::abs(instances.currentSkinPaletteForTesting(instance)[0][0][1]) < 0.0001f);
-    REQUIRE(std::abs(instances.currentSkinPaletteForTesting(instance)[0][0][0] - 1.0f) < 0.0001f);
+    REQUIRE(std::abs(PolygonInstanceTestAccess::currentSkinPalette(instances, instance)[0][0][1]) < 0.0001f);
+    REQUIRE(std::abs(PolygonInstanceTestAccess::currentSkinPalette(instances, instance)[0][0][0] - 1.0f) < 0.0001f);
     REQUIRE(context.animation().setParameter(*named, "go", 0) == Animation::Status::ok);
-    const auto step_palette = instances.currentSkinPaletteForTesting(instance);
+    const auto step_palette = PolygonInstanceTestAccess::currentSkinPalette(instances, instance);
     REQUIRE(context.animation().forceState(*named, "turn") == Animation::Status::ok);
     frame();
-    REQUIRE(instances.currentSkinPaletteForTesting(instance) != step_palette);
-    REQUIRE(std::abs(instances.currentSkinPaletteForTesting(instance)[0][0][1]) > 0.1f);
+    REQUIRE(PolygonInstanceTestAccess::currentSkinPalette(instances, instance) != step_palette);
+    REQUIRE(std::abs(PolygonInstanceTestAccess::currentSkinPalette(instances, instance)[0][0][1]) > 0.1f);
 
     // Switching to a clip removes the graph writer before phase evaluation.
     auto *animation = ecs.tryComponent<AnimationComponent>(*named);
@@ -1145,17 +1146,17 @@ TEST_CASE("authored animation graphs publish and release real scene model poses"
     REQUIRE(context.animation().setParameter(*named, "go", 1) == Animation::Status::not_found);
     REQUIRE(context.animation().forceState(*named, "turn") == Animation::Status::not_found);
     frame();
-    REQUIRE(instances.currentAnimationRevisionForTesting(instance) == time.frameIndex());
+    REQUIRE(PolygonInstanceTestAccess::currentAnimationRevision(instances, instance) == time.frameIndex());
     REQUIRE(context.animation().forceState(*named, "turn") == Animation::Status::not_found);
     animation->clip.clear();
     animation->graph = "turn.json";
     frame();
-    REQUIRE(instances.currentAnimationRevisionForTesting(instance) == time.frameIndex());
+    REQUIRE(PolygonInstanceTestAccess::currentAnimationRevision(instances, instance) == time.frameIndex());
     // Removing the unnamed actor retires both its renderer slot and writer.
     REQUIRE(ecs.remove(unnamed));
     REQUIRE(context.animation().forceState(unnamed, "turn") == Animation::Status::not_found);
     frame();
-    REQUIRE_THROWS(instances.currentAnimationRevisionForTesting(unnamed_instance));
+    REQUIRE_THROWS(PolygonInstanceTestAccess::currentAnimationRevision(instances, unnamed_instance));
     REQUIRE(context.animation().forceState(unnamed, "turn") == Animation::Status::not_found);
 
     test_support::loadScene(scene, "default_scene");
@@ -1165,10 +1166,10 @@ TEST_CASE("authored animation graphs publish and release real scene model poses"
     REQUIRE(*reloaded != *named);
     const auto new_instance = *ecs.tryComponent<SimpleModelViewComponent>(*reloaded)->model_instance_id;
     REQUIRE(new_instance != instance);
-    REQUIRE(instances.currentAnimationRevisionForTesting(new_instance) == time.frameIndex());
-    const auto reloaded_palette = instances.currentSkinPaletteForTesting(new_instance);
+    REQUIRE(PolygonInstanceTestAccess::currentAnimationRevision(instances, new_instance) == time.frameIndex());
+    const auto reloaded_palette = PolygonInstanceTestAccess::currentSkinPalette(instances, new_instance);
     frame();
-    REQUIRE(instances.currentSkinPaletteForTesting(new_instance) != reloaded_palette);
+    REQUIRE(PolygonInstanceTestAccess::currentSkinPalette(instances, new_instance) != reloaded_palette);
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 

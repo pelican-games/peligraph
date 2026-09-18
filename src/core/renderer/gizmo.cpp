@@ -5,10 +5,7 @@
 #include "../ecs/predefined/transform.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../loader/scene.hpp"
-#include "../shader/pelican_sets.hpp"
 #include "../userpublic/components/predefined.hpp"
-#include "../vkcore/core.hpp"
-#include "../vkcore/deletionqueue.hpp"
 
 #include <algorithm>
 #include <array>
@@ -359,25 +356,6 @@ const GizmoSegment *nearestGizmoSegment(const GizmoGeometry &geometry,
     return best;
 }
 
-vk::UniqueDescriptorPool createDescriptorPool(vk::Device device) {
-    vk::DescriptorPoolSize pool_size;
-    pool_size.type = vk::DescriptorType::eStorageBuffer;
-    pool_size.descriptorCount = 32;
-
-    vk::DescriptorPoolCreateInfo create_info;
-    create_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    create_info.maxSets = 32;
-    create_info.poolSizeCount = 1;
-    create_info.pPoolSizes = &pool_size;
-    return device.createDescriptorPoolUnique(create_info);
-}
-
-vk::DeviceSize nextCapacity(vk::DeviceSize required) {
-    vk::DeviceSize capacity = sizeof(GizmoVertex) * 256;
-    while (capacity < required) capacity *= 2;
-    return capacity;
-}
-
 } // namespace
 
 std::string_view gizmoModeName(GizmoMode mode) noexcept {
@@ -671,98 +649,15 @@ std::optional<GizmoDisplayRequest> Gizmo::displayRequest() const {
     return display_request;
 }
 
-void Gizmo::ensureDevice() {
-    if (!device) device = GET_MODULE(VulkanManageCore).getDevice();
-}
-
-void Gizmo::ensureDescriptorPool() {
-    ensureDevice();
-    if (!descriptor_pool) descriptor_pool = createDescriptorPool(device);
-}
-
-void Gizmo::ensureVertexCapacity(std::size_t vertex_count) {
-    const auto required =
-        static_cast<vk::DeviceSize>(vertex_count * sizeof(GizmoVertex));
-    if (required <= vertex_buffer_bytes) return;
-    auto &vulkan = GET_MODULE(VulkanManageCore);
-    vertex_buffer_bytes = nextCapacity(required);
-    vertex_buffer = vulkan.allocBuf(
-        vertex_buffer_bytes, vk::BufferUsageFlagBits::eStorageBuffer,
-        vma::MemoryUsage::eAutoPreferHost,
-        vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
-}
-
-void Gizmo::ensureDescriptorSet(PassId pass_id, PipelineRecord &record) {
-    if (record.descriptor_set) return;
-    ensureDescriptorPool();
-    auto &pipeline_factory = GET_MODULE(PipelineFactory);
-    const auto layout = pipeline_factory.descriptorSetLayout(
-        record.pipeline, PELICAN_SET_FREE);
-    vk::DescriptorSetAllocateInfo allocate;
-    allocate.descriptorPool = descriptor_pool.get();
-    allocate.descriptorSetCount = 1;
-    allocate.pSetLayouts = &layout;
-    auto sets = device.allocateDescriptorSetsUnique(allocate);
-    if (sets.empty()) {
-        throw std::runtime_error("Gizmo descriptor set allocation failed");
-    }
-    record.descriptor_set = std::move(sets.front());
-    (void)pass_id;
-}
-
-void Gizmo::updateDescriptorSet(const PipelineRecord &record,
-                                vk::DeviceSize bytes) {
-    vk::DescriptorBufferInfo buffer;
-    buffer.buffer = vertex_buffer.buffer.get();
-    buffer.offset = 0;
-    buffer.range = bytes;
-    vk::WriteDescriptorSet write;
-    write.dstSet = record.descriptor_set.get();
-    write.dstBinding = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = vk::DescriptorType::eStorageBuffer;
-    write.pBufferInfo = &buffer;
-    device.updateDescriptorSets(write, {});
-}
-
 PassId Gizmo::registerPass(vk::Format color_format,
                            ShaderBundleId vert_shader,
                            ShaderBundleId frag_shader,
                            std::vector<std::string> shader_defines,
                            vk::SampleCountFlagBits samples,
                            bool ray_query, std::string acceleration_structure) {
-    ensureDevice();
-    if (next_pass_id == std::numeric_limits<int>::max()) {
-        throw std::runtime_error("Gizmo pass handle table is exhausted");
-    }
-
-    GraphicsPipelineDesc desc;
-    desc.auxiliary_descriptor_contract = AuxiliaryDescriptorContract::vertex_buffer;
-    desc.allow_ray_query = ray_query;
-    desc.vert = vert_shader;
-    desc.frag = frag_shader;
-    desc.color_formats = {color_format};
-    desc.shader_defines = std::move(shader_defines);
-    desc.blend = true;
-    desc.src_color_blend_factor = vk::BlendFactor::eSrcAlpha;
-    desc.dst_color_blend_factor = vk::BlendFactor::eOneMinusSrcAlpha;
-    desc.src_alpha_blend_factor = vk::BlendFactor::eOne;
-    desc.dst_alpha_blend_factor = vk::BlendFactor::eOneMinusSrcAlpha;
-    desc.topology = vk::PrimitiveTopology::eLineList;
-    desc.rasterization_samples = samples;
-
-    const auto pass_id = PassId{next_pass_id++};
-    if (!pipelines
-             .emplace(pass_id,
-                      PipelineRecord{
-                          GET_MODULE(PipelineFactory).create(desc), {},
-                          std::move(acceleration_structure)})
-             .second) {
-        throw std::runtime_error(
-            "Gizmo pipeline table changed during registration");
-    }
-    registration_order.push_back(pass_id);
-    return pass_id;
+    return passes.registerPass(color_format, vert_shader, frag_shader,
+                               std::move(shader_defines), samples, ray_query,
+                               std::move(acceleration_structure));
 }
 
 void Gizmo::render(vk::CommandBuffer cmd_buf, PassId pass_id,
@@ -776,8 +671,8 @@ void Gizmo::render(vk::CommandBuffer cmd_buf, PassId pass_id,
         request->mode, *world_position, view_projection, extent, content_scale);
     if (geometry.segments.empty()) return;
 
-    const auto found = pipelines.find(pass_id);
-    if (found == pipelines.end()) {
+    auto *record = passes.findPass(pass_id);
+    if (record == nullptr) {
         throw std::runtime_error("Gizmo pass pipeline not found");
     }
     std::vector<GizmoVertex> vertices;
@@ -789,69 +684,13 @@ void Gizmo::render(vk::CommandBuffer cmd_buf, PassId pass_id,
             GizmoVertex{glm::vec4{segment.to.ndc, 1.0f}, segment.color});
     }
 
-    const auto bytes =
-        static_cast<vk::DeviceSize>(vertices.size() * sizeof(GizmoVertex));
-    ensureVertexCapacity(vertices.size());
-    ensureDescriptorSet(pass_id, found->second);
-    GET_MODULE(VulkanManageCore)
-        .writeBuf(vertex_buffer, vertices.data(), 0, bytes);
-    updateDescriptorSet(found->second, bytes);
-
-    auto &pipeline_factory = GET_MODULE(PipelineFactory);
-    cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics,
-                         pipeline_factory.pipeline(found->second.pipeline));
-    frame_resources.bindGraphics(
-        cmd_buf, pipeline_factory.layout(found->second.pipeline),
-        found->second.acceleration_structure);
-    cmd_buf.bindDescriptorSets(
-        vk::PipelineBindPoint::eGraphics,
-        pipeline_factory.layout(found->second.pipeline), PELICAN_SET_FREE,
-        found->second.descriptor_set.get(), {});
-    cmd_buf.draw(static_cast<std::uint32_t>(vertices.size()), 1, 0, 0);
-}
-
-Gizmo::RegistrationCheckpoint Gizmo::checkpointRegistrations() const noexcept {
-    return RegistrationCheckpoint{registration_order.size(), next_pass_id};
-}
-
-void Gizmo::rollbackRegistrations(RegistrationCheckpoint checkpoint) {
-    if (checkpoint.registration_count > registration_order.size()) {
-        throw std::runtime_error("Gizmo registration checkpoint is invalid");
-    }
-    while (registration_order.size() > checkpoint.registration_count) {
-        pipelines.erase(registration_order.back());
-        registration_order.pop_back();
-    }
-    next_pass_id = checkpoint.next_pass_id;
-}
-
-std::vector<PassId>
-Gizmo::registrationsSince(RegistrationCheckpoint checkpoint) const {
-    if (checkpoint.registration_count > registration_order.size()) {
-        throw std::runtime_error("Gizmo registration checkpoint is invalid");
-    }
-    return {registration_order.begin() +
-                static_cast<std::ptrdiff_t>(checkpoint.registration_count),
-            registration_order.end()};
+    passes.drawVertices(cmd_buf, *record, vertices.data(), vertices.size(),
+                        frame_resources);
 }
 
 void Gizmo::retireRegistrations(const std::vector<PassId> &ids) noexcept {
-    for (const auto id : ids) {
-        const auto found = pipelines.find(id);
-        if (found != pipelines.end()) {
-            auto retired = std::move(found->second);
-            pipelines.erase(found);
-            try {
-                auto *queue = FastModuleContainer::tryGet<DeletionQueue>();
-                if (queue != nullptr && queue->acceptingResources()) {
-                    queue->defer(std::move(retired));
-                }
-            } catch (...) {
-            }
-        }
-        std::erase(registration_order, id);
-    }
-    if (registration_order.empty()) {
+    passes.retireRegistrations(ids);
+    if (passes.empty()) {
         try {
             setDisplayRequest(std::nullopt);
         } catch (...) {

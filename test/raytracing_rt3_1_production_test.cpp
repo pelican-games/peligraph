@@ -55,6 +55,7 @@
 #include "../src/core/renderer/debugtext.hpp"
 #include "../src/core/renderer/gizmo.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
+#include "polygoninstancecontainer_testaccess.hpp"
 #include "../src/core/renderer/proceduralgeometrycontainer.hpp"
 #include "../src/core/shader/raygrouplayout.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
@@ -859,7 +860,7 @@ TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
         REQUIRE(id);
         const float weight = 1.0F;
         PublishMorphWeightFrameDescV1 frame;
-        frame.layout_generation = instances.morphLayoutGenerationForTesting(*id);
+        frame.layout_generation = PolygonInstanceTestAccess::morphLayoutGeneration(instances, *id);
         frame.frame_revision = 1;
         frame.weights = &weight;
         frame.weight_count = 1;
@@ -2029,7 +2030,7 @@ TEST_CASE("RT5 shared skinned mesh instances trace their current skin and morph 
     REQUIRE(*left_id != *right_id);
     const auto publish_morph = [&](float weight, std::uint64_t revision) {
         PublishMorphWeightFrameDescV1 frame;
-        frame.layout_generation = instances.morphLayoutGenerationForTesting(*left_id);
+        frame.layout_generation = PolygonInstanceTestAccess::morphLayoutGeneration(instances, *left_id);
         frame.frame_revision = revision;
         frame.weights = &weight;
         frame.weight_count = 1;
@@ -6250,9 +6251,9 @@ PELICAN_WP380_HOST_API void pelican_wp380_host_read_probe(
         GET_MODULE(PhysWorld).activeTriggerPairCountForTesting();
     const auto &renderer = GET_MODULE(PolygonInstanceContainer);
     probe->renderer_instance_count =
-        renderer.liveModelInstanceCountForTesting();
+        PolygonInstanceTestAccess::liveModelInstanceCount(renderer);
     probe->renderer_ordinal =
-        renderer.nextDrawDeclarationOrdinalForTesting();
+        PolygonInstanceTestAccess::nextDrawDeclarationOrdinal(renderer);
     probe->binding_count =
         GET_MODULE(SceneLoader).runtimeObjectBindings().size();
     probe->behavior_count =
@@ -6327,7 +6328,7 @@ TEST_CASE("WP382d component lifecycle publishes the candidate ray plan before a 
         const auto before_plan = renderer.rayAsPlan();
         const auto before_inventory = renderer.rayAsInventory();
         const auto before_rpc = query();
-        const auto before_live = renderer.liveModelInstanceCountForTesting();
+        const auto before_live = PolygonInstanceTestAccess::liveModelInstanceCount(renderer);
         fault.armed = true;
         fault.fired = false;
         const auto failed = edit(operation);
@@ -6335,14 +6336,14 @@ TEST_CASE("WP382d component lifecycle publishes the candidate ray plan before a 
         REQUIRE(fault.fired);
         CHECK(renderer.rayAsPlan() == before_plan);
         CHECK(renderer.rayAsInventory() == before_inventory);
-        CHECK(renderer.liveModelInstanceCountForTesting() == before_live);
+        CHECK(PolygonInstanceTestAccess::liveModelInstanceCount(renderer) == before_live);
         CHECK(query() == before_rpc);
     };
     check_failed_edit(remove_model);
     REQUIRE(edit(remove_model).at("status") == "committed");
     REQUIRE(renderer.rayAsPlan()->rows.empty());
     REQUIRE(renderer.rayAsInventory()->instances.empty());
-    CHECK(renderer.liveModelInstanceCountForTesting() == 0);
+    CHECK(PolygonInstanceTestAccess::liveModelInstanceCount(renderer) == 0);
     const auto removed = query();
     REQUIRE(removed.at("overrides").size() == 1);
     CHECK(removed.at("overrides").at(0).at("q").is_null());
@@ -6353,7 +6354,7 @@ TEST_CASE("WP382d component lifecycle publishes the candidate ray plan before a 
     REQUIRE(edit(add_model).at("status") == "committed");
     REQUIRE(renderer.rayAsPlan()->rows.size() == original_count);
     CHECK(renderer.rayAsPlan()->rows.front().instance_mask == 9);
-    CHECK(renderer.liveModelInstanceCountForTesting() == 1);
+    CHECK(PolygonInstanceTestAccess::liveModelInstanceCount(renderer) == 1);
     const auto restored = query();
     CHECK(restored.at("rejected_rows").empty());
     REQUIRE(restored.at("overrides").size() == 1);
@@ -6378,10 +6379,10 @@ TEST_CASE("WP382d component lifecycle publishes the candidate ray plan before a 
         GET_MODULE(ModelAssetContainer).getModelTemplateByName("chair"));
     renderer.setTrs(transient, {8.0F, 9.0F, 10.0F},
                     glm::quat{1.0F, 0.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 1.0F});
-    const auto transient_matrix = renderer.currentModelMatrixForTesting(transient);
+    const auto transient_matrix = PolygonInstanceTestAccess::currentModelMatrix(renderer, transient);
     REQUIRE(edit({{"op", "add_component"}, {"object_id", object},
                   {"component", ray_component}}).at("status") == "committed");
-    CHECK((renderer.currentModelMatrixForTesting(transient) == transient_matrix));
+    CHECK((PolygonInstanceTestAccess::currentModelMatrix(renderer, transient) == transient_matrix));
     const auto transient_inventory = renderer.rayAsInventory();
     const auto transient_row = std::find_if(transient_inventory->instances.begin(),
         transient_inventory->instances.end(), [&](const auto &row) {

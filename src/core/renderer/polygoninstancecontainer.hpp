@@ -76,6 +76,13 @@ namespace test_support {
 // wp380c_production_has_no_fault_setter_symbol).
 void setRayQueryGeometryGenerationForTesting(
     PolygonInstanceContainer &instances, std::uint64_t generation) noexcept;
+
+// The reads and pokes only a test needs. Defined in
+// test/polygoninstancecontainer_testaccess.hpp, so the container's public
+// header states what production calls and nothing else. The five counters the
+// editor runtime factory publishes in its preview-state JSON stay public
+// below; they are production readers.
+struct PolygonInstanceContainerTestAccess;
 } // namespace test_support
 
 inline constexpr std::uint32_t morphWeightDescriptorVersionV1 = 1;
@@ -392,6 +399,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     friend void test_support::setRayQueryGeometryGenerationForTesting(
         PolygonInstanceContainer &instances,
         std::uint64_t generation) noexcept;
+    friend struct test_support::PolygonInstanceContainerTestAccess;
     BufferWrapper indirect_buf;
     BufferWrapper view_family_indirect_buf;
     std::map<std::string,
@@ -566,10 +574,6 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::size_t modelInstanceSlotCount() const noexcept {
         return slots.instance_slots.slotCount();
     }
-    std::size_t liveModelInstanceCountForTesting() const noexcept;
-    std::uint64_t nextDrawDeclarationOrdinalForTesting() const noexcept {
-        return next_draw_declaration_ordinal;
-    }
     std::optional<ModelInstanceId>
     modelInstanceIdAt(std::uint32_t index) const;
     Animation::InstanceHandle animationInstance(ModelInstanceId id) const;
@@ -668,103 +672,20 @@ DECLARE_MODULE(PolygonInstanceContainer) {
                     : DrawQueuePhase::transparent,
                 sort_view_index, filter_id);
     }
+    // The five counters below are read by production: the editor runtime
+    // factory publishes them in its preview-state JSON. Everything else a test
+    // used to reach through this class now lives behind
+    // test_support::PolygonInstanceContainerTestAccess.
     size_t instanceCountForTesting() const { return slots.instance_slots.liveCount(); }
     size_t slotCountForTesting() const { return slots.model_instances_data.size(); }
-    // The whole published per-slot table, so a test can compare it against the
-    // candidate a publication swapped in.
-    const ModelInstanceSlotTable &slotTableForTesting() const { return slots; }
-    std::size_t
-    directionalShadowDrawViewCountForTesting() const {
-        const auto found =
-            prepared_view_family_draws.find(
-                directionalShadowRenderViewFamilyId);
-        return found ==
-                       prepared_view_family_draws.end()
-                   ? 0
-                   : found->second
-                         .visible_draw_counts.size();
-    }
-    std::size_t
-    directionalShadowVisibleDrawCountForTesting(
-        std::uint32_t view_index) const {
-        return viewFamilyVisibleDrawCountForTesting(
-            directionalShadowRenderViewFamilyId,
-            view_index);
-    }
-    std::size_t
-    viewFamilyDrawViewCountForTesting(
-        std::string_view family_id) const;
-    std::size_t
-    viewFamilyVisibleDrawCountForTesting(
-        std::string_view family_id,
-        std::uint32_t view_index) const;
-    std::vector<std::uint32_t>
-    drawOrderForTesting(
-        MaterialPhase phase,
-        std::uint32_t sort_view_index =
-            0) const;
-    std::vector<std::uint32_t>
-    viewFamilyDrawOrderForTesting(
-        std::string_view family_id,
-        std::uint32_t view_index,
-        MaterialPhase phase) const;
-    ModelInstanceId modelInstanceIdForTesting(std::uint32_t index) const;
-    ModelInstanceId forceGenerationForTesting(ModelInstanceId id,
-                                               std::uint32_t generation);
-    void forceSceneEpochForTesting(std::uint64_t epoch);
     std::uint64_t temporalHistoryAdvanceCountForTesting() const {
         return temporal_history_advance_count;
-    }
-    glm::mat4 currentModelMatrixForTesting(ModelInstanceId id) const;
-    glm::mat4 previousModelMatrixForTesting(ModelInstanceId id) const;
-    std::uint64_t currentAnimationRevisionForTesting(ModelInstanceId id) const {
-        return slots.animation_revisions.at(requireLive(id, "currentAnimationRevisionForTesting"));
-    }
-    std::uint64_t previousAnimationRevisionForTesting(ModelInstanceId id) const {
-        return slots.previous_animation_revisions.at(requireLive(id, "previousAnimationRevisionForTesting"));
-    }
-    std::uint32_t animationGenerationForTesting(ModelInstanceId id) const {
-        return slots.animation_generations.at(requireLive(id, "animationGenerationForTesting"));
-    }
-    const MorphWeightFrame &morphWeightFrameForTesting(ModelInstanceId id) const {
-        return slots.morph_weight_frames.at(requireLive(id, "morphWeightFrameForTesting"));
-    }
-    std::uint64_t morphLayoutGenerationForTesting(ModelInstanceId id) const {
-        const auto &layout = slots.morph_layouts.at(requireLive(id, "morphLayoutGenerationForTesting"));
-        return layout ? layout->generation : 0;
-    }
-    const MaterialInstanceOverrideFrame *materialOverrideFrameForTesting(
-        ModelInstanceId id) const {
-        const auto index = requireLive(id, "materialOverrideFrameForTesting");
-        const auto found = material_override_frames.find(index);
-        return found == material_override_frames.end() ? nullptr : &found->second;
     }
     size_t materialOverrideStorageEntryCountForTesting() const {
         return material_override_frames.size();
     }
-    const MaterialInstanceAbsoluteOverrideFrame *
-    materialAbsoluteOverrideFrameForTesting(
-        ModelInstanceId id, std::uint32_t source_material_index) const {
-        const auto index = requireLive(id, "materialAbsoluteOverrideFrameForTesting");
-        const MaterialInstanceAbsoluteOverrideKey key{
-            static_cast<std::uint64_t>(index) + 1, source_material_index};
-        const auto found = material_absolute_override_frames.find(key);
-        return found == material_absolute_override_frames.end() ? nullptr
-                                                                 : &found->second;
-    }
     size_t materialAbsoluteOverrideStorageEntryCountForTesting() const {
         return material_absolute_override_frames.size();
-    }
-    size_t instanceCountForAssetForTesting(ModelAssetId asset_id) const;
-    const std::vector<DrawItemSnapshot> &drawItemsForTesting() const {
-        return draw_inventory;
-    }
-    const CompiledDrawQueueSet &compiledDrawQueueForTesting() const {
-        return compiled_draw_queue;
-    }
-    const std::vector<glm::mat4> &
-    currentSkinPaletteForTesting(ModelInstanceId id) const {
-        return slots.skin_palettes.at(requireLive(id, "currentSkinPaletteForTesting"));
     }
 };
 

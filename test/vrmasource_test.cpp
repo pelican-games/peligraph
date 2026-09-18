@@ -9,6 +9,7 @@
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/gltf.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
+#include "polygoninstancecontainer_testaccess.hpp"
 #include "../src/core/userpublic/animation/animgraph.hpp"
 #include "../src/core/userpublic/details/reload/registrationowner.hpp"
 #include "../src/core/vkcore/core.hpp"
@@ -294,12 +295,12 @@ TEST_CASE("VRMA-I0 graph blends a generated .vrma twice and commits typed sinks 
     REQUIRE(mocap->target_rig_sha256.size() == 64);
 
     const auto &hero_morph =
-        instances.morphWeightFrameForTesting(hero_polygon);
+        PolygonInstanceTestAccess::morphWeightFrame(instances, hero_polygon);
     const auto &control_morph =
-        instances.morphWeightFrameForTesting(control_polygon);
+        PolygonInstanceTestAccess::morphWeightFrame(instances, control_polygon);
     REQUIRE(hero_morph.current_revision == revision);
     REQUIRE(control_morph.current_revision == revision);
-    REQUIRE(instances.currentAnimationRevisionForTesting(hero_polygon) ==
+    REQUIRE(PolygonInstanceTestAccess::currentAnimationRevision(instances, hero_polygon) ==
             revision);
     REQUIRE(hero_morph.current.size() == 2);
     // happy: source 0.5 at t=0.5, then graph weight 0.5.

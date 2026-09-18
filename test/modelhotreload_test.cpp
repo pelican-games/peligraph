@@ -15,6 +15,7 @@
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/vertbufcontainer.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
+#include "polygoninstancecontainer_testaccess.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/deletionqueue.hpp"
 #include "../src/core/watch/assetkey.hpp"
@@ -298,10 +299,10 @@ TEST_CASE("HR2-G fragment and rig reload contract", "[wp110][model-reload][gpu]"
                      {1.0f, 1.0f, 1.0f});
     instances.advanceTemporalHistoryAfterRender();
 
-    const auto matrix_a0 = instances.currentModelMatrixForTesting(instance_a0);
-    const auto matrix_a1 = instances.currentModelMatrixForTesting(instance_a1);
-    const auto matrix_b = instances.currentModelMatrixForTesting(instance_b);
-    const auto generation_a0 = instances.animationGenerationForTesting(instance_a0);
+    const auto matrix_a0 = PolygonInstanceTestAccess::currentModelMatrix(instances, instance_a0);
+    const auto matrix_a1 = PolygonInstanceTestAccess::currentModelMatrix(instances, instance_a1);
+    const auto matrix_b = PolygonInstanceTestAccess::currentModelMatrix(instances, instance_b);
+    const auto generation_a0 = PolygonInstanceTestAccess::animationGeneration(instances, instance_a0);
     const auto texture_count = materials.textureCountForTesting();
     const auto material_count = materials.materialCountForTesting();
     const auto index_count = geometry.allocatedIndexCountForTesting();
@@ -313,13 +314,13 @@ TEST_CASE("HR2-G fragment and rig reload contract", "[wp110][model-reload][gpu]"
     REQUIRE(models.contentRevisionForTesting("mesh_a") == 2);
     REQUIRE(models.contentRevisionForTesting("mesh_b") == 2);
     REQUIRE(models.compatibilityRevisionForTesting("mesh_a") == 0);
-    REQUIRE(instances.instanceCountForAssetForTesting(asset_a) == 2);
-    REQUIRE(instances.instanceCountForAssetForTesting(asset_b) == 1);
-    REQUIRE(sameMatrix(instances.currentModelMatrixForTesting(instance_a0), matrix_a0));
-    REQUIRE(sameMatrix(instances.currentModelMatrixForTesting(instance_a1), matrix_a1));
-    REQUIRE(sameMatrix(instances.currentModelMatrixForTesting(instance_b), matrix_b));
-    REQUIRE(sameMatrix(instances.previousModelMatrixForTesting(instance_a0), matrix_a0));
-    REQUIRE(instances.animationGenerationForTesting(instance_a0) == generation_a0 + 1);
+    REQUIRE(PolygonInstanceTestAccess::instanceCountForAsset(instances, asset_a) == 2);
+    REQUIRE(PolygonInstanceTestAccess::instanceCountForAsset(instances, asset_b) == 1);
+    REQUIRE(sameMatrix(PolygonInstanceTestAccess::currentModelMatrix(instances, instance_a0), matrix_a0));
+    REQUIRE(sameMatrix(PolygonInstanceTestAccess::currentModelMatrix(instances, instance_a1), matrix_a1));
+    REQUIRE(sameMatrix(PolygonInstanceTestAccess::currentModelMatrix(instances, instance_b), matrix_b));
+    REQUIRE(sameMatrix(PolygonInstanceTestAccess::previousModelMatrix(instances, instance_a0), matrix_a0));
+    REQUIRE(PolygonInstanceTestAccess::animationGeneration(instances, instance_a0) == generation_a0 + 1);
     REQUIRE(materials.textureCountForTesting() == texture_count);
     REQUIRE(materials.materialCountForTesting() == material_count);
     REQUIRE(geometry.allocatedIndexCountForTesting() == index_count);
@@ -333,7 +334,7 @@ TEST_CASE("HR2-G fragment and rig reload contract", "[wp110][model-reload][gpu]"
     REQUIRE(reload.transactions().status().failed == failed_before + 1);
     REQUIRE(models.contentRevisionForTesting("mesh_a") == 2);
     REQUIRE(models.contentRevisionForTesting("mesh_b") == 2);
-    REQUIRE(sameMatrix(instances.currentModelMatrixForTesting(instance_a0), matrix_a0));
+    REQUIRE(sameMatrix(PolygonInstanceTestAccess::currentModelMatrix(instances, instance_a0), matrix_a0));
     REQUIRE(materials.textureCountForTesting() == texture_count);
     REQUIRE(materials.materialCountForTesting() == material_count);
     REQUIRE(geometry.allocatedIndexCountForTesting() == index_count);
@@ -389,8 +390,8 @@ TEST_CASE("HR2-G rig layout change advances compatibility and resets temporal st
     instances.setTrs(instance, {4.0f, 5.0f, 6.0f}, glm::quat{1.0f, 0.0f, 0.0f, 0.0f},
                      {2.0f, 2.0f, 2.0f});
     instances.advanceTemporalHistoryAfterRender();
-    const auto matrix = instances.currentModelMatrixForTesting(instance);
-    const auto generation = instances.animationGenerationForTesting(instance);
+    const auto matrix = PolygonInstanceTestAccess::currentModelMatrix(instances, instance);
+    const auto generation = PolygonInstanceTestAccess::animationGeneration(instances, instance);
     const auto old_occurrences =
         modelOccurrenceIds(models.getModelTemplateByName("live"));
     const auto old_catalog_generation =
@@ -426,11 +427,11 @@ TEST_CASE("HR2-G rig layout change advances compatibility and resets temporal st
     REQUIRE(models.compatibilityRevisionForTesting("live") == 1);
     REQUIRE(models.getModelTemplateByName("live").skeletal);
     REQUIRE(primitiveCount(models.getModelTemplateByName("live")) == 1);
-    REQUIRE(sameMatrix(instances.currentModelMatrixForTesting(instance), matrix));
-    REQUIRE(sameMatrix(instances.previousModelMatrixForTesting(instance), matrix));
-    REQUIRE(instances.animationGenerationForTesting(instance) == generation + 1);
-    REQUIRE(instances.currentAnimationRevisionForTesting(instance) == 0);
-    REQUIRE(instances.previousAnimationRevisionForTesting(instance) == 0);
+    REQUIRE(sameMatrix(PolygonInstanceTestAccess::currentModelMatrix(instances, instance), matrix));
+    REQUIRE(sameMatrix(PolygonInstanceTestAccess::previousModelMatrix(instances, instance), matrix));
+    REQUIRE(PolygonInstanceTestAccess::animationGeneration(instances, instance) == generation + 1);
+    REQUIRE(PolygonInstanceTestAccess::currentAnimationRevision(instances, instance) == 0);
+    REQUIRE(PolygonInstanceTestAccess::previousAnimationRevision(instances, instance) == 0);
     const auto new_occurrences =
         modelOccurrenceIds(models.getModelTemplateByName("live"));
     const auto catalog = models.occurrenceCatalogStatus();

@@ -3,14 +3,13 @@
 #include "../container.hpp"
 #include "../renderingpass/renderingpass.hpp"
 #include "../shader/pipelinefactory.hpp"
-#include "../vkcore/buf.hpp"
 #include "../vkcore/image.hpp"
 #include "../ui/bitmapfont.hpp"
+#include "lineoverlaypassregistry.hpp"
 #include <glm/glm.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -32,44 +31,34 @@ DECLARE_MODULE(DebugText) {
         glm::vec4 color{1.0f};
     };
 
-    struct PipelineRecord {
-        PipelineHandle pipeline;
-        vk::UniqueDescriptorSet descriptor_set;
-        std::string acceleration_structure = "scene";
-    };
+    // The device, descriptor pool, vertex buffer and pass table are the same
+    // plumbing DebugDraw and Gizmo need. The font atlas below is ours, and so
+    // is the glyph-to-vertex step. The UI quad renderer stays a separate path
+    // on purpose (2026-07-17 debt review); only this plumbing is shared.
+    LineOverlayPassRegistry passes{LineOverlayRegistryTraits{
+        .label = "DebugText",
+        .vertex_stride = sizeof(DebugTextVertex),
+        .initial_vertex_count = 64,
+        .contract = AuxiliaryDescriptorContract::text_atlas,
+        .topology = vk::PrimitiveTopology::eTriangleList,
+        .sampled_image = true,
+        .tracks_enabled = true,
+    }};
 
-    vk::Device device;
-    bool enabled = false;
     bool font_loaded = false;
     std::optional<ui::BitmapFont> font;
-
-    vk::UniqueDescriptorPool descriptor_pool;
     vk::UniqueSampler atlas_sampler;
     ImageWrapper atlas_image;
     vk::UniqueImageView atlas_view;
-    BufferWrapper vertex_buffer;
-    vk::DeviceSize vertex_buffer_bytes = 0;
 
     std::vector<QueuedGlyph> queued_glyphs;
     std::vector<DebugTextVertex> vertices;
-    std::unordered_map<PassId, PipelineRecord, PassId::Hash> pipelines;
-    std::vector<PassId> registration_order;
-    int next_pass_id = 0;
 
-    void ensureDevice();
     void ensureFontResources();
-    void ensureDescriptorPool();
-    void ensureVertexCapacity(size_t vertex_count);
-    void ensureDescriptorSet(PassId pass_id, PipelineRecord &record);
-    void updateDescriptorSet(const PipelineRecord &record, vk::DeviceSize bytes);
     void buildVertices(vk::Extent2D target_extent);
 
   public:
-    struct RegistrationCheckpoint {
-        std::size_t registration_count = 0;
-        bool enabled = false;
-        int next_pass_id = 0;
-    };
+    using RegistrationCheckpoint = LineOverlayPassRegistry::Checkpoint;
 
     DebugText();
     ~DebugText();
@@ -87,18 +76,26 @@ DECLARE_MODULE(DebugText) {
     void render(vk::CommandBuffer cmd_buf, PassId pass_id, vk::Extent2D target_extent,
                 const FrameResources &frame_resources);
 
-    bool isEnabledForTesting() const { return enabled; }
+    bool isEnabledForTesting() const { return passes.enabled(); }
     size_t queuedGlyphCountForTesting() const { return queued_glyphs.size(); }
 
-    RegistrationCheckpoint checkpointRegistrations() const noexcept;
-    void rollbackRegistrations(RegistrationCheckpoint checkpoint);
+    RegistrationCheckpoint checkpointRegistrations() const noexcept {
+        return passes.checkpointRegistrations();
+    }
+    void rollbackRegistrations(RegistrationCheckpoint checkpoint) {
+        passes.rollbackRegistrations(checkpoint);
+    }
     std::vector<PassId>
-    registrationsSince(RegistrationCheckpoint checkpoint) const;
+    registrationsSince(RegistrationCheckpoint checkpoint) const {
+        return passes.registrationsSince(checkpoint);
+    }
     std::size_t registrationCount() const noexcept {
-        return registration_order.size();
+        return passes.registrationCount();
     }
     void retireRegistrations(
-        const std::vector<PassId> &ids) noexcept;
+        const std::vector<PassId> &ids) noexcept {
+        passes.retireRegistrations(ids);
+    }
 };
 
 } // namespace Pelican

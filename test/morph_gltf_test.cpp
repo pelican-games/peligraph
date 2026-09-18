@@ -5,6 +5,7 @@
 #include "../src/core/model/gltf.hpp"
 #include "../src/core/model/vertbufcontainer.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
+#include "polygoninstancecontainer_testaccess.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "vulkan_test_support.hpp"
 #include "morph_fixture.hpp"
@@ -150,15 +151,15 @@ TEST_CASE("morph weight frames are per-instance N and N-1 state",
             Animation::Status::ok);
     REQUIRE(instances.publishMorphWeightFrame(second, second_frame) ==
             Animation::Status::ok);
-    REQUIRE(instances.morphWeightFrameForTesting(first).current ==
+    REQUIRE(PolygonInstanceTestAccess::morphWeightFrame(instances, first).current ==
             std::vector<float>{0.0f});
-    REQUIRE(instances.morphWeightFrameForTesting(second).current ==
+    REQUIRE(PolygonInstanceTestAccess::morphWeightFrame(instances, second).current ==
             std::vector<float>{1.0f});
-    REQUIRE(instances.morphWeightFrameForTesting(first).current_revision == 7);
-    REQUIRE(instances.morphWeightFrameForTesting(second).current_revision == 7);
-    REQUIRE(instances.morphWeightFrameForTesting(first).previous ==
+    REQUIRE(PolygonInstanceTestAccess::morphWeightFrame(instances, first).current_revision == 7);
+    REQUIRE(PolygonInstanceTestAccess::morphWeightFrame(instances, second).current_revision == 7);
+    REQUIRE(PolygonInstanceTestAccess::morphWeightFrame(instances, first).previous ==
             std::vector<float>{0.0f});
-    REQUIRE(instances.morphWeightFrameForTesting(second).previous ==
+    REQUIRE(PolygonInstanceTestAccess::morphWeightFrame(instances, second).previous ==
             std::vector<float>{1.0f});
 
     instances.advanceMorphHistoryAfterRender();
@@ -166,14 +167,14 @@ TEST_CASE("morph weight frames are per-instance N and N-1 state",
     auto moved_frame = publishDesc(model, 8, &moved, 1);
     REQUIRE(instances.publishMorphWeightFrame(first, moved_frame) ==
             Animation::Status::ok);
-    REQUIRE(instances.morphWeightFrameForTesting(first).previous ==
+    REQUIRE(PolygonInstanceTestAccess::morphWeightFrame(instances, first).previous ==
             std::vector<float>{0.0f});
-    REQUIRE(instances.morphWeightFrameForTesting(first).previous_revision == 7);
-    REQUIRE(instances.morphWeightFrameForTesting(second).previous ==
+    REQUIRE(PolygonInstanceTestAccess::morphWeightFrame(instances, first).previous_revision == 7);
+    REQUIRE(PolygonInstanceTestAccess::morphWeightFrame(instances, second).previous ==
             std::vector<float>{1.0f});
 
     instances.resetTemporalHistory();
-    REQUIRE(instances.morphWeightFrameForTesting(first).previous ==
+    REQUIRE(PolygonInstanceTestAccess::morphWeightFrame(instances, first).previous ==
             std::vector<float>{0.75f});
     auto duplicate = publishDesc(model, 8, &on, 1);
     REQUIRE(instances.publishMorphWeightFrame(first, duplicate) ==
@@ -186,13 +187,13 @@ TEST_CASE("morph weight frames are per-instance N and N-1 state",
                                      morphCommitDiscontinuity);
     REQUIRE(instances.publishMorphWeightFrame(first, discontinuity) ==
             Animation::Status::ok);
-    REQUIRE(instances.morphWeightFrameForTesting(first).previous ==
+    REQUIRE(PolygonInstanceTestAccess::morphWeightFrame(instances, first).previous ==
             std::vector<float>{1.0f});
     const auto nan = std::numeric_limits<float>::quiet_NaN();
     auto non_finite = publishDesc(model, 10, &nan, 1);
     REQUIRE(instances.publishMorphWeightFrame(first, non_finite) ==
             Animation::Status::invalid_argument);
-    REQUIRE(instances.morphWeightFrameForTesting(first).current ==
+    REQUIRE(PolygonInstanceTestAccess::morphWeightFrame(instances, first).current ==
             std::vector<float>{1.0f});
 }
 
@@ -219,8 +220,8 @@ TEST_CASE("skinned morph reload keeps instance identity and resets weights",
     auto &instances = GET_MODULE(PolygonInstanceContainer);
     const auto instance = instances.placeModelInstance(first_model);
     const auto identity =
-        instances.morphWeightFrameForTesting(instance).instance_identity;
-    const auto old_layout = instances.morphLayoutGenerationForTesting(instance);
+        PolygonInstanceTestAccess::morphWeightFrame(instances, instance).instance_identity;
+    const auto old_layout = PolygonInstanceTestAccess::morphLayoutGeneration(instances, instance);
     const float on = 1.0f;
     auto frame = publishDesc(first_model, 5, &on, 1);
     REQUIRE(instances.publishMorphWeightFrame(instance, frame) ==
@@ -228,7 +229,7 @@ TEST_CASE("skinned morph reload keeps instance identity and resets weights",
     instances.advanceTemporalHistoryAfterRender();
 
     instances.rebuildModelInstances(first_model.asset_id, second_model);
-    const auto &reset = instances.morphWeightFrameForTesting(instance);
+    const auto &reset = PolygonInstanceTestAccess::morphWeightFrame(instances, instance);
     REQUIRE(reset.instance_identity == identity);
     REQUIRE(reset.layout_generation != old_layout);
     REQUIRE(reset.current == std::vector<float>{0.6f});
@@ -280,23 +281,23 @@ TEST_CASE("VRM firstPerson auto becomes exact node-aware per-view draw ranges",
     };
     REQUIRE(draw_count(false) == 2);
     REQUIRE(draw_count(true) == 1);
-    REQUIRE(instances.drawItemsForTesting().size() == 2);
-    REQUIRE(instances.drawItemsForTesting()[0].stable_identity.node_index == 0);
-    REQUIRE(instances.drawItemsForTesting()[1].stable_identity.node_index == 0);
-    REQUIRE(instances.drawItemsForTesting()[0].declaration_ordinal !=
-            instances.drawItemsForTesting()[1].declaration_ordinal);
-    REQUIRE(instances.drawItemsForTesting()[0].phase == MaterialPhase::opaque);
+    REQUIRE(PolygonInstanceTestAccess::drawItems(instances).size() == 2);
+    REQUIRE(PolygonInstanceTestAccess::drawItems(instances)[0].stable_identity.node_index == 0);
+    REQUIRE(PolygonInstanceTestAccess::drawItems(instances)[1].stable_identity.node_index == 0);
+    REQUIRE(PolygonInstanceTestAccess::drawItems(instances)[0].declaration_ordinal !=
+            PolygonInstanceTestAccess::drawItems(instances)[1].declaration_ordinal);
+    REQUIRE(PolygonInstanceTestAccess::drawItems(instances)[0].phase == MaterialPhase::opaque);
 
     const auto first_bytes = [&] {
         const auto bytes =
-            instances.compiledDrawQueueForTesting().indirectBytes();
+            PolygonInstanceTestAccess::compiledDrawQueue(instances).indirectBytes();
         return std::vector<std::byte>{bytes.begin(), bytes.end()};
     }();
     const auto first_third_person = instances.getDrawCalls(false);
     const auto first_first_person = instances.getDrawCalls(true);
     instances.triggerUpdate();
     const auto second_bytes =
-        instances.compiledDrawQueueForTesting().indirectBytes();
+        PolygonInstanceTestAccess::compiledDrawQueue(instances).indirectBytes();
     REQUIRE(std::equal(first_bytes.begin(), first_bytes.end(),
                        second_bytes.begin(), second_bytes.end()));
     REQUIRE(instances.getDrawCalls(false) == first_third_person);

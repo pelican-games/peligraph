@@ -2,6 +2,7 @@ target_sources(pelican_core PRIVATE
     atlasassetresource.cpp
     spritescene.cpp
     spriterenderer.cpp
+    lineoverlaypassregistry.cpp
     debugdraw.cpp
     gizmo.cpp
     modaltransform.cpp
