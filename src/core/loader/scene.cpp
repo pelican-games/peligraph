@@ -37,6 +37,7 @@
 #include "../userpublic/gameobjects.hpp"
 #include "pathresolver.hpp"
 #include "sceneloadfault.hpp"
+#include "sceneloadparticipant.hpp"
 #include "effecttransaction.hpp"
 #include <nlohmann/json.hpp>
 
@@ -190,6 +191,29 @@ SceneLoader::~SceneLoader() {
     releaseTransientModels(false);
 }
 
+// The per-object load plan the scene-load participants share.  It has
+// external linkage on purpose: SceneLoadContext holds a vector of these, and
+// a transaction state visible from the header must not be built out of
+// anonymous-namespace types.
+struct EcsObjectLoad {
+    struct ComponentLoad {
+        nlohmann::json effective_json;
+        const ComponentCodec *codec = nullptr;
+        ComponentCodecValue decoded;
+    };
+
+    AuthoringObjectId authoring_object_id{};
+    std::string name;
+    std::string parent;
+    bool hierarchy_participant = false;
+    std::vector<ComponentLoad> components;
+    std::vector<ComponentId> components_id;
+    std::vector<ColliderComponent> colliders;
+    std::vector<PreparedSceneBehaviorAttachment> behaviors;
+    std::optional<ModelInstanceId> prepared_model_instance;
+    std::optional<PhysWorld::Binding> prepared_model_physics;
+};
+
 namespace {
 
 struct PendingSceneTransaction {
@@ -260,25 +284,6 @@ ComponentId getComponentIdForObject(ComponentInfoManager &component_info_manager
     (void)object_name;
     return component_info_manager.getComponentIdByName(component_name);
 }
-
-struct EcsObjectLoad {
-    struct ComponentLoad {
-        nlohmann::json effective_json;
-        const ComponentCodec *codec = nullptr;
-        ComponentCodecValue decoded;
-    };
-
-    AuthoringObjectId authoring_object_id{};
-    std::string name;
-    std::string parent;
-    bool hierarchy_participant = false;
-    std::vector<ComponentLoad> components;
-    std::vector<ComponentId> components_id;
-    std::vector<ColliderComponent> colliders;
-    std::vector<PreparedSceneBehaviorAttachment> behaviors;
-    std::optional<ModelInstanceId> prepared_model_instance;
-    std::optional<PhysWorld::Binding> prepared_model_physics;
-};
 
 ColliderComponent loadColliderComponent(const ResolvedComponent &component,
                                         const std::string &object_name) {
@@ -543,25 +548,102 @@ SceneLoadDiagnostics rayScenePlanDiagnostics(
     return result;
 }
 
-SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
-    SceneLoadPhaseTrace phase_trace;
-    auto *const injector = fault_injector;
-    if (internal::sceneLoadRootDisconnected(request.root, injector)) {
-        auto error = std::make_exception_ptr(
-            std::runtime_error("injected scene-load root disconnect"));
-        return PreCommitFailure{SceneLoadPhase::prepare,
-                                exceptionMessage(error), error};
-    }
-    SceneAuthority candidate_authority{};
-    if (next_authority_epoch == std::numeric_limits<std::uint64_t>::max()) {
-        auto error = std::make_exception_ptr(
-            std::overflow_error("scene authority epoch space exhausted"));
-        return PreCommitFailure{SceneLoadPhase::prepare,
-                                exceptionMessage(error), error};
-    }
-    candidate_authority = SceneAuthority{run_nonce, next_authority_epoch++};
+namespace {
 
-    auto &config = GET_MODULE(ProjectBasicConfig);
+void runSceneLoadVerb(SceneLoadParticipant &participant,
+                      SceneLoadVerb verb) {
+    switch (verb) {
+    case SceneLoadVerb::prepare: participant.prepare(); return;
+    case SceneLoadVerb::early_publish: participant.earlyPublish(); return;
+    case SceneLoadVerb::publish: participant.publish(); return;
+    case SceneLoadVerb::activate: participant.activate(); return;
+    case SceneLoadVerb::commit: participant.commit(); return;
+    case SceneLoadVerb::retire: participant.retire(); return;
+    case SceneLoadVerb::flush: participant.flush(); return;
+    case SceneLoadVerb::finish: participant.finish(); return;
+    case SceneLoadVerb::rollback: participant.rollback(); return;
+    }
+}
+
+} // namespace
+
+bool SceneLoadMutationGate::applyBefore(SceneLoadParticipant &participant,
+                                        SceneLoadVerb verb) const noexcept {
+    bool skip = false;
+    for (const auto &point : participant.mutationPoints()) {
+        if (point.verb != verb || point.after) continue;
+        if (internal::sceneLoadMutationEnabled(injector_, point.fault_phase,
+                                               point.participant,
+                                               point.mutation_id)) {
+            skip = participant.mutateBefore(point.mutation_id) || skip;
+        }
+    }
+    return skip;
+}
+
+void SceneLoadMutationGate::run(SceneLoadParticipant &participant,
+                                SceneLoadVerb verb) const {
+    if (!applyBefore(participant, verb)) {
+        runSceneLoadVerb(participant, verb);
+    }
+    for (const auto &point : participant.mutationPoints()) {
+        if (point.verb != verb || !point.after) continue;
+        if (internal::sceneLoadMutationEnabled(injector_, point.fault_phase,
+                                               point.participant,
+                                               point.mutation_id)) {
+            participant.mutateAfter(point.mutation_id);
+        }
+    }
+}
+
+MetadataCommitToken SceneLoader::prepareLoadMetadata(
+    ProjectBasicConfig &config, SceneLoadRequest &request,
+    SceneAuthority authority, SceneLoadPhaseTrace &phase_trace) {
+    MetadataCommitToken metadata;
+    if (auto *owned =
+            std::get_if<SceneLoadRequest::Owned>(&request.source)) {
+        metadata = std::move(owned->token);
+    } else {
+        metadata = config.prepareBorrowedSceneMetadata(
+            std::get<SceneLoadRequest::Borrowed>(request.source)
+                .committed.get());
+    }
+    metadata.prepareRuntimeIdentity(request.scene_id, authority, phase_trace);
+    return metadata;
+}
+
+void SceneLoader::publishLoadMetadataDocumentOnly(
+    MetadataCommitToken &metadata) noexcept {
+    metadata.publishDocumentOnlyForFaultInjection();
+}
+
+void SceneLoader::commitLoadMetadata(
+    MetadataCommitToken &metadata,
+    SceneLoadPhaseTrace &phase_trace) noexcept {
+    static_assert(noexcept(std::declval<MetadataCommitToken &>().commit(
+        std::declval<SceneLoadPhaseTrace &>())));
+    metadata.commit(phase_trace);
+}
+
+// What used to be load()'s ~30 candidate locals.  Participants own the
+// candidates they prepare and publish; this is where those candidates live
+// for the length of one transaction, together with the handful of helpers
+// that reach into SceneLoader's own fields -- the only friendship the whole
+// participant set needs.
+struct SceneLoadContext {
+    SceneLoader &loader;
+    SceneLoadRequest &request;
+    ProjectBasicConfig &config;
+    SceneLoadFaultInjector *injector = nullptr;
+    SceneLoadPhaseTrace &phase_trace;
+    SceneAuthority authority{};
+
+    const ResolvedSceneView *scene = nullptr;
+    std::vector<LightLoadEntry> light_entries;
+
+    // Declaration order below is the order the old locals were declared in,
+    // so candidates are still destroyed in the same order at the end of a
+    // load: the metadata token last, after every candidate it outlived.
     MetadataCommitToken metadata;
     std::unique_ptr<internal::PreparedEventOutbox> event_outbox;
     std::unique_ptr<internal::PreparedEffectTransaction> effect_transaction;
@@ -576,7 +658,8 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
     SeqPlayer::PreparedSceneState seq_candidate;
     VatPlayer::PreparedSceneState vat_candidate;
     PhysWorld::PreparedState physics_candidate;
-    std::unordered_map<std::string, ObjectBinding> candidate_object_bindings;
+    std::unordered_map<std::string, SceneLoader::ObjectBinding>
+        candidate_object_bindings;
     std::vector<SceneRuntimeObjectBinding> candidate_runtime_bindings;
     std::vector<ModelTemplate> candidate_transient_models;
     bool candidate_runtime_only_changes = false;
@@ -587,49 +670,256 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
     std::vector<ECSEntityMutationToken> destroyed_entities;
     std::unique_ptr<PreparedBehaviorSceneReconciliation> behavior_candidate;
     DeterministicRng *rng = nullptr;
-    bool renderer_published = false;
-    bool procedural_published = false;
-    bool light_published = false;
-    bool candidates_published = false;
     double candidate_scene_start_time = 0;
 
-    const auto fail = [&](SceneLoadPhase phase,
-                          std::exception_ptr error) -> SceneLoadResult {
-        return PreCommitFailure{phase, exceptionMessage(error), error,
-                                releaseErrorStatus(error)};
+    // -- metadata ---------------------------------------------------------
+    void prepareMetadata() {
+        metadata = SceneLoader::prepareLoadMetadata(config, request, authority,
+                                                    phase_trace);
+    }
+    void publishMetadataDocumentOnly() noexcept {
+        SceneLoader::publishLoadMetadataDocumentOnly(metadata);
+    }
+    void commitMetadata() noexcept {
+        SceneLoader::commitLoadMetadata(metadata, phase_trace);
+    }
+
+    // -- SceneLoader-owned state ------------------------------------------
+    void reserveCandidateBindings(std::size_t object_count) {
+        candidate_runtime_bindings.reserve(object_count);
+        candidate_object_bindings.reserve(object_count);
+        loader.retirement_state->reserveOne();
+    }
+
+    void bindCandidateObject(const std::string &name,
+                             GameObjectId object_id) {
+        candidate_object_bindings.emplace(
+            name, SceneLoader::ObjectBinding{object_id});
+    }
+
+    void publishLoaderState() noexcept {
+        static_assert(noexcept(loader.object_bindings.swap(
+            candidate_object_bindings)));
+        static_assert(noexcept(loader.runtime_object_bindings.swap(
+            candidate_runtime_bindings)));
+        static_assert(noexcept(std::swap(loader.runtime_only_changes,
+                                         candidate_runtime_only_changes)));
+        static_assert(noexcept(loader.transient_models.swap(
+            candidate_transient_models)));
+        loader.object_bindings.swap(candidate_object_bindings);
+        loader.runtime_object_bindings.swap(candidate_runtime_bindings);
+        std::swap(loader.runtime_only_changes,
+                  candidate_runtime_only_changes);
+        loader.transient_models.swap(candidate_transient_models);
+    }
+
+    void rollbackLoaderState() noexcept {
+        loader.transient_models.swap(candidate_transient_models);
+        loader.runtime_only_changes = candidate_runtime_only_changes;
+        loader.runtime_object_bindings.swap(candidate_runtime_bindings);
+        loader.object_bindings.swap(candidate_object_bindings);
+    }
+
+    void commitSceneIdentity() noexcept {
+        loader.scene_start_time = candidate_scene_start_time;
+        loader.graph_runtime.clear();
+        // The unmatched-owner memos belong to the scene that was live, not to
+        // the one being committed: a document that could not bind an object
+        // there says nothing about what this scene has.
+        loader.graph_owner_resolved_scopes.clear();
+        loader.graph_owner_reported_scopes.clear();
+    }
+
+    void enqueueRetirementBatch(
+        std::vector<ECSEntityMutationToken> destroyed,
+        std::vector<ModelTemplate> transient) noexcept {
+        static_assert(noexcept(
+            std::declval<SceneLoader::RetirementState &>().enqueue(
+                std::declval<SceneLoader::RetirementState::Batch>(),
+                std::declval<SceneLoadPhaseTrace &>())));
+        loader.retirement_state->enqueue(
+            SceneLoader::RetirementState::Batch{
+                .destroyed_entities = std::move(destroyed),
+                .transient_models = std::move(transient),
+            },
+            phase_trace);
+    }
+
+    const std::optional<SceneId> &livePendingScene() const noexcept {
+        return loader.pending_scene_id;
+    }
+
+    void publishPendingScene() noexcept {
+        static_assert(noexcept(std::declval<std::optional<SceneId> &>().swap(
+            std::declval<std::optional<SceneId> &>())));
+        loader.pending_scene_id.swap(pending_candidate);
+    }
+
+    void rollbackPendingScene() noexcept {
+        internal::rollbackScenePendingCandidate(loader.pending_scene_id,
+                                                pending_candidate, injector);
+    }
+};
+
+namespace {
+
+// Every participant below differs only in which verbs it implements; the
+// transaction reference is all they share.
+struct TransactionParticipant : SceneLoadParticipant {
+    SceneLoadContext &t;
+
+    explicit TransactionParticipant(SceneLoadContext &transaction) noexcept
+        : t{transaction} {}
+};
+
+// The one metadata candidate.  Its publication is the commit point, so it
+// prepares first and publishes last: the document-only mutation has to land
+// at the very end of publication, where the activation window can observe a
+// torn commit.
+struct MetadataParticipant final : TransactionParticipant {
+    using TransactionParticipant::TransactionParticipant;
+
+    static constexpr std::array points{
+        SceneLoadMutationPoint{SceneLoadVerb::prepare,
+                               SceneLoadFaultPhase::prepare, "metadata",
+                               scene_load_mutation::metadata_projection,
+                               true},
+        SceneLoadMutationPoint{SceneLoadVerb::publish,
+                               SceneLoadFaultPhase::commit, "metadata",
+                               scene_load_mutation::metadata_document, false},
     };
 
-    try {
-        if (auto *owned = std::get_if<SceneLoadRequest::Owned>(
-                &request.source)) {
-            metadata = std::move(owned->token);
-        } else {
-            metadata = config.prepareBorrowedSceneMetadata(
-                std::get<SceneLoadRequest::Borrowed>(request.source)
-                    .committed.get());
-        }
-        metadata.prepareRuntimeIdentity(request.scene_id,
-                                        candidate_authority,
-                                        phase_trace);
-        if (internal::sceneLoadMutationEnabled(
-                injector, SceneLoadFaultPhase::prepare, "metadata",
-                scene_load_mutation::metadata_projection)) {
-            throw std::runtime_error(
-                "injected scene metadata prepare drop");
-        }
-        const auto &projection = metadata.projection();
+    std::string_view name() const noexcept override { return "metadata"; }
+    std::span<const SceneLoadMutationPoint>
+    mutationPoints() const noexcept override {
+        return points;
+    }
+    bool mutateBefore(std::string_view) noexcept override {
+        t.publishMetadataDocumentOnly();
+        return false;
+    }
+    void mutateAfter(std::string_view) override {
+        throw std::runtime_error("injected scene metadata prepare drop");
+    }
+    void prepare() override { t.prepareMetadata(); }
+    void commit() override { t.commitMetadata(); }
+};
+
+// The resolved-projection gate.  Nothing is staged here; it only decides
+// whether the rest of the transaction may run at all.
+struct SceneDocumentParticipant final : TransactionParticipant {
+    using TransactionParticipant::TransactionParticipant;
+
+    std::string_view name() const noexcept override {
+        return "scene_document";
+    }
+    void prepare() override {
+        const auto &projection = t.metadata.projection();
         const auto &scene_document = projection.resolved();
         for (const auto &warning : scene_document.warnings()) {
             if (logger != nullptr) LOG_WARNING(logger, "{}", warning);
         }
-        const auto *scene = scene_document.findScene(request.scene_id);
-        if (scene == nullptr) {
-            throw std::runtime_error("scene not found: " + request.scene_id);
+        t.scene = scene_document.findScene(t.request.scene_id);
+        if (t.scene == nullptr) {
+            throw std::runtime_error("scene not found: " + t.request.scene_id);
         }
-        internal::validateResolvedSceneFeatureBindings(*scene);
-        candidate_scene_start_time = GET_MODULE(EngineTime).now();
+        internal::validateResolvedSceneFeatureBindings(*t.scene);
+    }
+};
+
+// SceneLoader's own published state: the two binding maps, the runtime-only
+// flag, the transient model list and the scene clock.  Its retirement also
+// carries the ECS destroy tokens, because one batch is what the next frame
+// drains.
+struct LoaderStateParticipant final : TransactionParticipant {
+    using TransactionParticipant::TransactionParticipant;
+
+    static constexpr std::array points{
+        SceneLoadMutationPoint{SceneLoadVerb::retire,
+                               SceneLoadFaultPhase::retire, "scene_loader",
+                               scene_load_mutation::transient_retire, false},
+    };
+
+    bool published_ = false;
+    bool drop_transient_ = false;
+
+    std::string_view name() const noexcept override { return "scene_loader"; }
+    std::span<const SceneLoadMutationPoint>
+    mutationPoints() const noexcept override {
+        return points;
+    }
+    bool mutateBefore(std::string_view) noexcept override {
+        drop_transient_ = true;
+        return false;
+    }
+    void prepare() override {
+        t.candidate_scene_start_time = GET_MODULE(EngineTime).now();
+    }
+    void publish() noexcept override {
+        t.publishLoaderState();
+        published_ = true;
+    }
+    void commit() override { t.commitSceneIdentity(); }
+    void retire() override {
+        t.enqueueRetirementBatch(
+            std::move(t.destroyed_entities),
+            drop_transient_ ? std::vector<ModelTemplate>{}
+                            : std::move(t.candidate_transient_models));
+    }
+    void rollback() noexcept override {
+        if (published_) t.rollbackLoaderState();
+    }
+};
+
+struct ProceduralParticipant final : TransactionParticipant {
+    using TransactionParticipant::TransactionParticipant;
+
+    static constexpr std::array points{
+        SceneLoadMutationPoint{
+            SceneLoadVerb::publish, SceneLoadFaultPhase::publish,
+            "procedural", scene_load_mutation::procedural_aabb_buffer, false},
+        SceneLoadMutationPoint{
+            SceneLoadVerb::publish, SceneLoadFaultPhase::publish,
+            "procedural", scene_load_mutation::procedural_allocation_generation,
+            false},
+        SceneLoadMutationPoint{
+            SceneLoadVerb::publish, SceneLoadFaultPhase::publish,
+            "procedural", scene_load_mutation::procedural_instance_snapshot,
+            false},
+        SceneLoadMutationPoint{
+            SceneLoadVerb::retire, SceneLoadFaultPhase::retire, "procedural",
+            scene_load_mutation::procedural_retire_queue, false},
+    };
+
+    bool published_ = false;
+
+    std::string_view name() const noexcept override { return "procedural"; }
+    std::span<const SceneLoadMutationPoint>
+    mutationPoints() const noexcept override {
+        return points;
+    }
+    bool mutateBefore(std::string_view mutation_id) noexcept override {
+        if (mutation_id == scene_load_mutation::procedural_retire_queue) {
+            return true;
+        }
+        auto &procedural = GET_MODULE(ProceduralGeometryContainer);
+        if (mutation_id == scene_load_mutation::procedural_aabb_buffer) {
+            procedural.dropPreparedAabbBuffersForMutation(
+                t.procedural_candidate);
+        } else if (mutation_id ==
+                   scene_load_mutation::procedural_allocation_generation) {
+            procedural.dropPreparedAllocationGenerationForMutation(
+                t.procedural_candidate);
+        } else {
+            procedural.dropPreparedInstancesForMutation(
+                t.procedural_candidate);
+        }
+        return false;
+    }
+    void prepare() override {
         const bool has_procedural = std::any_of(
-            scene->objects.begin(), scene->objects.end(), [](const auto &object) {
+            t.scene->objects.begin(), t.scene->objects.end(),
+            [](const auto &object) {
                 return std::any_of(
                     object.components.begin(), object.components.end(),
                     [](const auto &component) {
@@ -641,15 +931,45 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
         VulkanManageCore *procedural_vkcore = nullptr;
         if (has_procedural) {
             asset_data = parseAssetDataFormatJson(
-                nlohmann::json::parse(config.assetDataJson()));
+                nlohmann::json::parse(t.config.assetDataJson()));
             procedural_vkcore = &GET_MODULE(VulkanManageCore);
         }
-        procedural_candidate =
+        t.procedural_candidate =
             GET_MODULE(ProceduralGeometryContainer).prepareScene(
-                asset_data, *scene, procedural_vkcore,
-                candidate_authority.scene_epoch, phase_trace);
+                asset_data, *t.scene, procedural_vkcore,
+                t.authority.scene_epoch, t.phase_trace);
+    }
+    void publish() noexcept override {
+        static_assert(noexcept(
+            std::declval<ProceduralGeometryContainer &>().publishPrepared(
+                std::declval<ProceduralGeometryContainer::PreparedSceneState &>(),
+                std::declval<SceneLoadPhaseTrace &>())));
+        GET_MODULE(ProceduralGeometryContainer).publishPrepared(
+            t.procedural_candidate, t.phase_trace);
+        published_ = true;
+    }
+    void retire() override {
+        GET_MODULE(ProceduralGeometryContainer).enqueueRetirement(
+            std::move(t.procedural_candidate), t.phase_trace);
+    }
+    void rollback() noexcept override {
+        if (published_) {
+            GET_MODULE(ProceduralGeometryContainer)
+                .rollbackPrepared(t.procedural_candidate);
+        }
+    }
+};
 
-        std::vector<LightLoadEntry> light_entries;
+// The per-object load plan every later participant reads: ECS component
+// values, colliders, behaviors, and the light entries the light candidate is
+// built from.
+struct SceneBindingsParticipant final : TransactionParticipant {
+    using TransactionParticipant::TransactionParticipant;
+
+    std::string_view name() const noexcept override {
+        return "scene_bindings";
+    }
+    void prepare() override {
         auto &component_info_manager = GET_MODULE(ComponentInfoManager);
         const auto game_logic_status = configuredGameLogicStatus();
         const auto behavior_availability =
@@ -657,15 +977,54 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
                 ? BehaviorRegistryAvailability::active
                 : BehaviorRegistryAvailability::dll_unavailable;
         auto behavior_entries = prepareResolvedSceneBehaviorAttachments(
-            scene->objects, behavior_availability);
-        ecs_objects = prepareSceneBindings(
-            *scene, component_info_manager, light_entries,
+            t.scene->objects, behavior_availability);
+        t.ecs_objects = prepareSceneBindings(
+            *t.scene, component_info_manager, t.light_entries,
             std::move(behavior_entries));
+    }
+};
 
+// The flat renderer's scene replacement, the staged model instances and the
+// ray scene plan.  It publishes before ECS entities exist because a created
+// entity's simplemodelview already names a prepared instance slot.
+struct RendererParticipant final : TransactionParticipant {
+    using TransactionParticipant::TransactionParticipant;
+
+    static constexpr std::array points{
+        SceneLoadMutationPoint{SceneLoadVerb::prepare,
+                               SceneLoadFaultPhase::prepare, "ray",
+                               scene_load_mutation::ray_occurrence_catalog,
+                               true},
+        SceneLoadMutationPoint{SceneLoadVerb::prepare,
+                               SceneLoadFaultPhase::prepare, "ray",
+                               scene_load_mutation::ray_as_plan, true},
+    };
+
+    bool published_ = false;
+
+    std::string_view name() const noexcept override {
+        return "renderer.flat";
+    }
+    std::span<const SceneLoadMutationPoint>
+    mutationPoints() const noexcept override {
+        return points;
+    }
+    void mutateAfter(std::string_view mutation_id) override {
+        auto dropped = std::make_shared<RayScenePlanState>(
+            *t.renderer_candidate.ray_scene_plan);
+        if (mutation_id == scene_load_mutation::ray_occurrence_catalog) {
+            dropped->inventory = std::make_shared<RaySceneInventorySnapshot>();
+        } else {
+            dropped->resolved_rows.reset();
+        }
+        t.renderer_candidate.ray_scene_plan = std::move(dropped);
+    }
+    void prepare() override {
+        auto &component_info_manager = GET_MODULE(ComponentInfoManager);
         auto &renderer = GET_MODULE(PolygonInstanceContainer);
-        renderer_candidate =
-            renderer.prepareSceneReplacement(renderer_retire_indices);
-        for (auto &object : ecs_objects) {
+        t.renderer_candidate =
+            renderer.prepareSceneReplacement(t.renderer_retire_indices);
+        for (auto &object : t.ecs_objects) {
             for (const auto &component : object.components) {
                 if (component.codec == nullptr ||
                     component.codec->name != "simplemodelview") {
@@ -679,149 +1038,202 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
                                   .getModelTemplateByName(
                                       model_view.model_name);
                 object.prepared_model_physics = makeModelPhysicsBinding(
-                    model, runtimeObjectIdentityName(request.scene_id,
+                    model, runtimeObjectIdentityName(t.request.scene_id,
                         object.authoring_object_id, object.name), PhysWorldTransform{});
                 auto staged =
-                    renderer.stagePreparedSceneModel(renderer_candidate,
+                    renderer.stagePreparedSceneModel(t.renderer_candidate,
                                                      model);
                 object.prepared_model_instance = staged.id();
-                renderer.publishPreparedSceneModel(renderer_candidate,
+                renderer.publishPreparedSceneModel(t.renderer_candidate,
                                                     std::move(staged));
-                renderer_candidate.slots.ray_authoring_object_ids.at(
+                t.renderer_candidate.slots.ray_authoring_object_ids.at(
                     object.prepared_model_instance->index) = object.authoring_object_id.value;
                 break;
             }
         }
         const auto ray_project = loadRayTracingProjectConfig(
-            loadRenderingPassConfigJsonFromString(config.renderingConfigJson(),
+            loadRenderingPassConfigJsonFromString(t.config.renderingConfigJson(),
                                                  "scene ray plan prepare"),
             [](std::string_view reference) { return GET_MODULE(PathResolver).loadText(reference); },
             PELICAN_RUNTIME_SHADER_COMPILER != 0);
-        renderer.prepareRayScenePlan(renderer_candidate, ray_project, scene,
-            GET_MODULE(ProceduralGeometryContainer).preparedRayInstances(*scene, &procedural_candidate),
-            &phase_trace);
-        if (internal::sceneLoadMutationEnabled(injector, SceneLoadFaultPhase::prepare,
-                "ray", scene_load_mutation::ray_occurrence_catalog)) {
-            auto dropped = std::make_shared<RayScenePlanState>(*renderer_candidate.ray_scene_plan);
-            dropped->inventory = std::make_shared<RaySceneInventorySnapshot>();
-            renderer_candidate.ray_scene_plan = std::move(dropped);
+        renderer.prepareRayScenePlan(t.renderer_candidate, ray_project, t.scene,
+            GET_MODULE(ProceduralGeometryContainer).preparedRayInstances(*t.scene, &t.procedural_candidate),
+            &t.phase_trace);
+    }
+    void earlyPublish() override {
+        static_assert(noexcept(std::declval<PolygonInstanceContainer &>()
+                                   .publishPreparedScene(std::declval<
+                                       PolygonInstanceContainer::PreparedSceneState &&>())));
+        GET_MODULE(PolygonInstanceContainer).publishPreparedScene(
+            std::move(t.renderer_candidate), t.phase_trace);
+        published_ = true;
+    }
+    void retire() override {
+        static_assert(noexcept(std::declval<PolygonInstanceContainer &>()
+                                   .enqueueSceneRetirement(
+                                       std::declval<std::vector<std::uint32_t>>())));
+        GET_MODULE(PolygonInstanceContainer).enqueueSceneRetirement(
+            std::move(t.renderer_retire_indices), t.phase_trace);
+    }
+    void rollback() noexcept override {
+        if (published_) {
+            GET_MODULE(PolygonInstanceContainer).publishPreparedScene(
+                std::move(t.renderer_candidate));
         }
-        if (internal::sceneLoadMutationEnabled(injector, SceneLoadFaultPhase::prepare,
-                "ray", scene_load_mutation::ray_as_plan)) {
-            auto dropped = std::make_shared<RayScenePlanState>(*renderer_candidate.ray_scene_plan);
-            dropped->resolved_rows.reset();
-            renderer_candidate.ray_scene_plan = std::move(dropped);
+    }
+};
+
+struct CameraParticipant final : TransactionParticipant {
+    using TransactionParticipant::TransactionParticipant;
+
+    bool published_ = false;
+
+    std::string_view name() const noexcept override { return "camera"; }
+    void prepare() override {
+        t.camera_candidate = GET_MODULE(Camera).prepareSceneCameras(
+            t.request.scene_id, t.metadata.projection().resolved());
+    }
+    void publish() noexcept override {
+        static_assert(noexcept(std::declval<Camera &>().publishPrepared(
+            std::declval<Camera::PreparedSceneState &&>())));
+        GET_MODULE(Camera).publishPrepared(std::move(t.camera_candidate),
+                                           t.phase_trace);
+        published_ = true;
+    }
+    void rollback() noexcept override {
+        if (published_) {
+            GET_MODULE(Camera).publishPrepared(
+                std::move(t.camera_candidate));
         }
-        camera_candidate = GET_MODULE(Camera).prepareSceneCameras(
-            request.scene_id, scene_document);
-        light_candidate = LightContainer::prepareLoad(light_entries);
-        for (const auto &warning : light_candidate.warnings) {
+    }
+};
+
+struct LightParticipant final : TransactionParticipant {
+    using TransactionParticipant::TransactionParticipant;
+
+    static constexpr std::array points{
+        SceneLoadMutationPoint{
+            SceneLoadVerb::publish, SceneLoadFaultPhase::publish, "light",
+            scene_load_mutation::light_directional_names, false},
+    };
+
+    bool published_ = false;
+
+    std::string_view name() const noexcept override { return "light"; }
+    std::span<const SceneLoadMutationPoint>
+    mutationPoints() const noexcept override {
+        return points;
+    }
+    bool mutateBefore(std::string_view) noexcept override { return true; }
+    void prepare() override {
+        t.light_candidate = LightContainer::prepareLoad(t.light_entries);
+        for (const auto &warning : t.light_candidate.warnings) {
             if (logger != nullptr) LOG_WARNING(logger, "{}", warning);
         }
-        seq_candidate = GET_MODULE(SeqPlayer).prepareSceneLoad();
-        vat_candidate = GET_MODULE(VatPlayer).prepareSceneLoad();
-        old_entities =
-            GET_MODULE(ECSCore).getTemplatePublicModule().liveEntities();
-        object_ids.assign(ecs_objects.size(), invalidGameObjectId);
-        created_entities.reserve(ecs_objects.size());
-        destroyed_entities.reserve(old_entities.size());
-        candidate_runtime_bindings.reserve(ecs_objects.size());
-        candidate_object_bindings.reserve(ecs_objects.size());
-        retirement_state->reserveOne();
-
-        rng = &GET_MODULE(DeterministicRng);
-        rng_candidate = rng->prepareSequence();
-        pending_candidate = request.consumes_pending_request
-                                ? std::optional<SceneId>{}
-                                : pending_scene_id;
-        event_outbox = std::make_unique<internal::PreparedEventOutbox>(
-            internal::getEventRegisterer(), 1U);
-        scene_loaded_event = event_outbox->prepare(
-            SceneLoaded{request.scene_id});
-        effect_transaction =
-            std::make_unique<internal::PreparedEffectTransaction>(
-                GET_MODULE(Persistence), *this);
-    } catch (...) {
-        return fail(SceneLoadPhase::prepare, std::current_exception());
     }
+    void publish() noexcept override {
+        static_assert(noexcept(std::declval<LightContainer &>().publishPrepared(
+            std::declval<LightContainer::PreparedLoad &&>())));
+        GET_MODULE(LightContainer).publishPrepared(
+            std::move(t.light_candidate), t.phase_trace);
+        published_ = true;
+    }
+    void rollback() noexcept override {
+        if (published_) {
+            GET_MODULE(LightContainer).publishPrepared(
+                std::move(t.light_candidate));
+        }
+    }
+};
 
-    // Every game-DLL callback, including a component JSON loader invoked by
-    // early publication, must observe the same transaction-local effects.
-    PendingSceneTransaction pending_transaction{
-        .loader = this,
-        .projection = &metadata.projection(),
-        .candidate = &pending_candidate,
-    };
-    internal::EventOutboxScope event_scope{*event_outbox};
-    internal::EffectTransactionScope effect_scope{*effect_transaction};
-    RngSequenceScope rng_scope{rng_candidate};
-    PendingSceneTransactionScope pending_scope{pending_transaction};
+struct SeqPlayerParticipant final : TransactionParticipant {
+    using TransactionParticipant::TransactionParticipant;
 
-    const auto rollback = [&]() noexcept {
-        if (behavior_candidate) behavior_candidate->rollback();
-        if (candidates_published) {
-            GET_MODULE(PhysWorld).publishPrepared(
-                std::move(physics_candidate));
-            if (light_published) {
-                GET_MODULE(LightContainer).publishPrepared(
-                    std::move(light_candidate));
-            }
-            GET_MODULE(Camera).publishPrepared(
-                std::move(camera_candidate));
-            GET_MODULE(VatPlayer).publishPreparedScene(
-                std::move(vat_candidate));
+    bool published_ = false;
+
+    std::string_view name() const noexcept override { return "seqplayer"; }
+    void prepare() override {
+        t.seq_candidate = GET_MODULE(SeqPlayer).prepareSceneLoad();
+    }
+    void publish() noexcept override {
+        static_assert(noexcept(std::declval<SeqPlayer &>().publishPreparedScene(
+            std::declval<SeqPlayer::PreparedSceneState &&>())));
+        GET_MODULE(SeqPlayer).publishPreparedScene(std::move(t.seq_candidate),
+                                                   t.phase_trace);
+        published_ = true;
+    }
+    void rollback() noexcept override {
+        if (published_) {
             GET_MODULE(SeqPlayer).publishPreparedScene(
-                std::move(seq_candidate));
-            transient_models.swap(candidate_transient_models);
-            runtime_only_changes = candidate_runtime_only_changes;
-            runtime_object_bindings.swap(candidate_runtime_bindings);
-            object_bindings.swap(candidate_object_bindings);
+                std::move(t.seq_candidate));
         }
-        if (renderer_published) {
-            GET_MODULE(PolygonInstanceContainer).publishPreparedScene(
-                std::move(renderer_candidate));
+    }
+};
+
+struct VatPlayerParticipant final : TransactionParticipant {
+    using TransactionParticipant::TransactionParticipant;
+
+    bool published_ = false;
+
+    std::string_view name() const noexcept override { return "vatplayer"; }
+    void prepare() override {
+        t.vat_candidate = GET_MODULE(VatPlayer).prepareSceneLoad();
+    }
+    void publish() noexcept override {
+        static_assert(noexcept(std::declval<VatPlayer &>().publishPreparedScene(
+            std::declval<VatPlayer::PreparedSceneState &&>())));
+        GET_MODULE(VatPlayer).publishPreparedScene(std::move(t.vat_candidate),
+                                                   t.phase_trace);
+        published_ = true;
+    }
+    void rollback() noexcept override {
+        if (published_) {
+            GET_MODULE(VatPlayer).publishPreparedScene(
+                std::move(t.vat_candidate));
         }
-        if (procedural_published) {
-            GET_MODULE(ProceduralGeometryContainer)
-                .rollbackPrepared(procedural_candidate);
-        }
-        for (auto it = destroyed_entities.rbegin();
-             it != destroyed_entities.rend(); ++it) {
-            it->rollback();
-        }
-        const bool bypass_ecs_create_rollback =
-            internal::sceneLoadMutationEnabled(
-                injector, SceneLoadFaultPhase::publish, "ecs",
-                scene_load_mutation::ecs_liveness);
-        for (auto it = created_entities.rbegin();
-             it != created_entities.rend(); ++it) {
-            if (bypass_ecs_create_rollback) {
-                it->finish();
-            } else {
-                it->rollback();
-            }
-        }
-        if (event_outbox) {
-            internal::rollbackSceneEventOutbox(*event_outbox, injector);
-        }
-        if (rng != nullptr) {
-            internal::rollbackSceneRngCandidate(
-                *rng, rng_candidate, injector);
-        }
-        internal::rollbackScenePendingCandidate(
-            pending_scene_id, pending_candidate, injector);
+    }
+};
+
+// Entity creation, the component values written into the new entities, and
+// the parent/world transform closure over them.  Its inverse token is per
+// entity, so rollback walks the created entities in reverse.
+struct EcsParticipant final : TransactionParticipant {
+    using TransactionParticipant::TransactionParticipant;
+
+    static constexpr std::array points{
+        SceneLoadMutationPoint{SceneLoadVerb::rollback,
+                               SceneLoadFaultPhase::publish, "ecs",
+                               scene_load_mutation::ecs_liveness, false},
     };
 
-    try {
+    bool bypass_create_rollback_ = false;
+
+    std::string_view name() const noexcept override { return "ecs"; }
+    std::span<const SceneLoadMutationPoint>
+    mutationPoints() const noexcept override {
+        return points;
+    }
+    bool mutateBefore(std::string_view) noexcept override {
+        bypass_create_rollback_ = true;
+        return false;
+    }
+    void prepare() override {
+        t.old_entities =
+            GET_MODULE(ECSCore).getTemplatePublicModule().liveEntities();
+        t.object_ids.assign(t.ecs_objects.size(), invalidGameObjectId);
+        t.created_entities.reserve(t.ecs_objects.size());
+        t.destroyed_entities.reserve(t.old_entities.size());
+        // The candidate binding maps and the retirement slot are reserved
+        // here because their size is the object count this participant is
+        // about to create.
+        t.reserveCandidateBindings(t.ecs_objects.size());
+    }
+    void earlyPublish() override {
         auto &component_info_manager = GET_MODULE(ComponentInfoManager);
         auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
-        auto &renderer = GET_MODULE(PolygonInstanceContainer);
-        renderer.publishPreparedScene(std::move(renderer_candidate),
-                                      phase_trace);
-        renderer_published = true;
 
         const auto create_object = [&](std::size_t object_index) {
-            auto &object = ecs_objects[object_index];
+            auto &object = t.ecs_objects[object_index];
             if (object.components_id.empty() && object.behaviors.empty()) {
                 return;
             }
@@ -846,27 +1258,27 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
                         }
                     }
                 });
-            object_ids[object_index] = token.entity();
+            t.object_ids[object_index] = token.entity();
             token.publish();
-            created_entities.push_back(std::move(token));
-            candidate_runtime_bindings.push_back(
+            t.created_entities.push_back(std::move(token));
+            t.candidate_runtime_bindings.push_back(
                 SceneRuntimeObjectBinding{
                     .authoring_object_id = object.authoring_object_id,
-                    .object_id = object_ids[object_index],
+                    .object_id = t.object_ids[object_index],
                 });
         };
 
-        for (std::size_t index = 0; index < ecs_objects.size(); ++index) {
+        for (std::size_t index = 0; index < t.ecs_objects.size(); ++index) {
             create_object(index);
         }
 
         const auto transform_id =
             component_info_manager.getComponentIdByName("transform");
         std::unordered_map<std::string, GameObjectId> object_ids_by_name;
-        object_ids_by_name.reserve(ecs_objects.size());
-        for (std::size_t index = 0; index < ecs_objects.size(); ++index) {
-            const auto &object = ecs_objects[index];
-            const auto object_id = object_ids[index];
+        object_ids_by_name.reserve(t.ecs_objects.size());
+        for (std::size_t index = 0; index < t.ecs_objects.size(); ++index) {
+            const auto &object = t.ecs_objects[index];
+            const auto object_id = t.object_ids[index];
             if (!object.name.empty() && object_id != invalidGameObjectId) {
                 object_ids_by_name.emplace(object.name, object_id);
             }
@@ -876,21 +1288,20 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
                           object.components_id.end(), transform_id) !=
                     object.components_id.end();
             if (!object.name.empty() && has_transform) {
-                candidate_object_bindings.emplace(
-                    object.name, ObjectBinding{object_id});
+                t.bindCandidateObject(object.name, object_id);
             }
         }
 
         const bool scene_uses_parents = std::any_of(
-            ecs_objects.begin(), ecs_objects.end(), [](const auto &object) {
+            t.ecs_objects.begin(), t.ecs_objects.end(), [](const auto &object) {
                 return object.hierarchy_participant;
             });
         if (scene_uses_parents) {
-            for (std::size_t index = 0; index < ecs_objects.size(); ++index) {
-                const auto &object = ecs_objects[index];
+            for (std::size_t index = 0; index < t.ecs_objects.size(); ++index) {
+                const auto &object = t.ecs_objects[index];
                 if (!object.hierarchy_participant) continue;
                 auto *local = ecs.tryComponent<LocalTransformComponent>(
-                    object_ids[index]);
+                    t.object_ids[index]);
                 if (local == nullptr) {
                     throw std::runtime_error(
                         "parent hierarchy object '" +
@@ -909,17 +1320,17 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
                     }
                     local->parent = parent->second;
                     (void)ecs.markComponentChanged(
-                        object_ids[index],
+                        t.object_ids[index],
                         ComponentIdByType<LocalTransformComponent>::value);
                 }
             }
 
             std::unordered_map<std::string, std::size_t>
                 object_indices_by_name;
-            object_indices_by_name.reserve(ecs_objects.size());
-            for (std::size_t index = 0; index < ecs_objects.size(); ++index) {
-                if (!ecs_objects[index].name.empty()) {
-                    object_indices_by_name.emplace(ecs_objects[index].name,
+            object_indices_by_name.reserve(t.ecs_objects.size());
+            for (std::size_t index = 0; index < t.ecs_objects.size(); ++index) {
+                if (!t.ecs_objects[index].name.empty()) {
+                    object_indices_by_name.emplace(t.ecs_objects[index].name,
                                                    index);
                 }
             }
@@ -927,27 +1338,27 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
             // validated just above, so the lookup stays `.at()` and a broken
             // link keeps raising its std::out_of_range here.
             resolveParentOrder(
-                ecs_objects.size(),
+                t.ecs_objects.size(),
                 [&](std::size_t index) {
-                    return ecs_objects[index].hierarchy_participant;
+                    return t.ecs_objects[index].hierarchy_participant;
                 },
                 [&](std::size_t index) {
-                    const auto &object = ecs_objects[index];
+                    const auto &object = t.ecs_objects[index];
                     if (object.parent.empty()) return ParentLookupResult::root();
                     return ParentLookupResult::at(
                         object_indices_by_name.at(object.parent));
                 },
                 [&](std::size_t index, const std::size_t *parent_index) {
-                    const auto &object = ecs_objects[index];
+                    const auto &object = t.ecs_objects[index];
                     auto *world = ecs.tryComponent<TransformComponent>(
-                        object_ids[index]);
+                        t.object_ids[index]);
                     auto *local = ecs.tryComponent<LocalTransformComponent>(
-                        object_ids[index]);
+                        t.object_ids[index]);
                     const TransformComponent *parent_world =
                         parent_index == nullptr
                             ? nullptr
                             : ecs.tryComponent<TransformComponent>(
-                                  object_ids[*parent_index]);
+                                  t.object_ids[*parent_index]);
                     TransformCodecTarget target{.world = world,
                                                 .local = local,
                                                 .parent_world = parent_world};
@@ -963,11 +1374,59 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
                     // already thrown, so no parent is ever reported missing.
                 });
         }
+    }
+    void finish() override {
+        static_assert(noexcept(std::declval<ECSEntityMutationToken &>().finish(
+            std::declval<SceneLoadPhaseTrace &>())));
+        for (auto &token : t.created_entities) token.finish();
+    }
+    void rollback() noexcept override {
+        for (auto it = t.created_entities.rbegin();
+             it != t.created_entities.rend(); ++it) {
+            if (bypass_create_rollback_) {
+                it->finish();
+            } else {
+                it->rollback();
+            }
+        }
+    }
+};
 
+// The other half of the ECS lifetime: the previous scene's entities are
+// destroyed only after every new binding has been staged, and their inverse
+// tokens are what the retirement batch carries.
+struct EcsRetireParticipant final : TransactionParticipant {
+    using TransactionParticipant::TransactionParticipant;
+
+    std::string_view name() const noexcept override { return "ecs.retire"; }
+    void earlyPublish() override {
+        auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+        for (const auto entity : t.old_entities) {
+            auto token = ECSEntityMutation::prepareDestroy(ecs, entity);
+            token.publish();
+            t.destroyed_entities.push_back(std::move(token));
+        }
+    }
+    void rollback() noexcept override {
+        for (auto it = t.destroyed_entities.rbegin();
+             it != t.destroyed_entities.rend(); ++it) {
+            it->rollback();
+        }
+    }
+};
+
+struct PhysicsParticipant final : TransactionParticipant {
+    using TransactionParticipant::TransactionParticipant;
+
+    bool published_ = false;
+
+    std::string_view name() const noexcept override { return "physics"; }
+    void earlyPublish() override {
+        auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
         std::vector<PhysWorld::Binding> physics_bindings;
-        for (std::size_t index = 0; index < ecs_objects.size(); ++index) {
-            const auto &object = ecs_objects[index];
-            const auto object_id = object_ids[index];
+        for (std::size_t index = 0; index < t.ecs_objects.size(); ++index) {
+            const auto &object = t.ecs_objects[index];
+            const auto object_id = t.object_ids[index];
             const bool has_transform =
                 object_id != invalidGameObjectId &&
                 ecs.tryComponent<TransformComponent>(object_id) != nullptr;
@@ -980,7 +1439,7 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
             }
             for (const auto &collider : object.colliders) {
                 const auto identity_name = runtimeObjectIdentityName(
-                    request.scene_id, object.authoring_object_id, object.name);
+                    t.request.scene_id, object.authoring_object_id, object.name);
                 physics_bindings.push_back(PhysWorld::Binding{
                     .identity = phys::ColliderIdentity{
                         .name = identity_name,
@@ -1005,27 +1464,280 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
                 });
             }
         }
-        physics_candidate = GET_MODULE(PhysWorld).prepareSceneBindings(
-            std::move(physics_bindings), object_ids);
+        t.physics_candidate = GET_MODULE(PhysWorld).prepareSceneBindings(
+            std::move(physics_bindings), t.object_ids);
+    }
+    void publish() noexcept override {
+        static_assert(noexcept(std::declval<PhysWorld &>().publishPrepared(
+            std::declval<PhysWorld::PreparedState &&>())));
+        GET_MODULE(PhysWorld).publishPrepared(std::move(t.physics_candidate),
+                                              t.phase_trace);
+        published_ = true;
+    }
+    void rollback() noexcept override {
+        if (published_) {
+            GET_MODULE(PhysWorld).publishPrepared(
+                std::move(t.physics_candidate));
+        }
+    }
+};
 
+// The only participant with an activation window: attachment construction
+// runs game-DLL code that may still fail the load.
+struct BehaviorParticipant final : TransactionParticipant {
+    using TransactionParticipant::TransactionParticipant;
+
+    static constexpr std::array points{
+        SceneLoadMutationPoint{
+            SceneLoadVerb::activate, SceneLoadFaultPhase::activate,
+            "behavior_arena", scene_load_mutation::behavior_attachments,
+            false},
+    };
+
+    std::string_view name() const noexcept override {
+        return "behavior_arena";
+    }
+    std::span<const SceneLoadMutationPoint>
+    mutationPoints() const noexcept override {
+        return points;
+    }
+    bool mutateBefore(std::string_view) noexcept override { return true; }
+    void earlyPublish() override {
         std::vector<BoundSceneBehaviorAttachment> bound_behaviors;
-        for (std::size_t index = 0; index < ecs_objects.size(); ++index) {
-            auto &object = ecs_objects[index];
+        for (std::size_t index = 0; index < t.ecs_objects.size(); ++index) {
+            auto &object = t.ecs_objects[index];
             for (auto &behavior : object.behaviors) {
                 bound_behaviors.push_back(BoundSceneBehaviorAttachment{
                     .prepared = std::move(behavior),
-                    .entity = object_ids[index],
+                    .entity = t.object_ids[index],
                 });
             }
         }
-        behavior_candidate =
+        t.behavior_candidate =
             GET_MODULE(BehaviorAttachmentArena).prepareSceneReconciliation(
                 std::move(bound_behaviors));
+    }
+    void publish() noexcept override {
+        static_assert(noexcept(std::declval<PreparedBehaviorSceneReconciliation &>()
+                                   .publish()));
+        t.behavior_candidate->publish(t.phase_trace);
+    }
+    void activate() override { t.behavior_candidate->activate(t.phase_trace); }
+    void commit() override {
+        static_assert(noexcept(
+            std::declval<PreparedBehaviorSceneReconciliation &>().finish(
+                std::declval<SceneLoadPhaseTrace &>())));
+        t.behavior_candidate->finish(t.phase_trace);
+    }
+    void rollback() noexcept override {
+        if (t.behavior_candidate) t.behavior_candidate->rollback();
+    }
+};
 
-        for (const auto entity : old_entities) {
-            auto token = ECSEntityMutation::prepareDestroy(ecs, entity);
-            token.publish();
-            destroyed_entities.push_back(std::move(token));
+struct RngParticipant final : TransactionParticipant {
+    using TransactionParticipant::TransactionParticipant;
+
+    std::string_view name() const noexcept override { return "rng_sequence"; }
+    void prepare() override {
+        t.rng = &GET_MODULE(DeterministicRng);
+        t.rng_candidate = t.rng->prepareSequence();
+    }
+    void flush() override {
+        static_assert(noexcept(std::declval<DeterministicRng &>()
+                                   .publishPreparedSequence(
+                                       std::declval<DeterministicRng::PreparedSequence>())));
+        GET_MODULE(DeterministicRng).publishPreparedSequence(t.rng_candidate,
+                                                             t.phase_trace);
+    }
+    void rollback() noexcept override {
+        if (t.rng != nullptr) {
+            internal::rollbackSceneRngCandidate(*t.rng, t.rng_candidate,
+                                                t.injector);
+        }
+    }
+};
+
+struct PendingSceneParticipant final : TransactionParticipant {
+    using TransactionParticipant::TransactionParticipant;
+
+    std::string_view name() const noexcept override {
+        return "pending_scene";
+    }
+    void prepare() override {
+        t.pending_candidate = t.request.consumes_pending_request
+                                  ? std::optional<SceneId>{}
+                                  : t.livePendingScene();
+    }
+    void flush() override { t.publishPendingScene(); }
+    void rollback() noexcept override { t.rollbackPendingScene(); }
+};
+
+struct EventOutboxParticipant final : TransactionParticipant {
+    using TransactionParticipant::TransactionParticipant;
+
+    std::string_view name() const noexcept override { return "event_outbox"; }
+    void prepare() override {
+        t.event_outbox = std::make_unique<internal::PreparedEventOutbox>(
+            internal::getEventRegisterer(), 1U);
+        t.scene_loaded_event = t.event_outbox->prepare(
+            SceneLoaded{t.request.scene_id});
+    }
+    void retire() override {
+        static_assert(noexcept(std::declval<internal::PreparedEventOutbox &>()
+                                   .stageReserved(
+                                       std::declval<internal::QueuedEvent>())));
+        t.event_outbox->stageReserved(std::move(t.scene_loaded_event));
+    }
+    void flush() override {
+        static_assert(noexcept(
+            std::declval<internal::PreparedEventOutbox &>().flush(
+                std::declval<SceneLoadPhaseTrace &>())));
+        t.event_outbox->flush(t.phase_trace);
+    }
+    void rollback() noexcept override {
+        if (t.event_outbox) {
+            internal::rollbackSceneEventOutbox(*t.event_outbox, t.injector);
+        }
+    }
+};
+
+struct EffectsParticipant final : TransactionParticipant {
+    using TransactionParticipant::TransactionParticipant;
+
+    std::string_view name() const noexcept override { return "effects"; }
+    void prepare() override {
+        t.effect_transaction =
+            std::make_unique<internal::PreparedEffectTransaction>(
+                GET_MODULE(Persistence), t.loader);
+    }
+    void commit() override {
+        t.effect_transaction->setRetiredObjects(t.destroyed_entities);
+    }
+    void flush() override {
+        static_assert(noexcept(
+            std::declval<internal::PreparedEffectTransaction &>().flush(
+                std::declval<SceneLoadFaultInjector *>(),
+                std::declval<SceneLoadPhaseTrace &>())));
+        t.effect_transaction->flush(t.injector, t.phase_trace);
+    }
+};
+
+} // namespace
+
+SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
+    SceneLoadPhaseTrace phase_trace;
+    auto *const injector = fault_injector;
+    if (internal::sceneLoadRootDisconnected(request.root, injector)) {
+        auto error = std::make_exception_ptr(
+            std::runtime_error("injected scene-load root disconnect"));
+        return PreCommitFailure{SceneLoadPhase::prepare,
+                                exceptionMessage(error), error};
+    }
+    SceneAuthority candidate_authority{};
+    if (next_authority_epoch == std::numeric_limits<std::uint64_t>::max()) {
+        auto error = std::make_exception_ptr(
+            std::overflow_error("scene authority epoch space exhausted"));
+        return PreCommitFailure{SceneLoadPhase::prepare,
+                                exceptionMessage(error), error};
+    }
+    candidate_authority = SceneAuthority{run_nonce, next_authority_epoch++};
+
+    auto &config = GET_MODULE(ProjectBasicConfig);
+    SceneLoadContext transaction{
+        .loader = *this,
+        .request = request,
+        .config = config,
+        .injector = injector,
+        .phase_trace = phase_trace,
+        .authority = candidate_authority,
+    };
+
+    MetadataParticipant metadata{transaction};
+    SceneDocumentParticipant scene_document{transaction};
+    LoaderStateParticipant loader_state{transaction};
+    ProceduralParticipant procedural{transaction};
+    SceneBindingsParticipant scene_bindings{transaction};
+    RendererParticipant renderer{transaction};
+    CameraParticipant camera{transaction};
+    LightParticipant light{transaction};
+    SeqPlayerParticipant seq_player{transaction};
+    VatPlayerParticipant vat_player{transaction};
+    EcsParticipant ecs{transaction};
+    PhysicsParticipant physics{transaction};
+    BehaviorParticipant behavior{transaction};
+    EcsRetireParticipant ecs_retire{transaction};
+    RngParticipant rng{transaction};
+    PendingSceneParticipant pending_scene{transaction};
+    EventOutboxParticipant event_outbox{transaction};
+    EffectsParticipant effects{transaction};
+
+    const SceneLoadMutationGate gate{injector};
+
+    // These orders are the transaction's specification, and they are not all
+    // the same list: the renderer publishes before ECS entities exist, the
+    // metadata document lands last so a torn commit is observable from the
+    // activation window, and rollback is the reverse of publication only for
+    // the candidate-swap participants -- the renderer's swap-back and the
+    // procedural container's prepared-resource release trail the rest, as
+    // they always have.
+    SceneLoadParticipant *const prepare_order[] = {
+        &metadata,    &scene_document, &loader_state, &procedural,
+        &scene_bindings, &renderer,    &camera,       &light,
+        &seq_player,  &vat_player,     &ecs,          &rng,
+        &pending_scene, &event_outbox, &effects};
+    SceneLoadParticipant *const early_publish_order[] = {
+        &renderer, &ecs, &physics, &behavior, &ecs_retire};
+    SceneLoadParticipant *const publish_order[] = {
+        &loader_state, &seq_player, &vat_player, &camera,   &light,
+        &physics,      &procedural, &behavior,   &metadata};
+    SceneLoadParticipant *const activate_order[] = {&behavior};
+    SceneLoadParticipant *const commit_order[] = {
+        &metadata, &loader_state, &effects, &behavior};
+    SceneLoadParticipant *const retire_order[] = {
+        &loader_state, &renderer, &procedural, &event_outbox};
+    SceneLoadParticipant *const flush_order[] = {
+        &rng, &pending_scene, &event_outbox, &effects};
+    SceneLoadParticipant *const finish_order[] = {&ecs};
+    SceneLoadParticipant *const rollback_order[] = {
+        &behavior,    &physics,    &light,       &camera, &vat_player,
+        &seq_player,  &loader_state, &renderer,  &procedural,
+        &ecs_retire,  &ecs,        &event_outbox, &rng,   &pending_scene};
+
+    const auto fail = [&](SceneLoadPhase phase,
+                          std::exception_ptr error) -> SceneLoadResult {
+        return PreCommitFailure{phase, exceptionMessage(error), error,
+                                releaseErrorStatus(error)};
+    };
+    const auto rollback = [&]() noexcept {
+        for (auto *participant : rollback_order) {
+            gate.run(*participant, SceneLoadVerb::rollback);
+        }
+    };
+
+    try {
+        for (auto *participant : prepare_order) {
+            gate.run(*participant, SceneLoadVerb::prepare);
+        }
+    } catch (...) {
+        return fail(SceneLoadPhase::prepare, std::current_exception());
+    }
+
+    // Every game-DLL callback, including a component JSON loader invoked by
+    // early publication, must observe the same transaction-local effects.
+    PendingSceneTransaction pending_transaction{
+        .loader = this,
+        .projection = &transaction.metadata.projection(),
+        .candidate = &transaction.pending_candidate,
+    };
+    internal::EventOutboxScope event_scope{*transaction.event_outbox};
+    internal::EffectTransactionScope effect_scope{
+        *transaction.effect_transaction};
+    RngSequenceScope rng_scope{transaction.rng_candidate};
+    PendingSceneTransactionScope pending_scope{pending_transaction};
+
+    try {
+        for (auto *participant : early_publish_order) {
+            gate.run(*participant, SceneLoadVerb::early_publish);
         }
     } catch (...) {
         rollback();
@@ -1034,87 +1746,16 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
     }
 
     // All remaining candidate publications are swaps over prepared storage.
-    static_assert(noexcept(std::declval<PolygonInstanceContainer &>()
-                               .publishPreparedScene(std::declval<
-                                   PolygonInstanceContainer::PreparedSceneState &&>())));
-    static_assert(noexcept(std::declval<SeqPlayer &>().publishPreparedScene(
-        std::declval<SeqPlayer::PreparedSceneState &&>())));
-    static_assert(noexcept(std::declval<VatPlayer &>().publishPreparedScene(
-        std::declval<VatPlayer::PreparedSceneState &&>())));
-    static_assert(noexcept(std::declval<Camera &>().publishPrepared(
-        std::declval<Camera::PreparedSceneState &&>())));
-    static_assert(noexcept(std::declval<LightContainer &>().publishPrepared(
-        std::declval<LightContainer::PreparedLoad &&>())));
-    static_assert(noexcept(std::declval<PhysWorld &>().publishPrepared(
-        std::declval<PhysWorld::PreparedState &&>())));
-    static_assert(noexcept(std::declval<ProceduralGeometryContainer &>()
-                               .publishPrepared(
-                                   std::declval<ProceduralGeometryContainer::PreparedSceneState &>(),
-                                   std::declval<SceneLoadPhaseTrace &>())));
-    static_assert(noexcept(std::declval<PreparedBehaviorSceneReconciliation &>()
-                               .publish()));
-    static_assert(noexcept(object_bindings.swap(
-        candidate_object_bindings)));
-    static_assert(noexcept(runtime_object_bindings.swap(
-        candidate_runtime_bindings)));
-    static_assert(noexcept(std::swap(runtime_only_changes,
-                                     candidate_runtime_only_changes)));
-    static_assert(noexcept(transient_models.swap(
-        candidate_transient_models)));
-    object_bindings.swap(candidate_object_bindings);
-    runtime_object_bindings.swap(candidate_runtime_bindings);
-    std::swap(runtime_only_changes, candidate_runtime_only_changes);
-    transient_models.swap(candidate_transient_models);
-    GET_MODULE(SeqPlayer).publishPreparedScene(std::move(seq_candidate),
-                                               phase_trace);
-    GET_MODULE(VatPlayer).publishPreparedScene(std::move(vat_candidate),
-                                               phase_trace);
-    GET_MODULE(Camera).publishPrepared(std::move(camera_candidate), phase_trace);
-    if (!internal::sceneLoadMutationEnabled(
-            injector, SceneLoadFaultPhase::publish, "light",
-            scene_load_mutation::light_directional_names)) {
-        GET_MODULE(LightContainer).publishPrepared(
-            std::move(light_candidate), phase_trace);
-        light_published = true;
-    }
-    GET_MODULE(PhysWorld).publishPrepared(std::move(physics_candidate),
-                                          phase_trace);
-    auto &procedural = GET_MODULE(ProceduralGeometryContainer);
-    if (internal::sceneLoadMutationEnabled(
-            injector, SceneLoadFaultPhase::publish, "procedural",
-            scene_load_mutation::procedural_aabb_buffer)) {
-        procedural.dropPreparedAabbBuffersForMutation(
-            procedural_candidate);
-    }
-    if (internal::sceneLoadMutationEnabled(
-            injector, SceneLoadFaultPhase::publish, "procedural",
-            scene_load_mutation::procedural_allocation_generation)) {
-        procedural.dropPreparedAllocationGenerationForMutation(
-            procedural_candidate);
-    }
-    if (internal::sceneLoadMutationEnabled(
-            injector, SceneLoadFaultPhase::publish, "procedural",
-            scene_load_mutation::procedural_instance_snapshot)) {
-        procedural.dropPreparedInstancesForMutation(
-            procedural_candidate);
-    }
-    procedural.publishPrepared(procedural_candidate, phase_trace);
-    procedural_published = true;
-    behavior_candidate->publish(phase_trace);
-    candidates_published = true;
-
-    if (internal::sceneLoadMutationEnabled(
-            injector, SceneLoadFaultPhase::commit, "metadata",
-            scene_load_mutation::metadata_document)) {
-        metadata.publishDocumentOnlyForFaultInjection();
+    // Every one of them is statically asserted noexcept in the participant
+    // that performs it, and SceneLoadParticipant::publish is noexcept, so
+    // this loop has no failure path at all.
+    for (auto *participant : publish_order) {
+        gate.run(*participant, SceneLoadVerb::publish);
     }
 
     try {
-        if (!internal::sceneLoadMutationEnabled(
-                injector, SceneLoadFaultPhase::activate,
-                "behavior_arena",
-                scene_load_mutation::behavior_attachments)) {
-            behavior_candidate->activate(phase_trace);
+        for (auto *participant : activate_order) {
+            gate.run(*participant, SceneLoadVerb::activate);
         }
     } catch (...) {
         const auto error = std::current_exception();
@@ -1124,81 +1765,28 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
 
     // The commit point is exactly one metadata swap. Nothing after it can
     // produce PreCommitFailure.
-    static_assert(noexcept(std::declval<MetadataCommitToken &>().commit(
-        std::declval<SceneLoadPhaseTrace &>())));
-    static_assert(noexcept(
-        std::declval<PreparedBehaviorSceneReconciliation &>().finish(
-            std::declval<SceneLoadPhaseTrace &>())));
-    static_assert(noexcept(std::declval<ECSEntityMutationToken &>().finish(
-        std::declval<SceneLoadPhaseTrace &>())));
-    static_assert(noexcept(std::declval<PolygonInstanceContainer &>()
-                               .enqueueSceneRetirement(
-                                   std::declval<std::vector<std::uint32_t>>())));
-    static_assert(noexcept(std::declval<RetirementState &>().enqueue(
-        std::declval<RetirementState::Batch>(),
-        std::declval<SceneLoadPhaseTrace &>())));
-    static_assert(noexcept(std::declval<internal::PreparedEventOutbox &>()
-                               .stageReserved(
-                                   std::declval<internal::QueuedEvent>())));
-    static_assert(noexcept(
-        std::declval<internal::PreparedEventOutbox &>().flush(
-            std::declval<SceneLoadPhaseTrace &>())));
-    static_assert(noexcept(std::declval<DeterministicRng &>()
-                               .publishPreparedSequence(
-                                   std::declval<DeterministicRng::PreparedSequence>())));
-    static_assert(noexcept(std::declval<std::optional<SceneId> &>().swap(
-        std::declval<std::optional<SceneId> &>())));
-    metadata.commit(phase_trace);
-    scene_start_time = candidate_scene_start_time;
-    graph_runtime.clear();
-    // The unmatched-owner memos belong to the scene that was live, not to the
-    // one being committed: a document that could not bind an object there says
-    // nothing about what this scene has.
-    graph_owner_resolved_scopes.clear();
-    graph_owner_reported_scopes.clear();
-
-    effect_transaction->setRetiredObjects(destroyed_entities);
-    behavior_candidate->finish(phase_trace);
-    const bool bypass_transient_retire =
-        internal::sceneLoadMutationEnabled(
-            injector, SceneLoadFaultPhase::retire, "scene_loader",
-            scene_load_mutation::transient_retire);
-    retirement_state->enqueue(RetirementState::Batch{
-        .destroyed_entities = std::move(destroyed_entities),
-        .transient_models = bypass_transient_retire
-                                ? std::vector<ModelTemplate>{}
-                                : std::move(candidate_transient_models),
-    }, phase_trace);
-    GET_MODULE(PolygonInstanceContainer).enqueueSceneRetirement(
-        std::move(renderer_retire_indices), phase_trace);
-    if (!internal::sceneLoadMutationEnabled(
-            injector, SceneLoadFaultPhase::retire, "procedural",
-            scene_load_mutation::procedural_retire_queue)) {
-        GET_MODULE(ProceduralGeometryContainer).enqueueRetirement(
-            std::move(procedural_candidate), phase_trace);
+    for (auto *participant : commit_order) {
+        gate.run(*participant, SceneLoadVerb::commit);
     }
-
-    event_outbox->stageReserved(std::move(scene_loaded_event));
-    GET_MODULE(DeterministicRng).publishPreparedSequence(rng_candidate,
-                                                          phase_trace);
+    for (auto *participant : retire_order) {
+        gate.run(*participant, SceneLoadVerb::retire);
+    }
     phase_trace.record(SceneLoadPhase::flush);
-    pending_scene_id.swap(pending_candidate);
-    event_outbox->flush(phase_trace);
-    static_assert(noexcept(
-        std::declval<internal::PreparedEffectTransaction &>().flush(
-            std::declval<SceneLoadFaultInjector *>(),
-            std::declval<SceneLoadPhaseTrace &>())));
-    effect_transaction->flush(injector, phase_trace);
+    for (auto *participant : flush_order) {
+        gate.run(*participant, SceneLoadVerb::flush);
+    }
 
     // The batch is an executor participant in its own right.  Recording here
     // keeps an empty scene observable while individual token completion stays
     // an implementation detail of the batch.
     phase_trace.record(SceneLoadPhase::finish);
-    for (auto &token : created_entities) token.finish();
+    for (auto *participant : finish_order) {
+        gate.run(*participant, SceneLoadVerb::finish);
+    }
 
     // Public strings and JSON are deliberately materialized only after the
     // noexcept commit tail has completed.
-    auto effect_errors = effect_transaction->effectErrors();
+    auto effect_errors = transaction.effect_transaction->effectErrors();
     const auto ray_plan = GET_MODULE(PolygonInstanceContainer).rayAsPlan();
     auto diagnostics = ray_plan ? rayScenePlanDiagnostics(*ray_plan) : SceneLoadDiagnostics{};
     if (!diagnostics.rejected_rows.empty() &&

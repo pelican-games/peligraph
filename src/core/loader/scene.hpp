@@ -23,6 +23,11 @@
 namespace Pelican {
 
 class SceneLoader;
+class ProjectBasicConfig;
+// The scene-load transaction's shared state.  Defined in scene.cpp, where the
+// participants that publish into the loader's own fields live; it is the one
+// seam allowed to reach them, so no participant needs friendship of its own.
+struct SceneLoadContext;
 namespace test_support {
 void setSceneLoadFaultInjectorForTesting(
     SceneLoader &loader, SceneLoadFaultInjector *injector) noexcept;
@@ -106,6 +111,7 @@ DECLARE_MODULE(SceneLoader) {
     struct RetirementState;
     std::unique_ptr<RetirementState> retirement_state;
 
+    friend struct SceneLoadContext;
     friend void test_support::setSceneLoadFaultInjectorForTesting(
         SceneLoader &loader, SceneLoadFaultInjector *injector) noexcept;
     friend void test_support::setDefaultSceneLoadFaultInjectorForTesting(
@@ -116,6 +122,18 @@ DECLARE_MODULE(SceneLoader) {
                            GameObjectId object_id);
     void clearRuntimeScene();
     void releaseTransientModels(bool deferred) noexcept;
+
+    // MetadataCommitToken's staging surface and ProjectBasicConfig's borrowed
+    // metadata factory are both private to SceneLoader.  The metadata
+    // participant of a scene load drives them through these three, so the
+    // participants themselves need no friendship of their own.
+    static MetadataCommitToken prepareLoadMetadata(
+        ProjectBasicConfig &config, SceneLoadRequest &request,
+        SceneAuthority authority, SceneLoadPhaseTrace &phase_trace);
+    static void publishLoadMetadataDocumentOnly(
+        MetadataCommitToken &metadata) noexcept;
+    static void commitLoadMetadata(MetadataCommitToken &metadata,
+                                   SceneLoadPhaseTrace &phase_trace) noexcept;
 
   public:
     SceneLoader();
