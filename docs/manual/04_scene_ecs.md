@@ -107,7 +107,7 @@
 | 形 | `{scene: <シーン ID の文字列>, object: <正の整数>}` の **2 キーちょうど**。欠けても増えても `graph owner requires scene and positive authoring object id`([graphcomposition.cpp:97](../../src/project/graphcomposition.cpp#L97)) |
 | `object` の正体 | **authoring object id** = シーン文書をロードしたときに**宣言順に振る通し番号**([authoringscenedocument.cpp:39](../../src/core/loader/authoringscenedocument.cpp#L39))。`scene.json` のどこにも**書かれていません**。開始値は既定 1 の引数で([authoringscenedocument.hpp:110](../../src/core/loader/authoringscenedocument.hpp#L110))、**番号は文書内のシーンをまたいで連番**です —— `scenes` の 1 つ目が 31 個なら、2 つ目のシーンの先頭は 1 ではなく 32 になります。つまり「`objects` 配列の何番目か」で数えてよいのは**最初のシーンだけ**です |
 | 解決 | ロード後の束縛表を線形に走査し、その id を持つ生きたオブジェクトを探します([SceneLoader::graphOwnerObject()](../../src/core/loader/scenegraphruntime.cpp#L35)) |
-| 見つからないとき | **エラーではなく inactive**。その instance の scope は評価されず、`LOG_WARNING` が出ます(`graph instance owner does not match any object in this scene: <scope>, <scope>, …`)。**1 行にまとまります** —— そのとき初めて報告する scope を `", "` で連ねて 1 回だけ出し、同じ scope は二度言いません([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L61))。「言った」という記憶は**シーンのロードで消えます**([scene.cpp:1152](../../src/core/loader/scene.cpp#L1157))ので、次のシーンでは同じ scope がまた 1 回報告されます。姿勢では「rest pose のまま動かない」に見えます |
+| 見つからないとき | **エラーではなく inactive**。その instance の scope は評価されず、`LOG_WARNING` が出ます(`graph instance owner does not match any object in this scene: <scope>, <scope>, …`)。**1 行にまとまります** —— そのとき初めて報告する scope を `", "` で連ねて 1 回だけ出し、同じ scope は二度言いません([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L61))。「言った」という記憶は**シーンのロードで消えます**([scene.cpp:730](../../src/core/loader/scene.cpp#L730))ので、次のシーンでは同じ scope がまた 1 回報告されます。姿勢では「rest pose のまま動かない」に見えます |
 | 別のオブジェクトを指したとき | id が**実在する別のオブジェクト**だった場合は黙って**そちらに適用**されます。姿勢の sink のように適用できない相手(カメラなど)なら、オブジェクト名入りで失敗します(`pose graph sink resolution for Camera failed with animation status …` — [posegraphruntime.cpp:181](../../src/core/animation/posegraphruntime.cpp#L187)) |
 
 > ⚠ **既知の穴(v0):** この id は**永続識別子ではありません**。シーンにオブジェクトを挿入して保存すると、以降の番号が 1 つずつずれ、**装着先が別の個体に移ります**(不一致なら無音の inactive、実在すれば黙ってそちらへ)。永続オブジェクト id(`design_object_identity.md` の ID-1〜4)は未実装で、v0 の穴として台帳に記録されています([第11章 §11.3](11_status.md))。当面は「装着を持つシーンでは、オブジェクトを**末尾に足す**」のが安全です。
@@ -332,11 +332,11 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 - grandfathered の 7 名は `eid` / `transform` / `localtransform` / `simplemodelview` / `camera` / `animation` / `sprite_view` です。**これ以降エンジンが足すビルトインは必ず `pelican_` で始まります**(`pelican_ray_instance` が最初の適用例)。
 - エンジン所有として登録する registrar([EngineComponentRegisterer](../../src/core/ecs/enginecomponentregistrar.hpp#L15))は **host 専用**で、ゲーム DLL からは include しても**リンク以前にコンパイルが通りません**(`registerEngineComponent` を呼ぶ game DLL は専用のコンパイル失敗テストで守られています)。
-- シーン JSON に**未登録の名前**を書くと `component_unknown@1{"name":"X"}`([componentinfo.hpp](../../src/core/ecs/componentinfo.hpp#L27))。**登録済みだが codec が無い**名前は、ロードはできてもエディタからは編集できず `not_editable`([editorjournal.cpp](../../src/core/communication/editorjournal.cpp#L225))になります。ゲーム DLL が登録した独自コンポーネントは(codec を持たないため)この状態です。
+- シーン JSON に**未登録の名前**を書くと `component_unknown@1{"name":"X"}`([componentinfo.hpp](../../src/core/ecs/componentinfo.hpp#L27))。**登録済みだが codec が無い**名前は、ロードはできてもエディタからは編集できず `not_editable`([editorjournal.cpp](../../src/core/communication/editorjournal.cpp#L211))になります。ゲーム DLL が登録した独自コンポーネントは(codec を持たないため)この状態です。
 
 ## 4.3 シーンロードの流れ
 
-[`SceneLoader::load(SceneLoadRequest)`](../../src/core/loader/scene.cpp#L546) は **1 つのトランザクション**です(✅WP380a〜e)。**トランザクション**とは、途中の状態を外から見せず「全部成功して切り替わる」か「1 つも変わらない」かのどちらかにする実行単位のことです([用語集](14_glossary.md))。「旧シーンを消してから新シーンを作る」のではなく、新シーンの候補を全部作って一斉に切り替え、失敗したら全部を旧シーンに戻します。
+[`SceneLoader::load(SceneLoadRequest)`](../../src/core/loader/scene.cpp#L1627) は **1 つのトランザクション**です(✅WP380a〜e)。**トランザクション**とは、途中の状態を外から見せず「全部成功して切り替わる」か「1 つも変わらない」かのどちらかにする実行単位のことです([用語集](14_glossary.md))。「旧シーンを消してから新シーンを作る」のではなく、新シーンの候補を全部作って一斉に切り替え、失敗したら全部を旧シーンに戻します。
 
 **この経路は 1 本だけ**です。起動時のロード / rpc `load_scene` / `ctx.loadScene()` の遅延適用(pending)/ エディタからのスナップショット import は、入口([SceneLoadRoot](../../src/core/loader/sceneload.hpp#L82))が違うだけで同じ executor を通ります。実際の処理順:
 
@@ -352,7 +352,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 2〜9 の 8 段が [SceneLoadPhase](../../src/core/loader/sceneload.hpp#L27) の 8 値(`prepare` / `early_publish` / `publish` / `activate` / `commit_metadata` / `retire` / `flush` / `finish`)にそのまま対応します(1 は executor に入る前の解釈レイヤなので phase ではありません)。ロード結果に付く phase trace は内部の順序検証(と fault injection)のためのもので、rpc には出ていません。
 
-> **ビルドから外した機能を要求するシーンは prepare で止まります(✅AG-1b)。** `PELICAN_WITH_ANIMATION=OFF` のビルドで `animation` コンポーネントを含むシーンをロードすると、**2 の prepare 段**で `animation.module_unavailable@1`(オブジェクト名入り)になります([scene.cpp:74](../../src/core/loader/scene.cpp#L74))。commit 前なので**ロールバックの契約に乗り**、稼働中の旧シーンはそのまま残ります —— 「読めたが誰も評価しないので rest pose のまま動かない」という状態を作りません。コンポーネントの **codec は OFF でも残る**ので、ツールは同じビルドでシーンを読み書きできます(読めることと動かせることを分けています)。
+> **ビルドから外した機能を要求するシーンは prepare で止まります(✅AG-1b)。** `PELICAN_WITH_ANIMATION=OFF` のビルドで `animation` コンポーネントを含むシーンをロードすると、**2 の prepare 段**で `animation.module_unavailable@1`(オブジェクト名入り)になります([scene.cpp:74](../../src/core/loader/scene.cpp#L75))。commit 前なので**ロールバックの契約に乗り**、稼働中の旧シーンはそのまま残ります —— 「読めたが誰も評価しないので rest pose のまま動かない」という状態を作りません。コンポーネントの **codec は OFF でも残る**ので、ツールは同じビルドでシーンを読み書きできます(読めることと動かせることを分けています)。
 
 ### ロード中の「作用」はトランザクションに溜まる(✅WP380b〜e)
 
@@ -375,7 +375,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 retire 中の `onDestroy` は「自分の最終状態」を読めます。entity はもう unpublish されていますが、`ctx.localTransform(self)` / `ctx.spriteView(self)` は**破棄トークンが持つスナップショット**を返します([retiredComponent](../../src/core/loader/effecttransaction.cpp#L462))。書き込み側(`setLocalTransform` / `setSpriteView` / `setSpriteTexture`)は throw せず **false** を返し、`SceneRetiredObjectMutationRejected` として `effect_errors` に積まれます([rejectRetiredMutation](../../src/core/loader/effecttransaction.cpp#L473))。
 
 - `onDestroy` は `noexcept` なので、この段の fallible API(`playSound` / `saveData` など)は**例外を投げずに `effect_errors` へ**回されます。呼び出し側のゲームコードは戻り値だけ見ればよく、握りつぶしではなく記録されます。
-- retire 中の `loadScene(name)` は、**commit 済みのシーン集合**に対して解決されます([requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1241))。旧シーンにしか無い名前を書くと `scene not found in committed projection: X` になり、`scene_retire_load_rejected@1` として記録されます。
+- retire 中の `loadScene(name)` は、**commit 済みのシーン集合**に対して解決されます([requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1829))。旧シーンにしか無い名前を書くと `scene not found in committed projection: X` になり、`scene_retire_load_rejected@1` として記録されます。
 
 ### commit したのに作用が失敗したとき
 

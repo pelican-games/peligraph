@@ -168,7 +168,7 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 | [`vkcore/`](../../src/core/vkcore) | Vulkan instance/device、FrameTarget、command、layout、renderer編成 | [`VulkanManageCore`](../../src/core/vkcore/core.hpp#L36)、[`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254) |
 | [`shader/`](../../src/core/shader) | compile、SPIR-V reflection、module、pipeline cache/hot reload | [`ShaderLibrary`](../../src/core/shader/shaderlibrary.hpp#L123)、[`PipelineFactory`](../../src/core/shader/pipelinefactory.hpp#L230) |
 | [`model/`](../../src/core/model) | glTF/VATロードと頂点バッファ | [`GltfLoader`](../../src/core/model/gltf.hpp#L61)、[`VertBufContainer`](../../src/core/model/vertbufcontainer.hpp#L48) |
-| [`material/`](../../src/core/material) | texture/material/pipeline/descriptor | [`MaterialContainer`](../../src/core/material/materialcontainer.hpp#L78) |
+| [`material/`](../../src/core/material) | texture/material/pipeline/descriptor | [`MaterialContainer`](../../src/core/material/materialcontainer.hpp#L80) |
 | [`asset/`](../../src/core/asset) | asset JSONからmodel templateを登録 | [`ModelAssetContainer`](../../src/core/asset/model.hpp#L24) |
 | [`fullscreenpass/`](../../src/core/fullscreenpass) | fullscreen pipelineと入力descriptor | [`FullscreenPassContainer`](../../src/core/fullscreenpass/fullscreenpasscontainer.hpp#L50) |
 | [`light/`](../../src/core/light) | scene lightとlight UBO | [`LightContainer`](../../src/core/light/lightcontainer.hpp#L29) |
@@ -274,7 +274,7 @@ registryの各行が持つキーのうち、この節で効くのは2つです�
 | [`PELICAN_WITH_ANIMATION`](../../cmake/pelican_feature_registry.cmake#L146) | skeletal animation評価器と `pelican.pose` graph module | `src/core/animation` の実装が外れて [`animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L1) だけになり、`pelican_project` から [`posegraphmodule.cpp` が外れます](../../src/project/CMakeLists.txt#L62)。帰結は4つ（下の段落） |
 | `PELICAN_WITH_SEQPLAYER` | transform sequence parser/player | [`seqplayer_stub.cpp`](../../src/core/playback/seqplayer_stub.cpp#L1) |
 | `PELICAN_WITH_IMGUI` | 開発者UI（ImGui）をリンク | imguiモジュールなし |
-| `PELICAN_WITH_PHYSICS` | 物理クエリサービスとcollider world | [`physicsservice_stub.cpp`](../../src/core/phys/physicsservice_stub.cpp)、sceneにcolliderがあると明示エラー（[`scene.cpp`](../../src/core/loader/scene.cpp#L150)） |
+| `PELICAN_WITH_PHYSICS` | 物理クエリサービスとcollider world | [`physicsservice_stub.cpp`](../../src/core/phys/physicsservice_stub.cpp)、sceneにcolliderがあると明示エラー（[`scene.cpp`](../../src/core/loader/scene.cpp#L151)） |
 | `PELICAN_WITH_OPENXR` | private OpenXR unit（`pelican_openxr`）をリンク | `--xr` 指定時に明示エラー |
 | `PELICAN_WITH_RENDERDOC` | **既に注入済みの**RenderDoc APIを受動利用（F11キャプチャ、`capture_gpu` RPC） | [`renderdoccapture_stub.cpp`](../../src/core/renderdoc/renderdoccapture_stub.cpp) をリンクし、`RenderDocCapture` は常に `unavailable`（理由 `renderdoc_build_disabled`）。キャプチャ要求は理由付きで拒否 |
 | `PELICAN_WITH_STANDARD_RENDER_ALGORITHMS` | 差し替え可能な標準render algorithmパッケージ [`src/core/render_algorithms/`](../../src/core/render_algorithms) と、その専用engine resourceを含める（[`PELICAN_STANDARD_RENDER_ALGORITHM_RESOURCES`](../../src/core/resources/render_algorithms/standard_algorithms.cmake#L6)） | サブディレクトリごと [`add_subdirectory(render_algorithms)`](../../src/core/CMakeLists.txt#L51) から外れ、[`registerStandardRenderAlgorithmProviders()`](../../src/core/renderer/viewfamilyproviderregistry.cpp#L71) の呼び出しも `#if` で消える。グラフ／コンパイラ／provider機構そのものは残るので、プロジェクト側で自前のViewFamily実装を差せる |
@@ -285,7 +285,7 @@ registryの各行が持つキーのうち、この節で効くのは2つです�
 1. **catalog から `pelican.pose` が消える** — [`makeBuiltinGraphModuleRegistry()`](../../src/project/graphmodule.cpp#L253) が `registerPoseGraphModule()` を呼ばないので、`pelican_cli graph-catalog` の出力は4 moduleから3 moduleになり、`pose.blend` / `pose.clip_sample` / `pose.retarget` / `pose.skeletal` / `pose.state_machine` / `pose.transform` の6 opだけが落ちます。これを検査するのが [`test/run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake#L117) です。2 本の catalog を突き合わせるのではなく、**1 本の catalog を `WITH_ANIMATION` の期待値に照らします**（module 数は [3 + ON なら 1](../../test/run_devcli_graph_catalog.cmake#L23)、名前空間と pose op の有無は [期待値の組み立て](../../test/run_devcli_graph_catalog.cmake#L74)）。同じ実行が [`docs/v0_freeze.md` の op 表とも突き合わせ](../../test/run_devcli_graph_catalog.cmake#L113)、OFF build で欠けてよいのは `pose.*` だけ、という形で差を固定します。
 2. **`pose.*` を書いた文書は `graph.operation_unregistered@1`** — op 名の特別扱いが無いので、未登録という一般の理由でそのまま落ちます（§1.5）。
 3. **`requires: ["animation"]` を書いたprojectは開く前に落ちる** — 語彙は `animation` 1語だけで（[`knownProjectRequirements()`](../../src/project/projectformat.hpp#L52)）、封筒のパース時点で `animation.module_unavailable@1` を投げます（[`parseProjectEnvelopeJson()` 内](../../src/project/projectformat.cpp#L180)）。node を1つずつ辿って気付く、という発見の仕方をさせないための前倒しです。
-4. **scene に animation component があれば prepare で落ちる** — [`validateResolvedSceneFeatureBindings()`](../../src/core/loader/scene.cpp#L62) が同じ `animation.module_unavailable@1` を、objectの名前を添えて投げます。componentのcodec自体は残るのでOFFビルドのツールでもsceneを読み書きでき、[`AnimationSystem` の登録だけが消えます](../../src/core/ecs/predefined.cpp#L54)（「登録されているが何もしない」ではありません）。
+4. **scene に animation component があれば prepare で落ちる** — [`validateResolvedSceneFeatureBindings()`](../../src/core/loader/scene.cpp#L63) が同じ `animation.module_unavailable@1` を、objectの名前を添えて投げます。componentのcodec自体は残るのでOFFビルドのツールでもsceneを読み書きでき、[`AnimationSystem` の登録だけが消えます](../../src/core/ecs/predefined.cpp#L54)（「登録されているが何もしない」ではありません）。
 
 ABIの交渉入口（`getApiV1` / `getPoseStagingServiceV1` / `getApplicationServiceV1`）はOFFでもexportされ続けます。3つとも、out 引数が null なら `invalid_argument`、そうでなければ `unsupported_version` です（[`animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L13)）。SDKに対してビルドされたgame DLLが**ロードはできて、名前で「このバイナリにはアニメーションが無い」と分かる**ようにするためです。
 
@@ -314,7 +314,7 @@ ABIの交渉入口（`getApiV1` / `getPoseStagingServiceV1` / `getApplicationSer
 | nlohmann/json | project/scene/rendering/RPC/保存など全JSON |
 | shaderc | GLSLからSPIR-V（[`ShaderCompiler`](../../src/core/shader/shadercompiler.hpp#L39)）。runtime compiler ON時だけVulkan SDK版をリンクし、暗黙のFetchContent fallbackは行わない |
 | SPIRV-Reflect | descriptor/push constant/vertex input抽出（[`reflect()`](../../src/core/shader/shaderreflection.hpp#L66)） |
-| tinygltf | glTF/GLB/VRMロード（[`GltfLoader`](../../src/core/model/gltf.cpp#L2647)） |
+| tinygltf | glTF/GLB/VRMロード（[`GltfLoader`](../../src/core/model/gltf.cpp#L2450)） |
 | stb / tinyexr | PNG等とEXRの画像ロード |
 | miniaudio | 音声backend |
 | OpenXR SDK | loader + headers（[OpenXR-SDK-Sourceの取得](../../CMakeLists.txt#L270)、`PELICAN_WITH_OPENXR` 時） |

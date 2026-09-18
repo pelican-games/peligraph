@@ -654,9 +654,9 @@ audioと同じく、persistenceも「用意」と「書き込み」に割れて�
 >
 > **不変条件**: `parents[i] < i`(root は -1)。`localToModel()` の 1 パスがこれに依存します。`layout_to_original` と `original_to_layout` は互いの逆写像なので、片方だけ触らないこと。
 
-> 🧩 **難所 — publish しない publish**([`publishFromSource()`](../../src/core/animation/animationservice.cpp#L1801) / [`commitStagedFrame()`](../../src/core/animation/animationservice.cpp#L988))
+> 🧩 **難所 — publish しない publish**([`publishFromSource()`](../../src/core/animation/animationservice.cpp#L1617) / [`commitStagedFrame()`](../../src/core/animation/animationservice.cpp#L821))
 >
-> **何をする所か**: anim graph が `base_pose_and_root_modifier` フェーズで publish したフレームを、その場では renderer へ流さず 1 枚だけ staging し、全フェーズ終了後に `commitStagedFrame()` が 1 回だけ publish します。
+> **何をする所か**: `animationservice.cpp` の runtime は [`PoseArena`](../../src/core/animation/animationposearena.hpp#L23)(pose 本体と stale 表)・[`SinkRegistry`](../../src/core/animation/animationsinkregistry.hpp#L24)(フェーズ登録)・[`PhaseScheduler`](../../src/core/animation/animationphasescheduler.hpp#L28)(順序と実行)を組み合わせた形で、以下の staging は arena と scheduler の縫い目です。anim graph が `base_pose_and_root_modifier` フェーズで publish したフレームを、その場では renderer へ流さず 1 枚だけ staging し、全フェーズ終了後に `commitStagedFrame()` が 1 回だけ publish します。
 >
 > **素朴に読むと**: `publishFromSource()` は名前に反して、フェーズ実行中は **publish しません**。ここを読み飛ばすと「publish したのに画面に出ない」の原因が追えません。さらに深いのは `commitStagedFrame()` の `if (staged.pose_accessed)` です。anim graph は自分で local→model→palette(matrix palette — skinning 用に、joint ごとの「model 行列 × inverse bind 行列」を並べた行列配列。頂点シェーダはこれを joint index で引いて頂点を変形します)まで済ませた palette を渡してきますが、その後の `world_post_process` フェーズで VRM の視線適用([`lookAtForPhase()`](../../src/core/animation/vrmapplication.cpp#L895))が staged local pose の回転を**直接上書き**します。上書き後の palette は graph が計算したものと食い違うので、「誰かが staged pose を acquire したら」model matrix と palette を local pose から作り直し、graph の palette を捨てます。素朴に「publish された palette をそのまま使う」と、目だけ動かないモデルができます(頭は動くので気付きにくい)。逆に「常に作り直す」と、pose を誰も触らないフレームでも `localToModel` + `buildSkinPalette` を二度払います。もう 1 つの罠は palette の所有権で、staging 時に呼び出し側の palette を `staged.palette` へ**深いコピー**したうえで、**staged 側に控えた descriptor** の `staged.frame.palette` を `nullptr` にします(呼び出し側のバッファを書き換えるわけではありません。staged 側に生ポインタを一切残さないための処置です)。呼び出し側のバッファは `evaluate()` を抜けた時点で消えるので、ポインタを保持すると commit 時にダングリングになります。
 >
@@ -993,7 +993,7 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 ### 退役済みobjectのsnapshot view
 
-`retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1160)）、2つの向きに使います。
+`retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1614)）、2つの向きに使います。
 
 - **読み**: [`retiredComponent(id, component_id)`](../../src/core/loader/effecttransaction.cpp#L462) が destroy token の中のcomponentを返し、`GameContext::localTransform()` / `spriteView()` がそれを**先に**引きます（[`GameContext::localTransform()`](../../src/core/userpublic/gamecontext.cpp#L119)）。だから `onDestroy` から自分の最後のtransformを読めます。
 - **書き**: [`rejectRetiredMutation(api, id)`](../../src/core/loader/effecttransaction.cpp#L473) が同じ列を引き、当たれば `SceneRetiredObjectMutationRejected` を診断へ1件積んで `true` を返します。呼び手のsetterは `false` を返すだけで**throwしません**（`onDestroy` は `noexcept` です）。
@@ -1122,8 +1122,8 @@ OFFビルドではこの3ファイルがビルドに入らず、`pelican.pose` m
 
 構造体の末尾 `resolve_rig_source_node` は、この4本目のbitが立っているときだけ存在する**加算的な尾**です（[宣言](../../src/core/userpublic/animation/pose_staging_v1.hpp#L104)）。
 
-4本目が要る理由がそのまま使い方です。`pose.clip_sample` は自分の `root_node`（glTF の node index）を**attach時に1回だけ**layout indexへ解決しますが、その時点ではまだ何もstagingされていません。staged frame 経由では聞けないうえ、この写像はそもそもフレームの性質ではなく **rig の性質**です。実装は [`resolveRigSourceNode()`](../../src/core/animation/animationservice.cpp#L1085) で、`rig.original_to_layout` を1回引くだけです（layoutに載らないnodeの印は `uint32` の最大値で、これは `not_found`）。
+4本目が要る理由がそのまま使い方です。`pose.clip_sample` は自分の `root_node`（glTF の node index）を**attach時に1回だけ**layout indexへ解決しますが、その時点ではまだ何もstagingされていません。staged frame 経由では聞けないうえ、この写像はそもそもフレームの性質ではなく **rig の性質**です。実装は [`resolveRigSourceNode()`](../../src/core/animation/animationservice.cpp#L1357) で、`rig.original_to_layout` を1回引くだけです（layoutに載らないnodeの印は `uint32` の最大値で、これは `not_found`）。
 
-`clip` ハンドルも一緒に渡すと、そのclipがそのnodeで駆動している **channel kind のビットマスク**が返ります（[集計](../../src/core/animation/animationservice.cpp#L1115)）。これで「あなたがrootと呼んだnode 3を、このclipは一度も平行移動させない」を**1度もサンプルせずに**答えられます。そうでなければ、症状は「常に0の変位」という気付きにくい形になります。
+`clip` ハンドルも一緒に渡すと、そのclipがそのnodeで駆動している **channel kind のビットマスク**が返ります（[集計](../../src/core/animation/animationservice.cpp#L925)）。これで「あなたがrootと呼んだnode 3を、このclipは一度も平行移動させない」を**1度もサンプルせずに**答えられます。そうでなければ、症状は「常に0の変位」という気付きにくい形になります。
 
-生成側（`resolve_rig_source_node` を埋める箇所）は [`getPoseStagingServiceV1()` の実装](../../src/core/animation/animationservice.cpp#L2040)です。呼び手の `struct_size` を超えて書かないよう `min(caller_size, sizeof)` でコピーするので、古いクライアントは末尾を見ないまま安全に使えます。
+生成側（`resolve_rig_source_node` を埋める箇所）は [`getPoseStagingServiceV1()` の実装](../../src/core/animation/animationservice.cpp#L1821)です。呼び手の `struct_size` を超えて書かないよう `min(caller_size, sizeof)` でコピーするので、古いクライアントは末尾を見ないまま安全に使えます。

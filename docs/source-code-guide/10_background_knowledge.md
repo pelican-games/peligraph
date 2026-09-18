@@ -320,7 +320,7 @@ return { std::max(1u, base.width >> mip), std::max(1u, base.height >> mip) };
 
 `remaining` をそのまま Vulkan へ渡さず先に解決するのは、キャッシュ鍵として比較するときに「同じ範囲なのに別の鍵」になるのを避けるためで、宣言側の相対表現と物理側の絶対値をこの 1 か所で切り離しています。
 
-同じ「1 枚のイメージを複数の窓から見る」使い分けは render target の外にもあります(2026-09-04 追記): [VulkanXrCompositionGraphics](../../src/core/openxr/openxrcompositiongraphics.cpp#L48) は OpenXR が返す 1 枚の配列イメージから、`layerCount = 2` の 2D array ビューと、レイヤごとの `layerCount = 1` の 2D ビューを両方作ります。[ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1022) と [MaterialContainer::buildScreenInputDescriptor()](../../src/core/material/materialcontainer.cpp#L4198) も、`baseArrayLayer` / `layerCount` を変えたビューで同じイメージの別レイヤを descriptor へ載せます。
+同じ「1 枚のイメージを複数の窓から見る」使い分けは render target の外にもあります(2026-09-04 追記): [VulkanXrCompositionGraphics](../../src/core/openxr/openxrcompositiongraphics.cpp#L48) は OpenXR が返す 1 枚の配列イメージから、`layerCount = 2` の 2D array ビューと、レイヤごとの `layerCount = 1` の 2D ビューを両方作ります。[ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1022) と [MaterialDescriptorBuilder::build()](../../src/core/material/materialdescriptorbuilder.cpp#L442) も、`baseArrayLayer` / `layerCount` を変えたビューで同じイメージの別レイヤを descriptor へ載せます。
 
 ### mip 数の上限は `floor(log2(max(w,h))) + 1`
 
@@ -363,7 +363,7 @@ Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取�
 
 同じイメージでも、シェーダからの触り方によって descriptor type が変わります。読み取りサンプリングは `COMBINED_IMAGE_SAMPLER`(イメージとサンプラを 1 つの descriptor に束ねる)、計算シェーダからの書き込みは `STORAGE_IMAGE`、そしてイメージとサンプラを別々の descriptor(`SAMPLED_IMAGE` + `SAMPLER`)に分ける形の 3 通りが基本です。分離型は「同じ画像を複数のサンプラで引く」「サンプラだけ差し替える」ときに効き、bindless なテクスチャ配列とサンプラ配列を独立に組める代わりに binding が 1 本増えます。**仕様上の位置**は "Descriptor Types" 節(`VK_DESCRIPTOR_TYPE_*` の列挙)です。
 
-**使用場所**: [MaterialContainer::registerMaterial()](../../src/core/material/materialcontainer.cpp#L1870)(`split_custom_samplers` のとき `eSampledImage` + `eSampler` の 2 binding へ割る) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1022)
+**使用場所**: [MaterialContainer::registerMaterial()](../../src/core/material/materialcontainer.cpp#L794)(`split_custom_samplers` のとき `eSampledImage` + `eSampler` の 2 binding へ割る) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1022)
 
 ### pNext チェーンと vulkan-hpp の StructureChain / unlink
 
@@ -445,7 +445,7 @@ TLAS の各 instance は `VkGeometryInstanceFlagsKHR` を持ち、`FORCE_OPAQUE`
 
 GPU に投入したコマンドバッファは、対応する fence が signal されるまで「まだ実行中かもしれない」ものです。そのコマンドバッファが参照している資源(バッファ・イメージ・acceleration structure・SBT・descriptor set)は、その間は破棄も上書きもできません。CPU が先へ進むために同じ資源を N セット用意して添字で回すのが in-flight frame で、この N はスワップチェーンのイメージ枚数とは**別の数**です。破棄を「fence 完了後」まで遅らせる仕組み(遅延解放キュー)と、フレームが掴んだ資源を型を消して握っておく仕組み(lease)を組むのが定型になります。
 
-**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L4759) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
+**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L4750) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
 
 ## 10.2 glTF / 3D アセット形式の仕様
 
@@ -473,7 +473,7 @@ glTF の頂点データは 3 層に分かれています。`buffer` が生バイ
 
 **このリポジトリでは**: `getDataFromAccessor()` の `readComponentByType()`(595〜607 行)は `std::memcpy(&value, ...)` で読んだ生の整数を `static_cast<OutType>(value)` するだけで `/255` を掛けないため、UNORM 属性を渡すと 255 倍(short なら 65535 倍)ずれた値が出ます。エンジンはこの復号を丸ごと避けるため、モーフ差分やアニメーションを運ぶ経路では FLOAT しか読まず、`readMorphDeltaAccessor()`(780〜784 行)と `src/core/loader/vrmadecoder.cpp` の `readFloatAccessor()`(327〜329 行)が「非 normalized の FLOAT + 期待する type」を明示的に要求して弾きます。正規化整数属性は v1 の契約外なので、255 倍ずれた頂点を素通しするより load 時点でエラーにする方針です。
 
-**2026-09-04 追記 — 復号そのものは実装されています。**上の「復号を丸ごと避ける」は現在のコードには当てはまりません。[normalizedIntegerComponent()](../../src/core/model/gltf.cpp#L569) が上記の復号式(unsigned は `value / max`、signed は `max(value / max, -1)`)をそのまま持ち、[getDataFromAccessor()](../../src/core/model/gltf.cpp#L640) が `accessor.normalized` のとき [readNormalizedScalar()](../../src/core/model/gltf.cpp#L586) / [readNormalizedVector()](../../src/core/model/gltf.cpp#L609) へ分岐します。除数に `std::numeric_limits<InType>::max()`(127 / 255 / 32767 / 65535)を使うのが仕様どおりで、128 や 32768 ではありません。変わっていないのは `readComponentByType()` の側で、こちらは今も `static_cast` するだけなので、normalized な accessor を非正規化の読み口へ回すと 255 倍ずれます。分岐の入口で「normalized なのに行き先が整数」を例外にしているのはそのためです。モーフ差分と VRMA サンプラが FLOAT のみを要求する点は変わりません。
+**2026-09-04 追記 — 復号そのものは実装されています。**上の「復号を丸ごと避ける」は現在のコードには当てはまりません。[normalizedIntegerComponent()](../../src/core/model/gltfaccessorreader.hpp#L70) が上記の復号式(unsigned は `value / max`、signed は `max(value / max, -1)`)をそのまま持ち、[getDataFromAccessor()](../../src/core/model/gltf.cpp#L1331) が `accessor.normalized` のとき [readNormalizedScalar()](../../src/core/model/gltfaccessorreader.hpp#L87) / [readNormalizedVector()](../../src/core/model/gltfaccessorreader.hpp#L110) へ分岐します。除数に `std::numeric_limits<InType>::max()`(127 / 255 / 32767 / 65535)を使うのが仕様どおりで、128 や 32768 ではありません。変わっていないのは `readComponentByType()` の側で、こちらは今も `static_cast` するだけなので、normalized な accessor を非正規化の読み口へ回すと 255 倍ずれます。分岐の入口で「normalized なのに行き先が整数」を例外にしているのはそのためです。モーフ差分と VRMA サンプラが FLOAT のみを要求する点は変わりません。
 
 ### node.weights と mesh.weights の優先順位
 
@@ -509,19 +509,19 @@ glTF のノード変換は `matrix`(列優先の 16 要素)か `translation` / `
 
 glTF 2.0 の `node.matrix` は 16 個の数値の配列ですが、**並びは column-major(列優先)**と仕様で決まっています(Concepts 章 → Nodes and Hierarchy 節)。つまり先頭 4 要素が第 1 列で、平行移動成分は添字 12・13・14 に来ます。GLM の `glm::mat4` も列優先なので、16 要素をそのまま流し込めば正しく入ります。row-major 前提の行列ライブラリへ同じ順で入れると転置されたものになり、回転と平行移動が入れ替わった見た目になります。`node.matrix` と TRS(`translation` / `rotation` / `scale`)は排他で、両方を持つノードは不正です。
 
-**使用場所**: [InternalGltfLoader::nodeTransform()](../../src/core/model/gltf.cpp#L1234) / [InternalGltfLoader::nodeRestPose()](../../src/core/model/gltf.cpp#L1277)
+**使用場所**: [InternalGltfLoader::nodeTransform()](../../src/core/model/gltf.cpp#L1402) / [InternalGltfLoader::nodeRestPose()](../../src/core/model/gltf.cpp#L1445)
 
 ### animation channel の出力 accessor の型は target_path で決まる
 
 glTF のアニメーションは channel(何を動かすか)と sampler(いつ・どんな値か)の組でできています。channel の `target.path` が `"translation"` / `"scale"` なら sampler の output accessor は VEC3、`"rotation"` なら VEC4(四元数、`[x, y, z, w]` 順)、`"weights"` ならスカラーの列(モーフターゲット数 × キーフレーム数)です。つまり**出力の型は宣言されているのではなく target_path から決まる**ので、読み込み側は path ごとに期待する型を切り替えて accessor を検証します。input accessor は常に秒を表すスカラーの単調増加列で、補間は `STEP` / `LINEAR` / `CUBICSPLINE` のいずれかです(CUBICSPLINE は 1 キーあたり接線込みで 3 倍の要素を持ちます)。
 
-**使用場所**: [InternalGltfLoader::loadAnimationClip()](../../src/core/model/gltf.cpp#L1309) / [readFloatAccessor()](../../src/core/loader/vrmadecoder.cpp#L320)
+**使用場所**: [InternalGltfLoader::loadAnimationClip()](../../src/core/model/gltf.cpp#L1477) / [readFloatAccessor()](../../src/core/loader/vrmadecoder.cpp#L320)
 
 ### JOINTS_0 / WEIGHTS_0(skin ローカルの joint index と重みの正規化)
 
 スキンメッシュの頂点属性 `JOINTS_0` は 4 本ぶんの joint 番号、`WEIGHTS_0` はそれに対応する 4 つの重みです。ここで押さえるべきは 2 点あります。1 つ目、**JOINTS_0 の番号は `skin.joints` 配列の中の添字**であって、glTF のノード番号でも、複数の skin を 1 本のパレットへ詰めたときの絶対番号でもありません。複数 skin を同じ行列パレットに載せるなら、skin ごとの先頭オフセットを足して絶対番号へ直す必要があります。2 つ目、**重みは合計 1** でなければ、パレット合成が伸び縮みします(仕様も正規化を要求しています)。合計が 0 の頂点は「スキンされていない」ので、割り算をしてはいけません。
 
-**使用場所**: [InternalGltfLoader::loadMesh()](../../src/core/model/gltf.cpp#L2093)(joint 番号の範囲検査と `joint_offset` の加算) / [VertBufContainer::addSkinnedPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L451)(`sum > 0` のときだけ 4 成分を合計で割る)
+**使用場所**: [InternalGltfLoader::loadMesh()](../../src/core/model/gltf.cpp#L2170)(joint 番号の範囲検査と `joint_offset` の加算) / [VertBufContainer::addSkinnedPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L451)(`sum > 0` のときだけ 4 成分を合計で割る)
 
 ## 10.3 C++ とビルドのイディオム
 
@@ -585,7 +585,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 `std::vector<bool>` は標準が規定する部分特殊化で、実装は 1 要素 1 ビットに詰めてよいことになっています。その代償として `operator[]` が返すのは `bool&` ではなくプロキシ型 `std::vector<bool>::reference` で、`bool *` を返す `data()` は存在せず、範囲 for で `for (auto &b : v)` と書くとコンパイルエラーになります(`auto` か `auto &&` なら通ります)。個々の要素にアドレスが無いため、他のコンテナと同じ「要素への参照・ポインタが取れる」前提が崩れる、というのが有名な落とし穴です。一方で、添字代入・`push_back`・`std::fill` はプロキシ経由で普通に動くので、ビット列として使う分には素直に使えます。要素のアドレスが必要なときは `std::vector<char>` や `std::deque<bool>`、固定長なら `std::bitset` に替えるのが定石です。
 
-**このリポジトリでは**: `src/core/renderer/polygoninstancecontainer.hpp` の `model_history_valid` / `morph_history_valid`(232・248 行)、`src/core/renderer/modelinstanceslots.hpp` の `alive_`。どちらもインスタンスごとの 1 ビットのフラグ列として、`std::fill(..., true/false)`(polygoninstancecontainer.cpp:723・745・767 行)と添字代入(495・509 行)だけで扱い、要素のアドレスもポインタも取りません。`history_valid` が false のスロットは `triggerUpdate(const DrawQueueFramePlan &)` で `previous = current` にして(571〜578 行)テンポラル履歴(モーションベクタ)の初期状態を表し、`alive_` はスロット生存の可否そのものです。プロキシ参照の落とし穴(`bool&` や `data()` が取れない)を踏まない使い方に限定したうえで、インスタンス数ぶんのビット列をコンパクトに持てます。逆に「参照が要る」側の例が [InternalGltfLoader::headRelatedNodes()](../../src/core/model/gltf.cpp#L2066) で(2026-09-04 追記)、ノードごとの判定結果を一度だけ計算してキャッシュするメモ化テーブルを `std::vector<std::uint8_t>` で持ち、その `const &` を返します。`std::vector<bool>` だと返せるのがプロキシになるため、真偽値の列でも `uint8_t` を選ぶのはこの理由です。
+**このリポジトリでは**: `src/core/renderer/polygoninstancecontainer.hpp` の `model_history_valid` / `morph_history_valid`(232・248 行)、`src/core/renderer/modelinstanceslots.hpp` の `alive_`。どちらもインスタンスごとの 1 ビットのフラグ列として、`std::fill(..., true/false)`(polygoninstancecontainer.cpp:723・745・767 行)と添字代入(495・509 行)だけで扱い、要素のアドレスもポインタも取りません。`history_valid` が false のスロットは `triggerUpdate(const DrawQueueFramePlan &)` で `previous = current` にして(571〜578 行)テンポラル履歴(モーションベクタ)の初期状態を表し、`alive_` はスロット生存の可否そのものです。プロキシ参照の落とし穴(`bool&` や `data()` が取れない)を踏まない使い方に限定したうえで、インスタンス数ぶんのビット列をコンパクトに持てます。逆に「参照が要る」側の例が [InternalGltfLoader::headRelatedNodes()](../../src/core/model/gltf.cpp#L583) で(2026-09-04 追記)、ノードごとの判定結果を一度だけ計算してキャッシュするメモ化テーブルを `std::vector<std::uint8_t>` で持ち、その `const &` を返します。`std::vector<bool>` だと返せるのがプロキシになるため、真偽値の列でも `uint8_t` を選ぶのはこの理由です。
 
 ### std::filesystem の error_code オーバーロード(投げない版)
 
@@ -615,7 +615,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 「いま実行中のトランザクション」「いま登録中のオブザーバ」のような、呼び出しの深いところまで届けたい文脈を、引数で引き回さずに参照するためのイディオムです。名前空間スコープの `thread_local` なポインタに現在値を置き、その差し替えを RAII クラス(コンストラクタで `std::exchange` して旧値を保存、デストラクタで書き戻す)に閉じ込めます。RAII にしておけば例外で抜けても必ず前の値に戻り、入れ子も正しく動きます。`thread_local` なのでスレッドごとに独立し、別スレッドの実行中トランザクションを踏むことがありません。素の大域変数 + 手書きの復元にすると、途中の `return` や例外で復元を飛ばした瞬間に「終わったはずのトランザクションが実行中に見える」壊れ方をします。
 
-**使用場所**: [PendingSceneTransactionScope](../../src/core/loader/scene.cpp#L204) / [thread_local な active_effect_transaction の宣言](../../src/core/loader/effecttransaction.cpp#L18) / [ScopedRenderPipelineCompanionReloadObserver のコンストラクタ](../../src/core/watch/reloadservice.cpp#L24)
+**使用場所**: [PendingSceneTransactionScope](../../src/core/loader/scene.cpp#L228) / [thread_local な active_effect_transaction の宣言](../../src/core/loader/effecttransaction.cpp#L18) / [ScopedRenderPipelineCompanionReloadObserver のコンストラクタ](../../src/core/watch/reloadservice.cpp#L24)
 
 ### スコープガード(巻き戻しをデストラクタに置き、成功時に無効化する)
 
@@ -663,7 +663,7 @@ C++ のムーブは、移動元を「有効だが未規定の状態」にしま�
 
 `std::any` は「任意の 1 個のコピー可能な値」を型を隠して保持する箱で、取り出しは `std::any_cast<T>` です。型が違えば `std::bad_any_cast` を投げます(ポインタ版は null を返します)。異なるコーデックが返す異種の値を 1 つのコンテナで運ぶような場面で、共通の基底クラスを作らずに済ませる手段になります。取り出し側は必ず失敗しうるので、`bad_any_cast` をその境界の例外契約(たとえば `std::invalid_argument`)へ翻訳しておくと、呼び出し側が 1 種類の失敗だけを見ればよくなります。
 
-**使用場所**: [codecValue()](../../src/core/loader/componentcodec.cpp#L411)(`any_cast` の失敗を `invalid_argument` に翻訳) / [prepareSceneBindings()](../../src/core/loader/scene.cpp#L303)
+**使用場所**: [codecValue()](../../src/core/loader/componentcodec.cpp#L411)(`any_cast` の失敗を `invalid_argument` に翻訳) / [prepareSceneBindings()](../../src/core/loader/scene.cpp#L308)
 
 ### Result 型で例外型を境界の外に出さない
 
@@ -675,7 +675,7 @@ C++ のムーブは、移動元を「有効だが未規定の状態」にしま�
 
 `std::variant` の中身で分岐する定型は、`std::visit` に総称ラムダを渡し、その中で `using T = std::decay_t<decltype(value)>;` として `if constexpr (std::same_as<T, X>)` で枝を書く形です。`std::visit` は全ての候補型を扱えることをコンパイル時に要求するので、型を足したときに「その枝を書き忘れた」がコンパイルエラーになります(`switch` の default と違って取りこぼせません)。`std::monostate` は「値が入っていない」を表すための空の型で、必ず別扱いの枝が要ります。総称ラムダの中で `if constexpr` を使うと、偽の枝は実体化されないので、その型に無いメンバを参照する枝も書けます。これは同じ理由でテンプレート引数ごとのコード生成一般に使われ、依存名の中でメンバーテンプレートを呼ぶときは `obj.template f<...>()` の `.template` 修飾が要ります(パーサに「これはテンプレート」と教えるため)。
 
-**使用場所**: [numericRange()](../../src/core/imgui/inspector.cpp#L38) / [freezeJournalOperation()](../../src/core/communication/editorjournal.cpp#L3264) / [PipelineFactory::rebuildPrepared()](../../src/core/shader/pipelinefactory.cpp#L1868) / [appendBehaviorEventHandlerAt()](../../src/core/userpublic/details/behavior/registerer.hpp#L137)(`if constexpr` の枝と `lookup.template operator()<Index>()`)
+**使用場所**: [numericRange()](../../src/core/imgui/inspector.cpp#L38) / [freezeJournalOperation()](../../src/core/communication/editorjournal.cpp#L1954) / [PipelineFactory::rebuildPrepared()](../../src/core/shader/pipelinefactory.cpp#L1868) / [appendBehaviorEventHandlerAt()](../../src/core/userpublic/details/behavior/registerer.hpp#L137)(`if constexpr` の枝と `lookup.template operator()<Index>()`)
 
 ### fold 式と std::apply(タプルライク型の全要素処理)
 
@@ -749,7 +749,7 @@ C++20 の `std::bit_cast<To>(from)` は、同じサイズの型の間でビッ�
 
 `std::jthread` は、デストラクタで自動的に `request_stop()` と `join()` を行うスレッドです。停止要求は `std::stop_token` としてスレッド関数の第 1 引数に渡され、ワーカー側は自分の都合のよい場所で `stop_requested()` を見て抜けます(強制終了ではなく協調的な停止です)。待機中のスレッドを起こすには `std::condition_variable_any` の `wait(lock, stop_token, pred)` を使い、停止要求が来た時点で待機が解けるようにします。素の `std::condition_variable` には stop_token を取るオーバーロードが無いため、この組み合わせでは `_any` の方が要ります。
 
-**使用場所**: [SwapchainFrameTarget::Impl::workerMain()](../../src/core/vkcore/swapchainframetarget.cpp#L1213)
+**使用場所**: [SwapchainBuildWorker::run()](../../src/core/vkcore/swapchainframetarget.cpp#L759)
 
 ### 固定長バッファ(例外も動的確保もしない経路のため)
 
@@ -767,7 +767,7 @@ C++20 の `std::bit_cast<To>(from)` は、同じサイズの型の間でビッ�
 
 すでにフックが刺さっているかもしれない場所へ自分の処理を足すとき、上書きすると先客の処理が消えます。定型は `auto previous = std::move(hook); hook = [previous = std::move(previous), ...] { if (previous) previous(); /* 自分の処理 */ };` で、旧フックをラムダに閉じ込めてから呼びます。先に旧フックを呼ぶか後に呼ぶかは意味が変わる(前処理か後処理か)ため、順序が契約になります。ムーブしてから包むのは、コピーによる二重実行を避けるためです。
 
-**使用場所**: [EditorCommandService::EditorCommandService()](../../src/core/communication/editorcommandservice.cpp#L581)(`frame_boundary_extension` の先客を呼んでから `commitPending()` を足す)
+**使用場所**: [EditorCommandService::EditorCommandService()](../../src/core/communication/editorcommandservice.cpp#L635)(`frame_boundary_extension` の先客を呼んでから `commitPending()` を足す)
 
 ## 10.4 OS・プロセス・ファイルの作法
 
@@ -961,7 +961,7 @@ C++ の `std::regex` は既定で ECMAScript 文法です。この文法では `
 
 複数のハッシュ値を 1 つに混ぜるときの定型が `h ^= v + 0x9e3779b9 + (h << 6) + (h >> 2)` で、Boost の `hash_combine` がこの形です。`0x9e3779b9` は黄金比の逆数を 32bit 固定小数で表した値(2^32 / φ)で、ビットが偏りなく散っている定数として選ばれています(64bit 版は `0x9e3779b97f4a7c15`)。単に XOR や加算で混ぜると、同じ値の組み合わせが打ち消し合って衝突します。
 
-**使用場所**: [hashWord()](../../src/core/vkcore/swapchainframetarget.cpp#L119)(64bit FNV-1a を 8 バイトぶん回す) / [surfaceSupportFingerprint()](../../src/core/vkcore/swapchainframetarget.cpp#L129)(offset basis 14695981039346656037 から始める) / [hashCombine()](../../src/core/shader/pipelinefactory.cpp#L69)
+**使用場所**: [hashWord()](../../src/core/vkcore/swapchainframetarget.cpp#L120)(64bit FNV-1a を 8 バイトぶん回す) / [surfaceSupportFingerprint()](../../src/core/vkcore/swapchainframetarget.cpp#L130)(offset basis 14695981039346656037 から始める) / [hashCombine()](../../src/core/shader/pipelinefactory.cpp#L69)
 
 ### ソート済み列に対する隣接検査(adjacent_find)
 
@@ -985,19 +985,19 @@ SPIR-V モジュールは 32bit ワードの列です。先頭 5 ワードがヘ
 
 `/a/b/0` の形でJSON 文書内の 1 か所を指す標準記法が **JSON Pointer(RFC 6901)** です。`/` 区切りの各トークンはオブジェクトのキーか配列の添字で、空文字列のポインタは文書全体を指します。キーに `/` や `~` が含まれる場合のエスケープがあり、**`~0` が `~`、`~1` が `/`** です。復号は RFC 6901 が順序まで規定していて、**先に `~1` → `/`、後から `~0` → `~`** の順でなければなりません。逆順にすると `~01` が `~1`(正解)ではなく `/` になります。nlohmann::json では `json::json_pointer` 型で表現し、`at(pointer)` は不在で例外、`operator[]` は不在の位置を作ってしまう、という違いがあります。エラー報告の「どのフィールドが悪いか」を機械可読に返す用途で広く使われます。
 
-**使用場所**: [prepareSet()](../../src/core/communication/editorjournal.cpp#L2277)(`Json::json_pointer{field_path}` でフィールド位置を解決) / [parseEditorMutationRequest()](../../src/core/communication/editorjournal.cpp#L4411)(構築できるかだけを検査する) / [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L134)(エラーに `/resolver_inputs/<field>` を載せる)
+**使用場所**: [prepareSet()](../../src/core/communication/editorjournalops.cpp#L647)(`Json::json_pointer{field_path}` でフィールド位置を解決) / [parseEditorMutationRequest()](../../src/core/communication/editorjournal.cpp#L2825)(構築できるかだけを検査する) / [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L134)(エラーに `/resolver_inputs/<field>` を載せる)
 
 ### nlohmann::json の型判定・キー順・JSON null
 
 nlohmann::json は数値を「符号なし整数 / 符号付き整数 / 浮動小数」の 3 つに区別して保持し、`is_number_unsigned()` / `is_number_integer()` / `is_number_float()` で見分けられます(`is_number_integer()` は符号なしにも true を返すので、負値を拒否したいときは順序に注意が要ります)。`nlohmann::ordered_json` は `std::map` ではなく挿入順を保つ連想コンテナを使う別名で、出力の安定性が要るとき(差分を取る、ダイジェストを取る)に選びます。もう 1 つの落とし穴が `std::optional` の出力で、**値が無いときにキーへ代入しないとキー自体が消えます**。「キーはあるが null」を出したいなら明示的に `nullptr` を代入する必要があり、この 2 つは受け手にとって別物です。
 
-**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L69)(`is_number_unsigned()` を先に見て、次に `is_number_integer()` — この順でないと符号なしが符号付き枝へ落ちる) / [validateStructSigned()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L107)(同じ 2 段の順序) / [editorComponentQueryJson()](../../src/core/communication/editorcommandservice.cpp#L1785)(値が無ければ `OrderedJson(nullptr)` を明示的に置く)
+**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L66)(`is_number_unsigned()` を先に見て、次に `is_number_integer()` — この順でないと符号なしが符号付き枝へ落ちる) / [validateStructSigned()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L107)(同じ 2 段の順序) / [editorComponentQueryJson()](../../src/core/communication/editorcommandservice.cpp#L1764)(値が無ければ `OrderedJson(nullptr)` を明示的に置く)
 
 ### IEEE 754 の倍精度と JSON の「安全な整数」2^53−1
 
 JSON の数値には型の区別が無く、多くの実装(JavaScript の `JSON.parse` を含む)は倍精度浮動小数点で受けます。IEEE 754 の倍精度は仮数部が 53 ビットなので、**絶対値が 2^53 = 9007199254740992 を超える整数は 1 刻みで表せません**。したがって「往復しても壊れない整数」の上限は 2^53−1 = 9007199254740991(JavaScript の `Number.MAX_SAFE_INTEGER`)です。64bit の ID をそのまま JSON に載せる設計は、この値域で切るか、文字列として運ぶかのどちらかを選ぶ必要があります。
 
-**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L69)(`maxExactJsonInteger` を超える値を `invalid_argument`) / [BehaviorAttachmentArena::reserveRuntimeAttachmentIdentity()](../../src/core/gamelogic/behaviorarena.cpp#L1057)(ハンドル空間の枯渇として `overflow_error`) / [max_exact_struct_json_integer の定義](../../src/core/userpublic/details/schema/structfieldjson.hpp#L105)
+**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L66)(`maxExactJsonInteger` を超える値を `invalid_argument`) / [BehaviorAttachmentArena::reserveRuntimeAttachmentIdentity()](../../src/core/gamelogic/behaviorarena.cpp#L1057)(ハンドル空間の枯渇として `overflow_error`) / [max_exact_struct_json_integer の定義](../../src/core/userpublic/details/schema/structfieldjson.hpp#L105)
 
 **このコードベースでの注意**: 境界の取り方が 2 つあります。journal と behavior arena は 2^53−1(9007199254740991)を上限に、スキーマ検証側は 2^53(9007199254740992)を上限にしています。前者が「安全な整数」の定義どおり、後者は 2^53 ちょうどを許す(表現自体は可能な)側です。
 
@@ -1114,7 +1114,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 `glm::quat` のコンストラクタは **`{w, x, y, z}` の順**で成分を取ります(メンバ変数としての `.x .y .z .w` の並びとは別の話です)。一方 glTF の `rotation`、多くのワイヤ形式、そして人が書く JSON は `[x, y, z, w]` の順で格納します。したがって配列から読むときは必ず並べ替えが要り、忘れると「軸と角度が入れ替わった」ような、しかし一見それらしく見える回転になります。型は同じなのでコンパイラは何も言いません。
 
-**使用場所**: [InternalGltfLoader::nodeTransform()](../../src/core/model/gltf.cpp#L1234) / [requireQuatField()](../../src/core/communication/rpcserver.cpp#L289)(配列の 0,1,2,3 を x,y,z,w に読んでから `glm::quat{w, x, y, z}` を組む)
+**使用場所**: [InternalGltfLoader::nodeTransform()](../../src/core/model/gltf.cpp#L1402) / [requireQuatField()](../../src/core/communication/rpcserver.cpp#L289)(配列の 0,1,2,3 を x,y,z,w に読んでから `glm::quat{w, x, y, z}` を組む)
 
 ### TRS の合成順序と world → local の逆算
 
@@ -1128,7 +1128,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 頂点位置を行列 M で変換するとき、法線に同じ M を掛けると、**非一様スケールやせん断があった場合に面と垂直でなくなります**。正しくは M の左上 3×3 の逆転置行列 `transpose(inverse(mat3(M)))` を掛けます(接平面上のベクトルとの内積が 0 に保たれる、という条件から導かれるので「normal matrix」と呼ばれます)。回転と一様スケールだけなら逆転置は元の行列の定数倍になるので、正規化してしまえば同じ結果になり、この違いが表に出ません。接線(tangent)は面に**平行**なベクトルなので本来は M をそのまま掛ける方が理屈に合いますが、同じ normal matrix を使う実装も多くあります。
 
-**使用場所**: [InternalGltfLoader::transformVertexData()](../../src/core/model/gltf.cpp#L1696)(`glm::transpose(glm::inverse(glm::mat3{transform}))` を法線と接線の両方に掛け、長さが 0 でないときだけ正規化する)
+**使用場所**: [InternalGltfLoader::transformVertexData()](../../src/core/model/gltf.cpp#L613)(`glm::transpose(glm::inverse(glm::mat3{transform}))` を法線と接線の両方に掛け、長さが 0 でないときだけ正規化する)
 
 ### 切り上げ除算と mip 寸法のシフト
 
