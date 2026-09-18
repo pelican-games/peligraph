@@ -44,6 +44,45 @@
 #include <unistd.h>
 #endif
 
+// These values are ABI. They are pinned by
+// test/fixtures/userpublic_frozen/{v1,v2}/render. RenderPolicy::Status is
+// offset by one from the four provider-ABI enums (buffer_too_small = 1); never
+// static_cast or memcpy between them. Change these asserts only together with a
+// new ABI version.
+static_assert(
+    static_cast<std::uint32_t>(Pelican::RenderPolicy::Status::buffer_too_small)
+    == 1u);
+static_assert(
+    static_cast<std::uint32_t>(Pelican::RenderPolicy::Status::invalid_argument)
+    == 2u);
+static_assert(
+    static_cast<std::uint32_t>(Pelican::RenderPolicy::Status::unavailable)
+    == 11u);
+static_assert(
+    static_cast<std::uint32_t>(Pelican::RenderPass::Status::invalid_argument)
+    == 1u);
+static_assert(
+    static_cast<std::uint32_t>(Pelican::RenderPass::Status::unavailable)
+    == 10u);
+static_assert(
+    static_cast<std::uint32_t>(
+        Pelican::RenderGraphTransform::Status::invalid_argument) == 1u);
+static_assert(
+    static_cast<std::uint32_t>(
+        Pelican::RenderGraphTransform::Status::unavailable) == 10u);
+static_assert(
+    static_cast<std::uint32_t>(
+        Pelican::RenderStrategy::Status::invalid_argument) == 1u);
+static_assert(
+    static_cast<std::uint32_t>(Pelican::RenderStrategy::Status::unavailable)
+    == 10u);
+static_assert(
+    static_cast<std::uint32_t>(
+        Pelican::RenderSubgraph::Status::invalid_argument) == 1u);
+static_assert(
+    static_cast<std::uint32_t>(Pelican::RenderSubgraph::Status::unavailable)
+    == 10u);
+
 namespace Pelican {
 
 namespace internal {

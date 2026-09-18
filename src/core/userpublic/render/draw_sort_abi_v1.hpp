@@ -13,6 +13,11 @@ inline constexpr std::uint32_t descriptorVersionV1 = 1;
 inline constexpr std::uint32_t providerVersionV1 = 1;
 inline constexpr std::uint32_t maximumProviderNameBytesV1 = 127;
 
+// The numbering below is ABI: it crosses the game-logic DLL boundary and is
+// pinned by the frozen snapshots in test/fixtures/userpublic_frozen/{v1,v2}/render.
+// It is deliberately offset by one from the other four render provider ABIs
+// (RenderPass / RenderGraphTransform / RenderStrategy / RenderSubgraph) because
+// only this one has buffer_too_small = 1; never static_cast or memcpy between them.
 enum class Status : std::uint32_t {
     ok = 0,
     buffer_too_small = 1,

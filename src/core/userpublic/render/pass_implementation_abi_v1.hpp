@@ -17,6 +17,9 @@ inline constexpr std::uint32_t maximumShaderReferenceBytesV1 = 1023;
 inline constexpr char fullscreenContractIdV1[] =
     "pelican.render.fullscreen_pass@1";
 
+// The numbering below is ABI: it crosses the game-logic DLL boundary and is
+// pinned by the frozen snapshots in test/fixtures/userpublic_frozen/{v1,v2}/render.
+// Change it only together with a new ABI version.
 enum class Status : std::uint32_t {
     ok = 0,
     invalid_argument = 1,

@@ -126,6 +126,12 @@ pose の sink は **owner 単位の単一 writer**(二重 writer は `pose.sink_
 | pose staging service | descriptor 1 / service 1 | `src/core/userpublic/animation/pose_staging_v1.hpp` |
 | game logic SDK epoch | `PELICAN_GAME_LOGIC_ABI_VERSION = 2` | `src/core/userpublic/gamelogic.hpp` |
 | engine / 文書互換 | `current_engine_version = "0.1.0"` | `src/project/projectformat.hpp` |
+| render provider ABI v1(5 面) | `abiVersionV1 = 1` / `descriptorVersionV1 = 1` | `src/core/userpublic/render/{draw_sort,pass_implementation,graph_transform,render_strategy,subgraph_replacement}_abi_v1.hpp` |
+
+render provider ABI の 5 面は各名前空間に `Status` を持ち、**その数値は game logic DLL 境界を渡る ABI**。
+正本は [test/fixtures/userpublic_frozen/](../test/fixtures/userpublic_frozen/) の v1 / v2 snapshot で、
+`RenderPolicy::Status` だけが `buffer_too_small = 1` を持つため残り 4 面から**意図的に 1 ずれている**
+(相互に `static_cast` してはならない。値は `src/core/gamelogic/gamelogicreload.cpp` の `static_assert` が固定する)。
 
 pose staging の capability bit(`PoseStagingServiceCapabilityBitsV1`)は 4 本。
 **service version を上げずに entry を足す**ための印で、既に 1 で交渉した client を落とさない:

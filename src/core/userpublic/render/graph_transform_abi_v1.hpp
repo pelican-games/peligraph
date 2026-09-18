@@ -27,6 +27,9 @@ inline constexpr std::uint32_t maximumBoundaryPortsV1 = 4096;
 inline constexpr char graphSetContractIdV1[] =
     "pelican.render.logical_graph_set@1";
 
+// The numbering below is ABI: it crosses the game-logic DLL boundary and is
+// pinned by the frozen snapshots in test/fixtures/userpublic_frozen/{v1,v2}/render.
+// Change it only together with a new ABI version.
 enum class Status : std::uint32_t {
     ok = 0,
     invalid_argument = 1,
