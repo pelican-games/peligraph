@@ -595,9 +595,24 @@ std::optional<phys::ObjectRaycastHit> PhysWorld::raycastClosest(
 
 std::optional<phys::RaycastQueryHit> PhysWorld::raycastClosest(
     const phys::Ray &ray, const phys::QueryFilter &filter) const {
-    auto hits = raycastAll(ray, filter);
-    if (hits.empty()) return std::nullopt;
-    return std::move(hits.front());
+    // Not hits.front(): hits within queryTieEpsilon of each other are a tie,
+    // and a tie is settled by the smallest collider id so the answer does not
+    // depend on collider or provider iteration order. This is the rule the
+    // unfiltered legacy path has always used; it now holds for every filter.
+    const auto hits = raycastAll(ray, filter);
+    const phys::RaycastQueryHit *best = nullptr;
+    for (const auto &hit : hits) {
+        const bool better_distance =
+            best == nullptr ||
+            hit.distance < best->distance - phys::internal::queryTieEpsilon;
+        const bool better_legacy_tie =
+            best != nullptr &&
+            std::abs(hit.distance - best->distance) <= phys::internal::queryTieEpsilon &&
+            hit.id < best->id;
+        if (better_distance || better_legacy_tie) best = &hit;
+    }
+    if (best == nullptr) return std::nullopt;
+    return *best;
 }
 
 Physics::Status PhysWorld::queryOverlapAll(
@@ -633,6 +648,13 @@ std::vector<phys::OverlapHit> PhysWorld::overlapAllHits(
         throw std::runtime_error("Physics query provider overlap failed with status " +
                                  std::to_string(static_cast<std::uint32_t>(status)));
     }
+    // Overlap has no natural order, so give it one: the id order the legacy
+    // name-vector path guaranteed. Without it the result follows collider and
+    // provider iteration order.
+    std::sort(hits.begin(), hits.end(),
+              [](const phys::OverlapHit &lhs, const phys::OverlapHit &rhs) {
+                  return lhs.id < rhs.id;
+              });
     return hits;
 }
 

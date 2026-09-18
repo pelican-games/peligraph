@@ -94,9 +94,9 @@ TEST_CASE("Persistence settings round-trip uses only user directory and ignores 
     REQUIRE_FALSE(std::filesystem::exists(sandbox.user_root / "settings.json"));
 
 #if PELICAN_WITH_AUDIO
-    context.setBusVolume("master", 0.25f);
-    context.setBusVolume("bgm", 0.5f);
-    context.setBusVolume("se", 0.75f);
+    context.audio().setBusVolume("master", 0.25f);
+    context.audio().setBusVolume("bgm", 0.5f);
+    context.audio().setBusVolume("se", 0.75f);
 #endif
     context.saveSettings();
 
@@ -155,28 +155,28 @@ TEST_CASE("GameContext save data is atomic, listed deterministically, and reject
     configureProject(sandbox);
 
     GameContext context;
-    context.saveData("slot-b", nlohmann::json{{"level", 2}});
-    context.saveData("slot-a", nlohmann::json{{"level", 1}});
-    context.saveData("slot-a", nlohmann::json{{"level", 3}});
+    context.save().saveData("slot-b", nlohmann::json{{"level", 2}});
+    context.save().saveData("slot-a", nlohmann::json{{"level", 1}});
+    context.save().saveData("slot-a", nlohmann::json{{"level", 3}});
 
-    REQUIRE(context.loadData("slot-a") == nlohmann::json{{"level", 3}});
-    REQUIRE_FALSE(context.loadData("missing").has_value());
+    REQUIRE(context.save().loadData("slot-a") == nlohmann::json{{"level", 3}});
+    REQUIRE_FALSE(context.save().loadData("missing").has_value());
 
-    const auto slots = context.listSaves();
+    const auto slots = context.save().listSaves();
     REQUIRE(slots.size() == 2);
     REQUIRE(slots[0].slot == "slot-a");
     REQUIRE(slots[1].slot == "slot-b");
 
     writeText(sandbox.user_root / "saves" / "abandoned.json.tmp", "partial");
-    REQUIRE(context.listSaves().size() == 2);
+    REQUIRE(context.save().listSaves().size() == 2);
 
     writeText(sandbox.user_root / "saves" / "corrupt.json", "not json");
-    REQUIRE_THROWS_AS(context.loadData("corrupt"), PersistenceReadError);
+    REQUIRE_THROWS_AS(context.save().loadData("corrupt"), PersistenceReadError);
     REQUIRE_THROWS_WITH(
-        context.loadData("corrupt"),
+        context.save().loadData("corrupt"),
         Catch::Matchers::ContainsSubstring("persistence_read_failed@1"));
 
-    REQUIRE_THROWS_WITH(context.saveData("../outside", nlohmann::json::object()),
+    REQUIRE_THROWS_WITH(context.save().saveData("../outside", nlohmann::json::object()),
                         Catch::Matchers::ContainsSubstring("invalid file-name character"));
     REQUIRE_FALSE(std::filesystem::exists(sandbox.project_root / "saves"));
     REQUIRE_FALSE(std::filesystem::exists(sandbox.base / "outside.json"));

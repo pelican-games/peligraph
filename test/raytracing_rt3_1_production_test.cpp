@@ -1956,9 +1956,9 @@ TEST_CASE("RT6 explicit ray launch dimensions and runtime edits reach every 3D l
     };
     check_lanes(2, 3, 2);
     const GameContext context;
-    context.setRayTracingDispatchExtent("wp386_trace", 3, 1, 2);
+    context.render().setRayTracingDispatchExtent("wp386_trace", 3, 1, 2);
     check_lanes(3, 1, 2);
-    CHECK_THROWS(context.setRayTracingDispatchExtent("wp386_trace", 3, 1, 0));
+    CHECK_THROWS(context.render().setRayTracingDispatchExtent("wp386_trace", 3, 1, 0));
     check_lanes(3, 1, 2);
 #else
     SUCCEED("RT6 production shader fixture requires the runtime compiler");
@@ -5842,8 +5842,8 @@ TEST_CASE(
     REQUIRE(std::holds_alternative<SceneLoadCommitted>(b_result.load_result));
     const auto b_voice_count = audio.voiceCountForTesting();
     REQUIRE(b_voice_count == 2);
-    REQUIRE(context.loadData("slot_b") == Json{{"slot", "slot_b"}});
-    REQUIRE(context.loadData("component_slot_b") ==
+    REQUIRE(context.save().loadData("slot_b") == Json{{"slot", "slot_b"}});
+    REQUIRE(context.save().loadData("component_slot_b") ==
             Json{{"source", "component_callback"}});
     const auto b_live_count = GameObjects::liveCountForTesting();
 
@@ -5853,9 +5853,9 @@ TEST_CASE(
     REQUIRE(loader.currentScene() == "B");
     REQUIRE(audio.voiceCountForTesting() == b_voice_count);
     REQUIRE(GameObjects::liveCountForTesting() == b_live_count);
-    REQUIRE(context.busVolume("se") == Catch::Approx(0.38F));
-    REQUIRE_FALSE(context.loadData("slot_c").has_value());
-    REQUIRE_FALSE(context.loadData("component_slot_c").has_value());
+    REQUIRE(context.audio().busVolume("se") == Catch::Approx(0.38F));
+    REQUIRE_FALSE(context.save().loadData("slot_c").has_value());
+    REQUIRE_FALSE(context.save().loadData("component_slot_c").has_value());
     REQUIRE(wp380bProbe(fixture_path).component_callback_ran == 1);
     REQUIRE(wp380bProbe(fixture_path).base_create_deferred == 1);
 
@@ -6724,15 +6724,15 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
         REQUIRE(fixture.set_callable_record != nullptr);
         fixture.set_callable_record("wp386_trace", 1, 400);
 #else
-        context.setRayTracingCallableRecord("wp386_trace", 1, Json{{"increment", 400}});
+        context.render().setRayTracingCallableRecord("wp386_trace", 1, Json{{"increment", 400}});
 #endif
         CHECK(observed_increment() == 400u);
         CHECK(marker() == 407u);
-        CHECK_THROWS(context.setRayTracingCallableRecord(
+        CHECK_THROWS(context.render().setRayTracingCallableRecord(
             "missing_ray_task", 1, Json{{"increment", 500}}));
-        CHECK_THROWS(context.setRayTracingCallableRecord(
+        CHECK_THROWS(context.render().setRayTracingCallableRecord(
             "wp386_trace", 2, Json{{"increment", 500}}));
-        CHECK_THROWS(context.setRayTracingCallableRecord(
+        CHECK_THROWS(context.render().setRayTracingCallableRecord(
             "wp386_trace", 1, Json{{"increment", "invalid"}}));
         CHECK(marker() == 407u);
         CHECK(pipeline_creates == 0);

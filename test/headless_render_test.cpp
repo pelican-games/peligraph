@@ -11180,7 +11180,7 @@ TEST_CASE("common graph state survives staged ray pipeline publication", "[headl
 #if PELICAN_WITH_AUDIO
         const auto voice = scene.graphSound(graph, "voice");
         REQUIRE(voice);
-        REQUIRE(GameContext{}.isPlaying(*voice));
+        REQUIRE(GameContext{}.audio().isPlaying(*voice));
 #endif
         document["nodes"].push_back({{"id", "extra"}, {"op", "value.constant"},
             {"parameters", {{"value", 1}}}, {"outputs", {"value"}}});
@@ -11208,8 +11208,8 @@ TEST_CASE("common graph state survives staged ray pipeline publication", "[headl
         REQUIRE(runtime.stagedGeneration() == 0);
         REQUIRE(readTextFile(config_path) == source);
 #if PELICAN_WITH_AUDIO
-        REQUIRE(GameContext{}.soundState(*voice));
-        REQUIRE_FALSE(GameContext{}.soundState(*voice)->paused);
+        REQUIRE(GameContext{}.audio().soundState(*voice));
+        REQUIRE_FALSE(GameContext{}.audio().soundState(*voice)->paused);
 #endif
         REQUIRE(apply(false).staged);
         renderer.render();
@@ -11220,8 +11220,8 @@ TEST_CASE("common graph state survives staged ray pipeline publication", "[headl
         REQUIRE(next != graph);
 #if PELICAN_WITH_AUDIO
         REQUIRE(scene.graphSound(next, "voice") == voice);
-        REQUIRE(GameContext{}.soundState(*voice));
-        REQUIRE(GameContext{}.soundState(*voice)->paused);
+        REQUIRE(GameContext{}.audio().soundState(*voice));
+        REQUIRE(GameContext{}.audio().soundState(*voice)->paused);
 #endif
         REQUIRE(next->emitEvent(scene.graphEvaluationState(next), "commands", Animation::CurvePlaybackCommand::resume, 10.75));
         time.setTime(11);
@@ -11287,7 +11287,7 @@ TEST_CASE("common graph state survives staged ray pipeline publication", "[headl
         vkcore.waitIdle();
         REQUIRE_FALSE(runtime.snapshot()->programs.begin()->second.frame_graph.value_graph);
 #if PELICAN_WITH_AUDIO
-        REQUIRE_FALSE(GameContext{}.soundState(*voice));
+        REQUIRE_FALSE(GameContext{}.audio().soundState(*voice));
 #endif
     } catch (...) {
         std::filesystem::remove_all(temp_dir);

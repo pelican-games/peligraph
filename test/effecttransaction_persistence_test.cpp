@@ -68,19 +68,19 @@ TEST_CASE("WP380b persistence shadow and overlays work without audio",
     auto &loader = GET_MODULE(SceneLoader);
     GameContext context;
     context.setGameSettings({{"world", "B"}});
-    context.saveData("slot_existing", {{"value", 379}});
+    context.save().saveData("slot_existing", {{"value", 379}});
 
     {
         internal::PreparedEffectTransaction transaction{persistence, loader};
         internal::EffectTransactionScope scope{transaction};
         context.setGameSettings({{"world", "C"}});
         context.saveSettings();
-        context.saveData("slot_c", {{"value", 380}});
-        context.saveData("slot_existing", {{"value", 380}});
+        context.save().saveData("slot_c", {{"value", 380}});
+        context.save().saveData("slot_existing", {{"value", 380}});
         REQUIRE(context.gameSettings().at("world") == "C");
-        REQUIRE(context.loadData("slot_c") ==
+        REQUIRE(context.save().loadData("slot_c") ==
                 nlohmann::json{{"value", 380}});
-        const auto saves = context.listSaves();
+        const auto saves = context.save().listSaves();
         REQUIRE(saves.size() == 2);
         for (const auto &save : saves) {
             REQUIRE(save.timestamp == std::filesystem::file_time_type{});
@@ -90,7 +90,7 @@ TEST_CASE("WP380b persistence shadow and overlays work without audio",
     REQUIRE(context.gameSettings().at("world") == "B");
     REQUIRE_FALSE(std::filesystem::exists(
         sandbox.user / "saves" / "slot_c.json"));
-    REQUIRE(context.loadData("slot_existing") ==
+    REQUIRE(context.save().loadData("slot_existing") ==
             nlohmann::json{{"value", 379}});
     REQUIRE_FALSE(std::filesystem::exists(sandbox.user / "settings.json"));
 
@@ -101,7 +101,7 @@ TEST_CASE("WP380b persistence shadow and overlays work without audio",
         internal::PreparedEffectTransaction transaction{persistence, loader};
         internal::EffectTransactionScope scope{transaction};
         context.saveSettings();
-        context.saveData("slot_d", {{"value", 381}});
+        context.save().saveData("slot_d", {{"value", 381}});
         transaction.flush(&fault, trace);
         errors = transaction.effectErrors();
     }
@@ -125,14 +125,14 @@ TEST_CASE("WP380e persistence keys use physical Windows path identity",
     {
         internal::PreparedEffectTransaction transaction{persistence, loader};
         internal::EffectTransactionScope scope{transaction};
-        context.saveData("Foo", {{"value", 1}});
-        context.saveData("foo", {{"value", 2}});
+        context.save().saveData("Foo", {{"value", 1}});
+        context.save().saveData("foo", {{"value", 2}});
         transaction.flush(nullptr, trace);
         REQUIRE(transaction.effectErrors().empty());
     }
 #ifdef _WIN32
     REQUIRE(persistence.preparedWriteCommitCountForTesting() - before == 1);
-    REQUIRE(context.loadData("Foo") == nlohmann::json{{"value", 2}});
+    REQUIRE(context.save().loadData("Foo") == nlohmann::json{{"value", 2}});
 #endif
 }
 
@@ -144,14 +144,14 @@ TEST_CASE("WP380e persistence read failures are named and absence alone is nullo
     auto &persistence = GET_MODULE(Persistence);
     auto &loader = GET_MODULE(SceneLoader);
     GameContext context;
-    REQUIRE_FALSE(context.loadData("absent").has_value());
+    REQUIRE_FALSE(context.save().loadData("absent").has_value());
     std::filesystem::create_directories(sandbox.user / "saves");
     {
         std::ofstream corrupt{sandbox.user / "saves" / "corrupt.json"};
         corrupt << "{not-json";
     }
-    REQUIRE_THROWS_AS(context.loadData("corrupt"), PersistenceReadError);
-    REQUIRE_THROWS_WITH(context.loadData("corrupt"),
+    REQUIRE_THROWS_AS(context.save().loadData("corrupt"), PersistenceReadError);
+    REQUIRE_THROWS_WITH(context.save().loadData("corrupt"),
                         Catch::Matchers::ContainsSubstring(
                             "persistence_read_failed@1"));
 
@@ -160,7 +160,7 @@ TEST_CASE("WP380e persistence read failures are named and absence alone is nullo
     internal::EffectTransactionScope scope{transaction};
     {
         internal::EffectDestroyScope destroy_scope;
-        REQUIRE_FALSE(context.loadData("corrupt").has_value());
+        REQUIRE_FALSE(context.save().loadData("corrupt").has_value());
     }
     transaction.flush(nullptr, trace);
     const auto errors = transaction.effectErrors();

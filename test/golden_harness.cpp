@@ -6359,7 +6359,7 @@ void renderDebugTextFrame(RenderTarget &render_target) {
     debug_text.text(-64, -64, "CLIP", {1.0f, 0.0f, 0.0f, 1.0f});
 
     GameContext context;
-    context.debugText(0, 0, "WP");
+    context.render().debugText(0, 0, "WP");
 
     renderer.render();
     GET_MODULE(VulkanManageCore).waitIdle();

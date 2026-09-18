@@ -1,0 +1,408 @@
+#pragma once
+
+#include "payloadschema.hpp"
+#include <schema.hpp>
+#include "../reload/registrationowner.hpp"
+#include "../schema/structfieldjson.hpp"
+#include "../../serialize/jsonarchive.hpp"
+#include "../../serialize/serialize.hpp"
+
+#include <concepts>
+#include <cstddef>
+#include <memory>
+#include <nlohmann/json.hpp>
+#include <span>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <typeindex>
+#include <vector>
+
+namespace Pelican {
+
+class GameContext;
+struct SceneLoadPhaseTrace;
+
+namespace internal {
+
+class PreparedEventOutbox;
+class EventOutboxScope;
+
+template <int Index> struct EventCatalogTag {};
+template <class Event> struct EventCatalogEntry {
+    using type = Event;
+};
+
+struct QueuedEvent {
+    std::type_index type = std::type_index{typeid(void)};
+    std::string name;
+    std::shared_ptr<const void> payload;
+    RegistrationOwner owner = engineRegistrationOwner;
+};
+
+struct EventQueueDrainResult {
+    std::size_t pending = 0;
+    std::size_t frozen = 0;
+
+    std::size_t total() const noexcept { return pending + frozen; }
+};
+
+using JsonPayloadLoadFn = std::shared_ptr<const void> (*)(const void *payload_json);
+using RefFieldListFn = std::vector<std::string> (*)();
+
+struct EventTypeRegistration {
+    std::string name;
+    std::type_index type = std::type_index{typeid(void)};
+    EventSchemaState schema_state = EventSchemaState::Opaque;
+    EventPayloadSchema schema{};
+    JsonPayloadLoadFn load_json_payload = nullptr;
+    RefFieldListFn list_ref_fields = nullptr;
+    RegistrationOwner owner = engineRegistrationOwner;
+    RegistrationToken token;
+};
+
+struct FrozenEventTypeRegistrationV2Layout {
+    std::string name;
+    std::type_index type;
+    EventSchemaState schema_state;
+    EventPayloadSchema schema;
+    JsonPayloadLoadFn load_json_payload;
+    RefFieldListFn list_ref_fields;
+    RegistrationOwner owner;
+    RegistrationToken token;
+};
+static_assert(sizeof(EventTypeRegistration) ==
+                  sizeof(FrozenEventTypeRegistrationV2Layout),
+              "EventTypeRegistration is the frozen v2 ABI record");
+static_assert(alignof(EventTypeRegistration) ==
+              alignof(FrozenEventTypeRegistrationV2Layout));
+#define PELICAN_FREEZE_EVENT_V2_FIELD(field)                            \
+    static_assert(offsetof(EventTypeRegistration, field) ==             \
+                  offsetof(FrozenEventTypeRegistrationV2Layout, field))
+PELICAN_FREEZE_EVENT_V2_FIELD(name);
+PELICAN_FREEZE_EVENT_V2_FIELD(type);
+PELICAN_FREEZE_EVENT_V2_FIELD(schema_state);
+PELICAN_FREEZE_EVENT_V2_FIELD(schema);
+PELICAN_FREEZE_EVENT_V2_FIELD(load_json_payload);
+PELICAN_FREEZE_EVENT_V2_FIELD(list_ref_fields);
+PELICAN_FREEZE_EVENT_V2_FIELD(owner);
+PELICAN_FREEZE_EVENT_V2_FIELD(token);
+#undef PELICAN_FREEZE_EVENT_V2_FIELD
+
+struct EventTypeRegistrationV3 {
+    EventTypeRegistration callbacks;
+    std::uint32_t schema_version = 1;
+    std::string schema_fingerprint;
+    const SchemaNode &schema;
+};
+
+struct EventSchemaRegistrationV3 {
+    RegistrationToken token;
+    std::uint32_t schema_version = 1;
+    std::string schema_fingerprint;
+    Schema::Node schema;
+};
+
+class UserEventRegistererTemplatePublic {
+    std::vector<EventTypeRegistration> event_types;
+    std::vector<EventSchemaRegistrationV3> v3_schemas;
+    std::vector<QueuedEvent> pending_events;
+    std::vector<QueuedEvent> deliver_now_events;
+    std::size_t payload_load_calls = 0;
+    bool catalog_frozen = false;
+
+    PELICAN_API RegistrationToken
+    pelican_register_event_v2(EventTypeRegistration registration);
+    PELICAN_API RegistrationToken
+    pelican_register_event_v3(EventTypeRegistrationV3 registration);
+    PELICAN_API void pelican_emit_v2(QueuedEvent event);
+    const EventTypeRegistration &validateByName(std::string_view name, const void *payload_json) const;
+
+    friend void unregisterEvent(RegistrationToken token);
+    friend void unregisterEvents(RegistrationOwner owner) noexcept;
+    friend std::size_t eventRegistrationCount(RegistrationOwner owner) noexcept;
+    friend class PreparedEventOutbox;
+
+  public:
+    struct IsolationEvent {
+        std::string name;
+        std::size_t type_hash = 0;
+        RegistrationOwner owner = engineRegistrationOwner;
+        std::uintptr_t payload_identity = 0;
+
+        bool operator==(const IsolationEvent &) const = default;
+    };
+
+    struct IsolationSnapshot {
+        std::vector<IsolationEvent> pending;
+        std::vector<IsolationEvent> deliver_now;
+        std::size_t payload_load_calls = 0;
+        bool catalog_frozen = false;
+    };
+
+    template <class Event> RegistrationToken registerEvent(std::string name) {
+        using EventType = std::remove_cvref_t<Event>;
+        static_assert(std::is_object_v<EventType>, "events must be object types");
+        static_assert(!std::is_pointer_v<EventType>, "events must be emitted by value, not pointer");
+        static_assert(std::copy_constructible<EventType>, "events must be copy constructible");
+
+        constexpr bool has_descriptor = requires { EventType::pelican_payload; };
+        constexpr bool recursive_descriptor = [] {
+            if constexpr (has_descriptor &&
+                          requires { EventType::pelican_payload.declarations; }) {
+                return schemaRequiresV3(EventType::pelican_payload);
+            }
+            return false;
+        }();
+        constexpr bool json_serializable = ISerializable<EventType, JsonArchiveLoader>;
+        constexpr bool record_serializable = ISerializable<EventType, RefFieldRecorder>;
+        if constexpr (has_descriptor) {
+            static_assert(std::default_initializable<EventType>,
+                          "events with pelican_payload must be default initializable");
+            static_assert(json_serializable || recursive_descriptor,
+                           "events with pelican_payload must be serializable with JsonArchiveLoader");
+            static_assert(std::is_nothrow_default_constructible_v<EventType>,
+                          "events with pelican_payload must be nothrow default constructible");
+        }
+
+        if constexpr (has_descriptor) {
+            static_assert(record_serializable,
+                          "typed event ref must support the event catalog recording archive");
+        }
+
+        auto registration = EventTypeRegistration{
+            .name = std::move(name),
+            .type = std::type_index{typeid(EventType)},
+            .schema_state = []() constexpr {
+                if constexpr (has_descriptor) {
+                    return EventSchemaState::Typed;
+                } else if constexpr (!json_serializable && !record_serializable &&
+                                     std::default_initializable<EventType>) {
+                    return EventSchemaState::Payloadless;
+                } else {
+                    return EventSchemaState::Opaque;
+                }
+            }(),
+            .schema = []() constexpr {
+                if constexpr (has_descriptor) {
+                    return internal::eventPayloadSchema<EventType>();
+                } else {
+                    return EventPayloadSchema{};
+                }
+            }(),
+            .load_json_payload =
+                []() constexpr -> JsonPayloadLoadFn {
+                if constexpr (has_descriptor) {
+                    return [](const void *payload_json) -> std::shared_ptr<const void> {
+                        EventType event{};
+                        if constexpr (recursive_descriptor) {
+                            decodeStructObject(
+                                *static_cast<const nlohmann::json *>(payload_json),
+                                event, EventType::pelican_payload, "payload");
+                        } else {
+                            JsonArchiveLoader archive{payload_json};
+                            event.ref(archive);
+                        }
+                        return std::make_shared<EventType>(std::move(event));
+                    };
+                } else if constexpr (!json_serializable && !record_serializable &&
+                                     std::default_initializable<EventType>) {
+                    return [](const void *) -> std::shared_ptr<const void> {
+                        return std::make_shared<EventType>();
+                    };
+                } else {
+                    return nullptr;
+                }
+            }(),
+            .list_ref_fields = []() constexpr -> RefFieldListFn {
+                if constexpr (has_descriptor) {
+                    return []() -> std::vector<std::string> {
+                        if constexpr (recursive_descriptor) {
+                            std::vector<std::string> names;
+                            for (const auto &field : EventType::pelican_payload.fields)
+                                names.emplace_back(field.name);
+                            return names;
+                        } else {
+                            EventType event{};
+                            RefFieldRecorder recorder;
+                            event.ref(recorder);
+                            return recorder.names;
+                        }
+                    };
+                } else {
+                    return nullptr;
+                }
+            }(),
+        };
+        if constexpr (recursive_descriptor) {
+            static const auto schema =
+                materializeSchemaNode(EventType::pelican_payload);
+            return pelican_register_event_v3(EventTypeRegistrationV3{
+                std::move(registration),
+                []() consteval {
+                    if constexpr (requires {
+                                      EventType::pelican_schema_version;
+                                  })
+                        return static_cast<std::uint32_t>(
+                            EventType::pelican_schema_version);
+                    return std::uint32_t{1};
+                }(),
+                schemaNodeFingerprint(schema), schema});
+        } else {
+            return pelican_register_event_v2(std::move(registration));
+        }
+    }
+
+    template <class Event> void emit(const Event &event) {
+        using EventType = std::remove_cvref_t<Event>;
+        static_assert(std::is_object_v<EventType>, "events must be object types");
+        static_assert(!std::is_pointer_v<EventType>, "events must be emitted by value, not pointer");
+        static_assert(std::copy_constructible<EventType>, "events must be copy constructible");
+
+        const auto *registration = findByType(std::type_index{typeid(EventType)});
+        if (registration == nullptr) {
+            throw std::runtime_error("event type is not registered");
+        }
+        pelican_emit_v2(QueuedEvent{
+            .type = std::type_index{typeid(EventType)},
+            .name = registration->name,
+            .payload = std::make_shared<EventType>(event),
+            .owner = registration->owner,
+        });
+    }
+
+    std::size_t emitByName(std::string_view name, const void *payload_json);
+    void validateEventPayload(std::string_view name, const void *payload_json) const;
+    EventSchemaLookup findEventSchema(std::string_view name) const;
+    PELICAN_API const EventTypeRegistration *findByType(std::type_index type) const;
+    const EventTypeRegistration *findByName(std::string_view name) const;
+    const Schema::Node *schemaFor(
+        const EventTypeRegistration &registration) const noexcept;
+    const std::vector<EventSchemaRegistrationV3> &registeredV3Schemas() const
+        noexcept { return v3_schemas; }
+    const std::vector<EventTypeRegistration> &registeredEventTypes() const
+        noexcept { return event_types; }
+    void validateCatalogAndFreeze();
+    void freezeCatalog() noexcept;
+    std::size_t pendingEventCount() const noexcept;
+    std::span<const QueuedEvent> pendingEventsForTesting() const noexcept {
+        return pending_events;
+    }
+    std::size_t payloadLoadCallCount() const noexcept;
+    IsolationSnapshot isolationSnapshot() const {
+        const auto copy = [](const std::vector<QueuedEvent> &source) {
+            std::vector<IsolationEvent> result;
+            result.reserve(source.size());
+            for (const auto &event : source) {
+                result.push_back(IsolationEvent{
+                    .name = event.name,
+                    .type_hash = event.type.hash_code(),
+                    .owner = event.owner,
+                    .payload_identity = reinterpret_cast<std::uintptr_t>(
+                        event.payload.get()),
+                });
+            }
+            return result;
+        };
+        return IsolationSnapshot{
+            .pending = copy(pending_events),
+            .deliver_now = copy(deliver_now_events),
+            .payload_load_calls = payload_load_calls,
+            .catalog_frozen = catalog_frozen,
+        };
+    }
+    void freezePendingEventsForFrame();
+    std::vector<QueuedEvent> drainFrozenEvents();
+    EventQueueDrainResult drainForTeardown() noexcept;
+    void clearPendingEvents();
+};
+
+// Scene activation writes to this engine-owned queue overlay. Capacity in the
+// destination queue is acquired while failure is still rollback-safe; flush
+// is consequently a sequence of no-throw moves.
+class PreparedEventOutbox {
+    UserEventRegistererTemplatePublic *destination_ = nullptr;
+    std::vector<QueuedEvent> events_;
+    std::size_t reserved_tail_ = 0;
+
+    void stage(QueuedEvent event);
+    friend class UserEventRegistererTemplatePublic;
+    friend class EventOutboxScope;
+
+  public:
+    explicit PreparedEventOutbox(
+        UserEventRegistererTemplatePublic &destination,
+        std::size_t reserved_tail);
+
+    template <class Event> QueuedEvent prepare(const Event &event) const {
+        using EventType = std::remove_cvref_t<Event>;
+        const auto *registration = destination_->findByType(
+            std::type_index{typeid(EventType)});
+        if (registration == nullptr) {
+            throw std::runtime_error("event type is not registered");
+        }
+        return QueuedEvent{
+            .type = std::type_index{typeid(EventType)},
+            .name = registration->name,
+            .payload = std::make_shared<EventType>(event),
+            .owner = registration->owner,
+        };
+    }
+
+    void stageReserved(QueuedEvent event) noexcept;
+    void flush() noexcept;
+    void flush(SceneLoadPhaseTrace &phase_trace) noexcept;
+    std::size_t size() const noexcept { return events_.size(); }
+};
+
+class EventOutboxScope {
+    PreparedEventOutbox *previous_ = nullptr;
+
+  public:
+    explicit EventOutboxScope(PreparedEventOutbox &outbox) noexcept;
+    ~EventOutboxScope();
+    EventOutboxScope(const EventOutboxScope &) = delete;
+    EventOutboxScope &operator=(const EventOutboxScope &) = delete;
+};
+
+PELICAN_API UserEventRegistererTemplatePublic &getEventRegisterer();
+void freezePendingEventsForFrame();
+void dispatchFrozenEvents(GameContext &ctx);
+EventQueueDrainResult drainPendingEventsForTeardown() noexcept;
+void clearPendingEvents();
+std::size_t emitEventByName(std::string_view name, const void *payload_json);
+void validateEventPayload(std::string_view name, const void *payload_json);
+EventSchemaLookup findEventSchema(std::string_view name);
+void validateEventCatalog();
+void unregisterEvent(RegistrationToken token);
+void unregisterEvents(RegistrationOwner owner) noexcept;
+std::size_t eventRegistrationCount(RegistrationOwner owner) noexcept;
+
+} // namespace internal
+
+} // namespace Pelican
+
+#ifndef PELICAN_DETAIL_CONCAT_INNER
+#define PELICAN_DETAIL_CONCAT_INNER(a, b) a##b
+#endif
+#ifndef PELICAN_DETAIL_CONCAT
+#define PELICAN_DETAIL_CONCAT(a, b) PELICAN_DETAIL_CONCAT_INNER(a, b)
+#endif
+
+#define PELICAN_REGISTER_EVENT_IMPL(Type, unique_id)                                                               \
+    static auto pelicanEventCatalogEntry(::Pelican::internal::EventCatalogTag<unique_id>)                           \
+        -> ::Pelican::internal::EventCatalogEntry<Type> {                                                          \
+        return {};                                                                                                 \
+    }                                                                                                              \
+    namespace {                                                                                                    \
+    struct PELICAN_DETAIL_CONCAT(PelicanEventAutoRegister_, unique_id) {                                           \
+        ::Pelican::internal::RegistrationToken token;                                                             \
+        PELICAN_DETAIL_CONCAT(PelicanEventAutoRegister_, unique_id)() {                                            \
+            token = ::Pelican::internal::getEventRegisterer().registerEvent<Type>(#Type);                          \
+        }                                                                                                          \
+    };                                                                                                             \
+    static const PELICAN_DETAIL_CONCAT(PelicanEventAutoRegister_, unique_id)                                       \
+        PELICAN_DETAIL_CONCAT(pelican_event_auto_register_, unique_id);                                            \
+    }
+#define PELICAN_REGISTER_EVENT(Type) PELICAN_REGISTER_EVENT_IMPL(Type, __COUNTER__)

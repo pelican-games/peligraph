@@ -1030,6 +1030,13 @@ function(run_physics_smoke)
     verify_jolt_physics_absent("${physics_build_dir}" "PELICAN_WITH_PHYSICS=OFF")
     find_built_executable("${physics_build_dir}" "pelican_test_physics_feature_probe" physics_probe)
     run_process("physics_api_stub" TRUE "${physics_probe}")
+    find_built_executable(
+        "${physics_build_dir}" "pelican_test_physics_disabled_probe" physics_api_probe)
+    expect_disabled_error(
+        "physics_gamecontext_api"
+        "PELICAN_WITH_PHYSICS"
+        "${physics_api_probe}"
+    )
     find_built_executable("${physics_build_dir}" "pelican_player" physics_player)
     set(physics_project "${ARTIFACT_ROOT}/physics_project")
     write_physics_project("${physics_project}")

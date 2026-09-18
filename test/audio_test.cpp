@@ -110,17 +110,17 @@ TEST_CASE("GameContext audio play state works with null backend", "[audio]") {
     configureNullAudioProject(sandbox);
 
     GameContext context;
-    const auto first = context.playSound("project://tone.wav");
-    const auto second = context.playSound("project://tone.wav");
+    const auto first = context.audio().playSound("project://tone.wav");
+    const auto second = context.audio().playSound("project://tone.wav");
 
     REQUIRE(first != second);
-    REQUIRE(context.isPlaying(first));
-    REQUIRE(context.isPlaying(second));
+    REQUIRE(context.audio().isPlaying(first));
+    REQUIRE(context.audio().isPlaying(second));
     REQUIRE(GET_MODULE(Audio).voiceCountForTesting() == 2);
     REQUIRE(GET_MODULE(Audio).backendVoiceCountForTesting() == 2);
 
-    REQUIRE_NOTHROW(context.setBusVolume("master", 0.75f));
-    REQUIRE_NOTHROW(context.setBusVolume("se", 0.5f));
+    REQUIRE_NOTHROW(context.audio().setBusVolume("master", 0.75f));
+    REQUIRE_NOTHROW(context.audio().setBusVolume("se", 0.5f));
     const ValueGraph::Graph authored{R"({"schema":"pelican.value_graph","version":1,
       "nodes":[{"id":"gain","op":"input","name":"gain"},
                {"id":"pitch","op":"input","name":"pitch"}],
@@ -131,51 +131,51 @@ TEST_CASE("GameContext audio play state works with null backend", "[audio]") {
     const auto published = graph.publish(context, {{"gain", 0.25}, {"pitch", 1.5}}, {{"voice", first}});
     REQUIRE(published.applied == 2);
     REQUIRE(published.unavailable.empty());
-    const auto state = context.soundState(first);
+    const auto state = context.audio().soundState(first);
     REQUIRE(state);
     REQUIRE(state->volume == 0.25f);
     REQUIRE(state->pitch == 1.5f);
     REQUIRE(state->effective_volume == 0.09375f);
     REQUIRE_FALSE(state->position_seconds);
-    REQUIRE(context.soundState(second)->volume == 1.0f);
-    REQUIRE(context.soundState(second)->pitch == 1.0f);
-    context.setBusVolume("master", 0.5f);
-    REQUIRE(context.soundState(first)->effective_volume == 0.0625f);
-    REQUIRE(context.soundState(second)->effective_volume == 0.25f);
+    REQUIRE(context.audio().soundState(second)->volume == 1.0f);
+    REQUIRE(context.audio().soundState(second)->pitch == 1.0f);
+    context.audio().setBusVolume("master", 0.5f);
+    REQUIRE(context.audio().soundState(first)->effective_volume == 0.0625f);
+    REQUIRE(context.audio().soundState(second)->effective_volume == 0.25f);
 
     const auto next_handle = GET_MODULE(Audio).nextHandleForTesting();
-    REQUIRE(context.setSoundPaused(first, true));
-    REQUIRE(context.setSoundPaused(first, true));
-    REQUIRE_FALSE(context.isPlaying(first));
-    REQUIRE(context.soundState(first)->paused);
-    REQUIRE(context.isPlaying(second));
+    REQUIRE(context.audio().setSoundPaused(first, true));
+    REQUIRE(context.audio().setSoundPaused(first, true));
+    REQUIRE_FALSE(context.audio().isPlaying(first));
+    REQUIRE(context.audio().soundState(first)->paused);
+    REQUIRE(context.audio().isPlaying(second));
     GET_MODULE(Audio).update();
     REQUIRE(GET_MODULE(Audio).voiceCountForTesting() == 2);
     REQUIRE(GET_MODULE(Audio).backendVoiceCountForTesting() == 2);
-    REQUIRE(context.soundState(first)->pitch == 1.5f);
-    REQUIRE(context.setSoundPaused(first, false));
-    REQUIRE(context.setSoundPaused(first, false));
-    REQUIRE(context.isPlaying(first));
-    REQUIRE_FALSE(context.soundState(first)->paused);
-    REQUIRE(context.soundState(first)->effective_volume == 0.0625f);
+    REQUIRE(context.audio().soundState(first)->pitch == 1.5f);
+    REQUIRE(context.audio().setSoundPaused(first, false));
+    REQUIRE(context.audio().setSoundPaused(first, false));
+    REQUIRE(context.audio().isPlaying(first));
+    REQUIRE_FALSE(context.audio().soundState(first)->paused);
+    REQUIRE(context.audio().soundState(first)->effective_volume == 0.0625f);
     REQUIRE(GET_MODULE(Audio).nextHandleForTesting() == next_handle);
-    REQUIRE(context.setSoundPaused(first, true));
+    REQUIRE(context.audio().setSoundPaused(first, true));
 
-    context.stopSound(first);
-    REQUIRE_FALSE(context.isPlaying(first));
-    REQUIRE_FALSE(context.soundState(first));
-    REQUIRE_FALSE(context.setSoundVolume(first, 1.0f));
-    REQUIRE_FALSE(context.setSoundPitch(first, 1.0f));
-    REQUIRE_FALSE(context.setSoundPaused(first, false));
+    context.audio().stopSound(first);
+    REQUIRE_FALSE(context.audio().isPlaying(first));
+    REQUIRE_FALSE(context.audio().soundState(first));
+    REQUIRE_FALSE(context.audio().setSoundVolume(first, 1.0f));
+    REQUIRE_FALSE(context.audio().setSoundPitch(first, 1.0f));
+    REQUIRE_FALSE(context.audio().setSoundPaused(first, false));
     const auto stopped = graph.publish(context, {{"gain", 1}, {"pitch", 1}}, {{"voice", first}});
     REQUIRE(stopped.applied == 0);
     REQUIRE(stopped.unavailable.size() == 2);
-    REQUIRE(context.isPlaying(second));
+    REQUIRE(context.audio().isPlaying(second));
     REQUIRE(GET_MODULE(Audio).voiceCountForTesting() == 1);
     REQUIRE(GET_MODULE(Audio).backendVoiceCountForTesting() == 1);
 
-    context.stopSound(second);
-    REQUIRE_FALSE(context.isPlaying(second));
+    context.audio().stopSound(second);
+    REQUIRE_FALSE(context.audio().isPlaying(second));
     REQUIRE(GET_MODULE(Audio).voiceCountForTesting() == 0);
     REQUIRE(GET_MODULE(Audio).backendVoiceCountForTesting() == 0);
 }
@@ -222,8 +222,8 @@ TEST_CASE("Stopped audio voices do not accumulate in either registry", "[audio]"
 
     GameContext context;
     for (std::size_t i = 0; i < 256; ++i) {
-        const auto handle = context.playSound("project://tone.wav");
-        context.stopSound(handle);
+        const auto handle = context.audio().playSound("project://tone.wav");
+        context.audio().stopSound(handle);
     }
 
     auto &audio = GET_MODULE(Audio);
@@ -240,16 +240,16 @@ TEST_CASE("GameContext audio reports invalid inputs", "[audio]") {
     configureNullAudioProject(sandbox);
 
     GameContext context;
-    REQUIRE_THROWS_WITH(context.playSound("project://bad.wav"),
+    REQUIRE_THROWS_WITH(context.audio().playSound("project://bad.wav"),
                         Catch::Matchers::ContainsSubstring("Invalid WAV"));
-    REQUIRE_THROWS_WITH(context.playSound("project://missing.wav"),
+    REQUIRE_THROWS_WITH(context.audio().playSound("project://missing.wav"),
                         Catch::Matchers::ContainsSubstring("Failed to open file"));
-    REQUIRE_THROWS_WITH(context.setBusVolume("dialog", 1.0f),
+    REQUIRE_THROWS_WITH(context.audio().setBusVolume("dialog", 1.0f),
                         Catch::Matchers::ContainsSubstring("Unknown audio bus"));
-    REQUIRE_THROWS_WITH(context.setBusVolume("se", -0.1f),
+    REQUIRE_THROWS_WITH(context.audio().setBusVolume("se", -0.1f),
                         Catch::Matchers::ContainsSubstring("finite non-negative"));
-    REQUIRE_THROWS(context.setSoundVolume(SoundHandle{}, -1.0f));
-    REQUIRE_THROWS(context.setSoundPitch(SoundHandle{}, 0.0f));
+    REQUIRE_THROWS(context.audio().setSoundVolume(SoundHandle{}, -1.0f));
+    REQUIRE_THROWS(context.audio().setSoundPitch(SoundHandle{}, 0.0f));
 }
 
 } // namespace Pelican

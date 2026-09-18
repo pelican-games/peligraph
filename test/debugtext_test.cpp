@@ -35,7 +35,7 @@ TEST_CASE("GameContext debugText is a no-op before the feature registers a pass"
     FastModuleContainer modules;
     GameContext context;
 
-    context.debugText(-1024, -1024, "offscreen");
+    context.render().debugText(-1024, -1024, "offscreen");
 
     auto &debug_text = GET_MODULE(DebugText);
     REQUIRE_FALSE(debug_text.isEnabledForTesting());

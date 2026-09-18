@@ -343,7 +343,7 @@ MoveAndSlide2DResult moveAndSlide(
     const ShapeCastAll2DQuery query = [&context](const phys::Shape &shape,
                                                  vec3 movement,
                                                  const phys::QueryFilter &query_filter) {
-        return context.shapeCastAll(shape, movement, query_filter);
+        return context.physics().shapeCastAll(shape, movement, query_filter);
     };
     return moveAndSlide(moving_shape, delta, query, filter, settings);
 }

@@ -426,15 +426,15 @@ TEST_CASE("PhysWorld module follows bound transforms and GameContext exposes que
     world.bindCollider("MovingSphere", collider, object);
 
     GameContext ctx;
-    REQUIRE_FALSE(ctx.raycastClosest(phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f}));
+    REQUIRE_FALSE(ctx.physics().raycastClosest(phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f}));
 
     GET_MODULE(ECSCore).getTemplatePublicModule().component<TransformComponent>(object).pos =
         glm::vec3{3.0f, 0.0f, 0.0f};
-    const auto hit = ctx.raycastClosest(phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f});
+    const auto hit = ctx.physics().raycastClosest(phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f});
     REQUIRE(hit);
     REQUIRE(hit->id == "MovingSphere");
     REQUIRE(hit->distance == Catch::Approx(2.0f));
-    const auto detailed_hit = ctx.raycastClosest(
+    const auto detailed_hit = ctx.physics().raycastClosest(
         phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f},
         phys::QueryFilter{});
     REQUIRE(detailed_hit);
@@ -443,14 +443,15 @@ TEST_CASE("PhysWorld module follows bound transforms and GameContext exposes que
     const auto original_collider_id = detailed_hit->identity.collider_id;
 
     const phys::QueryFilter ignore_original{.self = original_collider_id};
-    REQUIRE_FALSE(ctx.raycastClosest(
+    REQUIRE_FALSE(ctx.physics().raycastClosest(
         phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f},
         ignore_original));
 
-    const auto overlaps = ctx.overlapAll(phys::Sphere{{3.0f, 0.0f, 0.0f}, 0.25f});
-    REQUIRE(overlaps == std::vector<std::string>{"MovingSphere"});
+    const auto overlaps = ctx.physics().overlapAll(phys::Sphere{{3.0f, 0.0f, 0.0f}, 0.25f});
+    REQUIRE(overlaps.size() == 1);
+    REQUIRE(overlaps.front().id == "MovingSphere");
 
-    const auto cast_hit = ctx.shapeCastClosest(
+    const auto cast_hit = ctx.physics().shapeCastClosest(
         phys::Sphere{{0.0f, 0.0f, 0.0f}, 0.5f},
         {5.0f, 0.0f, 0.0f});
     REQUIRE(cast_hit);
@@ -458,19 +459,19 @@ TEST_CASE("PhysWorld module follows bound transforms and GameContext exposes que
     REQUIRE(cast_hit->time_of_impact == Catch::Approx(0.3f).margin(2.0e-4f));
 
     REQUIRE(GameObjects::remove(object));
-    REQUIRE_FALSE(ctx.raycastClosest(phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f}));
+    REQUIRE_FALSE(ctx.physics().raycastClosest(phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f}));
 
     transform.pos = glm::vec3{2.0f, 0.0f, 0.0f};
     const auto replacement = GameObjects::add().addComponent<TransformComponent>(transform).finish();
     REQUIRE_NOTHROW(world.bindCollider("MovingSphere", collider, replacement));
     REQUIRE(world.colliderCountForTesting() == 1);
-    const auto replacement_hit = ctx.raycastClosest(
+    const auto replacement_hit = ctx.physics().raycastClosest(
         phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f},
         phys::QueryFilter{});
     REQUIRE(replacement_hit);
     REQUIRE(replacement_hit->identity.collider_id != original_collider_id);
     REQUIRE(replacement_hit->identity.entity == replacement);
-    REQUIRE(ctx.raycastClosest(
+    REQUIRE(ctx.physics().raycastClosest(
         phys::Ray{{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, 5.0f},
         ignore_original));
 }

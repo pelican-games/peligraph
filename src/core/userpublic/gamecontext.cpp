@@ -166,12 +166,12 @@ bool GameContext::setSpriteTexture(GameObjectId id, std::string_view texture) co
     return ecs.setComponent<SpriteViewComponent>(id, replacement);
 }
 
-bool GameContext::setDirectionalLightDirection(std::string_view name, vec3 direction) const {
+bool RenderContext::setDirectionalLightDirection(std::string_view name, vec3 direction) const {
     return GET_MODULE(LightContainer).setDirectionalLightDirection(
         std::string{name}, glm::vec3{direction.x, direction.y, direction.z});
 }
 
-void GameContext::setRayTracingDispatchExtent(
+void RenderContext::setRayTracingDispatchExtent(
     std::string_view task_name, std::uint32_t width, std::uint32_t height,
     std::uint32_t depth) const {
     if (internal::activeEffectTransaction() != nullptr)
@@ -185,7 +185,7 @@ void GameContext::setRayTracingDispatchExtent(
     tasks.setRayTracingDispatchExtent(task, width, height, depth);
 }
 
-void GameContext::setRayTracingCallableRecord(
+void RenderContext::setRayTracingCallableRecord(
     std::string_view task_name, std::uint32_t index, const nlohmann::json &values) const {
     if (internal::activeEffectTransaction() != nullptr) {
         throw SceneTransactionMutationRejected{"setRayTracingCallableRecord"};
@@ -199,64 +199,63 @@ void GameContext::setRayTracingCallableRecord(
     tasks.setCallableRecord(task, index, values);
 }
 
-bool GameContext::setDirectionalLightIntensity(std::string_view name, float intensity) const {
+bool RenderContext::setDirectionalLightIntensity(std::string_view name, float intensity) const {
     return GET_MODULE(LightContainer).setDirectionalLightIntensity(std::string{name}, intensity);
 }
 
-bool GameContext::setPointLightPosition(std::string_view name, vec3 position) const {
+bool RenderContext::setPointLightPosition(std::string_view name, vec3 position) const {
     return GET_MODULE(LightContainer).setPointLightPosition(
         std::string{name}, glm::vec3{position.x, position.y, position.z});
 }
 
-bool GameContext::setSpotLightDirection(std::string_view name, vec3 direction) const {
+bool RenderContext::setSpotLightDirection(std::string_view name, vec3 direction) const {
     return GET_MODULE(LightContainer).setSpotLightDirection(
         std::string{name}, glm::vec3{direction.x, direction.y, direction.z});
 }
 
-std::vector<phys::RaycastQueryHit> GameContext::raycastAll(
+#if !PELICAN_WITH_PHYSICS
+namespace {
+[[noreturn]] void physicsDisabled(const char *entry) {
+    throwBuildFeatureDisabled("PELICAN_WITH_PHYSICS",
+                              std::string{entry} + " is unavailable");
+}
+} // namespace
+#endif
+
+std::vector<phys::RaycastQueryHit> PhysicsContext::raycastAll(
     const phys::Ray &ray, const phys::QueryFilter &filter) const {
 #if PELICAN_WITH_PHYSICS
     return GET_MODULE(PhysWorld).raycastAll(ray, filter);
 #else
     (void)ray;
     (void)filter;
-    return {};
+    physicsDisabled("raycastAll");
 #endif
 }
 
-std::optional<phys::ObjectRaycastHit> GameContext::raycastClosest(
-    const phys::Ray &ray) const {
-#if PELICAN_WITH_PHYSICS
-    return GET_MODULE(PhysWorld).raycastClosest(ray);
-#else
-    (void)ray;
-    return std::nullopt;
-#endif
-}
-
-std::optional<phys::RaycastQueryHit> GameContext::raycastClosest(
+std::optional<phys::RaycastQueryHit> PhysicsContext::raycastClosest(
     const phys::Ray &ray, const phys::QueryFilter &filter) const {
 #if PELICAN_WITH_PHYSICS
     return GET_MODULE(PhysWorld).raycastClosest(ray, filter);
 #else
     (void)ray;
     (void)filter;
-    return std::nullopt;
+    physicsDisabled("raycastClosest");
 #endif
 }
 
-std::vector<phys::OverlapHit> GameContext::overlapAllHits(
+std::vector<phys::OverlapHit> PhysicsContext::overlapAll(
     const phys::Shape &shape, const phys::QueryFilter &filter) const {
 #if PELICAN_WITH_PHYSICS
     return GET_MODULE(PhysWorld).overlapAllHits(shape, filter);
 #else
     (void)shape;
     (void)filter;
-    return {};
+    physicsDisabled("overlapAll");
 #endif
 }
 
-std::vector<phys::ShapeCastQueryHit> GameContext::shapeCastAll(
+std::vector<phys::ShapeCastQueryHit> PhysicsContext::shapeCastAll(
     const phys::Shape &moving_shape, vec3 delta,
     const phys::QueryFilter &filter) const {
 #if PELICAN_WITH_PHYSICS
@@ -265,11 +264,11 @@ std::vector<phys::ShapeCastQueryHit> GameContext::shapeCastAll(
     (void)moving_shape;
     (void)delta;
     (void)filter;
-    return {};
+    physicsDisabled("shapeCastAll");
 #endif
 }
 
-std::optional<phys::ShapeCastQueryHit> GameContext::shapeCastClosest(
+std::optional<phys::ShapeCastQueryHit> PhysicsContext::shapeCastClosest(
     const phys::Shape &moving_shape, vec3 delta,
     const phys::QueryFilter &filter) const {
 #if PELICAN_WITH_PHYSICS
@@ -278,32 +277,11 @@ std::optional<phys::ShapeCastQueryHit> GameContext::shapeCastClosest(
     (void)moving_shape;
     (void)delta;
     (void)filter;
-    return std::nullopt;
+    physicsDisabled("shapeCastClosest");
 #endif
 }
 
-std::vector<std::string> GameContext::overlapAll(
-    const phys::Shape &shape) const {
-#if PELICAN_WITH_PHYSICS
-    return GET_MODULE(PhysWorld).overlapAll(shape);
-#else
-    (void)shape;
-    return {};
-#endif
-}
-
-std::vector<std::string> GameContext::overlapAll(
-    const phys::Shape &shape, const phys::QueryFilter &filter) const {
-#if PELICAN_WITH_PHYSICS
-    return GET_MODULE(PhysWorld).overlapAll(shape, filter);
-#else
-    (void)shape;
-    (void)filter;
-    return {};
-#endif
-}
-
-void GameContext::setCamera(std::string_view name) const {
+void RenderContext::setCamera(std::string_view name) const {
     GET_MODULE(Camera).setActiveCamera(name);
 }
 
@@ -327,7 +305,7 @@ std::uint64_t GameContext::seed() const {
     return GET_MODULE(DeterministicRng).seed();
 }
 
-SoundHandle GameContext::playSound(std::string_view path) const {
+SoundHandle AudioContext::playSound(std::string_view path) const {
     if (auto *effect = internal::activeEffectTransaction()) {
         return effect->playSound(path);
     }
@@ -338,7 +316,7 @@ SoundHandle GameContext::playSound(std::string_view path) const {
 #endif
 }
 
-Animation::Status GameContext::setAnimationGraphParameter(GameObjectId object, std::string_view name, double value) const {
+Animation::Status AnimationContext::setParameter(GameObjectId object, std::string_view name, double value) const {
     if (internal::activeEffectTransaction()) return Animation::Status::phase_order_error;
 #if PELICAN_WITH_ANIMATION
     return GET_MODULE(AnimationSystem).setGraphParameter(object, name, value);
@@ -348,7 +326,7 @@ Animation::Status GameContext::setAnimationGraphParameter(GameObjectId object, s
 #endif
 }
 
-Animation::Status GameContext::forceAnimationGraphState(GameObjectId object, std::string_view state) const {
+Animation::Status AnimationContext::forceState(GameObjectId object, std::string_view state) const {
     if (internal::activeEffectTransaction()) return Animation::Status::phase_order_error;
 #if PELICAN_WITH_ANIMATION
     return GET_MODULE(AnimationSystem).forceGraphState(object, state);
@@ -358,7 +336,7 @@ Animation::Status GameContext::forceAnimationGraphState(GameObjectId object, std
 #endif
 }
 
-void GameContext::stopSound(SoundHandle handle) const {
+void AudioContext::stopSound(SoundHandle handle) const {
     if (auto *effect = internal::activeEffectTransaction()) {
         effect->stopSound(handle);
         return;
@@ -371,7 +349,7 @@ void GameContext::stopSound(SoundHandle handle) const {
 #endif
 }
 
-void GameContext::setBusVolume(std::string_view bus, float volume) const {
+void AudioContext::setBusVolume(std::string_view bus, float volume) const {
     if (auto *effect = internal::activeEffectTransaction()) {
         effect->setBusVolume(bus, volume);
         return;
@@ -385,7 +363,7 @@ void GameContext::setBusVolume(std::string_view bus, float volume) const {
 #endif
 }
 
-float GameContext::busVolume(std::string_view bus) const {
+float AudioContext::busVolume(std::string_view bus) const {
     if (auto *effect = internal::activeEffectTransaction()) {
         return effect->busVolume(bus);
     }
@@ -397,7 +375,7 @@ float GameContext::busVolume(std::string_view bus) const {
 #endif
 }
 
-bool GameContext::isPlaying(SoundHandle handle) const {
+bool AudioContext::isPlaying(SoundHandle handle) const {
     if (auto *effect = internal::activeEffectTransaction()) {
         return effect->isPlaying(handle);
     }
@@ -425,7 +403,7 @@ std::shared_ptr<const ValueGraph::Graph> graphForOwnedInput(std::string_view inp
 }
 }
 
-bool GameContext::setGraphParameter(GameObjectId object, std::string_view parameter, std::optional<double> value) const {
+bool RenderContext::setValueGraphParameter(GameObjectId object, std::string_view parameter, std::optional<double> value) const {
     if (internal::activeEffectTransaction()) return false;
     auto graph = graphForOwnedInput(parameter, &ValueGraph::Graph::parameterOwner);
     // A port an edge supplies has no parameter at all, so the lookup above
@@ -435,18 +413,18 @@ bool GameContext::setGraphParameter(GameObjectId object, std::string_view parame
     return graph && GET_MODULE(SceneLoader).setGraphParameter(std::move(graph), object, parameter, value);
 }
 
-bool GameContext::emitGraphEvent(GameObjectId object, std::string_view input, Animation::CurvePlaybackCommand command) const {
+bool RenderContext::emitValueGraphEvent(GameObjectId object, std::string_view input, Animation::CurvePlaybackCommand command) const {
     if (internal::activeEffectTransaction()) return false;
     auto graph = graphForOwnedInput(input, &ValueGraph::Graph::eventOwner);
     return graph && GET_MODULE(SceneLoader).emitGraphEvent(std::move(graph), object, input, command);
 }
 
-bool GameContext::setRenderValues(std::string_view buffer, std::span<const float> values) const {
+bool RenderContext::setRenderValues(std::string_view buffer, std::span<const float> values) const {
     if (internal::activeEffectTransaction()) return false;
     return GET_MODULE(FrameGraphResourceContainer).stageRuntimeValues(buffer, values);
 }
 
-bool GameContext::setSoundVolume(SoundHandle handle, float volume) const {
+bool AudioContext::setSoundVolume(SoundHandle handle, float volume) const {
     if (internal::activeEffectTransaction()) return false;
 #if PELICAN_WITH_AUDIO
     return GET_MODULE(Audio).setSoundVolume(handle, volume);
@@ -455,7 +433,7 @@ bool GameContext::setSoundVolume(SoundHandle handle, float volume) const {
 #endif
 }
 
-bool GameContext::setSoundPitch(SoundHandle handle, float pitch) const {
+bool AudioContext::setSoundPitch(SoundHandle handle, float pitch) const {
     if (internal::activeEffectTransaction()) return false;
 #if PELICAN_WITH_AUDIO
     return GET_MODULE(Audio).setSoundPitch(handle, pitch);
@@ -464,7 +442,7 @@ bool GameContext::setSoundPitch(SoundHandle handle, float pitch) const {
 #endif
 }
 
-std::optional<SoundPlaybackState> GameContext::soundState(SoundHandle handle) const {
+std::optional<SoundPlaybackState> AudioContext::soundState(SoundHandle handle) const {
 #if PELICAN_WITH_AUDIO
     return GET_MODULE(Audio).soundState(handle);
 #else
@@ -472,7 +450,7 @@ std::optional<SoundPlaybackState> GameContext::soundState(SoundHandle handle) co
 #endif
 }
 
-bool GameContext::setSoundPaused(SoundHandle handle, bool paused) const {
+bool AudioContext::setSoundPaused(SoundHandle handle, bool paused) const {
     if (internal::activeEffectTransaction()) return false;
 #if PELICAN_WITH_AUDIO
     return GET_MODULE(Audio).setSoundPaused(handle, paused);
@@ -493,7 +471,7 @@ std::string GameContext::currentScene() const {
     return GET_MODULE(SceneLoader).currentScene();
 }
 
-void GameContext::debugText(int x, int y, std::string_view text, vec4 color, int scale) const {
+void RenderContext::debugText(int x, int y, std::string_view text, vec4 color, int scale) const {
     GET_MODULE(DebugText).text(x, y, text, {color.x, color.y, color.z, color.w}, scale);
 }
 
@@ -524,7 +502,7 @@ void GameContext::saveSettings() const {
     persistence.saveSettings();
 }
 
-void GameContext::saveData(std::string_view slot, const Json &data) const {
+void SaveContext::saveData(std::string_view slot, const Json &data) const {
     if (auto *effect = internal::activeEffectTransaction()) {
         effect->saveData(slot, data);
         return;
@@ -532,14 +510,14 @@ void GameContext::saveData(std::string_view slot, const Json &data) const {
     GET_MODULE(Persistence).saveData(slot, data);
 }
 
-std::optional<GameContext::Json> GameContext::loadData(std::string_view slot) const {
+std::optional<SaveContext::Json> SaveContext::loadData(std::string_view slot) const {
     if (auto *effect = internal::activeEffectTransaction()) {
         return effect->loadData(slot);
     }
     return GET_MODULE(Persistence).loadData(slot);
 }
 
-std::vector<GameContext::SlotInfo> GameContext::listSaves() const {
+std::vector<SaveContext::SlotInfo> SaveContext::listSaves() const {
     const auto saves = internal::activeEffectTransaction()
         ? internal::activeEffectTransaction()->listSaves()
         : GET_MODULE(Persistence).listSaves();

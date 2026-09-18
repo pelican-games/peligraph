@@ -106,38 +106,38 @@ TEST_CASE("WP380b effect sink rollback keeps the committed semantic snapshot",
     auto &loader = GET_MODULE(SceneLoader);
     GameContext context;
 
-    const auto existing = context.playSound("project://tone.wav");
+    const auto existing = context.audio().playSound("project://tone.wav");
     const auto baseline_voices = audio.voiceCountForTesting();
     const auto baseline_cursor = audio.nextHandleForTesting();
-    context.setBusVolume("se", 0.75F);
+    context.audio().setBusVolume("se", 0.75F);
     context.setGameSettings({{"world", "B"}});
 
     SoundHandle failed_handle{};
     {
         internal::PreparedEffectTransaction transaction{persistence, loader};
         internal::EffectTransactionScope scope{transaction};
-        failed_handle = context.playSound("project://tone.wav");
-        REQUIRE_THROWS_AS(context.setRayTracingDispatchExtent("trace", 1, 1, 1),
+        failed_handle = context.audio().playSound("project://tone.wav");
+        REQUIRE_THROWS_AS(context.render().setRayTracingDispatchExtent("trace", 1, 1, 1),
                           SceneTransactionMutationRejected);
-        REQUIRE_THROWS_AS(context.setRayTracingCallableRecord("trace", 0, {}),
+        REQUIRE_THROWS_AS(context.render().setRayTracingCallableRecord("trace", 0, {}),
                           SceneTransactionMutationRejected);
-        REQUIRE(context.isPlaying(failed_handle));
-        context.stopSound(failed_handle);
-        REQUIRE_FALSE(context.isPlaying(failed_handle));
-        context.stopSound(existing);
-        REQUIRE_FALSE(context.isPlaying(existing));
-        context.setBusVolume("se", 0.50F);
-        context.setBusVolume("se", 0.25F);
-        REQUIRE(context.busVolume("se") == Catch::Approx(0.25F));
+        REQUIRE(context.audio().isPlaying(failed_handle));
+        context.audio().stopSound(failed_handle);
+        REQUIRE_FALSE(context.audio().isPlaying(failed_handle));
+        context.audio().stopSound(existing);
+        REQUIRE_FALSE(context.audio().isPlaying(existing));
+        context.audio().setBusVolume("se", 0.50F);
+        context.audio().setBusVolume("se", 0.25F);
+        REQUIRE(context.audio().busVolume("se") == Catch::Approx(0.25F));
         context.setGameSettings({{"world", "C-before"}});
         context.saveSettings();
         context.setGameSettings({{"world", "C"}});
         context.saveSettings();
         REQUIRE(context.gameSettings().at("world") == "C");
-        context.saveData("slot_c", {{"value", 379}});
-        context.saveData("slot_c", {{"value", 380}});
-        REQUIRE(context.loadData("slot_c") == nlohmann::json{{"value", 380}});
-        const auto saves = context.listSaves();
+        context.save().saveData("slot_c", {{"value", 379}});
+        context.save().saveData("slot_c", {{"value", 380}});
+        REQUIRE(context.save().loadData("slot_c") == nlohmann::json{{"value", 380}});
+        const auto saves = context.save().listSaves();
         REQUIRE(saves.size() == 1);
         REQUIRE(saves.front().slot == "slot_c");
         REQUIRE(saves.front().timestamp == std::filesystem::file_time_type{});
@@ -154,8 +154,8 @@ TEST_CASE("WP380b effect sink rollback keeps the committed semantic snapshot",
     }
 
     REQUIRE(audio.voiceCountForTesting() == baseline_voices);
-    REQUIRE(context.isPlaying(existing));
-    REQUIRE(context.busVolume("se") == Catch::Approx(0.75F));
+    REQUIRE(context.audio().isPlaying(existing));
+    REQUIRE(context.audio().busVolume("se") == Catch::Approx(0.75F));
     REQUIRE(context.gameSettings().at("world") == "B");
     REQUIRE_FALSE(std::filesystem::exists(
         sandbox.user / "saves" / "slot_c.json"));
@@ -163,7 +163,7 @@ TEST_CASE("WP380b effect sink rollback keeps the committed semantic snapshot",
 
     internal::PreparedEffectTransaction next{persistence, loader};
     internal::EffectTransactionScope next_scope{next};
-    const auto next_handle = context.playSound("project://tone.wav");
+    const auto next_handle = context.audio().playSound("project://tone.wav");
     REQUIRE(next_handle != failed_handle);
 }
 
@@ -213,7 +213,7 @@ TEST_CASE("WP380b retired objects expose their final snapshot and reject setters
         REQUIRE_FALSE(context.setSpriteView(retired, {}));
         REQUIRE_FALSE(context.setSpriteTexture(retired,
                                                "project://other.png"));
-        const auto invalid = context.playSound("project://missing.wav");
+        const auto invalid = context.audio().playSound("project://missing.wav");
         REQUIRE(invalid == SoundHandle{});
         transaction.flush(nullptr, trace);
         errors = transaction.effectErrors();
@@ -252,8 +252,8 @@ TEST_CASE("WP380b flush reports one failed resource and continues in call order"
     {
         internal::PreparedEffectTransaction transaction{persistence, loader};
         internal::EffectTransactionScope scope{transaction};
-        played = context.playSound("project://tone.wav");
-        context.saveData("slot_c", {{"value", 380}});
+        played = context.audio().playSound("project://tone.wav");
+        context.save().saveData("slot_c", {{"value", 380}});
         context.setGameSettings({{"world", "D"}});
         context.saveSettings();
         transaction.flush(&fault, trace);
@@ -263,7 +263,7 @@ TEST_CASE("WP380b flush reports one failed resource and continues in call order"
     REQUIRE(errors.size() == 1);
     REQUIRE(errors.front().api == "saveData");
     REQUIRE(errors.front().error_code == "persistence_write_failed@1");
-    REQUIRE(context.isPlaying(played));
+    REQUIRE(context.audio().isPlaying(played));
     REQUIRE(audio.voiceCountForTesting() == 1);
     REQUIRE_FALSE(std::filesystem::exists(
         sandbox.user / "saves" / "slot_c.json"));
@@ -304,7 +304,7 @@ TEST_CASE("WP380b every fallible effect manifest row has a killing flush mutatio
             GameContext context;
             SoundHandle existing{};
             if (test.mutation == scene_load_mutation::effect_audio_stop) {
-                existing = context.playSound("project://tone.wav");
+                existing = context.audio().playSound("project://tone.wav");
             }
             EffectFlushFault fault{std::string{test.participant},
                                    std::string{test.mutation}};
@@ -314,21 +314,21 @@ TEST_CASE("WP380b every fallible effect manifest row has a killing flush mutatio
             internal::EffectTransactionScope scope{transaction};
             if (test.mutation == scene_load_mutation::effect_audio_play) {
                 const auto provisional =
-                    context.playSound("project://tone.wav");
-                REQUIRE(context.isPlaying(provisional));
+                    context.audio().playSound("project://tone.wav");
+                REQUIRE(context.audio().isPlaying(provisional));
             } else if (test.mutation ==
                        scene_load_mutation::effect_audio_stop) {
-                context.stopSound(existing);
-                context.stopSound(existing);
-                REQUIRE_FALSE(context.isPlaying(existing));
+                context.audio().stopSound(existing);
+                context.audio().stopSound(existing);
+                REQUIRE_FALSE(context.audio().isPlaying(existing));
             } else if (test.mutation ==
                        scene_load_mutation::effect_audio_bus_volume) {
-                context.setBusVolume("se", 0.25F);
-                context.setBusVolume("se", 0.38F);
+                context.audio().setBusVolume("se", 0.25F);
+                context.audio().setBusVolume("se", 0.38F);
             } else if (test.mutation ==
                        scene_load_mutation::effect_save_data) {
-                context.saveData("slot_c", {{"value", 379}});
-                context.saveData("slot_c", {{"value", 380}});
+                context.save().saveData("slot_c", {{"value", 379}});
+                context.save().saveData("slot_c", {{"value", 380}});
             } else {
                 context.setGameSettings({{"world", "C"}});
                 context.saveSettings();
@@ -349,7 +349,7 @@ TEST_CASE("WP380b every fallible effect manifest row has a killing flush mutatio
             }
             if (test.mutation ==
                 scene_load_mutation::effect_audio_bus_volume) {
-                REQUIRE(context.busVolume("se") == Catch::Approx(0.38F));
+                REQUIRE(context.audio().busVolume("se") == Catch::Approx(0.38F));
             }
         }
     }
@@ -370,7 +370,7 @@ TEST_CASE("WP380e effect capacity reports overflow and provisional stop frees it
         internal::EffectTransactionScope scope{transaction};
         std::size_t staged = 0;
         for (std::size_t index = 0; index < 257; ++index) {
-            if (context.playSound("project://tone.wav") != SoundHandle{}) {
+            if (context.audio().playSound("project://tone.wav") != SoundHandle{}) {
                 ++staged;
             }
         }
@@ -386,12 +386,12 @@ TEST_CASE("WP380e effect capacity reports overflow and provisional stop frees it
         internal::PreparedEffectTransaction transaction{persistence, loader};
         internal::EffectTransactionScope scope{transaction};
         for (std::size_t index = 0; index < 300; ++index) {
-            const auto handle = context.playSound("project://tone.wav");
+            const auto handle = context.audio().playSound("project://tone.wav");
             REQUIRE(handle != SoundHandle{});
-            context.stopSound(handle);
+            context.audio().stopSound(handle);
         }
         REQUIRE(transaction.fixedErrorCount() == 0);
-        REQUIRE(context.playSound("project://tone.wav") != SoundHandle{});
+        REQUIRE(context.audio().playSound("project://tone.wav") != SoundHandle{});
     }
 }
 
@@ -411,9 +411,9 @@ TEST_CASE("WP380e destroy staging and flush errors retain API call order",
     internal::EffectTransactionScope scope{transaction};
     {
         internal::EffectDestroyScope destroy_scope;
-        (void)context.playSound("project://missing-wp380e.wav");
-        context.saveData("sequence", {{"value", 380}});
-        context.setBusVolume("missing-bus", 0.5F);
+        (void)context.audio().playSound("project://missing-wp380e.wav");
+        context.save().saveData("sequence", {{"value", 380}});
+        context.audio().setBusVolume("missing-bus", 0.5F);
     }
     transaction.flush(&fault, trace);
     const auto errors = transaction.effectErrors();

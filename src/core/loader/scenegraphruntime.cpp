@@ -261,7 +261,7 @@ void SceneLoader::PreparedGraphRuntimeTransfer::publishAudio(
         if (const auto sound = scene_.graphSound(graph, value.node)) {
             const GameContext context;
             const bool applied = value.kind == ValueGraph::AudioValueKind::volume
-                ? context.setSoundVolume(*sound, value.value) : context.setSoundPitch(*sound, value.value);
+                ? context.audio().setSoundVolume(*sound, value.value) : context.audio().setSoundPitch(*sound, value.value);
             if (!applied) throw std::runtime_error("published graph voice is unavailable: " + value.node);
         }
     audio_events_.clear();

@@ -109,7 +109,7 @@ TEST_CASE("WP380e flush failure reporting is allocation-free",
 
     internal::PreparedEffectTransaction transaction{persistence, loader};
     internal::EffectTransactionScope scope{transaction};
-    context.saveData("allocation", {{"value", 380}});
+    context.save().saveData("allocation", {{"value", 380}});
 
     allocation_count = 0;
     count_allocations = true;

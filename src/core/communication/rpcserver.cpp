@@ -1606,7 +1606,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
 
     server.setHandler("set_camera", [](const nlohmann::json &params) {
         const auto name = requireStringParam(params, "name", "set_camera");
-        GameContext{}.setCamera(name);
+        GameContext{}.render().setCamera(name);
         return nlohmann::json{
             {"name", name},
         };

@@ -132,7 +132,7 @@ std::vector<std::uint8_t> renderDebugText(
         fixture_color[0] / 255.0f, fixture_color[1] / 255.0f,
         fixture_color[2] / 255.0f, fixture_color[3] / 255.0f};
     for (const auto &label : labels) {
-        GameContext{}.debugText(static_cast<int>(label.x * fixture_scale),
+        GameContext{}.render().debugText(static_cast<int>(label.x * fixture_scale),
                         static_cast<int>(label.y * fixture_scale), label.text,
                         {color.x, color.y, color.z, color.w}, static_cast<int>(fixture_scale));
     }

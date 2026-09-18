@@ -42,22 +42,24 @@ extern "C" __declspec(dllexport) std::uint32_t pelican_physics_service_public_ap
 extern "C" __declspec(dllexport) std::size_t pelican_physquery_public_api_link_probe(
     Pelican::GameContext *context) {
     if (context == nullptr) {
-        return sizeof(Pelican::phys::ObjectRaycastHit) + sizeof(Pelican::phys::RaycastQueryHit);
+        return sizeof(Pelican::phys::RaycastQueryHit) + sizeof(Pelican::phys::OverlapHit);
     }
 
+    // Both call shapes of every surviving query, so the default-filter form and
+    // the explicit-filter form each keep an exported symbol to link against.
     const Pelican::phys::Ray ray{};
     const Pelican::phys::QueryFilter filter{};
-    const auto legacy_closest = context->raycastClosest(ray);
-    const auto detailed_closest = context->raycastClosest(ray, filter);
-    const auto all_hits = context->raycastAll(ray, filter);
-    const auto legacy_overlaps = context->overlapAll(Pelican::phys::Sphere{});
-    const auto detailed_overlaps = context->overlapAllHits(Pelican::phys::Sphere{}, filter);
-    const auto cast_hits = context->shapeCastAll(
+    const auto default_closest = context->physics().raycastClosest(ray);
+    const auto filtered_closest = context->physics().raycastClosest(ray, filter);
+    const auto all_hits = context->physics().raycastAll(ray, filter);
+    const auto default_overlaps = context->physics().overlapAll(Pelican::phys::Sphere{});
+    const auto filtered_overlaps = context->physics().overlapAll(Pelican::phys::Sphere{}, filter);
+    const auto cast_hits = context->physics().shapeCastAll(
         Pelican::phys::Sphere{}, Pelican::vec3{1.0F, 0.0F, 0.0F}, filter);
-    const auto cast_closest = context->shapeCastClosest(
+    const auto cast_closest = context->physics().shapeCastClosest(
         Pelican::phys::Sphere{}, Pelican::vec3{1.0F, 0.0F, 0.0F}, filter);
-    return legacy_closest.has_value() + detailed_closest.has_value() + all_hits.size() +
-           legacy_overlaps.size() + detailed_overlaps.size() + cast_hits.size() +
+    return default_closest.has_value() + filtered_closest.has_value() + all_hits.size() +
+           default_overlaps.size() + filtered_overlaps.size() + cast_hits.size() +
            cast_closest.has_value();
 }
 
@@ -93,8 +95,8 @@ extern "C" __declspec(dllexport) void pelican_event_emit_public_api_link_probe(
 extern "C" __declspec(dllexport) std::size_t pelican_light_public_api_link_probe(
     Pelican::GameContext *context) {
     if (context == nullptr) return 0;
-    return context->setDirectionalLightDirection("Sun", {0.0F, -1.0F, 0.0F}) +
-           context->setDirectionalLightIntensity("Sun", 2.0F) +
-           context->setPointLightPosition("Lamp", {1.0F, 2.0F, 3.0F}) +
-           context->setSpotLightDirection("Cone", {0.0F, -1.0F, 0.0F});
+    return context->render().setDirectionalLightDirection("Sun", {0.0F, -1.0F, 0.0F}) +
+           context->render().setDirectionalLightIntensity("Sun", 2.0F) +
+           context->render().setPointLightPosition("Lamp", {1.0F, 2.0F, 3.0F}) +
+           context->render().setSpotLightDirection("Cone", {0.0F, -1.0F, 0.0F});
 }

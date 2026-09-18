@@ -4,6 +4,203 @@
   "entries": [
     {
       "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "PhysicsContext",
+      "signature": "std::vector<phys::RaycastQueryHit>raycastAll(const phys::Ray&ray,const phys::QueryFilter&filter = {})const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "PhysicsContext",
+      "signature": "std::optional<phys::RaycastQueryHit>raycastClosest(const phys::Ray&ray,const phys::QueryFilter&filter = {})const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "PhysicsContext",
+      "signature": "std::vector<phys::OverlapHit>overlapAll(const phys::Shape&shape,const phys::QueryFilter&filter = {})const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "PhysicsContext",
+      "signature": "std::vector<phys::ShapeCastQueryHit>shapeCastAll(const phys::Shape&moving_shape,vec3 delta,const phys::QueryFilter&filter = {})const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "PhysicsContext",
+      "signature": "std::optional<phys::ShapeCastQueryHit>shapeCastClosest(const phys::Shape&moving_shape,vec3 delta,const phys::QueryFilter&filter = {})const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "AudioContext",
+      "signature": "SoundHandle playSound(std::string_view path)const",
+      "classification": "mutator",
+      "manifest": "shadow_outbox.audio-play"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "AudioContext",
+      "signature": "void stopSound(SoundHandle handle)const",
+      "classification": "mutator",
+      "manifest": "shadow_outbox.audio-stop"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "AudioContext",
+      "signature": "void setBusVolume(std::string_view bus,float volume)const",
+      "classification": "mutator",
+      "manifest": "shadow_outbox.audio-bus-volume"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "AudioContext",
+      "signature": "float busVolume(std::string_view bus)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "AudioContext",
+      "signature": "bool isPlaying(SoundHandle handle)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "AudioContext",
+      "signature": "bool setSoundVolume(SoundHandle handle,float volume)const",
+      "classification": "mutator",
+      "manifest": "refuse.transaction-scope"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "AudioContext",
+      "signature": "bool setSoundPitch(SoundHandle handle,float pitch)const",
+      "classification": "mutator",
+      "manifest": "refuse.transaction-scope"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "AudioContext",
+      "signature": "bool setSoundPaused(SoundHandle handle,bool paused)const",
+      "classification": "mutator",
+      "manifest": "refuse.transaction-scope"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "AudioContext",
+      "signature": "std::optional<SoundPlaybackState>soundState(SoundHandle handle)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "AnimationContext",
+      "signature": "Animation::Status setParameter(GameObjectId object,std::string_view name,double value)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "AnimationContext",
+      "signature": "Animation::Status forceState(GameObjectId object,std::string_view state)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "SaveContext",
+      "signature": "void saveData(std::string_view slot,const Json&data)const",
+      "classification": "mutator",
+      "manifest": "shadow_outbox.save-data"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "SaveContext",
+      "signature": "std::optional<Json>loadData(std::string_view slot)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "SaveContext",
+      "signature": "std::vector<SlotInfo>listSaves()const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "RenderContext",
+      "signature": "[[nodiscard]] bool setDirectionalLightDirection(std::string_view name,vec3 direction)const",
+      "classification": "mutator",
+      "manifest": "covered.candidate"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "RenderContext",
+      "signature": "[[nodiscard]] bool setDirectionalLightIntensity(std::string_view name,float intensity)const",
+      "classification": "mutator",
+      "manifest": "covered.candidate"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "RenderContext",
+      "signature": "[[nodiscard]] bool setPointLightPosition(std::string_view name,vec3 position)const",
+      "classification": "mutator",
+      "manifest": "covered.candidate"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "RenderContext",
+      "signature": "[[nodiscard]] bool setSpotLightDirection(std::string_view name,vec3 direction)const",
+      "classification": "mutator",
+      "manifest": "covered.candidate"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "RenderContext",
+      "signature": "void setCamera(std::string_view name)const",
+      "classification": "mutator",
+      "manifest": "covered.candidate"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "RenderContext",
+      "signature": "bool setRenderValues(std::string_view buffer,std::span<const float>values)const",
+      "classification": "mutator",
+      "manifest": "refuse.transaction-scope"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "RenderContext",
+      "signature": "bool setValueGraphParameter(GameObjectId object,std::string_view parameter,std::optional<double>value)const",
+      "classification": "mutator",
+      "manifest": "refuse.transaction-scope"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "RenderContext",
+      "signature": "bool emitValueGraphEvent(GameObjectId object,std::string_view input,Animation::CurvePlaybackCommand command)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "RenderContext",
+      "signature": "void debugText(int x,int y,std::string_view text,vec4 color = {1,1,1,1},int scale = 1)const",
+      "classification": "mutator",
+      "manifest": "nonparticipant.frame-lifetime"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "RenderContext",
+      "signature": "void setRayTracingCallableRecord(std::string_view task_name,std::uint32_t index,const nlohmann::json&values)const",
+      "classification": "mutator",
+      "manifest": "reject.transaction-scope"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "RenderContext",
+      "signature": "void setRayTracingDispatchExtent(std::string_view task_name,std::uint32_t width,std::uint32_t height,std::uint32_t depth)const",
+      "classification": "mutator",
+      "manifest": "reject.transaction-scope"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
       "class": "GameContext",
       "signature": "bool actionsConfigured()const",
       "classification": "getter"
@@ -137,103 +334,6 @@
     {
       "header": "src/core/userpublic/gamecontext.hpp",
       "class": "GameContext",
-      "signature": "[[nodiscard]] bool setDirectionalLightDirection(std::string_view name,vec3 direction)const",
-      "classification": "mutator",
-      "manifest": "covered.candidate"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "[[nodiscard]] bool setDirectionalLightIntensity(std::string_view name,float intensity)const",
-      "classification": "mutator",
-      "manifest": "covered.candidate"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "[[nodiscard]] bool setPointLightPosition(std::string_view name,vec3 position)const",
-      "classification": "mutator",
-      "manifest": "covered.candidate"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "[[nodiscard]] bool setSpotLightDirection(std::string_view name,vec3 direction)const",
-      "classification": "mutator",
-      "manifest": "covered.candidate"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "std::vector<phys::RaycastQueryHit>raycastAll(const phys::Ray&ray,const phys::QueryFilter&filter = {})const",
-      "classification": "getter"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "std::optional<phys::ObjectRaycastHit>raycastClosest(const phys::Ray&ray)const",
-      "classification": "getter"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "std::optional<phys::RaycastQueryHit>raycastClosest(const phys::Ray&ray,const phys::QueryFilter&filter)const",
-      "classification": "getter"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "std::vector<phys::OverlapHit>overlapAllHits(const phys::Shape&shape,const phys::QueryFilter&filter = {})const",
-      "classification": "getter"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "std::vector<phys::ShapeCastQueryHit>shapeCastAll(const phys::Shape&moving_shape,vec3 delta,const phys::QueryFilter&filter = {})const",
-      "classification": "getter"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "std::optional<phys::ShapeCastQueryHit>shapeCastClosest(const phys::Shape&moving_shape,vec3 delta,const phys::QueryFilter&filter = {})const",
-      "classification": "getter"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "std::vector<std::string>overlapAll(const phys::Shape&shape)const",
-      "classification": "getter"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "std::vector<std::string>overlapAll(const phys::Shape&shape,const phys::QueryFilter&filter)const",
-      "classification": "getter"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "void setCamera(std::string_view name)const",
-      "classification": "mutator",
-      "manifest": "covered.candidate"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "void setRayTracingCallableRecord(std::string_view task_name,std::uint32_t index,const nlohmann::json&values)const",
-      "classification": "mutator",
-      "manifest": "reject.transaction-scope"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "void setRayTracingDispatchExtent(std::string_view task_name,std::uint32_t width,std::uint32_t height,std::uint32_t depth)const",
-      "classification": "mutator",
-      "manifest": "reject.transaction-scope"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
       "signature": "double random()",
       "classification": "mutator",
       "manifest": "covered.rng-sequence"
@@ -268,98 +368,6 @@
     {
       "header": "src/core/userpublic/gamecontext.hpp",
       "class": "GameContext",
-      "signature": "SoundHandle playSound(std::string_view path)const",
-      "classification": "mutator",
-      "manifest": "shadow_outbox.audio-play"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "void stopSound(SoundHandle handle)const",
-      "classification": "mutator",
-      "manifest": "shadow_outbox.audio-stop"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "void setBusVolume(std::string_view bus,float volume)const",
-      "classification": "mutator",
-      "manifest": "shadow_outbox.audio-bus-volume"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "float busVolume(std::string_view bus)const",
-      "classification": "getter"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "bool isPlaying(SoundHandle handle)const",
-      "classification": "getter"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "bool setSoundVolume(SoundHandle handle,float volume)const",
-      "classification": "mutator",
-      "manifest": "refuse.transaction-scope"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "bool setSoundPitch(SoundHandle handle,float pitch)const",
-      "classification": "mutator",
-      "manifest": "refuse.transaction-scope"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "bool setSoundPaused(SoundHandle handle,bool paused)const",
-      "classification": "mutator",
-      "manifest": "refuse.transaction-scope"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "std::optional<SoundPlaybackState>soundState(SoundHandle handle)const",
-      "classification": "getter"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "bool setRenderValues(std::string_view buffer,std::span<const float>values)const",
-      "classification": "mutator",
-      "manifest": "refuse.transaction-scope"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "bool setGraphParameter(GameObjectId object,std::string_view parameter,std::optional<double>value)const",
-      "classification": "mutator",
-      "manifest": "refuse.transaction-scope"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "bool emitGraphEvent(GameObjectId object,std::string_view input,Animation::CurvePlaybackCommand command)const",
-      "classification": "getter"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "Animation::Status setAnimationGraphParameter(GameObjectId object,std::string_view name,double value)const",
-      "classification": "getter"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "Animation::Status forceAnimationGraphState(GameObjectId object,std::string_view state)const",
-      "classification": "getter"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
       "signature": "void loadScene(std::string_view name)const",
       "classification": "mutator",
       "manifest": "covered.pending-scene"
@@ -369,13 +377,6 @@
       "class": "GameContext",
       "signature": "std::string currentScene()const",
       "classification": "getter"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "void debugText(int x,int y,std::string_view text,vec4 color = {1,1,1,1},int scale = 1)const",
-      "classification": "mutator",
-      "manifest": "nonparticipant.frame-lifetime"
     },
     {
       "header": "src/core/userpublic/gamecontext.hpp",
@@ -407,20 +408,31 @@
     {
       "header": "src/core/userpublic/gamecontext.hpp",
       "class": "GameContext",
-      "signature": "void saveData(std::string_view slot,const Json&data)const",
-      "classification": "mutator",
-      "manifest": "shadow_outbox.save-data"
-    },
-    {
-      "header": "src/core/userpublic/gamecontext.hpp",
-      "class": "GameContext",
-      "signature": "std::optional<Json>loadData(std::string_view slot)const",
+      "signature": "PhysicsContext physics()const noexcept",
       "classification": "getter"
     },
     {
       "header": "src/core/userpublic/gamecontext.hpp",
       "class": "GameContext",
-      "signature": "std::vector<SlotInfo>listSaves()const",
+      "signature": "AudioContext audio()const noexcept",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "AnimationContext animation()const noexcept",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "SaveContext save()const noexcept",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "RenderContext render()const noexcept",
       "classification": "getter"
     },
     {

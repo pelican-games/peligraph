@@ -30,15 +30,15 @@ class ExamplePlayerControl {
 
     void updateLightAnimation(Pelican::GameContext &ctx) {
         const auto time = static_cast<float>(ctx.time());
-        (void)ctx.setDirectionalLightDirection(
+        (void)ctx.render().setDirectionalLightDirection(
             "KeyLight", rotateAroundY({0.5f, -0.2f, 0.5f}, time));
-        (void)ctx.setDirectionalLightIntensity(
+        (void)ctx.render().setDirectionalLightIntensity(
             "FillLight", 0.05f * (0.5f + 0.5f * sinf(time * 5.0f)));
-        (void)ctx.setPointLightPosition(
+        (void)ctx.render().setPointLightPosition(
             "PointLight1",
             {static_cast<float>(cos(time) * 2.0f), 0.2f,
              static_cast<float>(-2.0f + sin(time) * 2.0f)});
-        (void)ctx.setSpotLightDirection(
+        (void)ctx.render().setSpotLightDirection(
             "SpotLight1",
             rotateAroundY({0.0f, -0.5f, 1.0f}, sinf(time * 0.5f) * 0.5f));
     }

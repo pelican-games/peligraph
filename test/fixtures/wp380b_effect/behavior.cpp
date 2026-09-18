@@ -50,9 +50,9 @@ struct EarlyEffectComponent {
         archive.prop("sound", sound);
         archive.prop("slot", slot);
         Pelican::GameContext context;
-        if (!sound.empty()) (void)context.playSound(sound);
+        if (!sound.empty()) (void)context.audio().playSound(sound);
         if (!slot.empty()) {
-            context.saveData(slot, {{"source", "component_callback"}});
+            context.save().saveData(slot, {{"source", "component_callback"}});
         }
         probe.component_callback_ran = 1;
     }
@@ -88,20 +88,20 @@ class EffectBehavior final : public Pelican::Behavior {
         context.emit(EffectEvent{380});
         if (!params.init_scene.empty()) context.loadScene(params.init_scene);
         if (!params.sound.empty()) {
-            const auto handle = context.playSound(params.sound);
+            const auto handle = context.audio().playSound(params.sound);
             probe.handle = handle.value;
-            probe.playing_after_play = context.isPlaying(handle);
-            if (params.stop_provisional) context.stopSound(handle);
-            probe.playing_after_stop = context.isPlaying(handle);
+            probe.playing_after_play = context.audio().isPlaying(handle);
+            if (params.stop_provisional) context.audio().stopSound(handle);
+            probe.playing_after_stop = context.audio().isPlaying(handle);
         }
-        context.setBusVolume("se", 0.38F);
+        context.audio().setBusVolume("se", 0.38F);
         context.setGameSettings({{"fixture", "wp380b"}});
         context.saveSettings();
         if (!params.slot.empty()) {
             const auto value = Pelican::GameContext::Json{{"slot", params.slot}};
-            context.saveData(params.slot, value);
-            probe.load_overlay_equal = context.loadData(params.slot) == value;
-            for (const auto &entry : context.listSaves()) {
+            context.save().saveData(params.slot, value);
+            probe.load_overlay_equal = context.save().loadData(params.slot) == value;
+            for (const auto &entry : context.save().listSaves()) {
                 if (entry.slot == params.slot) {
                     probe.list_overlay_timestamp_zero =
                         entry.timestamp == std::filesystem::file_time_type{};
@@ -123,10 +123,10 @@ class EffectBehavior final : public Pelican::Behavior {
             if (const auto sprite = context.spriteView(self)) {
                 document["texture"] = sprite->texture;
             }
-            context.saveData(params.retire_slot, document);
+            context.save().saveData(params.retire_slot, document);
         }
         if (params.invalid_retire_sound) {
-            (void)context.playSound("project://missing-wp380b.wav");
+            (void)context.audio().playSound("project://missing-wp380b.wav");
         }
         if (!params.retire_scene.empty()) context.loadScene(params.retire_scene);
         if (!params.retire_reject_scene.empty()) {

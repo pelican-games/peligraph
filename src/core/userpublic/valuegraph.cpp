@@ -660,7 +660,7 @@ PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
         bool applied = false;
         if (binding.type == Target::render_buffer)
             applied = render_writer ? render_writer(binding.target, prepared[i])
-                                    : context.setRenderValues(binding.target, prepared[i]);
+                                    : context.render().setRenderValues(binding.target, prepared[i]);
         else if (audio_value_writer) {
             applied = audio_value_writer(binding.target, binding.voice,
                 binding.type == Target::sound_volume ? AudioValueKind::volume : AudioValueKind::pitch,
@@ -670,14 +670,14 @@ PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
             // A connected producer can exist before start, or after reset/end.
             if (!sound) continue;
             applied = binding.type == Target::sound_volume
-                ? context.setSoundVolume(*sound, prepared[i][0])
-                : context.setSoundPitch(*sound, prepared[i][0]);
+                ? context.audio().setSoundVolume(*sound, prepared[i][0])
+                : context.audio().setSoundPitch(*sound, prepared[i][0]);
         } else if (!binding.voice) {
             const auto sound = sounds.find(binding.target);
             if (sound != sounds.end())
                 applied = binding.type == Target::sound_volume
-                    ? context.setSoundVolume(sound->second, prepared[i][0])
-                    : context.setSoundPitch(sound->second, prepared[i][0]);
+                    ? context.audio().setSoundVolume(sound->second, prepared[i][0])
+                    : context.audio().setSoundPitch(sound->second, prepared[i][0]);
         }
         if (applied) ++result.applied;
         else result.unavailable.push_back(binding.kind + ":" + binding.target);

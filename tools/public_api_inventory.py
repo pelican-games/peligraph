@@ -9,6 +9,11 @@ import re
 from pathlib import Path
 
 HEADERS = (
+    ("src/core/userpublic/gamecontext.hpp", "PhysicsContext"),
+    ("src/core/userpublic/gamecontext.hpp", "AudioContext"),
+    ("src/core/userpublic/gamecontext.hpp", "AnimationContext"),
+    ("src/core/userpublic/gamecontext.hpp", "SaveContext"),
+    ("src/core/userpublic/gamecontext.hpp", "RenderContext"),
     ("src/core/userpublic/gamecontext.hpp", "GameContext"),
     ("src/core/userpublic/gameobjects.hpp", "GameObjects"),
     ("src/core/userpublic/behavior.hpp", "BehaviorContext"),

@@ -5,7 +5,7 @@
 
 int main() {
     try {
-        Pelican::GameContext{}.playSound("project://missing.wav");
+        Pelican::GameContext{}.audio().playSound("project://missing.wav");
     } catch (const std::exception &error) {
         std::cerr << error.what() << std::endl;
         return 1;

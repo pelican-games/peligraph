@@ -1817,6 +1817,14 @@ target_compile_definitions(pelican_test_physics_off_feature_probe PRIVATE
 )
 add_test(NAME physics_off_feature_probe COMMAND pelican_test_physics_off_feature_probe)
 
+# Built here, run only by run_build_units_smoke.cmake's PELICAN_WITH_PHYSICS=OFF
+# build, exactly like pelican_test_audio_disabled_probe. C-8 made the physics
+# facade throw the named disabled error instead of answering an empty vector,
+# and this is where that is measured.
+add_executable(pelican_test_physics_disabled_probe physics_disabled_probe.cpp)
+set_target_properties(pelican_test_physics_disabled_probe PROPERTIES CXX_STANDARD 20)
+target_link_libraries(pelican_test_physics_disabled_probe PRIVATE pelican_core)
+
 pelican_define_test(projectconfig_test GROUP runtime_services pelican_core glm)
 target_compile_definitions(pelican_test_projectconfig_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -2015,8 +2023,12 @@ if(WIN32)
     target_link_libraries(pelican_wp380b_effect_fixture PRIVATE
         "$<TARGET_LINKER_FILE:pelican_test_raytracing_rt3_1_production_test>"
         glm nlohmann_json)
+    # v3 is the post-C-8 snapshot: the facade split moved audio and save data
+    # off GameContext, so a fixture compiled against v2 can no longer resolve
+    # those symbols in the host. v1 and v2 stay on disk untouched for the
+    # WP381/WP382a fixtures that only need their layouts.
     target_include_directories(pelican_wp380b_effect_fixture PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/userpublic_frozen/v2
+        ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/userpublic_frozen/v3
         ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/userpublic_frozen/v1_support
         ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/wp380b_effect
         ${Vulkan_INCLUDE_DIRS})
@@ -2033,7 +2045,7 @@ if(WIN32)
         COMMAND ${CMAKE_COMMAND}
             -DSOURCE_DEPENDENCIES=${wp380b_frozen_source_dependencies}
             -DCURRENT_USERPUBLIC=${CMAKE_SOURCE_DIR}/src/core/userpublic
-            -DFROZEN_USERPUBLIC=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/userpublic_frozen/v2
+            -DFROZEN_USERPUBLIC=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/userpublic_frozen/v3
             -P ${CMAKE_CURRENT_SOURCE_DIR}/wp380b_frozen_header_audit.cmake)
     set_tests_properties(wp380b_frozen_header_audit
         PROPERTIES LABELS "WP380b;cpu;abi")
