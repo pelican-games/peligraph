@@ -40,7 +40,7 @@ class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport�
 [[nodiscard]] bool setSpotLightDirection(std::string_view name, vec3 direction) const;
 ```
 
-setterは対象ライトのstructを書き換えるだけです（[`LightContainer::setDirectionalLightDirection()`](../../src/core/light/lightcontainer.cpp#L380)）。GPUへ渡るのはframeごとで、[`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L397) がその時点の現在値をlight UBOへ詰め、shadow用のview-projectionとsky ambientと併せて `LightContainer::update()` を呼びます。ここでの shadow 用 view-projection は、directional shadow の view family に属する各 view（ライト × cascade）の `projection * view` 行列を並べたもので、shading 側が world 座標を shadow map の座標へ写すために使います（組み立ては同関数内の [`view_projections.push_back()`](../../src/core/vkcore/renderer.cpp#L447) の周辺）。ゲームSystemの`update()`から呼べばそのframeの描画に載る、という順序です。
+setterは対象ライトのstructを書き換えるだけです（[`LightContainer::setDirectionalLightDirection()`](../../src/core/light/lightcontainer.cpp#L380)）。GPUへ渡るのはframeごとで、[`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L491) がその時点の現在値をlight UBOへ詰め、shadow用のview-projectionとsky ambientと併せて `LightContainer::update()` を呼びます。ここでの shadow 用 view-projection は、directional shadow の view family に属する各 view（ライト × cascade）の `projection * view` 行列を並べたもので、shading 側が world 座標を shadow map の座標へ写すために使います（組み立ては同関数内の [`view_projections.push_back()`](../../src/core/vkcore/renderer.cpp#L541) の周辺）。ゲームSystemの`update()`から呼べばそのframeの描画に載る、という順序です。
 
 > **設計決定:** ライトの時間変化は**ユーザー空間の責務**です。engine側にライト名（`"KeyLight"`など）を見て時刻から値を書き換える経路はありません。[`LightContainer`](../../src/core/light/lightcontainer.hpp) が持つのは現在値の配列と名前→indexのmapだけで、時刻を受け取るAPIも、scene読み込み時の原本値を控える配列もありません。従ってsetterで上書きした値を元へ戻したければ、ユーザーコード側で覚えておく必要があります。実例は [`updateLightAnimation()`](../../projects/example/code/playercontrol.cpp#L31) で、`ctx.time()`から毎フレーム**絶対値を計算して**4本のsetterへ渡しています。移行時の注意は[第9章](09_black_magic_and_gotchas.md)を参照してください。
 
@@ -207,19 +207,19 @@ eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../
 
 ### L4: Action map
 
-[`parseInputActionsJson()`](../../src/core/os/actionmap.cpp#L879) が`pelican.input_actions` v1を読みます。現対応bindingはkeyboard key/chord、mouse delta/wheel axis、WASD/arrows composite、gamepad（[`gamepad_button` / `gamepad_axis1` / `gamepad_axis2`](../../src/core/os/actionmap.cpp#L26)）などです。プロファイルは `input/profiles/*.json` から選べます（起動オプション`--input-profile`、RPC `set_input_profile`）。
+[`parseInputActionsJson()`](../../src/core/os/actionmap.cpp#L885) が`pelican.input_actions` v1を読みます。現対応bindingはkeyboard key/chord、mouse delta/wheel axis、WASD/arrows composite、gamepad（[`gamepad_button` / `gamepad_axis1` / `gamepad_axis2`](../../src/core/os/actionmap.cpp#L26)）などです。プロファイルは `input/profiles/*.json` から選べます（起動オプション`--input-profile`、RPC `set_input_profile`）。
 
 起動時だけ必要な道具の入力は [`applyInputActionOverlays()`](../../src/project/inputactionoverlay.cpp#L194) で project actions の後ろへ合成します。bundle URI は `EngineLaunchConfig::input_action_overlays` にだけあり、`ProjectBasicConfig` には入りません。project profile は project 定義だけ、overlay profile はその overlay 定義だけを相手に検証してから binding を併合するため、片方の profile がもう片方の action を偶然取り込むこともありません。action / action set の同名は衝突名を含む例外です。入力 runtime の project-only 読み込みは [`loadInputActionsRuntimeSourceFromProject()`](../../src/core/userpublic/userinput.cpp#L28)、明示的な startup-overlay 経路は [`loadInputActionsRuntimeSourceWithStartupActionOverlays()`](../../src/core/userpublic/userinput.cpp#L42) に分かれています。
 
-action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L150) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L315)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1088) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
+action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L150) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L315)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1094) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
 
-Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`pose`型は実装済みで（WP130/132）、[`InputActionFrame::pose()`](../../src/core/os/actionmap.cpp#L867) は`poses` mapから返し、未サンプルならdefaultの`ActionPose`を返します。XR pose providerがない環境（flat）ではpose sampleが来ないため常にdefaultです。
+Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`pose`型は実装済みで（WP130/132）、[`InputActionFrame::pose()`](../../src/core/os/actionmap.cpp#L873) は`poses` mapから返し、未サンプルならdefaultの`ActionPose`を返します。XR pose providerがない環境（flat）ではpose sampleが来ないため常にdefaultです。
 
-> 🧩 **難所 — 消費は set 単位で効く**([`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1088))
+> 🧩 **難所 — 消費は set 単位で効く**([`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1094))
 >
 > **何をする所か**: action set stack を高優先から走査し、各 action の binding を評価します。使われた key / mouse axis / gamepad control を記録して、下位 set が同じ control を二重に読まないようにします。
 >
-> **素朴に読むと**: `ConsumedControls` が `consumed` / `consumed_by_set` / `consumed_by_action` と 3 つあり、なぜ 3 段要るのかがコードからは読めません。鍵は **binding の評価が参照するのは常に `consumed` だけ**という点です(`readBinding(resolved, snapshot, wheel, consumed, action.type)`)。`consumed_by_action` は action を抜けるときに `consumed_by_set` へ、`consumed_by_set` は set を抜けるときに `consumed` へ、と**一段遅れて**合流します。つまり同じ set の中では、どの action も互いの入力を奪えません。おかげで JSON の `actions` 配列を並べ替えても結果が変わらず、決定性が宣言順に依存しません。`consumed_by_action.merge(...)` を `consumed.merge(...)` へ 1 行内側で書き換えると「同じ set の先頭 action が W を食う」挙動になり、順序依存が静かに入ります。その代償として、同一 action に複数 binding があるときは互いを見ないまま [`mergeSample()`](../../src/core/os/actionmap.cpp#L490) で**加算**され、`clampAxis()` で [-1,1] へ丸められます。WASD とスティックを同時に倒して 2.0 が 1.0 に飽和するのは仕様であって取りこぼしではありません。`released` も `any_release && !held` と**全 binding を見た後で**決めるので、どれかを離しても他が押されていれば立ちません。
+> **素朴に読むと**: `ConsumedControls` が `consumed` / `consumed_by_set` / `consumed_by_action` と 3 つあり、なぜ 3 段要るのかがコードからは読めません。鍵は **binding の評価が参照するのは常に `consumed` だけ**という点です(`readBinding(resolved, snapshot, wheel, consumed, action.type)`)。`consumed_by_action` は action を抜けるときに `consumed_by_set` へ、`consumed_by_set` は set を抜けるときに `consumed` へ、と**一段遅れて**合流します。つまり同じ set の中では、どの action も互いの入力を奪えません。おかげで JSON の `actions` 配列を並べ替えても結果が変わらず、決定性が宣言順に依存しません。`consumed_by_action.merge(...)` を `consumed.merge(...)` へ 1 行内側で書き換えると「同じ set の先頭 action が W を食う」挙動になり、順序依存が静かに入ります。その代償として、同一 action に複数 binding があるときは互いを見ないまま [`mergeSample()`](../../src/core/os/actionmap.cpp#L496) で**加算**され、`clampAxis()` で [-1,1] へ丸められます。WASD とスティックを同時に倒して 2.0 が 1.0 に飽和するのは仕様であって取りこぼしではありません。`released` も `any_release && !held` と**全 binding を見た後で**決めるので、どれかを離しても他が押されていれば立ちません。
 >
 > **骨子**:
 > ```text
@@ -251,7 +251,7 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 - active camera名
 - optional orbit/follow/fly controller定義
 
-加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L109) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L114) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1431)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L516)）です。
+加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L109) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L114) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1525)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L516)）です。
 
 ### scene cameraロード
 
@@ -675,7 +675,7 @@ audioと同じく、persistenceも「用意」と「書き込み」に割れて�
 >
 > **不変条件**: 1 フェーズ実行につき staged frame は 1 枚。staged frame の palette は必ず自前バッファで、呼び出し側のポインタを保持しない。`pose_accessed` が立ったら palette は必ず作り直す(最適化するなら「書き込みがあったか」を別途追跡することになり、読み取り専用 acquire との区別を ABI へ足す必要があります)。
 
-> 🧩 **難所 — 割り込みとスナップショット**([`Impl::evaluate()`](../../src/core/userpublic/animation/animgraph.cpp#L714) / [`chooseTransition()`](../../src/core/userpublic/animation/animgraph.cpp#L674))
+> 🧩 **難所 — 割り込みとスナップショット**([`Impl::evaluate()`](../../src/core/userpublic/animation/animgraph.cpp#L714) / [`chooseTransition()`](../../src/core/userpublic/animation/animgraph.cpp#L675))
 >
 > **何をする所か**: 1 tick 分のグラフ評価です。現在のポーズを作り、遷移判定を行い、必要なら遷移を開始 / 前進させ、local→model→palette を経て publish します。
 >
@@ -743,7 +743,7 @@ class PELICAN_API Behavior {
 > behavior boundary. A deferred create has no live EntityId yet and
 > therefore returns invalidGameObjectId.
 
-WP380e 以降、遅延は `BehaviorContext` の override だけの性質ではありません。基底の [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L85) / [`createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L98) 自身が [`internal::behaviorCallbackActive()`](../../src/core/gamelogic/behaviorarena.cpp#L1588) を見て、behavior callback の中なら arena へ defer し `invalidGameObjectId` を返します。つまり behavior から `GameContext` として呼んでも即時生成には落ちません（`removeObject` は両者とも [`GameObjects::remove()`](../../src/core/userpublic/gameobjects.cpp#L32) 経由で、遅延するかは同関数の [`routeBehaviorObjectRemoval()`](../../src/core/userpublic/gameobjects.cpp#L41) が決めます）。
+WP380e 以降、遅延は `BehaviorContext` の override だけの性質ではありません。基底の [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L85) / [`createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L98) 自身が [`internal::behaviorCallbackActive()`](../../src/core/gamelogic/behaviorarena.cpp#L1485) を見て、behavior callback の中なら arena へ defer し `invalidGameObjectId` を返します。つまり behavior から `GameContext` として呼んでも即時生成には落ちません（`removeObject` は両者とも [`GameObjects::remove()`](../../src/core/userpublic/gameobjects.cpp#L32) 経由で、遅延するかは同関数の [`routeBehaviorObjectRemoval()`](../../src/core/userpublic/gameobjects.cpp#L41) が決めます）。
 
 ### 登録マクロ
 
@@ -828,21 +828,21 @@ PELICAN_REGISTER_BEHAVIOR(TriggerBehavior, "wp179_trigger_behavior", 1);
 
 ### Arena
 
-[`DECLARE_MODULE(BehaviorAttachmentArena)`](../../src/core/gamelogic/behaviorarena.hpp#L174) が生存・初期化・event配送・遅延構造変更・owner解放を持ちます。
+[`DECLARE_MODULE(BehaviorAttachmentArena)`](../../src/core/gamelogic/behaviorarena.hpp#L176) が生存・初期化・event配送・遅延構造変更・owner解放を持ちます。
 
 | 経路 | 使うAPI |
 |---|---|
-| scene由来 | `prepareResolvedSceneBehaviorAttachments()` → `prepareSceneReconciliation(desired)` → [`PreparedBehaviorSceneReconciliation`](../../src/core/gamelogic/behaviorarena.hpp#L137) の `publish()`（`noexcept`）/ `activate()`（`onInit`。唯一throwしうる）/ `rollback()` / `finish()`（`noexcept`）。scene load executor（[第3章 §3.5](03_project_and_loading.md)）が段ごとに呼ぶ。`publishSceneAttachments()` / `activatePublished()` は宣言が残っているが scene load からは呼ばれない |
-| 編集RPC由来 | `prepareEditorEdits(edits)` → [`PreparedBehaviorAttachmentEdits`](../../src/core/gamelogic/behaviorarena.hpp#L118) の `publish()` / `rollback()` / `finish()`（全て`noexcept`） |
+| scene由来 | `prepareResolvedSceneBehaviorAttachments()` → `prepareSceneReconciliation(desired)` → [`PreparedBehaviorSceneReconciliation`](../../src/core/gamelogic/behaviorarena.hpp#L139) の `publish()`（`noexcept`）/ `activate()`（`onInit`。唯一throwしうる）/ `rollback()` / `finish()`（`noexcept`）。scene load executor（[第3章 §3.5](03_project_and_loading.md)）が段ごとに呼ぶ。`publishSceneAttachments()` / `activatePublished()` は宣言が残っているが scene load からは呼ばれない |
+| 編集RPC由来 | `prepareEditorEdits(edits)` → [`PreparedBehaviorAttachmentEdits`](../../src/core/gamelogic/behaviorarena.hpp#L120) の `publish()` / `rollback()` / `finish()`（全て`noexcept`） |
 | teardown | `deactivateAllForTeardown()` / `drainDeferredMutationsForTeardown()` / `releaseOwner(owner)` |
 
-attachment identityは [`BehaviorAttachmentIdentity{handle, attachment_seq}`](../../src/core/gamelogic/behaviorarena.hpp#L83) です。scene由来のseqは [`sceneBehaviorAttachmentSeq(object_index, component_index)`](../../src/core/gamelogic/behaviorarena.hpp#L165) が上位32bit/下位32bitへpackして作るので、同じsceneからは常に同じseqが出ます。編集の種別は [`BehaviorAttachmentEditKind`](../../src/core/gamelogic/behaviorarena.hpp#L96) の5種（`attach` / `remove` / `set_params` / `insert_component` / `remove_component`）です。
+attachment identityは [`BehaviorAttachmentIdentity{handle, attachment_seq}`](../../src/core/gamelogic/behaviorarena.hpp#L83) です。scene由来のseqは [`sceneBehaviorAttachmentSeq(object_index, component_index)`](../../src/core/gamelogic/behaviorarena.hpp#L167) が上位32bit/下位32bitへpackして作るので、同じsceneからは常に同じseqが出ます。編集の種別は [`BehaviorAttachmentEditKind`](../../src/core/gamelogic/behaviorarena.hpp#L96) の5種（`attach` / `remove` / `set_params` / `insert_component` / `remove_component`）です。
 
 teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-callbacks`と`deferred-mutations`がこのarenaに対応します。
 
 ### DLL reload
 
-[`GameLogicReloader::validateCandidate()`](../../src/core/gamelogic/gamelogicreload.cpp#L392) は [`ResolvedScene::behaviorReloadSources()`](../../src/core/loader/resolvedscene.hpp#L270) からcore-privateな中立DTOを取得し、[`internal::validateBehaviorReloadSources()`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L85) へ渡します。DTOはauthored `source_params` とscene / object / authored component indexのprovenanceを保ち、候補DLL側のcodecだけが [`candidate->canonicalize_params(source.source_params)`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L123) を一度実行します。これにより `schema_version` の差分と型の消滅を候補DLL採用前に検証しつつ、active側の既定値で二重補完することを防ぎます。validatorはcore-privateであり、`src/core/userpublic` の公開面は変更していません。
+[`GameLogicReloader::validateCandidate()`](../../src/core/gamelogic/gamelogicreload.cpp#L431) は [`ResolvedScene::behaviorReloadSources()`](../../src/core/loader/resolvedscene.hpp#L270) からcore-privateな中立DTOを取得し、[`internal::validateBehaviorReloadSources()`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L85) へ渡します。DTOはauthored `source_params` とscene / object / authored component indexのprovenanceを保ち、候補DLL側のcodecだけが [`candidate->canonicalize_params(source.source_params)`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L123) を一度実行します。これにより `schema_version` の差分と型の消滅を候補DLL採用前に検証しつつ、active側の既定値で二重補完することを防ぎます。validatorはcore-privateであり、`src/core/userpublic` の公開面は変更していません。
 
 回帰テストは [`test/run_behavior_dll_reload.ps1`](../../test/run_behavior_dll_reload.ps1) の9ケースです（`test/CMakeLists.txt`の`foreach(wp162_case ...)`）。
 
@@ -871,7 +871,7 @@ teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-
 >
 > **不変条件**: 指紋に入れる項目・順序・キー名を変えると、既存の全 behavior が `schema_changed_without_version_bump` になります(変えるなら reload 側の互換方針とセットで)。`ordered_json` を `json` に変えない。指紋生成はデフォルト値の encode を経由するので、この経路を短絡させない。
 
-> 🧩 **難所 — 例外を捨ててから unload**([`GameLogicReloader::reloadTransaction()`](../../src/core/gamelogic/gamelogicreload.cpp#L518))
+> 🧩 **難所 — 例外を捨ててから unload**([`GameLogicReloader::reloadTransaction()`](../../src/core/gamelogic/gamelogicreload.cpp#L557))
 >
 > **何をする所か**: 候補 DLL のシャドウコピーを検証し、teardown → 旧 DLL の unload → 新 DLL の load → rebuild を 1 つの transaction として実行します。どこで失敗しても旧 DLL の状態へ戻すのがロールバック側の仕事です。
 >
@@ -888,7 +888,7 @@ teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-
 >               rebuild() が失敗したら teardown + unload して active を捨てる
 > ```
 >
-> **手がかり**: [`unload()`](../../src/core/gamelogic/gamelogicreload.cpp#L380) は `noexcept` で、`FreeLibrary` / `dlclose` の前に `releaseGameLogicRegistrations(owner)` を呼びます — owner 単位の登録解除(§5.2)が先、コード解放が後です。候補の後始末が [`removeFileNoThrow()`](../../src/core/gamelogic/gamelogicreload.cpp#L224) なのは `noexcept` 文脈から例外を漏らさないためで、`.pdb` も一緒に消します。`ReloadStateGuard` は transaction 中だけ `reload_in_progress` を立てる RAII です。候補の検証は load 前ではなく [`validateCandidate()`](../../src/core/gamelogic/gamelogicreload.cpp#L392) が**一度ロードして即 unload する**形で行うので、teardown に入る時点で候補は既に 1 回開かれています。回帰は [`test/run_game_logic_reload.ps1`](../../test/run_game_logic_reload.ps1)(壊れた DLL / ABI 不一致の後も旧挙動が続くこと、participant の `applied` / `failed` カウンタ、`systems=1` で登録が漏れないこと)。
+> **手がかり**: [`unload()`](../../src/core/gamelogic/gamelogicreload.cpp#L419) は `noexcept` で、`FreeLibrary` / `dlclose` の前に `releaseGameLogicRegistrations(owner)` を呼びます — owner 単位の登録解除(§5.2)が先、コード解放が後です。候補の後始末が [`removeFileNoThrow()`](../../src/core/gamelogic/gamelogicreload.cpp#L263) なのは `noexcept` 文脈から例外を漏らさないためで、`.pdb` も一緒に消します。`ReloadStateGuard` は transaction 中だけ `reload_in_progress` を立てる RAII です。候補の検証は load 前ではなく [`validateCandidate()`](../../src/core/gamelogic/gamelogicreload.cpp#L431) が**一度ロードして即 unload する**形で行うので、teardown に入る時点で候補は既に 1 回開かれています。回帰は [`test/run_game_logic_reload.ps1`](../../test/run_game_logic_reload.ps1)(壊れた DLL / ABI 不一致の後も旧挙動が続くこと、participant の `applied` / `failed` カウンタ、`systems=1` で登録が漏れないこと)。
 >
 > **不変条件**: `catch` の中で DLL を unload しない。`previous_unloaded` の 2 経路を 1 本化しない(旧ハンドルの再利用は「まだ落としていない」ときだけ正しい)。後始末経路は `noexcept` を保ち、`removeFileNoThrow()` を throw する削除へ替えない。ロールバックの `rebuild()` が失敗したら active を残さず捨てる。
 
@@ -941,7 +941,7 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 この節が扱うのは**平坦な**フィールド宣言（v2の `StructFieldSchema` 列）です。`Flags` と `List` を含む宣言は再帰的な `SchemaNode` へ起こされ、`$list` / `$row` の封筒付きJSONを使い、登録もv3入口へ回ります。その形と受理規則は[第3章 §3.11](03_project_and_loading.md) に、DLL境界での入口選択は [§2.11](02_runtime_lifecycle.md) にあります。
 
-> 🧩 **難所 — 3 回舐めてから swap**([`decodeBehaviorParams()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L1001))
+> 🧩 **難所 — 3 回舐めてから swap**([`decodeBehaviorParams()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L903))
 >
 > **何をする所か**: JSON を `Params` へ復元します。失敗した場合は destination を**一切書き換えません**。成功時の反映は `swap` 1 回で、これが behavior のライブ params 差し替えの原子性そのものです。
 >
@@ -958,7 +958,7 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 > 4. swap(destination, temporary)        ← ここまで destination は無傷
 > ```
 >
-> **手がかり**: `setStructDefault` / `decodeStructPolicyField` / `encodeStructPolicyField` はどれも `Declaration::member`(メンバポインタが非型テンプレート引数として型へ埋まっている)経由で `temporary.*member` に触るので、実行時のオフセット表は存在しません。テストは [`structfieldschema_test.cpp`](../../test/structfieldschema_test.cpp#L119) の "…scalar keys atomically" と [`BehaviorParams` 検証テスト](../../test/structfieldschema_test.cpp#L149) の "…without partial publication"。
+> **手がかり**: `setStructDefault` / `decodeStructPolicyField` / `encodeStructPolicyField` はどれも `Declaration::member`(メンバポインタが非型テンプレート引数として型へ埋まっている)経由で `temporary.*member` に触るので、実行時のオフセット表は存在しません。テストは [`structfieldschema_test.cpp`](../../test/structfieldschema_test.cpp#L131) の "…scalar keys atomically" と [`BehaviorParams` 検証テスト](../../test/structfieldschema_test.cpp#L161) の "…without partial publication"。
 >
 > **不変条件**: 3 本目の encode fold を「無駄だから」と消さない。unknown 検査を decode の後ろへ動かさない(エラーコードの優先順位が変わります)。destination への書き込みは最後の `swap` 1 回だけに保つ。`Params` に throw する swap や非 nothrow なムーブを持ち込まない(`using std::swap; swap(a,b);` の 2 段 ADL(実引数依存探索 — 引数の型が属する名前空間からも関数を探す C++ の名前探索規則。`using std::swap;` で既定を候補に入れつつ、その型の名前空間に専用の `swap` があればそちらが選ばれます)形と `is_nothrow_swappable_v` が見ている式は同じものなので、throw するメンバ swap を足すと静かに static_assert が落ちます)。
 
@@ -992,12 +992,12 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 ### 退役済みobjectのsnapshot view
 
-`retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1155)）、2つの向きに使います。
+`retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1160)）、2つの向きに使います。
 
 - **読み**: [`retiredComponent(id, component_id)`](../../src/core/loader/effecttransaction.cpp#L462) が destroy token の中のcomponentを返し、`GameContext::localTransform()` / `spriteView()` がそれを**先に**引きます（[`GameContext::localTransform()`](../../src/core/userpublic/gamecontext.cpp#L119)）。だから `onDestroy` から自分の最後のtransformを読めます。
 - **書き**: [`rejectRetiredMutation(api, id)`](../../src/core/loader/effecttransaction.cpp#L473) が同じ列を引き、当たれば `SceneRetiredObjectMutationRejected` を診断へ1件積んで `true` を返します。呼び手のsetterは `false` を返すだけで**throwしません**（`onDestroy` は `noexcept` です）。
 
-`onDestroy` の間だけ phase を切り替えるのが [`EffectDestroyScope`](../../src/core/loader/effecttransaction.cpp#L748) で、使うのは [`BehaviorAttachmentArena::destroyInstance()` の中の1行](../../src/core/gamelogic/behaviorarena.cpp#L993) の1箇所です。phase が `destroy` の間は、各sinkのcatch節が**例外を診断へ変換して飲みます**（それ以外の phase では `throw` し直します — 例えば [`playSound()` の catch](../../src/core/loader/effecttransaction.cpp#L156)）。`onDestroy` が `noexcept` である以上、そこから投げれば `std::terminate` なので、「捨てる」ではなく「記録して返る」に倒してあります。同じ理由で `loadScene()` も phase で分かれ、`destroy` 中は [`requestLoadDuringRetire()`](../../src/core/loader/effecttransaction.cpp#L448) 経由になり、拒否されれば `scene_retire_load_rejected@1` が記録されます。
+`onDestroy` の間だけ phase を切り替えるのが [`EffectDestroyScope`](../../src/core/loader/effecttransaction.cpp#L748) で、使うのは [`BehaviorAttachmentArena::destroyInstance()` の中の1行](../../src/core/gamelogic/behaviorarena.cpp#L890) の1箇所です。phase が `destroy` の間は、各sinkのcatch節が**例外を診断へ変換して飲みます**（それ以外の phase では `throw` し直します — 例えば [`playSound()` の catch](../../src/core/loader/effecttransaction.cpp#L156)）。`onDestroy` が `noexcept` である以上、そこから投げれば `std::terminate` なので、「捨てる」ではなく「記録して返る」に倒してあります。同じ理由で `loadScene()` も phase で分かれ、`destroy` 中は [`requestLoadDuringRetire()`](../../src/core/loader/effecttransaction.cpp#L448) 経由になり、拒否されれば `scene_retire_load_rejected@1` が記録されます。
 
 ### coalesceの規則
 

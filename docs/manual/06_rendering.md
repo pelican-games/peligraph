@@ -2552,7 +2552,7 @@ layout の骨格(`acceleration_structure` 以外は v1 / v2 共通):
 | version 1 | `LayoutV1Q` | 行の `instance_custom_index` は**常に q(行の正規順の添字)で上書き**され、authored な値を持てない。`acceleration_structure` は書けない |
 | version 2 | `LayoutV2` | `acceleration_structure` と `pelican_ray_instance` が使える |
 
-同一プロセス内で mode が変わる差し替え(グラフのリロード等)は `pelican.ray_layout_mode_change_requires_restart@1` で拒否されます。組み込みの `pelican_ray_instance` codec は **mode が v2 のときだけ codec 表に載ります**([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1605))。codec 表は既定で 7 件、v2 プロジェクトだけ 8 件目としてこれが載る、という形です([第4章](04_scene_ecs.md) §4.2 に「条件付き」として別項があります)。
+同一プロセス内で mode が変わる差し替え(グラフのリロード等)は `pelican.ray_layout_mode_change_requires_restart@1` で拒否されます。組み込みの `pelican_ray_instance` codec は **mode が v2 のときだけ codec 表に載ります**([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1597))。codec 表は既定で 7 件、v2 プロジェクトだけ 8 件目としてこれが載る、という形です([第4章](04_scene_ecs.md) §4.2 に「条件付き」として別項があります)。
 
 ### 10 状態表
 
@@ -2589,7 +2589,7 @@ scene JSON の `components` に書きます。
 | `custom_index` | 0〜`0x00ffffff`(**24 bit** — この値がそのまま Vulkan の TLAS インスタンス記録 `VkAccelerationStructureInstanceKHR::instanceCustomIndex` へ入り、その field 幅が 24 bit だからです。エンジンが決めた上限ではありません) | 常に 0(AS 宣言の `defaults` に `custom_index` は書けません — allowlist は `mask` / `instance_flags` / `geometry_flags` の 3 キーだけ) |
 
 - **3 つとも省略した空のコンポーネントは `pelican.ray_instance_empty@1` で拒否**されます。一方 `"instance_flags": []` は「空という明示的な上書き」として有効です(欠落と空配列は別)。
-- `force_opaque` と `force_no_opaque` の同時指定は `pelican.ray_as_conflicting_instance_flags@1`、未知のフラグ名は `pelican.ray_as_unknown_flag@1`、未知のフィールドは `pelican.ray_instance_unknown_field@1`、範囲外は `pelican.ray_instance_field_range@1` です([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1144))。
+- `force_opaque` と `force_no_opaque` の同時指定は `pelican.ray_as_conflicting_instance_flags@1`、未知のフラグ名は `pelican.ray_as_unknown_flag@1`、未知のフィールドは `pelican.ray_instance_unknown_field@1`、範囲外は `pelican.ray_instance_field_range@1` です([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1136))。
 - **`overrides`はWP382dで受理します**。`List`の各行で対象occurrenceのmask/flags/custom indexを上書きし、省略値はobject/layoutから継承します。行削除は継承へ戻ります([第3章](03_project_format.md) §3.10)。
 - `simplemodelview` の無いオブジェクトに付けると `pelican.ray_instance_not_ray_traced@1`。BLAS 適格な静的ジオメトリが 1 つも無い場合も同じコードです(スキン / morph / VAT のプリミティブは静的 BLAS に入りません — [ソースコード読解ガイド第11章](../source-code-guide/11_ray_query_acceleration_structures.md))。
 - 上書きは**フィールド単位**です。書かなかったフィールドは AS 宣言の `defaults`(それも無ければ canonical 既定 mask=255 / flags なし / custom_index=0)になります([rayinstance.hpp](../../src/core/userpublic/components/rayinstance.hpp#L23))。

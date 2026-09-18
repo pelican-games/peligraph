@@ -142,14 +142,14 @@ pelican2/
 | シェーダ stem 参照 | [第6章](06_rendering.md) | [`makeShaderReference()`](../../src/core/shader/shaderreference.cpp#L100) `makeShaderReference`(拡張子 hard error はここ) |
 | `input/actions.json`(pelican.input_actions) | [第7章](07_input_ui.md) | [os/actionmap.cpp](../../src/core/os/actionmap.cpp)(schema/version ゲートは `input_actions_schema` の照合箇所) |
 | `ui/ui_overlay.json` | [第7章](07_input_ui.md) | [loader/basicconfig.cpp](../../src/core/loader/basicconfig.cpp) `uiConfigJson()` → [renderer/uicontainer.cpp](../../src/core/renderer/uicontainer.cpp) |
-| collider コンポーネント | [第4章](04_scene_ecs.md)・[第8章](08_gameplay.md) | 受理の正: [`decodeCollider()`](../../src/core/loader/componentcodec.cpp#L930) `decodeCollider`(**closed schema** = 列挙した鍵以外を拒否する schema。未知の鍵を黙って無視する open な受理はしない)。ランタイム型は [userpublic/components/collider.cpp](../../src/core/userpublic/components/collider.cpp) |
-| camera コンポーネント / controller | [第4章](04_scene_ecs.md)・[第8章](08_gameplay.md) | 受理の正: [`decodeCamera()`](../../src/core/loader/componentcodec.cpp#L654) `decodeCamera`(closed schema。ネスト `perspective` / `orthographic` を含む)。controller の解釈は [renderer/camera.cpp](../../src/core/renderer/camera.cpp) `parseSceneCameraController` |
+| collider コンポーネント | [第4章](04_scene_ecs.md)・[第8章](08_gameplay.md) | 受理の正: [`decodeCollider()`](../../src/core/loader/componentcodec.cpp#L922) `decodeCollider`(**closed schema** = 列挙した鍵以外を拒否する schema。未知の鍵を黙って無視する open な受理はしない)。ランタイム型は [userpublic/components/collider.cpp](../../src/core/userpublic/components/collider.cpp) |
+| camera コンポーネント / controller | [第4章](04_scene_ecs.md)・[第8章](08_gameplay.md) | 受理の正: [`decodeCamera()`](../../src/core/loader/componentcodec.cpp#L646) `decodeCamera`(closed schema。ネスト `perspective` / `orthographic` を含む)。controller の解釈は [renderer/camera.cpp](../../src/core/renderer/camera.cpp) `parseSceneCameraController` |
 | pelican.transform_seq(JSONL) | [第5章](05_assets.md) | [playback/seqplayer.cpp](../../src/core/playback/seqplayer.cpp) `TransformSequence::fromJsonLines` |
 | pelican.vat(GLB extras) | [第5章](05_assets.md) | 純ロジック: [model/vatformat.cpp](../../src/core/model/vatformat.cpp) / 再生: [playback/vatplayer.cpp](../../src/core/playback/vatplayer.cpp) |
 | pelican.material / `.surface` | [第6章](06_rendering.md) | 純ロジック: [project/materialformat.cpp](../../src/project/materialformat.cpp)・[project/surfaceformat.cpp](../../src/project/surfaceformat.cpp)・[project/materiallowering.cpp](../../src/project/materiallowering.cpp) / 接続: [shader/surfacecompiler.cpp](../../src/core/shader/surfacecompiler.cpp)・[material/](../../src/core/material) |
 | rendering config の `snapshots` / canonical anchor | [第6章](06_rendering.md) | [project/featurecompose.cpp](../../src/project/featurecompose.cpp) |
 | pelican.import(納品 manifest) | [第5章](05_assets.md) | [project/importmanifest.cpp](../../src/project/importmanifest.cpp) `parseImportManifestJson`(利用者: [devcli/importcommand.cpp](../../src/devcli/importcommand.cpp)) |
-| JSON-RPC エンベロープ | [第10章](10_tools.md) | 純ロジック: [project/jsonrpc.cpp](../../src/project/jsonrpc.cpp) / メソッド実装: [communication/rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1315) `configureEngineRpcHandlers`(`setHandler` 群はすべてこの関数の中。エディタ系メソッドの実体は [editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp) ほか) |
+| JSON-RPC エンベロープ | [第10章](10_tools.md) | 純ロジック: [project/jsonrpc.cpp](../../src/project/jsonrpc.cpp) / メソッド実装: [communication/rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1231) `configureEngineRpcHandlers`(`setHandler` 群はすべてこの関数の中。エディタ系メソッドの実体は [editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp) ほか) |
 | pelican.frame_plan(出力専用) | [第6章](06_rendering.md) | 生成: [renderingpass/frameplanner.cpp](../../src/core/renderingpass/frameplanner.cpp) |
 | `test/golden/inventory.json`(pelican.golden_inventory v1 = golden ケースの登録簿) | [第6章](06_rendering.md) | [test/golden_inventory.py](../../test/golden_inventory.py)(生成と検証)/ gate: [test/ci/test_golden_inventory.py](../../test/ci/test_golden_inventory.py)。**golden ケースは inventory への登録が必須** |
 
@@ -234,7 +234,7 @@ WP150 の flat な `StructFieldSchema` に加えて、WP382a で
 [`Flags`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L194) /
 [`List`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L222)、**深さ 2 まで**。
 list の list は compile 時に拒否)が入りました。wire 側の `$list` エンベロープ(`v` / `next_id` / 行 id)の
-decode / encode は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L435) です。
+decode / encode は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L468) です。
 `List` / `Flags` を含む宣言だけが v3 の登録入口を通り、v2 の record は `static_assert` で凍結されています。
 **engine 同梱の component はまだ 1 つも `List` を宣言していません**(使っているのは
 `test/fixtures/wp382a_schema/` の v3 DLL だけ)。
@@ -253,7 +253,7 @@ owner の払い出しと builtin 登録は game DLL のヘッダから外れ、
 
 ### RPC(外部ツールの操作面)
 
-エンベロープ検証(JSON-RPC 2.0 / NDJSON)は純ロジック [project/jsonrpc.cpp](../../src/project/jsonrpc.cpp)、メソッド実装とエンジンへのバインドは [`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L1315) の `configureEngineRpcHandlers`(`runEngineRpcServer` はこれを組み立てて回すだけの薄いエントリです)。`RpcServer(istream, ostream) + setHandler` の汎用ディスパッチャ構造なので、メソッド追加はハンドラ登録 1 箇所です。OFF ビルド時のスタブは [rpcserver_stub.cpp](../../src/core/communication/rpcserver_stub.cpp)。
+エンベロープ検証(JSON-RPC 2.0 / NDJSON)は純ロジック [project/jsonrpc.cpp](../../src/project/jsonrpc.cpp)、メソッド実装とエンジンへのバインドは [`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L1231) の `configureEngineRpcHandlers`(`runEngineRpcServer` はこれを組み立てて回すだけの薄いエントリです)。`RpcServer(istream, ostream) + setHandler` の汎用ディスパッチャ構造なので、メソッド追加はハンドラ登録 1 箇所です。OFF ビルド時のスタブは [rpcserver_stub.cpp](../../src/core/communication/rpcserver_stub.cpp)。
 
 - **エディタ系メソッドの実体は別ファイル**です。`rpcserver.cpp` の `setHandler` は薄い入口で、編集・undo/redo・ジャーナル・preview・アセット問い合わせは [editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp) / [editorjournal.cpp](../../src/core/communication/editorjournal.cpp) / [editorpreviewservice.cpp](../../src/core/communication/editorpreviewservice.cpp) / [editorassetqueryruntime.cpp](../../src/core/communication/editorassetqueryruntime.cpp) にあります(組み立ては [editorruntimefactory.cpp](../../src/core/communication/editorruntimefactory.cpp))
 - **経路が 2 つある**点に注意してください。`--headless --rpc` は stdin を読み切るまでループを占有する blocking 経路、ウィンドウモードの `--rpc` は [windowedrpchost.cpp](../../src/core/communication/windowedrpchost.cpp) がリクエストを有界キューに積み、[loop.cpp](../../src/core/appflow/loop.cpp) が**フレーム境界で** `processFrameBoundary()` を呼んで捌く経路です(→ [第10章](10_tools.md))
@@ -287,7 +287,7 @@ owner の払い出しと builtin 登録は game DLL のヘッダから外れ、
 | オブジェクトに毎フレーム処理を付ける | プロジェクトの `code/` に `PELICAN_REGISTER_BEHAVIOR` + scene 側に `behavior` コンポーネント(エンジン側は触らない) | [第4章](04_scene_ecs.md)・[第8章](08_gameplay.md) |
 | ポストエフェクトを足す | feature fragment JSON + stem シェーダ(エンジンコード不要のことが多い) | [第6章](06_rendering.md) |
 | compute パスを足す | config の `buffers`/`compute_tasks` + `.comp` stem(コード不要) | [第6章](06_rendering.md) |
-| rpc メソッドを足す | [`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L1315) `configureEngineRpcHandlers` にハンドラ追加 | [第10章](10_tools.md) |
+| rpc メソッドを足す | [`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L1231) `configureEngineRpcHandlers` にハンドラ追加 | [第10章](10_tools.md) |
 | エディタ操作を足す | [communication/editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp) に操作を実装 → `rpcserver.cpp` の `setHandler` から呼ぶ(ImGui Inspector も同じ関数を通す) | [第10章](10_tools.md) |
 | GPU デバッグラベルを付ける | [vkcore/debugutils.hpp](../../src/core/vkcore/debugutils.hpp) の `nameImage` / `nameImageView` / `nameBuffer` / `beginCommandLabel`(有効化は `--gpu-labels`。RT には `rt/<name>/surface/<n>/image` という規範名が [rendertargetcontainer.cpp](../../src/core/renderingpass/rendertargetcontainer.cpp) `nameRenderTargetSurfaces()` で自動的に付きます) | [第6章](06_rendering.md) |
 | 新しい交換形式(JSON)を足す | [src/project/](../../src/project) に純ロジックパーサ + fixture + schema/version ゲート | [第1章](01_overview.md) 原則 |

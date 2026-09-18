@@ -87,7 +87,7 @@
 
 **prepare / publish / commit** — pelican2 全体で繰り返される 3 点セット。**prepare** で「投げうる準備(確保・コピー・検証)」を全部済ませ、**publish** は失敗しようのない差し替えだけにし、**commit** で外から見える状態を確定させます。publish が no-throw なので「半分だけ適用された状態」が原理的に作れません。初出: [第4章 §4.3](04_scene_ecs.md#43-シーンロードの流れ)。
 
-**retire(退役)** — 旧シーンを片付ける段。ここで旧オブジェクトの `onDestroy` が走り、旧 entity は既に unpublish 済みなので**新シーンからは見えません**。retire 中に新たなシーンロードを要求しても拒否されます。初出: [第4章 §4.3](04_scene_ecs.md#43-シーンロードの流れ)。([scene.cpp の requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1236))
+**retire(退役)** — 旧シーンを片付ける段。ここで旧オブジェクトの `onDestroy` が走り、旧 entity は既に unpublish 済みなので**新シーンからは見えません**。retire 中に新たなシーンロードを要求しても拒否されます。初出: [第4章 §4.3](04_scene_ecs.md#43-シーンロードの流れ)。([scene.cpp の requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1241))
 
 **staging(ステージング)** — 「作用を実行せず、実行可能な形にして取っておく」こと。ロード中に `playSound` や `saveData` を呼ぶと、その場では鳴らず・書かず、**実行に必要な準備だけ済ませた entry** がトランザクションに積まれます。溜めた分が実際に外へ出るのは、ロードの 8 段のうち **flush** 段(`commit` に成功したときだけ)です。具体例: `onInit` で `playSound("bgm")` を呼ぶと、その場では voice slot の予約だけが起き、音が鳴るのは flush 段です(ロードが失敗すれば予約ごと消え、鳴りません)。初出: [第4章 ロード中の「作用」](04_scene_ecs.md#ロード中の作用はトランザクションに溜まるwp380be)。([PreparedEffectTransaction](../../src/core/loader/effecttransaction.hpp#L27) / [SceneLoadPhase](../../src/core/loader/sceneload.hpp#L27))
 
@@ -97,13 +97,13 @@
 
 **participant(参加者)** — 1 回のシーンロードで状態を遷移させる**当事者**のこと(ECS・レンダラ・物理・ゲームロジック・永続化など)。誰がどの段で何をしたかを行にした `sceneParticipantManifest` があり、テストと診断が「取りこぼした参加者」を名指しできます。初出: [第13章 §13.13](13_editor.md#1313-シーン遷移とゲームロジックの結果wp378380b380e381381a)。([SceneParticipantManifestEntry](../../src/core/loader/sceneparticipantmanifest.hpp#L32))
 
-**codec(component codec)** — コンポーネントの**受理仕様**。JSON ↔ canonical ↔ runtime の 3 層を 1 つの表で往復させ、組み込みコンポーネントについては未知キーを拒否します(closed schema)。エディタが値を書き戻すと codec の正規形に整形されます。codec を持たない名前のコンポーネントは、保持はされますが編集面では扱えません。初出: [第12章 §12.5](12_codemap.md#125-データ--コード対応表json-はどこで読まれるか)。([ComponentCodecState](../../src/core/loader/componentcodec.hpp#L48))
+**codec(component codec)** — コンポーネントの**受理仕様**。JSON ↔ canonical ↔ runtime の 3 層を 1 つの表で往復させ、組み込みコンポーネントについては未知キーを拒否します(closed schema)。エディタが値を書き戻すと codec の正規形に整形されます。codec を持たない名前のコンポーネントは、保持はされますが編集面では扱えません。初出: [第12章 §12.5](12_codemap.md#125-データ--コード対応表json-はどこで読まれるか)。([ComponentCodecState](../../src/core/loader/componentcodec.hpp#L49))
 
 **EntityId / generation(世代)** — ECS の entity ハンドルは `index + generation` の組です。index を再利用するとき generation を進めるので、古いハンドルは「同じ index の別 entity」に**誤接続しません**。generation が上限に達したスロットは再利用せず永久に退役させます(低確率の取り違えを許容しない)。初出: [第4章 §4.4](04_scene_ecs.md#44-ランタイム-ecs-の要点ゲーム開発者向け)。([EntityId](../../src/core/userpublic/details/ecs/entity.hpp#L12))
 
 **free list(空きリスト)** — 解放した index を貯めておき、次の生成で再利用するための列。pelican2 では後入れ先出しで取り出すので、**同じ操作列なら同じ再利用順**になります(決定性のため)。初出: [source-code-guide 第4章 free list](../source-code-guide/04_ecs_deep_dive.md#free-list)。([coretemplate.hpp:121](../../src/core/userpublic/details/ecs/coretemplate.hpp#L121))
 
-**arena(アリーナ)** — 同種のものをまとめて置くエンジン側の置き場。behavior は ECS コンポーネントではなく、エンジン所有の `BehaviorAttachmentArena` に連番で並びます。ゲーム DLL の型をエンジンの ECS チャンクに載せずに、ホットリロード時の世代交代(インスタンス状態は失われ、params は authoring 値から再構築)とエディタからの付け外しを安全にするための置き場です。具体的には、エンジン側の 1 本の `std::vector<Attachment>` がすべての behavior 実体を持ち、ゲームコードは handle 経由でしか触りません([behaviorarena.hpp:193](../../src/core/gamelogic/behaviorarena.hpp#L193))。「arena」という呼び名の由来は設計文書に書かれておらず**未確認**です(この用語集では「置き場」の意味だけで使います)。初出: [第8章 §8.5.5](08_gameplay.md#855-実行順とライフサイクル決定性)。([BehaviorAttachmentArena](../../src/core/gamelogic/behaviorarena.hpp#L174))
+**arena(アリーナ)** — 同種のものをまとめて置くエンジン側の置き場。behavior は ECS コンポーネントではなく、エンジン所有の `BehaviorAttachmentArena` に連番で並びます。ゲーム DLL の型をエンジンの ECS チャンクに載せずに、ホットリロード時の世代交代(インスタンス状態は失われ、params は authoring 値から再構築)とエディタからの付け外しを安全にするための置き場です。具体的には、エンジン側の 1 本の `std::vector<Attachment>` がすべての behavior 実体を持ち、ゲームコードは handle 経由でしか触りません([behaviorarena.hpp:193](../../src/core/gamelogic/behaviorarena.hpp#L196))。「arena」という呼び名の由来は設計文書に書かれておらず**未確認**です(この用語集では「置き場」の意味だけで使います)。初出: [第8章 §8.5.5](08_gameplay.md#855-実行順とライフサイクル決定性)。([BehaviorAttachmentArena](../../src/core/gamelogic/behaviorarena.hpp#L176))
 
 **SoA / Chunk / Archetype** — ECS の格納形。**Archetype** は「同じコンポーネントの組み合わせを持つ entity の集合」、**Chunk** はそれを一定個数ずつ区切った箱、**SoA**(Structure of Arrays)は「コンポーネントごとに別の連続配列に置く」並べ方です。1 つのコンポーネントだけを走査するときに無駄なメモリを読まずに済みます。初出: [第4章 §4.4](04_scene_ecs.md#44-ランタイム-ecs-の要点ゲーム開発者向け)、詳細は [source-code-guide 第4章](../source-code-guide/04_ecs_deep_dive.md#chunkはsoa)。([ECSComponentChunk](../../src/core/userpublic/details/ecs/chunk.hpp#L19))
 
@@ -131,7 +131,7 @@
 
 **epoch anchor** — ゲーム DLL が必ず import する**目印のシンボル**(`pelican_game_logic_epoch_v2`)。ロードの前に DLL の import テーブルだけを読み、この目印が無ければ「古い DLL」として `game_logic_abi_stale@1` で拒否します。登録を持たない provider 専用 DLL にはリンカが強制する要素が無いので、この診断が唯一の門番です。世代番号は**シンボル名そのものへの文字列連結**で入ります —— マクロが `pelican_game_logic_epoch_v` に ABI 版を貼り付けるので、版が 3 になればシンボルは `pelican_game_logic_epoch_v3` に変わり、`_v2` を import する古い DLL は名前が一致しなくなります([gamelogic.hpp:10](../../src/core/userpublic/gamelogic.hpp#L10))。初出: [第8章 ゲーム DLL の ABI](08_gameplay.md#ゲーム-dll-の-abiwp381381a382a)。([gamelogic.hpp:23](../../src/core/userpublic/gamelogic.hpp#L23))
 
-**shadow copy(シャドウコピー)** — 実行中の DLL は Windows では上書きできないため、**原本の複製を作ってそちらをロードする**手口。pelican2 は原本の隣の `.pelican-hot-reload/<プロセス ID>/` へ複製するので、同じプロジェクトを 2 つ起動しても取り合いになりません。初出: [第8章 ゲーム DLL の ABI](08_gameplay.md#ゲーム-dll-の-abiwp381381a382a)。([gamelogicreload.cpp:423](../../src/core/gamelogic/gamelogicreload.cpp#L427))
+**shadow copy(シャドウコピー)** — 実行中の DLL は Windows では上書きできないため、**原本の複製を作ってそちらをロードする**手口。pelican2 は原本の隣の `.pelican-hot-reload/<プロセス ID>/` へ複製するので、同じプロジェクトを 2 つ起動しても取り合いになりません。初出: [第8章 ゲーム DLL の ABI](08_gameplay.md#ゲーム-dll-の-abiwp381381a382a)。([gamelogicreload.cpp:423](../../src/core/gamelogic/gamelogicreload.cpp#L466))
 
 **PCG32(permuted congruential generator)** — 高速で周期が長い擬似乱数生成器の一種。pelican2 は `std::mt19937` + `std::uniform_*` を**使わず**(処理系によって出る列が違うため)、PCG32 を分布まで自前実装しています。既定シードは 0 固定で、毎回変えたいゲームは自分で種を入れます。初出: [第8章 §8.10](08_gameplay.md#810-決定性--なぜ毎回同じ結果になるのか)。([deterministicrng.cpp:14](../../src/core/userpublic/deterministicrng.cpp#L14))
 
@@ -175,7 +175,7 @@
 
 **scope(スコープ)** — 物理プランの上で、**1 回の dynamic rendering を開いたまま連続して記録するノードの束**。コマンド記録のループは「scope → 実行(view) → その scope の全ノード」の順(scope-execution-major)で、「view ごとに全ノード」ではありません。`scope_edit_mode` はこの束を編集するときにどこまで崩してよいかの指定です。初出: [第6章 Vulkan physical fragment](06_rendering.md#vulkan-physical-fragment-v1--v2--v3)、詳細は [source-code-guide 第6章](../source-code-guide/06_rendering_vulkan_shader.md)。
 
-**view family(ビューファミリ)** — 「同じ内容を複数の視点で描く」ときの、その**視点の束**。XR の左右眼、シャドウのカスケード、キューブキャプチャの 6 面などが該当します。`$main` の family は物理プランが view 数まで決め、secondary family は実行時に数が決まる、という非対称があります。初出: [第6章 §6.12](06_rendering.md#612-openxr-ステレオレンダリングwp125138--wp203ac実装済み)。([RenderViewFamily](../../src/core/renderer/viewfamily.hpp#L72) / [ViewFamilyV1](../../src/core/userpublic/render/render_strategy_abi_v1.hpp#L88))
+**view family(ビューファミリ)** — 「同じ内容を複数の視点で描く」ときの、その**視点の束**。XR の左右眼、シャドウのカスケード、キューブキャプチャの 6 面などが該当します。`$main` の family は物理プランが view 数まで決め、secondary family は実行時に数が決まる、という非対称があります。初出: [第6章 §6.12](06_rendering.md#612-openxr-ステレオレンダリングwp125138--wp203ac実装済み)。([RenderViewFamily](../../src/core/renderer/viewfamily.hpp#L72) / [ViewFamilyV1](../../src/core/userpublic/render/render_strategy_abi_v1.hpp#L91))
 
 **`.surface`** — マテリアルの**シェーダとパラメータ宣言**を 1 ファイルにまとめた自己記述コンテナ。値のほうは別の `*.material.json` に書きます(2 ファイル方式)。同梱の standard / toon / OpenPBR も特権なしの `.surface` として実装されています。初出: [第6章 .surface](06_rendering.md#surface--自己記述コンテナ)。([SurfaceShaderComposition](../../src/core/shader/surfacecompiler.hpp#L54))
 

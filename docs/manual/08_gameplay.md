@@ -19,7 +19,7 @@
 
 > **設計決定(ネイティブ一本・2026-07-07 ユーザー決定):** ゲームロジックは C++ で書く。スクリプト言語は不採用。エンジンは「ソース同居の SDK」。
 
-✅WP90(G2)で、ゲームコードのビルド形態は静的リンクから **`pelican_game_logic.dll`** に移行しました。公開面(userpublic)だけを import する DLL で、実行中のホットリロード(F5 / 自動検出 / rpc)に対応します。リロードは v1 では **full-reset 方式**です — 差分を当てるのではなく、物理 → ECS → モデルインスタンス → 遅延ミューテーション → 未配送イベントの順に破棄し([runtime_teardown_order](../../src/core/appflow/teardown.hpp#L23))、現在のシーンを起動時と同じロード経路で組み直します([rebuildCurrentScene](../../src/core/gamelogic/gamelogicreload.cpp#L853))。C++ のオブジェクトは DLL ごと入れ替わるので、システムや behavior のメンバ変数に持っていた値は残りません。詳細は [第10章](10_tools.md) §10.5。
+✅WP90(G2)で、ゲームコードのビルド形態は静的リンクから **`pelican_game_logic.dll`** に移行しました。公開面(userpublic)だけを import する DLL で、実行中のホットリロード(F5 / 自動検出 / rpc)に対応します。リロードは v1 では **full-reset 方式**です — 差分を当てるのではなく、物理 → ECS → モデルインスタンス → 遅延ミューテーション → 未配送イベントの順に破棄し([runtime_teardown_order](../../src/core/appflow/teardown.hpp#L23))、現在のシーンを起動時と同じロード経路で組み直します([rebuildCurrentScene](../../src/core/gamelogic/gamelogicreload.cpp#L892))。C++ のオブジェクトは DLL ごと入れ替わるので、システムや behavior のメンバ変数に持っていた値は残りません。詳細は [第10章](10_tools.md) §10.5。
 
 > **設計決定(レイヤ規則):** ゲームコードが include してよいのは `src/core/userpublic/` のヘッダのみ。エンジン内部のモジュール取得(`GET_MODULE`)をゲームコードから直接呼ぶことは禁止で、入力・時刻・オブジェクト・物理・音・シーン・乱数はすべて **`GameContext`** ファサードを通す。
 
@@ -35,7 +35,7 @@
 - **再帰 schema**(フィールドの中にさらにフィールドを持つ、木になった schema)を宣言した型があると、SDK は `_v3` 入口([registerer.hpp](../../src/core/userpublic/details/behavior/registerer.hpp#L322))を**自動で選びます**。v2 の入口は平らなフィールド列しか運べないためです。判定は「`List` か `Flags` のフィールドが 1 つでもあるか」だけで([schemaRequiresV3](../../src/core/userpublic/details/schema/structfieldschema.hpp#L823))、§8.5.3 の `List<Row>` は行の型 `Row` が自分の `schema` を持つのでこれに当たります。書き手のコードは変わりません。v3 入口を使う DLL と v2 だけの DLL は同じホストに**同居できます**。
 - 逆に、ホストが古くて v3 入口を持たないのに DLL が v3 を使っていると、`game_logic_abi_stale@1{found: "v3", host: "v2"}` で拒否されます。
 
-実行中の DLL は原本ではなく **shadow copy**(別ディレクトリへ取った複製)を読みます。リロードのたびに連番付きの複製を作ってそちらをロードするので([makeShadowCopy](../../src/core/gamelogic/gamelogicreload.cpp#L299)。`.pdb` も一緒に複製するのでデバッガも繋がります)、エンジンが原本のファイルを掴んだままにならず、走らせたままビルドし直せます。置き場所は原本の隣の `.pelican-hot-reload/<プロセス ID>/` で([gamelogicreload.cpp](../../src/core/gamelogic/gamelogicreload.cpp#L427))、**プロセスごとに別ディレクトリ**なので同じプロジェクトを 2 つ起動しても取り合いになりません(死んだプロセスの残骸は起動時に掃除されます)。ビルドが原本を掴んだままだと、リロードは失敗ではなく保留になり、何度ポーリングしても掴まれたままなら [`game_logic_source_busy@1`](../../src/core/gamelogic/gamelogicreload.cpp#L743) が status に出ます。
+実行中の DLL は原本ではなく **shadow copy**(別ディレクトリへ取った複製)を読みます。リロードのたびに連番付きの複製を作ってそちらをロードするので([makeShadowCopy](../../src/core/gamelogic/gamelogicreload.cpp#L338)。`.pdb` も一緒に複製するのでデバッガも繋がります)、エンジンが原本のファイルを掴んだままにならず、走らせたままビルドし直せます。置き場所は原本の隣の `.pelican-hot-reload/<プロセス ID>/` で([gamelogicreload.cpp](../../src/core/gamelogic/gamelogicreload.cpp#L466))、**プロセスごとに別ディレクトリ**なので同じプロジェクトを 2 つ起動しても取り合いになりません(死んだプロセスの残骸は起動時に掃除されます)。ビルドが原本を掴んだままだと、リロードは失敗ではなく保留になり、何度ポーリングしても掴まれたままなら [`game_logic_source_busy@1`](../../src/core/gamelogic/gamelogicreload.cpp#L782) が status に出ます。
 
 エラーコードは rpc の `get_status` の reload 節と `reload_game_logic` のエラーに出ます([第10章](10_tools.md) §10.5)。
 
@@ -187,7 +187,7 @@ if (head.valid && head.source == Pelican::ActionPoseSource::synthetic_head) {
 StudioではInspectorの **Add component...** から **Behavior: 登録名** を選び、宣言JSONの`params`を設定して追加できます。
 同じ型を複数装着でき、追加・削除・Undo/Redo・保存は通常のシーン編集を使います。詳細は[第13章](13_editor.md)を参照してください。
 
-> **設計決定(engine-owned arena):** behavior は ECS コンポーネントではなく、light / collider と同じ「特別扱いのコンポーネント」としてエンジン所有の attachment arena に入る(arena = 同種のものをまとめて置くエンジン側の置き場。ここでは attachment を連番で並べる [BehaviorAttachmentArena](../../src/core/gamelogic/behaviorarena.hpp#L174))。理由は、ゲーム DLL の型をエンジンの ECS チャンクに載せずに、ホットリロード時の世代交代(§8.5.6)とエディタからの付け外しを安全に行うため。
+> **設計決定(engine-owned arena):** behavior は ECS コンポーネントではなく、light / collider と同じ「特別扱いのコンポーネント」としてエンジン所有の attachment arena に入る(arena = 同種のものをまとめて置くエンジン側の置き場。ここでは attachment を連番で並べる [BehaviorAttachmentArena](../../src/core/gamelogic/behaviorarena.hpp#L176))。理由は、ゲーム DLL の型をエンジンの ECS チャンクに載せずに、ホットリロード時の世代交代(§8.5.6)とエディタからの付け外しを安全に行うため。
 
 ### 8.5.1 最小の実例
 
@@ -336,7 +336,7 @@ struct CarrierParams {
 - behavior 全体は **`"BehaviorSystem"`(order = 50)という 1 個のゲームシステム**として、他のゲームシステムと同じ `(order, 型名)` の全順序に並びます。つまり `order < 50` のシステムは全 behavior より前、`order > 50` は後に走ります(ビルトインのカメラコントローラは 10000)。
 - attachment どうしの順序は `attachment_seq` の昇順。シーンロード時の seq は**宣言順**(オブジェクト順 → コンポーネント順)から決まります。
 - **生成**: シーンの entity/collider/light を publish した後、`attachment_seq` 昇順に `onInit`。途中で例外が出たら、それまでに init 済みのものを逆順に `onDestroy` して全部巻き戻し、例外を投げ直します(このとき失敗した本人の `onDestroy` は呼ばれません)。巻き戻るのは behavior だけではなく、scene load 全体が旧シーンに戻ります(entity・collider・light・カメラ・描画・`onInit` 中の `emit` / `loadScene()` も。✅WP380a、[第4章 §4.3](04_scene_ecs.md))。`SceneLoaded` の emit は commit の後です。
-- **破棄**: `attachment_seq` の**逆順**に `onDestroy`([destroyDetached](../../src/core/gamelogic/behaviorarena.cpp#L337))。`ctx.self()` から自分の transform / sprite を読めます — シーン切替の retire 段では entity は既に unpublish 済みなので、読めるのは**破棄トークンが持つ最終スナップショット**です。破棄トークンとは、unpublish のときにコンポーネントの値をそのまま退避しておく控えのことで、値が実際に壊れるのは retire の完了時です([finish](../../src/core/ecs/archetypemigration.cpp#L917))。
+- **破棄**: `attachment_seq` の**逆順**に `onDestroy`([destroyDetached](../../src/core/gamelogic/behaviorarena.cpp#L363))。`ctx.self()` から自分の transform / sprite を読めます — シーン切替の retire 段では entity は既に unpublish 済みなので、読めるのは**破棄トークンが持つ最終スナップショット**です。破棄トークンとは、unpublish のときにコンポーネントの値をそのまま退避しておく控えのことで、値が実際に壊れるのは retire の完了時です([finish](../../src/core/ecs/archetypemigration.cpp#L917))。
 - 更新・イベント配送はどちらも開始時に有効な attachment のスナップショットを取ってから走るため、途中で消えたオブジェクトは安全にスキップされます。
 
 #### `onInit` / `onDestroy` から呼べること(✅WP380b〜e)
@@ -363,7 +363,7 @@ struct CarrierParams {
 
 - バージョンを上げたときは、**現在ロードしていないシーンも含めて**全 behavior の params が新 schema で読めることが条件です。
 - リロード後、behavior のインスタンス状態(メンバ変数)は失われ、params は authoring 値から再構築されます(full-reset 方式)。
-- `schema_changed_without_version_bump` の判定は **schema の指紋**(schema の宣言内容を宣言順のまま 1 本の JSON 文字列に書き出したもの — [schemaNodeFingerprint](../../src/core/userpublic/details/schema/structfieldjson.hpp#L994))で、この文字列が 1 文字でも変われば別の schema と見なします。フィールドの型だけでなく**既定値・宣言順・enum 値の割り当て・presence(`defaulted` ↔ `required` ↔ `optionalOverride`)の変更も検出します**([validateBehaviorReloadSources](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L85))。「型は同じだから大丈夫」は通りません。
+- `schema_changed_without_version_bump` の判定は **schema の指紋**(schema の宣言内容を宣言順のまま 1 本の JSON 文字列に書き出したもの — [schemaNodeFingerprint](../../src/core/userpublic/details/schema/structfieldjson.hpp#L896))で、この文字列が 1 文字でも変われば別の schema と見なします。フィールドの型だけでなく**既定値・宣言順・enum 値の割り当て・presence(`defaulted` ↔ `required` ↔ `optionalOverride`)の変更も検出します**([validateBehaviorReloadSources](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L85))。「型は同じだから大丈夫」は通りません。
 - ⚠️ **この検証は behavior params だけが対象です。** イベントペイロードと ECS コンポーネントの schema を version bump なしで変えても、現状は検出されません(WP382a-fix で追加予定 = 📐**未対応**)。
 
 ### 8.5.7 ゲームシステムとの使い分け
@@ -598,7 +598,7 @@ auto slots  = ctx.listSaves();                           // {slot, timestamp} �
 
 > **「姿勢の正本を 1 本にまとめる」は v0 では撤回されました(✅AG-1b)。** 一本化には「シーンが持つ派生プログラムの置き場」と「評価器の状態を写す API」が先に要り、v0 にはどちらもありません。**v0 が約束するのは 2 つの経路の parity**(`loop` / `speed` / `start_time` の意味、位相、パラメータ編集をまたいだ状態の保持)**と owner 単位の排他**の 2 つだけです([docs/v0_freeze.md](../v0_freeze.md) §1.6)。
 
-`animation` コンポーネントの受理キーは `name` / `clip` / `graph` / `parameters` / `speed` / `loop` / `start_time` の 7 つですが、**`graph` を書いた場合 `speed` / `loop` / `start_time` は拒否されます**(`field 'animation.<鍵>' is clip-only; graph states define their playback clocks`)。逆に `parameters`(グラフの初期パラメータ)は `graph` のときだけ書けます([componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L990))。
+`animation` コンポーネントの受理キーは `name` / `clip` / `graph` / `parameters` / `speed` / `loop` / `start_time` の 7 つですが、**`graph` を書いた場合 `speed` / `loop` / `start_time` は拒否されます**(`field 'animation.<鍵>' is clip-only; graph states define their playback clocks`)。逆に `parameters`(グラフの初期パラメータ)は `graph` のときだけ書けます([componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L982))。
 
 ### ゲームコードから見た層
 
@@ -743,7 +743,7 @@ VRM expression service 経由のみ(通常クリップの weights channel は非
 ```
 
 - **`source` は 4 値**です: `pose_graph_clip` / `pose_graph_state_machine`(装着様式 (2))と `component_graph` / `component_clip`(装着様式 (1))。**両方の装着様式が同じ 1 つの表に出ます** —— コンポーネントで動いているシーンが「アニメーションの無いシーン」に見えないためです(pose graph 側は [animationstatus.cpp:54](../../src/core/communication/animationstatus.cpp#L54)、コンポーネント側の 2 値は [:87](../../src/core/communication/animationstatus.cpp#L87))。
-- `cursors[].normalized_phase` は **[0, 1] に正規化した位置**で、キーが 0 秒から始まらないクリップでも最初のキーで 0、最後のキーで 1 になります。ただし**これはクリップごとの値ではなく、ステートの位相**です —— ステートの中に複数クリップがあると、位相はリーダークリップの尺で進み([animgraph.cpp:591](../../src/core/userpublic/animation/animgraph.cpp#L591))、**同じステートのすべてのクリップが同じ値を報告します**([:894](../../src/core/userpublic/animation/animgraph.cpp#L894))。クリップ個別の位置が要るときは `time_seconds` を見てください。
+- `cursors[].normalized_phase` は **[0, 1] に正規化した位置**で、キーが 0 秒から始まらないクリップでも最初のキーで 0、最後のキーで 1 になります。ただし**これはクリップごとの値ではなく、ステートの位相**です —— ステートの中に複数クリップがあると、位相はリーダークリップの尺で進み([animgraph.cpp:591](../../src/core/userpublic/animation/animgraph.cpp#L592))、**同じステートのすべてのクリップが同じ値を報告します**([:894](../../src/core/userpublic/animation/animgraph.cpp#L894))。クリップ個別の位置が要るときは `time_seconds` を見てください。
 - `state` と `transition`(`{active, target, progress}`)は **ステートマシンを含む chain にだけ**出ます。キーごと無いので、「遷移していない」と「そもそもステートマシンが無い」を取り違えません。
 - `root_delta` は **root motion を抽出している chain にだけ**出ます。値は**クリップ自身の空間での移動量**で、個体の回転を掛ける前の数字です(実際に進んだ距離ではありません)。
 - 観測は**読むだけ**です。`get_status` を同じフレームで何度呼んでも時計は進みません。

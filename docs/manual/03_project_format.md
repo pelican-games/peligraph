@@ -366,7 +366,7 @@ example の README にあった手書き sha256 表の役目は、この manifes
 
 ## 3.10 コンポーネント宣言スキーマ v3 — `Flags` と `List` の wire(✅WP382a)
 
-§3.9 まではドキュメント全体の話でした。この節は **1 個のコンポーネントの中身**をどう書くかです。ここでの **v3 はスキーマ宣言機構の版番号**で、シーン JSON の `version`(pelican.scene v1)とは別物です([用語集](14_glossary.md))。従来の登録経路が運べたのは平坦なフィールド列だけで、`Flags` / `List` のように**入れ子の語彙を持つ型**を運べるようにしたのが v3 です。対象は**ゲームコード側が登録するコンポーネント**(と event payload / behavior params)で、エンジン組み込みの codec 表のコンポーネント(既定 7 件 + ray layout v2 のときだけ増える `pelican_ray_instance`。[componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1406))はこの節の対象外です(平坦なフィールド列のまま)。
+§3.9 まではドキュメント全体の話でした。この節は **1 個のコンポーネントの中身**をどう書くかです。ここでの **v3 はスキーマ宣言機構の版番号**で、シーン JSON の `version`(pelican.scene v1)とは別物です([用語集](14_glossary.md))。従来の登録経路が運べたのは平坦なフィールド列だけで、`Flags` / `List` のように**入れ子の語彙を持つ型**を運べるようにしたのが v3 です。対象は**ゲームコード側が登録するコンポーネント**(と event payload / behavior params)で、エンジン組み込みの codec 表のコンポーネント(既定 7 件 + ray layout v2 のときだけ増える `pelican_ray_instance`。[componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1398))はこの節の対象外です(平坦なフィールド列のまま)。
 
 登録側の `schema` に `Flags<E>` か `List<Row>` が 1 つでも含まれると、登録は自動的に **v3 の入口**へ切り替わります([registerer.hpp](../../src/core/userpublic/details/component/registerer.hpp#L188))。判定は `schemaRequiresV3()` のコンパイル時定数なので、含まないコンポーネントの wire は 1 バイトも変わりません。scene JSON からの入口は従来と同じ「コンポーネント JSON をそのまま渡す」経路です([`ComponentInfoManager::loadByJson()`](../../src/core/ecs/componentinfo.cpp#L189))。
 
@@ -396,7 +396,7 @@ struct CarrierParams {
 {"name": "my_component", "instance_flags": ["cull_disable", "flip_facing"]}
 ```
 
-空配列 `[]` も「明示的に空」という値で、キーごと省略するのとは別物です。重複する名前・宣言されていない名前はどちらも `InvalidEnum` で拒否されます([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L396))。
+空配列 `[]` も「明示的に空」という値で、キーごと省略するのとは別物です。重複する名前・宣言されていない名前はどちらも `InvalidEnum` で拒否されます([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L305))。
 
 ### `List` — object コンテナ + 行封筒
 
@@ -419,7 +419,7 @@ struct CarrierParams {
 
 > **設計決定(行の同一性は id であって添字ではない):** 行の identity は配列添字ではなく `$row.id` が持つ。`$list.next_id` は「次に採番する id」で、**現存するどの行 id よりも大きい**ことが検証される。添字を identity にすると、行の挿入や並べ替えが外部からの参照を静かに壊すため。
 
-失敗は名前付きです([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L428)):
+失敗は名前付きです([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L461)):
 
 | コード | 起きる条件 |
 |---|---|
@@ -433,9 +433,9 @@ struct CarrierParams {
 
 ### `$` で始まるフィールド名はエンジン予約
 
-スキーマ宣言側で `$` 始まりの名前を使うとコンパイル時に弾かれ([structfieldschema.hpp](../../src/core/userpublic/details/schema/structfieldschema.hpp#L494))、JSON 側に未知の `$` キーがあると `UnknownField` ではなく `ReservedFieldName` で拒否されます([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L730))。将来増える封筒キーを、利用者のフィールド名と衝突させないためです。
+スキーマ宣言側で `$` 始まりの名前を使うとコンパイル時に弾かれ([structfieldschema.hpp](../../src/core/userpublic/details/schema/structfieldschema.hpp#L494))、JSON 側に未知の `$` キーがあると `UnknownField` ではなく `ReservedFieldName` で拒否されます([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L632))。将来増える封筒キーを、利用者のフィールド名と衝突させないためです。
 
-保存でこの形は往復します。エンコードは `$list` → `rows` の順、各行は `$row` → authored フィールドの順に書き出します([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L643))。
+保存でこの形は往復します。エンコードは `$list` → `rows` の順、各行は `$row` → authored フィールドの順に書き出します([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L581))。
 
 > WP382dで`pelican_ray_instance.overrides`が`List`の利用者になりました。geometryごとの上書きを行ID付きで保存し、行を削除するとobject/layoutの値へ戻ります([第6章](06_rendering.md) §6.15)。
 

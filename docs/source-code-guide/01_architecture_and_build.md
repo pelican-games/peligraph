@@ -65,11 +65,11 @@ core 側からこの葉を使うための橋が [`pelican_schema_core_adapter`](
 
 [`src/player/CMakeLists.txt`](../../src/player/CMakeLists.txt#L1) が `pelican_core` と `argparse` をリンクします。`-DPELICAN_PROJECT=<dir>` が指定されると、プロジェクトの `code/CMakeLists.txt` をincludeし、[`pelican_game_sources()`](../../src/player/CMakeLists.txt#L106) でゲームの `.cpp` を**SHAREDライブラリ `pelican_game_logic`** へ追加します（[`add_library(pelican_game_logic SHARED ...)`](../../src/player/CMakeLists.txt#L127)、WP110系列）。
 
-playerは `ENABLE_EXPORTS` と `/WHOLEARCHIVE:pelican_core` でSDKシンボルをexportし（[同 L2-L13](../../src/player/CMakeLists.txt#L2)）、game DLLはplayerのimport libへリンクします（[`pelican_configure_game_logic_target()`](../../src/player/CMakeLists.txt#L45)、`PELICAN_GAME_DLL=1` define）。Windowsでは `LoadLibraryW` より先に、境界と作業量を制限した **raw PE import reader**（raw = OS loader にイメージをマップさせず、DLLファイルのバイト列を自分で読んで PE の import directory を解釈する読み方。マップしないので、壊れたDLLでも DllMain が走らない。詳細は[第10章 §10.4](10_background_knowledge.md)）でSDK epoch anchor の通常・直接・名前付き import を検証します。anchor（またはSDK入口）を import するDLLは OS loader も初期化前に解決しますが、**provider-only の旧DLL**（`getApiV1` 系を export するだけで、SDK 入口も epoch anchor も import しないDLL。「提供するだけ」なので only。次段落で詳述）は未解決 import を持たないため、この常時 raw 診断が実行前 enforcement です。実行時ロードは [`gamelogicreload.cpp`](../../src/core/gamelogic/gamelogicreload.cpp#L280) の `LoadLibraryW`/`dlopen` で行い、起動時初期化は [`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L873)、ABI契約は [`gamelogic.hpp`](../../src/core/userpublic/gamelogic.hpp#L21)（単一定義の `gameLogicAbiVersion` から導く epoch anchor）です。
+playerは `ENABLE_EXPORTS` と `/WHOLEARCHIVE:pelican_core` でSDKシンボルをexportし（[同 L2-L13](../../src/player/CMakeLists.txt#L2)）、game DLLはplayerのimport libへリンクします（[`pelican_configure_game_logic_target()`](../../src/player/CMakeLists.txt#L45)、`PELICAN_GAME_DLL=1` define）。Windowsでは `LoadLibraryW` より先に、境界と作業量を制限した **raw PE import reader**（raw = OS loader にイメージをマップさせず、DLLファイルのバイト列を自分で読んで PE の import directory を解釈する読み方。マップしないので、壊れたDLLでも DllMain が走らない。詳細は[第10章 §10.4](10_background_knowledge.md)）でSDK epoch anchor の通常・直接・名前付き import を検証します。anchor（またはSDK入口）を import するDLLは OS loader も初期化前に解決しますが、**provider-only の旧DLL**（`getApiV1` 系を export するだけで、SDK 入口も epoch anchor も import しないDLL。「提供するだけ」なので only。次段落で詳述）は未解決 import を持たないため、この常時 raw 診断が実行前 enforcement です。実行時ロードは [`gamelogicreload.cpp`](../../src/core/gamelogic/gamelogicreload.cpp#L319) の `LoadLibraryW`/`dlopen` で行い、起動時初期化は [`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L912)、ABI契約は [`gamelogic.hpp`](../../src/core/userpublic/gamelogic.hpp#L21)（単一定義の `gameLogicAbiVersion` から導く epoch anchor）です。
 
 この診断が保証するのは SDK が生成する **通常・直接・名前付き・非 weak** の top-level import です。host module への delay-load / ordinal import は unsupported としてロード前に拒否し、`GetProcAddress`、依存 DLL 経由、ELF import reader はこの診断の範囲外です。Linux は `RTLD_NOW` による OS enforcement のみを使います。
 
-この診断と OS loader の役割分担は DLL の中身で変わります。SDK 入口(`pelican_register_behavior_v2` / `pelican_register_event_v2` / `pelican_emit_v2` / `pelican_register_system_v2`)か epoch anchor を import する DLL なら、旧版は v1 名(`__registerBehavior` / `__registerEvent` / `__emit` / `__registerSystem`。host はもう export しません)が未解決 import になるので OS loader 自身が拒否します。一方 **provider-only の旧 DLL**(`getApiV1` 系を export するだけで SDK 入口を import しないもの)は未解決 import を持たないため loader は止めず、この raw import 診断([`diagnoseGameLogicImports()`](../../src/core/gamelogic/gamelogicimports.cpp#L559) の anchor 不在 = [`game_logic_abi_stale@1`](../../src/core/gamelogic/gamelogicimports.hpp#L40))が唯一の enforcement です。診断は無効化できず(`#ifdef _WIN32` の中で常時)、[`loadCopy()`](../../src/core/gamelogic/gamelogicreload.cpp#L331) が `LoadLibraryW` を呼ぶ**前**に走るので、旧 DLL の constructor は動きません。Linux 側にこの reader は無いので、`RTLD_NOW` が解決に失敗しない provider-only の旧 `.so` を止める仕組みは今のところありません。
+この診断と OS loader の役割分担は DLL の中身で変わります。SDK 入口(`pelican_register_behavior_v2` / `pelican_register_event_v2` / `pelican_emit_v2` / `pelican_register_system_v2`)か epoch anchor を import する DLL なら、旧版は v1 名(`__registerBehavior` / `__registerEvent` / `__emit` / `__registerSystem`。host はもう export しません)が未解決 import になるので OS loader 自身が拒否します。一方 **provider-only の旧 DLL**(`getApiV1` 系を export するだけで SDK 入口を import しないもの)は未解決 import を持たないため loader は止めず、この raw import 診断([`diagnoseGameLogicImports()`](../../src/core/gamelogic/gamelogicimports.cpp#L559) の anchor 不在 = [`game_logic_abi_stale@1`](../../src/core/gamelogic/gamelogicimports.hpp#L40))が唯一の enforcement です。診断は無効化できず(`#ifdef _WIN32` の中で常時)、[`loadCopy()`](../../src/core/gamelogic/gamelogicreload.cpp#L370) が `LoadLibraryW` を呼ぶ**前**に走るので、旧 DLL の constructor は動きません。Linux 側にこの reader は無いので、`RTLD_NOW` が解決に失敗しない provider-only の旧 `.so` を止める仕組みは今のところありません。
 
 ゲームSystemの静的自動登録はDLLロード時に走り、[`RegistrationOwner`](../../src/core/userpublic/details/reload/registrationowner.hpp#L11) 単位で [`unregisterGameSystems()`](../../src/core/userpublic/details/system/registerer.hpp#L143) により登録解除できます。これが実行中ホットリロードの基盤です。
 
@@ -161,16 +161,16 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 | [`loader/`](../../src/core/loader) | 設定、path/埋め込み資源のruntime adapter、scene、画像 | [`ProjectBasicConfig`](../../src/core/loader/basicconfig.hpp#L70)、[`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)。純粋な解決規則は [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) |
 | [`ecs/`](../../src/core/ecs) | 内部ECSのファサード、Componentメタデータ、組み込みSystem | [`ECSCore`](../../src/core/ecs/core.hpp#L13)、[`ComponentInfoManager`](../../src/core/ecs/componentinfo.hpp#L60) |
 | [`userpublic/`](../../src/core/userpublic) | ゲームコード向け公開APIとECS実体テンプレート | [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L26)、[`GameObjects`](../../src/core/userpublic/gameobjects.hpp#L31) |
-| [`os/`](../../src/core/os) | GLFW window、生入力、Action map | [`InputStateCore`](../../src/core/os/inputstate.hpp#L206)、[`InputActionMap`](../../src/core/os/actionmap.hpp#L64) |
+| [`os/`](../../src/core/os) | GLFW window、生入力、Action map | [`InputStateCore`](../../src/core/os/inputstate.hpp#L206)、[`InputActionMap`](../../src/core/os/actionmap.hpp#L65) |
 | [`renderingpass/`](../../src/core/renderingpass) | 描画宣言のパース、検証、frame graph、compute task、RT | [`PassDefinition`](../../src/core/renderingpass/renderingpass.hpp#L458)、[`FramePlan`](../../src/core/renderingpass/frameplanner.hpp#L159) |
 | [`renderer/`](../../src/core/renderer) | material/fullscreen/UI/debug/shadowの実描画。frameresources / projectionjitter / temporal / sprite* / velocitypasscontainer / shadowdepthpasscontainer / atlasassetresource が追加 | [`MaterialRenderer`](../../src/core/renderer/materialrender.hpp#L39)、[`Camera`](../../src/core/renderer/camera.hpp#L20) |
 | [`render_algorithms/`](../../src/core/render_algorithms) | 差し替え可能な標準render algorithm（cube capture / planar reflection）のViewFamily provider。`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF` で丸ごと外れる | [`registerStandardRenderAlgorithmProviders()`](../../src/core/render_algorithms/standardrenderalgorithms.hpp#L9) |
 | [`vkcore/`](../../src/core/vkcore) | Vulkan instance/device、FrameTarget、command、layout、renderer編成 | [`VulkanManageCore`](../../src/core/vkcore/core.hpp#L36)、[`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254) |
 | [`shader/`](../../src/core/shader) | compile、SPIR-V reflection、module、pipeline cache/hot reload | [`ShaderLibrary`](../../src/core/shader/shaderlibrary.hpp#L123)、[`PipelineFactory`](../../src/core/shader/pipelinefactory.hpp#L230) |
 | [`model/`](../../src/core/model) | glTF/VATロードと頂点バッファ | [`GltfLoader`](../../src/core/model/gltf.hpp#L61)、[`VertBufContainer`](../../src/core/model/vertbufcontainer.hpp#L48) |
-| [`material/`](../../src/core/material) | texture/material/pipeline/descriptor | [`MaterialContainer`](../../src/core/material/materialcontainer.hpp#L77) |
+| [`material/`](../../src/core/material) | texture/material/pipeline/descriptor | [`MaterialContainer`](../../src/core/material/materialcontainer.hpp#L78) |
 | [`asset/`](../../src/core/asset) | asset JSONからmodel templateを登録 | [`ModelAssetContainer`](../../src/core/asset/model.hpp#L24) |
-| [`fullscreenpass/`](../../src/core/fullscreenpass) | fullscreen pipelineと入力descriptor | [`FullscreenPassContainer`](../../src/core/fullscreenpass/fullscreenpasscontainer.hpp#L18) |
+| [`fullscreenpass/`](../../src/core/fullscreenpass) | fullscreen pipelineと入力descriptor | [`FullscreenPassContainer`](../../src/core/fullscreenpass/fullscreenpasscontainer.hpp#L50) |
 | [`light/`](../../src/core/light) | scene lightとlight UBO | [`LightContainer`](../../src/core/light/lightcontainer.hpp#L29) |
 | [`phys/`](../../src/core/phys) | CPU幾何クエリとscene binding | [`PhysWorld`](../../src/core/phys/physworld.hpp#L42)、[`phys::Shape`](../../src/core/phys/physquery.hpp#L41) |
 | [`audio/`](../../src/core/audio) | WAV decode、miniaudio backend、voice/bus | [`Audio`](../../src/core/audio/audio.hpp#L24) |
@@ -190,10 +190,10 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 | 場所 | 内容 |
 |---|---|
 | [`ecs/archetypemigration.hpp`](../../src/core/ecs/archetypemigration.hpp#L121) | 失敗しても原子的なarchetype移行と entity mutation のトークン（[第4章](04_ecs_deep_dive.md)） |
-| [`gamelogic/behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L168) | オブジェクトbehaviorのアタッチメントarena。ECS Componentではない別の所有者 |
+| [`gamelogic/behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L170) | オブジェクトbehaviorのアタッチメントarena。ECS Componentではない別の所有者 |
 | [`imgui/inspector.hpp`](../../src/core/imgui/inspector.hpp#L167) / [`imgui/assetbrowser.hpp`](../../src/core/imgui/assetbrowser.hpp#L36) | schema駆動inspectorパネルと読み取り専用asset browserパネル |
 | [`loader/authoringscenedocument.hpp`](../../src/core/loader/authoringscenedocument.hpp#L90) | `AuthoringSceneDocument` / `AuthoringSceneDocumentStage`（[第3章](03_project_and_loading.md)） |
-| [`loader/componentcodec.hpp`](../../src/core/loader/componentcodec.hpp#L226) | component codecの五点セット。componentのJSON受理仕様の正 |
+| [`loader/componentcodec.hpp`](../../src/core/loader/componentcodec.hpp#L297) | component codecの五点セット。componentのJSON受理仕様の正 |
 | [`loader/editorprojectiontransaction.hpp`](../../src/core/loader/editorprojectiontransaction.hpp#L25) | 編集のprepare/publish transactionと8種のadapter kind |
 | [`loader/vrmadecoder.hpp`](../../src/core/loader/vrmadecoder.hpp#L25) / [`model/vrmaanimation.hpp`](../../src/core/model/vrmaanimation.hpp#L87) / [`animation/vrmaretarget.hpp`](../../src/core/animation/vrmaretarget.hpp#L124) | `.vrma` decode → 型付きチャンネル → versioned retarget profile |
 | [`renderingpass/previewgraph.hpp`](../../src/core/renderingpass/previewgraph.hpp#L15) | 第3のグラフプログラム（preview variant） |
@@ -234,7 +234,7 @@ v0（共通グラフ・姿勢グラフ・package）で増えた入口は次の�
                       project（純粋パース・検証）
 ```
 
-実装上は、`GET_MODULE()` を使うサービスロケータが多いため、C++のコンストラクタ引数だけを見ても依存が全部は分かりません。サービスロケータとは、**必要な相手を引数で渡してもらう（DI）のではなく、共通の取得口から自分で引いてくる**方式のことです。Pelicanの取得口は `GET_MODULE(T)` ひとつで、鍵は文字列名ではなく型 `T`、実体は型ごとの `static std::optional<T>` を初回アクセス時に構築するだけの薄い機構です（[第9章 §9.1](09_black_magic_and_gotchas.md)）。DIコンテナのような登録表・スコープ・差し替え機構は持ちません。たとえば [`Renderer::Renderer()`](../../src/core/vkcore/renderer.cpp#L2971) は一行ですが、そこから設定、Vulkan、render target、shader、pipelineなどが遅延生成されます。
+実装上は、`GET_MODULE()` を使うサービスロケータが多いため、C++のコンストラクタ引数だけを見ても依存が全部は分かりません。サービスロケータとは、**必要な相手を引数で渡してもらう（DI）のではなく、共通の取得口から自分で引いてくる**方式のことです。Pelicanの取得口は `GET_MODULE(T)` ひとつで、鍵は文字列名ではなく型 `T`、実体は型ごとの `static std::optional<T>` を初回アクセス時に構築するだけの薄い機構です（[第9章 §9.1](09_black_magic_and_gotchas.md)）。DIコンテナのような登録表・スコープ・差し替え機構は持ちません。たとえば [`Renderer::Renderer()`](../../src/core/vkcore/renderer.cpp#L3065) は一行ですが、そこから設定、Vulkan、render target、shader、pipelineなどが遅延生成されます。
 
 新しい描画コードでは依存を明示する `XxxDependencies` 構造体が増えています。例は [`RenderPassExecutorDependencies`](../../src/core/vkcore/render_pass_executor.hpp#L16)、[`RenderPassDispatchDependencies`](../../src/core/vkcore/render_pass_dispatch.hpp#L29)、[`RenderingPassConfigRegistrationDependencies`](../../src/core/renderingpass/renderingpassconfigregistration.hpp#L65) です。これはグローバル取得を局所化し、純粋テストをしやすくする境界です。
 
@@ -244,7 +244,7 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 
 | 形式 | 例 | 目的 |
 |---|---|---|
-| 仮想基底 | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L92) | windowed/headless/XRの実装差し替え |
+| 仮想基底 | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L93) | windowed/headless/XRの実装差し替え |
 | 依存構造体 | [`MaterialRendererDependencies`](../../src/core/renderer/materialrender.hpp#L22) | 呼び出しに必要な協力オブジェクトを明示 |
 | Concept/duck typing | [`HasBatchProcess`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L77)、[`HasGameSystemUpdate`](../../src/core/userpublic/details/system/registerer.hpp#L38) | メソッド形だけをcompile時に要求 |
 | `std::variant` | [`PassInfo`](../../src/core/renderingpass/renderingpass.hpp#L321)、[`phys::Shape`](../../src/core/phys/physquery.hpp#L41) | 閉じた型集合を安全に分岐 |

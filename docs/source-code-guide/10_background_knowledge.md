@@ -423,7 +423,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 `VK_KHR_ray_tracing_pipeline` のパイプラインは、ステージ配列(`pStages`)とグループ配列(`pGroups`)の 2 段でできています。グループは `GENERAL`(raygen / miss / callable)と `TRIANGLES_HIT_GROUP`(closest hit + 任意の any hit)などの種類を持ち、各グループは pStages 内の添字を指します。**グループの並び順がそのまま SBT(Shader Binding Table)の並び順**になります。`vkGetRayTracingShaderGroupHandlesKHR` で取れる不透明ハンドルは 1 個あたり `shaderGroupHandleSize` バイト、SBT の 1 レコードは `shaderGroupHandleAlignment` に、raygen / miss / hit / callable の**各領域の先頭アドレスは `shaderGroupBaseAlignment`** に揃える必要があります(いずれも `VkPhysicalDeviceRayTracingPipelinePropertiesKHR`)。`vkCmdTraceRaysKHR` に渡す 4 つの `VkStridedDeviceAddressRegionKHR` はこの stride で読まれます。
 
-**使用場所**: [PipelineFactory::createRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L699)(stage 配列と group 配列を組む) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L813)(ハンドルを領域ごとに詰め、確保したアドレスの余りから base alignment へ寄せる) / [packRayTracingHitTable()](../../src/core/shader/raygrouplayout.cpp#L2309)
+**使用場所**: [PipelineFactory::createRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L699)(stage 配列と group 配列を組む) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L813)(ハンドルを領域ごとに詰め、確保したアドレスの余りから base alignment へ寄せる) / [packRayTracingHitTable()](../../src/core/shader/raygrouplayout.cpp#L2313)
 
 **このコードベースでの注意**: base alignment を満たすために `total_size + (base_alignment - 1)` を確保し、実アドレスの余りから内部オフセットを決めています。確保したバッファの先頭が揃っている保証は無い、という前提での書き方です。
 
@@ -439,13 +439,13 @@ BLAS の三角形ジオメトリ(`VkAccelerationStructureGeometryTrianglesDataKH
 
 TLAS の各 instance は `VkGeometryInstanceFlagsKHR` を持ち、`FORCE_OPAQUE` は「このインスタンスは不透明として扱う」= **any-hit シェーダを呼ばない**、`FORCE_NO_OPAQUE` はその逆です。両方を同時に立てるのは矛盾なので、宣言側で弾く必要があります。any-hit シェーダは交差**候補**ごとに(順不同で、同じ交差に対して複数回)呼ばれ、`ignoreIntersectionEXT` でその候補を棄却します。三角形の hit attribute は組み込みで `vec2` の重心座標(残り 1 成分は `1 - u - v`)、プリミティブ番号は `gl_PrimitiveID` です。したがってアルファ抜きを any-hit で実装している構成で `FORCE_OPAQUE` を立てると、抜きが丸ごと無効になります。
 
-**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1077)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L531) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1240)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
+**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1069)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L531) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1240)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
 
 ### in-flight フレームと GPU 資源の寿命
 
 GPU に投入したコマンドバッファは、対応する fence が signal されるまで「まだ実行中かもしれない」ものです。そのコマンドバッファが参照している資源(バッファ・イメージ・acceleration structure・SBT・descriptor set)は、その間は破棄も上書きもできません。CPU が先へ進むために同じ資源を N セット用意して添字で回すのが in-flight frame で、この N はスワップチェーンのイメージ枚数とは**別の数**です。破棄を「fence 完了後」まで遅らせる仕組み(遅延解放キュー)と、フレームが掴んだ資源を型を消して握っておく仕組み(lease)を組むのが定型になります。
 
-**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L4831) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
+**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L4759) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
 
 ## 10.2 glTF / 3D アセット形式の仕様
 
@@ -621,7 +621,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 「途中で失敗したら、それまでの副作用を取り消す」を例外安全に書く定型です。ローカルなガード型のデストラクタに巻き戻し処理を書き、正常系の最後で「もう巻き戻さない」印(commit / dismiss と呼ばれることが多い)を立ててガードを無効化します。こうすると、途中のどの `throw` からでも巻き戻しが走り、成功経路でだけ走りません(`std::scope_exit` / `scope_fail` は C++ 標準ライブラリ拡張の同種の道具です)。ガードに「そもそも何もしていない」状態を表す番兵(世代番号が 0、ハンドルが無効など)を持たせて、staging 前に抜けたときに巻き戻しを飛ばす形もよく使われます。
 
-**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L2922) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L2937) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L390)(`catch (...)` で確保済みの範囲を返す)
+**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3016) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3031) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L390)(`catch (...)` で確保済みの範囲を返す)
 
 ### double-checked locking と acquire / release
 
@@ -639,7 +639,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 2 つの 32bit 値を 1 つの 64bit に詰める `(hi << 32) | lo` は、単なる節約ではなく「2 つのキーの辞書順比較を、整数 1 回の比較で行う」ための表現です(上位に来た値が優先される)。復元はシフトとマスクで、詰める前に両方が 32bit に収まることを確かめておかないと静かに桁が落ちます。関連する定型が `(1u << n) - 1u`(下位 n ビットを立てる)で、n がビット幅と同じときは左シフトが未定義になるため別扱いが要ります。フラグ集合では「同時に立ってはいけない組み合わせ」を `(x & A) != 0 && (x & B) != 0` の形で検査するのが定石です。
 
-**使用場所**: [sceneBehaviorAttachmentSeq()](../../src/core/gamelogic/behaviorarena.cpp#L72)(32bit を超える入力を `length_error` で弾いてから詰める) / [refreshSceneAttachmentSequence()](../../src/core/gamelogic/behaviorarena.cpp#L358) / [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L247)(view_count 32 のときだけ `UINT32_MAX` へ分岐) / [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1077)(相反フラグの検査)
+**使用場所**: [sceneBehaviorAttachmentSeq()](../../src/core/gamelogic/behaviorarena.cpp#L72)(32bit を超える入力を `length_error` で弾いてから詰める) / [refreshSceneAttachmentSequence()](../../src/core/gamelogic/behaviorarena.cpp#L442) / [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L247)(view_count 32 のときだけ `UINT32_MAX` へ分岐) / [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1069)(相反フラグの検査)
 
 ### shared_ptr / weak_ptr による寿命の「リース」
 
@@ -663,13 +663,13 @@ C++ のムーブは、移動元を「有効だが未規定の状態」にしま�
 
 `std::any` は「任意の 1 個のコピー可能な値」を型を隠して保持する箱で、取り出しは `std::any_cast<T>` です。型が違えば `std::bad_any_cast` を投げます(ポインタ版は null を返します)。異なるコーデックが返す異種の値を 1 つのコンテナで運ぶような場面で、共通の基底クラスを作らずに済ませる手段になります。取り出し側は必ず失敗しうるので、`bad_any_cast` をその境界の例外契約(たとえば `std::invalid_argument`)へ翻訳しておくと、呼び出し側が 1 種類の失敗だけを見ればよくなります。
 
-**使用場所**: [codecValue()](../../src/core/loader/componentcodec.cpp#L370)(`any_cast` の失敗を `invalid_argument` に翻訳) / [prepareSceneBindings()](../../src/core/loader/scene.cpp#L303)
+**使用場所**: [codecValue()](../../src/core/loader/componentcodec.cpp#L372)(`any_cast` の失敗を `invalid_argument` に翻訳) / [prepareSceneBindings()](../../src/core/loader/scene.cpp#L303)
 
 ### Result 型で例外型を境界の外に出さない
 
 モジュールの内側では例外で失敗を運びつつ、外向きの API では成功/失敗を値(`Result` 型)で返す、という二層構造です。境界の関数が内部例外だけを `catch` して `Result::failure()` に畳むことで、呼び出し側が実装都合の例外型を知らずに済みます。重要なのは「どの例外を捕まえるか」で、内部の型だけを捕まえて `std::exception` や `...` を素通しにするか、あるいは全部畳んで種類を失うか、を意識的に決める必要があります。前者なら想定外のバグは伝播し、後者ならすべてが「失敗」に見えます。
 
-**使用場所**: [componentcodec.cpp の decode ラッパテンプレート](../../src/core/loader/componentcodec.cpp#L53)
+**使用場所**: [componentcodec.cpp の decode ラッパテンプレート](../../src/core/loader/componentcodec.cpp#L55)
 
 ### std::variant + std::visit + if constexpr のディスパッチ
 
@@ -681,7 +681,7 @@ C++ のムーブは、移動元を「有効だが未規定の状態」にしま�
 
 C++17 の fold 式は、パラメータパックを 1 つの式に畳み込みます。`(f(args), ...)` はカンマ fold で、**左から右へ順に評価されることが規格で保証されます**(通常の関数引数の評価順は未規定なので、順序が意味を持つ処理はこちらで書く必要があります)。`(pred(args) && ...)` は全称判定で、短絡も効きます。要素が `std::tuple` に入っているときは `std::apply(f, t)` で全要素を一度に受け取り、その中で fold にかけるのが定型です。スキーマ宣言のように「宣言順が結果の順序になる」処理は、この評価順の保証に依存しています。
 
-**使用場所**: [collectBehaviorEventHandlers()](../../src/core/userpublic/details/behavior/registerer.hpp#L148)(カンマ fold で全 Index を順に処理) / [materializeSchemaNode()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L926)(`std::apply` + fold) / [decodeStructObject()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L711) / [materializeBehaviorParamsSchemaFingerprint()](../../src/core/userpublic/details/behavior/registerer.hpp#L184)
+**使用場所**: [collectBehaviorEventHandlers()](../../src/core/userpublic/details/behavior/registerer.hpp#L148)(カンマ fold で全 Index を順に処理) / [materializeSchemaNode()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L828)(`std::apply` + fold) / [decodeStructObject()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L613) / [materializeBehaviorParamsSchemaFingerprint()](../../src/core/userpublic/details/behavior/registerer.hpp#L184)
 
 ### consteval とコンパイル時の throw
 
@@ -689,7 +689,7 @@ C++20 の `consteval` 関数は必ず定数評価されます。定数評価の�
 
 **使用場所**: [validateFloatingRange()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L414)(範囲が非有限、または min > max なら文字列を throw) / [field()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L486)(フィールド名が空、または予約接頭辞 `$` で始まるなら throw)
 
-**このコードベースでの注意**: 同じ `consteval` でも、[structFieldType()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L369) と [legacyBranchDescriptorsAreStrictlyOrdered()](../../src/core/loader/componentcodec.cpp#L1391) は `throw` ではなく `static_assert`(前者は `always_false_v` のフォールバック、後者は戻り値を呼び出し側の `static_assert` が見る形)で落とします。「引数の値に対する検査」は throw、「型やテーブル全体に対する検査」は `static_assert`、という使い分けです。
+**このコードベースでの注意**: 同じ `consteval` でも、[structFieldType()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L369) と [legacyBranchDescriptorsAreStrictlyOrdered()](../../src/core/loader/componentcodec.cpp#L1383) は `throw` ではなく `static_assert`(前者は `always_false_v` のフォールバック、後者は戻り値を呼び出し側の `static_assert` が見る形)で落とします。「引数の値に対する検査」は throw、「型やテーブル全体に対する検査」は `static_assert`、という使い分けです。
 
 ### __COUNTER__ と ADL タグディスパッチによる「登録済みの型の列挙」
 
@@ -701,7 +701,7 @@ C++20 の `consteval` 関数は必ず定数評価されます。定数評価の�
 
 C++17 以降、`template <auto Member>` でメンバーへのポインタを非型テンプレート引数として受け取れます。`decltype(Member)` は `T Owner::*` の形なので、traits で所有者型 `Owner` とメンバー型 `T` を取り出せ、実際の代入は `object.*Member = value;` と書けます。スキーマ定義が「この JSON のキーはこの構造体のこのフィールド」という対応を、文字列でもオフセットでもなく**型として**持てるのがこのイディオムの狙いで、フィールドを消したり型を変えたりするとスキーマ側がコンパイルエラーになります。
 
-**使用場所**: [StructFieldDeclaration](../../src/core/userpublic/details/schema/structfieldschema.hpp#L473) / [field()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L486) / [decodeStructPolicyField()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L282)
+**使用場所**: [StructFieldDeclaration](../../src/core/userpublic/details/schema/structfieldschema.hpp#L473) / [field()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L486) / [decodeStructPolicyField()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L438)
 
 ### concept / requires 節と、特殊化による trait チェーン
 
@@ -713,7 +713,7 @@ C++20 の `concept` と `requires` 式は「この型がこう使えるか」を
 
 `std::array<T, N>` は N ごとに別の型なので、そのまま非テンプレートの関数に渡せません。`std::span<const T>`(C++20)はポインタと個数の組を持つ非所有のビューで、`array` でも `vector` でも生配列でも同じ引数型で受けられるようにします。所有しないので**元の配列より長生きしてはいけない**のが唯一にして最大の注意点で、テンポラリから作った span を返すと即座にダングリングになります。
 
-**使用場所**: [fieldSpan()](../../src/core/loader/componentcodec.cpp#L1300) / [ReleaseReport](../../src/core/model/modelresourcerelease.hpp#L36)(`view()` が固定長配列の先頭 N 件を span で返す)
+**使用場所**: [fieldSpan()](../../src/core/loader/componentcodec.cpp#L1292) / [ReleaseReport](../../src/core/model/modelresourcerelease.hpp#L36)(`view()` が固定長配列の先頭 N 件を span で返す)
 
 ### 関数スコープ static の一度きり初期化
 
@@ -829,7 +829,7 @@ Windows の実行イメージ(PE)は先頭に DOS スタブ、続いて `PE\0\0`
 
 POSIX と違い、Windows ではファイルを開くときに「他のプロセスに何を許すか」を `CreateFileW` の `dwShareMode` で宣言します。`FILE_SHARE_READ` だけを渡すと「他プロセスの読みは許すが、書きと削除は許さない」という意味になり、逆に**自分が開いている間に他プロセスが書こうとすると失敗する**ようにもなります。ビルド中の DLL のように書き手がいるファイルを開こうとすると `ERROR_SHARING_VIOLATION`(32)か `ERROR_LOCK_VIOLATION`(33)が返るので、この 2 つを「まだ書き込み中だから少し待って再試行」の合図として使えます。ハンドルを開けたこと自体が短時間のロックになるため、判定用に開いたハンドルは RAII で確実に閉じます。
 
-**使用場所**: [SourceReadLease](../../src/core/gamelogic/gamelogicreload.cpp#L128)(`FILE_SHARE_READ` のみで開き、デストラクタで `CloseHandle`) / [sourceWriterIsActive()](../../src/core/gamelogic/gamelogicreload.cpp#L156)(2 つのエラーコードを「書き手が生きている」と解釈)
+**使用場所**: [SourceReadLease](../../src/core/gamelogic/gamelogicreload.cpp#L167)(`FILE_SHARE_READ` のみで開き、デストラクタで `CloseHandle`) / [sourceWriterIsActive()](../../src/core/gamelogic/gamelogicreload.cpp#L195)(2 つのエラーコードを「書き手が生きている」と解釈)
 
 **このコードベースでの注意**: 定数名は `ERROR_SHARING_VIOLATION` / `ERROR_LOCK_VIOLATION` です(`FILE_LOCK_VIOLATION` という名前の定数はありません)。再試行の回数は `sourceBusyRetryLimit` で 3 回に制限されています。
 
@@ -837,19 +837,19 @@ POSIX と違い、Windows ではファイルを開くときに「他のプロセ
 
 「その PID のプロセスがまだ生きているか」は、OS ごとに別の API になり、しかも**エラーが必ずしも「居ない」を意味しません**。POSIX の `kill(pid, 0)` はシグナルを送らずに存在確認だけを行い、`0` なら存在、`errno == EPERM`(権限が無い)も**存在する**の意味です。Windows の `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, ...)` は他ユーザーのプロセスに対して `ERROR_ACCESS_DENIED` を返しますが、これも存在の証拠です。したがって両方とも「アクセス拒否は生存扱い、見つからないときだけ死亡扱い」に倒すのが安全側です。PID の型も `DWORD` と `pid_t` で違うので、跨いで持ち回るときは `std::uint64_t` のような共通表現に正規化します。
 
-**使用場所**: [processIsAlive()](../../src/core/gamelogic/gamelogicreload.cpp#L164) / [currentProcessId()](../../src/core/gamelogic/gamelogicreload.cpp#L108)
+**使用場所**: [processIsAlive()](../../src/core/gamelogic/gamelogicreload.cpp#L203) / [currentProcessId()](../../src/core/gamelogic/gamelogicreload.cpp#L147)
 
 ### 動的ライブラリのエラー取得(GetLastError と dlerror)
 
 `LoadLibraryW` / `GetProcAddress` が失敗したときの理由は Windows では `GetLastError()` の数値コードで、POSIX の `dlopen` / `dlsym` では `dlerror()` の文字列で得ます。両者の性質はかなり違い、`GetLastError()` はスレッドごとの「直前の失敗コード」で成功時にクリアされるとは限らない一方、`dlerror()` は**読み出すとクリアされる**ので 2 回目は null が返ります(そのため戻り値を必ず一度だけ保存します)。また `GetLastError()` から得たメッセージ文字列はマシンのロケールに従うため、そのまま JSON や UTF-8 のログへ載せるとエンコーディングが混ざります。数値コードだけを載せて文字列は自前で組む、という割り切りがよく使われます。
 
-**使用場所**: [platformLoadError()](../../src/core/gamelogic/gamelogicreload.cpp#L91)(Windows は数値コードから英文を組み、POSIX は `dlerror()` の文字列を 1 度だけ読む)
+**使用場所**: [platformLoadError()](../../src/core/gamelogic/gamelogicreload.cpp#L130)(Windows は数値コードから英文を組み、POSIX は `dlerror()` の文字列を 1 度だけ読む)
 
 ### std::filesystem の canonical / weakly_canonical とルート名
 
 `std::filesystem::canonical(p)` は実在するパスしか正規化できず、存在しなければ例外(または `error_code`)になります。対して `weakly_canonical(p)` は「存在する先頭部分だけを解決し、残りは字句的に正規化する」ので、これから作るファイルのパスにも使えます。Windows 固有の落とし穴が**ルート名**で、`path::has_root_name()` は `C:` や `\\server` の有無を返します。`C:\dir`(ルート名 + ルートディレクトリ)は絶対パスですが、`C:dir` は「ドライブ C の**カレントディレクトリ**からの相対」であり、しかも `current_path()` がドライブごとに存在するため、プロセスのカレントだけでは決まりません。この曖昧な形は受け付けずに拒否するのが安全です。
 
-**使用場所**: [weaklyCanonicalOrAbsolute()](../../src/core/communication/rpcserver.cpp#L1039) / [absoluteCapturePath()](../../src/core/communication/rpcserver.cpp#L1031) / [projectRootString()](../../src/core/communication/rpcserver.cpp#L983) / [resolveDeclaration()](../../src/core/asset/model.cpp#L232)
+**使用場所**: [weaklyCanonicalOrAbsolute()](../../src/core/communication/rpcserver.cpp#L955) / [absoluteCapturePath()](../../src/core/communication/rpcserver.cpp#L947) / [projectRootString()](../../src/core/communication/rpcserver.cpp#L899) / [resolveDeclaration()](../../src/core/asset/model.cpp#L232)
 
 ## 10.5 アルゴリズムとデータ処理の定番
 
@@ -997,7 +997,7 @@ nlohmann::json は数値を「符号なし整数 / 符号付き整数 / 浮動�
 
 JSON の数値には型の区別が無く、多くの実装(JavaScript の `JSON.parse` を含む)は倍精度浮動小数点で受けます。IEEE 754 の倍精度は仮数部が 53 ビットなので、**絶対値が 2^53 = 9007199254740992 を超える整数は 1 刻みで表せません**。したがって「往復しても壊れない整数」の上限は 2^53−1 = 9007199254740991(JavaScript の `Number.MAX_SAFE_INTEGER`)です。64bit の ID をそのまま JSON に載せる設計は、この値域で切るか、文字列として運ぶかのどちらかを選ぶ必要があります。
 
-**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L69)(`maxExactJsonInteger` を超える値を `invalid_argument`) / [BehaviorAttachmentArena::reserveRuntimeAttachmentIdentity()](../../src/core/gamelogic/behaviorarena.cpp#L1160)(ハンドル空間の枯渇として `overflow_error`) / [max_exact_struct_json_integer の定義](../../src/core/userpublic/details/schema/structfieldjson.hpp#L105)
+**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L69)(`maxExactJsonInteger` を超える値を `invalid_argument`) / [BehaviorAttachmentArena::reserveRuntimeAttachmentIdentity()](../../src/core/gamelogic/behaviorarena.cpp#L1057)(ハンドル空間の枯渇として `overflow_error`) / [max_exact_struct_json_integer の定義](../../src/core/userpublic/details/schema/structfieldjson.hpp#L105)
 
 **このコードベースでの注意**: 境界の取り方が 2 つあります。journal と behavior arena は 2^53−1(9007199254740991)を上限に、スキーマ検証側は 2^53(9007199254740992)を上限にしています。前者が「安全な整数」の定義どおり、後者は 2^53 ちょうどを許す(表現自体は可能な)側です。
 
@@ -1005,7 +1005,7 @@ JSON の数値には型の区別が無く、多くの実装(JavaScript の `JSON
 
 JSON-RPC 2.0 の request は `{"jsonrpc": "2.0", "method": ..., "params": ..., "id": ...}` で、`params` は配列かオブジェクトのみ(スカラーは不可)、`id` を持たないものは **notification** と呼ばれ応答を返してはいけません。response は `result` と `error` の**どちらか一方だけ**を持たなければならず、両方あるものも両方無いものも不正です。この仕様自体には転送方式が定められていないため、行区切り(1 行 1 メッセージ)や `Content-Length` ヘッダ(LSP 方式)といった framing は実装側の取り決めになります。行区切りを採る場合、Windows で生まれたテキストは行末に `\r` が残るので、JSON へ渡す前に落とす必要があります(`\r` は JSON の空白文字なので実害が出ないこともありますが、id の照合や digest には効きます)。予約エラーコードは前掲の項を参照してください。
 
-**使用場所**: [RpcServer::run()](../../src/core/communication/rpcserver.cpp#L1168)(`getline` の後に末尾 `\r` を落として 1 行 1 応答) / [RpcServer::handleLine()](../../src/core/communication/rpcserver.cpp#L1090) / [parseJsonRpcRequest()](../../src/project/jsonrpc.cpp#L148)
+**使用場所**: [RpcServer::run()](../../src/core/communication/rpcserver.cpp#L1084)(`getline` の後に末尾 `\r` を落として 1 行 1 応答) / [RpcServer::handleLine()](../../src/core/communication/rpcserver.cpp#L1090) / [parseJsonRpcRequest()](../../src/project/jsonrpc.cpp#L148)
 
 ## 10.6 座標・数値の約束事
 
@@ -1108,7 +1108,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 四元数 q でベクトル v を回すとき、`q * v * conj(q)` を素直に計算する代わりに `t = 2 * cross(q.xyz, v); v' = v + q.w * t + cross(q.xyz, t)` と展開するのが標準的です。行列を作らずに済み、乗算回数も少なくなります。この式は q が単位四元数であることを前提にしているので、上の判定を通っていない値を渡すと大きさまで変わります。
 
-**使用場所**: [readQuat()](../../src/core/loader/componentcodec.cpp#L354)(`norm_squared <= epsilon` を拒否するだけで正規化はしない) / [rotateVector()](../../src/core/phys/physquery.cpp#L107)(上の展開形) / [normalizedQuat()](../../src/core/phys/physquery.cpp#L97)
+**使用場所**: [readQuat()](../../src/core/loader/componentcodec.cpp#L356)(`norm_squared <= epsilon` を拒否するだけで正規化はしない) / [rotateVector()](../../src/core/phys/physquery.cpp#L107)(上の展開形) / [normalizedQuat()](../../src/core/phys/physquery.cpp#L97)
 
 ### GLM の quat コンストラクタ引数順は (w, x, y, z)
 
@@ -1122,7 +1122,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 親の world 変換から子の local を復元するときは、この逆を逆順に当てます — 並進を引き、親回転の逆を掛け、親スケールで割る。スケールで割る以上、**成分が 0 に近い親スケールでは逆算が発散します**ので、閾値を置いて拒否するのが定石です。非一様スケールと回転が混ざると local の scale が一意に決まらない(せん断が生じる)ことにも注意が要ります。
 
-**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2316)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L427)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
+**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2316)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L419)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
 
 ### 法線の変換は transpose(inverse(M))
 
