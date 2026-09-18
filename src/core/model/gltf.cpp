@@ -1,7 +1,6 @@
-#define TINYGLTF_IMPLEMENTATION
-#define STB_IMAGE_IMPLEMENTATION
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-
+// The tinygltf / stb implementations live in tinygltf_implementation.cpp:
+// this file and gltfaccessorreader.hpp both include <tiny_gltf.h>, and the
+// implementation block sits outside its include guard.
 #include "../log.hpp"
 #include "../build_features.hpp"
 #include "../loader/engineresources.hpp"
@@ -13,6 +12,7 @@
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../../project/gltfmateriallowering.hpp"
 #include "gltf.hpp"
+#include "gltfaccessorreader.hpp"
 #include "gltfimage.hpp"
 #include "vatformat.hpp"
 #include "vertbufcontainer.hpp"
@@ -35,8 +35,11 @@
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 namespace Pelican {
+
+using GltfInternal::GltfAccessorReader;
 
 namespace {
 
@@ -251,13 +254,9 @@ void rejectVatModelIfDisabled(const tinygltf::Model &model) {
 #endif
 }
 
-#if PELICAN_WITH_VAT
-
 size_t vatTextureBytes(const VatPrimitiveInfo &vat) {
     return static_cast<size_t>(vat.vertex_count) * vat.frame_count * 4 * sizeof(uint16_t);
 }
-
-#endif
 
 } // namespace
 
@@ -543,351 +542,644 @@ class LiveGltfResourceSink final : public GltfResourceSink {
 
 } // namespace
 
-struct GltfAccessorReader {
+namespace {
+
+// How the VRM firstPerson extension annotates the meshes of one node.
+// `automatic` is the "auto" annotation, which splits a skinned primitive's
+// triangles by whether they are head-related.
+enum class FirstPersonAnnotation {
+    automatic,
+    both,
+    first_person_only,
+    third_person_only,
+};
+
+FirstPersonAnnotation firstPersonAnnotation(
+    const std::shared_ptr<const VrmSemanticData> &vrm_semantic, int node_index) {
+    if (!vrm_semantic) return FirstPersonAnnotation::both;
+    std::string_view annotation = "auto";
+    if (vrm_semantic->first_person) {
+        for (const auto &candidate :
+             vrm_semantic->first_person->mesh_annotations) {
+            if (candidate.node == node_index) {
+                annotation = candidate.type;
+                break;
+            }
+        }
+    }
+    if (annotation == "auto") return FirstPersonAnnotation::automatic;
+    if (annotation == "both") return FirstPersonAnnotation::both;
+    if (annotation == "firstPersonOnly")
+        return FirstPersonAnnotation::first_person_only;
+    if (annotation == "thirdPersonOnly")
+        return FirstPersonAnnotation::third_person_only;
+    throw std::runtime_error("VRM firstPerson annotation has unknown type '" +
+                             std::string{annotation} + "'");
+}
+
+// The head subtree mask, computed on first use and cached in `cache` (the
+// importer's `head_related_nodes` member) because every automatic primitive of
+// every mesh needs the same walk.
+const std::vector<std::uint8_t> &headRelatedNodes(
+    const tinygltf::Model &model,
+    const std::shared_ptr<const VrmSemanticData> &vrm_semantic,
+    std::optional<std::vector<std::uint8_t>> &cache) {
+    if (cache) return *cache;
+    std::vector<std::uint8_t> related(model.nodes.size());
+    if (vrm_semantic) {
+        const auto head = std::find_if(
+            vrm_semantic->human_bones.begin(),
+            vrm_semantic->human_bones.end(),
+            [](const VrmHumanBone &bone) { return bone.name == "head"; });
+        if (head != vrm_semantic->human_bones.end() && head->node >= 0) {
+            std::vector<int> pending{head->node};
+            while (!pending.empty()) {
+                const auto node = pending.back();
+                pending.pop_back();
+                if (node < 0 || node >= static_cast<int>(model.nodes.size()))
+                    throw std::runtime_error(
+                        "VRM head hierarchy references an invalid glTF node");
+                if (related[static_cast<std::size_t>(node)] != 0) continue;
+                related[static_cast<std::size_t>(node)] = 1;
+                const auto &children = model.nodes[node].children;
+                pending.insert(pending.end(), children.begin(), children.end());
+            }
+        }
+    }
+    cache = std::move(related);
+    return *cache;
+}
+
+void transformVertexData(CommonPolygonVertData &data, const glm::mat4 &transform) {
+    for (auto &position : data.pos) {
+        position = glm::vec3{transform * glm::vec4{position, 1.0f}};
+    }
+
+    const auto normal_transform = glm::transpose(glm::inverse(glm::mat3{transform}));
+    for (auto &normal : data.normal) {
+        const auto transformed = normal_transform * normal;
+        normal = data.morph_targets.empty() &&
+                         glm::dot(transformed, transformed) > 0.0f
+                     ? glm::normalize(transformed)
+                     : transformed;
+    }
+    for (auto &tangent : data.tangent) {
+        const auto unnormalized =
+            normal_transform * glm::vec3{tangent};
+        const auto transformed =
+            data.morph_targets.empty() &&
+                    glm::dot(unnormalized, unnormalized) > 0.0f
+                ? glm::normalize(unnormalized)
+                : unnormalized;
+        tangent = glm::vec4{transformed, tangent.w};
+    }
+    const auto position_transform = glm::mat3{transform};
+    for (auto &target : data.morph_targets) {
+        for (auto &position : target.position)
+            position = position_transform * position;
+        for (auto &normal : target.normal)
+            normal = normal_transform * normal;
+        for (auto &tangent : target.tangent)
+            tangent = normal_transform * tangent;
+    }
+}
+
+std::vector<glm::vec3> readMorphDeltaAccessor(
+    const tinygltf::Model &model, const std::string &source_path,
+    int accessor_index, std::size_t expected_count,
+    const std::string &context) {
+    if (accessor_index < 0 ||
+        accessor_index >= static_cast<int>(model.accessors.size()))
+        throw std::runtime_error(context + " references an invalid accessor index");
+    const auto &accessor = model.accessors[accessor_index];
+    if (accessor.type != TINYGLTF_TYPE_VEC3 ||
+        accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT ||
+        accessor.normalized)
+        throw std::runtime_error(
+            context + " accessor must be non-normalized FLOAT VEC3");
+    if (accessor.count != expected_count)
+        throw std::runtime_error(
+            context + " accessor count does not match primitive POSITION count");
+    if (accessor.sparse.isSparse)
+        throw std::runtime_error(
+            context + " uses a sparse accessor, unsupported by morph target v1");
+    if (accessor.bufferView < 0 ||
+        accessor.bufferView >= static_cast<int>(model.bufferViews.size()))
+        throw std::runtime_error(context + " accessor has no valid bufferView");
+    const auto &view = model.bufferViews[accessor.bufferView];
+    if (view.buffer < 0 || view.buffer >= static_cast<int>(model.buffers.size()))
+        throw std::runtime_error(context + " accessor bufferView has an invalid buffer");
+    const auto values = GltfAccessorReader{model, source_path}
+                            .getDataFromAccessor<TINYGLTF_TYPE_VEC3, glm::vec3>(
+                                accessor_index);
+    for (const auto &value : values) {
+        if (!std::isfinite(value.x) || !std::isfinite(value.y) ||
+            !std::isfinite(value.z))
+            throw std::runtime_error(context + " accessor contains a non-finite delta");
+    }
+    return values;
+}
+
+// The single place where the mesh path depends on PELICAN_WITH_VAT.
+//
+// With VAT compiled in, `parseVatPrimitive` decodes the pelican.vat extras.
+// With VAT compiled out there is no such thing as a VAT primitive: a GLB that
+// carries the extras is rejected here, and every caller below then sees an
+// empty optional, so the VAT branches stay present and unreachable instead of
+// disappearing. That is what keeps the `else if` chain, the occurrence
+// identity, and the material selection one shape in both configurations.
+#if PELICAN_WITH_VAT
+
+std::vector<VatBufferViewInfo> vatBufferViewInfos(const tinygltf::Model &model) {
+    std::vector<VatBufferViewInfo> infos;
+    infos.reserve(model.bufferViews.size());
+    for (size_t i = 0; i < model.bufferViews.size(); ++i) {
+        const auto &view = model.bufferViews[i];
+        infos.push_back(VatBufferViewInfo{
+            .index = static_cast<int>(i),
+            .buffer = view.buffer,
+            .byte_offset = view.byteOffset,
+            .byte_length = view.byteLength,
+        });
+    }
+    return infos;
+}
+
+std::optional<VatPrimitiveInfo> parseVatPrimitive(const tinygltf::Model &model,
+                                                  const VatPrimitiveMeta &vat_meta,
+                                                  uint32_t vertex_count) {
+    return parseVatPrimitiveExtras(vat_meta, vertex_count,
+                                   vatBufferViewInfos(model));
+}
+
+#else
+
+std::optional<VatPrimitiveInfo> parseVatPrimitive(const tinygltf::Model &,
+                                                  const VatPrimitiveMeta &vat_meta,
+                                                  uint32_t) {
+    if (vat_meta.present) {
+        throwBuildFeatureDisabled("PELICAN_WITH_VAT",
+                                  "GLB contains pelican.vat primitive extras");
+    }
+    return std::nullopt;
+}
+
+#endif
+
+// The importer's cross-method material state, named at the one place the
+// per-primitive path writes it. Generated (skinned / VAT) material ids are
+// handed out from `next_generated_material` downwards, and every one of them
+// must land in both `resolved_materials` and `generated_material_sources`;
+// `finalizeOccurrenceIdentities` reads the pair back.
+struct GeneratedMaterialRegistry {
+    using ModelLocalMaterialId = int;
+
+    GltfResourceSink &resources;
+    StandardMaterialResource &std_mat;
+    const tinygltf::Model &model;
+    const std::vector<MaterialInfo> &material_infos;
+    ModelLocalMaterialId &next_generated_material;
+    std::unordered_map<ModelLocalMaterialId, GlobalMaterialId> &resolved_materials;
+    std::unordered_map<ModelLocalMaterialId, std::uint32_t> &generated_material_sources;
+    std::unordered_map<ModelLocalMaterialId, ModelLocalMaterialId> &skinned_material_variants;
+
+    MaterialInfo materialInfoForPrimitive(int local_material_id) const {
+        if (local_material_id >= 0) {
+            return material_infos.at(local_material_id);
+        }
+
+        return MaterialInfo{
+            .vert_shader = std_mat.standardVertShader(),
+            .frag_shader = std_mat.standardFragShader(),
+            .base_color_texture = std_mat.whiteTexture(),
+            .metallic_roughness_texture = std_mat.metallicRoughnessDefaultTexture(),
+            .normal_texture = std_mat.normalDefaultTexture(),
+            .emissive_texture = std_mat.emissiveDefaultTexture(),
+            .occlusion_texture = std_mat.occlusionDefaultTexture(),
+        };
+    }
+
+    const std::byte *bufferViewData(const VatBufferViewSpan &span, size_t required_bytes) const {
+        if (span.buffer < 0 || span.buffer >= static_cast<int>(model.buffers.size())) {
+            throw std::runtime_error("pelican.vat references invalid buffer index");
+        }
+        const auto &buffer = model.buffers[span.buffer];
+        if (span.byte_offset > buffer.data.size() || required_bytes > buffer.data.size() - span.byte_offset) {
+            throw std::runtime_error("pelican.vat bufferView range exceeds GLB buffer data");
+        }
+        return reinterpret_cast<const std::byte *>(buffer.data.data() + span.byte_offset);
+    }
+
+    GlobalTextureId registerVatTexture(const VatBufferViewSpan &span, uint32_t vertex_count,
+                                       uint32_t frame_count, size_t required_bytes) const {
+        const auto *data = bufferViewData(span, required_bytes);
+        return resources.registerTexture(vk::Extent3D{vertex_count, frame_count, 1}, data,
+                                         vk::Format::eR16G16B16A16Sfloat, required_bytes);
+    }
+
+    ModelLocalMaterialId registerVatMaterial(int local_material_id, const VatPrimitiveInfo &vat,
+                                             const ModelTemplate::PrimitiveRefInfo &primitive_info) {
+        const auto required_bytes = vatTextureBytes(vat);
+        auto material_info = materialInfoForPrimitive(local_material_id);
+        const auto position_texture =
+            registerVatTexture(vat.position_view, vat.vertex_count, vat.frame_count, required_bytes);
+        const auto normal_texture =
+            vat.normal_view ? registerVatTexture(*vat.normal_view, vat.vertex_count, vat.frame_count,
+                                                 required_bytes)
+                            : std_mat.normalDefaultTexture();
+
+        material_info.vert_shader = std_mat.vatVertShader();
+        material_info.vat = MaterialInfo::VatPlaybackInfo{
+            .position_texture = position_texture,
+            .normal_texture = normal_texture,
+            .bounds_min = vat.bounds_min,
+            .bounds_max = vat.bounds_max,
+            .fps = static_cast<float>(vat.fps),
+            .frame_count = vat.frame_count,
+            .base_vertex = primitive_info.vert_offset,
+            .loop = vat.loop,
+            .has_normal = vat.normal_view.has_value(),
+        };
+
+        const auto generated_material = next_generated_material--;
+        resolved_materials[generated_material] = resources.registerMaterial(material_info);
+        generated_material_sources[generated_material] =
+            local_material_id >= 0 ? static_cast<std::uint32_t>(local_material_id)
+                                   : noSourceMaterialIndex;
+        return generated_material;
+    }
+
+    ModelLocalMaterialId skinnedMaterial(int local_material_id) {
+        if (const auto found = skinned_material_variants.find(local_material_id);
+            found != skinned_material_variants.end()) return found->second;
+        auto info = local_material_id >= 0 ? material_infos.at(local_material_id) : MaterialInfo{
+            .vert_shader = std_mat.standardVertShader(), .frag_shader = std_mat.standardFragShader(),
+            .base_color_texture = std_mat.whiteTexture(),
+            .metallic_roughness_texture = std_mat.metallicRoughnessDefaultTexture(),
+            .normal_texture = std_mat.normalDefaultTexture(),
+            .emissive_texture = std_mat.emissiveDefaultTexture(),
+            .occlusion_texture = std_mat.occlusionDefaultTexture()};
+        info.vert_shader = std_mat.skinnedVertShader();
+        info.skinned = true;
+        const auto generated = next_generated_material--;
+        resolved_materials[generated] = resources.registerMaterial(std::move(info));
+        generated_material_sources[generated] =
+            local_material_id >= 0 ? static_cast<std::uint32_t>(local_material_id)
+                                   : noSourceMaterialIndex;
+        skinned_material_variants[local_material_id] = generated;
+        return generated;
+    }
+};
+
+// Read-only, and fixed for the whole mesh.
+struct PrimitiveSourceContext {
     const tinygltf::Model &model;
     const std::string &source_path;
-
-    template <class InType, class OutType>
-    std::vector<OutType> readComponentByType(const unsigned char *p_data,
-                                             std::size_t count,
-                                             std::size_t stride,
-                                             std::size_t element_size) {
-        if (sizeof(InType) < element_size) {
-            throw std::runtime_error(
-                "glTF accessor element does not fit its decoded component type");
-        }
-        std::vector<OutType> buf(count);
-        for (std::size_t i = 0; i < count; ++i) {
-            InType value{};
-            std::memcpy(&value, p_data + stride * i, element_size);
-            buf[i] = static_cast<OutType>(value);
-        }
-        return buf;
-    }
-
-    template <class InType>
-    static float normalizedIntegerComponent(InType value) {
-        static_assert(std::is_integral_v<InType>);
-        if constexpr (std::is_unsigned_v<InType>) {
-            return static_cast<float>(value) /
-                   static_cast<float>(
-                       std::numeric_limits<InType>::max());
-        } else {
-            return std::max(
-                static_cast<float>(value) /
-                    static_cast<float>(
-                        std::numeric_limits<InType>::max()),
-                -1.0F);
-        }
-    }
-
-    template <class InType, class OutType>
-    std::vector<OutType>
-    readNormalizedScalar(const unsigned char *p_data,
-                         std::size_t count,
-                         std::size_t stride,
-                         std::size_t element_size) {
-        if (element_size != sizeof(InType)) {
-            throw std::runtime_error(
-                "glTF normalized scalar has an invalid element size");
-        }
-        std::vector<OutType> result(count);
-        for (std::size_t index = 0; index < count; ++index) {
-            InType value{};
-            std::memcpy(
-                &value, p_data + stride * index,
-                sizeof(value));
-            result[index] = static_cast<OutType>(
-                normalizedIntegerComponent(value));
-        }
-        return result;
-    }
-
-    template <class InType, class OutType,
-              std::size_t ComponentCount>
-    std::vector<OutType>
-    readNormalizedVector(const unsigned char *p_data,
-                         std::size_t count,
-                         std::size_t stride,
-                         std::size_t element_size) {
-        if (element_size !=
-            sizeof(InType) * ComponentCount) {
-            throw std::runtime_error(
-                "glTF normalized vector has an invalid element size");
-        }
-        using OutComponent = typename OutType::value_type;
-        std::vector<OutType> result(count);
-        for (std::size_t index = 0; index < count; ++index) {
-            auto &decoded = result[index];
-            for (std::size_t component = 0;
-                 component < ComponentCount;
-                 ++component) {
-                InType value{};
-                std::memcpy(
-                    &value,
-                    p_data + stride * index +
-                        sizeof(InType) * component,
-                    sizeof(value));
-                decoded[
-                    static_cast<glm::length_t>(component)] =
-                    static_cast<OutComponent>(
-                        normalizedIntegerComponent(value));
-            }
-        }
-        return result;
-    }
-
-    template <int expected_type, class T> std::vector<T> getDataFromAccessor(int accessor_index) {
-        const auto context = "glTF accessor " + std::to_string(accessor_index) +
-                             " in '" + source_path + "'";
-        if (accessor_index < 0 ||
-            accessor_index >= static_cast<int>(model.accessors.size())) {
-            throw std::runtime_error(context + " is out of range");
-        }
-        const auto &accessor = model.accessors.at(
-            static_cast<std::size_t>(accessor_index));
-        if (expected_type != accessor.type) {
-            throw std::runtime_error(context + " has unexpected accessor type " +
-                                     std::to_string(accessor.type));
-        }
-        if (accessor.sparse.isSparse) {
-            throw std::runtime_error(context +
-                                     " uses an unsupported sparse accessor");
-        }
-        if (accessor.bufferView < 0 ||
-            accessor.bufferView >= static_cast<int>(model.bufferViews.size())) {
-            throw std::runtime_error(context + " has no valid bufferView");
-        }
-        const auto &buffer_view = model.bufferViews.at(
-            static_cast<std::size_t>(accessor.bufferView));
-        if (buffer_view.buffer < 0 ||
-            buffer_view.buffer >= static_cast<int>(model.buffers.size())) {
-            throw std::runtime_error(context +
-                                     " bufferView references an invalid buffer");
-        }
-        const auto &buffer = model.buffers.at(
-            static_cast<std::size_t>(buffer_view.buffer));
-        const auto component_size =
-            tinygltf::GetComponentSizeInBytes(accessor.componentType);
-        const auto component_count =
-            tinygltf::GetNumComponentsInType(accessor.type);
-        if (component_size <= 0 || component_count <= 0) {
-            throw std::runtime_error(context +
-                                     " has an unsupported component encoding");
-        }
-        const auto element_size = static_cast<std::size_t>(component_size) *
-                                  static_cast<std::size_t>(component_count);
-        const auto stride_value = accessor.ByteStride(buffer_view);
-        if (stride_value < 0 ||
-            static_cast<std::size_t>(stride_value) < element_size) {
-            throw std::runtime_error(context + " has an invalid byte stride");
-        }
-        const auto stride = static_cast<std::size_t>(stride_value);
-        const auto view_begin = static_cast<std::size_t>(buffer_view.byteOffset);
-        const auto view_size = static_cast<std::size_t>(buffer_view.byteLength);
-        if (view_begin > buffer.data.size() ||
-            view_size > buffer.data.size() - view_begin) {
-            throw std::runtime_error(context + " bufferView exceeds its buffer");
-        }
-        const auto accessor_offset =
-            static_cast<std::size_t>(accessor.byteOffset);
-        if (accessor_offset > view_size) {
-            throw std::runtime_error(context +
-                                     " byteOffset exceeds its bufferView");
-        }
-        const auto count = static_cast<std::size_t>(accessor.count);
-        std::size_t required = 0;
-        if (count != 0) {
-            if ((count - 1) >
-                (std::numeric_limits<std::size_t>::max() - element_size) /
-                    stride) {
-                throw std::runtime_error(context + " byte range overflows");
-            }
-            required = (count - 1) * stride + element_size;
-        }
-        const auto available = view_size - accessor_offset;
-        const auto begin = view_begin + accessor_offset;
-        if (required > available || required > buffer.data.size() - begin) {
-            throw std::runtime_error(context +
-                                     " data exceeds its bufferView");
-        }
-        const auto *p_data = count == 0 ? nullptr : buffer.data.data() + begin;
-
-        if (accessor.normalized) {
-            if constexpr (
-                expected_type ==
-                TINYGLTF_TYPE_SCALAR) {
-                if constexpr (
-                    !std::is_floating_point_v<T>) {
-                    throw std::runtime_error(
-                        context +
-                        " is normalized but its destination is "
-                        "not floating-point");
-                }
-            } else if constexpr (
-                expected_type == TINYGLTF_TYPE_VEC2 ||
-                expected_type == TINYGLTF_TYPE_VEC3 ||
-                expected_type == TINYGLTF_TYPE_VEC4) {
-                if constexpr (
-                    !std::is_floating_point_v<
-                        typename T::value_type>) {
-                    throw std::runtime_error(
-                        context +
-                        " is normalized but its destination is "
-                        "not floating-point");
-                }
-            } else {
-                throw std::runtime_error(
-                    context +
-                    " uses normalized components for an "
-                    "unsupported accessor shape");
-            }
-
-            const auto read_normalized =
-                [&]<class InType>() -> std::vector<T> {
-                if constexpr (
-                    expected_type ==
-                    TINYGLTF_TYPE_SCALAR) {
-                    return readNormalizedScalar<
-                        InType, T>(
-                        p_data, count, stride,
-                        element_size);
-                } else if constexpr (
-                    expected_type ==
-                    TINYGLTF_TYPE_VEC2) {
-                    return readNormalizedVector<
-                        InType, T, 2>(
-                        p_data, count, stride,
-                        element_size);
-                } else if constexpr (
-                    expected_type ==
-                    TINYGLTF_TYPE_VEC3) {
-                    return readNormalizedVector<
-                        InType, T, 3>(
-                        p_data, count, stride,
-                        element_size);
-                } else if constexpr (
-                    expected_type ==
-                    TINYGLTF_TYPE_VEC4) {
-                    return readNormalizedVector<
-                        InType, T, 4>(
-                        p_data, count, stride,
-                        element_size);
-                } else {
-                    throw std::logic_error(
-                        "unreachable normalized accessor shape");
-                }
-            };
-            switch (accessor.componentType) {
-            case TINYGLTF_COMPONENT_TYPE_BYTE:
-                return read_normalized
-                    .template operator()<std::int8_t>();
-            case TINYGLTF_COMPONENT_TYPE_SHORT:
-                return read_normalized
-                    .template operator()<std::int16_t>();
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-                return read_normalized
-                    .template operator()<std::uint8_t>();
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
-                return read_normalized
-                    .template operator()<std::uint16_t>();
-            default:
-                throw std::runtime_error(
-                    context +
-                    " uses normalized components with an "
-                    "unsupported component type " +
-                    std::to_string(
-                        accessor.componentType));
-            }
-        }
-
-        if constexpr (expected_type == TINYGLTF_TYPE_SCALAR) {
-            switch (accessor.componentType) {
-            case TINYGLTF_COMPONENT_TYPE_FLOAT:
-                return readComponentByType<float, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_DOUBLE:
-                return readComponentByType<double, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_BYTE:
-                return readComponentByType<int8_t, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_SHORT:
-                return readComponentByType<int16_t, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_INT:
-                return readComponentByType<int32_t, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-                return readComponentByType<uint8_t, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
-                return readComponentByType<uint16_t, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
-                return readComponentByType<uint32_t, T>(p_data, count, stride, element_size);
-            }
-        } else if constexpr (expected_type == TINYGLTF_TYPE_VEC2) {
-            switch (accessor.componentType) {
-            case TINYGLTF_COMPONENT_TYPE_FLOAT:
-                return readComponentByType<glm::vec2, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_DOUBLE:
-                return readComponentByType<glm::f64vec2, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_BYTE:
-                return readComponentByType<glm::i8vec2, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_SHORT:
-                return readComponentByType<glm::i16vec2, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_INT:
-                return readComponentByType<glm::i32vec2, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-                return readComponentByType<glm::u8vec2, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
-                return readComponentByType<glm::u16vec2, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
-                return readComponentByType<glm::u32vec2, T>(p_data, count, stride, element_size);
-            }
-        } else if constexpr (expected_type == TINYGLTF_TYPE_VEC3) {
-            switch (accessor.componentType) {
-            case TINYGLTF_COMPONENT_TYPE_FLOAT:
-                return readComponentByType<glm::vec3, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_DOUBLE:
-                return readComponentByType<glm::f64vec3, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_BYTE:
-                return readComponentByType<glm::i8vec3, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_SHORT:
-                return readComponentByType<glm::i16vec3, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_INT:
-                return readComponentByType<glm::i32vec3, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-                return readComponentByType<glm::u8vec3, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
-                return readComponentByType<glm::u16vec3, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
-                return readComponentByType<glm::u32vec3, T>(p_data, count, stride, element_size);
-            }
-        } else if constexpr (expected_type == TINYGLTF_TYPE_VEC4) {
-            switch (accessor.componentType) {
-            case TINYGLTF_COMPONENT_TYPE_FLOAT:
-                return readComponentByType<glm::vec4, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_DOUBLE:
-                return readComponentByType<glm::f64vec4, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_BYTE:
-                return readComponentByType<glm::i8vec4, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_SHORT:
-                return readComponentByType<glm::i16vec4, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_INT:
-                return readComponentByType<glm::i32vec4, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-                return readComponentByType<glm::u8vec4, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
-                return readComponentByType<glm::u16vec4, T>(p_data, count, stride, element_size);
-            case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
-                return readComponentByType<glm::u32vec4, T>(p_data, count, stride, element_size);
-            }
-        } else if constexpr (expected_type == TINYGLTF_TYPE_MAT4) {
-            if (accessor.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
-                return readComponentByType<glm::mat4, T>(p_data, count, stride, element_size);
-            }
-        }
-        throw std::runtime_error(
-            context + " has unsupported component type " +
-            std::to_string(accessor.componentType));
-    }
-
+    const tinygltf::Mesh &mesh;
+    int mesh_index;
+    int node_index;
+    const glm::mat4 &world_transform;
+    const std::vector<std::string> &node_name_path;
+    const std::vector<std::uint32_t> &parent_index_path;
+    const std::optional<CanonicalModelAssetKey> &asset_key;
 };
+
+// The mesh-level skin decision. `joint_offset` is the palette base chosen by
+// `selectSkin`, which is why `skin_joint_offsets` stays on the importer: the
+// choice is made once per mesh, before any primitive is read.
+struct PrimitiveSkinContext {
+    bool skinned;
+    int skin_index;
+    std::uint32_t joint_offset;
+};
+
+// The mesh-level morph layout, already appended to the model default weights.
+struct PrimitiveMorphContext {
+    std::size_t target_count;
+    std::uint32_t weight_offset;
+};
+
+// VRM first-person state: the semantic document plus the importer's lazily
+// built head-subtree mask, which this path may be the one to fill.
+struct PrimitiveVrmContext {
+    const std::shared_ptr<const VrmSemanticData> &vrm_semantic;
+    std::optional<std::vector<std::uint8_t>> &head_related_nodes;
+};
+
+// What one glTF primitive contributes, in publication order. The importer
+// appends `material_primitives` to `tmp_material_primitives` and
+// `morph_layouts` to `morph_target_layout->primitives`; neither is read back
+// while the next primitive is built, so collecting them here and appending
+// after the primitive keeps both orders.
+struct PrimitiveBuildResult {
+    std::vector<std::pair<GeneratedMaterialRegistry::ModelLocalMaterialId,
+                          ModelTemplate::PrimitiveRefInfo>>
+        material_primitives;
+    std::vector<MorphPrimitiveLayout> morph_layouts;
+};
+
+// Decodes one primitive, splits it into view variants, hands the variants to
+// the resource sink, and names the material each one draws with. `collision`,
+// when non-null, is the collision mesh of the owning node and is appended to.
+PrimitiveBuildResult buildPrimitive(const tinygltf::Primitive &primitive,
+                                    std::size_t primitive_index,
+                                    const PrimitiveSourceContext &source,
+                                    const PrimitiveSkinContext &skin,
+                                    const PrimitiveMorphContext &morph,
+                                    const PrimitiveVrmContext &vrm,
+                                    GeneratedMaterialRegistry &materials,
+                                    ModelCollisionMesh *collision) {
+    const auto &model = source.model;
+    const auto &mesh = source.mesh;
+    GltfAccessorReader reader{model, source.source_path};
+    PrimitiveBuildResult result;
+    CommonPolygonVertData dat;
+
+    if (primitive.indices >= 0)
+        dat.indices = reader.getDataFromAccessor<TINYGLTF_TYPE_SCALAR, uint32_t>(primitive.indices);
+    if (auto it = primitive.attributes.find("POSITION"); it != primitive.attributes.end())
+        dat.pos = reader.getDataFromAccessor<TINYGLTF_TYPE_VEC3, glm::vec3>(it->second);
+    if (auto it = primitive.attributes.find("NORMAL"); it != primitive.attributes.end())
+        dat.normal = reader.getDataFromAccessor<TINYGLTF_TYPE_VEC3, glm::vec3>(it->second);
+    if (auto it = primitive.attributes.find("TANGENT"); it != primitive.attributes.end())
+        dat.tangent = reader.getDataFromAccessor<TINYGLTF_TYPE_VEC4, glm::vec4>(it->second);
+    if (auto it = primitive.attributes.find("TEXCOORD_0"); it != primitive.attributes.end())
+        dat.texcoord = reader.getDataFromAccessor<TINYGLTF_TYPE_VEC2, glm::vec2>(it->second);
+    if (auto it = primitive.attributes.find("COLOR_0"); it != primitive.attributes.end()) {
+        if (it->second < 0 ||
+            it->second >=
+                static_cast<int>(
+                    model.accessors.size())) {
+            throw std::runtime_error(
+                "glTF COLOR_0 accessor index is out of range");
+        }
+        const auto &accessor =
+            model.accessors.at(
+                static_cast<std::size_t>(
+                    it->second));
+        if (accessor.type ==
+            TINYGLTF_TYPE_VEC3) {
+            const auto &tmp_color =
+                reader.getDataFromAccessor<
+                    TINYGLTF_TYPE_VEC3,
+                    glm::vec3>(it->second);
+            dat.color.resize(tmp_color.size());
+            std::transform(
+                tmp_color.begin(), tmp_color.end(),
+                dat.color.begin(),
+                [](glm::vec3 value) {
+                    return glm::vec4{value, 1.0F};
+                });
+        } else if (
+            accessor.type ==
+            TINYGLTF_TYPE_VEC4) {
+            dat.color =
+                reader.getDataFromAccessor<
+                    TINYGLTF_TYPE_VEC4,
+                    glm::vec4>(it->second);
+        } else {
+            throw std::runtime_error(
+                "glTF COLOR_0 accessor must be VEC3 or VEC4");
+        }
+    }
+    if (auto it = primitive.attributes.find("JOINTS_0"); it != primitive.attributes.end())
+        dat.joint = reader.getDataFromAccessor<TINYGLTF_TYPE_VEC4, glm::i16vec4>(it->second);
+    if (auto it = primitive.attributes.find("WEIGHTS_0"); it != primitive.attributes.end())
+        dat.weight = reader.getDataFromAccessor<TINYGLTF_TYPE_VEC4, glm::vec4>(it->second);
+
+    dat.morph_weight_offset = morph.weight_offset;
+    dat.morph_targets.reserve(morph.target_count);
+    for (std::size_t target_index = 0;
+         target_index < morph.target_count; ++target_index) {
+        const auto &target = primitive.targets[target_index];
+        MorphTargetVertexData decoded;
+        const auto context =
+            "glTF mesh '" +
+            (mesh.name.empty() ? std::to_string(source.mesh_index) : mesh.name) +
+            "' primitive " + std::to_string(primitive_index) + " target " +
+            std::to_string(target_index);
+        for (const auto &[semantic, accessor] : target) {
+            if (semantic == "POSITION") {
+                decoded.position =
+                    readMorphDeltaAccessor(model, source.source_path, accessor,
+                                           dat.pos.size(), context + " POSITION");
+                decoded.presence_mask |= morphPositionPresent;
+            } else if (semantic == "NORMAL") {
+                decoded.normal =
+                    readMorphDeltaAccessor(model, source.source_path, accessor,
+                                           dat.pos.size(), context + " NORMAL");
+                decoded.presence_mask |= morphNormalPresent;
+            } else if (semantic == "TANGENT") {
+                decoded.tangent =
+                    readMorphDeltaAccessor(model, source.source_path, accessor,
+                                           dat.pos.size(), context + " TANGENT");
+                decoded.presence_mask |= morphTangentPresent;
+            } else {
+                throw std::runtime_error(context +
+                                         " has unsupported attribute '" +
+                                         semantic + "'");
+            }
+        }
+        if (decoded.presence_mask == 0)
+            throw std::runtime_error(context + " contains no supported delta attribute");
+        dat.morph_targets.push_back(std::move(decoded));
+    }
+
+    const auto vat_meta = tinyGltfValueToVatMeta(primitive.extras);
+    const auto primitive_mode =
+        primitive.mode < 0 ? TINYGLTF_MODE_TRIANGLES : primitive.mode;
+    const auto source_primitive_digest = primitiveContentDigestV1(
+        static_cast<std::uint8_t>(primitive_mode), dat);
+    const auto primitive_explicit_id =
+        tinyGltfExtrasId(primitive.extras);
+    const auto vat_info = parseVatPrimitive(
+        model, vat_meta, static_cast<uint32_t>(dat.pos.size()));
+    if (vat_info && primitive_mode != TINYGLTF_MODE_TRIANGLES) {
+        throw std::runtime_error("pelican.vat only supports TRIANGLES topology");
+    }
+    if (vat_info && !dat.morph_targets.empty()) {
+        throw std::runtime_error("glTF morph targets and pelican.vat cannot share one primitive");
+    }
+
+    const auto annotation =
+        firstPersonAnnotation(vrm.vrm_semantic, source.node_index);
+    std::optional<VrmAutoTriangleSplit> auto_split;
+    if (annotation == FirstPersonAnnotation::automatic && skin.skin_index >= 0) {
+        if (primitive_mode != TINYGLTF_MODE_TRIANGLES)
+            throw std::runtime_error(
+                "VRM firstPerson auto requires TRIANGLES topology");
+        auto_split = splitVrmAutoTriangles(VrmAutoTriangleSplitInput{
+            .indices = dat.indices,
+            .vertex_count = static_cast<std::uint32_t>(dat.pos.size()),
+            .joints = dat.joint,
+            .weights = dat.weight,
+            .skin_joint_nodes = model.skins.at(skin.skin_index).joints,
+            .head_related_nodes = headRelatedNodes(model, vrm.vrm_semantic,
+                                                   vrm.head_related_nodes),
+        });
+    }
+
+    if (skin.skinned && (dat.joint.empty() || dat.weight.empty())) {
+        throw std::runtime_error("glTF skinned primitive requires JOINTS_0 and WEIGHTS_0");
+    }
+    if (skin.skinned) {
+        const auto joint_count = model.skins.at(skin.skin_index).joints.size();
+        for (auto &joints : dat.joint) {
+            for (int component = 0; component < 4; ++component) {
+                if (joints[component] < 0 || static_cast<std::size_t>(joints[component]) >= joint_count) {
+                    throw std::runtime_error("glTF JOINTS_0 index exceeds its skin joint array");
+                }
+                joints[component] = static_cast<std::int16_t>(joints[component] + skin.joint_offset);
+            }
+        }
+    }
+    if (!skin.skinned) transformVertexData(dat, source.world_transform);
+    if (collision) {
+        if ((primitive.mode != -1 && primitive.mode != TINYGLTF_MODE_TRIANGLES) ||
+            !primitive.targets.empty() || tinyGltfValueToVatMeta(primitive.extras).present)
+            throw std::runtime_error("Static collision meshes require undeformed TRIANGLES primitives");
+        if (dat.pos.empty() || dat.pos.size() > std::numeric_limits<std::uint32_t>::max() - collision->positions.size())
+            throw std::runtime_error("Collision mesh has no positions or too many vertices");
+        const auto count = dat.indices.empty() ? dat.pos.size() : dat.indices.size();
+        if (count % 3 != 0)
+            throw std::runtime_error("Collision mesh triangle index count must be divisible by three");
+        const auto base = static_cast<std::uint32_t>(collision->positions.size());
+        for (const auto &position : dat.pos) {
+            if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z))
+                throw std::runtime_error("Collision mesh positions must be finite");
+            collision->positions.push_back(position);
+        }
+        for (std::size_t i = 0; i < count; ++i) {
+            const auto index = dat.indices.empty() ? static_cast<std::uint32_t>(i) : dat.indices[i];
+            if (index >= dat.pos.size()) throw std::runtime_error("Collision mesh index is out of range");
+            collision->indices.push_back(base + index);
+        }
+    }
+    std::vector<std::uint32_t> morph_presence;
+    morph_presence.reserve(dat.morph_targets.size());
+    for (const auto &target : dat.morph_targets)
+        morph_presence.push_back(target.presence_mask);
+
+    struct PrimitiveVariant {
+        CommonPolygonVertData data;
+        PrimitiveViewVisibility visibility =
+            PrimitiveViewVisibility::both;
+    };
+    std::vector<PrimitiveVariant> variants;
+    if (auto_split &&
+        !auto_split->third_person_only_indices.empty()) {
+        if (!auto_split->both_indices.empty()) {
+            auto body = dat;
+            body.indices = std::move(auto_split->both_indices);
+            variants.push_back(
+                {std::move(body), PrimitiveViewVisibility::both});
+        }
+        dat.indices =
+            std::move(auto_split->third_person_only_indices);
+        variants.push_back({std::move(dat),
+                            PrimitiveViewVisibility::third_person_only});
+    } else {
+        auto visibility = PrimitiveViewVisibility::both;
+        if (annotation == FirstPersonAnnotation::first_person_only)
+            visibility = PrimitiveViewVisibility::first_person_only;
+        else if (annotation ==
+                 FirstPersonAnnotation::third_person_only)
+            visibility = PrimitiveViewVisibility::third_person_only;
+        variants.push_back({std::move(dat), visibility});
+    }
+
+    for (auto &variant : variants) {
+        auto added = materials.resources.addPrimitive(std::move(variant.data),
+                                                      skin.skinned);
+        auto primitive_info = added.primitive;
+        primitive_info.mesh_index = static_cast<std::uint32_t>(source.mesh_index);
+        primitive_info.primitive_index =
+            static_cast<std::uint32_t>(primitive_index);
+        primitive_info.node_index =
+            source.node_index < 0
+                ? noSourceNodeIndex
+                : static_cast<std::uint32_t>(source.node_index);
+        primitive_info.view_visibility = variant.visibility;
+        ImporterVariant importer_variant{};
+        if (auto_split) {
+            importer_variant.kind =
+                variant.visibility == PrimitiveViewVisibility::both
+                    ? ImporterVariantV1::vrm_split_both
+                    : ImporterVariantV1::vrm_split_third_person_only;
+        } else if (vat_info) {
+            importer_variant.kind = ImporterVariantV1::vat_deformed;
+        } else if (!primitive.targets.empty()) {
+            importer_variant.kind = ImporterVariantV1::morph_expanded;
+        } else if (skin.skinned) {
+            importer_variant.kind = ImporterVariantV1::skinned;
+        }
+        primitive_info.occurrence =
+            std::make_shared<ModelOccurrenceIdentityInfo>(
+                ModelOccurrenceIdentityInfo{
+                    .asset = source.asset_key,
+                    .node_name_path = source.node_name_path,
+                    .diagnostic_parent_path = source.parent_index_path,
+                    .node_explicit_id =
+                        source.node_index < 0
+                            ? std::optional<std::string>{}
+                            : tinyGltfExtrasId(
+                                  model.nodes.at(source.node_index).extras),
+                    .primitive_explicit_id = primitive_explicit_id,
+                    .primitive_content_digest =
+                        source_primitive_digest,
+                    .variant = importer_variant,
+                });
+        // `vat_info` is empty in every build without VAT, so this leaves the
+        // member at its false default there and the ray-query classification
+        // is unchanged.
+        primitive_info.vat_deformed = vat_info.has_value();
+        if (vat_info) {
+            primitive_info.bounds_source =
+                std::make_shared<const ModelPrimitiveBoundsSource>(
+                    ModelPrimitiveBoundsSource{
+                        .base = ModelPrimitiveBounds{
+                            vat_info->bounds_min,
+                            vat_info->bounds_max,
+                        },
+                    });
+        }
+        if (!added.morph_ranges.empty()) {
+            for (std::size_t target = 0;
+                 target < added.morph_ranges.size(); ++target)
+                added.morph_ranges[target].presence_mask =
+                    morph_presence[target];
+            result.morph_layouts.push_back(
+                MorphPrimitiveLayout{
+                    .node_index =
+                        source.node_index < 0
+                            ? noMorphNode
+                            : static_cast<std::uint32_t>(source.node_index),
+                    .mesh_index = static_cast<std::uint32_t>(source.mesh_index),
+                    .primitive_index =
+                        static_cast<std::uint32_t>(primitive_index),
+                    .weight_offset = morph.weight_offset,
+                    .vertex_offset = static_cast<std::uint32_t>(
+                        primitive_info.vert_offset),
+                    .skinned = skin.skinned,
+                    .delta_ranges = std::move(added.morph_ranges),
+                });
+        }
+        if (skin.skinned && vat_info) {
+            throw std::runtime_error("glTF skeletal skinning and pelican.vat cannot share one primitive");
+        }
+        const auto material_id =
+            vat_info ? materials.registerVatMaterial(primitive.material,
+                                                     *vat_info, primitive_info)
+                     : (skin.skinned
+                            ? materials.skinnedMaterial(primitive.material)
+                            : primitive.material);
+        result.material_primitives.emplace_back(material_id,
+                                                std::move(primitive_info));
+    }
+    return result;
+}
+
+} // namespace
 
 struct InternalGltfLoader {
     using ModelLocalMaterialId = int;
@@ -921,13 +1213,6 @@ struct InternalGltfLoader {
     std::shared_ptr<MorphTargetLayout> morph_target_layout =
         std::make_shared<MorphTargetLayout>();
     std::optional<std::vector<std::uint8_t>> head_related_nodes;
-
-    enum class FirstPersonAnnotation {
-        automatic,
-        both,
-        first_person_only,
-        third_person_only,
-    };
 
     struct NodeOccurrence {
         int node_index = -1;
@@ -1043,125 +1328,8 @@ struct InternalGltfLoader {
         return inserted->second;
     }
 
-#if PELICAN_WITH_VAT
-    std::vector<VatBufferViewInfo> vatBufferViewInfos() const {
-        std::vector<VatBufferViewInfo> infos;
-        infos.reserve(model.bufferViews.size());
-        for (size_t i = 0; i < model.bufferViews.size(); ++i) {
-            const auto &view = model.bufferViews[i];
-            infos.push_back(VatBufferViewInfo{
-                .index = static_cast<int>(i),
-                .buffer = view.buffer,
-                .byte_offset = view.byteOffset,
-                .byte_length = view.byteLength,
-            });
-        }
-        return infos;
-    }
-
-    const std::byte *bufferViewData(const VatBufferViewSpan &span, size_t required_bytes) const {
-        if (span.buffer < 0 || span.buffer >= static_cast<int>(model.buffers.size())) {
-            throw std::runtime_error("pelican.vat references invalid buffer index");
-        }
-        const auto &buffer = model.buffers[span.buffer];
-        if (span.byte_offset > buffer.data.size() || required_bytes > buffer.data.size() - span.byte_offset) {
-            throw std::runtime_error("pelican.vat bufferView range exceeds GLB buffer data");
-        }
-        return reinterpret_cast<const std::byte *>(buffer.data.data() + span.byte_offset);
-    }
-
-    GlobalTextureId registerVatTexture(const VatBufferViewSpan &span, uint32_t vertex_count,
-                                       uint32_t frame_count, size_t required_bytes) const {
-        const auto *data = bufferViewData(span, required_bytes);
-        return resources.registerTexture(vk::Extent3D{vertex_count, frame_count, 1}, data,
-                                         vk::Format::eR16G16B16A16Sfloat, required_bytes);
-    }
-
-    MaterialInfo materialInfoForPrimitive(int local_material_id) const {
-        if (local_material_id >= 0) {
-            return material_infos.at(local_material_id);
-        }
-
-        return MaterialInfo{
-            .vert_shader = std_mat.standardVertShader(),
-            .frag_shader = std_mat.standardFragShader(),
-            .base_color_texture = std_mat.whiteTexture(),
-            .metallic_roughness_texture = std_mat.metallicRoughnessDefaultTexture(),
-            .normal_texture = std_mat.normalDefaultTexture(),
-            .emissive_texture = std_mat.emissiveDefaultTexture(),
-            .occlusion_texture = std_mat.occlusionDefaultTexture(),
-        };
-    }
-
-    ModelLocalMaterialId registerVatMaterial(int local_material_id, const VatPrimitiveInfo &vat,
-                                             const ModelTemplate::PrimitiveRefInfo &primitive_info) {
-        const auto required_bytes = vatTextureBytes(vat);
-        auto material_info = materialInfoForPrimitive(local_material_id);
-        const auto position_texture =
-            registerVatTexture(vat.position_view, vat.vertex_count, vat.frame_count, required_bytes);
-        const auto normal_texture =
-            vat.normal_view ? registerVatTexture(*vat.normal_view, vat.vertex_count, vat.frame_count,
-                                                 required_bytes)
-                            : std_mat.normalDefaultTexture();
-
-        material_info.vert_shader = std_mat.vatVertShader();
-        material_info.vat = MaterialInfo::VatPlaybackInfo{
-            .position_texture = position_texture,
-            .normal_texture = normal_texture,
-            .bounds_min = vat.bounds_min,
-            .bounds_max = vat.bounds_max,
-            .fps = static_cast<float>(vat.fps),
-            .frame_count = vat.frame_count,
-            .base_vertex = primitive_info.vert_offset,
-            .loop = vat.loop,
-            .has_normal = vat.normal_view.has_value(),
-        };
-
-        const auto generated_material = next_generated_material--;
-        resolved_materials[generated_material] = resources.registerMaterial(material_info);
-        generated_material_sources[generated_material] =
-            local_material_id >= 0 ? static_cast<std::uint32_t>(local_material_id)
-                                   : noSourceMaterialIndex;
-        return generated_material;
-    }
-#endif
-
     template <int expected_type, class T> std::vector<T> getDataFromAccessor(int accessor_index) {
         return GltfAccessorReader{model, source_path}.getDataFromAccessor<expected_type, T>(accessor_index);
-    }
-
-    std::vector<glm::vec3> readMorphDeltaAccessor(
-        int accessor_index, std::size_t expected_count,
-        const std::string &context) {
-        if (accessor_index < 0 ||
-            accessor_index >= static_cast<int>(model.accessors.size()))
-            throw std::runtime_error(context + " references an invalid accessor index");
-        const auto &accessor = model.accessors[accessor_index];
-        if (accessor.type != TINYGLTF_TYPE_VEC3 ||
-            accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT ||
-            accessor.normalized)
-            throw std::runtime_error(
-                context + " accessor must be non-normalized FLOAT VEC3");
-        if (accessor.count != expected_count)
-            throw std::runtime_error(
-                context + " accessor count does not match primitive POSITION count");
-        if (accessor.sparse.isSparse)
-            throw std::runtime_error(
-                context + " uses a sparse accessor, unsupported by morph target v1");
-        if (accessor.bufferView < 0 ||
-            accessor.bufferView >= static_cast<int>(model.bufferViews.size()))
-            throw std::runtime_error(context + " accessor has no valid bufferView");
-        const auto &view = model.bufferViews[accessor.bufferView];
-        if (view.buffer < 0 || view.buffer >= static_cast<int>(model.buffers.size()))
-            throw std::runtime_error(context + " accessor bufferView has an invalid buffer");
-        const auto values =
-            getDataFromAccessor<TINYGLTF_TYPE_VEC3, glm::vec3>(accessor_index);
-        for (const auto &value : values) {
-            if (!std::isfinite(value.x) || !std::isfinite(value.y) ||
-                !std::isfinite(value.z))
-                throw std::runtime_error(context + " accessor contains a non-finite delta");
-        }
-        return values;
     }
 
     std::size_t meshMorphTargetCount(int mesh_index) const {
@@ -1693,40 +1861,6 @@ struct InternalGltfLoader {
         return selection;
     }
 
-    void transformVertexData(CommonPolygonVertData &data, const glm::mat4 &transform) {
-        for (auto &position : data.pos) {
-            position = glm::vec3{transform * glm::vec4{position, 1.0f}};
-        }
-
-        const auto normal_transform = glm::transpose(glm::inverse(glm::mat3{transform}));
-        for (auto &normal : data.normal) {
-            const auto transformed = normal_transform * normal;
-            normal = data.morph_targets.empty() &&
-                             glm::dot(transformed, transformed) > 0.0f
-                         ? glm::normalize(transformed)
-                         : transformed;
-        }
-        for (auto &tangent : data.tangent) {
-            const auto unnormalized =
-                normal_transform * glm::vec3{tangent};
-            const auto transformed =
-                data.morph_targets.empty() &&
-                        glm::dot(unnormalized, unnormalized) > 0.0f
-                    ? glm::normalize(unnormalized)
-                    : unnormalized;
-            tangent = glm::vec4{transformed, tangent.w};
-        }
-        const auto position_transform = glm::mat3{transform};
-        for (auto &target : data.morph_targets) {
-            for (auto &position : target.position)
-                position = position_transform * position;
-            for (auto &normal : target.normal)
-                normal = normal_transform * normal;
-            for (auto &tangent : target.tangent)
-                tangent = normal_transform * tangent;
-        }
-    }
-
     void collectMeshMaterials(int mesh_index, std::set<int> &materials) const {
         if (mesh_index < 0 || mesh_index >= static_cast<int>(model.meshes.size())) {
             return;
@@ -2002,27 +2136,6 @@ struct InternalGltfLoader {
         return table;
     }
 
-    ModelLocalMaterialId skinnedMaterial(int local_material_id) {
-        if (const auto found = skinned_material_variants.find(local_material_id);
-            found != skinned_material_variants.end()) return found->second;
-        auto info = local_material_id >= 0 ? material_infos.at(local_material_id) : MaterialInfo{
-            .vert_shader = std_mat.standardVertShader(), .frag_shader = std_mat.standardFragShader(),
-            .base_color_texture = std_mat.whiteTexture(),
-            .metallic_roughness_texture = std_mat.metallicRoughnessDefaultTexture(),
-            .normal_texture = std_mat.normalDefaultTexture(),
-            .emissive_texture = std_mat.emissiveDefaultTexture(),
-            .occlusion_texture = std_mat.occlusionDefaultTexture()};
-        info.vert_shader = std_mat.skinnedVertShader();
-        info.skinned = true;
-        const auto generated = next_generated_material--;
-        resolved_materials[generated] = resources.registerMaterial(std::move(info));
-        generated_material_sources[generated] =
-            local_material_id >= 0 ? static_cast<std::uint32_t>(local_material_id)
-                                   : noSourceMaterialIndex;
-        skinned_material_variants[local_material_id] = generated;
-        return generated;
-    }
-
     std::set<int> texturesForMaterials(const std::set<int> &materials) const {
         std::set<int> textures;
         const auto append = [&](int texture_index) {
@@ -2041,53 +2154,17 @@ struct InternalGltfLoader {
         return textures;
     }
 
-    FirstPersonAnnotation firstPersonAnnotation(int node_index) const {
-        if (!vrm_semantic) return FirstPersonAnnotation::both;
-        std::string_view annotation = "auto";
-        if (vrm_semantic->first_person) {
-            for (const auto &candidate :
-                 vrm_semantic->first_person->mesh_annotations) {
-                if (candidate.node == node_index) {
-                    annotation = candidate.type;
-                    break;
-                }
-            }
-        }
-        if (annotation == "auto") return FirstPersonAnnotation::automatic;
-        if (annotation == "both") return FirstPersonAnnotation::both;
-        if (annotation == "firstPersonOnly")
-            return FirstPersonAnnotation::first_person_only;
-        if (annotation == "thirdPersonOnly")
-            return FirstPersonAnnotation::third_person_only;
-        throw std::runtime_error("VRM firstPerson annotation has unknown type '" +
-                                 std::string{annotation} + "'");
-    }
-
-    const std::vector<std::uint8_t> &headRelatedNodes() {
-        if (head_related_nodes) return *head_related_nodes;
-        std::vector<std::uint8_t> related(model.nodes.size());
-        if (vrm_semantic) {
-            const auto head = std::find_if(
-                vrm_semantic->human_bones.begin(),
-                vrm_semantic->human_bones.end(),
-                [](const VrmHumanBone &bone) { return bone.name == "head"; });
-            if (head != vrm_semantic->human_bones.end() && head->node >= 0) {
-                std::vector<int> pending{head->node};
-                while (!pending.empty()) {
-                    const auto node = pending.back();
-                    pending.pop_back();
-                    if (node < 0 || node >= static_cast<int>(model.nodes.size()))
-                        throw std::runtime_error(
-                            "VRM head hierarchy references an invalid glTF node");
-                    if (related[static_cast<std::size_t>(node)] != 0) continue;
-                    related[static_cast<std::size_t>(node)] = 1;
-                    const auto &children = model.nodes[node].children;
-                    pending.insert(pending.end(), children.begin(), children.end());
-                }
-            }
-        }
-        head_related_nodes = std::move(related);
-        return *head_related_nodes;
+    GeneratedMaterialRegistry generatedMaterials() {
+        return GeneratedMaterialRegistry{
+            .resources = resources,
+            .std_mat = std_mat,
+            .model = model,
+            .material_infos = material_infos,
+            .next_generated_material = next_generated_material,
+            .resolved_materials = resolved_materials,
+            .generated_material_sources = generated_material_sources,
+            .skinned_material_variants = skinned_material_variants,
+        };
     }
 
     void loadMesh(int mesh_index, const glm::mat4 &world_transform,
@@ -2131,305 +2208,31 @@ struct InternalGltfLoader {
             skinned = false;
         }
         const auto joint_offset = skinned ? selectSkin(skin_index) : 0u;
+
+        const PrimitiveSourceContext source{model,
+                                            source_path,
+                                            mesh,
+                                            mesh_index,
+                                            node_index,
+                                            world_transform,
+                                            node_name_path,
+                                            parent_index_path,
+                                            asset_key};
+        const PrimitiveSkinContext skin{skinned, skin_index, joint_offset};
+        const PrimitiveMorphContext morph{morph_target_count, morph_weight_offset};
+        const PrimitiveVrmContext vrm{vrm_semantic, head_related_nodes};
+        auto materials = generatedMaterials();
+
         for (std::size_t primitive_index = 0; primitive_index < mesh.primitives.size();
              ++primitive_index) {
-            const auto &primitive = mesh.primitives[primitive_index];
-            CommonPolygonVertData dat;
-
-            if (primitive.indices >= 0)
-                dat.indices = getDataFromAccessor<TINYGLTF_TYPE_SCALAR, uint32_t>(primitive.indices);
-            if (auto it = primitive.attributes.find("POSITION"); it != primitive.attributes.end())
-                dat.pos = getDataFromAccessor<TINYGLTF_TYPE_VEC3, glm::vec3>(it->second);
-            if (auto it = primitive.attributes.find("NORMAL"); it != primitive.attributes.end())
-                dat.normal = getDataFromAccessor<TINYGLTF_TYPE_VEC3, glm::vec3>(it->second);
-            if (auto it = primitive.attributes.find("TANGENT"); it != primitive.attributes.end())
-                dat.tangent = getDataFromAccessor<TINYGLTF_TYPE_VEC4, glm::vec4>(it->second);
-            if (auto it = primitive.attributes.find("TEXCOORD_0"); it != primitive.attributes.end())
-                dat.texcoord = getDataFromAccessor<TINYGLTF_TYPE_VEC2, glm::vec2>(it->second);
-            if (auto it = primitive.attributes.find("COLOR_0"); it != primitive.attributes.end()) {
-                if (it->second < 0 ||
-                    it->second >=
-                        static_cast<int>(
-                            model.accessors.size())) {
-                    throw std::runtime_error(
-                        "glTF COLOR_0 accessor index is out of range");
-                }
-                const auto &accessor =
-                    model.accessors.at(
-                        static_cast<std::size_t>(
-                            it->second));
-                if (accessor.type ==
-                    TINYGLTF_TYPE_VEC3) {
-                    const auto &tmp_color =
-                        getDataFromAccessor<
-                            TINYGLTF_TYPE_VEC3,
-                            glm::vec3>(it->second);
-                    dat.color.resize(tmp_color.size());
-                    std::transform(
-                        tmp_color.begin(), tmp_color.end(),
-                        dat.color.begin(),
-                        [](glm::vec3 value) {
-                            return glm::vec4{value, 1.0F};
-                        });
-                } else if (
-                    accessor.type ==
-                    TINYGLTF_TYPE_VEC4) {
-                    dat.color =
-                        getDataFromAccessor<
-                            TINYGLTF_TYPE_VEC4,
-                            glm::vec4>(it->second);
-                } else {
-                    throw std::runtime_error(
-                        "glTF COLOR_0 accessor must be VEC3 or VEC4");
-                }
-            }
-            if (auto it = primitive.attributes.find("JOINTS_0"); it != primitive.attributes.end())
-                dat.joint = getDataFromAccessor<TINYGLTF_TYPE_VEC4, glm::i16vec4>(it->second);
-            if (auto it = primitive.attributes.find("WEIGHTS_0"); it != primitive.attributes.end())
-                dat.weight = getDataFromAccessor<TINYGLTF_TYPE_VEC4, glm::vec4>(it->second);
-
-            dat.morph_weight_offset = morph_weight_offset;
-            dat.morph_targets.reserve(morph_target_count);
-            for (std::size_t target_index = 0;
-                 target_index < morph_target_count; ++target_index) {
-                const auto &target = primitive.targets[target_index];
-                MorphTargetVertexData decoded;
-                const auto context =
-                    "glTF mesh '" +
-                    (mesh.name.empty() ? std::to_string(mesh_index) : mesh.name) +
-                    "' primitive " + std::to_string(primitive_index) + " target " +
-                    std::to_string(target_index);
-                for (const auto &[semantic, accessor] : target) {
-                    if (semantic == "POSITION") {
-                        decoded.position =
-                            readMorphDeltaAccessor(accessor, dat.pos.size(),
-                                                   context + " POSITION");
-                        decoded.presence_mask |= morphPositionPresent;
-                    } else if (semantic == "NORMAL") {
-                        decoded.normal =
-                            readMorphDeltaAccessor(accessor, dat.pos.size(),
-                                                   context + " NORMAL");
-                        decoded.presence_mask |= morphNormalPresent;
-                    } else if (semantic == "TANGENT") {
-                        decoded.tangent =
-                            readMorphDeltaAccessor(accessor, dat.pos.size(),
-                                                   context + " TANGENT");
-                        decoded.presence_mask |= morphTangentPresent;
-                    } else {
-                        throw std::runtime_error(context +
-                                                 " has unsupported attribute '" +
-                                                 semantic + "'");
-                    }
-                }
-                if (decoded.presence_mask == 0)
-                    throw std::runtime_error(context + " contains no supported delta attribute");
-                dat.morph_targets.push_back(std::move(decoded));
-            }
-
-            const auto vat_meta = tinyGltfValueToVatMeta(primitive.extras);
-            const auto primitive_mode =
-                primitive.mode < 0 ? TINYGLTF_MODE_TRIANGLES : primitive.mode;
-            const auto source_primitive_digest = primitiveContentDigestV1(
-                static_cast<std::uint8_t>(primitive_mode), dat);
-            const auto primitive_explicit_id =
-                tinyGltfExtrasId(primitive.extras);
-#if PELICAN_WITH_VAT
-            const auto vat_info = parseVatPrimitiveExtras(
-                vat_meta, static_cast<uint32_t>(dat.pos.size()), vatBufferViewInfos());
-            if (vat_info && primitive_mode != TINYGLTF_MODE_TRIANGLES) {
-                throw std::runtime_error("pelican.vat only supports TRIANGLES topology");
-            }
-            if (vat_info && !dat.morph_targets.empty()) {
-                throw std::runtime_error("glTF morph targets and pelican.vat cannot share one primitive");
-            }
-#else
-            if (vat_meta.present) {
-                throwBuildFeatureDisabled("PELICAN_WITH_VAT", "GLB contains pelican.vat primitive extras");
-            }
-#endif
-
-            const auto annotation = firstPersonAnnotation(node_index);
-            std::optional<VrmAutoTriangleSplit> auto_split;
-            if (annotation == FirstPersonAnnotation::automatic && skin_index >= 0) {
-                if (primitive_mode != TINYGLTF_MODE_TRIANGLES)
-                    throw std::runtime_error(
-                        "VRM firstPerson auto requires TRIANGLES topology");
-                auto_split = splitVrmAutoTriangles(VrmAutoTriangleSplitInput{
-                    .indices = dat.indices,
-                    .vertex_count = static_cast<std::uint32_t>(dat.pos.size()),
-                    .joints = dat.joint,
-                    .weights = dat.weight,
-                    .skin_joint_nodes = model.skins.at(skin_index).joints,
-                    .head_related_nodes = headRelatedNodes(),
-                });
-            }
-
-            if (skinned && (dat.joint.empty() || dat.weight.empty())) {
-                throw std::runtime_error("glTF skinned primitive requires JOINTS_0 and WEIGHTS_0");
-            }
-            if (skinned) {
-                const auto joint_count = model.skins.at(skin_index).joints.size();
-                for (auto &joints : dat.joint) {
-                    for (int component = 0; component < 4; ++component) {
-                        if (joints[component] < 0 || static_cast<std::size_t>(joints[component]) >= joint_count) {
-                            throw std::runtime_error("glTF JOINTS_0 index exceeds its skin joint array");
-                        }
-                        joints[component] = static_cast<std::int16_t>(joints[component] + joint_offset);
-                    }
-                }
-            }
-            if (!skinned) transformVertexData(dat, world_transform);
-            if (collision) {
-                if ((primitive.mode != -1 && primitive.mode != TINYGLTF_MODE_TRIANGLES) ||
-                    !primitive.targets.empty() || tinyGltfValueToVatMeta(primitive.extras).present)
-                    throw std::runtime_error("Static collision meshes require undeformed TRIANGLES primitives");
-                if (dat.pos.empty() || dat.pos.size() > std::numeric_limits<std::uint32_t>::max() - collision->positions.size())
-                    throw std::runtime_error("Collision mesh has no positions or too many vertices");
-                const auto count = dat.indices.empty() ? dat.pos.size() : dat.indices.size();
-                if (count % 3 != 0)
-                    throw std::runtime_error("Collision mesh triangle index count must be divisible by three");
-                const auto base = static_cast<std::uint32_t>(collision->positions.size());
-                for (const auto &position : dat.pos) {
-                    if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z))
-                        throw std::runtime_error("Collision mesh positions must be finite");
-                    collision->positions.push_back(position);
-                }
-                for (std::size_t i = 0; i < count; ++i) {
-                    const auto index = dat.indices.empty() ? static_cast<std::uint32_t>(i) : dat.indices[i];
-                    if (index >= dat.pos.size()) throw std::runtime_error("Collision mesh index is out of range");
-                    collision->indices.push_back(base + index);
-                }
-            }
-            std::vector<std::uint32_t> morph_presence;
-            morph_presence.reserve(dat.morph_targets.size());
-            for (const auto &target : dat.morph_targets)
-                morph_presence.push_back(target.presence_mask);
-
-            struct PrimitiveVariant {
-                CommonPolygonVertData data;
-                PrimitiveViewVisibility visibility =
-                    PrimitiveViewVisibility::both;
-            };
-            std::vector<PrimitiveVariant> variants;
-            if (auto_split &&
-                !auto_split->third_person_only_indices.empty()) {
-                if (!auto_split->both_indices.empty()) {
-                    auto body = dat;
-                    body.indices = std::move(auto_split->both_indices);
-                    variants.push_back(
-                        {std::move(body), PrimitiveViewVisibility::both});
-                }
-                dat.indices =
-                    std::move(auto_split->third_person_only_indices);
-                variants.push_back({std::move(dat),
-                                    PrimitiveViewVisibility::third_person_only});
-            } else {
-                auto visibility = PrimitiveViewVisibility::both;
-                if (annotation == FirstPersonAnnotation::first_person_only)
-                    visibility = PrimitiveViewVisibility::first_person_only;
-                else if (annotation ==
-                         FirstPersonAnnotation::third_person_only)
-                    visibility = PrimitiveViewVisibility::third_person_only;
-                variants.push_back({std::move(dat), visibility});
-            }
-
-            for (auto &variant : variants) {
-                auto added =
-                    resources.addPrimitive(std::move(variant.data), skinned);
-                auto primitive_info = added.primitive;
-                primitive_info.mesh_index = static_cast<std::uint32_t>(mesh_index);
-                primitive_info.primitive_index =
-                    static_cast<std::uint32_t>(primitive_index);
-                primitive_info.node_index =
-                    node_index < 0 ? noSourceNodeIndex
-                                   : static_cast<std::uint32_t>(node_index);
-                primitive_info.view_visibility = variant.visibility;
-                ImporterVariant importer_variant{};
-                if (auto_split) {
-                    importer_variant.kind =
-                        variant.visibility == PrimitiveViewVisibility::both
-                            ? ImporterVariantV1::vrm_split_both
-                            : ImporterVariantV1::vrm_split_third_person_only;
-#if PELICAN_WITH_VAT
-                } else if (vat_info) {
-                    importer_variant.kind = ImporterVariantV1::vat_deformed;
-#endif
-                } else if (!primitive.targets.empty()) {
-                    importer_variant.kind = ImporterVariantV1::morph_expanded;
-                } else if (skinned) {
-                    importer_variant.kind = ImporterVariantV1::skinned;
-                }
-                primitive_info.occurrence =
-                    std::make_shared<ModelOccurrenceIdentityInfo>(
-                        ModelOccurrenceIdentityInfo{
-                            .asset = asset_key,
-                            .node_name_path = node_name_path,
-                            .diagnostic_parent_path = parent_index_path,
-                            .node_explicit_id =
-                                node_index < 0
-                                    ? std::optional<std::string>{}
-                                    : tinyGltfExtrasId(
-                                          model.nodes.at(node_index).extras),
-                            .primitive_explicit_id = primitive_explicit_id,
-                            .primitive_content_digest =
-                                source_primitive_digest,
-                            .variant = importer_variant,
-                        });
-#if PELICAN_WITH_VAT
-                // vat_info only exists in this configuration. With VAT compiled
-                // out a GLB carrying pelican.vat extras is rejected at load, so
-                // the member keeps its false default and the ray-query
-                // classification is unchanged.
-                primitive_info.vat_deformed = vat_info.has_value();
-                if (vat_info) {
-                    primitive_info.bounds_source =
-                        std::make_shared<const ModelPrimitiveBoundsSource>(
-                            ModelPrimitiveBoundsSource{
-                                .base = ModelPrimitiveBounds{
-                                    vat_info->bounds_min,
-                                    vat_info->bounds_max,
-                                },
-                            });
-                }
-#endif
-                if (!added.morph_ranges.empty()) {
-                    for (std::size_t target = 0;
-                         target < added.morph_ranges.size(); ++target)
-                        added.morph_ranges[target].presence_mask =
-                            morph_presence[target];
-                    morph_target_layout->primitives.push_back(
-                        MorphPrimitiveLayout{
-                            .node_index =
-                                node_index < 0
-                                    ? noMorphNode
-                                    : static_cast<std::uint32_t>(node_index),
-                            .mesh_index = static_cast<std::uint32_t>(mesh_index),
-                            .primitive_index =
-                                static_cast<std::uint32_t>(primitive_index),
-                            .weight_offset = morph_weight_offset,
-                            .vertex_offset = static_cast<std::uint32_t>(
-                                primitive_info.vert_offset),
-                            .skinned = skinned,
-                            .delta_ranges = std::move(added.morph_ranges),
-                        });
-                }
-#if PELICAN_WITH_VAT
-                if (skinned && vat_info) {
-                    throw std::runtime_error("glTF skeletal skinning and pelican.vat cannot share one primitive");
-                }
-                const auto material_id =
-                    vat_info ? registerVatMaterial(primitive.material, *vat_info,
-                                                   primitive_info)
-                             : (skinned ? skinnedMaterial(primitive.material)
-                                        : primitive.material);
-#else
-                const auto material_id = skinned
-                                             ? skinnedMaterial(primitive.material)
-                                             : primitive.material;
-#endif
+            auto built = buildPrimitive(mesh.primitives[primitive_index],
+                                        primitive_index, source, skin, morph, vrm,
+                                        materials, collision);
+            for (auto &[material_id, primitive_info] : built.material_primitives)
                 tmp_material_primitives[material_id].emplace_back(
                     std::move(primitive_info));
-            }
+            for (auto &layout : built.morph_layouts)
+                morph_target_layout->primitives.push_back(std::move(layout));
         }
     }
 

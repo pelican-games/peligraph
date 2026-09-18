@@ -1305,6 +1305,9 @@ target_compile_definitions(pelican_test_vrmsemantic_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 pelican_define_test(vrmadecoder_test GROUP core_foundation pelican_core tinygltf picosha2)
+# The glTF accessor layer needs no model file and no GPU: bytes plus an
+# accessor description in, typed vertex data or a named rejection out.
+pelican_define_test(gltfaccessorreader_test GROUP core_foundation pelican_core tinygltf glm)
 # The animation unit's own tests exist only when it is built. The common-graph
 # tests beside them (value / render / audio) stay in the group either way.
 if(PELICAN_WITH_ANIMATION)

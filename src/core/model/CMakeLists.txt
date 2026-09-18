@@ -2,6 +2,8 @@ target_sources(pelican_core PRIVATE
     modelresourcerelease.cpp
     vertbufcontainer.cpp
     gltf.cpp
+    gltfaccessorreader.cpp
+    tinygltf_implementation.cpp
     gltfimage.cpp
     modeltemplate.cpp
     occurrenceidentity.cpp
