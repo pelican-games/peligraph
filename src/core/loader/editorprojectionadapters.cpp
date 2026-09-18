@@ -1133,7 +1133,7 @@ void RendererModelProjectionAdapter::prepare(
         // Component migration retains removed model storage until finish so
         // rollback can restore it. Its geometry must already leave this plan.
         std::erase_if(impl_->candidate->draw_inventory, [&](const auto &item) {
-            const auto object = impl_->candidate->ray_authoring_object_ids.at(
+            const auto object = impl_->candidate->slots.ray_authoring_object_ids.at(
                 item.stable_identity.instance.index);
             if (object == 0) return false;
             return findResolvedComponent(

@@ -397,15 +397,8 @@ DrawItemSnapshot makeDrawItemSnapshot(
 
 struct StagedModelInstance::Impl {
     ModelInstanceId id{};
-    std::uint64_t authoring_object_id = 0;
-    glm::mat4 model_matrix{1.0F};
-    std::vector<glm::mat4> skin_palette;
-    std::vector<glm::mat4> animation_node_matrices;
-    ModelAssetId asset_id{};
-    std::shared_ptr<const SourceMaterialInitialValueTable> material_initial_values;
-    std::shared_ptr<const VrmSemanticData> vrm_semantic;
-    std::shared_ptr<const MorphTargetLayout> morph_layout;
-    MorphWeightFrame morph_weight_frame;
+    // Everything the slot table takes on publication, already allocated.
+    ModelInstanceSlotSeed seed;
     std::vector<DrawItemSnapshot> draw_items;
 };
 
@@ -420,16 +413,147 @@ ModelInstanceId StagedModelInstance::id() const noexcept {
     return impl_ ? impl_->id : ModelInstanceId{};
 }
 
+std::array<std::size_t, ModelInstanceSlotTable::arrayCount>
+ModelInstanceSlotTable::slotCounts() const {
+    return {
+        model_instances_data.size(),
+        previous_model_instances_data.size(),
+        model_history_valid.size(),
+        skin_palettes.size(),
+        animation_node_matrices.size(),
+        previous_skin_palettes.size(),
+        animation_revisions.size(),
+        previous_animation_revisions.size(),
+        animation_generations.size(),
+        instance_slots.slotCount(),
+        model_asset_ids.size(),
+        ray_authoring_object_ids.size(),
+        material_initial_value_tables.size(),
+        vrm_semantics.size(),
+        morph_layouts.size(),
+        morph_weight_frames.size(),
+        morph_history_valid.size(),
+    };
+}
+
+void ModelInstanceSlotTable::reserveSlots(std::size_t capacity) {
+    model_instances_data.reserve(capacity);
+    previous_model_instances_data.reserve(capacity);
+    model_history_valid.reserve(capacity);
+    skin_palettes.reserve(capacity);
+    animation_node_matrices.reserve(capacity);
+    previous_skin_palettes.reserve(capacity);
+    animation_revisions.reserve(capacity);
+    previous_animation_revisions.reserve(capacity);
+    animation_generations.reserve(capacity);
+    instance_slots.reserve(capacity);
+    model_asset_ids.reserve(capacity);
+    ray_authoring_object_ids.reserve(capacity);
+    material_initial_value_tables.reserve(capacity);
+    vrm_semantics.reserve(capacity);
+    morph_layouts.reserve(capacity);
+    morph_weight_frames.reserve(capacity);
+    morph_history_valid.reserve(capacity);
+}
+
+void ModelInstanceSlotTable::placeSlot(std::uint32_t index,
+                                       ModelInstanceSlotSeed &&seed) {
+    if (index == model_instances_data.size()) {
+        model_instances_data.push_back(seed.model_matrix);
+        previous_model_instances_data.push_back(seed.model_matrix);
+        model_history_valid.push_back(false);
+        skin_palettes.push_back(std::move(seed.skin_palette));
+        animation_node_matrices.push_back(
+            std::move(seed.animation_node_matrices));
+        previous_skin_palettes.emplace_back();
+        animation_revisions.push_back(0);
+        previous_animation_revisions.push_back(0);
+        animation_generations.push_back(1);
+        model_asset_ids.push_back(seed.asset_id);
+        ray_authoring_object_ids.push_back(0);
+        material_initial_value_tables.push_back(
+            std::move(seed.material_initial_values));
+        vrm_semantics.push_back(std::move(seed.vrm_semantic));
+        morph_layouts.push_back(std::move(seed.morph_layout));
+        morph_weight_frames.push_back(std::move(seed.morph_weight_frame));
+        morph_history_valid.push_back(false);
+    } else {
+        // A reused slot keeps animation_generations[index]: clearSlot() bumped
+        // it when the previous occupant died, and the staged morph frame was
+        // built for that bumped value.
+        model_instances_data[index] = seed.model_matrix;
+        previous_model_instances_data[index] = seed.model_matrix;
+        model_history_valid[index] = false;
+        skin_palettes[index] = std::move(seed.skin_palette);
+        animation_node_matrices[index] =
+            std::move(seed.animation_node_matrices);
+        previous_skin_palettes[index].clear();
+        animation_revisions[index] = 0;
+        previous_animation_revisions[index] = 0;
+        model_asset_ids[index] = seed.asset_id;
+        ray_authoring_object_ids[index] = 0;
+        material_initial_value_tables[index] =
+            std::move(seed.material_initial_values);
+        vrm_semantics[index] = std::move(seed.vrm_semantic);
+        morph_layouts[index] = std::move(seed.morph_layout);
+        morph_weight_frames[index] = std::move(seed.morph_weight_frame);
+        morph_history_valid[index] = false;
+    }
+    ray_authoring_object_ids[index] = seed.authoring_object_id;
+}
+
+void ModelInstanceSlotTable::clearSlot(std::uint32_t index) {
+    model_instances_data[index] = glm::identity<glm::mat4>();
+    previous_model_instances_data[index] = glm::identity<glm::mat4>();
+    model_history_valid[index] = false;
+    skin_palettes[index].clear();
+    animation_node_matrices[index].clear();
+    previous_skin_palettes[index].clear();
+    animation_revisions[index] = 0;
+    previous_animation_revisions[index] = 0;
+    model_asset_ids[index] = {};
+    ray_authoring_object_ids[index] = 0;
+    material_initial_value_tables[index].reset();
+    vrm_semantics[index].reset();
+    if (++animation_generations[index] == 0) ++animation_generations[index];
+    morph_layouts[index].reset();
+    morph_weight_frames[index] = MorphWeightFrame{
+        .instance_identity = static_cast<std::uint64_t>(index) + 1,
+        .instance_generation = animation_generations[index],
+    };
+    morph_history_valid[index] = false;
+}
+
+void ModelInstanceSlotTable::swap(ModelInstanceSlotTable &other) noexcept {
+    model_instances_data.swap(other.model_instances_data);
+    previous_model_instances_data.swap(other.previous_model_instances_data);
+    model_history_valid.swap(other.model_history_valid);
+    skin_palettes.swap(other.skin_palettes);
+    animation_node_matrices.swap(other.animation_node_matrices);
+    previous_skin_palettes.swap(other.previous_skin_palettes);
+    animation_revisions.swap(other.animation_revisions);
+    previous_animation_revisions.swap(other.previous_animation_revisions);
+    animation_generations.swap(other.animation_generations);
+    std::swap(instance_slots, other.instance_slots);
+    model_asset_ids.swap(other.model_asset_ids);
+    ray_authoring_object_ids.swap(other.ray_authoring_object_ids);
+    material_initial_value_tables.swap(other.material_initial_value_tables);
+    vrm_semantics.swap(other.vrm_semantics);
+    morph_layouts.swap(other.morph_layouts);
+    morph_weight_frames.swap(other.morph_weight_frames);
+    morph_history_valid.swap(other.morph_history_valid);
+}
+
 bool PolygonInstanceContainer::isLive(ModelInstanceId id) const noexcept {
-    return instance_slots.isLive(id);
+    return slots.instance_slots.isLive(id);
 }
 
 std::size_t
 PolygonInstanceContainer::liveModelInstanceCountForTesting() const noexcept {
     std::size_t result = 0;
     for (std::uint32_t index = 0;
-         index < instance_slots.slotCount(); ++index) {
-        if (instance_slots.alive(index)) ++result;
+         index < slots.instance_slots.slotCount(); ++index) {
+        if (slots.instance_slots.alive(index)) ++result;
     }
     return result;
 }
@@ -437,31 +561,15 @@ PolygonInstanceContainer::liveModelInstanceCountForTesting() const noexcept {
 PolygonInstanceContainer::PreparedSceneState
 PolygonInstanceContainer::snapshotPreparedScene() const {
     return PreparedSceneState{
+        .slots = slots,
         .draw_inventory = draw_inventory,
         .compiled_draw_queue = compiled_draw_queue,
         .draw_queue_material_filters = draw_queue_material_filters,
         .next_draw_declaration_ordinal = next_draw_declaration_ordinal,
         .ray_query_geometry_generation = ray_query_geometry_generation,
         .prepared_view_family_draws = prepared_view_family_draws,
-        .model_instances_data = model_instances_data,
-        .previous_model_instances_data = previous_model_instances_data,
-        .model_history_valid = model_history_valid,
-        .skin_palettes = skin_palettes,
-        .animation_node_matrices = animation_node_matrices,
-        .previous_skin_palettes = previous_skin_palettes,
-        .animation_revisions = animation_revisions,
-        .previous_animation_revisions = previous_animation_revisions,
-        .animation_generations = animation_generations,
-        .instance_slots = instance_slots,
-        .model_asset_ids = model_asset_ids,
-        .ray_authoring_object_ids = ray_authoring_object_ids,
         .ray_scene_declarations = ray_scene_declarations,
         .ray_scene_plan = ray_scene_plan,
-        .material_initial_value_tables = material_initial_value_tables,
-        .vrm_semantics = vrm_semantics,
-        .morph_layouts = morph_layouts,
-        .morph_weight_frames = morph_weight_frames,
-        .morph_history_valid = morph_history_valid,
         .temporal_history_advance_count = temporal_history_advance_count,
         .material_override_frames = material_override_frames,
         .material_absolute_override_frames =
@@ -473,8 +581,8 @@ PolygonInstanceContainer::PreparedSceneState
 PolygonInstanceContainer::prepareSceneReplacement(
     std::vector<std::uint32_t> &retire_indices) {
     auto candidate = snapshotPreparedScene();
-    candidate.instance_slots =
-        instance_slots.prepareSceneReplacement(retire_indices);
+    candidate.slots.instance_slots =
+        slots.instance_slots.prepareSceneReplacement(retire_indices);
     candidate.draw_inventory.clear();
     candidate.compiled_draw_queue = {};
     candidate.draw_queue_material_filters.clear();
@@ -492,6 +600,9 @@ PolygonInstanceContainer::prepareSceneReplacement(
 void PolygonInstanceContainer::publishPreparedScene(
     PreparedSceneState &&prepared) noexcept {
     using std::swap;
+    // One swap moves every per-slot array, so no slot index can be left one
+    // publication behind the others.
+    slots.swap(prepared.slots);
     draw_inventory.swap(prepared.draw_inventory);
     swap(compiled_draw_queue, prepared.compiled_draw_queue);
     draw_queue_material_filters.swap(prepared.draw_queue_material_filters);
@@ -500,27 +611,8 @@ void PolygonInstanceContainer::publishPreparedScene(
     swap(ray_query_geometry_generation,
          prepared.ray_query_geometry_generation);
     prepared_view_family_draws.swap(prepared.prepared_view_family_draws);
-    model_instances_data.swap(prepared.model_instances_data);
-    previous_model_instances_data.swap(
-        prepared.previous_model_instances_data);
-    model_history_valid.swap(prepared.model_history_valid);
-    skin_palettes.swap(prepared.skin_palettes);
-    animation_node_matrices.swap(prepared.animation_node_matrices);
-    previous_skin_palettes.swap(prepared.previous_skin_palettes);
-    animation_revisions.swap(prepared.animation_revisions);
-    previous_animation_revisions.swap(prepared.previous_animation_revisions);
-    animation_generations.swap(prepared.animation_generations);
-    swap(instance_slots, prepared.instance_slots);
-    model_asset_ids.swap(prepared.model_asset_ids);
-    ray_authoring_object_ids.swap(prepared.ray_authoring_object_ids);
     ray_scene_declarations.swap(prepared.ray_scene_declarations);
     ray_scene_plan.swap(prepared.ray_scene_plan);
-    material_initial_value_tables.swap(
-        prepared.material_initial_value_tables);
-    vrm_semantics.swap(prepared.vrm_semantics);
-    morph_layouts.swap(prepared.morph_layouts);
-    morph_weight_frames.swap(prepared.morph_weight_frames);
-    morph_history_valid.swap(prepared.morph_history_valid);
     swap(temporal_history_advance_count,
          prepared.temporal_history_advance_count);
     material_override_frames.swap(prepared.material_override_frames);
@@ -541,8 +633,8 @@ void PolygonInstanceContainer::publishPreparedScene(
 StagedModelInstance PolygonInstanceContainer::stagePreparedSceneModel(
     PreparedSceneState &prepared, const ModelTemplate &model) {
     const auto primitive_count = primitiveCount(model);
-    if (!prepared.instance_slots.hasReusableSlot() &&
-        prepared.model_instances_data.size() >= maxModelInstances) {
+    if (!prepared.slots.instance_slots.hasReusableSlot() &&
+        prepared.slots.slotCount() >= maxModelInstances) {
         throw std::runtime_error("Model instance capacity exceeded");
     }
     if (prepared.draw_inventory.size() > maxRenderCommands ||
@@ -556,29 +648,29 @@ StagedModelInstance PolygonInstanceContainer::stagePreparedSceneModel(
     }
 
     auto staged = std::make_unique<StagedModelInstance::Impl>();
-    staged->id = prepared.instance_slots.nextId(
-        static_cast<std::uint32_t>(prepared.model_instances_data.size()));
+    staged->id = prepared.slots.instance_slots.nextId(
+        static_cast<std::uint32_t>(prepared.slots.slotCount()));
     const auto index = staged->id.index;
-    const auto reuse = index != prepared.model_instances_data.size();
-    staged->asset_id = model.asset_id;
-    staged->material_initial_values = model.material_initial_values;
-    staged->vrm_semantic = model.vrm_semantic;
-    staged->morph_layout = model.morph_targets;
+    const auto reuse = index != prepared.slots.slotCount();
+    staged->seed.asset_id = model.asset_id;
+    staged->seed.material_initial_values = model.material_initial_values;
+    staged->seed.vrm_semantic = model.vrm_semantic;
+    staged->seed.morph_layout = model.morph_targets;
     if (model.skeletal) {
-        staged->skin_palette =
+        staged->seed.skin_palette =
             evaluateSkinPalette(*model.skeletal, nullptr, 0.0, 1.0, false,
-                                0.0, &staged->animation_node_matrices);
-        if (staged->skin_palette.size() > maxSkinJoints) {
+                                0.0, &staged->seed.animation_node_matrices);
+        if (staged->seed.skin_palette.size() > maxSkinJoints) {
             throw std::runtime_error("Skin palette exceeds 128 joints");
         }
     }
     const auto defaults = model.morph_targets
                               ? model.morph_targets->default_weights
                               : std::vector<float>{};
-    staged->morph_weight_frame = MorphWeightFrame{
+    staged->seed.morph_weight_frame = MorphWeightFrame{
         .instance_identity = static_cast<std::uint64_t>(index) + 1,
         .instance_generation =
-            reuse ? prepared.animation_generations[index] : 1u,
+            reuse ? prepared.slots.animation_generations[index] : 1u,
         .layout_generation =
             model.morph_targets ? model.morph_targets->generation : 0,
         .current_revision = 0,
@@ -602,32 +694,15 @@ StagedModelInstance PolygonInstanceContainer::stagePreparedSceneModel(
         }
     }
 
-    const auto capacity = prepared.model_instances_data.size() +
-                          (reuse ? 0U : 1U);
-    prepared.model_instances_data.reserve(capacity);
-    prepared.previous_model_instances_data.reserve(capacity);
-    prepared.model_history_valid.reserve(capacity);
-    prepared.skin_palettes.reserve(capacity);
-    prepared.animation_node_matrices.reserve(capacity);
-    prepared.previous_skin_palettes.reserve(capacity);
-    prepared.animation_revisions.reserve(capacity);
-    prepared.previous_animation_revisions.reserve(capacity);
-    prepared.animation_generations.reserve(capacity);
-    prepared.instance_slots.reserve(capacity);
-    prepared.model_asset_ids.reserve(capacity);
-    prepared.ray_authoring_object_ids.reserve(capacity);
-    prepared.material_initial_value_tables.reserve(capacity);
-    prepared.vrm_semantics.reserve(capacity);
-    prepared.morph_layouts.reserve(capacity);
-    prepared.morph_weight_frames.reserve(capacity);
-    prepared.morph_history_valid.reserve(capacity);
+    const auto capacity = prepared.slots.slotCount() + (reuse ? 0U : 1U);
+    prepared.slots.reserveSlots(capacity);
     prepared.draw_inventory.reserve(prepared.draw_inventory.size() +
                                     staged->draw_items.size());
-    if (!staged->skin_palette.empty()) {
+    if (!staged->seed.skin_palette.empty()) {
         GET_MODULE(VulkanManageCore)
-            .writeBuf(skin_palette_buffer, staged->skin_palette.data(),
+            .writeBuf(skin_palette_buffer, staged->seed.skin_palette.data(),
                       sizeof(glm::mat4) * maxSkinJoints * index,
-                      sizeof(glm::mat4) * staged->skin_palette.size());
+                      sizeof(glm::mat4) * staged->seed.skin_palette.size());
     }
     return StagedModelInstance{std::move(staged)};
 }
@@ -637,60 +712,34 @@ void PolygonInstanceContainer::setPreparedSceneModelMatrix(
     setStagedModelMatrix(staged, matrix);
 }
 
+namespace {
+// The single publication step, shared by the scene candidate and the live
+// container: the slot takes the staged state, the id goes live, and the draw
+// items take their declaration ordinals. Both callers reserved everything this
+// touches while staging, so it cannot fail.
+void publishStagedCandidate(ModelInstanceSlotTable &slots,
+                            std::vector<DrawItemSnapshot> &draw_inventory,
+                            std::uint64_t &next_draw_declaration_ordinal,
+                            ModelInstanceId id, ModelInstanceSlotSeed &&seed,
+                            std::vector<DrawItemSnapshot> &draw_items) noexcept {
+    slots.placeSlot(id.index, std::move(seed));
+    slots.instance_slots.publish(id);
+    for (auto &item : draw_items) {
+        item.declaration_ordinal = next_draw_declaration_ordinal++;
+    }
+    draw_inventory.insert(draw_inventory.end(),
+                          std::make_move_iterator(draw_items.begin()),
+                          std::make_move_iterator(draw_items.end()));
+}
+} // namespace
+
 void PolygonInstanceContainer::publishPreparedSceneModel(
     PreparedSceneState &prepared, StagedModelInstance staged) noexcept {
     assert(staged.impl_ != nullptr);
     auto &candidate = *staged.impl_;
-    const auto index = candidate.id.index;
-    if (index == prepared.model_instances_data.size()) {
-        prepared.model_instances_data.push_back(candidate.model_matrix);
-        prepared.previous_model_instances_data.push_back(
-            candidate.model_matrix);
-        prepared.model_history_valid.push_back(false);
-        prepared.skin_palettes.push_back(std::move(candidate.skin_palette));
-        prepared.animation_node_matrices.push_back(std::move(candidate.animation_node_matrices));
-        prepared.previous_skin_palettes.emplace_back();
-        prepared.animation_revisions.push_back(0);
-        prepared.previous_animation_revisions.push_back(0);
-        prepared.animation_generations.push_back(1);
-        prepared.model_asset_ids.push_back(candidate.asset_id);
-        prepared.ray_authoring_object_ids.push_back(0);
-        prepared.material_initial_value_tables.push_back(
-            std::move(candidate.material_initial_values));
-        prepared.vrm_semantics.push_back(std::move(candidate.vrm_semantic));
-        prepared.morph_layouts.push_back(std::move(candidate.morph_layout));
-        prepared.morph_weight_frames.push_back(
-            std::move(candidate.morph_weight_frame));
-        prepared.morph_history_valid.push_back(false);
-    } else {
-        prepared.model_instances_data[index] = candidate.model_matrix;
-        prepared.previous_model_instances_data[index] = candidate.model_matrix;
-        prepared.model_history_valid[index] = false;
-        prepared.skin_palettes[index] = std::move(candidate.skin_palette);
-        prepared.animation_node_matrices[index] = std::move(candidate.animation_node_matrices);
-        prepared.previous_skin_palettes[index].clear();
-        prepared.animation_revisions[index] = 0;
-        prepared.previous_animation_revisions[index] = 0;
-        prepared.model_asset_ids[index] = candidate.asset_id;
-        prepared.ray_authoring_object_ids[index] = 0;
-        prepared.material_initial_value_tables[index] =
-            std::move(candidate.material_initial_values);
-        prepared.vrm_semantics[index] = std::move(candidate.vrm_semantic);
-        prepared.morph_layouts[index] = std::move(candidate.morph_layout);
-        prepared.morph_weight_frames[index] =
-            std::move(candidate.morph_weight_frame);
-        prepared.morph_history_valid[index] = false;
-    }
-    prepared.ray_authoring_object_ids[index] = candidate.authoring_object_id;
-    prepared.instance_slots.publish(candidate.id);
-    for (auto &item : candidate.draw_items) {
-        item.declaration_ordinal =
-            prepared.next_draw_declaration_ordinal++;
-    }
-    prepared.draw_inventory.insert(
-        prepared.draw_inventory.end(),
-        std::make_move_iterator(candidate.draw_items.begin()),
-        std::make_move_iterator(candidate.draw_items.end()));
+    publishStagedCandidate(prepared.slots, prepared.draw_inventory,
+                           prepared.next_draw_declaration_ordinal, candidate.id,
+                           std::move(candidate.seed), candidate.draw_items);
 }
 
 void PolygonInstanceContainer::enqueueSceneRetirement(
@@ -713,12 +762,12 @@ void PolygonInstanceContainer::drainSceneRetirements() {
     bool changed = false;
     for (const auto &batch : pending) {
         for (const auto index : batch) {
-            if (index >= instance_slots.slotCount() ||
-                instance_slots.alive(index)) {
+            if (index >= slots.instance_slots.slotCount() ||
+                slots.instance_slots.alive(index)) {
                 continue;
             }
             resetSlot(index);
-            instance_slots.releaseWithheld(index);
+            slots.instance_slots.releaseWithheld(index);
             const MaterialInstanceOverrideGpuData empty{};
             GET_MODULE(VulkanManageCore).writeBuf(
                 material_override_buffer, &empty,
@@ -732,12 +781,12 @@ void PolygonInstanceContainer::drainSceneRetirements() {
 
 std::uint32_t PolygonInstanceContainer::requireLive(ModelInstanceId id,
                                                     const char *api_name) const {
-    return instance_slots.requireLive(id, api_name);
+    return slots.instance_slots.requireLive(id, api_name);
 }
 
 void PolygonInstanceContainer::preflightModelInstance(const ModelTemplate &model) const {
-    if (!instance_slots.hasReusableSlot() &&
-        model_instances_data.size() >= maxModelInstances) {
+    if (!slots.instance_slots.hasReusableSlot() &&
+        slots.slotCount() >= maxModelInstances) {
         throw std::runtime_error("Model instance capacity exceeded");
     }
 
@@ -760,29 +809,29 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
     preflightModelInstance(model);
 
     auto staged = std::make_unique<StagedModelInstance::Impl>();
-    staged->id = instance_slots.nextId(
-        static_cast<std::uint32_t>(model_instances_data.size()));
+    staged->id = slots.instance_slots.nextId(
+        static_cast<std::uint32_t>(slots.slotCount()));
     const auto index = staged->id.index;
-    const auto reuse = index != model_instances_data.size();
-    staged->asset_id = model.asset_id;
-    staged->material_initial_values = model.material_initial_values;
-    staged->vrm_semantic = model.vrm_semantic;
-    staged->morph_layout = model.morph_targets;
+    const auto reuse = index != slots.slotCount();
+    staged->seed.asset_id = model.asset_id;
+    staged->seed.material_initial_values = model.material_initial_values;
+    staged->seed.vrm_semantic = model.vrm_semantic;
+    staged->seed.morph_layout = model.morph_targets;
 
     if (model.skeletal) {
-        staged->skin_palette =
+        staged->seed.skin_palette =
             evaluateSkinPalette(*model.skeletal, nullptr, 0.0, 1.0, false, 0.0,
-                                &staged->animation_node_matrices);
-        if (staged->skin_palette.size() > maxSkinJoints)
+                                &staged->seed.animation_node_matrices);
+        if (staged->seed.skin_palette.size() > maxSkinJoints)
             throw std::runtime_error("Skin palette exceeds 128 joints");
     }
 
     const auto defaults = model.morph_targets
                               ? model.morph_targets->default_weights
                               : std::vector<float>{};
-    staged->morph_weight_frame = MorphWeightFrame{
+    staged->seed.morph_weight_frame = MorphWeightFrame{
         .instance_identity = static_cast<std::uint64_t>(staged->id.index) + 1,
-        .instance_generation = reuse ? animation_generations[index] : 1u,
+        .instance_generation = reuse ? slots.animation_generations[index] : 1u,
         .layout_generation = model.morph_targets ? model.morph_targets->generation : 0,
         .current_revision = 0,
         .previous_revision = 0,
@@ -809,33 +858,17 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
 
     // Reserve every live container before publication. Once this succeeds,
     // publishModelInstance() only moves/copies into already allocated storage.
-    const auto instance_capacity = model_instances_data.size() + (reuse ? 0u : 1u);
-    model_instances_data.reserve(instance_capacity);
-    previous_model_instances_data.reserve(instance_capacity);
-    model_history_valid.reserve(instance_capacity);
-    skin_palettes.reserve(instance_capacity);
-    animation_node_matrices.reserve(instance_capacity);
-    previous_skin_palettes.reserve(instance_capacity);
-    animation_revisions.reserve(instance_capacity);
-    previous_animation_revisions.reserve(instance_capacity);
-    animation_generations.reserve(instance_capacity);
-    instance_slots.reserve(instance_capacity);
-    model_asset_ids.reserve(instance_capacity);
-    ray_authoring_object_ids.reserve(instance_capacity);
-    material_initial_value_tables.reserve(instance_capacity);
-    vrm_semantics.reserve(instance_capacity);
-    morph_layouts.reserve(instance_capacity);
-    morph_weight_frames.reserve(instance_capacity);
-    morph_history_valid.reserve(instance_capacity);
+    const auto instance_capacity = slots.slotCount() + (reuse ? 0u : 1u);
+    slots.reserveSlots(instance_capacity);
     draw_inventory.reserve(draw_inventory.size() + staged->draw_items.size());
 
     // The future slot is not addressable until publication, so a failed write
     // cannot change the live inventory or IDs.
-    if (!staged->skin_palette.empty()) {
+    if (!staged->seed.skin_palette.empty()) {
         GET_MODULE(VulkanManageCore)
-            .writeBuf(skin_palette_buffer, staged->skin_palette.data(),
+            .writeBuf(skin_palette_buffer, staged->seed.skin_palette.data(),
                       sizeof(glm::mat4) * maxSkinJoints * staged->id.index,
-                      sizeof(glm::mat4) * staged->skin_palette.size());
+                      sizeof(glm::mat4) * staged->seed.skin_palette.size());
     }
 
     return StagedModelInstance{std::move(staged)};
@@ -844,7 +877,7 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
 void PolygonInstanceContainer::setStagedModelMatrix(
     StagedModelInstance &staged, const glm::mat4 &matrix) noexcept {
     assert(staged.impl_ != nullptr);
-    staged.impl_->model_matrix = matrix;
+    staged.impl_->seed.model_matrix = matrix;
 }
 
 void PolygonInstanceContainer::publishModelInstance(StagedModelInstance staged) noexcept {
@@ -854,53 +887,15 @@ void PolygonInstanceContainer::publishModelInstance(StagedModelInstance staged) 
 
     auto &candidate = *staged.impl_;
     const auto index = candidate.id.index;
-    assert(candidate.id.scene_epoch == instance_slots.sceneEpoch());
-    if (index == model_instances_data.size()) {
-        assert(model_instances_data.size() < model_instances_data.capacity());
-        model_instances_data.push_back(candidate.model_matrix);
-        previous_model_instances_data.push_back(candidate.model_matrix);
-        model_history_valid.push_back(false);
-        skin_palettes.push_back(std::move(candidate.skin_palette));
-        animation_node_matrices.push_back(std::move(candidate.animation_node_matrices));
-        previous_skin_palettes.emplace_back();
-        animation_revisions.push_back(0);
-        previous_animation_revisions.push_back(0);
-        animation_generations.push_back(1);
-        model_asset_ids.push_back(candidate.asset_id);
-        ray_authoring_object_ids.push_back(0);
-        material_initial_value_tables.push_back(
-            std::move(candidate.material_initial_values));
-        vrm_semantics.push_back(std::move(candidate.vrm_semantic));
-        morph_layouts.push_back(std::move(candidate.morph_layout));
-        morph_weight_frames.push_back(std::move(candidate.morph_weight_frame));
-        morph_history_valid.push_back(false);
+    assert(candidate.id.scene_epoch == slots.instance_slots.sceneEpoch());
+    if (index == slots.slotCount()) {
+        assert(slots.slotCount() < slots.model_instances_data.capacity());
     } else {
-        assert(!instance_slots.alive(index));
-        model_instances_data[index] = candidate.model_matrix;
-        previous_model_instances_data[index] = candidate.model_matrix;
-        model_history_valid[index] = false;
-        skin_palettes[index] = std::move(candidate.skin_palette);
-        animation_node_matrices[index] = std::move(candidate.animation_node_matrices);
-        previous_skin_palettes[index].clear();
-        animation_revisions[index] = 0;
-        previous_animation_revisions[index] = 0;
-        model_asset_ids[index] = candidate.asset_id;
-        ray_authoring_object_ids[index] = 0;
-        material_initial_value_tables[index] =
-            std::move(candidate.material_initial_values);
-        vrm_semantics[index] = std::move(candidate.vrm_semantic);
-        morph_layouts[index] = std::move(candidate.morph_layout);
-        morph_weight_frames[index] = std::move(candidate.morph_weight_frame);
-        morph_history_valid[index] = false;
+        assert(!slots.instance_slots.alive(index));
     }
-    ray_authoring_object_ids[index] = candidate.authoring_object_id;
-    instance_slots.publish(candidate.id);
-    for (auto &item : candidate.draw_items) {
-        item.declaration_ordinal = next_draw_declaration_ordinal++;
-    }
-    draw_inventory.insert(draw_inventory.end(),
-                          std::make_move_iterator(candidate.draw_items.begin()),
-                          std::make_move_iterator(candidate.draw_items.end()));
+    publishStagedCandidate(slots, draw_inventory, next_draw_declaration_ordinal,
+                           candidate.id, std::move(candidate.seed),
+                           candidate.draw_items);
 }
 
 ModelInstanceId PolygonInstanceContainer::placeModelInstance(const ModelTemplate &model) {
@@ -910,25 +905,7 @@ ModelInstanceId PolygonInstanceContainer::placeModelInstance(const ModelTemplate
     return id;
 }
 void PolygonInstanceContainer::resetSlot(std::uint32_t index) {
-    model_instances_data[index] = glm::identity<glm::mat4>();
-    previous_model_instances_data[index] = glm::identity<glm::mat4>();
-    model_history_valid[index] = false;
-    skin_palettes[index].clear();
-    animation_node_matrices[index].clear();
-    previous_skin_palettes[index].clear();
-    animation_revisions[index] = 0;
-    previous_animation_revisions[index] = 0;
-    model_asset_ids[index] = {};
-    ray_authoring_object_ids[index] = 0;
-    material_initial_value_tables[index].reset();
-    vrm_semantics[index].reset();
-    if (++animation_generations[index] == 0) ++animation_generations[index];
-    morph_layouts[index].reset();
-    morph_weight_frames[index] = MorphWeightFrame{
-        .instance_identity = static_cast<std::uint64_t>(index) + 1,
-        .instance_generation = animation_generations[index],
-    };
-    morph_history_valid[index] = false;
+    slots.clearSlot(index);
     material_override_frames.erase(index);
     const auto identity = static_cast<std::uint64_t>(index) + 1;
     std::erase_if(material_absolute_override_frames,
@@ -945,7 +922,7 @@ bool PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {
         return item.stable_identity.instance.index == index;
     });
     resetSlot(index);
-    instance_slots.retire(id);
+    slots.instance_slots.retire(id);
     const MaterialInstanceOverrideGpuData empty{};
     GET_MODULE(VulkanManageCore).writeBuf(
         material_override_buffer, &empty,
@@ -956,16 +933,16 @@ bool PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {
 
 void PolygonInstanceContainer::clear() {
     auto empty_declarations = std::make_shared<const RaySceneDeclarationCatalog>();
-    instance_slots.prepareClear();
+    slots.instance_slots.prepareClear();
     draw_inventory.clear();
     compiled_draw_queue = {};
     next_draw_declaration_ordinal = 0;
-    for (std::uint32_t index = 0; index < instance_slots.slotCount(); ++index) {
-        if (instance_slots.alive(index)) {
+    for (std::uint32_t index = 0; index < slots.instance_slots.slotCount(); ++index) {
+        if (slots.instance_slots.alive(index)) {
             resetSlot(index);
         }
     }
-    instance_slots.clearPrepared();
+    slots.instance_slots.clearPrepared();
     ray_scene_plan.reset();
     ray_scene_declarations = std::move(empty_declarations);
     material_override_frames.clear();
@@ -1015,27 +992,27 @@ void PolygonInstanceContainer::triggerUpdate(
         return;
     }
 
-    for (size_t i = 0; i < model_instances_data.size(); ++i) {
-        if (!model_history_valid[i]) {
-            previous_model_instances_data[i] = model_instances_data[i];
-            previous_skin_palettes[i] = skin_palettes[i];
+    for (size_t i = 0; i < slots.model_instances_data.size(); ++i) {
+        if (!slots.model_history_valid[i]) {
+            slots.previous_model_instances_data[i] = slots.model_instances_data[i];
+            slots.previous_skin_palettes[i] = slots.skin_palettes[i];
         }
-        if (!morph_history_valid[i]) {
-            morph_weight_frames[i].previous = morph_weight_frames[i].current;
-            morph_weight_frames[i].previous_revision =
-                morph_weight_frames[i].current_revision;
+        if (!slots.morph_history_valid[i]) {
+            slots.morph_weight_frames[i].previous = slots.morph_weight_frames[i].current;
+            slots.morph_weight_frames[i].previous_revision =
+                slots.morph_weight_frames[i].current_revision;
         }
-        if (!previous_skin_palettes[i].empty()) {
+        if (!slots.previous_skin_palettes[i].empty()) {
             GET_MODULE(VulkanManageCore)
-                .writeBuf(previous_skin_palette_buffer, previous_skin_palettes[i].data(),
+                .writeBuf(previous_skin_palette_buffer, slots.previous_skin_palettes[i].data(),
                           sizeof(glm::mat4) * maxSkinJoints * i,
-                          sizeof(glm::mat4) * previous_skin_palettes[i].size());
+                          sizeof(glm::mat4) * slots.previous_skin_palettes[i].size());
         }
     }
 
-    std::vector<MorphInstanceGpuData> morph_instances(model_instances_data.size());
-    for (size_t i = 0; i < morph_weight_frames.size(); ++i) {
-        const auto &frame = morph_weight_frames[i];
+    std::vector<MorphInstanceGpuData> morph_instances(slots.model_instances_data.size());
+    for (size_t i = 0; i < slots.morph_weight_frames.size(); ++i) {
+        const auto &frame = slots.morph_weight_frames[i];
         const auto generation = frame.layout_generation;
         morph_instances[i] = {
             static_cast<std::uint32_t>(frame.current.size()),
@@ -1067,26 +1044,26 @@ void PolygonInstanceContainer::triggerUpdate(
     const auto &materials = GET_MODULE(MaterialContainer);
     for (auto &item : frame_items) {
         const auto instance = item.stable_identity.instance.index;
-        if (!instance_slots.alive(instance) ||
-            instance >= model_instances_data.size() || !item.bounds_source) {
+        if (!slots.instance_slots.alive(instance) ||
+            instance >= slots.model_instances_data.size() || !item.bounds_source) {
             throw std::runtime_error(
                 "draw inventory contains a stale instance or missing bounds source");
         }
-        const auto weights = instance < morph_weight_frames.size()
+        const auto weights = instance < slots.morph_weight_frames.size()
                                  ? std::span<const float>{
-                                       morph_weight_frames[instance].current}
+                                       slots.morph_weight_frames[instance].current}
                                  : std::span<const float>{};
         std::span<const glm::mat4> palette;
         if (item.pipeline_material_key.skinned) {
-            if (instance >= skin_palettes.size() ||
-                skin_palettes[instance].empty()) {
+            if (instance >= slots.skin_palettes.size() ||
+                slots.skin_palettes[instance].empty()) {
                 throw std::runtime_error(
                     "skinned draw inventory item is missing its current skin palette");
             }
-            palette = skin_palettes[instance];
+            palette = slots.skin_palettes[instance];
         }
         item.world_bounds = resolveDrawWorldBounds(
-            *item.bounds_source, model_instances_data[instance], palette,
+            *item.bounds_source, slots.model_instances_data[instance], palette,
             weights);
         item.material_tags =
             materials.tagsForMaterial(
@@ -1148,10 +1125,10 @@ void PolygonInstanceContainer::triggerUpdate(
     compiled_draw_queue = std::move(next_draw_queue);
 
     GET_MODULE(VulkanManageCore)
-        .writeBuf(model_data_buffer, model_instances_data.data(), 0, sizeof(glm::mat4) * model_instances_data.size());
+        .writeBuf(model_data_buffer, slots.model_instances_data.data(), 0, sizeof(glm::mat4) * slots.model_instances_data.size());
     GET_MODULE(VulkanManageCore)
-        .writeBuf(previous_model_data_buffer, previous_model_instances_data.data(), 0,
-                  sizeof(glm::mat4) * previous_model_instances_data.size());
+        .writeBuf(previous_model_data_buffer, slots.previous_model_instances_data.data(), 0,
+                  sizeof(glm::mat4) * slots.previous_model_instances_data.size());
 }
 
 void PolygonInstanceContainer::commitFrameHistory() {
@@ -1159,11 +1136,11 @@ void PolygonInstanceContainer::commitFrameHistory() {
 }
 
 void PolygonInstanceContainer::advanceMorphHistoryAfterRender() {
-    for (auto &frame : morph_weight_frames) {
+    for (auto &frame : slots.morph_weight_frames) {
         frame.previous = frame.current;
         frame.previous_revision = frame.current_revision;
     }
-    std::fill(morph_history_valid.begin(), morph_history_valid.end(), true);
+    std::fill(slots.morph_history_valid.begin(), slots.morph_history_valid.end(), true);
 }
 
 void PolygonInstanceContainer::advanceMaterialOverrideHistoryAfterRender() {
@@ -1180,20 +1157,20 @@ void PolygonInstanceContainer::advanceMaterialOverrideHistoryAfterRender() {
 }
 
 void PolygonInstanceContainer::advanceTemporalHistoryAfterRender() {
-    previous_model_instances_data = model_instances_data;
-    previous_skin_palettes = skin_palettes;
-    previous_animation_revisions = animation_revisions;
+    slots.previous_model_instances_data = slots.model_instances_data;
+    slots.previous_skin_palettes = slots.skin_palettes;
+    slots.previous_animation_revisions = slots.animation_revisions;
     advanceMorphHistoryAfterRender();
     advanceMaterialOverrideHistoryAfterRender();
-    std::fill(model_history_valid.begin(), model_history_valid.end(), true);
+    std::fill(slots.model_history_valid.begin(), slots.model_history_valid.end(), true);
     ++temporal_history_advance_count;
 }
 
 void PolygonInstanceContainer::resetTemporalHistory() {
-    previous_model_instances_data = model_instances_data;
-    previous_skin_palettes = skin_palettes;
-    previous_animation_revisions = animation_revisions;
-    for (auto &frame : morph_weight_frames) {
+    slots.previous_model_instances_data = slots.model_instances_data;
+    slots.previous_skin_palettes = slots.skin_palettes;
+    slots.previous_animation_revisions = slots.animation_revisions;
+    for (auto &frame : slots.morph_weight_frames) {
         frame.previous = frame.current;
         frame.previous_revision = frame.current_revision;
     }
@@ -1207,8 +1184,8 @@ void PolygonInstanceContainer::resetTemporalHistory() {
         frame.previous = frame.current;
         frame.previous_revision = frame.current_revision;
     }
-    std::fill(model_history_valid.begin(), model_history_valid.end(), false);
-    std::fill(morph_history_valid.begin(), morph_history_valid.end(), false);
+    std::fill(slots.model_history_valid.begin(), slots.model_history_valid.end(), false);
+    std::fill(slots.morph_history_valid.begin(), slots.morph_history_valid.end(), false);
 }
 
 bool PolygonInstanceContainer::canRebuildModelInstances(
@@ -1223,17 +1200,17 @@ bool PolygonInstanceContainer::canRebuildModelInstances(
     size_t command_count = draw_inventory.size();
     for (const auto &item : draw_inventory) {
         const auto instance = item.stable_identity.instance.index;
-        if (instance < model_asset_ids.size() &&
-            instance_slots.alive(instance) &&
-            by_asset.contains(model_asset_ids[instance].value)) {
+        if (instance < slots.model_asset_ids.size() &&
+            slots.instance_slots.alive(instance) &&
+            by_asset.contains(slots.model_asset_ids[instance].value)) {
             --command_count;
         }
     }
     for (const auto &[asset, replacement] : by_asset) {
         size_t instances = 0;
-        for (std::size_t index = 0; index < model_asset_ids.size(); ++index)
-            if (instance_slots.alive(static_cast<std::uint32_t>(index)) &&
-                model_asset_ids[index].value == asset)
+        for (std::size_t index = 0; index < slots.model_asset_ids.size(); ++index)
+            if (slots.instance_slots.alive(static_cast<std::uint32_t>(index)) &&
+                slots.model_asset_ids[index].value == asset)
                 ++instances;
         const auto primitives = primitiveCount(*replacement);
         if (instances != 0 && primitives > (maxRenderCommands - command_count) / instances)
@@ -1254,34 +1231,11 @@ PolygonInstanceContainer::prepareModelInstanceRebuild(
     }
     if (!canRebuildModelInstances(replacements))
         throw std::runtime_error("Render command capacity exceeded by model reload batch");
+    // Everything below edits the candidate, never `this`: `next` is the
+    // candidate's own slot table, so a rebuilt slot is written once, in place,
+    // instead of through a shadow copy per array.
     auto prepared = snapshotPreparedScene();
-    auto &draw_inventory = prepared.draw_inventory;
-    auto &next_draw_declaration_ordinal =
-        prepared.next_draw_declaration_ordinal;
-    auto &ray_query_geometry_generation =
-        prepared.ray_query_geometry_generation;
-    auto &model_instances_data = prepared.model_instances_data;
-    auto &previous_model_instances_data =
-        prepared.previous_model_instances_data;
-    auto &model_history_valid = prepared.model_history_valid;
-    auto &skin_palettes = prepared.skin_palettes;
-    auto &animation_node_matrices = prepared.animation_node_matrices;
-    auto &previous_skin_palettes = prepared.previous_skin_palettes;
-    auto &animation_revisions = prepared.animation_revisions;
-    auto &previous_animation_revisions =
-        prepared.previous_animation_revisions;
-    auto &animation_generations = prepared.animation_generations;
-    auto &instance_slots = prepared.instance_slots;
-    auto &model_asset_ids = prepared.model_asset_ids;
-    auto &material_initial_value_tables =
-        prepared.material_initial_value_tables;
-    auto &vrm_semantics = prepared.vrm_semantics;
-    auto &morph_layouts = prepared.morph_layouts;
-    auto &morph_weight_frames = prepared.morph_weight_frames;
-    auto &morph_history_valid = prepared.morph_history_valid;
-    auto &material_override_frames = prepared.material_override_frames;
-    auto &material_absolute_override_frames =
-        prepared.material_absolute_override_frames;
+    auto &next = prepared.slots;
     std::unordered_map<std::uint64_t, const ModelTemplate *> by_asset;
     std::unordered_map<std::uint64_t, std::vector<glm::mat4>> rest_palettes;
     std::unordered_map<std::uint64_t, std::vector<glm::mat4>> rest_node_matrices;
@@ -1297,56 +1251,41 @@ PolygonInstanceContainer::prepareModelInstanceRebuild(
 
     std::vector<DrawItemSnapshot> rebuilt;
     rebuilt.reserve(maxRenderCommands);
-    for (const auto &item : draw_inventory) {
+    for (const auto &item : prepared.draw_inventory) {
         const auto instance = item.stable_identity.instance.index;
-        if (instance < model_asset_ids.size() &&
-            instance_slots.alive(instance) &&
-            by_asset.contains(model_asset_ids[instance].value))
+        if (instance < next.model_asset_ids.size() &&
+            next.instance_slots.alive(instance) &&
+            by_asset.contains(next.model_asset_ids[instance].value))
             continue;
         rebuilt.push_back(item);
     }
 
     std::size_t replacement_item_count = 0;
-    for (std::uint32_t instance = 0; instance < model_asset_ids.size();
+    for (std::uint32_t instance = 0; instance < next.model_asset_ids.size();
          ++instance) {
-        if (!instance_slots.alive(instance)) continue;
-        const auto found = by_asset.find(model_asset_ids[instance].value);
+        if (!next.instance_slots.alive(instance)) continue;
+        const auto found = by_asset.find(next.model_asset_ids[instance].value);
         if (found != by_asset.end()) {
             replacement_item_count += primitiveCount(*found->second);
         }
     }
     if (replacement_item_count >
         std::numeric_limits<std::uint64_t>::max() -
-            next_draw_declaration_ordinal) {
+            prepared.next_draw_declaration_ordinal) {
         throw std::runtime_error("Draw declaration ordinal exhausted");
     }
-    auto next_declaration_ordinal = next_draw_declaration_ordinal;
+    auto next_declaration_ordinal = prepared.next_draw_declaration_ordinal;
     const auto *materials = replacement_item_count == 0
                                 ? nullptr
                                 : &GET_MODULE(MaterialContainer);
 
-    auto next_skin_palettes = skin_palettes;
-    auto next_node_matrices = animation_node_matrices;
-    auto next_previous_skin_palettes = previous_skin_palettes;
-    auto next_animation_revisions = animation_revisions;
-    auto next_previous_animation_revisions = previous_animation_revisions;
-    auto next_animation_generations = animation_generations;
-    auto next_material_initial_value_tables = material_initial_value_tables;
-    auto next_vrm_semantics = vrm_semantics;
-    auto next_morph_layouts = morph_layouts;
-    auto next_morph_weight_frames = morph_weight_frames;
-    auto next_morph_history_valid = morph_history_valid;
-    auto next_material_override_frames = material_override_frames;
-    auto next_material_absolute_override_frames =
-        material_absolute_override_frames;
-    auto next_previous_models = previous_model_instances_data;
-    auto next_history_valid = model_history_valid;
-    for (uint32_t instance = 0; instance < model_asset_ids.size(); ++instance) {
-        if (!instance_slots.alive(instance)) continue;
-        const auto found = by_asset.find(model_asset_ids[instance].value);
+    for (uint32_t instance = 0; instance < next.model_asset_ids.size();
+         ++instance) {
+        if (!next.instance_slots.alive(instance)) continue;
+        const auto found = by_asset.find(next.model_asset_ids[instance].value);
         if (found == by_asset.end()) continue;
         const auto &replacement = *found->second;
-        const auto instance_id = instance_slots.idAt(instance);
+        const auto instance_id = next.instance_slots.idAt(instance);
         for (const auto &material : replacement.material_primitives) {
             if (material.primitives.empty()) continue;
             const auto route = materials->routeForMaterial(material.material);
@@ -1360,24 +1299,25 @@ PolygonInstanceContainer::prepareModelInstanceRebuild(
             }
         }
 
-        const auto &rest_palette = rest_palettes.at(model_asset_ids[instance].value);
-        next_skin_palettes[instance] = rest_palette;
-        next_node_matrices[instance] = rest_node_matrices.at(model_asset_ids[instance].value);
-        next_previous_skin_palettes[instance] = rest_palette;
-        next_animation_revisions[instance] = 0;
-        next_previous_animation_revisions[instance] = 0;
-        if (++next_animation_generations[instance] == 0)
-            ++next_animation_generations[instance];
-        next_material_initial_value_tables[instance] =
+        const auto asset = next.model_asset_ids[instance].value;
+        const auto &rest_palette = rest_palettes.at(asset);
+        next.skin_palettes[instance] = rest_palette;
+        next.animation_node_matrices[instance] = rest_node_matrices.at(asset);
+        next.previous_skin_palettes[instance] = rest_palette;
+        next.animation_revisions[instance] = 0;
+        next.previous_animation_revisions[instance] = 0;
+        if (++next.animation_generations[instance] == 0)
+            ++next.animation_generations[instance];
+        next.material_initial_value_tables[instance] =
             replacement.material_initial_values;
-        next_vrm_semantics[instance] = replacement.vrm_semantic;
-        next_morph_layouts[instance] = replacement.morph_targets;
+        next.vrm_semantics[instance] = replacement.vrm_semantic;
+        next.morph_layouts[instance] = replacement.morph_targets;
         const auto defaults = replacement.morph_targets
                                   ? replacement.morph_targets->default_weights
                                   : std::vector<float>{};
-        next_morph_weight_frames[instance] = MorphWeightFrame{
+        next.morph_weight_frames[instance] = MorphWeightFrame{
             .instance_identity = static_cast<std::uint64_t>(instance) + 1,
-            .instance_generation = next_animation_generations[instance],
+            .instance_generation = next.animation_generations[instance],
             .layout_generation = replacement.morph_targets
                                      ? replacement.morph_targets->generation
                                      : 0,
@@ -1386,37 +1326,21 @@ PolygonInstanceContainer::prepareModelInstanceRebuild(
             .current = defaults,
             .previous = defaults,
         };
-        next_morph_history_valid[instance] = false;
-        next_material_override_frames.erase(instance);
+        next.morph_history_valid[instance] = false;
+        prepared.material_override_frames.erase(instance);
         const auto identity = static_cast<std::uint64_t>(instance) + 1;
-        std::erase_if(next_material_absolute_override_frames,
+        std::erase_if(prepared.material_absolute_override_frames,
                       [identity](const auto &entry) {
                           return entry.first.instance_identity == identity;
                       });
-        next_previous_models[instance] = model_instances_data[instance];
-        next_history_valid[instance] = false;
+        next.previous_model_instances_data[instance] =
+            next.model_instances_data[instance];
+        next.model_history_valid[instance] = false;
     }
-    draw_inventory = std::move(rebuilt);
-    next_draw_declaration_ordinal = next_declaration_ordinal;
-    skin_palettes = std::move(next_skin_palettes);
-    animation_node_matrices = std::move(next_node_matrices);
-    previous_skin_palettes = std::move(next_previous_skin_palettes);
-    animation_revisions = std::move(next_animation_revisions);
-    previous_animation_revisions = std::move(next_previous_animation_revisions);
-    animation_generations = std::move(next_animation_generations);
-    material_initial_value_tables =
-        std::move(next_material_initial_value_tables);
-    vrm_semantics = std::move(next_vrm_semantics);
-    morph_layouts = std::move(next_morph_layouts);
-    morph_weight_frames = std::move(next_morph_weight_frames);
-    morph_history_valid = std::move(next_morph_history_valid);
-    material_override_frames = std::move(next_material_override_frames);
-    material_absolute_override_frames =
-        std::move(next_material_absolute_override_frames);
-    previous_model_instances_data = std::move(next_previous_models);
-    model_history_valid = std::move(next_history_valid);
+    prepared.draw_inventory = std::move(rebuilt);
+    prepared.next_draw_declaration_ordinal = next_declaration_ordinal;
     if (!replacements.empty()) {
-        ++ray_query_geometry_generation;
+        ++prepared.ray_query_geometry_generation;
     }
     std::vector<RayQueryGeometryInstanceSnapshot> procedurals;
     if (prepared.ray_scene_plan) {
@@ -1432,7 +1356,7 @@ PolygonInstanceContainer::prepareModelInstanceRebuild(
 
 void PolygonInstanceContainer::setStagedAuthoringObject(
     StagedModelInstance &staged, std::uint64_t object) noexcept {
-    staged.impl_->authoring_object_id = object;
+    staged.impl_->seed.authoring_object_id = object;
 }
 
 void PolygonInstanceContainer::rebuildModelInstances(
@@ -1493,12 +1417,12 @@ void PolygonInstanceContainer::prepareRayScenePlan(
             }
         }
         prepared.ray_scene_declarations = std::move(candidate_declarations);
-        for (std::size_t index = 0; index < prepared.ray_authoring_object_ids.size(); ++index) {
-            if (!prepared.instance_slots.alive(static_cast<std::uint32_t>(index))) continue;
-            const auto object = prepared.ray_authoring_object_ids[index];
+        for (std::size_t index = 0; index < prepared.slots.ray_authoring_object_ids.size(); ++index) {
+            if (!prepared.slots.instance_slots.alive(static_cast<std::uint32_t>(index))) continue;
+            const auto object = prepared.slots.ray_authoring_object_ids[index];
             if (const auto found = transforms.find(object); found != transforms.end()) {
                 const auto &world = found->second;
-                prepared.model_instances_data[index] =
+                prepared.slots.model_instances_data[index] =
                     glm::translate(glm::mat4{1.0F}, world.pos) *
                     glm::toMat4(world.rotation) * glm::scale(glm::mat4{1.0F}, world.scale);
             }
@@ -1523,14 +1447,7 @@ PolygonInstanceContainer::rayQueryGeometryInstances(
     // renderer without temporarily publishing their candidate.
     const auto &draw_inventory =
         prepared ? prepared->draw_inventory : this->draw_inventory;
-    const auto &model_instances_data =
-        prepared ? prepared->model_instances_data : this->model_instances_data;
-    const auto &model_asset_ids =
-        prepared ? prepared->model_asset_ids : this->model_asset_ids;
-    const auto &instance_slots =
-        prepared ? prepared->instance_slots : this->instance_slots;
-    const auto &ray_authoring_object_ids =
-        prepared ? prepared->ray_authoring_object_ids : this->ray_authoring_object_ids;
+    const auto &table = prepared ? prepared->slots : this->slots;
     const auto &declarations =
         *(prepared ? prepared->ray_scene_declarations : ray_scene_declarations);
     const auto &material_absolute_override_frames = prepared
@@ -1542,9 +1459,9 @@ PolygonInstanceContainer::rayQueryGeometryInstances(
     for (const auto &item : draw_inventory) {
         const auto instance =
             item.stable_identity.instance.index;
-        if (instance >= model_instances_data.size() ||
-            instance >= model_asset_ids.size() ||
-            !instance_slots.alive(instance)) {
+        if (instance >= table.model_instances_data.size() ||
+            instance >= table.model_asset_ids.size() ||
+            !table.instance_slots.alive(instance)) {
             continue;
         }
         std::uint32_t alpha_override_mask = 0;
@@ -1605,12 +1522,12 @@ PolygonInstanceContainer::rayQueryGeometryInstances(
                     values.uv_rotation;
             }
         }
-        const auto authoring_object = ray_authoring_object_ids.at(instance);
+        const auto authoring_object = table.ray_authoring_object_ids.at(instance);
         const auto declaration = declarations.find(authoring_object);
         result.push_back(
             RayQueryGeometryInstanceSnapshot{
                 .asset_identity =
-                    model_asset_ids[instance].value,
+                    table.model_asset_ids[instance].value,
                 .authoring_object_id =
                     authoring_object,
                 .ray_instance = declaration == declarations.end()
@@ -1692,7 +1609,7 @@ PolygonInstanceContainer::rayQueryGeometryInstances(
                     item.stable_identity.occurrence &&
                     item.stable_identity.occurrence->ambiguous,
                 .world_transform =
-                    model_instances_data[instance],
+                    table.model_instances_data[instance],
             });
     }
     return result;
@@ -1791,7 +1708,7 @@ void PolygonInstanceContainer::setRayInstanceDeclaration(
     const bool unchanged = declaration
         ? current != ray_scene_declarations->end() && current->second.value == *declaration
         : current == ray_scene_declarations->end();
-    if (ray_authoring_object_ids[index] == authoring_object_id && unchanged) {
+    if (slots.ray_authoring_object_ids[index] == authoring_object_id && unchanged) {
         return;
     }
     auto declarations = std::make_shared<RaySceneDeclarationCatalog>(*ray_scene_declarations);
@@ -1800,7 +1717,7 @@ void PolygonInstanceContainer::setRayInstanceDeclaration(
         owner.value = *declaration;
     } else declarations->erase(authoring_object_id);
     ray_scene_declarations = std::move(declarations);
-    ray_authoring_object_ids[index] = authoring_object_id;
+    slots.ray_authoring_object_ids[index] = authoring_object_id;
 }
 
 void PolygonInstanceContainer::rebuildModelInstances(
@@ -1811,9 +1728,9 @@ void PolygonInstanceContainer::rebuildModelInstances(
 
 size_t PolygonInstanceContainer::instanceCountForAssetForTesting(ModelAssetId asset_id) const {
     size_t count = 0;
-    for (std::size_t index = 0; index < model_asset_ids.size(); ++index) {
-        if (instance_slots.alive(static_cast<std::uint32_t>(index)) &&
-            model_asset_ids[index] == asset_id)
+    for (std::size_t index = 0; index < slots.model_asset_ids.size(); ++index) {
+        if (slots.instance_slots.alive(static_cast<std::uint32_t>(index)) &&
+            slots.model_asset_ids[index] == asset_id)
             ++count;
     }
     return count;
@@ -1823,18 +1740,18 @@ void PolygonInstanceContainer::setSkinningPalette(ModelInstanceId id,
                                                    std::span<const glm::mat4> palette) {
     const auto index = requireLive(id, "setSkinningPalette");
     if (palette.size() > maxSkinJoints) throw std::runtime_error("Skin palette exceeds 128 joints");
-    skin_palettes[index].assign(palette.begin(), palette.end());
+    slots.skin_palettes[index].assign(palette.begin(), palette.end());
     GET_MODULE(VulkanManageCore).writeBuf(skin_palette_buffer, palette.data(),
                                          sizeof(glm::mat4) * maxSkinJoints * index,
                                          sizeof(glm::mat4) * palette.size());
     // A palette-only override does not provide the evaluated node hierarchy.
-    animation_node_matrices[index].clear();
+    slots.animation_node_matrices[index].clear();
 }
 
 Animation::InstanceHandle PolygonInstanceContainer::animationInstance(ModelInstanceId id) const {
     if (!isLive(id)) return Animation::invalidHandle<Animation::InstanceHandle>();
     return {static_cast<std::uint64_t>(id.index) + 1,
-            animation_generations[id.index], 0};
+            slots.animation_generations[id.index], 0};
 }
 
 std::string_view animationFrameWriterName(AnimationFrameWriterKind kind) noexcept {
@@ -1850,7 +1767,7 @@ AnimationFrameWriter PolygonInstanceContainer::animationFrameWriter(ModelInstanc
     if (!isLive(id)) return {};
     const auto found = animation_frame_writers.find(id.index);
     if (found == animation_frame_writers.end() ||
-        found->second.generation != animation_generations[id.index])
+        found->second.generation != slots.animation_generations[id.index])
         return {};
     return found->second.writer;
 }
@@ -1890,8 +1807,8 @@ Animation::Status PolygonInstanceContainer::publishAnimationFrame(
         frame.palette_count > maxSkinJoints ||
         (frame.flags & ~(Animation::commit_reset_history | Animation::commit_discontinuity)) != 0)
         return Animation::Status::invalid_argument;
-    if (animation_revisions[index] != 0 &&
-        frame.frame_revision <= animation_revisions[index])
+    if (slots.animation_revisions[index] != 0 &&
+        frame.frame_revision <= slots.animation_revisions[index])
         return Animation::Status::duplicate_revision;
 
     if (model_matrices.size() != original_to_layout.size())
@@ -1909,15 +1826,15 @@ Animation::Status PolygonInstanceContainer::publishAnimationFrame(
                                              sizeof(glm::mat4) * maxSkinJoints * index,
                                              sizeof(glm::mat4) * palette.size());
     }
-    skin_palettes[index] = std::move(palette);
-    animation_node_matrices[index] = std::move(node_matrices);
-    animation_revisions[index] = frame.frame_revision;
+    slots.skin_palettes[index] = std::move(palette);
+    slots.animation_node_matrices[index] = std::move(node_matrices);
+    slots.animation_revisions[index] = frame.frame_revision;
     animation_frame_writers[index] = AnimationFrameWriterRecord{expected.generation,
         AnimationFrameWriter{writer.kind, writer.identity, frame.frame_revision}};
-    if (previous_animation_revisions[index] == 0 ||
+    if (slots.previous_animation_revisions[index] == 0 ||
         (frame.flags & (Animation::commit_reset_history | Animation::commit_discontinuity)) != 0) {
-        previous_skin_palettes[index] = skin_palettes[index];
-        previous_animation_revisions[index] = frame.frame_revision;
+        slots.previous_skin_palettes[index] = slots.skin_palettes[index];
+        slots.previous_animation_revisions[index] = frame.frame_revision;
     }
     return Animation::Status::ok;
 }
@@ -1925,7 +1842,7 @@ Animation::Status PolygonInstanceContainer::publishAnimationFrame(
 std::optional<glm::mat4> PolygonInstanceContainer::animationNodeMatrix(
     ModelInstanceId id, std::uint32_t source_node) const {
     if (!isLive(id)) return std::nullopt;
-    const auto &matrices = animation_node_matrices[id.index];
+    const auto &matrices = slots.animation_node_matrices[id.index];
     if (source_node >= matrices.size()) return std::nullopt;
     return matrices[source_node];
 }
@@ -1933,13 +1850,13 @@ std::optional<glm::mat4> PolygonInstanceContainer::animationNodeMatrix(
 std::optional<float> PolygonInstanceContainer::morphWeight(
     ModelInstanceId id, std::uint32_t node, std::uint32_t target) const {
     if (!isLive(id)) return std::nullopt;
-    const auto &layout = morph_layouts[id.index];
+    const auto &layout = slots.morph_layouts[id.index];
     if (!layout) return std::nullopt;
     for (const auto &primitive : layout->primitives) {
         if (primitive.node_index != node) continue;
         for (const auto &delta : primitive.delta_ranges)
             if (delta.target_index == target)
-                return morph_weight_frames[id.index].current.at(primitive.weight_offset + target);
+                return slots.morph_weight_frames[id.index].current.at(primitive.weight_offset + target);
     }
     return std::nullopt;
 }
@@ -1955,7 +1872,7 @@ Animation::Status PolygonInstanceContainer::publishMorphWeightFrame(
         return Animation::Status::reserved_not_zero;
     if (!isLive(id)) return Animation::Status::invalid_handle;
     const auto index = id.index;
-    const auto &layout = morph_layouts[index];
+    const auto &layout = slots.morph_layouts[index];
     if (!layout || frame.layout_generation != layout->generation)
         return Animation::Status::stale_generation;
     if (frame.frame_revision == 0 || frame.weight_count != layout->default_weights.size() ||
@@ -1963,7 +1880,7 @@ Animation::Status PolygonInstanceContainer::publishMorphWeightFrame(
         frame.weight_count > maxMorphWeightsPerInstance ||
         (frame.flags & ~(morphCommitResetHistory | morphCommitDiscontinuity)) != 0)
         return Animation::Status::invalid_argument;
-    const auto &current = morph_weight_frames[index];
+    const auto &current = slots.morph_weight_frames[index];
     if (current.current_revision != 0 &&
         frame.frame_revision <= current.current_revision)
         return Animation::Status::duplicate_revision;
@@ -1974,14 +1891,14 @@ Animation::Status PolygonInstanceContainer::publishMorphWeightFrame(
                     [](float value) { return !std::isfinite(value); }))
         return Animation::Status::invalid_argument;
 
-    auto &destination = morph_weight_frames[index];
+    auto &destination = slots.morph_weight_frames[index];
     destination.current = std::move(weights);
     destination.current_revision = frame.frame_revision;
-    if (!morph_history_valid[index] ||
+    if (!slots.morph_history_valid[index] ||
         (frame.flags & (morphCommitResetHistory | morphCommitDiscontinuity)) != 0) {
         destination.previous = destination.current;
         destination.previous_revision = destination.current_revision;
-        morph_history_valid[index] = false;
+        slots.morph_history_valid[index] = false;
     }
     return Animation::Status::ok;
 }
@@ -2055,8 +1972,8 @@ Animation::Status PolygonInstanceContainer::publishMaterialInstanceOverride(
 void PolygonInstanceContainer::uploadPublishedSceneState() {
     if (!published_scene_gpu_dirty) return;
     auto &vkcore = GET_MODULE(VulkanManageCore);
-    for (std::size_t i = 0; i < skin_palettes.size(); ++i) {
-        const auto &palette = skin_palettes[i];
+    for (std::size_t i = 0; i < slots.skin_palettes.size(); ++i) {
+        const auto &palette = slots.skin_palettes[i];
         if (!palette.empty()) {
             vkcore.writeBuf(skin_palette_buffer, palette.data(),
                             sizeof(glm::mat4) * maxSkinJoints * i,
@@ -2155,7 +2072,7 @@ PolygonInstanceContainer::publishMaterialInstanceAbsoluteOverride(
                          materialOverrideCommitDiscontinuity)) != 0)
         return Animation::Status::invalid_argument;
 
-    const auto &initial_values = material_initial_value_tables[index];
+    const auto &initial_values = slots.material_initial_value_tables[index];
     if (!initial_values ||
         frame.source_material_index >= initial_values->values.size() ||
         initial_values->values[frame.source_material_index]
@@ -2227,8 +2144,8 @@ Animation::Status PolygonInstanceContainer::publishVrmApplicationTransaction(
     bool previous_morph_history_valid = false;
     decltype(material_absolute_override_frames) previous_materials;
     try {
-        previous_morph = morph_weight_frames.at(index);
-        previous_morph_history_valid = morph_history_valid.at(index);
+        previous_morph = slots.morph_weight_frames.at(index);
+        previous_morph_history_valid = slots.morph_history_valid.at(index);
         previous_materials = material_absolute_override_frames;
     } catch (...) {
         return Animation::Status::out_of_memory;
@@ -2236,8 +2153,8 @@ Animation::Status PolygonInstanceContainer::publishVrmApplicationTransaction(
 
     const auto rollback = [&]() noexcept {
         try {
-            morph_weight_frames[index] = previous_morph;
-            morph_history_valid[index] = previous_morph_history_valid;
+            slots.morph_weight_frames[index] = previous_morph;
+            slots.morph_history_valid[index] = previous_morph_history_valid;
             material_absolute_override_frames = previous_materials;
             uploadMaterialAbsoluteOverrides();
         } catch (...) {
@@ -2271,19 +2188,19 @@ std::optional<VrmApplicationModelView>
 PolygonInstanceContainer::vrmApplicationModel(
     Animation::InstanceHandle instance) const {
     if (!Animation::isValid(instance) || instance.identity == 0 ||
-        instance.identity > animation_generations.size())
+        instance.identity > slots.animation_generations.size())
         return std::nullopt;
     const auto index = static_cast<std::uint32_t>(instance.identity - 1);
-    if (animation_generations[index] != instance.generation ||
-        index >= vrm_semantics.size() || !instance_slots.alive(index) ||
-        !vrm_semantics[index])
+    if (slots.animation_generations[index] != instance.generation ||
+        index >= slots.vrm_semantics.size() || !slots.instance_slots.alive(index) ||
+        !slots.vrm_semantics[index])
         return std::nullopt;
     return VrmApplicationModelView{
-        .model_instance = instance_slots.idAt(index),
+        .model_instance = slots.instance_slots.idAt(index),
         .instance = instance,
-        .semantic = vrm_semantics[index],
-        .morph_layout = morph_layouts[index],
-        .material_initial_values = material_initial_value_tables[index],
+        .semantic = slots.vrm_semantics[index],
+        .morph_layout = slots.morph_layouts[index],
+        .material_initial_values = slots.material_initial_value_tables[index],
     };
 }
 
@@ -2322,21 +2239,21 @@ PolygonInstanceContainer::prepareTrs(ModelInstanceId id, glm::vec3 pos,
                       glm::scale(glm::identity<glm::mat4>(), scale);
     return PreparedModelTrs{
         .index = index,
-        .old_value = model_instances_data[index],
+        .old_value = slots.model_instances_data[index],
         .next_value = next,
     };
 }
 
 void PolygonInstanceContainer::publishPreparedTrs(
     PreparedModelTrs &prepared) noexcept {
-    model_instances_data[prepared.index] = prepared.next_value;
+    slots.model_instances_data[prepared.index] = prepared.next_value;
     prepared.published = true;
 }
 
 void PolygonInstanceContainer::rollbackPreparedTrs(
     PreparedModelTrs &prepared) noexcept {
     if (!prepared.published) return;
-    model_instances_data[prepared.index] = prepared.old_value;
+    slots.model_instances_data[prepared.index] = prepared.old_value;
     prepared.published = false;
 }
 
@@ -2348,32 +2265,32 @@ void PolygonInstanceContainer::setTrs(ModelInstanceId id, glm::vec3 pos,
 
 ModelInstanceId
 PolygonInstanceContainer::modelInstanceIdForTesting(std::uint32_t index) const {
-    return instance_slots.idAt(index);
+    return slots.instance_slots.idAt(index);
 }
 
 std::optional<ModelInstanceId>
 PolygonInstanceContainer::modelInstanceIdAt(std::uint32_t index) const {
-    if (!instance_slots.alive(index)) return std::nullopt;
-    return instance_slots.idAt(index);
+    if (!slots.instance_slots.alive(index)) return std::nullopt;
+    return slots.instance_slots.idAt(index);
 }
 
 ModelInstanceId PolygonInstanceContainer::forceGenerationForTesting(
     ModelInstanceId id, std::uint32_t generation) {
-    return instance_slots.forceGeneration(id, generation);
+    return slots.instance_slots.forceGeneration(id, generation);
 }
 
 void PolygonInstanceContainer::forceSceneEpochForTesting(std::uint64_t epoch) {
-    instance_slots.forceSceneEpoch(epoch);
+    slots.instance_slots.forceSceneEpoch(epoch);
 }
 
 glm::mat4 PolygonInstanceContainer::currentModelMatrixForTesting(
     ModelInstanceId id) const {
-    return model_instances_data.at(requireLive(id, "currentModelMatrixForTesting"));
+    return slots.model_instances_data.at(requireLive(id, "currentModelMatrixForTesting"));
 }
 
 glm::mat4 PolygonInstanceContainer::previousModelMatrixForTesting(
     ModelInstanceId id) const {
-    return previous_model_instances_data.at(
+    return slots.previous_model_instances_data.at(
         requireLive(id, "previousModelMatrixForTesting"));
 }
 

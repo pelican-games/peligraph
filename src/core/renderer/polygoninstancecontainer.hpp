@@ -280,6 +280,72 @@ struct DrawQueueFramePlan {
     std::span<const MaterialDrawTagFilter> material_filters;
 };
 
+// The per-slot state of one model instance, as the value a publication moves
+// into a slot. Staging fills it; ModelInstanceSlotTable::placeSlot() is the
+// only thing that reads it.
+struct ModelInstanceSlotSeed {
+    glm::mat4 model_matrix{1.0F};
+    std::vector<glm::mat4> skin_palette;
+    std::vector<glm::mat4> animation_node_matrices;
+    ModelAssetId asset_id{};
+    std::uint64_t authoring_object_id = 0;
+    std::shared_ptr<const SourceMaterialInitialValueTable>
+        material_initial_values;
+    std::shared_ptr<const VrmSemanticData> vrm_semantic;
+    std::shared_ptr<const MorphTargetLayout> morph_layout;
+    MorphWeightFrame morph_weight_frame;
+};
+
+// Every per-slot array of the model-instance inventory, as one value. The same
+// slot index addresses the same instance in all of them, so they are only ever
+// copied, swapped and grown together: a scene candidate copies the whole table
+// and publication swaps the whole table back. A new per-slot array is one
+// member here, which the operations below then carry everywhere at once
+// instead of asking six call sites to remember it.
+struct ModelInstanceSlotTable {
+    // The arrays below are parallel: index i is instance i in every one of
+    // them, and instance_slots owns which of those indices are live.
+    std::vector<glm::mat4> model_instances_data;
+    std::vector<glm::mat4> previous_model_instances_data;
+    std::vector<bool> model_history_valid;
+    std::vector<std::vector<glm::mat4>> skin_palettes;
+    // Evaluated model-space hierarchy, indexed by original glTF node.
+    std::vector<std::vector<glm::mat4>> animation_node_matrices;
+    std::vector<std::vector<glm::mat4>> previous_skin_palettes;
+    std::vector<std::uint64_t> animation_revisions;
+    std::vector<std::uint64_t> previous_animation_revisions;
+    std::vector<std::uint32_t> animation_generations;
+    RendererInternal::ModelInstanceSlots instance_slots;
+    std::vector<ModelAssetId> model_asset_ids;
+    std::vector<std::uint64_t> ray_authoring_object_ids;
+    std::vector<std::shared_ptr<const SourceMaterialInitialValueTable>>
+        material_initial_value_tables;
+    std::vector<std::shared_ptr<const VrmSemanticData>> vrm_semantics;
+    std::vector<std::shared_ptr<const MorphTargetLayout>> morph_layouts;
+    std::vector<MorphWeightFrame> morph_weight_frames;
+    std::vector<bool> morph_history_valid;
+
+    static constexpr std::size_t arrayCount = 17;
+
+    std::size_t slotCount() const noexcept {
+        return model_instances_data.size();
+    }
+    // The size each array reports for itself, in declaration order. They are
+    // equal by construction; a test reads them to say so out loud.
+    std::array<std::size_t, arrayCount> slotCounts() const;
+
+    void reserveSlots(std::size_t capacity);
+    // Moves one staged instance into `index`, appending a slot when `index` is
+    // the end and reusing the slot otherwise. A reused slot keeps the
+    // generation resetSlot() bumped when its previous occupant died.
+    void placeSlot(std::uint32_t index, ModelInstanceSlotSeed &&seed);
+    // Returns a slot to its unoccupied shape and bumps its animation
+    // generation (never to 0), so a record the previous occupant left behind
+    // can never be mistaken for the current one.
+    void clearSlot(std::uint32_t index);
+    void swap(ModelInstanceSlotTable &other) noexcept;
+};
+
 // A fully allocated CPU candidate for one model instance. Staging performs all
 // capacity checks and allocations without changing the live instance/command
 // inventories. publishModelInstance() is the single no-fail publication point.
@@ -333,19 +399,10 @@ DECLARE_MODULE(PolygonInstanceContainer) {
              std::less<>>
         prepared_view_family_draws;
 
-    std::vector<glm::mat4> model_instances_data;
-    std::vector<glm::mat4> previous_model_instances_data;
-    std::vector<bool> model_history_valid;
+    ModelInstanceSlotTable slots;
     BufferWrapper model_data_buffer;
     BufferWrapper previous_model_data_buffer;
     vk::Device device;
-    std::vector<std::vector<glm::mat4>> skin_palettes;
-    // Evaluated model-space hierarchy, indexed by original glTF node.
-    std::vector<std::vector<glm::mat4>> animation_node_matrices;
-    std::vector<std::vector<glm::mat4>> previous_skin_palettes;
-    std::vector<std::uint64_t> animation_revisions;
-    std::vector<std::uint64_t> previous_animation_revisions;
-    std::vector<std::uint32_t> animation_generations;
     // Slot -> who published its animation frame, with the instance generation
     // the record was written for. A retired slot bumps that generation, so a
     // record left behind by the previous occupant can never be mistaken for the
@@ -355,18 +412,9 @@ DECLARE_MODULE(PolygonInstanceContainer) {
         AnimationFrameWriter writer;
     };
     std::unordered_map<std::uint32_t, AnimationFrameWriterRecord> animation_frame_writers;
-    RendererInternal::ModelInstanceSlots instance_slots;
-    std::vector<ModelAssetId> model_asset_ids;
-    std::vector<std::uint64_t> ray_authoring_object_ids;
     std::shared_ptr<const RaySceneDeclarationCatalog> ray_scene_declarations =
         std::make_shared<const RaySceneDeclarationCatalog>();
     std::shared_ptr<const RayScenePlanState> ray_scene_plan;
-    std::vector<std::shared_ptr<const SourceMaterialInitialValueTable>>
-        material_initial_value_tables;
-    std::vector<std::shared_ptr<const VrmSemanticData>> vrm_semantics;
-    std::vector<std::shared_ptr<const MorphTargetLayout>> morph_layouts;
-    std::vector<MorphWeightFrame> morph_weight_frames;
-    std::vector<bool> morph_history_valid;
     std::uint64_t temporal_history_advance_count = 0;
     BufferWrapper skin_palette_buffer;
     std::shared_ptr<RayDeformationPipeline> ray_deformation_pipeline;
@@ -402,7 +450,11 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void uploadPublishedSceneState();
 
   public:
+    // The candidate scene: the live state a prepare phase may edit before a
+    // noexcept publication swaps it in. It carries the same fields as the
+    // container, so a copy here and a swap back is the whole protocol.
     struct PreparedSceneState {
+        ModelInstanceSlotTable slots;
         std::vector<DrawItemSnapshot> draw_inventory;
         CompiledDrawQueueSet compiled_draw_queue;
         std::vector<MaterialDrawTagFilter> draw_queue_material_filters;
@@ -410,27 +462,9 @@ DECLARE_MODULE(PolygonInstanceContainer) {
         std::uint64_t ray_query_geometry_generation = 1;
         std::map<std::string, PreparedViewFamilyDraws, std::less<>>
             prepared_view_family_draws;
-        std::vector<glm::mat4> model_instances_data;
-        std::vector<glm::mat4> previous_model_instances_data;
-        std::vector<bool> model_history_valid;
-        std::vector<std::vector<glm::mat4>> skin_palettes;
-        std::vector<std::vector<glm::mat4>> animation_node_matrices;
-        std::vector<std::vector<glm::mat4>> previous_skin_palettes;
-        std::vector<std::uint64_t> animation_revisions;
-        std::vector<std::uint64_t> previous_animation_revisions;
-        std::vector<std::uint32_t> animation_generations;
-        RendererInternal::ModelInstanceSlots instance_slots;
-        std::vector<ModelAssetId> model_asset_ids;
-        std::vector<std::uint64_t> ray_authoring_object_ids;
         std::shared_ptr<const RaySceneDeclarationCatalog> ray_scene_declarations =
         std::make_shared<const RaySceneDeclarationCatalog>();
         std::shared_ptr<const RayScenePlanState> ray_scene_plan;
-        std::vector<std::shared_ptr<const SourceMaterialInitialValueTable>>
-            material_initial_value_tables;
-        std::vector<std::shared_ptr<const VrmSemanticData>> vrm_semantics;
-        std::vector<std::shared_ptr<const MorphTargetLayout>> morph_layouts;
-        std::vector<MorphWeightFrame> morph_weight_frames;
-        std::vector<bool> morph_history_valid;
         std::uint64_t temporal_history_advance_count = 0;
         std::unordered_map<std::uint32_t, MaterialInstanceOverrideFrame>
             material_override_frames;
@@ -530,7 +564,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void setSkinningPalette(ModelInstanceId id, std::span<const glm::mat4> palette);
     bool isModelInstanceAlive(ModelInstanceId id) const noexcept { return isLive(id); }
     std::size_t modelInstanceSlotCount() const noexcept {
-        return instance_slots.slotCount();
+        return slots.instance_slots.slotCount();
     }
     std::size_t liveModelInstanceCountForTesting() const noexcept;
     std::uint64_t nextDrawDeclarationOrdinalForTesting() const noexcept {
@@ -634,8 +668,11 @@ DECLARE_MODULE(PolygonInstanceContainer) {
                     : DrawQueuePhase::transparent,
                 sort_view_index, filter_id);
     }
-    size_t instanceCountForTesting() const { return instance_slots.liveCount(); }
-    size_t slotCountForTesting() const { return model_instances_data.size(); }
+    size_t instanceCountForTesting() const { return slots.instance_slots.liveCount(); }
+    size_t slotCountForTesting() const { return slots.model_instances_data.size(); }
+    // The whole published per-slot table, so a test can compare it against the
+    // candidate a publication swapped in.
+    const ModelInstanceSlotTable &slotTableForTesting() const { return slots; }
     std::size_t
     directionalShadowDrawViewCountForTesting() const {
         const auto found =
@@ -681,19 +718,19 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     glm::mat4 currentModelMatrixForTesting(ModelInstanceId id) const;
     glm::mat4 previousModelMatrixForTesting(ModelInstanceId id) const;
     std::uint64_t currentAnimationRevisionForTesting(ModelInstanceId id) const {
-        return animation_revisions.at(requireLive(id, "currentAnimationRevisionForTesting"));
+        return slots.animation_revisions.at(requireLive(id, "currentAnimationRevisionForTesting"));
     }
     std::uint64_t previousAnimationRevisionForTesting(ModelInstanceId id) const {
-        return previous_animation_revisions.at(requireLive(id, "previousAnimationRevisionForTesting"));
+        return slots.previous_animation_revisions.at(requireLive(id, "previousAnimationRevisionForTesting"));
     }
     std::uint32_t animationGenerationForTesting(ModelInstanceId id) const {
-        return animation_generations.at(requireLive(id, "animationGenerationForTesting"));
+        return slots.animation_generations.at(requireLive(id, "animationGenerationForTesting"));
     }
     const MorphWeightFrame &morphWeightFrameForTesting(ModelInstanceId id) const {
-        return morph_weight_frames.at(requireLive(id, "morphWeightFrameForTesting"));
+        return slots.morph_weight_frames.at(requireLive(id, "morphWeightFrameForTesting"));
     }
     std::uint64_t morphLayoutGenerationForTesting(ModelInstanceId id) const {
-        const auto &layout = morph_layouts.at(requireLive(id, "morphLayoutGenerationForTesting"));
+        const auto &layout = slots.morph_layouts.at(requireLive(id, "morphLayoutGenerationForTesting"));
         return layout ? layout->generation : 0;
     }
     const MaterialInstanceOverrideFrame *materialOverrideFrameForTesting(
@@ -727,7 +764,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     }
     const std::vector<glm::mat4> &
     currentSkinPaletteForTesting(ModelInstanceId id) const {
-        return skin_palettes.at(requireLive(id, "currentSkinPaletteForTesting"));
+        return slots.skin_palettes.at(requireLive(id, "currentSkinPaletteForTesting"));
     }
 };
 

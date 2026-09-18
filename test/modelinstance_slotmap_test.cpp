@@ -171,6 +171,63 @@ TEST_CASE("ModelInstanceId clear advances scene epoch and invalidates every owne
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
+TEST_CASE("Publishing a prepared scene moves every per-slot array together",
+          "[wp146][model-instance][slotmap][prepared-scene][gpu]") {
+    setupLogger();
+    FastModuleContainer modules;
+    requireSlotMapVulkan();
+
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    const auto model = emptyModel();
+    const auto retired = instances.placeModelInstance(model);
+    REQUIRE(instances.isModelInstanceAlive(retired));
+
+    std::vector<std::uint32_t> retire_indices;
+    auto prepared = instances.prepareSceneReplacement(retire_indices);
+    auto staged = instances.stagePreparedSceneModel(prepared, model);
+    const auto staged_id = staged.id();
+    glm::mat4 placed{1.0f};
+    placed[3].x = 3.0f;
+    instances.setPreparedSceneModelMatrix(staged, placed);
+    instances.publishPreparedSceneModel(prepared, std::move(staged));
+
+    // Every array of the candidate reports the same slot count, including the
+    // slot the staged model just took.
+    const auto prepared_counts = prepared.slots.slotCounts();
+    for (const auto count : prepared_counts) {
+        CHECK(count == prepared_counts.front());
+    }
+    REQUIRE(prepared_counts.front() > staged_id.index);
+    const auto prepared_matrix =
+        prepared.slots.model_instances_data.at(staged_id.index);
+    const auto prepared_asset =
+        prepared.slots.model_asset_ids.at(staged_id.index).value;
+    const auto prepared_morph_identity =
+        prepared.slots.morph_weight_frames.at(staged_id.index).instance_identity;
+
+    instances.publishPreparedScene(std::move(prepared));
+
+    // Publication swaps the table as one value, so no array can stay one
+    // publication behind the others.
+    const auto &published = instances.slotTableForTesting();
+    const auto published_counts = published.slotCounts();
+    CHECK(published_counts == prepared_counts);
+    for (const auto count : published_counts) {
+        CHECK(count == published_counts.front());
+    }
+    REQUIRE(instances.isModelInstanceAlive(staged_id));
+    REQUIRE_FALSE(instances.isModelInstanceAlive(retired));
+    CHECK(published.model_instances_data.at(staged_id.index) == prepared_matrix);
+    CHECK(published.model_asset_ids.at(staged_id.index).value == prepared_asset);
+    CHECK(published.morph_weight_frames.at(staged_id.index).instance_identity ==
+          prepared_morph_identity);
+    CHECK(instances.currentModelMatrixForTesting(staged_id)[3].x == 3.0f);
+
+    instances.enqueueSceneRetirement(std::move(retire_indices));
+    instances.drainSceneRetirements();
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
 TEST_CASE("Model instance capacity remains an active-live limit and freed slots recover",
           "[wp146][model-instance][slotmap][capacity][gpu]") {
     setupLogger();

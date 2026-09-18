@@ -687,7 +687,7 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
                 object.prepared_model_instance = staged.id();
                 renderer.publishPreparedSceneModel(renderer_candidate,
                                                     std::move(staged));
-                renderer_candidate.ray_authoring_object_ids.at(
+                renderer_candidate.slots.ray_authoring_object_ids.at(
                     object.prepared_model_instance->index) = object.authoring_object_id.value;
                 break;
             }
