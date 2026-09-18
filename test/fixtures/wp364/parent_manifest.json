@@ -153,8 +153,8 @@
     {
      "path": "projects/example/code/playercontrol.cpp",
      "eol": "lf",
-     "blob_sha256": "de2da09e3e84fb8d73ab2c865634a54c6bc274baa2c32aeb17683a2c64cd62e5",
-     "blob_bytes": 7265
+     "blob_sha256": "d446d8621f7020b1b04dec160eb7584726e624bd340284456233773089960d2a",
+     "blob_bytes": 7301
     },
     {
      "path": "projects/example/input/actions.json",
@@ -302,8 +302,8 @@
     {
      "path": "projects/sprite_demo/code/flipbook_demo.cpp",
      "eol": "lf",
-     "blob_sha256": "f8dfcee09ebfcfb89f6b57982ce1c3f157f4d2fc8a7ef8d3dcc3850ffdb818ef",
-     "blob_bytes": 4159
+     "blob_sha256": "229f64ed5fd01d0625f37b0e7df1d4bc5dfc9208c0cc17411a00552055255e62",
+     "blob_bytes": 4168
     },
     {
      "path": "projects/sprite_demo/input/actions.json",

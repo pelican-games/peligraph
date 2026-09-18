@@ -51,3 +51,13 @@ own per-file eol classification (lf|binary); the test normalizes
 working-tree CRLF->LF for eol==lf entries before hashing and compares
 eol==binary entries raw. 70 text + 5 binary files. Manifest generated
 mechanically from git blobs + `git ls-files --eol` by the integrator.
+
+2026-09-19 integration amendment: C-8 (commit d64a2db1) split GameContext
+into a root plus physics / audio / animation / save / render facades, so two
+shipped project sources changed by hand: projects/example/code/playercontrol.cpp
+(the four light setters moved to render()) and
+projects/sprite_demo/code/flipbook_demo.cpp (setCamera moved to render()).
+Their blob_sha256 / blob_bytes entries in parent_manifest.json are re-frozen
+from `git show HEAD:<path> | sha256sum` at that commit. No other entry, no
+cache key and no frame plan projection changed. The engine shader universe
+is untouched (the C-10 GLSL resource was withdrawn for exactly that reason).
