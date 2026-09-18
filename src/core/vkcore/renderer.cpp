@@ -118,6 +118,8 @@ struct RenderPipelinePublicationTransaction {
     std::set<watch::AssetKey> watched_sources;
     std::string config_json;
     std::string failure;
+    // The only per-path wording: each construction site fills it in.
+    std::string rollback_failure_message;
     RenderingPassId current_rendering_pass_id = invalidRenderingPassId();
     std::uint64_t generation = 0;
     bool authored = false;
@@ -125,7 +127,99 @@ struct RenderPipelinePublicationTransaction {
     bool runtime_published = false;
     bool ready = false;
     bool finalized = false;
+
+    // Both render pipeline reload paths publish and roll back by the same
+    // rules; the renderer state they touch is reached through `renderer`.
+    void publish(Renderer &renderer) noexcept;
+    void rollback(Renderer &renderer) noexcept;
 };
+
+void RenderPipelinePublicationTransaction::publish(
+    Renderer &renderer) noexcept {
+    if (finalized || !ready || !runtime_published) {
+        return;
+    }
+    if (graph_runtime_transfer) graph_runtime_transfer->commit();
+    std::string post_commit_error;
+    auto published_variants = std::move(*variants);
+    renderer.flat_rendering_pass_id = published_variants.flat;
+    renderer.xr_rendering_pass_id = published_variants.xr;
+    renderer.xr_excluded_features =
+        std::move(published_variants.xr_excluded_features);
+    renderer.preview_graph_program =
+        std::move(published_variants.preview);
+    renderer.current_rendering_pass_id =
+        current_rendering_pass_id;
+    GET_MODULE(ProjectBasicConfig)
+        .publishRenderingConfigJson(
+            std::move(config_json));
+
+    try {
+        if (auto *targets =
+                FastModuleContainer::tryGet<
+                    RenderTargetContainer>()) {
+            targets->resetHistory();
+        }
+        if (auto *instances =
+                FastModuleContainer::tryGet<
+                    PolygonInstanceContainer>()) {
+            instances->resetTemporalHistory();
+        }
+        renderer.render_target_layout_tracker.reset();
+        renderer.temporal_reset_requested = true;
+    } catch (const std::exception &caught) {
+        post_commit_error = caught.what();
+    } catch (...) {
+        post_commit_error =
+            "unknown post-commit render pipeline cleanup failure";
+    }
+
+    if (renderer.render_pipeline_reload_state != nullptr) {
+        auto &published =
+            *renderer.render_pipeline_reload_state;
+        published.watched_sources =
+            std::move(watched_sources);
+        published.last_generation = generation;
+        published.staged_generation = 0;
+        published.last_error.clear();
+        ++published.applied;
+    }
+    outcome =
+        RenderPipelineAuthoringApplyResult{
+            .committed = true,
+            .published_generation = generation,
+            .post_commit_error =
+                std::move(post_commit_error),
+        };
+    finalized = true;
+    if (completion_required && completion) {
+        completion(*outcome);
+    }
+}
+
+void RenderPipelinePublicationTransaction::rollback(
+    Renderer &renderer) noexcept {
+    model_reload.reset();
+    if (finalized) return;
+    if (failure.empty()) {
+        failure = rollback_failure_message;
+    }
+    if (renderer.render_pipeline_reload_state != nullptr) {
+        auto &rolled_back =
+            *renderer.render_pipeline_reload_state;
+        rolled_back.staged_generation = 0;
+        rolled_back.last_error = failure;
+        ++rolled_back.failed;
+    }
+    outcome =
+        RenderPipelineAuthoringApplyResult{
+            .error = failure,
+        };
+    finalized = true;
+    if (completion_required && completion) {
+        completion(*outcome);
+    }
+}
 
 namespace {
 
@@ -3044,9 +3138,8 @@ void Renderer::installRenderPipelineReloadParticipant() {
             .apply_batch =
                 [this](std::span<
                        const watch::ReloadRequest>) {
-                    std::string error;
-                    return reloadRenderPipelineFromDisk(
-                        error);
+                    return reloadRenderPipelineFromDisk()
+                        .error.empty();
                 },
             .companion_participants = {
                 std::string{watch::modelReloadParticipantName},
@@ -3086,9 +3179,9 @@ void Renderer::installRenderPipelineReloadParticipant() {
                     std::span<
                         const watch::ReloadRequest>
                         companion_requests) {
-                    std::string error;
                     return reloadRenderPipelineFromDisk(
-                        error, companion_requests);
+                               companion_requests)
+                        .error.empty();
                 },
             .runtime =
                 watch::RuntimeReloadParticipant{
@@ -3106,25 +3199,18 @@ void Renderer::installRenderPipelineReloadParticipant() {
                                 return watch::
                                     RuntimeReloadResult{};
                             }
-                            std::string error;
-                            std::uint64_t staged_generation = 0;
-                            const bool applied =
-                                reloadRenderPipelineFromDisk(
-                                    error, {},
-                                    &staged_generation);
+                            auto applied =
+                                reloadRenderPipelineFromDisk();
                             return watch::
                                 RuntimeReloadResult{
                                     .attempted = true,
                                     .committed =
-                                        applied &&
-                                        staged_generation == 0,
-                                    .staged =
-                                        applied &&
-                                        staged_generation != 0,
+                                        applied.committed,
+                                    .staged = applied.staged,
                                     .staged_generation =
-                                        staged_generation,
-                                    .error =
-                                        std::move(error),
+                                        applied.staged_generation,
+                                    .error = std::move(
+                                        applied.error),
                                 };
                         },
                     .describe =
@@ -3331,18 +3417,15 @@ void Renderer::relowerRenderPipelineForCurrentOutput() {
     }
 }
 
-bool Renderer::reloadRenderPipelineFromDisk(
-    std::string &error,
+RenderPipelineAuthoringApplyResult
+Renderer::reloadRenderPipelineFromDisk(
     std::span<const watch::ReloadRequest>
-        companion_requests,
-    std::uint64_t *staged_generation) noexcept {
-    if (staged_generation != nullptr) {
-        *staged_generation = 0;
-    }
+        companion_requests) noexcept {
+    RenderPipelineAuthoringApplyResult result;
     if (render_pipeline_reload_state == nullptr) {
-        error =
+        result.error =
             "render pipeline reload state is unavailable";
-        return false;
+        return result;
     }
     auto &state = *render_pipeline_reload_state;
     ++state.attempted;
@@ -3360,99 +3443,8 @@ bool Renderer::reloadRenderPipelineFromDisk(
             companion_requests.begin(),
             companion_requests.end());
         transaction->config_json = json;
-
-        const auto publish = [this, transaction]() noexcept {
-            if (transaction->finalized || !transaction->ready ||
-                !transaction->runtime_published) {
-                return;
-            }
-            std::string post_commit_error;
-            auto variants =
-                std::move(*transaction->variants);
-            flat_rendering_pass_id = variants.flat;
-            xr_rendering_pass_id = variants.xr;
-            xr_excluded_features =
-                std::move(variants.xr_excluded_features);
-            preview_graph_program =
-                std::move(variants.preview);
-            current_rendering_pass_id =
-                transaction->current_rendering_pass_id;
-            GET_MODULE(ProjectBasicConfig)
-                .publishRenderingConfigJson(
-                    std::move(transaction->config_json));
-
-            try {
-                if (auto *targets =
-                        FastModuleContainer::tryGet<
-                            RenderTargetContainer>()) {
-                    targets->resetHistory();
-                }
-                if (auto *instances =
-                        FastModuleContainer::tryGet<
-                            PolygonInstanceContainer>()) {
-                    instances->resetTemporalHistory();
-                }
-                render_target_layout_tracker.reset();
-                temporal_reset_requested = true;
-            } catch (const std::exception &caught) {
-                post_commit_error = caught.what();
-            } catch (...) {
-                post_commit_error =
-                    "unknown post-commit render pipeline cleanup failure";
-            }
-
-            if (render_pipeline_reload_state != nullptr) {
-                auto &published =
-                    *render_pipeline_reload_state;
-                published.watched_sources =
-                    std::move(transaction->watched_sources);
-                published.last_generation =
-                    transaction->generation;
-                published.staged_generation = 0;
-                published.last_error.clear();
-                ++published.applied;
-            }
-            transaction->finalized = true;
-            transaction->outcome =
-                RenderPipelineAuthoringApplyResult{
-                    .committed = true,
-                    .published_generation =
-                        transaction->generation,
-                    .post_commit_error =
-                        std::move(post_commit_error),
-                };
-            if (transaction->completion_required &&
-                transaction->completion) {
-                transaction->completion(
-                    *transaction->outcome);
-            }
-        };
-        const auto rollback = [this, transaction]() noexcept {
-            transaction->model_reload.reset();
-            if (transaction->finalized) return;
-            if (transaction->failure.empty()) {
-                transaction->failure =
-                    "pelican.ray_tracing.generation_rolled_back@1: staged render pipeline generation was not published";
-            }
-            if (render_pipeline_reload_state != nullptr) {
-                auto &rolled_back =
-                    *render_pipeline_reload_state;
-                rolled_back.staged_generation = 0;
-                rolled_back.last_error =
-                    transaction->failure;
-                ++rolled_back.failed;
-            }
-            transaction->finalized = true;
-            transaction->outcome =
-                RenderPipelineAuthoringApplyResult{
-                    .error = transaction->failure,
-                };
-            if (transaction->completion_required &&
-                transaction->completion) {
-                transaction->completion(
-                    *transaction->outcome);
-            }
-        };
+        transaction->rollback_failure_message =
+            "pelican.ray_tracing.generation_rolled_back@1: staged render pipeline generation was not published";
 
         RenderGraphVariantLoadHooks hooks;
         if (auto *reload_service =
@@ -3550,7 +3542,7 @@ bool Renderer::reloadRenderPipelineFromDisk(
                 };
         }
         hooks.after_publish =
-            [transaction, publish](
+            [transaction, this](
                 const RendererRuntimeGeneration
                     &generation) noexcept {
                 if (transaction->model_reload) {
@@ -3559,9 +3551,11 @@ bool Renderer::reloadRenderPipelineFromDisk(
                 }
                 transaction->generation = generation.generation;
                 transaction->runtime_published = true;
-                publish();
+                transaction->publish(*this);
             };
-        hooks.after_rollback = rollback;
+        hooks.after_rollback = [transaction, this]() noexcept {
+            transaction->rollback(*this);
+        };
         auto variants =
             loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
                 json, std::move(hooks));
@@ -3574,34 +3568,46 @@ bool Renderer::reloadRenderPipelineFromDisk(
         if (transaction->generation == 0) {
             transaction->generation = staged;
         }
-        if (staged != 0 && staged == transaction->generation) {
+        const bool staged_publication =
+            staged != 0 && staged == transaction->generation;
+        if (staged_publication) {
             state.staged_generation = staged;
-            if (staged_generation != nullptr) {
-                *staged_generation = staged;
-            }
         }
-        publish();
+        transaction->publish(*this);
         if (staged == 0 && !transaction->finalized) {
             throw std::runtime_error(
                 "render pipeline reload publication completion was not observed");
         }
-        error.clear();
-        return true;
+        if (staged_publication) {
+            result.staged = true;
+            result.staged_generation = staged;
+        } else {
+            result.committed = true;
+            if (transaction->outcome) {
+                result.published_generation =
+                    transaction->outcome->published_generation;
+                result.post_commit_error =
+                    transaction->outcome->post_commit_error;
+            }
+        }
+        return result;
     } catch (const std::exception &caught) {
-        error = caught.what();
+        result = RenderPipelineAuthoringApplyResult{
+            .error = caught.what()};
     } catch (...) {
-        error =
-            "unknown render pipeline reload failure";
+        result = RenderPipelineAuthoringApplyResult{
+            .error =
+                "unknown render pipeline reload failure"};
     }
-    state.last_error = error;
+    state.last_error = result.error;
     ++state.failed;
     if (logger) {
         LOG_WARNING(
             logger,
             "render pipeline reload failed: {}",
-            error);
+            result.error);
     }
-    return false;
+    return result;
 }
 
 RenderPipelineAuthoringApplyResult
@@ -3638,97 +3644,8 @@ Renderer::applyRenderPipelineAuthoringCandidate(
             candidate_documents.rootDocument().bytes;
         transaction->candidate_documents.emplace(
             std::move(candidate_documents));
-
-        const auto publish = [this, transaction]() noexcept {
-            if (transaction->finalized || !transaction->ready ||
-                !transaction->runtime_published) {
-                return;
-            }
-            if (transaction->graph_runtime_transfer) transaction->graph_runtime_transfer->commit();
-            std::string post_commit_error;
-            auto variants =
-                std::move(*transaction->variants);
-            flat_rendering_pass_id = variants.flat;
-            xr_rendering_pass_id = variants.xr;
-            xr_excluded_features =
-                std::move(variants.xr_excluded_features);
-            preview_graph_program =
-                std::move(variants.preview);
-            current_rendering_pass_id =
-                transaction->current_rendering_pass_id;
-            GET_MODULE(ProjectBasicConfig)
-                .publishRenderingConfigJson(
-                    std::move(transaction->config_json));
-            try {
-                if (auto *targets =
-                        FastModuleContainer::tryGet<
-                            RenderTargetContainer>()) {
-                    targets->resetHistory();
-                }
-                if (auto *instances =
-                        FastModuleContainer::tryGet<
-                            PolygonInstanceContainer>()) {
-                    instances->resetTemporalHistory();
-                }
-                render_target_layout_tracker.reset();
-                temporal_reset_requested = true;
-            } catch (const std::exception &caught) {
-                post_commit_error = caught.what();
-            } catch (...) {
-                post_commit_error =
-                    "unknown post-commit render pipeline cleanup failure";
-            }
-            if (render_pipeline_reload_state != nullptr) {
-                auto &published =
-                    *render_pipeline_reload_state;
-                published.watched_sources =
-                    std::move(transaction->watched_sources);
-                published.last_generation =
-                    transaction->generation;
-                published.staged_generation = 0;
-                published.last_error.clear();
-                ++published.applied;
-            }
-            transaction->outcome =
-                RenderPipelineAuthoringApplyResult{
-                    .committed = true,
-                    .published_generation =
-                        transaction->generation,
-                    .post_commit_error =
-                        std::move(post_commit_error),
-                };
-            transaction->finalized = true;
-            if (transaction->completion_required &&
-                transaction->completion) {
-                transaction->completion(
-                    *transaction->outcome);
-            }
-        };
-        const auto rollback = [this, transaction]() noexcept {
-            if (transaction->finalized) return;
-            if (transaction->failure.empty()) {
-                transaction->failure =
-                    "pelican.ray_tracing.generation_rolled_back@1: staged authored render pipeline generation was not published";
-            }
-            if (render_pipeline_reload_state != nullptr) {
-                auto &rolled_back =
-                    *render_pipeline_reload_state;
-                rolled_back.staged_generation = 0;
-                rolled_back.last_error =
-                    transaction->failure;
-                ++rolled_back.failed;
-            }
-            transaction->outcome =
-                RenderPipelineAuthoringApplyResult{
-                    .error = transaction->failure,
-                };
-            transaction->finalized = true;
-            if (transaction->completion_required &&
-                transaction->completion) {
-                transaction->completion(
-                    *transaction->outcome);
-            }
-        };
+        transaction->rollback_failure_message =
+            "pelican.ray_tracing.generation_rolled_back@1: staged authored render pipeline generation was not published";
 
         RenderGraphVariantLoadHooks hooks;
         hooks.validate_live_materials = true;
@@ -3796,14 +3713,16 @@ Renderer::applyRenderPipelineAuthoringCandidate(
                 }
             };
         hooks.after_publish =
-            [transaction, publish](
+            [transaction, this](
                 const RendererRuntimeGeneration
                     &generation) noexcept {
                 transaction->generation = generation.generation;
                 transaction->runtime_published = true;
-                publish();
+                transaction->publish(*this);
             };
-        hooks.after_rollback = rollback;
+        hooks.after_rollback = [transaction, this]() noexcept {
+            transaction->rollback(*this);
+        };
 
         auto variants =
             loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
@@ -3826,7 +3745,7 @@ Renderer::applyRenderPipelineAuthoringCandidate(
             result.staged_generation = staged;
             return result;
         }
-        publish();
+        transaction->publish(*this);
         if (!transaction->outcome) {
             throw std::runtime_error(
                 "authored render pipeline publication completion was not observed");

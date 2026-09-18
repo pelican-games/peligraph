@@ -27,6 +27,7 @@
 namespace Pelican {
 
 struct RenderPipelineReloadState;
+struct RenderPipelinePublicationTransaction;
 struct RenderPipelineAuthoringApplyResult {
     bool committed = false;
     bool staged = false;
@@ -143,6 +144,8 @@ class ILogicalFrameTarget {
 };
 
 DECLARE_MODULE(Renderer) {
+    // One publish()/rollback() pair serves both render pipeline reload paths.
+    friend struct RenderPipelinePublicationTransaction;
     RenderingPassId current_rendering_pass_id;
     RenderTargetLayoutTracker render_target_layout_tracker;
     bool execution_tracing_for_testing = false;
@@ -183,11 +186,10 @@ DECLARE_MODULE(Renderer) {
     void synchronizeGraphGpuOwnership();
     std::uint64_t graph_ownership_attempt_generation = 0;
     std::map<std::string, GameObjectId> graph_ownership_attempt_objects;
-    bool reloadRenderPipelineFromDisk(
-        std::string &error,
+    RenderPipelineAuthoringApplyResult
+    reloadRenderPipelineFromDisk(
         std::span<const watch::ReloadRequest>
-            companion_requests = {},
-        std::uint64_t *staged_generation = nullptr) noexcept;
+            companion_requests = {}) noexcept;
 
   public:
     Renderer();
