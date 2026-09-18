@@ -2,7 +2,6 @@
 #ifndef PELICAN_NO_LOG
 #include "log.hpp"
 #endif
-#include <iostream>
 
 namespace Pelican {
 
@@ -20,15 +19,12 @@ void Profiler::End(const char* zone_name) {
     if (it != start_times.end()) {
         auto end_time = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - it->second).count();
+        (void)duration;
         
 #ifndef PELICAN_NO_LOG
         if (logger) {
             // LOG_INFO(logger, "Profiler: {} took {} us", zone_name, duration);
-        } else {
-            std::cout << "Profiler: " << zone_name << " took " << duration << " us" << std::endl;
         }
-#else
-        std::cout << "Profiler: " << zone_name << " took " << duration << " us" << std::endl;
 #endif
         
         start_times.erase(it);
@@ -36,11 +32,7 @@ void Profiler::End(const char* zone_name) {
 #ifndef PELICAN_NO_LOG
         if (logger) {
             LOG_WARNING(logger, "Profiler: End called for {} without Start", zone_name);
-        } else {
-            std::cout << "Profiler: End called for " << zone_name << " without Start" << std::endl;
         }
-#else
-        std::cout << "Profiler: End called for " << zone_name << " without Start" << std::endl;
 #endif
     }
 }
