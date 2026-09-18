@@ -127,6 +127,12 @@ pose の sink は **owner 単位の単一 writer**(二重 writer は `pose.sink_
 | game logic SDK epoch | `PELICAN_GAME_LOGIC_ABI_VERSION = 2` | `src/core/userpublic/gamelogic.hpp` |
 | engine / 文書互換 | `current_engine_version = "0.1.0"` | `src/project/projectformat.hpp` |
 | render provider ABI v1(5 面) | `abiVersionV1 = 1` / `descriptorVersionV1 = 1` | `src/core/userpublic/render/{draw_sort,pass_implementation,graph_transform,render_strategy,subgraph_replacement}_abi_v1.hpp` |
+| game logic SDK 面(C-8 の facade 分割後) | v3 snapshot | `test/fixtures/userpublic_frozen/v3/` |
+
+C-8 で `GameContext` を facade に分割した(`physics()` / `audio()` / `animation()` / `save()` / `render()`)ため、
+game logic SDK 面は v2 snapshot と**互換ではない**(epoch は 2 のまま。epoch は loader の anchor であって
+`GameContext` の形ではない)。分割後の正本は v3 snapshot で、v1 / v2 は WP381 / WP382a の
+layout 固定用にそのまま残す。
 
 render provider ABI の 5 面は各名前空間に `Status` を持ち、**その数値は game logic DLL 境界を渡る ABI**。
 正本は [test/fixtures/userpublic_frozen/](../test/fixtures/userpublic_frozen/) の v1 / v2 snapshot で、

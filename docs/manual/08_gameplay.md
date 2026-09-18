@@ -136,7 +136,9 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 
 ## 8.4 GameContext API 一覧
 
-`GameContext` は状態を持たない薄いファサードです([gamecontext.hpp](../../src/core/userpublic/gamecontext.hpp))。
+`GameContext` は状態を持たない薄いファサードです([gamecontext.hpp](../../src/core/userpublic/gamecontext.hpp))。面は「根 + 5 つのドメインファサード」に分かれています — 根には入力・時刻・ログ・オブジェクト・乱数・シーン・イベント・設定が残り、物理 / 音 / アニメーション / セーブ / 描画は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L187) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L188) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L189) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L190) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L191) 経由です。ファサードはどれも**状態を持たない空の値**なので、`ctx.audio().playSound(...)` は 1 回の呼び出しであって検索ではありません。
+
+### 根 `GameContext`([宣言](../../src/core/userpublic/gamecontext.hpp#L138))
 
 | カテゴリ | API | 備考 |
 |---|---|---|
@@ -145,21 +147,28 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 | ログ | `logInfo/Warning/Error(msg)` | rpc モードでは stdout が使えないため、ログは必ずこれで |
 | オブジェクト | `createObject(LocalTransformComponent)` / `removeObject(id)`→bool / `localTransform(id)` / `setLocalTransform(id, t)`→bool | `setLocalTransform` は描画側へも即時伝播 |
 | スプライト | `createSpriteObject(transform, sprite)` / `spriteView(id)`→optional / `setSpriteView(id, s)`→bool / `setSpriteTexture(id, tex)`→bool | §8.14(✅WP103) |
-| 物理 | `raycastClosest(ray)` / `raycastClosest(ray, filter)` / `raycastAll(ray, filter)` / `overlapAll(shape)` / `overlapAllHits(shape, filter)` / `shapeCastAll` / `shapeCastClosest` | §8.8。filter 付き overload は stable identity 付きヒットを返す |
-| カメラ | `setCamera(name)` | §8.9 |
 | 乱数 | `random()` / `randomInt(min,max)` / `randomFloat(min,max)` / `setSeed(u64)` / `seed()` | §8.10 |
-| 音 | `playSound(path)`→SoundHandle / `stopSound(h)` / `setBusVolume(bus,v)` / `busVolume(bus)` / `isPlaying(h)` | §8.11 |
 | シーン | `loadScene(name)` / `currentScene()` | §8.7 |
-| 永続化 | `gameSettings()` / `setGameSettings(json)` / `saveSettings()` / `saveData(slot, json)` / `loadData(slot)`→optional / `listSaves()` | §8.12(✅WP65) |
-| ライト | `setDirectionalLightDirection(name, dir)` / `setDirectionalLightIntensity(name, f)` / `setPointLightPosition(name, pos)` / `setSpotLightDirection(name, dir)` — いずれも→bool | ✅WP142。[第4章](04_scene_ecs.md) §4.2 の light をオブジェクト `name` で指す。未知名は例外ではなく **false** が返る |
-| HUD | `debugText(x, y, text, color, scale)` | colorはRGBA、scaleは整数倍率。省略時は白・等倍。debug_text feature 未参照時は no-op([第7章](07_input_ui.md)) |
 | イベント | `emit(const Event&)` | §8.6 |
-| アニメーション | `setGraphParameter(object, parameter, value)`→bool | **共通グラフ(pass 文書)の `graph.instance`** の入力を実行時に上書きする。`std::nullopt` で上書きを取り消す。edge が供給しているポートを狙うと `graph.override_shadowed@1`([gamecontext.hpp:110](../../src/core/userpublic/gamecontext.hpp#L110)。[第6章](06_rendering.md) §6.17) |
-| | `setAnimationGraphParameter(object, name, value)`→`Animation::Status` / `forceAnimationGraphState(object, state)`→`Animation::Status` | **`animation` コンポーネントの `graph`**(`pelican.anim_graph`)に装着された評価器を動かす。初回装着の前と取り外し後は `not_found`、シーンのロード/破棄トランザクション中は `phase_order_error`([gamecontext.hpp:116](../../src/core/userpublic/gamecontext.hpp#L116)) |
+| 設定 | `gameSettings()` / `setGameSettings(json)` / `saveSettings()` | §8.12(✅WP65)。**ゲーム設定はセーブデータではない**ので根に残っています |
 
-> **この 3 本は「アニメーションの API」ですが、対象が 2 つに分かれていて互いに委譲しません(✅AG-1b 決定 5)。** `setGraphParameter` が触るのは **pass 文書の `graph.instance`** の入力ポート、`setAnimationGraphParameter` / `forceAnimationGraphState` が触るのは **シーンの `animation` コンポーネント**が持つ評価器です(`setGraphParameter` は [gamecontext.cpp:428](../../src/core/userpublic/gamecontext.cpp#L428) で `SceneLoader` へ、`setAnimationGraphParameter` / `forceAnimationGraphState` は [:341](../../src/core/userpublic/gamecontext.cpp#L341) / [:351](../../src/core/userpublic/gamecontext.cpp#L351) で `AnimationSystem` へ行きます)。**姿勢の装着様式が 2 つある**(§8.13)ことがそのまま API に出ています。同じ owner に両方は付かないので、「どちらを呼ぶか」は装着の仕方で決まります。
+### ドメインファサード
+
+| ファサード | API | 備考 |
+|---|---|---|
+| [`physics()`](../../src/core/userpublic/gamecontext.hpp#L187) → [`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L32) | `raycastAll(ray, filter)` / `raycastClosest(ray, filter)` / `overlapAll(shape, filter)` / `shapeCastAll(shape, delta, filter)` / `shapeCastClosest(shape, delta, filter)` | §8.8。`filter` は省略可。`PELICAN_WITH_PHYSICS` 無しビルドでは全問い合わせが `BuildFeatureDisabledError`(「何にも当たらなかった」とは答えません) |
+| [`audio()`](../../src/core/userpublic/gamecontext.hpp#L188) → [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L56) | `playSound(path)`→SoundHandle / `stopSound(h)` / `setBusVolume(bus,v)` / `busVolume(bus)` / `isPlaying(h)` / `setSoundVolume(h,v)` / `setSoundPitch(h,p)` / `setSoundPaused(h,b)` / `soundState(h)`→optional | §8.11。`PELICAN_WITH_AUDIO` 無しビルドは `BuildFeatureDisabledError` |
+| [`animation()`](../../src/core/userpublic/gamecontext.hpp#L189) → [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L77) | `setParameter(object, name, value)`→`Animation::Status` / `forceState(object, state)`→`Animation::Status` | **`animation` コンポーネントの `graph`**(`pelican.anim_graph`)に装着された評価器を動かす。初回装着の前と取り外し後は `not_found`、シーンのロード/破棄トランザクション中は `phase_order_error`([宣言](../../src/core/userpublic/gamecontext.hpp#L79)) |
+| [`save()`](../../src/core/userpublic/gamecontext.hpp#L190) → [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L86) | `saveData(slot, json)` / `loadData(slot)`→optional / `listSaves()`→`SlotInfo` 列 | §8.12(✅WP65) |
+| [`render()`](../../src/core/userpublic/gamecontext.hpp#L191) → [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L101) ライト | `setDirectionalLightDirection(name, dir)` / `setDirectionalLightIntensity(name, f)` / `setPointLightPosition(name, pos)` / `setSpotLightDirection(name, dir)` — いずれも→bool | ✅WP142。[第4章](04_scene_ecs.md) §4.2 の light をオブジェクト `name` で指す。未知名は例外ではなく **false** が返る |
+| `render()` カメラ | `setCamera(name)` | §8.9 |
+| `render()` 値グラフ | `setValueGraphParameter(object, parameter, value)`→bool / `emitValueGraphEvent(object, input, command)`→bool / `setRenderValues(buffer, values)`→bool | **共通グラフ(pass 文書)の `graph.instance`** の入力を実行時に上書きする。`std::nullopt` で上書きを取り消す。edge が供給しているポートを狙うと `graph.override_shadowed@1`([宣言](../../src/core/userpublic/gamecontext.hpp#L118)。[第6章](06_rendering.md) §6.17) |
+| `render()` HUD | `debugText(x, y, text, color, scale)` | colorはRGBA、scaleは整数倍率。省略時は白・等倍。debug_text feature 未参照時は no-op([第7章](07_input_ui.md)) |
+| `render()` レイトレーシング | `setRayTracingCallableRecord(task, index, values)` / `setRayTracingDispatchExtent(task, w, h, d)` | ゲーム/更新スレッドから呼ぶ。値は task の `callable_record` schema に合う必要があり、不正な更新は前の値を残す |
+
+> **この 3 本は「アニメーションの API」ですが、対象が 2 つに分かれていて互いに委譲しません(✅AG-1b 決定 5)。ファサード分割もその線を引き直しただけで、行き先は変わっていません。** `render().setValueGraphParameter` が触るのは **pass 文書の `graph.instance`** の入力ポート、`animation().setParameter` / `animation().forceState` が触るのは **シーンの `animation` コンポーネント**が持つ評価器です(前者は [gamecontext.cpp:406](../../src/core/userpublic/gamecontext.cpp#L406) で `SceneLoader` へ、後者は [:319](../../src/core/userpublic/gamecontext.cpp#L319) / [:329](../../src/core/userpublic/gamecontext.cpp#L329) で `AnimationSystem` へ行きます)。**姿勢の装着様式が 2 つある**(§8.13)ことがそのまま API に出ています。同じ owner に両方は付かないので、「どちらを呼ぶか」は装着の仕方で決まります。
 >
-> 同じ `graph.instance` 側には `emitGraphEvent(object, input, command)` もあります。`input` は **`event.playback` ノードの(展開後の)id** で、そこから `value.event_clock` / `audio.playback` の `events` ポートへ再生制御イベントが流れます([valuegraph.cpp:302](../../src/core/userpublic/valuegraph.cpp#L302))。
+> 同じ `graph.instance` 側には `render().emitValueGraphEvent(object, input, command)` もあります。`input` は **`event.playback` ノードの(展開後の)id** で、そこから `value.event_clock` / `audio.playback` の `events` ポートへ再生制御イベントが流れます([valuegraph.cpp:302](../../src/core/userpublic/valuegraph.cpp#L302))。
 >
 > 一方、**姿勢の評価器そのものは `GameContext` に載っていません** — 評価器を載せると標準の評価器だけが特権を持ってしまい、「評価器ごと自作できる」という設計が空文になるためです([../design_animation_graph.md](../design_animation_graph.md))。自作評価器は凍結 C-ABI 経由です(§8.13)。
 
@@ -178,7 +187,7 @@ if (head.valid && head.source == Pelican::ActionPoseSource::synthetic_head) {
 
 未知の名前(アクション・シーン・カメラ・オブジェクト・イベント)は**すべて名前入りの例外**になります(「名前入り」とは `unknown event type: DoorOpened` のように、どの名前で失敗したのかが例外メッセージに入るという意味です)。「静かに無視」はこのエンジンには存在しません(fail-fast の一貫した文化)。
 
-> **シーンロードの最中だけ、この表の意味が変わります(✅WP380b〜e)。** `onInit` から呼んだ `emit` / `setSeed` / `loadScene` / `playSound` / `stopSound` / `setBusVolume` / `setGameSettings` / `saveData` / `saveSettings` は**その場では起きず**、シーンロードのトランザクションに溜まります。ロードが失敗すれば全部消え、成功したときだけ実行されます。読み取り(`isPlaying` / `loadData` / `listSaves` / `gameSettings`)は自分が溜めた書き込みを見ます。詳細は [第4章 §4.3](04_scene_ecs.md)。
+> **シーンロードの最中だけ、この表の意味が変わります(✅WP380b〜e)。** `onInit` から呼んだ `emit` / `setSeed` / `loadScene` / `audio().playSound` / `audio().stopSound` / `audio().setBusVolume` / `setGameSettings` / `save().saveData` / `saveSettings` は**その場では起きず**、シーンロードのトランザクションに溜まります。ロードが失敗すれば全部消え、成功したときだけ実行されます。読み取り(`audio().isPlaying` / `save().loadData` / `save().listSaves` / `gameSettings`)は自分が溜めた書き込みを見ます。詳細は [第4章 §4.3](04_scene_ecs.md)。
 
 ## 8.5 オブジェクト behavior — もう一つのゲームコードの書き方(✅WP155/162/167)
 
@@ -598,7 +607,7 @@ auto slots  = ctx.listSaves();                           // {slot, timestamp} �
 
 > **「姿勢の正本を 1 本にまとめる」は v0 では撤回されました(✅AG-1b)。** 一本化には「シーンが持つ派生プログラムの置き場」と「評価器の状態を写す API」が先に要り、v0 にはどちらもありません。**v0 が約束するのは 2 つの経路の parity**(`loop` / `speed` / `start_time` の意味、位相、パラメータ編集をまたいだ状態の保持)**と owner 単位の排他**の 2 つだけです([docs/v0_freeze.md](../v0_freeze.md) §1.6)。
 
-`animation` コンポーネントの受理キーは `name` / `clip` / `graph` / `parameters` / `speed` / `loop` / `start_time` の 7 つですが、**`graph` を書いた場合 `speed` / `loop` / `start_time` は拒否されます**(`field 'animation.<鍵>' is clip-only; graph states define their playback clocks`)。逆に `parameters`(グラフの初期パラメータ)は `graph` のときだけ書けます([componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L982))。
+`animation` コンポーネントの受理キーは `name` / `clip` / `graph` / `parameters` / `speed` / `loop` / `start_time` の 7 つですが、**`graph` を書いた場合 `speed` / `loop` / `start_time` は拒否されます**(`field 'animation.<鍵>' is clip-only; graph states define their playback clocks`)。逆に `parameters`(グラフの初期パラメータ)は `graph` のときだけ書けます([componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L1149))。
 
 ### ゲームコードから見た層
 
@@ -698,7 +707,7 @@ VRM expression service 経由のみ(通常クリップの weights channel は非
 | `pose.state_machine` | `parameters`: `rig`(必須)/ `graph`(`pelican.anim_graph` v1 文書を**そのまま埋め込む**)。**文書の `parameters` の名前がそのまま入力ポートになります**(`time` は予約済みで、同名のパラメータは拒否)→ 出力 `pose` |
 | `pose.retarget` | `parameters`: `profile`(必須)。入力 `pose` → 出力 `pose`(同じ姿勢をそのまま渡すので root motion の経路に挟めます) |
 | `pose.skeletal` | **sink**。入力 `pose`。owner 個体の姿勢としてコミットする |
-| `pose.transform` | **sink**。catalog には載りますが **v0 では装着時に必ず拒否されます**(`pose.transform has no root writer yet`。[posegraphruntime.cpp:374](../../src/core/animation/posegraphruntime.cpp#L374)) |
+| `pose.transform` | **sink**。catalog には載りますが **v0 では装着時に必ず拒否されます**(`pose.transform has no root writer yet`。[posegraphruntime.cpp:374](../../src/core/animation/posegraphruntime.cpp#L433)) |
 
 規則:
 
@@ -709,16 +718,16 @@ VRM expression service 経由のみ(通常クリップの weights channel は非
 
 **parity(装着様式 (1) と同じ挙動になること)の中身**は次の 4 つです(✅AG-1b):
 
-1. **`loop: false` は clamp** です。クリップの外へ出た時刻は先頭/末尾に貼り付き、wrap しません([posegraphruntime.cpp:38](../../src/core/animation/posegraphruntime.cpp#L38))。
+1. **`loop: false` は clamp** です。クリップの外へ出た時刻は先頭/末尾に貼り付き、wrap しません([posegraphruntime.cpp:38](../../src/core/animation/posegraphruntime.cpp#L40))。
 2. **キーが 0 秒から始まらないクリップの位相ずれ**は animation service 側で揃えており、`time_seconds` は **絶対クリップ時刻**として報告されます(この 1 本は実装を読んだ範囲での理解で、装着様式をまたいだ数値比較までは未確認です)。
-3. **instance のパラメータを変えても、ステートマシンの現在ステートとクリップのカーソルは保たれます。** 退役するプログラムの評価器を donor として取っておき、**owner + ノード id + 埋め込んだ `anim_graph` 文書が一致すれば `rebind()` で引き継ぐ**からです([posegraphruntime.cpp:404](../../src/core/animation/posegraphruntime.cpp#L404))。
+3. **instance のパラメータを変えても、ステートマシンの現在ステートとクリップのカーソルは保たれます。** 退役するプログラムの評価器を donor として取っておき、**owner + ノード id + 埋め込んだ `anim_graph` 文書が一致すれば `rebind()` で引き継ぐ**からです([posegraphruntime.cpp:404](../../src/core/animation/posegraphruntime.cpp#L463))。
 4. 逆に **`graph` の文書そのものを変えて再公開したときは引き継ぎません** —— 一致条件に文書が入っているので、新しい評価器が `initial_state` から始まります。シーンの読み直しでも初期化されます。
 
 ### root motion(✅AG-2)
 
 `pose.clip_sample` に `root_motion: "extract"` と `root_node`(glTF のノード index)を書くと、**クリップが根のノードに書いている移動が、姿勢の中ではなく owner 個体の transform へ出て行きます**。
 
-- **差分は「折り返す前の時刻」で取ります。** ノードの時刻写像を u = (`time` − `start_time`)·`speed` + クリップ開始 とし、R(u) = loops(u)·(root(末尾) − root(先頭)) + root(canonical(u))、移動量 = R(今フレーム) − R(前フレーム)。この 1 本の式で **`speed < 0` も、1 フレームに 1 周以上進む場合も、境界ちょうども**同じように扱えます([posegraphruntime.cpp:312](../../src/core/animation/posegraphruntime.cpp#L312))。
+- **差分は「折り返す前の時刻」で取ります。** ノードの時刻写像を u = (`time` − `start_time`)·`speed` + クリップ開始 とし、R(u) = loops(u)·(root(末尾) − root(先頭)) + root(canonical(u))、移動量 = R(今フレーム) − R(前フレーム)。この 1 本の式で **`speed < 0` も、1 フレームに 1 周以上進む場合も、境界ちょうども**同じように扱えます([posegraphruntime.cpp:312](../../src/core/animation/posegraphruntime.cpp#L369))。
 - **`set_time`(シーク)は移動ではありません。** 時刻が外から差し替えられたフレームは前回値を捨て、その 1 フレームの移動量は 0 になります。一方、**`value.curve` のキーで `time` が跳んだ場合は「移動」として扱われます** —— この経路には「不連続だ」と知らせる信号が無いためです。カットを作りたいなら `set_time` を使ってください。
 - **適用先は owner の `localtransform`** です。`local.pos += local.rotation * delta` で足し込みます(**スケールは掛けません** —— 掛けると拡大した個体が同じクリップで違う距離を進んでしまうため)。姿勢の側では根ノードの translation が **クリップ先頭の値に固定(pin)**されるので、メッシュが個体の中で滑ることはありません。**回転量の抽出は v0 の射程外**です。
 - **名前付きの拒否は 4 種類**です。
@@ -756,7 +765,7 @@ VRM expression service 経由のみ(通常クリップの weights channel は非
 - `animation` コンポーネントを含むシーンは **prepare で** `animation.module_unavailable@1`。prepare の失敗なので rollback 契約に乗り、**古いシーンがそのまま残ります**([第4章](04_scene_ecs.md) §4.3)。
 - グラフ文書に `pose.*` を書いていれば `graph.operation_unregistered@1` です —— `pelican.pose` module がそもそも登録されないためです([第6章](06_rendering.md) §6.17)。
 - **ゲーム DLL はリンクできて、ロードもできます。** 凍結 ABI の交渉入口(`getApiV1` / `getPoseStagingServiceV1` / VRM の `getApplicationServiceV1`)は stub として残り、**`unsupported_version` を返します** —— SDK に対してビルドした DLL が「このバイナリにはアニメーションランタイムが無い」ことを**名前で知る**ためです([animation_disabled.cpp:13](../../src/core/animation/animation_disabled.cpp#L13))。
-- `GameContext` 側では `setAnimationGraphParameter` / `forceAnimationGraphState` が `not_found` を返します(§8.4)。
+- `GameContext` 側では `ctx.animation().setParameter()` / `ctx.animation().forceState()` が `not_found` を返します(§8.4)。
 
 ## 8.14 2D スプライトの操作(✅WP103/106)
 
