@@ -412,3 +412,77 @@ material = `materialcontainer.cpp` の screen input 構築、fullscreen = `fulls
 | 13 | `bindResource` は `logical_view_count == variants.size()` を要求 | `<=` と `view_index < logical_view_count` | 6 と一体で再考する |
 
 → D の materialcontainer 分割で `MaterialDescriptorBuilder` を作るとき、2 / 7 / 11 は fullscreen 側または material 側の「正」に寄せ、6 / 13 は裁定してから 1 本にする。
+
+## 9. C-2(componentcodec の宣言 schema 化)の実施記録(2026-09-19)
+
+監査 §2.1 / raw の所見 2・4 に対する着手。**5 component のうち宣言経路に移せたのは transform と light の 2 つだけ**で、
+残り 3 つは着手前に見えていなかった構造上の壁で止めた。分水嶺は単純で、
+**schema が runtime 型そのものに対して宣言されているか、別の `*SchemaFields` 鏡像に対して宣言されているか**である。
+
+| schema | 宣言先の型 | decode の権威 | 判定 |
+|---|---|---|---|
+| `transform_schema` | `TransformCodecData`(runtime 型) | 同じ | **移した** |
+| `light_schema` | `LightCodecData`(runtime 型) | 同じ | **移した** |
+| `sprite_schema` | `SpriteSchemaFields`(editor 専用の鏡像) | `SpriteViewComponent::loadFromJsonArchive` | 不可 |
+| `camera_schema` | `CameraSchemaFields`(editor 専用の平坦鏡像) | `decodeCamera`(nested / alias / 型推論) | 不可 |
+| `collider_schema` | `ColliderSchemaFields`(editor 専用の鏡像) | `ColliderComponent::ref()` | 不可 |
+
+### 移せなかった 3 つの理由(再挑戦する前に読む)
+
+- **sprite / collider: legacy branch が消える。** `sprite_view.*` 20 件と `collider.*` 15 件は
+  `SpriteViewComponent` / `ColliderComponent` 自身の parser が産む安定 id で、`decodeStructObject` に通すと
+  全部が `*.schema_validation` 1 件に潰れる。`legacy_corpus.json` はこの 35 件を名指しで到達させるので、
+  移行は corpus の削除と同義になる。移すなら先に「legacy branch id を宣言 schema 側から出す機構」が要る。
+- **camera: schema が wire 形式を記述していない。** `camera_schema` は editor が見せる平坦な 10 field で、
+  実際の受理形は nested `perspective` / `orthographic`、flat との二重受理、`xmag` の有無による type 推論、
+  alias(`fov_y` / `near` / `far`)の名指し拒否、`controller` の別 decoder を持つ。
+  `CameraSchemaFields` は runtime の `CameraCodecData`(全 projection field が `std::optional<float>`)と型が違う。
+  schema を書き直せば移せるが、それは editor metadata(`schemaNode()` / `fieldSchema()` / prefab descriptor の
+  json pointer 対応表)の変更であり、別 WP。
+
+### やったこと
+
+1. `requireClosed` の名前 list を**全 component で schema から生成**(`closedFieldNames`)。
+   dotted な schema 名(`sprite.pixel_perfect`)は最初の `.` までが wire key。
+   schema field でない鍵(`name` envelope、nested object、拒否専用の alias `size` / `height`)だけが literal で残る。
+   collider の「10 field が 8 箇所」は 7 箇所になった。
+2. transform / light の decode と encode を `decodeStructObject` / `encodeStructObject` 経由に。
+   手書きで残したのは cross-field 規則だけ: transform は退化四元数(`requireNonZeroQuat`)と
+   `rotation_specified` の presence、light は type による presence 規則 4 つと `range > 0` と `inner <= outer`。
+3. camera の既定値補完 115 行を `resolveComponent` から `ComponentCodec::completeDefaults` へ。
+   `ResolvedSceneDefaults` は componentcodec.hpp へ移した。dispatch は codec 名ではなく `runtime_kind` で、
+   `ScopedComponentCodecCatalog` で camera codec を差し替える test(WP378)でも補完が外れない。
+4. loader の文字列比較: `resolvedscene.cpp` の `== "camera"` 3 箇所が消えた(1 は completion の移動で消滅、
+   2 は `isCameraComponent()` = `runtime_kind` 判定へ)。codec が手元に無い比較(raw JSON の `"transform"` 数え、
+   `prefabprovider` の `provider_name`)は名前のまま残した。
+
+### 意図した挙動差(いずれも同じ legacy branch の中)
+
+- **light の `intensity` / `range` の上限が `FLT_MAX` から schema の `1e12` になった。** editor が広告していた
+  range を runtime が enforce するようになった側の変更で、監査が指摘した「editor の schema と runtime の受理が
+  静かにずれる」の実例そのもの。
+- transform / light の encode が schema の finite / range 検査を通るようになった(以前は無検査)。
+  NaN を含む runtime transform は `null` を書き出す代わりに拒否される。
+- 宣言経路が出す検査メッセージは schema 側の語彙になる(`must be a vec3 array` → `has an invalid array shape`、
+  `must be finite F32` → `must be finite` / `is not representable as F32`)。error code と受理集合は同じ。
+- 1 つの payload に複数の誤りがあるとき、どれが先に名指しされるかは変わりうる(presence 検査が値検査より前に集まった)。
+  誤りが 1 つの payload では code もメッセージも従来どおり。
+
+## 10. 段 C の実施記録(2026-09-19)
+
+| # | 変更 | 備考 |
+|---|---|---|
+| C-1 | `PreparedSceneState` の per-slot 配列 17 本を `ModelInstanceSlotTable` 1 値型に。field 28 → 12。`publishPreparedSceneModel` 55 → 8 行、`prepareModelInstanceRebuild` 186 → 132 行(同名 shadowing 20 個と `next_*` コピー 30 行が消えた) | 配列の列挙は 9 箇所 → table の 6 操作だけ。GPU test 1 case(publish 前後で全配列の数が一致) |
+| C-2 | transform / light の decode / encode を `decodeStructObject` 経由に。`requireClosed` の名前 list は 6 codec 全部で schema から生成。camera の既定値補完 115 行を `ComponentCodec::completeDefaults` へ | **sprite / collider / camera は保留**(§9: legacy branch id が規則単位で 35 個、camera は schema が wire 形と不一致)。挙動差: light の上限 1e12、encode 時の finite 検証、error 文言 |
+| C-3 | `XrCompositionTarget` の frame 状態 bool 6 個 → `FrameStage` 7 状態 + 遷移関数。`VulkanXrCompositionGraphics` は別 TU | 残した flag(depth / teardown / per-view / per-swapchain)は独立な資源の状態。CPU test 1 case(不正遷移の拒否) |
+| C-4 | `runPhases` の callback を lock 外で呼ぶ(sink は handle で再解決)。例外 → Status は型で対応(bad_alloc / invalid_argument / それ以外 = callback_failed)。`releaseOwner` は `sources` だけ compaction | `owners` / `phases` / `cursors` は `invalid_handle` vs `stale_generation` が契約なので tombstone 維持。`recursive_mutex` 維持(C ABI 全面が callback から到達可能)。VRM との lock 順逆転は phase 経路では解消。非 GPU test 2 case |
+| C-5 | pose graph の失敗を `exception_ptr` で保持し、`framephase.cpp` が generic 例外を投げる前に rethrow。`evaluate` 262 行を 5 関数に分割 | 「pose port is unconnected」の literal は document からは到達不能(`validateGraphPorts` が先に弾く)。到達可能な in-phase 失敗で test(GPU) |
+| C-6 | `Loop::run` 276 → 62 行。`FrameStep{advance, update, render, record}` 1 本と 3 driver。3 経路の差は enum 3 個で毎回明示 | 監査の 2 点の他に 4 点の差があった(update clock の位置、`updateFrameState` vs interactive、input clear、frame limit)。`#if` は 14 → 11。gate は O-1 replay(bytes) |
+| C-7 | `ReloadParticipant` を `{file, runtime, authored}` の role に、file の apply は 3 択 variant。`applyRequests` は `RequestSlot` 1 本(index 保持)。shader / material の名指し pass を削除し、shader を companion owner として登録。owner の順序は companion 辺の topological 順 | validator 10 規則 → 6 検査。死んだ callback 2 個削除。観測可能な変更 1 件: shader と material の両方が claim する key は shared claim(今日は存在しない)。CPU test 1 case(登録順に依らない) |
+| C-8 | `GameContext` を root + `physics()` / `audio()` / `animation()` / `save()` / `render()` に分割(65 → root 32 + facade 33)。重複 pair: `raycastClosest` は filter 付き 1 本(旧 unfiltered 経路の決定的 tie-break を移植)、`overlapAll` は hit を id 順で返す 1 本。無効 build の physics は throw(audio と同じ helper、probe 追加) | frozen v2 header で compile する `wp380b_effect` fixture が唯一の壁 → **v3 snapshot を追加して向け直し**(v1 / v2 は byte 不変、epoch 2 のまま)。`public_api_inventory` の tool / manifest / JSON を追随。`PhysWorld` 内部の同名 overload は未削除(follow-up) |
+| C-9 | `executePlannedFrameGraph` の引数 16 → `FrameGraphExecutionRequest` + 2、`executeRenderingPasses` 17 → 3 | 本体 952 行の分割は D |
+| C-10 | `computetask.cpp` 3947 行を `framegraphbuffercontainer` / `computetaskdefinitionjson` / `computetaskcontainer` の 3 TU + `deferredresourceretire.hpp` に。`registerComputeTask` 414 → 252 行。GLSL 直書きは `engine://ray_group_noop`。`ComputeTaskRuntimeDependencies` の注入 field 2 つを撤去(global module 前提を明示) | 純移動は sorted-line diff で確認。`appendUnique` の死んだ複製 1 つ削除 |
+
+積み残し(段 C から D への申し送り): C-2 の sprite / collider / camera、C-8 の `PhysWorld` 内部 overload と `setCamera` の `void`、C-4 の outer `catch(...)` → `out_of_memory` 2 箇所、C-3 / C-6 / C-10 が動かした doclink。
+
+追記(C-10 の GLSL 外出しは取り下げ): `engine://` に置いた 4 行の no-op closest-hit は `engineShaderUniverseSha256()`(`shadercompiler.cpp`、whitelist 拡張子の embedded shader 全部を 1 digest に畳む)に加わり、全 shader cache key を動かして WP364 の frozen parent oracle(`test/fixtures/wp364/parent_baseline.json`、過去 2 回 `9e4081b4` / `62f09ce0` で再凍結)を再び再凍結させる。4 行の literal のためにその費用は払わないと裁定し、GLSL は `computetaskcontainer.cpp` 内に戻した(理由の comment 付き)。副産物の指摘: whitelist は `.rint` / `.rcall` を含まないので、intersection / callable の embedded source を編集しても cache key が動かない(hit 系は全部動く)。別の小 item。
