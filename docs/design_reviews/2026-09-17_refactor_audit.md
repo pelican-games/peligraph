@@ -374,3 +374,41 @@ SPIR-V reader は 3 実装(`rtspirvinspection`、`spvlink`、`shadercompiler` �
 | A-5 | render provider ABI 5 本の `Status` は**番号を変えない**。`gamelogicreload.cpp` に `static_assert` 11 本、5 header に comment、`v0_freeze.md` §1.4 に行追加 | frozen fixture の render header は休眠(どの fixture も include していない)で、これまで機械的 guard は無かった。番号統一は `abiVersionV1` を上げる別 WP |
 | A-6 | `structfieldjson.hpp` の optional / 非 optional 枝を共通ヘルパに。optional vec の encode 検証欠落を修正 | frozen fixture は不変 |
 | A-7 | `animgraph.cpp` の関数内 `static TransitionV1` を `EvaluatorV1::Impl` のメンバに | 2 行 |
+
+## 8. 段 B の実施記録(2026-09-19)
+
+| # | 変更 | 備考 |
+|---|---|---|
+| B-1 | `registerRenderTarget` を `RenderTargetDefinition` 受けに(18 → 4 引数)。`physicalRenderTargetHistoryClearColor` は definition 層へ下ろし、依存を definition → container → config registration の一方向に。`.clang-format` を config だけ追加(触った区間にのみ適用する方針) | 呼び出し側は本番 2 + test 7 箇所 |
+| B-2 | `StableFingerprint` 4 実装を `StableFingerprint64` に置換 | 空白正規化で byte 一致を確認。値は不変 |
+| B-3 | registry 4 本の ABI helper(`nextGeneration` / `validHandle` / `validByteRange` / `validProvider` / `abiSize` / `statusName`)を `providerregistrycommon.hpp` に | lifecycle 本体は未着手(D)。net −218 行 |
+| B-4 | `materializeEditorProjection` の `expected_*` 3 引数を `EditorProjectionExpectation` に | test 側にも呼び出し 8 箇所(監査の見落とし) |
+| B-5 | `renderconfigeditor.cpp` の CAS 前置き(3 箇所)と ticket 後置き(2 箇所)を helper に | remove 経路の disk CAS 拒否だけ digest payload を欠いていたのはドリフトと裁定し揃えた(意図的 wire 変更 1 件)。root CAS の remove 経路は test が無かったので 1 case 追加 |
+| B-7 | `setInputResources` / `setInputResourcesById` の並列 vector 5 本を `FullscreenPassInput` に(13 → 7 引数)。descriptor 構築を別関数に抽出 | 部分的に埋まった authored 配列の拒否は compiler 側 helper に残した |
+| B-6a | `PassInputDescriptorVariant` を共有 header に、cube 分岐と write / update の tail を `passinputdescriptorvariant.{hpp,cpp}` に共有。material の `boundScreenInputImageViewsForTesting` に `view_index` | **ladder 本体は共有しない**(下の 13 点の差。同じものではなかった)。`WriteDescriptorSet` の pointer 取得を `submit()` 時に移し、`reserve` 依存を消した |
+| B-8 | Camera / Light / Collider adapter を `SnapshotProjectionAdapter<Policy>` に | 重複していた 21 関数本体 → 7。SceneObject / BehaviorScene / EcsCodec / RendererModel は形が違うので対象外 |
+| B-9 | world 回転合成を `composeWorldTransform` 1 本(正規化あり)に統一。DFS は機構(tri-state walk)だけ共有し、訪問集合と error 語彙は呼び手ごとに維持 | **`projects/example` の 31 object が非正規 quaternion(\|q\|≈0.99985)で、runtime は 0.03% の shear 付きで描いていた。** golden は全部 unit なので動かない |
+| B-10 | behaviorarena の transaction 機構を `BehaviorAttachmentTransaction` に統合 | ドリフト 2 点はどちらも edits 側が正(reconciliation 側では到達不能)。test 1 case 追加(同一 handle への update 2 回、attach + set_params) |
+| B-11 | renderer の publish / rollback を `RenderPipelinePublicationTransaction` の member に。`reloadRenderPipelineFromDisk` は結果 struct を返す | 差異 2 点は観測不能と確認(`graph_runtime_transfer` は reload 経路で常に null、`finalized` と `outcome` の間に何も走らない)。net −79 |
+
+監査の訂正: `reloadtransaction_test` / `renderconfigeditor_test` は renderer の reload 経路を通らない(watch 層 / config 層の test)。renderer 側の実 coverage は `headless_render_test`、`golden_harness`(reload の `domain_error` を検査する唯一の場所)、`skeletal_gltf_test`。
+
+### B-6b / D の入力: material と fullscreen の descriptor ladder の差 13 点
+
+material = `materialcontainer.cpp` の screen input 構築、fullscreen = `fullscreenpasscontainer.cpp` の `buildInputDescriptorVariants`。5 と 12 は B-6a で解消。
+
+| # | material | fullscreen | 判定 |
+|---|---|---|---|
+| 1 | subresource 分岐で退化した `family_2d_array`(base 0 / count 1)を全配列に展開。`base_array_layer += variant` はするが `layer_count` は変えない | `base_array_layer += variant; layer_count = 1`(`separate_view_layers` のとき)。family 展開なし | 両方正当(仕事が違う)。ただし material が base を offset して count を狭めないのは要再確認 |
+| 2 | array dispatch の key が `descriptor_dimension == two_d_array` | key が `view == family_2d_array` | **fullscreen が正**。descriptor 次元で family と layered/multiview を混同。material は multiview が無いので露見していない |
+| 3 | multiview 分岐なし(`GraphicsPipelineViewContract` は material 経路に来ない) | `multiview && layered_2d_array` 分岐あり | 両方正当。共有 builder は `logical_view_count` を optional で受ける |
+| 4 | 分岐順: subresource → cube → array → shared_2d → else **layer view** | subresource → cube → family → multiview → separate layers → else **full view** | 等価だが同一でない(`getImageViewForFrame` = `getImageLayerViewForFrame(…, 0, …)`)。variant 0 では一致、6 の場面だけ分かれる |
+| 6 | `separate_view_layers` の fallback なし。sequential/layered input の `arrayLayers` が `variant_count` と**厳密一致**しないと throw | `selected_layers < variant_count` または `variant_count == 1` なら 1 layer を全 variant で再利用 | fullscreen が高機能、material が保守的。どちらも防御可能。capability gap であって silent bug ではない |
+| 7 | variant 数は生の `arrayLayers(target)`(subresource を無視)。ladder は subresource を variant で offset | 両方 subresource 込みの `selected_layers` | **fullscreen が正**。subresource 付き sequential input で off-by-one の種 |
+| 8 | sampler 4 段(input attachment → material resource → clamp_to_edge の cache → material resource)。`ShaderResourcePortSampling` | `input_samplers.at(samplerIndex(sampling))`。`FullscreenInputSampling` | 両方正当、還元不能。builder は sampler resolver を受ける |
+| 9 | buffer は image loop 内(`isBuffer() → continue`)、binding は `resource.binding` | buffer は第 2 loop、binding は `inputs.size() + i` | 両方正当。write 層は B-6a で統一、binding の出所は呼び手ごと |
+| 10 | write type は保存済み `resource.descriptor_type` | `local_read` から都度導出 | **material が正** |
+| 11 | `validImageSubresourceRange` で mip / layer 範囲を検証、error は resource 名付き | 範囲検証なし、error は位置番号 | **material が正**(両方)。fullscreen 側に範囲検証を足すのは builder と独立の小修正候補 |
+| 13 | `bindResource` は `logical_view_count == variants.size()` を要求 | `<=` と `view_index < logical_view_count` | 6 と一体で再考する |
+
+→ D の materialcontainer 分割で `MaterialDescriptorBuilder` を作るとき、2 / 7 / 11 は fullscreen 側または material 側の「正」に寄せ、6 / 13 は裁定してから 1 本にする。
