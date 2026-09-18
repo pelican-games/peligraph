@@ -1239,37 +1239,6 @@ vk::ImageView
 RenderTargetContainer::getImageSubresourceView(
     GlobalRenderTargetId id,
     ImageSubresourceRange subresource,
-    bool array_view, bool history_read) const {
-    return getImageSubresourceViewForFrame(
-        id, subresource,
-        array_view
-            ? ImageSubresourceViewDimension::
-                  two_d_array
-            : ImageSubresourceViewDimension::
-                  two_d,
-        history_read, history_frame_index);
-}
-
-vk::ImageView
-RenderTargetContainer::getImageSubresourceViewForFrame(
-    GlobalRenderTargetId id,
-    ImageSubresourceRange subresource,
-    bool array_view, bool history_read,
-    std::uint32_t frame_index) const {
-    return getImageSubresourceViewForFrame(
-        id, subresource,
-        array_view
-            ? ImageSubresourceViewDimension::
-                  two_d_array
-            : ImageSubresourceViewDimension::
-                  two_d,
-        history_read, frame_index);
-}
-
-vk::ImageView
-RenderTargetContainer::getImageSubresourceView(
-    GlobalRenderTargetId id,
-    ImageSubresourceRange subresource,
     ImageSubresourceViewDimension dimension,
     bool history_read) const {
     return getImageSubresourceViewForFrame(
@@ -1421,7 +1390,11 @@ RenderTargetContainer::getAttachmentImageSubresourceView(
     const auto &rt = render_targets.get(id);
     if (rt.samples <= 1) {
         return getImageSubresourceView(
-            id, subresource, array_view,
+            id, subresource,
+            array_view
+                ? ImageSubresourceViewDimension::
+                      two_d_array
+                : ImageSubresourceViewDimension::two_d,
             history_read);
     }
     const auto surface =

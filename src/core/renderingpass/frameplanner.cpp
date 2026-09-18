@@ -35,18 +35,6 @@ struct PlannerEdges {
     std::vector<FramePlanBarrier> barriers;
 };
 
-void appendUnique(std::vector<std::string> &values, std::string value) {
-    if (std::find(values.begin(), values.end(), value) == values.end()) {
-        values.push_back(std::move(value));
-    }
-}
-
-void appendUnique(std::vector<std::string> &values, const std::vector<std::string> &more_values) {
-    for (const auto &value : more_values) {
-        appendUnique(values, value);
-    }
-}
-
 int footprintRank(LogicalReadFootprintKind kind) {
     switch (kind) {
     case LogicalReadFootprintKind::none: return 0;
@@ -269,44 +257,6 @@ void appendNodes(std::vector<FrameGraphNodeDefinition> &nodes,
     for (auto &node : more_nodes) {
         nodes.push_back(std::move(node));
     }
-}
-
-std::string requireString(const nlohmann::json &json, std::string_view field, std::string_view context) {
-    if (!json.contains(field) || !json.at(field).is_string()) {
-        throw std::runtime_error("Frame graph " + std::string{context} + " requires string field: " +
-                                 std::string{field});
-    }
-    return json.at(field).get<std::string>();
-}
-
-std::vector<std::string> parseStringList(const nlohmann::json &json, std::string_view context) {
-    if (json.is_null()) {
-        return {};
-    }
-    if (json.is_string()) {
-        return {json.get<std::string>()};
-    }
-    if (!json.is_array()) {
-        throw std::runtime_error("Frame graph " + std::string{context} + " must be a string or string array");
-    }
-
-    std::vector<std::string> values;
-    values.reserve(json.size());
-    for (const auto &entry : json) {
-        if (!entry.is_string()) {
-            throw std::runtime_error("Frame graph " + std::string{context} + " entries must be strings");
-        }
-        values.push_back(entry.get<std::string>());
-    }
-    return values;
-}
-
-std::vector<std::string> parseOptionalStringList(const nlohmann::json &json, std::string_view field,
-                                                 std::string_view context) {
-    if (!json.contains(field)) {
-        return {};
-    }
-    return parseStringList(json.at(field), std::string{context} + "." + std::string{field});
 }
 
 void appendMaterialScreenInputReads(
@@ -546,6 +496,40 @@ FrameGraphAttachmentStoreOp frameGraphAttachmentStoreOp(
     }
 }
 
+// The single place a raster attachment is recorded on a node. An attachment
+// that loads is also a same-pixel read of what it writes, so the read and its
+// footprint are stated here rather than at each of the four callers. A pass
+// whose target slot is unset keeps its empty name out of the attachment list.
+void appendAttachment(
+    FrameGraphNodeDefinition &node, std::string resource,
+    std::optional<ImageSubresourceRange> subresource,
+    FrameGraphAttachmentAspect aspect,
+    PassAttachmentOperations operations) {
+    if (!resource.empty()) {
+        node.attachments.push_back(
+            FrameGraphAttachmentDefinition{
+                .resource = resource,
+                .subresource = std::move(subresource),
+                .aspect = aspect,
+                .load_op =
+                    frameGraphAttachmentLoadOp(
+                        operations.load_op),
+                .store_op =
+                    frameGraphAttachmentStoreOp(
+                        operations.store_op),
+            });
+    }
+    if (operations.load_op !=
+        vk::AttachmentLoadOp::eLoad) {
+        return;
+    }
+    appendUnique(node.reads, resource);
+    appendReadFootprint(
+        node, std::move(resource),
+        {LogicalReadFootprintKind::same_pixel,
+         std::nullopt});
+}
+
 std::optional<vk::AttachmentLoadOp> parseOptionalAttachmentLoadOp(
     const nlohmann::json &pass_json,
     std::string_view field) {
@@ -554,8 +538,7 @@ std::optional<vk::AttachmentLoadOp> parseOptionalAttachmentLoadOp(
     }
     return stringToLoadOp(
         parseStringField(
-            pass_json, std::string{field},
-            "frame graph pass"));
+            pass_json, field, "frame graph pass"));
 }
 
 std::optional<vk::AttachmentStoreOp> parseOptionalAttachmentStoreOp(
@@ -566,8 +549,7 @@ std::optional<vk::AttachmentStoreOp> parseOptionalAttachmentStoreOp(
     }
     return stringToStoreOp(
         parseStringField(
-            pass_json, std::string{field},
-            "frame graph pass"));
+            pass_json, field, "frame graph pass"));
 }
 
 struct ParsedRasterAttachment {
@@ -688,7 +670,7 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
         throw std::runtime_error("Frame graph pass entries must be objects");
     }
     FrameGraphNodeDefinition node;
-    node.name = requireString(pass_json, "name", "pass");
+    node.name = parseStringField(pass_json, "name", "Frame graph pass");
     validatePassAttachmentOptionsHaveOutputs(
         pass_json, node.name);
     node.declaration_index = declaration_index;
@@ -697,8 +679,8 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
             pass_json,
             "Frame graph pass '" +
                 node.name + "'");
-    node.after = parseOptionalStringList(pass_json, "after", "pass");
-    node.before = parseOptionalStringList(pass_json, "before", "pass");
+    node.after = parseOptionalStringList(pass_json, "after", "Frame graph pass");
+    node.before = parseOptionalStringList(pass_json, "before", "Frame graph pass");
     node.region_tags =
         parseOptionalRegionTags(
             pass_json, "Frame graph pass '" + node.name + "'");
@@ -749,9 +731,9 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     }
     if (type == RenderPassType::snapshot_copy) {
         node.kind = FramePlanNodeKind::snapshot_copy;
-        node.reads = {requireString(pass_json, "source", "snapshot copy")};
-        node.writes = {requireString(pass_json, "destination", "snapshot copy")};
-        node.snapshot_after = requireString(pass_json, "snapshot_after", "snapshot copy");
+        node.reads = {parseStringField(pass_json, "source", "Frame graph snapshot copy")};
+        node.writes = {parseStringField(pass_json, "destination", "Frame graph snapshot copy")};
+        node.snapshot_after = parseStringField(pass_json, "snapshot_after", "Frame graph snapshot copy");
         return node;
     }
     if (!pass_json.contains("output") || !pass_json.at("output").is_object()) {
@@ -759,7 +741,7 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     }
     const auto authored_inputs =
         parseOptionalStringList(
-            pass_json, "input", "pass");
+            pass_json, "input", "Frame graph pass");
     splitHistoryReads(
         authored_inputs,
         node.reads, node.reads_history);
@@ -845,60 +827,22 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
         defaultPassAttachmentOperations(
             type, PassAttachmentAspect::depth);
     for (const auto &attachment : color_outputs) {
-        const auto operations = resolveAttachmentOperations(
-            attachment.load_op, attachment.store_op,
-            color_load, color_store, color_defaults);
-        node.attachments.push_back(
-            FrameGraphAttachmentDefinition{
-                .resource = attachment.resource,
-                .subresource =
-                    attachment.subresource,
-                .aspect =
-                    FrameGraphAttachmentAspect::color,
-                .load_op =
-                    frameGraphAttachmentLoadOp(
-                        operations.load_op),
-                .store_op =
-                    frameGraphAttachmentStoreOp(
-                        operations.store_op),
-            });
-        if (operations.load_op ==
-            vk::AttachmentLoadOp::eLoad) {
-            appendUnique(
-                node.reads, attachment.resource);
-            appendReadFootprint(
-                node, attachment.resource,
-                {LogicalReadFootprintKind::same_pixel,
-                 std::nullopt});
-        }
+        appendAttachment(
+            node, attachment.resource,
+            attachment.subresource,
+            FrameGraphAttachmentAspect::color,
+            resolveAttachmentOperations(
+                attachment.load_op, attachment.store_op,
+                color_load, color_store, color_defaults));
     }
     for (const auto &attachment : depth_outputs) {
-        const auto operations = resolveAttachmentOperations(
-            attachment.load_op, attachment.store_op,
-            depth_load, depth_store, depth_defaults);
-        node.attachments.push_back(
-            FrameGraphAttachmentDefinition{
-                .resource = attachment.resource,
-                .subresource =
-                    attachment.subresource,
-                .aspect =
-                    FrameGraphAttachmentAspect::depth,
-                .load_op =
-                    frameGraphAttachmentLoadOp(
-                        operations.load_op),
-                .store_op =
-                    frameGraphAttachmentStoreOp(
-                        operations.store_op),
-            });
-        if (operations.load_op ==
-            vk::AttachmentLoadOp::eLoad) {
-            appendUnique(
-                node.reads, attachment.resource);
-            appendReadFootprint(
-                node, attachment.resource,
-                {LogicalReadFootprintKind::same_pixel,
-                 std::nullopt});
-        }
+        appendAttachment(
+            node, attachment.resource,
+            attachment.subresource,
+            FrameGraphAttachmentAspect::depth,
+            resolveAttachmentOperations(
+                attachment.load_op, attachment.store_op,
+                depth_load, depth_store, depth_defaults));
     }
 
     return node;
@@ -910,7 +854,7 @@ FrameGraphNodeDefinition parseComputeNodeFromJson(const nlohmann::json &task_jso
     }
 
     FrameGraphNodeDefinition node;
-    node.name = requireString(task_json, "name", "compute task");
+    node.name = parseStringField(task_json, "name", "Frame graph compute task");
     node.kind = FramePlanNodeKind::compute;
     node.declaration_index = declaration_index;
     node.view_family =
@@ -920,10 +864,10 @@ FrameGraphNodeDefinition parseComputeNodeFromJson(const nlohmann::json &task_jso
                 node.name + "'");
     const auto authored_reads =
         parseOptionalStringList(
-            task_json, "reads", "compute task");
+            task_json, "reads", "Frame graph compute task");
     const auto writes =
         parseOptionalStringList(
-            task_json, "writes", "compute task");
+            task_json, "writes", "Frame graph compute task");
     splitHistoryReads(
         authored_reads,
         node.reads, node.reads_history);
@@ -941,9 +885,9 @@ FrameGraphNodeDefinition parseComputeNodeFromJson(const nlohmann::json &task_jso
             }
             appendUnique(
                 node.reads,
-                requireString(
+                parseStringField(
                     indirect, "buffer",
-                    "compute task dispatch.indirect: " +
+                    "Frame graph compute task dispatch.indirect: " +
                         node.name));
         }
     }
@@ -954,8 +898,8 @@ FrameGraphNodeDefinition parseComputeNodeFromJson(const nlohmann::json &task_jso
     parseReadFootprintOverrides(
         task_json, "read_footprints", node);
     node.writes = writes;
-    node.after = parseOptionalStringList(task_json, "after", "compute task");
-    node.before = parseOptionalStringList(task_json, "before", "compute task");
+    node.after = parseOptionalStringList(task_json, "after", "Frame graph compute task");
+    node.before = parseOptionalStringList(task_json, "before", "Frame graph compute task");
     node.region_tags =
         parseOptionalRegionTags(
             task_json,
@@ -976,7 +920,7 @@ std::vector<std::string> parseDeclaredRenderTargets(const nlohmann::json &json) 
         if (!target.is_object()) {
             throw std::runtime_error("Frame graph render_targets entries must be objects");
         }
-        auto name = requireString(target, "name", "render target");
+        auto name = parseStringField(target, "name", "Frame graph render target");
         validateAuthoredRenderResourceName(
             name, "render target");
         appendUnique(resources, std::move(name));
@@ -995,7 +939,7 @@ std::vector<std::string> parseHistoryRenderTargets(const nlohmann::json &json) {
             throw std::runtime_error("Frame graph render target history must be a boolean");
         }
         if (target.value("history", false)) {
-            appendUnique(resources, requireString(target, "name", "render target"));
+            appendUnique(resources, parseStringField(target, "name", "Frame graph render target"));
         }
     }
     return resources;
@@ -1018,7 +962,7 @@ std::vector<std::string> parseDeclaredBuffers(const nlohmann::json &json) {
             continue;
         }
         if (buffer.is_object()) {
-            auto name = requireString(buffer, "name", "buffer");
+            auto name = parseStringField(buffer, "name", "Frame graph buffer");
             validateAuthoredRenderResourceName(name, "buffer");
             appendUnique(resources, std::move(name));
             continue;
@@ -1063,7 +1007,7 @@ RenderTargetByteSizes parseRenderTargetByteSizes(const nlohmann::json &json) {
     }
     for (const auto &target : json.at("render_targets")) {
         if (!target.is_object()) continue;
-        const auto name = requireString(target, "name", "render target");
+        const auto name = parseStringField(target, "name", "Frame graph render target");
         sizes.has_extent_declarations |= target.contains("width") ||
             target.contains("height") || target.contains("extent_scale");
         std::size_t width = 0;
@@ -1083,7 +1027,7 @@ RenderTargetByteSizes parseRenderTargetByteSizes(const nlohmann::json &json) {
             continue;
         }
         if (width == 0 || height == 0) continue;
-        const auto format = requireString(target, "format", "render target '" + name + "'");
+        const auto format = parseStringField(target, "format", "Frame graph render target '" + name + "'");
         const auto bytes = formatBlockBytes(format);
         if (bytes != 0) sizes.resolved.emplace(name, width * height * bytes);
     }
@@ -1232,15 +1176,11 @@ void validatePassInfoMatchesType(const PassDefinition &pass) {
         std::string{passInfoVariantName(pass.pass_info)} + "'");
 }
 
-FramePlanNodeKind passKind(const PassDefinition &) {
-    return FramePlanNodeKind::render;
-}
-
 FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, size_t declaration_index) {
     validatePassInfoMatchesType(pass);
     FrameGraphNodeDefinition node;
     node.name = pass.name;
-    node.kind = passKind(pass);
+    node.kind = FramePlanNodeKind::render;
     if (pass.isMaterial() || pass.isFullscreen() || pass.isGenericRaster() || pass.isDebugDraw() ||
         pass.isDebugText() || pass.isGizmo() || pass.isShadowDepth() || pass.isVelocity() || pass.isPicking()) {
         node.ray_query = pass.ray_query;
@@ -1298,36 +1238,13 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
          ++color_index) {
         const auto &attachment =
             pass.output_color[color_index];
-        const auto operations =
-            pass.colorAttachmentOperations(color_index);
-        const auto target = attachment.target;
         const auto resource =
-            renderTargetResourceName(target);
+            renderTargetResourceName(attachment.target);
         appendUnique(node.writes, resource);
-        if (!resource.empty()) {
-            node.attachments.push_back(
-                FrameGraphAttachmentDefinition{
-                    .resource = resource,
-                    .subresource =
-                        attachment.subresource,
-                    .aspect =
-                        FrameGraphAttachmentAspect::color,
-                    .load_op =
-                        frameGraphAttachmentLoadOp(
-                            operations.load_op),
-                    .store_op =
-                        frameGraphAttachmentStoreOp(
-                            operations.store_op),
-                });
-        }
-        if (operations.load_op ==
-            vk::AttachmentLoadOp::eLoad) {
-            appendUnique(node.reads, resource);
-            appendReadFootprint(
-                node, resource,
-                {LogicalReadFootprintKind::same_pixel,
-                 std::nullopt});
-        }
+        appendAttachment(
+            node, resource, attachment.subresource,
+            FrameGraphAttachmentAspect::color,
+            pass.colorAttachmentOperations(color_index));
     }
     if (pass.isMaterial()) {
         for (const auto &input :
@@ -1395,30 +1312,11 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
         renderTargetResourceName(pass.output_depth);
     appendUnique(node.writes, depth_resource);
     if (!depth_resource.empty()) {
-        const auto operations =
-            pass.depthAttachmentOperations();
-        node.attachments.push_back(
-            FrameGraphAttachmentDefinition{
-                .resource = depth_resource,
-                .subresource =
-                    pass.output_depth.subresource,
-                .aspect =
-                    FrameGraphAttachmentAspect::depth,
-                .load_op =
-                    frameGraphAttachmentLoadOp(
-                        operations.load_op),
-                .store_op =
-                    frameGraphAttachmentStoreOp(
-                        operations.store_op),
-            });
-        if (operations.load_op ==
-            vk::AttachmentLoadOp::eLoad) {
-            appendUnique(node.reads, depth_resource);
-            appendReadFootprint(
-                node, depth_resource,
-                {LogicalReadFootprintKind::same_pixel,
-                 std::nullopt});
-        }
+        appendAttachment(
+            node, depth_resource,
+            pass.output_depth.subresource,
+            FrameGraphAttachmentAspect::depth,
+            pass.depthAttachmentOperations());
     }
     return node;
 }
@@ -1851,11 +1749,11 @@ void validateFramePlanPassInputsProduced(
     const std::unordered_set<std::string> &buffer_names) {
     std::unordered_map<std::string, std::vector<std::string>> required_inputs;
     for (const auto &pass : pass_set_json.at("passes")) {
-        const auto name = requireString(pass, "name", "pass");
+        const auto name = parseStringField(pass, "name", "Frame graph pass");
         if (pass.value("type", "") == "snapshot_copy") {
-            required_inputs[name] = {requireString(pass, "source", "snapshot copy")};
+            required_inputs[name] = {parseStringField(pass, "source", "Frame graph snapshot copy")};
         } else {
-            required_inputs[name] = parseOptionalStringList(pass, "input", "pass");
+            required_inputs[name] = parseOptionalStringList(pass, "input", "Frame graph pass");
         }
     }
 

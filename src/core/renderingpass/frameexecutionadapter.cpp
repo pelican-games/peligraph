@@ -1,6 +1,7 @@
 #include "frameexecutionadapter.hpp"
 
 #include "../../project/targetrenderplanning.hpp"
+#include "renderingpassjsonhelpers.hpp"
 
 #include <algorithm>
 #include <map>
@@ -25,16 +26,6 @@ inline constexpr std::string_view
 inline constexpr std::string_view
     kFrameOutputCapability =
         "pelican.execution.frame_output@1";
-
-void appendUnique(
-    std::vector<std::string> &values,
-    std::string_view value) {
-    if (std::find(
-            values.begin(), values.end(),
-            value) == values.end()) {
-        values.emplace_back(value);
-    }
-}
 
 bool contains(
     const std::vector<std::string> &values,

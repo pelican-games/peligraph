@@ -407,16 +407,6 @@ std::vector<std::string> relationList(
     return result;
 }
 
-void appendUnique(
-    std::vector<std::string> &values,
-    std::string value) {
-    if (std::find(
-            values.begin(), values.end(), value) ==
-        values.end()) {
-        values.push_back(std::move(value));
-    }
-}
-
 void setRelationList(
     nlohmann::json &node, std::string_view field,
     std::vector<std::string> values) {

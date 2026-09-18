@@ -3809,7 +3809,7 @@ TEST_CASE(
             GET_MODULE(RenderTargetContainer)
                 .getImageSubresourceView(
                     tint, full_tint_mips,
-                    false);
+                    ImageSubresourceViewDimension::two_d);
         REQUIRE(
             initial_tint_mip_view !=
             initial_tint_view);
@@ -3923,7 +3923,7 @@ TEST_CASE(
                     .getImageSubresourceView(
                         recreated_tint,
                         full_tint_mips,
-                        false)});
+                        ImageSubresourceViewDimension::two_d)});
 
         auto &geometry =
             GET_MODULE(VertBufContainer);
@@ -4079,7 +4079,7 @@ TEST_CASE(
                     .getImageSubresourceView(
                         reloaded_tint,
                         full_tint_mips,
-                        false)});
+                        ImageSubresourceViewDimension::two_d)});
 
         engine_time.advance();
         renderer.render();
@@ -9642,10 +9642,12 @@ TEST_CASE(
             };
         const auto initial_mip_zero_view =
             render_targets.getImageSubresourceView(
-                target, mip_zero, false);
+                target, mip_zero,
+                ImageSubresourceViewDimension::two_d);
         const auto initial_mip_one_view =
             render_targets.getImageSubresourceView(
-                target, mip_one, false);
+                target, mip_one,
+                ImageSubresourceViewDimension::two_d);
         REQUIRE(
             initial_mip_zero_view !=
             initial_mip_one_view);
@@ -9779,7 +9781,8 @@ TEST_CASE(
                 .extent == (vk::Extent2D{32, 32}));
         REQUIRE(
             render_targets.getImageSubresourceView(
-                target, mip_zero, false) ==
+                target, mip_zero,
+                ImageSubresourceViewDimension::two_d) ==
             initial_mip_zero_view);
 
         renderer
@@ -9809,10 +9812,12 @@ TEST_CASE(
                 .array_layers == 2);
         const auto resized_mip_zero_view =
             render_targets.getImageSubresourceView(
-                target, mip_zero, false);
+                target, mip_zero,
+                ImageSubresourceViewDimension::two_d);
         const auto resized_mip_one_view =
             render_targets.getImageSubresourceView(
-                target, mip_one, false);
+                target, mip_one,
+                ImageSubresourceViewDimension::two_d);
         REQUIRE(
             resized_mip_zero_view !=
             initial_mip_zero_view);
@@ -9869,10 +9874,12 @@ TEST_CASE(
                 reduce_task, 0);
         const auto pre_reload_mip_zero_view =
             render_targets.getImageSubresourceView(
-                target, mip_zero, false);
+                target, mip_zero,
+                ImageSubresourceViewDimension::two_d);
         const auto pre_reload_mip_one_view =
             render_targets.getImageSubresourceView(
-                target, mip_one, false);
+                target, mip_one,
+                ImageSubresourceViewDimension::two_d);
         REQUIRE(
             std::find(
                 pre_reload_reduce_views.begin(),
@@ -9909,10 +9916,12 @@ TEST_CASE(
                 reduce_task, 0);
         const auto reloaded_mip_zero_view =
             render_targets.getImageSubresourceView(
-                target, mip_zero, false);
+                target, mip_zero,
+                ImageSubresourceViewDimension::two_d);
         const auto reloaded_mip_one_view =
             render_targets.getImageSubresourceView(
-                target, mip_one, false);
+                target, mip_one,
+                ImageSubresourceViewDimension::two_d);
         REQUIRE(reloaded_reduce_views.size() == 2);
         REQUIRE(
             std::find(

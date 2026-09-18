@@ -93,7 +93,9 @@ vk::ImageView colorAttachmentView(
                    ? rt_container
                          .getImageSubresourceView(
                              attachment.target,
-                             subresource, true)
+                             subresource,
+                             ImageSubresourceViewDimension::
+                                 two_d_array)
                    : rt_container
                          .getAttachmentImageSubresourceView(
                              attachment.target,
@@ -107,8 +109,9 @@ vk::ImageView colorAttachmentView(
     return resolve
                ? rt_container
                      .getImageSubresourceView(
-                         attachment.target,
-                         subresource, false)
+                         attachment.target, subresource,
+                         ImageSubresourceViewDimension::
+                             two_d)
                : rt_container
                      .getAttachmentImageSubresourceView(
                          attachment.target,

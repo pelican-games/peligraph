@@ -40,13 +40,6 @@ static_assert(frameGraphDrawCountBytes == 4);
 static_assert(frameGraphSceneDrawBoundsV1Bytes == 32);
 static_assert(frameGraphSceneDrawSegmentV1Bytes == 32);
 
-std::string requireString(const nlohmann::json &json, std::string_view field, std::string_view context) {
-    if (!json.contains(field) || !json.at(field).is_string()) {
-        throw std::runtime_error(std::string{context} + " requires string field: " + std::string{field});
-    }
-    return json.at(field).get<std::string>();
-}
-
 uint32_t requireUint32(const nlohmann::json &json, std::string_view field, std::string_view context) {
     if (!json.contains(field) || !json.at(field).is_number_integer()) {
         throw std::runtime_error(std::string{context} + " requires non-negative integer field: " +
@@ -71,7 +64,7 @@ FrameGraphHostBufferSource parseHostBufferSource(
     const nlohmann::json &entry,
     std::string_view context) {
     const auto value =
-        requireString(entry, "host_source", context);
+        parseStringField(entry, "host_source", context);
     if (value == "runtime_f32") return FrameGraphHostBufferSource::runtime_f32;
     if (value == "scene_lights_v2") {
         return FrameGraphHostBufferSource::scene_lights_v2;
@@ -101,7 +94,7 @@ parseBufferCommandLayout(
     const nlohmann::json &entry,
     std::string_view context) {
     const auto value =
-        requireString(entry, "command_layout", context);
+        parseStringField(entry, "command_layout", context);
     if (value == "compute_dispatch") {
         return FrameGraphBufferCommandLayout::
             compute_dispatch;
@@ -253,7 +246,7 @@ parseExtentDerivedBufferSize(
         }
     }
     FrameGraphBufferExtentSizeDefinition definition{
-        .resource = requireString(
+        .resource = parseStringField(
             encoded, "resource",
             std::string{context} +
                 ".size_from_extent"),
@@ -319,36 +312,6 @@ parseExtentDerivedBufferSize(
             definition.copies,
             context);
     return {std::move(definition), byte_size};
-}
-
-std::vector<std::string> parseStringList(const nlohmann::json &json, std::string_view context) {
-    if (json.is_null()) {
-        return {};
-    }
-    if (json.is_string()) {
-        return {json.get<std::string>()};
-    }
-    if (!json.is_array()) {
-        throw std::runtime_error(std::string{context} + " must be a string or string array");
-    }
-
-    std::vector<std::string> values;
-    values.reserve(json.size());
-    for (const auto &entry : json) {
-        if (!entry.is_string()) {
-            throw std::runtime_error(std::string{context} + " entries must be strings");
-        }
-        values.push_back(entry.get<std::string>());
-    }
-    return values;
-}
-
-std::vector<std::string> parseOptionalStringList(const nlohmann::json &json, std::string_view field,
-                                                 std::string_view context) {
-    if (!json.contains(field)) {
-        return {};
-    }
-    return parseStringList(json.at(field), std::string{context} + "." + std::string{field});
 }
 
 std::vector<ShaderReference> parseRayTracingShaderList(
@@ -744,7 +707,7 @@ RayTracingTaskShaderDefinition parseRayTracingShaders(
     }
     RayTracingTaskShaderDefinition result{
         .raygen = makeShaderReference(
-            requireString(
+            parseStringField(
                 pipeline_json, "raygen",
                 "compute task ray_tracing: " + name),
             ShaderStage::raygen),
@@ -936,7 +899,7 @@ ComputeDispatchDefinition parseDispatch(
                 "dispatch.rays_from must contain exactly one image port: " +
                 name);
         }
-        auto port = requireString(
+        auto port = parseStringField(
             rays_from, "port",
             "compute task dispatch.rays_from: " + name);
         if (port.empty()) {
@@ -973,7 +936,7 @@ ComputeDispatchDefinition parseDispatch(
                 name);
         }
         ComputeIndirectDispatchDefinition definition{
-            .buffer = requireString(
+            .buffer = parseStringField(
                 indirect, "buffer",
                 "compute task dispatch.indirect: " +
                     name),
@@ -1055,7 +1018,7 @@ ComputeDispatchDefinition parseDispatch(
                     field.key() + "': " + name);
             }
         }
-        auto port = requireString(
+        auto port = parseStringField(
             groups_from, "port",
             "compute task dispatch.groups_from: " +
                 name);
@@ -1156,7 +1119,7 @@ std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson
             throw std::runtime_error("buffers entries must be strings or objects");
         }
         const auto name =
-            requireString(entry, "name", "buffer");
+            parseStringField(entry, "name", "buffer");
         validateAuthoredRenderResourceName(name, "buffer");
         const auto context = "buffer '" + name + "'";
         if (entry.contains("size") &&
@@ -1213,7 +1176,7 @@ std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson
                     context + " initial_f32 requires host_source 'runtime_f32' and one float per declared byte quad");
         }
         if (definition.host_source == FrameGraphHostBufferSource::view_family_matrices_v1) {
-            definition.host_view_family = requireString(entry, "view_family", context);
+            definition.host_view_family = parseStringField(entry, "view_family", context);
             if (definition.host_view_family.empty() || definition.command_layout ||
                 definition.size < 16 || definition.size % 16 != 0) {
                 throw std::runtime_error(context +
@@ -1224,7 +1187,7 @@ std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson
         }
         if (entry.contains("lifetime")) {
             const auto lifetime =
-                requireString(
+                parseStringField(
                     entry, "lifetime", context);
             if (lifetime == "persistent") {
                 definition.persistent = true;
@@ -1370,7 +1333,7 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(
             throw std::runtime_error("compute_tasks entries must be objects");
         }
         ComputeTaskDefinition definition;
-        definition.name = requireString(task_json, "name", "compute task");
+        definition.name = parseStringField(task_json, "name", "compute task");
         for (const auto *unsupported :
              {"any_hit", "anyhit", "intersection", "callable"}) {
             if (task_json.contains(unsupported)) {
@@ -1392,7 +1355,7 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(
                     "' ray_query requires only acceleration_structure and cannot accompany ray_tracing");
             }
             definition.ray_query_acceleration_structure =
-                requireString(query, "acceleration_structure", definition.name);
+                parseStringField(query, "acceleration_structure", definition.name);
             if (definition.ray_query_acceleration_structure->empty())
                 throw std::runtime_error("Compute task '" + definition.name +
                     "' ray_query acceleration_structure must not be empty");
@@ -1410,11 +1373,11 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(
                     task_json, definition.name,
                     ray_tracing_project);
             if (task_json.at("ray_tracing").contains("acceleration_structure"))
-                definition.ray_tracing->acceleration_structure = requireString(
+                definition.ray_tracing->acceleration_structure = parseStringField(
                     task_json.at("ray_tracing"), "acceleration_structure", definition.name);
         } else {
             definition.shader = makeShaderReference(
-                requireString(
+                parseStringField(
                     task_json, "shader",
                     "compute task: " + definition.name),
                 ShaderStage::compute);
@@ -1471,7 +1434,7 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(
         }
         if (task_json.contains("schedule")) {
             const auto schedule =
-                requireString(
+                parseStringField(
                     task_json, "schedule",
                     "compute task: " +
                         definition.name);

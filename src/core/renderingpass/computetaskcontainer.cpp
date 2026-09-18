@@ -1173,7 +1173,11 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
                               .getImageSubresourceViewForFrame(
                                   rt_id,
                                   subresource,
-                                  layered,
+                                  layered
+                                      ? ImageSubresourceViewDimension::
+                                            two_d_array
+                                      : ImageSubresourceViewDimension::
+                                            two_d,
                                   resource.history_read,
                                   frame_index);
             } else if (cube) {
@@ -1202,7 +1206,8 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
                                     resource
                                         .physical_view_count,
                             },
-                            true,
+                            ImageSubresourceViewDimension::
+                                two_d_array,
                             resource.history_read,
                             frame_index);
             } else if (sequential_layer) {

@@ -1138,7 +1138,7 @@ TEST_CASE(
                         .layer_count =
                             stereo_view_count,
                     },
-                    true)});
+                    ImageSubresourceViewDimension::two_d_array)});
     ComputeTaskDefinition cube_task{
         .name = "cube_descriptor_probe",
         .shader =
@@ -1455,7 +1455,7 @@ TEST_CASE(
                 .layer_count =
                     stereo_view_count,
             },
-            true));
+            ImageSubresourceViewDimension::two_d_array));
     REQUIRE(
         render_targets.getMetadata(
             capacity_target)
@@ -1809,7 +1809,7 @@ TEST_CASE(
                 .base_mip_level = 1,
                 .base_array_layer = 2,
             },
-            false));
+            ImageSubresourceViewDimension::two_d));
     REQUIRE(
         subresource_right.front().imageView ==
         render_targets.getImageSubresourceView(
@@ -1818,7 +1818,7 @@ TEST_CASE(
                 .base_mip_level = 1,
                 .base_array_layer = 3,
             },
-            false));
+            ImageSubresourceViewDimension::two_d));
     REQUIRE(
         subresource_layered.front().imageView ==
         render_targets.getImageSubresourceView(
@@ -1829,7 +1829,7 @@ TEST_CASE(
                 .layer_count =
                     stereo_view_count,
             },
-            true));
+            ImageSubresourceViewDimension::two_d_array));
     REQUIRE((
         getRenderPassTargetExtent(
             managed_frame, subresource_pass,

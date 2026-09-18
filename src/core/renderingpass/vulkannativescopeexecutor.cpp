@@ -419,8 +419,11 @@ VulkanNativeScopeRuntimeAttachment runtimeAttachment(
         targets.hasSeparateAttachment(
                 resource.render_target)
             ? targets.getImageSubresourceView(
-                  resource.render_target,
-                  subresource, array_view)
+                  resource.render_target, subresource,
+                  array_view
+                      ? ImageSubresourceViewDimension::
+                            two_d_array
+                      : ImageSubresourceViewDimension::two_d)
             : vk::ImageView{};
     result.extent =
         mipExtent(

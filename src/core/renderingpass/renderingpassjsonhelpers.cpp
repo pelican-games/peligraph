@@ -270,12 +270,58 @@ vk::AttachmentStoreOp stringToStoreOp(const std::string &op_str) {
     throw std::runtime_error("Unknown attachment store op: " + op_str);
 }
 
-std::string parseStringField(const nlohmann::json &json, const std::string &field_name,
-                             const std::string &context) {
+std::string parseStringField(const nlohmann::json &json, std::string_view field_name,
+                             std::string_view context) {
     if (!json.contains(field_name) || !json.at(field_name).is_string()) {
-        throw std::runtime_error(context + " requires string field: " + field_name);
+        throw std::runtime_error(std::string{context} + " requires string field: " +
+                                 std::string{field_name});
     }
     return json.at(field_name).get<std::string>();
+}
+
+std::vector<std::string> parseStringList(const nlohmann::json &json,
+                                         std::string_view context) {
+    if (json.is_null()) {
+        return {};
+    }
+    if (json.is_string()) {
+        return {json.get<std::string>()};
+    }
+    if (!json.is_array()) {
+        throw std::runtime_error(std::string{context} + " must be a string or string array");
+    }
+
+    std::vector<std::string> values;
+    values.reserve(json.size());
+    for (const auto &entry : json) {
+        if (!entry.is_string()) {
+            throw std::runtime_error(std::string{context} + " entries must be strings");
+        }
+        values.push_back(entry.get<std::string>());
+    }
+    return values;
+}
+
+std::vector<std::string> parseOptionalStringList(const nlohmann::json &json,
+                                                 std::string_view field,
+                                                 std::string_view context) {
+    if (!json.contains(field)) {
+        return {};
+    }
+    return parseStringList(json.at(field), std::string{context} + "." + std::string{field});
+}
+
+void appendUnique(std::vector<std::string> &values, std::string value) {
+    if (std::find(values.begin(), values.end(), value) == values.end()) {
+        values.push_back(std::move(value));
+    }
+}
+
+void appendUnique(std::vector<std::string> &values,
+                  const std::vector<std::string> &more_values) {
+    for (const auto &value : more_values) {
+        appendUnique(values, value);
+    }
 }
 
 void validateName(const std::string &name, const std::string &context) {
