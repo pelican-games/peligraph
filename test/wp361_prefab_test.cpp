@@ -621,8 +621,12 @@ EditorProjectionResult executeWp375Seam(
         },
         target.projectionState(), context);
     return materializeEditorProjection(
-        plan, modules, target, binding_state, binding_state.epoch,
-        context.layoutGeneration(), context.behaviorGeneration(),
+        plan, modules, target, binding_state,
+        EditorProjectionExpectation{
+            .binding_epoch = binding_state.epoch,
+            .codec_generation = context.layoutGeneration(),
+            .behavior_generation = context.behaviorGeneration(),
+        },
         fault_injector);
 }
 

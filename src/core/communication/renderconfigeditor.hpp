@@ -173,6 +173,23 @@ class RenderConfigEditorService {
         std::span<const RenderConfigCandidateDocument> additional_documents = {},
         std::optional<std::string> base_preset_digest = std::nullopt,
         bool source_only = false);
+    // The authoring precondition preamble shared by queueRootEdit and
+    // addAuthoredPass: gate -> base source digest CAS -> re-read-from-disk
+    // CAS, in that order.  Returns the rejection the RPC answers with, or
+    // nullopt when the edit may proceed.  The gate snapshot stays with the
+    // caller because the accepted ticket records its epochs.
+    std::optional<nlohmann::ordered_json> checkAuthoringPreconditions(
+        const GateSnapshot &gate, const std::string &base_digest,
+        std::string_view method,
+        std::string_view gate_closed_message) const;
+    // The authored-pass tail shared by addAuthoredPass and
+    // removeAuthoredPass: candidate-set preflight -> ticket enqueue ->
+    // accepted response.  The operation name is the only difference.
+    nlohmann::ordered_json enqueueAuthoredPassTicket(
+        std::string operation, const GateSnapshot &gate,
+        const std::string &base_digest, AuthoredRenderConfigDocument root,
+        RenderConfigCandidateDocumentSet candidate_documents,
+        const std::string &reference);
     nlohmann::ordered_json rejection(
         std::string code, std::string message,
         nlohmann::ordered_json details = nlohmann::ordered_json::object()) const;

@@ -3224,8 +3224,12 @@ void requireWp375MissingRendererParticipant() {
             .ecs = &ecs,
             .component_info = &GET_MODULE(ComponentInfoManager),
         },
-        target, bindings, bindings.epoch, context.layoutGeneration(),
-        context.behaviorGeneration());
+        target, bindings,
+        EditorProjectionExpectation{
+            .binding_epoch = bindings.epoch,
+            .codec_generation = context.layoutGeneration(),
+            .behavior_generation = context.behaviorGeneration(),
+        });
     REQUIRE(result.status == EditorProjectionStatus::Failed);
     REQUIRE(result.error.has_value());
     INFO("WP375 missing renderer participant: " << result.error->message);

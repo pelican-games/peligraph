@@ -58,6 +58,16 @@ struct EditorRuntimeBindingState {
     std::uint64_t behavior_generation = 0;
 };
 
+// The generations the caller observed before planning. All three are the same
+// type, so passing them positionally let a caller transpose two of them
+// without a compile error; naming the fields makes the staleness rejection
+// depend on the name instead of the argument order.
+struct EditorProjectionExpectation {
+    std::uint64_t binding_epoch;
+    std::uint64_t codec_generation;
+    std::uint64_t behavior_generation;
+};
+
 EditorProjectionContext makeEditorProjectionContext(
     std::string active_scene_id, EditorProjectionMode mode);
 
@@ -65,9 +75,7 @@ EditorProjectionResult materializeEditorProjection(
     const EditorProjectionPlan &plan, const EditorProjectionModules &modules,
     EditorProjectionDocumentTarget &target,
     EditorRuntimeBindingState &binding_state,
-    std::uint64_t expected_binding_epoch,
-    std::uint64_t expected_codec_generation,
-    std::uint64_t expected_behavior_generation,
+    const EditorProjectionExpectation &expected,
     EditorProjectionFaultInjector *fault_injector = nullptr);
 
 namespace internal {

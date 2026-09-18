@@ -5251,6 +5251,70 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "WP334b remove_authored_pass names both digests when the root moved on disk",
+    "[render-config-editor][wp334b][authored-pass][external-modification]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+
+    const Json pass{
+        {"name", "wp334b_root_cas_probe"},
+        {"type", "fullscreen"},
+        {"input", Json::array({"gbuffer_normal"})},
+        {"output",
+         {{"color", Json::array({"ssao_output"})},
+          {"depth", nullptr}}},
+        {"shader",
+         {{"vertex", "engine://fullscreen"},
+          {"fragment", "engine://fullscreen"}}},
+    };
+    const auto accepted = service->addAuthoredPass(
+        {{"base_source_digest",
+          service->documentForTesting().sourceDigest()},
+         {"graph", "main_render"},
+         {"insert", "after:ssao_pass"},
+         {"pass", pass}});
+    REQUIRE(accepted.at("status") == "accepted");
+    const auto fragment_reference =
+        accepted.at("fragment_reference").get<std::string>();
+    const auto add_ticket = accepted.at("ticket").get<std::string>();
+    service->commitPending();
+    REQUIRE(service->getResult({{"ticket", add_ticket}}).at("committed") ==
+            true);
+
+    // The root moves under the editor -- not the managed fragment, which the
+    // case above covers. The supplied base digest still matches the
+    // engine-owned document, so the only check that can refuse is the
+    // re-read-from-disk CAS, and it must name both digests: Studio shows the
+    // drift from them, and the add and root-edit paths have always sent them.
+    const auto engine_owned_digest =
+        service->documentForTesting().sourceDigest();
+    const auto root_before_external = readBytes(project.render_config);
+    const auto external_root = root_before_external + " \r\n";
+    writeBytes(project.render_config, external_root);
+
+    const auto rejected = service->removeAuthoredPass(
+        {{"base_source_digest", engine_owned_digest},
+         {"fragment_reference", fragment_reference}});
+    REQUIRE(rejected.at("status") == "rejected");
+    REQUIRE(rejected.at("committed") == false);
+    REQUIRE_FALSE(rejected.contains("ticket"));
+    const auto &error = rejected.at("error");
+    REQUIRE(error.at("code") == "external_modification");
+    REQUIRE(error.at("message") ==
+            "render config source changed outside the editor");
+    REQUIRE(error.contains("expected_source_digest"));
+    REQUIRE(error.contains("actual_source_digest"));
+    REQUIRE(error.at("expected_source_digest") == engine_owned_digest);
+    REQUIRE(error.at("actual_source_digest") !=
+            error.at("expected_source_digest"));
+    // A refused precondition writes nothing: the external bytes stand.
+    REQUIRE(readBytes(project.render_config) == external_root);
+}
+
+TEST_CASE(
     "WP334b multi-document transaction rolls back both failure directions and commits both directions",
     "[render-config-editor][wp334b][transaction][atomicity]") {
     TemporaryAnimgraphProject project;

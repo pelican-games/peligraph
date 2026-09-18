@@ -792,8 +792,12 @@ TEST_CASE(
         .behavior_generation = context.behaviorGeneration(),
     };
     const auto result = materializeEditorProjection(
-        plan, EditorProjectionModules{}, target, bindings, bindings.epoch,
-        context.layoutGeneration(), context.behaviorGeneration());
+        plan, EditorProjectionModules{}, target, bindings,
+        EditorProjectionExpectation{
+            .binding_epoch = bindings.epoch,
+            .codec_generation = context.layoutGeneration(),
+            .behavior_generation = context.behaviorGeneration(),
+        });
     REQUIRE(result.status == EditorProjectionStatus::Rejected);
     REQUIRE(result.error.has_value());
     REQUIRE(result.error->code ==
@@ -835,8 +839,12 @@ TEST_CASE(
         REQUIRE(plan.routes.front().kind ==
                 EditorProjectionRouteKind::BehaviorBatch);
         return materializeEditorProjection(
-            plan, projection_modules, target, bindings, bindings.epoch,
-            context.layoutGeneration(), context.behaviorGeneration());
+            plan, projection_modules, target, bindings,
+            EditorProjectionExpectation{
+                .binding_epoch = bindings.epoch,
+                .codec_generation = context.layoutGeneration(),
+                .behavior_generation = context.behaviorGeneration(),
+            });
     };
 
     const auto unknown = materialize("wp375a_unknown_active");
@@ -894,8 +902,12 @@ TEST_CASE(
             .ecs = &ecs,
             .component_info = &GET_MODULE(ComponentInfoManager),
         },
-        target, bindings, bindings.epoch, context.layoutGeneration(),
-        context.behaviorGeneration());
+        target, bindings,
+        EditorProjectionExpectation{
+            .binding_epoch = bindings.epoch,
+            .codec_generation = context.layoutGeneration(),
+            .behavior_generation = context.behaviorGeneration(),
+        });
     REQUIRE(result.status == EditorProjectionStatus::Failed);
     REQUIRE(result.error.has_value());
     REQUIRE_THAT(result.error->message,
@@ -1033,8 +1045,12 @@ TEST_CASE("WP375 stale materialization inputs fail with a named error",
         .behavior_generation = context.behaviorGeneration(),
     };
     const auto result = materializeEditorProjection(
-        plan, EditorProjectionModules{}, target, bindings, 13,
-        context.layoutGeneration(), context.behaviorGeneration());
+        plan, EditorProjectionModules{}, target, bindings,
+        EditorProjectionExpectation{
+            .binding_epoch = 13,
+            .codec_generation = context.layoutGeneration(),
+            .behavior_generation = context.behaviorGeneration(),
+        });
     REQUIRE(result.status == EditorProjectionStatus::Rejected);
     REQUIRE(result.error.has_value());
     REQUIRE_THAT(result.error->message,
@@ -1110,8 +1126,12 @@ TEST_CASE(
                 target.projectionState(), context);
             return materializeEditorProjection(
                 plan, projection_modules, target, binding_state,
-                binding_state.epoch, context.layoutGeneration(),
-                context.behaviorGeneration(), &fault);
+                EditorProjectionExpectation{
+                    .binding_epoch = binding_state.epoch,
+                    .codec_generation = context.layoutGeneration(),
+                    .behavior_generation = context.behaviorGeneration(),
+                },
+                &fault);
         },
         .gate = [] { return EditorGateObservation{}; },
         .allocate_behavior_attachment =
@@ -1233,8 +1253,12 @@ TEST_CASE("WP375 a registered foo codec reaches runtime set add and remove witho
                 },
                 target.projectionState(), context);
             return materializeEditorProjection(
-                plan, projection_modules, target, bindings, bindings.epoch,
-                context.layoutGeneration(), context.behaviorGeneration());
+                plan, projection_modules, target, bindings,
+                EditorProjectionExpectation{
+                    .binding_epoch = bindings.epoch,
+                    .codec_generation = context.layoutGeneration(),
+                    .behavior_generation = context.behaviorGeneration(),
+                });
         };
         const auto execute = [&](EditorProjectionCommand command,
                                  Json operation) {

@@ -1282,18 +1282,19 @@ OrderedJson RenderConfigEditorService::editRenderFeatures(
         });
 }
 
-OrderedJson RenderConfigEditorService::queueRootEdit(
-    const std::string &base_digest, const std::string &operation,
-    const std::function<std::optional<OrderedJson>(AuthoredRenderConfigDocument &)> &transform,
-    std::span<const RenderConfigCandidateDocument> additional_documents,
-    std::optional<std::string> base_preset_digest, bool source_only) {
-    if (!isLowerHexDigest(base_digest))
-        throw std::invalid_argument(operation + " base_source_digest must be 64 lowercase hex characters");
-    const auto gate = gateSnapshot();
+// The authoring precondition preamble shared by the root-edit queue and
+// add_authored_pass: gate -> base source digest CAS -> re-read-from-disk CAS,
+// in that order.  Returns the rejection the RPC answers with, or nullopt when
+// the edit may proceed.  The gate snapshot stays with the caller because the
+// accepted ticket records its epochs.
+std::optional<OrderedJson>
+RenderConfigEditorService::checkAuthoringPreconditions(
+    const GateSnapshot &gate, const std::string &base_digest,
+    std::string_view method, std::string_view gate_closed_message) const {
     if (!gate.can_edit) {
         return rejection(
-            "gate_closed", "render config editing is currently disabled",
-            {{"method", operation},
+            "gate_closed", std::string{gate_closed_message},
+            {{"method", std::string{method}},
              {"reason", primaryReason(gate.reasons)},
              {"gate_epoch", gate.epoch}});
     }
@@ -1316,6 +1317,22 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
         }
     } catch (const std::exception &error) {
         return rejection("external_modification", error.what());
+    }
+    return std::nullopt;
+}
+
+OrderedJson RenderConfigEditorService::queueRootEdit(
+    const std::string &base_digest, const std::string &operation,
+    const std::function<std::optional<OrderedJson>(AuthoredRenderConfigDocument &)> &transform,
+    std::span<const RenderConfigCandidateDocument> additional_documents,
+    std::optional<std::string> base_preset_digest, bool source_only) {
+    if (!isLowerHexDigest(base_digest))
+        throw std::invalid_argument(operation + " base_source_digest must be 64 lowercase hex characters");
+    const auto gate = gateSnapshot();
+    if (auto rejected = checkAuthoringPreconditions(
+            gate, base_digest, operation,
+            "render config editing is currently disabled")) {
+        return *rejected;
     }
 
     auto candidate = document_;
@@ -2367,6 +2384,43 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
     }
 }
 
+// The authored-pass tail shared by add_authored_pass and
+// remove_authored_pass: candidate-set preflight -> ticket enqueue -> accepted
+// response.  The operation name is the only difference between them.
+OrderedJson RenderConfigEditorService::enqueueAuthoredPassTicket(
+    std::string operation, const GateSnapshot &gate,
+    const std::string &base_digest, AuthoredRenderConfigDocument root,
+    RenderConfigCandidateDocumentSet candidate_documents,
+    const std::string &reference) {
+    try {
+        // This is the decisive staged-file contrast: neither the feature nor
+        // preset resolver may bypass the request-local document set.
+        (void)dependencies_.resolve_authoring_context(candidate_documents);
+    } catch (const std::exception &error) {
+        return rejection("render_pipeline_preflight_failed", error.what(),
+                         {{"participant", "pelican.render_pipeline"},
+                          {"fragment_reference", reference}});
+    }
+
+    const auto ticket_id =
+        "render-authored-pass-" + std::to_string(next_ticket_++);
+    pending_.push_back(Ticket{
+        .id = ticket_id,
+        .accepted_gate_epoch = gate.epoch,
+        .accepted_transition_epoch = gate.transition_epoch,
+        .base_source_digest = base_digest,
+        .candidate = std::move(root),
+        .candidate_documents = std::move(candidate_documents),
+        .operation = std::move(operation),
+        .fragment_reference = reference,
+    });
+    results_[ticket_id] = {{"ticket", ticket_id}, {"status", "pending"}};
+    return {{"ticket", ticket_id},
+            {"status", "accepted"},
+            {"base_source_digest", digestJson(base_digest)},
+            {"fragment_reference", reference}};
+}
+
 OrderedJson RenderConfigEditorService::addAuthoredPass(
     const Json &params) {
     requireOnly(params,
@@ -2404,32 +2458,10 @@ OrderedJson RenderConfigEditorService::addAuthoredPass(
     }
 
     const auto gate = gateSnapshot();
-    if (!gate.can_edit) {
-        return rejection(
-            "gate_closed", "render pass authoring is currently disabled",
-            {{"method", "add_authored_pass"},
-             {"reason", primaryReason(gate.reasons)},
-             {"gate_epoch", gate.epoch}});
-    }
-    if (base_digest != document_.sourceDigest()) {
-        return rejection(
-            "external_modification",
-            "render config base digest no longer matches the engine-owned document",
-            {{"expected_source_digest", document_.sourceDigest()},
-             {"provided_source_digest", base_digest}});
-    }
-    try {
-        const auto disk_digest =
-            renderConfigSourceDigest(readFileBytes(dependencies_.source_path));
-        if (disk_digest != document_.sourceDigest()) {
-            return rejection(
-                "external_modification",
-                "render config source changed outside the editor",
-                {{"expected_source_digest", document_.sourceDigest()},
-                 {"actual_source_digest", disk_digest}});
-        }
-    } catch (const std::exception &error) {
-        return rejection("external_modification", error.what());
+    if (auto rejected = checkAuthoringPreconditions(
+            gate, base_digest, "add_authored_pass",
+            "render pass authoring is currently disabled")) {
+        return *rejected;
     }
 
     try {
@@ -2547,33 +2579,10 @@ OrderedJson RenderConfigEditorService::addAuthoredPass(
     }
     RenderConfigCandidateDocumentSet candidate_documents{
         source_normalized_reference_, std::move(documents)};
-    try {
-        // This is the decisive staged-file contrast: neither the feature nor
-        // preset resolver may bypass the request-local document set.
-        (void)dependencies_.resolve_authoring_context(candidate_documents);
-    } catch (const std::exception &error) {
-        return rejection("render_pipeline_preflight_failed", error.what(),
-                         {{"participant", "pelican.render_pipeline"},
-                          {"fragment_reference", reference}});
-    }
-
-    const auto ticket_id =
-        "render-authored-pass-" + std::to_string(next_ticket_++);
-    pending_.push_back(Ticket{
-        .id = ticket_id,
-        .accepted_gate_epoch = gate.epoch,
-        .accepted_transition_epoch = gate.transition_epoch,
-        .base_source_digest = base_digest,
-        .candidate = std::move(root),
-        .candidate_documents = std::move(candidate_documents),
-        .operation = "add_authored_pass",
-        .fragment_reference = reference,
-    });
-    results_[ticket_id] = {{"ticket", ticket_id}, {"status", "pending"}};
-    return {{"ticket", ticket_id},
-            {"status", "accepted"},
-            {"base_source_digest", digestJson(base_digest)},
-            {"fragment_reference", reference}};
+    return enqueueAuthoredPassTicket("add_authored_pass", gate, base_digest,
+                                     std::move(root),
+                                     std::move(candidate_documents),
+                                     reference);
 }
 
 OrderedJson RenderConfigEditorService::removeAuthoredPass(
@@ -2597,30 +2606,10 @@ OrderedJson RenderConfigEditorService::removeAuthoredPass(
             "remove_authored_pass base_source_digest must be 64 lowercase hex characters");
     }
     const auto gate = gateSnapshot();
-    if (!gate.can_edit) {
-        return rejection(
-            "gate_closed", "render pass authoring is currently disabled",
-            {{"method", "remove_authored_pass"},
-             {"reason", primaryReason(gate.reasons)},
-             {"gate_epoch", gate.epoch}});
-    }
-    if (base_digest != document_.sourceDigest()) {
-        return rejection(
-            "external_modification",
-            "render config base digest no longer matches the engine-owned document",
-            {{"expected_source_digest", document_.sourceDigest()},
-             {"provided_source_digest", base_digest}});
-    }
-    try {
-        if (renderConfigSourceDigest(
-                readFileBytes(dependencies_.source_path)) !=
-            document_.sourceDigest()) {
-            return rejection(
-                "external_modification",
-                "render config source changed outside the editor");
-        }
-    } catch (const std::exception &error) {
-        return rejection("external_modification", error.what());
+    if (auto rejected = checkAuthoringPreconditions(
+            gate, base_digest, "remove_authored_pass",
+            "render pass authoring is currently disabled")) {
+        return *rejected;
     }
 
     AuthoredRenderConfigDocument root = document_;
@@ -2682,31 +2671,10 @@ OrderedJson RenderConfigEditorService::removeAuthoredPass(
     }
     RenderConfigCandidateDocumentSet candidate_documents{
         source_normalized_reference_, std::move(documents)};
-    try {
-        (void)dependencies_.resolve_authoring_context(candidate_documents);
-    } catch (const std::exception &error) {
-        return rejection("render_pipeline_preflight_failed", error.what(),
-                         {{"participant", "pelican.render_pipeline"},
-                          {"fragment_reference", reference}});
-    }
-
-    const auto ticket_id =
-        "render-authored-pass-" + std::to_string(next_ticket_++);
-    pending_.push_back(Ticket{
-        .id = ticket_id,
-        .accepted_gate_epoch = gate.epoch,
-        .accepted_transition_epoch = gate.transition_epoch,
-        .base_source_digest = base_digest,
-        .candidate = std::move(root),
-        .candidate_documents = std::move(candidate_documents),
-        .operation = "remove_authored_pass",
-        .fragment_reference = reference,
-    });
-    results_[ticket_id] = {{"ticket", ticket_id}, {"status", "pending"}};
-    return {{"ticket", ticket_id},
-            {"status", "accepted"},
-            {"base_source_digest", digestJson(base_digest)},
-            {"fragment_reference", reference}};
+    return enqueueAuthoredPassTicket("remove_authored_pass", gate,
+                                     base_digest, std::move(root),
+                                     std::move(candidate_documents),
+                                     reference);
 }
 
 OrderedJson RenderConfigEditorService::getResult(

@@ -1273,9 +1273,7 @@ EditorProjectionResult materializeEditorProjection(
     const EditorProjectionPlan &plan, const EditorProjectionModules &modules,
     EditorProjectionDocumentTarget &target,
     EditorRuntimeBindingState &binding_state,
-    std::uint64_t expected_binding_epoch,
-    std::uint64_t expected_codec_generation,
-    std::uint64_t expected_behavior_generation,
+    const EditorProjectionExpectation &expected,
     EditorProjectionFaultInjector *fault_injector) {
     const auto reject = [&](EditorProjectionStatus status,
                             EditorProjectionErrorCode code,
@@ -1296,11 +1294,11 @@ EditorProjectionResult materializeEditorProjection(
         };
     };
     try {
-        if (binding_state.epoch != expected_binding_epoch ||
-            binding_state.codec_generation != expected_codec_generation ||
-            binding_state.behavior_generation != expected_behavior_generation ||
-            plan.context.layoutGeneration() != expected_codec_generation ||
-            plan.context.behaviorGeneration() != expected_behavior_generation) {
+        if (binding_state.epoch != expected.binding_epoch ||
+            binding_state.codec_generation != expected.codec_generation ||
+            binding_state.behavior_generation != expected.behavior_generation ||
+            plan.context.layoutGeneration() != expected.codec_generation ||
+            plan.context.behaviorGeneration() != expected.behavior_generation) {
             return reject(EditorProjectionStatus::Rejected,
                           EditorProjectionErrorCode::CommandInvalid,
                           "editor_projection_stale_bindings@1: runtime binding or policy generation changed");
@@ -2165,9 +2163,14 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                     return materializeEditorProjection(
                         plan, editorProjectionModules(runtime->modules),
                         target, runtime->binding_state,
-                        runtime->modules.scene_loader.runtimeSceneEpoch(),
-                        context.layoutGeneration(),
-                        context.behaviorGeneration(), fault_injector);
+                        EditorProjectionExpectation{
+                            .binding_epoch = runtime->modules.scene_loader
+                                                 .runtimeSceneEpoch(),
+                            .codec_generation = context.layoutGeneration(),
+                            .behavior_generation =
+                                context.behaviorGeneration(),
+                        },
+                        fault_injector);
                 } catch (const EditorProjectionPlanError &error) {
                     return EditorProjectionResult{
                         .status = EditorProjectionStatus::Rejected,
@@ -2214,10 +2217,15 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                             plan,
                             editorProjectionModules(runtime->modules),
                             target, runtime->binding_state,
-                            runtime->modules.scene_loader
-                                .runtimeSceneEpoch(),
-                            context.layoutGeneration(),
-                            context.behaviorGeneration());
+                            EditorProjectionExpectation{
+                                .binding_epoch =
+                                    runtime->modules.scene_loader
+                                        .runtimeSceneEpoch(),
+                                .codec_generation =
+                                    context.layoutGeneration(),
+                                .behavior_generation =
+                                    context.behaviorGeneration(),
+                            });
                     } catch (const EditorProjectionPlanError &error) {
                         return EditorProjectionResult{
                             .status = EditorProjectionStatus::Rejected,
