@@ -1,6 +1,8 @@
 #include "passimplementationregistry.hpp"
 #include "../registrationownerhost.hpp"
 
+#include "providerregistrycommon.hpp"
+#include "../../project/stablefingerprint.hpp"
 #include "../../project/targetrenderplanning.hpp"
 
 #include <algorithm>
@@ -22,69 +24,25 @@ using RenderPass::Status;
 constexpr char authoredFullscreenImplementationIdV1[] =
     "pelican.render.authored_fullscreen@1";
 
-std::uint32_t nextGeneration(std::uint32_t generation) noexcept {
-    if (++generation == 0) ++generation;
-    return generation;
-}
-
-bool validHandle(RenderPass::ProviderHandleV1 handle) noexcept {
-    return handle.identity != 0 && handle.generation != 0 &&
-           handle.reserved == 0;
-}
-
-bool validByteRange(const char *data, std::uint32_t size,
-                    std::uint32_t maximum) noexcept {
-    return data != nullptr && size != 0 && size <= maximum &&
-           std::find(data, data + size, '\0') == data + size;
-}
+using provider_registry_common::nextGeneration;
+using provider_registry_common::statusName;
+using provider_registry_common::validByteRange;
+using provider_registry_common::validHandle;
 
 bool validProvider(const RenderPass::ProviderV1 &provider) noexcept {
-    if (provider.struct_size < sizeof(RenderPass::ProviderV1) ||
-        provider.version != RenderPass::descriptorVersionV1 ||
-        provider.reserved0 != 0 || provider.reserved1 != 0 ||
-        provider.reserved2 != 0 ||
-        provider.provider_version != RenderPass::providerVersionV1 ||
-        provider.minimum_engine_provider_version >
-            RenderPass::providerVersionV1 ||
-        provider.capability_bits !=
-            RenderPass::builtinProviderCapabilitiesV1 ||
-        provider.resolve_fullscreen == nullptr) {
-        return false;
-    }
-    return validByteRange(
-        provider.name_utf8, provider.name_size,
+    return provider_registry_common::validProviderEnvelope(
+        provider, &RenderPass::ProviderV1::resolve_fullscreen,
+        RenderPass::descriptorVersionV1,
+        RenderPass::providerVersionV1,
+        RenderPass::builtinProviderCapabilitiesV1,
         RenderPass::maximumProviderNameBytesV1);
 }
 
 std::uint32_t abiSize(
     std::size_t size, std::string_view field,
     std::string_view pass) {
-    if (size >
-        std::numeric_limits<std::uint32_t>::max()) {
-        throw std::runtime_error(
-            "pass implementation " +
-            std::string{field} +
-            " exceeds the v1 ABI size limit for pass '" +
-            std::string{pass} + "'");
-    }
-    return static_cast<std::uint32_t>(size);
-}
-
-const char *statusName(Status status) noexcept {
-    switch (status) {
-    case Status::ok: return "ok";
-    case Status::invalid_argument: return "invalid_argument";
-    case Status::unsupported_version: return "unsupported_version";
-    case Status::reserved_not_zero: return "reserved_not_zero";
-    case Status::duplicate_provider: return "duplicate_provider";
-    case Status::stale_provider: return "stale_provider";
-    case Status::wrong_owner: return "wrong_owner";
-    case Status::stale_owner: return "stale_owner";
-    case Status::provider_error: return "provider_error";
-    case Status::out_of_memory: return "out_of_memory";
-    case Status::unavailable: return "unavailable";
-    }
-    return "unknown_status";
+    return provider_registry_common::abiSizeChecked(
+        size, field, "pass implementation", "pass ", pass);
 }
 
 Status builtinResolveFullscreen(
@@ -188,33 +146,7 @@ nlohmann::ordered_json relationToJson(
     };
 }
 
-class StableFingerprint {
-    std::uint64_t value_ = 14695981039346656037ULL;
-
-  public:
-    void appendByte(std::uint8_t byte) noexcept {
-        value_ ^= byte;
-        value_ *= 1099511628211ULL;
-    }
-
-    void appendUnsigned(std::uint64_t value) noexcept {
-        for (std::uint32_t shift = 0; shift < 64; shift += 8) {
-            appendByte(static_cast<std::uint8_t>(value >> shift));
-        }
-    }
-
-    void appendString(std::string_view value) noexcept {
-        appendUnsigned(value.size());
-        for (const auto byte : value) {
-            appendByte(static_cast<std::uint8_t>(
-                static_cast<unsigned char>(byte)));
-        }
-    }
-
-    std::uint64_t value() const noexcept {
-        return value_;
-    }
-};
+using StableFingerprint = StableFingerprint64;
 
 std::string copyProviderString(
     const char *data, std::uint32_t size,
