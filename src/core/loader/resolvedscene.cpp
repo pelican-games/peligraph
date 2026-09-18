@@ -99,17 +99,14 @@ std::vector<std::string> componentPathPrefix(
             std::to_string(provenance.component_index)};
 }
 
-UserDataViolation cameraCompletionViolation(
-    std::string code, std::string token, std::string message,
-    std::span<const std::string> path_prefix) {
-    std::vector<std::string> tokens{path_prefix.begin(), path_prefix.end()};
-    tokens.push_back(std::move(token));
-    return UserDataViolation{
-        .code = std::move(code),
-        .tokens = std::move(tokens),
-        .fields = nlohmann::ordered_json::object(),
-        .leaf_message = std::move(message),
-    };
+// A registered codec carries the dispatch kind, so the component name is
+// consulted only where no codec was found: those components keep their
+// authored identity and nothing else identifies them.
+bool isCameraComponent(const ResolvedComponent &component) noexcept {
+    return component.runtime_codec != nullptr
+               ? component.runtime_codec->runtime_kind ==
+                     ComponentCodecRuntimeKind::Camera
+               : component.name == "camera";
 }
 
 void retainResolutionFailure(ResolvedComponent &component,
@@ -271,120 +268,13 @@ ResolvedComponent resolveComponent(
             return result;
         }
         result.runtime_value = std::move(decoded).value();
-        if (result.name == "camera") {
-            auto data = std::any_cast<CameraCodecData>(result.runtime_value);
-            const auto nested = [&](std::string_view name)
-                -> const nlohmann::json * {
-                const auto found = authored.find(name);
-                return found != authored.end() && found->is_object()
-                           ? &*found
-                           : nullptr;
-            };
-            if (!data.projection_specified) {
-                data.projection_kind = defaults.camera_projection.kind;
-                data.yfov = defaults.camera_projection.yfov;
-                data.znear = defaults.camera_projection.znear;
-                data.zfar = defaults.camera_projection.zfar;
-                data.aspect = defaults.camera_projection.aspect;
-                data.xmag = defaults.camera_projection.xmag;
-                data.ymag = defaults.camera_projection.ymag;
-            } else if (data.projection_kind ==
-                       CameraProjectionKind::Perspective) {
-                if (!data.yfov) {
-                    if (defaults.camera_projection.kind !=
-                        CameraProjectionKind::Perspective) {
-                        retainResolutionFailure(
-                            result,
-                            cameraCompletionViolation(
-                                "camera.yfov_required_for_perspective@1",
-                                "yfov",
-                                "camera.yfov is required when changing projection to perspective",
-                                path_prefix),
-                            authored);
-                        return result;
-                    }
-                    data.yfov = defaults.camera_projection.yfov;
-                }
-                if (!data.znear) {
-                    data.znear = defaults.camera_projection.znear;
-                }
-                if (!data.zfar) {
-                    data.zfar = defaults.camera_projection.zfar;
-                }
-                // The authored camera contract deliberately clears a fallback
-                // perspective aspect when the field is omitted.
-                // aspect is intentionally not inherited when it is omitted.
-            } else {
-                if (!data.xmag) {
-                    if (defaults.camera_projection.kind !=
-                        CameraProjectionKind::Orthographic) {
-                        retainResolutionFailure(
-                            result,
-                            cameraCompletionViolation(
-                                "camera.xmag_required_for_orthographic@1",
-                                "xmag",
-                                "camera.xmag is required when changing projection to orthographic",
-                                path_prefix),
-                            authored);
-                        return result;
-                    }
-                    data.xmag = defaults.camera_projection.xmag;
-                }
-                if (!data.ymag) {
-                    if (defaults.camera_projection.kind !=
-                        CameraProjectionKind::Orthographic) {
-                        retainResolutionFailure(
-                            result,
-                            cameraCompletionViolation(
-                                "camera.ymag_required_for_orthographic@1",
-                                "ymag",
-                                "camera.ymag is required when changing projection to orthographic",
-                                path_prefix),
-                            authored);
-                        return result;
-                    }
-                    data.ymag = defaults.camera_projection.ymag;
-                }
-                if (!data.znear) {
-                    data.znear = defaults.camera_projection.znear;
-                }
-                if (!data.zfar) {
-                    data.zfar = defaults.camera_projection.zfar;
-                }
-                data.aspect.reset();
-            }
-            // Keep the typed projection total for downstream consumers. The
-            // inactive-kind magnitudes/FOV are carried only as resolver state;
-            // encodeCanonical emits fields for the active kind alone.
-            if (!data.yfov) data.yfov = defaults.camera_projection.yfov;
-            if (!data.xmag) data.xmag = defaults.camera_projection.xmag;
-            if (!data.ymag) data.ymag = defaults.camera_projection.ymag;
-            data.projection_specified = true;
-            const bool projection_complete = data.znear && data.zfar &&
-                (data.projection_kind == CameraProjectionKind::Perspective
-                     ? static_cast<bool>(data.yfov)
-                     : static_cast<bool>(data.xmag) &&
-                           static_cast<bool>(data.ymag));
-            if (!projection_complete) {
-                throw std::logic_error(
-                    "resolved camera is missing projection values");
-            }
-            if (auto violation = cameraCrossFieldViolation(
-                    *data.znear, *data.zfar, path_prefix)) {
-                retainResolutionFailure(result, std::move(*violation),
-                                        authored);
-                return result;
-            }
-
-            const auto sprite = nested("sprite");
-            if (sprite == nullptr || !sprite->contains("pixel_perfect")) {
-                data.pixel_perfect = defaults.camera_sprite.pixel_perfect;
-            }
-            if (sprite == nullptr || !sprite->contains("sort")) {
-                data.sprite_sort = defaults.camera_sprite.sort;
-            }
-            data.sprite_specified = true;
-            result.runtime_value = std::move(data);
+        // Completing a scene-dependent omission is the codec's rule, not the
+        // resolver's: this dispatches, and the camera's projection/sprite
+        // completion lives next to decodeCamera.
+        if (auto violation = codec->completeDefaults(
+                result.runtime_value, authored, defaults, path_prefix)) {
+            retainResolutionFailure(result, std::move(*violation), authored);
+            return result;
         }
         result.effective_json = codec->encodeCanonical(result.runtime_value);
     } catch (const ResolvedSceneError &) {
@@ -410,7 +300,7 @@ ResolvedComponent resolveComponent(
 
 ResolvedSceneDefaults cameraDefaultsAfter(
     const ResolvedComponent &component, ResolvedSceneDefaults defaults) {
-    if (component.name != "camera" || component.runtime_codec == nullptr ||
+    if (component.runtime_codec == nullptr || !isCameraComponent(component) ||
         component.runtime_resolution_error) {
         return defaults;
     }
@@ -1126,7 +1016,7 @@ ResolvedScene ResolvedSceneResolver::resolve(
                     },
                     result.behavior_reload_sources_, scene_camera_defaults, surface));
                 if (!first_camera_resolved &&
-                    object.components.back().name == "camera") {
+                    isCameraComponent(object.components.back())) {
                     scene_camera_defaults = cameraDefaultsAfter(
                         object.components.back(), scene_camera_defaults);
                     first_camera_resolved = true;

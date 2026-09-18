@@ -51,14 +51,8 @@ struct BehaviorReloadSourceParams {
     SceneComponentProvenance provenance;
 };
 
-// Every authored omission which affects a scene reader is completed while the
-// immutable projection is prepared.  Keeping the project camera defaults on
-// the projection also lets editor transactions and request-local previews
-// reproduce the same completion without consulting live modules.
-struct ResolvedSceneDefaults {
-    CameraProjectionSpec camera_projection;
-    CameraSpritePolicySpec camera_sprite;
-};
+// ResolvedSceneDefaults itself lives in componentcodec.hpp, because the codec
+// which consumes each default is the one that owns the completion rule.
 
 // SnapshotV2's resolver-input wire type is deliberately an alias instead of a
 // second aggregate: its field set and declaration order are therefore exactly

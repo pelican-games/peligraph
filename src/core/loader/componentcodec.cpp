@@ -215,6 +215,49 @@ const auto light_fields = materializeSchema(light_schema);
 const auto collider_fields = materializeSchema(collider_schema);
 const auto sprite_fields = materializeSchema(sprite_schema);
 
+// The closed-field list a decoder enforces is derived from the declared
+// schema, so a field cannot be accepted by the runtime while the editor never
+// learns of it (or the reverse). A dotted schema name such as
+// "sprite.pixel_perfect" describes a nested editor path, and the wire key it
+// belongs to is the segment before the first dot. `extra` carries the keys
+// which are deliberately not schema fields: the "name" envelope, the nested
+// authoring objects, and the legacy aliases that exist only to be rejected
+// with a dedicated message.
+template <class Schema>
+std::vector<std::string_view> closedFieldNames(
+    const Schema &schema, std::span<const std::string_view> extra) {
+    std::vector<std::string_view> result;
+    result.reserve(std::size(schema.fields) + extra.size());
+    const auto push = [&result](std::string_view name) {
+        if (std::find(result.begin(), result.end(), name) == result.end())
+            result.push_back(name);
+    };
+    for (const auto &field : schema.fields) {
+        const auto dot = field.name.find('.');
+        push(dot == std::string_view::npos ? field.name
+                                           : field.name.substr(0, dot));
+    }
+    for (const auto name : extra) push(name);
+    return result;
+}
+
+constexpr std::array<std::string_view, 1> envelope_only{"name"};
+
+const auto transform_closed_fields =
+    closedFieldNames(transform_schema, envelope_only);
+const auto simple_model_view_closed_fields = closedFieldNames(
+    simple_model_view_schema,
+    std::array<std::string_view, 2>{"name", "params"});
+const auto camera_closed_fields = closedFieldNames(
+    camera_schema, std::array<std::string_view, 4>{
+                       "name", "perspective", "orthographic", "params"});
+const auto light_closed_fields = closedFieldNames(light_schema, envelope_only);
+const auto collider_closed_fields = closedFieldNames(
+    collider_schema,
+    std::array<std::string_view, 3>{"name", "size", "height"});
+const auto animation_closed_fields =
+    closedFieldNames(animation_schema, envelope_only);
+
 const std::array ray_instance_fields{
     StructFieldSchema{"mask", StructFieldType::U8,
                       std::pair<std::uint64_t, std::uint64_t>{0, 0xffu}},
@@ -265,8 +308,8 @@ void requireObjectAndName(const Json &json, std::string_view component_name) {
     }
 }
 
-template <std::size_t N>
-void requireClosed(const Json &json, std::string_view root, const std::array<std::string_view, N> &known) {
+void requireClosed(const Json &json, std::string_view root,
+                   std::span<const std::string_view> known) {
     for (const auto &[key, value] : json.items()) {
         (void)value;
         if (std::find(known.begin(), known.end(), key) == known.end()) {
@@ -345,21 +388,17 @@ vec3 readVec3(const Json &value, std::string path, float min = -std::numeric_lim
             readFloat(value[2], path, min, max, min_inclusive)};
 }
 
-vec4 readVec4(const Json &value, std::string path) {
-    if (!value.is_array() || value.size() != 4) {
-        codecError(StructFieldErrorCode::TypeMismatch, std::move(path), "must be a vec4 array");
-    }
-    return {readFloat(value[0], path), readFloat(value[1], path),
-            readFloat(value[2], path), readFloat(value[3], path)};
-}
-
-quat readQuat(const Json &value, std::string path) {
-    const auto v = readVec4(value, path);
-    const auto norm_squared = v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w;
+// The one degenerate-rotation rule. It is a property of the whole value rather
+// than of a component, so the declared schema (which carries per-component
+// ranges only) cannot express it. Nothing is normalized here: decode ->
+// encodeCanonical stays a byte-exact round trip, and composition into world
+// space is what normalizes.
+void requireNonZeroQuat(quat value, std::string path) {
+    const auto norm_squared = value.x * value.x + value.y * value.y +
+                              value.z * value.z + value.w * value.w;
     if (norm_squared <= std::numeric_limits<float>::epsilon()) {
         codecError(StructFieldErrorCode::OutOfRange, std::move(path), "must be a non-zero quaternion");
     }
-    return {v.x, v.y, v.z, v.w};
 }
 
 bool readBool(const Json &value, std::string path) {
@@ -382,23 +421,48 @@ OrderedJson encodeVec(vec3 value) { return OrderedJson::array({value.x, value.y,
 OrderedJson encodeVec(vec4 value) { return OrderedJson::array({value.x, value.y, value.z, value.w}); }
 OrderedJson encodeVec(quat value) { return OrderedJson::array({value.x, value.y, value.z, value.w}); }
 
+// The declared schema is the single source of the field names, defaults and
+// ranges a codec accepts. "name" is erased instead of being declared as a
+// field: it is the component's identity in the scene document, and the codec's
+// own requireObjectAndName has already validated it. The caller runs
+// requireClosed first, so decodeStructObject's own unknown-key scan never
+// fires and the UnknownField wording stays the codec's.
+template <class Owner, class Schema>
+void decodeSchemaFields(const Json &json, Owner &destination,
+                        const Schema &schema, std::string_view root) {
+    Json payload = json;
+    payload.erase("name");
+    internal::decodeStructObject(payload, destination, schema, root);
+}
+
+// The mirror of decodeSchemaFields. encodeStructObject emits the fields in
+// declaration order, which is why the schema order is the canonical key order;
+// the envelope goes in front.
+template <class Owner, class Schema>
+OrderedJson encodeSchemaFields(const Owner &value, const Schema &schema,
+                               std::string_view name) {
+    auto encoded = internal::encodeStructObject(value, schema, name);
+    auto result = OrderedJson::object();
+    result["name"] = name;
+    for (auto &[key, item] : encoded.items()) result[key] = std::move(item);
+    return result;
+}
+
 ComponentCodecValue decodeTransform(const Json &json) {
     requireObjectAndName(json, "transform");
-    requireClosed(json, "transform", std::array<std::string_view, 4>{"name", "pos", "rotation", "scale"});
+    requireClosed(json, "transform", transform_closed_fields);
     TransformCodecData result;
-    if (const auto it = json.find("pos"); it != json.end()) result.pos = readVec3(*it, "transform.pos");
-    if (const auto it = json.find("rotation"); it != json.end()) {
-        result.rotation = readQuat(*it, "transform.rotation");
-        result.rotation_specified = true;
-    }
-    if (const auto it = json.find("scale"); it != json.end()) result.scale = readVec3(*it, "transform.scale");
+    decodeSchemaFields(json, result, transform_schema, "transform");
+    // Presence, not value: callers distinguish "the scene authored a rotation"
+    // from "the rotation happens to equal the identity default".
+    result.rotation_specified = json.contains("rotation");
+    requireNonZeroQuat(result.rotation, "transform.rotation");
     return result;
 }
 
 OrderedJson encodeTransform(const ComponentCodecValue &value) {
-    const auto &data = codecValue<TransformCodecData>(value, "transform");
-    return OrderedJson{{"name", "transform"}, {"pos", encodeVec(data.pos)},
-                       {"rotation", encodeVec(data.rotation)}, {"scale", encodeVec(data.scale)}};
+    return encodeSchemaFields(codecValue<TransformCodecData>(value, "transform"),
+                              transform_schema, "transform");
 }
 
 void applyTransform(const ComponentCodecValue &value, void *raw_target) {
@@ -454,7 +518,7 @@ const Json *optionalObject(const Json &json, std::string_view root, std::string_
 
 ComponentCodecValue decodeSimpleModelView(const Json &json) {
     requireObjectAndName(json, "simplemodelview");
-    requireClosed(json, "simplemodelview", std::array<std::string_view, 3>{"name", "model", "params"});
+    requireClosed(json, "simplemodelview", simple_model_view_closed_fields);
     SimpleModelViewCodecData result;
     result.model = readString(requireField(json, "simplemodelview", "model"), "simplemodelview.model", true);
     if (const auto *params = optionalObject(json, "simplemodelview", "params")) {
@@ -668,10 +732,7 @@ ComponentCodecValue decodeCamera(const Json &json) {
         }
     };
     reject_aliases(json, "camera");
-    requireClosed(json, "camera",
-                  std::array<std::string_view, 13>{"name", "type", "perspective", "orthographic", "yfov",
-                                                   "znear", "zfar", "aspect", "xmag", "ymag", "sprite",
-                                                   "controller", "params"});
+    requireClosed(json, "camera", camera_closed_fields);
     const auto *perspective = optionalObject(json, "camera", "perspective");
     const auto *orthographic = optionalObject(json, "camera", "orthographic");
     if (perspective != nullptr && orthographic != nullptr) {
@@ -836,75 +897,185 @@ ComponentCodecValue projectCamera(const void *source) {
     return *static_cast<const CameraCodecData *>(source);
 }
 
+UserDataViolation cameraCompletionViolation(
+    std::string code, std::string token, std::string message,
+    std::span<const std::string> path_prefix) {
+    std::vector<std::string> tokens{path_prefix.begin(), path_prefix.end()};
+    tokens.push_back(std::move(token));
+    return UserDataViolation{
+        .code = std::move(code),
+        .tokens = std::move(tokens),
+        .fields = OrderedJson::object(),
+        .leaf_message = std::move(message),
+    };
+}
+
+// The camera is the only component whose authored omissions are completed from
+// the scene rather than from its own schema defaults: an omitted projection
+// field inherits the previous camera's value, and changing the projection kind
+// makes the fields the new kind needs mandatory. The rule lives beside
+// decodeCamera so the two cannot disagree about which field is authoritative.
+std::optional<UserDataViolation> completeCameraDefaults(
+    ComponentCodecValue &value, const Json &authored,
+    const ResolvedSceneDefaults &defaults,
+    std::span<const std::string> path_prefix) {
+    auto data = codecValue<CameraCodecData>(value, "camera");
+    const auto nested = [&authored](std::string_view name) -> const Json * {
+        const auto found = authored.find(name);
+        return found != authored.end() && found->is_object() ? &*found : nullptr;
+    };
+    if (!data.projection_specified) {
+        data.projection_kind = defaults.camera_projection.kind;
+        data.yfov = defaults.camera_projection.yfov;
+        data.znear = defaults.camera_projection.znear;
+        data.zfar = defaults.camera_projection.zfar;
+        data.aspect = defaults.camera_projection.aspect;
+        data.xmag = defaults.camera_projection.xmag;
+        data.ymag = defaults.camera_projection.ymag;
+    } else if (data.projection_kind == CameraProjectionKind::Perspective) {
+        if (!data.yfov) {
+            if (defaults.camera_projection.kind !=
+                CameraProjectionKind::Perspective) {
+                return cameraCompletionViolation(
+                    "camera.yfov_required_for_perspective@1", "yfov",
+                    "camera.yfov is required when changing projection to perspective",
+                    path_prefix);
+            }
+            data.yfov = defaults.camera_projection.yfov;
+        }
+        if (!data.znear) {
+            data.znear = defaults.camera_projection.znear;
+        }
+        if (!data.zfar) {
+            data.zfar = defaults.camera_projection.zfar;
+        }
+        // The authored camera contract deliberately clears a fallback
+        // perspective aspect when the field is omitted.
+        // aspect is intentionally not inherited when it is omitted.
+    } else {
+        if (!data.xmag) {
+            if (defaults.camera_projection.kind !=
+                CameraProjectionKind::Orthographic) {
+                return cameraCompletionViolation(
+                    "camera.xmag_required_for_orthographic@1", "xmag",
+                    "camera.xmag is required when changing projection to orthographic",
+                    path_prefix);
+            }
+            data.xmag = defaults.camera_projection.xmag;
+        }
+        if (!data.ymag) {
+            if (defaults.camera_projection.kind !=
+                CameraProjectionKind::Orthographic) {
+                return cameraCompletionViolation(
+                    "camera.ymag_required_for_orthographic@1", "ymag",
+                    "camera.ymag is required when changing projection to orthographic",
+                    path_prefix);
+            }
+            data.ymag = defaults.camera_projection.ymag;
+        }
+        if (!data.znear) {
+            data.znear = defaults.camera_projection.znear;
+        }
+        if (!data.zfar) {
+            data.zfar = defaults.camera_projection.zfar;
+        }
+        data.aspect.reset();
+    }
+    // Keep the typed projection total for downstream consumers. The
+    // inactive-kind magnitudes/FOV are carried only as resolver state;
+    // encodeCanonical emits fields for the active kind alone.
+    if (!data.yfov) data.yfov = defaults.camera_projection.yfov;
+    if (!data.xmag) data.xmag = defaults.camera_projection.xmag;
+    if (!data.ymag) data.ymag = defaults.camera_projection.ymag;
+    data.projection_specified = true;
+    const bool projection_complete = data.znear && data.zfar &&
+        (data.projection_kind == CameraProjectionKind::Perspective
+             ? static_cast<bool>(data.yfov)
+             : static_cast<bool>(data.xmag) &&
+                   static_cast<bool>(data.ymag));
+    if (!projection_complete) {
+        throw std::logic_error("resolved camera is missing projection values");
+    }
+    if (auto violation = cameraCrossFieldViolation(*data.znear, *data.zfar,
+                                                   path_prefix)) {
+        return violation;
+    }
+
+    const auto sprite = nested("sprite");
+    if (sprite == nullptr || !sprite->contains("pixel_perfect")) {
+        data.pixel_perfect = defaults.camera_sprite.pixel_perfect;
+    }
+    if (sprite == nullptr || !sprite->contains("sort")) {
+        data.sprite_sort = defaults.camera_sprite.sort;
+    }
+    data.sprite_specified = true;
+    value = std::move(data);
+    return std::nullopt;
+}
+
+// Which of the schema's fields a light may author depends on its type, so the
+// type is read (and the presence rules settled) before the schema decodes the
+// values. Everything below the presence rules is a cross-field rule that the
+// declared schema cannot state.
+LightCodecType decodeLightType(const Json &json) {
+    const auto type = readString(requireField(json, "light", "type"), "light.type");
+    if (type == "directional") return LightCodecType::Directional;
+    if (type == "point") return LightCodecType::Point;
+    if (type == "spot") return LightCodecType::Spot;
+    codecError(StructFieldErrorCode::InvalidEnum, "light.type", "is not directional, point, or spot");
+}
+
 ComponentCodecValue decodeLight(const Json &json) {
     requireObjectAndName(json, "light");
-    requireClosed(json, "light",
-                  std::array<std::string_view, 9>{"name", "type", "position", "direction", "intensity",
-                                                  "range", "color", "innerConeAngle", "outerConeAngle"});
-    const auto type = readString(requireField(json, "light", "type"), "light.type");
-    LightCodecData result;
-    if (type == "directional") result.type = LightCodecType::Directional;
-    else if (type == "point") result.type = LightCodecType::Point;
-    else if (type == "spot") result.type = LightCodecType::Spot;
-    else codecError(StructFieldErrorCode::InvalidEnum, "light.type", "is not directional, point, or spot");
+    requireClosed(json, "light", light_closed_fields);
+    const auto type = decodeLightType(json);
 
-    if (result.type != LightCodecType::Directional) {
-        result.position = readVec3(requireField(json, "light", "position"), "light.position");
+    if (type != LightCodecType::Directional) {
+        (void)requireField(json, "light", "position");
     } else if (json.contains("position")) {
         codecError(StructFieldErrorCode::UnknownField, "light.position", "is not valid for directional");
     }
-    if (result.type != LightCodecType::Point) {
-        result.direction = readVec3(requireField(json, "light", "direction"), "light.direction");
+    if (type != LightCodecType::Point) {
+        (void)requireField(json, "light", "direction");
     } else if (json.contains("direction")) {
         codecError(StructFieldErrorCode::UnknownField, "light.direction", "is not valid for point");
     }
-    result.color = readVec3(requireField(json, "light", "color"), "light.color", 0.0f, 1.0f);
-    if (json.contains("intensity")) {
-        result.intensity = readFloat(json.at("intensity"), "light.intensity", 0.0f);
-    }
-    if (json.contains("range")) {
-        result.range = readFloat(json.at("range"), "light.range", 0.0f,
-                                 std::numeric_limits<float>::max(), false);
-    }
-    if (result.type == LightCodecType::Spot) {
-        if (json.contains("innerConeAngle")) {
-            result.inner_cone_angle = readFloat(json.at("innerConeAngle"), "light.innerConeAngle", 0.0f, 180.0f);
-        }
-        if (json.contains("outerConeAngle")) {
-            result.outer_cone_angle = readFloat(json.at("outerConeAngle"), "light.outerConeAngle", 0.0f, 180.0f);
-        }
-        if (result.inner_cone_angle > result.outer_cone_angle) {
-            codecError(StructFieldErrorCode::OutOfRange, "light.innerConeAngle",
-                       "must not exceed outerConeAngle");
-        }
-    } else if (json.contains("innerConeAngle") || json.contains("outerConeAngle")) {
+    (void)requireField(json, "light", "color");
+    if (type != LightCodecType::Spot &&
+        (json.contains("innerConeAngle") || json.contains("outerConeAngle"))) {
         codecError(StructFieldErrorCode::UnknownField,
                    json.contains("innerConeAngle") ? "light.innerConeAngle" : "light.outerConeAngle",
                    "is valid only for spot");
     }
-    return result;
-}
 
-std::string_view lightTypeName(LightCodecType type) {
-    switch (type) {
-    case LightCodecType::Directional: return "directional";
-    case LightCodecType::Point: return "point";
-    case LightCodecType::Spot: return "spot";
+    LightCodecData result;
+    decodeSchemaFields(json, result, light_schema, "light");
+
+    // Zero is how an omitted range is carried, so an authored range has to be
+    // strictly positive. The schema's lower bound is inclusive because it
+    // describes the stored value, not the authored one.
+    if (json.contains("range") && !(result.range > 0.0f)) {
+        codecError(StructFieldErrorCode::OutOfRange, "light.range", "is out of range");
     }
-    return "directional";
+    if (result.type == LightCodecType::Spot &&
+        result.inner_cone_angle > result.outer_cone_angle) {
+        codecError(StructFieldErrorCode::OutOfRange, "light.innerConeAngle",
+                   "must not exceed outerConeAngle");
+    }
+    return result;
 }
 
 OrderedJson encodeLight(const ComponentCodecValue &value) {
     const auto &data = codecValue<LightCodecData>(value, "light");
-    OrderedJson result{{"name", "light"}, {"type", lightTypeName(data.type)}};
-    if (data.type != LightCodecType::Directional) result["position"] = encodeVec(data.position);
-    if (data.type != LightCodecType::Point) result["direction"] = encodeVec(data.direction);
-    result["intensity"] = data.intensity;
-    if (data.range > 0.0f) result["range"] = data.range;
-    result["color"] = encodeVec(data.color);
-    if (data.type == LightCodecType::Spot) {
-        result["innerConeAngle"] = data.inner_cone_angle;
-        result["outerConeAngle"] = data.outer_cone_angle;
+    auto result = encodeSchemaFields(data, light_schema, "light");
+    // The schema emits every field; the type decides which of them a light is
+    // allowed to author, and an omitted range is carried as zero.
+    if (data.type == LightCodecType::Directional) result.erase("position");
+    if (data.type == LightCodecType::Point) result.erase("direction");
+    if (!(data.range > 0.0f)) result.erase("range");
+    if (data.type != LightCodecType::Spot) {
+        result.erase("innerConeAngle");
+        result.erase("outerConeAngle");
     }
     return result;
 }
@@ -921,10 +1092,7 @@ ComponentCodecValue projectLight(const void *source) {
 
 ComponentCodecValue decodeCollider(const Json &json) {
     requireObjectAndName(json, "collider");
-    requireClosed(json, "collider",
-                  std::array<std::string_view, 13>{"name", "shape", "pos", "rotation", "radius",
-                                                   "half_extents", "half_height", "layer", "mask", "trigger",
-                                                   "one_way", "size", "height"});
+    requireClosed(json, "collider", collider_closed_fields);
     auto normalized = json;
     if (!normalized.contains("shape")) normalized["shape"] = "sphere";
     if (normalized.at("shape").is_string()) {
@@ -977,8 +1145,7 @@ ComponentCodecValue projectCollider(const void *source) {
 
 ComponentCodecValue decodeAnimation(const Json &json) {
     requireObjectAndName(json, "animation");
-    requireClosed(json, "animation",
-                  std::array<std::string_view, 7>{"name", "clip", "graph", "parameters", "speed", "loop", "start_time"});
+    requireClosed(json, "animation", animation_closed_fields);
     if (json.contains("clip") == json.contains("graph"))
         codecError(StructFieldErrorCode::OutOfRange, "animation",
                    "requires exactly one of clip or graph");
@@ -1584,6 +1751,21 @@ ComponentEditorSwapToken ComponentCodec::prepareEditorSwap(
 void ComponentCodec::swapEditorToken(
     ComponentEditorSwapToken &token, EditorCodecSwapPhase phase) const noexcept {
     if (editor_swap != nullptr) editor_swap(token, phase);
+}
+
+std::optional<UserDataViolation> ComponentCodec::completeDefaults(
+    ComponentCodecValue &value, const nlohmann::json &authored,
+    const ResolvedSceneDefaults &defaults,
+    std::span<const std::string> path_prefix) const {
+    switch (runtime_kind) {
+    case ComponentCodecRuntimeKind::Camera:
+        return completeCameraDefaults(value, authored, defaults, path_prefix);
+    case ComponentCodecRuntimeKind::Ecs:
+    case ComponentCodecRuntimeKind::Light:
+    case ComponentCodecRuntimeKind::Collider:
+        break;
+    }
+    return std::nullopt;
 }
 
 namespace {

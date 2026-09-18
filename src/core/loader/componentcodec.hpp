@@ -206,6 +206,18 @@ struct LightCodecData {
     float range = 0.0f;
 };
 
+// Every authored omission which affects a scene reader is completed while the
+// immutable projection is prepared.  Keeping the project camera defaults on
+// the projection also lets editor transactions and request-local previews
+// reproduce the same completion without consulting live modules.  The value
+// lives next to the codecs because ComponentCodec::completeDefaults is what
+// reads it: the rule for completing an authored omission belongs to the codec
+// that owns the field, not to the resolver that walks the scene.
+struct ResolvedSceneDefaults {
+    CameraProjectionSpec camera_projection;
+    CameraSpritePolicySpec camera_sprite;
+};
+
 // Canonical omission defaults consumed by both the decoder and the prefab
 // provider.  Keeping the value behind this boundary lets tests prove that a
 // codec-default change reaches the resolved component, instead of merely
@@ -332,6 +344,17 @@ struct ComponentCodec {
         const ComponentCodecValue &value) const;
     void swapEditorToken(ComponentEditorSwapToken &token,
                          EditorCodecSwapPhase phase) const noexcept;
+    // Completes the authored omissions whose value comes from the scene rather
+    // than from the component's own schema default -- today only the camera
+    // projection and sprite policy. The rule is selected by runtime_kind, not
+    // by the codec name, because what it completes is the runtime value's own
+    // type: a catalog that swaps in another camera decoder still gets the one
+    // completion rule for CameraCodecData. The returned violation is already
+    // rooted at `path_prefix`; std::nullopt means the value is total.
+    std::optional<UserDataViolation> completeDefaults(
+        ComponentCodecValue &value, const nlohmann::json &authored,
+        const ResolvedSceneDefaults &defaults,
+        std::span<const std::string> path_prefix) const;
 
     friend bool operator==(const ComponentCodec &left,
                            const ComponentCodec &right) noexcept {

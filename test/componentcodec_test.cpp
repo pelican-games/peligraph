@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <any>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -23,6 +24,7 @@
 #include <string>
 #include <type_traits>
 #include <unordered_set>
+#include <vector>
 
 #ifndef PELICAN_TEST_SOURCE_DIR
 #define PELICAN_TEST_SOURCE_DIR "."
@@ -121,6 +123,20 @@ nlohmann::ordered_json canonicalThroughRuntime(const ComponentCodec &codec,
         throw std::logic_error("unhandled codec in fixture");
     }
     return codec.encodeCanonical(projected);
+}
+
+std::vector<std::string> keysOf(const nlohmann::ordered_json &object) {
+    std::vector<std::string> result;
+    for (const auto &entry : object.items()) result.push_back(entry.key());
+    return result;
+}
+
+// A declared schema name can describe a nested editor path ("sprite.sort") or
+// an element of a packed wire value ("flip[0]"); the accepted document key is
+// the leading segment in both cases.
+std::string wireKeyOf(std::string_view schema_field) {
+    const auto end = schema_field.find_first_of(".[");
+    return std::string{schema_field.substr(0, end)};
 }
 
 void requireVec3(glm::vec3 actual, glm::vec3 expected) {
@@ -421,6 +437,124 @@ TEST_CASE("every component codec rejects invalid type range and unknown key fixt
             REQUIRE(covered.contains(std::string{codec.name} + "/" + kind));
         }
     }
+}
+
+TEST_CASE("the accepted key set of every codec is derived from its declared schema",
+          "[component-codec][schema][closed-schema][mutation]") {
+    // The closed-field list used to be a literal array next to each decoder.
+    // It is now generated from the schema the editor reads, so a field that
+    // exists in one and not the other cannot survive: no declared field name
+    // may be rejected as an unknown document key.
+    //
+    // The value below is deliberately wrong, but "is it rejected" is not the
+    // question and must not be asserted. A decoder that reads the field
+    // rejects it for its type or its range; a decoder that ignores the field
+    // for the shape it decoded accepts the document outright (collider's
+    // half_extents and half_height are unread under the default sphere).
+    // Both outcomes are correct here. Only an unknown-key rejection is not,
+    // and that is the single thing each section asserts.
+    for (const auto &codec : componentCodecs()) {
+        for (const auto &field : codec.fieldSchema()) {
+            const auto key = wireKeyOf(field.name);
+            nlohmann::json authored{{"name", codec.name}};
+            authored[key] = nullptr;
+            DYNAMIC_SECTION(std::string{codec.name}
+                            << "." << std::string{field.name}) {
+                std::string rejection;
+                try {
+                    (void)codec.decodeAuthored(authored);
+                } catch (const LegacyRejectException &error) {
+                    rejection = error.what();
+                    std::transform(rejection.begin(), rejection.end(),
+                                   rejection.begin(), [](unsigned char value) {
+                                       return static_cast<char>(
+                                           std::tolower(value));
+                                   });
+                }
+                INFO("authored key '"
+                     << key << "', rejection: "
+                     << (rejection.empty() ? std::string{"(accepted)"}
+                                           : rejection));
+                CHECK(rejection.find("unknown") == std::string::npos);
+            }
+        }
+    }
+}
+
+TEST_CASE("transform and light decode and encode through their declared schema",
+          "[component-codec][schema][transform][light][mutation]") {
+    using Json = nlohmann::json;
+    const auto &transform = requireComponentCodec("transform");
+    // Omitted fields take the schema defaults, and the canonical key order is
+    // the schema's declaration order behind the name envelope.
+    const auto minimal =
+        canonicalThroughRuntime(transform, Json{{"name", "transform"}});
+    CHECK(keysOf(minimal) ==
+          std::vector<std::string>{"name", "pos", "rotation", "scale"});
+    const auto minimal_json = Json(minimal);
+    CHECK(minimal_json.at("pos") == Json::array({0.0, 0.0, 0.0}));
+    CHECK(minimal_json.at("rotation") == Json::array({0.0, 0.0, 0.0, 1.0}));
+    CHECK(minimal_json.at("scale") == Json::array({1.0, 1.0, 1.0}));
+    // The degenerate-rotation rule is the one transform check the schema
+    // cannot state, so it is the one that has to be kept by hand.
+    CHECK_THROWS(decodeOrThrow(
+        transform, Json{{"name", "transform"},
+                        {"rotation", Json::array({0, 0, 0, 0})}}));
+
+    const auto &light = requireComponentCodec("light");
+    const Json spot{{"name", "light"},      {"type", "spot"},
+                    {"position", {0, 0, 0}}, {"direction", {0, -1, 0}},
+                    {"color", {1, 1, 1}}};
+    const auto canonical = canonicalThroughRuntime(light, spot);
+    CHECK(keysOf(canonical) ==
+          std::vector<std::string>{"name", "type", "position", "direction",
+                                   "intensity", "color", "innerConeAngle",
+                                   "outerConeAngle"});
+    CHECK(canonical.at("intensity") == 1.0);
+    CHECK(canonical.at("innerConeAngle") == 12.5);
+    CHECK(canonical.at("outerConeAngle") == 17.5);
+
+    // The range the editor advertises is now the range the decoder enforces.
+    auto over_range = spot;
+    over_range["intensity"] = 2.0e12;
+    CHECK_THROWS(decodeOrThrow(light, over_range));
+    auto at_bound = spot;
+    at_bound["intensity"] = 1.0e12;
+    CHECK_NOTHROW(decodeOrThrow(light, at_bound));
+
+    // Zero is how an omitted range is carried, so it is not an authored value.
+    auto zero_range = spot;
+    zero_range["range"] = 0.0;
+    CHECK_THROWS(decodeOrThrow(light, zero_range));
+    auto ranged = spot;
+    ranged["range"] = 4.0;
+    CHECK(canonicalThroughRuntime(light, ranged).at("range") == 4.0);
+
+    // The type-dependent presence rules survive the move to the schema path.
+    auto directional_with_position = spot;
+    directional_with_position["type"] = "directional";
+    CHECK_THROWS(decodeOrThrow(light, directional_with_position));
+    Json point_with_direction{{"name", "light"},
+                              {"type", "point"},
+                              {"position", {0, 0, 0}},
+                              {"direction", {0, -1, 0}},
+                              {"color", {1, 1, 1}}};
+    CHECK_THROWS(decodeOrThrow(light, point_with_direction));
+    Json directional{{"name", "light"},
+                     {"type", "directional"},
+                     {"direction", {0, -1, 0}},
+                     {"color", {1, 1, 1}}};
+    auto cone_on_directional = directional;
+    cone_on_directional["outerConeAngle"] = 30.0;
+    CHECK_THROWS(decodeOrThrow(light, cone_on_directional));
+    auto inverted_cone = spot;
+    inverted_cone["innerConeAngle"] = 40.0;
+    inverted_cone["outerConeAngle"] = 30.0;
+    CHECK_THROWS(decodeOrThrow(light, inverted_cone));
+    // A directional light carries neither a position nor a cone.
+    CHECK(keysOf(canonicalThroughRuntime(light, directional)) ==
+          std::vector<std::string>{"name", "type", "direction", "intensity",
+                                   "color"});
 }
 
 TEST_CASE("procedural geometry codec normalizes a single asset or a unique asset list",
