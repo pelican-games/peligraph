@@ -41,4 +41,10 @@ struct RenderTargetDefinition {
     std::optional<std::string> alias_group;
 };
 
+// Resolves the authored clear value against the target's format. Lives with
+// the definition rather than with config registration because registration
+// is the upper layer.
+vk::ClearColorValue physicalRenderTargetHistoryClearColor(
+    const RenderTargetDefinition &definition);
+
 } // namespace Pelican

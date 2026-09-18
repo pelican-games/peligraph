@@ -13279,12 +13279,19 @@ void GoldenHarness::runFullscreenRebind() {
     auto &render_targets = GET_MODULE(RenderTargetContainer);
     auto &compute_tasks = GET_MODULE(ComputeTaskContainer);
     const auto compute_history = render_targets.registerRenderTarget(
-        "compute_history", {goldenWidth, goldenHeight}, "rgba8", "test", 1.0f,
-        std::nullopt, vk::Format::eR8G8B8A8Unorm,
-        vk::ImageUsageFlagBits::eColorAttachment |
-            vk::ImageUsageFlagBits::eSampled |
-            vk::ImageUsageFlagBits::eStorage,
-        vma::MemoryUsage::eAutoPreferDevice, true);
+        RenderTargetDefinition{
+            .name = "compute_history",
+            .format_class = "rgba8",
+            .role = "test",
+            .extent_scale = 1.0f,
+            .fixed_extent = std::nullopt,
+            .format = vk::Format::eR8G8B8A8Unorm,
+            .usage = vk::ImageUsageFlagBits::eColorAttachment |
+                     vk::ImageUsageFlagBits::eSampled |
+                     vk::ImageUsageFlagBits::eStorage,
+            .history = true,
+        },
+        {goldenWidth, goldenHeight}, vma::MemoryUsage::eAutoPreferDevice);
     REQUIRE(isConcreteRenderTarget(compute_history));
     GET_MODULE(FrameGraphResourceContainer)
         .registerBuffers({FrameGraphBufferDefinition{

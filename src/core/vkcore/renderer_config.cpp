@@ -379,11 +379,26 @@ void registerXrMirrorIntermediate(vk::Extent2D extent) {
     }
     const auto metadata = targets.getMetadata(display);
     targets.registerRenderTarget(
-        std::string{OpenXr::xr_mirror_intermediate_name}, extent,
-        "explicit(" + vk::to_string(metadata.format) + ")", "color", 1.0f,
-        metadata.extent, metadata.format,
-        vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
-        vma::MemoryUsage::eAutoPreferDevice);
+        RenderTargetDefinition{
+            .name = std::string{OpenXr::xr_mirror_intermediate_name},
+            .format_class =
+                "explicit(" + vk::to_string(metadata.format) + ")",
+            .role = "color",
+            .extent_scale = 1.0f,
+            .fixed_extent = metadata.extent,
+            .format = metadata.format,
+            .usage = vk::ImageUsageFlagBits::eTransferDst |
+                     vk::ImageUsageFlagBits::eSampled,
+            .history = false,
+            .history_clear_color = {0.0, 0.0, 0.0, 0.0},
+            .samples = 1,
+            .mip_levels = ImageMipLevelCount{},
+            .array_layers = 1,
+            .dimension = ImageResourceDimension::two_d,
+            .storage_mode = RenderTargetStorageMode::materialized,
+            .alias_group = std::nullopt,
+        },
+        extent, vma::MemoryUsage::eAutoPreferDevice);
 }
 #endif
 

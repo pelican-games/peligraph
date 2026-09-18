@@ -8,8 +8,8 @@ namespace Pelican {
 
 class RenderTargetContainer;
 
-vk::ClearColorValue physicalRenderTargetHistoryClearColor(
-    const RenderTargetDefinition &definition);
+// physicalRenderTargetHistoryClearColor() now lives with the definition it
+// resolves, in rendertargetdefinition.hpp, which this header includes.
 
 void registerRenderTargetDefinitions(const std::vector<RenderTargetDefinition> &definitions,
                                      vk::Extent2D base_extent,

@@ -5,6 +5,7 @@
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <limits>
@@ -406,26 +407,112 @@ std::uint64_t RenderTargetContainer::createAliasGroupToken() {
     return next_alias_group_token++;
 }
 
-GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(const std::string &name,
-                                                                 vk::Extent2D base_extent,
-                                                                 const std::string &format_class,
-                                                                 const std::string &role,
-                                                                 float extent_scale,
-                                                                 std::optional<vk::Extent2D> fixed_extent,
-                                                                 vk::Format format,
-                                                                 vk::ImageUsageFlags usage,
-                                                                 vma::MemoryUsage memUsage,
-                                                                 bool history,
-                                                                 vk::ClearColorValue history_clear_color,
-                                                                 std::uint32_t samples,
-                                                                 ImageMipLevelCount mip_levels,
-                                                                 std::uint32_t array_layers,
-                                                                 RenderTargetStorageMode storage_mode,
-                                                                 std::optional<std::string> alias_group,
-                                                                 std::optional<std::uint64_t>
-                                                                     alias_group_token,
-                                                                 ImageResourceDimension
-                                                                     dimension) {
+vk::ClearColorValue physicalRenderTargetHistoryClearColor(
+    const RenderTargetDefinition &definition) {
+    const auto format_name =
+        vk::to_string(definition.format);
+    const auto signed_integer =
+        format_name.ends_with("Sint");
+    const auto unsigned_integer =
+        format_name.ends_with("Uint");
+    std::array<float, 4> floating{};
+    std::array<std::int32_t, 4> signed_values{};
+    std::array<std::uint32_t, 4> unsigned_values{};
+    for (std::size_t component = 0;
+         component <
+         definition.history_clear_color.size();
+         ++component) {
+        const auto value =
+            definition.history_clear_color[component];
+        if (!std::isfinite(value)) {
+            throw std::runtime_error(
+                "render target history clear value must be finite: " +
+                definition.name);
+        }
+        if (signed_integer) {
+            if (std::trunc(value) != value ||
+                value <
+                    static_cast<double>(
+                        std::numeric_limits<
+                            std::int32_t>::min()) ||
+                value >
+                    static_cast<double>(
+                        std::numeric_limits<
+                            std::int32_t>::max())) {
+                throw std::runtime_error(
+                    "signed integer render target history clear "
+                    "value is fractional or out of range: " +
+                    definition.name);
+            }
+            signed_values[component] =
+                static_cast<std::int32_t>(value);
+            continue;
+        }
+        if (unsigned_integer) {
+            if (std::trunc(value) != value ||
+                value < 0.0 ||
+                value >
+                    static_cast<double>(
+                        std::numeric_limits<
+                            std::uint32_t>::max())) {
+                throw std::runtime_error(
+                    "unsigned integer render target history clear "
+                    "value is fractional or out of range: " +
+                    definition.name);
+            }
+            unsigned_values[component] =
+                static_cast<std::uint32_t>(value);
+            continue;
+        }
+        if (value <
+                -static_cast<double>(
+                    std::numeric_limits<float>::max()) ||
+            value >
+                static_cast<double>(
+                    std::numeric_limits<float>::max())) {
+            throw std::runtime_error(
+                "floating render target history clear value is "
+                "out of range: " +
+                definition.name);
+        }
+        floating[component] =
+            static_cast<float>(value);
+    }
+    if (signed_integer) {
+        return vk::ClearColorValue{
+            signed_values};
+    }
+    if (unsigned_integer) {
+        return vk::ClearColorValue{
+            unsigned_values};
+    }
+    return vk::ClearColorValue{floating};
+}
+
+GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
+    const RenderTargetDefinition &definition,
+    vk::Extent2D base_extent,
+    vma::MemoryUsage memUsage,
+    std::optional<std::uint64_t> alias_group_token) {
+    // The physical clear value is resolved first so an unrepresentable
+    // authored value is reported before any other contract check, as it was
+    // when the caller resolved it ahead of the call.
+    const auto history_clear_color =
+        physicalRenderTargetHistoryClearColor(definition);
+    const auto &name = definition.name;
+    const auto &format_class = definition.format_class;
+    const auto &role = definition.role;
+    const auto extent_scale = definition.extent_scale;
+    const auto &fixed_extent = definition.fixed_extent;
+    const auto format = definition.format;
+    auto usage = definition.usage;
+    const auto history = definition.history;
+    const auto samples = definition.samples;
+    auto mip_levels = definition.mip_levels;
+    const auto array_layers = definition.array_layers;
+    const auto storage_mode = definition.storage_mode;
+    const auto &alias_group = definition.alias_group;
+    const auto dimension = definition.dimension;
     if (mip_levels.mode ==
         ImageMipLevelMode::full_chain) {
         mip_levels.count = 1;

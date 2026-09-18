@@ -904,41 +904,70 @@ TEST_CASE(
         GET_MODULE(RenderTargetContainer);
     const auto managed_target =
         render_targets.registerRenderTarget(
-            "wp203b_layered_target", test_extent,
-            "data", "data", 1.0f, std::nullopt,
-            test_format, usage,
-            vma::MemoryUsage::eAutoPreferDevice,
-            false, {}, 1, {},
-            stereo_view_count);
+            RenderTargetDefinition{
+                .name = "wp203b_layered_target",
+                .format_class = "data",
+                .role = "data",
+                .extent_scale = 1.0f,
+                .fixed_extent = std::nullopt,
+                .format = test_format,
+                .usage = usage,
+                .history = false,
+                .samples = 1,
+                .mip_levels = {},
+                .array_layers = stereo_view_count,
+            },
+            test_extent,
+            vma::MemoryUsage::eAutoPreferDevice);
     constexpr std::uint32_t authored_layer_capacity =
         stereo_view_count + 2;
     const auto capacity_target =
         render_targets.registerRenderTarget(
-            "wp209b_layer_capacity_target",
-            test_extent, "data", "data", 1.0f,
-            std::nullopt, test_format, usage,
-            vma::MemoryUsage::eAutoPreferDevice,
-            false, {}, 1, {},
-            authored_layer_capacity);
+            RenderTargetDefinition{
+                .name = "wp209b_layer_capacity_target",
+                .format_class = "data",
+                .role = "data",
+                .extent_scale = 1.0f,
+                .fixed_extent = std::nullopt,
+                .format = test_format,
+                .usage = usage,
+                .history = false,
+                .samples = 1,
+                .mip_levels = {},
+                .array_layers = authored_layer_capacity,
+            },
+            test_extent,
+            vma::MemoryUsage::eAutoPreferDevice);
     const auto cube_target =
         render_targets.registerRenderTarget(
-            "wp236_cube_target",
-            cube_extent, "data", "data", 1.0f,
-            std::optional<vk::Extent2D>{
-                cube_extent},
-            test_format, usage,
-            vma::MemoryUsage::eAutoPreferDevice,
-            false, {}, 1,
-            ImageMipLevelCount{
-                .mode =
-                    ImageMipLevelMode::fixed,
-                .count = 3,
+            RenderTargetDefinition{
+                .name = "wp236_cube_target",
+                .format_class = "data",
+                .role = "data",
+                .extent_scale = 1.0f,
+                .fixed_extent =
+                    std::optional<vk::Extent2D>{
+                        cube_extent},
+                .format = test_format,
+                .usage = usage,
+                .history = false,
+                .samples = 1,
+                .mip_levels =
+                    ImageMipLevelCount{
+                        .mode =
+                            ImageMipLevelMode::fixed,
+                        .count = 3,
+                    },
+                .array_layers = 6,
+                .dimension =
+                    ImageResourceDimension::cube,
+                .storage_mode =
+                    RenderTargetStorageMode::
+                        materialized,
+                .alias_group = std::nullopt,
             },
-            6,
-            RenderTargetStorageMode::
-                materialized,
-            std::nullopt, std::nullopt,
-            ImageResourceDimension::cube);
+            cube_extent,
+            vma::MemoryUsage::eAutoPreferDevice);
     REQUIRE(
         render_targets.getMetadata(cube_target)
             .dimension ==
@@ -1202,29 +1231,49 @@ TEST_CASE(
                     cube));
     const auto local_source =
         render_targets.registerRenderTarget(
-            "wp203b_tile_local_source",
-            test_extent, "data", "data", 1.0f,
-            std::nullopt, test_format,
-            vk::ImageUsageFlagBits::
-                    eColorAttachment |
-                vk::ImageUsageFlagBits::eSampled,
-            vma::MemoryUsage::eAutoPreferDevice,
-            false, {}, 1, {},
-            stereo_view_count,
-            RenderTargetStorageMode::
-                tile_local_attachment);
+            RenderTargetDefinition{
+                .name = "wp203b_tile_local_source",
+                .format_class = "data",
+                .role = "data",
+                .extent_scale = 1.0f,
+                .fixed_extent = std::nullopt,
+                .format = test_format,
+                .usage =
+                    vk::ImageUsageFlagBits::
+                            eColorAttachment |
+                        vk::ImageUsageFlagBits::
+                            eSampled,
+                .history = false,
+                .samples = 1,
+                .mip_levels = {},
+                .array_layers = stereo_view_count,
+                .storage_mode =
+                    RenderTargetStorageMode::
+                        tile_local_attachment,
+            },
+            test_extent,
+            vma::MemoryUsage::eAutoPreferDevice);
     const auto local_output =
         render_targets.registerRenderTarget(
-            "wp203b_local_output",
-            test_extent, "data", "data", 1.0f,
-            std::nullopt, test_format,
-            vk::ImageUsageFlagBits::
-                    eColorAttachment |
-                vk::ImageUsageFlagBits::
-                    eTransferSrc,
-            vma::MemoryUsage::eAutoPreferDevice,
-            false, {}, 1, {},
-            stereo_view_count);
+            RenderTargetDefinition{
+                .name = "wp203b_local_output",
+                .format_class = "data",
+                .role = "data",
+                .extent_scale = 1.0f,
+                .fixed_extent = std::nullopt,
+                .format = test_format,
+                .usage =
+                    vk::ImageUsageFlagBits::
+                            eColorAttachment |
+                        vk::ImageUsageFlagBits::
+                            eTransferSrc,
+                .history = false,
+                .samples = 1,
+                .mip_levels = {},
+                .array_layers = stereo_view_count,
+            },
+            test_extent,
+            vma::MemoryUsage::eAutoPreferDevice);
     const auto local_source_metadata =
         render_targets.getMetadata(
             local_source);
@@ -1696,17 +1745,27 @@ TEST_CASE(
 
     const auto subresource_target =
         render_targets.registerRenderTarget(
-            "wp235_subresource_target",
-            test_extent, "data", "data", 1.0f,
-            std::nullopt, test_format, usage,
-            vma::MemoryUsage::eAutoPreferDevice,
-            false, {}, 1,
-            ImageMipLevelCount{
-                .mode =
-                    ImageMipLevelMode::fixed,
-                .count = 3,
+            RenderTargetDefinition{
+                .name = "wp235_subresource_target",
+                .format_class = "data",
+                .role = "data",
+                .extent_scale = 1.0f,
+                .fixed_extent = std::nullopt,
+                .format = test_format,
+                .usage = usage,
+                .history = false,
+                .samples = 1,
+                .mip_levels =
+                    ImageMipLevelCount{
+                        .mode =
+                            ImageMipLevelMode::fixed,
+                        .count = 3,
+                    },
+                .array_layers =
+                    authored_layer_capacity,
             },
-            authored_layer_capacity);
+            test_extent,
+            vma::MemoryUsage::eAutoPreferDevice);
     PassDefinition subresource_pass;
     subresource_pass.name =
         "wp235_attachment_probe";

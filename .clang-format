@@ -1,0 +1,21 @@
+# Config only. A tree-wide reformat would destroy git blame across the engine,
+# so run clang-format on touched regions only, never on whole files.
+---
+Language: Cpp
+BasedOnStyle: LLVM
+ColumnLimit: 100
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+AccessModifierOffset: -2
+NamespaceIndentation: None
+BreakBeforeBraces: Attach
+PointerAlignment: Right
+ReferenceAlignment: Pointer
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: true
+IndentCaseLabels: false
+FixNamespaceComments: true
+SortIncludes: false

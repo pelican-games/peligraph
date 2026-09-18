@@ -4,6 +4,7 @@
 #include "../resourcecontainer.hpp"
 #include "../vkcore/buf.hpp"
 #include "../vkcore/image.hpp"
+#include "rendertargetdefinition.hpp"
 #include "rendertargetmetadata.hpp"
 #include "../../project/imagesubresource.hpp"
 #include <map>
@@ -114,28 +115,15 @@ DECLARE_MODULE(RenderTargetContainer) {
     RenderTargetContainer();
     ~RenderTargetContainer();
 
-    GlobalRenderTargetId registerRenderTarget(const std::string &name, vk::Extent2D base_extent,
-                                              const std::string &format_class,
-                                              const std::string &role,
-                                              float extent_scale, std::optional<vk::Extent2D> fixed_extent,
-                                              vk::Format format, vk::ImageUsageFlags usage,
-                                              vma::MemoryUsage memUsage, bool history = false,
-                                              vk::ClearColorValue history_clear_color =
-                                                  vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 0.0f}},
-                                              std::uint32_t samples = 1,
-                                              ImageMipLevelCount mip_levels = {},
-                                              std::uint32_t array_layers = 1,
-                                              RenderTargetStorageMode storage_mode =
-                                                  RenderTargetStorageMode::materialized,
-                                              std::optional<std::string> alias_group =
-                                                  std::nullopt,
-                                              std::optional<std::uint64_t>
-                                                  alias_group_token =
-                                                      std::nullopt,
-                                              ImageResourceDimension
-                                                  dimension =
-                                                      ImageResourceDimension::
-                                                          two_d);
+    // The authored contract travels as one value. Only the frame-time base
+    // extent, the allocator preference, and the alias-group token assigned
+    // by registration are outside the definition.
+    GlobalRenderTargetId registerRenderTarget(
+        const RenderTargetDefinition &definition,
+        vk::Extent2D base_extent,
+        vma::MemoryUsage memUsage,
+        std::optional<std::uint64_t>
+            alias_group_token = std::nullopt);
     std::uint64_t createAliasGroupToken();
     PreparedRenderTargetExtent prepareForExtent(
         vk::Extent2D base_extent) const;
