@@ -307,6 +307,7 @@ struct EvaluatorV1::Impl {
     std::size_t current{};
     std::optional<ActiveTransition> transition;
     std::vector<Forced> forced;
+    TransitionV1 forced_transition{};
     std::uint64_t next_force_sequence{1};
     std::uint64_t notification_revision{};
     std::uint64_t source_reset_count{};
@@ -676,7 +677,6 @@ struct EvaluatorV1::Impl {
             const auto selected = std::min_element(forced.begin(), forced.end(), [](const auto &a, const auto &b) {
                 return a.sequence < b.sequence;
             });
-            static TransitionV1 forced_transition;
             forced_transition = {};
             forced_transition.from = states[from].definition->name;
             forced_transition.to = states[selected->target].definition->name;
