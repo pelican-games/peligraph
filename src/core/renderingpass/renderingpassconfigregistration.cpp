@@ -671,18 +671,168 @@ struct RegisteredRenderGraphVariantFamily {
     std::optional<PreviewGraphProgram> preview;
 };
 
-RegisteredRenderGraphVariantFamily
-registerRenderingPassConfigVariantsData(
-    const nlohmann::json &rendering_pass_data,
-    vk::Extent2D base_extent,
+// Builds the compiler request list for one publication transaction. One
+// top-level program sees and compiles the complete variant family; its
+// backend package structure is checked before any mutable GPU registry
+// checkpoint is opened. The default program preserves the prior logical +
+// Vulkan sequence; a backend-native program can directly construct the same
+// physical package. Runtime object preparation retains the existing rollback
+// checks in RegistrationStages.
+//
+// Runtime variants keep the order of `dependencies`. The request-local
+// preview, when asked for, is appended after every runtime variant and is the
+// only data_only artifact in the list; it never enters shared GPU
+// registration.
+std::vector<RenderCompilerProgramVariantRequest>
+makeRenderGraphVariantRequests(
+    const std::vector<RenderingPassConfigRegistrationDependencies>
+        &dependencies,
+    bool with_preview) {
+    std::vector<RenderCompilerProgramVariantRequest>
+        variant_requests;
+    variant_requests.reserve(
+        dependencies.size() +
+        (with_preview ? 1u : 0u));
+    for (const auto &variant : dependencies) {
+        RenderCompilerProgramVariantRequest request{
+            .graph_variant =
+                variant.options.graph_variant,
+            .enable_multiview_runtime =
+                variant.options
+                    .enable_multiview_runtime,
+            .enable_external_depth_export =
+                variant.options
+                    .enable_external_depth_export,
+        };
+#if PELICAN_WITH_IMGUI
+        if (request.graph_variant ==
+            RenderPipelineGraphVariant::flat) {
+            request.compose_runtime_config =
+                [](nlohmann::json &config) {
+                    invokeImGuiRuntimeCallback(
+                        GET_MODULE(EngineLaunchConfig),
+                        [&config] {
+                            appendImGuiPassToCanonicalGraphs(
+                                config);
+                        });
+                };
+        }
+#endif
+        variant_requests.push_back(
+            std::move(request));
+    }
+    if (with_preview) {
+        variant_requests.push_back(
+            RenderCompilerProgramVariantRequest{
+                .graph_variant =
+                    RenderPipelineGraphVariant::
+                        preview,
+                .artifact =
+                    RenderCompilerProgramArtifact::
+                        data_only,
+            });
+    }
+    return variant_requests;
+}
+
+// One publication transaction, split into the four stages the entry point
+// below runs in order. Members are declared in the order the stages fill
+// them, so unwinding destroys them exactly as the single function destroyed
+// its locals: the per-variant programs and results go first, then the GPU
+// arena rolls back every registry it checkpointed, then the compiled
+// variants, and the registration mutex is released last.
+class RegistrationStages {
+  public:
+    RegistrationStages(
+        const nlohmann::json &rendering_pass_data_in,
+        vk::Extent2D base_extent_in,
+        std::vector<RenderingPassConfigRegistrationDependencies>
+            &dependencies_in,
+        std::span<const RenderCompilerProgramVariantRequest>
+            variant_requests_in)
+        : rendering_pass_data{rendering_pass_data_in},
+          base_extent{base_extent_in},
+          dependencies{dependencies_in},
+          variant_requests{variant_requests_in} {}
+
+    // Transaction validation, provider leases, asset loads and graph
+    // compilation. Mutates no GPU registry, so a throw here needs no
+    // rollback.
+    void prepare();
+    // Opens the registry checkpoint. From the arena construction here until
+    // publish() commits it, every GPU registration is undone by
+    // ~RegistrationStages.
+    void allocate();
+    // Per-variant program registration, attribute staging upload, and the
+    // per-program value graph validation.
+    void registerVariants();
+    // Cross-generation buffer handover, generation preparation, and the
+    // single publication (or ray-joint staging) that commits the arena.
+    RegisteredRenderGraphVariantFamily publish();
+
+  private:
+    void attachProgramGraphState(
+        RenderPipelineProgramPreparation &program,
+        std::size_t index,
+        std::set<FrameGraphBufferId> &uploaded_attributes);
+
+    const nlohmann::json &rendering_pass_data;
+    vk::Extent2D base_extent;
     std::vector<RenderingPassConfigRegistrationDependencies>
-        dependencies,
-    bool include_preview = false) {
+        &dependencies;
+    std::span<const RenderCompilerProgramVariantRequest>
+        variant_requests;
+
+    // prepare
+    std::string owner_scope;
+    PassImplementationRegistrySnapshot
+        pass_implementation_providers;
+    VulkanNativeScopeExecutorRegistrySnapshot
+        native_scope_providers;
+    std::shared_ptr<const RayTracingProjectConfig>
+        ray_tracing_project;
+    std::map<std::string, GltfAttributeData> attribute_data;
+    std::vector<GraphDeformedAttribute> deformed_attributes;
+    std::vector<GraphPoseAttribute> pose_attributes;
+    std::set<std::filesystem::path> attribute_source_files;
+    std::shared_ptr<const ValueGraph::Graph> value_graph;
+#if PELICAN_WITH_ANIMATION
+    std::shared_ptr<const Animation::PoseGraph> pose_graph;
+#endif
+    ValueGraph::InactiveScopes inactive_graph_scopes;
+    std::map<std::string, GameObjectId> graph_owner_objects;
+    std::shared_ptr<const RenderGraphDocumentSnapshot>
+        source_documents;
+    std::vector<RenderCompilerProgramVariantOutput>
+        prepared_variants;
+    std::optional<PreviewGraphProgram> prepared_preview;
+
+    // allocate
+    std::optional<std::scoped_lock<std::mutex>>
+        gpu_registration_lock;
+    // Keeps the replaced scope alive for publish().
+    std::shared_ptr<const RendererRuntimeGeneration>
+        current_generation;
+    const RenderPipelineGpuResourceScope *replaced_scope =
+        nullptr;
+    std::shared_ptr<RenderPipelineGpuRegistrationArena>
+        gpu_arena;
+
+    // registerVariants
+    std::vector<RenderingPassConfigRegistrationResult> results;
+    std::vector<std::size_t> program_offsets;
+    std::vector<RenderPipelineProgramPreparation>
+        program_preparations;
+    std::optional<std::vector<std::string>>
+        enabled_feature_names;
+};
+
+void RegistrationStages::prepare() {
     if (dependencies.empty()) {
         throw std::runtime_error(
             "Render pipeline variant transaction is empty");
     }
-    const auto owner_scope =
+    owner_scope =
         gpuOwnerScope(dependencies.front().options);
     std::size_t enabled_feature_publishers = 0;
     std::size_t coordinated_commit_owners = 0;
@@ -717,7 +867,7 @@ registerRenderingPassConfigVariantsData(
     // then render strategy). Keeping one immutable set across every variant
     // avoids mixed generations and a shared/exclusive lock-order inversion
     // during hot reload.
-    auto pass_implementation_providers =
+    pass_implementation_providers =
         passImplementationRegistry().snapshot();
     auto subgraph_replacement_providers =
         subgraphReplacementRegistry().snapshot();
@@ -725,60 +875,10 @@ registerRenderingPassConfigVariantsData(
         graphTransformRegistry().snapshot();
     auto render_strategy_providers =
         renderStrategyRegistry().snapshot();
-    auto native_scope_providers =
+    native_scope_providers =
         vulkanNativeScopeExecutorRegistry()
             .snapshot();
 
-    // One top-level program sees and compiles the complete variant family.
-    // Its backend package structure is checked before any mutable GPU
-    // registry checkpoint is opened. The default program preserves the prior
-    // logical + Vulkan sequence; a backend-native program can directly
-    // construct the same physical package. Runtime object preparation retains
-    // the existing rollback checks below.
-    std::vector<RenderCompilerProgramVariantRequest>
-        variant_requests;
-    variant_requests.reserve(
-        dependencies.size() +
-        (include_preview ? 1u : 0u));
-    for (const auto &variant : dependencies) {
-        RenderCompilerProgramVariantRequest request{
-            .graph_variant =
-                variant.options.graph_variant,
-            .enable_multiview_runtime =
-                variant.options
-                    .enable_multiview_runtime,
-            .enable_external_depth_export =
-                variant.options
-                    .enable_external_depth_export,
-        };
-#if PELICAN_WITH_IMGUI
-        if (request.graph_variant ==
-            RenderPipelineGraphVariant::flat) {
-            request.compose_runtime_config =
-                [](nlohmann::json &config) {
-                    invokeImGuiRuntimeCallback(
-                        GET_MODULE(EngineLaunchConfig),
-                        [&config] {
-                            appendImGuiPassToCanonicalGraphs(
-                                config);
-                        });
-                };
-        }
-#endif
-        variant_requests.push_back(
-            std::move(request));
-    }
-    if (include_preview) {
-        variant_requests.push_back(
-            RenderCompilerProgramVariantRequest{
-                .graph_variant =
-                    RenderPipelineGraphVariant::
-                        preview,
-                .artifact =
-                    RenderCompilerProgramArtifact::
-                        data_only,
-            });
-    }
 #if PELICAN_RUNTIME_SHADER_COMPILER
     constexpr bool runtime_shader_compiler_enabled =
         true;
@@ -788,7 +888,7 @@ registerRenderingPassConfigVariantsData(
 #endif
     RenderGraphDocumentSnapshot loaded_documents;
     const auto load_root_document =
-        [&dependencies, &loaded_documents](std::string_view reference) {
+        [this, &loaded_documents](std::string_view reference) {
             const auto &paths = dependencies.front().runtime.path_resolver;
             if (const auto found = loaded_documents.find(reference); found != loaded_documents.end())
                 return found->second;
@@ -797,7 +897,7 @@ registerRenderingPassConfigVariantsData(
             loaded_documents.emplace(std::string{reference}, bytes);
             return bytes;
         };
-    const auto ray_tracing_project =
+    ray_tracing_project =
         loadRayTracingProjectConfig(
             rendering_pass_data, load_root_document,
             runtime_shader_compiler_enabled);
@@ -819,16 +919,6 @@ registerRenderingPassConfigVariantsData(
                 enabled_device_extensions.end()},
             vulkan_core.getRuntimeCapabilities(),
         };
-    std::map<std::string, GltfAttributeData> attribute_data;
-    std::vector<GraphDeformedAttribute> deformed_attributes;
-    std::vector<GraphPoseAttribute> pose_attributes;
-    std::set<std::filesystem::path> attribute_source_files;
-    std::shared_ptr<const ValueGraph::Graph> value_graph;
-#if PELICAN_WITH_ANIMATION
-    std::shared_ptr<const Animation::PoseGraph> pose_graph;
-#endif
-    ValueGraph::InactiveScopes inactive_graph_scopes;
-    std::map<std::string, GameObjectId> graph_owner_objects;
     if (rendering_pass_data.value("schema", std::string{}) == "pelican.graph") {
         value_graph = std::make_shared<const ValueGraph::Graph>(rendering_pass_data.dump());
 #if PELICAN_WITH_ANIMATION
@@ -934,7 +1024,7 @@ registerRenderingPassConfigVariantsData(
             effectiveRenderCompilerProgram(
                 dependencies.front().options),
             compiler_input);
-    const auto source_documents = std::make_shared<const RenderGraphDocumentSnapshot>(std::move(loaded_documents));
+    source_documents = std::make_shared<const RenderGraphDocumentSnapshot>(std::move(loaded_documents));
     if (value_graph) {
         if (!value_graph->audioSources().empty()) {
 #if PELICAN_WITH_AUDIO
@@ -949,11 +1039,20 @@ registerRenderingPassConfigVariantsData(
         injectRayTracingJointTransactionPoint(
             RayTracingJointTransactionPoint::after_compile);
     }
-    auto prepared_variants =
+    prepared_variants =
         std::move(compiler_output.variants);
-    std::optional<PreviewGraphProgram>
-        prepared_preview;
-    if (include_preview) {
+    // The compiler returns one prepared variant per request, in request
+    // order. makeRenderGraphVariantRequests appends the request-local preview
+    // after every runtime variant and marks it data_only, so the preview
+    // artifact is the trailing prepared variant and each runtime variant
+    // keeps the index of its dependencies entry.
+    const auto preview_request = std::find_if(
+        variant_requests.begin(), variant_requests.end(),
+        [](const RenderCompilerProgramVariantRequest &request) {
+            return request.artifact ==
+                   RenderCompilerProgramArtifact::data_only;
+        });
+    if (preview_request != variant_requests.end()) {
         auto preview_variant =
             std::move(prepared_variants.back());
         prepared_variants.pop_back();
@@ -966,7 +1065,8 @@ registerRenderingPassConfigVariantsData(
                     preview_variant
                         .normalized_config));
     }
-    if (include_preview && !prepared_preview) {
+    if (preview_request != variant_requests.end() &&
+        !prepared_preview) {
         throw std::runtime_error(
             "Render graph variant family omitted its preview artifact");
     }
@@ -982,22 +1082,23 @@ registerRenderingPassConfigVariantsData(
     // expanding live resources inside the transaction.
     mergeVariantRenderTargetPhysicalRequirements(
         prepared_variants);
+}
 
+void RegistrationStages::allocate() {
     // Legacy registries are mutable containers rather than isolated
     // candidates. Serialize the checkpoint-to-publication interval so a
     // stale transaction cannot roll back another transaction's records.
-    const std::scoped_lock gpu_registration_lock{
-        gpuRegistrationMutex()};
+    gpu_registration_lock.emplace(gpuRegistrationMutex());
     auto &first = dependencies.front();
-    const auto current_generation =
+    current_generation =
         first.frame_graph_runtime.snapshot();
-    const auto *replaced_scope =
+    replaced_scope =
         current_generation != nullptr &&
                 current_generation->gpu_arena != nullptr
             ? current_generation->gpu_arena->findScope(
                   owner_scope)
             : nullptr;
-    auto gpu_arena = std::make_shared<
+    gpu_arena = std::make_shared<
         RenderPipelineGpuRegistrationArena>(
         RenderPipelineGpuRegistrationDependencies{
             first.render_targets.render_target_container,
@@ -1010,16 +1111,86 @@ registerRenderingPassConfigVariantsData(
             first.runtime.velocity_pass_container,
         },
         replaced_scope);
+}
 
-    std::vector<RenderingPassConfigRegistrationResult>
-        results(dependencies.size());
-    std::vector<std::size_t> program_offsets;
+// Uploads this program's graph attribute sources (once per frame graph
+// buffer across the whole transaction), attaches the graph-derived program
+// state, and validates the program against the value graph. Extracted
+// verbatim from the inner loop of registerVariants; the order of the upload,
+// the attachment and the validation is unchanged.
+void RegistrationStages::attachProgramGraphState(
+    RenderPipelineProgramPreparation &program, std::size_t index,
+    std::set<FrameGraphBufferId> &uploaded_attributes) {
+    const auto &vulkan_core = GET_MODULE(VulkanManageCore);
+    for (const auto &[name, data] : attribute_data) {
+        if (!value_graph->nodeActive(name, inactive_graph_scopes)) continue;
+        const auto found = program.buffer_bindings.find(name);
+        if (found == program.buffer_bindings.end())
+            throw std::runtime_error("unbound graph attribute source: " + name);
+        auto &resources = dependencies[index].frame_graph_resources;
+        if (resources.bufferSize(found->second) != data.bytes.size())
+            throw std::runtime_error("graph attribute source buffer size mismatch: " + name);
+        if (uploaded_attributes.insert(found->second).second) {
+            const auto staging = vulkan_core.allocBuf(data.bytes.size(), vk::BufferUsageFlagBits::eTransferSrc,
+                vma::MemoryUsage::eAuto, vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+            vulkan_core.writeBuf(staging, data.bytes.data(), 0, data.bytes.size());
+            GET_MODULE(VulkanUtils).executeOneTimeCmd([&](vk::CommandBuffer command) {
+                command.copyBuffer(staging.buffer.get(), resources.buffer(found->second).buffer.get(),
+                    vk::BufferCopy{0, 0, data.bytes.size()});
+                const vk::MemoryBarrier barrier{vk::AccessFlagBits::eTransferWrite,
+                    vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eIndexRead};
+                command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                    vk::PipelineStageFlagBits::eAllCommands, {}, barrier, {}, {});
+            }, true);
+        }
+    }
+    program.value_graph = value_graph;
+#if PELICAN_WITH_ANIMATION
+    program.pose_graph = pose_graph;
+#endif
+    program.inactive_graph_scopes = inactive_graph_scopes;
+    program.graph_owner_objects = graph_owner_objects;
+    program.source_documents = source_documents;
+    for (const auto &attribute : pose_attributes)
+        if (value_graph->nodeActive(attribute.resource, inactive_graph_scopes))
+            program.pose_attributes.push_back(attribute);
+    for (const auto &attribute : deformed_attributes)
+        if (value_graph->nodeActive(attribute.resource, inactive_graph_scopes))
+            program.deformed_attributes.push_back(attribute);
+    program.attribute_source_files.assign(attribute_source_files.begin(), attribute_source_files.end());
+    if (value_graph) {
+        if (program.target_plan) {
+            const std::set<std::string> no_scopes;
+            for (const auto &scope : program.target_plan->scopes) {
+                const std::set<std::string> *activation = nullptr;
+                for (const auto &node : scope.nodes) {
+                    const auto found = value_graph->scopeDependencies().find(node);
+                    const auto &scope_dependencies = found == value_graph->scopeDependencies().end()
+                        ? no_scopes : found->second;
+                    if (activation && *activation != scope_dependencies)
+                        throw std::runtime_error("physical scope combines different graph owner lifetimes: " + scope.id);
+                    activation = &scope_dependencies;
+                }
+            }
+        }
+        validateGraphInputs(*value_graph);
+        for (const auto &binding : value_graph->renderBufferBindings()) {
+            if (!value_graph->nodeActive(binding.target, inactive_graph_scopes)) continue;
+            const auto found = program.buffer_bindings.find(binding.target);
+            if (found == program.buffer_bindings.end())
+                throw std::runtime_error("unbound frame graph output: " + binding.target);
+            const auto &buffer = dependencies[index].frame_graph_resources.definition(found->second);
+            if (buffer.host_source != FrameGraphHostBufferSource::runtime_f32 ||
+                buffer.size != binding.element_count * sizeof(float))
+                throw std::runtime_error("incompatible frame graph output buffer: " + binding.target);
+        }
+    }
+}
+
+void RegistrationStages::registerVariants() {
+    results.resize(dependencies.size());
     program_offsets.reserve(dependencies.size() + 1);
     program_offsets.push_back(0);
-    std::vector<RenderPipelineProgramPreparation>
-        program_preparations;
-    std::optional<std::vector<std::string>>
-        enabled_feature_names;
     std::set<FrameGraphBufferId> uploaded_attributes;
     for (std::size_t index = 0;
          index < dependencies.size(); ++index) {
@@ -1031,69 +1202,8 @@ registerRenderingPassConfigVariantsData(
                 native_scope_providers,
                 results[index]);
         for (auto &program : variant_programs) {
-            for (const auto &[name, data] : attribute_data) {
-                if (!value_graph->nodeActive(name, inactive_graph_scopes)) continue;
-                const auto found = program.buffer_bindings.find(name);
-                if (found == program.buffer_bindings.end())
-                    throw std::runtime_error("unbound graph attribute source: " + name);
-                auto &resources = dependencies[index].frame_graph_resources;
-                if (resources.bufferSize(found->second) != data.bytes.size())
-                    throw std::runtime_error("graph attribute source buffer size mismatch: " + name);
-                if (uploaded_attributes.insert(found->second).second) {
-                    const auto staging = vulkan_core.allocBuf(data.bytes.size(), vk::BufferUsageFlagBits::eTransferSrc,
-                        vma::MemoryUsage::eAuto, vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
-                    vulkan_core.writeBuf(staging, data.bytes.data(), 0, data.bytes.size());
-                    GET_MODULE(VulkanUtils).executeOneTimeCmd([&](vk::CommandBuffer command) {
-                        command.copyBuffer(staging.buffer.get(), resources.buffer(found->second).buffer.get(),
-                            vk::BufferCopy{0, 0, data.bytes.size()});
-                        const vk::MemoryBarrier barrier{vk::AccessFlagBits::eTransferWrite,
-                            vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eIndexRead};
-                        command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-                            vk::PipelineStageFlagBits::eAllCommands, {}, barrier, {}, {});
-                    }, true);
-                }
-            }
-            program.value_graph = value_graph;
-#if PELICAN_WITH_ANIMATION
-            program.pose_graph = pose_graph;
-#endif
-            program.inactive_graph_scopes = inactive_graph_scopes;
-            program.graph_owner_objects = graph_owner_objects;
-            program.source_documents = source_documents;
-            for (const auto &attribute : pose_attributes)
-                if (value_graph->nodeActive(attribute.resource, inactive_graph_scopes))
-                    program.pose_attributes.push_back(attribute);
-            for (const auto &attribute : deformed_attributes)
-                if (value_graph->nodeActive(attribute.resource, inactive_graph_scopes))
-                    program.deformed_attributes.push_back(attribute);
-            program.attribute_source_files.assign(attribute_source_files.begin(), attribute_source_files.end());
-            if (value_graph) {
-                if (program.target_plan) {
-                    const std::set<std::string> no_scopes;
-                    for (const auto &scope : program.target_plan->scopes) {
-                        const std::set<std::string> *activation = nullptr;
-                        for (const auto &node : scope.nodes) {
-                            const auto found = value_graph->scopeDependencies().find(node);
-                            const auto &dependencies = found == value_graph->scopeDependencies().end()
-                                ? no_scopes : found->second;
-                            if (activation && *activation != dependencies)
-                                throw std::runtime_error("physical scope combines different graph owner lifetimes: " + scope.id);
-                            activation = &dependencies;
-                        }
-                    }
-                }
-                validateGraphInputs(*value_graph);
-                for (const auto &binding : value_graph->renderBufferBindings()) {
-                    if (!value_graph->nodeActive(binding.target, inactive_graph_scopes)) continue;
-                    const auto found = program.buffer_bindings.find(binding.target);
-                    if (found == program.buffer_bindings.end())
-                        throw std::runtime_error("unbound frame graph output: " + binding.target);
-                    const auto &buffer = dependencies[index].frame_graph_resources.definition(found->second);
-                    if (buffer.host_source != FrameGraphHostBufferSource::runtime_f32 ||
-                        buffer.size != binding.element_count * sizeof(float))
-                        throw std::runtime_error("incompatible frame graph output buffer: " + binding.target);
-                }
-            }
+            attachProgramGraphState(
+                program, index, uploaded_attributes);
         }
         program_preparations.insert(
             program_preparations.end(),
@@ -1109,6 +1219,10 @@ registerRenderingPassConfigVariantsData(
                 results[index].feature_names;
         }
     }
+}
+
+RegisteredRenderGraphVariantFamily RegistrationStages::publish() {
+    auto &first = dependencies.front();
     // Owner-only changes preserve persistent buffer contents, including host
     // values staged since the last frame. Ordinary authoring edits retain
     // their existing resource initialization semantics.
@@ -1273,7 +1387,7 @@ registerRenderingPassConfigVariantsData(
         first.frame_graph_runtime.stagePreparedGeneration(
             std::move(prepared_generation),
             std::static_pointer_cast<const void>(gpu_arena),
-            [gpu_arena] { gpu_arena->commit(); },
+            [arena = gpu_arena] { arena->commit(); },
             std::move(coordinated_commit),
             std::move(coordinated_publication),
             std::move(coordinated_rollback));
@@ -1299,6 +1413,23 @@ registerRenderingPassConfigVariantsData(
     };
 }
 
+RegisteredRenderGraphVariantFamily
+registerRenderingPassConfigVariantsData(
+    const nlohmann::json &rendering_pass_data,
+    vk::Extent2D base_extent,
+    std::vector<RenderingPassConfigRegistrationDependencies>
+        dependencies,
+    std::vector<RenderCompilerProgramVariantRequest>
+        variant_requests) {
+    RegistrationStages stages{
+        rendering_pass_data, base_extent, dependencies,
+        variant_requests};
+    stages.prepare();
+    stages.allocate();
+    stages.registerVariants();
+    return stages.publish();
+}
+
 } // namespace
 
 RenderingPassConfigRegistrationResult registerRenderingPassConfigFromJson(
@@ -1307,9 +1438,11 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigFromJson(
     std::vector<RenderingPassConfigRegistrationDependencies>
         variants;
     variants.push_back(std::move(dependencies));
+    auto variant_requests =
+        makeRenderGraphVariantRequests(variants, false);
     auto results = registerRenderingPassConfigVariantsData(
         loadRenderingPassConfigJson(json_path), base_extent,
-        std::move(variants));
+        std::move(variants), std::move(variant_requests));
     return std::move(
         results.runtime_variants.front());
 }
@@ -1320,9 +1453,12 @@ RenderingPassConfigRegistrationResult registerRenderingPassConfigFromJsonData(
     std::vector<RenderingPassConfigRegistrationDependencies>
         variants;
     variants.push_back(std::move(dependencies));
+    auto variant_requests =
+        makeRenderGraphVariantRequests(variants, false);
     auto results = registerRenderingPassConfigVariantsData(
         loadRenderingPassConfigJsonFromString(json_data, "ProjectBasicConfig"),
-        base_extent, std::move(variants));
+        base_extent, std::move(variants),
+        std::move(variant_requests));
     return std::move(
         results.runtime_variants.front());
 }
@@ -1332,12 +1468,15 @@ registerRenderingPassConfigVariantsFromJsonData(
     std::string_view json_data, vk::Extent2D base_extent,
     std::vector<RenderingPassConfigRegistrationDependencies>
         dependencies) {
+    auto variant_requests =
+        makeRenderGraphVariantRequests(dependencies, false);
     return registerRenderingPassConfigVariantsData(
                loadRenderingPassConfigJsonFromString(
                    json_data,
                    "ProjectBasicConfig"),
                base_extent,
-               std::move(dependencies))
+               std::move(dependencies),
+               std::move(variant_requests))
         .runtime_variants;
 }
 
@@ -1347,6 +1486,9 @@ registerRenderGraphVariantFamilyFromJsonData(
     vk::Extent2D base_extent,
     std::vector<RenderingPassConfigRegistrationDependencies>
         runtime_dependencies) {
+    auto variant_requests =
+        makeRenderGraphVariantRequests(
+            runtime_dependencies, true);
     auto registered =
         registerRenderingPassConfigVariantsData(
             loadRenderingPassConfigJsonFromString(
@@ -1354,7 +1496,7 @@ registerRenderGraphVariantFamilyFromJsonData(
                 "ProjectBasicConfig"),
             base_extent,
             std::move(runtime_dependencies),
-            true);
+            std::move(variant_requests));
     static_assert(std::is_nothrow_move_constructible_v<
                   RenderGraphVariantFamilyRegistrationResult>);
     return {
