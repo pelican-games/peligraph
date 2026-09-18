@@ -238,6 +238,33 @@ TEST_CASE("main loop prepares dependencies before freezing the module graph",
     REQUIRE(source.find("FastModuleContainer::enterRunningPhase();") == std::string::npos);
 }
 
+TEST_CASE("the main loop spells one frame once", "[module][architecture][frame]") {
+    const auto loop = readSourceFile("src/core/appflow/loop.cpp");
+
+    // The frame used to be written out three times -- headless, flat windowed,
+    // windowed+XR -- each with its own clock pairs. One `FrameStep` now owns
+    // advance / update / render / record, so each call that makes up a frame
+    // appears exactly once however many drivers there are. A fourth driver, or
+    // a new phase, must go through it rather than beside it.
+    REQUIRE(countOccurrences(loop, "engine_time_.advance();") == 1);
+    REQUIRE(countOccurrences(loop, "setCurrentFrameIndex(") == 1);
+    REQUIRE(countOccurrences(loop, "recordCpuFrame(") == 1);
+
+    // The two asymmetries between the paths are declared rather than
+    // accidental, and each survives as exactly one site: the XR frame is the
+    // only variant selector (the offline and flat frames leave that to
+    // `Renderer::render`), and the flat windowed frame is the only pacing wait
+    // (XR is paced by `xrWaitFrame`, offline by its fixed-step timeline).
+    REQUIRE(countOccurrences(loop, "renderer_.selectGraphVariant(") == 1);
+    REQUIRE(countOccurrences(loop, "framerate_adjuster->wait();") == 1);
+
+    // The exit-path flag that decides whether the GPU timing ring is flushed
+    // is named, not a trailing bool at three call sites.
+    REQUIRE(loop.find("TimingFlush timing_flush") != std::string::npos);
+    REQUIRE(countOccurrences(loop, "TimingFlush::skip") == 1);
+    REQUIRE(countOccurrences(loop, "TimingFlush::flush") == 3);
+}
+
 TEST_CASE("runtime reload entry points stay behind ReloadService participants",
           "[module][architecture][reload]") {
     const auto loop = readSourceFile("src/core/appflow/loop.cpp");

@@ -282,15 +282,26 @@ void prepareRuntimeModuleGraph(LoopModules &modules) {
     (void)resolveGpuDrainModules();
 }
 
+// Whether an exit path flushes the GPU timing ring on the way out. `flush()`
+// blocks on `collectGpuResults(true)` and then emits the frame-metrics log
+// line; the headless RPC exit is the one caller that skips it. This used to be
+// an unnamed trailing `bool`: the behaviour is preserved exactly and only the
+// name is new. The reason for the skip is not documented anywhere in the tree.
+enum class TimingFlush {
+    skip,
+    flush,
+};
+
 void finishLoopResources(InputSequenceRuntime &input_sequence,
                          CameraBakeRecorder *camera_bake,
                          RenderTiming *render_timing,
                          RenderDocCapture &renderdoc_capture,
-                         bool flush_timing) {
+                         TimingFlush timing_flush) {
     renderdoc_capture.beginShutdown();
     auto gpu = resolveGpuDrainModules();
     gpu.vulkan.waitIdle();
-    if (flush_timing && render_timing != nullptr) render_timing->flush();
+    if (timing_flush == TimingFlush::flush && render_timing != nullptr)
+        render_timing->flush();
     gpu.deletion_queue.flushAll();
     if (input_sequence.isRecording()) input_sequence.stopRecording();
     if (camera_bake == nullptr)
@@ -336,162 +347,362 @@ void renderFlatFrameWithOptionalCapture(LoopModules &modules, Window &window) {
     }
 }
 
-} // namespace
+// ---------------------------------------------------------------------------
+// One frame, spelled once.
+//
+// The engine runs frames in three places -- offline (`--headless`), in a
+// window, and in a window driving an OpenXR session -- and all three run the
+// same four steps in the same order: advance the timeline, update the CPU-side
+// world, render, record the CPU frame timings. `FrameStep` is that order
+// written down once. The three drivers below (`runHeadlessFrames`,
+// `runInteractive`, `runXrFrame`) differ only in what they hand to these four
+// calls, so adding or reordering a phase is one edit rather than three.
+//
+// The three places where the paths genuinely differ are the three enums below.
+// Each is passed explicitly at every call site -- including the sites that want
+// the do-nothing option -- so a difference between the paths is something a
+// reader sees named rather than something they have to notice is missing.
+// ---------------------------------------------------------------------------
 
-Loop::Loop() {}
+// Where the update clock opens relative to the timeline advance.
+enum class AdvanceTiming {
+    // Offline and flat frames: the clock opens before the advance, so
+    // EngineTime::advance() is counted as update time.
+    measured,
+    // XR frames: the advance sits between xrWaitFrame and xrBeginFrame, and
+    // the protocol calls that follow it (begin frame, locate views) are not
+    // the engine's update work, so the clock opens after them. Preserved from
+    // the pre-refactor code; reason not documented.
+    unmeasured,
+};
 
-void Loop::run() {
-#ifdef _WIN32
-    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-#endif
+// Who picks the render graph variant for this frame.
+enum class GraphVariantSelection {
+    // Offline and flat frames: Renderer::render() forwards to
+    // Renderer::render(view_families), whose first statement is
+    // selectGraphVariant(RenderGraphVariant::flat) (renderer.cpp). Selecting
+    // it here would be a second, redundant call -- and selectGraphVariant
+    // resets temporal history on a real transition, so the redundancy would
+    // not be free. Intentional.
+    renderer_selects,
+    // XR frames call Renderer::renderLogicalFrame() directly, which does not
+    // select a variant, so the driver has to.
+    xr,
+};
 
-    auto modules = resolveLoopModules();
-    const auto &launch_config = modules.launch_config;
-    auto &renderer = modules.renderer;
-    auto &engine_time = modules.engine_time;
-    auto &input_state = modules.input_state;
-    auto &input_sequence = modules.input_sequence;
-    auto *render_timing = modules.render_timing;
-    (void)modules.vat_player;
+// Whether this frame is paced by FramerateAdjust.
+enum class FramerateWait {
+    // Offline frames run a fixed-step timeline as fast as the machine allows,
+    // and XR frames are paced by xrWaitFrame -- named as the frame-progression
+    // owner of the windowed+XR path in
+    // docs/source-code-guide/02_runtime_lifecycle.md 2.4, which also states
+    // that FramerateAdjust is windowed-only. Sleeping again would push the
+    // frame past the runtime's predicted display time. Both intentional.
+    none,
+    // The flat windowed frame is the only one with nothing else pacing it.
+    adjuster,
+};
 
-    const auto pose_action_names = internal::poseInputActionNames();
-    if (launch_config.input_replay_path) {
-        input_sequence.startReplay(*launch_config.input_replay_path, pose_action_names);
-    } else if (launch_config.input_record) {
-        input_sequence.startRecording(*launch_config.input_record, launch_config.fps,
-                                      pose_action_names);
-    }
-    const auto time_mode = launch_config.headless || input_sequence.isReplaying()
-                               ? EngineTime::Mode::fixed_step
-                               : EngineTime::Mode::realtime;
-    const auto timeline_fps = input_sequence.isReplaying() ? input_sequence.replayFps() : launch_config.fps;
-    engine_time.setup(time_mode, 1.0 / timeline_fps);
-    if (launch_config.camera_bake_output) {
-        modules.camera_bake->start(*launch_config.camera_bake_output, input_sequence.replayFps());
-    }
-    prepareRuntimeModuleGraph(modules);
-#if PELICAN_WITH_OPENXR
-    std::unique_ptr<OpenXr::XrCompositionTarget> xr_composition_target;
-    std::unique_ptr<OpenXr::XrMirrorSink> xr_mirror_sink;
-    if (launch_config.xr_active) {
-        auto &session = GET_MODULE(OpenXr::SessionRuntime);
-        xr_composition_target = std::make_unique<OpenXr::XrCompositionTarget>(
-            resolveXrCompositionDependencies(session));
-        xr_mirror_sink = std::make_unique<OpenXr::XrMirrorSink>();
-    }
-#endif
-    dumpFramePlanIfRequested(launch_config, renderer);
-    modules.startup_metrics.finishAndLog();
-    FastModuleContainer::freezeCreation();
-    const auto module_graph = FastModuleContainer::graphSnapshot();
-    LOG_INFO(logger, "runtime module graph frozen: modules={} dependencies={}",
-             module_graph.initialized_modules.size(), module_graph.dependencies.size());
+class FrameStep {
+  public:
+    FrameStep(Renderer &renderer, EngineTime &engine_time,
+              VulkanManageCore &vulkan, RenderTiming *render_timing)
+        : renderer_{renderer}, engine_time_{engine_time}, vulkan_{vulkan},
+          render_timing_{render_timing} {}
 
-    LOG_INFO(logger, "starting main loop");
-
-    if (launch_config.headless) {
-        if (launch_config.rpc) {
-            runEngineRpcServer(std::cin, std::cout);
-            finishLoopResources(input_sequence, modules.camera_bake, render_timing,
-                                modules.renderdoc_capture, false);
-            return;
-        }
-
-        const auto render_out_pattern =
-            launch_config.render_out ? parseRenderOutPattern(*launch_config.render_out) : RenderOutPattern{};
-        // One headless frame, spelled once. Offline output replays the same
-        // frame the frame-count loop runs -- advance, update, render -- because
-        // a warm-up that skipped any of the three would leave the clocks, the
-        // game systems and the temporal history somewhere the real run never is.
-        const auto headlessFrame = [&](bool capture, uint32_t frame_number) {
-            if (!input_sequence.isReplaying()) {
-                input_state.clear();
-            }
-            const auto update_start = Clock::now();
-            engine_time.advance();
-            modules.vulkan.setCurrentFrameIndex(engine_time.frameIndex());
-            updateFrameState();
-            const auto update_end = Clock::now();
-
-            const auto render_start = Clock::now();
-            renderer.render();
-            const auto render_end = Clock::now();
-            if (render_timing != nullptr) {
-                render_timing->recordCpuFrame(CpuFrameDurations{
-                    elapsedMs(update_start, update_end),
-                    elapsedMs(render_start, render_end),
-                    0.0,
-                });
-            }
-            if (capture) {
-                resolveOutputRenderTarget()
-                    .captureLastFrameToPng(formatRenderOutPath(*launch_config.render_out, render_out_pattern,
-                                                               frame_number));
-            }
-        };
-        // `--start-time`: the run's first captured frame is the fixed-step frame
-        // that lands on that time, so the frames before it are replayed rather
-        // than skipped. There is no jump: the state that decides what a frame
-        // looks like is not reachable from the clock alone -- graph clocks only
-        // advance inside render(), project game systems integrate their own dt,
-        // and an animation component's evaluator is not consulted at all -- so
-        // the only honest way to be at a time is to have been at every step
-        // before it. The replayed frames run the same three calls the captured
-        // ones do; only the capture is left out.
-        if (launch_config.start_frames > 0) {
-            const auto replay = launch_config.start_frames - 1;
-            std::cerr << "offline: start_time="
-                      << static_cast<double>(launch_config.start_frames) / timeline_fps
-                      << " start_frame=" << launch_config.start_frames
-                      << " replay=" << replay << " frames=" << launch_config.headless_frames << std::endl;
-            for (std::uint64_t step = 0; step < replay; ++step) headlessFrame(false, 0u);
-        }
-        const auto replay_frames = input_sequence.isReplaying() ? input_sequence.replayFrameCount() : 0;
-        const auto frame_limit = input_sequence.isReplaying() && !launch_config.headless_frames_explicit
-                                     ? static_cast<uint32_t>(replay_frames)
-                                     : launch_config.headless_frames;
-        for (uint32_t frame = 0; frame_limit == 0 || frame < frame_limit;
-             ++frame) {
-            headlessFrame(launch_config.render_out && render_out_pattern.has_frame_token, frame + 1);
-        }
-        if (launch_config.render_out && !render_out_pattern.has_frame_token && launch_config.headless_frames > 0) {
-            resolveOutputRenderTarget().captureLastFrameToPng(*launch_config.render_out);
-        }
-        finishLoopResources(input_sequence, modules.camera_bake, render_timing,
-                            modules.renderdoc_capture, true);
-        return;
+    // Step 1: move the timeline on by one frame and republish the in-flight
+    // frame index that the per-frame GPU resources are indexed by.
+    void advance(AdvanceTiming timing) {
+        advance_is_measured_ = timing == AdvanceTiming::measured;
+        if (advance_is_measured_) update_start_ = Clock::now();
+        engine_time_.advance();
+        vulkan_.setCurrentFrameIndex(engine_time_.frameIndex());
     }
 
+    // Step 2: everything between the advance and the first render call.
+    template <class UpdateFn> void update(UpdateFn &&update_world) {
+        if (!advance_is_measured_) update_start_ = Clock::now();
+        update_world();
+        update_end_ = Clock::now();
+    }
+
+    // Step 3: graph variant selection, then the path's own render call.
+    template <class RenderFn>
+    void render(GraphVariantSelection variant, RenderFn &&render_frame) {
+        if (variant == GraphVariantSelection::xr)
+            renderer_.selectGraphVariant(RenderGraphVariant::xr);
+        render_start_ = Clock::now();
+        render_frame();
+        render_end_ = Clock::now();
+    }
+
+    // Step 4: the optional pacing wait, then the one recordCpuFrame for this
+    // frame. The wait lives here because its duration is the third field of
+    // that record, so the two cannot be separated without re-timing it.
+    void record(FramerateWait wait, FramerateAdjust *framerate_adjuster) {
+        double wait_ms = 0.0;
+        if (wait == FramerateWait::adjuster) {
+            const auto wait_start = Clock::now();
+            framerate_adjuster->wait();
+            const auto wait_end = Clock::now();
+            wait_ms = elapsedMs(wait_start, wait_end);
+        }
+        if (render_timing_ == nullptr) return;
+        render_timing_->recordCpuFrame(CpuFrameDurations{
+            elapsedMs(update_start_, update_end_),
+            elapsedMs(render_start_, render_end_),
+            wait_ms,
+        });
+    }
+
+  private:
+    Renderer &renderer_;
+    EngineTime &engine_time_;
+    VulkanManageCore &vulkan_;
+    RenderTiming *render_timing_;
+    bool advance_is_measured_ = true;
+    Clock::time_point update_start_{};
+    Clock::time_point update_end_{};
+    Clock::time_point render_start_{};
+    Clock::time_point render_end_{};
+};
+
+// The windowed JSON-RPC layer: one object built before the loop, one call per
+// frame boundary. Both halves live behind this single feature region so that
+// the frame drivers below carry no preprocessor conditional of their own.
 #if PELICAN_WITH_RPC
-    std::unique_ptr<EngineRpcEndpoint> windowed_rpc_endpoint;
-    std::unique_ptr<WindowedRpcHost> windowed_rpc_host;
-    if (launch_config.rpc) {
-        windowed_rpc_endpoint = std::make_unique<EngineRpcEndpoint>(std::cin, std::cout);
-        windowed_rpc_host = std::make_unique<WindowedRpcHost>(
-            std::cin, std::cout,
-            [&windowed_rpc_endpoint](std::string_view line) {
-                return windowed_rpc_endpoint->processLine(line);
-            },
+class WindowedRpcPump {
+  public:
+    void start(std::istream &input, std::ostream &output) {
+        endpoint_ = std::make_unique<EngineRpcEndpoint>(input, output);
+        host_ = std::make_unique<WindowedRpcHost>(
+            input, output,
+            [this](std::string_view line) { return endpoint_->processLine(line); },
             defaultWindowedRpcQueueCapacity);
     }
+
+    void processFrameBoundary() {
+        if (host_) host_->processFrameBoundary();
+    }
+
+  private:
+    std::unique_ptr<EngineRpcEndpoint> endpoint_;
+    std::unique_ptr<WindowedRpcHost> host_;
+};
+#else
+// --rpc is refused while the launch config is parsed when RPC is compiled out
+// (src/player/main.cpp), so neither method is reached in this build.
+class WindowedRpcPump {
+  public:
+    void start(std::istream &, std::ostream &) {}
+    void processFrameBoundary() {}
+};
 #endif
+
+// What one turn of the XR half of the interactive loop decided.
+enum class XrFrameOutcome {
+    // No XR session on this run (compiled out, or --xr not active): the flat
+    // frame runs.
+    not_xr,
+    // XR is up but the session is not running yet: actions were synced and the
+    // flat frame runs.
+    session_idle,
+    // A full XR frame ran; the interactive loop continues to its next turn.
+    frame_done,
+    // Terminal session path, or the composition generation needs teardown:
+    // leave the interactive loop.
+    stop,
+};
+
+// Everything the XR path owns. Built before the module graph is frozen because
+// its constructors pull modules.
+#if PELICAN_WITH_OPENXR
+struct XrRuntime {
+    std::unique_ptr<OpenXr::XrCompositionTarget> composition_target;
+    std::unique_ptr<OpenXr::XrMirrorSink> mirror_sink;
+    OpenXr::SessionRuntime *session = nullptr;
+};
+
+XrRuntime createXrRuntime(const EngineLaunchConfig &launch_config) {
+    XrRuntime runtime;
+    if (!launch_config.xr_active) return runtime;
+    auto &session = GET_MODULE(OpenXr::SessionRuntime);
+    runtime.composition_target = std::make_unique<OpenXr::XrCompositionTarget>(
+        resolveXrCompositionDependencies(session));
+    runtime.mirror_sink = std::make_unique<OpenXr::XrMirrorSink>();
+    runtime.session = &session;
+    return runtime;
+}
+
+// One XR frame: the same four FrameStep calls a flat frame makes, with the
+// OpenXR frame protocol (wait / begin / locate views / composition layer)
+// wrapped around them.
+template <class UpdateFn, class LimitFn>
+XrFrameOutcome runXrFrame(XrRuntime &xr, LoopModules &modules,
+                          const UpdateFn &update_interactive_state,
+                          const LimitFn &frame_limit_reached) {
+    auto *xr_session = xr.session;
+    if (xr_session == nullptr) return XrFrameOutcome::not_xr;
+
+    xr_session->pollEvents();
+    if (xr_session->hasTerminalPath()) return XrFrameOutcome::stop;
+    if (!xr_session->isSessionRunning()) {
+        auto xr_input = xr_session->syncActions(Actions::actionSetStack());
+        internal::setInputActionBackendFrame(std::move(xr_input.actions));
+        modules.input_state.queuePoseSamples(std::move(xr_input.pose_samples));
+        return XrFrameOutcome::session_idle;
+    }
+
+    auto *xr_target = xr.composition_target.get();
+    auto *xr_mirror = xr.mirror_sink.get();
+    if (xr_target == nullptr || xr_target->generationTeardownRequired()) {
+        LOG_ERROR(logger, "OpenXR composition generation requires teardown");
+        return XrFrameOutcome::stop;
+    }
+
+    const auto display_timing = xr_session->waitFrame();
+    FrameStep step{modules.renderer, modules.engine_time, modules.vulkan,
+                   modules.render_timing};
+    step.advance(AdvanceTiming::unmeasured);
+
+    const auto begin_result = xr_session->beginFrame();
+    OpenXr::XrLocatedViews located_views;
+    const bool xr_frame_renderable =
+        begin_result == OpenXr::XrBeginFrameResult::ready &&
+        display_timing.shouldRender();
+    if (xr_frame_renderable) {
+        located_views = xr_session->locateViews(display_timing);
+    }
+
+    // WP131's adapter anchors both eye poses to the active camera
+    // captured at this logical frame boundary.
+    const auto active_camera_view = GET_MODULE(Camera).getViewMatrix();
+    const auto camera_projection = GET_MODULE(Camera).getProjectionSpec();
+
+    step.update([&] {
+        auto xr_input = xr_session->syncActions(Actions::actionSetStack());
+        internal::setInputActionBackendFrame(std::move(xr_input.actions));
+        modules.input_state.queuePoseSamples(std::move(xr_input.pose_samples));
+        update_interactive_state(true);
+    });
+    step.render(GraphVariantSelection::xr, [&] {
+        if (xr_frame_renderable) {
+            xr_target->prepareFrame(
+                display_timing, located_views,
+                camera_projection.znear,
+                camera_projection.zfar);
+            const auto view_family = OpenXr::buildMainRenderViewFamily(
+                active_camera_view, located_views.views,
+                camera_projection.znear, camera_projection.zfar);
+            modules.renderer.renderLogicalFrame(*xr_target, view_family);
+            if (xr_mirror != nullptr) {
+                xr_mirror->tryPresent();
+                const auto &mirror = xr_mirror->statistics();
+                xr_session->recordMirrorStatistics(
+                    mirror.presented, mirror.dropped, mirror.failures);
+            }
+        } else {
+            xr_target->endFrameWithoutLayers(display_timing);
+        }
+    });
+    step.record(FramerateWait::none, nullptr);
+
+    if (frame_limit_reached()) return XrFrameOutcome::stop;
+    return XrFrameOutcome::frame_done;
+}
+#else
+struct XrRuntime {};
+
+inline XrRuntime createXrRuntime(const EngineLaunchConfig &) { return {}; }
+
+// XR is compiled out: the interactive loop always runs its flat frame.
+template <class UpdateFn, class LimitFn>
+XrFrameOutcome runXrFrame(XrRuntime &, LoopModules &, const UpdateFn &,
+                          const LimitFn &) {
+    return XrFrameOutcome::not_xr;
+}
+#endif
+
+// Offline frames: --headless without --rpc.
+void runHeadlessFrames(LoopModules &modules, double timeline_fps) {
+    const auto &launch_config = modules.launch_config;
+    auto &input_sequence = modules.input_sequence;
+
+    const auto render_out_pattern =
+        launch_config.render_out ? parseRenderOutPattern(*launch_config.render_out) : RenderOutPattern{};
+    // One headless frame, spelled once -- and, now that the frame is one
+    // FrameStep, spelled the same way the windowed and XR frames are. Offline
+    // output replays the same frame the frame-count loop runs -- advance,
+    // update, render -- because a warm-up that skipped any of the three would
+    // leave the clocks, the game systems and the temporal history somewhere
+    // the real run never is.
+    const auto headlessFrame = [&](bool capture, uint32_t frame_number) {
+        if (!input_sequence.isReplaying()) {
+            modules.input_state.clear();
+        }
+        FrameStep step{modules.renderer, modules.engine_time, modules.vulkan,
+                       modules.render_timing};
+        step.advance(AdvanceTiming::measured);
+        step.update([] { updateFrameState(); });
+        step.render(GraphVariantSelection::renderer_selects,
+                    [&] { modules.renderer.render(); });
+        step.record(FramerateWait::none, nullptr);
+        if (capture) {
+            resolveOutputRenderTarget()
+                .captureLastFrameToPng(formatRenderOutPath(*launch_config.render_out, render_out_pattern,
+                                                           frame_number));
+        }
+    };
+    // `--start-time`: the run's first captured frame is the fixed-step frame
+    // that lands on that time, so the frames before it are replayed rather
+    // than skipped. There is no jump: the state that decides what a frame
+    // looks like is not reachable from the clock alone -- graph clocks only
+    // advance inside render(), project game systems integrate their own dt,
+    // and an animation component's evaluator is not consulted at all -- so
+    // the only honest way to be at a time is to have been at every step
+    // before it. The replayed frames run the same three calls the captured
+    // ones do; only the capture is left out.
+    if (launch_config.start_frames > 0) {
+        const auto replay = launch_config.start_frames - 1;
+        std::cerr << "offline: start_time="
+                  << static_cast<double>(launch_config.start_frames) / timeline_fps
+                  << " start_frame=" << launch_config.start_frames
+                  << " replay=" << replay << " frames=" << launch_config.headless_frames << std::endl;
+        for (std::uint64_t step = 0; step < replay; ++step) headlessFrame(false, 0u);
+    }
+    const auto replay_frames = input_sequence.isReplaying() ? input_sequence.replayFrameCount() : 0;
+    const auto frame_limit = input_sequence.isReplaying() && !launch_config.headless_frames_explicit
+                                 ? static_cast<uint32_t>(replay_frames)
+                                 : launch_config.headless_frames;
+    for (uint32_t frame = 0; frame_limit == 0 || frame < frame_limit;
+         ++frame) {
+        headlessFrame(launch_config.render_out && render_out_pattern.has_frame_token, frame + 1);
+    }
+    if (launch_config.render_out && !render_out_pattern.has_frame_token && launch_config.headless_frames > 0) {
+        resolveOutputRenderTarget().captureLastFrameToPng(*launch_config.render_out);
+    }
+}
+
+// Windowed frames, with the XR half layered onto the same loop while a session
+// is running. --rpc layers onto this path too, as one call inside the update.
+void runInteractive(LoopModules &modules, XrRuntime &xr,
+                    WindowedRpcPump &rpc_pump) {
+    const auto &launch_config = modules.launch_config;
+    auto &input_sequence = modules.input_sequence;
+    auto &input_state = modules.input_state;
+
+    if (launch_config.rpc) rpc_pump.start(std::cin, std::cout);
 
     auto interactive = resolveInteractiveLoopModules();
     auto &window = interactive.window;
     auto &framerate_adjuster = interactive.framerate_adjuster;
-#if PELICAN_WITH_OPENXR
-    auto *xr_session = launch_config.xr_active
-                           ? FastModuleContainer::tryGet<OpenXr::SessionRuntime>()
-                           : nullptr;
-    auto *xr_target = xr_composition_target.get();
-    auto *xr_mirror = xr_mirror_sink.get();
-#endif
 
+    // The single point that means "this frame's state update is finished".
+    // Both the flat and the XR frame call it, which is why it is a lambda
+    // rather than inline in either.
     const auto update_interactive_state = [&](bool xr_frame) {
         updateFrameState();
-#if PELICAN_WITH_RPC
-        if (windowed_rpc_host) windowed_rpc_host->processFrameBoundary();
-#endif
+        rpc_pump.processFrameBoundary();
         if (UserInput::isKeyPushed(KeyCode::F5)) {
             (void)modules.reload_service.requestRuntimeReload(
                 watch::gameLogicReloadParticipantName);
@@ -501,6 +712,9 @@ void Loop::run() {
     };
 
     std::uint32_t interactive_frame_count = 0;
+    // Counts flat and XR frames alike, so --frames means the same number on
+    // both. It increments as a side effect, so it is called exactly once per
+    // frame on each path.
     const auto windowFrameLimitReached = [&] {
         if (!launch_config.headless_frames_explicit ||
             launch_config.headless_frames == 0) {
@@ -518,103 +732,93 @@ void Loop::run() {
         if (!input_sequence.isReplaying()) {
             input_state.queueEvents(window_events);
         }
-#if PELICAN_WITH_OPENXR
-        if (xr_session != nullptr) {
-            xr_session->pollEvents();
-            if (xr_session->hasTerminalPath()) break;
-            if (xr_session->isSessionRunning()) {
-                if (xr_target == nullptr || xr_target->generationTeardownRequired()) {
-                    LOG_ERROR(logger, "OpenXR composition generation requires teardown");
-                    break;
-                }
-                const auto display_timing = xr_session->waitFrame();
-                engine_time.advance();
-                modules.vulkan.setCurrentFrameIndex(engine_time.frameIndex());
-                const auto begin_result = xr_session->beginFrame();
-                OpenXr::XrLocatedViews located_views;
-                const bool xr_frame_renderable =
-                    begin_result == OpenXr::XrBeginFrameResult::ready &&
-                    display_timing.shouldRender();
-                if (xr_frame_renderable) {
-                    located_views = xr_session->locateViews(display_timing);
-                }
 
-                // WP131's adapter anchors both eye poses to the active camera
-                // captured at this logical frame boundary.
-                const auto active_camera_view = GET_MODULE(Camera).getViewMatrix();
-                const auto camera_projection = GET_MODULE(Camera).getProjectionSpec();
-                const auto update_start = Clock::now();
-                auto xr_input = xr_session->syncActions(Actions::actionSetStack());
-                internal::setInputActionBackendFrame(std::move(xr_input.actions));
-                input_state.queuePoseSamples(std::move(xr_input.pose_samples));
-                update_interactive_state(true);
-                const auto update_end = Clock::now();
+        const auto xr_outcome = runXrFrame(xr, modules, update_interactive_state,
+                                           windowFrameLimitReached);
+        if (xr_outcome == XrFrameOutcome::stop) break;
+        if (xr_outcome == XrFrameOutcome::frame_done) continue;
 
-                renderer.selectGraphVariant(RenderGraphVariant::xr);
-                const auto render_start = Clock::now();
-                if (xr_frame_renderable) {
-                    xr_target->prepareFrame(
-                        display_timing, located_views,
-                        camera_projection.znear,
-                        camera_projection.zfar);
-                    const auto view_family = OpenXr::buildMainRenderViewFamily(
-                        active_camera_view, located_views.views,
-                        camera_projection.znear, camera_projection.zfar);
-                    renderer.renderLogicalFrame(*xr_target, view_family);
-                    if (xr_mirror != nullptr) {
-                        xr_mirror->tryPresent();
-                        const auto &mirror = xr_mirror->statistics();
-                        xr_session->recordMirrorStatistics(
-                            mirror.presented, mirror.dropped, mirror.failures);
-                    }
-                } else {
-                    xr_target->endFrameWithoutLayers(display_timing);
-                }
-                const auto render_end = Clock::now();
-                if (render_timing != nullptr) {
-                    render_timing->recordCpuFrame(CpuFrameDurations{
-                        elapsedMs(update_start, update_end),
-                        elapsedMs(render_start, render_end),
-                        0.0,
-                    });
-                }
-                if (windowFrameLimitReached()) {
-                    break;
-                }
-                continue;
-            }
-            auto xr_input = xr_session->syncActions(Actions::actionSetStack());
-            internal::setInputActionBackendFrame(std::move(xr_input.actions));
-            input_state.queuePoseSamples(std::move(xr_input.pose_samples));
-        }
-#endif
-        const auto update_start = Clock::now();
-        engine_time.advance();
-        modules.vulkan.setCurrentFrameIndex(engine_time.frameIndex());
-        update_interactive_state(false);
-        const auto update_end = Clock::now();
+        // The flat frame: reached when XR is compiled out, is not active, or
+        // its session is not running.
+        FrameStep step{modules.renderer, modules.engine_time, modules.vulkan,
+                       modules.render_timing};
+        step.advance(AdvanceTiming::measured);
+        step.update([&] { update_interactive_state(false); });
+        step.render(GraphVariantSelection::renderer_selects,
+                    [&] { renderFlatFrameWithOptionalCapture(modules, window); });
+        step.record(FramerateWait::adjuster, &framerate_adjuster);
 
-        const auto render_start = Clock::now();
-        renderFlatFrameWithOptionalCapture(modules, window);
-        const auto render_end = Clock::now();
-
-        const auto wait_start = Clock::now();
-        framerate_adjuster.wait();
-        const auto wait_end = Clock::now();
-        if (render_timing != nullptr) {
-            render_timing->recordCpuFrame(CpuFrameDurations{
-                elapsedMs(update_start, update_end),
-                elapsedMs(render_start, render_end),
-                elapsedMs(wait_start, wait_end),
-            });
-        }
         if (windowFrameLimitReached()) {
             break;
         }
     }
+}
 
-    finishLoopResources(input_sequence, modules.camera_bake, render_timing,
-                        modules.renderdoc_capture, true);
+} // namespace
+
+Loop::Loop() {}
+
+void Loop::run() {
+#ifdef _WIN32
+    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+#endif
+
+    auto modules = resolveLoopModules();
+    const auto &launch_config = modules.launch_config;
+    auto &input_sequence = modules.input_sequence;
+    (void)modules.vat_player;
+
+    const auto pose_action_names = internal::poseInputActionNames();
+    if (launch_config.input_replay_path) {
+        input_sequence.startReplay(*launch_config.input_replay_path, pose_action_names);
+    } else if (launch_config.input_record) {
+        input_sequence.startRecording(*launch_config.input_record, launch_config.fps,
+                                      pose_action_names);
+    }
+    const auto time_mode = launch_config.headless || input_sequence.isReplaying()
+                               ? EngineTime::Mode::fixed_step
+                               : EngineTime::Mode::realtime;
+    const auto timeline_fps = input_sequence.isReplaying() ? input_sequence.replayFps() : launch_config.fps;
+    modules.engine_time.setup(time_mode, 1.0 / timeline_fps);
+    if (launch_config.camera_bake_output) {
+        modules.camera_bake->start(*launch_config.camera_bake_output, input_sequence.replayFps());
+    }
+    prepareRuntimeModuleGraph(modules);
+    // Built here rather than inside runInteractive(): the XR objects pull
+    // modules, and creation is frozen a few lines below.
+    auto xr = createXrRuntime(launch_config);
+    dumpFramePlanIfRequested(launch_config, modules.renderer);
+    modules.startup_metrics.finishAndLog();
+    FastModuleContainer::freezeCreation();
+    const auto module_graph = FastModuleContainer::graphSnapshot();
+    LOG_INFO(logger, "runtime module graph frozen: modules={} dependencies={}",
+             module_graph.initialized_modules.size(), module_graph.dependencies.size());
+
+    LOG_INFO(logger, "starting main loop");
+
+    if (launch_config.headless) {
+        if (launch_config.rpc) {
+            // Frame progression belongs to the RPC client here: the server
+            // pumps its own frames, so there is no FrameStep on this path.
+            runEngineRpcServer(std::cin, std::cout);
+            finishLoopResources(input_sequence, modules.camera_bake, modules.render_timing,
+                                modules.renderdoc_capture, TimingFlush::skip);
+            return;
+        }
+
+        runHeadlessFrames(modules, timeline_fps);
+        finishLoopResources(input_sequence, modules.camera_bake, modules.render_timing,
+                            modules.renderdoc_capture, TimingFlush::flush);
+        return;
+    }
+
+    // Owned here, not by runInteractive(): the RPC host outlives the loop and
+    // is torn down after finishLoopResources(), as it was before this was a
+    // function of its own.
+    WindowedRpcPump rpc_pump;
+    runInteractive(modules, xr, rpc_pump);
+    finishLoopResources(input_sequence, modules.camera_bake, modules.render_timing,
+                        modules.renderdoc_capture, TimingFlush::flush);
 }
 
 } // namespace Pelican
