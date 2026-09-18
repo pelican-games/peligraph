@@ -278,6 +278,162 @@ void validateListValue(const List<Row> &list, const std::string &path) {
                          "$list.next_id must exceed every row id");
 }
 
+// Presence is the only thing that separates an OptionalOverride field from a
+// Required or Defaulted one.  The per-value rules -- shape checks, error
+// text, and the order in which the checks run -- live here once, so the two
+// presence forms cannot drift apart again.
+template <class Value, class PolicyField>
+Value decodeStructScalarValue(const StructJson &value, const PolicyField &policy_field,
+                              const StructFieldSchema &schema, const std::string &path) {
+    Value result{};
+    if constexpr (is_flags_v<Value>) {
+        if (!value.is_array()) {
+            structFieldError(StructFieldErrorCode::TypeMismatch, path,
+                             "must be a flag string array");
+        }
+        using Storage = typename Value::storage_type;
+        Storage bits = 0;
+        std::set<std::string> seen;
+        for (const auto &item : value) {
+            if (!item.is_string()) {
+                structFieldError(StructFieldErrorCode::TypeMismatch, path,
+                                 "flag entries must be strings");
+            }
+            const auto &name = item.template get_ref<const std::string &>();
+            if (!seen.emplace(name).second) {
+                structFieldError(StructFieldErrorCode::InvalidEnum, path,
+                                 "contains a duplicate flag");
+            }
+            bool found = false;
+            for (const auto &entry : policy_field.enum_values.values) {
+                if (entry.name == name) {
+                    bits |= static_cast<Storage>(entry.value);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                structFieldError(StructFieldErrorCode::InvalidEnum, path,
+                                 "contains an undeclared flag");
+            }
+        }
+        result = Value{bits};
+    } else if constexpr (std::same_as<Value, bool>) {
+        if (!value.is_boolean()) {
+            structFieldError(StructFieldErrorCode::TypeMismatch, path, "must be a boolean");
+        }
+        result = value.get<bool>();
+    } else if constexpr (std::is_enum_v<Value>) {
+        if (!value.is_string()) {
+            structFieldError(StructFieldErrorCode::TypeMismatch, path, "must be an enum string");
+        }
+        const auto &name = value.template get_ref<const std::string &>();
+        bool found = false;
+        for (const auto &entry : policy_field.enum_values.values) {
+            if (entry.name == name) {
+                result = entry.value;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            structFieldError(StructFieldErrorCode::InvalidEnum, path,
+                             "is not a declared enum value");
+        }
+    } else if constexpr (std::is_signed_v<Value> && std::is_integral_v<Value>) {
+        result = static_cast<Value>(validateStructSigned(value, schema, path));
+    } else if constexpr (std::is_unsigned_v<Value> && std::is_integral_v<Value>) {
+        result = static_cast<Value>(validateStructUnsigned(value, schema, path));
+    } else if constexpr (std::same_as<Value, float> || std::same_as<Value, double>) {
+        result = static_cast<Value>(validateStructFloating(value, schema, path,
+                                                           std::same_as<Value, float>));
+    } else if constexpr (std::same_as<Value, std::string>) {
+        if (!value.is_string()) {
+            structFieldError(StructFieldErrorCode::TypeMismatch, path, "must be a string");
+        }
+        result = value.template get_ref<const std::string &>();
+    } else if constexpr (std::same_as<Value, vec2> || std::same_as<Value, vec3> ||
+                         std::same_as<Value, vec4> || std::same_as<Value, quat>) {
+        if (!value.is_array() || value.size() != structVectorLength(schema.type)) {
+            structFieldError(StructFieldErrorCode::TypeMismatch, path, "has an invalid array shape");
+        }
+        std::array<float, 4> components{};
+        for (std::size_t i = 0; i < value.size(); ++i) {
+            components[i] = static_cast<float>(validateStructFloating(value[i], schema, path, true));
+        }
+        if constexpr (std::same_as<Value, vec2>) {
+            result = {components[0], components[1]};
+        } else if constexpr (std::same_as<Value, vec3>) {
+            result = {components[0], components[1], components[2]};
+        } else {
+            result = {components[0], components[1], components[2], components[3]};
+        }
+    } else {
+        static_assert(always_false_v<Value>, "unsupported struct JSON field type");
+    }
+    return result;
+}
+
+// Encode runs the same range and finiteness checks the decoder would run on
+// the wire form it is about to emit, so a typed value that could not survive
+// a round trip is reported before any byte leaves.
+template <class Value, class PolicyField>
+nlohmann::ordered_json encodeStructScalarValue(const Value &value, const PolicyField &policy_field,
+                                               const StructFieldSchema &schema,
+                                               const std::string &path) {
+    if constexpr (is_flags_v<Value>) {
+        nlohmann::ordered_json result = nlohmann::ordered_json::array();
+        typename Value::storage_type declared_bits = 0;
+        for (const auto &entry : policy_field.enum_values.values) {
+            declared_bits |= static_cast<typename Value::storage_type>(entry.value);
+            if (value.contains(entry.value)) result.push_back(entry.name);
+        }
+        if ((value.bits() & ~declared_bits) != 0) {
+            structFieldError(StructFieldErrorCode::InvalidEnum, path,
+                             "contains bits outside the declared vocabulary");
+        }
+        return result;
+    } else if constexpr (std::same_as<Value, bool>) {
+        return value;
+    } else if constexpr (std::is_enum_v<Value>) {
+        for (const auto &entry : policy_field.enum_values.values) {
+            if (entry.value == value) {
+                return entry.name;
+            }
+        }
+        structFieldError(StructFieldErrorCode::InvalidEnum, path, "is not a declared enum value");
+    } else if constexpr (std::is_signed_v<Value> && std::is_integral_v<Value>) {
+        const StructJson encoded = value;
+        (void)validateStructSigned(encoded, schema, path);
+        return value;
+    } else if constexpr (std::is_unsigned_v<Value> && std::is_integral_v<Value>) {
+        const StructJson encoded = value;
+        (void)validateStructUnsigned(encoded, schema, path);
+        return value;
+    } else if constexpr (std::same_as<Value, float> || std::same_as<Value, double>) {
+        const StructJson encoded = value;
+        (void)validateStructFloating(encoded, schema, path, std::same_as<Value, float>);
+        return value;
+    } else if constexpr (std::same_as<Value, vec2>) {
+        for (const float component : {value.x, value.y}) {
+            (void)validateStructFloating(StructJson(component), schema, path, true);
+        }
+        return nlohmann::ordered_json::array({value.x, value.y});
+    } else if constexpr (std::same_as<Value, vec3>) {
+        for (const float component : {value.x, value.y, value.z}) {
+            (void)validateStructFloating(StructJson(component), schema, path, true);
+        }
+        return nlohmann::ordered_json::array({value.x, value.y, value.z});
+    } else if constexpr (std::same_as<Value, vec4> || std::same_as<Value, quat>) {
+        for (const float component : {value.x, value.y, value.z, value.w}) {
+            (void)validateStructFloating(StructJson(component), schema, path, true);
+        }
+        return nlohmann::ordered_json::array({value.x, value.y, value.z, value.w});
+    } else {
+        return value;
+    }
+}
+
 template <class PolicyField, class Owner>
 void decodeStructPolicyField(const StructJson &payload, const PolicyField &policy_field, Owner &temporary,
                              std::string_view root_path) {
@@ -301,130 +457,7 @@ void decodeStructPolicyField(const StructJson &payload, const PolicyField &polic
     auto &member = temporary.*Declaration::member;
     if constexpr (is_optional_v<Member>) {
         using Value = unwrap_optional_t<Member>;
-        Value decoded{};
-        if constexpr (is_flags_v<Value>) {
-            if (!value_it->is_array()) {
-                structFieldError(StructFieldErrorCode::TypeMismatch, path,
-                                 "must be a flag string array");
-            }
-            using Storage = typename Value::storage_type;
-            Storage bits = 0;
-            std::set<std::string> seen;
-            for (const auto &item : *value_it) {
-                if (!item.is_string()) {
-                    structFieldError(StructFieldErrorCode::TypeMismatch, path,
-                                     "flag entries must be strings");
-                }
-                const auto &name = item.template get_ref<const std::string &>();
-                if (!seen.emplace(name).second) {
-                    structFieldError(StructFieldErrorCode::InvalidEnum, path,
-                                     "contains a duplicate flag");
-                }
-                bool found = false;
-                for (const auto &entry : policy_field.enum_values.values) {
-                    if (entry.name == name) {
-                        bits |= static_cast<Storage>(entry.value);
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    structFieldError(StructFieldErrorCode::InvalidEnum, path,
-                                     "contains an undeclared flag");
-                }
-            }
-            decoded = Value{bits};
-        } else if constexpr (std::is_enum_v<Value>) {
-            if (!value_it->is_string()) {
-                structFieldError(StructFieldErrorCode::TypeMismatch, path,
-                                 "must be an enum string");
-            }
-            bool found = false;
-            for (const auto &entry : policy_field.enum_values.values) {
-                if (entry.name == value_it->template get_ref<const std::string &>()) {
-                    decoded = entry.value;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                structFieldError(StructFieldErrorCode::InvalidEnum, path,
-                                 "is not a declared enum value");
-            }
-        } else {
-            // Scalar optional values use the same validation below via a
-            // small local conversion instead of treating absence as default.
-            if constexpr (std::same_as<Value, bool>) {
-                if (!value_it->is_boolean()) structFieldError(StructFieldErrorCode::TypeMismatch, path, "must be a boolean");
-                decoded = value_it->template get<bool>();
-            } else if constexpr (std::is_signed_v<Value> && std::is_integral_v<Value>) {
-                decoded = static_cast<Value>(validateStructSigned(*value_it, schema, path));
-            } else if constexpr (std::is_unsigned_v<Value> && std::is_integral_v<Value>) {
-                decoded = static_cast<Value>(validateStructUnsigned(*value_it, schema, path));
-            } else if constexpr (std::same_as<Value, float> || std::same_as<Value, double>) {
-                decoded = static_cast<Value>(validateStructFloating(*value_it, schema, path, std::same_as<Value, float>));
-            } else if constexpr (std::same_as<Value, std::string>) {
-                if (!value_it->is_string()) structFieldError(StructFieldErrorCode::TypeMismatch, path, "must be a string");
-                decoded = value_it->template get_ref<const std::string &>();
-            } else if constexpr (std::same_as<Value, vec2> ||
-                                 std::same_as<Value, vec3> ||
-                                 std::same_as<Value, vec4> ||
-                                 std::same_as<Value, quat>) {
-                if (!value_it->is_array() ||
-                    value_it->size() != structVectorLength(schema.type)) {
-                    structFieldError(StructFieldErrorCode::TypeMismatch, path,
-                                     "has an invalid array shape");
-                }
-                std::array<float, 4> components{};
-                for (std::size_t index = 0; index < value_it->size(); ++index) {
-                    components[index] = static_cast<float>(
-                        validateStructFloating((*value_it)[index], schema,
-                                               path, true));
-                }
-                if constexpr (std::same_as<Value, vec2>)
-                    decoded = {components[0], components[1]};
-                else if constexpr (std::same_as<Value, vec3>)
-                    decoded = {components[0], components[1], components[2]};
-                else
-                    decoded = {components[0], components[1], components[2],
-                               components[3]};
-            } else {
-                static_assert(always_false_v<Value>, "unsupported OptionalOverride field type");
-            }
-        }
-        member = std::move(decoded);
-    } else if constexpr (is_flags_v<Member>) {
-        if (!value_it->is_array()) {
-            structFieldError(StructFieldErrorCode::TypeMismatch, path,
-                             "must be a flag string array");
-        }
-        using Storage = typename Member::storage_type;
-        Storage bits = 0;
-        std::set<std::string> seen;
-        for (const auto &item : *value_it) {
-            if (!item.is_string()) {
-                structFieldError(StructFieldErrorCode::TypeMismatch, path,
-                                 "flag entries must be strings");
-            }
-            const auto &name = item.template get_ref<const std::string &>();
-            if (!seen.emplace(name).second) {
-                structFieldError(StructFieldErrorCode::InvalidEnum, path,
-                                 "contains a duplicate flag");
-            }
-            bool found = false;
-            for (const auto &entry : policy_field.enum_values.values) {
-                if (entry.name == name) {
-                    bits |= static_cast<Storage>(entry.value);
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                structFieldError(StructFieldErrorCode::InvalidEnum, path,
-                                 "contains an undeclared flag");
-            }
-        }
-        member = Member{bits};
+        member = decodeStructScalarValue<Value>(*value_it, policy_field, schema, path);
     } else if constexpr (is_list_v<Member>) {
         using Row = typename ListTraits<Member>::row_type;
         if (!value_it->is_object()) {
@@ -525,53 +558,8 @@ void decodeStructPolicyField(const StructJson &payload, const PolicyField &polic
         }
         validateListValue(decoded, path);
         member = std::move(decoded);
-    } else if constexpr (std::same_as<Member, bool>) {
-        if (!value_it->is_boolean()) {
-            structFieldError(StructFieldErrorCode::TypeMismatch, path, "must be a boolean");
-        }
-        member = value_it->get<bool>();
-    } else if constexpr (std::is_enum_v<Member>) {
-        if (!value_it->is_string()) {
-            structFieldError(StructFieldErrorCode::TypeMismatch, path, "must be an enum string");
-        }
-        const auto &name = value_it->template get_ref<const std::string &>();
-        for (const auto &entry : policy_field.enum_values.values) {
-            if (entry.name == name) {
-                member = entry.value;
-                return;
-            }
-        }
-        structFieldError(StructFieldErrorCode::InvalidEnum, path, "is not a declared enum value");
-    } else if constexpr (std::is_signed_v<Member> && std::is_integral_v<Member>) {
-        member = static_cast<Member>(validateStructSigned(*value_it, schema, path));
-    } else if constexpr (std::is_unsigned_v<Member> && std::is_integral_v<Member>) {
-        member = static_cast<Member>(validateStructUnsigned(*value_it, schema, path));
-    } else if constexpr (std::same_as<Member, float> || std::same_as<Member, double>) {
-        member = static_cast<Member>(validateStructFloating(*value_it, schema, path,
-                                                            std::same_as<Member, float>));
-    } else if constexpr (std::same_as<Member, std::string>) {
-        if (!value_it->is_string()) {
-            structFieldError(StructFieldErrorCode::TypeMismatch, path, "must be a string");
-        }
-        member = value_it->template get_ref<const std::string &>();
-    } else if constexpr (std::same_as<Member, vec2> || std::same_as<Member, vec3> ||
-                         std::same_as<Member, vec4> || std::same_as<Member, quat>) {
-        if (!value_it->is_array() || value_it->size() != structVectorLength(schema.type)) {
-            structFieldError(StructFieldErrorCode::TypeMismatch, path, "has an invalid array shape");
-        }
-        std::array<float, 4> components{};
-        for (std::size_t i = 0; i < value_it->size(); ++i) {
-            components[i] = static_cast<float>(validateStructFloating((*value_it)[i], schema, path, true));
-        }
-        if constexpr (std::same_as<Member, vec2>) {
-            member = {components[0], components[1]};
-        } else if constexpr (std::same_as<Member, vec3>) {
-            member = {components[0], components[1], components[2]};
-        } else {
-            member = {components[0], components[1], components[2], components[3]};
-        }
     } else {
-        static_assert(always_false_v<Member>, "unsupported struct JSON field type");
+        member = decodeStructScalarValue<Member>(*value_it, policy_field, schema, path);
     }
 }
 
@@ -589,57 +577,7 @@ nlohmann::ordered_json encodeStructPolicyField(const Owner &value, const PolicyF
     if constexpr (is_optional_v<Member>) {
         if (!member) return nullptr;
         using Value = unwrap_optional_t<Member>;
-        if constexpr (is_flags_v<Value>) {
-            nlohmann::ordered_json result = nlohmann::ordered_json::array();
-            typename Value::storage_type declared_bits = 0;
-            for (const auto &entry : policy_field.enum_values.values) {
-                declared_bits |=
-                    static_cast<typename Value::storage_type>(entry.value);
-                if (member->contains(entry.value)) result.push_back(entry.name);
-            }
-            if ((member->bits() & ~declared_bits) != 0) {
-                structFieldError(StructFieldErrorCode::InvalidEnum, path,
-                                 "contains bits outside the declared vocabulary");
-            }
-            return result;
-        } else if constexpr (std::is_enum_v<Value>) {
-            for (const auto &entry : policy_field.enum_values.values) {
-                if (entry.value == *member) return entry.name;
-            }
-            structFieldError(StructFieldErrorCode::InvalidEnum, path,
-                             "is not a declared enum value");
-        } else {
-            const StructJson encoded = *member;
-            if constexpr (std::is_unsigned_v<Value> && std::is_integral_v<Value>)
-                (void)validateStructUnsigned(encoded, schema, path);
-            else if constexpr (std::is_signed_v<Value> && std::is_integral_v<Value>)
-                (void)validateStructSigned(encoded, schema, path);
-            else if constexpr (std::same_as<Value, float> || std::same_as<Value, double>)
-                (void)validateStructFloating(encoded, schema, path, std::same_as<Value, float>);
-            else if constexpr (std::same_as<Value, vec2>)
-                return nlohmann::ordered_json::array({member->x, member->y});
-            else if constexpr (std::same_as<Value, vec3>)
-                return nlohmann::ordered_json::array(
-                    {member->x, member->y, member->z});
-            else if constexpr (std::same_as<Value, vec4> ||
-                               std::same_as<Value, quat>)
-                return nlohmann::ordered_json::array(
-                    {member->x, member->y, member->z, member->w});
-            return *member;
-        }
-    } else if constexpr (is_flags_v<Member>) {
-        nlohmann::ordered_json result = nlohmann::ordered_json::array();
-        typename Member::storage_type declared_bits = 0;
-        for (const auto &entry : policy_field.enum_values.values) {
-            declared_bits |=
-                static_cast<typename Member::storage_type>(entry.value);
-            if (member.contains(entry.value)) result.push_back(entry.name);
-        }
-        if ((member.bits() & ~declared_bits) != 0) {
-            structFieldError(StructFieldErrorCode::InvalidEnum, path,
-                             "contains bits outside the declared vocabulary");
-        }
-        return result;
+        return encodeStructScalarValue<Value>(*member, policy_field, schema, path);
     } else if constexpr (is_list_v<Member>) {
         using Row = typename ListTraits<Member>::row_type;
         validateListValue(member, path);
@@ -662,44 +600,8 @@ nlohmann::ordered_json encodeStructPolicyField(const Owner &value, const PolicyF
             result["rows"].push_back(std::move(encoded_row));
         }
         return result;
-    } else if constexpr (std::same_as<Member, bool>) {
-        return member;
-    } else if constexpr (std::is_enum_v<Member>) {
-        for (const auto &entry : policy_field.enum_values.values) {
-            if (entry.value == member) {
-                return entry.name;
-            }
-        }
-        structFieldError(StructFieldErrorCode::InvalidEnum, path, "is not a declared enum value");
-    } else if constexpr (std::is_signed_v<Member> && std::is_integral_v<Member>) {
-        const StructJson encoded = member;
-        (void)validateStructSigned(encoded, schema, path);
-        return member;
-    } else if constexpr (std::is_unsigned_v<Member> && std::is_integral_v<Member>) {
-        const StructJson encoded = member;
-        (void)validateStructUnsigned(encoded, schema, path);
-        return member;
-    } else if constexpr (std::same_as<Member, float> || std::same_as<Member, double>) {
-        const StructJson encoded = member;
-        (void)validateStructFloating(encoded, schema, path, std::same_as<Member, float>);
-        return member;
-    } else if constexpr (std::same_as<Member, vec2>) {
-        for (const float component : {member.x, member.y}) {
-            (void)validateStructFloating(StructJson(component), schema, path, true);
-        }
-        return nlohmann::ordered_json::array({member.x, member.y});
-    } else if constexpr (std::same_as<Member, vec3>) {
-        for (const float component : {member.x, member.y, member.z}) {
-            (void)validateStructFloating(StructJson(component), schema, path, true);
-        }
-        return nlohmann::ordered_json::array({member.x, member.y, member.z});
-    } else if constexpr (std::same_as<Member, vec4> || std::same_as<Member, quat>) {
-        for (const float component : {member.x, member.y, member.z, member.w}) {
-            (void)validateStructFloating(StructJson(component), schema, path, true);
-        }
-        return nlohmann::ordered_json::array({member.x, member.y, member.z, member.w});
     } else {
-        return member;
+        return encodeStructScalarValue<Member>(member, policy_field, schema, path);
     }
 }
 

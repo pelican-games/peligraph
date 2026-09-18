@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -41,6 +42,17 @@ struct ComponentSchemaFixture {
         componentPolicy("fixture_component"),
         required(field<&ComponentSchemaFixture::required_value>("required_value")),
         defaulted(field<&ComponentSchemaFixture::defaulted_value>("defaulted_value"), 1.0f));
+};
+
+struct VectorOverrideFixture {
+    vec3 offset{};
+    std::optional<vec3> offset_override;
+
+    static constexpr auto schema = structFields(
+        componentPolicy("fixture_vector_override"),
+        required(field<&VectorOverrideFixture::offset>("offset", frange(-1.0, 1.0))),
+        optionalOverride(field<&VectorOverrideFixture::offset_override>("offset_override",
+                                                                       frange(-1.0, 1.0))));
 };
 
 int event_constructor_count = 0;
@@ -193,6 +205,28 @@ TEST_CASE("BehaviorParams validation reports stable code and path without partia
     params.speed = 11.0f;
     requireStructError([&] { (void)encodeBehaviorParams(params, BehaviorParamsFixture::schema); },
                        StructFieldErrorCode::OutOfRange, "params.speed");
+}
+
+TEST_CASE("Encode range-checks every vector component whether or not the field is optional",
+          "[struct-schema][component][errors]") {
+    VectorOverrideFixture params;
+
+    params.offset = vec3{0.0f, 2.0f, 0.0f};
+    requireStructError(
+        [&] { (void)encodeStructObject(params, VectorOverrideFixture::schema, "override"); },
+        StructFieldErrorCode::OutOfRange, "override.offset");
+
+    params.offset = vec3{0.0f, 0.0f, 0.0f};
+    params.offset_override = vec3{0.0f, 2.0f, 0.0f};
+    requireStructError(
+        [&] { (void)encodeStructObject(params, VectorOverrideFixture::schema, "override"); },
+        StructFieldErrorCode::OutOfRange, "override.offset_override");
+
+    params.offset_override = vec3{0.0f, 0.5f, 0.0f};
+    const auto encoded = Json::parse(
+        encodeStructObject(params, VectorOverrideFixture::schema, "override").dump());
+    REQUIRE(encoded.at("offset") == Json::array({0.0, 0.0, 0.0}));
+    REQUIRE(encoded.at("offset_override") == Json::array({0.0, 0.5, 0.0}));
 }
 
 TEST_CASE("EventPayload compatibility keeps unknown-before-missing and one loader call per accepted payload",
