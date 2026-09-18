@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../container.hpp"
+#include "../renderingpass/passinputdescriptorvariant.hpp"
 #include "../renderingpass/renderingpass.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include <cstdint>
@@ -14,6 +15,37 @@ namespace Pelican {
 
 class RenderTargetImageViewResolver;
 class FrameGraphResourceContainer;
+
+// One image input of a fullscreen / generic-raster pass. The per-input
+// metadata travels as one value so the "every array is either empty or
+// exactly as long as the target array" invariant holds by construction
+// instead of being re-checked at every entry point.
+struct FullscreenPassInput {
+    GlobalRenderTargetId target = noRenderTargetId();
+    bool history = false;
+    FullscreenInputSampling sampling{};
+    PassInputViewDimension view =
+        PassInputViewDimension::shared_2d;
+    std::optional<ImageSubresourceRange> subresource;
+    // Absent derives the descriptor view from `view`: layered and family
+    // array inputs bind a 2D array view, everything else a plain 2D view.
+    std::optional<ImageSubresourceViewDimension>
+        view_dimension;
+    bool local_read = false;
+
+    ImageSubresourceViewDimension
+    resolvedViewDimension() const {
+        if (view_dimension) return *view_dimension;
+        return view == PassInputViewDimension::
+                           layered_2d_array ||
+                       view ==
+                           PassInputViewDimension::
+                               family_2d_array
+                   ? ImageSubresourceViewDimension::
+                         two_d_array
+                   : ImageSubresourceViewDimension::two_d;
+    }
+};
 
 DECLARE_MODULE(FullscreenPassContainer) {
   public:
@@ -30,21 +62,8 @@ DECLARE_MODULE(FullscreenPassContainer) {
     uint32_t next_pipeline_id = 0;
 
     struct InputTextureInfo {
-        struct DescriptorVariant {
-            std::array<vk::UniqueDescriptorSet, 2> descsets;
-            std::array<std::vector<vk::ImageView>, 2>
-                bound_image_views;
-        };
-        std::vector<DescriptorVariant> variants;
-        std::vector<GlobalRenderTargetId> input_rt_ids;
-        std::vector<bool> input_rt_history;
-        std::vector<PassInputViewDimension> input_rt_views;
-        std::vector<ImageSubresourceViewDimension>
-            input_view_dimensions;
-        std::vector<std::optional<ImageSubresourceRange>>
-            input_rt_subresources;
-        std::vector<FullscreenInputSampling> input_sampling;
-        std::vector<bool> input_local_reads;
+        std::vector<PassInputDescriptorVariant> variants;
+        std::vector<FullscreenPassInput> inputs;
         std::vector<FrameGraphBufferId> input_buffer_ids;
         std::optional<FrameGraphBufferId> index_buffer;
         GraphicsPipelineViewContract view;
@@ -53,6 +72,16 @@ DECLARE_MODULE(FullscreenPassContainer) {
     };
     std::unordered_map<int, InputTextureInfo> input_textures;
     uint64_t next_binding_revision = 1;
+
+    // Descriptor-set construction for one pass: one set per (variant,
+    // history parity) over the already validated input list.
+    void buildInputDescriptorVariants(
+        InputTextureInfo &info,
+        vk::DescriptorSetLayout layout,
+        const RenderTargetImageViewResolver &rt_views,
+        const FrameGraphResourceContainer
+            &frame_graph_resources,
+        std::uint32_t variant_count) const;
 
   public:
     struct RegistrationCheckpoint {
@@ -94,38 +123,22 @@ DECLARE_MODULE(FullscreenPassContainer) {
     void setIndexBuffer(PassId pass_id, FrameGraphBufferId buffer);
     void setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts,
                           const RenderTargetImageViewResolver &rt_views);
-    void setInputResources(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts,
-                           const std::vector<bool> &input_rt_history,
-                           const std::vector<std::string> &input_buffers,
-                           const RenderTargetImageViewResolver &rt_views,
-                           const FrameGraphResourceContainer &frame_graph_resources,
-                           const std::vector<FullscreenInputSampling> &input_sampling = {},
-                           const std::vector<PassInputViewDimension> &input_views = {},
-                           GraphicsPipelineViewContract view = {},
-                           const std::vector<bool> &input_local_reads = {},
-                           const std::vector<std::optional<ImageSubresourceRange>>
-                               &input_subresources = {},
-                           std::uint32_t logical_view_count = 0,
-                           const std::vector<
-                               ImageSubresourceViewDimension>
-                               &input_view_dimensions = {});
+    void setInputResources(
+        PassId pass_id,
+        const std::vector<FullscreenPassInput> &inputs,
+        const std::vector<std::string> &input_buffers,
+        const RenderTargetImageViewResolver &rt_views,
+        const FrameGraphResourceContainer &frame_graph_resources,
+        GraphicsPipelineViewContract view = {},
+        std::uint32_t logical_view_count = 0);
     void setInputResourcesById(
         PassId pass_id,
-        const std::vector<GlobalRenderTargetId> &input_rts,
-        const std::vector<bool> &input_rt_history,
+        const std::vector<FullscreenPassInput> &inputs,
         const std::vector<FrameGraphBufferId> &input_buffers,
         const RenderTargetImageViewResolver &rt_views,
         const FrameGraphResourceContainer &frame_graph_resources,
-        const std::vector<FullscreenInputSampling> &input_sampling = {},
-        const std::vector<PassInputViewDimension> &input_views = {},
         GraphicsPipelineViewContract view = {},
-        const std::vector<bool> &input_local_reads = {},
-        const std::vector<std::optional<ImageSubresourceRange>>
-            &input_subresources = {},
-        std::uint32_t logical_view_count = 0,
-        const std::vector<
-            ImageSubresourceViewDimension>
-            &input_view_dimensions = {});
+        std::uint32_t logical_view_count = 0);
     void rebindInputResources(
         PassId pass_id,
         const RenderTargetImageViewResolver &rt_views,

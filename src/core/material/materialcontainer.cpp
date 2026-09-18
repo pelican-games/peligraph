@@ -4380,32 +4380,19 @@ MaterialContainer::buildScreenInputDescriptor(
             descriptor_variant.descsets[parity] =
                 std::move(device.allocateDescriptorSetsUnique(allocation).front());
 
-            std::vector<vk::DescriptorImageInfo> image_infos;
-            std::vector<vk::DescriptorBufferInfo> buffer_infos;
-            std::vector<vk::WriteDescriptorSet> writes;
-            image_infos.reserve(result.resources.size());
-            buffer_infos.reserve(result.resources.size());
-            writes.reserve(result.resources.size());
-            descriptor_variant.bound_image_views[parity]
-                .reserve(result.resources.size());
+            PassInputDescriptorWrites writes{
+                descriptor_variant, parity,
+                result.resources.size(),
+                result.resources.size()};
             for (const auto &resource :
                  result.resources) {
                 if (resource.isBuffer()) {
-                    buffer_infos.push_back(
+                    writes.appendBuffer(
+                        resource.binding,
                         GET_MODULE(
                             FrameGraphResourceContainer)
                             .descriptorInfo(
                                 resource.buffer));
-                    vk::WriteDescriptorSet write{
-                        descriptor_variant
-                            .descsets[parity]
-                            .get(),
-                        resource.binding, 0, 1,
-                        vk::DescriptorType::
-                            eStorageBuffer};
-                    write.pBufferInfo =
-                        &buffer_infos.back();
-                    writes.push_back(write);
                     continue;
                 }
                 const auto array_view =
@@ -4449,21 +4436,9 @@ MaterialContainer::buildScreenInputDescriptor(
                                 parity);
                 } else if (cube_view) {
                     image_view =
-                        rt_views
-                            .getImageSubresourceViewForFrame(
-                                resource.target,
-                                ImageSubresourceRange{
-                                    .base_mip_level = 0,
-                                    .level_count =
-                                        rt_views.mipLevels(
-                                            resource.target),
-                                    .base_array_layer = 0,
-                                    .layer_count = 6,
-                                },
-                                ImageSubresourceViewDimension::
-                                    cube,
-                                resource.history,
-                                parity);
+                        passInputCubeImageView(
+                            rt_views, resource.target,
+                            resource.history, parity);
                 } else if (array_view) {
                     image_view =
                         rt_views
@@ -4506,24 +4481,12 @@ MaterialContainer::buildScreenInputDescriptor(
                               : screen_linear_sampler.get()
                         : materialResourceSampler(
                               resource.sampling);
-                image_infos.push_back(vk::DescriptorImageInfo{
-                    sampler,
-                    image_view,
-                    resource.isInputAttachment()
-                        ? vk::ImageLayout::
-                              eRenderingLocalReadKHR
-                        : vk::ImageLayout::
-                              eShaderReadOnlyOptimal});
-                descriptor_variant.bound_image_views[parity]
-                    .push_back(image_view);
-                vk::WriteDescriptorSet write{
-                    descriptor_variant.descsets[parity].get(),
-                    resource.binding, 0, 1,
-                    resource.descriptor_type};
-                write.pImageInfo = &image_infos.back();
-                writes.push_back(write);
+                writes.appendImage(
+                    resource.binding,
+                    resource.descriptor_type, sampler,
+                    image_view);
             }
-            device.updateDescriptorSets(writes, {});
+            writes.submit(device);
         }
     }
     return result;
@@ -5115,14 +5078,16 @@ void MaterialContainer::rebindScreenInputs(
 
 std::vector<vk::ImageView>
 MaterialContainer::boundScreenInputImageViewsForTesting(
-    GlobalMaterialId material, const PassDefinition &pass) const {
+    GlobalMaterialId material, const PassDefinition &pass,
+    std::uint32_t view_index) const {
     const auto effective =
         resolveMaterialForPass(pass, material);
     const auto *descriptor =
         ensureScreenInputDescriptor(effective, pass);
     if (descriptor == nullptr) return {};
-    return descriptor->variants.front().bound_image_views[
-        GET_MODULE(RenderTargetContainer).historyFrameIndex()];
+    return descriptor->variants.at(view_index)
+        .bound_image_views[
+            GET_MODULE(RenderTargetContainer).historyFrameIndex()];
 }
 
 std::uint64_t MaterialContainer::screenInputBindingRevisionForTesting(

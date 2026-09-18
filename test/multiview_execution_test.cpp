@@ -1397,30 +1397,36 @@ TEST_CASE(
         target_views{render_targets};
     fullscreen_passes.setInputResourcesById(
         sequential_input_pass,
-        {capacity_target}, {false}, {},
-        target_views, frame_graph_resources, {},
-        {PassInputViewDimension::sequential_2d},
-        {}, {}, {}, stereo_view_count);
+        {FullscreenPassInput{
+            .target = capacity_target,
+            .view = PassInputViewDimension::
+                sequential_2d}},
+        {}, target_views, frame_graph_resources, {},
+        stereo_view_count);
     fullscreen_passes.setInputResourcesById(
         multiview_input_pass,
-        {capacity_target}, {false}, {},
-        target_views, frame_graph_resources, {},
-        {PassInputViewDimension::layered_2d_array},
+        {FullscreenPassInput{
+            .target = capacity_target,
+            .view = PassInputViewDimension::
+                layered_2d_array}},
+        {}, target_views, frame_graph_resources,
         GraphicsPipelineViewContract::multiview(
             stereo_view_count),
-        {}, {}, stereo_view_count);
+        stereo_view_count);
     fullscreen_passes.setInputResourcesById(
         local_read_input_pass,
-        {managed_target}, {false}, {},
-        target_views, frame_graph_resources, {},
-        {PassInputViewDimension::shared_2d},
-        {}, {true});
+        {FullscreenPassInput{
+            .target = managed_target,
+            .view = PassInputViewDimension::shared_2d,
+            .local_read = true}},
+        {}, target_views, frame_graph_resources);
     fullscreen_passes.setInputResourcesById(
         local_read_consumer_pass,
-        {local_source}, {false}, {},
-        target_views, frame_graph_resources, {},
-        {PassInputViewDimension::shared_2d},
-        {}, {true});
+        {FullscreenPassInput{
+            .target = local_source,
+            .view = PassInputViewDimension::shared_2d,
+            .local_read = true}},
+        {}, target_views, frame_graph_resources);
     REQUIRE(
         fullscreen_passes
             .boundInputImageViewsForTesting(

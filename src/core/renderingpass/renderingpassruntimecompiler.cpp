@@ -1569,6 +1569,65 @@ struct CompiledFullscreenResourceInterface {
         view_dimensions;
 };
 
+// The container takes one value per image input. The compiler still holds
+// its metadata per concern: history, sampling and the local-read mask are
+// one-to-one with the input targets by construction, while the authored
+// view, subresource and descriptor-view arrays are either absent (derive
+// the defaults) or one-to-one. Anything in between is authoring the inputs
+// of a pass the graph cannot bind, so it is rejected here rather than
+// silently defaulting the positions the array does not reach.
+void requirePassInputMetadataLength(
+    const PassDefinition &pass, std::size_t length,
+    std::size_t count, std::string_view field) {
+    if (length == 0 || length == count) return;
+    throw std::runtime_error(
+        "Fullscreen pass input " + std::string{field} +
+        " metadata is inconsistent: " + pass.name);
+}
+
+std::vector<FullscreenPassInput> fullscreenPassInputs(
+    const PassDefinition &pass,
+    const CompiledFullscreenResourceInterface
+        &resource_interface,
+    const std::vector<bool> &local_reads) {
+    const auto count = pass.input_targets.size();
+    requirePassInputMetadataLength(
+        pass, pass.input_target_views.size(), count,
+        "view");
+    requirePassInputMetadataLength(
+        pass, resource_interface.subresources.size(),
+        count, "subresource");
+    requirePassInputMetadataLength(
+        pass, resource_interface.view_dimensions.size(),
+        count, "descriptor-view");
+    std::vector<FullscreenPassInput> inputs;
+    inputs.reserve(count);
+    for (std::size_t input = 0; input < count; ++input) {
+        FullscreenPassInput entry;
+        entry.target = pass.input_targets[input];
+        entry.history =
+            pass.input_target_history.at(input);
+        entry.sampling =
+            resource_interface.sampling.at(input);
+        entry.local_read = local_reads.at(input);
+        if (!pass.input_target_views.empty()) {
+            entry.view =
+                pass.input_target_views[input];
+        }
+        if (!resource_interface.subresources.empty()) {
+            entry.subresource =
+                resource_interface.subresources[input];
+        }
+        if (!resource_interface.view_dimensions
+                 .empty()) {
+            entry.view_dimension =
+                resource_interface.view_dimensions[input];
+        }
+        inputs.push_back(std::move(entry));
+    }
+    return inputs;
+}
+
 VulkanResourceViewLayout physicalViewLayout(
     PassInputViewDimension view) {
     switch (view) {
@@ -2290,17 +2349,16 @@ PassId compileFullscreenPass(
 
     if (!pass_def.input_targets.empty() || !pass_def.input_buffers.empty()) {
         dependencies.fullscreen_pass_container.setInputResources(
-            pass_id, pass_def.input_targets, pass_def.input_target_history, pass_def.input_buffers,
+            pass_id,
+            fullscreenPassInputs(
+                pass_def, resource_interface,
+                localReadInputMask(
+                    pass_def, rendering)),
+            pass_def.input_buffers,
             dependencies.render_target_views,
             dependencies.frame_graph_resources,
-            resource_interface.sampling,
-            pass_def.input_target_views,
             view,
-            localReadInputMask(
-                pass_def, rendering),
-            resource_interface.subresources,
-            logical_view_count,
-            resource_interface.view_dimensions);
+            logical_view_count);
     }
 
     return pass_id;
@@ -2337,19 +2395,15 @@ PassId compileGenericRasterPass(
         dependencies.fullscreen_pass_container
             .setInputResources(
                 pass_id,
-                pass_def.input_targets,
-                pass_def.input_target_history,
+                fullscreenPassInputs(
+                    pass_def, resource_interface,
+                    localReadInputMask(
+                        pass_def, rendering)),
                 pass_def.input_buffers,
                 dependencies.render_target_views,
                 dependencies.frame_graph_resources,
-                resource_interface.sampling,
-                pass_def.input_target_views,
                 view,
-                localReadInputMask(
-                    pass_def, rendering),
-                resource_interface.subresources,
-                logical_view_count,
-                resource_interface.view_dimensions);
+                logical_view_count);
     }
     if (indexed) dependencies.fullscreen_pass_container.setIndexBuffer(pass_id,
         dependencies.frame_graph_resources.getBufferIdByName(indexed->index_buffer));

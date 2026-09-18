@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../container.hpp"
+#include "../renderingpass/passinputdescriptorvariant.hpp"
 #include "../renderingpass/renderingpass.hpp"
 #include "../resourcecontainer.hpp"
 #include "../shader/pelican_sets.hpp"
@@ -163,12 +164,8 @@ DECLARE_MODULE(MaterialContainer) {
             }
         };
         struct ScreenInputDescriptor {
-            struct DescriptorVariant {
-                std::array<vk::UniqueDescriptorSet, 2> descsets;
-                std::array<std::vector<vk::ImageView>, 2>
-                    bound_image_views;
-            };
-            std::vector<DescriptorVariant> variants;
+            std::vector<PassInputDescriptorVariant>
+                variants;
             std::vector<ScreenInputResource> resources;
             std::uint64_t binding_revision = 0;
         };
@@ -454,7 +451,8 @@ DECLARE_MODULE(MaterialContainer) {
                       RenderPassViewInvocation invocation = {}) const;
     void rebindScreenInputs(const RenderTargetImageViewResolver &rt_views) const;
     std::vector<vk::ImageView> boundScreenInputImageViewsForTesting(
-        GlobalMaterialId material, const PassDefinition &pass) const;
+        GlobalMaterialId material, const PassDefinition &pass,
+        std::uint32_t view_index = 0) const;
     std::uint64_t screenInputBindingRevisionForTesting(
         GlobalMaterialId material, const PassDefinition &pass) const;
     vk::PipelineLayout getPipelineLayout() const;
