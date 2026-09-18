@@ -22,6 +22,7 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <stdexcept>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
@@ -154,10 +155,17 @@ struct AnimationServiceRuntime::Impl {
     std::uint64_t next_vrma_identity{1ull << 63u};
     std::uint64_t registration_generation{1};
 
+    // Get-or-create, and deliberately so: the identity is the engine's own
+    // registration-owner slot (`currentRegistrationOwner`), never a handle a
+    // client supplied, and the only caller is getCurrentOwner -- asking "which
+    // owner am I?" for a slot that has not registered anything yet has to
+    // answer, not fail. The inserted record is `active` with generation 1,
+    // which is also what makes the tombstone in releaseOwner load-bearing: if
+    // that record were erased instead, this would resurrect generation 1 and a
+    // handle from the previous DLL generation would validate again.
     AnimationOwnerHandle ensureOwner(internal::RegistrationOwner internal_owner) {
         const auto identity = internal_owner + 1;
-        auto &owner = owners[identity];
-        if (!owner.active) return {identity, owner.generation, 0};
+        const auto &owner = owners[identity];
         return {identity, owner.generation, 0};
     }
 
@@ -782,68 +790,151 @@ struct AnimationServiceRuntime::Impl {
             }
             found->second.active = false;
             if (++found->second.generation == 0) ++found->second.generation;
+            // C-4. Every retired source is dropped, not just this owner's: the
+            // sinks that referred to them were cleared above (and by
+            // releaseSource / handoffSource), and findSource already answers
+            // nullptr for an inactive record, so an erased one is
+            // indistinguishable from a tombstoned one at every call site.
+            // Identities come from the monotonic next_identity, so nothing is
+            // ever reused. This is what stops the table from growing by one
+            // entry per source per game-DLL reload.
+            //
+            // owners / phases / cursors keep their tombstones on purpose:
+            // validateOwner, unregisterPhase and destroyCursor each distinguish
+            // invalid_handle (never existed) from stale_generation (existed,
+            // released), which is contract, and a cursor record mirrors a
+            // second tombstone inside ProbeRuntime that would then disagree.
+            std::erase_if(sources, [](const auto &entry) { return !entry.second.active; });
         } catch (...) {
         }
     }
 
-    Status runPhases(AnimationSinkHandle sink_handle, std::uint64_t revision) noexcept {
+    // What a client callback is allowed to throw, and what the caller is told.
+    // The callback is a raw function pointer from a game DLL invoked with no
+    // shim in between, so this is the only place the mapping can live.
+    static Status statusForCallbackException() noexcept {
         try {
-            std::scoped_lock lock{mutex};
-            auto *sink = findSink(sink_handle);
-            if (!sink || revision == 0) return Status::invalid_handle;
-            if (active_phase_sink) return Status::phase_order_error;
-            active_phase_sink = sink->handle;
-            active_phase_revision = revision;
+            throw;
+        } catch (const std::bad_alloc &) {
+            return Status::out_of_memory;
+        } catch (const std::invalid_argument &) {
+            return Status::invalid_argument;
+        } catch (...) {
+            return Status::callback_failed;
+        }
+    }
+
+    // C-4. The callbacks run OUTSIDE `mutex`. The lock is taken to decide what
+    // to run and to build each context, released across the call, and taken
+    // again to record the result -- so a callback may re-enter the service
+    // (every pose operation does) without the re-entrancy being load-bearing,
+    // and a phase that takes a second lock of its own no longer inverts an
+    // order against this one.
+    //
+    // Two consequences the body has to carry:
+    //  - `sink` is a raw SinkRecord* and cannot survive the gap, so only the
+    //    handle is kept and `findSink` re-resolves it after every callback. A
+    //    sink that went away mid-run is `stale_generation`, the same answer
+    //    commitStagedFrame already gives for exactly this.
+    //  - `ordered` holds PhaseRecord* into a node-based unordered_map that
+    //    nothing erases (see releaseOwner), so the pointers stay valid. A
+    //    register_phase from inside a callback therefore does not join the
+    //    pass that is running; it is picked up by the next one.
+    Status runPhases(AnimationSinkHandle sink_handle, std::uint64_t revision) noexcept {
+        const auto clear_active = [this]() {
             staged_frame.reset();
-            const auto clear_active = [&]() {
-                staged_frame.reset();
-                active_phase_sink.reset();
-                active_phase_revision = 0;
-            };
+            active_phase_sink.reset();
+            active_phase_revision = 0;
+        };
+        try {
+            AnimationSinkHandle sink_key{};
             std::vector<PhaseRecord *> ordered;
-            for (auto &[_, phase] : phases)
-                if (phase.active) ordered.push_back(&phase);
-            std::sort(ordered.begin(), ordered.end(), [](const PhaseRecord *left, const PhaseRecord *right) {
-                if (left->registration.phase != right->registration.phase)
-                    return left->registration.phase < right->registration.phase;
-                if (left->registration.priority != right->registration.priority)
-                    return left->registration.priority < right->registration.priority;
-                if (left->registration.registration_identity != right->registration.registration_identity)
-                    return left->registration.registration_identity < right->registration.registration_identity;
-                return left->registration.source_ordinal < right->registration.source_ordinal;
-            });
+            {
+                std::scoped_lock lock{mutex};
+                auto *sink = findSink(sink_handle);
+                if (!sink || revision == 0) return Status::invalid_handle;
+                if (active_phase_sink) return Status::phase_order_error;
+                sink_key = sink->handle;
+                active_phase_sink = sink->handle;
+                active_phase_revision = revision;
+                staged_frame.reset();
+                for (auto &[_, phase] : phases)
+                    if (phase.active) ordered.push_back(&phase);
+                std::sort(ordered.begin(), ordered.end(),
+                          [](const PhaseRecord *left, const PhaseRecord *right) {
+                    if (left->registration.phase != right->registration.phase)
+                        return left->registration.phase < right->registration.phase;
+                    if (left->registration.priority != right->registration.priority)
+                        return left->registration.priority < right->registration.priority;
+                    if (left->registration.registration_identity != right->registration.registration_identity)
+                        return left->registration.registration_identity < right->registration.registration_identity;
+                    return left->registration.source_ordinal < right->registration.source_ordinal;
+                });
+            }
             for (const auto *phase : ordered) {
-                active_phase = phase->registration.phase;
                 AnimationPhaseContextV1 context{};
-                context.struct_size = sizeof(context);
-                context.version = descriptorVersionV1;
-                context.phase = phase->registration.phase;
-                context.sink = sink->handle;
-                context.instance = sink->instance;
-                context.frame_revision = revision;
+                AnimationPhaseCallbackV1 callback = nullptr;
+                void *user_context = nullptr;
+                internal::RegistrationOwner owner_slot = 0;
+                {
+                    std::scoped_lock lock{mutex};
+                    auto *sink = findSink(sink_key);
+                    if (!sink) {
+                        clear_active();
+                        return Status::stale_generation;
+                    }
+                    // Read while the phase is still the active one: a callback
+                    // that re-enters publish_from_source reads this back.
+                    active_phase = phase->registration.phase;
+                    context.struct_size = sizeof(context);
+                    context.version = descriptorVersionV1;
+                    context.phase = phase->registration.phase;
+                    context.sink = sink->handle;
+                    context.instance = sink->instance;
+                    context.frame_revision = revision;
+                    callback = phase->callback;
+                    user_context = phase->user_context;
+                    owner_slot = phase->owner.identity - 1;
+                }
                 Status status = Status::callback_failed;
                 try {
-                    internal::ScopedRegistrationOwner owner_scope{phase->owner.identity - 1};
-                    status = phase->callback(phase->user_context, &context);
+                    internal::ScopedRegistrationOwner owner_scope{owner_slot};
+                    status = callback(user_context, &context);
                 } catch (...) {
-                    status = Status::callback_failed;
+                    status = statusForCallbackException();
                 }
+                std::scoped_lock lock{mutex};
+                auto *sink = findSink(sink_key);
                 if (status != Status::ok) {
-                    blocked_commits.push_back({sink->instance.identity, sink->instance.generation, revision});
+                    if (sink != nullptr)
+                        blocked_commits.push_back(
+                            {sink->instance.identity, sink->instance.generation, revision});
                     clear_active();
-                    return status == Status::ok ? Status::callback_failed : status;
+                    return status;
+                }
+                if (sink == nullptr) {
+                    clear_active();
+                    return Status::stale_generation;
                 }
             }
+            std::scoped_lock lock{mutex};
+            // commitStagedFrame re-resolves the sink by handle and rejects a
+            // staged frame whose object is no longer the one that sink names,
+            // which is also how `staged_frame.object` -- a raw ObjectRecord* --
+            // is re-validated across the gap.
             const auto commit_status = commitStagedFrame();
             if (commit_status != Status::ok) {
-                blocked_commits.push_back(
-                    {sink->instance.identity, sink->instance.generation, revision});
+                if (auto *sink = findSink(sink_key); sink != nullptr)
+                    blocked_commits.push_back(
+                        {sink->instance.identity, sink->instance.generation, revision});
                 clear_active();
                 return commit_status;
             }
             clear_active();
             return Status::ok;
         } catch (...) {
+            // Engine-side failure, not a client callback: the three-way mapping
+            // above deliberately does not apply here.
             staged_frame.reset();
             active_phase_sink.reset();
             active_phase_revision = 0;
@@ -1880,6 +1971,13 @@ Status AnimationServiceRuntime::runAllPhases(std::uint64_t frame_revision) noexc
 std::uint64_t AnimationServiceRuntime::registrationGeneration() const noexcept {
     std::scoped_lock lock{impl_->mutex};
     return impl_->registration_generation;
+}
+
+AnimationServiceRuntime::HandleTableSizes
+AnimationServiceRuntime::handleTableSizesForTesting() const noexcept {
+    std::scoped_lock lock{impl_->mutex};
+    return {impl_->sources.size(), impl_->phases.size(), impl_->cursors.size(),
+            impl_->owners.size()};
 }
 
 AnimationServiceRuntime &animationServiceRuntime() {

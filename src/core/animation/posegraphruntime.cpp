@@ -8,8 +8,10 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <set>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace Pelican::Animation {
@@ -106,7 +108,11 @@ struct PoseGraphRuntime::Impl {
         PhaseRegistrationHandle phase_registration{};
         bool evaluator_writes = false;
         bool bound = false;
-        bool failed = false;
+        // What the phase callback caught, kept whole. An exception cannot cross
+        // the C callback boundary, so the exception object itself waits here
+        // for the owner thread instead of collapsing into a bool that loses
+        // which port was mis-wired.
+        std::exception_ptr failure;
         // One evaluation per frame revision: the phase refuses a revision it
         // was not prepared for instead of running twice.
         bool tick_pending = false;
@@ -256,8 +262,59 @@ struct PoseGraphRuntime::Impl {
         return chain;
     }
 
+    // The owner thread's end of the phase callback. The exception the callback
+    // caught is raised again here, with the object the chain was writing put in
+    // front of the original message rather than replacing it: `what()` still
+    // carries "pose port is unconnected: blend1.b", which is the only text the
+    // graph's author can act on. Prefixing rather than nesting because every
+    // surface that reports this -- framephase, the RPC status -- reads one
+    // `what()` and never walks a nested chain.
+    [[noreturn]] void raiseFailure(Attachment &attachment) {
+        const auto failure = std::exchange(attachment.failure, {});
+        unbind(attachment);
+        const auto named = "pose graph evaluation failed for " + attachment.object_name;
+        try {
+            std::rethrow_exception(failure);
+        } catch (const std::exception &error) {
+            throw std::runtime_error(named + ": " + error.what());
+        }
+    }
+
     void bind(Attachment &attachment, const PoseGraphFrame &frame);
     Status evaluate(Attachment &attachment);
+    // One evaluation's working set: the pose arena this chain opens on demand
+    // and what each node produced. It exists so the five operations below can
+    // be five functions instead of five case bodies sharing six stack lambdas.
+    struct Produced {
+        PoseViewV1 view{};
+        PoseLayoutHandle layout{};
+    };
+    struct Evaluation {
+        Attachment &attachment;
+        AnimationServiceV1 &service;
+        BeginPoseArenaFrameDescV1 begin{};
+        bool arena_open = false;
+        std::map<std::size_t, Produced> poses;
+
+        // Beginning an arena frame retires what this owner staged earlier in
+        // the same phase run, so a chain that only reads a staged pose must
+        // never open one. The arena opens on the first operation that actually
+        // needs storage.
+        Status openArena();
+        Status acquire(PoseLayoutHandle layout, std::uint32_t joints, PoseViewV1 &view);
+        const Produced &poseInput(const PoseGraphNode &node, const char *port) const;
+        double scalar(const PoseGraphNode &node, const char *port, double fallback) const;
+        static void requireLayout(const PoseGraphNode &node, const char *port,
+                                  PoseLayoutHandle expected, PoseLayoutHandle observed);
+    };
+    static Status evaluateClipSample(Evaluation &state, const PoseGraphNode &node,
+                                     std::size_t index);
+    static Status evaluateStateMachine(Evaluation &state, const PoseGraphNode &node,
+                                       std::size_t index);
+    static Status evaluateBlend(Evaluation &state, const PoseGraphNode &node, std::size_t index);
+    static Status evaluateRetarget(Evaluation &state, const PoseGraphNode &node, std::size_t index);
+    static Status evaluateSink(Evaluation &state, const PoseGraph &graph,
+                               const PoseGraphNode &node);
     // Turns the clip's root translation into a displacement for the object and
     // pins the pose's own root, in that order. `pose` is the pose this node
     // just produced, already sampled at the canonical time; `unwrapped` is the
@@ -346,9 +403,11 @@ Status PoseGraphRuntime::Impl::phase(void *user, const AnimationPhaseContextV1 *
     try {
         return attachment.runtime->evaluate(attachment);
     } catch (...) {
-        // A named pose failure cannot cross the C callback boundary; the owner
-        // thread re-raises it on the next synchronize, which runs outside a phase.
-        attachment.failed = true;
+        // A named pose failure cannot cross the C callback boundary, so the
+        // exception is kept and raised again by the owner thread -- from
+        // rethrowPendingFailure() on this same frame, or from the next
+        // synchronize. Both run outside a phase.
+        attachment.failure = std::current_exception();
         return Status::callback_failed;
     }
 }
@@ -533,265 +592,295 @@ void PoseGraphRuntime::Impl::bind(Attachment &attachment, const PoseGraphFrame &
     attachment.bound = true;
 }
 
+Status PoseGraphRuntime::Impl::Evaluation::openArena() {
+    if (arena_open) return Status::ok;
+    begin.owner = attachment.service_owner;
+    begin.frame_revision = attachment.pending_revision;
+    const auto status = service.begin_pose_frame(service.context, &begin);
+    arena_open = status == Status::ok;
+    return status;
+}
+
+Status PoseGraphRuntime::Impl::Evaluation::acquire(PoseLayoutHandle layout, std::uint32_t joints,
+                                                   PoseViewV1 &view) {
+    if (const auto status = openArena(); status != Status::ok) return status;
+    view = descriptor<PoseViewV1>();
+    auto request = descriptor<AcquirePoseDescV1>();
+    request.arena = begin.arena;
+    request.layout = layout;
+    request.joint_count = joints;
+    request.out_view = &view;
+    return service.acquire_pose(service.context, &request);
+}
+
+const PoseGraphRuntime::Impl::Produced &
+PoseGraphRuntime::Impl::Evaluation::poseInput(const PoseGraphNode &node, const char *port) const {
+    const auto found = node.pose_inputs.find(port);
+    if (found == node.pose_inputs.end())
+        throw std::runtime_error(std::string{"pose port is unconnected: "} + node.id + "." + port);
+    return poses.at(found->second);
+}
+
+double PoseGraphRuntime::Impl::Evaluation::scalar(const PoseGraphNode &node, const char *port,
+                                                  double fallback) const {
+    const auto found = node.scalar_inputs.find(port);
+    if (found == node.scalar_inputs.end()) return fallback;
+    const auto value = attachment.scalars.find(found->second);
+    if (value == attachment.scalars.end())
+        throw std::runtime_error("pose scalar input was not evaluated this frame: " + found->second);
+    return value->second;
+}
+
+void PoseGraphRuntime::Impl::Evaluation::requireLayout(const PoseGraphNode &node, const char *port,
+                                                       PoseLayoutHandle expected,
+                                                       PoseLayoutHandle observed) {
+    if (expected.identity == observed.identity && expected.generation == observed.generation) return;
+    PoseGraph::raiseLayoutMismatch(node.id, port,
+        Json{{"identity", expected.identity}, {"generation", expected.generation}},
+        Json{{"identity", observed.identity}, {"generation", observed.generation}});
+}
+
+Status PoseGraphRuntime::Impl::evaluateClipSample(Evaluation &state, const PoseGraphNode &node,
+                                                  std::size_t index) {
+    auto &attachment = state.attachment;
+    auto &service = state.service;
+    auto &binding = attachment.bindings.at(index);
+    Produced produced;
+    produced.layout = binding.layout;
+    if (const auto status = state.acquire(binding.layout, binding.joint_count, produced.view);
+        status != Status::ok)
+        return status;
+    auto sample = descriptor<SamplePoseAtDescV1>();
+    sample.clip = binding.clip;
+    // The same arithmetic the animation component runs (sampleTime in
+    // animationjobs.cpp): shift by start_time, scale by speed, then wrap
+    // or clamp inside the clip's own [start, end]. The result is the
+    // absolute clip time, which is what sample_pose_at now takes -- the
+    // service no longer wraps a second time, so a clip whose keyframes
+    // do not begin at 0 keeps its phase.
+    // The node's own time map, before the clip's bounds fold it: seek,
+    // wrap and a negative speed are three readings of the same number.
+    const auto unwrapped = (state.scalar(node, "time", attachment.time) - node.start_time) *
+                               node.speed + binding.metadata.start_seconds;
+    sample.time_seconds = canonicalTime(unwrapped, binding.metadata.start_seconds,
+                                        binding.metadata.end_seconds, node.loop);
+    sample.output_pose = produced.view.pose;
+    if (const auto status = service.sample_pose_at(service.context, &sample); status != Status::ok)
+        return status;
+    if (binding.root_motion) {
+        if (const auto status = extractRootMotion(attachment, binding, node, produced.view,
+                                                  unwrapped);
+            status != Status::ok)
+            return status;
+    }
+    // AG-3a. A clip_sample node keeps no cursor -- the service samples
+    // an absolute time and forgets it -- so where the clip stood is
+    // only observable if the frame that computed it writes it down.
+    // The phase is measured inside the clip's own bounds, which is the
+    // same span canonicalTime folded the time into just above.
+    {
+        const auto span = binding.metadata.end_seconds - binding.metadata.start_seconds;
+        attachment.trace.cursors.push_back(CursorTrace{node.clip,
+            sample.time_seconds,
+            span > 0.0 ? (sample.time_seconds - binding.metadata.start_seconds) / span : 0.0});
+    }
+    state.poses.emplace(index, produced);
+    return Status::ok;
+}
+
+Status PoseGraphRuntime::Impl::evaluateStateMachine(Evaluation &state, const PoseGraphNode &node,
+                                                    std::size_t index) {
+    (void)node;
+    auto &attachment = state.attachment;
+    // The evaluator published this object's pose earlier in this same
+    // phase run; the port carries that staged pose, not a copy.
+    auto &binding = attachment.bindings.at(index);
+    auto staged = descriptor<Animation::AcquireStagedPoseDescV1>();
+    staged.instance = binding.instance;
+    staged.frame_revision = attachment.pending_revision;
+    auto staging = descriptor<PoseStagingServiceV1>();
+    if (const auto status = getPoseStagingServiceV1(poseStagingServiceVersionV1, &staging);
+        status != Status::ok)
+        return status;
+    if (const auto status = staging.acquire_staged_pose(staging.context, &staged);
+        status != Status::ok)
+        return status;
+    Produced produced;
+    produced.view = staged.local_pose;
+    produced.layout = staged.local_pose.layout;
+    state.poses.emplace(index, produced);
+    // The deterministic record of what the evaluator did this frame.
+    // AG-3a takes the rest of the same snapshot: a wrapped machine
+    // already keeps its cursors and its transition, so nothing here is
+    // recomputed -- it is copied out of the one status read.
+    {
+        const auto status = binding.evaluator->getStatus();
+        attachment.trace.state = status.current_state;
+        attachment.trace.source = SinkSource::state_machine;
+        attachment.trace.transition_active = status.transition_active;
+        attachment.trace.transition_target = status.transition_target;
+        attachment.trace.transition_progress = status.transition_progress;
+        for (const auto &cursor : status.cursors)
+            attachment.trace.cursors.push_back(CursorTrace{
+                cursor.clip, cursor.time_seconds, cursor.normalized_phase});
+    }
+    return Status::ok;
+}
+
+Status PoseGraphRuntime::Impl::evaluateBlend(Evaluation &state, const PoseGraphNode &node,
+                                             std::size_t index) {
+    auto &attachment = state.attachment;
+    auto &service = state.service;
+    const auto &a = state.poseInput(node, "a");
+    const auto &b = state.poseInput(node, "b");
+    Evaluation::requireLayout(node, "b", a.layout, b.layout);
+    Produced produced;
+    produced.layout = a.layout;
+    if (const auto status = state.acquire(a.layout, a.view.joint_count, produced.view);
+        status != Status::ok)
+        return status;
+    const auto weight = static_cast<float>(std::clamp(state.scalar(node, "weight", 0.0), 0.0, 1.0));
+    std::array<BlendLayerV1, 2> layers{};
+    for (auto &layer : layers) {
+        layer = descriptor<BlendLayerV1>();
+        layer.mode = BlendMode::normal;
+        layer.additive_space = AdditiveSpace::local;
+        layer.rest_fallback = RestFallback::use_rest_pose;
+        layer.root_policy = SidebandPolicy::suppress;
+        layer.curve_policy = SidebandPolicy::suppress;
+        layer.event_marker_policy = SidebandPolicy::suppress;
+    }
+    layers[0].pose = a.view.pose;
+    layers[0].weight = 1.0f - weight;
+    layers[1].pose = b.view.pose;
+    layers[1].weight = weight;
+    auto blend = descriptor<BlendNormalDescV1>();
+    blend.rig = attachment.rig;
+    blend.layers = layers.data();
+    blend.layer_count = 2;
+    blend.output_pose = produced.view.pose;
+    if (const auto status = service.blend_normal(service.context, &blend); status != Status::ok)
+        return status;
+    state.poses.emplace(index, produced);
+    return Status::ok;
+}
+
+Status PoseGraphRuntime::Impl::evaluateRetarget(Evaluation &state, const PoseGraphNode &node,
+                                                std::size_t index) {
+    // R0 applies a VRMA profile when the clip is baked, so at pose level
+    // the node asserts that the pose it received belongs to the layout
+    // the profile targets and hands the same staged pose on.
+    const auto &input = state.poseInput(node, "pose");
+    Evaluation::requireLayout(node, "pose", state.attachment.layout, input.layout);
+    state.poses.emplace(index, input);
+    return Status::ok;
+}
+
+Status PoseGraphRuntime::Impl::evaluateSink(Evaluation &state, const PoseGraph &graph,
+                                            const PoseGraphNode &node) {
+    auto &attachment = state.attachment;
+    auto &service = state.service;
+    const auto &input = state.poseInput(node, "pose");
+    Evaluation::requireLayout(node, "pose", attachment.layout, input.layout);
+    attachment.trace.sink = node.id;
+    attachment.trace.node = graph.nodes()[node.pose_inputs.at("pose")].id;
+    // AG-3a. Who this sink writes, and what AG-2 is about to hand the
+    // object. Recorded before the transfer below, so a frame whose
+    // apply fails still says what it was going to move.
+    attachment.trace.owner = attachment.owner;
+    attachment.trace.root_motion = attachment.root_motion;
+    attachment.trace.root_delta = attachment.root_delta;
+    attachment.trace.layout_identity = input.layout.identity;
+    attachment.trace.layout_generation = input.layout.generation;
+    attachment.trace.frame_revision = attachment.pending_revision;
+    auto hash = 1469598103934665603ull;
+    hash = fnv1a(hash, input.view.translations, input.view.joint_count * sizeof(Vec4fV1));
+    hash = fnv1a(hash, input.view.rotations, input.view.joint_count * sizeof(QuatfV1));
+    hash = fnv1a(hash, input.view.scales, input.view.joint_count * sizeof(Vec4fV1));
+    attachment.trace.pose_hash = hash;
+    // AG-2: animation, then root motion, then the publish -- all three
+    // in this one function, so the order cannot drift. The individual
+    // moves by what the clip's root advanced this frame; the pose that
+    // is about to be published has already had that root pinned, so the
+    // two do not both move it. There is no movement or physics step in
+    // the engine to place between them yet.
+    if (attachment.root_motion) {
+        if (!attachment.apply_root_translation ||
+            !attachment.apply_root_translation(attachment.root_object,
+                                               attachment.root_delta.data()))
+            PoseGraph::raiseRootMotionNoTransform(attachment.owner, node.id,
+                                                  attachment.object_name);
+    }
+    // A state machine already published its object's frame; the sink
+    // only records that this graph declared the writer.
+    if (attachment.evaluator_writes) return Status::ok;
+    PoseViewV1 model_pose{};
+    if (const auto status = state.acquire(attachment.layout, attachment.joint_count, model_pose);
+        status != Status::ok)
+        return status;
+    std::vector<Matrix4fV1> matrices(attachment.joint_count);
+    auto local_to_model = descriptor<LocalToModelDescV1>();
+    local_to_model.rig = attachment.rig;
+    local_to_model.local_pose = input.view.pose;
+    local_to_model.model_pose = model_pose.pose;
+    local_to_model.model_matrices = matrices.data();
+    local_to_model.model_matrix_capacity = static_cast<std::uint32_t>(matrices.size());
+    if (const auto status = service.local_to_model(service.context, &local_to_model);
+        status != Status::ok)
+        return status;
+    std::vector<Matrix4fV1> palette(attachment.palette_count);
+    auto build = descriptor<BuildSkinPaletteDescV1>();
+    build.skin_binding = attachment.skin_binding;
+    build.model_matrices = matrices.data();
+    build.model_matrix_count = local_to_model.model_matrix_count;
+    build.palette = palette.data();
+    build.palette_capacity = static_cast<std::uint32_t>(palette.size());
+    if (const auto status = service.build_skin_palette(service.context, &build); status != Status::ok)
+        return status;
+    auto publish = descriptor<PublishAnimationFrameFromSourceDescV1>();
+    publish.source = attachment.source;
+    publish.frame = descriptor<PublishAnimationFrameDescV1>();
+    publish.frame.instance = attachment.instance;
+    publish.frame.local_pose = input.view.pose;
+    publish.frame.model_pose = model_pose.pose;
+    publish.frame.palette = palette.data();
+    publish.frame.palette_count = static_cast<std::uint32_t>(palette.size());
+    publish.frame.frame_revision = attachment.pending_revision;
+    publish.frame.root_delta.rotation.w = 1.0f;
+    if (const auto status =
+            service.publish_animation_frame_from_source(service.context, &publish);
+        status != Status::ok)
+        return status;
+    return Status::ok;
+}
+
 Status PoseGraphRuntime::Impl::evaluate(Attachment &attachment) {
     const auto &graph = *attachment.graph;
-    auto &service = attachment.service;
-    // Beginning an arena frame retires what this owner staged earlier in the
-    // same phase run, so a chain that only reads a staged pose must never open
-    // one. The arena opens on the first operation that actually needs storage.
     attachment.root_delta = {};
-    auto begin = descriptor<BeginPoseArenaFrameDescV1>();
-    bool arena_open = false;
-    const auto openArena = [&] {
-        if (arena_open) return Status::ok;
-        begin.owner = attachment.service_owner;
-        begin.frame_revision = attachment.pending_revision;
-        const auto status = service.begin_pose_frame(service.context, &begin);
-        arena_open = status == Status::ok;
-        return status;
-    };
-
-    struct Produced {
-        PoseViewV1 view{};
-        PoseLayoutHandle layout{};
-    };
-    std::map<std::size_t, Produced> poses;
-    const auto acquire = [&](PoseLayoutHandle layout, std::uint32_t joints, PoseViewV1 &view) {
-        if (const auto status = openArena(); status != Status::ok) return status;
-        view = descriptor<PoseViewV1>();
-        auto request = descriptor<AcquirePoseDescV1>();
-        request.arena = begin.arena;
-        request.layout = layout;
-        request.joint_count = joints;
-        request.out_view = &view;
-        return service.acquire_pose(service.context, &request);
-    };
-    const auto poseInput = [&](const PoseGraphNode &node, const char *port) -> const Produced & {
-        const auto found = node.pose_inputs.find(port);
-        if (found == node.pose_inputs.end())
-            throw std::runtime_error(std::string{"pose port is unconnected: "} + node.id + "." + port);
-        return poses.at(found->second);
-    };
-    const auto scalar = [&](const PoseGraphNode &node, const char *port, double fallback) {
-        const auto found = node.scalar_inputs.find(port);
-        if (found == node.scalar_inputs.end()) return fallback;
-        const auto value = attachment.scalars.find(found->second);
-        if (value == attachment.scalars.end())
-            throw std::runtime_error("pose scalar input was not evaluated this frame: " + found->second);
-        return value->second;
-    };
-    const auto sameLayout = [](PoseLayoutHandle left, PoseLayoutHandle right) {
-        return left.identity == right.identity && left.generation == right.generation;
-    };
-    const auto requireLayout = [&](const PoseGraphNode &node, const char *port,
-                                   PoseLayoutHandle expected, PoseLayoutHandle observed) {
-        if (sameLayout(expected, observed)) return;
-        PoseGraph::raiseLayoutMismatch(node.id, port,
-            Json{{"identity", expected.identity}, {"generation", expected.generation}},
-            Json{{"identity", observed.identity}, {"generation", observed.generation}});
-    };
-
+    Evaluation state{attachment, attachment.service};
+    state.begin = descriptor<BeginPoseArenaFrameDescV1>();
     for (const auto index : attachment.chain) {
         const auto &node = graph.nodes()[index];
+        auto status = Status::ok;
         switch (node.op) {
-        case PoseGraphOp::clip_sample: {
-            auto &binding = attachment.bindings.at(index);
-            Produced produced;
-            produced.layout = binding.layout;
-            if (const auto status = acquire(binding.layout, binding.joint_count, produced.view);
-                status != Status::ok)
-                return status;
-            auto sample = descriptor<SamplePoseAtDescV1>();
-            sample.clip = binding.clip;
-            // The same arithmetic the animation component runs (sampleTime in
-            // animationjobs.cpp): shift by start_time, scale by speed, then wrap
-            // or clamp inside the clip's own [start, end]. The result is the
-            // absolute clip time, which is what sample_pose_at now takes -- the
-            // service no longer wraps a second time, so a clip whose keyframes
-            // do not begin at 0 keeps its phase.
-            // The node's own time map, before the clip's bounds fold it: seek,
-            // wrap and a negative speed are three readings of the same number.
-            const auto unwrapped = (scalar(node, "time", attachment.time) - node.start_time) *
-                                       node.speed + binding.metadata.start_seconds;
-            sample.time_seconds = canonicalTime(unwrapped, binding.metadata.start_seconds,
-                                                binding.metadata.end_seconds, node.loop);
-            sample.output_pose = produced.view.pose;
-            if (const auto status = service.sample_pose_at(service.context, &sample); status != Status::ok)
-                return status;
-            if (binding.root_motion) {
-                if (const auto status = extractRootMotion(attachment, binding, node, produced.view,
-                                                          unwrapped);
-                    status != Status::ok)
-                    return status;
-            }
-            // AG-3a. A clip_sample node keeps no cursor -- the service samples
-            // an absolute time and forgets it -- so where the clip stood is
-            // only observable if the frame that computed it writes it down.
-            // The phase is measured inside the clip's own bounds, which is the
-            // same span canonicalTime folded the time into just above.
-            {
-                const auto span = binding.metadata.end_seconds - binding.metadata.start_seconds;
-                attachment.trace.cursors.push_back(CursorTrace{node.clip,
-                    sample.time_seconds,
-                    span > 0.0 ? (sample.time_seconds - binding.metadata.start_seconds) / span : 0.0});
-            }
-            poses.emplace(index, produced);
+        case PoseGraphOp::clip_sample:
+            status = evaluateClipSample(state, node, index);
             break;
-        }
-        case PoseGraphOp::state_machine: {
-            // The evaluator published this object's pose earlier in this same
-            // phase run; the port carries that staged pose, not a copy.
-            auto &binding = attachment.bindings.at(index);
-            auto staged = descriptor<Animation::AcquireStagedPoseDescV1>();
-            staged.instance = binding.instance;
-            staged.frame_revision = attachment.pending_revision;
-            auto staging = descriptor<PoseStagingServiceV1>();
-            if (const auto status = getPoseStagingServiceV1(poseStagingServiceVersionV1, &staging);
-                status != Status::ok)
-                return status;
-            if (const auto status = staging.acquire_staged_pose(staging.context, &staged);
-                status != Status::ok)
-                return status;
-            Produced produced;
-            produced.view = staged.local_pose;
-            produced.layout = staged.local_pose.layout;
-            poses.emplace(index, produced);
-            // The deterministic record of what the evaluator did this frame.
-            // AG-3a takes the rest of the same snapshot: a wrapped machine
-            // already keeps its cursors and its transition, so nothing here is
-            // recomputed -- it is copied out of the one status read.
-            {
-                const auto status = binding.evaluator->getStatus();
-                attachment.trace.state = status.current_state;
-                attachment.trace.source = SinkSource::state_machine;
-                attachment.trace.transition_active = status.transition_active;
-                attachment.trace.transition_target = status.transition_target;
-                attachment.trace.transition_progress = status.transition_progress;
-                for (const auto &cursor : status.cursors)
-                    attachment.trace.cursors.push_back(CursorTrace{
-                        cursor.clip, cursor.time_seconds, cursor.normalized_phase});
-            }
+        case PoseGraphOp::state_machine:
+            status = evaluateStateMachine(state, node, index);
             break;
-        }
-        case PoseGraphOp::blend: {
-            const auto &a = poseInput(node, "a");
-            const auto &b = poseInput(node, "b");
-            requireLayout(node, "b", a.layout, b.layout);
-            Produced produced;
-            produced.layout = a.layout;
-            if (const auto status = acquire(a.layout, a.view.joint_count, produced.view);
-                status != Status::ok)
-                return status;
-            const auto weight = static_cast<float>(std::clamp(scalar(node, "weight", 0.0), 0.0, 1.0));
-            std::array<BlendLayerV1, 2> layers{};
-            for (auto &layer : layers) {
-                layer = descriptor<BlendLayerV1>();
-                layer.mode = BlendMode::normal;
-                layer.additive_space = AdditiveSpace::local;
-                layer.rest_fallback = RestFallback::use_rest_pose;
-                layer.root_policy = SidebandPolicy::suppress;
-                layer.curve_policy = SidebandPolicy::suppress;
-                layer.event_marker_policy = SidebandPolicy::suppress;
-            }
-            layers[0].pose = a.view.pose;
-            layers[0].weight = 1.0f - weight;
-            layers[1].pose = b.view.pose;
-            layers[1].weight = weight;
-            auto blend = descriptor<BlendNormalDescV1>();
-            blend.rig = attachment.rig;
-            blend.layers = layers.data();
-            blend.layer_count = 2;
-            blend.output_pose = produced.view.pose;
-            if (const auto status = service.blend_normal(service.context, &blend); status != Status::ok)
-                return status;
-            poses.emplace(index, produced);
+        case PoseGraphOp::blend:
+            status = evaluateBlend(state, node, index);
             break;
-        }
-        case PoseGraphOp::retarget: {
-            // R0 applies a VRMA profile when the clip is baked, so at pose level
-            // the node asserts that the pose it received belongs to the layout
-            // the profile targets and hands the same staged pose on.
-            const auto &input = poseInput(node, "pose");
-            requireLayout(node, "pose", attachment.layout, input.layout);
-            poses.emplace(index, input);
+        case PoseGraphOp::retarget:
+            status = evaluateRetarget(state, node, index);
             break;
-        }
         case PoseGraphOp::skeletal_sink:
-        case PoseGraphOp::transform_sink: {
-            const auto &input = poseInput(node, "pose");
-            requireLayout(node, "pose", attachment.layout, input.layout);
-            attachment.trace.sink = node.id;
-            attachment.trace.node = graph.nodes()[node.pose_inputs.at("pose")].id;
-            // AG-3a. Who this sink writes, and what AG-2 is about to hand the
-            // object. Recorded before the transfer below, so a frame whose
-            // apply fails still says what it was going to move.
-            attachment.trace.owner = attachment.owner;
-            attachment.trace.root_motion = attachment.root_motion;
-            attachment.trace.root_delta = attachment.root_delta;
-            attachment.trace.layout_identity = input.layout.identity;
-            attachment.trace.layout_generation = input.layout.generation;
-            attachment.trace.frame_revision = attachment.pending_revision;
-            auto hash = 1469598103934665603ull;
-            hash = fnv1a(hash, input.view.translations, input.view.joint_count * sizeof(Vec4fV1));
-            hash = fnv1a(hash, input.view.rotations, input.view.joint_count * sizeof(QuatfV1));
-            hash = fnv1a(hash, input.view.scales, input.view.joint_count * sizeof(Vec4fV1));
-            attachment.trace.pose_hash = hash;
-            // AG-2: animation, then root motion, then the publish -- all three
-            // in this one function, so the order cannot drift. The individual
-            // moves by what the clip's root advanced this frame; the pose that
-            // is about to be published has already had that root pinned, so the
-            // two do not both move it. There is no movement or physics step in
-            // the engine to place between them yet.
-            if (attachment.root_motion) {
-                if (!attachment.apply_root_translation ||
-                    !attachment.apply_root_translation(attachment.root_object,
-                                                       attachment.root_delta.data()))
-                    PoseGraph::raiseRootMotionNoTransform(attachment.owner, node.id,
-                                                          attachment.object_name);
-            }
-            // A state machine already published its object's frame; the sink
-            // only records that this graph declared the writer.
-            if (attachment.evaluator_writes) break;
-            PoseViewV1 model_pose{};
-            if (const auto status = acquire(attachment.layout, attachment.joint_count, model_pose);
-                status != Status::ok)
-                return status;
-            std::vector<Matrix4fV1> matrices(attachment.joint_count);
-            auto local_to_model = descriptor<LocalToModelDescV1>();
-            local_to_model.rig = attachment.rig;
-            local_to_model.local_pose = input.view.pose;
-            local_to_model.model_pose = model_pose.pose;
-            local_to_model.model_matrices = matrices.data();
-            local_to_model.model_matrix_capacity = static_cast<std::uint32_t>(matrices.size());
-            if (const auto status = service.local_to_model(service.context, &local_to_model);
-                status != Status::ok)
-                return status;
-            std::vector<Matrix4fV1> palette(attachment.palette_count);
-            auto build = descriptor<BuildSkinPaletteDescV1>();
-            build.skin_binding = attachment.skin_binding;
-            build.model_matrices = matrices.data();
-            build.model_matrix_count = local_to_model.model_matrix_count;
-            build.palette = palette.data();
-            build.palette_capacity = static_cast<std::uint32_t>(palette.size());
-            if (const auto status = service.build_skin_palette(service.context, &build); status != Status::ok)
-                return status;
-            auto publish = descriptor<PublishAnimationFrameFromSourceDescV1>();
-            publish.source = attachment.source;
-            publish.frame = descriptor<PublishAnimationFrameDescV1>();
-            publish.frame.instance = attachment.instance;
-            publish.frame.local_pose = input.view.pose;
-            publish.frame.model_pose = model_pose.pose;
-            publish.frame.palette = palette.data();
-            publish.frame.palette_count = static_cast<std::uint32_t>(palette.size());
-            publish.frame.frame_revision = attachment.pending_revision;
-            publish.frame.root_delta.rotation.w = 1.0f;
-            if (const auto status =
-                    service.publish_animation_frame_from_source(service.context, &publish);
-                status != Status::ok)
-                return status;
+        case PoseGraphOp::transform_sink:
+            status = evaluateSink(state, graph, node);
             break;
         }
-        }
+        if (status != Status::ok) return status;
     }
     return Status::ok;
 }
@@ -807,6 +896,14 @@ void PoseGraphRuntime::clear() noexcept {
     impl_->attachments.clear();
     impl_->published.clear();
     impl_->donors.clear();
+}
+
+void PoseGraphRuntime::rethrowPendingFailure() {
+    for (auto &[graph, list] : impl_->attachments) {
+        (void)graph;
+        for (auto &attachment : list)
+            if (attachment->failure) impl_->raiseFailure(*attachment);
+    }
 }
 
 void PoseGraphRuntime::retainOnly(const std::set<const PoseGraph *> &live) noexcept {
@@ -869,11 +966,7 @@ void PoseGraphRuntime::synchronize(const std::shared_ptr<const PoseGraph> &graph
         if (attachment->bound && attachment->object_name != *object) impl_->unbind(*attachment);
         attachment->object_name = *object;
         if (!attachment->bound) impl_->bind(*attachment, frame);
-        if (attachment->failed) {
-            attachment->failed = false;
-            impl_->unbind(*attachment);
-            throw std::runtime_error("pose graph evaluation failed for " + attachment->object_name);
-        }
+        if (attachment->failure) impl_->raiseFailure(*attachment);
         attachment->trace = {};
         attachment->time = frame.time;
         attachment->delta_seconds = frame.delta_seconds;

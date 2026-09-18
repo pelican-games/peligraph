@@ -21,6 +21,7 @@
 #include "../watch/reloadservice.hpp"
 #if PELICAN_WITH_ANIMATION
 #include "../animation/animationservice.hpp"
+#include "../animation/posegraphruntime.hpp"
 #include "../animation/vrmapplication.hpp"
 #endif
 #if PELICAN_WITH_IMGUI
@@ -188,6 +189,12 @@ void updateFrameState() {
             if (const auto status = Animation::animationServiceRuntime().runAllPhases(
                     modules.engine_time.frameIndex());
                 status != Animation::Status::ok) {
+                // A phase callback answers with a status because an exception
+                // cannot cross the C boundary. The pose graph kept the
+                // exception it caught, so ask for it before falling back to a
+                // message that says only that some phase failed: what reaches
+                // the author has to name the port, not the frame.
+                Animation::poseGraphRuntime().rethrowPendingFailure();
                 throw std::runtime_error("animation phase evaluation failed");
             }
 #endif

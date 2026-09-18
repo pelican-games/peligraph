@@ -29,10 +29,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -65,9 +67,15 @@ TEST_CASE("a pose graph's root motion moves the individual",
     setupLogger();
     const auto mode = GENERATE(as<std::string>{}, "extract", "none", "wrap", "reverse", "fast",
                                "seek", "seamless loop", "no local transform",
-                               "no translation channel", "no duration");
+                               "no translation channel", "no duration",
+                               "the individual goes away after the phase was prepared");
     CAPTURE(mode);
     const bool extract = mode != "none";
+    // C-5. The one failure that happens *inside* the phase callback rather than
+    // at attach: everything the document could decide was decided at bind, so
+    // what is left is the individual disappearing between the owner thread's
+    // synchronize and the phase that writes it.
+    const bool fails_in_phase = mode == "the individual goes away after the phase was prepared";
     const bool expects_rejection = mode == "no local transform" ||
                                    mode == "no translation channel" || mode == "no duration";
 
@@ -239,6 +247,41 @@ void main() {
         attached = !Animation::poseGraphRuntime().trace().empty();
     }
     REQUIRE(attached);
+
+    if (fails_in_phase) {
+        // The frame is prepared exactly as `animate` prepares one, and then the
+        // individual the sink was about to move is removed -- after the owner
+        // thread is done, while only the phase is left to run. Applying the
+        // root displacement fails there, inside a C callback an exception
+        // cannot cross.
+        time.advance();
+        GET_MODULE(ECSCore).update();
+        service.synchronizeSceneObjects();
+        GET_MODULE(AnimationSystem).updateGraphs();
+        REQUIRE(GameObjects::remove(*object));
+        REQUIRE(service.runAllPhases(time.frameIndex()) == Animation::Status::callback_failed);
+        std::string message;
+        try {
+            // What the frame loop does with a non-ok phase result: ask the pose
+            // graph for the exception the callback had to swallow.
+            Animation::poseGraphRuntime().rethrowPendingFailure();
+        } catch (const std::exception &error) {
+            message = error.what();
+        }
+        CAPTURE(message);
+        // The object is still named -- that much was always there.
+        REQUIRE_THAT(message,
+            Catch::Matchers::ContainsSubstring("pose graph evaluation failed for Mover"));
+        // And this is what C-5 adds: the evaluation's own words survive the
+        // callback boundary. Before it, `what()` stopped at the object name and
+        // the author was left to guess which node of which graph refused.
+        REQUIRE_THAT(message,
+            Catch::Matchers::ContainsSubstring("pose.root_motion_no_transform@1"));
+        REQUIRE_THAT(message, Catch::Matchers::ContainsSubstring("render/out"));
+        service.reset();
+        Animation::poseGraphRuntime().clear();
+        return;
+    }
 
     // The clock and the individual both start from zero, so every number below
     // is the one the ledger names rather than an offset from whichever frame

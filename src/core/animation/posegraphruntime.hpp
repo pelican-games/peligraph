@@ -84,6 +84,17 @@ class PoseGraphRuntime {
     void retainOnly(const std::set<const PoseGraph *> &live) noexcept;
     void clear() noexcept;
 
+    // Raises again what an evaluation threw inside a phase callback, if any
+    // attachment is carrying one. An exception cannot cross the C callback
+    // boundary, so the phase kept the exception object and answered
+    // `callback_failed`; this is how the owner thread turns that status back
+    // into the message the graph's author needs -- "pose port is unconnected:
+    // blend1.b" rather than "something in the animation phase failed". Call it
+    // wherever a non-ok phase result is about to be reported; it returns
+    // normally when no attachment failed. The next `synchronize` raises
+    // anything still pending, so a caller that ignores it loses nothing.
+    void rethrowPendingFailure();
+
     // What kind of chain produced this sink's pose. It decides where the
     // cursors below come from: a wrapped state machine keeps its own, a
     // clip_sample node has none of its own and the runtime records what it

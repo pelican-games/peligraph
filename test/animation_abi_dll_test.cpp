@@ -10,6 +10,8 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <new>
+#include <stdexcept>
 #include <windows.h>
 
 namespace Pelican::Animation {
@@ -66,6 +68,55 @@ SkeletalModelData evaluatorAsset() {
                       .times = {0.0f, 1.0f}, .values = {{4, 1, 0, 0}, {8, 1, 0, 0}}}},
     });
     return model;
+}
+
+// C-4. A phase callback that throws on purpose. The service calls a raw
+// function pointer with no shim in between, so the map from exception type to
+// Status is the only thing between a client bug and a wrong diagnosis -- and
+// before C-4 every one of these was reported as out_of_memory. The callback
+// lives in the test rather than in a fixture DLL because what is under test is
+// the engine's catch, not the DLL boundary (which the cases above already
+// cover with a non-throwing callback).
+enum class PhaseThrow : std::uint32_t { none, bad_alloc, invalid_argument, other_std, non_std };
+PhaseThrow phase_throw = PhaseThrow::none;
+std::uint32_t phase_throw_calls = 0;
+
+Status throwingPhase(void *, const AnimationPhaseContextV1 *) {
+    ++phase_throw_calls;
+    switch (phase_throw) {
+    case PhaseThrow::bad_alloc: throw std::bad_alloc{};
+    case PhaseThrow::invalid_argument: throw std::invalid_argument{"the phase rejected its input"};
+    case PhaseThrow::other_std: throw std::runtime_error{"the phase gave up"};
+    case PhaseThrow::non_std: throw 7;
+    case PhaseThrow::none: break;
+    }
+    return Status::ok;
+}
+
+AnimationServiceV1 negotiatedService(const ApiV1 &api) {
+    auto service = descriptor<AnimationServiceV1>();
+    REQUIRE(api.get_animation_service(api.context, animationServiceVersionV1, &service) == Status::ok);
+    return service;
+}
+
+// The name registerObject() was given. The size travels with the pointer --
+// resolve_sink takes a counted string, not a NUL-terminated one -- so it is
+// derived from the literal rather than written out a second time.
+constexpr char hero_object[] = "Hero";
+
+AnimationSinkHandle resolveHeroSink(const AnimationServiceV1 &service) {
+    auto request = descriptor<ResolveAnimationSinkDescV1>();
+    request.object_name = hero_object;
+    request.object_name_size = static_cast<std::uint32_t>(sizeof(hero_object) - 1);
+    request.sink_kind = AnimationSinkKind::skeletal_pose;
+    REQUIRE(service.resolve_sink(service.context, &request) == Status::ok);
+    return request.sink;
+}
+
+AnimationOwnerHandle currentOwner(const AnimationServiceV1 &service) {
+    auto request = descriptor<CurrentAnimationOwnerDescV1>();
+    REQUIRE(service.get_current_owner(service.context, &request) == Status::ok);
+    return request.owner;
 }
 
 } // namespace
@@ -215,6 +266,115 @@ TEST_CASE("third-party DLL drives clip blend palette and authority commit throug
     REQUIRE(runtime.runPhases(sink, 44) == Status::ok);
     REQUIRE(result.phase_callback_count == 1);
     runtime.reset();
+}
+
+// C-4. What escapes a phase callback decides what the caller is told, and a
+// failed phase must not leave the service unable to run the next one.
+TEST_CASE("a phase callback's exception is mapped by type and the service stays usable",
+          "[animation][a1.1][abi][phase]") {
+    auto model = evaluatorAsset();
+    auto &runtime = animationServiceRuntime();
+    runtime.reset();
+    runtime.registerObject(hero_object, model);
+
+    auto api = descriptor<ApiV1>();
+    REQUIRE(getApiV1(1, &api) == Status::ok);
+    const auto service = negotiatedService(api);
+
+    constexpr internal::RegistrationOwner phase_owner = 7101;
+    AnimationOwnerHandle owner{};
+    AnimationSinkHandle sink{};
+    PhaseRegistrationHandle registration{};
+    {
+        internal::ScopedRegistrationOwner owner_scope{phase_owner};
+        owner = currentOwner(service);
+        sink = resolveHeroSink(service);
+        auto request = descriptor<RegisterAnimationPhaseDescV1>();
+        request.owner = owner;
+        request.registration = descriptor<PhaseRegistrationV1>();
+        request.registration.phase = Phase::base_pose_and_root_modifier;
+        request.registration.registration_identity = 91;
+        request.registration.registration_generation = 1;
+        request.registration.source_ordinal = 3;
+        request.callback = &throwingPhase;
+        REQUIRE(service.register_phase(service.context, &request) == Status::ok);
+        registration = request.registration_handle;
+    }
+
+    phase_throw_calls = 0;
+    // One exception type at a time. `out_of_memory` is now the answer only for
+    // the exception that actually means it.
+    phase_throw = PhaseThrow::bad_alloc;
+    REQUIRE(runtime.runPhases(sink, 61) == Status::out_of_memory);
+    phase_throw = PhaseThrow::invalid_argument;
+    REQUIRE(runtime.runPhases(sink, 62) == Status::invalid_argument);
+    phase_throw = PhaseThrow::other_std;
+    REQUIRE(runtime.runPhases(sink, 63) == Status::callback_failed);
+    phase_throw = PhaseThrow::non_std;
+    REQUIRE(runtime.runPhases(sink, 64) == Status::callback_failed);
+    REQUIRE(phase_throw_calls == 4);
+
+    // Not a poisoned service: every failure cleared the staged frame and the
+    // active-phase bookkeeping, so the next pass starts rather than answering
+    // phase_order_error.
+    phase_throw = PhaseThrow::none;
+    REQUIRE(runtime.runPhases(sink, 65) == Status::ok);
+    REQUIRE(phase_throw_calls == 5);
+
+    auto unregister = descriptor<UnregisterAnimationPhaseDescV1>();
+    unregister.owner = owner;
+    unregister.registration = registration;
+    REQUIRE(service.unregister_phase(service.context, &unregister) == Status::ok);
+    releaseAnimationOwner(phase_owner);
+    phase_throw = PhaseThrow::none;
+    runtime.reset();
+}
+
+// C-4. A game-DLL reload releases its registration owner. The source table is
+// compacted there, so the inner development loop does not pay one permanent
+// entry per reload; the other three tables keep their tombstones because
+// invalid_handle and stale_generation are different answers for them.
+TEST_CASE("releasing an owner compacts the source table instead of growing it",
+          "[animation][a1.1][abi][phase]") {
+    auto model = evaluatorAsset();
+    auto &runtime = animationServiceRuntime();
+    runtime.reset();
+    runtime.registerObject(hero_object, model);
+
+    auto api = descriptor<ApiV1>();
+    REQUIRE(getApiV1(1, &api) == Status::ok);
+    const auto service = negotiatedService(api);
+
+    const auto claim_then_release = [&](internal::RegistrationOwner slot) {
+        {
+            internal::ScopedRegistrationOwner owner_scope{slot};
+            auto claim = descriptor<ClaimAnimationSourceDescV1>();
+            claim.owner = currentOwner(service);
+            claim.sink = resolveHeroSink(service);
+            claim.source_ordinal = 5;
+            REQUIRE(service.claim_source(service.context, &claim) == Status::ok);
+        }
+        releaseAnimationOwner(slot);
+    };
+
+    claim_then_release(7200);
+    const auto after_one = runtime.handleTableSizesForTesting();
+    // Erased, not tombstoned: the claim released above left nothing behind, and
+    // the sink's active_source was cleared before the erase so no live record
+    // still points at it.
+    REQUIRE(after_one.sources == 0);
+
+    constexpr internal::RegistrationOwner first_slot = 7201;
+    constexpr int rounds = 100;
+    for (int round = 0; round < rounds; ++round)
+        claim_then_release(first_slot + static_cast<internal::RegistrationOwner>(round));
+    const auto after_hundred = runtime.handleTableSizesForTesting();
+    REQUIRE(after_hundred.sources == after_one.sources);
+    // The documented trade, asserted rather than left to a reader: one owner
+    // tombstone per released registration slot stays, on purpose.
+    REQUIRE(after_hundred.owners == after_one.owners + static_cast<std::size_t>(rounds));
+    runtime.reset();
+    REQUIRE(runtime.handleTableSizesForTesting().owners == 0);
 }
 
 } // namespace Pelican::Animation

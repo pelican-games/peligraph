@@ -4,6 +4,7 @@
 #include "../userpublic/animation/abi_v1.hpp"
 #include "../userpublic/animation/pose_staging_v1.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -58,6 +59,19 @@ class AnimationServiceRuntime {
     Status runPhases(AnimationSinkHandle sink, std::uint64_t frame_revision) noexcept;
     Status runAllPhases(std::uint64_t frame_revision) noexcept;
     std::uint64_t registrationGeneration() const noexcept;
+
+    // C-4. How large the four handle tables a game-DLL reload churns have
+    // grown. Only `sources` is compacted on releaseOwner; the other three keep
+    // tombstones because invalid_handle and stale_generation are different
+    // answers there. A test that reloads in a loop watches `sources` stop
+    // growing and the rest grow by a bounded amount.
+    struct HandleTableSizes {
+        std::size_t sources{};
+        std::size_t phases{};
+        std::size_t cursors{};
+        std::size_t owners{};
+    };
+    HandleTableSizes handleTableSizesForTesting() const noexcept;
 
   private:
     struct Impl;
