@@ -15,6 +15,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <exception>
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -464,192 +465,336 @@ vk::Result resultFromSystemError(
         error.code().value());
 }
 
+// A complete candidate that only lost the framebuffer race is already built,
+// so its replacement may start on the very next maintenance tick.
+constexpr std::uint64_t
+    kStaleCandidateRetryDelayTicks = 1;
+// A preparation that failed waits out the transient condition (resource
+// pressure, or a surface that is not presentable yet) before retrying.
+constexpr std::uint64_t kPreparationRetryDelayTicks =
+    30;
+
+struct SurfaceEpoch {
+    SurfaceEpochId id = 0;
+    vk::UniqueSurfaceKHR surface;
+    vk::Queue presentation_queue;
+    std::uint32_t presentation_queue_family =
+        VK_QUEUE_FAMILY_IGNORED;
+    BasePresentRetirementTracker
+        base_retirement;
+    bool lost = false;
+    mutable std::mutex host_access;
+};
+
+struct SwapchainEpoch {
+    // This lease precedes the swapchain so reverse member destruction
+    // destroys every swapchain child before releasing its VkSurfaceKHR.
+    std::shared_ptr<SurfaceEpoch> surface_epoch;
+    vk::Device device;
+    SwapchainEpochId id = 0;
+    FramebufferExtentSnapshot framebuffer;
+    OutputCompileFacts output_facts;
+    SwapchainRecoveryKey recovery_key;
+
+    // Pools precede their children so reverse member destruction releases
+    // command buffers before the command pool.
+    vk::UniqueCommandPool command_pool;
+    std::array<CommandBufWrapper,
+               in_flight_frames_num>
+        command_buffers;
+    GpuSubmissionLeaseSlots<
+        in_flight_frames_num>
+        submission_leases;
+    std::array<bool, in_flight_frames_num>
+        submission_pending{};
+
+    // The swapchain precedes every dependent view/synchronization object,
+    // causing those objects to be destroyed first.
+    SwapchainWithFormat swapchain;
+    std::vector<vk::Image> images;
+    std::vector<vk::UniqueImageView> image_views;
+    ImageWrapper depth_image;
+    vk::UniqueImageView depth_image_view;
+    std::vector<vk::UniqueSemaphore>
+        acquire_semaphores;
+    std::vector<vk::UniqueSemaphore>
+        present_semaphores;
+    std::vector<vk::UniqueFence> present_fences;
+    std::vector<bool> present_fence_pending;
+    std::vector<vk::UniqueFence>
+        superseded_present_fences;
+    std::vector<bool> present_wait_pending;
+    bool ever_presented = false;
+    bool has_rendered_frame = false;
+    std::uint32_t last_rendered_image = 0;
+    std::uint32_t next_slot = 0;
+    mutable std::mutex host_access;
+
+    bool pollGpuCompletion() {
+        bool all_complete = true;
+        for (std::size_t slot = 0;
+             slot < submission_pending.size();
+             ++slot) {
+            if (!submission_pending[slot]) continue;
+            const auto status = device.getFenceStatus(
+                command_buffers[slot].getFence());
+            if (status == vk::Result::eSuccess) {
+                submission_pending[slot] = false;
+                submission_leases.complete(slot);
+            } else if (
+                status == vk::Result::eNotReady) {
+                all_complete = false;
+            } else {
+                throw std::runtime_error(
+                    "failed to poll swapchain submission fence: " +
+                    vk::to_string(status));
+            }
+        }
+        return all_complete;
+    }
+
+    bool pollPresentCompletion(
+        bool maintenance1) {
+        if (!maintenance1) {
+            return !ever_presented;
+        }
+        bool all_complete = true;
+        for (std::size_t image = 0;
+             image < present_fence_pending.size();
+             ++image) {
+            if (!present_fence_pending[image]) {
+                continue;
+            }
+            const auto status = device.getFenceStatus(
+                present_fences[image].get());
+            if (status == vk::Result::eSuccess) {
+                present_fence_pending[image] = false;
+            } else if (
+                status == vk::Result::eNotReady) {
+                all_complete = false;
+            } else {
+                throw std::runtime_error(
+                    "failed to poll swapchain present fence: " +
+                    vk::to_string(status));
+            }
+        }
+        auto first_pending =
+            std::remove_if(
+                superseded_present_fences.begin(),
+                superseded_present_fences.end(),
+                [&](const auto &fence) {
+                    const auto status =
+                        device.getFenceStatus(
+                            fence.get());
+                    if (status ==
+                        vk::Result::eSuccess) {
+                        return true;
+                    }
+                    if (status ==
+                        vk::Result::eNotReady) {
+                        all_complete = false;
+                        return false;
+                    }
+                    throw std::runtime_error(
+                        "failed to poll superseded present fence: " +
+                        vk::to_string(status));
+                });
+        superseded_present_fences.erase(
+            first_pending,
+            superseded_present_fences.end());
+        return all_complete;
+    }
+
+    void noteAcquired(
+        std::uint32_t image_index,
+        bool maintenance1) {
+        if (image_index >=
+            present_wait_pending.size()) {
+            throw std::runtime_error(
+                "vkAcquireNextImageKHR returned an image outside the epoch");
+        }
+        if (!present_wait_pending[image_index]) {
+            return;
+        }
+        present_wait_pending[image_index] = false;
+        if (!maintenance1) {
+            surface_epoch->base_retirement
+                .noteSuccessorImageReacquired(
+                    id, true);
+        }
+    }
+
+    vk::Fence preparePresentFence(
+        std::uint32_t image_index) {
+        if (image_index >= present_fences.size()) {
+            throw std::logic_error(
+                "present fence image index is outside the epoch");
+        }
+        if (present_fence_pending[image_index]) {
+            const auto status = device.getFenceStatus(
+                present_fences[image_index].get());
+            if (status == vk::Result::eSuccess) {
+                device.resetFences(
+                    {present_fences[image_index].get()});
+                present_fence_pending[image_index] =
+                    false;
+            } else if (
+                status == vk::Result::eNotReady) {
+                superseded_present_fences.push_back(
+                    std::move(
+                        present_fences[image_index]));
+                present_fences[image_index] =
+                    device.createFenceUnique({});
+                present_fence_pending[image_index] =
+                    false;
+            } else {
+                throw std::runtime_error(
+                    "failed to recycle a swapchain present fence: " +
+                    vk::to_string(status));
+            }
+        }
+        return present_fences[image_index].get();
+    }
+};
+
+struct BuildRequest {
+    SwapchainEpochId epoch_id = 0;
+    SurfaceEpochId surface_epoch_id = 0;
+    SwapchainPreparationRequest policy;
+    FramebufferExtentSnapshot framebuffer;
+    std::shared_ptr<SurfaceEpoch>
+        surface_epoch;
+    std::shared_ptr<SwapchainEpoch> old_epoch;
+    std::optional<std::uint32_t>
+        release_image_index;
+};
+
+struct BuildCompletion {
+    BuildRequest request;
+    std::shared_ptr<SwapchainEpoch> candidate;
+    // Set only when vkCreateSwapchainKHR succeeded but a dependent
+    // resource failed. This becomes oldSwapchain for the next attempt;
+    // the request's old epoch was retired by the successful create.
+    std::shared_ptr<SwapchainEpoch>
+        replacement_anchor;
+    SurfaceDeviceRebuildReason
+        device_rebuild_reason =
+            SurfaceDeviceRebuildReason::none;
+    vk::Result failure_result =
+        vk::Result::eSuccess;
+    WindowWsiCallSite failure_site =
+        WindowWsiCallSite::surface_create;
+    std::string error;
+};
+
+// Owns the preparation thread and the two hand-off slots. The engine
+// thread only submits a request and takes the completion back; the
+// preparation body itself still runs in Impl::runPreparation, which this
+// worker invokes on its own thread.
+class SwapchainBuildWorker {
+  public:
+    using PreparationFn =
+        std::function<void(BuildCompletion &)>;
+
+    ~SwapchainBuildWorker() { stopAndJoin(); }
+
+    void start(PreparationFn preparation) {
+        preparation_ = std::move(preparation);
+        thread_ = std::jthread(
+            [this](std::stop_token stop) {
+                run(stop);
+            });
+    }
+
+    void stopAndJoin() {
+        thread_.request_stop();
+        wakeup_.notify_all();
+        if (thread_.joinable()) thread_.join();
+    }
+
+    // Owner-thread state: set when a request is handed over and cleared
+    // when its completion is taken back.
+    bool busy() const noexcept {
+        return busy_;
+    }
+
+    void submit(BuildRequest request) {
+        {
+            std::scoped_lock lock{mutex_};
+            if (request_ || completion_) {
+                throw std::logic_error(
+                    "swapchain maintenance worker already owns a request");
+            }
+            request_.emplace(std::move(request));
+            busy_ = true;
+        }
+        wakeup_.notify_one();
+    }
+
+    std::optional<BuildCompletion>
+    takeCompletion() {
+        std::optional<BuildCompletion> completion;
+        std::scoped_lock lock{mutex_};
+        if (completion_) {
+            completion.emplace(
+                std::move(*completion_));
+            completion_.reset();
+            busy_ = false;
+        }
+        return completion;
+    }
+
+    // Valid only once the thread is joined: teardown salvages the epochs
+    // that never travelled back through takeCompletion().
+    std::optional<BuildRequest> &
+    abandonedRequest() noexcept {
+        return request_;
+    }
+    std::optional<BuildCompletion> &
+    abandonedCompletion() noexcept {
+        return completion_;
+    }
+
+  private:
+    void run(std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            std::optional<BuildRequest> request;
+            {
+                std::unique_lock lock{mutex_};
+                wakeup_.wait(
+                    lock, stop, [&] {
+                        return request_.has_value();
+                    });
+                if (stop.stop_requested()) return;
+                request.emplace(
+                    std::move(*request_));
+                request_.reset();
+            }
+            BuildCompletion completion{
+                .request = std::move(*request)};
+            preparation_(completion);
+            {
+                std::scoped_lock lock{mutex_};
+                completion_.emplace(
+                    std::move(completion));
+            }
+        }
+    }
+
+    PreparationFn preparation_;
+    std::mutex mutex_;
+    std::condition_variable_any wakeup_;
+    std::optional<BuildRequest> request_;
+    std::optional<BuildCompletion> completion_;
+    bool busy_ = false;
+    // Declared last so the thread is joined before the slots it touches
+    // are destroyed.
+    std::jthread thread_;
+};
+
 } // namespace
 
 struct SwapchainFrameTarget::Impl {
-    struct SurfaceEpoch {
-        SurfaceEpochId id = 0;
-        vk::UniqueSurfaceKHR surface;
-        vk::Queue presentation_queue;
-        std::uint32_t presentation_queue_family =
-            VK_QUEUE_FAMILY_IGNORED;
-        BasePresentRetirementTracker
-            base_retirement;
-        bool lost = false;
-        mutable std::mutex host_access;
-    };
-
-    struct SwapchainEpoch {
-        // This lease precedes the swapchain so reverse member destruction
-        // destroys every swapchain child before releasing its VkSurfaceKHR.
-        std::shared_ptr<SurfaceEpoch> surface_epoch;
-        vk::Device device;
-        SwapchainEpochId id = 0;
-        FramebufferExtentSnapshot framebuffer;
-        OutputCompileFacts output_facts;
-        SwapchainRecoveryKey recovery_key;
-
-        // Pools precede their children so reverse member destruction releases
-        // command buffers before the command pool.
-        vk::UniqueCommandPool command_pool;
-        std::array<CommandBufWrapper,
-                   in_flight_frames_num>
-            command_buffers;
-        GpuSubmissionLeaseSlots<
-            in_flight_frames_num>
-            submission_leases;
-        std::array<bool, in_flight_frames_num>
-            submission_pending{};
-
-        // The swapchain precedes every dependent view/synchronization object,
-        // causing those objects to be destroyed first.
-        SwapchainWithFormat swapchain;
-        std::vector<vk::Image> images;
-        std::vector<vk::UniqueImageView> image_views;
-        ImageWrapper depth_image;
-        vk::UniqueImageView depth_image_view;
-        std::vector<vk::UniqueSemaphore>
-            acquire_semaphores;
-        std::vector<vk::UniqueSemaphore>
-            present_semaphores;
-        std::vector<vk::UniqueFence> present_fences;
-        std::vector<bool> present_fence_pending;
-        std::vector<vk::UniqueFence>
-            superseded_present_fences;
-        std::vector<bool> present_wait_pending;
-        bool ever_presented = false;
-        bool has_rendered_frame = false;
-        std::uint32_t last_rendered_image = 0;
-        std::uint32_t next_slot = 0;
-        mutable std::mutex host_access;
-
-        bool pollGpuCompletion() {
-            bool all_complete = true;
-            for (std::size_t slot = 0;
-                 slot < submission_pending.size();
-                 ++slot) {
-                if (!submission_pending[slot]) continue;
-                const auto status = device.getFenceStatus(
-                    command_buffers[slot].getFence());
-                if (status == vk::Result::eSuccess) {
-                    submission_pending[slot] = false;
-                    submission_leases.complete(slot);
-                } else if (
-                    status == vk::Result::eNotReady) {
-                    all_complete = false;
-                } else {
-                    throw std::runtime_error(
-                        "failed to poll swapchain submission fence: " +
-                        vk::to_string(status));
-                }
-            }
-            return all_complete;
-        }
-
-        bool pollPresentCompletion(
-            bool maintenance1) {
-            if (!maintenance1) {
-                return !ever_presented;
-            }
-            bool all_complete = true;
-            for (std::size_t image = 0;
-                 image < present_fence_pending.size();
-                 ++image) {
-                if (!present_fence_pending[image]) {
-                    continue;
-                }
-                const auto status = device.getFenceStatus(
-                    present_fences[image].get());
-                if (status == vk::Result::eSuccess) {
-                    present_fence_pending[image] = false;
-                } else if (
-                    status == vk::Result::eNotReady) {
-                    all_complete = false;
-                } else {
-                    throw std::runtime_error(
-                        "failed to poll swapchain present fence: " +
-                        vk::to_string(status));
-                }
-            }
-            auto first_pending =
-                std::remove_if(
-                    superseded_present_fences.begin(),
-                    superseded_present_fences.end(),
-                    [&](const auto &fence) {
-                        const auto status =
-                            device.getFenceStatus(
-                                fence.get());
-                        if (status ==
-                            vk::Result::eSuccess) {
-                            return true;
-                        }
-                        if (status ==
-                            vk::Result::eNotReady) {
-                            all_complete = false;
-                            return false;
-                        }
-                        throw std::runtime_error(
-                            "failed to poll superseded present fence: " +
-                            vk::to_string(status));
-                    });
-            superseded_present_fences.erase(
-                first_pending,
-                superseded_present_fences.end());
-            return all_complete;
-        }
-
-        void noteAcquired(
-            std::uint32_t image_index,
-            bool maintenance1) {
-            if (image_index >=
-                present_wait_pending.size()) {
-                throw std::runtime_error(
-                    "vkAcquireNextImageKHR returned an image outside the epoch");
-            }
-            if (!present_wait_pending[image_index]) {
-                return;
-            }
-            present_wait_pending[image_index] = false;
-            if (!maintenance1) {
-                surface_epoch->base_retirement
-                    .noteSuccessorImageReacquired(
-                        id, true);
-            }
-        }
-
-        vk::Fence preparePresentFence(
-            std::uint32_t image_index) {
-            if (image_index >= present_fences.size()) {
-                throw std::logic_error(
-                    "present fence image index is outside the epoch");
-            }
-            if (present_fence_pending[image_index]) {
-                const auto status = device.getFenceStatus(
-                    present_fences[image_index].get());
-                if (status == vk::Result::eSuccess) {
-                    device.resetFences(
-                        {present_fences[image_index].get()});
-                    present_fence_pending[image_index] =
-                        false;
-                } else if (
-                    status == vk::Result::eNotReady) {
-                    superseded_present_fences.push_back(
-                        std::move(
-                            present_fences[image_index]));
-                    present_fences[image_index] =
-                        device.createFenceUnique({});
-                    present_fence_pending[image_index] =
-                        false;
-                } else {
-                    throw std::runtime_error(
-                        "failed to recycle a swapchain present fence: " +
-                        vk::to_string(status));
-                }
-            }
-            return present_fences[image_index].get();
-        }
-    };
-
     enum class ActiveFramePhase {
         acquired,
         recording,
@@ -672,36 +817,6 @@ struct SwapchainFrameTarget::Impl {
     struct PendingAbandonment {
         std::shared_ptr<SwapchainEpoch> epoch;
         std::uint32_t image_index = 0;
-    };
-
-    struct BuildRequest {
-        SwapchainEpochId epoch_id = 0;
-        SurfaceEpochId surface_epoch_id = 0;
-        SwapchainPreparationRequest policy;
-        FramebufferExtentSnapshot framebuffer;
-        std::shared_ptr<SurfaceEpoch>
-            surface_epoch;
-        std::shared_ptr<SwapchainEpoch> old_epoch;
-        std::optional<std::uint32_t>
-            release_image_index;
-    };
-
-    struct BuildCompletion {
-        BuildRequest request;
-        std::shared_ptr<SwapchainEpoch> candidate;
-        // Set only when vkCreateSwapchainKHR succeeded but a dependent
-        // resource failed. This becomes oldSwapchain for the next attempt;
-        // the request's old epoch was retired by the successful create.
-        std::shared_ptr<SwapchainEpoch>
-            replacement_anchor;
-        SurfaceDeviceRebuildReason
-            device_rebuild_reason =
-                SurfaceDeviceRebuildReason::none;
-        vk::Result failure_result =
-            vk::Result::eSuccess;
-        WindowWsiCallSite failure_site =
-            WindowWsiCallSite::surface_create;
-        std::string error;
     };
 
     struct PumpResult {
@@ -758,13 +873,7 @@ struct SwapchainFrameTarget::Impl {
     std::shared_ptr<FrameTargetFrameCleanup>
         frame_cleanup;
 
-    std::mutex worker_mutex;
-    std::condition_variable_any worker_wakeup;
-    std::optional<BuildRequest> worker_request;
-    std::optional<BuildCompletion>
-        worker_completion;
-    bool worker_busy = false;
-    std::jthread worker;
+    SwapchainBuildWorker build_worker;
 
     static void cleanupAbandonedFrame(
         void *owner, std::uint64_t serial) noexcept {
@@ -867,9 +976,9 @@ struct SwapchainFrameTarget::Impl {
             active_epoch->output_facts.extent.width,
             active_epoch->output_facts.extent.height);
 
-        worker = std::jthread(
-            [this](std::stop_token stop) {
-                workerMain(stop);
+        build_worker.start(
+            [this](BuildCompletion &completion) {
+                runPreparation(completion);
             });
         LOG_INFO(
             logger,
@@ -884,9 +993,7 @@ struct SwapchainFrameTarget::Impl {
 
     ~Impl() {
         frame_cleanup->detach(this);
-        worker.request_stop();
-        worker_wakeup.notify_all();
-        if (worker.joinable()) worker.join();
+        build_worker.stopAndJoin();
 
 #ifndef NDEBUG
         if (wsi_fault_script != nullptr) {
@@ -935,17 +1042,22 @@ struct SwapchainFrameTarget::Impl {
             retain(std::move(epoch));
         }
         retired_epochs.clear();
-        if (worker_request) {
+        auto &abandoned_request =
+            build_worker.abandonedRequest();
+        auto &abandoned_completion =
+            build_worker.abandonedCompletion();
+        if (abandoned_request) {
             retain(std::move(
-                worker_request->old_epoch));
+                abandoned_request->old_epoch));
         }
-        if (worker_completion) {
+        if (abandoned_completion) {
             retain(std::move(
-                worker_completion->request.old_epoch));
+                abandoned_completion->request
+                    .old_epoch));
             // An unpublished candidate has never been submitted or
             // presented and can be destroyed immediately.
-            worker_completion->candidate.reset();
-            worker_completion
+            abandoned_completion->candidate.reset();
+            abandoned_completion
                 ->replacement_anchor.reset();
         }
 
@@ -1210,156 +1322,137 @@ struct SwapchainFrameTarget::Impl {
         }
     }
 
-    void workerMain(std::stop_token stop) {
-        while (!stop.stop_requested()) {
-            std::optional<BuildRequest> request;
-            {
-                std::unique_lock lock{worker_mutex};
-                worker_wakeup.wait(
-                    lock, stop, [&] {
-                        return worker_request.has_value();
-                    });
-                if (stop.stop_requested()) return;
-                request.emplace(
-                    std::move(*worker_request));
-                worker_request.reset();
-            }
-
-            BuildCompletion completion{
-                .request = std::move(*request)};
-            std::shared_ptr<SwapchainEpoch>
-                replacement_anchor;
-            try {
-                if (completion.request.policy
-                        .preparation_kind ==
-                    WindowOutputPreparationKind::
-                        surface) {
-                    completion.failure_site =
-                        WindowWsiCallSite::
-                            surface_create;
-                    throwInjectedWsiFault(
-                        wsi_fault_script.get(),
-                        WindowWsiFaultContext{
-                            .site =
-                                WindowWsiCallSite::
-                                    surface_create,
-                            .surface_epoch =
-                                completion.request
-                                    .surface_epoch_id,
-                            .swapchain_epoch =
-                                completion.request
-                                    .epoch_id,
-                            .recovery_attempt =
-                                completion.request
-                                    .policy.attempt,
-                        });
-                    auto prepared_surface =
-                        surface_factory.create();
-                    completion.failure_site =
-                        WindowWsiCallSite::
-                            surface_support_query;
-                    throwInjectedWsiFault(
-                        wsi_fault_script.get(),
-                        WindowWsiFaultContext{
-                            .site =
-                                WindowWsiCallSite::
-                                    surface_support_query,
-                            .surface_epoch =
-                                completion.request
-                                    .surface_epoch_id,
-                            .swapchain_epoch =
-                                completion.request
-                                    .epoch_id,
-                            .recovery_attempt =
-                                completion.request
-                                    .policy.attempt,
-                        });
-                    const auto binding =
-                        querySurfacePresentationQueue(
-                            physical_device,
-                            prepared_surface.surface.get(),
-                            current_presentation_queue_family,
-                            created_queue_families);
-                    if (binding.kind ==
-                        SurfaceQueueBindingKind::
-                            device_rebuild_required) {
-                        completion.device_rebuild_reason =
-                            binding.rebuild_reason;
-                    } else {
-                        const auto queue =
-                            core.createdQueue(
-                                binding
-                                    .presentation_queue_family);
-                        if (!queue) {
-                            throw std::logic_error(
-                                "surface policy selected an uncreated queue");
-                        }
-                        auto surface_epoch =
-                            std::make_shared<
-                                SurfaceEpoch>();
-                        surface_epoch->id =
+    // Runs on the build worker thread. Touches only the request it is
+    // handed plus the immutable device / factory handles of the target.
+    void runPreparation(
+        BuildCompletion &completion) {
+        std::shared_ptr<SwapchainEpoch>
+            replacement_anchor;
+        try {
+            if (completion.request.policy
+                    .preparation_kind ==
+                WindowOutputPreparationKind::
+                    surface) {
+                completion.failure_site =
+                    WindowWsiCallSite::
+                        surface_create;
+                throwInjectedWsiFault(
+                    wsi_fault_script.get(),
+                    WindowWsiFaultContext{
+                        .site =
+                            WindowWsiCallSite::
+                                surface_create,
+                        .surface_epoch =
                             completion.request
-                                .surface_epoch_id;
-                        surface_epoch->surface =
-                            std::move(
-                                prepared_surface.surface);
-                        surface_epoch
-                            ->presentation_queue =
-                            *queue;
-                        surface_epoch
-                            ->presentation_queue_family =
-                            binding
-                                .presentation_queue_family;
-                        completion.request
-                            .surface_epoch =
-                            std::move(surface_epoch);
-                    }
-                }
-                if (completion.device_rebuild_reason !=
-                    SurfaceDeviceRebuildReason::none) {
-                    completion.failure_result =
-                        vk::Result::
-                            eErrorInitializationFailed;
-                    completion.error =
-                        "fresh surface requires Vulkan device rebuild: " +
-                        std::string{
-                            surfaceDeviceRebuildReasonName(
-                                completion
-                                    .device_rebuild_reason)};
+                                .surface_epoch_id,
+                        .swapchain_epoch =
+                            completion.request
+                                .epoch_id,
+                        .recovery_attempt =
+                            completion.request
+                                .policy.attempt,
+                    });
+                auto prepared_surface =
+                    surface_factory.create();
+                completion.failure_site =
+                    WindowWsiCallSite::
+                        surface_support_query;
+                throwInjectedWsiFault(
+                    wsi_fault_script.get(),
+                    WindowWsiFaultContext{
+                        .site =
+                            WindowWsiCallSite::
+                                surface_support_query,
+                        .surface_epoch =
+                            completion.request
+                                .surface_epoch_id,
+                        .swapchain_epoch =
+                            completion.request
+                                .epoch_id,
+                        .recovery_attempt =
+                            completion.request
+                                .policy.attempt,
+                    });
+                const auto binding =
+                    querySurfacePresentationQueue(
+                        physical_device,
+                        prepared_surface.surface.get(),
+                        current_presentation_queue_family,
+                        created_queue_families);
+                if (binding.kind ==
+                    SurfaceQueueBindingKind::
+                        device_rebuild_required) {
+                    completion.device_rebuild_reason =
+                        binding.rebuild_reason;
                 } else {
-                    completion.candidate =
-                        buildEpoch(
-                            completion.request,
-                            &replacement_anchor,
-                            &completion.failure_site);
+                    const auto queue =
+                        core.createdQueue(
+                            binding
+                                .presentation_queue_family);
+                    if (!queue) {
+                        throw std::logic_error(
+                            "surface policy selected an uncreated queue");
+                    }
+                    auto surface_epoch =
+                        std::make_shared<
+                            SurfaceEpoch>();
+                    surface_epoch->id =
+                        completion.request
+                            .surface_epoch_id;
+                    surface_epoch->surface =
+                        std::move(
+                            prepared_surface.surface);
+                    surface_epoch
+                        ->presentation_queue =
+                        *queue;
+                    surface_epoch
+                        ->presentation_queue_family =
+                        binding
+                            .presentation_queue_family;
+                    completion.request
+                        .surface_epoch =
+                        std::move(surface_epoch);
                 }
-            } catch (const vk::SystemError &error) {
+            }
+            if (completion.device_rebuild_reason !=
+                SurfaceDeviceRebuildReason::none) {
                 completion.failure_result =
-                    resultFromSystemError(error);
-                completion.error = error.what();
-            } catch (const std::bad_alloc &error) {
-                completion.failure_result =
-                    vk::Result::eErrorOutOfHostMemory;
-                completion.error = error.what();
-            } catch (const std::exception &error) {
-                completion.failure_result =
-                    vk::Result::eErrorUnknown;
-                completion.error = error.what();
-            } catch (...) {
-                completion.failure_result =
-                    vk::Result::eErrorUnknown;
+                    vk::Result::
+                        eErrorInitializationFailed;
                 completion.error =
-                    "unknown swapchain preparation failure";
+                    "fresh surface requires Vulkan device rebuild: " +
+                    std::string{
+                        surfaceDeviceRebuildReasonName(
+                            completion
+                                .device_rebuild_reason)};
+            } else {
+                completion.candidate =
+                    buildEpoch(
+                        completion.request,
+                        &replacement_anchor,
+                        &completion.failure_site);
             }
-            if (completion.candidate == nullptr) {
-                completion.replacement_anchor =
-                    std::move(replacement_anchor);
-            }
-            {
-                std::scoped_lock lock{worker_mutex};
-                worker_completion.emplace(
-                    std::move(completion));
-            }
+        } catch (const vk::SystemError &error) {
+            completion.failure_result =
+                resultFromSystemError(error);
+            completion.error = error.what();
+        } catch (const std::bad_alloc &error) {
+            completion.failure_result =
+                vk::Result::eErrorOutOfHostMemory;
+            completion.error = error.what();
+        } catch (const std::exception &error) {
+            completion.failure_result =
+                vk::Result::eErrorUnknown;
+            completion.error = error.what();
+        } catch (...) {
+            completion.failure_result =
+                vk::Result::eErrorUnknown;
+            completion.error =
+                "unknown swapchain preparation failure";
+        }
+        if (completion.candidate == nullptr) {
+            completion.replacement_anchor =
+                std::move(replacement_anchor);
         }
     }
 
@@ -1463,7 +1556,7 @@ struct SwapchainFrameTarget::Impl {
 
     void launchPendingPreparation(
         FramebufferExtentSnapshot framebuffer) {
-        if (worker_busy) return;
+        if (build_worker.busy()) return;
         if (recovery->kind() ==
                 WindowOutputStateKind::surface_lost &&
             std::any_of(
@@ -1542,18 +1635,7 @@ struct SwapchainFrameTarget::Impl {
             pending_abandonment.reset();
         }
 
-        {
-            std::scoped_lock lock{worker_mutex};
-            if (worker_request ||
-                worker_completion) {
-                throw std::logic_error(
-                    "swapchain maintenance worker already owns a request");
-            }
-            worker_request.emplace(
-                std::move(request));
-            worker_busy = true;
-        }
-        worker_wakeup.notify_one();
+        build_worker.submit(std::move(request));
     }
 
     void pollRetiredEpochs() {
@@ -1601,22 +1683,255 @@ struct SwapchainFrameTarget::Impl {
             first_live, retired_epochs.end());
     }
 
+    // The candidate is complete and still matches the live framebuffer, so it
+    // becomes the active epoch. Returns whether the published output compile
+    // facts changed.
+    bool publishCompletedEpoch(
+        BuildCompletion &completion) {
+        if (completion.request.old_epoch !=
+            nullptr) {
+            retireEpoch(
+                completion.request.old_epoch);
+        }
+        const auto previous_fingerprint =
+            outputCompileFactsFingerprint(
+                published_caps.compile_facts);
+        active_epoch =
+            std::move(completion.candidate);
+        if (published_surface_epoch_id !=
+            active_epoch->surface_epoch->id) {
+            published_surface_epoch_id =
+                active_epoch->surface_epoch->id;
+            ++surface_recovery_count;
+        }
+        published_caps.compile_facts =
+            active_epoch->output_facts;
+        last_present_configuration =
+            active_epoch->swapchain
+                .present_configuration;
+        last_support_fingerprint =
+            active_epoch->swapchain
+                .surface_support_fingerprint;
+        current_presentation_queue_family =
+            active_epoch->surface_epoch
+                ->presentation_queue_family;
+        device_rebuild_reason =
+            SurfaceDeviceRebuildReason::none;
+        recovery->preparationSucceeded(
+            active_epoch->id,
+            active_epoch->recovery_key);
+        camera.setScreenSize(
+            active_epoch->output_facts
+                .extent.width,
+            active_epoch->output_facts
+                .extent.height);
+        const bool output_facts_changed =
+            previous_fingerprint !=
+            outputCompileFactsFingerprint(
+                active_epoch->output_facts);
+        LOG_INFO(
+            logger,
+            "swapchain epoch published: epoch={} surface_epoch={} "
+            "extent={}x{} reason={} facts_changed={}",
+            active_epoch->id,
+            active_epoch->surface_epoch->id,
+            active_epoch->output_facts
+                .extent.width,
+            active_epoch->output_facts
+                .extent.height,
+            windowOutputRecoveryReasonName(
+                completion.request.policy.reason),
+            output_facts_changed);
+        return output_facts_changed;
+    }
+
+    // The candidate is complete but its framebuffer facts are already stale.
+    void deferStaleCandidate(
+        BuildCompletion &completion,
+        FramebufferExtentSnapshot framebuffer) {
+        if (completion.request.old_epoch !=
+            nullptr) {
+            retireEpoch(
+                completion.request.old_epoch);
+        }
+        LOG_INFO(
+            logger,
+            "discarding stale swapchain epoch candidate: "
+            "candidate_revision={} current_revision={}",
+            completion.request.framebuffer
+                .revision,
+            framebuffer.revision);
+        // The candidate is complete but has stale framebuffer facts.
+        // Keep its swapchain as oldSwapchain for the replacement
+        // instead of creating a second non-retired swapchain.
+        recovery_anchor =
+            std::move(completion.candidate);
+        recovery->deferRetry(
+            requestedRecoveryKey(framebuffer),
+            WindowOutputRecoveryReason::
+                framebuffer_changed,
+            maintenance_tick,
+            kStaleCandidateRetryDelayTicks,
+            completion.request.policy.attempt,
+            WindowOutputPreparationKind::
+                swapchain);
+        if (framebuffer.extent.width == 0 ||
+            framebuffer.extent.height == 0) {
+            recovery->observeZeroExtent(
+                0, framebuffer);
+        } else {
+            (void)recovery->requestRefresh(
+                0,
+                requestedRecoveryKey(framebuffer),
+                WindowOutputRecoveryReason::
+                    framebuffer_changed,
+                maintenance_tick);
+        }
+    }
+
+    // No candidate. Pick the anchor the next attempt must reuse, then act on
+    // the classified WSI decision.
+    void handlePreparationFailure(
+        BuildCompletion &completion,
+        FramebufferExtentSnapshot framebuffer) {
+        const auto anchor_kind =
+            selectSwapchainRecoveryAnchor(
+                completion.replacement_anchor !=
+                    nullptr,
+                completion.request.old_epoch !=
+                    nullptr);
+        if (anchor_kind ==
+            SwapchainRecoveryAnchorKind::
+                replacement) {
+            if (completion.request.old_epoch !=
+                nullptr) {
+                retireEpoch(
+                    completion.request.old_epoch);
+            }
+            recovery_anchor = std::move(
+                completion.replacement_anchor);
+        } else if (
+            anchor_kind ==
+            SwapchainRecoveryAnchorKind::previous) {
+            // vkCreateSwapchainKHR did not succeed, so oldSwapchain
+            // was not retired and remains the only legal anchor.
+            recovery_anchor = std::move(
+                completion.request.old_epoch);
+        }
+        last_wsi_result = completion.failure_result;
+        const auto decision =
+            decideWindowWsiRecovery(
+                completion.failure_site,
+                completion.failure_result);
+        LOG_WARNING(
+            logger,
+            "swapchain epoch preparation failed: call={} result={} "
+            "classification={} action={} error={}",
+            windowWsiCallSiteName(
+                completion.failure_site),
+            vk::to_string(
+                completion.failure_result),
+            wsiResultClassName(
+                decision.classification),
+            windowWsiRecoveryActionName(
+                decision.action),
+            completion.error);
+
+        // A device rebuild demanded by the worker outranks the classified
+        // action: no surface of this device can carry the next attempt.
+        if (completion.device_rebuild_reason !=
+            SurfaceDeviceRebuildReason::none) {
+            device_rebuild_reason =
+                completion.device_rebuild_reason;
+            recovery->markDeviceLost();
+            return;
+        }
+        const bool zero_extent =
+            framebuffer.extent.width == 0 ||
+            framebuffer.extent.height == 0;
+        switch (decision.action) {
+        case WindowWsiRecoveryAction::
+            replace_surface: {
+            auto lost_surface =
+                completion.request.surface_epoch;
+            if (lost_surface == nullptr &&
+                recovery_anchor != nullptr) {
+                lost_surface =
+                    recovery_anchor->surface_epoch;
+            }
+            markSurfaceLost(lost_surface, 0);
+            if (zero_extent) {
+                recovery->observeZeroExtent(
+                    0, framebuffer);
+            }
+            break;
+        }
+        case WindowWsiRecoveryAction::
+            rebuild_device:
+            recovery->markDeviceLost();
+            break;
+        case WindowWsiRecoveryAction::retry_later:
+        case WindowWsiRecoveryAction::
+            replace_swapchain: {
+            // A window with no drawable area cannot be retried against, so
+            // the zero-extent suspension supersedes the retry.
+            if (zero_extent) {
+                recovery->observeZeroExtent(
+                    0, framebuffer);
+                break;
+            }
+            const auto retry_reason =
+                decision.classification ==
+                        WsiResultClass::
+                            retryable_failure
+                    ? WindowOutputRecoveryReason::
+                          resource_pressure
+                    : WindowOutputRecoveryReason::
+                          prepare_failed;
+            if (completion.replacement_anchor !=
+                    nullptr ||
+                recovery_anchor != nullptr) {
+                recovery->deferRetry(
+                    requestedRecoveryKey(
+                        framebuffer),
+                    retry_reason, maintenance_tick,
+                    kPreparationRetryDelayTicks,
+                    completion.request.policy
+                        .attempt,
+                    WindowOutputPreparationKind::
+                        swapchain);
+            } else {
+                recovery->preparationFailed(
+                    maintenance_tick,
+                    kPreparationRetryDelayTicks);
+            }
+            break;
+        }
+        case WindowWsiRecoveryAction::proceed:
+        case WindowWsiRecoveryAction::
+            proceed_and_refresh:
+        case WindowWsiRecoveryAction::drop_frame:
+        case WindowWsiRecoveryAction::fatal:
+            // Same precedence as the retry cases: a suspended window is
+            // observed rather than declared fatal.
+            if (zero_extent) {
+                recovery->observeZeroExtent(
+                    0, framebuffer);
+                break;
+            }
+            recovery->markFatal();
+            break;
+        }
+    }
+
     PumpResult pumpMaintenance(
         FramebufferExtentSnapshot framebuffer) {
         ++maintenance_tick;
         pollRetiredEpochs();
         PumpResult result;
 
-        std::optional<BuildCompletion> completion;
-        {
-            std::scoped_lock lock{worker_mutex};
-            if (worker_completion) {
-                completion.emplace(
-                    std::move(*worker_completion));
-                worker_completion.reset();
-                worker_busy = false;
-            }
-        }
+        auto completion =
+            build_worker.takeCompletion();
         if (completion) {
             const bool framebuffer_still_matches =
                 framebuffer.extent.width != 0 &&
@@ -1625,230 +1940,20 @@ struct SwapchainFrameTarget::Impl {
                     framebuffer;
             if (completion->candidate != nullptr &&
                 framebuffer_still_matches) {
-                if (completion->request.old_epoch !=
-                    nullptr) {
-                    retireEpoch(
-                        completion->request.old_epoch);
-                }
-                const auto previous_fingerprint =
-                    outputCompileFactsFingerprint(
-                        published_caps.compile_facts);
-                active_epoch =
-                    std::move(completion->candidate);
-                if (published_surface_epoch_id !=
-                    active_epoch->surface_epoch->id) {
-                    published_surface_epoch_id =
-                        active_epoch->surface_epoch->id;
-                    ++surface_recovery_count;
-                }
-                published_caps.compile_facts =
-                    active_epoch->output_facts;
-                last_present_configuration =
-                    active_epoch->swapchain
-                        .present_configuration;
-                last_support_fingerprint =
-                    active_epoch->swapchain
-                        .surface_support_fingerprint;
-                current_presentation_queue_family =
-                    active_epoch->surface_epoch
-                        ->presentation_queue_family;
-                device_rebuild_reason =
-                    SurfaceDeviceRebuildReason::none;
-                recovery->preparationSucceeded(
-                    active_epoch->id,
-                    active_epoch->recovery_key);
-                camera.setScreenSize(
-                    active_epoch->output_facts
-                        .extent.width,
-                    active_epoch->output_facts
-                        .extent.height);
                 result.output_facts_changed =
-                    previous_fingerprint !=
-                    outputCompileFactsFingerprint(
-                        active_epoch->output_facts);
-                LOG_INFO(
-                    logger,
-                    "swapchain epoch published: epoch={} surface_epoch={} "
-                    "extent={}x{} reason={} facts_changed={}",
-                    active_epoch->id,
-                    active_epoch->surface_epoch->id,
-                    active_epoch->output_facts
-                        .extent.width,
-                    active_epoch->output_facts
-                        .extent.height,
-                    windowOutputRecoveryReasonName(
-                        completion->request.policy.reason),
-                    result.output_facts_changed);
+                    publishCompletedEpoch(
+                        *completion);
             } else if (
                 completion->candidate != nullptr) {
-                if (completion->request.old_epoch !=
-                    nullptr) {
-                    retireEpoch(
-                        completion->request.old_epoch);
-                }
-                LOG_INFO(
-                    logger,
-                    "discarding stale swapchain epoch candidate: "
-                    "candidate_revision={} current_revision={}",
-                    completion->request.framebuffer
-                        .revision,
-                    framebuffer.revision);
-                // The candidate is complete but has stale framebuffer facts.
-                // Keep its swapchain as oldSwapchain for the replacement
-                // instead of creating a second non-retired swapchain.
-                recovery_anchor =
-                    std::move(completion->candidate);
-                recovery->deferRetry(
-                    requestedRecoveryKey(
-                        framebuffer),
-                    WindowOutputRecoveryReason::
-                        framebuffer_changed,
-                    maintenance_tick, 1,
-                    completion->request.policy
-                        .attempt,
-                    WindowOutputPreparationKind::
-                        swapchain);
-                if (framebuffer.extent.width == 0 ||
-                    framebuffer.extent.height == 0) {
-                    recovery->observeZeroExtent(
-                        0, framebuffer);
-                } else {
-                    (void)recovery->requestRefresh(
-                        0,
-                        requestedRecoveryKey(
-                            framebuffer),
-                        WindowOutputRecoveryReason::
-                            framebuffer_changed,
-                        maintenance_tick);
-                }
+                deferStaleCandidate(
+                    *completion, framebuffer);
             } else {
-                const auto anchor_kind =
-                    selectSwapchainRecoveryAnchor(
-                        completion
-                                ->replacement_anchor !=
-                            nullptr,
-                        completion->request.old_epoch !=
-                            nullptr);
-                if (anchor_kind ==
-                    SwapchainRecoveryAnchorKind::
-                        replacement) {
-                    if (completion->request.old_epoch !=
-                        nullptr) {
-                        retireEpoch(
-                            completion->request
-                                .old_epoch);
-                    }
-                    recovery_anchor =
-                        std::move(
-                            completion
-                                ->replacement_anchor);
-                } else if (
-                    anchor_kind ==
-                    SwapchainRecoveryAnchorKind::
-                        previous) {
-                    // vkCreateSwapchainKHR did not succeed, so oldSwapchain
-                    // was not retired and remains the only legal anchor.
-                    recovery_anchor =
-                        std::move(
-                            completion->request
-                                .old_epoch);
-                }
-                last_wsi_result =
-                    completion->failure_result;
-                const auto decision =
-                    decideWindowWsiRecovery(
-                        completion->failure_site,
-                        completion->failure_result);
-                LOG_WARNING(
-                    logger,
-                    "swapchain epoch preparation failed: call={} result={} "
-                    "classification={} action={} error={}",
-                    windowWsiCallSiteName(
-                        completion->failure_site),
-                    vk::to_string(
-                        completion->failure_result),
-                    wsiResultClassName(
-                        decision.classification),
-                    windowWsiRecoveryActionName(
-                        decision.action),
-                    completion->error);
-                if (completion->device_rebuild_reason !=
-                    SurfaceDeviceRebuildReason::none) {
-                    device_rebuild_reason =
-                        completion
-                            ->device_rebuild_reason;
-                    recovery->markDeviceLost();
-                } else if (
-                    decision.action ==
-                    WindowWsiRecoveryAction::
-                        replace_surface) {
-                    auto lost_surface =
-                        completion->request
-                            .surface_epoch;
-                    if (lost_surface == nullptr &&
-                        recovery_anchor != nullptr) {
-                        lost_surface =
-                            recovery_anchor
-                                ->surface_epoch;
-                    }
-                    markSurfaceLost(
-                        lost_surface, 0);
-                    if (framebuffer.extent.width ==
-                            0 ||
-                        framebuffer.extent.height ==
-                            0) {
-                        recovery->observeZeroExtent(
-                            0, framebuffer);
-                    }
-                } else if (
-                    decision.action ==
-                    WindowWsiRecoveryAction::
-                        rebuild_device) {
-                    recovery->markDeviceLost();
-                } else if (
-                    framebuffer.extent.width == 0 ||
-                    framebuffer.extent.height == 0) {
-                    recovery->observeZeroExtent(
-                        0, framebuffer);
-                } else if (
-                    decision.action ==
-                        WindowWsiRecoveryAction::
-                            retry_later ||
-                    decision.action ==
-                        WindowWsiRecoveryAction::
-                            replace_swapchain) {
-                    const auto retry_reason =
-                        decision.classification ==
-                                WsiResultClass::
-                                    retryable_failure
-                            ? WindowOutputRecoveryReason::
-                                  resource_pressure
-                            : WindowOutputRecoveryReason::
-                                  prepare_failed;
-                    if (completion
-                            ->replacement_anchor !=
-                        nullptr ||
-                        recovery_anchor != nullptr) {
-                        recovery->deferRetry(
-                            requestedRecoveryKey(
-                                framebuffer),
-                            retry_reason,
-                            maintenance_tick, 30,
-                            completion->request.policy
-                                .attempt,
-                            WindowOutputPreparationKind::
-                                swapchain);
-                    } else {
-                        recovery->preparationFailed(
-                            maintenance_tick, 30);
-                    }
-                } else {
-                    recovery->markFatal();
-                }
+                handlePreparationFailure(
+                    *completion, framebuffer);
             }
         }
 
-        if (worker_busy) return result;
+        if (build_worker.busy()) return result;
 
         if (framebuffer.extent.width == 0 ||
             framebuffer.extent.height == 0) {
@@ -1991,7 +2096,7 @@ struct SwapchainFrameTarget::Impl {
         const auto framebuffer =
             window.framebufferSnapshot();
         if (pending_abandonment &&
-            !worker_busy &&
+            !build_worker.busy() &&
             recovery->kind() ==
                 WindowOutputStateKind::ready) {
             (void)recovery->requestRefresh(
@@ -2155,7 +2260,8 @@ struct SwapchainFrameTarget::Impl {
                           resource_pressure
                     : WindowOutputRecoveryReason::
                           prepare_failed,
-                maintenance_tick, 30);
+                maintenance_tick,
+                kPreparationRetryDelayTicks);
             return unavailableResult();
         }
         if (decision.action !=
@@ -2576,7 +2682,8 @@ struct SwapchainFrameTarget::Impl {
                               resource_pressure
                         : WindowOutputRecoveryReason::
                               prepare_failed,
-                    maintenance_tick, 30);
+                    maintenance_tick,
+                    kPreparationRetryDelayTicks);
                 return {
                     .disposition =
                         FrameSubmitDisposition::
