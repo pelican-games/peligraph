@@ -263,8 +263,6 @@ std::vector<CompiledComputeTask> compileComputeTasks(
             ComputeTaskRuntimeDependencies{
                 dependencies.runtime.shader_library,
                 dependencies.runtime.path_resolver,
-                dependencies.render_targets.render_target_container,
-                dependencies.frame_graph_resources,
                 &resource_views,
                 &resource_view_counts,
                 &dependencies.runtime

@@ -1066,8 +1066,6 @@ TEST_CASE(
                 ComputeTaskRuntimeDependencies{
                     library,
                     GET_MODULE(PathResolver),
-                    render_targets,
-                    frame_graph_resources,
                     &compute_resource_views,
                     &compute_resource_view_counts,
                 });
@@ -1122,8 +1120,6 @@ TEST_CASE(
                 ComputeTaskRuntimeDependencies{
                     library,
                     GET_MODULE(PathResolver),
-                    render_targets,
-                    frame_graph_resources,
                     &family_array_resource_views,
                     &compute_resource_view_counts,
                 });
@@ -1194,8 +1190,6 @@ TEST_CASE(
                 ComputeTaskRuntimeDependencies{
                     library,
                     GET_MODULE(PathResolver),
-                    render_targets,
-                    frame_graph_resources,
                     &cube_resource_views,
                 });
     const auto cube_view =

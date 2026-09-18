@@ -13305,8 +13305,7 @@ void GoldenHarness::runFullscreenRebind() {
     const auto compute_task_id = compute_tasks.registerComputeTask(
         history_task,
         ComputeTaskRuntimeDependencies{GET_MODULE(ShaderLibrary),
-                                       GET_MODULE(PathResolver), render_targets,
-                                       GET_MODULE(FrameGraphResourceContainer)});
+                                       GET_MODULE(PathResolver)});
     const auto initial_compute_views_0 =
         compute_tasks.boundImageViewsForTesting(compute_task_id, 0);
     const auto initial_compute_views_1 =

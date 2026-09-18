@@ -1267,7 +1267,7 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
     const auto definitions = parseComputeTaskDefinitionsFromConfigJson(config);
     REQUIRE(definitions.size() == 1);
     const auto task = tasks.registerComputeTask(definitions[0], ComputeTaskRuntimeDependencies{
-        GET_MODULE(ShaderLibrary), GET_MODULE(PathResolver), GET_MODULE(RenderTargetContainer), resources});
+        GET_MODULE(ShaderLibrary), GET_MODULE(PathResolver)});
     auto &frames = GET_MODULE(FrameResources);
     auto &vkcore = GET_MODULE(VulkanManageCore);
     const auto run = [&](double time, const ValueGraph::ParameterValues &parameters = ValueGraph::ParameterValues{}) {

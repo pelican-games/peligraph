@@ -1,5 +1,7 @@
 target_sources(pelican_core PRIVATE
-    computetask.cpp
+    computetaskcontainer.cpp
+    computetaskdefinitionjson.cpp
+    framegraphbuffercontainer.cpp
     debugdrawpassinfojsonparser.cpp
     debugtextpassinfojsonparser.cpp
     frameexecutionadapter.cpp
