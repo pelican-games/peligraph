@@ -1,10 +1,13 @@
 #include "openxrcompositiontarget.hpp"
 
+#include "openxrcompositiongraphics.hpp"
+
 #include "../vkcore/core.hpp"
 #include "../vkcore/image.hpp"
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -18,8 +21,6 @@ namespace {
 
 constexpr XrViewConfigurationType primary_view_configuration =
     XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-constexpr vk::ImageLayout runtime_release_layout =
-    vk::ImageLayout::eColorAttachmentOptimal;
 
 struct XrCompositionApi {
     PFN_xrEnumerateViewConfigurationViews enumerate_view_configuration_views = nullptr;
@@ -30,18 +31,6 @@ struct XrCompositionApi {
     PFN_xrAcquireSwapchainImage acquire_swapchain_image = nullptr;
     PFN_xrWaitSwapchainImage wait_swapchain_image = nullptr;
     PFN_xrReleaseSwapchainImage release_swapchain_image = nullptr;
-};
-
-class XrCompositionError final : public std::runtime_error {
-    XrResult xr_result;
-
-  public:
-    XrCompositionError(const char *operation, XrResult result)
-        : std::runtime_error(std::string{operation} + " failed (XrResult " +
-                             std::to_string(result) + ")"),
-          xr_result{result} {}
-
-    XrResult result() const noexcept { return xr_result; }
 };
 
 template <class Function>
@@ -56,414 +45,76 @@ void resolveRequired(PFN_xrGetInstanceProcAddr get_instance_proc_addr,
     destination = reinterpret_cast<Function>(function);
 }
 
-void requireSuccess(const char *operation, XrResult result) {
-    if (XR_FAILED(result) || result == XR_SESSION_LOSS_PENDING) {
-        throw XrCompositionError{operation, result};
-    }
-}
-
-bool isLossResult(XrResult result) {
-    return result == XR_ERROR_SESSION_LOST || result == XR_ERROR_INSTANCE_LOST ||
-           result == XR_SESSION_LOSS_PENDING;
-}
-
-vk::ImageAspectFlags depthLayoutAspect(
-    vk::Format format) {
-    if (format == vk::Format::eD24UnormS8Uint ||
-        format == vk::Format::eD32SfloatS8Uint) {
-        return vk::ImageAspectFlagBits::eDepth |
-               vk::ImageAspectFlagBits::eStencil;
-    }
-    return vk::ImageAspectFlagBits::eDepth;
-}
-
-vk::UniqueImageView createImageView(
-    vk::Device device, vk::Image image, vk::Format format,
-    vk::ImageAspectFlags aspect, vk::ImageViewType type,
-    std::uint32_t base_array_layer, std::uint32_t layer_count) {
-    vk::ImageViewCreateInfo info;
-    info.image = image;
-    info.viewType = type;
-    info.format = format;
-    info.components = {
-        vk::ComponentSwizzle::eR,
-        vk::ComponentSwizzle::eG,
-        vk::ComponentSwizzle::eB,
-        vk::ComponentSwizzle::eA,
-    };
-    info.subresourceRange = {
-        aspect, 0, 1, base_array_layer, layer_count};
-    return device.createImageViewUnique(info);
-}
-
-class VulkanXrCompositionGraphics final : public IXrCompositionGraphics {
-    struct SwapchainResources {
-        std::vector<vk::Image> images;
-        std::vector<vk::UniqueImageView> layered_views;
-        std::array<
-            std::vector<vk::UniqueImageView>,
-            xr_stereo_view_count>
-            layer_views;
-    };
-
-    static constexpr std::uint32_t view_family_command_slot =
-        xr_stereo_view_count;
-    static constexpr std::uint32_t command_slots_per_frame =
-        xr_stereo_view_count + 1;
-
-    VulkanManageCore &vulkan;
-    vk::Device device;
-    SwapchainResources color;
-    SwapchainResources depth;
-    std::vector<CommandBufWrapper> command_buffers;
-    vk::Extent2D extent{};
-    vk::Format color_format = vk::Format::eUndefined;
-    vk::Format depth_format = vk::Format::eUndefined;
-    vk::ImageLayout release_layout = runtime_release_layout;
-
-    CommandBufWrapper &command(std::uint32_t slot,
-                               std::uint32_t in_flight_frame_index) {
-        return command_buffers.at(static_cast<std::size_t>(in_flight_frame_index) *
-                                      command_slots_per_frame +
-                                  slot);
-    }
-
-    void enumerateSwapchain(
-        PFN_xrEnumerateSwapchainImages enumerate,
-        XrSwapchain swapchain, vk::Format format,
-        vk::ImageAspectFlags aspect, std::string_view debug_name,
-        SwapchainResources &resources) {
-        std::uint32_t image_count = 0;
-        requireSuccess(
-            "xrEnumerateSwapchainImages",
-            enumerate(swapchain, 0, &image_count, nullptr));
-        if (image_count == 0) {
-            throw std::runtime_error(
-                "OpenXR swapchain has no Vulkan images");
-        }
-        std::vector<XrSwapchainImageVulkan2KHR> xr_images(
-            image_count,
-            XrSwapchainImageVulkan2KHR{
-                XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR});
-        std::uint32_t returned_count = 0;
-        requireSuccess(
-            "xrEnumerateSwapchainImages",
-            enumerate(
-                swapchain, image_count, &returned_count,
-                reinterpret_cast<
-                    XrSwapchainImageBaseHeader *>(
-                    xr_images.data())));
-        if (returned_count != image_count) {
-            throw std::runtime_error(
-                "OpenXR swapchain image count changed during enumeration");
-        }
-
-        resources.images.reserve(image_count);
-        resources.layered_views.reserve(image_count);
-        for (auto &views : resources.layer_views) {
-            views.reserve(image_count);
-        }
-        for (std::uint32_t image_index = 0;
-             image_index < image_count; ++image_index) {
-            const vk::Image image{
-                xr_images[image_index].image};
-            resources.images.push_back(image);
-            resources.layered_views.push_back(
-                createImageView(
-                    device, image, format, aspect,
-                    vk::ImageViewType::e2DArray, 0,
-                    xr_stereo_view_count));
-            for (std::uint32_t layer = 0;
-                 layer < xr_stereo_view_count; ++layer) {
-                resources.layer_views[layer].push_back(
-                    createImageView(
-                        device, image, format, aspect,
-                        vk::ImageViewType::e2D, layer, 1));
-            }
-
-            const auto base =
-                "xr/" + std::string{debug_name} +
-                "/swapchain/image/" +
-                std::to_string(image_index);
-            vulkan.getDebugUtils().nameImage(
-                image, (base + "/image").c_str());
-            vulkan.getDebugUtils().nameImageView(
-                resources.layered_views.back().get(),
-                (base + "/array-view").c_str());
-            for (std::uint32_t layer = 0;
-                 layer < xr_stereo_view_count; ++layer) {
-                vulkan.getDebugUtils().nameImageView(
-                    resources.layer_views[layer]
-                        .back()
-                        .get(),
-                    (base + "/layer/" +
-                     std::to_string(layer) + "/view")
-                        .c_str());
-            }
-        }
-    }
-
-    FrameRenderContext begin(
-        std::uint32_t command_slot,
-        std::uint32_t base_array_layer,
-        std::uint32_t array_layers,
-        XrCompositionAcquiredImages images,
-        std::uint32_t in_flight_frame_index) {
-        if (images.color >= color.images.size()) {
-            throw std::runtime_error(
-                "OpenXR acquired color image index is out of range");
-        }
-        if (images.depth &&
-            (*images.depth >= depth.images.size() ||
-             depth_format == vk::Format::eUndefined)) {
-            throw std::runtime_error(
-                "OpenXR acquired depth image index is out of range");
-        }
-        if (!images.depth &&
-            depth_format != vk::Format::eUndefined) {
-            throw std::runtime_error(
-                "OpenXR composition depth image was not acquired");
-        }
-
-        auto &cmd =
-            command(command_slot, in_flight_frame_index);
-        if (device.waitForFences(
-                {cmd.getFence()}, VK_TRUE, UINT64_MAX) !=
-            vk::Result::eSuccess) {
-            throw std::runtime_error(
-                "OpenXR composition command fence wait failed");
-        }
-        cmd.recordBegin();
-
-        std::vector<vk::ImageMemoryBarrier> barriers;
-        barriers.reserve(images.depth ? 2u : 1u);
-        vk::ImageMemoryBarrier color_barrier;
-        color_barrier.oldLayout =
-            vk::ImageLayout::eUndefined;
-        color_barrier.newLayout =
-            vk::ImageLayout::eColorAttachmentOptimal;
-        color_barrier.srcQueueFamilyIndex =
-            VK_QUEUE_FAMILY_IGNORED;
-        color_barrier.dstQueueFamilyIndex =
-            VK_QUEUE_FAMILY_IGNORED;
-        color_barrier.image = color.images[images.color];
-        color_barrier.subresourceRange = {
-            vk::ImageAspectFlagBits::eColor, 0, 1,
-            base_array_layer, array_layers};
-        color_barrier.dstAccessMask =
-            vk::AccessFlagBits::eColorAttachmentRead |
-            vk::AccessFlagBits::eColorAttachmentWrite;
-        barriers.push_back(color_barrier);
-
-        if (images.depth) {
-            vk::ImageMemoryBarrier depth_barrier;
-            depth_barrier.oldLayout =
-                vk::ImageLayout::eUndefined;
-            depth_barrier.newLayout =
-                vk::ImageLayout::eTransferDstOptimal;
-            depth_barrier.srcQueueFamilyIndex =
-                VK_QUEUE_FAMILY_IGNORED;
-            depth_barrier.dstQueueFamilyIndex =
-                VK_QUEUE_FAMILY_IGNORED;
-            depth_barrier.image =
-                depth.images[*images.depth];
-            depth_barrier.subresourceRange = {
-                depthLayoutAspect(depth_format), 0, 1,
-                base_array_layer, array_layers};
-            depth_barrier.dstAccessMask =
-                vk::AccessFlagBits::eTransferWrite;
-            barriers.push_back(depth_barrier);
-        }
-        cmd->pipelineBarrier(
-            vk::PipelineStageFlagBits::eTopOfPipe,
-            vk::PipelineStageFlagBits::eColorAttachmentOutput |
-                vk::PipelineStageFlagBits::eTransfer |
-                vk::PipelineStageFlagBits::eEarlyFragmentTests |
-                vk::PipelineStageFlagBits::eLateFragmentTests,
-            {}, {}, {}, barriers);
-
-        const vk::Viewport viewport{
-            0.0F, 0.0F,
-            static_cast<float>(extent.width),
-            static_cast<float>(extent.height),
-            0.0F, 1.0F};
-        cmd->setViewport(0, {viewport});
-        cmd->setScissor(
-            0, {vk::Rect2D{{0, 0}, extent}});
-
-        FrameRenderContext context{
-            .cmd_buf = *cmd,
-            .color_image = color.images[images.color],
-            .color_attachment =
-                array_layers == xr_stereo_view_count
-                    ? color.layered_views[images.color].get()
-                    : color.layer_views[base_array_layer]
-                          [images.color]
-                              .get(),
-            .color_base_array_layer =
-                base_array_layer,
-            .color_array_layers = array_layers,
-            .extent = extent,
-            .image_prepared_semaphore = {},
-            .required_layout = release_layout,
-            .in_flight_frame_index =
-                in_flight_frame_index,
-        };
-        if (array_layers == xr_stereo_view_count) {
-            context.color_layer_attachments.reserve(
-                xr_stereo_view_count);
-            for (std::uint32_t layer = 0;
-                 layer < xr_stereo_view_count; ++layer) {
-                context.color_layer_attachments.push_back(
-                    color.layer_views[layer]
-                        [images.color]
-                            .get());
-            }
-        }
-        if (images.depth) {
-            context.depth_image =
-                depth.images[*images.depth];
-            context.depth_attachment =
-                array_layers == xr_stereo_view_count
-                    ? depth.layered_views[*images.depth].get()
-                    : depth.layer_views[base_array_layer]
-                          [*images.depth]
-                              .get();
-            context.depth_base_array_layer =
-                base_array_layer;
-            context.depth_array_layers = array_layers;
-            context.depth_format = depth_format;
-            context.depth_copy_layout =
-                vk::ImageLayout::eTransferDstOptimal;
-            context.depth_required_layout =
-                vk::ImageLayout::
-                    eDepthStencilAttachmentOptimal;
-            if (array_layers ==
-                xr_stereo_view_count) {
-                context.depth_layer_attachments.reserve(
-                    xr_stereo_view_count);
-                for (std::uint32_t layer = 0;
-                     layer < xr_stereo_view_count;
-                     ++layer) {
-                    context.depth_layer_attachments.push_back(
-                        depth.layer_views[layer]
-                            [*images.depth]
-                                .get());
-                }
-            }
-        }
-        return context;
-    }
-
-  public:
-    explicit VulkanXrCompositionGraphics(VulkanManageCore &vulkan)
-        : vulkan{vulkan}, device{vulkan.getDevice()} {}
-
-    ~VulkanXrCompositionGraphics() override {
-        if (device) device.waitIdle();
-    }
-
-    void initialize(const XrCompositionGraphicsConfig &config) override {
-        if (config.enumerate_swapchain_images == nullptr) {
-            throw std::runtime_error(
-                "OpenXR composition graphics has no image enumeration function");
-        }
-        color_format = config.color_format;
-        depth_format = config.depth_format;
-        extent = config.extent;
-        release_layout = config.release_layout;
-        if (!config.extent.width || !config.extent.height ||
-            config.color_swapchain == XR_NULL_HANDLE ||
-            color_format == vk::Format::eUndefined) {
-            throw std::runtime_error(
-                "OpenXR composition graphics has an invalid array swapchain");
-        }
-        if ((config.depth_swapchain == XR_NULL_HANDLE) !=
-            (depth_format == vk::Format::eUndefined)) {
-            throw std::runtime_error(
-                "OpenXR composition depth swapchain contract is inconsistent");
-        }
-        command_buffers = vulkan.allocCmdBufs(
-            in_flight_frames_num *
-            command_slots_per_frame);
-        enumerateSwapchain(
-            config.enumerate_swapchain_images,
-            config.color_swapchain, color_format,
-            vk::ImageAspectFlagBits::eColor,
-            "color", color);
-        if (config.depth_swapchain != XR_NULL_HANDLE) {
-            enumerateSwapchain(
-                config.enumerate_swapchain_images,
-                config.depth_swapchain, depth_format,
-                vk::ImageAspectFlagBits::eDepth,
-                "depth", depth);
-        }
-    }
-
-    FrameRenderContext beginView(std::uint32_t view_index,
-                                 XrCompositionAcquiredImages images,
-                                 std::uint32_t in_flight_frame_index) override {
-        if (view_index >= xr_stereo_view_count) {
-            throw std::out_of_range(
-                "OpenXR composition view index is out of range");
-        }
-        return begin(
-            view_index, view_index, 1,
-            std::move(images), in_flight_frame_index);
-    }
-
-    FrameRenderContext beginViewFamily(
-        XrCompositionAcquiredImages images,
-        std::uint32_t in_flight_frame_index) override {
-        return begin(
-            view_family_command_slot, 0,
-            xr_stereo_view_count, std::move(images),
-            in_flight_frame_index);
-    }
-
-    void submitView(std::uint32_t view_index,
-                    std::uint32_t in_flight_frame_index) override {
-        command(view_index, in_flight_frame_index).recordEndSubmit();
-    }
-
-    void submitViewFamily(
-        std::uint32_t in_flight_frame_index) override {
-        command(view_family_command_slot,
-                in_flight_frame_index)
-            .recordEndSubmit();
-    }
-
-    void waitForSubmission(std::uint32_t view_index,
-                           std::uint32_t in_flight_frame_index) override {
-        const auto &fence = command(view_index, in_flight_frame_index).getFence();
-        if (device.waitForFences({fence}, VK_TRUE, UINT64_MAX) !=
-            vk::Result::eSuccess) {
-            throw std::runtime_error("OpenXR composition GPU submission failed to finish");
-        }
-    }
-
-    void waitForViewFamilySubmission(
-        std::uint32_t in_flight_frame_index) override {
-        const auto &fence =
-            command(view_family_command_slot,
-                    in_flight_frame_index)
-                .getFence();
-        if (device.waitForFences(
-                {fence}, VK_TRUE, UINT64_MAX) !=
-            vk::Result::eSuccess) {
-            throw std::runtime_error(
-                "OpenXR composition view-family GPU submission failed to finish");
-        }
-    }
+// The frame protocol is a ladder, not a set of independent conditions.  Two
+// branches leave `logical_begun`: the sequential one records one eye at a time
+// and reaches `views_recorded` once both view commands are submitted, the
+// view-family one records both layers in a single command
+// (`view_family_begun` -> `view_family_ended`).  Both branches rejoin at
+// `submitted`, from which publication resets the frame.  Every stage may fall
+// back to `idle`, which is what a reset (successful publication) or an abort
+// does.
+enum class FrameStage : std::uint8_t {
+    idle,
+    prepared,
+    logical_begun,
+    views_recorded,
+    view_family_begun,
+    view_family_ended,
+    submitted,
 };
 
-std::unique_ptr<IXrCompositionGraphics>
-makeProductionGraphics(const XrCompositionDependencies &dependencies) {
-    if (dependencies.vulkan == nullptr) {
-        throw std::runtime_error(
-            "OpenXR composition production target requires VulkanManageCore");
+std::string_view frameStageName(FrameStage stage) {
+    switch (stage) {
+    case FrameStage::idle:
+        return "idle";
+    case FrameStage::prepared:
+        return "prepared";
+    case FrameStage::logical_begun:
+        return "logical_begun";
+    case FrameStage::views_recorded:
+        return "views_recorded";
+    case FrameStage::view_family_begun:
+        return "view_family_begun";
+    case FrameStage::view_family_ended:
+        return "view_family_ended";
+    case FrameStage::submitted:
+        return "submitted";
     }
-    return std::make_unique<VulkanXrCompositionGraphics>(*dependencies.vulkan);
+    return "unknown";
+}
+
+bool frameStageMoveIsLegal(FrameStage from, FrameStage to) {
+    // Resetting the frame is legal from anywhere: it is what publication and
+    // abort both end with.  Those two paths are noexcept and assign `idle`
+    // directly, so this edge exists for completeness of the rule rather than
+    // for a caller.
+    if (to == FrameStage::idle) return true;
+    switch (from) {
+    case FrameStage::idle:
+        return to == FrameStage::prepared;
+    case FrameStage::prepared:
+        return to == FrameStage::logical_begun;
+    case FrameStage::logical_begun:
+        return to == FrameStage::views_recorded ||
+               to == FrameStage::view_family_begun;
+    case FrameStage::views_recorded:
+        return to == FrameStage::submitted;
+    case FrameStage::view_family_begun:
+        return to == FrameStage::view_family_ended;
+    case FrameStage::view_family_ended:
+        return to == FrameStage::submitted;
+    case FrameStage::submitted:
+        return false;
+    }
+    return false;
+}
+
+void requireFrameStageMove(FrameStage from, FrameStage to) {
+    if (frameStageMoveIsLegal(from, to)) return;
+    throw std::logic_error(
+        std::string{"OpenXR composition frame stage cannot move from "} +
+        std::string{frameStageName(from)} + " to " +
+        std::string{frameStageName(to)});
 }
 
 } // namespace
@@ -503,14 +154,27 @@ class XrCompositionTarget::Impl {
     float far_z = 1000.0F;
     std::uint32_t in_flight_frame_index = 0;
     std::uint32_t next_view = 0;
-    bool frame_prepared = false;
-    bool logical_frame_begun = false;
-    bool logical_frame_submitted = false;
-    bool view_family_begun = false;
-    bool view_family_ended = false;
-    bool view_family_submission_complete = false;
+    FrameStage stage = FrameStage::idle;
+    // Orthogonal to the stage: which resources this frame touches, decided by
+    // the compiled graph before the logical frame begins and unchanged by any
+    // stage move.  Reset per frame with the stage.
     bool depth_submission_active = false;
+    // Orthogonal to the stage: a generation-level latch.  It survives the
+    // frame reset (a frame protocol violation is per frame, a lost runtime or
+    // a stranded acquired image is not) and is the only flag a caller can
+    // observe through generationTeardownRequired().
     bool teardown_required = false;
+
+    void advanceStage(FrameStage to) {
+        requireFrameStageMove(stage, to);
+        stage = to;
+    }
+
+    // `logical_begun` and everything after it means beginLogicalFrame() has
+    // run and the acquired image has not been handed back yet.
+    bool logicalFrameBegun() const noexcept {
+        return stage >= FrameStage::logical_begun;
+    }
 
     void resolveApi() {
         const auto instance = session_runtime.instanceHandle();
@@ -723,13 +387,8 @@ class XrCompositionTarget::Impl {
     }
 
     void resetFrameFlags() noexcept {
-        frame_prepared = false;
-        logical_frame_begun = false;
-        logical_frame_submitted = false;
+        stage = FrameStage::idle;
         next_view = 0;
-        view_family_begun = false;
-        view_family_ended = false;
-        view_family_submission_complete = false;
         depth_submission_active = false;
         display_timing.reset();
         located_views = {};
@@ -767,17 +426,25 @@ class XrCompositionTarget::Impl {
 
     void abortFrame() noexcept {
         bool all_submissions_complete = true;
-        if (view_family_ended &&
-            !view_family_submission_complete) {
+        switch (stage) {
+        case FrameStage::view_family_ended:
+            // The single family command was submitted but never waited on.
             try {
                 graphics->waitForViewFamilySubmission(
                     in_flight_frame_index);
-                view_family_submission_complete = true;
             } catch (...) {
                 teardown_required = true;
                 all_submissions_complete = false;
             }
-        } else {
+            break;
+        case FrameStage::idle:
+        case FrameStage::prepared:
+        case FrameStage::logical_begun:
+        case FrameStage::views_recorded:
+        case FrameStage::view_family_begun:
+        case FrameStage::submitted:
+            // Per-view submissions can be partially complete: one eye may have
+            // been submitted, or waited on, while the other threw.
             for (std::uint32_t view_index = 0;
                  view_index < xr_stereo_view_count;
                  ++view_index) {
@@ -796,6 +463,7 @@ class XrCompositionTarget::Impl {
                     all_submissions_complete = false;
                 }
             }
+            break;
         }
 
         const auto release_if_legal =
@@ -873,7 +541,7 @@ class XrCompositionTarget::Impl {
 
   public:
     void abortLogicalFrame() noexcept {
-        if (!frame_prepared && !logical_frame_begun &&
+        if (stage == FrameStage::idle &&
             !display_timing.has_value()) {
             return;
         }
@@ -953,7 +621,7 @@ class XrCompositionTarget::Impl {
             throw std::logic_error(
                 "OpenXR composition generation requires teardown");
         }
-        if (frame_prepared || logical_frame_begun) {
+        if (stage != FrameStage::idle) {
             throw std::logic_error(
                 "OpenXR composition frame was prepared more than once");
         }
@@ -972,11 +640,11 @@ class XrCompositionTarget::Impl {
         located_views = new_views;
         near_z = new_near_z;
         far_z = new_far_z;
-        frame_prepared = true;
+        advanceStage(FrameStage::prepared);
     }
 
     void endFrameWithoutLayers(const XrDisplayTiming &timing) {
-        if (frame_prepared || logical_frame_begun) {
+        if (stage != FrameStage::idle) {
             throw std::logic_error(
                 "OpenXR zero-layer close requires an unprepared frame");
         }
@@ -986,7 +654,7 @@ class XrCompositionTarget::Impl {
     bool configureExternalDepthSubmission(
         vk::Format source_format,
         vk::Extent2D source_extent) {
-        if (logical_frame_begun) {
+        if (logicalFrameBegun()) {
             throw std::logic_error(
                 "OpenXR composition depth cannot be reconfigured "
                 "during a logical frame");
@@ -1000,7 +668,7 @@ class XrCompositionTarget::Impl {
     }
 
     void beginLogicalFrame(std::uint32_t view_count) {
-        if (!frame_prepared || logical_frame_begun ||
+        if (stage != FrameStage::prepared ||
             view_count != xr_stereo_view_count) {
             throw std::logic_error(
                 "OpenXR composition requires one prepared two-view logical frame");
@@ -1027,7 +695,7 @@ class XrCompositionTarget::Impl {
             view.view_ended = false;
             view.submission_complete = false;
         }
-        logical_frame_begun = true;
+        advanceStage(FrameStage::logical_begun);
         next_view = 0;
         try {
             acquireAndWait(color);
@@ -1041,12 +709,11 @@ class XrCompositionTarget::Impl {
     }
 
     FrameRenderContext beginView(std::uint32_t view_index) {
-        if (!logical_frame_begun || view_index != next_view ||
+        if (stage != FrameStage::logical_begun || view_index != next_view ||
             view_index >= xr_stereo_view_count ||
             color.state != XrSwapchainState::waited ||
             (depth_submission_active &&
              depth.state != XrSwapchainState::waited) ||
-            view_family_begun ||
             views[view_index].view_begun) {
             throw std::logic_error("OpenXR composition view begin is out of order");
         }
@@ -1065,9 +732,9 @@ class XrCompositionTarget::Impl {
 
     FrameRenderContext beginViewFamily(
         std::uint32_t view_count) {
-        if (!logical_frame_begun ||
+        if (stage != FrameStage::logical_begun ||
             view_count != xr_stereo_view_count ||
-            next_view != 0 || view_family_begun ||
+            next_view != 0 ||
             color.state != XrSwapchainState::waited ||
             (depth_submission_active &&
              depth.state != XrSwapchainState::waited)) {
@@ -1079,7 +746,7 @@ class XrCompositionTarget::Impl {
                 graphics->beginViewFamily(
                     acquiredImages(),
                     in_flight_frame_index);
-            view_family_begun = true;
+            advanceStage(FrameStage::view_family_begun);
             return context;
         } catch (...) {
             teardown_required = true;
@@ -1104,10 +771,9 @@ class XrCompositionTarget::Impl {
     void endView(
         std::uint32_t view_index,
         GpuSubmissionLease lease) {
-        if (!logical_frame_begun || view_index != next_view ||
+        if (stage != FrameStage::logical_begun || view_index != next_view ||
             view_index >= xr_stereo_view_count ||
             !views[view_index].view_begun || views[view_index].view_ended ||
-            view_family_begun ||
             color.state != XrSwapchainState::waited) {
             throw std::logic_error("OpenXR composition view end is out of order");
         }
@@ -1128,6 +794,8 @@ class XrCompositionTarget::Impl {
                 if (depth_submission_active) {
                     depth.state = XrSwapchainState::waited;
                 }
+            } else {
+                advanceStage(FrameStage::views_recorded);
             }
         } catch (...) {
             teardown_required = true;
@@ -1138,9 +806,7 @@ class XrCompositionTarget::Impl {
 
     void endViewFamily(
         GpuSubmissionLease lease) {
-        if (!logical_frame_begun ||
-            !view_family_begun ||
-            view_family_ended || next_view != 0 ||
+        if (stage != FrameStage::view_family_begun || next_view != 0 ||
             color.state != XrSwapchainState::waited) {
             throw std::logic_error(
                 "OpenXR composition view-family end is out of order");
@@ -1149,7 +815,7 @@ class XrCompositionTarget::Impl {
             graphics->submitViewFamily(
                 in_flight_frame_index);
             retainSubmissionLease(std::move(lease));
-            view_family_ended = true;
+            advanceStage(FrameStage::view_family_ended);
             next_view = xr_stereo_view_count;
             color.state = XrSwapchainState::submitted;
             if (depth_submission_active) {
@@ -1163,16 +829,20 @@ class XrCompositionTarget::Impl {
     }
 
     void submitLogicalFrame(GpuSubmissionLease lease) {
-        if (!logical_frame_begun || next_view != xr_stereo_view_count) {
+        if (!logicalFrameBegun() || next_view != xr_stereo_view_count) {
             throw std::logic_error(
                 "OpenXR composition logical frame ended before both submissions");
         }
+        // Checked before the waits so that a repeated submission is rejected
+        // instead of waiting on the same fences twice.  The stage itself only
+        // advances once the waits have succeeded, because abortFrame() reads
+        // it to decide which submissions still have to be drained.
+        requireFrameStageMove(stage, FrameStage::submitted);
         retainSubmissionLease(std::move(lease));
         try {
-            if (view_family_ended) {
+            if (stage == FrameStage::view_family_ended) {
                 graphics->waitForViewFamilySubmission(
                     in_flight_frame_index);
-                view_family_submission_complete = true;
             } else {
                 for (std::uint32_t view = 0;
                      view < xr_stereo_view_count;
@@ -1182,7 +852,7 @@ class XrCompositionTarget::Impl {
                     views[view].submission_complete = true;
                 }
             }
-            logical_frame_submitted = true;
+            advanceStage(FrameStage::submitted);
         } catch (...) {
             abortFrame();
             throw;
@@ -1190,7 +860,7 @@ class XrCompositionTarget::Impl {
     }
 
     void publishLogicalFrame() {
-        if (!logical_frame_begun || !logical_frame_submitted) {
+        if (stage != FrameStage::submitted) {
             throw std::logic_error(
                 "OpenXR composition publish requires successful submission");
         }

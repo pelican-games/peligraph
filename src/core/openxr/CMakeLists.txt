@@ -1,5 +1,6 @@
 add_library(pelican_openxr STATIC
     openxraction.cpp
+    openxrcompositiongraphics.cpp
     openxrcompositiontarget.cpp
     openxrdiscovery.cpp
     openxrmirrorsink.cpp

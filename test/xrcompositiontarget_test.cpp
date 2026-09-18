@@ -741,6 +741,35 @@ TEST_CASE("WP384 OpenXR retains a submitted generation through publication",
     CHECK(observed.expired());
 }
 
+TEST_CASE("OpenXR composition rejects a repeated logical frame submission",
+          "[openxr][composition][frame-stage]") {
+    FakeRuntime fake;
+    FakeScope scope{fake};
+    Pelican::OpenXr::SessionRuntime session{sessionDependencies()};
+    makeReady(fake, session);
+    Pelican::OpenXr::XrCompositionTarget target{
+        compositionDependencies(session), std::make_unique<FakeGraphics>()};
+    auto frame = beginFrame(fake, session);
+    target.prepareFrame(frame.timing, frame.views);
+    submitBoth(target);
+    target.submitLogicalFrame();
+    const auto after_first_submission = fake.calls;
+
+    // The frame stage machine names both ends of the illegal move, and the
+    // rejected call must not wait on the same fences a second time.
+    CHECK_THROWS_WITH(target.submitLogicalFrame(),
+                      Catch::Matchers::ContainsSubstring(
+                          "cannot move from submitted to submitted"));
+    CHECK(fake.calls == after_first_submission);
+    CHECK_FALSE(target.generationTeardownRequired());
+
+    // The rejection left the frame publishable: nothing was unwound.
+    target.publishLogicalFrame();
+    CHECK(fake.saw_projection_layer);
+    CHECK(target.swapchainState(0) ==
+          Pelican::OpenXr::XrSwapchainState::released);
+}
+
 TEST_CASE("OpenXR swapchain wait timeout retries the same acquired image",
           "[openxr][composition][timeout]") {
     for (const bool with_depth : {false, true}) {
