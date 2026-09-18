@@ -562,6 +562,132 @@ TEST_CASE("WP167 live behavior edits preserve identity lifecycle and temporal vi
     REQUIRE(GameObjects::remove(entity));
 }
 
+TEST_CASE("Editor behavior edit batches apply every params update and invert them in reverse",
+          "[behavior][editor][attachment][params][rollback][transaction]") {
+    FastModuleContainer modules;
+    initializeBehaviorTestModules();
+    auto &arena = GET_MODULE(BehaviorAttachmentArena);
+    const auto entity = createEmptyEntity();
+    const auto ordered = arena.reserveRuntimeAttachmentIdentity(20, 0, 0);
+    const auto faulted = arena.reserveRuntimeAttachmentIdentity(20, 0, 1);
+    const auto added = arena.reserveRuntimeAttachmentIdentity(20, 0, 2);
+    GameContext ctx;
+
+    const auto component = [](std::string_view type, std::string_view label) {
+        return nlohmann::json{{"name", "behavior"},
+                              {"type", type},
+                              {"params", {{"label", label}}}};
+    };
+    const auto attach = [&](const BehaviorAttachmentIdentity &identity,
+                            std::string_view type, std::size_t component_index,
+                            std::string_view label) {
+        const auto raw = component(type, label);
+        return BehaviorAttachmentEdit{
+            .kind = BehaviorAttachmentEditKind::attach,
+            .entity = entity,
+            .component_index = component_index,
+            .identity = identity,
+            .stable_name = std::string{type},
+            .canonical_params =
+                internal::canonicalizeBehaviorParams(type, raw.at("params")),
+            .raw_component = raw,
+        };
+    };
+    const auto set_params = [&](const BehaviorAttachmentIdentity &identity,
+                                std::string_view type,
+                                std::size_t component_index,
+                                std::string_view label) {
+        const auto raw = component(type, label);
+        return BehaviorAttachmentEdit{
+            .kind = BehaviorAttachmentEditKind::set_params,
+            .entity = entity,
+            .component_index = component_index,
+            .identity = identity,
+            .canonical_params =
+                internal::canonicalizeBehaviorParams(type, raw.at("params")),
+            .raw_component = raw,
+        };
+    };
+    const auto infoFor = [&](BehaviorAttachmentHandle handle) {
+        for (const auto &attachment : arena.snapshot()) {
+            if (attachment.handle == handle) return attachment;
+        }
+        FAIL("behavior attachment disappeared");
+        return BehaviorAttachmentInfo{};
+    };
+
+    auto attached = arena.prepareEditorEdits(
+        {attach(ordered, "wp155_order", 0, "base"),
+         attach(faulted, "wp155_throw_init", 1, "fault")},
+        BehaviorRegistryAvailability::active);
+    attached->publish();
+    attached->finish();
+    trace.clear();
+    arena.update(ctx);
+    arena.update(ctx);
+    REQUIRE(trace ==
+            std::vector<std::string>{"init:base", "throw:init", "B:update:base"});
+    REQUIRE(arena.deferredMutationCountForTesting() == 0);
+    REQUIRE(infoFor(faulted.handle).activation_failed);
+    REQUIRE(infoFor(faulted.handle).activation_error == "wp155 activation fault");
+    REQUIRE(infoFor(faulted.handle).activation_delay == 0);
+
+    // Two updates for one handle in a single batch: publication applies every
+    // update, in order, so the live instance ends on the last one.
+    auto edited = arena.prepareEditorEdits(
+        {set_params(ordered, "wp155_order", 0, "first"),
+         set_params(ordered, "wp155_order", 0, "second")},
+        BehaviorRegistryAvailability::active);
+    edited->publish();
+    edited->finish();
+    trace.clear();
+    arena.update(ctx);
+    REQUIRE(trace == std::vector<std::string>{"B:update:second"});
+
+    // The inverse token is exact: the two updates unwind in reverse, so the
+    // live params return to "second" rather than to the intermediate "third",
+    // and the recorded activation failure comes back with them.
+    auto rolled_back = arena.prepareEditorEdits(
+        {set_params(ordered, "wp155_order", 0, "third"),
+         set_params(ordered, "wp155_order", 0, "fourth"),
+         set_params(faulted, "wp155_throw_init", 1, "retry")},
+        BehaviorRegistryAvailability::active);
+    rolled_back->publish();
+    REQUIRE_FALSE(infoFor(faulted.handle).activation_failed);
+    REQUIRE(infoFor(faulted.handle).activation_error.empty());
+    REQUIRE(infoFor(faulted.handle).activation_delay == 1);
+    trace.clear();
+    rolled_back->rollback();
+    REQUIRE(trace.empty());
+    REQUIRE(infoFor(faulted.handle).activation_failed);
+    REQUIRE(infoFor(faulted.handle).activation_error == "wp155 activation fault");
+    REQUIRE(infoFor(faulted.handle).activation_delay == 0);
+    REQUIRE(infoFor(ordered.handle).canonical_params == R"({"label":"second"})");
+    arena.update(ctx);
+    REQUIRE(trace == std::vector<std::string>{"B:update:second"});
+
+    // A handle attached inside this very batch is not retained from the live
+    // vector, so it is absent from the transaction's reused set; its params
+    // update must still reach the instance the attach edit created.
+    auto grown = arena.prepareEditorEdits(
+        {attach(added, "wp155_order", 2, "fresh"),
+         set_params(added, "wp155_order", 2, "fresh_edited")},
+        BehaviorRegistryAvailability::active);
+    grown->publish();
+    grown->finish();
+    trace.clear();
+    arena.update(ctx);
+    REQUIRE(trace == std::vector<std::string>{"B:update:second"});
+    trace.clear();
+    arena.update(ctx);
+    REQUIRE(trace == std::vector<std::string>{"init:fresh_edited",
+                                              "B:update:second",
+                                              "B:update:fresh_edited"});
+
+    arena.deactivateAll();
+    REQUIRE(GameObjects::remove(entity));
+}
+
 TEST_CASE("Structural removal during a behavior callback waits for the next boundary",
           "[behavior][mutation][snapshot]") {
     FastModuleContainer modules;

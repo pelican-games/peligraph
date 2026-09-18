@@ -115,6 +115,8 @@ struct BehaviorAttachmentEdit {
     nlohmann::json raw_component;
 };
 
+struct BehaviorAttachmentTransaction;
+
 class PreparedBehaviorAttachmentEdits {
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -175,6 +177,7 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
     friend class BehaviorCallbackScope;
     friend class PreparedBehaviorAttachmentEdits;
     friend class PreparedBehaviorSceneReconciliation;
+    friend struct BehaviorAttachmentTransaction;
 
     struct Attachment {
         BehaviorAttachmentInfo info;

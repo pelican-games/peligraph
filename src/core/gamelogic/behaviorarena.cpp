@@ -275,7 +275,13 @@ const BehaviorAttachmentArena::Attachment *BehaviorAttachmentArena::findAttachme
     return found == attachments.end() ? nullptr : &*found;
 }
 
-struct PreparedBehaviorAttachmentEdits::Impl {
+// The prepare / publish / rollback / finish machinery shared by the editor
+// edit batch (`PreparedBehaviorAttachmentEdits`) and the scene reconciliation
+// (`PreparedBehaviorSceneReconciliation`). Both users stage a complete next
+// vector, publish it with one swap, and keep the complete old vector as the
+// inverse token. The publish and rollback rules below are one rule, not two,
+// so an ordering fix reaches both paths.
+struct BehaviorAttachmentTransaction {
     struct ParamsUpdate {
         BehaviorAttachmentHandle handle = invalidBehaviorAttachmentHandle;
         internal::RawBehaviorParams params;
@@ -297,6 +303,17 @@ struct PreparedBehaviorAttachmentEdits::Impl {
     bool published = false;
     bool finished = false;
 
+    static BehaviorAttachmentArena::Attachment *findByHandle(
+        std::vector<BehaviorAttachmentArena::Attachment> &vector,
+        BehaviorAttachmentHandle handle) noexcept {
+        const auto found = std::find_if(
+            vector.begin(), vector.end(),
+            [handle](const BehaviorAttachmentArena::Attachment &attachment) {
+                return attachment.info.handle == handle;
+            });
+        return found == vector.end() ? nullptr : &*found;
+    }
+
     static void transferRuntime(BehaviorAttachmentArena::Attachment &from,
                                 BehaviorAttachmentArena::Attachment &to) noexcept {
         to.instance = std::exchange(from.instance, {});
@@ -312,6 +329,15 @@ struct PreparedBehaviorAttachmentEdits::Impl {
         to.info.owner = from.info.owner;
     }
 
+    // Two ordering rules bind every user of this transaction:
+    //   * `swapParamsAndActivation` must run before `transferRuntime` for the
+    //     same handle. `transferRuntime` moves the very activation fields this
+    //     swaps, so the reverse order restores them into the entry that is
+    //     about to be discarded, and leaves `instance.params` null so the
+    //     params half is skipped outright.
+    //   * updates invert in reverse insertion order. `apply_params` swaps the
+    //     live and the prepared value rather than assigning it, so a handle
+    //     carrying several updates unwinds as a swap chain.
     static void swapParamsAndActivation(
         BehaviorAttachmentArena::Attachment &attachment,
         ParamsUpdate &update) noexcept {
@@ -349,10 +375,68 @@ struct PreparedBehaviorAttachmentEdits::Impl {
         detached.clear();
     }
 
-    ~Impl() {
+    // Move every retained runtime instance into the prepared vector, then
+    // apply every params update to the prepared entry that is about to become
+    // live (an update whose handle is absent, because a later edit in the
+    // same batch removed it, is skipped), then swap the prepared vector in.
+    void publishCore() noexcept {
+        auto &live = arena->attachments;
+        for (const auto handle : reused) {
+            auto *old = findByHandle(live, handle);
+            auto *next = findByHandle(detached, handle);
+            if (old != nullptr && next != nullptr) {
+                transferRuntime(*old, *next);
+            }
+        }
+        for (auto &update : params_updates) {
+            if (auto *next = findByHandle(detached, update.handle)) {
+                swapParamsAndActivation(*next, update);
+            }
+        }
+        live.swap(detached);
+        published = true;
+    }
+
+    // The exact inverse of `publishCore`: undo every params update in reverse
+    // insertion order, move every retained runtime instance back, then swap
+    // the old vector in.
+    void rollbackCore() noexcept {
+        if (published) {
+            auto &live = arena->attachments;
+            for (auto update = params_updates.rbegin();
+                 update != params_updates.rend(); ++update) {
+                if (auto *current = findByHandle(live, update->handle)) {
+                    swapParamsAndActivation(*current, *update);
+                }
+            }
+            for (const auto handle : reused) {
+                auto *current = findByHandle(live, handle);
+                auto *old = findByHandle(detached, handle);
+                if (current != nullptr && old != nullptr) {
+                    transferRuntime(*current, *old);
+                }
+            }
+            live.swap(detached);
+        }
+        destroyDetached(false);
+        releasePreparedParams();
+        finished = true;
+    }
+
+    void finishCore() noexcept {
+        destroyDetached(published);
+        releasePreparedParams();
+        finished = true;
+    }
+
+    ~BehaviorAttachmentTransaction() {
         releasePreparedParams();
         if (!finished) destroyDetached(false);
     }
+};
+
+struct PreparedBehaviorAttachmentEdits::Impl {
+    BehaviorAttachmentTransaction tx;
 };
 
 void refreshSceneAttachmentSequence(BehaviorAttachmentInfo &info) noexcept {
@@ -373,81 +457,18 @@ PreparedBehaviorAttachmentEdits &PreparedBehaviorAttachmentEdits::operator=(
     PreparedBehaviorAttachmentEdits &&) noexcept = default;
 
 void PreparedBehaviorAttachmentEdits::publish() noexcept {
-    if (!impl_ || impl_->published || impl_->finished) return;
-    auto &arena = *impl_->arena;
-    for (const auto handle : impl_->reused) {
-        const auto old = std::find_if(
-            arena.attachments.begin(), arena.attachments.end(),
-            [handle](const auto &attachment) {
-                return attachment.info.handle == handle;
-            });
-        const auto next = std::find_if(
-            impl_->detached.begin(), impl_->detached.end(),
-            [handle](const auto &attachment) {
-                return attachment.info.handle == handle;
-            });
-        if (old != arena.attachments.end() &&
-            next != impl_->detached.end()) {
-            Impl::transferRuntime(*old, *next);
-        }
-    }
-    for (auto &update : impl_->params_updates) {
-        const auto next = std::find_if(
-            impl_->detached.begin(), impl_->detached.end(),
-            [&](const auto &attachment) {
-                return attachment.info.handle == update.handle;
-            });
-        if (next != impl_->detached.end()) {
-            Impl::swapParamsAndActivation(*next, update);
-        }
-    }
-    arena.attachments.swap(impl_->detached);
-    impl_->published = true;
+    if (!impl_ || impl_->tx.published || impl_->tx.finished) return;
+    impl_->tx.publishCore();
 }
 
 void PreparedBehaviorAttachmentEdits::rollback() noexcept {
-    if (!impl_ || impl_->finished) return;
-    auto &arena = *impl_->arena;
-    if (impl_->published) {
-        for (auto update = impl_->params_updates.rbegin();
-             update != impl_->params_updates.rend(); ++update) {
-            const auto current = std::find_if(
-                arena.attachments.begin(), arena.attachments.end(),
-                [&](const auto &attachment) {
-                    return attachment.info.handle == update->handle;
-                });
-            if (current != arena.attachments.end()) {
-                Impl::swapParamsAndActivation(*current, *update);
-            }
-        }
-        for (const auto handle : impl_->reused) {
-            const auto current = std::find_if(
-                arena.attachments.begin(), arena.attachments.end(),
-                [handle](const auto &attachment) {
-                    return attachment.info.handle == handle;
-                });
-            const auto old = std::find_if(
-                impl_->detached.begin(), impl_->detached.end(),
-                [handle](const auto &attachment) {
-                    return attachment.info.handle == handle;
-                });
-            if (current != arena.attachments.end() &&
-                old != impl_->detached.end()) {
-                Impl::transferRuntime(*current, *old);
-            }
-        }
-        arena.attachments.swap(impl_->detached);
-    }
-    impl_->destroyDetached(false);
-    impl_->releasePreparedParams();
-    impl_->finished = true;
+    if (!impl_ || impl_->tx.finished) return;
+    impl_->tx.rollbackCore();
 }
 
 void PreparedBehaviorAttachmentEdits::finish() noexcept {
-    if (!impl_ || impl_->finished) return;
-    impl_->destroyDetached(impl_->published);
-    impl_->releasePreparedParams();
-    impl_->finished = true;
+    if (!impl_ || impl_->tx.finished) return;
+    impl_->tx.finishCore();
 }
 
 namespace {
@@ -501,94 +522,13 @@ bool sameSceneBehaviorOrigin(const ResolvedComponentOrigin &left,
 } // namespace
 
 struct PreparedBehaviorSceneReconciliation::Impl {
-    struct ParamsUpdate {
-        BehaviorAttachmentHandle handle = invalidBehaviorAttachmentHandle;
-        internal::RawBehaviorParams params;
-        internal::BehaviorApplyPreparedParamsFn apply_params = nullptr;
-        internal::BehaviorDestroyPreparedParamsFn destroy_params = nullptr;
-        bool activation_failed = false;
-        std::string activation_error;
-        std::uint8_t activation_delay = 0;
-    };
-
-    BehaviorAttachmentArena *arena = nullptr;
-    std::vector<BehaviorAttachmentArena::Attachment> detached;
-    std::vector<BehaviorAttachmentHandle> reused;
-    std::vector<ParamsUpdate> params_updates;
+    BehaviorAttachmentTransaction tx;
     std::uint64_t old_next_handle = 1;
     std::uint64_t old_next_attachment_seq = 1;
     std::uint64_t next_handle = 1;
     std::uint64_t next_attachment_seq = 1;
     std::vector<std::size_t> activated;
     std::size_t deferred_base = 0;
-    bool published = false;
-    bool finished = false;
-
-    static void transferRuntime(BehaviorAttachmentArena::Attachment &from,
-                                BehaviorAttachmentArena::Attachment &to) noexcept {
-        to.instance = std::exchange(from.instance, {});
-        to.destroy = std::exchange(from.destroy, nullptr);
-        to.initialized = std::exchange(from.initialized, false);
-        to.info.activation_delay =
-            std::exchange(from.info.activation_delay, 0);
-        to.info.active = std::exchange(from.info.active, false);
-        to.info.activation_failed =
-            std::exchange(from.info.activation_failed, false);
-        to.info.activation_error = std::move(from.info.activation_error);
-        from.info.activation_error.clear();
-        to.info.owner = from.info.owner;
-    }
-
-    ParamsUpdate *findParamsUpdate(BehaviorAttachmentHandle handle) noexcept {
-        const auto found = std::find_if(
-            params_updates.begin(), params_updates.end(),
-            [handle](const ParamsUpdate &update) {
-                return update.handle == handle;
-            });
-        return found == params_updates.end() ? nullptr : &*found;
-    }
-
-    static void swapParamsAndActivation(
-        BehaviorAttachmentArena::Attachment &attachment,
-        ParamsUpdate &update) noexcept {
-        if (attachment.instance.params != nullptr &&
-            update.params.value != nullptr) {
-            update.apply_params(attachment.instance.params, update.params);
-        }
-        using std::swap;
-        swap(attachment.info.activation_failed, update.activation_failed);
-        attachment.info.activation_error.swap(update.activation_error);
-        swap(attachment.info.activation_delay, update.activation_delay);
-    }
-
-    void releasePreparedParams() noexcept {
-        for (auto &update : params_updates) {
-            if (update.params.value != nullptr &&
-                update.destroy_params != nullptr) {
-                update.destroy_params(update.params);
-            }
-        }
-    }
-
-    void destroyDetached(bool callbacks) noexcept {
-        if (arena == nullptr) return;
-        for (auto it = detached.rbegin(); it != detached.rend(); ++it) {
-            if (callbacks) {
-                arena->destroyInstance(*it, true);
-            } else if (it->instance.behavior != nullptr &&
-                       it->destroy != nullptr) {
-                it->destroy(it->instance);
-                it->destroy = nullptr;
-                it->instance = {};
-            }
-        }
-        detached.clear();
-    }
-
-    ~Impl() {
-        releasePreparedParams();
-        if (!finished) destroyDetached(false);
-    }
 };
 
 PreparedBehaviorSceneReconciliation::PreparedBehaviorSceneReconciliation(
@@ -603,31 +543,11 @@ PreparedBehaviorSceneReconciliation::operator=(
     PreparedBehaviorSceneReconciliation &&) noexcept = default;
 
 void PreparedBehaviorSceneReconciliation::publish() noexcept {
-    if (!impl_ || impl_->published || impl_->finished) return;
-    auto &arena = *impl_->arena;
-    for (const auto handle : impl_->reused) {
-        const auto old = std::find_if(
-            arena.attachments.begin(), arena.attachments.end(),
-            [handle](const auto &attachment) {
-                return attachment.info.handle == handle;
-            });
-        const auto next = std::find_if(
-            impl_->detached.begin(), impl_->detached.end(),
-            [handle](const auto &attachment) {
-                return attachment.info.handle == handle;
-            });
-        if (old != arena.attachments.end() &&
-            next != impl_->detached.end()) {
-            Impl::transferRuntime(*old, *next);
-            if (auto *update = impl_->findParamsUpdate(handle)) {
-                Impl::swapParamsAndActivation(*next, *update);
-            }
-        }
-    }
-    arena.attachments.swap(impl_->detached);
+    if (!impl_ || impl_->tx.published || impl_->tx.finished) return;
+    impl_->tx.publishCore();
+    auto &arena = *impl_->tx.arena;
     arena.next_handle = impl_->next_handle;
     arena.next_attachment_seq = impl_->next_attachment_seq;
-    impl_->published = true;
 }
 
 void PreparedBehaviorSceneReconciliation::publish(
@@ -637,11 +557,11 @@ void PreparedBehaviorSceneReconciliation::publish(
 }
 
 void PreparedBehaviorSceneReconciliation::activate() {
-    if (!impl_ || !impl_->published || impl_->finished) {
+    if (!impl_ || !impl_->tx.published || impl_->tx.finished) {
         throw std::logic_error(
             "behavior scene reconciliation is not published");
     }
-    auto &arena = *impl_->arena;
+    auto &arena = *impl_->tx.arena;
     impl_->deferred_base = arena.deferred_mutations.size();
     impl_->activated.clear();
     try {
@@ -689,42 +609,19 @@ void PreparedBehaviorSceneReconciliation::activate(
 }
 
 void PreparedBehaviorSceneReconciliation::rollback() noexcept {
-    if (!impl_ || impl_->finished) return;
-    auto &arena = *impl_->arena;
-    if (impl_->published) {
-        for (const auto handle : impl_->reused) {
-            const auto current = std::find_if(
-                arena.attachments.begin(), arena.attachments.end(),
-                [handle](const auto &attachment) {
-                    return attachment.info.handle == handle;
-                });
-            const auto old = std::find_if(
-                impl_->detached.begin(), impl_->detached.end(),
-                [handle](const auto &attachment) {
-                    return attachment.info.handle == handle;
-                });
-            if (current != arena.attachments.end() &&
-                old != impl_->detached.end()) {
-                if (auto *update = impl_->findParamsUpdate(handle)) {
-                    Impl::swapParamsAndActivation(*current, *update);
-                }
-                Impl::transferRuntime(*current, *old);
-            }
-        }
-        arena.attachments.swap(impl_->detached);
+    if (!impl_ || impl_->tx.finished) return;
+    const auto was_published = impl_->tx.published;
+    impl_->tx.rollbackCore();
+    if (was_published) {
+        auto &arena = *impl_->tx.arena;
         arena.next_handle = impl_->old_next_handle;
         arena.next_attachment_seq = impl_->old_next_attachment_seq;
     }
-    impl_->destroyDetached(false);
-    impl_->releasePreparedParams();
-    impl_->finished = true;
 }
 
 void PreparedBehaviorSceneReconciliation::finish() noexcept {
-    if (!impl_ || impl_->finished) return;
-    impl_->destroyDetached(impl_->published);
-    impl_->releasePreparedParams();
-    impl_->finished = true;
+    if (!impl_ || impl_->tx.finished) return;
+    impl_->tx.finishCore();
 }
 
 void PreparedBehaviorSceneReconciliation::finish(
@@ -739,13 +636,13 @@ BehaviorAttachmentArena::prepareSceneReconciliation(
     const OriginTransitionMap &origin_transition) {
     auto impl =
         std::make_unique<PreparedBehaviorSceneReconciliation::Impl>();
-    impl->arena = this;
+    impl->tx.arena = this;
     impl->old_next_handle = next_handle;
     impl->old_next_attachment_seq = next_attachment_seq;
     impl->next_handle = next_handle;
     impl->next_attachment_seq = next_attachment_seq;
-    impl->detached.reserve(attachments.size() + desired.size());
-    impl->params_updates.reserve(desired.size());
+    impl->tx.detached.reserve(attachments.size() + desired.size());
+    impl->tx.params_updates.reserve(desired.size());
     impl->activated.reserve(attachments.size() + desired.size());
     std::vector<bool> consumed(attachments.size(), false);
 
@@ -755,11 +652,11 @@ BehaviorAttachmentArena::prepareSceneReconciliation(
         const auto &attachment = attachments[index];
         if (attachment.info.scene_ordered) continue;
         consumed[index] = true;
-        impl->detached.push_back(Attachment{
+        impl->tx.detached.push_back(Attachment{
             .info = attachment.info,
             .raw_component = attachment.raw_component,
         });
-        impl->reused.push_back(attachment.info.handle);
+        impl->tx.reused.push_back(attachment.info.handle);
     }
 
     for (auto &bound : desired) {
@@ -791,7 +688,7 @@ BehaviorAttachmentArena::prepareSceneReconciliation(
             consumed[*reusable] = true;
             const auto &current = attachments[*reusable];
             handle = current.info.handle;
-            impl->reused.push_back(handle);
+            impl->tx.reused.push_back(handle);
             if (!current.info.pending &&
                 current.info.canonical_params !=
                     bound.prepared.canonical_params) {
@@ -803,7 +700,7 @@ BehaviorAttachmentArena::prepareSceneReconciliation(
                         "behavior registration disappeared during params reconciliation: " +
                         current.info.stable_name);
                 }
-                PreparedBehaviorSceneReconciliation::Impl::ParamsUpdate update{
+                BehaviorAttachmentTransaction::ParamsUpdate update{
                     .handle = handle,
                     .apply_params = registration->apply_prepared_params,
                     .destroy_params = registration->destroy_prepared_params,
@@ -818,7 +715,7 @@ BehaviorAttachmentArena::prepareSceneReconciliation(
                 update.params = registration->prepare_params(
                     bound.prepared.canonical_params);
                 try {
-                    impl->params_updates.push_back(std::move(update));
+                    impl->tx.params_updates.push_back(std::move(update));
                 } catch (...) {
                     if (update.params.value != nullptr &&
                         update.destroy_params != nullptr) {
@@ -864,7 +761,7 @@ BehaviorAttachmentArena::prepareSceneReconciliation(
             next.destroy = registration->destroy;
             next.info.activation_delay = 1;
         }
-        impl->detached.push_back(std::move(next));
+        impl->tx.detached.push_back(std::move(next));
         if (sequence == std::numeric_limits<std::uint64_t>::max()) {
             impl->next_attachment_seq = 0;
         } else {
@@ -873,14 +770,14 @@ BehaviorAttachmentArena::prepareSceneReconciliation(
         }
     }
 
-    std::sort(impl->detached.begin(), impl->detached.end(),
+    std::sort(impl->tx.detached.begin(), impl->tx.detached.end(),
               [](const auto &left, const auto &right) {
                   return left.info.attachment_seq <
                          right.info.attachment_seq;
               });
-    for (std::size_t index = 1; index < impl->detached.size(); ++index) {
-        if (impl->detached[index - 1].info.attachment_seq ==
-            impl->detached[index].info.attachment_seq) {
+    for (std::size_t index = 1; index < impl->tx.detached.size(); ++index) {
+        if (impl->tx.detached[index - 1].info.attachment_seq ==
+            impl->tx.detached[index].info.attachment_seq) {
             throw std::runtime_error(
                 "behavior scene reconciliation produced an attachment sequence collision");
         }
@@ -1191,21 +1088,21 @@ BehaviorAttachmentArena::prepareEditorEdits(
     std::vector<BehaviorAttachmentEdit> edits,
     BehaviorRegistryAvailability availability) {
     auto impl = std::make_unique<PreparedBehaviorAttachmentEdits::Impl>();
-    impl->arena = this;
-    impl->detached.reserve(attachments.size() + edits.size());
-    impl->reused.reserve(attachments.size());
-    impl->params_updates.reserve(edits.size());
+    impl->tx.arena = this;
+    impl->tx.detached.reserve(attachments.size() + edits.size());
+    impl->tx.reused.reserve(attachments.size());
+    impl->tx.params_updates.reserve(edits.size());
     for (const auto &attachment : attachments) {
-        impl->detached.push_back(Attachment{
+        impl->tx.detached.push_back(Attachment{
             .info = attachment.info,
             .raw_component = attachment.raw_component,
         });
-        impl->reused.push_back(attachment.info.handle);
+        impl->tx.reused.push_back(attachment.info.handle);
     }
 
     const auto find_prepared = [&](const BehaviorAttachmentEdit &edit) {
         return std::find_if(
-            impl->detached.begin(), impl->detached.end(),
+            impl->tx.detached.begin(), impl->tx.detached.end(),
             [&](const Attachment &attachment) {
                 if (edit.identity.handle != invalidBehaviorAttachmentHandle) {
                     return attachment.info.handle == edit.identity.handle;
@@ -1245,7 +1142,7 @@ BehaviorAttachmentArena::prepareEditorEdits(
             if (registration != nullptr) {
                 instance = registration->create(current.canonical_params);
             }
-            for (auto &candidate : impl->detached) {
+            for (auto &candidate : impl->tx.detached) {
                 if (candidate.info.entity == current.entity &&
                     candidate.info.component_index >=
                         current.component_index) {
@@ -1259,7 +1156,7 @@ BehaviorAttachmentArena::prepareEditorEdits(
                                                  current.component_index)
                     : current.identity.attachment_seq;
             if (std::any_of(
-                    impl->detached.begin(), impl->detached.end(),
+                    impl->tx.detached.begin(), impl->tx.detached.end(),
                     [&](const Attachment &candidate) {
                         return candidate.info.handle ==
                                    current.identity.handle ||
@@ -1298,7 +1195,7 @@ BehaviorAttachmentArena::prepareEditorEdits(
                 .initialized = false,
             };
             next.info.activation_delay = registration != nullptr ? 1 : 0;
-            impl->detached.push_back(std::move(next));
+            impl->tx.detached.push_back(std::move(next));
             break;
         }
         case BehaviorAttachmentEditKind::remove: {
@@ -1307,7 +1204,7 @@ BehaviorAttachmentArena::prepareEditorEdits(
                     "behavior editor attachment requires a live entity");
             }
             const auto found = find_prepared(current);
-            if (found == impl->detached.end() ||
+            if (found == impl->tx.detached.end() ||
                 found->info.entity != current.entity ||
                 found->info.component_index != current.component_index ||
                 (current.identity.handle == invalidBehaviorAttachmentHandle &&
@@ -1317,16 +1214,16 @@ BehaviorAttachmentArena::prepareEditorEdits(
                 throw std::runtime_error(
                     "behavior editor remove target is stale");
             }
-            const auto reused = std::find(impl->reused.begin(),
-                                          impl->reused.end(),
+            const auto reused = std::find(impl->tx.reused.begin(),
+                                          impl->tx.reused.end(),
                                           found->info.handle);
-            if (reused == impl->reused.end()) {
+            if (reused == impl->tx.reused.end()) {
                 destroy_unpublished(*found);
             } else {
-                impl->reused.erase(reused);
+                impl->tx.reused.erase(reused);
             }
-            impl->detached.erase(found);
-            for (auto &candidate : impl->detached) {
+            impl->tx.detached.erase(found);
+            for (auto &candidate : impl->tx.detached) {
                 if (candidate.info.entity == current.entity &&
                     candidate.info.component_index >
                         current.component_index) {
@@ -1342,7 +1239,7 @@ BehaviorAttachmentArena::prepareEditorEdits(
                     "behavior editor attachment requires a live entity");
             }
             const auto found = find_prepared(current);
-            if (found == impl->detached.end() ||
+            if (found == impl->tx.detached.end() ||
                 found->info.entity != current.entity ||
                 found->info.component_index != current.component_index ||
                 found->info.pending ||
@@ -1360,7 +1257,7 @@ BehaviorAttachmentArena::prepareEditorEdits(
                 throw std::runtime_error(
                     "behavior registration owner changed before params apply");
             }
-            PreparedBehaviorAttachmentEdits::Impl::ParamsUpdate update{
+            BehaviorAttachmentTransaction::ParamsUpdate update{
                 .handle = found->info.handle,
                 .apply_params = registration->apply_prepared_params,
                 .destroy_params = registration->destroy_prepared_params,
@@ -1375,7 +1272,7 @@ BehaviorAttachmentArena::prepareEditorEdits(
             update.params =
                 registration->prepare_params(current.canonical_params);
             try {
-                impl->params_updates.push_back(std::move(update));
+                impl->tx.params_updates.push_back(std::move(update));
             } catch (...) {
                 if (update.params.value != nullptr &&
                     update.destroy_params != nullptr) {
@@ -1398,7 +1295,7 @@ BehaviorAttachmentArena::prepareEditorEdits(
                 throw std::runtime_error(
                     "behavior editor attachment requires a live entity");
             }
-            for (auto &candidate : impl->detached) {
+            for (auto &candidate : impl->tx.detached) {
                 if (candidate.info.entity == current.entity &&
                     candidate.info.component_index >=
                         current.component_index) {
@@ -1412,7 +1309,7 @@ BehaviorAttachmentArena::prepareEditorEdits(
                 throw std::runtime_error(
                     "behavior editor attachment requires a live entity");
             }
-            for (auto &candidate : impl->detached) {
+            for (auto &candidate : impl->tx.detached) {
                 if (candidate.info.entity == current.entity &&
                     candidate.info.component_index >
                         current.component_index) {
@@ -1424,16 +1321,16 @@ BehaviorAttachmentArena::prepareEditorEdits(
         }
     }
 
-    std::sort(impl->detached.begin(), impl->detached.end(),
+    std::sort(impl->tx.detached.begin(), impl->tx.detached.end(),
               [](const Attachment &left, const Attachment &right) {
                   return left.info.attachment_seq <
                          right.info.attachment_seq;
               });
-    for (std::size_t index = 1; index < impl->detached.size(); ++index) {
-        if (impl->detached[index - 1].info.attachment_seq ==
-                impl->detached[index].info.attachment_seq ||
-            impl->detached[index - 1].info.handle ==
-                impl->detached[index].info.handle) {
+    for (std::size_t index = 1; index < impl->tx.detached.size(); ++index) {
+        if (impl->tx.detached[index - 1].info.attachment_seq ==
+                impl->tx.detached[index].info.attachment_seq ||
+            impl->tx.detached[index - 1].info.handle ==
+                impl->tx.detached[index].info.handle) {
             throw std::runtime_error(
                 "behavior editor attachment identity is already live");
         }
