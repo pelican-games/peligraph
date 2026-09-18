@@ -2152,7 +2152,11 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
         result.geometry_allocation_ids.push_back(
             source.geometry_allocation_id);
         result.geometry_rows.push_back(source.gpu);
-        const auto prefix = std::to_string(source.geometry_allocation_id) + "\0";
+        // NUL separates the allocation id from the row payload so that
+        // ids "1" + "2..." and "12" + "..." cannot hash to the same input.
+        // (`+ "\0"` appended nothing: the literal is an empty C string.)
+        auto prefix = std::to_string(source.geometry_allocation_id);
+        prefix.push_back('\0');
         result.geometry_row_digests.push_back(hash_bytes(
             prefix, &result.geometry_rows.back(), sizeof(source.gpu)));
     }
