@@ -2626,7 +2626,7 @@ geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation
 
 ### 移植プロファイルとの相互作用
 
-layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1519))。
+layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1530))。
 
 ## 6.16 rendering config の 2 つの root —— legacy root と `pelican.graph` root(✅P-2a-4a/4b)
 
@@ -2658,7 +2658,7 @@ rendering config のファイルは **2 つの root 形**のどちらかです�
 
 - `buffers` と `compute_tasks` は `pelican.graph` root では **グラフが所有します**。`rendering` 節に書くと lowering が名前付きで拒否します。
 - Studio と RPC の authoring(`get_render_features` / `edit_render_features` / `materialize` / `--feature-overlay`)は、どちらの root でも同じ 1 つの locator([`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L37))を通って `rendering` 節を読み書きします。graph root なのに `rendering` が無い(あるいは object でない)文書への編集は、黙って root にキーを作らず `render_config_section_unlocated` で拒否されます。
-- **ただし「1 箇所」なのは読み書きの locator までです。**byte-lossless の書き込み経路は同じ規則を鍵の側から判定していて、上の 6 キーかどうかを [`isGraphRootKey()`](../../src/project/renderconfigdocument.cpp#L418) で見てから root と節を振り分けます([withSectionValue()](../../src/project/renderconfigdocument.cpp#L658))。さらにレイトレの読み出しは**同じ規則をその場で書き直しており**、`rendering` が無いときは例外ではなく**空 object** として続行します([raygrouplayout.cpp:1465](../../src/core/shader/raygrouplayout.cpp#L1465))—— つまり「節が無い」ときの振る舞いは経路によって違います。
+- **ただし「1 箇所」なのは読み書きの locator までです。**byte-lossless の書き込み経路は同じ規則を鍵の側から判定していて、上の 6 キーかどうかを [`isGraphRootKey()`](../../src/project/renderconfigdocument.cpp#L418) で見てから root と節を振り分けます([withSectionValue()](../../src/project/renderconfigdocument.cpp#L658))。さらにレイトレの読み出しは**同じ規則をその場で書き直しており**、`rendering` が無いときは例外ではなく**空 object** として続行します([raygrouplayout.cpp:1465](../../src/core/shader/raygrouplayout.cpp#L1476))—— つまり「節が無い」ときの振る舞いは経路によって違います。
 - 新規プロジェクト(`pelican_cli project init`、[第10章](10_tools.md))が生成する config は `pelican.graph` root です。
 - 既存の legacy root を移すには、ファイル全体を `rendering` の値にして上の 5 キーを足すだけです。`test/fixtures/graph_root_example/` が実物の対比(出荷 `example` の節と、preset を選ぶ `animgraph_demo` の節)を持っています。
 - web ビューアは `pelican.graph` root をまだ読めません([第9章](09_web.md) §9.3)。
@@ -2754,7 +2754,7 @@ instance の入力ポート 1 本ごとに、値がどこから来ているか�
 | `connected` | 展開後にそのポートへ入る **edge**(`inputs` に書いた接続) |
 | `parameter` | instance の **`parameters`** に書いた固定スカラー |
 | `default` | 定義側の `graph.input` ノードの **`default`** |
-| `override` | 実行時の上書き(`GameContext::setGraphParameter` / RPC) |
+| `override` | 実行時の上書き(`RenderContext::setValueGraphParameter` = `ctx.render().setValueGraphParameter` / RPC) |
 
 **優先順位は `edge > parameters > default`** です([graphcomposition.cpp:48](../../src/project/graphcomposition.cpp#L48))。以前の「edge と `parameters` の二重指定は拒否」は P-1 で**優先順に緩められました** —— 上の posegraph_demo の実物が、edge を張ったうえで `parameters.weight: 0.0` を残しているのはそのためです。**`parameters` は「接続を外したときに戻る値」**なので、消さずに残すのが正しい形です(そして `default` を持たない入力も外せるようになりました)。
 

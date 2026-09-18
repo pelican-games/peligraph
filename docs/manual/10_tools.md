@@ -112,7 +112,7 @@ URI は `ProjectBasicConfig` に入らず、保存・再読み込みの対象に
 free-camera preset は overlay 側を選ぶため、両者は併用できます。
 
 `--start-time` は**飛びません。**指定した frame までの `start_frames − 1` frame を、capture だけ抜いて
-**普通に回します**([replay prologue](../../src/core/appflow/loop.cpp#L665))。graph の時計は `render()` の中でしか
+**普通に回します**([replay prologue](../../src/core/appflow/loop.cpp#L672))。graph の時計は `render()` の中でしか
 進まず、game system は自分で dt を積むので、「その時刻にいる」唯一の正直な方法が「そこまでの全 step を通ること」
 だからです。開始時に stderr へ 1 行 `offline: start_time=… start_frame=… replay=… frames=…` が出ます。
 最初に capture される frame が指定時刻の frame で、`--start-time 2.0 --frames 2 --fps 60` の `0001` は
@@ -130,7 +130,7 @@ free-camera preset は overlay 側を選ぶため、両者は併用できます�
 - batch・notification 非対応。エラーコードは標準 + アプリケーションエラー -32000、RenderDoc capture -32010。ハンドラ内例外は応答に変換されプロセスは落ちません。EOF で正常終了。
 - 1 プロセス 1 クライアント。**ゲーム DLL リロード中は全メソッドがアプリケーションエラーで拒否**されます。
 
-> **設計決定(決定性):** 同一の RPC スクリプトを 2 回実行したとき、応答列は(instance_id を除き)**バイト単位で完全一致**しなければならない。CI で検証済み。`instance_id` だけが除外されるのは、それが RPC エンドポイント生成時に振られる UUID v4 で、起動ごとに必ず変わる値だからです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1973))。
+> **設計決定(決定性):** 同一の RPC スクリプトを 2 回実行したとき、応答列は(instance_id を除き)**バイト単位で完全一致**しなければならない。CI で検証済み。`instance_id` だけが除外されるのは、それが RPC エンドポイント生成時に振られる UUID v4 で、起動ごとに必ず変わる値だからです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1977))。
 
 ### 基盤メソッド一覧
 
@@ -303,7 +303,7 @@ component に `resolution_error`。
 自分の state で評価するため、event や trigger で駆動される文書では両者が恒久的に違いうることを表します。
 
 2026-09 の追加(グラフ・共有部品・package): `get_graph_instances` / `get_graph_catalog` / `get_graph_values` /
-`edit_graph_document` / `edit_graph_instances`([登録](../../src/core/communication/editorrpchandlers.cpp#L202))、
+`edit_graph_document` / `edit_graph_instances`([登録](../../src/core/communication/editorrpchandlers.cpp#L222))、
 `export_render_feature` / `import_render_feature`(`user://components/<name>/` 経由の共有部品)、
 `install_package` / `uninstall_package`(`project://packages/<ns>/` への vendoring)。params と返り値、
 `ops` の 5 種と `scope`、名前付きの拒否は [第13章](13_editor.md) §13.5 が正です。

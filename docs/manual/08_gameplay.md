@@ -19,7 +19,7 @@
 
 > **設計決定(ネイティブ一本・2026-07-07 ユーザー決定):** ゲームロジックは C++ で書く。スクリプト言語は不採用。エンジンは「ソース同居の SDK」。
 
-✅WP90(G2)で、ゲームコードのビルド形態は静的リンクから **`pelican_game_logic.dll`** に移行しました。公開面(userpublic)だけを import する DLL で、実行中のホットリロード(F5 / 自動検出 / rpc)に対応します。リロードは v1 では **full-reset 方式**です — 差分を当てるのではなく、物理 → ECS → モデルインスタンス → 遅延ミューテーション → 未配送イベントの順に破棄し([runtime_teardown_order](../../src/core/appflow/teardown.hpp#L23))、現在のシーンを起動時と同じロード経路で組み直します([rebuildCurrentScene](../../src/core/gamelogic/gamelogicreload.cpp#L892))。C++ のオブジェクトは DLL ごと入れ替わるので、システムや behavior のメンバ変数に持っていた値は残りません。詳細は [第10章](10_tools.md) §10.5。
+✅WP90(G2)で、ゲームコードのビルド形態は静的リンクから **`pelican_game_logic.dll`** に移行しました。公開面(userpublic)だけを import する DLL で、実行中のホットリロード(F5 / 自動検出 / rpc)に対応します。リロードは v1 では **full-reset 方式**です — 差分を当てるのではなく、物理 → ECS → モデルインスタンス → 遅延ミューテーション → 未配送イベントの順に破棄し([runtime_teardown_order](../../src/core/appflow/teardown.hpp#L23))、現在のシーンを起動時と同じロード経路で組み直します([rebuildCurrentScene](../../src/core/gamelogic/gamelogicreload.cpp#L897))。C++ のオブジェクトは DLL ごと入れ替わるので、システムや behavior のメンバ変数に持っていた値は残りません。詳細は [第10章](10_tools.md) §10.5。
 
 > **設計決定(レイヤ規則):** ゲームコードが include してよいのは `src/core/userpublic/` のヘッダのみ。エンジン内部のモジュール取得(`GET_MODULE`)をゲームコードから直接呼ぶことは禁止で、入力・時刻・オブジェクト・物理・音・シーン・乱数はすべて **`GameContext`** ファサードを通す。
 
@@ -35,7 +35,7 @@
 - **再帰 schema**(フィールドの中にさらにフィールドを持つ、木になった schema)を宣言した型があると、SDK は `_v3` 入口([registerer.hpp](../../src/core/userpublic/details/behavior/registerer.hpp#L322))を**自動で選びます**。v2 の入口は平らなフィールド列しか運べないためです。判定は「`List` か `Flags` のフィールドが 1 つでもあるか」だけで([schemaRequiresV3](../../src/core/userpublic/details/schema/structfieldschema.hpp#L823))、§8.5.3 の `List<Row>` は行の型 `Row` が自分の `schema` を持つのでこれに当たります。書き手のコードは変わりません。v3 入口を使う DLL と v2 だけの DLL は同じホストに**同居できます**。
 - 逆に、ホストが古くて v3 入口を持たないのに DLL が v3 を使っていると、`game_logic_abi_stale@1{found: "v3", host: "v2"}` で拒否されます。
 
-実行中の DLL は原本ではなく **shadow copy**(別ディレクトリへ取った複製)を読みます。リロードのたびに連番付きの複製を作ってそちらをロードするので([makeShadowCopy](../../src/core/gamelogic/gamelogicreload.cpp#L338)。`.pdb` も一緒に複製するのでデバッガも繋がります)、エンジンが原本のファイルを掴んだままにならず、走らせたままビルドし直せます。置き場所は原本の隣の `.pelican-hot-reload/<プロセス ID>/` で([gamelogicreload.cpp](../../src/core/gamelogic/gamelogicreload.cpp#L466))、**プロセスごとに別ディレクトリ**なので同じプロジェクトを 2 つ起動しても取り合いになりません(死んだプロセスの残骸は起動時に掃除されます)。ビルドが原本を掴んだままだと、リロードは失敗ではなく保留になり、何度ポーリングしても掴まれたままなら [`game_logic_source_busy@1`](../../src/core/gamelogic/gamelogicreload.cpp#L782) が status に出ます。
+実行中の DLL は原本ではなく **shadow copy**(別ディレクトリへ取った複製)を読みます。リロードのたびに連番付きの複製を作ってそちらをロードするので([makeShadowCopy](../../src/core/gamelogic/gamelogicreload.cpp#L373)。`.pdb` も一緒に複製するのでデバッガも繋がります)、エンジンが原本のファイルを掴んだままにならず、走らせたままビルドし直せます。置き場所は原本の隣の `.pelican-hot-reload/<プロセス ID>/` で([gamelogicreload.cpp](../../src/core/gamelogic/gamelogicreload.cpp#L501))、**プロセスごとに別ディレクトリ**なので同じプロジェクトを 2 つ起動しても取り合いになりません(死んだプロセスの残骸は起動時に掃除されます)。ビルドが原本を掴んだままだと、リロードは失敗ではなく保留になり、何度ポーリングしても掴まれたままなら [`game_logic_source_busy@1`](../../src/core/gamelogic/gamelogicreload.cpp#L787) が status に出ます。
 
 エラーコードは rpc の `get_status` の reload 節と `reload_game_logic` のエラーに出ます([第10章](10_tools.md) §10.5)。
 
@@ -352,8 +352,8 @@ struct CarrierParams {
 
 シーンロードの最中は、`GameContext` の作用がトランザクションに溜まります(§8.4 の囲み・[第4章 §4.3](04_scene_ecs.md))。behavior から見た要点:
 
-- `onInit` で `playSound` すると**音はまだ鳴りません**。ロードが commit したあとの flush で鳴ります。直後に `ctx.isPlaying(handle)` を呼べば true が返り、`stopSound` すればその予約ごと消えます(鳴らずに終わる)。
-- `onInit` で `saveData` した内容は、同じ `onInit` の中の `loadData` で読めます。`listSaves()` にも並びますが、**まだ書いていないので `timestamp` は 0** です。
+- `onInit` で `ctx.audio().playSound()` すると**音はまだ鳴りません**。ロードが commit したあとの flush で鳴ります。直後に `ctx.audio().isPlaying(handle)` を呼べば true が返り、`ctx.audio().stopSound(handle)` すればその予約ごと消えます(鳴らずに終わる)。
+- `onInit` で `ctx.save().saveData()` した内容は、同じ `onInit` の中の `ctx.save().loadData()` で読めます。`ctx.save().listSaves()` にも並びますが、**まだ書いていないので `timestamp` は 0** です。
 - `onInit` が例外を投げると、これらの作用は**すべて捨てられます**(予約した voice は解放され、`user://` の中身も設定も変わりません)。シーンも旧シーンに戻ります。
 - **`onDestroy` は破棄されるオブジェクトの最終状態を読めます。** `ctx.localTransform(ctx.self())` / `ctx.spriteView(ctx.self())` は破棄トークンのスナップショットを返します。書き込み側は throw せず `false` を返します。
 - `onDestroy` は `noexcept` なので、この段で `playSound` や `saveData` が失敗しても**例外にはならず**、ロード結果の `effect_errors` に名前付きで積まれます。
@@ -451,18 +451,18 @@ ctx.loadScene("scene_flow_second");   // 予約(名前はその場で検証。�
 ```cpp
 // レイキャスト(最近傍 1 件)
 Pelican::phys::Ray ray{ {0,0,0}, {0,0,1}, 100.0f };   // origin, direction, max_distance
-if (auto hit = ctx.raycastClosest(ray)) {
+if (auto hit = ctx.physics().raycastClosest(ray)) {
     // hit->id(オブジェクト名), hit->distance, hit->position, hit->normal
 }
 
-// 形状オーバーラップ(該当オブジェクト名の一覧、名前昇順)
-auto names = ctx.overlapAll(Pelican::phys::Shape{ Pelican::phys::Sphere{ {0,1,0}, 0.5f } });
+// 形状オーバーラップ(該当 collider の hit 一覧、collider id 昇順。名前は hit.id)
+auto hits = ctx.physics().overlapAll(Pelican::phys::Shape{ Pelican::phys::Sphere{ {0,1,0}, 0.5f } });
 
 // capsule を delta だけ平行移動し、最初の衝突を取得
 Pelican::phys::Shape player = Pelican::phys::Capsule{
     {0, 2, 0}, {}, 0.5f, 0.25f
 };
-if (auto hit = ctx.shapeCastClosest(player, {0, -4, 0})) {
+if (auto hit = ctx.physics().shapeCastClosest(player, {0, -4, 0})) {
     // hit->time_of_impact は delta のどこで当たったかの割合(0 = 出発点、1 = 動かしきった先)。
     // normal は player を押し出す向き。最初から食い込んでいた(initial_overlap)ときは
     // normal * penetration_depth が MTD(minimum translation distance = 食い込みを解く最小の移動)。
@@ -514,7 +514,7 @@ Builtin/Jolt/game DLL provider の交換、ゲーム独自 controller への置�
 
 カメラは「**定義**(glTF 1:1 の投影)/ **コントローラ**(orbit・follow・fly)/ **演出**(カット切替など)」の三層設計です。定義とコントローラの書き方(シーン JSON)は [第4章](04_scene_ecs.md) §4.2 を参照してください。
 
-- **カット切替**: `ctx.setCamera("SceneFlowCamera")` または rpc `set_camera`。名前付きカメラだけが宛先になれます。切替後はフリーカメラ操作がロックされ、そのカメラの定義が即時適用されます。
+- **カット切替**: `ctx.render().setCamera("SceneFlowCamera")` または rpc `set_camera`。名前付きカメラだけが宛先になれます。切替後はフリーカメラ操作がロックされ、そのカメラの定義が即時適用されます。
 - **コントローラ**はビルトインのゲームシステム(order 10000)が毎フレーム駆動します。orbit / fly は Actions の `move` / `look`(いずれも axis2)を消費しますが、アクションが未定義でも「動かないだけ」でエラーにはなりません。
 - damping はブレンド重み `1 - exp(-damping * dt)` で、0 なら即時追従。パラメータ変更やフレーム巻き戻し(rpc `set_time`)を検出すると内部状態を自動リセットします(決定性のため)。
 - 📐未実装(C3 以降): glb カメラノードの取り込み/書き出し round-trip、transform_seq のカメラトラック、ブレンド・シェイク。
@@ -529,7 +529,7 @@ Builtin/Jolt/game DLL provider の交換、ゲーム独自 controller への置�
 2. 入力はフレーム頭のスナップショットで凍結(WP37)—— フレーム開始時に、前フレーム以降に OS から届いた入力を 1 回だけ切り出し([beginFrame](../../src/core/os/inputstate.cpp#L373))、そのフレーム中は誰が何度読んでも同じ値です(途中で届いた入力は次フレームの分として待ちます)
 3. システム実行順 = order → 名前の辞書順
 4. イベント配送 = 次フレーム頭・emit 順
-5. 物理のタイブレーク(同じ距離・同じ TOI に並んだヒットの順序決め)= stable `ColliderId` → entity 世代 → shape ordinal(名前は最終手段。※レガシー API `raycastClosest(ray)` 単引数と `overlapAll` 名前列のみ旧来の名前辞書順)
+5. 物理のタイブレーク(同じ距離・同じ TOI に並んだヒットの順序決め)= stable `ColliderId` → entity 世代 → shape ordinal(名前は最終手段)。無フィルタ専用だった単引数版 `raycastClosest(ray)` は廃止され、[`raycastClosest(ray, filter = {})`](../../src/core/userpublic/gamecontext.hpp#L39) 1 本になりました(filter を省いても規則は同じ。「フィルタ無しで全 collider」が要るときは `phys::every_collider_filter` を渡します)。最近傍 1 件を選ぶときの同距離クラスタの決着だけは、どの filter でも文字列 id の昇順です([physworld.cpp](../../src/core/phys/physworld.cpp#L585))
 6. 乱数 = PCG32 + 固定シード(`basic_config.seed` / `ctx.setSeed` / rpc `set_seed`)
 7. シーン切替 = フレーム境界適用
 8. ヘッドレス実行 = 固定ステップ時刻(dt = 1/fps)
@@ -541,10 +541,10 @@ Builtin/Jolt/game DLL provider の交換、ゲーム独自 controller への置�
 ## 8.11 オーディオ(✅A1 = WP51)
 
 ```cpp
-auto h = ctx.playSound("assets/audio/shot.wav");  // WAV のみ。戻り値はハンドル
-ctx.setBusVolume("se", 0.5f);                     // バスは master / bgm / se の 3 固定
-bool playing = ctx.isPlaying(h);
-ctx.stopSound(h);
+auto h = ctx.audio().playSound("assets/audio/shot.wav");  // WAV のみ。戻り値はハンドル
+ctx.audio().setBusVolume("se", 0.5f);                     // バスは master / bgm / se の 3 固定
+bool playing = ctx.audio().isPlaying(h);
+ctx.audio().stopSound(h);
 ```
 
 - 対応フォーマットは **WAV のみ**(厳格なパーサ。規格逸脱ファイルは名指しで拒否)。再生バックエンドは miniaudio です。
@@ -580,13 +580,13 @@ ctx.saveSettings();                      // user://settings.json へ atomic 書�
 ### セーブデータ
 
 ```cpp
-ctx.saveData("slot-a", nlohmann::json{{"level", 3}});   // user://saves/slot-a.json
-auto loaded = ctx.loadData("slot-a");                    // optional<Json>(欠落/破損は nullopt)
-auto slots  = ctx.listSaves();                           // {slot, timestamp} の昇順一覧
+ctx.save().saveData("slot-a", nlohmann::json{{"level", 3}});  // user://saves/slot-a.json
+auto loaded = ctx.save().loadData("slot-a");                  // optional<Json>(欠落/破損は nullopt)
+auto slots  = ctx.save().listSaves();                         // SaveContext::SlotInfo{slot, timestamp} の昇順一覧
 ```
 
 - スロット名はポータブルなファイル名検証付き(`.`/`..`・末尾ドット/空白・`/ \ # : " < > | ? *`・制御文字は例外)。中身はエンベロープなしの任意 JSON です。
-- **例外挙動の非対称に注意**: 書き込み系(`saveSettings` / `saveData`)は失敗で例外、読み込み系(`loadData`)は throw せず `nullopt` を返します(起動フローを壊さないため)。
+- **例外挙動の非対称に注意**: 書き込み系(`ctx.saveSettings()` / `ctx.save().saveData()`)は失敗で例外、読み込み系(`ctx.save().loadData()`)は throw せず `nullopt` を返します(起動フローを壊さないため)。
 - 書き込みはすべて atomic(tmp + rename)。削除 API(`deleteSave`)や rpc 経由の永続化メソッドはまだありません。
 - **シーンロード中に書くと、ディスクへの反映はロードの成功後**です(§8.4 の囲み)。同じロードの中では `loadData` が書いた値を返し、`listSaves()` にも並びますが、その `timestamp` は **0**(まだファイルが無い)です。`onDestroy` から書いた場合、失敗しても例外にはならず `effect_errors` に記録されます。
 

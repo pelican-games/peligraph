@@ -357,7 +357,7 @@ Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取�
 
 `VK_EXT_descriptor_indexing`(Vulkan 1.2 でコア入り)は、descriptor 配列を「実行時に決まる添字で引く」ための機能群です。`VkDescriptorSetLayoutBindingFlagsCreateInfo` に立てる `VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT` は「配列の一部の要素が未書き込みでも、シェーダがその要素を読まない限り有効」という緩和で、テクスチャ枠を N 個ぶん確保しておいて実際には数個しか埋めない bindless 構成には必須です。関連する緩和に `VARIABLE_DESCRIPTOR_COUNT` と `UPDATE_AFTER_BIND` があり、シェーダ側で非一様な添字を使うには `nonuniformEXT()` が要ります。**外部で引くときの名前**は Vulkan 仕様の "Descriptor Set Layout" 節と拡張名 `VK_EXT_descriptor_indexing` です。
 
-**使用場所**: [rayMaterialDescriptorBindingFlags()](../../src/core/shader/pipelinefactory.cpp#L202)(3 binding のうちテクスチャ配列にだけ `ePartiallyBound` を立てる) / [PipelineFactory::descriptorSetLayoutKeysFor()](../../src/core/shader/pipelinefactory.cpp#L483)(ray レイアウトのとき set 3 の `binding_flags` にそれを積み、`vk::DescriptorSetLayoutBindingFlagsCreateInfo` として layout 作成へ渡す) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1240)(生成される GLSL 側の `nonuniformEXT(row.texture_index)`)
+**使用場所**: [rayMaterialDescriptorBindingFlags()](../../src/core/shader/pipelinefactory.cpp#L205)(3 binding のうちテクスチャ配列にだけ `ePartiallyBound` を立てる) / [PipelineFactory::descriptorSetLayoutKeysFor()](../../src/core/shader/pipelinefactory.cpp#L486)(ray レイアウトのとき set 3 の `binding_flags` にそれを積み、`vk::DescriptorSetLayoutBindingFlagsCreateInfo` として layout 作成へ渡す) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1251)(生成される GLSL 側の `nonuniformEXT(row.texture_index)`)
 
 ### descriptor type の使い分け(combined image sampler / storage image / sampled image + sampler)
 
@@ -369,7 +369,7 @@ Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取�
 
 Vulkan の構造体は `sType` と `pNext` を持ち、拡張機能ぶんの構造体を `pNext` で数珠つなぎにして 1 回の呼び出しに載せます。vulkan-hpp の `vk::StructureChain<A, B, C>` はこの連結を型で表現したもので、`get<B>()` で要素を取り出し、`unlink<B>()` で**実行時に**その要素を鎖から外せます(`relink<B>()` で戻せます)。外すことは「その機能を要求しない」という意味になるので、拡張の無い環境で同じコードを通す常套手段です。逆に鎖へ残したまま非対応のデバイスへ渡すと、検証レイヤに叱られるか、そのまま失敗します。
 
-**使用場所**: [createLogicalDevice()](../../src/core/vkcore/core.cpp#L562)(feature 構造体を chain に積み、非対応なら `unlink()`) / [PipelineFactory::createGraphicsPipeline()](../../src/core/shader/pipelinefactory.cpp#L548) / [FrameResources::FramePublication](../../src/core/renderer/frameresources.cpp#L403)(descriptor write の `pNext` に acceleration structure 情報を足す)
+**使用場所**: [createLogicalDevice()](../../src/core/vkcore/core.cpp#L562)(feature 構造体を chain に積み、非対応なら `unlink()`) / [PipelineFactory::createGraphicsPipeline()](../../src/core/shader/pipelinefactory.cpp#L554) / [FrameResources::FramePublication](../../src/core/renderer/frameresources.cpp#L403)(descriptor write の `pNext` に acceleration structure 情報を足す)
 
 ### 機能照会(getFeatures2 の chain)と拡張関数の動的解決
 
@@ -389,13 +389,13 @@ VMA は Vulkan のメモリタイプ選択とサブアロケーションを引�
 
 `VkPhysicalDeviceBufferDeviceAddressFeatures::bufferDeviceAddress`(Vulkan 1.2 コア)を有効にすると、`vkGetBufferDeviceAddress` でバッファの GPU 仮想アドレスを 64bit 整数として取得でき、シェーダから `buffer_reference` でポインタのように辿れます。ただし**アドレスを取る予定のバッファは、作成時に `VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT` を立てておかなければなりません**(後から取ることはできません)。レイトレーシングの BLAS 入力に使うバッファはさらに `VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR` が要ります。得たアドレスに整列要件があるときは `address % alignment` の余りから前方へ寄せるのが定型です。
 
-**使用場所**: [geometryBuildInputUsage()](../../src/core/model/vertbufcontainer.cpp#L17)(capability があるときだけ 2 つの usage を足す) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L175) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L813)
+**使用場所**: [geometryBuildInputUsage()](../../src/core/model/vertbufcontainer.cpp#L17)(capability があるときだけ 2 つの usage を足す) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L175) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L819)
 
 ### std140 / std430 レイアウト規則
 
 GLSL の uniform ブロックは既定で **std140**、storage ブロックは **std430** のレイアウト規則に従います(GLSL 仕様の "Standard Uniform Block Layout" / "Standard Shader Storage Block Layout")。std140 では、スカラーは自身のサイズ、`vec2` は 8、`vec3` と `vec4` は 16 バイト境界に置かれ(`vec3` は**サイズ 12・アラインメント 16**)、**配列の要素と構造体は 16 バイトの倍数へ切り上げられます**。std430 はこの「配列・構造体を 16 へ切り上げる」規則だけが緩み、要素の素のアラインメントがそのまま使われます。C++ 側で同じバイト列を作るには `alignas` を明示し、`offsetof` の `static_assert` で固定するのが定型で、これを怠るとシェーダ側が 1 メンバぶんずれた値を読みます。
 
-**使用場所**: [FrameUniformData](../../src/core/renderer/frameresources.hpp#L48)(型自体が `alignas(16)`。vec4 / mat4 のメンバに `alignas(16)`、`vec2` の 2 本には `alignas(8)`、後続の `uint32_t` 4 本には指定なしで自然に 4 バイト刻みに詰まり、直後の offset / `sizeof` の `static_assert` 群がその並びを凍結します) / [RayMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L400) / [RayProfileMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L412)
+**使用場所**: [FrameUniformData](../../src/core/renderer/frameresources.hpp#L48)(型自体が `alignas(16)`。vec4 / mat4 のメンバに `alignas(16)`、`vec2` の 2 本には `alignas(8)`、後続の `uint32_t` 4 本には指定なしで自然に 4 バイト刻みに詰まり、直後の offset / `sizeof` の `static_assert` 群がその並びを凍結します) / [RayMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L411) / [RayProfileMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L423)
 
 **このコードベースでの注意**: レイトレーシング側は「profile 有り/無しで別の行構造体」を用意し、profile が無い構成では以前の ABI をバイト単位で保つようにしてあります。同じ意味の行なのに型が 2 つあるのはそのためです。
 
@@ -411,7 +411,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 `VK_KHR_multiview`(Vulkan 1.1 コア)は、1 回の描画で複数のビュー(VR の左右目など)へ同時に書くための機能です。`viewMask` の**立っているビットの位置**が、シェーダで読める `gl_ViewIndex` の取りうる値になります。連続する N ビューなら `(1u << N) - 1u` が定型のマスクですが、N が 32 のときは左シフトが未定義になるため `UINT32_MAX` を直接使う分岐が要ります。dynamic rendering では `VkRenderingInfo::viewMask`、パイプライン側では `VkPipelineRenderingCreateInfo::viewMask` に同じ値を置き、両者が一致していなければなりません。
 
-**使用場所**: [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L247)(view_count が [2,32] であること、マスクが連続であること、シェーダが `gl_ViewIndex` を消費することを検査) / [PipelineFactory::createGraphicsPipeline()](../../src/core/shader/pipelinefactory.cpp#L548) / [FrameResources::selectMultiview()](../../src/core/renderer/frameresources.cpp#L651)
+**使用場所**: [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L250)(view_count が [2,32] であること、マスクが連続であること、シェーダが `gl_ViewIndex` を消費することを検査) / [PipelineFactory::createGraphicsPipeline()](../../src/core/shader/pipelinefactory.cpp#L554) / [FrameResources::selectMultiview()](../../src/core/renderer/frameresources.cpp#L651)
 
 ### sampler の filter と address mode
 
@@ -423,7 +423,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 `VK_KHR_ray_tracing_pipeline` のパイプラインは、ステージ配列(`pStages`)とグループ配列(`pGroups`)の 2 段でできています。グループは `GENERAL`(raygen / miss / callable)と `TRIANGLES_HIT_GROUP`(closest hit + 任意の any hit)などの種類を持ち、各グループは pStages 内の添字を指します。**グループの並び順がそのまま SBT(Shader Binding Table)の並び順**になります。`vkGetRayTracingShaderGroupHandlesKHR` で取れる不透明ハンドルは 1 個あたり `shaderGroupHandleSize` バイト、SBT の 1 レコードは `shaderGroupHandleAlignment` に、raygen / miss / hit / callable の**各領域の先頭アドレスは `shaderGroupBaseAlignment`** に揃える必要があります(いずれも `VkPhysicalDeviceRayTracingPipelinePropertiesKHR`)。`vkCmdTraceRaysKHR` に渡す 4 つの `VkStridedDeviceAddressRegionKHR` はこの stride で読まれます。
 
-**使用場所**: [PipelineFactory::createRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L699)(stage 配列と group 配列を組む) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L813)(ハンドルを領域ごとに詰め、確保したアドレスの余りから base alignment へ寄せる) / [packRayTracingHitTable()](../../src/core/shader/raygrouplayout.cpp#L2313)
+**使用場所**: [PipelineFactory::createRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L705)(stage 配列と group 配列を組む) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L819)(ハンドルを領域ごとに詰め、確保したアドレスの余りから base alignment へ寄せる) / [packRayTracingHitTable()](../../src/core/shader/raygrouplayout.cpp#L2324)
 
 **このコードベースでの注意**: base alignment を満たすために `total_size + (base_alignment - 1)` を確保し、実アドレスの余りから内部オフセットを決めています。確保したバッファの先頭が揃っている保証は無い、という前提での書き方です。
 
@@ -439,7 +439,7 @@ BLAS の三角形ジオメトリ(`VkAccelerationStructureGeometryTrianglesDataKH
 
 TLAS の各 instance は `VkGeometryInstanceFlagsKHR` を持ち、`FORCE_OPAQUE` は「このインスタンスは不透明として扱う」= **any-hit シェーダを呼ばない**、`FORCE_NO_OPAQUE` はその逆です。両方を同時に立てるのは矛盾なので、宣言側で弾く必要があります。any-hit シェーダは交差**候補**ごとに(順不同で、同じ交差に対して複数回)呼ばれ、`ignoreIntersectionEXT` でその候補を棄却します。三角形の hit attribute は組み込みで `vec2` の重心座標(残り 1 成分は `1 - u - v`)、プリミティブ番号は `gl_PrimitiveID` です。したがってアルファ抜きを any-hit で実装している構成で `FORCE_OPAQUE` を立てると、抜きが丸ごと無効になります。
 
-**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1236)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L531) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1240)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
+**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1236)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L531) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1251)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
 
 ### in-flight フレームと GPU 資源の寿命
 
@@ -639,7 +639,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 2 つの 32bit 値を 1 つの 64bit に詰める `(hi << 32) | lo` は、単なる節約ではなく「2 つのキーの辞書順比較を、整数 1 回の比較で行う」ための表現です(上位に来た値が優先される)。復元はシフトとマスクで、詰める前に両方が 32bit に収まることを確かめておかないと静かに桁が落ちます。関連する定型が `(1u << n) - 1u`(下位 n ビットを立てる)で、n がビット幅と同じときは左シフトが未定義になるため別扱いが要ります。フラグ集合では「同時に立ってはいけない組み合わせ」を `(x & A) != 0 && (x & B) != 0` の形で検査するのが定石です。
 
-**使用場所**: [sceneBehaviorAttachmentSeq()](../../src/core/gamelogic/behaviorarena.cpp#L72)(32bit を超える入力を `length_error` で弾いてから詰める) / [refreshSceneAttachmentSequence()](../../src/core/gamelogic/behaviorarena.cpp#L442) / [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L247)(view_count 32 のときだけ `UINT32_MAX` へ分岐) / [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1236)(相反フラグの検査)
+**使用場所**: [sceneBehaviorAttachmentSeq()](../../src/core/gamelogic/behaviorarena.cpp#L72)(32bit を超える入力を `length_error` で弾いてから詰める) / [refreshSceneAttachmentSequence()](../../src/core/gamelogic/behaviorarena.cpp#L442) / [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L250)(view_count 32 のときだけ `UINT32_MAX` へ分岐) / [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1236)(相反フラグの検査)
 
 ### shared_ptr / weak_ptr による寿命の「リース」
 
@@ -675,7 +675,7 @@ C++ のムーブは、移動元を「有効だが未規定の状態」にしま�
 
 `std::variant` の中身で分岐する定型は、`std::visit` に総称ラムダを渡し、その中で `using T = std::decay_t<decltype(value)>;` として `if constexpr (std::same_as<T, X>)` で枝を書く形です。`std::visit` は全ての候補型を扱えることをコンパイル時に要求するので、型を足したときに「その枝を書き忘れた」がコンパイルエラーになります(`switch` の default と違って取りこぼせません)。`std::monostate` は「値が入っていない」を表すための空の型で、必ず別扱いの枝が要ります。総称ラムダの中で `if constexpr` を使うと、偽の枝は実体化されないので、その型に無いメンバを参照する枝も書けます。これは同じ理由でテンプレート引数ごとのコード生成一般に使われ、依存名の中でメンバーテンプレートを呼ぶときは `obj.template f<...>()` の `.template` 修飾が要ります(パーサに「これはテンプレート」と教えるため)。
 
-**使用場所**: [numericRange()](../../src/core/imgui/inspector.cpp#L38) / [freezeJournalOperation()](../../src/core/communication/editorjournal.cpp#L1954) / [PipelineFactory::rebuildPrepared()](../../src/core/shader/pipelinefactory.cpp#L1868) / [appendBehaviorEventHandlerAt()](../../src/core/userpublic/details/behavior/registerer.hpp#L137)(`if constexpr` の枝と `lookup.template operator()<Index>()`)
+**使用場所**: [numericRange()](../../src/core/imgui/inspector.cpp#L38) / [freezeJournalOperation()](../../src/core/communication/editorjournal.cpp#L1954) / [PipelineFactory::rebuildPrepared()](../../src/core/shader/pipelinefactory.cpp#L1878) / [appendBehaviorEventHandlerAt()](../../src/core/userpublic/details/behavior/registerer.hpp#L137)(`if constexpr` の枝と `lookup.template operator()<Index>()`)
 
 ### fold 式と std::apply(タプルライク型の全要素処理)
 
@@ -737,7 +737,7 @@ C++20 の `std::bit_cast<To>(from)` は、同じサイズの型の間でビッ�
 
 符号なし整数の演算は折り返し、符号付きはオーバーフロー自体が未定義動作なので、**起こしてから検出することはできません**。掛け算は `lhs > max / rhs`(rhs が 0 でないとき)、足し算は `lhs > max - rhs` の形で、演算する**前**に判定します。除算に置き換えるのがポイントで、`lhs * rhs > max` と書くと検査そのものが折り返します。サイズ計算(幅 × 高さ × バイト数)のように外から来た値を掛ける経路では、この検査を通した専用のヘルパを 1 つ用意して全部そこを通すのが定型です。
 
-**使用場所**: [checkedMultiply()](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L204) / [parseExtentDerivedBufferSize()](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L230)
+**使用場所**: [checkedMultiply()](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L197) / [parseExtentDerivedBufferSize()](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L223)
 
 ### swap-and-pop(末尾要素で穴を埋める削除)
 
@@ -761,7 +761,7 @@ C++20 の `std::bit_cast<To>(from)` は、同じサイズの型の間でビッ�
 
 ラムダは自分自身を名前で呼べません(`auto` で宣言した変数の型が、その初期化子の中ではまだ決まっていないため)。回避策として、自分自身を第 1 引数で受け取り `self(self, ...)` の形で呼ぶイディオムがあります(Y コンビネータ風、C++23 の "deducing this" があれば不要になります)。JSON のように任意の深さを持つ木を、その場限りの述語で走査したいときによく使われます。
 
-**使用場所**: [RpcServer::handleLine()](../../src/core/communication/rpcserver.cpp#L1090)(`contains_resolution_error(contains_resolution_error, result)` で JSON を再帰的に探索)
+**使用場所**: [UI document の木を下る `has_text`](../../src/core/ui/module.cpp#L143)(`self(self, child)` で子を再帰) / [親名の循環検出](../../src/project/sceneformat.cpp#L168)。`RpcServer::handleLine()` にあった `contains_resolution_error(contains_resolution_error, result)`(応答 JSON から `resolution_error` を再帰探索)は、名前付きの自己再帰関数 [`embedsResolutionError()`](../../src/core/communication/editorrpchandlers.cpp#L50) として editor 側へ移り、この形では残っていません。
 
 ### コールバック連鎖(既存のフックを move して包む)
 
@@ -829,7 +829,7 @@ Windows の実行イメージ(PE)は先頭に DOS スタブ、続いて `PE\0\0`
 
 POSIX と違い、Windows ではファイルを開くときに「他のプロセスに何を許すか」を `CreateFileW` の `dwShareMode` で宣言します。`FILE_SHARE_READ` だけを渡すと「他プロセスの読みは許すが、書きと削除は許さない」という意味になり、逆に**自分が開いている間に他プロセスが書こうとすると失敗する**ようにもなります。ビルド中の DLL のように書き手がいるファイルを開こうとすると `ERROR_SHARING_VIOLATION`(32)か `ERROR_LOCK_VIOLATION`(33)が返るので、この 2 つを「まだ書き込み中だから少し待って再試行」の合図として使えます。ハンドルを開けたこと自体が短時間のロックになるため、判定用に開いたハンドルは RAII で確実に閉じます。
 
-**使用場所**: [SourceReadLease](../../src/core/gamelogic/gamelogicreload.cpp#L167)(`FILE_SHARE_READ` のみで開き、デストラクタで `CloseHandle`) / [sourceWriterIsActive()](../../src/core/gamelogic/gamelogicreload.cpp#L195)(2 つのエラーコードを「書き手が生きている」と解釈)
+**使用場所**: [SourceReadLease](../../src/core/gamelogic/gamelogicreload.cpp#L202)(`FILE_SHARE_READ` のみで開き、デストラクタで `CloseHandle`) / [sourceWriterIsActive()](../../src/core/gamelogic/gamelogicreload.cpp#L230)(2 つのエラーコードを「書き手が生きている」と解釈)
 
 **このコードベースでの注意**: 定数名は `ERROR_SHARING_VIOLATION` / `ERROR_LOCK_VIOLATION` です(`FILE_LOCK_VIOLATION` という名前の定数はありません)。再試行の回数は `sourceBusyRetryLimit` で 3 回に制限されています。
 
@@ -837,13 +837,13 @@ POSIX と違い、Windows ではファイルを開くときに「他のプロセ
 
 「その PID のプロセスがまだ生きているか」は、OS ごとに別の API になり、しかも**エラーが必ずしも「居ない」を意味しません**。POSIX の `kill(pid, 0)` はシグナルを送らずに存在確認だけを行い、`0` なら存在、`errno == EPERM`(権限が無い)も**存在する**の意味です。Windows の `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, ...)` は他ユーザーのプロセスに対して `ERROR_ACCESS_DENIED` を返しますが、これも存在の証拠です。したがって両方とも「アクセス拒否は生存扱い、見つからないときだけ死亡扱い」に倒すのが安全側です。PID の型も `DWORD` と `pid_t` で違うので、跨いで持ち回るときは `std::uint64_t` のような共通表現に正規化します。
 
-**使用場所**: [processIsAlive()](../../src/core/gamelogic/gamelogicreload.cpp#L203) / [currentProcessId()](../../src/core/gamelogic/gamelogicreload.cpp#L147)
+**使用場所**: [processIsAlive()](../../src/core/gamelogic/gamelogicreload.cpp#L238) / [currentProcessId()](../../src/core/gamelogic/gamelogicreload.cpp#L182)
 
 ### 動的ライブラリのエラー取得(GetLastError と dlerror)
 
 `LoadLibraryW` / `GetProcAddress` が失敗したときの理由は Windows では `GetLastError()` の数値コードで、POSIX の `dlopen` / `dlsym` では `dlerror()` の文字列で得ます。両者の性質はかなり違い、`GetLastError()` はスレッドごとの「直前の失敗コード」で成功時にクリアされるとは限らない一方、`dlerror()` は**読み出すとクリアされる**ので 2 回目は null が返ります(そのため戻り値を必ず一度だけ保存します)。また `GetLastError()` から得たメッセージ文字列はマシンのロケールに従うため、そのまま JSON や UTF-8 のログへ載せるとエンコーディングが混ざります。数値コードだけを載せて文字列は自前で組む、という割り切りがよく使われます。
 
-**使用場所**: [platformLoadError()](../../src/core/gamelogic/gamelogicreload.cpp#L130)(Windows は数値コードから英文を組み、POSIX は `dlerror()` の文字列を 1 度だけ読む)
+**使用場所**: [platformLoadError()](../../src/core/gamelogic/gamelogicreload.cpp#L165)(Windows は数値コードから英文を組み、POSIX は `dlerror()` の文字列を 1 度だけ読む)
 
 ### std::filesystem の canonical / weakly_canonical とルート名
 
@@ -1005,7 +1005,7 @@ JSON の数値には型の区別が無く、多くの実装(JavaScript の `JSON
 
 JSON-RPC 2.0 の request は `{"jsonrpc": "2.0", "method": ..., "params": ..., "id": ...}` で、`params` は配列かオブジェクトのみ(スカラーは不可)、`id` を持たないものは **notification** と呼ばれ応答を返してはいけません。response は `result` と `error` の**どちらか一方だけ**を持たなければならず、両方あるものも両方無いものも不正です。この仕様自体には転送方式が定められていないため、行区切り(1 行 1 メッセージ)や `Content-Length` ヘッダ(LSP 方式)といった framing は実装側の取り決めになります。行区切りを採る場合、Windows で生まれたテキストは行末に `\r` が残るので、JSON へ渡す前に落とす必要があります(`\r` は JSON の空白文字なので実害が出ないこともありますが、id の照合や digest には効きます)。予約エラーコードは前掲の項を参照してください。
 
-**使用場所**: [RpcServer::run()](../../src/core/communication/rpcserver.cpp#L1084)(`getline` の後に末尾 `\r` を落として 1 行 1 応答) / [RpcServer::handleLine()](../../src/core/communication/rpcserver.cpp#L1090) / [parseJsonRpcRequest()](../../src/project/jsonrpc.cpp#L148)
+**使用場所**: [RpcServer::run()](../../src/core/communication/rpcserver.cpp#L1077)(`getline` の後に末尾 `\r` を落として 1 行 1 応答) / [RpcServer::handleLine()](../../src/core/communication/rpcserver.cpp#L1012) / [parseJsonRpcRequest()](../../src/project/jsonrpc.cpp#L148)
 
 ## 10.6 座標・数値の約束事
 
@@ -1122,7 +1122,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 親の world 変換から子の local を復元するときは、この逆を逆順に当てます — 並進を引き、親回転の逆を掛け、親スケールで割る。スケールで割る以上、**成分が 0 に近い親スケールでは逆算が発散します**ので、閾値を置いて拒否するのが定石です。非一様スケールと回転が混ざると local の scale が一意に決まらない(せん断が生じる)ことにも注意が要ります。
 
-**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2233)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L483)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
+**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2213)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L483)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
 
 ### 法線の変換は transpose(inverse(M))
 
@@ -1136,7 +1136,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 mip レベル m の寸法は `max(1, n >> m)` です(2 で割ることを右シフトで書いたもの)。`max(1, ...)` が要るのは、一方の辺が先に 1 に達しても mip チェーンは続くためで、これを忘れると 0 サイズのディスパッチや 0 除算になります。
 
-**使用場所**: [parseExtentDerivedBufferSize()](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L230)(タイル数の切り上げ) / [imageExtentDispatchGroups()](../../src/core/renderingpass/computetaskcontainer.cpp#L630)(`max(1u, dimension >> mip)` の後に切り上げ除算)
+**使用場所**: [parseExtentDerivedBufferSize()](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L223)(タイル数の切り上げ) / [imageExtentDispatchGroups()](../../src/core/renderingpass/computetaskcontainer.cpp#L630)(`max(1u, dimension >> mip)` の後に切り上げ除算)
 
 ### view 行列の逆行列とカメラの前方軸
 
@@ -1228,7 +1228,7 @@ OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメー
 
 **小さな例**: `fps = 60` で `t = 2.0` を指定すると frame 120 になります。`--frames 2` なら出力される 2 枚は、通常実行の 120 枚目・121 枚目と**バイト単位で一致**していなければおかしい。ここで丸めを `floor(t·fps − ε)` に変えると 119 が選ばれ、この一致が壊れます(壊れ方がテストで見えるので、丸めの選択はテストで固定できます)。
 
-**使用場所**: [`parseStartFrame()`](../../src/player/main.cpp#L283)(`llround(seconds * fps)`。テキストとして parse し、綴り違い・非有限・負を 1 つの名前へ集約)/ [replay prologue](../../src/core/appflow/loop.cpp#L665)(`start_frames − 1` フレームを capture 無しで回してから出力を始める)
+**使用場所**: [`parseStartFrame()`](../../src/player/main.cpp#L283)(`llround(seconds * fps)`。テキストとして parse し、綴り違い・非有限・負を 1 つの名前へ集約)/ [replay prologue](../../src/core/appflow/loop.cpp#L672)(`start_frames − 1` フレームを capture 無しで回してから出力を始める)
 
 ## 関連文書
 

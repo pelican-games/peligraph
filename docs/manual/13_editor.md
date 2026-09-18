@@ -143,7 +143,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 | `unpack_prefab` | `object`(このほかのキーは拒否) | prefab インスタンスを素のオブジェクトへ展開 |
 
 `get_procedural_assets` / `edit_procedural_asset` は **`edit` の op ではなく独立した RPC メソッド**です
-([登録](../../src/core/communication/editorrpchandlers.cpp#L223))。`edit_procedural_asset` は
+([登録](../../src/core/communication/editorrpchandlers.cpp#L243))。`edit_procedural_asset` は
 `base_source_digest` と `asset_name` を取り、編集は `aabb` / `record`、新規は `operation: "create"` と両方の値、
 削除は `operation: "delete"` だけです。実行モデルはレンダー設定側(§13.5)と同じ digest CAS です。
 
@@ -213,9 +213,10 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化していない旧分岐は
 `{legacy_branch_id, message}` です(正は
 [`resolutionFailureJson()`](../../src/core/loader/resolutionresult.hpp#L114))。
-**`resolution_error` を含む応答はキー順が保存されます** —— `RpcServer` が応答木を走査して
-`resolution_error` を見つけたら ordered JSON で直列化するためです
-([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1028))。
+**`resolution_error` を含む応答はキー順が保存されます** —— editor 側のハンドラが「応答木のどこかに
+`resolution_error` があるか」を見る述語 `embedsResolutionError` を登録時に添え
+([editorrpchandlers.cpp](../../src/core/communication/editorrpchandlers.cpp#L50))、`RpcServer` はその述語が真を返した応答だけを
+ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1036))。
 
 ### セッションと編集
 
@@ -973,7 +974,7 @@ scene のロードは 1 つのトランザクションになりました([第4�
 ### `get_status.participants.game_logic` の `error_code` / `error_fields`
 
 `get_status` に `participants.game_logic` が入りました。**まだ 1 度も reload を試していない
-起動直後でも、startup の初期化失敗がここに出ます**([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1128))。
+起動直後でも、startup の初期化失敗がここに出ます**([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1121))。
 
 - 試行済みなら `reload.runtime.game_logic` の内容(`configured` / `loaded` / `reloading` /
   `pending` / `source_busy_retries` / `generation` / `systems` / `source` / `loaded_copy` /

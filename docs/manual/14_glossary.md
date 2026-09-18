@@ -131,7 +131,7 @@
 
 **epoch anchor** — ゲーム DLL が必ず import する**目印のシンボル**(`pelican_game_logic_epoch_v2`)。ロードの前に DLL の import テーブルだけを読み、この目印が無ければ「古い DLL」として `game_logic_abi_stale@1` で拒否します。登録を持たない provider 専用 DLL にはリンカが強制する要素が無いので、この診断が唯一の門番です。世代番号は**シンボル名そのものへの文字列連結**で入ります —— マクロが `pelican_game_logic_epoch_v` に ABI 版を貼り付けるので、版が 3 になればシンボルは `pelican_game_logic_epoch_v3` に変わり、`_v2` を import する古い DLL は名前が一致しなくなります([gamelogic.hpp:10](../../src/core/userpublic/gamelogic.hpp#L10))。初出: [第8章 ゲーム DLL の ABI](08_gameplay.md#ゲーム-dll-の-abiwp381381a382a)。([gamelogic.hpp:23](../../src/core/userpublic/gamelogic.hpp#L23))
 
-**shadow copy(シャドウコピー)** — 実行中の DLL は Windows では上書きできないため、**原本の複製を作ってそちらをロードする**手口。pelican2 は原本の隣の `.pelican-hot-reload/<プロセス ID>/` へ複製するので、同じプロジェクトを 2 つ起動しても取り合いになりません。初出: [第8章 ゲーム DLL の ABI](08_gameplay.md#ゲーム-dll-の-abiwp381381a382a)。([gamelogicreload.cpp:423](../../src/core/gamelogic/gamelogicreload.cpp#L466))
+**shadow copy(シャドウコピー)** — 実行中の DLL は Windows では上書きできないため、**原本の複製を作ってそちらをロードする**手口。pelican2 は原本の隣の `.pelican-hot-reload/<プロセス ID>/` へ複製するので、同じプロジェクトを 2 つ起動しても取り合いになりません。初出: [第8章 ゲーム DLL の ABI](08_gameplay.md#ゲーム-dll-の-abiwp381381a382a)。([gamelogicreload.cpp:423](../../src/core/gamelogic/gamelogicreload.cpp#L501))
 
 **PCG32(permuted congruential generator)** — 高速で周期が長い擬似乱数生成器の一種。pelican2 は `std::mt19937` + `std::uniform_*` を**使わず**(処理系によって出る列が違うため)、PCG32 を分布まで自前実装しています。既定シードは 0 固定で、毎回変えたいゲームは自分で種を入れます。初出: [第8章 §8.10](08_gameplay.md#810-決定性--なぜ毎回同じ結果になるのか)。([deterministicrng.cpp:14](../../src/core/userpublic/deterministicrng.cpp#L14))
 
@@ -161,7 +161,7 @@
 
 **SPIR-V / SPIR-V reflection** — SPIR-V は Vulkan が読むシェーダの中間バイナリ形式。**reflection**(リフレクション)は、そのバイナリを解析して「どの set / binding に何型のリソースが要るか」を取り出すことです。pelican2 は spirv-reflect で解析し、descriptor set layout・pipeline layout・push constant range を**全自動生成**します。初出: [第6章 自動リフレクションとキャッシュ](06_rendering.md#自動リフレクションとキャッシュ)。([ShaderCompiler](../../src/core/shader/shadercompiler.hpp#L39))
 
-**descriptor set** — シェーダが使うリソース(テクスチャ・バッファ)をまとめて束ねた単位で、番号(set 0, 1, …)で区別します。pelican2 は set の役割を規約で固定しており(フレーム共通・パス・マテリアルなど)、シェーダ側は番号を直接書かずに規約の定数を使います。初出: [第6章 descriptor set 規約](06_rendering.md#descriptor-set-規約shader_contractmd-が正)。([pelican_sets.hpp:7](../../src/core/shader/pelican_sets.hpp#L7))
+**descriptor set** — シェーダが使うリソース(テクスチャ・バッファ)をまとめて束ねた単位で、番号(set 0, 1, …)で区別します。pelican2 は set の役割を規約で固定しており(フレーム共通・パス・マテリアルなど)、シェーダ側は番号を直接書かずに規約の定数を使います。初出: [第6章 descriptor set 規約](06_rendering.md#descriptor-set-規約shader_contractmd-が正)。([pelican_sets.hpp:7](../../src/core/shader/pelican_sets.hpp#L15))
 
 **feature** — GPU 機能を「JSON の断片 + シェーダ断片」で足す**ユーザー空間の**単位。rendering config の `features[]` に参照を書いたときだけ存在し、書かなければ機構ごと素通りします(パージ可能)。エンジン同梱の feature も特権は持たず、`engine://features/*.json` をコピーして改造するのが公式ワークフローです。初出: [第6章 §6.5](06_rendering.md#65-feature--パージ可能な-gpu-機能wp2831548788104226)。
 

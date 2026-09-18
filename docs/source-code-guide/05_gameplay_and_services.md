@@ -170,7 +170,7 @@ flowchart LR
 
 [`Window`](../../src/core/os/window.hpp#L17) がGLFW callbackを`InputEvent`へ変換します。RPCの`inject_input`も同じ`InputState.queueEvents()`へ合流するため、下流は入力源を区別しません。
 
-XRセッション中は **XR action backend** もこの層に入ります。`syncActions()`の結果を`internal::setInputActionBackendFrame()`と`queuePoseSamples()`でInputStateへ流し込みます（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L563)）。また [`InputSequenceRuntime`](../../src/core/os/inputsequence.hpp#L45) によるrecord/replayが、この層のevent queue境界に挿入されます。record/replayは `--record-input` / `--replay`（[第2章 §2.1](02_runtime_lifecycle.md)）で、記録・再生されるのは**この層の順序付き `InputEvent` 列とフレーム境界のmarker**です — 上位のL3 snapshotやL4のAction結果ではありません（再生時はそれらを記録から復元するのではなく、注入した event 列から**同じ手順で作り直します**）。番号合わせの詳細は次の難所にあります。
+XRセッション中は **XR action backend** もこの層に入ります。`syncActions()`の結果を`internal::setInputActionBackendFrame()`と`queuePoseSamples()`でInputStateへ流し込みます（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L570)）。また [`InputSequenceRuntime`](../../src/core/os/inputsequence.hpp#L45) によるrecord/replayが、この層のevent queue境界に挿入されます。record/replayは `--record-input` / `--replay`（[第2章 §2.1](02_runtime_lifecycle.md)）で、記録・再生されるのは**この層の順序付き `InputEvent` 列とフレーム境界のmarker**です — 上位のL3 snapshotやL4のAction結果ではありません（再生時はそれらを記録から復元するのではなく、注入した event 列から**同じ手順で作り直します**）。番号合わせの詳細は次の難所にあります。
 
 ### L2: 順序付きInputEvent
 
@@ -252,15 +252,15 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 - active camera名
 - optional orbit/follow/fly controller定義
 
-加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L109) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L114) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1525)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L730)）です。
+加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L112) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L117) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1525)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L737)）です。
 
 ### scene cameraロード
 
-[`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L394) はscene JSONを再正規化し、`camera` componentを持つobjectを抽出します。最初のcameraを初期表示へ使い、名前付きcameraはmapへ保存します。
+[`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L359) はscene JSONを再正規化し、`camera` componentを持つobjectを抽出します。最初のcameraを初期表示へ使い、名前付きcameraはmapへ保存します。
 
-`GameContext::setCamera(name)`は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L465) を呼び、以後そのcameraのpose/projectionをactiveにします。
+`RenderContext::setCamera(name)`(`ctx.render().setCamera`)は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L430) を呼び、以後そのcameraのpose/projectionをactiveにします。
 
-このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L80)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L408) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L303)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L456) を通るため、このフラグの影響を受けません。
+このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L80)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L373) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L296)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L421) を通るため、このフラグの影響を受けません。
 
 ### controller
 
@@ -292,7 +292,7 @@ controllerは名前bindingからtarget transformを毎回resolveし、scene遷�
 > quat_cast(mat3{right, up, dir})
 > ```
 >
-> **手がかり**: `projectWorldUp()` は `ProjectBasicConfig` が既に読み取った `basic_config.camera.up` を正規化します。`worldUpFor()` はその up と dir がほぼ平行(内積の絶対値が 0.98 超)なら、宣言 up と最も平行でない canonical 軸へ退避します。+Y 規約では従来どおり +Z を選びますが、up 自体が +Z の project では +X を選ぶため、退避先まで平行になることはありません。同じ処理を [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L113) 経由で orbit / follow が共有し、fly も直接使います。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L456) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
+> **手がかり**: `projectWorldUp()` は `ProjectBasicConfig` が既に読み取った `basic_config.camera.up` を正規化します。`worldUpFor()` はその up と dir がほぼ平行(内積の絶対値が 0.98 超)なら、宣言 up と最も平行でない canonical 軸へ退避します。+Y 規約では従来どおり +Z を選びますが、up 自体が +Z の project では +X を選ぶため、退避先まで平行になることはありません。同じ処理を [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L113) 経由で orbit / follow が共有し、fly も直接使います。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L421) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
 >
 > **不変条件**: 外積の順は `right = cross(up, dir)` / `up = cross(dir, right)`(+Z 前方の巡回順)を保つ。`quat_cast` へ渡す前に必ず直交化する。project up を固定軸へ読み替えず、極点の fallback も宣言 up に対して非平行な軸を選ぶ。
 
@@ -300,7 +300,7 @@ controllerは名前bindingからtarget transformを毎回resolveし、scene遷�
 
 physicsはビルドフラグ `PELICAN_WITH_PHYSICS` の配下にあります（OFFでは **stub 実装**、つまり「同じ宣言を持つが中身を持たない差し替え版」に切り替わります。呼ぶと投げる形なので、colliderを含むsceneは明示エラーです。実物は本節末の `physworld_stub.cpp`）。
 
-この章で扱うクエリは3種類です。**raycast** は点と方向（[`Ray`](../../src/core/phys/physquery.hpp#L17)）を飛ばして当たったcolliderを返し、**overlap** はいま重なっているcolliderを列挙し、**shapeCast** はその中間 — Sphere / Box / Capsule を**向きを固定したまま** `delta` だけ平行移動させて、最初に当たるcolliderと接触時刻を返します（「太さのあるraycast」。契約は [`ShapeCastHit` の上のコメント](../../src/core/phys/physquery.hpp#L124) が正で、`delta` がゼロなら「いまの貫通をどれだけ押し出せば解けるか」だけを問う query になります — 通常形状の押し出し量が後述のMTDです。meshの近似補正はフラグで区別します）。
+この章で扱うクエリは3種類です。**raycast** は点と方向（[`Ray`](../../src/core/phys/physquery.hpp#L17)）を飛ばして当たったcolliderを返し、**overlap** はいま重なっているcolliderを列挙し、**shapeCast** はその中間 — Sphere / Box / Capsule を**向きを固定したまま** `delta` だけ平行移動させて、最初に当たるcolliderと接触時刻を返します（「太さのあるraycast」。契約は [`ShapeCastHit` の上のコメント](../../src/core/phys/physquery.hpp#L132) が正で、`delta` がゼロなら「いまの貫通をどれだけ押し出せば解けるか」だけを問う query になります — 通常形状の押し出し量が後述のMTDです。meshの近似補正はフラグで区別します）。
 
 クエリ実装は **provider ABI** で差し替え可能です（WP107系列）。ABI は application binary interface で、ここでは「C互換の関数ポインタ表」という意味です — [`ProviderV2`](../../src/core/userpublic/physics/abi_v2.hpp#L91) は `context` と `raycast_all` / `overlap_all` / `shape_cast_all` の3本を並べた `std::is_standard_layout_v` 固定の構造体で、先頭に `struct_size` と `version` を置いてあります。ヘッダ / クラスではなくこの形にしてあるので、別ビルドのDLLが実装を差し込めます（fixtureが [`test/fixtures/physics_provider_dll/`](../../test/fixtures/physics_provider_dll)）。差し替えても結果の並びが変わらない理由は下の「εクラスタの全順序」にあります（[用語集](../manual/14_glossary.md) の「provider」「ABI」）。
 
@@ -337,7 +337,7 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 
 ### 純粋クエリ層
 
-[`physquery.hpp`](../../src/core/phys/physquery.hpp#L12) はSphere、oriented Box、Capsuleを`std::variant`で表します（[`Shape`](../../src/core/phys/physquery.hpp#L41)）。クエリは [`QueryFilter`](../../src/core/phys/physquery.hpp#L76) と [`ShapeCastHit`](../../src/core/phys/physquery.hpp#L141) を持ち、実装はaggregate/contract/sweepに分割されています。
+[`physquery.hpp`](../../src/core/phys/physquery.hpp#L12) はSphere、oriented Box、Capsuleを`std::variant`で表します（[`Shape`](../../src/core/phys/physquery.hpp#L41)）。クエリは [`QueryFilter`](../../src/core/phys/physquery.hpp#L76) と [`ShapeCastHit`](../../src/core/phys/physquery.hpp#L149) を持ち、実装はaggregate/contract/sweepに分割されています。
 
 `raycastClosest`は距離最小を選び、距離がepsilon内で同じなら文字列ID昇順を tie-break（同値になったときの順序決定）に使います。`overlapAll`もIDをsortして返すため、sceneの内部登録順に結果が左右されません。
 
@@ -358,9 +358,9 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 >          ^anchor (+1e-5 まで) ^新 anchor    0.100008 を anchor にして連鎖させない
 > ```
 >
-> **手がかり**: `queryTieEpsilon` は `shapeCastTieEpsilon` = 1e-5F([`physqueryinternal.hpp` 内](../../src/core/phys/physqueryinternal.hpp#L7))。[`colliderIdentityLess()`](../../src/core/phys/physquerycontract.cpp#L60) は collider_id → entity → shape_ordinal → name の辞書式で、collider_id が一意なのでほぼ 1 段目で決まります。なお [`PhysWorld::raycastClosest(ray)`](../../src/core/phys/physworld.cpp#L572) の `better_legacy_tie` は**この順序ではなく**文字列 id 比較の旧 API 経路で、新旧 2 つの tie-break が並存しています。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L352) の "shapeCastAll shares filters and canonical TOI identity ordering" と [微小形状の長距離精度](../../test/physquery_test.cpp#L134)。
+> **手がかり**: `queryTieEpsilon` は `shapeCastTieEpsilon` = 1e-5F([`physqueryinternal.hpp` 内](../../src/core/phys/physqueryinternal.hpp#L7))。[`colliderIdentityLess()`](../../src/core/phys/physquerycontract.cpp#L60) は collider_id → entity → shape_ordinal → name の辞書式で、collider_id が一意なのでほぼ 1 段目で決まります。なお [`PhysWorld::raycastClosest()`](../../src/core/phys/physworld.cpp#L572) が同距離クラスタから 1 件を選ぶときの決着は**この順序ではなく**文字列 id(`hit.id`)の比較です。無フィルタ専用だった単引数版が消えて `raycastClosest(ray, filter)` 1 本になったので、この規則は**どの filter でも同じ**ように働きます(変数名は [`better_legacy_tie`](../../src/core/phys/physworld.cpp#L585) のまま残っていますが、新旧 2 経路が並存しているわけではありません。「フィルタ無し」相当が要るときは [`phys::every_collider_filter`](../../src/core/phys/physquery.hpp#L90) を渡します)。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L352) の "shapeCastAll shares filters and canonical TOI identity ordering" と [微小形状の長距離精度](../../test/physquery_test.cpp#L134)。
 >
-> **不変条件**: 1 回目の comparator に ε を持ち込まない(strict weak ordering を壊さない)。クラスタは必ず先頭要素の生の値にアンカーし、連鎖させない。`orderXxxHits` は provider 側ではなく **host 側で最後に呼ぶ**([`orderOverlapHits` L530](../../src/core/phys/physicsruntime.cpp#L879) / [`orderShapeCastHits` L621](../../src/core/phys/physicsruntime.cpp#L957) / [`orderRaycastHits` L470](../../src/core/phys/physicsruntime.cpp#L641))。provider の列挙順を結果へ漏らさない最後の関門です。
+> **不変条件**: 1 回目の comparator に ε を持ち込まない(strict weak ordering を壊さない)。クラスタは必ず先頭要素の生の値にアンカーし、連鎖させない。`orderXxxHits` は provider 側ではなく **host 側で最後に呼ぶ**。runtime 側の呼び出しは共有スケルトン [`decodeHits()`](../../src/core/phys/physicsruntime.cpp#L324) の末尾 1 箇所へ集約され、各クエリ入口は並べ替え関数を `order` 引数として渡すだけになりました([overlap の引き渡し](../../src/core/phys/physicsruntime.cpp#L947) / [shapeCast の引き渡し](../../src/core/phys/physicsruntime.cpp#L1057) / [raycast の引き渡し](../../src/core/phys/physicsruntime.cpp#L909))。生 hit の翻訳が全件通ったあとにだけ走る、provider の列挙順を結果へ漏らさない最後の関門であることは変わりません(例外は mesh と primitive の hit を連結する `PhysWorld::queryOverlapAll()` で、連結後にもう一度 `orderOverlapHits` を呼びます — [連結後の再ソート](../../src/core/phys/physworld.cpp#L613))。
 
 > 🧩 **難所 — GJK 最近点の全列挙**([`closestToOrigin()`](../../src/core/phys/physquerysweep.cpp#L373) / [`closestForSubset()`](../../src/core/phys/physquerysweep.cpp#L310))
 >
@@ -403,13 +403,13 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 > 40 回使い切ったら nullopt(偽陽性より偽陰性を選ぶ)
 > ```
 >
-> **手がかり**: ループの**前**に 3 つの早期経路があります — sphere-sphere の解析的初期接触、`overlaps()` が真なら EPA へ、`delta≈0` なら nullopt。つまりこのループは「最初は離れている」場合専用で、`last_separated_time = 0` から安全に始められます。`normal` の向きの規約は [法線の契約](../../src/core/phys/physquery.hpp#L126) のコメントが正。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp) の "shapeCast prevents thin-collider tunneling for every standard shape pair" と退化形状 corpus。
+> **手がかり**: ループの**前**に 3 つの早期経路があります — sphere-sphere の解析的初期接触、`overlaps()` が真なら EPA へ、`delta≈0` なら nullopt。つまりこのループは「最初は離れている」場合専用で、`last_separated_time = 0` から安全に始められます。`normal` の向きの規約は [法線の契約](../../src/core/phys/physquery.hpp#L134) のコメントが正。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp) の "shapeCast prevents thin-collider tunneling for every standard shape pair" と退化形状 corpus。
 >
 > **不変条件**: `step` の下限を消さない(終了しなくなります)。逆に大きくすると TOI を飛び越えて貫通を見逃します。`kDistanceTolerance`(2e-5)は ABI 層の `shapeCastContactEpsilonV2`(1e-5)とは別物で、ABI 検証は `time_of_impact <= 1 + 1e-5` を要求するため、`1 + kDistanceTolerance` 超過の判定を緩めると host 側で `provider_error` になります。
 
 > 🧩 **難所 — EPA の四面体と面選択**([`penetration()`](../../src/core/phys/physquerysweep.cpp#L657) / [`closestCanonicalFace()`](../../src/core/phys/physquerysweep.cpp#L621))
 >
-> **何をする所か**: 初期貫通しているペアの MTD(minimum translation distance — 貫通を解消する最小の押し出し量。このコードベースでは [`ShapeCastHit`](../../src/core/phys/physquery.hpp#L141) の契約どおり `normal * penetration_depth`、つまり向きと深さの対を指します)を EPA で求めます。通常形状の`shapeCast`が`initial_overlap = true`で返す`penetration_depth` / `normal`の出どころです。meshの近似押し戻しは`approximate_depenetration`で区別します。EPA そのものの説明（GJK が「交差している」で止まった後、その単体を種に多面体を膨らませて原点に最も近い面を探す）は [第10章 §10.5](10_background_knowledge.md) にあります。
+> **何をする所か**: 初期貫通しているペアの MTD(minimum translation distance — 貫通を解消する最小の押し出し量。このコードベースでは [`ShapeCastHit`](../../src/core/phys/physquery.hpp#L149) の契約どおり `normal * penetration_depth`、つまり向きと深さの対を指します)を EPA で求めます。通常形状の`shapeCast`が`initial_overlap = true`で返す`penetration_depth` / `normal`の出どころです。meshの近似押し戻しは`approximate_depenetration`で区別します。EPA そのものの説明（GJK が「交差している」で止まった後、その単体を種に多面体を膨らませて原点に最も近い面を探す）は [第10章 §10.5](10_background_knowledge.md) にあります。
 >
 > **素朴に読むと**: 2 か所が初見でまず読めません。(a) [`enclosingTetrahedron()`](../../src/core/phys/physquerysweep.cpp#L544) が **26 方向サンプル + 4 点の総当り**という力技になっている理由。EPA は原点を内包する四面体からしか始められませんが、GJK が返す終端 simplex は点 / 線分 / 三角形かもしれません。通常は次元を 1 つずつ上げる増分構成をしますが退化ケースの分岐が多いので、ここでは {-1,0,1}³ の 26 方向で support 点(support 関数 — 与えた方向 d に対し、形状上で dot(p, d) が最大になる点、つまりその方向の一番端の点を返す関数。凸形状はこの関数だけで完全に表現でき、GJK / EPA の反復はこの関数の呼び出しだけで進みます)を足し、`C(n,4)` を総当りして**最小重心座標が最大**の四面体を選びます。「原点を最も余裕を持って内包する = 最も条件の良い面が張れる」という選び方で、この最大化が抜けるとほぼ退化した四面体を掴み、`makeFace()` が全滅して `faces.size() != 4` で `nullopt` へ落ちます。(b) `closestCanonicalFace()` の三重条件。同心の箱のような対称ペアでは**同じ深さの面が同時に何枚も存在**し、float 誤差と面の生成順で勝者が変わると MTD の向きがコンパイラ依存になります。そこで最小距離から `shapeCastTieEpsilon` 以内の面だけを候補にし、**符号反転した法線**(= 実際に返る MTD 方向)に対する辞書式キー `(dot(n, preferred), n.x, n.y, n.z)` の最大を採ります。`preferred` は `normalize(-delta)`(delta=0 なら +X)なので「動いてきた方向へ押し返す面」が優先されます。条件式の `!canonicalNormalGreater(selected, candidate, ...)` は「先の比較が偽で、かつ逆向きも偽」= キー完全一致 を表す遠回りな書き方で、そのときだけ頂点インデックス三つ組の辞書順で決めます。
 >
@@ -425,7 +425,7 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 >
 > **手がかり**: `addBoundaryEdge` の「逆向き辺があれば消す、なければ積む」は可視面群の**シルエット抽出**の定石で、ここを理解しないと穴の張り直しが読めません。`facePenetration()` は 3 頂点で `closestToOrigin()` を再利用して接触点を出します(直前の難所と繋がります)。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L301) の "shapeCast reports deterministic initial-overlap minimum translation"。
 >
-> **不変条件**: MTD の tie-break キーと `preferred` の定義は [MTDの優先方向](../../src/core/phys/physquery.hpp#L136)の**公開契約**です(変えると `shapeCast` の外向き API が変わります)。`penetration()` が `nullopt` を返しても `shapeCast` は落ちず GJK の法線 + depth 0 へ縮退するので、この fallback を消すと退化ペアで hit が消えます。`makeFace()` の向き正規化(距離が負なら反転)は「原点が内部にある」前提なので、四面体選択を緩めるとこの前提が壊れます。
+> **不変条件**: MTD の tie-break キーと `preferred` の定義は [MTDの優先方向](../../src/core/phys/physquery.hpp#L144)の**公開契約**です(変えると `shapeCast` の外向き API が変わります)。`penetration()` が `nullopt` を返しても `shapeCast` は落ちず GJK の法線 + depth 0 へ縮退するので、この fallback を消すと退化ペアで hit が消えます。`makeFace()` の向き正規化(距離が負なら反転)は「原点が内部にある」前提なので、四面体選択を緩めるとこの前提が壊れます。
 
 ### World binding層
 
@@ -442,7 +442,7 @@ builtin providerは **broad phase spatial index** を持たず、queryごとに�
 
 呼び出し元は専用のゲームSystem `PhysicsTriggerSystem` です（[`PhysicsTriggerSystem`](../../src/core/phys/physworld.cpp#L34)）。orderは `std::numeric_limits<int>::max()` なので、組み込み`BuiltinCameraControllerSystem`（10000）を含む**すべてのゲームSystemの後**に走ります。
 
-[`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L731) は、
+[`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L692) は、
 `trigger=true` collider ごとに provider の overlap query を行い、full
 `EntityId` の canonical pair set を前 frame と比較します。pair 全体を sort /
 unique してから sorted merge するため、provider の列挙順には依存しません。
@@ -458,7 +458,7 @@ event は特別な即時 callback ではなく通常のE1 queueへ入り、次�
 typed System/Behavior handlerへ配送されます。trigger query と rigid-body responseは
 独立であり、現在も Jolt は query providerだけです。
 
-> 🧩 **難所 — 差分は 1 パスのマージ**([`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L731))
+> 🧩 **難所 — 差分は 1 パスのマージ**([`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L692))
 >
 > **何をする所か**: trigger collider ごとの overlap 結果から entity ペア集合を作り、前フレームの集合と差分を取って `OverlapEnter` / `OverlapExit` を emit します。
 >
@@ -517,7 +517,7 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 >  └────────┘   下から: support < plane              → 素通り
 > ```
 >
-> **手がかり**: 渡される `shape` は `moveAndSlide()` の**その反復の開始姿勢**(`result.shape`)であって元の入力形状ではないので、滑った後の再接触は滑り後の姿勢で判定されます。`hit.position` が「静止 collider 側の点」であることは [接触位置の契約](../../src/core/phys/physquery.hpp#L125)に依存しています。粗いフィルタ `filter.include_one_way` は**クエリから丸ごと除外**する経路で、細かい方向判定はこの関数側にあります(二層になっているのを見落としやすい)。テストは [`platformer_controller_test.cpp`](../../test/platformer_controller_test.cpp#L247) の "one-way floors pass from below, catch from above, and can be disabled"。
+> **手がかり**: 渡される `shape` は `moveAndSlide()` の**その反復の開始姿勢**(`result.shape`)であって元の入力形状ではないので、滑った後の再接触は滑り後の姿勢で判定されます。`hit.position` が「静止 collider 側の点」であることは [接触位置の契約](../../src/core/phys/physquery.hpp#L133)に依存しています。粗いフィルタ `filter.include_one_way` は**クエリから丸ごと除外**する経路で、細かい方向判定はこの関数側にあります(二層になっているのを見落としやすい)。テストは [`platformer_controller_test.cpp`](../../test/platformer_controller_test.cpp#L247) の "one-way floors pass from below, catch from above, and can be disabled"。
 >
 > **不変条件**: `projectedRadius()` は純粋層の `support()` と同じ形状規約に一致していること(ずれると乗れる / 抜けるが形状ごとに食い違います)。比較は当該反復の**開始姿勢**に対して行う。`one_way_tolerance >= skin_width` が実質の前提です(既定 2e-4 vs 1e-4)。
 
@@ -595,7 +595,7 @@ audioと同じく、persistenceも「用意」と「書き込み」に割れて�
 
 ## 5.11 Debug text
 
-`GameContext::debugText(x,y,text)`は [`DebugText::text()`](../../src/core/renderer/debugtext.hpp#L84) へglyphをqueueします。描画configで`debug_text` featureが有効なときだけrendererが`DebugText` moduleを生成し、対応passで描画します。APIを呼べることと、passが画面へ出すことは別条件です。
+`RenderContext::debugText(x,y,text,color,scale)`(`ctx.render().debugText`)は [`DebugText::text()`](../../src/core/renderer/debugtext.hpp#L73) へglyphをqueueします。描画configで`debug_text` featureが有効なときだけrendererが`DebugText` moduleを生成し、対応passで描画します。APIを呼べることと、passが画面へ出すことは別条件です。
 
 ## 5.12 ゲームコードの推奨境界
 
@@ -654,11 +654,11 @@ audioと同じく、persistenceも「用意」と「書き込み」に割れて�
 >
 > **不変条件**: `parents[i] < i`(root は -1)。`localToModel()` の 1 パスがこれに依存します。`layout_to_original` と `original_to_layout` は互いの逆写像なので、片方だけ触らないこと。
 
-> 🧩 **難所 — publish しない publish**([`publishFromSource()`](../../src/core/animation/animationservice.cpp#L1617) / [`commitStagedFrame()`](../../src/core/animation/animationservice.cpp#L821))
+> 🧩 **難所 — publish しない publish**([`publishFromSource()`](../../src/core/animation/animationservice.cpp#L1661) / [`commitStagedFrame()`](../../src/core/animation/animationservice.cpp#L865))
 >
 > **何をする所か**: `animationservice.cpp` の runtime は [`PoseArena`](../../src/core/animation/animationposearena.hpp#L23)(pose 本体と stale 表)・[`SinkRegistry`](../../src/core/animation/animationsinkregistry.hpp#L24)(フェーズ登録)・[`PhaseScheduler`](../../src/core/animation/animationphasescheduler.hpp#L28)(順序と実行)を組み合わせた形で、以下の staging は arena と scheduler の縫い目です。anim graph が `base_pose_and_root_modifier` フェーズで publish したフレームを、その場では renderer へ流さず 1 枚だけ staging し、全フェーズ終了後に `commitStagedFrame()` が 1 回だけ publish します。
 >
-> **素朴に読むと**: `publishFromSource()` は名前に反して、フェーズ実行中は **publish しません**。ここを読み飛ばすと「publish したのに画面に出ない」の原因が追えません。さらに深いのは `commitStagedFrame()` の `if (staged.pose_accessed)` です。anim graph は自分で local→model→palette(matrix palette — skinning 用に、joint ごとの「model 行列 × inverse bind 行列」を並べた行列配列。頂点シェーダはこれを joint index で引いて頂点を変形します)まで済ませた palette を渡してきますが、その後の `world_post_process` フェーズで VRM の視線適用([`lookAtForPhase()`](../../src/core/animation/vrmapplication.cpp#L895))が staged local pose の回転を**直接上書き**します。上書き後の palette は graph が計算したものと食い違うので、「誰かが staged pose を acquire したら」model matrix と palette を local pose から作り直し、graph の palette を捨てます。素朴に「publish された palette をそのまま使う」と、目だけ動かないモデルができます(頭は動くので気付きにくい)。逆に「常に作り直す」と、pose を誰も触らないフレームでも `localToModel` + `buildSkinPalette` を二度払います。もう 1 つの罠は palette の所有権で、staging 時に呼び出し側の palette を `staged.palette` へ**深いコピー**したうえで、**staged 側に控えた descriptor** の `staged.frame.palette` を `nullptr` にします(呼び出し側のバッファを書き換えるわけではありません。staged 側に生ポインタを一切残さないための処置です)。呼び出し側のバッファは `evaluate()` を抜けた時点で消えるので、ポインタを保持すると commit 時にダングリングになります。
+> **素朴に読むと**: `publishFromSource()` は名前に反して、フェーズ実行中は **publish しません**。ここを読み飛ばすと「publish したのに画面に出ない」の原因が追えません。さらに深いのは `commitStagedFrame()` の `if (staged.pose_accessed)` です。anim graph は自分で local→model→palette(matrix palette — skinning 用に、joint ごとの「model 行列 × inverse bind 行列」を並べた行列配列。頂点シェーダはこれを joint index で引いて頂点を変形します)まで済ませた palette を渡してきますが、その後の `world_post_process` フェーズで VRM の視線適用([`lookAtForPhase()`](../../src/core/animation/vrmapplication.cpp#L951))が staged local pose の回転を**直接上書き**します。上書き後の palette は graph が計算したものと食い違うので、「誰かが staged pose を acquire したら」model matrix と palette を local pose から作り直し、graph の palette を捨てます。素朴に「publish された palette をそのまま使う」と、目だけ動かないモデルができます(頭は動くので気付きにくい)。逆に「常に作り直す」と、pose を誰も触らないフレームでも `localToModel` + `buildSkinPalette` を二度払います。もう 1 つの罠は palette の所有権で、staging 時に呼び出し側の palette を `staged.palette` へ**深いコピー**したうえで、**staged 側に控えた descriptor** の `staged.frame.palette` を `nullptr` にします(呼び出し側のバッファを書き換えるわけではありません。staged 側に生ポインタを一切残さないための処置です)。呼び出し側のバッファは `evaluate()` を抜けた時点で消えるので、ポインタを保持すると commit 時にダングリングになります。
 >
 > **骨子**:
 > ```text
@@ -843,7 +843,7 @@ teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-
 
 ### DLL reload
 
-[`GameLogicReloader::validateCandidate()`](../../src/core/gamelogic/gamelogicreload.cpp#L431) は [`ResolvedScene::behaviorReloadSources()`](../../src/core/loader/resolvedscene.hpp#L264) からcore-privateな中立DTOを取得し、[`internal::validateBehaviorReloadSources()`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L85) へ渡します。DTOはauthored `source_params` とscene / object / authored component indexのprovenanceを保ち、候補DLL側のcodecだけが [`candidate->canonicalize_params(source.source_params)`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L123) を一度実行します。これにより `schema_version` の差分と型の消滅を候補DLL採用前に検証しつつ、active側の既定値で二重補完することを防ぎます。validatorはcore-privateであり、`src/core/userpublic` の公開面は変更していません。
+[`GameLogicReloader::validateCandidate()`](../../src/core/gamelogic/gamelogicreload.cpp#L466) は [`ResolvedScene::behaviorReloadSources()`](../../src/core/loader/resolvedscene.hpp#L264) からcore-privateな中立DTOを取得し、[`internal::validateBehaviorReloadSources()`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L85) へ渡します。DTOはauthored `source_params` とscene / object / authored component indexのprovenanceを保ち、候補DLL側のcodecだけが [`candidate->canonicalize_params(source.source_params)`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L123) を一度実行します。これにより `schema_version` の差分と型の消滅を候補DLL採用前に検証しつつ、active側の既定値で二重補完することを防ぎます。validatorはcore-privateであり、`src/core/userpublic` の公開面は変更していません。
 
 回帰テストは [`test/run_behavior_dll_reload.ps1`](../../test/run_behavior_dll_reload.ps1) の9ケースです（`test/CMakeLists.txt`の`foreach(wp162_case ...)`）。
 
@@ -872,7 +872,7 @@ teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-
 >
 > **不変条件**: 指紋に入れる項目・順序・キー名を変えると、既存の全 behavior が `schema_changed_without_version_bump` になります(変えるなら reload 側の互換方針とセットで)。`ordered_json` を `json` に変えない。指紋生成はデフォルト値の encode を経由するので、この経路を短絡させない。
 
-> 🧩 **難所 — 例外を捨ててから unload**([`GameLogicReloader::reloadTransaction()`](../../src/core/gamelogic/gamelogicreload.cpp#L557))
+> 🧩 **難所 — 例外を捨ててから unload**([`GameLogicReloader::reloadTransaction()`](../../src/core/gamelogic/gamelogicreload.cpp#L584))
 >
 > **何をする所か**: 候補 DLL のシャドウコピーを検証し、teardown → 旧 DLL の unload → 新 DLL の load → rebuild を 1 つの transaction として実行します。どこで失敗しても旧 DLL の状態へ戻すのがロールバック側の仕事です。
 >
@@ -889,7 +889,7 @@ teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-
 >               rebuild() が失敗したら teardown + unload して active を捨てる
 > ```
 >
-> **手がかり**: [`unload()`](../../src/core/gamelogic/gamelogicreload.cpp#L419) は `noexcept` で、`FreeLibrary` / `dlclose` の前に `releaseGameLogicRegistrations(owner)` を呼びます — owner 単位の登録解除(§5.2)が先、コード解放が後です。候補の後始末が [`removeFileNoThrow()`](../../src/core/gamelogic/gamelogicreload.cpp#L263) なのは `noexcept` 文脈から例外を漏らさないためで、`.pdb` も一緒に消します。`ReloadStateGuard` は transaction 中だけ `reload_in_progress` を立てる RAII です。候補の検証は load 前ではなく [`validateCandidate()`](../../src/core/gamelogic/gamelogicreload.cpp#L431) が**一度ロードして即 unload する**形で行うので、teardown に入る時点で候補は既に 1 回開かれています。回帰は [`test/run_game_logic_reload.ps1`](../../test/run_game_logic_reload.ps1)(壊れた DLL / ABI 不一致の後も旧挙動が続くこと、participant の `applied` / `failed` カウンタ、`systems=1` で登録が漏れないこと)。
+> **手がかり**: [`unload()`](../../src/core/gamelogic/gamelogicreload.cpp#L454) は `noexcept` で、`FreeLibrary` / `dlclose` の前に `releaseGameLogicRegistrations(owner)` を呼びます — owner 単位の登録解除(§5.2)が先、コード解放が後です。候補の後始末が [`removeFileNoThrow()`](../../src/core/gamelogic/gamelogicreload.cpp#L298) なのは `noexcept` 文脈から例外を漏らさないためで、`.pdb` も一緒に消します。`ReloadStateGuard` は transaction 中だけ `reload_in_progress` を立てる RAII です。候補の検証は load 前ではなく [`validateCandidate()`](../../src/core/gamelogic/gamelogicreload.cpp#L466) が**一度ロードして即 unload する**形で行うので、teardown に入る時点で候補は既に 1 回開かれています。回帰は [`test/run_game_logic_reload.ps1`](../../test/run_game_logic_reload.ps1)(壊れた DLL / ABI 不一致の後も旧挙動が続くこと、participant の `applied` / `failed` カウンタ、`systems=1` で登録が漏れないこと)。
 >
 > **不変条件**: `catch` の中で DLL を unload しない。`previous_unloaded` の 2 経路を 1 本化しない(旧ハンドルの再利用は「まだ落としていない」ときだけ正しい)。後始末経路は `noexcept` を保ち、`removeFileNoThrow()` を throw する削除へ替えない。ロールバックの `rebuild()` が失敗したら active を残さず捨てる。
 
@@ -1122,8 +1122,8 @@ OFFビルドではこの3ファイルがビルドに入らず、`pelican.pose` m
 
 構造体の末尾 `resolve_rig_source_node` は、この4本目のbitが立っているときだけ存在する**加算的な尾**です（[宣言](../../src/core/userpublic/animation/pose_staging_v1.hpp#L104)）。
 
-4本目が要る理由がそのまま使い方です。`pose.clip_sample` は自分の `root_node`（glTF の node index）を**attach時に1回だけ**layout indexへ解決しますが、その時点ではまだ何もstagingされていません。staged frame 経由では聞けないうえ、この写像はそもそもフレームの性質ではなく **rig の性質**です。実装は [`resolveRigSourceNode()`](../../src/core/animation/animationservice.cpp#L1357) で、`rig.original_to_layout` を1回引くだけです（layoutに載らないnodeの印は `uint32` の最大値で、これは `not_found`）。
+4本目が要る理由がそのまま使い方です。`pose.clip_sample` は自分の `root_node`（glTF の node index）を**attach時に1回だけ**layout indexへ解決しますが、その時点ではまだ何もstagingされていません。staged frame 経由では聞けないうえ、この写像はそもそもフレームの性質ではなく **rig の性質**です。実装は [`resolveRigSourceNode()`](../../src/core/animation/animationservice.cpp#L1401) で、`rig.original_to_layout` を1回引くだけです（layoutに載らないnodeの印は `uint32` の最大値で、これは `not_found`）。
 
-`clip` ハンドルも一緒に渡すと、そのclipがそのnodeで駆動している **channel kind のビットマスク**が返ります（[集計](../../src/core/animation/animationservice.cpp#L925)）。これで「あなたがrootと呼んだnode 3を、このclipは一度も平行移動させない」を**1度もサンプルせずに**答えられます。そうでなければ、症状は「常に0の変位」という気付きにくい形になります。
+`clip` ハンドルも一緒に渡すと、そのclipがそのnodeで駆動している **channel kind のビットマスク**が返ります（[集計](../../src/core/animation/animationservice.cpp#L969)）。これで「あなたがrootと呼んだnode 3を、このclipは一度も平行移動させない」を**1度もサンプルせずに**答えられます。そうでなければ、症状は「常に0の変位」という気付きにくい形になります。
 
-生成側（`resolve_rig_source_node` を埋める箇所）は [`getPoseStagingServiceV1()` の実装](../../src/core/animation/animationservice.cpp#L1821)です。呼び手の `struct_size` を超えて書かないよう `min(caller_size, sizeof)` でコピーするので、古いクライアントは末尾を見ないまま安全に使えます。
+生成側（`resolve_rig_source_node` を埋める箇所）は [`getPoseStagingServiceV1()` の実装](../../src/core/animation/animationservice.cpp#L1865)です。呼び手の `struct_size` を超えて書かないよう `min(caller_size, sizeof)` でコピーするので、古いクライアントは末尾を見ないまま安全に使えます。
