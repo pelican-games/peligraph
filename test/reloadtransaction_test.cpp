@@ -367,17 +367,21 @@ TEST_CASE("ReloadService routes requests through one named participant",
 
     service.registerParticipant(ReloadParticipant{
         .name = "fake",
-        .claims = [key](const ReloadRequest &request) { return request.key == key; },
-        .enqueue = [resource](const ReloadRequest &, ReloadCoordinator &coordinator) {
-            ReloadTransactionGroup group{"fake-participant"};
-            group.add(replace(resource, 2));
-            coordinator.enqueue(std::move(group));
-            return true;
-        },
-        .retire = [&retired](std::shared_ptr<const void> payload,
-                             ReloadCoordinator &) noexcept {
-            retired = *std::static_pointer_cast<const int>(std::move(payload));
-            return true;
+        .file = FileReloadRole{
+            .claims = [key](const ReloadRequest &request) { return request.key == key; },
+            .apply = PerRequestReloadApply{
+                .enqueue = [resource](const ReloadRequest &, ReloadCoordinator &coordinator) {
+                    ReloadTransactionGroup group{"fake-participant"};
+                    group.add(replace(resource, 2));
+                    coordinator.enqueue(std::move(group));
+                    return true;
+                },
+            },
+            .retire = [&retired](std::shared_ptr<const void> payload,
+                                 ReloadCoordinator &) noexcept {
+                retired = *std::static_pointer_cast<const int>(std::move(payload));
+                return true;
+            },
         },
     });
 
@@ -405,22 +409,26 @@ TEST_CASE(
 
     service.registerParticipant(ReloadParticipant{
         .name = "fake.pipeline",
-        .claims =
-            [root, feature](
-                const ReloadRequest &request) {
-                return request.key == root ||
-                       request.key == feature;
+        .file = FileReloadRole{
+            .claims =
+                [root, feature](
+                    const ReloadRequest &request) {
+                    return request.key == root ||
+                           request.key == feature;
+                },
+            .apply = BatchReloadApply{
+                .apply_batch =
+                    [&apply_count, &received](
+                        std::span<const ReloadRequest>
+                            requests) {
+                        ++apply_count;
+                        for (const auto &request : requests) {
+                            received.push_back(request.key);
+                        }
+                        return true;
+                    },
             },
-        .apply_batch =
-            [&apply_count, &received](
-                std::span<const ReloadRequest>
-                    requests) {
-                ++apply_count;
-                for (const auto &request : requests) {
-                    received.push_back(request.key);
-                }
-                return true;
-            },
+        },
     });
 
     const std::array requests{
@@ -459,7 +467,6 @@ TEST_CASE(
         makeAssetKey("shaders/main.surface");
     const auto texture =
         makeAssetKey("textures/base.png");
-    std::size_t standalone_graph_applies = 0;
     std::size_t coordinated_applies = 0;
     std::vector<AssetKey> coordinated_owned;
     std::vector<AssetKey> coordinated_companions;
@@ -467,60 +474,62 @@ TEST_CASE(
 
     service.registerParticipant(ReloadParticipant{
         .name = "fake.assets",
-        .claims =
-            [shader, texture](
-                const ReloadRequest &request) {
-                return request.key == shader ||
-                       request.key == texture;
+        .file = FileReloadRole{
+            .claims =
+                [shader, texture](
+                    const ReloadRequest &request) {
+                    return request.key == shader ||
+                           request.key == texture;
+                },
+            .apply = BatchReloadApply{
+                .apply_batch =
+                    [&standalone_assets](
+                        std::span<const ReloadRequest>
+                            requests) {
+                        for (const auto &request : requests) {
+                            standalone_assets.push_back(
+                                request.key);
+                        }
+                        return true;
+                    },
             },
-        .apply_batch =
-            [&standalone_assets](
-                std::span<const ReloadRequest>
-                    requests) {
-                for (const auto &request : requests) {
-                    standalone_assets.push_back(
-                        request.key);
-                }
-                return true;
-            },
+        },
     });
     service.registerParticipant(ReloadParticipant{
         .name = "fake.pipeline",
-        .claims =
-            [graph, shader, shared](const ReloadRequest &request) {
-                return request.key == graph || (shared && request.key == shader);
+        .file = FileReloadRole{
+            .claims =
+                [graph, shader, shared](const ReloadRequest &request) {
+                    return request.key == graph || (shared && request.key == shader);
+                },
+            .apply = CompanionBatchReloadApply{
+                .companion_participants = {
+                    "fake.assets"},
+                .companion_claims =
+                    [shader](
+                        std::string_view,
+                        const ReloadRequest &request) {
+                        return request.key == shader;
+                    },
+                .apply =
+                    [&](
+                        std::span<const ReloadRequest> owned,
+                        std::span<const ReloadRequest>
+                            companions) {
+                        ++coordinated_applies;
+                        for (const auto &request : owned) {
+                            coordinated_owned.push_back(
+                                request.key);
+                        }
+                        for (const auto &request :
+                             companions) {
+                            coordinated_companions.push_back(
+                                request.key);
+                        }
+                        return true;
+                    },
             },
-        .apply_batch =
-            [&standalone_graph_applies](
-                std::span<const ReloadRequest>) {
-                ++standalone_graph_applies;
-                return true;
-            },
-        .companion_participants = {
-            "fake.assets"},
-        .companion_claims =
-            [shader](
-                std::string_view,
-                const ReloadRequest &request) {
-                return request.key == shader;
-            },
-        .apply_with_companions =
-            [&](
-                std::span<const ReloadRequest> owned,
-                std::span<const ReloadRequest>
-                    companions) {
-                ++coordinated_applies;
-                for (const auto &request : owned) {
-                    coordinated_owned.push_back(
-                        request.key);
-                }
-                for (const auto &request :
-                     companions) {
-                    coordinated_companions.push_back(
-                        request.key);
-                }
-                return true;
-            },
+        },
     });
 
     const std::array requests{
@@ -534,7 +543,8 @@ TEST_CASE(
     REQUIRE(
         service.applyRequestsForTesting(requests) ==
         std::vector<bool>{true, true, true});
-    REQUIRE(standalone_graph_applies == 0);
+    // A companion owner has no standalone batch route at all now: the type
+    // says the coordinated call is the only way its requests are delivered.
     REQUIRE(coordinated_applies == 1);
     REQUIRE(coordinated_owned ==
             (shared ? std::vector<AssetKey>{shader, graph} : std::vector<AssetKey>{graph}));
@@ -553,10 +563,14 @@ TEST_CASE("ReloadService rejects ambiguous participant claims before enqueue",
     for (const auto *name : {"left", "right"}) {
         service.registerParticipant(ReloadParticipant{
             .name = name,
-            .claims = [key](const ReloadRequest &request) { return request.key == key; },
-            .enqueue = [&enqueued](const ReloadRequest &, ReloadCoordinator &) {
-                ++enqueued;
-                return true;
+            .file = FileReloadRole{
+                .claims = [key](const ReloadRequest &request) { return request.key == key; },
+                .apply = PerRequestReloadApply{
+                    .enqueue = [&enqueued](const ReloadRequest &, ReloadCoordinator &) {
+                        ++enqueued;
+                        return true;
+                    },
+                },
             },
         });
     }
@@ -565,9 +579,145 @@ TEST_CASE("ReloadService rejects ambiguous participant claims before enqueue",
     REQUIRE(enqueued == 0);
     REQUIRE_THROWS(service.registerParticipant(ReloadParticipant{
         .name = "left",
-        .claims = [](const ReloadRequest &) { return false; },
-        .enqueue = [](const ReloadRequest &, ReloadCoordinator &) { return false; },
+        .file = FileReloadRole{
+            .claims = [](const ReloadRequest &) { return false; },
+            .apply = PerRequestReloadApply{
+                .enqueue = [](const ReloadRequest &, ReloadCoordinator &) { return false; },
+            },
+        },
     }));
+    // A companion owner must name someone other than itself.
+    REQUIRE_THROWS(service.registerParticipant(ReloadParticipant{
+        .name = "self.companion",
+        .file = FileReloadRole{
+            .claims = [](const ReloadRequest &) { return false; },
+            .apply = CompanionBatchReloadApply{
+                .companion_participants = {"self.companion"},
+                .apply = [](std::span<const ReloadRequest>,
+                            std::span<const ReloadRequest>) { return true; },
+            },
+        },
+    }));
+}
+
+TEST_CASE(
+    "ReloadService applies nested batch owners outermost first whatever the registration order",
+    "[c7][reload-participant][batch][companions]") {
+    // "outer" names "inner" as a companion, and "inner" names "leaf". The
+    // inner owner must not absorb its own requests before the outer owner has
+    // had them, no matter which participant reached the service first.
+    const bool inner_first = GENERATE(false, true);
+    CAPTURE(inner_first);
+    if (!logger) setupLogger();
+    ReloadService service;
+    const auto outer_key = makeAssetKey("passes/outer.json");
+    const auto inner_key = makeAssetKey("shaders/inner.surface");
+    const auto leaf_key = makeAssetKey("materials/leaf.json");
+    std::vector<AssetKey> outer_owned;
+    std::vector<AssetKey> outer_companions;
+    std::vector<AssetKey> inner_owned;
+    std::vector<AssetKey> inner_companions;
+    std::vector<AssetKey> leaf_standalone;
+
+    const auto register_leaf = [&] {
+        service.registerParticipant(ReloadParticipant{
+            .name = "leaf",
+            .file = FileReloadRole{
+                .claims = [leaf_key](const ReloadRequest &request) {
+                    return request.key == leaf_key;
+                },
+                .apply = BatchReloadApply{
+                    .apply_batch = [&leaf_standalone](
+                                       std::span<const ReloadRequest> requests) {
+                        for (const auto &request : requests) {
+                            leaf_standalone.push_back(request.key);
+                        }
+                        return true;
+                    },
+                },
+            },
+        });
+    };
+    const auto register_inner = [&] {
+        service.registerParticipant(ReloadParticipant{
+            .name = "inner",
+            .file = FileReloadRole{
+                .claims = [inner_key](const ReloadRequest &request) {
+                    return request.key == inner_key;
+                },
+                .apply = CompanionBatchReloadApply{
+                    .companion_participants = {"leaf"},
+                    .apply = [&](std::span<const ReloadRequest> owned,
+                                 std::span<const ReloadRequest> companions) {
+                        for (const auto &request : owned)
+                            inner_owned.push_back(request.key);
+                        for (const auto &request : companions)
+                            inner_companions.push_back(request.key);
+                        return true;
+                    },
+                },
+            },
+        });
+    };
+    const auto register_outer = [&] {
+        service.registerParticipant(ReloadParticipant{
+            .name = "outer",
+            .file = FileReloadRole{
+                .claims = [outer_key](const ReloadRequest &request) {
+                    return request.key == outer_key;
+                },
+                .apply = CompanionBatchReloadApply{
+                    .companion_participants = {"inner", "leaf"},
+                    .apply = [&](std::span<const ReloadRequest> owned,
+                                 std::span<const ReloadRequest> companions) {
+                        for (const auto &request : owned)
+                            outer_owned.push_back(request.key);
+                        for (const auto &request : companions)
+                            outer_companions.push_back(request.key);
+                        return true;
+                    },
+                },
+            },
+        });
+    };
+
+    register_leaf();
+    if (inner_first) {
+        register_inner();
+        register_outer();
+    } else {
+        register_outer();
+        register_inner();
+    }
+
+    const std::array requests{
+        ReloadRequest{inner_key, ReloadKind::modified, {}, 1},
+        ReloadRequest{outer_key, ReloadKind::modified, {}, 1},
+        ReloadRequest{leaf_key, ReloadKind::modified, {}, 1},
+    };
+    REQUIRE(service.applyRequestsForTesting(requests) ==
+            std::vector<bool>{true, true, true});
+    REQUIRE(outer_owned == std::vector<AssetKey>{outer_key});
+    REQUIRE(outer_companions == std::vector<AssetKey>{inner_key, leaf_key});
+    REQUIRE(inner_owned.empty());
+    REQUIRE(inner_companions.empty());
+    REQUIRE(leaf_standalone.empty());
+
+    // With nothing of its own to publish, the outer owner steps aside and the
+    // inner owner takes its companion.
+    outer_owned.clear();
+    outer_companions.clear();
+    const std::array inner_only{
+        ReloadRequest{inner_key, ReloadKind::modified, {}, 1},
+        ReloadRequest{leaf_key, ReloadKind::modified, {}, 1},
+    };
+    REQUIRE(service.applyRequestsForTesting(inner_only) ==
+            std::vector<bool>{true, true});
+    REQUIRE(outer_owned.empty());
+    REQUIRE(outer_companions.empty());
+    REQUIRE(inner_owned == std::vector<AssetKey>{inner_key});
+    REQUIRE(inner_companions == std::vector<AssetKey>{leaf_key});
+    REQUIRE(leaf_standalone.empty());
 }
 
 TEST_CASE("ReloadService schedules runtime participants at their declared boundary",

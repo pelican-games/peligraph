@@ -15,6 +15,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <variant>
 #include <vector>
 
 namespace Pelican {
@@ -96,20 +97,37 @@ struct RuntimeReloadParticipant {
     std::function<void(nlohmann::json &)> describe;
 };
 
-struct ReloadParticipant {
-    std::string name;
-    std::function<bool(const ReloadRequest &)> claims;
+// Where a file-triggered batch is counted in the runtime status table.
+// `immediate` bills the apply as soon as the watcher frame delivers it.
+// `at_runtime_boundary` means the participant carries its own result forward
+// and bills it from its runtime transaction instead, so ReloadService must not
+// count the same apply twice.
+enum class ReloadStatusReporting : std::uint8_t {
+    immediate,
+    at_runtime_boundary,
+};
+
+// Apply route 1: one call per claimed request.
+struct PerRequestReloadApply {
     std::function<bool(const ReloadRequest &, ReloadCoordinator &)> enqueue;
-    // Requests claimed by one participant in the same watcher frame are
-    // delivered once. This is intended for whole-domain transactions such as
-    // render-pipeline recompilation, where rebuilding once per changed
-    // dependency would publish intermediate generations.
+};
+
+// Apply route 2: requests claimed by one participant in the same watcher frame
+// are delivered once. This is intended for whole-domain transactions such as
+// render-pipeline recompilation, where rebuilding once per changed dependency
+// would publish intermediate generations.
+struct BatchReloadApply {
     std::function<bool(std::span<const ReloadRequest>)> apply_batch;
-    // A batch owner may absorb selected requests claimed by other named
-    // participants so all affected domains publish one generation. The owner
-    // still needs apply_batch for ordinary standalone batches.
-    // A source claimed by both owner and an accepted companion is delivered in
-    // both spans of one coordinated call; unrelated ambiguous claims fail.
+};
+
+// Apply route 3: a batch owner absorbs selected requests claimed by other named
+// participants so all affected domains publish one generation.
+// A source claimed by both the owner and an accepted companion is delivered in
+// both spans of one coordinated call; unrelated ambiguous claims fail.
+// Owners run in topological order over these edges: an owner named as another
+// owner's companion is applied after that owner, so the outer transaction keeps
+// its companions no matter which participant registered first.
+struct CompanionBatchReloadApply {
     std::vector<std::string> companion_participants;
     std::function<bool(
         std::string_view,
@@ -118,19 +136,40 @@ struct ReloadParticipant {
     std::function<bool(
         std::span<const ReloadRequest>,
         std::span<const ReloadRequest>)>
-        apply_with_companions;
+        apply;
+    ReloadStatusReporting status_reporting =
+        ReloadStatusReporting::immediate;
+};
+
+// A participant that answers the file watcher. `claims` decides ownership, the
+// variant decides how owned requests are delivered, and the apply routes are
+// mutually exclusive by construction rather than by a runtime validator.
+struct FileReloadRole {
+    std::function<bool(const ReloadRequest &)> claims;
+    std::variant<PerRequestReloadApply, BatchReloadApply,
+                 CompanionBatchReloadApply>
+        apply;
     // Retirement callbacks must not throw. ReloadService still guards the
     // boundary so one faulty participant cannot terminate frame teardown.
     std::function<bool(std::shared_ptr<const void>, ReloadCoordinator &)> retire;
-    std::optional<RuntimeReloadParticipant> runtime;
-    // Engine-owned authoring documents may supply private candidate bytes.
-    // The participant must preflight them, invoke source_commit as the last
-    // fallible pre-publication operation, and then publish without throwing.
+};
+
+// Engine-owned authoring documents may supply private candidate bytes.
+// The participant must preflight them, invoke source_commit as the last
+// fallible pre-publication operation, and then publish without throwing.
+struct AuthoredCandidateReloadRole {
     std::function<AuthoredRuntimeReloadResult(
         RenderConfigCandidateDocumentSet,
         std::function<void()>,
         std::function<void(AuthoredRuntimeReloadResult)>)>
-        apply_authored_candidate;
+        apply;
+};
+
+struct ReloadParticipant {
+    std::string name;
+    std::optional<FileReloadRole> file;
+    std::optional<RuntimeReloadParticipant> runtime;
+    std::optional<AuthoredCandidateReloadRole> authored;
 };
 
 DECLARE_MODULE(ReloadService) {
@@ -175,17 +214,38 @@ DECLARE_MODULE(ReloadService) {
         nlohmann::ordered_json error_fields = nlohmann::ordered_json::object();
     };
 
+    // One request of the watcher frame. `claimant` is an index into
+    // `participants_`, never a pointer: an apply callback may register or
+    // unregister participants and reallocate that vector.
+    static constexpr std::size_t no_claimant =
+        static_cast<std::size_t>(-1);
+    struct RequestSlot {
+        const ReloadRequest *request = nullptr;
+        std::size_t claimant = no_claimant;
+        // Claimed by the owner and by one of its accepted companions, so it
+        // belongs in both spans of the coordinated call.
+        bool shared_claim = false;
+        bool ok = true;
+        bool done = false;
+        // No pass may touch a slot that failed, was already applied, or that
+        // nobody claimed.
+        bool pending() const noexcept {
+            return ok && !done && claimant != no_claimant;
+        }
+    };
+
     void ensureBuiltInParticipants();
     ReloadCoordinator::RetireSink retireSink();
     bool applyRequest(const ReloadRequest &request);
     std::vector<bool> applyRequests(std::span<const ReloadRequest> requests);
-    bool applyClaimedRequest(ReloadParticipant &claimant,
+    std::vector<std::size_t> companionOwnerOrder() const;
+    bool applyClaimedRequest(std::size_t claimant,
                              const ReloadRequest &request);
     bool applyClaimedBatch(
-        ReloadParticipant &claimant,
+        std::size_t claimant,
         std::span<const ReloadRequest> requests);
     bool applyClaimedCompanionBatch(
-        ReloadParticipant &claimant,
+        std::size_t claimant,
         std::span<const ReloadRequest> requests,
         std::span<const ReloadRequest>
             companion_requests);

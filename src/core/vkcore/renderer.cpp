@@ -3123,63 +3123,64 @@ void Renderer::installRenderPipelineReloadParticipant() {
         watch::ReloadParticipant{
             .name = std::string{
                 watch::renderPipelineReloadParticipantName},
-            .claims =
-                [this](
-                    const watch::ReloadRequest &request) {
-                    return render_pipeline_reload_state !=
-                               nullptr &&
-                           render_pipeline_reload_state
-                               ->watched_sources
-                               .contains(request.key);
+            .file = watch::FileReloadRole{
+                .claims =
+                    [this](
+                        const watch::ReloadRequest &request) {
+                        return render_pipeline_reload_state !=
+                                   nullptr &&
+                               render_pipeline_reload_state
+                                   ->watched_sources
+                                   .contains(request.key);
+                    },
+                // The graph owns the coordinated transaction: shader, material
+                // and model changes seen in the same watcher frame publish one
+                // generation with it instead of one generation each.
+                .apply = watch::CompanionBatchReloadApply{
+                    .companion_participants = {
+                        std::string{watch::modelReloadParticipantName},
+                        std::string{
+                            watch::shaderReloadParticipantName},
+                        std::string{
+                            watch::materialReloadParticipantName},
+                    },
+                    .companion_claims =
+                        [](std::string_view participant,
+                           const watch::ReloadRequest &request) {
+                            if (participant == watch::modelReloadParticipantName) {
+                                return true; // The model participant already claimed this request.
+                            }
+                            if (participant ==
+                                watch::
+                                    shaderReloadParticipantName) {
+                                return true;
+                            }
+                            if (participant !=
+                                watch::
+                                    materialReloadParticipantName) {
+                                return false;
+                            }
+                            const auto *materials =
+                                FastModuleContainer::tryGet<
+                                    MaterialContainer>();
+                            return materials != nullptr &&
+                                   materials
+                                       ->handlesMaterialValuesReload(
+                                           request.key);
+                        },
+                    .apply =
+                        [this](
+                            std::span<
+                                const watch::ReloadRequest>,
+                            std::span<
+                                const watch::ReloadRequest>
+                                companion_requests) {
+                            return reloadRenderPipelineFromDisk(
+                                       companion_requests)
+                                .error.empty();
+                        },
                 },
-            .apply_batch =
-                [this](std::span<
-                       const watch::ReloadRequest>) {
-                    return reloadRenderPipelineFromDisk()
-                        .error.empty();
-                },
-            .companion_participants = {
-                std::string{watch::modelReloadParticipantName},
-                std::string{
-                    watch::shaderReloadParticipantName},
-                std::string{
-                    watch::materialReloadParticipantName},
             },
-            .companion_claims =
-                [](std::string_view participant,
-                   const watch::ReloadRequest &request) {
-                    if (participant == watch::modelReloadParticipantName) {
-                        return true; // The model participant already claimed this request.
-                    }
-                    if (participant ==
-                        watch::
-                            shaderReloadParticipantName) {
-                        return true;
-                    }
-                    if (participant !=
-                        watch::
-                            materialReloadParticipantName) {
-                        return false;
-                    }
-                    const auto *materials =
-                        FastModuleContainer::tryGet<
-                            MaterialContainer>();
-                    return materials != nullptr &&
-                           materials
-                               ->handlesMaterialValuesReload(
-                                   request.key);
-                },
-            .apply_with_companions =
-                [this](
-                    std::span<
-                        const watch::ReloadRequest>,
-                    std::span<
-                        const watch::ReloadRequest>
-                        companion_requests) {
-                    return reloadRenderPipelineFromDisk(
-                               companion_requests)
-                        .error.empty();
-                },
             .runtime =
                 watch::RuntimeReloadParticipant{
                     .boundary =
@@ -3250,7 +3251,8 @@ void Renderer::installRenderPipelineReloadParticipant() {
                             };
                         },
                 },
-            .apply_authored_candidate =
+            .authored = watch::AuthoredCandidateReloadRole{
+                .apply =
                 [this](
                     RenderConfigCandidateDocumentSet candidate,
                     std::function<void()> source_commit,
@@ -3295,6 +3297,7 @@ void Renderer::installRenderPipelineReloadParticipant() {
                             applied.post_commit_error,
                     };
                 },
+            },
         });
 }
 
@@ -5679,17 +5682,24 @@ void Renderer::renderLogicalFrame(
             node_trace_ptr = &node_trace;
         }
         executeRenderingPasses(
-            render_ctx, rendering_pass,
-            frame_graph, modules, record_scene_as,
-            view_family_states,
-            frame_target_format,
-            render_target_layout_tracker,
-            node_trace_ptr,
-            engine_time.frameIndex(),
-            renderPipelineGraphVariantName(
-                graph_variant_policy.variant),
-            0, view_count, per_view_sort,
-            logical_frame_schedule, inactive_graph_scopes);
+            FrameGraphExecutionRequest{
+                .render_ctx = render_ctx,
+                .rendering_pass = rendering_pass,
+                .frame_graph = frame_graph,
+                .modules = modules,
+                .layout_tracker = render_target_layout_tracker,
+                .record_scene_as = record_scene_as,
+                .inactive_graph_scopes = inactive_graph_scopes,
+                .frame_target_format = frame_target_format,
+                .logical_frame = engine_time.frameIndex(),
+                .graph_variant = renderPipelineGraphVariantName(
+                    graph_variant_policy.variant),
+                .view_index = 0u,
+                .logical_view_count = view_count,
+                .authored_schedule = logical_frame_schedule,
+                .trace_out = node_trace_ptr,
+            },
+            view_family_states, per_view_sort);
         if (external_depth_submission_active) {
             recordExternalDepthExport(
                 render_ctx,
@@ -5815,17 +5825,25 @@ void Renderer::renderLogicalFrame(
             node_trace = nlohmann::json::array();
             node_trace_ptr = &node_trace;
         }
-        executeRenderingPasses(render_ctx, rendering_pass, frame_graph, modules, record_scene_as,
-                               view_family_states,
-                               frame_target_format,
-                               render_target_layout_tracker,
-                               node_trace_ptr, engine_time.frameIndex(),
-                               renderPipelineGraphVariantName(
-                                   graph_variant_policy.variant),
-                               view_index,
-                               view_count,
-                               per_view_sort,
-                               per_view_schedule, inactive_graph_scopes);
+        executeRenderingPasses(
+            FrameGraphExecutionRequest{
+                .render_ctx = render_ctx,
+                .rendering_pass = rendering_pass,
+                .frame_graph = frame_graph,
+                .modules = modules,
+                .layout_tracker = render_target_layout_tracker,
+                .record_scene_as = record_scene_as,
+                .inactive_graph_scopes = inactive_graph_scopes,
+                .frame_target_format = frame_target_format,
+                .logical_frame = engine_time.frameIndex(),
+                .graph_variant = renderPipelineGraphVariantName(
+                    graph_variant_policy.variant),
+                .view_index = view_index,
+                .logical_view_count = view_count,
+                .authored_schedule = per_view_schedule,
+                .trace_out = node_trace_ptr,
+            },
+            view_family_states, per_view_sort);
         if (external_depth_submission_active) {
             recordExternalDepthExport(
                 render_ctx,

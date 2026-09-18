@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
+#include <type_traits>
 
 namespace Pelican::watch {
 
@@ -58,65 +59,61 @@ ReloadService::~ReloadService() {
 }
 
 void ReloadService::registerParticipant(ReloadParticipant participant) {
+    // The apply routes are mutually exclusive by construction now, so what is
+    // left here is what a type cannot say: a required callback is not null, a
+    // companion list names other participants, and the name is unique.
     if (participant.name.empty()) {
         throw std::invalid_argument("reload participant name cannot be empty");
     }
-    const bool has_apply =
-        static_cast<bool>(participant.enqueue) ||
-        static_cast<bool>(participant.apply_batch);
-    const bool has_file_callbacks =
-        participant.claims || has_apply ||
-        participant.retire;
-    if (participant.enqueue &&
-        participant.apply_batch) {
-        throw std::invalid_argument(
-            "reload participant '" + participant.name +
-            "' cannot register both per-request and batch apply callbacks");
-    }
-    if (participant.apply_with_companions &&
-        (!participant.apply_batch ||
-         participant.companion_participants.empty())) {
-        throw std::invalid_argument(
-            "reload participant '" + participant.name +
-            "' companion apply requires apply_batch and at "
-            "least one companion participant");
-    }
-    if ((!participant.companion_participants.empty() ||
-         participant.companion_claims) &&
-        !participant.apply_with_companions) {
-        throw std::invalid_argument(
-            "reload participant '" + participant.name +
-            "' declares companions without a companion apply "
-            "callback");
-    }
-    std::unordered_set<std::string>
-        companion_names;
-    for (const auto &companion :
-         participant.companion_participants) {
-        if (companion.empty() ||
-            companion == participant.name ||
-            !companion_names.insert(companion).second) {
-            throw std::invalid_argument(
-                "reload participant '" +
-                participant.name +
-                "' has an invalid companion participant");
+    if (participant.file) {
+        const bool has_apply = std::visit(
+            [](const auto &route) {
+                using Route = std::decay_t<decltype(route)>;
+                if constexpr (std::is_same_v<Route, PerRequestReloadApply>) {
+                    return static_cast<bool>(route.enqueue);
+                } else if constexpr (std::is_same_v<Route, BatchReloadApply>) {
+                    return static_cast<bool>(route.apply_batch);
+                } else {
+                    return static_cast<bool>(route.apply);
+                }
+            },
+            participant.file->apply);
+        if (!participant.file->claims || !has_apply) {
+            throw std::invalid_argument("reload participant '" + participant.name +
+                                        "' requires claims plus one apply callback");
         }
-    }
-    if (static_cast<bool>(participant.claims) != has_apply) {
-        throw std::invalid_argument("reload participant '" + participant.name +
-                                    "' requires claims plus one apply callback");
-    }
-    if (has_file_callbacks &&
-        (!participant.claims || !has_apply)) {
-        throw std::invalid_argument("reload participant '" + participant.name +
-                                    "' cannot register a retire callback by itself");
+        if (const auto *companions =
+                std::get_if<CompanionBatchReloadApply>(&participant.file->apply)) {
+            if (companions->companion_participants.empty()) {
+                throw std::invalid_argument(
+                    "reload participant '" + participant.name +
+                    "' companion apply requires at least one companion "
+                    "participant");
+            }
+            std::unordered_set<std::string> companion_names;
+            for (const auto &companion :
+                 companions->companion_participants) {
+                if (companion.empty() ||
+                    companion == participant.name ||
+                    !companion_names.insert(companion).second) {
+                    throw std::invalid_argument(
+                        "reload participant '" +
+                        participant.name +
+                        "' has an invalid companion participant");
+                }
+            }
+        }
     }
     if (participant.runtime && !participant.runtime->apply) {
         throw std::invalid_argument("runtime reload participant '" + participant.name +
                                     "' requires an apply callback");
     }
-    if (!has_file_callbacks && !participant.runtime &&
-        !participant.apply_authored_candidate) {
+    if (participant.authored && !participant.authored->apply) {
+        throw std::invalid_argument("authored reload participant '" + participant.name +
+                                    "' requires an apply callback");
+    }
+    if (!participant.file && !participant.runtime &&
+        !participant.authored) {
         throw std::invalid_argument("reload participant '" + participant.name +
                                     "' has no file, runtime or authored-candidate callbacks");
     }
@@ -234,7 +231,7 @@ AuthoredRuntimeReloadResult ReloadService::applyAuthoredCandidate(
                      std::string{name} + "' is not registered",
         };
     }
-    if (!found->apply_authored_candidate) {
+    if (!found->authored) {
         return {
             .attempted = true,
             .error = "reload participant '" + std::string{name} +
@@ -242,7 +239,7 @@ AuthoredRuntimeReloadResult ReloadService::applyAuthoredCandidate(
         };
     }
     try {
-        auto result = found->apply_authored_candidate(
+        auto result = found->authored->apply(
             std::move(candidate), std::move(source_commit),
             std::move(completion));
         result.attempted = true;
@@ -522,12 +519,40 @@ void ReloadService::ensureBuiltInParticipants() {
     if (!has_participant(shaderReloadParticipantName)) {
         registerParticipant(ReloadParticipant{
             .name = std::string{shaderReloadParticipantName},
-            .claims = [](const ReloadRequest &request) {
-                const auto *library = FastModuleContainer::tryGet<ShaderLibrary>();
-                return library != nullptr && library->handlesReload(request.key);
-            },
-            .enqueue = [this](const ReloadRequest &request, ReloadCoordinator &) {
-                return applyShaderReloadBatch(std::span{&request, std::size_t{1}}, {});
+            .file = FileReloadRole{
+                .claims = [](const ReloadRequest &request) {
+                    const auto *library = FastModuleContainer::tryGet<ShaderLibrary>();
+                    return library != nullptr && library->handlesReload(request.key);
+                },
+                // One shader/pipeline transaction per watcher frame, with the
+                // material documents that changed alongside it. Material value
+                // documents ride along only when a shader actually changed;
+                // on their own they stay with the material participant.
+                .apply = CompanionBatchReloadApply{
+                    .companion_participants = {
+                        std::string{materialReloadParticipantName}},
+                    .companion_claims = [](std::string_view,
+                                           const ReloadRequest &request) {
+                        const auto *materials =
+                            FastModuleContainer::tryGet<MaterialContainer>();
+                        return materials != nullptr &&
+                               materials->handlesMaterialValuesReload(request.key);
+                    },
+                    .apply = [this](std::span<const ReloadRequest> shader_requests,
+                                    std::span<const ReloadRequest> companions) {
+                        std::vector<AssetKey> material_documents;
+                        material_documents.reserve(companions.size());
+                        for (const auto &companion : companions) {
+                            material_documents.push_back(companion.key);
+                        }
+                        return applyShaderReloadBatch(shader_requests,
+                                                      material_documents);
+                    },
+                    // The shader transaction hands its result to the runtime
+                    // participant below, which bills it at render_start.
+                    .status_reporting =
+                        ReloadStatusReporting::at_runtime_boundary,
+                },
             },
             .runtime = RuntimeReloadParticipant{
                 .boundary = RuntimeReloadBoundary::render_start,
@@ -634,19 +659,26 @@ void ReloadService::ensureBuiltInParticipants() {
             models->attachReloadCoordinator(transactions_);
             registerParticipant(ReloadParticipant{
                 .name = std::string{modelReloadParticipantName},
-                .claims = [models](const ReloadRequest &request) {
-                    return models->handlesReload(request.key);
-                },
-                .apply_batch = [this, models](std::span<const ReloadRequest> requests) {
-                    const auto before = transactions_.status();
-                    transactions_.enqueue(models->makeReloadGroup(requests, transactions_));
-                    transactions_.applyFrame(retireSink());
-                    const auto after = transactions_.status();
-                    return after.failed == before.failed && after.applied > before.applied;
-                },
-                .retire = [models](std::shared_ptr<const void> payload,
-                                   ReloadCoordinator &coordinator) noexcept {
-                    return models->retireReloadPayload(std::move(payload), coordinator);
+                .file = FileReloadRole{
+                    .claims = [models](const ReloadRequest &request) {
+                        return models->handlesReload(request.key);
+                    },
+                    .apply = BatchReloadApply{
+                        .apply_batch = [this, models](
+                                           std::span<const ReloadRequest> requests) {
+                            const auto before = transactions_.status();
+                            transactions_.enqueue(
+                                models->makeReloadGroup(requests, transactions_));
+                            transactions_.applyFrame(retireSink());
+                            const auto after = transactions_.status();
+                            return after.failed == before.failed &&
+                                   after.applied > before.applied;
+                        },
+                    },
+                    .retire = [models](std::shared_ptr<const void> payload,
+                                       ReloadCoordinator &coordinator) noexcept {
+                        return models->retireReloadPayload(std::move(payload), coordinator);
+                    },
                 },
             });
         }
@@ -663,18 +695,24 @@ void ReloadService::ensureBuiltInParticipants() {
 
     registerParticipant(ReloadParticipant{
         .name = std::string{materialReloadParticipantName},
-        .claims = [materials](const ReloadRequest &request) {
-            return materials->handlesTextureReload(request.key) ||
-                   materials->handlesMaterialValuesReload(request.key);
-        },
-        .enqueue = [materials](const ReloadRequest &request, ReloadCoordinator &coordinator) {
-            return materials->enqueueTextureReload(request, coordinator) ||
-                   materials->enqueueMaterialValuesReload(request, coordinator);
-        },
-        .retire = [materials](std::shared_ptr<const void> payload,
-                              ReloadCoordinator &coordinator) noexcept {
-            return materials->retireTextureReloadPayload(payload, coordinator) ||
-                   materials->retireMaterialValuesReloadPayload(std::move(payload), coordinator);
+        .file = FileReloadRole{
+            .claims = [materials](const ReloadRequest &request) {
+                return materials->handlesTextureReload(request.key) ||
+                       materials->handlesMaterialValuesReload(request.key);
+            },
+            .apply = PerRequestReloadApply{
+                .enqueue = [materials](const ReloadRequest &request,
+                                       ReloadCoordinator &coordinator) {
+                    return materials->enqueueTextureReload(request, coordinator) ||
+                           materials->enqueueMaterialValuesReload(request, coordinator);
+                },
+            },
+            .retire = [materials](std::shared_ptr<const void> payload,
+                                  ReloadCoordinator &coordinator) noexcept {
+                return materials->retireTextureReloadPayload(payload, coordinator) ||
+                       materials->retireMaterialValuesReloadPayload(std::move(payload),
+                                                                    coordinator);
+            },
         },
     });
 }
@@ -705,19 +743,25 @@ void ReloadService::applyFrame() {
 
 ReloadCoordinator::RetireSink ReloadService::retireSink() {
     return [this](std::shared_ptr<const void> payload) noexcept {
-        for (const auto &participant : participants_) {
-            if (!participant.retire) continue;
+        // Indexed, not a range-for: a retirement callback may register or
+        // unregister participants and reallocate the vector under us.
+        for (std::size_t index = 0; index < participants_.size(); ++index) {
+            if (!participants_[index].file ||
+                !participants_[index].file->retire) {
+                continue;
+            }
+            const auto name = participants_[index].name;
             try {
-                if (participant.retire(payload, transactions_)) return;
+                if (participants_[index].file->retire(payload, transactions_)) return;
             } catch (const std::exception &error) {
                 if (logger) {
                     LOG_ERROR(logger, "reload participant '{}' retirement failed: {}",
-                              participant.name, error.what());
+                              name, error.what());
                 }
             } catch (...) {
                 if (logger) {
                     LOG_ERROR(logger, "reload participant '{}' retirement failed with an unknown error",
-                              participant.name);
+                              name);
                 }
             }
         }
@@ -732,10 +776,11 @@ bool ReloadService::applyRequest(const ReloadRequest &request) {
     return !results.empty() && results.front();
 }
 
-bool ReloadService::applyClaimedRequest(ReloadParticipant &claimant,
+bool ReloadService::applyClaimedRequest(std::size_t claimant,
                                         const ReloadRequest &request) {
-    const auto claimant_name = claimant.name;
-    const auto enqueue = claimant.enqueue;
+    const auto claimant_name = participants_[claimant].name;
+    const auto enqueue =
+        std::get<PerRequestReloadApply>(participants_[claimant].file->apply).enqueue;
     if (!enqueue(request, transactions_)) {
         if (logger) {
             LOG_ERROR(logger, "reload participant '{}' claimed '{}' but did not enqueue it",
@@ -750,12 +795,18 @@ bool ReloadService::applyClaimedRequest(ReloadParticipant &claimant,
 }
 
 bool ReloadService::applyClaimedBatch(
-    ReloadParticipant &claimant,
+    std::size_t claimant,
     std::span<const ReloadRequest> requests) {
+    // Everything the status update needs is read before the callback runs:
+    // the callback may reallocate `participants_`.
+    const auto claimant_name = participants_[claimant].name;
+    const bool bills_here = participants_[claimant].runtime.has_value();
+    const auto apply_batch =
+        std::get<BatchReloadApply>(participants_[claimant].file->apply).apply_batch;
     bool applied = false;
     std::string error;
     try {
-        applied = claimant.apply_batch(requests);
+        applied = apply_batch(requests);
         if (!applied) {
             error = "file-triggered batch apply failed";
         }
@@ -765,7 +816,7 @@ bool ReloadService::applyClaimedBatch(
             LOG_ERROR(
                 logger,
                 "reload participant '{}' batch failed: {}",
-                claimant.name, caught.what());
+                claimant_name, caught.what());
         }
     } catch (...) {
         error = "unknown file-triggered batch failure";
@@ -773,11 +824,11 @@ bool ReloadService::applyClaimedBatch(
             LOG_ERROR(
                 logger,
                 "reload participant '{}' batch failed with an unknown error",
-                claimant.name);
+                claimant_name);
         }
     }
-    if (claimant.runtime) {
-        auto &status = runtime_status_[claimant.name];
+    if (bills_here) {
+        auto &status = runtime_status_[claimant_name];
         ++status.attempted;
         if (applied) {
             ++status.applied;
@@ -791,14 +842,23 @@ bool ReloadService::applyClaimedBatch(
 }
 
 bool ReloadService::applyClaimedCompanionBatch(
-    ReloadParticipant &claimant,
+    std::size_t claimant,
     std::span<const ReloadRequest> requests,
     std::span<const ReloadRequest>
         companion_requests) {
+    const auto claimant_name = participants_[claimant].name;
+    const auto &route = std::get<CompanionBatchReloadApply>(
+        participants_[claimant].file->apply);
+    // A participant that bills its own transaction at a runtime boundary must
+    // not be counted here as well.
+    const bool bills_here =
+        participants_[claimant].runtime.has_value() &&
+        route.status_reporting == ReloadStatusReporting::immediate;
+    const auto apply = route.apply;
     bool applied = false;
     std::string error;
     try {
-        applied = claimant.apply_with_companions(
+        applied = apply(
             requests, companion_requests);
         if (!applied) {
             error =
@@ -811,7 +871,7 @@ bool ReloadService::applyClaimedCompanionBatch(
                 logger,
                 "reload participant '{}' coordinated batch "
                 "failed: {}",
-                claimant.name, caught.what());
+                claimant_name, caught.what());
         }
     } catch (...) {
         error =
@@ -821,12 +881,12 @@ bool ReloadService::applyClaimedCompanionBatch(
                 logger,
                 "reload participant '{}' coordinated batch "
                 "failed with an unknown error",
-                claimant.name);
+                claimant_name);
         }
     }
-    if (claimant.runtime) {
+    if (bills_here) {
         auto &status =
-            runtime_status_[claimant.name];
+            runtime_status_[claimant_name];
         ++status.attempted;
         if (applied) {
             ++status.applied;
@@ -840,183 +900,257 @@ bool ReloadService::applyClaimedCompanionBatch(
     return applied;
 }
 
+std::vector<std::size_t> ReloadService::companionOwnerOrder() const {
+    std::vector<std::size_t> owners;
+    for (std::size_t index = 0; index < participants_.size(); ++index) {
+        const auto &participant = participants_[index];
+        if (participant.file &&
+            std::holds_alternative<CompanionBatchReloadApply>(
+                participant.file->apply)) {
+            owners.push_back(index);
+        }
+    }
+    if (owners.size() < 2) return owners;
+
+    // An owner that another owner names as a companion must run later, so the
+    // outer transaction absorbs the inner one's requests instead of finding
+    // them already consumed. Registration order only breaks ties.
+    const auto companions_of =
+        [this](std::size_t participant) -> const std::vector<std::string> & {
+        return std::get<CompanionBatchReloadApply>(
+                   participants_[participant].file->apply)
+            .companion_participants;
+    };
+    std::vector<std::vector<std::size_t>> after(owners.size());
+    std::vector<std::size_t> waiting(owners.size(), 0);
+    for (std::size_t owner = 0; owner < owners.size(); ++owner) {
+        const auto &names = companions_of(owners[owner]);
+        for (std::size_t other = 0; other < owners.size(); ++other) {
+            if (other == owner) continue;
+            if (std::find(names.begin(), names.end(),
+                          participants_[owners[other]].name) == names.end()) {
+                continue;
+            }
+            after[owner].push_back(other);
+            ++waiting[other];
+        }
+    }
+
+    std::vector<std::size_t> order;
+    order.reserve(owners.size());
+    std::vector<bool> placed(owners.size(), false);
+    while (order.size() < owners.size()) {
+        std::size_t next = owners.size();
+        for (std::size_t owner = 0; owner < owners.size(); ++owner) {
+            if (!placed[owner] && waiting[owner] == 0) {
+                next = owner;
+                break;
+            }
+        }
+        if (next == owners.size()) break;
+        placed[next] = true;
+        order.push_back(owners[next]);
+        for (const auto blocked : after[next]) --waiting[blocked];
+    }
+    if (order.size() != owners.size()) {
+        if (logger) {
+            LOG_WARNING(logger,
+                        "reload companion participants form a cycle; applying "
+                        "batch owners in registration order");
+        }
+        return owners;
+    }
+    return order;
+}
+
 std::vector<bool> ReloadService::applyRequests(
     std::span<const ReloadRequest> requests) {
     ensureBuiltInParticipants();
-    std::vector<bool> results(requests.size(), true);
-    std::vector<ReloadParticipant *> claimants(requests.size(), nullptr);
-    std::vector<bool> shared_claims(requests.size(), false);
-    const auto accepts = [](const ReloadParticipant &owner, const ReloadParticipant &other,
-                            const ReloadRequest &request) {
-        return owner.apply_with_companions &&
-            std::find(owner.companion_participants.begin(), owner.companion_participants.end(), other.name) !=
-                owner.companion_participants.end() &&
-            (!owner.companion_claims || owner.companion_claims(other.name, request));
+    // One slot per request. Every pass below reads `pending()` instead of
+    // repeating the guard, and an applied slot is never touched again.
+    std::vector<RequestSlot> slots(requests.size());
+    for (std::size_t index = 0; index < requests.size(); ++index) {
+        slots[index].request = &requests[index];
+    }
+    const auto companion_route =
+        [this](std::size_t participant) -> const CompanionBatchReloadApply * {
+        const auto &candidate = participants_[participant];
+        if (!candidate.file) return nullptr;
+        return std::get_if<CompanionBatchReloadApply>(&candidate.file->apply);
+    };
+    const auto accepts = [&](std::size_t owner, std::size_t other,
+                             const ReloadRequest &request) {
+        const auto *route = companion_route(owner);
+        return route != nullptr &&
+            std::find(route->companion_participants.begin(),
+                      route->companion_participants.end(),
+                      participants_[other].name) !=
+                route->companion_participants.end() &&
+            (!route->companion_claims ||
+             route->companion_claims(participants_[other].name, request));
     };
     for (std::size_t index = 0; index < requests.size(); ++index) {
         const auto &request = requests[index];
-        for (auto &participant : participants_) {
-            if (!participant.claims) continue;
+        auto &slot = slots[index];
+        for (std::size_t participant = 0; participant < participants_.size();
+             ++participant) {
+            if (!participants_[participant].file) continue;
+            const auto participant_name = participants_[participant].name;
             bool claimed = false;
             try {
-                claimed = participant.claims(request);
+                claimed = participants_[participant].file->claims(request);
             } catch (const std::exception &error) {
                 if (logger) {
                     LOG_ERROR(logger, "reload participant '{}' claim failed for '{}': {}",
-                              participant.name, assetKeyString(request.key), error.what());
+                              participant_name, assetKeyString(request.key), error.what());
                 }
-                results[index] = false;
+                slot.ok = false;
                 break;
             } catch (...) {
                 if (logger) {
                     LOG_ERROR(logger,
                               "reload participant '{}' claim failed for '{}' with an unknown error",
-                              participant.name, assetKeyString(request.key));
+                              participant_name, assetKeyString(request.key));
                 }
-                results[index] = false;
+                slot.ok = false;
                 break;
             }
             if (!claimed) continue;
-            if (claimants[index] != nullptr) {
-                if (accepts(*claimants[index], participant, request)) {
-                    shared_claims[index] = true;
+            if (slot.claimant != no_claimant) {
+                if (accepts(slot.claimant, participant, request)) {
+                    slot.shared_claim = true;
                     continue;
                 }
-                if (!shared_claims[index] && accepts(participant, *claimants[index], request)) {
-                    shared_claims[index] = true;
-                    claimants[index] = &participant;
+                if (!slot.shared_claim && accepts(participant, slot.claimant, request)) {
+                    slot.shared_claim = true;
+                    slot.claimant = participant;
                     continue;
                 }
                 if (logger) {
                     LOG_ERROR(logger, "reload request '{}' is claimed by both '{}' and '{}'",
-                              assetKeyString(request.key), claimants[index]->name,
-                              participant.name);
+                              assetKeyString(request.key),
+                              participants_[slot.claimant].name, participant_name);
                 }
-                results[index] = false;
+                slot.ok = false;
                 break;
             }
-            claimants[index] = &participant;
+            slot.claimant = participant;
         }
     }
 
-    std::vector<bool> consumed(requests.size(), false);
-    for (auto &participant : participants_) {
-        if (!participant.apply_with_companions) {
+    for (const auto owner : companionOwnerOrder()) {
+        // The order was computed before any apply ran. A callback that
+        // registers or unregisters participants invalidates it; skip rather
+        // than address a different participant by a stale index.
+        if (owner >= participants_.size() || !participants_[owner].file ||
+            !std::holds_alternative<CompanionBatchReloadApply>(
+                participants_[owner].file->apply)) {
             continue;
         }
+        const auto &route = std::get<CompanionBatchReloadApply>(
+            participants_[owner].file->apply);
         std::vector<std::size_t> owned_indices;
         std::vector<std::size_t> companion_indices;
         std::vector<ReloadRequest> owned_batch;
         std::vector<ReloadRequest> companion_batch;
         for (std::size_t index = 0;
              index < requests.size(); ++index) {
-            if (!results[index] || consumed[index] ||
-                claimants[index] == nullptr) {
-                continue;
-            }
-            if (claimants[index] == &participant) {
+            const auto &slot = slots[index];
+            if (!slot.pending()) continue;
+            if (slot.claimant == owner) {
                 owned_indices.push_back(index);
-                owned_batch.push_back(requests[index]);
-                if (shared_claims[index]) companion_batch.push_back(requests[index]);
+                owned_batch.push_back(*slot.request);
+                if (slot.shared_claim) companion_batch.push_back(*slot.request);
                 continue;
             }
+            const auto &claimant_name = participants_[slot.claimant].name;
             const auto named = std::find(
-                participant.companion_participants.begin(),
-                participant.companion_participants.end(),
-                claimants[index]->name);
+                route.companion_participants.begin(),
+                route.companion_participants.end(),
+                claimant_name);
             if (named ==
-                participant.companion_participants.end()) {
+                route.companion_participants.end()) {
                 continue;
             }
-            if (participant.companion_claims &&
-                !participant.companion_claims(
-                    claimants[index]->name,
-                    requests[index])) {
+            if (route.companion_claims &&
+                !route.companion_claims(
+                    claimant_name,
+                    *slot.request)) {
                 continue;
             }
             companion_indices.push_back(index);
             companion_batch.push_back(
-                requests[index]);
+                *slot.request);
         }
         if (owned_batch.empty()) {
             continue;
         }
         const bool applied =
             applyClaimedCompanionBatch(
-                participant, owned_batch,
+                owner, owned_batch,
                 companion_batch);
         for (const auto index : owned_indices) {
-            results[index] = applied;
-            consumed[index] = true;
+            slots[index].ok = applied;
+            slots[index].done = true;
         }
         for (const auto index :
              companion_indices) {
-            results[index] = applied;
-            consumed[index] = true;
+            slots[index].ok = applied;
+            slots[index].done = true;
         }
     }
 
-    std::vector<std::size_t> shader_indices;
-    std::vector<std::size_t> material_value_indices;
-    auto *materials =
-        FastModuleContainer::tryGet<MaterialContainer>();
-    for (std::size_t index = 0; index < requests.size(); ++index) {
-        if (!results[index] || consumed[index] ||
-            claimants[index] == nullptr) {
+    for (std::size_t participant = 0; participant < participants_.size();
+         ++participant) {
+        if (!participants_[participant].file ||
+            !std::holds_alternative<BatchReloadApply>(
+                participants_[participant].file->apply)) {
             continue;
         }
-        if (claimants[index]->name == shaderReloadParticipantName) {
-            shader_indices.push_back(index);
-        } else if (materials != nullptr &&
-                   claimants[index]->name == materialReloadParticipantName &&
-                   materials->handlesMaterialValuesReload(requests[index].key)) {
-            material_value_indices.push_back(index);
-        }
-    }
-
-    if (!shader_indices.empty()) {
-        std::vector<ReloadRequest> shader_requests;
-        std::vector<AssetKey> material_documents;
-        shader_requests.reserve(shader_indices.size());
-        material_documents.reserve(material_value_indices.size());
-        for (const auto index : shader_indices) {
-            shader_requests.push_back(requests[index]);
-            consumed[index] = true;
-        }
-        for (const auto index : material_value_indices) {
-            material_documents.push_back(requests[index].key);
-            consumed[index] = true;
-        }
-        const bool applied = applyShaderReloadBatch(shader_requests, material_documents);
-        for (const auto index : shader_indices) results[index] = applied;
-        for (const auto index : material_value_indices) results[index] = applied;
-    }
-
-    for (auto &participant : participants_) {
-        if (!participant.apply_batch) continue;
         std::vector<std::size_t> indices;
         std::vector<ReloadRequest> batch;
         for (std::size_t index = 0;
              index < requests.size(); ++index) {
-            if (!results[index] || consumed[index] ||
-                claimants[index] != &participant) {
+            if (!slots[index].pending() ||
+                slots[index].claimant != participant) {
                 continue;
             }
             indices.push_back(index);
-            batch.push_back(requests[index]);
+            batch.push_back(*slots[index].request);
         }
         if (batch.empty()) continue;
         const bool applied =
             applyClaimedBatch(participant, batch);
         for (const auto index : indices) {
-            results[index] = applied;
-            consumed[index] = true;
+            slots[index].ok = applied;
+            slots[index].done = true;
         }
     }
 
+    // Only per-request claimants can still be pending: a batch owner with a
+    // pending slot always had a non-empty batch above.
     for (std::size_t index = 0; index < requests.size(); ++index) {
-        if (!results[index] || consumed[index] || claimants[index] == nullptr) continue;
-        results[index] = applyClaimedRequest(*claimants[index], requests[index]);
+        if (!slots[index].pending()) continue;
+        const auto claimant = slots[index].claimant;
+        if (claimant >= participants_.size() || !participants_[claimant].file ||
+            !std::holds_alternative<PerRequestReloadApply>(
+                participants_[claimant].file->apply)) {
+            if (logger) {
+                LOG_ERROR(logger,
+                          "reload request '{}' lost its claimant before apply",
+                          assetKeyString(slots[index].request->key));
+            }
+            slots[index].ok = false;
+            slots[index].done = true;
+            continue;
+        }
+        slots[index].ok = applyClaimedRequest(claimant, *slots[index].request);
+        slots[index].done = true;
+    }
+
+    std::vector<bool> results(requests.size(), true);
+    for (std::size_t index = 0; index < requests.size(); ++index) {
+        results[index] = slots[index].ok;
     }
     return results;
 }
