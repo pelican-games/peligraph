@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -107,5 +108,9 @@ InputActionFrame evaluateInputActions(const InputActionMap &map, const FrameInpu
                                       const std::vector<std::string> &action_set_stack);
 void mergeInputActionBackendFrame(InputActionFrame &destination,
                                   const InputActionFrame &backend_frame);
+
+// Maps a keyboard control name ("space", "f5", "left_ctrl", "a", "num3") to its KeyCode.
+// The input must already be lower-case ASCII; unknown names yield std::nullopt.
+std::optional<KeyCode> keyboardControlToKey(std::string_view control);
 
 } // namespace Pelican

@@ -177,6 +177,10 @@ InputActionType parseActionType(std::string_view type, std::string_view action_n
     throw std::runtime_error("unknown input action type '" + std::string{type} + "'" + actionContext(action_name));
 }
 
+} // namespace
+
+// External linkage: shared with the RPC input-injection path (rpcserver.cpp),
+// so RPC key names and binding-profile key names are parsed by one function.
 std::optional<KeyCode> keyboardControlToKey(std::string_view control) {
     if (control.size() == 1) {
         const char ch = control[0];
@@ -263,6 +267,8 @@ std::optional<KeyCode> keyboardControlToKey(std::string_view control) {
 
     return std::nullopt;
 }
+
+namespace {
 
 std::optional<KeyCode> mouseControlToKey(std::string_view control) {
     if (control == "left") {
