@@ -4756,268 +4756,625 @@ void Renderer::renderLogicalFrame(
             view_family));
 }
 
-void Renderer::renderLogicalFrame(
-    ILogicalFrameTarget &target,
-    const RenderViewFamilies &view_families) {
-    synchronizeGraphGpuOwnership();
-    auto &deletion_queue = resolveFrameDeletionQueue();
+// One logical frame's recording state, in one object. Every lambda that used
+// to share `renderLogicalFrame`'s 57-local scope is a member function here, and
+// every value those lambdas captured is a field whose comment names the step
+// that makes it valid. The class is a member of Renderer, so it reaches the
+// renderer state a frame mutates through `renderer`.
+class Renderer::LogicalFrameRecorder {
+  public:
+    // Resolves the frame's module graph, its published runtime generation and
+    // the compiled program that generation selects. Throws before any GPU work
+    // when the program is missing or has no compiled render pipeline.
+    LogicalFrameRecorder(Renderer &renderer, ILogicalFrameTarget &target);
 
-    auto modules = resolveRenderFrameModules();
-    // Keep one immutable publication root alive for the whole logical frame.
-    // A frame therefore observes either the complete old generation or the
-    // complete new generation, never a pass/plan mixture.
-    const auto runtime_generation =
-        modules.frame_graph_runtime.renderingSnapshot();
-    const auto staged_runtime_generation =
-        runtime_generation != nullptr &&
-                modules.frame_graph_runtime.stagedGeneration() ==
-                    runtime_generation->generation
-            ? runtime_generation->generation
-            : 0;
-    StagedRuntimeRollbackGuard staged_runtime_guard{
-        modules.frame_graph_runtime,
-        staged_runtime_generation};
+    // The steps of one logical frame, in the order renderLogicalFrame calls
+    // them.
+    void requireUnchangedWindowOutput();
+    void collectPassPlan();
+    void resolveViewFamilies(const RenderViewFamilies &view_families);
+    void configureGpuTimingRanges();
+    void synchronizeTemporalHistories();
+    void beginFrameResources();
+    void consumeShaderReload();
+    void observeHistoryInvalidations();
+    void publishFrameValueGraph();
+    void stagePoseAttributesAndLights();
+    void buildDrawSortViews();
+    void planLogicalFrameSchedule();
+    void configureExternalDepthExport();
+    void beginLogicalFrameTarget();
+    void recordExecutions();
+    void submitFrame();
+    void publishFrame();
+    void retainPickingSnapshot();
+    void publishExecutionTrace();
+    void advanceFrameHistories();
+
+  private:
+    // One view's (or one view family's) recording, from the begin object the
+    // caller already obtained through to the trace entry it pushes.
+    // `is_view_family` is the only thing that separated the two branches this
+    // replaced.
+    void recordOneExecution(
+        const FrameRenderContext &render_ctx,
+        std::uint32_t view_index,
+        std::uint32_t logical_view_count,
+        bool is_view_family,
+        std::span<const LogicalFrameNodeInvocation> authored_schedule);
+
+    void recordGraphDeformation(vk::CommandBuffer command);
+    void recordAccelerationStructures(
+        vk::CommandBuffer command_buffer,
+        std::uint32_t in_flight_frame_index);
+    void publishAccelerationStructures(
+        std::uint32_t in_flight_frame_index);
+    bool recordSceneAs(
+        const FrameRenderContext &context, std::string_view node_name);
+    void capturePickingModelInstances();
+    void prepareViewFamilyStates(
+        std::uint32_t in_flight_frame,
+        const FrameResolutionExtents &resolution_extents);
+    void sealRetirementBatch();
+    void publishFrameGeneration() noexcept;
+
+    // Fields are declared in the order the old locals were constructed, so the
+    // destruction order at the end of the frame is unchanged.
+
+    // Valid from construction.
+    Renderer &renderer;
+    ILogicalFrameTarget &target;
+    DeletionQueue &deletion_queue;
+    RenderFrameModules modules;
+    // One immutable publication root for the whole logical frame: a frame
+    // observes either the complete old generation or the complete new one,
+    // never a pass/plan mixture.
+    std::shared_ptr<const RendererRuntimeGeneration> runtime_generation;
+    std::uint64_t staged_runtime_generation = 0;
+    StagedRuntimeRollbackGuard staged_runtime_guard;
+    const CompiledRenderProgram *program = nullptr;
+    const std::vector<SceneAccelerationStructureDefinition> &named_scene_as;
+    bool graph_builds_scene_as = false;
+    std::shared_ptr<RayQueryAccelerationStructureScope>
+        acceleration_structures;
+    const RenderPipelineGpuResourceScope *gpu_owner_scope = nullptr;
+    bool triangle_world_space = false;
+    bool procedural_world_space = false;
+    std::shared_ptr<LogicalFrameSubmissionResources> submission_resources;
+    const CompiledRenderingPass &rendering_pass;
+    const CompiledFrameGraphExecution &frame_graph;
+    GlobalRenderTargetId picking_target;
+    bool picking_pass_active = false;
+    std::optional<ProjectionJitterSettings> frame_projection_jitter;
+    const CompiledGraphVariantPolicy &graph_variant_policy;
+    const CompiledDrawSorting &draw_sorting;
+    EngineTime &engine_time;
+    TemporalViewFamilyHistory &temporal_history;
+    RenderViewFamilyProjectionModifiers view_family_modifiers;
+
+    // Valid from recordAccelerationStructures, which recordSceneAs runs once
+    // per frame at the base scene AS node; committed in publishFrameGeneration.
+    std::optional<RayQueryAccelerationStructureScope::FrameBuild>
+        acceleration_structure_build;
+    // Valid from recordAccelerationStructures on a frame without ray tracing,
+    // and from publishAccelerationStructures on a frame with it.
+    std::optional<FrameResources::FramePublication> frame_publication;
+    // Valid from recordAccelerationStructures, and only when the owner scope
+    // carries a ray tracing project.
+    std::shared_ptr<const RayScenePlanState> ray_plan_publication;
+    // Filled by recordSceneAs, one entry per AS node already recorded.
+    std::set<std::string> recorded_as_nodes;
+
+    // Filled by capturePickingModelInstances (first view, after resize),
+    // moved out by retainPickingSnapshot.
+    std::vector<std::optional<PickingModelInstanceToken>>
+        picking_model_instances;
+    bool picking_model_instances_captured = false;
+    // Valid from collectPassPlan.
+    GpuSubmissionLease submission_lease;
+    std::vector<MaterialDrawTagFilter> material_draw_filters;
+    std::vector<std::string> locally_sorted_secondary_families;
+
+    // Valid from resolveViewFamilies.
+    RenderViewFamilies resolved_view_families;
+    const RenderViewFamily *main_view_family = nullptr;
+    std::uint32_t view_count = 0;
+    std::uint64_t sequential_view_count = 0;
+
+    // Valid from publishFrameValueGraph.
+    ValueGraph::InactiveScopes inactive_graph_scopes;
+    std::unique_ptr<SceneLoader::PreparedGraphRuntimeTransfer>
+        staged_graph_transfer;
+
+    // Valid from buildDrawSortViews.
+    bool per_view_sort = false;
+    std::vector<DrawQueueSortView> sort_views;
+
+    // Valid from prepareViewFamilyStates, which recordOneExecution runs on the
+    // first view only.
+    std::vector<RenderViewFamilyExecutionState> view_family_states;
+
+    // Valid from planLogicalFrameSchedule.
+    nlohmann::json view_traces;
+    bool use_view_family_execution = false;
+    std::vector<LogicalFrameNodeInvocation> logical_frame_schedule;
+
+    // Valid from configureExternalDepthExport.
+    std::optional<RuntimeExternalDepthExport> external_depth_export;
+    bool external_depth_submission_active = false;
+
+    // Valid from recordOneExecution's first view; later views check themselves
+    // against them.
+    std::optional<std::uint32_t> logical_in_flight_frame;
+    std::optional<vk::Extent2D> logical_extent;
+
+    // Valid from beginLogicalFrameTarget until publishFrame completes it.
+    std::optional<LogicalFrameAbortGuard> frame_abort_guard;
+    bool retirement_batch_sealed = false;
+};
+
+namespace {
+
+const CompiledRenderProgram *requireCompiledRenderProgram(
+    const RendererRuntimeGeneration *generation,
+    RenderingPassId rendering_pass_id) {
     const auto *program =
-        runtime_generation != nullptr
-            ? runtime_generation->find(
-                  current_rendering_pass_id)
-            : nullptr;
+        generation != nullptr ? generation->find(rendering_pass_id) : nullptr;
     if (program == nullptr ||
         !program->frame_graph.render_pipeline) {
         throw std::runtime_error(
             "Renderer logical frame requires a compiled render pipeline");
     }
-    const auto &named_scene_as = program->frame_graph.render_pipeline->scene_acceleration_structures;
-    const bool graph_builds_scene_as = std::any_of(
-        program->frame_graph.nodes.begin(), program->frame_graph.nodes.end(),
-        [](const auto &node) { return node.kind == FramePlanNodeKind::acceleration_structure; });
-    const auto acceleration_structures = graph_builds_scene_as
-        ? rayQueryAccelerationStructureScope(*runtime_generation, *program)
-        : nullptr;
-    const auto *gpu_owner_scope =
-        renderPipelineGpuOwnerScope(*runtime_generation, *program);
-    const bool triangle_world_space = gpu_owner_scope && gpu_owner_scope->ray_tracing_project &&
-        gpu_owner_scope->ray_tracing_project->layout.acceleration_structure &&
-        gpu_owner_scope->ray_tracing_project->layout.acceleration_structure->triangle_world_space;
-    const bool procedural_world_space = gpu_owner_scope && gpu_owner_scope->ray_tracing_project &&
-        gpu_owner_scope->ray_tracing_project->layout.acceleration_structure &&
-        gpu_owner_scope->ray_tracing_project->layout.acceleration_structure->procedural_world_space;
-    std::optional<
-        RayQueryAccelerationStructureScope::FrameBuild>
-        acceleration_structure_build;
-    std::optional<FrameResources::FramePublication>
-        frame_publication;
-    std::shared_ptr<const RayScenePlanState> ray_plan_publication;
-    auto submission_resources =
-        std::make_shared<LogicalFrameSubmissionResources>();
+    return program;
+}
+
+} // namespace
+
+Renderer::LogicalFrameRecorder::LogicalFrameRecorder(
+    Renderer &renderer, ILogicalFrameTarget &target)
+    : renderer{renderer},
+      target{target},
+      deletion_queue{resolveFrameDeletionQueue()},
+      modules{resolveRenderFrameModules()},
+      runtime_generation{modules.frame_graph_runtime.renderingSnapshot()},
+      staged_runtime_generation{
+          runtime_generation != nullptr &&
+                  modules.frame_graph_runtime.stagedGeneration() ==
+                      runtime_generation->generation
+              ? runtime_generation->generation
+              : 0},
+      staged_runtime_guard{
+          modules.frame_graph_runtime,
+          staged_runtime_generation},
+      program{requireCompiledRenderProgram(
+          runtime_generation.get(), renderer.current_rendering_pass_id)},
+      named_scene_as{
+          program->frame_graph.render_pipeline->scene_acceleration_structures},
+      graph_builds_scene_as{std::any_of(
+          program->frame_graph.nodes.begin(), program->frame_graph.nodes.end(),
+          [](const auto &node) { return node.kind == FramePlanNodeKind::acceleration_structure; })},
+      acceleration_structures{
+          graph_builds_scene_as
+              ? rayQueryAccelerationStructureScope(*runtime_generation, *program)
+              : nullptr},
+      gpu_owner_scope{
+          renderPipelineGpuOwnerScope(*runtime_generation, *program)},
+      triangle_world_space{gpu_owner_scope && gpu_owner_scope->ray_tracing_project &&
+          gpu_owner_scope->ray_tracing_project->layout.acceleration_structure &&
+          gpu_owner_scope->ray_tracing_project->layout.acceleration_structure->triangle_world_space},
+      procedural_world_space{gpu_owner_scope && gpu_owner_scope->ray_tracing_project &&
+          gpu_owner_scope->ray_tracing_project->layout.acceleration_structure &&
+          gpu_owner_scope->ray_tracing_project->layout.acceleration_structure->procedural_world_space},
+      submission_resources{
+          std::make_shared<LogicalFrameSubmissionResources>()},
+      rendering_pass{program->rendering_pass},
+      frame_graph{program->frame_graph},
+      picking_target{boundRenderTarget(frame_graph, "picking_id")},
+      picking_pass_active{
+          isConcreteRenderTarget(picking_target) &&
+          std::any_of(
+              rendering_pass.passes.begin(), rendering_pass.passes.end(),
+              [this](const auto &pass) {
+                  return pass.definition.isPicking() &&
+                         std::find(pass.definition.output_color.begin(),
+                                   pass.definition.output_color.end(),
+                                   picking_target) !=
+                             pass.definition.output_color.end();
+              })},
+      frame_projection_jitter{projectionJitterSettingsFor(frame_graph)},
+      graph_variant_policy{frame_graph.render_pipeline->graph_variant_policy},
+      draw_sorting{frame_graph.render_pipeline->draw_sorting},
+      engine_time{resolveFrameEngineTime()},
+      temporal_history{renderer.activeTemporalHistory()},
+      view_family_modifiers{
+          .projection_jitter = frame_projection_jitter,
+      } {
     submission_resources->runtime_generation = runtime_generation;
-    const auto record_graph_deformation = [&](vk::CommandBuffer command) {
-        if (program->frame_graph.deformed_attributes.empty()) return;
-        auto &geometry = submission_resources->deformed_geometry;
-        geometry = modules.instance_container.rayQueryGeometryInstances();
-        recordGraphDeformedAttributes(command, program->frame_graph, geometry,
-            acceleration_structures != nullptr);
-    };
-    const auto record_acceleration_structures =
-        [&](vk::CommandBuffer command_buffer,
-            std::uint32_t in_flight_frame_index) {
-            // Shared geometry and SBT are prepared once. Each named TLAS
-            // extends the frame's AS state at its own execution node.
-            if (acceleration_structure_build) return;
-            if (acceleration_structures == nullptr) {
-                frame_publication.emplace(
-                    modules.frame_resources
-                        .prepareNonRayTracingPublication());
-                return;
-            }
-            auto triangle_instances = submission_resources->deformed_geometry.empty()
-                ? modules.instance_container.rayQueryGeometryInstances()
-                : submission_resources->deformed_geometry;
-            modules.instance_container.recordGeometryDeformation(
-                command_buffer, triangle_instances, true);
-            auto procedural_instances =
-                GET_MODULE(ProceduralGeometryContainer)
-                    .proceduralRayInstances();
-            for (auto &instance : procedural_instances)
-                instance.ray_instance_component_witness = modules.instance_container
-                    .rayComponentWitness(instance.authoring_object_id);
-            const auto generation = next_ray_scene_generation++;
-            auto inventory =
-                std::make_shared<RaySceneInventorySnapshot>(
-                    makeRaySceneInventorySnapshot(
-                        triangle_instances, procedural_instances,
-                        generation));
-            const auto &geometry_instances = inventory->instances;
-            auto generation_root =
-                std::make_shared<RaySceneGenerationRoot>();
-            generation_root->generation = generation;
-            generation_root->inventory = inventory;
-            const auto &index_buffer =
-                modules.vert_buf_container.indexBuffer();
-            const auto &vertex_buffer =
-                modules.vert_buf_container.vertexBuffer(false);
-            const auto device =
-                GET_MODULE(VulkanManageCore).getDevice();
-            auto geometry_snapshot =
-                std::make_shared<RayTracingGeometrySnapshot>(
-                    makeRayTracingGeometrySnapshot(
-                        geometry_instances,
-                        device.getBufferAddress(
-                            vk::BufferDeviceAddressInfo{
-                                index_buffer.buffer.get()}),
-                        device.getBufferAddress(
-                            vk::BufferDeviceAddressInfo{
-                                vertex_buffer.buffer.get()})));
-            geometry_snapshot->generation = generation;
-            generation_root->geometry_table = geometry_snapshot;
-            std::shared_ptr<const RaySceneRowSnapshot>
-                ray_scene_rows;
-            std::shared_ptr<const RayTracingSceneShaderBindingTables>
-                ray_tracing_scene_tables;
-            std::uint32_t ray_type_count = 0;
-            const auto ray_tracing_pipeline_generation =
-                GET_MODULE(PipelineFactory)
-                    .rayTracingPipelineGeneration();
-            if (gpu_owner_scope != nullptr &&
-                gpu_owner_scope->ray_tracing_project != nullptr) {
-                const auto &ray_project =
-                    *gpu_owner_scope->ray_tracing_project;
-                if (ray_project.layout.ray_types.size() >
-                    std::numeric_limits<std::uint32_t>::max()) {
-                    throw std::runtime_error(
-                        "pelican.ray_tracing.ray_type_count_limit@1: ray type count exceeds uint32");
-                }
-                ray_type_count = static_cast<std::uint32_t>(
-                    ray_project.layout.ray_types.size());
-                ray_plan_publication = modules.instance_container.prepareFrameRayScenePlan(
-                    gpu_owner_scope->ray_tracing_project, inventory);
-                ray_scene_rows = std::make_shared<RaySceneRowSnapshot>(
-                    *ray_plan_publication->resolved_rows);
-                const_cast<RaySceneRowSnapshot &>(*ray_scene_rows)
-                    .generation = generation;
-                generation_root->resolved_rows = ray_scene_rows;
-                std::vector<PipelineHandle> owner_pipelines;
-                for (const auto &resource :
-                     gpu_owner_scope->resources) {
-                    if (resource.kind !=
-                        RenderPipelineGpuResourceKind::pipeline) {
-                        continue;
-                    }
-                    if (resource.handle < 0 ||
-                        resource.handle >
-                            std::numeric_limits<int>::max()) {
-                        throw std::runtime_error(
-                            "pelican.ray_tracing.scene_generation_mismatch@1: owner pipeline handle is out of range");
-                    }
-                    owner_pipelines.push_back(PipelineHandle{
-                        static_cast<int>(resource.handle)});
-                }
-                auto reused =
-                    rayTracingTlasRecordOffsetOverrideActiveForTesting()
-                        ? std::optional<RayQueryAccelerationStructureScope::FrameBuild>{}
-                        : acceleration_structures->tryReuseFrame(
-                        modules.vert_buf_container
-                            .geometryAddressGeneration(),
-                        modules.instance_container
-                            .rayQueryGeometryGeneration(),
-                        *geometry_snapshot, *ray_scene_rows,
-                        ray_type_count,
-                        runtime_generation->generation,
-                        ray_tracing_pipeline_generation, named_scene_as, triangle_world_space, procedural_world_space);
-                if (reused) {
-                    acceleration_structure_build.emplace(
-                        std::move(*reused));
-                    ray_tracing_scene_tables =
-                        acceleration_structure_build->sceneTables();
-                    ray_scene_rows =
-                        ray_tracing_scene_tables->row_snapshot;
-                } else {
-                    ray_tracing_scene_tables =
-                        GET_MODULE(PipelineFactory)
-                            .createRayTracingSceneShaderBindingTables(
-                                owner_pipelines, ray_scene_rows,
-                                ray_project, geometry_snapshot,
-                                generation_root);
-                    ray_scene_rows =
-                        ray_tracing_scene_tables->row_snapshot;
-                    generation_root->resolved_rows = ray_scene_rows;
-                    generation_root->sbt = ray_tracing_scene_tables;
-                    const auto classification =
-                        classifyRayQueryGeometry(geometry_instances);
-                    generation_root->tlas_plan =
-                        lowerRayTracingTlasInstancePlan(
-                            geometry_instances,
-                            classification.eligible_instance_indices,
-                            ray_scene_rows.get(), ray_type_count);
-                    generation_root->tlas_plan_generation = generation;
-                    injectRayTracingJointTransactionPoint(
-                        RayTracingJointTransactionPoint::after_sbt);
-                }
-            }
-            if (!acceleration_structure_build) {
-                acceleration_structure_build.emplace(
-                    acceleration_structures->recordFrame(
-                    command_buffer,
-                    GET_MODULE(VulkanManageCore),
-                    deletion_queue,
-                    index_buffer,
-                    vertex_buffer,
-                    modules.vert_buf_container
-                        .geometryAddressGeneration(),
-                    geometry_instances,
-                    geometry_snapshot,
-                    modules.instance_container
-                        .rayQueryGeometryGeneration(),
-                    ray_scene_rows, ray_type_count,
-                    ray_tracing_scene_tables,
-                    gpu_owner_scope != nullptr &&
-                        gpu_owner_scope->ray_tracing_project != nullptr &&
-                        gpu_owner_scope->ray_tracing_project->layout
-                            .usesMaterialAlphaProfile(),
-                    runtime_generation->generation,
-                    ray_tracing_pipeline_generation,
-                    ray_scene_rows ? generation_root : nullptr, named_scene_as, triangle_world_space, procedural_world_space));
-            }
-        };
-    const auto publish_acceleration_structures = [&](std::uint32_t in_flight_frame_index) {
+}
+
+void Renderer::LogicalFrameRecorder::recordGraphDeformation(
+    vk::CommandBuffer command) {
+    if (program->frame_graph.deformed_attributes.empty()) return;
+    auto &geometry = submission_resources->deformed_geometry;
+    geometry = modules.instance_container.rayQueryGeometryInstances();
+    recordGraphDeformedAttributes(command, program->frame_graph, geometry,
+        acceleration_structures != nullptr);
+}
+
+void Renderer::LogicalFrameRecorder::recordAccelerationStructures(
+    vk::CommandBuffer command_buffer,
+    std::uint32_t in_flight_frame_index) {
+    // Shared geometry and SBT are prepared once. Each named TLAS
+    // extends the frame's AS state at its own execution node.
+    if (acceleration_structure_build) return;
+    if (acceleration_structures == nullptr) {
         frame_publication.emplace(
-            modules.frame_resources.prepareRayTracingPublication(
-                in_flight_frame_index,
-                acceleration_structure_build->topLevel(),
-                acceleration_structure_build->sceneTables(),
-                std::string{
-                    acceleration_structure_build->rowDigest()},
-                acceleration_structure_build->namedTopLevels()));
-        submission_resources->rt_state =
-            acceleration_structure_build->stateLease();
-        // Earlier commands may already bind an earlier immutable bundle.
-        // Replacing the recording selection must retain all of those pools
-        // through the same submission fence as the AS state.
-        submission_resources->rt_bundles.push_back(frame_publication->bundleLease());
-    };
-    std::set<std::string> recorded_as_nodes;
-    const auto record_scene_as = [&](const FrameRenderContext &context, std::string_view node_name) {
-        // Later XR views reuse the AS operations already recorded this frame.
-        if (recorded_as_nodes.contains(std::string{node_name})) return false;
-        constexpr std::string_view base_node = "__scene_acceleration_structure";
-        bool recorded = true;
-        if (node_name == base_node) {
-            record_acceleration_structures(context.cmd_buf, context.in_flight_frame_index);
-        } else {
-            if (!acceleration_structure_build || !node_name.starts_with(std::string{base_node} + ":"))
-                throw std::logic_error("Named AS operation requires the shared scene build: " + std::string{node_name});
-            recorded = acceleration_structure_build->recordNamedTopLevel(
-                context.cmd_buf, GET_MODULE(VulkanManageCore), deletion_queue,
-                node_name.substr(base_node.size() + 1));
+            modules.frame_resources
+                .prepareNonRayTracingPublication());
+        return;
+    }
+    auto triangle_instances = submission_resources->deformed_geometry.empty()
+        ? modules.instance_container.rayQueryGeometryInstances()
+        : submission_resources->deformed_geometry;
+    modules.instance_container.recordGeometryDeformation(
+        command_buffer, triangle_instances, true);
+    auto procedural_instances =
+        GET_MODULE(ProceduralGeometryContainer)
+            .proceduralRayInstances();
+    for (auto &instance : procedural_instances)
+        instance.ray_instance_component_witness = modules.instance_container
+            .rayComponentWitness(instance.authoring_object_id);
+    const auto generation = renderer.next_ray_scene_generation++;
+    auto inventory =
+        std::make_shared<RaySceneInventorySnapshot>(
+            makeRaySceneInventorySnapshot(
+                triangle_instances, procedural_instances,
+                generation));
+    const auto &geometry_instances = inventory->instances;
+    auto generation_root =
+        std::make_shared<RaySceneGenerationRoot>();
+    generation_root->generation = generation;
+    generation_root->inventory = inventory;
+    const auto &index_buffer =
+        modules.vert_buf_container.indexBuffer();
+    const auto &vertex_buffer =
+        modules.vert_buf_container.vertexBuffer(false);
+    const auto device =
+        GET_MODULE(VulkanManageCore).getDevice();
+    auto geometry_snapshot =
+        std::make_shared<RayTracingGeometrySnapshot>(
+            makeRayTracingGeometrySnapshot(
+                geometry_instances,
+                device.getBufferAddress(
+                    vk::BufferDeviceAddressInfo{
+                        index_buffer.buffer.get()}),
+                device.getBufferAddress(
+                    vk::BufferDeviceAddressInfo{
+                        vertex_buffer.buffer.get()})));
+    geometry_snapshot->generation = generation;
+    generation_root->geometry_table = geometry_snapshot;
+    std::shared_ptr<const RaySceneRowSnapshot>
+        ray_scene_rows;
+    std::shared_ptr<const RayTracingSceneShaderBindingTables>
+        ray_tracing_scene_tables;
+    std::uint32_t ray_type_count = 0;
+    const auto ray_tracing_pipeline_generation =
+        GET_MODULE(PipelineFactory)
+            .rayTracingPipelineGeneration();
+    if (gpu_owner_scope != nullptr &&
+        gpu_owner_scope->ray_tracing_project != nullptr) {
+        const auto &ray_project =
+            *gpu_owner_scope->ray_tracing_project;
+        if (ray_project.layout.ray_types.size() >
+            std::numeric_limits<std::uint32_t>::max()) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.ray_type_count_limit@1: ray type count exceeds uint32");
         }
-        recorded_as_nodes.emplace(node_name);
-        if (acceleration_structure_build)
-            publish_acceleration_structures(context.in_flight_frame_index);
-        if (recorded_as_nodes.size() == named_scene_as.size() + 1 &&
-            gpu_owner_scope != nullptr && gpu_owner_scope->ray_tracing_project != nullptr)
-            injectRayTracingJointTransactionPoint(RayTracingJointTransactionPoint::after_as_record);
-        return recorded;
-    };
+        ray_type_count = static_cast<std::uint32_t>(
+            ray_project.layout.ray_types.size());
+        ray_plan_publication = modules.instance_container.prepareFrameRayScenePlan(
+            gpu_owner_scope->ray_tracing_project, inventory);
+        ray_scene_rows = std::make_shared<RaySceneRowSnapshot>(
+            *ray_plan_publication->resolved_rows);
+        const_cast<RaySceneRowSnapshot &>(*ray_scene_rows)
+            .generation = generation;
+        generation_root->resolved_rows = ray_scene_rows;
+        std::vector<PipelineHandle> owner_pipelines;
+        for (const auto &resource :
+             gpu_owner_scope->resources) {
+            if (resource.kind !=
+                RenderPipelineGpuResourceKind::pipeline) {
+                continue;
+            }
+            if (resource.handle < 0 ||
+                resource.handle >
+                    std::numeric_limits<int>::max()) {
+                throw std::runtime_error(
+                    "pelican.ray_tracing.scene_generation_mismatch@1: owner pipeline handle is out of range");
+            }
+            owner_pipelines.push_back(PipelineHandle{
+                static_cast<int>(resource.handle)});
+        }
+        auto reused =
+            rayTracingTlasRecordOffsetOverrideActiveForTesting()
+                ? std::optional<RayQueryAccelerationStructureScope::FrameBuild>{}
+                : acceleration_structures->tryReuseFrame(
+                modules.vert_buf_container
+                    .geometryAddressGeneration(),
+                modules.instance_container
+                    .rayQueryGeometryGeneration(),
+                *geometry_snapshot, *ray_scene_rows,
+                ray_type_count,
+                runtime_generation->generation,
+                ray_tracing_pipeline_generation, named_scene_as, triangle_world_space, procedural_world_space);
+        if (reused) {
+            acceleration_structure_build.emplace(
+                std::move(*reused));
+            ray_tracing_scene_tables =
+                acceleration_structure_build->sceneTables();
+            ray_scene_rows =
+                ray_tracing_scene_tables->row_snapshot;
+        } else {
+            ray_tracing_scene_tables =
+                GET_MODULE(PipelineFactory)
+                    .createRayTracingSceneShaderBindingTables(
+                        owner_pipelines, ray_scene_rows,
+                        ray_project, geometry_snapshot,
+                        generation_root);
+            ray_scene_rows =
+                ray_tracing_scene_tables->row_snapshot;
+            generation_root->resolved_rows = ray_scene_rows;
+            generation_root->sbt = ray_tracing_scene_tables;
+            const auto classification =
+                classifyRayQueryGeometry(geometry_instances);
+            generation_root->tlas_plan =
+                lowerRayTracingTlasInstancePlan(
+                    geometry_instances,
+                    classification.eligible_instance_indices,
+                    ray_scene_rows.get(), ray_type_count);
+            generation_root->tlas_plan_generation = generation;
+            injectRayTracingJointTransactionPoint(
+                RayTracingJointTransactionPoint::after_sbt);
+        }
+    }
+    if (!acceleration_structure_build) {
+        acceleration_structure_build.emplace(
+            acceleration_structures->recordFrame(
+            command_buffer,
+            GET_MODULE(VulkanManageCore),
+            deletion_queue,
+            index_buffer,
+            vertex_buffer,
+            modules.vert_buf_container
+                .geometryAddressGeneration(),
+            geometry_instances,
+            geometry_snapshot,
+            modules.instance_container
+                .rayQueryGeometryGeneration(),
+            ray_scene_rows, ray_type_count,
+            ray_tracing_scene_tables,
+            gpu_owner_scope != nullptr &&
+                gpu_owner_scope->ray_tracing_project != nullptr &&
+                gpu_owner_scope->ray_tracing_project->layout
+                    .usesMaterialAlphaProfile(),
+            runtime_generation->generation,
+            ray_tracing_pipeline_generation,
+            ray_scene_rows ? generation_root : nullptr, named_scene_as, triangle_world_space, procedural_world_space));
+    }
+}
+
+void Renderer::LogicalFrameRecorder::publishAccelerationStructures(
+    std::uint32_t in_flight_frame_index) {
+    frame_publication.emplace(
+        modules.frame_resources.prepareRayTracingPublication(
+            in_flight_frame_index,
+            acceleration_structure_build->topLevel(),
+            acceleration_structure_build->sceneTables(),
+            std::string{
+                acceleration_structure_build->rowDigest()},
+            acceleration_structure_build->namedTopLevels()));
+    submission_resources->rt_state =
+        acceleration_structure_build->stateLease();
+    // Earlier commands may already bind an earlier immutable bundle.
+    // Replacing the recording selection must retain all of those pools
+    // through the same submission fence as the AS state.
+    submission_resources->rt_bundles.push_back(frame_publication->bundleLease());
+}
+
+bool Renderer::LogicalFrameRecorder::recordSceneAs(
+    const FrameRenderContext &context, std::string_view node_name) {
+    // Later XR views reuse the AS operations already recorded this frame.
+    if (recorded_as_nodes.contains(std::string{node_name})) return false;
+    constexpr std::string_view base_node = "__scene_acceleration_structure";
+    bool recorded = true;
+    if (node_name == base_node) {
+        recordAccelerationStructures(context.cmd_buf, context.in_flight_frame_index);
+    } else {
+        if (!acceleration_structure_build || !node_name.starts_with(std::string{base_node} + ":"))
+            throw std::logic_error("Named AS operation requires the shared scene build: " + std::string{node_name});
+        recorded = acceleration_structure_build->recordNamedTopLevel(
+            context.cmd_buf, GET_MODULE(VulkanManageCore), deletion_queue,
+            node_name.substr(base_node.size() + 1));
+    }
+    recorded_as_nodes.emplace(node_name);
+    if (acceleration_structure_build)
+        publishAccelerationStructures(context.in_flight_frame_index);
+    if (recorded_as_nodes.size() == named_scene_as.size() + 1 &&
+        gpu_owner_scope != nullptr && gpu_owner_scope->ray_tracing_project != nullptr)
+        injectRayTracingJointTransactionPoint(RayTracingJointTransactionPoint::after_as_record);
+    return recorded;
+}
+
+void Renderer::LogicalFrameRecorder::capturePickingModelInstances() {
+    if (!picking_pass_active ||
+        picking_model_instances_captured) {
+        return;
+    }
+    const auto count =
+        modules.instance_container.modelInstanceSlotCount();
+    if (count >
+        static_cast<std::size_t>(
+            std::numeric_limits<std::uint32_t>::max())) {
+        throw std::runtime_error(
+            "picking model-instance slot table exceeds R32_UINT encoding");
+    }
+    picking_model_instances.resize(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto id = modules.instance_container.modelInstanceIdAt(
+            static_cast<std::uint32_t>(index));
+        if (!id) continue;
+        picking_model_instances[index] = PickingModelInstanceToken{
+            .index = id->index,
+            .generation = id->generation,
+            .scene_epoch = id->scene_epoch,
+        };
+    }
+    picking_model_instances_captured = true;
+}
+
+void Renderer::LogicalFrameRecorder::prepareViewFamilyStates(
+    std::uint32_t in_flight_frame,
+    const FrameResolutionExtents &resolution_extents) {
+    if (!view_family_states.empty()) {
+        throw std::logic_error(
+            "render view families were prepared more than once");
+    }
+    std::uint32_t slot_base = 0;
+    for (const auto &family :
+         resolved_view_families
+             .families) {
+        auto family_resolution_extents =
+            resolution_extents;
+        if (family.family_id !=
+            mainRenderViewFamilyId) {
+            if (const auto raster_extent =
+                    resolveViewFamilyRasterExtent(
+                        family.family_id,
+                        rendering_pass,
+                        frame_graph,
+                        modules
+                            .render_target_container)) {
+                family_resolution_extents =
+                    FrameResolutionExtents{
+                        .render =
+                            *raster_extent,
+                        .output =
+                            *raster_extent,
+                    };
+            }
+        }
+        auto &history =
+            family.family_id ==
+                    mainRenderViewFamilyId
+                ? temporal_history
+                : renderer.secondary_temporal_histories
+                      .at(
+                          family.family_id);
+        const auto modifiers =
+            family.family_id ==
+                    mainRenderViewFamilyId
+                ? view_family_modifiers
+                : RenderViewFamilyProjectionModifiers{};
+        RenderViewFamilyExecutionState
+            state{
+                .family = &family,
+                .snapshots =
+                    buildRenderViewFamilySnapshots(
+                        history,
+                        family,
+                        modifiers,
+                        graph_variant_policy,
+                        engine_time
+                            .frameIndex(),
+                        family_resolution_extents
+                            .render.width,
+                        family_resolution_extents
+                            .render.height,
+                        renderer.temporal_reset_requested),
+                .sequential_slot_base =
+                    slot_base,
+            };
+        const auto family_view_count =
+            static_cast<std::uint32_t>(
+                family.views.size());
+        state.frame_uniforms.reserve(
+            family_view_count);
+        state.frame_resolutions.reserve(
+            family_view_count);
+        for (std::uint32_t
+                 family_view_index = 0;
+             family_view_index <
+             family_view_count;
+             ++family_view_index) {
+            modules.frame_resources
+                .selectSequentialView(
+                    in_flight_frame,
+                    slot_base +
+                        family_view_index);
+            state.frame_uniforms
+                .push_back(
+                    updateFrameResources(
+                        modules,
+                        engine_time,
+                        family_resolution_extents
+                            .render,
+                        family_resolution_extents
+                            .output,
+                        state.snapshots
+                            .at(
+                                family_view_index),
+                        family.views
+                            .at(
+                                family_view_index)
+                            .clip_plane,
+                        family_view_index,
+                        family_view_count,
+                        family.family_id));
+            state.frame_resolutions
+                .push_back(
+                    frameResolutionData(
+                        family_resolution_extents
+                            .render,
+                        family_resolution_extents
+                            .output));
+        }
+        slot_base +=
+            family_view_count;
+        view_family_states.push_back(
+            std::move(state));
+    }
+}
+
+void Renderer::LogicalFrameRecorder::sealRetirementBatch() {
+    if (retirement_batch_sealed) return;
+    deletion_queue.confirmSubmission();
+    retirement_batch_sealed = true;
+}
+
+void Renderer::LogicalFrameRecorder::publishFrameGeneration() noexcept {
+    // Submission has succeeded. RT state, descriptor/SBT selection, and
+    // the staged renderer root advance exactly once and are never rolled
+    // back by output publication failure.
+    if (acceleration_structure_build) {
+        acceleration_structure_build->commit();
+    }
+    if (frame_publication) {
+        frame_publication->commit();
+    }
+    if (ray_plan_publication)
+        modules.instance_container.publishRayScenePlan(ray_plan_publication);
+    if (staged_runtime_generation != 0) {
+        if (staged_graph_transfer) staged_graph_transfer->commit();
+        if (!modules.frame_graph_runtime
+                 .publishStagedGeneration(
+                     staged_runtime_generation)) {
+            std::terminate();
+        }
+        staged_runtime_guard.complete();
+    }
+}
+
+void Renderer::LogicalFrameRecorder::requireUnchangedWindowOutput() {
     // Most output revisions are caught before an image is acquired. The
     // post-begin check remains necessary because acquire itself may replace a
     // blocking legacy WP215 swapchain; WP216 removes that mutable cutover.
@@ -5025,59 +5382,12 @@ void Renderer::renderLogicalFrame(
             target, runtime_generation)) {
         throw OutputRelowerRequired{};
     }
-    const auto &rendering_pass =
-        program->rendering_pass;
-    const auto &frame_graph =
-        program->frame_graph;
-    const auto picking_target =
-        boundRenderTarget(frame_graph, "picking_id");
-    const bool picking_pass_active =
-        isConcreteRenderTarget(picking_target) &&
-        std::any_of(
-            rendering_pass.passes.begin(), rendering_pass.passes.end(),
-            [picking_target](const auto &pass) {
-                return pass.definition.isPicking() &&
-                       std::find(pass.definition.output_color.begin(),
-                                 pass.definition.output_color.end(),
-                                 picking_target) !=
-                           pass.definition.output_color.end();
-            });
-    std::vector<std::optional<PickingModelInstanceToken>>
-        picking_model_instances;
-    bool picking_model_instances_captured = false;
-    const auto capture_picking_model_instances = [&] {
-        if (!picking_pass_active ||
-            picking_model_instances_captured) {
-            return;
-        }
-        const auto count =
-            modules.instance_container.modelInstanceSlotCount();
-        if (count >
-            static_cast<std::size_t>(
-                std::numeric_limits<std::uint32_t>::max())) {
-            throw std::runtime_error(
-                "picking model-instance slot table exceeds R32_UINT encoding");
-        }
-        picking_model_instances.resize(count);
-        for (std::size_t index = 0; index < count; ++index) {
-            const auto id = modules.instance_container.modelInstanceIdAt(
-                static_cast<std::uint32_t>(index));
-            if (!id) continue;
-            picking_model_instances[index] = PickingModelInstanceToken{
-                .index = id->index,
-                .generation = id->generation,
-                .scene_epoch = id->scene_epoch,
-            };
-        }
-        picking_model_instances_captured = true;
-    };
-    const auto submission_lease =
+}
+
+void Renderer::LogicalFrameRecorder::collectPassPlan() {
+    submission_lease =
         deletion_queue.leaseForNextSubmission(
             submission_resources);
-    std::vector<MaterialDrawTagFilter>
-        material_draw_filters;
-    std::vector<std::string>
-        locally_sorted_secondary_families;
     std::map<std::uint64_t, std::size_t>
         material_draw_filter_indices;
     for (const auto &pass :
@@ -5123,12 +5433,12 @@ void Renderer::renderLogicalFrame(
                 "material draw filter stable-id collision");
         }
     }
-    const auto frame_projection_jitter =
-        projectionJitterSettingsFor(frame_graph);
-    const auto &graph_variant_policy =
-        frame_graph.render_pipeline->graph_variant_policy;
+}
+
+void Renderer::LogicalFrameRecorder::resolveViewFamilies(
+    const RenderViewFamilies &view_families) {
     const auto expected_graph_variant =
-        active_graph_variant == RenderGraphVariant::flat
+        renderer.active_graph_variant == RenderGraphVariant::flat
             ? RenderPipelineGraphVariant::flat
             : RenderPipelineGraphVariant::xr;
     if (graph_variant_policy.variant !=
@@ -5149,7 +5459,7 @@ void Renderer::renderLogicalFrame(
 #endif
     if (shadow_targets_changed) {
         rebindFullscreenInputs(modules);
-        render_target_layout_tracker.reset();
+        renderer.render_target_layout_tracker.reset();
     }
     const RenderViewFamilyProviderContext
         view_family_provider_context{
@@ -5160,7 +5470,7 @@ void Renderer::renderLogicalFrame(
                 modules
                     .render_target_container,
         };
-    const auto resolved_view_families =
+    resolved_view_families =
         resolveRuntimeRenderViewFamilies(
             view_families,
             view_family_provider_context);
@@ -5175,15 +5485,16 @@ void Renderer::renderLogicalFrame(
             mainRenderViewFamilyId);
     const auto &views =
         view_family.views;
+    main_view_family = &view_family;
     if (views.size() >
         std::numeric_limits<std::uint32_t>::max()) {
         throw std::runtime_error(
             "Renderer logical frame view count exceeds the public index range");
     }
-    const auto view_count =
+    view_count =
         static_cast<std::uint32_t>(
             views.size());
-    std::uint64_t sequential_view_count = 0;
+    sequential_view_count = 0;
     for (const auto &family :
          resolved_view_families.families) {
         sequential_view_count +=
@@ -5195,11 +5506,13 @@ void Renderer::renderLogicalFrame(
             "Renderer logical frame family views exceed the frame-resource "
             "slot range");
     }
+}
 
+void Renderer::LogicalFrameRecorder::configureGpuTimingRanges() {
     if (modules.render_timing != nullptr) {
         std::size_t max_nodes = 0;
-        for (const auto pass_id : {flat_rendering_pass_id,
-                                   xr_rendering_pass_id.value_or(flat_rendering_pass_id)}) {
+        for (const auto pass_id : {renderer.flat_rendering_pass_id,
+                                   renderer.xr_rendering_pass_id.value_or(renderer.flat_rendering_pass_id)}) {
             const auto *candidate =
                 runtime_generation->find(pass_id);
             if (candidate != nullptr) {
@@ -5210,23 +5523,26 @@ void Renderer::renderLogicalFrame(
         }
         // XR range slots 0/1 are the eyes; 2 is the engine mirror copy and 3
         // is the independently submitted desktop mirror sink.
-        const auto range_slots = xr_rendering_pass_id ? 4u : view_count;
+        const auto range_slots = renderer.xr_rendering_pass_id ? 4u : view_count;
         modules.render_timing->configureGpuQueries(
             static_cast<std::uint32_t>(in_flight_frames_num), range_slots,
             static_cast<std::uint32_t>(max_nodes));
     }
-    auto &temporal_history = activeTemporalHistory();
+}
+
+void Renderer::LogicalFrameRecorder::synchronizeTemporalHistories() {
+    const auto &view_family = *main_view_family;
     const auto view_family_change =
         synchronizeTemporalViewFamilyHistory(
             temporal_history, view_family);
     if (view_family_change !=
         TemporalViewFamilyChange::none) {
-        if (!temporal_reset_requested) {
+        if (!renderer.temporal_reset_requested) {
             modules.render_target_container.resetHistory();
             modules.instance_container.resetTemporalHistory();
-            render_target_layout_tracker.reset();
+            renderer.render_target_layout_tracker.reset();
         }
-        temporal_reset_requested = true;
+        renderer.temporal_reset_requested = true;
     }
     for (const auto &family :
          resolved_view_families.families) {
@@ -5235,44 +5551,52 @@ void Renderer::renderLogicalFrame(
             continue;
         }
         auto &history =
-            secondary_temporal_histories[
+            renderer.secondary_temporal_histories[
                 family.family_id];
         (void)synchronizeTemporalViewFamilyHistory(
             history, family);
     }
+}
+
+void Renderer::LogicalFrameRecorder::beginFrameResources() {
     modules.frame_resources.beginLogicalFrame(
         view_count,
         static_cast<std::uint32_t>(
             sequential_view_count),
         acceleration_structures != nullptr);
+}
 
+void Renderer::LogicalFrameRecorder::consumeShaderReload() {
     auto shader_hot_reload = resolveShaderHotReloadModules();
     if (consumeShaderReloadPublication(shader_hot_reload)) {
         rebindFullscreenInputs(modules);
     }
-    auto &engine_time = resolveFrameEngineTime();
+}
+
+void Renderer::LogicalFrameRecorder::observeHistoryInvalidations() {
     const auto time_set_revision = engine_time.timeSetRevision();
     const auto camera_discontinuity_revision = modules.camera.discontinuityRevision();
     const bool has_temporal_history =
         temporal_history.hasValidView();
     if (has_temporal_history &&
-        (time_set_revision != observed_time_set_revision ||
-         camera_discontinuity_revision != observed_camera_discontinuity_revision)) {
+        (time_set_revision != renderer.observed_time_set_revision ||
+         camera_discontinuity_revision != renderer.observed_camera_discontinuity_revision)) {
         modules.render_target_container.resetHistory();
         modules.instance_container.resetTemporalHistory();
-        render_target_layout_tracker.reset();
-        temporal_reset_requested = true;
+        renderer.render_target_layout_tracker.reset();
+        renderer.temporal_reset_requested = true;
     }
-    observed_time_set_revision = time_set_revision;
-    observed_camera_discontinuity_revision = camera_discontinuity_revision;
-    ValueGraph::InactiveScopes inactive_graph_scopes;
-    std::unique_ptr<SceneLoader::PreparedGraphRuntimeTransfer> staged_graph_transfer;
+    renderer.observed_time_set_revision = time_set_revision;
+    renderer.observed_camera_discontinuity_revision = camera_discontinuity_revision;
+}
+
+void Renderer::LogicalFrameRecorder::publishFrameValueGraph() {
     if (staged_runtime_generation != 0) {
         auto &scene = GET_MODULE(SceneLoader);
         const auto previous = GET_MODULE(RenderingPassContainer).snapshot();
         std::shared_ptr<const ValueGraph::Graph> old_graph;
         if (previous)
-            if (const auto old = previous->programs.find(flat_rendering_pass_id); old != previous->programs.end())
+            if (const auto old = previous->programs.find(renderer.flat_rendering_pass_id); old != previous->programs.end())
                 old_graph = old->second.frame_graph.value_graph;
         staged_graph_transfer = scene.prepareGraphRuntimeTransfer(old_graph, frame_graph.value_graph);
     }
@@ -5318,6 +5642,9 @@ void Renderer::renderLogicalFrame(
                                   .graph = frame_graph.value_graph,
                                   .node_values = std::move(published.node_values)});
     }
+}
+
+void Renderer::LogicalFrameRecorder::stagePoseAttributesAndLights() {
     stageGraphPoseAttributes(frame_graph);
     modules.frame_graph_resources.uploadRuntimeValues();
     updateFrameLights(
@@ -5325,10 +5652,11 @@ void Renderer::renderLogicalFrame(
         modules.frame_graph_resources,
         resolved_view_families,
         *frame_graph.render_pipeline);
+}
 
-    const auto &draw_sorting =
-        frame_graph.render_pipeline->draw_sorting;
-    const bool per_view_sort =
+void Renderer::LogicalFrameRecorder::buildDrawSortViews() {
+    const auto &views = main_view_family->views;
+    per_view_sort =
         graph_variant_policy.view_family ==
             GraphVariantViewFamily::stereo &&
         draw_sorting.xr_view_policy == DrawSortXrViewPolicy::per_view;
@@ -5336,7 +5664,6 @@ void Renderer::renderLogicalFrame(
         throw std::runtime_error(
             "XR per_view draw sorting requires exactly two views");
     }
-    std::vector<DrawQueueSortView> sort_views;
     if (per_view_sort) {
         sort_views.reserve(view_count);
         for (const auto &view : views)
@@ -5378,134 +5705,14 @@ void Renderer::renderLogicalFrame(
                         static_cast<float>(forward.z)},
         });
     }
-    std::vector<RenderViewFamilyExecutionState>
-        view_family_states;
+}
+
+void Renderer::LogicalFrameRecorder::planLogicalFrameSchedule() {
     view_family_states.reserve(
         resolved_view_families
             .families.size());
-    const RenderViewFamilyProjectionModifiers
-        view_family_modifiers{
-            .projection_jitter =
-                frame_projection_jitter,
-        };
-    const auto prepare_view_family_states =
-        [&](std::uint32_t in_flight_frame,
-            const FrameResolutionExtents
-                &resolution_extents) {
-            if (!view_family_states.empty()) {
-                throw std::logic_error(
-                    "render view families were prepared more than once");
-            }
-            std::uint32_t slot_base = 0;
-            for (const auto &family :
-                 resolved_view_families
-                     .families) {
-                auto family_resolution_extents =
-                    resolution_extents;
-                if (family.family_id !=
-                    mainRenderViewFamilyId) {
-                    if (const auto raster_extent =
-                            resolveViewFamilyRasterExtent(
-                                family.family_id,
-                                rendering_pass,
-                                frame_graph,
-                                modules
-                                    .render_target_container)) {
-                        family_resolution_extents =
-                            FrameResolutionExtents{
-                                .render =
-                                    *raster_extent,
-                                .output =
-                                    *raster_extent,
-                            };
-                    }
-                }
-                auto &history =
-                    family.family_id ==
-                            mainRenderViewFamilyId
-                        ? temporal_history
-                        : secondary_temporal_histories
-                              .at(
-                                  family.family_id);
-                const auto modifiers =
-                    family.family_id ==
-                            mainRenderViewFamilyId
-                        ? view_family_modifiers
-                        : RenderViewFamilyProjectionModifiers{};
-                RenderViewFamilyExecutionState
-                    state{
-                        .family = &family,
-                        .snapshots =
-                            buildRenderViewFamilySnapshots(
-                                history,
-                                family,
-                                modifiers,
-                                graph_variant_policy,
-                                engine_time
-                                    .frameIndex(),
-                                family_resolution_extents
-                                    .render.width,
-                                family_resolution_extents
-                                    .render.height,
-                                temporal_reset_requested),
-                        .sequential_slot_base =
-                            slot_base,
-                    };
-                const auto family_view_count =
-                    static_cast<std::uint32_t>(
-                        family.views.size());
-                state.frame_uniforms.reserve(
-                    family_view_count);
-                state.frame_resolutions.reserve(
-                    family_view_count);
-                for (std::uint32_t
-                         family_view_index = 0;
-                     family_view_index <
-                     family_view_count;
-                     ++family_view_index) {
-                    modules.frame_resources
-                        .selectSequentialView(
-                            in_flight_frame,
-                            slot_base +
-                                family_view_index);
-                    state.frame_uniforms
-                        .push_back(
-                            updateFrameResources(
-                                modules,
-                                engine_time,
-                                family_resolution_extents
-                                    .render,
-                                family_resolution_extents
-                                    .output,
-                                state.snapshots
-                                    .at(
-                                        family_view_index),
-                                family.views
-                                    .at(
-                                        family_view_index)
-                                    .clip_plane,
-                                family_view_index,
-                                family_view_count,
-                                family.family_id));
-                    state.frame_resolutions
-                        .push_back(
-                            frameResolutionData(
-                                family_resolution_extents
-                                    .render,
-                                family_resolution_extents
-                                    .output));
-                }
-                slot_base +=
-                    family_view_count;
-                view_family_states.push_back(
-                    std::move(state));
-            }
-        };
-    nlohmann::json view_traces = nlohmann::json::array();
-    std::optional<std::uint32_t> logical_in_flight_frame;
-    std::optional<vk::Extent2D> logical_extent;
-
-    const bool use_view_family_execution =
+    view_traces = nlohmann::json::array();
+    use_view_family_execution =
         frame_graph.target_plan != nullptr &&
         frame_graph.target_plan
             ->view_execution_plan.uses_multiview;
@@ -5515,8 +5722,6 @@ void Renderer::renderLogicalFrame(
             "compiled frame graph requires multiview, but the logical-frame "
             "target does not expose a view-family command context");
     }
-    std::vector<LogicalFrameNodeInvocation>
-        logical_frame_schedule;
     if (frame_graph.target_plan != nullptr) {
         std::vector<
             LogicalFrameViewFamilyCardinality>
@@ -5540,12 +5745,14 @@ void Renderer::renderLogicalFrame(
                 *frame_graph.target_plan,
                 family_cardinalities);
     }
+}
 
-    const auto external_depth_export =
+void Renderer::LogicalFrameRecorder::configureExternalDepthExport() {
+    external_depth_export =
         resolveRuntimeExternalDepthExport(
             frame_graph,
             modules.render_target_container);
-    const auto external_depth_submission_active =
+    external_depth_submission_active =
         target.configureExternalDepthSubmission(
             external_depth_export
                 ? external_depth_export
@@ -5561,7 +5768,9 @@ void Renderer::renderLogicalFrame(
             "logical-frame target activated external depth without "
             "a compiled export source");
     }
+}
 
+void Renderer::LogicalFrameRecorder::beginLogicalFrameTarget() {
     target.beginLogicalFrame(
         view_count,
         LogicalFrameRuntime{
@@ -5570,176 +5779,20 @@ void Renderer::renderLogicalFrame(
             .submission_lease =
                 submission_lease,
         });
-    LogicalFrameAbortGuard frame_abort_guard{target};
-    bool retirement_batch_sealed = false;
-    const auto seal_retirement_batch = [&] {
-        if (retirement_batch_sealed) return;
-        deletion_queue.confirmSubmission();
-        retirement_batch_sealed = true;
-    };
+    frame_abort_guard.emplace(target);
+    retirement_batch_sealed = false;
+}
+
+void Renderer::LogicalFrameRecorder::recordExecutions() {
+    // The only thing the two execution shapes still disagree about is which
+    // begin object the target hands out. Everything after that is a parameter.
     if (use_view_family_execution) {
         const auto render_ctx =
             target.beginViewFamily(view_count);
-        if (render_ctx.color_array_layers <
-                view_count ||
-            render_ctx.color_layer_attachments.size() <
-                view_count) {
-            throw std::runtime_error(
-                "view-family target does not expose the required full-array "
-                "and per-layer color attachment contract");
-        }
-        logical_in_flight_frame =
-            render_ctx.in_flight_frame_index;
-        logical_extent = render_ctx.extent;
-        const bool extent_changed =
-            !internal_render_extent ||
-            *internal_render_extent !=
-                render_ctx.extent;
-        if (handleFrameTargetResize(
-                modules,
-                render_target_layout_tracker,
-                target, render_ctx.extent,
-                extent_changed,
-                runtime_generation)) {
-            modules.instance_container
-                .resetTemporalHistory();
-            temporal_reset_requested = true;
-            internal_render_extent =
-                render_ctx.extent;
-        }
-        modules.instance_container.triggerUpdate(
-            DrawQueueFramePlan{
-                .opaque_provider =
-                    draw_sorting.opaque.provider,
-                .transparent_provider =
-                    draw_sorting.transparent.provider,
-                .sort_views = sort_views,
-                .material_filters =
-                    material_draw_filters,
-            });
-        record_graph_deformation(render_ctx.cmd_buf);
-        if (acceleration_structures == nullptr)
-            record_scene_as(render_ctx, "__scene_acceleration_structure");
-        capture_picking_model_instances();
-        prepareSecondaryViewFamilyDraws(
-            modules.instance_container,
-            resolved_view_families,
-            locally_sorted_secondary_families);
-        updateFrameDrawCandidates(
-            modules.instance_container,
-            modules.frame_graph_resources);
-
-        const auto frame_target_format =
-            target.colorFormat(0);
-        for (std::uint32_t view_index = 1;
-             view_index < view_count;
-             ++view_index) {
-            if (target.colorFormat(view_index) !=
-                frame_target_format) {
-                throw std::runtime_error(
-                    "view-family target requires one color format across "
-                    "all layers");
-            }
-        }
-        if (frame_target_format !=
-            modules.render_target
-                .getSwapchainFormat()) {
-            throw std::runtime_error(
-                "Renderer logical-frame target format does not match the "
-                "compiled graph");
-        }
-
-        const auto resolution_extents =
-            resolveFrameResolutionExtents(
-                frame_graph,
-                modules.render_target_container,
-                render_ctx.extent);
-        prepare_view_family_states(
-            render_ctx
-                .in_flight_frame_index,
-            resolution_extents);
-        const auto &main_state =
-            requireRenderViewFamilyExecutionState(
-                view_family_states,
-                mainRenderViewFamilyId);
-        modules.frame_resources
-            .selectMultiview(
-                render_ctx
-                    .in_flight_frame_index);
-        modules.frame_resources
-            .updateMultiview(
-                main_state.frame_uniforms);
-        modules.frame_resources
-            .updateMultiviewResolutions(
-                main_state.frame_resolutions);
-
-        nlohmann::json node_trace;
-        nlohmann::json *node_trace_ptr =
-            nullptr;
-        if (execution_tracing_for_testing) {
-            node_trace =
-                nlohmann::json::array();
-            node_trace_ptr = &node_trace;
-        }
-        executeRenderingPasses(
-            FrameGraphExecutionRequest{
-                .render_ctx = render_ctx,
-                .rendering_pass = rendering_pass,
-                .frame_graph = frame_graph,
-                .modules = modules,
-                .layout_tracker = render_target_layout_tracker,
-                .record_scene_as = record_scene_as,
-                .inactive_graph_scopes = inactive_graph_scopes,
-                .frame_target_format = frame_target_format,
-                .logical_frame = engine_time.frameIndex(),
-                .graph_variant = renderPipelineGraphVariantName(
-                    graph_variant_policy.variant),
-                .view_index = 0u,
-                .logical_view_count = view_count,
-                .authored_schedule = logical_frame_schedule,
-                .trace_out = node_trace_ptr,
-            },
-            view_family_states, per_view_sort);
-        if (external_depth_submission_active) {
-            recordExternalDepthExport(
-                render_ctx,
-                *external_depth_export,
-                modules.render_target_container,
-                modules.vk_utils,
-                render_target_layout_tracker,
-                0, view_count, true,
-                node_trace_ptr);
-        }
-#if PELICAN_WITH_OPENXR
-        if (graph_variant_policy.mirror_output ==
-            GraphVariantMirrorOutput::left_eye) {
-            recordXrMirrorIntermediate(
-                render_ctx, frame_graph, modules,
-                render_target_layout_tracker,
-                node_trace_ptr,
-                engine_time.frameIndex());
-        }
-#endif
-        target.endViewFamily(
-            submission_lease);
-        if (target.submitsOnViewEnd()) {
-            seal_retirement_batch();
-        }
-        if (execution_tracing_for_testing) {
-            view_traces.push_back({
-                {"execution", "view_family"},
-                {"view_count", view_count},
-                {"nodes", std::move(node_trace)},
-                {"final_layouts",
-                 finalLayoutsTrace(
-                     rendering_pass, frame_graph,
-                     modules
-                         .render_target_container,
-                     render_target_layout_tracker,
-                     render_ctx.required_layout)},
-            });
-        }
-    } else {
+        recordOneExecution(
+            render_ctx, 0u, view_count, true, logical_frame_schedule);
+        return;
+    }
     for (std::uint32_t view_index = 0; view_index < view_count; ++view_index) {
         std::vector<LogicalFrameNodeInvocation>
             per_view_schedule;
@@ -5750,138 +5803,220 @@ void Renderer::renderLogicalFrame(
                     view_index, view_count);
         }
         const auto render_ctx = target.beginView(view_index);
-        if (view_index == 0) {
-            logical_in_flight_frame = render_ctx.in_flight_frame_index;
-            logical_extent = render_ctx.extent;
-            const bool extent_changed =
-                !internal_render_extent || *internal_render_extent != render_ctx.extent;
-            if (handleFrameTargetResize(modules, render_target_layout_tracker, target,
-                                        render_ctx.extent, extent_changed,
-                                        runtime_generation)) {
-                modules.instance_container.resetTemporalHistory();
-                temporal_reset_requested = true;
-                internal_render_extent = render_ctx.extent;
-            }
-            // Object, skin, morph, and material-override GPU state is frozen
-            // after target acquisition and before the first view records.
-            modules.instance_container.triggerUpdate(DrawQueueFramePlan{
-                .opaque_provider = draw_sorting.opaque.provider,
-                .transparent_provider = draw_sorting.transparent.provider,
+        recordOneExecution(
+            render_ctx, view_index, view_count, false, per_view_schedule);
+    }
+}
+
+void Renderer::LogicalFrameRecorder::recordOneExecution(
+    const FrameRenderContext &render_ctx,
+    std::uint32_t view_index,
+    std::uint32_t logical_view_count,
+    bool is_view_family,
+    std::span<const LogicalFrameNodeInvocation> authored_schedule) {
+    // Only a family context promises the full-array attachment plus one
+    // per-layer attachment per view.
+    if (is_view_family) {
+        if (render_ctx.color_array_layers <
+                logical_view_count ||
+            render_ctx.color_layer_attachments.size() <
+                logical_view_count) {
+            throw std::runtime_error(
+                "view-family target does not expose the required full-array "
+                "and per-layer color attachment contract");
+        }
+    }
+    if (view_index == 0) {
+        logical_in_flight_frame =
+            render_ctx.in_flight_frame_index;
+        logical_extent = render_ctx.extent;
+        const bool extent_changed =
+            !renderer.internal_render_extent ||
+            *renderer.internal_render_extent !=
+                render_ctx.extent;
+        if (handleFrameTargetResize(
+                modules,
+                renderer.render_target_layout_tracker,
+                target, render_ctx.extent,
+                extent_changed,
+                runtime_generation)) {
+            modules.instance_container
+                .resetTemporalHistory();
+            renderer.temporal_reset_requested = true;
+            renderer.internal_render_extent =
+                render_ctx.extent;
+        }
+        // Object, skin, morph, and material-override GPU state is frozen
+        // after target acquisition and before the first view records.
+        modules.instance_container.triggerUpdate(
+            DrawQueueFramePlan{
+                .opaque_provider =
+                    draw_sorting.opaque.provider,
+                .transparent_provider =
+                    draw_sorting.transparent.provider,
                 .sort_views = sort_views,
                 .material_filters =
                     material_draw_filters,
             });
-            record_graph_deformation(render_ctx.cmd_buf);
-            if (acceleration_structures == nullptr)
-                record_scene_as(render_ctx, "__scene_acceleration_structure");
-            capture_picking_model_instances();
-            prepareSecondaryViewFamilyDraws(
-                modules.instance_container,
-                resolved_view_families,
-                locally_sorted_secondary_families);
-            updateFrameDrawCandidates(
-                modules.instance_container,
-                modules.frame_graph_resources);
-        } else {
-            if (render_ctx.in_flight_frame_index != *logical_in_flight_frame) {
-                throw std::runtime_error(
-                    "Renderer logical-frame views must share one in-flight frame index");
-            }
-            if (render_ctx.extent != *logical_extent) {
-                throw std::runtime_error(
-                    "Renderer logical-frame v1 requires equal per-view extents");
-            }
-        }
-
-        const auto frame_target_format = target.colorFormat(view_index);
-        if (frame_target_format != modules.render_target.getSwapchainFormat()) {
+        recordGraphDeformation(render_ctx.cmd_buf);
+        if (acceleration_structures == nullptr)
+            recordSceneAs(render_ctx, "__scene_acceleration_structure");
+        capturePickingModelInstances();
+        prepareSecondaryViewFamilyDraws(
+            modules.instance_container,
+            resolved_view_families,
+            locally_sorted_secondary_families);
+        updateFrameDrawCandidates(
+            modules.instance_container,
+            modules.frame_graph_resources);
+    } else {
+        if (render_ctx.in_flight_frame_index != *logical_in_flight_frame) {
             throw std::runtime_error(
-                "Renderer logical-frame target format does not match the compiled flat graph");
+                "Renderer logical-frame views must share one in-flight frame index");
         }
+        if (render_ctx.extent != *logical_extent) {
+            throw std::runtime_error(
+                "Renderer logical-frame v1 requires equal per-view extents");
+        }
+    }
 
-        const auto resolution_extents =
-            resolveFrameResolutionExtents(
-                frame_graph,
-                modules.render_target_container,
-                render_ctx.extent);
-        if (view_index == 0) {
-            prepare_view_family_states(
-                render_ctx
-                    .in_flight_frame_index,
-                resolution_extents);
+    const auto frame_target_format =
+        target.colorFormat(view_index);
+    if (is_view_family) {
+        for (std::uint32_t layer_index = 1;
+             layer_index < logical_view_count;
+             ++layer_index) {
+            if (target.colorFormat(layer_index) !=
+                frame_target_format) {
+                throw std::runtime_error(
+                    "view-family target requires one color format across "
+                    "all layers");
+            }
         }
-        const auto &main_state =
-            requireRenderViewFamilyExecutionState(
-                view_family_states,
-                mainRenderViewFamilyId);
+    }
+    if (frame_target_format !=
+        modules.render_target
+            .getSwapchainFormat()) {
+        throw std::runtime_error(
+            is_view_family
+                ? "Renderer logical-frame target format does not match the "
+                  "compiled graph"
+                : "Renderer logical-frame target format does not match the compiled flat graph");
+    }
+
+    const auto resolution_extents =
+        resolveFrameResolutionExtents(
+            frame_graph,
+            modules.render_target_container,
+            render_ctx.extent);
+    if (view_index == 0) {
+        prepareViewFamilyStates(
+            render_ctx
+                .in_flight_frame_index,
+            resolution_extents);
+    }
+    const auto &main_state =
+        requireRenderViewFamilyExecutionState(
+            view_family_states,
+            mainRenderViewFamilyId);
+    if (is_view_family) {
+        modules.frame_resources
+            .selectMultiview(
+                render_ctx
+                    .in_flight_frame_index);
+        modules.frame_resources
+            .updateMultiview(
+                main_state.frame_uniforms);
+        modules.frame_resources
+            .updateMultiviewResolutions(
+                main_state.frame_resolutions);
+    } else {
         modules.frame_resources.selectSequentialView(
             render_ctx.in_flight_frame_index,
             main_state.sequential_slot_base +
                 view_index);
+    }
 
-        nlohmann::json node_trace;
-        nlohmann::json *node_trace_ptr = nullptr;
-        if (execution_tracing_for_testing) {
-            node_trace = nlohmann::json::array();
-            node_trace_ptr = &node_trace;
-        }
-        executeRenderingPasses(
-            FrameGraphExecutionRequest{
-                .render_ctx = render_ctx,
-                .rendering_pass = rendering_pass,
-                .frame_graph = frame_graph,
-                .modules = modules,
-                .layout_tracker = render_target_layout_tracker,
-                .record_scene_as = record_scene_as,
-                .inactive_graph_scopes = inactive_graph_scopes,
-                .frame_target_format = frame_target_format,
-                .logical_frame = engine_time.frameIndex(),
-                .graph_variant = renderPipelineGraphVariantName(
-                    graph_variant_policy.variant),
-                .view_index = view_index,
-                .logical_view_count = view_count,
-                .authored_schedule = per_view_schedule,
-                .trace_out = node_trace_ptr,
-            },
-            view_family_states, per_view_sort);
-        if (external_depth_submission_active) {
-            recordExternalDepthExport(
-                render_ctx,
-                *external_depth_export,
-                modules.render_target_container,
-                modules.vk_utils,
-                render_target_layout_tracker,
-                view_index, view_count, false,
-                node_trace_ptr);
-        }
+    nlohmann::json node_trace;
+    nlohmann::json *node_trace_ptr = nullptr;
+    if (renderer.execution_tracing_for_testing) {
+        node_trace = nlohmann::json::array();
+        node_trace_ptr = &node_trace;
+    }
+    executeRenderingPasses(
+        FrameGraphExecutionRequest{
+            .render_ctx = render_ctx,
+            .rendering_pass = rendering_pass,
+            .frame_graph = frame_graph,
+            .modules = modules,
+            .layout_tracker = renderer.render_target_layout_tracker,
+            .record_scene_as =
+                [this](const FrameRenderContext &context,
+                       std::string_view node_name) {
+                    return recordSceneAs(context, node_name);
+                },
+            .inactive_graph_scopes = inactive_graph_scopes,
+            .frame_target_format = frame_target_format,
+            .logical_frame = engine_time.frameIndex(),
+            .graph_variant = renderPipelineGraphVariantName(
+                graph_variant_policy.variant),
+            .view_index = view_index,
+            .logical_view_count = logical_view_count,
+            .authored_schedule = authored_schedule,
+            .trace_out = node_trace_ptr,
+        },
+        view_family_states, per_view_sort);
+    if (external_depth_submission_active) {
+        recordExternalDepthExport(
+            render_ctx,
+            *external_depth_export,
+            modules.render_target_container,
+            modules.vk_utils,
+            renderer.render_target_layout_tracker,
+            view_index, logical_view_count, is_view_family,
+            node_trace_ptr);
+    }
 #if PELICAN_WITH_OPENXR
-        if (graph_variant_policy.mirror_output ==
-                GraphVariantMirrorOutput::left_eye &&
-            view_index == 0) {
-            recordXrMirrorIntermediate(render_ctx, frame_graph,
-                                       modules,
-                                       render_target_layout_tracker, node_trace_ptr,
-                                       engine_time.frameIndex());
-        }
+    if (graph_variant_policy.mirror_output ==
+            GraphVariantMirrorOutput::left_eye &&
+        view_index == 0) {
+        recordXrMirrorIntermediate(
+            render_ctx, frame_graph, modules,
+            renderer.render_target_layout_tracker,
+            node_trace_ptr,
+            engine_time.frameIndex());
+    }
 #endif
+    if (is_view_family) {
+        target.endViewFamily(
+            submission_lease);
+    } else {
         target.endView(view_index, submission_lease);
-        if (target.submitsOnViewEnd()) {
-            seal_retirement_batch();
-        }
-
-        if (execution_tracing_for_testing) {
-            view_traces.push_back({
-                {"view_index", view_index},
-                {"nodes", std::move(node_trace)},
-                {"final_layouts",
-                 finalLayoutsTrace(rendering_pass, frame_graph,
-                                   modules.render_target_container,
-                                   render_target_layout_tracker, render_ctx.required_layout)},
-            });
-        }
     }
+    if (target.submitsOnViewEnd()) {
+        sealRetirementBatch();
     }
+    if (renderer.execution_tracing_for_testing) {
+        // nlohmann::json orders object keys itself, so assembling the entry by
+        // assignment produces the document both old branches produced.
+        auto view_trace =
+            is_view_family
+                ? nlohmann::json{{"execution", "view_family"},
+                                 {"view_count", logical_view_count}}
+                : nlohmann::json{{"view_index", view_index}};
+        view_trace["nodes"] = std::move(node_trace);
+        view_trace["final_layouts"] =
+            finalLayoutsTrace(
+                rendering_pass, frame_graph,
+                modules
+                    .render_target_container,
+                renderer.render_target_layout_tracker,
+                render_ctx.required_layout);
+        view_traces.push_back(std::move(view_trace));
+    }
+}
 
+void Renderer::LogicalFrameRecorder::submitFrame() {
     if (staged_runtime_generation != 0) {
         modules.frame_graph_runtime
             .prepareStagedGenerationCommit(
@@ -5890,82 +6025,70 @@ void Renderer::renderLogicalFrame(
             RayTracingJointTransactionPoint::submit);
     }
     target.submitLogicalFrame(submission_lease);
-    seal_retirement_batch();
+    sealRetirementBatch();
+}
 
-    const auto publish_frame_generation = [&]() noexcept {
-        // Submission has succeeded. RT state, descriptor/SBT selection, and
-        // the staged renderer root advance exactly once and are never rolled
-        // back by output publication failure.
-        if (acceleration_structure_build) {
-            acceleration_structure_build->commit();
-        }
-        if (frame_publication) {
-            frame_publication->commit();
-        }
-        if (ray_plan_publication)
-            modules.instance_container.publishRayScenePlan(ray_plan_publication);
-        if (staged_runtime_generation != 0) {
-            if (staged_graph_transfer) staged_graph_transfer->commit();
-            if (!modules.frame_graph_runtime
-                     .publishStagedGeneration(
-                         staged_runtime_generation)) {
-                std::terminate();
-            }
-            staged_runtime_guard.complete();
-        }
-    };
-    static_assert(noexcept(publish_frame_generation()));
-    publish_frame_generation();
+void Renderer::LogicalFrameRecorder::publishFrame() {
+    static_assert(noexcept(publishFrameGeneration()));
+    publishFrameGeneration();
     if (staged_graph_transfer) staged_graph_transfer->publishAudio(frame_graph.value_graph);
     if (staged_runtime_generation != 0) {
         injectRayTracingJointTransactionPoint(
             RayTracingJointTransactionPoint::after_publication);
     }
     target.publishLogicalFrame();
-    frame_abort_guard.complete();
+    frame_abort_guard->complete();
+}
+
+void Renderer::LogicalFrameRecorder::retainPickingSnapshot() {
     if (picking_pass_active &&
         picking_model_instances_captured) {
-        last_picking_target = picking_target;
-        last_picking_rendering_pass_id =
-            current_rendering_pass_id;
-        last_picking_runtime_generation =
+        renderer.last_picking_target = picking_target;
+        renderer.last_picking_rendering_pass_id =
+            renderer.current_rendering_pass_id;
+        renderer.last_picking_runtime_generation =
             runtime_generation->generation;
-        last_picking_extent =
+        renderer.last_picking_extent =
             modules.render_target_container
                 .getMetadata(picking_target)
                 .extent;
-        last_picking_frame_index =
+        renderer.last_picking_frame_index =
             engine_time.frameIndex();
-        last_picking_model_instances =
+        renderer.last_picking_model_instances =
             std::move(picking_model_instances);
     } else {
-        last_picking_target = noRenderTargetId();
-        last_picking_rendering_pass_id =
+        renderer.last_picking_target = noRenderTargetId();
+        renderer.last_picking_rendering_pass_id =
             invalidRenderingPassId();
-        last_picking_runtime_generation = 0;
-        last_picking_extent.reset();
-        last_picking_frame_index = 0;
+        renderer.last_picking_runtime_generation = 0;
+        renderer.last_picking_extent.reset();
+        renderer.last_picking_frame_index = 0;
         std::vector<std::optional<PickingModelInstanceToken>>{}
-            .swap(last_picking_model_instances);
+            .swap(renderer.last_picking_model_instances);
     }
-    if (execution_tracing_for_testing) {
+}
+
+void Renderer::LogicalFrameRecorder::publishExecutionTrace() {
+    if (renderer.execution_tracing_for_testing) {
         if (use_view_family_execution) {
-            last_execution_trace =
+            renderer.last_execution_trace =
                 nlohmann::json{
                     {"view_family",
                      std::move(
                          view_traces.at(0))},
                 };
         } else if (view_count == 1) {
-            last_execution_trace = nlohmann::json{
+            renderer.last_execution_trace = nlohmann::json{
                 {"nodes", std::move(view_traces.at(0).at("nodes"))},
                 {"final_layouts", std::move(view_traces.at(0).at("final_layouts"))},
             };
         } else {
-            last_execution_trace = nlohmann::json{{"views", std::move(view_traces)}};
+            renderer.last_execution_trace = nlohmann::json{{"views", std::move(view_traces)}};
         }
     }
+}
 
+void Renderer::LogicalFrameRecorder::advanceFrameHistories() {
     modules.render_target_container.advanceHistoryFrame();
     modules.instance_container.advanceTemporalHistoryAfterRender();
     for (const auto &state :
@@ -5974,7 +6097,7 @@ void Renderer::renderLogicalFrame(
             state.family->family_id ==
                     mainRenderViewFamilyId
                 ? temporal_history
-                : secondary_temporal_histories
+                : renderer.secondary_temporal_histories
                       .at(
                           state.family
                               ->family_id);
@@ -5982,23 +6105,50 @@ void Renderer::renderLogicalFrame(
             history, *state.family,
             state.snapshots);
     }
-    last_view_snapshots =
+    renderer.last_view_snapshots =
         requireRenderViewFamilyExecutionState(
             view_family_states,
             mainRenderViewFamilyId)
             .snapshots;
-    temporal_reset_requested = false;
-    if (pending_graph_transition) {
-        auto &transition = graph_variant_transition_trace.at(*pending_graph_transition);
+    renderer.temporal_reset_requested = false;
+    if (renderer.pending_graph_transition) {
+        auto &transition = renderer.graph_variant_transition_trace.at(*renderer.pending_graph_transition);
         transition["reset_epochs"] = nlohmann::json::array();
-        for (const auto &snapshot : last_view_snapshots) {
+        for (const auto &snapshot : renderer.last_view_snapshots) {
             transition["reset_epochs"].push_back(snapshot.temporal_reset_epoch);
         }
         transition["projection_jitter"] =
             frame_projection_jitter.has_value();
-        transition["frame_plan"] = currentFramePlanOrderForTesting();
-        pending_graph_transition.reset();
+        transition["frame_plan"] = renderer.currentFramePlanOrderForTesting();
+        renderer.pending_graph_transition.reset();
     }
+}
+
+void Renderer::renderLogicalFrame(
+    ILogicalFrameTarget &target,
+    const RenderViewFamilies &view_families) {
+    synchronizeGraphGpuOwnership();
+    LogicalFrameRecorder recorder{*this, target};
+    recorder.requireUnchangedWindowOutput();
+    recorder.collectPassPlan();
+    recorder.resolveViewFamilies(view_families);
+    recorder.configureGpuTimingRanges();
+    recorder.synchronizeTemporalHistories();
+    recorder.beginFrameResources();
+    recorder.consumeShaderReload();
+    recorder.observeHistoryInvalidations();
+    recorder.publishFrameValueGraph();
+    recorder.stagePoseAttributesAndLights();
+    recorder.buildDrawSortViews();
+    recorder.planLogicalFrameSchedule();
+    recorder.configureExternalDepthExport();
+    recorder.beginLogicalFrameTarget();
+    recorder.recordExecutions();
+    recorder.submitFrame();
+    recorder.publishFrame();
+    recorder.retainPickingSnapshot();
+    recorder.publishExecutionTrace();
+    recorder.advanceFrameHistories();
 }
 
 void Renderer::render(

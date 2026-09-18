@@ -146,6 +146,11 @@ class ILogicalFrameTarget {
 DECLARE_MODULE(Renderer) {
     // One publish()/rollback() pair serves both render pipeline reload paths.
     friend struct RenderPipelinePublicationTransaction;
+    // One logical frame's recording state and steps. Defined in renderer.cpp
+    // because its fields name types that only the renderer translation unit
+    // has; being a member of Renderer is what lets it reach the renderer state
+    // a frame mutates.
+    class LogicalFrameRecorder;
     RenderingPassId current_rendering_pass_id;
     RenderTargetLayoutTracker render_target_layout_tracker;
     bool execution_tracing_for_testing = false;
