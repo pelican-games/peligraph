@@ -1315,6 +1315,46 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "WP375c a failed forced abort never rewrites an already committed edit",
+    "[WP375c][editor][journal][preview][forced-abort][commit][mutation]") {
+    Harness harness;
+    const auto opened = harness.edits->openPreview(
+        {{"actor_id", harness.actor},
+         {"operations",
+          Json::array({{{"op", "set_component_value"},
+                        {"object_id", 1},
+                        {"component_slot", "light"},
+                        {"field_path", "/intensity"},
+                        {"value", 4.0}}})}});
+    REQUIRE(opened.at("status") == "accepted");
+    harness.edits->commitPending();
+    REQUIRE(harness.edits->hasOpenPreviewLease());
+    (void)harness.edits->takeCompletedResults();
+
+    harness.reject_preview_restore = true;
+    const auto edit = harness.enqueue(
+        {{"op", "set_component_value"}, {"object_id", 4},
+         {"component_slot", "transform"}, {"field_path", "/pos"},
+         {"value", {11, 0, 0}}});
+    REQUIRE(edit.at("status") == "accepted");
+    harness.edits->commitPending();
+
+    const auto result =
+        harness.edits->getResult({{"ticket", edit.at("ticket")}});
+    REQUIRE(result.at("status") == "committed");
+    REQUIRE_THAT(result.at("preview_abort_error").get<std::string>(),
+                 Catch::Matchers::ContainsSubstring(
+                     "editor_preview_forced_abort_failed@1"));
+    REQUIRE(harness.edits->hasOpenPreviewLease());
+    const auto notifications = harness.edits->takeCompletedResults();
+    REQUIRE(std::count_if(notifications.begin(), notifications.end(),
+                          [&](const auto &value) {
+                              return value.contains("ticket") &&
+                                     value.at("ticket") == edit.at("ticket");
+                          }) == 1);
+}
+
+TEST_CASE(
     "WP375c failed preview commit restores runtime and releases its lease",
     "[WP375c][editor][journal][preview][commit-failure][lease][mutation]") {
     Harness harness;

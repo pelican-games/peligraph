@@ -5397,9 +5397,16 @@ struct EditorEditCoordinator::Impl {
                              {"target", targetState(preview_lease->raw_operations,
                                                     document())}},
                             "preview ticket base SceneRevision is stale"};
-                        finishPreviewRequest(request,
-                                             previewRejected(request, failure));
-                        forceAbort("stale_revision");
+                        auto result = previewRejected(request, failure);
+                        // Abort before publishing: a restore failure thrown
+                        // past this point would be caught below and replace
+                        // this stale_revision rejection with a second result.
+                        try {
+                            forceAbort("stale_revision");
+                        } catch (const EditorPreviewAbortError &error) {
+                            result["preview_abort_error"] = error.what();
+                        }
+                        finishPreviewRequest(request, std::move(result));
                         continue;
                     }
                     try {
@@ -5727,9 +5734,20 @@ struct EditorEditCoordinator::Impl {
                     ticket.result["source_transaction_id"] =
                         *ticket.source_transaction_id;
                 }
+                // The document and the journal already carry this edit, so the
+                // ticket outcome is decided.  Force the stale lease down before
+                // the result is published and keep a restore failure as a
+                // diagnostic: letting it reach the catch below would republish
+                // the very same ticket as "failed".
+                if (preview_lease) {
+                    try {
+                        (void)forceAbort("base_revision_stale");
+                    } catch (const EditorPreviewAbortError &error) {
+                        ticket.result["preview_abort_error"] = error.what();
+                    }
+                }
                 results[ticket.id] = ticket.result;
                 completed.push_back(ticket.result);
-                if (preview_lease) (void)forceAbort("base_revision_stale");
             } catch (const EditFailure &failure) {
                 ticket.result = rejected(ticket.id, ticket.actor_id,
                                          ticket.base_revision, failure);
