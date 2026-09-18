@@ -456,7 +456,9 @@ XrLocatedViews SessionRuntime::locateViews(const XrDisplayTiming &display_timing
     return input_located_views;
 }
 
-void SessionRuntime::endFrame(const XrDisplayTiming &display_timing) {
+void SessionRuntime::endFrameWithLayers(
+    const XrDisplayTiming &display_timing,
+    std::span<const XrCompositionLayerBaseHeader *const> layers) {
     if (!session_running || frame_phase != FramePhase::begun ||
         display_timing.predictedDisplayTime() != pending_display_time) {
         throw std::logic_error("xrEndFrame requires the current begun frame timing");
@@ -464,8 +466,11 @@ void SessionRuntime::endFrame(const XrDisplayTiming &display_timing) {
     XrFrameEndInfo end_info{XR_TYPE_FRAME_END_INFO};
     end_info.displayTime = display_timing.predictedDisplayTime();
     end_info.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-    end_info.layerCount = 0;
-    end_info.layers = nullptr;
+    end_info.layerCount = static_cast<uint32_t>(layers.size());
+    // An empty span must submit a null pointer, not the one-past-the-end
+    // pointer of an empty range: the runtime is handed layerCount 0 with
+    // layers == nullptr exactly as the layer-less overload always did.
+    end_info.layers = layers.empty() ? nullptr : layers.data();
     recordPredictedDisplayMargin(before_submit_margins_ms,
                                  display_timing.predictedDisplayTime());
     const auto result = api.end_frame(session, &end_info);
@@ -481,6 +486,10 @@ void SessionRuntime::endFrame(const XrDisplayTiming &display_timing) {
     }
     if (XR_FAILED(result)) throwFailure("xrEndFrame", result);
     logTimingProgress();
+}
+
+void SessionRuntime::endFrame(const XrDisplayTiming &display_timing) {
+    endFrameWithLayers(display_timing, {});
 }
 
 XrInputFrame SessionRuntime::syncActions(
@@ -500,31 +509,8 @@ XrInputFrame SessionRuntime::syncActions(
 
 void SessionRuntime::endFrame(const XrDisplayTiming &display_timing,
                               const XrCompositionLayerBaseHeader &layer) {
-    if (!session_running || frame_phase != FramePhase::begun ||
-        display_timing.predictedDisplayTime() != pending_display_time) {
-        throw std::logic_error("xrEndFrame requires the current begun frame timing");
-    }
     const XrCompositionLayerBaseHeader *layers[] = {&layer};
-    XrFrameEndInfo end_info{XR_TYPE_FRAME_END_INFO};
-    end_info.displayTime = display_timing.predictedDisplayTime();
-    end_info.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-    end_info.layerCount = 1;
-    end_info.layers = layers;
-    recordPredictedDisplayMargin(before_submit_margins_ms,
-                                 display_timing.predictedDisplayTime());
-    const auto result = api.end_frame(session, &end_info);
-    recordPredictedDisplayMargin(after_end_frame_margins_ms,
-                                 display_timing.predictedDisplayTime());
-    frame_phase = FramePhase::idle;
-    pending_display_time = 0;
-    if (result == XR_SESSION_LOSS_PENDING || result == XR_ERROR_SESSION_LOST ||
-        result == XR_ERROR_INSTANCE_LOST) {
-        if (result == XR_SESSION_LOSS_PENDING) ++session_loss_pending_count;
-        reportCompositionLoss(result);
-        throwFailure("xrEndFrame", result);
-    }
-    if (XR_FAILED(result)) throwFailure("xrEndFrame", result);
-    logTimingProgress();
+    endFrameWithLayers(display_timing, layers);
 }
 
 void SessionRuntime::reportCompositionLoss(XrResult result) noexcept {

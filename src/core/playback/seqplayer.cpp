@@ -2,13 +2,11 @@
 
 #include "../launchconfig.hpp"
 #include "../loader/fileio.hpp"
-#include "../loader/sceneload.hpp"
 #include "../log.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../material/standardmaterialresource.hpp"
 #include "../model/gltf.hpp"
 #include "../model/vertbufcontainer.hpp"
-#include "../renderer/camera.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 
 #include <algorithm>
@@ -291,7 +289,6 @@ TransformSequence loadTransformSequenceFile(const std::filesystem::path &path) {
 
 SeqPlayer::SeqPlayer() {
     const auto &launch_config = GET_MODULE(EngineLaunchConfig);
-    applyCameraOverride();
     if (!launch_config.play_seq) {
         return;
     }
@@ -303,26 +300,6 @@ SeqPlayer::SeqPlayer() {
 
     LOG_INFO(logger, "SeqPlayer loaded {} objects from {}", sequence.objects().size(),
              launch_config.play_seq->string());
-}
-
-void SeqPlayer::applyCameraOverride() {
-    const auto &launch_config = GET_MODULE(EngineLaunchConfig);
-    if (!launch_config.camera_override) {
-        return;
-    }
-
-    auto &camera = GET_MODULE(Camera);
-    const auto &override = *launch_config.camera_override;
-    const glm::vec3 position{override.position[0], override.position[1], override.position[2]};
-    const glm::vec3 target{override.target[0], override.target[1], override.target[2]};
-    const auto dir = target - position;
-    if (glm::length(dir) <= 0.0f) {
-        throw std::runtime_error("--camera position and target must not be identical");
-    }
-
-    camera.setPos(position);
-    camera.setDir(glm::normalize(dir));
-    camera.setNearFar(override.fov_y, 0.01f, 1000.0f);
 }
 
 void SeqPlayer::initializeInstances(const std::filesystem::path &mesh_path) {
@@ -359,24 +336,7 @@ void SeqPlayer::releaseInstancesForSceneLoad() {
     enabled = false;
 }
 
-SeqPlayer::PreparedSceneState SeqPlayer::snapshotPreparedScene() const {
-    return PreparedSceneState{.enabled = enabled, .instances = instances};
-}
-
-SeqPlayer::PreparedSceneState SeqPlayer::prepareSceneLoad() const {
-    return PreparedSceneState{};
-}
-
-void SeqPlayer::publishPreparedScene(
-    PreparedSceneState &&prepared) noexcept {
-    std::swap(enabled, prepared.enabled);
-    instances.swap(prepared.instances);
-}
-
-void SeqPlayer::publishPreparedScene(PreparedSceneState &&prepared,
-                                     SceneLoadPhaseTrace &phase_trace) noexcept {
-    phase_trace.record(SceneLoadPhase::publish);
-    publishPreparedScene(std::move(prepared));
-}
+// snapshotPreparedScene / prepareSceneLoad / publishPreparedScene live in
+// playbackscenestate.cpp, which every build variant compiles.
 
 } // namespace Pelican

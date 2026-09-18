@@ -55,7 +55,6 @@ DECLARE_MODULE(SeqPlayer) {
     std::vector<ModelInstanceId> instances;
     std::optional<ModelTemplate> sequence_model;
 
-    void applyCameraOverride();
     void initializeInstances(const std::filesystem::path &mesh_path);
 
   public:

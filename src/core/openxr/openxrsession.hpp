@@ -9,6 +9,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -173,6 +174,13 @@ DECLARE_MODULE(SessionRuntime) {
     void recordPredictedDisplayMargin(std::deque<double> &samples,
                                       XrTime predicted_display_time) noexcept;
     void logTimingProgress() const;
+    // The whole of xrEndFrame. The two public overloads differ only in the
+    // layer span they hand over -- empty for the projection-less submit, one
+    // layer for the composition submit -- so the phase check, the two margin
+    // recordings, the frame-phase reset and the loss handling live here once.
+    void endFrameWithLayers(
+        const XrDisplayTiming &display_timing,
+        std::span<const XrCompositionLayerBaseHeader *const> layers);
 
   public:
     SessionRuntime();

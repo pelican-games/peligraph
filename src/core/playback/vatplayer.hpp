@@ -14,8 +14,6 @@ DECLARE_MODULE(VatPlayer) {
     std::optional<ModelTemplate> vat_model;
     std::optional<ModelInstanceId> instance;
 
-    void applyCameraOverride();
-
   public:
     struct PreparedSceneState {
         bool enabled = false;

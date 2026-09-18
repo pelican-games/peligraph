@@ -47,6 +47,29 @@ using Internal::descriptorHeaderSize;
 using Internal::sameHandle;
 using Internal::validateDescriptor;
 
+// The outer handlers of `runPhases` and `runAllPhases`. C-4 gave the client
+// callback its own three-way mapping (`PhaseScheduler::statusForCallbackException`)
+// but left these two as a flat `catch (...) -> out_of_memory`, and C-4's own
+// note carried that forward as a follow-up. Everything that reaches here is
+// engine code -- the callback never escapes its handler -- so the ABI's
+// `callback_failed` would name the wrong party, and `phase_order_error` is not
+// a candidate either: a phase-order violation is *returned* by the driver
+// below (`return Status::phase_order_error` in runPhases), never thrown.
+// Must be called from inside a catch block.
+Status statusForEngineException() noexcept {
+    try {
+        throw;
+    } catch (const std::bad_alloc &) {
+        return Status::out_of_memory;
+    } catch (const std::invalid_argument &) {
+        return Status::invalid_argument;
+    } catch (...) {
+        // Conservative default: an unrecognized engine-side exception keeps
+        // the status this path has always reported.
+        return Status::out_of_memory;
+    }
+}
+
 } // namespace
 
 // D-7. What is left here after the split is the part that is genuinely one
@@ -56,6 +79,25 @@ using Internal::validateDescriptor;
 // `PhaseScheduler` are plain members with no locks of their own; every call
 // into them below happens with `mutex` held, except across a client phase
 // callback in runPhases, where C-4 deliberately releases it.
+//
+// D-7's follow-up proposed a fourth part, `AssetTable`, over the maps in the
+// first block below. It was measured and not taken: it is not a pure move.
+// Of the 24 functions the follow-up listed as asset-shaped, 9 already reach a
+// second part -- `reloadAsset` (pose_arena.stalePosesForLayout,
+// sink_registry.rebindInstancesForObjects), `unregisterObject` and through it
+// `synchronizeSceneObjects` (sink_registry.retireObject), `samplePoseLocked`
+// and `sampleAnimationSourceLocked` (pose_arena.resolvePose),
+// `createCursorLocked` / `destroyCursorLocked` / `ensureOwner` /
+// `validateOwner` (the `owners` table, which the follow-up's member list left
+// behind) -- and a further eleven functions that were never on the list
+// (`blendPosesLocked`, `localToModelLocked`, `buildPaletteLocked`,
+// `acquirePoseLocked`, `beginPoseFrameLocked`, `resolveRigLocked`,
+// `publishToSink`, `commitStagedFrame`, `acquireStagedPoseLocked`,
+// `resolveStagedSourceNodeLocked`, `publishFromSourceLocked`) read the same
+// maps. Moving the maps out therefore does not move the readers; it replaces
+// nine direct members with nine public accessors on a table with no invariant
+// of its own, which is a worse seam than the one it removes. `reset()` and
+// `releaseOwner()` span all four groupings either way.
 struct AnimationServiceRuntime::Impl {
     using ObjectRecord = Internal::ObjectRecord;
     using PoseArena = Internal::PoseArena;
@@ -762,11 +804,11 @@ struct AnimationServiceRuntime::Impl {
             clear_active();
             return Status::ok;
         } catch (...) {
-            // Engine-side failure, not a client callback: the three-way mapping
-            // in PhaseScheduler deliberately does not apply here.
-            sink_registry.stagedFrame().reset();
-            phase_scheduler.clearActive();
-            return Status::out_of_memory;
+            // Engine-side failure, not a client callback: the mapping in
+            // PhaseScheduler deliberately does not apply here (see
+            // statusForEngineException).
+            clear_active();
+            return statusForEngineException();
         }
     }
 
@@ -786,7 +828,9 @@ struct AnimationServiceRuntime::Impl {
             }
             return Status::ok;
         } catch (...) {
-            return Status::out_of_memory;
+            // Only the fan-out itself can throw here: runPhases is noexcept
+            // and already answered for every phase it ran.
+            return statusForEngineException();
         }
     }
 

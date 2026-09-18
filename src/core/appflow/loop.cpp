@@ -17,6 +17,7 @@
 #include "../openxr/openxrviewspace.hpp"
 #endif
 #include "../playback/camerabake.hpp"
+#include "../playback/launchcameraoverride.hpp"
 #include "../playback/vatplayer.hpp"
 #include "../persistence/persistence.hpp"
 #if PELICAN_WITH_PHYSICS
@@ -165,6 +166,12 @@ LoopModules resolveLoopModules() {
     if (rendering_passes.isFeatureEnabled("ui")) (void)GET_MODULE(ui::UiModule);
 
     auto &engine_time = GET_MODULE(EngineTime);
+    // `--camera` used to be applied by SeqPlayer's constructor (always) and
+    // VatPlayer's (when --play-vat was given), so with both players active it
+    // ran twice. It runs once here instead, at the earlier of those two
+    // points: VatPlayer is constructed on the next line, SeqPlayer later in
+    // prepareRuntimeModuleGraph, and nothing between the two reads Camera.
+    applyLaunchCameraOverride();
     auto &vat_player = GET_MODULE(VatPlayer);
     auto &input_state = GET_MODULE(InputState);
     auto &input_sequence = GET_MODULE(InputSequenceRuntime);

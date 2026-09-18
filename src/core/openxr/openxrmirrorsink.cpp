@@ -69,6 +69,98 @@ XrMirrorBeginAction classifyMirrorBeginResult(
     return XrMirrorBeginAction::disable;
 }
 
+namespace {
+
+// tryPresent() used to track its unwinding with four locals (`frame_token`,
+// `rendering_begun`, `timing_begun`, `submission_lease`) across eight exit
+// points, and to repeat the same 14-line cleanup in both catch handlers.
+// These three guards own that unwinding instead: each undoes its own step
+// unless the body hands it off, and each destructor swallows -- tryPresent()
+// is noexcept, and the old handlers wrapped their cleanup in catch(...) too.
+//
+// Declaration order in tryPresent() is token -> timing -> rendering, so the
+// unwind ends the rendering scope before it abandons the frame, which is the
+// order the old handlers used. cancelGpuRange() records nothing into the
+// command buffer, so where it falls in that sequence is not observable.
+
+// The acquired frame. submit() takes it through release(); leaving the scope
+// any other way abandons it.
+class ScopedFrameToken {
+    RenderTarget *target_;
+    std::optional<FrameTargetFrame> frame_;
+
+  public:
+    ScopedFrameToken(RenderTarget &target, FrameTargetFrame &&frame)
+        : target_{&target}, frame_{std::move(frame)} {}
+    ScopedFrameToken(const ScopedFrameToken &) = delete;
+    ScopedFrameToken &operator=(const ScopedFrameToken &) = delete;
+    ~ScopedFrameToken() {
+        if (!frame_) return;
+        try {
+            target_->abandon(release());
+        } catch (...) {
+        }
+    }
+
+    const FrameRenderContext &context() const { return frame_->context(); }
+    FrameTargetFrame release() {
+        auto token = std::move(*frame_);
+        frame_.reset();
+        return token;
+    }
+};
+
+// The GPU timing range opened by beginGpuRange(). end() closes it; leaving the
+// scope any other way cancels it. A null RenderTiming means the range was
+// never opened and the guard is inert.
+class ScopedGpuTimingRange {
+    RenderTiming *timing_;
+
+  public:
+    explicit ScopedGpuTimingRange(RenderTiming *timing) noexcept : timing_{timing} {}
+    ScopedGpuTimingRange(const ScopedGpuTimingRange &) = delete;
+    ScopedGpuTimingRange &operator=(const ScopedGpuTimingRange &) = delete;
+    ~ScopedGpuTimingRange() {
+        if (timing_ == nullptr) return;
+        try {
+            timing_->cancelGpuRange();
+        } catch (...) {
+        }
+    }
+    void end() {
+        if (auto *timing = std::exchange(timing_, nullptr); timing != nullptr)
+            timing->endGpuRange();
+    }
+};
+
+// cmd.beginRendering() ... cmd.endRendering().
+class ScopedRendering {
+    vk::CommandBuffer cmd_;
+    bool begun_ = false;
+
+  public:
+    ScopedRendering(vk::CommandBuffer cmd, const vk::RenderingInfo &rendering)
+        : cmd_{cmd} {
+        cmd_.beginRendering(rendering);
+        begun_ = true;
+    }
+    ScopedRendering(const ScopedRendering &) = delete;
+    ScopedRendering &operator=(const ScopedRendering &) = delete;
+    ~ScopedRendering() {
+        if (!begun_) return;
+        try {
+            cmd_.endRendering();
+        } catch (...) {
+        }
+    }
+    void end() {
+        if (!std::exchange(begun_, false)) return;
+        cmd_.endRendering();
+    }
+};
+
+} // namespace
+
 XrMirrorSink::XrMirrorSink() noexcept {
     try {
         initialize();
@@ -187,15 +279,23 @@ void XrMirrorSink::tryPresent() noexcept {
     }
 
     auto &target = GET_MODULE(RenderTarget);
-    std::optional<FrameTargetFrame> frame_token;
-    bool rendering_begun = false;
-    bool timing_begun = false;
     GpuSubmissionLease submission_lease;
     RenderTiming *render_timing = FastModuleContainer::tryGet<RenderTiming>();
-    vk::CommandBuffer cmd;
     try {
-        const auto runtime_generation =
-            GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+        // The module lookups used to be spread over eleven sites inside the
+        // body. They are resolved once here, inside the try so a lookup
+        // failure still disables the mirror rather than terminating this
+        // noexcept function. The two UI modules stay behind the `screen_ui`
+        // test below: they exist only when the ui feature is enabled.
+        auto &frame_graph_runtime = GET_MODULE(FrameGraphRuntimeContainer);
+        auto &render_targets = GET_MODULE(RenderTargetContainer);
+        const auto &debug_utils = GET_MODULE(VulkanManageCore).getDebugUtils();
+        const auto frame_index = GET_MODULE(EngineTime).frameIndex();
+        auto &fullscreen_renderer = GET_MODULE(FullscreenPassRenderer);
+        auto &fullscreen_passes = GET_MODULE(FullscreenPassContainer);
+        auto &frame_resources = GET_MODULE(FrameResources);
+
+        const auto runtime_generation = frame_graph_runtime.snapshot();
         submission_lease = runtime_generation;
         auto begun = target.beginFrame(
             runtime_generation,
@@ -221,45 +321,40 @@ void XrMirrorSink::tryPresent() noexcept {
             reportProgress();
             return;
         }
-        frame_token.emplace(std::move(*begun.frame));
-        const auto &frame = frame_token->context();
-        cmd = frame.cmd_buf;
+        ScopedFrameToken frame_token{target, std::move(*begun.frame)};
+        const auto &frame = frame_token.context();
+        const vk::CommandBuffer cmd = frame.cmd_buf;
         rebindSourceIfNeeded();
-        const auto source_extent =
-            GET_MODULE(RenderTargetContainer).getMetadata(source_id).extent;
+        const auto source_extent = render_targets.getMetadata(source_id).extent;
         const auto letterbox = mirrorLetterboxRect(source_extent, frame.extent);
         if (!letterbox) {
-            auto token = std::move(*frame_token);
-            frame_token.reset();
-            target.submit(std::move(token));
+            target.submit(frame_token.release());
             ++stats.dropped;
             reportProgress();
             return;
         }
-        const auto &debug_utils = GET_MODULE(VulkanManageCore).getDebugUtils();
         std::string node_debug_name;
         if (debug_utils.commandLabelsEnabled()) {
             node_debug_name = makeFrameGraphDebugLabel(FrameGraphDebugLabelIdentity{
-                GET_MODULE(EngineTime).frameIndex(), "xr", xr_stereo_view_count, 0,
+                frame_index, "xr", xr_stereo_view_count, 0,
                 "mirror", "output_transform"});
         }
         if (render_timing != nullptr) {
             render_timing->beginGpuRange(
                 cmd, frame.in_flight_frame_index, 3,
-                GpuTimingRangeIdentity{GET_MODULE(EngineTime).frameIndex(), "xr",
-                                       xr_stereo_view_count},
+                GpuTimingRangeIdentity{frame_index, "xr", xr_stereo_view_count},
                 {GpuTimingNodeDescriptor{0, "mirror", "output_transform", true}});
-            timing_begun = true;
         }
+        // Armed only once beginGpuRange has returned, which is what the
+        // `timing_begun` flag used to say.
+        ScopedGpuTimingRange timing_range{render_timing};
         ScopedCommandDebugLabel node_label{debug_utils, cmd, node_debug_name.c_str()};
+        // The barrier subrange is still timed even though the pass that used
+        // to record barriers here is gone; the empty debug-label scope that
+        // wrapped nothing between these two writes was deleted with it.
         if (render_timing != nullptr) {
             render_timing->writeNodeSubrangeStart(
                 cmd, 0, GpuTimingSubrange::barriers);
-        }
-        {
-            ScopedCommandDebugLabel barrier_label{debug_utils, cmd, "barriers"};
-        }
-        if (render_timing != nullptr) {
             render_timing->writeNodeSubrangeEnd(
                 cmd, 0, GpuTimingSubrange::barriers);
         }
@@ -268,32 +363,32 @@ void XrMirrorSink::tryPresent() noexcept {
             render_timing->writeNodeSubrangeStart(cmd, 0, GpuTimingSubrange::body);
         }
 
-        vk::RenderingAttachmentInfo attachment;
-        attachment.imageView = frame.color_attachment;
-        attachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        attachment.loadOp = vk::AttachmentLoadOp::eClear;
-        attachment.storeOp = vk::AttachmentStoreOp::eStore;
-        attachment.clearValue.color =
-            vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 1.0f}};
-        vk::RenderingInfo rendering;
-        rendering.renderArea = vk::Rect2D{{0, 0}, frame.extent};
-        rendering.layerCount = 1;
-        rendering.setColorAttachments(attachment);
-        cmd.beginRendering(rendering);
-        rendering_begun = true;
-        const auto &rect = *letterbox;
-        cmd.setViewport(0, vk::Viewport{
-                               static_cast<float>(rect.offset.x),
-                               static_cast<float>(rect.offset.y),
-                               static_cast<float>(rect.extent.width),
-                               static_cast<float>(rect.extent.height), 0.0f, 1.0f});
-        cmd.setScissor(0, rect);
-        GET_MODULE(FullscreenPassRenderer)
-            .render(cmd, output_transform->pass_id, output_transform->definition,
-                    FullscreenPassRendererDependencies{
-                        GET_MODULE(FullscreenPassContainer), GET_MODULE(FrameResources)});
-        cmd.endRendering();
-        rendering_begun = false;
+        {
+            vk::RenderingAttachmentInfo attachment;
+            attachment.imageView = frame.color_attachment;
+            attachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+            attachment.loadOp = vk::AttachmentLoadOp::eClear;
+            attachment.storeOp = vk::AttachmentStoreOp::eStore;
+            attachment.clearValue.color =
+                vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 1.0f}};
+            vk::RenderingInfo rendering;
+            rendering.renderArea = vk::Rect2D{{0, 0}, frame.extent};
+            rendering.layerCount = 1;
+            rendering.setColorAttachments(attachment);
+            ScopedRendering rendering_scope{cmd, rendering};
+            const auto &rect = *letterbox;
+            cmd.setViewport(0, vk::Viewport{
+                                   static_cast<float>(rect.offset.x),
+                                   static_cast<float>(rect.offset.y),
+                                   static_cast<float>(rect.extent.width),
+                                   static_cast<float>(rect.extent.height), 0.0f, 1.0f});
+            cmd.setScissor(0, rect);
+            fullscreen_renderer.render(
+                cmd, output_transform->pass_id, output_transform->definition,
+                FullscreenPassRendererDependencies{fullscreen_passes,
+                                                   frame_resources});
+            rendering_scope.end();
+        }
 
         if (screen_ui) {
             GET_MODULE(UiRenderer).render(
@@ -310,52 +405,33 @@ void XrMirrorSink::tryPresent() noexcept {
                 },
                 UiRendererDependencies{GET_MODULE(UIContainer),
                                        GET_MODULE(ui::UiModule),
-                                       GET_MODULE(FrameResources)});
+                                       frame_resources});
         }
         if (render_timing != nullptr) {
             render_timing->writeNodeSubrangeEnd(cmd, 0, GpuTimingSubrange::body);
         }
         body_label.end();
         node_label.end();
-        auto token = std::move(*frame_token);
-        frame_token.reset();
-        target.submit(std::move(token));
-        if (render_timing != nullptr) {
-            render_timing->endGpuRange();
-            timing_begun = false;
-        }
+        target.submit(frame_token.release());
+        timing_range.end();
         ++stats.presented;
         reportProgress();
-    } catch (const std::exception &e) {
-        if (timing_begun && render_timing != nullptr) render_timing->cancelGpuRange();
-        ++stats.failures;
-        disabled = true;
-        LOG_WARNING(logger, "OpenXR mirror disabled after presentation failure: {}", e.what());
-        reportProgress();
-        try {
-            if (rendering_begun) cmd.endRendering();
-            if (frame_token) {
-                auto token = std::move(*frame_token);
-                frame_token.reset();
-                target.abandon(std::move(token));
-            }
-        } catch (...) {
-        }
     } catch (...) {
-        if (timing_begun && render_timing != nullptr) render_timing->cancelGpuRange();
+        // One handler, not two: the guards above have already ended the
+        // rendering scope, cancelled the timing range and abandoned the frame
+        // by the time control arrives here, so all that is left is the
+        // bookkeeping the two old copies shared and the one line they did not.
         ++stats.failures;
         disabled = true;
-        LOG_WARNING(logger, "OpenXR mirror disabled after unknown presentation failure");
-        reportProgress();
         try {
-            if (rendering_begun) cmd.endRendering();
-            if (frame_token) {
-                auto token = std::move(*frame_token);
-                frame_token.reset();
-                target.abandon(std::move(token));
-            }
+            throw;
+        } catch (const std::exception &e) {
+            LOG_WARNING(logger, "OpenXR mirror disabled after presentation failure: {}",
+                        e.what());
         } catch (...) {
+            LOG_WARNING(logger, "OpenXR mirror disabled after unknown presentation failure");
         }
+        reportProgress();
     }
 }
 

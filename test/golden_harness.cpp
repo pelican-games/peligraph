@@ -28,6 +28,7 @@
 #include "../src/core/model/vertbufcontainer.hpp"
 #include "../src/core/openxr/openxrmirrorsink.hpp"
 #include "../src/core/phys/physworld.hpp"
+#include "../src/core/playback/launchcameraoverride.hpp"
 #include "../src/core/playback/vatplayer.hpp"
 #include "../src/core/renderer/debugdraw.hpp"
 #include "../src/core/renderer/debugtext.hpp"
@@ -4687,6 +4688,10 @@ void renderVatPlaybackFrame(RenderTarget &render_target, const std::filesystem::
     engine_time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
     engine_time.setTime(1.0);
 
+    // VatPlayer's constructor used to apply --camera itself; the override is
+    // now a free function the startup path calls once, so this fixture calls
+    // it at the same point to keep the framing of the golden frame.
+    applyLaunchCameraOverride();
     (void)GET_MODULE(VatPlayer);
     GET_MODULE(Renderer).render();
     GET_MODULE(VulkanManageCore).waitIdle();

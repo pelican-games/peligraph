@@ -1,5 +1,9 @@
 target_sources(pelican_core PRIVATE
     camerabake.cpp
+    launchcameraoverride.cpp
+    # The prepared-scene protocol for both players, shared by the real and the
+    # stub build variants below so the stubs cannot drift from it.
+    playbackscenestate.cpp
 )
 
 if(PELICAN_WITH_SEQPLAYER)

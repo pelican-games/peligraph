@@ -1,10 +1,13 @@
 #include "seqplayer.hpp"
-#include "../loader/sceneload.hpp"
 
 #include "../build_features.hpp"
 #include "../launchconfig.hpp"
 
 namespace Pelican {
+
+// Everything the disabled build feature actually changes. The prepared-scene
+// snapshot/publish protocol is shared with the real build in
+// playbackscenestate.cpp rather than copied here.
 
 bool TransformSequenceFrame::isHidden(uint32_t) const { return false; }
 
@@ -30,8 +33,6 @@ SeqPlayer::SeqPlayer() {
     }
 }
 
-void SeqPlayer::applyCameraOverride() {}
-
 void SeqPlayer::initializeInstances(const std::filesystem::path &) {}
 
 void SeqPlayer::update(double) {}
@@ -39,26 +40,6 @@ void SeqPlayer::update(double) {}
 void SeqPlayer::releaseInstancesForSceneLoad() {
     instances.clear();
     enabled = false;
-}
-
-SeqPlayer::PreparedSceneState SeqPlayer::snapshotPreparedScene() const {
-    return PreparedSceneState{.enabled = enabled, .instances = instances};
-}
-
-SeqPlayer::PreparedSceneState SeqPlayer::prepareSceneLoad() const {
-    return PreparedSceneState{};
-}
-
-void SeqPlayer::publishPreparedScene(
-    PreparedSceneState &&prepared) noexcept {
-    std::swap(enabled, prepared.enabled);
-    instances.swap(prepared.instances);
-}
-
-void SeqPlayer::publishPreparedScene(PreparedSceneState &&prepared,
-                                     SceneLoadPhaseTrace &phase_trace) noexcept {
-    phase_trace.record(SceneLoadPhase::publish);
-    publishPreparedScene(std::move(prepared));
 }
 
 } // namespace Pelican

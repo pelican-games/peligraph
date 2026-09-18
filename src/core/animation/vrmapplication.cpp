@@ -468,39 +468,50 @@ struct ApplicationServiceRuntime::Impl {
                    : nullptr;
     }
 
-    static Status setInputs(void *context,
-                            const SetExpressionInputDescV1 *desc) {
-        if (!context || !desc) return Status::invalid_argument;
-        if (const auto status = validateDescriptor(*desc); status != Status::ok)
-            return status;
-        if (desc->reserved2 != 0 || !Animation::isValid(desc->instance) ||
-            desc->input_revision == 0 ||
-            (desc->weight_count != 0 && !desc->weights) ||
-            !std::isfinite(desc->look_at_yaw_degrees) ||
-            !std::isfinite(desc->look_at_pitch_degrees) ||
-            (desc->flags & ~(expression_input_look_at |
-                             expression_input_reset_history |
-                             expression_input_discontinuity)) != 0)
-            return Status::invalid_argument;
-        auto *runtime = self(context);
-        std::scoped_lock lock{runtime->mutex};
-        const auto view = runtime->model(desc->instance);
-        if (!view) return Status::stale_generation;
-        const auto previous = runtime->inputs.find(desc->instance.identity);
-        if (previous != runtime->inputs.end() &&
-            sameInstance(previous->second.instance, desc->instance) &&
-            desc->input_revision <= previous->second.input_revision)
-            return Status::duplicate_revision;
+    // The fields SetExpressionInputDescV1 and SetTypedAnimationInputDescV1
+    // have in common. The two entry points used to spell ~46 lines of
+    // validation and state building twice over exactly these.
+    struct CommonInputFields {
+        Animation::InstanceHandle instance{};
+        // input_revision on the untyped descriptor, frame_revision on the
+        // typed one; both land in InputState::input_revision.
+        std::uint64_t revision = 0;
+        const ExpressionWeightV1 *weights = nullptr;
+        std::uint32_t weight_count = 0;
+        std::uint32_t source_ordinal = 0;
+        float look_at_yaw_degrees = 0.0f;
+        float look_at_pitch_degrees = 0.0f;
+        std::uint32_t flags = expression_input_none;
+        std::uint32_t reserved2 = 0;
+    };
 
-        InputState next;
-        next.instance = desc->instance;
-        next.source_ordinal = desc->source_ordinal;
-        next.input_revision = desc->input_revision;
-        next.look_at_yaw_degrees = desc->look_at_yaw_degrees;
-        next.look_at_pitch_degrees = desc->look_at_pitch_degrees;
-        next.flags = desc->flags;
-        for (std::uint32_t index = 0; index < desc->weight_count; ++index) {
-            const auto &weight = desc->weights[index];
+    // Everything both entry points reject with invalid_argument, including the
+    // flag mask. Each caller ANDs its own descriptor-specific fields into the
+    // same answer (the typed path's three asset fields); every check here
+    // returns the same status, so their relative order is not observable.
+    static Status validateCommonInput(const CommonInputFields &fields) {
+        if (fields.reserved2 != 0 || !Animation::isValid(fields.instance) ||
+            fields.revision == 0 ||
+            (fields.weight_count != 0 && !fields.weights) ||
+            !std::isfinite(fields.look_at_yaw_degrees) ||
+            !std::isfinite(fields.look_at_pitch_degrees) ||
+            (fields.flags & ~(expression_input_look_at |
+                              expression_input_reset_history |
+                              expression_input_discontinuity)) != 0)
+            return Status::invalid_argument;
+        return Status::ok;
+    }
+
+    // The security-relevant part, and the reason this is one copy rather than
+    // two: `element_size`, `version`, `name`/`name_size` and `value` all come
+    // from a foreign DLL and are bounds-checked before the name is
+    // materialized. A hardening fix here now reaches both setters.
+    static Status readWeights(const ExpressionWeightV1 *weights,
+                              std::uint32_t weight_count,
+                              const VrmSemanticData &semantic,
+                              InputState &next) {
+        for (std::uint32_t index = 0; index < weight_count; ++index) {
+            const auto &weight = weights[index];
             if (weight.element_size < sizeof(ExpressionWeightV1) ||
                 weight.version != applicationDescriptorVersionV1 ||
                 weight.reserved0 != 0 ||
@@ -509,14 +520,78 @@ struct ApplicationServiceRuntime::Impl {
                 return Status::invalid_argument;
             const auto name = std::string{weight.name ? weight.name : "",
                                           weight.name_size};
-            if (name.empty() || !isExpression(*view->semantic, name))
+            if (name.empty() || !isExpression(semantic, name))
                 return Status::not_found;
             if (!next.weights.emplace(name, std::clamp(weight.value, 0.0f, 1.0f))
                      .second)
                 return Status::invalid_argument;
         }
-        if (previous != runtime->inputs.end() &&
-            !sameInstance(previous->second.instance, desc->instance)) {
+        return Status::ok;
+    }
+
+    // `mutex` must already be held. The stale-model / stale-revision preamble
+    // and the InputState both setters build. The asset fields are left zero
+    // for the typed caller to fill in afterwards -- nothing between here and
+    // there reads them. `instance_replaced` reports the one case the untyped
+    // tail still has to clean up after (a previous record under the same
+    // identity but a different generation); `inputs` is not touched in
+    // between, so answering it here is the same answer the tail used to
+    // compute for itself after the weight loop. The typed setter passes
+    // nullptr: it never erased those frames.
+    Status prepareInputLocked(const CommonInputFields &fields, InputState &next,
+                              bool *instance_replaced = nullptr) {
+        if (instance_replaced) *instance_replaced = false;
+        const auto view = model(fields.instance);
+        if (!view) return Status::stale_generation;
+        if (const auto previous = inputs.find(fields.instance.identity);
+            previous != inputs.end()) {
+            if (sameInstance(previous->second.instance, fields.instance)) {
+                if (fields.revision <= previous->second.input_revision)
+                    return Status::duplicate_revision;
+            } else if (instance_replaced) {
+                *instance_replaced = true;
+            }
+        }
+        next.instance = fields.instance;
+        next.source_ordinal = fields.source_ordinal;
+        next.input_revision = fields.revision;
+        next.look_at_yaw_degrees = fields.look_at_yaw_degrees;
+        next.look_at_pitch_degrees = fields.look_at_pitch_degrees;
+        next.flags = fields.flags;
+        return readWeights(fields.weights, fields.weight_count, *view->semantic,
+                           next);
+    }
+
+    static Status setInputs(void *context,
+                            const SetExpressionInputDescV1 *desc) {
+        if (!context || !desc) return Status::invalid_argument;
+        if (const auto status = validateDescriptor(*desc); status != Status::ok)
+            return status;
+        const CommonInputFields fields{
+            .instance = desc->instance,
+            .revision = desc->input_revision,
+            .weights = desc->weights,
+            .weight_count = desc->weight_count,
+            .source_ordinal = desc->source_ordinal,
+            .look_at_yaw_degrees = desc->look_at_yaw_degrees,
+            .look_at_pitch_degrees = desc->look_at_pitch_degrees,
+            .flags = desc->flags,
+            .reserved2 = desc->reserved2,
+        };
+        if (const auto status = validateCommonInput(fields); status != Status::ok)
+            return status;
+        auto *runtime = self(context);
+        std::scoped_lock lock{runtime->mutex};
+        InputState next;
+        bool instance_replaced = false;
+        if (const auto status =
+                runtime->prepareInputLocked(fields, next, &instance_replaced);
+            status != Status::ok)
+            return status;
+        // Only the untyped path retires what a previous generation of this
+        // identity left behind. (The typed path instead patches an already
+        // open frame; see below.)
+        if (instance_replaced) {
             for (auto frame = runtime->frames.begin();
                  frame != runtime->frames.end();) {
                 if (frame->second.snapshot.instance.identity ==
@@ -538,52 +613,33 @@ struct ApplicationServiceRuntime::Impl {
         if (!context || !desc) return Status::invalid_argument;
         if (const auto status = validateDescriptor(*desc); status != Status::ok)
             return status;
-        if (desc->reserved2 != 0 || !Animation::isValid(desc->instance) ||
-            desc->frame_revision == 0 || desc->asset_identity == 0 ||
-            desc->asset_generation == 0 || desc->profile_version == 0 ||
-            (desc->weight_count != 0 && !desc->weights) ||
-            !std::isfinite(desc->look_at_yaw_degrees) ||
-            !std::isfinite(desc->look_at_pitch_degrees) ||
-            (desc->flags & ~(expression_input_look_at |
-                             expression_input_reset_history |
-                             expression_input_discontinuity)) != 0)
+        const CommonInputFields fields{
+            .instance = desc->instance,
+            .revision = desc->frame_revision,
+            .weights = desc->weights,
+            .weight_count = desc->weight_count,
+            .source_ordinal = desc->source_ordinal,
+            .look_at_yaw_degrees = desc->look_at_yaw_degrees,
+            .look_at_pitch_degrees = desc->look_at_pitch_degrees,
+            .flags = desc->flags,
+            .reserved2 = desc->reserved2,
+        };
+        if (desc->asset_identity == 0 || desc->asset_generation == 0 ||
+            desc->profile_version == 0 ||
+            validateCommonInput(fields) != Status::ok)
             return Status::invalid_argument;
         auto *runtime = self(context);
         std::scoped_lock lock{runtime->mutex};
-        const auto view = runtime->model(desc->instance);
-        if (!view) return Status::stale_generation;
-        const auto previous = runtime->inputs.find(desc->instance.identity);
-        if (previous != runtime->inputs.end() &&
-            sameInstance(previous->second.instance, desc->instance) &&
-            desc->frame_revision <= previous->second.input_revision)
-            return Status::duplicate_revision;
-
         InputState next;
-        next.instance = desc->instance;
-        next.source_ordinal = desc->source_ordinal;
-        next.input_revision = desc->frame_revision;
-        next.look_at_yaw_degrees = desc->look_at_yaw_degrees;
-        next.look_at_pitch_degrees = desc->look_at_pitch_degrees;
-        next.flags = desc->flags;
+        if (const auto status = runtime->prepareInputLocked(fields, next);
+            status != Status::ok)
+            return status;
+        // Set after the shared preamble rather than inside it: nothing between
+        // there and here reads them, and leaving them zero is exactly what the
+        // untyped setter wants.
         next.asset_identity = desc->asset_identity;
         next.asset_generation = desc->asset_generation;
         next.profile_version = desc->profile_version;
-        for (std::uint32_t index = 0; index < desc->weight_count; ++index) {
-            const auto &weight = desc->weights[index];
-            if (weight.element_size < sizeof(ExpressionWeightV1) ||
-                weight.version != applicationDescriptorVersionV1 ||
-                weight.reserved0 != 0 ||
-                (!weight.name && weight.name_size != 0) ||
-                !std::isfinite(weight.value))
-                return Status::invalid_argument;
-            const auto name = std::string{weight.name ? weight.name : "",
-                                          weight.name_size};
-            if (name.empty() || !isExpression(*view->semantic, name))
-                return Status::not_found;
-            if (!next.weights.emplace(
-                    name, std::clamp(weight.value, 0.0f, 1.0f)).second)
-                return Status::invalid_argument;
-        }
 
         // parameter_snapshot may already have materialized the previous input
         // for this revision. Base-pose typed input replaces that immutable
