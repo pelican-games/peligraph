@@ -58,20 +58,45 @@ class RpcServer {
     using OrderedMethodHandler =
         std::function<nlohmann::ordered_json(const nlohmann::json &)>;
 
+    // Consulted once per parsed request, ahead of dispatch. A returned string
+    // is the refusal message reported as an application error; std::nullopt
+    // lets the request through. The transport has no reason of its own to
+    // refuse a request, so whoever wires the handlers supplies the reasons it
+    // must honour.
+    using RequestGate =
+        std::function<std::optional<std::string>(std::string_view method)>;
+
+    // An ordered handler's result is normally serialized through
+    // nlohmann::json, which sorts object keys. A handler whose response embeds
+    // a payload whose key order is part of the wire contract declares that at
+    // registration time with this predicate: when it holds for a result, the
+    // response is dumped with its insertion order intact. Without a policy the
+    // response is key-sorted like any other. The transport therefore never has
+    // to recognise which payloads are order-significant.
+    using OrderedResponseOrderPolicy =
+        std::function<bool(const nlohmann::ordered_json &result)>;
+
   private:
-    using Handler = std::variant<MethodHandler, OrderedMethodHandler>;
+    struct OrderedHandlerEntry {
+        OrderedMethodHandler handler;
+        OrderedResponseOrderPolicy preserve_order;
+    };
+    using Handler = std::variant<MethodHandler, OrderedHandlerEntry>;
     std::istream &input;
     std::ostream &output;
     std::unordered_map<std::string, Handler> handlers;
+    RequestGate request_gate;
 
     std::string handleLine(std::string_view line) const;
 
   public:
     RpcServer(std::istream &input_stream, std::ostream &output_stream);
 
+    void setRequestGate(RequestGate gate);
     void setHandler(std::string method, MethodHandler handler);
     void setOrderedHandler(std::string method,
-                           OrderedMethodHandler handler);
+                           OrderedMethodHandler handler,
+                           OrderedResponseOrderPolicy preserve_order = {});
     std::string processLine(std::string_view line) const;
     void run();
 };

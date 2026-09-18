@@ -1152,14 +1152,25 @@ struct PelicanRayGeometryRow {
     uint attribute_presence;
     uint reserved;
 };
-layout(set = 3, binding = 0, std430) readonly buffer PelicanRayMaterialTable {
-    PelicanRayMaterialRow pelican_ray_material_rows[];
-};
-layout(set = 3, binding = 1) uniform sampler2D pelican_ray_material_textures[1024];
-layout(set = 3, binding = 2, std430) readonly buffer PelicanRayGeometryTable {
-    PelicanRayGeometryRow pelican_ray_geometry_rows[];
-};
-PelicanRayMaterialRow pelicanRayMaterial(uint material_index) {
+)glsl";
+    // The ray table set and its three bindings are named once in the header;
+    // the declarations below and the pipeline layout are written from the same
+    // constants instead of repeating the numbers on each side.
+    source << "layout(set = " << rayTableDescriptorSet
+           << ", binding = " << rayMaterialTableBinding
+           << ", std430) readonly buffer PelicanRayMaterialTable {\n"
+              "    PelicanRayMaterialRow pelican_ray_material_rows[];\n"
+              "};\n";
+    source << "layout(set = " << rayTableDescriptorSet
+           << ", binding = " << rayMaterialTextureBinding
+           << ") uniform sampler2D pelican_ray_material_textures["
+           << rayBindlessTextureCapacity << "];\n";
+    source << "layout(set = " << rayTableDescriptorSet
+           << ", binding = " << rayGeometryTableBinding
+           << ", std430) readonly buffer PelicanRayGeometryTable {\n"
+              "    PelicanRayGeometryRow pelican_ray_geometry_rows[];\n"
+              "};\n";
+    source << R"glsl(PelicanRayMaterialRow pelicanRayMaterial(uint material_index) {
     return pelican_ray_material_rows[material_index];
 })glsl";
     if (layout.usesMaterialAlphaProfile()) {

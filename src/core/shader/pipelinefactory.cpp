@@ -189,12 +189,15 @@ rayMaterialDescriptorSetLayoutBindings() {
     const auto stages = vk::ShaderStageFlagBits::eAll;
     return {
         vk::DescriptorSetLayoutBinding{
-            0, vk::DescriptorType::eStorageBuffer, 1, stages},
+            rayMaterialTableBinding, vk::DescriptorType::eStorageBuffer, 1,
+            stages},
         vk::DescriptorSetLayoutBinding{
-            1, vk::DescriptorType::eCombinedImageSampler,
+            rayMaterialTextureBinding,
+            vk::DescriptorType::eCombinedImageSampler,
             rayBindlessTextureCapacity, stages},
         vk::DescriptorSetLayoutBinding{
-            2, vk::DescriptorType::eStorageBuffer, 1, stages},
+            rayGeometryTableBinding, vk::DescriptorType::eStorageBuffer, 1,
+            stages},
     };
 }
 
@@ -496,9 +499,12 @@ PipelineFactory::descriptorSetLayoutKeysFor(
         keys[set].bindings = makeDescriptorSetLayoutBindings(reflection, set);
     }
     if (ray_layout != nullptr && ray_layout->usesRayTables()) {
-        keys.resize(std::max<std::size_t>(keys.size(), 4));
-        keys[3].bindings = rayMaterialDescriptorSetLayoutBindings();
-        keys[3].binding_flags = rayMaterialDescriptorBindingFlags();
+        keys.resize(
+            std::max<std::size_t>(keys.size(), rayTableDescriptorSet + 1));
+        keys[rayTableDescriptorSet].bindings =
+            rayMaterialDescriptorSetLayoutBindings();
+        keys[rayTableDescriptorSet].binding_flags =
+            rayMaterialDescriptorBindingFlags();
     }
     return keys;
 }
@@ -1564,7 +1570,8 @@ PipelineFactory::createRayTracingSceneShaderBindingTables(
             result->ray_table_descriptor_pool =
                 device.createDescriptorPoolUnique(pool_info);
 
-            const auto set_layout = descriptorSetLayout(*layout_pipeline, 3);
+            const auto set_layout =
+                descriptorSetLayout(*layout_pipeline, rayTableDescriptorSet);
             const std::array set_layouts{set_layout};
             vk::DescriptorSetAllocateInfo allocation_info;
             allocation_info.descriptorPool =
@@ -1592,17 +1599,20 @@ PipelineFactory::createRayTracingSceneShaderBindingTables(
             }
             std::vector<vk::WriteDescriptorSet> writes{
                 vk::WriteDescriptorSet{
-                    result->ray_table_descriptor_set.get(), 0, 0, 1,
+                    result->ray_table_descriptor_set.get(),
+                    rayMaterialTableBinding, 0, 1,
                     vk::DescriptorType::eStorageBuffer, nullptr,
                     &buffer_infos[0]},
                 vk::WriteDescriptorSet{
-                    result->ray_table_descriptor_set.get(), 2, 0, 1,
+                    result->ray_table_descriptor_set.get(),
+                    rayGeometryTableBinding, 0, 1,
                     vk::DescriptorType::eStorageBuffer, nullptr,
                     &buffer_infos[1]},
             };
             if (!image_infos.empty()) {
                 writes.emplace_back(
-                    result->ray_table_descriptor_set.get(), 1, 0,
+                    result->ray_table_descriptor_set.get(),
+                    rayMaterialTextureBinding, 0,
                     static_cast<std::uint32_t>(image_infos.size()),
                     vk::DescriptorType::eCombinedImageSampler,
                     image_infos.data());

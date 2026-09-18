@@ -391,6 +391,17 @@ inline constexpr std::uint32_t rayGeometryAttributeNormal = 1u << 0u;
 inline constexpr std::uint32_t rayGeometryAttributeUv0 = 1u << 1u;
 inline constexpr std::uint32_t rayGeometryAttributeColor0 = 1u << 2u;
 inline constexpr std::uint32_t rayMissingTextureIndex = 0xffffffffu;
+
+// The ray tables occupy one descriptor set of their own on the ray tracing
+// pipeline layout. These four names are the whole contract: the generated GLSL
+// in makeRayGroupLayoutVirtualInclude declares the three resources from them,
+// and the pipeline layout, the descriptor set lookup and the descriptor writes
+// in pipelinefactory.cpp are built from the same values, so neither side can
+// drift from the other.
+inline constexpr std::uint32_t rayTableDescriptorSet = 3u;
+inline constexpr std::uint32_t rayMaterialTableBinding = 0u;
+inline constexpr std::uint32_t rayMaterialTextureBinding = 1u;
+inline constexpr std::uint32_t rayGeometryTableBinding = 2u;
 inline constexpr std::uint32_t rayBindlessTextureCapacity = 1024u;
 inline constexpr std::uint32_t rayAlphaOverrideBaseFactor = 1u << 0u;
 inline constexpr std::uint32_t rayAlphaOverrideUvTransform = 1u << 1u;

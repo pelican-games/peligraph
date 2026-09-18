@@ -992,11 +992,17 @@ void RpcServer::setHandler(std::string method, MethodHandler handler) {
 }
 
 void RpcServer::setOrderedHandler(std::string method,
-                                  OrderedMethodHandler handler) {
+                                  OrderedMethodHandler handler,
+                                  OrderedResponseOrderPolicy preserve_order) {
     handlers.insert_or_assign(
         std::move(method),
-        Handler{std::in_place_type<OrderedMethodHandler>,
-                std::move(handler)});
+        Handler{std::in_place_type<OrderedHandlerEntry>,
+                OrderedHandlerEntry{std::move(handler),
+                                    std::move(preserve_order)}});
+}
+
+void RpcServer::setRequestGate(RequestGate gate) {
+    request_gate = std::move(gate);
 }
 
 std::string RpcServer::processLine(std::string_view line) const {
@@ -1010,10 +1016,12 @@ std::string RpcServer::handleLine(std::string_view line) const {
     }
 
     const auto &request = *parsed.request;
-    if (isGameLogicReloadInProgress()) {
-        return serializeJsonRpcError(makeJsonRpcError(
-            request.id, JsonRpcErrorCodes::applicationError,
-            "RPC method '" + request.method + "' rejected while game logic DLL reload is in progress"));
+    if (request_gate) {
+        if (auto reason = request_gate(request.method)) {
+            return serializeJsonRpcError(makeJsonRpcError(
+                request.id, JsonRpcErrorCodes::applicationError,
+                std::move(*reason)));
+        }
     }
     const auto handler = handlers.find(request.method);
     if (handler == handlers.end()) {
@@ -1023,25 +1031,10 @@ std::string RpcServer::handleLine(std::string_view line) const {
 
     try {
         if (const auto *ordered =
-                std::get_if<OrderedMethodHandler>(&handler->second)) {
-            auto result = (*ordered)(request.params);
-            const auto contains_resolution_error = [](const auto &self,
-                                                      const auto &value)
-                -> bool {
-                if (value.is_object()) {
-                    if (value.contains("resolution_error")) return true;
-                    for (const auto &entry : value) {
-                        if (self(self, entry)) return true;
-                    }
-                } else if (value.is_array()) {
-                    for (const auto &entry : value) {
-                        if (self(self, entry)) return true;
-                    }
-                }
-                return false;
-            };
-            if (!contains_resolution_error(contains_resolution_error,
-                                           result)) {
+                std::get_if<OrderedHandlerEntry>(&handler->second)) {
+            auto result = ordered->handler(request.params);
+            if (!ordered->preserve_order ||
+                !ordered->preserve_order(result)) {
                 return serializeJsonRpcResult(
                     request.id, nlohmann::json(std::move(result)));
             }
@@ -1232,6 +1225,17 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                                 const std::string &instance_id,
                                 std::vector<PendingTransformUpdate> &pending_transforms,
                                 EditorCommandRpcAdapter &editor_rpc) {
+    // The engine endpoint refuses every method while the game logic DLL is
+    // being swapped: handlers reach state the reload is rebuilding underneath
+    // them. That is an engine fact, not a transport one, so it is declared
+    // here rather than inside RpcServer.
+    server.setRequestGate(
+        [](std::string_view method) -> std::optional<std::string> {
+            if (!isGameLogicReloadInProgress()) return std::nullopt;
+            return "RPC method '" + std::string{method} +
+                   "' rejected while game logic DLL reload is in progress";
+        });
+
     internal::configureGameLogicReloadRpcHandler(
         server, modules.reload_service,
         internal::GameLogicReloadRpcHooks{
