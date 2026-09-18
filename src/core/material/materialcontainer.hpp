@@ -3,6 +3,8 @@
 #include "../container.hpp"
 #include "../renderingpass/passinputdescriptorvariant.hpp"
 #include "../renderingpass/renderingpass.hpp"
+#include "materialdescriptorbuilder.hpp"
+#include "materialtexturestore.hpp"
 #include "../resourcecontainer.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../shader/pipelinefactory.hpp"
@@ -38,8 +40,8 @@ void setMaterialReleaseFailureForTesting(MaterialContainer &, bool) noexcept;
 void setTextureReleaseFailureForTesting(MaterialContainer &, bool) noexcept;
 }
 
-struct LoadedImage;
 struct RendererRuntimeGeneration;
+struct MaterialGenerationPlanner;
 class TextureReloadHandler;
 class MaterialValuesReloadHandler;
 class RenderTargetImageViewResolver;
@@ -79,28 +81,22 @@ DECLARE_MODULE(MaterialContainer) {
 
     friend class TextureReloadHandler;
     friend class MaterialValuesReloadHandler;
+    // Owns the two live-generation entry points below; it needs the
+    // material table and nothing else of this class.
+    friend struct MaterialGenerationPlanner;
 
     vk::Device device;
     bool split_custom_samplers = false;
 
-    vk::UniqueSampler nearest_sampler, linear_sampler;
-    vk::UniqueSampler screen_nearest_sampler, screen_linear_sampler;
-    mutable std::array<vk::UniqueSampler, 6>
-        material_resource_samplers;
-    vk::UniqueDescriptorPool desc_pool;
-    vk::UniqueDescriptorPool screen_input_desc_pool;
-    mutable vk::UniqueDescriptorPool
-        material_resource_desc_pool;
+    // The three pieces this container was split into. Texture upload and
+    // the sampler cache; the descriptor pools and the pass-input
+    // descriptor construction; and (statelessly, in its own TU) the
+    // render-generation planner.
+    MaterialTextureStore texture_store;
+    MaterialDescriptorBuilder descriptor_builder;
 
-    struct InternalTextureResource {
-        ImageWrapper image;
-        vk::UniqueImageView linear_view;
-        vk::UniqueImageView srgb_view;
-        SurfaceTextureDimension dimension =
-            SurfaceTextureDimension::two_d;
-        vk::ImageViewType view_type =
-            vk::ImageViewType::e2D;
-    };
+    using InternalTextureResource =
+        MaterialTextureResource;
     struct StagedMaterialDescriptor {
         GlobalMaterialId material;
         vk::UniqueDescriptorSet descriptor;
@@ -109,7 +105,6 @@ DECLARE_MODULE(MaterialContainer) {
         InternalTextureResource texture;
         std::vector<vk::UniqueDescriptorSet> descriptors;
     };
-    ResourceContainer<GlobalTextureId, InternalTextureResource> textures;
 
     struct InternalMaterialInfo {
         struct TextureBinding {
@@ -124,51 +119,10 @@ DECLARE_MODULE(MaterialContainer) {
                 sampler_resolution;
         };
 
-        struct ScreenInputResource {
-            std::string name;
-            std::uint32_t binding = 0;
-            vk::DescriptorType descriptor_type =
-                vk::DescriptorType::
-                    eCombinedImageSampler;
-            GlobalRenderTargetId target = noRenderTargetId();
-            FrameGraphBufferId buffer =
-                noFrameGraphBufferId();
-            bool history = false;
-            PassInputViewDimension view_dimension =
-                PassInputViewDimension::shared_2d;
-            ImageSubresourceViewDimension
-                descriptor_dimension =
-                    ImageSubresourceViewDimension::two_d;
-            ShaderResourcePortSampling sampling;
-            std::optional<ImageSubresourceRange>
-                subresource;
-            bool material_resource = false;
-
-            bool isImage() const {
-                return descriptor_type ==
-                       vk::DescriptorType::
-                           eCombinedImageSampler ||
-                       descriptor_type ==
-                           vk::DescriptorType::
-                               eInputAttachment;
-            }
-            bool isInputAttachment() const {
-                return descriptor_type ==
-                       vk::DescriptorType::
-                           eInputAttachment;
-            }
-            bool isBuffer() const {
-                return descriptor_type ==
-                       vk::DescriptorType::
-                           eStorageBuffer;
-            }
-        };
-        struct ScreenInputDescriptor {
-            std::vector<PassInputDescriptorVariant>
-                variants;
-            std::vector<ScreenInputResource> resources;
-            std::uint64_t binding_revision = 0;
-        };
+        using ScreenInputResource =
+            MaterialScreenInputResource;
+        using ScreenInputDescriptor =
+            MaterialScreenInputDescriptorSet;
 
         PipelineHandle pipeline;
         std::uint64_t ray_generation = 0;
@@ -190,17 +144,7 @@ DECLARE_MODULE(MaterialContainer) {
         MaterialShaderContract shader_contract = MaterialShaderContract::gbuffer_v1;
         std::optional<MaterialOutputSchema> output_schema;
         std::optional<std::string> exact_pass;
-        struct PassInput {
-            MaterialPassInputContract contract;
-            vk::DescriptorType descriptor_type =
-                vk::DescriptorType::
-                    eCombinedImageSampler;
-            std::optional<std::uint32_t>
-                input_attachment_index;
-
-            bool operator==(const PassInput &) const =
-                default;
-        };
+        using PassInput = MaterialPassInputState;
         std::vector<PassInput> pass_inputs;
         std::vector<ShaderResourceInterfaceBinding>
             resource_interface;
@@ -240,6 +184,45 @@ DECLARE_MODULE(MaterialContainer) {
         // own the independent GPU records selected by material passes.
         std::map<std::string, GlobalMaterialId> variants;
     };
+
+    // The appearance a named variant inherits wholesale from its base.
+    // Deliberately adjacent to the member list above: a new appearance
+    // field on MaterialInfo has to be added here in the same review, or
+    // variants silently keep the registration's own value. The base is
+    // templated so the same list snapshots an InternalMaterialInfo and
+    // then applies to each MaterialInfo -- registering a variant can
+    // reallocate the material table, so the snapshot has to be taken by
+    // value before the first registration.
+    template <typename Base>
+    static void inheritFromBase(
+        MaterialInfo &variant, const Base &base) {
+        // A hidden runtime resource must never enter a draw queue through
+        // the parent's selection tags.
+        variant.tags.clear();
+        variant.skinned = base.skinned;
+        variant.base_color_texture =
+            base.base_color_texture;
+        variant.metallic_roughness_texture =
+            base.metallic_roughness_texture;
+        variant.normal_texture = base.normal_texture;
+        variant.emissive_texture =
+            base.emissive_texture;
+        variant.occlusion_texture =
+            base.occlusion_texture;
+        variant.base_color_factor =
+            base.base_color_factor;
+        variant.emissive_factor =
+            base.emissive_factor;
+        variant.metallic_factor =
+            base.metallic_factor;
+        variant.roughness_factor =
+            base.roughness_factor;
+        variant.normal_scale = base.normal_scale;
+        variant.occlusion_strength =
+            base.occlusion_strength;
+        variant.vat = base.vat;
+    }
+
     std::unordered_map<std::string, PipelineHandle> pipelines;
     std::optional<PipelineHandle> default_pipeline;
     ResourceContainer<GlobalMaterialId, InternalMaterialInfo> materials;
@@ -247,12 +230,6 @@ DECLARE_MODULE(MaterialContainer) {
                        std::unordered_set<GlobalMaterialId, GlobalMaterialId::Hash>,
                        GlobalTextureId::Hash>
         texture_materials;
-    using MaterialSamplerKey =
-        std::tuple<SurfaceTextureFilter, SurfaceTextureFilter,
-                   SurfaceTextureAddressMode,
-                   SurfaceTextureCompare, bool, float>;
-    std::map<MaterialSamplerKey, vk::UniqueSampler>
-        custom_texture_samplers;
     BufferWrapper material_buffer;
     std::unique_ptr<TextureReloadHandler> texture_reload_handler;
     std::unique_ptr<MaterialValuesReloadHandler> material_values_reload_handler;
@@ -282,14 +259,6 @@ DECLARE_MODULE(MaterialContainer) {
                         std::vector<StagedMaterialDescriptor> descriptors);
     bool materialValuesLayoutMatches(GlobalMaterialId material,
                                      const Std140Layout &layout) const;
-    InternalMaterialInfo::ScreenInputDescriptor buildScreenInputDescriptor(
-        PipelineHandle pipeline,
-        std::vector<InternalMaterialInfo::ScreenInputResource> resources,
-        const RenderTargetImageViewResolver &rt_views) const;
-    vk::Sampler materialResourceSampler(
-        ShaderResourcePortSampling sampling) const;
-    vk::Sampler materialTextureSampler(
-        const ResolvedMaterialSampler &sampler);
     const InternalMaterialInfo::ScreenInputDescriptor *ensureScreenInputDescriptor(
         GlobalMaterialId material, const PassDefinition &pass) const;
 
@@ -352,11 +321,13 @@ DECLARE_MODULE(MaterialContainer) {
     std::pair<vk::ImageView, vk::ImageView> textureViewsForTesting(GlobalTextureId texture) const;
     SurfaceTextureDimension textureDimensionForTesting(
         GlobalTextureId texture) const {
-        return textures.get(texture).dimension;
+        return texture_store.textures.get(texture)
+            .dimension;
     }
     vk::ImageViewType textureViewTypeForTesting(
         GlobalTextureId texture) const {
-        return textures.get(texture).view_type;
+        return texture_store.textures.get(texture)
+            .view_type;
     }
     std::optional<ResolvedMaterialSampler>
     materialSamplerResolutionForTesting(
@@ -364,8 +335,12 @@ DECLARE_MODULE(MaterialContainer) {
         std::string_view texture_name) const;
     std::vector<uint8_t> texturePixelsForTesting(
         GlobalTextureId texture, uint32_t mip_level = 0) const;
-    uint32_t textureMipLevelsForTesting(GlobalTextureId texture) const { return textures.get(texture).image.mip_levels; }
-    size_t textureCountForTesting() const { return textures.size(); }
+    uint32_t textureMipLevelsForTesting(GlobalTextureId texture) const {
+        return texture_store.textures.get(texture).image.mip_levels;
+    }
+    size_t textureCountForTesting() const {
+        return texture_store.textures.size();
+    }
     size_t materialCountForTesting() const { return materials.size(); }
     size_t materialCapacityForTesting() const;
     size_t referencingMaterialCountForTesting(GlobalTextureId texture) const;

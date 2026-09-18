@@ -20,6 +20,75 @@ vk::ImageView passInputCubeImageView(
         parity);
 }
 
+vk::ImageView resolvePassInputImageView(
+    const ResolvedPassInput &input,
+    const RenderTargetImageViewResolver &rt_views) {
+    if (input.subresource) {
+        auto subresource = *input.subresource;
+        if (input.layer_binding ==
+            PassInputLayerBinding::per_variant) {
+            subresource.base_array_layer +=
+                input.variant;
+            subresource.layer_count = 1;
+        }
+        return rt_views
+            .getImageSubresourceViewForFrame(
+                input.target, subresource,
+                input.descriptor_dimension,
+                input.history, input.parity);
+    }
+    if (input.descriptor_dimension ==
+        ImageSubresourceViewDimension::cube) {
+        return passInputCubeImageView(
+            rt_views, input.target, input.history,
+            input.parity);
+    }
+    // The producer family is one array descriptor regardless of how the
+    // physical target is laid out, so this dispatches on the declared view
+    // and not on the descriptor dimension derived from it.
+    if (input.view ==
+        PassInputViewDimension::family_2d_array) {
+        return rt_views.getLayeredImageViewForFrame(
+            input.target, input.history, input.parity);
+    }
+    if (input.logical_view_count &&
+        input.view ==
+            PassInputViewDimension::layered_2d_array) {
+        return rt_views.arrayLayers(input.target) ==
+                       *input.logical_view_count
+                   ? rt_views
+                         .getLayeredImageViewForFrame(
+                             input.target,
+                             input.history,
+                             input.parity)
+                   : rt_views
+                         .getImageSubresourceViewForFrame(
+                             input.target,
+                             ImageSubresourceRange{
+                                 .layer_count =
+                                     *input
+                                          .logical_view_count,
+                             },
+                             ImageSubresourceViewDimension::
+                                 two_d_array,
+                             input.history,
+                             input.parity);
+    }
+    if (input.layer_binding ==
+        PassInputLayerBinding::per_variant) {
+        return rt_views.getImageLayerViewForFrame(
+            input.target, input.variant,
+            input.history, input.parity);
+    }
+    if (input.layer_binding ==
+        PassInputLayerBinding::whole_array) {
+        return rt_views.getLayeredImageViewForFrame(
+            input.target, input.history, input.parity);
+    }
+    return rt_views.getImageViewForFrame(
+        input.target, input.history, input.parity);
+}
+
 PassInputDescriptorWrites::PassInputDescriptorWrites(
     PassInputDescriptorVariant &descriptor_variant,
     std::uint32_t history_parity,

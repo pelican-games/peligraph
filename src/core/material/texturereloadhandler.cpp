@@ -103,7 +103,8 @@ void TextureReloadHandler::track(const watch::AssetKey &key, std::filesystem::pa
         throw std::runtime_error("reloadable texture is already tracked: " +
                                  watch::assetKeyString(key));
     }
-    const auto &resource = materials_.textures.get(texture);
+    const auto &resource =
+        materials_.texture_store.textures.get(texture);
     auto payload = std::make_shared<TexturePayload>();
     payload->key = key;
     payload->texture = texture;

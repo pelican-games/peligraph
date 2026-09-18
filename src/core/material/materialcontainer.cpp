@@ -15,6 +15,8 @@
 #include "../vkcore/rendertarget.hpp"
 #include "../vkcore/util.hpp"
 #include "../watch/reloadservice.hpp"
+#include "materialgenerationplanner.hpp"
+#include "materiallimits.hpp"
 #include "standardmaterialresource.hpp"
 #include "materialvaluesreloadhandler.hpp"
 #include "texturereloadhandler.hpp"
@@ -29,40 +31,41 @@
 namespace Pelican {
 
 
-constexpr uint32_t imageDescriptorSetNumber = PELICAN_SET_MATERIAL;
-constexpr uint32_t baseColorBinding = 0;
-constexpr uint32_t metallicRoughnessBinding = 1;
-constexpr uint32_t normalBinding = 2;
-constexpr uint32_t emissiveBinding = 3;
-constexpr uint32_t vatPositionBinding = 4;
-constexpr uint32_t vatNormalBinding = 5;
-constexpr uint32_t materialBufferBinding = PELICAN_MATERIAL_BUFFER_BINDING;
-constexpr uint32_t occlusionBinding =
-    PELICAN_MATERIAL_OCCLUSION_TEXTURE_BINDING;
-constexpr uint32_t baseMaterialTextureBindingCount = 5;
-constexpr uint32_t vatMaterialTextureBindingCount = 7;
-constexpr size_t maxMaterials = 1024;
-constexpr uint32_t maxMaterialPassInputs = 8;
-constexpr uint32_t maxMaterialPassDescriptors = 32;
 
 static_assert(
     materialCustomTextureFirstBinding ==
     PELICAN_MATERIAL_CUSTOM_TEXTURE_FIRST_BINDING);
 
-static bool supportsDepthComparisonSampling(
-    vk::Format format) {
-    switch (format) {
-    case vk::Format::eD16Unorm:
-    case vk::Format::eX8D24UnormPack32:
-    case vk::Format::eD32Sfloat:
-    case vk::Format::eD16UnormS8Uint:
-    case vk::Format::eD24UnormS8Uint:
-    case vk::Format::eD32SfloatS8Uint:
-        return true;
-    default:
-        return false;
+// Every compiled pass the renderer would run right now: the published
+// snapshot when there is one, the registered table otherwise. Registration
+// and variant prewarming both walk it, and both used to spell the
+// snapshot-precedence rule out for themselves.
+template <typename F>
+static void forEachCompiledPass(
+    const RenderingPassContainer &registered_passes,
+    F &&visit) {
+    if (const auto generation =
+            registered_passes.snapshot()) {
+        for (const auto rendering_pass_id :
+             generation->rendering_pass_ids) {
+            const auto *program =
+                generation->find(rendering_pass_id);
+            if (program == nullptr) {
+                throw std::logic_error(
+                    "Published render pipeline pass table is inconsistent");
+            }
+            visit(program->rendering_pass);
+        }
+        return;
+    }
+    for (const auto rendering_pass_id :
+         registered_passes.getRegisteredPassIds()) {
+        visit(registered_passes
+                  .getCompiledRenderingPass(
+                      rendering_pass_id));
     }
 }
+
 
 static bool isIntegerColorFormat(vk::Format format) {
     switch (format) {
@@ -98,211 +101,6 @@ static void validateMaterialInputAttachmentFormat(
     }
 }
 
-struct MaterialPipelineRenderingContract {
-    std::vector<vk::Format> color_formats;
-    std::optional<vk::Format> depth_format;
-    vk::SampleCountFlagBits rasterization_samples =
-        vk::SampleCountFlagBits::e1;
-    GraphicsPipelineRenderingLocalReadContract local_read;
-    std::vector<MaterialOutputAttachmentState>
-        output_states;
-
-    bool operator==(
-        const MaterialPipelineRenderingContract &) const =
-        default;
-};
-
-static MaterialPipelineRenderingContract
-defaultMaterialPipelineRenderingContract(
-    MaterialShaderContract shader_contract,
-    vk::SampleCountFlagBits samples) {
-    MaterialPipelineRenderingContract result;
-    if (shader_contract ==
-        MaterialShaderContract::forward_scene_color_v1) {
-        result.color_formats.push_back(
-            forwardMaterialPassColorAttachmentFormat);
-    } else {
-        const auto &formats =
-            materialPassColorAttachmentFormats(
-                GET_MODULE(RenderingPassContainer)
-                    .isFeatureEnabled("hdr"));
-        result.color_formats.assign(
-            formats.begin(), formats.end());
-    }
-    result.depth_format =
-        materialPassDepthAttachmentFormat;
-    result.rasterization_samples = samples;
-    return result;
-}
-
-static vk::Format resolveMaterialColorFormat(
-    GlobalRenderTargetId target) {
-    if (isConcreteRenderTarget(target)) {
-        return GET_MODULE(RenderTargetContainer)
-            .getMetadata(target)
-            .format;
-    }
-    if (isSwapchainRenderTarget(target)) {
-        return GET_MODULE(RenderTarget)
-            .getSwapchainFormat();
-    }
-    throw std::runtime_error(
-        "material physical rendering contract has an invalid "
-        "color target");
-}
-
-static MaterialPipelineRenderingContract
-resolveMaterialPassRenderingBinding(
-    const MaterialPassRenderingBinding &binding,
-    MaterialShaderContract shader_contract) {
-    if (binding.rendering.color_attachments.empty()) {
-        auto result =
-            defaultMaterialPipelineRenderingContract(
-                shader_contract,
-                binding.rasterization_samples);
-        result.output_states = binding.output_states;
-        return result;
-    }
-
-    MaterialPipelineRenderingContract result;
-    result.rasterization_samples =
-        binding.rasterization_samples;
-    result.output_states = binding.output_states;
-    result.color_formats.reserve(
-        binding.rendering.color_attachments.size());
-    for (const auto target :
-         binding.rendering.color_attachments) {
-        result.color_formats.push_back(
-            resolveMaterialColorFormat(target));
-    }
-    if (isConcreteRenderTarget(
-            binding.rendering.depth_attachment)) {
-        result.depth_format =
-            GET_MODULE(RenderTargetContainer)
-                .getMetadata(
-                    binding.rendering.depth_attachment)
-                .format;
-    } else if (isSwapchainRenderTarget(
-                   binding.rendering.depth_attachment)) {
-        throw std::runtime_error(
-            "material physical rendering contract cannot use the "
-            "swapchain as a depth attachment: " +
-            binding.pass_name);
-    }
-
-    result.local_read.enabled =
-        binding.rendering.local_read_scope;
-    if (!result.local_read.enabled) {
-        return result;
-    }
-    result.local_read.color_attachment_locations =
-        binding.rendering.color_attachment_locations;
-    result.local_read.color_attachment_input_indices =
-        binding.rendering
-            .color_attachment_input_indices;
-    result.local_read.depth_attachment_input_index =
-        binding.rendering
-            .depth_attachment_input_index;
-    return result;
-}
-
-static MaterialPipelineRenderingContract
-resolveMaterialPipelineRenderingContract(
-    const MaterialInfo &info) {
-    const auto &rendering_passes =
-        GET_MODULE(RenderingPassContainer);
-    const auto bindings =
-        rendering_passes
-            .materialPassRenderingBindings(
-                info.route, info.shader_contract,
-                info.exact_pass);
-    if (bindings.empty()) {
-        if (rendering_passes.hasMaterialPasses()) {
-            const auto selected =
-                info.exact_pass
-                    ? " exact pass '" +
-                          *info.exact_pass + "'"
-                    : std::string{};
-            const auto material_name =
-                info.name.empty()
-                    ? std::string{"<unnamed>"}
-                    : info.name;
-            const auto source_asset =
-                info.source_asset.empty()
-                    ? std::string{}
-                    : " from asset '" +
-                          info.source_asset + "'";
-            const auto *project_config =
-                FastModuleContainer::tryGet<
-                    ProjectBasicConfig>();
-            const auto config_source =
-                project_config == nullptr
-                    ? std::string{
-                          "<active rendering configuration>"}
-                    : project_config
-                          ->renderingConfigReference();
-            throw std::runtime_error(
-                "material '" + material_name + "'" +
-                source_asset + " requires route '" +
-                std::string{
-                    materialRouteClassName(
-                        info.route)} +
-                "' with shader contract '" +
-                std::string{
-                    materialShaderContractName(
-                        info.shader_contract)} +
-                "', but rendering config '" +
-                config_source +
-                "' has no compatible registered material pass" +
-                selected);
-        }
-        return defaultMaterialPipelineRenderingContract(
-            info.shader_contract,
-            rendering_passes
-                .materialRasterizationSamples(
-                    info.shader_contract));
-    }
-
-    for (const auto &binding : bindings) {
-        if (binding.output_schema !=
-            info.output_schema) {
-            const auto shader_schema =
-                info.output_schema
-                    ? "'" + info.output_schema->name + "'"
-                    : std::string{"<built-in>"};
-            const auto pass_schema =
-                binding.output_schema
-                    ? "'" + binding.output_schema->name + "'"
-                    : std::string{"<built-in>"};
-            throw std::runtime_error(
-                "material fragment-output schema " +
-                shader_schema +
-                " is incompatible with pass '" +
-                binding.pass_name + "' schema " +
-                pass_schema);
-        }
-    }
-
-    auto result =
-        resolveMaterialPassRenderingBinding(
-            bindings.front(),
-            info.shader_contract);
-    for (std::size_t index = 1;
-         index < bindings.size(); ++index) {
-        const auto candidate =
-            resolveMaterialPassRenderingBinding(
-                bindings[index],
-                info.shader_contract);
-        if (candidate != result) {
-            throw std::runtime_error(
-                "material route resolves to pipeline-incompatible "
-                "physical rendering contracts: " +
-                bindings.front().pass_name + " and " +
-                bindings[index].pass_name);
-        }
-    }
-    return result;
-}
 
 static std::string makePipelineKey(
     const MaterialInfo &info,
@@ -620,176 +418,6 @@ resolveMaterialResourceInterface(
     return result;
 }
 
-static vk::BlendFactor toVkBlendFactor(
-    MaterialOutputBlendFactor factor) {
-    switch (factor) {
-    case MaterialOutputBlendFactor::zero:
-        return vk::BlendFactor::eZero;
-    case MaterialOutputBlendFactor::one:
-        return vk::BlendFactor::eOne;
-    case MaterialOutputBlendFactor::source_color:
-        return vk::BlendFactor::eSrcColor;
-    case MaterialOutputBlendFactor::one_minus_source_color:
-        return vk::BlendFactor::eOneMinusSrcColor;
-    case MaterialOutputBlendFactor::destination_color:
-        return vk::BlendFactor::eDstColor;
-    case MaterialOutputBlendFactor::
-        one_minus_destination_color:
-        return vk::BlendFactor::eOneMinusDstColor;
-    case MaterialOutputBlendFactor::source_alpha:
-        return vk::BlendFactor::eSrcAlpha;
-    case MaterialOutputBlendFactor::one_minus_source_alpha:
-        return vk::BlendFactor::eOneMinusSrcAlpha;
-    case MaterialOutputBlendFactor::destination_alpha:
-        return vk::BlendFactor::eDstAlpha;
-    case MaterialOutputBlendFactor::
-        one_minus_destination_alpha:
-        return vk::BlendFactor::eOneMinusDstAlpha;
-    case MaterialOutputBlendFactor::source_alpha_saturate:
-        return vk::BlendFactor::eSrcAlphaSaturate;
-    }
-    throw std::runtime_error(
-        "unknown material output blend factor");
-}
-
-static vk::BlendOp toVkBlendOperation(
-    MaterialOutputBlendOperation operation) {
-    switch (operation) {
-    case MaterialOutputBlendOperation::add:
-        return vk::BlendOp::eAdd;
-    case MaterialOutputBlendOperation::subtract:
-        return vk::BlendOp::eSubtract;
-    case MaterialOutputBlendOperation::reverse_subtract:
-        return vk::BlendOp::eReverseSubtract;
-    case MaterialOutputBlendOperation::minimum:
-        return vk::BlendOp::eMin;
-    case MaterialOutputBlendOperation::maximum:
-        return vk::BlendOp::eMax;
-    }
-    throw std::runtime_error(
-        "unknown material output blend operation");
-}
-
-static vk::ColorComponentFlags toVkWriteMask(
-    std::uint8_t mask) {
-    vk::ColorComponentFlags result;
-    if ((mask & materialOutputWriteRed) != 0)
-        result |= vk::ColorComponentFlagBits::eR;
-    if ((mask & materialOutputWriteGreen) != 0)
-        result |= vk::ColorComponentFlagBits::eG;
-    if ((mask & materialOutputWriteBlue) != 0)
-        result |= vk::ColorComponentFlagBits::eB;
-    if ((mask & materialOutputWriteAlpha) != 0)
-        result |= vk::ColorComponentFlagBits::eA;
-    return result;
-}
-
-static GraphicsPipelineColorAttachmentState
-defaultMaterialColorAttachmentState(
-    SurfaceBlendMode blend) {
-    GraphicsPipelineColorAttachmentState result;
-    if (blend == SurfaceBlendMode::blend) {
-        result.blend_enabled = true;
-        result.source_color =
-            vk::BlendFactor::eSrcAlpha;
-        result.destination_color =
-            vk::BlendFactor::eOneMinusSrcAlpha;
-        result.source_alpha =
-            vk::BlendFactor::eOne;
-        result.destination_alpha =
-            vk::BlendFactor::eOneMinusSrcAlpha;
-    } else if (blend ==
-               SurfaceBlendMode::additive) {
-        result.blend_enabled = true;
-        result.source_color =
-            vk::BlendFactor::eSrcAlpha;
-        result.destination_color =
-            vk::BlendFactor::eOne;
-        result.source_alpha =
-            vk::BlendFactor::eOne;
-        result.destination_alpha =
-            vk::BlendFactor::eOne;
-    }
-    return result;
-}
-
-static std::vector<GraphicsPipelineColorAttachmentState>
-resolveMaterialColorAttachmentStates(
-    const MaterialInfo &info,
-    const MaterialPipelineRenderingContract &rendering) {
-    std::vector<GraphicsPipelineColorAttachmentState>
-        result(
-            rendering.color_formats.size(),
-            defaultMaterialColorAttachmentState(
-                info.render_state.blend));
-    if (rendering.output_states.empty()) {
-        return result;
-    }
-    if (!info.output_schema) {
-        throw std::logic_error(
-            "material output attachment states require an "
-            "output schema");
-    }
-    if (info.output_schema->outputs.size() !=
-        result.size()) {
-        throw std::runtime_error(
-            "material output attachment state count is "
-            "incompatible with the physical color attachments");
-    }
-    validateMaterialOutputAttachmentStates(
-        rendering.output_states,
-        *info.output_schema,
-        "material pipeline output states");
-    for (const auto &override :
-         rendering.output_states) {
-        const auto output = std::find_if(
-            info.output_schema->outputs.begin(),
-            info.output_schema->outputs.end(),
-            [&](const auto &field) {
-                return field.name == override.output;
-            });
-        if (output ==
-            info.output_schema->outputs.end()) {
-            throw std::logic_error(
-                "validated material output state is absent "
-                "from its schema");
-        }
-        const auto location =
-            static_cast<std::size_t>(
-                std::distance(
-                    info.output_schema->outputs.begin(),
-                    output));
-        auto &state = result[location];
-        if (override.blend) {
-            state.blend_enabled =
-                override.blend->enabled;
-            state.source_color =
-                toVkBlendFactor(
-                    override.blend->color.source);
-            state.destination_color =
-                toVkBlendFactor(
-                    override.blend->color.destination);
-            state.color_operation =
-                toVkBlendOperation(
-                    override.blend->color.operation);
-            state.source_alpha =
-                toVkBlendFactor(
-                    override.blend->alpha.source);
-            state.destination_alpha =
-                toVkBlendFactor(
-                    override.blend->alpha.destination);
-            state.alpha_operation =
-                toVkBlendOperation(
-                    override.blend->alpha.operation);
-        }
-        if (override.write_mask) {
-            state.write_mask =
-                toVkWriteMask(
-                    *override.write_mask);
-        }
-    }
-    return result;
-}
 
 static GraphicsPipelineDesc makeMaterialPipelineDesc(
     const MaterialInfo &info,
@@ -836,106 +464,6 @@ static GraphicsPipelineDesc makeMaterialPipelineDesc(
     return desc;
 }
 
-static void validateMaterialCapabilities(
-    const MaterialInfo &info,
-    const MaterialPipelineRenderingContract
-        &rendering) {
-    const auto physical_device = GET_MODULE(VulkanManageCore).getPhysDevice();
-    const auto limits = physical_device.getProperties().limits;
-    if (rendering.color_formats.size() >
-        limits.maxColorAttachments) {
-        throw std::runtime_error(
-            "material output schema requires " +
-            std::to_string(
-                rendering.color_formats.size()) +
-            " color attachments but device "
-            "maxColorAttachments is " +
-            std::to_string(limits.maxColorAttachments));
-    }
-    const auto reserved = info.vat ? vatMaterialTextureBindingCount : baseMaterialTextureBindingCount;
-    const auto sampler_count = static_cast<std::uint32_t>(reserved + info.custom_textures.size());
-    if (sampler_count > limits.maxPerStageDescriptorSamplers ||
-        sampler_count > limits.maxDescriptorSetSamplers) {
-        throw std::runtime_error("material custom textures require " +
-                                 std::to_string(sampler_count) +
-                                 " samplers but device descriptor limit is " +
-                                 std::to_string(std::min(limits.maxPerStageDescriptorSamplers,
-                                                         limits.maxDescriptorSetSamplers)));
-    }
-    if (!info.render_state.depth_test && info.render_state.depth_write) {
-        throw std::runtime_error(
-            "material render_state requests depth_write while depth_test is disabled");
-    }
-    const auto attachment_states =
-        resolveMaterialColorAttachmentStates(
-            info, rendering);
-    const auto independent_states =
-        attachment_states.size() > 1 &&
-        std::any_of(
-            attachment_states.begin() + 1,
-            attachment_states.end(),
-            [&](const auto &state) {
-                return state !=
-                       attachment_states.front();
-            });
-    if (independent_states &&
-        !GET_MODULE(VulkanManageCore)
-             .getRuntimeCapabilities()
-             .independent_blend) {
-        throw std::runtime_error(
-            "material output attachment states differ but the "
-            "device does not support independentBlend");
-    }
-    for (std::size_t location = 0;
-         location < rendering.color_formats.size();
-         ++location) {
-        const auto format =
-            rendering.color_formats[location];
-        const auto features =
-            physical_device.getFormatProperties(format)
-                .optimalTilingFeatures;
-        if (!(features &
-              vk::FormatFeatureFlagBits::
-                  eColorAttachment)) {
-            throw std::runtime_error(
-                "material output format lacks device color "
-                "attachment capability: " +
-                vk::to_string(format));
-        }
-        if (attachment_states[location]
-                .blend_enabled) {
-            if (!(features & vk::FormatFeatureFlagBits::eColorAttachmentBlend)) {
-                throw std::runtime_error(
-                    "material output blend lacks device "
-                    "capability for color format " +
-                    vk::to_string(format) +
-                    " at attachment " +
-                    std::to_string(location));
-            }
-        }
-    }
-    if (info.render_state.depth_test ||
-        info.render_state.depth_write) {
-        if (!rendering.depth_format) {
-            throw std::runtime_error(
-                "material render_state requires a depth attachment");
-        }
-        const auto depth_features =
-            physical_device
-                .getFormatProperties(
-                    *rendering.depth_format)
-                .optimalTilingFeatures;
-        if (!(depth_features &
-              vk::FormatFeatureFlagBits::
-                  eDepthStencilAttachment)) {
-            throw std::runtime_error(
-                "material render_state depth lacks device "
-                "capability for format " +
-                vk::to_string(
-                    *rendering.depth_format));
-        }
-    }
-}
 
 static ReflectedImageViewDimension reflectedTextureDimension(
     SurfaceTextureDimension dimension) {
@@ -1156,276 +684,16 @@ MaterialGpuData makeMaterialGpuData(const MaterialInfo &info) {
     return data;
 }
 
-static vk::UniqueDescriptorPool createDescriptorPool(vk::Device device, bool split_custom_samplers) {
-    std::vector<vk::DescriptorPoolSize> pool_sizes{
-        {vk::DescriptorType::eStorageBuffer, 1024},
-        {vk::DescriptorType::eCombinedImageSampler, 32768},
-    };
-    if (split_custom_samplers) {
-        pool_sizes.push_back({vk::DescriptorType::eSampledImage, 16384});
-        pool_sizes.push_back({vk::DescriptorType::eSampler, 16384});
-    }
 
-    vk::DescriptorPoolCreateInfo create_info;
-    create_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    create_info.maxSets = 1024;
-    create_info.setPoolSizes(pool_sizes);
-    return device.createDescriptorPoolUnique(create_info);
-}
 
-static vk::UniqueDescriptorPool createScreenInputDescriptorPool(
-    vk::Device device, uint32_t max_sets = maxMaterials * 8) {
-    const std::array pool_sizes{
-        vk::DescriptorPoolSize{
-            vk::DescriptorType::eCombinedImageSampler,
-            max_sets * maxMaterialPassInputs},
-        vk::DescriptorPoolSize{
-            vk::DescriptorType::eInputAttachment,
-            max_sets * maxMaterialPassInputs},
-    };
-    vk::DescriptorPoolCreateInfo create_info;
-    // Material/pass pairs are rebound independently while sharing this pool.
-    // Free lease-retired sets individually instead of retiring a pool that
-    // still backs unrelated live descriptors.
-    create_info.flags =
-        vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    create_info.maxSets = max_sets;
-    create_info.setPoolSizes(pool_sizes);
-    return device.createDescriptorPoolUnique(create_info);
-}
 
-static vk::UniqueDescriptorPool
-createMaterialResourceDescriptorPool(
-    vk::Device device,
-    uint32_t max_sets = maxMaterials * 8) {
-    const std::array pool_sizes{
-        vk::DescriptorPoolSize{
-            vk::DescriptorType::
-                eCombinedImageSampler,
-            max_sets *
-                maxMaterialPassDescriptors},
-        vk::DescriptorPoolSize{
-            vk::DescriptorType::eInputAttachment,
-            max_sets *
-                maxMaterialPassDescriptors},
-        vk::DescriptorPoolSize{
-            vk::DescriptorType::eStorageBuffer,
-            max_sets *
-                maxMaterialPassDescriptors},
-    };
-    vk::DescriptorPoolCreateInfo create_info;
-    create_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    create_info.maxSets = max_sets;
-    create_info.setPoolSizes(pool_sizes);
-    return device.createDescriptorPoolUnique(create_info);
-}
 
-static vk::UniqueSampler createSampler(vk::Device device, vk::Filter filter) {
-    vk::SamplerCreateInfo create_info;
-    create_info.magFilter = filter;
-    create_info.minFilter = filter;
-    create_info.mipmapMode = vk::SamplerMipmapMode::eLinear;
-    create_info.addressModeU = vk::SamplerAddressMode::eRepeat;
-    create_info.addressModeV = vk::SamplerAddressMode::eRepeat;
-    create_info.addressModeW = vk::SamplerAddressMode::eRepeat;
-    create_info.mipLodBias = 0.0f;
-    create_info.anisotropyEnable = false;
-    create_info.maxAnisotropy = 1.0f;
-    create_info.compareEnable = false;
-    create_info.compareOp = vk::CompareOp::eAlways;
-    create_info.minLod = 0.0f;
-    create_info.maxLod = VK_LOD_CLAMP_NONE;
-    create_info.borderColor = vk::BorderColor::eIntOpaqueBlack;
-    create_info.unnormalizedCoordinates = false;
-    return device.createSamplerUnique(create_info);
-}
-
-static vk::Filter materialTextureFilter(
-    SurfaceTextureFilter filter) {
-    return filter == SurfaceTextureFilter::nearest
-               ? vk::Filter::eNearest
-               : vk::Filter::eLinear;
-}
-
-static vk::SamplerMipmapMode materialTextureMipmapMode(
-    SurfaceTextureFilter filter) {
-    return filter == SurfaceTextureFilter::nearest
-               ? vk::SamplerMipmapMode::eNearest
-               : vk::SamplerMipmapMode::eLinear;
-}
-
-static vk::SamplerAddressMode materialTextureAddressMode(
-    SurfaceTextureAddressMode address) {
-    switch (address) {
-    case SurfaceTextureAddressMode::repeat:
-        return vk::SamplerAddressMode::eRepeat;
-    case SurfaceTextureAddressMode::mirrored_repeat:
-        return vk::SamplerAddressMode::eMirroredRepeat;
-    case SurfaceTextureAddressMode::clamp_to_edge:
-        return vk::SamplerAddressMode::eClampToEdge;
-    }
-    throw std::runtime_error(
-        "unknown material texture address mode");
-}
-
-static vk::CompareOp materialTextureCompareOp(
-    SurfaceTextureCompare compare) {
-    switch (compare) {
-    case SurfaceTextureCompare::none:
-    case SurfaceTextureCompare::always:
-        return vk::CompareOp::eAlways;
-    case SurfaceTextureCompare::never:
-        return vk::CompareOp::eNever;
-    case SurfaceTextureCompare::less:
-        return vk::CompareOp::eLess;
-    case SurfaceTextureCompare::equal:
-        return vk::CompareOp::eEqual;
-    case SurfaceTextureCompare::less_equal:
-        return vk::CompareOp::eLessOrEqual;
-    case SurfaceTextureCompare::greater:
-        return vk::CompareOp::eGreater;
-    case SurfaceTextureCompare::not_equal:
-        return vk::CompareOp::eNotEqual;
-    case SurfaceTextureCompare::greater_equal:
-        return vk::CompareOp::eGreaterOrEqual;
-    }
-    throw std::runtime_error(
-        "unknown material texture comparison");
-}
-
-static vk::UniqueSampler createScreenSampler(vk::Device device,
-                                             vk::Filter filter) {
-    vk::SamplerCreateInfo create_info;
-    create_info.magFilter = filter;
-    create_info.minFilter = filter;
-    create_info.mipmapMode = vk::SamplerMipmapMode::eNearest;
-    create_info.addressModeU = vk::SamplerAddressMode::eClampToEdge;
-    create_info.addressModeV = vk::SamplerAddressMode::eClampToEdge;
-    create_info.addressModeW = vk::SamplerAddressMode::eClampToEdge;
-    create_info.minLod = 0.0f;
-    create_info.maxLod = 0.0f;
-    return device.createSamplerUnique(create_info);
-}
-
-static vk::SamplerAddressMode materialResourceAddressMode(
-    ShaderResourcePortAddressMode mode) {
-    switch (mode) {
-    case ShaderResourcePortAddressMode::repeat:
-        return vk::SamplerAddressMode::eRepeat;
-    case ShaderResourcePortAddressMode::mirrored_repeat:
-        return vk::SamplerAddressMode::
-            eMirroredRepeat;
-    case ShaderResourcePortAddressMode::clamp_to_edge:
-        return vk::SamplerAddressMode::eClampToEdge;
-    }
-    throw std::runtime_error(
-        "unknown material resource sampler address mode");
-}
-
-static std::size_t materialResourceSamplerIndex(
-    ShaderResourcePortSampling sampling) {
-    const auto filter =
-        sampling.filter ==
-                ShaderResourcePortFilter::nearest
-            ? std::size_t{1}
-            : std::size_t{0};
-    std::size_t address = 0;
-    switch (sampling.address_mode) {
-    case ShaderResourcePortAddressMode::repeat:
-        address = 0;
-        break;
-    case ShaderResourcePortAddressMode::mirrored_repeat:
-        address = 1;
-        break;
-    case ShaderResourcePortAddressMode::clamp_to_edge:
-        address = 2;
-        break;
-    }
-    return filter * 3 + address;
-}
-
-static vk::UniqueSampler
-createMaterialResourceSampler(
-    vk::Device device,
-    ShaderResourcePortSampling sampling) {
-    vk::SamplerCreateInfo create_info;
-    create_info.magFilter =
-        sampling.filter ==
-                ShaderResourcePortFilter::nearest
-            ? vk::Filter::eNearest
-            : vk::Filter::eLinear;
-    create_info.minFilter =
-        create_info.magFilter;
-    create_info.mipmapMode =
-        sampling.filter ==
-                ShaderResourcePortFilter::nearest
-            ? vk::SamplerMipmapMode::eNearest
-            : vk::SamplerMipmapMode::eLinear;
-    create_info.addressModeU =
-        materialResourceAddressMode(
-            sampling.address_mode);
-    create_info.addressModeV =
-        create_info.addressModeU;
-    create_info.addressModeW =
-        create_info.addressModeU;
-    create_info.minLod = 0.0f;
-    create_info.maxLod = VK_LOD_CLAMP_NONE;
-    return device.createSamplerUnique(
-        create_info);
-}
-
-static vk::ImageViewType materialTextureViewType(
-    SurfaceTextureDimension dimension) {
-    switch (dimension) {
-    case SurfaceTextureDimension::two_d:
-        return vk::ImageViewType::e2D;
-    case SurfaceTextureDimension::cube:
-        return vk::ImageViewType::eCube;
-    case SurfaceTextureDimension::two_d_array:
-        return vk::ImageViewType::e2DArray;
-    case SurfaceTextureDimension::three_d:
-        return vk::ImageViewType::e3D;
-    }
-    throw std::runtime_error(
-        "unknown material texture dimension");
-}
-
-static vk::UniqueImageView createImageView(
-    vk::Device device, const ImageWrapper &image,
-    vk::Format format,
-    SurfaceTextureDimension dimension =
-        SurfaceTextureDimension::two_d) {
-    vk::ImageViewCreateInfo create_info;
-    create_info.image = image.image.get();
-    create_info.viewType =
-        materialTextureViewType(dimension);
-    create_info.format = format;
-    create_info.components.r = vk::ComponentSwizzle::eR;
-    create_info.components.g = vk::ComponentSwizzle::eG;
-    create_info.components.b = vk::ComponentSwizzle::eB;
-    create_info.components.a = vk::ComponentSwizzle::eA;
-    create_info.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
-    create_info.subresourceRange.baseMipLevel = 0;
-    create_info.subresourceRange.levelCount = image.mip_levels;
-    create_info.subresourceRange.baseArrayLayer = 0;
-    create_info.subresourceRange.layerCount =
-        dimension ==
-                SurfaceTextureDimension::three_d
-            ? 1
-            : image.array_layers;
-
-    return device.createImageViewUnique(create_info);
-}
 
 MaterialContainer::MaterialContainer()
     : device{GET_MODULE(VulkanManageCore).getDevice()},
       split_custom_samplers{surfaceSpvLinkExperimentalEnabled()},
-      nearest_sampler{createSampler(device, vk::Filter::eNearest)},
-      linear_sampler{createSampler(device, vk::Filter::eLinear)},
-      screen_nearest_sampler{createScreenSampler(device, vk::Filter::eNearest)},
-      screen_linear_sampler{createScreenSampler(device, vk::Filter::eLinear)},
-      desc_pool{createDescriptorPool(device, split_custom_samplers)},
-      screen_input_desc_pool{createScreenInputDescriptorPool(device)},
+      texture_store{device},
+      descriptor_builder{device, split_custom_samplers},
       material_buffer{GET_MODULE(VulkanManageCore).allocBuf(
           sizeof(MaterialGpuData) * maxMaterials, vk::BufferUsageFlagBits::eStorageBuffer,
           vma::MemoryUsage::eAuto, vma::AllocationCreateFlagBits::eHostAccessSequentialWrite)} {}
@@ -1433,412 +701,68 @@ MaterialContainer::~MaterialContainer() {
     deferred_callbacks.closeAndWait();
 }
 
-vk::Sampler MaterialContainer::materialResourceSampler(
-    ShaderResourcePortSampling sampling) const {
-    auto &sampler =
-        material_resource_samplers.at(
-            materialResourceSamplerIndex(
-                sampling));
-    if (!sampler) {
-        sampler =
-            createMaterialResourceSampler(
-                device, sampling);
-    }
-    return sampler.get();
+GlobalTextureId MaterialContainer::registerTexture(
+    vk::Extent3D extent, const void *data) {
+    return texture_store.registerTexture(extent, data);
 }
 
-vk::Sampler MaterialContainer::materialTextureSampler(
-    const ResolvedMaterialSampler &sampler) {
-    const MaterialSamplerKey key{
-        sampler.filter, sampler.mip_filter, sampler.address,
-        sampler.compare, sampler.anisotropy_enabled,
-        sampler.max_anisotropy};
-    const auto existing =
-        custom_texture_samplers.find(key);
-    if (existing != custom_texture_samplers.end()) {
-        return existing->second.get();
-    }
-
-    vk::SamplerCreateInfo create_info;
-    create_info.magFilter =
-        materialTextureFilter(sampler.filter);
-    create_info.minFilter = create_info.magFilter;
-    create_info.mipmapMode =
-        materialTextureMipmapMode(sampler.mip_filter);
-    create_info.addressModeU =
-        materialTextureAddressMode(sampler.address);
-    create_info.addressModeV = create_info.addressModeU;
-    create_info.addressModeW = create_info.addressModeU;
-    create_info.mipLodBias = 0.0f;
-    create_info.anisotropyEnable =
-        sampler.anisotropy_enabled;
-    create_info.maxAnisotropy =
-        sampler.anisotropy_enabled
-            ? sampler.max_anisotropy
-            : 1.0f;
-    create_info.compareEnable =
-        sampler.compare != SurfaceTextureCompare::none;
-    create_info.compareOp =
-        materialTextureCompareOp(sampler.compare);
-    create_info.minLod = 0.0f;
-    create_info.maxLod = VK_LOD_CLAMP_NONE;
-    create_info.borderColor =
-        vk::BorderColor::eIntOpaqueBlack;
-    create_info.unnormalizedCoordinates = false;
-    auto created =
-        device.createSamplerUnique(create_info);
-    const auto handle = created.get();
-    custom_texture_samplers.emplace(
-        key, std::move(created));
-    return handle;
-}
-
-namespace {
-
-std::uint32_t fullMipLevelCount(vk::Extent3D extent) {
-    auto longest_side = std::max(extent.width, extent.height);
-    std::uint32_t levels = 1;
-    while (longest_side > 1) {
-        longest_side /= 2;
-        ++levels;
-    }
-    return levels;
-}
-
-std::uint32_t validateRgba8MipInput(
+GlobalTextureId MaterialContainer::registerTexture(
     vk::Extent3D extent, const void *data,
-    vk::DeviceSize bytes_num) {
-    if (extent.width == 0 || extent.height == 0 || extent.depth != 1) {
-        throw std::runtime_error(
-            "RGBA8 material textures require a non-zero 2D extent");
-    }
-    if (data == nullptr) {
-        throw std::runtime_error("RGBA8 material texture data is null");
-    }
-    constexpr vk::DeviceSize bytes_per_pixel = 4;
-    if (extent.width >
-        std::numeric_limits<vk::DeviceSize>::max() /
-            extent.height / bytes_per_pixel) {
-        throw std::runtime_error(
-            "RGBA8 material texture byte size overflows");
-    }
-    const auto base_bytes = static_cast<vk::DeviceSize>(extent.width) *
-                            extent.height * bytes_per_pixel;
-    if (bytes_num != base_bytes) {
-        throw std::runtime_error(
-            "RGBA8 material texture byte size mismatch: expected " +
-            std::to_string(base_bytes) + ", got " +
-            std::to_string(bytes_num));
-    }
-    if (base_bytes > std::numeric_limits<std::size_t>::max()) {
-        throw std::runtime_error(
-            "RGBA8 material texture exceeds host address space");
-    }
-    return fullMipLevelCount(extent);
+    vk::Format format, vk::DeviceSize bytes_num) {
+    return texture_store.registerTexture(
+        extent, data, format, bytes_num);
 }
 
-} // namespace
-
-GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const void *data) {
-    return registerTexture(extent, data, vk::Format::eR8G8B8A8Unorm,
-                           static_cast<vk::DeviceSize>(extent.width) * extent.height * extent.depth * 4);
+GlobalTextureId MaterialContainer::registerTexture(
+    const LoadedImage &loaded, std::string_view name) {
+    return texture_store.registerTexture(loaded, name);
 }
 
-GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const void *data, vk::Format format,
-                                                   vk::DeviceSize bytes_num) {
-    const auto &vkcore = GET_MODULE(VulkanManageCore);
-    const bool rgba8 = format == vk::Format::eR8G8B8A8Unorm;
-    // A raw glTF image can feed both data (UNORM) and color (SRGB) material
-    // bindings. Vulkan decodes an SRGB image before a linear blit, but this
-    // backing image is created as UNORM; SRGB is only a mutable sampling view.
-    // The GPU therefore filters stored values, matching WP246's encoded-value
-    // averaging rather than applying a color-only transfer function.
-    const auto mip_levels = rgba8
-                                ? validateRgba8MipInput(
-                                      extent, data, bytes_num)
-                                : 1u;
-    const std::array mutable_formats{vk::Format::eR8G8B8A8Unorm, vk::Format::eR8G8B8A8Srgb};
-    auto image = vkcore.allocImage(extent, format,
-                                   vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst |
-                                       vk::ImageUsageFlagBits::eTransferSrc,
-                                   vma::MemoryUsage::eAutoPreferDevice, {}, VulkanProcessType::graphics,
-                                   rgba8 ? std::span<const vk::Format>{mutable_formats}
-                                         : std::span<const vk::Format>{},
-                                   mip_levels);
-
-    auto &vkutil = GET_MODULE(VulkanUtils);
-    const VulkanUtils::ImageTransferInfo transfer_info{
-        .old_layout = vk::ImageLayout::eUndefined,
-        .new_layout = vk::ImageLayout::eShaderReadOnlyOptimal,
-        .dst_stage = vk::PipelineStageFlagBits::eVertexShader |
-                     vk::PipelineStageFlagBits::eFragmentShader |
-                     vk::PipelineStageFlagBits::eComputeShader,
-        .dst_access = vk::AccessFlagBits::eShaderRead,
-    };
-    if (rgba8) {
-        vkutil.safeTransferMemoryToImageAndGenerateMipmaps(
-            image, data, bytes_num, transfer_info);
-    } else {
-        vkutil.safeTransferMemoryToImage(image, data, bytes_num,
-                                         transfer_info);
-    }
-
-    auto linear_view = createImageView(device, image, format);
-    vk::UniqueImageView srgb_view;
-    if (rgba8) {
-        const auto features = vkcore.getPhysDevice()
-                                  .getFormatProperties(vk::Format::eR8G8B8A8Srgb)
-                                  .optimalTilingFeatures;
-        const auto required = vk::FormatFeatureFlagBits::eSampledImage |
-                              vk::FormatFeatureFlagBits::eSampledImageFilterLinear;
-        if ((features & required) != required) {
-            throw std::runtime_error("SRGB material texture lacks sampled/linear-filter support");
-        }
-        srgb_view = createImageView(device, image, vk::Format::eR8G8B8A8Srgb);
-    }
-
-    return textures.reg(InternalTextureResource{
-        .image = std::move(image),
-        .linear_view = std::move(linear_view),
-        .srgb_view = std::move(srgb_view),
-        .dimension = SurfaceTextureDimension::two_d,
-        .view_type = vk::ImageViewType::e2D,
-    });
+GlobalTextureId MaterialContainer::registerTextureFile(
+    const std::filesystem::path &path) {
+    return texture_store.registerTextureFile(path);
 }
 
-namespace {
-
-vk::Format vkFormatForLoaded(ImagePixelFormat format) {
-    switch (format) {
-    case ImagePixelFormat::Rgba8Unorm: return vk::Format::eR8G8B8A8Unorm;
-    case ImagePixelFormat::Rgba8Srgb: return vk::Format::eR8G8B8A8Srgb;
-    case ImagePixelFormat::Rgba16Sfloat: return vk::Format::eR16G16B16A16Sfloat;
-    case ImagePixelFormat::Rgba32Sfloat: return vk::Format::eR32G32B32A32Sfloat;
-    case ImagePixelFormat::Bc5Unorm: return vk::Format::eBc5UnormBlock;
-    case ImagePixelFormat::Bc7Unorm: return vk::Format::eBc7UnormBlock;
-    case ImagePixelFormat::Bc7Srgb: return vk::Format::eBc7SrgbBlock;
-    }
-    throw std::runtime_error("Unknown loaded image format");
+MaterialTextureResource
+MaterialContainer::createTextureResource(
+    const LoadedImage &loaded,
+    std::string_view name) const {
+    return texture_store.createTextureResource(loaded,
+                                               name);
 }
 
-SurfaceTextureDimension surfaceTextureDimension(
-    LoadedImageDimension dimension) {
-    switch (dimension) {
-    case LoadedImageDimension::TwoD:
-        return SurfaceTextureDimension::two_d;
-    case LoadedImageDimension::Cube:
-        return SurfaceTextureDimension::cube;
-    case LoadedImageDimension::TwoDArray:
-        return SurfaceTextureDimension::two_d_array;
-    case LoadedImageDimension::ThreeD:
-        return SurfaceTextureDimension::three_d;
-    }
-    throw std::runtime_error(
-        "Unknown loaded image dimension");
+bool MaterialContainer::textureShapeMatches(
+    GlobalTextureId texture,
+    const LoadedImage &image) const {
+    return texture_store.textureShapeMatches(texture,
+                                             image);
 }
 
-vk::ImageType materialTextureImageType(
-    SurfaceTextureDimension dimension) {
-    return dimension ==
-                   SurfaceTextureDimension::three_d
-               ? vk::ImageType::e3D
-               : vk::ImageType::e2D;
+void MaterialContainer::uploadTextureInPlace(
+    GlobalTextureId texture,
+    const LoadedImage &image) const {
+    texture_store.uploadTextureInPlace(texture, image);
 }
 
-vk::ImageCreateFlags materialTextureImageFlags(
-    SurfaceTextureDimension dimension) {
-    return dimension ==
-                   SurfaceTextureDimension::cube
-               ? vk::ImageCreateFlagBits::eCubeCompatible
-               : vk::ImageCreateFlags{};
+std::pair<vk::ImageView, vk::ImageView>
+MaterialContainer::textureViewsForTesting(
+    GlobalTextureId texture) const {
+    return texture_store.textureViewsForTesting(texture);
 }
 
-void validateLoadedTextureShape(
-    const LoadedImage &loaded, std::string_view name,
-    const vk::PhysicalDeviceLimits &limits) {
-    if (loaded.width == 0 || loaded.height == 0 ||
-        loaded.depth == 0 || loaded.array_layers == 0) {
-        throw std::runtime_error(
-            "Texture '" + std::string{name} +
-            "' has a zero-sized dimension or array layer count");
-    }
-    switch (loaded.dimension) {
-    case LoadedImageDimension::TwoD:
-        if (loaded.depth != 1 || loaded.array_layers != 1) {
-            throw std::runtime_error(
-                "Texture '" + std::string{name} +
-                "' dimension 2d requires depth=1 and "
-                "array_layers=1");
-        }
-        if (loaded.width > limits.maxImageDimension2D ||
-            loaded.height > limits.maxImageDimension2D) {
-            throw std::runtime_error(
-                "Texture '" + std::string{name} +
-                "' dimension 2d exceeds device "
-                "maxImageDimension2D " +
-                std::to_string(limits.maxImageDimension2D));
-        }
-        break;
-    case LoadedImageDimension::Cube:
-        if (loaded.width != loaded.height ||
-            loaded.depth != 1 ||
-            loaded.array_layers != 6) {
-            throw std::runtime_error(
-                "Texture '" + std::string{name} +
-                "' dimension cube requires square faces, "
-                "depth=1, and exactly 6 array layers");
-        }
-        if (loaded.width > limits.maxImageDimensionCube) {
-            throw std::runtime_error(
-                "Texture '" + std::string{name} +
-                "' dimension cube exceeds device "
-                "maxImageDimensionCube " +
-                std::to_string(limits.maxImageDimensionCube));
-        }
-        break;
-    case LoadedImageDimension::TwoDArray:
-        if (loaded.depth != 1) {
-            throw std::runtime_error(
-                "Texture '" + std::string{name} +
-                "' dimension 2d_array requires depth=1");
-        }
-        if (loaded.width > limits.maxImageDimension2D ||
-            loaded.height > limits.maxImageDimension2D ||
-            loaded.array_layers > limits.maxImageArrayLayers) {
-            throw std::runtime_error(
-                "Texture '" + std::string{name} +
-                "' dimension 2d_array exceeds device 2D "
-                "dimension or array-layer limits");
-        }
-        break;
-    case LoadedImageDimension::ThreeD:
-        if (loaded.array_layers != 1) {
-            throw std::runtime_error(
-                "Texture '" + std::string{name} +
-                "' dimension 3d requires array_layers=1");
-        }
-        if (loaded.width > limits.maxImageDimension3D ||
-            loaded.height > limits.maxImageDimension3D ||
-            loaded.depth > limits.maxImageDimension3D) {
-            throw std::runtime_error(
-                "Texture '" + std::string{name} +
-                "' dimension 3d exceeds device "
-                "maxImageDimension3D " +
-                std::to_string(limits.maxImageDimension3D));
-        }
-        break;
-    }
+std::vector<uint8_t>
+MaterialContainer::texturePixelsForTesting(
+    GlobalTextureId texture,
+    uint32_t mip_level) const {
+    return texture_store.texturePixelsForTesting(
+        texture, mip_level);
 }
 
-void requireCompressedTextureFeatures(vk::PhysicalDevice physical_device, vk::Format format,
-                                      std::string_view name) {
-    if (format != vk::Format::eBc5UnormBlock && format != vk::Format::eBc7UnormBlock &&
-        format != vk::Format::eBc7SrgbBlock) return;
-    const auto features = physical_device.getFormatProperties(format).optimalTilingFeatures;
-    const auto required = vk::FormatFeatureFlagBits::eSampledImage |
-                          vk::FormatFeatureFlagBits::eSampledImageFilterLinear |
-                          vk::FormatFeatureFlagBits::eTransferDst;
-    if ((features & required) != required)
-        throw std::runtime_error("KTX2 texture '" + std::string{name} + "' format " +
-                                 vk::to_string(format) +
-                                 " lacks sampled/linear-filter/transfer-dst GPU support");
-}
 
-} // namespace
 
-MaterialContainer::InternalTextureResource
-MaterialContainer::createTextureResource(const LoadedImage &loaded, std::string_view name) const {
-    if (loaded.pixels.empty() || loaded.levels.empty())
-        throw std::runtime_error("Texture '" + std::string{name} + "' has no image levels");
-    const auto &vkcore = GET_MODULE(VulkanManageCore);
-    const auto format = vkFormatForLoaded(loaded.format);
-    requireCompressedTextureFeatures(vkcore.getPhysDevice(), format, name);
-    validateLoadedTextureShape(
-        loaded, name,
-        vkcore.getPhysDevice().getProperties().limits);
-    const auto dimension =
-        surfaceTextureDimension(loaded.dimension);
-    const auto image_type =
-        materialTextureImageType(dimension);
-    const auto image_flags =
-        materialTextureImageFlags(dimension);
-    const vk::Extent3D extent{
-        loaded.width, loaded.height, loaded.depth};
 
-    const bool rgba8 = loaded.format == ImagePixelFormat::Rgba8Unorm ||
-                       loaded.format == ImagePixelFormat::Rgba8Srgb;
-    const bool bc7 = loaded.format == ImagePixelFormat::Bc7Unorm ||
-                     loaded.format == ImagePixelFormat::Bc7Srgb;
-    const std::array rgba_formats{vk::Format::eR8G8B8A8Unorm, vk::Format::eR8G8B8A8Srgb};
-    const std::array bc7_formats{vk::Format::eBc7UnormBlock, vk::Format::eBc7SrgbBlock};
-    const auto compatible = rgba8 ? std::span<const vk::Format>{rgba_formats}
-                                  : bc7 ? std::span<const vk::Format>{bc7_formats}
-                                        : std::span<const vk::Format>{};
-    auto image = vkcore.allocImage(
-        extent, format,
-        vk::ImageUsageFlagBits::eSampled |
-            vk::ImageUsageFlagBits::eTransferDst |
-            vk::ImageUsageFlagBits::eTransferSrc,
-        vma::MemoryUsage::eAutoPreferDevice, {},
-        VulkanProcessType::graphics, compatible,
-        loaded.mipLevels(), vk::SampleCountFlagBits::e1,
-        loaded.array_layers, {}, image_flags, image_type);
-    std::vector<vk::BufferImageCopy> regions;
-    regions.reserve(loaded.levels.size());
-    for (std::uint32_t mip = 0; mip < loaded.levels.size(); ++mip) {
-        const auto &level = loaded.levels[mip];
-        vk::BufferImageCopy copy;
-        copy.bufferOffset = level.offset;
-        copy.imageSubresource = {
-            vk::ImageAspectFlagBits::eColor, mip, 0,
-            loaded.dimension ==
-                    LoadedImageDimension::ThreeD
-                ? 1u
-                : loaded.array_layers};
-        copy.imageExtent = vk::Extent3D{
-            level.width, level.height, level.depth};
-        regions.push_back(copy);
-    }
-    GET_MODULE(VulkanUtils).safeTransferMemoryToImageLevels(
-        image, loaded.pixels.data(), loaded.pixels.size(), regions,
-        VulkanUtils::ImageTransferInfo{.old_layout = vk::ImageLayout::eUndefined,
-                                       .new_layout = vk::ImageLayout::eShaderReadOnlyOptimal,
-                                       .dst_stage = vk::PipelineStageFlagBits::eVertexShader |
-                                                    vk::PipelineStageFlagBits::eFragmentShader |
-                                                    vk::PipelineStageFlagBits::eComputeShader,
-                                       .dst_access = vk::AccessFlagBits::eShaderRead});
 
-    const auto linear_format = rgba8 ? vk::Format::eR8G8B8A8Unorm
-                                     : bc7 ? vk::Format::eBc7UnormBlock : format;
-    requireCompressedTextureFeatures(vkcore.getPhysDevice(), linear_format, name);
-    auto linear_view =
-        createImageView(device, image, linear_format,
-                        dimension);
-    vk::UniqueImageView srgb_view;
-    if (rgba8 || bc7) {
-        const auto srgb_format = rgba8 ? vk::Format::eR8G8B8A8Srgb : vk::Format::eBc7SrgbBlock;
-        const auto features = vkcore.getPhysDevice().getFormatProperties(srgb_format).optimalTilingFeatures;
-        const auto required = vk::FormatFeatureFlagBits::eSampledImage |
-                              vk::FormatFeatureFlagBits::eSampledImageFilterLinear;
-        if ((features & required) != required)
-            throw std::runtime_error("KTX2 texture '" + std::string{name} + "' SRGB view " +
-                                     vk::to_string(srgb_format) + " lacks sampled/linear-filter GPU support");
-        srgb_view = createImageView(
-            device, image, srgb_format, dimension);
-    }
-    return {
-        std::move(image), std::move(linear_view),
-        std::move(srgb_view), dimension,
-        materialTextureViewType(dimension)};
-}
 
-GlobalTextureId MaterialContainer::registerTexture(const LoadedImage &loaded, std::string_view name) {
-    return textures.reg(createTextureResource(loaded, name));
-}
-
-GlobalTextureId MaterialContainer::registerTextureFile(const std::filesystem::path &path) {
-    return registerTexture(loadImageFile(path), path.string());
-}
 
 GlobalTextureId MaterialContainer::registerReloadableTextureFile(
     const watch::AssetKey &key, const std::filesystem::path &path) {
@@ -1861,7 +785,7 @@ MaterialContainer::RayDeformationMaterial MaterialContainer::rayDeformationMater
     RayDeformationMaterial result{.vat = entry.vat};
     for (std::size_t i = 0; i < ids.size(); ++i) {
         result.images[i] = vk::DescriptorImageInfo{
-            nearest_sampler.get(), textures.get(ids[i]).linear_view.get(),
+            texture_store.nearestSampler(), texture_store.textures.get(ids[i]).linear_view.get(),
             vk::ImageLayout::eShaderReadOnlyOptimal};
     }
     return result;
@@ -1969,7 +893,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     }
 
     vk::DescriptorSetAllocateInfo desc_alloc_info;
-    desc_alloc_info.descriptorPool = desc_pool.get();
+    desc_alloc_info.descriptorPool = descriptor_builder.materialPool();
     const auto material_set_layout = GET_MODULE(PipelineFactory).descriptorSetLayout(pipeline, imageDescriptorSetNumber);
     desc_alloc_info.setSetLayouts({material_set_layout});
 
@@ -1998,7 +922,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
                                   std::optional<ResolvedMaterialSampler>
                                       sampler_resolution =
                                           std::nullopt) {
-        const auto &tex = textures.get(texture);
+        const auto &tex = texture_store.textures.get(texture);
         if (tex.dimension != expected_dimension) {
             throw std::runtime_error(
                 "declared dimension " +
@@ -2022,14 +946,14 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
                                         sampler_resolution)});
     };
 
-    setImageInfo(baseColorBinding, info.base_color_texture, linear_sampler.get(), true);
-    setImageInfo(metallicRoughnessBinding, info.metallic_roughness_texture, linear_sampler.get(), false);
-    setImageInfo(normalBinding, info.normal_texture, linear_sampler.get(), false);
-    setImageInfo(emissiveBinding, info.emissive_texture, linear_sampler.get(), true);
-    setImageInfo(occlusionBinding, info.occlusion_texture, linear_sampler.get(), false);
+    setImageInfo(baseColorBinding, info.base_color_texture, texture_store.linearSampler(), true);
+    setImageInfo(metallicRoughnessBinding, info.metallic_roughness_texture, texture_store.linearSampler(), false);
+    setImageInfo(normalBinding, info.normal_texture, texture_store.linearSampler(), false);
+    setImageInfo(emissiveBinding, info.emissive_texture, texture_store.linearSampler(), true);
+    setImageInfo(occlusionBinding, info.occlusion_texture, texture_store.linearSampler(), false);
     if (info.vat) {
-        setImageInfo(vatPositionBinding, info.vat->position_texture, nearest_sampler.get(), false);
-        setImageInfo(vatNormalBinding, info.vat->normal_texture, nearest_sampler.get(), false);
+        setImageInfo(vatPositionBinding, info.vat->position_texture, texture_store.nearestSampler(), false);
+        setImageInfo(vatNormalBinding, info.vat->normal_texture, texture_store.nearestSampler(), false);
     }
     for (std::size_t i = 0; i < info.custom_textures.size(); ++i) {
         const auto &custom = info.custom_textures[i];
@@ -2048,7 +972,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
             GET_MODULE(StandardMaterialResource).defaultTexture(custom.missing_default));
         try {
             const auto &resource =
-                textures.get(texture);
+                texture_store.textures.get(texture);
             const auto &runtime_capabilities =
                 GET_MODULE(VulkanManageCore)
                     .getRuntimeCapabilities();
@@ -2084,7 +1008,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
                     limits.maxSamplerAnisotropy);
             }
             const auto custom_sampler =
-                materialTextureSampler(resolved_sampler);
+                texture_store.materialTextureSampler(resolved_sampler);
             const auto binding = materialCustomTextureFirstBinding + static_cast<std::uint32_t>(
                 i * (split_custom_samplers ? 2 : 1));
             setImageInfo(
@@ -2232,27 +1156,8 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
                     }
                 }
             };
-        if (const auto generation =
-                registered_passes.snapshot()) {
-            for (const auto rendering_pass_id :
-                 generation->rendering_pass_ids) {
-                const auto *program =
-                    generation->find(rendering_pass_id);
-                if (program == nullptr) {
-                    throw std::logic_error(
-                        "Published render pipeline pass table is inconsistent");
-                }
-                bind_screen_inputs(program->rendering_pass);
-            }
-        } else {
-            for (const auto rendering_pass_id :
-                 registered_passes.getRegisteredPassIds()) {
-                bind_screen_inputs(
-                    registered_passes
-                        .getCompiledRenderingPass(
-                            rendering_pass_id));
-            }
-        }
+        forEachCompiledPass(registered_passes,
+                            bind_screen_inputs);
         GET_MODULE(VulkanManageCore)
             .writeBuf(material_buffer, &gpu_data, sizeof(MaterialGpuData) * material_id.value,
                       sizeof(gpu_data));
@@ -2277,30 +1182,9 @@ void MaterialContainer::registerMaterialVariants(
     std::vector<NamedMaterialVariantRegistration> registrations) {
     const auto &registered_base = materials.get(base);
     const auto base_route = registered_base.route;
-    const auto base_skinned = registered_base.skinned;
-    const auto base_color_texture =
-        registered_base.base_color_texture;
-    const auto metallic_roughness_texture =
-        registered_base.metallic_roughness_texture;
-    const auto normal_texture =
-        registered_base.normal_texture;
-    const auto emissive_texture =
-        registered_base.emissive_texture;
-    const auto occlusion_texture =
-        registered_base.occlusion_texture;
-    const auto base_color_factor =
-        registered_base.base_color_factor;
-    const auto emissive_factor =
-        registered_base.emissive_factor;
-    const auto metallic_factor =
-        registered_base.metallic_factor;
-    const auto roughness_factor =
-        registered_base.roughness_factor;
-    const auto normal_scale =
-        registered_base.normal_scale;
-    const auto occlusion_strength =
-        registered_base.occlusion_strength;
-    const auto base_vat = registered_base.vat;
+    MaterialInfo inherited_appearance;
+    inheritFromBase(inherited_appearance,
+                    registered_base);
     std::map<std::string, GlobalMaterialId> next =
         registered_base.variants;
     std::vector<std::pair<std::string, GlobalMaterialId>> created;
@@ -2337,33 +1221,8 @@ void MaterialContainer::registerMaterialVariants(
 
     try {
         for (auto &registration : registrations) {
-            // A hidden runtime resource must never enter a draw queue through
-            // the parent's selection tags.
-            registration.material.tags.clear();
-            registration.material.skinned = base_skinned;
-            registration.material.base_color_texture =
-                base_color_texture;
-            registration.material.metallic_roughness_texture =
-                metallic_roughness_texture;
-            registration.material.normal_texture =
-                normal_texture;
-            registration.material.emissive_texture =
-                emissive_texture;
-            registration.material.occlusion_texture =
-                occlusion_texture;
-            registration.material.base_color_factor =
-                base_color_factor;
-            registration.material.emissive_factor =
-                emissive_factor;
-            registration.material.metallic_factor =
-                metallic_factor;
-            registration.material.roughness_factor =
-                roughness_factor;
-            registration.material.normal_scale =
-                normal_scale;
-            registration.material.occlusion_strength =
-                occlusion_strength;
-            registration.material.vat = base_vat;
+            inheritFromBase(registration.material,
+                            inherited_appearance);
             const auto resource =
                 registerMaterial(std::move(registration.material));
             created.emplace_back(registration.name, resource);
@@ -2402,28 +1261,8 @@ void MaterialContainer::registerMaterialVariants(
                     }
                 }
             };
-        const auto &registered_passes =
-            GET_MODULE(RenderingPassContainer);
-        if (const auto generation =
-                registered_passes.snapshot()) {
-            for (const auto rendering_pass_id :
-                 generation->rendering_pass_ids) {
-                const auto *program =
-                    generation->find(rendering_pass_id);
-                if (program == nullptr) {
-                    throw std::logic_error(
-                        "Published render pipeline pass table is inconsistent");
-                }
-                prewarm(program->rendering_pass);
-            }
-        } else {
-            for (const auto rendering_pass_id :
-                 registered_passes.getRegisteredPassIds()) {
-                prewarm(
-                    registered_passes.getCompiledRenderingPass(
-                        rendering_pass_id));
-            }
-        }
+        forEachCompiledPass(
+            GET_MODULE(RenderingPassContainer), prewarm);
     } catch (...) {
         if (attached && materials.contains(base)) {
             materials.get(base).variants.swap(next);
@@ -2542,7 +1381,7 @@ ReleaseReport MaterialContainer::releaseModelResources(
                     continue;
                 }
                 texture_materials.erase(texture);
-                auto value = textures.extract(texture);
+                auto value = texture_store.textures.extract(texture);
                 if (value) retired.textures.push_back(std::move(*value));
                 if (fail_texture_release_for_testing) {
                     throw std::runtime_error("injected texture release failure");
@@ -2648,19 +1487,6 @@ std::function<void()> MaterialContainer::prepareSurfaceMaterialReload(
         surface_documents, material_documents);
 }
 
-bool MaterialContainer::textureShapeMatches(GlobalTextureId texture,
-                                            const LoadedImage &image) const {
-    const auto &resource = textures.get(texture);
-    const auto &live = resource.image;
-    return resource.dimension ==
-               surfaceTextureDimension(image.dimension) &&
-           live.extent ==
-               vk::Extent3D{image.width, image.height,
-                            image.depth} &&
-           live.array_layers == image.array_layers &&
-           live.format == vkFormatForLoaded(image.format) &&
-           live.mip_levels == image.mipLevels();
-}
 
 void MaterialContainer::validateTextureReload(GlobalTextureId texture,
                                               const LoadedImage &image) const {
@@ -2669,13 +1495,13 @@ void MaterialContainer::validateTextureReload(GlobalTextureId texture,
         image, "reload candidate",
         vkcore.getPhysDevice().getProperties().limits);
     const auto candidate_dimension =
-        surfaceTextureDimension(image.dimension);
+        surfaceTextureDimensionOf(image.dimension);
     const bool has_srgb_view = image.format == ImagePixelFormat::Rgba8Unorm ||
                                image.format == ImagePixelFormat::Rgba8Srgb ||
                                image.format == ImagePixelFormat::Bc7Unorm ||
                                image.format == ImagePixelFormat::Bc7Srgb;
     const auto candidate_format =
-        vkFormatForLoaded(image.format);
+        vkFormatForLoadedImage(image.format);
     const auto reverse = texture_materials.find(texture);
     if (reverse == texture_materials.end()) return;
     for (const auto material_id : reverse->second) {
@@ -2712,42 +1538,6 @@ void MaterialContainer::validateTextureReload(GlobalTextureId texture,
     }
 }
 
-void MaterialContainer::uploadTextureInPlace(GlobalTextureId texture,
-                                             const LoadedImage &image) const {
-    if (!textureShapeMatches(texture, image)) {
-        throw std::runtime_error(
-            "in-place texture upload requires identical "
-            "dimension/extent/layers/format/mips");
-    }
-    // The logical image handle must stay unchanged, so there is no old image
-    // to defer. Drain prior readers before writing the live allocation.
-    GET_MODULE(VulkanManageCore).waitIdle();
-    std::vector<vk::BufferImageCopy> regions;
-    regions.reserve(image.levels.size());
-    for (std::uint32_t mip = 0; mip < image.levels.size(); ++mip) {
-        const auto &level = image.levels[mip];
-        vk::BufferImageCopy copy;
-        copy.bufferOffset = level.offset;
-        copy.imageSubresource = {
-            vk::ImageAspectFlagBits::eColor, mip, 0,
-            image.dimension ==
-                    LoadedImageDimension::ThreeD
-                ? 1u
-                : image.array_layers};
-        copy.imageExtent = vk::Extent3D{
-            level.width, level.height, level.depth};
-        regions.push_back(copy);
-    }
-    GET_MODULE(VulkanUtils).safeTransferMemoryToImageLevels(
-        textures.get(texture).image, image.pixels.data(), image.pixels.size(), regions,
-        VulkanUtils::ImageTransferInfo{
-            .old_layout = vk::ImageLayout::eShaderReadOnlyOptimal,
-            .new_layout = vk::ImageLayout::eShaderReadOnlyOptimal,
-            .dst_stage = vk::PipelineStageFlagBits::eVertexShader |
-                         vk::PipelineStageFlagBits::eFragmentShader |
-                         vk::PipelineStageFlagBits::eComputeShader,
-            .dst_access = vk::AccessFlagBits::eShaderRead});
-}
 
 std::vector<MaterialContainer::StagedMaterialDescriptor>
 MaterialContainer::stageTextureRebind(
@@ -2759,7 +1549,7 @@ MaterialContainer::stageTextureRebind(
     for (const auto material_id : reverse->second) {
         const auto &material = materials.get(material_id);
         vk::DescriptorSetAllocateInfo allocation;
-        allocation.descriptorPool = desc_pool.get();
+        allocation.descriptorPool = descriptor_builder.materialPool();
         const auto layout = GET_MODULE(PipelineFactory).descriptorSetLayout(
             material.pipeline, imageDescriptorSetNumber);
         allocation.setSetLayouts({layout});
@@ -2772,7 +1562,7 @@ MaterialContainer::stageTextureRebind(
         for (const auto &binding : material.texture_bindings) {
             const auto &resource = binding.texture == texture
                                        ? replacement
-                                       : textures.get(binding.texture);
+                                       : texture_store.textures.get(binding.texture);
             if (binding.srgb && !resource.srgb_view) {
                 throw std::runtime_error("reloaded color texture does not provide an SRGB view");
             }
@@ -2819,7 +1609,7 @@ MaterialContainer::RetiredTextureResources MaterialContainer::commitTextureRebin
         }
         (void)materials.get(descriptor.material);
     }
-    auto &slot = textures.get(texture);
+    auto &slot = texture_store.textures.get(texture);
     RetiredTextureResources retired{std::move(slot), {}};
     retired.descriptors.reserve(descriptors.size());
     slot = std::move(replacement);
@@ -2926,14 +1716,14 @@ RayMaterialTableSource MaterialContainer::rayMaterialTableSource(
             alpha.digestSha256();
     }
     if (!result.base_color_texture_identity.empty()) {
-        const auto &texture = textures.get(
+        const auto &texture = texture_store.textures.get(
             registered.base_color_texture);
         if (!texture.srgb_view) {
             throw std::runtime_error(
                 "pelican.ray_material_texture_invalid@1: authored base color texture has no sRGB view");
         }
         result.base_color_srgb_view = texture.srgb_view.get();
-        result.default_sampler = linear_sampler.get();
+        result.default_sampler = texture_store.linearSampler();
     }
     return result;
 }
@@ -2969,11 +1759,6 @@ bool MaterialContainer::retireMaterialValuesReloadPayload(
            material_values_reload_handler->retire(std::move(payload), coordinator);
 }
 
-std::pair<vk::ImageView, vk::ImageView>
-MaterialContainer::textureViewsForTesting(GlobalTextureId texture) const {
-    const auto &resource = textures.get(texture);
-    return {resource.linear_view.get(), resource.srgb_view.get()};
-}
 
 std::optional<ResolvedMaterialSampler>
 MaterialContainer::materialSamplerResolutionForTesting(
@@ -2992,63 +1777,6 @@ MaterialContainer::materialSamplerResolutionForTesting(
                : std::optional{found->second};
 }
 
-std::vector<uint8_t> MaterialContainer::texturePixelsForTesting(
-    GlobalTextureId texture, uint32_t mip_level) const {
-    const auto &resource = textures.get(texture);
-    if (resource.dimension !=
-        SurfaceTextureDimension::two_d) {
-        throw std::runtime_error(
-            "texture test readback only supports dimension 2d");
-    }
-    if (resource.image.format != vk::Format::eR8G8B8A8Unorm &&
-        resource.image.format != vk::Format::eR8G8B8A8Srgb) {
-        throw std::runtime_error("texture test readback only supports RGBA8");
-    }
-    if (mip_level >= resource.image.mip_levels) {
-        throw std::runtime_error(
-            "texture test readback mip level is out of range");
-    }
-    const auto width =
-        std::max<std::uint32_t>(1, resource.image.extent.width >> mip_level);
-    const auto height =
-        std::max<std::uint32_t>(1, resource.image.extent.height >> mip_level);
-    const auto bytes = static_cast<vk::DeviceSize>(width) * height * 4;
-    auto &vkcore = GET_MODULE(VulkanManageCore);
-    auto staging = vkcore.allocBuf(bytes, vk::BufferUsageFlagBits::eTransferDst,
-                                   vma::MemoryUsage::eAutoPreferHost,
-                                   vma::AllocationCreateFlagBits::eHostAccessRandom);
-    auto &utils = GET_MODULE(VulkanUtils);
-    utils.executeOneTimeCmd(
-        [&](vk::CommandBuffer command) {
-            utils.changeImageLayoutCmd(
-                command, resource.image, vk::ImageLayout::eShaderReadOnlyOptimal,
-                vk::ImageLayout::eTransferSrcOptimal,
-                {.src_stage = vk::PipelineStageFlagBits::eVertexShader |
-                              vk::PipelineStageFlagBits::eFragmentShader |
-                              vk::PipelineStageFlagBits::eComputeShader,
-                 .dst_stage = vk::PipelineStageFlagBits::eTransfer,
-                 .src_access = vk::AccessFlagBits::eShaderRead,
-                 .dst_access = vk::AccessFlagBits::eTransferRead});
-            vk::BufferImageCopy copy;
-            copy.imageSubresource = {
-                vk::ImageAspectFlagBits::eColor, mip_level, 0, 1};
-            copy.imageExtent = vk::Extent3D{width, height, 1};
-            command.copyImageToBuffer(resource.image.image.get(),
-                                      vk::ImageLayout::eTransferSrcOptimal,
-                                      staging.buffer.get(), copy);
-            utils.changeImageLayoutCmd(
-                command, resource.image, vk::ImageLayout::eTransferSrcOptimal,
-                vk::ImageLayout::eShaderReadOnlyOptimal,
-                {.src_stage = vk::PipelineStageFlagBits::eTransfer,
-                 .dst_stage = vk::PipelineStageFlagBits::eVertexShader |
-                              vk::PipelineStageFlagBits::eFragmentShader |
-                              vk::PipelineStageFlagBits::eComputeShader,
-                 .src_access = vk::AccessFlagBits::eTransferRead,
-                 .dst_access = vk::AccessFlagBits::eShaderRead});
-        },
-        true);
-    return vkcore.readBuf(staging, bytes);
-}
 
 std::vector<std::byte>
 MaterialContainer::materialGpuValuesForTesting(GlobalMaterialId material) const {
@@ -3075,966 +1803,6 @@ MaterialContainer::materialGpuRecordForTesting(GlobalMaterialId material) const 
     return record;
 }
 
-static void appendSurfaceResourceLocalReadDefines(
-    std::vector<std::string> &defines,
-    std::size_t resource_index,
-    std::uint32_t input_attachment_index,
-    const std::optional<vk::Extent2D> &extent,
-    std::string_view resource_name) {
-    if (!extent) {
-        throw std::runtime_error(
-            "material resource port '" +
-            std::string{resource_name} +
-            "' input attachment has no resolved extent");
-    }
-    const auto generated =
-        makeSurfaceResourceLocalReadDefines(
-            resource_index,
-            input_attachment_index, *extent);
-    defines.insert(
-        defines.end(), generated.begin(),
-        generated.end());
-}
-
-static std::vector<MaterialPassRenderingBinding>
-materialBindingsForGeneration(
-    const RendererRuntimeGeneration &generation,
-    MaterialRouteClass route,
-    MaterialShaderContract shader_contract,
-    const std::optional<std::string> &exact_pass) {
-    std::vector<MaterialPassRenderingBinding> bindings;
-    for (const auto rendering_pass_id :
-         generation.rendering_pass_ids) {
-        const auto *program =
-            generation.find(rendering_pass_id);
-        if (program == nullptr) {
-            throw std::logic_error(
-                "Render-pipeline candidate pass table is "
-                "inconsistent");
-        }
-        for (const auto &compiled :
-             program->rendering_pass.passes) {
-            const auto &pass = compiled.definition;
-            if (!pass.isMaterial() ||
-                !materialPassAcceptsMaterial(
-                    pass.materialInfo().contract,
-                    pass.name, route,
-                    shader_contract, exact_pass)) {
-                continue;
-            }
-
-            std::vector<MaterialPassShaderInputBinding>
-                shader_inputs;
-            const auto input_attachment_index =
-                [&](GlobalRenderTargetId target,
-                    bool history,
-                    const LogicalReadFootprint &footprint)
-                -> std::optional<std::uint32_t> {
-                if (history) {
-                    return std::nullopt;
-                }
-                const auto target_position = std::find(
-                    pass.input_targets.begin(),
-                    pass.input_targets.end(), target);
-                if (target_position ==
-                    pass.input_targets.end()) {
-                    throw std::runtime_error(
-                        "material pass input is absent from "
-                        "the positional physical input table: " +
-                        pass.name);
-                }
-                const auto index =
-                    static_cast<std::uint32_t>(
-                        target_position -
-                        pass.input_targets.begin());
-                const auto local =
-                    std::find(
-                        compiled.rendering
-                            .color_attachment_input_indices
-                            .begin(),
-                        compiled.rendering
-                            .color_attachment_input_indices
-                            .end(),
-                        index) !=
-                        compiled.rendering
-                            .color_attachment_input_indices
-                            .end() ||
-                    compiled.rendering
-                            .depth_attachment_input_index ==
-                        index;
-                if (!local) {
-                    return std::nullopt;
-                }
-                if (footprint.kind !=
-                    LogicalReadFootprintKind::same_pixel) {
-                    throw std::logic_error(
-                        "material pass selected a local "
-                        "attachment for a non-same-pixel "
-                        "input: " +
-                        pass.name);
-                }
-                return index;
-            };
-            const auto append_input =
-                [&](MaterialPassShaderInputKind kind,
-                    std::string name,
-                    GlobalRenderTargetId target,
-                    bool history,
-                    const LogicalReadFootprint &footprint,
-                    std::optional<
-                        ShaderResourcePortView>
-                        resource_view =
-                            std::nullopt) {
-                    const auto target_position = std::find(
-                        pass.input_targets.begin(),
-                        pass.input_targets.end(), target);
-                    auto view_dimension =
-                        target_position !=
-                                    pass.input_targets.end() &&
-                                pass.input_target_views.size() ==
-                                    pass.input_targets.size()
-                            ? pass.input_target_views.at(
-                                  static_cast<std::size_t>(
-                                      target_position -
-                                      pass.input_targets.begin()))
-                            : PassInputViewDimension::shared_2d;
-                    if (resource_view ==
-                        ShaderResourcePortView::
-                            family_array) {
-                        view_dimension =
-                            PassInputViewDimension::
-                                family_2d_array;
-                    } else if (
-                        resource_view ==
-                        ShaderResourcePortView::
-                            shared_2d) {
-                        view_dimension =
-                            PassInputViewDimension::
-                                shared_2d;
-                    }
-                    const auto attachment =
-                        input_attachment_index(
-                            target, history,
-                            footprint);
-                    const auto descriptor_dimension =
-                        attachment
-                            ? ImageSubresourceViewDimension::
-                                  two_d
-                        : resource_view ==
-                                  ShaderResourcePortView::
-                                      cube
-                            ? ImageSubresourceViewDimension::
-                                  cube
-                        : view_dimension ==
-                                  PassInputViewDimension::
-                                      layered_2d_array ||
-                              view_dimension ==
-                                  PassInputViewDimension::
-                                      family_2d_array
-                            ? ImageSubresourceViewDimension::
-                                  two_d_array
-                            : ImageSubresourceViewDimension::
-                                  two_d;
-                    shader_inputs.push_back({
-                        .input = {
-                            .kind = kind,
-                            .name = std::move(name),
-                        },
-                        .input_attachment_index =
-                            attachment,
-                        .input_attachment_extent =
-                            attachment
-                                ? compiled.rendering
-                                      .local_read_extent
-                                : std::nullopt,
-                        .view_dimension =
-                            view_dimension,
-                        .descriptor_dimension =
-                            descriptor_dimension,
-                    });
-                };
-            for (const auto &input :
-                 pass.materialInfo().screen_inputs) {
-                append_input(
-                    MaterialPassShaderInputKind::
-                        screen_input,
-                    input.contract.name, input.target,
-                    input.history,
-                    input.contract.footprint);
-            }
-            for (const auto &resource :
-                 pass.materialInfo()
-                     .material_resources) {
-                if (!resource.isImage()) {
-                    continue;
-                }
-                append_input(
-                    MaterialPassShaderInputKind::
-                        material_resource,
-                    resource.port.name,
-                    resource.target,
-                    resource.history,
-                    resource.footprint,
-                    resource.port.view);
-            }
-
-            bindings.push_back(
-                MaterialPassRenderingBinding{
-                    .pass_name = pass.name,
-                    .ray_query = pass.ray_query,
-                    .rasterization_samples =
-                        pass.rasterization_samples,
-                    .rendering = compiled.rendering,
-                    .output_schema =
-                        pass.materialInfo()
-                            .output_schema,
-                    .output_states =
-                        pass.materialInfo()
-                            .output_states,
-                    .shader_inputs =
-                        std::move(shader_inputs),
-                });
-        }
-    }
-    return bindings;
-}
-
-static std::vector<MaterialPassShaderInputBinding>
-resolveGenerationShaderInputs(
-    std::span<const MaterialPassRenderingBinding> passes,
-    std::span<const MaterialPassShaderInputRequest> inputs) {
-    std::vector<MaterialPassShaderInputBinding> result;
-    result.reserve(inputs.size());
-    for (const auto &input : inputs) {
-        result.push_back({
-            .input = input,
-            .input_attachment_index = std::nullopt,
-            .view_dimension =
-                PassInputViewDimension::shared_2d,
-        });
-    }
-    if (passes.empty()) {
-        return result;
-    }
-
-    for (std::size_t input_index = 0;
-         input_index < inputs.size(); ++input_index) {
-        std::optional<std::uint32_t> expected;
-        std::optional<vk::Extent2D>
-            expected_extent;
-        auto expected_view =
-            PassInputViewDimension::shared_2d;
-        auto expected_descriptor_dimension =
-            ImageSubresourceViewDimension::two_d;
-        std::string expected_pass;
-        bool initialized = false;
-        for (const auto &pass : passes) {
-            const auto found = std::find_if(
-                pass.shader_inputs.begin(),
-                pass.shader_inputs.end(),
-                [&](const auto &candidate) {
-                    return candidate.input ==
-                           inputs[input_index];
-                });
-            if (found == pass.shader_inputs.end()) {
-                throw std::runtime_error(
-                    "material pass '" + pass.pass_name +
-                    "' does not provide shader input '" +
-                    inputs[input_index].name + "'");
-            }
-            if (!initialized) {
-                expected =
-                    found->input_attachment_index;
-                expected_extent =
-                    found->input_attachment_extent;
-                expected_view =
-                    found->view_dimension;
-                expected_descriptor_dimension =
-                    found->descriptor_dimension;
-                expected_pass =
-                    pass.pass_name;
-                initialized = true;
-                continue;
-            }
-            if (expected !=
-                    found->input_attachment_index ||
-                expected_extent !=
-                    found->input_attachment_extent ||
-                expected_view !=
-                    found->view_dimension ||
-                expected_descriptor_dimension !=
-                    found->descriptor_dimension) {
-                throw std::runtime_error(
-                    "material shader input '" +
-                    inputs[input_index].name +
-                    "' resolves to different sampled/local-read ABIs "
-                    "or image-view ABIs across render graph variants: '" +
-                    expected_pass + "' (view " +
-                    std::to_string(
-                        static_cast<int>(
-                            expected_view)) +
-                    ", descriptor " +
-                    std::string{
-                        imageSubresourceViewDimensionName(
-                            expected_descriptor_dimension)} +
-                    ") and '" + pass.pass_name +
-                    "' (view " +
-                    std::to_string(
-                        static_cast<int>(
-                            found->view_dimension)) +
-                    ", descriptor " +
-                    std::string{
-                        imageSubresourceViewDimensionName(
-                            found->descriptor_dimension)} +
-                    ")");
-            }
-        }
-        result[input_index].input_attachment_index =
-            expected;
-        result[input_index].input_attachment_extent =
-            expected_extent;
-        result[input_index].view_dimension =
-            expected_view;
-        result[input_index].descriptor_dimension =
-            expected_descriptor_dimension;
-    }
-    return result;
-}
-
-void MaterialContainer::validateRuntimeGenerationCompatibility(
-    const RendererRuntimeGeneration &generation) const {
-    const auto previous = GET_MODULE(FrameGraphRuntimeContainer).snapshot();
-    materials.forEach(
-        [&](GlobalMaterialId material_id,
-            const InternalMaterialInfo &material) {
-            const auto bindings =
-                materialBindingsForGeneration(
-                    generation, material.route,
-                material.shader_contract,
-                material.exact_pass);
-            if (bindings.empty()) {
-                // A registered material need not be drawn by this graph (for
-                // example an RT-only project). Preserve that state, but reject
-                // removal of a route which the published graph did consume.
-                if (previous && materialBindingsForGeneration(*previous, material.route,
-                        material.shader_contract, material.exact_pass).empty()) return;
-                throw std::runtime_error(
-                    "render-pipeline candidate has no compatible "
-                    "pass for live material " +
-                    std::to_string(material_id.value) +
-                    " (route '" +
-                    std::string{materialRouteClassName(
-                        material.route)} +
-                    "', shader contract '" +
-                    std::string{materialShaderContractName(
-                        material.shader_contract)} +
-                    "')");
-            }
-
-            const MaterialPipelineRenderingContract live{
-                .color_formats =
-                    material.pipeline_color_formats,
-                .depth_format =
-                    material.pipeline_depth_format,
-                .rasterization_samples =
-                    material
-                        .pipeline_rasterization_samples,
-                .local_read =
-                    material.pipeline_local_read,
-                .output_states =
-                    material.pipeline_output_states,
-            };
-            for (const auto &binding : bindings) {
-                if (!binding.ray_query && GET_MODULE(PipelineFactory).pipelineUsesRayQueryFrameSet(material.pipeline))
-                    throw std::runtime_error("Material pass '" + binding.pass_name + "' uses an acceleration structure but does not declare ray_query");
-                if (binding.output_schema !=
-                    material.output_schema) {
-                    const auto live_schema =
-                        material.output_schema
-                            ? "'" +
-                                  material.output_schema
-                                      ->name +
-                                  "'"
-                            : std::string{"<built-in>"};
-                    const auto candidate_schema =
-                        binding.output_schema
-                            ? "'" +
-                                  binding.output_schema->name +
-                                  "'"
-                            : std::string{"<built-in>"};
-                    throw std::runtime_error(
-                        "render-pipeline candidate pass '" +
-                        binding.pass_name +
-                        "' changes live material " +
-                        std::to_string(material_id.value) +
-                        " output schema from " +
-                        live_schema + " to " +
-                        candidate_schema +
-                        "; reload the material surface "
-                        "transactionally with the graph");
-                }
-
-                const auto candidate =
-                    resolveMaterialPassRenderingBinding(
-                        binding,
-                        material.shader_contract);
-                if (candidate != live) {
-                    throw std::runtime_error(
-                        "render-pipeline candidate pass '" +
-                        binding.pass_name +
-                        "' changes the physical rendering "
-                        "contract of live material " +
-                        std::to_string(material_id.value) +
-                        "; color/depth formats, sample count, "
-                        "local-read mapping, or attachment "
-                        "state require a "
-                        "transactional material pipeline "
-                        "rebuild");
-                }
-            }
-        });
-}
-
-MaterialRuntimeGenerationReloadPlan
-MaterialContainer::prepareRuntimeGenerationReload(
-    const RendererRuntimeGeneration &generation) {
-    // Called inside the renderer publication hook: compare against the live
-    // generation without reacquiring its publication mutex or selecting itself.
-    const auto previous = GET_MODULE(FrameGraphRuntimeContainer).snapshot();
-    struct MetadataUpdate {
-        GlobalMaterialId material;
-        std::optional<MaterialOutputSchema>
-            output_schema;
-        MaterialPipelineRenderingContract rendering;
-        std::vector<InternalMaterialInfo::PassInput>
-            pass_inputs;
-        std::vector<ShaderResourceInterfaceBinding>
-            resource_interface;
-        bool descriptor_abi_changed = false;
-    };
-
-    MaterialRuntimeGenerationReloadPlan plan;
-    std::unordered_map<std::uint64_t, bool> pipeline_ray_query;
-    materials.forEach([&](GlobalMaterialId, const InternalMaterialInfo &material) {
-        const auto bindings = materialBindingsForGeneration(
-            generation, material.route, material.shader_contract, material.exact_pass);
-        const bool allowed = !bindings.empty() && std::all_of(
-            bindings.begin(), bindings.end(), [](const auto &binding) { return binding.ray_query; });
-        auto [entry, inserted] = pipeline_ray_query.emplace(material.pipeline.value, allowed);
-        if (!inserted) entry->second = entry->second && allowed;
-    });
-    std::vector<MetadataUpdate> metadata_updates;
-    auto &pipeline_factory =
-        GET_MODULE(PipelineFactory);
-
-    const auto append_shader_override =
-        [&](SurfaceShaderReloadOverride candidate) {
-            const auto found = std::find_if(
-                plan.shader_overrides.begin(),
-                plan.shader_overrides.end(),
-                [&](const auto &existing) {
-                    return existing.fragment ==
-                           candidate.fragment;
-                });
-            if (found ==
-                plan.shader_overrides.end()) {
-                plan.shader_overrides.push_back(
-                    std::move(candidate));
-                return;
-            }
-            if (*found != candidate) {
-                throw std::runtime_error(
-                    "live materials sharing fragment shader " +
-                    std::to_string(
-                        candidate.fragment.value) +
-                    " require incompatible render-graph "
-                    "ABIs");
-            }
-        };
-    const auto append_pipeline_override =
-        [&](GraphicsPipelineReloadOverride candidate) {
-            const auto found = std::find_if(
-                plan.pipeline_overrides.begin(),
-                plan.pipeline_overrides.end(),
-                [&](const auto &existing) {
-                    return existing.handle ==
-                           candidate.handle;
-                });
-            if (found ==
-                plan.pipeline_overrides.end()) {
-                plan.pipeline_overrides.push_back(
-                    std::move(candidate));
-                return;
-            }
-            if (found->desc != candidate.desc) {
-                throw std::runtime_error(
-                    "live materials sharing pipeline " +
-                    std::to_string(
-                        candidate.handle.value) +
-                    " require incompatible render-graph "
-                    "contracts");
-            }
-        };
-
-    materials.forEach(
-        [&](GlobalMaterialId material_id,
-            const InternalMaterialInfo &material) {
-            const auto bindings =
-                materialBindingsForGeneration(
-                    generation, material.route,
-                    material.shader_contract,
-                    material.exact_pass);
-            if (bindings.empty()) {
-                if (previous && materialBindingsForGeneration(*previous, material.route,
-                        material.shader_contract, material.exact_pass).empty()) return;
-                throw std::runtime_error(
-                    "render-pipeline candidate has no compatible "
-                    "pass for live material " +
-                    std::to_string(material_id.value) +
-                    " (route '" +
-                    std::string{materialRouteClassName(
-                        material.route)} +
-                    "', shader contract '" +
-                    std::string{
-                        materialShaderContractName(
-                            material.shader_contract)} +
-                    "')");
-            }
-
-            const auto candidate_schema =
-                bindings.front().output_schema;
-            auto candidate_rendering =
-                resolveMaterialPassRenderingBinding(
-                    bindings.front(),
-                    material.shader_contract);
-            for (std::size_t index = 1;
-                 index < bindings.size(); ++index) {
-                if (bindings[index].output_schema !=
-                    candidate_schema) {
-                    throw std::runtime_error(
-                        "material route resolves to different "
-                        "output schemas across render graph "
-                        "variants: " +
-                        bindings.front().pass_name + " and " +
-                        bindings[index].pass_name);
-                }
-                const auto rendering =
-                    resolveMaterialPassRenderingBinding(
-                        bindings[index],
-                        material.shader_contract);
-                if (rendering !=
-                    candidate_rendering) {
-                    throw std::runtime_error(
-                        "material route resolves to "
-                        "pipeline-incompatible physical rendering "
-                        "contracts: " +
-                        bindings.front().pass_name + " and " +
-                        bindings[index].pass_name);
-                }
-            }
-
-            std::vector<MaterialPassShaderInputRequest>
-                requested_inputs;
-            requested_inputs.reserve(
-                material.declared_screen_inputs.size() +
-                material.declared_resource_ports.size());
-            for (const auto &input :
-                 material.declared_screen_inputs) {
-                requested_inputs.push_back({
-                    .kind =
-                        MaterialPassShaderInputKind::
-                            screen_input,
-                    .name = input.name,
-                });
-            }
-            std::vector<std::size_t>
-                image_resource_indices;
-            for (std::size_t index = 0;
-                 index <
-                 material.declared_resource_ports.size();
-                 ++index) {
-                const auto &resource =
-                    material
-                        .declared_resource_ports[index];
-                if (resource.kind !=
-                    SurfaceResourcePortKind::image) {
-                    continue;
-                }
-                requested_inputs.push_back({
-                    .kind =
-                        MaterialPassShaderInputKind::
-                            material_resource,
-                    .name = resource.name,
-                });
-                image_resource_indices.push_back(index);
-            }
-            const auto physical_inputs =
-                resolveGenerationShaderInputs(
-                    bindings, requested_inputs);
-
-            std::vector<std::string>
-                current_physical_defines;
-            std::vector<std::string>
-                candidate_physical_defines;
-            auto candidate_pass_inputs =
-                material.pass_inputs;
-            for (std::size_t index = 0;
-                 index <
-                 material.declared_screen_inputs.size();
-                 ++index) {
-                const auto &declared =
-                    material.declared_screen_inputs[index];
-                const auto current = std::find_if(
-                    material.pass_inputs.begin(),
-                    material.pass_inputs.end(),
-                    [&](const auto &input) {
-                        return input.contract.name ==
-                               declared.name;
-                    });
-                const auto candidate = std::find_if(
-                    candidate_pass_inputs.begin(),
-                    candidate_pass_inputs.end(),
-                    [&](const auto &input) {
-                        return input.contract.name ==
-                               declared.name;
-                    });
-                if (current ==
-                        material.pass_inputs.end() ||
-                    candidate ==
-                        candidate_pass_inputs.end()) {
-                    throw std::runtime_error(
-                        "live material screen-input metadata is "
-                        "incomplete for '" +
-                        declared.name + "'");
-                }
-                if (current
-                        ->input_attachment_index) {
-                    current_physical_defines.push_back(
-                        makeSurfaceScreenInputLocalReadDefine(
-                            index,
-                            *current
-                                 ->input_attachment_index));
-                }
-                const auto attachment =
-                    physical_inputs.at(index)
-                        .input_attachment_index;
-                candidate->descriptor_type =
-                    attachment
-                        ? vk::DescriptorType::
-                              eInputAttachment
-                        : vk::DescriptorType::
-                              eCombinedImageSampler;
-                candidate->input_attachment_index =
-                    attachment;
-                if (attachment) {
-                    candidate_physical_defines.push_back(
-                        makeSurfaceScreenInputLocalReadDefine(
-                            index, *attachment));
-                }
-            }
-
-            auto candidate_resource_interface =
-                material.resource_interface;
-            for (std::size_t position = 0;
-                 position <
-                 image_resource_indices.size();
-                 ++position) {
-                const auto resource_index =
-                    image_resource_indices[position];
-                const auto &declared =
-                    material.declared_resource_ports
-                        [resource_index];
-                const auto current = std::find_if(
-                    material.resource_interface.begin(),
-                    material.resource_interface.end(),
-                    [&](const auto &resource) {
-                        return resource.port.name ==
-                               declared.name;
-                    });
-                const auto candidate = std::find_if(
-                    candidate_resource_interface.begin(),
-                    candidate_resource_interface.end(),
-                    [&](const auto &resource) {
-                        return resource.port.name ==
-                               declared.name;
-                    });
-                if (current ==
-                        material.resource_interface.end() ||
-                    candidate ==
-                        candidate_resource_interface.end()) {
-                    throw std::runtime_error(
-                        "live material resource metadata is "
-                        "incomplete for '" +
-                        declared.name + "'");
-                }
-                if (current
-                        ->input_attachment_index) {
-                    appendSurfaceResourceLocalReadDefines(
-                        current_physical_defines,
-                        resource_index,
-                        *current
-                             ->input_attachment_index,
-                        current
-                            ->input_attachment_extent,
-                        declared.name);
-                } else if (
-                    current->image_view_dimension ==
-                    ReflectedImageViewDimension::
-                        cube) {
-                    current_physical_defines.push_back(
-                        makeSurfaceResourceCubeDefine(
-                            resource_index));
-                } else if (
-                    current->image_view_dimension ==
-                    ReflectedImageViewDimension::
-                        two_d_array) {
-                    current_physical_defines.push_back(
-                        makeSurfaceResourceLayeredDefine(
-                            resource_index));
-                }
-                const auto &physical =
-                    physical_inputs.at(
-                        material
-                            .declared_screen_inputs
-                            .size() +
-                        position);
-                const auto attachment =
-                    physical.input_attachment_index;
-                const auto cube =
-                    !attachment &&
-                    physical.descriptor_dimension ==
-                        ImageSubresourceViewDimension::
-                            cube;
-                const auto layered =
-                    !attachment && !cube &&
-                    physical.descriptor_dimension ==
-                        ImageSubresourceViewDimension::
-                            two_d_array;
-                candidate->descriptor =
-                    attachment
-                        ? ShaderResourceDescriptorKind::
-                              input_attachment
-                        : ShaderResourceDescriptorKind::
-                              combined_image_sampler;
-                candidate->input_attachment_index =
-                    attachment;
-                candidate->input_attachment_extent =
-                    attachment
-                        ? physical
-                              .input_attachment_extent
-                        : std::nullopt;
-                candidate->image_view_dimension =
-                    cube
-                        ? ReflectedImageViewDimension::
-                              cube
-                    : layered
-                        ? ReflectedImageViewDimension::
-                              two_d_array
-                        : ReflectedImageViewDimension::
-                              two_d;
-                candidate->port.view =
-                    cube
-                        ? ShaderResourcePortView::
-                              cube
-                    : layered
-                        ? ShaderResourcePortView::
-                              family_array
-                        : ShaderResourcePortView::
-                              shared_2d;
-                if (attachment) {
-                    appendSurfaceResourceLocalReadDefines(
-                        candidate_physical_defines,
-                        resource_index, *attachment,
-                        physical
-                            .input_attachment_extent,
-                        declared.name);
-                } else if (cube) {
-                    candidate_physical_defines.push_back(
-                        makeSurfaceResourceCubeDefine(
-                            resource_index));
-                } else if (layered) {
-                    candidate_physical_defines.push_back(
-                        makeSurfaceResourceLayeredDefine(
-                            resource_index));
-                }
-            }
-
-            auto pipeline_desc =
-                pipeline_factory.graphicsDesc(
-                    material.pipeline);
-            if (!pipeline_desc.frag) {
-                throw std::logic_error(
-                    "material pipeline has no fragment shader");
-            }
-            if (candidate_schema !=
-                    material.output_schema ||
-                candidate_physical_defines !=
-                    current_physical_defines) {
-                append_shader_override({
-                    .fragment =
-                        *pipeline_desc.frag,
-                    .physical_defines =
-                        std::move(
-                            candidate_physical_defines),
-                    .material_output_schema =
-                        candidate_schema,
-                });
-            }
-
-            MaterialInfo validation_info;
-            validation_info.output_schema =
-                candidate_schema;
-            validation_info.render_state =
-                material.render_state;
-            validation_info.vat = material.vat;
-            validation_info.custom_textures.resize(
-                material
-                    .custom_sampler_resolutions
-                    .size());
-            validateMaterialCapabilities(
-                validation_info,
-                candidate_rendering);
-
-            auto candidate_pipeline_desc =
-                pipeline_desc;
-            candidate_pipeline_desc.allow_ray_query = pipeline_ray_query.at(material.pipeline.value);
-            candidate_pipeline_desc.color_formats =
-                candidate_rendering.color_formats;
-            candidate_pipeline_desc.depth_format =
-                candidate_rendering.depth_format;
-            candidate_pipeline_desc
-                .rasterization_samples =
-                candidate_rendering
-                    .rasterization_samples;
-            candidate_pipeline_desc.local_read =
-                candidate_rendering.local_read;
-            candidate_pipeline_desc.resource_interface =
-                candidate_resource_interface;
-            candidate_pipeline_desc
-                .color_attachment_states =
-                candidate_rendering
-                        .output_states.empty()
-                    ? std::vector<
-                          GraphicsPipelineColorAttachmentState>{}
-                    : resolveMaterialColorAttachmentStates(
-                          validation_info,
-                          candidate_rendering);
-            if (candidate_pipeline_desc !=
-                pipeline_desc) {
-                append_pipeline_override({
-                    .handle = material.pipeline,
-                    .desc = std::move(
-                        candidate_pipeline_desc),
-                });
-            }
-
-            const MaterialPipelineRenderingContract live{
-                .color_formats =
-                    material.pipeline_color_formats,
-                .depth_format =
-                    material.pipeline_depth_format,
-                .rasterization_samples =
-                    material
-                        .pipeline_rasterization_samples,
-                .local_read =
-                    material.pipeline_local_read,
-                .output_states =
-                    material.pipeline_output_states,
-            };
-            const auto descriptor_abi_changed =
-                candidate_pass_inputs !=
-                    material.pass_inputs ||
-                candidate_resource_interface !=
-                    material.resource_interface;
-            if (candidate_schema !=
-                    material.output_schema ||
-                candidate_rendering != live ||
-                descriptor_abi_changed) {
-                metadata_updates.push_back({
-                    .material = material_id,
-                    .output_schema =
-                        candidate_schema,
-                    .rendering =
-                        std::move(
-                            candidate_rendering),
-                    .pass_inputs =
-                        std::move(
-                            candidate_pass_inputs),
-                    .resource_interface =
-                        std::move(
-                            candidate_resource_interface),
-                    .descriptor_abi_changed =
-                        descriptor_abi_changed,
-                });
-            }
-        });
-
-    const auto overridden_pipelines =
-        plan.pipeline_overrides;
-    plan.commit =
-        [this,
-         updates = std::move(metadata_updates),
-         overridden_pipelines]() mutable {
-            const auto descriptor_abi_changed =
-                std::any_of(
-                    updates.begin(), updates.end(),
-                    [](const auto &update) {
-                        return update
-                            .descriptor_abi_changed;
-                    });
-            if (descriptor_abi_changed) {
-                GET_MODULE(VulkanManageCore)
-                    .waitIdle();
-            }
-            for (auto &update : updates) {
-                auto &material =
-                    materials.get(update.material);
-                material.output_schema =
-                    std::move(
-                        update.output_schema);
-                material.pipeline_color_formats =
-                    std::move(
-                        update.rendering
-                            .color_formats);
-                material.pipeline_depth_format =
-                    update.rendering.depth_format;
-                material
-                    .pipeline_rasterization_samples =
-                    update.rendering
-                        .rasterization_samples;
-                material.pipeline_local_read =
-                    std::move(
-                        update.rendering.local_read);
-                material.pipeline_output_states =
-                    std::move(
-                        update.rendering
-                            .output_states);
-                material.pass_inputs =
-                    std::move(update.pass_inputs);
-                material.resource_interface =
-                    std::move(
-                        update.resource_interface);
-                if (update.descriptor_abi_changed) {
-                    material
-                        .screen_input_descriptors
-                        .clear();
-                    ++material.descriptor_revision;
-                }
-            }
-            std::erase_if(
-                pipelines,
-                [&](const auto &entry) {
-                    return std::any_of(
-                        overridden_pipelines.begin(),
-                        overridden_pipelines.end(),
-                        [&](const auto &override) {
-                            return entry.second ==
-                                   override.handle;
-                        });
-                });
-        };
-    return plan;
-}
 
 bool MaterialContainer::isRenderRequired(const PassDefinition &pass,
                                          GlobalMaterialId material_id) const {
@@ -4095,402 +1863,6 @@ std::uint32_t MaterialContainer::materialGpuIndexForPass(
     return static_cast<std::uint32_t>(effective.value);
 }
 
-static std::string makeScreenInputPassKey(const PassDefinition &pass) {
-    std::ostringstream key;
-    key << pass.name << ':' << static_cast<int>(pass.materialInfo().contract);
-    for (const auto &input : pass.materialInfo().screen_inputs) {
-        key << ':' << input.contract.name << '=' << input.target.value
-            << (input.history ? "@history" : "");
-    }
-    for (const auto &input :
-         pass.materialInfo().surface_resources) {
-        key << ":surface:" << input.contract.name << '='
-            << input.target.value
-            << (input.history ? "@history" : "");
-    }
-    for (const auto &resource :
-         pass.materialInfo().material_resources) {
-        key << ":resource:" << resource.port.name
-            << '=';
-        if (resource.isBuffer()) {
-            key << "buffer:" << resource.buffer
-                << '#' << resource.buffer_id.value;
-        } else {
-            key << "image:" << resource.target.value
-                << (resource.history ? "@history"
-                                     : "");
-        }
-        key << ":access="
-            << static_cast<int>(
-                   resource.port.access)
-            << ":view="
-            << static_cast<int>(resource.port.view)
-            << ":filter="
-            << static_cast<int>(
-                   resource.port.sampling.filter)
-            << ":address="
-            << static_cast<int>(
-                   resource.port.sampling.address_mode);
-        if (resource.port.subresource) {
-            const auto &subresource =
-                *resource.port.subresource;
-            key << ":mip="
-                << subresource.base_mip_level
-                << ":mip_count=";
-            if (subresource.mip_count_mode ==
-                ImageSubresourceMipCountMode::
-                    remaining) {
-                key << "remaining";
-            } else {
-                key << subresource.level_count;
-            }
-            key << ":layer="
-                << subresource.base_array_layer
-                << ":layer_count="
-                << subresource.layer_count;
-        }
-    }
-    for (const auto view : pass.input_target_views) {
-        key << ":view=" << static_cast<int>(view);
-    }
-    return key.str();
-}
-
-static std::optional<std::uint32_t>
-materialPassInputAttachmentIndex(
-    const GraphicsPipelineRenderingLocalReadContract
-        &local_read,
-    const PassDefinition &pass,
-    GlobalRenderTargetId target,
-    bool history) {
-    if (!local_read.enabled || history) {
-        return std::nullopt;
-    }
-    const auto position = std::find(
-        pass.input_targets.begin(),
-        pass.input_targets.end(), target);
-    if (position == pass.input_targets.end()) {
-        throw std::runtime_error(
-            "material pass input target is absent from pass '" +
-            pass.name + "'");
-    }
-    const auto input_index =
-        static_cast<std::uint32_t>(
-            position - pass.input_targets.begin());
-    const auto color =
-        std::find(
-            local_read
-                .color_attachment_input_indices.begin(),
-            local_read
-                .color_attachment_input_indices.end(),
-            input_index) !=
-        local_read
-            .color_attachment_input_indices.end();
-    if (color ||
-        local_read.depth_attachment_input_index ==
-            input_index) {
-        return input_index;
-    }
-    return std::nullopt;
-}
-
-MaterialContainer::InternalMaterialInfo::ScreenInputDescriptor
-MaterialContainer::buildScreenInputDescriptor(
-    PipelineHandle pipeline,
-    std::vector<InternalMaterialInfo::ScreenInputResource> resources,
-    const RenderTargetImageViewResolver &rt_views) const {
-    if (resources.empty()) return {};
-    if (resources.size() >
-        maxMaterialPassDescriptors) {
-        throw std::runtime_error(
-            "material has too many pass input descriptors");
-    }
-
-    auto &pipeline_factory = GET_MODULE(PipelineFactory);
-    const auto &reflection =
-        pipeline_factory.reflection(pipeline);
-    const auto reflected_count =
-        std::count_if(
-            reflection.bindings.begin(),
-            reflection.bindings.end(),
-            [](const auto &binding) {
-                return binding.set ==
-                       PELICAN_SET_PASS_INPUT;
-            });
-    if (reflected_count != resources.size()) {
-        throw std::runtime_error(
-            "material pass input resources do not cover shader reflection");
-    }
-    for (const auto &resource : resources) {
-        const auto found = std::find_if(
-            reflection.bindings.begin(),
-            reflection.bindings.end(),
-            [&](const auto &binding) {
-                return binding.set ==
-                           PELICAN_SET_PASS_INPUT &&
-                       binding.binding ==
-                           resource.binding;
-            });
-        if (found == reflection.bindings.end() ||
-            found->count != 1 ||
-            found->type !=
-                resource.descriptor_type) {
-            throw std::runtime_error(
-                "material pass input resource '" +
-                resource.name +
-                "' does not match shader reflection");
-        }
-    }
-    const auto layout = pipeline_factory.descriptorSetLayout(
-        pipeline, PELICAN_SET_PASS_INPUT);
-
-    InternalMaterialInfo::ScreenInputDescriptor result;
-    result.resources = std::move(resources);
-    result.binding_revision = next_screen_input_binding_revision++;
-    std::uint32_t variant_count = 1;
-    for (const auto &resource : result.resources) {
-        if (resource.isImage() &&
-            !isConcreteRenderTarget(resource.target)) {
-            throw std::runtime_error(
-                "material image input must resolve to a render target: " +
-                resource.name);
-        }
-        if (resource.isInputAttachment() &&
-            resource.history) {
-            throw std::runtime_error(
-                "material input attachment cannot read history: " +
-                resource.name);
-        }
-        if (resource.isInputAttachment() &&
-            resource.subresource) {
-            throw std::runtime_error(
-                "material input attachment cannot select an image "
-                "subresource: " +
-                resource.name);
-        }
-        if (resource.isInputAttachment() &&
-            resource.descriptor_dimension ==
-                ImageSubresourceViewDimension::cube) {
-            throw std::runtime_error(
-                "material input attachment cannot use a cube image "
-                "view: " +
-                resource.name);
-        }
-        if (resource.isImage() &&
-            resource.descriptor_dimension ==
-                ImageSubresourceViewDimension::cube &&
-            rt_views.dimension(resource.target) !=
-                ImageResourceDimension::cube) {
-            throw std::runtime_error(
-                "material cube input requires a cube render target: " +
-                resource.name);
-        }
-        if (resource.isImage() &&
-            resource.descriptor_dimension ==
-                ImageSubresourceViewDimension::cube &&
-            resource.subresource &&
-            (resource.subresource->base_array_layer != 0 ||
-             resource.subresource->layer_count != 6)) {
-            throw std::runtime_error(
-                "material cube input subresource must select all six "
-                "faces: " +
-                resource.name);
-        }
-        if (resource.isImage() &&
-            resource.subresource &&
-            !validImageSubresourceRange(
-                *resource.subresource,
-                rt_views.mipLevels(
-                    resource.target),
-                rt_views.arrayLayers(
-                    resource.target))) {
-            throw std::runtime_error(
-                "material image input has an out-of-range "
-                "subresource: " +
-                resource.name);
-        }
-        if (resource.isBuffer() &&
-            !GET_MODULE(FrameGraphResourceContainer)
-                 .hasBuffer(resource.buffer)) {
-            throw std::runtime_error(
-                "material buffer input is absent from its GPU generation: " +
-                resource.name);
-        }
-        if (resource.isImage() &&
-            resource.view_dimension !=
-                PassInputViewDimension::shared_2d &&
-            resource.view_dimension !=
-                PassInputViewDimension::
-                    family_2d_array &&
-            !(resource.isInputAttachment() &&
-              resource.view_dimension ==
-                  PassInputViewDimension::
-                      layered_2d_array)) {
-            variant_count = std::max(
-                variant_count,
-                rt_views.arrayLayers(resource.target));
-        }
-    }
-    for (const auto &resource : result.resources) {
-        if (resource.isImage() &&
-            resource.view_dimension !=
-                PassInputViewDimension::shared_2d &&
-            resource.view_dimension !=
-                PassInputViewDimension::
-                    family_2d_array &&
-            !(resource.isInputAttachment() &&
-              resource.view_dimension ==
-                  PassInputViewDimension::
-                      layered_2d_array) &&
-            rt_views.arrayLayers(resource.target) !=
-                variant_count) {
-            throw std::runtime_error(
-                "material sequential screen inputs have inconsistent "
-                "array-layer counts");
-        }
-    }
-    result.variants.resize(variant_count);
-    const auto has_material_resource =
-        std::any_of(
-            result.resources.begin(),
-            result.resources.end(),
-            [](const auto &resource) {
-                return resource.material_resource;
-            });
-    if (has_material_resource &&
-        !material_resource_desc_pool) {
-        material_resource_desc_pool =
-            createMaterialResourceDescriptorPool(
-                device);
-    }
-    const auto descriptor_pool =
-        has_material_resource
-            ? material_resource_desc_pool.get()
-            : screen_input_desc_pool.get();
-    for (std::uint32_t variant = 0;
-         variant < variant_count; ++variant) {
-        for (uint32_t parity = 0; parity < 2; ++parity) {
-            auto &descriptor_variant =
-                result.variants[variant];
-            vk::DescriptorSetAllocateInfo allocation;
-            allocation.descriptorPool =
-                descriptor_pool;
-            allocation.descriptorSetCount = 1;
-            allocation.pSetLayouts = &layout;
-            descriptor_variant.descsets[parity] =
-                std::move(device.allocateDescriptorSetsUnique(allocation).front());
-
-            PassInputDescriptorWrites writes{
-                descriptor_variant, parity,
-                result.resources.size(),
-                result.resources.size()};
-            for (const auto &resource :
-                 result.resources) {
-                if (resource.isBuffer()) {
-                    writes.appendBuffer(
-                        resource.binding,
-                        GET_MODULE(
-                            FrameGraphResourceContainer)
-                            .descriptorInfo(
-                                resource.buffer));
-                    continue;
-                }
-                const auto array_view =
-                    resource.descriptor_dimension ==
-                    ImageSubresourceViewDimension::
-                        two_d_array;
-                const auto cube_view =
-                    resource.descriptor_dimension ==
-                    ImageSubresourceViewDimension::cube;
-                vk::ImageView image_view;
-                if (resource.subresource) {
-                    auto subresource =
-                        *resource.subresource;
-                    if (array_view &&
-                        resource.view_dimension ==
-                            PassInputViewDimension::
-                                family_2d_array &&
-                        subresource
-                                .base_array_layer == 0 &&
-                        subresource.layer_count == 1) {
-                        subresource.layer_count =
-                            rt_views.arrayLayers(
-                                resource.target);
-                    } else if (!array_view &&
-                        !cube_view &&
-                        resource.view_dimension !=
-                            PassInputViewDimension::
-                                shared_2d) {
-                        subresource
-                            .base_array_layer +=
-                            variant;
-                    }
-                    image_view =
-                        rt_views
-                            .getImageSubresourceViewForFrame(
-                                resource.target,
-                                subresource,
-                                resource
-                                    .descriptor_dimension,
-                                resource.history,
-                                parity);
-                } else if (cube_view) {
-                    image_view =
-                        passInputCubeImageView(
-                            rt_views, resource.target,
-                            resource.history, parity);
-                } else if (array_view) {
-                    image_view =
-                        rt_views
-                            .getLayeredImageViewForFrame(
-                                resource.target,
-                                resource.history,
-                                parity);
-                } else if (
-                    resource.view_dimension ==
-                    PassInputViewDimension::
-                        shared_2d) {
-                    image_view =
-                        rt_views
-                            .getImageViewForFrame(
-                                resource.target,
-                                resource.history,
-                                parity);
-                } else {
-                    image_view =
-                        rt_views
-                            .getImageLayerViewForFrame(
-                                resource.target,
-                                variant,
-                                resource.history,
-                                parity);
-                }
-                const auto sampler =
-                    resource.isInputAttachment()
-                        ? vk::Sampler{}
-                    : resource.material_resource
-                        ? materialResourceSampler(
-                              resource.sampling)
-                    : resource.sampling.address_mode ==
-                              ShaderResourcePortAddressMode::
-                                  clamp_to_edge
-                        ? resource.sampling.filter ==
-                                  ShaderResourcePortFilter::
-                                      nearest
-                              ? screen_nearest_sampler.get()
-                              : screen_linear_sampler.get()
-                        : materialResourceSampler(
-                              resource.sampling);
-                writes.appendImage(
-                    resource.binding,
-                    resource.descriptor_type, sampler,
-                    image_view);
-            }
-            writes.submit(device);
-        }
-    }
-    return result;
-}
 
 const MaterialContainer::InternalMaterialInfo::ScreenInputDescriptor *
 MaterialContainer::ensureScreenInputDescriptor(
@@ -4591,43 +1963,13 @@ MaterialContainer::ensureScreenInputDescriptor(
                 "pass '" +
                 pass.name + "'");
         }
-        auto view_dimension =
-            PassInputViewDimension::shared_2d;
-        const auto target_position = std::find(
-            pass.input_targets.begin(),
-            pass.input_targets.end(),
-            binding->target);
-        if (target_position != pass.input_targets.end() &&
-            pass.input_target_views.size() ==
-                pass.input_targets.size()) {
-            view_dimension =
-                pass.input_target_views.at(
-                    static_cast<std::size_t>(
-                        target_position -
-                        pass.input_targets.begin()));
-        }
-        if (required.contract.view_policy ==
-                MaterialPassInputViewPolicy::shared_2d &&
-            view_dimension !=
-                PassInputViewDimension::shared_2d) {
-            throw std::runtime_error(
-                "material pass input '" +
-                required.contract.name +
-                "' requires shared_2d view policy in pass '" +
-                pass.name + "'");
-        }
-        if (required.contract.view_policy ==
-                MaterialPassInputViewPolicy::
-                    family_array &&
-            view_dimension !=
-                PassInputViewDimension::
-                    family_2d_array) {
-            throw std::runtime_error(
-                "material pass input '" +
-                required.contract.name +
-                "' requires family_array view policy in pass '" +
-                pass.name + "'");
-        }
+        const auto view_dimension =
+            passInputViewDimensionForTarget(
+                pass, binding->target);
+        validateMaterialPassInputViewPolicy(
+            required.contract.view_policy,
+            view_dimension,
+            required.contract.name, pass);
         resources.push_back(
             InternalMaterialInfo::ScreenInputResource{
                 .name = required.contract.name,
@@ -4767,22 +2109,9 @@ MaterialContainer::ensureScreenInputDescriptor(
                 binding->target);
         }
 
-        auto view_dimension =
-            PassInputViewDimension::shared_2d;
-        const auto target_position = std::find(
-            pass.input_targets.begin(),
-            pass.input_targets.end(),
-            binding->target);
-        if (target_position !=
-                pass.input_targets.end() &&
-            pass.input_target_views.size() ==
-                pass.input_targets.size()) {
-            view_dimension =
-                pass.input_target_views.at(
-                    static_cast<std::size_t>(
-                        target_position -
-                        pass.input_targets.begin()));
-        }
+        const auto view_dimension =
+            passInputViewDimensionForTarget(
+                pass, binding->target);
         auto descriptor_view_dimension =
             view_dimension;
         if (!input_attachment &&
@@ -4877,58 +2206,9 @@ MaterialContainer::ensureScreenInputDescriptor(
                         binding->port.view)} +
                 ")");
         }
-        if (binding->port.view ==
-                ShaderResourcePortView::shared_2d &&
-            view_dimension !=
-                PassInputViewDimension::shared_2d) {
-            throw std::runtime_error(
-                "material resource port '" +
-                required.port.name +
-                "' requires shared_2d in pass '" +
-                pass.name + "'");
-        }
-        if (binding->port.view ==
-                ShaderResourcePortView::per_view &&
-            view_dimension ==
-                PassInputViewDimension::shared_2d) {
-            throw std::runtime_error(
-                "material resource port '" +
-                required.port.name +
-                "' requires per_view in pass '" +
-                pass.name + "'");
-        }
-        if (binding->port.view ==
-                ShaderResourcePortView::
-                    family_array &&
-            view_dimension !=
-                    PassInputViewDimension::
-                        family_2d_array &&
-            view_dimension !=
-                    PassInputViewDimension::
-                        shared_2d &&
-            view_dimension !=
-                    PassInputViewDimension::
-                        sequential_2d) {
-            throw std::runtime_error(
-                "material resource port '" +
-                required.port.name +
-                "' requires family_array in pass '" +
-                pass.name + "'");
-        }
-        if (binding->port.view !=
-                ShaderResourcePortView::
-                    family_array &&
-            binding->port.view !=
-                ShaderResourcePortView::cube &&
-            view_dimension ==
-                PassInputViewDimension::
-                    family_2d_array) {
-            throw std::runtime_error(
-                "material resource port '" +
-                required.port.name +
-                "' must declare family_array in pass '" +
-                pass.name + "'");
-        }
+        validateMaterialResourcePortViewPolicy(
+            binding->port.view, view_dimension,
+            required.port.name, pass);
         if (view_dimension ==
             PassInputViewDimension::
                 layered_2d_array &&
@@ -4971,8 +2251,10 @@ MaterialContainer::ensureScreenInputDescriptor(
     }
 
     auto [inserted, unused] = material.screen_input_descriptors.emplace(
-        key, buildScreenInputDescriptor(material.pipeline, std::move(resources),
-                                        rt_views));
+        key, descriptor_builder.build(
+                 material.pipeline, std::move(resources),
+                 rt_views,
+                 next_screen_input_binding_revision));
     (void)unused;
     return &inserted->second;
 }
@@ -5062,10 +2344,11 @@ void MaterialContainer::rebindScreenInputs(
                 continue;
             }
             auto replacement =
-                buildScreenInputDescriptor(
+                descriptor_builder.build(
                     material.pipeline,
                     descriptor->second.resources,
-                    rt_views);
+                    rt_views,
+                    next_screen_input_binding_revision);
             deferRetiredDescriptorResources(
                 GET_MODULE(DeletionQueue),
                 std::move(descriptor->second));

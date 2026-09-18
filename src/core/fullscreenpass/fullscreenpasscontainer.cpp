@@ -9,8 +9,10 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <optional>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -329,6 +331,20 @@ void validateResolvedPassInputs(
                 "Fullscreen cube input requires a cube target and "
                 "all six faces");
         }
+        // The material path has always rejected an out-of-range
+        // subresource up front; without this the range only fails much
+        // later, inside view creation, with no input identity attached.
+        if (input.subresource &&
+            !validImageSubresourceRange(
+                *input.subresource,
+                rt_views.mipLevels(input.target),
+                layers)) {
+            throw std::runtime_error(
+                "Fullscreen pass input " +
+                std::to_string(
+                    &input - inputs.data()) +
+                " has an out-of-range subresource");
+        }
     }
 }
 
@@ -613,7 +629,85 @@ void FullscreenPassContainer::buildInputDescriptorVariants(
     const auto &input_buffers = info.input_buffer_ids;
     const auto &view = info.view;
     const auto logical_view_count =
-        info.logical_view_count;
+        view.execution ==
+                GraphicsPipelineViewExecution::multiview
+            ? std::optional{info.logical_view_count}
+            : std::nullopt;
+
+    // Resolved once per input instead of once per (variant, parity,
+    // input): the descriptor type and sampler are properties of the
+    // input, as they already are on the material path.
+    struct ResolvedFullscreenInput {
+        ResolvedPassInput view_request;
+        vk::DescriptorType descriptor_type =
+            vk::DescriptorType::eCombinedImageSampler;
+        vk::Sampler sampler;
+    };
+    std::vector<ResolvedFullscreenInput> resolved;
+    resolved.reserve(inputs.size());
+    for (const auto &input : inputs) {
+        if (!isConcreteRenderTarget(input.target)) {
+            throw std::runtime_error("Fullscreen pass input texture must be a render target");
+        }
+        const auto descriptor_dimension =
+            input.resolvedViewDimension();
+        const auto selected_layers =
+            input.subresource
+                ? input.subresource->layer_count
+                : rt_views.arrayLayers(input.target);
+        // Fullscreen keeps its fallback: a sequential input that cannot
+        // cover the variant count reuses one layer for every variant.
+        const auto separate_view_layers =
+            input.view ==
+                PassInputViewDimension::
+                    layered_2d_array ||
+            (input.view ==
+                 PassInputViewDimension::sequential_2d &&
+             selected_layers >= variant_count &&
+             variant_count > 1);
+        const auto layer_binding =
+            input.view ==
+                    PassInputViewDimension::
+                        family_2d_array
+                ? PassInputLayerBinding::whole_array
+            : descriptor_dimension !=
+                        ImageSubresourceViewDimension::
+                            cube &&
+                    view.execution ==
+                        GraphicsPipelineViewExecution::
+                            single_view &&
+                    separate_view_layers
+                ? PassInputLayerBinding::per_variant
+                : PassInputLayerBinding::shared;
+        resolved.push_back(ResolvedFullscreenInput{
+            .view_request =
+                ResolvedPassInput{
+                    .target = input.target,
+                    .history = input.history,
+                    .view = input.view,
+                    .descriptor_dimension =
+                        descriptor_dimension,
+                    .subresource = input.subresource,
+                    .layer_binding = layer_binding,
+                    .logical_view_count =
+                        logical_view_count,
+                },
+            .descriptor_type =
+                input.local_read
+                    ? vk::DescriptorType::
+                          eInputAttachment
+                    : vk::DescriptorType::
+                          eCombinedImageSampler,
+            .sampler =
+                input.local_read
+                    ? vk::Sampler{}
+                    : input_samplers
+                          .at(samplerIndex(
+                              input.sampling))
+                          .get(),
+        });
+    }
+
     info.variants.resize(variant_count);
     for (std::uint32_t variant = 0;
          variant < variant_count; ++variant) {
@@ -630,125 +724,16 @@ void FullscreenPassContainer::buildInputDescriptorVariants(
             PassInputDescriptorWrites writes{
                 descriptor_variant, parity,
                 inputs.size(), input_buffers.size()};
-            for (uint32_t i = 0; i < inputs.size(); ++i) {
-                const auto &input = inputs[i];
-                if (!isConcreteRenderTarget(input.target)) {
-                    throw std::runtime_error("Fullscreen pass input texture must be a render target");
-                }
-                const auto dimension = input.view;
-                const auto descriptor_dimension =
-                    input.resolvedViewDimension();
-                vk::ImageView image_view;
-                const auto selected_layers =
-                    input.subresource
-                        ? input.subresource->layer_count
-                        : rt_views.arrayLayers(
-                              input.target);
-                const auto separate_view_layers =
-                    dimension ==
-                        PassInputViewDimension::
-                            layered_2d_array ||
-                    (dimension ==
-                         PassInputViewDimension::
-                             sequential_2d &&
-                     selected_layers >=
-                         variant_count &&
-                     variant_count > 1);
-                if (input.subresource) {
-                    auto subresource = *input.subresource;
-                    const auto sequential =
-                        descriptor_dimension !=
-                                ImageSubresourceViewDimension::
-                                    cube &&
-                        dimension !=
-                                PassInputViewDimension::
-                                    family_2d_array &&
-                        view.execution ==
-                                GraphicsPipelineViewExecution::
-                                    single_view &&
-                            separate_view_layers;
-                    if (sequential) {
-                        subresource.base_array_layer +=
-                            variant;
-                        subresource.layer_count = 1;
-                    }
-                    image_view =
-                        rt_views
-                            .getImageSubresourceViewForFrame(
-                                input.target,
-                                subresource,
-                                descriptor_dimension,
-                                input.history,
-                                parity);
-                } else if (
-                    descriptor_dimension ==
-                    ImageSubresourceViewDimension::
-                        cube) {
-                    image_view =
-                        passInputCubeImageView(
-                            rt_views, input.target,
-                            input.history, parity);
-                } else if (
-                    dimension ==
-                    PassInputViewDimension::
-                        family_2d_array) {
-                    image_view =
-                        rt_views
-                            .getLayeredImageViewForFrame(
-                                input.target,
-                                input.history,
-                                parity);
-                } else if (view.execution ==
-                        GraphicsPipelineViewExecution::multiview &&
-                    dimension ==
-                        PassInputViewDimension::layered_2d_array) {
-                    image_view =
-                        rt_views.arrayLayers(
-                            input.target) ==
-                                logical_view_count
-                            ? rt_views
-                                  .getLayeredImageViewForFrame(
-                                      input.target,
-                                      input.history,
-                                      parity)
-                            : rt_views
-                                  .getImageSubresourceViewForFrame(
-                                      input.target,
-                                      ImageSubresourceRange{
-                                          .layer_count =
-                                              logical_view_count,
-                                      },
-                                      true,
-                                      input.history,
-                                      parity);
-                } else if (
-                    view.execution ==
-                        GraphicsPipelineViewExecution::single_view &&
-                    separate_view_layers) {
-                    image_view =
-                        rt_views.getImageLayerViewForFrame(
-                            input.target, variant,
-                            input.history, parity);
-                } else {
-                    image_view =
-                        rt_views.getImageViewForFrame(
-                            input.target,
-                            input.history, parity);
-                }
+            for (uint32_t i = 0; i < resolved.size(); ++i) {
+                auto request =
+                    resolved[i].view_request;
+                request.variant = variant;
+                request.parity = parity;
                 writes.appendImage(
-                    i,
-                    input.local_read
-                        ? vk::DescriptorType::
-                              eInputAttachment
-                        : vk::DescriptorType::
-                              eCombinedImageSampler,
-                    input.local_read
-                        ? vk::Sampler{}
-                        : input_samplers
-                              .at(samplerIndex(
-                                  input.sampling))
-                              .get(),
-                    image_view);
+                    i, resolved[i].descriptor_type,
+                    resolved[i].sampler,
+                    resolvePassInputImageView(
+                        request, rt_views));
             }
             for (uint32_t i = 0; i < input_buffers.size(); ++i) {
                 const auto binding = static_cast<uint32_t>(inputs.size()) + i;
