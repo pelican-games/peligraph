@@ -24,10 +24,8 @@ using RenderStrategy::Status;
 constexpr char authoredImplementationIdV1[] =
     "pelican.render.strategy.authored_config@1";
 
-using provider_registry_common::nextGeneration;
 using provider_registry_common::statusName;
 using provider_registry_common::validByteRange;
-using provider_registry_common::validHandle;
 
 bool validProvider(
     const RenderStrategy::ProviderV1
@@ -443,46 +441,37 @@ int api_context_token = 0;
 
 } // namespace
 
-struct RenderStrategyRegistryState {
-    struct ProviderSlot {
-        std::uint32_t generation = 0;
-        bool active = false;
-        internal::RegistrationOwner owner =
-            internal::engineRegistrationOwner;
-        std::uint32_t provider_version = 0;
-        std::uint64_t capability_bits = 0;
-        std::string name;
-        void *context = nullptr;
-        RenderStrategy::ResolveRenderStrategyV1Fn
-            resolve_render_strategy = nullptr;
-    };
+struct RenderStrategyRegistryTraits {
+    using Provider = RenderStrategy::ProviderV1;
+    using Handle = RenderStrategy::ProviderHandleV1;
+    using Status = RenderStrategy::Status;
+    using Resolve =
+        RenderStrategy::ResolveRenderStrategyV1Fn;
 
-    mutable std::shared_mutex mutex;
-    std::vector<ProviderSlot> providers;
-    std::vector<std::uint32_t> free_slots;
-    std::unordered_map<std::uint32_t, std::uint32_t>
-        retired_owner_generations;
-    internal::RegistrationOwner active_game_owner =
-        internal::engineRegistrationOwner;
+    static constexpr auto provider_resolve =
+        &Provider::resolve_render_strategy;
+    static constexpr std::string_view builtin_name =
+        builtinAuthoredRenderStrategyProvider;
+    static constexpr std::uint64_t builtin_capability_bits =
+        RenderStrategy::builtinProviderCapabilitiesV1;
+    static constexpr Resolve builtin_resolve =
+        builtinResolveRenderStrategy;
+    static constexpr std::string_view
+        builtin_registration_failure =
+            "failed to register builtin render strategy "
+            "provider";
 
-    bool ownerIsRetired(
-        internal::RegistrationOwner owner) const noexcept {
-        const auto found =
-            retired_owner_generations.find(
-                internal::registrationOwnerIdentity(owner));
-        return found !=
-                   retired_owner_generations.end() &&
-               found->second ==
-                   internal::registrationOwnerGeneration(owner);
+    static Provider descriptor() noexcept {
+        return RenderStrategy::descriptor<Provider>();
     }
-
-    void retireOwner(
-        internal::RegistrationOwner owner) {
-        retired_owner_generations.insert_or_assign(
-            internal::registrationOwnerIdentity(owner),
-            internal::registrationOwnerGeneration(owner));
+    static bool valid(const Provider &provider) noexcept {
+        return validProvider(provider);
     }
 };
+
+struct RenderStrategyRegistryState
+    : provider_registry_common::ProviderRegistry<
+          RenderStrategyRegistryTraits> {};
 
 struct RenderStrategyRegistrySnapshot::Impl {
     std::shared_lock<std::shared_mutex> lock;
@@ -574,34 +563,8 @@ RenderStrategyRegistrySnapshot::resolveStrategy(
             "render strategy provider name is invalid for '" +
             std::string{strategy_name} + "'");
     }
-    const auto find_for_owner =
-        [&](internal::RegistrationOwner owner)
-        -> const RenderStrategyRegistryState::
-            ProviderSlot * {
-        const auto found = std::find_if(
-            registry.providers.begin(),
-            registry.providers.end(),
-            [&](const auto &slot) {
-                return slot.active &&
-                       slot.owner == owner &&
-                       slot.name == requested;
-            });
-        return found == registry.providers.end()
-                   ? nullptr
-                   : &*found;
-    };
     const RenderStrategyRegistryState::ProviderSlot
-        *selected = nullptr;
-    if (registry.active_game_owner !=
-        internal::engineRegistrationOwner) {
-        selected =
-            find_for_owner(registry.active_game_owner);
-    }
-    if (selected == nullptr) {
-        selected =
-            find_for_owner(
-                internal::engineRegistrationOwner);
-    }
+        *selected = registry.findActiveProvider(requested);
     if (selected == nullptr) {
         throw std::runtime_error(
             "render strategy provider '" + requested +
@@ -663,7 +626,7 @@ RenderStrategyRegistrySnapshot::resolveStrategy(
         RenderStrategy::descriptor<
             RenderStrategy::RenderStrategyOutputV1>();
     const auto status =
-        selected->resolve_render_strategy(
+        selected->resolve(
             selected->context, &input, &output);
     if (status != Status::ok) {
         throw std::runtime_error(
@@ -739,27 +702,7 @@ RenderStrategyRegistry::RenderStrategyRegistry()
     : impl_{
           std::make_unique<
               RenderStrategyRegistryState>()} {
-    auto provider =
-        RenderStrategy::descriptor<
-            RenderStrategy::ProviderV1>();
-    provider.capability_bits =
-        RenderStrategy::builtinProviderCapabilitiesV1;
-    provider.name_utf8 =
-        builtinAuthoredRenderStrategyProvider.data();
-    provider.name_size =
-        static_cast<std::uint32_t>(
-            builtinAuthoredRenderStrategyProvider.size());
-    provider.resolve_render_strategy =
-        builtinResolveRenderStrategy;
-    RenderStrategy::ProviderHandleV1 handle{};
-    if (registerProvider(
-            provider,
-            internal::engineRegistrationOwner,
-            handle) != Status::ok) {
-        throw std::logic_error(
-            "failed to register builtin render strategy "
-            "provider");
-    }
+    impl_->registerBuiltinProvider();
 }
 
 RenderStrategyRegistry::~RenderStrategyRegistry() =
@@ -771,113 +714,15 @@ RenderStrategyRegistry::registerProvider(
     internal::RegistrationOwner owner,
     RenderStrategy::ProviderHandleV1
         &out_handle) noexcept {
-    out_handle = {};
-    if (!validProvider(provider)) {
-        return Status::invalid_argument;
-    }
-    if (!internal::isRegistrationOwnerCurrent(owner)) {
-        return Status::stale_owner;
-    }
-    try {
-        std::unique_lock lock{impl_->mutex};
-        if (impl_->ownerIsRetired(owner)) {
-            return Status::stale_owner;
-        }
-        const std::string_view name{
-            provider.name_utf8,
-            provider.name_size};
-        if (std::any_of(
-                impl_->providers.begin(),
-                impl_->providers.end(),
-                [&](const auto &registered) {
-                    return registered.active &&
-                           registered.owner == owner &&
-                           registered.name == name;
-                })) {
-            return Status::duplicate_provider;
-        }
-
-        std::uint32_t slot_index = 0;
-        if (!impl_->free_slots.empty()) {
-            slot_index = impl_->free_slots.back();
-            impl_->free_slots.pop_back();
-        } else {
-            if (impl_->providers.size() >=
-                std::numeric_limits<
-                    std::uint32_t>::max()) {
-                return Status::out_of_memory;
-            }
-            impl_->providers.emplace_back();
-            slot_index =
-                static_cast<std::uint32_t>(
-                    impl_->providers.size() - 1);
-        }
-
-        auto &slot = impl_->providers[slot_index];
-        slot.generation =
-            nextGeneration(slot.generation);
-        slot.active = true;
-        slot.owner = owner;
-        slot.provider_version =
-            provider.provider_version;
-        slot.capability_bits =
-            provider.capability_bits;
-        slot.name.assign(
-            provider.name_utf8, provider.name_size);
-        slot.context = provider.context;
-        slot.resolve_render_strategy =
-            provider.resolve_render_strategy;
-        out_handle =
-            RenderStrategy::ProviderHandleV1{
-                .identity =
-                    static_cast<std::uint64_t>(
-                        slot_index) +
-                    1,
-                .generation = slot.generation,
-            };
-        return Status::ok;
-    } catch (const std::bad_alloc &) {
-        return Status::out_of_memory;
-    } catch (...) {
-        return Status::provider_error;
-    }
+    return impl_->registerProvider(
+        provider, owner, out_handle);
 }
 
 RenderStrategy::Status
 RenderStrategyRegistry::unregisterProvider(
     RenderStrategy::ProviderHandleV1 handle,
     internal::RegistrationOwner owner) noexcept {
-    if (!validHandle(handle)) {
-        return Status::invalid_argument;
-    }
-    if (!internal::isRegistrationOwnerCurrent(owner)) {
-        return Status::stale_owner;
-    }
-    std::unique_lock lock{impl_->mutex};
-    if (handle.identity > impl_->providers.size()) {
-        return Status::stale_provider;
-    }
-    const auto index =
-        static_cast<std::uint32_t>(
-            handle.identity - 1);
-    auto &slot = impl_->providers[index];
-    if (!slot.active ||
-        slot.generation != handle.generation) {
-        return Status::stale_provider;
-    }
-    if (slot.owner != owner) {
-        return Status::wrong_owner;
-    }
-    slot.active = false;
-    slot.owner =
-        internal::engineRegistrationOwner;
-    slot.provider_version = 0;
-    slot.capability_bits = 0;
-    slot.name.clear();
-    slot.context = nullptr;
-    slot.resolve_render_strategy = nullptr;
-    impl_->free_slots.push_back(index);
-    return Status::ok;
+    return impl_->unregisterProvider(handle, owner);
 }
 
 RenderStrategyRegistrySnapshot
@@ -891,44 +736,12 @@ RenderStrategyRegistry::snapshot() const {
 
 void RenderStrategyRegistry::activateOwner(
     internal::RegistrationOwner owner) noexcept {
-    std::unique_lock lock{impl_->mutex};
-    impl_->active_game_owner =
-        !impl_->ownerIsRetired(owner) &&
-                internal::isRegistrationOwnerCurrent(owner)
-            ? owner
-            : internal::engineRegistrationOwner;
+    impl_->activateOwner(owner);
 }
 
 void RenderStrategyRegistry::releaseOwner(
     internal::RegistrationOwner owner) noexcept {
-    if (owner ==
-        internal::engineRegistrationOwner) {
-        return;
-    }
-    std::unique_lock lock{impl_->mutex};
-    impl_->retireOwner(owner);
-    if (impl_->active_game_owner == owner) {
-        impl_->active_game_owner =
-            internal::engineRegistrationOwner;
-    }
-    for (std::uint32_t index = 0;
-         index < impl_->providers.size();
-         ++index) {
-        auto &slot = impl_->providers[index];
-        if (!slot.active ||
-            slot.owner != owner) {
-            continue;
-        }
-        slot.active = false;
-        slot.owner =
-            internal::engineRegistrationOwner;
-        slot.provider_version = 0;
-        slot.capability_bits = 0;
-        slot.name.clear();
-        slot.context = nullptr;
-        slot.resolve_render_strategy = nullptr;
-        impl_->free_slots.push_back(index);
-    }
+    impl_->releaseOwner(owner);
 }
 
 ResolvedRenderStrategyConfig resolveRenderStrategy(

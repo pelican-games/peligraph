@@ -1,5 +1,6 @@
 #include "renderpolicyregistry.hpp"
 #include "../registrationownerhost.hpp"
+#include "../renderingpass/providerregistrycommon.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -18,16 +19,6 @@ namespace Pelican {
 namespace {
 
 using RenderPolicy::Status;
-
-std::uint32_t nextGeneration(std::uint32_t generation) noexcept {
-    if (++generation == 0) ++generation;
-    return generation;
-}
-
-bool validHandle(RenderPolicy::ProviderHandleV1 handle) noexcept {
-    return handle.identity != 0 && handle.generation != 0 &&
-           handle.reserved == 0;
-}
 
 bool validPhase(RenderPolicy::DrawSortPhaseV1 phase) noexcept {
     switch (phase) {
@@ -266,42 +257,28 @@ RenderPolicy::Status DrawSortProviderLease::sort(
         static_cast<std::uint32_t>(output.size()), &out_count);
 }
 
-struct RenderPolicyRegistry::Impl {
-    struct ProviderSlot {
-        std::uint32_t generation = 0;
-        bool active = false;
-        internal::RegistrationOwner owner = internal::engineRegistrationOwner;
-        std::uint32_t provider_version = 0;
-        std::uint64_t capability_bits = 0;
-        std::string name;
-        void *context = nullptr;
-        RenderPolicy::SortItemsV1Fn sort_items = nullptr;
-    };
+// The owner lifecycle is the one the four renderingpass provider
+// registries share, so it comes from the same template. Only the
+// two builtin draw sort providers and the lease-shaped resolve
+// below are this registry's own -- this registry seeds itself in
+// its own constructor and never calls registerBuiltinProvider(),
+// which is why the builtin_* members of the traits are absent.
+struct RenderPolicyRegistryTraits {
+    using Provider = RenderPolicy::ProviderV1;
+    using Handle = RenderPolicy::ProviderHandleV1;
+    using Status = RenderPolicy::Status;
+    using Resolve = RenderPolicy::SortItemsV1Fn;
 
-    mutable std::shared_mutex mutex;
-    std::vector<ProviderSlot> providers;
-    std::vector<std::uint32_t> free_slots;
-    // One generation per reusable RegistrationOwner slot bounds retirement
-    // bookkeeping by peak concurrent owners rather than by reload count.
-    std::unordered_map<std::uint32_t, std::uint32_t>
-        retired_owner_generations;
-    internal::RegistrationOwner active_game_owner =
-        internal::engineRegistrationOwner;
+    static constexpr auto provider_resolve = &Provider::sort_items;
 
-    bool ownerIsRetired(internal::RegistrationOwner owner) const noexcept {
-        const auto found = retired_owner_generations.find(
-            internal::registrationOwnerIdentity(owner));
-        return found != retired_owner_generations.end() &&
-               found->second ==
-                   internal::registrationOwnerGeneration(owner);
-    }
-
-    void retireOwner(internal::RegistrationOwner owner) {
-        retired_owner_generations.insert_or_assign(
-            internal::registrationOwnerIdentity(owner),
-            internal::registrationOwnerGeneration(owner));
+    static bool valid(const Provider &provider) noexcept {
+        return validProvider(provider);
     }
 };
+
+struct RenderPolicyRegistry::Impl
+    : provider_registry_common::ProviderRegistry<
+          RenderPolicyRegistryTraits> {};
 
 RenderPolicyRegistry::RenderPolicyRegistry() : impl_{std::make_unique<Impl>()} {
     const auto register_builtin = [&](std::string_view name,
@@ -331,104 +308,19 @@ RenderPolicy::Status RenderPolicyRegistry::registerDrawSortProvider(
     const RenderPolicy::ProviderV1 &provider,
     internal::RegistrationOwner owner,
     RenderPolicy::ProviderHandleV1 &out_handle) noexcept {
-    out_handle = {};
-    if (!validProvider(provider)) return Status::invalid_argument;
-    if (!internal::isRegistrationOwnerCurrent(owner)) return Status::stale_owner;
-    try {
-        std::unique_lock lock{impl_->mutex};
-        // releaseOwner records retirement under this same lock before the DLL
-        // is unloaded. This closes the window between registry cleanup and
-        // RegistrationOwner invalidation for a late concurrent registration.
-        if (impl_->ownerIsRetired(owner)) return Status::stale_owner;
-        const std::string_view name{provider.name_utf8, provider.name_size};
-        if (std::any_of(
-                impl_->providers.begin(), impl_->providers.end(),
-                [&](const Impl::ProviderSlot &registered) {
-                    return registered.active && registered.owner == owner &&
-                           registered.name == name;
-                })) {
-            return Status::duplicate_provider;
-        }
-
-        std::uint32_t slot_index = 0;
-        if (!impl_->free_slots.empty()) {
-            slot_index = impl_->free_slots.back();
-            impl_->free_slots.pop_back();
-        } else {
-            if (impl_->providers.size() >=
-                std::numeric_limits<std::uint32_t>::max()) {
-                return Status::out_of_memory;
-            }
-            impl_->providers.emplace_back();
-            slot_index =
-                static_cast<std::uint32_t>(impl_->providers.size() - 1);
-        }
-
-        auto &slot = impl_->providers[slot_index];
-        slot.generation = nextGeneration(slot.generation);
-        slot.active = true;
-        slot.owner = owner;
-        slot.provider_version = provider.provider_version;
-        slot.capability_bits = provider.capability_bits;
-        slot.name.assign(provider.name_utf8, provider.name_size);
-        slot.context = provider.context;
-        slot.sort_items = provider.sort_items;
-        out_handle = RenderPolicy::ProviderHandleV1{
-            .identity = static_cast<std::uint64_t>(slot_index) + 1,
-            .generation = slot.generation,
-        };
-        return Status::ok;
-    } catch (const std::bad_alloc &) {
-        return Status::out_of_memory;
-    } catch (...) {
-        return Status::provider_error;
-    }
+    return impl_->registerProvider(provider, owner, out_handle);
 }
 
 RenderPolicy::Status RenderPolicyRegistry::unregisterDrawSortProvider(
     RenderPolicy::ProviderHandleV1 handle,
     internal::RegistrationOwner owner) noexcept {
-    if (!validHandle(handle)) return Status::invalid_argument;
-    if (!internal::isRegistrationOwnerCurrent(owner)) return Status::stale_owner;
-    std::unique_lock lock{impl_->mutex};
-    if (handle.identity > impl_->providers.size()) return Status::stale_provider;
-    const auto slot_index = static_cast<std::uint32_t>(handle.identity - 1);
-    auto &slot = impl_->providers[slot_index];
-    if (!slot.active || slot.generation != handle.generation) {
-        return Status::stale_provider;
-    }
-    if (slot.owner != owner) return Status::wrong_owner;
-    slot.active = false;
-    slot.owner = internal::engineRegistrationOwner;
-    slot.provider_version = 0;
-    slot.capability_bits = 0;
-    slot.name.clear();
-    slot.context = nullptr;
-    slot.sort_items = nullptr;
-    impl_->free_slots.push_back(slot_index);
-    return Status::ok;
+    return impl_->unregisterProvider(handle, owner);
 }
 
 DrawSortProviderLease RenderPolicyRegistry::resolveDrawSortProvider(
     std::string_view name) const {
     std::shared_lock lock{impl_->mutex};
-    const auto find_for_owner = [&](internal::RegistrationOwner owner)
-        -> const Impl::ProviderSlot * {
-        const auto found = std::find_if(
-            impl_->providers.begin(), impl_->providers.end(),
-            [&](const Impl::ProviderSlot &slot) {
-                return slot.active && slot.owner == owner && slot.name == name;
-            });
-        return found == impl_->providers.end() ? nullptr : &*found;
-    };
-
-    const Impl::ProviderSlot *selected = nullptr;
-    if (impl_->active_game_owner != internal::engineRegistrationOwner) {
-        selected = find_for_owner(impl_->active_game_owner);
-    }
-    if (selected == nullptr) {
-        selected = find_for_owner(internal::engineRegistrationOwner);
-    }
+    const Impl::ProviderSlot *selected = impl_->findActiveProvider(name);
     if (selected == nullptr) {
         throw std::runtime_error("draw sort provider '" + std::string{name} +
                                  "' is not registered for the active owner");
@@ -447,40 +339,18 @@ DrawSortProviderLease RenderPolicyRegistry::resolveDrawSortProvider(
         .capability_bits = selected->capability_bits,
     };
     auto lease = std::make_unique<DrawSortProviderLease::Impl>(
-        std::move(lock), selected->context, selected->sort_items);
+        std::move(lock), selected->context, selected->resolve);
     return DrawSortProviderLease{std::move(lease), std::move(info)};
 }
 
 void RenderPolicyRegistry::activateOwner(
     internal::RegistrationOwner owner) noexcept {
-    std::unique_lock lock{impl_->mutex};
-    impl_->active_game_owner =
-        !impl_->ownerIsRetired(owner) &&
-                internal::isRegistrationOwnerCurrent(owner)
-            ? owner
-            : internal::engineRegistrationOwner;
+    impl_->activateOwner(owner);
 }
 
 void RenderPolicyRegistry::releaseOwner(
     internal::RegistrationOwner owner) noexcept {
-    if (owner == internal::engineRegistrationOwner) return;
-    std::unique_lock lock{impl_->mutex};
-    impl_->retireOwner(owner);
-    if (impl_->active_game_owner == owner) {
-        impl_->active_game_owner = internal::engineRegistrationOwner;
-    }
-    for (std::uint32_t index = 0; index < impl_->providers.size(); ++index) {
-        auto &slot = impl_->providers[index];
-        if (!slot.active || slot.owner != owner) continue;
-        slot.active = false;
-        slot.owner = internal::engineRegistrationOwner;
-        slot.provider_version = 0;
-        slot.capability_bits = 0;
-        slot.name.clear();
-        slot.context = nullptr;
-        slot.sort_items = nullptr;
-        impl_->free_slots.push_back(index);
-    }
+    impl_->releaseOwner(owner);
 }
 
 RenderPolicyRegistry &renderPolicyRegistry() {
