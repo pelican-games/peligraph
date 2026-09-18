@@ -1201,230 +1201,216 @@ void RendererModelProjectionAdapter::finish() noexcept {
     impl_->published = false;
 }
 
-struct CameraProjectionAdapter::Impl {
-    Camera &camera;
+template <class Policy>
+struct SnapshotProjectionAdapter<Policy>::Impl : Policy {
+    typename Policy::Target &target;
     std::string scene_id;
     std::string adapter_name;
-    std::optional<Camera::PreparedSceneState> old_state;
-    std::optional<Camera::PreparedSceneState> next_state;
+    std::optional<typename Policy::Prepared> old_state;
+    std::optional<typename Policy::Prepared> next_state;
     bool published = false;
+
+    Impl(typename Policy::Target &target, std::string scene_id,
+         Policy policy = {})
+        : Policy(std::move(policy)), target(target),
+          scene_id(std::move(scene_id)),
+          adapter_name(std::string(Policy::name_prefix) + this->scene_id) {}
 };
+
+template <class Policy>
+SnapshotProjectionAdapter<Policy>::SnapshotProjectionAdapter(
+    std::unique_ptr<Impl> impl) noexcept
+    : impl_(std::move(impl)) {}
+
+template <class Policy>
+SnapshotProjectionAdapter<Policy>::~SnapshotProjectionAdapter() = default;
+
+template <class Policy>
+EditorProjectionAdapterKind
+SnapshotProjectionAdapter<Policy>::kind() const noexcept {
+    return Policy::adapter_kind;
+}
+
+template <class Policy>
+std::string_view SnapshotProjectionAdapter<Policy>::name() const noexcept {
+    return impl_->adapter_name;
+}
+
+template <class Policy>
+EditorProjectionPublicationMode
+SnapshotProjectionAdapter<Policy>::publicationMode() const noexcept {
+    return Policy::publication_mode;
+}
+
+template <class Policy>
+void SnapshotProjectionAdapter<Policy>::prepare(
+    const EditorProjectionPrepareContext &context) {
+    Policy::prepare(*impl_, context);
+    impl_->published = false;
+}
+
+template <class Policy>
+void SnapshotProjectionAdapter<Policy>::publish() noexcept {
+    impl_->target.publishPrepared(std::move(*impl_->next_state));
+    impl_->published = true;
+}
+
+template <class Policy>
+void SnapshotProjectionAdapter<Policy>::rollback() noexcept {
+    if (impl_->published) {
+        impl_->target.publishPrepared(std::move(*impl_->old_state));
+    }
+    SnapshotProjectionAdapter::finish();
+}
+
+template <class Policy>
+void SnapshotProjectionAdapter<Policy>::finish() noexcept {
+    impl_->old_state.reset();
+    impl_->next_state.reset();
+    impl_->published = false;
+}
+
+struct CameraProjectionPolicy {
+    using Target = Camera;
+    using Prepared = Camera::PreparedSceneState;
+
+    static constexpr auto adapter_kind = EditorProjectionAdapterKind::Camera;
+    static constexpr auto publication_mode =
+        EditorProjectionPublicationMode::StagedNoexcept;
+    static constexpr std::string_view name_prefix = "codec.camera.";
+
+    template <class State>
+    static void prepare(State &state,
+                        const EditorProjectionPrepareContext &context) {
+        state.old_state = state.target.snapshotPrepared();
+        state.next_state = state.target.prepareSceneCameras(
+            state.scene_id, context.next_resolved);
+    }
+};
+
+struct LightProjectionPolicy {
+    using Target = LightContainer;
+    using Prepared = LightContainer::PreparedLoad;
+
+    static constexpr auto adapter_kind = EditorProjectionAdapterKind::Light;
+    static constexpr auto publication_mode =
+        EditorProjectionPublicationMode::InverseToken;
+    static constexpr std::string_view name_prefix = "codec.light.";
+
+    template <class State>
+    static void prepare(State &state,
+                        const EditorProjectionPrepareContext &context) {
+        auto entries = prepareLightEntries(context.next_resolved,
+                                           state.scene_id);
+        state.old_state = state.target.snapshotPrepared();
+        state.next_state = LightContainer::prepareLoad(entries);
+    }
+};
+
+struct ColliderProjectionPolicy {
+    using Target = PhysWorld;
+    using Prepared = PhysWorld::PreparedState;
+
+    static constexpr auto adapter_kind = EditorProjectionAdapterKind::PhysWorld;
+    static constexpr auto publication_mode =
+        EditorProjectionPublicationMode::InverseToken;
+    static constexpr std::string_view name_prefix = "codec.collider.";
+
+    ECSCoreTemplatePublic *ecs = nullptr;
+    std::vector<EditorProjectionRuntimeObjectBinding> bindings;
+
+    template <class State>
+    static void prepare(State &state,
+                        const EditorProjectionPrepareContext &context) {
+        ECSCoreTemplatePublic &ecs_core = *state.ecs;
+        const auto entities = bindingMap(state.bindings);
+        state.old_state = state.target.snapshotPrepared();
+        std::unordered_map<std::string, const PhysWorld::Binding *> old_by_name;
+        old_by_name.reserve(state.old_state->bindings.size());
+        for (const auto &binding : state.old_state->bindings) {
+            old_by_name.emplace(binding.identity.name, &binding);
+        }
+
+        std::vector<PhysWorld::Binding> next_bindings;
+        const auto *scene =
+            findResolvedScene(context.next_resolved, state.scene_id);
+        if (scene != nullptr) {
+            for (const auto &object : scene->objects) {
+                const auto *component =
+                    findResolvedComponent(&object, "collider");
+                auto mesh_transform = std::variant<GameObjectId, PhysWorldTransform>{resolvedPhysTransform(object)};
+                if (const auto runtime = entities.find(object.authoring_object_id.value);
+                    runtime != entities.end() && findResolvedComponent(&object, "transform") != nullptr)
+                    mesh_transform = runtime->second;
+                appendModelPhysicsBinding(next_bindings, object, runtimeObjectIdentityName(
+                    state.scene_id, object.authoring_object_id, object.name.value_or(std::string{})),
+                    std::move(mesh_transform), old_by_name);
+                if (component == nullptr) continue;
+                const auto identity_name = runtimeObjectIdentityName(
+                    state.scene_id, object.authoring_object_id,
+                    object.name.value_or(std::string{}));
+                ColliderComponent collider;
+                component->runtime_codec->applyRuntime(
+                    component->requireRuntimeValue(), &collider);
+
+                PhysWorld::Binding binding{
+                    .identity = {.name = identity_name},
+                    .collider = collider,
+                    .transform_source = PhysWorldTransform{},
+                };
+                if (const auto old = old_by_name.find(identity_name);
+                    old != old_by_name.end()) {
+                    binding.identity = old->second->identity;
+                    binding.metadata = old->second->metadata;
+                }
+                const auto entity = entities.find(object.authoring_object_id.value);
+                if (entity != entities.end() &&
+                    ecs_core.tryComponent<TransformComponent>(entity->second) !=
+                        nullptr) {
+                    binding.transform_source = entity->second;
+                } else if (const auto *transform =
+                               findResolvedComponent(&object, "transform")) {
+                    const auto &trs =
+                        std::any_cast<const TransformCodecData &>(
+                            transform->requireRuntimeValue());
+                    binding.transform_source = PhysWorldTransform{
+                        .pos = trs.pos,
+                        .rotation = trs.rotation,
+                        .scale = trs.scale,
+                    };
+                }
+                next_bindings.push_back(std::move(binding));
+            }
+        }
+        appendRuntimePhysicsBindings(next_bindings, *state.old_state, ecs_core);
+        state.next_state =
+            state.target.prepareBindings(std::move(next_bindings));
+    }
+};
+
+template class SnapshotProjectionAdapter<CameraProjectionPolicy>;
+template class SnapshotProjectionAdapter<LightProjectionPolicy>;
+template class SnapshotProjectionAdapter<ColliderProjectionPolicy>;
 
 CameraProjectionAdapter::CameraProjectionAdapter(Camera &camera,
                                                  std::string scene_id)
-    : impl_(std::make_unique<Impl>(Impl{
-          .camera = camera,
-          .scene_id = std::move(scene_id),
-      })) {
-    impl_->adapter_name = "codec.camera." + impl_->scene_id;
-}
-CameraProjectionAdapter::~CameraProjectionAdapter() = default;
-EditorProjectionAdapterKind CameraProjectionAdapter::kind() const noexcept {
-    return EditorProjectionAdapterKind::Camera;
-}
-std::string_view CameraProjectionAdapter::name() const noexcept {
-    return impl_->adapter_name;
-}
-EditorProjectionPublicationMode
-CameraProjectionAdapter::publicationMode() const noexcept {
-    return EditorProjectionPublicationMode::StagedNoexcept;
-}
-void CameraProjectionAdapter::prepare(
-    const EditorProjectionPrepareContext &context) {
-    impl_->old_state = impl_->camera.snapshotPrepared();
-    impl_->next_state = impl_->camera.prepareSceneCameras(
-        impl_->scene_id, context.next_resolved);
-    impl_->published = false;
-}
-void CameraProjectionAdapter::publish() noexcept {
-    impl_->camera.publishPrepared(std::move(*impl_->next_state));
-    impl_->published = true;
-}
-void CameraProjectionAdapter::rollback() noexcept {
-    if (impl_->published) {
-        impl_->camera.publishPrepared(std::move(*impl_->old_state));
-    }
-    impl_->old_state.reset();
-    impl_->next_state.reset();
-    impl_->published = false;
-}
-void CameraProjectionAdapter::finish() noexcept {
-    impl_->old_state.reset();
-    impl_->next_state.reset();
-    impl_->published = false;
-}
-
-struct LightProjectionAdapter::Impl {
-    LightContainer &lights;
-    std::string scene_id;
-    std::string adapter_name;
-    std::optional<LightContainer::PreparedLoad> old_state;
-    std::optional<LightContainer::PreparedLoad> next_state;
-    bool published = false;
-};
+    : SnapshotProjectionAdapter<CameraProjectionPolicy>(
+          std::make_unique<Impl>(camera, std::move(scene_id))) {}
 
 LightProjectionAdapter::LightProjectionAdapter(LightContainer &lights,
                                                std::string scene_id)
-    : impl_(std::make_unique<Impl>(Impl{
-          .lights = lights,
-          .scene_id = std::move(scene_id),
-      })) {
-    impl_->adapter_name = "codec.light." + impl_->scene_id;
-}
-LightProjectionAdapter::~LightProjectionAdapter() = default;
-EditorProjectionAdapterKind LightProjectionAdapter::kind() const noexcept {
-    return EditorProjectionAdapterKind::Light;
-}
-std::string_view LightProjectionAdapter::name() const noexcept {
-    return impl_->adapter_name;
-}
-EditorProjectionPublicationMode
-LightProjectionAdapter::publicationMode() const noexcept {
-    return EditorProjectionPublicationMode::InverseToken;
-}
-void LightProjectionAdapter::prepare(
-    const EditorProjectionPrepareContext &context) {
-    auto entries = prepareLightEntries(context.next_resolved,
-                                       impl_->scene_id);
-    impl_->old_state = impl_->lights.snapshotPrepared();
-    impl_->next_state = LightContainer::prepareLoad(entries);
-    impl_->published = false;
-}
-void LightProjectionAdapter::publish() noexcept {
-    impl_->lights.publishPrepared(std::move(*impl_->next_state));
-    impl_->published = true;
-}
-void LightProjectionAdapter::rollback() noexcept {
-    if (impl_->published) {
-        impl_->lights.publishPrepared(std::move(*impl_->old_state));
-    }
-    impl_->old_state.reset();
-    impl_->next_state.reset();
-    impl_->published = false;
-}
-void LightProjectionAdapter::finish() noexcept {
-    impl_->old_state.reset();
-    impl_->next_state.reset();
-    impl_->published = false;
-}
-
-struct ColliderProjectionAdapter::Impl {
-    ECSCoreTemplatePublic &ecs;
-    PhysWorld &physics;
-    std::string scene_id;
-    std::string adapter_name;
-    std::vector<EditorProjectionRuntimeObjectBinding> bindings;
-    std::optional<PhysWorld::PreparedState> old_state;
-    std::optional<PhysWorld::PreparedState> next_state;
-    bool published = false;
-};
+    : SnapshotProjectionAdapter<LightProjectionPolicy>(
+          std::make_unique<Impl>(lights, std::move(scene_id))) {}
 
 ColliderProjectionAdapter::ColliderProjectionAdapter(
     ECSCoreTemplatePublic &ecs, PhysWorld &physics, std::string scene_id,
     std::vector<EditorProjectionRuntimeObjectBinding> bindings)
-    : impl_(std::make_unique<Impl>(Impl{
-          .ecs = ecs,
-          .physics = physics,
-          .scene_id = std::move(scene_id),
-          .adapter_name = {},
-          .bindings = std::move(bindings),
-      })) {
+    : SnapshotProjectionAdapter<ColliderProjectionPolicy>(
+          std::make_unique<Impl>(
+              physics, std::move(scene_id),
+              ColliderProjectionPolicy{.ecs = &ecs,
+                                       .bindings = std::move(bindings)})) {
     (void)bindingMap(impl_->bindings);
-    impl_->adapter_name = "codec.collider." + impl_->scene_id;
-}
-ColliderProjectionAdapter::~ColliderProjectionAdapter() = default;
-EditorProjectionAdapterKind ColliderProjectionAdapter::kind() const noexcept {
-    return EditorProjectionAdapterKind::PhysWorld;
-}
-std::string_view ColliderProjectionAdapter::name() const noexcept {
-    return impl_->adapter_name;
-}
-EditorProjectionPublicationMode
-ColliderProjectionAdapter::publicationMode() const noexcept {
-    return EditorProjectionPublicationMode::InverseToken;
-}
-void ColliderProjectionAdapter::prepare(
-    const EditorProjectionPrepareContext &context) {
-    const auto entities = bindingMap(impl_->bindings);
-    impl_->old_state = impl_->physics.snapshotPrepared();
-    std::unordered_map<std::string, const PhysWorld::Binding *> old_by_name;
-    old_by_name.reserve(impl_->old_state->bindings.size());
-    for (const auto &binding : impl_->old_state->bindings) {
-        old_by_name.emplace(binding.identity.name, &binding);
-    }
-
-    std::vector<PhysWorld::Binding> next_bindings;
-    const auto *scene =
-        findResolvedScene(context.next_resolved, impl_->scene_id);
-    if (scene != nullptr) {
-        for (const auto &object : scene->objects) {
-            const auto *component =
-                findResolvedComponent(&object, "collider");
-            auto mesh_transform = std::variant<GameObjectId, PhysWorldTransform>{resolvedPhysTransform(object)};
-            if (const auto runtime = entities.find(object.authoring_object_id.value);
-                runtime != entities.end() && findResolvedComponent(&object, "transform") != nullptr)
-                mesh_transform = runtime->second;
-            appendModelPhysicsBinding(next_bindings, object, runtimeObjectIdentityName(
-                impl_->scene_id, object.authoring_object_id, object.name.value_or(std::string{})),
-                std::move(mesh_transform), old_by_name);
-            if (component == nullptr) continue;
-            const auto identity_name = runtimeObjectIdentityName(
-                impl_->scene_id, object.authoring_object_id,
-                object.name.value_or(std::string{}));
-            ColliderComponent collider;
-            component->runtime_codec->applyRuntime(
-                component->requireRuntimeValue(), &collider);
-
-            PhysWorld::Binding binding{
-                .identity = {.name = identity_name},
-                .collider = collider,
-                .transform_source = PhysWorldTransform{},
-            };
-            if (const auto old = old_by_name.find(identity_name);
-                old != old_by_name.end()) {
-                binding.identity = old->second->identity;
-                binding.metadata = old->second->metadata;
-            }
-            const auto entity = entities.find(object.authoring_object_id.value);
-            if (entity != entities.end() &&
-                impl_->ecs.tryComponent<TransformComponent>(entity->second) !=
-                    nullptr) {
-                binding.transform_source = entity->second;
-            } else if (const auto *transform =
-                           findResolvedComponent(&object, "transform")) {
-                const auto &trs =
-                    std::any_cast<const TransformCodecData &>(
-                        transform->requireRuntimeValue());
-                binding.transform_source = PhysWorldTransform{
-                    .pos = trs.pos,
-                    .rotation = trs.rotation,
-                    .scale = trs.scale,
-                };
-            }
-            next_bindings.push_back(std::move(binding));
-        }
-    }
-    appendRuntimePhysicsBindings(next_bindings, *impl_->old_state, impl_->ecs);
-    impl_->next_state =
-        impl_->physics.prepareBindings(std::move(next_bindings));
-    impl_->published = false;
-}
-void ColliderProjectionAdapter::publish() noexcept {
-    impl_->physics.publishPrepared(std::move(*impl_->next_state));
-    impl_->published = true;
-}
-void ColliderProjectionAdapter::rollback() noexcept {
-    if (impl_->published) {
-        impl_->physics.publishPrepared(std::move(*impl_->old_state));
-    }
-    impl_->old_state.reset();
-    impl_->next_state.reset();
-    impl_->published = false;
-}
-void ColliderProjectionAdapter::finish() noexcept {
-    impl_->old_state.reset();
-    impl_->next_state.reset();
-    impl_->published = false;
 }
 
 EditorProjectionCallbackAdapter makeBehaviorAttachmentProjectionJunction(

@@ -5,6 +5,7 @@
 
 #include "componentcodec.hpp"
 #include "../build_features.hpp"
+#include "../ecs/predefined/transform.hpp"
 #include "../phys/physworld.hpp"
 #include "../userpublic/components/collider.hpp"
 
@@ -150,11 +151,12 @@ EvaluatedTrs decodeLocalTrs(const ResolvedObject &object) {
 }
 
 EvaluatedTrs compose(const EvaluatedTrs &parent, const EvaluatedTrs &local) {
-    return {
-        .pos = parent.pos + parent.rotation * (parent.scale * local.pos),
-        .rotation = glm::normalize(parent.rotation * local.rotation),
-        .scale = parent.scale * local.scale,
-    };
+    const TransformComponent parent_world{parent.pos, parent.rotation,
+                                          parent.scale};
+    const auto world = composeWorldTransform(
+        &parent_world,
+        TransformComponent{local.pos, local.rotation, local.scale});
+    return {.pos = world.pos, .rotation = world.rotation, .scale = world.scale};
 }
 
 struct ObjectLocation {
@@ -290,7 +292,6 @@ OrderedJson evaluatedScene(const ResolvedScene &document) {
             const ResolvedObject *view = nullptr;
             EvaluatedTrs local;
             EvaluatedTrs world;
-            enum class Visit : std::uint8_t { fresh, active, done } visit = Visit::fresh;
         };
         std::vector<Node> nodes;
         nodes.reserve(scene.objects.size());
@@ -300,31 +301,35 @@ OrderedJson evaluatedScene(const ResolvedScene &document) {
                                  .local = decodeLocalTrs(object)});
             if (object.name) by_name.emplace(*object.name, nodes.size() - 1);
         }
-        const auto resolve = [&](auto &&self, std::size_t index) -> void {
-            auto &node = nodes.at(index);
-            if (node.visit == Node::Visit::done) return;
-            if (node.visit == Node::Visit::active) {
+        // Every object participates, with or without a transform; a parent
+        // name that no named object in this scene carries is absent.
+        resolveParentOrder(
+            nodes.size(), [](std::size_t) { return true; },
+            [&](std::size_t index) {
+                const auto &node = nodes.at(index);
+                if (!node.view->parent) return ParentLookupResult::root();
+                const auto parent = by_name.find(*node.view->parent);
+                if (parent == by_name.end()) return ParentLookupResult::missing();
+                return ParentLookupResult::at(parent->second);
+            },
+            [&](std::size_t index, const std::size_t *parent_index) {
+                auto &node = nodes.at(index);
+                node.world =
+                    parent_index == nullptr
+                        ? node.local
+                        : compose(nodes.at(*parent_index).world, node.local);
+            },
+            [](std::size_t) {
                 schemaError("prepared_projection/parent",
                             "prepared transform hierarchy contains a cycle");
-            }
-            node.visit = Node::Visit::active;
-            if (node.view->parent) {
-                const auto parent = by_name.find(*node.view->parent);
-                if (parent == by_name.end()) {
-                    schemaError("prepared_projection/parent",
-                                "prepared transform parent is not present in the scene");
-                }
-                self(self, parent->second);
-                node.world = compose(nodes.at(parent->second).world, node.local);
-            } else {
-                node.world = node.local;
-            }
-            node.visit = Node::Visit::done;
-        };
+            },
+            [](std::size_t) {
+                schemaError("prepared_projection/parent",
+                            "prepared transform parent is not present in the scene");
+            });
 
         auto evaluated_objects = OrderedJson::array();
         for (std::size_t index = 0; index < nodes.size(); ++index) {
-            resolve(resolve, index);
             const auto &node = nodes[index];
             auto components = OrderedJson::array();
             for (const auto &component : node.view->components) {

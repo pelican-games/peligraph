@@ -5,6 +5,7 @@
 #include "resolutionresult.hpp"
 
 #include <any>
+#include <cstddef>
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <memory>
@@ -70,6 +71,76 @@ struct TransformCodecTarget {
     LocalTransformComponent *local = nullptr;
     const TransformComponent *parent_world = nullptr;
 };
+
+// The single world TRS composition. Runtime scene load, the editor projection
+// transaction and the editor preview all reach world space through this one
+// function, so a scene that authors a near-unit quaternion (0.707 rather than
+// 0.7071068) produces the same world rotation on every path. The local
+// rotation is normalized before the product and the product is normalized
+// again; a zero-length or non-finite local rotation therefore normalizes to a
+// non-finite quaternion, and the callers that must reject it keep their own
+// guard and their own error around this call.
+TransformComponent composeWorldTransform(const TransformComponent *parent_world,
+                                         const TransformComponent &local) noexcept;
+TransformComponent composeWorldTransform(const TransformComponent *parent_world,
+                                         const TransformCodecData &local) noexcept;
+
+// What one parent lookup found. `missing` means the object names a parent the
+// caller could not resolve; the caller's on_missing_parent decides what that
+// means.
+struct ParentLookupResult {
+    enum class Kind : std::uint8_t { root, parent, missing };
+
+    Kind kind = Kind::root;
+    std::size_t index = 0;
+
+    static ParentLookupResult root() noexcept { return {}; }
+    static ParentLookupResult at(std::size_t parent_index) noexcept {
+        return {Kind::parent, parent_index};
+    }
+    static ParentLookupResult missing() noexcept { return {Kind::missing, 0}; }
+};
+
+// The tri-state (fresh / active / done) parent-first walk shared by the three
+// hierarchy projections. Only the mechanics live here: every caller supplies
+// its own participant filter, its own composition in `visit`, and its own
+// exception from `on_cycle` / `on_missing_parent`, so the error vocabularies
+// stay per-caller. Objects are started in index order 0..count-1 and a parent
+// is always resolved before its child. `should_start` gates the driver loop
+// only: a parent is still resolved when its child is started, even if the
+// parent would not be started on its own. `visit` receives the resolved
+// parent index, or nullptr for a root.
+template <class ShouldStart, class GetParent, class Visit, class OnCycle,
+          class OnMissingParent>
+void resolveParentOrder(std::size_t count, ShouldStart should_start,
+                        GetParent get_parent, Visit visit, OnCycle on_cycle,
+                        OnMissingParent on_missing_parent) {
+    enum class State : std::uint8_t { fresh, active, done };
+    std::vector<State> state(count, State::fresh);
+    const auto resolve = [&](auto &&self, std::size_t index) -> void {
+        if (state[index] == State::done) return;
+        if (state[index] == State::active) {
+            on_cycle(index);
+            return;
+        }
+        state[index] = State::active;
+        const auto parent = get_parent(index);
+        if (parent.kind == ParentLookupResult::Kind::missing) {
+            on_missing_parent(index);
+            return;
+        }
+        if (parent.kind == ParentLookupResult::Kind::parent) {
+            self(self, parent.index);
+            visit(index, &parent.index);
+        } else {
+            visit(index, nullptr);
+        }
+        state[index] = State::done;
+    };
+    for (std::size_t index = 0; index < count; ++index) {
+        if (should_start(index)) resolve(resolve, index);
+    }
+}
 
 struct SimpleModelViewCodecData {
     std::string model;

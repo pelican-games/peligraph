@@ -10,6 +10,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <glm/gtc/quaternion.hpp>
+
 #include <algorithm>
 #include <any>
 #include <filesystem>
@@ -125,6 +127,13 @@ void requireVec3(glm::vec3 actual, glm::vec3 expected) {
     REQUIRE(actual.x == Catch::Approx(expected.x).margin(1.0e-5f));
     REQUIRE(actual.y == Catch::Approx(expected.y).margin(1.0e-5f));
     REQUIRE(actual.z == Catch::Approx(expected.z).margin(1.0e-5f));
+}
+
+void requireQuat(glm::quat actual, glm::quat expected) {
+    REQUIRE(actual.x == Catch::Approx(expected.x).margin(1.0e-6f));
+    REQUIRE(actual.y == Catch::Approx(expected.y).margin(1.0e-6f));
+    REQUIRE(actual.z == Catch::Approx(expected.z).margin(1.0e-6f));
+    REQUIRE(actual.w == Catch::Approx(expected.w).margin(1.0e-6f));
 }
 
 } // namespace
@@ -271,6 +280,46 @@ TEST_CASE("transform codec keeps authored local TRS and projects parent-child wo
         decodeOrThrow(codec, runtime_json.at("local_trs")), &fresh_target);
     requireVec3(fresh_world.pos, child_world.pos);
     requireVec3(fresh_world.scale, child_world.scale);
+}
+
+TEST_CASE("transform codec normalizes the world rotation of a near-unit authored quaternion",
+          "[component-codec][transform][hierarchy][wp151]") {
+    const auto &codec = requireComponentCodec("transform");
+    // projects/example authors 0.707 rather than 0.7071068, so |q| is 0.99985.
+    // Runtime used to publish that raw quaternion while the editor preview
+    // published the normalized one.
+    const auto local_json = nlohmann::json{
+        {"name", "transform"}, {"pos", {0.0f, 0.0f, 0.0f}},
+        {"rotation", {0.0f, 0.707f, -0.707f, 0.0f}},
+        {"scale", {1.0f, 1.0f, 1.0f}},
+    };
+    const auto local_rotation =
+        glm::normalize(glm::quat{0.0f, 0.0f, 0.707f, -0.707f});
+
+    TransformComponent root_world{};
+    TransformCodecTarget root_target{.world = &root_world};
+    codec.applyRuntime(decodeOrThrow(codec, local_json), &root_target);
+    REQUIRE(glm::length(root_world.rotation) ==
+            Catch::Approx(1.0f).margin(1.0e-6f));
+    requireQuat(root_world.rotation, local_rotation);
+
+    const auto parent_json = nlohmann::json{
+        {"name", "transform"}, {"pos", {10.0f, 0.0f, 0.0f}},
+        {"rotation", {0.0f, 0.0f, 0.70710678118f, 0.70710678118f}},
+        {"scale", {2.0f, 3.0f, 4.0f}},
+    };
+    TransformComponent parent_world{};
+    TransformCodecTarget parent_target{.world = &parent_world};
+    codec.applyRuntime(decodeOrThrow(codec, parent_json), &parent_target);
+
+    TransformComponent child_world{};
+    TransformCodecTarget child_target{.world = &child_world,
+                                      .parent_world = &parent_world};
+    codec.applyRuntime(decodeOrThrow(codec, local_json), &child_target);
+    requireQuat(child_world.rotation,
+                glm::normalize(parent_world.rotation * local_rotation));
+    REQUIRE(glm::length(child_world.rotation) ==
+            Catch::Approx(1.0f).margin(1.0e-6f));
 }
 
 TEST_CASE("animation and sprite authored booleans remain JSON booleans after runtime projection",

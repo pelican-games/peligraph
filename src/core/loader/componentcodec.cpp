@@ -15,6 +15,8 @@
 #include "../userpublic/components/spriteview.hpp"
 #include "../userpublic/details/schema/structfieldjson.hpp"
 
+#include <glm/gtc/quaternion.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -411,17 +413,7 @@ void applyTransform(const ComponentCodecValue &value, void *raw_target) {
         target.local->scale = data.scale;
     }
 
-    glm::vec3 parent_pos{0.0f};
-    glm::quat parent_rotation{1.0f, 0.0f, 0.0f, 0.0f};
-    glm::vec3 parent_scale{1.0f};
-    if (target.parent_world != nullptr) {
-        parent_pos = target.parent_world->pos;
-        parent_rotation = target.parent_world->rotation;
-        parent_scale = target.parent_world->scale;
-    }
-    target.world->scale = parent_scale * to_glm(data.scale);
-    target.world->rotation = parent_rotation * to_glm(data.rotation);
-    target.world->pos = parent_pos + parent_rotation * (parent_scale * to_glm(data.pos));
+    *target.world = composeWorldTransform(target.parent_world, data);
 }
 
 ComponentCodecValue projectTransform(const void *raw_source) {
@@ -1656,6 +1648,31 @@ ComponentCodecQueryMetadata componentCodecQueryMetadata(std::string_view name) n
         return {ComponentCodecState::Registered, true, codec->name};
     }
     return {ComponentCodecState::Missing, false, {}};
+}
+
+TransformComponent composeWorldTransform(const TransformComponent *parent_world,
+                                         const TransformComponent &local) noexcept {
+    glm::vec3 parent_pos{0.0f};
+    glm::quat parent_rotation{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::vec3 parent_scale{1.0f};
+    if (parent_world != nullptr) {
+        parent_pos = parent_world->pos;
+        parent_rotation = parent_world->rotation;
+        parent_scale = parent_world->scale;
+    }
+    return TransformComponent{
+        .pos = parent_pos + parent_rotation * (parent_scale * local.pos),
+        .rotation = glm::normalize(parent_rotation * glm::normalize(local.rotation)),
+        .scale = parent_scale * local.scale,
+    };
+}
+
+TransformComponent composeWorldTransform(const TransformComponent *parent_world,
+                                         const TransformCodecData &local) noexcept {
+    return composeWorldTransform(parent_world,
+                                 TransformComponent{.pos = to_glm(local.pos),
+                                                    .rotation = to_glm(local.rotation),
+                                                    .scale = to_glm(local.scale)});
 }
 
 nlohmann::ordered_json projectTransformRuntimeJson(const TransformCodecTarget &target) {

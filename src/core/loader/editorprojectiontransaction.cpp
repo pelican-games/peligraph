@@ -157,20 +157,7 @@ bool finite(const TransformCodecData &value) noexcept {
 TransformComponent composeWorld(const TransformComponent *parent,
                                 const TransformCodecData &local,
                                 std::string_view path) {
-    glm::vec3 parent_pos{0.0F};
-    glm::quat parent_rotation{1.0F, 0.0F, 0.0F, 0.0F};
-    glm::vec3 parent_scale{1.0F};
-    if (parent != nullptr) {
-        parent_pos = parent->pos;
-        parent_rotation = parent->rotation;
-        parent_scale = parent->scale;
-    }
-    const TransformComponent result{
-        .pos = parent_pos +
-               parent_rotation * (parent_scale * to_glm(local.pos)),
-        .rotation = parent_rotation * to_glm(local.rotation),
-        .scale = parent_scale * to_glm(local.scale),
-    };
+    const auto result = composeWorldTransform(parent, local);
     if (!finite(result.pos) || !finite(result.rotation) ||
         !finite(result.scale)) {
         projectionError(EditorProjectionErrorCode::TransformNonFinite,
@@ -187,33 +174,40 @@ struct DocumentTransformNode {
     std::string path;
     TransformCodecData local;
     TransformComponent world{};
-    std::uint8_t state = 0;
 };
 
 using NodeIndex = std::unordered_map<std::string, std::size_t>;
 
-void projectNode(std::size_t index, std::vector<DocumentTransformNode> &nodes,
-                 const NodeIndex &indices) {
-    auto &node = nodes[index];
-    if (node.state == 2) return;
-    if (node.state == 1) {
-        projectionError(EditorProjectionErrorCode::TransformCycle, node.path,
-                        "reparent would create a parent cycle");
-    }
-    node.state = 1;
-    const TransformComponent *parent_world = nullptr;
-    if (!node.parent.empty()) {
-        const auto parent = indices.find(node.parent);
-        if (parent == indices.end()) {
+// Every node participates; the parent link is a name and an absent name is
+// this caller's ObjectNotFound.
+void projectNodes(std::vector<DocumentTransformNode> &nodes,
+                  const NodeIndex &indices) {
+    resolveParentOrder(
+        nodes.size(), [](std::size_t) { return true; },
+        [&](std::size_t index) {
+            const auto &node = nodes[index];
+            if (node.parent.empty()) return ParentLookupResult::root();
+            const auto parent = indices.find(node.parent);
+            if (parent == indices.end()) return ParentLookupResult::missing();
+            return ParentLookupResult::at(parent->second);
+        },
+        [&](std::size_t index, const std::size_t *parent_index) {
+            auto &node = nodes[index];
+            node.world = composeWorld(
+                parent_index == nullptr ? nullptr : &nodes[*parent_index].world,
+                node.local, node.path);
+        },
+        [&](std::size_t index) {
+            projectionError(EditorProjectionErrorCode::TransformCycle,
+                            nodes[index].path,
+                            "reparent would create a parent cycle");
+        },
+        [&](std::size_t index) {
             projectionError(EditorProjectionErrorCode::ObjectNotFound,
-                            node.path,
-                            "transform parent does not exist: " + node.parent);
-        }
-        projectNode(parent->second, nodes, indices);
-        parent_world = &nodes[parent->second].world;
-    }
-    node.world = composeWorld(parent_world, node.local, node.path);
-    node.state = 2;
+                            nodes[index].path,
+                            "transform parent does not exist: " +
+                                nodes[index].parent);
+        });
 }
 
 std::pair<std::vector<DocumentTransformNode>, NodeIndex>
@@ -239,9 +233,7 @@ buildTransformNodes(const Json &scene, std::string_view scene_id) {
             .local = decodeTransformObject(object, path),
         });
     }
-    for (std::size_t index = 0; index < nodes.size(); ++index) {
-        projectNode(index, nodes, indices);
-    }
+    projectNodes(nodes, indices);
     return {std::move(nodes), std::move(indices)};
 }
 
@@ -289,9 +281,7 @@ AuthoringTransformNodes buildResolvedTransformNodes(
             });
         }
     }
-    for (std::size_t index = 0; index < result.nodes.size(); ++index) {
-        projectNode(index, result.nodes, result.by_name);
-    }
+    projectNodes(result.nodes, result.by_name);
     return result;
 }
 

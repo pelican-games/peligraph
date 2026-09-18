@@ -923,40 +923,45 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
                                                    index);
                 }
             }
-            std::vector<std::uint8_t> transform_state(ecs_objects.size(), 0);
-            const auto project_transform =
-                [&](auto &&self, std::size_t index) -> void {
-                if (transform_state[index] == 2) return;
-                if (transform_state[index] == 1) {
+            // Only hierarchy participants are started; the parent link was
+            // validated just above, so the lookup stays `.at()` and a broken
+            // link keeps raising its std::out_of_range here.
+            resolveParentOrder(
+                ecs_objects.size(),
+                [&](std::size_t index) {
+                    return ecs_objects[index].hierarchy_participant;
+                },
+                [&](std::size_t index) {
+                    const auto &object = ecs_objects[index];
+                    if (object.parent.empty()) return ParentLookupResult::root();
+                    return ParentLookupResult::at(
+                        object_indices_by_name.at(object.parent));
+                },
+                [&](std::size_t index, const std::size_t *parent_index) {
+                    const auto &object = ecs_objects[index];
+                    auto *world = ecs.tryComponent<TransformComponent>(
+                        object_ids[index]);
+                    auto *local = ecs.tryComponent<LocalTransformComponent>(
+                        object_ids[index]);
+                    const TransformComponent *parent_world =
+                        parent_index == nullptr
+                            ? nullptr
+                            : ecs.tryComponent<TransformComponent>(
+                                  object_ids[*parent_index]);
+                    TransformCodecTarget target{.world = world,
+                                                .local = local,
+                                                .parent_world = parent_world};
+                    const auto &prepared = transformLoad(object);
+                    prepared.codec->applyRuntime(prepared.decoded, &target);
+                },
+                [](std::size_t) {
                     throw std::logic_error(
                         "validated scene hierarchy became cyclic during projection");
-                }
-                transform_state[index] = 1;
-                const auto &object = ecs_objects[index];
-                const TransformComponent *parent_world = nullptr;
-                if (!object.parent.empty()) {
-                    const auto parent_index =
-                        object_indices_by_name.at(object.parent);
-                    self(self, parent_index);
-                    parent_world = ecs.tryComponent<TransformComponent>(
-                        object_ids[parent_index]);
-                }
-                auto *world = ecs.tryComponent<TransformComponent>(
-                    object_ids[index]);
-                auto *local = ecs.tryComponent<LocalTransformComponent>(
-                    object_ids[index]);
-                TransformCodecTarget target{.world = world,
-                                            .local = local,
-                                            .parent_world = parent_world};
-                const auto &prepared = transformLoad(object);
-                prepared.codec->applyRuntime(prepared.decoded, &target);
-                transform_state[index] = 2;
-            };
-            for (std::size_t index = 0; index < ecs_objects.size(); ++index) {
-                if (ecs_objects[index].hierarchy_participant) {
-                    project_transform(project_transform, index);
-                }
-            }
+                },
+                [](std::size_t) {
+                    // Unreachable: the lookup above is `.at()`, which has
+                    // already thrown, so no parent is ever reported missing.
+                });
         }
 
         std::vector<PhysWorld::Binding> physics_bindings;

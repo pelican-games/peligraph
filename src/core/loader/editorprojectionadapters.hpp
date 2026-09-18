@@ -166,57 +166,62 @@ class RendererModelProjectionAdapter final : public EditorProjectionAdapter {
     void finish() noexcept override;
 };
 
-class CameraProjectionAdapter final : public EditorProjectionAdapter {
+// Shared skeleton for the projections whose whole publication is one prepared
+// state swap on a single module: prepare snapshots the live state and stages
+// the next one, publish swaps the next one in, rollback swaps the snapshot
+// back when publication already happened, and finish drops both. Policy is
+// defined in the adapter translation unit and supplies the module type, the
+// prepared state type, the adapter kind, the publication mode, the adapter
+// name prefix, prepare() and any extra per-adapter state; the prepared state
+// therefore stays behind Impl and this header stays free of the camera,
+// light and physics module definitions.
+template <class Policy>
+class SnapshotProjectionAdapter : public EditorProjectionAdapter {
+  public:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
 
+    ~SnapshotProjectionAdapter() override;
+
+    EditorProjectionAdapterKind kind() const noexcept override;
+    std::string_view name() const noexcept override;
+    EditorProjectionPublicationMode publicationMode() const noexcept override;
+    void prepare(const EditorProjectionPrepareContext &context) override;
+    void publish() noexcept override;
+    void rollback() noexcept override;
+    void finish() noexcept override;
+
+  protected:
+    explicit SnapshotProjectionAdapter(std::unique_ptr<Impl> impl) noexcept;
+
+    std::unique_ptr<Impl> impl_;
+};
+
+struct CameraProjectionPolicy;
+struct LightProjectionPolicy;
+struct ColliderProjectionPolicy;
+
+extern template class SnapshotProjectionAdapter<CameraProjectionPolicy>;
+extern template class SnapshotProjectionAdapter<LightProjectionPolicy>;
+extern template class SnapshotProjectionAdapter<ColliderProjectionPolicy>;
+
+class CameraProjectionAdapter final
+    : public SnapshotProjectionAdapter<CameraProjectionPolicy> {
   public:
     CameraProjectionAdapter(Camera &camera, std::string scene_id);
-    ~CameraProjectionAdapter();
-
-    EditorProjectionAdapterKind kind() const noexcept override;
-    std::string_view name() const noexcept override;
-    EditorProjectionPublicationMode publicationMode() const noexcept override;
-    void prepare(const EditorProjectionPrepareContext &context) override;
-    void publish() noexcept override;
-    void rollback() noexcept override;
-    void finish() noexcept override;
 };
 
-class LightProjectionAdapter final : public EditorProjectionAdapter {
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
-
+class LightProjectionAdapter final
+    : public SnapshotProjectionAdapter<LightProjectionPolicy> {
   public:
     LightProjectionAdapter(LightContainer &lights, std::string scene_id);
-    ~LightProjectionAdapter();
-
-    EditorProjectionAdapterKind kind() const noexcept override;
-    std::string_view name() const noexcept override;
-    EditorProjectionPublicationMode publicationMode() const noexcept override;
-    void prepare(const EditorProjectionPrepareContext &context) override;
-    void publish() noexcept override;
-    void rollback() noexcept override;
-    void finish() noexcept override;
 };
 
-class ColliderProjectionAdapter final : public EditorProjectionAdapter {
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
-
+class ColliderProjectionAdapter final
+    : public SnapshotProjectionAdapter<ColliderProjectionPolicy> {
   public:
     ColliderProjectionAdapter(
         ECSCoreTemplatePublic &ecs, PhysWorld &physics, std::string scene_id,
         std::vector<EditorProjectionRuntimeObjectBinding> bindings);
-    ~ColliderProjectionAdapter();
-
-    EditorProjectionAdapterKind kind() const noexcept override;
-    std::string_view name() const noexcept override;
-    EditorProjectionPublicationMode publicationMode() const noexcept override;
-    void prepare(const EditorProjectionPrepareContext &context) override;
-    void publish() noexcept override;
-    void rollback() noexcept override;
-    void finish() noexcept override;
 };
 
 EditorProjectionCallbackAdapter makeBehaviorAttachmentProjectionJunction(
