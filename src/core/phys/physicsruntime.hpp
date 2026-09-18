@@ -30,6 +30,11 @@ void releaseProviderOwner(internal::RegistrationOwner owner) noexcept;
 
 [[nodiscard]] std::string activeProviderName();
 
+// The one ShapeCastHit -> ABI translation. The builtin mesh provider shares it
+// with the runtime instead of repeating it per shape kind.
+[[nodiscard]] Physics::ProviderShapeCastHitV2 toAbi(
+    std::uint32_t collider_index, const phys::ShapeCastHit &hit) noexcept;
+
 Physics::Status raycastMeshes(
     const phys::Ray &ray, std::span<const Physics::TriangleMeshV3> meshes,
     std::span<const phys::ColliderIdentity> identities,

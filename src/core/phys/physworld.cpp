@@ -569,36 +569,13 @@ std::vector<phys::RaycastQueryHit> PhysWorld::raycastAll(
     return hits;
 }
 
-std::optional<phys::ObjectRaycastHit> PhysWorld::raycastClosest(
-    const phys::Ray &ray) const {
-    std::vector<phys::RaycastQueryHit> hits;
-    const auto status = queryRaycastAll(ray, nullptr, hits);
-    if (status == Physics::Status::unavailable) return std::nullopt;
-    if (status != Physics::Status::ok) {
-        throw std::runtime_error("Physics query provider raycast failed with status " +
-                                 std::to_string(static_cast<std::uint32_t>(status)));
-    }
-
-    std::optional<phys::ObjectRaycastHit> best;
-    for (const auto &hit : hits) {
-        const bool better_distance =
-            !best || hit.distance < best->distance - phys::internal::queryTieEpsilon;
-        const bool better_legacy_tie =
-            best && std::abs(hit.distance - best->distance) <= phys::internal::queryTieEpsilon &&
-            hit.id < best->id;
-        if (better_distance || better_legacy_tie) {
-            best = phys::ObjectRaycastHit{hit.id, hit.distance, hit.position, hit.normal};
-        }
-    }
-    return best;
-}
-
 std::optional<phys::RaycastQueryHit> PhysWorld::raycastClosest(
     const phys::Ray &ray, const phys::QueryFilter &filter) const {
     // Not hits.front(): hits within queryTieEpsilon of each other are a tie,
     // and a tie is settled by the smallest collider id so the answer does not
     // depend on collider or provider iteration order. This is the rule the
-    // unfiltered legacy path has always used; it now holds for every filter.
+    // legacy unfiltered entry point always used; it now holds for every filter,
+    // with phys::every_collider_filter standing in for "no filter at all".
     const auto hits = raycastAll(ray, filter);
     const phys::RaycastQueryHit *best = nullptr;
     for (const auto &hit : hits) {
@@ -701,22 +678,6 @@ std::optional<phys::ShapeCastQueryHit> PhysWorld::shapeCastClosest(
     auto hits = shapeCastAll(moving_shape, delta, filter);
     if (hits.empty()) return std::nullopt;
     return std::move(hits.front());
-}
-
-std::vector<std::string> PhysWorld::overlapAll(
-    const phys::Shape &shape) const {
-    std::vector<phys::OverlapHit> hits;
-    const auto status = queryOverlapAll(shape, nullptr, hits);
-    if (status == Physics::Status::unavailable) return {};
-    if (status != Physics::Status::ok) {
-        throw std::runtime_error("Physics query provider overlap failed with status " +
-                                 std::to_string(static_cast<std::uint32_t>(status)));
-    }
-    std::vector<std::string> ids;
-    ids.reserve(hits.size());
-    for (const auto &hit : hits) ids.push_back(hit.id);
-    std::sort(ids.begin(), ids.end());
-    return ids;
 }
 
 std::vector<std::string> PhysWorld::overlapAll(

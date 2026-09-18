@@ -434,13 +434,14 @@ TEST_CASE("Jolt provider handles box and capsule queries without exposing Jolt t
     REQUIRE(hits[1].distance == Catch::Approx(5.5F));
 
     const auto inside_hit = world.raycastClosest(
-        phys::Ray{{3.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, 10.0F});
+        phys::Ray{{3.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, 10.0F},
+        phys::every_collider_filter);
     REQUIRE(inside_hit.has_value());
     REQUIRE(inside_hit->id == "box");
     REQUIRE(inside_hit->distance == Catch::Approx(0.5F));
 
     const auto overlaps = world.overlapAll(
-        phys::Sphere{{6.0F, 1.25F, 0.0F}, 0.3F});
+        phys::Sphere{{6.0F, 1.25F, 0.0F}, 0.3F}, phys::every_collider_filter);
     REQUIRE(overlaps.size() == 1);
     REQUIRE(overlaps[0] == "capsule");
 
@@ -540,7 +541,7 @@ TEST_CASE("game-owned physics provider activates explicitly and is released by o
     // The game provider implements raycast only. Other capabilities fall back
     // independently to the configured provider when one is compiled in.
     const auto fallback_overlap = world.overlapAll(
-        phys::Sphere{{3.0F, 0.0F, 0.0F}, 0.25F});
+        phys::Sphere{{3.0F, 0.0F, 0.0F}, 0.25F}, phys::every_collider_filter);
 #if PELICAN_WITH_JOLT_PHYSICS || PELICAN_WITH_BUILTIN_PHYSICS
     REQUIRE(fallback_overlap == std::vector<std::string>{"first"});
 #else
@@ -568,13 +569,15 @@ TEST_CASE("game-owned physics provider activates explicitly and is released by o
 #if PELICAN_WITH_JOLT_PHYSICS || PELICAN_WITH_BUILTIN_PHYSICS
     REQUIRE(physics_internal::activeProviderName() == configuredProviderName());
     const auto configured_hit = world.raycastClosest(
-        phys::Ray{{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, 10.0F});
+        phys::Ray{{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, 10.0F},
+        phys::every_collider_filter);
     REQUIRE(configured_hit.has_value());
     REQUIRE(configured_hit->distance == Catch::Approx(2.0F));
 #else
     REQUIRE(physics_internal::activeProviderName().empty());
     REQUIRE_FALSE(world.raycastClosest(
-        phys::Ray{{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, 10.0F}).has_value());
+        phys::Ray{{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, 10.0F},
+        phys::every_collider_filter).has_value());
 #endif
 }
 

@@ -206,7 +206,8 @@ double physWorldQuery() {
     const auto elapsed = elapsedMilliseconds([&] {
         for (size_t i = 0; i < 200; ++i) {
             const auto hit = world.raycastClosest(
-                phys::Ray{{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, 2048.0F});
+                phys::Ray{{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, 2048.0F},
+                phys::every_collider_filter);
             benchmark_sink = benchmark_sink ^ static_cast<std::uint64_t>(hit ? hit->distance * 1000.0F : 0.0F);
         }
     });

@@ -105,12 +105,6 @@ std::vector<phys::RaycastQueryHit> PhysWorld::raycastAll(
     return {};
 }
 
-std::optional<phys::ObjectRaycastHit>
-PhysWorld::raycastClosest(const phys::Ray &ray) const {
-    (void)ray;
-    return std::nullopt;
-}
-
 std::optional<phys::RaycastQueryHit> PhysWorld::raycastClosest(
     const phys::Ray &ray, const phys::QueryFilter &filter) const {
     (void)ray;
@@ -153,12 +147,6 @@ std::optional<phys::ShapeCastQueryHit> PhysWorld::shapeCastClosest(
     (void)delta;
     (void)filter;
     return std::nullopt;
-}
-
-std::vector<std::string>
-PhysWorld::overlapAll(const phys::Shape &shape) const {
-    (void)shape;
-    return {};
 }
 
 std::vector<std::string> PhysWorld::overlapAll(

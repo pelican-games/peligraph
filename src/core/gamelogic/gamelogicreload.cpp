@@ -85,6 +85,49 @@ static_assert(
 
 namespace Pelican {
 
+namespace {
+
+// Every provider registry a game DLL can publish into, in the single order that
+// activation and release both follow. A new registry is added here once and
+// reaches the initial load, the reload, the rollback and the release together.
+struct GameProviderRegistry {
+    void (*activate)(internal::RegistrationOwner) noexcept;
+    void (*release)(internal::RegistrationOwner) noexcept;
+};
+
+constexpr GameProviderRegistry game_provider_registries[] = {
+    {render_policy_internal::activateProviderOwner,
+     render_policy_internal::releaseProviderOwner},
+    {render_pass_internal::activateProviderOwner,
+     render_pass_internal::releaseProviderOwner},
+    {render_subgraph_internal::activateProviderOwner,
+     render_subgraph_internal::releaseProviderOwner},
+    {render_graph_transform_internal::activateProviderOwner,
+     render_graph_transform_internal::releaseProviderOwner},
+    {render_strategy_internal::activateProviderOwner,
+     render_strategy_internal::releaseProviderOwner},
+    {vulkan_native_scope_internal::activateProviderOwner,
+     vulkan_native_scope_internal::releaseProviderOwner},
+#if PELICAN_WITH_PHYSICS
+    {physics_internal::activateProviderOwner,
+     physics_internal::releaseProviderOwner},
+#endif
+};
+
+using GameProviderRegistryAction =
+    void (*GameProviderRegistry::*)(internal::RegistrationOwner) noexcept;
+
+// `enabled` carries the rollback path's per-call guard: rollback re-activates
+// the owner only when it actually loaded a second copy of the previous DLL.
+void forEachProviderRegistry(internal::RegistrationOwner owner,
+                             GameProviderRegistryAction action,
+                             bool enabled = true) noexcept {
+    if (!enabled) return;
+    for (const auto &registry : game_provider_registries) (registry.*action)(owner);
+}
+
+} // namespace
+
 namespace internal {
 
 void releaseGameLogicRegistrations(RegistrationOwner owner) noexcept {
@@ -94,15 +137,7 @@ void releaseGameLogicRegistrations(RegistrationOwner owner) noexcept {
 #if PELICAN_WITH_ANIMATION
     Animation::releaseAnimationOwner(owner);
 #endif
-    render_policy_internal::releaseProviderOwner(owner);
-    render_pass_internal::releaseProviderOwner(owner);
-    render_subgraph_internal::releaseProviderOwner(owner);
-    render_graph_transform_internal::releaseProviderOwner(owner);
-    render_strategy_internal::releaseProviderOwner(owner);
-    vulkan_native_scope_internal::releaseProviderOwner(owner);
-#if PELICAN_WITH_PHYSICS
-    physics_internal::releaseProviderOwner(owner);
-#endif
+    forEachProviderRegistry(owner, &GameProviderRegistry::release);
     unregisterGameSystems(owner);
     unregisterBehaviors(owner);
     unregisterEvents(owner);
@@ -528,15 +563,7 @@ bool GameLogicReloader::initialize(const std::filesystem::path &source) {
             LOG_ERROR(logger, "{}", last_error);
             return false;
         }
-        render_policy_internal::activateProviderOwner(owner);
-        render_pass_internal::activateProviderOwner(owner);
-        render_subgraph_internal::activateProviderOwner(owner);
-        render_graph_transform_internal::activateProviderOwner(owner);
-        render_strategy_internal::activateProviderOwner(owner);
-        vulkan_native_scope_internal::activateProviderOwner(owner);
-#if PELICAN_WITH_PHYSICS
-        physics_internal::activateProviderOwner(owner);
-#endif
+        forEachProviderRegistry(owner, &GameProviderRegistry::activate);
         generation = 1;
         clearLastError();
         LOG_INFO(logger, "game logic DLL loaded: source='{}' copy='{}' epoch={} systems={}",
@@ -596,15 +623,7 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
             transaction_error = std::move(load_error);
             throw std::runtime_error(transaction_error.message);
         }
-        render_policy_internal::activateProviderOwner(owner);
-        render_pass_internal::activateProviderOwner(owner);
-        render_subgraph_internal::activateProviderOwner(owner);
-        render_graph_transform_internal::activateProviderOwner(owner);
-        render_strategy_internal::activateProviderOwner(owner);
-        vulkan_native_scope_internal::activateProviderOwner(owner);
-#if PELICAN_WITH_PHYSICS
-        physics_internal::activateProviderOwner(owner);
-#endif
+        forEachProviderRegistry(owner, &GameProviderRegistry::activate);
         rebuild();
 
         ++generation;
@@ -657,22 +676,8 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
             active = std::move(previous);
         }
         if (active) {
-            if (activate_rollback_owner) {
-                render_policy_internal::activateProviderOwner(active->owner);
-                render_pass_internal::activateProviderOwner(active->owner);
-                render_subgraph_internal::activateProviderOwner(active->owner);
-                render_graph_transform_internal::activateProviderOwner(
-                    active->owner);
-                render_strategy_internal::activateProviderOwner(
-                    active->owner);
-                vulkan_native_scope_internal::activateProviderOwner(
-                    active->owner);
-            }
-#if PELICAN_WITH_PHYSICS
-            if (activate_rollback_owner) {
-                physics_internal::activateProviderOwner(active->owner);
-            }
-#endif
+            forEachProviderRegistry(active->owner, &GameProviderRegistry::activate,
+                                    activate_rollback_owner);
             bool rollback_rebuild_failed = false;
             try {
                 rebuild();

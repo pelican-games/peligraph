@@ -98,7 +98,8 @@ DECLARE_MODULE(PhysWorld) {
         std::vector<phys::RaycastQueryHit> &hits) const;
     std::vector<phys::RaycastQueryHit> raycastAll(
         const phys::Ray &ray, const phys::QueryFilter &filter = {}) const;
-    std::optional<phys::ObjectRaycastHit> raycastClosest(const phys::Ray &ray) const;
+    // Closest hit under a filter. phys::every_collider_filter reproduces the
+    // unfiltered legacy query.
     std::optional<phys::RaycastQueryHit> raycastClosest(
         const phys::Ray &ray, const phys::QueryFilter &filter) const;
     Physics::Status queryOverlapAll(const phys::Shape &shape,
@@ -113,7 +114,6 @@ DECLARE_MODULE(PhysWorld) {
     std::optional<phys::ShapeCastQueryHit> shapeCastClosest(
         const phys::Shape &moving_shape, vec3 delta,
         const phys::QueryFilter &filter = {}) const;
-    std::vector<std::string> overlapAll(const phys::Shape &shape) const;
     std::vector<std::string> overlapAll(const phys::Shape &shape,
                                         const phys::QueryFilter &filter) const;
     void updateTriggers(GameContext &ctx);

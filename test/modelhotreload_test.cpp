@@ -197,8 +197,8 @@ TEST_CASE("Scene collision follows model reload additions changes and removals",
     CHECK(hits[0].identity.collider_id == id);
     writeText(glb, "broken glTF");
     REQUIRE_FALSE(reload.applyRequestForTesting(modified("collision.glb")));
-    REQUIRE(world.raycastClosest(ray));
-    CHECK(world.raycastClosest(ray)->distance == Catch::Approx(7));
+    REQUIRE(world.raycastClosest(ray, phys::every_collider_filter));
+    CHECK(world.raycastClosest(ray, phys::every_collider_filter)->distance == Catch::Approx(7));
     writeMesh(std::nullopt);
     REQUIRE(reload.applyRequestForTesting(modified("collision.glb")));
     CHECK(world.raycastAll(ray).empty());

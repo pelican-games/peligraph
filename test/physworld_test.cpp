@@ -899,7 +899,8 @@ TEST_CASE("Prepared mesh bindings share raycast service and track transforms", "
     auto overlaps = world.overlapAllHits(phys::Sphere{{0, 0, 3.25F}, 0.25F});
     REQUIRE(overlaps.size() == 1);
     CHECK(overlaps[0].identity.collider_id == identity);
-    CHECK(world.overlapAll(phys::Sphere{{0, 0, 3.3F}, 0.25F}).empty());
+    CHECK(world.overlapAll(phys::Sphere{{0, 0, 3.3F}, 0.25F},
+                           phys::every_collider_filter).empty());
     phys::QueryFilter self_filter;
     self_filter.self = identity;
     CHECK(world.overlapAllHits(phys::Sphere{{0, 0, 3}, 1}, self_filter).empty());
@@ -1028,8 +1029,8 @@ TEST_CASE("Prepared mesh bindings share raycast service and track transforms", "
     world.publishPrepared(std::move(saved));
     CHECK(world.raycastAll(ray).empty());
     GET_MODULE(ECSCore).getTemplatePublicModule().component<TransformComponent>(object).pos = {0, 0, 0};
-    REQUIRE(world.raycastClosest(ray));
-    CHECK(world.raycastClosest(ray)->id == "target/mesh");
+    REQUIRE(world.raycastClosest(ray, phys::every_collider_filter));
+    CHECK(world.raycastClosest(ray, phys::every_collider_filter)->id == "target/mesh");
     phys::QueryFilter filter;
     filter.mask = 0;
     CHECK(world.raycastAll(ray, filter).empty());
@@ -1099,10 +1100,10 @@ TEST_CASE("Model collision replacements prepare additions removals and stable id
     auto unchanged = world.prepareBindings(candidate.bindings);
     CHECK(unchanged.bindings.at(0).mesh_acceleration == acceleration);
     const phys::Ray ray{{0, 0, 0}, {0, 0, 1}, 10};
-    CHECK_FALSE(world.raycastClosest(ray));
+    CHECK_FALSE(world.raycastClosest(ray, phys::every_collider_filter));
     world.publishPrepared(std::move(candidate));
-    REQUIRE(world.raycastClosest(ray));
-    CHECK(world.raycastClosest(ray)->distance == Catch::Approx(3));
+    REQUIRE(world.raycastClosest(ray, phys::every_collider_filter));
+    CHECK(world.raycastClosest(ray, phys::every_collider_filter)->distance == Catch::Approx(3));
     auto replacement = std::make_shared<std::vector<ModelCollisionMesh>>(*sources);
     for (auto &vertex : replacement->at(0).positions) vertex.z = 7;
     model.collision_meshes = replacement;
@@ -1116,24 +1117,24 @@ TEST_CASE("Model collision replacements prepare additions removals and stable id
     CHECK(candidate.bindings.at(0).metadata.one_way);
     REQUIRE(candidate.bindings.at(0).mesh_acceleration);
     CHECK(candidate.bindings.at(0).mesh_acceleration != acceleration);
-    CHECK(world.raycastClosest(ray)->distance == Catch::Approx(3));
+    CHECK(world.raycastClosest(ray, phys::every_collider_filter)->distance == Catch::Approx(3));
     world.publishPrepared(std::move(candidate));
-    REQUIRE(world.raycastClosest(ray));
-    CHECK(world.raycastClosest(ray)->distance == Catch::Approx(7));
+    REQUIRE(world.raycastClosest(ray, phys::every_collider_filter));
+    CHECK(world.raycastClosest(ray, phys::every_collider_filter)->distance == Catch::Approx(7));
     model.collision_meshes.reset();
     bindings = world.snapshotPrepared().bindings;
     replaceModelPhysicsBinding(bindings, model, "target", PhysWorldTransform{});
     auto removed = world.prepareBindings(std::move(bindings));
-    CHECK(world.raycastClosest(ray)->distance == Catch::Approx(7));
+    CHECK(world.raycastClosest(ray, phys::every_collider_filter)->distance == Catch::Approx(7));
     world.publishPrepared(std::move(removed));
-    CHECK_FALSE(world.raycastClosest(ray));
+    CHECK_FALSE(world.raycastClosest(ray, phys::every_collider_filter));
     // A collision declaration can be added again after a collision-free reload.
     model.collision_meshes = sources;
     bindings = world.snapshotPrepared().bindings;
     replaceModelPhysicsBinding(bindings, model, "target", PhysWorldTransform{});
     world.publishPrepared(world.prepareBindings(std::move(bindings)));
-    REQUIRE(world.raycastClosest(ray));
-    CHECK(world.raycastClosest(ray)->distance == Catch::Approx(3));
+    REQUIRE(world.raycastClosest(ray, phys::every_collider_filter));
+    CHECK(world.raycastClosest(ray, phys::every_collider_filter)->distance == Catch::Approx(3));
 }
 
 } // namespace Pelican

@@ -1,4 +1,5 @@
 #include "meshphysicsprovider.hpp"
+#include "physicsruntime.hpp"
 #include "trianglemesh.hpp"
 
 #include <algorithm>
@@ -139,15 +140,7 @@ Physics::Status builtinMeshSphereShapeCastAll(
                 phys::Sphere{{query.center.x, query.center.y, query.center.z}, query.radius},
                 {query.delta.x, query.delta.y, query.delta.z}, transform);
             if (!hit) return std::nullopt;
-            Physics::ProviderShapeCastHitV2 result;
-            result.collider_index = index;
-            result.time_of_impact = hit->time_of_impact;
-            result.penetration_depth = hit->penetration_depth;
-            result.position = {hit->position.x, hit->position.y, hit->position.z};
-            result.normal = {hit->normal.x, hit->normal.y, hit->normal.z};
-            result.flags = (hit->initial_overlap ? Physics::shape_cast_initial_overlap : 0U) |
-                (hit->approximate_depenetration ? Physics::shape_cast_approximate_depenetration : 0U);
-            return result;
+            return toAbi(index, *hit);
         });
 }
 
@@ -165,15 +158,7 @@ Physics::Status builtinMeshBoxShapeCastAll(
                     {query.half_extents.x, query.half_extents.y, query.half_extents.z}},
                 {query.delta.x, query.delta.y, query.delta.z}, transform);
             if (!hit) return std::nullopt;
-            Physics::ProviderShapeCastHitV2 result;
-            result.collider_index = index;
-            result.time_of_impact = hit->time_of_impact;
-            result.penetration_depth = hit->penetration_depth;
-            result.position = {hit->position.x, hit->position.y, hit->position.z};
-            result.normal = {hit->normal.x, hit->normal.y, hit->normal.z};
-            result.flags = (hit->initial_overlap ? Physics::shape_cast_initial_overlap : 0U) |
-                (hit->approximate_depenetration ? Physics::shape_cast_approximate_depenetration : 0U);
-            return result;
+            return toAbi(index, *hit);
         });
 }
 
@@ -191,15 +176,7 @@ Physics::Status builtinMeshCapsuleShapeCastAll(
                     query.half_height, query.radius},
                 {query.delta.x, query.delta.y, query.delta.z}, transform);
             if (!hit) return std::nullopt;
-            Physics::ProviderShapeCastHitV2 result;
-            result.collider_index = index;
-            result.time_of_impact = hit->time_of_impact;
-            result.penetration_depth = hit->penetration_depth;
-            result.position = {hit->position.x, hit->position.y, hit->position.z};
-            result.normal = {hit->normal.x, hit->normal.y, hit->normal.z};
-            result.flags = (hit->initial_overlap ? Physics::shape_cast_initial_overlap : 0U) |
-                (hit->approximate_depenetration ? Physics::shape_cast_approximate_depenetration : 0U);
-            return result;
+            return toAbi(index, *hit);
         });
 }
 

@@ -210,7 +210,7 @@ TEST_CASE("public game DLL physics provider survives reload rollback and in-flig
     // The DLL replaces raycast only. Overlap remains independently available
     // from the configured backend, or unavailable in a provider-only build.
     const auto fallback_overlap = world.overlapAll(
-        phys::Sphere{{3.0F, 0.0F, 0.0F}, 0.25F});
+        phys::Sphere{{3.0F, 0.0F, 0.0F}, 0.25F}, phys::every_collider_filter);
 #if PELICAN_WITH_JOLT_PHYSICS || PELICAN_WITH_BUILTIN_PHYSICS
     REQUIRE(fallback_overlap == std::vector<std::string>{"target"});
 #else

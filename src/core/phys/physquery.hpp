@@ -84,6 +84,14 @@ struct QueryFilter {
     std::span<const GameObjectId> ignored_entities{};
 };
 
+// The default filter sits on the default layer only, so it drops a collider
+// whose mask clears bit 0. This one carries every layer and accepts every mask,
+// which is what a caller that used to run the query with no filter at all wants.
+inline constexpr QueryFilter every_collider_filter{
+    .layer = all_collision_layers,
+    .mask = all_collision_layers,
+};
+
 struct Collider {
     // Compatibility label retained for existing callers. New query results also
     // expose the complete identity below.

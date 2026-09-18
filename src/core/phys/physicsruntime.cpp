@@ -282,6 +282,80 @@ Physics::Status invokeProvider(const ProviderDispatch &provider,
     return Physics::Status::ok;
 }
 
+// Every query entry point maps an escaping exception the same way, and every
+// one of them leaves the caller's vector empty when it does not return ok.
+template <class Hit, class Body>
+Physics::Status runQuery(std::vector<Hit> &out_hits, Body body) noexcept {
+    out_hits.clear();
+    try {
+        return body();
+    } catch (const std::invalid_argument &) {
+        out_hits.clear();
+        return Physics::Status::invalid_argument;
+    } catch (const std::bad_alloc &) {
+        out_hits.clear();
+        return Physics::Status::out_of_memory;
+    } catch (...) {
+        out_hits.clear();
+        return Physics::Status::provider_error;
+    }
+}
+
+// The primitive-collider counterpart of invokeMeshProvider: hold the registry
+// lock only for capability selection and the provider call itself.
+template <class RawHit, class Query, class Callback>
+Physics::Status invokePrimitiveProvider(std::uint64_t capability,
+                                        Callback ProviderDispatch::*callback,
+                                        const Query &query,
+                                        std::size_t maximum_hits,
+                                        std::vector<RawHit> &raw_hits) {
+    auto &value = registry();
+    std::shared_lock lock{value.mutex};
+    const auto *provider = providerForCapabilityLocked(value, capability);
+    if (provider == nullptr) return Physics::Status::unavailable;
+    return invokeProvider(*provider, capability, provider->*callback, query,
+                          maximum_hits, raw_hits);
+}
+
+// Raw provider hits become engine hits here. A collider may answer at most
+// once, a hit the translation rejects empties the result, and the accepted hits
+// leave in the query's canonical order.
+template <class RawHit, class Hit, class Translate, class Order>
+Physics::Status decodeHits(const std::vector<RawHit> &raw_hits,
+                           std::size_t collider_count, Translate translate,
+                           Order order, std::vector<Hit> &out_hits) {
+    std::vector<bool> seen(collider_count, false);
+    out_hits.reserve(raw_hits.size());
+    for (const auto &raw : raw_hits) {
+        if (raw.collider_index >= collider_count || seen[raw.collider_index] ||
+            !translate(raw, out_hits)) {
+            out_hits.clear();
+            return Physics::Status::provider_error;
+        }
+        seen[raw.collider_index] = true;
+    }
+    order(out_hits);
+    return Physics::Status::ok;
+}
+
+// A raycast hit is usable only when its distance lies inside the ray and both
+// its normal and the position it reconstructs are representable.
+bool raycastHitPoint(const Physics::ProviderRaycastHitV1 &raw,
+                     Physics::Vec3V1 origin, Physics::Vec3V1 unit_direction,
+                     float max_distance, Physics::Vec3V1 &unit_normal,
+                     Physics::Vec3V1 &position) {
+    if (raw.reserved != 0 || !std::isfinite(raw.distance) || raw.distance < 0.0F ||
+        raw.distance > max_distance + 1.0e-5F || !normalized(raw.normal, unit_normal)) {
+        return false;
+    }
+    position = Physics::Vec3V1{
+        origin.x + unit_direction.x * raw.distance,
+        origin.y + unit_direction.y * raw.distance,
+        origin.z + unit_direction.z * raw.distance,
+    };
+    return finite(position);
+}
+
 struct SelectedMeshes {
     std::vector<Physics::TriangleMeshV3> meshes;
     std::vector<const phys::TriangleMesh *> acceleration;
@@ -293,35 +367,62 @@ Physics::Status decodeMeshOverlapHits(const SelectedMeshes &selected,
     std::span<const phys::ColliderQueryMetadata> metadata,
     const std::vector<Physics::ProviderOverlapHitV1> &raw_hits,
     std::vector<phys::OverlapHit> &out_hits) {
-    using Physics::Status;
-    std::vector<bool> seen(selected.meshes.size(), false);
-    out_hits.reserve(raw_hits.size());
-    for (const auto &raw : raw_hits) {
-        if (raw.reserved != 0 || raw.collider_index >= selected.meshes.size() || seen[raw.collider_index]) {
-            out_hits.clear();
-            return Status::provider_error;
-        }
-        seen[raw.collider_index] = true;
-        const auto &identity = selected.identities[raw.collider_index];
-        out_hits.push_back(phys::OverlapHit{
-            identity.name, identity, metadata[selected.source_indices[raw.collider_index]]});
-    }
-    phys::internal::orderOverlapHits(out_hits);
-    return Status::ok;
+    return decodeHits(raw_hits, selected.meshes.size(),
+        [&](const Physics::ProviderOverlapHitV1 &raw,
+            std::vector<phys::OverlapHit> &hits) {
+            if (raw.reserved != 0) return false;
+            const auto &identity = selected.identities[raw.collider_index];
+            hits.push_back(phys::OverlapHit{
+                identity.name, identity,
+                metadata[selected.source_indices[raw.collider_index]]});
+            return true;
+        },
+        phys::internal::orderOverlapHits, out_hits);
 }
 
-Physics::Status selectMeshes(
-    std::span<const Physics::TriangleMeshV3> meshes,
-    std::span<const phys::ColliderIdentity> identities,
-    std::span<const phys::ColliderQueryMetadata> metadata,
-    const phys::QueryFilter *filter,
-    std::span<const phys::TriangleMesh *const> acceleration, SelectedMeshes &result) {
+// The four index-aligned spans a mesh query threads through the runtime. They
+// are only ever built by from(), so the "same length" invariant is established
+// once per entry point instead of being re-checked further in.
+struct MeshQuerySet {
+    std::span<const Physics::TriangleMeshV3> meshes;
+    std::span<const phys::ColliderIdentity> identities;
+    std::span<const phys::ColliderQueryMetadata> metadata;
+    std::span<const phys::TriangleMesh *const> acceleration;
+
+    static Physics::Status validate(
+        std::span<const Physics::TriangleMeshV3> meshes,
+        std::span<const phys::ColliderIdentity> identities,
+        std::span<const phys::ColliderQueryMetadata> metadata,
+        std::span<const phys::TriangleMesh *const> acceleration) {
+        if ((!acceleration.empty() && acceleration.size() != meshes.size()) ||
+            meshes.size() != identities.size() || meshes.size() != metadata.size())
+            return Physics::Status::invalid_argument;
+        if (meshes.size() > std::numeric_limits<std::uint32_t>::max())
+            return Physics::Status::out_of_memory;
+        return Physics::Status::ok;
+    }
+
+    static Physics::Status from(
+        std::span<const Physics::TriangleMeshV3> meshes,
+        std::span<const phys::ColliderIdentity> identities,
+        std::span<const phys::ColliderQueryMetadata> metadata,
+        std::span<const phys::TriangleMesh *const> acceleration,
+        MeshQuerySet &out) {
+        const auto status = validate(meshes, identities, metadata, acceleration);
+        if (status != Physics::Status::ok) return status;
+        out = MeshQuerySet{meshes, identities, metadata, acceleration};
+        return Physics::Status::ok;
+    }
+};
+
+Physics::Status selectMeshes(const MeshQuerySet &set,
+                             const phys::QueryFilter *filter,
+                             SelectedMeshes &result) {
     using Physics::Status;
-    if ((!acceleration.empty() && acceleration.size() != meshes.size()) ||
-        meshes.size() != identities.size() || meshes.size() != metadata.size())
-        return Status::invalid_argument;
-    if (meshes.size() > std::numeric_limits<std::uint32_t>::max())
-        return Status::out_of_memory;
+    const auto meshes = set.meshes;
+    const auto identities = set.identities;
+    const auto metadata = set.metadata;
+    const auto acceleration = set.acceleration;
     for (std::size_t index = 0; index < meshes.size(); ++index) {
         phys::Collider identity_proxy;
         identity_proxy.id = identities[index].name;
@@ -467,7 +568,39 @@ bool validShapeCastHit(const Physics::ProviderShapeCastHitV2 &raw,
         finite(raw.position) && normalized(raw.normal, unit_normal);
 }
 
+phys::ShapeCastQueryHit shapeCastQueryHit(
+    const Physics::ProviderShapeCastHitV2 &raw, Physics::Vec3V1 unit_normal,
+    const phys::ColliderIdentity &identity,
+    const phys::ColliderQueryMetadata &metadata) {
+    const bool initial = (raw.flags & Physics::shape_cast_initial_overlap) != 0;
+    return phys::ShapeCastQueryHit{
+        identity.name,
+        std::clamp(raw.time_of_impact, 0.0F, 1.0F),
+        initial ? raw.penetration_depth : 0.0F,
+        fromAbi(raw.position),
+        fromAbi(unit_normal),
+        initial,
+        identity,
+        metadata,
+        (raw.flags & Physics::shape_cast_approximate_depenetration) != 0,
+    };
+}
+
 } // namespace
+
+Physics::ProviderShapeCastHitV2 toAbi(std::uint32_t collider_index,
+                                      const phys::ShapeCastHit &hit) noexcept {
+    Physics::ProviderShapeCastHitV2 result;
+    result.collider_index = collider_index;
+    result.time_of_impact = hit.time_of_impact;
+    result.penetration_depth = hit.penetration_depth;
+    result.position = {hit.position.x, hit.position.y, hit.position.z};
+    result.normal = {hit.normal.x, hit.normal.y, hit.normal.z};
+    result.flags =
+        (hit.initial_overlap ? Physics::shape_cast_initial_overlap : 0U) |
+        (hit.approximate_depenetration ? Physics::shape_cast_approximate_depenetration : 0U);
+    return result;
+}
 
 Physics::Status registerProvider(const Physics::ProviderV2 &provider,
                                  internal::RegistrationOwner owner,
@@ -590,23 +723,27 @@ Physics::Status raycastMeshes(
     std::vector<phys::RaycastQueryHit> &out_hits,
     std::span<const phys::TriangleMesh *const> acceleration) noexcept {
     using Physics::Status;
-    out_hits.clear();
-    try {
-        if ((!acceleration.empty() && acceleration.size() != meshes.size()) ||
-            meshes.size() != identities.size() || meshes.size() != metadata.size() ||
-            !finite(toAbi(ray.origin)) || !finite(toAbi(ray.direction)) ||
-            !std::isfinite(ray.max_distance) || ray.max_distance < 0.0F)
+    return runQuery(out_hits, [&]() -> Status {
+        MeshQuerySet set;
+        const auto set_status =
+            MeshQuerySet::from(meshes, identities, metadata, acceleration, set);
+        const auto origin = toAbi(ray.origin);
+        // A misaligned span and an unusable ray report the same status, and
+        // that status outranks the size limit, as the single combined
+        // condition this replaced did.
+        if (set_status == Status::invalid_argument || !finite(origin) ||
+            !finite(toAbi(ray.direction)) || !std::isfinite(ray.max_distance) ||
+            ray.max_distance < 0.0F)
             return Status::invalid_argument;
-        if (meshes.size() > std::numeric_limits<std::uint32_t>::max())
-            return Status::out_of_memory;
+        if (set_status != Status::ok) return set_status;
         Physics::Vec3V1 direction{};
         if (!normalized(toAbi(ray.direction), direction)) return Status::ok;
         SelectedMeshes selection;
-        const auto selected_status = selectMeshes(meshes, identities, metadata, filter, acceleration, selection);
+        const auto selected_status = selectMeshes(set, filter, selection);
         if (selected_status != Status::ok) return selected_status;
         const auto &selected = selection.meshes;
         const Physics::ProviderMeshRaycastQueryV3 query{
-            .ray = Physics::RayV1{toAbi(ray.origin), direction, ray.max_distance, 0},
+            .ray = Physics::RayV1{origin, direction, ray.max_distance, 0},
             .colliders = selected.empty() ? nullptr : selected.data(),
             .collider_count = static_cast<std::uint32_t>(selected.size()),
         };
@@ -614,42 +751,22 @@ Physics::Status raycastMeshes(
         const auto status = invokeMeshProvider(Physics::query_mesh_raycast_all,
             &ProviderDispatch::mesh_raycast_all, query, selection, raw_hits);
         if (status != Status::ok) return status;
-        std::vector<bool> seen(selected.size(), false);
-        for (const auto &raw : raw_hits) {
-            Physics::Vec3V1 normal{};
-            if (raw.reserved != 0 || raw.collider_index >= selected.size() ||
-                seen[raw.collider_index] || !std::isfinite(raw.distance) ||
-                raw.distance < 0.0F || raw.distance > ray.max_distance + 1.0e-5F ||
-                !normalized(raw.normal, normal)) {
-                out_hits.clear();
-                return Status::provider_error;
-            }
-            const Physics::Vec3V1 position{
-                ray.origin.x + direction.x * raw.distance,
-                ray.origin.y + direction.y * raw.distance,
-                ray.origin.z + direction.z * raw.distance};
-            if (!finite(position)) {
-                out_hits.clear();
-                return Status::provider_error;
-            }
-            seen[raw.collider_index] = true;
-            const auto &identity = selection.identities[raw.collider_index];
-            out_hits.push_back(phys::RaycastQueryHit{
-                identity.name, raw.distance, fromAbi(position), fromAbi(normal),
-                identity, metadata[selection.source_indices[raw.collider_index]]});
-        }
-        phys::internal::orderRaycastHits(out_hits);
-        return Status::ok;
-    } catch (const std::invalid_argument &) {
-        out_hits.clear();
-        return Status::invalid_argument;
-    } catch (const std::bad_alloc &) {
-        out_hits.clear();
-        return Status::out_of_memory;
-    } catch (...) {
-        out_hits.clear();
-        return Status::provider_error;
-    }
+        return decodeHits(raw_hits, selected.size(),
+            [&](const Physics::ProviderRaycastHitV1 &raw,
+                std::vector<phys::RaycastQueryHit> &hits) {
+                Physics::Vec3V1 normal{};
+                Physics::Vec3V1 position{};
+                if (!raycastHitPoint(raw, origin, direction, ray.max_distance,
+                                     normal, position))
+                    return false;
+                const auto &identity = selection.identities[raw.collider_index];
+                hits.push_back(phys::RaycastQueryHit{
+                    identity.name, raw.distance, fromAbi(position), fromAbi(normal),
+                    identity, set.metadata[selection.source_indices[raw.collider_index]]});
+                return true;
+            },
+            phys::internal::orderRaycastHits, out_hits);
+    });
 }
 
 Physics::Status overlapMeshes(
@@ -659,11 +776,15 @@ Physics::Status overlapMeshes(
     const phys::QueryFilter *filter, std::vector<phys::OverlapHit> &out_hits,
     std::span<const phys::TriangleMesh *const> acceleration) noexcept {
     using Physics::Status;
-    out_hits.clear();
-    try {
+    return runQuery(out_hits, [&]() -> Status {
         const auto query_shape = toAbi(shape);
+        MeshQuerySet set;
+        if (const auto set_status =
+                MeshQuerySet::from(meshes, identities, metadata, acceleration, set);
+            set_status != Status::ok)
+            return set_status;
         SelectedMeshes selected;
-        const auto selected_status = selectMeshes(meshes, identities, metadata, filter, acceleration, selected);
+        const auto selected_status = selectMeshes(set, filter, selected);
         if (selected_status != Status::ok) return selected_status;
         std::vector<Physics::ProviderOverlapHitV1> raw_hits;
         Status status;
@@ -695,17 +816,8 @@ Physics::Status overlapMeshes(
                 &ProviderDispatch::mesh_capsule_overlap_all, query, selected, raw_hits);
         }
         if (status != Status::ok) return status;
-        return decodeMeshOverlapHits(selected,metadata,raw_hits,out_hits);
-    } catch (const std::invalid_argument &) {
-        out_hits.clear();
-        return Status::invalid_argument;
-    } catch (const std::bad_alloc &) {
-        out_hits.clear();
-        return Status::out_of_memory;
-    } catch (...) {
-        out_hits.clear();
-        return Status::provider_error;
-    }
+        return decodeMeshOverlapHits(selected, set.metadata, raw_hits, out_hits);
+    });
 }
 
 Physics::Status overlapMeshMeshes(
@@ -716,15 +828,19 @@ Physics::Status overlapMeshMeshes(
     std::span<const phys::TriangleMesh *const> acceleration,
     const phys::TriangleMesh *query_acceleration) noexcept {
     using Physics::Status;
-    out_hits.clear();
-    try {
+    return runQuery(out_hits, [&]() -> Status {
         SelectedMeshes selected, querySelection;
         const phys::ColliderIdentity queryIdentity{};
         const phys::ColliderQueryMetadata queryMetadata{};
-        auto status = selectMeshes({&shape,1},{&queryIdentity,1},{&queryMetadata,1},
-            nullptr,{&query_acceleration,1},querySelection);
+        MeshQuerySet query_set, set;
+        auto status = MeshQuerySet::from({&shape,1},{&queryIdentity,1},
+            {&queryMetadata,1},{&query_acceleration,1},query_set);
         if (status != Status::ok) return status;
-        status = selectMeshes(meshes,identities,metadata,filter,acceleration,selected);
+        status = selectMeshes(query_set, nullptr, querySelection);
+        if (status != Status::ok) return status;
+        status = MeshQuerySet::from(meshes,identities,metadata,acceleration,set);
+        if (status != Status::ok) return status;
+        status = selectMeshes(set, filter, selected);
         if (status != Status::ok || selected.meshes.empty()) return status;
         const Physics::ProviderMeshMeshOverlapQueryV3 query{
             .shape = shape, .colliders = selected.meshes.data(),
@@ -733,32 +849,26 @@ Physics::Status overlapMeshMeshes(
         status = invokeMeshProvider(Physics::query_mesh_mesh_overlap_all,
             &ProviderDispatch::mesh_mesh_overlap_all,query,selected,raw_hits,query_acceleration);
         if (status != Status::ok) return status;
-        return decodeMeshOverlapHits(selected,metadata,raw_hits,out_hits);
-    } catch (const std::invalid_argument &) {
-        out_hits.clear(); return Status::invalid_argument;
-    } catch (const std::bad_alloc &) {
-        out_hits.clear(); return Status::out_of_memory;
-    } catch (...) {
-        out_hits.clear(); return Status::provider_error;
-    }
+        return decodeMeshOverlapHits(selected, set.metadata, raw_hits, out_hits);
+    });
 }
 
 Physics::Status raycastAll(const phys::Ray &ray,
                            std::span<const phys::Collider> colliders,
                            const phys::QueryFilter *filter,
                            std::vector<phys::RaycastQueryHit> &out_hits) noexcept {
-    out_hits.clear();
-    try {
+    using Physics::Status;
+    return runQuery(out_hits, [&]() -> Status {
         const auto origin = toAbi(ray.origin);
         const auto direction = toAbi(ray.direction);
         if (!finite(origin) || !finite(direction) ||
             !std::isfinite(ray.max_distance) || ray.max_distance < 0.0F) {
-            return Physics::Status::invalid_argument;
+            return Status::invalid_argument;
         }
         Physics::Vec3V1 unit_direction{};
-        if (!normalized(direction, unit_direction)) return Physics::Status::ok;
+        if (!normalized(direction, unit_direction)) return Status::ok;
         if (colliders.size() > std::numeric_limits<std::uint32_t>::max()) {
-            return Physics::Status::out_of_memory;
+            return Status::out_of_memory;
         }
         std::vector<Physics::ShapeV1> shapes;
         const auto selected = selectColliders(colliders, filter, shapes);
@@ -773,71 +883,41 @@ Physics::Status raycastAll(const phys::Ray &ray,
         };
 
         std::vector<Physics::ProviderRaycastHitV1> raw_hits;
-        auto &value = registry();
-        {
-            std::shared_lock lock{value.mutex};
-            const auto *provider = providerForCapabilityLocked(
-                value, Physics::query_raycast_all);
-            if (provider == nullptr) return Physics::Status::unavailable;
-            const auto status = invokeProvider(*provider, Physics::query_raycast_all,
-                                               provider->raycast_all, query,
-                                               selected.size(), raw_hits);
-            if (status != Physics::Status::ok) return status;
-        }
+        const auto status = invokePrimitiveProvider(Physics::query_raycast_all,
+            &ProviderDispatch::raycast_all, query, selected.size(), raw_hits);
+        if (status != Status::ok) return status;
 
-        std::vector<bool> seen(selected.size(), false);
-        out_hits.reserve(raw_hits.size());
-        for (const auto &raw : raw_hits) {
-            Physics::Vec3V1 unit_normal{};
-            if (raw.reserved != 0 || raw.collider_index >= selected.size() ||
-                seen[raw.collider_index] || !std::isfinite(raw.distance) ||
-                raw.distance < 0.0F || raw.distance > ray.max_distance + 1.0e-5F ||
-                !normalized(raw.normal, unit_normal)) {
-                out_hits.clear();
-                return Physics::Status::provider_error;
-            }
-            const Physics::Vec3V1 canonical_position{
-                origin.x + unit_direction.x * raw.distance,
-                origin.y + unit_direction.y * raw.distance,
-                origin.z + unit_direction.z * raw.distance,
-            };
-            if (!finite(canonical_position)) {
-                out_hits.clear();
-                return Physics::Status::provider_error;
-            }
-            seen[raw.collider_index] = true;
-            const auto &selected_collider = selected[raw.collider_index];
-            out_hits.push_back(phys::RaycastQueryHit{
-                selected_collider.identity.name,
-                raw.distance,
-                fromAbi(canonical_position),
-                fromAbi(unit_normal),
-                selected_collider.identity,
-                selected_collider.collider->metadata,
-            });
-        }
-        phys::internal::orderRaycastHits(out_hits);
-        return Physics::Status::ok;
-    } catch (const std::invalid_argument &) {
-        out_hits.clear();
-        return Physics::Status::invalid_argument;
-    } catch (const std::bad_alloc &) {
-        out_hits.clear();
-        return Physics::Status::out_of_memory;
-    } catch (...) {
-        out_hits.clear();
-        return Physics::Status::provider_error;
-    }
+        return decodeHits(raw_hits, selected.size(),
+            [&](const Physics::ProviderRaycastHitV1 &raw,
+                std::vector<phys::RaycastQueryHit> &hits) {
+                Physics::Vec3V1 unit_normal{};
+                Physics::Vec3V1 canonical_position{};
+                if (!raycastHitPoint(raw, origin, unit_direction, ray.max_distance,
+                                     unit_normal, canonical_position))
+                    return false;
+                const auto &selected_collider = selected[raw.collider_index];
+                hits.push_back(phys::RaycastQueryHit{
+                    selected_collider.identity.name,
+                    raw.distance,
+                    fromAbi(canonical_position),
+                    fromAbi(unit_normal),
+                    selected_collider.identity,
+                    selected_collider.collider->metadata,
+                });
+                return true;
+            },
+            phys::internal::orderRaycastHits, out_hits);
+    });
 }
 
 Physics::Status overlapAll(const phys::Shape &shape,
                            std::span<const phys::Collider> colliders,
                            const phys::QueryFilter *filter,
                            std::vector<phys::OverlapHit> &out_hits) noexcept {
-    out_hits.clear();
-    try {
+    using Physics::Status;
+    return runQuery(out_hits, [&]() -> Status {
         if (colliders.size() > std::numeric_limits<std::uint32_t>::max()) {
-            return Physics::Status::out_of_memory;
+            return Status::out_of_memory;
         }
         std::vector<Physics::ShapeV1> shapes;
         const auto selected = selectColliders(colliders, filter, shapes);
@@ -848,46 +928,24 @@ Physics::Status overlapAll(const phys::Shape &shape,
         };
 
         std::vector<Physics::ProviderOverlapHitV1> raw_hits;
-        auto &value = registry();
-        {
-            std::shared_lock lock{value.mutex};
-            const auto *provider = providerForCapabilityLocked(
-                value, Physics::query_overlap_all);
-            if (provider == nullptr) return Physics::Status::unavailable;
-            const auto status = invokeProvider(*provider, Physics::query_overlap_all,
-                                               provider->overlap_all, query,
-                                               selected.size(), raw_hits);
-            if (status != Physics::Status::ok) return status;
-        }
+        const auto status = invokePrimitiveProvider(Physics::query_overlap_all,
+            &ProviderDispatch::overlap_all, query, selected.size(), raw_hits);
+        if (status != Status::ok) return status;
 
-        std::vector<bool> seen(selected.size(), false);
-        out_hits.reserve(raw_hits.size());
-        for (const auto &raw : raw_hits) {
-            if (raw.reserved != 0 || raw.collider_index >= selected.size() ||
-                seen[raw.collider_index]) {
-                out_hits.clear();
-                return Physics::Status::provider_error;
-            }
-            seen[raw.collider_index] = true;
-            const auto &selected_collider = selected[raw.collider_index];
-            out_hits.push_back(phys::OverlapHit{
-                selected_collider.identity.name,
-                selected_collider.identity,
-                selected_collider.collider->metadata,
-            });
-        }
-        phys::internal::orderOverlapHits(out_hits);
-        return Physics::Status::ok;
-    } catch (const std::invalid_argument &) {
-        out_hits.clear();
-        return Physics::Status::invalid_argument;
-    } catch (const std::bad_alloc &) {
-        out_hits.clear();
-        return Physics::Status::out_of_memory;
-    } catch (...) {
-        out_hits.clear();
-        return Physics::Status::provider_error;
-    }
+        return decodeHits(raw_hits, selected.size(),
+            [&](const Physics::ProviderOverlapHitV1 &raw,
+                std::vector<phys::OverlapHit> &hits) {
+                if (raw.reserved != 0) return false;
+                const auto &selected_collider = selected[raw.collider_index];
+                hits.push_back(phys::OverlapHit{
+                    selected_collider.identity.name,
+                    selected_collider.identity,
+                    selected_collider.collider->metadata,
+                });
+                return true;
+            },
+            phys::internal::orderOverlapHits, out_hits);
+    });
 }
 
 Physics::Status shapeCastMeshes(
@@ -897,12 +955,16 @@ Physics::Status shapeCastMeshes(
     const phys::QueryFilter *filter, std::vector<phys::ShapeCastQueryHit> &out_hits,
     std::span<const phys::TriangleMesh *const> acceleration) noexcept {
     using Physics::Status;
-    out_hits.clear();
-    try {
+    return runQuery(out_hits, [&]() -> Status {
         const auto query_shape = toAbi(shape);
         if (!finite(toAbi(delta))) return Status::invalid_argument;
+        MeshQuerySet set;
+        if (const auto set_status =
+                MeshQuerySet::from(meshes, identities, metadata, acceleration, set);
+            set_status != Status::ok)
+            return set_status;
         SelectedMeshes selected;
-        const auto selected_status = selectMeshes(meshes, identities, metadata, filter, acceleration, selected);
+        const auto selected_status = selectMeshes(set, filter, selected);
         if (selected_status != Status::ok) return selected_status;
         if (selected.meshes.empty()) return Status::ok;
         std::vector<Physics::ProviderShapeCastHitV2> raw_hits;
@@ -935,51 +997,32 @@ Physics::Status shapeCastMeshes(
                 &ProviderDispatch::mesh_capsule_shape_cast_all, query, selected, raw_hits);
         }
         if (status != Status::ok) return status;
-        std::vector<bool> seen(selected.meshes.size(), false);
-        out_hits.reserve(raw_hits.size());
-        for (const auto &raw : raw_hits) {
-            Physics::Vec3V1 unit_normal{};
-            if (raw.collider_index >= selected.meshes.size() || seen[raw.collider_index] ||
-                !validShapeCastHit(raw, unit_normal)) {
-                out_hits.clear();
-                return Status::provider_error;
-            }
-            seen[raw.collider_index] = true;
-            const auto &identity = selected.identities[raw.collider_index];
-            const bool initial = (raw.flags & Physics::shape_cast_initial_overlap) != 0;
-            out_hits.push_back(phys::ShapeCastQueryHit{
-                identity.name, std::clamp(raw.time_of_impact, 0.0F, 1.0F),
-                initial ? raw.penetration_depth : 0.0F,
-                fromAbi(raw.position), fromAbi(unit_normal), initial, identity,
-                metadata[selected.source_indices[raw.collider_index]],
-                (raw.flags & Physics::shape_cast_approximate_depenetration) != 0});
-        }
-        phys::internal::orderShapeCastHits(out_hits);
-        return Status::ok;
-    } catch (const std::invalid_argument &) {
-        out_hits.clear();
-        return Status::invalid_argument;
-    } catch (const std::bad_alloc &) {
-        out_hits.clear();
-        return Status::out_of_memory;
-    } catch (...) {
-        out_hits.clear();
-        return Status::provider_error;
-    }
+        return decodeHits(raw_hits, selected.meshes.size(),
+            [&](const Physics::ProviderShapeCastHitV2 &raw,
+                std::vector<phys::ShapeCastQueryHit> &hits) {
+                Physics::Vec3V1 unit_normal{};
+                if (!validShapeCastHit(raw, unit_normal)) return false;
+                const auto &identity = selected.identities[raw.collider_index];
+                hits.push_back(shapeCastQueryHit(raw, unit_normal, identity,
+                    set.metadata[selected.source_indices[raw.collider_index]]));
+                return true;
+            },
+            phys::internal::orderShapeCastHits, out_hits);
+    });
 }
 
 Physics::Status shapeCastAll(const phys::Shape &moving_shape, vec3 delta,
                              std::span<const phys::Collider> colliders,
                              const phys::QueryFilter *filter,
                              std::vector<phys::ShapeCastQueryHit> &out_hits) noexcept {
-    out_hits.clear();
-    try {
+    using Physics::Status;
+    return runQuery(out_hits, [&]() -> Status {
         const auto abi_delta = toAbi(delta);
         if (!finite(abi_delta)) {
-            return Physics::Status::invalid_argument;
+            return Status::invalid_argument;
         }
         if (colliders.size() > std::numeric_limits<std::uint32_t>::max()) {
-            return Physics::Status::out_of_memory;
+            return Status::out_of_memory;
         }
 
         std::vector<Physics::ShapeV1> shapes;
@@ -992,57 +1035,27 @@ Physics::Status shapeCastAll(const phys::Shape &moving_shape, vec3 delta,
         };
 
         std::vector<Physics::ProviderShapeCastHitV2> raw_hits;
-        auto &value = registry();
-        {
-            std::shared_lock lock{value.mutex};
-            const auto *provider = providerForCapabilityLocked(
-                value, Physics::query_shape_cast_all);
-            if (provider == nullptr) return Physics::Status::unavailable;
-            const auto status = invokeProvider(
-                *provider, Physics::query_shape_cast_all, provider->shape_cast_all,
-                query, selected.size(), raw_hits);
-            if (status != Physics::Status::ok) return status;
-        }
+        const auto status = invokePrimitiveProvider(Physics::query_shape_cast_all,
+            &ProviderDispatch::shape_cast_all, query, selected.size(), raw_hits);
+        if (status != Status::ok) return status;
 
-        std::vector<bool> seen(selected.size(), false);
-        out_hits.reserve(raw_hits.size());
-        for (const auto &raw : raw_hits) {
-            Physics::Vec3V1 unit_normal{};
-            const bool initial_overlap =
-                (raw.flags & Physics::shape_cast_initial_overlap) != 0;
-            if (raw.collider_index >= selected.size() || seen[raw.collider_index] ||
-                (raw.flags & Physics::shape_cast_approximate_depenetration) != 0 ||
-                !validShapeCastHit(raw, unit_normal)) {
-                out_hits.clear();
-                return Physics::Status::provider_error;
-            }
-
-            seen[raw.collider_index] = true;
-            const auto &selected_collider = selected[raw.collider_index];
-            out_hits.push_back(phys::ShapeCastQueryHit{
-                selected_collider.identity.name,
-                std::clamp(raw.time_of_impact, 0.0F, 1.0F),
-                initial_overlap ? raw.penetration_depth : 0.0F,
-                fromAbi(raw.position),
-                fromAbi(unit_normal),
-                initial_overlap,
-                selected_collider.identity,
-                selected_collider.collider->metadata,
-                (raw.flags & Physics::shape_cast_approximate_depenetration) != 0,
-            });
-        }
-        phys::internal::orderShapeCastHits(out_hits);
-        return Physics::Status::ok;
-    } catch (const std::invalid_argument &) {
-        out_hits.clear();
-        return Physics::Status::invalid_argument;
-    } catch (const std::bad_alloc &) {
-        out_hits.clear();
-        return Physics::Status::out_of_memory;
-    } catch (...) {
-        out_hits.clear();
-        return Physics::Status::provider_error;
-    }
+        return decodeHits(raw_hits, selected.size(),
+            [&](const Physics::ProviderShapeCastHitV2 &raw,
+                std::vector<phys::ShapeCastQueryHit> &hits) {
+                Physics::Vec3V1 unit_normal{};
+                // Unlike the mesh path, a primitive provider may not report an
+                // approximate depenetration.
+                if ((raw.flags & Physics::shape_cast_approximate_depenetration) != 0 ||
+                    !validShapeCastHit(raw, unit_normal))
+                    return false;
+                const auto &selected_collider = selected[raw.collider_index];
+                hits.push_back(shapeCastQueryHit(raw, unit_normal,
+                    selected_collider.identity,
+                    selected_collider.collider->metadata));
+                return true;
+            },
+            phys::internal::orderShapeCastHits, out_hits);
+    });
 }
 
 } // namespace Pelican::physics_internal
