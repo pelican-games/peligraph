@@ -856,6 +856,9 @@ EditorProjectionPlan planEditorProjectionOrThrow(
                                        operation.scene_id,
                                        operation.object_id, false,
                                        operation.origin_transition);
+                } else {
+                    static_assert(editorCanonicalOperationUnhandled<Operation>,
+                                  "unhandled EditorCanonicalOperation alternative");
                 }
             },
             plan.operations[operation_index]);

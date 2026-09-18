@@ -544,6 +544,60 @@ bool scenePayloadContainsPrefabKey(const Json &document) {
     return false;
 }
 
+// SNAPSHOT0 gates 1-3, the same three for SnapshotV1 and SnapshotV2: declared
+// version, 64 MiB size ceiling, then the sha256 digest over the payload. The
+// order is part of the wire contract - do not reorder them, and do not move
+// parsing ahead of the digest check.
+template <class Request>
+void validateSnapshotEnvelope(const Request &request, std::uint64_t version) {
+    if (request.schema_version != version) {
+        throw EditorCommandError{
+            EditorCommandErrorCode::UnsupportedSnapshotVersion,
+            "unsupported snapshot version: " +
+                std::to_string(request.schema_version)};
+    }
+    if (request.semantic_scene_bytes.size() > maxSceneSnapshotBytes) {
+        throw EditorCommandError{EditorCommandErrorCode::SnapshotTooLarge,
+                                 "snapshot exceeds 64 MiB"};
+    }
+    const auto actual_digest = picosha2::hash256_hex_string(
+        request.semantic_scene_bytes.begin(),
+        request.semantic_scene_bytes.end());
+    if (request.digest.algorithm != "sha256" ||
+        request.digest.hex != actual_digest) {
+        throw EditorCommandError{EditorCommandErrorCode::DigestMismatch,
+                                 "snapshot digest does not match semantic_scene_bytes"};
+    }
+}
+
+// The committed reload outcome, shaped for both import versions: the effect
+// errors only exist on the partially committed alternative, the diagnostics on
+// both.
+ImportSceneSnapshotResult makeImportResult(SceneImportResult &imported,
+                                           std::string current_scene_id) {
+    const auto revision = imported.revision;
+    if (revision.value > maxExactEditorJsonInteger) {
+        throw std::overflow_error("SceneRevision exceeds 2^53-1");
+    }
+    return ImportSceneSnapshotResult{
+        .scene_revision = revision,
+        .current_scene_id = std::move(current_scene_id),
+        .effect_errors = std::holds_alternative<CommittedWithEffectFailure>(
+                             imported.load_result)
+            ? std::move(std::get<CommittedWithEffectFailure>(
+                            imported.load_result).effect_errors)
+            : std::vector<CommittedWithEffectFailure::EffectError>{},
+        .diagnostics = std::holds_alternative<CommittedWithEffectFailure>(
+                           imported.load_result)
+                           ? std::get<CommittedWithEffectFailure>(
+                                 imported.load_result)
+                                 .diagnostics
+                           : std::get<SceneLoadCommitted>(
+                                 imported.load_result)
+                                 .diagnostics,
+    };
+}
+
 } // namespace
 
 std::string_view editorCommandErrorCodeName(EditorCommandErrorCode code) noexcept {
@@ -1060,25 +1114,7 @@ ImportSceneSnapshotResult EditorCommandService::importSceneSnapshot(
     }
     // SNAPSHOT0 validation order is part of the wire contract. Do not merge
     // these gates or move parsing ahead of the digest check.
-    if (request.schema_version != 1) {
-        throw EditorCommandError{
-            EditorCommandErrorCode::UnsupportedSnapshotVersion,
-            "unsupported snapshot version: " +
-                std::to_string(request.schema_version)};
-    }
-    if (request.semantic_scene_bytes.size() > maxSceneSnapshotBytes) {
-        throw EditorCommandError{EditorCommandErrorCode::SnapshotTooLarge,
-                                 "snapshot exceeds 64 MiB"};
-    }
-
-    const auto actual_digest = picosha2::hash256_hex_string(
-        request.semantic_scene_bytes.begin(),
-        request.semantic_scene_bytes.end());
-    if (request.digest.algorithm != "sha256" ||
-        request.digest.hex != actual_digest) {
-        throw EditorCommandError{EditorCommandErrorCode::DigestMismatch,
-                                 "snapshot digest does not match semantic_scene_bytes"};
-    }
+    validateSnapshotEnvelope(request, 1);
     AuthoringSceneDocument validated;
     try {
         validated = AuthoringSceneDocument::load(
@@ -1108,27 +1144,7 @@ ImportSceneSnapshotResult EditorCommandService::importSceneSnapshot(
     try {
         auto imported = dependencies_.import_scene_snapshot(
             request.semantic_scene_bytes, request.current_scene_id);
-        const auto revision = imported.revision;
-        if (revision.value > maxExactEditorJsonInteger) {
-            throw std::overflow_error("SceneRevision exceeds 2^53-1");
-        }
-        return ImportSceneSnapshotResult{
-            .scene_revision = revision,
-            .current_scene_id = request.current_scene_id,
-            .effect_errors = std::holds_alternative<CommittedWithEffectFailure>(
-                                 imported.load_result)
-                ? std::move(std::get<CommittedWithEffectFailure>(
-                                imported.load_result).effect_errors)
-                : std::vector<CommittedWithEffectFailure::EffectError>{},
-            .diagnostics = std::holds_alternative<CommittedWithEffectFailure>(
-                               imported.load_result)
-                               ? std::get<CommittedWithEffectFailure>(
-                                     imported.load_result)
-                                     .diagnostics
-                               : std::get<SceneLoadCommitted>(
-                                     imported.load_result)
-                                     .diagnostics,
-        };
+        return makeImportResult(imported, request.current_scene_id);
     } catch (const EditorCommandError &) {
         throw;
     } catch (const std::exception &error) {
@@ -1141,25 +1157,7 @@ ImportSceneSnapshotResult EditorCommandService::importSceneSnapshotV2(
     const ImportSceneSnapshotRequestV2 &request) {
     // SnapshotV2 retains SNAPSHOT0's five gates and inserts closure matching
     // after parse/semantic validation but before current-scene selection.
-    if (request.schema_version != 2) {
-        throw EditorCommandError{
-            EditorCommandErrorCode::UnsupportedSnapshotVersion,
-            "unsupported snapshot version: " +
-                std::to_string(request.schema_version)};
-    }
-    if (request.semantic_scene_bytes.size() > maxSceneSnapshotBytes) {
-        throw EditorCommandError{EditorCommandErrorCode::SnapshotTooLarge,
-                                 "snapshot exceeds 64 MiB"};
-    }
-    const auto actual_digest = picosha2::hash256_hex_string(
-        request.semantic_scene_bytes.begin(),
-        request.semantic_scene_bytes.end());
-    if (request.digest.algorithm != "sha256" ||
-        request.digest.hex != actual_digest) {
-        throw EditorCommandError{
-            EditorCommandErrorCode::DigestMismatch,
-            "snapshot digest does not match semantic_scene_bytes"};
-    }
+    validateSnapshotEnvelope(request, 2);
 
     AuthoringSceneDocument validated;
     ResolvedScene validated_projection;
@@ -1222,26 +1220,7 @@ ImportSceneSnapshotResult EditorCommandService::importSceneSnapshotV2(
     try {
         auto imported = dependencies_.import_scene_snapshot_versioned(
             request.semantic_scene_bytes, request.current_scene_id, 2);
-        const auto revision = imported.revision;
-        if (revision.value > maxExactEditorJsonInteger) {
-            throw std::overflow_error("SceneRevision exceeds 2^53-1");
-        }
-        return {.scene_revision = revision,
-                .current_scene_id = request.current_scene_id,
-                .effect_errors =
-                    std::holds_alternative<CommittedWithEffectFailure>(
-                        imported.load_result)
-                    ? std::move(std::get<CommittedWithEffectFailure>(
-                                    imported.load_result).effect_errors)
-                    : std::vector<CommittedWithEffectFailure::EffectError>{},
-                .diagnostics =
-                    std::holds_alternative<CommittedWithEffectFailure>(
-                        imported.load_result)
-                        ? std::get<CommittedWithEffectFailure>(
-                              imported.load_result)
-                              .diagnostics
-                        : std::get<SceneLoadCommitted>(imported.load_result)
-                              .diagnostics};
+        return makeImportResult(imported, request.current_scene_id);
     } catch (const EditorCommandError &) {
         throw;
     } catch (const PrefabError &error) {

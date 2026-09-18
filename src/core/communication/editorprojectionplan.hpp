@@ -254,6 +254,16 @@ using EditorCanonicalOperation = std::variant<
     EditorSetPrefabParameterOperation, EditorUnsetPrefabParameterOperation,
     EditorUnpackPrefabOperation, EditorRestorePrefabOperation>;
 
+// Terminal guard for the `if constexpr` chains that hand-expand the twelve
+// alternatives above.  Without an `else` an alternative added to the variant
+// compiles and is silently ignored at run time; with
+// `else static_assert(editorCanonicalOperationUnhandled<Operation>)` every such
+// chain has to name the new alternative before the build succeeds.  Branches
+// that deliberately do nothing for a group of alternatives list that group
+// explicitly rather than falling through.
+template <class Operation>
+inline constexpr bool editorCanonicalOperationUnhandled = false;
+
 // Converts journal-prepared wire into the typed operation shared by replay,
 // planning, and execution.  The wire value is already canonical here; this
 // function only freezes it and derives stable routing fields.  In particular,

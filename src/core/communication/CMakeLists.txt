@@ -38,6 +38,8 @@ target_sources(pelican_core PRIVATE
     proceduralassetpublication.cpp
     editorcommandservice.cpp
     editorjournal.cpp
+    editorjournalintegrity.cpp
+    editorjournalops.cpp
     editorpreviewservice.cpp
     editorprojectionplan.cpp
     renderconfigeditor.cpp

@@ -1337,6 +1337,32 @@ EditorProjectionResult materializeEditorProjection(
                                 return std::pair{stable_name,
                                                  typed.object_id};
                             }
+                        } else if constexpr (
+                            std::same_as<Operation,
+                                         EditorRemoveComponentOperation> ||
+                            std::same_as<Operation, EditorReparentOperation> ||
+                            std::same_as<Operation, EditorSpawnOperation> ||
+                            std::same_as<Operation, EditorDestroyOperation> ||
+                            std::same_as<Operation,
+                                         EditorRemoveObjectsOperation> ||
+                            std::same_as<Operation,
+                                         EditorRestoreObjectsOperation> ||
+                            std::same_as<Operation,
+                                         EditorSetPrefabParameterOperation> ||
+                            std::same_as<Operation,
+                                         EditorUnsetPrefabParameterOperation> ||
+                            std::same_as<Operation,
+                                         EditorUnpackPrefabOperation> ||
+                            std::same_as<Operation,
+                                         EditorRestorePrefabOperation>) {
+                            // No authored behaviour body to name a stable type
+                            // with: removal carries only the occurrence, and
+                            // the object/prefab lifecycle operations reach the
+                            // registry through their own lifecycle routes.
+                        } else {
+                            static_assert(
+                                editorCanonicalOperationUnhandled<Operation>,
+                                "unhandled EditorCanonicalOperation alternative");
                         }
                         return std::nullopt;
                     },
@@ -1643,6 +1669,29 @@ EditorProjectionResult materializeEditorProjection(
                                     operation.component_index,
                                 .identity = behaviorIdentity(operation.wire),
                             });
+                        } else if constexpr (
+                            std::same_as<Operation, EditorReparentOperation> ||
+                            std::same_as<Operation, EditorSpawnOperation> ||
+                            std::same_as<Operation, EditorDestroyOperation> ||
+                            std::same_as<Operation,
+                                         EditorRemoveObjectsOperation> ||
+                            std::same_as<Operation,
+                                         EditorRestoreObjectsOperation> ||
+                            std::same_as<Operation,
+                                         EditorSetPrefabParameterOperation> ||
+                            std::same_as<Operation,
+                                         EditorUnsetPrefabParameterOperation> ||
+                            std::same_as<Operation,
+                                         EditorUnpackPrefabOperation> ||
+                            std::same_as<Operation,
+                                         EditorRestorePrefabOperation>) {
+                            // planEditorProjection only emits BehaviorBatch for
+                            // the three component operations above; the object
+                            // and prefab lifecycles use their own route kinds.
+                        } else {
+                            static_assert(
+                                editorCanonicalOperationUnhandled<Operation>,
+                                "unhandled EditorCanonicalOperation alternative");
                         }
                     },
                     plan.operations.at(route.operation_index));

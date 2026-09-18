@@ -1,4 +1,7 @@
 #include "editorjournal.hpp"
+#include "editorjournalintegrity.hpp"
+#include "editorjournalinternal.hpp"
+#include "editorjournalops.hpp"
 
 #include "../loader/authoringsceneauthority.hpp"
 
@@ -24,23 +27,17 @@
 #include <utility>
 
 namespace Pelican {
-namespace {
+namespace EditorJournalInternal {
 
 using Json = nlohmann::json;
 using OrderedJson = nlohmann::ordered_json;
 
 constexpr std::uint64_t maxExactJsonInteger = UINT64_C(9007199254740991);
 
-class EditFailure final : public std::runtime_error {
-  public:
-    EditorEditErrorCode code;
-    OrderedJson payload;
-
-    EditFailure(EditorEditErrorCode error_code, OrderedJson error_payload,
-                std::string message)
-        : std::runtime_error(std::move(message)), code{error_code},
-          payload(std::move(error_payload)) {}
-};
+EditFailure::EditFailure(EditorEditErrorCode error_code,
+                         OrderedJson error_payload, std::string message)
+    : std::runtime_error(std::move(message)), code{error_code},
+      payload(std::move(error_payload)) {}
 
 [[noreturn]] void editFailure(EditorEditErrorCode code, OrderedJson payload,
                               std::string message) {
@@ -67,7 +64,7 @@ void requireOnly(const Json &value,
 }
 
 std::uint64_t exactUnsigned(const Json &value, std::string_view context,
-                            bool nonzero = false) {
+                            bool nonzero) {
     std::uint64_t result = 0;
     if (value.is_number_unsigned()) {
         result = value.get<std::uint64_t>();
@@ -117,16 +114,6 @@ std::optional<std::string> optionalString(const Json &value,
     return found->get<std::string>();
 }
 
-struct ObjectLocation {
-    std::string scene_id;
-    std::size_t scene_index = 0;
-    std::size_t object_index = 0;
-    AuthoringObjectId object_id{};
-    std::optional<std::string> name;
-    std::optional<std::string> parent;
-    Json authored;
-};
-
 std::vector<ObjectLocation> objectLocations(const AuthoringSceneDocument &document) {
     std::vector<ObjectLocation> result;
     const auto scenes = AuthoringSceneAuthority::query(document);
@@ -149,8 +136,7 @@ std::vector<ObjectLocation> objectLocations(const AuthoringSceneDocument &docume
 
 ObjectLocation requireObjectLocation(const AuthoringSceneDocument &document,
                                      AuthoringObjectId object_id,
-                                     EditorEditErrorCode error =
-                                         EditorEditErrorCode::closure_unresolvable) {
+                                     EditorEditErrorCode error) {
     const auto objects = objectLocations(document);
     const auto found = std::find_if(objects.begin(), objects.end(),
                                     [&](const auto &object) {
@@ -218,7 +204,7 @@ bool hasComponent(const ObjectLocation &object, std::string_view component_name)
 Json canonicalComponent(const Json &component, AuthoringObjectId object_id,
                         std::string_view component_name,
                         const std::function<bool(std::string_view)> &
-                            component_exists = {}) {
+                            component_exists) {
     const auto *codec = findComponentCodec(component_name);
     if (codec == nullptr) {
         if (component_exists && component_exists(component_name)) {
@@ -516,26 +502,6 @@ class LocalDocumentTarget final : public EditorProjectionDocumentTarget {
     }
 };
 
-struct PreparedUnpack {
-    ResolvedScene generated_scene;
-    std::string scene_id;
-    AuthoringObjectId object_id{};
-    std::string instance_id;
-    std::vector<OriginTransitionAuthority> authority;
-};
-
-struct PreparedOperation {
-    std::vector<EditorProjectionCommand> commands;
-    OrderedJson forward;
-    OrderedJson inverse;
-    std::vector<AuthoringObjectId> affected;
-    std::string stable_target;
-    std::vector<std::string> read_set;
-    std::vector<std::string> write_set;
-    OrderedJson structural_domain = OrderedJson::object();
-    std::optional<PreparedUnpack> unpack;
-};
-
 struct PreparedBatch {
     std::vector<EditorProjectionCommand> commands;
     std::vector<OrderedJson> forward;
@@ -547,7 +513,7 @@ struct PreparedBatch {
 
 std::string stableComponentTarget(AuthoringObjectId object_id,
                                   std::string_view component,
-                                  std::string_view field_path = {}) {
+                                  std::string_view field_path) {
     auto result = "/authoring_objects/" + std::to_string(object_id.value) +
                   "/components/" + std::string{component};
     if (!field_path.empty() && field_path != "/") result += std::string{field_path};
@@ -557,7 +523,7 @@ std::string stableComponentTarget(AuthoringObjectId object_id,
 std::string stableBehaviorTarget(AuthoringObjectId object_id,
                                  std::size_t attachment_index,
                                  std::uint64_t attachment_handle,
-                                 std::string_view field_path = {}) {
+                                 std::string_view field_path) {
     (void)attachment_handle;
     auto result = "/authoring_objects/" + std::to_string(object_id.value) +
                   "/behaviors/occurrences/" +
@@ -683,14 +649,14 @@ void copyBehaviorAttachmentWitness(const Json &raw, OrderedJson &forward,
 std::uint64_t internalIdentityValue(const Json &operation,
                                     std::string_view field,
                                     std::string_view context,
-                                    bool nonzero = false) {
+                                    bool nonzero) {
     const auto found = operation.find(std::string{field});
     return found == operation.end() ? 0 : exactUnsigned(*found, context, nonzero);
 }
 
 std::vector<std::string> pointerTokens(std::string_view pointer,
                                        std::string_view context,
-                                       bool allow_empty = false) {
+                                       bool allow_empty) {
     if (pointer.empty()) {
         if (allow_empty) return {};
         throw std::invalid_argument(std::string{context} +
@@ -739,21 +705,8 @@ bool decimalIndex(std::string_view token) noexcept {
            });
 }
 
-struct AddressedComponent {
-    ObjectLocation object;
-    std::size_t component_index = 0;
-    std::string component_name;
-    Json component;
-    OrderedJson attachment_identity;
-    std::string list_path;
-    std::vector<std::string> list_tokens;
-    std::optional<std::uint32_t> row_id;
-    std::string leaf_path;
-    std::vector<std::string> leaf_tokens;
-};
-
 std::uint32_t exactU32(const Json &value, std::string_view context,
-                       bool nonzero = false) {
+                       bool nonzero) {
     const auto raw = exactUnsigned(value, context, nonzero);
     if (raw > std::numeric_limits<std::uint32_t>::max()) {
         throw std::invalid_argument(std::string{context} + " exceeds u32");
@@ -1097,7 +1050,7 @@ void validateListHighWaterMonotonic(const Json &previous, Json &next,
 void validateRawComponentTransition(const Json &previous, Json &next,
                                     AuthoringObjectId object_id,
                                     std::string_view component_name,
-                                    bool preserve_on_replay = false) {
+                                    bool preserve_on_replay) {
     validateRawComponent(next, object_id, component_name);
     std::optional<Schema::Node> owned;
     const Schema::Node *schema = nullptr;
@@ -1218,6 +1171,15 @@ void rejectLegacyListPointer(const Json &component,
                       : OrderedJson(nullptr)}},
                 error.what());
 }
+
+} // namespace EditorJournalInternal
+
+// The helpers above keep external linkage so editorjournalops.cpp and
+// editorjournalintegrity.cpp can call them; everything below stays
+// internal to this translation unit.
+using namespace EditorJournalInternal;
+
+namespace {
 
 EditorProjectionCommand makePrefabParameterCommand(
     const ObjectLocation &object, std::string parameter,
@@ -1403,26 +1365,6 @@ OrderedJson unpackExpandedComponentsJson(
     for (const auto &component : authority) {
         result.push_back({{"component_key", component.component_key},
                           {"body", component.body}});
-    }
-    return result;
-}
-
-std::vector<OriginTransitionAuthority> unpackAuthorityFromJson(
-    const Json &value) {
-    if (!value.is_array()) {
-        throw std::invalid_argument(
-            "unpack expanded_components must be an array");
-    }
-    std::vector<OriginTransitionAuthority> result;
-    result.reserve(value.size());
-    for (const auto &entry : value) {
-        requireOnly(entry, {"component_key", "body"},
-                    "unpack expanded component");
-        result.push_back({
-            .component_key = requireString(entry, "component_key",
-                                           "unpack expanded component"),
-            .body = entry.at("body"),
-        });
     }
     return result;
 }
@@ -1648,1258 +1590,6 @@ void finalizePreparedUnpack(PreparedOperation &prepared,
     } catch (const OriginTransitionError &error) {
         throwOriginTransitionFailure(error, unpack.object_id);
     }
-}
-
-std::string addressedTarget(const AddressedComponent &address,
-                            std::optional<std::uint32_t> row_id,
-                            std::string_view leaf_path = {}) {
-    auto result = "/authoring_objects/" +
-                  std::to_string(address.object.object_id.value) +
-                  "/attachments/" + std::to_string(address.component_index) +
-                  address.list_path;
-    if (row_id) result += "/rows/by-id/" + std::to_string(*row_id);
-    if (!leaf_path.empty()) result += std::string{leaf_path};
-    return result;
-}
-
-void copyAddressRuntimeIdentity(const Json &raw, OrderedJson &operation) {
-    for (const auto field : {"attachment_handle", "attachment_seq"}) {
-        if (const auto found = raw.find(field); found != raw.end()) {
-            operation[field] = *found;
-        }
-    }
-}
-
-OrderedJson canonicalAddress(const AddressedComponent &address,
-                             std::optional<std::uint32_t> row_id,
-                             std::string_view leaf_path) {
-    OrderedJson result{
-        {"authoring_object_id", address.object.object_id.value},
-        {"component",
-         {{"type", address.attachment_identity.at("type")},
-          {"occurrence", address.component_index},
-          {"origin", address.attachment_identity.at("origin")}}},
-        {"list_path", address.list_path},
-    };
-    if (row_id) result["row_id"] = *row_id;
-    if (!leaf_path.empty()) result["leaf_path"] = leaf_path;
-    return result;
-}
-
-PreparedOperation addressedPreparedOperation(
-    const Json &raw, const AddressedComponent &address,
-    std::string_view op, const Json &next_component,
-    const Json &inverse_component, std::optional<std::uint32_t> row_id,
-    std::string_view leaf_path, std::optional<Json> value = std::nullopt,
-    std::optional<OrderedJson> position = std::nullopt) {
-    const auto target = addressedTarget(address, row_id, leaf_path);
-    OrderedJson forward{
-        {"op", op},
-        {"object_id", address.object.object_id.value},
-        {"scene_id", address.object.scene_id},
-        {"component_slot", address.component_name},
-        {"attachment_index", address.component_index},
-        {"attachment_identity", address.attachment_identity},
-        {"address", canonicalAddress(address, row_id, leaf_path)},
-        {"authored_component", next_component},
-    };
-    OrderedJson inverse{
-        {"op", op},
-        {"object_id", address.object.object_id.value},
-        {"scene_id", address.object.scene_id},
-        {"component_slot", address.component_name},
-        {"attachment_index", address.component_index},
-        {"attachment_identity", address.attachment_identity},
-        {"address", canonicalAddress(address, row_id, leaf_path)},
-        {"authored_component", inverse_component},
-    };
-    if (value) forward["value"] = *value;
-    if (position) forward["position"] = *position;
-    copyAddressRuntimeIdentity(raw, forward);
-    copyAddressRuntimeIdentity(raw, inverse);
-    return PreparedOperation{
-        .commands = {makeReplaceComponentCommand(
-            address.object, address.component_index, address.component_name,
-            next_component)},
-        .forward = std::move(forward),
-        .inverse = std::move(inverse),
-        .affected = {address.object.object_id},
-        .stable_target = target,
-        .read_set = {target},
-        .write_set = {target},
-        .structural_domain =
-            {{"kind", "component_list_row"},
-             {"object", address.object.object_id.value},
-             {"slot", address.component_name},
-             {"attachment", address.attachment_identity},
-             {"list_path", address.list_path},
-             {"row_id", row_id ? OrderedJson(*row_id) : OrderedJson(nullptr)},
-             {"leaf_path", leaf_path.empty() ? OrderedJson(nullptr)
-                                               : OrderedJson(leaf_path)}},
-    };
-}
-
-PreparedOperation prepareAddressedSet(
-    const Json &raw, const AuthoringSceneDocument &document) {
-    constexpr auto context = "set_component_value";
-    requireOnly(raw, {"op", "address", "value", "attachment_handle",
-                      "attachment_seq"}, context);
-    if (!raw.contains("value")) {
-        throw std::invalid_argument("set_component_value value is required");
-    }
-    auto address = requireComponentAddress(raw, document, context, false);
-    const auto &list_schema = requireListSchema(address);
-    if (address.leaf_tokens.empty()) {
-        editFailure(EditorEditErrorCode::schema_violation,
-                    {{"object", address.object.object_id.value},
-                     {"slot", address.component_name},
-                     {"field_path", address.leaf_path},
-                     {"detail", "row leaf_path must identify one leaf field"}},
-                    "row leaf_path must identify a leaf field");
-    }
-    const auto &leaf_schema =
-        requireRowLeafSchema(address, list_schema);
-    if (leaf_schema.tag == Schema::NodeTag::Struct ||
-        leaf_schema.tag == Schema::NodeTag::List) {
-        editFailure(EditorEditErrorCode::schema_violation,
-                    {{"object", address.object.object_id.value},
-                     {"slot", address.component_name},
-                     {"field_path", address.leaf_path},
-                     {"detail", "leaf_path must identify a scalar field"}},
-                    "leaf_path must identify a scalar field");
-    }
-    Json next = address.component;
-    auto *list = findListValue(next, address);
-    if (list == nullptr) {
-        editFailure(EditorEditErrorCode::row_envelope_missing,
-                    {{"object", address.object.object_id.value},
-                     {"slot", address.component_name},
-                     {"field_path", address.list_path}},
-                    "RowEnvelopeMissing: list is absent");
-    }
-    auto [row_index, row] = requireRow(*list, *address.row_id, address);
-    (void)row_index;
-    try {
-        const Json::json_pointer pointer{address.leaf_path};
-        (void)row.at(pointer);
-        row[pointer] = raw.at("value");
-    } catch (const std::exception &error) {
-        editFailure(EditorEditErrorCode::schema_violation,
-                    {{"object", address.object.object_id.value},
-                     {"slot", address.component_name},
-                     {"field_path", address.leaf_path},
-                     {"row_id", *address.row_id},
-                     {"detail", error.what()}},
-                    error.what());
-    }
-    validateRawComponentTransition(address.component, next,
-                                   address.object.object_id,
-                                   address.component_name);
-    return addressedPreparedOperation(
-        raw, address, context, next, address.component, address.row_id,
-        address.leaf_path, raw.at("value"));
-}
-
-std::pair<std::size_t, std::uint32_t> insertionPosition(
-    Json &list, const Json &raw, const AddressedComponent &address) {
-    const auto found = raw.find("position");
-    if (found == raw.end()) {
-        throw std::invalid_argument(
-            "list row requires position for a list row");
-    }
-    requireObject(*found, "list row position");
-    const bool has_before = found->contains("before");
-    const bool has_end = found->contains("end");
-    if (has_before == has_end) {
-        throw std::invalid_argument(
-            "list row position requires exactly one of before and end");
-    }
-    if (has_end) {
-        requireOnly(*found, {"end"}, "list row position");
-        if (!found->at("end").is_boolean() ||
-            !found->at("end").get<bool>()) {
-            throw std::invalid_argument(
-                "list row position.end must be true");
-        }
-        return {list.at("rows").size(), 0};
-    }
-    requireOnly(*found, {"before"}, "list row position");
-    const auto before = exactU32(found->at("before"),
-                                 "list row position.before", true);
-    auto [index, row] = requireRow(list, before, address);
-    (void)row;
-    return {index, before};
-}
-
-std::optional<Schema::Node> fieldSchemaAt(const Json &component,
-                                          std::string_view component_name,
-                                          std::span<const std::string> tokens) {
-    std::optional<Schema::Node> owned;
-    const Schema::Node *node = nullptr;
-    std::size_t index = 0;
-    if (component_name == "behavior") {
-        if (tokens.empty() || tokens.front() != "params") return std::nullopt;
-        const auto *registration = internal::getBehaviorRegisterer().findByName(
-            component.value("type", std::string{}));
-        if (registration == nullptr) return std::nullopt;
-        node = internal::getBehaviorRegisterer().schemaFor(*registration);
-        if (node == nullptr) {
-            // A v2 behavior keeps only the flat schema; lift it into the same
-            // owning model so both paths below read one representation.
-            owned = internal::hostSchemaNode(
-                SchemaNode::fromFlat(registration->params_schema));
-            node = &*owned;
-        }
-        index = 1;
-    } else if (const auto *codec = findComponentCodec(component_name)) {
-        owned = internal::hostSchemaNode(codec->schemaNode());
-        node = &*owned;
-    }
-    for (; node != nullptr && index < tokens.size(); ++index) {
-        if (node->tag != Schema::NodeTag::Struct) return std::nullopt;
-        const auto child = std::find_if(
-            node->children.begin(), node->children.end(), [&](const auto &entry) {
-                return entry.name == tokens[index];
-            });
-        if (child == node->children.end()) return std::nullopt;
-        node = &*child;
-    }
-    if (node == nullptr) return std::nullopt;
-    return *node;
-}
-
-PreparedOperation prepareLegacyFieldMutation(
-    const Json &raw, const AuthoringSceneDocument &document, bool insert) {
-    const auto context = insert ? std::string_view{"insert_component_field"}
-                                : std::string_view{"remove_component_field"};
-    requireOnly(raw, {"op", "object_id", "component_slot", "field_path",
-                      "attachment_index", "attachment_handle",
-                      "attachment_seq", "attachment_identity"}, context);
-    const auto object_id = AuthoringObjectId{exactUnsigned(
-        raw.at("object_id"), std::string{context} + " object_id", true)};
-    const auto component_name = requireString(raw, "component_slot", context);
-    const auto field_path = requireString(raw, "field_path", context);
-    const auto tokens = pointerTokens(field_path,
-                                      std::string{context} + " field_path");
-    if (field_path == "/name" || field_path.starts_with("/name/")) {
-        throw std::invalid_argument(std::string{context} +
-                                    " cannot change component name");
-    }
-    const auto object = requireObjectLocation(document, object_id);
-    const bool behavior = component_name == "behavior";
-    std::pair<std::size_t, Json> located;
-    if (behavior) {
-        const auto found = raw.find("attachment_index");
-        if (found == raw.end()) {
-            throw std::invalid_argument(std::string{context} +
-                                        " behavior target requires attachment_index");
-        }
-        located = requireComponentAt(
-            object,
-            static_cast<std::size_t>(exactUnsigned(
-                *found, std::string{context} + " attachment_index")),
-            component_name);
-    } else {
-        located = requireComponent(object, component_name);
-    }
-    const auto &[component_index, old_component] = located;
-    rejectLegacyListPointer(old_component, component_name, tokens, object_id,
-                            field_path);
-    const auto field = fieldSchemaAt(old_component, component_name, tokens);
-    if (!field || field->tag == Schema::NodeTag::Struct ||
-        field->tag == Schema::NodeTag::List) {
-        editFailure(EditorEditErrorCode::schema_violation,
-                    {{"object", object_id.value},
-                     {"slot", component_name},
-                     {"field_path", field_path},
-                     {"detail", "field_path does not identify an editable field"}},
-                    "field_path does not identify an editable field");
-    }
-
-    Json next = old_component;
-    const Json::json_pointer pointer{field_path};
-    if (insert) {
-        try {
-            (void)next.at(pointer);
-            editFailure(EditorEditErrorCode::schema_violation,
-                        {{"object", object_id.value},
-                         {"slot", component_name},
-                         {"field_path", field_path},
-                         {"detail", "field already exists"}},
-                        "field already exists");
-        } catch (const EditFailure &) {
-            throw;
-        } catch (const nlohmann::json::out_of_range &) {
-        }
-        Json default_value;
-        if (field->default_value) {
-            default_value = *field->default_value;
-        } else {
-            // Legacy flat schemas do not retain default literals.  Decode to a
-            // temporary typed value solely to discover the selected default;
-            // never publish the resulting canonical component.
-            const auto canonical =
-                behavior ? canonicalBehaviorComponent(old_component, object_id)
-                         : canonicalComponent(old_component, object_id,
-                                              component_name);
-            try {
-                default_value = canonical.at(pointer);
-            } catch (const nlohmann::json::out_of_range &) {
-                editFailure(EditorEditErrorCode::schema_violation,
-                            {{"object", object_id.value},
-                             {"slot", component_name},
-                             {"field_path", field_path},
-                             {"detail", "field has no authored default"}},
-                            "field has no authored default");
-            }
-        }
-        if (behavior && !next.contains("params")) {
-            next["params"] = Json::object();
-        }
-        next[pointer] = std::move(default_value);
-    } else {
-        try {
-            (void)next.at(pointer);
-        } catch (const nlohmann::json::out_of_range &) {
-            editFailure(EditorEditErrorCode::schema_violation,
-                        {{"object", object_id.value},
-                         {"slot", component_name},
-                         {"field_path", field_path},
-                         {"detail", "field does not exist"}},
-                        "field does not exist");
-        }
-        Json *parent = &next;
-        for (std::size_t index = 0; index + 1 < tokens.size(); ++index) {
-            parent = &parent->at(tokens[index]);
-        }
-        parent->erase(tokens.back());
-    }
-    validateRawComponentTransition(old_component, next, object_id,
-                                   component_name);
-
-    const auto attachment_handle = internalIdentityValue(
-        raw, "attachment_handle", std::string{context} + " attachment_handle",
-        true);
-    const auto attachment_seq = internalIdentityValue(
-        raw, "attachment_seq", std::string{context} + " attachment_seq");
-    const auto target = behavior
-                            ? stableBehaviorTarget(object_id, component_index,
-                                                   attachment_handle, field_path)
-                            : stableComponentTarget(object_id, component_name,
-                                                    field_path);
-    OrderedJson forward{{"op", context},
-                        {"object_id", object_id.value},
-                        {"scene_id", object.scene_id},
-                        {"component_slot", component_name},
-                        {"field_path", field_path},
-                        {"authored_component", next}};
-    OrderedJson inverse{{"op", context},
-                        {"object_id", object_id.value},
-                        {"scene_id", object.scene_id},
-                        {"component_slot", component_name},
-                        {"field_path", field_path},
-                        {"authored_component", old_component}};
-    if (behavior) {
-        forward["attachment_index"] = component_index;
-        inverse["attachment_index"] = component_index;
-        forward["attachment_handle"] = attachment_handle;
-        inverse["attachment_handle"] = attachment_handle;
-        forward["attachment_seq"] = attachment_seq;
-        inverse["attachment_seq"] = attachment_seq;
-        copyBehaviorAttachmentWitness(raw, forward, inverse);
-    }
-    return PreparedOperation{
-        .commands = {makeReplaceComponentCommand(
-            object, component_index, component_name, next)},
-        .forward = std::move(forward),
-        .inverse = std::move(inverse),
-        .affected = {object_id},
-        .stable_target = target,
-        .read_set = {target},
-        .write_set = {target},
-        .structural_domain =
-            {{"kind", "value_field"},
-             {"object", object_id.value},
-             {"slot", component_name},
-             {"field_path", field_path},
-             {"attachment_index", behavior ? OrderedJson(component_index)
-                                             : OrderedJson(nullptr)}},
-    };
-}
-
-PreparedOperation prepareInsertField(
-    const Json &raw, const AuthoringSceneDocument &document) {
-    constexpr auto context = "insert_component_field";
-    if (!raw.contains("address")) {
-        return prepareLegacyFieldMutation(raw, document, true);
-    }
-    requireOnly(raw, {"op", "address", "value", "position",
-                      "attachment_handle", "attachment_seq"}, context);
-    auto address = requireComponentAddress(raw, document, context, true);
-    const auto &list_schema = requireListSchema(address);
-    Json next = address.component;
-
-    if (!address.row_id) {
-        if (!raw.contains("value") || !raw.at("value").is_object()) {
-            throw std::invalid_argument(
-                "insert_component_field list row value must be an object");
-        }
-        Json *list = findListValue(next, address);
-        const bool list_was_absent = list == nullptr;
-        if (list_was_absent) {
-            if (list_schema.presence != Schema::FieldPresence::Defaulted) {
-                editFailure(EditorEditErrorCode::schema_violation,
-                            {{"object", address.object.object_id.value},
-                             {"slot", address.component_name},
-                             {"field_path", address.list_path},
-                             {"detail", "missing list is not defaulted"}},
-                            "missing list is not defaulted");
-            }
-            list = &createMissingListValue(next, address);
-            *list = Json{{"$list", {{"v", 1}, {"next_id", 1}}},
-                         {"rows", Json::array()}};
-        }
-        validateListContainerShape(*list, address);
-        const auto next_id = exactU32(list->at("$list").at("next_id"),
-                                      "$list.next_id", true);
-        if (next_id == std::numeric_limits<std::uint32_t>::max()) {
-            editFailure(EditorEditErrorCode::row_id_exhausted,
-                        {{"object", address.object.object_id.value},
-                         {"slot", address.component_name},
-                         {"field_path", address.list_path}},
-                        "RowIdExhausted: list row id space is exhausted");
-        }
-        const auto [insert_index, before] =
-            insertionPosition(*list, raw, address);
-        Json authored_row = raw.at("value");
-        Json envelope{{"id", next_id}, {"v", 1}};
-        if (const auto supplied = authored_row.find("$row");
-            supplied != authored_row.end()) {
-            if (!supplied->is_object() || !supplied->contains("id") ||
-                !supplied->contains("v")) {
-                editFailure(EditorEditErrorCode::row_envelope_missing,
-                            {{"object", address.object.object_id.value},
-                             {"slot", address.component_name},
-                             {"field_path", address.list_path}},
-                            "RowEnvelopeMissing: copied row has an invalid $row envelope");
-            }
-            for (auto member = supplied->begin(); member != supplied->end();
-                 ++member) {
-                if (member.key() != "id" && member.key() != "v" &&
-                    member.key() != "hint") {
-                    editFailure(
-                        EditorEditErrorCode::schema_violation,
-                        {{"object", address.object.object_id.value},
-                         {"slot", address.component_name},
-                         {"field_path", address.list_path},
-                         {"detail", "copied $row envelope has an unknown member"}},
-                        "copied $row envelope has an unknown member");
-                }
-            }
-            if (exactU32(supplied->at("v"), "$row.v") != 1U) {
-                editFailure(EditorEditErrorCode::row_envelope_unsupported,
-                            {{"object", address.object.object_id.value},
-                             {"slot", address.component_name},
-                             {"field_path", address.list_path}},
-                            "RowEnvelopeUnsupported: copied row has an unknown $row version");
-            }
-            (void)exactU32(supplied->at("id"), "$row.id", true);
-            if (supplied->contains("hint")) {
-                envelope["hint"] = supplied->at("hint");
-            }
-            authored_row.erase(supplied);
-        }
-        Json row{{"$row", std::move(envelope)}};
-        for (auto field = authored_row.begin(); field != authored_row.end();
-             ++field) {
-            row[field.key()] = field.value();
-        }
-        auto &rows = list->at("rows");
-        rows.insert(rows.begin() + static_cast<Json::difference_type>(insert_index),
-                    std::move(row));
-        (*list)["$list"]["next_id"] = next_id + 1U;
-        validateRawComponentTransition(address.component, next,
-                                       address.object.object_id,
-                                       address.component_name);
-
-        Json inverse = address.component;
-        Json *inverse_list = findListValue(inverse, address);
-        if (inverse_list == nullptr) {
-            inverse_list = &createMissingListValue(inverse, address);
-            *inverse_list = Json{{"$list", {{"v", 1},
-                                             {"next_id", next_id + 1U}}},
-                                 {"rows", Json::array()}};
-        } else {
-            (*inverse_list)["$list"]["next_id"] = next_id + 1U;
-        }
-        address.row_id = next_id;
-        const OrderedJson position = before == 0
-                                         ? OrderedJson{{"end", true}}
-                                         : OrderedJson{{"before", before}};
-        return addressedPreparedOperation(
-            raw, address, context, next, inverse, next_id, {},
-            raw.at("value"), position);
-    }
-
-    if (raw.contains("position")) {
-        throw std::invalid_argument(
-            "insert_component_field leaf insertion does not accept position");
-    }
-    if (address.leaf_tokens.empty()) {
-        throw std::invalid_argument(
-            "insert_component_field with row_id requires leaf_path");
-    }
-    Json *list = findListValue(next, address);
-    if (list == nullptr) {
-        editFailure(EditorEditErrorCode::row_envelope_missing,
-                    {{"object", address.object.object_id.value},
-                     {"slot", address.component_name},
-                     {"field_path", address.list_path}},
-                    "RowEnvelopeMissing: list is absent");
-    }
-    auto [row_index, row] = requireRow(*list, *address.row_id, address);
-    (void)row_index;
-    const auto &field = requireRowLeafSchema(address, list_schema);
-    if (field.tag == Schema::NodeTag::Struct ||
-        field.tag == Schema::NodeTag::List || !field.default_value) {
-        editFailure(EditorEditErrorCode::schema_violation,
-                    {{"object", address.object.object_id.value},
-                     {"slot", address.component_name},
-                     {"field_path", address.leaf_path},
-                     {"detail", "field has no authored default"}},
-                    "field has no authored default");
-    }
-    const Json::json_pointer pointer{address.leaf_path};
-    try {
-        (void)row.at(pointer);
-        editFailure(EditorEditErrorCode::schema_violation,
-                    {{"object", address.object.object_id.value},
-                     {"slot", address.component_name},
-                     {"field_path", address.leaf_path},
-                     {"detail", "field already exists"}},
-                    "field already exists");
-    } catch (const EditFailure &) {
-        throw;
-    } catch (const nlohmann::json::out_of_range &) {
-    }
-    row[pointer] = *field.default_value;
-    validateRawComponentTransition(address.component, next,
-                                   address.object.object_id,
-                                   address.component_name);
-    return addressedPreparedOperation(
-        raw, address, context, next, address.component, address.row_id,
-        address.leaf_path);
-}
-
-PreparedOperation prepareMoveField(
-    const Json &raw, const AuthoringSceneDocument &document) {
-    constexpr auto context = "move_component_field";
-    requireOnly(raw, {"op", "address", "position", "attachment_handle", "attachment_seq"}, context);
-    const auto address = requireComponentAddress(raw, document, context, false);
-    (void)requireListSchema(address);
-    if (!address.row_id || !address.leaf_tokens.empty()) {
-        throw std::invalid_argument("move_component_field requires row_id and no leaf_path");
-    }
-    Json next = address.component;
-    auto *list = findListValue(next, address);
-    if (list == nullptr) {
-        editFailure(EditorEditErrorCode::row_envelope_missing,
-                    {{"object", address.object.object_id.value},
-                     {"slot", address.component_name}, {"field_path", address.list_path}},
-                    "RowEnvelopeMissing: list is absent");
-    }
-    const auto [source, row] = requireRow(*list, *address.row_id, address);
-    const auto [destination, before] = insertionPosition(*list, raw, address);
-    auto &rows = list->at("rows");
-    if (before != *address.row_id) {
-        Json moved = row;
-        rows.erase(rows.begin() + static_cast<Json::difference_type>(source));
-        const auto index = destination > source ? destination - 1 : destination;
-        rows.insert(rows.begin() + static_cast<Json::difference_type>(index), std::move(moved));
-    }
-    return addressedPreparedOperation(raw, address, context, next, address.component,
-                                      address.row_id, {}, std::nullopt, raw.at("position"));
-}
-
-PreparedOperation prepareRemoveField(
-    const Json &raw, const AuthoringSceneDocument &document) {
-    constexpr auto context = "remove_component_field";
-    if (!raw.contains("address")) {
-        return prepareLegacyFieldMutation(raw, document, false);
-    }
-    requireOnly(raw, {"op", "address", "attachment_handle",
-                      "attachment_seq"}, context);
-    auto address = requireComponentAddress(raw, document, context, false);
-    (void)requireListSchema(address);
-    Json next = address.component;
-    auto *list = findListValue(next, address);
-    if (list == nullptr) {
-        editFailure(EditorEditErrorCode::row_envelope_missing,
-                    {{"object", address.object.object_id.value},
-                     {"slot", address.component_name},
-                     {"field_path", address.list_path}},
-                    "RowEnvelopeMissing: list is absent");
-    }
-    auto [row_index, row] = requireRow(*list, *address.row_id, address);
-    if (address.leaf_tokens.empty()) {
-        auto &rows = list->at("rows");
-        rows.erase(rows.begin() + static_cast<Json::difference_type>(row_index));
-    } else {
-        const auto row_list_schema = requireListSchema(address);
-        (void)requireRowLeafSchema(address, row_list_schema);
-        const Json::json_pointer pointer{address.leaf_path};
-        try {
-            (void)row.at(pointer);
-        } catch (const nlohmann::json::out_of_range &) {
-            editFailure(EditorEditErrorCode::schema_violation,
-                        {{"object", address.object.object_id.value},
-                         {"slot", address.component_name},
-                         {"field_path", address.leaf_path},
-                         {"row_id", *address.row_id},
-                         {"detail", "field does not exist"}},
-                        "field does not exist");
-        }
-        Json *parent = &row;
-        for (std::size_t index = 0;
-             index + 1U < address.leaf_tokens.size(); ++index) {
-            parent = &parent->at(address.leaf_tokens[index]);
-        }
-        parent->erase(address.leaf_tokens.back());
-    }
-    validateRawComponentTransition(address.component, next,
-                                   address.object.object_id,
-                                   address.component_name);
-    return addressedPreparedOperation(
-        raw, address, context, next, address.component, address.row_id,
-        address.leaf_path);
-}
-
-PreparedOperation prepareSet(const Json &raw,
-                             const AuthoringSceneDocument &document) {
-    constexpr auto context = "set_component_value";
-    if (raw.contains("address")) return prepareAddressedSet(raw, document);
-    requireOnly(raw, {"op", "object_id", "component_slot", "field_path",
-                      "value", "attachment_index", "attachment_handle",
-                      "attachment_seq", "attachment_identity"}, context);
-    const auto object_id = AuthoringObjectId{
-        exactUnsigned(raw.at("object_id"), "set_component_value object_id", true)};
-    const auto component_name = requireString(raw, "component_slot", context);
-    const auto field_path = requireString(raw, "field_path", context);
-    if (field_path.front() != '/' || field_path == "/name" ||
-        field_path.starts_with("/name/")) {
-        editFailure(EditorEditErrorCode::schema_violation,
-                    {{"object", object_id.value},
-                     {"slot", component_name},
-                     {"field_path", field_path},
-                     {"detail", "field_path must be a JSON pointer and cannot change name"}},
-                    "invalid component field path");
-    }
-    const auto object = requireObjectLocation(document, object_id);
-    const bool behavior = component_name == "behavior";
-    std::size_t attachment_index = 0;
-    std::pair<std::size_t, Json> located;
-    if (behavior) {
-        const auto found = raw.find("attachment_index");
-        if (found == raw.end()) {
-            editFailure(EditorEditErrorCode::schema_violation,
-                        {{"object", object_id.value},
-                         {"slot", component_name},
-                         {"field_path", "/attachment_index"},
-                         {"detail", "behavior edits require attachment_index"}},
-                        "behavior edits require attachment_index");
-        }
-        attachment_index = static_cast<std::size_t>(exactUnsigned(
-            *found, "set_component_value attachment_index"));
-        located = requireComponentAt(object, attachment_index, component_name);
-        if (!field_path.starts_with("/params/") || field_path.size() <= 8U) {
-            editFailure(EditorEditErrorCode::schema_violation,
-                        {{"object", object_id.value},
-                         {"slot", component_name},
-                         {"field_path", field_path},
-                         {"detail", "behavior field_path must target one params field"}},
-                        "behavior field_path must target one params field");
-        }
-    } else {
-        located = requireComponent(object, component_name);
-    }
-    const auto &[component_index, old_component] = located;
-    const auto *codec = behavior ? nullptr : findComponentCodec(component_name);
-    if (!behavior && codec == nullptr) {
-        editFailure(EditorEditErrorCode::not_editable,
-                    {{"object", object_id.value}, {"slot", component_name}},
-                    "component has no editable codec");
-    }
-    Json next_component = old_component;
-    const auto tokens = pointerTokens(field_path,
-                                      "set_component_value field_path");
-    rejectLegacyListPointer(old_component, component_name, tokens, object_id,
-                            field_path);
-    try {
-        const Json::json_pointer pointer{field_path};
-        (void)next_component.at(pointer);
-        next_component[pointer] = raw.at("value");
-    } catch (const std::exception &error) {
-        editFailure(EditorEditErrorCode::schema_violation,
-                    {{"object", object_id.value},
-                     {"slot", component_name},
-                     {"field_path", field_path},
-                     {"detail", error.what()}},
-                    error.what());
-    }
-    validateRawComponentTransition(old_component, next_component, object_id,
-                                   component_name);
-    const auto attachment_handle = internalIdentityValue(
-        raw, "attachment_handle", "set_component_value attachment_handle", true);
-    const auto attachment_seq = internalIdentityValue(
-        raw, "attachment_seq", "set_component_value attachment_seq");
-    const auto target = behavior
-                            ? stableBehaviorTarget(object_id, attachment_index,
-                                                   attachment_handle, field_path)
-                            : stableComponentTarget(object_id, component_name,
-                                                    field_path);
-    OrderedJson forward{{"op", context},
-                        {"object_id", object_id.value},
-                        {"scene_id", object.scene_id},
-                        {"component_slot", component_name},
-                        {"field_path", field_path},
-                        {"value", raw.at("value")},
-                        {"authored_component", next_component}};
-    OrderedJson inverse{{"op", context},
-                        {"object_id", object_id.value},
-                        {"scene_id", object.scene_id},
-                        {"component_slot", component_name},
-                        {"field_path", field_path},
-                        {"authored_component", old_component}};
-    if (behavior) {
-        forward["attachment_index"] = attachment_index;
-        inverse["attachment_index"] = attachment_index;
-        if (attachment_handle != 0) {
-            forward["attachment_handle"] = attachment_handle;
-            inverse["attachment_handle"] = attachment_handle;
-        }
-        forward["attachment_seq"] = attachment_seq;
-        inverse["attachment_seq"] = attachment_seq;
-        copyBehaviorAttachmentWitness(raw, forward, inverse);
-    }
-    return PreparedOperation{
-        .commands = {makeReplaceComponentCommand(object, component_index,
-                                                  component_name, next_component)},
-        .forward = std::move(forward),
-        .inverse = std::move(inverse),
-        .affected = {object_id},
-        .stable_target = target,
-        .read_set = {target},
-        .write_set = {target},
-        .structural_domain = {{"kind", behavior ? "behavior_params" : "value_field"},
-                              {"object", object_id.value},
-                              {"slot", component_name},
-                              {"field_path", field_path},
-                              {"attachment_index", behavior ? OrderedJson(attachment_index)
-                                                             : OrderedJson(nullptr)},
-                              {"attachment_handle", behavior && attachment_handle != 0
-                                                            ? OrderedJson(attachment_handle)
-                                                            : OrderedJson(nullptr)}},
-    };
-}
-
-PreparedOperation prepareAdd(const Json &raw,
-                             const AuthoringSceneDocument &document,
-                             const std::function<bool(std::string_view)> &
-                                 component_exists) {
-    constexpr auto context = "add_component";
-    requireOnly(raw, {"op", "object_id", "component", "component_index",
-                      "attachment_handle", "attachment_seq",
-                      "attachment_identity"}, context);
-    const auto object_id = AuthoringObjectId{
-        exactUnsigned(raw.at("object_id"), "add_component object_id", true)};
-    const auto object = requireObjectLocation(document, object_id);
-    const auto &component = requireObject(raw.at("component"),
-                                          "add_component component");
-    const auto component_name = requireString(component, "name", context);
-    const bool behavior = component_name == "behavior";
-    if (!behavior && hasComponent(object, component_name)) {
-        editFailure(EditorEditErrorCode::duplicate_component,
-                    {{"object", object_id.value}, {"slot", component_name}},
-                    "component slot already exists");
-    }
-    // Decode/canonicalize only to validate the typed projection.  The authored
-    // component itself is the command and journal payload so omitted defaults,
-    // list envelopes, and member order survive remove/undo and replay.
-    if (behavior) {
-        (void)canonicalBehaviorComponent(component, object_id);
-    } else {
-        (void)canonicalComponent(component, object_id, component_name,
-                                 component_exists);
-    }
-    auto component_index = object.authored.at("components").size();
-    if (const auto found = raw.find("component_index"); found != raw.end()) {
-        component_index = static_cast<std::size_t>(exactUnsigned(
-            *found, "add_component component_index"));
-        if (component_index > object.authored.at("components").size()) {
-            editFailure(EditorEditErrorCode::schema_violation,
-                        {{"object", object_id.value},
-                         {"slot", component_name},
-                         {"field_path", "/component_index"},
-                         {"detail", "component index is outside the declaration interval"}},
-                        "component index is outside the declaration interval");
-        }
-    }
-    const auto attachment_handle = internalIdentityValue(
-        raw, "attachment_handle", "add_component attachment_handle", true);
-    const auto attachment_seq = internalIdentityValue(
-        raw, "attachment_seq", "add_component attachment_seq");
-    if (behavior && attachment_handle == 0) {
-        editFailure(EditorEditErrorCode::method_unavailable,
-                    {{"method", context}, {"adapter", "behavior_identity"}},
-                    "behavior attach identity allocator is unavailable");
-    }
-    const auto target = behavior
-                            ? stableBehaviorTarget(object_id, component_index,
-                                                   attachment_handle)
-                            : stableComponentTarget(object_id, component_name);
-    OrderedJson forward{{"op", context},
-                        {"object_id", object_id.value},
-                        {"scene_id", object.scene_id},
-                        {"component_slot", component_name},
-                        {"component_index", component_index},
-                        {"component", component}};
-    OrderedJson inverse{{"op", "remove_component"},
-                        {"object_id", object_id.value},
-                        {"scene_id", object.scene_id},
-                        {"component_slot", component_name},
-                        {"component_index", component_index}};
-    if (behavior) {
-        forward["attachment_handle"] = attachment_handle;
-        forward["attachment_seq"] = attachment_seq;
-        inverse["attachment_index"] = component_index;
-        inverse["attachment_handle"] = attachment_handle;
-        inverse["attachment_seq"] = attachment_seq;
-        copyBehaviorAttachmentWitness(raw, forward, inverse);
-    }
-    return PreparedOperation{
-        .commands = {makeInsertComponentCommand(object, component_index, component)},
-        .forward = std::move(forward),
-        .inverse = std::move(inverse),
-        .affected = {object_id},
-        .stable_target = target,
-        .read_set = {behavior ? stableBehaviorTarget(object_id, component_index, 0)
-                              : target},
-        .write_set = behavior
-                         ? std::vector<std::string>{
-                               "/authoring_objects/" + std::to_string(object_id.value) +
-                                   "/behaviors",
-                               target}
-                         : std::vector<std::string>{target},
-        .structural_domain = {{"kind", behavior ? "behavior_attachment"
-                                                   : "component_slot"},
-                              {"object", object_id.value},
-                              {"slot", component_name},
-                              {"component_index", component_index},
-                              {"attachment_handle", behavior
-                                                            ? OrderedJson(attachment_handle)
-                                                            : OrderedJson(nullptr)},
-                              {"attachment_seq", behavior
-                                                         ? OrderedJson(attachment_seq)
-                                                         : OrderedJson(nullptr)}},
-    };
-}
-
-PreparedOperation prepareRemove(const Json &raw,
-                                const AuthoringSceneDocument &document) {
-    constexpr auto context = "remove_component";
-    requireOnly(raw, {"op", "object_id", "component_slot", "attachment_index",
-                      "attachment_handle", "attachment_seq",
-                      "attachment_identity"}, context);
-    const auto object_id = AuthoringObjectId{
-        exactUnsigned(raw.at("object_id"), "remove_component object_id", true)};
-    const auto component_name = requireString(raw, "component_slot", context);
-    const bool behavior = component_name == "behavior";
-    const auto object = requireObjectLocation(document, object_id);
-    std::pair<std::size_t, Json> located;
-    if (behavior) {
-        const auto found = raw.find("attachment_index");
-        if (found == raw.end()) {
-            editFailure(EditorEditErrorCode::schema_violation,
-                        {{"object", object_id.value},
-                         {"slot", component_name},
-                         {"field_path", "/attachment_index"},
-                         {"detail", "behavior remove requires attachment_index"}},
-                        "behavior remove requires attachment_index");
-        }
-        located = requireComponentAt(
-            object, static_cast<std::size_t>(exactUnsigned(
-                        *found, "remove_component attachment_index")),
-            component_name);
-    } else {
-        located = requireComponent(object, component_name);
-    }
-    const auto &[component_index, old_component] = located;
-    const auto attachment_handle = internalIdentityValue(
-        raw, "attachment_handle", "remove_component attachment_handle", true);
-    const auto attachment_seq = internalIdentityValue(
-        raw, "attachment_seq", "remove_component attachment_seq");
-    const auto target = behavior
-                            ? stableBehaviorTarget(object_id, component_index,
-                                                   attachment_handle)
-                            : stableComponentTarget(object_id, component_name);
-    OrderedJson forward{{"op", context},
-                        {"object_id", object_id.value},
-                        {"scene_id", object.scene_id},
-                        {"component_slot", component_name},
-                        {"component_index", component_index}};
-    OrderedJson inverse{{"op", "add_component"},
-                        {"object_id", object_id.value},
-                        {"scene_id", object.scene_id},
-                        {"component_slot", component_name},
-                        {"component_index", component_index},
-                        {"component", old_component}};
-    if (behavior) {
-        forward["attachment_index"] = component_index;
-        inverse["attachment_index"] = component_index;
-        if (attachment_handle != 0) {
-            forward["attachment_handle"] = attachment_handle;
-            inverse["attachment_handle"] = attachment_handle;
-        }
-        forward["attachment_seq"] = attachment_seq;
-        inverse["attachment_seq"] = attachment_seq;
-        copyBehaviorAttachmentWitness(raw, forward, inverse);
-    }
-    return PreparedOperation{
-        .commands = {makeEraseComponentCommand(object, component_index,
-                                                component_name)},
-        .forward = std::move(forward),
-        .inverse = std::move(inverse),
-        .affected = {object_id},
-        .stable_target = target,
-        .read_set = {target},
-        .write_set = behavior
-                         ? std::vector<std::string>{
-                               "/authoring_objects/" + std::to_string(object_id.value) +
-                                   "/behaviors",
-                               target}
-                         : std::vector<std::string>{target},
-        .structural_domain = {{"kind", behavior ? "behavior_attachment"
-                                                   : "component_slot"},
-                              {"object", object_id.value},
-                              {"slot", component_name},
-                              {"component_index", component_index},
-                              {"attachment_handle", behavior && attachment_handle != 0
-                                                            ? OrderedJson(attachment_handle)
-                                                            : OrderedJson(nullptr)},
-                              {"attachment_seq", behavior && attachment_seq != 0
-                                                         ? OrderedJson(attachment_seq)
-                                                         : OrderedJson(nullptr)}},
-    };
-}
-
-Json canonicalSpawnObject(const Json &value, std::string_view scene_id,
-                          const AuthoringSceneDocument &document,
-                          const std::function<bool(std::string_view)> &
-                              component_exists) {
-    auto object = requireObject(value, "spawn object");
-    Json result = object;
-    const auto name = result.value("name", std::string{});
-    if (name.empty()) {
-        editFailure(EditorEditErrorCode::schema_violation,
-                    {{"object", nullptr}, {"slot", nullptr},
-                     {"field_path", "/name"},
-                     {"detail", "spawned object requires a name"}},
-                    "spawned object requires a name");
-    }
-    if (objectIdByName(document, scene_id, name)) {
-        editFailure(EditorEditErrorCode::name_conflict, {{"name", name}},
-                    "spawned object name already exists");
-    }
-    if (const auto parent = result.find("parent"); parent != result.end()) {
-        if (!parent->is_string() || parent->get_ref<const std::string &>().empty() ||
-            !objectIdByName(document, scene_id, parent->get_ref<const std::string &>())) {
-            editFailure(EditorEditErrorCode::parent_not_found,
-                        {{"name", parent->is_string() ? *parent : Json(nullptr)}},
-                        "spawn parent does not exist");
-        }
-    }
-    if (!result.contains("components") || !result.at("components").is_array()) {
-        editFailure(EditorEditErrorCode::schema_violation,
-                    {{"object", nullptr}, {"slot", nullptr},
-                     {"field_path", "/components"},
-                     {"detail", "components must be an array"}},
-                    "spawn components must be an array");
-    }
-    std::unordered_set<std::string> names;
-    for (auto &component : result.at("components")) {
-        const auto component_name = requireString(component, "name", "spawn component");
-        if (component_name != "behavior" &&
-            !names.insert(component_name).second) {
-            editFailure(EditorEditErrorCode::schema_violation,
-                        {{"object", nullptr}, {"slot", component_name},
-                         {"field_path", "/components"},
-                         {"detail", "duplicate component name"}},
-                        "spawn component names must be unique");
-        }
-        if (component_name == "behavior") continue;
-        // Validation produces the typed projection later; spawn must retain
-        // the exact authored component instead of publishing its defaults.
-        (void)canonicalComponent(component, AuthoringObjectId{}, component_name,
-                                 component_exists);
-    }
-    return result;
-}
-
-PreparedOperation prepareSpawn(const Json &raw,
-                               const AuthoringSceneDocument &document,
-                               std::string_view default_scene,
-                               const std::function<bool(std::string_view)> &
-                                   component_exists) {
-    constexpr auto context = "spawn";
-    requireOnly(raw, {"op", "scene_id", "declaration_index", "object",
-                      "new_instance_id"},
-                context);
-    const auto scene_id = optionalString(raw, "scene_id", context)
-                              .value_or(std::string{default_scene});
-    const auto scenes = AuthoringSceneAuthority::query(document);
-    const auto scene = std::find_if(scenes.begin(), scenes.end(),
-                                    [&](const auto &candidate) {
-                                        return candidate.scene_id == scene_id;
-                                    });
-    if (scene == scenes.end()) {
-        editFailure(EditorEditErrorCode::schema_violation,
-                    {{"object", nullptr}, {"slot", nullptr},
-                     {"field_path", "/scene_id"},
-                     {"detail", "scene does not exist"}},
-                    "spawn scene does not exist");
-    }
-    auto declaration_index = scene->objects.size();
-    if (const auto found = raw.find("declaration_index"); found != raw.end()) {
-        declaration_index = static_cast<std::size_t>(exactUnsigned(
-            *found, "spawn declaration_index"));
-        if (declaration_index > scene->objects.size()) {
-            editFailure(EditorEditErrorCode::schema_violation,
-                        {{"object", nullptr}, {"slot", nullptr},
-                         {"field_path", "/declaration_index"},
-                         {"detail", "declaration index is outside the scene"}},
-                        "spawn declaration index is outside the scene");
-        }
-    }
-    auto object = canonicalSpawnObject(raw.at("object"), scene_id, document,
-                                       component_exists);
-    std::optional<std::string> new_instance_id;
-    if (object.contains("prefab")) {
-        const auto found = raw.find("new_instance_id");
-        if (found == raw.end()) {
-            editFailure(
-                EditorEditErrorCode::prefab_instance_id_collision,
-                {{"object", nullptr}, {"slot", nullptr},
-                 {"field_path", "/new_instance_id"},
-                 {"detail", "prefab spawn requires an authoritative new_instance_id"}},
-                "prefab spawn requires an authoritative new_instance_id");
-        }
-        if (!found->is_string() ||
-            !isPrefabIdentifier(found->get_ref<const std::string &>())) {
-            editFailure(
-                EditorEditErrorCode::schema_violation,
-                {{"object", nullptr}, {"slot", nullptr},
-                 {"field_path", "/new_instance_id"},
-                 {"detail", "prefab spawn requires a valid new_instance_id"}},
-                "prefab spawn requires a valid new_instance_id");
-        }
-        if (!object.at("prefab").is_object()) {
-            editFailure(EditorEditErrorCode::schema_violation,
-                        {{"object", nullptr}, {"slot", nullptr},
-                         {"field_path", "/object/prefab"},
-                         {"detail", "prefab spawn block must be an object"}},
-                        "prefab spawn block must be an object");
-        }
-        new_instance_id = found->get<std::string>();
-        object["prefab"]["instance_id"] = *new_instance_id;
-    } else if (raw.contains("new_instance_id")) {
-        editFailure(EditorEditErrorCode::schema_violation,
-                    {{"object", nullptr}, {"slot", nullptr},
-                     {"field_path", "/new_instance_id"},
-                     {"detail", "new_instance_id is valid only for prefab spawn"}},
-                    "new_instance_id is valid only for prefab spawn");
-    }
-    const auto name = object.at("name").get<std::string>();
-    OrderedJson forward{{"op", context},
-                        {"scene_id", scene_id},
-                        {"declaration_index", declaration_index},
-                        {"object", object}};
-    if (new_instance_id) forward["new_instance_id"] = *new_instance_id;
-    return PreparedOperation{
-        .commands = {makeInsertObjectCommand(scene_id, declaration_index, object)},
-        .forward = std::move(forward),
-        .inverse = {{"op", "remove_objects"}, {"object_ids", OrderedJson::array()}},
-        .stable_target = "/scenes/" + scene_id + "/name_reservations/" + name,
-        .read_set = {"/scenes/" + scene_id + "/name_reservations/" + name},
-        .write_set = {"/scenes/" + scene_id + "/objects"},
-        .structural_domain = {{"kind", "object_existence"},
-                              {"scene_id", scene_id},
-                              {"name_reservation", name},
-                              {"declaration_index", declaration_index}},
-    };
-}
-
-std::vector<ObjectLocation> subtreeObjects(const AuthoringSceneDocument &document,
-                                           const ObjectLocation &root) {
-    auto all = objectLocations(document);
-    std::vector<ObjectLocation> result{root};
-    std::unordered_set<std::string> names;
-    if (root.name) names.insert(*root.name);
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        for (const auto &candidate : all) {
-            if (candidate.scene_id != root.scene_id || !candidate.parent ||
-                !names.contains(*candidate.parent) ||
-                std::any_of(result.begin(), result.end(), [&](const auto &current) {
-                    return current.object_id == candidate.object_id;
-                })) {
-                continue;
-            }
-            result.push_back(candidate);
-            if (candidate.name) names.insert(*candidate.name);
-            changed = true;
-        }
-    }
-    std::sort(result.begin(), result.end(), [](const auto &left, const auto &right) {
-        return left.object_index > right.object_index;
-    });
-    return result;
-}
-
-PreparedOperation prepareDestroy(const Json &raw,
-                                 const AuthoringSceneDocument &document) {
-    constexpr auto context = "destroy";
-    requireOnly(raw, {"op", "object_id"}, context);
-    const auto object_id = AuthoringObjectId{
-        exactUnsigned(raw.at("object_id"), "destroy object_id", true)};
-    const auto root = requireObjectLocation(document, object_id);
-    const auto subtree = subtreeObjects(document, root);
-    PreparedOperation result;
-    result.forward = {{"op", context}, {"object_ids", OrderedJson::array()}};
-    result.inverse = {{"op", "restore_objects"}, {"closures", OrderedJson::array()}};
-    result.stable_target = "/authoring_objects/" + std::to_string(object_id.value);
-    result.read_set = {result.stable_target};
-    result.write_set = {result.stable_target};
-    result.structural_domain = {{"kind", "object_subtree"},
-                                {"scene_id", root.scene_id},
-                                {"root", object_id.value},
-                                {"objects", OrderedJson::array()},
-                                {"declaration_indices", OrderedJson::array()},
-                                {"name_reservations", OrderedJson::array()}};
-    for (const auto &object : subtree) {
-        result.commands.push_back(makeRemoveObjectCommand(object.object_id));
-        result.forward["object_ids"].push_back(object.object_id.value);
-        result.affected.push_back(object.object_id);
-        result.structural_domain["objects"].push_back(object.object_id.value);
-        result.structural_domain["declaration_indices"].push_back(
-            object.object_index);
-        if (object.name) {
-            result.structural_domain["name_reservations"].push_back(*object.name);
-        }
-    }
-    return result;
-}
-
-PreparedOperation prepareReparent(const Json &raw,
-                                  const AuthoringSceneDocument &document) {
-    constexpr auto context = "reparent";
-    requireOnly(raw, {"op", "object_id", "new_parent_id", "preserve"}, context);
-    const auto object_id = AuthoringObjectId{
-        exactUnsigned(raw.at("object_id"), "reparent object_id", true)};
-    const auto child = requireObjectLocation(document, object_id);
-    if (!child.name) {
-        editFailure(EditorEditErrorCode::schema_violation,
-                    {{"object", object_id.value}, {"slot", "transform"},
-                     {"field_path", "/name"},
-                     {"detail", "reparent child requires a name"}},
-                    "reparent child requires a name");
-    }
-    const auto preserve_name = requireString(raw, "preserve", context);
-    ReparentPreserve preserve;
-    if (preserve_name == "local") {
-        preserve = ReparentPreserve::Local;
-    } else if (preserve_name == "world") {
-        preserve = ReparentPreserve::World;
-    } else {
-        editFailure(EditorEditErrorCode::preserve_missing,
-                    {{"child", object_id.value}},
-                    "reparent preserve must be local or world");
-    }
-    std::optional<AuthoringObjectId> new_parent_id;
-    std::optional<std::string> new_parent_name;
-    const auto parent_field = raw.find("new_parent_id");
-    if (parent_field == raw.end()) {
-        editFailure(EditorEditErrorCode::preserve_missing,
-                    {{"child", object_id.value}},
-                    "reparent requires new_parent_id (null for root)");
-    }
-    if (!parent_field->is_null()) {
-        new_parent_id = AuthoringObjectId{
-            exactUnsigned(*parent_field, "reparent new_parent_id", true)};
-        const auto parent = requireObjectLocation(document, *new_parent_id,
-                                                  EditorEditErrorCode::parent_not_found);
-        if (parent.scene_id != child.scene_id || !parent.name) {
-            editFailure(EditorEditErrorCode::parent_not_found,
-                        {{"name", parent.name ? Json(*parent.name) : Json(nullptr)}},
-                        "reparent parent is not a named object in the same scene");
-        }
-        new_parent_name = parent.name;
-    }
-    std::optional<AuthoringObjectId> old_parent_id;
-    if (child.parent) old_parent_id = objectIdByName(document, child.scene_id, *child.parent);
-    const auto [transform_index, old_transform] = requireComponent(child, "transform");
-    (void)transform_index;
-    const auto target = "/authoring_objects/" + std::to_string(object_id.value) +
-                        "/parent";
-    OrderedJson descendants = OrderedJson::array();
-    for (const auto &descendant : subtreeObjects(document, child)) {
-        if (descendant.object_id != object_id) {
-            descendants.push_back(descendant.object_id.value);
-        }
-    }
-    OrderedJson forward{{"op", context},
-                        {"object_id", object_id.value},
-                        {"scene_id", child.scene_id},
-                        {"object_name", *child.name},
-                        {"new_parent_id", new_parent_id
-                                              ? OrderedJson(new_parent_id->value)
-                                              : OrderedJson(nullptr)},
-                        {"new_parent_name", new_parent_name
-                                                ? OrderedJson(*new_parent_name)
-                                                : OrderedJson(nullptr)},
-                        {"preserve", preserve_name}};
-    OrderedJson inverse{{"op", context},
-                        {"object_id", object_id.value},
-                        {"scene_id", child.scene_id},
-                        {"object_name", *child.name},
-                        {"new_parent_id", old_parent_id
-                                              ? OrderedJson(old_parent_id->value)
-                                              : OrderedJson(nullptr)},
-                        {"new_parent_name", child.parent
-                                                ? OrderedJson(*child.parent)
-                                                : OrderedJson(nullptr)},
-                        {"preserve", preserve_name},
-                        {"restore_transform", old_transform}};
-    return PreparedOperation{
-        .commands = {makeReparentCommand(child.scene_id, *child.name,
-                                          new_parent_name, preserve)},
-        .forward = std::move(forward),
-        .inverse = std::move(inverse),
-        .affected = {object_id},
-        .stable_target = target,
-        .read_set = {target, stableComponentTarget(object_id, "transform")},
-        .write_set = {target, stableComponentTarget(object_id, "transform")},
-        .structural_domain = {{"kind", "parent_edge"},
-                              {"child", object_id.value},
-                              {"old_parent", old_parent_id
-                                                 ? OrderedJson(old_parent_id->value)
-                                                 : OrderedJson(nullptr)},
-                              {"new_parent", new_parent_id
-                                                 ? OrderedJson(new_parent_id->value)
-                                                 : OrderedJson(nullptr)},
-                              {"descendants", std::move(descendants)},
-                              {"preserve", preserve_name}},
-    };
 }
 
 PreparedOperation prepareRpcOperation(const Json &raw,
@@ -3290,6 +1980,22 @@ EditorCanonicalOperation freezeJournalOperation(
                     operation.canonical_behavior_params = OrderedJson(
                         canonical.value("params", Json::object())).dump();
                 }
+            } else if constexpr (
+                std::same_as<Operation, EditorRemoveComponentOperation> ||
+                std::same_as<Operation, EditorReparentOperation> ||
+                std::same_as<Operation, EditorSpawnOperation> ||
+                std::same_as<Operation, EditorDestroyOperation> ||
+                std::same_as<Operation, EditorRemoveObjectsOperation> ||
+                std::same_as<Operation, EditorRestoreObjectsOperation> ||
+                std::same_as<Operation, EditorSetPrefabParameterOperation> ||
+                std::same_as<Operation, EditorUnsetPrefabParameterOperation> ||
+                std::same_as<Operation, EditorUnpackPrefabOperation> ||
+                std::same_as<Operation, EditorRestorePrefabOperation>) {
+                // These alternatives carry no authored component body, so
+                // there is nothing to canonicalize onto the frozen operation.
+            } else {
+                static_assert(editorCanonicalOperationUnhandled<Operation>,
+                              "unhandled EditorCanonicalOperation alternative");
             }
         },
         result);
@@ -4100,301 +2806,9 @@ bool sameStableSet(std::span<const std::string> left,
            std::equal(left.begin(), left.end(), right.begin());
 }
 
-bool isCanonicalUnpackOperation(const Json &operation) {
-    const auto op = operation.value("op", std::string{});
-    return op == "unpack_prefab" || op == "restore_prefab";
-}
-
-std::optional<std::string> unpackJournalIntegrityFailureImpl(
-    const OrderedJson &forward, const OrderedJson &inverse) {
-    try {
-        if (!isCanonicalUnpackOperation(forward) ||
-            !isCanonicalUnpackOperation(inverse)) {
-            return "operation";
-        }
-        const auto forward_op = forward.at("op").get<std::string>();
-        const auto inverse_op = inverse.at("op").get<std::string>();
-        if ((forward_op == "unpack_prefab") ==
-            (inverse_op == "unpack_prefab")) {
-            return "operation";
-        }
-        constexpr std::array<std::string_view, 6> common_fields{
-            "object", "scene_id", "prefab", "expanded_components",
-            "dependency_witness", "origin_transition"};
-        if (forward.size() != common_fields.size() + 1U ||
-            inverse.size() != common_fields.size() + 1U) {
-            return "shape";
-        }
-        for (const auto field : common_fields) {
-            if (!forward.contains(std::string{field}) ||
-                !inverse.contains(std::string{field})) {
-                return "shape";
-            }
-            if (field != "origin_transition" && field != "prefab" &&
-                field != "dependency_witness" &&
-                forward.at(std::string{field}) !=
-                    inverse.at(std::string{field})) {
-                return std::string{field};
-            }
-        }
-        const auto &forward_prefab = forward.at("prefab");
-        const auto &inverse_prefab = inverse.at("prefab");
-        const auto &forward_witness = forward.at("dependency_witness");
-        const auto &inverse_witness = inverse.at("dependency_witness");
-        if (!forward_prefab.is_object() || !inverse_prefab.is_object() ||
-            !forward_witness.is_object() || !inverse_witness.is_object() ||
-            !forward_prefab.contains("ref") ||
-            !forward_prefab.at("ref").is_string() ||
-            !inverse_prefab.contains("ref") ||
-            !inverse_prefab.at("ref").is_string() ||
-            !forward_witness.contains("ref") ||
-            !forward_witness.at("ref").is_string() ||
-            !inverse_witness.contains("ref") ||
-            !inverse_witness.at("ref").is_string()) {
-            return "ref";
-        }
-        if (forward_prefab.at("ref") != inverse_prefab.at("ref") ||
-            forward_prefab.at("ref") != forward_witness.at("ref") ||
-            forward_prefab.at("ref") != inverse_witness.at("ref")) {
-            return "ref";
-        }
-        if (!forward_prefab.contains("instance_id") ||
-            !forward_prefab.at("instance_id").is_string() ||
-            !inverse_prefab.contains("instance_id") ||
-            !inverse_prefab.at("instance_id").is_string() ||
-            !forward_witness.contains("instance_id") ||
-            !forward_witness.at("instance_id").is_string() ||
-            !inverse_witness.contains("instance_id") ||
-            !inverse_witness.at("instance_id").is_string()) {
-            return "instance_id";
-        }
-        if (forward_prefab.at("instance_id") !=
-                inverse_prefab.at("instance_id") ||
-            forward_prefab.at("instance_id") !=
-                forward_witness.at("instance_id") ||
-            forward_prefab.at("instance_id") !=
-                inverse_witness.at("instance_id")) {
-            return "instance_id";
-        }
-        if (forward_prefab != inverse_prefab) return "prefab";
-        if (forward_witness != inverse_witness) {
-            return "dependency_witness";
-        }
-        constexpr std::array<std::string_view, 6> witness_fields{
-            "ref", "instance_id", "prefab_digest_sha256",
-            "provider_fingerprint_sha256", "behaviors",
-            "resolver_inputs_fingerprint_sha256"};
-        if (forward_witness.size() != witness_fields.size()) {
-            return "dependency_witness";
-        }
-        for (const auto field : witness_fields) {
-            if (!forward_witness.contains(std::string{field})) {
-                return "dependency_witness";
-            }
-        }
-        for (const auto field : {"ref", "instance_id",
-                                 "prefab_digest_sha256",
-                                 "provider_fingerprint_sha256",
-                                 "resolver_inputs_fingerprint_sha256"}) {
-            if (!forward_witness.at(field).is_string()) {
-                return "dependency_witness";
-            }
-        }
-        const auto &behaviors = forward_witness.at("behaviors");
-        if (!behaviors.is_array()) return "behaviors";
-        std::string previous_behavior;
-        for (const auto &behavior : behaviors) {
-            if (!behavior.is_object() || behavior.size() != 3U ||
-                !behavior.contains("stable_name") ||
-                !behavior.at("stable_name").is_string() ||
-                !behavior.contains("schema_version") ||
-                !behavior.contains("params_schema_fingerprint") ||
-                !behavior.at("params_schema_fingerprint").is_string()) {
-                return "behaviors";
-            }
-            (void)exactUnsigned(behavior.at("schema_version"),
-                                "unpack behavior schema_version");
-            const auto name = behavior.at("stable_name").get<std::string>();
-            if (name.empty() ||
-                (!previous_behavior.empty() && name <= previous_behavior)) {
-                return "behaviors";
-            }
-            previous_behavior = name;
-        }
-        const auto forward_map = originTransitionMapFromJson(
-            forward.at("origin_transition"));
-        const auto inverse_map = originTransitionMapFromJson(
-            inverse.at("origin_transition"));
-        if (invertOriginTransitionMap(forward_map) != inverse_map) {
-            return "origin_transition";
-        }
-        if ((forward_op == "unpack_prefab" &&
-             forward_map.direction !=
-                 OriginTransitionDirection::GeneratedToAuthored) ||
-            (forward_op == "restore_prefab" &&
-             forward_map.direction !=
-                 OriginTransitionDirection::AuthoredToGenerated)) {
-            return "origin_transition_direction";
-        }
-        const auto authority = unpackAuthorityFromJson(
-            forward.at("expanded_components"));
-        if (authority.size() != forward_map.entries.size()) {
-            return "origin_transition_count";
-        }
-        const auto object_id = exactUnsigned(
-            forward.at("object"), "unpack journal object", true);
-        const auto scene_id = requireString(forward, "scene_id",
-                                            "unpack journal operation");
-        const auto instance_id = requireString(
-            forward_witness, "instance_id", "unpack dependency witness");
-        std::unordered_set<std::string> component_keys;
-        std::unordered_set<std::string> gids;
-        std::unordered_set<std::size_t> authored_indices;
-        for (std::size_t index = 0; index < authority.size(); ++index) {
-            const auto &body = authority[index].body;
-            const auto &entry = forward_map.entries[index];
-            if (authority[index].component_key.empty() || !body.is_object() ||
-                !component_keys.insert(authority[index].component_key).second ||
-                authority[index].component_key != entry.component_key) {
-                return "component_key";
-            }
-            for (auto field = body.begin(); field != body.end(); ++field) {
-                if (prefabGeneratedMarkerRule(field.key(), field.value())) {
-                    return "expanded_components";
-                }
-            }
-            if (entry.scene_id != scene_id ||
-                entry.authoring_object_id.value != object_id) {
-                return "origin_transition_target";
-            }
-            if (entry.gid != prefabGeneratedId(instance_id,
-                                                entry.component_key) ||
-                !gids.insert(entry.gid).second) {
-                return "gid";
-            }
-            if (!authored_indices.insert(entry.final_authored_index).second ||
-                (index != 0U &&
-                 (forward_map.entries[index - 1U].final_authored_index ==
-                      std::numeric_limits<std::size_t>::max() ||
-                  entry.final_authored_index !=
-                      forward_map.entries[index - 1U]
-                              .final_authored_index +
-                          1U))) {
-                return "final_authored_index";
-            }
-        }
-        return std::nullopt;
-    } catch (const std::exception &) {
-        return "shape";
-    }
-}
-
-void requireUnpackDependencies(const OrderedJson &operation,
-                               const SceneProjectionState &state) {
-    if (!isCanonicalUnpackOperation(operation)) return;
-    const auto &witness = operation.at("dependency_witness");
-    const auto ref = requireString(witness, "ref",
-                                   "unpack dependency witness");
-    const auto expected_digest = requireString(
-        witness, "prefab_digest_sha256", "unpack dependency witness");
-    const auto *record = state.resolved().prefabRegistry().find(ref);
-    const auto current_digest =
-        record == nullptr ? std::string{} : record->digest_sha256;
-    if (current_digest != expected_digest) {
-        editFailure(EditorEditErrorCode::prefab_digest_changed,
-                    {{"expected", expected_digest},
-                     {"current", current_digest},
-                     {"ref", ref}},
-                    "prefab digest changed since unpack");
-    }
-
-    const auto expected_provider = requireString(
-        witness, "provider_fingerprint_sha256",
-        "unpack dependency witness");
-    const auto current_provider =
-        state.resolved().prefabClosure().provider_fingerprint_sha256;
-    if (current_provider != expected_provider) {
-        editFailure(EditorEditErrorCode::prefab_provider_changed,
-                    {{"expected", expected_provider},
-                     {"current", current_provider}},
-                    "prefab provider fingerprint changed since unpack");
-    }
-
-    const auto expected_behaviors = witness.find("behaviors");
-    if (expected_behaviors == witness.end() ||
-        !expected_behaviors->is_array()) {
-        editFailure(EditorEditErrorCode::journal_integrity_error,
-                    {{"reason", "behaviors"}},
-                    "unpack behavior dependency witness is invalid");
-    }
-    OrderedJson current_behaviors = OrderedJson::array();
-    const auto dependencies =
-        state.resolved().bindableProvider().behaviorDependencies();
-    for (const auto &expected : *expected_behaviors) {
-        const auto name = requireString(expected, "stable_name",
-                                        "unpack behavior dependency");
-        const auto found = std::lower_bound(
-            dependencies.begin(), dependencies.end(), name,
-            [](const auto &dependency, std::string_view stable_name) {
-                return dependency.stable_name < stable_name;
-            });
-        if (found == dependencies.end() || found->stable_name != name) {
-            current_behaviors.push_back(nullptr);
-        } else {
-            current_behaviors.push_back(
-                {{"stable_name", found->stable_name},
-                 {"schema_version", found->schema_version},
-                 {"params_schema_fingerprint",
-                  found->params_schema_fingerprint}});
-        }
-    }
-    const auto expected_resolver = requireString(
-        witness, "resolver_inputs_fingerprint_sha256",
-        "unpack dependency witness");
-    const auto current_resolver = state.resolved()
-                                      .prefabClosure()
-                                      .resolver_inputs_fingerprint_sha256;
-    if (current_behaviors != OrderedJson(*expected_behaviors) ||
-        current_resolver != expected_resolver) {
-        editFailure(EditorEditErrorCode::prefab_behavior_dependency_changed,
-                    {{"expected_behaviors", *expected_behaviors},
-                     {"current_behaviors", current_behaviors},
-                     {"expected_resolver_inputs", expected_resolver},
-                     {"current_resolver_inputs", current_resolver}},
-                    "prefab behavior dependency or resolver inputs changed since unpack");
-    }
-}
-
-bool journalUsesUnpack(const EditorJournalRecord &record) {
-    for (const auto &operation : record.ordered_forward) {
-        if (isCanonicalUnpackOperation(operation)) return true;
-    }
-    for (const auto &operation : record.ordered_inverse) {
-        if (isCanonicalUnpackOperation(operation)) return true;
-    }
-    return false;
-}
-
-void requireUnpackJournalRecord(const EditorJournalRecord &record,
-                                const SceneProjectionState &state) {
-    if (!journalUsesUnpack(record)) return;
-    if (record.ordered_forward.size() != 1U ||
-        record.ordered_inverse.size() != 1U ||
-        record.commands.size() != 1U ||
-        record.commands.front().forward != record.ordered_forward.front() ||
-        record.commands.front().inverse != record.ordered_inverse.front()) {
-        editFailure(EditorEditErrorCode::journal_integrity_error,
-                    {{"reason", "record"}},
-                    "unpack journal record is internally inconsistent");
-    }
-    if (const auto failure = unpackJournalIntegrityFailureImpl(
-            record.ordered_forward.front(),
-            record.ordered_inverse.front())) {
-        editFailure(EditorEditErrorCode::journal_integrity_error,
-                    {{"reason", *failure}},
-                    "unpack journal forward and inverse are inconsistent");
-    }
-    requireUnpackDependencies(record.ordered_forward.front(), state);
+void deduplicate(std::vector<std::string> &values) {
+    std::sort(values.begin(), values.end());
+    values.erase(std::unique(values.begin(), values.end()), values.end());
 }
 
 } // namespace
@@ -4743,6 +3157,22 @@ struct EditorEditCoordinator::Impl {
         std::string accepted_scene_id;
         OrderedJson result;
     };
+    // The live-preview lease and everything that hangs off it: the open lease,
+    // the reservation held between acceptance and the frame boundary, the
+    // request queue, the published request results, the tombstones that answer
+    // a request naming a ticket that is already gone, and the epoch counter.
+    // Kept together so a change to the preview state machine cannot silently
+    // reach the ticket queue or the undo/redo stacks beside it.
+    struct PreviewLeaseState {
+        std::optional<PreviewLease> lease;
+        std::optional<PreviewLease> reservation;
+        std::vector<PreviewRequest> pending;
+        std::unordered_map<std::string, OrderedJson> results;
+        std::unordered_map<std::string, PreviewTombstone> tombstones;
+        std::uint64_t next_ticket = 1;
+        std::uint64_t next_request = 1;
+        std::uint64_t epoch = 0;
+    };
 
     EditorEditRuntimeDependencies dependencies;
     std::unordered_map<std::uint64_t, Session> sessions;
@@ -4761,14 +3191,7 @@ struct EditorEditCoordinator::Impl {
         last_writers;
     std::unordered_map<std::uint64_t, std::vector<std::string>> undo_stacks;
     std::unordered_map<std::uint64_t, std::vector<RedoEntry>> redo_stacks;
-    std::optional<PreviewLease> preview_lease;
-    std::optional<PreviewLease> preview_reservation;
-    std::vector<PreviewRequest> pending_preview;
-    std::unordered_map<std::string, OrderedJson> preview_results;
-    std::unordered_map<std::string, PreviewTombstone> preview_tombstones;
-    std::uint64_t next_preview_ticket = 1;
-    std::uint64_t next_preview_request = 1;
-    std::uint64_t preview_epoch = 0;
+    PreviewLeaseState preview;
     std::uint32_t observed_reasons = 0;
     std::uint64_t observed_transition_epoch = 0;
     std::uint64_t gate_epoch = 1;
@@ -4876,10 +3299,10 @@ struct EditorEditCoordinator::Impl {
 
     std::string allocateTicket() { return "edit-" + std::to_string(next_ticket++); }
     std::string allocatePreviewTicket() {
-        return "preview-" + std::to_string(next_preview_ticket++);
+        return "preview-" + std::to_string(preview.next_ticket++);
     }
     std::string allocatePreviewRequest() {
-        return "preview-request-" + std::to_string(next_preview_request++);
+        return "preview-request-" + std::to_string(preview.next_request++);
     }
     std::string allocateTransaction() {
         return "txn-" + std::to_string(next_transaction++);
@@ -4904,6 +3327,41 @@ struct EditorEditCoordinator::Impl {
                 {"status", std::move(status)},
                 {"error", editErrorJson(failure.code, failure.payload,
                                          failure.what())}};
+    }
+
+    // The wire name of a ticket kind.  One function instead of the same three
+    // way ternary spelled out at each use.
+    static constexpr const char *ticketKindName(Ticket::Kind kind) noexcept {
+        return kind == Ticket::Kind::edit
+                   ? "edit"
+                   : kind == Ticket::Kind::undo ? "undo" : "redo";
+    }
+
+    // The only place an edit ticket outcome becomes visible: the ticket keeps
+    // its own copy, `results` answers get_result, and `completed` is drained by
+    // takeCompletedResults.  Every exit of commitPending goes through here.
+    void publishResult(Ticket &ticket, OrderedJson result) {
+        ticket.result = std::move(result);
+        results[ticket.id] = ticket.result;
+        completed.push_back(ticket.result);
+    }
+
+    void publishFailure(Ticket &ticket, const EditFailure &failure,
+                        const char *status) {
+        auto result =
+            rejected(ticket.id, ticket.actor_id, ticket.base_revision, failure);
+        result["status"] = status;
+        publishResult(ticket, std::move(result));
+    }
+
+    // The three catch bodies at the end of commitPending differ only in how
+    // they name the failure; the execution ones share one payload.
+    void publishExecutionFailure(Ticket &ticket, std::string message) {
+        const EditFailure failure{
+            EditorEditErrorCode::method_unavailable,
+            OrderedJson{{"method", "edit"}, {"adapter", "execution"}},
+            std::move(message)};
+        publishFailure(ticket, failure, "failed");
     }
 
     const EditorJournalRecord &requireJournal(std::string_view transaction_id) const {
@@ -4938,12 +3396,12 @@ struct EditorEditCoordinator::Impl {
     const PreviewLease *conflictingLease(
         std::span<const std::string> writes,
         std::span<const OrderedJson> domains) const {
-        if (preview_lease && leaseOverlaps(*preview_lease, writes, domains)) {
-            return &*preview_lease;
+        if (preview.lease && leaseOverlaps(*preview.lease, writes, domains)) {
+            return &*preview.lease;
         }
-        if (preview_reservation &&
-            leaseOverlaps(*preview_reservation, writes, domains)) {
-            return &*preview_reservation;
+        if (preview.reservation &&
+            leaseOverlaps(*preview.reservation, writes, domains)) {
+            return &*preview.reservation;
         }
         return nullptr;
     }
@@ -5019,6 +3477,28 @@ struct EditorEditCoordinator::Impl {
         }
     }
 
+    // JOURNAL0 record assembly, shared by the edit and the revert paths: a
+    // command record also contributes to the record-level stable target,
+    // read/write and structural domain sets.  Adding a field to
+    // EditorJournalCommandRecord is a change here, not in two callers.
+    static void appendCommandRecord(EditorJournalRecord &record,
+                                    EditorJournalCommandRecord command) {
+        record.stable_targets.push_back(command.stable_target);
+        record.read_set.insert(record.read_set.end(), command.read_set.begin(),
+                               command.read_set.end());
+        record.write_set.insert(record.write_set.end(), command.write_set.begin(),
+                                command.write_set.end());
+        record.structural_domain.push_back(command.structural_domain);
+        record.forward_postconditions.push_back(command.forward_postcondition);
+        record.commands.push_back(std::move(command));
+    }
+
+    static void finalizeRecordSets(EditorJournalRecord &record) {
+        deduplicate(record.stable_targets);
+        deduplicate(record.read_set);
+        deduplicate(record.write_set);
+    }
+
     void finalizeJournal(Ticket &ticket, PreparedBatch batch,
                          const EditorProjectionResult &projection,
                          const std::string &transaction_id) {
@@ -5057,22 +3537,9 @@ struct EditorEditCoordinator::Impl {
                     Json::array({record.ordered_forward[index]}), document()),
                 .last_writer = stamp,
             };
-            record.stable_targets.push_back(command.stable_target);
-            record.read_set.insert(record.read_set.end(), command.read_set.begin(),
-                                   command.read_set.end());
-            record.write_set.insert(record.write_set.end(), command.write_set.begin(),
-                                    command.write_set.end());
-            record.structural_domain.push_back(command.structural_domain);
-            record.forward_postconditions.push_back(command.forward_postcondition);
-            record.commands.push_back(std::move(command));
+            appendCommandRecord(record, std::move(command));
         }
-        const auto deduplicate = [](std::vector<std::string> &values) {
-            std::sort(values.begin(), values.end());
-            values.erase(std::unique(values.begin(), values.end()), values.end());
-        };
-        deduplicate(record.stable_targets);
-        deduplicate(record.read_set);
-        deduplicate(record.write_set);
+        finalizeRecordSets(record);
         for (const auto &write : record.write_set) {
             auto &history = last_writers[write];
             if (history.empty() ||
@@ -5118,22 +3585,9 @@ struct EditorEditCoordinator::Impl {
                     Json::array({record.ordered_forward[index]}), document()),
                 .last_writer = stamp,
             };
-            record.stable_targets.push_back(command.stable_target);
-            record.read_set.insert(record.read_set.end(), command.read_set.begin(),
-                                   command.read_set.end());
-            record.write_set.insert(record.write_set.end(), command.write_set.begin(),
-                                    command.write_set.end());
-            record.structural_domain.push_back(command.structural_domain);
-            record.forward_postconditions.push_back(command.forward_postcondition);
-            record.commands.push_back(std::move(command));
+            appendCommandRecord(record, std::move(command));
         }
-        const auto deduplicate = [](std::vector<std::string> &values) {
-            std::sort(values.begin(), values.end());
-            values.erase(std::unique(values.begin(), values.end()), values.end());
-        };
-        deduplicate(record.stable_targets);
-        deduplicate(record.read_set);
-        deduplicate(record.write_set);
+        finalizeRecordSets(record);
         if (record.operation_kind == "undo") {
             for (const auto &write : source.write_set) {
                 const auto found = last_writers.find(write);
@@ -5156,16 +3610,16 @@ struct EditorEditCoordinator::Impl {
     }
 
     void advancePreviewEpoch() {
-        if (preview_epoch >= maxExactJsonInteger) {
+        if (preview.epoch >= maxExactJsonInteger) {
             throw std::overflow_error("preview_epoch space exhausted");
         }
-        ++preview_epoch;
+        ++preview.epoch;
     }
 
     EditFailure missingPreviewTicket(std::string_view ticket) const {
         OrderedJson payload{{"ticket", ticket}};
-        if (const auto found = preview_tombstones.find(std::string{ticket});
-            found != preview_tombstones.end()) {
+        if (const auto found = preview.tombstones.find(std::string{ticket});
+            found != preview.tombstones.end()) {
             payload["final_status"] = found->second.final_status;
         }
         return EditFailure{EditorEditErrorCode::ticket_not_found,
@@ -5196,9 +3650,9 @@ struct EditorEditCoordinator::Impl {
     }
 
     bool forceAbort(std::string reason) {
-        if (!preview_lease) return false;
+        if (!preview.lease) return false;
         try {
-            const auto lease = *preview_lease;
+            const auto lease = *preview.lease;
             const auto projection = executeLivePreview(
                 lease, {}, lease.canonical_operations, true);
             if (!projection.committed()) {
@@ -5206,15 +3660,15 @@ struct EditorEditCoordinator::Impl {
             }
             if (dependencies.preview_boundary) dependencies.preview_boundary();
             advancePreviewEpoch();
-            preview_tombstones[lease.ticket] =
+            preview.tombstones[lease.ticket] =
                 PreviewTombstone{lease.actor_id, "forced_aborted"};
             completed.push_back({{"event", "ticket_forced_aborted"},
                                  {"ticket", lease.ticket},
                                  {"actor_id", lease.actor_id.value},
                                  {"reason", std::move(reason)},
                                  {"final_status", "forced_aborted"},
-                                 {"preview_epoch", preview_epoch}});
-            preview_lease.reset();
+                                 {"preview_epoch", preview.epoch}});
+            preview.lease.reset();
             return true;
         } catch (const EditorPreviewAbortError &) {
             throw;
@@ -5227,13 +3681,22 @@ struct EditorEditCoordinator::Impl {
 
     void finishPreviewRequest(PreviewRequest &request, OrderedJson result) {
         request.result = std::move(result);
-        preview_results[request.request_id] = request.result;
+        preview.results[request.request_id] = request.result;
         completed.push_back(request.result);
     }
 
+    // The preview twin of publishFailure: every rejected preview request goes
+    // out through one place.
+    void publishPreviewFailure(PreviewRequest &request,
+                               const EditFailure &failure,
+                               std::string status = "rejected") {
+        finishPreviewRequest(
+            request, previewRejected(request, failure, std::move(status)));
+    }
+
     void commitPendingPreview() {
-        auto queue = std::move(pending_preview);
-        pending_preview.clear();
+        auto queue = std::move(preview.pending);
+        preview.pending.clear();
         for (auto &request : queue) {
             try {
                 const auto gate = gateSnapshot();
@@ -5255,25 +3718,23 @@ struct EditorEditCoordinator::Impl {
                                                   : primaryGateReason(gate)},
                          {"gate_epoch", gate.epoch}},
                         "editor preview gate changed after request acceptance"};
-                    finishPreviewRequest(request,
-                                         previewRejected(request, failure, "failed"));
+                    publishPreviewFailure(request, failure, "failed");
                     if (request.kind == PreviewRequest::Kind::open &&
-                        preview_reservation &&
-                        preview_reservation->ticket == request.ticket) {
-                        preview_reservation.reset();
+                        preview.reservation &&
+                        preview.reservation->ticket == request.ticket) {
+                        preview.reservation.reset();
                     }
                     continue;
                 }
 
                 if (request.kind == PreviewRequest::Kind::open) {
-                    if (preview_lease) {
+                    if (preview.lease) {
                         const EditFailure failure{
                             EditorEditErrorCode::preview_lease_busy,
-                            {{"owner", preview_lease->actor_id.value}},
+                            {{"owner", preview.lease->actor_id.value}},
                             "live preview lease is already occupied"};
-                        finishPreviewRequest(request,
-                                             previewRejected(request, failure));
-                        preview_reservation.reset();
+                        publishPreviewFailure(request, failure);
+                        preview.reservation.reset();
                         continue;
                     }
                     auto batch = prepareBatch(request.raw_operations, document(),
@@ -5301,31 +3762,31 @@ struct EditorEditCoordinator::Impl {
                     }
                     if (dependencies.preview_boundary) dependencies.preview_boundary();
                     advancePreviewEpoch();
-                    preview_lease = std::move(lease);
-                    preview_reservation.reset();
+                    preview.lease = std::move(lease);
+                    preview.reservation.reset();
                     finishPreviewRequest(
                         request,
                         {{"request_id", request.request_id},
                          {"ticket", request.ticket},
                          {"actor_id", request.actor_id.value},
-                         {"base_revision", preview_lease->base_revision.value},
+                         {"base_revision", preview.lease->base_revision.value},
                          {"affected_authoring_ids", [&] {
                               OrderedJson values = OrderedJson::array();
-                              for (const auto id : preview_lease->affected) {
+                              for (const auto id : preview.lease->affected) {
                                   values.push_back(id.value);
                               }
                               return values;
                           }()},
                          {"status", "open"},
-                         {"preview_epoch", preview_epoch}});
+                         {"preview_epoch", preview.epoch}});
                     continue;
                 }
 
-                if (!preview_lease || preview_lease->ticket != request.ticket) {
+                if (!preview.lease || preview.lease->ticket != request.ticket) {
                     if (request.kind == PreviewRequest::Kind::abort) {
-                        const auto tombstone = preview_tombstones.find(request.ticket);
+                        const auto tombstone = preview.tombstones.find(request.ticket);
                         const auto final_status =
-                            tombstone == preview_tombstones.end()
+                            tombstone == preview.tombstones.end()
                                 ? std::string{"not_found"}
                                 : tombstone->second.final_status;
                         finishPreviewRequest(
@@ -5335,22 +3796,20 @@ struct EditorEditCoordinator::Impl {
                              {"actor_id", request.actor_id.value},
                              {"status", "succeeded"},
                              {"final_status", final_status},
-                             {"preview_epoch", preview_epoch}});
+                             {"preview_epoch", preview.epoch}});
                     } else {
                         const auto failure = missingPreviewTicket(request.ticket);
-                        finishPreviewRequest(request,
-                                             previewRejected(request, failure));
+                        publishPreviewFailure(request, failure);
                     }
                     continue;
                 }
-                if (preview_lease->actor_id != request.actor_id) {
+                if (preview.lease->actor_id != request.actor_id) {
                     const EditFailure failure{
                         EditorEditErrorCode::not_lease_owner,
                         {{"ticket", request.ticket},
-                         {"owner", preview_lease->actor_id.value}},
+                         {"owner", preview.lease->actor_id.value}},
                         "preview ticket belongs to another actor"};
-                    finishPreviewRequest(request,
-                                         previewRejected(request, failure));
+                    publishPreviewFailure(request, failure);
                     continue;
                 }
 
@@ -5363,38 +3822,38 @@ struct EditorEditCoordinator::Impl {
                                               componentExists());
                     requireLivePreviewCapability(batch, "update_preview");
                     auto writes = batchWriteSet(batch);
-                    if (!sameStableSet(writes, preview_lease->write_set)) {
+                    if (!sameStableSet(writes, preview.lease->write_set)) {
                         editFailure(EditorEditErrorCode::method_unavailable,
                                     {{"method", "update_preview"},
                                      {"field", "lease_write_set"}},
                                     "preview update cannot expand or replace its lease");
                     }
                     const auto projection = executeLivePreview(
-                        *preview_lease, batch.commands,
+                        *preview.lease, batch.commands,
                         batch.canonical_forward, false);
                     if (!projection.committed()) {
                         throw projectionFailure(projection, "update_preview");
                     }
-                    preview_lease->raw_operations = request.raw_operations;
-                    preview_lease->canonical_operations =
+                    preview.lease->raw_operations = request.raw_operations;
+                    preview.lease->canonical_operations =
                         batch.canonical_forward;
-                    preview_lease->affected = batch.affected;
+                    preview.lease->affected = batch.affected;
                     advancePreviewEpoch();
                     finishPreviewRequest(request,
                                          {{"request_id", request.request_id},
                                           {"ticket", request.ticket},
                                           {"actor_id", request.actor_id.value},
                                           {"status", "updated"},
-                                          {"preview_epoch", preview_epoch}});
+                                          {"preview_epoch", preview.epoch}});
                     continue;
                 }
 
                 if (request.kind == PreviewRequest::Kind::commit) {
-                    if (document().revision() != preview_lease->base_revision) {
+                    if (document().revision() != preview.lease->base_revision) {
                         const EditFailure failure{
                             EditorEditErrorCode::stale_revision,
                             {{"current_revision", document().revision().value},
-                             {"target", targetState(preview_lease->raw_operations,
+                             {"target", targetState(preview.lease->raw_operations,
                                                     document())}},
                             "preview ticket base SceneRevision is stale"};
                         auto result = previewRejected(request, failure);
@@ -5411,12 +3870,12 @@ struct EditorEditCoordinator::Impl {
                     }
                     try {
                         auto batch = prepareBatch(
-                            preview_lease->raw_operations, document(),
-                            preview_lease->scene_id, prefabRegistry(),
+                            preview.lease->raw_operations, document(),
+                            preview.lease->scene_id, prefabRegistry(),
                             bindableProvider(), projectionState(),
                             componentExists());
                         const EditorEditExecutionRequest execution{
-                            .base_revision = preview_lease->base_revision,
+                            .base_revision = preview.lease->base_revision,
                             .commands = batch.commands,
                             .operations = batch.canonical_forward,
                         };
@@ -5429,16 +3888,16 @@ struct EditorEditCoordinator::Impl {
                             .id = request.request_id,
                             .kind = Ticket::Kind::edit,
                             .actor_id = request.actor_id,
-                            .base_revision = preview_lease->base_revision,
-                            .raw_operations = preview_lease->raw_operations,
+                            .base_revision = preview.lease->base_revision,
+                            .raw_operations = preview.lease->raw_operations,
                         };
                         const auto transaction_id = allocateTransaction();
                         finalizeJournal(journal_ticket, std::move(batch),
                                         projection, transaction_id);
                         advancePreviewEpoch();
-                        preview_tombstones[request.ticket] =
+                        preview.tombstones[request.ticket] =
                             PreviewTombstone{request.actor_id, "committed"};
-                        preview_lease.reset();
+                        preview.lease.reset();
                         finishPreviewRequest(
                             request,
                             {{"request_id", request.request_id},
@@ -5448,11 +3907,11 @@ struct EditorEditCoordinator::Impl {
                              {"committed_revision",
                               projection.committed_revision.value},
                              {"transaction_id", transaction_id},
-                             {"preview_epoch", preview_epoch}});
+                             {"preview_epoch", preview.epoch}});
                     } catch (...) {
                         const auto commit_failure = std::current_exception();
-                        if (preview_lease &&
-                            preview_lease->ticket == request.ticket) {
+                        if (preview.lease &&
+                            preview.lease->ticket == request.ticket) {
                             forceAbort("commit_failed");
                         }
                         std::rethrow_exception(commit_failure);
@@ -5461,39 +3920,37 @@ struct EditorEditCoordinator::Impl {
                 }
 
                 const auto projection = executeLivePreview(
-                    *preview_lease, {}, preview_lease->canonical_operations, true);
+                    *preview.lease, {}, preview.lease->canonical_operations, true);
                 if (!projection.committed()) {
                     throw projectionFailure(projection, "abort_preview");
                 }
                 if (dependencies.preview_boundary) dependencies.preview_boundary();
                 advancePreviewEpoch();
-                preview_tombstones[request.ticket] =
+                preview.tombstones[request.ticket] =
                     PreviewTombstone{request.actor_id, "aborted"};
-                preview_lease.reset();
+                preview.lease.reset();
                 finishPreviewRequest(request,
                                      {{"request_id", request.request_id},
                                       {"ticket", request.ticket},
                                       {"actor_id", request.actor_id.value},
                                       {"status", "succeeded"},
                                       {"final_status", "aborted"},
-                                      {"preview_epoch", preview_epoch}});
+                                      {"preview_epoch", preview.epoch}});
             } catch (const EditFailure &failure) {
-                finishPreviewRequest(request,
-                                     previewRejected(request, failure, "failed"));
+                publishPreviewFailure(request, failure, "failed");
                 if (request.kind == PreviewRequest::Kind::open &&
-                    preview_reservation &&
-                    preview_reservation->ticket == request.ticket) {
-                    preview_reservation.reset();
+                    preview.reservation &&
+                    preview.reservation->ticket == request.ticket) {
+                    preview.reservation.reset();
                 }
             } catch (const std::exception &error) {
                 const EditFailure failure{
                     EditorEditErrorCode::method_unavailable,
                     {{"method", "preview"}, {"adapter", "execution"}},
                     error.what()};
-                finishPreviewRequest(request,
-                                     previewRejected(request, failure, "failed"));
+                publishPreviewFailure(request, failure, "failed");
                 if (request.kind == PreviewRequest::Kind::open) {
-                    preview_reservation.reset();
+                    preview.reservation.reset();
                 }
             }
         }
@@ -5507,9 +3964,9 @@ struct EditorEditCoordinator::Impl {
         try {
             commitPendingPreview();
             const auto preview_gate = gateSnapshot();
-            if (preview_lease &&
+            if (preview.lease &&
                 (!preview_gate.can_preview ||
-                 dependencies.current_scene_id() != preview_lease->scene_id)) {
+                 dependencies.current_scene_id() != preview.lease->scene_id)) {
                 (void)forceAbort(preview_gate.can_preview
                                      ? "scene_transition"
                                      : primaryGateReason(preview_gate));
@@ -5527,19 +3984,11 @@ struct EditorEditCoordinator::Impl {
                     observed_transition_epoch != ticket.accepted_transition_epoch) {
                     const EditFailure failure{
                         EditorEditErrorCode::gate_closed,
-                        OrderedJson{{"method", ticket.kind == Ticket::Kind::edit
-                                                  ? "edit"
-                                                  : ticket.kind == Ticket::Kind::undo
-                                                        ? "undo"
-                                                        : "redo"},
+                        OrderedJson{{"method", ticketKindName(ticket.kind)},
                                     {"reason", primaryGateReason(snapshot)},
                                     {"gate_epoch", snapshot.epoch}},
                         "editor gate changed after request acceptance"};
-                    ticket.result = rejected(ticket.id, ticket.actor_id,
-                                             ticket.base_revision, failure);
-                    ticket.result["status"] = "failed";
-                    results[ticket.id] = ticket.result;
-                    completed.push_back(ticket.result);
+                    publishFailure(ticket, failure, "failed");
                     continue;
                 }
                 if (dependencies.current_scene_id() != ticket.accepted_scene_id) {
@@ -5550,11 +3999,7 @@ struct EditorEditCoordinator::Impl {
                                     {"reason", "reload_scene_transition"},
                                     {"gate_epoch", gate_epoch}},
                         "scene changed after request acceptance"};
-                    ticket.result = rejected(ticket.id, ticket.actor_id,
-                                             ticket.base_revision, failure);
-                    ticket.result["status"] = "failed";
-                    results[ticket.id] = ticket.result;
-                    completed.push_back(ticket.result);
+                    publishFailure(ticket, failure, "failed");
                     continue;
                 }
                 std::optional<EditorJournalRecord> revert_source;
@@ -5593,19 +4038,12 @@ struct EditorEditCoordinator::Impl {
                         OrderedJson{{"current_revision", document().revision().value},
                                     {"target", targetState(ticket.raw_operations, document())}},
                         "base SceneRevision is stale at execution"};
-                    ticket.result = rejected(ticket.id, ticket.actor_id,
-                                             ticket.base_revision, failure);
-                    results[ticket.id] = ticket.result;
-                    completed.push_back(ticket.result);
+                    publishFailure(ticket, failure, "rejected");
                     continue;
                 }
                 if (ticket.kind == Ticket::Kind::edit) {
                     if (const auto failure = prefabCasFailure(ticket)) {
-                        ticket.result = rejected(ticket.id, ticket.actor_id,
-                                                 ticket.base_revision, *failure);
-                        ticket.result["status"] = "failed";
-                        results[ticket.id] = ticket.result;
-                        completed.push_back(ticket.result);
+                        publishFailure(ticket, *failure, "failed");
                         continue;
                     }
                 }
@@ -5684,18 +4122,14 @@ struct EditorEditCoordinator::Impl {
                                             ? (batch.forward.empty()
                                                    ? std::string{"edit"}
                                                    : batch.forward.front().at("op").get<std::string>())
-                                            : ticket.kind == Ticket::Kind::undo
-                                                  ? std::string{"undo"}
-                                                  : std::string{"redo"};
+                                            : std::string{ticketKindName(
+                                                  ticket.kind)};
                     const auto failure = projectionFailure(projection, method);
-                    ticket.result = rejected(ticket.id, ticket.actor_id,
-                                             ticket.base_revision, failure);
-                    ticket.result["status"] = projection.status ==
-                                                       EditorProjectionStatus::Failed
-                                                   ? "failed"
-                                                   : "rejected";
-                    results[ticket.id] = ticket.result;
-                    completed.push_back(ticket.result);
+                    publishFailure(ticket, failure,
+                                   projection.status ==
+                                           EditorProjectionStatus::Failed
+                                       ? "failed"
+                                       : "rejected");
                     continue;
                 }
                 std::string transaction_id;
@@ -5718,20 +4152,16 @@ struct EditorEditCoordinator::Impl {
                         undo_stack.push_back(transaction_id);
                     }
                 }
-                ticket.result = {{"ticket", ticket.id},
-                                 {"actor_id", ticket.actor_id.value},
-                                 {"base_revision", ticket.base_revision.value},
-                                 {"committed_revision",
-                                  projection.committed_revision.value},
-                                 {"transaction_id", transaction_id},
-                                 {"operation", ticket.kind == Ticket::Kind::edit
-                                                   ? "edit"
-                                                   : ticket.kind == Ticket::Kind::undo
-                                                         ? "undo"
-                                                         : "redo"},
-                                 {"status", "committed"}};
+                OrderedJson result{{"ticket", ticket.id},
+                                   {"actor_id", ticket.actor_id.value},
+                                   {"base_revision", ticket.base_revision.value},
+                                   {"committed_revision",
+                                    projection.committed_revision.value},
+                                   {"transaction_id", transaction_id},
+                                   {"operation", ticketKindName(ticket.kind)},
+                                   {"status", "committed"}};
                 if (ticket.source_transaction_id) {
-                    ticket.result["source_transaction_id"] =
+                    result["source_transaction_id"] =
                         *ticket.source_transaction_id;
                 }
                 // The document and the journal already carry this edit, so the
@@ -5739,41 +4169,21 @@ struct EditorEditCoordinator::Impl {
                 // the result is published and keep a restore failure as a
                 // diagnostic: letting it reach the catch below would republish
                 // the very same ticket as "failed".
-                if (preview_lease) {
+                if (preview.lease) {
                     try {
                         (void)forceAbort("base_revision_stale");
                     } catch (const EditorPreviewAbortError &error) {
-                        ticket.result["preview_abort_error"] = error.what();
+                        result["preview_abort_error"] = error.what();
                     }
                 }
-                results[ticket.id] = ticket.result;
-                completed.push_back(ticket.result);
+                publishResult(ticket, std::move(result));
             } catch (const EditFailure &failure) {
-                ticket.result = rejected(ticket.id, ticket.actor_id,
-                                         ticket.base_revision, failure);
-                ticket.result["status"] = "failed";
-                results[ticket.id] = ticket.result;
-                completed.push_back(ticket.result);
+                publishFailure(ticket, failure, "failed");
             } catch (const std::exception &error) {
-                const EditFailure failure{
-                    EditorEditErrorCode::method_unavailable,
-                    OrderedJson{{"method", "edit"}, {"adapter", "execution"}},
-                    error.what()};
-                ticket.result = rejected(ticket.id, ticket.actor_id,
-                                         ticket.base_revision, failure);
-                ticket.result["status"] = "failed";
-                results[ticket.id] = ticket.result;
-                completed.push_back(ticket.result);
+                publishExecutionFailure(ticket, error.what());
             } catch (...) {
-                const EditFailure failure{
-                    EditorEditErrorCode::method_unavailable,
-                    OrderedJson{{"method", "edit"}, {"adapter", "execution"}},
-                    "unknown editor execution failure"};
-                ticket.result = rejected(ticket.id, ticket.actor_id,
-                                         ticket.base_revision, failure);
-                ticket.result["status"] = "failed";
-                results[ticket.id] = ticket.result;
-                completed.push_back(ticket.result);
+                publishExecutionFailure(ticket,
+                                        "unknown editor execution failure");
             }
         }
         if (dependencies.frame_boundary_extension) {
@@ -5854,14 +4264,14 @@ OrderedJson EditorEditCoordinator::canPreview(const Json &params) {
     requireOnly(params, {}, "can_preview");
     const auto snapshot = impl_->gateSnapshot();
     auto reasons = snapshot.reasons;
-    if (impl_->preview_lease || impl_->preview_reservation) {
+    if (impl_->preview.lease || impl_->preview.reservation) {
         reasons.push_back("preview_lease_conflict");
     }
     return {{"can_preview", snapshot.can_preview &&
-                                !impl_->preview_lease &&
-                                !impl_->preview_reservation},
+                                !impl_->preview.lease &&
+                                !impl_->preview.reservation},
             {"gate_epoch", snapshot.epoch},
-            {"preview_epoch", impl_->preview_epoch},
+            {"preview_epoch", impl_->preview.epoch},
             {"reasons", reasons}};
 }
 
@@ -6168,7 +4578,7 @@ OrderedJson EditorEditCoordinator::openPreview(const Json &params) {
     };
     const auto reject = [&](const EditFailure &failure) {
         auto result = impl_->previewRejected(request, failure);
-        impl_->preview_results[request_id] = result;
+        impl_->preview.results[request_id] = result;
         return result;
     };
     if (!gate.can_preview) {
@@ -6179,10 +4589,10 @@ OrderedJson EditorEditCoordinator::openPreview(const Json &params) {
              {"gate_epoch", gate.epoch}},
             "editor preview gate is closed"});
     }
-    if (impl_->preview_lease || impl_->preview_reservation) {
-        const auto owner = impl_->preview_lease
-                               ? impl_->preview_lease->actor_id.value
-                               : impl_->preview_reservation->actor_id.value;
+    if (impl_->preview.lease || impl_->preview.reservation) {
+        const auto owner = impl_->preview.lease
+                               ? impl_->preview.lease->actor_id.value
+                               : impl_->preview.reservation->actor_id.value;
         return reject(EditFailure{EditorEditErrorCode::preview_lease_busy,
                                   {{"owner", owner}},
                                   "live preview lease is already occupied"});
@@ -6200,7 +4610,7 @@ OrderedJson EditorEditCoordinator::openPreview(const Json &params) {
                         {{"method", method}, {"adapter", "live_preview"}},
                         "live preview execution is unavailable");
         }
-        impl_->preview_reservation = Impl::PreviewLease{
+        impl_->preview.reservation = Impl::PreviewLease{
             .ticket = ticket,
             .actor_id = actor,
             .base_revision = impl_->document().revision(),
@@ -6214,9 +4624,9 @@ OrderedJson EditorEditCoordinator::openPreview(const Json &params) {
     } catch (const EditFailure &failure) {
         return reject(failure);
     }
-    impl_->preview_results[request_id] = request.result;
-    impl_->pending_preview.push_back(std::move(request));
-    return impl_->preview_results.at(request_id);
+    impl_->preview.results[request_id] = request.result;
+    impl_->preview.pending.push_back(std::move(request));
+    return impl_->preview.results.at(request_id);
 }
 
 OrderedJson EditorEditCoordinator::updatePreview(const Json &params) {
@@ -6241,7 +4651,7 @@ OrderedJson EditorEditCoordinator::updatePreview(const Json &params) {
     };
     const auto reject = [&](const EditFailure &failure) {
         auto result = impl_->previewRejected(request, failure);
-        impl_->preview_results[request_id] = result;
+        impl_->preview.results[request_id] = result;
         return result;
     };
     if (!gate.can_preview) {
@@ -6251,13 +4661,13 @@ OrderedJson EditorEditCoordinator::updatePreview(const Json &params) {
                                    {"gate_epoch", gate.epoch}},
                                   "editor preview gate is closed"});
     }
-    if (!impl_->preview_lease || impl_->preview_lease->ticket != ticket) {
+    if (!impl_->preview.lease || impl_->preview.lease->ticket != ticket) {
         return reject(impl_->missingPreviewTicket(ticket));
     }
-    if (impl_->preview_lease->actor_id != actor) {
+    if (impl_->preview.lease->actor_id != actor) {
         return reject(EditFailure{EditorEditErrorCode::not_lease_owner,
                                   {{"ticket", ticket},
-                                   {"owner", impl_->preview_lease->actor_id.value}},
+                                   {"owner", impl_->preview.lease->actor_id.value}},
                                   "preview ticket belongs to another actor"});
     }
     try {
@@ -6269,7 +4679,7 @@ OrderedJson EditorEditCoordinator::updatePreview(const Json &params) {
                                   impl_->componentExists());
         requireLivePreviewCapability(batch, method);
         const auto writes = batchWriteSet(batch);
-        if (!sameStableSet(writes, impl_->preview_lease->write_set)) {
+        if (!sameStableSet(writes, impl_->preview.lease->write_set)) {
             editFailure(EditorEditErrorCode::method_unavailable,
                         {{"method", method}, {"field", "lease_write_set"}},
                         "preview update cannot expand or replace its lease");
@@ -6277,9 +4687,9 @@ OrderedJson EditorEditCoordinator::updatePreview(const Json &params) {
     } catch (const EditFailure &failure) {
         return reject(failure);
     }
-    impl_->preview_results[request_id] = request.result;
-    impl_->pending_preview.push_back(std::move(request));
-    return impl_->preview_results.at(request_id);
+    impl_->preview.results[request_id] = request.result;
+    impl_->preview.pending.push_back(std::move(request));
+    return impl_->preview.results.at(request_id);
 }
 
 OrderedJson EditorEditCoordinator::commitPreview(const Json &params) {
@@ -6304,7 +4714,7 @@ OrderedJson EditorEditCoordinator::commitPreview(const Json &params) {
     };
     const auto reject = [&](const EditFailure &failure) {
         auto result = impl_->previewRejected(request, failure);
-        impl_->preview_results[request_id] = result;
+        impl_->preview.results[request_id] = result;
         return result;
     };
     if (!gate.can_edit) {
@@ -6314,29 +4724,29 @@ OrderedJson EditorEditCoordinator::commitPreview(const Json &params) {
                                    {"gate_epoch", gate.epoch}},
                                   "editor edit gate is closed"});
     }
-    if (!impl_->preview_lease || impl_->preview_lease->ticket != ticket) {
+    if (!impl_->preview.lease || impl_->preview.lease->ticket != ticket) {
         return reject(impl_->missingPreviewTicket(ticket));
     }
-    if (impl_->preview_lease->actor_id != actor) {
+    if (impl_->preview.lease->actor_id != actor) {
         return reject(EditFailure{EditorEditErrorCode::not_lease_owner,
                                   {{"ticket", ticket},
-                                   {"owner", impl_->preview_lease->actor_id.value}},
+                                   {"owner", impl_->preview.lease->actor_id.value}},
                                   "preview ticket belongs to another actor"});
     }
-    if (impl_->document().revision() != impl_->preview_lease->base_revision) {
+    if (impl_->document().revision() != impl_->preview.lease->base_revision) {
         const EditFailure failure{
             EditorEditErrorCode::stale_revision,
             {{"current_revision", impl_->document().revision().value},
-             {"target", targetState(impl_->preview_lease->raw_operations,
+             {"target", targetState(impl_->preview.lease->raw_operations,
                                     impl_->document())}},
             "preview ticket base SceneRevision is stale"};
         auto result = reject(failure);
         (void)impl_->forceAbort("stale_revision");
         return result;
     }
-    impl_->preview_results[request_id] = request.result;
-    impl_->pending_preview.push_back(std::move(request));
-    return impl_->preview_results.at(request_id);
+    impl_->preview.results[request_id] = request.result;
+    impl_->preview.pending.push_back(std::move(request));
+    return impl_->preview.results.at(request_id);
 }
 
 OrderedJson EditorEditCoordinator::abortPreview(const Json &params) {
@@ -6359,19 +4769,19 @@ OrderedJson EditorEditCoordinator::abortPreview(const Json &params) {
         .result = {{"request_id", request_id}, {"ticket", ticket},
                    {"actor_id", actor.value}, {"status", "accepted"}},
     };
-    if (impl_->preview_lease && impl_->preview_lease->ticket == ticket &&
-        impl_->preview_lease->actor_id != actor) {
+    if (impl_->preview.lease && impl_->preview.lease->ticket == ticket &&
+        impl_->preview.lease->actor_id != actor) {
         const EditFailure failure{EditorEditErrorCode::not_lease_owner,
                                   {{"ticket", ticket},
-                                   {"owner", impl_->preview_lease->actor_id.value}},
+                                   {"owner", impl_->preview.lease->actor_id.value}},
                                   "preview ticket belongs to another actor"};
         auto result = impl_->previewRejected(request, failure);
-        impl_->preview_results[request_id] = result;
+        impl_->preview.results[request_id] = result;
         return result;
     }
-    impl_->preview_results[request_id] = request.result;
-    impl_->pending_preview.push_back(std::move(request));
-    return impl_->preview_results.at(request_id);
+    impl_->preview.results[request_id] = request.result;
+    impl_->preview.pending.push_back(std::move(request));
+    return impl_->preview.results.at(request_id);
 }
 
 OrderedJson EditorEditCoordinator::getResult(const Json &params) const {
@@ -6388,8 +4798,8 @@ OrderedJson EditorEditCoordinator::getPreviewResult(const Json &params) const {
     requireOnly(params, {"request_id"}, "get_preview_result");
     const auto request_id = requireString(params, "request_id",
                                           "get_preview_result");
-    const auto found = impl_->preview_results.find(request_id);
-    if (found == impl_->preview_results.end()) {
+    const auto found = impl_->preview.results.find(request_id);
+    if (found == impl_->preview.results.end()) {
         throw std::invalid_argument(
             "get_preview_result request_id was not issued by this session");
     }
@@ -6425,18 +4835,18 @@ std::vector<std::string> EditorEditCoordinator::pendingTicketIds() const {
     std::vector<std::string> result;
     result.reserve(impl_->pending.size());
     for (const auto &ticket : impl_->pending) result.push_back(ticket.id);
-    for (const auto &request : impl_->pending_preview) {
+    for (const auto &request : impl_->preview.pending) {
         result.push_back(request.request_id);
     }
     return result;
 }
 
 bool EditorEditCoordinator::hasOpenPreviewLease() const noexcept {
-    return impl_->preview_lease.has_value();
+    return impl_->preview.lease.has_value();
 }
 
 std::uint64_t EditorEditCoordinator::previewEpoch() const noexcept {
-    return impl_->preview_epoch;
+    return impl_->preview.epoch;
 }
 
 bool EditorEditCoordinator::forceAbortPreview(std::string reason) {
