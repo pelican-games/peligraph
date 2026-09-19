@@ -64,6 +64,7 @@
 #include "../src/core/vkcore/accelerationstructure.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
+#include "renderer_testaccess.hpp"
 #include "../src/core/watch/reloadservice.hpp"
 #include "../src/core/userpublic/details/component/registerer.hpp"
 #include "../src/core/userpublic/details/ecs/componentdeclare.hpp"
@@ -782,7 +783,7 @@ TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
         REQUIRE(rows.rows[0].material_index != rows.rows[1].material_index);
         for (const std::string ray_type : {"primary", "shadow"}) {
             CAPTURE(ray_type, moved);
-            const auto image = GET_MODULE(Renderer).readRenderTargetForTesting(
+            const auto image = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer),
                 "multi_" + ray_type, ImageSubresourceRange{});
             REQUIRE(image.bytes.size() >= 12 * sizeof(std::uint32_t));
             std::array<std::uint32_t, 12> pixels{};
@@ -804,7 +805,7 @@ TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
             }
             CHECK((pixels[9] != 0xffffffffu) == moved);
         }
-        const auto diagnostics = GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting();
+        const auto diagnostics = RendererTestAccess::rayQueryAccelerationStructureDiagnostics(GET_MODULE(Renderer));
         const auto count = distinct_instances && !world_space ? 2u : 1u;
         CHECK(diagnostics.active_blas_count == count);
         CHECK(diagnostics.tlas_instance_count == count);
@@ -834,10 +835,10 @@ TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
             INFO(result.dump());
             REQUIRE(result.at("committed") == true);
             (void)renderWp374aProductionRows();
-            const auto diagnostics = GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting();
+            const auto diagnostics = RendererTestAccess::rayQueryAccelerationStructureDiagnostics(GET_MODULE(Renderer));
             CHECK(diagnostics.active_blas_count == (space == "world" ? 1u : 2u));
             CHECK(diagnostics.tlas_instance_count == (space == "world" ? 1u : 2u));
-            const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("multi_primary", ImageSubresourceRange{});
+            const auto image = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "multi_primary", ImageSubresourceRange{});
             REQUIRE(image.bytes.size() >= sizeof(std::uint32_t));
             std::uint32_t value = 0;
             std::memcpy(&value, image.bytes.data(), sizeof(value));
@@ -1371,7 +1372,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
         return;
     }
     load();
-    GET_MODULE(Renderer).setExecutionTracingForTesting(true);
+    RendererTestAccess::setExecutionTracing(GET_MODULE(Renderer), true);
     if (debug_draw_case) {
         if (debug_type == "debug_text") GET_MODULE(DebugText).text(2, 2, "A", {0,1,0,1});
         else if (debug_type == "gizmo") GET_MODULE(Gizmo).setDisplayRequest(
@@ -1381,7 +1382,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     const auto rows = renderWp374aProductionRows();
     REQUIRE(rows.rows.size() == 2);
     if (material_query || sprite_before_as) {
-        const auto albedo = GET_MODULE(Renderer).readRenderTargetForTesting("lit_color", ImageSubresourceRange{});
+        const auto albedo = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "lit_color", ImageSubresourceRange{});
         std::size_t covered = 0;
         for (std::size_t offset = 0; offset + 7 < albedo.bytes.size(); offset += 8) {
             std::array<std::uint16_t, 4> pixel;
@@ -1393,7 +1394,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
         }
         CHECK(covered > 0);
     }
-    const auto &execution_nodes = GET_MODULE(Renderer).lastExecutionTraceForTesting().at("nodes");
+    const auto &execution_nodes = RendererTestAccess::lastExecutionTrace(GET_MODULE(Renderer)).at("nodes");
     REQUIRE(execution_nodes.size() >= 4);
     const auto node_position = [&](const std::string &name) {
         const auto found = std::find_if(execution_nodes.begin(), execution_nodes.end(),
@@ -1407,7 +1408,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     if (!geometry_type.empty()) {
         if (geometry_query.empty()) CHECK(node_position("geometry_query") < as_offset);
         else CHECK(node_position("geometry_query") > node_position("__scene_acceleration_structure:" + geometry_query));
-        const auto depth = GET_MODULE(Renderer).readRenderTargetForTesting("geometry_depth_readback", ImageSubresourceRange{});
+        const auto depth = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "geometry_depth_readback", ImageSubresourceRange{});
         std::size_t covered = 0;
         for (std::size_t i=0;i+sizeof(float)<=depth.bytes.size();i+=sizeof(float)) {
             float z=1;
@@ -1419,7 +1420,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
         }
         CHECK(covered>0);
         if (geometry_type=="picking") {
-            const auto color = GET_MODULE(Renderer).readRenderTargetForTesting("geometry_color", ImageSubresourceRange{});
+            const auto color = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "geometry_color", ImageSubresourceRange{});
             REQUIRE(color.bytes.size() == depth.bytes.size());
             std::size_t picked=0;
             for(std::size_t i=0;i+sizeof(float)<=depth.bytes.size();i+=sizeof(float)) {
@@ -1435,7 +1436,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
             CHECK(picked>0);
         }
         if (geometry_type=="velocity" && !geometry_query.empty()) {
-            const auto color = GET_MODULE(Renderer).readRenderTargetForTesting("geometry_color", ImageSubresourceRange{});
+            const auto color = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "geometry_color", ImageSubresourceRange{});
             REQUIRE(color.bytes.size() == depth.bytes.size());
             std::size_t hits=0;
             for(std::size_t i=0;i+3<color.bytes.size();i+=4) {
@@ -1454,7 +1455,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     if (debug_draw_case) {
         if (debug_query.empty()) CHECK(node_position(debug_type) < as_offset);
         else CHECK(node_position(debug_type) > node_position("__scene_acceleration_structure:" + debug_query));
-        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("debug_result", ImageSubresourceRange{});
+        const auto image = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "debug_result", ImageSubresourceRange{});
         std::size_t covered = 0;
         for (std::size_t offset=0;offset+3<image.bytes.size();offset+=4) {
             if (debug_type == "gizmo" && debug_query.empty()) {
@@ -1487,7 +1488,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
             CHECK_THAT(result.last_error, Catch::Matchers::ContainsSubstring("Auxiliary descriptor contract"));
             GET_MODULE(DebugText).text(2, 2, "A", {0,1,0,1});
             (void)renderWp374aProductionRows();
-            const auto retained = GET_MODULE(Renderer).readRenderTargetForTesting("debug_result", ImageSubresourceRange{});
+            const auto retained = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "debug_result", ImageSubresourceRange{});
             bool retained_hit = false;
             for (std::size_t i = 0; i + 3 < retained.bytes.size(); i += 4)
                 retained_hit |= retained.bytes[i] == 255 && retained.bytes[i+1] == 255 && retained.bytes[i+2] == 0;
@@ -1497,7 +1498,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     }
     if (ui_before_as) {
         CHECK(node_position("pelican_ui") < as_offset);
-        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("pre_as_ui", ImageSubresourceRange{});
+        const auto image = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "pre_as_ui", ImageSubresourceRange{});
         std::size_t green_pixels = 0;
         for (std::size_t offset = 0; offset + 3 < image.bytes.size(); offset += 4)
             if (image.bytes[offset] == 0 && image.bytes[offset + 1] == 255 && image.bytes[offset + 2] == 0) ++green_pixels;
@@ -1505,7 +1506,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     }
     if (before_as) {
         CHECK(node_position(raster ? "pre_as_raster" : "pre_as_compute") < as_offset);
-        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("pre_as_output", ImageSubresourceRange{});
+        const auto image = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "pre_as_output", ImageSubresourceRange{});
         REQUIRE(image.bytes.size() >= sizeof(std::uint32_t));
         std::uint32_t pixel = 0;
         std::memcpy(&pixel, image.bytes.data(), sizeof(pixel));
@@ -1520,7 +1521,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     }
     for (const std::string name : {"left", "right", "empty"}) {
         CAPTURE(name);
-        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting(
+        const auto image = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer),
             "rt6_" + name, ImageSubresourceRange{});
         REQUIRE(image.bytes.size() >= 12 * sizeof(std::uint32_t));
         std::array<std::uint32_t, 12> pixels{};
@@ -1530,7 +1531,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
         CHECK(pixels[9] == 0xffffffffu);
         if (query) CHECK(pixels[0] == 0u);
         if (raster_query) {
-            const auto raster_image = GET_MODULE(Renderer).readRenderTargetForTesting("raster_rt6_" + name, ImageSubresourceRange{});
+            const auto raster_image = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "raster_rt6_" + name, ImageSubresourceRange{});
             REQUIRE(raster_image.bytes.size() >= sizeof(pixels));
             std::memcpy(pixels.data(), raster_image.bytes.data(), sizeof(pixels));
             CHECK(pixels[0] == 0u);
@@ -1539,7 +1540,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
             CHECK(pixels[9] == 0xffffffffu);
         }
     }
-    const auto diagnostics = GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting();
+    const auto diagnostics = RendererTestAccess::rayQueryAccelerationStructureDiagnostics(GET_MODULE(Renderer));
     CHECK(diagnostics.tlas_instance_count == 2);
     CHECK(diagnostics.named_tlas_instance_counts.at("left") == 1);
     CHECK(diagnostics.named_tlas_instance_counts.at("right") == 1);
@@ -1589,7 +1590,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
                                        "__scene_acceleration_structure:right", "__scene_acceleration_structure:empty"}}});
         // Publication replaces the targets at the boundary; read the next completed frame.
         (void)renderWp374aProductionRows();
-        const auto ordered_nodes = GET_MODULE(Renderer).lastExecutionTraceForTesting().at("nodes");
+        const auto ordered_nodes = RendererTestAccess::lastExecutionTrace(GET_MODULE(Renderer)).at("nodes");
         const auto execution_position = [&](const std::string &name) {
             const auto found = std::find_if(ordered_nodes.begin(), ordered_nodes.end(), [&](const auto &node) { return node.at("name") == name; });
             REQUIRE(found != ordered_nodes.end());
@@ -1599,7 +1600,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
         CHECK(execution_position(left_consumer) < execution_position("__scene_acceleration_structure:right"));
         CHECK(execution_position("__scene_acceleration_structure:right") < execution_position("__scene_acceleration_structure:empty"));
         for (const std::string name : {"left", "right"}) {
-            const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("rt6_" + name, ImageSubresourceRange{});
+            const auto image = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "rt6_" + name, ImageSubresourceRange{});
             std::array<std::uint32_t, 12> pixels{};
             REQUIRE(image.bytes.size() >= sizeof(pixels));
             std::memcpy(pixels.data(), image.bytes.data(), sizeof(pixels));
@@ -1621,7 +1622,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
         CHECK(Json::parse(readWp374aText(project.path / "hybrid.json")).at("scene_acceleration_structures") == definitions);
         // Publication retires the old targets at the frame boundary; draw the new generation.
         (void)renderWp374aProductionRows();
-        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("rt6_left", ImageSubresourceRange{});
+        const auto image = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "rt6_left", ImageSubresourceRange{});
         std::array<std::uint32_t, 12> pixels{};
         REQUIRE(image.bytes.size() >= sizeof(pixels));
         std::memcpy(pixels.data(), image.bytes.data(), sizeof(pixels));
@@ -1640,7 +1641,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
         REQUIRE(runWp374aRpcBytes(*service, rpc_id++, "get_edit_result",
             {{"ticket", connected.at("ticket")}}).at("committed") == true);
         (void)renderWp374aProductionRows();
-        const auto connected_image = GET_MODULE(Renderer).readRenderTargetForTesting("rt6_left", ImageSubresourceRange{});
+        const auto connected_image = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "rt6_left", ImageSubresourceRange{});
         REQUIRE(connected_image.bytes.size() >= sizeof(pixels));
         std::memcpy(pixels.data(), connected_image.bytes.data(), sizeof(pixels));
         CHECK(pixels[1] == 71u);
@@ -1771,14 +1772,14 @@ void main() {
     const auto check_lanes = [&](std::uint32_t width, std::uint32_t height,
                                  std::uint32_t depth) {
         auto &renderer = GET_MODULE(Renderer);
-        renderer.setExecutionTracingForTesting(true);
+        RendererTestAccess::setExecutionTracing(renderer, true);
         (void)renderWp374aProductionRows();
-        const auto &nodes = renderer.lastExecutionTraceForTesting().at("nodes");
+        const auto &nodes = RendererTestAccess::lastExecutionTrace(renderer).at("nodes");
         REQUIRE_FALSE(nodes.empty());
         CHECK(nodes.front().at("kind") == "acceleration_structure");
         CHECK(nodes.front().at("recorded") == true);
         CHECK(nodes.front().at("name") == "__scene_acceleration_structure");
-        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting(
+        const auto image = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer),
             "wp386_out", ImageSubresourceRange{});
         const auto lane_count = width * height * depth;
         REQUIRE(image.bytes.size() >= lane_count * 4 * sizeof(std::uint32_t));
@@ -1870,7 +1871,7 @@ void main() { pelican_resource_args.values[0] = uvec4(0u, 1u, 2u, 1u); }
     edit_task("wp386_trace", [](Json &task) { task["dispatch"] = {{"indirect", {{"buffer", "ray_args"}, {"offset", 4}}}}; });
     check_lanes(1, 2, 1);
     const auto execution_position = [&](const std::string &name) {
-        const auto &nodes = GET_MODULE(Renderer).lastExecutionTraceForTesting().at("nodes");
+        const auto &nodes = RendererTestAccess::lastExecutionTrace(GET_MODULE(Renderer)).at("nodes");
         const auto found = std::find_if(nodes.begin(), nodes.end(), [&](const auto &node) { return node.at("name") == name; });
         REQUIRE(found != nodes.end());
         return found - nodes.begin();
@@ -1936,7 +1937,7 @@ TEST_CASE("RT6 explicit ray launch dimensions and runtime edits reach every 3D l
     const auto check_lanes = [&](std::uint32_t width, std::uint32_t height,
                                  std::uint32_t depth) {
         (void)renderWp374aProductionRows();
-        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting(
+        const auto image = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer),
             "wp386_out", ImageSubresourceRange{});
         const auto lane_count = width * height * depth;
         REQUIRE(image.bytes.size() >= lane_count * 4 * sizeof(std::uint32_t));
@@ -2003,7 +2004,7 @@ TEST_CASE("RT5 shared skinned mesh instances trace their current skin and morph 
     auto &instances = GET_MODULE(PolygonInstanceContainer);
     const auto sample = [&] {
         (void)renderWp374aProductionRows();
-        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting(
+        const auto image = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer),
             "wp366_a", ImageSubresourceRange{});
         REQUIRE(image.bytes.size() >= 12 * sizeof(std::uint32_t));
         std::array<std::uint32_t, 12> pixels{};
@@ -2012,7 +2013,7 @@ TEST_CASE("RT5 shared skinned mesh instances trace their current skin and morph 
                           pixels[9] != 0xffffffffu};
     };
     const auto initial = sample();
-    const auto first_as = GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting();
+    const auto first_as = RendererTestAccess::rayQueryAccelerationStructureDiagnostics(GET_MODULE(Renderer));
     CHECK(first_as.blas_build_count == 2);
     CHECK(first_as.blas_update_count == 0);
     CHECK_FALSE(initial[0]);
@@ -2046,7 +2047,7 @@ TEST_CASE("RT5 shared skinned mesh instances trace their current skin and morph 
     // The left ray requires both morph and skin; the right uses skin alone.
     // Sharing either instance's output makes at least one of these rays miss.
     const auto deformed = sample();
-    const auto updated_as = GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting();
+    const auto updated_as = RendererTestAccess::rayQueryAccelerationStructureDiagnostics(GET_MODULE(Renderer));
     CHECK(updated_as.blas_build_count == first_as.blas_build_count);
     CHECK(updated_as.blas_update_count == 2);
     CHECK(deformed[0]);
@@ -2055,7 +2056,7 @@ TEST_CASE("RT5 shared skinned mesh instances trace their current skin and morph 
     publish_morph(0.0F, 2);
     instances.setSkinningPalette(*right_id, std::array{glm::mat4{1.0F}});
     const auto restored = sample();
-    CHECK(GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting().blas_update_count == 4);
+    CHECK(RendererTestAccess::rayQueryAccelerationStructureDiagnostics(GET_MODULE(Renderer)).blas_update_count == 4);
     CHECK_FALSE(restored[0]);
     CHECK_FALSE(restored[1]);
     CHECK(restored[2]);
@@ -2095,7 +2096,7 @@ TEST_CASE("RT5 VAT ray hits follow interpolated playback with loop and clamp",
     const auto sample = [&](double time) {
         GET_MODULE(EngineTime).setTime(time);
         (void)renderWp374aProductionRows();
-        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting(
+        const auto image = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer),
             "wp366_a", ImageSubresourceRange{});
         REQUIRE(image.bytes.size() >= 12 * sizeof(std::uint32_t));
         std::array<std::uint32_t, 12> pixels{};
@@ -2238,7 +2239,7 @@ TEST_CASE("WP382d authored occurrence masks and custom indices reach the product
         REQUIRE(row.q.has_value());
         CHECK(overridden.rows.at(*row.q).instance_mask == row.mask);
     }
-    auto output = GET_MODULE(Renderer).readRenderTargetForTesting("wp366_a", ImageSubresourceRange{});
+    auto output = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "wp366_a", ImageSubresourceRange{});
     REQUIRE(output.bytes.size() >= 16 * sizeof(std::uint32_t));
     std::array<std::uint32_t, 16> pixels{};
     std::memcpy(pixels.data(), output.bytes.data(), sizeof(pixels));
@@ -2309,7 +2310,7 @@ TEST_CASE("WP382d authored occurrence masks and custom indices reach the product
     const auto restored = renderWp374aProductionRows();
     REQUIRE(restored.rows.size() == 2);
     for (const auto &row : restored.rows) CHECK(row.instance_mask == 3);
-    output = GET_MODULE(Renderer).readRenderTargetForTesting("wp366_a", ImageSubresourceRange{});
+    output = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "wp366_a", ImageSubresourceRange{});
     std::memcpy(pixels.data(), output.bytes.data(), sizeof(pixels));
     for (const auto lane_index : {1, 5, 9, 13}) CHECK(pixels[lane_index] != 0xffffffffu);
 #if PELICAN_WITH_RPC
@@ -2458,7 +2459,7 @@ TEST_CASE(
                   original_rows.rows[index].scene_identity);
         }
 
-        const auto output = GET_MODULE(Renderer).readRenderTargetForTesting(
+        const auto output = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer),
             "wp386_out", ImageSubresourceRange{});
         REQUIRE(output.bytes.size() >= sizeof(std::uint32_t));
         std::uint32_t marker = 0;
@@ -6593,7 +6594,7 @@ TEST_CASE("RT7 project preset pass shader edits publish to the production render
             {"graph", "main_render"}, {"pass_name", "scene_present"}, {"input", Json::array()},
             {"output", selected->at("preset_declaration").at("output")},
             {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", std::string{"project://shaders/"} + color}}}}));
-        const auto pixels = GET_MODULE(Renderer).readRenderTargetForTesting("display", ImageSubresourceRange{});
+        const auto pixels = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "display", ImageSubresourceRange{});
         REQUIRE(pixels.format == vk::Format::eB8G8R8A8Srgb);
         REQUIRE(pixels.bytes.size() >= 4);
         CHECK((pixels.bytes[1] > 240) == (std::string_view{color} == "green"));
@@ -6604,7 +6605,7 @@ TEST_CASE("RT7 project preset pass shader edits publish to the production render
     const auto reopened = runWp374aRpcBytes(*service, rpc_id++, "get_render_authoring_context", Json::object());
     CHECK(reopened.at("pipeline_preset").at("reference") == "project://pipelines/local.json");
     render();
-    CHECK(GET_MODULE(Renderer).readRenderTargetForTesting("display", ImageSubresourceRange{}).bytes[1] > 240);
+    CHECK(RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "display", ImageSubresourceRange{}).bytes[1] > 240);
 }
 
 TEST_CASE("RT4 callable dispatch selects its SBT record and reloads its implementation",
@@ -6682,7 +6683,7 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
     test_support::loadScene(GET_MODULE(SceneLoader), "main");
     const auto marker = [&] {
         (void)renderWp374aProductionRows();
-        const auto output = GET_MODULE(Renderer).readRenderTargetForTesting(
+        const auto output = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer),
             "wp386_out", ImageSubresourceRange{});
         REQUIRE(output.bytes.size() >= sizeof(std::uint32_t));
         std::uint32_t value;
@@ -6844,7 +6845,7 @@ void main() {
         const auto rows = renderWp374aProductionRows();
         REQUIRE(rows.rows.size() == 2);
         CHECK(rows.rows[0].geometry_allocation_id == rows.rows[1].geometry_allocation_id);
-        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("wp386_out", ImageSubresourceRange{});
+        const auto image = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "wp386_out", ImageSubresourceRange{});
         std::array<std::uint32_t, 12> pixels{};
         REQUIRE(image.bytes.size() >= sizeof(pixels));
         std::memcpy(pixels.data(), image.bytes.data(), sizeof(pixels));
@@ -6854,7 +6855,7 @@ void main() {
         CHECK(std::abs(std::bit_cast<float>(pixels[1]) - 7.0f) < 0.001f);
         CHECK(std::abs(std::bit_cast<float>(pixels[5]) - right_depth) < 0.001f);
         CHECK((pixels[2] != pixels[6]) == world);
-        const auto diagnostics = GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting();
+        const auto diagnostics = RendererTestAccess::rayQueryAccelerationStructureDiagnostics(GET_MODULE(Renderer));
         CHECK(diagnostics.active_blas_count == 1); // Geometry mode reuses one asset BLAS across two instances.
         CHECK(diagnostics.tlas_instance_count == (world ? 1 : 2));
         return diagnostics;
@@ -6949,7 +6950,7 @@ void main() {
         REQUIRE(rows.rows.size() == 2);
         CHECK(rows.rows[0].scene_identity == rows.rows[1].scene_identity);
         CHECK(rows.rows[0].geometry_index != rows.rows[1].geometry_index);
-        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("wp386_out", ImageSubresourceRange{});
+        const auto image = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "wp386_out", ImageSubresourceRange{});
         std::array<std::uint32_t, 12> pixels{};
         REQUIRE(image.bytes.size() >= sizeof(pixels));
         std::memcpy(pixels.data(), image.bytes.data(), sizeof(pixels));
@@ -6966,7 +6967,7 @@ void main() {
         CHECK(pixels[2] != pixels[6]);
         CHECK(std::bit_cast<float>(pixels[3]) == left_radius);
         CHECK(std::bit_cast<float>(pixels[7]) == 1.25f);
-        const auto diagnostics = GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting();
+        const auto diagnostics = RendererTestAccess::rayQueryAccelerationStructureDiagnostics(GET_MODULE(Renderer));
         CHECK(diagnostics.active_blas_count == 1);
         CHECK(diagnostics.tlas_instance_count == 1);
         REQUIRE(diagnostics.active_blas_inputs.size() == 1);
@@ -7187,7 +7188,7 @@ void main() {
     };
     const auto pixels = [&] {
         (void)renderWp374aProductionRows();
-        const auto output = GET_MODULE(Renderer).readRenderTargetForTesting("wp386_out", ImageSubresourceRange{});
+        const auto output = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "wp386_out", ImageSubresourceRange{});
         std::array<std::uint32_t, 12> values{};
         REQUIRE(output.bytes.size() >= sizeof(values));
         std::memcpy(values.data(), output.bytes.data(), sizeof(values));

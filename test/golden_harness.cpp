@@ -57,6 +57,7 @@
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/deletionqueue.hpp"
 #include "../src/core/vkcore/renderer.hpp"
+#include "renderer_testaccess.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
 #include "../src/core/vkcore/rendertiming.hpp"
 #include "../src/core/vkcore/util.hpp"
@@ -5553,8 +5554,7 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
         std::array<std::size_t, 3>
             invocations{};
         for (const auto &node :
-             GET_MODULE(Renderer)
-                 .lastExecutionTraceForTesting()
+             RendererTestAccess::lastExecutionTrace(GET_MODULE(Renderer))
                  .at("nodes")) {
             if (node.at("name") !=
                 "shadow_depth") {
@@ -5644,7 +5644,7 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
             const auto metadata = targets.getMetadata(targets.getRenderTargetIdByName(target));
             REQUIRE(metadata.array_layers == view_count);
             std::vector<unsigned> invocations(view_count);
-            for (const auto &node : GET_MODULE(Renderer).lastExecutionTraceForTesting().at("nodes")) {
+            for (const auto &node : RendererTestAccess::lastExecutionTrace(GET_MODULE(Renderer)).at("nodes")) {
                 if (node.value("view_family", std::string{}) != family) continue;
                 const auto view_index = node.at("view_index").get<std::uint32_t>();
                 REQUIRE(view_index < view_count);
@@ -5682,8 +5682,7 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
         std::array<std::size_t, 2>
             invocations{};
         for (const auto &node :
-             GET_MODULE(Renderer)
-                 .lastExecutionTraceForTesting()
+             RendererTestAccess::lastExecutionTrace(GET_MODULE(Renderer))
                  .at("nodes")) {
             if (node.at("name") !=
                 "shadow_depth") {
@@ -6512,9 +6511,9 @@ void renderTaaGoldenFrames(RenderTarget &render_target, const std::string &mode)
     } else if (mode == "taa_resize") {
         renderFrames(4);
         GET_MODULE(VulkanManageCore).waitIdle();
-        renderer.recreateRenderTargetsAndRebindForTesting(
+        RendererTestAccess::recreateRenderTargetsAndRebind(renderer,
             {goldenWidth / 2, goldenHeight / 2});
-        renderer.recreateRenderTargetsAndRebindForTesting({goldenWidth, goldenHeight});
+        RendererTestAccess::recreateRenderTargetsAndRebind(renderer, {goldenWidth, goldenHeight});
         renderFrames(1);
     } else if (mode == "taa_set_time") {
         renderFrames(4);
@@ -6852,7 +6851,7 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
     Renderer *renderer = nullptr;
     if (usesRenderer(golden_case)) {
         renderer = &GET_MODULE(Renderer);
-        renderer->setExecutionTracingForTesting(true);
+        RendererTestAccess::setExecutionTracing(*renderer, true);
     }
     if (golden_case.mode == "clear") {
         renderClearFrame(render_target, vk::ClearColorValue{std::array{0.1f, 0.2f, 0.3f, 1.0f}});
@@ -7138,8 +7137,8 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
     return RenderedCase{
         RgbaImage{golden_case.width, golden_case.height, pixels},
         std::string{device_properties.deviceName.data()},
-        renderer != nullptr ? renderer->lastExecutionTraceForTesting() : nlohmann::json{},
-        renderer != nullptr ? renderer->currentFramePlanOrderForTesting() : std::vector<std::string>{},
+        renderer != nullptr ? RendererTestAccess::lastExecutionTrace(*renderer) : nlohmann::json{},
+        renderer != nullptr ? RendererTestAccess::currentFramePlanOrder(*renderer) : std::vector<std::string>{},
         RenderTiming::__get().has_value() ? RenderTiming::__get()->lastFrameNodeNamesForTesting()
                                           : std::vector<std::string>{},
         RenderTiming::__get().has_value() ? RenderTiming::__get()->lastFrameQueryCountForTesting() : 0,
@@ -7852,7 +7851,7 @@ captureGpuSegmentedOcclusionXr(
     auto &renderer = GET_MODULE(Renderer);
     renderer.selectGraphVariant(
         RenderGraphVariant::xr);
-    renderer.setExecutionTracingForTesting(
+    RendererTestAccess::setExecutionTracing(renderer,
         true);
     const auto format =
         GET_MODULE(RenderTarget)
@@ -7945,8 +7944,7 @@ captureGpuSegmentedOcclusionXr(
     result.frame_plan =
         renderer.currentFramePlanJson();
     result.execution_trace =
-        renderer
-            .lastExecutionTraceForTesting();
+        RendererTestAccess::lastExecutionTrace(renderer);
 
     vkcore.waitIdle();
     std::filesystem::remove_all(root);
@@ -9020,7 +9018,7 @@ RenderTargetReadback captureWp338Ssao(
                 renderer.render();
             }
             vkcore.waitIdle();
-            readback = renderer.readRenderTargetForTesting(
+            readback = RendererTestAccess::readRenderTarget(renderer,
                 contract.target,
                 ImageSubresourceRange{
                     .layer_count = contract.layer_count,
@@ -9711,14 +9709,14 @@ Wp339SsaoBlurCapture captureWp339SsaoBlur(
                     reflected->image_view_dimension;
             }
             capture.producer =
-                renderer.readRenderTargetForTesting(
+                RendererTestAccess::readRenderTarget(renderer,
                     contract.producer_target,
                     ImageSubresourceRange{
                         .layer_count =
                             contract.producer_layers,
                     });
             capture.blur =
-                renderer.readRenderTargetForTesting(
+                RendererTestAccess::readRenderTarget(renderer,
                     contract.blur_target,
                     ImageSubresourceRange{
                         .layer_count =
@@ -10362,11 +10360,11 @@ void requireWp339SsaoBlurIntegrationSmoke() {
             renderer.render();
             vkcore.waitIdle();
             const auto producer =
-                renderer.readRenderTargetForTesting(
+                RendererTestAccess::readRenderTarget(renderer,
                     "ssao_output",
                     ImageSubresourceRange{});
             const auto blur =
-                renderer.readRenderTargetForTesting(
+                RendererTestAccess::readRenderTarget(renderer,
                     "ssao_blur",
                     ImageSubresourceRange{});
             REQUIRE(producer.format ==
@@ -12117,7 +12115,7 @@ void GoldenHarness::runLogicalFrameStereo() {
 
     time.advance();
     renderer.renderLogicalFrame(stereo_target, first_view_family);
-    const auto first_snapshots = renderer.lastViewSnapshotsForTesting();
+    const auto first_snapshots = RendererTestAccess::lastViewSnapshots(renderer);
     const auto first_left = stereo_target.readback(0);
     const auto first_right = stereo_target.readback(1);
 
@@ -12157,7 +12155,7 @@ void GoldenHarness::runLogicalFrameStereo() {
 
     time.advance();
     renderer.renderLogicalFrame(stereo_target, second_view_family);
-    const auto second_snapshots = renderer.lastViewSnapshotsForTesting();
+    const auto second_snapshots = RendererTestAccess::lastViewSnapshots(renderer);
     const auto second_left = stereo_target.readback(0);
     const auto second_right = stereo_target.readback(1);
 
@@ -12404,9 +12402,9 @@ void GoldenHarness::runOpenXrTaaTransition() {
     REQUIRE(renderer.hasXrGraphVariant());
     REQUIRE(renderer.xrExcludedFeatures() ==
             std::vector<std::string>{"velocity", "taa", "ui"});
-    renderer.setExecutionTracingForTesting(true);
+    RendererTestAccess::setExecutionTracing(renderer, true);
     renderer.selectGraphVariant(RenderGraphVariant::xr);
-    const auto xr_plan = renderer.currentFramePlanOrderForTesting();
+    const auto xr_plan = RendererTestAccess::currentFramePlanOrder(renderer);
     for (const auto forbidden : {"velocity_pass", "taa_resolve", "taa_composite",
                                  "pelican_ui"}) {
         REQUIRE(std::find(xr_plan.begin(), xr_plan.end(), forbidden) == xr_plan.end());
@@ -12438,7 +12436,7 @@ void GoldenHarness::runOpenXrTaaTransition() {
     };
     renderer.renderLogicalFrame(
         stereo_target, xr_view_family);
-    const auto xr_snapshots = renderer.lastViewSnapshotsForTesting();
+    const auto xr_snapshots = RendererTestAccess::lastViewSnapshots(renderer);
     REQUIRE(xr_snapshots.size() == 2);
     REQUIRE(xr_snapshots[0].jitter_ndc == glm::vec2{0.0f});
     REQUIRE(xr_snapshots[1].jitter_ndc == glm::vec2{0.0f});
@@ -12450,7 +12448,7 @@ void GoldenHarness::runOpenXrTaaTransition() {
         std::string{OpenXr::xr_mirror_intermediate_name});
     REQUIRE(targets.getMetadata(mirror).extent ==
             targets.getMetadata(display).extent);
-    const auto &enter_trace = renderer.graphVariantTransitionTraceForTesting();
+    const auto &enter_trace = RendererTestAccess::graphVariantTransitionTrace(renderer);
     REQUIRE(enter_trace.size() == 1);
     REQUIRE(enter_trace.at(0).at("from") == "flat");
     REQUIRE(enter_trace.at(0).at("to") == "xr");
@@ -12493,7 +12491,7 @@ void GoldenHarness::runOpenXrTaaTransition() {
         }
     }
     const auto &xr_execution_trace =
-        renderer.lastExecutionTraceForTesting();
+        RendererTestAccess::lastExecutionTrace(renderer);
     REQUIRE(xr_execution_trace.at("views").size() == 2);
     const auto timed_node_count =
         [](const nlohmann::json &view_trace) {
@@ -12519,14 +12517,14 @@ void GoldenHarness::runOpenXrTaaTransition() {
 
     time.advance();
     renderer.render();
-    const auto flat_plan = renderer.currentFramePlanOrderForTesting();
+    const auto flat_plan = RendererTestAccess::currentFramePlanOrder(renderer);
     for (const auto restored : {"velocity_pass", "taa_resolve", "taa_composite",
                                 "pelican_ui"}) {
         REQUIRE(std::find(flat_plan.begin(), flat_plan.end(), restored) != flat_plan.end());
     }
     const auto flat_epoch =
-        renderer.lastViewSnapshotsForTesting().at(0).temporal_reset_epoch;
-    const auto &return_trace = renderer.graphVariantTransitionTraceForTesting();
+        RendererTestAccess::lastViewSnapshots(renderer).at(0).temporal_reset_epoch;
+    const auto &return_trace = RendererTestAccess::graphVariantTransitionTrace(renderer);
     REQUIRE(return_trace.size() == 2);
     REQUIRE(return_trace.at(1).at("from") == "xr");
     REQUIRE(return_trace.at(1).at("to") == "flat");
@@ -12537,8 +12535,8 @@ void GoldenHarness::runOpenXrTaaTransition() {
 
     time.advance();
     renderer.render();
-    REQUIRE(renderer.graphVariantTransitionTraceForTesting().size() == 2);
-    REQUIRE(renderer.lastViewSnapshotsForTesting().at(0).temporal_reset_epoch ==
+    REQUIRE(RendererTestAccess::graphVariantTransitionTrace(renderer).size() == 2);
+    REQUIRE(RendererTestAccess::lastViewSnapshots(renderer).at(0).temporal_reset_epoch ==
             flat_epoch);
     std::string capture_error;
     try {
@@ -12833,7 +12831,7 @@ void GoldenHarness::runGpuTimingRing() {
 
     timing.flush();
     const auto status = timing.statusJson();
-    const auto plan = renderer.currentFramePlanOrderForTesting();
+    const auto plan = RendererTestAccess::currentFramePlanOrder(renderer);
     REQUIRE(timing.queryPoolCreateCountForTesting() == 1);
     REQUIRE(timing.allGpuQueriesCollectedForTesting());
     REQUIRE(status.at("history_capacity") == 120);
@@ -13366,7 +13364,7 @@ void GoldenHarness::runFullscreenRebind() {
     renderer.render();
     GET_MODULE(VulkanManageCore).waitIdle();
     REQUIRE(deletion_queue.pendingCountForTesting() == 0);
-    REQUIRE(renderer.imageMemoryDependencyCountForTesting() > 0);
+    REQUIRE(RendererTestAccess::imageMemoryDependencyCount(renderer) > 0);
     const auto hot_reload_revision = fullscreen_passes.inputBindingRevisionForTesting(*input_pass);
     REQUIRE(hot_reload_revision > direct_rebind_revision);
     REQUIRE(fullscreen_passes.boundInputImageViewsForTesting(*input_pass) == initial_views);
@@ -13392,7 +13390,7 @@ void GoldenHarness::runFullscreenRebind() {
 
     const auto lit_color = render_targets.getRenderTargetIdByName("lit_color");
     const auto old_view = render_targets.getImageView(lit_color);
-    renderer.recreateRenderTargetsAndRebindForTesting(vk::Extent2D{goldenWidth, goldenHeight});
+    RendererTestAccess::recreateRenderTargetsAndRebind(renderer, vk::Extent2D{goldenWidth, goldenHeight});
     const auto new_view = render_targets.getImageView(lit_color);
 
     REQUIRE(new_view != old_view);
@@ -13420,7 +13418,7 @@ void GoldenHarness::runFullscreenRebind() {
              vk::Extent2D{goldenWidth, goldenHeight + 8},
              vk::Extent2D{goldenWidth + 16, goldenHeight + 8},
              vk::Extent2D{goldenWidth, goldenHeight}}) {
-        renderer.recreateRenderTargetsAndRebindForTesting(
+        RendererTestAccess::recreateRenderTargetsAndRebind(renderer,
             extent);
         REQUIRE(
             deletion_queue.pendingCountForTesting() > 0);

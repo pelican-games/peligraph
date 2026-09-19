@@ -12,6 +12,7 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/material/materialcontainer.hpp"
+#include "materialcontainer_testaccess.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/vertbufcontainer.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
@@ -354,7 +355,7 @@ TEST_CASE("HR2-G fragment and rig reload contract", "[wp110][model-reload][gpu]"
         .emissive_texture = standard.emissiveDefaultTexture(),
         .occlusion_texture = standard.occlusionDefaultTexture(),
     };
-    while (materials.materialCountForTesting() + 1 < materials.materialCapacityForTesting())
+    while (materials.materialCountForTesting() + 1 < MaterialContainerTestAccess::materialCapacity(materials))
         (void)materials.registerMaterial(filler);
     const auto staged_failure_materials = materials.materialCountForTesting();
     const auto staged_failure_textures = materials.textureCountForTesting();

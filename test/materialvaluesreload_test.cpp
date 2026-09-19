@@ -3,6 +3,7 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/material/materialcontainer.hpp"
+#include "materialcontainer_testaccess.hpp"
 #include "../src/core/material/projectmaterialasset.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/vkcore/core.hpp"
@@ -328,7 +329,7 @@ TEST_CASE("HR2-S commits surface shader variants and material layout as one tran
         REQUIRE(applied == std::vector<bool>{true, true});
         REQUIRE(GET_MODULE(ShaderLibrary).get(shader_bundles.vertex).version == 2);
         REQUIRE(GET_MODULE(ShaderLibrary).get(shader_bundles.fragment).version == 2);
-        const auto values_after = materials.materialValuesForTesting(material);
+        const auto values_after = MaterialContainerTestAccess::materialValues(materials, material);
         REQUIRE(values_after.size() == 32);
         REQUIRE(readAt<float>(values_after, 0) == Catch::Approx(7.0f));
         REQUIRE(readAt<float>(values_after, 16) == Catch::Approx(0.25f));
@@ -346,7 +347,7 @@ TEST_CASE("HR2-S commits surface shader variants and material layout as one tran
         REQUIRE(rejected_material == std::vector<bool>{false, false});
         REQUIRE(GET_MODULE(ShaderLibrary).get(shader_bundles.vertex).version == 2);
         REQUIRE(GET_MODULE(ShaderLibrary).get(shader_bundles.fragment).version == 2);
-        const auto after_material_failure = materials.materialValuesForTesting(material);
+        const auto after_material_failure = MaterialContainerTestAccess::materialValues(materials, material);
         REQUIRE(after_material_failure.size() == stable_values.size());
         REQUIRE(std::equal(after_material_failure.begin(), after_material_failure.end(),
                            stable_values.begin()));
@@ -357,7 +358,7 @@ TEST_CASE("HR2-S commits surface shader variants and material layout as one tran
         REQUIRE(rejected_shader == std::vector<bool>{false, false});
         REQUIRE(GET_MODULE(ShaderLibrary).get(shader_bundles.vertex).version == 2);
         REQUIRE(GET_MODULE(ShaderLibrary).get(shader_bundles.fragment).version == 2);
-        const auto after_shader_failure = materials.materialValuesForTesting(material);
+        const auto after_shader_failure = MaterialContainerTestAccess::materialValues(materials, material);
         REQUIRE(after_shader_failure.size() == stable_values.size());
         REQUIRE(std::equal(after_shader_failure.begin(), after_shader_failure.end(),
                            stable_values.begin()));
@@ -394,7 +395,7 @@ TEST_CASE("HR1-M updates one same-layout material and rolls back invalid candida
             materials, loadLowered(path_a, catalog, "material_b"),
             shaders);
         const auto pipeline_a = materials.pipelineLayout(material_a);
-        const auto descriptor_a = materials.materialDescriptorRevisionForTesting(material_a);
+        const auto descriptor_a = MaterialContainerTestAccess::materialDescriptorRevision(materials, material_a);
         const auto key_a = watch::makeAssetKey("pair.material.json");
         const std::array bindings{
             MaterialContainer::ReloadableMaterialValuesBinding{"material_a", material_a},
@@ -406,21 +407,21 @@ TEST_CASE("HR1-M updates one same-layout material and rolls back invalid candida
         writeTwoMaterials(path_a, 12.0, 9.0);
         REQUIRE(reload.applyRequestForTesting(
             {key_a, watch::ReloadKind::modified, {}, 1}));
-        REQUIRE(readAt<float>(materials.materialValuesForTesting(material_a), 0) ==
+        REQUIRE(readAt<float>(MaterialContainerTestAccess::materialValues(materials, material_a), 0) ==
                 Catch::Approx(12.0f));
-        REQUIRE(readAt<float>(materials.materialGpuValuesForTesting(material_a), 0) ==
+        REQUIRE(readAt<float>(MaterialContainerTestAccess::materialGpuValues(materials, material_a), 0) ==
                 Catch::Approx(12.0f));
-        REQUIRE(readAt<float>(materials.materialGpuValuesForTesting(material_b), 0) ==
+        REQUIRE(readAt<float>(MaterialContainerTestAccess::materialGpuValues(materials, material_b), 0) ==
                 Catch::Approx(9.0f));
         REQUIRE(materials.pipelineLayout(material_a) == pipeline_a);
-        REQUIRE(materials.materialDescriptorRevisionForTesting(material_a) == descriptor_a);
+        REQUIRE(MaterialContainerTestAccess::materialDescriptorRevision(materials, material_a) == descriptor_a);
         REQUIRE(reload.transactions().registry().snapshot().resourceCount() == resources);
 
-        const auto before_failure = materials.materialGpuValuesForTesting(material_a);
+        const auto before_failure = MaterialContainerTestAccess::materialGpuValues(materials, material_a);
         writeText(path_a, "{ broken json");
         REQUIRE_FALSE(reload.applyRequestForTesting(
             {key_a, watch::ReloadKind::modified, {}, 1}));
-        auto after_failure = materials.materialGpuValuesForTesting(material_a);
+        auto after_failure = MaterialContainerTestAccess::materialGpuValues(materials, material_a);
         REQUIRE(std::equal(after_failure.begin(), after_failure.end(),
                            before_failure.begin(), before_failure.end()));
 
@@ -435,14 +436,14 @@ TEST_CASE("HR1-M updates one same-layout material and rolls back invalid candida
         writeText(path_a, type_mismatch.dump(2));
         REQUIRE_FALSE(reload.applyRequestForTesting(
             {key_a, watch::ReloadKind::modified, {}, 1}));
-        after_failure = materials.materialGpuValuesForTesting(material_a);
+        after_failure = MaterialContainerTestAccess::materialGpuValues(materials, material_a);
         REQUIRE(std::equal(after_failure.begin(), after_failure.end(),
                            before_failure.begin(), before_failure.end()));
 
         writeTwoMaterials(path_a, 101.0, 9.0);
         REQUIRE_FALSE(reload.applyRequestForTesting(
             {key_a, watch::ReloadKind::modified, {}, 1}));
-        after_failure = materials.materialGpuValuesForTesting(material_a);
+        after_failure = MaterialContainerTestAccess::materialGpuValues(materials, material_a);
         REQUIRE(std::equal(after_failure.begin(), after_failure.end(),
                            before_failure.begin(), before_failure.end()));
 
@@ -462,7 +463,7 @@ TEST_CASE("HR1-M updates one same-layout material and rolls back invalid candida
         REQUIRE_FALSE(reload.applyRequestForTesting(
             {key_a, watch::ReloadKind::modified, {}, 1}));
         after_failure =
-            materials.materialGpuValuesForTesting(
+            MaterialContainerTestAccess::materialGpuValues(materials,
                 material_a);
         REQUIRE(std::equal(
             after_failure.begin(),
@@ -477,7 +478,7 @@ TEST_CASE("HR1-M updates one same-layout material and rolls back invalid candida
         writeTwoMaterials(path_a, 20.0, 9.0, "project://alternate.surface");
         REQUIRE_FALSE(reload.applyRequestForTesting(
             {key_a, watch::ReloadKind::modified, {}, 1}));
-        after_failure = materials.materialGpuValuesForTesting(material_a);
+        after_failure = MaterialContainerTestAccess::materialGpuValues(materials, material_a);
         REQUIRE(std::equal(after_failure.begin(), after_failure.end(),
                            before_failure.begin(), before_failure.end()));
         const auto status = reload.transactions().status();
@@ -523,7 +524,7 @@ TEST_CASE("WP206b named variant owns its GPU record and reloads atomically with 
         const auto base = materials.registerMaterial(
             std::move(base_info));
         const auto base_record_before =
-            materials.materialGpuRecordForTesting(base);
+            MaterialContainerTestAccess::materialGpuRecord(materials, base);
         std::vector<MaterialContainer::NamedMaterialVariantRegistration>
             registrations;
         auto variant_info =
@@ -541,16 +542,16 @@ TEST_CASE("WP206b named variant owns its GPU record and reloads atomically with 
             materials.materialVariantResource(base, "silhouette");
         REQUIRE(variant != base);
         REQUIRE(sameBytes(
-            materials.materialGpuRecordForTesting(base),
+            MaterialContainerTestAccess::materialGpuRecord(materials, base),
             base_record_before));
         REQUIRE(readAt<float>(
-                    materials.materialGpuValuesForTesting(base), 0) ==
+                    MaterialContainerTestAccess::materialGpuValues(materials, base), 0) ==
                 Catch::Approx(2.0f));
         REQUIRE(readAt<float>(
-                    materials.materialGpuValuesForTesting(variant), 0) ==
+                    MaterialContainerTestAccess::materialGpuValues(materials, variant), 0) ==
                 Catch::Approx(5.0f));
         REQUIRE(readAt<float>(
-                    materials.materialGpuRecordForTesting(variant), 0) ==
+                    MaterialContainerTestAccess::materialGpuRecord(materials, variant), 0) ==
                 Catch::Approx(0.25f));
 
         PassDefinition pass;
@@ -613,24 +614,24 @@ TEST_CASE("WP206b named variant owns its GPU record and reloads atomically with 
         REQUIRE(reload.applyRequestForTesting(
             {key, watch::ReloadKind::modified, {}, 1}));
         REQUIRE(readAt<float>(
-                    materials.materialGpuValuesForTesting(base), 0) ==
+                    MaterialContainerTestAccess::materialGpuValues(materials, base), 0) ==
                 Catch::Approx(7.0f));
         REQUIRE(readAt<float>(
-                    materials.materialGpuValuesForTesting(variant), 0) ==
+                    MaterialContainerTestAccess::materialGpuValues(materials, variant), 0) ==
                 Catch::Approx(11.0f));
 
         const auto stable_base =
-            materials.materialGpuValuesForTesting(base);
+            MaterialContainerTestAccess::materialGpuValues(materials, base);
         const auto stable_variant =
-            materials.materialGpuValuesForTesting(variant);
+            MaterialContainerTestAccess::materialGpuValues(materials, variant);
         writeVariantMaterial(path, 13.0, 17.0, true);
         REQUIRE_FALSE(reload.applyRequestForTesting(
             {key, watch::ReloadKind::modified, {}, 1}));
         REQUIRE(sameBytes(
-            materials.materialGpuValuesForTesting(base),
+            MaterialContainerTestAccess::materialGpuValues(materials, base),
             stable_base));
         REQUIRE(sameBytes(
-            materials.materialGpuValuesForTesting(variant),
+            MaterialContainerTestAccess::materialGpuValues(materials, variant),
             stable_variant));
 
         auto transparent_variant =
@@ -690,14 +691,14 @@ TEST_CASE("WP240c project material registry wires texture and values reload",
     auto &materials = GET_MODULE(MaterialContainer);
     REQUIRE(
         readAt<float>(
-            materials.materialValuesForTesting(material),
+            MaterialContainerTestAccess::materialValues(materials, material),
             0) == Catch::Approx(2.0f));
     const auto occlusion =
-        materials.materialTextureForTesting(
+        MaterialContainerTestAccess::materialTexture(materials,
             material,
             PELICAN_MATERIAL_OCCLUSION_TEXTURE_BINDING);
     const auto albedo_detail =
-        materials.materialTextureForTesting(
+        MaterialContainerTestAccess::materialTexture(materials,
             material,
             materialCustomTextureFirstBinding);
     REQUIRE(occlusion.has_value());
@@ -725,7 +726,7 @@ TEST_CASE("WP240c project material registry wires texture and values reload",
         material);
     REQUIRE(
         readAt<float>(
-            materials.materialGpuValuesForTesting(
+            MaterialContainerTestAccess::materialGpuValues(materials,
                 material),
             0) == Catch::Approx(7.0f));
     GET_MODULE(VulkanManageCore).waitIdle();
@@ -812,13 +813,13 @@ TEST_CASE("HR1-M watcher gate and 1000 reloads keep resources bounded",
             [&] { return watch::ReloadGateSnapshot{gate_enabled, 7, "replay"}; }, options);
         const auto t0 = watch::FileWatcher::Clock::now();
         watcher.runControlCycleForTesting(t0);
-        const auto disabled_value = materials.materialGpuValuesForTesting(material);
+        const auto disabled_value = MaterialContainerTestAccess::materialGpuValues(materials, material);
         writeMaterial(path, "stress", 7.0);
         watcher.runControlCycleForTesting(t0 + 20ms);
         REQUIRE(watcher.applyFrame([&](const watch::ReloadRequest &request) {
             return reload.applyRequestForTesting(request);
         }) == 0);
-        const auto still_disabled = materials.materialGpuValuesForTesting(material);
+        const auto still_disabled = MaterialContainerTestAccess::materialGpuValues(materials, material);
         REQUIRE(std::equal(still_disabled.begin(), still_disabled.end(),
                            disabled_value.begin(), disabled_value.end()));
 
@@ -829,7 +830,7 @@ TEST_CASE("HR1-M watcher gate and 1000 reloads keep resources bounded",
         REQUIRE(watcher.applyFrame([&](const watch::ReloadRequest &request) {
             return reload.applyRequestForTesting(request);
         }) >= 1);
-        REQUIRE(readAt<float>(materials.materialGpuValuesForTesting(material), 0) ==
+        REQUIRE(readAt<float>(MaterialContainerTestAccess::materialGpuValues(materials, material), 0) ==
                 Catch::Approx(8.0f));
         watcher.stop();
         GET_MODULE(VulkanManageCore).waitIdle();

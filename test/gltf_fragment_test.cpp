@@ -10,6 +10,7 @@
 #include "../src/core/loader/scene.hpp"
 #include "scene_load_test_support.hpp"
 #include "../src/core/material/materialcontainer.hpp"
+#include "materialcontainer_testaccess.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/gltf.hpp"
 #include "../src/core/asset/model.hpp"
@@ -301,20 +302,20 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
     const auto selected_material =
         selected.named_materials.front().material;
     const auto selected_base_color =
-        materials.materialTextureForTesting(
+        MaterialContainerTestAccess::materialTexture(materials,
             selected_material, 0);
     const auto selected_metallic_roughness =
-        materials.materialTextureForTesting(
+        MaterialContainerTestAccess::materialTexture(materials,
             selected_material, 1);
     const auto selected_occlusion =
-        materials.materialTextureForTesting(
+        MaterialContainerTestAccess::materialTexture(materials,
             selected_material,
             PELICAN_MATERIAL_OCCLUSION_TEXTURE_BINDING);
     REQUIRE(selected_base_color.has_value());
-    REQUIRE(materials.textureMipLevelsForTesting(
+    REQUIRE(MaterialContainerTestAccess::textureMipLevels(materials,
                 *selected_base_color) == 3);
     REQUIRE(selected_metallic_roughness.has_value());
-    REQUIRE(materials.textureMipLevelsForTesting(
+    REQUIRE(MaterialContainerTestAccess::textureMipLevels(materials,
                 *selected_metallic_roughness) == 3);
     REQUIRE(selected_occlusion.has_value());
     REQUIRE(*selected_occlusion ==
@@ -362,7 +363,7 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
     REQUIRE(material_only.material_primitives.front().primitives.empty());
     REQUIRE(material_only.named_materials.size() == 1);
     const auto material_only_occlusion =
-        materials.materialTextureForTesting(
+        MaterialContainerTestAccess::materialTexture(materials,
             material_only.named_materials.front().material,
             PELICAN_MATERIAL_OCCLUSION_TEXTURE_BINDING);
     REQUIRE(material_only_occlusion.has_value());

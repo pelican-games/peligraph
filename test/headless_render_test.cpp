@@ -16,6 +16,7 @@
 #include "../src/core/fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../src/core/light/lightcontainer.hpp"
 #include "../src/core/material/materialcontainer.hpp"
+#include "materialcontainer_testaccess.hpp"
 #include "../src/core/material/projectmaterialasset.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/gltf.hpp"
@@ -51,6 +52,7 @@
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/deletionqueue.hpp"
 #include "../src/core/vkcore/renderer.hpp"
+#include "renderer_testaccess.hpp"
 #include "../src/core/vkcore/renderer_config.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
 #include "../src/core/vkcore/util.hpp"
@@ -3123,7 +3125,7 @@ TEST_CASE("headless render target renders and reads back RGBA8 frames", "[headle
         const auto dual_use_texture = GET_MODULE(MaterialContainer).registerTexture(
             vk::Extent3D{1, 1, 1}, dual_use_pixel.data());
         const auto [data_view, color_view] =
-            GET_MODULE(MaterialContainer).textureViewsForTesting(dual_use_texture);
+            MaterialContainerTestAccess::textureViews(GET_MODULE(MaterialContainer), dual_use_texture);
         REQUIRE(data_view);
         REQUIRE(color_view);
         REQUIRE(data_view != color_view);
@@ -3141,9 +3143,8 @@ TEST_CASE("headless render target renders and reads back RGBA8 frames", "[headle
         const auto mipmapped_texture =
             GET_MODULE(MaterialContainer).registerTexture(
                 vk::Extent3D{4, 4, 1}, checker_pixels.data());
-        REQUIRE(GET_MODULE(MaterialContainer)
-                    .textureMipLevelsForTesting(mipmapped_texture) == 3);
-        REQUIRE(GET_MODULE(MaterialContainer).texturePixelsForTesting(
+        REQUIRE(MaterialContainerTestAccess::textureMipLevels(GET_MODULE(MaterialContainer), mipmapped_texture) == 3);
+        REQUIRE(MaterialContainerTestAccess::texturePixels(GET_MODULE(MaterialContainer),
                     mipmapped_texture, 0) ==
                 std::vector<uint8_t>(checker_pixels.begin(),
                                      checker_pixels.end()));
@@ -3163,11 +3164,11 @@ TEST_CASE("headless render target renders and reads back RGBA8 frames", "[headle
             }
         };
         require_neutral_filtered_mip(
-            GET_MODULE(MaterialContainer).texturePixelsForTesting(
+            MaterialContainerTestAccess::texturePixels(GET_MODULE(MaterialContainer),
                 mipmapped_texture, 1),
             4);
         require_neutral_filtered_mip(
-            GET_MODULE(MaterialContainer).texturePixelsForTesting(
+            MaterialContainerTestAccess::texturePixels(GET_MODULE(MaterialContainer),
                 mipmapped_texture, 2),
             1);
         const auto ktx_bytes = TestKtx2::makeRgba8Srgb188();
@@ -3176,15 +3177,15 @@ TEST_CASE("headless render target renders and reads back RGBA8 frames", "[headle
         const auto ktx_texture = GET_MODULE(MaterialContainer).registerTexture(
             ktx_loaded, "headless-known-188.ktx2");
         const auto [ktx_data_view, ktx_color_view] =
-            GET_MODULE(MaterialContainer).textureViewsForTesting(ktx_texture);
+            MaterialContainerTestAccess::textureViews(GET_MODULE(MaterialContainer), ktx_texture);
         REQUIRE(ktx_data_view);
         REQUIRE(ktx_color_view);
         REQUIRE(ktx_data_view != ktx_color_view);
-        REQUIRE(GET_MODULE(MaterialContainer).textureMipLevelsForTesting(ktx_texture) == 2);
-        REQUIRE(GET_MODULE(MaterialContainer).texturePixelsForTesting(
+        REQUIRE(MaterialContainerTestAccess::textureMipLevels(GET_MODULE(MaterialContainer), ktx_texture) == 2);
+        REQUIRE(MaterialContainerTestAccess::texturePixels(GET_MODULE(MaterialContainer),
                     ktx_texture, 0) ==
                 std::vector<uint8_t>(16, 188));
-        REQUIRE(GET_MODULE(MaterialContainer).texturePixelsForTesting(
+        REQUIRE(MaterialContainerTestAccess::texturePixels(GET_MODULE(MaterialContainer),
                     ktx_texture, 1) ==
                 std::vector<uint8_t>(4, 188));
         const std::array clears{
@@ -3379,11 +3380,11 @@ vec3 pelican_lighting_v1(
             materials.registerTexture(
                 loaded_cube, "environment.ktx2");
         REQUIRE(
-            materials.textureDimensionForTesting(
+            MaterialContainerTestAccess::textureDimension(materials,
                 cube_texture) ==
             SurfaceTextureDimension::cube);
         REQUIRE(
-            materials.textureViewTypeForTesting(
+            MaterialContainerTestAccess::textureViewType(materials,
                 cube_texture) ==
             vk::ImageViewType::eCube);
 
@@ -3403,11 +3404,11 @@ vec3 pelican_lighting_v1(
                     "layers.ktx2"),
                 "layers.ktx2");
         REQUIRE(
-            materials.textureDimensionForTesting(
+            MaterialContainerTestAccess::textureDimension(materials,
                 array_texture) ==
             SurfaceTextureDimension::two_d_array);
         REQUIRE(
-            materials.textureViewTypeForTesting(
+            MaterialContainerTestAccess::textureViewType(materials,
                 array_texture) ==
             vk::ImageViewType::e2DArray);
 
@@ -3425,11 +3426,11 @@ vec3 pelican_lighting_v1(
                     "volume.ktx2"),
                 "volume.ktx2");
         REQUIRE(
-            materials.textureDimensionForTesting(
+            MaterialContainerTestAccess::textureDimension(materials,
                 volume_texture) ==
             SurfaceTextureDimension::three_d);
         REQUIRE(
-            materials.textureViewTypeForTesting(
+            MaterialContainerTestAccess::textureViewType(materials,
                 volume_texture) ==
             vk::ImageViewType::e3D);
 
@@ -3487,7 +3488,7 @@ vec3 pelican_lighting_v1(
                 std::move(material));
         REQUIRE(isValidMaterialId(material_id));
         const auto sampler =
-            materials.materialSamplerResolutionForTesting(
+            MaterialContainerTestAccess::materialSamplerResolution(materials,
                 material_id, "environment");
         REQUIRE(sampler.has_value());
         REQUIRE(sampler->filter ==
@@ -3771,8 +3772,7 @@ TEST_CASE(
                 std::move(material));
         REQUIRE(isValidMaterialId(material_id));
         const auto initial_binding_revision =
-            materials
-                .screenInputBindingRevisionForTesting(
+            MaterialContainerTestAccess::screenInputBindingRevision(materials,
                     material_id,
                     geometry_pass->definition);
         REQUIRE(initial_binding_revision != 0);
@@ -3782,8 +3782,7 @@ TEST_CASE(
             MaterialPassContract::
                 deferred_geometry_v1;
         REQUIRE_THROWS_WITH(
-            materials
-                .screenInputBindingRevisionForTesting(
+            MaterialContainerTestAccess::screenInputBindingRevision(materials,
                     material_id,
                     non_consumer_pass),
             Catch::Matchers::ContainsSubstring(
@@ -3814,8 +3813,7 @@ TEST_CASE(
             initial_tint_mip_view !=
             initial_tint_view);
         REQUIRE(
-            materials
-                .boundScreenInputImageViewsForTesting(
+            MaterialContainerTestAccess::boundScreenInputImageViews(materials,
                     material_id,
                     geometry_pass->definition) ==
             std::vector<vk::ImageView>{
@@ -3843,16 +3841,14 @@ TEST_CASE(
             deletion_queue.pendingCountForTesting() ==
             pending_before_material_rebind + 1);
         const auto direct_material_rebind_revision =
-            materials
-                .screenInputBindingRevisionForTesting(
+            MaterialContainerTestAccess::screenInputBindingRevision(materials,
                     material_id,
                     geometry_pass->definition);
         REQUIRE(
             direct_material_rebind_revision >
             initial_binding_revision);
         REQUIRE(
-            materials
-                .boundScreenInputImageViewsForTesting(
+            MaterialContainerTestAccess::boundScreenInputImageViews(materials,
                     material_id,
                     geometry_pass->definition) ==
             std::vector<vk::ImageView>{
@@ -3877,8 +3873,7 @@ TEST_CASE(
         mismatched_view_binding->port.view =
             ShaderResourcePortView::per_view;
         REQUIRE_THROWS_WITH(
-            materials
-                .screenInputBindingRevisionForTesting(
+            MaterialContainerTestAccess::screenInputBindingRevision(materials,
                     material_id,
                     mismatched_view_pass),
             Catch::Matchers::ContainsSubstring(
@@ -3894,18 +3889,16 @@ TEST_CASE(
                        "displacement";
             });
         REQUIRE_THROWS_WITH(
-            materials
-                .screenInputBindingRevisionForTesting(
+            MaterialContainerTestAccess::screenInputBindingRevision(materials,
                     material_id,
                     missing_port_pass),
             Catch::Matchers::ContainsSubstring(
                 "is not provided"));
 
-        renderer.recreateRenderTargetsAndRebindForTesting(
+        RendererTestAccess::recreateRenderTargetsAndRebind(renderer,
             {32, 32});
         REQUIRE(
-            materials
-                .screenInputBindingRevisionForTesting(
+            MaterialContainerTestAccess::screenInputBindingRevision(materials,
                     material_id,
                     geometry_pass->definition) >
             direct_material_rebind_revision);
@@ -3914,8 +3907,7 @@ TEST_CASE(
                 .getRenderTargetIdByName(
                     "material_tint");
         REQUIRE(
-            materials
-                .boundScreenInputImageViewsForTesting(
+            MaterialContainerTestAccess::boundScreenInputImageViews(materials,
                     material_id,
                     geometry_pass->definition) ==
             std::vector<vk::ImageView>{
@@ -3987,8 +3979,7 @@ TEST_CASE(
         REQUIRE(green_centroid_x > 18.0);
 
         const auto resized_binding_revision =
-            materials
-                .screenInputBindingRevisionForTesting(
+            MaterialContainerTestAccess::screenInputBindingRevision(materials,
                     material_id,
                     geometry_pass->definition);
         auto replacement =
@@ -4056,8 +4047,7 @@ TEST_CASE(
             reloaded_displacement->buffer_id !=
             initial_displacement_buffer);
         const auto reloaded_binding_revision =
-            materials
-                .screenInputBindingRevisionForTesting(
+            MaterialContainerTestAccess::screenInputBindingRevision(materials,
                     material_id,
                     reloaded_geometry_pass
                         ->definition);
@@ -4069,8 +4059,7 @@ TEST_CASE(
                 .getRenderTargetIdByName(
                     "material_tint");
         REQUIRE(
-            materials
-                .boundScreenInputImageViewsForTesting(
+            MaterialContainerTestAccess::boundScreenInputImageViews(materials,
                     material_id,
                     reloaded_geometry_pass
                         ->definition) ==
@@ -4110,8 +4099,7 @@ TEST_CASE(
             runtime.snapshot() ==
             reloaded_generation);
         REQUIRE(
-            materials
-                .screenInputBindingRevisionForTesting(
+            MaterialContainerTestAccess::screenInputBindingRevision(materials,
                     material_id,
                     reloaded_geometry_pass
                         ->definition) ==
@@ -4819,13 +4807,13 @@ TEST_CASE(
         vkcore.waitIdle();
 
         const auto omitted_pixels =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp353_omitted", ImageSubresourceRange{});
         const auto additive_pixels =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp353_additive", ImageSubresourceRange{});
         const auto one_one_pixels =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp353_one_one", ImageSubresourceRange{});
         const auto require_center_pixel =
             [](const RenderTargetReadback &readback,
@@ -5466,13 +5454,11 @@ vec3 pelican_lighting_v1(
         REQUIRE(
             isValidMaterialId(material_id));
         REQUIRE(
-            materials
-                .screenInputBindingRevisionForTesting(
+            MaterialContainerTestAccess::screenInputBindingRevision(materials,
                     material_id,
                     consumer->definition) != 0);
         REQUIRE(
-            materials
-                .boundScreenInputImageViewsForTesting(
+            MaterialContainerTestAccess::boundScreenInputImageViews(materials,
                     material_id,
                     consumer->definition) ==
             std::vector<vk::ImageView>{
@@ -5906,7 +5892,7 @@ TEST_CASE(
                         eStore,
                 }});
 
-        renderer.setExecutionTracingForTesting(
+        RendererTestAccess::setExecutionTracing(renderer,
             true);
         engine_time.advance();
         renderer.render();
@@ -5914,8 +5900,7 @@ TEST_CASE(
             .waitIdle();
 
         const auto &trace =
-            renderer
-                .lastExecutionTraceForTesting();
+            RendererTestAccess::lastExecutionTrace(renderer);
         REQUIRE(trace.contains("nodes"));
         std::vector<std::string>
             executed_nodes;
@@ -6184,12 +6169,10 @@ TEST_CASE(
         renderer.render();
         GET_MODULE(VulkanManageCore).waitIdle();
         REQUIRE(
-            renderer
-                .imageAliasDependencyCountForTesting() >=
+            RendererTestAccess::imageAliasDependencyCount(renderer) >=
             1);
 
-        renderer
-            .recreateRenderTargetsAndRebindForTesting(
+        RendererTestAccess::recreateRenderTargetsAndRebind(renderer,
                 {32, 32});
         REQUIRE(
             targets.sharesAllocation(
@@ -6202,8 +6185,7 @@ TEST_CASE(
         renderer.render();
         GET_MODULE(VulkanManageCore).waitIdle();
         REQUIRE(
-            renderer
-                .imageAliasDependencyCountForTesting() >=
+            RendererTestAccess::imageAliasDependencyCount(renderer) >=
             1);
         const auto pixels =
             GET_MODULE(RenderTarget)
@@ -6452,7 +6434,7 @@ TEST_CASE("project-owned material variant renders a second opaque pass",
         const auto base = materials.registerMaterial(
             make_material(base_lowered, base_shaders));
         const auto base_record =
-            materials.materialGpuRecordForTesting(base);
+            MaterialContainerTestAccess::materialGpuRecord(materials, base);
         materials.registerMaterialVariants(
             base,
             {{
@@ -6466,7 +6448,7 @@ TEST_CASE("project-owned material variant renders a second opaque pass",
                 base, "silhouette");
         REQUIRE(variant != base);
         const auto base_record_after =
-            materials.materialGpuRecordForTesting(base);
+            MaterialContainerTestAccess::materialGpuRecord(materials, base);
         REQUIRE(base_record_after.size() ==
                 base_record.size());
         REQUIRE(std::equal(
@@ -6780,8 +6762,7 @@ TEST_CASE(
         }
 
         const auto order =
-            renderer
-                .currentFramePlanOrderForTesting();
+            RendererTestAccess::currentFramePlanOrder(renderer);
         const auto selector =
             std::find(
                 order.begin(), order.end(),
@@ -6902,7 +6883,7 @@ TEST_CASE(
                     .end(),
                 "clustered_lighting") ==
             renderer.xrExcludedFeatures().end());
-        renderer.setExecutionTracingForTesting(
+        RendererTestAccess::setExecutionTracing(renderer,
             true);
         GET_MODULE(EngineTime).advance();
         Test::VulkanSyntheticStereoTarget
@@ -7327,11 +7308,11 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         REQUIRE(
             transparent->definition.materialInfo()
                 .surface_resources.size() == 1);
-        const auto first_revision = materials.screenInputBindingRevisionForTesting(
+        const auto first_revision = MaterialContainerTestAccess::screenInputBindingRevision(materials,
             refraction_id, transparent->definition);
         REQUIRE(first_revision != 0);
         const auto opaque_revision =
-            materials.screenInputBindingRevisionForTesting(
+            MaterialContainerTestAccess::screenInputBindingRevision(materials,
                 material_id, opaque->definition);
         REQUIRE(opaque_revision != 0);
         const auto opaque_color = GET_MODULE(RenderTargetContainer)
@@ -7343,12 +7324,12 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                 .getRenderTargetIdByName("shadow_map");
         REQUIRE(isConcreteRenderTarget(shadow_map));
         REQUIRE(
-            materials.boundScreenInputImageViewsForTesting(
+            MaterialContainerTestAccess::boundScreenInputImageViews(materials,
                 material_id, opaque->definition) ==
             std::vector<vk::ImageView>{
                 GET_MODULE(RenderTargetContainer)
                     .getLayeredImageView(shadow_map)});
-        const auto first_views = materials.boundScreenInputImageViewsForTesting(
+        const auto first_views = MaterialContainerTestAccess::boundScreenInputImageViews(materials,
             refraction_id, transparent->definition);
         REQUIRE(first_views ==
                 std::vector<vk::ImageView>{
@@ -7356,20 +7337,20 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                     GET_MODULE(RenderTargetContainer).getImageView(opaque_depth),
                     GET_MODULE(RenderTargetContainer)
                         .getLayeredImageView(shadow_map)});
-        renderer.recreateRenderTargetsAndRebindForTesting({32, 32});
-        REQUIRE(materials.screenInputBindingRevisionForTesting(
+        RendererTestAccess::recreateRenderTargetsAndRebind(renderer, {32, 32});
+        REQUIRE(MaterialContainerTestAccess::screenInputBindingRevision(materials,
                     refraction_id, transparent->definition) > first_revision);
         REQUIRE(
-            materials.screenInputBindingRevisionForTesting(
+            MaterialContainerTestAccess::screenInputBindingRevision(materials,
                 material_id, opaque->definition) >
             opaque_revision);
         REQUIRE(
-            materials.boundScreenInputImageViewsForTesting(
+            MaterialContainerTestAccess::boundScreenInputImageViews(materials,
                 material_id, opaque->definition) ==
             std::vector<vk::ImageView>{
                 GET_MODULE(RenderTargetContainer)
                     .getLayeredImageView(shadow_map)});
-        REQUIRE(materials.boundScreenInputImageViewsForTesting(
+        REQUIRE(MaterialContainerTestAccess::boundScreenInputImageViews(materials,
                     refraction_id, transparent->definition) ==
                 std::vector<vk::ImageView>{
                     GET_MODULE(RenderTargetContainer).getImageView(opaque_color),
@@ -7463,10 +7444,10 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                 ->resourceCount();
         REQUIRE(previous_gpu_resource_count > 0);
         const auto resized_opaque_revision =
-            materials.screenInputBindingRevisionForTesting(
+            MaterialContainerTestAccess::screenInputBindingRevision(materials,
                 material_id, opaque->definition);
         const auto previous_shadow_views =
-            materials.boundScreenInputImageViewsForTesting(
+            MaterialContainerTestAccess::boundScreenInputImageViews(materials,
                 material_id, opaque->definition);
         REQUIRE(previous_shadow_views ==
                 std::vector<vk::ImageView>{
@@ -7572,13 +7553,13 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         REQUIRE(isConcreteRenderTarget(
             reloaded_shadow_map));
         const auto reloaded_opaque_revision =
-            materials.screenInputBindingRevisionForTesting(
+            MaterialContainerTestAccess::screenInputBindingRevision(materials,
                 material_id,
                 reloaded_opaque->definition);
         REQUIRE(reloaded_opaque_revision >
                 resized_opaque_revision);
         const auto reloaded_shadow_views =
-            materials.boundScreenInputImageViewsForTesting(
+            MaterialContainerTestAccess::boundScreenInputImageViews(materials,
                 material_id,
                 reloaded_opaque->definition);
         REQUIRE(reloaded_shadow_views ==
@@ -7632,12 +7613,12 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                     ->resourceCount() ==
                 previous_gpu_resource_count);
         REQUIRE(
-            materials.screenInputBindingRevisionForTesting(
+            MaterialContainerTestAccess::screenInputBindingRevision(materials,
                 material_id,
                 reloaded_opaque->definition) ==
             reloaded_opaque_revision);
         REQUIRE(
-            materials.boundScreenInputImageViewsForTesting(
+            MaterialContainerTestAccess::boundScreenInputImageViews(materials,
                 material_id,
                 reloaded_opaque->definition) ==
             reloaded_shadow_views);
@@ -8714,8 +8695,7 @@ void pelican_material_outputs_v1(
                 .version ==
             shader_version_before + 1);
         const auto coordinated_schema =
-            GET_MODULE(MaterialContainer)
-                .materialOutputSchemaForTesting(
+            MaterialContainerTestAccess::materialOutputSchema(GET_MODULE(MaterialContainer),
                     material_id);
         REQUIRE(coordinated_schema);
         REQUIRE(
@@ -8804,8 +8784,7 @@ void pelican_surface_v1(
                 .version ==
             failed_shader_version_before);
         const auto rollback_schema =
-            GET_MODULE(MaterialContainer)
-                .materialOutputSchemaForTesting(
+            MaterialContainerTestAccess::materialOutputSchema(GET_MODULE(MaterialContainer),
                     material_id);
         REQUIRE(rollback_schema);
         REQUIRE(
@@ -9785,8 +9764,7 @@ TEST_CASE(
                 ImageSubresourceViewDimension::two_d) ==
             initial_mip_zero_view);
 
-        renderer
-            .recreateRenderTargetsAndRebindForTesting(
+        RendererTestAccess::recreateRenderTargetsAndRebind(renderer,
                 {64, 32});
         REQUIRE_THROWS_WITH(
             render_targets.publishPreparedExtent(
@@ -9991,8 +9969,7 @@ TEST_CASE(
         GET_MODULE(VulkanManageCore).waitIdle();
 
         const auto diagnostics =
-            renderer
-                .rayQueryAccelerationStructureDiagnosticsForTesting();
+            RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
         CHECK_FALSE(diagnostics.requested);
         CHECK(diagnostics.blas_build_count == 0);
         CHECK(diagnostics.tlas_build_count == 0);
@@ -10137,8 +10114,7 @@ TEST_CASE(
         camera.setUp({0.0F, 1.0F, 0.0F});
 
         renderer.render();
-        auto initial = renderer
-                           .rayQueryAccelerationStructureDiagnosticsForTesting();
+        auto initial = RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
         REQUIRE(initial.requested);
         CHECK(initial.blas_build_count == 3);
         CHECK(initial.tlas_build_count == 1);
@@ -10165,8 +10141,7 @@ TEST_CASE(
             {1.0F, 1.0F, 1.0F});
         renderer.render();
         const auto transformed =
-            renderer
-                .rayQueryAccelerationStructureDiagnosticsForTesting();
+            RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
         CHECK(transformed.blas_build_count == initial.blas_build_count);
         CHECK(transformed.blas_update_count == initial.blas_update_count + 2);
         CHECK(transformed.tlas_build_count ==
@@ -10183,8 +10158,7 @@ TEST_CASE(
                 rebuild_generation + 1);
         renderer.render();
         const auto rebuilt =
-            renderer
-                .rayQueryAccelerationStructureDiagnosticsForTesting();
+            RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
         CHECK(rebuilt.blas_build_count ==
               transformed.blas_build_count + 3);
         CHECK(rebuilt.blas_update_count == transformed.blas_update_count);
@@ -10252,8 +10226,7 @@ TEST_CASE(
 
         renderer.render();
         const auto reallocated =
-            renderer
-                .rayQueryAccelerationStructureDiagnosticsForTesting();
+            RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
         CHECK(reallocated.geometry_pool_invalidation_count == 1);
         CHECK(reallocated.blas_build_count ==
               rebuilt.blas_build_count + 3);
@@ -10460,16 +10433,15 @@ TEST_CASE(
             vkcore.waitIdle();
             return RenderResult{
                 .mask =
-                    renderer.readR8RenderTargetForTesting(
+                    RendererTestAccess::readR8RenderTarget(renderer,
                         "rt_shadow_mask"),
                 .pipeline_mask =
-                    renderer.readR8RenderTargetForTesting(
+                    RendererTestAccess::readR8RenderTarget(renderer,
                         "rt_shadow_mask_pipeline"),
                 .color = GET_MODULE(RenderTarget)
                              .readbackLastFrameRGBA8(),
                 .diagnostics =
-                    renderer
-                        .rayQueryAccelerationStructureDiagnosticsForTesting(),
+                    RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer),
             };
         };
         const auto dark_count = [](const auto &pixels) -> std::size_t {
@@ -10649,10 +10621,10 @@ TEST_CASE(
         renderer.render();
         vkcore.waitIdle();
         const auto mask =
-            renderer.readR8RenderTargetForTesting(
+            RendererTestAccess::readR8RenderTarget(renderer,
                 "rt_shadow_mask");
         const auto pipeline_mask =
-            renderer.readR8RenderTargetForTesting(
+            RendererTestAccess::readR8RenderTarget(renderer,
                 "rt_shadow_mask_pipeline");
         REQUIRE(mask.extent == vk::Extent2D{32, 32});
         REQUIRE(pipeline_mask.extent == mask.extent);
@@ -10661,8 +10633,7 @@ TEST_CASE(
             mask.pixels.begin(), mask.pixels.end(),
             [](const auto value) { return value > 192; }));
         const auto diagnostics =
-            renderer
-                .rayQueryAccelerationStructureDiagnosticsForTesting();
+            RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
         REQUIRE(diagnostics.requested);
         REQUIRE(diagnostics.tlas_build_count == 1);
         REQUIRE(diagnostics.active_blas_count == 0);
@@ -10736,10 +10707,10 @@ TEST_CASE(
         renderer.render();
         vkcore.waitIdle();
         const auto mask =
-            renderer.readR8RenderTargetForTesting(
+            RendererTestAccess::readR8RenderTarget(renderer,
                 "rt_shadow_mask");
         const auto pipeline_mask =
-            renderer.readR8RenderTargetForTesting(
+            RendererTestAccess::readR8RenderTarget(renderer,
                 "rt_shadow_mask_pipeline");
         REQUIRE(mask.extent == vk::Extent2D{32, 32});
         REQUIRE(mask.pixels.size() == 32 * 32);
@@ -10756,8 +10727,7 @@ TEST_CASE(
             }
         }
         const auto diagnostics =
-            renderer
-                .rayQueryAccelerationStructureDiagnosticsForTesting();
+            RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
         REQUIRE(diagnostics.requested);
         REQUIRE(diagnostics.tlas_build_count == 1);
         REQUIRE(diagnostics.tlas_instance_count == 1);
@@ -11028,10 +10998,10 @@ TEST_CASE(
         renderer.render();
         vkcore.waitIdle();
         const auto primary =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp364_oracle", ImageSubresourceRange{});
         const auto shifted =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp364_oracle_shifted",
                 ImageSubresourceRange{});
         REQUIRE(primary.format ==
@@ -11513,7 +11483,7 @@ TEST_CASE(
             Catch::Matchers::ContainsSubstring(
                 "Current frame plan is not registered"));
         CHECK_THROWS_WITH(
-            renderer.currentFramePlanOrderForTesting(),
+            RendererTestAccess::currentFramePlanOrder(renderer),
             Catch::Matchers::ContainsSubstring(
                 "Current frame plan is not registered"));
 
@@ -11562,9 +11532,9 @@ TEST_CASE(
         REQUIRE(runtime.stagedGeneration() == 0);
         REQUIRE(runtime.activeGeneration() == private_generation);
 
-        const auto output_a = renderer.readRenderTargetForTesting(
+        const auto output_a = RendererTestAccess::readRenderTarget(renderer,
             "wp366_a", ImageSubresourceRange{});
-        const auto output_b = renderer.readRenderTargetForTesting(
+        const auto output_b = RendererTestAccess::readRenderTarget(renderer,
             "wp366_b", ImageSubresourceRange{});
         REQUIRE(output_a.format == vk::Format::eR32G32B32A32Uint);
         REQUIRE(output_b.format == output_a.format);
@@ -11727,10 +11697,10 @@ TEST_CASE(
         writes.clear();
         renderer.render();
         vkcore.waitIdle();
-        CHECK(renderer.readRenderTargetForTesting(
+        CHECK(RendererTestAccess::readRenderTarget(renderer,
                   "wp366_a", ImageSubresourceRange{}).bytes ==
               output_a.bytes);
-        CHECK(renderer.readRenderTargetForTesting(
+        CHECK(RendererTestAccess::readRenderTarget(renderer,
                   "wp366_b", ImageSubresourceRange{}).bytes ==
               output_b.bytes);
         REQUIRE(writes.empty());
@@ -11751,10 +11721,10 @@ TEST_CASE(
             vkcore.waitIdle();
         }
         const auto wrong_tlas_output_a =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp366_a", ImageSubresourceRange{});
         const auto wrong_tlas_output_b =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp366_b", ImageSubresourceRange{});
         // The bad base affects q=1, whichever authored object owns it.
         const auto q_one_pixel = q_a == 1u ? 0u : 1u;
@@ -11770,10 +11740,10 @@ TEST_CASE(
         writes.clear();
         renderer.render();
         vkcore.waitIdle();
-        CHECK(renderer.readRenderTargetForTesting(
+        CHECK(RendererTestAccess::readRenderTarget(renderer,
                   "wp366_a", ImageSubresourceRange{}).bytes ==
               output_a.bytes);
-        CHECK(renderer.readRenderTargetForTesting(
+        CHECK(RendererTestAccess::readRenderTarget(renderer,
                   "wp366_b", ImageSubresourceRange{}).bytes ==
               output_b.bytes);
 
@@ -11788,9 +11758,9 @@ TEST_CASE(
         writes.clear();
         renderer.render();
         vkcore.waitIdle();
-        const auto reverse_output_a = renderer.readRenderTargetForTesting(
+        const auto reverse_output_a = RendererTestAccess::readRenderTarget(renderer,
             "wp366_a", ImageSubresourceRange{});
-        const auto reverse_output_b = renderer.readRenderTargetForTesting(
+        const auto reverse_output_b = RendererTestAccess::readRenderTarget(renderer,
             "wp366_b", ImageSubresourceRange{});
         CHECK(reverse_output_a.bytes == output_a.bytes);
         CHECK(reverse_output_b.bytes == output_b.bytes);
@@ -11822,10 +11792,10 @@ TEST_CASE(
         renderer.render();
         vkcore.waitIdle();
         const auto removed_output_a =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp366_a", ImageSubresourceRange{});
         const auto removed_output_b =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp366_b", ImageSubresourceRange{});
         CHECK(pixel(removed_output_a, 0) ==
               std::array{0xa0u, 0u, 101u,
@@ -11864,10 +11834,10 @@ TEST_CASE(
         writes.clear();
         renderer.render();
         vkcore.waitIdle();
-        CHECK(renderer.readRenderTargetForTesting(
+        CHECK(RendererTestAccess::readRenderTarget(renderer,
                   "wp366_a", ImageSubresourceRange{}).bytes ==
               output_a.bytes);
-        CHECK(renderer.readRenderTargetForTesting(
+        CHECK(RendererTestAccess::readRenderTarget(renderer,
                   "wp366_b", ImageSubresourceRange{}).bytes ==
               output_b.bytes);
         REQUIRE(writes.empty());
@@ -11939,10 +11909,10 @@ TEST_CASE(
                     after_keys, [&](const auto &key) {
                         return !before_keys.contains(key);
                     }));
-                CHECK(renderer.readRenderTargetForTesting(
+                CHECK(RendererTestAccess::readRenderTarget(renderer,
                           "wp366_a", ImageSubresourceRange{}).bytes ==
                       output_a.bytes);
-                CHECK(renderer.readRenderTargetForTesting(
+                CHECK(RendererTestAccess::readRenderTarget(renderer,
                           "wp366_b", ImageSubresourceRange{}).bytes ==
                       output_b.bytes);
                 REQUIRE(writes.empty());
@@ -12028,10 +11998,10 @@ TEST_CASE(
               watch::makeAssetKey("shaders/wp366_a.rgen"));
         renderer.render();
         vkcore.waitIdle();
-        CHECK(renderer.readRenderTargetForTesting(
+        CHECK(RendererTestAccess::readRenderTarget(renderer,
                   "wp366_a", ImageSubresourceRange{}).bytes ==
               output_a.bytes);
-        CHECK(renderer.readRenderTargetForTesting(
+        CHECK(RendererTestAccess::readRenderTarget(renderer,
                   "wp366_b", ImageSubresourceRange{}).bytes ==
               output_b.bytes);
 
@@ -12061,7 +12031,7 @@ TEST_CASE(
         REQUIRE(stable_descriptor_bundle->top_level ==
                 stable_scope->acceleration_structures->topLevel());
         const auto stable_diagnostics =
-            renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+            RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
         REQUIRE(stable_diagnostics.descriptor_bundle_generation != 0);
         // WP384 decision 11 seals the retirement batch at the first successful
         // real GPU submit, not at logical-frame completion. The seal counter
@@ -12180,14 +12150,14 @@ TEST_CASE(
             // makes either this frame or its byte comparison diverge.
             renderer.render();
             vkcore.waitIdle();
-            CHECK(renderer.readRenderTargetForTesting(
+            CHECK(RendererTestAccess::readRenderTarget(renderer,
                       "wp366_a", ImageSubresourceRange{}).bytes ==
                   output_a.bytes);
-            CHECK(renderer.readRenderTargetForTesting(
+            CHECK(RendererTestAccess::readRenderTarget(renderer,
                       "wp366_b", ImageSubresourceRange{}).bytes ==
                   output_b.bytes);
             const auto reused =
-                renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+                RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
             CHECK(reused.tlas_build_count ==
                   stable_diagnostics.tlas_build_count);
             CHECK(reused.descriptor_bundle_generation ==
@@ -12338,10 +12308,10 @@ TEST_CASE(
                   ->topLevelDeviceAddress() == before_ambiguous_tlas);
 
         const auto pre_b_output_a =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp366_a", ImageSubresourceRange{});
         const auto pre_b_output_b =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp366_b", ImageSubresourceRange{});
         instances.setTrs(restored_b, {20.0f, 0.0f, 0.0f},
                          glm::quat{1.0f, 0.0f, 0.0f, 0.0f}, glm::vec3{1.0f});
@@ -12402,11 +12372,11 @@ TEST_CASE(
         CHECK(published_b_bundle != stable_descriptor_bundle);
         CHECK(published_b_sbt != stable_sbt);
         const auto published_b_diagnostics =
-            renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+            RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
         renderer.render();
         vkcore.waitIdle();
         const auto reused_b_diagnostics =
-            renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+            RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
         CHECK(reused_b_diagnostics.tlas_build_count ==
               published_b_diagnostics.tlas_build_count);
         CHECK(reused_b_diagnostics.descriptor_bundle_generation ==
@@ -12417,10 +12387,10 @@ TEST_CASE(
                   .rayTracingSceneShaderBindingTablesLeaseForTesting() ==
               published_b_sbt);
         const auto reused_b_output_a =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp366_a", ImageSubresourceRange{});
         const auto reused_b_output_b =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp366_b", ImageSubresourceRange{});
         CHECK(pixel(reused_b_output_a, 1) != pixel(pre_b_output_a, 1));
         CHECK(pixel(reused_b_output_b, 1) != pixel(pre_b_output_b, 1));
@@ -12580,7 +12550,7 @@ TEST_CASE(
             return marker;
         };
         const auto profile_absent =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp366_a", ImageSubresourceRange{});
         for (std::uint32_t lane = 0; lane < 8; ++lane) {
             CAPTURE(lane);
@@ -12784,10 +12754,10 @@ TEST_CASE(
         vkcore.waitIdle();
 
         const auto profile_active =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp366_a", ImageSubresourceRange{});
         const auto raster_active =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "gbuffer_albedo", ImageSubresourceRange{});
         constexpr std::uint32_t miss_marker = 1280u;
         constexpr std::uint32_t hit_marker = 0x3690u;
@@ -12939,10 +12909,10 @@ TEST_CASE(
         renderer.render();
         vkcore.waitIdle();
         const auto relative_frame =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp366_a", ImageSubresourceRange{});
         const auto relative_raster =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "gbuffer_albedo", ImageSubresourceRange{});
         constexpr std::array<bool, 6> relative_visibility{
             true, false, true, false, true, true};
@@ -12968,10 +12938,10 @@ TEST_CASE(
         renderer.render();
         vkcore.waitIdle();
         const auto absolute_uv_frame =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp366_a", ImageSubresourceRange{});
         const auto absolute_uv_raster =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "gbuffer_albedo", ImageSubresourceRange{});
         constexpr std::array<bool, 6> absolute_uv_visibility{
             true, true, true, false, true, true};
@@ -12999,10 +12969,10 @@ TEST_CASE(
         renderer.render();
         vkcore.waitIdle();
         const auto clamped_frame =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp366_a", ImageSubresourceRange{});
         const auto clamped_raster =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "gbuffer_albedo", ImageSubresourceRange{});
         require_shared_visibility(
             clamped_frame, clamped_raster,
@@ -13024,8 +12994,7 @@ TEST_CASE(
                     CHECK(row.geometry_flags == expected);
                 }
                 const auto diagnostics =
-                    renderer
-                        .rayQueryAccelerationStructureDiagnosticsForTesting();
+                    RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
                 REQUIRE_FALSE(diagnostics.active_blas_inputs.empty());
                 for (const auto &resident :
                      diagnostics.active_blas_inputs) {
@@ -13050,7 +13019,7 @@ TEST_CASE(
         renderer.render();
         vkcore.waitIdle();
         const auto profile_removed =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp366_a", ImageSubresourceRange{});
         for (std::uint32_t lane = 0; lane < 8; ++lane) {
             CAPTURE(lane);
@@ -13074,8 +13043,7 @@ TEST_CASE(
                 ->topLevelDeviceAddress();
         REQUIRE(stable_tlas != 0);
         const auto stable_as =
-            renderer
-                .rayQueryAccelerationStructureDiagnosticsForTesting();
+            RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
         const auto stable_tables = GET_MODULE(FrameResources)
                                        .rayTracingSceneShaderBindingTablesLeaseForTesting();
         REQUIRE(stable_tables != nullptr);
@@ -13099,8 +13067,7 @@ TEST_CASE(
         CHECK(runtime.stagedGeneration() == 0);
         CHECK(stable_scope->acceleration_structures
                   ->topLevelDeviceAddress() == stable_tlas);
-        CHECK(renderer
-                  .rayQueryAccelerationStructureDiagnosticsForTesting()
+        CHECK(RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer)
                   .active_blas_inputs == stable_as.active_blas_inputs);
         CHECK(GET_MODULE(FrameResources)
                   .rayTracingSceneShaderBindingTablesLeaseForTesting() ==
@@ -13111,7 +13078,7 @@ TEST_CASE(
         // the same production bytes again.
         renderer.render();
         vkcore.waitIdle();
-        CHECK(renderer.readRenderTargetForTesting(
+        CHECK(RendererTestAccess::readRenderTarget(renderer,
                   "wp366_a", ImageSubresourceRange{}).bytes ==
               profile_removed.bytes);
         require_geometry_flags(rayGeometryOpaque);
@@ -13309,7 +13276,7 @@ TEST_CASE(
         auto &renderer = GET_MODULE(Renderer);
         renderer.render();
         vkcore.waitIdle();
-        CHECK_THROWS(renderer.readRenderTargetForTesting(
+        CHECK_THROWS(RendererTestAccess::readRenderTarget(renderer,
             "wp366_a", ImageSubresourceRange{}));
         auto &shaders = GET_MODULE(ShaderLibrary);
         const auto registration_baseline =
@@ -13360,7 +13327,7 @@ TEST_CASE(
         CHECK(shaders.registrationCount() == baseline_count);
         CHECK(shaders.registrationsSince(
                   registration_baseline).empty());
-        CHECK_THROWS(renderer.readRenderTargetForTesting(
+        CHECK_THROWS(RendererTestAccess::readRenderTarget(renderer,
             "wp366_a", ImageSubresourceRange{}));
 
         std::vector<RayTracingSbtWriteObservation> writes;
@@ -13479,10 +13446,10 @@ TEST_CASE(
             return result;
         };
         const auto primary =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp366_a", ImageSubresourceRange{});
         const auto geometry =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp366_b", ImageSubresourceRange{});
 
         const std::array<std::array<std::uint32_t, 4>, 4>
@@ -13625,10 +13592,10 @@ TEST_CASE(
             vkcore.waitIdle();
         }
         const auto wrong_primary =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp366_a", ImageSubresourceRange{});
         const auto wrong_geometry =
-            renderer.readRenderTargetForTesting(
+            RendererTestAccess::readRenderTarget(renderer,
                 "wp366_b", ImageSubresourceRange{});
         CHECK(pixel(wrong_primary, 0) ==
               primary_expected[1]);
@@ -13643,11 +13610,11 @@ TEST_CASE(
 
         renderer.render();
         vkcore.waitIdle();
-        CHECK(renderer.readRenderTargetForTesting(
+        CHECK(RendererTestAccess::readRenderTarget(renderer,
                   "wp366_a",
                   ImageSubresourceRange{}).bytes ==
               primary.bytes);
-        CHECK(renderer.readRenderTargetForTesting(
+        CHECK(RendererTestAccess::readRenderTarget(renderer,
                   "wp366_b",
                   ImageSubresourceRange{}).bytes ==
               geometry.bytes);
@@ -13676,7 +13643,7 @@ TEST_CASE(
                   .rayTracingSceneShaderBindingTables() ==
               nullptr);
         CHECK(retired_tables.expired());
-        CHECK_THROWS(renderer.readRenderTargetForTesting(
+        CHECK_THROWS(RendererTestAccess::readRenderTarget(renderer,
             "wp366_a", ImageSubresourceRange{}));
         CHECK(shaders.registrationCount() ==
               baseline_count);
@@ -13864,9 +13831,9 @@ TEST_CASE(
 
         renderer.render();
         vkcore.waitIdle();
-        const auto actual = renderer.readRenderTargetForTesting(
+        const auto actual = RendererTestAccess::readRenderTarget(renderer,
             "wp367_actual", ImageSubresourceRange{});
-        const auto always = renderer.readRenderTargetForTesting(
+        const auto always = RendererTestAccess::readRenderTarget(renderer,
             "wp367_always", ImageSubresourceRange{});
         REQUIRE(actual.format == vk::Format::eR32G32B32A32Uint);
         REQUIRE(always.format == actual.format);
@@ -14110,10 +14077,10 @@ TEST_CASE(
             REQUIRE(creates.size() > creates_before_control);
             renderer.render();
             vkcore.waitIdle();
-            const auto rejected = renderer.readRenderTargetForTesting(
+            const auto rejected = RendererTestAccess::readRenderTarget(renderer,
                 "wp367_actual", ImageSubresourceRange{});
             const auto unchanged_always =
-                renderer.readRenderTargetForTesting(
+                RendererTestAccess::readRenderTarget(renderer,
                     "wp367_always", ImageSubresourceRange{});
             CHECK(pixel(rejected, 0) == miss_pixel);
             CHECK(unchanged_always.bytes == always.bytes);
@@ -14131,7 +14098,7 @@ TEST_CASE(
                 reload_sequence++}));
         renderer.render();
         vkcore.waitIdle();
-        const auto restored = renderer.readRenderTargetForTesting(
+        const auto restored = RendererTestAccess::readRenderTarget(renderer,
             "wp367_actual", ImageSubresourceRange{});
         const auto restored_single = pixel(restored, 0);
         CHECK(restored_single[0] == single.q);
@@ -14162,9 +14129,9 @@ TEST_CASE(
         writes.clear();
         renderer.render();
         vkcore.waitIdle();
-        const auto reloaded_actual = renderer.readRenderTargetForTesting(
+        const auto reloaded_actual = RendererTestAccess::readRenderTarget(renderer,
             "wp367_actual", ImageSubresourceRange{});
-        const auto reloaded_always = renderer.readRenderTargetForTesting(
+        const auto reloaded_always = RendererTestAccess::readRenderTarget(renderer,
             "wp367_always", ImageSubresourceRange{});
         const auto reloaded_front = pixel(reloaded_actual, 1);
         CHECK(reloaded_front[0] == front.q);
@@ -14433,46 +14400,46 @@ TEST_CASE(
         auto &renderer = GET_MODULE(Renderer);
         renderer.render();
         vkcore.waitIdle();
-        const auto visible = renderer.readRenderTargetForTesting(
+        const auto visible = RendererTestAccess::readRenderTarget(renderer,
             "wp366_a", ImageSubresourceRange{});
         CHECK(wp374aPixel(visible, 0)[0] == 0xa0u);
         CHECK(wp374aPixel(visible, 1)[0] == 0xa0u);
         const auto visible_diagnostics =
-            renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+            RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
 
         instances.setRayInstanceDeclaration(
             right, 374012, RayInstanceComponent{.mask = std::uint8_t{0}});
         renderer.render();
         vkcore.waitIdle();
-        const auto masked = renderer.readRenderTargetForTesting(
+        const auto masked = RendererTestAccess::readRenderTarget(renderer,
             "wp366_a", ImageSubresourceRange{});
         CHECK(wp374aPixel(masked, 0)[0] == 0xa0u);
         CHECK(wp374aPixel(masked, 1) ==
               std::array{1280u, 0xffffffffu, 0u, 0u});
         const auto masked_diagnostics =
-            renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+            RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
         CHECK(masked_diagnostics.tlas_build_count ==
               visible_diagnostics.tlas_build_count + 1);
 
         instances.setRayInstanceDeclaration(right, 374012, std::nullopt);
         renderer.render();
         vkcore.waitIdle();
-        const auto restored = renderer.readRenderTargetForTesting(
+        const auto restored = RendererTestAccess::readRenderTarget(renderer,
             "wp366_a", ImageSubresourceRange{});
         CHECK(wp374aPixel(restored, 0)[0] == 0xa0u);
         CHECK(wp374aPixel(restored, 1)[0] == 0xa0u);
         CHECK(masked.bytes != restored.bytes);
         const auto restored_diagnostics =
-            renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+            RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
         CHECK(restored_diagnostics.tlas_build_count ==
               masked_diagnostics.tlas_build_count + 1);
 
         renderer.render();
         vkcore.waitIdle();
-        const auto reused = renderer.readRenderTargetForTesting(
+        const auto reused = RendererTestAccess::readRenderTarget(renderer,
             "wp366_a", ImageSubresourceRange{});
         const auto reused_diagnostics =
-            renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+            RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
         CHECK(reused.bytes == restored.bytes);
         CHECK(reused_diagnostics.tlas_build_count ==
               restored_diagnostics.tlas_build_count);
@@ -14521,7 +14488,7 @@ TEST_CASE(
         auto &renderer = GET_MODULE(Renderer);
         renderer.render();
         vkcore.waitIdle();
-        const auto output = renderer.readRenderTargetForTesting(
+        const auto output = RendererTestAccess::readRenderTarget(renderer,
             "wp367_actual", ImageSubresourceRange{});
         const auto left_pixel = wp374aPixel(output, 0);
         const auto right_pixel = wp374aPixel(output, 1);
@@ -14581,7 +14548,7 @@ TEST_CASE(
         vkcore.waitIdle();
         const auto first_q =
             wp374aRowForAuthor(wp374aActiveRows(), 374031).q;
-        const auto first = renderer.readRenderTargetForTesting(
+        const auto first = RendererTestAccess::readRenderTarget(renderer,
             "wp366_a", ImageSubresourceRange{});
         CHECK(wp374aPixel(first, 0)[1] == declared_index);
 
@@ -14595,7 +14562,7 @@ TEST_CASE(
         const auto &target_row = wp374aRowForAuthor(shifted_rows, 374031);
         CHECK(target_row.q != first_q);
         CHECK(target_row.instance_custom_index == declared_index);
-        const auto shifted = renderer.readRenderTargetForTesting(
+        const auto shifted = RendererTestAccess::readRenderTarget(renderer,
             "wp366_a", ImageSubresourceRange{});
         const auto target_pixel = wp374aPixel(shifted, 0);
         CHECK(target_pixel[0] == 0xa0u);
@@ -14682,8 +14649,7 @@ TEST_CASE(
                 renderer.render();
                 vkcore.waitIdle();
                 const auto diagnostics =
-                    renderer
-                        .rayQueryAccelerationStructureDiagnosticsForTesting();
+                    RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
                 CHECK(diagnostics.blas_build_count ==
                       previous_builds + expected_delta);
                 previous_builds = diagnostics.blas_build_count;
@@ -14694,7 +14660,7 @@ TEST_CASE(
                 }
                 CHECK(resident.geometry_allocation_id == *allocation);
                 CHECK(resident.geometry_flags == expected_flags);
-                const auto output = renderer.readRenderTargetForTesting(
+                const auto output = RendererTestAccess::readRenderTarget(renderer,
                     "wp367_actual", ImageSubresourceRange{});
                 CHECK(wp374aPixel(output, 0)[3] == expected_proof);
             };

@@ -27,6 +27,7 @@
 #include "polygoninstancecontainer_testaccess.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
+#include "renderer_testaccess.hpp"
 #include "../src/core/vkcore/renderer_config.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
@@ -670,7 +671,7 @@ void main() {
     weight(initial, 0.5f, 1);
     expect({0.7f, 1.3f, 0.0f, 1.0f});
     if (ray_query) {
-        const auto diagnostics = renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+        const auto diagnostics = RendererTestAccess::rayQueryAccelerationStructureDiagnostics(renderer);
         REQUIRE(diagnostics.requested);
         REQUIRE(diagnostics.active_blas_count > 0);
     }
@@ -1482,7 +1483,7 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
         loadRenderGraphVariantsFromConfigData(candidate.dump());
         GET_MODULE(ProjectBasicConfig).publishRenderingConfigJson(candidate.dump());
     };
-    renderer.setExecutionTracingForTesting(true);
+    RendererTestAccess::setExecutionTracing(renderer, true);
     auto &vkcore = GET_MODULE(VulkanManageCore);
     const auto read = [&](const char *buffer) {
         const auto bytes = vkcore.readBuf(GET_MODULE(FrameGraphResourceContainer).buffer(buffer), sizeof(float));
@@ -1540,7 +1541,7 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     REQUIRE_FALSE(graph_buffers.hasBuffer(retired_input));
     const auto reclaimed_generation = GET_MODULE(RenderingPassContainer).activeGeneration();
     if (graphics_path) {
-        const auto &trace = renderer.lastExecutionTraceForTesting();
+        const auto &trace = RendererTestAccess::lastExecutionTrace(renderer);
         const auto &view = trace.contains("view_family") ? trace.at("view_family") : trace;
         const auto &nodes = view.at("nodes");
         const auto probe = std::find_if(nodes.begin(), nodes.end(), [](const auto &node) {

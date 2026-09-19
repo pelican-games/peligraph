@@ -2,6 +2,7 @@
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/material/materialcontainer.hpp"
+#include "materialcontainer_testaccess.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/deletionqueue.hpp"
@@ -109,36 +110,36 @@ TEST_CASE("HR1-T reload keeps identity, rebinds shape changes, and rolls back fa
         const auto material = registerReferencingMaterial(materials, texture);
         auto &reload = GET_MODULE(watch::ReloadService);
 
-        const auto initial_views = materials.textureViewsForTesting(texture);
-        REQUIRE(materials.texturePixelsForTesting(texture) ==
+        const auto initial_views = MaterialContainerTestAccess::textureViews(materials, texture);
+        REQUIRE(MaterialContainerTestAccess::texturePixels(materials, texture) ==
                 std::vector<std::uint8_t>{255, 0, 0, 255});
-        REQUIRE(materials.referencingMaterialCountForTesting(texture) == 1);
-        REQUIRE(materials.materialDescriptorRevisionForTesting(material) == 0);
+        REQUIRE(MaterialContainerTestAccess::referencingMaterialCount(materials, texture) == 1);
+        REQUIRE(MaterialContainerTestAccess::materialDescriptorRevision(materials, material) == 0);
 
         writeBytes(path, std::span{bluePng});
         REQUIRE(reload.applyRequestForTesting({key, watch::ReloadKind::modified, {}, 1}));
-        REQUIRE(materials.textureViewsForTesting(texture) == initial_views);
-        REQUIRE(materials.texturePixelsForTesting(texture) ==
+        REQUIRE(MaterialContainerTestAccess::textureViews(materials, texture) == initial_views);
+        REQUIRE(MaterialContainerTestAccess::texturePixels(materials, texture) ==
                 std::vector<std::uint8_t>{0, 0, 255, 255});
-        REQUIRE(materials.materialDescriptorRevisionForTesting(material) == 0);
+        REQUIRE(MaterialContainerTestAccess::materialDescriptorRevision(materials, material) == 0);
 
         writeBytes(path, std::span{green2Png});
         REQUIRE(reload.applyRequestForTesting({key, watch::ReloadKind::modified, {}, 1}));
-        REQUIRE(materials.textureViewsForTesting(texture) != initial_views);
-        REQUIRE(materials.texturePixelsForTesting(texture) ==
+        REQUIRE(MaterialContainerTestAccess::textureViews(materials, texture) != initial_views);
+        REQUIRE(MaterialContainerTestAccess::texturePixels(materials, texture) ==
                 std::vector<std::uint8_t>{0, 255, 0, 255, 0, 255, 0, 255});
-        REQUIRE(materials.materialDescriptorRevisionForTesting(material) == 1);
+        REQUIRE(MaterialContainerTestAccess::materialDescriptorRevision(materials, material) == 1);
         REQUIRE(materials.textureCountForTesting() >= 1);
         REQUIRE(GET_MODULE(DeletionQueue).pendingCountForTesting() == 2);
 
-        const auto before_failure = materials.textureViewsForTesting(texture);
-        const auto before_pixels = materials.texturePixelsForTesting(texture);
+        const auto before_failure = MaterialContainerTestAccess::textureViews(materials, texture);
+        const auto before_pixels = MaterialContainerTestAccess::texturePixels(materials, texture);
         const std::array<std::uint8_t, 4> broken{0, 1, 2, 3};
         writeBytes(path, std::span{broken});
         REQUIRE_FALSE(reload.applyRequestForTesting(
             {key, watch::ReloadKind::modified, {}, 1}));
-        REQUIRE(materials.textureViewsForTesting(texture) == before_failure);
-        REQUIRE(materials.texturePixelsForTesting(texture) == before_pixels);
+        REQUIRE(MaterialContainerTestAccess::textureViews(materials, texture) == before_failure);
+        REQUIRE(MaterialContainerTestAccess::texturePixels(materials, texture) == before_pixels);
         const auto status = reload.transactions().status();
         REQUIRE(status.failed == 1);
         REQUIRE(status.last_reload_error);
@@ -163,7 +164,7 @@ TEST_CASE("HR1-T uses watcher gate and survives 1000 same-shape reloads plus KTX
         const auto texture = materials.registerReloadableTextureFile(key, path);
         const auto material = registerReferencingMaterial(materials, texture);
         auto &reload = GET_MODULE(watch::ReloadService);
-        const auto views = materials.textureViewsForTesting(texture);
+        const auto views = MaterialContainerTestAccess::textureViews(materials, texture);
         const auto texture_count = materials.textureCountForTesting();
         const auto resources = reload.transactions().registry().snapshot().resourceCount();
 
@@ -172,12 +173,12 @@ TEST_CASE("HR1-T uses watcher gate and survives 1000 same-shape reloads plus KTX
             REQUIRE(reload.applyRequestForTesting(
                 {key, watch::ReloadKind::modified, {}, 1}));
         }
-        REQUIRE(materials.textureViewsForTesting(texture) == views);
+        REQUIRE(MaterialContainerTestAccess::textureViews(materials, texture) == views);
         REQUIRE(materials.textureCountForTesting() == texture_count);
         REQUIRE(reload.transactions().registry().snapshot().resourceCount() == resources);
         REQUIRE(reload.transactions().registry().snapshot().liveBytes() == 4);
-        REQUIRE(materials.materialDescriptorRevisionForTesting(material) == 0);
-        REQUIRE(materials.referencingMaterialCountForTesting(texture) == 1);
+        REQUIRE(MaterialContainerTestAccess::materialDescriptorRevision(materials, material) == 0);
+        REQUIRE(MaterialContainerTestAccess::referencingMaterialCount(materials, texture) == 1);
         REQUIRE(GET_MODULE(DeletionQueue).pendingCountForTesting() == 0);
 
         bool gate_enabled = false;
@@ -194,7 +195,7 @@ TEST_CASE("HR1-T uses watcher gate and survives 1000 same-shape reloads plus KTX
         REQUIRE(watcher.applyFrame([&](const watch::ReloadRequest &request) {
             return reload.applyRequestForTesting(request);
         }) == 0);
-        REQUIRE(materials.textureViewsForTesting(texture) == views);
+        REQUIRE(MaterialContainerTestAccess::textureViews(materials, texture) == views);
 
         // Real-filesystem end-to-end: reconcile the disabled edit as the new
         // baseline, then overwrite the PNG and let FileWatcher drive HR1-T.
@@ -205,7 +206,7 @@ TEST_CASE("HR1-T uses watcher gate and survives 1000 same-shape reloads plus KTX
         REQUIRE(watcher.applyFrame([&](const watch::ReloadRequest &request) {
             return reload.applyRequestForTesting(request);
         }) >= 1);
-        REQUIRE(materials.texturePixelsForTesting(texture) ==
+        REQUIRE(MaterialContainerTestAccess::texturePixels(materials, texture) ==
                 std::vector<std::uint8_t>{255, 0, 0, 255});
         watcher.stop();
 
@@ -214,14 +215,14 @@ TEST_CASE("HR1-T uses watcher gate and survives 1000 same-shape reloads plus KTX
         const auto srgb_mips = TestKtx2::makeRgba8Srgb188();
         writeBytes(ktx_path, std::span{srgb_mips});
         const auto ktx_texture = materials.registerReloadableTextureFile(ktx_key, ktx_path);
-        REQUIRE(materials.textureMipLevelsForTesting(ktx_texture) == 2);
-        const auto old_ktx_views = materials.textureViewsForTesting(ktx_texture);
+        REQUIRE(MaterialContainerTestAccess::textureMipLevels(materials, ktx_texture) == 2);
+        const auto old_ktx_views = MaterialContainerTestAccess::textureViews(materials, ktx_texture);
         const auto unorm_single = TestKtx2::makeRgba8UnormSingleMip();
         writeBytes(ktx_path, std::span{unorm_single});
         REQUIRE(reload.applyRequestForTesting(
             {ktx_key, watch::ReloadKind::modified, {}, 1}));
-        REQUIRE(materials.textureMipLevelsForTesting(ktx_texture) == 1);
-        REQUIRE(materials.textureViewsForTesting(ktx_texture) != old_ktx_views);
+        REQUIRE(MaterialContainerTestAccess::textureMipLevels(materials, ktx_texture) == 1);
+        REQUIRE(MaterialContainerTestAccess::textureViews(materials, ktx_texture) != old_ktx_views);
         GET_MODULE(VulkanManageCore).waitIdle();
         GET_MODULE(DeletionQueue).flushAll();
         REQUIRE(GET_MODULE(DeletionQueue).pendingCountForTesting() == 0);

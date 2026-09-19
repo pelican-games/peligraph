@@ -42,6 +42,11 @@ struct RayQueryAccelerationStructureDiagnostics;
 namespace watch {
 struct ReloadRequest;
 }
+namespace test_support {
+// Defined in test/renderer_testaccess.hpp. No production translation unit
+// includes that header.
+struct RendererTestAccess;
+}
 
 enum class RenderGraphVariant {
     flat,
@@ -146,6 +151,11 @@ class ILogicalFrameTarget {
 DECLARE_MODULE(Renderer) {
     // One publish()/rollback() pair serves both render pipeline reload paths.
     friend struct RenderPipelinePublicationTransaction;
+    // The reads and pokes only a test performs, including the execution
+    // trace below. They are declared here rather than in the public section
+    // so the public header states what production calls and nothing else;
+    // the struct that reaches them lives in test/.
+    friend struct test_support::RendererTestAccess;
     // One logical frame's recording state and steps. Defined in renderer.cpp
     // because its fields name types that only the renderer translation unit
     // has; being a member of Renderer is what lets it reach the renderer state
@@ -196,6 +206,16 @@ DECLARE_MODULE(Renderer) {
         std::span<const watch::ReloadRequest>
             companion_requests = {}) noexcept;
 
+    RenderTargetReadback readRenderTargetForTesting(
+        std::string_view name,
+        const ImageSubresourceRange &range);
+    R8RenderTargetReadback readR8RenderTargetForTesting(
+        std::string_view name);
+    std::vector<std::string> currentFramePlanOrderForTesting() const;
+    RayQueryAccelerationStructureDiagnostics
+    rayQueryAccelerationStructureDiagnosticsForTesting() const;
+    void recreateRenderTargetsAndRebindForTesting(vk::Extent2D extent);
+
   public:
     Renderer();
     Renderer(RendererFramePlanCpuSeam,
@@ -210,28 +230,8 @@ DECLARE_MODULE(Renderer) {
         RenderPipelineAuthoringCompletion completion = {});
     PickingReadbackResult readPickingPixel(std::uint32_t x,
                                            std::uint32_t y);
-    RenderTargetReadback readRenderTargetForTesting(
-        std::string_view name,
-        const ImageSubresourceRange &range);
-    R8RenderTargetReadback readR8RenderTargetForTesting(
-        std::string_view name);
     std::optional<vk::Format>
     xrCompositionDepthFormat() const;
-    std::vector<std::string> currentFramePlanOrderForTesting() const;
-    RayQueryAccelerationStructureDiagnostics
-    rayQueryAccelerationStructureDiagnosticsForTesting() const;
-    void setExecutionTracingForTesting(bool enabled) { execution_tracing_for_testing = enabled; }
-    const nlohmann::json &lastExecutionTraceForTesting() const { return last_execution_trace; }
-    std::size_t imageMemoryDependencyCountForTesting() const noexcept {
-        return render_target_layout_tracker.memoryDependencyCountForTesting();
-    }
-    std::size_t imageAliasDependencyCountForTesting() const noexcept {
-        return render_target_layout_tracker.aliasDependencyCountForTesting();
-    }
-    const std::vector<RenderFrameSnapshot> &lastViewSnapshotsForTesting() const {
-        return last_view_snapshots;
-    }
-    void recreateRenderTargetsAndRebindForTesting(vk::Extent2D extent);
     void resetTemporalHistory();
     void selectGraphVariant(RenderGraphVariant variant);
     RenderGraphVariant graphVariant() const noexcept { return active_graph_variant; }
@@ -243,9 +243,6 @@ DECLARE_MODULE(Renderer) {
         return preview_graph_program;
     }
     nlohmann::ordered_json previewIsolationStateJson() const;
-    const nlohmann::json &graphVariantTransitionTraceForTesting() const noexcept {
-        return graph_variant_transition_trace;
-    }
     // Resolves every renderer-owned runtime dependency while module creation is
     // still legal. Subsequent render calls only read the frozen module graph.
     void prepareRuntimeModules();

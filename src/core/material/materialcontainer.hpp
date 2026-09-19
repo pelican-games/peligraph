@@ -38,6 +38,9 @@ class MaterialContainer;
 namespace test_support {
 void setMaterialReleaseFailureForTesting(MaterialContainer &, bool) noexcept;
 void setTextureReleaseFailureForTesting(MaterialContainer &, bool) noexcept;
+// Defined in test/materialcontainer_testaccess.hpp. No production
+// translation unit includes that header.
+struct MaterialContainerTestAccess;
 }
 
 struct RendererRuntimeGeneration;
@@ -245,6 +248,30 @@ DECLARE_MODULE(MaterialContainer) {
         MaterialContainer &, bool) noexcept;
     friend void test_support::setTextureReleaseFailureForTesting(
         MaterialContainer &, bool) noexcept;
+    // The reads only a test performs. Declared here rather than in the
+    // public section so the public header states what production calls and
+    // nothing else; the struct that reaches them lives in test/.
+    friend struct test_support::MaterialContainerTestAccess;
+
+    std::pair<vk::ImageView, vk::ImageView> textureViewsForTesting(GlobalTextureId texture) const;
+    std::optional<ResolvedMaterialSampler>
+    materialSamplerResolutionForTesting(
+        GlobalMaterialId material,
+        std::string_view texture_name) const;
+    std::vector<uint8_t> texturePixelsForTesting(
+        GlobalTextureId texture, uint32_t mip_level = 0) const;
+    size_t materialCapacityForTesting() const;
+    size_t referencingMaterialCountForTesting(GlobalTextureId texture) const;
+    std::optional<GlobalTextureId>
+    materialTextureForTesting(GlobalMaterialId material,
+                              std::uint32_t binding) const;
+    std::vector<std::byte> materialGpuValuesForTesting(GlobalMaterialId material) const;
+    std::vector<std::byte> materialGpuRecordForTesting(GlobalMaterialId material) const;
+    std::vector<vk::ImageView> boundScreenInputImageViewsForTesting(
+        GlobalMaterialId material, const PassDefinition &pass,
+        std::uint32_t view_index = 0) const;
+    std::uint64_t screenInputBindingRevisionForTesting(
+        GlobalMaterialId material, const PassDefinition &pass) const;
 
     InternalTextureResource createTextureResource(const LoadedImage &image,
                                                   std::string_view name) const;
@@ -318,48 +345,14 @@ DECLARE_MODULE(MaterialContainer) {
                               std::span<const std::byte> values);
     void updateMaterialValues(GlobalMaterialId material,
                               std::span<const std::byte> values);
-    std::pair<vk::ImageView, vk::ImageView> textureViewsForTesting(GlobalTextureId texture) const;
-    SurfaceTextureDimension textureDimensionForTesting(
-        GlobalTextureId texture) const {
-        return texture_store.textures.get(texture)
-            .dimension;
-    }
-    vk::ImageViewType textureViewTypeForTesting(
-        GlobalTextureId texture) const {
-        return texture_store.textures.get(texture)
-            .view_type;
-    }
-    std::optional<ResolvedMaterialSampler>
-    materialSamplerResolutionForTesting(
-        GlobalMaterialId material,
-        std::string_view texture_name) const;
-    std::vector<uint8_t> texturePixelsForTesting(
-        GlobalTextureId texture, uint32_t mip_level = 0) const;
-    uint32_t textureMipLevelsForTesting(GlobalTextureId texture) const {
-        return texture_store.textures.get(texture).image.mip_levels;
-    }
+    // memorydiagnostics.cpp publishes these two counts in the engine's
+    // memory report, so they are production readers and stay public. Every
+    // other test-only read of this container is a member of
+    // test_support::MaterialContainerTestAccess.
     size_t textureCountForTesting() const {
         return texture_store.textures.size();
     }
     size_t materialCountForTesting() const { return materials.size(); }
-    size_t materialCapacityForTesting() const;
-    size_t referencingMaterialCountForTesting(GlobalTextureId texture) const;
-    std::optional<GlobalTextureId>
-    materialTextureForTesting(GlobalMaterialId material,
-                              std::uint32_t binding) const;
-    std::uint64_t materialDescriptorRevisionForTesting(GlobalMaterialId material) const {
-        return materials.get(material).descriptor_revision;
-    }
-    std::vector<std::byte> materialValuesForTesting(GlobalMaterialId material) const {
-        return materials.get(material).custom_values;
-    }
-    std::vector<std::byte> materialGpuValuesForTesting(GlobalMaterialId material) const;
-    std::vector<std::byte> materialGpuRecordForTesting(GlobalMaterialId material) const;
-    std::optional<MaterialOutputSchema>
-    materialOutputSchemaForTesting(
-        GlobalMaterialId material) const {
-        return materials.get(material).output_schema;
-    }
     bool handlesTextureReload(const watch::AssetKey &key) const;
     bool enqueueTextureReload(const watch::ReloadRequest &request,
                               watch::ReloadCoordinator &coordinator);
@@ -425,11 +418,6 @@ DECLARE_MODULE(MaterialContainer) {
                       GlobalMaterialId prev_material_id,
                       RenderPassViewInvocation invocation = {}) const;
     void rebindScreenInputs(const RenderTargetImageViewResolver &rt_views) const;
-    std::vector<vk::ImageView> boundScreenInputImageViewsForTesting(
-        GlobalMaterialId material, const PassDefinition &pass,
-        std::uint32_t view_index = 0) const;
-    std::uint64_t screenInputBindingRevisionForTesting(
-        GlobalMaterialId material, const PassDefinition &pass) const;
     vk::PipelineLayout getPipelineLayout() const;
     vk::PipelineLayout pipelineLayout(GlobalMaterialId material) const;
     vk::PipelineLayout pipelineLayout(const PassDefinition &pass,

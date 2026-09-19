@@ -11,6 +11,7 @@
 #include "scene_load_test_support.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/material/materialcontainer.hpp"
+#include "materialcontainer_testaccess.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/vertbufcontainer.hpp"
 #include "../src/core/renderer/camera.hpp"
@@ -949,7 +950,7 @@ TEST_CASE("RPC load_gltf publishes once and preserves inventory on preflight and
         .emissive_texture = standard.emissiveDefaultTexture(),
         .occlusion_texture = standard.occlusionDefaultTexture(),
     };
-    while (materials.materialCountForTesting() + 1 < materials.materialCapacityForTesting()) {
+    while (materials.materialCountForTesting() + 1 < MaterialContainerTestAccess::materialCapacity(materials)) {
         (void)materials.registerMaterial(filler);
     }
     const auto before_gpu_failure = transientInventory("anchor");

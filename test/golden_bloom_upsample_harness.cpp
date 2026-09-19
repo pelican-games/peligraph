@@ -23,6 +23,7 @@
 #include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
+#include "renderer_testaccess.hpp"
 #include "../src/project/featurecompose.hpp"
 
 #include <algorithm>
@@ -456,17 +457,17 @@ Wp357BloomCapture wp357CaptureBloom(
             vkcore.waitIdle();
             for (std::size_t level = 0; level < 4; ++level) {
                 capture.seeds[level] =
-                    renderer.readRenderTargetForTesting(
+                    RendererTestAccess::readRenderTarget(renderer,
                         "wp357_seed_V" + std::to_string(level),
                         ImageSubresourceRange{});
             }
             capture.working_v3 =
-                renderer.readRenderTargetForTesting(
+                RendererTestAccess::readRenderTarget(renderer,
                     std::string{wp357LevelTargets[3]},
                     ImageSubresourceRange{});
             for (std::size_t stage = 0; stage < 3; ++stage) {
                 capture.stages[stage] =
-                    renderer.readRenderTargetForTesting(
+                    RendererTestAccess::readRenderTarget(renderer,
                         std::string{wp357LevelTargets[
                             wp357DestinationLevels[stage]]},
                         ImageSubresourceRange{});
@@ -1126,13 +1127,13 @@ Wp357ProductionCapture wp357CaptureProductionComposite(
             time.advance();
             renderer.render();
             GET_MODULE(VulkanManageCore).waitIdle();
-            capture.h0 = renderer.readRenderTargetForTesting(
+            capture.h0 = RendererTestAccess::readRenderTarget(renderer,
                 "Bloom_Downsample_H_0_RT",
                 ImageSubresourceRange{});
-            capture.v0 = renderer.readRenderTargetForTesting(
+            capture.v0 = RendererTestAccess::readRenderTarget(renderer,
                 "Bloom_Upsample_V_0_RT",
                 ImageSubresourceRange{});
-            capture.display = renderer.readRenderTargetForTesting(
+            capture.display = RendererTestAccess::readRenderTarget(renderer,
                 "display", ImageSubresourceRange{});
         }
         std::filesystem::remove_all(root);
@@ -1364,7 +1365,7 @@ std::array<std::uint8_t, 4> wp357CaptureMinimal(std::string_view load_op) {
             renderer.render();
             auto &vkcore = GET_MODULE(VulkanManageCore);
             vkcore.waitIdle();
-            const auto readback = renderer.readRenderTargetForTesting(
+            const auto readback = RendererTestAccess::readRenderTarget(renderer,
                 "display", ImageSubresourceRange{});
             REQUIRE(readback.format == vk::Format::eB8G8R8A8Srgb);
             REQUIRE(readback.extent == vk::Extent2D{16, 16});

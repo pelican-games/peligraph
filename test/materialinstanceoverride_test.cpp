@@ -2,6 +2,7 @@
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/material/materialcontainer.hpp"
+#include "materialcontainer_testaccess.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "polygoninstancecontainer_testaccess.hpp"
@@ -132,8 +133,8 @@ TEST_CASE("material instance override frames are independent and preserve templa
 
     auto &materials = GET_MODULE(MaterialContainer);
     const auto material = registerTemplateMaterial();
-    const auto template_before = materials.materialGpuRecordForTesting(material);
-    const auto descriptor_revision = materials.materialDescriptorRevisionForTesting(material);
+    const auto template_before = MaterialContainerTestAccess::materialGpuRecord(materials, material);
+    const auto descriptor_revision = MaterialContainerTestAccess::materialDescriptorRevision(materials, material);
     auto model = sharedTemplate(material);
     auto &instances = GET_MODULE(PolygonInstanceContainer);
     const auto first = instances.placeModelInstance(model);
@@ -163,8 +164,8 @@ TEST_CASE("material instance override frames are independent and preserve templa
     REQUIRE(first_frame->previous.base_color_factor ==
             first_frame->current.base_color_factor);
     REQUIRE(model.material_primitives.front().material == material);
-    REQUIRE(sameBytes(materials.materialGpuRecordForTesting(material), template_before));
-    REQUIRE(materials.materialDescriptorRevisionForTesting(material) == descriptor_revision);
+    REQUIRE(sameBytes(MaterialContainerTestAccess::materialGpuRecord(materials, material), template_before));
+    REQUIRE(MaterialContainerTestAccess::materialDescriptorRevision(materials, material) == descriptor_revision);
 
     instances.advanceMaterialOverrideHistoryAfterRender();
     auto green = overrideDesc(first_handle, 8, {0.1f, 1.0f, 0.2f, 1.0f});
@@ -192,7 +193,7 @@ TEST_CASE("material instance override validates atomically and reuses storage",
 
     auto &materials = GET_MODULE(MaterialContainer);
     const auto material = registerTemplateMaterial();
-    const auto template_before = materials.materialGpuRecordForTesting(material);
+    const auto template_before = MaterialContainerTestAccess::materialGpuRecord(materials, material);
     auto model = sharedTemplate(material);
     auto &instances = GET_MODULE(PolygonInstanceContainer);
     const auto instance = instances.placeModelInstance(model);
@@ -208,7 +209,7 @@ TEST_CASE("material instance override validates atomically and reuses storage",
         instances.advanceMaterialOverrideHistoryAfterRender();
     }
     REQUIRE(instances.materialOverrideStorageEntryCountForTesting() == 1);
-    REQUIRE(sameBytes(materials.materialGpuRecordForTesting(material), template_before));
+    REQUIRE(sameBytes(MaterialContainerTestAccess::materialGpuRecord(materials, material), template_before));
 
     auto invalid = overrideDesc(handle, 1001, glm::vec4{1.0f});
     invalid.values.uv_rotation = std::numeric_limits<float>::quiet_NaN();
@@ -264,9 +265,9 @@ TEST_CASE("material absolute overrides are source-material scoped and temporal",
     const auto first_material = registerTemplateMaterial();
     const auto second_material = registerTemplateMaterial();
     const auto first_bytes =
-        materials.materialGpuRecordForTesting(first_material);
+        MaterialContainerTestAccess::materialGpuRecord(materials, first_material);
     const auto second_bytes =
-        materials.materialGpuRecordForTesting(second_material);
+        MaterialContainerTestAccess::materialGpuRecord(materials, second_material);
     auto model = twoMaterialTemplate(first_material, second_material);
     REQUIRE(model.material_initial_values->values.at(0).base_color_factor ==
             glm::vec4{0.0f, 0.0f, 0.0f, 1.0f});
@@ -345,9 +346,9 @@ TEST_CASE("material absolute overrides are source-material scoped and temporal",
             Animation::Status::invalid_argument);
     REQUIRE(PolygonInstanceTestAccess::materialAbsoluteOverrideFrame(instances, first, 0)
                 ->current_revision == 1002);
-    REQUIRE(sameBytes(materials.materialGpuRecordForTesting(first_material),
+    REQUIRE(sameBytes(MaterialContainerTestAccess::materialGpuRecord(materials, first_material),
                       first_bytes));
-    REQUIRE(sameBytes(materials.materialGpuRecordForTesting(second_material),
+    REQUIRE(sameBytes(MaterialContainerTestAccess::materialGpuRecord(materials, second_material),
                       second_bytes));
     GET_MODULE(VulkanManageCore).waitIdle();
 }
