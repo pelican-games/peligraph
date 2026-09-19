@@ -218,11 +218,19 @@ const auto sprite_fields = materializeSchema(sprite_schema);
 // The closed-field list a decoder enforces is derived from the declared
 // schema, so a field cannot be accepted by the runtime while the editor never
 // learns of it (or the reverse). A dotted schema name such as
-// "sprite.pixel_perfect" describes a nested editor path, and the wire key it
-// belongs to is the segment before the first dot. `extra` carries the keys
-// which are deliberately not schema fields: the "name" envelope, the nested
-// authoring objects, and the legacy aliases that exist only to be rejected
-// with a dedicated message.
+// "sprite.pixel_perfect" describes a nested editor path and "flip[1]" an
+// indexed one; the wire key either belongs to is the segment before the first
+// '.' or '['. That is the same split the editors use to turn a schema field
+// name into a JSON pointer (inspector.cpp, inspectormodel.cpp), so the closed
+// key set and the pointer table cannot disagree about where a field lives.
+// `extra` carries the keys which are deliberately not schema fields: the
+// "name" envelope, the nested authoring objects, and the legacy aliases that
+// exist only to be rejected with a dedicated message.
+constexpr std::string_view wireKeyOfSchemaField(std::string_view name) {
+    const auto cut = name.find_first_of(".[");
+    return cut == std::string_view::npos ? name : name.substr(0, cut);
+}
+
 template <class Schema>
 std::vector<std::string_view> closedFieldNames(
     const Schema &schema, std::span<const std::string_view> extra) {
@@ -232,11 +240,7 @@ std::vector<std::string_view> closedFieldNames(
         if (std::find(result.begin(), result.end(), name) == result.end())
             result.push_back(name);
     };
-    for (const auto &field : schema.fields) {
-        const auto dot = field.name.find('.');
-        push(dot == std::string_view::npos ? field.name
-                                           : field.name.substr(0, dot));
-    }
+    for (const auto &field : schema.fields) push(wireKeyOfSchemaField(field.name));
     for (const auto name : extra) push(name);
     return result;
 }
@@ -257,6 +261,7 @@ const auto collider_closed_fields = closedFieldNames(
     std::array<std::string_view, 3>{"name", "size", "height"});
 const auto animation_closed_fields =
     closedFieldNames(animation_schema, envelope_only);
+const auto sprite_closed_fields = closedFieldNames(sprite_schema, envelope_only);
 
 const std::array ray_instance_fields{
     StructFieldSchema{"mask", StructFieldType::U8,
@@ -290,8 +295,13 @@ const SchemaNode &rayInstanceSchema() {
     return schema;
 }
 
+// A rule the codec states itself, outside the declared schema: the envelope,
+// the closed-key scan, and the cross-field rules. These never reach a legacy
+// branch table -- the tables key on the schema's own per-field reasons -- so
+// they all carry the one reason that says "not a declared-schema rejection"
+// and land on `<codec>.schema_validation` exactly as before.
 [[noreturn]] void codecError(StructFieldErrorCode code, std::string path, std::string_view detail) {
-    internal::structFieldError(code, std::move(path), detail);
+    internal::structFieldError(code, StructFieldErrorReason::CodecRule, std::move(path), detail);
 }
 
 void requireObjectAndName(const Json &json, std::string_view component_name) {
@@ -446,6 +456,162 @@ OrderedJson encodeSchemaFields(const Owner &value, const Schema &schema,
     result["name"] = name;
     for (auto &[key, item] : encoded.items()) result[key] = std::move(item);
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// Legacy branch translation for the declarative decoders.
+//
+// Two codecs (collider, sprite_view) had hand-written parsers whose only
+// remaining value was the per-rule rejection identity: 16 + 19 stable
+// `legacy_branch_id`s that scene authors and the WP378 corpus name one by one.
+// The declared schema decodes the same documents, but a StructFieldErrorCode
+// is far coarser than those rules -- "must be a number", "must be finite" and
+// "is not representable as F32" are all TypeMismatch -- so the translation is
+// keyed on the finer StructFieldErrorReason instead.
+//
+// A rule is (schema field name, set of reasons, id). `discriminant` is for the
+// one rule whose identity depends on another field's value: a non-positive
+// collider radius is `radius_non_positive` for a sphere and
+// `capsule_radius_non_positive` for a capsule. An empty discriminant matches
+// every document.
+//
+// What is deliberately NOT here: rules about the payload envelope, the closed
+// key set, and every value rule that survives the schema (a radius of exactly
+// zero is inside the declared range). The first group stays in the decoder's
+// own pre-steps, the second in the component's `validate()`, which production
+// also calls on runtime-built values.
+struct LegacyBranchRule {
+    std::string_view field;
+    std::uint64_t reasons;
+    std::string_view legacy_branch_id;
+    std::string_view discriminant;
+};
+
+constexpr std::uint64_t reasonBit(StructFieldErrorReason reason) {
+    return std::uint64_t{1} << static_cast<std::uint8_t>(reason);
+}
+
+template <class... Reasons> constexpr std::uint64_t reasonMask(Reasons... reasons) {
+    return (reasonBit(reasons) | ...);
+}
+
+// The reasons a declared field of this shape can actually produce. It is what
+// makes "the table is total" checkable: a field type that could reject for a
+// reason no rule names is a silent `<codec>.schema_validation`, which for
+// sprite_view is not even a registered id.
+constexpr std::uint64_t reachableReasons(StructFieldType type, bool has_range,
+                                         StructFieldPresence presence) {
+    using R = StructFieldErrorReason;
+    std::uint64_t mask = 0;
+    if (presence == StructFieldPresence::Required) mask |= reasonBit(R::MissingRequired);
+    switch (type) {
+    case StructFieldType::Bool:
+        return mask | reasonBit(R::NotBoolean);
+    case StructFieldType::String:
+        return mask | reasonBit(R::NotString);
+    case StructFieldType::Enum:
+        return mask | reasonMask(R::NotEnumString, R::EnumUnknown);
+    case StructFieldType::I8:
+    case StructFieldType::I16:
+    case StructFieldType::I32:
+    case StructFieldType::I64:
+        mask |= reasonMask(R::NotIntegerToken, R::IntegerNotExact, R::IntegerNotRepresentable);
+        break;
+    case StructFieldType::U8:
+    case StructFieldType::U16:
+    case StructFieldType::U32:
+    case StructFieldType::U64:
+        mask |= reasonMask(R::NotIntegerToken, R::NegativeValue, R::IntegerNotExact,
+                           R::IntegerNotRepresentable);
+        break;
+    case StructFieldType::F64:
+        mask |= reasonMask(R::NotNumber, R::NotFinite);
+        break;
+    case StructFieldType::F32:
+        mask |= reasonMask(R::NotNumber, R::NotFinite, R::NotRepresentableF32);
+        break;
+    case StructFieldType::Vec2:
+    case StructFieldType::Vec3:
+    case StructFieldType::Vec4:
+    case StructFieldType::Quat:
+        mask |= reasonMask(R::ArrayShape, R::NotNumber, R::NotFinite, R::NotRepresentableF32);
+        break;
+    case StructFieldType::Flags:
+    case StructFieldType::List:
+        // A legacy branch table over a Flags or List field would also have to
+        // cover the envelope reasons and the row paths; no codec needs one.
+        return ~std::uint64_t{0};
+    }
+    if (has_range) mask |= reasonBit(R::DeclaredRange);
+    return mask;
+}
+
+template <class Schema, std::size_t RuleCount>
+consteval bool legacyRulesAreTotal(
+    const Schema &schema,
+    const std::array<LegacyBranchRule, RuleCount> &rules) {
+    for (std::size_t index = 0; index < schema.fields.size(); ++index) {
+        const auto &field = schema.fields[index];
+        const auto required =
+            reachableReasons(field.type,
+                             field.range.kind != internal::StructFieldRangeKind::None,
+                             schema.presence[index]);
+        std::uint64_t covered = 0;
+        for (const auto &rule : rules)
+            if (rule.field == field.name) covered |= rule.reasons;
+        if ((required & ~covered) != 0) return false;
+    }
+    return true;
+}
+
+// A discriminated field must answer for the same reasons under every
+// discriminant, or the table would be total for one shape and silently short
+// for another.
+template <std::size_t RuleCount>
+consteval bool legacyRuleDiscriminantsAgree(
+    const std::array<LegacyBranchRule, RuleCount> &rules) {
+    for (const auto &left : rules) {
+        if (left.discriminant.empty()) continue;
+        for (const auto &right : rules) {
+            if (right.discriminant.empty() || right.field != left.field) continue;
+            if (right.reasons != left.reasons) return false;
+        }
+    }
+    return true;
+}
+
+std::string_view findLegacyBranch(std::span<const LegacyBranchRule> rules,
+                                  std::string_view root,
+                                  const StructFieldValidationError &error,
+                                  std::string_view discriminant) {
+    auto path = error.path();
+    if (path.size() > root.size() + 1 && path.starts_with(root) && path[root.size()] == '.')
+        path.remove_prefix(root.size() + 1);
+    const auto bit = reasonBit(reasonOf(error));
+    for (const auto &rule : rules) {
+        if (rule.field != path || (rule.reasons & bit) == 0) continue;
+        if (!rule.discriminant.empty() && rule.discriminant != discriminant) continue;
+        return rule.legacy_branch_id;
+    }
+    return {};
+}
+
+// decodeSchemaFields plus the translation. An error the table does not name
+// escapes as a StructFieldValidationError, which ComponentCodec::decodeAuthored
+// turns into `<codec>.schema_validation`; the consteval totality check above is
+// what keeps that from happening behind a codec which has no such id.
+template <class Owner, class Schema>
+void decodeSchemaFieldsWithLegacyBranches(const Json &json, Owner &destination,
+                                          const Schema &schema, std::string_view root,
+                                          std::span<const LegacyBranchRule> rules,
+                                          std::string_view discriminant = {}) {
+    try {
+        decodeSchemaFields(json, destination, schema, root);
+    } catch (const StructFieldValidationError &error) {
+        const auto id = findLegacyBranch(rules, root, error, discriminant);
+        if (id.empty()) throw;
+        legacyReject(id, error.what());
+    }
 }
 
 ComponentCodecValue decodeTransform(const Json &json) {
@@ -1090,11 +1256,101 @@ ComponentCodecValue projectLight(const void *source) {
     return *static_cast<const LightCodecData *>(source);
 }
 
+// The shape-dependent half of the collider's rejection identity. A radius that
+// is not positive is one rule with two names, and nothing in a per-field schema
+// can say that.
+constexpr std::array collider_legacy_rules{
+    LegacyBranchRule{"shape", reasonMask(StructFieldErrorReason::NotEnumString),
+                     "collider.shape_type", {}},
+    LegacyBranchRule{"shape", reasonMask(StructFieldErrorReason::EnumUnknown),
+                     "collider.shape_unknown", {}},
+    LegacyBranchRule{"pos",
+                     reasonMask(StructFieldErrorReason::ArrayShape,
+                                StructFieldErrorReason::NotNumber),
+                     "collider.vec3_type", {}},
+    LegacyBranchRule{"pos",
+                     reasonMask(StructFieldErrorReason::NotFinite,
+                                StructFieldErrorReason::NotRepresentableF32),
+                     "collider.pose_non_finite", {}},
+    LegacyBranchRule{"rotation",
+                     reasonMask(StructFieldErrorReason::ArrayShape,
+                                StructFieldErrorReason::NotNumber),
+                     "collider.quaternion_type", {}},
+    LegacyBranchRule{"rotation",
+                     reasonMask(StructFieldErrorReason::NotFinite,
+                                StructFieldErrorReason::NotRepresentableF32),
+                     "collider.pose_non_finite", {}},
+    LegacyBranchRule{"radius", reasonMask(StructFieldErrorReason::NotNumber),
+                     "collider.numeric_type", {}},
+    LegacyBranchRule{"radius",
+                     reasonMask(StructFieldErrorReason::NotFinite,
+                                StructFieldErrorReason::NotRepresentableF32,
+                                StructFieldErrorReason::DeclaredRange),
+                     "collider.radius_non_positive", "sphere"},
+    LegacyBranchRule{"radius",
+                     reasonMask(StructFieldErrorReason::NotFinite,
+                                StructFieldErrorReason::NotRepresentableF32,
+                                StructFieldErrorReason::DeclaredRange),
+                     "collider.capsule_radius_non_positive", "capsule"},
+    LegacyBranchRule{"half_extents",
+                     reasonMask(StructFieldErrorReason::ArrayShape,
+                                StructFieldErrorReason::NotNumber),
+                     "collider.vec3_type", {}},
+    LegacyBranchRule{"half_extents",
+                     reasonMask(StructFieldErrorReason::NotFinite,
+                                StructFieldErrorReason::NotRepresentableF32,
+                                StructFieldErrorReason::DeclaredRange),
+                     "collider.half_extents_non_positive", {}},
+    LegacyBranchRule{"half_height", reasonMask(StructFieldErrorReason::NotNumber),
+                     "collider.numeric_type", {}},
+    LegacyBranchRule{"half_height",
+                     reasonMask(StructFieldErrorReason::NotFinite,
+                                StructFieldErrorReason::NotRepresentableF32,
+                                StructFieldErrorReason::DeclaredRange),
+                     "collider.half_height_negative", {}},
+    LegacyBranchRule{"layer", reasonMask(StructFieldErrorReason::NotIntegerToken),
+                     "collider.uint32_type", {}},
+    LegacyBranchRule{"layer",
+                     reasonMask(StructFieldErrorReason::NegativeValue,
+                                StructFieldErrorReason::IntegerNotExact,
+                                StructFieldErrorReason::IntegerNotRepresentable),
+                     "collider.uint32_range", {}},
+    LegacyBranchRule{"mask", reasonMask(StructFieldErrorReason::NotIntegerToken),
+                     "collider.uint32_type", {}},
+    LegacyBranchRule{"mask",
+                     reasonMask(StructFieldErrorReason::NegativeValue,
+                                StructFieldErrorReason::IntegerNotExact,
+                                StructFieldErrorReason::IntegerNotRepresentable),
+                     "collider.uint32_range", {}},
+    LegacyBranchRule{"trigger", reasonMask(StructFieldErrorReason::NotBoolean),
+                     "collider.boolean_type", {}},
+    LegacyBranchRule{"one_way", reasonMask(StructFieldErrorReason::NotBoolean),
+                     "collider.boolean_type", {}},
+};
+
+static_assert(legacyRulesAreTotal(collider_schema, collider_legacy_rules),
+              "collider legacy branch rules must name every reason its schema can produce");
+static_assert(legacyRuleDiscriminantsAgree(collider_legacy_rules),
+              "a discriminated collider rule must cover the same reasons for every shape");
+
+std::string_view colliderShapeName(ColliderSchemaShape shape) {
+    switch (shape) {
+    case ColliderSchemaShape::Sphere:
+        return "sphere";
+    case ColliderSchemaShape::Box:
+        return "box";
+    case ColliderSchemaShape::Capsule:
+        return "capsule";
+    }
+    return "sphere";
+}
+
 ComponentCodecValue decodeCollider(const Json &json) {
     requireObjectAndName(json, "collider");
     requireClosed(json, "collider", collider_closed_fields);
     auto normalized = json;
     if (!normalized.contains("shape")) normalized["shape"] = "sphere";
+    std::string_view shape_key;
     if (normalized.at("shape").is_string()) {
         const auto &shape = normalized.at("shape").get_ref<const std::string &>();
         if ((shape == "sphere" || shape == "capsule") &&
@@ -1108,13 +1364,67 @@ ComponentCodecValue decodeCollider(const Json &json) {
         if (shape == "capsule" && !normalized.contains("half_height")) {
             normalized["half_height"] = 0.5F;
         }
+        // The v1 aliases. `size` and `height` are silently ignored for the
+        // other shapes -- the closed set admits them everywhere -- so the
+        // rejection is stated here, where the shape is known, and not by the
+        // schema, which has no field of either name.
+        if (shape == "box" && normalized.contains("size")) {
+            legacyReject(
+                "collider.box_size_alias",
+                "Box collider field 'size' is not supported in v1; use 'half_extents' (size divided by 2)");
+        }
+        if (shape == "capsule" && normalized.contains("height")) {
+            legacyReject(
+                "collider.capsule_height_alias",
+                "Capsule collider field 'height' is not supported in v1; use 'half_height' (height divided by 2)");
+        }
+        // Drop the fields this shape does not read. The hand parser ignored
+        // them without looking, so the declared ranges must not see them
+        // either: `{"shape":"sphere","half_height":-1}` and
+        // `{"shape":"box","radius":"large"}` stay accepted, exactly as before.
+        if (shape == "sphere") {
+            shape_key = "sphere";
+            normalized.erase("half_extents");
+            normalized.erase("half_height");
+        } else if (shape == "box") {
+            shape_key = "box";
+            normalized.erase("radius");
+            normalized.erase("half_height");
+        } else if (shape == "capsule") {
+            shape_key = "capsule";
+            normalized.erase("half_extents");
+        }
     }
+    normalized.erase("size");
+    normalized.erase("height");
+
+    ColliderSchemaFields fields;
+    decodeSchemaFieldsWithLegacyBranches(normalized, fields, collider_schema, "collider",
+                                         collider_legacy_rules, shape_key);
+
     ColliderComponent result;
-    JsonArchiveLoader archive{static_cast<const void *>(&normalized)};
-    result.ref(archive);
+    result.shape = std::string{colliderShapeName(fields.shape)};
+    result.pos = fields.pos;
+    result.rotation = fields.rotation;
+    result.radius = fields.radius;
+    result.half_extents = fields.half_extents;
+    result.half_height = fields.half_height;
+    result.layer = fields.layer;
+    result.mask = fields.mask;
+    result.trigger = fields.trigger;
+    result.one_way = fields.one_way;
+    // The value rules the declared ranges cannot state (strict positivity, and
+    // which of them applies to which shape) stay in the component, because
+    // physics builds colliders that never passed through JSON.
+    result.validate();
     return result;
 }
 
+// Encode stays hand-written. encodeStructObject emits every declared field in
+// declaration order, and the collider's canonical form emits only the keys the
+// decoded shape reads (radius for a sphere, half_extents for a box, both radius
+// and half_height for a capsule). Key order is therefore this function's, not
+// the schema's, and it is unchanged by the declarative decode.
 OrderedJson encodeCollider(const ComponentCodecValue &value) {
     const auto &data = codecValue<ColliderComponent>(value, "collider");
     data.validate();
@@ -1216,12 +1526,114 @@ ComponentCodecValue projectAnimation(const void *source) {
     return *static_cast<const AnimationComponent *>(source);
 }
 
+// sprite_view has no `.schema_validation` id, so unlike every other codec it
+// has no fallback: a reason no rule names would be reported under an id that
+// is not in the registry at all. legacyRulesAreTotal is what forbids that.
+constexpr std::array sprite_legacy_rules{
+    LegacyBranchRule{"texture",
+                     reasonMask(StructFieldErrorReason::MissingRequired,
+                                StructFieldErrorReason::NotString),
+                     "sprite_view.texture_type", {}},
+    LegacyBranchRule{"size",
+                     reasonMask(StructFieldErrorReason::ArrayShape,
+                                StructFieldErrorReason::NotNumber),
+                     "sprite_view.vec2_type", {}},
+    LegacyBranchRule{"size",
+                     reasonMask(StructFieldErrorReason::NotFinite,
+                                StructFieldErrorReason::NotRepresentableF32,
+                                StructFieldErrorReason::DeclaredRange),
+                     "sprite_view.size_non_positive", {}},
+    LegacyBranchRule{"pivot",
+                     reasonMask(StructFieldErrorReason::ArrayShape,
+                                StructFieldErrorReason::NotNumber),
+                     "sprite_view.vec2_type", {}},
+    LegacyBranchRule{"pivot",
+                     reasonMask(StructFieldErrorReason::NotFinite,
+                                StructFieldErrorReason::NotRepresentableF32,
+                                StructFieldErrorReason::DeclaredRange),
+                     "sprite_view.pivot_out_of_range", {}},
+    LegacyBranchRule{"color",
+                     reasonMask(StructFieldErrorReason::ArrayShape,
+                                StructFieldErrorReason::NotNumber),
+                     "sprite_view.vec4_type", {}},
+    LegacyBranchRule{"color",
+                     reasonMask(StructFieldErrorReason::NotFinite,
+                                StructFieldErrorReason::NotRepresentableF32),
+                     "sprite_view.color_non_finite", {}},
+    LegacyBranchRule{"flip[0]", reasonMask(StructFieldErrorReason::NotBoolean),
+                     "sprite_view.flip_type", {}},
+    LegacyBranchRule{"flip[1]", reasonMask(StructFieldErrorReason::NotBoolean),
+                     "sprite_view.flip_type", {}},
+    LegacyBranchRule{"layer", reasonMask(StructFieldErrorReason::NotIntegerToken),
+                     "sprite_view.layer_type", {}},
+    LegacyBranchRule{"layer",
+                     reasonMask(StructFieldErrorReason::IntegerNotExact,
+                                StructFieldErrorReason::IntegerNotRepresentable),
+                     "sprite_view.layer_range", {}},
+    LegacyBranchRule{"billboard", reasonMask(StructFieldErrorReason::NotEnumString),
+                     "sprite_view.billboard_type", {}},
+    LegacyBranchRule{"billboard", reasonMask(StructFieldErrorReason::EnumUnknown),
+                     "sprite_view.billboard_value", {}},
+};
+
+static_assert(legacyRulesAreTotal(sprite_schema, sprite_legacy_rules),
+              "sprite_view legacy branch rules must name every reason its schema can produce");
+static_assert(legacyRuleDiscriminantsAgree(sprite_legacy_rules),
+              "a discriminated sprite_view rule must cover the same reasons for every document");
+
 ComponentCodecValue decodeSprite(const Json &json) {
-    // SpriteViewComponent owns the normative closed-schema parser. Calling it
-    // here keeps the runtime loader and codec acceptance set identical.
+    // The envelope and the closed key set are checked before the schema, in
+    // the order the v1 parser used: an unknown key on a payload whose `name`
+    // is also wrong is still reported as the unknown key.
+    if (!json.is_object())
+        legacyReject("sprite_view.payload_not_object", "sprite_view must be an object");
+    for (const auto &[key, value] : json.items()) {
+        (void)value;
+        if (std::find(sprite_closed_fields.begin(), sprite_closed_fields.end(), key) ==
+            sprite_closed_fields.end())
+            legacyReject("sprite_view.unknown_field", "sprite_view has unknown field: " + key);
+    }
+    if (!json.contains("name") || !json.at("name").is_string() ||
+        json.at("name").get_ref<const std::string &>() != "sprite_view")
+        legacyReject("sprite_view.name_mismatch",
+                     "sprite_view component name must be sprite_view");
+
+    // `flip` is a two-boolean array on the wire and two declared bool fields in
+    // the schema ("flip[0]", "flip[1]"), which is how the editors address its
+    // halves. The container shape is this codec's rule; the element type is the
+    // schema's.
+    auto normalized = json;
+    if (const auto flip = normalized.find("flip"); flip != normalized.end()) {
+        if (!flip->is_array() || flip->size() != 2)
+            legacyReject("sprite_view.flip_type",
+                         "sprite_view flip must contain two booleans");
+        auto first = flip->at(0);
+        auto second = flip->at(1);
+        normalized.erase("flip");
+        normalized["flip[0]"] = std::move(first);
+        normalized["flip[1]"] = std::move(second);
+    }
+    // Presence, not value: an authored size is validated, an omitted one is not.
+    const bool has_explicit_size = json.contains("size");
+
+    SpriteSchemaFields fields;
+    decodeSchemaFieldsWithLegacyBranches(normalized, fields, sprite_schema, "sprite_view",
+                                         sprite_legacy_rules);
+
     SpriteViewComponent result;
-    JsonArchiveLoader archive{static_cast<const void *>(&json)};
-    result.ref(archive);
+    result.texture = std::move(fields.texture);
+    result.size = fields.size;
+    result.has_explicit_size = has_explicit_size ? 1 : 0;
+    result.pivot = fields.pivot;
+    result.color = fields.color;
+    result.flip_x = fields.flip_x ? 1 : 0;
+    result.flip_y = fields.flip_y ? 1 : 0;
+    result.layer = fields.layer;
+    result.billboard = fields.billboard;
+    // The rules the declared schema cannot state: a non-empty texture, the
+    // asset-reference grammar, and strict positivity for an authored size.
+    // The runtime calls this on sprites that never saw JSON, so it stays here.
+    result.validate();
     return result;
 }
 
@@ -1431,6 +1843,10 @@ ComponentCodecValue projectRayInstance(const void *source) {
     return *static_cast<const RayInstanceComponent *>(source);
 }
 
+// Encode stays hand-written. Two of the wire keys have no declared-schema
+// counterpart to emit: `size` appears only when it was authored, and `flip` is
+// one two-boolean array where the schema declares the halves separately.
+// Key order is therefore this function's, and it is unchanged.
 OrderedJson encodeSprite(const ComponentCodecValue &value) {
     const auto &data = codecValue<SpriteViewComponent>(value, "sprite_view");
     data.validate();

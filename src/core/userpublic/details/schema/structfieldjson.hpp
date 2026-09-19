@@ -30,6 +30,71 @@ enum class StructFieldErrorCode : std::uint8_t {
     RowIdExhausted,
 };
 
+// The finer discriminator behind StructFieldErrorCode. One value per distinct
+// rejection message this header can produce, so a host that needs to tell two
+// rejections apart does not have to match on the message text. `code()` and
+// `what()` are the stable, published pair and are unaffected by this value;
+// the reason exists for hosts (today the component codecs' legacy branch
+// tables) that must keep a per-rule identity which the twelve codes cannot
+// express -- "must be a number" and "must be finite" are both TypeMismatch.
+enum class StructFieldErrorReason : std::uint8_t {
+    // What a StructFieldValidationError carries when it is not a
+    // StructFieldReasonError: an error thrown by a game DLL compiled against
+    // the frozen v1 header, which predates this vocabulary. It is first so a
+    // zero value reads as "no reason", and no reason table may name it.
+    Unspecified,
+    PayloadNotObject,
+    UnknownKey,
+    ReservedKey,
+    MissingRequired,
+    NotNumber,
+    NotIntegerToken,
+    NegativeValue,
+    NotBoolean,
+    NotString,
+    NotEnumString,
+    ArrayShape,
+    IntegerNotRepresentable,
+    IntegerNotExact,
+    NotFinite,
+    NotRepresentableF32,
+    DeclaredRange,
+    EnumUnknown,
+    FlagsNotArray,
+    FlagEntryNotString,
+    FlagDuplicate,
+    FlagUnknown,
+    FlagsOutsideVocabulary,
+    NotUnsigned32,
+    OutsideU32,
+    ListContainerNotObject,
+    ListContainerUnknownKey,
+    ListEnvelopeMissing,
+    ListEnvelopeInvalid,
+    ListEnvelopeUnknownKey,
+    ListVersionUnsupported,
+    ListRowsNotArray,
+    ListNextIdNotAboveRows,
+    RowEnvelopeMissing,
+    RowEnvelopeInvalid,
+    RowEnvelopeUnknownKey,
+    RowHintNotObject,
+    RowHintNotJson,
+    RowIdZero,
+    RowIdDuplicate,
+    RowIdExhausted,
+    RowVersionUnsupported,
+    // Not produced by this header. Hosts that funnel their own rules through
+    // StructFieldValidationError use it to say "this rejection did not come
+    // from a declared schema field", so a per-field reason table cannot match
+    // it by accident.
+    CodecRule,
+};
+
+// WP378 freezes this type's layout and its constructor: it crosses the game
+// DLL boundary, and a client compiled against the frozen v1 header throws an
+// object of exactly this shape for a host built from this one to catch. Adding
+// a member or an argument here breaks that, so nothing may be added.
 class StructFieldValidationError : public std::runtime_error {
     StructFieldErrorCode error_code;
     std::string field_path;
@@ -47,14 +112,43 @@ class StructFieldValidationError : public std::runtime_error {
     }
 };
 
+// The reason rides on a derived type instead, which the frozen ABI does not
+// constrain. Everything this header throws is one of these; every existing
+// `catch (const StructFieldValidationError &)` still catches it, and a `throw;`
+// rethrow keeps the dynamic type.
+class StructFieldReasonError final : public StructFieldValidationError {
+    StructFieldErrorReason error_reason;
+
+  public:
+    StructFieldReasonError(StructFieldErrorCode code, StructFieldErrorReason reason,
+                           std::string path, std::string message)
+        : StructFieldValidationError(code, std::move(path), std::move(message)),
+          error_reason(reason) {}
+
+    StructFieldErrorReason reason() const noexcept {
+        return error_reason;
+    }
+};
+
+// The one way to ask an already-caught error for its reason. An error that came
+// across the DLL boundary from a frozen-header client is a plain base object and
+// has none, so it answers Unspecified and cannot match a reason table.
+inline StructFieldErrorReason reasonOf(const StructFieldValidationError &error) noexcept {
+    if (const auto *typed = dynamic_cast<const StructFieldReasonError *>(&error))
+        return typed->reason();
+    return StructFieldErrorReason::Unspecified;
+}
+
 namespace internal {
 
 using StructJson = nlohmann::json;
 
-[[noreturn]] inline void structFieldError(StructFieldErrorCode code, std::string path,
-                                          std::string_view detail) {
+// The reason has no default on purpose: a new rejection site has to name the
+// rule it is rejecting, instead of silently inheriting one.
+[[noreturn]] inline void structFieldError(StructFieldErrorCode code, StructFieldErrorReason reason,
+                                          std::string path, std::string_view detail) {
     auto message = "field '" + path + "' " + std::string{detail};
-    throw StructFieldValidationError(code, std::move(path), std::move(message));
+    throw StructFieldReasonError(code, reason, std::move(path), std::move(message));
 }
 
 inline std::string childFieldPath(std::string_view root, std::string_view field) {
@@ -111,7 +205,8 @@ inline std::int64_t validateStructSigned(const StructJson &value, const StructFi
         const auto unsigned_value = value.get<std::uint64_t>();
         if (unsigned_value > max_exact_struct_json_integer ||
             unsigned_value > static_cast<std::uint64_t>(INT64_MAX)) {
-            structFieldError(StructFieldErrorCode::TypeMismatch, path,
+            structFieldError(StructFieldErrorCode::TypeMismatch,
+                             StructFieldErrorReason::IntegerNotExact, path,
                              "is outside the exact JSON integer range");
         }
         result = static_cast<std::int64_t>(unsigned_value);
@@ -119,21 +214,25 @@ inline std::int64_t validateStructSigned(const StructJson &value, const StructFi
         result = value.get<std::int64_t>();
         if (result < -static_cast<std::int64_t>(max_exact_struct_json_integer) ||
             result > static_cast<std::int64_t>(max_exact_struct_json_integer)) {
-            structFieldError(StructFieldErrorCode::TypeMismatch, path,
+            structFieldError(StructFieldErrorCode::TypeMismatch,
+                             StructFieldErrorReason::IntegerNotExact, path,
                              "is outside the exact JSON integer range");
         }
     } else {
-        structFieldError(StructFieldErrorCode::TypeMismatch, path, "must be an integer token");
+        structFieldError(StructFieldErrorCode::TypeMismatch,
+                         StructFieldErrorReason::NotIntegerToken, path, "must be an integer token");
     }
 
     const auto [min_value, max_value] = signedStructFieldLimits(field.type);
     if (result < min_value || result > max_value) {
-        structFieldError(StructFieldErrorCode::TypeMismatch, path,
+        structFieldError(StructFieldErrorCode::TypeMismatch,
+                         StructFieldErrorReason::IntegerNotRepresentable, path,
                          "is not representable by its integer type");
     }
     if (const auto *range = std::get_if<std::pair<std::int64_t, std::int64_t>>(&field.range);
         range != nullptr && (result < range->first || result > range->second)) {
-        structFieldError(StructFieldErrorCode::OutOfRange, path, "is out of range");
+        structFieldError(StructFieldErrorCode::OutOfRange,
+                         StructFieldErrorReason::DeclaredRange, path, "is out of range");
     }
     return result;
 }
@@ -146,24 +245,29 @@ inline std::uint64_t validateStructUnsigned(const StructJson &value, const Struc
     } else if (value.is_number_integer()) {
         const auto signed_value = value.get<std::int64_t>();
         if (signed_value < 0) {
-            structFieldError(StructFieldErrorCode::TypeMismatch, path, "must not be negative");
+            structFieldError(StructFieldErrorCode::TypeMismatch,
+                             StructFieldErrorReason::NegativeValue, path, "must not be negative");
         }
         result = static_cast<std::uint64_t>(signed_value);
     } else {
-        structFieldError(StructFieldErrorCode::TypeMismatch, path, "must be an integer token");
+        structFieldError(StructFieldErrorCode::TypeMismatch,
+                         StructFieldErrorReason::NotIntegerToken, path, "must be an integer token");
     }
 
     if (result > max_exact_struct_json_integer) {
-        structFieldError(StructFieldErrorCode::TypeMismatch, path,
+        structFieldError(StructFieldErrorCode::TypeMismatch,
+                         StructFieldErrorReason::IntegerNotExact, path,
                          "is outside the exact JSON integer range");
     }
     if (result > unsignedStructFieldLimit(field.type)) {
-        structFieldError(StructFieldErrorCode::TypeMismatch, path,
+        structFieldError(StructFieldErrorCode::TypeMismatch,
+                         StructFieldErrorReason::IntegerNotRepresentable, path,
                          "is not representable by its integer type");
     }
     if (const auto *range = std::get_if<std::pair<std::uint64_t, std::uint64_t>>(&field.range);
         range != nullptr && (result < range->first || result > range->second)) {
-        structFieldError(StructFieldErrorCode::OutOfRange, path, "is out of range");
+        structFieldError(StructFieldErrorCode::OutOfRange,
+                         StructFieldErrorReason::DeclaredRange, path, "is out of range");
     }
     return result;
 }
@@ -171,22 +275,26 @@ inline std::uint64_t validateStructUnsigned(const StructJson &value, const Struc
 inline double validateStructFloating(const StructJson &value, const StructFieldSchema &field,
                                      const std::string &path, bool requires_f32) {
     if (!value.is_number()) {
-        structFieldError(StructFieldErrorCode::TypeMismatch, path, "must be a number");
+        structFieldError(StructFieldErrorCode::TypeMismatch,
+                         StructFieldErrorReason::NotNumber, path, "must be a number");
     }
     const double result = value.get<double>();
     if (!std::isfinite(result)) {
-        structFieldError(StructFieldErrorCode::TypeMismatch, path, "must be finite");
+        structFieldError(StructFieldErrorCode::TypeMismatch,
+                         StructFieldErrorReason::NotFinite, path, "must be finite");
     }
     if (requires_f32) {
         constexpr double max_f32 = static_cast<double>(std::numeric_limits<float>::max());
         if (result < -max_f32 || result > max_f32) {
-            structFieldError(StructFieldErrorCode::TypeMismatch, path,
+            structFieldError(StructFieldErrorCode::TypeMismatch,
+                             StructFieldErrorReason::NotRepresentableF32, path,
                              "is not representable as F32");
         }
     }
     if (const auto *range = std::get_if<std::pair<double, double>>(&field.range);
         range != nullptr && (result < range->first || result > range->second)) {
-        structFieldError(StructFieldErrorCode::OutOfRange, path, "is out of range");
+        structFieldError(StructFieldErrorCode::OutOfRange,
+                         StructFieldErrorReason::DeclaredRange, path, "is out of range");
     }
     return result;
 }
@@ -245,36 +353,43 @@ void validateListValue(const List<Row> &list, const std::string &path) {
         const auto &envelope = list.rows[index].envelope;
         const auto row_path = path + ".rows[" + std::to_string(index) + "]";
         if (envelope.id == 0)
-            structFieldError(StructFieldErrorCode::OutOfRange, row_path,
+            structFieldError(StructFieldErrorCode::OutOfRange,
+                             StructFieldErrorReason::RowIdZero, row_path,
                              "row id must be non-zero");
         if (envelope.version != 1)
             structFieldError(StructFieldErrorCode::RowEnvelopeUnsupported,
+                             StructFieldErrorReason::RowVersionUnsupported,
                              row_path,
                              "RowEnvelopeUnsupported: unknown $row version");
         if (!ids.emplace(envelope.id).second)
-            structFieldError(StructFieldErrorCode::DuplicateRowId, row_path,
+            structFieldError(StructFieldErrorCode::DuplicateRowId,
+                             StructFieldErrorReason::RowIdDuplicate, row_path,
                              "DuplicateRowId: row id is duplicated");
         maximum_id = std::max(maximum_id, envelope.id);
         if (envelope.hint_json) {
             try {
                 if (!nlohmann::json::parse(*envelope.hint_json).is_object())
                     structFieldError(StructFieldErrorCode::TypeMismatch,
+                                     StructFieldErrorReason::RowHintNotObject,
                                      row_path + ".$row.hint",
                                      "must be an object");
             } catch (const StructFieldValidationError &) {
                 throw;
             } catch (const nlohmann::json::exception &) {
                 structFieldError(StructFieldErrorCode::TypeMismatch,
+                                 StructFieldErrorReason::RowHintNotJson,
                                  row_path + ".$row.hint",
                                  "must be valid object JSON");
             }
         }
     }
     if (maximum_id == std::numeric_limits<std::uint32_t>::max())
-        structFieldError(StructFieldErrorCode::RowIdExhausted, path,
+        structFieldError(StructFieldErrorCode::RowIdExhausted,
+                         StructFieldErrorReason::RowIdExhausted, path,
                          "RowIdExhausted: row id high-water reached UINT32_MAX");
     if (list.next_id <= maximum_id)
-        structFieldError(StructFieldErrorCode::OutOfRange, path,
+        structFieldError(StructFieldErrorCode::OutOfRange,
+                         StructFieldErrorReason::ListNextIdNotAboveRows, path,
                          "$list.next_id must exceed every row id");
 }
 
@@ -288,7 +403,8 @@ Value decodeStructScalarValue(const StructJson &value, const PolicyField &policy
     Value result{};
     if constexpr (is_flags_v<Value>) {
         if (!value.is_array()) {
-            structFieldError(StructFieldErrorCode::TypeMismatch, path,
+            structFieldError(StructFieldErrorCode::TypeMismatch,
+                             StructFieldErrorReason::FlagsNotArray, path,
                              "must be a flag string array");
         }
         using Storage = typename Value::storage_type;
@@ -296,12 +412,14 @@ Value decodeStructScalarValue(const StructJson &value, const PolicyField &policy
         std::set<std::string> seen;
         for (const auto &item : value) {
             if (!item.is_string()) {
-                structFieldError(StructFieldErrorCode::TypeMismatch, path,
+                structFieldError(StructFieldErrorCode::TypeMismatch,
+                                 StructFieldErrorReason::FlagEntryNotString, path,
                                  "flag entries must be strings");
             }
             const auto &name = item.template get_ref<const std::string &>();
             if (!seen.emplace(name).second) {
-                structFieldError(StructFieldErrorCode::InvalidEnum, path,
+                structFieldError(StructFieldErrorCode::InvalidEnum,
+                                 StructFieldErrorReason::FlagDuplicate, path,
                                  "contains a duplicate flag");
             }
             bool found = false;
@@ -313,19 +431,22 @@ Value decodeStructScalarValue(const StructJson &value, const PolicyField &policy
                 }
             }
             if (!found) {
-                structFieldError(StructFieldErrorCode::InvalidEnum, path,
+                structFieldError(StructFieldErrorCode::InvalidEnum,
+                                 StructFieldErrorReason::FlagUnknown, path,
                                  "contains an undeclared flag");
             }
         }
         result = Value{bits};
     } else if constexpr (std::same_as<Value, bool>) {
         if (!value.is_boolean()) {
-            structFieldError(StructFieldErrorCode::TypeMismatch, path, "must be a boolean");
+            structFieldError(StructFieldErrorCode::TypeMismatch,
+                             StructFieldErrorReason::NotBoolean, path, "must be a boolean");
         }
         result = value.get<bool>();
     } else if constexpr (std::is_enum_v<Value>) {
         if (!value.is_string()) {
-            structFieldError(StructFieldErrorCode::TypeMismatch, path, "must be an enum string");
+            structFieldError(StructFieldErrorCode::TypeMismatch,
+                             StructFieldErrorReason::NotEnumString, path, "must be an enum string");
         }
         const auto &name = value.template get_ref<const std::string &>();
         bool found = false;
@@ -337,7 +458,8 @@ Value decodeStructScalarValue(const StructJson &value, const PolicyField &policy
             }
         }
         if (!found) {
-            structFieldError(StructFieldErrorCode::InvalidEnum, path,
+            structFieldError(StructFieldErrorCode::InvalidEnum,
+                             StructFieldErrorReason::EnumUnknown, path,
                              "is not a declared enum value");
         }
     } else if constexpr (std::is_signed_v<Value> && std::is_integral_v<Value>) {
@@ -349,13 +471,16 @@ Value decodeStructScalarValue(const StructJson &value, const PolicyField &policy
                                                            std::same_as<Value, float>));
     } else if constexpr (std::same_as<Value, std::string>) {
         if (!value.is_string()) {
-            structFieldError(StructFieldErrorCode::TypeMismatch, path, "must be a string");
+            structFieldError(StructFieldErrorCode::TypeMismatch,
+                             StructFieldErrorReason::NotString, path, "must be a string");
         }
         result = value.template get_ref<const std::string &>();
     } else if constexpr (std::same_as<Value, vec2> || std::same_as<Value, vec3> ||
                          std::same_as<Value, vec4> || std::same_as<Value, quat>) {
         if (!value.is_array() || value.size() != structVectorLength(schema.type)) {
-            structFieldError(StructFieldErrorCode::TypeMismatch, path, "has an invalid array shape");
+            structFieldError(StructFieldErrorCode::TypeMismatch,
+                             StructFieldErrorReason::ArrayShape, path,
+                             "has an invalid array shape");
         }
         std::array<float, 4> components{};
         for (std::size_t i = 0; i < value.size(); ++i) {
@@ -389,7 +514,8 @@ nlohmann::ordered_json encodeStructScalarValue(const Value &value, const PolicyF
             if (value.contains(entry.value)) result.push_back(entry.name);
         }
         if ((value.bits() & ~declared_bits) != 0) {
-            structFieldError(StructFieldErrorCode::InvalidEnum, path,
+            structFieldError(StructFieldErrorCode::InvalidEnum,
+                             StructFieldErrorReason::FlagsOutsideVocabulary, path,
                              "contains bits outside the declared vocabulary");
         }
         return result;
@@ -401,7 +527,8 @@ nlohmann::ordered_json encodeStructScalarValue(const Value &value, const PolicyF
                 return entry.name;
             }
         }
-        structFieldError(StructFieldErrorCode::InvalidEnum, path, "is not a declared enum value");
+        structFieldError(StructFieldErrorCode::InvalidEnum,
+                         StructFieldErrorReason::EnumUnknown, path, "is not a declared enum value");
     } else if constexpr (std::is_signed_v<Value> && std::is_integral_v<Value>) {
         const StructJson encoded = value;
         (void)validateStructSigned(encoded, schema, path);
@@ -447,7 +574,8 @@ void decodeStructPolicyField(const StructJson &payload, const PolicyField &polic
     if (value_it == payload.end()) {
         if constexpr (Traits::presence == StructFieldPresence::Required) {
             const auto path = childFieldPath(root_path, descriptor.name);
-            structFieldError(StructFieldErrorCode::MissingField, path, "is required");
+            structFieldError(StructFieldErrorCode::MissingField,
+                             StructFieldErrorReason::MissingRequired, path, "is required");
         }
         return;
     }
@@ -461,29 +589,34 @@ void decodeStructPolicyField(const StructJson &payload, const PolicyField &polic
     } else if constexpr (is_list_v<Member>) {
         using Row = typename ListTraits<Member>::row_type;
         if (!value_it->is_object()) {
-            structFieldError(StructFieldErrorCode::ListContainerMissing, path,
+            structFieldError(StructFieldErrorCode::ListContainerMissing,
+                             StructFieldErrorReason::ListContainerNotObject, path,
                              "ListContainerMissing: list must use an object container");
         }
         for (auto item = value_it->begin(); item != value_it->end(); ++item) {
             if (item.key() != "$list" && item.key() != "rows") {
                 structFieldError(StructFieldErrorCode::UnknownField,
+                                 StructFieldErrorReason::ListContainerUnknownKey,
                                  childFieldPath(path, item.key()),
                                  "is not part of a List container");
             }
         }
         const auto list_meta = value_it->find("$list");
         if (list_meta == value_it->end()) {
-            structFieldError(StructFieldErrorCode::RowEnvelopeMissing, path,
+            structFieldError(StructFieldErrorCode::RowEnvelopeMissing,
+                             StructFieldErrorReason::ListEnvelopeMissing, path,
                              "RowEnvelopeMissing: list container has no $list envelope");
         }
         if (!list_meta->is_object() || !list_meta->contains("v") ||
             !list_meta->contains("next_id")) {
-            structFieldError(StructFieldErrorCode::RowEnvelopeMissing, path,
+            structFieldError(StructFieldErrorCode::RowEnvelopeMissing,
+                             StructFieldErrorReason::ListEnvelopeInvalid, path,
                              "RowEnvelopeMissing: invalid $list envelope");
         }
         for (auto item = list_meta->begin(); item != list_meta->end(); ++item) {
             if (item.key() != "v" && item.key() != "next_id") {
                 structFieldError(StructFieldErrorCode::UnknownField,
+                                 StructFieldErrorReason::ListEnvelopeUnknownKey,
                                  childFieldPath(path, "$list." + item.key()),
                                  "is not part of the $list envelope");
             }
@@ -493,12 +626,14 @@ void decodeStructPolicyField(const StructJson &payload, const PolicyField &polic
             if ((!json.is_number_unsigned() && !json.is_number_integer()) ||
                 (json.is_number_integer() && json.get<std::int64_t>() < 0)) {
                 structFieldError(StructFieldErrorCode::TypeMismatch,
+                                 StructFieldErrorReason::NotUnsigned32,
                                  childFieldPath(path, child),
                                  "must be an unsigned 32-bit integer");
             }
             const auto value = json.get<std::uint64_t>();
             if (value > std::numeric_limits<std::uint32_t>::max()) {
                 structFieldError(StructFieldErrorCode::OutOfRange,
+                                 StructFieldErrorReason::OutsideU32,
                                  childFieldPath(path, child),
                                  "is outside U32");
             }
@@ -506,14 +641,16 @@ void decodeStructPolicyField(const StructJson &payload, const PolicyField &polic
         };
         const auto list_version = read_u32(list_meta->at("v"), "$list.v");
         if (list_version != 1) {
-            structFieldError(StructFieldErrorCode::RowEnvelopeUnsupported, path,
+            structFieldError(StructFieldErrorCode::RowEnvelopeUnsupported,
+                             StructFieldErrorReason::ListVersionUnsupported, path,
                              "RowEnvelopeUnsupported: unknown $list version");
         }
         Member decoded;
         decoded.next_id = read_u32(list_meta->at("next_id"), "$list.next_id");
         const auto rows = value_it->find("rows");
         if (rows == value_it->end() || !rows->is_array()) {
-            structFieldError(StructFieldErrorCode::TypeMismatch, path,
+            structFieldError(StructFieldErrorCode::TypeMismatch,
+                             StructFieldErrorReason::ListRowsNotArray, path,
                              "list rows must be an array");
         }
         for (std::size_t index = 0; index < rows->size(); ++index) {
@@ -521,6 +658,7 @@ void decodeStructPolicyField(const StructJson &payload, const PolicyField &polic
             const auto row_path = path + ".rows[" + std::to_string(index) + "]";
             if (!encoded_row.is_object() || !encoded_row.contains("$row")) {
                 structFieldError(StructFieldErrorCode::RowEnvelopeMissing,
+                                 StructFieldErrorReason::RowEnvelopeMissing,
                                  row_path,
                                  "RowEnvelopeMissing: row has no $row envelope");
             }
@@ -528,6 +666,7 @@ void decodeStructPolicyField(const StructJson &payload, const PolicyField &polic
             if (!row_meta.is_object() || !row_meta.contains("id") ||
                 !row_meta.contains("v")) {
                 structFieldError(StructFieldErrorCode::RowEnvelopeMissing,
+                                 StructFieldErrorReason::RowEnvelopeInvalid,
                                  row_path,
                                  "RowEnvelopeMissing: invalid $row envelope");
             }
@@ -536,6 +675,7 @@ void decodeStructPolicyField(const StructJson &payload, const PolicyField &polic
                     item.key() != "hint") {
                     structFieldError(
                         StructFieldErrorCode::UnknownField,
+                        StructFieldErrorReason::RowEnvelopeUnknownKey,
                         row_path + ".$row." + item.key(),
                         "is not part of the $row envelope");
                 }
@@ -546,6 +686,7 @@ void decodeStructPolicyField(const StructJson &payload, const PolicyField &polic
             if (const auto hint = row_meta.find("hint"); hint != row_meta.end()) {
                 if (!hint->is_object()) {
                     structFieldError(StructFieldErrorCode::TypeMismatch,
+                                     StructFieldErrorReason::RowHintNotObject,
                                      row_path + ".$row.hint",
                                      "must be an object");
                 }
@@ -620,6 +761,7 @@ void decodeStructObject(
                   "schema owner atomic apply requires a noexcept swap");
     if (!payload.is_object()) {
         structFieldError(StructFieldErrorCode::PayloadMustBeObject,
+                         StructFieldErrorReason::PayloadNotObject,
                          std::string{root_path}, "must be an object");
     }
     for (auto it = payload.begin(); it != payload.end(); ++it) {
@@ -631,10 +773,12 @@ void decodeStructObject(
             const auto path = childFieldPath(root_path, it.key());
             if (it.key().starts_with("$")) {
                 structFieldError(StructFieldErrorCode::ReservedFieldName,
+                                 StructFieldErrorReason::ReservedKey,
                                  path,
                                  "ReservedFieldName: '$' names are reserved");
             }
-            structFieldError(StructFieldErrorCode::UnknownField, path,
+            structFieldError(StructFieldErrorCode::UnknownField,
+                             StructFieldErrorReason::UnknownKey, path,
                              "is unknown");
         }
     }

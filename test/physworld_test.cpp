@@ -333,7 +333,14 @@ TEST_CASE("Collider component rejects unknown shapes and negative dimensions", "
     } catch (const std::exception &ex) {
         unknown_message = ex.what();
     }
-    REQUIRE(contains(unknown_message, "Unknown collider shape"));
+    // The shape vocabulary is declared once, by collider_schema, and an
+    // unauthorized value is rejected by the declared enum rather than by a
+    // second hand-written whitelist. The rejection identity is unchanged
+    // (collider.shape_unknown); the wording is the schema's, so what is pinned
+    // here is that the diagnostic names the offending field and says the value
+    // is not one of the declared ones.
+    REQUIRE(contains(unknown_message, "collider.shape"));
+    REQUIRE(contains(unknown_message, "not a declared enum value"));
 
     std::string negative_message;
     try {
