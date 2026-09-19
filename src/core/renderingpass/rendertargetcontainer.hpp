@@ -140,6 +140,10 @@ DECLARE_MODULE(RenderTargetContainer) {
     uint32_t historyFrameIndex() const { return history_frame_index; }
     uint32_t surfaceIndex(GlobalRenderTargetId id, bool history_read = false) const;
     GlobalRenderTargetId getRenderTargetIdByName(const std::string &name) const;
+    // The registration name of one target. Diagnostics that only need the
+    // identity say so without building a whole metadata value.
+    std::string_view getRenderTargetName(
+        GlobalRenderTargetId id) const;
     RenderTargetMetadata getMetadata(GlobalRenderTargetId id) const;
     const ImageWrapper &getImage(GlobalRenderTargetId id, bool history_read = false) const;
     const ImageWrapper &getImageForFrame(GlobalRenderTargetId id, bool history_read,
@@ -177,7 +181,7 @@ DECLARE_MODULE(RenderTargetContainer) {
     vk::ImageView getAttachmentImageSubresourceView(
         GlobalRenderTargetId id,
         ImageSubresourceRange subresource,
-        bool array_view,
+        ImageSubresourceViewDimension dimension,
         bool history_read = false) const;
     // Returns one e2DArray view spanning every layer, including the
     // single-layer case. This is the descriptor view for family-array ABIs.

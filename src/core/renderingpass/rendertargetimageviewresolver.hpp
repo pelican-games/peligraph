@@ -1,6 +1,7 @@
 #pragma once
 
 #include "renderingpass.hpp"
+#include <string_view>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -32,6 +33,10 @@ class RenderTargetImageViewResolver {
     std::uint32_t mipLevels(
         GlobalRenderTargetId id) const;
     ImageResourceDimension dimension(
+        GlobalRenderTargetId id) const;
+    // The registration name of the target, so a validation failure can say
+    // which resource it is about instead of only where it sat in a list.
+    std::string_view name(
         GlobalRenderTargetId id) const;
 };
 

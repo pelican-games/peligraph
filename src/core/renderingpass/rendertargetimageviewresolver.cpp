@@ -61,4 +61,9 @@ RenderTargetImageViewResolver::dimension(
     return rt_container.getMetadata(id).dimension;
 }
 
+std::string_view RenderTargetImageViewResolver::name(
+    GlobalRenderTargetId id) const {
+    return rt_container.getRenderTargetName(id);
+}
+
 } // namespace Pelican

@@ -25,6 +25,20 @@ struct RetiredRenderTargetResourceBatch {
         targets;
 };
 
+vk::ImageViewType toImageViewType(
+    ImageSubresourceViewDimension dimension) {
+    switch (dimension) {
+    case ImageSubresourceViewDimension::two_d:
+        return vk::ImageViewType::e2D;
+    case ImageSubresourceViewDimension::two_d_array:
+        return vk::ImageViewType::e2DArray;
+    case ImageSubresourceViewDimension::cube:
+        return vk::ImageViewType::eCube;
+    }
+    throw std::runtime_error(
+        "unknown image subresource view dimension");
+}
+
 vk::SampleCountFlagBits toSampleCount(std::uint32_t samples) {
     switch (samples) {
     case 1: return vk::SampleCountFlagBits::e1;
@@ -1182,6 +1196,12 @@ GlobalRenderTargetId RenderTargetContainer::getRenderTargetIdByName(const std::s
     return noRenderTargetId();
 }
 
+std::string_view
+RenderTargetContainer::getRenderTargetName(
+    GlobalRenderTargetId id) const {
+    return render_targets.get(id).name;
+}
+
 RenderTargetMetadata RenderTargetContainer::getMetadata(GlobalRenderTargetId id) const {
     const auto &rt = render_targets.get(id);
     return RenderTargetMetadata{
@@ -1279,15 +1299,7 @@ RenderTargetContainer::getImageSubresourceViewForFrame(
     }
     auto view = createImageView(
         device, rt.resources->images[surface],
-        dimension ==
-                ImageSubresourceViewDimension::
-                    two_d_array
-            ? vk::ImageViewType::e2DArray
-        : dimension ==
-                ImageSubresourceViewDimension::cube
-            ? vk::ImageViewType::eCube
-            : vk::ImageViewType::e2D,
-        subresource);
+        toImageViewType(dimension), subresource);
     GET_MODULE(VulkanManageCore)
         .getDebugUtils()
         .nameImageView(
@@ -1386,16 +1398,12 @@ vk::ImageView
 RenderTargetContainer::getAttachmentImageSubresourceView(
     GlobalRenderTargetId id,
     ImageSubresourceRange subresource,
-    bool array_view, bool history_read) const {
+    ImageSubresourceViewDimension dimension,
+    bool history_read) const {
     const auto &rt = render_targets.get(id);
     if (rt.samples <= 1) {
         return getImageSubresourceView(
-            id, subresource,
-            array_view
-                ? ImageSubresourceViewDimension::
-                      two_d_array
-                : ImageSubresourceViewDimension::two_d,
-            history_read);
+            id, subresource, dimension, history_read);
     }
     const auto surface =
         surfaceIndex(id, history_read);
@@ -1410,12 +1418,7 @@ RenderTargetContainer::getAttachmentImageSubresourceView(
                 .array_layers);
     const ImageSubresourceViewKey key{
         .range = subresource,
-        .dimension =
-            array_view
-                ? ImageSubresourceViewDimension::
-                      two_d_array
-                : ImageSubresourceViewDimension::
-                      two_d,
+        .dimension = dimension,
     };
     auto &views =
         rt.resources
@@ -1429,10 +1432,7 @@ RenderTargetContainer::getAttachmentImageSubresourceView(
         device,
         rt.resources
             ->attachment_images[surface],
-        array_view
-            ? vk::ImageViewType::e2DArray
-            : vk::ImageViewType::e2D,
-        subresource);
+        toImageViewType(dimension), subresource);
     GET_MODULE(VulkanManageCore)
         .getDebugUtils()
         .nameImageView(
@@ -1448,8 +1448,15 @@ RenderTargetContainer::getAttachmentImageSubresourceView(
              "-" +
              std::to_string(
                  subresource.layer_count) +
-             (array_view ? "/array_view"
-                         : "/view"))
+             (dimension ==
+                      ImageSubresourceViewDimension::
+                          two_d_array
+                  ? "/array_view"
+              : dimension ==
+                      ImageSubresourceViewDimension::
+                          cube
+                  ? "/cube_view"
+                  : "/view"))
                 .c_str());
     const auto [inserted, success] =
         views.emplace(key, std::move(view));

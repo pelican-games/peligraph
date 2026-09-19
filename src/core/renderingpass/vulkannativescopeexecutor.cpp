@@ -408,22 +408,21 @@ VulkanNativeScopeRuntimeAttachment runtimeAttachment(
     const auto subresource =
         invocationSubresource(
             *attachment.subresource, scope, view);
-    const bool array_view =
+    const auto view_dimension =
         scope.view_execution ==
-        VulkanScopeViewExecution::multiview;
+                VulkanScopeViewExecution::multiview
+            ? ImageSubresourceViewDimension::two_d_array
+            : ImageSubresourceViewDimension::two_d;
     result.image_view =
         targets.getAttachmentImageSubresourceView(
             resource.render_target, subresource,
-            array_view);
+            view_dimension);
     result.resolve_image_view =
         targets.hasSeparateAttachment(
                 resource.render_target)
             ? targets.getImageSubresourceView(
                   resource.render_target, subresource,
-                  array_view
-                      ? ImageSubresourceViewDimension::
-                            two_d_array
-                      : ImageSubresourceViewDimension::two_d)
+                  view_dimension)
             : vk::ImageView{};
     result.extent =
         mipExtent(

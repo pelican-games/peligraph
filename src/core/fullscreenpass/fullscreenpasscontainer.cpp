@@ -260,15 +260,26 @@ void validateResolvedPassInputs(
     const RenderTargetImageViewResolver &rt_views,
     std::uint32_t logical_view_count,
     std::uint32_t variant_count) {
+    // Like the material path, a rejected input is named by the resource it
+    // binds, not only by where it sat in the authored list.
+    const auto named =
+        [&rt_views](const FullscreenPassInput &input,
+                    std::string message) {
+            return std::runtime_error{
+                std::move(message) + ": " +
+                std::string{rt_views.name(input.target)}};
+        };
     for (const auto &input : inputs) {
         if (input.local_read && input.history) {
-            throw std::runtime_error(
+            throw named(
+                input,
                 "Fullscreen local-read input cannot reference history");
         }
         if (input.local_read &&
             input.resolvedViewDimension() ==
                 ImageSubresourceViewDimension::cube) {
-            throw std::runtime_error(
+            throw named(
+                input,
                 "Fullscreen local-read input cannot use a cube "
                 "descriptor view");
         }
@@ -283,13 +294,15 @@ void validateResolvedPassInputs(
                 layered_2d_array) {
             if (selected_layers <
                 logical_view_count) {
-                throw std::runtime_error(
+                throw named(
+                    input,
                     "Fullscreen per_view input has too few array layers");
             }
             if (input.subresource &&
                 selected_layers !=
                     logical_view_count) {
-                throw std::runtime_error(
+                throw named(
+                    input,
                     "Fullscreen per_view subresource must select "
                     "exactly the logical view count");
             }
@@ -298,7 +311,8 @@ void validateResolvedPassInputs(
                 PassInputViewDimension::
                     family_2d_array) {
             if (selected_layers == 0) {
-                throw std::runtime_error(
+                throw named(
+                    input,
                     "Fullscreen family_array input must select at least "
                     "one producer-family layer");
             }
@@ -308,14 +322,16 @@ void validateResolvedPassInputs(
                     sequential_2d) {
             if (selected_layers != 1 &&
                 selected_layers < variant_count) {
-                throw std::runtime_error(
+                throw named(
+                    input,
                     "Fullscreen sequential_2d input must provide one "
                     "reusable layer or the descriptor view capacity");
             }
             if (input.subresource &&
                 selected_layers != 1 &&
                 selected_layers != variant_count) {
-                throw std::runtime_error(
+                throw named(
+                    input,
                     "Fullscreen sequential_2d subresource must select one "
                     "reusable layer or exactly the descriptor view capacity");
             }
@@ -327,7 +343,8 @@ void validateResolvedPassInputs(
              (input.subresource &&
               (input.subresource->base_array_layer != 0 ||
                input.subresource->layer_count != 6)))) {
-            throw std::runtime_error(
+            throw named(
+                input,
                 "Fullscreen cube input requires a cube target and "
                 "all six faces");
         }
@@ -339,11 +356,12 @@ void validateResolvedPassInputs(
                 *input.subresource,
                 rt_views.mipLevels(input.target),
                 layers)) {
-            throw std::runtime_error(
+            throw named(
+                input,
                 "Fullscreen pass input " +
-                std::to_string(
-                    &input - inputs.data()) +
-                " has an out-of-range subresource");
+                    std::to_string(
+                        &input - inputs.data()) +
+                    " has an out-of-range subresource");
         }
     }
 }

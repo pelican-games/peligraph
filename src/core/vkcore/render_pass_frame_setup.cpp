@@ -99,7 +99,9 @@ vk::ImageView colorAttachmentView(
                    : rt_container
                          .getAttachmentImageSubresourceView(
                              attachment.target,
-                             subresource, true);
+                             subresource,
+                             ImageSubresourceViewDimension::
+                                 two_d_array);
     }
     const auto layer = sequentialAttachmentLayer(
         attachment, rt_container, invocation);
@@ -115,7 +117,9 @@ vk::ImageView colorAttachmentView(
                : rt_container
                      .getAttachmentImageSubresourceView(
                          attachment.target,
-                         subresource, false);
+                         subresource,
+                         ImageSubresourceViewDimension::
+                             two_d);
 }
 
 vk::Extent2D attachmentExtent(
