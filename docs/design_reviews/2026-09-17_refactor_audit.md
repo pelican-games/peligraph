@@ -514,3 +514,28 @@ material = `materialcontainer.cpp` の screen input 構築、fullscreen = `fulls
 | rpc / shader | `RpcServer` は reload gate を注入で受け、順序保持は handler 登録時の述語(3 handler が同じ `embedsResolutionError` を登録 = wire 同一)。`pelican_sets.hpp` は set 別 block(衝突 2 組は別 set と判明)。ray table の set 3 / binding 0,1,2 / 1024 は `raygrouplayout.hpp` の定数 1 箇所から GLSL と C++ の両方へ(include 文字列は byte 同一、rt2b の hash が pin) | |
 
 未着手で残るもの: C-2 の sprite / collider / camera(legacy branch id の機構が先)、animation の `AssetTable`(純移動でない)、`RenderTargetFrameSelector`(123 call site)、`getAttachmentImageSubresourceView` の bool、fullscreen 側の resource 名付き error(resolver に name accessor が無い)、`MaterialContainer` / `Renderer` の `*ForTesting` friend 集約、`docs/implementation_plan.md:22996` の死んだ link(完了済み台帳記録の中)。
+
+## 13. 積み残しの着地(2026-09-19、§12 末尾の項目)
+
+| item | 変更 | 備考 |
+|---|---|---|
+| C-2 の collider / sprite | 宣言経路へ移行。`StructFieldValidationError` は WP378 が DLL 境界 ABI として layout と constructor を凍結しているので、reason は派生型 `StructFieldReasonError`(`structFieldError` が投げる)で運び、`reasonOf()` が base だけの object(frozen v1 DLL からの例外)には `Unspecified` を返す。collider は「shape が読まない field を先に消す」pre-step で受理集合を厳密に保存し `(field, reason mask, shape)` 20 行の表、sprite は `flip` の splat 後に 13 行の表(fallback id 無し)。両表の totality は `static_assert`(schema の各 field が出し得る reason を全部覆う)。`ColliderComponent` / `SpriteViewComponent` の hand parser は codec への転送に(受理実装は 1 つ、`validate()` は runtime 値用に残置) | 35 id は corpus 不変で全部到達可能、`docs/component_codec_legacy_branches.md` は byte 同一。encoder 2 本は shape 依存 key のため手書きのまま。挙動差は error 文言(schema 語彙)と複数 fault 時の順序のみ(§9 と同じ族) |
+| `*ForTesting`(Material / Renderer) | Material 18 → 2(残り 2 は `memorydiagnostics.cpp` が読む)、Renderer 11 → 0。`test/materialcontainer_testaccess.hpp` / `test/renderer_testaccess.hpp`、call site 307 箇所 | 実行 trace の状態は private のまま friend 経由でだけ読める |
+| fullscreen の名前付き error | resolver に `name(GlobalRenderTargetId)`、validation error 6 種は旧文を prefix に target 名を末尾へ | test は文言を pin していない |
+| `getAttachmentImageSubresourceView` | bool → `ImageSubresourceViewDimension`(caller 3)。次元 → `vk::ImageViewType` の三項 2 箇所を helper 1 つに、cube が表現可能に | |
+| `docs/implementation_plan.md:22996` | 完了済み台帳記録の本文はそのまま、死んだ link 2 個の path だけ `computetaskdefinitionjson.cpp` へ | |
+
+**教訓(memory へ)**: 公開 SDK header の例外型に member を足す前に、`test/wp378_resolution_test.cpp` の layout pin と `test/fixtures/wp378_abi/v1` を見る。`sizeof` は padding で偶然通っても constructor pin で落ちる。
+
+### camera codec の宣言 schema 化は別 WP(C-2 から切り出し、2026-09-19 裁定)
+
+C-2 の設計調査(phase 1)の結論: camera は宣言経路に載せても leaf の型 / 範囲検査しか宣言にならず、難しい規則(nested `perspective` / `orthographic` と flat の二重受理、`xmag` / `ymag` からの type 推論、alias の名指し拒否、`controller.type` で live field が変わる)は全部手書きのまま残る。一方で費用は大きい:
+
+1. **schema DSL に nested struct 種別が無い**(`StructFieldType` は scalar / vec / quat / string / bool / enum / `Flags` / `List` だけ。`SchemaNodeTag::Struct` は `List` の row にしか使われない)。decode / encode / `materializeSchemaNode` / node model の追加 = game DLL が構築する公開 header の変更。
+2. `ComponentCodec::fieldSchema()` は root の子だけを平坦に出す。nested にすると `perspective` / `orthographic` が意味の無い leaf になり projection field が消えるので、dotted 名への再帰平坦化が要る。
+3. `test/fixtures/wp360/get_components.parent.ndjson` は byte 凍結(2410 bytes、sha256 pin)で camera の flat 10 entry を順序込みで含む → 再凍結。
+4. provider fingerprint(`pelican.bindable.provider.v4`)が動き、journal / witness に保存済みの `prefab_closure.provider_fingerprint` が replay で不一致になる。
+
+得られるもの: `src/project/prefab.cpp` の `cloneCameraPath` と `prefabprovider.cpp` の 8 組 copy table が消える(`pointerFor()` が `/perspective/yfov` を自然に出す)。Studio は `schema.fields` を汎用に読むので変更なし。
+
+起票するなら独立に出荷できる 2 半分: (a) DSL に nested struct を足して自前 test で閉じる、(b) camera を再宣言し `fieldSchema()` を再帰平坦化、`cloneCameraPath` と copy table を削除、`get_components.parent.ndjson` を理由付きで再凍結。
