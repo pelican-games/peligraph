@@ -24,7 +24,7 @@ Runtime object
 | render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2905) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1484) |
 | JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L55) |
 | asset manifest | [`parse/generate/verify`](../../src/project/assetsmanifest.hpp#L60) | [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L11) |
-| material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) | runtime接続済み（WP116〜117, 122）。`.surface`は [`surfacecompiler`](../../src/core/shader/surfacecompiler.cpp) でGLSL/SPIR-V化されpipelineへ。`.material.json`は [`lowerMaterial()`](../../src/project/materiallowering.hpp#L140) → [`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L311) |
+| material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) | runtime接続済み（WP116〜117, 122）。`.surface`は [`surfacecompiler`](../../src/core/shader/surfacecompiler.cpp) でGLSL/SPIR-V化されpipelineへ。`.material.json`は [`lowerMaterial()`](../../src/project/materiallowering.hpp#L140) → [`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L338) |
 
 新形式を追加するときは、まず`src/project`へGPU非依存の受理/拒否規則を置き、次に`src/core`で実体化するのが既存パターンです。
 
@@ -457,6 +457,8 @@ sceneのcomponent名から型への変換は [`ComponentInfoManager`](../../src/
 
 `ref()`を持たないComponentはscene JSONからロードできず、明示エラーになります。JSON archiveの対応型は [`jsonarchive.hpp`](../../src/core/userpublic/serialize/jsonarchive.hpp#L12) に固定されています。
 
+ただし `collider` と `sprite_view` の `ref()` は、**自前のパーサを持ちません**。どちらの `loadFromJsonArchive()` も [`requireComponentCodec()`](../../src/core/loader/componentcodec.hpp#L376) で codec を引き、`decode_authored` → `runtime_apply` に委譲します（[collider 側](../../src/core/userpublic/components/collider.cpp#L39) / [sprite_view 側](../../src/core/userpublic/components/spriteview.cpp#L30)）。受理仕様の実装が §3.11 の codec の1本だけになるので、この ECS 経路と scene loader 経路が別々に drift することはありません（失敗は `ResolutionFailureException` として投げ直されます）。
+
 ## 3.8 Asset modelから描画instanceまで
 
 [`ModelAssetContainer`](../../src/core/asset/model.hpp#L24) は`asset_data.json.models`を読み、拡張子に応じて [`GltfLoader::loadGltf()`](../../src/core/model/gltf.cpp#L2670) / [`loadGltfBinary()`](../../src/core/model/gltf.cpp#L2659) を呼び、名前から`ModelTemplate`へmapします。受理拡張子は`.glb`/`.gltf`に加え **`.vrm`** です（[asset/model.cpp](../../src/core/asset/model.cpp#L270)）。`.vrm` がglTFと同列なのは別形式だからではなく、**VRMがバイナリglTF（GLB）コンテナそのもの**だからです — 拡張が増えているだけなので、同じbinary loader経路がそのまま読みます（受理判定の直前のコメントがそう書いています）。VRM固有の意味（humanoid bone / expression / lookAt / firstPerson）は、読み込んだglTF拡張から後段の [`vrmsemantic.hpp`](../../src/core/model/vrmsemantic.hpp) がデコードします。glTF scene fragmentの抽出には [`loadGltfBinarySceneNode()`](../../src/core/model/gltf.cpp#L2665) が使われます。
@@ -480,7 +482,7 @@ tinygltf Model
 → ModelTemplate
 ```
 
-執筆基準時点から要素が増えています。VRM semanticデコード（[`vrmsemantic.hpp`](../../src/core/model/vrmsemantic.hpp) — humanoid bone / expression / lookAt / firstPerson、WP111）、morph target（[`morphtarget.hpp`](../../src/core/model/morphtarget.hpp)、WP121）、skeletal animation（[`skeletalanimation.hpp`](../../src/core/model/skeletalanimation.hpp)）、KTX2テクスチャ（[`loader/ktx2.hpp`](../../src/core/loader/ktx2.hpp)、BC5/BC7 fixtureあり）、atlas asset（[`asset/atlasasset.hpp`](../../src/core/asset/atlasasset.hpp) + [`renderer/atlasassetresource.hpp`](../../src/core/renderer/atlasassetresource.hpp)）です。モデルのhot reload（HR2-G、WP110）に伴い、世代管理は [`MaterialContainer::releaseModelResources()`](../../src/core/material/materialcontainer.hpp#L300) が担います。この API は `[[nodiscard]]` で、返り値の [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36) は固定容量 8 の `ReleaseError`（`{stage, code, index}`。`index` は実 ID）と、9 件目以降を数える `overflow_count` だけを持ち、報告のために確保しません。[`releaseModelResources()` の本体](../../src/core/material/materialcontainer.cpp#L1294) は material も texture も resource 1 件ずつ try で囲むので、1 件の失敗で後続の返却が止まりません。同期経路は失敗を例外（`ModelResourceReleaseException`）に載せて運び、[`releaseErrorStatus()`](../../src/core/loader/scene.cpp#L253) が stage 名の列（溢れた分は `overflow:N`）へ畳んで [`PreCommitFailure::release_errors`](../../src/core/loader/sceneload.hpp#L143) に入れます。呼び元へ report を返せない destructor / deferred release / retirement queue / teardown の各経路は [`ReleaseErrorSink::record()`](../../src/core/model/modelresourcerelease.cpp#L11)（log + `release_errors` / `overflow_count` の累積カウンタ。[`status()`](../../src/core/model/modelresourcerelease.cpp#L28) で読めます）へ渡します（WP380d）。
+執筆基準時点から要素が増えています。VRM semanticデコード（[`vrmsemantic.hpp`](../../src/core/model/vrmsemantic.hpp) — humanoid bone / expression / lookAt / firstPerson、WP111）、morph target（[`morphtarget.hpp`](../../src/core/model/morphtarget.hpp)、WP121）、skeletal animation（[`skeletalanimation.hpp`](../../src/core/model/skeletalanimation.hpp)）、KTX2テクスチャ（[`loader/ktx2.hpp`](../../src/core/loader/ktx2.hpp)、BC5/BC7 fixtureあり）、atlas asset（[`asset/atlasasset.hpp`](../../src/core/asset/atlasasset.hpp) + [`renderer/atlasassetresource.hpp`](../../src/core/renderer/atlasassetresource.hpp)）です。モデルのhot reload（HR2-G、WP110）に伴い、世代管理は [`MaterialContainer::releaseModelResources()`](../../src/core/material/materialcontainer.hpp#L327) が担います。この API は `[[nodiscard]]` で、返り値の [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36) は固定容量 8 の `ReleaseError`（`{stage, code, index}`。`index` は実 ID）と、9 件目以降を数える `overflow_count` だけを持ち、報告のために確保しません。[`releaseModelResources()` の本体](../../src/core/material/materialcontainer.cpp#L1294) は material も texture も resource 1 件ずつ try で囲むので、1 件の失敗で後続の返却が止まりません。同期経路は失敗を例外（`ModelResourceReleaseException`）に載せて運び、[`releaseErrorStatus()`](../../src/core/loader/scene.cpp#L253) が stage 名の列（溢れた分は `overflow:N`）へ畳んで [`PreCommitFailure::release_errors`](../../src/core/loader/sceneload.hpp#L143) に入れます。呼び元へ report を返せない destructor / deferred release / retirement queue / teardown の各経路は [`ReleaseErrorSink::record()`](../../src/core/model/modelresourcerelease.cpp#L11)（log + `release_errors` / `overflow_count` の累積カウンタ。[`status()`](../../src/core/model/modelresourcerelease.cpp#L28) で読めます）へ渡します（WP380d）。
 
 失敗したときに**誰が解放するか**も、この API の一部です（WP380a-fix）。`ModelAssetContainer` は §3.5 の 3 のとおり participant ではなく warm cache なので、scene load が失敗しても cache は戻りません。ただし「戻さない」と「作りかけを残す」は別です。[constructor](../../src/core/asset/model.cpp#L479) は宣言を1件ずつ commit していき、途中で投げたときに二段で GPU 資源を返します — 内側の catch が**その1件**（[`releaseModelGpuResources(model, false)`](../../src/core/asset/model.cpp#L782)）、外側の catch が**それまでに登録済みの全件**（[`impl_->releaseAllModels()`](../../src/core/asset/model.cpp#L528)）です。どちらも report が空でなければ `ModelResourceReleaseException` に載せ替えて投げ直します。加えて `Impl` の [destructor](../../src/core/asset/model.cpp#L386) と、公開前の reload candidate を持つ [`ModelPayload` の destructor](../../src/core/asset/model.cpp#L325) が `ReleaseErrorSink` 経由で同じ解放を行います。**公開されなかった `ModelAssetContainer` は cache になりません**（moduleとして `__ready()` が立たない。§2.2）ので、部分状態を再利用するより資源を戻すほうが正しい、という選択です。
 
@@ -536,7 +538,7 @@ tinygltf Model
 > generated_material_sources[派生ID] = 元の material index(無ければ noSourceMaterialIndex)
 > ```
 >
-> **手がかり**: `skinned_material_variants` は「この元materialのskinned派生は作成済み」というキャッシュ([参照箇所](../../src/core/model/gltf.cpp#L1790))で、同じ元から二重に派生を作らない同一性保証も兼ねます(`registerVatMaterial()` に同種のキャッシュが無いのは、`base_vertex` がプリミティブごとに違って共有できないためです)。`source_material_index` は再グループ化のキーでもあり、[`modeltemplate.cpp` 内](../../src/core/model/modeltemplate.cpp#L176) は「解決後のmaterial」と「元のindex」の**組**でまとめ直します。テストは [`material absolute overrides are source-material scoped and temporal`](../../test/materialinstanceoverride_test.cpp#L257)「material absolute overrides are source-material scoped」。
+> **手がかり**: `skinned_material_variants` は「この元materialのskinned派生は作成済み」というキャッシュ([参照箇所](../../src/core/model/gltf.cpp#L1790))で、同じ元から二重に派生を作らない同一性保証も兼ねます(`registerVatMaterial()` に同種のキャッシュが無いのは、`base_vertex` がプリミティブごとに違って共有できないためです)。`source_material_index` は再グループ化のキーでもあり、[`modeltemplate.cpp` 内](../../src/core/model/modeltemplate.cpp#L176) は「解決後のmaterial」と「元のindex」の**組**でまとめ直します。テストは [`material absolute overrides are source-material scoped and temporal`](../../test/materialinstanceoverride_test.cpp#L258)「material absolute overrides are source-material scoped」。
 >
 > **不変条件**: `-1` は採番しない。派生を登録したら必ず `generated_material_sources` へ元のindexを残す。負のIDは `ModelTemplate` の外へ出さない(外向きは `source_material_index`)。
 
@@ -708,7 +710,7 @@ sceneと違い、feature合成は「純粋層で済ませてからruntimeへ渡�
 
 [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744) はmaterial v1とoptional surface catalogの整合性を検証します。[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) はfront matter風の宣言部とshader codeを分け、parameter/texture/screen inputを構造化します。
 
-これらはruntime接続済みです（WP116〜117, 122）。純粋層はparseと [`lowerMaterial()`](../../src/project/materiallowering.hpp#L140)（OpenPBR写像は [`openpbrmapping.hpp`](../../src/project/openpbrmapping.hpp)）まで、core層はsurface compile（[`surfacecompiler.cpp`](../../src/core/shader/surfacecompiler.cpp)）とvalues SSBO登録（[`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L311)）を担います。hot reloadは `MaterialValuesReloadHandler` / `TextureReloadHandler`（[src/core/material/](../../src/core/material)）です。
+これらはruntime接続済みです（WP116〜117, 122）。純粋層はparseと [`lowerMaterial()`](../../src/project/materiallowering.hpp#L140)（OpenPBR写像は [`openpbrmapping.hpp`](../../src/project/openpbrmapping.hpp)）まで、core層はsurface compile（[`surfacecompiler.cpp`](../../src/core/shader/surfacecompiler.cpp)）とvalues SSBO登録（[`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L338)）を担います。hot reloadは `MaterialValuesReloadHandler` / `TextureReloadHandler`（[src/core/material/](../../src/core/material)）です。
 
 material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](../../src/project/materialformat.hpp#L45) の `usd_path`、[`modeltemplate.cpp`](../../src/core/model/modeltemplate.cpp#L99) で重複/未解決を検証）。これはU-USDレーン（WP119/124）の観測境界です。
 
@@ -866,13 +868,13 @@ struct ComponentCodec {
 
 この五つ（decode / encode / schema / apply / project）が**全codecに必須**です。値の運搬は `ComponentCodecValue = std::any` です。`decode_authored` は例外ではなく [`ResolutionResult<ComponentCodecValue>`](../../src/core/loader/resolutionresult.hpp#L55) を返し、登録テーブルでは `decodeResult<decodeXxx>` が生の decode 関数を包みます。`schema` が返すのは平坦な `StructFieldSchema` 列ではなく**再帰記述子** [`const SchemaNode &`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L155) で、平坦な列が要るときだけ [`fieldSchema()`](../../src/core/loader/componentcodec.hpp#L338) が作り直します（後述）。
 
-`editor_prepare` / `editor_swap` の2本は必須ではありません（transform / simplemodelview / camera / light / collider は `nullptr`）。[`prepareEditorSwap()`](../../src/core/loader/componentcodec.cpp#L1739) は `editor_policy` が `EcsCodec` で、かつ両方が非nullのときだけ通し、そうでなければ `logic_error` です。[`EditorProjectionPolicy`](../../src/core/loader/componentcodec.hpp#L34) に既定値が無いのは意図で、ヘッダのコメントどおり「codecを増やすなら、live projectionを所有するruntime participantを選ぶ」ことを強制します。
+`editor_prepare` / `editor_swap` の2本は必須ではありません（transform / simplemodelview / camera / light / collider は `nullptr`）。[`prepareEditorSwap()`](../../src/core/loader/componentcodec.cpp#L2155) は `editor_policy` が `EcsCodec` で、かつ両方が非nullのときだけ通し、そうでなければ `logic_error` です。[`EditorProjectionPolicy`](../../src/core/loader/componentcodec.hpp#L34) に既定値が無いのは意図で、ヘッダのコメントどおり「codecを増やすなら、live projectionを所有するruntime participantを選ぶ」ことを強制します。
 
 `runtime_apply` と `runtime_project` がどの型を指すかは [`ComponentCodecRuntimeKind`](../../src/core/loader/componentcodec.hpp#L24) が決めます。ヘッダのコメントが規範です — transform は `TransformCodecTarget`、その他のECS codecはそのcomponent自身、camera/light は `CameraCodecData` / `LightCodecData`、collider は `ColliderComponent` です。
 
-この中でtransformだけが、componentを直接指さずに [`TransformCodecTarget`](../../src/core/loader/componentcodec.hpp#L69)（`world` / `local` / `parent_world` の三つのポインタ）を経由します。authoredなのは **local TRS** ですが、ランタイムで全員が読むのは world の `TransformComponent` で、`LocalTransformComponent` は親を持つobjectにしか付かない、という食い違いがあるためです（[`editorruntimefactory.cpp` 内](../../src/core/communication/editorruntimefactory.cpp#L889) の `tryComponent<LocalTransformComponent>` はrootではnullになります）。そのため `runtime_apply` は local へ書いたうえで world も自分で合成し直し（[`applyTransform()`](../../src/core/loader/componentcodec.cpp#L468)）、`runtime_project` は local があればそれを返し、無ければ `parent_world` を使って world から逆算します（[`projectTransform()`](../../src/core/loader/componentcodec.cpp#L483)）。`parent_world` は両方向の変換に必要な係数で、これが無いと親の下のobjectについてlocalとworldを行き来できません。
+この中でtransformだけが、componentを直接指さずに [`TransformCodecTarget`](../../src/core/loader/componentcodec.hpp#L69)（`world` / `local` / `parent_world` の三つのポインタ）を経由します。authoredなのは **local TRS** ですが、ランタイムで全員が読むのは world の `TransformComponent` で、`LocalTransformComponent` は親を持つobjectにしか付かない、という食い違いがあるためです（[`editorruntimefactory.cpp` 内](../../src/core/communication/editorruntimefactory.cpp#L889) の `tryComponent<LocalTransformComponent>` はrootではnullになります）。そのため `runtime_apply` は local へ書いたうえで world も自分で合成し直し（[`applyTransform()`](../../src/core/loader/componentcodec.cpp#L634)）、`runtime_project` は local があればそれを返し、無ければ `parent_world` を使って world から逆算します（[`projectTransform()`](../../src/core/loader/componentcodec.cpp#L649)）。`parent_world` は両方向の変換に必要な係数で、これが無いと親の下のobjectについてlocalとworldを行き来できません。
 
-登録テーブルは8行です（[`componentcodec.cpp` 内](../../src/core/loader/componentcodec.cpp#L1564)）。ただし**見えるのは常に8行とは限りません**（最後の行だけは後述のgate付きです）。
+登録テーブルは8行です（[`componentcodec.cpp` 内](../../src/core/loader/componentcodec.cpp#L1980)）。ただし**見えるのは常に8行とは限りません**（最後の行だけは後述のgate付きです）。
 
 | codec名 | `runtime_kind` | `editor_policy` | editor swap |
 |---|---|---|---|
@@ -895,13 +897,13 @@ transformだけは専用の投影関数 [`projectTransformRuntimeJson()`](../../
 
 ### `pelican_ray_instance` は二重にgateされる ✅実装済み
 
-8番目のcodecだけは、**テーブルに載っていても引けるとは限りません**。[`componentCodecs()`](../../src/core/loader/componentcodec.cpp#L1779) は [`rayInstanceCodecEnabled()`](../../src/core/loader/componentcodec.cpp#L1772) が偽なら `codecs` の**先頭7要素だけ**を span として返します（[その `first()`](../../src/core/loader/componentcodec.cpp#L1784)）。判定は [`RayLayoutRuntimeState::builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L180) で、`configure()` 済みかつモードが `LayoutV2` のときだけ真です。モードを固定するのは起動の1点だけで、組み込みComponent登録より前です（§2.1 の 7番）。同じ述語がECS側の登録も分けるので（[`predefined.cpp` 内](../../src/core/ecs/predefined.cpp#L38)）、「codecはあるがComponentが無い」状態は作られません。テストからは [`findComponentCodecIncludingDisabled()`](../../src/core/loader/componentcodec.hpp#L381) でgateを迂回できます。
+8番目のcodecだけは、**テーブルに載っていても引けるとは限りません**。[`componentCodecs()`](../../src/core/loader/componentcodec.cpp#L2195) は [`rayInstanceCodecEnabled()`](../../src/core/loader/componentcodec.cpp#L2188) が偽なら `codecs` の**先頭7要素だけ**を span として返します（[その `first()`](../../src/core/loader/componentcodec.cpp#L2200)）。判定は [`RayLayoutRuntimeState::builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L180) で、`configure()` 済みかつモードが `LayoutV2` のときだけ真です。モードを固定するのは起動の1点だけで、組み込みComponent登録より前です（§2.1 の 7番）。同じ述語がECS側の登録も分けるので（[`predefined.cpp` 内](../../src/core/ecs/predefined.cpp#L38)）、「codecはあるがComponentが無い」状態は作られません。テストからは [`findComponentCodecIncludingDisabled()`](../../src/core/loader/componentcodec.hpp#L381) でgateを迂回できます。
 
-WP382dから[`decodeRayInstance()`](../../src/core/loader/componentcodec.cpp#L1303)は`overrides`を可変長の行として受理します。省略した値は継承し、明示した0や空のflagsは上書きとして保持します。実行時のcatalogとAS planをscene/editorの候補に含め、公開・rollbackで一緒に切り替えます。
+WP382dから[`decodeRayInstance()`](../../src/core/loader/componentcodec.cpp#L1715)は`overrides`を可変長の行として受理します。省略した値は継承し、明示した0や空のflagsは上書きとして保持します。実行時のcatalogとAS planをscene/editorの候補に含め、公開・rollbackで一緒に切り替えます。
 
-previewでは共通decode入口の[`componentDecodeSurfaceViolation()`](../../src/core/loader/componentcodec.cpp#L1674)が`ray_instance_overrides_unsupported@1`と`surface=preview`を返します。共通codecにはWeb用surface制約もありますが、別repoのWebパーサへの接続はWeb側の担当です。旧`overrides_not_enabled`分岐とそのlegacy branch IDは削除しました。
+previewでは共通decode入口の[`componentDecodeSurfaceViolation()`](../../src/core/loader/componentcodec.cpp#L2090)が`ray_instance_overrides_unsupported@1`と`surface=preview`を返します。共通codecにはWeb用surface制約もありますが、別repoのWebパーサへの接続はWeb側の担当です。旧`overrides_not_enabled`分岐とそのlegacy branch IDは削除しました。
 
-そのほかの受理規則も全て名前付きの legacy branch で拒否します: `instance_flags` は文字列配列のみ、重複flagは拒否、未知flag名は `ray_as_unknown_flag`、`force_opaque` と `force_no_opaque` の同時指定は `ray_as_conflicting_instance_flags`（[その検査](../../src/core/loader/componentcodec.cpp#L1274)）、`mask` は 0..255、`custom_index` は `rayCustomIndexMaximum` まで、そして**scalar 3項目もoverridesも省略された宣言**は `ray_instance_empty` です（[その検査](../../src/core/loader/componentcodec.cpp#L1387)）。
+そのほかの受理規則も全て名前付きの legacy branch で拒否します: `instance_flags` は文字列配列のみ、重複flagは拒否、未知flag名は `ray_as_unknown_flag`、`force_opaque` と `force_no_opaque` の同時指定は `ray_as_conflicting_instance_flags`（[その検査](../../src/core/loader/componentcodec.cpp#L1686)）、`mask` は 0..255、`custom_index` は `rayCustomIndexMaximum` まで、そして**scalar 3項目もoverridesも省略された宣言**は `ray_instance_empty` です（[その検査](../../src/core/loader/componentcodec.cpp#L1799)）。
 
 ### 再帰schema `SchemaNode` と `$list` / `$row` ✅実装済み
 
@@ -916,7 +918,7 @@ codecの `schema` が返す [`SchemaNode`](../../src/core/userpublic/details/sch
 | `vocabulary` | enum / Flags の名前と値（符号の有無を `signed_value` で持つ） |
 | `children` | `Struct` なら各フィールド、`List` なら行の型のschemaが**1つだけ** |
 
-平坦な列からの持ち上げは [`SchemaNode::fromFlat()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L230)（v2の記録をそのまま包む。子は作りません）、宣言DSLからの構築は [`materializeSchemaNode()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L828) で、`List` のときだけ行型の schema へ**再帰**します（[その1行](../../src/core/userpublic/details/schema/structfieldjson.hpp)）。[`recursive()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L160) は `Flags` か `List` が1つでもあれば真で、これが §2.11 のv3入口の選択に使われます。fingerprintは [`schemaNodeJson()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L867) の `dump()` そのものです（[`schemaNodeFingerprint()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L896)）。
+平坦な列からの持ち上げは [`SchemaNode::fromFlat()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L230)（v2の記録をそのまま包む。子は作りません）、宣言DSLからの構築は [`materializeSchemaNode()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L972) で、`List` のときだけ行型の schema へ**再帰**します（[その1行](../../src/core/userpublic/details/schema/structfieldjson.hpp)）。[`recursive()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L160) は `Flags` か `List` が1つでもあれば真で、これが §2.11 のv3入口の選択に使われます。fingerprintは [`schemaNodeJson()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L1011) の `dump()` そのものです（[`schemaNodeFingerprint()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L1040)）。
 
 `List` のJSON表現は**オブジェクトのコンテナ**で、行のidを持つ封筒が付きます。
 
@@ -928,19 +930,19 @@ codecの `schema` が返す [`SchemaNode`](../../src/core/userpublic/details/sch
     {"$row": {"id": 2, "v": 1, "hint": {"label": "goal"}}, "pos": [1,0,0]}]}}
 ```
 
-decode（[list の枝](../../src/core/userpublic/details/schema/structfieldjson.hpp#L461)）が課す規則は次で、いずれも名前付きの `StructFieldErrorCode` です。
+decode（[list の枝](../../src/core/userpublic/details/schema/structfieldjson.hpp#L589)）が課す規則は次で、いずれも名前付きの `StructFieldErrorCode` です。
 
 - コンテナが object でなければ `ListContainerMissing`。`$list` と `rows` 以外のキーは `UnknownField`。
 - `$list` は `v` と `next_id` の2つだけ（他は `UnknownField`）。`v != 1` は `RowEnvelopeUnsupported`。
 - 各行は `$row` を必須とし、その中身は `id` / `v` / `hint` の3つだけ。`id == 0` は `OutOfRange`、`v != 1` は `RowEnvelopeUnsupported`、`hint` は object のみで、**そのまま文字列として**保持されます（`hint_json`）。
 - `id` の重複は `DuplicateRowId`。最後に `next_id` が**全行のidより大きい**ことを確認し、破れば `OutOfRange`（`$list.next_id must exceed every row id`）。
-- 行の本体は `$row` を除いた残りを行型のschemaで [`decodeStructObject()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L613) へ渡します。エラーのpathは `field.rows[2].member` の形になります。
+- 行の本体は `$row` を除いた残りを行型のschemaで [`decodeStructObject()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L754) へ渡します。エラーのpathは `field.rows[2].member` の形になります。
 
-encode（[list の枝](../../src/core/userpublic/details/schema/structfieldjson.hpp#L581)）は逆向きに `$list` → `rows` の順で `ordered_json` を組み、`hint_json` は保存時のテキストを parse し直して戻します。`List` フィールドの既定値は常に**空**です（[`setStructDefault()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L209) の `Member{}`。宣言側も [`EmptyListDefault`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L589) の1引数形しか受け付けません）。行の型がさらに `List` を持つことは [`validRecursivePolicyField()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L804) が拒否するので、入れ子は**1段だけ**です。
+encode（[list の枝](../../src/core/userpublic/details/schema/structfieldjson.hpp#L589)）は逆向きに `$list` → `rows` の順で `ordered_json` を組み、`hint_json` は保存時のテキストを parse し直して戻します。`List` フィールドの既定値は常に**空**です（[`setStructDefault()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L317) の `Member{}`。宣言側も [`EmptyListDefault`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L589) の1引数形しか受け付けません）。行の型がさらに `List` を持つことは [`validRecursivePolicyField()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L804) が拒否するので、入れ子は**1段だけ**です。
 
 > **設計決定:** 行のidを配列添字ではなく封筒で持つのは、行を並べ替えても挿入しても外部参照が切れないようにするためです（§3.12 の `AuthoringObjectId` と同じ動機）。`next_id` を単調に保つ検査がその保証の要で、ここを緩めると同じidが再利用され、参照が黙って別の行を指します。
 
-なお `ComponentCodec::fieldSchema()` が返す平坦な列は **rootの直下の子だけ**を写します（[その実装](../../src/core/loader/componentcodec.cpp#L1710)）。`List` の行schemaはそこに現れないので、平坦な列を消費する側（schema駆動のinspectorなど）は再帰schemaを完全には表現できません。
+なお `ComponentCodec::fieldSchema()` が返す平坦な列は **rootの直下の子だけ**を写します（[その実装](../../src/core/loader/componentcodec.cpp#L2126)）。`List` の行schemaはそこに現れないので、平坦な列を消費する側（schema駆動のinspectorなど）は再帰schemaを完全には表現できません。
 
 ## 3.12 AuthoringSceneDocument ✅実装済み
 

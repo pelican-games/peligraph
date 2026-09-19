@@ -372,7 +372,7 @@ struct CarrierParams {
 
 - バージョンを上げたときは、**現在ロードしていないシーンも含めて**全 behavior の params が新 schema で読めることが条件です。
 - リロード後、behavior のインスタンス状態(メンバ変数)は失われ、params は authoring 値から再構築されます(full-reset 方式)。
-- `schema_changed_without_version_bump` の判定は **schema の指紋**(schema の宣言内容を宣言順のまま 1 本の JSON 文字列に書き出したもの — [schemaNodeFingerprint](../../src/core/userpublic/details/schema/structfieldjson.hpp#L896))で、この文字列が 1 文字でも変われば別の schema と見なします。フィールドの型だけでなく**既定値・宣言順・enum 値の割り当て・presence(`defaulted` ↔ `required` ↔ `optionalOverride`)の変更も検出します**([validateBehaviorReloadSources](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L85))。「型は同じだから大丈夫」は通りません。
+- `schema_changed_without_version_bump` の判定は **schema の指紋**(schema の宣言内容を宣言順のまま 1 本の JSON 文字列に書き出したもの — [schemaNodeFingerprint](../../src/core/userpublic/details/schema/structfieldjson.hpp#L1040))で、この文字列が 1 文字でも変われば別の schema と見なします。フィールドの型だけでなく**既定値・宣言順・enum 値の割り当て・presence(`defaulted` ↔ `required` ↔ `optionalOverride`)の変更も検出します**([validateBehaviorReloadSources](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L85))。「型は同じだから大丈夫」は通りません。
 - ⚠️ **この検証は behavior params だけが対象です。** イベントペイロードと ECS コンポーネントの schema を version bump なしで変えても、現状は検出されません(WP382a-fix で追加予定 = 📐**未対応**)。
 
 ### 8.5.7 ゲームシステムとの使い分け
@@ -607,7 +607,7 @@ auto slots  = ctx.save().listSaves();                         // SaveContext::Sl
 
 > **「姿勢の正本を 1 本にまとめる」は v0 では撤回されました(✅AG-1b)。** 一本化には「シーンが持つ派生プログラムの置き場」と「評価器の状態を写す API」が先に要り、v0 にはどちらもありません。**v0 が約束するのは 2 つの経路の parity**(`loop` / `speed` / `start_time` の意味、位相、パラメータ編集をまたいだ状態の保持)**と owner 単位の排他**の 2 つだけです([docs/v0_freeze.md](../v0_freeze.md) §1.6)。
 
-`animation` コンポーネントの受理キーは `name` / `clip` / `graph` / `parameters` / `speed` / `loop` / `start_time` の 7 つですが、**`graph` を書いた場合 `speed` / `loop` / `start_time` は拒否されます**(`field 'animation.<鍵>' is clip-only; graph states define their playback clocks`)。逆に `parameters`(グラフの初期パラメータ)は `graph` のときだけ書けます([componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L1149))。
+`animation` コンポーネントの受理キーは `name` / `clip` / `graph` / `parameters` / `speed` / `loop` / `start_time` の 7 つですが、**`graph` を書いた場合 `speed` / `loop` / `start_time` は拒否されます**(`field 'animation.<鍵>' is clip-only; graph states define their playback clocks`)。逆に `parameters`(グラフの初期パラメータ)は `graph` のときだけ書けます([componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L1459))。
 
 ### ゲームコードから見た層
 

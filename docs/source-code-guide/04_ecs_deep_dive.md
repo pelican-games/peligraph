@@ -47,7 +47,7 @@ DECLARE_COMPONENT(型, 数値ID)
 | 3 | `CameraComponent` | `camera` | 内部ECS camera marker（現状dummy） |
 | 16 | `LocalTransformComponent` | `localtransform` | 公開API用transform |
 | 17 | `AnimationComponent` | `animation` | アニメーション再生状態 |
-| 18 | `SpriteViewComponent` | `sprite_view` | 2D sprite表示（登録は [`registerSpriteViewComponent()`](../../src/core/userpublic/components/spriteview.cpp#L136) 経由） |
+| 18 | `SpriteViewComponent` | `sprite_view` | 2D sprite表示（登録は [`registerSpriteViewComponent()`](../../src/core/userpublic/components/spriteview.cpp#L55) 経由） |
 | 19 | [`RayInstanceComponent`](../../src/core/userpublic/components/rayinstance.hpp#L67) | `pelican_ray_instance` | ray tracing の instance 宣言（mask / instance flags / custom index）。**条件付き登録** |
 
 最後の1件だけは無条件ではありません。[`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L22) は [`RayLayoutRuntimeState::builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L180) が真のとき、すなわち起動時に `ray_group_layout` version 2 が configure されたときにだけ [`registerComponent<RayInstanceComponent>("pelican_ray_instance")`](../../src/core/ecs/predefined.cpp#L39) を呼びます。したがって v2 layout を持たないプロジェクトでは、この Component は**そもそも登録されていません**。scene 側に宣言があると [`scene.cpp` の gate](../../src/core/loader/scene.cpp#L117) が `pelican.ray_instance_requires_layout_v2@1` で止めます（意味論は[第6章](06_rendering_vulkan_shader.md)）。
