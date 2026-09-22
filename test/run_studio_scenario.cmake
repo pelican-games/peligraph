@@ -6,7 +6,7 @@
 # fixture project (two of them, so "re-read it from disk" is a question that can
 # be answered), Qt on PATH, and the player the viewport should launch.
 
-foreach(required IN ITEMS STUDIO PLAYER DRIVER SCENARIO FIXTURE_DIR OUT_DIR UV)
+foreach(required IN ITEMS STUDIO PLAYER DRIVER SCENARIO FIXTURE_DIR OUT_DIR PYTHON)
     if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
         message(FATAL_ERROR "${required} is required")
     endif()
@@ -47,7 +47,7 @@ endif()
 set(report "${run_dir}/report.json")
 execute_process(
     COMMAND ${CMAKE_COMMAND} -E env "PATH=${scenario_path_env}"
-        "${UV}" run --quiet "${DRIVER}"
+        "${PYTHON}" -B "${DRIVER}"
             --studio "${STUDIO}"
             --player "${PLAYER}"
             --scenario "${SCENARIO}"

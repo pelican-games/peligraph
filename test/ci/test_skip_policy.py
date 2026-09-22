@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import run_gpu_gate
 from skip_policy import SkipPolicyError, validate_skip_policy
 
 
@@ -90,6 +94,60 @@ class SkipPolicyTest(unittest.TestCase):
 
             with self.assertRaisesRegex(SkipPolicyError, "wildcard"):
                 validate_skip_policy(junit, allowlist)
+
+    def test_required_test_cannot_be_waived_by_the_skip_allowlist(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            junit = root / "report.xml"
+            allowlist = root / "allowlist.txt"
+            write_junit(junit, [("studio_scenario_edit", True)])
+            allowlist.write_text("studio_scenario_edit\n", encoding="utf-8")
+            with self.assertRaisesRegex(SkipPolicyError, "required.*did not run"):
+                validate_skip_policy(
+                    junit, allowlist, "GPU", required_tests={"studio_scenario_edit"}
+                )
+
+
+class GpuGateCoverageTest(unittest.TestCase):
+    def run_gate(self, reported: set[str], *, engine_only: bool = False) -> int:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            allowlist = root / "allowlist.txt"
+            allowlist.write_text("", encoding="utf-8")
+
+            def successful_ctest(ctest, build_dir, config, labels, junit, log):
+                write_junit(junit, [(name, False) for name in sorted(reported)])
+                return 0
+
+            with (
+                mock.patch("skip_policy.shutil.which", return_value="ctest"),
+                mock.patch("skip_policy.run_ctest", side_effect=successful_ctest),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                return run_gpu_gate.main([
+                    "--build-dir", str(root / "build"),
+                    "--artifacts-dir", str(root / "artifacts"),
+                    "--allowlist", str(allowlist),
+                    *(["--engine-only"] if engine_only else []),
+                ])
+
+    def test_full_gate_requires_every_shipped_studio_scenario(self) -> None:
+        required = run_gpu_gate.required_studio_tests(
+            Path(__file__).resolve().parents[1] / "studio_scenarios"
+        )
+        self.assertEqual(self.run_gate(required | {"engine_test"}), 0)
+        for absent in (required, {sorted(required)[0]}):
+            with self.subTest(absent=sorted(absent)):
+                self.assertEqual(self.run_gate((required - absent) | {"engine_test"}), 2)
+
+    def test_engine_only_is_an_explicit_subset(self) -> None:
+        self.assertEqual(self.run_gate({"engine_test"}, engine_only=True), 0)
+
+    def test_missing_scenario_directory_cannot_lower_the_required_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(SkipPolicyError, "no required Studio scenarios"):
+                run_gpu_gate.required_studio_tests(Path(directory) / "missing")
 
 
 if __name__ == "__main__":

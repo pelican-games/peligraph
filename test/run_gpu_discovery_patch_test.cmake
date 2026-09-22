@@ -8,6 +8,7 @@ add_test([==[CPU case]==] [==[C:/with spaces/test.exe]==] [==[a;b]==])
 set_tests_properties([==[CPU case]==] PROPERTIES LABELS cpu)
 add_test([==[GPU case]==] [==[C:/with spaces/test.exe]==] [==[a;b]==])
 set_tests_properties([==[GPU case]==] PROPERTIES LABELS [==[gpu;render]==] TIMEOUT 180)
+set_tests_properties([==[GPU case]==] PROPERTIES ENVIRONMENT_MODIFICATION [==[PATH=path_list_prepend:C:/Qt/bin]==])
 set(sample_TESTS [==[CPU case]==] [==[GPU case]==])
 ]====])
 set(patcher "${CMAKE_CURRENT_LIST_DIR}/patch_catch_gpu_lease_tests.cmake")
@@ -26,6 +27,7 @@ foreach(expected IN ITEMS
     "add_test([==[CPU case]==] [==[C:/with spaces/test.exe]==] [==[a;b]==])"
     "add_test([==[GPU case]==] [==[C:/with spaces/lease.exe]==] [==[--]==] [==[C:/with spaces/test.exe]==] [==[a;b]==])"
     "[==[LABELS]==] [==[gpu;render]==]"
+    "[==[ENVIRONMENT_MODIFICATION]==] [==[PATH=path_list_prepend:C:/Qt/bin]==]"
     "set(sample_TESTS [==[CPU case]==] [==[GPU case]==])")
     string(FIND "${first}" "${expected}" position)
     if(position EQUAL -1)

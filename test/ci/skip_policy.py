@@ -4,10 +4,10 @@
 A test has three outcomes, and the dangerous one is the third: a failing test is
 red and gets looked at, but a skipped test stays green while not existing. So a
 gate names the tests that may skip and fails on every other skip -- and fails
-too when a named test never appeared, so the list cannot rot.
+too when a named test never appeared, so the list cannot rot. A gate may also
+require exact test names; those must appear and must run even if allowlisted.
 
-`run_cpu_gate.py` and `run_gpu_gate.py` are drivers over this module; they differ
-only in the CTest label selection and their allowlist.
+The CPU, GPU and Studio drivers select labels, skip policy and required tests.
 """
 
 from __future__ import annotations
@@ -76,9 +76,24 @@ def validate_skip_policy(
     allowlist_path: Path,
     gate_name: str = "CPU",
     bulk_skip_hint: str | None = None,
+    required_tests: set[str] | None = None,
 ) -> set[str]:
     allowed = load_allowlist(allowlist_path)
     reported, skipped = read_junit(junit_path)
+
+    required = required_tests or set()
+    missing = required - reported
+    if missing:
+        raise SkipPolicyError(
+            f"required CTest names were not present in the {gate_name} gate: "
+            + ", ".join(sorted(missing))
+        )
+    skipped_required = required & skipped
+    if skipped_required:
+        raise SkipPolicyError(
+            f"required CTest names did not run in the {gate_name} gate: "
+            + ", ".join(sorted(skipped_required))
+        )
 
     stale = allowed - reported
     if stale:
@@ -145,8 +160,11 @@ def run_gate(
     default_allowlist: Path,
     bulk_skip_hint: str | None = None,
     argv: list[str] | None = None,
+    required_tests: set[str] | None = None,
+    parser: argparse.ArgumentParser | None = None,
 ) -> int:
-    parser = argparse.ArgumentParser(description=f"Run the {gate_name} CTest gate.")
+    if parser is None:
+        parser = argparse.ArgumentParser(description=f"Run the {gate_name} CTest gate.")
     parser.add_argument("--build-dir", type=Path, required=True)
     parser.add_argument("--config", default="Debug")
     parser.add_argument("--artifacts-dir", type=Path, required=True)
@@ -171,10 +189,11 @@ def run_gate(
     )
     try:
         skipped = validate_skip_policy(
-            junit_path, args.allowlist.resolve(), gate_name, bulk_skip_hint
+            junit_path, args.allowlist.resolve(), gate_name, bulk_skip_hint, required_tests
         )
         summary = (
             "SKIP exact policy: PASS\n"
+            + f"required tests observed: {len(required_tests or set())}\n"
             + f"observed allowlisted skips: {len(skipped)}\n"
             + "\n".join(sorted(skipped))
             + ("\n" if skipped else "")

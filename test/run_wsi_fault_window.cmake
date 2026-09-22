@@ -6,6 +6,7 @@ endforeach()
 
 if(NOT CONFIG STREQUAL "Debug")
     message(STATUS
+        "PELICAN_WSI_FAULT_WINDOW_SKIP_NON_DEBUG: "
         "WSI fault injection is Debug-only; skipping ${CONFIG} integration run")
     return()
 endif()

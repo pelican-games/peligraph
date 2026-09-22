@@ -2807,6 +2807,35 @@ if(NOT SKIP_DEVSTUDIO)
     pelican_gpu_test_properties(vulkan_validation_runtime_player 600)
 endif()
 
+set(PELICAN_PYTHON_TESTS "OFF" CACHE STRING
+    "Python-backed test gates: OFF (default), AUTO, or ON (required)")
+set_property(CACHE PELICAN_PYTHON_TESTS PROPERTY STRINGS AUTO ON OFF)
+string(TOUPPER "${PELICAN_PYTHON_TESTS}" PELICAN_PYTHON_TESTS_MODE)
+set(_pelican_python_test_modes AUTO ON OFF)
+list(FIND _pelican_python_test_modes "${PELICAN_PYTHON_TESTS_MODE}"
+     _pelican_python_test_mode_index)
+if(_pelican_python_test_mode_index EQUAL -1)
+    message(FATAL_ERROR
+        "PELICAN_PYTHON_TESTS must be AUTO, ON, or OFF (got '${PELICAN_PYTHON_TESTS}')")
+endif()
+
+set(PELICAN_PYTHON_TESTS_AVAILABLE OFF)
+if(PELICAN_PYTHON_TESTS_MODE STREQUAL "ON")
+    find_package(Python3 3.11 COMPONENTS Interpreter REQUIRED)
+    set(PELICAN_PYTHON_TESTS_AVAILABLE ON)
+elseif(PELICAN_PYTHON_TESTS_MODE STREQUAL "AUTO")
+    find_package(Python3 3.11 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        set(PELICAN_PYTHON_TESTS_AVAILABLE ON)
+    else()
+        message(STATUS
+            "Python 3.11 or newer was not found; Python-backed tests are omitted "
+            "(use -DPELICAN_PYTHON_TESTS=ON to require them)")
+    endif()
+else()
+    message(STATUS "Python-backed tests are disabled")
+endif()
+
 # Q-1: the Studio scenarios. Each `test/studio_scenarios/<name>.json` becomes
 # one `studio_scenario_<name>` test: a real Studio window, the real engine
 # behind it, and tools/studio_drive.py driving the GUI over the `--automation`
@@ -2814,8 +2843,7 @@ endif()
 # drive embeds a running player. (`QT_QPA_PLATFORM=offscreen` is deliberately
 # not set: a window that is never realised embeds nothing.)
 if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
-    find_program(PELICAN_UV_EXECUTABLE uv)
-    if(PELICAN_UV_EXECUTABLE)
+    if(PELICAN_PYTHON_TESTS_AVAILABLE)
         file(GLOB pelican_studio_scenario_files CONFIGURE_DEPENDS
             "${CMAKE_CURRENT_SOURCE_DIR}/studio_scenarios/*.json")
         foreach(pelican_studio_scenario IN LISTS pelican_studio_scenario_files)
@@ -2841,19 +2869,20 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
                     -DSCENARIO=${pelican_studio_scenario}
                     -DFIXTURE_DIR=${pelican_studio_scenario_fixture}
                     -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/studio_scenarios
-                    -DUV=${PELICAN_UV_EXECUTABLE}
+                    -DPYTHON=${Python3_EXECUTABLE}
                     -DQT_BIN_DIR=$<TARGET_FILE_DIR:Qt6::Core>
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_studio_scenario.cmake
             )
             set_property(TEST studio_scenario_${pelican_studio_scenario_name}
-                APPEND PROPERTY LABELS studio_scenario)
+                APPEND PROPERTY LABELS "studio_scenario;python")
             pelican_gpu_test_properties(
                 studio_scenario_${pelican_studio_scenario_name}
                 ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
         endforeach()
     else()
         message(STATUS
-            "uv was not found: the studio_scenario_* tests are not registered")
+            "Studio E2E tests require Python-backed tests; use "
+            "-DPELICAN_PYTHON_TESTS=ON for the full GPU/release gate")
     endif()
 endif()
 
@@ -2979,6 +3008,8 @@ if(WIN32)
             -DCONFIG=$<CONFIG>
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_wsi_fault_window.cmake
     )
+    set_tests_properties(wsi_fault_window_player PROPERTIES
+        SKIP_REGULAR_EXPRESSION PELICAN_WSI_FAULT_WINDOW_SKIP_NON_DEBUG)
     pelican_gpu_test_properties(wsi_fault_window_player 180)
 endif()
 pelican_define_test(texturereload_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
@@ -3061,38 +3092,9 @@ if(NOT PELICAN_RUNTIME_SHADER_COMPILER)
     endforeach()
 endif()
 
-set(PELICAN_PYTHON_TESTS "OFF" CACHE STRING
-    "Python-backed test gates: OFF (default), AUTO, or ON (required)")
-set_property(CACHE PELICAN_PYTHON_TESTS PROPERTY STRINGS AUTO ON OFF)
-string(TOUPPER "${PELICAN_PYTHON_TESTS}" PELICAN_PYTHON_TESTS_MODE)
-set(_pelican_python_test_modes AUTO ON OFF)
-list(FIND _pelican_python_test_modes "${PELICAN_PYTHON_TESTS_MODE}"
-     _pelican_python_test_mode_index)
-if(_pelican_python_test_mode_index EQUAL -1)
-    message(FATAL_ERROR
-        "PELICAN_PYTHON_TESTS must be AUTO, ON, or OFF (got '${PELICAN_PYTHON_TESTS}')")
-endif()
-
 get_property(pelican_studio_cpu_tests GLOBAL PROPERTY PELICAN_STUDIO_CPU_TEST_TARGETS)
 if(pelican_studio_cpu_tests)
   add_custom_target(pelican_studio_cpu_tests DEPENDS ${pelican_studio_cpu_tests})
-endif()
-
-set(PELICAN_PYTHON_TESTS_AVAILABLE OFF)
-if(PELICAN_PYTHON_TESTS_MODE STREQUAL "ON")
-    find_package(Python3 COMPONENTS Interpreter REQUIRED)
-    set(PELICAN_PYTHON_TESTS_AVAILABLE ON)
-elseif(PELICAN_PYTHON_TESTS_MODE STREQUAL "AUTO")
-    find_package(Python3 COMPONENTS Interpreter QUIET)
-    if(Python3_Interpreter_FOUND)
-        set(PELICAN_PYTHON_TESTS_AVAILABLE ON)
-    else()
-        message(STATUS
-            "Python 3 was not found; Python-backed tests are omitted "
-            "(use -DPELICAN_PYTHON_TESTS=ON to require them)")
-    endif()
-else()
-    message(STATUS "Python-backed tests are disabled")
 endif()
 
 if(PELICAN_PYTHON_TESTS_AVAILABLE)
@@ -3212,10 +3214,12 @@ if(MSVC)
 
   # The contract test above drives the module through its own fixture, so it
   # stays green even if pelican_studio stops calling it. This one reads what
-  # the real studio build left behind.
+  # the real Debug studio build left behind. The archive module and its
+  # dump-visible PDB name are Debug-only; other configurations do not archive.
   if(TARGET pelican_studio)
     add_test(
       NAME crash_symbol_production_wiring
+      CONFIGURATIONS Debug
       COMMAND ${CMAKE_COMMAND}
         "-DARCHIVE_ROOT=${PELICAN_CRASH_SYMBOL_ARCHIVE_DIR}"
         "-DEXPECTED_TARGET=pelican_studio"
