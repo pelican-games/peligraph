@@ -20,8 +20,8 @@ screenshots.
 To run one by hand, without CTest:
 
     uv run tools/studio_drive.py \
-      --studio dist_debug/pelican_studio.exe \
-      --player build/src/player/Debug/pelican_player.exe \
+      --studio build/dist/Debug/pelican_studio.exe \
+      --player build/dist/Debug/pelican_player.exe \
       --scenario test/studio_scenarios/graph_read.json \
       --project <a copy of a project> \
       --var other_project=<a second copy> \
@@ -46,9 +46,11 @@ order:
 * `steps` -- the same thing in full, for when the summary is not enough.
 * `studio_log` -- Studio's and the engine's console output for the whole run.
 
-`studio_exit_code` is recorded but is *not* part of the verdict: Studio is known
-to leave a non-zero code on the way out (backlog), and the report says so in
-`studio_exit_code_note` so a reader who has only the file is not left guessing.
+The final `shutdown` step requires Studio to exit with code zero without forced
+termination. A non-zero exit, a shutdown timeout, or a watchdog termination makes
+the report red and the driver return non-zero even when all scenario steps pass.
+`studio_exit_code` and `studio_shutdown_forced` record the outcome; `failures`
+includes the shutdown reason.
 
 ## Writing a scenario
 

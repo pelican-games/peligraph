@@ -252,7 +252,7 @@ flowchart LR
 同じ rendering config が、2 通りの入れ物で出荷されます。
 
 - **legacy root** — `features` / `render_targets` / `rendering_passes` … がそのまま最上位にある従来の形。
-- **`pelican.graph` root** — 共通グラフ文書(`schema` / `version` / `definitions` / `nodes` / `outputs` の 5 キー)の `rendering` メンバの下に、legacy config が丸ごと入る形。`graph.instance` を書けるのはこの root の下だけです(legacy root には `nodes` / `definitions` 自体が無いので置き場が無い、というだけで、parse 時に名前付きで拒否されるわけではありません。`graph.nested_instance@1` / `graph.input_scope@1` は [`editGraphDocument()`](../../src/project/graphcomposition.cpp#L685) の編集経路にしか存在しません)。
+- **`pelican.graph` root** — 共通グラフ文書(`schema` / `version` / `definitions` / `nodes` / `outputs` の 5 キー)の `rendering` メンバの下に、legacy config が丸ごと入る形。`graph.instance` を書けるのはこの root の下だけです(legacy root には `nodes` / `definitions` 自体が無いので置き場が無い、というだけで、parse 時に名前付きで拒否されるわけではありません。`graph.nested_instance@1` / `graph.input_scope@1` は [`editGraphDocument()`](../../src/project/graphcomposition.cpp#L757) の編集経路にしか存在しません)。
 
 出荷 project では [`projects/example/passes/main_rendering_config.json`](../../projects/example/passes/main_rendering_config.json) と [`projects/posegraph_demo/passes/main.json`](../../projects/posegraph_demo/passes/main.json) の **2 本**が graph root で、残りは legacy root です。
 

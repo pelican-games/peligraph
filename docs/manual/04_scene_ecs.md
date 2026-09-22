@@ -70,7 +70,7 @@
 | `version` | **必須**。整数で **`1` か `2`**(0・負・3 以上は拒否。`2` は prefab(`pelican.prefab` 文書の展開。台帳 WP361)を使う scene 用。v1 に `prefab` を書くと `prefab_requires_scene_v2` で拒否) |
 | `scenes` | **必須**。`{ "<scene_id>": { "objects": [...] }, ... }` |
 
-- **hard error** とは、警告を出して続行するのではなく、その場で例外を投げてロードを打ち切る失敗のことです(エンベロープの検査なら [validateEnvelope](../../src/project/sceneformat.cpp#L52) が `std::runtime_error` を投げます)。シーンロードは 1 つのトランザクションなので(§4.3)、hard error になったシーンが半分だけ構築されて残ることはありません。
+- **hard error** とは、警告を出して続行するのではなく、その場で例外を投げてロードを打ち切る失敗のことです(エンベロープの検査なら [validateEnvelope](../../src/project/sceneformat.cpp#L110) が `std::runtime_error` を投げます)。シーンロードは 1 つのトランザクションなので(§4.3)、hard error になったシーンが半分だけ構築されて残ることはありません。
 - schema なしのレガシー形式、トップレベル `lights` セクションは **v1 では受理されません**(名指しのエラーで移行先を案内)。※設計文書には「WARN+自動解釈」と書かれていますが、WP63(strict v1 化)で意図的に廃止されており、実装が正です。
 - 本文の `WP63` / `✅WP79` のような `WP<数字>` は、エンジン側の作業単位(work package)に付く通し番号です([用語集](14_glossary.md))。「どの作業で入った仕様か」の目印として本文に添えています。
 - 起動時にロードされるのは `project.json` の `basic_config.default_scene_id` のシーンです。
@@ -104,13 +104,15 @@
 
 | 事項 | 中身 |
 |---|---|
-| 形 | `{scene: <シーン ID の文字列>, object: <正の整数>}` の **2 キーちょうど**。欠けても増えても `graph owner requires scene and positive authoring object id`([graphcomposition.cpp:97](../../src/project/graphcomposition.cpp#L97)) |
-| `object` の正体 | **authoring object id** = シーン文書をロードしたときに**宣言順に振る通し番号**([authoringscenedocument.cpp:39](../../src/core/loader/authoringscenedocument.cpp#L39))。`scene.json` のどこにも**書かれていません**。開始値は既定 1 の引数で([authoringscenedocument.hpp:110](../../src/core/loader/authoringscenedocument.hpp#L110))、**番号は文書内のシーンをまたいで連番**です —— `scenes` の 1 つ目が 31 個なら、2 つ目のシーンの先頭は 1 ではなく 32 になります。つまり「`objects` 配列の何番目か」で数えてよいのは**最初のシーンだけ**です |
+| 形 | `{scene: <シーン ID の文字列>, object: <正の整数>}` の **2 キーちょうど**。欠けても増えても `graph owner requires scene and positive authoring object id`([graphcomposition.cpp:97](../../src/project/graphcomposition.cpp#L98)) |
+| `object` の正体 | **authoring object id**。保存時に各 object の `authoring_object_id` として記録され、削除・並べ替え・保存・再読込を跨いでも同じ対象を指します。ID のない旧文書は従来どおり文書全体の宣言順で採番され、最初の保存で永続化されます。ID は `scene_tree` で確認してください([authoringscenedocument.cpp](../../src/core/loader/authoringscenedocument.cpp)) |
 | 解決 | ロード後の束縛表を線形に走査し、その id を持つ生きたオブジェクトを探します([SceneLoader::graphOwnerObject()](../../src/core/loader/scenegraphruntime.cpp#L35)) |
 | 見つからないとき | **エラーではなく inactive**。その instance の scope は評価されず、`LOG_WARNING` が出ます(`graph instance owner does not match any object in this scene: <scope>, <scope>, …`)。**1 行にまとまります** —— そのとき初めて報告する scope を `", "` で連ねて 1 回だけ出し、同じ scope は二度言いません([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L61))。「言った」という記憶は**シーンのロードで消えます**([scene.cpp:730](../../src/core/loader/scene.cpp#L730))ので、次のシーンでは同じ scope がまた 1 回報告されます。姿勢では「rest pose のまま動かない」に見えます |
 | 別のオブジェクトを指したとき | id が**実在する別のオブジェクト**だった場合は黙って**そちらに適用**されます。姿勢の sink のように適用できない相手(カメラなど)なら、オブジェクト名入りで失敗します(`pose graph sink resolution for Camera failed with animation status …` — [posegraphruntime.cpp:181](../../src/core/animation/posegraphruntime.cpp#L187)) |
 
-> ⚠ **既知の穴(v0):** この id は**永続識別子ではありません**。シーンにオブジェクトを挿入して保存すると、以降の番号が 1 つずつずれ、**装着先が別の個体に移ります**(不一致なら無音の inactive、実在すれば黙ってそちらへ)。永続オブジェクト id(`design_object_identity.md` の ID-1〜4)は未実装で、v0 の穴として台帳に記録されています([第11章 §11.3](11_status.md))。当面は「装着を持つシーンでは、オブジェクトを**末尾に足す**」のが安全です。
+`authoring_object_id` と文書直下の `next_authoring_object_id` は、保存・読込用の予約フィールドです。ID は正の整数で、同じ文書の別シーンも含めて重複できません。`next_authoring_object_id` は使用済み ID より大きい次の採番値を保持するため、最大番号の object を削除してもその番号を再利用しません。ID のない object を保存済み文書へ追加すると、この採番値以降が割り当てられます。外部エディタで object を移動するときは ID を一緒に移動し、複製して新しい object にするときは複製側の ID を外してください。重複・不正な型・採番値との矛盾はロード時に拒否されます。
+
+`save_scene` は非表示のシーンを含む文書全体の ID を保存します。`export_scene_snapshot` は持ち運び用の意味的な内容を返し、ID を含めません。snapshot import は従来どおり新しい ID を割り当てるため、別文書の graph owner を同じ番号のまま流用せず、取り込み後の `scene_tree` を参照してください([第13章 §13.8](13_editor.md))。
 
 > **設計決定(コンポーネント名 = 登録名):** シーン形式が定義するのは「`name` + 任意パラメータのレコード列」まで。コンポーネントの語彙は ECS の登録名(+バインダの特別扱い)で決まり、新コンポーネント追加にシーン形式仕様の改訂は不要。未知の名前は `component_unknown@1{"name":"X"}` で fail-fast。
 

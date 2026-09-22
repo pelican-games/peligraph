@@ -38,8 +38,8 @@ CMake フラグです。`ON` の PC 開発ビルドには完全な Vulkan SDK �
 # 初回構成(Qt のパスは自分の環境に合わせる)
 cmake . -B build -DCMAKE_PREFIX_PATH=C:/Qt/6.10.2/msvc2022_64
 
-# ビルド(MSVC では既定で Debug 構成)
-cmake --build ./build
+# ビルド
+cmake --build ./build --config Debug
 ```
 
 Qt を入れていない、または player だけ欲しい場合は Studio をスキップします:
@@ -54,21 +54,38 @@ cmake . -B build -DSKIP_DEVSTUDIO=ON
 
 テストを有効にした場合、`PELICAN_PYTHON_TESTS`は次の三値です。
 
-- `OFF`（既定）: Pythonを探索せず、C++/CMakeテストだけを登録
+- `OFF`（既定）: Python製テスト用の探索をせず、C++/CMakeテストだけを登録
 - `AUTO`: Python 3があればPython製gateも登録し、なければC++/CMakeテストだけを登録
 - `ON`: Python 3とPython製gateを必須化（CIの完全テスト構成）
 
-> **注意:** リポジトリの [README.md](../../README.md) には値なしの `-DSKIP_DEVSTUDIO` と書かれていますが、リポジトリ内の実運用(`test/run_build_units_smoke.cmake`)は `=ON` 付きです。`=ON` を付ける書き方が確実です。
+この設定は依存ライブラリの生成処理とは独立です。OpenXR-SDK-Sourceのdispatch header生成と
+experimental SPIR-V linkerはPythonを必要とする場合があります。Pythonなしでconfigureする場合は
+`-DPELICAN_WITH_OPENXR=OFF -DPELICAN_WITH_SPIRV_LINK=OFF`も指定してください。
 
 ### ビルド成果物の場所
 
 | 実行ファイル | 場所 |
 |---|---|
-| `pelican_player.exe` | **build ツリー内**: `build/src/player/<Config>/`(例: `build/src/player/Debug/pelican_player.exe`) |
-| `pelican_cli.exe` | `dist/`(Debug 構成では `dist_debug/`) |
-| `pelican_studio.exe` | `dist/`(同上) |
+| `pelican_player.exe` | `build/dist/<Config>/`(例: `build/dist/Debug/pelican_player.exe`) |
+| `pelican_cli.exe` | `build/dist/<Config>/` |
+| `pelican_studio.exe` | `build/dist/<Config>/` |
 
-**build ツリー**とは CMake が生成物を書き出すディレクトリ(この文書では `build/`)のことです。`pelican_player.exe` はそこに置かれたまま実行し、`dist/` へコピーされるのは `pelican_cli` と `pelican_studio` です([第10章](10_tools.md) §10.1)。
+各 build ツリーの中に実行物を集めるため、別の構成をビルドしても同じ source tree の
+実行ファイルを上書きしません。`PELICAN_OUTPUT_ROOT` で `build/dist` 部分を変更できます。
+`PELICAN_PROJECT` で作るゲーム DLL も player と同じディレクトリに置きます。
+
+Windows 用の配布ディレクトリは次の手順で作れます。`Runtime` component は実行物と
+Qt が選んだ runtime/plugin を配置し、engine/Studio のリソースはバイナリに埋め込まれています。
+
+```sh
+cmake -S . -B build-release -DBUILD_TESTING=OFF -DCMAKE_PREFIX_PATH=C:/Qt/6.10.3/msvc2022_64
+cmake --build build-release --config Release --target pelican_runtime
+cmake --install build-release --config Release --component Runtime --prefix build-release/package
+```
+
+結果は `build-release/package/bin/` です。プロジェクトとそのアセットは別途用意し、
+`--project` で指定します。ソース shader を使う v0 プロジェクトは runtime shader compiler を
+ON のまま配布します。OFF は必要な shader variant を全て事前生成したプロジェクト用です。
 
 ### 機能ユニット(PELICAN_WITH_*)
 
@@ -113,9 +130,9 @@ skip posegraph_demo: requires animation (PELICAN_WITH_ANIMATION=OFF)
 ```
 
 この 1 行は宣言したプロジェクトごとに出るので、OFF build では `animgraph_demo` / `posegraph_demo` /
-`vrm_xr_demo` の **3 行**が並びます([run_project_catalog_smoke.cmake:128](../../test/run_project_catalog_smoke.cmake#L128))。
+`vrm_xr_demo` の **3 行**が並びます([プロジェクトの skip 出力](../../test/run_project_catalog_smoke.cmake#L108))。
 飛ばされたプロジェクトがエディタ経路のレーンを持っていた場合は `skip editor lane: <project> requires …` が続き
-([:317](../../test/run_project_catalog_smoke.cmake#L317))、最後に「何件中何件を飛ばしたか」の要約が 1 行出ます。
+([editor lane の skip 出力](../../test/run_project_catalog_smoke.cmake#L288))、最後に「何件中何件を飛ばしたか」の要約が 1 行出ます。
 
 語彙・検証規則は [第3章 §3.2](03_project_format.md) の「機能ユニットの要求(`requires`)」にあります。
 
@@ -137,7 +154,7 @@ ON時のpinned SPIRV-Tools生成処理にはPython 3が必要です。
 リポジトリには実プロジェクトの例 [projects/example](../../projects/example) が入っています。
 
 ```sh
-build/src/player/Debug/pelican_player.exe --project projects/example
+build/dist/Debug/pelican_player.exe --project projects/example
 ```
 
 `--project` は**任意の作業ディレクトリから**実行できます(パス解決に cwd を使わないため)。相対パスは cwd 基準で絶対化されます。
@@ -193,11 +210,11 @@ pelican_player --xr on --project projects/vrm_xr_demo --input-profile touch
 `pelican_cli project init` が雛形一式を生成します(✅実装済み・WP57)。生成されるプロジェクトは**バイナリアセット不要で、生成直後にそのまま起動できます**(カメラ+ディレクショナルライトのみのシーン)。
 
 ```sh
-# 1. 雛形生成(dist_debug は Debug ビルドの場合)
-dist_debug/pelican_cli.exe project init mygame
+# 1. 雛形生成(Debug ビルドの場合)
+build/dist/Debug/pelican_cli.exe project init mygame
 
 # 2. 起動
-build/src/player/Debug/pelican_player.exe --project mygame
+build/dist/Debug/pelican_player.exe --project mygame
 ```
 
 対象ディレクトリは「存在しない(自動作成される)」か「空」である必要があります。生成物は次のとおりです:
@@ -333,10 +350,10 @@ pelican_player --headless --project mygame --start-time 2.0 --frames 2 --fps 60 
 cp -r test/fixtures/package_template /tmp/glowkit
 
 # 2. project へ install(= packages/<namespace>/ への複製 + project.json への記録)
-dist_debug/pelican_cli.exe package install /tmp/glowkit --project mygame
+build/dist/Debug/pelican_cli.exe package install /tmp/glowkit --project mygame
 
 # 3. 入ったか確認する(sha256 を再計算して照合します)
-dist_debug/pelican_cli.exe package list --project mygame
+build/dist/Debug/pelican_cli.exe package list --project mygame
 ```
 
 install が終わると `mygame/packages/acme.glowkit/` ができ、`project.json` に `{"namespace": "acme.glowkit", "package_version": …, "sha256": …}` が 1 行増えます。package が提供する feature は **`<namespace>.<名前>`**(例 `acme.glowkit.glow`)という名前で RPC `list_render_features` のカタログに `source: "package"` として現れ、`project://packages/acme.glowkit/features/glow.json` で参照できます。使うには rendering config の `features[]` に足します([第6章](06_rendering.md))。
@@ -356,7 +373,7 @@ ctest --test-dir ./build -C Debug --output-on-failure
 ## 2.7 Pelican Studio を起動する
 
 ```sh
-cmake --build ./build --target run_studio
+cmake --build ./build --config Debug --target run_studio
 ```
 
 `run_studio` ターゲットは windeployqt(Qt DLL 配置)まで面倒を見ます。

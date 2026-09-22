@@ -2258,10 +2258,10 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 | `render_config.section_unlocated@1` | 同じ理由で `--feature-overlay` の適用先が見つからない([renderfeatureoverlay.cpp:142](../../src/project/renderfeatureoverlay.cpp#L142)) |
 | `graph.operation_unregistered@1` `{node, op}` | ノードの `op` をどの module も登録していない。綴り間違いのほか、**`PELICAN_WITH_ANIMATION=OFF` の build で `pose.*` を書いた**ときもこれ([graphmodule.cpp:199](../../src/project/graphmodule.cpp#L199)。§6.17) |
 | `graph.operation_unexecutable@1` `{backend, op, node}` | op は登録されているのに、それを実行する backend がこの build に無い。rendering 側は `backend: "pelican.render"` で、lowering できる 6 op 以外を rendering 区画に置いたときに出ます([rendergraphcomposition.cpp:58](../../src/project/rendergraphcomposition.cpp#L58))。姿勢側・値側にも同名の拒否があります([posegraph.cpp:91](../../src/core/animation/posegraph.cpp#L91) / [valuegraph.cpp:289](../../src/core/userpublic/valuegraph.cpp#L289)) |
-| `graph.node_duplicate@1` / `graph.node_missing@1` / `graph.input_unknown@1` / `graph.input_referenced@1` / `graph.output_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1` / `graph.definition_immutable@1` / `graph.layout_invalid@1` | `edit_graph_document` の **9 つ**の名前付き拒否(重複 id / 不在 node / 不明な入力 port / まだ供給されている `graph.input` の削除 / まだ参照されている node の削除 / definition の中の `graph.instance` / root の `graph.input` / 編集できない scope)。正は [`editGraphDocument()` の宣言コメント](../../src/project/graphcomposition.hpp#L90)(9 つ全部を列挙しています。9 つ目 `graph.layout_invalid@1` は N-6 の `set_layout`)と throw 箇所([graphcomposition.cpp:363](../../src/project/graphcomposition.cpp#L363) 〜 [:534](../../src/project/graphcomposition.cpp#L740))。一覧は [第13章](13_editor.md) |
+| `graph.node_duplicate@1` / `graph.node_missing@1` / `graph.input_unknown@1` / `graph.input_referenced@1` / `graph.output_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1` / `graph.definition_immutable@1` / `graph.layout_invalid@1` | `edit_graph_document` の **9 つ**の名前付き拒否(重複 id / 不在 node / 不明な入力 port / まだ供給されている `graph.input` の削除 / まだ参照されている node の削除 / definition の中の `graph.instance` / root の `graph.input` / 編集できない scope)。正は [`editGraphDocument()` の宣言コメント](../../src/project/graphcomposition.hpp#L90)(9 つ全部を列挙しています。9 つ目 `graph.layout_invalid@1` は N-6 の `set_layout`)と throw 箇所([graphcomposition.cpp:363](../../src/project/graphcomposition.cpp#L364) 〜 [:534](../../src/project/graphcomposition.cpp#L828))。一覧は [第13章](13_editor.md) |
 | `graph.override_shadowed@1` `{parameter}` | edge が供給している入力に `setGraphParameter` で実行時の上書きをかけた。**黙って消えない**([scenegraphruntime.cpp:123](../../src/core/loader/scenegraphruntime.cpp#L123)。§6.17) |
-| `unconnected graph input: <node>.<port>` / `unconnected subgraph input: <名前>` | 必須入力に edge も `parameters` も `default` も無い([graphcomposition.cpp:323](../../src/project/graphcomposition.cpp#L323)、[:59](../../src/project/graphcomposition.cpp#L59)) |
-| `unknown graph definition: <名前>` / `recursive graph definition: <名前>` / `cyclic subgraph connection: <id>` | `graph.instance.definition` の綴り違い / 定義の再帰 / インスタンス同士の循環([graphcomposition.cpp:93](../../src/project/graphcomposition.cpp#L93) / [:108](../../src/project/graphcomposition.cpp#L108) / [:90](../../src/project/graphcomposition.cpp#L90)) |
+| `unconnected graph input: <node>.<port>` / `unconnected subgraph input: <名前>` | 必須入力に edge も `parameters` も `default` も無い([graphcomposition.cpp:323](../../src/project/graphcomposition.cpp#L324)、[:59](../../src/project/graphcomposition.cpp#L60)) |
+| `unknown graph definition: <名前>` / `recursive graph definition: <名前>` / `cyclic subgraph connection: <id>` | `graph.instance.definition` の綴り違い / 定義の再帰 / インスタンス同士の循環([graphcomposition.cpp:93](../../src/project/graphcomposition.cpp#L94) / [:108](../../src/project/graphcomposition.cpp#L109) / [:90](../../src/project/graphcomposition.cpp#L91)) |
 
 ## 6.12 OpenXR ステレオレンダリング(✅WP125〜138 / WP203a〜c実装済み)
 
@@ -2699,7 +2699,7 @@ op は **module** が登録します。登録済み module はエンジンに 4 
 
 `evaluation` はノード単位で **強い方へ上げられます**(引き下げは採られません)。実物は `pose.clip_sample` で、`root_motion: "extract"` を書いたノードだけが `direct` → `replay` に上がります([posegraphmodule.cpp:179](../../src/project/posegraphmodule.cpp#L179))。v0 で実際に現れるのは `direct` と `replay` の 2 つだけで、`baked` / `recorded` を宣言する同梱 op はありません。
 
-`ports` は `declared`(op が固定のポート一覧を持つ)か `parameter_dependent`(ノード自身の書きぶりから決まる)です。catalog が `parameter_dependent` と書く条件は「factory を持ち、**かつ宣言コントラクトの `inputs` / `outputs` が両方とも空**」で([graphmodule.cpp:123](../../src/project/graphmodule.cpp#L123))、これに当たるのは **`render.*` の 6 本だけ**です。`pose.state_machine` は包む文書に従ってポートが増えますが、`pose` 出力を宣言しているので catalog の `ports` は **`declared`** です —— 増えた入力ポートは解決後にしか見えません。Studio のキャンバスもこのフィールドで分岐します([graphcanvasmodel.cpp:434](../../src/devstudio/model/graphcanvasmodel.cpp#L715))。
+`ports` は `declared`(op が固定のポート一覧を持つ)か `parameter_dependent`(ノード自身の書きぶりから決まる)です。catalog が `parameter_dependent` と書く条件は「factory を持ち、**かつ宣言コントラクトの `inputs` / `outputs` が両方とも空**」で([graphmodule.cpp:123](../../src/project/graphmodule.cpp#L123))、これに当たるのは **`render.*` の 6 本だけ**です。`pose.state_machine` は包む文書に従ってポートが増えますが、`pose` 出力を宣言しているので catalog の `ports` は **`declared`** です —— 増えた入力ポートは解決後にしか見えません。Studio のキャンバスもこのフィールドで分岐します([graphcanvasmodel.cpp:434](../../src/devstudio/model/graphcanvasmodel.cpp#L724))。
 
 ### op 一覧
 
@@ -2731,7 +2731,7 @@ op は **module** が登録します。登録済み module はエンジンに 4 
 
 ### `definitions` と `graph.instance`
 
-`definitions` は **名前 → 部分グラフ文書**(`{nodes, outputs}`)の辞書です。部分グラフの入力口は `graph.input` という特別なノードで、`default` を書けます。root の `nodes` に置いた **`graph.instance`** がそれを 1 つ実体化します([graphcomposition.cpp:88](../../src/project/graphcomposition.cpp#L88))。
+`definitions` は **名前 → 部分グラフ文書**(`{nodes, outputs}`)の辞書です。部分グラフの入力口は `graph.input` という特別なノードで、`default` を書けます。root の `nodes` に置いた **`graph.instance`** がそれを 1 つ実体化します([graphcomposition.cpp:88](../../src/project/graphcomposition.cpp#L89))。
 
 ```json
 {"id": "hero_walk_run", "op": "graph.instance", "definition": "walk_run",
@@ -2741,7 +2741,7 @@ op は **module** が登録します。登録済み module はエンジンに 4 
 ```
 
 - 展開後のノード id は **`<instance id>/<定義内の id>`**(上なら `hero_walk_run/mix`)。エラーメッセージにはこの展開後の名前が出ます。
-- `owner` は **`scene` と `object` のちょうど 2 キー**で、`object` は **正の整数の authoring object id** です。この id は `scene.json` には書かれておらず、**宣言順に振られる通し番号**です(既定では 1 始まりですが、**文書内のシーンをまたいで連番**なので 2 つ目のシーンの先頭は 1 ではありません — [第4章](04_scene_ecs.md) §4.1。[graphcomposition.cpp:100](../../src/project/graphcomposition.cpp#L100))。**並べ替えると指す個体が変わります** —— 永続 id は v0 の穴として記録されています。存在しない id は **inactive**(装着が効かないだけで、ロードは止まりません)。ただし**無音ではなく**、そのシーンで初めて解決できなかった scope をまとめた `LOG_WARNING` が 1 回出ます([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L61)。[第4章](04_scene_ecs.md) §4.1)。存在する別の個体を指すと装着の解決が名前付きで失敗します。
+- `owner` は **`scene` と `object` のちょうど 2 キー**で、`object` は **正の整数の authoring object id** です。この id は `scene.json` には書かれておらず、**宣言順に振られる通し番号**です(既定では 1 始まりですが、**文書内のシーンをまたいで連番**なので 2 つ目のシーンの先頭は 1 ではありません — [第4章](04_scene_ecs.md) §4.1。[graphcomposition.cpp:100](../../src/project/graphcomposition.cpp#L101))。**並べ替えると指す個体が変わります** —— 永続 id は v0 の穴として記録されています。存在しない id は **inactive**(装着が効かないだけで、ロードは止まりません)。ただし**無音ではなく**、そのシーンで初めて解決できなかった scope をまとめた `LOG_WARNING` が 1 回出ます([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L61)。[第4章](04_scene_ecs.md) §4.1)。存在する別の個体を指すと装着の解決が名前付きで失敗します。
 - `definition` の綴り違いは `unknown graph definition`、定義の再帰は `recursive graph definition`、インスタンス同士の循環は `cyclic subgraph connection` です。
 - `definitions` の中のノードと、インスタンス経路越しのノードは **`edit_graph_document` では編集できません**(`graph.definition_immutable@1`)。[第13章](13_editor.md) を参照してください。
 
@@ -2756,7 +2756,7 @@ instance の入力ポート 1 本ごとに、値がどこから来ているか�
 | `default` | 定義側の `graph.input` ノードの **`default`** |
 | `override` | 実行時の上書き(`RenderContext::setValueGraphParameter` = `ctx.render().setValueGraphParameter` / RPC) |
 
-**優先順位は `edge > parameters > default`** です([graphcomposition.cpp:48](../../src/project/graphcomposition.cpp#L48))。以前の「edge と `parameters` の二重指定は拒否」は P-1 で**優先順に緩められました** —— 上の posegraph_demo の実物が、edge を張ったうえで `parameters.weight: 0.0` を残しているのはそのためです。**`parameters` は「接続を外したときに戻る値」**なので、消さずに残すのが正しい形です(そして `default` を持たない入力も外せるようになりました)。
+**優先順位は `edge > parameters > default`** です([graphcomposition.cpp:48](../../src/project/graphcomposition.cpp#L49))。以前の「edge と `parameters` の二重指定は拒否」は P-1 で**優先順に緩められました** —— 上の posegraph_demo の実物が、edge を張ったうえで `parameters.weight: 0.0` を残しているのはそのためです。**`parameters` は「接続を外したときに戻る値」**なので、消さずに残すのが正しい形です(そして `default` を持たない入力も外せるようになりました)。
 
 実行時の `override` は 4 つ目の mode として由来に出ます。ただし **edge が供給しているポートを上書きしようとすると `graph.override_shadowed@1`** になります —— 展開が `value.parameter` ノードを作っていないので上書きの着地点が無く、**黙って消えるのではなく名前で断ります**([scenegraphruntime.cpp:123](../../src/core/loader/scenegraphruntime.cpp#L123))。
 

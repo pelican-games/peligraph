@@ -4,8 +4,9 @@
 
 GitHub Actions の `CPU gate` は Windows/MSVC の configure、Debug 全ターゲット build、
 GPU 不要 CTest を pull request ごとに検査する。加えて Qt 6.10 を持つ別 job が
-`SKIP_DEVSTUDIO=OFF` / runtime shader compiler OFF で WP354 の frame-plan model と widget を
-`QT_QPA_PLATFORM=offscreen` で検査する。統合ブランチ
+`SKIP_DEVSTUDIO=OFF` / runtime shader compiler OFF で `studio_cpu` ラベルの
+Studio model/widget テストを検査する。Qt widget は offscreen、実 HWND を使う
+viewport の結合テストは Windows platform plugin を使う。統合ブランチ
 `codex/rendering-phase1-refactor` への push でも実行し、同じ pull request / ref の古い run は
 `concurrency.cancel-in-progress` で中止する。テストや build の自動 retry は行わない。
 
@@ -40,8 +41,11 @@ python -B test/ci/run_cpu_gate.py `
 最後のコマンドは次の CTest と SKIP policy 検査を一体で行う。
 
 ```powershell
-ctest --test-dir build -C Debug -LE gpu -j16 --output-on-failure
+ctest --test-dir build -C Debug -LE gpu --output-on-failure --no-tests=error
 ```
+
+Python policy の self-test、public API inventory、golden inventory は CTest に登録する。
+workflow の前段で同じチェックを重ねて実行しない。
 
 `-j16` は測定に基づく。この tier は直列で 124 秒、`-j16` で 43.8 秒である。
 GPU を含む全数は `-j4`(674 秒 → 346 秒)。それ以上は
@@ -54,9 +58,10 @@ GPU 対象だけを確認する場合は `ctest --test-dir build -C Debug -L gpu
 
 常設 CI0 の engine job と CI1 clean-clone job は **Qt を導入せず
 `-DSKIP_DEVSTUDIO=ON` を維持する**。一方、CI0 の `windows-msvc-studio` job は Qt 6.10 を導入し、
-`-DSKIP_DEVSTUDIO=OFF -DPELICAN_RUNTIME_SHADER_COMPILER=OFF` で WP354 の model/widget 2 件を
-offscreen 実行する。これにより既定 engine gate を GUI toolchain に結合せず、shader 投影の
-Studio consumer は毎 PR の門番に置く。D0 リンク境界の負例テストは Qt 非依存なので、
+`-DSKIP_DEVSTUDIO=OFF -DPELICAN_RUNTIME_SHADER_COMPILER=OFF` で
+`pelican_studio_cpu_tests` target をビルドし、`studio_cpu` ラベルの全ケースを実行する。
+対象は GPU を必要としない `devstudio_*` テストで、特定 WP の名前には限定しない。
+D0 リンク境界の負例テストは Qt 非依存なので、
 engine job にも引き続き登録する。
 
 devstudio のコンパイル、レイアウト永続化、frame plan 表示 model のテストは、Qt 6.10 を用意した
@@ -66,13 +71,19 @@ devstudio のコンパイル、レイアウト永続化、frame plan 表示 mode
 
 ```powershell
 cmake -S . -B build-studio -DSKIP_DEVSTUDIO=OFF `
-  -DCMAKE_PREFIX_PATH=<Qt-install-path>
-cmake --build build-studio --config Debug
-ctest --test-dir build-studio -C Debug --output-on-failure
+  -DCMAKE_PREFIX_PATH=<Qt-install-path> `
+  -DPELICAN_RUNTIME_SHADER_COMPILER=OFF -DPELICAN_WITH_SPIRV_LINK=OFF `
+  -DPELICAN_PYTHON_TESTS=OFF
+cmake --build build-studio --config Debug --target pelican_studio_cpu_tests
+python -B test/ci/run_studio_gate.py --build-dir build-studio --config Debug `
+  --artifacts-dir build-studio/ci-artifacts
 ```
 
-CI0 の WP354 行だけを手元で再現する場合は compiler OFF で対象 target をビルドし、
-`QT_QPA_PLATFORM=offscreen` を設定して `ctest -R "^WP354 Studio"` を実行する。
+CTest の各テストが必要な Qt platform を設定する。`studio_skip_allowlist.txt` は
+compiler OFF で動かせない WP344 planar prefilter / WP348 cube capture の2件だけを許可する。
+それ以外の skip、未実行、0件選択は gate の失敗になる。compiler ON で同じ gate を使う場合は、
+空の allowlist ファイルを `--allowlist <path>` で渡す。RT1a の compiler/SPIRV_LINK OFF
+試験も独立して維持する。
 
 ### GPU gate(`run_gpu_gate.py`)
 
@@ -107,12 +118,15 @@ WP241 はこの4件を allowlist に加えず修正した。2026-08-01 の再実
 GPU の無い機械で走らせると大半が skip して gate は落ちる。これは意図どおりで、
 上の「fail-on-no-GPU」の実体である。その場合は「no Vulkan device」の診断行が先頭に出る。
 
-Pythonはエンジン／ゲームの実行依存ではない。`BUILD_TESTING=OFF`なら探索自体を行わず、
-`BUILD_TESTING=ON`でも`PELICAN_PYTHON_TESTS=OFF`（既定）はPythonを探索しない。
+Pythonはエンジン／ゲームの実行依存ではない。`BUILD_TESTING=OFF`、または
+`PELICAN_PYTHON_TESTS=OFF`（既定）では、Python製テスト用の探索を行わない。
 手元で任意登録する場合だけ`AUTO`、完全なgateを要求するCI0/clean-cloneは
-`PELICAN_PYTHON_TESTS=ON`を指定する。OpenXRもchecked-in生成済みsourceを使う通常構成では
-上流CMakeの任意Python探索を局所的に無効化する。Python製CTestには`python`ラベルを付け、
+`PELICAN_PYTHON_TESTS=ON`を指定する。ただしOpenXR-SDK-Sourceのdispatch header生成は
+このテスト設定と独立してPythonを必要とする場合がある。Pythonなしの構成では
+`PELICAN_WITH_OPENXR=OFF`と`PELICAN_WITH_SPIRV_LINK=OFF`も指定する。
+Python製CTestには`python`ラベルを付け、
 実行時は`-B` / `PYTHONDONTWRITEBYTECODE=1`でsource treeへ`__pycache__`を作らない。
+GPU lease 用 Catch discovery の書き換えは CMake だけで行い、Python OFF 構成でも有効である。
 
 experimental SPIR-V linkerは`PELICAN_WITH_SPIRV_LINK=OFF`が既定である。ON時だけ
 pinned SPIRV-Toolsと`pelican-spv-link`をbuild graphへ加える。この依存の生成処理も

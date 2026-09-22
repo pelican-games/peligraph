@@ -111,9 +111,9 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
 | 事項 | 中身 |
 |---|---|
 | 語彙 | **ビルド機能ユニットのレジストリに載っている名前**です。`animation` は `PELICAN_WITH_ANIMATION` を指します([第2章 §2.2](02_getting_started.md))。今日の表は 1 行だけ([projectformat.cpp:80](../../src/project/projectformat.cpp#L80))で、`knownProjectRequirements()` がその一覧を返します |
-| 検証の時 | **parse 時**。[parseProjectRequirements()](../../src/project/projectformat.cpp#L110)が配列であること・非空文字列であること・表にある名前であることを見ます |
+| 検証の時 | **parse 時**。[parseProjectRequirements()](../../src/project/projectformat.cpp#L112)が配列であること・非空文字列であること・表にある名前であることを見ます |
 | 未知の名前 | `project.requires_unknown@1: project.json requires 'physics', which this engine does not know; known requirements: animation` —— **既知の一覧を添えて**拒否します |
-| 満たせないビルド | 名前は新設せず、そのユニットが既に使っている `animation.module_unavailable@1` を出します([projectformat.cpp:181](../../src/project/projectformat.cpp#L181))。`pelican_player` はこれを捕まえて 1 行表示して exit 1 します |
+| 満たせないビルド | 名前は新設せず、そのユニットが既に使っている `animation.module_unavailable@1` を出します([projectformat.cpp:181](../../src/project/projectformat.cpp#L183))。`pelican_player` はこれを捕まえて 1 行表示して exit 1 します |
 | コーパス側 | **プロジェクト群を舐めるテスト・スモークも同じ値を読みます**。満たせない要求を持つプロジェクトは失敗ではなく**名前付きの skip**(`skip posegraph_demo: requires animation (PELICAN_WITH_ANIMATION=OFF)`)になります。OFF build では宣言した 3 つ分の行と、必要なら `skip editor lane: …`、最後に件数の要約が出ます([第2章 §2.2](02_getting_started.md)) |
 | 出荷での宣言 | `animgraph_demo` / `vrm_xr_demo` / `posegraph_demo` の 3 つ |
 
@@ -550,7 +550,7 @@ engine 同梱 shader は `PELICAN_FEATURE_BLOOM_THRESHOLD` のように**自分�
 
 ### code を持つ package
 
-`code/CMakeLists.txt` は `pelican_package_sources(...)` を呼びます。ホスト project 側の `code/CMakeLists.txt` は `pelican_packages()` を 1 行呼ぶだけです(`pelican_cli project init` の雛形はこの 2 行を最初から書きます)。この 3 つの関数は `cmake/` ではなく **[src/player/CMakeLists.txt](../../src/player/CMakeLists.txt#L106)** にあります(`pelican_game_sources` :106 / [`pelican_package_sources`](../../src/player/CMakeLists.txt#L203) :203 / [`pelican_packages`](../../src/player/CMakeLists.txt#L260) :260)。
+`code/CMakeLists.txt` は `pelican_package_sources(...)` を呼びます。ホスト project 側の `code/CMakeLists.txt` は `pelican_packages()` を 1 行呼ぶだけです(`pelican_cli project init` の雛形はこの 2 行を最初から書きます)。この 3 つの関数は `cmake/` ではなく **[src/player/CMakeLists.txt](../../src/player/CMakeLists.txt#L107)** にあります(`pelican_game_sources` :106 / [`pelican_package_sources`](../../src/player/CMakeLists.txt#L205) :203 / [`pelican_packages`](../../src/player/CMakeLists.txt#L262) :260)。
 
 ```cmake
 # <project>/code/CMakeLists.txt
@@ -584,7 +584,7 @@ RPC `uninstall_package{namespace}` は `packages/<ns>/` を消し、`project.jso
 - pass 名・render target 名には namespace が付きません。同じ pass 名を持つ package が 2 つ入ると合成で衝突します。
 - `sha256` は `package list` が再計算して照合します。エンジン起動時には照合しません。
 - `provides.components` は複製されるだけで、engine 側の消費者はまだありません。この `components` は **`pelican.render_component`**(§3.12)のディレクトリを指す語で、**ECS のコンポーネント([第4章](04_scene_ecs.md))とも、`project.json` の他の語とも無関係**です。今日それを読むのは `import_render_feature` だけで、package 経由では読まれません。
-- **install が途中で死ぬと `packages/<namespace>.tmp-<pid>` が残ります**。install 自体は失敗時に自分の staging を消しますが、プロセスごと消えた場合の残骸を**誰も掃除しません**(export 側の `user://components/*.tmp-*` は次の export が掃除します — §3.12。install 側にその機構はありません)。残骸は `pelican_packages()` が飛ばすのでビルドは壊れませんが、手で消す必要があります —— **glob(`packages/*/package.json`)自体は残骸も拾い**、拾ってから `if(package_name MATCHES "\\.tmp-") continue()` で落とす形です([src/player/CMakeLists.txt:277](../../src/player/CMakeLists.txt#L277))。
+- **install が途中で死ぬと `packages/<namespace>.tmp-<pid>` が残ります**。install 自体は失敗時に自分の staging を消しますが、プロセスごと消えた場合の残骸を**誰も掃除しません**(export 側の `user://components/*.tmp-*` は次の export が掃除します — §3.12。install 側にその機構はありません)。残骸は `pelican_packages()` が飛ばすのでビルドは壊れませんが、手で消す必要があります —— **glob(`packages/*/package.json`)自体は残骸も拾い**、拾ってから `if(package_name MATCHES "\\.tmp-") continue()` で落とす形です([src/player/CMakeLists.txt:277](../../src/player/CMakeLists.txt#L279))。
 - `uninstall_package` が「まだ使われているか」を見るのは **rendering config の root 文書と、その preset だけ**です([renderconfigeditor.cpp:1119](../../src/core/communication/renderconfigeditor.cpp#L1119))。他の feature 文書の中から `project://packages/<ns>/` を参照していても検出されません。
 - shader を持ち込む package は未対応です(feature が `engine://` shader だけを参照できる範囲)。
 

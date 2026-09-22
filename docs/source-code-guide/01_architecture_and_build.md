@@ -11,7 +11,7 @@ Pelican2のコードは、最初から個々のクラスを読むより、次の
 | 実行ファイル | 引数を読み、ライブラリを起動する | [`src/player/main.cpp`](../../src/player/main.cpp#L593)、[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L14)、[`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5)、[`src/spvlink/main.cpp`](../../src/spvlink/main.cpp#L1)（オフラインSPIR-VリンカCLI、[`spvlink.hpp`](../../src/core/shader/spvlink.hpp)を使用） |
 | 純粋ロジック | JSONやテキスト形式のパース・検証・合成。Vulkan不要 | [`src/project/CMakeLists.txt`](../../src/project/CMakeLists.txt#L1) |
 | エンジン本体 | ECS、入力、scene、描画、音声、物理、保存、RPC | [`src/core/CMakeLists.txt`](../../src/core/CMakeLists.txt) |
-| ゲーム/検証 | プロジェクト固有コード、fixture、単体・結合・golden test | [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L1)、[`test/CMakeLists.txt`](../../test/CMakeLists.txt#L70) |
+| ゲーム/検証 | プロジェクト固有コード、fixture、単体・結合・golden test | [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L1)、[`test/CMakeLists.txt`](../../test/CMakeLists.txt#L61) |
 
 この分離で最も重要なのは `pelican_project` です。[`src/project/CMakeLists.txt`](../../src/project/CMakeLists.txt#L1) を見ると、依存は主に `nlohmann_json` とハッシュ用の `picosha2` だけです。project.json封筒とパス参照、scene形式、render feature合成、material/surface形式、JSON-RPCエンベロープ、import/assets manifestをGPUなしで扱えます。
 
@@ -59,13 +59,13 @@ core 側からこの葉を使うための橋が [`pelican_schema_core_adapter`](
 
 ### `pelican_core`
 
-宣言は [`src/core/CMakeLists.txt`](../../src/core/CMakeLists.txt) です。公開includeディレクトリに [`src/core/userpublic`](../../src/core/userpublic) と [`src/core`](../../src/core) を追加します。`userpublic`、`ecs`、`handle.hpp`、`physquery.hpp` の公開ヘッダを `dist*/lib/include` へコピーするPOST_BUILD処理は、[`PELICAN_AUTO_STAGE_SDK`](../../CMakeLists.txt#L52)（既定 **OFF**）がONのときだけ登録されます（[`pelican_copy_headers()`](../../src/core/CMakeLists.txt#L138)）。既定でOFFなのは、Debugの `pelican_core` アーカイブが約1 GiBあり、通常の再リンクごとにコピーすると書き込み量が跳ね上がるためです。`dist*/lib/include` が空でも異常ではありません。
+宣言は [`src/core/CMakeLists.txt`](../../src/core/CMakeLists.txt) です。公開includeディレクトリに [`src/core/userpublic`](../../src/core/userpublic) と [`src/core`](../../src/core) を追加します。`userpublic`、`ecs`、`handle.hpp`、`physquery.hpp` の公開ヘッダを `dist*/lib/include` へコピーするPOST_BUILD処理は、[`PELICAN_AUTO_STAGE_SDK`](../../CMakeLists.txt#L53)（既定 **OFF**）がONのときだけ登録されます（[`pelican_copy_headers()`](../../src/core/CMakeLists.txt#L138)）。既定でOFFなのは、Debugの `pelican_core` アーカイブが約1 GiBあり、通常の再リンクごとにコピーすると書き込み量が跳ね上がるためです。`dist*/lib/include` が空でも異常ではありません。
 
 ### `pelican_player`
 
-[`src/player/CMakeLists.txt`](../../src/player/CMakeLists.txt#L1) が `pelican_core` と `argparse` をリンクします。`-DPELICAN_PROJECT=<dir>` が指定されると、プロジェクトの `code/CMakeLists.txt` をincludeし、[`pelican_game_sources()`](../../src/player/CMakeLists.txt#L106) でゲームの `.cpp` を**SHAREDライブラリ `pelican_game_logic`** へ追加します（[`add_library(pelican_game_logic SHARED ...)`](../../src/player/CMakeLists.txt#L127)、WP110系列）。
+[`src/player/CMakeLists.txt`](../../src/player/CMakeLists.txt#L1) が `pelican_core` と `argparse` をリンクします。`-DPELICAN_PROJECT=<dir>` が指定されると、プロジェクトの `code/CMakeLists.txt` をincludeし、[`pelican_game_sources()`](../../src/player/CMakeLists.txt#L107) でゲームの `.cpp` を**SHAREDライブラリ `pelican_game_logic`** へ追加します（[`add_library(pelican_game_logic SHARED ...)`](../../src/player/CMakeLists.txt#L128)、WP110系列）。
 
-playerは `ENABLE_EXPORTS` と `/WHOLEARCHIVE:pelican_core` でSDKシンボルをexportし（[同 L2-L13](../../src/player/CMakeLists.txt#L2)）、game DLLはplayerのimport libへリンクします（[`pelican_configure_game_logic_target()`](../../src/player/CMakeLists.txt#L45)、`PELICAN_GAME_DLL=1` define）。Windowsでは `LoadLibraryW` より先に、境界と作業量を制限した **raw PE import reader**（raw = OS loader にイメージをマップさせず、DLLファイルのバイト列を自分で読んで PE の import directory を解釈する読み方。マップしないので、壊れたDLLでも DllMain が走らない。詳細は[第10章 §10.4](10_background_knowledge.md)）でSDK epoch anchor の通常・直接・名前付き import を検証します。anchor（またはSDK入口）を import するDLLは OS loader も初期化前に解決しますが、**provider-only の旧DLL**（`getApiV1` 系を export するだけで、SDK 入口も epoch anchor も import しないDLL。「提供するだけ」なので only。次段落で詳述）は未解決 import を持たないため、この常時 raw 診断が実行前 enforcement です。実行時ロードは [`gamelogicreload.cpp`](../../src/core/gamelogic/gamelogicreload.cpp#L354) の `LoadLibraryW`/`dlopen` で行い、起動時初期化は [`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L917)、ABI契約は [`gamelogic.hpp`](../../src/core/userpublic/gamelogic.hpp#L21)（単一定義の `gameLogicAbiVersion` から導く epoch anchor）です。
+playerは `ENABLE_EXPORTS` と `/WHOLEARCHIVE:pelican_core` でSDKシンボルをexportし（[同 L2-L13](../../src/player/CMakeLists.txt#L3)）、game DLLはplayerのimport libへリンクします（[`pelican_configure_game_logic_target()`](../../src/player/CMakeLists.txt#L46)、`PELICAN_GAME_DLL=1` define）。Windowsでは `LoadLibraryW` より先に、境界と作業量を制限した **raw PE import reader**（raw = OS loader にイメージをマップさせず、DLLファイルのバイト列を自分で読んで PE の import directory を解釈する読み方。マップしないので、壊れたDLLでも DllMain が走らない。詳細は[第10章 §10.4](10_background_knowledge.md)）でSDK epoch anchor の通常・直接・名前付き import を検証します。anchor（またはSDK入口）を import するDLLは OS loader も初期化前に解決しますが、**provider-only の旧DLL**（`getApiV1` 系を export するだけで、SDK 入口も epoch anchor も import しないDLL。「提供するだけ」なので only。次段落で詳述）は未解決 import を持たないため、この常時 raw 診断が実行前 enforcement です。実行時ロードは [`gamelogicreload.cpp`](../../src/core/gamelogic/gamelogicreload.cpp#L354) の `LoadLibraryW`/`dlopen` で行い、起動時初期化は [`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L917)、ABI契約は [`gamelogic.hpp`](../../src/core/userpublic/gamelogic.hpp#L21)（単一定義の `gameLogicAbiVersion` から導く epoch anchor）です。
 
 この診断が保証するのは SDK が生成する **通常・直接・名前付き・非 weak** の top-level import です。host module への delay-load / ordinal import は unsupported としてロード前に拒否し、`GetProcAddress`、依存 DLL 経由、ELF import reader はこの診断の範囲外です。Linux は `RTLD_NOW` による OS enforcement のみを使います。
 
@@ -77,12 +77,12 @@ playerは `ENABLE_EXPORTS` と `/WHOLEARCHIVE:pelican_core` でSDKシンボル�
 
 package は「エンジンのツリーの外で書かれ、プロジェクトへvendorされるディレクトリ」です（形式は [第3章 §3.16](03_project_and_loading.md)）。コードを持つ package のビルドは、同じ [`src/player/CMakeLists.txt`](../../src/player/CMakeLists.txt#L1) の中の2関数で閉じています。
 
-- [`pelican_packages()`](../../src/player/CMakeLists.txt#L260) — プロジェクトの `code/CMakeLists.txt` から呼びます。`<project>/packages/*/package.json` をglobしてソート（configure順を名前順に固定）し、`code/CMakeLists.txt` を持つものだけを `add_subdirectory()` します。install が中断して残った `.tmp-` 付きディレクトリは名前で飛ばします。引数は取りません。
-- [`pelican_package_sources()`](../../src/player/CMakeLists.txt#L203) — package 自身の `code/CMakeLists.txt` から呼びます。その package 用の **OBJECT ライブラリ**を作り、ソースを足します。package 単独のDLLは作らず、objectはプロジェクトのgame logic DLLへ合流します。
+- [`pelican_packages()`](../../src/player/CMakeLists.txt#L262) — プロジェクトの `code/CMakeLists.txt` から呼びます。`<project>/packages/*/package.json` をglobしてソート（configure順を名前順に固定）し、`code/CMakeLists.txt` を持つものだけを `add_subdirectory()` します。install が中断して残った `.tmp-` 付きディレクトリは名前で飛ばします。引数は取りません。
+- [`pelican_package_sources()`](../../src/player/CMakeLists.txt#L205) — package 自身の `code/CMakeLists.txt` から呼びます。その package 用の **OBJECT ライブラリ**を作り、ソースを足します。package 単独のDLLは作らず、objectはプロジェクトのgame logic DLLへ合流します。
 
-呼ぶ場所を間違えると configure が名前付きで止まります。`pelican_package_sources()` を package の外から呼ぶと「`pelican_packages()` がそのディレクトリを足すのだ」という [`FATAL_ERROR`](../../src/player/CMakeLists.txt#L208)、`pelican_packages()` を `pelican_game_sources(...)` より**前**に呼ぶと「package の object が合流すべきDLLがまだ無い」という [`FATAL_ERROR`](../../src/player/CMakeLists.txt#L309) です。`devcli project init` の雛形が2行を必ずこの順で書くのはこのためです。
+呼ぶ場所を間違えると configure が名前付きで止まります。`pelican_package_sources()` を package の外から呼ぶと「`pelican_packages()` がそのディレクトリを足すのだ」という [`FATAL_ERROR`](../../src/player/CMakeLists.txt#L210)、`pelican_packages()` を `pelican_game_sources(...)` より**前**に呼ぶと「package の object が合流すべきDLLがまだ無い」という [`FATAL_ERROR`](../../src/player/CMakeLists.txt#L311) です。`devcli project init` の雛形が2行を必ずこの順で書くのはこのためです。
 
-**forwarding-header SDK**。project code の DLL は include path に `src/core` を持つので、エンジン内部ヘッダへ手が届きます。package は外から来たコードなので、「公開SDKだけ」を約束ではなく**判定できる性質**にしてあります。[`pelican_package_sdk_include_dir()`](../../src/player/CMakeLists.txt#L159) が `PELICAN_AUTO_STAGE_SDK` の公開範囲（`src/core/userpublic/**`、`src/core/ecs/**`、`handle.hpp`、`phys/physquery.hpp`）と同じ集合について、[`package_sdk_header.hpp.in`](../../src/player/package_sdk_header.hpp.in) から1行だけの転送ヘッダ（`#include "<本物のヘッダ>"`）を `configure_file()` で生成し、そのディレクトリを package ターゲットへ渡します（[`target_include_directories`](../../src/player/CMakeLists.txt#L232) が渡すのは SDK 転送ヘッダ・`src/schema`・package 自身の 2 ディレクトリの計4つで、**`src/core` が無いこと自体が仕掛け**です。そう書いたコメントが[直前](../../src/player/CMakeLists.txt#L230)にあります）。コピーではなく転送なので、本物のヘッダは自分の相対includeを自分で解決し、内容が古くなりません。公開範囲の外のヘッダはこのディレクトリに入口が無いので、package からのincludeはコンパイルエラーになります。
+**forwarding-header SDK**。project code の DLL は include path に `src/core` を持つので、エンジン内部ヘッダへ手が届きます。package は外から来たコードなので、「公開SDKだけ」を約束ではなく**判定できる性質**にしてあります。[`pelican_package_sdk_include_dir()`](../../src/player/CMakeLists.txt#L161) が `PELICAN_AUTO_STAGE_SDK` の公開範囲（`src/core/userpublic/**`、`src/core/ecs/**`、`handle.hpp`、`phys/physquery.hpp`）と同じ集合について、[`package_sdk_header.hpp.in`](../../src/player/package_sdk_header.hpp.in) から1行だけの転送ヘッダ（`#include "<本物のヘッダ>"`）を `configure_file()` で生成し、そのディレクトリを package ターゲットへ渡します（[`target_include_directories`](../../src/player/CMakeLists.txt#L234) が渡すのは SDK 転送ヘッダ・`src/schema`・package 自身の 2 ディレクトリの計4つで、**`src/core` が無いこと自体が仕掛け**です。そう書いたコメントが[直前](../../src/player/CMakeLists.txt#L232)にあります）。コピーではなく転送なので、本物のヘッダは自分の相対includeを自分で解決し、内容が古くなりません。公開範囲の外のヘッダはこのディレクトリに入口が無いので、package からのincludeはコンパイルエラーになります。
 
 ### `pelican_openxr`
 
@@ -91,7 +91,7 @@ package は「エンジンのツリーの外で書かれ、プロジェクトへ
 ### `spvlink`
 
 `PELICAN_WITH_SPIRV_LINK=ON`時に
-[`src/spvlink/CMakeLists.txt`](../../src/spvlink/CMakeLists.txt#L2) が作るオフラインSPIR-VリンカCLI（実行ファイル名 `pelican-spv-link`）です。[`src/core/shader/spvlink.hpp`](../../src/core/shader/spvlink.hpp) の実装を使います。
+[`src/spvlink/CMakeLists.txt`](../../src/spvlink/CMakeLists.txt#L1) が作るオフラインSPIR-VリンカCLI（実行ファイル名 `pelican-spv-link`）です。[`src/core/shader/spvlink.hpp`](../../src/core/shader/spvlink.hpp) の実装を使います。
 
 ### `pelican_cli`
 
@@ -144,7 +144,7 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 トップレベルの [`cmake_minimum_required(VERSION 3.13)`](../../CMakeLists.txt#L1) は多くのポリシーを未設定のまま残し、CMake 4.x は未設定をOLDとして解決します。その結果「CIの古いCMakeでは通るが、手元の新しいCMakeではconfigureが落ちる」種類の破綻が2系統あります。CMP0118はトップレベル1箇所の宣言で固定できますが、CMP0169はトップレベルに閉じず、`FetchContent_Populate()` を直接呼ぶ箇所ごとに戻す形（サブディレクトリの `src/core/imgui/CMakeLists.txt` を含む）です。原因は同じなので、片方を触るときはもう片方も見ます。
 
 - [`cmake_policy(SET CMP0118 NEW)`](../../CMakeLists.txt#L10) — ファイル冒頭、`project()` より前に置いています。battery::embedは**ビルド時にファイルの中身を byte 配列としてC++ソースへ焼き込み、実行時には `b::embed<"id">()` で取り出す**静的埋め込みライブラリです（実行時にファイルを探しません）。エンジン標準のshader SPIR-Vやpreset JSONをこれで埋め込むから、`engine://` 参照が**プロジェクト側にコピーを置かなくても**解決できます（`engine://` として引ける資源の取り出し口は [`engineResource()`](../../src/core/loader/engineresources.cpp#L161) で、その中に並ぶ `PELICAN_ENGINE_RESOURCE` マクロが全量です。なお `b::embed` 自体はここ以外でも直接使われており、調査時点では `standardmaterialresource.cpp` / `shadowdepthpasscontainer.cpp` / `spriterenderer.cpp` / `uirenderer.cpp` が自前の shader をこの経路を通さず埋め込んでいます）。そのbattery::embedは `embed.hpp` の生成を `cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL ...)` でトップレベルディレクトリへ遅延させ、そのスコープから `file(GENERATE)` で書きます。一方それを `target_sources` で消費するのは [`b_embed_proxy_target(pelican_core pelican_resources)`](../../src/core/resources/CMakeLists.txt#L1) が作る `pelican_resources` で、`b_embed()` は `src/core/resources` のディレクトリスコープで走ります。CMP0118がOLDだと `GENERATED` プロパティがディレクトリ境界を越えないため、generate段階で `battery/embed.hpp` が「存在しないsource file」として拒否されます。
-- `CMP0169`（`FetchContent_Populate` の単独呼び出しの禁止）— こちらはNEWにできないので、必要な箇所ごとに `cmake_policy(PUSH)` / `SET ... OLD` / `POP` で囲んでOLDへ戻しています。`FetchContent_MakeAvailable()` を使わず、展開だけしてターゲットの作り方を自分で決めている依存が対象で、トップレベルのminiaudio・[`FetchContent_Populate(picosha2)`](../../CMakeLists.txt#L179)・SPIRV-Headers・tinyexr・JoltPhysicsの5箇所に、`PELICAN_WITH_IMGUI` がONのときだけ通る [`FetchContent_Populate(imgui_vendor)`](../../src/core/imgui/CMakeLists.txt#L14) を加えた6箇所に同じ定型が並びます。`FetchContent_Populate()` を直接呼ぶ場所を増やすたびに同じ定型が要る、という形です。
+- `CMP0169`（`FetchContent_Populate` の単独呼び出しの禁止）— こちらはNEWにできないので、必要な箇所ごとに `cmake_policy(PUSH)` / `SET ... OLD` / `POP` で囲んでOLDへ戻しています。`FetchContent_MakeAvailable()` を使わず、展開だけしてターゲットの作り方を自分で決めている依存が対象で、トップレベルのminiaudio・[`FetchContent_Populate(picosha2)`](../../CMakeLists.txt#L180)・SPIRV-Headers・tinyexr・JoltPhysicsの5箇所に、`PELICAN_WITH_IMGUI` がONのときだけ通る [`FetchContent_Populate(imgui_vendor)`](../../src/core/imgui/CMakeLists.txt#L14) を加えた6箇所に同じ定型が並びます。`FetchContent_Populate()` を直接呼ぶ場所を増やすたびに同じ定型が要る、という形です。
 
 ## 1.3 `src/core` の責務地図
 
@@ -192,7 +192,7 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 | [`ecs/archetypemigration.hpp`](../../src/core/ecs/archetypemigration.hpp#L121) | 失敗しても原子的なarchetype移行と entity mutation のトークン（[第4章](04_ecs_deep_dive.md)） |
 | [`gamelogic/behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L170) | オブジェクトbehaviorのアタッチメントarena。ECS Componentではない別の所有者 |
 | [`imgui/inspector.hpp`](../../src/core/imgui/inspector.hpp#L167) / [`imgui/assetbrowser.hpp`](../../src/core/imgui/assetbrowser.hpp#L36) | schema駆動inspectorパネルと読み取り専用asset browserパネル |
-| [`loader/authoringscenedocument.hpp`](../../src/core/loader/authoringscenedocument.hpp#L90) | `AuthoringSceneDocument` / `AuthoringSceneDocumentStage`（[第3章](03_project_and_loading.md)） |
+| [`loader/authoringscenedocument.hpp`](../../src/core/loader/authoringscenedocument.hpp#L95) | `AuthoringSceneDocument` / `AuthoringSceneDocumentStage`（[第3章](03_project_and_loading.md)） |
 | [`loader/componentcodec.hpp`](../../src/core/loader/componentcodec.hpp#L309) | component codecの五点セット。componentのJSON受理仕様の正 |
 | [`loader/editorprojectiontransaction.hpp`](../../src/core/loader/editorprojectiontransaction.hpp#L25) | 編集のprepare/publish transactionと8種のadapter kind |
 | [`loader/vrmadecoder.hpp`](../../src/core/loader/vrmadecoder.hpp#L25) / [`model/vrmaanimation.hpp`](../../src/core/model/vrmaanimation.hpp#L87) / [`animation/vrmaretarget.hpp`](../../src/core/animation/vrmaretarget.hpp#L124) | `.vrma` decode → 型付きチャンネル → versioned retarget profile |
@@ -258,7 +258,7 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 
 ## 1.6 ビルド機能フラグ
 
-機能フラグの定義は [`NAME PELICAN_RUNTIME_SHADER_COMPILER` 以下のregistry](../../cmake/pelican_feature_registry.cmake#L103) です。トップレベルはregistryからCMake optionを宣言します。現在の登録は16件です。下表のうちregistry由来は12件（`PELICAN_ENABLE_ASAN` だけはregistryではなくトップレベルの [`option()`](../../CMakeLists.txt#L45) なので別枠）で、残りは [`NAME PELICAN_WITH_SPIRV_LINK`](../../cmake/pelican_feature_registry.cmake#L110)、[`NAME SKIP_DEVSTUDIO`](../../cmake/pelican_feature_registry.cmake#L215)、そして後述の従属option 2件です。
+機能フラグの定義は [`NAME PELICAN_RUNTIME_SHADER_COMPILER` 以下のregistry](../../cmake/pelican_feature_registry.cmake#L103) です。トップレベルはregistryからCMake optionを宣言します。現在の登録は16件です。下表のうちregistry由来は12件（`PELICAN_ENABLE_ASAN` だけはregistryではなくトップレベルの [`option()`](../../CMakeLists.txt#L46) なので別枠）で、残りは [`NAME PELICAN_WITH_SPIRV_LINK`](../../cmake/pelican_feature_registry.cmake#L110)、[`NAME SKIP_DEVSTUDIO`](../../cmake/pelican_feature_registry.cmake#L215)、そして後述の従属option 2件です。
 
 registryの各行が持つキーのうち、この節で効くのは2つです。`BASELINE` は**対照ビルドの基準になる値**（WPごとの対照matrixは、この基準から対象フラグだけを動かして作られます）で、同時に**`OPTION_DEFAULT` が明示されていなければCMake optionの既定値も兼ねます**。`OPTION_DEFAULT` はその兼務を切り離し、既定値だけを別に指定するキーです（registry冒頭のコメントが規範）。
 
@@ -284,7 +284,7 @@ registryの各行が持つキーのうち、この節で効くのは2つです�
 
 1. **catalog から `pelican.pose` が消える** — [`makeBuiltinGraphModuleRegistry()`](../../src/project/graphmodule.cpp#L253) が `registerPoseGraphModule()` を呼ばないので、`pelican_cli graph-catalog` の出力は4 moduleから3 moduleになり、`pose.blend` / `pose.clip_sample` / `pose.retarget` / `pose.skeletal` / `pose.state_machine` / `pose.transform` の6 opだけが落ちます。これを検査するのが [`test/run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake#L117) です。2 本の catalog を突き合わせるのではなく、**1 本の catalog を `WITH_ANIMATION` の期待値に照らします**（module 数は [3 + ON なら 1](../../test/run_devcli_graph_catalog.cmake#L23)、名前空間と pose op の有無は [期待値の組み立て](../../test/run_devcli_graph_catalog.cmake#L74)）。同じ実行が [`docs/v0_freeze.md` の op 表とも突き合わせ](../../test/run_devcli_graph_catalog.cmake#L113)、OFF build で欠けてよいのは `pose.*` だけ、という形で差を固定します。
 2. **`pose.*` を書いた文書は `graph.operation_unregistered@1`** — op 名の特別扱いが無いので、未登録という一般の理由でそのまま落ちます（§1.5）。
-3. **`requires: ["animation"]` を書いたprojectは開く前に落ちる** — 語彙は `animation` 1語だけで（[`knownProjectRequirements()`](../../src/project/projectformat.hpp#L52)）、封筒のパース時点で `animation.module_unavailable@1` を投げます（[`parseProjectEnvelopeJson()` 内](../../src/project/projectformat.cpp#L180)）。node を1つずつ辿って気付く、という発見の仕方をさせないための前倒しです。
+3. **`requires: ["animation"]` を書いたprojectは開く前に落ちる** — 語彙は `animation` 1語だけで（[`knownProjectRequirements()`](../../src/project/projectformat.hpp#L52)）、封筒のパース時点で `animation.module_unavailable@1` を投げます（[`parseProjectEnvelopeJson()` 内](../../src/project/projectformat.cpp#L182)）。node を1つずつ辿って気付く、という発見の仕方をさせないための前倒しです。
 4. **scene に animation component があれば prepare で落ちる** — [`validateResolvedSceneFeatureBindings()`](../../src/core/loader/scene.cpp#L63) が同じ `animation.module_unavailable@1` を、objectの名前を添えて投げます。componentのcodec自体は残るのでOFFビルドのツールでもsceneを読み書きでき、[`AnimationSystem` の登録だけが消えます](../../src/core/ecs/predefined.cpp#L54)（「登録されているが何もしない」ではありません）。
 
 ABIの交渉入口（`getApiV1` / `getPoseStagingServiceV1` / `getApplicationServiceV1`）はOFFでもexportされ続けます。3つとも、out 引数が null なら `invalid_argument`、そうでなければ `unsupported_version` です（[`animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L13)）。SDKに対してビルドされたgame DLLが**ロードはできて、名前で「このバイナリにはアニメーションが無い」と分かる**ようにするためです。
@@ -317,9 +317,9 @@ ABIの交渉入口（`getApiV1` / `getPoseStagingServiceV1` / `getApplicationSer
 | tinygltf | glTF/GLB/VRMロード（[`GltfLoader`](../../src/core/model/gltf.cpp#L2450)） |
 | stb / tinyexr | PNG等とEXRの画像ロード |
 | miniaudio | 音声backend |
-| OpenXR SDK | loader + headers（[OpenXR-SDK-Sourceの取得](../../CMakeLists.txt#L270)、`PELICAN_WITH_OPENXR` 時） |
-| JoltPhysics | optionalの物理provider（[JoltPhysicsの取得](../../CMakeLists.txt#L420)、`PELICAN_WITH_JOLT_PHYSICS` 時） |
-| SPIRV-Tools | experimental SPIR-V linking（`PELICAN_WITH_SPIRV_LINK=ON`時だけ取得、[`if(PELICAN_WITH_SPIRV_LINK)`](../../CMakeLists.txt#L167)） |
+| OpenXR SDK | loader + headers（[OpenXR-SDK-Sourceの取得](../../CMakeLists.txt#L271)、`PELICAN_WITH_OPENXR` 時） |
+| JoltPhysics | optionalの物理provider（[JoltPhysicsの取得](../../CMakeLists.txt#L419)、`PELICAN_WITH_JOLT_PHYSICS` 時） |
+| SPIRV-Tools | experimental SPIR-V linking（`PELICAN_WITH_SPIRV_LINK=ON`時だけ取得、[`if(PELICAN_WITH_SPIRV_LINK)`](../../CMakeLists.txt#L168)） |
 | Dear ImGui | 開発者UI（`PELICAN_WITH_IMGUI` 時） |
 | battery::embed | shaderのSPIR-VとengineリソースJSON（`render_pipelines/`、`features/`、`surfaces/` など）をバイナリへ埋め込む。入口は [`b_embed_proxy_target(pelican_core pelican_resources)`](../../src/core/resources/CMakeLists.txt#L1) で、以降に並ぶ `b_embed()` の一覧が `engine://` で引ける資源の全量。ビルドフラグで消えうる資源の扱いは2通りに分かれます。`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS` 側は [`PELICAN_OPTIONAL_ENGINE_RESOURCE_IDS`](../../src/core/resources/CMakeLists.txt#L139) に積まれて `pelican_optional_engine_resources.inc` として生成されますが、[`embed_shader(vat.vert)`](../../src/core/resources/CMakeLists.txt#L7) だけはこの一覧に載らず、[`engineResource()`](../../src/core/loader/engineresources.cpp#L161) 側の `#if PELICAN_WITH_VAT` と対で書かれています。書き込み量削減のため [`cmake/patch_battery_embed_low_write.cmake`](../../cmake/patch_battery_embed_low_write.cmake) を `PATCH_COMMAND` で当てており、CMP0118のpinもこの依存のため |
 | picosha2 | SHA-256。`pelican_project` の形式ハッシュに加え、`pelican_core` でもscene snapshot digestやVRMA content hashに使います（[`target_link_libraries(pelican_core PRIVATE picosha2)`](../../src/core/CMakeLists.txt#L105)） |
@@ -328,7 +328,7 @@ ABIの交渉入口（`getApiV1` / `getPoseStagingServiceV1` / `getApplicationSer
 | Catch2 | 単体テスト |
 | Qt6/QML | Pelican Studio |
 
-外部依存のバージョンはトップレベルの `GIT_TAG` 群（先頭は [`GIT_TAG v10.2.0`](../../CMakeLists.txt#L74)）に固定されています。picosha2はもともと「純粋層だけの依存」でしたが、現在は `pelican_core` からも使われる点に注意してください。
+外部依存のバージョンはトップレベルの `GIT_TAG` 群（先頭は [`GIT_TAG v10.2.0`](../../CMakeLists.txt#L75)）に固定されています。picosha2はもともと「純粋層だけの依存」でしたが、現在は `pelican_core` からも使われる点に注意してください。
 
 ## 1.8 読解用のビルド
 
@@ -425,12 +425,12 @@ configuration smokeはregistry matrix生成、対照build、clean-cloneの3 job�
 
 ### GPU テストの直列化: label と `RESOURCE_LOCK` と launcher の三点一致
 
-`gpu` ラベルの付いた CTest は、1つの `ctest` 実行の中では [`RESOURCE_LOCK pelican_gpu`](../../test/CMakeLists.txt#L42) で直列化され、**プロセスを跨ぐ側**は [`pelican_gpu_lease_run`](../../test/CMakeLists.txt#L28) という launcher が machine-wide の lease で担います。この launcher は意図的に `pelican_core` へ依存しません（本番ビルドが壊れても lease が消えないため）。
+`gpu` ラベルの付いた CTest は、1つの `ctest` 実行の中では [`RESOURCE_LOCK pelican_gpu`](../../test/CMakeLists.txt#L41) で直列化され、**プロセスを跨ぐ側**は [`pelican_gpu_lease_run`](../../test/CMakeLists.txt#L27) という launcher が machine-wide の lease で担います。この launcher は意図的に `pelican_core` へ依存しません（本番ビルドが壊れても lease が消えないため）。
 
 ビルド構成として押さえるのは次の3点です。lease 自体の状態機械は[第7章](07_tools_rpc_tests.md)にあります。
 
 - `gpu` label / `RESOURCE_LOCK=pelican_gpu` / launcher 起動の3つは**必ず同時に成立**していなければならず、[`verify_gpu_lease_inventory.py`](../../test/ci/verify_gpu_lease_inventory.py#L6) が CTest の inventory を読んで食い違いを落とします。
-- 手書きの `add_test()` は [`pelican_gpu_test_properties(<test> <intrinsic>)`](../../test/CMakeLists.txt#L37) を呼び、Catch2 が discover した分は build 後に `add_test()` 行を書き換えて launcher を差し込みます。
+- 手書きの `add_test()` は [`pelican_gpu_test_properties(<test> <intrinsic>)`](../../test/CMakeLists.txt#L36) を呼び、Catch2 が discover した分は build 後に `add_test()` 行を書き換えて launcher を差し込みます。
 - CTest の `TIMEOUT` は `lease_timeout_max + intrinsic + grace` で生成し、3つの数値の出所は [`test/gpu_lease_config.cmake`](../../test/gpu_lease_config.cmake#L3) の1ファイルだけです。
 
 ### test-only TU: `PELICAN_TESTING` は使わない

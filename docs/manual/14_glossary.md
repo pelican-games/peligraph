@@ -65,7 +65,7 @@
 
 **フラグメント参照(`#`)** — `models/town.glb#Building_02` のように、**コンテナ内の 1 要素**を指す参照。解決の過程でフラグメントを落とさずに運ぶのが規約です。初出: [第5章 §5.6](05_assets.md#56-フラグメント参照とアセットコンテナ実ロード対応wp55777984)。
 
-**authoring / runtime** — 同じシーンの 2 つの表現。**authoring** は編集の正本(`AuthoringSceneDocument`)で、オブジェクトの順序や `AuthoringObjectId` を保ち、rename / reorder しても参照が切れないようにします。**runtime** はエンジンが実際に動かす ECS 側の姿です。エディタは authoring を編集し、その結果が runtime へ投影されます。初出: [第3章 §3.9](03_project_format.md#39-シーンドキュメントと保存エディタ経路wp149158166168)。([AuthoringSceneDocument](../../src/core/loader/authoringscenedocument.hpp#L90))
+**authoring / runtime** — 同じシーンの 2 つの表現。**authoring** は編集の正本(`AuthoringSceneDocument`)で、オブジェクトの順序や `AuthoringObjectId` を保ち、rename / reorder しても参照が切れないようにします。**runtime** はエンジンが実際に動かす ECS 側の姿です。エディタは authoring を編集し、その結果が runtime へ投影されます。初出: [第3章 §3.9](03_project_format.md#39-シーンドキュメントと保存エディタ経路wp149158166168)。([AuthoringSceneDocument](../../src/core/loader/authoringscenedocument.hpp#L95))
 
 **3 段合成** — `basic_config` の値を「エンジン既定 → `project.json` → `.pelican/local.json`」の 3 段で重ねて決めること。deep merge ではなく**パス単位で問い合わせる**方式なので、どの段が勝ったかを後から言えます。初出: [第3章 basic_config と「3 段合成」](03_project_format.md#basic_config-と3-段合成)。
 

@@ -251,7 +251,7 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 
 | 穴 | 記録している節 |
 |---|---|
-| `graph.instance.owner` の authoring object id が非永続(保存 → 再読込を跨ぐと別個体を指しうる)。不一致は無音で inactive | 「未了項目と再開順」現況 / `### P-1:` / `### P-2b:` |
+| `graph.instance.owner` の authoring object id — **解消**。scene 保存時に ID と次の採番値を永続化し、削除・再読込後も別個体へ付け替わらない | `sceneformat` / `AuthoringSceneDocument` の `[persistent-identity]` 回帰テスト |
 | 加速構造 row transform の identity 比較が ±0 を別物とする(`accelerationstructure.cpp`) | 「未了項目と再開順」 |
 | `frameIndex() == 0` の間は animation frame を公開できない(`setTime` だけで駆動する headless 呼び手) | 「未了項目と再開順」現況 |
 | `SceneLoader::load` を 2 回呼ぶと hang | `### AG-1b:` |
@@ -265,25 +265,11 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 | shader source の改行と cache key | `### WP386: RT3-2` |
 | preset + graph root の `region_replacements` | `### P-2a-4a:` / `### P-2a-3:` |
 | `--start-time` の `llround` overflow(≈1e17 s。今日は起きない) | `### O-1:` |
-| **`requires` は test 時の sweep しか読まない**: `PELICAN_TEST_PROJECTS_DIR` を向けた `PELICAN_WITH_ANIMATION=OFF` build は、skip される project の game logic DLL を configure 時に作り、link に失敗する(下の段落) | `### R-3:` |
-| `dist_debug/` が source tree 直下なので、同じ worktree の ON build と OFF build が `pelican_cli` / `pelican_studio` を上書きし合う(catalog の module 数を取り違える) | `### R-3:` |
-| `pelican_studio` が window close で exit 139(SIGSEGV)する(X button でも `CloseMainWindow` でも。実害は `pelican_player.exe` の孤児化。別 session の GUI backlog、未調査)| GUI session の報告(N-1b / N-2) |
+| `requires` を configure が読まず OFF build で DLL の link に失敗する — **解消**。configure と test sweep が同じ宣言表を使い、要求を満たさない sample target を作らない | `projectrequirements.def` / `pelican_project_requirements.cmake` |
+| source tree の `dist_debug/` を別 build が上書きする — **解消**。実行ファイルは `<build>/dist/<config>/`、配布物は `cmake --install --component Runtime` でまとめる | `pelican_runtime_layout.cmake` / README |
+| `pelican_studio` の終了時クラッシュ — **終了時に届く RPC 通知の経路を修正**。Windows で保存・project 切替後のアクセス違反を再現し、viewport 破棄前の通知切断で正常終了を確認。scenario runner も異常終了を失敗として扱う | `EmbeddedViewport::~EmbeddedViewport` / `[shutdown]` 回帰テスト |
 | `test/gpu_lease_run.cpp:94` が GPU lease の log を消さず `%TEMP%` に `pelican_gpu_lease_v1.<pid>.log` が数千個積もる(R-1 の temp dir flake の真の候補)| `### R-1:` の完了記録 |
 | N-3 のパンは scroll bar 経由なので、**描画が view に収まっている間は中ボタンドラッグが何も動かさない**(使い勝手の穴)| `### Q-1b:` の着地前の実測(2026-09-17)。**N-4 `af6e335f` で解消**(view が余白を持ち `centerOn` で動く)|
-**`requires` を読まない configure 時の game logic 目標**(R-3 で見つけ、R-3 では直さない)。
-corpus の game logic DLL 目標は `test/CMakeLists.txt` の
-`file(GLOB_RECURSE pelican_catalog_project_manifests CONFIGURE_DEPENDS ... "${pelican_catalog_projects_dir}/*/project.json")`
-が舐めた各 project について、`code/CMakeLists.txt` があれば `pelican_add_catalog_game_logic()` を呼ぶ形で
-**configure 時に**作られる。この glob は project.json の `requires` を見ないので、
-`PELICAN_TEST_PROJECTS_DIR` を出荷 corpus に向けた `PELICAN_WITH_ANIMATION=OFF` build では、
-sweep が実行時に名前付き skip する project の DLL まで作ろうとし、
-`pelican_catalog_animgraph_demo_game_logic` と `pelican_catalog_vrm_xr_demo_game_logic` が
-`AnimationGraph::parseDocumentV1` / `EvaluatorV1::*` の未解決シンボル各 9 件(LNK2019 → LNK1120)で link に失敗する。
-つまり **build が赤になるのは test が skip を決めるより前**で、`requires` では防げない。
-直し方は同じ glob の中で project.json の `requires` を読み、
-この build が満たせない要求を持つ project では `pelican_add_catalog_game_logic()` を呼ばないこと
-(skip の語彙は `run_project_catalog_smoke.cmake` の表と同じ `{animation}` → `PELICAN_WITH_<NAME>` を使う。
-CMake 側で 2 つ目の表を作らないため、語彙の置き場は 1 箇所に寄せる)。
 | `studio_scenario_graph_edit_roundtrip` が赤(帯の editor が ~500 ms で閉じる)| 根本は N-2 `02a3d285` の `FocusOut` 規則。この機械では導入 commit `06829720` から一度も緑でなかった(Q-1 の記録は別 tree)。`83645084` の全数 1947 はこのシナリオを含まない。**Q-3 `9be4113f` で修正**(環境依存の timing ではなく実欠陥) |
 
 ## 5. v0 で入ったもの

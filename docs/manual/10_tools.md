@@ -17,13 +17,19 @@
 
 | ターゲット | 種類 | 出力先 | 役割 |
 |---|---|---|---|
-| `pelican_player` | exe | build ツリー内(`build/src/player/<Config>/`) | ゲームランタイム。ウィンドウ / ヘッドレス / RPC の 3 モード |
+| `pelican_player` | exe | `build/dist/<Config>/` | ゲームランタイム。ウィンドウ / ヘッドレス / RPC の 3 モード |
 | `pelican_game_logic` | **DLL**(`PELICAN_PROJECT` 指定時) | player と同ディレクトリ | プロジェクトの `code/` のビルド産物(✅WP90 で静的リンクから移行) |
-| `pelican_cli` | exe | `dist/`(Debug は `dist_debug/`) | 開発 CLI。**エンジン(pelican_core)にリンクしない** |
-| `pelican_studio` | exe(Qt6) | `dist/`(同上) | Widgets エディタ shell + 別 process engine viewport。render-tools dock は **3 タブ**(Frame Plan / Features / Graph)で、Inspector にグラフ装着欄がある(§10.7) |
-| `pelican-spv-link` | exe | build 内 | `PELICAN_WITH_SPIRV_LINK=ON`時だけ作るexperimental SPIR-V リンカ CLI([第6章](06_rendering.md) §6.7) |
+| `pelican_cli` | exe | `build/dist/<Config>/` | 開発 CLI。**エンジン(pelican_core)にリンクしない** |
+| `pelican_studio` | exe(Qt6) | `build/dist/<Config>/` | Widgets エディタ shell + 別 process engine viewport。render-tools dock は **3 タブ**(Frame Plan / Features / Graph)で、Inspector にグラフ装着欄がある(§10.7) |
+| `pelican-spv-link` | exe | `build/dist/<Config>/` | `PELICAN_WITH_SPIRV_LINK=ON`時だけ作るexperimental SPIR-V リンカ CLI([第6章](06_rendering.md) §6.7) |
 | `pelican_project` | 静的 lib | build 内 | 解釈レイヤ(JSON パース/検証の純ロジック) |
-| `pelican_core` | 静的 lib | build 内+`dist/lib` | エンジン本体。公開ヘッダは `dist/lib/include` へコピー |
+| `pelican_core` | 静的 lib | build 内 | エンジン本体。`PELICAN_AUTO_STAGE_SDK=ON` のときだけ archive と公開ヘッダを `build/dist/<Config>/lib/` へコピー |
+
+`pelican_runtime` target は有効な実行物と通常の project DLL をまとめてビルドします。
+`cmake --install build-release --config Release --component Runtime --prefix build-release/package`
+は `package/bin` に実行物と Windows の Qt runtime/plugin を組み立てます。先に
+`cmake --build build-release --config Release --target pelican_runtime` を実行してください。
+プロジェクトのコンテンツはこの component に含みません。全手順は [第2章 §2.2](02_getting_started.md#22-ビルド)。
 
 ## 10.2 pelican_player CLI リファレンス
 
@@ -347,7 +353,7 @@ except PelicanRpcError as error:
     print(error.code, error.message, error.data)
 ```
 
-`exe_path` を省略すると `build/src/player/Debug/pelican_player.exe` を探索します。
+`exe_path` を省略すると `build/dist/Debug/pelican_player.exe` を探索します。
 別の build ツリーを使う場合は `PelicanRpc(project, exe_path=player_path)` と明示して
 ください。`call(method, params)` と各 helper は params の辞書を変換・検証せず
 エンジンへ渡します。形式の正は常に `rpcserver.cpp` です。常駐プロセスを残さない
@@ -475,8 +481,9 @@ pelican_cli assets status --project mygame              # OK / MISSING / MISMATC
 
 ```sh
 pelican_cli dist-config projects/mygame --out build-dist/preset.cmake
-cmake . -B build-dist -C build-dist/preset.cmake -DCMAKE_BUILD_TYPE=Release
-cmake --build build-dist --config Release
+cmake . -B build-dist -C build-dist/preset.cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DSKIP_DEVSTUDIO=ON
+cmake --build build-dist --config Release --target pelican_runtime
+cmake --install build-dist --config Release --component Runtime --prefix build-dist/package
 ```
 
 ※ AUDIO / PHYSICS 系は導出対象外(常に既定 ON)。B3(embed サブセット)・B4(shaderc OFF 焼き込み配布)は 📐設計のみ。
@@ -596,7 +603,7 @@ behavior paramsをside-decodeします。不適合なら旧DLL/runtimeを一切�
 ワークスペース配置の永続化、pass の著作フォーム(fullscreen / material / raster と preset pass の保存)、
 `features[]` とその scalar パラメータの編集・materialize、共通グラフの閲覧と編集、
 Inspector からのグラフ装着まで実装済み。**
-起動は `cmake --build ./build --target run_studio`。
+起動は `cmake --build ./build --config Debug --target run_studio`。
 
 ### `pelican_studio` の CLI
 
@@ -609,7 +616,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 ```
 
 `--tab` が取るのは `frame_plan` / `render_features` / `graph` の 3 つ
-([一覧](../../src/devstudio/view/mainwindow.cpp#L625))。**未知の名前は window を作る前に console へ
+([一覧](../../src/devstudio/view/mainwindow.cpp#L661))。**未知の名前は window を作る前に console へ
 理由を出して終了コード 2** です([検査](../../src/devstudio/main.cpp#L36)) —— window を開いて「たまたま前にあった
 タブ」を見せると、綴り間違いが成功に見えるためです。`--tab` は `openProject` の**後**に適用されます
 ([順序](../../src/devstudio/view/uimain.cpp#L62)) —— project を開くとその project のツール配置が復元され、
@@ -627,21 +634,22 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 変わりません。listen できたときだけ `automation listening: <endpoint>` を標準出力に出します
 ([その 1 行](../../src/devstudio/view/uimain.cpp#L55))。開けなかったときは理由を出して **終了コード 3** です。
 
-回す側は [`tools/studio_drive.py`](../../tools/studio_drive.py#L892)(`uv run`、標準ライブラリだけ)です。
+回す側は [`tools/studio_drive.py`](../../tools/studio_drive.py#L893)(`uv run`、標準ライブラリだけ)です。
 Studio を `--automation --project --tab` で起動し、シナリオ JSON(`test/studio_scenarios/<名前>.json`)の step を
 順に送り、期待を検査して `report.json` を書きます。
 
 ```sh
-uv run tools/studio_drive.py --studio dist_debug/pelican_studio.exe \
-  --player build/src/player/Debug/pelican_player.exe \
+uv run tools/studio_drive.py --studio build/dist/Debug/pelican_studio.exe \
+  --player build/dist/Debug/pelican_player.exe \
   --scenario test/studio_scenarios/graph_read.json \
   --project <project の複製> --var other_project=<もう 1 つの複製> \
   --artifacts out/graph_read --report out/graph_read/report.json
 ```
 
 report は `verdict`(`green` / `red`)・`summary`(step ごとに 1 行)・`failures`(送受信・理由・失敗時の
-スクリーンショット)・`studio_log` を持ちます([組み立て](../../tools/studio_drive.py#L1006))。
-`studio_exit_code` は記録されますが**判定には入りません**(Studio は終了時に異常終了コードを残す既知の穴)。
+スクリーンショット)・`studio_log` を持ちます([組み立て](../../tools/studio_drive.py#L1029))。
+最後の `shutdown` step は終了コード 0 での正常終了を検査します。異常終了・終了待ちのタイムアウト・watchdog による
+強制終了はシナリオの操作が成功していても失敗です。`studio_exit_code` と `studio_shutdown_forced` に結果を記録します。
 書式・命令表・名前の付け方は [README](../../test/studio_scenarios/README.md#L1) と
 [第13章](13_editor.md) §13.5「Studio の自動化面」が正です。
 
@@ -659,15 +667,15 @@ overlay 付きの
 `pelican_player` 子 process として起動し、Windows の native HWND を
 Qt host へ再親付けします。player が自分の swapchain へ描いて OS が合成するため、pixel readback、
 copy、process 間 frame 転送はありません。player が終了しても Studio は残り、`Restart Engine`
-から再起動できます。既定では Studio と同じ directory、次に
-`../build/src/player/Debug/pelican_player.exe` を探します。project、`--rpc`、`--feature-overlay` は Studio が所有し、
+から再起動できます。既定では Studio と同じ directory の
+`pelican_player.exe` を使います。project、`--rpc`、`--feature-overlay` は Studio が所有し、
 `PELICAN_STUDIO_PLAYER_ARGUMENTS` 内の同名指定は除去します。開発時の executable と追加引数の
 override は次です:
 
 ```powershell
 $env:PELICAN_STUDIO_PLAYER = "C:/path/to/pelican_player.exe"
 $env:PELICAN_STUDIO_PLAYER_ARGUMENTS = "--gpu-labels --vulkan-validation=on --free-camera"
-dist_debug/pelican_studio.exe
+build/dist/Debug/pelican_studio.exe
 ```
 
 `--project` はここに書きません。Studio が開いた project から自分で渡すため、同名指定は除去されます。
@@ -685,7 +693,7 @@ viewport の左クリックは child client の物理 pixel 座標を `pick_obje
 現在は選択と toolbar の Move / Rotate / Scale モードを `set_gizmo` で player へ送ります。
 
 Inspector の `Add component...` / `Ray geometry...` の下、properties の一覧より**上**には **Attached graphs** グループが
-あります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L203))。選択オブジェクトを owner とする
+あります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L207))。選択オブジェクトを owner とする
 `graph.instance` の一覧と **Attach...** / **Detach** / **Refresh**、選択した instance の **Instance inputs**
 (port ごとに mode / 著作された値 / 実際に使われた値の 3 列)、そして port ごとの 4 導線 ——
 **Control with a curve** / **Connect to another output** / **Open the source** / **Disconnect** です。
@@ -720,7 +728,7 @@ overlay が用意しますが、overlay の feature 一覧を scene や project 
 
 `View > Panels > Frame Plan` の dock(`pelican.framePlanDock`)には **Frame Plan・Features・Graph の
 3 つのタブ**が同居します(タブ widget の object name は `pelican.renderTools`。
-[構築](../../src/devstudio/view/mainwindow.cpp#L255))。**Graph は新しい dock ではなくこの dock の 3 枚目**です ——
+[構築](../../src/devstudio/view/mainwindow.cpp#L263))。**Graph は新しい dock ではなくこの dock の 3 枚目**です ——
 dock を増やすことは「見失う場所」を増やすことなので、同じレンダー設定を語る 3 つの見方を 1 箇所に置いています。
 
 **Frame Plan タブ**は実行中 player の公開 `get_frame_plan` を読む調査面で、**9 枚のタブ**を持ちます ——
@@ -817,7 +825,7 @@ canned reply のハーネスと mock を使う Studio テスト群はそのま�
 
 ## 10.8 クラッシュシンボルの退避
 
-**ダンプは Windows が勝手に取ってくれるが、`dist_debug` を作り直すと PDB が上書きされ、
+**ダンプは Windows が勝手に取ってくれるが、Debug build を作り直すと PDB が上書きされ、
 取ったダンプが読めなくなる。**実際に **9 件**の studio クラッシュが未解明で、**うち 8 件は対応する PDB が既に無く、おそらく永久に読めない。**
 
 **MSVC の Debug ビルドで `pelican_studio` を作るたび**、実行ファイルと PDB が
@@ -855,7 +863,7 @@ HEAD が動くと configure が再実行される。
 - 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。2026-07-10 以降の追加: `run_devcli_assets`(WP66)/ `run_event_schema_compile`(WP71)/ `run_dump_lowered_material`(WP76)/ `run_devcli_gltf_extract`(WP79)/ `run_spvlink_golden`(WP80)/ `run_devcli_rules_import`(WP84)/ `run_devcli_bake_camera` + `run_input_record_replay_headless`(WP89)/ `run_ui_u2_rpc_replay`(WP93)など。
 - 2026-09 の追加: [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake)(ctest 名 `devcli_graph_catalog`。`pelican_cli graph-catalog` の出力を検査し、**さらに `docs/v0_freeze.md` の操作表と突き合わせます** —— 表は `<!-- graph-op-table:begin -->` / `:end` のコメントで区切られていて、誰も比べない写しを 2 つ目の正にしないための仕掛けです)、`package_install_smoke`(X-1。install → カタログ → 描画 → uninstall を実 player で。`gpu` ラベル)、[`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(出荷 project の走査。`project.json` の `requires` が満たせない project は**名前を出して skip** し、player の中で落ちません)。
 - **Studio のシナリオ(Q-1)**: `test/studio_scenarios/*.json` は 1 本が 1 つの ctest `studio_scenario_<名前>` になり
-([登録](../../test/CMakeLists.txt#L2798))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
+([登録](../../test/CMakeLists.txt#L2809))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
 実物の player が埋まるので `QT_QPA_PLATFORM=offscreen` は掛けません。`uv` が見つからない build と
 `SKIP_DEVSTUDIO=ON` では**登録されません**(「緑だが走っていない」になる形なので、Studio を触ったら Studio 入りの
 build で見ます)。[`run_studio_scenario.cmake`](../../test/run_studio_scenario.cmake#L30) が fixture
