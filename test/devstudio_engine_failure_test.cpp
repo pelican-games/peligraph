@@ -411,6 +411,7 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
     ViewportObservation broken;
     QString not_started_status;
     QString broken_status;
+    QString broken_detail;
     {
         EnvironmentVariableGuard player_arguments{
             // Exercise Studio's windowed launch path. A headless child can
@@ -439,6 +440,7 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
         }
         QApplication::processEvents();
         broken_status = status->text();
+        broken_detail = status->toolTip();
     }
 
     REQUIRE(broken.stopped);
@@ -446,13 +448,22 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
     INFO("engine stderr: " << broken.standard_error.toStdString());
     INFO("Studio process output: " << broken.studio_output.toStdString());
     INFO("running engine fatal line: " << engine_fatal.toStdString());
+    INFO("Frame Plan status: " << broken_status.toStdString());
+    INFO("Frame Plan detail: " << broken_detail.toStdString());
     REQUIRE_FALSE(engine_fatal.isEmpty());
     REQUIRE(engine_fatal.contains(QStringLiteral("forward_transparent")));
     REQUIRE(engine_fatal.contains(QStringLiteral(
         "has no compatible registered material pass")));
     // This is EmbeddedViewport's production signal, not a test-side model.
     REQUIRE(broken.fatal_error_line == engine_fatal);
-    REQUIRE(broken_status == engine_fatal);
+    // N-7 keeps a long diagnostic in the tooltip and shows its leading text
+    // in one bounded status row. Logger metadata can make this fatal line
+    // much longer than the short message used by the isolated view test.
+    REQUIRE(broken_detail == engine_fatal);
+    REQUIRE_FALSE(broken_status.isEmpty());
+    REQUIRE(broken_status.size() <= 90);
+    REQUIRE(broken_status.endsWith(QStringLiteral("…")));
+    REQUIRE(engine_fatal.startsWith(broken_status.chopped(1)));
     REQUIRE(broken_status != not_started_status);
     // With no pending RPC response, equality means stdout contributed zero bytes.
     REQUIRE(broken.studio_output == broken.standard_error);

@@ -23,11 +23,16 @@ Copy-Item -LiteralPath $ProjectPass -Destination (Join-Path $project 'passes/mai
 $liveDll = Join-Path $OutDir 'wp179_trigger_behavior.dll'
 Copy-Item -LiteralPath $Fixture -Destination $liveDll
 $playerOutput = @()
+$previousErrorActionPreference = $ErrorActionPreference
 Push-Location $OutDir
 try {
+    # Windows PowerShell turns redirected native stderr into ErrorRecords.
+    # Diagnostics are output; the exit code below determines process failure.
+    $ErrorActionPreference = 'Continue'
     $playerOutput = & $Player --headless --project $project --game-logic $liveDll --frames 4 --size 160x90 --fps 30 2>&1
     $playerExitCode = $LASTEXITCODE
 } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
     Pop-Location
 }
 $playerOutput | Write-Output

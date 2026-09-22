@@ -69,8 +69,10 @@ void setupLogger(bool reserve_stdout_for_protocol) {
     }
 #else
     (void)reserve_stdout_for_protocol;
-    auto sink = createFileSinkOrStderr();
-    logger = quill::Frontend::create_or_get_logger("pelican", std::move(sink));
+    // Keep Release diagnostics visible to launchers and Studio's Engine Log
+    // while leaving stdout available for JSON-RPC and other protocol output.
+    logger = quill::Frontend::create_or_get_logger(
+        "pelican", createProtocolSinks());
 #endif
 
     LOG_INFO(logger, "pelican log start");
