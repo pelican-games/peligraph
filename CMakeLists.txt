@@ -9,6 +9,9 @@ cmake_minimum_required(VERSION 3.13)
 if(POLICY CMP0118)
   cmake_policy(SET CMP0118 NEW)
 endif()
+if(POLICY CMP0087)
+  cmake_policy(SET CMP0087 NEW)
+endif()
 
 project(pelican2)
 
@@ -37,9 +40,7 @@ include(cmake/pelican_target_environment.cmake)
 include(cmake/pelican_feature_registry.cmake)
 
 # variable definition
-set(PELICAN_INSTALL_DIR ${CMAKE_SOURCE_DIR}/dist$<$<CONFIG:Debug>:_debug>)
-set(PELICAN_LIB_DIR ${PELICAN_INSTALL_DIR}/lib/bin)
-set(PELICAN_INCLUDE_DIR ${PELICAN_INSTALL_DIR}/lib/include)
+include(cmake/pelican_runtime_layout.cmake)
 pelican_declare_feature_options()
 pelican_verify_feature_ledger("${CMAKE_SOURCE_DIR}/docs/implementation_plan.md")
 option(PELICAN_ENABLE_ASAN "Build targets with AddressSanitizer (intended for test builds)" OFF)
@@ -271,11 +272,9 @@ if(PELICAN_WITH_OPENXR)
     GIT_TAG        211e2f4f0b79932300a845f3a8ed75026dbfa4a3
   )
   function(pelican_add_openxr_sdk)
-    # OpenXR probes Python unconditionally even though its checked-in generated
-    # sources are sufficient when BUILD_FORCE_GENERATION=OFF. Keep that
-    # optional probe out of Pelican's normal configure without changing the
-    # caller's Python package policy.
-    set(CMAKE_DISABLE_FIND_PACKAGE_Python3 TRUE)
+    # This pinned OpenXR-SDK-Source checkout can require Python to generate
+    # dispatch headers, independently of Pelican's Python-backed test option.
+    # Preserve the caller's package policy and let the SDK find its generator.
     FetchContent_MakeAvailable(openxr_sdk)
   endfunction()
   pelican_add_openxr_sdk()
@@ -461,6 +460,15 @@ set(PELICAN_CRASH_SYMBOL_GENERATIONS "8" CACHE STRING
     "Maximum number of retained pelican_studio crash-symbol generations")
 if(NOT SKIP_DEVSTUDIO)
 add_subdirectory(src/devstudio)
+endif()
+
+get_property(pelican_runtime_targets GLOBAL PROPERTY PELICAN_RUNTIME_TARGETS)
+add_custom_target(pelican_runtime DEPENDS ${pelican_runtime_targets})
+# Only the Debug fallback links shaderc dynamically. Release uses the SDK's
+# static library; do not package unrelated DLLs from the SDK directory.
+if(TARGET pelican_shaderc_sdk_shared AND NOT TARGET pelican_shaderc_sdk_debug)
+  install(FILES "$<TARGET_FILE:pelican_shaderc_sdk_shared>"
+      DESTINATION bin CONFIGURATIONS Debug COMPONENT Runtime)
 endif()
 
 ## test

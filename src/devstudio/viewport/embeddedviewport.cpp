@@ -113,18 +113,9 @@ QString defaultPlayerPath() {
     }
 
     const QDir application_directory{QCoreApplication::applicationDirPath()};
-    const QString executable_name = playerExecutableName();
-    const QStringList candidates{
-        application_directory.absoluteFilePath(executable_name),
-        application_directory.absoluteFilePath(
-            QStringLiteral("../build/src/player/Debug/%1").arg(executable_name)),
-    };
-    for (const QString &candidate : candidates) {
-        if (QFileInfo::exists(candidate)) {
-            return QFileInfo(candidate).absoluteFilePath();
-        }
-    }
-    return QFileInfo(candidates.back()).absoluteFilePath();
+    // Build and installed applications use the same directory. Falling back
+    // to a different build may silently select another version of the engine.
+    return application_directory.absoluteFilePath(playerExecutableName());
 }
 
 // How long an engine may load in silence before Studio stops it. The default

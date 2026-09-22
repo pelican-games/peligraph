@@ -1,4 +1,5 @@
 add_executable(pelican_player main.cpp)
+pelican_runtime_target(pelican_player)
 set_target_properties(pelican_player PROPERTIES
     CXX_STANDARD 20
     ENABLE_EXPORTS TRUE
@@ -132,6 +133,7 @@ function(pelican_game_sources)
         # This keeps the engine registries and module container single-owned.
         pelican_configure_game_logic_target(${game_logic_target})
         if(game_logic_target STREQUAL "pelican_game_logic")
+            pelican_runtime_target(${game_logic_target})
             target_compile_definitions(pelican_player PRIVATE
                 PELICAN_GAME_LOGIC_DLL_NAME="pelican_game_logic${CMAKE_SHARED_LIBRARY_SUFFIX}"
             )

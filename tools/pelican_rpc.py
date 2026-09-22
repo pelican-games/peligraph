@@ -23,7 +23,7 @@ class PelicanRpcError(RuntimeError):
 class PelicanRpc:
     """Launch and control a headless ``pelican_player`` process over stdio."""
 
-    _DEFAULT_EXE = Path("build/src/player/Debug/pelican_player.exe")
+    _DEFAULT_EXE = Path("build/dist/Debug/pelican_player.exe")
 
     def __init__(
         self,

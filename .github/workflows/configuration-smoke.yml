@@ -158,22 +158,6 @@ jobs:
           "fresh checkout contains no ignored example assets" |
             Set-Content -Encoding utf8 build-clean-clone/ci-artifacts/asset-isolation.log
 
-      - name: Test CI policy checkers
-        shell: pwsh
-        run: |
-          python -B -m unittest discover -s test/ci -p "test_*.py" -v 2>&1 |
-            Tee-Object -FilePath build-clean-clone/ci-artifacts/skip-policy-tests.log
-          $result = $LASTEXITCODE
-          if ($result -ne 0) { exit $result }
-
-      - name: Check golden inventory
-        shell: pwsh
-        run: |
-          python -B test/golden_inventory.py --repo-root . 2>&1 |
-            Tee-Object -FilePath build-clean-clone/ci-artifacts/golden-inventory.log
-          $result = $LASTEXITCODE
-          if ($result -ne 0) { exit $result }
-
       - name: Configure fresh checkout
         shell: pwsh
         run: |

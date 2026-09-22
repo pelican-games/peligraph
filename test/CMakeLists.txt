@@ -7,7 +7,6 @@ FetchContent_MakeAvailable(Catch2)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 include(Catch)
 include(${CMAKE_CURRENT_SOURCE_DIR}/gpu_lease_config.cmake)
-find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 # CPU reference math and fixture generators belong only to the tests that
 # consume them; pelican_player whole-archives pelican_core for SDK exports.
@@ -46,14 +45,6 @@ function(pelican_gpu_test_properties test_name intrinsic_timeout)
       "\"${test_name}\": ${intrinsic_timeout}")
   endif()
 endfunction()
-
-add_test(
-  NAME pelican_public_api_inventory
-  COMMAND ${Python3_EXECUTABLE}
-          ${CMAKE_SOURCE_DIR}/tools/public_api_inventory.py
-          --repo-root ${CMAKE_SOURCE_DIR})
-set_tests_properties(pelican_public_api_inventory
-  PROPERTIES LABELS "WP380b;cpu;contract")
 
 set(PELICAN_CATCH_ADD_TESTS_SCRIPT "${_CATCH_DISCOVER_TESTS_SCRIPT}")
 set(PELICAN_CATCH_DISCOVERY_ALLOW_EMPTY_SCRIPT
@@ -157,6 +148,11 @@ if(PELICAN_TEST_NO_DISCOVERY)
   return()
 endif()
 set(discovery_properties)
+if(source_name MATCHES "^devstudio_" AND
+   NOT PELICAN_TEST_GPU AND NOT PELICAN_TEST_MIXED_GPU)
+  list(APPEND discovery_properties LABELS studio_cpu)
+  set_property(GLOBAL APPEND PROPERTY PELICAN_STUDIO_CPU_TEST_TARGETS ${target_name})
+endif()
 # A discovered case with zero assertions must not be reported as passing.
 set(discovery_arguments EXTRA_ARGS -w NoAssertions)
 if(PELICAN_TEST_QT)
@@ -239,11 +235,11 @@ if(PELICAN_TEST_GPU OR PELICAN_TEST_MIXED_GPU)
   # those entries for MIXED_GPU targets) start with the launcher.
   add_dependencies(${target_name} pelican_gpu_lease_run)
   add_custom_command(TARGET ${target_name} POST_BUILD
-    COMMAND ${Python3_EXECUTABLE}
-      ${CMAKE_CURRENT_SOURCE_DIR}/patch_catch_gpu_lease_tests.py
-      --directory ${CMAKE_CURRENT_BINARY_DIR}
-      --target ${target_name}
-      --launcher $<TARGET_FILE:pelican_gpu_lease_run>
+    COMMAND ${CMAKE_COMMAND}
+      "-DDIRECTORY=${CMAKE_CURRENT_BINARY_DIR}"
+      "-DTARGET=${target_name}"
+      "-DLAUNCHER=$<TARGET_FILE:pelican_gpu_lease_run>"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/patch_catch_gpu_lease_tests.cmake
     VERBATIM)
 endif()
 
@@ -271,6 +267,16 @@ add_test(
     -DTEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/devstudio_boundary_negative
     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devstudio_boundary_negative.cmake
 )
+
+add_test(NAME gpu_discovery_patch_contract
+  COMMAND ${CMAKE_COMMAND}
+    "-DTEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/gpu_discovery_patch"
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_gpu_discovery_patch_test.cmake)
+
+add_test(NAME project_requirements_catalog_contract
+  COMMAND ${CMAKE_COMMAND}
+    "-DTEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/project_requirements"
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_project_requirements_test.cmake)
 
 add_test(
   NAME wp360_raw_authority_compile_contract
@@ -2857,14 +2863,7 @@ target_link_libraries(pelican_test_png_nonuniform_check PRIVATE stb)
 set(PELICAN_TEST_PROJECTS_DIR "" CACHE PATH
     "Project corpus scanned by project_catalog_headless_smoke; empty skips the test")
 
-function(pelican_add_catalog_game_logic project_dir target_stem output_var)
-    set(PELICAN_PROJECT_ROOT "${project_dir}")
-    set(PELICAN_PROJECT_CODE_DIR "${project_dir}/code")
-    set(PELICAN_GAME_LOGIC_TARGET_OVERRIDE
-        "pelican_catalog_${target_stem}_game_logic")
-    include("${PELICAN_PROJECT_CODE_DIR}/CMakeLists.txt")
-    set(${output_var} "${PELICAN_GAME_LOGIC_TARGET_OVERRIDE}" PARENT_SCOPE)
-endfunction()
+include(${CMAKE_CURRENT_SOURCE_DIR}/catalog_game_logic.cmake)
 
 # A catalog project with code is run with that code, rather than with a
 # data-only generic player. Discovery still comes from project.json; this
@@ -2885,8 +2884,10 @@ if(NOT "${PELICAN_TEST_PROJECTS_DIR}" STREQUAL "")
                 target_stem "${project_relative}")
             pelican_add_catalog_game_logic(
                 "${project_dir}" "${target_stem}" game_logic_target)
-            list(APPEND pelican_catalog_game_logic_targets
-                "${game_logic_target}")
+            if(game_logic_target)
+                list(APPEND pelican_catalog_game_logic_targets
+                    "${game_logic_target}")
+            endif()
         endif()
     endforeach()
 endif()
@@ -2899,6 +2900,7 @@ if(TARGET pelican_test_studio_player_arguments)
 endif()
 
 if(TARGET pelican_test_studio_player_arguments)
+    pelican_project_requirement_arguments(pelican_catalog_requirement_arguments)
     add_test(
         NAME project_catalog_headless_smoke
         COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
@@ -2909,7 +2911,7 @@ if(TARGET pelican_test_studio_player_arguments)
             -DGAME_LOGIC_PREFIX=${CMAKE_SHARED_LIBRARY_PREFIX}
             -DGAME_LOGIC_SUFFIX=${CMAKE_SHARED_LIBRARY_SUFFIX}
             -DPROJECTS_DIR=${PELICAN_TEST_PROJECTS_DIR}
-            -DWITH_ANIMATION=$<BOOL:${PELICAN_WITH_ANIMATION}>
+            ${pelican_catalog_requirement_arguments}
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/project_catalog_smoke
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_project_catalog_smoke.cmake
     )
@@ -3070,6 +3072,11 @@ if(_pelican_python_test_mode_index EQUAL -1)
         "PELICAN_PYTHON_TESTS must be AUTO, ON, or OFF (got '${PELICAN_PYTHON_TESTS}')")
 endif()
 
+get_property(pelican_studio_cpu_tests GLOBAL PROPERTY PELICAN_STUDIO_CPU_TEST_TARGETS)
+if(pelican_studio_cpu_tests)
+  add_custom_target(pelican_studio_cpu_tests DEPENDS ${pelican_studio_cpu_tests})
+endif()
+
 set(PELICAN_PYTHON_TESTS_AVAILABLE OFF)
 if(PELICAN_PYTHON_TESTS_MODE STREQUAL "ON")
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
@@ -3113,6 +3120,13 @@ if(PELICAN_PYTHON_TESTS_AVAILABLE)
         set_tests_properties(${test_name} PROPERTIES LABELS "gpu;python")
         pelican_gpu_test_properties(${test_name} 120)
     endfunction()
+
+    pelican_define_python_test(
+        pelican_public_api_inventory
+        ${CMAKE_SOURCE_DIR}/tools/public_api_inventory.py
+        --repo-root ${CMAKE_SOURCE_DIR})
+    set_property(TEST pelican_public_api_inventory APPEND PROPERTY
+        LABELS "WP380b;cpu;contract")
 
     # WP175 boundary contracts are source/fixture checks and require no GPU.
     foreach(contract_gate IN ITEMS openpbr projection engine-mvp)

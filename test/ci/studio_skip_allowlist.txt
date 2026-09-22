@@ -1,0 +1,5 @@
+# The Studio CI lane intentionally builds with the runtime shader compiler OFF.
+# These production-composition cases require it; all other skips are failures.
+# For a compiler-ON local run, pass --allowlist with an empty file.
+WP344 shipped planar prefilter region collapses and opens through the production path
+WP348 cube capture measures the non-degenerate view-family loop on the production path

@@ -6,7 +6,7 @@
 """Drive Pelican Studio through its `--automation` channel and judge a scenario.
 
     uv run tools/studio_drive.py \
-        --studio dist_debug/pelican_studio.exe \
+        --studio build/dist/Debug/pelican_studio.exe \
         --scenario test/studio_scenarios/graph_read.json \
         --project <a copy of a project, in a temp directory> \
         --report out/graph_read/report.json

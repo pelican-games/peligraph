@@ -78,8 +78,10 @@ struct ProjectRequirement {
 };
 
 constexpr ProjectRequirement project_requirements[] = {
-    {"animation", "PELICAN_WITH_ANIMATION", "animation.module_unavailable@1",
-     static_cast<bool>(PELICAN_WITH_ANIMATION)},
+#define PELICAN_PROJECT_REQUIREMENT(name, option, code) \
+    {name, #option, code, static_cast<bool>(option)},
+#include "projectrequirements.def"
+#undef PELICAN_PROJECT_REQUIREMENT
 };
 
 const ProjectRequirement *findProjectRequirement(std::string_view name) {

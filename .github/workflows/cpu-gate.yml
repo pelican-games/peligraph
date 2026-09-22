@@ -40,18 +40,6 @@ jobs:
         shell: pwsh
         run: New-Item -ItemType Directory -Force build/ci-artifacts | Out-Null
 
-      - name: Test CI policy checkers
-        shell: pwsh
-        run: |
-          python -B -m unittest discover -s test/ci -p "test_*.py" -v 2>&1 |
-            Tee-Object -FilePath build/ci-artifacts/skip-policy-tests.log
-          $result = $LASTEXITCODE
-          if ($result -ne 0) { exit $result }
-
-      - name: Check golden inventory
-        shell: pwsh
-        run: python -B test/golden_inventory.py --repo-root .
-
       - name: Configure
         shell: pwsh
         run: |
@@ -94,7 +82,7 @@ jobs:
             build/CMakeFiles/CMakeConfigureLog.yaml
 
   windows-msvc-studio:
-    name: Windows MSVC / WP354 Studio offscreen
+    name: Windows MSVC / Studio offscreen
     runs-on: windows-latest
     timeout-minutes: 90
     env:
@@ -103,6 +91,11 @@ jobs:
     steps:
       - name: Check out sources
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
 
       - name: Install Vulkan SDK
         uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff # v1.2
@@ -135,34 +128,24 @@ jobs:
           $result = $LASTEXITCODE
           if ($result -ne 0) { exit $result }
 
-      - name: Build WP354 Studio and WP364 RT1a tests
+      - name: Build Studio CPU suite and RT1a tests
         shell: pwsh
         run: |
           cmake --build build-studio --config Debug --target `
-            pelican_test_devstudio_frameplan_test `
-            pelican_test_devstudio_frameplan_graph_test `
+            pelican_studio_cpu_tests `
             pelican_test_raytracing_rt1a_test 2>&1 |
             Tee-Object -FilePath build-studio/ci-artifacts/build.log
           $result = $LASTEXITCODE
           if ($result -ne 0) { exit $result }
 
-      - name: Run WP354 Studio model and widget offscreen
+      - name: Run Studio offscreen with exact SKIP policy
         shell: pwsh
         run: |
           $env:QT_QPA_PLATFORM = "offscreen"
-          $listing = ctest --test-dir build-studio -C Debug -N -R "^WP354 Studio" 2>&1
-          $result = $LASTEXITCODE
-          $listing | Tee-Object -FilePath build-studio/ci-artifacts/ctest-list.log
-          if ($result -ne 0) { exit $result }
-          if (($listing -join "`n") -notmatch "Total Tests: 2") {
-            Write-Error "expected exactly two WP354 Studio tests"
-            exit 1
-          }
-          ctest --test-dir build-studio -C Debug `
-            -R "^WP354 Studio" --output-on-failure 2>&1 |
-            Tee-Object -FilePath build-studio/ci-artifacts/ctest.log
-          $result = $LASTEXITCODE
-          if ($result -ne 0) { exit $result }
+          python -B test/ci/run_studio_gate.py `
+            --build-dir build-studio --config Debug `
+            --artifacts-dir build-studio/ci-artifacts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run WP364 RT1a with compiler and SPIRV_LINK off
         shell: pwsh

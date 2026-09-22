@@ -956,11 +956,12 @@ function(run_animation_smoke)
     find_built_executable(
         "${animation_build_dir}" "pelican_test_group_core_foundation" animation_graph_test)
     run_process("animation_common_graph" TRUE "${animation_graph_test}"
-        "[graph-composition],[graph-module],[valuegraph],[curve]")
+        -w NoAssertions "[graph-composition],[graph-module],[valuegraph],[curve]")
     # AG-1b acceptance 3, measured in the OFF build itself: a scene carrying an
     # animation component fails scene prepare by name, and the scene that was
     # already live is still there afterwards.
-    run_process("animation_off_scene_reject" TRUE "${animation_graph_test}" "[animation-off]")
+    run_process("animation_off_scene_reject" TRUE "${animation_graph_test}"
+        -w NoAssertions "[animation-off]")
     clean_successful_build("${animation_build_dir}")
 endfunction()
 

@@ -14,9 +14,9 @@ set_target_properties(pelican_studio_layout PROPERTIES
 target_include_directories(pelican_studio_layout PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(pelican_studio_layout PUBLIC Qt6::Core)
 
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PELICAN_INSTALL_DIR})
 add_executable(pelican_studio main.cpp)
-unset(CMAKE_RUNTIME_OUTPUT_DIRECTORY)
+pelican_runtime_target(pelican_studio)
+add_dependencies(pelican_studio pelican_player pelican_cli)
 
 set_target_properties(pelican_studio PROPERTIES
     AUTOMOC ON
@@ -58,6 +58,16 @@ add_subdirectory(view)
 # After view: the embed proxy links into pelican_studio_view, which that
 # directory defines.
 add_subdirectory(resources)
+
+# Qt owns its runtime/plugin dependency list. The Runtime component produces
+# a relocatable Windows bin directory with the adjacent player and CLI.
+if(WIN32)
+    qt_generate_deploy_app_script(
+        TARGET pelican_studio
+        NO_COMPILER_RUNTIME
+        OUTPUT_SCRIPT pelican_studio_deploy_script)
+    install(SCRIPT ${pelican_studio_deploy_script} COMPONENT Runtime)
+endif()
 
 include(${CMAKE_SOURCE_DIR}/cmake/devstudio_link_boundary.cmake)
 pelican_collect_directory_targets(${CMAKE_SOURCE_DIR}/src/core pelican_engine_targets)

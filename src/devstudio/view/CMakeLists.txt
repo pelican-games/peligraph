@@ -66,8 +66,9 @@ target_link_libraries(pelican_studio PRIVATE pelican_studio_view)
 # custom target for debug
 if(WIN32)
 add_custom_target(deploy_studio
-  COMMAND ${WINDEPLOYQT_EXECUTABLE} $<TARGET_FILE:pelican_studio>
+  COMMAND $<TARGET_FILE:Qt6::windeployqt> $<TARGET_FILE:pelican_studio>
   DEPENDS pelican_studio
+  VERBATIM
 )
 add_custom_target(run_studio
     COMMAND $<TARGET_FILE:pelican_studio>

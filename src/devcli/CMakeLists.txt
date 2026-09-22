@@ -1,7 +1,6 @@
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PELICAN_INSTALL_DIR})
 add_executable(pelican_cli main.cpp)
+pelican_runtime_target(pelican_cli)
 set_target_properties(pelican_cli PROPERTIES CXX_STANDARD 20)
-unset(CMAKE_RUNTIME_OUTPUT_DIRECTORY)
 
 target_sources(pelican_cli PRIVATE
   assetscommand.cpp

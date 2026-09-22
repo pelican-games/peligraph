@@ -3,6 +3,8 @@ dist/
 dist_debug/
 **/.pelican/
 /pelican.log
+/aqtinstall.log
+/out/
 /scratch/
 __pycache__/
 *.py[cod]

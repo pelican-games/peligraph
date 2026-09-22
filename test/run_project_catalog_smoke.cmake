@@ -7,11 +7,12 @@ endif()
 
 foreach(required IN ITEMS PLAYER PNG_NONUNIFORM_CHECK STUDIO_ARGUMENTS_PROBE
                           GAME_LOGIC_DIR GAME_LOGIC_PREFIX GAME_LOGIC_SUFFIX
-                          OUT_DIR WITH_ANIMATION)
+                          OUT_DIR)
     if(NOT DEFINED ${required})
         message(FATAL_ERROR "${required} is required")
     endif()
 endforeach()
+include("${CMAKE_CURRENT_LIST_DIR}/../cmake/pelican_project_requirements.cmake")
 
 function(require_no_validation_errors label stdout stderr)
     if(stdout MATCHES "Validation Error|VUID-" OR
@@ -85,8 +86,7 @@ set(catalog_frame_names
     0001 0002 0003 0004 0005 0006 0007 0008 0009 0010)
 set(editor_project_dir "")
 set(skipped_projects)
-set(skipped_editor_projects)
-set(skipped_editor_requirement "")
+set(skipped_editor_descriptions)
 
 foreach(project_manifest IN LISTS project_manifests)
     get_filename_component(project_dir "${project_manifest}" DIRECTORY)
@@ -101,39 +101,12 @@ foreach(project_manifest IN LISTS project_manifests)
     # the declaration is read here: a project that needs a module this build
     # left out is skipped by name, rather than failing inside the player on
     # operations the disabled module never registered.
-    file(READ "${project_manifest}" project_manifest_text)
-    set(project_skipped FALSE)
-    string(JSON requires_type ERROR_VARIABLE requires_error
-        TYPE "${project_manifest_text}" requires)
-    if(NOT requires_error)
-        if(NOT requires_type STREQUAL "ARRAY")
-            message(FATAL_ERROR
-                "project.requires_unknown@1: project '${project_relative}' "
-                "declares requires that is not an array")
-        endif()
-        string(JSON requires_length LENGTH "${project_manifest_text}" requires)
-        if(requires_length GREATER 0)
-            math(EXPR last_requirement "${requires_length} - 1")
-            foreach(requirement_index RANGE 0 ${last_requirement})
-                string(JSON requirement GET
-                    "${project_manifest_text}" requires ${requirement_index})
-                # The vocabulary is the one parseProjectRequirements knows.
-                if(NOT requirement STREQUAL "animation")
-                    message(FATAL_ERROR
-                        "project.requires_unknown@1: project "
-                        "'${project_relative}' requires '${requirement}'")
-                endif()
-                if(NOT WITH_ANIMATION)
-                    message(NOTICE
-                        "skip ${project_relative}: requires animation "
-                        "(PELICAN_WITH_ANIMATION=OFF)")
-                    set(project_skipped TRUE)
-                    set(project_skipped_requirement "${requirement}")
-                endif()
-            endforeach()
-        endif()
-    endif()
-    if(project_skipped)
+    pelican_unavailable_project_requirement("${project_manifest}"
+        project_skipped_requirement project_skipped_option)
+    if(project_skipped_requirement)
+        message(NOTICE
+            "skip ${project_relative}: requires ${project_skipped_requirement} "
+            "(${project_skipped_option}=OFF)")
         list(APPEND skipped_projects "${project_relative}")
         # The editor lane runs against whichever project declares it. If that
         # project is the one `requires` just skipped, the lane has no target for
@@ -147,8 +120,8 @@ foreach(project_manifest IN LISTS project_manifests)
             string(JSON skipped_editor_type ERROR_VARIABLE skipped_editor_error
                 TYPE "${skipped_expectations}" editor)
             if(NOT skipped_editor_error AND skipped_editor_type STREQUAL "OBJECT")
-                list(APPEND skipped_editor_projects "${project_relative}")
-                set(skipped_editor_requirement "${project_skipped_requirement}")
+                list(APPEND skipped_editor_descriptions
+                    "${project_relative} requires ${project_skipped_requirement} (${project_skipped_option}=OFF)")
             endif()
         endif()
         continue()
@@ -306,17 +279,13 @@ foreach(project_manifest IN LISTS project_manifests)
 endforeach()
 
 if(editor_project_dir STREQUAL "")
-    if(skipped_editor_projects)
+    if(skipped_editor_descriptions)
         # Named, not silent: the lane is gone because a project the build cannot
         # run owned it, and the line says which project and which build feature.
         # The corpus still has to declare the lane somewhere -- a corpus that
         # declares it nowhere falls through to the error below, as before.
-        string(TOUPPER "${skipped_editor_requirement}" skipped_editor_feature)
-        foreach(skipped_editor_project IN LISTS skipped_editor_projects)
-            message(NOTICE
-                "skip editor lane: ${skipped_editor_project} requires "
-                "${skipped_editor_requirement} "
-                "(PELICAN_WITH_${skipped_editor_feature}=OFF)")
+        foreach(description IN LISTS skipped_editor_descriptions)
+            message(NOTICE "skip editor lane: ${description}")
         endforeach()
         list(LENGTH skipped_projects skipped_count)
         message(STATUS

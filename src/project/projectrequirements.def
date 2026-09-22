@@ -1,0 +1,3 @@
+// Shared by project parsing and the CMake project-corpus selection helpers.
+// Only explicitly declared names belong to project.json's public vocabulary.
+PELICAN_PROJECT_REQUIREMENT("animation", PELICAN_WITH_ANIMATION, "animation.module_unavailable@1")

@@ -116,13 +116,7 @@ endif()
 run_process(configure_cli "${CMAKE_COMMAND}" ${configure_common} "-DPELICAN_PROJECT=")
 run_process(build_cli "${CMAKE_COMMAND}" --build "${BUILD_DIR}"
     --config "${PELICAN_PACKAGE_TEMPLATE_SMOKE_CONFIG}" --target pelican_cli)
-# pelican_cli's runtime output directory is the repository's dist tree, not the
-# build tree.  Note that this run therefore replaces <repo>/dist*/pelican_cli.
-if(PELICAN_PACKAGE_TEMPLATE_SMOKE_CONFIG STREQUAL "Debug")
-    set(cli "${SOURCE_DIR}/dist_debug/pelican_cli${EXE_SUFFIX}")
-else()
-    set(cli "${SOURCE_DIR}/dist/pelican_cli${EXE_SUFFIX}")
-endif()
+set(cli "${BUILD_DIR}/dist/${PELICAN_PACKAGE_TEMPLATE_SMOKE_CONFIG}/pelican_cli${EXE_SUFFIX}")
 if(NOT EXISTS "${cli}")
     find_built_executable("${BUILD_DIR}" "pelican_cli" cli)
 endif()
