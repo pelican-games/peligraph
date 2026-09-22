@@ -28,6 +28,8 @@ add_library(pelican_studio_view STATIC
     graphattachmentwidget.hpp
     graphcanvaswidget.cpp
     graphcanvaswidget.hpp
+    graphcanvasdrawing.cpp
+    graphcanvasdrawing.hpp
     graphcanvasreadcapability.cpp
     graphcanvasreadcapability.hpp
     proceduralassetdialog.cpp
