@@ -254,6 +254,27 @@ class GraphCanvasModel {
     std::uint64_t content_revision_ = 0;
     std::uint64_t report_revision_ = 0;
 
+    struct HistoryEntry {
+        nlohmann::json forward;
+        nlohmann::json inverse;
+    };
+    enum class HistoryAction { Edit, Undo, Redo };
+    struct PendingHistory {
+        HistoryAction action;
+        HistoryEntry entry;
+    };
+    std::vector<HistoryEntry> undo_;
+    std::vector<HistoryEntry> redo_;
+    std::optional<PendingHistory> pending_history_;
+    // History belongs to exactly one committed document. A refresh showing
+    // another writer's revision invalidates it instead of overwriting them.
+    std::string history_digest_;
+    static constexpr std::size_t historyCapacity = 100;
+    nlohmann::json inverseOps(const nlohmann::json &ops) const;
+    bool submitHistory(HistoryAction action, HistoryEntry entry);
+    void commitHistory(const nlohmann::json &response);
+    void clearHistory();
+
     // The current scope and the path taken to reach it. The first entry is
     // always the root scope.
     std::vector<std::string> breadcrumb_{std::string{}};
@@ -457,6 +478,14 @@ class GraphCanvasModel {
     // An edit needs a digest to compare against: without one there is nothing
     // to hold the document still between the read and the write.
     bool canEdit() const noexcept { return canRefresh() && !digest_.empty(); }
+    bool canUndo() const noexcept {
+        return canEdit() && !undo_.empty() && digest_ == history_digest_;
+    }
+    bool canRedo() const noexcept {
+        return canEdit() && !redo_.empty() && digest_ == history_digest_;
+    }
+    bool undo();
+    bool redo();
 
     // --- Editing. Each call is one gesture on the canvas and, when it returns
     // true, exactly one edit_graph_document carrying one op list. Every op

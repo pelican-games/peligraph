@@ -1,4 +1,5 @@
 #include "graphcanvasmodel.hpp"
+#include "graphcomposition.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -801,4 +802,161 @@ TEST_CASE("The graph canvas polls only for the catalog, Live, or an edit ticket"
     REQUIRE(h.model.pollWanted());
     h.model.setLive(false);
     REQUIRE_FALSE(h.model.pollWanted());
+}
+
+namespace {
+// Run emitted edits through the production document editor. This exercises
+// Undo's data restoration as well as the asynchronous ticket/CAS boundary.
+struct GraphHistoryHarness {
+    Harness client;
+    Json document = fixtureDocument();
+    int generation = 0;
+
+    std::string digest() const { return "revision-" + std::to_string(generation); }
+    Json snapshot() const {
+        return {{"source_reference", "fixture"}, {"root_schema", "pelican.graph"},
+                {"source_digest", {{"hex", digest()}}},
+                {"nodes", document.at("nodes")},
+                {"definitions", document.at("definitions")},
+                {"layout", document.value("layout", Json::object())}};
+    }
+    void open() { client.open(snapshot()); }
+    void refresh() {
+        client.reply(client.take("get_graph_instances"), snapshot());
+    }
+    void commit() {
+        const auto submit = client.take("edit_graph_document");
+        REQUIRE(submit.params.at("base_source_digest") == digest());
+        auto edited = Pelican::editGraphDocument(document, submit.params.at("ops"));
+        client.reply(submit, {{"status", "accepted"}, {"ticket", "edit"}});
+        REQUIRE_FALSE(client.model.canUndo());
+        const auto poll = client.take("get_edit_result");
+        document = std::move(edited);
+        ++generation;
+        client.reply(poll, {{"status", "committed"}, {"source_digest", {{"hex", digest()}}}});
+        refresh();
+    }
+};
+}
+
+TEST_CASE("Graph Undo restores deleted nodes, order and placement together",
+          "[studio][graph-canvas][graph-history]") {
+    GraphHistoryHarness h;
+    h.document["layout"] = {{"nodes", {
+        {"clock", {{"x", 11}, {"y", 12}}},
+        {"left", {{"x", 40}, {"y", 50}}}}}};
+    const auto before = h.document;
+    h.open();
+    REQUIRE(h.client.model.removeNode("clock"));
+    h.commit();
+    REQUIRE_FALSE(h.document.at("layout").at("nodes").contains("clock"));
+    const auto removed = h.document;
+    REQUIRE(h.client.model.canUndo());
+    REQUIRE(h.client.model.undo());
+    h.commit();
+    REQUIRE(h.document == before);
+    REQUIRE_FALSE(h.client.model.canUndo());
+    REQUIRE(h.client.model.canRedo());
+    REQUIRE(h.client.model.redo());
+    h.commit();
+    REQUIRE(h.document == removed);
+}
+
+TEST_CASE("Graph Undo preserves complete nodes and groups seeded additions",
+          "[studio][graph-canvas][graph-history]") {
+    GraphHistoryHarness h;
+    h.open();
+    const auto before = h.document;
+    SECTION("parameter and label edits restore absent fields") {
+        REQUIRE(h.client.model.setNodeLabel("clock", "Scene clock"));
+        h.commit();
+        REQUIRE(h.client.model.setNodeParameter("clock", "name", "other_time"));
+        h.commit();
+        REQUIRE(h.client.model.undo());
+        h.commit();
+        REQUIRE(h.document.at("nodes")[0].at("label") == "Scene clock");
+        REQUIRE(h.client.model.undo());
+        h.commit();
+        REQUIRE(h.document == before);
+    }
+    SECTION("one add gesture includes its seed constants") {
+        REQUIRE(h.client.model.addNode("value.add"));
+        h.commit();
+        REQUIRE(h.document.at("nodes").size() == before.at("nodes").size() + 3);
+        REQUIRE(h.client.model.undo());
+        h.commit();
+        REQUIRE(h.document == before);
+        REQUIRE(h.client.model.redo());
+        h.commit();
+        REQUIRE(h.document.at("nodes").size() == before.at("nodes").size() + 3);
+    }
+    SECTION("definition edits stay in their own scope") {
+        REQUIRE(h.client.model.selectScope("gain_curve"));
+        REQUIRE(h.client.model.setNodeLabel("sum", "Sum"));
+        h.commit();
+        REQUIRE(h.client.model.selectScope(""));
+        REQUIRE(h.client.model.undo());
+        h.commit();
+        REQUIRE(h.document == before);
+    }
+}
+
+TEST_CASE("Graph Undo restores disconnected edges and their reroutes",
+          "[studio][graph-canvas][graph-history]") {
+    GraphHistoryHarness h;
+    h.document["nodes"][1]["inputs"]["gain"] = {{"node", "clock"}, {"port", "value"}};
+    h.document["layout"] = {{"reroutes", Json::array({
+        {{"edge", {{"node", "left"}, {"port", "gain"}}},
+         {"points", Json::array({Json::array({10, 20})})}}})}};
+    const auto before = h.document;
+    h.open();
+    REQUIRE(h.client.model.disconnectInput("left", "gain"));
+    h.commit();
+    REQUIRE(h.document.at("layout").at("reroutes").empty());
+    REQUIRE(h.client.model.undo());
+    h.commit();
+    REQUIRE(h.document == before);
+}
+
+TEST_CASE("Graph history never replays across another writer or a reconnect",
+          "[studio][graph-canvas][graph-history]") {
+    GraphHistoryHarness h;
+    h.open();
+    REQUIRE(h.client.model.setNodeLabel("clock", "Clock"));
+    h.commit();
+    REQUIRE(h.client.model.canUndo());
+    SECTION("external change invalidates history") {
+        ++h.generation;
+        h.document["nodes"][0]["label"] = "Another writer";
+        h.client.model.refresh();
+        h.refresh();
+    }
+    SECTION("reconnect starts a new history") {
+        h.client.model.setConnected(false);
+        h.open();
+    }
+    REQUIRE_FALSE(h.client.model.canUndo());
+    REQUIRE_FALSE(h.client.model.canRedo());
+    REQUIRE_FALSE(h.client.model.undo());
+    REQUIRE(h.client.model.takeRpcRequests().empty());
+}
+
+TEST_CASE("Rejected graph edits retain history but successful branches discard Redo",
+          "[studio][graph-canvas][graph-history]") {
+    GraphHistoryHarness h;
+    h.open();
+    REQUIRE(h.client.model.setNodeLabel("clock", "Clock"));
+    h.commit();
+    REQUIRE(h.client.model.undo());
+    h.commit();
+    REQUIRE(h.client.model.canRedo());
+    REQUIRE(h.client.model.setNodeLabel("clock", "Rejected"));
+    const auto submitted = h.client.take("edit_graph_document");
+    h.client.reply(submitted, {{"error", {{"message", "Rejected edit"}}}});
+    h.refresh();
+    REQUIRE(h.client.model.canRedo());
+    REQUIRE(h.client.model.setNodeLabel("clock", "New branch"));
+    h.commit();
+    REQUIRE_FALSE(h.client.model.canRedo());
+    REQUIRE(h.client.model.canUndo());
 }

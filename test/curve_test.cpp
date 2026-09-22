@@ -486,6 +486,120 @@ TEST_CASE("graph document ops apply together or not at all", "[curve][graph-comp
         Json{{"op", "remove_node"}, {"node", "absent"}}})) == "graph.node_missing@1");
 }
 
+TEST_CASE("graph topology edits prune placement atomically and their inverse restores it",
+          "[curve][graph-composition][graph-undo]") {
+    using Json = nlohmann::json;
+    const auto source = Json::parse(R"({"schema":"pelican.graph","version":1,
+      "nodes":[
+        {"id":"source","op":"value.constant","parameters":{"value":2},"outputs":["value"]},
+        {"id":"drop","op":"value.multiply","inputs":{"a":{"node":"source","port":"value"},
+          "b":{"node":"source","port":"value"}},"outputs":["value"],"label":"Keep on undo"},
+        {"id":"sink","op":"value.multiply","inputs":{"a":{"node":"source","port":"value"},
+          "b":{"node":"source","port":"value"}},"outputs":["value"]}],
+      "outputs":{"value":{"node":"sink","port":"value"}},
+      "layout":{
+        "nodes":{"source":{"x":0,"y":0},"drop":{"x":100,"y":100},"sink":{"x":100,"y":0}},
+        "reroutes":[{"edge":{"node":"drop","port":"a"},"points":[[10,20]]},
+          {"edge":{"node":"sink","port":"a"},"points":[[20,30]]},
+          {"edge":{"node":"sink","port":"b"},"points":[[40,0],[80,0]]}],
+        "ties":[{"x":50,"y":60,"edges":[{"node":"drop","port":"b"},{"node":"sink","port":"b"}]}],
+        "frame_plan":{"render":{"nodes":{"unrelated":{"x":10,"y":20}}}}}})");
+    for (const bool definition_scope : {false, true}) {
+        CAPTURE(definition_scope);
+        auto document = source;
+        const std::string scope = definition_scope ? "inner" : "root";
+        if (definition_scope) {
+            auto body = source;
+            body.erase("schema");
+            body.erase("version");
+            document = {{"schema", "pelican.graph"}, {"version", 1},
+                {"definitions", {{"inner", body}}},
+                {"nodes", Json::array({Json{{"id", "instance"}, {"op", "graph.instance"},
+                    {"definition", "inner"}}})},
+                {"outputs", {{"value", {{"node", "instance"}, {"port", "value"}}}}}};
+            document["layout"]["nodes"]["instance"] = {{"x", 500}, {"y", 600}};
+        }
+        const auto bodyOf = [&](const Json &value) -> const Json & {
+            return definition_scope ? value.at("definitions").at("inner") : value;
+        };
+        const auto original_node = bodyOf(document).at("nodes").at(1);
+        const auto original_layout = bodyOf(document).at("layout");
+        const auto removed = Pelican::editGraphDocument(document, Json::array({
+            Json{{"op", "remove_node"}, {"scope", scope}, {"node", "drop"}}}));
+        const auto &layout = bodyOf(removed).at("layout");
+        CHECK_FALSE(layout.at("nodes").contains("drop"));
+        REQUIRE(layout.at("reroutes").size() == 2);
+        CHECK(layout.at("reroutes").at(0) == original_layout.at("reroutes").at(1));
+        CHECK(layout.at("reroutes").at(1).at("points") == Json::array({
+            Json::array({40, 0}), Json::array({50, 60}), Json::array({80, 0})}));
+        CHECK(layout.at("ties").empty());
+        CHECK(layout.at("frame_plan") == original_layout.at("frame_plan"));
+        if (definition_scope) CHECK(removed.at("layout") == document.at("layout"));
+        // No canvas-generated repair transaction is needed after the removal.
+        REQUIRE_NOTHROW(Pelican::editGraphDocument(removed, Json::array({
+            Json{{"op", "set_layout"}, {"scope", scope}, {"layout", layout}}})));
+        CHECK(Pelican::editGraphDocument(removed, Json::array({
+            Json{{"op", "add_node"}, {"scope", scope}, {"node", original_node}, {"index", 1}},
+            Json{{"op", "set_layout"}, {"scope", scope}, {"layout", original_layout}}})) == document);
+
+        const auto disconnected = Pelican::editGraphDocument(document, Json::array({
+            Json{{"op", "set_input"}, {"scope", scope}, {"node", "drop"},
+                {"port", "b"}, {"source", nullptr}}}));
+        const auto &disconnected_layout = bodyOf(disconnected).at("layout");
+        CHECK(disconnected_layout.at("nodes") == original_layout.at("nodes"));
+        CHECK(disconnected_layout.at("ties").empty());
+        CHECK(disconnected_layout.at("reroutes").at(2).at("points") ==
+            layout.at("reroutes").at(1).at("points"));
+        CHECK(Pelican::editGraphDocument(disconnected, Json::array({
+            Json{{"op", "replace_node"}, {"scope", scope}, {"node", original_node}},
+            Json{{"op", "set_layout"}, {"scope", scope}, {"layout", original_layout}}})) == document);
+        auto without_input = original_node;
+        without_input["inputs"].erase("b");
+        CHECK(Pelican::editGraphDocument(document, Json::array({
+            Json{{"op", "replace_node"}, {"scope", scope}, {"node", without_input}}})) == disconnected);
+    }
+}
+
+TEST_CASE("graph inverse operations validate indexes and replacement topology",
+          "[curve][graph-composition][graph-undo]") {
+    using Json = nlohmann::json;
+    const auto document = parameterGraphCompositionFixture();
+    auto added = document.at("nodes").at(1);
+    added["id"] = "extra";
+    for (const auto &index : Json::array({-1, 0.5, "1", true, nullptr,
+             Json(document.at("nodes").size() + 1), Json(std::numeric_limits<std::uint64_t>::max())})) {
+        CAPTURE(index);
+        CHECK_THROWS(Pelican::editGraphDocument(document, Json::array({
+            Json{{"op", "add_node"}, {"node", added}, {"index", index}}})));
+    }
+    CHECK(Pelican::editGraphDocument(document, Json::array({
+        Json{{"op", "add_node"}, {"node", added}, {"index", 0}}})).at("nodes").front() == added);
+    CHECK(Pelican::editGraphDocument(document, Json::array({
+        Json{{"op", "add_node"}, {"node", added}, {"index", document.at("nodes").size()}}}))
+        .at("nodes").back() == added);
+
+    const auto original = document.at("nodes").at(3);
+    const auto changed = Pelican::editGraphDocument(document, Json::array({
+        Json{{"op", "set_node_label"}, {"node", "left"}, {"label", "Edited"}}}));
+    CHECK(Pelican::editGraphDocument(changed, Json::array({
+        Json{{"op", "replace_node"}, {"node", original}}})) == document);
+    for (const auto &invalid : Json::array({
+             Json{{"id", "absent"}, {"op", "value.constant"}, {"outputs", {"value"}}},
+             Json{{"id", "left/shape"}, {"op", "value.constant"}, {"outputs", {"value"}}},
+             Json{{"id", "left"}, {"op", "graph.input"}}})) {
+        CAPTURE(invalid);
+        CHECK_THROWS(Pelican::editGraphDocument(document, Json::array({
+            Json{{"op", "replace_node"}, {"node", invalid}}})));
+    }
+    auto missing_source = original;
+    missing_source["inputs"]["time"]["node"] = "absent";
+    CHECK_THROWS(Pelican::editGraphDocument(document, Json::array({
+        Json{{"op", "replace_node"}, {"node", missing_source}}})));
+    CHECK_THROWS(Pelican::editGraphDocument(document, Json::array({
+        Json{{"op", "replace_node"}, {"scope", "scaled_curve"},
+             {"node", {{"id", "shape"}, {"op", "graph.instance"}, {"definition", "scaled_curve"}}}}})));
+}
+
 TEST_CASE("mixed graph keeps one document for scalar and render execution", "[curve][graph-composition]") {
     auto document = mixedGraphCompositionFixture();
     const Pelican::ValueGraph::Graph graph{document.dump()};

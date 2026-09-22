@@ -1,5 +1,6 @@
 #include "graphcanvaswidget.hpp"
 
+#include "inlineediteventfilter.hpp"
 #include "panelhelp.hpp"
 
 #include "nodelayout.hpp"
@@ -15,8 +16,6 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
-#include <QEvent>
-#include <QFocusEvent>
 #include <QFont>
 #include <QFontMetricsF>
 #include <QGraphicsPathItem>
@@ -193,53 +192,7 @@ bool isNodeSurface(const QString &kind) {
            kind == QLatin1String{GraphCanvasValueBandItem};
 }
 
-// Enter confirms, Escape abandons, and losing the focus confirms the way a
-// spreadsheet cell does. The decision is reported back rather than acted on
-// here: the widget being watched is still dispatching the event that produced
-// it, so it cannot be deleted from inside this call.
-class InlineEditFilter final : public QObject {
-  public:
-    using Done = std::function<void(bool commit)>;
-
-    explicit InlineEditFilter(Done done) : done_{std::move(done)} {}
-
-  protected:
-    bool eventFilter(QObject *watched, QEvent *event) override {
-        if (event->type() == QEvent::KeyPress) {
-            auto *key = static_cast<QKeyEvent *>(event);
-            if (key->key() == Qt::Key_Escape) {
-                finish(false);
-                return true;
-            }
-            if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
-                finish(true);
-                return true;
-            }
-        } else if (event->type() == QEvent::FocusOut) {
-            // Losing the focus to another widget is a person saying "done
-            // here" -- the spreadsheet rule. Losing the *window* is not: the
-            // reasons below are Qt saying the whole application went to the
-            // back, or a popup took the keyboard for a moment. Alt-Tabbing
-            // away while typing a value must not silently end the edit, and
-            // on Windows a native child window handing the keyboard to its
-            // parent produces exactly this blink -- which is how a value the
-            // canvas had just opened for editing used to vanish on its own.
-            const auto reason = static_cast<QFocusEvent *>(event)->reason();
-            if (reason != Qt::ActiveWindowFocusReason &&
-                reason != Qt::PopupFocusReason)
-                finish(true);
-        }
-        return QObject::eventFilter(watched, event);
-    }
-
-  private:
-    void finish(bool commit) {
-        if (!done_) return;
-        auto done = std::exchange(done_, {});
-        done(commit);
-    }
-    Done done_;
-};
+using InlineEditFilter = InlineEditEventFilter;
 
 // What kind of editor one stored value asks for. The current value is the only
 // evidence there is: no schema says what a node's parameter is allowed to be.
@@ -2385,6 +2338,18 @@ bool GraphCanvasScene::deleteSelection() {
 }
 
 void GraphCanvasScene::keyPressEvent(QKeyEvent *event) {
+    // Text widgets keep their own Undo stack. Only a canvas gesture belongs
+    // to graph history, and a drag must finish saving before it can be undone.
+    if (!editingInline() && event->matches(QKeySequence::Undo)) {
+        undoEdit();
+        event->accept();
+        return;
+    }
+    if (!editingInline() && event->matches(QKeySequence::Redo)) {
+        redoEdit();
+        event->accept();
+        return;
+    }
     if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) {
         // A control point is placement, not document: removing one sends a
         // `set_layout` when the wait runs out, and no graph edit at all.
@@ -2399,6 +2364,16 @@ void GraphCanvasScene::keyPressEvent(QKeyEvent *event) {
         }
     }
     QGraphicsScene::keyPressEvent(event);
+}
+
+void GraphCanvasScene::undoEdit() {
+    if (model_ && !editingInline() && !dragging() && !layoutPending())
+        afterEdit(model_->undo());
+}
+
+void GraphCanvasScene::redoEdit() {
+    if (model_ && !editingInline() && !dragging() && !layoutPending())
+        afterEdit(model_->redo());
 }
 
 void GraphCanvasScene::leaveCurrentScope() {
@@ -2673,6 +2648,8 @@ struct GraphCanvasWidget::Impl {
     QAction *fit_view_action = nullptr;
     QAction *tie_action = nullptr;
     QAction *untie_action = nullptr;
+    QAction *undo_action = nullptr;
+    QAction *redo_action = nullptr;
     QTimer *poll_timer = nullptr;
     QHash<qint64, quint64> transport_requests;
     std::uint64_t rendered_content = std::numeric_limits<std::uint64_t>::max();
@@ -2735,6 +2712,31 @@ struct GraphCanvasWidget::Impl {
         scene = new GraphCanvasScene(&view);
         canvas = new NodeCanvasView(scene, splitter);
         canvas->setObjectName(QStringLiteral("pelican.graphCanvasView"));
+        const auto historyAction = [&](const QString &label, const QString &name,
+                                       QKeySequence::StandardKey key, auto invoke) {
+            auto *action = new QAction(label, &view);
+            action->setObjectName(name);
+            action->setShortcut(QKeySequence{key});
+            // The scene handles canvas keys; inline text editors must retain
+            // Qt's text Undo. The action remains available to automation.
+            action->setShortcutContext(Qt::WidgetShortcut);
+            view.addAction(action);
+            auto *button = new QPushButton(label, &view);
+            button->setObjectName(name + QStringLiteral("Button"));
+            controls->insertWidget(controls->count() - 1, button);
+            QObject::connect(button, &QPushButton::clicked, action, &QAction::trigger);
+            QObject::connect(action, &QAction::changed, button,
+                             [button, action] { button->setEnabled(action->isEnabled()); });
+            QObject::connect(action, &QAction::triggered, &view, invoke);
+            action->setEnabled(false);
+            return action;
+        };
+        undo_action = historyAction(QObject::tr("Undo"),
+            QStringLiteral("pelican.graphCanvas.undo"), QKeySequence::Undo,
+            [this] { scene->undoEdit(); });
+        redo_action = historyAction(QObject::tr("Redo"),
+            QStringLiteral("pelican.graphCanvas.redo"), QKeySequence::Redo,
+            [this] { scene->redoEdit(); });
         // The canvas menu's two entries live for as long as the tab does, and
         // are named: `action` fires a QAction by name without opening a popup,
         // which a command that owes a reply on the wire cannot do.
@@ -3228,6 +3230,10 @@ struct GraphCanvasWidget::Impl {
     }
 
     void synchronize() {
+        const bool history_available = !scene->editingInline() &&
+                                       !scene->dragging() && !scene->layoutPending();
+        undo_action->setEnabled(history_available && model.canUndo());
+        redo_action->setEnabled(history_available && model.canRedo());
         const bool content_changed = rendered_content != model.contentRevision();
         const bool report_changed = rendered_report != model.reportRevision();
         // A redraw deletes the in-place editor, so it waits for the editor to

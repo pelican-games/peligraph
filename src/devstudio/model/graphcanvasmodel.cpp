@@ -82,6 +82,7 @@ GraphCanvasModel::takeRead(std::uint64_t id) {
 }
 
 void GraphCanvasModel::clearContext() {
+    clearHistory();
     digest_.clear();
     nodes_ = Json::array();
     definitions_ = Json::object();
@@ -277,6 +278,9 @@ void GraphCanvasModel::receiveRpcFailure(std::uint64_t id, std::string message) 
         return;
     }
     if (kind == RequestKind::Submit) {
+        // A lost submission reply may have committed. Do not offer history
+        // until a fresh document is read, or guess which edit it belongs to.
+        clearHistory();
         edit_notice_ = {InspectorNoticeKind::Error, std::move(message)};
         ticket_.clear();
         // The gesture is gone; the document the canvas shows may not be.
@@ -366,6 +370,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                 // gesture is discarded, the reason is shown, and the canvas
                 // reads the document again rather than keeping a stale one.
                 ticket_.clear();
+                pending_history_.reset();
                 edit_notice_ = {InspectorNoticeKind::Error, diagnostic(response)};
                 refresh();
                 return;
@@ -387,10 +392,12 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             ticket_.clear();
             if (status != "committed")
                 throw std::invalid_argument("The graph edit did not commit: " + status);
+            commitHistory(response);
             edit_notice_ = {InspectorNoticeKind::Success, "Graph change saved."};
             refresh();
         } catch (const std::exception &error) {
             ticket_.clear();
+            pending_history_.reset();
             edit_notice_ = {InspectorNoticeKind::Error, error.what()};
             refresh();
         }
@@ -421,6 +428,8 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         root_schema_ = response.value("root_schema", std::string{});
         source_reference_ = response.value("source_reference", std::string{});
         digest_ = response.value("source_digest", Json::object()).value("hex", std::string{});
+        if (!history_digest_.empty() && digest_ != history_digest_)
+            clearHistory();
         context_received_ = true;
         failure_ = {};
         // The scope trail can name a definition the new document dropped.
@@ -877,10 +886,99 @@ std::string GraphCanvasModel::scopeToken() const {
 bool GraphCanvasModel::submitOps(Json ops) {
     if (!canEdit()) return false;
     if (!ops.is_array() || ops.empty()) return false;
+    return submitHistory(HistoryAction::Edit, {ops, inverseOps(ops)});
+}
+
+Json GraphCanvasModel::inverseOps(const Json &ops) const {
+    Json inverse = Json::array();
+    std::set<std::string> layouts;
+    // Canvas batches only contain independent node additions (including seed
+    // constants). Other gestures change a single node or one scope's layout.
+    // Restore whole nodes so unknown fields and absent values survive Undo.
+    for (auto it = ops.rbegin(); it != ops.rend(); ++it) {
+        const auto &op = *it;
+        const auto kind = op.at("op").get<std::string>();
+        const auto scope = op.value("scope", std::string{"root"});
+        const auto model_scope = scope == "root" ? std::string{} : scope;
+        Json back{{"scope", scope}};
+        if (kind == "add_node") {
+            back["op"] = "remove_node";
+            back["node"] = op.at("node").at("id");
+        } else if (kind == "set_layout") {
+            layouts.insert(model_scope);
+            continue;
+        } else {
+            const auto id = op.at("node").get<std::string>();
+            const auto *node = findNode(model_scope, id);
+            if (node == nullptr) throw std::logic_error("Graph history node is missing: " + id);
+            back["op"] = kind == "remove_node" ? "add_node" : "replace_node";
+            back["node"] = *node;
+            if (kind == "remove_node") {
+                const auto *nodes = scopeNodes(model_scope);
+                const auto found = std::ranges::find_if(*nodes, [&](const Json &value) {
+                    return text(value, "id") == id;
+                });
+                back["index"] = std::distance(nodes->begin(), found);
+            }
+            // Topology edits discard placements for removed nodes/edges in
+            // the same transaction. Restore those only after their endpoints.
+            if (kind == "remove_node" || kind == "set_input")
+                layouts.insert(model_scope);
+        }
+        inverse.push_back(std::move(back));
+    }
+    for (const auto &scope : layouts) {
+        const auto layout = scopeLayout(scope);
+        inverse.push_back(Json{{"op", "set_layout"},
+            {"scope", scope.empty() ? std::string{"root"} : scope}, {"layout", layout}});
+    }
+    return inverse;
+}
+
+bool GraphCanvasModel::submitHistory(HistoryAction action, HistoryEntry entry) {
+    if (!canEdit()) return false;
+    Json ops = action == HistoryAction::Undo ? entry.inverse : entry.forward;
+    pending_history_ = PendingHistory{action, std::move(entry)};
     edit_notice_ = {InspectorNoticeKind::Information, "Saving the graph change..."};
     request(RequestKind::Submit, "edit_graph_document",
             {{"base_source_digest", digest_}, {"ops", std::move(ops)}});
     return true;
+}
+
+void GraphCanvasModel::clearHistory() {
+    undo_.clear();
+    redo_.clear();
+    pending_history_.reset();
+    history_digest_.clear();
+}
+
+void GraphCanvasModel::commitHistory(const Json &response) {
+    const auto digest = response.value("source_digest", Json::object())
+                            .value("hex", std::string{});
+    if (!pending_history_ || digest.empty()) {
+        clearHistory();
+        return;
+    }
+    auto pending = std::move(*pending_history_);
+    pending_history_.reset();
+    if (pending.action == HistoryAction::Undo) {
+        undo_.pop_back();
+        redo_.push_back(std::move(pending.entry));
+    } else {
+        if (pending.action == HistoryAction::Redo) redo_.pop_back();
+        else redo_.clear();
+        undo_.push_back(std::move(pending.entry));
+        if (undo_.size() > historyCapacity) undo_.erase(undo_.begin());
+    }
+    history_digest_ = digest;
+}
+
+bool GraphCanvasModel::undo() {
+    return canUndo() && submitHistory(HistoryAction::Undo, undo_.back());
+}
+
+bool GraphCanvasModel::redo() {
+    return canRedo() && submitHistory(HistoryAction::Redo, redo_.back());
 }
 
 Json GraphCanvasModel::nodeParameters(std::string_view id) const {

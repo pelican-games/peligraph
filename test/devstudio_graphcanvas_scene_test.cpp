@@ -25,6 +25,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QWidget>
@@ -308,8 +309,9 @@ void drag(QGraphicsScene &scene, const QPointF &from, const QPointF &to) {
     QCoreApplication::processEvents();
 }
 
-void pressKey(QGraphicsScene &scene, int key) {
-    QKeyEvent event{QEvent::KeyPress, key, Qt::NoModifier};
+void pressKey(QGraphicsScene &scene, int key,
+              Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+    QKeyEvent event{QEvent::KeyPress, key, modifiers};
     QApplication::sendEvent(&scene, &event);
     QCoreApplication::processEvents();
 }
@@ -373,9 +375,10 @@ QWidget *editorWidget(QGraphicsScene &scene) {
     return nullptr;
 }
 
-void typeKey(QWidget *widget, int key) {
+void typeKey(QWidget *widget, int key,
+             Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
     REQUIRE(widget != nullptr);
-    QKeyEvent event{QEvent::KeyPress, key, Qt::NoModifier};
+    QKeyEvent event{QEvent::KeyPress, key, modifiers};
     QApplication::sendEvent(widget, &event);
     // The editor reports its decision from the event loop: it cannot delete
     // itself inside the event it is still dispatching.
@@ -1075,6 +1078,91 @@ TEST_CASE("Selecting an edge and pressing Delete clears the input it lands on",
                                          {"node", "sum"},
                                          {"port", "b"},
                                          {"source", nullptr}});
+}
+
+TEST_CASE("Graph keyboard Undo and Redo use committed history while text keeps its own Undo",
+          "[devstudio][graph-canvas][scene][graph-edit][graph-history]") {
+    (void)application();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    const auto original = readFixture("graph_node_visuals");
+    answer(model, original, visualCatalog());
+    scene.setModel(&model);
+
+    auto renamed = original;
+    for (auto &node : renamed.at("nodes"))
+        if (node.at("id") == "helmet_pulse") node["label"] = "Visor pulse";
+
+    // Match the engine's commit and refresh digest: a submission alone must
+    // never be enough to create an Undo entry.
+    const auto commit = [&](const Json &document, const char *digest) {
+        const auto polls = model.takeRpcRequests();
+        REQUIRE(polls.size() == 1);
+        REQUIRE(polls.front().method == "get_edit_result");
+        model.receiveRpcResult(polls.front().request_id,
+            Json{{"status", "committed"},
+                 {"source_digest", {{"hex", digest}}}}.dump());
+        const auto reads = model.takeRpcRequests();
+        REQUIRE(reads.size() == 1);
+        REQUIRE(reads.front().method == "get_graph_instances");
+        auto snapshot = context(document);
+        snapshot["source_digest"]["hex"] = digest;
+        model.receiveRpcResult(reads.front().request_id, snapshot.dump());
+        scene.repopulate();
+    };
+
+    REQUIRE(model.setNodeLabel("helmet_pulse", "Visor pulse"));
+    const auto forward = takeEdit(model);
+    REQUIRE_FALSE(model.canUndo());
+    commit(renamed, "source-b");
+    REQUIRE(model.canUndo());
+    REQUIRE_FALSE(model.canRedo());
+
+    SECTION("canvas shortcuts submit the inverse and then the original edit") {
+        pressKey(scene, Qt::Key_Z, Qt::ControlModifier);
+        const auto undo = takeEdit(model);
+        REQUIRE(undo.at("base_source_digest") == "source-b");
+        REQUIRE(undo.at("ops").size() == 1);
+        REQUIRE(undo.at("ops").at(0).at("op") == "replace_node");
+        REQUIRE(undo.at("ops").at(0).at("node").at("label") == "Helmet pulse");
+        commit(original, "source-c");
+        REQUIRE_FALSE(model.canUndo());
+        REQUIRE(model.canRedo());
+
+        pressKey(scene, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+        const auto redo = takeEdit(model);
+        REQUIRE(redo.at("base_source_digest") == "source-c");
+        REQUIRE(redo.at("ops") == forward.at("ops"));
+        commit(renamed, "source-d");
+        REQUIRE(model.canUndo());
+        REQUIRE_FALSE(model.canRedo());
+    }
+
+    SECTION("an inline label uses native text Undo without submitting graph history") {
+        REQUIRE(scene.beginLabelEdit("helmet_pulse"));
+        auto *line = qobject_cast<QLineEdit *>(editorWidget(scene));
+        REQUIRE(line != nullptr);
+        line->insert(QStringLiteral("Local draft"));
+        REQUIRE(scene.inlineEditText() == QStringLiteral("Local draft"));
+        REQUIRE(line->isUndoAvailable());
+
+        typeKey(line, Qt::Key_Z, Qt::ControlModifier);
+        REQUIRE(scene.inlineEditText() == QStringLiteral("Visor pulse"));
+        REQUIRE(scene.editingInline());
+        REQUIRE(model.canUndo());
+        requireNoEdit(model);
+
+        // Even if the key reaches the scene while the editor is open, graph
+        // history must not consume it or submit a document mutation.
+        pressKey(scene, Qt::Key_Z, Qt::ControlModifier);
+        REQUIRE(scene.editingInline());
+        REQUIRE(model.canUndo());
+        requireNoEdit(model);
+        typeKey(line, Qt::Key_Escape);
+        REQUIRE_FALSE(scene.editingInline());
+        requireNoEdit(model);
+    }
 }
 
 TEST_CASE("A value pill opens in place and sends only the key that changed",

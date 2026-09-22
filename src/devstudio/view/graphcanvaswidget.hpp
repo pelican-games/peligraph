@@ -163,7 +163,7 @@ SocketTypeFacts graphCanvasSocketFacts(const GraphCanvasModel &model,
 
 // Editable canvas over one scope of the common graph. Every gesture that
 // changes the document goes out as exactly one edit_graph_document the moment
-// it finishes: there is no Apply button, and no undo (v0).
+// it finishes. Undo/Redo replay the same validated, digest-checked RPC edits.
 class GraphCanvasScene final : public QGraphicsScene {
   public:
     explicit GraphCanvasScene(QObject *parent = nullptr);
@@ -205,6 +205,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     // back as one tie -- so the drawing it produced survives the next node drag,
     // and the whole of it goes to the document as one `set_layout`.
     void autoLayout();
+    void undoEdit();
+    void redoEdit();
     // The menu entries the owner named. A named QAction can be fired by the
     // automation surface without driving a popup, so the scene is handed the
     // entries rather than inventing a throwaway one per right-click.

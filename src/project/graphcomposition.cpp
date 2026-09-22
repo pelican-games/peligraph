@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <iterator>
 #include <set>
 #include <stdexcept>
 
@@ -672,6 +673,77 @@ void requireLayout(const EditScope &scope, const Json &definitions, const Json &
     }
 }
 
+// Topology and its placement are one edit. Leaving stale placement for the
+// canvas to repair would create a second history entry whose inverse refers
+// to an already removed node or edge and therefore cannot pass set_layout.
+void pruneScopeLayout(const EditScope &scope) {
+    const auto found = scope.container->find("layout");
+    if (found == scope.container->end() || !found->is_object()) return;
+    auto &layout = *found;
+    std::set<std::string> present;
+    std::set<std::pair<std::string, std::string>> edges;
+    for (const auto &node : *scope.nodes) {
+        const auto id = node.at("id").get<std::string>();
+        present.insert(id);
+        if (const auto inputs = node.find("inputs");
+            inputs != node.end() && inputs->is_object())
+            for (const auto &[port, endpoint] : inputs->items()) {
+                (void)endpoint;
+                edges.emplace(id, port);
+            }
+    }
+    const auto liveEdge = [&](const Json &edge) {
+        return edge.is_object() && edge.contains("node") && edge.at("node").is_string() &&
+            edge.contains("port") && edge.at("port").is_string() &&
+            edges.contains({edge.at("node").get<std::string>(), edge.at("port").get<std::string>()});
+    };
+    if (const auto nodes = layout.find("nodes"); nodes != layout.end() && nodes->is_object()) {
+        for (auto entry = nodes->begin(); entry != nodes->end();)
+            if (!present.contains(entry.key())) entry = nodes->erase(entry);
+            else ++entry;
+    }
+    if (const auto reroutes = layout.find("reroutes");
+        reroutes != layout.end() && reroutes->is_array())
+        reroutes->erase(std::remove_if(reroutes->begin(), reroutes->end(), [&](const Json &entry) {
+            return entry.is_object() && entry.contains("edge") &&
+                (!liveEdge(entry.at("edge")) ||
+                 (entry.contains("points") && entry.at("points").empty()));
+        }), reroutes->end());
+    if (const auto ties = layout.find("ties"); ties != layout.end() && ties->is_array()) {
+        for (auto &tie : *ties) {
+            if (!tie.is_object() || !tie.contains("edges") || !tie.at("edges").is_array()) continue;
+            auto &members = tie["edges"];
+            members.erase(std::remove_if(members.begin(), members.end(), [&](const Json &edge) {
+                return !liveEdge(edge);
+            }), members.end());
+            if (members.size() != 1 || !tie.contains("x") || !tie.at("x").is_number() ||
+                !tie.contains("y") || !tie.at("y").is_number()) continue;
+            // Match the canvas: a surviving line keeps the former bundle's
+            // control point, ordered by x with its existing reroute points.
+            if (!layout.contains("reroutes")) layout["reroutes"] = Json::array();
+            auto &reroutes = layout["reroutes"];
+            if (!reroutes.is_array()) continue;
+            auto entry = std::find_if(reroutes.begin(), reroutes.end(), [&](const Json &reroute) {
+                return reroute.is_object() && reroute.value("edge", Json{}) == members.front();
+            });
+            if (entry == reroutes.end()) {
+                reroutes.push_back({{"edge", members.front()}, {"points", Json::array()}});
+                entry = std::prev(reroutes.end());
+            }
+            auto &points = (*entry)["points"];
+            if (!points.is_array()) continue;
+            points.push_back(Json::array({tie.at("x"), tie.at("y")}));
+            std::stable_sort(points.begin(), points.end(), [](const Json &a, const Json &b) {
+                return a.at(0).get<double>() < b.at(0).get<double>();
+            });
+            members.clear();
+        }
+        ties->erase(std::remove_if(ties->begin(), ties->end(), [](const Json &tie) {
+            return tie.is_object() && tie.contains("edges") && tie.at("edges").empty();
+        }), ties->end());
+    }
+}
+
 void requireInstancePort(const Json &node, const Json &definitions, const std::string &port) {
     if (node.value("op", std::string{}) != "graph.instance") return;
     const auto declared = declaredInstanceInputs(node, definitions);
@@ -702,9 +774,9 @@ nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
         const auto scope = resolveEditScope(candidate, operation);
         auto &nodes = *scope.nodes;
         const auto &definitions = definitionsOf();
-        if (kind == "add_node") {
+        if (kind == "add_node" || kind == "replace_node") {
             const auto &node = operation.at("node");
-            object(node, "add_node requires a node object");
+            object(node, "graph node edit requires a node object");
             const auto id = opNodeName(node.at("id"));
             if (id.find('/') != std::string::npos)
                 throw GraphRegistryError("graph.definition_immutable@1",
@@ -718,11 +790,27 @@ nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
                     {{"node", id}, {"scope", scope.name}});
             if (op == "graph.input" && scope.root)
                 throw GraphRegistryError("graph.input_scope@1", {{"node", id}});
+            if (kind == "replace_node") {
+                // Restoring a node preserves all authored fields, including
+                // absent parameters and extension fields. The full candidate
+                // is validated below just like an ordinary graph edit.
+                locateNode(scope, definitions, id) = node;
+                pruneScopeLayout(scope);
+                continue;
+            }
             if (std::any_of(nodes.begin(), nodes.end(), [&](const Json &existing) {
                     return existing.contains("id") && existing.at("id") == id;
                 }))
                 throw GraphRegistryError("graph.node_duplicate@1", {{"node", id}});
-            nodes.push_back(node);
+            if (const auto index = operation.find("index"); index != operation.end()) {
+                if ((!index->is_number_unsigned() && !index->is_number_integer()) ||
+                    (index->is_number_integer() && index->get<std::int64_t>() < 0) ||
+                    index->get<std::uint64_t>() > nodes.size())
+                    throw std::invalid_argument("add_node index must be within the node array");
+                nodes.insert(nodes.begin() + index->get<Json::difference_type>(), node);
+            } else {
+                nodes.push_back(node);
+            }
         } else if (kind == "remove_node") {
             const auto id = opNodeName(operation.at("node"));
             const auto removed_op = locateNode(scope, definitions, id).value("op", std::string{});
@@ -750,6 +838,7 @@ nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
             nodes.erase(std::find_if(nodes.begin(), nodes.end(), [&](const Json &node) {
                 return node.contains("id") && node.at("id") == id;
             }));
+            pruneScopeLayout(scope);
         } else if (kind == "set_input") {
             const auto id = opNodeName(operation.at("node"));
             const auto port = identifier(operation.at("port"));
@@ -769,6 +858,7 @@ nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
                 (void)identifier(source.at("port"));
                 node["inputs"][port] = source;
             }
+            pruneScopeLayout(scope);
         } else if (kind == "set_node_parameters") {
             const auto id = opNodeName(operation.at("node"));
             const auto &parameters = operation.at("parameters");

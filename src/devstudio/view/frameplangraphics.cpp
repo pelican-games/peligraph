@@ -1,5 +1,6 @@
 #include "frameplangraphics.hpp"
 
+#include "inlineediteventfilter.hpp"
 #include "nodelayout.hpp"
 #include "studiotheme.hpp"
 
@@ -15,7 +16,6 @@
 #include <QGraphicsSceneContextMenuEvent>
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsSimpleTextItem>
-#include <QFocusEvent>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLineEdit>
@@ -3485,56 +3485,7 @@ std::optional<FramePlanEdgeSelection> edgeAt(QGraphicsScene &scene,
 
 namespace {
 
-// Q-4, the Graph canvas's rule (Q-3) applied to the Frame Plan's own band
-// editor. Enter confirms, Escape abandons, and losing the focus confirms the
-// way a spreadsheet cell does -- except when what was lost is the window
-// rather than the focus. The decision is reported back rather than acted on
-// here: the widget being watched is still dispatching the event that produced
-// it, so it cannot be deleted from inside this call.
-class FramePlanInlineEditFilter final : public QObject {
-  public:
-    using Done = std::function<void(bool commit)>;
-
-    explicit FramePlanInlineEditFilter(Done done) : done_{std::move(done)} {}
-
-  protected:
-    bool eventFilter(QObject *watched, QEvent *event) override {
-        if (event->type() == QEvent::KeyPress) {
-            auto *key = static_cast<QKeyEvent *>(event);
-            if (key->key() == Qt::Key_Escape) {
-                finish(false);
-                return true;
-            }
-            if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
-                finish(true);
-                return true;
-            }
-        } else if (event->type() == QEvent::FocusOut) {
-            // Losing the focus to another widget is a person saying "done
-            // here". Losing the *window* is not: these two reasons are Qt
-            // saying the whole application went to the back, or that a popup
-            // took the keyboard for a moment. On Windows the embedded engine
-            // viewport's native window hands the keyboard back and forth with
-            // the main window, and that blink arrives here as exactly this
-            // event -- which is how a band the user had just opened used to
-            // close itself before anything could be typed into it.
-            const auto reason = static_cast<QFocusEvent *>(event)->reason();
-            if (reason != Qt::ActiveWindowFocusReason &&
-                reason != Qt::PopupFocusReason) {
-                finish(true);
-            }
-        }
-        return QObject::eventFilter(watched, event);
-    }
-
-  private:
-    void finish(bool commit) {
-        if (!done_) return;
-        auto done = std::exchange(done_, {});
-        done(commit);
-    }
-    Done done_;
-};
+using FramePlanInlineEditFilter = InlineEditEventFilter;
 
 } // namespace
 
