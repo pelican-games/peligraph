@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.25)
 
 get_filename_component(PELICAN_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
-set(feature_ledger "${PELICAN_SOURCE_DIR}/docs/implementation_plan.md")
 set(feature_verifier "${PELICAN_SOURCE_DIR}/cmake/verify_feature_registry.cmake")
 include("${PELICAN_SOURCE_DIR}/cmake/pelican_feature_registry.cmake")
+set(feature_ledger "${PELICAN_FEATURE_LEDGER_DEFAULT}")
 
 if(NOT DEFINED PELICAN_MUTATION_DIR)
   set(PELICAN_MUTATION_DIR

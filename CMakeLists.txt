@@ -42,7 +42,7 @@ include(cmake/pelican_feature_registry.cmake)
 # variable definition
 include(cmake/pelican_runtime_layout.cmake)
 pelican_declare_feature_options()
-pelican_verify_feature_ledger("${CMAKE_SOURCE_DIR}/docs/implementation_plan.md")
+pelican_verify_feature_ledger("${PELICAN_FEATURE_LEDGER_DEFAULT}")
 option(PELICAN_ENABLE_ASAN "Build targets with AddressSanitizer (intended for test builds)" OFF)
 option(
   PELICAN_LEAN_TEST_ARTIFACTS

@@ -2,8 +2,11 @@ include_guard(GLOBAL)
 
 include(CMakeDependentOption)
 
+# Keep configure-time validation independent of the implementation history.
+set(PELICAN_FEATURE_LEDGER_DEFAULT "${CMAKE_CURRENT_LIST_DIR}/../docs/build_features.md")
+
 # The feature validation registry is the single source for CMake option
-# defaults, the development ledger, and the build-unit contrast matrix.
+# defaults, docs/build_features.md, and the build-unit contrast matrix.
 # BASELINE is the configuration against which a WP contrast is built.  It is
 # also the option default unless OPTION_DEFAULT is explicitly supplied (the
 # SPIR-V linker is intentionally enabled by the development baseline while

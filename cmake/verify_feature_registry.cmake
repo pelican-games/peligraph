@@ -3,7 +3,7 @@ include("${PELICAN_SOURCE_DIR}/cmake/pelican_feature_registry.cmake")
 
 if(NOT DEFINED PELICAN_FEATURE_LEDGER)
   set(PELICAN_FEATURE_LEDGER
-      "${PELICAN_SOURCE_DIR}/docs/implementation_plan.md")
+      "${PELICAN_FEATURE_LEDGER_DEFAULT}")
 endif()
 
 pelican_verify_feature_ledger("${PELICAN_FEATURE_LEDGER}")

@@ -50,30 +50,11 @@ ctest --test-dir ./build -C Debug -R '<affected-test-regex>' -j1 --output-on-fai
   一つの対照構成を別のフラグの対照として代用しない。基準値・対照値・対照で
   連動するフラグの正本は
   [`cmake/pelican_feature_registry.cmake`](../cmake/pelican_feature_registry.cmake) とする。
-  以下の表は同 registry から生成され、通常の configure と
+  [専用台帳](build_features.md)は同 registry から生成され、通常の configure と
   `cmake -P cmake/verify_feature_registry.cmake` が完全一致を検査する。
   更新は `cmake -P cmake/update_feature_ledger.cmake` で行う。
 
-<!-- PELICAN_FEATURE_REGISTRY_BEGIN -->
-| フラグ | 基準値 | 対照値 | 対照で連動するフラグ |
-|---|---:|---:|---|
-| `PELICAN_RUNTIME_SHADER_COMPILER` | `ON` | `OFF` | — |
-| `PELICAN_WITH_SPIRV_LINK` | `ON` | `OFF` | — |
-| `PELICAN_WITH_AUDIO` | `ON` | `OFF` | — |
-| `PELICAN_WITH_VAT` | `ON` | `OFF` | — |
-| `PELICAN_WITH_EXR` | `ON` | `OFF` | — |
-| `PELICAN_WITH_RPC` | `ON` | `OFF` | — |
-| `PELICAN_WITH_ANIMATION` | `ON` | `OFF` | — |
-| `PELICAN_WITH_SEQPLAYER` | `ON` | `OFF` | — |
-| `PELICAN_WITH_IMGUI` | `ON` | `OFF` | — |
-| `PELICAN_WITH_PHYSICS` | `ON` | `OFF` | `PELICAN_WITH_JOLT_PHYSICS=OFF`<br>`PELICAN_WITH_BUILTIN_PHYSICS=OFF` |
-| `PELICAN_WITH_OPENXR` | `ON` | `OFF` | — |
-| `PELICAN_WITH_RENDERDOC` | `ON` | `OFF` | — |
-| `PELICAN_WITH_STANDARD_RENDER_ALGORITHMS` | `ON` | `OFF` | — |
-| `PELICAN_WITH_JOLT_PHYSICS` | `OFF` | `ON` | `PELICAN_WITH_BUILTIN_PHYSICS=OFF` |
-| `PELICAN_WITH_BUILTIN_PHYSICS` | `ON` | `OFF` | — |
-| `SKIP_DEVSTUDIO` | `OFF` | `ON` | — |
-<!-- PELICAN_FEATURE_REGISTRY_END -->
+機能表は [ビルド機能の検証台帳](build_features.md) に分離した。
 
 registry が宣言した連動以外のフラグを対照行で動かしてはならない。
 

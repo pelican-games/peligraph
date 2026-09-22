@@ -15,7 +15,7 @@ endif()
 get_filename_component(SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 include("${SOURCE_DIR}/cmake/pelican_feature_registry.cmake")
 include("${SOURCE_DIR}/test/required_capability_ctest.cmake")
-pelican_verify_feature_ledger("${SOURCE_DIR}/docs/implementation_plan.md")
+pelican_verify_feature_ledger("${PELICAN_FEATURE_LEDGER_DEFAULT}")
 set(ARTIFACT_ROOT "${SOURCE_DIR}/build-unit-smoke-artifacts")
 
 if(WIN32)
