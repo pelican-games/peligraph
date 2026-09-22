@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -17,6 +18,63 @@ namespace {
 
 constexpr std::string_view scene_schema = "pelican.scene";
 constexpr int latest_scene_version = 2;
+
+std::uint64_t positiveIdentityInteger(const nlohmann::json &value,
+                                      std::string_view field) {
+    if (!value.is_number_integer() ||
+        (value.is_number_integer() && !value.is_number_unsigned() &&
+         value.get<std::int64_t>() <= 0) ||
+        (value.is_number_unsigned() && value.get<std::uint64_t>() == 0)) {
+        throw std::runtime_error(std::string{field} +
+                                 " must be a positive integer token");
+    }
+    return value.get<std::uint64_t>();
+}
+
+void resolveAuthoringIdentities(const nlohmann::json &source,
+                               std::uint64_t first_id,
+                               SceneFormatDocument &document) {
+    if (first_id == 0)
+        throw std::invalid_argument("AuthoringObjectId allocation must start at a non-zero value");
+    std::unordered_set<std::uint64_t> claimed;
+    std::uint64_t largest_id = 0;
+    for (const auto &[scene_id, scene] : document.scenes.items()) {
+        auto &ids = document.authoring_object_ids[scene_id];
+        for (const auto &object : scene.at("objects")) {
+            std::uint64_t id = 0;
+            if (const auto field = object.find("authoring_object_id");
+                field != object.end()) {
+                document.has_persistent_authoring_ids = true;
+                id = positiveIdentityInteger(*field, "authoring_object_id");
+                if (id == std::numeric_limits<std::uint64_t>::max())
+                    throw std::runtime_error("authoring_object_id leaves no next identity");
+                if (!claimed.insert(id).second)
+                    throw std::runtime_error("duplicate authoring_object_id: " + std::to_string(id));
+                largest_id = std::max(largest_id, id);
+            }
+            ids.push_back(id);
+        }
+    }
+    auto next = largest_id + 1;
+    if (const auto field = source.find("next_authoring_object_id");
+        field != source.end()) {
+        document.has_persistent_authoring_ids = true;
+        next = positiveIdentityInteger(*field, "next_authoring_object_id");
+        if (next <= largest_id)
+            throw std::runtime_error("next_authoring_object_id must exceed every authoring_object_id");
+    }
+    if (!document.has_persistent_authoring_ids) next = first_id;
+    for (auto &[scene_id, ids] : document.authoring_object_ids) {
+        (void)scene_id;
+        for (auto &id : ids) {
+            if (id != 0) continue;
+            if (next == std::numeric_limits<std::uint64_t>::max())
+                throw std::overflow_error("AuthoringObjectId space exhausted");
+            id = next++;
+        }
+    }
+    document.next_authoring_object_id = next;
+}
 
 bool isR7Identifier(std::string_view value) {
     if (value.empty()) {
@@ -200,7 +258,8 @@ nlohmann::json normalizeScene(const nlohmann::json &scene, const std::string &sc
 
 } // namespace
 
-SceneFormatDocument normalizeSceneDataJson(const nlohmann::json &scene_data) {
+SceneFormatDocument normalizeSceneDataJson(const nlohmann::json &scene_data,
+                                          std::uint64_t first_authoring_object_id) {
     if (!scene_data.is_object()) {
         throw std::runtime_error("scene data must be an object");
     }
@@ -232,6 +291,7 @@ SceneFormatDocument normalizeSceneDataJson(const nlohmann::json &scene_data) {
         requireIdentifier(scene_id, "scene id", "");
         document.scenes[scene_id] = normalizeScene(it.value(), scene_id);
     }
+    resolveAuthoringIdentities(scene_data, first_authoring_object_id, document);
     return document;
 }
 

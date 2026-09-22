@@ -14,6 +14,7 @@
 #include "graph_composition_fixture.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
 #include <quill/Frontend.h>
 #include <quill/Logger.h>
 #include <quill/sinks/Sink.h>
@@ -25,6 +26,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -361,6 +363,156 @@ TEST_CASE("AuthoringSceneDocument preserves every raw scene object and component
     REQUIRE(test_support::authoring(fresh).encodeSemantic() == encoded);
 }
 
+TEST_CASE("Persistent scene identities survive reorder and do not reuse deleted IDs",
+          "[scene-format][authoring][persistent-identity]") {
+    const auto source = nlohmann::json::parse(R"({"schema":"pelican.scene","version":1,
+        "scenes":{"main":{"objects":[{"name":"First","components":[]},
+        {"name":"Owner","components":[]}]},
+        "secondary":{"objects":[{"name":"Last","components":[]}]}}})");
+    const auto original = AuthoringSceneDocument::load(source.dump(), SceneRevision{1});
+    auto stage = AuthoringSceneAuthority::structuralStage(original);
+    stage.removeObject(AuthoringObjectId{3});
+    stage.reorderObject(AuthoringObjectId{2}, 0);
+    stage.renameObject(AuthoringObjectId{2}, "Renamed");
+    const auto edited = std::move(stage).finish(SceneRevision{2});
+    const auto bytes = AuthoringSceneAuthority::encodePersistent(edited);
+    const auto reopened = AuthoringSceneDocument::load(bytes, SceneRevision{1}, 1000);
+    const auto scenes = AuthoringSceneAuthority::query(reopened);
+    REQUIRE(scenes[0].objects[0].name == "Renamed");
+    REQUIRE(scenes[0].objects[0].authoring_object_id == AuthoringObjectId{2});
+    REQUIRE(scenes[0].objects[1].authoring_object_id == AuthoringObjectId{1});
+    REQUIRE(scenes[1].objects.empty());
+    REQUIRE(AuthoringSceneAuthority::encodePersistent(reopened) == bytes);
+    auto next = AuthoringSceneAuthority::structuralStage(reopened);
+    REQUIRE(next.insertObject("secondary", 0, {{"components", nlohmann::json::array()}}) ==
+            AuthoringObjectId{4});
+
+    // Portable snapshots keep the established fresh-identity contract.
+    const auto snapshot = AuthoringSceneAuthority::encodeSemantic(edited);
+    REQUIRE_FALSE(nlohmann::json::parse(snapshot).contains("next_authoring_object_id"));
+    const auto imported = AuthoringSceneDocument::load(snapshot, SceneRevision{1}, 100);
+    REQUIRE(AuthoringSceneAuthority::query(imported)[0].objects[0].authoring_object_id ==
+            AuthoringObjectId{100});
+    const auto explicit_import = AuthoringSceneDocument::load(
+        bytes, SceneRevision{1}, 100, AuthoringIdentityPolicy::AllocateFresh);
+    REQUIRE(AuthoringSceneAuthority::query(explicit_import)[0].objects[0].authoring_object_id ==
+            AuthoringObjectId{100});
+    REQUIRE(AuthoringSceneAuthority::encodeSemantic(explicit_import) == snapshot);
+}
+
+TEST_CASE("Scene identity metadata rejects ambiguous IDs and protects the allocation boundary",
+          "[scene-format][authoring][persistent-identity]") {
+    using Json = nlohmann::json;
+    const auto source = Json::parse(R"({"schema":"pelican.scene","version":1,
+        "next_authoring_object_id":10,"scenes":{
+        "main":{"objects":[{"authoring_object_id":2,"components":[]}]},
+        "secondary":{"objects":[{"components":[]}]}}})");
+    SECTION("unidentified additions allocate above persisted high water in every scene") {
+        const auto document = AuthoringSceneDocument::load(source.dump(), SceneRevision{1});
+        const auto scenes = AuthoringSceneAuthority::query(document);
+        REQUIRE(scenes[0].objects[0].authoring_object_id == AuthoringObjectId{2});
+        REQUIRE(scenes[1].objects[0].authoring_object_id == AuthoringObjectId{10});
+        REQUIRE(Json::parse(AuthoringSceneAuthority::encodePersistent(document))
+                    .at("next_authoring_object_id") == 11);
+    }
+    SECTION("IDs must be positive exact integers with a representable successor") {
+        for (const Json &invalid : std::vector<Json>{0, -1, 2.0, "2", true, nullptr,
+                 std::numeric_limits<std::uint64_t>::max()}) {
+            auto bad = source;
+            bad["scenes"]["main"]["objects"][0]["authoring_object_id"] = invalid;
+            CAPTURE(invalid.dump());
+            REQUIRE_THROWS(normalizeSceneDataJson(bad));
+            REQUIRE_THROWS(AuthoringSceneDocument::load(bad.dump(), SceneRevision{1}));
+        }
+    }
+    SECTION("duplicates across different scenes are rejected") {
+        auto bad = source;
+        bad["scenes"]["secondary"]["objects"][0]["authoring_object_id"] = 2;
+        REQUIRE_THROWS_WITH(normalizeSceneDataJson(bad), "duplicate authoring_object_id: 2");
+    }
+    SECTION("next identity must be exact and exceed all claimed identities") {
+        for (const Json &invalid : std::vector<Json>{0, -1, 1, 2, 10.0, "10", true, nullptr}) {
+            auto bad = source;
+            bad["next_authoring_object_id"] = invalid;
+            CAPTURE(invalid.dump());
+            REQUIRE_THROWS(normalizeSceneDataJson(bad));
+        }
+    }
+    SECTION("exhaustion cannot wrap around to a live ID") {
+        auto exhausted = source;
+        exhausted["scenes"].erase("secondary");
+        exhausted["next_authoring_object_id"] = std::numeric_limits<std::uint64_t>::max();
+        const auto document = AuthoringSceneDocument::load(exhausted.dump(), SceneRevision{1});
+        auto stage = AuthoringSceneAuthority::structuralStage(document);
+        REQUIRE_THROWS_AS(stage.insertObject("main", 1, {{"components", Json::array()}}),
+                          std::overflow_error);
+        exhausted["scenes"]["main"]["objects"].push_back({{"components", Json::array()}});
+        REQUIRE_THROWS_AS(normalizeSceneDataJson(exhausted), std::overflow_error);
+    }
+    SECTION("projection and structural raw edits cannot forge persisted identities") {
+        const auto document = AuthoringSceneDocument::load(source.dump(), SceneRevision{1});
+        auto raw = AuthoringSceneAuthority::rawView(document).documentJson();
+        raw["scenes"]["main"]["objects"][0]["authoring_object_id"] = 99;
+        REQUIRE_THROWS_AS(AuthoringSceneAuthority::stage(document, raw, SceneRevision{2}),
+                          std::invalid_argument);
+        auto stage = AuthoringSceneAuthority::structuralStage(document);
+        stage.rawJson() = raw;
+        REQUIRE_THROWS_AS(std::move(stage).finish(SceneRevision{2}), std::invalid_argument);
+    }
+}
+
+TEST_CASE("Saving after removing an earlier object preserves the graph owner on reopen",
+          "[scene-format][authoring][save][graph-owner][persistent-identity]") {
+    ensureLogger();
+    const auto temp_dir = makeTempProjectDir();
+    try {
+        const auto source = nlohmann::json::parse(R"({"schema":"pelican.scene","version":1,
+            "scenes":{"main":{"objects":[
+            {"name":"Before","components":[{"name":"transform"}]},
+            {"name":"Hero","components":[{"name":"transform"}]},
+            {"name":"Other","components":[{"name":"transform"}]}]}}})");
+        writeText(temp_dir / "scene.json", source.dump());
+        writeText(temp_dir / "passes/main_rendering_config.json", "{}");
+        const nlohmann::json project{
+            {"schema", "pelican.project"}, {"version", 1},
+            {"engine_min_version", "0.1.0"},
+            {"basic_config", {{"default_scene_id", "main"}, {"scene_data_json", "scene.json"}}}};
+        {
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(temp_dir, false);
+            GET_MODULE(ProjectSource).setProjectData(project.dump());
+            auto &config = GET_MODULE(ProjectBasicConfig);
+            // Even an unchanged legacy scene gets IDs on the first save.
+            (void)config.saveSceneDocument();
+            REQUIRE(readJson(temp_dir / "scene.json").at("next_authoring_object_id") == 4);
+            auto stage = AuthoringSceneAuthority::structuralStage(config.sceneDocument());
+            stage.removeObject(AuthoringObjectId{1});
+            const auto edited = std::move(stage).finish(
+                SceneRevision{config.sceneDocument().revision().value + 1});
+            config.updateSceneDocument(AuthoringSceneAuthority::encodePersistent(edited));
+            (void)config.saveSceneDocument();
+        }
+        {
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(temp_dir, false);
+            GET_MODULE(ProjectSource).setProjectData(project.dump());
+            GET_MODULE(ECSPredefinedRegistration).reg();
+            auto &loader = GET_MODULE(SceneLoader);
+            test_support::loadScene(loader, SceneId{"main"});
+            const auto hero = loader.objectId("Hero");
+            REQUIRE(hero);
+            REQUIRE(loader.objectId("Other"));
+            REQUIRE(loader.graphOwnerObject(GraphInstanceOwner{"main", 2}) == hero);
+            REQUIRE(loader.graphOwnerObject(GraphInstanceOwner{"main", 3}) == loader.objectId("Other"));
+            REQUIRE_FALSE(loader.graphOwnerObject(GraphInstanceOwner{"main", 1}));
+        }
+    } catch (...) {
+        std::filesystem::remove_all(temp_dir);
+        throw;
+    }
+    std::filesystem::remove_all(temp_dir);
+}
+
 TEST_CASE("ProjectBasicConfig has one authoring document cache authority", "[scene-format][authoring]") {
     ensureLogger();
     auto temp_dir = makeTempProjectDir();
@@ -464,6 +616,8 @@ TEST_CASE("SAVE0 is failure-atomic at every prepare point and reloads semantical
             source["editor_envelope"]["save_marker"] = "wp166";
             config.updateSceneDocument(source.dump());
             const auto expected_semantic = config.sceneDataJson();
+            const auto expected_persisted =
+                AuthoringSceneAuthority::encodePersistent(config.sceneDocument());
             const auto old_revision = config.sceneDocument().revision();
             const auto *old_cache = &config.sceneDocument();
 
@@ -508,9 +662,9 @@ TEST_CASE("SAVE0 is failure-atomic at every prepare point and reloads semantical
 
             const auto saved = config.saveSceneDocument();
             REQUIRE(saved.scene_revision.value == old_revision.value + 1U);
-            REQUIRE(saved.byte_count == expected_semantic.size());
+            REQUIRE(saved.byte_count == expected_persisted.size());
             REQUIRE(saved.digest.size() == 64);
-            REQUIRE(readText(scene_path) == expected_semantic);
+            REQUIRE(readText(scene_path) == expected_persisted);
             REQUIRE(config.sceneDataJson() == expected_semantic);
             REQUIRE(config.sceneDocument().revision() == saved.scene_revision);
             REQUIRE(temporarySceneFileCount(temp_dir) == 0);

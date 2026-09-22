@@ -49,6 +49,13 @@ class AuthoringSceneAuthority {
         return document.encodeSemanticAuthoring();
     }
 
+    // Disk saves retain object identity; portable semantic snapshots deliberately
+    // omit it so importing a snapshot continues to allocate fresh identities.
+    static std::string encodePersistent(
+        const AuthoringSceneDocument &document) {
+        return document.encodePersistentAuthoring();
+    }
+
     static AuthoringSceneDocument stage(
         const AuthoringSceneDocument &document, nlohmann::json raw_document,
         SceneRevision revision) {

@@ -814,7 +814,8 @@ SceneImportResult ProjectBasicConfig::importSceneDocument(
     // candidate allocation complete before the live cache is touched.
     auto candidate_document = AuthoringSceneDocument::load(
         scene_v1_bytes, SceneRevision{scene_metadata.next_scene_revision},
-        scene_metadata.next_authoring_object_id);
+        scene_metadata.next_authoring_object_id,
+        AuthoringIdentityPolicy::AllocateFresh);
     if (snapshot_schema_version != 1 && snapshot_schema_version != 2) {
         throw PrefabError{PrefabErrorCode::PrefabPersistenceUnsupported,
                           "unsupported scene snapshot persistence version"};
@@ -927,9 +928,9 @@ SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
         throw std::overflow_error("SceneResolverGeneration space exhausted");
     }
 
-    // This is deliberately the only serialization call in SAVE0. Everything
-    // below consumes these exact semantic bytes.
-    auto semantic_bytes = AuthoringSceneAuthority::encodeSemantic(source);
+    // This is deliberately the only serialization call in SAVE0. Disk bytes
+    // include stable object IDs; portable snapshots remain semantic-only.
+    auto persistent_bytes = AuthoringSceneAuthority::encodePersistent(source);
     const auto inject = [&](SceneSaveFaultPoint point) {
         if (scene_save_hook) scene_save_hook(point);
         if (scene_save_fault == point) {
@@ -951,11 +952,11 @@ SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
     inject(SceneSaveFaultPoint::AfterDiskDigest);
 
     TemporarySceneFile temporary{temporaryScenePath(destination)};
-    writeAndFlushSceneFile(temporary.path(), semantic_bytes);
+    writeAndFlushSceneFile(temporary.path(), persistent_bytes);
     inject(SceneSaveFaultPoint::AfterTemporaryWrite);
 
     const auto temporary_bytes = readSceneFile(temporary.path());
-    if (temporary_bytes != semantic_bytes) {
+    if (temporary_bytes != persistent_bytes) {
         throw SceneSaveError{SceneSaveErrorCode::IoFailure,
                              "temporary scene bytes differ after flush"};
     }
@@ -979,11 +980,11 @@ SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
         scene_metadata.projection->resolved().bindableProvider());
     const auto committed_revision = next_state.revision();
     auto next_baseline = scenePersistenceBaseline(
-        sceneBytesDigest(semantic_bytes), next_state.resolved());
+        sceneBytesDigest(persistent_bytes), next_state.resolved());
     SceneSaveResult result{
         .scene_revision = committed_revision,
         .digest = next_baseline.scene_digest_sha256,
-        .byte_count = semantic_bytes.size(),
+        .byte_count = persistent_bytes.size(),
     };
     inject(SceneSaveFaultPoint::AfterCachePrepare);
 

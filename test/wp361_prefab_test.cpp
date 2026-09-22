@@ -1814,6 +1814,21 @@ TEST_CASE("WP361 generated identity survives edit undo redo removal and authored
                 .origin.generated()->stable_generated_id == gid);
     REQUIRE(behaviorOriginIdentity(restored_resolved) == base_behavior_identity);
 
+    // Saving and reopening the same document retains the anchor identity and
+    // therefore the generated component provenance. Snapshot import below is
+    // intentionally a different operation and allocates fresh identities.
+    const auto reopened = AuthoringSceneDocument::load(
+        AuthoringSceneAuthority::encodePersistent(fixture.document),
+        SceneRevision{98}, 900);
+    const auto reopened_resolved = ResolvedSceneResolver::resolve(
+        reopened, SceneResolverGeneration{98}, {}, fixture.registry,
+        fixture.provider);
+    REQUIRE(instanceObject(reopened_resolved).authoring_object_id ==
+            instanceObject(fixture.resolved).authoring_object_id);
+    REQUIRE(generatedByKey(instanceObject(reopened_resolved), "sprite")
+                .origin.generated()->stable_generated_id == gid);
+    REQUIRE(behaviorOriginIdentity(reopened_resolved) == base_behavior_identity);
+
     auto second_session = AuthoringSceneDocument::load(
         AuthoringSceneAuthority::encodeSemantic(fixture.document),
         SceneRevision{99}, 900);

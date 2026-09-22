@@ -16,7 +16,8 @@ std::string runtimeObjectIdentityName(std::string_view scene_id,
 }
 
 AuthoringSceneDocument AuthoringSceneDocument::load(std::string_view scene_v1_bytes, SceneRevision revision,
-                                                    std::uint64_t first_authoring_object_id) {
+                                                    std::uint64_t first_authoring_object_id,
+                                                    AuthoringIdentityPolicy identities) {
     if (revision.value == 0) {
         throw std::invalid_argument("AuthoringSceneDocument revision must be non-zero");
     }
@@ -31,29 +32,38 @@ AuthoringSceneDocument AuthoringSceneDocument::load(std::string_view scene_v1_by
     // Validation deliberately runs before identity allocation. The raw tree is
     // retained as the authoring authority; normalizeSceneDataJson's scene copy
     // is not cached a second time.
-    auto validated = normalizeSceneDataJson(document.raw_document_);
+    auto validated = normalizeSceneDataJson(document.raw_document_, first_authoring_object_id);
     document.format_version_ = validated.version;
     document.uses_prefabs_ = validated.uses_prefabs;
     document.warnings_ = std::move(validated.warnings);
 
-    std::uint64_t next_object_id = first_authoring_object_id;
-    const auto &scenes = document.raw_document_.at("scenes");
+    // The reserved disk fields belong to identity metadata, not editable raw
+    // properties. Semantic snapshots retain their fresh-identity import contract.
+    document.raw_document_.erase("next_authoring_object_id");
+    auto next_fresh_id = first_authoring_object_id;
+    auto &scenes = document.raw_document_.at("scenes");
     document.scene_metadata_.reserve(scenes.size());
     for (auto scene_it = scenes.begin(); scene_it != scenes.end(); ++scene_it) {
         SceneMetadata scene_metadata;
         scene_metadata.id = scene_it.key();
-        const auto &objects = scene_it.value().at("objects");
+        auto &objects = scene_it.value().at("objects");
+        const auto &ids = validated.authoring_object_ids.at(scene_it.key());
         scene_metadata.objects.reserve(objects.size());
         for (std::size_t object_index = 0; object_index < objects.size(); ++object_index) {
-            if (next_object_id == std::numeric_limits<std::uint64_t>::max()) {
-                throw std::overflow_error("AuthoringObjectId space exhausted");
+            auto id = ids[object_index];
+            if (identities == AuthoringIdentityPolicy::AllocateFresh) {
+                if (next_fresh_id == std::numeric_limits<std::uint64_t>::max())
+                    throw std::overflow_error("AuthoringObjectId space exhausted");
+                id = next_fresh_id++;
             }
-            scene_metadata.objects.push_back(ObjectMetadata{AuthoringObjectId{next_object_id}});
-            ++next_object_id;
+            scene_metadata.objects.push_back(ObjectMetadata{AuthoringObjectId{id}});
+            objects[object_index].erase("authoring_object_id");
         }
         document.scene_metadata_.push_back(std::move(scene_metadata));
     }
-    document.next_authoring_object_id_value_ = next_object_id;
+    document.next_authoring_object_id_value_ =
+        identities == AuthoringIdentityPolicy::AllocateFresh
+            ? next_fresh_id : validated.next_authoring_object_id;
     return document;
 }
 
@@ -113,6 +123,17 @@ std::string AuthoringSceneDocument::encodeSemanticAuthoring() const {
     return raw_document_.dump();
 }
 
+std::string AuthoringSceneDocument::encodePersistentAuthoring() const {
+    auto persisted = raw_document_;
+    persisted["next_authoring_object_id"] = next_authoring_object_id_value_;
+    for (const auto &scene : scene_metadata_) {
+        auto &objects = persisted.at("scenes").at(scene.id).at("objects");
+        for (std::size_t index = 0; index < scene.objects.size(); ++index)
+            objects.at(index)["authoring_object_id"] = scene.objects[index].id.value;
+    }
+    return persisted.dump();
+}
+
 AuthoringSceneDocument AuthoringSceneDocument::stageAuthoring(
     nlohmann::json raw_document, SceneRevision revision) const {
     if (revision.value == 0 || revision.value <= revision_.value) {
@@ -121,6 +142,8 @@ AuthoringSceneDocument AuthoringSceneDocument::stageAuthoring(
     }
 
     auto validated = normalizeSceneDataJson(raw_document);
+    if (validated.has_persistent_authoring_ids)
+        throw std::invalid_argument("persistent authoring identities cannot be changed by a projection edit");
     const auto &base_scenes = raw_document_.at("scenes");
     const auto &next_scenes = raw_document.at("scenes");
     if (next_scenes.size() != scene_metadata_.size()) {
@@ -217,6 +240,8 @@ std::optional<std::size_t> AuthoringSceneDocumentStage::findObjectIndex(
 AuthoringObjectId AuthoringSceneDocumentStage::insertObject(
     std::string_view scene_id, std::size_t declaration_index,
     nlohmann::json authored_object) {
+    if (authored_object.contains("authoring_object_id"))
+        throw std::invalid_argument("insertObject allocates its own authoring_object_id");
     const auto scene_index = requireSceneIndex(scene_id);
     auto &metadata = base_.scene_metadata_[scene_index];
     auto &objects = base_.raw_document_.at("scenes")
@@ -286,6 +311,9 @@ void AuthoringSceneDocumentStage::restoreObject(
     if (containsObjectId(closure.authoring_object_id)) {
         throw std::invalid_argument("destroy closure AuthoringObjectId is already live");
     }
+    if (closure.authoring_object_id.value >= base_.next_authoring_object_id_value_ ||
+        closure.authored_json.contains("authoring_object_id"))
+        throw std::invalid_argument("destroy closure has an unallocated AuthoringObjectId");
     const auto scene_index = requireSceneIndex(closure.scene_id);
     auto &metadata = base_.scene_metadata_[scene_index];
     auto &objects = base_.raw_document_.at("scenes")
@@ -381,6 +409,8 @@ AuthoringSceneDocument AuthoringSceneDocumentStage::finish(
             "staged AuthoringSceneDocument revision must increase");
     }
     auto validated = normalizeSceneDataJson(base_.raw_document_);
+    if (validated.has_persistent_authoring_ids)
+        throw std::invalid_argument("persistent authoring identities cannot be changed by a structural edit");
     const auto &scenes = base_.raw_document_.at("scenes");
     if (scenes.size() != base_.scene_metadata_.size()) {
         throw std::invalid_argument(

@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -14,9 +15,16 @@ struct SceneFormatDocument {
     bool uses_prefabs = false;
     nlohmann::json scenes;
     std::vector<std::string> warnings;
+    // Persistent identities are document-wide, including inactive scenes.
+    // Missing identities in legacy documents are allocated in declaration order.
+    std::map<std::string, std::vector<std::uint64_t>, std::less<>> authoring_object_ids;
+    std::uint64_t next_authoring_object_id = 1;
+    bool has_persistent_authoring_ids = false;
 };
 
-SceneFormatDocument normalizeSceneDataJson(const nlohmann::json &scene_data);
+SceneFormatDocument normalizeSceneDataJson(
+    const nlohmann::json &scene_data,
+    std::uint64_t first_authoring_object_id = 1);
 
 // Preserve an authored name when one exists; otherwise derive the canonical
 // internal display identity used by runtime and authoring tools. Callers own

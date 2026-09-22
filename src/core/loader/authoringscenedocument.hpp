@@ -27,7 +27,7 @@ PELICAN_DEFINE_HANDLE(AuthoringObjectId, std::uint64_t)
 
 // Runtime subsystems such as physics still expose a string label. Preserve an
 // authored name when one exists; otherwise derive a collision-free internal
-// identity from the session-stable authoring object id.
+// identity from the persisted authoring object id.
 std::string runtimeObjectIdentityName(std::string_view scene_id,
                                       AuthoringObjectId object_id,
                                       std::string_view authored_name);
@@ -87,6 +87,11 @@ struct AuthoringStructuralChange {
 
 class AuthoringSceneDocumentStage;
 
+enum class AuthoringIdentityPolicy {
+    Preserve,
+    AllocateFresh,
+};
+
 class AuthoringSceneDocument {
     struct ObjectMetadata {
         AuthoringObjectId id{};
@@ -107,7 +112,8 @@ class AuthoringSceneDocument {
 
   public:
     static AuthoringSceneDocument load(std::string_view scene_v1_bytes, SceneRevision revision,
-                                       std::uint64_t first_authoring_object_id = 1);
+                                       std::uint64_t first_authoring_object_id = 1,
+                                       AuthoringIdentityPolicy identities = AuthoringIdentityPolicy::Preserve);
 
     SceneRevision revision() const noexcept { return revision_; }
     int formatVersion() const noexcept { return format_version_; }
@@ -122,6 +128,7 @@ class AuthoringSceneDocument {
     // runtime readers receive ResolvedScene instead.
     std::vector<AuthoringSceneView> queryAuthoring() const;
     std::string encodeSemanticAuthoring() const;
+    std::string encodePersistentAuthoring() const;
     AuthoringSceneDocument stageAuthoring(nlohmann::json raw_document,
                                           SceneRevision revision) const;
     AuthoringSceneDocumentStage structuralStageAuthoring() const;
