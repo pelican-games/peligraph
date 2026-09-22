@@ -420,6 +420,11 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
 EmbeddedViewport::~EmbeddedViewport() {
     shutting_down_ = true;
     restart_after_stop_ = false;
+    // Waiting for QProcess below can synchronously drain output and fail
+    // pending RPCs. Our owning window's members may already be destroyed
+    // while QWidget tears down this child, so none of those callbacks may
+    // update the viewport or forward signals to its owner during teardown.
+    disconnect(&process_, nullptr, this, nullptr);
     window_discovery_timer_->stop();
     diagnostics_timer_->stop();
     pointer_focus_timer_->stop();

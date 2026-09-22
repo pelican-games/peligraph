@@ -440,6 +440,44 @@ TEST_CASE("The engine window is embedded only once its own thread takes "
     REQUIRE(pumpUntil([&] { return viewport.rpcReady(); }, 20000) >= 0);
 }
 
+TEST_CASE("Viewport destruction does not forward pending engine RPC callbacks",
+          "[devstudio][viewport][process][rpc][shutdown]") {
+    EngineFixtureEnvironment fixture{/*pump_delay_ms=*/0,
+                                     /*heartbeat_ms=*/0,
+                                     /*rpc_delay_ms=*/0,
+                                     /*load_timeout_ms=*/60000};
+    int argument_count = 1;
+    char application_name[] = "pelican_viewport_shutdown_test";
+    char *arguments[] = {application_name};
+    QApplication application{argument_count, arguments};
+    auto viewport = std::make_unique<EmbeddedViewport>();
+    viewport->resize(320, 200);
+    QString output;
+    int replies = 0;
+    int failures = 0;
+    QObject::connect(viewport.get(), &EmbeddedViewport::engineOutputReceived,
+                     &application, [&](const QString &text) { output += text; });
+    QObject::connect(viewport.get(), &EmbeddedViewport::inspectorRpcSucceeded,
+                     &application, [&](qint64, const QByteArray &) { ++replies; });
+    QObject::connect(viewport.get(), &EmbeddedViewport::inspectorRpcFailed,
+                     &application, [&](qint64, const QString &) { ++failures; });
+    viewport->openProject(QDir::tempPath());
+    REQUIRE(pumpUntil([&] { return viewport->rpcReady(); }, 20000) >= 0);
+
+    // Live replies still reach the owner. The next request is deliberately
+    // left pending in the child until the destructor closes its native window.
+    REQUIRE(viewport->requestRpc(QStringLiteral("get_status"), {}) != 0);
+    REQUIRE(pumpUntil([&] { return replies == 1; }, 10000) >= 0);
+    REQUIRE(viewport->requestRpc(QStringLiteral("wait_for_shutdown"), {}) != 0);
+    REQUIRE(pumpUntil([&] { return output.contains(QStringLiteral("fixture-rpc-held")); },
+                      10000) >= 0);
+    REQUIRE(failures == 0);
+    viewport.reset();
+    QCoreApplication::processEvents();
+    CHECK(replies == 1);
+    CHECK(failures == 0);
+}
+
 // The other half of the rule: an engine that never answers is stopped, but
 // only when it has also stopped writing its log.
 TEST_CASE("An engine that goes silent is stopped, and one that is still "

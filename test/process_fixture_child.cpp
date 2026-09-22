@@ -82,6 +82,12 @@ void answerRpcOnStandardInput() {
     std::string request;
     while (std::getline(std::cin, request)) {
         const long long id = rpcIntegerField(request, "id");
+        if (rpcStringField(request, "method") == "wait_for_shutdown") {
+            // Leave a known request pending so the viewport shutdown test
+            // exercises transport failure emitted while QProcess is reaped.
+            std::cout << "fixture-rpc-held\n" << std::flush;
+            continue;
+        }
         std::cout << "{\"id\":" << id
                   << ",\"jsonrpc\":\"2.0\",\"result\":{\"contract\":1}}\n"
                   << std::flush;

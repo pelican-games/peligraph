@@ -14,7 +14,8 @@
 The scenario is a JSON file of ordered steps.  Every step is either a *command*
 (`{"cmd": ...}`), sent verbatim to Studio, or an *expectation* (`{"expect":
 ...}`), which issues the command it needs and compares the answer.  The exit
-code is non-zero when any step failed, and `report.json` says which one and why:
+code is non-zero when any step failed or Studio did not exit cleanly, and
+`report.json` says which one and why:
 one line per step in `summary`, the reasons in `failures`, and a screenshot of
 the window as it stood when a step failed.
 
@@ -988,18 +989,40 @@ def main() -> int:
         run.record("launch", " ".join(command), ok=False, detail=launch_error, started=started)
 
     exit_code: int | None = None
+    forced_shutdown = False
     if studio is not None:
+        shutdown_started = time.monotonic()
         if run.channel is not None:
             try:
                 run.channel.send({"cmd": "quit"}, timeout=30.0)
             except AutomationError:
                 pass
             run.channel.close()
-        # Studio is known to leave a non-zero code on the way out (backlog); the
-        # scenario's verdict is the steps, not the exit code.
         exit_code = studio.wait_for_exit(30)
+        forced_shutdown = watchdog.tripped is not None
         if exit_code is None:
+            forced_shutdown = True
             exit_code = studio.stop()
+        if watchdog.tripped is not None:
+            shutdown_detail = (
+                f"watchdog forced Studio to stop: {watchdog.tripped} never answered "
+                f"(exit code {exit_code})"
+            )
+        elif forced_shutdown:
+            shutdown_detail = (
+                f"Studio did not exit within 30 seconds; forced shutdown "
+                f"(exit code {exit_code})"
+            )
+        else:
+            shutdown_detail = f"Studio exited with code {exit_code}"
+        run.record(
+            "shutdown",
+            "Studio exits cleanly",
+            ok=exit_code == 0 and not forced_shutdown,
+            response={"exit_code": exit_code, "forced": forced_shutdown},
+            detail=shutdown_detail,
+            started=shutdown_started,
+        )
 
     failed = len(run.failures)
     report = {
@@ -1016,19 +1039,13 @@ def main() -> int:
         "ok": failed == 0 and not launch_error,
         "verdict": "green" if (failed == 0 and not launch_error) else "red",
         "steps_run": len(run.steps),
-        "steps_planned": len(scenario.get("steps", [])) + (1 if scenario.get("probe_no_automation") else 0) + 1,
+        "steps_planned": len(scenario.get("steps", [])) + (1 if scenario.get("probe_no_automation") else 0) + 2,
         "failed_steps": failed,
         "summary": run.summary,
         "failures": run.failures,
         "screenshots": run.screenshots,
         "studio_exit_code": exit_code,
-        # Said out loud, because a reader who only has this file cannot know it:
-        # Studio is known to leave a non-zero code behind on the way out
-        # (backlog), so the verdict is the steps and nothing else.
-        "studio_exit_code_note": (
-            "not part of the verdict; Studio's exit code is known to be "
-            "non-zero on shutdown (backlog) and says nothing about the run"
-        ),
+        "studio_shutdown_forced": forced_shutdown,
         "studio_log": str((artifacts / "studio.log").resolve()),
         "steps": run.steps,
     }

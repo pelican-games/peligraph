@@ -170,6 +170,11 @@ if(PELICAN_TEST_QT_OFFSCREEN)
   list(APPEND discovery_properties
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
+if(WIN32 AND source_name STREQUAL "devstudio_viewport_test")
+  # These GPU-free cases attach a real Win32 fixture window. The offscreen
+  # plugin has no native window handle, so it cannot exercise that contract.
+  list(APPEND discovery_properties ENVIRONMENT "QT_QPA_PLATFORM=windows")
+endif()
 if(PELICAN_TEST_GOLDEN OR
    source_name STREQUAL "debugtext_ui_compat_test")
   # Golden GPU fixtures are part of the one GPU serialization domain.
@@ -3125,6 +3130,10 @@ if(PELICAN_PYTHON_TESTS_AVAILABLE)
     pelican_define_python_test(
         ci_skip_policy_unit
         ${CMAKE_CURRENT_SOURCE_DIR}/ci/test_skip_policy.py
+    )
+    pelican_define_python_test(
+        studio_drive_shutdown_unit
+        ${CMAKE_CURRENT_SOURCE_DIR}/ci/test_studio_drive.py
     )
     pelican_define_python_test(
         gpu_lease_inventory
