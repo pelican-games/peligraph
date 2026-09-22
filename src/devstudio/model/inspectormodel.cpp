@@ -475,6 +475,12 @@ struct InspectorModel::Impl {
     std::uint64_t ray_catalog_epoch = 0;
     InspectorNotice notice;
     std::uint64_t content_revision = 0;
+    std::optional<std::uint64_t> current_scene_revision;
+    std::optional<std::uint64_t> saved_scene_revision;
+    bool scene_revision_uncertain = false;
+    bool first_session_revision = true;
+    std::uint64_t save_completion = 0;
+    bool last_save_succeeded = false;
     std::uint64_t selection_generation = 0;
     std::uint64_t next_request_id = 1;
     std::vector<InspectorRpcRequest> outgoing;
@@ -496,6 +502,21 @@ struct InspectorModel::Impl {
         notice = {.kind = kind, .message = std::move(message)};
     }
 
+    void observeSceneRevision(std::uint64_t revision) {
+        if (first_session_revision && current_scene_revision && revision < *current_scene_revision) {
+            // A restarted engine begins its revision sequence again. Retain
+            // the warning about edits lost with that session until Save or
+            // Discard, without comparing future saves to an obsolete counter.
+            scene_revision_uncertain = scene_revision_uncertain ||
+                (saved_scene_revision && *current_scene_revision != *saved_scene_revision);
+            current_scene_revision = revision;
+            saved_scene_revision = revision;
+        }
+        first_session_revision = false;
+        if (!saved_scene_revision) saved_scene_revision = revision;
+        current_scene_revision = std::max(current_scene_revision.value_or(revision), revision);
+    }
+
     void clearSnapshot() {
         invalidateRayOccurrences();
         component_add_candidates.reset();
@@ -512,9 +533,7 @@ struct InspectorModel::Impl {
     bool editSubmissionInFlight() const noexcept {
         return std::any_of(
             requests.begin(), requests.end(), [&](const auto &request) {
-                return request.second.purpose == RequestPurpose::EditSubmit &&
-                       request.second.selection_generation ==
-                           selection_generation;
+                return request.second.purpose == RequestPurpose::EditSubmit;
             });
     }
 
@@ -527,6 +546,17 @@ struct InspectorModel::Impl {
             requests.begin(), requests.end(), [](const auto &request) {
                 return request.second.purpose == RequestPurpose::Save;
             });
+    }
+
+    void abandonSessionOperations() {
+        // An edit may commit before its reply is lost. Dropping its ticket is
+        // not evidence of a clean document.
+        scene_revision_uncertain = scene_revision_uncertain || editPending() ||
+                                   preview.has_value() || !staged_operations.empty();
+        if (saveInFlight()) {
+            last_save_succeeded = false;
+            ++save_completion;
+        }
     }
 
     bool refreshSuppressed() const noexcept {
@@ -858,7 +888,8 @@ struct InspectorModel::Impl {
         observed_watch.reset();
         editing_widgets.clear();
         staged_operations.clear();
-        pending_edits.clear();
+        // Accepted edits belong to the scene, not the selected property panel.
+        // Keep polling them even after selecting another object.
         snapshot.reset();
         invalidateRayOccurrences();
         ++content_revision;
@@ -1333,13 +1364,33 @@ struct InspectorModel::Impl {
         const auto revision = unsignedInteger(
             requiredField(result, "scene_revision", "save_scene result"),
             "save_scene scene_revision");
+        observeSceneRevision(revision);
+        saved_scene_revision = revision;
+        last_save_succeeded = true;
+        scene_revision_uncertain = false;
+        ++save_completion;
         setNotice(InspectorNoticeKind::Success,
                   "Scene saved at revision " + std::to_string(revision) + ".");
     }
 
     void handleResult(const RequestState &state, const Json &result) {
+        // A selection change cannot undo a committed edit. Track its revision
+        // before dropping a response whose property panel is now stale.
+        if (result.value("status", std::string{}) == "committed" &&
+            result.contains("committed_revision")) {
+            observeSceneRevision(unsignedInteger(result.at("committed_revision"),
+                                                  "edit committed_revision"));
+        }
+        if ((state.purpose == RequestPurpose::SceneTree ||
+             state.purpose == RequestPurpose::Components ||
+             state.purpose == RequestPurpose::WatchPoll ||
+             state.purpose == RequestPurpose::WatchSync) && result.contains("scene_revision")) {
+            observeSceneRevision(unsignedInteger(result.at("scene_revision"), "scene_revision"));
+        }
         if (state.purpose != RequestPurpose::OpenSession &&
             state.purpose != RequestPurpose::Save &&
+            state.purpose != RequestPurpose::EditSubmit &&
+            state.purpose != RequestPurpose::EditPoll &&
             state.selection_generation != selection_generation) {
             return;
         }
@@ -1413,6 +1464,8 @@ struct InspectorModel::Impl {
     void handleFailure(const RequestState &state, std::string message) {
         if (state.purpose != RequestPurpose::OpenSession &&
             state.purpose != RequestPurpose::Save &&
+            state.purpose != RequestPurpose::EditSubmit &&
+            state.purpose != RequestPurpose::EditPoll &&
             state.selection_generation != selection_generation) {
             return;
         }
@@ -1426,6 +1479,7 @@ struct InspectorModel::Impl {
             watch_request_in_flight = false;
             break;
         case RequestPurpose::EditPoll: {
+            scene_revision_uncertain = true;
             const auto pending = std::find_if(
                 pending_edits.begin(), pending_edits.end(),
                 [&](const PendingEdit &candidate) {
@@ -1439,6 +1493,11 @@ struct InspectorModel::Impl {
         }
         case RequestPurpose::PreviewSubmit:
         case RequestPurpose::PreviewPoll: {
+            const bool failed_commit =
+                state.purpose == RequestPurpose::PreviewSubmit
+                    ? state.preview_kind == PreviewRequestKind::Commit
+                    : preview && preview->outstanding_kind == PreviewRequestKind::Commit;
+            scene_revision_uncertain = scene_revision_uncertain || failed_commit;
             const bool failed_abort =
                 state.purpose == RequestPurpose::PreviewSubmit
                     ? state.preview_kind == PreviewRequestKind::Abort
@@ -1452,9 +1511,12 @@ struct InspectorModel::Impl {
             actor_id.reset();
             break;
         case RequestPurpose::EditSubmit:
+            scene_revision_uncertain = true;
             requestRefresh(true);
             break;
         case RequestPurpose::Save:
+            last_save_succeeded = false;
+            ++save_completion;
             break;
         case RequestPurpose::ComponentAddCandidates:
             component_add_candidates.reset();
@@ -1473,12 +1535,16 @@ InspectorModel::InspectorModel() : impl_{std::make_unique<Impl>()} {}
 InspectorModel::~InspectorModel() = default;
 
 void InspectorModel::startSession() {
+    impl_->abandonSessionOperations();
+    impl_->first_session_revision = true;
     impl_->connected = true;
     impl_->actor_id.reset();
     impl_->requests.clear();
     impl_->outgoing.clear();
     impl_->pending_edits.clear();
     impl_->preview.reset();
+    impl_->pending_selection.reset();
+    impl_->pending_selection_set = false;
     impl_->preview_unavailable.clear();
     impl_->editing_widgets.clear();
     impl_->staged_operations.clear();
@@ -1498,12 +1564,15 @@ void InspectorModel::startSession() {
 }
 
 void InspectorModel::stopSession(std::string message) {
+    impl_->abandonSessionOperations();
     impl_->connected = false;
     impl_->actor_id.reset();
     impl_->requests.clear();
     impl_->outgoing.clear();
     impl_->pending_edits.clear();
     impl_->preview.reset();
+    impl_->pending_selection.reset();
+    impl_->pending_selection_set = false;
     impl_->editing_widgets.clear();
     impl_->staged_operations.clear();
     impl_->observed_watch.reset();
@@ -2005,6 +2074,27 @@ bool InspectorModel::saveScene() {
     impl_->setNotice(InspectorNoticeKind::Information, "Saving scene...");
     return true;
 }
+
+void InspectorModel::observeSceneRevision(std::uint64_t revision) {
+    impl_->observeSceneRevision(revision);
+}
+
+void InspectorModel::resetSceneSaveState() {
+    impl_->current_scene_revision.reset();
+    impl_->saved_scene_revision.reset();
+    impl_->scene_revision_uncertain = false;
+    impl_->first_session_revision = true;
+}
+
+bool InspectorModel::hasUnsavedChanges() const noexcept {
+    return impl_->scene_revision_uncertain ||
+           (impl_->current_scene_revision && impl_->saved_scene_revision &&
+            *impl_->current_scene_revision != *impl_->saved_scene_revision);
+}
+
+bool InspectorModel::sceneSaveInFlight() const noexcept { return impl_->saveInFlight(); }
+std::uint64_t InspectorModel::sceneSaveCompletion() const noexcept { return impl_->save_completion; }
+bool InspectorModel::lastSceneSaveSucceeded() const noexcept { return impl_->last_save_succeeded; }
 
 const std::optional<OutlinerObjectKey> &InspectorModel::selection() const noexcept {
     return impl_->selection;

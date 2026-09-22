@@ -11,6 +11,7 @@
 #include <QHash>
 #include <QMainWindow>
 #include <QPoint>
+#include <QPointer>
 
 #include <array>
 #include <optional>
@@ -21,6 +22,7 @@ class QCloseEvent;
 class QLabel;
 class QListWidget;
 class QMenu;
+class QMessageBox;
 class QPlainTextEdit;
 class QString;
 class QTreeWidget;
@@ -101,6 +103,14 @@ class MainWindow : public QMainWindow {
     QHash<qint64, quint64> pending_gizmo_requests_;
     std::uint64_t presented_gizmo_notice_revision_ = 0;
     std::uint64_t presented_gizmo_binding_revision_ = 0;
+    enum class Navigation { None, Close, Project };
+    Navigation pending_navigation_ = Navigation::None;
+    QString pending_project_path_;
+    qint64 navigation_revision_request_ = 0;
+    bool navigation_waiting_for_save_ = false;
+    std::uint64_t navigation_save_completion_ = 0;
+    bool close_authorized_ = false;
+    QPointer<QMessageBox> navigation_prompt_;
 
     void createWorkspace();
     void createMenus();
@@ -111,6 +121,14 @@ class MainWindow : public QMainWindow {
     // The stored preference, applied before the first widget is built.
     void applyStoredTheme();
     void chooseProject();
+    void openProjectNow(const QString &path);
+    void requestNavigation(Navigation destination, const QString &path = {});
+    void checkNavigationRevision();
+    void continueNavigation();
+    void answerNavigationPrompt(int answer);
+    void completeNavigation();
+    void cancelNavigation(const QString &message = {});
+    void sceneStateChanged();
     void populateOutliner();
     void requestOutlinerRefresh();
     // The modal poll runs while, and only while, a modal transform could be

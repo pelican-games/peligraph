@@ -155,7 +155,7 @@ MainWindow::MainWindow(const QString &application_config_directory)
         throw std::invalid_argument(
             "MainWindow requires an application config directory");
     }
-    setWindowTitle(tr("Pelican Studio"));
+    setWindowTitle(tr("Pelican Studio[*]"));
     setDockOptions(
         QMainWindow::AnimatedDocks | QMainWindow::AllowNestedDocks | QMainWindow::AllowTabbedDocks |
         QMainWindow::GroupedDragging);
@@ -172,6 +172,14 @@ MainWindow::MainWindow(const QString &application_config_directory)
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
+    if (!close_authorized_ &&
+        (project_model_ || inspector_->hasUnsavedSceneChanges() || inspector_->sceneEditPending())) {
+        event->ignore();
+        // Do not close recursively from within QWidget's active close event.
+        QTimer::singleShot(0, this, [this] { requestNavigation(Navigation::Close); });
+        return;
+    }
+    close_authorized_ = false;
     saveLastToolLayout();
     saveLastPanelLayout();
     QMainWindow::closeEvent(event);
@@ -382,6 +390,9 @@ void MainWindow::createWorkspace() {
             });
     connect(viewport_, &EmbeddedViewport::engineRpcBecameUnavailable, this,
             [this](const QString &) {
+                if (pending_navigation_ != Navigation::None) {
+                    cancelNavigation(tr("The engine disconnected. The project remains open."));
+                }
                 outliner_refresh_timer_->stop();
                 pending_outliner_request_ = 0;
                 pending_gizmo_requests_.clear();
@@ -392,11 +403,31 @@ void MainWindow::createWorkspace() {
             [this](bool) { updateModalTransformPolling(); });
     connect(viewport_, &EmbeddedViewport::inspectorRpcSucceeded, this,
             [this](qint64 request_id, const QByteArray &result_json) {
+                if (request_id != 0 && request_id == navigation_revision_request_) {
+                    navigation_revision_request_ = 0;
+                    try {
+                        const auto result = nlohmann::json::parse(result_json.constData(),
+                            result_json.constData() + result_json.size());
+                        const auto &revision = result.at("scene_revision");
+                        if (!revision.is_number_unsigned()) {
+                            throw std::runtime_error("invalid scene revision");
+                        }
+                        inspector_->observeSceneRevision(revision.get<std::uint64_t>());
+                        continueNavigation();
+                    } catch (const std::exception &) {
+                        cancelNavigation(tr("Could not check unsaved changes. The project remains open."));
+                    }
+                    return;
+                }
                 completeOutlinerRpc(request_id, result_json);
                 completeGizmoRpc(request_id, result_json);
             });
     connect(viewport_, &EmbeddedViewport::inspectorRpcFailed, this,
             [this](qint64 request_id, const QString &message) {
+                if (request_id != 0 && request_id == navigation_revision_request_) {
+                    cancelNavigation(tr("Could not check unsaved changes: %1").arg(message));
+                    return;
+                }
                 failOutlinerRpc(request_id, message);
                 failGizmoRpc(request_id, message);
             });
@@ -416,6 +447,11 @@ void MainWindow::createWorkspace() {
     outliner_refresh_timer_->setInterval(outliner_refresh_interval_ms_);
     connect(outliner_refresh_timer_, &QTimer::timeout, this,
             [this] { requestOutlinerRefresh(); });
+    inspector_->setSceneStateChangedAction([this] {
+        // A successful save may replace the project and its engine. Wait until
+        // the Inspector has finished handling the reply before doing either.
+        QTimer::singleShot(0, this, [this] { sceneStateChanged(); });
+    });
 }
 
 void MainWindow::updateModalTransformPolling() {
@@ -648,10 +684,124 @@ void MainWindow::chooseProject() {
 }
 
 void MainWindow::openProject(const QString &path) {
+    if (project_model_) {
+        std::error_code error;
+        if (std::filesystem::equivalent(filesystemPath(path), project_model_->projectRoot(), error) &&
+            !error) return;
+    }
+    requestNavigation(Navigation::Project, path);
+}
+
+void MainWindow::requestNavigation(Navigation destination, const QString &path) {
+    if (pending_navigation_ != Navigation::None) return;
+    pending_navigation_ = destination;
+    pending_project_path_ = path;
+    checkNavigationRevision();
+}
+
+void MainWindow::checkNavigationRevision() {
+    if (pending_navigation_ == Navigation::None) return;
+    if (project_model_ && viewport_->rpcReady()) {
+        QString error;
+        navigation_revision_request_ = viewport_->requestRpc(
+            QStringLiteral("get_scene_revision"), {}, &error);
+        if (navigation_revision_request_ == 0) {
+            cancelNavigation(tr("Could not check unsaved changes: %1").arg(error));
+        }
+        return;
+    }
+    continueNavigation();
+}
+
+void MainWindow::continueNavigation() {
+    if (pending_navigation_ == Navigation::None) return;
+    if (!inspector_->hasUnsavedSceneChanges() && !inspector_->sceneEditPending()) {
+        completeNavigation();
+        return;
+    }
+    if (navigation_prompt_) return;
+    auto *prompt = new QMessageBox(QMessageBox::Warning, tr("Unsaved Scene Changes"),
+        tr("Save your scene changes before leaving this project?"),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, this);
+    navigation_prompt_ = prompt;
+    prompt->setObjectName(QStringLiteral("pelican.unsavedScenePrompt"));
+    prompt->setDefaultButton(QMessageBox::Save);
+    prompt->setEscapeButton(QMessageBox::Cancel);
+    prompt->setAttribute(Qt::WA_DeleteOnClose);
+    connect(prompt, &QMessageBox::finished, this, [this, prompt](int answer) {
+        if (navigation_prompt_ != prompt) return;
+        navigation_prompt_ = nullptr;
+        answerNavigationPrompt(answer);
+    });
+    prompt->open();
+}
+
+void MainWindow::answerNavigationPrompt(int answer) {
+    // Engine failure may cancel the navigation while the prompt is visible.
+    // A later button click cannot resurrect that request.
+    if (pending_navigation_ == Navigation::None) return;
+    if (answer == QMessageBox::Discard) {
+        completeNavigation();
+    } else if (answer == QMessageBox::Save) {
+        navigation_save_completion_ = inspector_->sceneSaveCompletion();
+        navigation_waiting_for_save_ = true;
+        if (!inspector_->sceneSaveInFlight() && !inspector_->saveScene()) {
+            cancelNavigation(tr("Scene save is unavailable. Finish any active edit and retry. The project remains open."));
+        } else {
+            statusBar()->showMessage(tr("Saving scene before leaving the project..."));
+        }
+    } else {
+        cancelNavigation();
+    }
+}
+
+void MainWindow::sceneStateChanged() {
+    setWindowModified(inspector_->hasUnsavedSceneChanges());
+    if (!navigation_waiting_for_save_ ||
+        inspector_->sceneSaveCompletion() == navigation_save_completion_) return;
+    navigation_waiting_for_save_ = false;
+    if (!inspector_->lastSceneSaveSucceeded()) {
+        cancelNavigation(tr("The scene could not be saved. The project remains open."));
+        return;
+    }
+    // An edit by another RPC client can land while saving. Ask once more so
+    // successful persistence of revision N never discards a newer revision.
+    checkNavigationRevision();
+}
+
+void MainWindow::cancelNavigation(const QString &message) {
+    pending_navigation_ = Navigation::None;
+    pending_project_path_.clear();
+    navigation_revision_request_ = 0;
+    navigation_waiting_for_save_ = false;
+    if (navigation_prompt_) {
+        auto *prompt = navigation_prompt_.data();
+        navigation_prompt_ = nullptr;
+        prompt->reject();
+    }
+    if (!message.isEmpty()) statusBar()->showMessage(message, 8000);
+}
+
+void MainWindow::completeNavigation() {
+    const auto destination = pending_navigation_;
+    const auto path = pending_project_path_;
+    cancelNavigation();
+    if (destination == Navigation::Close) {
+        close_authorized_ = true;
+        close();
+    } else if (destination == Navigation::Project) {
+        openProjectNow(path);
+    }
+}
+
+void MainWindow::openProjectNow(const QString &path) {
     try {
         ProjectOutlinerModel opened_project =
             ProjectOutlinerModel::open(filesystemPath(path));
         saveLastToolLayout();
+        outliner_refresh_timer_->stop();
+        pending_outliner_request_ = 0;
+        inspector_->resetSceneSaveState();
         project_model_ = std::move(opened_project);
         tool_layout_presets_.emplace(
             application_config_directory_,
@@ -737,6 +887,10 @@ void MainWindow::completeOutlinerRpc(
         const auto result = nlohmann::json::parse(std::string{
             result_json.constData(),
             static_cast<std::size_t>(result_json.size())});
+        if (const auto revision = result.find("scene_revision");
+            revision != result.end() && revision->is_number_unsigned()) {
+            inspector_->observeSceneRevision(revision->get<std::uint64_t>());
+        }
         if (!project_model_->updateSceneTree(result)) {
             // The engine answered with the revision Studio already has. Ask
             // again, but less often: a scene that is not moving does not need

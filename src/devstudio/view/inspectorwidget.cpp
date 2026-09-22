@@ -138,6 +138,10 @@ struct InspectorWidget::Impl {
     std::uint64_t rendered_content_revision =
         std::numeric_limits<std::uint64_t>::max();
     bool rebuilding = false;
+    std::function<void()> scene_state_changed;
+    bool reported_scene_dirty = false;
+    bool reported_scene_busy = false;
+    std::uint64_t reported_save_completion = 0;
     std::vector<std::unique_ptr<NumericBinding>> numeric_bindings;
     std::vector<std::unique_ptr<TextBinding>> text_bindings;
     std::vector<QWidget *> direct_editors;
@@ -879,6 +883,16 @@ struct InspectorWidget::Impl {
     }
 
     void synchronize() {
+        const bool scene_dirty = model.hasUnsavedChanges();
+        const bool scene_busy = model.busy() || model.refreshBlocked();
+        const auto save_completion = model.sceneSaveCompletion();
+        if (scene_dirty != reported_scene_dirty || scene_busy != reported_scene_busy ||
+            save_completion != reported_save_completion) {
+            reported_scene_dirty = scene_dirty;
+            reported_scene_busy = scene_busy;
+            reported_save_completion = save_completion;
+            if (scene_state_changed) scene_state_changed();
+        }
         const auto &snapshot = model.snapshot();
         graph_attachments->setOwner(snapshot && snapshot->authoring_object_id != 0
             ? std::optional<GraphAttachmentOwner>{{snapshot->scene_id, snapshot->authoring_object_id}}
@@ -1602,6 +1616,35 @@ void InspectorWidget::finishGizmoEdit(std::string_view field_key,
 }
 
 bool InspectorWidget::saveScene() { return impl_->saveScene(); }
+
+bool InspectorWidget::hasUnsavedSceneChanges() const noexcept {
+    return impl_->model.hasUnsavedChanges();
+}
+bool InspectorWidget::sceneEditPending() const noexcept {
+    return impl_->model.busy() || impl_->model.refreshBlocked();
+}
+bool InspectorWidget::sceneSaveInFlight() const noexcept { return impl_->model.sceneSaveInFlight(); }
+std::uint64_t InspectorWidget::sceneSaveCompletion() const noexcept {
+    return impl_->model.sceneSaveCompletion();
+}
+bool InspectorWidget::lastSceneSaveSucceeded() const noexcept {
+    return impl_->model.lastSceneSaveSucceeded();
+}
+void InspectorWidget::observeSceneRevision(std::uint64_t revision) {
+    impl_->model.observeSceneRevision(revision);
+    impl_->synchronize();
+}
+void InspectorWidget::resetSceneSaveState() {
+    // The previous process can still send replies while it is shutting down.
+    // They must not establish the new project's initial saved revision.
+    impl_->transport_requests.clear();
+    impl_->model.stopSession();
+    impl_->model.resetSceneSaveState();
+    impl_->synchronize();
+}
+void InspectorWidget::setSceneStateChangedAction(std::function<void()> action) {
+    impl_->scene_state_changed = std::move(action);
+}
 
 bool InspectorWidget::eventFilter(QObject *watched, QEvent *event) {
     return impl_->handleEvent(watched, event) ||

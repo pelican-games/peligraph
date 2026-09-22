@@ -34,6 +34,14 @@ class InspectorWidget final : public QWidget {
                           nlohmann::json value);
     void finishGizmoEdit(std::string_view field_key, bool commit);
     bool saveScene();
+    bool hasUnsavedSceneChanges() const noexcept;
+    bool sceneEditPending() const noexcept;
+    bool sceneSaveInFlight() const noexcept;
+    std::uint64_t sceneSaveCompletion() const noexcept;
+    bool lastSceneSaveSucceeded() const noexcept;
+    void observeSceneRevision(std::uint64_t revision);
+    void resetSceneSaveState();
+    void setSceneStateChangedAction(std::function<void()> action);
     void setRayGroupAction(std::function<void(const QString &)> action);
     // Where "Open the source" on a graph input row goes. The Inspector names
     // the producing node; the composition root decides which view shows it.

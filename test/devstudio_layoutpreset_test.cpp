@@ -1,12 +1,14 @@
 #include "layoutpreset.hpp"
 #include "frameplanwidget.hpp"
 #include "mainwindow.hpp"
+#include "inspectorwidget.hpp"
 #include "studiotheme.hpp"
 #include "toollayoutpreset.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <QAction>
+#include <QAbstractButton>
 #include <QApplication>
 #include <QDir>
 #include <QDockWidget>
@@ -15,6 +17,7 @@
 #include <QJsonObject>
 #include <QMainWindow>
 #include <QMenu>
+#include <QMessageBox>
 #include <QSet>
 #include <QSettings>
 #include <QSplitter>
@@ -22,6 +25,7 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QWidget>
 
 namespace {
@@ -540,4 +544,81 @@ TEST_CASE("The View menu switches the theme and the next window keeps it",
     settings.remove(QStringLiteral("studio/theme"));
     settings.sync();
     REQUIRE(PelicanStudio::setCurrentStudioTheme(QStringLiteral("dark")));
+}
+
+TEST_CASE("Studio protects unsaved scenes on close and project switching",
+          "[devstudio][mainwindow][save][unsaved]") {
+    (void)application();
+    QTemporaryDir application_config;
+    REQUIRE(application_config.isValid());
+    PelicanStudio::MainWindow window{application_config.path()};
+    auto *inspector = dynamic_cast<PelicanStudio::InspectorWidget *>(
+        window.findChild<QWidget *>(QStringLiteral("pelican.inspector")));
+    REQUIRE(inspector != nullptr);
+    inspector->observeSceneRevision(1);
+    inspector->observeSceneRevision(2);
+    window.show();
+    QCoreApplication::processEvents();
+    REQUIRE(window.isWindowModified());
+
+    const auto checkNavigation = [&](QMessageBox::StandardButton answer,
+                                     bool switching_project = false) {
+        if (switching_project) {
+            // If cancellation is ignored this path would attempt to open an
+            // invalid project and display another dialog.
+            window.openProject(application_config.filePath(QStringLiteral("not-a-project")));
+        } else {
+            REQUIRE_FALSE(window.close()); // Deferred while the decision is pending.
+        }
+        QCoreApplication::processEvents();
+        auto *prompt = window.findChild<QMessageBox *>(
+            QStringLiteral("pelican.unsavedScenePrompt"));
+        REQUIRE(prompt != nullptr);
+        prompt->button(answer)->click();
+        QCoreApplication::processEvents();
+        CHECK(window.isVisible() == (answer != QMessageBox::Discard));
+        if (answer != QMessageBox::Discard) {
+            CHECK(inspector->hasUnsavedSceneChanges());
+            CHECK(window.isWindowModified());
+        }
+        if (answer == QMessageBox::Save) {
+            CHECK(window.statusBar()->currentMessage().contains(QStringLiteral("remains open")));
+        }
+    };
+
+    SECTION("Cancel leaves the dirty window open") {
+        checkNavigation(QMessageBox::Cancel);
+    }
+    SECTION("Discard explicitly permits closing") {
+        checkNavigation(QMessageBox::Discard);
+    }
+    SECTION("a save that cannot start never closes the window") {
+        checkNavigation(QMessageBox::Save);
+    }
+    SECTION("Cancel prevents replacing the project") {
+        checkNavigation(QMessageBox::Cancel, true);
+    }
+}
+
+TEST_CASE("Studio owns an asynchronous unsaved prompt through window destruction",
+          "[devstudio][mainwindow][save][unsaved]") {
+    (void)application();
+    QTemporaryDir application_config;
+    REQUIRE(application_config.isValid());
+    QPointer<QMessageBox> prompt;
+    {
+        PelicanStudio::MainWindow window{application_config.path()};
+        auto *inspector = dynamic_cast<PelicanStudio::InspectorWidget *>(
+            window.findChild<QWidget *>(QStringLiteral("pelican.inspector")));
+        REQUIRE(inspector != nullptr);
+        inspector->observeSceneRevision(1);
+        inspector->observeSceneRevision(2);
+        window.show();
+        REQUIRE_FALSE(window.close());
+        QCoreApplication::processEvents();
+        prompt = window.findChild<QMessageBox *>(QStringLiteral("pelican.unsavedScenePrompt"));
+        REQUIRE(prompt != nullptr);
+    }
+    CHECK(prompt.isNull());
+    QCoreApplication::processEvents();
 }

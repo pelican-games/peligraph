@@ -174,6 +174,15 @@ class InspectorModel {
     void undo();
     void redo();
     bool saveScene();
+    // Scene revisions are independent of the current selection. The outliner
+    // also feeds them here so edits by another client are noticed with nothing
+    // selected. Reset only after an explicitly accepted document switch.
+    void observeSceneRevision(std::uint64_t revision);
+    void resetSceneSaveState();
+    bool hasUnsavedChanges() const noexcept;
+    bool sceneSaveInFlight() const noexcept;
+    std::uint64_t sceneSaveCompletion() const noexcept;
+    bool lastSceneSaveSucceeded() const noexcept;
 
     const std::optional<OutlinerObjectKey> &selection() const noexcept;
     const std::optional<InspectorObjectSnapshot> &snapshot() const noexcept;

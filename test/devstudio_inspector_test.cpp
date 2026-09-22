@@ -829,13 +829,17 @@ TEST_CASE("Devstudio save scene RPC is serialized only while idle",
           "[devstudio][inspector][save][rpc][wp275]") {
     InspectorHarness harness;
     harness.open();
+    REQUIRE_FALSE(harness.model.hasUnsavedChanges());
     harness.commitGizmoStylePosition(4.0);
+    REQUIRE(harness.model.hasUnsavedChanges());
 
     REQUIRE(harness.model.canSave());
     REQUIRE(harness.model.saveScene());
     const auto save = harness.take("save_scene");
     REQUIRE(save.params == Json::object());
     REQUIRE(harness.model.busy());
+    REQUIRE(harness.model.hasUnsavedChanges());
+    REQUIRE(harness.model.sceneSaveCompletion() == 0);
     REQUIRE_FALSE(harness.model.saveScene());
 
     harness.reply(save,
@@ -844,6 +848,9 @@ TEST_CASE("Devstudio save scene RPC is serialized only while idle",
                    {"scene_hot_reload", false},
                    {"byte_count", 1234}});
     REQUIRE_FALSE(harness.model.busy());
+    REQUIRE_FALSE(harness.model.hasUnsavedChanges());
+    REQUIRE(harness.model.lastSceneSaveSucceeded());
+    REQUIRE(harness.model.sceneSaveCompletion() == 1);
     REQUIRE(harness.model.notice().kind == InspectorNoticeKind::Success);
     REQUIRE(harness.model.notice().message.find("revision 2") !=
             std::string::npos);
@@ -852,6 +859,232 @@ TEST_CASE("Devstudio save scene RPC is serialized only while idle",
     // object selection after the gizmo edit was committed.
     harness.model.selectObject(std::nullopt);
     REQUIRE(harness.model.canSave());
+}
+
+TEST_CASE("Studio preserves unsaved revisions across failed saves and selection changes",
+          "[devstudio][inspector][save][unsaved]") {
+    InspectorHarness harness;
+    harness.open();
+    harness.model.selectObject(std::nullopt);
+    harness.model.observeSceneRevision(2);
+    REQUIRE(harness.model.hasUnsavedChanges());
+    REQUIRE(harness.model.saveScene());
+    const auto save = harness.take("save_scene");
+
+    SECTION("a failed save never clears dirty state") {
+        harness.model.receiveRpcFailure(save.request_id, "external_modification");
+        CHECK(harness.model.hasUnsavedChanges());
+        CHECK_FALSE(harness.model.lastSceneSaveSucceeded());
+        CHECK(harness.model.sceneSaveCompletion() == 1);
+    }
+    SECTION("a disconnected save is a completed failure") {
+        harness.model.stopSession("engine stopped");
+        CHECK(harness.model.hasUnsavedChanges());
+        CHECK_FALSE(harness.model.lastSceneSaveSucceeded());
+        CHECK(harness.model.sceneSaveCompletion() == 1);
+        // A late success from the abandoned transport cannot release a close.
+        harness.reply(save, {{"status", "saved"}, {"scene_revision", 2}});
+        CHECK(harness.model.hasUnsavedChanges());
+        CHECK_FALSE(harness.model.lastSceneSaveSucceeded());
+    }
+    SECTION("saving an older revision leaves a concurrent edit dirty") {
+        harness.model.observeSceneRevision(3);
+        harness.reply(save, {{"status", "saved"}, {"scene_revision", 2}});
+        CHECK(harness.model.lastSceneSaveSucceeded());
+        CHECK(harness.model.hasUnsavedChanges());
+        harness.model.observeSceneRevision(1); // delayed pre-save response
+        CHECK(harness.model.hasUnsavedChanges());
+        REQUIRE(harness.model.saveScene());
+        harness.reply(harness.take("save_scene"), {{"status", "saved"}, {"scene_revision", 3}});
+        CHECK_FALSE(harness.model.hasUnsavedChanges());
+    }
+    SECTION("malformed success does not count as persistence") {
+        harness.reply(save, {{"status", "saved"}});
+        CHECK(harness.model.hasUnsavedChanges());
+        CHECK_FALSE(harness.model.lastSceneSaveSucceeded());
+        CHECK(harness.model.sceneSaveCompletion() == 1);
+    }
+}
+
+TEST_CASE("Studio scene dirty state follows committed revisions rather than refreshes",
+          "[devstudio][inspector][save][unsaved]") {
+    InspectorHarness harness;
+    harness.open();
+    harness.model.requestRefresh();
+    harness.completeRefresh(1.0, 1);
+    CHECK_FALSE(harness.model.hasUnsavedChanges());
+    harness.model.pollExternalChanges();
+    harness.reply(harness.take("get_scene_revision"),
+                  {{"scene_revision", 1}, {"preview_epoch", 1}});
+    CHECK_FALSE(harness.model.hasUnsavedChanges());
+    harness.model.observeSceneRevision(2);
+    REQUIRE(harness.model.hasUnsavedChanges());
+    harness.model.stopSession();
+    CHECK(harness.model.hasUnsavedChanges());
+    harness.model.resetSceneSaveState();
+    harness.model.observeSceneRevision(1);
+    CHECK_FALSE(harness.model.hasUnsavedChanges());
+}
+
+TEST_CASE("Studio retains edit tickets when the selected object changes",
+          "[devstudio][inspector][save][unsaved]") {
+    InspectorHarness harness;
+    harness.open();
+    const auto field = harness.field("fixture_flags", "enabled").field_key;
+    REQUIRE(harness.model.commitWidgetValue(field, false));
+    const auto edit = harness.take("edit");
+    SECTION("selection changes before the edit is accepted") {
+        harness.model.selectObject(std::nullopt);
+        REQUIRE(harness.model.busy());
+        REQUIRE_FALSE(harness.model.canSave());
+        harness.reply(edit, {{"status", "accepted"}, {"ticket", "edit:changed-selection"}});
+    }
+    SECTION("selection changes after acceptance but before commit") {
+        harness.reply(edit, {{"status", "accepted"}, {"ticket", "edit:changed-selection"}});
+        harness.model.selectObject(std::nullopt);
+        REQUIRE(harness.model.busy());
+        REQUIRE_FALSE(harness.model.canSave());
+    }
+    REQUIRE(harness.model.busy());
+    REQUIRE(harness.model.pendingPollWanted());
+    harness.model.pollPendingOperations();
+    harness.reply(harness.take("get_edit_result"),
+                  {{"status", "committed"}, {"committed_revision", 2}});
+    CHECK_FALSE(harness.model.busy());
+    CHECK(harness.model.hasUnsavedChanges());
+    REQUIRE(harness.model.saveScene());
+    // SAVE0 publishes its own revision, even though the authored values did
+    // not change. A delayed pre-save view response must not dirty it again.
+    harness.reply(harness.take("save_scene"), {{"status", "saved"}, {"scene_revision", 3}});
+    harness.model.observeSceneRevision(2);
+    CHECK_FALSE(harness.model.hasUnsavedChanges());
+}
+
+TEST_CASE("Studio cannot infer a clean scene from a lost edit response or restarted counter",
+          "[devstudio][inspector][save][unsaved]") {
+    InspectorHarness harness;
+    harness.open();
+    const auto field = harness.field("fixture_flags", "enabled").field_key;
+    REQUIRE(harness.model.commitWidgetValue(field, false));
+    const auto edit = harness.take("edit");
+    SECTION("disconnect while an edit result is unknown") {
+        harness.model.stopSession("connection lost");
+        CHECK(harness.model.hasUnsavedChanges());
+    }
+    SECTION("transport failure after sending the edit") {
+        harness.model.receiveRpcFailure(edit.request_id, "connection lost");
+        CHECK(harness.model.hasUnsavedChanges());
+        harness.model.stopSession();
+    }
+    SECTION("a committed revision is lost when the process restarts") {
+        harness.reply(edit, {{"status", "committed"}, {"committed_revision", 7}});
+        REQUIRE(harness.model.hasUnsavedChanges());
+        harness.model.stopSession();
+    }
+    CHECK(harness.model.hasUnsavedChanges());
+    harness.model.selectObject(std::nullopt);
+    harness.model.startSession();
+    harness.reply(harness.take("open_editor_session"), {{"actor_id", 10}});
+    harness.model.observeSceneRevision(1);
+    CHECK(harness.model.hasUnsavedChanges());
+    REQUIRE(harness.model.saveScene());
+    harness.reply(harness.take("save_scene"), {{"status", "saved"}, {"scene_revision", 2}});
+    CHECK_FALSE(harness.model.hasUnsavedChanges());
+}
+
+TEST_CASE("Discarded Inspector operations cannot dirty the next project",
+          "[devstudio][inspector][save][unsaved]") {
+    InspectorHarness harness;
+    harness.open();
+
+    const auto discardAndReconnect = [&](const InspectorRpcRequest &late) {
+        REQUIRE(harness.model.busy());
+        REQUIRE_FALSE(harness.model.canSave());
+
+        // InspectorWidget discards a document by ending its session before
+        // resetting the baseline. The viewport subsequently stops/restarts
+        // that session again as the next project's process becomes ready.
+        harness.model.stopSession();
+        REQUIRE(harness.model.hasUnsavedChanges());
+        harness.model.resetSceneSaveState();
+        REQUIRE_FALSE(harness.model.hasUnsavedChanges());
+        REQUIRE_FALSE(harness.model.busy());
+        REQUIRE_FALSE(harness.model.refreshBlocked());
+        harness.model.selectObject(std::nullopt);
+        harness.model.stopSession();
+        harness.model.startSession();
+        const auto session = harness.take("open_editor_session");
+
+        // A reply in flight from the discarded process must not establish
+        // either the new project's saved baseline or its current revision.
+        harness.reply(late, {{"status", "committed"}, {"committed_revision", 99}});
+        harness.reply(session, {{"actor_id", 10}});
+        harness.model.observeSceneRevision(1);
+        CHECK_FALSE(harness.model.hasUnsavedChanges());
+        CHECK_FALSE(harness.model.busy());
+        harness.model.pollPendingOperations();
+        CHECK(harness.model.takeRpcRequests().empty());
+        harness.model.observeSceneRevision(2);
+        CHECK(harness.model.hasUnsavedChanges());
+    };
+
+    SECTION("a pending edit ticket belongs only to the discarded document") {
+        const auto field = harness.field("fixture_flags", "enabled").field_key;
+        REQUIRE(harness.model.commitWidgetValue(field, false));
+        harness.reply(harness.take("edit"),
+                      {{"status", "accepted"}, {"ticket", "old-edit"}});
+        harness.model.pollPendingOperations();
+        discardAndReconnect(harness.take("get_edit_result"));
+    }
+    SECTION("an unresolved preview belongs only to the discarded document") {
+        const auto field = harness.field("transform", "pos").field_key;
+        REQUIRE(harness.model.previewWidgetValue(field, Json::array({4.0, 2.0, 3.0})));
+        harness.reply(harness.take("open_preview"),
+                      {{"status", "accepted"}, {"ticket", "old-preview"},
+                       {"request_id", "old-preview-request"}});
+        harness.model.pollPendingOperations();
+        discardAndReconnect(harness.take("get_preview_result"));
+    }
+}
+
+TEST_CASE("A restarted Inspector cannot apply selection deferred by an old preview",
+          "[devstudio][inspector][preview][unsaved]") {
+    InspectorHarness harness;
+    harness.open();
+    const auto original_selection = harness.model.selection();
+    const auto field = harness.field("transform", "pos").field_key;
+    REQUIRE(harness.model.previewWidgetValue(field, Json::array({4.0, 2.0, 3.0})));
+    const auto old_preview = harness.take("open_preview");
+    harness.model.selectObject(OutlinerObjectKey{
+        .scene_id = "main", .declaration_index = 0});
+    // Selection is deferred until this preview aborts. A replacement session
+    // must discard that deferred action together with the old preview.
+    REQUIRE(harness.model.selection() == original_selection);
+    REQUIRE(harness.model.busy());
+
+    const auto reconnectAndCommit = [&] {
+        harness.model.startSession();
+        harness.reply(harness.take("open_editor_session"), {{"actor_id", 10}});
+        harness.completeRefresh(1.0, 1);
+        harness.reply(old_preview,
+                      {{"status", "accepted"}, {"ticket", "stale-preview"},
+                       {"request_id", "stale-preview-request"}});
+        REQUIRE(harness.model.selection() == original_selection);
+        REQUIRE_FALSE(harness.model.busy());
+        harness.commitGizmoStylePosition(5.0);
+        REQUIRE(harness.model.selection() == original_selection);
+        REQUIRE(harness.model.snapshot());
+        CHECK(harness.model.snapshot()->declaration_index == 2);
+        CHECK(harness.field("transform", "pos").value == Json::array({5.0, 2.0, 3.0}));
+    };
+
+    SECTION("an explicit stop discards the deferred selection") {
+        harness.model.stopSession();
+        reconnectAndCommit();
+    }
+    SECTION("replacing the session directly also discards the deferred selection") {
+        reconnectAndCommit();
+    }
 }
 
 TEST_CASE("Devstudio modal gizmo commit survives save and a fresh authoring reload",
