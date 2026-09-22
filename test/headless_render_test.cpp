@@ -1,4 +1,5 @@
 #include "../src/core/appflow/enginetime.hpp"
+#include "../src/core/appflow/teardown.hpp"
 #include "../src/core/asset/model.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/launchconfig.hpp"
@@ -11286,6 +11287,10 @@ TEST_CASE(
     const auto temp_dir = makeTempProjectDir();
     try {
         FastModuleContainer modules;
+        // Retired descriptor sets must drain while their container-owned
+        // pools are alive, including when an assertion unwinds this fixture.
+        RuntimeTeardownGuard teardown{
+            RuntimeTeardownMode::terminal_shutdown};
         writeRt1bLayoutProject(temp_dir);
         configureRayQueryTestRuntime(temp_dir);
         auto &vkcore = GET_MODULE(VulkanManageCore);
@@ -12456,6 +12461,8 @@ TEST_CASE(
                   .rayTracingSceneShaderBindingTablesLeaseForTesting() ==
               nullptr);
 
+        CHECK(teardown.run().succeeded());
+        CHECK(deletion_queue.pendingCountForTesting() == 0);
         std::filesystem::remove_all(temp_dir);
     } catch (const std::exception &error) {
         std::filesystem::remove_all(temp_dir);
