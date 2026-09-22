@@ -117,16 +117,19 @@ if(NOT log_text MATCHES "cpu_present_wait_ms_avg=[0-9]+\\.[0-9]+")
     message(FATAL_ERROR "gpu timing metrics did not include numeric present wait time\nstdout:\n${stdout}\nstderr:\n${stderr}")
 endif()
 
-# Exercise the additive get_status.gpu_timing schema. Three current-time
-# renders rotate back to the first in-flight slot, which reclaims and
-# publishes at least one completed timestamp range without an explicit wait.
+# Repeated current-time renders must keep one sample per logical-frame
+# identity. Five draws cycle the in-flight ring far enough to collect both
+# the original recording and a duplicate, including with asynchronous GPU
+# completion. Neither redraw may advance time or duplicate timing samples.
 set(rpc_script "${OUT_DIR}/gpu_timing_status.ndjson")
 file(WRITE "${rpc_script}"
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render_frame\",\"params\":{}}\n"
-    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"step_frame\",\"params\":{}}\n"
-    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"step_frame\",\"params\":{}}\n"
-    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"get_status\",\"params\":{}}\n"
-    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"get_gpu_timing\",\"params\":{}}\n"
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"render_frame\",\"params\":{}}\n"
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"render_frame\",\"params\":{}}\n"
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"render_frame\",\"params\":{}}\n"
+    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"render_frame\",\"params\":{}}\n"
+    "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"get_status\",\"params\":{}}\n"
+    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"get_gpu_timing\",\"params\":{}}\n"
 )
 execute_process(
     COMMAND "${PLAYER}"
@@ -154,7 +157,7 @@ if(NOT rpc_stdout MATCHES [=["schema_version":2,"supported":true]=] OR
     message(FATAL_ERROR "get_status.gpu_timing omitted identity, subranges, or pool reuse counters\nstdout:\n${rpc_stdout}")
 endif()
 
-# Select the fifth protocol line so no similarly named field in get_status can
+# Select the last protocol line so no similarly named field in get_status can
 # satisfy the dedicated lightweight-RPC contract by accident.
 string(REPLACE "\r\n" "\n" rpc_normalized "${rpc_stdout}")
 string(REPLACE "\r" "\n" rpc_normalized "${rpc_normalized}")
@@ -162,11 +165,20 @@ string(REGEX REPLACE "\n$" "" rpc_trimmed "${rpc_normalized}")
 string(REPLACE ";" "\\;" rpc_list_safe "${rpc_trimmed}")
 string(REPLACE "\n" ";" rpc_lines "${rpc_list_safe}")
 list(LENGTH rpc_lines rpc_line_count)
-if(NOT rpc_line_count EQUAL 5)
-    message(FATAL_ERROR "gpu timing RPC run expected 5 response lines, got ${rpc_line_count}\nstdout:\n${rpc_stdout}")
+if(NOT rpc_line_count EQUAL 7)
+    message(FATAL_ERROR "gpu timing RPC run expected 7 response lines, got ${rpc_line_count}\nstdout:\n${rpc_stdout}")
 endif()
-list(GET rpc_lines 4 gpu_timing_line)
-if(NOT gpu_timing_line MATCHES [=["id":5]=] OR
+foreach(render_response_index RANGE 0 4)
+    list(GET rpc_lines ${render_response_index} render_response)
+    string(JSON render_frame GET "${render_response}" result frame)
+    string(JSON render_time GET "${render_response}" result t)
+    if(NOT render_frame EQUAL 0 OR NOT render_time EQUAL 0)
+        message(FATAL_ERROR
+            "render_frame advanced simulation time: ${render_response}")
+    endif()
+endforeach()
+list(GET rpc_lines 6 gpu_timing_line)
+if(NOT gpu_timing_line MATCHES [=["id":7]=] OR
    NOT gpu_timing_line MATCHES [=["schema":"pelican\.gpu_timing_node_averages"]=] OR
    NOT gpu_timing_line MATCHES [=["version":1]=] OR
    NOT gpu_timing_line MATCHES [=["enabled":true]=] OR

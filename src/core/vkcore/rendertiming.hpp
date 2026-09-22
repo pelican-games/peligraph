@@ -35,6 +35,8 @@ struct GpuTimingRangeIdentity {
     std::uint64_t logical_frame = 0;
     std::string graph_variant;
     std::uint32_t view_index = 0;
+
+    bool operator==(const GpuTimingRangeIdentity &) const = default;
 };
 
 struct GpuTimingNodeDescriptor {
@@ -158,6 +160,7 @@ DECLARE_MODULE(RenderTiming) {
 
     struct ActiveGpuRange {
         std::size_t pending_index = 0;
+        std::uint32_t range_slot = 0;
         std::uint32_t first_query = 0;
         GpuTimingRangeIdentity identity;
         std::vector<GpuTimingNodeDescriptor> nodes;
@@ -179,6 +182,7 @@ DECLARE_MODULE(RenderTiming) {
     std::uint32_t queries_per_range = 0;
     std::vector<std::optional<PendingGpuRange>> pending_gpu_ranges;
     std::optional<ActiveGpuRange> active_gpu_range;
+    std::vector<std::optional<GpuTimingRangeIdentity>> last_recorded_gpu_ranges;
     std::uint64_t query_pool_create_count = 0;
     std::uint64_t dropped_samples = 0;
 

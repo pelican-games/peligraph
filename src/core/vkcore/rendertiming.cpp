@@ -477,6 +477,9 @@ void RenderTiming::configureGpuQueries(std::uint32_t frame_slots,
     pending_gpu_ranges.clear();
     pending_gpu_ranges.resize(static_cast<std::size_t>(configured_frame_slots) *
                               configured_range_slots);
+    // Growing the pool does not start another logical frame. Retain which
+    // recording ranges were already measured, including across graph growth.
+    last_recorded_gpu_ranges.resize(configured_range_slots);
     if (gpu_timestamps_supported) {
         query_pool = createTimestampQueryPool(static_cast<std::uint32_t>(capacity64));
         ++query_pool_create_count;
@@ -518,10 +521,15 @@ void RenderTiming::beginGpuRange(vk::CommandBuffer cmd_buf, std::uint32_t frame_
         }
         publishSnapshot();
     }
+    // render_frame and capture_gpu redraw without advancing EngineTime. Keep
+    // the first timing for each logical frame instead of publishing duplicate
+    // sample identities. Range slots stay separate: XR's intermediate copy
+    // and desktop mirror share a view index but are both measured.
+    if (last_recorded_gpu_ranges[range_slot] == identity) return;
     const auto first_query = static_cast<std::uint32_t>(pending_index) * queries_per_range;
     cmd_buf.resetQueryPool(query_pool.get(), first_query, queries_per_range);
     active_gpu_range = ActiveGpuRange{
-        pending_index, first_query, std::move(identity), std::move(nodes)};
+        pending_index, range_slot, first_query, std::move(identity), std::move(nodes)};
 }
 
 void RenderTiming::writeNodeSubrangeStart(vk::CommandBuffer cmd_buf,
@@ -552,6 +560,7 @@ void RenderTiming::writeNodeSubrangeEnd(vk::CommandBuffer cmd_buf,
 
 void RenderTiming::endGpuRange() {
     if (!active_gpu_range) return;
+    last_recorded_gpu_ranges[active_gpu_range->range_slot] = active_gpu_range->identity;
     const auto query_count = static_cast<std::uint32_t>(active_gpu_range->nodes.size()) *
                              timestamp_queries_per_node;
     pending_gpu_ranges[active_gpu_range->pending_index] = PendingGpuRange{
