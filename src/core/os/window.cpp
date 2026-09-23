@@ -321,7 +321,20 @@ bool Window::process() {
     auto gamepad_events = gamepad_poller.poll(source, internal::gamepadPollingEnabled());
     input_events.insert(input_events.end(), gamepad_events.begin(), gamepad_events.end());
 
-    return !glfwWindowShouldClose(window);
+    if (glfwWindowShouldClose(window)) return false;
+#ifdef _WIN32
+    // An embedding host (Studio) can destroy its native parent before the
+    // WM_CLOSE it posts reaches this window, and the child window dies with
+    // it. GLFW never sets its close flag then, and the swapchain would
+    // re-create a surface for the dead window every frame until the host
+    // kills the process. A window that no longer exists ends the loop the
+    // same way a close does.
+    if (!IsWindow(glfwGetWin32Window(window))) {
+        LOG_INFO(logger, "native window no longer exists; stopping the main loop");
+        return false;
+    }
+#endif
+    return true;
 }
 
 std::vector<InputEvent> Window::drainInputEvents() {
