@@ -268,6 +268,7 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 | player のログが 1 ファイルに混ざる | 全 player が Studio の cwd の `pelican.log` に追記していた。player に `--log-file`(起動ごとに切り詰め)を足し、Studio は `<project>/.pelican/logs/player.log` を渡す。既定の `pelican.log` 追記は維持。`48d5b3cb`、`devstudio_viewport_test` と配布確認 |
 | engine の準備完了の判定 | engine は最初の frame より前に RPC に答えるので、capture や frame plan を待つ側が名前付きの「まだ」エラーを再試行していた。`get_status` に `render.published_frames`、automation の `wait_engine` に `frames` を足した。Frame Plan dock は公開前の plan を「失敗」と表示せず上限付き(250 ms × 40)で問い直す。dock の失敗表示は `1bed0335` 以後の再現 6 回では出ておらず、上限付きの保険として入れた。`90806c80` |
 | staged な ray tracing 世代の行き先 | 公開 / 次の frame へ持ち越し / 巻き戻しの 3 つを `StagedRuntimeRollbackGuard` にまとめ、`published()` / `keepForNextFrame()` で名指しする。`RenderTarget` に test seam を足し、出力に image の無い frame を 2 回飛ばしても staged の世代が残り次の frame で公開される GPU テストを追加。`keepForNextFrame()` を外すと赤。`90806c80` |
+| indirect command の padding | `RenderCommand` は 34 バイトの field を 36 バイトに詰めており、末尾 2 バイトの padding にスタックの残りが入って、GPU へ上げるバイト列が実行ごとに変わっていた。`state_batched_v1` の byte 比較がこの build で 40 回中 34 回赤。padding を 0 初期化の名前付きメンバーにし、`has_unique_object_representations` を static_assert。GPU が読む stride と先頭の Vulkan command は不変。`f4ba9913`。0 / 40 |
 | 配布確認の手順 | scratch の script だった確認を `test/ci/run_distribution_check.py` に移し、出荷 sample を `projects/` から自動で数える。手順は [CI 運用](ci.md)。`8813ab82` |
 | editor の gate 判定の一本化 | journal・render config・procedural asset が同じ `EditorGateEpoch` で受理後の commit 可否を判定し、遷移は型付きの `ReloadTransitionFacts` を 1 つの counter が数える。閉じて開き直した gate を procedural asset が見逃す穴も閉じた。`c3830d32` |
 | 同一 logical frame の再描画 | 通常動作中の Studio で `render_frame` を重ねた際、GPU timing の sample ID が重複して fatal になる不具合を修正。同じ logical frame の同じ範囲を再記録しない。全 GPU gate の結果は §6 で別に扱う |
@@ -287,8 +288,8 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 | AS / shader の同一性 | `WP386` の signed-zero transform identity、shader source 改行と cache key |
 | graph root と preset の組合せ | `P-2a-4a` / `P-2a-3` の `region_replacements`、Frame Plan fixture と現在の生成結果 |
 | export / 一時ファイル | per-process temp root 修正後の並列 `renderconfigeditor`、GPU lease log の残留。古い `%TEMP%` 件数を現在の原因の証拠にしない |
-| Debug 専用 WSI 故障注入 | `wsi_fault_window_player` は Release で注入 hook がなく明示 skip。2026-09-23 に Debug build(`1bed0335`)で実行し、注入 6 回・surface 作り直し 5 回・公開 2 回で通過 |
-| Debug の production PDB 配線 | `crash_symbol_production_wiring` は実際の Debug Studio が残した symbol archive を読むため Debug 構成だけで登録する。2026-09-23 に Debug build で実行し、Studio の `1bed0335` の PDB が archive されていることを確認 |
+| Debug 専用 WSI 故障注入 | `wsi_fault_window_player` は Release で注入 hook がなく明示 skip。2026-09-24 に Debug build(`f4ba9913`)で実行し、注入 6 回・surface 作り直し 5 回・公開 2 回で通過 |
+| Debug の production PDB 配線 | `crash_symbol_production_wiring` は実際の Debug Studio が残した symbol archive を読むため Debug 構成だけで登録する。2026-09-24 に Debug build で実行し、Studio の `f4ba9913` の PDB が archive されていることを確認 |
 | オフライン時刻の上限 | `O-1` の `--start-time` / `llround` 境界。入力範囲の拒否と通常 replay の区別 |
 
 最終 revision の GPU / Studio gate と配布物の結果はrelease完了時に §6 へ記録する。部分確認や過去の全数成功で代用しない。
@@ -351,6 +352,8 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 | player の project ごとのログ(`--log-file`) | `48d5b3cb` |
 | 公開 frame 数による準備完了・staged 世代の行き先と test seam・Frame Plan dock の問い直し | `90806c80` |
 | 配布確認の repo 化(`run_distribution_check.py`) | `8813ab82` |
+| Studio の fatal テストを project ごとの log に合わせる | `b6863aae` |
+| `RenderCommand` の padding を無くす | `f4ba9913` |
 
 ## 6. v0.1.0 tag の手順
 
@@ -360,19 +363,19 @@ tag は利用者が v0 を閉じる判断をした時点で付ける。
 
 2026-09-22 のローカル検証は Windows / MSVC、Qt 6.10.3、Python 3.12、Vulkan SDK 1.4.x の
 `build-v0` / Release で実施した。Studio、Python tests、runtime shader compiler は ON。
-CPU / GPU gate、配布 stage、Debug 専用の確認は、2026-09-23 に `1bed0335` で行った(Release build、
+CPU / GPU / Studio gate、配布 stage、Debug 専用の確認は、2026-09-24 に `f4ba9913` で行った(Release build、
 そこから作った Runtime install の `build-v0/stage`、同じ tree の Debug build)。以後の revision で tag を
 付けるときは、その revision で同じ確認をやり直す。
 
 | 確認範囲 | 結果と制約 |
 |---|---|
 | Release build / Runtime install | 成功。install prefix は絶対パスを使用 |
-| CPU gate | 2026-09-23、`1bed0335`。1,793 件中 1,792 PASS、directory symlink 権限による allowlisted skip 1 件、失敗 0。`build-v0/test_artifacts/v0-cpu-final4/` の CTest と exact SKIP policy が根拠 |
-| 配布 stage の出荷 sample | 2026-09-23、`1bed0335`。7 / 7 成功(pathtrace_demo を追加)。起動・capture → 別 project へ切替 → 元の project を再読込・capture → 正常終了を確認。同じ project の open が no-op になる経路ではない。engine は RPC に答えてから最初の frame を出すので、確認手順は capture と `get_frame_plan` を名前付きの未準備エラー(出力なし・描画済み frame なし・公開前の plan)の間だけ最大 20 秒待ち直す。`scratch/samples7_final.log` と `build-v0/test_artifacts/staged-samples/report.json` |
-| 配布 stage の新規 project | 2026-09-23、`1bed0335`。CLI init → 位置編集 → 保存 → 完全終了 → Studio 再起動で authoring ID と保存値の持続、capture、正常終了を確認。`scratch/newproj_final2.log` |
-| 全 GPU gate | 2026-09-23、`1bed0335`。274 件中 273 PASS、Debug 専用 WSI の allowlisted skip 1 件、失敗 0。実窓 Studio scenario 10 件はすべて観測・通過し、exact SKIP policy も PASS。`build-v0/test_artifacts/v0-gpu-final4/` が根拠 |
-| Studio CPU gate | 2026-09-23、`a0e7820d`(以後 Studio の code は無変更)。compiler ON なので空の allowlist で実行し、263 件中 263 PASS、skip 0、exact SKIP policy PASS。`build-v0/test_artifacts/v0-studio-final3/` が根拠 |
-| Debug 専用の確認 | 2026-09-23、`1bed0335` の Debug build。`wsi_fault_window_player`(注入 6 回・surface 作り直し 5 回・公開 2 回)と `crash_symbol_production_wiring`(Studio の `1bed0335` の PDB が archive 済み)がどちらも通過 |
+| CPU gate | 2026-09-24、`f4ba9913`。1,793 件中 1,792 PASS、directory symlink 権限による allowlisted skip 1 件、失敗 0。`build-v0/test_artifacts/v0-cpu-final6/` の CTest と exact SKIP policy が根拠 |
+| 配布 stage の出荷 sample | 2026-09-24、`f4ba9913`。`test/ci/run_distribution_check.py` で 7 / 7。起動・最初の frame を待って capture → 別 project へ切替 → 元の project を再読込・capture → Frame Plan dock が失敗表示で止まっていない → 正常終了を確認。同じ project の open が no-op になる経路ではない。project ごとの player log があり、Studio 終了時に生きていた player の surface lost は 7 本とも 0 回。`build-v0/test_artifacts/distribution/run-20260924-003010-57332/report.json` |
+| 配布 stage の新規 project | 2026-09-24、`f4ba9913`。同じ確認の中で CLI init → 位置編集 → 保存 → 完全終了 → Studio 再起動で authoring ID と保存値の持続、capture、正常終了を確認 |
+| 全 GPU gate | 2026-09-24、`f4ba9913`。275 件中 274 PASS、Debug 専用 WSI の allowlisted skip 1 件、失敗 0。実窓 Studio scenario 10 件はすべて観測・通過し、exact SKIP policy も PASS。`build-v0/test_artifacts/v0-gpu-final6/` が根拠 |
+| Studio CPU gate | 2026-09-24、`f4ba9913`。compiler ON なので空の allowlist で実行し、263 件中 263 PASS、skip 0、exact SKIP policy PASS。`build-v0/test_artifacts/v0-studio-final6/` が根拠 |
+| Debug 専用の確認 | 2026-09-24、`f4ba9913` の Debug build。`wsi_fault_window_player`(注入 6 回・surface 作り直し 5 回・公開 2 回)と `crash_symbol_production_wiring`(Studio の `f4ba9913` の PDB が archive 済み)がどちらも通過 |
 
 GPU gate の経緯: 09-22 初回の失敗 4 件は、Studio への fatal ログ通知、WP366/WP384 の frame publication
 fixture 終了、`physics_trigger_behavior_e2e`、`behavior_project_e2e`(初回ログは `v0-gpu-final/`)。
@@ -385,7 +388,9 @@ reload 結果だけから作るよう修正し、`c3830d32` で gate 判定を 1
 配布確認の経緯: `b798a31f` の配布確認で、Studio から pathtrace_demo を開き直すと player が落ちる不具合が見つかった
 (上の §4.1「Studio で開いた ray tracing project の起動直後」)。`a0e7820d` で直したとき `get_frame_plan` も
 公開前の staged な generation を返すように変えたが、公開前の generation を非公開とする WP384 の契約に反し、
-全 GPU gate の WP366/WP384 frame publication test が検出した。`1bed0335` でその部分だけ取り消し、上の最終確認を行った。
+全 GPU gate の WP366/WP384 frame publication test が検出した。`1bed0335` でその部分だけ取り消した。
+
+v0 に足した 6 項目(`d8249a3a`〜`8813ab82`)の後、`e5737c87` の確認で 2 件赤が出た。全 GPU gate の `devstudio_engine_failure_test` は player の log を player の横の `pelican.log` と固定しており、project ごとの log へ移した変更と食い違った(`b6863aae` で修正。控えの run が同じファイルを切り詰めることも検査する)。CPU gate の `state_batched_v1` は `RenderCommand` の padding を比べていた(§4.1、`f4ba9913`)。上の表はその後の `f4ba9913` での最終確認である。
 
 1. 対象 revision と構成を固定する。Studio ON、Python 3.11 以上と `PELICAN_PYTHON_TESTS=ON`、runtime shader compiler ON を使う。必要な機能の基準値は [ビルド機能台帳](build_features.md)、実行コマンドは [CI 運用](ci.md) を参照する。
 2. 影響範囲の CPU 回帰と最終 GPU gate を通し、Studio CPU gate と実窓 scenario が未登録・skip になっていないことを確認する。`run_gpu_gate.py --engine-only` は限定検証用であり release 判定には使わない。古い件数を成功条件に固定しない。
