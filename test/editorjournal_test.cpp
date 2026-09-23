@@ -2121,4 +2121,56 @@ TEST_CASE("WP157 edit errors use only the canonical catalog",
     }
 }
 
+TEST_CASE("Editor transition epoch ignores participant self-description but not reload outcomes",
+          "[editor][gate][transition]") {
+    const auto status = [](std::uint64_t render_generation,
+                           std::uint64_t cache_hits, int applied) {
+        return nlohmann::json{
+            {"state", "watching"},
+            {"epoch", 7},
+            {"runtime",
+             {{"render_pipeline",
+               {{"boundary", "frame"},
+                {"requested", false},
+                {"attempted", applied},
+                {"applied", applied},
+                {"failed", 0},
+                {"last_error", nullptr},
+                {"error_code", nullptr},
+                {"error_fields", nlohmann::json::object()},
+                {"details", {{"available", true},
+                             {"generation", render_generation}}}}},
+              {"shader",
+               {{"boundary", "frame"},
+                {"requested", false},
+                {"attempted", 0},
+                {"applied", 0},
+                {"failed", 0},
+                {"last_error", nullptr},
+                {"error_code", nullptr},
+                {"error_fields", nlohmann::json::object()},
+                {"details", {{"cache_hits", cache_hits}}}}}}},
+        };
+    };
+    const auto base = status(3, 10, 1);
+    const auto epoch = internal::editorTransitionEpochFrom("main", &base);
+
+    // A window resize re-lowers the render pipeline and republishes its
+    // generation; shader preparation moves cache counters. Neither is a
+    // transition, so an edit accepted before them must still commit.
+    const auto relowered = status(4, 12, 1);
+    CHECK(internal::editorTransitionEpochFrom("main", &relowered) == epoch);
+
+    // A runtime reload that actually applied, a watcher epoch change, and a
+    // scene switch are transitions.
+    const auto reloaded = status(4, 10, 2);
+    CHECK(internal::editorTransitionEpochFrom("main", &reloaded) != epoch);
+    auto watcher = base;
+    watcher["epoch"] = 8;
+    CHECK(internal::editorTransitionEpochFrom("main", &watcher) != epoch);
+    CHECK(internal::editorTransitionEpochFrom("other", &base) != epoch);
+    CHECK(internal::editorTransitionEpochFrom("main", nullptr) !=
+          internal::editorTransitionEpochFrom("other", nullptr));
+}
+
 } // namespace Pelican

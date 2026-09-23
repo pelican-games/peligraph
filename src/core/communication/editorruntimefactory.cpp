@@ -64,6 +64,25 @@
 
 namespace Pelican {
 
+std::uint64_t internal::editorTransitionEpochFrom(
+    std::string_view current_scene, const nlohmann::json *reload_status) {
+    std::string state{current_scene};
+    if (reload_status != nullptr) {
+        state += "\n" + reload_status->value("state", std::string{});
+        state += "\n" + std::to_string(
+                             reload_status->value("epoch", std::uint64_t{}));
+        if (const auto runtime = reload_status->find("runtime");
+            runtime != reload_status->end() && runtime->is_object()) {
+            auto outcomes = *runtime;
+            for (auto &participant : outcomes) {
+                if (participant.is_object()) participant.erase("details");
+            }
+            state += "\n" + outcomes.dump();
+        }
+    }
+    return static_cast<std::uint64_t>(std::hash<std::string>{}(state));
+}
+
 EditorGateObservation internal::applyBehaviorEditConcurrencyGate(
     EditorGateObservation observation, bool behavior_callback_active,
     bool game_logic_reload_active, bool reload_reconciling) noexcept {
@@ -819,16 +838,13 @@ class EphemeralEditorProjectionTarget final
 };
 
 std::uint64_t editorTransitionEpoch(const EditorRuntimeModules &modules) {
-    std::string state = modules.scene_loader.currentScene();
-    if (modules.reload_service != nullptr) {
-        const auto reload = modules.reload_service->statusJson();
-        state += "\n" + reload.value("state", std::string{});
-        state += "\n" + std::to_string(reload.value("epoch", std::uint64_t{}));
-        if (const auto runtime = reload.find("runtime"); runtime != reload.end()) {
-            state += "\n" + runtime->dump();
-        }
+    if (modules.reload_service == nullptr) {
+        return internal::editorTransitionEpochFrom(
+            modules.scene_loader.currentScene(), nullptr);
     }
-    return static_cast<std::uint64_t>(std::hash<std::string>{}(state));
+    const auto reload = modules.reload_service->statusJson();
+    return internal::editorTransitionEpochFrom(
+        modules.scene_loader.currentScene(), &reload);
 }
 
 EditorGateObservation editorGateObservation(const EditorRuntimeModules &modules) {

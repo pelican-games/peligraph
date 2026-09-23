@@ -4,9 +4,11 @@
 #include "editorprojectionplan.hpp"
 #include "../loader/editorprojectionadapters.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Pelican {
@@ -111,6 +113,16 @@ makeEditorPrefabBehaviorProjectionAdapters(
 EditorGateObservation applyBehaviorEditConcurrencyGate(
     EditorGateObservation observation, bool behavior_callback_active,
     bool game_logic_reload_active, bool reload_reconciling) noexcept;
+
+// The transition epoch a ticket is accepted under. It changes on a scene
+// switch, a watcher state or epoch change, and any runtime participant reload
+// outcome (requested / attempted / applied / failed / error). A participant's
+// `details` are self-description, not transitions: re-lowering the render
+// pipeline for a resized window republishes its generation there, and a
+// resize is not a reason to drop an accepted edit. `reload_status` is the
+// reload service's statusJson(), or null when there is no reload service.
+std::uint64_t editorTransitionEpochFrom(std::string_view current_scene,
+                                        const nlohmann::json *reload_status);
 
 } // namespace internal
 
