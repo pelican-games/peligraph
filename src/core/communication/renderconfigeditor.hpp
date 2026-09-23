@@ -3,6 +3,7 @@
 #include "../../project/renderconfigdocument.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "renderconfigtransaction.hpp"
+#include "editorgate.hpp"
 #include "../userpublic/valuegraph.hpp"
 #include "../vkcore/renderer_config.hpp"
 
@@ -40,6 +41,8 @@ struct RenderConfigEditorGateObservation {
     bool can_edit = true;
     std::uint64_t transition_epoch = 0;
     std::vector<std::string> reasons;
+
+    bool operator==(const RenderConfigEditorGateObservation &) const = default;
 };
 
 struct RenderConfigRuntimeSnapshot {
@@ -104,7 +107,6 @@ class RenderConfigEditorService {
     struct Ticket {
         std::string id;
         std::uint64_t accepted_gate_epoch = 0;
-        std::uint64_t accepted_transition_epoch = 0;
         std::string base_source_digest;
         AuthoredRenderConfigDocument candidate;
         std::optional<RenderConfigCandidateDocumentSet> candidate_documents;
@@ -148,11 +150,7 @@ class RenderConfigEditorService {
         managed_documents_;
     std::string source_normalized_reference_;
     std::uint64_t next_ticket_ = 1;
-    std::uint64_t gate_epoch_ = 1;
-    std::uint64_t observed_transition_epoch_ = 0;
-    bool observed_can_edit_ = true;
-    std::vector<std::string> observed_gate_reasons_;
-    bool gate_initialized_ = false;
+    EditorGateEpoch<RenderConfigEditorGateObservation> gate_tracker_;
     std::shared_ptr<const void> lifetime_ =
         std::make_shared<const int>(0);
     std::optional<std::string> inflight_ticket_;
@@ -160,7 +158,6 @@ class RenderConfigEditorService {
     struct GateSnapshot {
         bool can_edit = true;
         std::uint64_t epoch = 1;
-        std::uint64_t transition_epoch = 0;
         std::vector<std::string> reasons;
     };
 

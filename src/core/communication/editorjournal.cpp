@@ -1,4 +1,5 @@
 #include "editorjournal.hpp"
+#include "editorgate.hpp"
 #include "editorjournalintegrity.hpp"
 #include "editorjournalinternal.hpp"
 #include "editorjournalops.hpp"
@@ -3121,7 +3122,6 @@ struct EditorEditCoordinator::Impl {
         std::optional<OrderedJson> accepted_unpack_forward;
         std::optional<OrderedJson> accepted_unpack_inverse;
         std::uint64_t accepted_gate_epoch = 0;
-        std::uint64_t accepted_transition_epoch = 0;
         std::string accepted_scene_id;
         OrderedJson result;
     };
@@ -3153,7 +3153,6 @@ struct EditorEditCoordinator::Impl {
         EditorActorId actor_id{};
         Json raw_operations;
         std::uint64_t accepted_gate_epoch = 0;
-        std::uint64_t accepted_transition_epoch = 0;
         std::string accepted_scene_id;
         OrderedJson result;
     };
@@ -3192,10 +3191,7 @@ struct EditorEditCoordinator::Impl {
     std::unordered_map<std::uint64_t, std::vector<std::string>> undo_stacks;
     std::unordered_map<std::uint64_t, std::vector<RedoEntry>> redo_stacks;
     PreviewLeaseState preview;
-    std::uint32_t observed_reasons = 0;
-    std::uint64_t observed_transition_epoch = 0;
-    std::uint64_t gate_epoch = 1;
-    bool gate_initialized = false;
+    EditorGateEpoch<EditorGateObservation> gate_tracker;
     bool hook_installed = false;
 
     explicit Impl(EditorEditRuntimeDependencies runtime)
@@ -3273,20 +3269,11 @@ struct EditorEditCoordinator::Impl {
     EditorGateSnapshot gateSnapshot() {
         const auto observation = dependencies.gate ? dependencies.gate()
                                                    : EditorGateObservation{};
-        if (!gate_initialized) {
-            observed_reasons = observation.reasons;
-            observed_transition_epoch = observation.transition_epoch;
-            gate_initialized = true;
-        } else if (observed_reasons != observation.reasons ||
-                   observed_transition_epoch != observation.transition_epoch) {
-            observed_reasons = observation.reasons;
-            observed_transition_epoch = observation.transition_epoch;
-            ++gate_epoch;
-        }
-        return EditorGateSnapshot{.can_edit = observed_reasons == 0,
-                                  .can_preview = observed_reasons == 0,
-                                  .epoch = gate_epoch,
-                                  .reasons = gateReasonNames(observed_reasons)};
+        const auto epoch = gate_tracker.observe(observation);
+        return EditorGateSnapshot{.can_edit = observation.reasons == 0,
+                                  .can_preview = observation.reasons == 0,
+                                  .epoch = epoch,
+                                  .reasons = gateReasonNames(observation.reasons)};
     }
 
     const Session &requireBound(EditorActorId actor) const {
@@ -3702,7 +3689,6 @@ struct EditorEditCoordinator::Impl {
                 const auto gate = gateSnapshot();
                 const bool gate_changed =
                     gate.epoch != request.accepted_gate_epoch ||
-                    observed_transition_epoch != request.accepted_transition_epoch ||
                     dependencies.current_scene_id() != request.accepted_scene_id;
 
                 if (request.kind != PreviewRequest::Kind::abort &&
@@ -3980,8 +3966,7 @@ struct EditorEditCoordinator::Impl {
         for (auto &ticket : queue) {
             try {
                 auto snapshot = gateSnapshot();
-                if (!snapshot.can_edit || snapshot.epoch != ticket.accepted_gate_epoch ||
-                    observed_transition_epoch != ticket.accepted_transition_epoch) {
+                if (!snapshot.can_edit || snapshot.epoch != ticket.accepted_gate_epoch) {
                     const EditFailure failure{
                         EditorEditErrorCode::gate_closed,
                         OrderedJson{{"method", ticketKindName(ticket.kind)},
@@ -3992,12 +3977,12 @@ struct EditorEditCoordinator::Impl {
                     continue;
                 }
                 if (dependencies.current_scene_id() != ticket.accepted_scene_id) {
-                    ++gate_epoch;
+                    const auto epoch = gate_tracker.advance();
                     const EditFailure failure{
                         EditorEditErrorCode::gate_closed,
                         OrderedJson{{"method", "edit"},
                                     {"reason", "reload_scene_transition"},
-                                    {"gate_epoch", gate_epoch}},
+                                    {"gate_epoch", epoch}},
                         "scene changed after request acceptance"};
                     publishFailure(ticket, failure, "failed");
                     continue;
@@ -4381,7 +4366,6 @@ OrderedJson EditorEditCoordinator::enqueue(const Json &params) {
         .accepted_unpack_forward = std::move(accepted_unpack_forward),
         .accepted_unpack_inverse = std::move(accepted_unpack_inverse),
         .accepted_gate_epoch = gate.epoch,
-        .accepted_transition_epoch = impl_->observed_transition_epoch,
         .accepted_scene_id = impl_->dependencies.current_scene_id(),
         .result = {{"ticket", ticket},
                    {"actor_id", actor.value},
@@ -4529,7 +4513,6 @@ OrderedJson EditorEditCoordinator::enqueueRevert(const Json &params,
             .expected_provider_generation = expected_provider,
             .prefab_cas = prefab_cas,
             .accepted_gate_epoch = gate.epoch,
-            .accepted_transition_epoch = impl.observed_transition_epoch,
             .accepted_scene_id = impl.dependencies.current_scene_id(),
             .result = {{"ticket", ticket_id},
                        {"actor_id", actor.value},
@@ -4569,7 +4552,6 @@ OrderedJson EditorEditCoordinator::openPreview(const Json &params) {
         .actor_id = actor,
         .raw_operations = parsed.operations,
         .accepted_gate_epoch = gate.epoch,
-        .accepted_transition_epoch = impl_->observed_transition_epoch,
         .accepted_scene_id = impl_->dependencies.current_scene_id(),
         .result = {{"request_id", request_id},
                    {"ticket", ticket},
@@ -4644,7 +4626,6 @@ OrderedJson EditorEditCoordinator::updatePreview(const Json &params) {
         .actor_id = actor,
         .raw_operations = parsed.operations,
         .accepted_gate_epoch = gate.epoch,
-        .accepted_transition_epoch = impl_->observed_transition_epoch,
         .accepted_scene_id = impl_->dependencies.current_scene_id(),
         .result = {{"request_id", request_id}, {"ticket", ticket},
                    {"actor_id", actor.value}, {"status", "accepted"}},
@@ -4707,7 +4688,6 @@ OrderedJson EditorEditCoordinator::commitPreview(const Json &params) {
         .kind = Impl::PreviewRequest::Kind::commit,
         .actor_id = actor,
         .accepted_gate_epoch = gate.epoch,
-        .accepted_transition_epoch = impl_->observed_transition_epoch,
         .accepted_scene_id = impl_->dependencies.current_scene_id(),
         .result = {{"request_id", request_id}, {"ticket", ticket},
                    {"actor_id", actor.value}, {"status", "accepted"}},
@@ -4764,7 +4744,6 @@ OrderedJson EditorEditCoordinator::abortPreview(const Json &params) {
         .kind = Impl::PreviewRequest::Kind::abort,
         .actor_id = actor,
         .accepted_gate_epoch = gate.epoch,
-        .accepted_transition_epoch = impl_->observed_transition_epoch,
         .accepted_scene_id = impl_->dependencies.current_scene_id(),
         .result = {{"request_id", request_id}, {"ticket", ticket},
                    {"actor_id", actor.value}, {"status", "accepted"}},

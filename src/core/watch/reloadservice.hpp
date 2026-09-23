@@ -3,6 +3,7 @@
 #include "../container.hpp"
 #include "filewatcher.hpp"
 #include "reloadtransaction.hpp"
+#include "reloadtransition.hpp"
 #include "../../project/renderconfigdocument.hpp"
 
 #include <functional>
@@ -187,6 +188,9 @@ DECLARE_MODULE(ReloadService) {
         std::function<void(AuthoredRuntimeReloadResult)> completion = {});
     bool requestRuntimeReload(std::string_view name);
     nlohmann::json statusJson() const;
+    // The typed subset of statusJson() that the editor gate treats as a
+    // transition. Participant `details` are excluded by construction.
+    ReloadTransitionFacts transitionFacts() const;
     FileWatcher *watcherForTesting() noexcept { return watcher_.get(); }
     ReloadCoordinator &transactions() noexcept { return transactions_; }
     bool applyRequestForTesting(const ReloadRequest &request);

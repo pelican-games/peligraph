@@ -64,23 +64,24 @@
 
 namespace Pelican {
 
-std::uint64_t internal::editorTransitionEpochFrom(
-    std::string_view current_scene, const nlohmann::json *reload_status) {
-    std::string state{current_scene};
-    if (reload_status != nullptr) {
-        state += "\n" + reload_status->value("state", std::string{});
-        state += "\n" + std::to_string(
-                             reload_status->value("epoch", std::uint64_t{}));
-        if (const auto runtime = reload_status->find("runtime");
-            runtime != reload_status->end() && runtime->is_object()) {
-            auto outcomes = *runtime;
-            for (auto &participant : outcomes) {
-                if (participant.is_object()) participant.erase("details");
-            }
-            state += "\n" + outcomes.dump();
+std::uint64_t internal::EditorTransitionCounter::observe(
+    std::string_view current_scene,
+    const watch::ReloadTransitionFacts *facts) {
+    const bool changed =
+        observed_ &&
+        (scene_ != current_scene || facts_.has_value() != (facts != nullptr) ||
+         (facts != nullptr && !(*facts_ == *facts)));
+    if (!observed_ || changed) {
+        observed_ = true;
+        scene_ = std::string{current_scene};
+        if (facts != nullptr) {
+            facts_ = *facts;
+        } else {
+            facts_.reset();
         }
     }
-    return static_cast<std::uint64_t>(std::hash<std::string>{}(state));
+    if (changed) ++value_;
+    return value_;
 }
 
 EditorGateObservation internal::applyBehaviorEditConcurrencyGate(
@@ -837,17 +838,9 @@ class EphemeralEditorProjectionTarget final
     }
 };
 
-std::uint64_t editorTransitionEpoch(const EditorRuntimeModules &modules) {
-    if (modules.reload_service == nullptr) {
-        return internal::editorTransitionEpochFrom(
-            modules.scene_loader.currentScene(), nullptr);
-    }
-    const auto reload = modules.reload_service->statusJson();
-    return internal::editorTransitionEpochFrom(
-        modules.scene_loader.currentScene(), &reload);
-}
-
-EditorGateObservation editorGateObservation(const EditorRuntimeModules &modules) {
+EditorGateObservation editorGateObservation(
+    const EditorRuntimeModules &modules,
+    internal::EditorTransitionCounter &transitions) {
     std::uint32_t reasons = 0;
     if (modules.launch_config.input_replay || modules.input_sequence.isReplaying()) {
         reasons |= editorGateReasonBit(EditorGateReason::replay);
@@ -858,15 +851,17 @@ EditorGateObservation editorGateObservation(const EditorRuntimeModules &modules)
     if (modules.launch_config.strict_assets) {
         reasons |= editorGateReasonBit(EditorGateReason::strict);
     }
-    bool reload_reconciling = false;
+    std::optional<watch::ReloadTransitionFacts> facts;
     if (modules.reload_service != nullptr) {
-        const auto state = modules.reload_service->statusJson().value(
-            "state", std::string{});
-        reload_reconciling = state == "reconciling";
+        facts = modules.reload_service->transitionFacts();
     }
+    const bool reload_reconciling =
+        facts.has_value() && facts->state == "reconciling";
+    const auto transition_epoch = transitions.observe(
+        modules.scene_loader.currentScene(),
+        facts.has_value() ? &*facts : nullptr);
     return internal::applyBehaviorEditConcurrencyGate(
-        {.reasons = reasons,
-         .transition_epoch = editorTransitionEpoch(modules)},
+        {.reasons = reasons, .transition_epoch = transition_epoch},
         internal::behaviorCallbackActive(), isGameLogicReloadInProgress(),
         reload_reconciling);
 }
@@ -976,6 +971,9 @@ std::vector<EditorAssetQueryResult> collectEditorAssets(const EditorRuntimeModul
 struct EditorRuntimeState {
     EditorRuntimeModules modules;
     EditorRuntimeBindingState binding_state;
+    // Shared by every editor service's gate so all of them see one
+    // transition epoch.
+    internal::EditorTransitionCounter transitions;
 
     EditorRuntimeState()
         : modules{resolveEditorRuntimeModules()},
@@ -1991,7 +1989,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                     .gate = [runtime] {
                         const auto observation =
                             editorGateObservation(
-                                runtime->modules);
+                                runtime->modules, runtime->transitions);
                         return RenderConfigEditorGateObservation{
                             .can_edit =
                                 observation.reasons == 0,
@@ -2153,7 +2151,8 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                 .project_root = runtime->modules.path_resolver.projectRoot(),
                 .source_bytes = raw_assets,
                 .gate = [runtime, source_matches_runtime] {
-                    const auto gate = editorGateObservation(runtime->modules);
+                    const auto gate = editorGateObservation(
+                        runtime->modules, runtime->transitions);
                     return RenderConfigEditorGateObservation{
                         .can_edit = source_matches_runtime && gate.reasons == 0 && !runtime->modules.renderer.hasPendingRenderPipelinePublication(),
                         .transition_epoch = gate.transition_epoch};
@@ -2307,7 +2306,8 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                 runtime->modules.renderer.resetTemporalHistory();
             },
             .gate = [runtime] {
-                return editorGateObservation(runtime->modules);
+                return editorGateObservation(runtime->modules,
+                                             runtime->transitions);
             },
             .allocate_behavior_attachment =
                 [runtime](std::uint64_t commit_seq, std::size_t command_index,

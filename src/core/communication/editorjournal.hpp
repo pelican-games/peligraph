@@ -31,9 +31,12 @@ constexpr std::uint32_t editorGateReasonBit(EditorGateReason reason) noexcept {
 
 struct EditorGateObservation {
     std::uint32_t reasons = 0;
-    // Incremented by the composition root when a reload or scene transition
-    // passes between acceptance and execution, even if the gate is open again.
+    // A counter the composition root advances when it observes a reload or
+    // scene transition (internal::EditorTransitionCounter), so an edit that
+    // straddles one is rejected even if the gate is open again.
     std::uint64_t transition_epoch = 0;
+
+    bool operator==(const EditorGateObservation &) const = default;
 };
 
 struct EditorGateSnapshot {

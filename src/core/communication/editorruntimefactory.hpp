@@ -3,9 +3,11 @@
 #include "editorjournal.hpp"
 #include "editorprojectionplan.hpp"
 #include "../loader/editorprojectionadapters.hpp"
+#include "../watch/reloadtransition.hpp"
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -114,15 +116,25 @@ EditorGateObservation applyBehaviorEditConcurrencyGate(
     EditorGateObservation observation, bool behavior_callback_active,
     bool game_logic_reload_active, bool reload_reconciling) noexcept;
 
-// The transition epoch a ticket is accepted under. It changes on a scene
-// switch, a watcher state or epoch change, and any runtime participant reload
-// outcome (requested / attempted / applied / failed / error). A participant's
-// `details` are self-description, not transitions: re-lowering the render
-// pipeline for a resized window republishes its generation there, and a
-// resize is not a reason to drop an accepted edit. `reload_status` is the
-// reload service's statusJson(), or null when there is no reload service.
-std::uint64_t editorTransitionEpochFrom(std::string_view current_scene,
-                                        const nlohmann::json *reload_status);
+// The transition epoch every editor gate observation carries. One counter,
+// owned by the editor runtime, advances whenever the current scene id or the
+// reload service's typed transition facts differ from the previous
+// observation: a scene switch, a watcher state or epoch change, or any runtime
+// participant reload outcome. What is not a transition cannot enter, because
+// ReloadTransitionFacts has no place for a participant's `details` (a
+// render pipeline re-lowered for a resized window republishes its
+// generation there). `facts` is null when there is no reload service.
+class EditorTransitionCounter {
+  public:
+    std::uint64_t observe(std::string_view current_scene,
+                          const watch::ReloadTransitionFacts *facts);
+
+  private:
+    bool observed_ = false;
+    std::string scene_;
+    std::optional<watch::ReloadTransitionFacts> facts_;
+    std::uint64_t value_ = 0;
+};
 
 } // namespace internal
 

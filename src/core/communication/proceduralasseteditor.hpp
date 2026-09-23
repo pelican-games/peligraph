@@ -22,9 +22,10 @@ class ProceduralAssetEditorService {
     using Result = nlohmann::ordered_json;
     struct Pending {
         std::string ticket, base_digest, bytes;
-        std::uint64_t transition_epoch;
+        std::uint64_t accepted_gate_epoch;
     };
     ProceduralAssetEditorDependencies dependencies_;
+    EditorGateEpoch<RenderConfigEditorGateObservation> gate_tracker_;
     std::vector<Pending> pending_;
     std::map<std::string, Result> results_;
     std::vector<Result> completed_;

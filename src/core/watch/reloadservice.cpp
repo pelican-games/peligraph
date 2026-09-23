@@ -1200,6 +1200,34 @@ nlohmann::json ReloadService::runtimeStatusJson() const {
     return result;
 }
 
+ReloadTransitionFacts ReloadService::transitionFacts() const {
+    ReloadTransitionFacts facts;
+    if (!watcher_) {
+        facts.state = "disabled";
+        facts.epoch = GET_MODULE(ReloadGate).snapshot().epoch;
+    } else {
+        const auto status = watcher_->status();
+        facts.state = std::string{watcherStateName(status.state)};
+        facts.epoch = status.epoch;
+    }
+    for (const auto &participant : participants_) {
+        if (!participant.runtime) continue;
+        const auto found = runtime_status_.find(participant.name);
+        const RuntimeParticipantStatus empty;
+        const auto &status = found != runtime_status_.end() ? found->second : empty;
+        facts.participants.push_back({
+            .name = participant.name,
+            .requested = requested_runtime_reloads_.contains(participant.name),
+            .attempted = status.attempted,
+            .applied = status.applied,
+            .failed = status.failed,
+            .error_code = status.error_code,
+            .last_error = status.last_error,
+        });
+    }
+    return facts;
+}
+
 nlohmann::json ReloadService::statusJson() const {
     const auto gate = GET_MODULE(ReloadGate).snapshot();
     const auto resources = transactions_.status();

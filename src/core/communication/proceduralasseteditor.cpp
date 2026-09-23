@@ -52,6 +52,7 @@ ProceduralAssetEditorService::Result ProceduralAssetEditorService::edit(const Js
     if (operation != "delete" && !params.contains("aabb") && !params.contains("record"))
         throw std::invalid_argument("Provide aabb or record to edit");
     const auto gate = dependencies_.gate();
+    const auto gate_epoch = gate_tracker_.observe(gate);
     if (!gate.can_edit) return rejectAsset("gate_closed", "Asset editing is currently disabled");
     if (digest != renderConfigSourceDigest(dependencies_.source_bytes) ||
         digest != renderConfigSourceDigest(readAssetSource(dependencies_.path)))
@@ -78,7 +79,7 @@ ProceduralAssetEditorService::Result ProceduralAssetEditorService::edit(const Js
     }
     (void)parseAssetDataFormatJson(Json(candidate));
     const auto ticket = "procedural-asset-edit-" + std::to_string(next_ticket_++);
-    pending_.push_back({ticket, digest, candidate.dump(2) + "\n", gate.transition_epoch});
+    pending_.push_back({ticket, digest, candidate.dump(2) + "\n", gate_epoch});
     results_[ticket] = {{"ticket", ticket}, {"status", "pending"}, {"committed", false}};
     return {{"status", "accepted"}, {"ticket", ticket}};
 }
@@ -90,7 +91,7 @@ void ProceduralAssetEditorService::commitPending() noexcept {
         Result outcome = {{"ticket", edit.ticket}, {"status", "rejected"}, {"committed", false}};
         try {
             const auto gate = dependencies_.gate();
-            if (!gate.can_edit || gate.transition_epoch != edit.transition_epoch)
+            if (!gate.can_edit || gate_tracker_.observe(gate) != edit.accepted_gate_epoch)
                 throw std::runtime_error("Asset editing gate changed before publication");
             if (renderConfigSourceDigest(dependencies_.source_bytes) != edit.base_digest)
                 throw RenderConfigExternalModification("An earlier asset edit changed this document");

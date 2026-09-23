@@ -1559,8 +1559,10 @@ TEST_CASE("scene AS edits use render publication and source CAS", "[render-confi
     ActualCpuRenderRuntime runtime;
     runtime.initialize(original);
     bool gate_open = true;
+    std::uint64_t transition = 0;
     auto service = makeService(source, runtime, [&] {
-        return RenderConfigEditorGateObservation{.can_edit = gate_open};
+        return RenderConfigEditorGateObservation{
+            .can_edit = gate_open, .transition_epoch = transition};
     });
     const auto before = service->getSceneAccelerationStructures(Json::object());
     const auto digest = before.at("source_digest").at("hex").get<std::string>();
@@ -1633,6 +1635,25 @@ TEST_CASE("scene AS edits use render publication and source CAS", "[render-confi
         CHECK(readBytes(source.path) == original);
         CHECK(service->getSceneAccelerationStructures(Json::object()) == before);
         CHECK(runtime.snapshot.published_generation == generation);
+    }
+    SECTION("a transition or a closed-and-reopened gate between admission and commit rejects") {
+        for (const bool reopen : {false, true}) {
+            const auto accepted = submit(definitions);
+            REQUIRE(accepted.at("status") == "accepted");
+            if (reopen) {
+                gate_open = false;
+                CHECK(submit(definitions).at("error").at("code") == "gate_closed");
+                gate_open = true;
+            } else {
+                ++transition;
+            }
+            service->commitPending();
+            const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+            CHECK(result.at("committed") == false);
+            CHECK(result.at("error").at("code") == "gate_closed");
+            CHECK(readBytes(source.path) == original);
+            CHECK(runtime.apply_calls == 0);
+        }
     }
     SECTION("invalid definitions and closed gate do not write") {
         for (const auto &invalid : Json::array({
@@ -4093,6 +4114,39 @@ TEST_CASE("Compute task editing resolves direct roots and project presets",
         REQUIRE(service->getComputeTaskAuthoring(Json::object()).at("tasks").empty());
         if (use_preset) REQUIRE(readBytes(project.render_config) == root_before);
     }
+}
+
+TEST_CASE("Procedural asset edits reject a gate that closed and reopened before publication",
+          "[render-config-editor][procedural-asset-create][gate]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    const auto path = project.root / "gated_assets.json";
+    const Json original{{"schema", "pelican.asset_data"}, {"version", 1}, {"models", Json::array()}};
+    writeBytes(path, original.dump());
+    bool open = true;
+    int applied = 0;
+    ProceduralAssetEditorService service({
+        .reference = "project://gated_assets.json",
+        .normalized_reference = resolver.normalizedReference("project://gated_assets.json"),
+        .path = path, .project_root = project.root, .source_bytes = original.dump(),
+        .gate = [&] { return RenderConfigEditorGateObservation{.can_edit = open}; },
+        .apply = [&](std::string_view, const std::function<void()> &commit) {
+            ++applied;
+            commit();
+        }});
+    const auto digest = service.get(Json::object()).at("source_digest").at("hex");
+    const Json request{{"operation", "create"}, {"base_source_digest", digest}, {"asset_name", "gated"},
+        {"aabb", {{"min", {-1, -1, -1}}, {"max", {1, 1, 1}}}}, {"record", {{"radius", 1}}}};
+    const auto accepted = service.edit(request);
+    REQUIRE(accepted.at("status") == "accepted");
+    open = false;
+    CHECK(service.edit(request).at("error").at("code") == "gate_closed");
+    open = true;
+    service.commitPending();
+    CHECK(service.result({{"ticket", accepted.at("ticket")}}).at("committed") == false);
+    CHECK(applied == 0);
+    CHECK(readBytes(path) == original.dump());
 }
 
 TEST_CASE("Procedural asset creation upgrades an empty asset document atomically",

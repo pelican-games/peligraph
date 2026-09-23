@@ -1,4 +1,5 @@
 #include "../src/core/communication/editorjournal.hpp"
+#include "../src/core/communication/editorgate.hpp"
 #include "../src/core/communication/editorruntimefactory.hpp"
 #include "../src/core/gamelogic/behaviorarena.hpp"
 #include "../src/core/userpublic/behavior.hpp"
@@ -2121,56 +2122,69 @@ TEST_CASE("WP157 edit errors use only the canonical catalog",
     }
 }
 
-TEST_CASE("Editor transition epoch ignores participant self-description but not reload outcomes",
+TEST_CASE("Editor transition counter moves on reload outcomes and scene switches only",
           "[editor][gate][transition]") {
-    const auto status = [](std::uint64_t render_generation,
-                           std::uint64_t cache_hits, int applied) {
-        return nlohmann::json{
-            {"state", "watching"},
-            {"epoch", 7},
-            {"runtime",
-             {{"render_pipeline",
-               {{"boundary", "frame"},
-                {"requested", false},
-                {"attempted", applied},
-                {"applied", applied},
-                {"failed", 0},
-                {"last_error", nullptr},
-                {"error_code", nullptr},
-                {"error_fields", nlohmann::json::object()},
-                {"details", {{"available", true},
-                             {"generation", render_generation}}}}},
-              {"shader",
-               {{"boundary", "frame"},
-                {"requested", false},
-                {"attempted", 0},
-                {"applied", 0},
-                {"failed", 0},
-                {"last_error", nullptr},
-                {"error_code", nullptr},
-                {"error_fields", nlohmann::json::object()},
-                {"details", {{"cache_hits", cache_hits}}}}}}},
+    using Facts = watch::ReloadTransitionFacts;
+    const auto facts = [](std::uint64_t applied, std::uint64_t watcher_epoch) {
+        return Facts{
+            .state = "watching",
+            .epoch = watcher_epoch,
+            .participants = {
+                {.name = "pelican.render_pipeline", .attempted = applied,
+                 .applied = applied},
+                {.name = "pelican.shaders"},
+            },
         };
     };
-    const auto base = status(3, 10, 1);
-    const auto epoch = internal::editorTransitionEpochFrom("main", &base);
+    internal::EditorTransitionCounter counter;
+    const auto base = facts(1, 7);
+    const auto first = counter.observe("main", &base);
 
-    // A window resize re-lowers the render pipeline and republishes its
-    // generation; shader preparation moves cache counters. Neither is a
-    // transition, so an edit accepted before them must still commit.
-    const auto relowered = status(4, 12, 1);
-    CHECK(internal::editorTransitionEpochFrom("main", &relowered) == epoch);
+    // Observing the same facts again is not a transition. A window resize
+    // re-lowers the render pipeline, but that only moves the participant's
+    // self-description, which ReloadTransitionFacts cannot carry.
+    const auto same = facts(1, 7);
+    CHECK(counter.observe("main", &same) == first);
 
-    // A runtime reload that actually applied, a watcher epoch change, and a
-    // scene switch are transitions.
-    const auto reloaded = status(4, 10, 2);
-    CHECK(internal::editorTransitionEpochFrom("main", &reloaded) != epoch);
-    auto watcher = base;
-    watcher["epoch"] = 8;
-    CHECK(internal::editorTransitionEpochFrom("main", &watcher) != epoch);
-    CHECK(internal::editorTransitionEpochFrom("other", &base) != epoch);
-    CHECK(internal::editorTransitionEpochFrom("main", nullptr) !=
-          internal::editorTransitionEpochFrom("other", nullptr));
+    // An applied reload, a watcher epoch change, and a scene switch are.
+    const auto reloaded = facts(2, 7);
+    const auto after_reload = counter.observe("main", &reloaded);
+    CHECK(after_reload != first);
+    const auto watcher = facts(2, 8);
+    const auto after_watcher = counter.observe("main", &watcher);
+    CHECK(after_watcher != after_reload);
+    const auto after_scene = counter.observe("other", &watcher);
+    CHECK(after_scene != after_watcher);
+
+    // Returning to earlier facts is still a transition: the counter never
+    // reuses a value, unlike the hash it replaced.
+    CHECK(counter.observe("main", &base) != after_scene);
+    CHECK(counter.observe("main", &base) == counter.observe("main", &base));
+
+    internal::EditorTransitionCounter without_reload;
+    const auto none = without_reload.observe("main", nullptr);
+    CHECK(without_reload.observe("main", nullptr) == none);
+    CHECK(without_reload.observe("main", &base) != none);
+}
+
+TEST_CASE("Editor gate epoch treats a gate that closed and reopened as a change",
+          "[editor][gate]") {
+    EditorGateEpoch<EditorGateObservation> gate;
+    const EditorGateObservation open{.reasons = 0, .transition_epoch = 3};
+    const auto accepted = gate.observe(open);
+    CHECK(gate.observe(open) == accepted);
+
+    const EditorGateObservation closed{
+        .reasons = editorGateReasonBit(EditorGateReason::replay),
+        .transition_epoch = 3};
+    const auto while_closed = gate.observe(closed);
+    CHECK(while_closed != accepted);
+    // Open again with the same transition epoch: an edit accepted before the
+    // gate closed must still see a different epoch.
+    CHECK(gate.observe(open) != accepted);
+    const auto advanced = gate.advance();
+    CHECK(advanced == gate.current());
+    CHECK(advanced != accepted);
 }
 
 } // namespace Pelican

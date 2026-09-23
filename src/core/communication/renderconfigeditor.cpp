@@ -605,23 +605,10 @@ RenderConfigEditorService::currentDocumentSet() const {
 RenderConfigEditorService::GateSnapshot
 RenderConfigEditorService::gateSnapshot() {
     const auto observation = dependencies_.gate();
-    if (!gate_initialized_) {
-        gate_initialized_ = true;
-        observed_can_edit_ = observation.can_edit;
-        observed_transition_epoch_ = observation.transition_epoch;
-        observed_gate_reasons_ = observation.reasons;
-    } else if (observed_can_edit_ != observation.can_edit ||
-               observed_transition_epoch_ != observation.transition_epoch ||
-               observed_gate_reasons_ != observation.reasons) {
-        observed_can_edit_ = observation.can_edit;
-        observed_transition_epoch_ = observation.transition_epoch;
-        observed_gate_reasons_ = observation.reasons;
-        ++gate_epoch_;
-    }
-    return {.can_edit = observed_can_edit_,
-            .epoch = gate_epoch_,
-            .transition_epoch = observed_transition_epoch_,
-            .reasons = observed_gate_reasons_};
+    const auto epoch = gate_tracker_.observe(observation);
+    return {.can_edit = observation.can_edit,
+            .epoch = epoch,
+            .reasons = observation.reasons};
 }
 
 OrderedJson RenderConfigEditorService::rejection(
@@ -1373,7 +1360,6 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
     pending_.push_back(Ticket{
         .id = ticket_id,
         .accepted_gate_epoch = gate.epoch,
-        .accepted_transition_epoch = gate.transition_epoch,
         .base_source_digest = base_digest,
         .candidate = std::move(candidate),
         .candidate_documents =
@@ -2407,7 +2393,6 @@ OrderedJson RenderConfigEditorService::enqueueAuthoredPassTicket(
     pending_.push_back(Ticket{
         .id = ticket_id,
         .accepted_gate_epoch = gate.epoch,
-        .accepted_transition_epoch = gate.transition_epoch,
         .base_source_digest = base_digest,
         .candidate = std::move(root),
         .candidate_documents = std::move(candidate_documents),
@@ -2851,8 +2836,7 @@ void RenderConfigEditorService::commitPending() noexcept {
         std::shared_ptr<CommitTransaction> transaction;
         try {
             const auto gate = gateSnapshot();
-            if (!gate.can_edit || gate.epoch != ticket.accepted_gate_epoch ||
-                gate.transition_epoch != ticket.accepted_transition_epoch) {
+            if (!gate.can_edit || gate.epoch != ticket.accepted_gate_epoch) {
                 finish(rejection(
                     "gate_closed",
                     "editor gate changed after render feature edit acceptance",
