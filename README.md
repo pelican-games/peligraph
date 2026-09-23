@@ -42,9 +42,10 @@ override its root. Embedded engine/Studio resources travel in the binaries.
 ```sh
 cmake -S . -B build-release -DBUILD_TESTING=OFF -DCMAKE_PREFIX_PATH=C:/Qt/6.10.3/msvc2022_64
 cmake --build build-release --config Release --target pelican_runtime
-cmake --install build-release --config Release --component Runtime --prefix build-release/package
+cmake --install build-release --config Release --component Runtime --prefix "$PWD/build-release/package"
 ```
 
+Qt's deployment step requires an absolute install prefix, as above.
 `build-release/package/bin` contains the applications, the Release MSVC
 redistributable runtime, and Qt's deployed runtime/plugins when Studio is
 enabled. Debug CRTs are not distributed. Projects and their assets are supplied separately. Keep
@@ -68,8 +69,8 @@ GPU tests share a lease and the `pelican_gpu` resource lock. Use `-LE gpu`
 for GPU-free tests; CI gate commands and exact skip policies are in
 [docs/ci.md](docs/ci.md).
 
-`PELICAN_PYTHON_TESTS=OFF` (the default) omits Python-backed policy/RPC tests.
-Use `AUTO` to add them when Python 3 is available; complete CI uses `ON`.
+`PELICAN_PYTHON_TESTS=OFF` (the default) omits Python-backed policy, RPC, and Studio E2E tests.
+Use `AUTO` to add them when Python 3.11 or newer is available; complete CI and release gates use `ON`.
 The OpenXR SDK source build can still require Python to generate dispatch
 headers, independently of this test option. A configuration without Python
 uses `-DPELICAN_WITH_OPENXR=OFF -DPELICAN_WITH_SPIRV_LINK=OFF` and keeps

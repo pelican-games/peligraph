@@ -1,18 +1,17 @@
 # v1 の完成条件と開発順序
 
-2026-09-07 更新。利用者が確定した製品方針と、開発再開時に必要な現況をまとめる。
+2026-09-22 更新。利用者が確定した製品方針と、開発再開時に必要な現況をまとめる。
 WP の仕様・検証履歴の正本は [implementation_plan.md](implementation_plan.md)。
 本書は機能を削減する裁定や、未実装 WP の仕様を新設するものではない。
 
 ## 再開時の入口
 
-- 作業ブランチは `codex/render-target-runtime-slice`。RT・Studio基盤を `96d9cb7e`、embed再生成修正を `b0c000a9`、文書・運用整理を `1878a3e0` に統合。再開後、material passのray query設定を `73557204`、入出力編集を `d2f336a5`、raster接続編集を `2ecb5ae8`、rasterのshader・draw・state編集を `03ee3b32`、triangle worldモードのGUI・保存を `c20a2432` に統合。続いて異transform AABBのworld結合を実装した（7f2a2dc6）。AABBのgeometry/world切替もScene AS画面へ接続した（変換record宣言済みlayout v3が対象）。
-- 本書の現況と残件を読み、着手する項目だけ台帳の該当WP・最終差分と `design_raytracing.md` §4-P / §11へ進む。台帳全体や完了履歴を毎回読み直さない。
-- 利用者の最新指示が旧運用記録に優先する。2026-09-06に統合担当としてのcommitを許可済み。実装・影響範囲の確認・記録が揃った単位でcommitし、個別の実装workerは統合担当へ渡す。
-- 同時agentは主担当を含め最大2、fastは使わない。`<作業ディレクトリ>/wp336`、`projects/showcase/`、無関係な `.claude/`・`out/` は触らない。モデル・thinking effort・プラグイン設定は利用者の選択を尊重する。
-- 開始時にbranch・差分・対象jobの状態を確認する。完了したログや状態ファイルだけを根拠に、処理が今も動いていると判断しない。
+- v0 の出荷範囲・解消済み項目・再検証は [v0 凍結一覧](v0_freeze.md) §3・§4・§6を参照する。v1 の拡張を v0 の未実装と混同しない。
+- 着手する項目の WP・最終差分だけ確認する。機能フラグの表は [専用台帳](build_features.md)、以前の着地時系列は [履歴](history/v0_delivery_2026-09.md) に分離した。
+- 開始時に branch・差分・対象 job の現在状態を確認する。古いログの成功は現行 revision の release gate 通過を意味しない。
+- 利用者の現在の指示を優先する。モデル・並列数・commit 権限・端末固有パスを過去のセッション記録から復元しない。
 
-### 統合済みと残件
+### RT・編集機能の棚卸し
 
 | 区分 | 内容 |
 |---|---|
@@ -20,11 +19,14 @@ WP の仕様・検証履歴の正本は [implementation_plan.md](implementation_
 | 編集経路を実装済み | component追加・削除等、procedural asset作成・編集・未使用定義削除、task宣言/接続/dispatch、Callable初期値、AS順序、fullscreen preset編集、material/raster passの入出力・ray query/TLAS選択、material contract・対象/出力/resource設定・routing表編集、rasterのshader参照・draw/state JSON編集、root/preset feature instanceの公開パラメーター編集、project featureの明示pass編集、Frame Planドラッグ接続、triangle geometry/world切替とlayout同時保存 |
 | 機能の残り | 計画・未了記録と現行コードを再照合して残件を確定する。6種の補助描画は出力先・shader・ray queryのGUI/RPC編集まで接続済み。UI/ImGuiは固定描画としてAS非依存。補助shaderのdescriptor契約不一致は生成/再読込時に拒否する。生成variantは元feature設定から再生成する。output_transformは固定色変換であり汎用編集は不要（design_color_pipeline.md §0）。機能全体の完了は未判定 |
 | 操作・性能の残確認 | 新dialog全体の実エンジン接続下操作、保存・再読込を含む制作経路、複合undo等の既存レビュー残余、動的ASの確保コストと性能計測、配布物 |
-| 後で行うもの | 学習サンプルと代表ゲーム。WP386cの追加数値oracle整備は保留であり、機能開発の必須条件に戻さない |
+| 後で行うもの | 追加の学習サンプルと、物理・音・save/loadまで使う代表ゲーム。出荷済み6 sampleの起動確認とは区別する。WP386cの追加数値oracle整備は保留であり、機能開発の必須条件に戻さない |
 
 geometry occurrence候補選択とoverrideのcomponent/行・適用状態・実効値・拒否理由をStudioへ接続済み。RT stage/record/materialの観測、AS設定の実効値・適用元・優先順、Callableの実行時CPU設定も接続済み。省略Defaulted fieldのAdd default、Listの追加・削除・行内値編集・IDを保つ移動も接続済み。model reload後GPU反映、direct model参照のasset key、別Behaviorの独立Undo、spawn/add→List編集、unpack/destroyを跨ぐUndo/Redoも修正・確認済み。新画面の実GUI操作は残る。上表は実装率や残工数の積算ではない。個々の証拠と未確認範囲は下表・台帳に従う。
 
-## 現行コードに基づく次の作業（2026-09-07、物理実装の区切り後）
+## 機能別の棚卸し（2026-09-07 の確認を基準にした v1 の候補）
+
+以下は機能ごとの到達点と確認境界を残す表である。その後のAG/P/N群と2026-09-22の修正は
+[v0の現況](v0_freeze.md)で上書きされる。ここに残る「未確認」「残件」だけを根拠に再実装しない。
 
 利用者から「機能実装をどこまで行うか」「物理を優先した理由」の確認を受け、物理の連続拡張を止めて開発順を再整理した。これは未実装機能の削除や、v1完成の宣言ではない。台帳の過去の「次は」「未実装」をそのまま現在の作業一覧として扱わない。
 
@@ -120,43 +122,35 @@ v0 は機能の総数ではなく、**約束する制作体験**で切る。
 
 「一つのグラフモデル」は意味の共通化であり、一枚のキャンバスではない。Studio は制作対象 / 関係 / 時間 / 実行結果の view に分け、同じ正本を見る。authoring graph と展開・コンパイル済みの実行グラフは混同せず、Frame Plan から元の feature・node・コードへ戻れるようにする(生成結果を第二の正本にしない)。
 
-#### 段(順序。R 群は前段の後)
+#### v0 の着地と v1 へ残した範囲
 
 | 段 | 内容 | 閉じ方 |
 |---|---|---|
 | **AG-0 登録契約と purge** ✅ `adb73793` | module が型(opaque handle + identity + 世代)・op(`GraphOperationContracts`)・sink を登録する契約を明文化。animation を外した build で共通グラフが compile・評価・描画できる | `PELICAN_WITH_ANIMATION` OFF の build と test。未登録の型・op を使う文書は `graph.type_unregistered@1` 等で名前付き拒否 |
-| **AG-1 pose モジュールと正本の一本化**(1a ✅ `5bc79586`、1b ✅ `945ad8aa`。一本化と event は v0 の後) | `pelican.pose@1` を登録型(port を流れるのは handle と layout 世代、bytes ではない)、`clip_sample` / `blend` / `state_machine`(既存 `pelican.anim_graph` を包む 1 ノード、文法は増やさない)/ `retarget` の op、skeletal と transform の sink。animation component の `clip XOR graph` を `graph.instance` に一本化(読込時 1 回変換、旧文法の並走は無し)。parameter は value port、遷移と clip event は typed event | 同一 scene で clip / graph / value port 駆動 → 評価済み姿勢属性の GPU 値が変わる。保存 → 再読込で同一。value port を消すと GameContext 経由だけになる |
+| **AG-1 pose モジュール** ✅ 1a `5bc79586` / 1b `945ad8aa` | `pelican.pose@1` の型・op・sink、pose graph 経路のloop/speed/start_timeとowner単位の排他を実装。v0はanimation componentのclip/graph経路も維持する | 共通graph経路のparityとOFF buildのfail-fastを確認。経路の一本化とtyped eventの拡張はv1 |
 | **P-1 パラメータ mode と由来** ✅ `b960edf7` | Inspector の欄に mode(固定値 / 接続)と導線(曲線で制御 / 別の出力に接続 / 供給元を開く)。「接続」は共通グラフの edge そのもの(Inspector と graph は同じ edge の別 view)。parameter 宣言に「変更時の扱い」を持たせる。`get_status` の実効値に instance・port・時計を載せる | GUI で「曲線で制御」→ 文書に `value.curve` / `value.playback` と edge が生える。graph 側で edge を消すと欄が固定値に戻る。分類「値だけ」以外の欄は接続不可と表示され、RPC でも拒否 |
 | **P-2 往復のパイロット 2 本**(a ✅ 1a `70982870` / 1b `a1233ddd` / 1c `9e4081b4` / 2 `62f09ce0` / 4a+3 `5100be5f`。b ✅ P-2b `393f9d30`)| (a) Bloom: 使う → 供給元を接続 → 内部を見る(参照を保つ)→ このプロジェクト用に派生 → 共有部品として保存 → 別プロジェクトで使う。(b) 曲線駆動の blend: 姿勢部品で同じ往復(AG-1 の受け入れを兼ねる) | 「内部を見る」で materialize されない(標準部品の更新を受け続ける)。派生後は元を変えない。保存した部品が別プロジェクトで同じ出力 |
-| **AG-2 root motion** ✅ `584afc15`(clip_sample の extract のみ。state_machine / blend と回転量は送り)| `state_machine` / `clip_sample` の出力 port(移動量・回転量)。評価順 animation → root motion → movement → physics query → publish を 1 か所に固定 | root motion を持つ clip で個体が移動、出力を消すと動かない |
-| **O-1 オフライン出力** ✅ `405cd319`(v0 は `--start-time` の replay。評価分類の強制と read-only render は送り)| 指定時刻 t の決定的評価と連番出力(CLI)。評価分類を各ノードが宣言し、replay が要るノードには初期状態からの replay、記録が要るノードには named reject。**状態を進めることと、状態から値を読むことを分ける**(1 frame を複数回サンプルしても game 状態と音 event が進まない) | 同 t の 2 回出力で bytes 一致。状態付きノードに時刻だけ渡した出力は拒否される |
+| **AG-2 root motion** ✅ `584afc15` | v0はclip_sampleから根の移動量を抽出し、個体のmovementへ渡す | clipによる移動と出力を外した対照を確認。state_machine / blend経由と回転量はv1 |
+| **O-1 オフライン出力** ✅ `405cd319` | `--start-time`による初期状態からのreplayと連番出力 | 同じ時刻のframe等価をbytesで確認。評価分類の強制と状態を進めないread-only renderはv1 |
 | **X-1 持ち出し** ✅ `3f72b71d`(package manifest / vendoring / namespace 付き catalog / 公開 SDK だけの include を compile で判定)| 本体ツリー外のテンプレート repo(graph / feature パックが主力、native 拡張は SDK とビルド条件を固定)。package manifest とカタログ(Studio 検索・CLI 一覧・エージェント向け) | シナリオ「拡張して持ち出す」の test |
-| **AG-3 観測と view**(3a ✅ `9862ebdd` = `get_status.animation` + `get_graph_node_values`。3b = Studio、別 session)| 定義を見ているのか特定 instance の評価結果を見ているのかを UI で区別。時間軸 view(まず読み取り)。anim graph の state / event を `get_status` で | GUI から 装着 → 編集 → 観測 → 保存 → 再読込 を 1 経路 |
-| **R 群(整理・操作感・サンプル・凍結)**(R-3 ✅ `979b40f7` = 索引・`docs/v0_freeze.md`・`requires`。R-2 は裁定。R-1 ✅ `aa56a1af`。tag は全数の後)| 「同じ接続に二つの正本」の撤去(旧 `pelican.value_graph` の bindings 文書、component 固有 graph の残骸、到達不能な legacy 分岐)。新 dialog の実操作と複合 undo。学習サンプルは概念 1 つに 1 個、代表ゲームは制作経路の全項目を 1 本。凍結一覧と v0 tag | 表の各行を「撤去 / 維持(理由)」で閉じる。サンプルと代表ゲームが smoke corpus に入る |
+| **AG-3 観測と view** ✅ 3a `9862ebdd` / 3b `5d64bd6e` | `get_status.animation` / `get_graph_node_values`と、Studioの値の帯・Live・Timelineを接続 | `graph_observe_roundtrip`で装着→編集→観測→保存→再読込。pose/event固有の未確認範囲は凍結一覧§4 |
+| **R 群(整理・操作感・サンプル・凍結)** ✅ R-1 `aa56a1af` / R-3 `979b40f7` | 二つの正本の撤去/維持を裁定し、サンプル索引・凍結一覧・requiresを整備。2026-09-22の追加修正は凍結一覧§5 | 最終release構成の確認後にtagを判断する。複合Undoと代表ゲームの拡張はv1 |
 
-進捗(置換更新): **基準は 2026-09-17 `36e8115f` で緑**。**AG-0 着地 `adb73793`**、**AG-1a 着地 `5bc79586`**。AG-1b は設計レビュー 2 巡で「一本化」を v0 では撤回し、v3 = pose graph 経路の parity(loop / speed / start_time、位相ずれ、状態移送)+ owner 単位の排他 + OFF build の fail-fast に確定(event は v0 の後)。**P-1 着地 `b960edf7`**。**AG-1b 着地 `945ad8aa`**(全数 1886 緑、RT6 の間欠 1 件は直列緑)。**P-2a-1a 着地 `70982870`**(W1 の赤は RT6 間欠のみ、記録して squash)。**P-2a-1b 着地 `a1233ddd`**(gate は build + 非 GPU のみ。利用者指示で「進めて後でテスト」に切替、全数は P-2 を閉じるとき)、**P-2a-1c 着地 `9e4081b4`**(materialize 後の parameter 編集を含む)。P-2a-2(runtime 値)実装中。**O-1 着地 `405cd319`**(`--start-time` の replay、frame 等価を bytes で確認)。**AG-2 着地 `584afc15`**(root motion、10 mode GPU test)。**P-2a-4a + P-2a-3 着地 `5100be5f`**(graph root の `rendering` 節を authoring 全面が読み書き、component の export / import)。**P-2a-2 着地 `62f09ce0`**(`binding: buffer`、共通グラフから毎 frame)。P-2 の (a) は閉じた。**AG-3a 着地 `9862ebdd`**、**X-1 着地 `3f72b71d`**、**P-2b 着地 `393f9d30`**(posegraph_demo、`requires`)。**P-2a-4b 着地 `d236822b`**(example は graph root)。**R-3 着地 `979b40f7`**(`docs/v0_freeze.md`)。**R-1 着地 `aa56a1af`**。**engine 側の v0 段は全部着地し、全数(configure + build + ctest -j4、GPU 込み、source `83645084`)が 1947 / 1947 緑**(RT6 の間欠は R1-2 で消えた)。利用者の裁定(2026-09-17): **Studio の改良(N 系 / AG-3b、別 session)も v0** で、tag は Studio 側が入って利用者が閉じるまで打たない。以後はゆったり磨く(残りの 1 枚は下)。P-2a-4b と R 群は起票済み(`57d47334`)、**R1-2 着地 `edf4bd43`**(committed marker。704 round で新経路 0 件)。全数は P-2 を閉じるときに 1 回(利用者指示)。**GUI 系(N 群、別セッション)**: N-1 共通グラフの読み取りキャンバス着地 `2c6828e4`(Frame Plan dock の Graph tab、`pelican_studio --project --tab`)。利用者レビュー 1 巡目から **N-1b 着地 `373f62ee`**(見出し + ソケット欄、型ごとのソケット形状は JSON 既定表 → module 宣言優先)。**N-2 着地 `02a3d285`**(折り畳み / 辺の接続・切断 / 値のその場編集 / palette 追加・削除 / ラベル / 定義 scope の編集 op と `set_node_label`)。次は利用者レビュー 3 巡目と AG-3b(定義内の値の重ね = `get_graph_node_values`、時間軸 view)。AG-3 は AG-3a(engine、別セッション)/ AG-3b(Studio、この列)に分割。P-2 は設計レビュー 2 巡で打ち切り、v3 = 1a(anchor 明示と撤去)/ 1b(Bloom の feature 化と oracle の付け替え)/ 1c(define 化と materialize 後の編集)/ P-2a-2(runtime 値)+ 送り(共有部品の公開、出荷 project の `pelican.graph` root、posegraph_demo、外部定義参照、hdr on の Bloom)。まず 1a。 **→ 着地 `5d64bd6e`**(装着 → 編集 → 観測 → 保存 → 再読込 のシナリオ `graph_observe_roundtrip` が実 engine で緑)**N-7 着地 `5865a6fd`**(パネルの文字)。**N-6 着地 `fd02e356`**(reroute / tie / 配置の永続化 `layout` + `set_layout`)。Studio 側の v0 一覧は backlog を残して閉じた。**N-8 着地 `6c71c5af`**(Frame Plan の canvas 編集: 接続 / 切断 / 帯 / 追加 / 削除 / 配置の永続化。legacy root 4 project は配置を保存できない = 磨きの一覧)。**Q-2 着地 `cb76c164`**(応答性: idle RPC 56 → 0.5/秒、frame plan 1 回 parse、canvas の cache。Debug build が最大要因 = Release 版 launcher `<作業ディレクトリ>/studio_rel.cmd`。embed の固まりは診断のみ → Q-4)。**Q-3 着地 `9be4113f`**(帯の editor が窓の瞬きで閉じて古い値を保存する欠陥。N-2 由来、シナリオはこの機械で一度も緑でなかった)。
-**説明書とコード解説の更新着地 `61a4b3b4`**(2026-09-17 夜、利用者依頼「今ある機能の説明書の更新とコード解説の更新」。manual 00〜04 / 06 / 08 / 10〜14、guide 01〜11 + README、`docs/v0_freeze.md`。敵対 fact-check 2 本(manual 18 件 + 矛盾 7、guide 32 件 + link 21)を全件適用、doclink 4760 / 0 unresolved。Q-1b `026268ee`・N-5 `43f032b1` まで反映)。
+#### v0 の現状と残り（2026-09-22）
 
-#### v0 の残り(2026-09-17 夜、engine 側 + Studio 側の 1 枚。置換更新)
+AG / P / O / X / R / N / Q の着地 SHA は [v0 凍結一覧 §5](v0_freeze.md#5-v0-で入ったもの)、
+途中の判断・検証件数は [日付付き履歴](history/v0_delivery_2026-09.md) にまとめた。
+2026-09-17 の engine 全数 1947 / 1947 は当時の構成の結果であり、現行 Studio を含む release の完了宣言ではない。
 
-## Studio 側(別 session pelican2-3e が所有。**2026-09-17 夜に全部着地**)
-- N-3 `dd088c2a` / Q-1 `06829720` / Q-1b `026268ee` / N-5 `43f032b1` / N-4 `af6e335f` / AG-3b `5d64bd6e`(各 spec は `<作業ディレクトリ>/*_spec.md`、完了記録は台帳)
-- backlog(未予定、利用者が決める): parameter_dependent な render.* op の palette form / seed constant の自動掃除 / 必須入力の disconnect UX / graph 編集の undo / definition の create・delete・copy(P-2b-2)/ Features dock の export・import UI(P-2a-3 の RPC)と package feature / node の text elision / Studio の exit crash(139)/ animation sink の e2e / scrub の GPU coverage
-- 既知の穴: Studio が raytracing_demo を開けない
+| 区分 | 現在の扱い |
+|---|---|
+| 実装・対象回帰を確認済み | scene authoring ID の永続化、Graph Canvas の基本 Undo/Redo と配置の同時復元、未保存 scene の close/project 切替ガード、終了通知による Studio crash の修正、build ごとの runtime 配置と Runtime install、`requires` に沿った configure target 選別 |
+| v0 の再検証 | 新規projectの編集・保存・完全再起動と出荷6 sampleの別project経由再読込はWindows Runtime stageで確認済み。最終revisionのGPU / Studio gateは別に完了を判定する。旧 hang・OFF build・shader / AS の指摘は [凍結一覧 §4](v0_freeze.md#4-v0-の状態と再検証) の範囲で再現を判定する |
+| v1 の機能・操作拡張 | scene と graph/render config を束ねる複合 Undo、外部 definition 参照と create/delete/copy、package の shader・名前空間・catalog 拡張、read-only render と評価分類の強制、代表ゲームの物理・音・save/load・UI。個々の仕様は既存 WP / 設計に従う |
+| 未予定の操作改善候補 | parameter_dependent な render op の palette form、seed constant 自動掃除、必須入力 disconnect UX、Features dock の export/import UI、node text elision、animation sink / scrub の GPU coverage。現状の不足を利用操作で確認してから選ぶ |
 
-## engine 側(v0 の段は全部着地。残りは磨き = 記録済みの穴。`docs/v0_freeze.md` §4 と同じ)
-- `test/fixtures/devstudio/example_frame_plan.json` の再凍結(Studio 入り build で数値 assert を追随。P-2a-4b の穴)
-- `requires` を読まない configure 時の corpus game logic 目標(OFF build + `PELICAN_TEST_PROJECTS_DIR`)
-- GPU lease log の掃除(`gpu_lease_run.cpp:94`、`%TEMP%` に数千個)
-- pose 側 snapshot(`get_graph_node_values` は rendering 側の値。event / trigger 駆動で pose 側とずれ得る)
-- owner id の永続化(位置依存 id、不在 id は無音 inactive → R-1 で 1 行警告)
-- package: 自前 shader(X-2)、pass / RT 名の namespace、`ProjectEnvelope` の `packages`、`get_graph_catalog` の package
-- hdr on の Bloom / Bloom shader の define prefix と namespace 付き派生
-- component 経路(component_graph / component_clip)の `get_status.animation` test
-- SceneLoader の二重 load hang / 放棄 scene transaction の teardown hang / `looks_mutating` gate / signed-zero の AS identity
-- 複合 undo(v1)/ 代表ゲームの物理・音・save(v1)/ 外部定義参照(P-2b-2)/ read-only render(O-1 の送り)/ 評価分類の強制(recorded の宣言者と同時)
-- codex の敵対コードレビュー(limit 解除後、CLI 更新が要る): AG-0 / AG-1a / AG-1b / P-1 / R0 + 今日の 14 本
-
+Graph Canvas の基本 Undo は `df5fb880` で実装済み。render config 全体や scene journal と跨る複合 Undo は別の未完了項目である。
+scene owner ID の永続化も `352eea58` で実装済みのため、新規開発候補には戻さない。
 
 #### 部品の 3 操作(Houdini HDA を参照)
 
@@ -181,73 +175,22 @@ v0 は機能の総数ではなく、**約束する制作体験**で切る。
 
 部品化 = Houdini Digital Asset(内部展開、parameter promotion、編集許可と定義への復帰)。パラメータ操作 = TouchDesigner の Parameter Mode と Component Time。シーンと評価 = Gaffer の Box / Reference / Context。描画拡張 = NVIDIA Falcor(`reflect()` と `execute()` の分離、Mogwai)。描画方式の境界 = Hydra の scene index / filter / render delegate、MaterialX の NodeDef と実装の分離。状態と時間 = Blender Simulation Zone(前状態・キャッシュ・ベイクの境界)。登録と発見 = VS Code の extension manifest と contribution point。コード側の説明をノードへ反映 = vvvv。
 
-### 全体グラフを正本にする（2026-09-07、直近の方針）
+### 共通グラフの現在地と v1 の接続拡張
 
-コンポーネント固有のグラフを別系統として増やす進め方を見直す。
-[全体グラフとコンポーネント表示の共通化](design_graph_composition.md)を参照し、
-同じ編集モデルのサブグラフinstanceとして保存し、Studioだけ表示を分ける。
-既存CompiledLogicalRenderGraphは描画用の派生結果であり、編集の正本に転用しない。
-現在のValueGraph・bindingsとanimation componentは実装済みだが共通化は未了。
-project/graphcompositionへ共通形式の定義/instance/port展開を追加し、ValueGraphの
-数値backendへ接続した。保存は元の共通文書を保ち、生成bindingは派生結果とする。
-共通portは既存LogicalTypeRegistryへ接続し、数値operationと描画/音声scalar sinkの
-入力契約を照合する。既存render authoring全体/scene/Studioとの統合は未了。
-render.buffer/render.computeの資源・型付き入出力を既存compose入口へ接続した。
-計算結果portへの接続から完了依存を生成する。混在文書の実行分割と、bufferのvalue入力を
-通じた数値→runtime_f32→GPU compute消費も接続し、実結果を読み戻して確認した。
-現在の転送境界は1個のfloat用。数値処理を描画世代に保持し、通常Rendererで自動評価する
-経路とscene読込み時刻の供給を接続した。更新失敗時の旧世代維持も実GPUで確認済み。
-instanceの保存parameter、定義default、evaluate/publishへの一時overrideは実装した。
-instance.ownerによるauthoring objectとの対応と、GameContextからのparameter変更を接続した。
-削除/scene再読込み時のoverride破棄、別グラフの独立性も通常Rendererで確認済み。
-ownerの生存状態に沿った数値評価・publish・依存computeの停止と、scene再読込みでの再開を
-通常Rendererへ接続した。render.imageとcomputeのstorage/sampled画像portも接続済み。
-個体別EvaluationStateとvalue.trigger_clockの開始/一時停止/再開/resetも通常Rendererへ接続した。
-型付き再生イベントのsource/時計consumerと時刻付きキューも通常Rendererへ接続した。
-audio.playbackへ開始/pause/resume/resetを接続し、個体・scene・Graphの寿命に沿ったvoice解放を
-通常Renderer経由で確認した（音声はnull backend）。typed voice portからvolume/pitchへの接続と、
-新規再生/再開始したframeの値反映も実装した。raster/fullscreen passの共通nodeから既存パスへの
-変換とCPUコンパイルに加え、GPU画素出力とowner不在時の描画scope停止を確認した。
-render.attributeのvertex/instance/material/index domainを型identityとして照合し、既存bufferとshader
-accessorへ渡す入口も追加した。countからstd430サイズとraster描画数を導出する接続も実装した。
-GltfLoaderの属性抽出を共通graphのsource参照・count解決・候補buffer uploadへ接続した。
-GPUで複数頂点の属性値とcountを読み、元のsource参照の保存と失敗候補による旧世代維持を確認した。
-属性の実ファイル依存を変更通知へ接続し、同じGLBや`.gltf`の外部bufferをモデルとgraph属性が共有する場合の
-共同更新を実装した。候補失敗時は両方を維持し、buffer参照先の切替に合わせて依存も更新する。
-glTFインデックスも共通sourceから読出し、draw.index_sourceからnative indexed drawへ接続した。
-候補世代のbufferを保持し、GPUで後半三角形の画素・owner停止/再開を確認した。
-rasterの頂点shaderではvertex/instance属性の引数なしloadを追加し、glTFの頂点と
-first_instance=1のcompute生成属性を使ったGPU画素出力を確認した。
-遅延RT公開時の共有モデル検証、変形後属性は残件。
-モーフ差分はsource.morph_targetから属性portへ読み出せる。通常computeでのウェイト合成と
-不正target時の旧世代維持をGPU確認済み。所有者付きvalue.morph_weightから個体の現在ウェイトを
-読み、通常computeへの合成・個体削除時の停止・再生成後の再接続を確認した。
-この接続で区切る。スキニング済みGPU属性の参照とアニメーショングラフ全体の共通化は別工程。
-動的描画nodeは現状scopeを分離して実行し、
-同じowner条件のnode間融合と共通history画像のpreview対応は残件。
-停止時もGPU資源は描画世代が保持する。動的instance装着や個体単位の資源回収は未了。
-sceneごとのgraph選択と、既存scalar音声bindingへのhandle/任意外部inputの自動供給はまだない。
-画像pass、feature自体の共通instance化、時計以外の状態/イベント境界、Studio統合は残件。
-専用ValueGraphComponentや新しいkind分岐の追加は先行しない。
-アトリビュート生成/付与・固有shaderもこの共通表現へ含める。material反復の
-保存粒度は未確定。対象条件/反復本体を定義として保存し、列挙結果を派生にする案を
-設計へ記録したが、汎用foreach文法や全件展開保存を先行実装しない。
+共通形式 `pelican.graph` の definition / instance / edge、数値・描画・pose の module、
+Scene owner と Studio Canvas は接続済み。外部 authoring の正本は共通文書であり、
+旧 `pelican.value_graph` は内部 IR / test 面に限る。animation component の
+`clip` / `graph` 経路は v0 で維持すると決めた経路で、未完了の撤去作業ではない
+（[凍結一覧 §2](v0_freeze.md#2-撤去--維持の表)）。
 
-### グラフ間のデータ接続（2026-09-07 利用者要望、未実装）
+数値カーブから resource buffer、評価済み pose から描画への接続は実装済み。
+物理結果を共通 graph の入力へ供給すること、スキニング済み GPU 属性の共有、
+scene ごとの graph 選択、動的 instance の資源回収、任意の外部入力・汎用反復は
+v1 の個別設計対象とする。既存の typed resource port と評価・寿命契約を再利用し、
+専用 component や暗黙の転送経路を増やさない。
 
-アニメーションと物理をノードで組み合わせ、その出力をレンダリンググラフの入力へ接続できるようにする。専用エフェクトごとの隠れた転送処理ではなく、既存resource port/bufferの仕組みへ型付きデータとして公開する。描画・compute・RTの各consumerが同じ出力を参照でき、保存・再読込後も接続を保持することを完成条件とする。
-
-- アニメーション: 評価済みの数値カーブ・姿勢/行列を公開する。キーフレーム自体をGPUで補間したい用途には、時間・値・補間方式を持つカーブ資産の入力も区別して扱う。
-- 数値接続の保存: ValueGraph::Graphでpelican.value_graph文書のinput/constant/curve/add/multiply/playbackと名前付き配列出力を保存・評価する経路を追加。playbackの使用区間・duration・speed・delay・sample_intervalは定数/他ノードを接続でき、wrapも保存する。bindingsでrender_buffer/sound_volume/sound_pitchへの出力先を保存し、publishで反映できる。音声は論理名から実行中handleを渡す。時刻は外部入力で、内部時計を持たない。sceneへの自動装着、triggerノード、pose等の型、GUIは未実装。
-- 描画への数値入力: bufferの`host_source: "runtime_f32"`とGameContext::setRenderValuesでfloat配列を公開する経路を追加。既存storage buffer portをconsumerへ接続できる。CPU側でコピーし、rendererの既存host更新位置で転送する。未設定はゼロ、公開後は次の更新まで保持し、サイズは宣言全体との一致を要求する。数値グラフのbindingsからこの経路への接続保存も追加。sceneからの自動実行とGUI配線は残件。
-- カーブの設定は形状と再生を分離する。使用区間・再生時間・速度/逆再生・ループ/往復、値の倍率/オフセット、開始トリガー/遅延/再トリガー、連続/固定間隔/LUT解像度を組み合わせる。公開C++のScalarCurve・sampleCurve・CurveTriggerClockで基本評価を実装。数値グラフで形状とadd/multiply・playbackによる変換の接続保存まで追加。triggerノード・LUT公開・GUIと複数トリガーの重ね合わせは未実装であり、一括機能を提供する場合も各処理へ分解できる構成を保つ。
-- 物理: transform・速度等の状態と、接触等のイベント列を区別する。イベントを描画フレームごとに重複消費せず、固定stepと描画補間の関係を明示する。現在未実装の剛体シミュレーションを実装済みとはしない。
-- 音声（追加要望）: グラフのイベントから再生/停止、連続値から音量/ピッチ等を操作する。GameContextの既存playSound/stopSound/setBusVolumeに、個別voiceのsetSoundVolume/setSoundPitchとsoundStateを追加。音量は個別値×バス×masterを維持する。再生位置はminiaudioのsource cursor秒であり、デバイスから聞こえる時刻ではない。null backendは時計なしを返す。新しい変更APIはupdate thread向けでscene effect staging中はfalseを返す。数値グラフのbindingsからvolume/pitchへ接続でき、音声出力は1要素を要求する。stage内の設定予約、再生/停止イベントとその重複消費防止は未実装。
-- 境界: 型・要素数・座標系・時刻/世代・CPU/GPUの所在を接続契約に含める。CPU結果は必要な出力だけアップロードし、GPU上の結果は可能ならbufferを直接共有する。同時使用中の内容を書き換えず、必要な依存・同期・寿命を既存実行基盤へ渡す。
-
-まず既存評価器の装着/解除とscene上の所有を接続し、評価済みカーブからrender入力へ至る一経路を通す。その後に配列/姿勢・物理出力へ広げる。カーブ、物理、描画の全処理を同じ時間刻みの一枚のグラフへ押し込む方針ではない。標準機能はノードへの分解可能性を保持する。
-
-既存pelican.anim_graphのstate/clip/blend評価器は標準の姿勢生成処理として再利用する。汎用の数値/イベント接続、音声制御、render resourceへの出力を、そのstate machine文法へ個別の特例として積み込まない。合成側で型付きポートと実行phaseを扱い、各評価器/サービスへ渡す。scene componentはその構成と公開パラメーターを装着する入口とする。
+当時の個々の接続・GPU 検証・残件の記録は [共通グラフへの接続経緯](history/v0_delivery_2026-09.md#共通グラフへの接続経緯) に保存した。
+履歴にある「Studio 統合未了」「共通化未了」はその後の AG / P / N の着地で部分的に更新されているため、未実装の一覧として読まない。
 
 ### ノードへの分解を優先する（2026-09-06 利用者方針）
 

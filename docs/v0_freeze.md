@@ -4,7 +4,7 @@ v1 計画 [docs/v1_development_plan.md](v1_development_plan.md) の「v0 で凍�
 5 行表を、実物の名前に展開した正本。**この文書が凍結の一覧であり、v1 計画の表は要約**。
 
 読み方: §1 が「動かさないと約束するもの」、§2 が「二つの正本のうちどちらを残したか」、
-§3 が「v0 では約束しないもの」、§4 が「約束の内側にあるが今日は穴になっているもの」、
+§3 が「v0 では約束しないもの」、§4 が「解消済みの項目と現行構成で再検証するもの」、
 §5 が「v0 に入った変更の SHA」、§6 が tag の手順。
 
 ## 1. 凍結するもの
@@ -18,7 +18,7 @@ project が持てる文書と、parser が受ける version。`schema` と `vers
 | schema | version | parser | 備考 |
 |---|---|---|---|
 | `pelican.project` | 1 | `src/project/projectformat.cpp` | `project.json`。`engine_min_version` と `requires` を持つ |
-| `pelican.scene` | 1〜2 | `src/project/sceneformat.cpp` | 書き出しは 2(`latest_scene_version`)。prefab は scene v2 を要求する |
+| `pelican.scene` | 1〜2 | `src/project/sceneformat.cpp` | 保存は読み込んだ版を維持する。prefab は scene v2 を要求し、永続IDは両版で受理する |
 | `pelican.graph` | 1 | `src/project/graphcomposition.cpp` | 共通グラフ。`definitions` / `nodes` / `outputs` と `graph.instance` / `graph.input` |
 | `pelican.value_graph` | 1 | `src/core/userpublic/valuegraph.cpp` | **内部 IR + test 面**。外部契約ではない(§2 行 1) |
 | `pelican.anim_graph` | 1 | `src/core/userpublic/animation/animgraph.cpp` | animation component が指す state machine 文書 |
@@ -233,44 +233,58 @@ v0 の後に回すもの(v1 計画「やらない」): 双方向 bind / 任意�
 2D ノード集 / 映像向け合成ノード / timeline 文書(時間軸は view)/ 物理 → graph 入力 /
 native ABI の永久互換 / 任意 module の unload / マーケットプレイスと細分化された repo 群。
 
-**複合 undo は v0 では約束しない**(`### R-2:` の裁定)。journal / undo の対象は **scene 編集 12 op だけ**で
-(`editorjournal.cpp`。他は `method_unavailable`)、render config 編集は **CAS + transaction** の
-「失敗したら何も変わらない」が契約。文書単位の inverse は既にある
-(`RenderConfigDocumentCommitReceipt` + `rollbackCommittedRenderConfigDocuments`、graph 編集は `nodes` 1 key)。
-無いのは **scene journal と render config 編集を 1 本の undo stack に束ねる複合 undo** で、これは v1 計画の項目そのもの。
-理由: v0 の 4 シナリオに要らない / editor journal の既知の弱点(WP372 系)を先に片付ける必要がある。
+**複合 undo は v0 では約束しない**(`### R-2:` の裁定)。scene journal の対象は
+scene 編集 12 op で、Graph Canvas は graph 専用の基本 Undo/Redo を持つ（§4.1）。
+graph の履歴は CAS で保存し、外部編集後は無効化する。render config 全体の編集は
+CAS + transaction による失敗時の原状維持が契約で、文書単位の rollback は内部にある。
+**scene journal と graph / render config を 1 本の履歴へ束ねる複合 Undo**は v1 の項目として残す。
 
 **代表ゲームの射程**: 代表は `projects/example` で、触るのは入力・ECS 生成と `setLocalTransform`・
 VRM 表情・light animation まで。**物理 query・音・save/load・UI 操作・behavior のサンプルは v1**
 (scene に collider 0、repo に音声 file 0、[docs/example_assets.md](example_assets.md) が新規 binary を禁じ、
 `playSound` は `PELICAN_WITH_AUDIO=OFF` で throw = 「外す」と衝突する)。
 
-## 4. v0 の既知の穴
+## 4. v0 の状態と再検証
 
-約束の内側にあるが今日は塞がっていないもの。**行番号ではなく台帳の節名**で引く。
+2026-09-22 時点の実装と確認範囲。完了済みの項目を未実装リストへ戻さず、
+以前のレビュー指摘は現在の release 構成で再現を判定する。
+旧表と途中の検証記録は [履歴](history/v0_delivery_2026-09.md) に残した。
 
-| 穴 | 記録している節 |
+### 4.1 解消・確認したもの
+
+| 項目 | 現在の状態と根拠 |
 |---|---|
-| `graph.instance.owner` の authoring object id — **解消**。scene 保存時に ID と次の採番値を永続化し、削除・再読込後も別個体へ付け替わらない | `sceneformat` / `AuthoringSceneDocument` の `[persistent-identity]` 回帰テスト |
-| 加速構造 row transform の identity 比較が ±0 を別物とする(`accelerationstructure.cpp`) | 「未了項目と再開順」 |
-| `frameIndex() == 0` の間は animation frame を公開できない(`setTime` だけで駆動する headless 呼び手) | 「未了項目と再開順」現況 |
-| `SceneLoader::load` を 2 回呼ぶと hang | `### AG-1b:` |
-| 放棄した scene transaction の teardown で hang | `### WP380e:` / 「未了項目と再開順」 |
-| `looks_mutating` gate | `### WP386: RT3-2` |
-| `PELICAN_WITH_RPC=OFF` build で落ちる test(`raytracing_rt3_1_production_test.cpp` の `#if`) | `### AG-1a:` / `### R-1:`(安い穴) |
-| Studio が raytracing_demo を開けない(`renderer.cpp`) | `### WP386: RT3-2` |
-| temp dir を共有する `renderconfigeditor` 6 件が並列で赤 — R-1 で per-process temp root(flake は再現せず。真の候補は `gpu_lease_run.cpp:94` が lease log を消さないこと: `%TEMP%` に 3358 個)| `### O-1:` / `### R-1:`(安い穴) |
-| export の `.tmp-<pid>` が残る — **R-1 で閉じた**(次の export が掃除)| `### P-2a-3:` / `### R-1:`(安い穴) |
-| `structfieldjson.hpp` の呼び手無し複製 — **R-1 で閉じた** | `### R-1:`(安い穴) |
-| shader source の改行と cache key | `### WP386: RT3-2` |
-| preset + graph root の `region_replacements` | `### P-2a-4a:` / `### P-2a-3:` |
-| `--start-time` の `llround` overflow(≈1e17 s。今日は起きない) | `### O-1:` |
-| `requires` を configure が読まず OFF build で DLL の link に失敗する — **解消**。configure と test sweep が同じ宣言表を使い、要求を満たさない sample target を作らない | `projectrequirements.def` / `pelican_project_requirements.cmake` |
-| source tree の `dist_debug/` を別 build が上書きする — **解消**。実行ファイルは `<build>/dist/<config>/`、配布物は `cmake --install --component Runtime` でまとめる | `pelican_runtime_layout.cmake` / README |
-| `pelican_studio` の終了時クラッシュ — **終了時に届く RPC 通知の経路を修正**。Windows で保存・project 切替後のアクセス違反を再現し、viewport 破棄前の通知切断で正常終了を確認。scenario runner も異常終了を失敗として扱う | `EmbeddedViewport::~EmbeddedViewport` / `[shutdown]` 回帰テスト |
-| `test/gpu_lease_run.cpp:94` が GPU lease の log を消さず `%TEMP%` に `pelican_gpu_lease_v1.<pid>.log` が数千個積もる(R-1 の temp dir flake の真の候補)| `### R-1:` の完了記録 |
-| N-3 のパンは scroll bar 経由なので、**描画が view に収まっている間は中ボタンドラッグが何も動かさない**(使い勝手の穴)| `### Q-1b:` の着地前の実測(2026-09-17)。**N-4 `af6e335f` で解消**(view が余白を持ち `centerOn` で動く)|
-| `studio_scenario_graph_edit_roundtrip` が赤(帯の editor が ~500 ms で閉じる)| 根本は N-2 `02a3d285` の `FocusOut` 規則。この機械では導入 commit `06829720` から一度も緑でなかった(Q-1 の記録は別 tree)。`83645084` の全数 1947 はこのシナリオを含まない。**Q-3 `9be4113f` で修正**(環境依存の timing ではなく実欠陥) |
+| `graph.instance.owner` の ID | scene 保存時に `authoring_object_id` と採番上限を永続化。先行 object の削除・順序変更後の保存/再読込でも owner が別個体へ変わらない。`352eea58`、`sceneformat_test` の `[persistent-identity]` と prefab 回帰 |
+| Graph Canvas の基本 Undo/Redo | graph 専用の履歴を CAS で適用し、外部変更後は破棄する。ノード・接続と配置の掃除を同じ transaction に含めて復元する。`df5fb880`、Studio の `[graph-history]` と編集 op の `[graph-undo]` 回帰。scene と跨る複合 Undo は §3 の範囲外 |
+| 未保存 scene の close/project 切替 | Save / Discard / Cancel を経由し、保存失敗時は切り替えない。`35c82db6`、model/widget 回帰と実 Studio 操作 |
+| Studio の終了 crash | Windows の保存・project 切替後のアクセス違反を再現し、viewport 破棄前に通知を切断して修正。`b14ba957`、`[shutdown]` 回帰。scenario も異常終了・強制終了を失敗とする |
+| configure の `requires` 無視 | configure と test sweep が同じ `projectrequirements.def` を参照し、OFF build で非対応の sample DLL target を作らない。`f9b4c221` |
+| 複数 build による配布物の上書き | runtime は `<build>/dist/<config>/`、配布物は `cmake --install --component Runtime` で集約する。`f9b4c221`。現行 Windows の Release build と絶対パスの prefix への Runtime install は成功。配布物の確認範囲は §6 |
+| Studio が `raytracing_demo` を開けないという旧指摘 | 現行 Windows の Runtime stage で起動、`scene_tree` / `get_frame_plan`、capture、別projectへの切替と戻りによる再読込、正常終了を確認。RT の二球の画像も確認した。他の OS / GPU の保証ではない |
+| 出荷 sample の Studio 起動 | `example` / `raytracing_demo` / `sprite_demo` / `animgraph_demo` / `posegraph_demo` / `vrm_xr_demo`を現行Windows Runtime stageで起動・capture・別projectを介した再読込・正常終了まで確認。機能全組合せやGPU全数とは区別する |
+| 新規 project からの編集・保存 | CLI init → Studio で位置編集 → FileSaveScene → 完全終了 → Studio 再起動を確認。authoring ID が維持され、`get_components` の authoring/runtime 両方で保存位置が一致し、capture・正常終了まで通過 |
+| 同一 logical frame の再描画 | 通常動作中の Studio で `render_frame` を重ねた際、GPU timing の sample ID が重複して fatal になる不具合を修正。同じ logical frame の同じ範囲を再記録しない。全 GPU gate の結果は §6 で別に扱う |
+| Release の runtime 診断 | file のみだったログ出力を file + stderr に戻し、Studio の Engine Log とテストの捕捉 stderr へ届くよう修正。JSON-RPC の stdout は維持 |
+| 既に閉じた旧指摘 | export の `.tmp-<pid>` 掃除と `structfieldjson.hpp` 複製は R-1、canvas の余白/pan は N-4、inline editor の意図しない FocusOut は Q-3 で解消。着地記録は §5 / 実装台帳 |
+
+### 4.2 現行構成で再検証するもの
+
+以下は日付付き台帳から引き継いだ確認対象であり、この一覧だけで現 HEAD の再現済み不具合とはしない。
+対象の操作・構成で確認し、再現時は blocker / v1 送りの判断を残す。全履歴の再試験は要求しない。
+
+| 対象 | 元の記録・確認する境界 |
+|---|---|
+| SceneLoader の二重 load / 放棄 transaction の teardown | `AG-1b` / `WP380e`。同 process の load と終了時の寿命 |
+| animation frame の公開 | `frameIndex() == 0` の `setTime` 呼び手、pose 側 snapshot、component_clip / component_graph の status。描画側の値だけで完了としない |
+| RPC OFF と mutation 判定 | `AG-1a` / `R-1` の `raytracing_rt3_1_production_test`、`WP386` の `looks_mutating` gate |
+| AS / shader の同一性 | `WP386` の signed-zero transform identity、shader source 改行と cache key |
+| graph root と preset の組合せ | `P-2a-4a` / `P-2a-3` の `region_replacements`、Frame Plan fixture と現在の生成結果 |
+| export / 一時ファイル | per-process temp root 修正後の並列 `renderconfigeditor`、GPU lease log の残留。古い `%TEMP%` 件数を現在の原因の証拠にしない |
+| Debug 専用 WSI 故障注入 | `wsi_fault_window_player` は Release で注入 hook がなく明示 skip。専用 player の validation on/off 対照とは別の確認範囲であり、今回は Debug 故障注入を未検証 |
+| Debug の production PDB 配線 | `crash_symbol_production_wiring` は実際の Debug Studio が残した symbol archive を読むため Debug 構成だけで登録する。Release では対象外。fixture による archive 契約テストの成功を、実 Debug build の配線確認の代わりにしない |
+| オフライン時刻の上限 | `O-1` の `--start-time` / `llround` 境界。入力範囲の拒否と通常 replay の区別 |
+
+最終 revision の GPU / Studio gate と配布物の結果はrelease完了時に §6 へ記録する。部分確認や過去の全数成功で代用しない。
 
 ## 5. v0 で入ったもの
 
@@ -311,12 +325,53 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 | Q-2 Studio の応答性(idle polling / parse 1 回 / canvas cache) | `cb76c164` |
 | Q-3 帯の inline editor の focus 規則(窓の瞬きで閉じない) | `9be4113f` |
 | Q-4 project open の固まり(embed の待ち方)/ Frame Plan fill / Frame Plan editor 規則 | `0547c0ac` |
+| scene owner ID の永続化 | `352eea58` |
+| 未保存 scene の終了・project 切替ガード | `35c82db6` |
+| Graph Canvas の基本 Undo/Redo と配置の同時復元 | `df5fb880` |
+| Studio 終了通知の遮断と scenario 異常終了判定 | `b14ba957` |
+| build ごとの runtime 配置・Runtime install・構成 gate 整理 | `f9b4c221` |
+| Graph Canvas の描画・配置組み立ての責務分離 | `6fd3e1f6` |
+| ビルド機能台帳と実装履歴の分離 | `249da0e4` |
+| Release の診断ログと PowerShell runner | `2d4f747d` |
+| 同一 logical frame の再描画時の GPU timing 重複防止 | `48144f66` |
+| Studio scenario の必須化・GPU 分類・構成別 gate | `dd26441b` |
+| 描画 fixture の終了手順と固定 cache hash 検査の整理 | `86d521a2` |
 
-## 6. v0.1.0 tag の手順(2026-09-17: engine 側の全数 1947 / 1947 緑 @ `83645084`。tag は Studio 側(N 系 / AG-3b)が入り利用者が v0 を閉じるまで打たない)
+## 6. v0.1.0 tag の手順
 
-1. 全数(GPU 込み)を **1 回**通す。
-2. `docs/v0_freeze.md` と索引の変更を commit する。
-3. `git tag -a v0.1.0 -m "pelican v0 (format 0.1.0)"`。
+2026-09-17 の engine 全数 1947 / 1947（`83645084`）は履歴である。
+その構成には現在の全 Studio scenario が含まれず、現行 release の gate 通過とは扱わない。
+tag は利用者が v0 を閉じる判断をした時点で付ける。
 
-tag は **release marker** であって、format 互換の正本は `src/project/projectformat.hpp` の
-`current_engine_version`(= `"0.1.0"`)。tag 名はこの定数に合わせる。
+2026-09-22 のローカル検証は Windows / MSVC、Qt 6.10.3、Python 3.12、Vulkan SDK 1.4.x の
+`build-v0` / Release で実施した。Studio、Python tests、runtime shader compiler は ON。
+CPU / GPU / Studio CPU gate と配布 stage の確認は、2026-09-23 に `7652fb09` の Release build と、
+そこから作った Runtime install(`build-v0/stage`)で行った。以後の revision で tag を付けるときは、
+その revision で同じ確認をやり直す。
+
+| 確認範囲 | 結果と制約 |
+|---|---|
+| Release build / Runtime install | 成功。install prefix は絶対パスを使用 |
+| CPU gate | 2026-09-23、`7652fb09`。1,790 件中 1,789 PASS、directory symlink 権限による allowlisted skip 1 件、失敗 0。`build-v0/test_artifacts/v0-cpu-0923/` の CTest と exact SKIP policy が根拠 |
+| 配布 stage の出荷 sample | 2026-09-23、`7652fb09`。6 / 6 成功。起動・capture → 別 project へ切替 → 元の project を再読込・capture → 正常終了を確認。同じ project の open が no-op になる経路ではない。`scratch/v0-samples-0923.log` と `build-v0/test_artifacts/staged-samples/report.json` |
+| 配布 stage の新規 project | 2026-09-23、`7652fb09`。CLI init → 位置編集 → 保存 → 完全終了 → Studio 再起動で authoring ID と保存値の持続、capture、正常終了を確認。`scratch/v0-new-project-0923.log` |
+| 全 GPU gate | 2026-09-23、`7652fb09`。274 件中 273 PASS、Debug 専用 WSI の allowlisted skip 1 件、失敗 0。実窓 Studio scenario 10 件はすべて観測・通過し、exact SKIP policy も PASS。`build-v0/test_artifacts/v0-gpu-0923/` が根拠 |
+| Studio CPU gate | 2026-09-23、`7652fb09`。compiler ON なので空の allowlist で実行し、263 件中 263 PASS、skip 0、exact SKIP policy PASS。`build-v0/test_artifacts/v0-studio-0923/` が根拠 |
+| Debug 専用の確認 | WSI 故障注入と production PDB 配線は未検証。Release の skip / 対象外を成功数へ含めない |
+
+GPU gate の経緯: 09-22 初回の失敗 4 件は、Studio への fatal ログ通知、WP366/WP384 の frame publication
+fixture 終了、`physics_trigger_behavior_e2e`、`behavior_project_e2e`(初回ログは `v0-gpu-final/`)。
+修正後の再実行では `studio_scenario_graph_observe_roundtrip` が 1 件失敗した(`v0-gpu-verified/`)。
+Inspector から graph を装着する編集が、受付後の viewport resize で `gate_closed` として捨てられていた。
+resize が render pipeline を再 lowering して reload 状態の `details.generation` を更新し、それが editor の
+遷移 epoch の hash に入っていたためである。`7652fb09` で遷移 epoch を scene、watcher、各 participant の
+reload 結果だけから作るよう修正し、上の最終 gate で確認した。
+
+1. 対象 revision と構成を固定する。Studio ON、Python 3.11 以上と `PELICAN_PYTHON_TESTS=ON`、runtime shader compiler ON を使う。必要な機能の基準値は [ビルド機能台帳](build_features.md)、実行コマンドは [CI 運用](ci.md) を参照する。
+2. 影響範囲の CPU 回帰と最終 GPU gate を通し、Studio CPU gate と実窓 scenario が未登録・skip になっていないことを確認する。`run_gpu_gate.py --engine-only` は限定検証用であり release 判定には使わない。古い件数を成功条件に固定しない。
+3. Runtime install で作った配布物から、新規 project → 編集 → 保存 → 再起動の経路と出荷 sample を確認する。v1 計画の「作る / 学ぶ / 出力する / 拡張して持ち出す」の 4 シナリオについて、確認した経路と残る制限を残す。
+4. §4 の再検証結果と既知の制限、利用した revision・構成・実行範囲を記録し、文書・索引を commit する。
+5. 利用者の release 判断後に `git tag -a v0.1.0 -m "pelican v0 (format 0.1.0)"` を実行する。
+
+tag は **release marker** であり、format 互換の正本は `src/project/projectformat.hpp` の
+`current_engine_version`（`"0.1.0"`）。tag 名はこの定数に合わせる。

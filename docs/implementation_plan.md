@@ -1,6 +1,6 @@
 # 実装指示書(コーディングエージェント向け)
 
-> **再開入口 (2026-09-06):** 最初に [v1 の現況・残件・開発運用](v1_development_plan.md) を読み、対象WPの仕様と本書末尾「未了項目と再開順」の現況を確認する。RT・Studio基盤は `96d9cb7e` に統合し、その後の追加は現況へ記録する。旧履歴の未commit・再開順を現在の状態として扱わない。v1 は RT 機能を十分に完成させ、最新の graphics pipeline をノードで操作・観測・学習できるものとし、RT3〜RT7 を小さなゲームの最小要件だけで削らない。
+> **再開入口 (2026-09-22):** 最初に [v0 の凍結・再検証一覧](v0_freeze.md) と [v1 の現況・残件・開発運用](v1_development_plan.md) を読み、対象WPの仕様だけ確認する。本書末尾「未了項目と再開順」は日付付きの履歴を含み、最新の未完了リストではない。RT・Studio基盤は `96d9cb7e` に統合し、その後の追加は現況へ記録する。旧履歴の未commit・再開順を現在の状態として扱わない。v1 は RT 機能を十分に完成させ、最新の graphics pipeline をノードで操作・観測・学習できるものとし、RT3〜RT7 を小さなゲームの最小要件だけで削らない。
 
 > 本書はWP仕様・共通規則と、その変更・検証履歴を扱う。以前に移動した完了WPは [implementation_archive.md](implementation_archive.md) を参照。どちらの履歴も新たな作業指示ではない。現行の対象が必要とする節だけ読み、全履歴を再審議しない。
 
@@ -23421,7 +23421,7 @@ pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1
 
 #### 第 2 巡が確認した事実(v2 の訂正)
 
-- `edit_graph_instances` の `queueRootEdit` は非同期で、同一 frame の 2 本目は commit 時 CAS で `stale_source_digest`([renderconfigeditor.cpp:2252](../src/devstudio/view/renderconfigeditor.cpp#L2252))→ 1 操作は 1 op 列で原子的に送る必要がある
+- `edit_graph_instances` の `queueRootEdit` は非同期で、同一 frame の 2 本目は commit 時 CAS で `stale_source_digest`([renderconfigeditor.cpp](../src/core/communication/renderconfigeditor.cpp))→ 1 操作は 1 op 列で原子的に送る必要がある
 - edge と `parameters` の二重指定は拒否([graphcomposition.cpp:48](../src/project/graphcomposition.cpp#L48))、default の無い入力は `parameters` を消すと外せない(:54)。Studio が作る instance は全入力に `parameters` を書く([graphattachmentmodel.cpp:164](../src/devstudio/model/graphattachmentmodel.cpp#L164))
 - journal の undo stack は actor 単位で、record は `SceneRevision` しか持たない([editorjournal.cpp:4762](../src/core/communication/editorjournal.cpp#L4762))。render config の commit は非同期で失敗しうる
 - 評価値は `evaluateInternal` のローカルで、どこにも残らない([valuegraph.cpp:439](../src/core/userpublic/valuegraph.cpp#L439))。RPC からの再評価は時計を進め event を二重消費する
@@ -24351,6 +24351,8 @@ engine 側の起動短縮 / Studio 起動の並列化 / 別 thread の RPC。
 transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復活。
 
 ### 未了項目と再開順
+
+> この節は当時の実装・検証・再開順の記録を保存している。現在の残件は [v0 凍結一覧 §4](v0_freeze.md#4-v0-の状態と再検証) と [v1 計画](v1_development_plan.md) を参照し、以下の「未了」「次は」をそのまま作業指示にしない。
 
 #### 現況 (2026-09-12、履歴より優先)
 

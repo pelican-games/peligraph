@@ -534,7 +534,7 @@ flat画面では`render()`がactive Cameraを1-view providerとして渡しま�
 
 ### 編集セッションの生成点も1個
 
-編集面の生成は [`makeEditorRuntimeService()`](../../src/core/communication/editorruntimefactory.hpp#L120) だけです。ヘッダのコメントが規範で、要点は次の通りです。
+編集面の生成は [`makeEditorRuntimeService()`](../../src/core/communication/editorruntimefactory.hpp#L132) だけです。ヘッダのコメントが規範で、要点は次の通りです。
 
 - RPC endpointか、interactiveなImGui runtimeの**どちらか一方**が使う、唯一のproduction composition。
 - 決定的ドライバ（headless固定フレームやgolden test）はinteractive runtimeを作らないため、**編集面はそもそも存在しません**。

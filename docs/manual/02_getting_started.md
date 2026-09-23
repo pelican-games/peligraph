@@ -55,8 +55,11 @@ cmake . -B build -DSKIP_DEVSTUDIO=ON
 テストを有効にした場合、`PELICAN_PYTHON_TESTS`は次の三値です。
 
 - `OFF`（既定）: Python製テスト用の探索をせず、C++/CMakeテストだけを登録
-- `AUTO`: Python 3があればPython製gateも登録し、なければC++/CMakeテストだけを登録
-- `ON`: Python 3とPython製gateを必須化（CIの完全テスト構成）
+- `AUTO`: Python 3.11以上があればPython製gateも登録し、なければC++/CMakeテストだけを登録
+- `ON`: Python 3.11以上とPython製gateを必須化（CIの完全テスト構成）
+
+Studioの実窓シナリオもこの設定を使います。完全なGPU/release gateではStudioを有効にし、
+`PELICAN_PYTHON_TESTS=ON`を指定します。
 
 この設定は依存ライブラリの生成処理とは独立です。OpenXR-SDK-Sourceのdispatch header生成と
 experimental SPIR-V linkerはPythonを必要とする場合があります。Pythonなしでconfigureする場合は
@@ -80,9 +83,10 @@ Qt が選んだ runtime/plugin を配置し、engine/Studio のリソースは�
 ```sh
 cmake -S . -B build-release -DBUILD_TESTING=OFF -DCMAKE_PREFIX_PATH=C:/Qt/6.10.3/msvc2022_64
 cmake --build build-release --config Release --target pelican_runtime
-cmake --install build-release --config Release --component Runtime --prefix build-release/package
+cmake --install build-release --config Release --component Runtime --prefix "$PWD/build-release/package"
 ```
 
+Qt の配布処理は絶対パスを要求するため、上のように `$PWD` を含めて指定します。
 結果は `build-release/package/bin/` です。プロジェクトとそのアセットは別途用意し、
 `--project` で指定します。ソース shader を使う v0 プロジェクトは runtime shader compiler を
 ON のまま配布します。OFF は必要な shader variant を全て事前生成したプロジェクト用です。
@@ -98,7 +102,7 @@ ON のまま配布します。OFF は必要な shader variant を全て事前生
 | `PELICAN_WITH_VAT` | `pelican.vat`(GLB)再生 |
 | `PELICAN_WITH_EXR` | EXR 読み込み |
 | `PELICAN_WITH_AUDIO` | WAV SE 再生 |
-| `PELICAN_WITH_ANIMATION` | スケルタルアニメーションの評価器と `pelican.pose` グラフ module(✅AG-1a。[pelican_feature_registry.cmake:146](../../cmake/pelican_feature_registry.cmake#L146)、`SMOKE_ID animation`) |
+| `PELICAN_WITH_ANIMATION` | スケルタルアニメーションの評価器と `pelican.pose` グラフ module(✅AG-1a。[pelican_feature_registry.cmake:146](../../cmake/pelican_feature_registry.cmake#L149)、`SMOKE_ID animation`) |
 | `PELICAN_WITH_IMGUI` | ImGui 開発者 UI(F1 トグル・Plan Viewer)。配布では dist-config が常時 OFF([第10章](10_tools.md)) |
 | `PELICAN_WITH_OPENXR` | OpenXR(PCVR)ランタイム。開発既定 ON・**配布は `dist-config --with openxr` を指定した時だけ ON** |
 | `PELICAN_WITH_RENDERDOC` | 注入済みRenderDocの受動検出とF11/RPC capture。binary/import libraryはリンクせず、配布では常にOFF |
@@ -368,7 +372,7 @@ ctest --test-dir ./build -C Debug --output-on-failure
 
 - テストは Catch2 v3 の単体テストと、実際に `pelican_player` / `pelican_cli` を子プロセス起動する CMake / PowerShell スクリプト駆動の結合テスト(`test/run_*.cmake` / `test/run_*.ps1`)の 2 種類です。
 - **GPU 必須のテストは、Vulkan デバイスの列挙に失敗した環境では `SKIP()`** されます(テスト規約)。
-- 開発全体の完了条件は常に「ビルド成功 + 全テストグリーン + `git diff --check` クリーン」です([../implementation_plan.md](../implementation_plan.md) §0)。
+- 変更時は必要なbuildと影響範囲のテスト、`git diff --check`、文書参照を確認します。全数を毎回繰り返す運用ではありません([../implementation_plan.md](../implementation_plan.md) §0)。releaseでは[CI運用](../ci.md)のGPU/Studio gateと[v0凍結一覧](../v0_freeze.md)の出荷確認を使います。
 
 ## 2.7 Pelican Studio を起動する
 

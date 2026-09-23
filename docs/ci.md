@@ -22,6 +22,33 @@ feature OFF / build-unit / project-code smoke と clean-clone gate は、毎 pus
 Vulkan を保証した runner で golden、validation layer、player を fail-on-no-GPU で実行する責務は
 将来の CI2 に置く。CI0 の runner に Vulkan device があることは期待しない。
 
+## 2026-09-22 のローカル Release 検証
+
+`build-v0` は Windows / MSVC、Qt 6.10.3、Python 3.12、Vulkan SDK 1.4.x、Studio ON、
+`PELICAN_PYTHON_TESTS=ON`、runtime shader compiler ON の Release 構成。
+Release build と絶対パスの prefix への Runtime install は成功した。
+
+| gate / 確認 | 結果 |
+|---|---|
+| CPU gate(2026-09-23、`7652fb09`) | 1,790 件中 1,789 PASS、allowlisted skip 1 件、失敗 0。skip は directory symlink 作成権限が必要な `PathResolver rejects symlink escapes after canonicalization`。`v0-cpu-0923/` の exact SKIP policy も PASS |
+| 全 GPU gate(2026-09-23、`7652fb09`) | 274 件中 273 PASS、allowlisted skip 1 件(Debug 専用の `wsi_fault_window_player`)、失敗 0。実窓 Studio scenario 10 件はすべて観測・通過。exact SKIP policy PASS。artifact は `v0-gpu-0923/` |
+| Studio CPU gate(2026-09-23、`7652fb09`) | compiler ON の release 構成なので空の allowlist で実行。263 件中 263 PASS、skip 0、exact SKIP policy PASS。artifact は `v0-studio-0923/` |
+| 全 GPU gate の経緯 | 09-22 初回は 4 失敗(`v0-gpu-final/`)、修正後の再実行は `studio_scenario_graph_observe_roundtrip` の 1 失敗(`v0-gpu-verified/`)。後者は viewport の resize による render pipeline の再 lowering が editor の遷移 epoch を動かし、受付済みの編集を `gate_closed` で捨てていた。`7652fb09` で遷移 epoch を participant の reload 結果だけから作るよう修正 |
+| 配布 stage(2026-09-23、`7652fb09`) | Runtime install から出荷 sample 6 / 6 の起動、別 project 経由の再読込、capture、正常終了が成功。新規 project の位置編集・保存・完全終了・Studio 再起動でも authoring ID と保存値の持続を確認 |
+
+gate の artifact は `build-v0/test_artifacts/` 以下。配布物の操作ログと詳しい確認範囲は
+[v0 の検証記録](v0_freeze.md#6-v010-tag-の手順) を参照する。CPU / GPU / Studio CPU gate と配布 stage は
+`7652fb09` の Release build で通過した。以後の revision で tag を付けるときは、その revision でやり直す。
+
+Release では Debug 専用の `wsi_fault_window_player` を明示 skip とし、
+`crash_symbol_production_wiring` は Debug 構成だけを対象にする。今回は両者とも未検証。
+player の validation on/off 対照や fixture の symbol archive 契約テストは、
+Debug の故障注入・実 Studio の PDB 配線の確認とは分けて扱う。
+
+同じ logical frame を再描画したときの GPU timing sample ID 重複による fatal は修正済み。
+Release の runtime ログも file + stderr へ戻した。後者により Studio / テストへ診断が届くようになったため、
+過去の file のみの構成での成功件数を現行 gate の成功根拠にしない。
+
 ## ローカルで同じ gate を実行する
 
 Python 3.12 と Vulkan SDK 1.4.x を PATH / `VULKAN_SDK` から参照できる状態で実行する。
@@ -88,7 +115,9 @@ compiler OFF で動かせない WP344 planar prefilter / WP348 cube capture の2
 ### GPU gate(`run_gpu_gate.py`)
 
 CI2 は存在しないが、**gate 自体は名前の付いたコマンドとして用意してある**。Vulkan device の
-ある機械で次を実行する。CI2 が立つときはこれを呼ぶだけでよい。
+ある機械で次を実行する。完全な gate は Studio の実窓 scenario も対象とするため、
+Qt と Python 3.11 以上を用意し、`SKIP_DEVSTUDIO=OFF`、`PELICAN_PYTHON_TESTS=ON`、
+`PELICAN_RUNTIME_SHADER_COMPILER=ON` の build を使う。CI2 が立つときはこれを呼ぶだけでよい。
 
 ```powershell
 python -B test/ci/run_gpu_gate.py `
@@ -100,6 +129,18 @@ python -B test/ci/run_gpu_gate.py `
 CPU gate と同じ exact SKIP policy を `test/ci/gpu_skip_allowlist.txt` に対して適用する。
 判定ロジックは `test/ci/skip_policy.py` に両 gate 共通で置き、self-test は
 `test/ci/test_skip_policy.py`(`python -m unittest test_skip_policy`)。
+既定allowlistはWindowsかつStudio有効の構成に対応する。別のplatformやStudioを外す限定検証は
+対応するファイルを`--allowlist`で明示し、登録されないテスト名を自動で除外しない。
+
+`test/studio_scenarios/*.json` の全 scenario（現在10件）を正確な CTest 名で必須とし、
+未登録・未実行・skip も失敗にする。scenario の CTest 登録と起動は CMake が検出した
+Python を直接使い、`uv` の有無には依存しない。driver は step の成功に加え、
+Studio の exit 0 と強制終了されていないことを確認する。
+
+Studio を含めない限定確認には `--engine-only` を指定できる。この場合は
+`studio_scenario` ラベルを除外し、必須 scenario 検査を外す。**release gate の代用にはしない**。
+Studio の GPU 不要テストは上の `run_studio_gate.py` でも確認し、compiler ON の release
+構成には空の allowlist を渡す。
 
 `project_catalog_headless_smoke` の corpus は clone / worktree の外に置き、configure 時に
 `-DPELICAN_TEST_PROJECTS_DIR=<projects>` で指定する。未指定時は理由
@@ -112,16 +153,23 @@ GPU allowlist で許可する。entry を外したまま未指定 gate を走ら
 落ちたテストより見つけにくい。
 
 WP241 はこの4件を allowlist に加えず修正した。2026-08-01 の再実行は GPU 125/125、
-非許可 skip 0、`SKIP exact policy: PASS`。現在の allowlist entry は上記 project catalog の
-外部 corpus 未指定だけであり、WP241 で除いた例外 catch は戻していない。
+非許可 skip 0、`SKIP exact policy: PASS`。現在は外部corpus未指定のproject catalogに加え、
+Releaseで実行できないDebug専用WSI故障注入1件をallowlistに記録する。正確なテスト名は
+`wsi_fault_window_player`で、`test/ci/gpu_skip_allowlist.txt`が正本である。Releaseでは明示skipし、Debug故障注入の検証済みとはしない。
+専用の`vulkan_validation_runtime_player`が行うvalidation on/off対照とは別の境界である。
+WP241で除いた例外catchは戻していない。
+
+Releaseのruntimeログもファイルとstderrへ出力する。StudioのEngine Logやテストの捕捉stderrへ
+診断が届くため、ファイルだけを見ていない呼び手もエラーを検出できる。JSON-RPCのstdoutはログに使わない。
 
 GPU の無い機械で走らせると大半が skip して gate は落ちる。これは意図どおりで、
 上の「fail-on-no-GPU」の実体である。その場合は「no Vulkan device」の診断行が先頭に出る。
 
 Pythonはエンジン／ゲームの実行依存ではない。`BUILD_TESTING=OFF`、または
 `PELICAN_PYTHON_TESTS=OFF`（既定）では、Python製テスト用の探索を行わない。
-手元で任意登録する場合だけ`AUTO`、完全なgateを要求するCI0/clean-cloneは
-`PELICAN_PYTHON_TESTS=ON`を指定する。ただしOpenXR-SDK-Sourceのdispatch header生成は
+手元で任意登録する場合だけ`AUTO`、完全なgateを要求するCI0/clean-clone/releaseは
+`PELICAN_PYTHON_TESTS=ON`でPython 3.11以上を要求する。Studio E2Eの登録もこの条件を使う。
+ただしOpenXR-SDK-Sourceのdispatch header生成は
 このテスト設定と独立してPythonを必要とする場合がある。Pythonなしの構成では
 `PELICAN_WITH_OPENXR=OFF`と`PELICAN_WITH_SPIRV_LINK=OFF`も指定する。
 Python製CTestには`python`ラベルを付け、
@@ -176,7 +224,8 @@ configure/build/CTestログ、CTest JUnit、SKIP policy 結果、`LastTest.log`�
 
 - [`cmake/pelican_feature_registry.cmake`](../cmake/pelican_feature_registry.cmake) が生成する
   全 feature contrast。各行は registry の共通基準から対象だけを対照値へ動かし、
-  Jolt 等で連動する値も registry 宣言に限定する
+  Jolt 等で連動する値も registry 宣言に限定する。[ビルド機能台帳](build_features.md) が生成表で、
+  configure と契約テストはこの表を検証する。WP の巨大な実装履歴は読み込まない
 - `PELICAN_PROJECT=projects/example` の project-code build と、tracked fixture だけで作る
   一時 project の headless smoke
 

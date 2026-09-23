@@ -513,7 +513,9 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 
 | 文書 | 内容 |
 |---|---|
-| [implementation_plan.md](../implementation_plan.md) | WP 詳細・受け入れ基準・共通規則(§0)。110KB 超 — 分割は backlog 登録済み。**v0 の段(記号 ID)の完了記録もここが正**(§11.1 の v0 表は転記) |
+| [implementation_plan.md](../implementation_plan.md) | WP 詳細・受け入れ基準・共通規則(§0)と約2.2MBの履歴。対象WPだけを読む。現行の残件はv0/v1計画で確認する。**v0 の段(記号 ID)の完了記録もここが正**(§11.1 の v0 表は転記) |
+| [build_features.md](../build_features.md) | CMake registryから生成する機能フラグの基準・対照・連動表。configureと契約テストの参照先 |
+| [history/v0_delivery_2026-09.md](../history/v0_delivery_2026-09.md) | v1計画から分離した着地・途中判断・旧残件の履歴。現在の作業指示ではない |
 | [v1_development_plan.md](../v1_development_plan.md) | v1 の現況・残件・開発運用。v0 の段(AG / P / X / O / R / N)の**出所**であり、「v0 で凍結するもの / 広く約束しないもの」の 5 行表を持つ(その表を実名に展開したのが [v0_freeze.md](../v0_freeze.md)) |
 | [roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md) | 今後の候補 47 件・6 ティア + D-P / SA トラック(セッション引き継ぎ用。ウェーブ表は 2026-07-16 夜時点) |
 | [adding_features.md](../adding_features.md) | 機能追加レシピ集 |

@@ -1447,14 +1447,14 @@ frame/<logical_frame>/graph/<variant>/view/<view_index>/node/<ordinal>:<kind>:<n
 |---|---|
 | [`GpuTimingSubrange`](../../src/core/vkcore/rendertiming.hpp#L27) | `barriers` / `body` |
 | [`GpuTimingRangeIdentity`](../../src/core/vkcore/rendertiming.hpp#L34) | `logical_frame` + `graph_variant` + `view_index` |
-| [`GpuTimingSampleIdentity`](../../src/core/vkcore/rendertiming.hpp#L47) | 上記 + `node_ordinal` / `node_kind` / `node_name` / `subrange` |
-| [`GpuTimingViewRow`](../../src/core/vkcore/rendertiming.hpp#L73) / [`GpuTimingNodeRow`](../../src/core/vkcore/rendertiming.hpp#L83) | 集計出力の行 |
+| [`GpuTimingSampleIdentity`](../../src/core/vkcore/rendertiming.hpp#L49) | 上記 + `node_ordinal` / `node_kind` / `node_name` / `subrange` |
+| [`GpuTimingViewRow`](../../src/core/vkcore/rendertiming.hpp#L75) / [`GpuTimingNodeRow`](../../src/core/vkcore/rendertiming.hpp#L85) | 集計出力の行 |
 
 履歴容量は [`gpu_timing_history_capacity = 120`](../../src/core/vkcore/rendertiming.hpp#L18) です。
 
-[`makeGpuTimingSampleLabel()`](../../src/core/vkcore/rendertiming.hpp#L147) は `makeFrameGraphDebugLabel()` の結果へ `/barriers` または `/body` を足すだけです([`makeGpuTimingSampleLabel()`](../../src/core/vkcore/rendertiming.cpp#L146))。つまり **RenderDoc のラベルと GPU timing のサンプル名は同一命名規約** です。
+[`makeGpuTimingSampleLabel()`](../../src/core/vkcore/rendertiming.hpp#L149) は `makeFrameGraphDebugLabel()` の結果へ `/barriers` または `/body` を足すだけです([`makeGpuTimingSampleLabel()`](../../src/core/vkcore/rendertiming.cpp#L146))。つまり **RenderDoc のラベルと GPU timing のサンプル名は同一命名規約** です。
 
-帰属の規範は [`gpuTimingAttributionContractJson()`](../../src/core/vkcore/rendertiming.hpp#L148)(無効時は [`disabledGpuTimingStatusJson()`](../../src/core/vkcore/rendertiming.hpp#L149))が JSON として出します。`barriers` は「compile 済み incoming barrier」、`body` は「node 自身の image/resource transition と描画・dispatch」です。
+帰属の規範は [`gpuTimingAttributionContractJson()`](../../src/core/vkcore/rendertiming.hpp#L150)(無効時は [`disabledGpuTimingStatusJson()`](../../src/core/vkcore/rendertiming.hpp#L151))が JSON として出します。`barriers` は「compile 済み incoming barrier」、`body` は「node 自身の image/resource transition と描画・dispatch」です。
 
 fixture は [`test/fixtures/gpu_timing_attribution.json`](../../test/fixtures/gpu_timing_attribution.json)、テストは [`test/rendertiming_test.cpp`](../../test/rendertiming_test.cpp) と [`test/golden_timing_test.cpp`](../../test/golden_timing_test.cpp) です。
 
