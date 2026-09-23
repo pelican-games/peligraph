@@ -88,7 +88,7 @@ sequenceDiagram
 10. **`(void)GET_MODULE(Renderer)`**（[この1行](../../src/core/userpublic/pelican_core.cpp#L130)） — render graphの検証と公開を、scene loadのprepareが `ModelAssetContainer` を実体化してmodelをuploadするより**前**に済ませます（WP380a-fix。§3.8）。
 11. `ProjectBasicConfig.defaultSceneId()` のsceneを [`SceneLoadRoot::startup`](../../src/core/userpublic/pelican_core.cpp#L135) の `Borrowed` requestで即時ロード（§3.5 の 3）。`Borrowed` は scene load 要求の2種別のうち「いま commit 済みの projection をそのまま借りて読む」側で、新しい document を持ち込む `Owned`（import 経路）と対です（[`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L223)）。
 12. `ProjectMaterialAssetContainer` と `ModelAssetContainer` を明示的に生成（並列prepareのcommitを起動スレッドで実施）。
-13. [`watch::ReloadService.setup()`](../../src/core/watch/reloadservice.hpp#L179) でwatcherのlive inventoryを種付け。
+13. [`watch::ReloadService.setup()`](../../src/core/watch/reloadservice.hpp#L180) でwatcherのlive inventoryを種付け。
 14. `Loop::run()`へ入る。
 15. loop終了後、Vulkan deviceをidleまで待つ。
 16. [`internal::runTerminalShutdown(teardown)`](../../src/core/userpublic/pelican_core.cpp#L64) — `teardown.run()` でruntime資源を順序付き解放し、続けて `shutdownConfiguredGameLogic()`。
@@ -385,7 +385,7 @@ void updateFrameState() {
 - **位置が固定**: reload公開の後、`freeze_events` の直前。windowed / headless固定フレーム / RPC `step_frame` の全loop面で同じ位置です。
 - **未設置ならzero-state no-op**: hookが無い場合、moduleを生成せずmodule graphも変えません。
 
-実装者は現在 [`EditorJournal` の登録箇所](../../src/core/communication/editorjournal.cpp#L4209) の1箇所だけです。
+実装者は現在 [`EditorJournal` の登録箇所](../../src/core/communication/editorjournal.cpp#L4194) の1箇所だけです。
 
 > **設計決定:** 編集の公開点をフレーム境界の1箇所へ寄せることで、「エディタが動いていないビルド／セッションでは編集面が存在しない」状態を保っています。§2.4 のwindowed RPC dispatch（`updateFrameState()` の直後）と合わせて読むと、リクエスト受理→次フレーム冒頭で公開、という往復になります。
 
@@ -534,7 +534,7 @@ flat画面では`render()`がactive Cameraを1-view providerとして渡しま�
 
 ### 編集セッションの生成点も1個
 
-編集面の生成は [`makeEditorRuntimeService()`](../../src/core/communication/editorruntimefactory.hpp#L132) だけです。ヘッダのコメントが規範で、要点は次の通りです。
+編集面の生成は [`makeEditorRuntimeService()`](../../src/core/communication/editorruntimefactory.hpp#L144) だけです。ヘッダのコメントが規範で、要点は次の通りです。
 
 - RPC endpointか、interactiveなImGui runtimeの**どちらか一方**が使う、唯一のproduction composition。
 - 決定的ドライバ（headless固定フレームやgolden test）はinteractive runtimeを作らないため、**編集面はそもそも存在しません**。

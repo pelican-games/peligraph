@@ -872,7 +872,7 @@ struct ComponentCodec {
 
 `runtime_apply` と `runtime_project` がどの型を指すかは [`ComponentCodecRuntimeKind`](../../src/core/loader/componentcodec.hpp#L24) が決めます。ヘッダのコメントが規範です — transform は `TransformCodecTarget`、その他のECS codecはそのcomponent自身、camera/light は `CameraCodecData` / `LightCodecData`、collider は `ColliderComponent` です。
 
-この中でtransformだけが、componentを直接指さずに [`TransformCodecTarget`](../../src/core/loader/componentcodec.hpp#L69)（`world` / `local` / `parent_world` の三つのポインタ）を経由します。authoredなのは **local TRS** ですが、ランタイムで全員が読むのは world の `TransformComponent` で、`LocalTransformComponent` は親を持つobjectにしか付かない、という食い違いがあるためです（[`editorruntimefactory.cpp` 内](../../src/core/communication/editorruntimefactory.cpp#L905) の `tryComponent<LocalTransformComponent>` はrootではnullになります）。そのため `runtime_apply` は local へ書いたうえで world も自分で合成し直し（[`applyTransform()`](../../src/core/loader/componentcodec.cpp#L634)）、`runtime_project` は local があればそれを返し、無ければ `parent_world` を使って world から逆算します（[`projectTransform()`](../../src/core/loader/componentcodec.cpp#L649)）。`parent_world` は両方向の変換に必要な係数で、これが無いと親の下のobjectについてlocalとworldを行き来できません。
+この中でtransformだけが、componentを直接指さずに [`TransformCodecTarget`](../../src/core/loader/componentcodec.hpp#L69)（`world` / `local` / `parent_world` の三つのポインタ）を経由します。authoredなのは **local TRS** ですが、ランタイムで全員が読むのは world の `TransformComponent` で、`LocalTransformComponent` は親を持つobjectにしか付かない、という食い違いがあるためです（[`editorruntimefactory.cpp` 内](../../src/core/communication/editorruntimefactory.cpp#L900) の `tryComponent<LocalTransformComponent>` はrootではnullになります）。そのため `runtime_apply` は local へ書いたうえで world も自分で合成し直し（[`applyTransform()`](../../src/core/loader/componentcodec.cpp#L634)）、`runtime_project` は local があればそれを返し、無ければ `parent_world` を使って world から逆算します（[`projectTransform()`](../../src/core/loader/componentcodec.cpp#L649)）。`parent_world` は両方向の変換に必要な係数で、これが無いと親の下のobjectについてlocalとworldを行き来できません。
 
 登録テーブルは8行です（[`componentcodec.cpp` 内](../../src/core/loader/componentcodec.cpp#L1980)）。ただし**見えるのは常に8行とは限りません**（最後の行だけは後述のgate付きです）。
 
@@ -975,7 +975,7 @@ componentごとに §3.11 のcodec metadataが付くので、「宣言として�
 
 > **設計決定:** `removeObject()` は破棄ではなく [`AuthoringObjectClosure`](../../src/core/loader/authoringscenedocument.hpp#L63) を**返します**。ここでのclosureは「取り除いた宣言を元の場所へそのまま戻すための記録一式」という意味で、関数のクロージャでもグラフの閉包でもありません。中身は `authoring_object_id` / `scene_id` / `declaration_index` / `previous_object_id` / `next_object_id` / `authored_json` の六つで（[`AuthoringObjectClosure`](../../src/core/loader/authoringscenedocument.hpp#L63)）、これだけあれば **同じ `AuthoringObjectId` を、消したときと同じ宣言区間（前後の兄弟の間）へ、JSONを一字も落とさずに戻せます** — 「無損失」はこの意味です。ヘッダのコメント通り、object配列の変更をこれらの操作だけに限ることで、metadataのidentity列とauthored JSONの並びがずれないことを型で保証しています。
 
-> 🧩 **難所 — closureがidentityを運ぶ**([`restoreObject()`](../../src/core/loader/authoringscenedocument.cpp#L306) / journal側の [`finalizeJournal()`](../../src/core/communication/editorjournal.cpp#L3502))
+> 🧩 **難所 — closureがidentityを運ぶ**([`restoreObject()`](../../src/core/loader/authoringscenedocument.cpp#L306) / journal側の [`finalizeJournal()`](../../src/core/communication/editorjournal.cpp#L3489))
 >
 > **何をする所か**: commit済みのjournal recordに、spawnしたobjectのclosure(id + scene + 宣言index + 前後の兄弟id + authored JSON)を後から書き足し、再生時は同じidを同じ宣言区間へ戻します。
 >
@@ -990,7 +990,7 @@ componentごとに §3.11 のcodec metadataが付くので、「宣言として�
 > restoreObject: index = next ? *next : (previous ? *previous+1 : min(saved, size))
 > ```
 >
-> **手がかり**: `previous_object_id` / `next_object_id` が「宣言区間」を index ではなく **id** で表しているのが要点です。`Insert` と `Restore` が別の [`AuthoringStructuralChangeKind`](../../src/core/loader/authoringscenedocument.hpp#L72) なのも同じ理由で、ランタイム側のadapterはこの種別で「新規entityを作るのか、同じauthoring idへ紐づけ直すのか」を決めます。テストは [`WP161 behavior attachment sequence survives spawn undo redo`](../../test/editorjournal_test.cpp#L1418) と [`editorprojectiontransaction_test.cpp` 内](../../test/editorprojectiontransaction_test.cpp#L495)(destroy interval)。
+> **手がかり**: `previous_object_id` / `next_object_id` が「宣言区間」を index ではなく **id** で表しているのが要点です。`Insert` と `Restore` が別の [`AuthoringStructuralChangeKind`](../../src/core/loader/authoringscenedocument.hpp#L72) なのも同じ理由で、ランタイム側のadapterはこの種別で「新規entityを作るのか、同じauthoring idへ紐づけ直すのか」を決めます。テストは [`WP161 behavior attachment sequence survives spawn undo redo`](../../test/editorjournal_test.cpp#L1419) と [`editorprojectiontransaction_test.cpp` 内](../../test/editorprojectiontransaction_test.cpp#L495)(destroy interval)。
 >
 > **不変条件**: journalに載るspawnは必ずclosure付き(closureなしspawnは「新規採番」を意味する)。restoreは保存indexを盲信せず必ず前後idから引き直す。同一idの二重生存は禁止。
 

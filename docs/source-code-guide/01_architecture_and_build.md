@@ -157,7 +157,7 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 | [`imgui/`](../../src/core/imgui) | 開発者UI（ImGui runtime、frame plan viewer） | [`ImGuiSystem`](../../src/core/imgui/imguisystem.hpp#L22)、[`planviewer.hpp`](../../src/core/imgui/planviewer.hpp) |
 | [`openxr/`](../../src/core/openxr) | OpenXR discovery/session/action/composition/mirror（独立static lib） | [`OpenXr::SessionRuntime`](../../src/core/openxr/openxrsession.hpp#L135) |
 | [`ui/`](../../src/core/ui) | 2D UI（document/layout/atlas/bitmapfont/input routing） | [`ui::UiModule`](../../src/core/ui/module.hpp#L30) |
-| [`watch/`](../../src/core/watch) | FileWatcher、ContentDigest、reload gate/queue/transaction/service | [`watch::ReloadService`](../../src/core/watch/reloadservice.hpp#L175) |
+| [`watch/`](../../src/core/watch) | FileWatcher、ContentDigest、reload gate/queue/transaction/service | [`watch::ReloadService`](../../src/core/watch/reloadservice.hpp#L176) |
 | [`loader/`](../../src/core/loader) | 設定、path/埋め込み資源のruntime adapter、scene、画像 | [`ProjectBasicConfig`](../../src/core/loader/basicconfig.hpp#L70)、[`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)。純粋な解決規則は [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) |
 | [`ecs/`](../../src/core/ecs) | 内部ECSのファサード、Componentメタデータ、組み込みSystem | [`ECSCore`](../../src/core/ecs/core.hpp#L13)、[`ComponentInfoManager`](../../src/core/ecs/componentinfo.hpp#L60) |
 | [`userpublic/`](../../src/core/userpublic) | ゲームコード向け公開APIとECS実体テンプレート | [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L138)、[`GameObjects`](../../src/core/userpublic/gameobjects.hpp#L31) |

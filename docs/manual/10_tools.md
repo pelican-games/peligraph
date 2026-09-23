@@ -298,12 +298,12 @@ selection の硬いエラーは `error.data.code` でも判別できます。宣
 `import_scene_snapshot` の result に `committed` / `effect_errors`、`get_components` の各
 component に `resolution_error`。
 
-2026-09 の追加(AG-3a、`9862ebdd`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L2055)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L168))。読み取り専用で `edit_*` の CAS には乗らない。
+2026-09 の追加(AG-3a、`9862ebdd`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L2041)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L168))。読み取り専用で `edit_*` の CAS には乗らない。
 
 **`get_graph_values` と `get_graph_node_values` は問いが違います。**前者は `instance` 必須で、その
 **instance の入力 port だけ**を `{port, value, source, connected|parameter}` として返します(`source` は
 `connected` / `parameter` / `default` / `override`)。後者は**展開木のノードを全部**並べ、各ノードの出力値を
-`outputs` に入れます([実装](../../src/core/communication/renderconfigeditor.cpp#L1974))。両方とも
+`outputs` に入れます([実装](../../src/core/communication/renderconfigeditor.cpp#L1960))。両方とも
 **同じ publish snapshot を読むだけ**で再評価しません —— 再評価は graph の時計を進め event を二重に消費するためです。
 `source: "rendering"` は「これは描画側の評価が使った値だ」という明示で、animation phase は同じ文書を
 自分の state で評価するため、event や trigger で駆動される文書では両者が恒久的に違いうることを表します。

@@ -118,10 +118,10 @@ v3 は v2 の `ComponentLoaderInfo` を入れ子で再利用**しません**。h
 
 | 状況 | 編集エラー |
 |---|---|
-| そもそも Component 名を知らない | [`component_unknown@1`](../../src/core/communication/editorjournal.cpp#L216)（`ComponentUnknownError::payload()` をそのまま運ぶ） |
-| Component は存在するが、編集用の codec が無い | [`not_editable`](../../src/core/communication/editorjournal.cpp#L210)（`{object, slot}`） |
+| そもそも Component 名を知らない | [`component_unknown@1`](../../src/core/communication/editorjournal.cpp#L217)（`ComponentUnknownError::payload()` をそのまま運ぶ） |
+| Component は存在するが、編集用の codec が無い | [`not_editable`](../../src/core/communication/editorjournal.cpp#L211)（`{object, slot}`） |
 
-判定順が要点です。[`canonicalComponent()`](../../src/core/communication/editorjournal.cpp#L204) は codec が見つからないとき、まず `component_exists` コールバックで **ECS 側に登録があるか**を問い合わせ、あれば `not_editable`、無ければ `component_unknown@1` を出します。逆にすると「codec が無いだけの既知 Component」が「そんな Component は無い」と報告されます。
+判定順が要点です。[`canonicalComponent()`](../../src/core/communication/editorjournal.cpp#L205) は codec が見つからないとき、まず `component_exists` コールバックで **ECS 側に登録があるか**を問い合わせ、あれば `not_editable`、無ければ `component_unknown@1` を出します。逆にすると「codec が無いだけの既知 Component」が「そんな Component は無い」と報告されます。
 
 なお `ComponentUnknownError` を**握り潰す**正当な場所も1つあります。[`scene.cpp` の builtin ray-instance gate](../../src/core/loader/scene.cpp#L105) は「`pelican_ray_instance` を外部 owner が登録しているか」を名前解決の成否で判定するので、未登録は例外ではなく「外部 owner 不在」を意味します。
 

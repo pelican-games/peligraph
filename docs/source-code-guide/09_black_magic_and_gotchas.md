@@ -826,18 +826,26 @@ instances.publishModelInstance(std::move(staged_instance));
 
 ### 4. preview は lease(ticket)
 
-`open_preview` → `update_preview` → `commit_preview` / `abort_preview` の流れです(lease は「開いている間その対象の編集を 1 人が占有する権利」、ticket はその lease 1 件を指す識別子です)。関連するエラーコードは [`EditorEditErrorCode`](../../src/core/communication/editorjournal.hpp#L46) の `preview_lease_conflict` / `preview_lease_busy` / `not_lease_owner` / `ticket_not_found` / `undo_conflict` です。composition root 用の緊急口として `EditorCommandService::forceAbortPreview(reason)` があります。
+`open_preview` → `update_preview` → `commit_preview` / `abort_preview` の流れです(lease は「開いている間その対象の編集を 1 人が占有する権利」、ticket はその lease 1 件を指す識別子です)。関連するエラーコードは [`EditorEditErrorCode`](../../src/core/communication/editorjournal.hpp#L49) の `preview_lease_conflict` / `preview_lease_busy` / `not_lease_owner` / `ticket_not_found` / `undo_conflict` です。composition root 用の緊急口として `EditorCommandService::forceAbortPreview(reason)` があります。
 
 ### 5. 編集ゲートは 5 ビット。「受理時に開いていた」は実行してよい理由にならない
 
 [`EditorGateReason`](../../src/core/communication/editorjournal.hpp#L20) は `replay` / `golden` / `strict` / `reload_scene_transition` / `preview_lease_conflict` のビットフラグです。[`EditorGateObservation`](../../src/core/communication/editorjournal.hpp#L32) の `transition_epoch` のコメントが規範です。
 
-> Incremented by the composition root when a reload or scene transition
-> passes between acceptance and execution, even if the gate is open again.
+> A counter the composition root advances when it observes a reload or
+> scene transition (internal::EditorTransitionCounter), so an edit that
+> straddles one is rejected even if the gate is open again.
 
-behavior コールバック実行中 / DLL リロード中の追加ゲートは [`internal::applyBehaviorEditConcurrencyGate()`](../../src/core/communication/editorruntimefactory.hpp#L113) です。
+behavior コールバック実行中 / DLL リロード中の追加ゲートは [`internal::applyBehaviorEditConcurrencyGate()`](../../src/core/communication/editorruntimefactory.hpp#L115) です。
 
-その「遷移」を数えるのが [`internal::editorTransitionEpochFrom()`](../../src/core/communication/editorruntimefactory.hpp#L124) です。scene id、reload watcher の state と epoch、各 runtime participant の reload 結果(requested / attempted / applied / failed / error)だけを hash し、participant の `details` は入れません。`details` は participant の自己記述で、たとえば window を resize すると render pipeline の再 lowering が `details.generation` を進めます。これを hash に入れていた版では、受付と frame 境界の間に viewport の大きさが変わるだけで編集が `gate_closed` で捨てられ、v0 の GPU gate で `studio_scenario_graph_observe_roundtrip` が負荷次第で落ちていました(`7652fb09` で修正)。**participant に状態を足すときは、遷移なら reload 結果の側、観測値なら `details` の側に置いてください。**
+その「遷移」は 2 段で数えます。
+
+- reload service の [`transitionFacts()`](../../src/core/watch/reloadservice.hpp#L193) が、watcher の state と epoch、各 runtime participant の reload 結果(requested / attempted / applied / failed / error)を型付きの [`ReloadTransitionFacts`](../../src/core/watch/reloadtransition.hpp#L17) で返します。participant の `details` は**型として入る場所がありません**。
+- editor runtime が 1 つだけ持つ [`internal::EditorTransitionCounter`](../../src/core/communication/editorruntimefactory.hpp#L127) が、現在の scene id とその facts を前回と比べ、違えば数を 1 進めます。これが `transition_epoch` です。hash ではないので衝突せず、元の値に戻る遷移(A→B→A)も遷移として数えます。
+
+受理した編集を commit してよいかの判定は、journal・render config・procedural asset の 3 つの editor が同じ [`EditorGateEpoch`](../../src/core/communication/editorgate.hpp#L18) で行います。gate の観測(開閉・理由・`transition_epoch`)が前回と違えば epoch を進め、受理時の epoch と commit 時の epoch が違えば `gate_closed` です。閉じてから開き直した gate も変化として数えます。
+
+`details` は participant の自己記述で、たとえば window を resize すると render pipeline の再 lowering が `details.generation` を進めます。以前は reload 状態の JSON 全体を hash していたため、受付と frame 境界の間に viewport の大きさが変わるだけで編集が `gate_closed` で捨てられ、v0 の GPU gate で `studio_scenario_graph_observe_roundtrip` が負荷次第で落ちていました(`7652fb09` で応急修正、上の形への一本化で構造ごと解消)。**participant に状態を足すときは、遷移なら `ReloadTransitionFacts` の側、観測値なら `details` の側に置いてください。**
 
 ### 6. 編集コミットはフレーム境界に 1 点だけ
 
@@ -1535,7 +1543,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 ### 9.23.9 editor journal
 
-#### [OriginTransitionMap の journal 側](../../src/core/communication/editorjournal.cpp#L1557) — forward / inverse の向き
+#### [OriginTransitionMap の journal 側](../../src/core/communication/editorjournal.cpp#L1558) — forward / inverse の向き
 
 **分からなくなること**: 同じ表を「展開」と「復元」の両方で使うとき、方向がどこで反転するのか。
 
@@ -1545,31 +1553,31 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: どれが主キーで、どれが照合用なのか。
 
-**答え**: **`attachment_handle` が主キー相当**(runtime arena が採番する不透明な実体ハンドル。0 は無効)、`attachment_seq` は `(object_index<<32)|component_index` の**宣言位置由来の順序キー**、`attachment_identity`(witness)は object / component_index / behavior type / origin から作る**内容照合用の指紋**で、[resolver が返した runtime identity と食い違えば](../../src/core/communication/editorjournal.cpp#L1824) `journal_integrity_error` です。→ §9.22「identity / canonical key / lease の三層」。
+**答え**: **`attachment_handle` が主キー相当**(runtime arena が採番する不透明な実体ハンドル。0 は無効)、`attachment_seq` は `(object_index<<32)|component_index` の**宣言位置由来の順序キー**、`attachment_identity`(witness)は object / component_index / behavior type / origin から作る**内容照合用の指紋**で、[resolver が返した runtime identity と食い違えば](../../src/core/communication/editorjournal.cpp#L1825) `journal_integrity_error` です。→ §9.22「identity / canonical key / lease の三層」。
 
 #### [`sceneBehaviorAttachmentSeq()`](../../src/core/gamelogic/behaviorarena.cpp#L72) — 存在する関数
 
 **分からなくなること**: journal 側から呼ばれているこの名前が、どこで定義されているのか。
 
-**答え**: **behavior arena 側に実在します**(宣言は [`behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L167))。`sceneBehaviorAttachmentSeq(object_index, component_index)` は両者が u32 に収まるか検査して上位 / 下位 32bit に詰めた 64bit を返すだけの関数で、journal は [1950 行付近](../../src/core/communication/editorjournal.cpp#L1815)でこれを呼びます。
+**答え**: **behavior arena 側に実在します**(宣言は [`behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L167))。`sceneBehaviorAttachmentSeq(object_index, component_index)` は両者が u32 に収まるか検査して上位 / 下位 32bit に詰めた 64bit を返すだけの関数で、journal は [1950 行付近](../../src/core/communication/editorjournal.cpp#L1816)でこれを呼びます。
 
-#### [`structuralDomainsOverlap()`](../../src/core/communication/editorjournal.cpp#L2623) — kind が競合検出でどう使われるか
+#### [`structuralDomainsOverlap()`](../../src/core/communication/editorjournal.cpp#L2624) — kind が競合検出でどう使われるか
 
 **分からなくなること**: `kind` 文字列が判定にどう効くのか。
 
 **答え**: まず **object 集合・同一 scene 内の name_reservation・declaration_index の交差**で判定し、その後の追加規則として **`component_slot` と `value_field` の組み合わせに限り「同一 object かつ同一 slot」を衝突**とみなします(スロット追加 / 削除と同スロットの値編集を競合扱いにする)。他の kind(prefab_parameter / behavior_params / behavior_attachment / parent_edge / object_existence / object_subtree)は自分が載せた object / index / name フィールド経由で交差判定されます。
 
-#### [パス重複と domain 重複](../../src/core/communication/editorjournal.cpp#L2552) — 両方が要る理由
+#### [パス重複と domain 重複](../../src/core/communication/editorjournal.cpp#L2553) — 両方が要る理由
 
 **分からなくなること**: JSON パスが重ならなければ安全ではないのか。
 
-**答え**: [第7章「曖昧な重なり判定」](07_tools_rpc_tests.md)が本体です。1 点だけ補うと、`stablePathsOverlap` は `/authoring_objects/7` と `/authoring_objects/7/...` のような**祖先・子孫関係しか見ない**ので、パス表現が異なるまま同一意味領域に触れる編集(名前予約・declaration_index・同一 slot への異種 op)を取りこぼします。だから [`recordOverlaps()`](../../src/core/communication/editorjournal.cpp#L2717) が両者を OR で結びます。
+**答え**: [第7章「曖昧な重なり判定」](07_tools_rpc_tests.md)が本体です。1 点だけ補うと、`stablePathsOverlap` は `/authoring_objects/7` と `/authoring_objects/7/...` のような**祖先・子孫関係しか見ない**ので、パス表現が異なるまま同一意味領域に触れる編集(名前予約・declaration_index・同一 slot への異種 op)を取りこぼします。だから [`recordOverlaps()`](../../src/core/communication/editorjournal.cpp#L2718) が両者を OR で結びます。
 
-#### [`last_writers`](../../src/core/communication/editorjournal.cpp#L3188) — 「active writer history」の意味
+#### [`last_writers`](../../src/core/communication/editorjournal.cpp#L3187) — 「active writer history」の意味
 
 **分からなくなること**: 履歴という名前なのに、undo で要素が消える理由。
 
-**答え**: [コメント](../../src/core/communication/editorjournal.cpp#L3188)どおり**その write_set を現在保持している有効な書き手のスタック**であって、積まれた操作の履歴ではありません。よって undo は「取り消された書き手を除去する」操作なので [top を pop](../../src/core/communication/editorjournal.cpp#L3594) し、redo は[新しい transaction を top として push](../../src/core/communication/editorjournal.cpp#L3604) します。
+**答え**: [コメント](../../src/core/communication/editorjournal.cpp#L3187)どおり**その write_set を現在保持している有効な書き手のスタック**であって、積まれた操作の履歴ではありません。よって undo は「取り消された書き手を除去する」操作なので [top を pop](../../src/core/communication/editorjournal.cpp#L3581) し、redo は[新しい transaction を top として push](../../src/core/communication/editorjournal.cpp#L3591) します。
 
 #### [`final_authored_index` の連続性](../../src/core/communication/editorjournalintegrity.cpp#L211) — `max()` はスキップではない
 
@@ -1579,26 +1587,26 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
-| [gate_epoch と transition_epoch](../../src/core/communication/editorjournal.cpp#L3283) | 2 つのエポック | 違い | `transition_epoch` は**ゲート提供側(runtime)から観測される外部の状態遷移カウンタ**、[`gate_epoch`](../../src/core/communication/editorjournal.cpp#L3197) はその観測が変わるたびに journal 側で増やす**内部の単調エポック**。受理時に両方控え、[コミット時に片方でも食い違えば](../../src/core/communication/editorjournal.cpp#L3705)拒否する |
-| [`requireRevertPreconditions()`](../../src/core/communication/editorjournal.cpp#L3430) | undo 前の 3 段検証 | 何を見ているか | → [第7章「undo前提の三段検証」](07_tools_rpc_tests.md) |
-| [`Impl::preview` の reservation と lease](../../src/core/communication/editorjournal.cpp#L3166) | 予約と実効リース | 2 つある理由 | reservation は `open_preview` を受理した瞬間(まだ frame boundary 前)の**先行予約**、lease はプレビュー適用後の**実効リース**。[`requireNoLeaseOverlap()`](../../src/core/communication/editorjournal.cpp#L3409) が両者と新規編集の重複を見て `preview_lease_conflict`。状態機械は[第7章「preview leaseの状態機械」](07_tools_rpc_tests.md) |
-| [unpack の単独 op 強制](../../src/core/communication/editorjournal.cpp#L2017) | batch の形の制限 | なぜ 1 command か | unpack は object subtree 全体を作り替え、その inverse を `origin_transition` 込みの forward/inverse ペアとして**受理時点で確定**させる必要があるため。他 op と混ぜるとこの単一ペアの整合検査が成立しない |
+| [gate epoch と transition_epoch](../../src/core/communication/editorjournal.cpp#L3272) | 2 つのエポック | 違い | `transition_epoch` は**ゲート提供側(runtime の `EditorTransitionCounter`)が数える外部の状態遷移カウンタ**、[`gate_tracker`](../../src/core/communication/editorjournal.cpp#L3194)(`EditorGateEpoch`)の epoch はその観測が変わるたびに進む**内部の単調エポック**。受理時に epoch を控え、[commit 時に食い違えば](../../src/core/communication/editorjournal.cpp#L3969)拒否する。transition の変化は必ず epoch を進めるので、比べるのは epoch だけでよい |
+| [`requireRevertPreconditions()`](../../src/core/communication/editorjournal.cpp#L3417) | undo 前の 3 段検証 | 何を見ているか | → [第7章「undo前提の三段検証」](07_tools_rpc_tests.md) |
+| [`Impl::preview` の reservation と lease](../../src/core/communication/editorjournal.cpp#L3165) | 予約と実効リース | 2 つある理由 | reservation は `open_preview` を受理した瞬間(まだ frame boundary 前)の**先行予約**、lease はプレビュー適用後の**実効リース**。[`requireNoLeaseOverlap()`](../../src/core/communication/editorjournal.cpp#L3396) が両者と新規編集の重複を見て `preview_lease_conflict`。状態機械は[第7章「preview leaseの状態機械」](07_tools_rpc_tests.md) |
+| [unpack の単独 op 強制](../../src/core/communication/editorjournal.cpp#L2018) | batch の形の制限 | なぜ 1 command か | unpack は object subtree 全体を作り替え、その inverse を `origin_transition` 込みの forward/inverse ペアとして**受理時点で確定**させる必要があるため。他 op と混ぜるとこの単一ペアの整合検査が成立しない |
 | [`prefabGeneratedId()`](../../src/project/prefab.cpp#L1060) | gid の生成 | アルゴリズム | ドメイン分離タグ `"pelican.prefab.gid.v1"` / `instance_id` / `component_key` を**長さ前置で連結**したバイト列の SHA-256 の先頭 16 バイトを hex 化し `gid_` を前置する([宣言側コメント](../../src/project/prefab.hpp#L224)= WP361 v4)。component_key は `component.id`、無ければ `component.name` |
-| [`canonicalBehaviorComponent()`](../../src/core/communication/editorjournal.cpp#L257) | behavior だけ codec を通さない | 理由 | behavior attachment は登録済み codec を持つ通常 component ではなく `{name,type,params}` の固定形で、**型登録が DLL 由来で欠けている可能性がある**。未登録でも情報を落とさず保持し、「レジストリが生きている(名前拒否)」と「DLL 不在(pending attachment)」をコミット境界で区別するため |
+| [`canonicalBehaviorComponent()`](../../src/core/communication/editorjournal.cpp#L258) | behavior だけ codec を通さない | 理由 | behavior attachment は登録済み codec を持つ通常 component ではなく `{name,type,params}` の固定形で、**型登録が DLL 由来で欠けている可能性がある**。未登録でも情報を落とさず保持し、「レジストリが生きている(名前拒否)」と「DLL 不在(pending attachment)」をコミット境界で区別するため |
 | [子孫の降順ソート](../../src/core/communication/editorjournalops.cpp#L1133) | prepareDestroy の並べ替え | 降順の理由 | 子孫から順に remove を積む必要があり、降順で削除すれば**削除に伴う後続要素のインデックスずれが未処理分に波及しない**。同時に inverse(restore_objects)が逆順で元の宣言位置に挿し戻せる |
 | [`field_path` の `/name` 禁止](../../src/core/communication/editorjournalops.cpp#L658) | 値編集の対象制限 | なぜ name だけ禁止か | `name` は **component のスロット同一性(と object 名前予約)を決める識別子**なので、値編集経路で書き換えられると slot / domain 計算が破綻する。detail も "field_path must be a JSON pointer and cannot change name" と明言 |
-| [`prefabGeneratedMarkerRule`](../../src/core/communication/editorjournal.cpp#L1512) | マーカー削除と body 検証 | 何を消すのか | 上記 gid / OriginTransitionMap と一体。詳細は**未執筆** |
-| [unpack の forward/inverse 整合](../../src/core/communication/editorjournal.cpp#L1582) | commit 時の structural_changes | 何を突き合わせるか | **未執筆**(根拠がコードにない) |
-| [`behaviorAttachmentWitness()`](../../src/core/communication/editorjournal.cpp#L561) | witness の組み立て | generated と authored の分岐 | witness 自体は常に 4 フィールド(`authoring_object_id` / `authored_component_occurrence` / `type` / `origin`)。分岐するのは [`origin` の中身](../../src/core/communication/editorjournal.cpp#L535)で、authored は 2 フィールド(`kind` / `authoring_component_index`)、generated は 6 フィールド(`kind` / `stable_generated_id` / `prefab` / `instance_id` / `component_key` / `digest_sha256`) |
-| [`expanded_components`](../../src/core/communication/editorjournalintegrity.cpp#L23) と [末尾からの削除](../../src/core/communication/editorjournal.cpp#L1446) | 展開区間の位置 | 逆操作が末尾削除でよい理由 | unpack は authored 配列の**末尾に展開区間を置く**ので、逆操作は末尾から authority.size() 分を削るだけでよい(→ final_authored_index の連続性) |
+| [`prefabGeneratedMarkerRule`](../../src/core/communication/editorjournal.cpp#L1513) | マーカー削除と body 検証 | 何を消すのか | 上記 gid / OriginTransitionMap と一体。詳細は**未執筆** |
+| [unpack の forward/inverse 整合](../../src/core/communication/editorjournal.cpp#L1583) | commit 時の structural_changes | 何を突き合わせるか | **未執筆**(根拠がコードにない) |
+| [`behaviorAttachmentWitness()`](../../src/core/communication/editorjournal.cpp#L562) | witness の組み立て | generated と authored の分岐 | witness 自体は常に 4 フィールド(`authoring_object_id` / `authored_component_occurrence` / `type` / `origin`)。分岐するのは [`origin` の中身](../../src/core/communication/editorjournal.cpp#L536)で、authored は 2 フィールド(`kind` / `authoring_component_index`)、generated は 6 フィールド(`kind` / `stable_generated_id` / `prefab` / `instance_id` / `component_key` / `digest_sha256`) |
+| [`expanded_components`](../../src/core/communication/editorjournalintegrity.cpp#L23) と [末尾からの削除](../../src/core/communication/editorjournal.cpp#L1447) | 展開区間の位置 | 逆操作が末尾削除でよい理由 | unpack は authored 配列の**末尾に展開区間を置く**ので、逆操作は末尾から authority.size() 分を削るだけでよい(→ final_authored_index の連続性) |
 | [behavior edit の attachment_index](../../src/core/communication/editorjournalops.cpp#L71) | 必須引数 | なぜ必須か | 同一 object に複数の behavior が付くので index なしでは対象が決まらない(→ §9.23.2 の「behavior だけ重複可」) |
-| [`closureJson()`](../../src/core/communication/editorjournal.cpp#L375) | previous/next による linked-list | 宣言順の復元 | → [第3章「closureがidentityを運ぶ」](03_project_and_loading.md) |
-| [`resolvePrefabInstance` の context 引数](../../src/core/communication/editorjournal.cpp#L1235) | scene_id / parameter / json_pointer | 何を運ぶか | **未執筆**(根拠がコードにない) |
-| [replay 時の witness 再検証](../../src/core/communication/editorjournal.cpp#L1901) | rebind | undo/redo で張り替わる理由 | **未執筆**(根拠がコードにない) |
-| [`projection_state->revision() == source.revision()`](../../src/core/communication/editorjournal.cpp#L2029) | incremental update | 判定の意味 | **未執筆**(根拠がコードにない) |
+| [`closureJson()`](../../src/core/communication/editorjournal.cpp#L376) | previous/next による linked-list | 宣言順の復元 | → [第3章「closureがidentityを運ぶ」](03_project_and_loading.md) |
+| [`resolvePrefabInstance` の context 引数](../../src/core/communication/editorjournal.cpp#L1236) | scene_id / parameter / json_pointer | 何を運ぶか | **未執筆**(根拠がコードにない) |
+| [replay 時の witness 再検証](../../src/core/communication/editorjournal.cpp#L1902) | rebind | undo/redo で張り替わる理由 | **未執筆**(根拠がコードにない) |
+| [`projection_state->revision() == source.revision()`](../../src/core/communication/editorjournal.cpp#L2030) | incremental update | 判定の意味 | **未執筆**(根拠がコードにない) |
 | [`ReparentPreserve`](../../src/core/communication/editorjournalops.cpp#L1188) | Local / World | transform 計算への影響 | → [第3章「preserve-worldの逆算」](03_project_and_loading.md) |
 | [behavior canonical 化の `old_component` 保持](../../src/core/communication/editorjournalops.cpp#L275) | retain する理由 | 何のために残すか | コメントどおり「`BehaviorParamsPolicy` の既定値は編集可能な authored view の一部なので、field pointer を解決する前に一時オブジェクトへ展開する。その間 `old_component` は inverse / raw 復元のために**逐語のまま**保持する」 |
-| [`domainObjects` / `domainNames` / `domainIndices` の定義](../../src/core/communication/editorjournal.cpp#L2561) ほか(prefab_cas フラグ、generated_id と component_slot の排他、`operationsUsePrefabParameters`、`forceAbort` と preview_boundary、`normalizeBehaviorAttachmentIdentities`、`batchWriteSet` の集約、`coalesce_key`、`finalizeRevertJournal` の逆順再構築) | 競合判定の下請けと journal の細部 | 個々の規則 | **未執筆**(いずれも根拠がコードにない。エラーコードの `@1` は §9.23.18 の契約バージョン) |
+| [`domainObjects` / `domainNames` / `domainIndices` の定義](../../src/core/communication/editorjournal.cpp#L2562) ほか(prefab_cas フラグ、generated_id と component_slot の排他、`operationsUsePrefabParameters`、`forceAbort` と preview_boundary、`normalizeBehaviorAttachmentIdentities`、`batchWriteSet` の集約、`coalesce_key`、`finalizeRevertJournal` の逆順再構築) | 競合判定の下請けと journal の細部 | 個々の規則 | **未執筆**(いずれも根拠がコードにない。エラーコードの `@1` は §9.23.18 の契約バージョン) |
 
 ### 9.23.10 editor command service
 
@@ -1642,7 +1650,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: 参加者名の文字列が何なのか(`"game_logic_reload"` に見える資料がある)。
 
-**答え**: 定数は [`watch::gameLogicReloadParticipantName = "pelican.game_logic"`](../../src/core/watch/reloadservice.hpp#L32) です。ReloadService が未登録なら [`registerParticipant` で自己登録](../../src/core/watch/reloadservice.cpp#L596)し(frame_start 境界の RuntimeReloadParticipant)、RPC は [`statusJson()["runtime"][participant]`](../../src/core/communication/rpcserver.cpp#L1176) で照会、`applyRuntimeNow(participant)` で明示適用します。
+**答え**: 定数は [`watch::gameLogicReloadParticipantName = "pelican.game_logic"`](../../src/core/watch/reloadservice.hpp#L33) です。ReloadService が未登録なら [`registerParticipant` で自己登録](../../src/core/watch/reloadservice.cpp#L596)し(frame_start 境界の RuntimeReloadParticipant)、RPC は [`statusJson()["runtime"][participant]`](../../src/core/communication/rpcserver.cpp#L1176) で照会、`applyRuntimeNow(participant)` で明示適用します。
 
 #### [`SceneLoadResult` の受け取り](../../src/core/communication/rpcserver.cpp#L1583) — 状態機械
 
@@ -1675,7 +1683,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: 「両方あると不正」という検査がどこへ行ったのか。
 
-**答え**: 適用ルートの排他は検査ではなく型になりました。[`FileReloadRole::apply`](../../src/core/watch/reloadservice.hpp#L147) は [`PerRequestReloadApply`](../../src/core/watch/reloadservice.hpp#L111)(1 件ずつ)/ [`BatchReloadApply`](../../src/core/watch/reloadservice.hpp#L119)(まとめて)/ [`CompanionBatchReloadApply`](../../src/core/watch/reloadservice.hpp#L130)(他 participant の request を吸い上げて 1 世代で publish)の `std::variant` で、二つ持つこと自体が書けません。ここに残っているのは**型が言えないことだけ**です — 名前が空でないこと、選ばれたルートの callback が null でないこと、companion apply なら companion 名が 1 つ以上あり空・自己参照・重複でないこと、そして名前が一意であること。batch owner 同士の順序も宣言から導かれます: ある owner が別の owner の companion に名指されていれば、名指した側の**後**に適用されるので、どちらが先に登録されたかで外側のトランザクションが companion を失うことがありません([宣言のコメント](../../src/core/watch/reloadservice.hpp#L127))。
+**答え**: 適用ルートの排他は検査ではなく型になりました。[`FileReloadRole::apply`](../../src/core/watch/reloadservice.hpp#L148) は [`PerRequestReloadApply`](../../src/core/watch/reloadservice.hpp#L112)(1 件ずつ)/ [`BatchReloadApply`](../../src/core/watch/reloadservice.hpp#L120)(まとめて)/ [`CompanionBatchReloadApply`](../../src/core/watch/reloadservice.hpp#L131)(他 participant の request を吸い上げて 1 世代で publish)の `std::variant` で、二つ持つこと自体が書けません。ここに残っているのは**型が言えないことだけ**です — 名前が空でないこと、選ばれたルートの callback が null でないこと、companion apply なら companion 名が 1 つ以上あり空・自己参照・重複でないこと、そして名前が一意であること。batch owner 同士の順序も宣言から導かれます: ある owner が別の owner の companion に名指されていれば、名指した側の**後**に適用されるので、どちらが先に登録されたかで外側のトランザクションが companion を失うことがありません([宣言のコメント](../../src/core/watch/reloadservice.hpp#L128))。
 
 #### [`applyRenderPipelineCompanionReload()`](../../src/core/watch/reloadservice.cpp#L331) — 流れと早期 return
 
@@ -1904,13 +1912,13 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **実際は**: 編集は最後まで **byte 列のまま**行われます。[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288) は root のメンバを字句走査する [`locateObjectMembers()`](../../src/project/renderconfigdocument.cpp#L194) を 2 回使い、まず root で `rendering` の値スパンを見つけ、その位置から同じ走査を節の中へ入れ直します。要点は**入れ子にしても offset を相対化しないこと**で、ヘッダのコメントがそれを規範として書いています — 「同じ bytes の中に位置づけるので、offset は絶対のまま、文書 digest は file 全体を覆い続ける」([コメント](../../src/project/renderconfigdocument.cpp#L286))。この性質があるので、節を編集しても CAS の単位([`renderConfigSourceDigest()`](../../src/project/renderconfigdocument.cpp#L410))は文書全体のままで変わりません。書き手は [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L658) 1 本で、legacy root と graph root 自身のキーは [`withRootValue()`](../../src/project/renderconfigdocument.cpp#L637) へ落ちます。
 
-読み手と書き手の非対称も意図です。[`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L37) は節が無ければ `RenderConfigSectionUnlocated` を投げ、[`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L47) は空 object を返します。**読みは節が無くても失敗せず、編集だけが `render_config_section_unlocated` という名前で拒否されます**([拒否の実例](../../src/core/communication/renderconfigeditor.cpp#L887))。
+読み手と書き手の非対称も意図です。[`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L37) は節が無ければ `RenderConfigSectionUnlocated` を投げ、[`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L47) は空 object を返します。**読みは節が無くても失敗せず、編集だけが `render_config_section_unlocated` という名前で拒否されます**([拒否の実例](../../src/core/communication/renderconfigeditor.cpp#L874))。
 
 **不変条件**: 節の中の offset を「節の先頭からの相対」に変えないこと(digest が節だけを覆う別物になり、CAS の意味が変わります)。読みの経路に `renderingSectionOf()` を使わないこと — 節を持たない graph root を読んだだけで例外になります。authored key の住所判定を各 caller が `if (graph)` で持たないこと。
 
 **読む場所**: [`renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L13) → [`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288) → [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L658)。
 
-> **N-6 の例外**: `edit_graph_document` の op 列が `set_layout` だけのとき、editor は候補文書を `apply_candidate` に通さず(`Ticket::source_only`)、文書を書くだけで commit を終えます。「すべての commit は候補経路を通る」の唯一の例外で、置き場所は engine の挙動に触れないためです([経路](../../src/core/communication/renderconfigeditor.cpp#L1901))。
+> **N-6 の例外**: `edit_graph_document` の op 列が `set_layout` だけのとき、editor は候補文書を `apply_candidate` に通さず(`Ticket::source_only`)、文書を書くだけで commit を終えます。「すべての commit は候補経路を通る」の唯一の例外で、置き場所は engine の挙動に触れないためです([経路](../../src/core/communication/renderconfigeditor.cpp#L1887))。
 
 ### 難所 — 排他 create の committed marker
 
