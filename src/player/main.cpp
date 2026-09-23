@@ -26,6 +26,7 @@ namespace {
 
 struct ParsedLaunchConfig {
     Pelican::EngineLaunchConfig engine;
+    std::string log_file;
     std::filesystem::path project_root;
     std::optional<std::string> project_json;
     std::optional<std::filesystem::path> user_dir_override;
@@ -319,6 +320,10 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .help("headless: replay up to this time, then render --frames frames from there");
     program.add_argument("--size").default_value(std::string{"1280x720"}).metavar("WxH").help("headless render size");
     program.add_argument("--render-out").default_value(std::string{}).metavar("path").help("render output path");
+    program.add_argument("--log-file")
+        .default_value(std::string{})
+        .metavar("path")
+        .help("write this run's log to path (truncated) instead of appending to pelican.log in the working directory");
     program.add_argument("--dump-frame-plan").flag().help("dump the resolved frame plan JSON to stderr");
     program.add_argument("--gpu-labels").flag().help("enable Vulkan debug object names and command labels");
     program.add_argument("--vulkan-validation")
@@ -458,6 +463,7 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
 
         config.headless_extent = parseExtent(program.get<std::string>("--size"));
 
+        parsed.log_file = program.get<std::string>("--log-file");
         const auto render_out = program.get<std::string>("--render-out");
         if (!render_out.empty()) {
             config.render_out = std::filesystem::path{render_out};
@@ -599,6 +605,9 @@ int main(int argc, char *argv[]) {
     }
 
     const auto &launch_config = parsed_launch_config.engine;
+    if (!parsed_launch_config.log_file.empty()) {
+        Pelican::setLogFilePath(parsed_launch_config.log_file);
+    }
     Pelican::PelicanCore pl{"{}", launch_config.rpc};
     Pelican::FastModuleContainer::get<Pelican::EngineLaunchConfig>() = launch_config;
     auto &path_resolver = Pelican::FastModuleContainer::get<Pelican::PathResolver>();

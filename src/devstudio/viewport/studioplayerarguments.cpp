@@ -18,6 +18,7 @@ std::vector<std::string> studioPlayerArgumentStrings(
     std::vector<std::string> additional;
     additional.reserve(configured.size());
     bool has_editor_transform_preset = false;
+    bool has_log_file = false;
     for (std::size_t index = 0; index < configured.size(); ++index) {
         const auto &argument = configured[index];
         if (argument == "--rpc") {
@@ -45,6 +46,9 @@ std::vector<std::string> studioPlayerArgumentStrings(
             startsWith(argument, "--editor-transform=")) {
             has_editor_transform_preset = true;
         }
+        if (argument == "--log-file" || startsWith(argument, "--log-file=")) {
+            has_log_file = true;
+        }
         additional.push_back(argument);
     }
 
@@ -57,6 +61,13 @@ std::vector<std::string> studioPlayerArgumentStrings(
     };
     if (!has_editor_transform_preset) {
         arguments.emplace_back("--editor-transform");
+    }
+    // Each engine Studio starts writes its own log under the project it opened,
+    // rather than every player appending to one pelican.log next to the
+    // executable. A configured --log-file wins.
+    if (!has_log_file) {
+        arguments.emplace_back("--log-file");
+        arguments.emplace_back(project_root + "/.pelican/logs/player.log");
     }
     arguments.insert(arguments.end(), additional.begin(), additional.end());
     return arguments;

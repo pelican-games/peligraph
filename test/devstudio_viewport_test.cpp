@@ -145,7 +145,15 @@ TEST_CASE("Studio player arguments force public editor feature and input overlay
                         QStringLiteral("C:/projects/example"),
                         QStringLiteral("--feature-overlay"), expected_overlay,
                         QStringLiteral("--editor-transform"),
+                        QStringLiteral("--log-file"),
+                        QStringLiteral("C:/projects/example/.pelican/logs/player.log"),
                         QStringLiteral("--frames"), QStringLiteral("5")});
+    // A configured log file is the user's choice and is not replaced.
+    const auto own_log = studioPlayerArguments(
+        {QStringLiteral("--log-file"), QStringLiteral("D:/logs/mine.log")},
+        QStringLiteral("C:/projects/example"));
+    REQUIRE(own_log.count(QStringLiteral("--log-file")) == 1);
+    REQUIRE(own_log.contains(QStringLiteral("D:/logs/mine.log")));
     REQUIRE(arguments.count(QStringLiteral("--feature-overlay")) == 1);
     REQUIRE(arguments.count(QStringLiteral("--editor-transform")) == 1);
 

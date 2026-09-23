@@ -9,12 +9,18 @@
 
 #include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <memory>
 #include <utility>
 #include <vector>
 
 namespace Pelican {
 namespace {
+
+std::string &configuredLogFilePath() {
+    static std::string path;
+    return path;
+}
 
 auto createStderrSink() {
     quill::ConsoleSinkConfig config;
@@ -24,19 +30,30 @@ auto createStderrSink() {
 }
 
 auto createFileSinkOrStderr() {
+    const auto &configured = configuredLogFilePath();
+    const std::string file_name =
+        configured.empty() ? std::string{logFileName} : configured;
     try {
+        if (configured.empty()) {
+            return quill::Frontend::create_or_get_sink<quill::FileSink>(
+                file_name);
+        }
+        const auto parent = std::filesystem::path{file_name}.parent_path();
+        if (!parent.empty()) std::filesystem::create_directories(parent);
+        quill::FileSinkConfig config;
+        config.set_open_mode('w');
         return quill::Frontend::create_or_get_sink<quill::FileSink>(
-            logFileName);
+            file_name, config);
     } catch (const std::exception &error) {
         std::fprintf(
             stderr,
             "Pelican: cannot open '%s'; logging to stderr instead: %s\n",
-            logFileName, error.what());
+            file_name.c_str(), error.what());
     } catch (...) {
         std::fprintf(
             stderr,
             "Pelican: cannot open '%s'; logging to stderr instead\n",
-            logFileName);
+            file_name.c_str());
     }
     return createStderrSink();
 }
@@ -53,6 +70,10 @@ std::vector<std::shared_ptr<quill::Sink>> createProtocolSinks() {
 } // namespace
 
 quill::Logger *logger = nullptr;
+
+void setLogFilePath(std::string path) {
+    configuredLogFilePath() = std::move(path);
+}
 
 void setupLogger(bool reserve_stdout_for_protocol) {
     quill::Backend::start();
