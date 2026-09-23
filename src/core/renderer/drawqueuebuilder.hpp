@@ -13,6 +13,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -28,9 +29,14 @@ struct RenderCommand {
     std::uint32_t node_index = noSourceNodeIndex;
     bool skinned = false;
     PrimitiveViewVisibility view_visibility = PrimitiveViewVisibility::both;
+    // Named so the record has no padding: these bytes are uploaded, hashed
+    // and compared, and implicit padding carries whatever the stack held.
+    std::uint8_t reserved[2] = {};
 };
 
 static_assert(offsetof(RenderCommand, command) == 0);
+static_assert(std::has_unique_object_representations_v<RenderCommand>,
+              "RenderCommand bytes must be fully determined by its fields");
 
 inline constexpr std::uint32_t noSceneDrawSegmentIndex =
     std::numeric_limits<std::uint32_t>::max();
