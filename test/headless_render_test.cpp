@@ -54,6 +54,7 @@
 #include "../src/core/vkcore/deletionqueue.hpp"
 #include "../src/core/vkcore/renderer.hpp"
 #include "renderer_testaccess.hpp"
+#include "rendertarget_testaccess.hpp"
 #include "../src/core/vkcore/renderer_config.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
 #include "../src/core/vkcore/util.hpp"
@@ -11269,6 +11270,64 @@ TEST_CASE("common graph state survives staged ray pipeline publication", "[headl
 #if PELICAN_WITH_AUDIO
         REQUIRE_FALSE(GameContext{}.audio().soundState(*voice));
 #endif
+    } catch (...) {
+        std::filesystem::remove_all(temp_dir);
+        throw;
+    }
+    std::filesystem::remove_all(temp_dir);
+#else
+    SKIP("runtime shader compiler unavailable");
+#endif
+}
+
+TEST_CASE("a frame skipped for want of an output image keeps the staged ray-tracing startup generation",
+          "[headless][gpu][ray-tracing][staged-startup]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    const auto temp_dir = makeTempProjectDir();
+    try {
+        FastModuleContainer modules;
+        RuntimeTeardownGuard teardown{
+            RuntimeTeardownMode::terminal_shutdown};
+        writeRt1bLayoutProject(temp_dir);
+        writeTextFile(temp_dir / "ray_bindings.json",
+                      R"({"schema":"pelican.ray_bindings","version":1,"bindings":[]})");
+        configureRayQueryTestRuntime(temp_dir);
+        auto &vkcore = GET_MODULE(VulkanManageCore);
+        if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
+            SKIP("pelican.vulkan.ray_tracing_pipeline@1 is unavailable");
+        }
+        auto &renderer = GET_MODULE(Renderer);
+        auto &runtime = GET_MODULE(FrameGraphRuntimeContainer);
+        GET_MODULE(PolygonInstanceContainer).placeModelInstance(
+            GET_MODULE(ModelAssetContainer).getModelTemplateByName("tree"));
+
+        // A ray-tracing startup generation is staged, not published, until
+        // its first submitted frame.
+        REQUIRE(runtime.snapshot() == nullptr);
+        const auto staged = runtime.stagedGeneration();
+        REQUIRE(staged != 0);
+        REQUIRE(renderer.publishedLogicalFrameCount() == 0);
+
+        // The first frames arrive before the output has an image, as they do
+        // for a player embedded in Studio with a warm shader cache.
+        test_support::RenderTargetTestAccess::reportUnavailableFrames(
+            GET_MODULE(RenderTarget), 2);
+        renderer.render();
+        renderer.render();
+        CHECK(runtime.stagedGeneration() == staged);
+        CHECK(runtime.snapshot() == nullptr);
+        CHECK(renderer.publishedLogicalFrameCount() == 0);
+
+        // The first frame with an image publishes that same generation.
+        renderer.render();
+        vkcore.waitIdle();
+        CHECK(runtime.stagedGeneration() == 0);
+        CHECK(runtime.activeGeneration() == staged);
+        CHECK(renderer.publishedLogicalFrameCount() == 1);
+        renderer.render();
+        vkcore.waitIdle();
+        CHECK(renderer.publishedLogicalFrameCount() == 2);
     } catch (...) {
         std::filesystem::remove_all(temp_dir);
         throw;

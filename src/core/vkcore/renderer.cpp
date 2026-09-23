@@ -3025,6 +3025,18 @@ class LogicalFrameAbortGuard {
     void complete() noexcept { target = nullptr; }
 };
 
+// A staged ray-tracing generation meets a logical frame in one of three ways,
+// and this guard is where the recorder says which:
+//
+// - published: the frame submitted and publishFrameGeneration() made it the
+//   active generation (published()).
+// - kept: the frame was skipped because the output had no image yet. Nothing
+//   was recorded or committed, so the next frame uses the same staged
+//   generation (keepForNextFrame()). Rolling back here once left a ray tracing
+//   project that had never published with no generation at all.
+// - rolled back: anything else ends the frame early, including an output that
+//   changed (OutputRelowerRequired re-lowers and stages a new generation).
+//   The destructor rolls the staged generation back.
 class StagedRuntimeRollbackGuard {
     FrameGraphRuntimeContainer *runtime_ = nullptr;
     std::uint64_t generation_ = 0;
@@ -3045,7 +3057,8 @@ class StagedRuntimeRollbackGuard {
                 generation_);
         }
     }
-    void complete() noexcept { runtime_ = nullptr; }
+    void published() noexcept { runtime_ = nullptr; }
+    void keepForNextFrame() noexcept { runtime_ = nullptr; }
 };
 
 struct LogicalFrameSubmissionResources {
@@ -5370,7 +5383,7 @@ void Renderer::LogicalFrameRecorder::publishFrameGeneration() noexcept {
                      staged_runtime_generation)) {
             std::terminate();
         }
-        staged_runtime_guard.complete();
+        staged_runtime_guard.published();
     }
 }
 
@@ -5781,16 +5794,9 @@ void Renderer::LogicalFrameRecorder::beginLogicalFrameTarget() {
                     submission_lease,
             });
     } catch (const OutputTemporarilyUnavailable &) {
-        // Skipping a frame because the output has no image yet records no
-        // GPU work and commits nothing, so a staged ray-tracing generation
-        // stays staged for the next frame. Rolling it back here left a ray
-        // tracing project with no renderer generation at all when its first
-        // frame came before the window output existed (a project opened in
-        // Studio with a warm shader cache), and the next frame then failed
-        // with "Renderer logical frame requires a compiled render pipeline".
-        // An output that changed still rolls back: OutputRelowerRequired
-        // re-lowers and stages a new generation.
-        staged_runtime_guard.complete();
+        // See StagedRuntimeRollbackGuard: a skipped frame keeps the staged
+        // generation for the next one.
+        staged_runtime_guard.keepForNextFrame();
         throw;
     }
     frame_abort_guard.emplace(target);
@@ -6052,6 +6058,7 @@ void Renderer::LogicalFrameRecorder::publishFrame() {
     }
     target.publishLogicalFrame();
     frame_abort_guard->complete();
+    ++renderer.published_logical_frames;
 }
 
 void Renderer::LogicalFrameRecorder::retainPickingSnapshot() {

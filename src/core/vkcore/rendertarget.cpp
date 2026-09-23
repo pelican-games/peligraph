@@ -30,6 +30,13 @@ FrameBeginResult RenderTarget::beginFrame(
         runtime_generation,
     GpuSubmissionLease submission_lease,
     FrameBeginMode mode) {
+    if (unavailable_frames_for_testing > 0) {
+        --unavailable_frames_for_testing;
+        return FrameBeginResult{
+            .disposition = FrameBeginDisposition::unavailable,
+            .reason = FrameUnavailableReason::acquire_not_ready,
+        };
+    }
     return impl->beginFrame(
         std::move(runtime_generation),
         std::move(submission_lease), mode);

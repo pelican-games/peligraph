@@ -1398,6 +1398,8 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             {"sprite", modules.sprite_scene != nullptr
                            ? modules.sprite_scene->statusJson()
                            : nlohmann::json{{"enabled", false}}},
+            {"render", {{"published_frames",
+                         modules.renderer.publishedLogicalFrameCount()}}},
             {"startup", {{"config_ms", startup.config_ms},
                          {"vulkan_ms", startup.vulkan_ms},
                          {"shaders_ms", startup.shaders_ms},

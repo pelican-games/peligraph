@@ -175,6 +175,7 @@ DECLARE_MODULE(Renderer) {
         secondary_temporal_histories;
     std::vector<RenderFrameSnapshot> last_view_snapshots;
     bool temporal_reset_requested = true;
+    std::uint64_t published_logical_frames = 0;
     std::uint64_t observed_time_set_revision = 0;
     std::uint64_t observed_camera_discontinuity_revision = 0;
     std::optional<vk::Extent2D> internal_render_extent;
@@ -223,6 +224,13 @@ DECLARE_MODULE(Renderer) {
     ~Renderer();
     nlohmann::json currentFramePlanJson() const;
     bool hasPendingRenderPipelinePublication() const noexcept;
+    // Logical frames this renderer has published since it was created. The
+    // engine answers RPC before its first frame; a client that needs a drawn
+    // frame (capture, a published frame plan) waits for this to become
+    // non-zero instead of retrying named "not yet" errors.
+    std::uint64_t publishedLogicalFrameCount() const noexcept {
+        return published_logical_frames;
+    }
     RenderPipelineAuthoringApplyResult
     applyRenderPipelineAuthoringCandidate(
         RenderConfigCandidateDocumentSet candidate_documents,

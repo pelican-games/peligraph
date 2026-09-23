@@ -399,6 +399,12 @@ struct FramePlanWidget::Impl {
     std::function<void(const QString &, const QString &, const QStringList &)> pass_connection_action;
     std::function<void(const QString &, const QStringList &, quint64)> node_order_action;
     qint64 pending_request = 0;
+    // A ray-tracing project's first generation stays private until its first
+    // submitted frame, and the engine answers RPC before that. While
+    // get_frame_plan names that state, ask again instead of showing a failure.
+    int unpublished_plan_retries = 0;
+    static constexpr int max_unpublished_plan_retries = 40;
+    static constexpr int unpublished_plan_retry_ms = 250;
     qint64 pending_gpu_timing_request = 0;
     // Half of what gates the GPU timing clock: whether the engine still has
     // anything to report. The other half is whether anyone is looking at the
@@ -801,6 +807,7 @@ struct FramePlanWidget::Impl {
         QObject::connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable,
                          &owner, [this] {
                              pending_request = 0;
+                             unpublished_plan_retries = 0;
                              pending_gpu_timing_request = 0;
                              model.reset();
                              clearTrees();
@@ -1358,6 +1365,7 @@ struct FramePlanWidget::Impl {
             return;
         }
         pending_request = 0;
+        unpublished_plan_retries = 0;
         owner.receiveResult(result_json);
     }
 
@@ -1450,6 +1458,17 @@ struct FramePlanWidget::Impl {
             return;
         }
         pending_request = 0;
+        if (message.contains(QStringLiteral("Current frame plan is not registered")) &&
+            unpublished_plan_retries < max_unpublished_plan_retries &&
+            viewport.rpcReady()) {
+            ++unpublished_plan_retries;
+            status->setStyleSheet({});
+            showStatus(owner.tr("Waiting for the engine's first frame..."));
+            QTimer::singleShot(unpublished_plan_retry_ms, &owner, [this] {
+                if (viewport.rpcReady()) requestRefresh();
+            });
+            return;
+        }
         showFailure(message);
     }
 

@@ -6,6 +6,8 @@
 #include "../view/nodegraphics.hpp"
 #include "../viewport/embeddedviewport.hpp"
 
+#include <optional>
+#include <cmath>
 #include <QAction>
 #include <QAbstractButton>
 #include <QAbstractItemView>
@@ -1414,52 +1416,22 @@ AutomationReply commandWait(const AutomationHost &host,
                  last_text));
 }
 
-AutomationReply commandWaitEngine(const AutomationHost &host,
-                                  const QJsonObject &request) {
-    if (host.viewport == nullptr)
-        return AutomationReply::failure(
-            EngineNotReady, QStringLiteral("this window has no engine viewport"));
-    const int timeout = timeoutOf(request, 60000);
-    QElapsedTimer elapsed;
-    elapsed.start();
-    for (;;) {
-        if (host.viewport->rpcReady())
-            return AutomationReply::success(QJsonObject{
-                {QStringLiteral("ready"), true},
-                {QStringLiteral("waited_ms"),
-                 static_cast<double>(elapsed.elapsed())},
-            });
-        if (elapsed.elapsed() >= timeout) break;
-        QTest::qWait(50);
-    }
-    return AutomationReply::failure(
-        EngineNotReady,
-        QStringLiteral("the engine viewport was not ready for editor RPC "
-                       "within %1 ms")
-            .arg(timeout));
-}
+// One engine RPC, answered synchronously on the automation thread's event
+// loop. Returns the parsed result, or an AutomationReply failure.
+struct SyncRpcOutcome {
+    std::optional<QJsonValue> result;
+    std::optional<AutomationReply> failure;
+};
 
-AutomationReply commandRpc(const AutomationHost &host,
-                           const QJsonObject &request) {
-    if (host.viewport == nullptr)
-        return AutomationReply::failure(
-            EngineNotReady, QStringLiteral("this window has no engine viewport"));
-    const QString method = request.value(QStringLiteral("method")).toString();
-    if (method.isEmpty())
-        return AutomationReply::failure(BadRequest,
-                                        QStringLiteral("method is required"));
-    const QJsonValue params_value = request.value(QStringLiteral("params"));
-    if (!params_value.isUndefined() && !params_value.isObject())
-        return AutomationReply::failure(
-            BadRequest, QStringLiteral("params must be an object"));
-    const QJsonObject params = params_value.toObject();
+SyncRpcOutcome callEngineRpc(const AutomationHost &host, const QString &method,
+                             const QJsonObject &params, int timeout_ms) {
     QString error;
     const qint64 id = host.viewport->requestRpc(method, params, &error);
     if (id == 0)
-        return AutomationReply::failure(
-            EngineNotReady,
-            error.isEmpty() ? QStringLiteral("the engine refused the request")
-                            : error);
+        return {.failure = AutomationReply::failure(
+                    EngineNotReady,
+                    error.isEmpty() ? QStringLiteral("the engine refused the request")
+                                    : error)};
 
     QEventLoop loop;
     bool answered = false;
@@ -1487,22 +1459,103 @@ AutomationReply commandRpc(const AutomationHost &host,
     QTimer timer;
     timer.setSingleShot(true);
     QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    timer.start(timeoutOf(request));
+    timer.start(timeout_ms);
     loop.exec();
     QObject::disconnect(on_result);
     QObject::disconnect(on_failure);
 
     if (!answered)
-        return AutomationReply::failure(
-            RpcFailed, QStringLiteral("%1 did not answer within %2 ms")
-                           .arg(method)
-                           .arg(timeoutOf(request)));
+        return {.failure = AutomationReply::failure(
+                    RpcFailed, QStringLiteral("%1 did not answer within %2 ms")
+                                   .arg(method)
+                                   .arg(timeout_ms))};
     if (!succeeded)
+        return {.failure = AutomationReply::failure(
+                    RpcFailed, QStringLiteral("%1 failed: %2").arg(method, message))};
+    return {.result = parseRpcPayload(payload)};
+}
+
+// `wait_engine` answers once the engine takes editor RPC. With `frames` it
+// also waits until the engine has published that many logical frames
+// (get_status render.published_frames): the engine answers RPC before its
+// first frame, and capture or a published frame plan need a drawn one.
+AutomationReply commandWaitEngine(const AutomationHost &host,
+                                  const QJsonObject &request) {
+    if (host.viewport == nullptr)
         return AutomationReply::failure(
-            RpcFailed, QStringLiteral("%1 failed: %2").arg(method, message));
+            EngineNotReady, QStringLiteral("this window has no engine viewport"));
+    const int timeout = timeoutOf(request, 60000);
+    const QJsonValue frames_value = request.value(QStringLiteral("frames"));
+    if (!frames_value.isUndefined() &&
+        (!frames_value.isDouble() || frames_value.toDouble() < 0 ||
+         frames_value.toDouble() != std::floor(frames_value.toDouble())))
+        return AutomationReply::failure(
+            BadRequest, QStringLiteral("frames must be a non-negative integer"));
+    const auto frames = static_cast<qint64>(frames_value.toDouble(0));
+    QElapsedTimer elapsed;
+    elapsed.start();
+    for (;;) {
+        if (host.viewport->rpcReady()) break;
+        if (elapsed.elapsed() >= timeout)
+            return AutomationReply::failure(
+                EngineNotReady,
+                QStringLiteral("the engine viewport was not ready for editor RPC "
+                               "within %1 ms")
+                    .arg(timeout));
+        QTest::qWait(50);
+    }
+    qint64 published = -1;
+    while (frames > 0) {
+        const auto remaining =
+            std::max<qint64>(1, timeout - elapsed.elapsed());
+        auto status = callEngineRpc(host, QStringLiteral("get_status"),
+                                    QJsonObject{}, static_cast<int>(remaining));
+        if (status.failure) return *status.failure;
+        published = static_cast<qint64>(
+            status.result->toObject()
+                .value(QStringLiteral("render")).toObject()
+                .value(QStringLiteral("published_frames")).toDouble(-1));
+        if (published < 0)
+            return AutomationReply::failure(
+                RpcFailed, QStringLiteral("get_status has no render.published_frames"));
+        if (published >= frames) break;
+        if (elapsed.elapsed() >= timeout)
+            return AutomationReply::failure(
+                EngineNotReady,
+                QStringLiteral("the engine published %1 of %2 frames within %3 ms")
+                    .arg(published)
+                    .arg(frames)
+                    .arg(timeout));
+        QTest::qWait(50);
+    }
+    QJsonObject reply{
+        {QStringLiteral("ready"), true},
+        {QStringLiteral("waited_ms"), static_cast<double>(elapsed.elapsed())},
+    };
+    if (frames > 0)
+        reply.insert(QStringLiteral("published_frames"), static_cast<double>(published));
+    return AutomationReply::success(reply);
+}
+
+AutomationReply commandRpc(const AutomationHost &host,
+                           const QJsonObject &request) {
+    if (host.viewport == nullptr)
+        return AutomationReply::failure(
+            EngineNotReady, QStringLiteral("this window has no engine viewport"));
+    const QString method = request.value(QStringLiteral("method")).toString();
+    if (method.isEmpty())
+        return AutomationReply::failure(BadRequest,
+                                        QStringLiteral("method is required"));
+    const QJsonValue params_value = request.value(QStringLiteral("params"));
+    if (!params_value.isUndefined() && !params_value.isObject())
+        return AutomationReply::failure(
+            BadRequest, QStringLiteral("params must be an object"));
+    auto outcome = callEngineRpc(host, method, params_value.toObject(),
+                                 timeoutOf(request));
+    if (outcome.failure) return *outcome.failure;
     return AutomationReply::success(QJsonObject{
         {QStringLiteral("method"), method},
-        {QStringLiteral("result"), parseRpcPayload(payload)},
+        {QStringLiteral("result"), *outcome.result},
     });
 }
 

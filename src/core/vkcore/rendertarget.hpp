@@ -15,8 +15,16 @@ namespace Pelican {
 
 constexpr size_t in_flight_frames_num = 2;
 
+namespace test_support {
+struct RenderTargetTestAccess;
+}
+
 DECLARE_MODULE(RenderTarget) {
     std::unique_ptr<IFrameTarget> impl;
+    // Test-only (RenderTargetTestAccess): the next N beginFrame calls report
+    // an unavailable output, as a window without a swapchain image does.
+    std::uint32_t unavailable_frames_for_testing = 0;
+    friend struct test_support::RenderTargetTestAccess;
 
   public:
     RenderTarget();
