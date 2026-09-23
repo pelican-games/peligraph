@@ -30,18 +30,19 @@ Release build と絶対パスの prefix への Runtime install は成功した�
 
 | gate / 確認 | 結果 |
 |---|---|
-| CPU gate(2026-09-23、`7652fb09`) | 1,790 件中 1,789 PASS、allowlisted skip 1 件、失敗 0。skip は directory symlink 作成権限が必要な `PathResolver rejects symlink escapes after canonicalization`。`v0-cpu-0923/` の exact SKIP policy も PASS |
-| 全 GPU gate(2026-09-23、`7652fb09`) | 274 件中 273 PASS、allowlisted skip 1 件(Debug 専用の `wsi_fault_window_player`)、失敗 0。実窓 Studio scenario 10 件はすべて観測・通過。exact SKIP policy PASS。artifact は `v0-gpu-0923/` |
-| Studio CPU gate(2026-09-23、`7652fb09`) | compiler ON の release 構成なので空の allowlist で実行。263 件中 263 PASS、skip 0、exact SKIP policy PASS。artifact は `v0-studio-0923/` |
+| CPU gate(2026-09-23、`1bed0335`) | 1,793 件中 1,792 PASS、allowlisted skip 1 件、失敗 0。skip は directory symlink 作成権限が必要な `PathResolver rejects symlink escapes after canonicalization`。`v0-cpu-final4/` の exact SKIP policy も PASS |
+| 全 GPU gate(2026-09-23、`1bed0335`) | 274 件中 273 PASS、allowlisted skip 1 件(Debug 専用の `wsi_fault_window_player`)、失敗 0。実窓 Studio scenario 10 件はすべて観測・通過。exact SKIP policy PASS。artifact は `v0-gpu-final4/` |
+| Studio CPU gate(2026-09-23、`a0e7820d`、以後 Studio の code は無変更) | compiler ON の release 構成なので空の allowlist で実行。263 件中 263 PASS、skip 0、exact SKIP policy PASS。artifact は `v0-studio-final3/` |
 | 全 GPU gate の経緯 | 09-22 初回は 4 失敗(`v0-gpu-final/`)、修正後の再実行は `studio_scenario_graph_observe_roundtrip` の 1 失敗(`v0-gpu-verified/`)。後者は viewport の resize による render pipeline の再 lowering が editor の遷移 epoch を動かし、受付済みの編集を `gate_closed` で捨てていた。`7652fb09` で遷移 epoch を participant の reload 結果だけから作るよう修正 |
-| 配布 stage(2026-09-23、`7652fb09`) | Runtime install から出荷 sample 6 / 6 の起動、別 project 経由の再読込、capture、正常終了が成功。新規 project の位置編集・保存・完全終了・Studio 再起動でも authoring ID と保存値の持続を確認 |
+| 配布 stage(2026-09-23、`1bed0335`) | Runtime install から出荷 sample 7 / 7(pathtrace_demo を追加)の起動、別 project 経由の再読込、capture、正常終了が成功。新規 project の位置編集・保存・完全終了・Studio 再起動でも authoring ID と保存値の持続を確認 |
+| Debug 専用(2026-09-23、`1bed0335`) | 同じ tree の Debug build で `wsi_fault_window_player` と `crash_symbol_production_wiring` が通過 |
 
 gate の artifact は `build-v0/test_artifacts/` 以下。配布物の操作ログと詳しい確認範囲は
-[v0 の検証記録](v0_freeze.md#6-v010-tag-の手順) を参照する。CPU / GPU / Studio CPU gate と配布 stage は
-`7652fb09` の Release build で通過した。以後の revision で tag を付けるときは、その revision でやり直す。
+[v0 の検証記録](v0_freeze.md#6-v010-tag-の手順) を参照する。CPU / GPU gate、配布 stage、Debug 専用の確認は
+`1bed0335` で通過した。以後の revision で tag を付けるときは、その revision でやり直す。
 
 Release では Debug 専用の `wsi_fault_window_player` を明示 skip とし、
-`crash_symbol_production_wiring` は Debug 構成だけを対象にする。今回は両者とも未検証。
+`crash_symbol_production_wiring` は Debug 構成だけを対象にする。両者は同じ tree の Debug build で確認した。
 player の validation on/off 対照や fixture の symbol archive 契約テストは、
 Debug の故障注入・実 Studio の PDB 配線の確認とは分けて扱う。
 

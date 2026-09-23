@@ -261,8 +261,10 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 | configure の `requires` 無視 | configure と test sweep が同じ `projectrequirements.def` を参照し、OFF build で非対応の sample DLL target を作らない。`f9b4c221` |
 | 複数 build による配布物の上書き | runtime は `<build>/dist/<config>/`、配布物は `cmake --install --component Runtime` で集約する。`f9b4c221`。現行 Windows の Release build と絶対パスの prefix への Runtime install は成功。配布物の確認範囲は §6 |
 | Studio が `raytracing_demo` を開けないという旧指摘 | 現行 Windows の Runtime stage で起動、`scene_tree` / `get_frame_plan`、capture、別projectへの切替と戻りによる再読込、正常終了を確認。RT の二球の画像も確認した。他の OS / GPU の保証ではない |
-| 出荷 sample の Studio 起動 | `example` / `raytracing_demo` / `sprite_demo` / `animgraph_demo` / `posegraph_demo` / `vrm_xr_demo`を現行Windows Runtime stageで起動・capture・別projectを介した再読込・正常終了まで確認。機能全組合せやGPU全数とは区別する |
+| 出荷 sample の Studio 起動 | `example` / `raytracing_demo` / `pathtrace_demo` / `sprite_demo` / `animgraph_demo` / `posegraph_demo` / `vrm_xr_demo` の 7 本を現行 Windows Runtime stage で起動・capture・別 project を介した再読込・正常終了まで確認。機能全組合せや GPU 全数とは区別する |
 | 新規 project からの編集・保存 | CLI init → Studio で位置編集 → FileSaveScene → 完全終了 → Studio 再起動を確認。authoring ID が維持され、`get_components` の authoring/runtime 両方で保存位置が一致し、capture・正常終了まで通過 |
+| Studio で開いた ray tracing project の起動直後 | shader cache が効いて起動が速いと、窓の出力より先に最初の frame が来る。出力待ちで飛ばした frame が staged な起動 generation を巻き戻し、次の frame が `Renderer logical frame requires a compiled render pipeline` で落ちていた(pathtrace_demo の開き直しで 5 回中 2 回)。飛ばした frame では巻き戻さず、公開前の live material 検査も「取り除く経路が無い」として受け入れる。`a0e7820d` / `1bed0335`。開き直し 10 / 10 |
+| editor の gate 判定の一本化 | journal・render config・procedural asset が同じ `EditorGateEpoch` で受理後の commit 可否を判定し、遷移は型付きの `ReloadTransitionFacts` を 1 つの counter が数える。閉じて開き直した gate を procedural asset が見逃す穴も閉じた。`c3830d32` |
 | 同一 logical frame の再描画 | 通常動作中の Studio で `render_frame` を重ねた際、GPU timing の sample ID が重複して fatal になる不具合を修正。同じ logical frame の同じ範囲を再記録しない。全 GPU gate の結果は §6 で別に扱う |
 | Release の runtime 診断 | file のみだったログ出力を file + stderr に戻し、Studio の Engine Log とテストの捕捉 stderr へ届くよう修正。JSON-RPC の stdout は維持 |
 | 既に閉じた旧指摘 | export の `.tmp-<pid>` 掃除と `structfieldjson.hpp` 複製は R-1、canvas の余白/pan は N-4、inline editor の意図しない FocusOut は Q-3 で解消。着地記録は §5 / 実装台帳 |
@@ -280,8 +282,8 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 | AS / shader の同一性 | `WP386` の signed-zero transform identity、shader source 改行と cache key |
 | graph root と preset の組合せ | `P-2a-4a` / `P-2a-3` の `region_replacements`、Frame Plan fixture と現在の生成結果 |
 | export / 一時ファイル | per-process temp root 修正後の並列 `renderconfigeditor`、GPU lease log の残留。古い `%TEMP%` 件数を現在の原因の証拠にしない |
-| Debug 専用 WSI 故障注入 | `wsi_fault_window_player` は Release で注入 hook がなく明示 skip。専用 player の validation on/off 対照とは別の確認範囲であり、今回は Debug 故障注入を未検証 |
-| Debug の production PDB 配線 | `crash_symbol_production_wiring` は実際の Debug Studio が残した symbol archive を読むため Debug 構成だけで登録する。Release では対象外。fixture による archive 契約テストの成功を、実 Debug build の配線確認の代わりにしない |
+| Debug 専用 WSI 故障注入 | `wsi_fault_window_player` は Release で注入 hook がなく明示 skip。2026-09-23 に Debug build(`1bed0335`)で実行し、注入 6 回・surface 作り直し 5 回・公開 2 回で通過 |
+| Debug の production PDB 配線 | `crash_symbol_production_wiring` は実際の Debug Studio が残した symbol archive を読むため Debug 構成だけで登録する。2026-09-23 に Debug build で実行し、Studio の `1bed0335` の PDB が archive されていることを確認 |
 | オフライン時刻の上限 | `O-1` の `--start-time` / `llround` 境界。入力範囲の拒否と通常 replay の区別 |
 
 最終 revision の GPU / Studio gate と配布物の結果はrelease完了時に §6 へ記録する。部分確認や過去の全数成功で代用しない。
@@ -336,6 +338,10 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 | 同一 logical frame の再描画時の GPU timing 重複防止 | `48144f66` |
 | Studio scenario の必須化・GPU 分類・構成別 gate | `dd26441b` |
 | 描画 fixture の終了手順と固定 cache hash 検査の整理 | `86d521a2` |
+| viewport resize で受理済みの編集が捨てられる不具合 | `7652fb09` |
+| path tracing の出荷 sample(PT-1a〜1c、camera の viewport 修正) | `77a6fff7` |
+| editor の gate 判定の一本化と型付きの遷移 counter | `c3830d32` |
+| Studio で開いた ray tracing project の起動直後の fatal | `a0e7820d` / `1bed0335` |
 
 ## 6. v0.1.0 tag の手順
 
@@ -345,19 +351,19 @@ tag は利用者が v0 を閉じる判断をした時点で付ける。
 
 2026-09-22 のローカル検証は Windows / MSVC、Qt 6.10.3、Python 3.12、Vulkan SDK 1.4.x の
 `build-v0` / Release で実施した。Studio、Python tests、runtime shader compiler は ON。
-CPU / GPU / Studio CPU gate と配布 stage の確認は、2026-09-23 に `7652fb09` の Release build と、
-そこから作った Runtime install(`build-v0/stage`)で行った。以後の revision で tag を付けるときは、
-その revision で同じ確認をやり直す。
+CPU / GPU gate、配布 stage、Debug 専用の確認は、2026-09-23 に `1bed0335` で行った(Release build、
+そこから作った Runtime install の `build-v0/stage`、同じ tree の Debug build)。以後の revision で tag を
+付けるときは、その revision で同じ確認をやり直す。
 
 | 確認範囲 | 結果と制約 |
 |---|---|
 | Release build / Runtime install | 成功。install prefix は絶対パスを使用 |
-| CPU gate | 2026-09-23、`7652fb09`。1,790 件中 1,789 PASS、directory symlink 権限による allowlisted skip 1 件、失敗 0。`build-v0/test_artifacts/v0-cpu-0923/` の CTest と exact SKIP policy が根拠 |
-| 配布 stage の出荷 sample | 2026-09-23、`7652fb09`。6 / 6 成功。起動・capture → 別 project へ切替 → 元の project を再読込・capture → 正常終了を確認。同じ project の open が no-op になる経路ではない。`scratch/v0-samples-0923.log` と `build-v0/test_artifacts/staged-samples/report.json` |
-| 配布 stage の新規 project | 2026-09-23、`7652fb09`。CLI init → 位置編集 → 保存 → 完全終了 → Studio 再起動で authoring ID と保存値の持続、capture、正常終了を確認。`scratch/v0-new-project-0923.log` |
-| 全 GPU gate | 2026-09-23、`7652fb09`。274 件中 273 PASS、Debug 専用 WSI の allowlisted skip 1 件、失敗 0。実窓 Studio scenario 10 件はすべて観測・通過し、exact SKIP policy も PASS。`build-v0/test_artifacts/v0-gpu-0923/` が根拠 |
-| Studio CPU gate | 2026-09-23、`7652fb09`。compiler ON なので空の allowlist で実行し、263 件中 263 PASS、skip 0、exact SKIP policy PASS。`build-v0/test_artifacts/v0-studio-0923/` が根拠 |
-| Debug 専用の確認 | WSI 故障注入と production PDB 配線は未検証。Release の skip / 対象外を成功数へ含めない |
+| CPU gate | 2026-09-23、`1bed0335`。1,793 件中 1,792 PASS、directory symlink 権限による allowlisted skip 1 件、失敗 0。`build-v0/test_artifacts/v0-cpu-final4/` の CTest と exact SKIP policy が根拠 |
+| 配布 stage の出荷 sample | 2026-09-23、`1bed0335`。7 / 7 成功(pathtrace_demo を追加)。起動・capture → 別 project へ切替 → 元の project を再読込・capture → 正常終了を確認。同じ project の open が no-op になる経路ではない。engine は RPC に答えてから最初の frame を出すので、確認手順は capture と `get_frame_plan` を名前付きの未準備エラー(出力なし・描画済み frame なし・公開前の plan)の間だけ最大 20 秒待ち直す。`scratch/samples7_final.log` と `build-v0/test_artifacts/staged-samples/report.json` |
+| 配布 stage の新規 project | 2026-09-23、`1bed0335`。CLI init → 位置編集 → 保存 → 完全終了 → Studio 再起動で authoring ID と保存値の持続、capture、正常終了を確認。`scratch/newproj_final2.log` |
+| 全 GPU gate | 2026-09-23、`1bed0335`。274 件中 273 PASS、Debug 専用 WSI の allowlisted skip 1 件、失敗 0。実窓 Studio scenario 10 件はすべて観測・通過し、exact SKIP policy も PASS。`build-v0/test_artifacts/v0-gpu-final4/` が根拠 |
+| Studio CPU gate | 2026-09-23、`a0e7820d`(以後 Studio の code は無変更)。compiler ON なので空の allowlist で実行し、263 件中 263 PASS、skip 0、exact SKIP policy PASS。`build-v0/test_artifacts/v0-studio-final3/` が根拠 |
+| Debug 専用の確認 | 2026-09-23、`1bed0335` の Debug build。`wsi_fault_window_player`(注入 6 回・surface 作り直し 5 回・公開 2 回)と `crash_symbol_production_wiring`(Studio の `1bed0335` の PDB が archive 済み)がどちらも通過 |
 
 GPU gate の経緯: 09-22 初回の失敗 4 件は、Studio への fatal ログ通知、WP366/WP384 の frame publication
 fixture 終了、`physics_trigger_behavior_e2e`、`behavior_project_e2e`(初回ログは `v0-gpu-final/`)。
@@ -365,7 +371,12 @@ fixture 終了、`physics_trigger_behavior_e2e`、`behavior_project_e2e`(初回�
 Inspector から graph を装着する編集が、受付後の viewport resize で `gate_closed` として捨てられていた。
 resize が render pipeline を再 lowering して reload 状態の `details.generation` を更新し、それが editor の
 遷移 epoch の hash に入っていたためである。`7652fb09` で遷移 epoch を scene、watcher、各 participant の
-reload 結果だけから作るよう修正し、上の最終 gate で確認した。
+reload 結果だけから作るよう修正し、`c3830d32` で gate 判定を 1 つの規則と型付きの counter にまとめた。
+
+配布確認の経緯: `b798a31f` の配布確認で、Studio から pathtrace_demo を開き直すと player が落ちる不具合が見つかった
+(上の §4.1「Studio で開いた ray tracing project の起動直後」)。`a0e7820d` で直したとき `get_frame_plan` も
+公開前の staged な generation を返すように変えたが、公開前の generation を非公開とする WP384 の契約に反し、
+全 GPU gate の WP366/WP384 frame publication test が検出した。`1bed0335` でその部分だけ取り消し、上の最終確認を行った。
 
 1. 対象 revision と構成を固定する。Studio ON、Python 3.11 以上と `PELICAN_PYTHON_TESTS=ON`、runtime shader compiler ON を使う。必要な機能の基準値は [ビルド機能台帳](build_features.md)、実行コマンドは [CI 運用](ci.md) を参照する。
 2. 影響範囲の CPU 回帰と最終 GPU gate を通し、Studio CPU gate と実窓 scenario が未登録・skip になっていないことを確認する。`run_gpu_gate.py --engine-only` は限定検証用であり release 判定には使わない。古い件数を成功条件に固定しない。

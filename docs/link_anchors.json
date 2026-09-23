@@ -4708,6 +4708,7 @@
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/vkcore/renderer.cpp|`StagedRuntimeRollbackGuard`": "class StagedRuntimeRollbackGuard {",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/vkcore/renderer.cpp|`after_publish`": "hooks.after_publish =",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/vkcore/renderer.cpp|`after_publish` フック": "hooks.after_publish =",
+    "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/vkcore/renderer.cpp|`beginLogicalFrameTarget()`": "void Renderer::LogicalFrameRecorder::beginLogicalFrameTarget() {",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/vkcore/renderer.cpp|`configureExternalDepthSubmission()`": "target.configureExternalDepthSubmission(",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/vkcore/renderer.cpp|`consumeShaderReloadPublication()`": "bool consumeShaderReloadPublication(ShaderHotReloadModules &modules) {",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/vkcore/renderer.cpp|`currentFramePlanJson()`": "nlohmann::json Renderer::currentFramePlanJson() const {",
