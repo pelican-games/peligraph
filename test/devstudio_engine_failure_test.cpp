@@ -468,10 +468,11 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
     // With no pending RPC response, equality means stdout contributed zero bytes.
     REQUIRE(broken.studio_output == broken.standard_error);
 
-    const fs::path broken_log = filesystemPath(player).parent_path() /
-                                "pelican.log";
-    REQUIRE(fs::is_regular_file(broken_log));
-    REQUIRE(QString::fromStdString(readText(broken_log)).contains(engine_fatal));
+    // Studio gives each project's player its own log, truncated per run.
+    const fs::path player_log =
+        test_project / ".pelican" / "logs" / "player.log";
+    REQUIRE(fs::is_regular_file(player_log));
+    REQUIRE(QString::fromStdString(readText(player_log)).contains(engine_fatal));
 
     // Restore the deliberately broken example before running the control.
     writeText(rendering_config, original_config);
@@ -533,8 +534,10 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
         QStringLiteral("Pelican fatal error")));
     REQUIRE_FALSE(stopped_status.contains(
         QStringLiteral("Pelican fatal error")));
-    REQUIRE(QString::fromStdString(readText(broken_log)).contains(
-        QStringLiteral("starting main loop")));
+    // The control run truncated the file: it holds this run, not the failed one.
+    const QString control_log = QString::fromStdString(readText(player_log));
+    REQUIRE(control_log.contains(QStringLiteral("starting main loop")));
+    REQUIRE_FALSE(control_log.contains(engine_fatal));
 }
 
 } // namespace PelicanStudio
