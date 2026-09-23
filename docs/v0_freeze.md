@@ -264,6 +264,11 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 | 出荷 sample の Studio 起動 | `example` / `raytracing_demo` / `pathtrace_demo` / `sprite_demo` / `animgraph_demo` / `posegraph_demo` / `vrm_xr_demo` の 7 本を現行 Windows Runtime stage で起動・capture・別 project を介した再読込・正常終了まで確認。機能全組合せや GPU 全数とは区別する |
 | 新規 project からの編集・保存 | CLI init → Studio で位置編集 → FileSaveScene → 完全終了 → Studio 再起動を確認。authoring ID が維持され、`get_components` の authoring/runtime 両方で保存位置が一致し、capture・正常終了まで通過 |
 | Studio で開いた ray tracing project の起動直後 | shader cache が効いて起動が速いと、窓の出力より先に最初の frame が来る。出力待ちで飛ばした frame が staged な起動 generation を巻き戻し、次の frame が `Renderer logical frame requires a compiled render pipeline` で落ちていた(pathtrace_demo の開き直しで 5 回中 2 回)。飛ばした frame では巻き戻さず、公開前の live material 検査も「取り除く経路が無い」として受け入れる。`a0e7820d` / `1bed0335`。開き直し 10 / 10 |
+| Studio 終了時に player が空回りする | Studio が viewport の親窓を先に壊すと、埋め込み player は close flag が立たないまま surface を毎 frame 作り直し(`ErrorSurfaceLostKHR` 168〜172 行)、Studio に kill されるまで回っていた。main loop が Win32 の窓の実在を見て止まる。`d8249a3a`。配布確認が終了時の player log で 3 件以下を検査し、修正を外すと赤 |
+| player のログが 1 ファイルに混ざる | 全 player が Studio の cwd の `pelican.log` に追記していた。player に `--log-file`(起動ごとに切り詰め)を足し、Studio は `<project>/.pelican/logs/player.log` を渡す。既定の `pelican.log` 追記は維持。`48d5b3cb`、`devstudio_viewport_test` と配布確認 |
+| engine の準備完了の判定 | engine は最初の frame より前に RPC に答えるので、capture や frame plan を待つ側が名前付きの「まだ」エラーを再試行していた。`get_status` に `render.published_frames`、automation の `wait_engine` に `frames` を足した。Frame Plan dock は公開前の plan を「失敗」と表示せず上限付き(250 ms × 40)で問い直す。dock の失敗表示は `1bed0335` 以後の再現 6 回では出ておらず、上限付きの保険として入れた。`90806c80` |
+| staged な ray tracing 世代の行き先 | 公開 / 次の frame へ持ち越し / 巻き戻しの 3 つを `StagedRuntimeRollbackGuard` にまとめ、`published()` / `keepForNextFrame()` で名指しする。`RenderTarget` に test seam を足し、出力に image の無い frame を 2 回飛ばしても staged の世代が残り次の frame で公開される GPU テストを追加。`keepForNextFrame()` を外すと赤。`90806c80` |
+| 配布確認の手順 | scratch の script だった確認を `test/ci/run_distribution_check.py` に移し、出荷 sample を `projects/` から自動で数える。手順は [CI 運用](ci.md)。`8813ab82` |
 | editor の gate 判定の一本化 | journal・render config・procedural asset が同じ `EditorGateEpoch` で受理後の commit 可否を判定し、遷移は型付きの `ReloadTransitionFacts` を 1 つの counter が数える。閉じて開き直した gate を procedural asset が見逃す穴も閉じた。`c3830d32` |
 | 同一 logical frame の再描画 | 通常動作中の Studio で `render_frame` を重ねた際、GPU timing の sample ID が重複して fatal になる不具合を修正。同じ logical frame の同じ範囲を再記録しない。全 GPU gate の結果は §6 で別に扱う |
 | Release の runtime 診断 | file のみだったログ出力を file + stderr に戻し、Studio の Engine Log とテストの捕捉 stderr へ届くよう修正。JSON-RPC の stdout は維持 |
@@ -342,6 +347,10 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 | path tracing の出荷 sample(PT-1a〜1c、camera の viewport 修正) | `77a6fff7` |
 | editor の gate 判定の一本化と型付きの遷移 counter | `c3830d32` |
 | Studio で開いた ray tracing project の起動直後の fatal | `a0e7820d` / `1bed0335` |
+| Studio 終了時の player の空回り | `d8249a3a` |
+| player の project ごとのログ(`--log-file`) | `48d5b3cb` |
+| 公開 frame 数による準備完了・staged 世代の行き先と test seam・Frame Plan dock の問い直し | `90806c80` |
+| 配布確認の repo 化(`run_distribution_check.py`) | `8813ab82` |
 
 ## 6. v0.1.0 tag の手順
 
@@ -380,7 +389,7 @@ reload 結果だけから作るよう修正し、`c3830d32` で gate 判定を 1
 
 1. 対象 revision と構成を固定する。Studio ON、Python 3.11 以上と `PELICAN_PYTHON_TESTS=ON`、runtime shader compiler ON を使う。必要な機能の基準値は [ビルド機能台帳](build_features.md)、実行コマンドは [CI 運用](ci.md) を参照する。
 2. 影響範囲の CPU 回帰と最終 GPU gate を通し、Studio CPU gate と実窓 scenario が未登録・skip になっていないことを確認する。`run_gpu_gate.py --engine-only` は限定検証用であり release 判定には使わない。古い件数を成功条件に固定しない。
-3. Runtime install で作った配布物から、新規 project → 編集 → 保存 → 再起動の経路と出荷 sample を確認する。v1 計画の「作る / 学ぶ / 出力する / 拡張して持ち出す」の 4 シナリオについて、確認した経路と残る制限を残す。
+3. Runtime install で作った配布物から、新規 project → 編集 → 保存 → 再起動の経路と出荷 sample を確認する(`test/ci/run_distribution_check.py` を GPU lease の下で実行。[CI 運用](ci.md))。v1 計画の「作る / 学ぶ / 出力する / 拡張して持ち出す」の 4 シナリオについて、確認した経路と残る制限を残す。
 4. §4 の再検証結果と既知の制限、利用した revision・構成・実行範囲を記録し、文書・索引を commit する。
 5. 利用者の release 判断後に `git tag -a v0.1.0 -m "pelican v0 (format 0.1.0)"` を実行する。
 

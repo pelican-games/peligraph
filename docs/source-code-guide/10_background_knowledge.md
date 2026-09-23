@@ -445,7 +445,7 @@ TLAS の各 instance は `VkGeometryInstanceFlagsKHR` を持ち、`FORCE_OPAQUE`
 
 GPU に投入したコマンドバッファは、対応する fence が signal されるまで「まだ実行中かもしれない」ものです。そのコマンドバッファが参照している資源(バッファ・イメージ・acceleration structure・SBT・descriptor set)は、その間は破棄も上書きもできません。CPU が先へ進むために同じ資源を N セット用意して添字で回すのが in-flight frame で、この N はスワップチェーンのイメージ枚数とは**別の数**です。破棄を「fence 完了後」まで遅らせる仕組み(遅延解放キュー)と、フレームが掴んだ資源を型を消して握っておく仕組み(lease)を組むのが定型になります。
 
-**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L4750) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
+**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L4763) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
 
 ## 10.2 glTF / 3D アセット形式の仕様
 
@@ -621,7 +621,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 「途中で失敗したら、それまでの副作用を取り消す」を例外安全に書く定型です。ローカルなガード型のデストラクタに巻き戻し処理を書き、正常系の最後で「もう巻き戻さない」印(commit / dismiss と呼ばれることが多い)を立ててガードを無効化します。こうすると、途中のどの `throw` からでも巻き戻しが走り、成功経路でだけ走りません(`std::scope_exit` / `scope_fail` は C++ 標準ライブラリ拡張の同種の道具です)。ガードに「そもそも何もしていない」状態を表す番兵(世代番号が 0、ハンドルが無効など)を持たせて、staging 前に抜けたときに巻き戻しを飛ばす形もよく使われます。
 
-**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3013) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3028) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L390)(`catch (...)` で確保済みの範囲を返す)
+**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3013) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3040) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L390)(`catch (...)` で確保済みの範囲を返す)
 
 ### double-checked locking と acquire / release
 
@@ -1228,7 +1228,7 @@ OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメー
 
 **小さな例**: `fps = 60` で `t = 2.0` を指定すると frame 120 になります。`--frames 2` なら出力される 2 枚は、通常実行の 120 枚目・121 枚目と**バイト単位で一致**していなければおかしい。ここで丸めを `floor(t·fps − ε)` に変えると 119 が選ばれ、この一致が壊れます(壊れ方がテストで見えるので、丸めの選択はテストで固定できます)。
 
-**使用場所**: [`parseStartFrame()`](../../src/player/main.cpp#L283)(`llround(seconds * fps)`。テキストとして parse し、綴り違い・非有限・負を 1 つの名前へ集約)/ [replay prologue](../../src/core/appflow/loop.cpp#L672)(`start_frames − 1` フレームを capture 無しで回してから出力を始める)
+**使用場所**: [`parseStartFrame()`](../../src/player/main.cpp#L284)(`llround(seconds * fps)`。テキストとして parse し、綴り違い・非有限・負を 1 つの名前へ集約)/ [replay prologue](../../src/core/appflow/loop.cpp#L672)(`start_frames − 1` フレームを capture 無しで回してから出力を始める)
 
 ## 関連文書
 

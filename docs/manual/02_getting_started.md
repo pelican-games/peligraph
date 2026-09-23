@@ -338,7 +338,7 @@ pelican_player --headless --project mygame --frames 10 --render-out out/%04d.png
 pelican_player --headless --project mygame --start-time 2.0 --frames 2 --fps 60 --render-out out/%04d.png
 ```
 
-- 秒はコマンドラインで **1 回だけ frame 番号に量子化**されます(`llround(秒 × fps)`。エンジンには「フレームの間の時刻」が渡りません — [parseStartFrame()](../../src/player/main.cpp#L283))。
+- 秒はコマンドラインで **1 回だけ frame 番号に量子化**されます(`llround(秒 × fps)`。エンジンには「フレームの間の時刻」が渡りません — [parseStartFrame()](../../src/player/main.cpp#L284))。
 - **飛ばすのではなく、そこまで回します。** `start_frame − 1` 枚を capture 無しで実行(warm-up)し、**最初に capture される frame が t の frame** です([loop.cpp:441](../../src/core/appflow/loop.cpp#L672))。グラフの時計・ゲームシステムの積分・アニメーションの評価器は時刻から逆算できないので、「その時刻に居た」と言える唯一の方法が全ステップを通ることだからです。`--start-time 0` は通常の run と同一です。
 - 実行時に stderr へ 1 行出ます: `offline: start_time=2 start_frame=120 replay=119 frames=2`。
 - **`--frames` とは併用できます**(枚数の指定)。**併用できないのは** `--rpc` / `--replay` / `--record-input` / `--bake-camera-output` の 4 つで、これらは「どの frame を出すか」を自分で決める経路だからです。
@@ -402,7 +402,7 @@ cmake --build ./build --config Debug --target run_studio
 | `engine_min_version` のエラー | プロジェクトが要求するエンジン版(現行 `0.1.0`)より新しい。`--ignore-engine-version` で WARN に降格可能 |
 | Qt が見つからず configure 失敗 | `-DCMAKE_PREFIX_PATH` に Qt のインストールパスを渡すか、`-DSKIP_DEVSTUDIO=ON` |
 | GPU テストが全部 SKIP | Vulkan デバイスが列挙できない環境(リモートデスクトップ等)。仕様どおりの挙動 |
-| rpc モードでログが出ない | rpc モードでは **stdout はプロトコル専用** —— JSON-RPC の応答行以外は何も流れません(ヘッドレスの blocking rpc / ウィンドウのフレーム境界 rpc のどちらも同じ)。ログは cwd の `pelican.log` に出ます(Release ビルドも同様) |
+| rpc モードでログが出ない | rpc モードでは **stdout はプロトコル専用** —— JSON-RPC の応答行以外は何も流れません(ヘッドレスの blocking rpc / ウィンドウのフレーム境界 rpc のどちらも同じ)。ログは cwd の `pelican.log` に出ます(Release ビルドも同様)。`--log-file <path>` で起動ごとのファイルに分けられ、Studio が起動した player は `<project>/.pelican/logs/player.log` に出します |
 | `windowed rpc request queue is busy`(`data.reason = "busy"` / `queue_capacity`) | ウィンドウモードの `--rpc` はフレーム境界でのみ処理する**有界キュー**(既定 64)。詰め込みすぎると即エラーで返るので、応答を待ってから次のリクエストを送る([第10章](10_tools.md)) |
 | `--xr on is incompatible with <driver>` | `--xr on` と決定的な駆動モード(rpc / golden / replay / headless)の併用。`--xr auto` にすれば(ログなしで)flat に正規化されます(§2.3) |
 | `Unknown behavior type 'X' on object 'Y'` | シーンの `behavior.type` がゲームロジック DLL に登録されていない。`PELICAN_REGISTER_BEHAVIOR` の登録名と綴りを合わせる([第8章](08_gameplay.md)) |

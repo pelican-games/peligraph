@@ -45,12 +45,13 @@
 | `--size WxH` | 1280x720 | ヘッドレスの描画サイズ |
 | `--render-out <path>` | なし | PNG 出力先(sRGB エンコード)。`%04d` 等で毎フレーム連番 |
 | `--fps <f>` | 60.0 | ヘッドレス固定ステップのレート(dt = 1/fps) |
-| `--start-time <秒>` | なし | **ヘッドレス専用**。この時刻の frame から `--frames` 枚を出す(✅O-1)。`llround(秒 × fps)` で **parse 時に frame 番号へ量子化**され、engine には「frame の間の時刻」が渡りません([parseStartFrame()](../../src/player/main.cpp#L283))。`--headless` が無ければ `offline.headless_required@1`、負・非有限・数でない綴りは**すべて** `offline.time_invalid@1`、`--rpc` / `--replay` / `--record-input` / `--bake-camera-output` との併用は `offline.mode_conflict@1`([検査](../../src/player/main.cpp#L517))。`--frames` は併用です |
+| `--start-time <秒>` | なし | **ヘッドレス専用**。この時刻の frame から `--frames` 枚を出す(✅O-1)。`llround(秒 × fps)` で **parse 時に frame 番号へ量子化**され、engine には「frame の間の時刻」が渡りません([parseStartFrame()](../../src/player/main.cpp#L284))。`--headless` が無ければ `offline.headless_required@1`、負・非有限・数でない綴りは**すべて** `offline.time_invalid@1`、`--rpc` / `--replay` / `--record-input` / `--bake-camera-output` との併用は `offline.mode_conflict@1`([検査](../../src/player/main.cpp#L523))。`--frames` は併用です |
 | `--dump-frame-plan` | off | 解決済みフレームプラン JSON を **stderr** へ出力([第6章](06_rendering.md)) |
 | `--gpu-labels` | off | Vulkan debug object 名と command label を有効化。validation layer の選択とは独立([第6章](06_rendering.md) §6.14) |
 | `--vulkan-validation <off\|on>` | `_DEBUG`: on / それ以外: off | Khronos validation layer と synchronization validation を一体で選択。要求時に `VK_LAYER_KHRONOS_validation` が無ければ名前付き hard error |
 | `--allow-absolute-paths` | off | CLI 由来のコンテンツ参照に限り絶対パスを許可。JSON 内の絶対パスは常に拒否 |
 | `--user-dir <dir>` | なし | `user://` ルートの差し替え |
+| `--log-file <path>` | なし | この起動のログを `<path>` に書く。親 directory は作り、**起動ごとに切り詰めます**(1 ファイル = 1 回の実行)。省略時は従来どおり cwd の `pelican.log` に追記します([main.cpp](../../src/player/main.cpp#L323)、[log.cpp](../../src/core/log.cpp#L32))。Studio は project ごとの log をこれで渡します(§10.7) |
 | `--ignore-engine-version` | off | `engine_min_version` 不適合を hard error → WARN に降格 |
 | `--play-seq <path.jsonl>` | なし | `pelican.transform_seq` の再生(`PELICAN_WITH_SEQPLAYER` ビルドユニットが ON のビルドでのみ使えます — [第2章](02_getting_started.md) §2.2) |
 | `--seq-mesh <builtin:sphere\|path.glb>` | builtin:sphere | transform_seq 全オブジェクトに使うメッシュ |
@@ -132,17 +133,17 @@ free-camera preset は overlay 側を選ぶため、両者は併用できます�
 
 ### 枠組み(不変)
 
-- stdin/stdout の NDJSON(1 行 = 1 つの JSON-RPC 2.0 リクエスト)。**stdout はプロトコル専用**(ログは `pelican.log`)。
+- stdin/stdout の NDJSON(1 行 = 1 つの JSON-RPC 2.0 リクエスト)。**stdout はプロトコル専用**(ログは cwd の `pelican.log`。`--log-file` を付けたときはそのファイル)。
 - batch・notification 非対応。エラーコードは標準 + アプリケーションエラー -32000、RenderDoc capture -32010。ハンドラ内例外は応答に変換されプロセスは落ちません。EOF で正常終了。
 - 1 プロセス 1 クライアント。**ゲーム DLL リロード中は全メソッドがアプリケーションエラーで拒否**されます。
 
-> **設計決定(決定性):** 同一の RPC スクリプトを 2 回実行したとき、応答列は(instance_id を除き)**バイト単位で完全一致**しなければならない。CI で検証済み。`instance_id` だけが除外されるのは、それが RPC エンドポイント生成時に振られる UUID v4 で、起動ごとに必ず変わる値だからです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1977))。
+> **設計決定(決定性):** 同一の RPC スクリプトを 2 回実行したとき、応答列は(instance_id を除き)**バイト単位で完全一致**しなければならない。CI で検証済み。`instance_id` だけが除外されるのは、それが RPC エンドポイント生成時に振られる UUID v4 で、起動ごとに必ず変わる値だからです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1979))。
 
 ### 基盤メソッド一覧
 
 | メソッド | params | 動作 |
 |---|---|---|
-| `get_status` | `{}` | `{instance_id, project_root, scene, frame, time, seed, renderdoc, diagnostics:{renderdoc:{...}}, debug_utils:{...}, vulkan_validation:{layer, available, enabled, synchronization, reason}, stores, input:{...}, reload:{...}, participants:{game_logic:{...}}, sprite:{...}, color:{...}, startup:{...}, xr:{active, reference_space, floor_semantics, ...}, animation:{available, sinks:[{owner, node, source, cursors:[{clip, time_seconds, normalized_phase}], frame_revision, pose_hash, state?, transition?, root_delta?}]}}`(`animation` は AG-3a。animation module の無い build では `{available: false}` だけ)※rpc は常に flat 駆動のため `xr.active=true` は rpc からは観測できない |
+| `get_status` | `{}` | `{instance_id, project_root, scene, frame, time, seed, renderdoc, diagnostics:{renderdoc:{...}}, debug_utils:{...}, vulkan_validation:{layer, available, enabled, synchronization, reason}, stores, input:{...}, reload:{...}, participants:{game_logic:{...}}, sprite:{...}, color:{...}, render:{published_frames}, startup:{...}, xr:{active, reference_space, floor_semantics, ...}, animation:{available, sinks:[{owner, node, source, cursors:[{clip, time_seconds, normalized_phase}], frame_revision, pose_hash, state?, transition?, root_delta?}]}}`(`animation` は AG-3a。animation module の無い build では `{available: false}` だけ)※rpc は常に flat 駆動のため `xr.active=true` は rpc からは観測できない |
 | `set_seed` | `{seed}` | 決定的乱数のシード設定 |
 | `set_time` | `{t}` | 仮想時刻の直接設定(dt=0) |
 | `step_frame` | `{}` | 1 フレーム進める |
@@ -629,10 +630,16 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 `\\.\pipe\<名前>`)が開き、**改行区切りの JSON 1 行 = 1 命令**で `list` / `click` / `double_click` / `drag` /
 `wheel` / `move` / `press` / `release` / `key` / `type` / `text` / `action` / `menu_list` / `view_state` /
 `wait` / `wait_engine` / `rpc` / `open_project` / `screenshot` / `quit` の **20 命令**を受けます
-([一覧](../../src/devstudio/automation/automationcommands.cpp#L1612))。**flag が無い起動では server object が
+([一覧](../../src/devstudio/automation/automationcommands.cpp#L1665))。**flag が無い起動では server object が
 作られないので socket は存在しません**([構築](../../src/devstudio/view/uimain.cpp#L36)) —— 出荷時の挙動は
 変わりません。listen できたときだけ `automation listening: <endpoint>` を標準出力に出します
 ([その 1 行](../../src/devstudio/view/uimain.cpp#L55))。開けなかったときは理由を出して **終了コード 3** です。
+
+`wait_engine` は engine が editor RPC に答えた時点で返ります。engine は**最初の frame を出す前に** RPC に
+答えるので、描画済みの frame が要る操作(`capture`、公開済みの frame plan)の前には `frames` を付けます。
+`{"cmd": "wait_engine", "frames": 1}` は `get_status` の `render.published_frames` がその数に届くまで待ち、
+応答に `published_frames` を足します([commandWaitEngine()](../../src/devstudio/automation/automationcommands.cpp#L1482))。
+`published_frames` は renderer がその起動で公開した logical frame の数で、飛ばした frame は数えません。
 
 回す側は [`tools/studio_drive.py`](../../tools/studio_drive.py#L893)(`uv run`、標準ライブラリだけ)です。
 Studio を `--automation --project --tab` で起動し、シナリオ JSON(`test/studio_scenarios/<名前>.json`)の step を
@@ -679,6 +686,17 @@ build/dist/Debug/pelican_studio.exe
 ```
 
 `--project` はここに書きません。Studio が開いた project から自分で渡すため、同名指定は除去されます。
+
+player のログは **project ごと**に `<project>/.pelican/logs/player.log` へ出ます。Studio が `--log-file` を
+付けて起動し([引数の組み立て](../../src/devstudio/viewport/studioplayerarguments.cpp#L67))、ファイルは起動のたびに
+切り詰められます。以前は全 player が Studio の cwd の `pelican.log` に追記していたため、別の project や
+前回の起動の行が混ざっていました。`PELICAN_STUDIO_PLAYER_ARGUMENTS` に自分で `--log-file` を書いた場合は
+それが優先され、Studio は付け足しません。
+
+Studio が viewport の窓を先に壊した場合も player は自分で終わります。埋め込み窓は親と一緒に消え、GLFW の
+close flag は立たないので、以前は surface を毎 frame 作り直そうとして(`ErrorSurfaceLostKHR` が数十行)
+Studio に kill されるまで回っていました。main loop は Win32 の窓がもう無いことを見て止まります
+([Window::process()](../../src/core/os/window.cpp#L318))。
 
 `--free-camera [blender|unity]`、`--feature-overlay`、`--input-action-overlay` は Studio 固有機能ではなく、いずれも同じ
 `pelican_player` の公開引数です。したがって素の player や profiler からも同じ起動時 overlay を

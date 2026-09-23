@@ -181,6 +181,28 @@ experimental SPIR-V linkerは`PELICAN_WITH_SPIRV_LINK=OFF`が既定である。O
 pinned SPIRV-Toolsと`pelican-spv-link`をbuild graphへ加える。この依存の生成処理も
 Pythonを使うため、完全なCI gateはPython testと同時にON、通常／配布buildはOFFにする。
 
+### 配布物の確認(`run_distribution_check.py`)
+
+Runtime install を利用者と同じ形で確かめる。PATH を install の `bin` と System32 だけにして、
+開発 build や Qt SDK の DLL が欠けたファイルの代わりにならないようにする。出荷 sample(`projects/` の
+`project.json` を持つ directory すべて)ごとに、install の Studio で複製を開き、最初の frame を待って
+`scene_tree` / `get_frame_plan` / capture、別 project へ切替えて戻し、再度 capture し、Frame Plan dock が失敗表示で
+止まっていないことを見て、終了コード 0 で終わることを確かめる。そのあと project ごとの player log があること、
+Studio 終了時に生きていた player が surface を作り直し続けていないこと(`ErrorSurfaceLostKHR` 3 件以下)を見る。
+最後に `pelican_cli project init` の新規 project を editor RPC で編集、File メニューで保存、Studio を完全に
+終了・再起動して値が残ることを確かめる。
+
+```powershell
+cmake --install build-v0 --config Release --component Runtime --prefix <絶対パス>/build-v0/stage
+build-v0/test/Release/pelican_gpu_lease_run.exe -- python -B test/ci/run_distribution_check.py `
+  --stage build-v0/stage --artifacts build-v0/test_artifacts/distribution
+```
+
+他の GPU 作業と同時に走らせうるので GPU lease の下で起動する。`--sample <名前>`(繰り返し可)で sample を絞り、
+`--skip-new-project` で新規 project の確認を外せる。結果は `--artifacts` の下の `run-<時刻>-<pid>/report.json` に
+sample ごとの成否・失敗理由・capture とともに書く。engine は最初の frame より先に RPC に答えるので、
+確認は automation の `wait_engine` に `frames: 1` を付けて描画済みの frame を待つ。
+
 ## `gpu` ラベル
 
 CI0 の選択条件はテスト名の grep や workflow 内のテスト一覧ではなく、CTest の `gpu` ラベルだけである。

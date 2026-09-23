@@ -200,7 +200,7 @@ window the desktop happens to have activated.
 | `view_state`   | `name` -- a QGraphicsView's `scale`, `transform`, `center`, `scroll`, `visible_scene`, `viewport` |
 | `layout_stats` | `name` -- what the automatic placement achieved on the scene a QGraphicsView shows: `crossings`, `overlaps`, `nodes`, `reversed_edges` |
 | `wait`         | `name`, one of `visible` / `enabled` / `text` / `contains` / `missing`, `timeout_ms?` |
-| `wait_engine`  | `timeout_ms?` -- until the viewport answers editor RPC         |
+| `wait_engine`  | `timeout_ms?`, `frames?` -- until the viewport answers editor RPC; with `frames`, until the engine has published that many frames (`get_status` `render.published_frames`) |
 | `rpc`          | `method`, `params?`, `timeout_ms?` -- straight to the engine   |
 | `open_project` | `dir`                                                         |
 | `screenshot`   | `path`, `name?`, `mode?` (`widget` \| `screen`)               |
