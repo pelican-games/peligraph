@@ -3865,10 +3865,17 @@ const TemporalViewFamilyHistory &Renderer::activeTemporalHistory() const {
 
 nlohmann::json Renderer::currentFramePlanJson() const {
     const auto *frame_graph_runtime = FastModuleContainer::tryGet<FrameGraphRuntimeContainer>();
-    const auto generation =
+    // The published plan. Before anything is published, a ray-tracing
+    // startup generation waits staged for its first submitted frame; frames
+    // already render from it, so answer with it rather than reporting no plan
+    // (Studio asks as soon as the engine answers RPC).
+    auto generation =
         frame_graph_runtime != nullptr
             ? frame_graph_runtime->snapshot()
             : nullptr;
+    if (generation == nullptr && frame_graph_runtime != nullptr) {
+        generation = frame_graph_runtime->renderingSnapshot();
+    }
     const auto *program =
         generation != nullptr
             ? generation->find(current_rendering_pass_id)
@@ -5771,14 +5778,28 @@ void Renderer::LogicalFrameRecorder::configureExternalDepthExport() {
 }
 
 void Renderer::LogicalFrameRecorder::beginLogicalFrameTarget() {
-    target.beginLogicalFrame(
-        view_count,
-        LogicalFrameRuntime{
-            .renderer_generation =
-                runtime_generation,
-            .submission_lease =
-                submission_lease,
-        });
+    try {
+        target.beginLogicalFrame(
+            view_count,
+            LogicalFrameRuntime{
+                .renderer_generation =
+                    runtime_generation,
+                .submission_lease =
+                    submission_lease,
+            });
+    } catch (const OutputTemporarilyUnavailable &) {
+        // Skipping a frame because the output has no image yet records no
+        // GPU work and commits nothing, so a staged ray-tracing generation
+        // stays staged for the next frame. Rolling it back here left a ray
+        // tracing project with no renderer generation at all when its first
+        // frame came before the window output existed (a project opened in
+        // Studio with a warm shader cache), and the next frame then failed
+        // with "Renderer logical frame requires a compiled render pipeline".
+        // An output that changed still rolls back: OutputRelowerRequired
+        // re-lowers and stages a new generation.
+        staged_runtime_guard.complete();
+        throw;
+    }
     frame_abort_guard.emplace(target);
     retirement_batch_sealed = false;
 }

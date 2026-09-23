@@ -712,8 +712,11 @@ resolveLiveMaterialBindings(
     }
     // A registered material need not be drawn by this graph (for example an
     // RT-only project). Preserve that state, but reject removal of a route
-    // which the published graph did consume.
-    if (previous != nullptr &&
+    // which the published graph did consume. With nothing published yet (a
+    // ray-tracing startup generation stays staged until its first submitted
+    // frame, and a window output that appears first re-lowers it) no route
+    // was consumed, so there is nothing to remove.
+    if (previous == nullptr ||
         materialBindingsForGeneration(
             *previous, route, shader_contract,
             exact_pass)
