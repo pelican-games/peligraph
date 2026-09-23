@@ -1,0 +1,70 @@
+{
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {
+    "main": {
+      "objects": [
+        {
+          "name": "Camera",
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0,
+                0,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "scale": [
+                1,
+                1,
+                1
+              ]
+            },
+            {
+              "name": "camera",
+              "type": "orthographic",
+              "xmag": 2.0,
+              "ymag": 2.0,
+              "znear": 0.1,
+              "zfar": 100.0
+            }
+          ]
+        },
+        {
+          "name": "FurnaceSphere",
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0,
+                0,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "scale": [
+                1,
+                1,
+                1
+              ]
+            },
+            {
+              "name": "pelican_procedural_geometry",
+              "asset": "furnace_sphere"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

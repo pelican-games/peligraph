@@ -1,0 +1,237 @@
+{
+  "schema": "pelican.scene",
+  "version": 1,
+  "scenes": {
+    "main": {
+      "objects": [
+        {
+          "name": "Camera",
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0,
+                0,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "scale": [
+                1,
+                1,
+                1
+              ]
+            },
+            {
+              "name": "camera",
+              "type": "perspective",
+              "yfov": 0.7853981633974483,
+              "znear": 0.1,
+              "zfar": 100.0
+            }
+          ]
+        },
+        {
+          "name": "Ground",
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0,
+                0,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "scale": [
+                1,
+                1,
+                1
+              ]
+            },
+            {
+              "name": "pelican_procedural_geometry",
+              "asset": "ground"
+            }
+          ]
+        },
+        {
+          "name": "RedSphere",
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0,
+                0,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "scale": [
+                1,
+                1,
+                1
+              ]
+            },
+            {
+              "name": "pelican_procedural_geometry",
+              "asset": "red_sphere"
+            }
+          ]
+        },
+        {
+          "name": "GreenSphere",
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0,
+                0,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "scale": [
+                1,
+                1,
+                1
+              ]
+            },
+            {
+              "name": "pelican_procedural_geometry",
+              "asset": "green_sphere"
+            }
+          ]
+        },
+        {
+          "name": "WhiteSphere",
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0,
+                0,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "scale": [
+                1,
+                1,
+                1
+              ]
+            },
+            {
+              "name": "pelican_procedural_geometry",
+              "asset": "white_sphere"
+            }
+          ]
+        },
+        {
+          "name": "Emitter",
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0,
+                0,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "scale": [
+                1,
+                1,
+                1
+              ]
+            },
+            {
+              "name": "pelican_procedural_geometry",
+              "asset": "emitter"
+            }
+          ]
+        },
+        {
+          "name": "CheckerBox",
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                -0.85,
+                -0.6,
+                3.6
+              ],
+              "rotation": [
+                0,
+                0.2588190451,
+                0,
+                0.9659258263
+              ],
+              "scale": [
+                0.8,
+                0.8,
+                0.8
+              ]
+            },
+            {
+              "name": "simplemodelview",
+              "model": "checker_box"
+            }
+          ]
+        },
+        {
+          "name": "GlassSphere",
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0,
+                0,
+                0
+              ],
+              "rotation": [
+                0,
+                0,
+                0,
+                1
+              ],
+              "scale": [
+                1,
+                1,
+                1
+              ]
+            },
+            {
+              "name": "pelican_procedural_geometry",
+              "asset": "glass_sphere"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

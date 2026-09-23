@@ -2637,7 +2637,7 @@ rendering config のファイルは **2 つの root 形**のどちらかです�
 | 最上位のキー | §6.2 の表のキーがそのまま並ぶ | `schema` / `version` / `definitions` / `nodes` / `outputs` の **5 つだけ** |
 | §6.2 の表のキー | 最上位 | **`rendering` の下**(`rendering.features`、`rendering.render_targets`、…) |
 | 共通グラフ(ノード)を持てるか | **持てない** | 持てる |
-| 出荷プロジェクト(全 6 本) | `animgraph_demo` / `sprite_demo` / `vrm_xr_demo` / `raytracing_demo` | `example`(✅P-2a-4b)と **`posegraph_demo`**(✅P-2b) |
+| 出荷プロジェクト(全 7 本) | `animgraph_demo` / `sprite_demo` / `vrm_xr_demo` / `raytracing_demo` / `pathtrace_demo` | `example`(✅P-2a-4b)と **`posegraph_demo`**(✅P-2b) |
 
 ```json
 {

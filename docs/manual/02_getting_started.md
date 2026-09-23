@@ -174,13 +174,14 @@ pelican_cli assets verify --project projects/example
 
 手元にバイナリが無い状態で試したい場合は、次節の `project init` から始めるのが確実です。
 
-example のほかに、機能別のデモプロジェクトが 5 つあります(いずれも同様に `--project` で起動):
+example のほかに、機能別のデモプロジェクトが 6 つあります(いずれも同様に `--project` で起動):
 
 - [projects/sprite_demo](../../projects/sprite_demo) — 2D 横スクロールの vertical slice(スプライト・pixel perfect・`moveAndSlide`・ゲームパッド)
 - [projects/animgraph_demo](../../projects/animgraph_demo) — アニメーショングラフ(歩き↔走りブレンド + ジャンプ割込み)
 - [projects/posegraph_demo](../../projects/posegraph_demo) — 共通グラフの姿勢(`pose.clip_sample` 2 本を曲線で blend。code 無しのデータだけの project。`requires: ["animation"]`)
 - [projects/vrm_xr_demo](../../projects/vrm_xr_demo) — VRM キャラクター(表情・視線・一人称)+ OpenXR。**flat-first** — XR なしでも WASD で完全動作(下記)
 - [projects/raytracing_demo](../../projects/raytracing_demo) — 手続き幾何のレイトレーシング(intersection shader で球を解く。Vulkan ray tracing 対応 GPU が要る)
+- [projects/pathtrace_demo](../../projects/pathtrace_demo) — frame をまたいで蓄積する path tracer。Principled BSDF(ガラス・金属・coat)、scene の camera(透視 / 正射影)、glTF の mesh。engine を変えずに project 側の shader だけで組んである。設計と検証は [design_pathtracing.md](../design_pathtracing.md)(Vulkan ray tracing 対応 GPU が要る)
 
 ### XR モードで起動する(PCVR / Quest Link)✅WP125〜138
 

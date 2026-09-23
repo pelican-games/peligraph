@@ -1,0 +1,30 @@
+{
+  "schema": "pelican.project",
+  "version": 1,
+  "name": "PT-1c glass furnace",
+  "basic_config": {
+    "window_title": "Pelican \u2014 PT-1a Furnace",
+    "window_size": {
+      "width": 960,
+      "height": 540
+    },
+    "fullscreen": false,
+    "framerate": 60,
+    "camera": {
+      "yfov": 0.7853981633974483,
+      "znear": 0.1,
+      "zfar": 100.0,
+      "up": [
+        0,
+        1,
+        0
+      ]
+    },
+    "default_scene_id": "main",
+    "scene_data_json": "scene.json",
+    "asset_data_json": "assets.json",
+    "rendering_config_json": "rendering.json",
+    "default_rendering_pass": "main_render",
+    "ui_config_json": "ui.json"
+  }
+}

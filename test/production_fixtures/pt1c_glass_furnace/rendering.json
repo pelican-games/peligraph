@@ -1,0 +1,10 @@
+{
+  "ray_group_layout": "ray_layout.json",
+  "ray_bindings": "ray_bindings.json",
+  "features": ["project://features/pathtrace.json"],
+  "rendering_passes": [{"name": "main_render", "passes": [
+    {"name": "present", "type": "fullscreen",
+     "input": ["radiance_accum"], "output": {"color": ["swapchain"], "depth": null},
+     "shader": {"vertex": "engine://fullscreen", "fragment": "project://shaders/present"}}
+  ]}]
+}

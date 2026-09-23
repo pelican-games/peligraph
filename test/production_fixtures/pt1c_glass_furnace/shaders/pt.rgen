@@ -1,0 +1,177 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "__pelican_ray_group_layout.glsl"
+#include "pelican_frame.glsl"
+#include "pt_payload.glsl"
+#include "pt_rng.glsl"
+#include "pt_bsdf.glsl"
+#include "pt_scene.glsl"
+
+layout(set = PELICAN_SET_FRAME, binding = PELICAN_RAY_QUERY_TLAS_BINDING)
+    uniform accelerationStructureEXT pelicanRayTracingScene;
+layout(rgba32f, set = PELICAN_SET_PASS_INPUT, binding = 0)
+    uniform readonly image2D pelican_resource_radiance_history;
+layout(rgba32f, set = PELICAN_SET_PASS_INPUT, binding = 1)
+    uniform writeonly image2D pelican_resource_radiance_accum;
+
+layout(location = 0) rayPayloadEXT RadiancePayload radiancePayload;
+layout(location = 1) rayPayloadEXT ShadowPayload shadowPayload;
+
+const float PT_RAY_EPSILON = 1e-3;
+const float PT_RAY_MAX_DISTANCE = 10000.0;
+
+// Solid-angle pdf of sampling the emitter sphere uniformly within its cone
+// as seen from `from`. Zero when `from` is inside the sphere.
+float ptEmitterPdf(vec3 from) {
+    vec3 toCenter = PT_EMITTER_CENTER - from;
+    float d2 = dot(toCenter, toCenter);
+    float r2 = PT_EMITTER_RADIUS * PT_EMITTER_RADIUS;
+    if (d2 <= r2 * 1.000001) return 0.0;
+    float cosThetaMax = sqrt(max(0.0, 1.0 - r2 / d2));
+    return 1.0 / (2.0 * PT_PI * (1.0 - cosThetaMax));
+}
+
+float ptPowerHeuristic(float a, float b) {
+    float a2 = a * a;
+    float b2 = b * b;
+    return a2 / max(a2 + b2, 1.0e-12);
+}
+
+bool ptOccluded(vec3 origin, vec3 direction, float tmax) {
+    shadowPayload.occluded = 0u;
+    traceRayEXT(pelicanRayTracingScene,
+                gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+                0xffu, PELICAN_RAY_TYPE_shadow, pelican_ray_type_count,
+                PELICAN_MISS_shadow, origin, 0.0, direction, tmax, 1);
+    return shadowPayload.occluded != 0u;
+}
+
+void main() {
+    uvec2 pixel = gl_LaunchIDEXT.xy;
+    uint seed = ptSeed(pixel, pelicanFrame.frame_index.x);
+    vec2 size = vec2(gl_LaunchSizeEXT.xy);
+    vec2 jitter = vec2(ptRandom(seed, 0u, 0u), ptRandom(seed, 0u, 1u));
+
+    // The camera is the engine's: unproject the pixel through the frame UBO's
+    // projection and view so perspective and orthographic cameras both work.
+    // Pixel rows count down from the top; the engine's projection keeps +y up.
+    vec2 ndc = (vec2(pixel) + jitter) / size * 2.0 - 1.0;
+    ndc.y = -ndc.y;
+    mat4 inverseProjection = inverse(pelicanFrame.projection);
+    mat4 inverseView = inverse(pelicanFrame.view);
+    vec4 nearView = inverseProjection * vec4(ndc, 0.0, 1.0);
+    vec4 farView = inverseProjection * vec4(ndc, 1.0, 1.0);
+    nearView /= nearView.w;
+    farView /= farView.w;
+    vec3 origin = (inverseView * vec4(nearView.xyz, 1.0)).xyz;
+    vec3 direction = normalize(
+        (inverseView * vec4(farView.xyz, 1.0)).xyz - origin);
+
+    vec3 radiance = vec3(0.0);
+    vec3 beta = vec3(1.0);
+    bool previousDelta = true; // the camera vertex counts emission in full
+    float previousPdf = 0.0;
+    vec3 previousPosition = origin;
+
+    for (uint bounce = 0u; bounce < PT_MAX_BOUNCES; ++bounce) {
+        radiancePayload.hit = 0u;
+        radiancePayload.emission = vec3(0.0);
+        traceRayEXT(
+            pelicanRayTracingScene, gl_RayFlagsOpaqueEXT, 0xffu,
+            PELICAN_RAY_TYPE_radiance, pelican_ray_type_count,
+            PELICAN_MISS_sky, origin, PT_RAY_EPSILON, direction,
+            PT_RAY_MAX_DISTANCE, 0);
+
+        if (radiancePayload.hit == 0u) {
+            // The sky is never sampled explicitly, so a BSDF path owns it.
+            radiance += beta * radiancePayload.emission;
+            break;
+        }
+
+        if (any(greaterThan(radiancePayload.emission, vec3(0.0)))) {
+            // Emissive surface reached by BSDF sampling: combine with the
+            // light sample that could have produced the same vertex.
+            float weight = 1.0;
+            if (!previousDelta && PT_EMITTER_RADIUS > 0.0) {
+                float lightPdf = ptEmitterPdf(previousPosition);
+                weight = ptPowerHeuristic(previousPdf, lightPdf);
+            }
+            radiance += beta * radiancePayload.emission * weight;
+        }
+
+        PtMaterial material;
+        material.base_color = radiancePayload.base_color;
+        material.metallic = radiancePayload.metallic;
+        material.roughness = radiancePayload.roughness;
+        material.ior = max(radiancePayload.ior, 1.0001);
+        material.transmission = radiancePayload.transmission;
+
+        vec3 position = radiancePayload.position;
+        PtFrame frame = ptMakeFrame(radiancePayload.normal);
+        vec3 wo = ptToLocal(frame, -direction);
+
+        // Next-event estimation toward the emitter sphere, weighted by MIS.
+        if (PT_EMITTER_RADIUS > 0.0) {
+            vec3 toCenter = PT_EMITTER_CENTER - position;
+            float d2 = dot(toCenter, toCenter);
+            float r2 = PT_EMITTER_RADIUS * PT_EMITTER_RADIUS;
+            if (d2 > r2 * 1.000001) {
+                float centerDistance = sqrt(d2);
+                vec3 coneAxis = toCenter / centerDistance;
+                float cosThetaMax = sqrt(max(0.0, 1.0 - r2 / d2));
+                float cosTheta = mix(1.0, cosThetaMax, ptRandom(seed, bounce, 2u));
+                float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+                float phi = 2.0 * PT_PI * ptRandom(seed, bounce, 3u);
+                PtFrame cone = ptMakeFrame(coneAxis);
+                vec3 lightDirection = ptToWorld(
+                    cone, vec3(sinTheta * cos(phi), sinTheta * sin(phi), cosTheta));
+                float bsdfPdf;
+                vec3 f = ptEval(material, wo, ptToLocal(frame, lightDirection), bsdfPdf);
+                float cosSurface = abs(dot(radiancePayload.normal, lightDirection));
+                if (any(greaterThan(f, vec3(0.0))) && cosSurface > 0.0) {
+                    vec3 offset = radiancePayload.position - PT_EMITTER_CENTER;
+                    float halfB = dot(offset, lightDirection);
+                    float discriminant = halfB * halfB - (dot(offset, offset) - r2);
+                    float lightDistance = -halfB - sqrt(max(0.0, discriminant));
+                    float shadowMax = lightDistance - PT_RAY_EPSILON;
+                    vec3 shadowOrigin = position + radiancePayload.normal *
+                        (dot(lightDirection, radiancePayload.normal) > 0.0
+                             ? PT_RAY_EPSILON : -PT_RAY_EPSILON);
+                    if (shadowMax > PT_RAY_EPSILON &&
+                        !ptOccluded(shadowOrigin, lightDirection, shadowMax)) {
+                        float lightPdf = 1.0 / (2.0 * PT_PI * (1.0 - cosThetaMax));
+                        float weight = ptPowerHeuristic(lightPdf, bsdfPdf);
+                        radiance += beta * f * PT_EMITTER_RADIANCE *
+                                    cosSurface / lightPdf * weight;
+                    }
+                }
+            }
+        }
+
+        // Continue the path by sampling the BSDF.
+        vec3 wi;
+        float pdf;
+        bool isDelta;
+        vec3 weight = ptSample(
+            material, wo, ptRandom(seed, bounce, 4u),
+            ptRandom(seed, bounce, 5u), ptRandom(seed, bounce, 6u),
+            wi, pdf, isDelta);
+        if (all(lessThanEqual(weight, vec3(0.0)))) {
+            break;
+        }
+        beta *= weight;
+        previousDelta = isDelta;
+        previousPdf = pdf;
+        previousPosition = position;
+        direction = normalize(ptToWorld(frame, wi));
+        origin = position + radiancePayload.normal *
+            (dot(direction, radiancePayload.normal) > 0.0 ? PT_RAY_EPSILON
+                                                          : -PT_RAY_EPSILON);
+    }
+
+    ivec2 outputPixel = ivec2(pixel);
+    vec4 previous = imageLoad(pelican_resource_radiance_history, outputPixel);
+    imageStore(pelican_resource_radiance_accum, outputPixel,
+               previous + vec4(radiance, 1.0));
+}

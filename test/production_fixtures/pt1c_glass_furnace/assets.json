@@ -1,0 +1,47 @@
+{
+  "schema": "pelican.asset_data",
+  "version": 2,
+  "models": [],
+  "textures": [],
+  "materials": [],
+  "procedural_geometry": [
+    {
+      "name": "glass_furnace_sphere",
+      "kind": "aabb_v1",
+      "aabb": {
+        "min": [
+          -1.02,
+          -1.02,
+          2.98
+        ],
+        "max": [
+          1.02,
+          1.02,
+          5.02
+        ]
+      },
+      "record": {
+        "radius": 1.0,
+        "center": [
+          0,
+          0,
+          4
+        ],
+        "base_color": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "emission": [
+          0,
+          0,
+          0
+        ],
+        "metallic": 0.0,
+        "roughness": 0.0,
+        "ior": 1.5,
+        "transmission": 1.0
+      }
+    }
+  ]
+}

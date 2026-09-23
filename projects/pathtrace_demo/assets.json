@@ -1,0 +1,242 @@
+{
+  "schema": "pelican.asset_data",
+  "version": 2,
+  "models": [
+    {
+      "name": "checker_box",
+      "path": "assets/checker_box.glb"
+    }
+  ],
+  "textures": [],
+  "materials": [],
+  "procedural_geometry": [
+    {
+      "name": "ground",
+      "kind": "aabb_v1",
+      "aabb": {
+        "min": [
+          -102.0,
+          -203.0,
+          -96.0
+        ],
+        "max": [
+          102.0,
+          1.0,
+          108.0
+        ]
+      },
+      "record": {
+        "radius": 100.0,
+        "center": [
+          0,
+          -101,
+          6
+        ],
+        "base_color": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "emission": [
+          0,
+          0,
+          0
+        ],
+        "metallic": 0.0,
+        "roughness": 1.0,
+        "ior": 1.5,
+        "transmission": 0.0
+      }
+    },
+    {
+      "name": "red_sphere",
+      "kind": "aabb_v1",
+      "aabb": {
+        "min": [
+          -2.37,
+          -1.12,
+          4.779999999999999
+        ],
+        "max": [
+          -0.33000000000000007,
+          0.92,
+          6.82
+        ]
+      },
+      "record": {
+        "radius": 1.0,
+        "center": [
+          -1.35,
+          -0.1,
+          5.8
+        ],
+        "base_color": [
+          0.8,
+          0.12,
+          0.08
+        ],
+        "emission": [
+          0,
+          0,
+          0
+        ],
+        "metallic": 0.0,
+        "roughness": 0.35,
+        "ior": 1.5,
+        "transmission": 0.0
+      }
+    },
+    {
+      "name": "green_sphere",
+      "kind": "aabb_v1",
+      "aabb": {
+        "min": [
+          0.485,
+          -1.0150000000000001,
+          4.235
+        ],
+        "max": [
+          2.015,
+          0.515,
+          5.765
+        ]
+      },
+      "record": {
+        "radius": 0.75,
+        "center": [
+          1.25,
+          -0.25,
+          5.0
+        ],
+        "base_color": [
+          0.1,
+          0.72,
+          0.18
+        ],
+        "emission": [
+          0,
+          0,
+          0
+        ],
+        "metallic": 1.0,
+        "roughness": 0.25,
+        "ior": 1.5,
+        "transmission": 0.0
+      }
+    },
+    {
+      "name": "white_sphere",
+      "kind": "aabb_v1",
+      "aabb": {
+        "min": [
+          -1.024,
+          -0.6739999999999999,
+          6.776
+        ],
+        "max": [
+          1.424,
+          1.774,
+          9.224
+        ]
+      },
+      "record": {
+        "radius": 1.2,
+        "center": [
+          0.2,
+          0.55,
+          8.0
+        ],
+        "base_color": [
+          0.78,
+          0.78,
+          0.78
+        ],
+        "emission": [
+          0,
+          0,
+          0
+        ],
+        "metallic": 0.0,
+        "roughness": 1.0,
+        "ior": 1.5,
+        "transmission": 0.0
+      }
+    },
+    {
+      "name": "emitter",
+      "kind": "aabb_v1",
+      "aabb": {
+        "min": [
+          -0.51,
+          1.89,
+          6.49
+        ],
+        "max": [
+          0.51,
+          2.91,
+          7.51
+        ]
+      },
+      "record": {
+        "radius": 0.5,
+        "center": [
+          0,
+          2.4,
+          7.0
+        ],
+        "base_color": [
+          0,
+          0,
+          0
+        ],
+        "emission": [
+          12,
+          12,
+          12
+        ],
+        "metallic": 0.0,
+        "roughness": 1.0,
+        "ior": 1.5,
+        "transmission": 0.0
+      }
+    },
+    {
+      "name": "glass_sphere",
+      "kind": "aabb_v1",
+      "aabb": {
+        "min": [
+          0.3889999999999999,
+          -1.1110000000000002,
+          2.939
+        ],
+        "max": [
+          1.5110000000000001,
+          0.01100000000000001,
+          4.061
+        ]
+      },
+      "record": {
+        "radius": 0.55,
+        "center": [
+          0.95,
+          -0.55,
+          3.5
+        ],
+        "base_color": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "emission": [
+          0,
+          0,
+          0
+        ],
+        "metallic": 0.0,
+        "roughness": 0.0,
+        "ior": 1.5,
+        "transmission": 1.0
+      }
+    }
+  ]
+}

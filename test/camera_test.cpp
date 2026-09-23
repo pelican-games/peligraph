@@ -593,4 +593,31 @@ TEST_CASE("Runtime navigation camera overlays the resolved scene without changin
     REQUIRE(readText(scene_path) == authored);
 }
 
+TEST_CASE("Scene camera load keeps the published viewport instead of the project window size",
+          "[camera][viewport][headless]") {
+    ensureLogger();
+    Sandbox sandbox;
+    writeText(sandbox.root / "scene.json", cameraSceneJson());
+
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(sandbox.root, false);
+    GET_MODULE(ProjectSource).setProjectData(projectJson().dump());
+
+    auto &camera = GET_MODULE(Camera);
+    // The project window is 100x100. A headless --size (or a resize) publishes
+    // a 2:1 viewport before the scene loads; loading the scene must not revert
+    // the viewport to the project's initial window size.
+    camera.setScreenSize(200, 100);
+    camera.loadSceneCameras("default_scene");
+    camera.setActiveCamera("ViewportCam");
+    const auto projection = camera.getProjectionMatrix();
+    REQUIRE(projection[0][0] * 2.0f == Catch::Approx(projection[1][1]));
+
+    camera.setScreenSize(100, 100);
+    camera.loadSceneCameras("default_scene");
+    camera.setActiveCamera("ViewportCam");
+    const auto square = camera.getProjectionMatrix();
+    REQUIRE(square[0][0] == Catch::Approx(square[1][1]));
+}
+
 } // namespace Pelican

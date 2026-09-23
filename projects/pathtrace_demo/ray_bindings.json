@@ -1,0 +1,30 @@
+{
+  "schema": "pelican.ray_bindings",
+  "version": 2,
+  "bindings": [
+    {
+      "procedural": "ground",
+      "group": "sphere"
+    },
+    {
+      "procedural": "red_sphere",
+      "group": "sphere"
+    },
+    {
+      "procedural": "green_sphere",
+      "group": "sphere"
+    },
+    {
+      "procedural": "white_sphere",
+      "group": "sphere"
+    },
+    {
+      "procedural": "emitter",
+      "group": "sphere"
+    },
+    {
+      "procedural": "glass_sphere",
+      "group": "sphere"
+    }
+  ]
+}

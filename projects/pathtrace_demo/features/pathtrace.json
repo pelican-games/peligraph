@@ -1,0 +1,90 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "accumulating_path_tracer",
+  "runtime_shader_compiler": "required",
+  "required_capabilities": [
+    "pelican.vulkan.ray_tracing_pipeline@1"
+  ],
+  "render_targets": [
+    {
+      "name": "radiance_accum",
+      "extent_scale": 1.0,
+      "format": "R32G32B32A32_SFLOAT",
+      "format_class": "explicit(R32G32B32A32_SFLOAT)",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "history": true,
+      "clear_color": [
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "compute_tasks": [
+    {
+      "name": "trace_path",
+      "before": [
+        "present"
+      ],
+      "ray_tracing": {
+        "raygen": "project://shaders/pt",
+        "traced_ray_types": [
+          "radiance",
+          "shadow"
+        ],
+        "misses": {
+          "sky": "project://shaders/pt_radiance",
+          "shadow": "project://shaders/pt_shadow"
+        },
+        "hit_shaders": {
+          "radiance": {
+            "sphere": {
+              "closesthit": "project://shaders/pt",
+              "intersection": "project://shaders/sphere"
+            },
+            "mesh": {
+              "closesthit": "project://shaders/pt_mesh"
+            }
+          },
+          "shadow": {
+            "sphere": {
+              "closesthit": "project://shaders/pt_shadow",
+              "intersection": "project://shaders/sphere"
+            },
+            "mesh": {
+              "closesthit": "project://shaders/pt_shadow"
+            }
+          }
+        },
+        "max_recursion": 1
+      },
+      "reads": [
+        "radiance_accum@history"
+      ],
+      "writes": [
+        "radiance_accum"
+      ],
+      "resource_ports": {
+        "radiance_history": {
+          "resource": "radiance_accum@history",
+          "access": "storage"
+        },
+        "radiance_accum": {
+          "resource": "radiance_accum",
+          "access": "storage"
+        }
+      },
+      "dispatch": {
+        "rays_from": {
+          "port": "radiance_accum"
+        }
+      }
+    }
+  ]
+}

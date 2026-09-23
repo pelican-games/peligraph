@@ -1,0 +1,10 @@
+{
+  "schema": "pelican.ray_bindings",
+  "version": 2,
+  "bindings": [
+    {
+      "procedural": "glass_furnace_sphere",
+      "group": "sphere"
+    }
+  ]
+}

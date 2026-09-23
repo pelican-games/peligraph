@@ -265,14 +265,16 @@ Camera::PreparedSceneState
 Camera::makeDefaultPreparedSceneState() const {
     const auto &config = GET_MODULE(ProjectBasicConfig);
     const auto props = config.initailCameraProperty();
-    const auto screen = config.initialWindowSize();
+    // The viewport belongs to the surface, not the scene: keep whatever
+    // setScreenSize published (headless --size, a resized window), instead of
+    // reverting to the project's initial window size on every scene load.
     PreparedSceneState prepared{
         .pos = {0.0f, 0.0f, 0.0f},
         .dir = {1.0f, 0.0f, 0.0f},
         .up = props.up,
-        .viewport_aspect = static_cast<float>(screen.width) / screen.height,
-        .viewport_width = static_cast<uint32_t>(screen.width),
-        .viewport_height = static_cast<uint32_t>(screen.height),
+        .viewport_aspect = viewport_aspect,
+        .viewport_width = viewport_width,
+        .viewport_height = viewport_height,
         .projection = props.projection,
         .sprite_policy = props.sprite,
         .discontinuity_revision = discontinuity_revision + 1,
