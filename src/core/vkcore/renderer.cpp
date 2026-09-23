@@ -3865,17 +3865,10 @@ const TemporalViewFamilyHistory &Renderer::activeTemporalHistory() const {
 
 nlohmann::json Renderer::currentFramePlanJson() const {
     const auto *frame_graph_runtime = FastModuleContainer::tryGet<FrameGraphRuntimeContainer>();
-    // The published plan. Before anything is published, a ray-tracing
-    // startup generation waits staged for its first submitted frame; frames
-    // already render from it, so answer with it rather than reporting no plan
-    // (Studio asks as soon as the engine answers RPC).
-    auto generation =
+    const auto generation =
         frame_graph_runtime != nullptr
             ? frame_graph_runtime->snapshot()
             : nullptr;
-    if (generation == nullptr && frame_graph_runtime != nullptr) {
-        generation = frame_graph_runtime->renderingSnapshot();
-    }
     const auto *program =
         generation != nullptr
             ? generation->find(current_rendering_pass_id)
