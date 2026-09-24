@@ -24645,6 +24645,141 @@ engine 側の変更 / root pass の編集(F-6)/ canvas での並べ替え。
 - **観察(未再現)**: 早い run の 2 回で、`pelican_player` が起動直後に exit 1 し、studio.log に何も残らなかった。再現していない。要観察
 - **F 系列(「0 から組める」第一段階)はこれで全部着地**。別に残るのは F-5 で記録した `graph_reroute_tie` の待ちの修正
 
+### Q-5: Graph canvas で配置を保存した直後に選択が消える(F-5 の着地で見つかった既知の赤 `graph_reroute_tie`)
+
+**下段(Studio のみ)。実装者: Claude(Opus)。**
+
+#### 前提(2026-09-24、develop)
+- シナリオ `studio_scenario_graph_reroute_tie` が常に赤: node を drag → 「Graph change saved.」を待つ → reroute 点を click → edge を ctrl+click → 「Tie together」が有効のはずが無効
+- 待ち(step 17)は notice が**前の保存で既に「Graph change saved.」**なので 0 ms で抜ける。その後の click が、drag の配置保存(`set_layout`、`Ticket::source_only`、再 compose 無し)が返ってきた時の scene の作り直しと競合し、**選択が消える**(起票時の診断。着地で外れと分かった。下の着地)
+- 利用者の操作でも「node を動かした直後に何かを選ぶと、保存が返った瞬間に選択が外れる」が起きうる(実在の UX の穴)。Frame Plan 側(N-8)にも同じ形があるか確認する
+- 関係する所: `src/devstudio/view/graphcanvaswidget.cpp`(保存の返答 → 再読込 → repopulate)、`nodegraphics.cpp` / `graphcanvasdrawing.cpp`、N-6 の reroute / tie の item
+
+#### 決定
+1. **配置だけの保存(`set_layout`)が返ってきても、選択と scene を保つ**: 送った layout と返ってきた文書の layout が同じなら scene を作り直さない。作り直す必要がある場合(別の変更が混じった)でも、選択(node / edge / reroute / tie の key)を作り直しの前後で引き継ぐ
+2. シナリオの待ちを「保存が返った」ことに正しく結びつける: notice を毎回区別できる形にする(保存中は「Saving…」を経由させて `wait` が変化を待てるようにする、など)。既存シナリオの `Graph change saved.` 待ちが壊れないこと(`contains` で待てる形)
+3. Frame Plan canvas(`frameplangraphics.cpp` / `frameplanwidget.cpp`)の配置保存にも同じ穴があれば同じ直し方で
+
+#### 受け入れ(§4 規約 10)
+1. scene / widget test: node を drag → 選択を作る → 配置保存の返答が届く → 選択が残る(対照: 選択の引き継ぎを外す変異で赤)
+2. シナリオ `graph_reroute_tie` が 3 回連続で緑
+3. 既存の Graph / Frame Plan test 全数緑、非 GPU 全数緑、シナリオ全数緑
+
+#### やらないこと
+undo の変更 / 配置保存の debounce の変更。
+
+#### 着地(2026-09-24、ab643e44)
+- **診断は起票と違った**: 赤の原因は保存の返答と click の競合ではなかった。シナリオは node を**窓の画素位置**へ drop していた。F-5 から run は毎回既定 layout で始まるので、その画素では `sum` が入力の列より左に置かれ、続く gain→sum の辺の中央への ctrl+click が `bias` node に当たり、node を選んだことで reroute と辺の選択が外れていた。シナリオの drag は **canvas の位置**(`"scene": [560, 250]`)で終えるようにした(`test/studio_scenarios/graph_reroute_tie.json`、36 step)
+- それでも起票の 2 つの直しは入れた:
+  - **決定 1(scene を保つ)**: `GraphCanvasModel::receiveRpcResult` は、前の読みと配置(root の `layout` と各 definition の `layout`)以外がすべて同じ読みを「配置だけの読み」とし、`contentRevision` ではなく新しい `placementRevision` を進める。このとき node の値を消して読み直すこともしない。widget は、canvas が既にその配置を描いていれば(`GraphCanvasScene::followDocumentPlacement`。自分の保存が返ってきた / 見ていない scope)scene を作り直さない。違う配置(Undo、別の書き手)なら描き直す。ほかの変更が混じった読みは描き直し、既存の選択の引き継ぎが効く
+  - **決定 2(待ちを保存に結びつける)**: 配置の変更がまだ送られていない間(debounce 中)、Graph の notice は「Saving the graph change...」(error の notice だけはそれより優先)。「Graph change saved.」を待つ step は、これで今の保存を待つ。既存の `Graph change saved.` 待ちはそのまま通る
+- **決定 3(Frame Plan)**: 同じ穴は無かった(Frame Plan の `set_layout` の返答は描き直さず、読み戻しは選んだ node を保つ)。test がそれを固定する
+- **test**: `devstudio_graphcanvas_scene_test`(配置保存の返答が戻っても scene と選択が残る / 別の変更が混じれば描き直して選択を引き継ぐ)/ `devstudio_frameplan_graph_test`(Frame Plan の配置の読み戻しが選んだ node を保つ)/ シナリオ `graph_reroute_tie`
+- **変異**: commit の記録に無く未確認。受け入れ 2 の「3 回連続で緑」も記録に無く未確認
+- **記録した穴**:
+  1. シナリオの bundle の drag(「carry it across the canvas」)は、まだ窓の画素位置(`point`)で動かす
+  2. engine が配置を丸めて返すと、送ったものと一致しないので「Saving…」のまま残る
+  3. 編集できる状態にならないままだと、「Saving…」が出たままになる
+  4. `devstudio_frameplan_graph_test` の「N-3 the shared canvas view zooms…」は、test の exe を 1 process で全 case 走らせると赤(ctest の下では緑)。Q-5 が原因ではない
+
+### G-1: material pass を Studio から足す —— contract を選ぶと必要な target が揃う(利用者指示 2026-09-24、第二段階「forward / deferred の material 処理ループを組める」)
+
+**中段(engine の gate を 1 つ外す + Studio の form)。実装者: Claude(Opus)。第二の流儀を作らない: 書き込みは今日の `add_authored_pass`(managed fragment + preflight + ticket)のまま、受ける `type` を増やすだけ。target は F-1 の `edit_render_targets`。**
+
+#### 第二段階の割り振り(2026-09-24)
+第二段階(「forward / deferred の material 処理ループを Studio で組める」)は 5 本: **G-1** material pass の追加(本節)/ **G-2** Outliner の「Add object」(別 session が engine に足している基本形 GP-5、`engine://primitives/{cube,plane,sphere}` を spawn で置く)/ **G-3** lighting の fullscreen pass(次節)/ **G-4** forward だけの構成(project の既定の `render_path` と、material の route を受ける pass が無いときの早い名前付き拒否)/ **G-5** 端から端の 2 本のシナリオ(forward と deferred)。
+
+#### 前提(2026-09-24、develop。第二段階の下調べ)
+- `add_authored_pass` は `type != "fullscreen"` を `authored_pass_type_unavailable` で拒否する唯一の場所がある(`src/core/communication/renderconfigeditor.cpp` の addAuthoredPass)。書き先は `project://passes/authoring/pass-<id>.json` の feature fragment で、feature は material pass を含められる(`src/core/resources/features/planar_reflection.json`)。gate を外せば下流の preflight が検証するはず(推測。確かめる —— 着地で外れと分かった)
+- material pass の必須と形(`materialpassinfojsonparser.cpp`、`renderingpassvalidation.cpp`):
+  - `output.color` と具体的な `output.depth`(`D32_SFLOAT`)。swapchain / display への出力は不可
+  - `material_contract`(省略時 `legacy_gbuffer_v1`)。forward 系(`forward_opaque_v1` / `forward_transparent_v1`)は color 1 枚で `R16G16B16A16_SFLOAT`。gbuffer 系(`deferred_geometry_v1` / `legacy_gbuffer_v1`)は color 5 枚、format 列は `src/core/renderingpass/materialpassattachments.hpp` の SDR か HDR(1 枚目で判定)
+  - 任意: `material_filter`、`material_variant`、`material_range`、`gpu_draw_source`、`material_outputs`、`screen_inputs`、`material_resources`
+- material は自分の route で pass を選ぶ(`materiallowering.cpp` の `routeMaterial`、pass 側は `materialPassAcceptsMaterial`)。**route を受ける pass が無いと load 時に例外**(`materialgenerationplanner.cpp`)。この扱いは G-4 で直す(G-1 では触らない)
+- Studio: Pass Editor は既存の material pass の編集はできる(Contract combo、`material_settings` JSON)が、新規作成は fullscreen だけ。F-1 の New render target… form と `edit_render_targets` がある
+
+#### 決定
+1. **engine**: `add_authored_pass` が `type: "material"` を受ける(raster は受けない。raster は scene を描かないので第二段階の目的外)。拒否は preflight に任せ、material 特有の形の誤りは parser の文言で `render_pipeline_preflight_failed`
+2. **Studio: 「Add material pass…」**(Frame Plan canvas の右クリックと toolbar、Pass Editor の新規モードの Type に material)。form は
+   - contract の選択: **Forward opaque** / **Forward transparent** / **Deferred geometry(G-buffer)** / Legacy G-buffer
+   - contract に応じた color 出力の枠(forward = 1、gbuffer = 5、各枠に役割名: albedo / normal / material / world position / emissive)と depth 1 枠。各枠は宣言済み target から選ぶか **「新しく作る」**
+   - **「足りない target をまとめて作る」**: 空いた枠を、contract が要求する format(HDR か SDR かは project の設定から。分からなければ HDR)と既定の名前(`gbuffer_albedo` … / `scene_color` / `scene_depth`)で、F-1 の `edit_render_targets` の 1 回の add batch で作ってから pass を足す(2 回の RPC。pass の追加が拒否されたら、作った target はそのまま残ると form に明示する)
+   - 入力(`screen_inputs` など)は第二段階の後半。G-1 では出さない
+3. **material pass の編集**: 既存の Pass Editor の material モードで、F-6 の root / preset / feature の 3 書き先がそのまま効くこと(確認のみ)
+
+#### 受け入れ(§4 規約 10)
+1. `renderconfigeditor_test`: `type: material` の forward_opaque_v1 pass(color 1 枚 R16G16B16A16_SFLOAT + D32 depth)が direct root と preset root の両方で commit し、`get_frame_plan` に出る / 5 枚でない gbuffer、swapchain 出力、depth 無しがそれぞれ preflight で拒否され文書は変わらない / raster は今日どおり `authored_pass_type_unavailable`(対照: gate を元に戻す変異で 1 番目が赤)
+2. Studio の純関数 test: contract → 枠の数・役割名・要求 format / 「足りない target をまとめて作る」の payload(`edit_render_targets` の add 列の format が contract の要求どおり)(対照: format 表を 1 つずらす変異で赤)
+3. widget / scene test: Add material pass… → Deferred geometry → まとめて作る → Save で `edit_render_targets` 1 回と `add_authored_pass` 1 回がこの順
+4. シナリオ `material_pass_authoring`: model を持つ fixture project で、forward_opaque の pass を Studio で足し、`scene_color` を present が読むようにして(F-6 / F-7 の操作)、viewport に形が出る(`distinct_colors` と画素)。deferred は G-3(lighting)と合わせて G-5 で
+5. 非 GPU 全数緑、シナリオ全数緑
+
+#### やらないこと
+raster pass の追加 / `material_routing` の編集 / route が合わないときの扱い(G-4)/ `screen_inputs` の UI / material 側(surface)の編集。
+
+#### 着地(2026-09-24、2bd713a1)
+- **engine**: `add_authored_pass` が `type: "material"` を受ける。raster など他の種類は今日どおり `authored_pass_type_unavailable` で、拒否の detail は `supported_type`(文字列)から **`supported_types`(配列 `["fullscreen", "material"]`)** に変わった
+- **preflight(起票の前提が外れた)**: 合成だけでは material pass の color の枚数・depth・format を見ていなかった。そこで合成した候補の中の新しい pass を、load と同じ parser(`parsePassDefinitionFromJson`)に候補の render target で通す(`validateAuthoredMaterialPass`)。形の誤りは parser の文言のまま `render_pipeline_preflight_failed`。target の大きさは**仮の 1920×1080**(parser が見るのは 1 pass の出力どうしの比だけ)。`format_class: scene` の解決は、running pipeline の enabled features に `hdr` があるかで決める
+- **authoring context**: `get_render_authoring_context` に **`enabled_feature_names`**(running pipeline が有効にした feature 名)。Studio はこれで新しい G-buffer の target を HDR / SDR のどちらの format で作るかを決める(context が言わなければ HDR と読む)
+- **Studio(起票からの逸脱: 入口)**: Pass Editor の Type に material を足すのではなく、Frame Plan の**新しい dialog「Add material pass...」**(`src/devstudio/view/materialpassform.cpp`、`pelican.materialPassForm`)。G-3 が同時に編集していた `fullscreenpasswidget.cpp` に触れないため。入口は toolbar の button(`pelican.framePlanAddMaterialPass`)と canvas の右クリック(action `pelican.framePlan.addMaterialPass`。node の上でも空所でも)。挿入先は右クリックした / 選んだ node の後、無ければ graph の先頭
+- **form**: Contract(Forward opaque / Forward transparent / Deferred geometry (G-buffer) / Legacy G-buffer。Forward opaque で開く)に応じて color の枠(forward は scene color 1 枠、G-buffer は albedo / normal / material / world position / emissive の 5 枠)と depth 1 枠を並べる。各枠は宣言済み target を選ぶか新しい名前を打つ combo で、横に `empty` / `declared` / `new: made as <format>`。**Create missing targets** は空いた枠だけを既定の名前(`scene_color`、`gbuffer_albedo` / `gbuffer_normal` / `gbuffer_material` / `gbuffer_worldpos` / `gbuffer_emissive`、`scene_depth`。宣言済みか他の枠が使っていれば `_2`…)で埋める。作る format は contract の表どおり: forward の color は `explicit(R16G16B16A16_SFLOAT)`、G-buffer の albedo と emissive は `format_class: scene`(hybrid_v1 と同じ。HDR で R16G16B16A16_SFLOAT、SDR で B8G8R8A8_SRGB)、normal と world position は R16G16B16A16_SFLOAT、material は R8G8B8A8_UNORM、depth は D32_SFLOAT。pass 名は contract から(`forward_opaque`、使われていれば `_2`…)で、contract を変えると付け直すが、利用者が打った名前は変えない
+- **Save**: 新しい target があれば `edit_render_targets` 1 回(add の batch)→ その commit の後に届く新しい context の digest で `add_authored_pass` 1 回(新しい target が無ければ後者だけ)。form は「pass が拒否されても新しい target は宣言されたまま残る」と言い、拒否の status 行も残った target の名前を並べる。要求はすべて `materialpassedit` の純関数
+- **fixture の probe(G-4 まで)**: `test/fixtures/studio_material_pass_authoring` は、誰も読まない material pass を 2 つ持つ(`g1_gbuffer` と `g1_forward_probe`)。engine の既定 material の route(`deferred_geometry`)を受ける pass が無いと project が起動しないため。G-4 で外す
+- **シナリオ `material_pass_authoring`(38 step)**: 既定 layout → Add material pass... を名前で発火 → Forward opaque と名前 `forward_opaque` で開く → Create missing targets で `scene_color` / `scene_depth` → Save(`edit_render_targets` → `add_authored_pass`)→ engine が 2 target を authoring fragment から宣言し、`forward_opaque` を forward opaque の material pass として最初に走らせる → `present.frag` を `file` step で「入力 0 をそのまま出す」に書き換え → canvas で `scene_color` を `present` へ drag(root への `edit_preset_pass`)→ viewport が gradient でなく数色になり、中央の box の色が背景とも前の gradient とも違う
+- **test**: `renderconfigeditor_test`(forward pass を direct root と preset root に足す / 3 枚の G-buffer・swapchain 出力・depth 無しが parser の文言で拒否され文書は変わらない / raster は今日どおり)/ `devstudio_frameplan_graph_test`(contract の枠と format / Create missing targets / add batch の format / 2 要求がこの順 / 拒否された pass が残った target を言う)/ シナリオ
+- **変異**: gate を fullscreen だけに戻す → add の test が赤 / preflight の検査を外す → 拒否の test が赤 / format 表を入れ替える → 純関数の test が赤
+- **build**: 直前の `f6e8221c` で `devstudio_frameplan_graph_test.cpp` を MSVC の `/bigobj` で compile するようにした(F 系列で大きくなり、RelWithDebInfo で C1128)
+- **記録した穴**:
+  1. 既存の target を枠に選んだとき、Studio 側で format を先に検査しない
+  2. 足した material pass を F-6 の 3 書き先で編集できること(決定 3)は、context が `editable_feature_pass: true` と言うことしか確かめていない
+  3. route を受ける pass が無いと起動しない件(fixture の probe)は G-4
+
+### G-3: lighting の fullscreen pass を Studio で組む —— 光源と G-buffer を読む雛形、pass の設定欄(第二段階)
+
+**下段〜中段(Studio + shader 雛形。engine は読むだけ)。実装者: Claude(Opus)。第二の流儀を作らない: pass の書き込みは今日の `add_authored_pass` / `edit_preset_pass`、雛形は F-3 の仕組み(`src/devstudio/resources/fullscreen_pass.frag.in` と `fullscreenshadertemplate.{hpp,cpp}`)を広げる。**
+
+#### 前提(2026-09-24、develop)
+- deferred の lighting は fullscreen pass に `uses_light_data: true` と `push_constants: "camera_position"` を付けて書く(例: `projects/sprite_demo/passes/main.json`、hybrid_v1 の `deferred_lighting`)。`engine://fullscreen`(`src/core/resources/fullscreen.frag`)は input 0〜5(albedo, normal, material, worldpos, emissive, ssao)を読む 324 行の deferred lighting
+- 光源は frame set の `pelicanLights` UBO(`src/core/resources/shaders/include/pelican_frame.glsl`)、関数群は `pelican_lighting_v1.glsl`。`uses_light_data` が立ったときだけ bind されるかは未確認 —— 確かめる
+- F-3 の雛形は `pelican_sets` と `pelican_view` だけを include し、入力は `PELICAN_DECLARE_INPUT_n` で読む。光源の include も helper も無い
+- Studio の Pass Editor(fullscreen)には `uses_light_data` / `push_constants` / 出力の load・store・clear の欄が無い(出力は `output.color` の attachment JSON 欄で書けるだけ)
+
+#### 決定
+1. **Pass Editor(fullscreen)に設定欄**: 「Uses scene lights」(`uses_light_data`)、「Camera position」(`push_constants: "camera_position"`)、出力ごとの **Load / Clear(色)/ Don't care** と Store(attachment object に書く。既存の JSON 欄と矛盾させない —— どちらかを正とし、もう一方はそれを映す)。add / edit の両方
+2. **雛形を選べる**: New… に雛形の種類
+   - **Pass-through / gradient**(今日の F-3)
+   - **Deferred lighting**: 入力 5〜6 枚(albedo / normal / material / world position / emissive / ssao 任意)を読み、`pelican_frame.glsl` / `pelican_lighting_v1.glsl` の光源で Lambert + 簡単な specular を出す、**短く読める**実装(engine://fullscreen の 324 行を写さない。利用者が改造する出発点)。選ぶと pass の設定を「Uses scene lights」「Camera position」に自動で入れ、入力の枠に役割名を出す
+   - **Tone map / present**: HDR の scene color を読んで表示用に出す(`display` へ。engine の output_transform との関係を確かめて二重の tone map にならない形)
+3. 雛形はすべて、F-3 と同じく test で GLSL として compile を確かめる
+
+#### 受け入れ(§4 規約 10)
+1. 雛形 test: 3 種がそれぞれ compile する(runtime compiler ON の構成で)/ Deferred lighting は光源の UBO と入力 5 枚を宣言している(対照: include を外す変異で compile が赤)
+2. widget test: 「Uses scene lights」「Camera position」を入れて Save → `add_authored_pass` / `edit_preset_pass` の pass に `uses_light_data: true` と `push_constants: "camera_position"` / Load=Clear(色)で attachment object に `load_op` と `clear_color`(対照: 欄の値を payload に入れない変異で赤)/ 既存の attachment JSON 欄との往復で値が落ちない
+3. シナリオ `lighting_pass_template`: G-buffer を持つ fixture で、Deferred lighting の雛形から pass を作り、`present` が読む → viewport が一様でない。fixture が無理なら GPU の headless test で雛形の出力が光源に反応する(光源を消すと暗くなる)ことを確かめる
+4. 非 GPU 全数緑、シナリオ全数緑
+
+#### やらないこと
+material pass の追加(G-1)/ shadow・SSAO の雛形 / Studio 内の shader エディタ / compute の雛形。
+
+#### 着地(2026-09-24、d66b6476)
+- **Pass Editor(fullscreen)の設定欄**: 「Frame data」の行(`pelican.fullscreenPass.interface`)に **Uses scene lights**(`uses_light_data`)と push constants の combo(No push constants / Camera position / Projection and view。起票の「Camera position」の 1 項目より広い)。color 出力の欄の下に、出力ごとの行(`pelican.fullscreenPass.outputOps`): Load(Default / Load / Clear / Don't care)・clear colour(`r, g, b[, a]`)・Store(Default / Store / Don't care)。add / edit の両方
+- **正は `output.color` の JSON 欄**(決定 1 の「どちらか」): `load_op` / `store_op` はそこへ書き戻し、行はそれを映す(`subresource` など他の field は保つ)。**clear colour は attachment object に書けない**(attachment object が受けるのは `target` / `subresource` / `load_op` / `store_op` だけ)ので、pass の **`clear_colors`**(出力名が鍵)に書く(起票の「attachment object に `clear_color`」からの逸脱)
+- **engine**: `edit_preset_pass` が fullscreen pass の `uses_light_data` / `push_constants` / `clear_colors` を受ける(今まで拒否していた。省略は保持、`null` は削除)。Studio の edit は、宣言から変わった field だけを送る(変えずに保存すれば送らない、外せば `null`)
+- **前提の確認(`uses_light_data` と bind)**: light の UBO(set 0 binding 2)は `uses_light_data` に関係なく**すべての pass に bind される**。`uses_light_data` と `push_constants` は contract と fingerprint の宣言で、camera の位置は push されず、雛形は `pelicanFrame.camera_position` を読む
+- **雛形**: New… の左に種類の combo(`pelican.fullscreenPass.shaderTemplateKind`):
+  - **Pass-through**(F-3 のまま)
+  - **Deferred lighting**(`src/devstudio/resources/fullscreen_lighting_pass.frag.in`): albedo / normal / material / world position / emissive と任意の ambient occlusion を位置で読み、`pelican_frame.glsl` の光源と `pelican_lighting_v1.glsl` で照らして scene-linear の色を出す。clustered lighting はその light list が resource port を要るので `#undef` する。選ぶと Uses scene lights と Camera position が入り(外しはしない)、入力の欄の下に役割名(`inputs: 0 albedo, ...`)が出る。入力に無い役割は名前付きの定数になり、compile は通る
+  - **Tone map**(`fullscreen_tonemap_pass.frag.in`): Reinhard だけ。`output_transform` は表示の変換だけで tone map しないので、ここで 1 回かける。project の `hdr` feature が有効なら `hdr_tonemap` が tone map するので素通し
+- **打つものを減らした**: Vertex の既定は `engine://fullscreen`。New… は空の pass 名(か New… 自身が入れた名前)を雛形の名前(`deferred_lighting` / `tone_map`、Pass-through は `fullscreen_pass`。使われていれば `_2`…)にし、shader 名を pass 名から付ける。利用者が打った名前は上書きしない
+- **シナリオ `lighting_pass_template`(41 step)**: fixture `test/fixtures/studio_lighting_pass_template`(rendering 文書は `studio_fullscreen_pass_from_template` のもの、scene に box 1 つと directional light 1 つ)。engine の `lighting_pass` の後に Add fullscreen pass で、G-buffer 5 枚を読み `lit_color`(画面に届く色)に書く pass を New… の Deferred lighting で作る → viewport が一様でない(box が光源で照らされる)→ `file` step で shader の light loop を切ると画面が 1 色(黒)→ 戻すと照らされた box が戻る。受け入れ 3 の fixture は作れたので、GPU の headless test の代替は使っていない
+- **test**: `devstudio_shadertemplate_compile_test`(3 種が compile / lighting は set 0 binding 2 の light UBO と set 1 の image 5 枚を宣言 / 6 枚と clustered lighting・sky ambient・HDR の define でも compile / 欠けた役割は名前付き定数)/ `devstudio_fullscreen_pass_test`(設定が `add_authored_pass` に届く / `edit_preset_pass` での往復 / 名前と Vertex の既定)/ `renderconfigeditor_test`(3 field を受けて消す、型違いを拒否)/ シナリオ
+- **変異**: include を外す → compile が赤 / 設定を draft に入れない → 2 test が赤 / シナリオの対照: light loop を切る → 画面が 1 色
+- **記録した穴**:
+  1. Deferred lighting は G-buffer の入力を自動では埋めない(役割名を出すだけ)
+  2. Load / Store の行に列の見出しが無い(Pass Editor の可視文字は上限 400 に対して 383)
+  3. swapchain → display の正規化の下で `clear_colors` の鍵がどうなるかは未確認
+  4. 保存した後も form は同じ名前を持ったまま
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
