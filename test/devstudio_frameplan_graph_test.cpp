@@ -23,6 +23,7 @@
 #include "frameplaneditcapability.hpp"
 #include "frameplangraphics.hpp"
 #include "frameplanwidget.hpp"
+#include "materialpassedit.hpp"
 #include "shaderreloadfollower.hpp"
 #include "jsonrpcrequest.hpp"
 #include "taskconnectiongraphics.hpp"
@@ -6805,6 +6806,8 @@ struct FramePlanEditRecorder {
     QString method;
     QJsonObject params;
     int submits = 0;
+    // Every method sent, in order (G-1: Save can be two).
+    std::vector<QString> methods;
     FramePlanEditCapability::ResultHandler result;
     FramePlanEditCapability::FailureHandler failure;
 
@@ -6821,6 +6824,7 @@ struct FramePlanEditRecorder {
         const auto record = [this](const char *name) {
             return [this, name](const QJsonObject &sent, QString *) {
                 method = QString::fromLatin1(name);
+                methods.push_back(method);
                 params = sent;
                 ++submits;
                 submit_id = next_id++;
@@ -6832,6 +6836,7 @@ struct FramePlanEditRecorder {
         capability.editComputeTask = record("edit_compute_task");
         capability.removeComputeTask = record("remove_compute_task");
         capability.editRenderTargets = record("edit_render_targets");
+        capability.addAuthoredPass = record("add_authored_pass");
         capability.requestEditResult = [this](const QString &, QString *) {
             ticket_id = next_id++;
             return ticket_id;
@@ -8519,6 +8524,315 @@ TEST_CASE("F-7 Whole frame is the first view of a graph, draws a target "
         CHECK(selector.currentText() == QStringLiteral("wp343_mixed_d_output"));
         CHECK(logical.property("pelicanTarget").toString() ==
               QStringLiteral("wp343_mixed_d_output"));
+    }
+}
+// --- G-1: Add material pass...
+
+namespace {
+
+// The G-buffer formats of materialpassattachments.hpp, spelled the way a
+// render target declaration spells them, and the depth format after them.
+const std::vector<std::string> G1GbufferHdr{
+    "R16G16B16A16_SFLOAT", "R16G16B16A16_SFLOAT", "R8G8B8A8_UNORM",
+    "R16G16B16A16_SFLOAT", "R16G16B16A16_SFLOAT", "D32_SFLOAT"};
+const std::vector<std::string> G1GbufferSdr{
+    "B8G8R8A8_SRGB", "R16G16B16A16_SFLOAT", "R8G8B8A8_UNORM",
+    "R16G16B16A16_SFLOAT", "B8G8R8A8_SRGB", "D32_SFLOAT"};
+
+std::vector<std::string> g1Formats(const std::vector<MaterialPassSlot> &outputs) {
+    std::vector<std::string> formats;
+    for (const auto &slot : outputs) formats.push_back(slot.format);
+    return formats;
+}
+
+Json g1Context(std::vector<std::string> features = {"hdr"}) {
+    auto context = withRenderTargets(mixedAuthoringContext("main_render"));
+    context["enabled_feature_names"] = features;
+    return context;
+}
+
+} // namespace
+
+TEST_CASE("G-1 a material contract lays out its outputs, and the missing "
+          "targets are made with the formats it requires",
+          "[devstudio][frame-plan][g1][material-pass]") {
+    SECTION("forward is one scene-linear color and depth") {
+        for (const bool hdr : {true, false}) {
+            const auto outputs = materialPassSlots("forward_opaque_v1", hdr);
+            REQUIRE(outputs.size() == 2);
+            CHECK(outputs[0].id == "color");
+            CHECK(outputs[0].default_name == "scene_color");
+            CHECK(outputs[0].format == "R16G16B16A16_SFLOAT");
+            CHECK(outputs[0].format_class == "explicit(R16G16B16A16_SFLOAT)");
+            CHECK(outputs[1].depth);
+            CHECK(outputs[1].default_name == "scene_depth");
+            CHECK(outputs[1].format == "D32_SFLOAT");
+        }
+        CHECK(materialPassSlots("forward_transparent_v1", true).size() == 2);
+    }
+
+    SECTION("a G-buffer is five named colors in the contract's order") {
+        for (const auto *contract : {"deferred_geometry_v1", "legacy_gbuffer_v1"}) {
+            const auto outputs = materialPassSlots(contract, true);
+            REQUIRE(outputs.size() == 6);
+            std::vector<std::string> ids;
+            for (const auto &slot : outputs) ids.push_back(slot.id);
+            CHECK(ids == std::vector<std::string>{"albedo", "normal", "material",
+                                                  "world_position", "emissive",
+                                                  "depth"});
+            CHECK(g1Formats(outputs) == G1GbufferHdr);
+            CHECK(g1Formats(materialPassSlots(contract, false)) == G1GbufferSdr);
+            // Albedo and emissive follow the pipeline's HDR switch as targets,
+            // the way the contract's table does.
+            CHECK(outputs[0].format_class == "scene");
+            CHECK(outputs[4].format_class == "scene");
+            CHECK(outputs[1].format_class == "data");
+        }
+        CHECK(materialPassSlots("no_such_contract_v1", true).empty());
+    }
+
+    SECTION("Create missing targets fills the empty outputs and only them") {
+        const std::vector<std::string> declared{"gbuffer_albedo", "display"};
+        const auto filled = materialPassFillMissing(
+            declared, "deferred_geometry_v1",
+            {"", "my_normal", "", "", "", ""});
+        CHECK(filled == std::vector<std::string>{
+                            "gbuffer_albedo_2", "my_normal", "gbuffer_material",
+                            "gbuffer_worldpos", "gbuffer_emissive", "scene_depth"});
+    }
+
+    const auto authoring = framePlanAuthoringFromContext(g1Context());
+    REQUIRE(authoring.received);
+    CHECK(materialPassHdr(authoring));
+    MaterialPassFormValues values;
+    values.graph = "main_render";
+    values.insert = "before:wp343_mixed_a";
+    values.name = "g1_gbuffer";
+    values.contract = "deferred_geometry_v1";
+    values.targets = materialPassFillMissing({"f1_owned", "display", "gbuffer_albedo"},
+                                             values.contract, {});
+
+    SECTION("Save's first request makes every new target, with the contract's format") {
+        const auto request = materialPassTargetsRequest(authoring, values);
+        REQUIRE(request.sendable());
+        CHECK(request.method == "edit_render_targets");
+        CHECK(request.params.at("base_source_digest") == RootDigest);
+        const auto &ops = request.params.at("ops");
+        REQUIRE(ops.size() == 6);
+        std::vector<std::string> names;
+        std::vector<std::string> formats;
+        for (const auto &op : ops) {
+            CHECK(op.at("op") == "add");
+            names.push_back(op.at("target").at("name").get<std::string>());
+            formats.push_back(op.at("target").at("format").get<std::string>());
+        }
+        CHECK(names == values.targets);
+        CHECK(formats == G1GbufferHdr);
+        CHECK(ops.at(5).at("target").at("usage") ==
+              Json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"}));
+
+        // A pipeline without "hdr" makes the SDR column.
+        const auto sdr = framePlanAuthoringFromContext(g1Context({"bloom"}));
+        CHECK_FALSE(materialPassHdr(sdr));
+        const auto sdr_request = materialPassTargetsRequest(sdr, values);
+        std::vector<std::string> sdr_formats;
+        for (const auto &op : sdr_request.params.at("ops"))
+            sdr_formats.push_back(op.at("target").at("format").get<std::string>());
+        CHECK(sdr_formats == G1GbufferSdr);
+    }
+
+    SECTION("the pass waits for its targets, then is one add_authored_pass") {
+        const auto early = materialPassAddRequest(authoring, values);
+        CHECK_FALSE(early.sendable());
+        CHECK(early.refusal.find("not declared yet") != std::string::npos);
+
+        auto context = g1Context();
+        for (const auto &name : values.targets)
+            context["render_targets"].push_back(
+                Json{{"name", name}, {"declaration", {{"name", name}}},
+                     {"editable", true}, {"source", "authoring"}});
+        const auto after = framePlanAuthoringFromContext(context);
+        CHECK_FALSE(materialPassTargetsRequest(after, values).sendable());
+        CHECK(materialPassTargetsRequest(after, values).refusal.empty());
+        const auto request = materialPassAddRequest(after, values);
+        REQUIRE(request.sendable());
+        CHECK(request.method == "add_authored_pass");
+        CHECK(request.params ==
+              Json{{"base_source_digest", RootDigest},
+                   {"graph", "main_render"},
+                   {"insert", "before:wp343_mixed_a"},
+                   {"pass",
+                    {{"name", "g1_gbuffer"},
+                     {"type", "material"},
+                     {"material_contract", "deferred_geometry_v1"},
+                     {"output",
+                      {{"color", Json::array({values.targets[0], values.targets[1],
+                                              values.targets[2], values.targets[3],
+                                              values.targets[4]})},
+                       {"depth", values.targets[5]}}}}}});
+    }
+
+    SECTION("the form refuses what the engine would, in one sentence") {
+        auto empty = values;
+        empty.targets[1].clear();
+        CHECK(materialPassFormRefusal(authoring, empty).find("normal") !=
+              std::string::npos);
+        auto taken = values;
+        taken.name = "wp343_mixed_a";
+        CHECK(materialPassFormRefusal(authoring, taken).find("already has") !=
+              std::string::npos);
+        auto nowhere = values;
+        nowhere.insert = "after:nobody";
+        CHECK_FALSE(materialPassFormRefusal(authoring, nowhere).empty());
+        CHECK(materialPassDefaultName(authoring, "main_render",
+                                      "deferred_geometry_v1") ==
+              "deferred_geometry");
+    }
+}
+
+TEST_CASE("G-1 Add material pass... makes the missing targets, then adds the "
+          "pass, in that order",
+          "[devstudio][frame-plan][g1][material-pass][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    fixture.widget.resize(1400, 900);
+    fixture.widget.show();
+    fixture.widget.setEditCapability(fixture.recorder.capability());
+    fixture.widget.receiveResult(QByteArray::fromStdString(fixture.wire.dump()));
+    fixture.graph = fixture.wire.at("graph").get<std::string>();
+    QApplication::processEvents();
+    REQUIRE(fixture.recorder.result);
+    auto context = withRenderTargets(mixedAuthoringContext(fixture.graph));
+    fixture.recorder.result(fixture.recorder.context_id,
+                            QByteArray::fromStdString(context.dump()));
+    QApplication::processEvents();
+
+    auto *action = fixture.widget.findChild<QAction *>(
+        QStringLiteral("pelican.framePlan.addMaterialPass"));
+    REQUIRE(action != nullptr);
+    CHECK(fixture.widget.findChild<QPushButton *>(
+              QStringLiteral("pelican.framePlanAddMaterialPass")) != nullptr);
+    action->trigger();
+    QApplication::processEvents();
+    auto *form = fixture.widget.findChild<QWidget *>(
+        QStringLiteral("pelican.materialPassForm"));
+    REQUIRE(form != nullptr);
+    CHECK(form->isVisible());
+
+    // Deferred geometry lays out five colors and a depth.
+    auto *contract = form->findChild<QComboBox *>(
+        QStringLiteral("pelican.materialPassForm.contract"));
+    REQUIRE(contract != nullptr);
+    contract->setCurrentIndex(
+        contract->findData(QStringLiteral("deferred_geometry_v1")));
+    QApplication::processEvents();
+    auto *name = form->findChild<QLineEdit *>(
+        QStringLiteral("pelican.materialPassForm.name"));
+    REQUIRE(name != nullptr);
+    CHECK(name->text() == QStringLiteral("deferred_geometry"));
+    for (const auto *slot : {"albedo", "normal", "material", "world_position",
+                             "emissive", "depth"})
+        CHECK(form->findChild<QComboBox *>(
+                  QStringLiteral("pelican.materialPassForm.target.%1")
+                      .arg(QLatin1String{slot})) != nullptr);
+
+    // Save with an empty output is refused inside the form: nothing is sent.
+    auto *ok = form->findChild<QPushButton *>(
+        QStringLiteral("pelican.materialPassForm.ok"));
+    REQUIRE(ok != nullptr);
+    QTest::mouseClick(ok, Qt::LeftButton);
+    QApplication::processEvents();
+    CHECK(fixture.recorder.submits == 0);
+    CHECK(form->isVisible());
+
+    auto *missing = form->findChild<QPushButton *>(
+        QStringLiteral("pelican.materialPassForm.createMissing"));
+    REQUIRE(missing != nullptr);
+    QTest::mouseClick(missing, Qt::LeftButton);
+    QApplication::processEvents();
+    auto *albedo_state = form->findChild<QLabel *>(
+        QStringLiteral("pelican.materialPassForm.state.albedo"));
+    REQUIRE(albedo_state != nullptr);
+    CHECK(albedo_state->text().startsWith(QStringLiteral("new")));
+    auto *notice = form->findChild<QLabel *>(
+        QStringLiteral("pelican.materialPassForm.notice"));
+    REQUIRE(notice != nullptr);
+    CHECK(notice->text().contains(QStringLiteral("stay declared")));
+
+    QTest::mouseClick(ok, Qt::LeftButton);
+    QApplication::processEvents();
+    CHECK_FALSE(form->isVisible());
+    REQUIRE(fixture.recorder.methods ==
+            std::vector<QString>{QStringLiteral("edit_render_targets")});
+    const auto targets = Json::parse(
+        QJsonDocument(fixture.recorder.params).toJson().toStdString());
+    REQUIRE(targets.at("ops").size() == 6);
+    std::vector<std::string> made;
+    for (const auto &op : targets.at("ops"))
+        made.push_back(op.at("target").at("name").get<std::string>());
+    // gbuffer_albedo is the preset's; the new one takes the next name.
+    CHECK(made == std::vector<std::string>{"gbuffer_albedo_2", "gbuffer_normal",
+                                           "gbuffer_material", "gbuffer_worldpos",
+                                           "gbuffer_emissive", "scene_depth"});
+
+    // The targets commit; the pass waits for the context that names them.
+    fixture.recorder.result(
+        fixture.recorder.submit_id,
+        QByteArray::fromStdString(
+            Json{{"status", "accepted"}, {"ticket", "g1-targets"}}.dump()));
+    QApplication::processEvents();
+    fixture.recorder.result(
+        fixture.recorder.ticket_id,
+        QByteArray::fromStdString(
+            Json{{"status", "committed"}, {"committed", true}}.dump()));
+    QApplication::processEvents();
+    CHECK(fixture.recorder.methods.size() == 1);
+
+    constexpr auto after_digest =
+        "4444444444444444444444444444444444444444444444444444444444444444";
+    context["source_digest"]["hex"] = after_digest;
+    for (const auto &target : made)
+        context["render_targets"].push_back(
+            Json{{"name", target}, {"declaration", {{"name", target}}},
+                 {"editable", true}, {"source", "authoring"}});
+    fixture.recorder.result(fixture.recorder.context_id,
+                            QByteArray::fromStdString(context.dump()));
+    QApplication::processEvents();
+
+    REQUIRE(fixture.recorder.methods ==
+            std::vector<QString>{QStringLiteral("edit_render_targets"),
+                                 QStringLiteral("add_authored_pass")});
+    const auto pass = Json::parse(
+        QJsonDocument(fixture.recorder.params).toJson().toStdString());
+    CHECK(pass.at("base_source_digest") == after_digest);
+    CHECK(pass.at("graph") == fixture.graph);
+    CHECK(pass.at("insert") == "before:wp343_mixed_a");
+    CHECK(pass.at("pass").at("name") == "deferred_geometry");
+    CHECK(pass.at("pass").at("type") == "material");
+    CHECK(pass.at("pass").at("material_contract") == "deferred_geometry_v1");
+    CHECK(pass.at("pass").at("output").at("color") ==
+          Json::array({"gbuffer_albedo_2", "gbuffer_normal", "gbuffer_material",
+                       "gbuffer_worldpos", "gbuffer_emissive"}));
+    CHECK(pass.at("pass").at("output").at("depth") == "scene_depth");
+
+    SECTION("a refused pass says the targets it made stay") {
+        fixture.recorder.result(
+            fixture.recorder.submit_id,
+            QByteArray::fromStdString(
+                Json{{"status", "rejected"},
+                     {"error",
+                      {{"code", "render_pipeline_preflight_failed"},
+                       {"message", "Material pass requires depth output: x"}}}}
+                    .dump()));
+        QApplication::processEvents();
+        auto *status = fixture.widget.findChild<QLabel *>(
+            QStringLiteral("pelican.framePlanStatus"));
+        REQUIRE(status != nullptr);
+        const QString shown = status->toolTip().isEmpty() ? status->text()
+                                                          : status->toolTip();
+        CHECK(shown.contains(QStringLiteral("requires depth output")));
+        CHECK(shown.contains(QStringLiteral("stay declared")));
+        CHECK(shown.contains(QStringLiteral("gbuffer_albedo_2")));
     }
 }
 } // namespace PelicanStudio

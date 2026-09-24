@@ -40,6 +40,10 @@ struct FramePlanEditCapability {
     // F-1: add / replace / remove render targets in the editor's fragment.
     std::function<qint64(const QJsonObject &params, QString *error)>
         editRenderTargets;
+    // G-1: "Add material pass..." adds its pass through the same call the
+    // Pass Editor adds a fullscreen one with.
+    std::function<qint64(const QJsonObject &params, QString *error)>
+        addAuthoredPass;
     std::function<qint64(const QString &ticket, QString *error)>
         requestEditResult;
     std::function<void(QObject *context, ResultHandler handler)> result;

@@ -1,0 +1,275 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "material_pass_authoring",
+  "description": "G-1: Add material pass... on the Frame Plan adds a forward_opaque pass to a project with a model, Create missing targets makes scene_color and scene_depth in the same Save, and once present reads scene_color the model is on screen.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout: the panel layout is the desktop's, saved by whichever Studio closed last",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "the first frame plan arrives",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "before: present's gradient, read at the middle of the viewport",
+      "expect": "result",
+      "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/before_gradient.png", "pixels": [[0.5, 0.5], [0.06, 0.06]]},
+      "path": "pixels[0]",
+      "remember": "gradient_middle"
+    },
+    {
+      "label": "and it is a gradient, not a shape",
+      "expect": "result",
+      "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/before_gradient.png"},
+      "path": "distinct_colors",
+      "op": "gt",
+      "value": 100
+    },
+    {
+      "label": "Add material pass..., fired by name with nothing picked",
+      "cmd": "action",
+      "name": "pelican.framePlan.addMaterialPass"
+    },
+    {
+      "label": "the form is open",
+      "cmd": "wait",
+      "name": "pelican.materialPassForm.name",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the pass goes at the start of the graph",
+      "expect": "result",
+      "command": {"cmd": "text", "name": "pelican.materialPassForm.where"},
+      "path": "text",
+      "op": "contains",
+      "value": "start of main_render"
+    },
+    {
+      "label": "Forward opaque is the contract it opens on",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.contract",
+      "value": "Forward opaque"
+    },
+    {
+      "label": "and the pass is named after it, with nothing typed",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.name",
+      "value": "forward_opaque"
+    },
+    {
+      "label": "its color output is empty",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.state.color",
+      "value": "empty"
+    },
+    {
+      "label": "Create missing targets",
+      "cmd": "click",
+      "name": "pelican.materialPassForm.createMissing"
+    },
+    {
+      "label": "the color output is a new scene_color",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.target.color",
+      "value": "scene_color"
+    },
+    {
+      "label": "made with the format the contract requires",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.state.color",
+      "value": "new: made as R16G16B16A16_SFLOAT"
+    },
+    {
+      "label": "and the depth output a new scene_depth",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.target.depth",
+      "value": "scene_depth"
+    },
+    {
+      "label": "the form says the targets stay if the pass is refused",
+      "expect": "result",
+      "command": {"cmd": "text", "name": "pelican.materialPassForm.notice"},
+      "path": "text",
+      "op": "contains",
+      "value": "stay declared"
+    },
+    {
+      "label": "Save: edit_render_targets, then add_authored_pass",
+      "cmd": "click",
+      "name": "pelican.materialPassForm.ok"
+    },
+    {
+      "label": "the form closed",
+      "cmd": "wait",
+      "name": "pelican.materialPassForm.name",
+      "visible": false,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the engine declares scene_color, from the authoring fragment",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "render_targets[0].name",
+      "value": "scene_color",
+      "retry_ms": 120000
+    },
+    {
+      "label": "and scene_depth",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "render_targets[1].authored_declaration.format",
+      "value": "D32_SFLOAT"
+    },
+    {
+      "label": "the engine runs forward_opaque first",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[0].name",
+      "value": "forward_opaque",
+      "retry_ms": 120000
+    },
+    {
+      "label": "as a material pass of the forward opaque contract",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[0].declaration.material_contract",
+      "value": "forward_opaque_v1"
+    },
+    {
+      "label": "that the editor manages",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[0].managed",
+      "value": true
+    },
+    {
+      "label": "the canvas draws it, writing scene_color",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#forward_opaque/out:scene_color",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "nothing reads scene_color yet, so the screen is still the gradient",
+      "expect": "result",
+      "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/after_pass_still_gradient.png"},
+      "path": "distinct_colors",
+      "op": "gt",
+      "value": 100
+    },
+    {
+      "label": "present.frag passes input 0 through, typed in the author's own editor",
+      "file": "write",
+      "path": "{project}/shaders/present.frag",
+      "text": "#version 460\n#extension GL_GOOGLE_include_directive : require\n#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\nPELICAN_DECLARE_INPUT_0(in_scene_color);  // scene_color\n\nvoid main() {\n    outColor = PELICAN_TEXTURE_2D_0(in_scene_color, inUV);\n}\n"
+    },
+    {
+      "label": "show the whole graph so both ends of the drag are on screen",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
+    },
+    {
+      "label": "present is drawn",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "drag scene_color from forward_opaque onto present: one edit_preset_pass on the root",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.framePlanLogicalView::node_socket#forward_opaque/out:scene_color"
+      },
+      "to": {
+        "name": "pelican.framePlanLogicalView::node#present"
+      },
+      "steps": 8
+    },
+    {
+      "label": "the root's present reads scene_color",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[3].root_declaration.input[0]",
+      "value": "scene_color",
+      "retry_ms": 120000
+    },
+    {
+      "label": "the canvas draws the read",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#present/in:scene_color",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the viewport now holds a shape: a handful of colours, not a gradient's thousands",
+      "expect": "result",
+      "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/after_box.png", "pixels": [[0.5, 0.5], [0.06, 0.06]]},
+      "path": "distinct_colors",
+      "op": "le",
+      "value": 16,
+      "retry_ms": 120000
+    },
+    {
+      "label": "read the background in a corner",
+      "expect": "result",
+      "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/after_box.png", "pixels": [[0.5, 0.5], [0.06, 0.06]]},
+      "path": "pixels[1]",
+      "remember": "background"
+    },
+    {
+      "label": "the box covers the middle, in a colour the background is not",
+      "expect": "result",
+      "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/after_box.png", "pixels": [[0.5, 0.5], [0.06, 0.06]]},
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "background"
+    },
+    {
+      "label": "and not the gradient's colour there before",
+      "expect": "result",
+      "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/after_box.png", "pixels": [[0.5, 0.5], [0.06, 0.06]]},
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "gradient_middle"
+    },
+    {
+      "label": "the new targets are in the editor's own fragment on disk",
+      "file": "exists",
+      "path": "{project}/passes/authoring/render-targets.json",
+      "value": true
+    },
+    {
+      "label": "a picture of the Frame Plan for the reader of this report",
+      "expect": "screenshot",
+      "name": "pelican.framePlan",
+      "path": "material_pass_canvas.png"
+    }
+  ]
+}

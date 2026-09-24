@@ -6568,4 +6568,150 @@ TEST_CASE("F-6 a preset root still requires a fork before its passes are edited"
     CHECK(readBytes(project.render_config) == root_before);
 }
 
+// --- G-1: a material pass is authored the way a fullscreen pass is.
+
+namespace {
+
+Json g1ForwardColor(std::string_view name) {
+    return Json{{"name", name},
+                {"extent_scale", 1.0},
+                {"format", "R16G16B16A16_SFLOAT"},
+                {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+                {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}};
+}
+
+Json g1Depth(std::string_view name) {
+    return Json{{"name", name},
+                {"extent_scale", 1.0},
+                {"format", "D32_SFLOAT"},
+                {"format_class", "data"},
+                {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"})}};
+}
+
+Json g1MaterialPass(std::string_view name, std::string_view contract,
+                    Json colors, Json depth) {
+    return Json{{"name", name},
+                {"type", "material"},
+                {"material_contract", contract},
+                {"output", {{"color", std::move(colors)}, {"depth", std::move(depth)}}}};
+}
+
+// The first anchor the context offers for main_render: before its first pass,
+// where a scene's geometry is drawn.
+std::string g1FirstAnchor(const nlohmann::ordered_json &context) {
+    for (const auto &graph : context.at("graphs"))
+        if (graph.at("name") == "main_render")
+            return graph.at("anchor_candidates").at(0).at("insert").get<std::string>();
+    return {};
+}
+
+} // namespace
+
+TEST_CASE("G-1 add_authored_pass adds a forward material pass to a direct and a preset root",
+          "[render-config-editor][g1][material-pass]") {
+    const bool direct = GENERATE(true, false);
+    INFO((direct ? "direct graph root" : "hybrid_v1 preset root"));
+    RenderTargetHarness harness{direct};
+    harness.commit(Json::array({{{"op", "add"}, {"target", g1ForwardColor("g1_color")}},
+                                {{"op", "add"}, {"target", g1Depth("g1_depth")}}}));
+    const auto context = harness.context();
+    const auto accepted = harness.service->addAuthoredPass(
+        {{"base_source_digest", context.at("source_digest").at("hex")},
+         {"graph", "main_render"},
+         {"insert", g1FirstAnchor(context)},
+         {"pass", g1MaterialPass("g1_forward", "forward_opaque_v1",
+                                 Json::array({"g1_color"}), "g1_depth")}});
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    harness.service->commitPending();
+    const auto result = harness.service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("committed") == true);
+
+    // The frame plan the engine published draws it into the two targets.
+    const auto &nodes = harness.runtime.frame_plan.at("nodes");
+    const auto node = std::find_if(nodes.begin(), nodes.end(), [](const auto &value) {
+        return value.at("name") == "g1_forward";
+    });
+    REQUIRE(node != nodes.end());
+    CHECK(std::ranges::count(node->at("writes"), Json("g1_color")) == 1);
+
+    // It is a managed feature pass, which the Pass Editor edits in its fragment.
+    const auto after = harness.context();
+    const auto *pass = f6ContextPass(after, "g1_forward");
+    REQUIRE(pass != nullptr);
+    CHECK(pass->at("managed") == true);
+    CHECK(pass->at("provenance").at("source") == "feature");
+    CHECK(pass->at("editable_feature_pass") == true);
+    CHECK(pass->at("declaration").at("type") == "material");
+    // The context says which features the running pipeline enabled.
+    CHECK(after.at("enabled_feature_names").is_array());
+}
+
+TEST_CASE("G-1 a material pass of the wrong shape is refused in the parser's words",
+          "[render-config-editor][g1][material-pass][rejection]") {
+    RenderTargetHarness harness{true};
+    harness.commit(Json::array({{{"op", "add"}, {"target", g1ForwardColor("g1_color")}},
+                                {{"op", "add"}, {"target", g1Depth("g1_depth")}}}));
+    const auto context = harness.context();
+    const auto root_before = readBytes(harness.project.render_config);
+    const auto fragment_before = readBytes(harness.fragmentPath());
+    const auto authoring_directory = harness.project.root / "passes" / "authoring";
+    const auto files_before = [&] {
+        std::set<std::string> files;
+        for (const auto &entry : std::filesystem::directory_iterator{authoring_directory})
+            files.insert(entry.path().filename().string());
+        return files;
+    };
+    const auto listed_before = files_before();
+    const auto refused = [&](Json pass, std::string_view words) {
+        const auto rejected = harness.service->addAuthoredPass(
+            {{"base_source_digest", context.at("source_digest").at("hex")},
+             {"graph", "main_render"},
+             {"insert", g1FirstAnchor(context)},
+             {"pass", std::move(pass)}});
+        INFO(rejected.dump());
+        REQUIRE(rejected.at("status") == "rejected");
+        CHECK(rejected.at("error").at("code") == "render_pipeline_preflight_failed");
+        CHECK(rejected.at("error").at("message").get<std::string>().find(words) !=
+              std::string::npos);
+        harness.service->commitPending();
+        CHECK(readBytes(harness.project.render_config) == root_before);
+        CHECK(readBytes(harness.fragmentPath()) == fragment_before);
+        CHECK(files_before() == listed_before);
+    };
+
+    SECTION("a G-buffer pass with three colors, not five") {
+        refused(g1MaterialPass("g1_gbuffer", "deferred_geometry_v1",
+                               Json::array({"gbuffer_albedo", "gbuffer_normal",
+                                            "gbuffer_material"}),
+                               "g1_depth"),
+                "requires exactly 5 color outputs");
+    }
+    SECTION("a material pass drawing to the swapchain") {
+        refused(g1MaterialPass("g1_swapchain", "forward_opaque_v1",
+                               Json::array({"swapchain"}), "g1_depth"),
+                "swapchain");
+    }
+    SECTION("a material pass with no depth") {
+        refused(g1MaterialPass("g1_depthless", "forward_opaque_v1",
+                               Json::array({"g1_color"}), nullptr),
+                "requires depth output");
+    }
+    SECTION("a raster pass is still not authored here") {
+        const auto rejected = harness.service->addAuthoredPass(
+            {{"base_source_digest", context.at("source_digest").at("hex")},
+             {"graph", "main_render"},
+             {"insert", g1FirstAnchor(context)},
+             {"pass",
+              {{"name", "g1_raster"},
+               {"type", "raster"},
+               {"output", {{"color", Json::array({"g1_color"})}, {"depth", nullptr}}}}}});
+        INFO(rejected.dump());
+        CHECK(rejected.at("error").at("code") == "authored_pass_type_unavailable");
+        CHECK(rejected.at("error").at("requested_type") == "raster");
+        CHECK(readBytes(harness.project.render_config) == root_before);
+    }
+}
+
 } // namespace Pelican

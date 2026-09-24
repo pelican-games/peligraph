@@ -45,6 +45,7 @@ FramePlanEditCapability framePlanEditCapability(EmbeddedViewport &viewport) {
         .editComputeTask = send("edit_compute_task"),
         .removeComputeTask = send("remove_compute_task"),
         .editRenderTargets = send("edit_render_targets"),
+        .addAuthoredPass = send("add_authored_pass"),
         .requestEditResult = [&viewport](const QString &ticket, QString *error) {
             return viewport.requestRpc(
                 QStringLiteral("get_edit_result"),

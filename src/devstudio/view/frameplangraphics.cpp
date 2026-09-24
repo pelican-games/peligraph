@@ -3595,6 +3595,8 @@ void FramePlanGraphicsScene::contextMenuEvent(
         // the cursor's node is remembered for the named actions as well.
         context_node_ = clicked;
         if (add_pass_action_ != nullptr) menu.addAction(add_pass_action_);
+        if (material_pass_action_ != nullptr)
+            menu.addAction(material_pass_action_);
         if (add_task_action_ != nullptr) menu.addAction(add_task_action_);
         if (selected_nodes_.size() >= 2 &&
             selected_nodes_.contains(clicked)) {
@@ -3673,6 +3675,8 @@ void FramePlanGraphicsScene::contextMenuEvent(
     }
     if (!on_entity && render_target_action_ != nullptr)
         menu.addAction(render_target_action_);
+    if (!on_entity && material_pass_action_ != nullptr)
+        menu.addAction(material_pass_action_);
     if (!menu.actions().isEmpty()) menu.addSeparator();
     // The same two objects the automation surface fires by name, so a scenario
     // reaches them without driving a popup.
@@ -4270,6 +4274,10 @@ void FramePlanGraphicsScene::recordSelection() {
 
 void FramePlanGraphicsScene::setRenderTargetAction(QAction *action) {
     render_target_action_ = action;
+}
+
+void FramePlanGraphicsScene::setMaterialPassAction(QAction *action) {
+    material_pass_action_ = action;
 }
 
 void FramePlanGraphicsScene::applyResourcePick() {

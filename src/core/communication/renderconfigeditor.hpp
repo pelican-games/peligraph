@@ -195,12 +195,17 @@ class RenderConfigEditorService {
     // `edits_additional_documents` is set by an edit whose root can stay
     // byte-identical (edit_render_targets on an existing fragment): without it
     // the commit would answer "no change" and never write the fragment.
+    // `check` (G-1) judges the composed candidate further; what it throws is
+    // refused as render_pipeline_preflight_failed like a composition error.
+    using AuthoredCandidateCheck =
+        std::function<void(const ResolvedRenderConfigAuthoringContext &)>;
     nlohmann::ordered_json enqueueAuthoredPassTicket(
         std::string operation, const GateSnapshot &gate,
         const std::string &base_digest, AuthoredRenderConfigDocument root,
         RenderConfigCandidateDocumentSet candidate_documents,
         const std::string &reference,
-        bool edits_additional_documents = false);
+        bool edits_additional_documents = false,
+        const AuthoredCandidateCheck &check = {});
     nlohmann::ordered_json rejection(
         std::string code, std::string message,
         nlohmann::ordered_json details = nlohmann::ordered_json::object()) const;

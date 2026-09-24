@@ -90,6 +90,10 @@ struct FramePlanAuthoring {
     std::vector<std::string> render_target_formats;
     std::vector<std::string> render_target_usages;
     std::string preset_name;
+    // G-1: the features the running pipeline enabled ("hdr" decides a
+    // G-buffer's formats). Unknown when the context predates the member.
+    std::vector<std::string> enabled_features;
+    bool enabled_features_known = false;
 
     [[nodiscard]] const FramePlanRenderTarget *findRenderTarget(
         const std::string &name) const;

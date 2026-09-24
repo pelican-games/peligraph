@@ -465,6 +465,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/shaderreloadfollower.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/rendertargetform.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/materialpassedit.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/materialpassform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplangraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodelayout.cpp
@@ -506,6 +508,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanwidget.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/rendertargetform.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/materialpassedit.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/materialpassform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplangraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodelayout.cpp

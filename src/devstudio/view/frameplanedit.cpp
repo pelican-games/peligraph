@@ -252,6 +252,14 @@ FramePlanAuthoring framePlanAuthoringFromContext(const Json &context) {
         }
     }
     authoring.preset_name = textOr(preset, "name");
+    // G-1: the features the running pipeline enabled, when the context says.
+    if (const auto features = context.find("enabled_feature_names");
+        features != context.end() && features->is_array()) {
+        authoring.enabled_features_known = true;
+        for (const auto &feature : *features)
+            if (feature.is_string())
+                authoring.enabled_features.push_back(feature.get<std::string>());
+    }
     if (const auto targets = context.find("render_targets");
         targets != context.end() && targets->is_array()) {
         for (const auto &target : *targets) {

@@ -12,8 +12,11 @@
 
 #include "../loader/engineresources.hpp"
 #include "../renderingpass/frameplanner.hpp"
+#include "../renderingpass/passdefinitionjsonparser.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
 #include "../renderingpass/rendertargetjsonparser.hpp"
+#include "../renderingpass/rendertargetmetadataresolver.hpp"
+#include "../renderingpass/rendertargetnameresolver.hpp"
 #include "../vkcore/renderer_config.hpp"
 
 #include <algorithm>
@@ -25,6 +28,7 @@
 #include <ranges>
 #include <set>
 #include <stdexcept>
+#include <unordered_set>
 #include <utility>
 
 namespace Pelican {
@@ -318,6 +322,69 @@ std::string managedFragmentBytes(std::string_view id,
              {{{"insert", insert}, {"pass", pass}}})},
     };
     return fragment.dump(2) + "\n";
+}
+
+// G-1. A material pass is judged by the pass parser the pipeline load runs --
+// contract, color count, depth, formats, no swapchain output -- against the
+// targets of the composed candidate, so a shape the load would refuse is
+// refused before anything is written, in the parser's own words. Composition
+// alone does not look at attachment formats. The screen extent is nominal:
+// only the ratios between one pass's outputs matter to the parser.
+void validateAuthoredMaterialPass(const Json &config, const std::string &graph,
+                                  const std::string &pass_name, bool hdr) {
+    std::optional<Json> pass;
+    for (const auto &candidate : config.value("rendering_passes", Json::array())) {
+        if (!candidate.is_object() || candidate.value("name", std::string{}) != graph)
+            continue;
+        for (const auto &entry : candidate.value("passes", Json::array()))
+            if (entry.is_object() && entry.value("name", std::string{}) == pass_name)
+                pass = entry;
+    }
+    if (!pass)
+        throw std::runtime_error("the composed candidate has no pass " + pass_name +
+                                 " in " + graph);
+    constexpr vk::Extent2D screen{1920, 1080};
+    const auto definitions = parseRenderTargetDefinitionsFromJson(
+        resolveRenderTargetFormatClassesV2(
+            Json{{"resolver_version", 2},
+                 {"render_targets", config.value("render_targets", Json::array())}},
+            vk::Format::eB8G8R8A8Srgb, screen, hdr));
+    std::unordered_set<std::string> buffers;
+    for (const auto &buffer : config.value("buffers", Json::array()))
+        if (buffer.is_object() && buffer.contains("name") && buffer.at("name").is_string())
+            buffers.insert(buffer.at("name").get<std::string>());
+    const RenderTargetNameResolver names{[&](const std::string &name) {
+        for (std::size_t index = 0; index < definitions.size(); ++index)
+            if (definitions[index].name == name)
+                return GlobalRenderTargetId{static_cast<int>(index)};
+        return noRenderTargetId();
+    }};
+    const RenderTargetMetadataResolver metadata{[&](GlobalRenderTargetId id) {
+        if (id.value < 0 || static_cast<std::size_t>(id.value) >= definitions.size())
+            throw std::runtime_error("render target metadata requested for an unknown target");
+        const auto &definition = definitions[static_cast<std::size_t>(id.value)];
+        const auto scaled = [&](std::uint32_t size) {
+            return std::max<std::uint32_t>(
+                1, static_cast<std::uint32_t>(size * definition.extent_scale + 0.5f));
+        };
+        const auto extent = definition.fixed_extent.value_or(
+            vk::Extent2D{scaled(screen.width), scaled(screen.height)});
+        return RenderTargetMetadata{
+            .name = definition.name,
+            .usage = definition.usage,
+            .format = definition.format,
+            .extent = extent,
+            .history = definition.history,
+            .samples = definition.samples,
+            .mip_levels = definition.mip_levels.mode == ImageMipLevelMode::full_chain
+                              ? maximumImageMipLevels(extent.width, extent.height)
+                              : definition.mip_levels.count,
+            .array_layers = definition.array_layers,
+            .dimension = definition.dimension,
+            .storage_mode = definition.storage_mode,
+        };
+    }};
+    (void)parsePassDefinitionFromJson(*pass, names, metadata, buffers);
 }
 
 std::string provenanceSourceName(RenderPipelineProvenanceSource source) {
@@ -1893,6 +1960,10 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
         {"source_reference", dependencies_.source_reference},
         {"source_digest", digestJson(document_.sourceDigest())},
         {"published_generation", runtime.published_generation},
+        // G-1: what the running pipeline enabled. A scene-class target is
+        // R16G16B16A16_SFLOAT only with "hdr" among them, which decides the
+        // formats a new G-buffer's targets are made with.
+        {"enabled_feature_names", runtime.enabled_feature_names},
         {"config_kind",
          resolved.pipeline_preset ? "preset" : "direct"},
         {"graphs", std::move(graphs)},
@@ -2684,11 +2755,14 @@ OrderedJson RenderConfigEditorService::enqueueAuthoredPassTicket(
     std::string operation, const GateSnapshot &gate,
     const std::string &base_digest, AuthoredRenderConfigDocument root,
     RenderConfigCandidateDocumentSet candidate_documents,
-    const std::string &reference, bool edits_additional_documents) {
+    const std::string &reference, bool edits_additional_documents,
+    const AuthoredCandidateCheck &check) {
     try {
         // This is the decisive staged-file contrast: neither the feature nor
         // preset resolver may bypass the request-local document set.
-        (void)dependencies_.resolve_authoring_context(candidate_documents);
+        const auto candidate =
+            dependencies_.resolve_authoring_context(candidate_documents);
+        if (check) check(candidate);
     } catch (const std::exception &error) {
         return rejection("render_pipeline_preflight_failed", error.what(),
                          {{"participant", "pelican.render_pipeline"},
@@ -2742,12 +2816,16 @@ OrderedJson RenderConfigEditorService::addAuthoredPass(
         throw std::invalid_argument(
             "add_authored_pass requires pass object with a non-empty string name");
     }
-    if (pass->value("type", std::string{}) != "fullscreen") {
+    // G-1: a material pass is authored the same way as a fullscreen one. Its
+    // shape is the pass parser's to judge, against the composed candidate
+    // (below); a raster pass draws no scene and is still not authored here.
+    const auto pass_type = pass->value("type", std::string{});
+    if (pass_type != "fullscreen" && pass_type != "material") {
         return rejection(
             "authored_pass_type_unavailable",
-            "add_authored_pass currently authors fullscreen passes only",
-            {{"requested_type", pass->value("type", std::string{})},
-             {"supported_type", "fullscreen"}});
+            "add_authored_pass authors fullscreen and material passes only",
+            {{"requested_type", pass_type},
+             {"supported_types", OrderedJson::array({"fullscreen", "material"})}});
     }
 
     const auto gate = gateSnapshot();
@@ -2872,10 +2950,22 @@ OrderedJson RenderConfigEditorService::addAuthoredPass(
     }
     RenderConfigCandidateDocumentSet candidate_documents{
         source_normalized_reference_, std::move(documents)};
+    AuthoredCandidateCheck check;
+    if (pass_type == "material") {
+        const auto features =
+            dependencies_.runtime_snapshot
+                ? dependencies_.runtime_snapshot().enabled_feature_names
+                : std::vector<std::string>{};
+        const bool hdr = std::ranges::find(features, "hdr") != features.end();
+        check = [graph, name = pass->at("name").get<std::string>(), hdr](
+                    const ResolvedRenderConfigAuthoringContext &candidate) {
+            validateAuthoredMaterialPass(candidate.config, graph, name, hdr);
+        };
+    }
     return enqueueAuthoredPassTicket("add_authored_pass", gate, base_digest,
                                      std::move(root),
                                      std::move(candidate_documents),
-                                     reference);
+                                     reference, false, check);
 }
 
 OrderedJson RenderConfigEditorService::removeAuthoredPass(

@@ -11,6 +11,10 @@ add_library(pelican_studio_view STATIC
     frameplaneditcapability.hpp
     rendertargetform.cpp
     rendertargetform.hpp
+    materialpassedit.cpp
+    materialpassedit.hpp
+    materialpassform.cpp
+    materialpassform.hpp
     nodegraphics.cpp
     nodegraphics.hpp
     nodelayout.cpp

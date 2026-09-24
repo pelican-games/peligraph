@@ -321,6 +321,16 @@ the log under its form. Under automation Studio does
 not hand a shader to the desktop: "opening" one prints
 `automation: shader source open <path>` to its log instead.
 
+G-1's "Add material pass..." is the named QAction
+`pelican.framePlan.addMaterialPass` (also the toolbar button
+`pelican.framePlanAddMaterialPass`). Its form is `pelican.materialPassForm`:
+`.name`, `.contract` (a combo: `select` it by the label a person reads),
+one `.target.<slot>` combo and one `.state.<slot>` label per output, where the
+slot is `color` for a forward contract, `albedo`, `normal`, `material`,
+`world_position`, `emissive` for a G-buffer, and `depth`; `.createMissing`,
+`.notice`, `.error` and `.ok`. `material_pass_authoring` is the example; its
+fixture explains why it carries two material passes nobody reads.
+
 ## Gestures a canvas is driven with
 
 `press`, `move` and `release` share one piece of state: which buttons this

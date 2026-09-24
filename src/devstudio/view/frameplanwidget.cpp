@@ -10,6 +10,8 @@
 #include "projectpathresolver.hpp"
 #include "shaderreloadfollower.hpp"
 #include "rendertargetform.hpp"
+#include "materialpassedit.hpp"
+#include "materialpassform.hpp"
 #include "shadersourceresolver.hpp"
 
 #include <QAbstractItemView>
@@ -451,6 +453,16 @@ struct FramePlanWidget::Impl {
     // and a New render target... that arrived before any context at all.
     std::string pending_form_target;
     bool pending_new_target_form = false;
+    // --- G-1: material passes. Save may be two changes: the targets first,
+    // then -- from the context that names them -- the pass.
+    MaterialPassForm *material_pass_form = nullptr;
+    bool pending_material_form = false;
+    std::optional<MaterialPassFormValues> pending_material_pass;
+    // The context in flight when the targets committed predates them; the
+    // pass waits for the next one.
+    bool material_context_stale = false;
+    // The targets Save made for the pass in flight: they stay if it is refused.
+    std::vector<std::string> material_targets_made;
 
     Impl(FramePlanWidget &widget, EmbeddedViewport &embedded_viewport)
         : owner{widget}, viewport{embedded_viewport} {
@@ -575,6 +587,11 @@ struct FramePlanWidget::Impl {
         new_target->setObjectName(
             QStringLiteral("pelican.framePlanNewRenderTarget"));
         toolbar->addWidget(new_target);
+        auto *new_material_pass =
+            new QPushButton(owner.tr("Add material pass..."), &owner);
+        new_material_pass->setObjectName(
+            QStringLiteral("pelican.framePlanAddMaterialPass"));
+        toolbar->addWidget(new_material_pass);
         toolbar->addWidget(makePanelHelpButton(
             &owner, "pelican.framePlan.help", ManualFramePlanAnchor,
             owner.tr("Shift-drag: connect resources. The snapshot updates "
@@ -750,6 +767,18 @@ struct FramePlanWidget::Impl {
         QObject::connect(new_target, &QPushButton::clicked, add_target,
                          &QAction::trigger);
         logical_scene->setRenderTargetAction(add_target);
+        // G-1: named like the others; after the node right-clicked or picked,
+        // at the start of the graph otherwise.
+        auto *add_material = new QAction(
+            QStringLiteral("Add material pass..."), &owner);
+        add_material->setObjectName(
+            QStringLiteral("pelican.framePlan.addMaterialPass"));
+        owner.addAction(add_material);
+        QObject::connect(add_material, &QAction::triggered, &owner,
+                         [this] { openMaterialPassForm(); });
+        QObject::connect(new_material_pass, &QPushButton::clicked,
+                         add_material, &QAction::trigger);
+        logical_scene->setMaterialPassAction(add_material);
         logical_scene->resourceEditRequested =
             [this](const FramePlanNodeKey &resource) {
                 openRenderTargetForm(resource.name);
@@ -904,6 +933,11 @@ struct FramePlanWidget::Impl {
                              pending_form_target.clear();
                              pending_new_target_form = false;
                              if (render_target_form) render_target_form->hide();
+                             pending_material_form = false;
+                             pending_material_pass.reset();
+                             material_context_stale = false;
+                             material_targets_made.clear();
+                             if (material_pass_form) material_pass_form->hide();
                              placement_loaded = false;
                              placement_graph.clear();
                              requestRefresh();
@@ -1198,9 +1232,9 @@ struct FramePlanWidget::Impl {
     // they follow the same rule -- a tab behind another one must not put
     // traffic on the editor channel, or take work from the panel in front.
     // They are asked for again the moment this one is shown.
-    void requestAuthoringContext() {
+    void requestAuthoringContext(bool even_hidden = false) {
         if (!edit.requestAuthoringContext || pending_authoring_request != 0 ||
-            !owner.isVisible())
+            (!owner.isVisible() && !even_hidden))
             return;
         QString error;
         pending_authoring_request = edit.requestAuthoringContext(&error);
@@ -1237,6 +1271,7 @@ struct FramePlanWidget::Impl {
             : request.method == "edit_compute_task"  ? edit.editComputeTask
             : request.method == "remove_compute_task" ? edit.removeComputeTask
             : request.method == "edit_render_targets" ? edit.editRenderTargets
+            : request.method == "add_authored_pass"   ? edit.addAuthoredPass
                                                       : nullptr;
         if (!sender) {
             showStatus(owner.tr("Canvas editing is unavailable: %1").arg(method));
@@ -1288,6 +1323,15 @@ struct FramePlanWidget::Impl {
             if (std::exchange(pending_new_target_form, false) &&
                 authoring.received)
                 openNewRenderTarget();
+            if (std::exchange(pending_material_form, false) &&
+                authoring.received)
+                openMaterialPassForm();
+            if (pending_material_pass) {
+                if (std::exchange(material_context_stale, false))
+                    requestAuthoringContext(true);
+                else
+                    submitMaterialPass();
+            }
             if (!pending_form_target.empty()) {
                 const auto name = std::exchange(pending_form_target, {});
                 if (authoring.findRenderTarget(name) != nullptr)
@@ -1338,7 +1382,7 @@ struct FramePlanWidget::Impl {
             const auto status_text = response.value("status", std::string{});
             if (status_text != "accepted" || !response.contains("ticket") ||
                 !response.at("ticket").is_string()) {
-                const QString message = rejectionText(response);
+                const QString message = rejectionText(response) + materialFailureNote();
                 status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
                 showStatus(oneLine(message), message);
                 return;
@@ -1366,14 +1410,21 @@ struct FramePlanWidget::Impl {
             pending_ticket.clear();
             if (status_text != "committed" ||
                 !response.value("committed", false)) {
-                const QString message = rejectionText(response);
+                const QString message = rejectionText(response) + materialFailureNote();
                 status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
                 showStatus(oneLine(message), message);
                 return;
             }
             status->setStyleSheet({});
-            if (submitted_method == "edit_render_targets")
+            if (submitted_method == "edit_render_targets" && !pending_material_pass)
                 pending_target_selection = submitted_target;
+            // G-1: the pass is added from the context that names the targets;
+            // a reply already in flight was read before they were made.
+            if (submitted_method == "edit_render_targets" && pending_material_pass) {
+                material_context_stale = pending_authoring_request != 0;
+                requestAuthoringContext(true);
+            }
+            if (submitted_method == "add_authored_pass") material_targets_made.clear();
             // The refresh first, so its own "requesting..." line does not land
             // on top of the answer the user is waiting for. The summary line
             // replaces this one when the new plan arrives, which is the right
@@ -1389,6 +1440,104 @@ struct FramePlanWidget::Impl {
             status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
             showStatus(oneLine(message), message);
         }
+    }
+
+    // G-1. What a refused material pass leaves behind: the targets Save made
+    // for it, named, so the user knows they are there. A refused target batch
+    // made nothing, and the pass it was for is not sent.
+    QString materialFailureNote() {
+        if (submitted_method == "edit_render_targets" && pending_material_pass) {
+            pending_material_pass.reset();
+            material_context_stale = false;
+            material_targets_made.clear();
+            return owner.tr(" The material pass was not added.");
+        }
+        if (submitted_method != "add_authored_pass" || material_targets_made.empty())
+            return {};
+        std::string names;
+        for (const auto &name : std::exchange(material_targets_made, {}))
+            names += (names.empty() ? "" : ", ") + name;
+        return owner.tr(" The render targets made for it stay declared: %1.")
+            .arg(text(names));
+    }
+
+    MaterialPassForm &materialPassForm() {
+        if (material_pass_form == nullptr) {
+            material_pass_form = new MaterialPassForm(&owner);
+            material_pass_form->setSubmit(
+                [this](const MaterialPassFormValues &values) -> QString {
+                    if (pending_edit_request != 0 || !pending_ticket.isEmpty() ||
+                        pending_material_pass)
+                        return owner.tr("Wait for the current change to finish.");
+                    const auto targets = materialPassTargetsRequest(authoring, values);
+                    if (!targets.refusal.empty()) return text(targets.refusal);
+                    if (!targets.sendable()) {
+                        const auto pass = materialPassAddRequest(authoring, values);
+                        if (!pass.sendable()) return text(pass.refusal);
+                        material_targets_made.clear();
+                        submit(pass);
+                        return {};
+                    }
+                    pending_material_pass = values;
+                    material_context_stale = false;
+                    material_targets_made.clear();
+                    for (const auto index : materialPassNewSlots(authoring, values))
+                        material_targets_made.push_back(values.targets[index]);
+                    submit(targets);
+                    if (pending_edit_request == 0) {
+                        pending_material_pass.reset();
+                        material_targets_made.clear();
+                    }
+                    return {};
+                });
+        }
+        return *material_pass_form;
+    }
+
+    void openMaterialPassForm() {
+        if (!model) {
+            showStatus(owner.tr("The frame plan has not arrived yet."));
+            return;
+        }
+        if (!authoring.received) {
+            pending_material_form = true;
+            requestAuthoringContext();
+            showStatus(owner.tr("Reading the render authoring context..."));
+            return;
+        }
+        const auto &graph = model->graph;
+        std::string insert;
+        QString where;
+        if (const auto anchor = logical_scene->insertAnchor();
+            anchor && anchor->graph == graph) {
+            if (const auto after = authoring.anchorAfter(graph, anchor->name)) {
+                insert = after->second;
+                where = owner.tr("The pass goes after %1 in %2.")
+                            .arg(text(anchor->name), text(graph));
+            }
+        }
+        if (insert.empty()) {
+            const auto anchors = authoring.anchors.find(graph);
+            if (anchors != authoring.anchors.end())
+                for (const auto &[position, token] : anchors->second)
+                    if (position == 0) insert = token;
+            where = owner.tr("The pass goes at the start of %1.").arg(text(graph));
+        }
+        materialPassForm().present(authoring, graph, insert, where);
+    }
+
+    // The second half of Save: the context that names the new targets is here.
+    void submitMaterialPass() {
+        const auto values = *std::exchange(pending_material_pass, std::nullopt);
+        const auto request = materialPassAddRequest(authoring, values);
+        if (!request.sendable()) {
+            submitted_method = "add_authored_pass";
+            const QString message = text(request.refusal) + materialFailureNote();
+            status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+            showStatus(oneLine(message), message);
+            return;
+        }
+        submit(request);
     }
 
     bool receiveEditFailure(qint64 request_id, const QString &message) {
@@ -1469,6 +1618,10 @@ struct FramePlanWidget::Impl {
              error->value("code", std::string{}).starts_with("render_target_")))
             return text(framePlanRenderTargetRejection(*error,
                                                        authoring.preset_name));
+        if (error != response.end() && error->is_object() &&
+            submitted_method == "add_authored_pass")
+            return owner.tr("The engine refused the pass: %1")
+                .arg(text(error->value("message", error->dump())));
         return responseError(response);
     }
 
