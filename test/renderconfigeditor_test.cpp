@@ -12,6 +12,7 @@
 #include "../src/core/loader/renderconfigcandidate.hpp"
 #include "../src/project/renderconfigsection.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
+#include "../src/core/renderingpass/previewgraph.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
 #include "../src/core/shader/raygrouplayout.hpp"
@@ -571,7 +572,9 @@ std::unique_ptr<RenderConfigEditorService> makeService(
 
 std::unique_ptr<RenderConfigEditorService> makeProjectService(
     TemporaryAnimgraphProject &project, PathResolver &resolver,
-    ActualCpuRenderRuntime &runtime) {
+    ActualCpuRenderRuntime &runtime,
+    std::function<void(const RenderConfigCandidateDocumentSet &)>
+        preflight_graph_variants = {}) {
     runtime.path_resolver = &resolver;
     // This producer models an already-running animgraph_demo instance. Shader
     // availability has its own ON/OFF gate tests; keep this lifecycle fixture
@@ -644,6 +647,7 @@ std::unique_ptr<RenderConfigEditorService> makeProjectService(
                             std::move(composition.resource_provenance),
                     };
                 },
+            .preflight_graph_variants = std::move(preflight_graph_variants),
             .feature_catalog = [&runtime] {
                 return enumerateEngineRenderFeatureDocuments(
                     [&runtime](std::string_view name,
@@ -7003,5 +7007,179 @@ TEST_CASE("G-4 without the runtime shader compiler the forward default is refuse
     CHECK(readBytes(harness.project.render_config) == root_before);
 }
 #endif
+
+// --- G-6: an edit is composed by every graph variant the engine registered.
+
+namespace {
+
+// The Blank template's rendering document: present, reading nothing.
+constexpr std::string_view g6BlankRoot = R"json({
+  "rendering_passes": [
+    {
+      "name": "main_render",
+      "passes": [
+        {
+          "name": "present",
+          "type": "fullscreen",
+          "input": [],
+          "output": {"color": ["display"], "depth": null},
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "project://shaders/present"
+          }
+        }
+      ]
+    }
+  ]
+}
+)json";
+
+// The engine's own preflight (the one editorruntimefactory installs), over
+// the candidate document set.
+std::function<void(const RenderConfigCandidateDocumentSet &)>
+g6ProductionPreflight(PathResolver &resolver, bool xr_active) {
+    return [&resolver, xr_active](
+               const RenderConfigCandidateDocumentSet &documents) {
+        preflightRenderGraphVariants(
+            documents.rootDocument().bytes,
+            [&resolver, &documents](std::string_view reference) {
+                return loadRenderConfigCandidateText(documents, resolver,
+                                                     reference);
+            },
+            true, xr_active);
+    };
+}
+
+struct G6Harness {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    ActualCpuRenderRuntime runtime;
+    std::unique_ptr<RenderConfigEditorService> service;
+
+    explicit G6Harness(bool xr_active) {
+        writeBytes(project.render_config, std::string{g6BlankRoot});
+        resolver.setup(project.root, false);
+        service = makeProjectService(
+            project, resolver, runtime,
+            g6ProductionPreflight(resolver, xr_active));
+    }
+
+    std::string digest() {
+        return service->getRenderAuthoringContext(Json::object())
+            .at("source_digest")
+            .at("hex")
+            .get<std::string>();
+    }
+
+    nlohmann::ordered_json targets(Json ops) {
+        return service->editRenderTargets(
+            {{"base_source_digest", digest()}, {"ops", std::move(ops)}});
+    }
+
+    nlohmann::ordered_json present(Json input) {
+        return service->editPresetPass(
+            {{"base_source_digest", digest()},
+             {"graph", "main_render"},
+             {"pass_name", "present"},
+             {"input", std::move(input)},
+             {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+             {"shader",
+              {{"vertex", "engine://fullscreen"},
+               {"fragment", "project://shaders/present"}}}});
+    }
+
+    nlohmann::ordered_json settle(const nlohmann::ordered_json &accepted) {
+        if (accepted.value("status", std::string{}) != "accepted")
+            return accepted;
+        service->commitPending();
+        return service->getResult({{"ticket", accepted.at("ticket")}});
+    }
+};
+
+} // namespace
+
+TEST_CASE("G-6 an edit preview cannot compose is refused before it takes a ticket, "
+          "naming preview, and nothing is written",
+          "[render-config-editor][g6][preflight][preview]") {
+    auto history_target = sceneTarget("trail");
+    history_target["history"] = true;
+
+    // The same edits against an engine-side service without the variant
+    // preflight: flat composes every one of them, the last included.
+    {
+        G6Harness flat_only{false};
+        flat_only.service = makeProjectService(flat_only.project,
+                                               flat_only.resolver,
+                                               flat_only.runtime);
+        REQUIRE(flat_only.settle(flat_only.targets(
+                    addOp(sceneTarget("lit_color"))))
+                    .at("committed") == true);
+        REQUIRE(flat_only.settle(flat_only.targets(addOp(history_target)))
+                    .at("committed") == true);
+        const auto read = flat_only.settle(flat_only.present(
+            Json::array({"lit_color", "trail@history"})));
+        INFO(read.dump());
+        REQUIRE(read.at("committed") == true);
+    }
+
+    G6Harness harness{false};
+    REQUIRE(harness.settle(harness.targets(addOp(sceneTarget("lit_color"))))
+                .at("committed") == true);
+    REQUIRE(harness.settle(harness.present(Json::array({"lit_color"})))
+                .at("committed") == true);
+    // A history target is taken: preview leaves the fragment that declares
+    // it out, and nothing preview keeps reads it.
+    REQUIRE(harness.settle(harness.targets(addOp(history_target)))
+                .at("committed") == true);
+
+    // present reading last frame's trail is what preview cannot take.
+    const auto root_before = readBytes(harness.project.render_config);
+    const auto applies_before = harness.runtime.apply_calls;
+    const auto refused =
+        harness.present(Json::array({"lit_color", "trail@history"}));
+    INFO(refused.dump());
+    REQUIRE(refused.at("status") == "rejected");
+    const auto &error = refused.at("error");
+    CHECK(error.at("code") == "render_pipeline_preflight_failed");
+    CHECK(error.at("variant") == "preview");
+    CHECK(error.at("message").get<std::string>().find("history read") !=
+          std::string::npos);
+    CHECK_FALSE(refused.contains("ticket"));
+    harness.service->commitPending();
+    CHECK(harness.runtime.apply_calls == applies_before);
+    CHECK(readBytes(harness.project.render_config) == root_before);
+}
+
+TEST_CASE("G-6 xr composes an edit only in an engine that started it",
+          "[render-config-editor][g6][preflight][xr]") {
+    auto history_target = sceneTarget("trail");
+    history_target["history"] = true;
+
+    // No XR session: a history target -- what a TAA-style project declares --
+    // is an edit like any other.
+    G6Harness flat{false};
+    REQUIRE(flat.settle(flat.targets(addOp(history_target)))
+                .at("committed") == true);
+
+#if PELICAN_WITH_OPENXR
+    // An engine that started XR composes xr too, and xr refuses history.
+    G6Harness xr{true};
+    REQUIRE(xr.settle(xr.targets(addOp(sceneTarget("lit_color"))))
+                .at("committed") == true);
+    const auto fragment_before = readBytes(
+        xr.project.root / "passes" / "authoring" / "render-targets.json");
+    const auto refused = xr.targets(addOp(history_target));
+    INFO(refused.dump());
+    REQUIRE(refused.at("status") == "rejected");
+    CHECK(refused.at("error").at("code") ==
+          "render_pipeline_preflight_failed");
+    CHECK(refused.at("error").at("variant") == "xr");
+    CHECK(refused.at("error").at("fragment_reference") ==
+          renderTargetFragment);
+    xr.service->commitPending();
+    CHECK(readBytes(xr.project.root / "passes" / "authoring" /
+                    "render-targets.json") == fragment_before);
+#endif
+}
 
 } // namespace Pelican

@@ -44,4 +44,20 @@ PreviewGraphProgram precompilePreviewGraph(
     const std::function<std::string(std::string_view)> &load_feature_json,
     bool runtime_shader_compiler_enabled);
 
+// G-6: an edit's candidate, composed by every graph variant the engine
+// registered when it started: flat and preview always, xr only when this
+// launch activated it (xr refuses history features outright, so composing it
+// for an engine that never opened a session would refuse every edit of a TAA
+// project). Preview is composed by precompilePreviewGraph above.
+//
+// The flat composition comes first and is the baseline: a candidate flat
+// cannot compose is left to the caller's own flat path, which reports it in
+// its own words, so a flat problem is never reported as a preview one. Once
+// flat composes, a variant that cannot is raised as
+// GraphVariantCompositionError naming that variant.
+void preflightRenderGraphVariants(
+    std::string_view rendering_config_json,
+    const std::function<std::string(std::string_view)> &load_feature_json,
+    bool runtime_shader_compiler_enabled, bool xr_active);
+
 } // namespace Pelican

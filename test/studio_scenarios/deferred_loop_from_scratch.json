@@ -552,15 +552,15 @@
       "timeout_ms": 180000
     },
     {
-      "label": "look at what reaches the screen",
+      "label": "look at the whole frame, where the geometry pass is drawn",
       "cmd": "select",
       "name": "pelican.framePlanTarget",
-      "text": "display"
+      "text": "Whole frame"
     },
     {
-      "label": "present is drawn",
+      "label": "deferred_geometry is drawn",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#present",
+      "name": "pelican.framePlanLogicalView::node#deferred_geometry",
       "visible": true,
       "timeout_ms": 120000
     },
@@ -570,9 +570,9 @@
       "name": "pelican.framePlan.fitView"
     },
     {
-      "label": "pick present by its heading (detour: see the hole above)",
+      "label": "pick deferred_geometry by its heading: the lighting pass goes after the pass another fragment added (G-6)",
       "cmd": "click",
-      "name": "pelican.framePlanLogicalView::node_header#present"
+      "name": "pelican.framePlanLogicalView::node_header#deferred_geometry"
     },
     {
       "label": "Add fullscreen pass after it",
@@ -720,65 +720,7 @@
       "name": "pelican.fullscreenPass.save"
     },
     {
-      "label": "the engine has deferred_lighting, declared after present",
-      "expect": "rpc_equals",
-      "method": "get_render_authoring_context",
-      "params": {},
-      "path": "graphs[0].passes[2].name",
-      "value": "deferred_lighting",
-      "retry_ms": 180000
-    },
-    {
-      "label": "with the scene lights",
-      "expect": "rpc_equals",
-      "method": "get_render_authoring_context",
-      "params": {},
-      "path": "graphs[0].passes[2].declaration.uses_light_data",
-      "value": true,
-      "retry_ms": 60000
-    },
-    {
-      "label": "File > Save Scene before the detour reopens the project",
-      "cmd": "action",
-      "name": "pelican.file.saveScene"
-    },
-    {
-      "label": "the save is done",
-      "cmd": "wait",
-      "name": "pelican.inspectorNotice",
-      "contains": "Scene saved",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "DETOUR: the lighting pass's fragment, edited in the author's own editor: before present",
-      "file": "replace",
-      "path": "{artifacts}/deferred_loop/passes/authoring/pass-cb9d40e82793d443cfcb.json",
-      "old": "\"insert\": \"after:present\"",
-      "new": "\"insert\": \"before:present\""
-    },
-    {
-      "label": "DETOUR: open another project, so the next open reads the fragment again",
-      "cmd": "open_project",
-      "dir": "{other_project}"
-    },
-    {
-      "label": "that engine answers",
-      "cmd": "wait_engine",
-      "timeout_ms": 180000
-    },
-    {
-      "label": "DETOUR: open the deferred project again",
-      "cmd": "open_project",
-      "dir": "{artifacts}/deferred_loop"
-    },
-    {
-      "label": "the re-read engine answers and has presented frames",
-      "cmd": "wait_engine",
-      "timeout_ms": 180000,
-      "frames": 30
-    },
-    {
-      "label": "deferred_lighting now runs between the geometry and present",
+      "label": "the engine runs deferred_lighting between the geometry and present, in flat and in the preview it composes with it",
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
@@ -787,11 +729,13 @@
       "retry_ms": 180000
     },
     {
-      "label": "the canvas has present again",
-      "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#present",
-      "visible": true,
-      "timeout_ms": 180000
+      "label": "with the scene lights",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].declaration.uses_light_data",
+      "value": true,
+      "retry_ms": 60000
     },
     {
       "label": "step 5: look at what reaches the screen",

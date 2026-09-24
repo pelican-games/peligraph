@@ -28,6 +28,7 @@
 #include "../os/inputsequence.hpp"
 #include "../phys/physworld.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
+#include "../renderingpass/previewgraph.hpp"
 #include "../renderer/camera.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "../shader/raygrouplayout.hpp"
@@ -40,6 +41,7 @@
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
 #include "../../project/featurecompose.hpp"
+#include "../../project/renderfeatureoverlay.hpp"
 
 #include <algorithm>
 #include <any>
@@ -2103,6 +2105,42 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                 .resource_provenance =
                                     std::move(composed.resource_provenance),
                             };
+                        },
+                    // G-6: the candidate as the engine's start-up
+                    // registration composes it -- the launch's feature
+                    // overlays applied, preview always, xr only when this
+                    // launch activated it.
+                    .preflight_graph_variants =
+                        [runtime](
+                            const RenderConfigCandidateDocumentSet
+                                &documents) {
+                            const auto loader =
+                                [&documents, runtime](
+                                    std::string_view reference) {
+                                    return loadRenderConfigCandidateText(
+                                        documents,
+                                        runtime->modules.path_resolver,
+                                        reference);
+                                };
+                            const auto &launch =
+                                runtime->modules.launch_config;
+                            std::string bytes =
+                                documents.rootDocument().bytes;
+                            if (!launch.render_feature_overlays.empty()) {
+                                bytes = applyRenderFeatureOverlays(
+                                            nlohmann::json::parse(bytes),
+                                            launch.render_feature_overlays,
+                                            loader)
+                                            .dump();
+                            }
+                            preflightRenderGraphVariants(
+                                bytes, loader,
+#if PELICAN_RUNTIME_SHADER_COMPILER
+                                true,
+#else
+                                false,
+#endif
+                                launch.xr_active);
                         },
                     // X-1: the catalog is the engine's own set plus the
                     // documents installed packages provide.  The package half

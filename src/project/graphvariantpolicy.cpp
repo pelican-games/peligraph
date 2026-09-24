@@ -1,13 +1,17 @@
 #include "graphvariantpolicy.hpp"
 
+#include "featurecompose.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <functional>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #ifndef PELICAN_WITH_OPENXR
 #define PELICAN_WITH_OPENXR 0
@@ -33,6 +37,72 @@ bool containsMarker(std::string_view value,
                        });
 }
 
+// G-6: the words of a name. Words are split at every character that is not a
+// letter or a digit, where a lower-case letter meets an upper-case one, and
+// where letters meet digits; they come back in lower case. "fluid_sim" is
+// {fluid, sim}, "debugUI" is {debug, ui}, "taa2" is {taa, 2}.
+std::vector<std::string> nameWords(std::string_view value) {
+    std::vector<std::string> words;
+    std::string word;
+    const auto flush = [&] {
+        if (!word.empty()) words.push_back(std::move(word));
+        word.clear();
+    };
+    char previous = '\0';
+    for (const char raw : value) {
+        const auto ch = static_cast<unsigned char>(raw);
+        if (std::isalnum(ch) == 0) {
+            flush();
+            previous = '\0';
+            continue;
+        }
+        const auto prev = static_cast<unsigned char>(previous);
+        const bool case_break =
+            previous != '\0' && std::islower(prev) != 0 &&
+            std::isupper(ch) != 0;
+        const bool digit_break =
+            previous != '\0' &&
+            (std::isdigit(prev) != 0) != (std::isdigit(ch) != 0);
+        if (case_break || digit_break) flush();
+        word.push_back(static_cast<char>(std::tolower(ch)));
+        previous = raw;
+    }
+    flush();
+    return words;
+}
+
+// G-6: a marker matches whole words, never a piece of one. A marker of
+// several words ("motion_vector") matches that run of words; its last word
+// may carry a plural "s" ("motion_vectors"). So "ui" is found in "pelican_ui"
+// and "ui_overlay" and not in "fluid_sim" or "build_grid", and "present" is
+// found in "final_present" and not in "presentation".
+bool containsMarkerWord(std::string_view value,
+                        std::span<const std::string_view> markers) {
+    const auto words = nameWords(value);
+    return std::any_of(
+        markers.begin(), markers.end(),
+        [&](const std::string_view marker) {
+            const auto wanted = nameWords(marker);
+            if (wanted.empty() || wanted.size() > words.size()) {
+                return false;
+            }
+            for (std::size_t start = 0;
+                 start + wanted.size() <= words.size(); ++start) {
+                bool match = true;
+                for (std::size_t index = 0;
+                     match && index < wanted.size(); ++index) {
+                    const auto &word = words[start + index];
+                    const auto &want = wanted[index];
+                    match = word == want ||
+                            (index + 1 == wanted.size() &&
+                             word == want + "s");
+                }
+                if (match) return true;
+            }
+            return false;
+        });
+}
+
 bool unsafePreviewName(std::string_view value) {
     constexpr std::array markers{
         std::string_view{"taa"}, std::string_view{"velocity"},
@@ -41,7 +111,7 @@ bool unsafePreviewName(std::string_view value) {
         std::string_view{"imgui"}, std::string_view{"mirror"},
         std::string_view{"present"},
     };
-    return containsMarker(value, markers);
+    return containsMarkerWord(value, markers);
 }
 
 bool unsafePreviewDirectPassSurface(std::string_view value) {
@@ -54,7 +124,7 @@ bool unsafePreviewDirectPassSurface(std::string_view value) {
         std::string_view{"projection_jitter"}, std::string_view{"ui"},
         std::string_view{"imgui"}, std::string_view{"mirror"},
     };
-    return containsMarker(value, markers);
+    return containsMarkerWord(value, markers);
 }
 
 bool looksLikeVelocityName(std::string_view name) {
@@ -112,6 +182,9 @@ bool declaresVelocityTarget(const nlohmann::json &feature) {
         });
 }
 
+// A pass placed on the UI anchor draws over the UI: the one placement a
+// preview must never take, whatever the pass calls itself. Exactly the two
+// spellings of that anchor; an insert that merely mentions "ui" is not it.
 bool declaresUiAnchor(const nlohmann::json &feature) {
     if (!feature.contains("passes") ||
         !feature.at("passes").is_array()) {
@@ -120,9 +193,10 @@ bool declaresUiAnchor(const nlohmann::json &feature) {
     return std::any_of(
         feature.at("passes").begin(), feature.at("passes").end(),
         [](const auto &entry) {
-            return entry.is_object() &&
-                   entry.value("insert", std::string{})
-                           .find("pelican_ui") != std::string::npos;
+            if (!entry.is_object()) return false;
+            const auto insert = entry.value("insert", std::string{});
+            return insert == "after:pelican_ui" ||
+                   insert == "before:pelican_ui";
         });
 }
 
@@ -151,10 +225,12 @@ bool declaresUnsafePreviewPass(const nlohmann::json &feature) {
         const auto &pass =
             entry.contains("pass") ? entry.at("pass") : entry;
         if (!pass.is_object()) continue;
+        // G-6: judged by the pass itself. Where it is inserted is not a
+        // property of the pass: "before:present" is just a place, and a pass
+        // anchored on an excluded feature's pass is excluded by
+        // GraphVariantFeatureSelection, which knows that feature.
         if (unsafePreviewName(pass.value("name", std::string{})) ||
-            unsafePreviewName(pass.value("type", std::string{})) ||
-            unsafePreviewName(
-                entry.value("insert", std::string{}))) {
+            unsafePreviewName(pass.value("type", std::string{}))) {
             return true;
         }
     }
@@ -281,11 +357,13 @@ void validatePreviewConfig(const nlohmann::json &config) {
                 pass.value("type", std::string{});
             if (type == "canonical_anchor") continue;
             const auto lower_name = lower(pass_name);
+            constexpr std::array overlay_words{
+                std::string_view{"mirror"}, std::string_view{"ui"},
+            };
             const bool retained_terminal =
                 outputsRequestLocalTerminal(pass) &&
                 lower_name.ends_with("present") &&
-                lower_name.find("mirror") == std::string::npos &&
-                lower_name.find("ui") == std::string::npos;
+                !containsMarkerWord(pass_name, overlay_words);
             if ((unsafePreviewDirectPassSurface(pass_name) &&
                  !retained_terminal) ||
                 unsafePreviewDirectPassSurface(type)) {
@@ -530,6 +608,8 @@ std::string_view graphVariantFeatureReasonName(
         return "user_interface";
     case GraphVariantFeatureReason::unsafe_surface:
         return "unsafe_surface";
+    case GraphVariantFeatureReason::dependency:
+        return "dependency";
     }
     return "unknown";
 }
@@ -615,6 +695,206 @@ GraphVariantFeatureDecision decideGraphVariantFeature(
 #endif
     }
     throw std::runtime_error("unknown graph variant feature policy");
+}
+
+namespace {
+
+// The names a JSON value lists: a string, or the strings of an array.
+void forEachListedName(const nlohmann::json &value,
+                       const std::function<void(const std::string &)> &visit) {
+    if (value.is_string()) {
+        visit(value.get_ref<const std::string &>());
+    } else if (value.is_array()) {
+        for (const auto &entry : value) {
+            if (entry.is_string()) {
+                visit(entry.get_ref<const std::string &>());
+            }
+        }
+    }
+}
+
+// Every resource a pass's `input` / `output` names, as a string anywhere
+// under them. A history read ("name@history") names the resource before '@'.
+void forEachResourceName(const nlohmann::json &value,
+                         const std::function<void(const std::string &)> &visit) {
+    if (value.is_string()) {
+        const auto &name = value.get_ref<const std::string &>();
+        const auto at = name.find('@');
+        visit(at == std::string::npos ? name : name.substr(0, at));
+        return;
+    }
+    if (value.is_array() || value.is_object()) {
+        for (const auto &entry : value) {
+            forEachResourceName(entry, visit);
+        }
+    }
+}
+
+// The pass of a feature `passes[]` entry ({insert, pass}); a bare pass object
+// is accepted the same way decideGraphVariantFeature accepts it.
+const nlohmann::json *featurePassOf(const nlohmann::json &entry) {
+    if (!entry.is_object()) return nullptr;
+    const auto &pass = entry.contains("pass") ? entry.at("pass") : entry;
+    return pass.is_object() ? &pass : nullptr;
+}
+
+const nlohmann::json *arrayField(const nlohmann::json &object,
+                                 std::string_view field) {
+    const auto found = object.find(std::string{field});
+    return found != object.end() && found->is_array() ? &*found : nullptr;
+}
+
+const nlohmann::json *objectField(const nlohmann::json &object,
+                                  std::string_view field) {
+    const auto found = object.find(std::string{field});
+    return found != object.end() && found->is_object() ? &*found : nullptr;
+}
+
+std::string insertAnchor(const std::string &insert) {
+    for (const std::string_view prefix : {std::string_view{"before:"},
+                                          std::string_view{"after:"}}) {
+        if (insert.starts_with(prefix)) {
+            return insert.substr(prefix.size());
+        }
+    }
+    return {};
+}
+
+} // namespace
+
+GraphVariantFeatureSelection::GraphVariantFeatureSelection(
+    CompiledGraphVariantPolicy policy)
+    : policy_{std::move(policy)} {}
+
+GraphVariantFeatureDecision GraphVariantFeatureSelection::decide(
+    std::string_view feature_name, const nlohmann::json &feature) {
+    auto decision =
+        decideGraphVariantFeature(policy_, feature_name, feature);
+    if (decision.disposition ==
+        GraphVariantFeatureDisposition::include) {
+        if (const auto *owner = usedExcludedFeature(feature)) {
+            decision.disposition =
+                GraphVariantFeatureDisposition::exclude;
+            decision.reason = GraphVariantFeatureReason::dependency;
+            decision.depends_on = *owner;
+        }
+    }
+    if (decision.disposition ==
+        GraphVariantFeatureDisposition::exclude) {
+        carryExcluded(decision.feature_name, feature);
+    }
+    return decision;
+}
+
+void GraphVariantFeatureSelection::carryExcluded(
+    const std::string &feature_name, const nlohmann::json &feature) {
+    if (!feature.is_object()) return;
+    const auto keep = [&feature_name](auto &names,
+                                      const std::string &name) {
+        if (!name.empty()) names.try_emplace(name, feature_name);
+    };
+    if (const auto *passes = arrayField(feature, "passes")) {
+        for (const auto &entry : *passes) {
+            if (const auto *pass = featurePassOf(entry)) {
+                keep(excluded_passes_,
+                     pass->value("name", std::string{}));
+            }
+        }
+    }
+    if (const auto *tasks = arrayField(feature, "compute_tasks")) {
+        for (const auto &task : *tasks) {
+            if (task.is_object()) {
+                keep(excluded_passes_,
+                     task.value("name", std::string{}));
+            }
+        }
+    }
+    for (const std::string_view field :
+         {std::string_view{"render_targets"},
+          std::string_view{"buffers"}}) {
+        if (const auto *resources = arrayField(feature, field)) {
+            for (const auto &resource : *resources) {
+                if (resource.is_object()) {
+                    keep(excluded_resources_,
+                         resource.value("name", std::string{}));
+                }
+            }
+        }
+    }
+}
+
+const std::string *GraphVariantFeatureSelection::usedExcludedFeature(
+    const nlohmann::json &feature) const {
+    if (!feature.is_object() ||
+        (excluded_passes_.empty() && excluded_resources_.empty())) {
+        return nullptr;
+    }
+    const std::string *owner = nullptr;
+    const auto pass_named = [&](const std::string &name) {
+        if (owner != nullptr) return;
+        if (const auto found = excluded_passes_.find(name);
+            found != excluded_passes_.end()) {
+            owner = &found->second;
+        }
+    };
+    const auto resource_named = [&](const std::string &name) {
+        if (owner != nullptr) return;
+        if (const auto found = excluded_resources_.find(name);
+            found != excluded_resources_.end()) {
+            owner = &found->second;
+        }
+    };
+    // A graph node of this feature: its explicit edges and what it reads and
+    // writes.
+    const auto node = [&](const nlohmann::json &pass) {
+        for (const std::string_view edge :
+             {std::string_view{"after"}, std::string_view{"before"}}) {
+            if (const auto found = pass.find(std::string{edge});
+                found != pass.end()) {
+                forEachListedName(*found, pass_named);
+            }
+        }
+        for (const std::string_view field :
+             {std::string_view{"input"}, std::string_view{"output"}}) {
+            if (const auto found = pass.find(std::string{field});
+                found != pass.end()) {
+                forEachResourceName(*found, resource_named);
+            }
+        }
+    };
+    if (const auto *passes = arrayField(feature, "passes")) {
+        for (const auto &entry : *passes) {
+            if (!entry.is_object()) continue;
+            // (a) The anchor an insert names. A canonical anchor is the
+            // pipeline's own node, never a feature's pass of the same name.
+            const auto anchor =
+                insertAnchor(entry.value("insert", std::string{}));
+            if (!anchor.empty() &&
+                !isCanonicalRenderPassAnchor(anchor)) {
+                pass_named(anchor);
+            }
+            if (const auto *pass = featurePassOf(entry)) node(*pass);
+        }
+    }
+    if (const auto *tasks = arrayField(feature, "compute_tasks")) {
+        for (const auto &task : *tasks) {
+            if (task.is_object()) node(task);
+        }
+    }
+    if (const auto *overrides = objectField(feature, "pass_overrides")) {
+        for (auto entry = overrides->begin(); entry != overrides->end();
+             ++entry) {
+            pass_named(entry.key());
+        }
+    }
+    if (const auto *overrides =
+            objectField(feature, "render_target_overrides")) {
+        for (auto entry = overrides->begin(); entry != overrides->end();
+             ++entry) {
+            resource_named(entry.key());
+        }
+    }
+    return owner;
 }
 
 std::string graphVariantFeatureRejectionMessage(

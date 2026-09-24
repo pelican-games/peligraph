@@ -37,6 +37,15 @@ std::string canonicalAnchorNodeName(std::string_view anchor) {
     return "__anchor_" + std::string{anchor};
 }
 
+} // namespace
+
+bool isCanonicalRenderPassAnchor(std::string_view name) {
+    return std::find(canonical_anchors.begin(), canonical_anchors.end(),
+                     name) != canonical_anchors.end();
+}
+
+namespace {
+
 bool isIdentifier(std::string_view value) {
     if (value.empty() || (std::isalpha(static_cast<unsigned char>(value.front())) == 0 &&
                           value.front() != '_')) {

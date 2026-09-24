@@ -1,4 +1,5 @@
 #include "fullscreenpasswidget.hpp"
+#include "frameplanedit.hpp"
 #include "fullscreenshadertemplate.hpp"
 #include "mainwindow.hpp"
 #include "renderfeatureswidget.hpp"
@@ -3645,5 +3646,74 @@ TEST_CASE("G-3 a new pass needs no stem or name typed: the vertex stem is the "
     required<QPushButton>(form, "pelican.fullscreenPass.new").click();
     CHECK(vertex.text() == QStringLiteral("engine://fullscreen"));
     CHECK(name.text().isEmpty());
+}
+
+TEST_CASE("G-6 a refused edit shows its code and the graph that refused it "
+          "on the panel, not only in the tooltip",
+          "[devstudio][fullscreen-pass][g6][widget]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
+    form.receiveResult(QByteArray::fromStdString(f3FramePlan().dump()));
+    driveMinimalDraft(form, "tint", "project://shaders/tint", "lit_color",
+                      "tint_out");
+    auto &save = required<QPushButton>(form, "pelican.fullscreenPass.save");
+    auto &status =
+        required<QLabel>(form, "pelican.fullscreenPass.authoringStatus");
+    const Json refusal{
+        {"code", "render_pipeline_preflight_failed"},
+        {"participant", "pelican.render_pipeline"},
+        {"variant", "preview"},
+        {"message", "render feature pass insert anchor was not found: x"}};
+
+    // Refused when it is asked (the preflight)...
+    REQUIRE(save.isEnabled());
+    save.click();
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("add_authored_pass"));
+    authoring.succeed(authoring.requests.back().id,
+                      {{"status", "rejected"},
+                       {"committed", false},
+                       {"error", refusal}});
+    CHECK_FALSE(status.isHidden());
+    CHECK(status.text().contains(QStringLiteral("preview graph")));
+    CHECK(status.text().contains(
+        QStringLiteral("render_pipeline_preflight_failed")));
+    CHECK(status.text() != QStringLiteral("authoring failed"));
+    CHECK(status.toolTip().contains(QStringLiteral("anchor was not found")));
+
+    // ...and when the ticket comes back refused.
+    REQUIRE(save.isEnabled());
+    save.click();
+    authoring.succeed(authoring.requests.back().id,
+                      {{"ticket", "g6-1"}, {"status", "accepted"}});
+    QApplication::processEvents();
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("get_edit_result"));
+    Json xr_refusal = refusal;
+    xr_refusal["variant"] = "xr";
+    authoring.succeed(authoring.requests.back().id,
+                      {{"status", "rejected"},
+                       {"committed", false},
+                       {"error", xr_refusal}});
+    CHECK(status.text().contains(QStringLiteral("xr graph")));
+
+    // A refusal no variant made keeps its code on the line.
+    save.click();
+    authoring.succeed(authoring.requests.back().id,
+                      {{"status", "rejected"},
+                       {"committed", false},
+                       {"error",
+                        {{"code", "external_modification"},
+                         {"message", "Source changed"}}}});
+    CHECK(status.text().contains(QStringLiteral("external_modification")));
+    CHECK_FALSE(status.text().contains(QStringLiteral("graph refused")));
+
+    // The line itself is one function's.
+    CHECK(renderAuthoringRefusalLine(refusal) ==
+          "The preview graph refused it: render_pipeline_preflight_failed: "
+          "render feature pass insert anchor was not found: x");
 }
 } // namespace PelicanStudio

@@ -765,9 +765,22 @@ std::string framePlanRenderTargetRejection(const Json &error,
     if (code == "render_target_not_found")
         return "No render target named " + name + " is declared.";
     if (code == "render_pipeline_preflight_failed")
-        return "The engine refused the render target: " + message;
+        return textOr(error, "variant").empty()
+                   ? "The engine refused the render target: " + message
+                   : renderAuthoringRefusalLine(error);
     if (code.empty()) return message;
     return code + ": " + message;
+}
+
+std::string renderAuthoringRefusalLine(const Json &error) {
+    const auto code = textOr(error, "code");
+    const auto message = textOr(error, "message");
+    const auto variant = textOr(error, "variant");
+    std::string line;
+    if (!variant.empty()) line = "The " + variant + " graph refused it: ";
+    if (!code.empty()) line += code;
+    if (!message.empty()) line += (code.empty() ? "" : ": ") + message;
+    return line.empty() ? std::string{"the engine refused the edit"} : line;
 }
 
 } // namespace PelicanStudio

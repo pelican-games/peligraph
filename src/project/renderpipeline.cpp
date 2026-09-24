@@ -1232,6 +1232,9 @@ ResolvedRenderPipeline resolveRenderPipeline(
         GraphVariantPolicyRequest{capabilities.graph_variant},
         capabilities.graph_variant_capabilities);
     std::vector<GraphVariantFeatureDecision> feature_decisions;
+    // G-6: one selection for the whole features[] walk, so an exclusion is
+    // carried to every later feature that uses what it took away.
+    GraphVariantFeatureSelection feature_selection{graph_variant_policy};
     auto composed = composeRenderFeatureConfig(
         request.authored_config,
         RenderFeatureComposeDependencies{
@@ -1239,11 +1242,12 @@ ResolvedRenderPipeline resolveRenderPipeline(
             .runtime_shader_compiler_enabled =
                 capabilities.runtime_shader_compiler_enabled,
             .include_feature =
-                [&graph_variant_policy, &feature_decisions](
+                [&graph_variant_policy, &feature_decisions,
+                 &feature_selection](
                 std::string_view feature_name,
                 const nlohmann::json &feature) {
-                auto decision = decideGraphVariantFeature(
-                    graph_variant_policy, feature_name, feature);
+                auto decision =
+                    feature_selection.decide(feature_name, feature);
                 if (decision.disposition ==
                     GraphVariantFeatureDisposition::reject) {
                     throw std::runtime_error(
@@ -1371,7 +1375,10 @@ ResolvedRenderPipeline resolveRenderPipeline(
                 result.graph_variant_policy.variant)} +
                 ":" +
                 std::string{graphVariantFeatureReasonName(
-                    decision.reason)},
+                    decision.reason)} +
+                (decision.depends_on.empty()
+                     ? std::string{}
+                     : ":" + decision.depends_on),
         });
     }
     return result;

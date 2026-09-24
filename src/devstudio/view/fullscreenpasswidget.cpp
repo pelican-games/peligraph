@@ -1,5 +1,6 @@
 #include <set>
 #include "fullscreenpasswidget.hpp"
+#include "frameplanedit.hpp"
 
 #include "../model/frameplanmodel.hpp"
 #include "../model/frameplanresourcekind.hpp"
@@ -1128,7 +1129,14 @@ struct FullscreenPassWidget::Impl {
             return;
         }
         compile_log->clear();
-        authoringError(message);
+        // G-6: the refusal's own line is what the panel shows -- its code,
+        // and the graph variant that refused it -- not "authoring failed".
+        const auto error = response.find("error");
+        authoringError(
+            message,
+            error != response.end() && error->is_object()
+                ? oneLine(text(renderAuthoringRefusalLine(*error)))
+                : QString{});
     }
 
     bool preservesPresetDeclaration() const {

@@ -1637,6 +1637,11 @@ struct FramePlanWidget::Impl {
              error->value("code", std::string{}).starts_with("render_target_")))
             return text(framePlanRenderTargetRejection(*error,
                                                        authoring.preset_name));
+        // G-6: a graph variant that refused the edit is named, whatever the
+        // edit was.
+        if (error != response.end() && error->is_object() &&
+            error->contains("variant"))
+            return text(renderAuthoringRefusalLine(*error));
         if (error != response.end() && error->is_object() &&
             submitted_method == "add_authored_pass") {
             // G-4: name the materials no pass would draw, and the fix.

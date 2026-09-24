@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -544,3 +545,278 @@ TEST_CASE("WP203 pipeline preset settings carry an authored XR target preference
                 .at("view_execution") == "sequential");
 }
 #endif
+
+// --- G-6: preview judges a feature by its passes, and an exclusion is carried
+// to the features that use what it took away.
+
+namespace {
+
+Json g6Target(std::string name, bool history = false) {
+    Json target{
+        {"name", std::move(name)},
+        {"extent_scale", 1.0},
+        {"format", "R16G16B16A16_SFLOAT"},
+        {"format_class", "scene"},
+        {"role", "color"},
+        {"sample_count", 1},
+        {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+    };
+    if (history) target["history"] = true;
+    return target;
+}
+
+Json g6Pass(std::string name, Json input, Json color) {
+    return {
+        {"name", name},
+        {"type", "fullscreen"},
+        {"input", std::move(input)},
+        {"output", {{"color", std::move(color)}, {"depth", nullptr}}},
+        {"shader",
+         {{"vertex", "shaders/fullscreen"},
+          {"fragment", "shaders/" + name}}},
+    };
+}
+
+Json g6Feature(std::string name, std::string insert, Json pass,
+               Json targets = Json::array()) {
+    auto result = feature(std::move(name));
+    result["passes"] = Json::array({
+        {{"insert", std::move(insert)}, {"pass", std::move(pass)}},
+    });
+    if (!targets.empty()) result["render_targets"] = std::move(targets);
+    return result;
+}
+
+GraphVariantFeatureDecision g6Decision(
+    const CompiledGraphVariantPolicy &policy, const Json &feature_json) {
+    return decideGraphVariantFeature(
+        policy, feature_json.at("name").get<std::string>(), feature_json);
+}
+
+// Resolves `features` (in that order) for one variant; the refs are the
+// feature names.
+ResolvedRenderPipeline g6Resolve(RenderPipelineGraphVariant variant,
+                                 const std::vector<Json> &features) {
+    std::unordered_map<std::string, Json> documents;
+    std::vector<std::string> refs;
+    for (const auto &entry : features) {
+        const auto name = entry.at("name").get<std::string>();
+        documents.emplace(name, entry);
+        refs.push_back(name);
+    }
+    return resolveRenderPipeline(
+        RenderPipelineRequest{baseConfig(refs), "G-6 fixture"},
+        RenderEnvironmentCapabilities{true, variant},
+        RenderPipelineResolveDependencies{
+            .load_feature_json =
+                [documents](std::string_view reference) {
+                    return documents.at(std::string{reference}).dump();
+                },
+        });
+}
+
+const GraphVariantFeatureDecision *g6Excluded(
+    const ResolvedRenderPipeline &resolved, std::string_view name) {
+    const auto found = std::find_if(
+        resolved.graph_variant_feature_decisions.begin(),
+        resolved.graph_variant_feature_decisions.end(),
+        [&](const auto &decision) {
+            return decision.feature_name == name;
+        });
+    return found == resolved.graph_variant_feature_decisions.end()
+               ? nullptr
+               : &*found;
+}
+
+bool g6Included(const ResolvedRenderPipeline &resolved,
+                std::string_view name) {
+    return std::find(resolved.feature_names.begin(),
+                     resolved.feature_names.end(),
+                     name) != resolved.feature_names.end();
+}
+
+// The G-5 story B in miniature: a G-buffer pass placed before present, and a
+// lighting pass placed after it that reads its targets.
+std::vector<Json> g6DeferredLoop() {
+    return {
+        g6Feature("g6_geometry", "before:present",
+                  g6Pass("deferred_geometry", Json::array(),
+                         Json::array({"gbuffer_albedo"})),
+                  Json::array({g6Target("gbuffer_albedo"),
+                               g6Target("lit_color")})),
+        g6Feature("g6_lighting", "after:deferred_geometry",
+                  g6Pass("deferred_lighting",
+                         Json::array({"gbuffer_albedo"}),
+                         Json::array({"lit_color"}))),
+    };
+}
+
+} // namespace
+
+TEST_CASE("G-6 preview judges a feature by its passes, not by where it is inserted",
+          "[g6][graph-variant][preview][feature-decision]") {
+    const auto preview = compileGraphVariantPolicy(
+        GraphVariantPolicyRequest{RenderPipelineGraphVariant::preview});
+    const auto include = [&](const Json &feature_json) {
+        const auto decision = g6Decision(preview, feature_json);
+        CAPTURE(feature_json.dump());
+        REQUIRE(decision.disposition ==
+                GraphVariantFeatureDisposition::include);
+    };
+    const auto exclude = [&](const Json &feature_json,
+                             GraphVariantFeatureReason reason) {
+        const auto decision = g6Decision(preview, feature_json);
+        CAPTURE(feature_json.dump());
+        REQUIRE(decision.disposition ==
+                GraphVariantFeatureDisposition::exclude);
+        REQUIRE(decision.reason == reason);
+    };
+
+    // A place next to present is only a place.
+    include(g6Feature("g6_geometry", "before:present",
+                      g6Pass("deferred_geometry", Json::array(),
+                             Json::array({"gbuffer_albedo"}))));
+    include(g6Feature("g6_late_lighting", "after:present",
+                      g6Pass("deferred_lighting",
+                             Json::array({"gbuffer_albedo"}),
+                             Json::array({"lit_color"}))));
+
+    // A pass that presents, or draws the UI, straight to the screen is out.
+    exclude(g6Feature("g6_overlay", "after:present",
+                      g6Pass("final_present", Json::array(), "swapchain")),
+            GraphVariantFeatureReason::unsafe_surface);
+    auto hud = g6Pass("hud", Json::array(), "display");
+    hud["type"] = "ui";
+    exclude(g6Feature("g6_hud", "end", hud),
+            GraphVariantFeatureReason::user_interface);
+    exclude(g6Feature("g6_on_top", "after:pelican_ui",
+                      g6Pass("on_top", Json::array(), "swapchain")),
+            GraphVariantFeatureReason::user_interface);
+    exclude(g6Feature("g6_beneath", "before:pelican_ui",
+                      g6Pass("beneath", Json::array(), "swapchain")),
+            GraphVariantFeatureReason::user_interface);
+
+    // Words, not pieces of words: "ui" is not in fluid or build, and
+    // "present" is not in presentation.
+    include(g6Feature("fluid_sim", "before:present",
+                      g6Pass("build_grid", Json::array(),
+                             Json::array({"fluid_density"})),
+                      Json::array({g6Target("fluid_density")})));
+    include(g6Feature("g6_presentation", "before:present",
+                      g6Pass("presentation_blur", Json::array(),
+                             Json::array({"blurred"}))));
+    exclude(g6Feature("debug_ui", "before:present",
+                      g6Pass("debug_panel", Json::array(),
+                             Json::array({"panel"}))),
+            GraphVariantFeatureReason::unsafe_name);
+
+    // Composed together, the lighting pass finds its anchor in preview as it
+    // does in flat.
+    const auto flat = g6Resolve(RenderPipelineGraphVariant::flat,
+                                g6DeferredLoop());
+    REQUIRE(g6Included(flat, "g6_lighting"));
+    const auto resolved = g6Resolve(RenderPipelineGraphVariant::preview,
+                                    g6DeferredLoop());
+    REQUIRE(g6Included(resolved, "g6_geometry"));
+    REQUIRE(g6Included(resolved, "g6_lighting"));
+    REQUIRE(resolved.excluded_feature_names.empty());
+}
+
+TEST_CASE("G-6 a feature that uses what an excluded feature declared is excluded with it",
+          "[g6][graph-variant][preview][xr][feature-decision][dependency]") {
+    // "taa" is excluded by preview (its name) and by XR (known). Each later
+    // feature is fine by itself and uses taa's pass or target one way.
+    const auto taa = g6Feature(
+        "taa", "before:present",
+        g6Pass("taa_resolve", Json::array({"taa_history@history"}),
+               Json::array({"taa_history"})),
+        Json::array({g6Target("taa_history", true)}));
+    const auto anchored = g6Feature(
+        "g6_anchored", "after:taa_resolve",
+        g6Pass("sharpen", Json::array({"taa_history"}),
+               Json::array({"sharpened"})),
+        Json::array({g6Target("sharpened")}));
+    auto edged_pass = g6Pass("edged_pass", Json::array(),
+                             Json::array({"edged"}));
+    edged_pass["after"] = Json::array({"taa_resolve"});
+    const auto edged =
+        g6Feature("g6_edged", "before:present", edged_pass,
+                  Json::array({g6Target("edged")}));
+    const auto reader = g6Feature(
+        "g6_reader", "before:present",
+        g6Pass("reader_pass", Json::array({"taa_history"}),
+               Json::array({"read_out"})),
+        Json::array({g6Target("read_out")}));
+    // Second order: it depends on g6_anchored, which only depended on taa.
+    const auto second = g6Feature(
+        "g6_second", "after:sharpen",
+        g6Pass("second_pass", Json::array({"sharpened"}),
+               Json::array({"second_out"})),
+        Json::array({g6Target("second_out")}));
+    const auto independent = g6Feature(
+        "g6_independent", "before:present",
+        g6Pass("independent_pass", Json::array(),
+               Json::array({"independent_out"})),
+        Json::array({g6Target("independent_out")}));
+    const std::vector<Json> features{taa,    anchored, edged,
+                                     reader, second,   independent};
+
+    std::vector<RenderPipelineGraphVariant> variants{
+        RenderPipelineGraphVariant::preview};
+#if PELICAN_WITH_OPENXR
+    variants.push_back(RenderPipelineGraphVariant::xr);
+#endif
+    for (const auto variant : variants) {
+        const auto variant_name =
+            std::string{renderPipelineGraphVariantName(variant)};
+        CAPTURE(variant_name);
+
+        // One by one, each is fine...
+        const auto policy =
+            compileGraphVariantPolicy(GraphVariantPolicyRequest{variant});
+        for (const auto &entry : {anchored, edged, reader, independent}) {
+            REQUIRE(g6Decision(policy, entry).disposition ==
+                    GraphVariantFeatureDisposition::include);
+        }
+
+        // ...and in the list, the ones that use taa go with it.
+        const auto resolved = g6Resolve(variant, features);
+        REQUIRE(g6Included(resolved, "g6_independent"));
+        for (const auto &[name, depends_on] :
+             std::vector<std::pair<std::string, std::string>>{
+                 {"g6_anchored", "taa"},
+                 {"g6_edged", "taa"},
+                 {"g6_reader", "taa"},
+                 {"g6_second", "g6_anchored"},
+             }) {
+            CAPTURE(name);
+            REQUIRE_FALSE(g6Included(resolved, name));
+            const auto *decision = g6Excluded(resolved, name);
+            REQUIRE(decision != nullptr);
+            REQUIRE(*decision ==
+                    GraphVariantFeatureDecision{
+                        name,
+                        GraphVariantFeatureDisposition::exclude,
+                        GraphVariantFeatureReason::dependency,
+                        depends_on,
+                    });
+            REQUIRE(std::any_of(
+                resolved.diagnostics.begin(), resolved.diagnostics.end(),
+                [&](const auto &diagnostic) {
+                    return diagnostic.kind ==
+                               RenderPipelineDiagnosticKind::
+                                   feature_excluded &&
+                           diagnostic.subject == name &&
+                           diagnostic.detail ==
+                               variant_name + ":dependency:" + depends_on;
+                }));
+        }
+    }
+
+    // Flat excludes nothing, so nothing is carried.
+    const auto flat =
+        g6Resolve(RenderPipelineGraphVariant::flat, features);
+    REQUIRE(flat.excluded_feature_names.empty());
+    REQUIRE(std::string{graphVariantFeatureReasonName(
+                GraphVariantFeatureReason::dependency)} == "dependency");
+}

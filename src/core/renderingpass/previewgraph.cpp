@@ -12,6 +12,55 @@
 namespace Pelican {
 namespace {
 
+// The data-only resolve and compile of one variant, as precompilePreviewGraph
+// does it for preview.
+std::pair<CompiledRenderPipeline, nlohmann::json> resolveDataOnlyVariant(
+    const nlohmann::json &base, std::string_view source_name,
+    RenderPipelineGraphVariant variant,
+    const std::function<std::string(std::string_view)> &load_feature_json,
+    bool runtime_shader_compiler_enabled) {
+    const auto strategy_providers =
+        renderStrategyRegistry().snapshot();
+    std::optional<RenderStrategySelection>
+        resolved_render_strategy;
+    auto resolved = resolveRenderPipeline(
+        RenderPipelineRequest{base, std::string{source_name}},
+        RenderEnvironmentCapabilities{
+            .runtime_shader_compiler_enabled =
+                runtime_shader_compiler_enabled,
+            .graph_variant = variant,
+            .pass_field_ownership =
+                buildPassFieldOwnershipCapabilities(),
+        },
+        RenderPipelineResolveDependencies{
+            .load_feature_json = load_feature_json,
+            .load_pipeline_json = load_feature_json,
+            .resolve_render_strategy =
+                [&strategy_providers,
+                 &resolved_render_strategy,
+                 runtime_shader_compiler_enabled](
+                    const nlohmann::json &config,
+                    const CompiledGraphVariantPolicy
+                        &policy) {
+                    auto generated =
+                        resolveRenderStrategy(
+                            config, policy,
+                            runtime_shader_compiler_enabled,
+                            strategy_providers);
+                    resolved_render_strategy =
+                        generated.selection;
+                    return std::move(
+                        generated.config);
+                },
+        });
+    auto compiled_pipeline =
+        compileRenderPipeline(resolved);
+    compiled_pipeline.render_strategy =
+        std::move(resolved_render_strategy);
+    return {std::move(compiled_pipeline),
+            std::move(resolved.normalized_config)};
+}
+
 std::uint64_t generationOf(const nlohmann::json &config) {
     // Keep the value exactly representable by JSON number consumers.
     std::uint64_t hash = 1469598103934665603ull;
@@ -94,50 +143,57 @@ PreviewGraphProgram precompilePreviewGraph(
     bool runtime_shader_compiler_enabled) {
     const auto base = loadRenderingPassConfigJsonFromString(
         rendering_config_json, "preview graph");
-    const auto strategy_providers =
-        renderStrategyRegistry().snapshot();
-    std::optional<RenderStrategySelection>
-        resolved_render_strategy;
-    auto resolved = resolveRenderPipeline(
-        RenderPipelineRequest{base, "preview graph"},
-        RenderEnvironmentCapabilities{
-            .runtime_shader_compiler_enabled =
-                runtime_shader_compiler_enabled,
-            .graph_variant =
-                RenderPipelineGraphVariant::preview,
-            .pass_field_ownership =
-                buildPassFieldOwnershipCapabilities(),
-        },
-        RenderPipelineResolveDependencies{
-            .load_feature_json = load_feature_json,
-            .load_pipeline_json = load_feature_json,
-            .resolve_render_strategy =
-                [&strategy_providers,
-                 &resolved_render_strategy,
-                 runtime_shader_compiler_enabled](
-                    const nlohmann::json &config,
-                    const CompiledGraphVariantPolicy
-                        &policy) {
-                    auto generated =
-                        resolveRenderStrategy(
-                            config, policy,
-                            runtime_shader_compiler_enabled,
-                            strategy_providers);
-                    resolved_render_strategy =
-                        generated.selection;
-                    return std::move(
-                        generated.config);
-                },
-        });
-    auto compiled_pipeline =
-        compileRenderPipeline(resolved);
-    compiled_pipeline.render_strategy =
-        std::move(resolved_render_strategy);
+    auto [compiled_pipeline, normalized_config] =
+        resolveDataOnlyVariant(
+            base, "preview graph",
+            RenderPipelineGraphVariant::preview,
+            load_feature_json, runtime_shader_compiler_enabled);
     return makePreviewGraphProgram(
         std::make_shared<
             const CompiledRenderPipeline>(
             std::move(compiled_pipeline)),
-        std::move(resolved.normalized_config));
+        std::move(normalized_config));
+}
+
+void preflightRenderGraphVariants(
+    std::string_view rendering_config_json,
+    const std::function<std::string(std::string_view)> &load_feature_json,
+    bool runtime_shader_compiler_enabled, bool xr_active) {
+    try {
+        const auto base = loadRenderingPassConfigJsonFromString(
+            rendering_config_json, "edit preflight");
+        (void)resolveDataOnlyVariant(
+            base, "edit preflight",
+            RenderPipelineGraphVariant::flat, load_feature_json,
+            runtime_shader_compiler_enabled);
+    } catch (const std::exception &) {
+        return;
+    }
+    try {
+        (void)precompilePreviewGraph(rendering_config_json,
+                                     load_feature_json,
+                                     runtime_shader_compiler_enabled);
+    } catch (const std::exception &error) {
+        throw GraphVariantCompositionError{
+            RenderPipelineGraphVariant::preview, error.what()};
+    }
+#if PELICAN_WITH_OPENXR
+    if (xr_active) {
+        try {
+            const auto base = loadRenderingPassConfigJsonFromString(
+                rendering_config_json, "edit preflight");
+            (void)resolveDataOnlyVariant(
+                base, "edit preflight",
+                RenderPipelineGraphVariant::xr, load_feature_json,
+                runtime_shader_compiler_enabled);
+        } catch (const std::exception &error) {
+            throw GraphVariantCompositionError{
+                RenderPipelineGraphVariant::xr, error.what()};
+        }
+    }
+#else
+    (void)xr_active;
+#endif
 }
 
 } // namespace Pelican

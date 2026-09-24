@@ -6,6 +6,7 @@
 #include "../../project/rasterpass.hpp"
 #include "../../project/featurecompose.hpp"
 #include "../../project/graphcomposition.hpp"
+#include "../../project/graphvariantpolicy.hpp"
 #include "../../project/graphpartition.hpp"
 #include "../../project/renderconfigsection.hpp"
 #include "renderconfigtransaction.hpp"
@@ -895,6 +896,21 @@ OrderedJson RenderConfigEditorService::rejection(
             {"error", std::move(details)}};
 }
 
+std::optional<OrderedJson> RenderConfigEditorService::preflightGraphVariants(
+    const RenderConfigCandidateDocumentSet &candidate,
+    OrderedJson details) const {
+    if (!dependencies_.preflight_graph_variants) return std::nullopt;
+    try {
+        dependencies_.preflight_graph_variants(candidate);
+    } catch (const GraphVariantCompositionError &error) {
+        details["variant"] =
+            std::string{renderPipelineGraphVariantName(error.variant())};
+        return rejection("render_pipeline_preflight_failed", error.what(),
+                         std::move(details));
+    }
+    return std::nullopt;
+}
+
 const RenderFeatureCatalogEntry *
 RenderConfigEditorService::findCatalogReference(
     std::string_view reference) const noexcept {
@@ -1632,15 +1648,24 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
             *existing = extra;
         }
     }
+    RenderConfigCandidateDocumentSet candidate_set{
+        source_normalized_reference_, std::move(candidate_documents)};
+    // G-6: an edit the engine will compile is composed by every variant it
+    // registered first. An edit that only moves bytes the engine never reads
+    // (source_only) has nothing to compose.
+    if (!source_only) {
+        if (auto refused = preflightGraphVariants(
+                candidate_set, {{"participant", "pelican.render_pipeline"},
+                                {"method", operation}})) {
+            return *refused;
+        }
+    }
     pending_.push_back(Ticket{
         .id = ticket_id,
         .accepted_gate_epoch = gate.epoch,
         .base_source_digest = base_digest,
         .candidate = std::move(candidate),
-        .candidate_documents =
-            RenderConfigCandidateDocumentSet{
-                source_normalized_reference_,
-                std::move(candidate_documents)},
+        .candidate_documents = std::move(candidate_set),
         .operation = operation,
         .base_preset_digest = std::move(base_preset_digest),
         .edits_additional_documents = !additional_documents.empty(),
@@ -2843,6 +2868,14 @@ OrderedJson RenderConfigEditorService::enqueueAuthoredPassTicket(
         return rejection("render_pipeline_preflight_failed", error.what(),
                          {{"participant", "pelican.render_pipeline"},
                           {"fragment_reference", reference}});
+    }
+    // G-6: the same candidate, by every variant the engine will compose it
+    // with when it publishes.
+    if (auto refused = preflightGraphVariants(
+            candidate_documents,
+            {{"participant", "pelican.render_pipeline"},
+             {"fragment_reference", reference}})) {
+        return *refused;
     }
 
     const auto ticket_id =

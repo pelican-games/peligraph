@@ -233,4 +233,11 @@ std::string framePlanRenderTargetOrigin(const std::string &source,
 std::string framePlanRenderTargetRejection(
     const nlohmann::json &error, const std::string &preset_name = {});
 
+// G-6: the line an engine refusal of a render edit gets where it is seen (not
+// only in a tooltip): which graph variant refused it when one did, the code,
+// then the engine's message --
+// "The preview graph refused it: render_pipeline_preflight_failed: ...".
+// `error` is the rejection's `error` object.
+std::string renderAuthoringRefusalLine(const nlohmann::json &error);
+
 } // namespace PelicanStudio

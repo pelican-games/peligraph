@@ -8324,6 +8324,19 @@ TEST_CASE("F-1 the render target form becomes the declaration the engine takes",
                  {"source", "preset"}},
             "hybrid_v1");
         CHECK(not_editable.find("preset hybrid_v1") != std::string::npos);
+        // G-6: a graph variant that refused the candidate is named with the
+        // code; without one the sentence stays as it was.
+        const auto variant = framePlanRenderTargetRejection(
+            Json{{"code", "render_pipeline_preflight_failed"},
+                 {"variant", "preview"},
+                 {"message", "preview graph 'main_render' rejects authored "
+                             "pass 'present': history read"}});
+        CHECK(variant.starts_with("The preview graph refused it: "
+                                  "render_pipeline_preflight_failed: "));
+        const auto flat = framePlanRenderTargetRejection(
+            Json{{"code", "render_pipeline_preflight_failed"},
+                 {"message", "bad target"}});
+        CHECK(flat == "The engine refused the render target: bad target");
     }
 }
 

@@ -84,4 +84,9 @@ std::vector<std::string> renderFeatureRequiredCapabilities(
     const nlohmann::json &feature,
     std::string_view feature_name);
 
+// G-6: whether `before:<name>` / `after:<name>` names one of the canonical
+// color pipeline's anchors. Composition resolves such an insert to the anchor
+// before any pass that happens to share the name.
+bool isCanonicalRenderPassAnchor(std::string_view name);
+
 } // namespace Pelican

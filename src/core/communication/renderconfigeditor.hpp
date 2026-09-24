@@ -97,6 +97,15 @@ struct RenderConfigEditorDependencies {
     std::function<ResolvedRenderConfigAuthoringContext(
         const RenderConfigCandidateDocumentSet &)>
         resolve_authoring_context;
+    // G-6: composes an edit's candidate with every graph variant the engine
+    // registered at start (flat and preview, xr when the launch activated
+    // it) before the edit takes a ticket. A variant that cannot compose it
+    // throws GraphVariantCompositionError; the edit is refused as
+    // render_pipeline_preflight_failed with that `variant`, and no document
+    // changes. Reading the context never calls it. Unset: no variant is
+    // composed here, and the runtime's apply is the only check.
+    std::function<void(const RenderConfigCandidateDocumentSet &)>
+        preflight_graph_variants;
     std::function<std::vector<RenderFeatureCatalogEntry>()> feature_catalog;
     // The instance input values the last published draw generation used. Left
     // unset outside a running engine, and then no values are reported: the
@@ -213,6 +222,12 @@ class RenderConfigEditorService {
     nlohmann::ordered_json rejection(
         std::string code, std::string message,
         nlohmann::ordered_json details = nlohmann::ordered_json::object()) const;
+    // G-6: the candidate through preflight_graph_variants. Returns the
+    // refusal naming the variant that could not compose it, or nullopt.
+    // `details` are the fields the caller's own preflight refusals carry.
+    std::optional<nlohmann::ordered_json> preflightGraphVariants(
+        const RenderConfigCandidateDocumentSet &candidate,
+        nlohmann::ordered_json details) const;
     const RenderFeatureCatalogEntry *findCatalogReference(
         std::string_view reference) const noexcept;
     RenderConfigCandidateDocumentSet currentDocumentSet() const;
