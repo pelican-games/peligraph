@@ -380,11 +380,11 @@ attachment load/store、material route、backend 非依存 execution facts へ�
 (`get_render_authoring_context` / `add_authored_pass` / `remove_authored_pass` / `edit_preset_pass` /
 `get_edit_result` の 5 つだけ。context は `requestContext` という別名で持ちます。[結線](../../src/devstudio/view/renderpassauthoringcapability.cpp#L30))です。
 フォームは `fullscreen` 固定でもありません —— material の契約・設定・routing、raster の `Draw settings (JSON)` と
-`Raster state (JSON, optional)` の欄を持ちます([組み立て](../../src/devstudio/view/fullscreenpasswidget.cpp#L372))。
+`Raster state (JSON, optional)` の欄を持ちます([組み立て](../../src/devstudio/view/fullscreenpasswidget.cpp#L384))。
 ボタンは **Save authored pass** / **Remove authored pass** / **New pass**
-([構築](../../src/devstudio/view/fullscreenpasswidget.cpp#L577))で、preset 由来の pass を開いているときは
+([構築](../../src/devstudio/view/fullscreenpasswidget.cpp#L590))で、preset 由来の pass を開いているときは
 save の文言が **Save preset**(feature 由来なら **Save feature**)に変わります(N-7 で短くなった)
-([切り替え](../../src/devstudio/view/fullscreenpasswidget.cpp#L1917))。
+([切り替え](../../src/devstudio/view/fullscreenpasswidget.cpp#L2112))。
 変わっていないのは所有の向きです: 対象候補は `get_frame_plan` の `resources[]` から作り、フィールド所有・
 同一 graph の名前衝突・target 名／`frame_target` を Studio 単独で検査し、target usage や shader stem 解決は
 軸名付きの `Not checked` として残します。**ファイルは engine が書きます。**

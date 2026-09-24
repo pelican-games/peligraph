@@ -316,12 +316,12 @@ replay と `--strict-assets` の engine は今までどおり断ります([越�
 | `edit_ray_callable_records` | `base_source_digest`と`task_records` objectで初期値の上書き指定全体を置換。既存の編集ticketを返す |
 | `fork_render_pipeline` | `base_source_digest`・`base_preset_digest`・`destination_reference`で選択中presetを新しいprojectファイルへコピーし、rootの参照先も切り替える |
 | `edit_region_replacement` | `base_source_digest`・`base_preset_digest`・`graph`・`region`でproject presetのタグ付き領域を指定。`provider`に登録済みprovider名を指定するとコンパイル時の差し替えを選択し、`null`なら差し替え要求を除去して元のノード構成を使用する。元のpass・設定・接続は保持する。現在の指定は`get_render_authoring_context`の各graphの`region_replacements`で取得できる。標準feature全体の展開操作ではない |
-| `edit_preset_pass` | `base_source_digest`・`base_preset_digest`・`graph`・`pass_name`でproject presetのpassを指定。fullscreenは`input`・`output`・`shader`と任意の`ray_query`、materialは`input`・`output`・`ray_query`の1項目以上。rasterはさらに`shader`・`draw`・`raster_state`を部分編集できる。省略項目は保持、rasterの`raster_state: null`は既定状態へ戻す。書き先は 3 つ: project preset(`base_preset_digest`)/ project feature(`base_feature_digest`)/ **direct root 自身**(✅F-6。root が preset を選ばず、要求がどちらの digest も持たないとき。`base_source_digest` が root の digest を兼ね、root の `rendering.rendering_passes` の pass を編集する)。置換規則は 3 つとも同じ関数です([direct root の書き先](../../src/core/communication/renderconfigeditor.cpp#L2721)) |
+| `edit_preset_pass` | `base_source_digest`・`base_preset_digest`・`graph`・`pass_name`でproject presetのpassを指定。fullscreenは`input`・`output`・`shader`と任意の`ray_query`、materialは`input`・`output`・`ray_query`の1項目以上。rasterはさらに`shader`・`draw`・`raster_state`を部分編集できる。省略項目は保持、rasterの`raster_state: null`は既定状態へ戻す。書き先は 3 つ: project preset(`base_preset_digest`)/ project feature(`base_feature_digest`)/ **direct root 自身**(✅F-6。root が preset を選ばず、要求がどちらの digest も持たないとき。`base_source_digest` が root の digest を兼ね、root の `rendering.rendering_passes` の pass を編集する)。置換規則は 3 つとも同じ関数です([direct root の書き先](../../src/core/communication/renderconfigeditor.cpp#L2728)) |
 | `get_compute_task_authoring` | compute/RT taskの元宣言・編集可否・保存先とdigestを取得する |
 | `edit_compute_task` | `base_source_digest`・`base_task_source_digest`・`task_name`・`task`でtask宣言を置換する。名前は保持する |
 | `add_compute_task` | `base_source_digest`・`destination_reference`・`task`で新規project featureにtaskを作り、rootのfeaturesへ追加する |
 | `remove_compute_task` | `base_source_digest`・`base_task_source_digest`・`task_name`で元文書からtaskを削除する |
-| `edit_render_targets` | `base_source_digest`・`ops[]`(✅F-1)。op は `{op:"add", target}` / `{op:"replace", name, target}`(`target.name` を変えれば改名)/ `{op:"remove", name}`。書くのは managed fragment `project://passes/authoring/render-targets.json` 1 つだけで、最初の要求で作って root の `features[]` に足す(空になっても消さない)。ops は順に当て、最後に 1 回 preflight して ticket を返す —— **全部入るか、何も入らないか**。名前付きの拒否は下の 6 種([edit_render_targets の実装](../../src/core/communication/renderconfigeditor.cpp#L3073)) |
+| `edit_render_targets` | `base_source_digest`・`ops[]`(✅F-1)。op は `{op:"add", target}` / `{op:"replace", name, target}`(`target.name` を変えれば改名)/ `{op:"remove", name}`。書くのは managed fragment `project://passes/authoring/render-targets.json` 1 つだけで、最初の要求で作って root の `features[]` に足す(空になっても消さない)。ops は順に当て、最後に 1 回 preflight して ticket を返す —— **全部入るか、何も入らないか**。名前付きの拒否は下の 6 種([edit_render_targets の実装](../../src/core/communication/renderconfigeditor.cpp#L3080)) |
 | `edit_graph_document` | `base_source_digest`と`ops[]`で共通グラフ文書を編集する(§13.5「グラフの装着を編集する」)。ops は順に候補文書へ当て、最後に 1 回だけ展開する — **全部通るか、文書ごと拒否か**のどちらか |
 | `edit_graph_instances` | `base_source_digest`・`attach[]`・`detach[]`。owner を持つ root instance の装着 / 取り外しだけを扱い、中身は `edit_graph_document` の ops へ翻訳される([edit_graph_instances の実装](../../src/core/communication/renderconfigeditor.cpp#L2182)) |
 | `export_render_feature` | `scope`(`root` / `preset`)と`index`で feature 1 つを `user://components/<name>/` へ書き出す。`engine://` の feature は `render_component_engine_reference` で拒否([export の実装](../../src/core/communication/renderconfigeditor.cpp#L1121)) |
@@ -709,7 +709,7 @@ fork は要りません(fork する preset がありません)。
 偽の pass(編集できる種類でないもの)を開くと、Pass Editor は保存できない draft を読み込まず、notice 行に
 「`<pass>`: not editable in a direct root」、tooltip に root の参照と「..., which selects no preset, and the engine offers no
 editable declaration of it. Edit that file by hand.」を出します
-([direct root の Pass Editor の拒否](../../src/devstudio/view/fullscreenpasswidget.cpp#L1844))。canvas も同じ文で断り、
+([direct root の Pass Editor の拒否](../../src/devstudio/view/fullscreenpasswidget.cpp#L2037))。canvas も同じ文で断り、
 engine が足した pass には「is added by the engine; it has no declaration in the project to edit.」と言います。どちらも
 fork は勧めません([direct root の canvas の拒否](../../src/devstudio/view/frameplanedit.cpp#L126))。Pass Editor は pass を
 選ぶと最初に form を空にするので、断られた pass の下に前の pass の下書きが残ることはありません(✅F-7)。
@@ -754,14 +754,14 @@ desktop の既定のエディタで開きます。雛形は**その時点の入�
 `PELICAN_TEXTURE_2D_i` の行を持ち、最初の入力をそのまま出します。入力が無ければ UV の gradient です。buffer の入力と
 9 個目以降の入力は宣言せず、注釈 1 行で残します。名前は英数字・`_`・`-` だけなので、`shaders` の外には書けません。
 **既にファイルがあれば上書きしません** —— 「already exists」と **Open**(`pelican.fullscreenPass.openExistingShader`)が出て、
-Open はそのファイルを使って開きます([書き込み](../../src/devstudio/view/fullscreenshadertemplate.cpp#L144))。
+Open はそのファイルを使って開きます([書き込み](../../src/devstudio/view/fullscreenshadertemplate.cpp#L319))。
 名前の行は、次に New pass を押すまで出たままです。
 
 保存が **shader の compile 失敗**で断られる(`render_pipeline_preflight_failed` の message に "Shader compile failed" が
 ある)と、form の下の折りたためる欄(`pelican.fullscreenPass.compileLog`)に log 全文が等幅で出ます。行番号が付き、
 log が名指す `file:line` は強調されます。notice 行は「shader compile failed; see the log below」だけで、**form に打った
 値はそのまま残る**ので、shader を直してもう一度 Save できます。成功すると欄は消えます
-([経路](../../src/devstudio/view/fullscreenpasswidget.cpp#L913))。canvas の帯で直接 stem を変えて compile で断られた
+([経路](../../src/devstudio/view/fullscreenpasswidget.cpp#L1098))。canvas の帯で直接 stem を変えて compile で断られた
 ときは、今も status の 1 行だけです。
 
 **shader を外のエディタで保存すると画面が変わる —— reload と失敗の印(F-3 / ✅F-5)**: Frame Plan は描いている node の
