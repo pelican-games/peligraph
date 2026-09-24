@@ -332,14 +332,11 @@ transient glTF 経路（`load_gltf`）は executor を通らず、従来どお�
 
 ### 4. authored local TRSのworld投影
 
-ECS objectを作った後、同じ early_publish 段の中で親子transformのworld解決を済ませます（[親子 transform の投影](../../src/core/loader/scene.cpp#L1282)）。behavior の `onInit`（activate 段）や `SceneLoaded` の配送（flush 段）より前です。
+ECS objectを作った後、同じ early_publish 段の中で transform を持つ全objectのworld解決を済ませます（[transform node の投影](../../src/core/loader/scene.cpp#L1305)）。behavior の `onInit`（activate 段）や `SceneLoaded` の配送（flush 段）より前です。
 
-```cpp
-// Project authored local TRS to world before any SceneLoaded observer can
-// query the runtime. This is the same recurrence as LocalTransformSystem.
-```
+GP-1 から、投影の対象は「親子に参加するobject」ではなく **`transform` を持つ全object（`transform_node`）** です。scene に `parent` が1つも無くても同じ経路を通ります。各objectの `LocalTransformComponent` へ親リンクを書き、[`resolveParentOrder()`](../../src/core/loader/scene.cpp#L1350) で親が先に来る順に並べ、transform codec の `runtime_apply` で local を書いてから world を合成します。rootは親を持たないので、その local は authored の TRS そのものになります。
 
-これは `LocalTransformSystem` と同じ漸化式です。したがって `SceneLoaded` を受け取ったコードは、まだ1フレームも回っていない時点でも world transform を問い合わせられます。
+合成は [`composeWorldTransform()`](../../src/core/loader/componentcodec.cpp#L2277) で、`LocalTransformSystem` も同じ関数を呼びます（[`composeFromLocal()`](../../src/core/ecs/predefined/localtransformsystem.cpp#L14)）。したがって `SceneLoaded` を受け取ったコードは、まだ1フレームも回っていない時点でも world transform を問い合わせられ、最初のフレームの再計算でも同じ world に着地します。この関数は回転を正規化します（`normalize(parent.R * normalize(local.R))`）。GP-1 以前の `LocalTransformSystem` は正規化せずに掛けていたので、親子のある scene の毎フレームの world 回転は、以前と下位 bit が変わることがあります。
 
 > 🧩 **難所 — preserve-worldの逆算**([`inverseLocal()`](../../src/core/loader/editorprojectiontransaction.cpp#L288) / [`makeReparentCommand()`](../../src/core/loader/editorprojectiontransaction.cpp#L588))
 >
@@ -872,7 +869,7 @@ struct ComponentCodec {
 
 `runtime_apply` と `runtime_project` がどの型を指すかは [`ComponentCodecRuntimeKind`](../../src/core/loader/componentcodec.hpp#L24) が決めます。ヘッダのコメントが規範です — transform は `TransformCodecTarget`、その他のECS codecはそのcomponent自身、camera/light は `CameraCodecData` / `LightCodecData`、collider は `ColliderComponent` です。
 
-この中でtransformだけが、componentを直接指さずに [`TransformCodecTarget`](../../src/core/loader/componentcodec.hpp#L69)（`world` / `local` / `parent_world` の三つのポインタ）を経由します。authoredなのは **local TRS** ですが、ランタイムで全員が読むのは world の `TransformComponent` で、`LocalTransformComponent` は親を持つobjectにしか付かない、という食い違いがあるためです（[`editorruntimefactory.cpp` 内](../../src/core/communication/editorruntimefactory.cpp#L900) の `tryComponent<LocalTransformComponent>` はrootではnullになります）。そのため `runtime_apply` は local へ書いたうえで world も自分で合成し直し（[`applyTransform()`](../../src/core/loader/componentcodec.cpp#L635)）、`runtime_project` は local があればそれを返し、無ければ `parent_world` を使って world から逆算します（[`projectTransform()`](../../src/core/loader/componentcodec.cpp#L650)）。`parent_world` は両方向の変換に必要な係数で、これが無いと親の下のobjectについてlocalとworldを行き来できません。
+この中でtransformだけが、componentを直接指さずに [`TransformCodecTarget`](../../src/core/loader/componentcodec.hpp#L69)（`world` / `local` / `parent_world` の三つのポインタ）を経由します。authoredなのは **local TRS** ですが、ランタイムで全員が読むのは world の `TransformComponent` で、`LocalTransformComponent` を持たないobjectもある、という食い違いがあるためです。GP-1 以降、scene load と editor の spawn では transform を持つ全objectに local が付きます（§4）。付かないのは editor の `add_component` で後から `transform` を足したobject（次の load まで）と、`load_gltf` の transient object です。そのため `runtime_apply` は local へ書いたうえで world も自分で合成し直し（[`applyTransform()`](../../src/core/loader/componentcodec.cpp#L635)）、`runtime_project` は local があればそれを返し、無ければ `parent_world` を使って world から逆算します（[`projectTransform()`](../../src/core/loader/componentcodec.cpp#L650)）。`parent_world` は両方向の変換に必要な係数で、これが無いと親の下のobjectについてlocalとworldを行き来できません。editor の読み取り（[`queryEditorRuntime()`](../../src/core/communication/editorruntimefactory.cpp#L889) の `tryComponent<LocalTransformComponent>`）もこの `runtime_project` を通るので、`get_components` の `local_trs` は root でも注入された local（= authored の値）を返します。GP-1 以前の root では local が無く、world をそのまま返していました。
 
 登録テーブルは8行です（[`componentcodec.cpp` 内](../../src/core/loader/componentcodec.cpp#L1981)）。ただし**見えるのは常に8行とは限りません**（最後の行だけは後述のgate付きです）。
 

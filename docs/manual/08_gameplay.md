@@ -136,7 +136,7 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 
 ## 8.4 GameContext API 一覧
 
-`GameContext` は状態を持たない薄いファサードです([gamecontext.hpp](../../src/core/userpublic/gamecontext.hpp))。面は「根 + 5 つのドメインファサード」に分かれています — 根には入力・時刻・ログ・オブジェクト・乱数・シーン・イベント・設定が残り、物理 / 音 / アニメーション / セーブ / 描画は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L216) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L217) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L218) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L219) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L220) 経由です。ファサードはどれも**状態を持たない空の値**なので、`ctx.audio().playSound(...)` は 1 回の呼び出しであって検索ではありません。
+`GameContext` は状態を持たない薄いファサードです([gamecontext.hpp](../../src/core/userpublic/gamecontext.hpp))。面は「根 + 6 つのドメインファサード」に分かれています — 根には入力・時刻・ログ・オブジェクト・乱数・シーン・イベント・設定が残り、物理 / 音 / アニメーション / セーブ / 描画 / シーンオブジェクトの名前解決は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L216) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L217) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L218) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L219) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L220) / [`objects()`](../../src/core/userpublic/gamecontext.hpp#L221) 経由です。ファサードはどれも**状態を持たない空の値**なので、`ctx.audio().playSound(...)` は 1 回の呼び出しであって検索ではありません。
 
 ### 根 `GameContext`([宣言](../../src/core/userpublic/gamecontext.hpp#L167))
 
@@ -145,7 +145,7 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 | 入力 | `actionsConfigured()` / `actionPressed/Released/Held(name)` / `actionAxis1(name)` / `actionAxis2(name)` / `actionPose(name)` | 未知アクション名は名前入り例外。`actionPose` は ✅WP132 で実動作(下記) |
 | 時刻 | `time()` / `deltaTime()` / `frameIndex()` | |
 | ログ | `logInfo/Warning/Error(msg)` | rpc モードでは stdout が使えないため、ログは必ずこれで |
-| オブジェクト | `createObject(LocalTransformComponent)` / `removeObject(id)`→bool / `localTransform(id)` / `setLocalTransform(id, t)`→bool | `setLocalTransform` は描画側へも即時伝播 |
+| オブジェクト | `createObject(LocalTransformComponent)` / `removeObject(id)`→bool / `localTransform(id)` / `setLocalTransform(id, t)`→bool | `setLocalTransform` は描画側へも即時伝播。ただし親の位置を掛けたワールドは次の transform 更新で揃う(下の「objects()」)。`transform` を持つシーンオブジェクトには localtransform が必ず付くので、親子の無いシーンでも `true` を返す(✅GP-1) |
 | スプライト | `createSpriteObject(transform, sprite)` / `spriteView(id)`→optional / `setSpriteView(id, s)`→bool / `setSpriteTexture(id, tex)`→bool | §8.14(✅WP103) |
 | 乱数 | `random()` / `randomInt(min,max)` / `randomFloat(min,max)` / `setSeed(u64)` / `seed()` | §8.10 |
 | シーン | `loadScene(name)` / `currentScene()` | §8.7 |
@@ -165,12 +165,61 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 | `render()` 値グラフ | `setValueGraphParameter(object, parameter, value)`→bool / `emitValueGraphEvent(object, input, command)`→bool / `setRenderValues(buffer, values)`→bool | **共通グラフ(pass 文書)の `graph.instance`** の入力を実行時に上書きする。`std::nullopt` で上書きを取り消す。edge が供給しているポートを狙うと `graph.override_shadowed@1`([宣言](../../src/core/userpublic/gamecontext.hpp#L119)。[第6章](06_rendering.md) §6.17) |
 | `render()` HUD | `debugText(x, y, text, color, scale)` | colorはRGBA、scaleは整数倍率。省略時は白・等倍。debug_text feature 未参照時は no-op([第7章](07_input_ui.md)) |
 | `render()` レイトレーシング | `setRayTracingCallableRecord(task, index, values)` / `setRayTracingDispatchExtent(task, w, h, d)` | ゲーム/更新スレッドから呼ぶ。値は task の `callable_record` schema に合う必要があり、不正な更新は前の値を残す |
+| [`objects()`](../../src/core/userpublic/gamecontext.hpp#L221) → [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L160) | `resolve(name)`→`Resolved<ObjectRef>` / `materialize(ref)`→`Resolved<GameObjectId>` / `worldTransform(ref)`→`Resolved<WorldTransform>` | ✅GP-1。シーンオブジェクトを名前で引き、ワールド変換を読む。失敗は例外ではなく名前付きエラー(下の「objects()」) |
 
 > **この 3 本は「アニメーションの API」ですが、対象が 2 つに分かれていて互いに委譲しません(✅AG-1b 決定 5)。ファサード分割もその線を引き直しただけで、行き先は変わっていません。** `render().setValueGraphParameter` が触るのは **pass 文書の `graph.instance`** の入力ポート、`animation().setParameter` / `animation().forceState` が触るのは **シーンの `animation` コンポーネント**が持つ評価器です(前者は [gamecontext.cpp:406](../../src/core/userpublic/gamecontext.cpp#L428) で `SceneLoader` へ、後者は [:319](../../src/core/userpublic/gamecontext.cpp#L341) / [:329](../../src/core/userpublic/gamecontext.cpp#L351) で `AnimationSystem` へ行きます)。**姿勢の装着様式が 2 つある**(§8.13)ことがそのまま API に出ています。同じ owner に両方は付かないので、「どちらを呼ぶか」は装着の仕方で決まります。
 >
 > 同じ `graph.instance` 側には `render().emitValueGraphEvent(object, input, command)` もあります。`input` は **`event.playback` ノードの(展開後の)id** で、そこから `value.event_clock` / `audio.playback` の `events` ポートへ再生制御イベントが流れます([valuegraph.cpp:302](../../src/core/userpublic/valuegraph.cpp#L302))。
 >
 > 一方、**姿勢の評価器そのものは `GameContext` に載っていません** — 評価器を載せると標準の評価器だけが特権を持ってしまい、「評価器ごと自作できる」という設計が空文になるためです([../design_animation_graph.md](../design_animation_graph.md))。自作評価器は凍結 C-ABI 経由です(§8.13)。
+
+### objects() — シーンオブジェクトを名前で引いてワールドを読む(✅GP-1)
+
+公開型は [object_ref.hpp](../../src/core/userpublic/object_ref.hpp) にあり、`gamecontext.hpp` が取り込んでいます。手順は「名前で解決 → 実行時オブジェクトにする → ワールドを読む」の 3 段です。
+
+```cpp
+void update(Pelican::GameContext &ctx) {
+    // 1. 名前を ObjectRef にする。resolve はシーンの宣言を先頭から探すので、
+    //    ref を保持すれば検索は 1 回で済む(ただしシーンが変わったら引き直す)
+    const auto hero = ctx.objects().resolve("Hero");
+    if (!hero) {
+        ctx.logWarning(hero.errorName());   // 例: object.not_materialized@1
+        return;
+    }
+
+    // 2. ワールド変換を読む(pos / rotation / scale)
+    if (const auto world = ctx.objects().worldTransform(hero.value())) {
+        const Pelican::vec3 pos = world.value().pos;
+        // ...
+    }
+
+    // 3. 書き込みには GameObjectId が要る
+    if (const auto object = ctx.objects().materialize(hero.value())) {
+        auto local = ctx.localTransform(object.value());
+        local.pos.y += 1.0f;
+        (void)ctx.setLocalTransform(object.value(), local);
+    }
+}
+```
+
+`Resolved<T>`([宣言](../../src/core/userpublic/object_ref.hpp#L79))は「値、または値が無い理由の名前」です。`ok()` / `if (r)` で判定し、`get()` は値が無ければ null、`value()` は値が無ければエラー名で始まる `std::logic_error` を投げます。`errorName()` は値があるとき空です。
+
+| エラー名(`ObjectError`) | いつ出るか |
+|---|---|
+| `object.stale_authority@1`(`stale_authority`) | ref を解決した後にシーンがロードされた。**同じシーンの再ロードでも出ます**(宣言 ID が同じでも、別の実行とみなして読みません)。既定構築の `ObjectRef{}` もこれ |
+| `object.not_materialized@1`(`not_materialized`) | シーンに宣言されていない名前 / 宣言はあるが実行時のオブジェクトが無い(削除された、ライトだけのオブジェクトなど) |
+| `object.missing_capability@1`(`missing_capability`) | オブジェクトは生きているが、`worldTransform` が読む `transform` を持たない |
+
+複数当てはまるときは表の上のものが返ります。名前は [`objectErrorName()`](../../src/core/userpublic/object_ref.hpp#L69) でも引けます。
+
+注意点:
+
+- **ref はシーンをまたいで使えません。** シーンを切り替えた(または読み直した)ら、`SceneLoaded` の `onEvent` などで `resolve` し直してください(§8.7 の落とし穴と同じ理由です)。
+- **シーンのロード中(behavior の `onInit` を含む)に `resolve` すると、ロード中の新しいシーンで解決します。** `onInit` で解決した ref は、ロードが終わった後もそのまま使えます。
+- 同じ名前が 2 つあれば宣言順で先のものが選ばれますが、シーン文書が同名を拒否する([第4章 §4.1](04_scene_ecs.md))ので、ロードできたシーンでは起きません。
+- **`worldTransform` は「今の」ワールド変換を読みます。** ワールドは毎フレームの transform 更新で local から作り直されます。`setLocalTransform` はそのオブジェクトのワールドを即座に書きますが、親が無いものとして書くので、**親を持つオブジェクトや、動かしたオブジェクトの子を直後に読むと、次の transform 更新まで 1 フレーム前の値**になります。親の無いオブジェクト自身はすぐ正しく読めます。
+- **ワールド変換(`TransformComponent`)を直接書いても、次のフレームで local の値に戻ります。** 位置は `setLocalTransform` で変えてください([第4章 §4.4](04_scene_ecs.md))。
+- `load_gltf` で置いた一時オブジェクト(transient)を指す ref はまだ出しません。
 
 ### actionPose(✅WP132 — XR 姿勢入力)
 
@@ -439,7 +488,7 @@ ctx.loadScene("scene_flow_second");   // 予約(名前はその場で検証。�
 
 ### 落とし穴: システム状態はシーン切替で消えない
 
-システムのインスタンスは static シングルトンなので、メンバに保持した `GameObjectId` は切替後「死んだ ID」になります(`setLocalTransform` / `removeObject` は false を返し、`localTransform` は例外になり得ます)。**`SceneLoaded` の `onEvent` で状態をリセットする**のが正道です。「シーンをまたいで残るオブジェクト」(persistent)の仕組みは v1 にはありません。
+システムのインスタンスは static シングルトンなので、メンバに保持した `GameObjectId` は切替後「死んだ ID」になります(`setLocalTransform` / `removeObject` は false を返し、`localTransform` は例外になり得ます)。保持した `ObjectRef`(§8.4 の objects())も、切替後は `object.stale_authority@1` で拒否されます。**`SceneLoaded` の `onEvent` で状態をリセットする**(ref なら `resolve` し直す)のが正道です。「シーンをまたいで残るオブジェクト」(persistent)の仕組みは v1 にはありません。
 
 ## 8.8 物理クエリとトリガー(✅P1/P2/WP107/179)
 
@@ -736,7 +785,7 @@ VRM expression service 経由のみ(通常クリップの weights channel は非
   - `pose.root_motion_no_transform@1` — sink が書く個体に `localtransform` が無い(**黙って無効化しません**)
   - `pose.root_motion_shared@1` — 1 つの抽出ノードの姿勢を 2 つの消費者が受け取っている(1 本のクリップで 2 個体が動くことになるため)
 - **末尾キーを先頭キーと同じにした「継ぎ目のない」クリップは、1 周の正味変位が 0 なので動きません。** 移動させたいなら**正味の変位を末尾キーに残す**のがクリップ側の規約です。
-- `localtransform` は **親子関係に参加する個体にしか自動で付きません**。単独の個体には自分で宣言する必要があります。また **親を持つ個体は 1 フレーム遅れます**(同じフレームでは local をそのまま world として描き、次のフレームに `LocalTransformSystem` が world を組み直すため)。
+- `localtransform` は **`transform` を持つシーンオブジェクトには必ず付く**ので(✅GP-1、[第4章 §4.2](04_scene_ecs.md))、root motion のために宣言する必要はありません(以前は親子関係に参加する個体にしか付かず、単独の個体には手書きの宣言が要りました)。**親を持つ個体は 1 フレーム遅れます**(同じフレームでは local をそのまま world として描き、次のフレームに `LocalTransformSystem` が world を組み直すため)。
 - 出荷プロジェクトに `root_motion` の宣言はありません。実物は `test/root_motion_fixture.hpp` と `skeletal_rootmotion_test` です。
 
 ### 走っている姿勢を観測する(✅AG-3a)

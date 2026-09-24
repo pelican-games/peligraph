@@ -579,7 +579,7 @@ level実行前に、その段に入っている**全System**の`prepare_func`が
 
 | System | Query | 処理 |
 |---|---|---|
-| [`LocalTransformSystem`](../../src/core/ecs/predefined/localtransformsystem.cpp#L60) | `EntityId, Transform, LocalTransform` | 公開transformをGLM内部transformへcopy |
+| [`LocalTransformSystem`](../../src/core/ecs/predefined/localtransformsystem.cpp#L60) | `EntityId, Transform, LocalTransform` | local から world を毎フレーム合成(親があれば親を先に、root は親の walk なし)。合成は scene load と同じ `composeWorldTransform()`。GP-1 以降は scene の transform object が全部 local を持つので、root の world も毎フレーム上書きされる |
 | [`SimpleModelViewUpdateSystem`](../../src/core/ecs/predefined/modelviewupdatesystem.cpp#L42) | `SimpleModelView` | dirtyなmodel名からGPU instanceを生成 |
 | [`AnimationSystem`](../../src/core/ecs/predefined/animationsystem.cpp) | `Animation, SimpleModelView` | アニメーション再生状態をmodel instanceへ反映 |
 | [`SimpleModelViewTransformSystem`](../../src/core/ecs/predefined/modelviewtransformsystem.cpp#L7) | `Transform, SimpleModelView` | GPU instanceへTRS反映 |
@@ -601,7 +601,7 @@ level実行前に、その段に入っている**全System**の`prepare_func`が
 3. pose側が読むスカラーは、**同じ文書のvalues partitionを別の評価状態で1回評価**して得ます（[`poseGraphEvaluationState()` を使う箇所](../../src/core/ecs/predefined/animationsystem.cpp#L366)）。描画側の評価状態とは別物で、共有するとreplay系のopが1フレームに2回進みます（[第9章 §9.24](09_black_magic_and_gotchas.md) の難所「`$pose/` のスカラー橋と 2 つの EvaluationState」）。
 4. `runtime.synchronize(pose_graph, frame)` で評価器へ渡します（[この呼び出し](../../src/core/ecs/predefined/animationsystem.cpp#L376)）。
 
-AG-2のroot motionもここに着地します。[`frame.root_transform_object`](../../src/core/ecs/predefined/animationsystem.cpp#L305) が「変位を受け取れるオブジェクト」をattach時に1回だけ解決してtokenにし、[`frame.apply_root_translation`](../../src/core/ecs/predefined/animationsystem.cpp#L317) が毎フレームの差分を**そのオブジェクトの回転で回してから**加算します（scaleは掛けません — 掛けると同じクリップで移動距離が個体ごとに変わります）。`LocalTransformComponent` を持たないオブジェクトは `std::nullopt` を返し、変位は黙って捨てられるのではなく名前付きで拒否されます（`pose.root_motion_no_transform@1`、[`posegraph.hpp` の宣言](../../src/core/animation/posegraph.hpp#L105)）。
+AG-2のroot motionもここに着地します。[`frame.root_transform_object`](../../src/core/ecs/predefined/animationsystem.cpp#L305) が「変位を受け取れるオブジェクト」をattach時に1回だけ解決してtokenにし、[`frame.apply_root_translation`](../../src/core/ecs/predefined/animationsystem.cpp#L317) が毎フレームの差分を**そのオブジェクトの回転で回してから**加算します（scaleは掛けません — 掛けると同じクリップで移動距離が個体ごとに変わります）。`LocalTransformComponent` を持たないオブジェクト(GP-1 以降の scene では `transform` の無い object、ほかに `load_gltf` の transient object など)は `std::nullopt` を返し、変位は黙って捨てられるのではなく名前付きで拒否されます（`pose.root_motion_no_transform@1`、[`posegraph.hpp` の宣言](../../src/core/animation/posegraph.hpp#L105)）。
 
 ### `componentTrace()`: 描いた位相をそのまま返す
 

@@ -79,8 +79,8 @@
 
 - 各オブジェクトは `components` 配列が**必須**です。
 - `name` は**任意**。付ける場合は `[a-zA-Z0-9_]` のみ(識別子規約 R7)で、**シーン内一意**(重複は hard error)。
-- 名前の用途: rpc `update_transforms` の宛先、カメラコントローラの `target`、**`parent` 参照**、ライト名、collider 名、エラーメッセージ。
-- `parent`(✅WP79): オブジェクト直下の任意キーで、**親オブジェクトの `name`** を文字列で指定します(省略 = ルート)。未知の親・同名複数(曖昧)・循環(経路列挙付き)はすべて hard error。親子に参加するオブジェクトは `transform` 必須で、`localtransform` を書かなければローダーが transform から自動注入します。ワールド変換は `parent_world × local` で毎フレーム合成されます(scale は成分積)。
+- 名前の用途: rpc `update_transforms` の宛先、カメラコントローラの `target`、**`parent` 参照**、ライト名、collider 名、ゲームコードの `ctx.objects().resolve(name)`(§4.4)、エラーメッセージ。
+- `parent`(✅WP79): オブジェクト直下の任意キーで、**親オブジェクトの `name`** を文字列で指定します(省略 = ルート)。未知の親・同名複数(曖昧)・循環(経路列挙付き)はすべて hard error。親子に参加するオブジェクトは `transform` 必須です。`localtransform` は書かなくても、ローダーが `transform` を持つ**全オブジェクト**に付けます(親子の有無は問いません — §4.2 の localtransform)。ワールド変換は `parent_world × local` で毎フレーム合成されます(scale は成分積。親の無いオブジェクトは local がそのまま world)。
 
 ```json
 { "name": "Wheel", "parent": "CarBody",
@@ -146,9 +146,18 @@ codec の表には 8 個目として `pelican_ray_instance` が並んでいま�
 
 `pos` / `rotation` / `scale`(すべて必須)。毎フレーム値が `transform` へ反映されます。親子階層はオブジェクト直下の `parent` キー(§4.1)で宣言します — localtransform コンポーネント自体に親を書くフィールドはありません。
 
-**root motion の着地点でもあります(✅AG-2)。** クリップに焼かれた「根の移動」を個体の移動として使う(`pose.clip_sample{root_motion: "extract", root_node}` — [第8章 §8.13](08_gameplay.md))と、エンジンは毎フレームの移動量を **この localtransform に加算**します(`local.pos += local.rotation * delta`。スケールは掛けません。書き手は [GameObjects::setLocalTransform()](../../src/core/userpublic/gameobjects.cpp#L67) で、姿勢の評価フェーズの中、姿勢を stage する直前に呼ばれます)。したがって **root motion を使う個体には `localtransform` の宣言が要ります**。無い個体に `extract` を装着すると、黙って移動が消えるのではなく装着時に `pose.root_motion_no_transform@1` で拒否されます。
+**普通は書く必要がありません(✅GP-1)。** `transform` を持つシーンオブジェクトには、親子の有無にかかわらず、ロード時にローダーが localtransform を付けます。値は `transform` に書いた TRS(親から見た値)です。この付けた localtransform は実行時の状態で、**保存には出ません**(シーンファイルに `localtransform` が書き足されることはありません)。自分で書いた `localtransform` は従来どおりシーンの一部として保存されます。
 
-注意が 2 つあります。**(a) `localtransform` が自動で付くのは親子階層に参加するオブジェクトだけ**です(§4.1)。単独のオブジェクトには自動注入されないので、自分で宣言してください(出荷プロジェクトで root motion を宣言しているものは今日ありません。`posegraph_demo` の `Hero` は `transform` と同じ TRS を `localtransform` にも書いています)。**(b) 親を持つ個体は 1 フレームずれます** —— ワールド変換の再合成は次フレームの `LocalTransformSystem` が行うためです。
+付かない例外が 2 つあります。
+
+- エディタの `add_component` で後から `transform` を足したオブジェクトには、次にシーンをロードするまで付きません。
+- `load_gltf` で置いた一時オブジェクト(transient)には付きません。
+
+GP-1 より前は、localtransform が自動で付くのは親子に参加するオブジェクトだけでした。親子を使わないシーンでは `setLocalTransform` が `false` を返し、root motion には手書きの宣言が要りました。この制約はもうありません。
+
+**root motion の着地点でもあります(✅AG-2)。** クリップに焼かれた「根の移動」を個体の移動として使う(`pose.clip_sample{root_motion: "extract", root_node}` — [第8章 §8.13](08_gameplay.md))と、エンジンは毎フレームの移動量を **この localtransform に加算**します(`local.pos += local.rotation * delta`。スケールは掛けません。書き手は [GameObjects::setLocalTransform()](../../src/core/userpublic/gameobjects.cpp#L67) で、姿勢の評価フェーズの中、姿勢を stage する直前に呼ばれます)。`transform` を持つシーンオブジェクトには localtransform が必ず付くので(上記)、**root motion のために `localtransform` を宣言する必要はありません**。localtransform の無い個体(`transform` の無いオブジェクトや、上の例外)に `extract` を装着すると、黙って移動が消えるのではなく装着時に `pose.root_motion_no_transform@1` で拒否されます。
+
+注意: **親を持つ個体は 1 フレームずれます** —— ワールド変換の再合成は次フレームの `LocalTransformSystem` が行うためです(§4.4「transform は local から作られる」)。
 
 ### camera(✅)
 
@@ -414,6 +423,34 @@ ECS の実装(WP62・R5-core ✅)は archetype/chunk 方式ですが、ゲーム
 
 エンジン内部の ECS システム(transform → 描画反映、カメラ反映など)は依存グラフをトポロジカルソートして JobSystem で並列実行されます。ゲームロジックはこれとは別の「ゲームシステム」(`PELICAN_REGISTER_SYSTEM`)として決定的な順序で実行されます([第8章](08_gameplay.md))。
 
+### 名前でシーンオブジェクトを引く — `ctx.objects()`(✅GP-1)
+
+ゲームコードからシーンのオブジェクトを名前で探すときは、[`GameContext::objects()`](../../src/core/userpublic/gamecontext.hpp#L221) を使います。手順は 3 段です。
+
+1. `resolve(name)` — 名前を 1 回だけ引き、**`ObjectRef`** を返します。ref は名前を持たず、「どのシーンの実行(run)で解決したか」と「シーン内の宣言 ID(authoring object id — §4.1)」の組です。
+2. `materialize(ref)` — 今生きている `GameObjectId` を返します。
+3. `worldTransform(ref)` — ワールド変換(`pos` / `rotation` / `scale`)を返します。
+
+戻り値はどれも `Resolved<T>` で、値が無いときは次の名前付きエラーを持ちます(複数当てはまるときは表の上のものが返ります)。
+
+| エラー名 | いつ出るか |
+|---|---|
+| `object.stale_authority@1` | ref を解決した後にシーンがロードされた(同じシーンの再ロードも含む)。既定構築の ref もこれ |
+| `object.not_materialized@1` | そのシーンに宣言されていない名前 / 宣言はあるが実行時のオブジェクトが無い(削除済み、ライトだけのオブジェクトなど) |
+| `object.missing_capability@1` | オブジェクトは生きているが、`worldTransform` が読む `transform` を持たない |
+
+同じ名前が 2 つあれば宣言順で先のものが選ばれますが、シーン文書が同名を拒否する(§4.1)ので、ロードできたシーンでは起きません。シーンのロード中(behavior の `onInit` を含む)に呼ぶと、**ロード中の新しいシーン**で解決します。コード例と注意は [第8章 §8.4](08_gameplay.md) にあります。
+
+### transform は local から作られる(✅GP-1)
+
+**`LocalTransformSystem` は、localtransform を持つ全オブジェクトのワールド変換を毎フレーム local から作り直します。** GP-1 からは `transform` を持つシーンオブジェクトが全部 localtransform を持つので(§4.2)、親の無いオブジェクトも毎フレーム作り直されます。ここから 3 つのことが起きます。
+
+- **ワールド変換(内部の `TransformComponent`)を直接書いても、次のフレームで local の値に戻ります。** 位置を変えるなら `setLocalTransform` で local を書いてください。エンジン自身のワールドを書く経路(rpc `update_transforms`、カメラコントローラ、エディタの spawn)は、local も一緒に書くように直してあります。
+- **`setLocalTransform` の直後の読みは、次の transform 更新までずれることがあります。** `setLocalTransform` はそのオブジェクトの local とワールドを即座に書きますが、ワールドは「親が無いもの」として書きます。親の位置を掛けた正しいワールドと、動かしたオブジェクトの子のワールドは、次のフレームの `LocalTransformSystem` で揃います。それまで、親を持つオブジェクトやその子を `worldTransform` などで読むと 1 フレーム前の値になります。親の無いオブジェクト自身はすぐ正しく読めます。
+- **rpc `get_components` の `local_trs` は、親の無いオブジェクトでもシーンに書いた値を返します**(以前は local が無かったので、ワールドの値を返していました)。また、ワールドの回転はロード時と同じ関数で正規化されるので、親子のあるシーンでは回転の下位ビットが以前と変わることがあります。
+
+親の無いオブジェクトも毎フレーム計算する分、ECS の更新は重くなりました。GP-1 着地時の計測(Debug ビルド、親の無いオブジェクト 4000 個)で、ロードは約 700 ms → 約 935 ms、1 フレームの ECS 更新は 0.11〜0.16 ms → 約 1.97 ms です。Release ビルドは未測です。
+
 ### ユーザー定義コンポーネント(✅WP379/382a)
 
 ゲーム DLL から **ECS コンポーネント型を登録できます**。`DECLARE_COMPONENT` で ID を宣言し、[`registerComponent<T>(name)`](../../src/core/userpublic/details/component/registerer.hpp#L185) を静的初期化で呼びます:
@@ -502,7 +539,8 @@ DECLARE_COMPONENT(MyComponent, 61);   // 0..63 の空き番号(エンジンは 0
 | `physics.module_unavailable@1` | `PELICAN_WITH_PHYSICS=OFF` のビルドで、`collider` コンポーネントを含むシーンをロードした(§4.3)/ `requires: ["physics"]` のプロジェクトを開いた([第3章 §3.2](03_project_format.md))。他の語(`audio` / `xr` / `vat` / `seqplayer`)も `requires` では同じ形の名前になります |
 | `project.requires_unknown@1` | `project.json` の `requires` に、このエンジンが知らない名前を書いた(既知の一覧がメッセージに付きます — [第3章 §3.2](03_project_format.md)) |
 | `pose.sink_conflict@1{owner, first, second}` | 同じオブジェクトに姿勢の writer が 2 つある(animation コンポーネント + `pose.skeletal`、または sink 2 本。§4.2) |
-| `pose.root_motion_no_transform@1{owner, node, object}` | `root_motion: "extract"` の装着先に `localtransform` が無い(§4.2 の localtransform) |
+| `pose.root_motion_no_transform@1{owner, node, object}` | `root_motion: "extract"` の装着先に `localtransform` が無い(`transform` の無いオブジェクトなど。§4.2 の localtransform) |
+| `object.stale_authority@1` / `object.not_materialized@1` / `object.missing_capability@1` | `ctx.objects()` の ref が古いシーンのもの / 実行時のオブジェクトが無い / `transform` が無い(§4.4) |
 | `graph.operation_unregistered@1{node, op}` | 文書が、この build に登録されていない op を使っている(OFF ビルドでの `pose.*` など。[第1章 §1.5](01_overview.md) 設計決定 12) |
 
 ## 4.6 既知の注意点

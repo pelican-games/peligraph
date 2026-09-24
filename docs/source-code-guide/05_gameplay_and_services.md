@@ -4,7 +4,7 @@
 
 ## 5.1 `GameContext`は公開ファサード
 
-ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L167) が主要サービスを薄く包みます。面は根と5つのドメインファサードに分かれ、物理 / 音 / アニメーション / セーブ / 描画は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L216) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L217) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L218) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L219) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L220) が返す値越しに呼びます。ファサードは空のクラス（[`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L33) / [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L57) / [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L78) / [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L87) / [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L102)）で、状態もポインタも持たないので、返り値を持ち回っても何も持っていないのと同じです。委譲先は分割前と同じです。
+ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L167) が主要サービスを薄く包みます。面は根と6つのドメインファサードに分かれ、物理 / 音 / アニメーション / セーブ / 描画 / シーンオブジェクトの名前解決は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L216) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L217) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L218) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L219) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L220) / [`objects()`](../../src/core/userpublic/gamecontext.hpp#L221)（GP-1）が返す値越しに呼びます。ファサードは空のクラス（[`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L33) / [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L57) / [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L78) / [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L87) / [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L102) / [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L160)）で、状態もポインタも持たないので、返り値を持ち回っても何も持っていないのと同じです。委譲先は分割前と同じです。
 
 | API群 | 委譲先 | 実装へジャンプ |
 |---|---|---|
@@ -18,6 +18,7 @@
 | camera（`render().setCamera`） | `Camera` | [`RenderContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L306) |
 | 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L310) |
 | audio（`audio().playSound` ほか） | `Audio`またはfeature disabled error | [`AudioContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L330) |
+| scene object の名前解決（`objects().resolve` / `materialize` / `worldTransform`、GP-1） | `SceneLoader::resolveObject` / `materializeObject`、world は ECS の `TransformComponent` | [`ObjectsContext::resolve()`](../../src/core/userpublic/gamecontext.cpp#L169) |
 | scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L484) |
 | debug text（`render().debugText`） | `DebugText` | [`RenderContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L496) |
 | event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L204) |
