@@ -744,7 +744,7 @@ production の登録表([`makeBuiltinDocumentMigrationRegistry()`](../../src/pro
 
 ### 残した穴(MG-1 の時点)
 
-- **Studio が player を起動せずに project を読む経路(offline open)は入口を通りません**。Studio に移行の画面もまだありません(どちらも GUI session の別 WP)。
+- Studio の offline open と移行の画面は、MG-1 の GUI 側(`52547bee`)で入りました。旧版の project を Studio で開くと、plan を見せてから apply します([第 13 章「Studio で旧版の project を開く」](13_editor.md#studio-で旧版の-project-を開くmg-1))。
 - `pelican_cli` のほかのサブコマンド(project の文書を直接読み書きするもの)には入口がありません。
 - 退避先 `.pelican/migration/<時刻>/` を消す手段はありません(手で消します)。
 - 検出が歩くのは project root の下だけで、**root の外に mount した asset store の中の文書は見ません**。
