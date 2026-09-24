@@ -275,6 +275,11 @@ function(run_pad_profile label cli_profile rpc_profile button capture_path captu
         NOT profile_stdout MATCHES [=["gamepad_polling":true]=]))
         message(FATAL_ERROR "${label}: CLI profile did not activate gamepad polling:\n${profile_stdout}")
     endif()
+    # GP-4: get_status reports the cursor mode. Nothing asked for one, and a
+    # headless run has no window to embed.
+    if(NOT profile_stdout MATCHES [=["cursor":{"effective":"normal","embedded":false,"requested":"normal"}]=])
+        message(FATAL_ERROR "${label}: get_status input.cursor is missing or wrong:\n${profile_stdout}")
+    endif()
     if(rpc_profile STREQUAL "arcade")
         if(NOT profile_stdout MATCHES [=["profile":"keyboard"]=] OR
            NOT profile_stdout MATCHES [=["gamepad_polling":false]=])

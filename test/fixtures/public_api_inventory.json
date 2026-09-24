@@ -195,6 +195,12 @@
     {
       "header": "src/core/userpublic/gamecontext.hpp",
       "class": "RenderContext",
+      "signature": "Resolved<phys::Ray,RenderError>screenRay(vec2 position_px)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "RenderContext",
       "signature": "void setRayTracingCallableRecord(std::string_view task_name,std::uint32_t index,const nlohmann::json&values)const",
       "classification": "mutator",
       "manifest": "reject.transaction-scope"
@@ -250,6 +256,19 @@
       "signature": "[[nodiscard]] UiWriteResult setValue(std::string_view path,float value)const",
       "classification": "mutator",
       "manifest": "nonparticipant.ui-document"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "InputContext",
+      "signature": "PointerState pointer()const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "InputContext",
+      "signature": "void setCursorMode(CursorMode mode)const",
+      "classification": "mutator",
+      "manifest": "nonparticipant.window-cursor"
     },
     {
       "header": "src/core/userpublic/gamecontext.hpp",
@@ -485,6 +504,12 @@
       "header": "src/core/userpublic/gamecontext.hpp",
       "class": "GameContext",
       "signature": "RenderContext render()const noexcept",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "InputContext input()const noexcept",
       "classification": "getter"
     },
     {

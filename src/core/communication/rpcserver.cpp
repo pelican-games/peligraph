@@ -861,6 +861,11 @@ std::vector<InputEvent> bindInjectedInputEvents(const std::vector<RpcInputInject
             break;
         }
         case RpcInputInjectionEventType::mouseMove:
+            // x / y are window coordinates, the ones the OS reports a cursor
+            // in, not framebuffer pixels: an injected move is the same event
+            // a real one is. The pointer (GameContext::input().pointer()) and
+            // the UI router convert it by the frame's content scale; ImGui
+            // reads it as it is. Headless there is no window and the scale is 1.
             events.push_back(InputEvent::cursorMove(static_cast<float>(rpc_event.x), static_cast<float>(rpc_event.y)));
             break;
         case RpcInputInjectionEventType::mouseDown:
@@ -1506,7 +1511,12 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                                        ? nlohmann::json(*internal::activeInputProfile())
                                        : nlohmann::json(nullptr)},
                        {"profiles", internal::availableInputProfiles()},
-                       {"gamepad_polling", internal::gamepadPollingEnabled()}}},
+                       {"gamepad_polling", internal::gamepadPollingEnabled()},
+                       // GP-4: what game code asked for and what the window
+                       // applied; an embedded window keeps a lock normal.
+                       {"cursor", {{"requested", std::string{cursorModeName(modules.input_state.cursorMode().requested)}},
+                                   {"effective", std::string{cursorModeName(modules.input_state.cursorMode().effective)}},
+                                   {"embedded", modules.input_state.cursorMode().embedded}}}}},
             {"stores", assetStoresStatus(modules.path_resolver)},
             {"reload", modules.reload_service != nullptr
                            ? modules.reload_service->statusJson()

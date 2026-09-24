@@ -17,11 +17,25 @@ namespace Pelican {
 struct InputSequenceFrame {
     std::uint64_t frame = 0;
     std::vector<InputEvent> events;
+    // How this frame's cursor events became framebuffer pixels when it was
+    // recorded (GP-4). A v1 recording carries none: scale 1, framebuffer
+    // unknown, which is what its window coordinates meant then.
+    PointerTransform pointer_transform;
 };
 
+// pelican.input_seq, JSON Lines. It is written wherever the recorder was told
+// (--record-input, start_input_record), not as a project document, so the
+// project migration (MG-1) never sees it; the parser reads both versions.
+//
+// v2 (written): the header carries the first frame's pointer transform as
+// "content_scale":[x, y] and "framebuffer":[width, height]; a frame whose
+// transform differs from the frame before carries both fields on its marker.
+// v1 (read): no transform; every frame reads as scale 1 with the framebuffer
+// unknown, the meaning its window coordinates had when it was written.
 class InputSequence {
     double sequence_fps = 60.0;
     std::vector<InputSequenceFrame> frame_samples;
+    int source_version = 2;
 
   public:
     static InputSequence fromJsonLines(std::string_view json_lines);
@@ -30,8 +44,10 @@ class InputSequence {
     explicit InputSequence(double fps = 60.0);
 
     double fps() const noexcept { return sequence_fps; }
+    // The version it was read from; a sequence built in memory is v2.
+    int sourceVersion() const noexcept { return source_version; }
     std::span<const InputSequenceFrame> frames() const noexcept { return frame_samples; }
-    void appendFrame(std::span<const InputEvent> events);
+    void appendFrame(std::span<const InputEvent> events, const PointerTransform &pointer_transform = {});
     std::string toJsonLines() const;
     void writeFile(const std::filesystem::path &path) const;
 };
@@ -67,7 +83,11 @@ DECLARE_MODULE(InputSequenceRuntime) {
                      std::span<const std::string> pose_action_names = {});
     void stopReplay();
 
-    void prepareFrame(InputState &input);
+    // Gives the next frame its events and its pointer transform: the recorded
+    // one while replaying (a v1 recording's unknown framebuffer is taken from
+    // live), live otherwise. live is this machine's transform.
+    void prepareFrame(InputState &input, const PointerTransform &live = {});
+    // Records the frame's events and its pointer transform.
     void recordFrame(const FrameInput &frame_input);
 
     bool isRecording() const noexcept { return mode == Mode::recording; }

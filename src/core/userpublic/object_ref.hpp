@@ -75,11 +75,19 @@ constexpr std::string_view objectErrorName(ObjectError error) noexcept {
     return "object.unknown_error@1";
 }
 
-// A value, or the named reason there is none.
-template <class T> class Resolved {
+// The name Resolved reports for an error. Each error enum a facade answers
+// with has one of these beside it (RenderError: render_error.hpp).
+constexpr std::string_view errorCodeName(ObjectError error) noexcept {
+    return objectErrorName(error);
+}
+
+// A value, or the named reason there is none. E is the facade's error enum;
+// the objects facade answers with ObjectError, the render facade with
+// RenderError.
+template <class T, class E = ObjectError> class Resolved {
   public:
     Resolved(T value) : value_{std::move(value)}, ok_{true} {}
-    Resolved(ObjectError error) : error_{error}, ok_{false} {}
+    Resolved(E error) : error_{error}, ok_{false} {}
 
     bool ok() const noexcept { return ok_; }
     explicit operator bool() const noexcept { return ok_; }
@@ -90,22 +98,22 @@ template <class T> class Resolved {
     // there is no value.
     const T &value() const {
         if (!ok_) {
-            throw std::logic_error(std::string{objectErrorName(error_)} +
+            throw std::logic_error(std::string{errorCodeName(error_)} +
                                    ": the result holds no value");
         }
         return value_;
     }
 
     // Meaningful only when !ok().
-    ObjectError error() const noexcept { return error_; }
+    E error() const noexcept { return error_; }
     // The error's name, or empty when there is a value.
     std::string_view errorName() const noexcept {
-        return ok_ ? std::string_view{} : objectErrorName(error_);
+        return ok_ ? std::string_view{} : errorCodeName(error_);
     }
 
   private:
     T value_{};
-    ObjectError error_ = ObjectError::not_materialized;
+    E error_{};
     bool ok_ = false;
 };
 

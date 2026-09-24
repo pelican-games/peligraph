@@ -1453,6 +1453,9 @@ pelican_define_test(pg1_feature_gate_test GROUP core_foundation pelican_core)
 # PG-2: the call-time half -- the facades a build left the module out of --
 # measured in every build (the OFF builds run its [pg2] tag).
 pelican_define_test(pg2_facade_failure_test GROUP core_foundation pelican_core)
+# GP-4: the pointer in framebuffer pixels, its record/replay, the UI router's
+# conversion, screenRay and the cursor mode.
+pelican_define_test(gp4_pointer_test GROUP core_foundation pelican_core glm)
 # PG-2b: the same facades inside a noexcept onDestroy record the refusal
 # instead of throwing, and the RPC raycast of a build without physics refuses
 # by name. Its [pg2] cases run in the OFF builds with the PG-2 ones.

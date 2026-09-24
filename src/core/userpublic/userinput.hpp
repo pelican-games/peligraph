@@ -1,5 +1,7 @@
 #pragma once
 
+#include <geom/vec.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -120,6 +122,36 @@ enum class ActionPoseHand : std::uint8_t {
     none,
     left,
     right,
+};
+
+// Where the pointer is, in framebuffer pixels: the pixels the frame is drawn
+// in, origin at the framebuffer's top-left corner, +x right, +y down, the
+// pixel (i, j) covering [i, i+1) x [j, j+1). Reached through
+// GameContext::input().pointer().
+//
+// The operating system reports the cursor in window coordinates. They become
+// framebuffer pixels by the frame's content scale (framebuffer size / window
+// size, per axis): on a display scaled to 200%, window (10, 20) is pixel
+// (20, 40). A replayed input sequence uses the scale it recorded, not the one
+// of the machine replaying it. The position is neither clamped nor combined
+// with any action: a locked cursor, or one captured outside the window, can
+// report a position outside the framebuffer.
+//
+// inside is true when the position is known (a cursor event has arrived since
+// input was last cleared) and lies in the framebuffer. position_px is (0, 0)
+// until the first cursor event.
+struct PointerState {
+    vec2 position_px{0.0f, 0.0f};
+    bool inside = false;
+};
+
+// GameContext::input().setCursorMode. normal shows the cursor; hidden hides
+// it while it is over the window; locked hides it and keeps it in the window,
+// reporting unbounded motion (the GLFW disabled cursor).
+enum class CursorMode : std::uint8_t {
+    normal,
+    hidden,
+    locked,
 };
 
 struct ActionPose {

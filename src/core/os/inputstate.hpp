@@ -146,6 +146,50 @@ class GamepadEventPoller {
     std::vector<InputEvent> poll(GamepadStateSource &source, bool enabled);
 };
 
+// GP-4: how the window coordinates of a frame's cursor events become the
+// framebuffer pixels the public pointer (GameContext::input().pointer()) and
+// the UI router read. InputSnapshot and InputEvent keep window coordinates;
+// only those two convert, and ImGui reads window coordinates as it always
+// did.
+//
+// scale_x / scale_y are the content scale per axis, framebuffer size / window
+// size (1 on a display that is not scaled, and wherever there is no window).
+// The framebuffer is the one the pixels are measured in; 0 x 0 means it is not
+// known, which only a pelican.input_seq v1 recording leaves it.
+struct PointerTransform {
+    float scale_x = 1.0f;
+    float scale_y = 1.0f;
+    std::uint32_t framebuffer_width = 0;
+    std::uint32_t framebuffer_height = 0;
+
+    bool framebufferKnown() const noexcept { return framebuffer_width != 0 && framebuffer_height != 0; }
+    bool operator==(const PointerTransform &) const = default;
+};
+
+// The live transform of a framebuffer drawn for a window of logical_width x
+// logical_height: framebuffer / window per axis, 1 on an axis either side
+// of which is 0 (a minimized window).
+PointerTransform pointerTransformFor(std::uint32_t framebuffer_width, std::uint32_t framebuffer_height,
+                                     std::uint32_t logical_width, std::uint32_t logical_height) noexcept;
+// Window coordinates to framebuffer pixels.
+vec2 windowToFramebufferPx(const PointerTransform &transform, float window_x, float window_y) noexcept;
+// The pointer at window (window_x, window_y) under transform. Outside unless
+// position_known and the pixel lies in a known framebuffer.
+PointerState pointerStateFor(const PointerTransform &transform, float window_x, float window_y,
+                             bool position_known) noexcept;
+
+// A locked cursor in a window embedded in another (the Studio viewport) would
+// take the host's cursor, so there the lock is not applied and the cursor
+// stays normal. Every other request is applied as asked.
+CursorMode effectiveCursorMode(CursorMode requested, bool embedded) noexcept;
+std::string_view cursorModeName(CursorMode mode) noexcept;
+
+struct CursorModeStatus {
+    CursorMode requested = CursorMode::normal;
+    CursorMode effective = CursorMode::normal;
+    bool embedded = false;
+};
+
 struct InputConsumptionMask {
     std::array<std::uint8_t, key_code_count> controls{};
     bool pointer_motion = false;
@@ -174,6 +218,8 @@ struct FrameInput {
     std::span<const InputEvent> ordered_events;
     std::span<const InputPoseSample> pose_samples;
     InputSnapshot snapshot;
+    // The frame's window-to-framebuffer conversion (see PointerTransform).
+    PointerTransform pointer_transform;
 
     FrameInput() = default;
     FrameInput(const FrameInput &other) noexcept;
@@ -190,7 +236,7 @@ struct FrameInput {
     std::uint64_t borrowed_generation = 0;
 
     FrameInput(std::span<const InputEvent> events, std::span<const InputPoseSample> poses,
-               const InputSnapshot &snapshot,
+               const InputSnapshot &snapshot, const PointerTransform &pointer_transform,
                std::shared_ptr<internal::FrameInputBorrowState> state) noexcept;
     void acquire() noexcept;
     void release() noexcept;
@@ -213,6 +259,11 @@ class InputStateCore {
     std::vector<InputPoseSample> pending_pose_samples;
     std::vector<InputPoseSample> frame_pose_samples;
     InputConsumptionMask consumption_mask;
+    // The transform the next beginFrame gives its frame, and that frame's.
+    // clear() keeps both: they describe the window, not the input.
+    PointerTransform next_pointer_transform;
+    PointerTransform frame_pointer_transform;
+    PointerState frame_pointer;
     std::shared_ptr<internal::FrameInputBorrowState> borrow_state =
         std::make_shared<internal::FrameInputBorrowState>();
     // InputStateCore is the sole sequence owner. The production InputState owns
@@ -240,11 +291,16 @@ class InputStateCore {
     void queueEvents(const std::vector<InputEvent> &events);
     void queuePoseSample(InputPoseSample sample);
     void queuePoseSamples(std::vector<InputPoseSample> samples);
+    // The transform the next beginFrame converts that frame's cursor with.
+    void setPointerTransform(const PointerTransform &transform) noexcept;
     void beginFrame();
     void clear();
 
     const InputSnapshot &currentSnapshot() const noexcept;
     FrameInput currentFrameInput() const noexcept;
+    const PointerTransform &pointerTransform() const noexcept;
+    // The pointer of the current frame, in framebuffer pixels.
+    const PointerState &pointer() const noexcept;
     void consumeControlForActions(KeyCode code) noexcept;
     void consumePointerMotionForActions() noexcept;
     void consumePointerForActions() noexcept;
@@ -258,16 +314,28 @@ class InputStateCore {
 
 DECLARE_MODULE(InputState) {
     InputStateCore core;
+    CursorModeStatus cursor;
 
   public:
     void queueEvent(InputEvent event);
     void queueEvents(const std::vector<InputEvent> &events);
     void queuePoseSample(InputPoseSample sample);
     void queuePoseSamples(std::vector<InputPoseSample> samples);
+    void setPointerTransform(const PointerTransform &transform) noexcept;
     void beginFrame();
     void clear();
     const InputSnapshot &currentSnapshot() const noexcept;
     FrameInput currentFrameInput() const noexcept;
+    const PointerTransform &pointerTransform() const noexcept;
+    const PointerState &pointer() const noexcept;
+    // What game code asked for (GameContext::input().setCursorMode) and what
+    // the window applied. clear() keeps both.
+    void requestCursorMode(CursorMode mode) noexcept { cursor.requested = mode; }
+    void setAppliedCursorMode(CursorMode effective, bool embedded) noexcept {
+        cursor.effective = effective;
+        cursor.embedded = embedded;
+    }
+    const CursorModeStatus &cursorMode() const noexcept { return cursor; }
     void consumeControlForActions(KeyCode code) noexcept;
     void consumePointerMotionForActions() noexcept;
     void consumePointerForActions() noexcept;

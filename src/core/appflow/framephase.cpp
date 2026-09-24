@@ -9,6 +9,7 @@
 #include "../loader/scene.hpp"
 #include "../os/inputstate.hpp"
 #include "../os/inputsequence.hpp"
+#include "../os/window.hpp"
 #include "../ui/module.hpp"
 #include "../vkcore/rendertarget.hpp"
 #include "../playback/camerabake.hpp"
@@ -57,6 +58,22 @@ struct FrameStateModules {
     SeqPlayer &seq_player;
     SceneLoader &scene_loader;
 };
+
+// GP-4: this machine's window-to-framebuffer conversion. With a window, its
+// framebuffer over its window size; without one (headless), cursor events
+// have no window to be measured in and are taken as the output's pixels.
+PointerTransform livePointerTransform() {
+    if (const auto *window = FastModuleContainer::tryGet<Window>()) {
+        return window->pointerTransform();
+    }
+    PointerTransform transform;
+    if (const auto *target = FastModuleContainer::tryGet<RenderTarget>()) {
+        const auto extent = target->getExtent();
+        transform.framebuffer_width = extent.width;
+        transform.framebuffer_height = extent.height;
+    }
+    return transform;
+}
 
 FrameStateModules resolveFrameStateModules() {
     auto *ui_module = FastModuleContainer::tryGet<ui::UiModule>();
@@ -147,7 +164,7 @@ void updateFrameState() {
             internal::freezePendingEventsForFrame();
             break;
         case FramePhase::freeze_input:
-            modules.input_sequence.prepareFrame(modules.input_state);
+            modules.input_sequence.prepareFrame(modules.input_state, livePointerTransform());
             modules.input_state.beginFrame();
             modules.input_sequence.recordFrame(modules.input_state.currentFrameInput());
             break;

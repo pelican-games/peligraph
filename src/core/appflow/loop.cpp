@@ -735,6 +735,10 @@ void runInteractive(LoopModules &modules, XrRuntime &xr,
     while (true) {
         if (!window.process())
             break;
+        // GP-4: the cursor mode game code asked for in the frame before.
+        const auto cursor = window.applyCursorMode(
+            input_state.cursorMode().requested, launch_config.rpc);
+        input_state.setAppliedCursorMode(cursor.effective, cursor.embedded);
         auto window_events = window.drainInputEvents();
         if (!input_sequence.isReplaying()) {
             input_state.queueEvents(window_events);

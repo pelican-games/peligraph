@@ -14,14 +14,16 @@ namespace Pelican {
 namespace {
 
 constexpr std::string_view inputSequenceSchema = "pelican.input_seq";
-constexpr int inputSequenceVersion = 1;
+// v2 (GP-4) adds the pointer transform; v1 is still read.
+constexpr int inputSequenceVersion = 2;
+constexpr int inputSequenceLegacyVersion = 1;
 
 void rejectPoseInputSequence(std::span<const std::string> pose_action_names,
                              std::string_view operation) {
     if (pose_action_names.empty()) return;
     throw std::runtime_error(std::string{operation} +
                              " does not support pose action '" + pose_action_names.front() +
-                             "' in pelican.input_seq v1");
+                             "' in pelican.input_seq v2");
 }
 
 constexpr std::array<std::string_view, key_code_count> keyCodeNames{
@@ -106,6 +108,44 @@ std::string requireControlName(const nlohmann::json &json, std::size_t line, std
                                  " event requires string field 'code'");
     }
     return it->get<std::string>();
+}
+
+// The pointer transform a v2 header or frame marker carries. A marker may
+// carry none (the frame keeps the previous transform); a header must.
+std::optional<PointerTransform> parsePointerTransform(const nlohmann::json &json, std::size_t line,
+                                                      bool required) {
+    const auto scale = json.find("content_scale");
+    const auto framebuffer = json.find("framebuffer");
+    if (scale == json.end() && framebuffer == json.end() && !required) return std::nullopt;
+    const auto where = "input_seq line " + std::to_string(line);
+    if (scale == json.end() || !scale->is_array() || scale->size() != 2 || !(*scale)[0].is_number() ||
+        !(*scale)[1].is_number()) {
+        throw std::runtime_error(where + " requires 'content_scale' as two numbers");
+    }
+    if (framebuffer == json.end() || !framebuffer->is_array() || framebuffer->size() != 2 ||
+        !(*framebuffer)[0].is_number_unsigned() || !(*framebuffer)[1].is_number_unsigned()) {
+        throw std::runtime_error(where + " requires 'framebuffer' as two unsigned integers");
+    }
+    PointerTransform transform;
+    transform.scale_x = (*scale)[0].get<float>();
+    transform.scale_y = (*scale)[1].get<float>();
+    if (!std::isfinite(transform.scale_x) || !std::isfinite(transform.scale_y) || transform.scale_x <= 0.0f ||
+        transform.scale_y <= 0.0f) {
+        throw std::runtime_error(where + " 'content_scale' must be positive and finite");
+    }
+    const auto width = (*framebuffer)[0].get<std::uint64_t>();
+    const auto height = (*framebuffer)[1].get<std::uint64_t>();
+    if (width > std::numeric_limits<std::uint32_t>::max() || height > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error(where + " 'framebuffer' is out of range");
+    }
+    transform.framebuffer_width = static_cast<std::uint32_t>(width);
+    transform.framebuffer_height = static_cast<std::uint32_t>(height);
+    return transform;
+}
+
+void writePointerTransform(nlohmann::json &json, const PointerTransform &transform) {
+    json["content_scale"] = nlohmann::json::array({transform.scale_x, transform.scale_y});
+    json["framebuffer"] = nlohmann::json::array({transform.framebuffer_width, transform.framebuffer_height});
 }
 
 InputEvent parseEvent(const nlohmann::json &json, std::size_t line) {
@@ -241,6 +281,7 @@ InputSequence InputSequence::fromJsonLines(std::string_view json_lines) {
     bool saw_frame = false;
     std::optional<std::uint64_t> previous_event_seq;
     InputSequence parsed;
+    PointerTransform pointer_transform;
 
     while (std::getline(stream, line)) {
         ++line_number;
@@ -263,7 +304,8 @@ InputSequence InputSequence::fromJsonLines(std::string_view json_lines) {
             if (!json.is_object() || json.value("schema", std::string{}) != inputSequenceSchema) {
                 throw std::runtime_error("input_seq schema is not supported");
             }
-            if (json.value("version", 0) != inputSequenceVersion) {
+            const auto version = json.value("version", 0);
+            if (version != inputSequenceVersion && version != inputSequenceLegacyVersion) {
                 throw std::runtime_error("input_seq version is not supported");
             }
             const auto fps_it = json.find("fps");
@@ -271,6 +313,10 @@ InputSequence InputSequence::fromJsonLines(std::string_view json_lines) {
                 throw std::runtime_error("input_seq header requires numeric fps");
             }
             parsed = InputSequence{fps_it->get<double>()};
+            parsed.source_version = version;
+            if (version == inputSequenceVersion) {
+                pointer_transform = *parsePointerTransform(json, line_number, true);
+            }
             header_read = true;
             continue;
         }
@@ -280,7 +326,15 @@ InputSequence InputSequence::fromJsonLines(std::string_view json_lines) {
             if (frame != parsed.frame_samples.size()) {
                 throw std::runtime_error("input_seq frame markers must start at zero and be contiguous");
             }
-            parsed.frame_samples.push_back(InputSequenceFrame{frame, {}});
+            if (parsed.source_version == inputSequenceLegacyVersion) {
+                if (json.contains("content_scale") || json.contains("framebuffer")) {
+                    throw std::runtime_error("input_seq line " + std::to_string(line_number) +
+                                             " carries a pointer transform, which needs version 2");
+                }
+            } else if (const auto changed = parsePointerTransform(json, line_number, false)) {
+                pointer_transform = *changed;
+            }
+            parsed.frame_samples.push_back(InputSequenceFrame{frame, {}, pointer_transform});
             saw_frame = true;
             continue;
         }
@@ -308,23 +362,31 @@ InputSequence InputSequence::loadFile(const std::filesystem::path &path) {
     return fromJsonLines(readTextFile(path));
 }
 
-void InputSequence::appendFrame(std::span<const InputEvent> events) {
+void InputSequence::appendFrame(std::span<const InputEvent> events, const PointerTransform &pointer_transform) {
     InputSequenceFrame frame;
     frame.frame = frame_samples.size();
     frame.events.assign(events.begin(), events.end());
+    frame.pointer_transform = pointer_transform;
     frame_samples.push_back(std::move(frame));
 }
 
 std::string InputSequence::toJsonLines() const {
     std::ostringstream output;
-    output << nlohmann::json{{"fps", sequence_fps},
-                             {"generator", "pelican2"},
-                             {"schema", inputSequenceSchema},
-                             {"version", inputSequenceVersion}}
-                  .dump()
-           << '\n';
+    nlohmann::json header{{"fps", sequence_fps},
+                          {"generator", "pelican2"},
+                          {"schema", inputSequenceSchema},
+                          {"version", inputSequenceVersion}};
+    writePointerTransform(header, frame_samples.empty() ? PointerTransform{}
+                                                         : frame_samples.front().pointer_transform);
+    output << header.dump() << '\n';
+    const PointerTransform *previous = nullptr;
     for (const auto &frame : frame_samples) {
-        output << nlohmann::json{{"frame", frame.frame}}.dump() << '\n';
+        nlohmann::json marker{{"frame", frame.frame}};
+        if (previous != nullptr && !(frame.pointer_transform == *previous)) {
+            writePointerTransform(marker, frame.pointer_transform);
+        }
+        previous = &frame.pointer_transform;
+        output << marker.dump() << '\n';
         for (const auto &event : frame.events) {
             output << serializeEvent(event).dump() << '\n';
         }
@@ -422,10 +484,19 @@ void InputSequenceRuntime::stopReplay() {
     replay_sequence_offset.reset();
 }
 
-void InputSequenceRuntime::prepareFrame(InputState &input) {
+void InputSequenceRuntime::prepareFrame(InputState &input, const PointerTransform &live) {
     if (!isReplaying() || replayComplete()) {
+        input.setPointerTransform(live);
         return;
     }
+    // The recorded conversion, not this machine's: the pixels a replay reports
+    // are the pixels the recording saw.
+    auto recorded = sequence.frames()[replay_frame].pointer_transform;
+    if (!recorded.framebufferKnown()) {
+        recorded.framebuffer_width = live.framebuffer_width;
+        recorded.framebuffer_height = live.framebuffer_height;
+    }
+    input.setPointerTransform(recorded);
     const auto &source = sequence.frames()[replay_frame].events;
     std::vector<InputEvent> events{source.begin(), source.end()};
     if (!events.empty()) {
@@ -449,9 +520,9 @@ void InputSequenceRuntime::recordFrame(const FrameInput &frame_input) {
         if (!frame_input.pose_samples.empty()) {
             throw std::runtime_error("start_input_record does not support pose action '" +
                                      frame_input.pose_samples.front().action_name +
-                                     "' in pelican.input_seq v1");
+                                     "' in pelican.input_seq v2");
         }
-        sequence.appendFrame(frame_input.ordered_events);
+        sequence.appendFrame(frame_input.ordered_events, frame_input.pointer_transform);
     }
 }
 

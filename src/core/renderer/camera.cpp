@@ -388,6 +388,26 @@ void Camera::setDir(glm::vec3 new_dir) {
 
 glm::mat4 Camera::getVPMatrix() const { return projection_matrix * glm::lookAt(pos, pos + dir, up); }
 
+Camera::PixelRay Camera::rayThroughPixel(glm::vec2 position_px) const {
+    // Double precision: a far plane a thousand near planes away leaves little
+    // of a float's mantissa for the far point.
+    const glm::dmat4 inverse_projection = glm::inverse(glm::dmat4{projection_matrix});
+    const glm::dmat4 inverse_view = glm::inverse(glm::dmat4{getViewMatrix()});
+    const double ndc_x = 2.0 * static_cast<double>(position_px.x) / viewport_width - 1.0;
+    const double ndc_y = 2.0 * static_cast<double>(position_px.y) / viewport_height - 1.0;
+    // Depth is [0, 1] (the *_ZO projections): 0 on the near plane, 1 on the far.
+    const auto unproject = [&](double depth) {
+        const glm::dvec4 view_point = inverse_projection * glm::dvec4{ndc_x, ndc_y, depth, 1.0};
+        return glm::dvec3{inverse_view * (view_point / view_point.w)};
+    };
+    const auto near_point = unproject(0.0);
+    const auto far_point = unproject(1.0);
+    return PixelRay{
+        .origin = glm::vec3{near_point},
+        .direction = glm::vec3{glm::normalize(far_point - near_point)},
+    };
+}
+
 void Camera::setScreenSize(uint32_t width, uint32_t height) {
     if (width == 0 || height == 0) throw std::runtime_error("camera viewport must be non-zero");
     viewport_width = width;

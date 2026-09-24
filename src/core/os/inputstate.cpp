@@ -53,6 +53,48 @@ std::optional<GamepadAxis> gamepadAxisFromName(std::string_view name) noexcept {
                : std::optional<GamepadAxis>{static_cast<GamepadAxis>(it - gamepad_axis_names.begin())};
 }
 
+PointerTransform pointerTransformFor(std::uint32_t framebuffer_width, std::uint32_t framebuffer_height,
+                                     std::uint32_t logical_width, std::uint32_t logical_height) noexcept {
+    PointerTransform transform;
+    transform.framebuffer_width = framebuffer_width;
+    transform.framebuffer_height = framebuffer_height;
+    if (framebuffer_width != 0 && logical_width != 0) {
+        transform.scale_x = static_cast<float>(framebuffer_width) / static_cast<float>(logical_width);
+    }
+    if (framebuffer_height != 0 && logical_height != 0) {
+        transform.scale_y = static_cast<float>(framebuffer_height) / static_cast<float>(logical_height);
+    }
+    return transform;
+}
+
+vec2 windowToFramebufferPx(const PointerTransform &transform, float window_x, float window_y) noexcept {
+    return vec2{window_x * transform.scale_x, window_y * transform.scale_y};
+}
+
+PointerState pointerStateFor(const PointerTransform &transform, float window_x, float window_y,
+                             bool position_known) noexcept {
+    PointerState state;
+    state.position_px = windowToFramebufferPx(transform, window_x, window_y);
+    state.inside = position_known && transform.framebufferKnown() &&
+                   state.position_px.x >= 0.0f && state.position_px.y >= 0.0f &&
+                   state.position_px.x < static_cast<float>(transform.framebuffer_width) &&
+                   state.position_px.y < static_cast<float>(transform.framebuffer_height);
+    return state;
+}
+
+CursorMode effectiveCursorMode(CursorMode requested, bool embedded) noexcept {
+    return requested == CursorMode::locked && embedded ? CursorMode::normal : requested;
+}
+
+std::string_view cursorModeName(CursorMode mode) noexcept {
+    switch (mode) {
+    case CursorMode::normal: return "normal";
+    case CursorMode::hidden: return "hidden";
+    case CursorMode::locked: return "locked";
+    }
+    return "normal";
+}
+
 bool isValidKeyCode(KeyCode code) noexcept {
     using KeyCodeValue = std::underlying_type_t<KeyCode>;
     return static_cast<KeyCodeValue>(code) < static_cast<KeyCodeValue>(KeyCode::Count);
@@ -235,24 +277,24 @@ InputSnapshot InputConsumptionMask::apply(const InputSnapshot &source) const noe
 }
 
 FrameInput::FrameInput(std::span<const InputEvent> events, std::span<const InputPoseSample> poses,
-                       const InputSnapshot &frame_snapshot,
+                       const InputSnapshot &frame_snapshot, const PointerTransform &frame_pointer_transform,
                        std::shared_ptr<internal::FrameInputBorrowState> state) noexcept
     : ordered_events(events), pose_samples(poses), snapshot(frame_snapshot),
-      borrow_state(std::move(state)),
+      pointer_transform(frame_pointer_transform), borrow_state(std::move(state)),
       borrowed_generation(borrow_state ? borrow_state->generation : 0) {
     acquire();
 }
 
 FrameInput::FrameInput(const FrameInput &other) noexcept
     : ordered_events(other.ordered_events), pose_samples(other.pose_samples), snapshot(other.snapshot),
-      borrow_state(other.borrow_state),
+      pointer_transform(other.pointer_transform), borrow_state(other.borrow_state),
       borrowed_generation(other.borrowed_generation) {
     acquire();
 }
 
 FrameInput::FrameInput(FrameInput &&other) noexcept
     : ordered_events(other.ordered_events), pose_samples(other.pose_samples), snapshot(other.snapshot),
-      borrow_state(std::move(other.borrow_state)),
+      pointer_transform(other.pointer_transform), borrow_state(std::move(other.borrow_state)),
       borrowed_generation(other.borrowed_generation) {
     other.ordered_events = {};
     other.pose_samples = {};
@@ -267,6 +309,7 @@ FrameInput &FrameInput::operator=(const FrameInput &other) noexcept {
     ordered_events = other.ordered_events;
     pose_samples = other.pose_samples;
     snapshot = other.snapshot;
+    pointer_transform = other.pointer_transform;
     borrow_state = other.borrow_state;
     borrowed_generation = other.borrowed_generation;
     acquire();
@@ -281,6 +324,7 @@ FrameInput &FrameInput::operator=(FrameInput &&other) noexcept {
     ordered_events = other.ordered_events;
     pose_samples = other.pose_samples;
     snapshot = other.snapshot;
+    pointer_transform = other.pointer_transform;
     borrow_state = std::move(other.borrow_state);
     borrowed_generation = other.borrowed_generation;
     other.ordered_events = {};
@@ -463,6 +507,12 @@ void InputStateCore::beginFrame() {
     }
 
     snapshot = next_snapshot;
+    frame_pointer_transform = next_pointer_transform;
+    frame_pointer = pointerStateFor(frame_pointer_transform, mouse_x, mouse_y, mouse_position_known);
+}
+
+void InputStateCore::setPointerTransform(const PointerTransform &transform) noexcept {
+    next_pointer_transform = transform;
 }
 
 void InputStateCore::clear() {
@@ -482,6 +532,7 @@ void InputStateCore::clear() {
     mouse_x = 0.0f;
     mouse_y = 0.0f;
     mouse_position_known = false;
+    frame_pointer = {};
     frame_active = false;
     actions_frozen = false;
 }
@@ -492,7 +543,15 @@ const InputSnapshot &InputStateCore::currentSnapshot() const noexcept {
 
 FrameInput InputStateCore::currentFrameInput() const noexcept {
     assert(frame_active && "FrameInput is only available after beginFrame");
-    return FrameInput{frame_events, frame_pose_samples, snapshot, borrow_state};
+    return FrameInput{frame_events, frame_pose_samples, snapshot, frame_pointer_transform, borrow_state};
+}
+
+const PointerTransform &InputStateCore::pointerTransform() const noexcept {
+    return frame_pointer_transform;
+}
+
+const PointerState &InputStateCore::pointer() const noexcept {
+    return frame_pointer;
 }
 
 void InputStateCore::consumeControlForActions(KeyCode code) noexcept {
@@ -551,6 +610,10 @@ void InputState::queuePoseSamples(std::vector<InputPoseSample> samples) {
     core.queuePoseSamples(std::move(samples));
 }
 
+void InputState::setPointerTransform(const PointerTransform &transform) noexcept {
+    core.setPointerTransform(transform);
+}
+
 void InputState::beginFrame() {
     core.beginFrame();
 }
@@ -565,6 +628,14 @@ const InputSnapshot &InputState::currentSnapshot() const noexcept {
 
 FrameInput InputState::currentFrameInput() const noexcept {
     return core.currentFrameInput();
+}
+
+const PointerTransform &InputState::pointerTransform() const noexcept {
+    return core.pointerTransform();
+}
+
+const PointerState &InputState::pointer() const noexcept {
+    return core.pointer();
 }
 
 void InputState::consumeControlForActions(KeyCode code) noexcept {

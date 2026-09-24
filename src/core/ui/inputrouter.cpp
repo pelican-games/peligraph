@@ -115,11 +115,19 @@ RouteFrameResult InputRouter::routeFrameInput(const FrameInput &input, const Wid
                                               std::span<const WidgetId> traversal, const ViewportTransform &viewport,
                                               const PointerHandler &handler) {
     std::vector<UiPointerEvent> converted;
-    PointI position{static_cast<std::int32_t>(input.snapshot.mouse_x), static_cast<std::int32_t>(input.snapshot.mouse_y)};
+    // Cursor events carry window coordinates; the viewport is in framebuffer
+    // pixels. The frame's pointer transform is the one conversion the public
+    // pointer uses too (GP-4), so a HiDPI window and a replay made on one
+    // route the same pixels.
+    const auto toPx = [&](float window_x, float window_y) {
+        const auto px = windowToFramebufferPx(input.pointer_transform, window_x, window_y);
+        return PointI{static_cast<std::int32_t>(px.x), static_cast<std::int32_t>(px.y)};
+    };
+    PointI position = toPx(input.snapshot.mouse_x, input.snapshot.mouse_y);
     for (const auto &event : input.ordered_events) {
         UiPointerEvent out{.event_seq = event.event_seq, .pointer_id = 0, .position_px = position};
         if (event.type == InputEvent::Type::cursor_move) {
-            position = {static_cast<std::int32_t>(event.mouse_x), static_cast<std::int32_t>(event.mouse_y)};
+            position = toPx(event.mouse_x, event.mouse_y);
             out.position_px = position;
             out.kind = PointerKind::Move;
         } else if (event.type == InputEvent::Type::button &&

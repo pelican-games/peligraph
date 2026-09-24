@@ -222,6 +222,10 @@ constexpr std::array public_api_manifest{
     ScenePublicApiManifestEntry{"UiContext", "[[nodiscard]] UiWriteResult setText(std::string_view path,std::string_view text)const", "nonparticipant.ui-document"},
     ScenePublicApiManifestEntry{"UiContext", "[[nodiscard]] UiWriteResult setVisible(std::string_view path,bool visible)const", "nonparticipant.ui-document"},
     ScenePublicApiManifestEntry{"UiContext", "[[nodiscard]] UiWriteResult setValue(std::string_view path,float value)const", "nonparticipant.ui-document"},
+    // GP-4: the cursor mode belongs to the window, not to a scene. A request
+    // made while a scene loads is applied at the next frame whatever the
+    // load's outcome.
+    ScenePublicApiManifestEntry{"InputContext", "void setCursorMode(CursorMode mode)const", "nonparticipant.window-cursor"},
     ScenePublicApiManifestEntry{"GameContext", "double random()", "covered.rng-sequence"},
     ScenePublicApiManifestEntry{"GameContext", "int randomInt(int min,int max)", "covered.rng-sequence"},
     ScenePublicApiManifestEntry{"GameContext", "float randomFloat(float min,float max)", "covered.rng-sequence"},

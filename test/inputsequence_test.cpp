@@ -102,13 +102,13 @@ TEST_CASE("pelican.input_seq v1 rejects pose record and replay at start with the
         runtime.startRecording(temp, 60.0, pose_actions),
         Catch::Matchers::ContainsSubstring("start_input_record") &&
             Catch::Matchers::ContainsSubstring("aim_left") &&
-            Catch::Matchers::ContainsSubstring("pelican.input_seq v1"));
+            Catch::Matchers::ContainsSubstring("pelican.input_seq v2"));
     REQUIRE_FALSE(runtime.isRecording());
 
     REQUIRE_THROWS_WITH(
         runtime.startReplay(temp, pose_actions),
         Catch::Matchers::ContainsSubstring("start_input_replay") &&
             Catch::Matchers::ContainsSubstring("aim_left") &&
-            Catch::Matchers::ContainsSubstring("pelican.input_seq v1"));
+            Catch::Matchers::ContainsSubstring("pelican.input_seq v2"));
     REQUIRE_FALSE(runtime.isReplaying());
 }

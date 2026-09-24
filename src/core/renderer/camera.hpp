@@ -121,6 +121,17 @@ DECLARE_MODULE(Camera) {
     glm::mat4 getVPMatrix() const;
     glm::mat4 getProjectionMatrix() const { return projection_matrix; }
     glm::mat4 getViewMatrix() const { return glm::lookAt(pos, pos + dir, up); }
+
+    // GP-4: the world ray through a framebuffer pixel position, by the inverse
+    // of the projection and the view this camera draws the frame with. Pixel
+    // (0, 0) is the viewport's top-left corner and +y is down, the way the
+    // flat frame maps NDC to the framebuffer (gizmo.cpp projectPoint). The
+    // origin lies on the near plane; the direction is normalized.
+    struct PixelRay {
+        glm::vec3 origin{0.0f};
+        glm::vec3 direction{0.0f, 0.0f, -1.0f};
+    };
+    PixelRay rayThroughPixel(glm::vec2 position_px) const;
 };
 
 } // namespace Pelican

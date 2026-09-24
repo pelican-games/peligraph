@@ -14,10 +14,12 @@
 #endif
 #include "../ecs/predefined/transform.hpp"
 #include "../gamelogic/behaviorarena.hpp"
+#include "../launchconfig.hpp"
 #include "../loader/scene.hpp"
 #include "../loader/effecttransaction.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../log.hpp"
+#include "../os/inputstate.hpp"
 #include "../persistence/persistence.hpp"
 #if PELICAN_WITH_PHYSICS
 #include "../phys/physworld.hpp"
@@ -28,6 +30,7 @@
 #include "../ui/module.hpp"
 #include "valuegraph.hpp"
 
+#include <cmath>
 #include <optional>
 #include <type_traits>
 #include <utility>
@@ -432,6 +435,28 @@ std::optional<phys::ShapeCastQueryHit> PhysicsContext::shapeCastClosest(
 
 void RenderContext::setCamera(std::string_view name) const {
     GET_MODULE(Camera).setActiveCamera(name);
+}
+
+Resolved<phys::Ray, RenderError> RenderContext::screenRay(vec2 position_px) const {
+    if (!std::isfinite(position_px.x) || !std::isfinite(position_px.y)) {
+        return RenderError::screen_position_invalid;
+    }
+    // An XR frame draws each eye from its own view (openxrviewspace.cpp);
+    // only the flat frame is one camera over the whole framebuffer.
+    if (GET_MODULE(EngineLaunchConfig).xr_active) return RenderError::screen_ray_unavailable;
+    const auto ray = GET_MODULE(Camera).rayThroughPixel(glm::vec2{position_px.x, position_px.y});
+    phys::Ray result;
+    result.origin = vec3{ray.origin.x, ray.origin.y, ray.origin.z};
+    result.direction = vec3{ray.direction.x, ray.direction.y, ray.direction.z};
+    return result;
+}
+
+PointerState InputContext::pointer() const {
+    return GET_MODULE(InputState).pointer();
+}
+
+void InputContext::setCursorMode(CursorMode mode) const {
+    GET_MODULE(InputState).requestCursorMode(mode);
 }
 
 double GameContext::random() {

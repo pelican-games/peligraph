@@ -9,6 +9,7 @@
 #include "events.hpp"
 #include "gameobjects.hpp"
 #include "object_ref.hpp"
+#include "render_error.hpp"
 #include "ui_write.hpp"
 #include "userinput.hpp"
 #include <handle.hpp>
@@ -159,6 +160,19 @@ class PELICAN_API RenderContext {
     void debugText(int x, int y, std::string_view text,
                    vec4 color = {1, 1, 1, 1}, int scale = 1) const;
 
+    // The world ray through a framebuffer pixel position (PointerState's
+    // position_px, or any position in the same pixels), as the active camera
+    // draws the frame: the inverse of its projection and view. The ray starts
+    // on the near plane and runs away from the camera, direction normalized.
+    // It reads the camera as it stands, so a camera moved earlier in this
+    // update is the camera the ray follows. A position outside the framebuffer
+    // still has its ray.
+    //
+    // render.screen_ray_unavailable@1 while XR is active (each eye is a view
+    // of its own, so no single ray belongs to a screen position);
+    // render.screen_position_invalid@1 for a position that is not finite.
+    Resolved<phys::Ray, RenderError> screenRay(vec2 position_px) const;
+
     // Call from the game/update thread. Values must match the task's
     // callable_record schema; invalid updates leave the previous values intact.
     // Scene activation/destruction transactions cannot modify live RT tasks.
@@ -197,6 +211,22 @@ class PELICAN_API ObjectsContext {
     Resolved<ObjectRef> resolve(std::string_view name) const;
     Resolved<GameObjectId> materialize(const ObjectRef &ref) const;
     Resolved<WorldTransform> worldTransform(const ObjectRef &ref) const;
+};
+
+// The pointer and the cursor. Reached through GameContext::input(). Actions
+// (actionPressed and the others on GameContext) stay the way to read buttons
+// and axes; the pointer is not an action because an action's axis is clamped
+// to [-1, 1] and summed over bindings, and a pixel position is neither.
+//
+// setCursorMode lands at the next frame boundary, where the window applies
+// it. A window embedded in another one (the Studio viewport of a --rpc
+// player) ignores locked and keeps the cursor normal: the lock would take
+// the host's cursor. get_status reports what was asked and what is in
+// effect under input.cursor. A run without a window has no cursor to change.
+class PELICAN_API InputContext {
+  public:
+    PointerState pointer() const;
+    void setCursorMode(CursorMode mode) const;
 };
 
 // The project's UI, written from game code. Reached through
@@ -287,6 +317,7 @@ class PELICAN_API GameContext {
     AnimationContext animation() const noexcept { return {}; }
     SaveContext save() const noexcept { return {}; }
     RenderContext render() const noexcept { return {}; }
+    InputContext input() const noexcept { return {}; }
     ObjectsContext objects() const noexcept { return {}; }
     UiContext ui() const noexcept { return UiContext{std::string_view{}}; }
     UiContext ui(std::string_view document_key) const noexcept { return UiContext{document_key}; }

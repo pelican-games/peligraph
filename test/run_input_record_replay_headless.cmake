@@ -29,10 +29,14 @@ if(NOT EXISTS "${recording_path}" OR NOT EXISTS "${record_capture}")
     message(FATAL_ERROR "input recording did not produce input_seq and capture")
 endif()
 file(READ "${recording_path}" recording)
+# GP-4: v2 records the pointer transform. Headless has no window, so the
+# content scale is 1 and the framebuffer is the --size output.
 if(NOT recording MATCHES [=["schema":"pelican.input_seq"]=] OR
-   NOT recording MATCHES [=["version":1]=] OR
-   NOT recording MATCHES [=["fps":30.0]=])
-    message(FATAL_ERROR "input_seq header is missing schema/version/fps:\n${recording}")
+   NOT recording MATCHES [=["version":2]=] OR
+   NOT recording MATCHES [=["fps":30.0]=] OR
+   NOT recording MATCHES [=["content_scale":\[1.0,1.0\]]=] OR
+   NOT recording MATCHES [=["framebuffer":\[160,90\]]=])
+    message(FATAL_ERROR "input_seq header is missing schema/version/fps/content_scale/framebuffer:\n${recording}")
 endif()
 string(REGEX MATCHALL [=[\{"frame":[0-9]+\}]=] markers "${recording}")
 list(LENGTH markers marker_count)

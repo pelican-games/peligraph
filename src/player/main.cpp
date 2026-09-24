@@ -368,11 +368,11 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     program.add_argument("--record-input")
         .default_value(std::string{})
         .metavar("path.jsonl")
-        .help("record ordered input events as pelican.input_seq v1");
+        .help("record ordered input events as pelican.input_seq v2");
     program.add_argument("--replay")
         .default_value(std::string{})
         .metavar("path.jsonl")
-        .help("replay a pelican.input_seq v1 file");
+        .help("replay a pelican.input_seq file (v2, or v1 read at content scale 1)");
     program.add_argument("--input-profile")
         .default_value(std::string{})
         .metavar("name")

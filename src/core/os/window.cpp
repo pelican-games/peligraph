@@ -307,6 +307,35 @@ vk::Extent2D Window::logicalExtent() const {
                         static_cast<uint32_t>(std::max(height, 0))};
 }
 
+PointerTransform Window::pointerTransform() const {
+    const auto framebuffer = framebufferExtent();
+    const auto logical = logicalExtent();
+    return pointerTransformFor(framebuffer.width, framebuffer.height, logical.width, logical.height);
+}
+
+CursorModeStatus Window::applyCursorMode(CursorMode requested, bool rpc) {
+    // Embedded: the Studio viewport of a --rpc player, whose window the host
+    // made a child of its own (nativewindowhost SetParent with WS_CHILD).
+    bool embedded = false;
+#ifdef _WIN32
+    if (rpc) {
+        const auto style = GetWindowLongPtrW(glfwGetWin32Window(window), GWL_STYLE);
+        embedded = (style & WS_CHILD) != 0;
+    }
+#else
+    (void)rpc;
+#endif
+    const auto effective = effectiveCursorMode(requested, embedded);
+    if (effective != applied_cursor_mode) {
+        const int glfw_mode = effective == CursorMode::locked   ? GLFW_CURSOR_DISABLED
+                              : effective == CursorMode::hidden ? GLFW_CURSOR_HIDDEN
+                                                                : GLFW_CURSOR_NORMAL;
+        glfwSetInputMode(window, GLFW_CURSOR, glfw_mode);
+        applied_cursor_mode = effective;
+    }
+    return CursorModeStatus{.requested = requested, .effective = effective, .embedded = embedded};
+}
+
 void *Window::renderDocCaptureHandle() const noexcept {
 #ifdef _WIN32
     return reinterpret_cast<void *>(glfwGetWin32Window(window));
