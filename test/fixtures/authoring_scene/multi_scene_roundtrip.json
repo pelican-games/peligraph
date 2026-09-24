@@ -1,6 +1,6 @@
 {
   "schema": "pelican.scene",
-  "version": 1,
+  "version": 2,
   "editor_envelope": {
     "read_only_metadata": ["keep", 7, true]
   },

@@ -22,6 +22,21 @@ class RenderConfigSectionUnlocated : public std::invalid_argument {
     RenderConfigSectionUnlocated();
 };
 
+// MG-2b: the authored rendering config root is a `pelican.graph` document and
+// nothing else. A root in the older form (the rendering config's own keys at
+// the root) is not read: every reader of an authored root stops on it by this
+// name. It is rewritten by hand as
+//   {"schema": "pelican.graph", "version": 1, "definitions": {},
+//    "nodes": [], "outputs": {}, "rendering": <the old root>}
+// which is the same config -- the section is read exactly as the old root was.
+inline constexpr std::string_view renderConfigLegacyRootCode =
+    "render_config.legacy_root@1";
+
+class RenderConfigLegacyRoot : public std::invalid_argument {
+  public:
+    RenderConfigLegacyRoot();
+};
+
 // WP331's byte-lossless authoring contract is deliberately separate from the
 // scene document's semantic encoder.  The root bytes remain authoritative;
 // edits replace only the selected lexical value span or insert one root member.
@@ -35,7 +50,6 @@ class AuthoredRenderConfigDocument {
 
     std::string bytes_;
     std::string digest_;
-    bool graph_root_ = false;
     bool section_located_ = false;
     bool has_features_array_ = false;
     std::size_t features_open_ = 0;
@@ -48,9 +62,12 @@ class AuthoredRenderConfigDocument {
                                           bool require_features);
 
   public:
+    // All three refuse a root that is not `pelican.graph` with
+    // RenderConfigLegacyRoot.
     static AuthoredRenderConfigDocument initialize(std::string bytes);
-    // Read-only inspection accepts a valid legacy root without features[].
-    // initialize() remains the explicit transition to the editable form.
+    // Read-only inspection accepts a graph root without features[] (or
+    // without a rendering section). initialize() remains the explicit
+    // transition to the editable form.
     static AuthoredRenderConfigDocument inspect(std::string bytes);
     static AuthoredRenderConfigDocument parse(std::string bytes);
 
@@ -70,16 +87,14 @@ class AuthoredRenderConfigDocument {
         return features_close_;
     }
 
-    // True when the root is `pelican.graph`; the section is then `rendering`.
-    bool isGraphRoot() const noexcept { return graph_root_; }
-    // A legacy root is its own section, so this is false only for a graph
-    // root whose `rendering` member is missing or not an object.
+    // False when the graph root's `rendering` member is missing or not an
+    // object.
     bool hasRenderingSection() const noexcept { return section_located_; }
 
     AuthoredRenderConfigDocument withRootValue(
         std::string_view key, std::string_view json_value) const;
-    // Writes the key where the composer reads it: the root for a legacy
-    // document or for a graph root's own keys, `rendering.<key>` otherwise.
+    // Writes the key where the composer reads it: the root for a graph
+    // root's own keys, `rendering.<key>` otherwise.
     AuthoredRenderConfigDocument withSectionValue(
         std::string_view key, std::string_view json_value) const;
 

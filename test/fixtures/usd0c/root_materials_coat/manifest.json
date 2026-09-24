@@ -14,8 +14,8 @@
     {
       "file": "scene.json",
       "schema": "pelican.scene",
-      "sha256": "b21f4f0d72b2f7ccd7456e38ce71f1b1894ad14b227ada536203e47a6ebe59f8",
-      "version": 1
+      "sha256": "1dbfff3e95b445603701cebff360a7651f8c2487a12df580abea23694a1e2b0c",
+      "version": 2
     },
     {
       "file": "textures/bcfd899348e6d036_checker_1001.png",
@@ -58,14 +58,14 @@
         "gltf": "4c225bec7494d7d4c1f975235d1b149ee2c83c3854b708766f37bdd257fca34b",
         "pelican.material": "9734724b326e35416187aaa20a3193770da87ac79a5a887d33748a642377bd35",
         "pelican.material_bindings": "450f4182844c1d4bea3a7dba741960363ba5c768a0cee75df67cc4e7921f27f1",
-        "pelican.scene": "b21f4f0d72b2f7ccd7456e38ce71f1b1894ad14b227ada536203e47a6ebe59f8",
+        "pelican.scene": "1dbfff3e95b445603701cebff360a7651f8c2487a12df580abea23694a1e2b0c",
         "png:textures/bcfd899348e6d036_checker_1001.png": "bcfd899348e6d036a6b2906f51a097ed049a483139731c83ee23b5aac16bbf7e"
       },
       "second": {
         "gltf": "4c225bec7494d7d4c1f975235d1b149ee2c83c3854b708766f37bdd257fca34b",
         "pelican.material": "9734724b326e35416187aaa20a3193770da87ac79a5a887d33748a642377bd35",
         "pelican.material_bindings": "450f4182844c1d4bea3a7dba741960363ba5c768a0cee75df67cc4e7921f27f1",
-        "pelican.scene": "b21f4f0d72b2f7ccd7456e38ce71f1b1894ad14b227ada536203e47a6ebe59f8",
+        "pelican.scene": "1dbfff3e95b445603701cebff360a7651f8c2487a12df580abea23694a1e2b0c",
         "png:textures/bcfd899348e6d036_checker_1001.png": "bcfd899348e6d036a6b2906f51a097ed049a483139731c83ee23b5aac16bbf7e"
       },
       "verified": true

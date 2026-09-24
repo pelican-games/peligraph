@@ -124,13 +124,14 @@ Json wp360aProjectJson(float up_y = 1.0f, float zfar = 1000.0f,
 void setupWp360aProject(const Wp360aSandbox &sandbox,
                         const Json &project, const Json &scene) {
     writeWp360aText(sandbox.root / "scene.json", scene.dump());
-    writeWp360aText(sandbox.root / "passes/main_rendering_config.json", "{}");
+    writeWp360aText(sandbox.root / "passes/main_rendering_config.json",
+                    R"({"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":{}})");
     GET_MODULE(PathResolver).setup(sandbox.root, false);
     GET_MODULE(ProjectSource).setProjectData(project.dump());
 }
 
 constexpr std::string_view wireScene() {
-    return R"json({"schema":"pelican.scene","version":1,"scenes":{"main":{"objects":[{"name":"WP360WireProbe","components":[{"name":"camera","type":"perspective","yfov":0.731},{"name":"behavior","type":"wp360_wire_behavior","params":{}},{"name":"light","type":"point","position":[7,8,9],"intensity":6.25,"color":[0.2,0.4,0.8]},{"name":"unknown_read_only","payload":{"identity":360}}]}]}}})json";
+    return R"json({"schema":"pelican.scene","version":2,"scenes":{"main":{"objects":[{"name":"WP360WireProbe","components":[{"name":"camera","type":"perspective","yfov":0.731},{"name":"behavior","type":"wp360_wire_behavior","params":{}},{"name":"light","type":"point","position":[7,8,9],"intensity":6.25,"color":[0.2,0.4,0.8]},{"name":"unknown_read_only","payload":{"identity":360}}]}]}}})json";
 }
 
 void ensureWireBehavior() {
@@ -263,7 +264,7 @@ TEST_CASE("WP360 resolver owns source/effective forms defaults and authored iden
 TEST_CASE("WP360 generated requests return only the named unsupported error",
           "[wp360][resolved-scene][generated][negative]") {
     const auto document = AuthoringSceneDocument::load(
-        R"json({"schema":"pelican.scene","version":1,"scenes":{"main":{"objects":[{"components":[{"name":"camera","generated":true}]}]}}})json",
+        R"json({"schema":"pelican.scene","version":2,"scenes":{"main":{"objects":[{"components":[{"name":"camera","generated":true}]}]}}})json",
         SceneRevision{1});
     try {
         (void)ResolvedSceneResolver::resolve(
@@ -280,7 +281,7 @@ TEST_CASE("WP360 generated requests return only the named unsupported error",
 TEST_CASE("WP360 physics matrix consumes the resolved collider with a named OFF error",
           "[wp360][physics][matrix]") {
     const auto document = AuthoringSceneDocument::load(
-        R"json({"schema":"pelican.scene","version":1,"scenes":{"main":{"objects":[{"name":"PhysicsProbe","components":[{"name":"collider","shape":"sphere","radius":0.375}] }]}}})json",
+        R"json({"schema":"pelican.scene","version":2,"scenes":{"main":{"objects":[{"name":"PhysicsProbe","components":[{"name":"collider","shape":"sphere","radius":0.375}] }]}}})json",
         SceneRevision{9});
     const auto resolved = ResolvedSceneResolver::resolve(
         document, SceneResolverGeneration{9});
@@ -312,7 +313,7 @@ TEST_CASE("WP360 physics matrix consumes the resolved collider with a named OFF 
 TEST_CASE("WP360 preview matrix reads resolver-completed values in every UI configuration",
           "[wp360][preview][matrix]") {
     const auto document = AuthoringSceneDocument::load(
-        R"json({"schema":"pelican.scene","version":1,"scenes":{"main":{"objects":[{"name":"PreviewProbe","components":[{"name":"camera","type":"perspective","yfov":0.731}]}]}}})json",
+        R"json({"schema":"pelican.scene","version":2,"scenes":{"main":{"objects":[{"name":"PreviewProbe","components":[{"name":"camera","type":"perspective","yfov":0.731}]}]}}})json",
         SceneRevision{10});
     const auto prepared = prepareEditorPreviewProjection(
         document, Json::array(),
@@ -345,7 +346,7 @@ TEST_CASE("WP360a case 1 accepts a target-less orbit through codec and Camera",
     ensureWp360aLogger();
     Wp360aSandbox sandbox{"orbit"};
     const auto scene = Json::parse(R"json({
-      "schema":"pelican.scene","version":1,
+      "schema":"pelican.scene","version":2,
       "scenes":{"default_scene":{"objects":[
         {"name":"OrbitNoTarget","components":[
           {"name":"camera","controller":{"type":"orbit","distance":4.0}}
@@ -368,7 +369,7 @@ TEST_CASE("WP360a case 2 preserves nondefault project up only when rotation is o
     ensureWp360aLogger();
     Wp360aSandbox sandbox{"up"};
     const auto scene = Json::parse(R"json({
-      "schema":"pelican.scene","version":1,
+      "schema":"pelican.scene","version":2,
       "scenes":{"default_scene":{"objects":[
         {"name":"NoRotation","components":[
           {"name":"transform","pos":[1,2,3]},{"name":"camera"}
@@ -397,7 +398,7 @@ TEST_CASE("WP360a case 2 preserves nondefault project up only when rotation is o
 TEST_CASE("WP360a case 3 rejects a string camera override at the merge seam",
           "[wp360a][harm-3]") {
     const auto document = AuthoringSceneDocument::load(R"json({
-      "schema":"pelican.scene","version":1,
+      "schema":"pelican.scene","version":2,
       "scenes":{"main":{"objects":[
         {"name":"Camera","components":[
           {"name":"camera","type":"perspective","yfov":0.8,"znear":0.1,"zfar":100}
@@ -426,7 +427,7 @@ TEST_CASE("WP360a case 3 rejects a string camera override at the merge seam",
 TEST_CASE("WP360a case 4 reserves only exact generated markers",
           "[wp360a][harm-4]") {
     const auto accepted = AuthoringSceneDocument::load(R"json({
-      "schema":"pelican.scene","version":1,
+      "schema":"pelican.scene","version":2,
       "scenes":{"main":{"objects":[{"components":[
         {"name":"external_false","generated":false},
         {"name":"external_null","generated":null},
@@ -442,7 +443,7 @@ TEST_CASE("WP360a case 4 reserves only exact generated markers",
 
     const auto require_reserved = [](std::string_view marker) {
         const auto document = AuthoringSceneDocument::load(
-            std::string{R"json({"schema":"pelican.scene","version":1,"scenes":{"main":{"objects":[{"components":[{"name":"external_probe",)json"} +
+            std::string{R"json({"schema":"pelican.scene","version":2,"scenes":{"main":{"objects":[{"components":[{"name":"external_probe",)json"} +
                 std::string{marker} +
                 R"json(}] }]}}})json",
             SceneRevision{1});
@@ -461,7 +462,7 @@ TEST_CASE("WP360a case 5 compares znear with the resolved project zfar once",
     ensureWp360aLogger();
     Wp360aSandbox sandbox{"camera-default"};
     const auto scene = Json::parse(R"json({
-      "schema":"pelican.scene","version":1,
+      "schema":"pelican.scene","version":2,
       "scenes":{"default_scene":{"objects":[
         {"name":"LongRange","components":[
           {"name":"camera","type":"perspective","yfov":0.5,"znear":5000}
@@ -484,7 +485,7 @@ TEST_CASE("WP360a case 6 stores inactive behavior errors and names active bind f
     ensureWp360aLogger();
     Wp360aSandbox sandbox{"inactive"};
     const auto scene = Json::parse(R"json({
-      "schema":"pelican.scene","version":1,
+      "schema":"pelican.scene","version":2,
       "scenes":{
         "active":{"objects":[]},
         "inactive":{"objects":[
@@ -519,7 +520,7 @@ TEST_CASE("WP378 inactive scene retains typed and legacy failures until two acti
     ensureWp360aLogger();
     Wp360aSandbox sandbox{"wp378-inactive"};
     auto scene = Json::parse(R"json({
-      "schema":"pelican.scene","version":1,
+      "schema":"pelican.scene","version":2,
       "scenes":{
         "active":{"objects":[]},
         "inactive":{"objects":[
@@ -590,7 +591,7 @@ TEST_CASE("WP378 inactive scene retains typed and legacy failures until two acti
 TEST_CASE("WP360a missing resolved provider is a named error with no fallback",
           "[wp360a][fallback]") {
     const auto document = AuthoringSceneDocument::load(
-        R"json({"schema":"pelican.scene","version":1,"scenes":{"main":{"objects":[]}}})json",
+        R"json({"schema":"pelican.scene","version":2,"scenes":{"main":{"objects":[]}}})json",
         SceneRevision{1});
     const EditorCommandService service{EditorCommandServiceDependencies{
         .document = [&document]() -> const AuthoringSceneDocument & {

@@ -1,4 +1,5 @@
 #include "enginefailuremodel.hpp"
+#include "render_graph_root_test_support.hpp"
 #include "engineprocess.hpp"
 #include "nativewindowhost.hpp"
 #include "viewportgeometry.hpp"
@@ -304,19 +305,22 @@ Json animgraphFramePlan(
     Json authored = readJson(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
                              "projects" / "animgraph_demo" / "passes" /
                              "main.json");
+    // MG-2b: the shipped document is a `pelican.graph` root; its features
+    // live in the `rendering` section.
+    auto &section = Pelican::renderingSectionOf(authored);
 #if PELICAN_RUNTIME_SHADER_COMPILER
     if (!shadow_directional_enabled) {
         Json retained = Json::array();
-        for (const auto &feature : authored.at("features")) {
+        for (const auto &feature : section.at("features")) {
             if (feature != "engine://features/shadow_directional.json") {
                 retained.push_back(feature);
             }
         }
-        authored["features"] = std::move(retained);
+        section["features"] = std::move(retained);
     }
 #else
     (void)shadow_directional_enabled;
-    authored["features"] = Json::array();
+    section["features"] = Json::array();
 #endif
 
     auto resolved = Pelican::resolveRenderPipeline(
@@ -433,7 +437,7 @@ const Json &planarReflectionGroupingFramePlan() {
 
         auto resolved = Pelican::resolveRenderPipeline(
             Pelican::RenderPipelineRequest{
-                .authored_config = std::move(authored),
+                .authored_config = Pelican::TestSupport::renderGraphRoot(std::move(authored)),
                 .source_name = "wp344/planar_reflection.json",
             },
             Pelican::RenderEnvironmentCapabilities{
@@ -482,7 +486,7 @@ const Wp348CubeCaptureMeasurement &wp348CubeCaptureMeasurement() {
             "engine://features/cube_capture.json";
         auto resolved = Pelican::resolveRenderPipeline(
             Pelican::RenderPipelineRequest{
-                .authored_config = std::move(authored),
+                .authored_config = Pelican::TestSupport::renderGraphRoot(std::move(authored)),
                 .source_name = "wp348/cube_capture_measurement.json",
             },
             Pelican::RenderEnvironmentCapabilities{
@@ -644,11 +648,33 @@ Json &authoredRenderingPass(Json &document, std::string_view name) {
                              std::string{name});
 }
 
+// MG-2b: the fixture is a `pelican.graph` root like every authored config.
+// Its splice carries the bloom component's `buffers`, which a graph root
+// reserves for the graph itself (the lowering refuses `rendering.buffers` by
+// name), so they reach the composition from this feature instead. Buffers are
+// not render nodes, so the 19-node block below is unchanged.
+constexpr std::string_view Wp343BloomBuffersReference =
+    "engine://features/wp343_bloom_buffers.json";
+
+std::string loadWp343Document(std::string_view reference) {
+    if (reference != Wp343BloomBuffersReference) {
+        return loadEngineDocument(reference);
+    }
+    const Json bloom = readJson(
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "src" / "core" /
+        "resources" / "features" / "bloom.json");
+    return Json{
+        {"schema", "pelican.render_feature"},
+        {"version", 1},
+        {"name", "wp343_bloom_buffers"},
+        {"runtime_shader_compiler", "optional"},
+        {"buffers", bloom.at("buffers")},
+    }.dump();
+}
+
 Json wp343GroupingAuthoredExample() {
     // P-2a-4b: start from the shipping `rendering` section through the
-    // production locator and keep this fixture a legacy root -- the splice
-    // below adds `buffers`, which a `pelican.graph` root reserves for the
-    // graph itself (the lowering refuses `rendering.buffers` by name).
+    // production locator.
     const Json shipping = readJson(
         std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
         "example" / "passes" / "main_rendering_config.json");
@@ -667,10 +693,7 @@ Json wp343GroupingAuthoredExample() {
     }
     // P-2a-2: the composite also reads the component's own `bloom.intensity`
     // runtime_f32 buffer through a resource port, so the splice carries the
-    // buffer declarations too.
-    for (const auto &buffer : bloom.at("buffers")) {
-        authored["buffers"].push_back(buffer);
-    }
+    // buffer declarations too -- through Wp343BloomBuffersReference (MG-2b).
     for (const auto &entry : bloom.at("passes")) {
         authored.at("rendering_passes").at(0).at("passes").push_back(
             entry.at("pass"));
@@ -681,7 +704,8 @@ Json wp343GroupingAuthoredExample() {
     // anchors, while the two snapshot copies sit between project render
     // passes. Replace those three detours with one ordinary authored pass so
     // the required filter-removal mutation can really collapse all 19 nodes.
-    authored["features"] = Json::array();
+    authored["features"] =
+        Json::array({std::string{Wp343BloomBuffersReference}});
     auto &targets = authored.at("render_targets");
     Json retained_targets = Json::array();
     for (auto &target : targets) {
@@ -734,6 +758,7 @@ Json wp343GroupingAuthoredExample() {
         }
     }
     passes = std::move(retained);
+    authored = Pelican::TestSupport::renderGraphRoot(std::move(authored));
     auto &forward = authoredRenderingPass(authored, "forward_transparent");
     forward["screen_inputs"] = {
         {"opaque_color", "lit_color"},
@@ -781,7 +806,7 @@ Json resolvedWp343Example(
             .graph_variant = Pelican::RenderPipelineGraphVariant::flat,
         },
         Pelican::RenderPipelineResolveDependencies{
-            .load_feature_json = loadEngineDocument,
+            .load_feature_json = loadWp343Document,
             .load_pipeline_json = loadEngineDocument,
         });
     return resolvedFramePlan(std::move(resolved), label);
@@ -819,7 +844,8 @@ legacyRegionBoundaryCases() {
 const Json &legacyRegionBoundaryFramePlan() {
     static const Json wire = [] {
         Json authored = wp343GroupingAuthoredExample();
-        auto &passes = authored.at("rendering_passes").at(0).at("passes");
+        auto &passes = Pelican::renderingSectionOf(authored)
+                           .at("rendering_passes").at(0).at("passes");
         const std::size_t required = legacyRegionBoundaryCases().size() * 2;
         if (passes.size() < required) {
             throw std::runtime_error(
@@ -846,7 +872,7 @@ const Json &legacyRegionBoundaryFramePlan() {
                 .graph_variant = Pelican::RenderPipelineGraphVariant::flat,
             },
             Pelican::RenderPipelineResolveDependencies{
-                .load_feature_json = loadEngineDocument,
+                .load_feature_json = loadWp343Document,
                 .load_pipeline_json = loadEngineDocument,
             });
         return resolvedFramePlan(std::move(resolved),

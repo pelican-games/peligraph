@@ -63,11 +63,11 @@ void writeText(const std::filesystem::path &path, std::string_view value) {
 void configureProject(const std::filesystem::path &root, const nlohmann::json &models) {
     writeText(root / "assets.json",
               nlohmann::json{{"schema", "pelican.asset_data"},
-                             {"version", 1},
+                             {"version", 2},
                              {"models", models}}
                   .dump());
     writeText(root / "scene.json",
-              R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+              R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
     GET_MODULE(PathResolver).setup(root, false);
     GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{{"basic_config", {
         {"scene_data_json", "scene.json"}, {"asset_data_json", "assets.json"}}}}.dump());
@@ -173,8 +173,8 @@ TEST_CASE("Scene collision follows model reload additions changes and removals",
     }));
     std::filesystem::create_directories(sandbox.root / "passes");
     writeText(sandbox.root / "passes/main_rendering_config.json",
-        R"({"pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},"features":[]})");
-    writeText(sandbox.root / "scene.json", R"({"schema":"pelican.scene","version":1,
+        R"({"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":{"pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},"features":[]}})");
+    writeText(sandbox.root / "scene.json", R"({"schema":"pelican.scene","version":2,
         "scenes":{"default_scene":{"objects":[{"name":"target","components":[
         {"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
         {"name":"simplemodelview","model":"target_model"}]}]}}})");

@@ -103,7 +103,7 @@ class AuthoringSceneDocument {
     };
 
     SceneRevision revision_{};
-    int format_version_ = 1;
+    int format_version_ = 2;
     bool uses_prefabs_ = false;
     nlohmann::json raw_document_;
     std::vector<std::string> warnings_;

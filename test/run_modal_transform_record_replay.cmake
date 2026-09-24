@@ -33,13 +33,13 @@ file(WRITE "${project_dir}/project.json" [=[
 }
 ]=])
 file(WRITE "${project_dir}/assets/asset_data.json"
-    "{\"schema\":\"pelican.asset_data\",\"version\":1,\"models\":[]}\n")
+    "{\"schema\":\"pelican.asset_data\",\"version\":2,\"models\":[]}\n")
 file(WRITE "${project_dir}/ui/empty.json"
     "{\"schema\":\"pelican.ui\",\"version\":1,\"key\":\"empty\",\"root\":{\"id\":\"root\",\"type\":\"panel\"}}\n")
 file(WRITE "${project_dir}/scenes/main.scene.json" [=[
 {
   "schema": "pelican.scene",
-  "version": 1,
+  "version": 2,
   "scenes": {
     "default_scene": {
       "objects": [

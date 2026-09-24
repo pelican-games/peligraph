@@ -57,13 +57,13 @@ int main(int argc, char **argv) {
         write(root / "project.json", project.dump(2) + "\n");
         write(root / "assets.json", R"json({
   "schema": "pelican.asset_data",
-  "version": 1,
+  "version": 2,
   "models": [
     {"name":"character","path":"assets/wp123_expression.vrm"}
   ]
 })json");
         write(root / "scene.json", R"json({
-  "schema":"pelican.scene","version":1,
+  "schema":"pelican.scene","version":2,
   "scenes":{"default_scene":{"objects":[
     {"name":"VrmExpressionPreview","components":[
       {"name":"transform","pos":[-0.72,0,0],"rotation":[0,0,0,1],"scale":[0.9,0.9,0.9]},

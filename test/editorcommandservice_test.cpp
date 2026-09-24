@@ -174,24 +174,27 @@ DigestV1 digestFor(std::string_view bytes) {
     };
 }
 
-ImportSceneSnapshotRequestV1 importRequest(
-    const ExportSceneSnapshotResponseV1 &snapshot) {
-    return ImportSceneSnapshotRequestV1{
+// MG-2b: SnapshotV1 is gone; these tests run the snapshot contract through
+// SnapshotV2, the one form, which keeps SNAPSHOT0's gates.
+ImportSceneSnapshotRequestV2 importRequest(
+    const ExportSceneSnapshotResponseV2 &snapshot) {
+    return ImportSceneSnapshotRequestV2{
         .schema_version = snapshot.schema_version,
         .semantic_scene_bytes = snapshot.semantic_scene_bytes,
         .digest = snapshot.digest,
         .current_scene_id = snapshot.current_scene_id,
+        .prefab_closure = snapshot.prefab_closure,
     };
 }
 
-nlohmann::json importRequestJson(
-    const ImportSceneSnapshotRequestV1 &request) {
+// The wire form of an import request built from the wire form of an export.
+nlohmann::json importRequestJson(const nlohmann::ordered_json &exported) {
     return {
-        {"schema_version", request.schema_version},
-        {"semantic_scene_bytes", request.semantic_scene_bytes},
-        {"digest", {{"algorithm", request.digest.algorithm},
-                    {"hex", request.digest.hex}}},
-        {"current_scene_id", request.current_scene_id},
+        {"schema_version", exported.at("schema_version")},
+        {"semantic_scene_bytes", exported.at("semantic_scene_bytes")},
+        {"digest", exported.at("digest")},
+        {"current_scene_id", exported.at("current_scene_id")},
+        {"prefab_closure", exported.at("prefab_closure")},
     };
 }
 
@@ -654,7 +657,7 @@ TEST_CASE("get_components publishes recursive v3 component catalog nodes",
     }
     const nlohmann::json source{
         {"schema", "pelican.scene"},
-        {"version", 1},
+        {"version", 2},
         {"scenes",
          {{"main",
            {{"objects",
@@ -764,7 +767,7 @@ TEST_CASE("RPC declaration indices follow order after authoring id diverges on i
     REQUIRE(components.at("declaration_index") == 1);
 }
 
-TEST_CASE("ExportSceneSnapshot V1 fixture uses semantic bytes and their real sha256",
+TEST_CASE("ExportSceneSnapshot fixture uses semantic bytes and their real sha256",
           "[editor-command][snapshot][wp154]") {
     const auto fixture = readJson(fixturePath("export_scene_snapshot_v1.json"));
     const auto document = AuthoringSceneDocument::load(fixture.at("document").dump(), SceneRevision{42});
@@ -778,8 +781,13 @@ TEST_CASE("ExportSceneSnapshot V1 fixture uses semantic bytes and their real sha
     const EditorCommandImGuiFakeAdapter imgui{service};
 
     const auto rpc_response = rpc.exportSceneSnapshot(fixture.at("request"));
-    const auto typed_response = imgui.exportSceneSnapshot({.schema_version = 1, .allow_pending = false});
-    REQUIRE(nlohmann::json(rpc_response) == fixture.at("expected_response"));
+    const auto typed_response = imgui.exportSceneSnapshotV2({.schema_version = 2, .allow_pending = false});
+    // The closure is SnapshotV2's own (checked by the WP362 tests); the rest
+    // of the response is the fixture's.
+    auto without_closure = nlohmann::json(rpc_response);
+    REQUIRE(without_closure.at("prefab_closure").at("scenes").size() == 1);
+    without_closure.erase("prefab_closure");
+    REQUIRE(without_closure == fixture.at("expected_response"));
     REQUIRE(rpc_response.dump() == editorQueryJson(typed_response).dump());
     REQUIRE(typed_response.semantic_scene_bytes ==
             test_support::authoring(document).encodeSemantic());
@@ -791,7 +799,7 @@ TEST_CASE("ExportSceneSnapshot V1 fixture uses semantic bytes and their real sha
     REQUIRE(maxSceneSnapshotBytes == 64U * 1024U * 1024U);
 }
 
-TEST_CASE("ExportSceneSnapshot V1 validates strict request fields and pending state",
+TEST_CASE("ExportSceneSnapshot validates strict request fields and pending state",
           "[editor-command][snapshot][negative][wp154]") {
     const auto fixture = readJson(fixturePath("export_scene_snapshot_v1.json"));
     const auto document = AuthoringSceneDocument::load(fixture.at("document").dump(), SceneRevision{8});
@@ -807,25 +815,25 @@ TEST_CASE("ExportSceneSnapshot V1 validates strict request fields and pending st
     }};
     const EditorCommandRpcAdapter rpc{busy_service};
 
-    REQUIRE(errorCode([&] { (void)rpc.exportSceneSnapshot({{"schema_version", 1}}); }) ==
+    REQUIRE(errorCode([&] { (void)rpc.exportSceneSnapshot({{"schema_version", 2}}); }) ==
             EditorCommandErrorCode::SnapshotBusy);
-    const auto allowed = rpc.exportSceneSnapshot({{"schema_version", 1}, {"allow_pending", true}});
+    const auto allowed = rpc.exportSceneSnapshot({{"schema_version", 2}, {"allow_pending", true}});
     REQUIRE(allowed.at("pending_ticket_ids") == nlohmann::ordered_json::array({"ticket-7"}));
     REQUIRE(allowed.at("preview_epoch") == 9);
 
     REQUIRE(errorCode([&] { (void)rpc.exportSceneSnapshot({{"schema_version", 3}}); }) ==
             EditorCommandErrorCode::UnsupportedSnapshotVersion);
-    REQUIRE(errorCode([&] { (void)rpc.exportSceneSnapshot({{"schema_version", 1.0}}); }) ==
+    REQUIRE(errorCode([&] { (void)rpc.exportSceneSnapshot({{"schema_version", 2.0}}); }) ==
             EditorCommandErrorCode::InvalidParams);
     REQUIRE(errorCode([&] {
-                (void)rpc.exportSceneSnapshot({{"schema_version", 1}, {"allow_pending", nullptr}});
+                (void)rpc.exportSceneSnapshot({{"schema_version", 2}, {"allow_pending", nullptr}});
             }) == EditorCommandErrorCode::InvalidParams);
     REQUIRE(errorCode([&] {
-                (void)rpc.exportSceneSnapshot({{"schema_version", 1}, {"unknown", false}});
+                (void)rpc.exportSceneSnapshot({{"schema_version", 2}, {"unknown", false}});
             }) == EditorCommandErrorCode::InvalidParams);
 }
 
-TEST_CASE("ExportSceneSnapshot V1 rejects semantic payloads over 64 MiB",
+TEST_CASE("ExportSceneSnapshot rejects semantic payloads over 64 MiB",
           "[editor-command][snapshot][negative][wp154]") {
     auto oversized_document = readJson(fixturePath("export_scene_snapshot_v1.json")).at("document");
     oversized_document["padding"] = std::string(maxSceneSnapshotBytes, 'x');
@@ -837,12 +845,12 @@ TEST_CASE("ExportSceneSnapshot V1 rejects semantic payloads over 64 MiB",
         .snapshot_state = [] { return EditorSnapshotState{}; },
     }};
 
-    const ExportSceneSnapshotRequestV1 request{.schema_version = 1};
-    const auto code = errorCode([&] { (void)service.exportSceneSnapshot(request); });
+    const ExportSceneSnapshotRequestV2 request{.schema_version = 2};
+    const auto code = errorCode([&] { (void)service.exportSceneSnapshotV2(request); });
     REQUIRE(code == EditorCommandErrorCode::SnapshotTooLarge);
 }
 
-TEST_CASE("ImportSceneSnapshot V1 round trips all semantic bytes with fresh identities",
+TEST_CASE("ImportSceneSnapshot round trips all semantic bytes with fresh identities",
           "[editor-command][snapshot][import][roundtrip][wp168]") {
     const auto source = AuthoringSceneDocument::load(
         readJson(authoringFixturePath()).dump(), SceneRevision{42});
@@ -851,10 +859,13 @@ TEST_CASE("ImportSceneSnapshot V1 round trips all semantic bytes with fresh iden
         .resolved_scene = explicitResolvedProvider(source),
         .current_scene_id = [] { return std::string{"main"}; },
     }};
-    const auto exported = source_service.exportSceneSnapshot({});
+    const EditorCommandRpcAdapter source_rpc{source_service};
+    const auto exported = source_service.exportSceneSnapshotV2({});
+    const auto exported_json = source_rpc.exportSceneSnapshot(
+        {{"schema_version", 2}, {"allow_pending", false}});
 
     auto target = AuthoringSceneDocument::load(
-        R"({"schema":"pelican.scene","version":1,"scenes":{"main":{"objects":[]}}})",
+        R"({"schema":"pelican.scene","version":2,"scenes":{"main":{"objects":[]}}})",
         SceneRevision{7});
     std::string target_scene = "main";
     std::size_t import_calls = 0;
@@ -862,8 +873,10 @@ TEST_CASE("ImportSceneSnapshot V1 round trips all semantic bytes with fresh iden
         .document = [&target]() -> const AuthoringSceneDocument & { return target; },
         .resolved_scene = explicitResolvedProvider(target),
         .current_scene_id = [&target_scene] { return target_scene; },
-        .import_scene_snapshot =
-            [&](std::string_view bytes, std::string_view current_scene_id) {
+        .import_scene_snapshot_versioned =
+            [&](std::string_view bytes, std::string_view current_scene_id,
+                std::uint64_t schema_version) {
+                REQUIRE(schema_version == 2);
                 ++import_calls;
                 target = AuthoringSceneDocument::load(
                     bytes, SceneRevision{target.revision().value + 1U}, 1000);
@@ -880,7 +893,7 @@ TEST_CASE("ImportSceneSnapshot V1 round trips all semantic bytes with fresh iden
     EditorCommandRpcAdapter target_rpc{target_service};
 
     const auto response =
-        target_rpc.importSceneSnapshot(importRequestJson(importRequest(exported)));
+        target_rpc.importSceneSnapshot(importRequestJson(exported_json));
     REQUIRE(response.at("status") == "imported");
     REQUIRE(response.at("committed") == true);
     REQUIRE(response.at("scene_revision") == 8);
@@ -891,7 +904,7 @@ TEST_CASE("ImportSceneSnapshot V1 round trips all semantic bytes with fresh iden
             "persistence_write_failed@1");
     REQUIRE(import_calls == 1);
 
-    const auto round_tripped = target_service.exportSceneSnapshot({});
+    const auto round_tripped = target_service.exportSceneSnapshotV2({});
     REQUIRE(round_tripped.semantic_scene_bytes == exported.semantic_scene_bytes);
     REQUIRE(round_tripped.digest.algorithm == exported.digest.algorithm);
     REQUIRE(round_tripped.digest.hex == exported.digest.hex);
@@ -922,10 +935,10 @@ TEST_CASE("ImportSceneSnapshot V1 round trips all semantic bytes with fresh iden
     REQUIRE(target_objects.front().authoring_object_id.value == 1000);
 }
 
-TEST_CASE("ImportSceneSnapshot V1 enforces five ordered gates without publication",
+TEST_CASE("ImportSceneSnapshot enforces five ordered gates without publication",
           "[editor-command][snapshot][import][negative][fault][wp168]") {
     auto target = AuthoringSceneDocument::load(
-        R"({"schema":"pelican.scene","version":1,"scenes":{"main":{"objects":[]}}})",
+        R"({"schema":"pelican.scene","version":2,"scenes":{"main":{"objects":[]}}})",
         SceneRevision{11});
     const auto source = AuthoringSceneDocument::load(
         readJson(authoringFixturePath()).dump(), SceneRevision{21});
@@ -934,15 +947,16 @@ TEST_CASE("ImportSceneSnapshot V1 enforces five ordered gates without publicatio
         .resolved_scene = explicitResolvedProvider(source),
         .current_scene_id = [] { return std::string{"main"}; },
     }};
-    auto valid = importRequest(source_service.exportSceneSnapshot({}));
+    auto valid = importRequest(source_service.exportSceneSnapshotV2({}));
 
     bool inject_fault = false;
     std::size_t import_calls = 0;
     EditorCommandService target_service{EditorCommandServiceDependencies{
         .document = [&target]() -> const AuthoringSceneDocument & { return target; },
+        .resolved_scene = explicitResolvedProvider(target),
         .current_scene_id = [] { return std::string{"main"}; },
-        .import_scene_snapshot =
-            [&](std::string_view bytes, std::string_view) {
+        .import_scene_snapshot_versioned =
+            [&](std::string_view bytes, std::string_view, std::uint64_t) {
                 ++import_calls;
                 if (inject_fault) {
                     throw std::runtime_error("injected import publication fault");
@@ -963,22 +977,22 @@ TEST_CASE("ImportSceneSnapshot V1 enforces five ordered gates without publicatio
     };
 
     auto unsupported = valid;
-    unsupported.schema_version = 2;
+    unsupported.schema_version = 3;
     unsupported.semantic_scene_bytes.assign(maxSceneSnapshotBytes + 1U, 'x');
-    REQUIRE(errorCode([&] { (void)target_service.importSceneSnapshot(unsupported); }) ==
+    REQUIRE(errorCode([&] { (void)target_service.importSceneSnapshotV2(unsupported); }) ==
             EditorCommandErrorCode::UnsupportedSnapshotVersion);
     require_unpublished();
 
     auto oversized = valid;
     oversized.semantic_scene_bytes.assign(maxSceneSnapshotBytes + 1U, 'x');
     oversized.digest.hex = "wrong";
-    REQUIRE(errorCode([&] { (void)target_service.importSceneSnapshot(oversized); }) ==
+    REQUIRE(errorCode([&] { (void)target_service.importSceneSnapshotV2(oversized); }) ==
             EditorCommandErrorCode::SnapshotTooLarge);
     require_unpublished();
 
     auto mismatched = valid;
     mismatched.digest.hex = std::string(64, '0');
-    REQUIRE(errorCode([&] { (void)target_service.importSceneSnapshot(mismatched); }) ==
+    REQUIRE(errorCode([&] { (void)target_service.importSceneSnapshotV2(mismatched); }) ==
             EditorCommandErrorCode::DigestMismatch);
     require_unpublished();
 
@@ -987,7 +1001,7 @@ TEST_CASE("ImportSceneSnapshot V1 enforces five ordered gates without publicatio
     invalid.digest = digestFor(invalid.semantic_scene_bytes);
     std::optional<std::string> invalid_detail;
     try {
-        (void)target_service.importSceneSnapshot(invalid);
+        (void)target_service.importSceneSnapshotV2(invalid);
     } catch (const EditorCommandError &error) {
         REQUIRE(error.code() == EditorCommandErrorCode::SnapshotInvalid);
         invalid_detail = error.detail();
@@ -998,7 +1012,7 @@ TEST_CASE("ImportSceneSnapshot V1 enforces five ordered gates without publicatio
 
     auto missing_scene = valid;
     missing_scene.current_scene_id = "absent";
-    REQUIRE(errorCode([&] { (void)target_service.importSceneSnapshot(missing_scene); }) ==
+    REQUIRE(errorCode([&] { (void)target_service.importSceneSnapshotV2(missing_scene); }) ==
             EditorCommandErrorCode::SceneNotFound);
     require_unpublished();
     REQUIRE(import_calls == 0);
@@ -1006,7 +1020,7 @@ TEST_CASE("ImportSceneSnapshot V1 enforces five ordered gates without publicatio
     inject_fault = true;
     std::optional<std::string> fault_detail;
     try {
-        (void)target_service.importSceneSnapshot(valid);
+        (void)target_service.importSceneSnapshotV2(valid);
     } catch (const EditorCommandError &error) {
         REQUIRE(error.code() == EditorCommandErrorCode::SnapshotInvalid);
         fault_detail = error.detail();
@@ -1022,7 +1036,7 @@ TEST_CASE("ImportSceneSnapshot V1 enforces five ordered gates without publicatio
             }) == EditorCommandErrorCode::UnsupportedSnapshotVersion);
     REQUIRE(errorCode([&] {
                 (void)rpc.importSceneSnapshot(
-                    {{"schema_version", 1},
+                    {{"schema_version", 2},
                      {"semantic_scene_bytes",
                       std::string(maxSceneSnapshotBytes + 1U, 'x')}});
             }) == EditorCommandErrorCode::SnapshotTooLarge);
@@ -1036,16 +1050,17 @@ TEST_CASE("ImportSceneSnapshot design example is strict JSON and reaches semanti
     example["digest"]["hex"] = digestFor(bytes).hex;
 
     const auto document = AuthoringSceneDocument::load(
-        R"({"schema":"pelican.scene","version":1,"scenes":{"main":{"objects":[]}}})",
+        R"({"schema":"pelican.scene","version":2,"scenes":{"main":{"objects":[]}}})",
         SceneRevision{1});
     std::size_t import_calls = 0;
     EditorCommandService service{EditorCommandServiceDependencies{
         .document = [&document]() -> const AuthoringSceneDocument & {
             return document;
         },
+        .resolved_scene = explicitResolvedProvider(document),
         .current_scene_id = [] { return std::string{"main"}; },
-        .import_scene_snapshot =
-            [&](std::string_view, std::string_view) {
+        .import_scene_snapshot_versioned =
+            [&](std::string_view, std::string_view, std::uint64_t) {
                 ++import_calls;
                 return SceneRevision{2};
             },
@@ -1053,6 +1068,61 @@ TEST_CASE("ImportSceneSnapshot design example is strict JSON and reaches semanti
     EditorCommandRpcAdapter rpc{service};
     REQUIRE(errorCode([&] { (void)rpc.importSceneSnapshot(example); }) ==
             EditorCommandErrorCode::SnapshotInvalid);
+    REQUIRE(import_calls == 0);
+}
+
+// MG-2b: SnapshotV1 carried a pelican.scene version 1 payload, which this
+// engine does not read. Both RPCs refuse schema_version 1 by name before the
+// payload is parsed, and nothing is published.
+TEST_CASE("SnapshotV1 is refused by name on export and import",
+          "[editor-command][snapshot][negative][mg2b]") {
+    const auto document = AuthoringSceneDocument::load(
+        R"({"schema":"pelican.scene","version":2,"scenes":{"main":{"objects":[]}}})",
+        SceneRevision{1});
+    std::size_t import_calls = 0;
+    EditorCommandService service{EditorCommandServiceDependencies{
+        .document = [&document]() -> const AuthoringSceneDocument & {
+            return document;
+        },
+        .resolved_scene = explicitResolvedProvider(document),
+        .current_scene_id = [] { return std::string{"main"}; },
+        .import_scene_snapshot_versioned =
+            [&](std::string_view, std::string_view, std::uint64_t) {
+                ++import_calls;
+                return SceneRevision{2};
+            },
+    }};
+    EditorCommandRpcAdapter rpc{service};
+    const auto require_v1_refused = [](auto &&call) {
+        try {
+            (void)call();
+            FAIL("SnapshotV1 was accepted");
+        } catch (const EditorCommandError &error) {
+            REQUIRE(error.code() ==
+                    EditorCommandErrorCode::UnsupportedSnapshotVersion);
+            REQUIRE(std::string_view{error.what()}.find(
+                        "pelican.scene version 1") != std::string_view::npos);
+        }
+    };
+    require_v1_refused([&] {
+        return rpc.exportSceneSnapshot(
+            {{"schema_version", 1}, {"allow_pending", false}});
+    });
+    const std::string v1_bytes =
+        R"({"schema":"pelican.scene","version":1,"scenes":{"main":{"objects":[]}}})";
+    require_v1_refused([&] {
+        return rpc.importSceneSnapshot(
+            {{"schema_version", 1},
+             {"semantic_scene_bytes", v1_bytes},
+             {"digest", {{"algorithm", "sha256"},
+                         {"hex", digestFor(v1_bytes).hex}}},
+             {"current_scene_id", "main"}});
+    });
+    // The version is the first gate: a request with nothing else in it is
+    // still refused by the version name.
+    require_v1_refused([&] {
+        return rpc.importSceneSnapshot({{"schema_version", 1}});
+    });
     REQUIRE(import_calls == 0);
 }
 

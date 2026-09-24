@@ -11,7 +11,22 @@ if(NOT DEFINED OUT_DIR)
     message(FATAL_ERROR "OUT_DIR is required")
 endif()
 
-file(READ "${RENDER_CONFIG}" rendering_config)
+file(READ "${RENDER_CONFIG}" rendering_root)
+# MG-2b: the project's rendering config is a pelican.graph root; the preset
+# project's settings live in its `rendering` section.
+string(JSON root_schema ERROR_VARIABLE root_schema_error
+    GET "${rendering_root}" schema)
+if(NOT root_schema_error STREQUAL "NOTFOUND" OR
+   NOT root_schema STREQUAL "pelican.graph")
+    message(FATAL_ERROR
+        "project rendering config is not a pelican.graph root\n${rendering_root}")
+endif()
+string(JSON rendering_config ERROR_VARIABLE section_error
+    GET "${rendering_root}" rendering)
+if(NOT section_error STREQUAL "NOTFOUND")
+    message(FATAL_ERROR
+        "project rendering config has no rendering section\n${rendering_root}")
+endif()
 string(JSON preset ERROR_VARIABLE preset_error
     GET "${rendering_config}" pipeline preset)
 if(NOT preset_error STREQUAL "NOTFOUND" OR

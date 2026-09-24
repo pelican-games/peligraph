@@ -189,13 +189,13 @@ EditorListAssetsRequest parseListAssetsRequest(const Json &params) {
     return {.store = optionalString(params, "store", method)};
 }
 
-ExportSceneSnapshotRequestV1 parseExportSceneSnapshotRequest(const Json &params) {
+ExportSceneSnapshotRequestV2 parseExportSceneSnapshotRequest(const Json &params) {
     constexpr auto method = "export_scene_snapshot";
     requireObjectParams(params, method);
     requireOnlyFields(params, {"schema_version", "allow_pending"}, method);
     const auto version = params.find("schema_version");
     if (version == params.end()) invalidParams("export_scene_snapshot schema_version is required");
-    ExportSceneSnapshotRequestV1 request;
+    ExportSceneSnapshotRequestV2 request;
     request.schema_version = exactUnsignedInteger(*version, "export_scene_snapshot schema_version");
     if (const auto allow = params.find("allow_pending"); allow != params.end()) {
         if (!allow->is_boolean()) invalidParams("export_scene_snapshot allow_pending must be a boolean");
@@ -204,17 +204,27 @@ ExportSceneSnapshotRequestV1 parseExportSceneSnapshotRequest(const Json &params)
     return request;
 }
 
-ExportSceneSnapshotRequestV2 parseExportSceneSnapshotRequestV2(
-    const Json &params) {
-    const auto common = parseExportSceneSnapshotRequest(params);
-    if (common.schema_version != 2) {
+// MG-2b: SnapshotV1 carried a pelican.scene version 1 payload, which this
+// engine no longer reads. Both RPCs refuse schema_version 1 by the snapshot
+// version name before looking at anything else in the request.
+[[noreturn]] void rejectSnapshotVersion(std::uint64_t schema_version) {
+    if (schema_version == 1) {
         throw EditorCommandError{
             EditorCommandErrorCode::UnsupportedSnapshotVersion,
-            "unsupported snapshot version: " +
-                std::to_string(common.schema_version)};
+            "unsupported snapshot version: 1 (SnapshotV1 carries a "
+            "pelican.scene version 1 payload, which this engine does not "
+            "read; use schema_version 2)"};
     }
-    return {.schema_version = common.schema_version,
-            .allow_pending = common.allow_pending};
+    throw EditorCommandError{
+        EditorCommandErrorCode::UnsupportedSnapshotVersion,
+        "unsupported snapshot version: " + std::to_string(schema_version)};
+}
+
+ExportSceneSnapshotRequestV2 parseExportSceneSnapshotRequestV2(
+    const Json &params) {
+    auto request = parseExportSceneSnapshotRequest(params);
+    if (request.schema_version != 2) rejectSnapshotVersion(request.schema_version);
+    return request;
 }
 
 DigestV1 parseClosureDigest(const Json &value, std::string_view path,
@@ -408,67 +418,6 @@ std::optional<std::string> closureMismatchDetail(
     return std::nullopt;
 }
 
-ImportSceneSnapshotRequestV1 parseImportSceneSnapshotRequest(const Json &params) {
-    constexpr auto method = "import_scene_snapshot";
-    requireObjectParams(params, method);
-
-    // Preserve the normative validation order even when later fields are
-    // malformed. A shaped request with an unsupported version must never
-    // inspect or allocate its payload.
-    const auto version = params.find("schema_version");
-    if (version == params.end()) {
-        invalidParams("import_scene_snapshot schema_version is required");
-    }
-    const auto schema_version =
-        exactUnsignedInteger(*version, "import_scene_snapshot schema_version");
-    if (schema_version != 1) {
-        throw EditorCommandError{
-            EditorCommandErrorCode::UnsupportedSnapshotVersion,
-            "unsupported snapshot version: " + std::to_string(schema_version)};
-    }
-
-    requireOnlyFields(params,
-                      {"schema_version", "semantic_scene_bytes", "digest",
-                       "current_scene_id"},
-                      method);
-    const auto bytes = params.find("semantic_scene_bytes");
-    if (bytes == params.end() || !bytes->is_string()) {
-        invalidParams(
-            "import_scene_snapshot semantic_scene_bytes must be a string");
-    }
-    if (bytes->get_ref<const std::string &>().size() > maxSceneSnapshotBytes) {
-        throw EditorCommandError{EditorCommandErrorCode::SnapshotTooLarge,
-                                 "snapshot exceeds 64 MiB"};
-    }
-
-    const auto digest = params.find("digest");
-    if (digest == params.end() || !digest->is_object()) {
-        invalidParams("import_scene_snapshot digest must be an object");
-    }
-    requireOnlyFields(*digest, {"algorithm", "hex"},
-                      "import_scene_snapshot digest");
-    const auto algorithm = digest->find("algorithm");
-    const auto hex = digest->find("hex");
-    if (algorithm == digest->end() || !algorithm->is_string() ||
-        hex == digest->end() || !hex->is_string()) {
-        invalidParams(
-            "import_scene_snapshot digest requires string algorithm and hex fields");
-    }
-
-    const auto current_scene =
-        optionalString(params, "current_scene_id", method);
-    if (!current_scene) {
-        invalidParams("import_scene_snapshot current_scene_id is required");
-    }
-    return ImportSceneSnapshotRequestV1{
-        .schema_version = schema_version,
-        .semantic_scene_bytes = bytes->get<std::string>(),
-        .digest = {.algorithm = algorithm->get<std::string>(),
-                   .hex = hex->get<std::string>()},
-        .current_scene_id = *current_scene,
-    };
-}
-
 ImportSceneSnapshotRequestV2 parseImportSceneSnapshotRequestV2(
     const Json &params) {
     constexpr auto method = "import_scene_snapshot";
@@ -479,12 +428,7 @@ ImportSceneSnapshotRequestV2 parseImportSceneSnapshotRequestV2(
     }
     const auto schema_version =
         exactUnsignedInteger(*version, "import_scene_snapshot schema_version");
-    if (schema_version != 2) {
-        throw EditorCommandError{
-            EditorCommandErrorCode::UnsupportedSnapshotVersion,
-            "unsupported snapshot version: " +
-                std::to_string(schema_version)};
-    }
+    if (schema_version != 2) rejectSnapshotVersion(schema_version);
     requireOnlyFields(params,
                       {"schema_version", "semantic_scene_bytes", "digest",
                        "current_scene_id", "prefab_closure"},
@@ -529,33 +473,14 @@ void validateSaveSceneRequest(const Json &params) {
     requireOnlyFields(params, {}, method);
 }
 
-bool scenePayloadContainsPrefabKey(const Json &document) {
-    const auto scenes = document.find("scenes");
-    if (scenes == document.end() || !scenes->is_object()) return false;
-    for (const auto &[unused, scene] : scenes->items()) {
-        (void)unused;
-        if (!scene.is_object()) continue;
-        const auto objects = scene.find("objects");
-        if (objects == scene.end() || !objects->is_array()) continue;
-        for (const auto &object : *objects) {
-            if (object.is_object() && object.contains("prefab")) return true;
-        }
-    }
-    return false;
-}
-
-// SNAPSHOT0 gates 1-3, the same three for SnapshotV1 and SnapshotV2: declared
+// SNAPSHOT0 gates 1-3, kept by SnapshotV2 from SnapshotV1: declared
 // version, 64 MiB size ceiling, then the sha256 digest over the payload. The
 // order is part of the wire contract - do not reorder them, and do not move
 // parsing ahead of the digest check.
 template <class Request>
 void validateSnapshotEnvelope(const Request &request, std::uint64_t version) {
-    if (request.schema_version != version) {
-        throw EditorCommandError{
-            EditorCommandErrorCode::UnsupportedSnapshotVersion,
-            "unsupported snapshot version: " +
-                std::to_string(request.schema_version)};
-    }
+    if (request.schema_version != version)
+        rejectSnapshotVersion(request.schema_version);
     if (request.semantic_scene_bytes.size() > maxSceneSnapshotBytes) {
         throw EditorCommandError{EditorCommandErrorCode::SnapshotTooLarge,
                                  "snapshot exceeds 64 MiB"};
@@ -983,74 +908,10 @@ EditorListAssetsResult EditorCommandService::listAssets(const EditorListAssetsRe
     return result;
 }
 
-ExportSceneSnapshotResponseV1
-EditorCommandService::exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &request) const {
-    if (document().formatVersion() != 1 || document().usesPrefabs()) {
-        throw EditorCommandError{
-            EditorCommandErrorCode::PrefabPersistenceUnsupported,
-            "prefab_persistence_unsupported: SnapshotV1 requires formatVersion 1 without prefabs"};
-    }
-    if (request.schema_version != 1) {
-        throw EditorCommandError{EditorCommandErrorCode::UnsupportedSnapshotVersion,
-                                 "unsupported snapshot version: " +
-                                     std::to_string(request.schema_version)};
-    }
-    auto snapshot_state = dependencies_.snapshot_state ? dependencies_.snapshot_state()
-                                                        : EditorSnapshotState{};
-    if (edit_) {
-        auto pending = edit_->pendingTicketIds();
-        snapshot_state.pending_ticket_ids.insert(
-            snapshot_state.pending_ticket_ids.end(), pending.begin(), pending.end());
-        snapshot_state.open_preview_lease =
-            snapshot_state.open_preview_lease || edit_->hasOpenPreviewLease();
-        snapshot_state.preview_epoch =
-            std::max(snapshot_state.preview_epoch, edit_->previewEpoch());
-    }
-    if (snapshot_state.preview_epoch > maxExactEditorJsonInteger) {
-        throw std::overflow_error("preview_epoch exceeds 2^53-1");
-    }
-    if (!request.allow_pending &&
-        (!snapshot_state.pending_ticket_ids.empty() || snapshot_state.open_preview_lease)) {
-        throw EditorCommandError{EditorCommandErrorCode::SnapshotBusy,
-                                 "snapshot export is busy"};
-    }
-
-    const auto &source = document();
-    if (source.revision().value > maxExactEditorJsonInteger) {
-        throw std::overflow_error("SceneRevision exceeds 2^53-1");
-    }
-    const auto current_scene = dependencies_.current_scene_id();
-    if (resolved().findScene(current_scene) == nullptr) {
-        throw EditorCommandError{EditorCommandErrorCode::SceneNotFound,
-                                 "scene not found: " + current_scene};
-    }
-    auto bytes = internal::encodeAuthoringSceneSemantic(source);
-    if (bytes.size() > maxSceneSnapshotBytes) {
-        throw EditorCommandError{EditorCommandErrorCode::SnapshotTooLarge,
-                                 "snapshot exceeds 64 MiB"};
-    }
-
-    auto digest = picosha2::hash256_hex_string(bytes.begin(), bytes.end());
-    return ExportSceneSnapshotResponseV1{
-        .schema_version = 1,
-        .scene_revision = source.revision(),
-        .current_scene_id = current_scene,
-        .semantic_scene_bytes = std::move(bytes),
-        .digest = {.algorithm = "sha256", .hex = std::move(digest)},
-        .pending_ticket_ids = snapshot_state.pending_ticket_ids,
-        .preview_epoch = snapshot_state.preview_epoch,
-    };
-}
-
 ExportSceneSnapshotResponseV2
 EditorCommandService::exportSceneSnapshotV2(
     const ExportSceneSnapshotRequestV2 &request) const {
-    if (request.schema_version != 2) {
-        throw EditorCommandError{
-            EditorCommandErrorCode::UnsupportedSnapshotVersion,
-            "unsupported snapshot version: " +
-                std::to_string(request.schema_version)};
-    }
+    if (request.schema_version != 2) rejectSnapshotVersion(request.schema_version);
     auto snapshot_state = dependencies_.snapshot_state
                               ? dependencies_.snapshot_state()
                               : EditorSnapshotState{};
@@ -1100,68 +961,6 @@ EditorCommandService::exportSceneSnapshotV2(
         .preview_epoch = snapshot_state.preview_epoch,
         .prefab_closure = projection.prefabClosure(),
     };
-}
-
-ImportSceneSnapshotResult EditorCommandService::importSceneSnapshot(
-    const ImportSceneSnapshotRequestV1 &request) {
-    if (document().formatVersion() != 1 || document().usesPrefabs()) {
-        throw EditorCommandError{
-            EditorCommandErrorCode::PrefabPersistenceUnsupported,
-            "prefab_persistence_unsupported: SnapshotV1 requires a formatVersion 1 live scene without prefabs"};
-    }
-    // Incoming prefab data is routed before the request-version decision so
-    // a V2-shaped closure cannot escape through SnapshotV1's version gate.
-    try {
-        if (scenePayloadContainsPrefabKey(
-                nlohmann::json::parse(request.semantic_scene_bytes))) {
-            throw EditorCommandError{
-                EditorCommandErrorCode::PrefabPersistenceUnsupported,
-                "prefab_persistence_unsupported: snapshot import contains prefab instances"};
-        }
-    } catch (const EditorCommandError &) {
-        throw;
-    } catch (const std::exception &) {
-        // Preserve SNAPSHOT0's later named snapshot-invalid boundary.
-    }
-    // SNAPSHOT0 validation order is part of the wire contract. Do not merge
-    // these gates or move parsing ahead of the digest check.
-    validateSnapshotEnvelope(request, 1);
-    AuthoringSceneDocument validated;
-    try {
-        validated = AuthoringSceneDocument::load(
-            request.semantic_scene_bytes, SceneRevision{1});
-    } catch (const std::exception &error) {
-        throw EditorCommandError{EditorCommandErrorCode::SnapshotInvalid,
-                                 "snapshot parse or semantic validation failed",
-                                 error.what()};
-    }
-    if (validated.formatVersion() != 1 || validated.usesPrefabs()) {
-        throw EditorCommandError{
-            EditorCommandErrorCode::PrefabPersistenceUnsupported,
-            "prefab_persistence_unsupported: SnapshotV1 payload requires formatVersion 1 without prefabs"};
-    }
-    if (!internal::authoringSceneContains(validated,
-                                          request.current_scene_id)) {
-        throw EditorCommandError{
-            EditorCommandErrorCode::SceneNotFound,
-            "scene not found: " + request.current_scene_id};
-    }
-
-    if (!dependencies_.import_scene_snapshot) {
-        throw EditorCommandError{EditorCommandErrorCode::SnapshotInvalid,
-                                 "snapshot import is unavailable",
-                                 "runtime import surface is unavailable"};
-    }
-    try {
-        auto imported = dependencies_.import_scene_snapshot(
-            request.semantic_scene_bytes, request.current_scene_id);
-        return makeImportResult(imported, request.current_scene_id);
-    } catch (const EditorCommandError &) {
-        throw;
-    } catch (const std::exception &error) {
-        throw EditorCommandError{EditorCommandErrorCode::SnapshotInvalid,
-                                 "snapshot reload failed", error.what()};
-    }
 }
 
 ImportSceneSnapshotResult EditorCommandService::importSceneSnapshotV2(
@@ -1971,18 +1770,6 @@ OrderedJson editorQueryJson(const EditorListAssetsResult &assets) {
     return result;
 }
 
-OrderedJson editorQueryJson(const ExportSceneSnapshotResponseV1 &snapshot) {
-    return OrderedJson{
-        {"schema_version", snapshot.schema_version},
-        {"scene_revision", snapshot.scene_revision.value},
-        {"current_scene_id", snapshot.current_scene_id},
-        {"semantic_scene_bytes", snapshot.semantic_scene_bytes},
-        {"digest", OrderedJson{{"algorithm", snapshot.digest.algorithm}, {"hex", snapshot.digest.hex}}},
-        {"pending_ticket_ids", snapshot.pending_ticket_ids},
-        {"preview_epoch", snapshot.preview_epoch},
-    };
-}
-
 OrderedJson prefabClosureJson(const PrefabResolutionClosure &closure) {
     OrderedJson result;
     result["scenes"] = OrderedJson::array();
@@ -2246,18 +2033,8 @@ OrderedJson EditorCommandRpcAdapter::listAssets(const Json &params) const {
 }
 
 OrderedJson EditorCommandRpcAdapter::exportSceneSnapshot(const Json &params) const {
-    const auto request = parseExportSceneSnapshotRequest(params);
-    if (request.schema_version == 1) {
-        return editorQueryJson(service_.exportSceneSnapshot(request));
-    }
-    if (request.schema_version == 2) {
-        return editorQueryJson(
-            service_.exportSceneSnapshotV2(parseExportSceneSnapshotRequestV2(params)));
-    }
-    throw EditorCommandError{
-        EditorCommandErrorCode::UnsupportedSnapshotVersion,
-        "unsupported snapshot version: " +
-            std::to_string(request.schema_version)};
+    return editorQueryJson(
+        service_.exportSceneSnapshotV2(parseExportSceneSnapshotRequestV2(params)));
 }
 
 OrderedJson EditorCommandRpcAdapter::importSceneSnapshot(const Json &params) const {
@@ -2269,35 +2046,9 @@ OrderedJson EditorCommandRpcAdapter::importSceneSnapshot(const Json &params) con
     }
     const auto version = exactUnsignedInteger(
         *version_field, "import_scene_snapshot schema_version");
-    if (version == 2) {
-        return editorQueryJson(mutable_service_->importSceneSnapshotV2(
-            parseImportSceneSnapshotRequestV2(params)));
-    }
-    if (version != 1) {
-        throw EditorCommandError{
-            EditorCommandErrorCode::UnsupportedSnapshotVersion,
-            "unsupported snapshot version: " + std::to_string(version)};
-    }
-    if (params.is_object()) {
-        const auto bytes = params.find("semantic_scene_bytes");
-        if (bytes != params.end() && bytes->is_string()) {
-            try {
-                if (scenePayloadContainsPrefabKey(nlohmann::json::parse(
-                        bytes->get_ref<const std::string &>()))) {
-                    throw EditorCommandError{
-                        EditorCommandErrorCode::PrefabPersistenceUnsupported,
-                        "prefab_persistence_unsupported: snapshot import contains prefab instances"};
-                }
-            } catch (const EditorCommandError &) {
-                throw;
-            } catch (const std::exception &) {
-                // The ordinary request/parser gates retain ownership of
-                // malformed JSON and malformed request fields.
-            }
-        }
-    }
-    return editorQueryJson(mutable_service_->importSceneSnapshot(
-        parseImportSceneSnapshotRequest(params)));
+    if (version != 2) rejectSnapshotVersion(version);
+    return editorQueryJson(mutable_service_->importSceneSnapshotV2(
+        parseImportSceneSnapshotRequestV2(params)));
 }
 
 OrderedJson EditorCommandRpcAdapter::saveScene(const Json &params) const {

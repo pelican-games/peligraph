@@ -57,7 +57,7 @@ PELICAN_REGISTER_BEHAVIOR(JournalListBehavior, "wp382b_journal_list_behavior", 1
 Json editorFixture() {
     return Json::parse(R"json({
       "schema":"pelican.scene",
-      "version":1,
+      "version":2,
       "scenes":{
         "main":{
           "objects":[

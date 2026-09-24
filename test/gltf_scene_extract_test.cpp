@@ -109,14 +109,21 @@ TEST_CASE("extracted scene loads through SceneLoader with glTF world transforms"
     const auto extracted = DevCli::extractGltfScene(glb, "hierarchy.glb");
     writeText(temp.path / "scene.json", extracted.dump(2) + "\n");
     writeText(temp.path / "assets.json",
-              R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+              R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
     // Scene preparation reads the project rendering config to build the ray
     // scene plan, so the temporary project needs the file that
     // `pelican_cli project init` writes at the default reference.
     std::filesystem::create_directories(temp.path / "passes");
     writeText(temp.path / "passes" / "main_rendering_config.json",
-              R"json({"pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},
-"features":["engine://features/shadow_directional.json","engine://features/sky_ambient.json"]})json");
+              R"json({
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {"pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},
+  "features":["engine://features/shadow_directional.json","engine://features/sky_ambient.json"]}
+})json");
 
     FastModuleContainer modules;
     GET_MODULE(PathResolver).setup(temp.path, false);

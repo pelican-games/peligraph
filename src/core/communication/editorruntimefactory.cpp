@@ -1940,9 +1940,11 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
         const auto source_bytes =
             runtime->modules.path_resolver
                 .loadText(source_reference);
-        // The editor service inspects legacy roots without writing them.
-        // Their lexical features array is initialized only by a requested
-        // edit and committed through the normal candidate transaction.
+        // The editor service reads the pelican.graph root and refuses any
+        // other root by name (render_config.legacy_root@1). A root without a
+        // features array is inspected as is; the array is initialized only by
+        // a requested edit and committed through the normal candidate
+        // transaction.
         {
             const auto resolved =
                 runtime->modules.path_resolver
@@ -2436,34 +2438,13 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
         .render_config_editor =
             std::move(render_config_editor),
         .procedural_asset_editor = std::move(procedural_asset_editor),
-        .import_scene_snapshot =
-            [runtime](std::string_view bytes,
-                      std::string_view current_scene_id) {
-                std::vector<EditorProjectionRuntimeObjectBinding>
-                    next_runtime_bindings;
-                const auto revision =
-                    runtime->modules.project_config.importSceneDocument(
-                        bytes, [&](SceneLoadRequest &&request) {
-                            request.scene_id = std::string{current_scene_id};
-                            auto result = runtime->modules.scene_loader.load(
-                                std::move(request));
-                            if (!std::holds_alternative<PreCommitFailure>(
-                                    result)) {
-                                next_runtime_bindings =
-                                    collectEditorRuntimeBindings(
-                                        runtime->modules);
-                            }
-                            return result;
-                        });
-                runtime->binding_state.bindings.swap(next_runtime_bindings);
-                runtime->binding_state.epoch =
-                    runtime->modules.scene_loader.runtimeSceneEpoch();
-                return revision;
-            },
         .import_scene_snapshot_versioned =
             [runtime](std::string_view bytes,
                       std::string_view current_scene_id,
                       std::uint64_t schema_version) {
+                // The service has already refused every snapshot version
+                // but 2 by name (MG-2b); a scene import has one form.
+                (void)schema_version;
                 std::vector<EditorProjectionRuntimeObjectBinding>
                     next_runtime_bindings;
                 const auto revision =
@@ -2480,8 +2461,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                         runtime->modules);
                             }
                             return result;
-                        },
-                        schema_version);
+                        });
                 runtime->binding_state.bindings.swap(next_runtime_bindings);
                 runtime->binding_state.epoch =
                     runtime->modules.scene_loader.runtimeSceneEpoch();

@@ -107,8 +107,8 @@ void requireErrorKind(std::string_view message, std::string_view error_kind) {
         REQUIRE(contains(message, "schema"));
         REQUIRE(contains(message, "pelican.scene"));
     } else if (error_kind == "version") {
-        REQUIRE(contains(message, "version"));
-        REQUIRE(contains(message, "1"));
+        // MG-2b: every version but 2 -- including 1 -- is refused by name.
+        REQUIRE(contains(message, "pelican.scene.version_unsupported@1"));
     } else if (error_kind == "legacy_lights") {
         REQUIRE(contains(message, "'lights'"));
         REQUIRE(contains(message, "'light'"));
@@ -234,7 +234,7 @@ std::size_t temporarySceneFileCount(const std::filesystem::path &directory) {
 
 } // namespace
 
-TEST_CASE("Scene format fixtures accept only v1 documents", "[scene-format]") {
+TEST_CASE("Scene format fixtures accept only v2 documents", "[scene-format]") {
     const auto expectations = readJson(fixtureRoot() / "expectations.json");
 
     for (const auto &entry : expectations) {
@@ -365,7 +365,7 @@ TEST_CASE("AuthoringSceneDocument preserves every raw scene object and component
 
 TEST_CASE("Persistent scene identities survive reorder and do not reuse deleted IDs",
           "[scene-format][authoring][persistent-identity]") {
-    const auto source = nlohmann::json::parse(R"({"schema":"pelican.scene","version":1,
+    const auto source = nlohmann::json::parse(R"({"schema":"pelican.scene","version":2,
         "scenes":{"main":{"objects":[{"name":"First","components":[]},
         {"name":"Owner","components":[]}]},
         "secondary":{"objects":[{"name":"Last","components":[]}]}}})");
@@ -403,7 +403,7 @@ TEST_CASE("Persistent scene identities survive reorder and do not reuse deleted 
 TEST_CASE("Scene identity metadata rejects ambiguous IDs and protects the allocation boundary",
           "[scene-format][authoring][persistent-identity]") {
     using Json = nlohmann::json;
-    const auto source = Json::parse(R"({"schema":"pelican.scene","version":1,
+    const auto source = Json::parse(R"({"schema":"pelican.scene","version":2,
         "next_authoring_object_id":10,"scenes":{
         "main":{"objects":[{"authoring_object_id":2,"components":[]}]},
         "secondary":{"objects":[{"components":[]}]}}})");
@@ -466,13 +466,14 @@ TEST_CASE("Saving after removing an earlier object preserves the graph owner on 
     ensureLogger();
     const auto temp_dir = makeTempProjectDir();
     try {
-        const auto source = nlohmann::json::parse(R"({"schema":"pelican.scene","version":1,
+        const auto source = nlohmann::json::parse(R"({"schema":"pelican.scene","version":2,
             "scenes":{"main":{"objects":[
             {"name":"Before","components":[{"name":"transform"}]},
             {"name":"Hero","components":[{"name":"transform"}]},
             {"name":"Other","components":[{"name":"transform"}]}]}}})");
         writeText(temp_dir / "scene.json", source.dump());
-        writeText(temp_dir / "passes/main_rendering_config.json", "{}");
+        writeText(temp_dir / "passes/main_rendering_config.json",
+                  R"({"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":{}})");
         const nlohmann::json project{
             {"schema", "pelican.project"}, {"version", 1},
             {"engine_min_version", "0.1.0"},
@@ -888,7 +889,7 @@ TEST_CASE("SAVE0 new-process semantic reload probe",
 TEST_CASE("Scene format rejects legacy lights and names the v1 replacement", "[scene-format]") {
     const auto legacy_lights = nlohmann::json::parse(R"json({
   "schema": "pelican.scene",
-  "version": 1,
+  "version": 2,
   "scenes": {
     "default_scene": {
       "lights": [{"name": "BlueSpot", "type": "spot"}],
@@ -922,7 +923,7 @@ TEST_CASE("SceneLoader reports the common typed cause for unknown component name
     try {
         writeText(temp_dir / "scene.json", R"json({
   "schema": "pelican.scene",
-  "version": 1,
+  "version": 2,
   "scenes": {
     "default_scene": {
       "objects": [
@@ -1040,7 +1041,7 @@ TEST_CASE("an unmatched graph instance owner is named once per graph generation"
     auto temp_dir = makeTempProjectDir();
     try {
         writeText(temp_dir / "scene.json", R"json({
-  "schema": "pelican.scene", "version": 1,
+  "schema": "pelican.scene", "version": 2,
   "scenes": {
     "default_scene": {"objects": [
       {"name": "Left", "components": [
@@ -1050,7 +1051,8 @@ TEST_CASE("an unmatched graph instance owner is named once per graph generation"
         {"name": "transform", "pos": [0,0,0], "rotation": [0,0,0,1], "scale": [1,1,1]}]}]}
   }
 })json");
-        writeText(temp_dir / "passes/main_rendering_config.json", "{}");
+        writeText(temp_dir / "passes/main_rendering_config.json",
+                  R"({"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":{}})");
         const auto project = nlohmann::json{
             {"schema", "pelican.project"}, {"version", 1},
             {"name", "graph-owner-test"}, {"engine_min_version", "0.1.0"},

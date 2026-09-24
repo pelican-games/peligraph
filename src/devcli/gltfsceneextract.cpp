@@ -115,7 +115,7 @@ NodeTrs nodeTrs(const tinygltf::Node &node, int node_index) {
         if (glm::length(skew) > epsilon ||
             glm::length(perspective - glm::dvec4{0.0, 0.0, 0.0, 1.0}) > epsilon) {
             throw std::runtime_error("glTF " + nodeLabel(node, node_index) +
-                                     " matrix contains shear or perspective not representable by scene v1 TRS");
+                                     " matrix contains shear or perspective not representable by scene TRS");
         }
         result.rotation = glm::normalize(result.rotation);
         return result;
@@ -396,7 +396,7 @@ nlohmann::json extractGltfScene(const std::filesystem::path &glb_path,
     }
     return nlohmann::json{
         {"schema", "pelican.scene"},
-        {"version", 1},
+        {"version", 2},
         {"scenes", std::move(scenes)},
     };
 }
@@ -404,7 +404,7 @@ nlohmann::json extractGltfScene(const std::filesystem::path &glb_path,
 int runGltfImportCommand(int argc, char *argv[]) {
     argparse::ArgumentParser program("Pelican Cli import gltf");
     program.add_argument("--extract-scene").required().metavar("glb").help(
-        "extract GLB hierarchy as deterministic pelican.scene v1 JSON");
+        "extract GLB hierarchy as deterministic pelican.scene v2 JSON");
     try {
         program.parse_args(argc, argv);
         const auto input = program.get<std::string>("--extract-scene");

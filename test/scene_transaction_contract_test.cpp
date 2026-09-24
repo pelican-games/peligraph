@@ -290,7 +290,7 @@ TEST_CASE("PG-2 participant OFF divisions follow the scene-declaration rule",
     }
 }
 
-TEST_CASE("WP380 manifest fixes exclusions and all five production call sites",
+TEST_CASE("WP380 manifest fixes exclusions and all four production call sites",
           "[WP380][contract][manifest][roots]") {
     REQUIRE(manifestRow("model_asset", "warm_cache").role ==
             SceneManifestRole::cache);
@@ -303,15 +303,20 @@ TEST_CASE("WP380 manifest fixes exclusions and all five production call sites",
 
     for (const auto owner : {
              "root.startup", "root.rpc", "root.pending",
-             "root.import.unversioned", "root.import.versioned"}) {
+             "root.import.versioned"}) {
         REQUIRE(manifestRow(owner, owner == std::string_view{"root.pending"}
                                        ? "apply"
-                                       : (owner == std::string_view{"root.import.unversioned"} ||
-                                                  owner == std::string_view{"root.import.versioned"}
+                                       : (owner == std::string_view{"root.import.versioned"}
                                               ? "callback"
                                               : "direct_load"))
                     .role == SceneManifestRole::production_root);
     }
+    // MG-2b: the SnapshotV1 import root read a pelican.scene version 1
+    // payload and is gone; no manifest row names it.
+    const auto rows = sceneParticipantManifest();
+    REQUIRE(std::none_of(rows.begin(), rows.end(), [](const auto &row) {
+        return row.owner == std::string_view{"root.import.unversioned"};
+    }));
 }
 
 TEST_CASE("WP380 every installed root disconnect mutation toggles the executor gate",
@@ -325,13 +330,11 @@ TEST_CASE("WP380 every installed root disconnect mutation toggles the executor g
         {SceneLoadRoot::startup, "root.startup", "direct_load"},
         {SceneLoadRoot::rpc, "root.rpc", "direct_load"},
         {SceneLoadRoot::pending, "root.pending", "apply"},
-        {SceneLoadRoot::import_unversioned,
-         "root.import.unversioned", "callback"},
         {SceneLoadRoot::import_versioned,
          "root.import.versioned", "callback"},
     };
     auto document = AuthoringSceneDocument::load(
-        R"({"schema":"pelican.scene","version":1,"scenes":{"known":{"objects":[]}}})",
+        R"({"schema":"pelican.scene","version":2,"scenes":{"known":{"objects":[]}}})",
         SceneRevision{1}, 1);
     auto projection = ResolvedSceneResolver::prepare(
         std::move(document), SceneResolverGeneration{1});

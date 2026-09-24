@@ -1,4 +1,5 @@
 #include "raygrouplayout.hpp"
+#include "../../project/renderconfigdocument.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -1457,8 +1458,12 @@ loadRayTracingProjectConfig(
             "pelican.ray_tracing.root_invalid@1: rendering config root must be an object");
     }
     const json empty = json::object();
-    const auto &authored_root = document.value("schema", std::string{}) == "pelican.graph"
-        ? (document.contains("rendering") ? document.at("rendering") : empty) : document;
+    // MG-2b: the authored root is a `pelican.graph` document; the older form
+    // is refused by name.
+    if (document.value("schema", std::string{}) != "pelican.graph")
+        throw RenderConfigLegacyRoot{};
+    const auto &authored_root =
+        document.contains("rendering") ? document.at("rendering") : empty;
     if (!authored_root.is_object())
         throw std::runtime_error("pelican.ray_tracing.root_invalid@1: graph rendering settings must be an object");
     const auto has_layout = authored_root.contains("ray_group_layout");

@@ -3,6 +3,13 @@
   "version": 1,
   "name": "wp309_compute_provenance",
   "runtime_shader_compiler": "optional",
+  "buffers": [
+    {
+      "name": "probe_buffer",
+      "size": 16,
+      "lifetime": "persistent"
+    }
+  ],
   "compute_tasks": [
     {
       "name": "probe",

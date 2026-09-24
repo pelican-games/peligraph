@@ -2,6 +2,7 @@
 #include "golden_harness.hpp"
 #include "../src/project/rendercomponent.hpp"
 #include "../src/project/renderconfigsection.hpp"
+#include "render_graph_root_test_support.hpp"
 #include "vulkan_test_support.hpp"
 
 #include "../src/core/appflow/enginetime.hpp"
@@ -197,10 +198,10 @@ void wp357WriteProjectShell(const std::filesystem::path &root,
                    wp357ProjectJson(name, graph).dump(2));
     wp357WriteText(
         root / "scene.json",
-        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
     wp357WriteText(
         root / "assets.json",
-        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+        R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
     wp357WriteText(
         root / "ui" / "ui_overlay.json",
         R"json({"schema":"pelican.ui","version":1,"key":"wp357","revision":"1","direction":"ltr","root":{"id":"root","type":"panel","children":[]}})json");
@@ -329,7 +330,9 @@ void wp357WriteBloomProject(const std::filesystem::path &root,
             root, "wp357_seed_V" + std::to_string(level));
     }
     wp357WriteText(root / "passes" / "main.json",
-                   wp357BloomConfig(hdr, peeled_stage).dump(2));
+                   Pelican::TestSupport::renderGraphRoot(
+                       wp357BloomConfig(hdr, peeled_stage))
+                       .dump(2));
 }
 
 struct Wp357PhysicalFacts {
@@ -756,8 +759,8 @@ nlohmann::json wp357ProductionProbeFeature() {
 
 nlohmann::json wp357ProductionProbeConfig() {
     // P-2a-4b: the shipping project is a `pelican.graph` root. This probe
-    // writes its own legacy-root project (and `wp357WrapGraphRoot` re-wraps
-    // it for the graph-root leg), so take the shipping `rendering` section.
+    // edits the shipping `rendering` section and writes it back in a graph
+    // root of its own (`wp357WrapGraphRoot`).
     const auto shipping = wp357ReadJson(
         wp357SourceRoot() / "projects" / "example" / "passes" /
         "main_rendering_config.json");
@@ -946,9 +949,9 @@ void wp357PointConfigAtDerivative(nlohmann::json &config,
 }
 
 nlohmann::json wp357WrapGraphRoot(const nlohmann::json &config) {
-    // P-2a-4b: one wrap, shared with `devcli project init` and the shipping
-    // project, so this leg cannot drift from the shape the engine ships.
-    return wrapLegacyRenderingConfig(config);
+    // MG-2b: every authored rendering config is a `pelican.graph` root, so
+    // both legs of the comparison below write one.
+    return Pelican::TestSupport::renderGraphRoot(config);
 }
 
 void wp357WriteProductionProbeProject(
@@ -1004,8 +1007,7 @@ void wp357WriteProductionProbeProject(
         (variant.graph_intensity
              ? wp357GraphDrivenConfig(std::move(config), *variant.graph_intensity,
                                       variant.graph_sink)
-             : (variant.graph_root ? wp357WrapGraphRoot(std::move(config))
-                                   : std::move(config)))
+             : wp357WrapGraphRoot(std::move(config)))
             .dump(2));
 }
 
@@ -1188,6 +1190,9 @@ void wp357RequireDerivedBloomFeatureChangesPixels() {
 
 // P-2a-4a acceptance 3 and 6, measured on the device: the graph root draws
 // the legacy frame, and the derivative cut to two levels still changes it.
+// MG-2b: the older root is no longer read, so both legs now write the graph
+// root and the first comparison holds two captures of the same document to
+// the same frame; the derivative comparison is unchanged.
 void wp357RequireGraphRootBloom() {
     const auto legacy = wp357CaptureProductionComposite();
     const auto graph_root = wp357CaptureProductionComposite(
@@ -1346,7 +1351,9 @@ std::array<std::uint8_t, 4> wp357CaptureMinimal(std::string_view load_op) {
         wp357InstallPrecompiledFragment(root, "wp357_destination");
         wp357InstallPrecompiledFragment(root, "wp357_source");
         wp357WriteText(root / "passes" / "main.json",
-                       wp357MinimalConfig(load_op).dump(2));
+                       Pelican::TestSupport::renderGraphRoot(
+                           wp357MinimalConfig(load_op))
+                           .dump(2));
         std::array<std::uint8_t, 4> result{};
         {
             FastModuleContainer modules;

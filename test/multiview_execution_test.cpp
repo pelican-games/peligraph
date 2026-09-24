@@ -64,9 +64,9 @@ class TempProject {
                  std::to_string(suffix));
         std::filesystem::create_directories(root_);
         std::ofstream{root_ / "scene.json", std::ios::binary}
-            << R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json";
+            << R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json";
         std::ofstream{root_ / "assets.json", std::ios::binary}
-            << R"json({"schema":"pelican.asset_data","version":1,"models":[]})json";
+            << R"json({"schema":"pelican.asset_data","version":2,"models":[]})json";
     }
 
     ~TempProject() {

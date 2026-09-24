@@ -1645,13 +1645,18 @@ std::vector<FrameGraphDefinition> parseFrameGraphDefinitionsFromConfigJson(const
     if (!document.is_object()) {
         throw std::runtime_error("Frame graph config must be an object");
     }
-    // P-2a-4b: a `pelican.graph` root keeps the rendering config under
-    // `rendering`. Without this the planner read a root that has none of its
-    // keys and returned an empty plan set -- a shipping project would have
-    // silently planned zero frames. A graph root that cannot name its section
-    // is refused (`RenderConfigSectionUnlocated`) rather than answered with
-    // "no frame graphs".
-    const nlohmann::json &config_json = renderingSectionOf(document);
+    // Two inputs reach this parser. The production callers pass the composed
+    // config -- the lowered, flat form the compiler works on, which is not an
+    // authored document. A caller holding the authored document passes its
+    // `pelican.graph` root, which keeps the rendering config under
+    // `rendering` (P-2a-4b: reading that root as flat planned zero frames).
+    // A graph root that cannot name its section is refused
+    // (`RenderConfigSectionUnlocated`) rather than answered with "no frame
+    // graphs". An authored root in the older form never gets here: every
+    // reader of the authored file refuses it first (MG-2b,
+    // `render_config.legacy_root@1`).
+    const nlohmann::json &config_json =
+        isRenderGraphRoot(document) ? renderingSectionOf(document) : document;
 
     std::vector<FrameGraphDefinition> graphs;
     if (!config_json.contains("rendering_passes")) {

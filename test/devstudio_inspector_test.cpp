@@ -1094,7 +1094,7 @@ TEST_CASE("Devstudio modal gizmo commit survives save and a fresh authoring relo
     PersistenceProject project_dir;
     const Json source{
         {"schema", "pelican.scene"},
-        {"version", 1},
+        {"version", 2},
         {"scenes",
          {{"main",
            {{"objects",

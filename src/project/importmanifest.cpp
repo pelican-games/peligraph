@@ -152,10 +152,16 @@ void validateOutputSchema(const std::string &schema, const std::optional<int> &v
         }
         return;
     }
-    if (schema == "pelican.transform_seq" || schema == "pelican.scene" ||
+    if (schema == "pelican.transform_seq" ||
         schema == "pelican.layout" || schema == "pelican.atlas" ||
         schema == "pelican.material") {
         requireOutputVersion(schema, version, 1);
+        return;
+    }
+    // MG-2b: the engine reads pelican.scene version 2 only, so a delivery
+    // declaring an older scene would install a document that cannot load.
+    if (schema == "pelican.scene") {
+        requireOutputVersion(schema, version, 2);
         return;
     }
     // pelican-import-tools の ktx2 レシピが出力する schema(KTX2 container

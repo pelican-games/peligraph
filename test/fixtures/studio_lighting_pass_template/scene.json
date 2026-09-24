@@ -1,4 +1,4 @@
-{"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+{"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[
   {"name":"Box","components":[
     {"name":"transform","pos":[0.0,0.0,0.0],"rotation":[0.2391,0.3696,-0.0990,0.8924],"scale":[1.5,1.5,1.5]},
     {"name":"simplemodelview","model":"box"}

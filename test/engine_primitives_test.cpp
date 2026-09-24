@@ -15,6 +15,7 @@
 #include "../src/core/vkcore/renderer.hpp"
 #include "../src/project/projecttemplate.hpp"
 #include "../src/project/renderconfigsection.hpp"
+#include "render_graph_root_test_support.hpp"
 #include "vulkan_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -389,7 +390,7 @@ TEST_CASE("GP-5 a declared primitive takes its material from the existing materi
     writeFile(root / "materials/floor.bindings.json",
               R"json({"schema":"pelican.material_bindings","version":1,"model":"engine://primitives/plane","bindings":[{"usd_path":"/Floor","mesh":0,"primitive":0,"material":"ProjectRed","routing":{"alpha_mode":"opaque","double_sided":false}}]})json");
     writeFile(root / "assets/asset_data.json",
-              R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"red_floor","path":"engine://primitives/plane","material_bindings":"materials/floor.bindings.json"}],"materials":[{"path":"materials/red.material.json"}]})json");
+              R"json({"schema":"pelican.asset_data","version":2,"models":[{"name":"red_floor","path":"engine://primitives/plane","material_bindings":"materials/floor.bindings.json"}],"materials":[{"path":"materials/red.material.json"}]})json");
 
     FastModuleContainer modules;
     configureHeadless(root);
@@ -445,7 +446,7 @@ void writeForwardOnlyProject(const std::filesystem::path &root, bool forward_def
     };
     if (forward_default) rendering["material_route_default"] = "forward";
     writeFile(root / "passes/main_rendering_config.json",
-              wrapLegacyRenderingConfig(rendering).dump(2));
+              Pelican::TestSupport::renderGraphRoot(rendering).dump(2));
     writeFile(root / "shaders/present.frag",
               "#version 460\n#extension GL_GOOGLE_include_directive : require\n"
               "#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\n"

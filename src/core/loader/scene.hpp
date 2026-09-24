@@ -107,7 +107,7 @@ DECLARE_MODULE(SceneLoader) {
     std::uint64_t next_authority_epoch = 1;
     std::uint64_t run_nonce = 0;
     SceneLoadFaultInjector *fault_injector = nullptr;
-    std::array<SceneLoadDiagnostics, 6> diagnostics_by_root;
+    std::array<SceneLoadDiagnostics, 5> diagnostics_by_root;
     static SceneLoadFaultInjector *default_fault_injector_for_testing;
     struct RetirementState;
     std::unique_ptr<RetirementState> retirement_state;

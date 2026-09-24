@@ -124,7 +124,7 @@ file(WRITE "${ARTIFACT_ROOT}/project/project.json" [=[
 file(WRITE "${ARTIFACT_ROOT}/project/assets/asset_data.json" [=[
 {
   "schema": "pelican.asset_data",
-  "version": 1,
+  "version": 2,
   "models": [
     {"name": "character", "path": "assets/models/character.glb"}
   ]
@@ -134,7 +134,7 @@ file(WRITE "${ARTIFACT_ROOT}/project/assets/asset_data.json" [=[
 file(WRITE "${ARTIFACT_ROOT}/project/scenes/main.scene.json" [=[
 {
   "schema": "pelican.scene",
-  "version": 1,
+  "version": 2,
   "scenes": {
     "default_scene": {
       "objects": [

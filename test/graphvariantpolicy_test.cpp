@@ -1,4 +1,5 @@
 #include "../src/project/graphvariantpolicy.hpp"
+#include "render_graph_root_test_support.hpp"
 #include "../src/project/renderpipeline.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -305,7 +306,7 @@ TEST_CASE("WP192 resolver owns XR and preview policy without injected callbacks"
 
 #if PELICAN_WITH_OPENXR
     const auto xr = resolveRenderPipeline(
-        RenderPipelineRequest{authored, "CPU-only XR fixture"},
+        RenderPipelineRequest{Pelican::TestSupport::renderGraphRoot(authored), "CPU-only XR fixture"},
         RenderEnvironmentCapabilities{
             true, RenderPipelineGraphVariant::xr},
         RenderPipelineResolveDependencies{
@@ -330,7 +331,7 @@ TEST_CASE("WP192 resolver owns XR and preview policy without injected callbacks"
 #endif
 
     const auto preview = resolveRenderPipeline(
-        RenderPipelineRequest{authored, "CPU-only preview fixture"},
+        RenderPipelineRequest{Pelican::TestSupport::renderGraphRoot(authored), "CPU-only preview fixture"},
         RenderEnvironmentCapabilities{
             true, RenderPipelineGraphVariant::preview},
         RenderPipelineResolveDependencies{
@@ -521,7 +522,7 @@ TEST_CASE("WP203 pipeline preset settings carry an authored XR target preference
            {{"xr", {{"view_execution", "sequential"}}}}}}},
     };
     const auto resolved = resolveRenderPipeline(
-        RenderPipelineRequest{authored, "XR policy preset"},
+        RenderPipelineRequest{Pelican::TestSupport::renderGraphRoot(authored), "XR policy preset"},
         RenderEnvironmentCapabilities{
             true, RenderPipelineGraphVariant::xr},
         RenderPipelineResolveDependencies{
@@ -605,7 +606,8 @@ ResolvedRenderPipeline g6Resolve(RenderPipelineGraphVariant variant,
         refs.push_back(name);
     }
     return resolveRenderPipeline(
-        RenderPipelineRequest{baseConfig(refs), "G-6 fixture"},
+        RenderPipelineRequest{Pelican::TestSupport::renderGraphRoot(baseConfig(refs)),
+                              "G-6 fixture"},
         RenderEnvironmentCapabilities{true, variant},
         RenderPipelineResolveDependencies{
             .load_feature_json =

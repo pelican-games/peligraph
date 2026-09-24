@@ -241,7 +241,7 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
         writeMaterialRoutingGlb(routing_path);
     writeText(temp_dir / "scene.json", R"json({
         "schema":"pelican.scene",
-        "version":1,
+        "version":2,
         "scenes":{"default_scene":{"objects":[{
             "name":"fragment_object",
             "components":[
@@ -251,12 +251,12 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
         }]}}
     })json");
     writeText(temp_dir / "assets.json",
-              R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"selected","path":"fragment.glb#mesh/MeshA"}]})json");
+              R"json({"schema":"pelican.asset_data","version":2,"models":[{"name":"selected","path":"fragment.glb#mesh/MeshA"}]})json");
 
     FastModuleContainer modules;
     std::filesystem::create_directories(temp_dir / "passes");
     writeText(temp_dir / "passes/main_rendering_config.json",
-              R"json({"pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},"features":[]})json");
+              R"json({"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":{"pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},"features":[]}})json");
     GET_MODULE(PathResolver).setup(temp_dir, false);
     GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{
         {"basic_config",
@@ -489,12 +489,12 @@ TEST_CASE("U-USD0b corpus deliveries parse, load, and instantiate their scene fr
     std::filesystem::copy_file(yup / "model.glb", temp_dir / "model.glb");
     std::filesystem::copy_file(yup / "scene.json", temp_dir / "scene.json");
     writeText(temp_dir / "assets.json",
-              R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+              R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
 
     FastModuleContainer modules;
     std::filesystem::create_directories(temp_dir / "passes");
     writeText(temp_dir / "passes/main_rendering_config.json",
-              R"json({"pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},"features":[]})json");
+              R"json({"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":{"pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},"features":[]}})json");
     GET_MODULE(PathResolver).setup(temp_dir, false);
     GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{
         {"basic_config",
@@ -580,12 +580,12 @@ TEST_CASE("U-USD0c generated delivery parses material and binding then loads the
                           std::filesystem::copy_options::recursive |
                               std::filesystem::copy_options::overwrite_existing);
     writeText(temp_dir / "assets.json",
-              R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+              R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
 
     FastModuleContainer modules;
     std::filesystem::create_directories(temp_dir / "passes");
     writeText(temp_dir / "passes/main_rendering_config.json",
-              R"json({"pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},"features":[]})json");
+              R"json({"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":{"pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},"features":[]}})json");
     GET_MODULE(PathResolver).setup(temp_dir, false);
     GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{
         {"basic_config",

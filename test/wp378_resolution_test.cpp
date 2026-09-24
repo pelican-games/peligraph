@@ -115,7 +115,7 @@ Json resolutionFixture(float znear = 5000.0F,
     if (zfar) camera["zfar"] = *zfar;
     return Json{
         {"schema", "pelican.scene"},
-        {"version", 1},
+        {"version", 2},
         {"scenes",
          {{"main",
            {{"objects",
@@ -280,7 +280,7 @@ TEST_CASE("WP378 camera completion retains all four named leaf contracts",
         DYNAMIC_SECTION(test.code) {
             const auto document = AuthoringSceneDocument::load(
                 Json{{"schema", "pelican.scene"},
-                     {"version", 1},
+                     {"version", 2},
                      {"scenes",
                       {{"main",
                         {{"objects",

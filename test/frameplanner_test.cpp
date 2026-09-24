@@ -151,10 +151,19 @@ void normalizeDisplayAlias(nlohmann::json &value) {
     }
 }
 
+// MG-2b: the production locator reads an authored root, which is always a
+// `pelican.graph` root. These helpers are also handed the composed config --
+// the flat form the compiler works on, not an authored document -- so they
+// take the section only from a graph root.
+const nlohmann::json &sectionOrComposed(const nlohmann::json &document) {
+    return isRenderGraphRoot(document) ? renderingSectionOrEmpty(document)
+                                       : document;
+}
+
 nlohmann::json legacyPassProjection(const nlohmann::json &document) {
     // P-2a-4b: called with both a composed (legacy) config and the shipping
-    // graph root, so it asks the production locator where the section is.
-    const auto &config = renderingSectionOrEmpty(document);
+    // graph root, so it asks where the section is.
+    const auto &config = sectionOrComposed(document);
     auto projected = nlohmann::json::array();
     for (const auto &pass : config.at("rendering_passes").at(0).at("passes")) {
         const auto type = pass.value("type", std::string{});
@@ -172,7 +181,7 @@ nlohmann::json legacyPassProjection(const nlohmann::json &document) {
 }
 
 nlohmann::json legacyTargetProjection(const nlohmann::json &document) {
-    const auto &config = renderingSectionOrEmpty(document);
+    const auto &config = sectionOrComposed(document);
     auto projected = nlohmann::json::array();
     for (const auto &target : config.at("render_targets")) {
         if (target.value("name", std::string{}) == "display") {
@@ -228,8 +237,9 @@ std::vector<ConfigCase> staticRenderingConfigCases() {
             }
             // P-2a-4b: `projects/example` is a `pelican.graph` root now. Its
             // passes live in the `rendering` section, and the shadow cases
-            // below are legacy-shaped configs, so take the section.
-            const auto &section = renderingSectionOrEmpty(json);
+            // below are legacy-shaped configs, so take the section. The
+            // fixtures also hold flat configs that are not authored roots.
+            const auto &section = sectionOrComposed(json);
             if (section.contains("rendering_passes")) {
                 cases.push_back(ConfigCase{
                     std::filesystem::relative(entry.path(), sourceRoot()).generic_string(),

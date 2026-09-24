@@ -134,7 +134,7 @@ void configureGpu(const Sandbox &box) {
     writeText(scene, "{}");
     writeText(
         assets,
-        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+        R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
     GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{
         {"basic_config", {{"window_size", {{"width", 16}, {"height", 16}}},
                           {"scene_data_json", scene.generic_string()},
@@ -273,7 +273,7 @@ void writeMaterialAssetIndex(
     }
     writeText(box.root / "assets.json", nlohmann::json{
         {"schema", "pelican.asset_data"},
-        {"version", 1},
+        {"version", 2},
         {"models", nlohmann::json::array()},
         {"materials", std::move(materials)}}
         .dump(2));

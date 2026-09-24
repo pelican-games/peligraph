@@ -14,7 +14,7 @@ file(WRITE "${OUT_DIR}/project/project.json" [=[
 }
 ]=])
 file(WRITE "${OUT_DIR}/project/assets.json"
-     "{\"schema\":\"pelican.asset_data\",\"version\":1,\"models\":[]}\n")
+     "{\"schema\":\"pelican.asset_data\",\"version\":2,\"models\":[]}\n")
 file(WRITE "${OUT_DIR}/project/ui/hang.psd" "fixture\n")
 file(WRITE "${OUT_DIR}/project/imports.rules.json" [=[
 {

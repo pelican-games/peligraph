@@ -63,7 +63,7 @@ void writeText(const std::filesystem::path &path, std::string_view value) {
 void writeRenderingConfig(const std::filesystem::path &root) {
     std::filesystem::create_directories(root / "passes");
     writeText(root / "passes/main_rendering_config.json",
-              R"({"pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"}})");
+              R"({"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":{"pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"}}})");
 }
 struct TempDir { std::filesystem::path path; ~TempDir() { std::filesystem::remove_all(path); } };
 AssetFragmentRef animationFragment(std::string name) {
@@ -244,10 +244,10 @@ void main() {
         {"element", "vec3"}, {"domain", "vertex"}, {"access", "read"}};
     document["rendering"] = {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}};
     writeText(root / "passes/main_rendering_config.json", document.dump());
-    writeText(root / "assets.json", nlohmann::json{{"schema", "pelican.asset_data"}, {"version", 1},
+    writeText(root / "assets.json", nlohmann::json{{"schema", "pelican.asset_data"}, {"version", 2},
         {"models", shared_model ? nlohmann::json::array({{{"name", "character"}, {"path", source_file}}})
                                 : nlohmann::json::array()}}.dump());
-    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})");
+    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})");
     FastModuleContainer modules;
     GET_MODULE(PathResolver).setup(root, false);
     GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{{"basic_config", {
@@ -488,8 +488,8 @@ void main() {
     pelican_store_destination(0, position.x);
 }
 )");
-    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"character.glb"}]})");
-    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":2,"models":[{"name":"character","path":"character.glb"}]})");
+    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[
       {"name":"Character","components":[{"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
         {"name":"simplemodelview","model":"character"}]}
     ]}}})");
@@ -614,8 +614,8 @@ void main() {
     pelican_store_destination(3, pelican_load_normal(0).z);
 }
 )");
-    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"character.gltf"}]})");
-    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":2,"models":[{"name":"character","path":"character.gltf"}]})");
+    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[
       {"name":"Character","components":[{"name":"transform","pos":[10,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
         {"name":"simplemodelview","model":"character"}]}
     ]}}})");
@@ -795,10 +795,10 @@ void main() {
     pelican_store_destination(3, pelican_load_model(0)[0].x);
 }
 )");
-    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"character.gltf"}]})");
+    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":2,"models":[{"name":"character","path":"character.gltf"}]})");
     writeText(root / "turn.json", R"({"schema":"pelican.anim_graph","version":1,
       "parameters":{},"initial_state":"turn","states":[{"name":"turn","type":"clip","clip":"Turn","loop":false}],"transitions":[]})");
-    auto scene_document = nlohmann::json::parse(R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+    auto scene_document = nlohmann::json::parse(R"({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[
       {"name":"Character","components":[{"name":"transform","pos":[10,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
         {"name":"simplemodelview","model":"character"}]}
     ]}}})");
@@ -951,9 +951,9 @@ TEST_CASE("glTF skin and clips connect to animation component without ECS bones"
         root / "bad_default_scene.glb",
         TestSkeletalFixture::Options{.invalid_default_scene = true});
     writeText(root / "assets.json",
-              R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"character.glb"}]})json");
+              R"json({"schema":"pelican.asset_data","version":2,"models":[{"name":"character","path":"character.glb"}]})json");
     writeText(root / "scene.json", R"json({
-      "schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[{
+      "schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[{
         "name":"Character","components":[
           {"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
           {"name":"simplemodelview","model":"character"},
@@ -1033,8 +1033,8 @@ TEST_CASE("animation component rejects competing clip and graph sources", "[skel
     std::filesystem::create_directories(root);
     const TempDir guard{root};
     writeText(root / "assets.json",
-              R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
-    writeText(root / "scene.json", R"json({"schema":"pelican.scene","version":1,
+              R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
+    writeText(root / "scene.json", R"json({"schema":"pelican.scene","version":2,
       "scenes":{"default_scene":{"objects":[{"name":"Bad","components":[
         {"name":"animation","clip":"x.glb#animation/Walk","graph":"walk.anim.json"}
       ]}]}}})json");
@@ -1056,7 +1056,7 @@ TEST_CASE("authored animation graphs publish and release real scene model poses"
     const TempDir guard{root};
     TestSkeletalFixture::writeGlb(root / "character.glb");
     writeText(root / "assets.json",
-              R"({"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"character.glb"}]})");
+              R"({"schema":"pelican.asset_data","version":2,"models":[{"name":"character","path":"character.glb"}]})");
     writeRenderingConfig(root);
     writeText(root / "turn.json", R"({"schema":"pelican.anim_graph","version":1,
       "parameters":{"go":0},"initial_state":"turn",
@@ -1064,7 +1064,7 @@ TEST_CASE("authored animation graphs publish and release real scene model poses"
                 {"name":"step","type":"clip","clip":"Step","loop":false}],
       "transitions":[{"from":"turn","to":"step","duration":0,
                       "conditions":[{"parameter":"go","op":">","value":0}]}]})");
-    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":1,
+    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":2,
       "scenes":{"default_scene":{"objects":[
         {"name":"Character","components":[
           {"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
@@ -1451,8 +1451,8 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     document["nodes"][0]["parameters"]["name"] = "scene_time";
     document["rendering"] = {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}};
     writeText(root / "passes/main_rendering_config.json", document.dump());
-    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":1,"models":[]})");
-    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":2,"models":[]})");
+    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[
       {"name":"Left","components":[{"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}]},
       {"name":"Right","components":[{"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}]}
     ]}}})");
@@ -1862,10 +1862,10 @@ void main() {
     pelican_store_destination(3, pelican_load_model(0)[0].x);
 }
 )");
-    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"character.gltf"}]})");
+    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":2,"models":[{"name":"character","path":"character.gltf"}]})");
     // No animation component: the graph is the only thing that can pose this
     // object, so anything the attribute shows came through the pose port.
-    auto scene_document = nlohmann::json::parse(R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+    auto scene_document = nlohmann::json::parse(R"({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[
       {"name":"Character","components":[{"name":"transform","pos":[10,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
         {"name":"simplemodelview","model":"character"}]}]}}})");
     if (component_writer)
@@ -2139,11 +2139,11 @@ void main() {
     pelican_store_destination(3, posed[3].y);
 }
 )");
-    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"character.gltf"}]})");
+    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":2,"models":[{"name":"character","path":"character.gltf"}]})");
     nlohmann::json animation_component{{"name", "animation"},
         {"clip", "character.gltf#animation/Turn"}, {"loop", loop},
         {"speed", speed}, {"start_time", start_time}};
-    auto scene_document = nlohmann::json::parse(R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+    auto scene_document = nlohmann::json::parse(R"({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[
       {"name":"Component","components":[{"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
         {"name":"simplemodelview","model":"character"}]},
       {"name":"Posed","components":[{"name":"transform","pos":[4,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
@@ -2342,8 +2342,8 @@ void main() {
     pelican_store_destination(3, tip[0].x);
 }
 )");
-    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"character.gltf"}]})");
-    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":2,"models":[{"name":"character","path":"character.gltf"}]})");
+    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[
       {"name":"Hero","components":[{"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
         {"name":"simplemodelview","model":"character"}]}]}}})");
 

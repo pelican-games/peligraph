@@ -5,7 +5,8 @@
 # is the part a reader can check without one --
 #   * the default is still the standard template, byte for byte what
 #     `project init` wrote before F-2 (the digests below were taken from that
-#     build), and `--template standard` is the same thing spelled out;
+#     build; MG-2b re-took the two it changed, see the table), and
+#     `--template standard` is the same thing spelled out;
 #   * `--template blank` is a direct config -- no `pipeline`, no `features`,
 #     no `render_targets` -- with one fullscreen pass `present` writing
 #     `display`, and ships the shader that pass names;
@@ -36,12 +37,19 @@ endfunction()
 
 # Every file the standard template writes, and its SHA-256 as `project init`
 # wrote it before the templates moved into pelican_project.
+#
+# MG-2b (2026-09-24) re-took two rows: the engine reads pelican.scene and
+# pelican.asset_data version 2 only, so the template writes `"version": 2` in
+# scenes/main.scene.json and assets/asset_data.json -- the only byte that
+# changed in either file. passes/main_rendering_config.json is now written as
+# the pelican.graph root directly instead of wrapped at run time; its bytes
+# (and so its row) did not change.
 set(standard_digests
     ".gitattributes=53ca7dbd7bae3d4305c235b965e0af1b77aa1a6b0afa1ffcb8b8301e44c82955"
     ".gitignore=45658c9867458757f8857156830c81a4aabec1ac1b68dda97a9bed3c42c3f8a7"
     "README.md=88d9f3ec8d5d6c54b5e6f8ef9200d050c19764c5a4293759d45b7e8d86b9ae93"
     "assets/.gitkeep=01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
-    "assets/asset_data.json=04c3cd783bf73a4686b758d36c7c720037f37938fd68a8d98ab99ef68fa653d0"
+    "assets/asset_data.json=99284ff84b66d0665aee8d324fd2e5f64a708b025f06895c8766c5c57e999d38"
     "assets/audio/.gitkeep=01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     "assets/models/.gitkeep=01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
     "assets/textures/.gitkeep=01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
@@ -51,7 +59,7 @@ set(standard_digests
     "input/profiles/keyboard.json=86d35286615bce33adfb6bf9a9c1b54e02d30e9b85b35cd1513f14538657d97c"
     "passes/main_rendering_config.json=81163814279c3171d67a654ec510ed0698daa1636ca22327b0894013976e000b"
     "project.json=a869d958975225db7dc00796b8882811d1f8d038d6948d6b1e987689fdd68431"
-    "scenes/main.scene.json=4a4e4e178d0f4c5b0dbeecdbd9fe9dd557a2b21871bcb235dfccdf39394384bd"
+    "scenes/main.scene.json=c6ec9bab9c5fab7f326b9c556330dd7fb94db85d97780eddfe39c795c3808fcb"
     "ui/ui_overlay.json=f9cf52bb037434a9aa098e11a18fd12587bad51bf07928db10899b1da952a2ac"
 )
 

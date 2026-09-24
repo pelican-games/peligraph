@@ -27,7 +27,7 @@ class DocumentTarget final : public test_support::SceneProjectionTarget {
 nlohmann::json projectionFixture() {
     return nlohmann::json::parse(R"json({
       "schema": "pelican.scene",
-      "version": 1,
+      "version": 2,
       "scenes": {
         "main": {
           "objects": [
@@ -241,7 +241,7 @@ nlohmann::json wp378TransformFixture(bool invalid) {
     if (invalid) root_transform["wp378_invalid"] = true;
     return nlohmann::json{
         {"schema", "pelican.scene"},
-        {"version", 1},
+        {"version", 2},
         {"scenes",
          {{"main",
            {{"objects",
@@ -719,7 +719,7 @@ TEST_CASE("Transform projection recomputes descendants and reparent policies",
 TEST_CASE("Transform projection binds an unnamed child by authoring id",
           "[editor-projection][transform][hierarchy][unnamed][wp244]") {
     const auto fixture = nlohmann::json::parse(R"json({
-      "schema":"pelican.scene","version":1,
+      "schema":"pelican.scene","version":2,
       "scenes":{"main":{"objects":[
         {"name":"Root","components":[
           {"name":"transform","pos":[2,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}

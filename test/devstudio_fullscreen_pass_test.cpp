@@ -1,5 +1,6 @@
 #include "fullscreenpasswidget.hpp"
 #include "frameplanedit.hpp"
+#include "render_graph_root_test_support.hpp"
 #include "fullscreenshadertemplate.hpp"
 #include "mainwindow.hpp"
 #include "renderfeatureswidget.hpp"
@@ -439,10 +440,12 @@ Json projectToKeys(const Json &declaration, const StringSet &keys) {
 
 const Json &findPass(const Json &document, std::string_view graph,
                      std::string_view name) {
-    // P-2a-4b: called with the shipping `pelican.graph` root as well as with
-    // legacy-root projects; the production locator answers for both.
-    for (const auto &graph_entry :
-         Pelican::renderingSectionOf(document).at("rendering_passes")) {
+    // P-2a-4b / MG-2b: called with an authored `pelican.graph` root and with
+    // a resolved (composed, flat) config, which is not an authored document.
+    const Json &section = Pelican::isRenderGraphRoot(document)
+                              ? Pelican::renderingSectionOf(document)
+                              : document;
+    for (const auto &graph_entry : section.at("rendering_passes")) {
         if (std::string_view{
                 graph_entry.at("name").get_ref<const std::string &>()} !=
             graph) {
@@ -1362,7 +1365,7 @@ TEST_CASE(
         };
         return Pelican::resolveRenderPipeline(
                    Pelican::RenderPipelineRequest{
-                       config, "WP355 saved fullscreen form"},
+                       Pelican::TestSupport::renderGraphRoot(config), "WP355 saved fullscreen form"},
                    Pelican::RenderEnvironmentCapabilities{})
             .normalized_config;
     };
@@ -1988,7 +1991,9 @@ TEST_CASE(
     const auto root = std::filesystem::path{PELICAN_TEST_SOURCE_DIR};
     const Json config = readJson(
         root / "projects" / "vrm_xr_demo" / "passes" / "main.json");
-    const auto &graph = config.at("rendering_passes").at(0);
+    // MG-2b: the shipped document is a `pelican.graph` root.
+    const Json &section = Pelican::renderingSectionOf(config);
+    const auto &graph = section.at("rendering_passes").at(0);
     const Json &lighting = findPass(
         config, graph.at("name").get<std::string>(), "lighting_pass");
     const Json plan = resolvedFramePlanFromAuthoredConfig(
@@ -2006,7 +2011,7 @@ TEST_CASE(
     REQUIRE(plan.at("graph") == graph.at("name"));
 
     CoreShapeResources core_resources;
-    for (const auto &target : config.at("render_targets")) {
+    for (const auto &target : section.at("render_targets")) {
         const auto name = target.at("name").get<std::string>();
         core_resources.render_targets.push_back(name);
         if (target.value("history", false)) {
@@ -2176,7 +2181,8 @@ TEST_CASE(
 
     RefreshHarness refresh;
     FullscreenPassWidget form{refresh.driver()};
-    form.receiveAuthoringConfig(QByteArray::fromStdString(authored.dump()));
+    form.receiveAuthoringConfig(
+        QByteArray::fromStdString(Pelican::TestSupport::renderGraphRoot(authored).dump()));
     form.receiveResult(QByteArray::fromStdString(plan.dump()));
     auto &name = required<QLineEdit>(
         form, "pelican.fullscreenPass.name");
@@ -2201,7 +2207,7 @@ TEST_CASE(
          })},
     };
     form.receiveAuthoringConfig(
-        QByteArray::fromStdString(other_graph.dump()));
+        QByteArray::fromStdString(Pelican::TestSupport::renderGraphRoot(other_graph).dump()));
     name.setText(QStringLiteral("runtime_only"));
     REQUIRE(axisState(
                 form, "pelican.fullscreenPass.axis.nameCollision") ==
@@ -2226,7 +2232,8 @@ TEST_CASE(
     const Json plan = minimalFramePlan(
         "refresh_graph",
         Json::array({resource("input_a"), resource("output_a")}));
-    form.receiveAuthoringConfig(QByteArray::fromStdString(authored.dump()));
+    form.receiveAuthoringConfig(
+        QByteArray::fromStdString(Pelican::TestSupport::renderGraphRoot(authored).dump()));
     form.receiveResult(QByteArray::fromStdString(plan.dump()));
     driveShapeDraft(form, {"input_a"}, {"output_a"}, std::nullopt);
     REQUIRE(axisState(

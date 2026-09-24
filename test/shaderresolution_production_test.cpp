@@ -1,4 +1,5 @@
 #include "../src/core/appflow/enginetime.hpp"
+#include "render_graph_root_test_support.hpp"
 #include "../src/core/registrationownerhost.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/launchconfig.hpp"
@@ -171,10 +172,10 @@ TEST_CASE(
     try {
         writeText(
             root / "scene.json",
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeText(
             root / "assets.json",
-            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         std::filesystem::create_directories(root / "shaders");
         writeText(
             root / "shaders" / "effective_vertex.vert",
@@ -237,7 +238,7 @@ void main() { out_color = vec4(0.25, 0.5, 0.75, 1.0); }
             ]
           }]
         })json");
-        writeText(root / "pipeline.json", pipeline.dump(2));
+        writeText(root / "pipeline.json", Pelican::TestSupport::renderGraphRoot(pipeline).dump(2));
 
         nlohmann::json project{
             {"schema", "pelican.project"},

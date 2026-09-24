@@ -205,7 +205,7 @@ int main(int argc, char **argv) {
     }
 
     const auto document = AuthoringSceneDocument::load(
-        R"json({"schema":"pelican.scene","version":1,"scenes":{"main":{"objects":[{"name":"WP358Fixture","components":[{"name":"behavior","type":"wp358_integer_schema_types","params":{}},{"name":"behavior","type":"wp358_floating_schema_types","params":{}},{"name":"behavior","type":"wp358_vec2_schema_type","params":{}},{"name":"behavior","type":"wp358_vec3_schema_type","params":{}},{"name":"behavior","type":"wp358_vec4_schema_type","params":{}},{"name":"behavior","type":"wp358_quat_schema_type","params":{}},{"name":"behavior","type":"wp358_other_schema_types","params":{}}]}]}}})json",
+        R"json({"schema":"pelican.scene","version":2,"scenes":{"main":{"objects":[{"name":"WP358Fixture","components":[{"name":"behavior","type":"wp358_integer_schema_types","params":{}},{"name":"behavior","type":"wp358_floating_schema_types","params":{}},{"name":"behavior","type":"wp358_vec2_schema_type","params":{}},{"name":"behavior","type":"wp358_vec3_schema_type","params":{}},{"name":"behavior","type":"wp358_vec4_schema_type","params":{}},{"name":"behavior","type":"wp358_quat_schema_type","params":{}},{"name":"behavior","type":"wp358_other_schema_types","params":{}}]}]}}})json",
         SceneRevision{1});
     std::cerr << "capture:document\n";
     progress << "document\n" << std::flush;

@@ -382,7 +382,7 @@ TEST_CASE("WP354 shipping shader families project their concrete effective refer
         source_root / "projects" / "sprite_demo" / "passes" /
         "main.json");
     const auto &sprite_passes =
-        sprite.at("rendering_passes").at(0).at("passes");
+        sprite.at("rendering").at("rendering_passes").at(0).at("passes");
     const auto raster_json = std::find_if(
         sprite_passes.begin(), sprite_passes.end(),
         [](const auto &pass) {

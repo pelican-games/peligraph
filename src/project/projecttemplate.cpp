@@ -1,7 +1,5 @@
 #include "projecttemplate.hpp"
 
-#include "renderconfigsection.hpp"
-
 #include <nlohmann/json.hpp>
 
 #include <array>
@@ -121,7 +119,7 @@ constexpr std::string_view project_json = R"json({
 
 constexpr std::string_view scene_json = R"json({
   "schema": "pelican.scene",
-  "version": 1,
+  "version": 2,
   "scenes": {
     "default_scene": {
       "objects": [
@@ -159,7 +157,7 @@ constexpr std::string_view scene_json = R"json({
 
 constexpr std::string_view asset_data_json = R"json({
   "schema": "pelican.asset_data",
-  "version": 1,
+  "version": 2,
   "models": []
 }
 )json";
@@ -191,42 +189,66 @@ constexpr std::string_view input_keyboard_profile_json = R"json({
 }
 )json";
 
-// P-2a-4b: a new project is authored as a `pelican.graph` root, the same
-// shape `projects/example` ships. The literal below is what goes in the
-// `rendering` section; the wrap is the single production function every
-// generator shares, so nothing here re-states where `rendering` goes.
+// P-2a-4b / MG-2b: a new project is authored as a `pelican.graph` root, the
+// same shape every shipping project has. The literal is the whole document,
+// written as the graph root directly (the bytes are those the retired
+// wrapLegacyRenderingConfig produced, so this file is unchanged for a
+// template user).
 constexpr std::string_view rendering_config_json = R"json({
-  "pipeline": { "preset": "engine://render_pipelines/hybrid_v1.json" },
-  "features": [
-    "engine://features/shadow_directional.json",
-    "engine://features/sky_ambient.json"
-  ]
-})json";
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "pipeline": {
+      "preset": "engine://render_pipelines/hybrid_v1.json"
+    },
+    "features": [
+      "engine://features/shadow_directional.json",
+      "engine://features/sky_ambient.json"
+    ]
+  }
+})json"
+                                                   "\n";
 
-// F-2: the blank template's rendering section. No `pipeline` key makes it a
+// F-2: the blank template's rendering config. No `pipeline` key makes it a
 // direct config, so the engine runs exactly the passes listed here plus the
 // canonical anchors and `output_transform` it always adds. `present` writes
 // `display`, the name `output_transform` reads -- which is also what lets the
 // HDR path find the scene's last pass.
 constexpr std::string_view blank_rendering_config_json = R"json({
-  "rendering_passes": [
-    {
-      "name": "main_render",
-      "passes": [
-        {
-          "name": "present",
-          "type": "fullscreen",
-          "input": [],
-          "output": {"color": ["display"], "depth": null},
-          "shader": {
-            "vertex": "engine://fullscreen",
-            "fragment": "project://shaders/present"
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "rendering_passes": [
+      {
+        "name": "main_render",
+        "passes": [
+          {
+            "name": "present",
+            "type": "fullscreen",
+            "input": [],
+            "output": {
+              "color": [
+                "display"
+              ],
+              "depth": null
+            },
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "project://shaders/present"
+            }
           }
-        }
-      ]
-    }
-  ]
-})json";
+        ]
+      }
+    ]
+  }
+})json"
+                                                         "\n";
 
 // Reads nothing, so it needs no bindings: a pixel's colour is where it sits on
 // the screen, and a first frame that is not one flat colour says the pass ran.
@@ -240,18 +262,9 @@ void main() {
 }
 )glsl";
 
-std::string wrappedRenderingConfig(std::string_view legacy) {
-    return wrapLegacyRenderingConfig(nlohmann::ordered_json::parse(legacy))
-               .dump(2) +
-           "\n";
-}
-
-const std::string &renderingConfigJson(ProjectTemplate kind) {
-    static const std::string standard =
-        wrappedRenderingConfig(rendering_config_json);
-    static const std::string blank =
-        wrappedRenderingConfig(blank_rendering_config_json);
-    return kind == ProjectTemplate::Blank ? blank : standard;
+std::string_view renderingConfigJson(ProjectTemplate kind) {
+    return kind == ProjectTemplate::Blank ? blank_rendering_config_json
+                                          : rendering_config_json;
 }
 
 constexpr std::string_view ui_overlay_json = R"json({

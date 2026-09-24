@@ -4,6 +4,7 @@
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/project/featurecompose.hpp"
 #include "../src/project/renderconfigsection.hpp"
+#include "render_graph_root_test_support.hpp"
 #include "../src/project/renderpipeline.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -193,7 +194,7 @@ TEST_CASE(
     legacy["pipeline"] = Json{{"preset", "engine://render_pipelines/unreachable.json"}};
     legacy.at("rendering_passes").at(0).at("passes").at(0)["push_constants"] =
         "projection_view";
-    const auto document = wrapLegacyRenderingConfig(legacy);
+    const auto document = Pelican::TestSupport::renderGraphRoot(legacy);
     REQUIRE(document.at("schema") == "pelican.graph");
     REQUIRE_FALSE(document.contains("rendering_passes"));
 
@@ -396,7 +397,7 @@ TEST_CASE("WP180 flat resolver preserves FeatureCompose bytes without modules",
         RenderFeatureComposeDependencies{load_feature, true, {},
                                          load_pipeline});
     const auto resolved = resolveRenderPipeline(
-        RenderPipelineRequest{authored, "flat fixture"},
+        RenderPipelineRequest{Pelican::TestSupport::renderGraphRoot(authored), "flat fixture"},
         RenderEnvironmentCapabilities{true,
                                       RenderPipelineGraphVariant::flat},
         RenderPipelineResolveDependencies{load_feature, load_pipeline});
@@ -452,7 +453,7 @@ TEST_CASE("WP180 XR resolution preserves policy order suffix and metadata",
 
     std::vector<std::string> resolution_order;
     const auto resolved = resolveRenderPipeline(
-        RenderPipelineRequest{authored, "xr fixture"},
+        RenderPipelineRequest{Pelican::TestSupport::renderGraphRoot(authored), "xr fixture"},
         RenderEnvironmentCapabilities{true,
                                       RenderPipelineGraphVariant::xr},
         RenderPipelineResolveDependencies{
@@ -515,7 +516,7 @@ TEST_CASE("WP180 hybrid resolver preserves semantic material routing",
         RenderFeatureComposeDependencies{loadEngineResource, true, {},
                                          loadEngineResource});
     const auto resolved = resolveRenderPipeline(
-        RenderPipelineRequest{authored, "hybrid fixture"},
+        RenderPipelineRequest{Pelican::TestSupport::renderGraphRoot(authored), "hybrid fixture"},
         RenderEnvironmentCapabilities{true,
                                       RenderPipelineGraphVariant::flat},
         RenderPipelineResolveDependencies{loadEngineResource,
@@ -572,7 +573,7 @@ TEST_CASE("target planning authoring compiles to typed graph-scoped controls",
     };
 
     const auto resolved = resolveRenderPipeline(
-        RenderPipelineRequest{authored, "target planning fixture"},
+        RenderPipelineRequest{Pelican::TestSupport::renderGraphRoot(authored), "target planning fixture"},
         RenderEnvironmentCapabilities{
             true, selected_variant});
     REQUIRE(resolved.target_planning.authored);
@@ -641,7 +642,7 @@ TEST_CASE("target planning authoring rejects ambiguous controls",
         REQUIRE_THROWS_WITH(
             resolveRenderPipeline(
                 RenderPipelineRequest{
-                    authored, "invalid target planning"},
+                    Pelican::TestSupport::renderGraphRoot(authored), "invalid target planning"},
                 RenderEnvironmentCapabilities{}),
             Catch::Matchers::ContainsSubstring(
                 "seed is only valid for hazard_stress"));
@@ -657,7 +658,7 @@ TEST_CASE("target planning authoring rejects ambiguous controls",
         REQUIRE_THROWS_WITH(
             resolveRenderPipeline(
                 RenderPipelineRequest{
-                    authored, "invalid target planning"},
+                    Pelican::TestSupport::renderGraphRoot(authored), "invalid target planning"},
                 RenderEnvironmentCapabilities{}),
             Catch::Matchers::ContainsSubstring(
                 "serial must be a boolean"));
@@ -672,7 +673,7 @@ TEST_CASE("target planning authoring rejects ambiguous controls",
         REQUIRE_THROWS_WITH(
             resolveRenderPipeline(
                 RenderPipelineRequest{
-                    authored, "invalid target planning"},
+                    Pelican::TestSupport::renderGraphRoot(authored), "invalid target planning"},
                 RenderEnvironmentCapabilities{}),
             Catch::Matchers::ContainsSubstring(
                 "must not contain duplicates"));
@@ -691,7 +692,7 @@ TEST_CASE("target planning authoring rejects ambiguous controls",
         REQUIRE_THROWS_WITH(
             resolveRenderPipeline(
                 RenderPipelineRequest{
-                    authored, "invalid target planning"},
+                    Pelican::TestSupport::renderGraphRoot(authored), "invalid target planning"},
                 RenderEnvironmentCapabilities{}),
             Catch::Matchers::ContainsSubstring(
                 "required_capabilities must not contain duplicates"));
@@ -733,7 +734,7 @@ TEST_CASE("Vulkan plan pins select the current immutable graph variant",
 
     const auto resolved = resolveRenderPipeline(
         RenderPipelineRequest{
-            authored, "Vulkan plan pin fixture"},
+            Pelican::TestSupport::renderGraphRoot(authored), "Vulkan plan pin fixture"},
         RenderEnvironmentCapabilities{
             true, selected_variant});
     REQUIRE(resolved.vulkan_plan_pins ==
@@ -754,7 +755,7 @@ TEST_CASE("Vulkan plan pins select the current immutable graph variant",
     REQUIRE_THROWS_WITH(
         resolveRenderPipeline(
             RenderPipelineRequest{
-                authored, "duplicate Vulkan plan pins"},
+                Pelican::TestSupport::renderGraphRoot(authored), "duplicate Vulkan plan pins"},
             RenderEnvironmentCapabilities{
                 true, selected_variant}),
         Catch::Matchers::ContainsSubstring(
@@ -814,7 +815,7 @@ TEST_CASE("Vulkan physical fragments select the current immutable graph variant"
 
     const auto resolved = resolveRenderPipeline(
         RenderPipelineRequest{
-            authored, "Vulkan physical fragment fixture"},
+            Pelican::TestSupport::renderGraphRoot(authored), "Vulkan physical fragment fixture"},
         RenderEnvironmentCapabilities{
             true, selected_variant});
     REQUIRE(
@@ -840,7 +841,7 @@ TEST_CASE("Vulkan physical fragments select the current immutable graph variant"
     REQUIRE_THROWS_WITH(
         resolveRenderPipeline(
             RenderPipelineRequest{
-                authored,
+                Pelican::TestSupport::renderGraphRoot(authored),
                 "duplicate Vulkan physical fragments"},
             RenderEnvironmentCapabilities{
                 true, selected_variant}),
@@ -957,7 +958,7 @@ TEST_CASE("WP180 resolve failure cannot publish partial registration state",
 
     const auto resolve_then_publish = [&] {
         const auto resolved = resolveRenderPipeline(
-            RenderPipelineRequest{authored, "invalid fixture"},
+            RenderPipelineRequest{Pelican::TestSupport::renderGraphRoot(authored), "invalid fixture"},
             RenderEnvironmentCapabilities{},
             RenderPipelineResolveDependencies{
                 .transform_config = [](Json &config) {
@@ -998,7 +999,7 @@ TEST_CASE(
     const auto resolve_then_publish = [&] {
         const auto resolved = resolveRenderPipeline(
             RenderPipelineRequest{
-                authored, "WP311 preview ownership fixture"},
+                Pelican::TestSupport::renderGraphRoot(authored), "WP311 preview ownership fixture"},
             RenderEnvironmentCapabilities{},
             RenderPipelineResolveDependencies{
                 .resolve_render_strategy =
@@ -1024,7 +1025,7 @@ TEST_CASE(
 
     REQUIRE_THROWS_WITH(
         precompilePreviewGraph(
-            authored.dump(),
+            Pelican::TestSupport::renderGraphRoot(authored).dump(),
             [](std::string_view) -> std::string {
                 throw std::runtime_error(
                     "standalone preview loader must not be called");
@@ -1052,12 +1053,12 @@ TEST_CASE(
 
     const auto resolve = [&](const Json &config) {
         return resolveRenderPipeline(
-            RenderPipelineRequest{config, "WP355 raster fixture"},
+            RenderPipelineRequest{Pelican::TestSupport::renderGraphRoot(config), "WP355 raster fixture"},
             RenderEnvironmentCapabilities{});
     };
     const auto preview = [&](const Json &config) {
         return precompilePreviewGraph(
-            config.dump(),
+            Pelican::TestSupport::renderGraphRoot(config).dump(),
             [](std::string_view) -> std::string {
                 throw std::runtime_error(
                     "WP355 inline fixture must not load a feature");
@@ -1128,7 +1129,7 @@ TEST_CASE("WP180 preview precompile resolves presets through the shared boundary
     const auto authored =
         Json{{"pipeline", {{"preset", "fixture://preview_pipeline"}}}};
     const auto program = precompilePreviewGraph(
-        authored.dump(), load_pipeline,
+        Pelican::TestSupport::renderGraphRoot(authored).dump(), load_pipeline,
         true);
 
     REQUIRE(program.generation != 0);
@@ -1166,7 +1167,7 @@ TEST_CASE("WP180 preview precompile resolves presets through the shared boundary
         Json{"preview_hidden"});
 
     const auto resolved = resolveRenderPipeline(
-        RenderPipelineRequest{authored, "preview typed fixture"},
+        RenderPipelineRequest{Pelican::TestSupport::renderGraphRoot(authored), "preview typed fixture"},
         RenderEnvironmentCapabilities{true,
                                       RenderPipelineGraphVariant::preview},
         RenderPipelineResolveDependencies{
@@ -1396,7 +1397,7 @@ TEST_CASE("G-4 material_route_default is a root key the resolver validates and n
         Catch::Matchers::ContainsSubstring("preset config cannot own material_route_default"));
 
     // The graph root keeps it in its rendering section, like every other key.
-    const auto graph_root = wrapLegacyRenderingConfig(
+    const auto graph_root = Pelican::TestSupport::renderGraphRoot(
         Json{{"material_route_default", "forward"}});
     REQUIRE(readMaterialRouteDefault(renderingSectionOrEmpty(graph_root)) ==
             MaterialRouteDefault::forward);

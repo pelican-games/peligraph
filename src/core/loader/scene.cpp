@@ -1875,9 +1875,8 @@ bool SceneLoader::applyPendingLoad() {
 }
 
 nlohmann::ordered_json SceneLoader::diagnosticsStatusJson() const {
-    static constexpr std::array<std::string_view, 6> names{
-        "unspecified", "startup", "rpc", "pending",
-        "import_unversioned", "import_versioned"};
+    static constexpr std::array<std::string_view, 5> names{
+        "unspecified", "startup", "rpc", "pending", "import_versioned"};
     auto result = nlohmann::ordered_json::object();
     for (std::size_t index = 0; index < names.size(); ++index)
         result[std::string{names[index]}] =

@@ -32,15 +32,15 @@ struct AssetDataProceduralGeometryDeclaration {
 };
 
 struct AssetDataFormatDocument {
-    std::uint32_t version = 1;
+    std::uint32_t version = 2;
     std::vector<AssetDataModelDeclaration> models;
     std::vector<AssetDataMaterialDeclaration> materials;
     std::vector<AssetDataProceduralGeometryDeclaration>
         procedural_geometry;
 };
 
-// pelican.asset_data is a strict, versioned project format. Version 1 keeps
-// its historical meaning; only version 2 may declare procedural_geometry.
+// pelican.asset_data is a strict, versioned project format. Only version 2 is
+// read; any other version is pelican.asset_data.version_unsupported@1.
 // Callers that need category-specific payloads such as sprite textures may
 // continue reading those arrays after this envelope validation succeeds.
 AssetDataFormatDocument

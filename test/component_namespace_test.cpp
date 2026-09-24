@@ -2,6 +2,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "../src/core/container.hpp"
+#include "render_graph_root_test_support.hpp"
 #include "../src/core/communication/editorcommandservice.hpp"
 #include "../src/core/ecs/componentinfo.hpp"
 #include "../src/core/ecs/enginecomponentregistrar.hpp"
@@ -73,7 +74,7 @@ void configureNoLayoutProject(const TemporaryProject &project) {
     project.write(
         "scene.json",
         Json{{"schema", "pelican.scene"},
-             {"version", 1},
+             {"version", 2},
              {"scenes",
               {{"main",
                 {{"objects",
@@ -85,13 +86,13 @@ void configureNoLayoutProject(const TemporaryProject &project) {
     project.write(
         "assets.json",
         Json{{"schema", "pelican.asset_data"},
-             {"version", 1},
+             {"version", 2},
              {"models", Json::array()},
              {"textures", Json::array()}}
             .dump(2));
     project.write(
         "rendering.json",
-        Json{{"rendering_passes",
+        Pelican::TestSupport::renderGraphRoot(Json{{"rendering_passes",
               Json::array(
                   {{{"name", "main_render"},
                     {"passes",
@@ -104,7 +105,7 @@ void configureNoLayoutProject(const TemporaryProject &project) {
                            {"shader",
                             {{"vertex", "engine://fullscreen"},
                              {"fragment",
-                              "engine://shader_lab_hello"}}}}})}}})}}
+                              "engine://shader_lab_hello"}}}}})}}})}})
             .dump(2));
 
     GET_MODULE(PathResolver).setup(project.root, false);
@@ -312,13 +313,13 @@ void configureUnknownBindingPrefabProject(const TemporaryProject &project) {
     project.write(
         "assets.json",
         Json{{"schema", "pelican.asset_data"},
-             {"version", 1},
+             {"version", 2},
              {"models", Json::array()},
              {"textures", Json::array()}}
             .dump(2));
     project.write(
         "rendering.json",
-        Json{{"rendering_passes", Json::array()}}.dump(2));
+        Pelican::TestSupport::renderGraphRoot(Json{{"rendering_passes", Json::array()}}).dump(2));
 
     GET_MODULE(PathResolver).setup(project.root, false);
     GET_MODULE(ProjectSource).setProjectData(
@@ -389,15 +390,14 @@ TEST_CASE("WP379a unknown bound prefab providers reach the common component regi
         .current_scene_id = [] { return std::string{"main"}; },
         .import_scene_snapshot_versioned =
             [&](std::string_view bytes, std::string_view current_scene,
-                std::uint64_t version) {
+                std::uint64_t) {
                 return config.importSceneDocument(
                     bytes,
                     [&](SceneLoadRequest &&request) {
                         request.scene_id = std::string{current_scene};
                         return GET_MODULE(SceneLoader)
                             .load(std::move(request));
-                    },
-                    version);
+                    });
             },
     }};
     const auto exported =

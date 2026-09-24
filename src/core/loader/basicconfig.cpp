@@ -802,8 +802,7 @@ void ProjectBasicConfig::invalidateSceneDocument() noexcept {
 }
 
 SceneImportResult ProjectBasicConfig::importSceneDocument(
-    std::string_view scene_v1_bytes, const SceneImportCallback &reload,
-    std::uint64_t snapshot_schema_version) {
+    std::string_view scene_bytes, const SceneImportCallback &reload) {
     if (!reload) {
         throw std::invalid_argument("scene snapshot import requires a reload callback");
     }
@@ -818,21 +817,13 @@ SceneImportResult ProjectBasicConfig::importSceneDocument(
 
     // Parse, semantic validation, fresh AuthoringObjectId allocation, and all
     // candidate allocation complete before the live cache is touched.
+    // MG-2b: one import form. The unversioned (SnapshotV1) import read a
+    // pelican.scene version 1 payload; that version is refused by the parser
+    // below and SnapshotV1 by the editor service before it gets here.
     auto candidate_document = AuthoringSceneDocument::load(
-        scene_v1_bytes, SceneRevision{scene_metadata.next_scene_revision},
+        scene_bytes, SceneRevision{scene_metadata.next_scene_revision},
         scene_metadata.next_authoring_object_id,
         AuthoringIdentityPolicy::AllocateFresh);
-    if (snapshot_schema_version != 1 && snapshot_schema_version != 2) {
-        throw PrefabError{PrefabErrorCode::PrefabPersistenceUnsupported,
-                          "unsupported scene snapshot persistence version"};
-    }
-    if (snapshot_schema_version == 1 &&
-        (candidate_document.formatVersion() != 1 ||
-         candidate_document.usesPrefabs())) {
-        throw PrefabError{
-            PrefabErrorCode::PrefabPersistenceUnsupported,
-            "scene snapshot import accepts only formatVersion 1 without prefabs"};
-    }
     const bool publish_provider = scene_metadata.prefab_provider.generation() == 0;
     auto candidate_provider = publish_provider
                                   ? buildProductionBindableProviderSnapshot(
@@ -863,10 +854,7 @@ SceneImportResult ProjectBasicConfig::importSceneDocument(
             "injected scene import fault before transactional publication");
     }
     auto request = SceneLoadRequest::owned(
-        {}, std::move(metadata),
-        snapshot_schema_version == 1
-            ? SceneLoadRoot::import_unversioned
-            : SceneLoadRoot::import_versioned);
+        {}, std::move(metadata), SceneLoadRoot::import_versioned);
     auto result = reload(std::move(request));
     (void)requireSceneLoadCommitted(result);
     // A non-runtime importer may accept the typed request without forwarding

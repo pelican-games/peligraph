@@ -795,7 +795,7 @@ TEST_CASE(
     const auto root = sourceRoot();
     const Json animgraph = readJson(
         root / "projects" / "animgraph_demo" / "passes" / "main.json");
-    REQUIRE(animgraph.at("pipeline").at("preset") ==
+    REQUIRE(Pelican::renderingSectionOf(animgraph).at("pipeline").at("preset") ==
             "engine://render_pipelines/hybrid_v1.json");
 
     const Json hybrid = readJson(
@@ -805,19 +805,22 @@ TEST_CASE(
     // feature. They are still part of the shipping corpus, just declared by
     // the component the project now names instead of by the project.
     // P-2a-4b: `projects/example` is a `pelican.graph` root, so its render
-    // targets live in the `rendering` section. The other four documents are
-    // legacy-shaped and the locator returns them unchanged.
+    // targets live in the `rendering` section. MG-2b: so do the sprite and
+    // vrm_xr demos; the pipeline preset and the bloom feature are not
+    // authored roots and are read as they are.
     const Json shipping_example = readJson(
         root / "projects" / "example" / "passes" / "main_rendering_config.json");
+    const Json shipping_sprite = readJson(
+        root / "projects" / "sprite_demo" / "passes" / "main.json");
+    const Json shipping_vrm_xr = readJson(
+        root / "projects" / "vrm_xr_demo" / "passes" / "main.json");
     const std::array<Json, 5> target_documents{
         hybrid.at("config"),
         Pelican::renderingSectionOf(shipping_example),
         readJson(root / "src" / "core" / "resources" / "features" /
                  "bloom.json"),
-        readJson(root / "projects" / "sprite_demo" / "passes" /
-                 "main.json"),
-        readJson(root / "projects" / "vrm_xr_demo" / "passes" /
-                 "main.json"),
+        Pelican::renderingSectionOf(shipping_sprite),
+        Pelican::renderingSectionOf(shipping_vrm_xr),
     };
 
     std::map<std::string, float, std::less<>> target_scales;

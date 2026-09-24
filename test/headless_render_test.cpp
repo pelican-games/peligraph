@@ -1,4 +1,6 @@
 #include "../src/core/appflow/enginetime.hpp"
+#include "render_graph_root_test_support.hpp"
+#include "../src/project/renderconfigsection.hpp"
 #include "../src/core/appflow/teardown.hpp"
 #include "../src/core/asset/model.hpp"
 #include "../src/core/container.hpp"
@@ -176,10 +178,10 @@ void writeRayQueryTestProject(
     bool require_ray_query) {
     writeTextFile(
         directory / "scene.json",
-        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
     writeTextFile(
         directory / "assets.json",
-        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+        R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
     nlohmann::json rendering{
         {"pipeline",
          {{"preset",
@@ -195,7 +197,7 @@ void writeRayQueryTestProject(
         };
     }
     writeTextFile(directory / "hybrid.json",
-                  rendering.dump(2));
+                  Pelican::TestSupport::renderGraphRootWithTaskFeature(rendering, directory).dump(2));
 }
 
 void writeRtShadowMaskTestProject(
@@ -204,10 +206,10 @@ void writeRtShadowMaskTestProject(
     bool ray_tracing_pipeline = false) {
     writeTextFile(
         directory / "scene.json",
-        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
     writeTextFile(
         directory / "assets.json",
-        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+        R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
     nlohmann::json features = nlohmann::json::array({
         "engine://features/rt_shadow_mask.json"});
     if (ray_tracing_pipeline) {
@@ -220,12 +222,12 @@ void writeRtShadowMaskTestProject(
     }
     writeTextFile(
         directory / "hybrid.json",
-        nlohmann::json{
+        Pelican::TestSupport::renderGraphRootWithTaskFeature(nlohmann::json{
             {"pipeline",
              {{"preset",
                "engine://render_pipelines/hybrid_v1.json"}}},
             {"features", std::move(features)},
-        }.dump(2));
+        }, directory).dump(2));
 }
 
 void writeEmbeddedRtShadowMaskTestProject(
@@ -234,10 +236,10 @@ void writeEmbeddedRtShadowMaskTestProject(
     bool reloadable_project_shaders = false) {
     writeTextFile(
         directory / "scene.json",
-        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
     writeTextFile(
         directory / "assets.json",
-        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+        R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
     // This intentionally has no shader defines or generated includes. The
     // compiler-OFF build must resolve every stage to embedded SPIR-V.
     auto config = nlohmann::json::parse(R"json({
@@ -393,17 +395,17 @@ void writeEmbeddedRtShadowMaskTestProject(
                 engineResourceOrThrow(name));
         }
     }
-    writeTextFile(directory / "hybrid.json", config.dump(2));
+    writeTextFile(directory / "hybrid.json", Pelican::TestSupport::renderGraphRootWithTaskFeature(config, directory).dump(2));
 }
 
 void writeRt1aOracleProject(
     const std::filesystem::path &directory) {
     writeTextFile(
         directory / "scene.json",
-        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
     writeTextFile(
         directory / "assets.json",
-        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+        R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
     const auto fixture_root =
         std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
         "fixtures" / "wp364";
@@ -419,7 +421,7 @@ void writeRt1aOracleProject(
     }
     writeTextFile(
         directory / "hybrid.json",
-        R"json({
+        Pelican::TestSupport::renderGraphRootWithTaskFeature(nlohmann::json::parse(R"json({
   "render_targets": [
     {
       "name": "wp364_oracle",
@@ -509,14 +511,14 @@ void writeRt1aOracleProject(
       }
     }
   }
-})json");
+})json"), directory).dump(2));
 }
 
 void writeRt1bLayoutProject(
     const std::filesystem::path &directory) {
     writeTextFile(
         directory / "scene.json",
-        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
     std::filesystem::create_directories(
         directory / "models");
     TestGltfFragmentFixture::writeGlb(
@@ -529,7 +531,7 @@ void writeRt1bLayoutProject(
         R"json({"schema":"pelican.material_bindings","version":1,"model":"project://models/tree.glb","bindings":[{"usd_path":"/World/ProjectLeaf","mesh":0,"primitive":0,"material":"ProjectLeaf","routing":{"alpha_mode":"opaque","double_sided":false}},{"usd_path":"/World/EmbeddedLeaf","mesh":1,"primitive":0,"material":"MatB","routing":{"alpha_mode":"opaque","double_sided":false}}]})json");
     writeTextFile(
         directory / "assets.json",
-        R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"tree","path":"models/tree.glb","material_bindings":"materials/tree.bindings.json"}],"materials":[{"path":"materials/project.material.json"}],"textures":[]})json");
+        R"json({"schema":"pelican.asset_data","version":2,"models":[{"name":"tree","path":"models/tree.glb","material_bindings":"materials/tree.bindings.json"}],"materials":[{"path":"materials/project.material.json"}],"textures":[]})json");
     writeTextFile(
         directory / "ray_layout.json",
         R"json({"schema":"pelican.ray_group_layout","version":3,"ray_types":["primary","shadow"],"default_group":"opaque","groups":[{"name":"opaque","type":"triangles"},{"name":"foliage","type":"triangles"}],"misses":[{"name":"sky"},{"name":"shadow_open"}],"record":[{"name":"tint","type":"vec4"},{"name":"flags","type":"u32"}]})json");
@@ -616,7 +618,7 @@ void writeRt1bLayoutProject(
                {"pelican.vulkan.ray_query@1",
                 "pelican.vulkan.ray_tracing_pipeline@1"}}}}}}}},
     };
-    writeTextFile(directory / "hybrid.json", config.dump(2));
+    writeTextFile(directory / "hybrid.json", Pelican::TestSupport::renderGraphRootWithTaskFeature(config, directory).dump(2));
 }
 
 void writeRt2bTableProject(
@@ -633,7 +635,7 @@ void writeRt2bTableProject(
         R"json({"schema":"pelican.material_bindings","version":1,"model":"project://models/tree.glb","bindings":[{"usd_path":"/World/EmbeddedRed","mesh":0,"primitive":0,"material":"EmbeddedRed","routing":{"alpha_mode":"opaque","double_sided":false}},{"usd_path":"/World/EmbeddedGreen","mesh":1,"primitive":0,"material":"EmbeddedGreen","routing":{"alpha_mode":"opaque","double_sided":false}},{"usd_path":"/World/ProjectOak","mesh":2,"primitive":0,"material":"ProjectOak","routing":{"alpha_mode":"opaque","double_sided":false}},{"usd_path":"/World/ProjectPine","mesh":3,"primitive":0,"material":"ProjectPine","routing":{"alpha_mode":"opaque","double_sided":false}}]})json");
     writeTextFile(
         directory / "assets.json",
-        R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"tree","path":"models/tree.glb","material_bindings":"materials/tree.bindings.json"}],"materials":[{"path":"materials/forest.material.json"}],"textures":[]})json");
+        R"json({"schema":"pelican.asset_data","version":2,"models":[{"name":"tree","path":"models/tree.glb","material_bindings":"materials/tree.bindings.json"}],"materials":[{"path":"materials/forest.material.json"}],"textures":[]})json");
     writeTextFile(
         directory / "ray_bindings.json",
         R"json({"schema":"pelican.ray_bindings","version":2,"bindings":[{"material":{"asset":"models/tree.glb","source_material_index":0},"group":"opaque","record":{"tint":[1.0,0.0,0.0,1.0],"flags":101}},{"material":{"asset":"models/tree.glb","source_material_index":1},"group":"foliage","record":{"tint":[0.0,1.0,0.0,1.0],"flags":202}},{"material":{"document":"materials/forest.material.json"},"group":"opaque","record":{"tint":[0.25,0.5,0.75,1.0],"flags":303}}]})json");
@@ -776,7 +778,7 @@ void writeWp369MaterialAlphaProject(
         R"json({"schema":"pelican.material_bindings","version":1,"model":"project://models/tree.glb","bindings":[{"usd_path":"/World/CheckerLow","mesh":0,"primitive":0,"material":"CheckerLowMask","routing":{"alpha_mode":"mask","double_sided":false}},{"usd_path":"/World/CheckerHigh","mesh":1,"primitive":0,"material":"CheckerHighMask","routing":{"alpha_mode":"mask","double_sided":false}},{"usd_path":"/World/NegativeClamp","mesh":2,"primitive":0,"material":"NegativeClampMask","routing":{"alpha_mode":"mask","double_sided":false}},{"usd_path":"/World/ColorLow","mesh":3,"primitive":0,"material":"ColorLowMask","routing":{"alpha_mode":"mask","double_sided":false}},{"usd_path":"/World/ColorHigh","mesh":4,"primitive":0,"material":"ColorHighMask","routing":{"alpha_mode":"mask","double_sided":false}},{"usd_path":"/World/CutoffClamp","mesh":5,"primitive":0,"material":"CutoffClampMask","routing":{"alpha_mode":"mask","double_sided":false}},{"usd_path":"/World/ProjectOpaque","mesh":6,"primitive":0,"material":"ProjectOpaque","routing":{"alpha_mode":"opaque","double_sided":false}},{"usd_path":"/World/Blend","mesh":7,"primitive":0,"material":"BlendMaterial","routing":{"alpha_mode":"blend","double_sided":false}}]})json");
     writeTextFile(
         directory / "assets.json",
-        R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"tree","path":"models/tree.glb","material_bindings":"materials/tree.bindings.json"}],"materials":[{"path":"materials/wp369.material.json"}],"textures":[]})json");
+        R"json({"schema":"pelican.asset_data","version":2,"models":[{"name":"tree","path":"models/tree.glb","material_bindings":"materials/tree.bindings.json"}],"materials":[{"path":"materials/wp369.material.json"}],"textures":[]})json");
     nlohmann::json ray_bindings{
         {"schema", "pelican.ray_bindings"},
         {"version", 2},
@@ -821,8 +823,10 @@ void writeWp369MaterialAlphaProject(
     RayTracingRt31Fixture::writeWp366RaygenAndMissShaders(
         directory, writeTextFile, true, true);
 
-    auto rendering = nlohmann::json::parse(
+    // MG-2b: the project written above is a graph root; edit its section.
+    auto root = nlohmann::json::parse(
         readTextFile(directory / "hybrid.json"));
+    auto &rendering = renderingSectionOf(root);
     const auto albedo = std::ranges::find(
         rendering["render_targets"], "gbuffer_albedo",
         [](const auto &target) {
@@ -851,7 +855,7 @@ void writeWp369MaterialAlphaProject(
         {"depth_store_op", "store"},
     };
     passes.insert(passes.end() - 1, std::move(transparent_pass));
-    writeTextFile(directory / "hybrid.json", rendering.dump(2));
+    writeTextFile(directory / "hybrid.json", root.dump(2));
 
     RayTracingRt31Fixture::writeWp366ClosestHitShaders(
         directory, writeTextFile, true, true);
@@ -859,10 +863,20 @@ void writeWp369MaterialAlphaProject(
 
 std::string wp368InactiveRenderingConfig(
     std::string_view active_config) {
-    auto inactive = nlohmann::json::parse(active_config);
+    // MG-2b: the active config is a graph root. Its authored tasks live in
+    // the task feature, so dropping that reference drops them.
+    auto root = nlohmann::json::parse(active_config);
+    auto &inactive = renderingSectionOf(root);
     inactive.erase("ray_group_layout");
     inactive.erase("ray_bindings");
-    inactive.erase("compute_tasks");
+    if (const auto features = inactive.find("features");
+        features != inactive.end()) {
+        features->erase(
+            std::remove(features->begin(), features->end(),
+                        nlohmann::json(
+                            "project://features/authored_tasks.json")),
+            features->end());
+    }
     inactive.erase("target_planning");
     auto &targets = inactive.at("render_targets");
     targets.erase(
@@ -873,7 +887,7 @@ std::string wp368InactiveRenderingConfig(
                 return name == "wp366_a" || name == "wp366_b";
             }),
         targets.end());
-    return inactive.dump(2);
+    return root.dump(2);
 }
 
 constexpr std::uint32_t wp367SingleRecord = 111u;
@@ -958,10 +972,10 @@ void writeRt2aAnyHitProject(
     const std::filesystem::path &directory) {
     writeTextFile(
         directory / "scene.json",
-        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
     writeTextFile(
         directory / "assets.json",
-        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+        R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
     writeTextFile(
         directory / "ray_layout.json",
         R"json({"schema":"pelican.ray_group_layout","version":3,"ray_types":["primary","shadow"],"default_group":"single","groups":[{"name":"single","type":"triangles"},{"name":"front","type":"triangles"},{"name":"back","type":"triangles"}],"misses":[{"name":"open"}],"record":[{"name":"marker","type":"u32"},{"name":"ray_marker","type":"u32"},{"name":"group_marker","type":"u32"}]})json");
@@ -1176,7 +1190,7 @@ void main() {
                {"pelican.vulkan.ray_query@1",
                 "pelican.vulkan.ray_tracing_pipeline@1"}}}}}}}},
     };
-    writeTextFile(directory / "hybrid.json", config.dump(2));
+    writeTextFile(directory / "hybrid.json", Pelican::TestSupport::renderGraphRootWithTaskFeature(config, directory).dump(2));
 }
 
 enum class Wp367NegativeAnyHitLoadKind {
@@ -1192,10 +1206,10 @@ void writeWp367NegativeAnyHitLoadProject(
     Wp367NegativeAnyHitLoadKind kind) {
     writeTextFile(
         directory / "scene.json",
-        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
     writeTextFile(
         directory / "assets.json",
-        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+        R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
     writeTextFile(
         directory / "ray_layout.json",
         kind == Wp367NegativeAnyHitLoadKind::unreached_payload_mismatch
@@ -1387,7 +1401,7 @@ void main() { if (ray_record.marker == 0xffffffffu) ignoreIntersectionEXT; }
                "project://shaders/wp367_negative_unused"}}},
         };
     }
-    writeTextFile(directory / "hybrid.json", config.dump(2));
+    writeTextFile(directory / "hybrid.json", Pelican::TestSupport::renderGraphRootWithTaskFeature(config, directory).dump(2));
 }
 
 enum class Rt1aNegativeLoadKind {
@@ -1401,10 +1415,10 @@ void writeRt1aNegativeLoadProject(
     Rt1aNegativeLoadKind kind) {
     writeTextFile(
         directory / "scene.json",
-        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+        R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
     writeTextFile(
         directory / "assets.json",
-        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+        R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
     const auto fixture_root =
         std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
         "fixtures" / "wp364";
@@ -1430,7 +1444,7 @@ void writeRt1aNegativeLoadProject(
     }
     writeTextFile(
         directory / "hybrid.json",
-        R"json({
+        Pelican::TestSupport::renderGraphRootWithTaskFeature(nlohmann::json::parse(R"json({
   "render_targets": [
     {
       "name": "wp364_negative_output",
@@ -1485,7 +1499,7 @@ void writeRt1aNegativeLoadProject(
       }
     }
   }
-})json");
+})json"), directory).dump(2));
 }
 
 void configureRayQueryTestRuntime(
@@ -3254,18 +3268,17 @@ TEST_CASE(
         temp_dir = makeTempProjectDir();
         writeTextFile(
             temp_dir / "scene.json",
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         writeTextFile(
             temp_dir / "hybrid.json",
-            nlohmann::json{
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(nlohmann::json{
                 {"pipeline",
                  {{"preset",
                    "engine://render_pipelines/hybrid_v1.json"}}},
-            }
-                .dump(2));
+            }, temp_dir).dump(2));
 
         auto project =
             makeProjectConfig("scene.json", "assets.json");
@@ -3561,10 +3574,10 @@ TEST_CASE(
         temp_dir = makeTempProjectDir();
         writeTextFile(
             temp_dir / "scene.json",
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         std::filesystem::create_directories(
             temp_dir / "shaders");
         writeTextFile(
@@ -3589,7 +3602,7 @@ TEST_CASE(
             materialDisplacementComputeShader());
         writeTextFile(
             temp_dir / "pipeline.json",
-            materialResourceRenderingConfig().dump(2));
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(materialResourceRenderingConfig(), temp_dir).dump(2));
 
         const auto surface_source = std::string{
             "//! pelican.surface v1\n"
@@ -3985,7 +3998,7 @@ TEST_CASE(
             32;
         writeTextFile(
             temp_dir / "pipeline.json",
-            replacement.dump(2));
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(replacement, temp_dir).dump(2));
         REQUIRE(
             GET_MODULE(watch::ReloadService)
                 .applyRequestForTesting(
@@ -4083,7 +4096,7 @@ TEST_CASE(
                 "missing_material_displacement";
         writeTextFile(
             temp_dir / "pipeline.json",
-            invalid_replacement.dump(2));
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(invalid_replacement, temp_dir).dump(2));
         REQUIRE_FALSE(
             GET_MODULE(watch::ReloadService)
                 .applyRequestForTesting(
@@ -4136,9 +4149,9 @@ TEST_CASE(
         temp_dir = makeTempProjectDir();
         writeTextFile(
             temp_dir / "scene.json",
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(temp_dir / "assets.json",
-                      R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+                      R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         std::filesystem::create_directories(
             temp_dir / "shaders");
         std::filesystem::create_directories(
@@ -4157,7 +4170,7 @@ TEST_CASE(
             upscaleContractCopyFragmentShader());
         writeTextFile(
             temp_dir / "pipeline.json",
-            upscaleContractRenderingConfig().dump(2));
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(upscaleContractRenderingConfig(), temp_dir).dump(2));
         writeTextFile(
             temp_dir / "features" /
                 "upscale_jitter.json",
@@ -4470,7 +4483,7 @@ TEST_CASE(
                     physical_fragment)});
         writeTextFile(
             temp_dir / "pipeline.json",
-            replacement.dump(2));
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(replacement, temp_dir).dump(2));
 
         auto &runtime =
             GET_MODULE(FrameGraphRuntimeContainer);
@@ -4613,10 +4626,10 @@ TEST_CASE(
         temp_dir = makeTempProjectDir();
         writeTextFile(
             temp_dir / "scene.json",
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         std::filesystem::create_directories(
             temp_dir / "shaders");
         writeTextFile(
@@ -4627,7 +4640,7 @@ TEST_CASE(
             gpuArenaCopyFragmentShader());
         writeTextFile(
             temp_dir / "pipeline.json",
-            wp353IntegerBlendEarlyFailureConfig().dump(2));
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(wp353IntegerBlendEarlyFailureConfig(), temp_dir).dump(2));
 
         auto project =
             makeProjectConfig("scene.json", "assets.json");
@@ -4683,10 +4696,10 @@ TEST_CASE(
         temp_dir = makeTempProjectDir();
         writeTextFile(
             temp_dir / "scene.json",
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         std::filesystem::create_directories(
             temp_dir / "shaders");
         writeTextFile(
@@ -4703,7 +4716,7 @@ TEST_CASE(
             wp353BlendPresentFragmentShader());
         writeTextFile(
             temp_dir / "pipeline.json",
-            wp353BlendRenderingConfig().dump(2));
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(wp353BlendRenderingConfig(), temp_dir).dump(2));
 
         auto project =
             makeProjectConfig("scene.json", "assets.json");
@@ -4880,10 +4893,10 @@ TEST_CASE(
         temp_dir = makeTempProjectDir();
         writeTextFile(
             temp_dir / "scene.json",
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         std::filesystem::create_directories(
             temp_dir / "shaders");
         writeTextFile(
@@ -4904,7 +4917,7 @@ TEST_CASE(
             gpuArenaCopyFragmentShader());
         writeTextFile(
             temp_dir / "pipeline.json",
-            localReadRenderingConfig().dump(2));
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(localReadRenderingConfig(), temp_dir).dump(2));
 
         auto project =
             makeProjectConfig(
@@ -5182,10 +5195,10 @@ TEST_CASE(
         temp_dir = makeTempProjectDir();
         writeTextFile(
             temp_dir / "scene.json",
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         std::filesystem::create_directories(
             temp_dir / "shaders");
         writeTextFile(
@@ -5202,7 +5215,7 @@ TEST_CASE(
             gpuArenaCopyFragmentShader());
         writeTextFile(
             temp_dir / "pipeline.json",
-            materialLocalReadRenderingConfig().dump(2));
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(materialLocalReadRenderingConfig(), temp_dir).dump(2));
 
         constexpr std::string_view surface_source =
             R"surface(//! pelican.surface v1
@@ -5557,10 +5570,10 @@ TEST_CASE(
         temp_dir = makeTempProjectDir();
         writeTextFile(
             temp_dir / "scene.json",
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         std::filesystem::create_directories(
             temp_dir / "shaders");
         writeTextFile(
@@ -5585,8 +5598,7 @@ TEST_CASE(
             gpuArenaComputeShader());
         writeTextFile(
             temp_dir / "pipeline.json",
-            dependencySafePhysicalScopeRenderingConfig()
-                .dump(2));
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(dependencySafePhysicalScopeRenderingConfig(), temp_dir).dump(2));
 
         auto project =
             makeProjectConfig(
@@ -5760,7 +5772,7 @@ TEST_CASE(
                     fragment)});
         writeTextFile(
             temp_dir / "pipeline.json",
-            replacement.dump(2));
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(replacement, temp_dir).dump(2));
 
         const auto before_generation =
             runtime.activeGeneration();
@@ -6000,10 +6012,10 @@ TEST_CASE(
         temp_dir = makeTempProjectDir();
         writeTextFile(
             temp_dir / "scene.json",
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         std::filesystem::create_directories(
             temp_dir / "shaders");
         writeTextFile(
@@ -6024,7 +6036,7 @@ TEST_CASE(
             gpuArenaCopyFragmentShader());
         writeTextFile(
             temp_dir / "pipeline.json",
-            aliasLifetimeRenderingConfig().dump(2));
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(aliasLifetimeRenderingConfig(), temp_dir).dump(2));
 
         auto project =
             makeProjectConfig(
@@ -6227,10 +6239,10 @@ TEST_CASE("project-owned material variant renders a second opaque pass",
         temp_dir = makeTempProjectDir();
         writeTextFile(
             temp_dir / "scene.json",
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         std::filesystem::create_directories(temp_dir / "features");
         std::filesystem::create_directories(temp_dir / "shaders");
         std::filesystem::create_directories(temp_dir / "materials");
@@ -6331,15 +6343,14 @@ TEST_CASE("project-owned material variant renders a second opaque pass",
             material_json.dump(2));
         writeTextFile(
             temp_dir / "hybrid.json",
-            nlohmann::json{
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(nlohmann::json{
                 {"pipeline",
                  {{"preset",
                    "engine://render_pipelines/hybrid_v1.json"}}},
                 {"features",
                  nlohmann::json::array(
                      {"project://features/silhouette.json"})},
-            }
-                .dump(2));
+            }, temp_dir).dump(2));
 
         auto project =
             makeProjectConfig("scene.json", "assets.json");
@@ -6556,13 +6567,13 @@ TEST_CASE(
         temp_dir = makeTempProjectDir();
         writeTextFile(
             temp_dir / "scene.json",
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         writeTextFile(
             temp_dir / "hybrid.json",
-            nlohmann::json{
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(nlohmann::json{
                 {"pipeline",
                  {{"preset",
                    "engine://render_pipelines/hybrid_v1.json"}}},
@@ -6571,8 +6582,7 @@ TEST_CASE(
                      {"engine://features/clustered_lighting.json"})},
                 {"xr",
                  {{"view_execution", "sequential"}}},
-            }
-                .dump(2));
+            }, temp_dir).dump(2));
 
         auto project =
             makeProjectConfig(
@@ -7001,10 +7011,10 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         const auto asset_path = temp_dir / "assets.json";
         writeTextFile(
             scene_path,
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             asset_path,
-            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         std::filesystem::create_directories(
             temp_dir / "features");
         writeTextFile(
@@ -7014,7 +7024,7 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                 "features/shadow_directional.json"));
         writeTextFile(
             temp_dir / "hybrid.json",
-            nlohmann::json{
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(nlohmann::json{
                 {"pipeline",
                  {{"preset",
                    "engine://render_pipelines/hybrid_v1.json"},
@@ -7034,8 +7044,7 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                  nlohmann::json::array(
                      {{{"name",
                         "headless.hybrid_identity"}}})},
-            }
-                .dump(2));
+            }, temp_dir).dump(2));
 
         auto project = makeProjectConfig("scene.json", "assets.json");
         project["basic_config"]["default_scene_id"] = "default_scene";
@@ -7651,13 +7660,13 @@ TEST_CASE(
         temp_dir = makeTempProjectDir();
         writeTextFile(
             temp_dir / "scene.json",
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         writeTextFile(
             temp_dir / "hybrid.json",
-            nlohmann::json{
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(nlohmann::json{
                 {"pipeline",
                  {{"preset",
                    "engine://render_pipelines/hybrid_v1.json"}}},
@@ -7675,8 +7684,7 @@ TEST_CASE(
                               {"sky_intensity", 0.1},
                           }},
                      }})},
-            }
-                .dump(2));
+            }, temp_dir).dump(2));
 
         auto project =
             makeProjectConfig(
@@ -8168,10 +8176,10 @@ TEST_CASE(
             temp_dir / "shaders");
         writeTextFile(
             temp_dir / "scene.json",
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         writeTextFile(
             temp_dir / "shaders" /
                 "object_id_present.frag",
@@ -8302,7 +8310,7 @@ void main() {
             "project://shaders/object_id_present";
         writeTextFile(
             temp_dir / "extended_gbuffer.json",
-            config.dump(2));
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(config, temp_dir).dump(2));
 
         auto project =
             makeProjectConfig(
@@ -8588,7 +8596,7 @@ void pelican_material_outputs_v1(
             ["write_mask"] = "rg";
         writeTextFile(
             temp_dir / "extended_gbuffer.json",
-            state_reload.dump(2));
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(state_reload, temp_dir).dump(2));
         REQUIRE(
             GET_MODULE(watch::ReloadService)
                 .applyRequestForTesting(
@@ -8652,7 +8660,7 @@ void pelican_material_outputs_v1(
 )surface";
         writeTextFile(
             temp_dir / "extended_gbuffer.json",
-            coordinated_reload.dump(2));
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(coordinated_reload, temp_dir).dump(2));
         writeTextFile(
             temp_dir / "shaders" /
                 "extended_gbuffer.surface",
@@ -8737,7 +8745,7 @@ void pelican_material_outputs_v1(
             "headless.failed_reload";
         writeTextFile(
             temp_dir / "extended_gbuffer.json",
-            failed_reload.dump(2));
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(failed_reload, temp_dir).dump(2));
         writeTextFile(
             temp_dir / "shaders" /
                 "extended_gbuffer.surface",
@@ -8827,9 +8835,9 @@ TEST_CASE(
             temp_dir / "features");
         writeTextFile(
             temp_dir / "scene.json",
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(temp_dir / "assets.json",
-                      R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+                      R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         writeTextFile(
             temp_dir / "shaders" /
                 "gpu_arena_fullscreen.vert",
@@ -8847,7 +8855,7 @@ TEST_CASE(
             R"json({"schema":"pelican.render_feature","version":1,"name":"reload_marker"})json");
         writeTextFile(
             temp_dir / "pipeline.json",
-            initial_config.dump());
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(initial_config, temp_dir).dump());
 
         auto project =
             makeProjectConfig("scene.json",
@@ -8890,7 +8898,7 @@ TEST_CASE(
             "WP196_RELOADED";
         writeTextFile(
             temp_dir / "pipeline.json",
-            replacement.dump());
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(replacement, temp_dir).dump());
         // A real watcher batch can contain both the root and one dependency.
         // The participant must compile and publish exactly once.
         const std::array requests{
@@ -8952,7 +8960,7 @@ TEST_CASE(
                 "engine://features/ui.json");
         writeTextFile(
             temp_dir / "pipeline.json",
-            unsupported_feature.dump());
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(unsupported_feature, temp_dir).dump());
         FastModuleContainer::freezeCreation();
         REQUIRE_FALSE(
             GET_MODULE(watch::ReloadService)
@@ -8995,10 +9003,10 @@ TEST_CASE(
         const auto asset_path = temp_dir / "assets.json";
         writeTextFile(
             scene_path,
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             asset_path,
-            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         writeTextFile(
             temp_dir / "shaders" /
                 "gpu_arena_fullscreen.vert",
@@ -9053,7 +9061,10 @@ TEST_CASE(
             RenderPipelineGpuRegistrationFaultPoint::
                 after_runtime_prepare,
         };
-        const auto config = gpuArenaRenderingConfig().dump();
+        // MG-2b: the arena's buffers and tasks reach the composition through
+        // the project's task feature.
+        const auto config =
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(gpuArenaRenderingConfig(), temp_dir).dump();
         for (const auto fault_point : fault_points) {
             RenderingPassConfigRegistrationDependencies::
                 Options options;
@@ -9273,7 +9284,7 @@ TEST_CASE(
                 }),
             batch_passes.end());
         const auto batch_config =
-            batch_config_json.dump();
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(batch_config_json, temp_dir).dump();
 
         RenderingPassConfigRegistrationDependencies::
             Options batch_flat_options;
@@ -9384,7 +9395,7 @@ TEST_CASE(
                 after_runtime_prepare;
         REQUIRE_THROWS_WITH(
             registerRenderingPassConfigFromJsonData(
-                replacement_config.dump(), {16, 16},
+                Pelican::TestSupport::renderGraphRootWithTaskFeature(replacement_config, temp_dir).dump(), {16, 16},
                 gpuArenaRegistrationDependencies(
                     std::move(
                         failed_replacement_options))),
@@ -9412,7 +9423,7 @@ TEST_CASE(
 
         const auto replaced =
             registerRenderingPassConfigFromJsonData(
-                replacement_config.dump(), {16, 16},
+                Pelican::TestSupport::renderGraphRootWithTaskFeature(replacement_config, temp_dir).dump(), {16, 16},
                 gpuArenaRegistrationDependencies({}));
         REQUIRE(replaced.runtime_generation == 2);
         auto replacement_generation =
@@ -9532,10 +9543,10 @@ TEST_CASE(
             temp_dir / "shaders");
         writeTextFile(
             temp_dir / "scene.json",
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         writeTextFile(
             temp_dir / "shaders" /
                 "depth_pyramid_fullscreen.vert",
@@ -9558,7 +9569,7 @@ TEST_CASE(
             depthPyramidPresentFragmentShader());
         writeTextFile(
             temp_dir / "pipeline.json",
-            depthPyramidRenderingConfig().dump(2));
+            Pelican::TestSupport::renderGraphRootWithTaskFeature(depthPyramidRenderingConfig(), temp_dir).dump(2));
 
         auto project =
             makeProjectConfig(
@@ -11092,14 +11103,18 @@ TEST_CASE("common graph state survives staged ray pipeline publication", "[headl
             {"id":"clock_buffer","op":"render.buffer","parameters":{"element":"float"},
               "inputs":{"value":{"node":"clock","port":"value"}},"outputs":["resource"]}],
           "outputs":{"elapsed":{"node":"clock","port":"value"}}})");
-        document["rendering"] = nlohmann::json::parse(readTextFile(config_path));
+        document["rendering"] =
+            nlohmann::json::parse(readTextFile(config_path)).at("rendering");
         // Existing RT tasks remain a feature, while the common graph derives
-        // its own CPU-to-GPU buffers from connections.
+        // its own CPU-to-GPU buffers from connections. MG-2b: the project was
+        // written as a graph root, so its tasks are already in its task
+        // feature; this test carries them in a feature of its own.
         auto &rendering = document["rendering"];
+        const auto authored_tasks = nlohmann::json::parse(
+            readTextFile(temp_dir / "features" / "authored_tasks.json"));
         const nlohmann::json rt_feature{{"schema", "pelican.render_feature"}, {"version", 1},
-            {"name", "rt_probe"}, {"compute_tasks", rendering.at("compute_tasks")}};
+            {"name", "rt_probe"}, {"compute_tasks", authored_tasks.at("compute_tasks")}};
         writeTextFile(temp_dir / "rt_probe.json", rt_feature.dump());
-        rendering.erase("compute_tasks");
         rendering["features"] = {"project://rt_probe.json"};
 #if PELICAN_WITH_AUDIO
         const unsigned char wav[]{'R','I','F','F',44,0,0,0,'W','A','V','E','f','m','t',' ',16,0,0,0,
@@ -11114,7 +11129,7 @@ TEST_CASE("common graph state survives staged ray pipeline publication", "[headl
         configureRayQueryTestRuntime(temp_dir);
         auto &vkcore = GET_MODULE(VulkanManageCore);
         if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) SKIP("ray tracing pipeline unavailable");
-        writeTextFile(temp_dir / "scene.json", R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+        writeTextFile(temp_dir / "scene.json", R"({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[
             {"name":"GraphOwner","components":[{"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}]}
         ]}}})");
         GET_MODULE(ECSPredefinedRegistration).reg();
@@ -11257,11 +11272,17 @@ TEST_CASE("common graph state survives staged ray pipeline publication", "[headl
         std::memcpy(&restored_value, restored.data(), sizeof(float));
         REQUIRE(restored_value == 7);
         REQUIRE(readTextFile(config_path) == before_owner_removal);
-        document = document.at("rendering");
+        // MG-2b: "no graph" is a graph root with no nodes, not the older
+        // root.
+        document = Pelican::TestSupport::renderGraphRoot(document.at("rendering"));
         REQUIRE(apply(false).staged);
         renderer.render();
         vkcore.waitIdle();
-        REQUIRE_FALSE(runtime.snapshot()->programs.begin()->second.frame_graph.value_graph);
+        // The graph root always carries a value graph now; without nodes it
+        // drives nothing.
+        const auto &emptied_graph =
+            runtime.snapshot()->programs.begin()->second.frame_graph.value_graph;
+        REQUIRE((!emptied_graph || emptied_graph->nodeIds().empty()));
 #if PELICAN_WITH_AUDIO
         REQUIRE_FALSE(GameContext{}.audio().soundState(*voice));
 #endif
@@ -12284,9 +12305,14 @@ TEST_CASE(
                            invalid.replacement);
             writeTextFile(raygen_path, source);
             auto invalid_config = readTextFile(config_path);
+            // MG-2b: the project is a graph root; its tasks are in the task
+            // feature, which the direct loads below read from disk.
+            const auto task_feature_path =
+                temp_dir / "features" / "authored_tasks.json";
+            const auto valid_task_feature = readTextFile(task_feature_path);
             if (invalid.error ==
                 "pelican.ray_tracing.ray_type_offset_invalid@1") {
-                auto config = nlohmann::json::parse(invalid_config);
+                auto config = nlohmann::json::parse(valid_task_feature);
                 auto &tasks = config.at("compute_tasks");
                 const auto task = std::find_if(
                     tasks.begin(), tasks.end(), [](const auto &candidate) {
@@ -12296,7 +12322,7 @@ TEST_CASE(
                 auto &pipeline = task->at("ray_tracing");
                 pipeline["traced_ray_types"] = {"primary"};
                 REQUIRE(pipeline.at("hit_shaders").erase("shadow") == 1);
-                invalid_config = config.dump(2);
+                writeTextFile(task_feature_path, config.dump(2));
             }
             progress("direct-load");
             CHECK_THROWS_WITH(
@@ -12327,6 +12353,7 @@ TEST_CASE(
             CHECK(runtime.snapshot() == stable_root);
             CHECK(runtime.stagedGeneration() == 0);
             writeTextFile(raygen_path, valid_raygen);
+            writeTextFile(task_feature_path, valid_task_feature);
             progress("restored");
             ++invalid_addressing_index;
         }
@@ -12471,11 +12498,19 @@ TEST_CASE(
         // following successful frame publishes the bundle-less generation.
         auto non_rt_config = nlohmann::json::parse(
             readTextFile(temp_dir / "hybrid.json"));
-        non_rt_config.erase("ray_group_layout");
-        non_rt_config.erase("ray_bindings");
-        non_rt_config["compute_tasks"] = nlohmann::json::array();
-        non_rt_config["target_planning"]["graphs"]["main_render"]
-                     ["required_capabilities"] = nlohmann::json::array();
+        // MG-2b: the project is a graph root. Its authored tasks are in the
+        // task feature, so dropping that reference drops every task.
+        auto &non_rt = renderingSectionOf(non_rt_config);
+        non_rt.erase("ray_group_layout");
+        non_rt.erase("ray_bindings");
+        auto &non_rt_features = non_rt["features"];
+        non_rt_features.erase(
+            std::remove(non_rt_features.begin(), non_rt_features.end(),
+                        nlohmann::json(
+                            "project://features/authored_tasks.json")),
+            non_rt_features.end());
+        non_rt["target_planning"]["graphs"]["main_render"]
+              ["required_capabilities"] = nlohmann::json::array();
         writeTextFile(temp_dir / "hybrid.json", non_rt_config.dump(2));
         REQUIRE(reload_service.applyRequestForTesting(
             watch::ReloadRequest{
@@ -13736,10 +13771,11 @@ TEST_CASE(
     const auto temp_dir = makeTempProjectDir();
     try {
         writeRt2bTableProject(temp_dir);
-        const nlohmann::json authored_root{
-            {"ray_group_layout", "ray_layout.json"},
-            {"ray_bindings", "ray_bindings.json"},
-        };
+        const auto authored_root = Pelican::TestSupport::renderGraphRoot(
+            nlohmann::json{
+                {"ray_group_layout", "ray_layout.json"},
+                {"ray_bindings", "ray_bindings.json"},
+            });
         std::size_t document_loads = 0;
         CHECK_THROWS_WITH(
             loadRayTracingProjectConfig(

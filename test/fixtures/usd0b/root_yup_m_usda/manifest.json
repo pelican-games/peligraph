@@ -8,8 +8,8 @@
     {
       "file": "scene.json",
       "schema": "pelican.scene",
-      "sha256": "1b70f58ddcb6f04bd901595b3ea8ab95e372c157bb21a9ad288986d947772f0b",
-      "version": 1
+      "sha256": "f61687e41e872b7f6092db3849ecb6dcfbd106ca5663eed2f476b4e76257b543",
+      "version": 2
     }
   ],
   "schema": "pelican.import",
@@ -33,11 +33,11 @@
     "determinism": {
       "first": {
         "gltf": "ade2869ea56d030afcbb93e40e6cb2a97228896bf9ef46d002b32f275c4cb959",
-        "pelican.scene": "1b70f58ddcb6f04bd901595b3ea8ab95e372c157bb21a9ad288986d947772f0b"
+        "pelican.scene": "f61687e41e872b7f6092db3849ecb6dcfbd106ca5663eed2f476b4e76257b543"
       },
       "second": {
         "gltf": "ade2869ea56d030afcbb93e40e6cb2a97228896bf9ef46d002b32f275c4cb959",
-        "pelican.scene": "1b70f58ddcb6f04bd901595b3ea8ab95e372c157bb21a9ad288986d947772f0b"
+        "pelican.scene": "f61687e41e872b7f6092db3849ecb6dcfbd106ca5663eed2f476b4e76257b543"
       },
       "verified": true
     },

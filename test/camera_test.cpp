@@ -81,7 +81,7 @@ nlohmann::json projectJson() {
 const char *cameraSceneJson() {
     return R"json({
   "schema": "pelican.scene",
-  "version": 1,
+  "version": 2,
   "scenes": {
     "default_scene": {
       "objects": [
@@ -119,7 +119,7 @@ const char *cameraSceneJson() {
 const char *cameraControllerSceneJson() {
     return R"json({
   "schema": "pelican.scene",
-  "version": 1,
+  "version": 2,
   "scenes": {
     "default_scene": {
       "objects": [
@@ -184,7 +184,7 @@ const char *cameraControllerSceneJson() {
 const char *invalidCameraControllerSceneJson() {
     return R"json({
   "schema": "pelican.scene",
-  "version": 1,
+  "version": 2,
   "scenes": {
     "default_scene": {
       "objects": [
@@ -272,7 +272,7 @@ TEST_CASE("Project sprite ppu and default camera policy are validated", "[camera
     ensureLogger();
     Sandbox sandbox;
     writeText(sandbox.root / "scene.json", R"json({
-      "schema":"pelican.scene","version":1,
+      "schema":"pelican.scene","version":2,
       "scenes":{"default_scene":{"objects":[]}}
     })json");
     auto project = projectJson();
@@ -303,7 +303,7 @@ TEST_CASE("WP378 basic camera cross-field boundary returns the shared typed fail
     ensureLogger();
     Sandbox sandbox;
     writeText(sandbox.root / "scene.json", R"json({
-      "schema":"pelican.scene","version":1,
+      "schema":"pelican.scene","version":2,
       "scenes":{"default_scene":{"objects":[]}}
     })json");
     auto project = projectJson();
@@ -383,7 +383,7 @@ TEST_CASE("Project sprite policy objects are closed", "[camera][sprite][pixel]")
     ensureLogger();
     Sandbox sandbox;
     writeText(sandbox.root / "scene.json", R"json({
-      "schema":"pelican.scene","version":1,
+      "schema":"pelican.scene","version":2,
       "scenes":{"default_scene":{"objects":[]}}
     })json");
     auto project = projectJson();
@@ -471,7 +471,7 @@ TEST_CASE("Scene camera aliases are rejected with camera and v1 replacement name
             camera_component[alias.name] = alias.value;
             const nlohmann::json scene{
                 {"schema", "pelican.scene"},
-                {"version", 1},
+                {"version", 2},
                 {"scenes",
                  {{"default_scene",
                    {{"objects",

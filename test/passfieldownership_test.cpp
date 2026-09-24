@@ -1,4 +1,5 @@
 #include "../src/project/passfieldownership.hpp"
+#include "render_graph_root_test_support.hpp"
 #include "../src/project/projectformat.hpp"
 #include "../src/project/projectpathresolver.hpp"
 #include "../src/project/featurecompose.hpp"
@@ -560,9 +561,9 @@ TEST_CASE(
             const auto reference =
                 "engine://render_pipelines/" +
                 entry.path().filename().generic_string();
-            const nlohmann::json authored{
+            const auto authored = Pelican::TestSupport::renderGraphRoot(nlohmann::json{
                 {"pipeline", {{"preset", reference}}},
-            };
+            });
             const auto resolve = [&] {
                 return resolveRenderPipeline(
                     RenderPipelineRequest{authored, reference},
@@ -623,14 +624,14 @@ TEST_CASE(
             const auto reference =
                 "engine://features/" +
                 entry.path().filename().generic_string();
-            auto authored = schema == "pelican.render_feature"
-                                ? featureCorpusConfig(
-                                      envelope, reference)
-                                : nlohmann::json::parse(
-                                      loadEngineText(
-                                          "engine://render_pipelines/"
-                                          "hybrid_v1.json"))
-                                      .at("config");
+            auto authored = Pelican::TestSupport::renderGraphRoot(
+                schema == "pelican.render_feature"
+                    ? featureCorpusConfig(envelope, reference)
+                    : nlohmann::json::parse(
+                          loadEngineText(
+                              "engine://render_pipelines/"
+                              "hybrid_v1.json"))
+                          .at("config"));
             if (schema == "pelican.render_feature_overlay") {
                 authored = applyRenderFeatureOverlays(
                     authored,
@@ -992,7 +993,7 @@ TEST_CASE(
     compiler_on.runtime_shader_compiler_enabled = true;
     const auto omitted_resolved = resolveRenderPipeline(
         RenderPipelineRequest{
-            omitted_config, "wp353 omitted compiler-on"},
+            Pelican::TestSupport::renderGraphRoot(omitted_config), "wp353 omitted compiler-on"},
         compiler_on,
         RenderPipelineResolveDependencies{
             .load_feature_json = omitted_loader,
@@ -1000,7 +1001,7 @@ TEST_CASE(
         });
     const auto explicit_resolved = resolveRenderPipeline(
         RenderPipelineRequest{
-            explicit_config, "wp353 explicit compiler-on"},
+            Pelican::TestSupport::renderGraphRoot(explicit_config), "wp353 explicit compiler-on"},
         compiler_on,
         RenderPipelineResolveDependencies{
             .load_feature_json = explicit_loader,
@@ -1026,7 +1027,7 @@ TEST_CASE(
             try {
                 (void)resolveRenderPipeline(
                     RenderPipelineRequest{
-                        config, std::string{source}},
+                        Pelican::TestSupport::renderGraphRoot(config), std::string{source}},
                     compiler_off, dependencies);
             } catch (const std::runtime_error &error) {
                 return std::string{error.what()};

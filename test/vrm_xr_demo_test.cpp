@@ -178,8 +178,11 @@ TEST_CASE("WP135 project graph input and XR activation contracts are safe",
     }
     REQUIRE(touch_dump.find("\"action\":\"head\"") == std::string::npos);
 
-    const auto rendering =
+    // MG-2b: the shipped rendering config is a pelican.graph root.
+    const auto rendering_root =
         nlohmann::json::parse(readText(root / "passes/main.json"));
+    REQUIRE(rendering_root.at("schema") == "pelican.graph");
+    const auto &rendering = rendering_root.at("rendering");
     REQUIRE(rendering.at("features").empty());
     const auto rendering_dump = rendering.dump();
     for (const auto *forbidden : {"taa", "velocity", "history", "pelican_ui",

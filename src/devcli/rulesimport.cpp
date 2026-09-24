@@ -325,7 +325,7 @@ void writeExtractDelivery(const SelectedInput &input, const std::filesystem::pat
         {"source", {{"file", input.relative}}},
         {"outputs", nlohmann::json::array({{{"file", "scene.json"},
                                              {"schema", "pelican.scene"},
-                                             {"version", 1},
+                                             {"version", 2},
                                              {"sha256", sha256File(scene_path)}}})},
     };
     writeFile(temporary / "manifest.json", manifest.dump(2) + "\n");

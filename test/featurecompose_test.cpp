@@ -3,6 +3,7 @@
 #include "../src/project/rendergraphcomposition.hpp"
 #include "../src/core/renderingpass/computetask.hpp"
 #include "../src/project/renderconfigsection.hpp"
+#include "render_graph_root_test_support.hpp"
 #include "../src/project/renderfeatureoverlay.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "../src/core/loader/engineresources.hpp"
@@ -263,15 +264,11 @@ RenderSubgraph::ProviderV1 wp309Provider(
 
 nlohmann::json wp309CompilerConfig(
     bool gate_feature_enabled) {
+    // MG-2b: the compiler reads this as the authored `pelican.graph` root's
+    // section, which cannot declare buffers (the graph owns them), so the
+    // probe task's buffer is declared by its own feature.
     auto config = nlohmann::json::parse(R"json({
   "features": [],
-  "buffers": [
-    {
-      "name": "probe_buffer",
-      "size": 16,
-      "lifetime": "persistent"
-    }
-  ],
   "render_targets": [
     {
       "name": "scene_in",
@@ -441,7 +438,7 @@ TEST_CASE(
                              bool runtime_shader_compiler_enabled) {
         return resolveRenderPipeline(
             RenderPipelineRequest{
-                make_config(feature_enabled),
+                Pelican::TestSupport::renderGraphRoot(make_config(feature_enabled)),
                 "WP300 provenance capability contrast"},
             RenderEnvironmentCapabilities{
                 runtime_shader_compiler_enabled,
@@ -601,8 +598,8 @@ TEST_CASE(
     const auto resolve = [](RenderPipelineGraphVariant variant) {
         return resolveRenderPipeline(
             RenderPipelineRequest{
-                baseConfigWithFeature(
-                    "engine://features/compute_provenance_probe.json"),
+                Pelican::TestSupport::renderGraphRoot(baseConfigWithFeature(
+                    "engine://features/compute_provenance_probe.json")),
                 "WP301 compute provenance variant contrast"},
             RenderEnvironmentCapabilities{
                 false,
@@ -810,7 +807,7 @@ TEST_CASE(
         return runRenderCompilerProgram(
             defaultVulkanRenderCompilerProgram(),
             RenderCompilerProgramInput{
-                .rendering_config = config,
+                .rendering_config = Pelican::TestSupport::renderGraphRoot(config),
                 .source_name =
                     "WP309 production compiler fixture",
                 .path_resolver = path_resolver,
@@ -3249,7 +3246,7 @@ TEST_CASE("P-2a-4a a pelican.graph root composes like its legacy twin and takes 
     REQUIRE(shipping.at("schema") == "pelican.graph");
     REQUIRE(graph_root.at("rendering") == renderingSectionOf(shipping));
     REQUIRE(graph_root ==
-            wrapLegacyRenderingConfig(renderingSectionOf(shipping)));
+            Pelican::TestSupport::renderGraphRoot(renderingSectionOf(shipping)));
     const auto legacy = renderingSectionOf(shipping);
 
     struct Topology {
@@ -3323,8 +3320,11 @@ TEST_CASE("P-2a-4a a pelican.graph root composes like its legacy twin and takes 
     const auto preset_graph_root =
         readJson(source_root / "test" / "fixtures" / "graph_root_example" /
                  "passes" / "preset_main.json");
-    const auto preset_legacy = readJson(source_root / "projects" /
-                                        "animgraph_demo" / "passes" / "main.json");
+    // MG-2b: the animgraph demo is itself a graph root now; its section is
+    // the flat config this compares against.
+    const auto preset_shipping = readJson(source_root / "projects" /
+                                          "animgraph_demo" / "passes" / "main.json");
+    const auto preset_legacy = renderingSectionOf(preset_shipping);
     REQUIRE(preset_graph_root.at("rendering") == preset_legacy);
     const auto preset_legacy_composition = compose(preset_legacy);
     const auto preset_graph_composition = compose(preset_graph_root);
@@ -3376,7 +3376,8 @@ TEST_CASE("P-2a-4a a pelican.graph root composes like its legacy twin and takes 
 
 TEST_CASE("startup feature overlay accepts only its strict v1 envelope",
           "[render-feature][overlay][format][wp289]") {
-    const auto base = nlohmann::json{{"features", nlohmann::json::array()}};
+    const auto base = Pelican::TestSupport::renderGraphRoot(
+        nlohmann::json{{"features", nlohmann::json::array()}});
     const std::vector<std::string> overlays{"project://overlay.json"};
     const auto apply = [&](std::string bytes) {
         return applyRenderFeatureOverlays(

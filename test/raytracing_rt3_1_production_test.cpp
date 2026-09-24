@@ -1,4 +1,6 @@
 #include "../src/core/communication/proceduralassetpublication.hpp"
+#include "render_graph_root_test_support.hpp"
+#include "../src/project/renderconfigsection.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include "../src/core/shader/raytracingoracle.hpp"
 #include <catch2/generators/catch_generators.hpp>
@@ -219,7 +221,7 @@ void writeWp374aProject(const std::filesystem::path &root,
     writeWp374aText(
         root / "scene.json",
         Json{{"schema", "pelican.scene"},
-             {"version", 1},
+             {"version", 2},
              {"scenes", {{"main", {{"objects", std::move(objects)}}}}}}
             .dump(2));
 
@@ -233,7 +235,7 @@ void writeWp374aProject(const std::filesystem::path &root,
     writeWp374aText(
         root / "assets.json",
         Json{{"schema", "pelican.asset_data"},
-             {"version", 1},
+             {"version", 2},
              {"models", std::move(models)},
              {"textures", Json::array()}}
             .dump(2));
@@ -302,13 +304,15 @@ void writeWp374aProject(const std::filesystem::path &root,
                  Json::array({"pelican.vulkan.ray_query@1"})}}}}},
         };
     }
-    writeWp374aText(root / "hybrid.json", rendering.dump(2));
+    // MG-2b: the rendering config is a graph root.
+    writeWp374aText(root / "hybrid.json",
+                    Pelican::TestSupport::renderGraphRoot(rendering).dump(2));
 }
 
 void writeWp386aProceduralProject(const std::filesystem::path &root) {
     writeWp374aProject(root, 3, true, false, false);
     writeWp374aText(root / "scene.json", Json{
-        {"schema", "pelican.scene"}, {"version", 1},
+        {"schema", "pelican.scene"}, {"version", 2},
         {"scenes", {{"main", {{"objects", Json::array({{
             {"name", "Sphere"},
             {"components", Json::array({
@@ -398,7 +402,7 @@ void main() { payload.marker = 0xdead386au; }
     };
     writeWp374aText(root / "features" / "wp386_procedural.json",
                     feature.dump(2));
-    writeWp374aText(root / "hybrid.json", Json{
+    writeWp374aText(root / "hybrid.json", Pelican::TestSupport::renderGraphRoot(Json{
         {"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
         {"features", {"project://features/wp386_procedural.json"}},
         {"ray_group_layout", "ray_layout.json"},
@@ -406,7 +410,7 @@ void main() { payload.marker = 0xdead386au; }
         {"target_planning", {{"graphs", {{"main_render", {
             {"required_capabilities", Json::array({
                  "pelican.vulkan.ray_query@1"})}}}}}}}
-    }.dump(2));
+    }).dump(2));
 }
 
 std::shared_ptr<const RayTracingProjectConfig>
@@ -1028,7 +1032,8 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
         writeWp374aText(project.path / "textures/sprite.ktx2", {reinterpret_cast<const char *>(bytes.data()), bytes.size()});
     }
     writeWp374aText(project.path / "scene.json", scene.dump());
-    auto rendering = Json::parse(readWp374aText(project.path / "hybrid.json"));
+    auto rendering_root = Json::parse(readWp374aText(project.path / "hybrid.json"));
+        auto &rendering = renderingSectionOf(rendering_root);  // MG-2b: the graph root's section
     rendering["scene_acceleration_structures"] = Json::array({
         {{"name", "left"}, {"instance_mask", 1}},
         {{"name", "right"}, {"instance_mask", 2}},
@@ -1214,7 +1219,7 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 s, in PelicanSurfaceInputV1 i) {
 }
 )surface");
     }
-    writeWp374aText(project.path / "hybrid.json", rendering.dump());
+    writeWp374aText(project.path / "hybrid.json", rendering_root.dump());
     const auto feature_path = project.path / "features/wp377_profile_owner.json";
     auto feature = Json::parse(readWp374aText(feature_path));
     const auto target_template = feature["render_targets"][0];
@@ -1333,7 +1338,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
 )glsl");
         }
         rendering["frame_node_order"] = {{"main_render", {raster ? "pre_as_raster" : "pre_as_compute", "__scene_acceleration_structure"}}};
-        writeWp374aText(project.path / "hybrid.json", rendering.dump());
+        writeWp374aText(project.path / "hybrid.json", rendering_root.dump());
     }
     writeWp374aText(feature_path, feature.dump());
     FastModuleContainer modules;
@@ -1625,7 +1630,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
         (void)renderWp374aProductionRows();
         const auto result = runWp374aRpcBytes(*service, rpc_id++, "get_edit_result", {{"ticket", accepted.at("ticket")}});
         REQUIRE(result.at("committed") == true);
-        CHECK(Json::parse(readWp374aText(project.path / "hybrid.json")).at("scene_acceleration_structures") == definitions);
+        CHECK(Json::parse(readWp374aText(project.path / "hybrid.json")).at("rendering").at("scene_acceleration_structures") == definitions);
         // Publication retires the old targets at the frame boundary; draw the new generation.
         (void)renderWp374aProductionRows();
         const auto image = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "rt6_left", ImageSubresourceRange{});
@@ -1653,7 +1658,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
         CHECK(pixels[1] == 71u);
         CHECK(pixels[5] == 0xffffffffu);
         CHECK(readWp374aText(feature_path) == feature_before_connection);
-        CHECK(Json::parse(readWp374aText(project.path / "hybrid.json")).at("ray_task_acceleration_structures") == connections);
+        CHECK(Json::parse(readWp374aText(project.path / "hybrid.json")).at("rendering").at("ray_task_acceleration_structures") == connections);
         // Removing a referenced AS must leave the source and active graph intact.
         before = runWp374aRpcBytes(*service, rpc_id++, "get_scene_acceleration_structures", Json::object());
         const auto source_before_failure = readWp374aText(project.path / "hybrid.json");
@@ -2749,8 +2754,9 @@ TEST_CASE(
         std::string_view diagnostic;
     };
     constexpr std::array cases{
+        // MG-2b: the same for asset_data version 1.
         Downgrade{"assets.json",
-                  "pelican.asset_data_procedural_requires_v2@1"},
+                  "pelican.asset_data.version_unsupported@1"},
         // MG-2a: an older ray document is refused as a version, not read in
         // its old meaning.
         Downgrade{"ray_bindings.json",
@@ -2777,10 +2783,11 @@ TEST_CASE(
         setupLogger();
         Wp374aProjectRoot project{"wp386a_missing_layout_reject"};
         writeWp386aProceduralProject(project.path);
-        auto rendering = Json::parse(readWp374aText(project.path / "hybrid.json"));
+        auto rendering_root = Json::parse(readWp374aText(project.path / "hybrid.json"));
+        auto &rendering = renderingSectionOf(rendering_root);  // MG-2b: the graph root's section
         rendering.erase("ray_group_layout");
         rendering.erase("ray_bindings");
-        writeWp374aText(project.path / "hybrid.json", rendering.dump());
+        writeWp374aText(project.path / "hybrid.json", rendering_root.dump());
         FastModuleContainer modules;
         CHECK_THROWS_WITH(loadWp374aScene(project.path),
             ContainsSubstring("pelican.ray_group_type_requires_layout_v3@1"));
@@ -3011,7 +3018,7 @@ void writeWp375BehaviorProject(const std::filesystem::path &root) {
     writeWp374aText(
         root / "scene.json",
         Json{{"schema", "pelican.scene"},
-             {"version", 1},
+             {"version", 2},
              {"scenes",
               {{"main",
                 {{"objects",
@@ -3081,7 +3088,7 @@ void writeWp375aParticipantProject(const std::filesystem::path &root) {
     writeWp374aText(
         root / "scene.json",
         Json{{"schema", "pelican.scene"},
-             {"version", 1},
+             {"version", 2},
              {"scenes",
               {{"main",
                 {{"objects",
@@ -4146,11 +4153,14 @@ TEST_CASE(
         CHECK(rejected.at("error").at("message") ==
               "component_unknown@1{\"name\":\"ray_instance\"}");
 
-        // Intentional old-name occurrence: SnapshotV1 enters through the real
-        // RpcServer and preserves snapshot_invalid as its outer contract.
+        // Intentional old-name occurrence: the snapshot import enters through
+        // the real RpcServer and preserves snapshot_invalid as its outer
+        // contract. MG-2b: SnapshotV1 is gone, so this is SnapshotV2 with the
+        // payload's own closure (the unknown component is found by the scene
+        // load behind the closure gate).
         const auto snapshot_bytes =
             Json{{"schema", "pelican.scene"},
-                 {"version", 1},
+                 {"version", 2},
                  {"scenes",
                   {{"main",
                     {{"objects",
@@ -4162,12 +4172,40 @@ TEST_CASE(
                 .dump();
         const auto digest = picosha2::hash256_hex_string(
             snapshot_bytes.begin(), snapshot_bytes.end());
+        const auto &live_scene = GET_MODULE(ProjectBasicConfig).resolvedScene();
+        const auto payload_projection = ResolvedSceneResolver::resolve(
+            AuthoringSceneDocument::load(snapshot_bytes, SceneRevision{1}),
+            SceneResolverGeneration{1}, live_scene.defaults(),
+            live_scene.prefabRegistry(), live_scene.bindableProvider());
+        const auto &payload_closure = payload_projection.prefabClosure();
+        Json closure_json{{"scenes", Json::array()},
+                          {"prefabs", Json::array()},
+                          {"behaviors", Json::array()}};
+        for (const auto &scene : payload_closure.scenes)
+            closure_json["scenes"].push_back(
+                {{"scene_id", scene.scene_id},
+                 {"digest", {{"algorithm", "sha256"}, {"hex", scene.digest_sha256}}}});
+        for (const auto &prefab : payload_closure.prefabs)
+            closure_json["prefabs"].push_back(
+                {{"name", prefab.name},
+                 {"digest", {{"algorithm", "sha256"}, {"hex", prefab.digest_sha256}}}});
+        for (const auto &behavior : payload_closure.behaviors)
+            closure_json["behaviors"].push_back(
+                {{"stable_name", behavior.stable_name},
+                 {"schema_version", behavior.schema_version},
+                 {"params_schema_fingerprint", behavior.params_schema_fingerprint}});
+        closure_json["provider_fingerprint"] = {
+            {"algorithm", "sha256"}, {"hex", payload_closure.provider_fingerprint_sha256}};
+        closure_json["resolver_inputs_fingerprint"] = {
+            {"algorithm", "sha256"},
+            {"hex", payload_closure.resolver_inputs_fingerprint_sha256}};
         const auto snapshot_response = runWp374aRpcResponse(
             *service, rpc_id++, "import_scene_snapshot",
-            {{"schema_version", 1},
+            {{"schema_version", 2},
              {"semantic_scene_bytes", snapshot_bytes},
              {"digest", {{"algorithm", "sha256"}, {"hex", digest}}},
-             {"current_scene_id", "main"}});
+             {"current_scene_id", "main"},
+             {"prefab_closure", closure_json}});
         REQUIRE(snapshot_response.contains("error"));
         const auto &snapshot_error = snapshot_response.at("error");
         REQUIRE(snapshot_error.at("data").at("code") ==
@@ -4328,7 +4366,7 @@ TEST_CASE(
 #if PELICAN_WITH_RPC
         auto document = AuthoringSceneDocument::load(
             Json{{"schema", "pelican.scene"},
-                 {"version", 1},
+                 {"version", 2},
                  {"scenes",
                   {{"main",
                     {{"objects",
@@ -4529,7 +4567,7 @@ TEST_CASE(
     writeWp374aText(
         project.path / "scene.json",
         Json{{"schema", "pelican.scene"},
-             {"version", 1},
+             {"version", 2},
              {"scenes",
               {{"main",
                 {{"objects",
@@ -4982,7 +5020,7 @@ Json wp380Document(std::int32_t tag, std::string_view scene_name,
                    bool fail_after_effects) {
     return Json{
         {"schema", "pelican.scene"},
-        {"version", 1},
+        {"version", 2},
         {"scenes",
          {{std::string{scene_name},
            wp380Scene(tag, scene_name, pending_scene,
@@ -5081,7 +5119,7 @@ TEST_CASE(
     const auto a_document = wp380Document(1, "A", "A_pending", false);
     const Json empty_document{
         {"schema", "pelican.scene"},
-        {"version", 1},
+        {"version", 2},
         {"scenes", {{"empty", {{"objects", Json::array()}}}}},
     };
     writeWp374aText(project.path / "scene.json", a_document.dump(2));
@@ -5541,7 +5579,7 @@ TEST_CASE(
     writeWp374aText(
         project.path / "assets.json",
         Json{{"schema", "pelican.asset_data"},
-             {"version", 1},
+             {"version", 2},
              {"models",
               Json::array(
                   {{{"name", "chair"},
@@ -5599,10 +5637,10 @@ TEST_CASE(
 TEST_CASE(
     "WP380c production pending RPC and import roots reach the executor",
     "[WP380c][transaction][roots][gpu]") {
+    // MG-2b: the SnapshotV1 import root is gone; the import has one root.
     enum class RootCase {
         pending,
         rpc,
-        import_v1,
         import_v2,
     };
     constexpr std::array cases{
@@ -5610,7 +5648,6 @@ TEST_CASE(
 #if PELICAN_WITH_RPC
         RootCase::rpc,
 #endif
-        RootCase::import_v1,
         RootCase::import_v2,
     };
 
@@ -5618,10 +5655,7 @@ TEST_CASE(
         const auto section_name =
             root_case == RootCase::pending
                 ? "pending"
-                : root_case == RootCase::rpc
-                      ? "rpc"
-                      : root_case == RootCase::import_v1 ? "import_v1"
-                                                         : "import_v2";
+                : root_case == RootCase::rpc ? "rpc" : "import_v2";
         DYNAMIC_SECTION(section_name) {
         setupLogger();
         Wp374aProjectRoot project{"wp380c_root"};
@@ -5643,10 +5677,6 @@ TEST_CASE(
             root = SceneLoadRoot::rpc;
             owner = "root.rpc";
             field = "direct_load";
-        } else if (root_case == RootCase::import_v1) {
-            root = SceneLoadRoot::import_unversioned;
-            owner = "root.import.unversioned";
-            field = "callback";
         } else if (root_case == RootCase::import_v2) {
             root = SceneLoadRoot::import_versioned;
             owner = "root.import.versioned";
@@ -5708,13 +5738,12 @@ TEST_CASE(
                     std::string::npos);
 #endif
         } else {
-            const auto version = root_case == RootCase::import_v1 ? 1U : 2U;
             injector.setEnabled(false);
             REQUIRE_NOTHROW(config.importSceneDocument(
                 b_document.dump(), [&](SceneLoadRequest &&request) {
                     request.scene_id = "B";
                     return loader.load(std::move(request));
-                }, version));
+                }));
             REQUIRE(loader.currentScene() == "B");
             const auto *const resolved_b =
                 config.resolvedScene().findScene("B");
@@ -5729,8 +5758,7 @@ TEST_CASE(
                     [&](SceneLoadRequest &&request) {
                         request.scene_id = "B";
                         return loader.load(std::move(request));
-                    },
-                    version),
+                    }),
                 ContainsSubstring("injected scene-load root disconnect"));
             REQUIRE(loader.currentScene() == "B");
         }
@@ -5894,7 +5922,7 @@ Json wp380bDocument(std::string_view scene_name, std::string_view slot,
     }
     Json document{
         {"schema", "pelican.scene"},
-        {"version", 1},
+        {"version", 2},
         {"scenes",
          {{std::string{scene_name},
            {{"objects", Json::array({{{"name", "EffectHost"},
@@ -5930,7 +5958,7 @@ TEST_CASE(
     writeWp374aProject(project.path, std::nullopt, false, false, true);
     writeWp380bTone(project.path / "tone.wav");
     const auto a_document = Json{{"schema", "pelican.scene"},
-                                 {"version", 1},
+                                 {"version", 2},
                                  {"scenes", {{"A", {{"objects", Json::array()}}}}}};
     const auto b_document =
         wp380bDocument("B", "slot_b", false, "only_e", true, true);
@@ -6211,7 +6239,7 @@ TEST_CASE(
     writeWp374aText(
         project.path / "scene.json",
         Json{{"schema", "pelican.scene"},
-             {"version", 1},
+             {"version", 2},
              {"scenes",
               {{"main",
                 {{"objects",
@@ -6223,7 +6251,7 @@ TEST_CASE(
     writeWp374aText(
         project.path / "assets.json",
         Json{{"schema", "pelican.asset_data"},
-             {"version", 1},
+             {"version", 2},
              {"models",
               Json::array({{{"name", "chair"}, {"path", "models/chair.glb"}},
                            {{"name", "twin"}, {"path", "models/twin.glb"}},
@@ -6745,7 +6773,8 @@ TEST_CASE("RT4 callable dispatch selects its SBT record and reloads its implemen
     if (dynamic_records) {
         ray["callable_record"] = Json::array({{{"name", "increment"}, {"type", "u32"}}});
         ray["callable_records"] = Json::array({{{"increment", 100}}, {{"increment", 200}}});
-        auto rendering = Json::parse(readWp374aText(project.path / "hybrid.json"));
+        auto rendering_root = Json::parse(readWp374aText(project.path / "hybrid.json"));
+        auto &rendering = renderingSectionOf(rendering_root);  // MG-2b: the graph root's section
         rendering.erase("pipeline");
         rendering["rendering_passes"] = Json::array({
             {{"name", "main_render"}, {"passes", Json::array({
@@ -6757,7 +6786,7 @@ TEST_CASE("RT4 callable dispatch selects its SBT record and reloads its implemen
             "#version 450\nlayout(location=0) out vec4 color;\nvoid main() { color = vec4(0,0,0,1); }\n");
         rendering["ray_task_callable_records"] = {{"wp386_trace",
             Json::array({{{"increment", 100}}, {{"increment", 250}}})}};
-        writeWp374aText(project.path / "hybrid.json", rendering.dump());
+        writeWp374aText(project.path / "hybrid.json", rendering_root.dump());
     }
     ray["hit_shaders"]["primary"]["sphere"]["intersection"] = "project://shaders/hit";
     writeWp374aText(project.path / "features/wp386_procedural.json", feature.dump());
@@ -6896,7 +6925,7 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
         edit(mapping);
         CHECK(marker() == 1807u);
         CHECK(readWp374aText(feature_path) == feature_bytes);
-        CHECK(Json::parse(readWp374aText(project.path / "hybrid.json")).at("ray_task_callable_records") == mapping);
+        CHECK(Json::parse(readWp374aText(project.path / "hybrid.json")).at("rendering").at("ray_task_callable_records") == mapping);
         CHECK(runWp374aRpcBytes(*service, rpc_id++, "edit_ray_callable_records", {
             {"base_source_digest", before.at("source_digest").at("hex")},
             {"task_records", mapping}}).at("status") == "rejected");

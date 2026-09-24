@@ -51,11 +51,11 @@ file(WRITE "${OUT_DIR}/project/project.json" [=[
 file(WRITE "${OUT_DIR}/project/scene.json" [=[
 {
   "schema": "pelican.scene",
-  "version": 1,
+  "version": 2,
   "scenes": {"default_scene": {"objects": []}}
 }
 ]=])
-file(WRITE "${OUT_DIR}/project/assets.json" "{\"schema\":\"pelican.asset_data\",\"version\":1,\"models\":[]}\n")
+file(WRITE "${OUT_DIR}/project/assets.json" "{\"schema\":\"pelican.asset_data\",\"version\":2,\"models\":[]}\n")
 file(WRITE "${OUT_DIR}/project/ui/ui.json" "{\"schema\":\"pelican.ui\",\"version\":1,\"key\":\"empty\",\"root\":{\"id\":\"root\",\"type\":\"panel\"}}\n")
 
 file(WRITE "${OUT_DIR}/project/shaders/fullscreen.vert" [=[

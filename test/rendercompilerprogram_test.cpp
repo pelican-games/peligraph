@@ -14,6 +14,7 @@
 #include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
 #include "../src/project/renderconfigdocument.hpp"
 #include "../src/project/renderconfigsection.hpp"
+#include "render_graph_root_test_support.hpp"
 #include "../src/project/rasterrayquery.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -21,6 +22,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -521,6 +523,30 @@ struct ProgramInputFixture {
     nlohmann::json config =
         nlohmann::json::object();
     PathResolver path_resolver;
+    std::filesystem::path task_project;
+
+    // MG-2b: the authored config is a `pelican.graph` root. A fixture that
+    // declares buffers or compute tasks keeps them in a project task feature,
+    // so this writes one into a temporary project the resolver reads from.
+    void useAuthoredConfig(nlohmann::json flat, std::string_view label) {
+        task_project = std::filesystem::temp_directory_path() /
+                       ("pelican-mg2b-" + std::string{label} + "-" +
+                        std::to_string(std::chrono::steady_clock::now()
+                                           .time_since_epoch()
+                                           .count()));
+        std::filesystem::create_directories(task_project);
+        path_resolver.setup(task_project, false);
+        config = Pelican::TestSupport::renderGraphRootWithTaskFeature(std::move(flat), task_project);
+    }
+
+    ProgramInputFixture() = default;
+    ProgramInputFixture(const ProgramInputFixture &) = delete;
+    ProgramInputFixture &operator=(const ProgramInputFixture &) = delete;
+    ~ProgramInputFixture() {
+        if (task_project.empty()) return;
+        std::error_code ignored;
+        std::filesystem::remove_all(task_project, ignored);
+    }
     GraphTransformRegistrySnapshot
         graph_transforms;
     RenderStrategyRegistrySnapshot
@@ -637,7 +663,7 @@ TEST_CASE(
     "WP311 data-only production compiler rejects non-material GPU draw ownership before publication",
     "[wp311][render-compiler][data-only][pass-field-ownership]") {
     ProgramInputFixture fixture;
-    fixture.config = {
+    fixture.config = Pelican::TestSupport::renderGraphRoot(nlohmann::json{
         {"render_targets", nlohmann::json::array()},
         {"rendering_passes",
          nlohmann::json::array({
@@ -659,7 +685,7 @@ TEST_CASE(
                   })},
              },
          })},
-    };
+    });
     fixture.backend_context =
         VulkanRenderCompilerBackendContext{
             vk::Format::eB8G8R8A8Srgb,
@@ -696,18 +722,20 @@ TEST_CASE(
 TEST_CASE("Frame node orders are scoped to their compiled graph variants",
           "[rendercompiler][node-order][variants]") {
     ProgramInputFixture fixture;
-    fixture.config = readJsonFixture(
+    fixture.useAuthoredConfig(readJsonFixture(
         std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
-        "test/production_fixtures/pass_field_ownership/gpu_draw_material.json");
+        "test/production_fixtures/pass_field_ownership/gpu_draw_material.json"),
+        "node-order");
     fixture.backend_context = VulkanRenderCompilerBackendContext{
         vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
         VulkanRenderCompilerDevicePlanningMode::compiler_only};
     fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat}};
-    fixture.config["frame_node_order"] = {{"main", {"build_visible_draws", "gpu_geometry"}}};
+    auto &authored = renderingSectionOf(fixture.config);
+    authored["frame_node_order"] = {{"main", {"build_visible_draws", "gpu_geometry"}}};
     SECTION("flat and XR accept independent graph orders") {
 #if PELICAN_WITH_OPENXR
         fixture.variants.push_back({.graph_variant = RenderPipelineGraphVariant::xr});
-        fixture.config["frame_node_order"]["main#xr"] = {"build_visible_draws#xr", "gpu_geometry"};
+        authored["frame_node_order"]["main#xr"] = {"build_visible_draws#xr", "gpu_geometry"};
 #endif
         const auto output = runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), fixture.input());
         REQUIRE(output.variants.front().frame_plans.contains("main"));
@@ -716,13 +744,13 @@ TEST_CASE("Frame node orders are scoped to their compiled graph variants",
 #endif
     }
     SECTION("unknown graph is still rejected across the program") {
-        fixture.config["frame_node_order"]["unknown"] = nlohmann::json::array();
+        authored["frame_node_order"]["unknown"] = nlohmann::json::array();
         REQUIRE_THROWS_WITH(runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), fixture.input()),
                             Catch::Matchers::ContainsSubstring("frame_node_order unknown graph: unknown"));
     }
     SECTION("data-only compilation still rejects duplicate names") {
         fixture.variants.front().artifact = RenderCompilerProgramArtifact::data_only;
-        fixture.config["frame_node_order"]["main"] = {"gpu_geometry", "gpu_geometry"};
+        authored["frame_node_order"]["main"] = {"gpu_geometry", "gpu_geometry"};
         REQUIRE_THROWS_WITH(runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), fixture.input()),
                             Catch::Matchers::ContainsSubstring("frame_node_order duplicate node"));
     }
@@ -752,7 +780,7 @@ TEST_CASE("P-2a-4b frame_node_order is read in a pelican.graph root's rendering 
         vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
         VulkanRenderCompilerDevicePlanningMode::compiler_only};
     fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat}};
-    fixture.config = wrapLegacyRenderingConfig(section);
+    fixture.config = Pelican::TestSupport::renderGraphRoot(section);
     REQUIRE_FALSE(fixture.config.contains("frame_node_order"));
 
     SECTION("a known graph order is accepted through the section") {
@@ -773,9 +801,10 @@ TEST_CASE(
     "WP311 production compiler retains GPU draw reads and pins final buffer IDs",
     "[wp311][render-compiler][gpu-draw][pass-field-ownership]") {
     ProgramInputFixture fixture;
-    fixture.config = readJsonFixture(
+    fixture.useAuthoredConfig(readJsonFixture(
         std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
-        "test/production_fixtures/pass_field_ownership/gpu_draw_material.json");
+        "test/production_fixtures/pass_field_ownership/gpu_draw_material.json"),
+        "gpu-draw");
     fixture.backend_context =
         VulkanRenderCompilerBackendContext{
             vk::Format::eB8G8R8A8Srgb,
@@ -909,10 +938,10 @@ TEST_CASE(
     const std::string feature_reference =
         "project://passes/wp334b-staged-feature.json";
     const std::string root_bytes =
-        nlohmann::json{
+        Pelican::TestSupport::renderGraphRoot(nlohmann::json{
             {"pipeline", {{"preset", preset_reference}}},
             {"features", nlohmann::json::array({feature_reference})},
-        }
+        })
             .dump();
     const auto preset_bytes = fixture.path_resolver.loadText(
         "engine://render_pipelines/hybrid_v1.json");

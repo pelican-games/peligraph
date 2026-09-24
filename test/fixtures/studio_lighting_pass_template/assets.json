@@ -1,1 +1,1 @@
-{"schema":"pelican.asset_data","version":1,"models":[{"name":"box","path":"assets/ground.glb"}]}
+{"schema":"pelican.asset_data","version":2,"models":[{"name":"box","path":"assets/ground.glb"}]}

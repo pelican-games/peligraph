@@ -168,11 +168,11 @@ TEST_CASE("RPC capture reports contract 2 and absolute encoded-sRGB color", "[rp
     const auto capture = root / "capture.png";
 
     writeFile(root / "scene.json", R"json({
-  "schema":"pelican.scene","version":1,
+  "schema":"pelican.scene","version":2,
   "scenes":{"default_scene":{"objects":[]}}
 })json");
     writeFile(root / "assets.json",
-              R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+              R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
     writeFile(root / "ui/ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeFile(root / "shaders/fullscreen.vert", R"glsl(
 #version 450
@@ -185,12 +185,19 @@ layout(location=0) out vec4 outColor;
 void main(){ outColor=vec4(0.5,0.5,0.5,0.25); }
 )glsl");
     writeFile(root / "passes/main.json", R"json({
-  "render_targets":[],
-  "rendering_passes":[{"name":"main","passes":[{
-    "name":"known_value","type":"fullscreen",
-    "output":{"color":"swapchain","depth":null},
-    "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/half"}
-  }]}]
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "render_targets":[],
+    "rendering_passes":[{"name":"main","passes":[{
+      "name":"known_value","type":"fullscreen",
+      "output":{"color":"swapchain","depth":null},
+      "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/half"}
+    }]}]
+  }
 })json");
 
     const nlohmann::json project{
@@ -312,7 +319,7 @@ TEST_CASE("picking feature readback maps a pixel to the WP258 declaration identi
     TestGltfFragmentFixture::writeGlb(
         project_dir.root / "asset.glb", false, true);
     writeFile(project_dir.root / "scene.json", R"json({
-  "schema":"pelican.scene","version":1,
+  "schema":"pelican.scene","version":2,
   "scenes":{"default_scene":{"objects":[
     {"name":"PickCamera","components":[
       {"name":"transform","pos":[0,0,-2],"rotation":[0,0,0,1],"scale":[1,1,1]},
@@ -326,13 +333,20 @@ TEST_CASE("picking feature readback maps a pixel to the WP258 declaration identi
 })json");
     writeFile(
         project_dir.root / "assets.json",
-        R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"triangle","path":"asset.glb"}]})json");
+        R"json({"schema":"pelican.asset_data","version":2,"models":[{"name":"triangle","path":"asset.glb"}]})json");
     writeFile(
         project_dir.root / "ui/ui.json",
         R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeFile(project_dir.root / "passes/main.json", R"json({
-  "pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},
-  "features":["engine://features/picking.json"]
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},
+    "features":["engine://features/picking.json"]
+  }
 })json");
 
     const nlohmann::json project{
@@ -437,7 +451,7 @@ TEST_CASE("gizmo feature draws and exposes stateless handle queries",
 
     std::filesystem::create_directories(project_dir.root);
     writeFile(project_dir.root / "scene.json", R"json({
-  "schema":"pelican.scene","version":1,
+  "schema":"pelican.scene","version":2,
   "scenes":{"default_scene":{"objects":[
     {"name":"GizmoCamera","components":[
       {"name":"transform","pos":[0,0,-2],"rotation":[0,0,0,1],"scale":[1,1,1]},
@@ -450,13 +464,20 @@ TEST_CASE("gizmo feature draws and exposes stateless handle queries",
 })json");
     writeFile(
         project_dir.root / "assets.json",
-        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+        R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
     writeFile(
         project_dir.root / "ui/ui.json",
         R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeFile(project_dir.root / "passes/main.json", R"json({
-  "pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},
-  "features":["engine://features/gizmo.json"]
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},
+    "features":["engine://features/gizmo.json"]
+  }
 })json");
 
     const nlohmann::json project{
@@ -617,7 +638,7 @@ TEST_CASE("gizmo targets an undeclared runtime object with strict identity error
 
     std::filesystem::create_directories(project_dir.root);
     writeFile(project_dir.root / "scene.json", R"json({
-  "schema":"pelican.scene","version":1,
+  "schema":"pelican.scene","version":2,
   "scenes":{"default_scene":{"objects":[
     {"name":"GizmoCamera","components":[
       {"name":"transform","pos":[0,0,-2],"rotation":[0,0,0,1],"scale":[1,1,1]},
@@ -627,13 +648,20 @@ TEST_CASE("gizmo targets an undeclared runtime object with strict identity error
 })json");
     writeFile(
         project_dir.root / "assets.json",
-        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+        R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
     writeFile(
         project_dir.root / "ui/ui.json",
         R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeFile(project_dir.root / "passes/main.json", R"json({
-  "pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},
-  "features":["engine://features/gizmo.json"]
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},
+    "features":["engine://features/gizmo.json"]
+  }
 })json");
 
     const nlohmann::json project{
@@ -877,15 +905,22 @@ TEST_CASE("RPC load_gltf publishes once and preserves inventory on preflight and
     std::filesystem::create_directories(project_dir.root);
     TestGltfFragmentFixture::writeGlb(project_dir.root / "asset.glb");
     writeFile(project_dir.root / "scene.json", R"json({
-  "schema":"pelican.scene","version":1,
+  "schema":"pelican.scene","version":2,
   "scenes":{"default_scene":{"objects":[]}}
 })json");
     writeFile(project_dir.root / "assets.json",
-              R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+              R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
     writeFile(project_dir.root / "ui/ui.json",
               R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeFile(project_dir.root / "passes/main.json", R"json({
-  "pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"}
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"}
+  }
 })json");
 
     const nlohmann::json project{

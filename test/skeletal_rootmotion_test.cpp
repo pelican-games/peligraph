@@ -145,12 +145,12 @@ void main() {
 }
 )");
     writeText(root / "assets.json",
-        R"({"schema":"pelican.asset_data","version":1,"models":[{"name":"mover","path":"mover.gltf"}]})");
+        R"({"schema":"pelican.asset_data","version":2,"models":[{"name":"mover","path":"mover.gltf"}]})");
     // No animation component: the graph is the only thing that can pose this
     // object or move it. `localtransform` is declared here and left out in the
     // "no local transform" mode; the loader gives every object with a
     // transform one either way (GP-1), so both shapes move the same.
-    auto scene_document = nlohmann::json::parse(R"({"schema":"pelican.scene","version":1,
+    auto scene_document = nlohmann::json::parse(R"({"schema":"pelican.scene","version":2,
       "scenes":{"default_scene":{"objects":[{"name":"Mover","components":[
         {"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
         {"name":"localtransform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},

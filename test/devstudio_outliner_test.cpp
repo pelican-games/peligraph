@@ -273,7 +273,7 @@ TEST_CASE("Devstudio outliner projects parent references onto declaration identi
 })json");
     sandbox.write("scenes/tree.scene.json", R"json({
   "schema": "pelican.scene",
-  "version": 1,
+  "version": 2,
   "scenes": {
     "main": {
       "objects": [
@@ -399,7 +399,7 @@ TEST_CASE("Studio outliner follows RPC snapshot and structure revisions instead 
   "basic_config":{"scene_data_json":"scenes/tree.scene.json"}
 })json");
     sandbox.write("scenes/tree.scene.json", R"json({
-  "schema":"pelican.scene","version":1,
+  "schema":"pelican.scene","version":2,
   "scenes":{"main":{"objects":[{"name":"DiskOnly","components":[]}]}}
 })json");
 

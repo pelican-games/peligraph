@@ -102,17 +102,19 @@ parseAssetDataFormatJson(
     if (!document.contains("version") ||
         !document.at("version").is_number_integer()) {
         throw std::runtime_error(
-            "asset_data.json version must be exactly 1 or 2");
+            "asset_data.json requires an integer version");
+    }
+    // MG-2b: one version. A version 1 document (the same document without
+    // procedural_geometry) is not read; a project that still has one rewrites
+    // its "version" to 2 -- nothing else changes.
+    if (document.at("version") != assetDataCurrentVersion) {
+        throw std::runtime_error(
+            "pelican.asset_data.version_unsupported@1: asset_data version " +
+            document.at("version").dump() +
+            " is not supported; this engine reads version " +
+            std::to_string(assetDataCurrentVersion) + " only");
     }
     const auto version = document.at("version").get<int>();
-    if (version < 1 || version > assetDataCurrentVersion) {
-        throw std::runtime_error(
-            "asset_data.json version must be exactly 1 or 2");
-    }
-    if (version == 1 && document.contains("procedural_geometry")) {
-        throw std::runtime_error(
-            "pelican.asset_data_procedural_requires_v2@1: procedural_geometry requires asset_data version 2");
-    }
     if (!document.contains("models") ||
         !document.at("models").is_array()) {
         throw std::runtime_error(

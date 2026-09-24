@@ -415,6 +415,14 @@ RenderConfigSectionUnlocated::RenderConfigSectionUnlocated()
     : std::invalid_argument(
           "graph root render config has no rendering section object") {}
 
+RenderConfigLegacyRoot::RenderConfigLegacyRoot()
+    : std::invalid_argument(
+          std::string{renderConfigLegacyRootCode} +
+          ": the rendering config root is not a pelican.graph document; this "
+          "engine reads only the graph root. Move the old root under "
+          "\"rendering\" of {\"schema\": \"pelican.graph\", \"version\": 1, "
+          "\"definitions\": {}, \"nodes\": [], \"outputs\": {}}") {}
+
 bool isGraphRootKey(std::string_view key) {
     // `layout` is the editor's own placement (N-6). It is a graph root member
     // like the four that carry the graph itself, so it must not be written into
@@ -526,21 +534,17 @@ AuthoredRenderConfigDocument::AuthoredRenderConfigDocument(
         if (!semantic.is_object()) {
             throw std::invalid_argument("render config root must be an object");
         }
-        graph_root_ =
-            semantic.value("schema", std::string{}) == "pelican.graph";
-        // A graph root keeps the authored rendering config one level down.
+        if (semantic.value("schema", std::string{}) != "pelican.graph")
+            throw RenderConfigLegacyRoot{};
+        // The graph root keeps the authored rendering config one level down.
         // Everything below reads and writes that object, so `features` at the
         // root of a graph document is not this document's features array.
-        const auto *section = &semantic;
-        if (graph_root_) {
-            const auto found = semantic.find(
-                std::string{renderingSectionKey});
-            if (found == semantic.end() || !found->is_object()) {
-                if (require_features) throw RenderConfigSectionUnlocated{};
-                return;
-            }
-            section = &*found;
+        const auto found = semantic.find(std::string{renderingSectionKey});
+        if (found == semantic.end() || !found->is_object()) {
+            if (require_features) throw RenderConfigSectionUnlocated{};
+            return;
         }
+        const auto *section = &*found;
         section_located_ = true;
         if (section->contains("features") &&
             !section->at("features").is_array()) {
@@ -557,8 +561,7 @@ AuthoredRenderConfigDocument::AuthoredRenderConfigDocument(
     }
     if (!section_located_) return;
 
-    const auto location = graph_root_ ? locateSectionMembers(bytes_)
-                                      : locateRootMembers(bytes_);
+    const auto location = locateSectionMembers(bytes_);
     if (!location.found) {
         if (require_features) {
             throw std::invalid_argument(
@@ -588,27 +591,21 @@ AuthoredRenderConfigDocument::AuthoredRenderConfigDocument(
 
 AuthoredRenderConfigDocument
 AuthoredRenderConfigDocument::initialize(std::string bytes) {
-    bool graph_root = false;
     try {
         const auto semantic = nlohmann::json::parse(bytes);
         if (!semantic.is_object()) {
             throw std::invalid_argument(
                 "render config root must be an object");
         }
-        graph_root =
-            semantic.value("schema", std::string{}) == "pelican.graph";
-        const auto *section = &semantic;
-        if (graph_root) {
-            const auto found = semantic.find(
-                std::string{renderingSectionKey});
-            // The features array belongs in the section the composer reads.
-            // Without one there is no silent root member to fall back on.
-            if (found == semantic.end() || !found->is_object()) {
-                throw RenderConfigSectionUnlocated{};
-            }
-            section = &*found;
+        if (semantic.value("schema", std::string{}) != "pelican.graph")
+            throw RenderConfigLegacyRoot{};
+        const auto found = semantic.find(std::string{renderingSectionKey});
+        // The features array belongs in the section the composer reads.
+        // Without one there is no silent root member to fall back on.
+        if (found == semantic.end() || !found->is_object()) {
+            throw RenderConfigSectionUnlocated{};
         }
-        if (section->contains("features")) {
+        if (found->contains("features")) {
             return parse(std::move(bytes));
         }
     } catch (const nlohmann::json::exception &error) {
@@ -617,8 +614,7 @@ AuthoredRenderConfigDocument::initialize(std::string bytes) {
             error.what());
     }
 
-    const auto location = graph_root ? locateSectionMembers(bytes)
-                                     : locateRootMembers(bytes);
+    const auto location = locateSectionMembers(bytes);
     const auto insertion = missingRootMemberInsertion(bytes, location, "\"features\": []");
     bytes.insert(insertion.offset, insertion.bytes);
     return parse(std::move(bytes));
@@ -657,8 +653,7 @@ AuthoredRenderConfigDocument AuthoredRenderConfigDocument::withRootValue(
 
 AuthoredRenderConfigDocument AuthoredRenderConfigDocument::withSectionValue(
     std::string_view key, std::string_view json_value) const {
-    if (!graph_root_ || isGraphRootKey(key))
-        return withRootValue(key, json_value);
+    if (isGraphRootKey(key)) return withRootValue(key, json_value);
     if (!nlohmann::json::accept(json_value))
         throw std::invalid_argument("render config section replacement must be one valid JSON value");
     JsonCursor value_cursor{json_value};

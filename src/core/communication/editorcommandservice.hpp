@@ -128,11 +128,6 @@ struct EditorListAssetsResult {
     std::vector<EditorAssetQueryResult> assets;
 };
 
-struct ExportSceneSnapshotRequestV1 {
-    std::uint64_t schema_version = 1;
-    bool allow_pending = false;
-};
-
 struct DigestV1 {
     std::string algorithm;
     std::string hex;
@@ -143,16 +138,6 @@ struct SaveSceneResult {
     DigestV1 digest;
     std::size_t byte_count = 0;
     bool scene_hot_reload = false;
-};
-
-struct ExportSceneSnapshotResponseV1 {
-    std::uint64_t schema_version = 1;
-    SceneRevision scene_revision{};
-    std::string current_scene_id;
-    std::string semantic_scene_bytes;
-    DigestV1 digest;
-    std::vector<std::string> pending_ticket_ids;
-    std::uint64_t preview_epoch = 0;
 };
 
 struct ExportSceneSnapshotRequestV2 {
@@ -169,13 +154,6 @@ struct ExportSceneSnapshotResponseV2 {
     std::vector<std::string> pending_ticket_ids;
     std::uint64_t preview_epoch = 0;
     PrefabResolutionClosure prefab_closure;
-};
-
-struct ImportSceneSnapshotRequestV1 {
-    std::uint64_t schema_version = 1;
-    std::string semantic_scene_bytes;
-    DigestV1 digest;
-    std::string current_scene_id;
 };
 
 struct ImportSceneSnapshotRequestV2 {
@@ -267,8 +245,6 @@ struct EditorCommandServiceDependencies {
     std::optional<EditorPreviewServiceDependencies> preview;
     std::shared_ptr<RenderConfigEditorService> render_config_editor;
     std::shared_ptr<ProceduralAssetEditorService> procedural_asset_editor;
-    std::function<SceneImportResult(std::string_view, std::string_view)>
-        import_scene_snapshot;
     std::function<SceneImportResult(std::string_view, std::string_view,
                                    std::uint64_t)>
         import_scene_snapshot_versioned;
@@ -330,11 +306,8 @@ class EditorCommandService {
     RayOccurrenceResolution resolveRayOccurrence(
         std::string_view occurrence_id) const;
     EditorListAssetsResult listAssets(const EditorListAssetsRequest &request = {}) const;
-    ExportSceneSnapshotResponseV1 exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &request) const;
     ExportSceneSnapshotResponseV2 exportSceneSnapshotV2(
         const ExportSceneSnapshotRequestV2 &request) const;
-    ImportSceneSnapshotResult importSceneSnapshot(
-        const ImportSceneSnapshotRequestV1 &request);
     ImportSceneSnapshotResult importSceneSnapshotV2(
         const ImportSceneSnapshotRequestV2 &request);
     SaveSceneResult saveScene();
@@ -509,8 +482,9 @@ class EditorCommandImGuiFakeAdapter {
     EditorListAssetsResult listAssets(const EditorListAssetsRequest &request = {}) const {
         return service_.listAssets(request);
     }
-    ExportSceneSnapshotResponseV1 exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &request) const {
-        return service_.exportSceneSnapshot(request);
+    ExportSceneSnapshotResponseV2 exportSceneSnapshotV2(
+        const ExportSceneSnapshotRequestV2 &request) const {
+        return service_.exportSceneSnapshotV2(request);
     }
     SaveSceneResult saveScene() const {
         if (!mutable_service_) {
@@ -525,7 +499,6 @@ nlohmann::ordered_json editorQueryJson(const EditorSceneRevisionResult &revision
 nlohmann::ordered_json editorQueryJson(const EditorObjectQueryResult &object);
 nlohmann::ordered_json editorQueryJson(const EditorSceneTreeResult &scene);
 nlohmann::ordered_json editorQueryJson(const EditorListAssetsResult &assets);
-nlohmann::ordered_json editorQueryJson(const ExportSceneSnapshotResponseV1 &snapshot);
 nlohmann::ordered_json editorQueryJson(const ExportSceneSnapshotResponseV2 &snapshot);
 nlohmann::ordered_json editorQueryJson(const ImportSceneSnapshotResult &snapshot);
 nlohmann::ordered_json editorQueryJson(const SaveSceneResult &save);

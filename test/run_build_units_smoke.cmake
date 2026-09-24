@@ -576,31 +576,38 @@ function(write_common_project root)
 ]=])
 file(WRITE "${root}/passes/main.json" [=[
 {
-  "features": ["engine://features/ui.json"],
-  "render_targets": [],
-  "rendering_passes": [
-    {
-      "name": "main",
-      "passes": [
-        {
-          "name": "present",
-          "type": "ui",
-          "output": {"color": "swapchain", "depth": null}
-        }
-      ]
-    }
-  ]
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "features": ["engine://features/ui.json"],
+    "render_targets": [],
+    "rendering_passes": [
+      {
+        "name": "main",
+        "passes": [
+          {
+            "name": "present",
+            "type": "ui",
+            "output": {"color": "swapchain", "depth": null}
+          }
+        ]
+      }
+    ]
+  }
 }
 ]=])
 endfunction()
 
 function(write_empty_project root)
     write_common_project("${root}")
-    file(WRITE "${root}/assets/asset_data.json" "{\"schema\":\"pelican.asset_data\",\"version\":1,\"models\":[]}\n")
+    file(WRITE "${root}/assets/asset_data.json" "{\"schema\":\"pelican.asset_data\",\"version\":2,\"models\":[]}\n")
     file(WRITE "${root}/scenes/main.scene.json" [=[
 {
   "schema": "pelican.scene",
-  "version": 1,
+  "version": 2,
   "scenes": {"default_scene": {"objects": []}}
 }
 ]=])
@@ -639,7 +646,7 @@ function(write_vat_project root)
     file(WRITE "${root}/assets/asset_data.json" [=[
 {
   "schema": "pelican.asset_data",
-  "version": 1,
+  "version": 2,
   "models": [
     {"name": "vat_model", "path": "assets/tiny_vat.glb"}
   ]
@@ -648,7 +655,7 @@ function(write_vat_project root)
     file(WRITE "${root}/scenes/main.scene.json" [=[
 {
   "schema": "pelican.scene",
-  "version": 1,
+  "version": 2,
   "scenes": {
     "default_scene": {
       "objects": [
@@ -679,28 +686,35 @@ function(write_physics_project root)
     # fullscreen pass: the collider has to reach scene prepare to be refused.
     file(WRITE "${root}/passes/main.json" [=[
 {
-  "features": ["engine://features/ui.json"],
-  "render_targets": [],
-  "rendering_passes": [
-    {
-      "name": "main",
-      "passes": [
-        {
-          "name": "present",
-          "type": "fullscreen",
-          "output": {"color": "swapchain", "depth": null},
-          "shader": {"vertex": "engine://fullscreen", "fragment": "engine://fullscreen"}
-        }
-      ]
-    }
-  ]
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "features": ["engine://features/ui.json"],
+    "render_targets": [],
+    "rendering_passes": [
+      {
+        "name": "main",
+        "passes": [
+          {
+            "name": "present",
+            "type": "fullscreen",
+            "output": {"color": "swapchain", "depth": null},
+            "shader": {"vertex": "engine://fullscreen", "fragment": "engine://fullscreen"}
+          }
+        ]
+      }
+    ]
+  }
 }
 ]=])
-    file(WRITE "${root}/assets/asset_data.json" "{\"schema\":\"pelican.asset_data\",\"version\":1,\"models\":[]}\n")
+    file(WRITE "${root}/assets/asset_data.json" "{\"schema\":\"pelican.asset_data\",\"version\":2,\"models\":[]}\n")
     file(WRITE "${root}/scenes/main.scene.json" [=[
 {
   "schema": "pelican.scene",
-  "version": 1,
+  "version": 2,
   "scenes": {
     "default_scene": {
       "objects": [

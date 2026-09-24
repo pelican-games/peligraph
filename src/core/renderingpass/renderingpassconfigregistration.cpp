@@ -952,7 +952,9 @@ void RegistrationStages::prepare() {
                 enabled_device_extensions.end()},
             vulkan_core.getRuntimeCapabilities(),
         };
-    if (rendering_pass_data.value("schema", std::string{}) == "pelican.graph") {
+    // The loader admitted a `pelican.graph` root only (MG-2b), so the value
+    // and pose partitions always exist.
+    {
         value_graph = std::make_shared<const ValueGraph::Graph>(rendering_pass_data.dump());
 #if PELICAN_WITH_ANIMATION
         // The same authored document, partitioned the other way. Compiling it
@@ -967,7 +969,7 @@ void RegistrationStages::prepare() {
         }
     }
     auto resolved_rendering_data = rendering_pass_data;
-    if (rendering_pass_data.value("schema", std::string{}) == "pelican.graph") {
+    {
         std::map<std::string, PreparedGltf> sources;
         std::map<std::string, ModelTemplate> inspected_models;
         resolved_rendering_data = resolveGraphAttributeSources(rendering_pass_data,

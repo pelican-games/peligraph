@@ -70,7 +70,6 @@ ProceduralAssetEditorService::Result ProceduralAssetEditorService::edit(const Js
         if (found != assets.end()) return rejectAsset("asset_already_exists", "Procedural asset already exists: " + name);
         assets.push_back({{"name", name}, {"kind", "aabb_v1"},
                           {"aabb", params.at("aabb")}, {"record", params.at("record")}});
-        candidate["version"] = 2;
     } else {
         if (found == assets.end()) return rejectAsset("asset_not_found", "Unknown procedural asset: " + name);
         if (operation == "delete") assets.erase(found);

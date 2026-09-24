@@ -1,4 +1,5 @@
 #include "../src/core/shader/raygrouplayout.hpp"
+#include "render_graph_root_test_support.hpp"
 #include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
@@ -119,10 +120,11 @@ RayBindings bindingsFor(const RayGroupLayout &layout) {
 }
 
 nlohmann::json rt1bSidecarRoot() {
-    return {
+    // MG-2b: the sidecar references sit in the graph root's section.
+    return Pelican::TestSupport::renderGraphRoot(nlohmann::json{
         {"ray_group_layout", "layout.json"},
         {"ray_bindings", "bindings.json"},
-    };
+    });
 }
 
 std::shared_ptr<const RayTracingProjectConfig> loadRt1bSidecar(
@@ -203,7 +205,7 @@ nlohmann::json rt1bCompilerConfig(bool require_rt_capability) {
                   "pelican.vulkan.ray_tracing_pipeline@1"}}}}}},
         };
     }
-    return config;
+    return Pelican::TestSupport::renderGraphRoot(std::move(config));
 }
 
 struct Rt1bCompilerFixture {
@@ -616,9 +618,9 @@ TEST_CASE("WP366 generated include salt drives the real shader cache",
 
 TEST_CASE("WP366 root sidecar is single-load and drives the complete task grammar",
           "[ray-tracing][rt1b][wire][production][mutation]") {
-    const auto root = nlohmann::json{
+    const auto root = Pelican::TestSupport::renderGraphRoot(nlohmann::json{
         {"ray_group_layout", "layout.json"},
-        {"ray_bindings", "bindings.json"}};
+        {"ray_bindings", "bindings.json"}});
     std::size_t layout_loads = 0;
     std::size_t binding_loads = 0;
     const auto project = loadRayTracingProjectConfig(

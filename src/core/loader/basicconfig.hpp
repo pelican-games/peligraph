@@ -159,9 +159,8 @@ DECLARE_MODULE(ProjectBasicConfig) {
     const SceneProjectionState &sceneProjectionState() const;
     void updateSceneDocument(std::string_view scene_v1_bytes);
     void invalidateSceneDocument() noexcept;
-    SceneImportResult importSceneDocument(std::string_view scene_v1_bytes,
-                                          const SceneImportCallback &reload,
-                                          std::uint64_t snapshot_schema_version = 1);
+    SceneImportResult importSceneDocument(std::string_view scene_bytes,
+                                          const SceneImportCallback &reload);
     void refreshResolvedScene(const std::function<void()> &reload);
     SceneSaveResult saveSceneDocument();
     void setSceneSaveFaultForTesting(

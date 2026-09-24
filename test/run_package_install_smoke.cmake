@@ -319,11 +319,18 @@ endif()
 # --------------------------------------------------------------------------
 file(WRITE "${host}/passes/main_rendering_config.json" [=[
 {
-  "pipeline": { "preset": "engine://render_pipelines/hybrid_v1.json" },
-  "features": [
-    "engine://features/shadow_directional.json",
-    "engine://features/sky_ambient.json"
-  ]
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "pipeline": { "preset": "engine://render_pipelines/hybrid_v1.json" },
+    "features": [
+      "engine://features/shadow_directional.json",
+      "engine://features/sky_ambient.json"
+    ]
+  }
 }
 ]=])
 

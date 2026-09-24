@@ -22,7 +22,7 @@
     {
      "path": "projects/animgraph_demo/assets/asset_data.json",
      "eol": "lf",
-     "blob_sha256": "ed6d7b8fd54ce8ca9db0863cf07dee4c06b0dc43333d666a4f7773acad3b8cce",
+     "blob_sha256": "23c561d9990c873fa7e308e7d87ca971230601ec674f24d1df91f4906a418a04",
      "blob_bytes": 159
     },
     {
@@ -76,8 +76,8 @@
     {
      "path": "projects/animgraph_demo/passes/main.json",
      "eol": "lf",
-     "blob_sha256": "4374b90d8a2999415b88d87b30e71d27251df7fd7acb8476ac75442ff8781650",
-     "blob_bytes": 219
+     "blob_sha256": "e0d9079ae9a0c4ae4142250e5c20c292de1f81a66c351be7b5b12f09a3014faa",
+     "blob_bytes": 350
     },
     {
      "path": "projects/animgraph_demo/project.json",
@@ -88,7 +88,7 @@
     {
      "path": "projects/animgraph_demo/scene.json",
      "eol": "lf",
-     "blob_sha256": "a48e75b8be22312e2d18add72f8ffa03e3fe841a423dfe53002aba7beec79e6c",
+     "blob_sha256": "055d73fb85da8cdeb9b4dab2cee8bf24544166a9d553e292aa7838e63b47e9cb",
      "blob_bytes": 469
     },
     {
@@ -117,7 +117,7 @@
     {
      "path": "projects/example/assets/asset_data.json",
      "eol": "lf",
-     "blob_sha256": "f31a013fcab58efe20e26ab8f2151d309b4fff813c3c7a56eb0463cdedabd55a",
+     "blob_sha256": "39a1dc22f00de55fb3a54cebac55894a3e95f91ec2c31dd344ba947e2e81fe30",
      "blob_bytes": 403
     },
     {
@@ -213,8 +213,8 @@
     {
      "path": "projects/example/passes/example_renderingpass_data.json",
      "eol": "lf",
-     "blob_sha256": "2b16430aa67d4cd920c9dd343f155931514a7070e10dbe66144edcb6e84791d8",
-     "blob_bytes": 2229
+     "blob_sha256": "2dc09b3b13771404324c122f6954eaf822e85357b5a8bd51fa25be28e3feadc2",
+     "blob_bytes": 2512
     },
     {
      "path": "projects/example/passes/main_rendering_config.json",
@@ -231,7 +231,7 @@
     {
      "path": "projects/example/scenes/main.scene.json",
      "eol": "lf",
-     "blob_sha256": "7d29c6d2bd2af49748656ad801465e72e882c5c4dd780e245fac6d2f02a62613",
+     "blob_sha256": "0929e9b27d897213268c35a9b48e7669964ee041382c8f6b4294301d951a134d",
      "blob_bytes": 26278
     },
     {
@@ -272,7 +272,7 @@
     {
      "path": "projects/sprite_demo/assets.json",
      "eol": "lf",
-     "blob_sha256": "a64f7399637a12faa106495b04bba5c36227850694c80f6c9cfe3a719baff8d9",
+     "blob_sha256": "b9e7026ffbb85ba609aac574d72a57db99263d5554ce32aa8eed485ce1204ee0",
      "blob_bytes": 173
     },
     {
@@ -320,8 +320,8 @@
     {
      "path": "projects/sprite_demo/passes/main.json",
      "eol": "lf",
-     "blob_sha256": "4b4379df79b3db7077ff8881a209d8acee0cd7c45dbe3d773217b21c06a4b29c",
-     "blob_bytes": 1765
+     "blob_sha256": "cdec64c426818992b6ffc2da42d0dcb5ed72c4c66ee297a54d7303e5913299f9",
+     "blob_bytes": 1914
     },
     {
      "path": "projects/sprite_demo/project.json",
@@ -332,7 +332,7 @@
     {
      "path": "projects/sprite_demo/scene.json",
      "eol": "lf",
-     "blob_sha256": "744e9781b0c88835e0f6d676f09a3386a5c80166d73daf79247408a53f87498e",
+     "blob_sha256": "bf07e2d65ffe42ed788f2e7db32fe83abe2de76152306c20ab5eacbeebddc729",
      "blob_bytes": 2293
     },
     {
@@ -367,7 +367,7 @@
     {
      "path": "projects/vrm_xr_demo/assets/asset_data.json",
      "eol": "lf",
-     "blob_sha256": "93037669cd8512e80a64f8e9ec62a609b48fb69724e9f393bbe1bbb7d10c8878",
+     "blob_sha256": "a53f1146f2d5f429f8d6cb50807a39e9ec8bbdffecd749c1d166de4b75e757c2",
      "blob_bytes": 197
     },
     {
@@ -433,8 +433,8 @@
     {
      "path": "projects/vrm_xr_demo/passes/main.json",
      "eol": "lf",
-     "blob_sha256": "9f9ca8604f17468b19758f6d8a58500d22ba766c41c7091c03e14090dc38b2d0",
-     "blob_bytes": 1597
+     "blob_sha256": "d328d895f178cd2aca0d72bf168f2a84b8392c5604beffc625d449ca621032bf",
+     "blob_bytes": 1746
     },
     {
      "path": "projects/vrm_xr_demo/project.json",
@@ -445,7 +445,7 @@
     {
      "path": "projects/vrm_xr_demo/scene.json",
      "eol": "lf",
-     "blob_sha256": "c9b175d6f3ff6bf61ec6f3c80882b0a50ae2f7ef9fb271c7f40d4124ee783271",
+     "blob_sha256": "a3e03369df5197e8c5b24aa10a98a5c942914d3c980d4333dbcefe1e5498e7fb",
      "blob_bytes": 895
     },
     {

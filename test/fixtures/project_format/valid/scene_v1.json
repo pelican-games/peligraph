@@ -7,7 +7,7 @@
   "expected_light_object_names": ["BlueSpot"],
   "document": {
     "schema": "pelican.scene",
-    "version": 1,
+    "version": 2,
     "scenes": {
       "default_scene": {
         "objects": [

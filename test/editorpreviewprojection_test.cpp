@@ -17,7 +17,7 @@ using Json = nlohmann::json;
 Json previewFixture() {
     return Json::parse(R"json({
       "schema":"pelican.scene",
-      "version":1,
+      "version":2,
       "scenes":{
         "main":{
           "objects":[

@@ -1,4 +1,5 @@
 #include "../src/core/shader/pipelinefactory.hpp"
+#include "render_graph_root_test_support.hpp"
 #include "../src/core/shader/raygrouplayout.hpp"
 #include "../src/core/shader/raytracingvalidation.hpp"
 #include "../src/core/shader/shadercompiler.hpp"
@@ -69,7 +70,8 @@ std::shared_ptr<const void> wp368Lease(int value) {
 }
 
 struct Wp368CompilerFixture {
-    nlohmann::json config = nlohmann::json::parse(R"json({
+    // MG-2b: the authored config is a graph root.
+    nlohmann::json config = Pelican::TestSupport::renderGraphRoot(nlohmann::json::parse(R"json({
       "features": [],
       "render_targets": [],
       "rendering_passes": [{
@@ -80,7 +82,7 @@ struct Wp368CompilerFixture {
           "output": {"color": ["swapchain"], "depth": null}
         }]
       }]
-    })json");
+    })json"));
     PathResolver path_resolver;
     GraphTransformRegistrySnapshot graph_transforms;
     RenderStrategyRegistrySnapshot render_strategies;
@@ -140,10 +142,10 @@ std::size_t wp368BindlessCapabilityCount(
 std::shared_ptr<const RayTracingProjectConfig>
 loadWp368Sidecar(bool runtime_shader_compiler_enabled,
                  std::size_t *loads = nullptr) {
-    const nlohmann::json root{
+    const auto root = Pelican::TestSupport::renderGraphRoot(nlohmann::json{
         {"ray_group_layout", "layout.json"},
         {"ray_bindings", "bindings.json"},
-    };
+    });
     return loadRayTracingProjectConfig(
         root,
         [&](std::string_view reference) {
@@ -1242,7 +1244,8 @@ TEST_CASE(
     const auto registration_checkpoint =
         registrations.checkpointRegistrations();
     std::size_t document_loads = 0;
-    const nlohmann::json root{{"ray_group_layout", "layout.json"}};
+    const auto root = Pelican::TestSupport::renderGraphRoot(
+        nlohmann::json{{"ray_group_layout", "layout.json"}});
     CHECK_THROWS_WITH(
         loadRayTracingProjectConfig(
             root,

@@ -99,7 +99,7 @@ TEST_CASE("import manifest accepts deterministic K3 deliveries", "[import-manife
 
 TEST_CASE("import manifest requires version 1 for versioned Pelican outputs",
           "[import-manifest][wp213]") {
-    for (const std::string_view schema : {"pelican.transform_seq", "pelican.scene",
+    for (const std::string_view schema : {"pelican.transform_seq",
                                           "pelican.layout", "pelican.atlas"}) {
         DYNAMIC_SECTION(std::string{schema}) {
             const auto versionedManifest = [schema](nlohmann::json output) {
@@ -124,6 +124,30 @@ TEST_CASE("import manifest requires version 1 for versioned Pelican outputs",
             CHECK(parseImportManifestJson(versionedManifest({{"version", 1}})).outputs.size() == 1);
         }
     }
+}
+
+// MG-2b: the engine reads pelican.scene version 2 only, so a delivery that
+// declares a version 1 scene is refused instead of installing a document
+// that cannot load.
+TEST_CASE("import manifest requires version 2 for pelican.scene outputs",
+          "[import-manifest][mg2b]") {
+    const auto sceneManifest = [](nlohmann::json output) {
+        output["file"] = "scene.json";
+        output["schema"] = "pelican.scene";
+        output["sha256"] = std::string(64, 'e');
+        return nlohmann::json{
+            {"schema", "pelican.import"},
+            {"version", 1},
+            {"tool", {{"name", "version-gate-test"}}},
+            {"source", {{"file", "source.asset"}}},
+            {"outputs", {std::move(output)}},
+        };
+    };
+    CHECK_THROWS_WITH(parseImportManifestJson(sceneManifest({})),
+                      Catch::Matchers::ContainsSubstring("pelican.scene requires version 2"));
+    CHECK_THROWS_WITH(parseImportManifestJson(sceneManifest({{"version", 1}})),
+                      Catch::Matchers::ContainsSubstring("expected=2, actual=1"));
+    CHECK(parseImportManifestJson(sceneManifest({{"version", 2}})).outputs.size() == 1);
 }
 
 TEST_CASE("import manifest accepts khronos.ktx2 outputs from the ktx2 recipe",

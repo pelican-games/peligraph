@@ -196,7 +196,6 @@ constexpr std::array manifest{
     SceneParticipantManifestEntry{"root.startup", "direct_load", real, SceneManifestRole::production_root, "Borrowed", "SceneLoader::load(request)", "result", no_retire, "root-wiring-v1", scene_load_mutation::root_startup},
     SceneParticipantManifestEntry{"root.rpc", "direct_load", rpc_presence, SceneManifestRole::production_root, "Borrowed", "SceneLoader::load(request)", "result", no_retire, "root-wiring-v1", rpc_presence == real ? scene_load_mutation::root_rpc : std::string_view{}},
     SceneParticipantManifestEntry{"root.pending", "apply", real, SceneManifestRole::production_root, "Borrowed:late-bound", "SceneLoader::load(request)", "retain-on-failure", no_retire, "root-wiring-v1", scene_load_mutation::root_pending},
-    SceneParticipantManifestEntry{"root.import.unversioned", "callback", real, SceneManifestRole::production_root, "Owned", "SceneLoader::load(request)", "discard-token", no_retire, "root-wiring-v1", scene_load_mutation::root_import_unversioned},
     SceneParticipantManifestEntry{"root.import.versioned", "callback", real, SceneManifestRole::production_root, "Owned", "SceneLoader::load(request)", "discard-token", no_retire, "root-wiring-v1", scene_load_mutation::root_import_versioned},
 };
 

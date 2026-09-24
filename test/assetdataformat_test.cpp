@@ -24,14 +24,17 @@ TEST_CASE("WP386a asset_data v2 owns one fixed AABB per procedural asset",
     CHECK(parsed.procedural_geometry[0].aabb_max[2] == 1.0F);
     CHECK(parsed.procedural_geometry[0].record.at("tag") == 7);
 
+    // MG-2b: a version 1 document is refused by its version before any
+    // procedural_geometry is looked at (the old
+    // pelican.asset_data_procedural_requires_v2@1 is no longer raised).
     auto v1 = nlohmann::json::parse(R"json({
       "schema":"pelican.asset_data","version":1,
       "models":[],"materials":[],"textures":[],
       "procedural_geometry":[]
     })json");
     CHECK_THROWS_WITH(parseAssetDataFormatJson(v1),
-                      Catch::Matchers::ContainsSubstring(
-                          "pelican.asset_data_procedural_requires_v2@1"));
+                      Catch::Matchers::StartsWith(
+                          "pelican.asset_data.version_unsupported@1"));
 
     auto entries = nlohmann::json::parse(R"json({
       "schema":"pelican.asset_data","version":2,
@@ -56,13 +59,13 @@ TEST_CASE("WP386a asset_data v2 owns one fixed AABB per procedural asset",
 }
 
 TEST_CASE(
-    "pelican.asset_data v1 is strict and indexes material documents by path",
+    "pelican.asset_data is strict and indexes material documents by path",
     "[asset-data][wp240c]") {
     const auto parsed =
         parseAssetDataFormatJson(
             nlohmann::json::parse(R"json({
               "schema":"pelican.asset_data",
-              "version":1,
+              "version":2,
               "models":[{
                 "name":"helmet",
                 "path":"assets/helmet.glb",
@@ -102,7 +105,7 @@ TEST_CASE(
                  nlohmann::json::array()},
             }),
         Catch::Matchers::ContainsSubstring(
-            "version must be exactly 1"));
+            "requires an integer version"));
     CHECK(parseAssetDataFormatJson(
               nlohmann::json{
                   {"schema", "pelican.asset_data"},
@@ -110,12 +113,27 @@ TEST_CASE(
                   {"models", nlohmann::json::array()},
               })
               .version == 2);
+    // MG-2b: only version 2 is read. Version 1 (the same document without
+    // procedural_geometry) and any other integer stop by name.
+    for (const auto version : {0, 1, 3}) {
+        CAPTURE(version);
+        REQUIRE_THROWS_WITH(
+            parseAssetDataFormatJson(
+                nlohmann::json{
+                    {"schema", "pelican.asset_data"},
+                    {"version", version},
+                    {"models", nlohmann::json::array()},
+                }),
+            Catch::Matchers::StartsWith(
+                "pelican.asset_data.version_unsupported@1: asset_data version " +
+                std::to_string(version) + " is not supported"));
+    }
     REQUIRE_THROWS_WITH(
         parseAssetDataFormatJson(
             nlohmann::json{
                 {"schema",
                  "pelican.asset_data"},
-                {"version", 1},
+                {"version", 2},
                 {"models",
                  nlohmann::json::array()},
                 {"materials",
@@ -130,7 +148,7 @@ TEST_CASE(
             nlohmann::json{
                 {"schema",
                  "pelican.asset_data"},
-                {"version", 1},
+                {"version", 2},
                 {"models",
                  nlohmann::json::array()},
                 {"legacy", true},

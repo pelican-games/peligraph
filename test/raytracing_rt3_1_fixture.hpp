@@ -308,7 +308,7 @@ inline const ResolvedSceneView &resolveProductionScene(bool with_ray_instance,
     }
     const Json scene{
         {"schema", "pelican.scene"},
-        {"version", 1},
+        {"version", 2},
         {"scenes",
          {{"main",
            {{"objects",

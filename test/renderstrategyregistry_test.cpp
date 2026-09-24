@@ -1,4 +1,5 @@
 #include "../src/core/renderingpass/renderstrategyregistry.hpp"
+#include "render_graph_root_test_support.hpp"
 #include "../src/core/registrationownerhost.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
@@ -548,7 +549,7 @@ TEST_CASE(
         const auto providers = registry.snapshot();
         std::optional<RenderStrategySelection> selection;
         const auto resolved = resolveRenderPipeline(
-            RenderPipelineRequest{authored, "strategy preset"},
+            RenderPipelineRequest{Pelican::TestSupport::renderGraphRoot(authored), "strategy preset"},
             RenderEnvironmentCapabilities{
                 .runtime_shader_compiler_enabled = true,
             },
@@ -598,7 +599,7 @@ TEST_CASE(
             [&] {
                 (void)resolveRenderPipeline(
                     RenderPipelineRequest{
-                        override_config,
+                        Pelican::TestSupport::renderGraphRoot(override_config),
                         "strategy preset override"},
                     RenderEnvironmentCapabilities{
                         .runtime_shader_compiler_enabled =
@@ -678,7 +679,7 @@ TEST_CASE(
             [&] {
                 (void)resolveRenderPipeline(
                     RenderPipelineRequest{
-                        authored, "invalid strategy"},
+                        Pelican::TestSupport::renderGraphRoot(authored), "invalid strategy"},
                     RenderEnvironmentCapabilities{
                         .runtime_shader_compiler_enabled =
                             true,

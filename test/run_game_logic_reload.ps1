@@ -20,9 +20,9 @@ Copy-Item -LiteralPath $FixtureModel -Destination (Join-Path $project 'assets/ch
 {"schema":"pelican.project","version":1,"name":"wp90_reload","engine_min_version":"0.1.0","basic_config":{"window_title":"WP90","window_size":{"width":160,"height":90},"fullscreen":false,"framerate":30,"camera":{"yfov":0.7853981633974483,"znear":0.1,"zfar":1000.0,"up":[0.0,1.0,0.0]},"default_scene_id":"default_scene","scene_data_json":"scenes/main.scene.json","asset_data_json":"assets/asset_data.json","rendering_config_json":"passes/main_rendering_config.json","default_rendering_pass":"main_render","ui_config_json":"ui/ui_overlay.json"}}
 '@ | Set-Content -LiteralPath (Join-Path $project 'project.json') -Encoding ascii
 @'
-{"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}}
+{"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}}
 '@ | Set-Content -LiteralPath (Join-Path $project 'scenes/main.scene.json') -Encoding ascii
-'{"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"assets/character.glb"}]}' | Set-Content -LiteralPath (Join-Path $project 'assets/asset_data.json') -Encoding ascii
+'{"schema":"pelican.asset_data","version":2,"models":[{"name":"character","path":"assets/character.glb"}]}' | Set-Content -LiteralPath (Join-Path $project 'assets/asset_data.json') -Encoding ascii
 '{"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}}' | Set-Content -LiteralPath (Join-Path $project 'ui/ui_overlay.json') -Encoding ascii
 
 $sourceDll = Join-Path $OutDir 'wp90_live.dll'

@@ -68,3 +68,21 @@ demo's scene carries colliders and its code tests the ground. That entry's
 blob_sha256 / blob_bytes are re-frozen from `git show HEAD:<path> | sha256sum`
 (962 -> 989 bytes). No other entry, no cache key and no frame plan
 projection changed.
+
+2026-09-24 integration amendment: MG-2b retires pelican.scene 1,
+pelican.asset_data 1 and the rendering config root that is not a
+pelican.graph document, so the shipped projects were rewritten as text: the
+scene and asset_data documents change only their "version" to 2, and the
+older rendering roots (animgraph_demo/passes/main.json,
+sprite_demo/passes/main.json, vrm_xr_demo/passes/main.json and
+example/passes/example_renderingpass_data.json) move their whole config
+under "rendering" of a pelican.graph root with an empty graph. Twelve
+entries' blob_sha256 / blob_bytes in parent_manifest.json are re-frozen from
+the LF-normalized working-tree bytes, each checked against `git hash-object`
+(the blob those bytes commit as): animgraph_demo asset_data.json,
+passes/main.json (219 -> 350 bytes), scene.json; example asset_data.json,
+passes/example_renderingpass_data.json (2229 -> 2512), scenes/main.scene.json;
+sprite_demo assets.json, passes/main.json (1765 -> 1914), scene.json;
+vrm_xr_demo asset_data.json, passes/main.json (1597 -> 1746), scene.json.
+No file was added or removed, and no cache key and no frame plan projection
+changed.

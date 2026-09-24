@@ -1,4 +1,5 @@
 #include "../src/core/communication/editorcommandservice.hpp"
+#include "render_graph_root_test_support.hpp"
 #include "../src/core/communication/editorrpchandlers.hpp"
 #include "../src/core/communication/renderconfigeditor.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
@@ -25,7 +26,9 @@
 #include "../src/project/vulkanviewplanning.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_exception.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
+#include <functional>
 #include <catch2/generators/catch_generators.hpp>
 
 #ifdef _WIN32
@@ -741,8 +744,15 @@ void requireOnlySectionKeyChanged(const std::string &before,
 
 std::string emptyHybridConfig() {
     return R"json({
-  "pipeline": { "preset": "engine://render_pipelines/hybrid_v1.json" },
-  "features": []
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "pipeline": { "preset": "engine://render_pipelines/hybrid_v1.json" },
+    "features": []
+  }
 }
 )json";
 }
@@ -758,7 +768,11 @@ TEST_CASE("Callable editor normalizes one shader and rejects invalid record valu
         {"callable", "shaders/gain.rcall"},
         {"callable_record", Json::array({{{"name", "count"}, {"type", "u32"}}})},
         {"callable_records", Json::array({{{"count", 1}}})}};
-    config["compute_tasks"] = Json::array({task});
+    // MG-2b: the root is a graph root. This service has no authoring-context
+    // resolver, so it reads tasks from the section it was handed; the document
+    // is never composed here (a composed graph root takes its tasks from a
+    // feature -- the lowering refuses `rendering.compute_tasks`).
+    config.at("rendering")["compute_tasks"] = Json::array({task});
     TemporaryConfig source{config.dump(2)};
     ActualCpuRenderRuntime runtime;
     auto service = makeService(source, runtime);
@@ -781,7 +795,7 @@ TEST_CASE("owned graph instances attach and detach through source publication", 
          {"parameters", {{"element", "float"}}}, {"outputs", {"resource"}}}})},
         {"outputs", {{"value", {{"node", "gain"}, {"port", "value"}}}}}};
     const Json original{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", {{"unit", unit}}},
-        {"nodes", Json::array()}, {"outputs", Json::object()}, {"rendering", Json::parse(emptyHybridConfig())}};
+        {"nodes", Json::array()}, {"outputs", Json::object()}, {"rendering", Json::parse(emptyHybridConfig()).at("rendering")}};
     TemporaryConfig source{original.dump(2)};
     ActualCpuRenderRuntime runtime;
     runtime.initialize(readBytes(source.path));
@@ -1607,7 +1621,7 @@ TEST_CASE("scene AS edits use render publication and source CAS", "[render-confi
         REQUIRE(accepted.at("status") == "accepted");
         service->commitPending();
         CHECK(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == true);
-        CHECK(Json::parse(readBytes(source.path)).at("ray_task_callable_records") == Json::object());
+        CHECK(Json::parse(readBytes(source.path)).at("rendering").at("ray_task_callable_records") == Json::object());
     }
     SECTION("task connection mapping rejects invalid values and accepts clearing overrides") {
         CHECK(before.at("task_connections").empty());
@@ -1622,7 +1636,7 @@ TEST_CASE("scene AS edits use render publication and source CAS", "[render-confi
         REQUIRE(accepted.at("status") == "accepted");
         service->commitPending();
         REQUIRE(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == true);
-        CHECK(Json::parse(readBytes(source.path)).at("ray_task_acceleration_structures") == Json::object());
+        CHECK(Json::parse(readBytes(source.path)).at("rendering").at("ray_task_acceleration_structures") == Json::object());
     }
     SECTION("add modify remove and reopen") {
         auto accepted = submit(definitions);
@@ -1631,7 +1645,7 @@ TEST_CASE("scene AS edits use render publication and source CAS", "[render-confi
         service->commitPending();
         REQUIRE(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == true);
         CHECK(service->getSceneAccelerationStructures(Json::object()).at("definitions") == definitions);
-        CHECK(Json::parse(readBytes(source.path)).at("scene_acceleration_structures") == definitions);
+        CHECK(Json::parse(readBytes(source.path)).at("rendering").at("scene_acceleration_structures") == definitions);
         const auto generation = runtime.snapshot.published_generation;
         CHECK(submit(definitions).at("error").at("code") == "external_modification");
         auto updated = definitions;
@@ -1643,7 +1657,7 @@ TEST_CASE("scene AS edits use render publication and source CAS", "[render-confi
             REQUIRE(accepted.at("status") == "accepted");
             service->commitPending();
             REQUIRE(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == true);
-            CHECK(Json::parse(readBytes(source.path)).at("scene_acceleration_structures") == value);
+            CHECK(Json::parse(readBytes(source.path)).at("rendering").at("scene_acceleration_structures") == value);
         }
         CHECK(runtime.snapshot.published_generation == generation + 2);
         auto reopened = makeService(source, runtime);
@@ -1716,7 +1730,7 @@ TEST_CASE("scene AS triangle space edits publish the referenced layout atomicall
                                              {"rules", Json::array()}}}};
     writeBytes(layout_path, layout.dump(2));
     auto root = Json::parse(readBytes(project.render_config));
-    root["ray_group_layout"] = "ray_layout.json";
+    renderingSectionOf(root)["ray_group_layout"] = "ray_layout.json";
     writeBytes(project.render_config, root.dump(2));
     const auto source_before = readBytes(project.render_config);
     const auto layout_before = readBytes(layout_path);
@@ -1748,8 +1762,8 @@ TEST_CASE("scene AS triangle space edits publish the referenced layout atomicall
             INFO(result.dump());
             REQUIRE(result.at("committed") == true);
             layout["acceleration_structure"]["triangle_space"] = space;
-            root["scene_acceleration_structures"] = definitions;
-            root["ray_task_acceleration_structures"] = Json::object();
+            renderingSectionOf(root)["scene_acceleration_structures"] = definitions;
+            renderingSectionOf(root)["ray_task_acceleration_structures"] = Json::object();
             CHECK(Json::parse(readBytes(layout_path)) == layout);
             CHECK(Json::parse(readBytes(project.render_config)) == root);
             CHECK(parseRayGroupLayout(readBytes(layout_path)).digest_sha256 == abi_before);
@@ -1786,8 +1800,8 @@ TEST_CASE("scene AS triangle space edits publish the referenced layout atomicall
             REQUIRE(result.at("committed") == true);
             layout["acceleration_structure"]["triangle_space"] = "world";
             layout["acceleration_structure"]["procedural_space"] = space;
-            root["scene_acceleration_structures"] = definitions;
-            root["ray_task_acceleration_structures"] = Json::object();
+            renderingSectionOf(root)["scene_acceleration_structures"] = definitions;
+            renderingSectionOf(root)["ray_task_acceleration_structures"] = Json::object();
             CHECK(Json::parse(readBytes(layout_path)) == layout);
             CHECK(Json::parse(readBytes(project.render_config)) == root);
             CHECK(parseRayGroupLayout(readBytes(layout_path)).digest_sha256 == procedural_abi);
@@ -1929,8 +1943,11 @@ TEST_CASE("scene AS triangle space edits publish the referenced layout atomicall
 
 TEST_CASE("authored render root value edits preserve unrelated lexical bytes",
           "[renderconfig][document][root-value]") {
+    // MG-2b: the document is a graph root (the only root read); its features
+    // live in the section, and the root members below stay root members.
     const std::string original =
-        "{\r\n  \"features\" : [ \"keep\" ],\r\n"
+        "{\r\n  \"schema\" : \"pelican.graph\",\r\n"
+        "  \"rendering\" : { \"features\" : [ \"keep\" ] },\r\n"
         "  \"scene_acceleration_structures\" : [ {\"name\":\"old\"} ],\r\n"
         "  \"nested\": {\"scene_acceleration_structures\": [1,2], \"text\": \"} ]\"}\r\n}\r\n";
     const auto document = AuthoredRenderConfigDocument::parse(original);
@@ -1946,28 +1963,39 @@ TEST_CASE("authored render root value edits preserve unrelated lexical bytes",
         CHECK(document.bytes() == original);
     }
     SECTION("insert absent member without adding features or changing existing whitespace") {
-        const auto source = AuthoredRenderConfigDocument::inspect("{\r\n\t\"keep\" : 1\r\n}\r\n");
+        const auto source = AuthoredRenderConfigDocument::inspect(
+            "{\r\n\t\"schema\" : \"pelican.graph\",\r\n\t\"keep\" : 1\r\n}\r\n");
         const auto edited = source.withRootValue("scene_acceleration_structures", " [] ");
-        CHECK(edited.bytes() == "{\r\n\t\"keep\" : 1,\r\n\t\"scene_acceleration_structures\": []\r\n}\r\n");
+        CHECK(edited.bytes() ==
+              "{\r\n\t\"schema\" : \"pelican.graph\",\r\n\t\"keep\" : 1,\r\n"
+              "\t\"scene_acceleration_structures\": []\r\n}\r\n");
         CHECK_FALSE(edited.hasFeaturesArray());
     }
     SECTION("empty object and escaped key") {
         const std::string key = "quoted\"\\\nkey";
-        const auto edited = AuthoredRenderConfigDocument::inspect("{ }").withRootValue(key, "42");
+        const auto edited =
+            AuthoredRenderConfigDocument::inspect("{\"schema\":\"pelican.graph\" }")
+                .withRootValue(key, "42");
         CHECK(Json::parse(edited.bytes()).at(key) == 42);
-        CHECK(edited.bytes() == "{ " + Json(key).dump() + ": 42}");
+        CHECK(edited.bytes() ==
+              "{\"schema\":\"pelican.graph\", " + Json(key).dump() + ": 42 }");
     }
     SECTION("duplicate non-feature keys keep existing last-wins contract") {
-        const auto source = AuthoredRenderConfigDocument::inspect("{\"x\":1, \"x\":2}");
-        CHECK(source.withRootValue("x", "3").bytes() == "{\"x\":1, \"x\":3}");
-        CHECK_THROWS_AS(AuthoredRenderConfigDocument::inspect("{\"features\":[],\"features\":[]}"), std::invalid_argument);
+        const auto source = AuthoredRenderConfigDocument::inspect(
+            "{\"schema\":\"pelican.graph\",\"x\":1, \"x\":2}");
+        CHECK(source.withRootValue("x", "3").bytes() ==
+              "{\"schema\":\"pelican.graph\",\"x\":1, \"x\":3}");
+        CHECK_THROWS_AS(
+            AuthoredRenderConfigDocument::inspect(
+                "{\"schema\":\"pelican.graph\",\"rendering\":{\"features\":[],\"features\":[]}}"),
+            std::invalid_argument);
     }
     SECTION("invalid or multiple JSON values reject without changing source") {
         for (const auto value : {"", "[", "false true", "{\"x\":}", "NaN"}) {
             CAPTURE(value);
             CHECK_THROWS_AS(document.withRootValue("scene_acceleration_structures", value), std::invalid_argument);
         }
-        CHECK_THROWS_AS(document.withRootValue("features", "null"), std::invalid_argument);
+        CHECK_THROWS_AS(document.withSectionValue("features", "null"), std::invalid_argument);
         CHECK(document.bytes() == original);
     }
 }
@@ -1980,7 +2008,6 @@ TEST_CASE("P-2a-4a section value edits address the graph root's rendering member
         "  \"rendering\" : {\r\n    \"features\" : [ \"engine://features/ui.json\" ],\r\n"
         "    \"frame_node_order\" : { \"main_render\": [\"a\"] }\r\n  }\r\n}\r\n";
     const auto document = AuthoredRenderConfigDocument::parse(original);
-    REQUIRE(document.isGraphRoot());
     REQUIRE(document.hasRenderingSection());
     REQUIRE(document.hasFeaturesArray());
     REQUIRE(document.featureReferences() ==
@@ -2030,12 +2057,22 @@ TEST_CASE("P-2a-4a section value edits address the graph root's rendering member
         const auto removed = added.withFeatureRemoved("project://features/x.json");
         CHECK(removed.bytes() == original);
     }
-    SECTION("a legacy root keeps writing at the root") {
-        const auto legacy = AuthoredRenderConfigDocument::parse(
-            "{\"features\":[],\"rendering\":{\"features\":[]}}");
-        CHECK_FALSE(legacy.isGraphRoot());
-        CHECK(legacy.withSectionValue("shader_defines", "[]").bytes() ==
-              "{\"features\":[],\"rendering\":{\"features\":[]}, \"shader_defines\": []}");
+    SECTION("a root that is not a graph root is refused by name (MG-2b)") {
+        // The older root kept the config's own keys at the root. None of the
+        // three entry points reads it; each stops with the same name.
+        const std::string legacy =
+            "{\"features\":[],\"rendering\":{\"features\":[]}}";
+        for (const auto &entry :
+             std::vector<std::function<void()>>{
+                 [&] { (void)AuthoredRenderConfigDocument::parse(legacy); },
+                 [&] { (void)AuthoredRenderConfigDocument::inspect(legacy); },
+                 [&] { (void)AuthoredRenderConfigDocument::initialize(legacy); },
+             }) {
+            CHECK_THROWS_MATCHES(
+                entry(), RenderConfigLegacyRoot,
+                Catch::Matchers::MessageMatches(
+                    Catch::Matchers::StartsWith("render_config.legacy_root@1")));
+        }
     }
     SECTION("initialize creates the features array in the section") {
         const auto initialized = AuthoredRenderConfigDocument::initialize(
@@ -2050,7 +2087,6 @@ TEST_CASE("P-2a-4a section value edits address the graph root's rendering member
             "{\"schema\": \"pelican.graph\", \"nodes\": []}";
         const auto inspected =
             AuthoredRenderConfigDocument::inspect(sectionless);
-        CHECK(inspected.isGraphRoot());
         CHECK_FALSE(inspected.hasRenderingSection());
         CHECK_FALSE(inspected.hasFeaturesArray());
         CHECK(inspected.featureReferences().empty());
@@ -2078,14 +2114,28 @@ TEST_CASE(
     "[render-config-editor][wp335][rpc][byte-lossless][initialization]") {
     const std::string original =
         "{\r\n"
-        "  \"pipeline\" : { \"preset\" : \"engine://render_pipelines/hybrid_v1.json\" },\r\n"
-        "  \"shader_defines\" : [ \"WP334A_KEPT\" ]\r\n"
+        "  \"schema\": \"pelican.graph\",\r\n"
+        "  \"version\": 1,\r\n"
+        "  \"definitions\": {},\r\n"
+        "  \"nodes\": [],\r\n"
+        "  \"outputs\": {},\r\n"
+        "  \"rendering\" : {\r\n"
+        "    \"pipeline\" : { \"preset\" : \"engine://render_pipelines/hybrid_v1.json\" },\r\n"
+        "    \"shader_defines\" : [ \"WP334A_KEPT\" ]\r\n"
+        "  }\r\n"
         "}\r\n";
     const std::string initialized =
         "{\r\n"
-        "  \"pipeline\" : { \"preset\" : \"engine://render_pipelines/hybrid_v1.json\" },\r\n"
-        "  \"shader_defines\" : [ \"WP334A_KEPT\" ],\r\n"
-        "  \"features\": []\r\n"
+        "  \"schema\": \"pelican.graph\",\r\n"
+        "  \"version\": 1,\r\n"
+        "  \"definitions\": {},\r\n"
+        "  \"nodes\": [],\r\n"
+        "  \"outputs\": {},\r\n"
+        "  \"rendering\" : {\r\n"
+        "    \"pipeline\" : { \"preset\" : \"engine://render_pipelines/hybrid_v1.json\" },\r\n"
+        "    \"shader_defines\" : [ \"WP334A_KEPT\" ],\r\n"
+        "    \"features\": []\r\n"
+        "  }\r\n"
         "}\r\n";
 
     REQUIRE_FALSE(Json::parse(original).contains("features"));
@@ -2260,11 +2310,14 @@ TEST_CASE(
         "\", \"parameters\" : { \"alpha\" : 0.125 } }";
     const std::string object_config =
         "{\r\n"
-        "  \"features\" : [\r\n"
-        "    " + object_entry + ",\r\n"
-        "    \"" + std::string{editable_old} + "\"\r\n"
-        "  ],\r\n"
-        "  \"sentinel\" : \"WP335_KEEP\"\r\n"
+        "  \"schema\" : \"pelican.graph\",\r\n"
+        "  \"rendering\" : {\r\n"
+        "    \"features\" : [\r\n"
+        "      " + object_entry + ",\r\n"
+        "      \"" + std::string{editable_old} + "\"\r\n"
+        "    ],\r\n"
+        "    \"sentinel\" : \"WP335_KEEP\"\r\n"
+        "  }\r\n"
         "}\r\n";
 
     struct PassthroughRuntime {
@@ -2340,7 +2393,8 @@ TEST_CASE(
     REQUIRE(object_add.at("committed") == true);
     const auto bytes_after_add = readBytes(object_source.path);
     REQUIRE(bytes_after_add.find(object_entry) != std::string::npos);
-    const auto semantic_after_add = Json::parse(bytes_after_add);
+    const auto semantic_after_add =
+        Json::parse(bytes_after_add).at("rendering");
     REQUIRE(semantic_after_add.at("features").at(0) ==
             Json::parse(object_entry));
     REQUIRE(semantic_after_add.at("features").at(1) ==
@@ -2355,7 +2409,8 @@ TEST_CASE(
     REQUIRE(object_remove.at("committed") == true);
     const auto bytes_after_remove = readBytes(object_source.path);
     REQUIRE(bytes_after_remove.find(object_entry) != std::string::npos);
-    const auto semantic_after_remove = Json::parse(bytes_after_remove);
+    const auto semantic_after_remove =
+        Json::parse(bytes_after_remove).at("rendering");
     REQUIRE(semantic_after_remove.at("features").size() == 2);
     REQUIRE(semantic_after_remove.at("features").at(0) ==
             Json::parse(object_entry));
@@ -2368,8 +2423,9 @@ TEST_CASE(
     REQUIRE(object_view_after.at("uneditable_feature_entry_count") == 1);
 
     const std::string strings_only_config =
-        "{\n  \"features\" : [ \"" + std::string{editable_old} +
-        "\" ],\n  \"sentinel\" : \"WP335_STRINGS\"\n}\n";
+        "{\n  \"schema\" : \"pelican.graph\",\n  \"rendering\" : {\n"
+        "    \"features\" : [ \"" + std::string{editable_old} +
+        "\" ],\n    \"sentinel\" : \"WP335_STRINGS\"\n  }\n}\n";
     TemporaryConfig strings_source{strings_only_config};
     PassthroughRuntime strings_runtime;
     auto strings_service =
@@ -2399,7 +2455,8 @@ TEST_CASE(
                 strings_service->documentForTesting().sourceDigest(),
                 operation("remove", editable_old))
                 .at("committed") == true);
-    const auto strings_semantic = Json::parse(readBytes(strings_source.path));
+    const auto strings_semantic =
+        Json::parse(readBytes(strings_source.path)).at("rendering");
     REQUIRE(strings_semantic.at("features") ==
             Json::array({editable_new}));
     REQUIRE(strings_semantic.at("sentinel") == "WP335_STRINGS");
@@ -2520,9 +2577,16 @@ TEST_CASE(
     "[render-config-editor][wp331][wp332][byte-lossless][no-op]") {
     const std::string original =
         "{\r\n"
-        "  \"pipeline\": { \"preset\": \"engine://render_pipelines/hybrid_v1.json\" },\r\n"
-        "  \"shader_defines\": [ \"WP331_KEPT\" ],\r\n"
-        "  \"features\": []\r\n"
+        "  \"schema\": \"pelican.graph\",\r\n"
+        "  \"version\": 1,\r\n"
+        "  \"definitions\": {},\r\n"
+        "  \"nodes\": [],\r\n"
+        "  \"outputs\": {},\r\n"
+        "  \"rendering\": {\r\n"
+        "    \"pipeline\": { \"preset\": \"engine://render_pipelines/hybrid_v1.json\" },\r\n"
+        "    \"shader_defines\": [ \"WP331_KEPT\" ],\r\n"
+        "    \"features\": []\r\n"
+        "  }\r\n"
         "}\r\n";
     TemporaryConfig source{original};
     ActualCpuRenderRuntime runtime;
@@ -2555,11 +2619,18 @@ TEST_CASE(
     REQUIRE(runtime.apply_calls == baseline_apply_calls + 1);
     const std::string expected =
         "{\r\n"
-        "  \"pipeline\": { \"preset\": \"engine://render_pipelines/hybrid_v1.json\" },\r\n"
-        "  \"shader_defines\": [ \"WP331_KEPT\" ],\r\n"
-        "  \"features\": [\"" +
+        "  \"schema\": \"pelican.graph\",\r\n"
+        "  \"version\": 1,\r\n"
+        "  \"definitions\": {},\r\n"
+        "  \"nodes\": [],\r\n"
+        "  \"outputs\": {},\r\n"
+        "  \"rendering\": {\r\n"
+        "    \"pipeline\": { \"preset\": \"engine://render_pipelines/hybrid_v1.json\" },\r\n"
+        "    \"shader_defines\": [ \"WP331_KEPT\" ],\r\n"
+        "    \"features\": [\"" +
         std::string{buildAvailableReference} +
         "\"]\r\n"
+        "  }\r\n"
         "}\r\n";
     REQUIRE(readBytes(source.path) == expected);
 
@@ -3010,8 +3081,8 @@ TEST_CASE("Feature materialization saves the concrete feature and switches its o
                 {"name", "integrated_compute"}, {"shader", "project://shaders/probe"},
                 {"dispatch", {{"groups", {1, 1, 1}}}}, {"schedule", "per_frame"}}});
             writeBytes(project.root / "passes" / "shadow-source.json", shadow.dump(2));
-            root["features"][0] = {{"ref", "project://passes/shadow-source.json"}, {"parameters", {{"color_r", 0.7}}}};
-            root["features"].erase(1); // The selected local sky replaces the engine sky instance.
+            renderingSectionOf(root)["features"][0] = {{"ref", "project://passes/shadow-source.json"}, {"parameters", {{"color_r", 0.7}}}};
+            renderingSectionOf(root)["features"].erase(1); // The selected local sky replaces the engine sky instance.
             const auto preset_path = project.root / "passes" / "editable.json";
             auto preset = Json::parse(resolver.loadText("engine://render_pipelines/hybrid_v1.json"));
             auto &graph = preset["config"]["rendering_passes"][0];
@@ -3024,12 +3095,12 @@ TEST_CASE("Feature materialization saves the concrete feature and switches its o
                 if (pass.at("name") == "deferred_lighting") pass["regions"] = Json::array({"region.lighting"});
             }
             if (scope == "preset") {
-                preset["config"]["features"] = root.at("features");
-                root["features"] = Json::array();
+                preset["config"]["features"] = renderingSectionOf(root).at("features");
+                renderingSectionOf(root)["features"] = Json::array();
             }
             writeBytes(preset_path, preset.dump(2));
             const auto preset_before = readBytes(preset_path);
-            root["pipeline"]["preset"] = "project://passes/editable.json";
+            renderingSectionOf(root)["pipeline"]["preset"] = "project://passes/editable.json";
             writeBytes(project.render_config, root.dump(2));
             const auto owner_path = scope == "root" ? project.render_config : preset_path;
             const auto owner_before = readBytes(owner_path);
@@ -3060,7 +3131,9 @@ TEST_CASE("Feature materialization saves the concrete feature and switches its o
                 CHECK(saved.at("parameters").at("scalars") == shadow.at("parameters").at("scalars"));
                 CHECK(saved.at("bound_parameters").at("color_r") == 0.7);
                 const auto owner = Json::parse(readBytes(owner_path));
-                CHECK((scope == "root" ? owner : owner.at("config")).at("features").at(0) == "project://passes/shadow-local.json");
+                // MG-2b: the root owner is a graph root; its features are in
+                // the section.
+                CHECK((scope == "root" ? renderingSectionOf(owner) : owner.at("config")).at("features").at(0) == "project://passes/shadow-local.json");
                 const auto saved_preset = Json::parse(readBytes(preset_path));
                 CHECK(saved_preset.at("config").at("rendering_passes").at(0).at("region_replacements") ==
                     Json::array({{{"region", "region.lighting"}, {"provider", "builtin.identity_v1"}}}));
@@ -3942,7 +4015,7 @@ TEST_CASE("Pipeline fork saves the original preset and switches the root atomica
         REQUIRE(result.at("committed") == true);
         REQUIRE(readBytes(destination) == preset_bytes);
         auto expected_root = Json::parse(root_before);
-        expected_root["pipeline"]["preset"] = request.at("destination_reference");
+        renderingSectionOf(expected_root)["pipeline"]["preset"] = request.at("destination_reference");
         REQUIRE(Json::parse(readBytes(project.render_config)) == expected_root);
         check_structure();
         service.reset();
@@ -3971,7 +4044,7 @@ TEST_CASE("Pipeline fork saves the original preset and switches the root atomica
         const auto source = project.root / "passes" / "source-preset.json";
         writeBytes(source, preset_bytes);
         auto local_root = Json::parse(root_before);
-        local_root["pipeline"]["preset"] = "project://passes/source-preset.json";
+        renderingSectionOf(local_root)["pipeline"]["preset"] = "project://passes/source-preset.json";
         writeBytes(project.render_config, local_root.dump());
         service.reset();
         service = makeProjectService(project, resolver, runtime);
@@ -4003,7 +4076,7 @@ TEST_CASE("Frame node order edits persist and preserve the old state on invalid 
     writeBytes(path, Json{{"schema", "pelican.render_feature"}, {"version", 1},
                          {"name", "order_tasks"}, {"compute_tasks", tasks}}.dump(2));
     auto root = Json::parse(readBytes(project.render_config));
-    root["features"].push_back("project://passes/order_tasks.json");
+    renderingSectionOf(root)["features"].push_back("project://passes/order_tasks.json");
     writeBytes(project.render_config, root.dump(2));
     const auto before = readBytes(project.render_config);
     ActualCpuRenderRuntime runtime;
@@ -4134,7 +4207,11 @@ TEST_CASE("Compute task creation and removal publish project features transactio
 
 TEST_CASE("Compute task editing resolves direct roots and project presets",
           "[render-config-editor][compute-task-edit]") {
-    for (const bool use_preset : {false, true}) {
+    // MG-2b: the root is a `pelican.graph` root, whose `rendering` section
+    // cannot declare compute tasks (the graph owns them; the lowering refuses
+    // the key by name). So a root-declared task is no longer a case; the
+    // preset-declared one is.
+    for (const bool use_preset : {true}) {
         CAPTURE(use_preset);
         TemporaryAnimgraphProject project;
         PathResolver resolver;
@@ -4146,8 +4223,8 @@ TEST_CASE("Compute task editing resolves direct roots and project presets",
         const auto preset_path = project.root / "passes" / "owned.json";
         writeBytes(preset_path, preset.dump(2));
         writeBytes(project.render_config, use_preset
-            ? Json{{"pipeline", {{"preset", "project://passes/owned.json"}}}}.dump(2)
-            : preset.at("config").dump(2));
+            ? Pelican::TestSupport::renderGraphRoot(Json{{"pipeline", {{"preset", "project://passes/owned.json"}}}}).dump(2)
+            : Pelican::TestSupport::renderGraphRoot(preset.at("config")).dump(2));
         const auto root_before = readBytes(project.render_config);
         ActualCpuRenderRuntime runtime;
         auto service = makeProjectService(project, resolver, runtime);
@@ -4190,7 +4267,7 @@ TEST_CASE("Procedural asset edits reject a gate that closed and reopened before 
     PathResolver resolver;
     resolver.setup(project.root, false);
     const auto path = project.root / "gated_assets.json";
-    const Json original{{"schema", "pelican.asset_data"}, {"version", 1}, {"models", Json::array()}};
+    const Json original{{"schema", "pelican.asset_data"}, {"version", 2}, {"models", Json::array()}};
     writeBytes(path, original.dump());
     bool open = true;
     int applied = 0;
@@ -4223,7 +4300,7 @@ TEST_CASE("Procedural asset creation upgrades an empty asset document atomically
     PathResolver resolver;
     resolver.setup(project.root, false);
     const auto path = project.root / "created_assets.json";
-    const Json original{{"schema", "pelican.asset_data"}, {"version", 1}, {"models", Json::array()}};
+    const Json original{{"schema", "pelican.asset_data"}, {"version", 2}, {"models", Json::array()}};
     writeBytes(path, original.dump());
     std::string published;
     ProceduralAssetEditorService service({
@@ -4287,7 +4364,7 @@ TEST_CASE("Compute task source edits preserve other declarations and reject conf
                        {"compute_tasks", Json::array({task})}};
     writeBytes(source_path, feature.dump(2));
     auto root = Json::parse(readBytes(project.render_config));
-    root["features"].push_back("project://passes/compute.json");
+    renderingSectionOf(root)["features"].push_back("project://passes/compute.json");
     writeBytes(project.render_config, root.dump(2));
     const auto root_before = readBytes(project.render_config);
     const auto source_before = readBytes(source_path);
@@ -4383,7 +4460,7 @@ TEST_CASE("Region replacement selection preserves authored nodes and survives re
     const auto preset_path = project.root / "passes" / "editable.json";
     writeBytes(preset_path, preset.dump(2));
     auto root = Json::parse(readBytes(project.render_config));
-    root["pipeline"]["preset"] = "project://passes/editable.json";
+    renderingSectionOf(root)["pipeline"]["preset"] = "project://passes/editable.json";
     writeBytes(project.render_config, root.dump(2));
     ActualCpuRenderRuntime runtime;
     auto service = makeProjectService(project, resolver, runtime);
@@ -4447,7 +4524,7 @@ TEST_CASE("Project preset pass edits publish without changing the root document"
     const auto preset_path = project.root / "passes" / "editable.json";
     writeBytes(preset_path, preset.dump(2));
     auto root = Json::parse(readBytes(project.render_config));
-    root["pipeline"]["preset"] = "project://passes/editable.json";
+    renderingSectionOf(root)["pipeline"]["preset"] = "project://passes/editable.json";
     writeBytes(project.render_config, root.dump(2));
     const auto root_before = readBytes(project.render_config);
     const auto preset_before = readBytes(preset_path);
@@ -4849,9 +4926,9 @@ TEST_CASE("Feature parameter overrides publish through the shared binder and pre
     const auto feature_before = feature.dump(2);
     writeBytes(feature_path, feature_before);
     auto root = Json::parse(readBytes(project.render_config));
-    const auto index = root.at("features").size();
+    const auto index = renderingSectionOf(root).at("features").size();
     const std::string reference = "project://passes/parameters.json";
-    root["features"].push_back(reference);
+    renderingSectionOf(root)["features"].push_back(reference);
     writeBytes(project.render_config, root.dump(2));
     const auto root_before = readBytes(project.render_config);
     ActualCpuRenderRuntime runtime;
@@ -4877,7 +4954,7 @@ TEST_CASE("Feature parameter overrides publish through the shared binder and pre
             const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
             INFO(result.dump());
             REQUIRE(result.at("committed") == true);
-            root["features"][index] = {{"ref", reference}, {"parameters", parameters}};
+            renderingSectionOf(root)["features"][index] = {{"ref", reference}, {"parameters", parameters}};
             CHECK(Json::parse(readBytes(project.render_config)) == root);
             CHECK(readBytes(feature_path) == feature_before);
             service.reset();
@@ -4898,8 +4975,8 @@ TEST_CASE("Feature parameter overrides publish through the shared binder and pre
         preset["config"]["features"] = Json::array({reference});
         const auto preset_path = project.root / "passes" / "parameter_preset.json";
         writeBytes(preset_path, preset.dump(2));
-        root["features"].erase(index);
-        root["pipeline"]["preset"] = "project://passes/parameter_preset.json";
+        renderingSectionOf(root)["features"].erase(index);
+        renderingSectionOf(root)["pipeline"]["preset"] = "project://passes/parameter_preset.json";
         writeBytes(project.render_config, root.dump(2));
         const auto preset_root_before = readBytes(project.render_config);
         service.reset();
@@ -4988,7 +5065,7 @@ TEST_CASE("Project feature pass edits publish their source and retain the render
         const auto feature_path = project.root / "passes" / "editable_feature.json";
         writeBytes(feature_path, feature.dump(2));
         auto root = Json::parse(readBytes(project.render_config));
-        root["features"].push_back("project://passes/editable_feature.json");
+        renderingSectionOf(root)["features"].push_back("project://passes/editable_feature.json");
         writeBytes(project.render_config, root.dump(2));
         const auto root_before = readBytes(project.render_config);
         ActualCpuRenderRuntime runtime;
@@ -5076,7 +5153,7 @@ TEST_CASE("Project auxiliary preset edits preserve declarations and reopen",
         const auto path = project.root / "passes" / "auxiliary.json";
         writeBytes(path, preset.dump(2));
         auto root = Json::parse(readBytes(project.render_config));
-        root["pipeline"]["preset"] = "project://passes/auxiliary.json";
+        renderingSectionOf(root)["pipeline"]["preset"] = "project://passes/auxiliary.json";
         writeBytes(project.render_config, root.dump(2));
         const auto root_before = readBytes(project.render_config);
         ActualCpuRenderRuntime runtime;
@@ -5159,7 +5236,7 @@ TEST_CASE("Project raster preset edits preserve omitted fields and reopen",
     const auto preset_path = project.root / "passes" / "raster.json";
     writeBytes(preset_path, preset.dump(2));
     auto root = Json::parse(readBytes(project.render_config));
-    root["pipeline"]["preset"] = "project://passes/raster.json";
+    renderingSectionOf(root)["pipeline"]["preset"] = "project://passes/raster.json";
     writeBytes(project.render_config, root.dump(2));
     const auto root_before = readBytes(project.render_config);
     const auto preset_before = readBytes(preset_path);
@@ -5278,7 +5355,7 @@ TEST_CASE(
         std::set<std::string, std::less<>> references;
         const auto root =
             Json::parse(readBytes(project.render_config));
-        for (const auto &entry : root.at("features")) {
+        for (const auto &entry : renderingSectionOf(root).at("features")) {
             if (entry.is_string()) {
                 references.insert(entry.get<std::string>());
             } else if (entry.is_object() && entry.contains("ref") &&
@@ -5770,7 +5847,7 @@ TEST_CASE(
     REQUIRE(std::filesystem::is_regular_file(manual_path));
     const auto root = Json::parse(readBytes(project.render_config));
     REQUIRE(std::ranges::none_of(
-        root.at("features"), [&](const auto &feature) {
+        renderingSectionOf(root).at("features"), [&](const auto &feature) {
             return feature.is_string() &&
                    feature.get<std::string>() == manual_reference;
         }));
@@ -5990,7 +6067,7 @@ TEST_CASE(
     REQUIRE(std::filesystem::is_regular_file(fragment_path));
     auto root = Json::parse(readBytes(project.render_config));
     REQUIRE(std::ranges::any_of(
-        root.at("features"), [&](const auto &feature) {
+        renderingSectionOf(root).at("features"), [&](const auto &feature) {
             return feature.is_string() &&
                    feature.get<std::string>() == alias;
         }));
@@ -7014,25 +7091,33 @@ TEST_CASE("G-4 without the runtime shader compiler the forward default is refuse
 
 namespace {
 
-// The Blank template's rendering document: present, reading nothing.
+// The Blank template's rendering document: present, reading nothing. A
+// `pelican.graph` root, as the template writes it (MG-2b).
 constexpr std::string_view g6BlankRoot = R"json({
-  "rendering_passes": [
-    {
-      "name": "main_render",
-      "passes": [
-        {
-          "name": "present",
-          "type": "fullscreen",
-          "input": [],
-          "output": {"color": ["display"], "depth": null},
-          "shader": {
-            "vertex": "engine://fullscreen",
-            "fragment": "project://shaders/present"
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "rendering_passes": [
+      {
+        "name": "main_render",
+        "passes": [
+          {
+            "name": "present",
+            "type": "fullscreen",
+            "input": [],
+            "output": {"color": ["display"], "depth": null},
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "project://shaders/present"
+            }
           }
-        }
-      ]
-    }
-  ]
+        ]
+      }
+    ]
+  }
 }
 )json";
 

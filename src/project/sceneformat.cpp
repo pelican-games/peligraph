@@ -115,10 +115,17 @@ int validateEnvelope(const nlohmann::json &document) {
     if (!document.contains("version") || !document.at("version").is_number_integer()) {
         throw std::runtime_error("scene data requires numeric version");
     }
-    const auto version = document.at("version").get<int>();
-    if (version < 1 || version > latest_scene_version) {
-        throw std::runtime_error("scene data version must be 1 or 2");
+    // MG-2b: one version. A version 1 document is not read in its old meaning
+    // (the same document without prefabs); a project that still has one
+    // rewrites its "version" to 2 -- nothing else changes.
+    if (document.at("version") != latest_scene_version) {
+        throw std::runtime_error(
+            "pelican.scene.version_unsupported@1: scene version " +
+            document.at("version").dump() +
+            " is not supported; this engine reads version " +
+            std::to_string(latest_scene_version) + " only");
     }
+    const auto version = document.at("version").get<int>();
     if (!document.contains("scenes") || !document.at("scenes").is_object()) {
         throw std::runtime_error("scene data requires scenes object");
     }
@@ -275,12 +282,6 @@ SceneFormatDocument normalizeSceneDataJson(const nlohmann::json &scene_data,
         for (const auto &object : *objects) {
             if (object.is_object() && object.contains("prefab")) {
                 document.uses_prefabs = true;
-                if (document.version == 1) {
-                    throw PrefabError{
-                        PrefabErrorCode::PrefabRequiresSceneV2,
-                        "scene version 1 cannot contain a prefab key",
-                        {.scene_id = scene_it.key(), .json_pointer = "/prefab"}};
-                }
             }
         }
     }

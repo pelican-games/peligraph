@@ -34,7 +34,7 @@ PELICAN_REGISTER_BEHAVIOR(InspectorBehavior, "wp167_inspector_behavior", 1);
 Json inspectorFixture() {
     return Json::parse(R"json({
       "schema":"pelican.scene",
-      "version":1,
+      "version":2,
       "scenes":{"main":{"objects":[
         {"name":"Root","components":[
           {"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},

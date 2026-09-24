@@ -94,7 +94,7 @@ endfunction()
 make_project(PLAIN_ROOT plain [=[
 {
   "schema": "pelican.asset_data",
-  "version": 1,
+  "version": 2,
   "models": []
 }
 ]=] [=[
@@ -104,7 +104,7 @@ make_project(PLAIN_ROOT plain [=[
 make_project(VAT_ROOT vat_asset [=[
 {
   "schema": "pelican.asset_data",
-  "version": 1,
+  "version": 2,
   "models": [
     {"name": "vat", "path": "assets/tiny_vat.glb"}
   ]
@@ -123,7 +123,7 @@ if(NOT vat_writer_result EQUAL 0)
 endif()
 
 make_project(EXR_ROOT exr_ui [=[
-{"schema":"pelican.asset_data","version":1,"models":[]}
+{"schema":"pelican.asset_data","version":2,"models":[]}
 ]=] [=[
 {
   "images": [
@@ -133,7 +133,7 @@ make_project(EXR_ROOT exr_ui [=[
 ]=])
 
 make_project(MANIFEST_ROOT vat_manifest [=[
-{"schema":"pelican.asset_data","version":1,"models":[]}
+{"schema":"pelican.asset_data","version":2,"models":[]}
 ]=] [=[
 {"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}}
 ]=])

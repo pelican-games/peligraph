@@ -42,7 +42,7 @@ file(WRITE "${OUT_DIR}/project/project.json" [=[
 file(WRITE "${OUT_DIR}/project/scenes/main.scene.json" [=[
 {
   "schema": "pelican.scene",
-  "version": 1,
+  "version": 2,
   "scenes": {
     "default_scene": {
       "objects": []
@@ -50,7 +50,7 @@ file(WRITE "${OUT_DIR}/project/scenes/main.scene.json" [=[
   }
 }
 ]=])
-file(WRITE "${OUT_DIR}/project/assets/asset_data.json" "{\"schema\":\"pelican.asset_data\",\"version\":1,\"models\":[]}\n")
+file(WRITE "${OUT_DIR}/project/assets/asset_data.json" "{\"schema\":\"pelican.asset_data\",\"version\":2,\"models\":[]}\n")
 file(WRITE "${OUT_DIR}/project/ui/ui.json" "{\"schema\":\"pelican.ui\",\"version\":1,\"key\":\"empty\",\"root\":{\"id\":\"root\",\"type\":\"panel\"}}\n")
 file(WRITE "${OUT_DIR}/project/shaders/present.frag" [=[
 #version 450
@@ -61,24 +61,31 @@ void main() {
 ]=])
 file(WRITE "${OUT_DIR}/project/passes/main.json" [=[
 {
-  "features": ["engine://features/gpu_timing.json"],
-  "render_targets": [],
-  "rendering_passes": [
-    {
-      "name": "main",
-      "passes": [
-        {
-          "name": "present",
-          "type": "fullscreen",
-          "output": {"color": "swapchain", "depth": null},
-          "shader": {
-            "vertex": "engine://fullscreen",
-            "fragment": "shaders/present"
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "features": ["engine://features/gpu_timing.json"],
+    "render_targets": [],
+    "rendering_passes": [
+      {
+        "name": "main",
+        "passes": [
+          {
+            "name": "present",
+            "type": "fullscreen",
+            "output": {"color": "swapchain", "depth": null},
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "shaders/present"
+            }
           }
-        }
-      ]
-    }
-  ]
+        ]
+      }
+    ]
+  }
 }
 ]=])
 

@@ -34,7 +34,7 @@ namespace {
 using Json = nlohmann::json;
 
 // Two scenes over the same objects; the only difference is the component.
-constexpr auto sceneDocument = R"({"schema":"pelican.scene","version":1,"scenes":{
+constexpr auto sceneDocument = R"({"schema":"pelican.scene","version":2,"scenes":{
   "active":{"objects":[{"name":"Prop","components":[
     {"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}]}]},
   "animated":{"objects":[{"name":"Prop","components":[
@@ -52,7 +52,8 @@ struct Sandbox {
         root = base / "project";
         std::filesystem::create_directories(root / "passes");
         std::ofstream{root / "scene.json", std::ios::binary} << sceneDocument;
-        std::ofstream{root / "passes/main_rendering_config.json", std::ios::binary} << "{}";
+        std::ofstream{root / "passes/main_rendering_config.json", std::ios::binary}
+            << R"({"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":{}})";
     }
     ~Sandbox() {
         std::error_code error;

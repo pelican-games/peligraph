@@ -257,6 +257,14 @@ foreach(project_manifest IN LISTS project_manifests)
         file(READ "${project_dir}/${rendering_config_reference}" rendering_config_text)
         string(JSON rendering_config_schema ERROR_VARIABLE rendering_schema_error
             GET "${rendering_config_text}" schema)
+        # MG-2b: the engine reads only the pelican.graph rendering root; a
+        # project in the older form would stop at load, so say which one.
+        if(rendering_schema_error OR
+           NOT rendering_config_schema STREQUAL "pelican.graph")
+            message(FATAL_ERROR
+                "project '${project_relative}' rendering config "
+                "'${rendering_config_reference}' is not a pelican.graph root")
+        endif()
         if(NOT rendering_schema_error AND
            rendering_config_schema STREQUAL "pelican.graph" AND
            rendering_config_text MATCHES "\"pose[.]")

@@ -67,7 +67,7 @@ void configureGpu(const Sandbox &box) {
     const auto assets = box.root / "assets.json";
     std::ofstream{scene} << "{}";
     std::ofstream{assets}
-        << R"json({"schema":"pelican.asset_data","version":1,"models":[]})json";
+        << R"json({"schema":"pelican.asset_data","version":2,"models":[]})json";
     GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{
         {"basic_config", {{"window_size", {{"width", 16}, {"height", 16}}},
                           {"scene_data_json", scene.generic_string()},

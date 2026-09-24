@@ -1,4 +1,5 @@
 #include "renderfeatureoverlay.hpp"
+#include "renderconfigdocument.hpp"
 
 #include <algorithm>
 #include <nlohmann/json.hpp>
@@ -133,16 +134,16 @@ nlohmann::json applyRenderFeatureOverlays(
     auto result = authored_config;
     // P-2a-4a: a `pelican.graph` root keeps the authored rendering config
     // under `rendering`. Adding to the root there would be dropped by the
-    // lowering, so the overlay lands in the section or says so by name.
-    auto *section = &result;
-    if (result.value("schema", std::string{}) == "pelican.graph") {
-        const auto found = result.find("rendering");
-        if (found == result.end() || !found->is_object()) {
-            throw std::runtime_error(
-                "render_config.section_unlocated@1: a pelican.graph rendering config needs an object 'rendering' section to receive feature overlays");
-        }
-        section = &*found;
+    // lowering, so the overlay lands in the section or says so by name. A
+    // root that is not a graph root is refused by name (MG-2b).
+    if (result.value("schema", std::string{}) != "pelican.graph")
+        throw RenderConfigLegacyRoot{};
+    const auto found = result.find("rendering");
+    if (found == result.end() || !found->is_object()) {
+        throw std::runtime_error(
+            "render_config.section_unlocated@1: a pelican.graph rendering config needs an object 'rendering' section to receive feature overlays");
     }
+    auto *section = &*found;
     if (!section->contains("features")) {
         (*section)["features"] = nlohmann::json::array();
     }

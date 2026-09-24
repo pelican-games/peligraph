@@ -49,9 +49,9 @@ function(write_project name config)
  "asset_data_json":"assets/asset_data.json","rendering_config_json":"passes/main_rendering_config.json",
  "default_rendering_pass":"main_render","ui_config_json":"ui/ui_overlay.json"}}
 ]=])
-  file(WRITE "${dir}/assets/asset_data.json" "{\"schema\":\"pelican.asset_data\",\"version\":1,\"models\":[]}\n")
+  file(WRITE "${dir}/assets/asset_data.json" "{\"schema\":\"pelican.asset_data\",\"version\":2,\"models\":[]}\n")
   file(WRITE "${dir}/scenes/main.scene.json" [=[
-{"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+{"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[
  {"name":"Camera","components":[{"name":"transform","pos":[0.0,0.0,-4.0],"rotation":[0.0,0.0,0.0,1.0],"scale":[1.0,1.0,1.0]},{"name":"camera","type":"perspective","yfov":0.78539816339,"znear":0.1,"zfar":1000.0}]}
 ]}}}
 ]=])

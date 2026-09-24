@@ -156,7 +156,7 @@ TEST_CASE("sprite_view schema is closed, finite, ranged, and has no sampler over
 TEST_CASE("asset declarations own sampler and resolve atlas fragments", "[sprite][asset][c1]") {
     const auto assets = Json::parse(R"json({
       "schema":"pelican.asset_data",
-      "version":1,
+      "version":2,
       "models":[],
       "textures":[
         {"name":"hero","path":"assets/hero.atlas.json","sampler":"nearest"},

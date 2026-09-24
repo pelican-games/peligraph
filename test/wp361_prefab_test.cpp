@@ -29,6 +29,7 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
 #include <array>
@@ -815,14 +816,19 @@ TEST_CASE("WP361 v4 leaf grammar registry gate and GID are byte fixed",
     REQUIRE(prefabGeneratedId("gi_other", "sprite") != expected);
     REQUIRE(prefabGeneratedId("gi_main", "hit") != expected);
 
+    // MG-2b: a version 1 scene is refused by its version before any prefab
+    // key is looked at, so prefab_requires_scene_v2 is no longer raised (the
+    // name stays in the catalog above, where it was published).
     auto v1 = sceneFixture();
     v1["version"] = 1;
     v1["scenes"]["main"]["objects"][1]["prefab"] = nullptr;
-    requirePrefabError(PrefabErrorCode::PrefabRequiresSceneV2,
-                       [&] { (void)normalizeSceneDataJson(v1); });
+    REQUIRE_THROWS_WITH(normalizeSceneDataJson(v1),
+                        Catch::Matchers::StartsWith(
+                            "pelican.scene.version_unsupported@1"));
     v1["scenes"]["main"]["objects"][1]["prefab"] = 42;
-    requirePrefabError(PrefabErrorCode::PrefabRequiresSceneV2,
-                       [&] { (void)normalizeSceneDataJson(v1); });
+    REQUIRE_THROWS_WITH(normalizeSceneDataJson(v1),
+                        Catch::Matchers::StartsWith(
+                            "pelican.scene.version_unsupported@1"));
 
     requirePrefabError(PrefabErrorCode::PrefabPathInvalid, [&] {
         (void)parseProjectEnvelopeJson(
@@ -1980,7 +1986,7 @@ TEST_CASE("WP361 journal preserves generated identity and records prefab spawn a
 }
 
 #if PELICAN_WITH_RPC
-TEST_CASE("WP361 real RpcServer exposes generated wire and preserves V1 gates",
+TEST_CASE("WP361 real RpcServer exposes generated wire and refuses SnapshotV1 by name",
           "[wp361][prefab][rpc][readonly][persistence]") {
     auto rpc_scene = sceneFixture(false, true);
     rpc_scene["scenes"]["main"]["objects"].push_back(
@@ -2150,12 +2156,14 @@ TEST_CASE("WP361 real RpcServer exposes generated wire and preserves V1 gates",
             "prefab_generated_read_only");
     REQUIRE(parsed[2].at("error").at("data").at("code") ==
             "save_unavailable");
+    // MG-2b: SnapshotV1 (a pelican.scene version 1 payload) is refused by
+    // the snapshot version name on both RPCs.
     REQUIRE(parsed[3].at("error").at("data").at("code") ==
-            "prefab_persistence_unsupported");
+            "unsupported_snapshot_version");
     REQUIRE(parsed[4].at("result").at("schema_version") == 2);
     REQUIRE(parsed[4].at("result").contains("prefab_closure"));
     REQUIRE(parsed[5].at("error").at("data").at("code") ==
-            "prefab_persistence_unsupported");
+            "unsupported_snapshot_version");
     REQUIRE(parsed[6].at("error").at("data").at("code") ==
             "invalid_params");
     REQUIRE(parsed[7].at("error").at("data").at("code") ==
@@ -2206,66 +2214,87 @@ TEST_CASE("WP361 real RpcServer exposes generated wire and preserves V1 gates",
 }
 #endif
 
-TEST_CASE("WP361a SnapshotV1 and lower import gates reject every prefab persistence escape",
-          "[wp361a][prefab][persistence][generation]") {
+// MG-2b: SnapshotV1 carried a pelican.scene version 1 payload. Both RPCs now
+// refuse schema_version 1 by name, before the payload -- prefab or not -- is
+// looked at; SnapshotV2 is the one snapshot form.
+TEST_CASE("MG-2b SnapshotV1 is refused by name on export and import",
+          "[wp361a][mg2b][prefab][persistence][generation]") {
     ensureWp361Logger();
     const Json plain_scene{
-        {"schema", "pelican.scene"}, {"version", 1},
+        {"schema", "pelican.scene"}, {"version", 2},
         {"scenes", {{"main", {{"objects", Json::array({
              {{"name", "Plain"}, {"components", Json::array({transform()})}}
          })}}}}}};
-    const auto make_service = [](const AuthoringSceneDocument &document,
-                                 const ResolvedScene &resolved) {
-        return EditorCommandService{EditorCommandServiceDependencies{
-            .document = [&]() -> const AuthoringSceneDocument & {
-                return document;
-            },
-            .resolved_scene = [&]() -> const ResolvedScene & {
-                return resolved;
-            },
-            .current_scene_id = [] { return std::string{"main"}; },
-        }};
-    };
-
-    const auto live_v1 = AuthoringSceneDocument::load(
+    const auto live = AuthoringSceneDocument::load(
         plain_scene.dump(), SceneRevision{1});
-    const auto resolved_v1 = ResolvedSceneResolver::resolve(
-        live_v1, SceneResolverGeneration{1}, {}, {}, {});
-    auto service_v1 = make_service(live_v1, resolved_v1);
-    REQUIRE(service_v1.exportSceneSnapshot(
-                          ExportSceneSnapshotRequestV1{.schema_version = 1})
-                .schema_version == 1);
-
-    auto plain_v2_json = plain_scene;
-    plain_v2_json["version"] = 2;
-    const auto live_v2 = AuthoringSceneDocument::load(
-        plain_v2_json.dump(), SceneRevision{1});
-    const auto resolved_v2 = ResolvedSceneResolver::resolve(
-        live_v2, SceneResolverGeneration{1}, {}, {}, {});
-    auto service_v2 = make_service(live_v2, resolved_v2);
-    try {
-        (void)service_v2.exportSceneSnapshot(
-            ExportSceneSnapshotRequestV1{.schema_version = 1});
-        FAIL("SnapshotV1 accepted a formatVersion 2 document without prefabs");
-    } catch (const EditorCommandError &error) {
-        REQUIRE(error.code() ==
-                EditorCommandErrorCode::PrefabPersistenceUnsupported);
-    }
-
-    const auto incoming_prefab_bytes = sceneFixture().dump();
-    try {
-        (void)service_v1.importSceneSnapshot(ImportSceneSnapshotRequestV1{
-            .schema_version = 99,
-            .semantic_scene_bytes = incoming_prefab_bytes,
-            .digest = {.algorithm = "sha256", .hex = "deliberately-later"},
-            .current_scene_id = "main",
+    const auto resolved = ResolvedSceneResolver::resolve(
+        live, SceneResolverGeneration{1}, {}, {}, {});
+    bool imported = false;
+    EditorCommandService service{EditorCommandServiceDependencies{
+        .document = [&]() -> const AuthoringSceneDocument & { return live; },
+        .resolved_scene = [&]() -> const ResolvedScene & { return resolved; },
+        .current_scene_id = [] { return std::string{"main"}; },
+        .import_scene_snapshot_versioned =
+            [&](std::string_view, std::string_view, std::uint64_t) {
+                imported = true;
+                return SceneRevision{2};
+            },
+    }};
+    EditorCommandRpcAdapter adapter{service};
+    const auto require_v1_refused = [](auto &&call) {
+        try {
+            (void)call();
+            FAIL("SnapshotV1 was accepted");
+        } catch (const EditorCommandError &error) {
+            REQUIRE(error.code() ==
+                    EditorCommandErrorCode::UnsupportedSnapshotVersion);
+            REQUIRE_THAT(std::string{error.what()},
+                         Catch::Matchers::ContainsSubstring(
+                             "pelican.scene version 1"));
+        }
+    };
+    require_v1_refused([&] {
+        return adapter.exportSceneSnapshot(
+            Json{{"schema_version", 1}, {"allow_pending", false}});
+    });
+    const auto v1_bytes = [&] {
+        auto v1 = plain_scene;
+        v1["version"] = 1;
+        return v1.dump();
+    }();
+    for (const auto &bytes : {v1_bytes, sceneFixture().dump()}) {
+        require_v1_refused([&] {
+            return adapter.importSceneSnapshot(Json{
+                {"schema_version", 1},
+                {"semantic_scene_bytes", bytes},
+                {"digest", {{"algorithm", "sha256"},
+                            {"hex", picosha2::hash256_hex_string(bytes)}}},
+                {"current_scene_id", "main"}});
         });
-        FAIL("incoming prefab escaped through the snapshot version gate");
-    } catch (const EditorCommandError &error) {
-        REQUIRE(error.code() ==
-                EditorCommandErrorCode::PrefabPersistenceUnsupported);
     }
+    REQUIRE_FALSE(imported);
+    // The one snapshot form still round trips through the same adapter.
+    const auto exported = adapter.exportSceneSnapshot(
+        Json{{"schema_version", 2}, {"allow_pending", false}});
+    REQUIRE(exported.at("schema_version") == 2);
+    REQUIRE(adapter.importSceneSnapshot(Json{
+                {"schema_version", 2},
+                {"semantic_scene_bytes", exported.at("semantic_scene_bytes")},
+                {"digest", exported.at("digest")},
+                {"current_scene_id", "main"},
+                {"prefab_closure", exported.at("prefab_closure")}})
+                .at("status") == "imported");
+    REQUIRE(imported);
+}
 
+TEST_CASE("WP361a a failed resolved-scene refresh keeps the provider generation",
+          "[wp361a][prefab][persistence][generation]") {
+    ensureWp361Logger();
+    const Json plain_scene{
+        {"schema", "pelican.scene"}, {"version", 2},
+        {"scenes", {{"main", {{"objects", Json::array({
+             {{"name", "Plain"}, {"components", Json::array({transform()})}}
+         })}}}}}};
     Wp361TemporaryProject temporary;
     temporary.write("scene.json", plain_scene.dump());
     const Json project{
@@ -2278,13 +2307,6 @@ TEST_CASE("WP361a SnapshotV1 and lower import gates reject every prefab persiste
     GET_MODULE(ProjectSource).setProjectData(project.dump());
     auto &config = GET_MODULE(ProjectBasicConfig);
     (void)config.sceneProjectionState();
-    requirePrefabError(PrefabErrorCode::PrefabPersistenceUnsupported, [&] {
-        (void)config.importSceneDocument(
-            incoming_prefab_bytes,
-            [](SceneLoadRequest &&) -> SceneLoadResult {
-                return SceneLoadCommitted{};
-            });
-    });
 
     const auto initial_provider_generation =
         config.resolvedScene().bindableProvider().generation();
@@ -2326,7 +2348,7 @@ TEST_CASE("WP361 authored detector remains and ImGui never creates generated mut
     REQUIRE(makeInspectorWidgetPlan(query).empty());
 
     const auto forged = AuthoringSceneDocument::load(
-        R"json({"schema":"pelican.scene","version":1,"scenes":{"main":{"objects":[{"components":[{"name":"external","generated":true}]}]}}})json",
+        R"json({"schema":"pelican.scene","version":2,"scenes":{"main":{"objects":[{"components":[{"name":"external","generated":true}]}]}}})json",
         SceneRevision{1});
     REQUIRE_THROWS_AS(ResolvedSceneResolver::resolve(
                           forged, SceneResolverGeneration{1}),

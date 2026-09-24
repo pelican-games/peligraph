@@ -1,9 +1,16 @@
 {
-  "schema_version": 1,
-  "semantic_scene_bytes": "{\"schema\":\"pelican.scene\",\"version\":1,\"scenes\":[]}",
+  "schema_version": 2,
+  "semantic_scene_bytes": "{\"schema\":\"pelican.scene\",\"version\":2,\"scenes\":[]}",
   "digest": {
     "algorithm": "sha256",
     "hex": "0f9c2a4b8d6e13577531fedcba9876543210abcdef0123456789abcdef012345"
   },
-  "current_scene_id": "main"
+  "current_scene_id": "main",
+  "prefab_closure": {
+    "scenes": [],
+    "prefabs": [],
+    "behaviors": [],
+    "provider_fingerprint": {"algorithm": "sha256", "hex": "0000000000000000000000000000000000000000000000000000000000000000"},
+    "resolver_inputs_fingerprint": {"algorithm": "sha256", "hex": "0000000000000000000000000000000000000000000000000000000000000000"}
+  }
 }

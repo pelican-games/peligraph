@@ -40,7 +40,7 @@ file(WRITE "${OUT_DIR}/project.json" [=[
 file(WRITE "${OUT_DIR}/scene.json" [=[
 {
   "schema": "pelican.scene",
-  "version": 1,
+  "version": 2,
   "scenes": {
     "default_scene": {
       "objects": []
@@ -48,7 +48,7 @@ file(WRITE "${OUT_DIR}/scene.json" [=[
   }
 }
 ]=])
-file(WRITE "${OUT_DIR}/assets.json" "{\"schema\":\"pelican.asset_data\",\"version\":1,\"models\":[]}\n")
+file(WRITE "${OUT_DIR}/assets.json" "{\"schema\":\"pelican.asset_data\",\"version\":2,\"models\":[]}\n")
 file(WRITE "${OUT_DIR}/ui/ui.json" "{\"schema\":\"pelican.ui\",\"version\":1,\"key\":\"empty\",\"root\":{\"id\":\"root\",\"type\":\"panel\"}}\n")
 
 file(WRITE "${OUT_DIR}/shaders/fullscreen.vert" [=[
@@ -152,11 +152,26 @@ void main() {
 }
 ]=])
 
-file(WRITE "${OUT_DIR}/passes/main.json" [=[
+# MG-2b: the rendering config is a pelican.graph root. Its buffers and
+# compute tasks belong to the graph, so this project declares them in a
+# feature the section names first, unchanged.
+file(WRITE "${OUT_DIR}/features/authored_tasks.json" [=[
 {
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "authored_tasks",
+  "runtime_shader_compiler": "optional",
   "buffers": [
-    {"name": "raw_color", "size": 16, "lifetime": "persistent"},
-    {"name": "compute_color", "size": 16, "lifetime": "persistent"},
+    {
+      "name": "raw_color",
+      "size": 16,
+      "lifetime": "persistent"
+    },
+    {
+      "name": "compute_color",
+      "size": 16,
+      "lifetime": "persistent"
+    },
     {
       "name": "dispatch_arguments",
       "size": 12,
@@ -164,75 +179,16 @@ file(WRITE "${OUT_DIR}/passes/main.json" [=[
       "command_layout": "compute_dispatch"
     }
   ],
-  "render_targets": [
-    {"name": "material_albedo", "extent_scale": 1.0, "format": "B8G8R8A8_UNORM", "format_class": "scene", "role": "color", "usage": ["COLOR_ATTACHMENT"]},
-    {"name": "material_normal", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT", "format_class": "data", "role": "data", "usage": ["COLOR_ATTACHMENT"]},
-    {"name": "seed_image", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM", "format_class": "data", "role": "data", "usage": ["COLOR_ATTACHMENT", "STORAGE", "SAMPLED"]},
-    {"name": "material_worldpos", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT", "format_class": "data", "role": "data", "usage": ["COLOR_ATTACHMENT"]},
-    {"name": "material_emissive", "extent_scale": 1.0, "format": "B8G8R8A8_UNORM", "format_class": "scene", "role": "color", "usage": ["COLOR_ATTACHMENT"]},
-    {"name": "result_image", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM", "format_class": "data", "role": "data", "usage": ["COLOR_ATTACHMENT", "STORAGE", "SAMPLED"]},
-    {"name": "material_depth", "extent_scale": 1.0, "format": "D32_SFLOAT", "format_class": "data", "role": "data", "usage": ["DEPTH_STENCIL_ATTACHMENT"]},
-    {"name": "sampled_color", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM", "format_class": "data", "role": "data", "usage": ["COLOR_ATTACHMENT", "STORAGE"]}
-  ],
-  "rendering_passes": [
-    {
-      "name": "main",
-      "passes": [
-        {
-          "name": "seed_render",
-          "type": "material",
-          "output": {
-            "color": ["material_albedo", "material_normal", "seed_image", "material_worldpos", "material_emissive"],
-            "depth": "material_depth"
-          },
-          "clear_color": [0.10, 0.75, 0.35, 1.0]
-        },
-        {
-          "name": "initialize_result",
-          "type": "fullscreen",
-          "input": ["seed_image"],
-          "resource_ports": {
-            "source_image": {
-              "resource": "seed_image",
-              "access": "sampled"
-            }
-          },
-          "output": {"color": "result_image", "depth": null},
-          "shader": {"vertex": "shaders/fullscreen", "fragment": "shaders/sample_image"}
-        },
-        {
-          "name": "sample_render",
-          "type": "fullscreen",
-          "after": ["transform_image"],
-          "input": ["result_image"],
-          "resource_ports": {
-            "source_image": {
-              "resource": "result_image",
-              "access": "sampled"
-            }
-          },
-          "output": {"color": "sampled_color", "depth": null},
-          "shader": {"vertex": "shaders/fullscreen", "fragment": "shaders/sample_image"}
-        },
-        {
-          "name": "present",
-          "type": "fullscreen",
-          "input": ["compute_color"],
-          "output": {"color": "swapchain", "depth": null},
-          "shader": {
-            "vertex": "shaders/fullscreen",
-            "fragment": "shaders/compute_present"
-          }
-        }
-      ]
-    }
-  ],
   "compute_tasks": [
     {
       "name": "transform_image",
       "shader": "shaders/transform_image",
-      "reads": ["seed_image"],
-      "writes": ["result_image"],
+      "reads": [
+        "seed_image"
+      ],
+      "writes": [
+        "result_image"
+      ],
       "resource_ports": {
         "seed_image": {
           "access": "sampled",
@@ -245,30 +201,60 @@ file(WRITE "${OUT_DIR}/passes/main.json" [=[
           "access": "storage"
         }
       },
-      "after": ["initialize_result"],
-      "dispatch": {"groups": [1, 1, 1]},
+      "after": [
+        "initialize_result"
+      ],
+      "dispatch": {
+        "groups": [
+          1,
+          1,
+          1
+        ]
+      },
       "schedule": "per_frame"
     },
     {
       "name": "image_to_buffer",
       "shader": "shaders/image_to_buffer",
-      "reads": ["sampled_color"],
-      "writes": ["raw_color"],
-      "dispatch": {"groups": [1, 1, 1]},
+      "reads": [
+        "sampled_color"
+      ],
+      "writes": [
+        "raw_color"
+      ],
+      "dispatch": {
+        "groups": [
+          1,
+          1,
+          1
+        ]
+      },
       "schedule": "per_frame"
     },
     {
       "name": "build_dispatch",
       "shader": "shaders/build_dispatch",
-      "writes": ["dispatch_arguments"],
-      "dispatch": {"groups": [1, 1, 1]},
+      "writes": [
+        "dispatch_arguments"
+      ],
+      "dispatch": {
+        "groups": [
+          1,
+          1,
+          1
+        ]
+      },
       "schedule": "per_frame"
     },
     {
       "name": "transform_color",
       "shader": "shaders/transform_color",
-      "reads": ["raw_color"],
-      "writes": ["compute_color"],
+      "reads": [
+        "raw_color"
+      ],
+      "writes": [
+        "compute_color"
+      ],
       "dispatch": {
         "indirect": {
           "buffer": "dispatch_arguments"
@@ -277,6 +263,195 @@ file(WRITE "${OUT_DIR}/passes/main.json" [=[
       "schedule": "per_frame"
     }
   ]
+}
+]=])
+
+file(WRITE "${OUT_DIR}/passes/main.json" [=[
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "features": [
+      "project://features/authored_tasks.json"
+    ],
+    "render_targets": [
+      {
+        "name": "material_albedo",
+        "extent_scale": 1.0,
+        "format": "B8G8R8A8_UNORM",
+        "format_class": "scene",
+        "role": "color",
+        "usage": [
+          "COLOR_ATTACHMENT"
+        ]
+      },
+      {
+        "name": "material_normal",
+        "extent_scale": 1.0,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "data",
+        "role": "data",
+        "usage": [
+          "COLOR_ATTACHMENT"
+        ]
+      },
+      {
+        "name": "seed_image",
+        "extent_scale": 1.0,
+        "format": "R8G8B8A8_UNORM",
+        "format_class": "data",
+        "role": "data",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "STORAGE",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "material_worldpos",
+        "extent_scale": 1.0,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "data",
+        "role": "data",
+        "usage": [
+          "COLOR_ATTACHMENT"
+        ]
+      },
+      {
+        "name": "material_emissive",
+        "extent_scale": 1.0,
+        "format": "B8G8R8A8_UNORM",
+        "format_class": "scene",
+        "role": "color",
+        "usage": [
+          "COLOR_ATTACHMENT"
+        ]
+      },
+      {
+        "name": "result_image",
+        "extent_scale": 1.0,
+        "format": "R8G8B8A8_UNORM",
+        "format_class": "data",
+        "role": "data",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "STORAGE",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "material_depth",
+        "extent_scale": 1.0,
+        "format": "D32_SFLOAT",
+        "format_class": "data",
+        "role": "data",
+        "usage": [
+          "DEPTH_STENCIL_ATTACHMENT"
+        ]
+      },
+      {
+        "name": "sampled_color",
+        "extent_scale": 1.0,
+        "format": "R8G8B8A8_UNORM",
+        "format_class": "data",
+        "role": "data",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "STORAGE"
+        ]
+      }
+    ],
+    "rendering_passes": [
+      {
+        "name": "main",
+        "passes": [
+          {
+            "name": "seed_render",
+            "type": "material",
+            "output": {
+              "color": [
+                "material_albedo",
+                "material_normal",
+                "seed_image",
+                "material_worldpos",
+                "material_emissive"
+              ],
+              "depth": "material_depth"
+            },
+            "clear_color": [
+              0.1,
+              0.75,
+              0.35,
+              1.0
+            ]
+          },
+          {
+            "name": "initialize_result",
+            "type": "fullscreen",
+            "input": [
+              "seed_image"
+            ],
+            "resource_ports": {
+              "source_image": {
+                "resource": "seed_image",
+                "access": "sampled"
+              }
+            },
+            "output": {
+              "color": "result_image",
+              "depth": null
+            },
+            "shader": {
+              "vertex": "shaders/fullscreen",
+              "fragment": "shaders/sample_image"
+            }
+          },
+          {
+            "name": "sample_render",
+            "type": "fullscreen",
+            "after": [
+              "transform_image"
+            ],
+            "input": [
+              "result_image"
+            ],
+            "resource_ports": {
+              "source_image": {
+                "resource": "result_image",
+                "access": "sampled"
+              }
+            },
+            "output": {
+              "color": "sampled_color",
+              "depth": null
+            },
+            "shader": {
+              "vertex": "shaders/fullscreen",
+              "fragment": "shaders/sample_image"
+            }
+          },
+          {
+            "name": "present",
+            "type": "fullscreen",
+            "input": [
+              "compute_color"
+            ],
+            "output": {
+              "color": "swapchain",
+              "depth": null
+            },
+            "shader": {
+              "vertex": "shaders/fullscreen",
+              "fragment": "shaders/compute_present"
+            }
+          }
+        ]
+      }
+    ]
+  }
 }
 ]=])
 

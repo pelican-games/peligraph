@@ -84,7 +84,8 @@ enum class SceneLoadRoot : std::uint8_t {
     startup,
     rpc,
     pending,
-    import_unversioned,
+    // MG-2b: the SnapshotV1 (pelican.scene version 1) import root is gone;
+    // a scene snapshot import has this one root.
     import_versioned,
 };
 
@@ -120,8 +121,6 @@ inline constexpr std::string_view ray_as_plan = "ray.as-plan.bypass";
 inline constexpr std::string_view root_startup = "root.startup.disconnect";
 inline constexpr std::string_view root_rpc = "root.rpc.disconnect";
 inline constexpr std::string_view root_pending = "root.pending.disconnect";
-inline constexpr std::string_view root_import_unversioned =
-    "root.import-v1.disconnect";
 inline constexpr std::string_view root_import_versioned =
     "root.import-v2.disconnect";
 inline constexpr std::string_view effect_audio_play =

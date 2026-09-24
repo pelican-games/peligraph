@@ -69,11 +69,11 @@ TEST_CASE("F-5 reload_shaders recompiles what changed under an RPC driver, "
     const auto capture = root / "capture.png";
 
     writeFile(root / "scene.json", R"json({
-  "schema":"pelican.scene","version":1,
+  "schema":"pelican.scene","version":2,
   "scenes":{"default_scene":{"objects":[]}}
 })json");
     writeFile(root / "assets.json",
-              R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+              R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
     writeFile(root / "ui/ui.json",
               R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
     writeFile(root / "shaders/fullscreen.vert", R"glsl(
@@ -83,12 +83,19 @@ void main(){ uv=vec2((gl_VertexIndex<<1)&2,gl_VertexIndex&2); gl_Position=vec4(u
 )glsl");
     writeFile(shader, fragment("outColor=vec4(0.5,0.5,0.5,1.0);"));
     writeFile(root / "passes/main.json", R"json({
-  "render_targets":[],
-  "rendering_passes":[{"name":"main","passes":[{
-    "name":"tone","type":"fullscreen",
-    "output":{"color":"swapchain","depth":null},
-    "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/tone"}
-  }]}]
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "render_targets":[],
+    "rendering_passes":[{"name":"main","passes":[{
+      "name":"tone","type":"fullscreen",
+      "output":{"color":"swapchain","depth":null},
+      "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/tone"}
+    }]}]
+  }
 })json");
     const Json project{
         {"schema", "pelican.project"}, {"version", 1}, {"name", "F-5 reload_shaders"},

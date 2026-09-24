@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -51,7 +50,7 @@ def make_project(root: Path, rendering_config: Path) -> Path:
         project / "scenes/main.scene.json",
         {
             "schema": "pelican.scene",
-            "version": 1,
+            "version": 2,
             "scenes": {
                 "default_scene": {
                     "objects": [
@@ -76,7 +75,7 @@ def make_project(root: Path, rendering_config: Path) -> Path:
         project / "assets/asset_data.json",
         {
             "schema": "pelican.asset_data",
-            "version": 1,
+            "version": 2,
             "models": [],
         },
     )
@@ -98,7 +97,7 @@ def make_project(root: Path, rendering_config: Path) -> Path:
 def snapshot_source_document() -> dict[str, object]:
     return {
         "schema": "pelican.scene",
-        "version": 1,
+        "version": 2,
         "editor_envelope": {"round_trip": ["keep", 7, True]},
         "scenes": {
             "default_scene": {
@@ -130,21 +129,6 @@ def snapshot_source_document() -> dict[str, object]:
                     }
                 ]
             },
-        },
-    }
-
-
-def scratch_boot_document() -> dict[str, object]:
-    return {
-        "schema": "pelican.scene",
-        "version": 1,
-        "scenes": {
-            "default_scene": {
-                "objects": [
-                    {"name": f"ScratchOnly{index}", "components": []}
-                    for index in range(5)
-                ]
-            }
         },
     }
 
@@ -190,14 +174,17 @@ def main() -> int:
         human = PelicanRpc(human_project, exe_path=args.player)
         with human:
             human.get_status()
+            # MG-2b: SnapshotV2 is the one snapshot form (SnapshotV1 carried
+            # a pelican.scene version 1 payload and is refused by name).
             exported = human.export_scene_snapshot(
-                {"schema_version": 1, "allow_pending": False}
+                {"schema_version": 2, "allow_pending": False}
             )
             payload = {
                 "schema_version": exported["schema_version"],
                 "semantic_scene_bytes": exported["semantic_scene_bytes"],
                 "digest": exported["digest"],
                 "current_scene_id": exported["current_scene_id"],
+                "prefab_closure": exported["prefab_closure"],
             }
             human_tree = human.scene_tree()
             scratch = PelicanRpc(human_project, exe_path=args.player)
@@ -207,22 +194,11 @@ def main() -> int:
 
                 # Consume a different scratch-local identity range before the
                 # real transfer. Both processes still share the exact same
-                # project root and disk scene read-only.
-                padding_bytes = json.dumps(
-                    scratch_boot_document(),
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
-                padding_payload = {
-                    "schema_version": 1,
-                    "semantic_scene_bytes": padding_bytes,
-                    "digest": {
-                        "algorithm": "sha256",
-                        "hex": hashlib.sha256(padding_bytes.encode("utf-8")).hexdigest(),
-                    },
-                    "current_scene_id": "default_scene",
-                }
-                scratch.import_scene_snapshot(padding_payload)
+                # project root and disk scene read-only. A SnapshotV2 import
+                # needs the payload's own closure, so the padding imports the
+                # same payload: each import allocates fresh identities.
+                for _ in range(2):
+                    scratch.import_scene_snapshot(payload)
 
                 imported = scratch.import_scene_snapshot(payload)
                 if imported.get("status") != "imported":
@@ -242,7 +218,7 @@ def main() -> int:
                     )
 
                 round_tripped = scratch.export_scene_snapshot(
-                    {"schema_version": 1, "allow_pending": False}
+                    {"schema_version": 2, "allow_pending": False}
                 )
                 for field in ("current_scene_id", "semantic_scene_bytes", "digest"):
                     if round_tripped[field] != exported[field]:

@@ -102,6 +102,11 @@
     "error_kind": "version"
   },
   {
+    "file": "invalid/scene_version_one.json",
+    "expect": "error",
+    "error_kind": "version"
+  },
+  {
     "file": "invalid/scene_version_zero.json",
     "expect": "error",
     "error_kind": "version"

@@ -59,7 +59,7 @@ Json sceneDocument() {
                      {"color", {1.0, 1.0, 1.0}}};
     return Json{
         {"schema", "pelican.scene"},
-        {"version", 1},
+        {"version", 2},
         {"scenes",
          {{"main",
            {{"objects",
@@ -107,7 +107,8 @@ struct Sandbox {
         root = base / "project";
         std::filesystem::create_directories(root / "passes");
         std::ofstream{root / "scene.json", std::ios::binary} << sceneDocument().dump(2);
-        std::ofstream{root / "passes/main_rendering_config.json", std::ios::binary} << "{}";
+        std::ofstream{root / "passes/main_rendering_config.json", std::ios::binary}
+            << R"({"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":{}})";
     }
     ~Sandbox() {
         std::error_code error;

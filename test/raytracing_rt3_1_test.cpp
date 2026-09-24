@@ -4,6 +4,7 @@
 #include <components/predefined.hpp>
 
 #include "../src/core/appflow/enginetime.hpp"
+#include "render_graph_root_test_support.hpp"
 #include "../src/core/appflow/framephase.hpp"
 #include "../src/core/communication/editorcommandservice.hpp"
 #include "../src/core/communication/editorrpchandlers.hpp"
@@ -398,8 +399,9 @@ TEST_CASE("MG-2a ray group layout v1 and v2 and ray bindings v1 are refused by n
         CHECK_NOTHROW(parseRayBindings(bindings_of(2, false), layout));
     }
     SECTION("the project loader refuses either document by name") {
-        const Json root{{"ray_group_layout", "layout.json"},
-                        {"ray_bindings", "bindings.json"}};
+        const auto root = Pelican::TestSupport::renderGraphRoot(
+            Json{{"ray_group_layout", "layout.json"},
+                 {"ray_bindings", "bindings.json"}});
         const auto load = [&](std::string layout_bytes,
                               std::string bindings_bytes) {
             return loadRayTracingProjectConfig(
@@ -764,7 +766,7 @@ TEST_CASE("RT5 declarations support deformation and reject ineligible geometry",
 
 TEST_CASE("WP374 compiler-off error wins before layout or scene loading",
           "[WP374][ray-tracing][rt3-1][compiler-off][matrix]") {
-    Json root{{"ray_group_layout", "layout.json"}};
+    auto root = Pelican::TestSupport::renderGraphRoot(Json{{"ray_group_layout", "layout.json"}});
     bool loader_called = false;
     CHECK_THROWS_WITH(
         loadRayTracingProjectConfig(

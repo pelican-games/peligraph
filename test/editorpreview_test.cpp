@@ -17,7 +17,7 @@ using OrderedJson = nlohmann::ordered_json;
 
 Json sceneFixture() {
     return Json::parse(R"json({
-      "schema":"pelican.scene","version":1,"scenes":{"main":{"objects":[
+      "schema":"pelican.scene","version":2,"scenes":{"main":{"objects":[
         {"name":"Root","components":[
           {"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
           {"name":"light","type":"directional","direction":[0,-1,0],"intensity":1,"color":[1,1,1]}
@@ -39,12 +39,15 @@ Json sceneFixture() {
 
 PreviewGraphProgram graphFixture() {
     const auto config = R"json({
+      "schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},
+      "rendering":{
       "features":["fixture://ui"],
       "render_targets":[],
       "rendering_passes":[{"name":"main_render","passes":[
         {"name":"main_scene","type":"material",
          "output":{"color":["swapchain"],"depth":null}}
       ]}]
+      }
     })json";
     return precompilePreviewGraph(
         config,

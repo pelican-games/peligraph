@@ -11,7 +11,7 @@
 namespace Pelican {
 
 struct SceneFormatDocument {
-    int version = 1;
+    int version = 2;
     bool uses_prefabs = false;
     nlohmann::json scenes;
     std::vector<std::string> warnings;

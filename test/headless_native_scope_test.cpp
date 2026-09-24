@@ -1,4 +1,5 @@
 #include "../src/core/appflow/enginetime.hpp"
+#include "render_graph_root_test_support.hpp"
 #include "../src/core/registrationownerhost.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/launchconfig.hpp"
@@ -772,10 +773,10 @@ TEST_CASE(
             temp_dir / "shaders");
         writeTextFile(
             temp_dir / "scene.json",
-            R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
         writeTextFile(
             temp_dir / "assets.json",
-            R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         writeTextFile(
             temp_dir / "shaders" /
                 "native_fullscreen.vert",
@@ -788,8 +789,9 @@ TEST_CASE(
             temp_dir / "shaders" /
                 "native_copy.frag",
             gpuArenaCopyFragmentShader());
-        const auto config =
-            nativeScopeRenderingConfig();
+        // MG-2b: the rendering config is a graph root.
+        const auto config = Pelican::TestSupport::renderGraphRootWithTaskFeature(
+            nativeScopeRenderingConfig(), temp_dir);
         writeTextFile(
             temp_dir / "native_scope.json",
             config.dump(2));
