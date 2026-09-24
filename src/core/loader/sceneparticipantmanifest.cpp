@@ -210,6 +210,12 @@ constexpr std::array public_api_manifest{
     ScenePublicApiManifestEntry{"GameContext", "[[nodiscard]] bool setLocalTransform(GameObjectId id,const LocalTransformComponent&transform)const", "covered.candidate-or-retired-reject"},
     ScenePublicApiManifestEntry{"GameContext", "[[nodiscard]] bool setSpriteView(GameObjectId id,const SpriteViewComponent&sprite)const", "covered.candidate-or-retired-reject"},
     ScenePublicApiManifestEntry{"GameContext", "[[nodiscard]] bool setSpriteTexture(GameObjectId id,std::string_view texture)const", "covered.candidate-or-retired-reject"},
+    // GP-2: queued under the scene run the call addresses (the load candidate
+    // inside a load's callbacks) and carried out at the next frame boundary;
+    // a request of a run that is not live there, a failed candidate's
+    // included, is dropped.
+    ScenePublicApiManifestEntry{"GameContext", "TransientObjectRef spawn(std::string_view prefab,const SpawnParams&params)const", "covered.spawn-queue"},
+    ScenePublicApiManifestEntry{"GameContext", "[[nodiscard]] Resolved<TransientObjectRef>destroy(const TransientObjectRef&ref)const", "covered.spawn-queue"},
     ScenePublicApiManifestEntry{"RenderContext", "[[nodiscard]] bool setDirectionalLightDirection(std::string_view name,vec3 direction)const", "covered.candidate"},
     ScenePublicApiManifestEntry{"RenderContext", "[[nodiscard]] bool setDirectionalLightIntensity(std::string_view name,float intensity)const", "covered.candidate"},
     ScenePublicApiManifestEntry{"RenderContext", "[[nodiscard]] bool setPointLightPosition(std::string_view name,vec3 position)const", "covered.candidate"},

@@ -79,6 +79,19 @@ std::uint64_t sceneBehaviorAttachmentSeq(std::size_t object_index,
            static_cast<std::uint64_t>(component_index);
 }
 
+std::uint64_t runtimeSpawnAttachmentSeq(std::uint64_t boundary,
+                                        std::uint64_t spawn_index,
+                                        std::uint64_t attachment_index) {
+    if (boundary >= runtime_spawn_boundary_limit ||
+        spawn_index >= runtime_spawn_index_limit ||
+        attachment_index >= runtime_spawn_attachment_limit) {
+        throw std::length_error(
+            "runtime spawn attachment tuple exceeds its 28/16/8-bit fields");
+    }
+    return runtime_spawn_attachment_seq_base | (boundary << 24U) |
+           (spawn_index << 8U) | attachment_index;
+}
+
 std::vector<PreparedSceneBehaviorAttachment> prepareSceneBehaviorAttachments(
     const nlohmann::json &objects, BehaviorRegistryAvailability availability) {
     if (!objects.is_array()) {
@@ -633,7 +646,8 @@ void PreparedBehaviorSceneReconciliation::finish(
 std::unique_ptr<PreparedBehaviorSceneReconciliation>
 BehaviorAttachmentArena::prepareSceneReconciliation(
     std::vector<BoundSceneBehaviorAttachment> desired,
-    const OriginTransitionMap &origin_transition) {
+    const OriginTransitionMap &origin_transition,
+    BehaviorSpawnedAttachments spawned) {
     auto impl =
         std::make_unique<PreparedBehaviorSceneReconciliation::Impl>();
     impl->tx.arena = this;
@@ -647,10 +661,16 @@ BehaviorAttachmentArena::prepareSceneReconciliation(
     std::vector<bool> consumed(attachments.size(), false);
 
     // Runtime-created, non-scene attachments are outside reconciliation but
-    // participate in the same atomic vector publication.
+    // participate in the same atomic vector publication. A spawned one that
+    // is retired stays behind in the old vector, so the finish of a
+    // committed load gives it onDestroy and a rollback puts it back.
     for (std::size_t index = 0; index < attachments.size(); ++index) {
         const auto &attachment = attachments[index];
         if (attachment.info.scene_ordered) continue;
+        if (attachment.info.runtime_spawned &&
+            spawned == BehaviorSpawnedAttachments::retire) {
+            continue;
+        }
         consumed[index] = true;
         impl->tx.detached.push_back(Attachment{
             .info = attachment.info,
@@ -943,6 +963,138 @@ void BehaviorAttachmentArena::activatePublished() {
     }
 }
 
+void BehaviorAttachmentArena::attachSpawned(
+    GameObjectId entity, std::vector<PreparedSceneBehaviorAttachment> prepared,
+    std::uint64_t boundary, std::uint64_t spawn_index) {
+    if (prepared.empty()) return;
+    if (entity == invalidGameObjectId ||
+        !GET_MODULE(ECSCore).getTemplatePublicModule().isAlive(entity)) {
+        throw std::logic_error("spawned behaviors require a live entity");
+    }
+    constexpr auto max_exact_json_integer = UINT64_C(9007199254740991);
+    std::vector<Attachment> added;
+    added.reserve(prepared.size());
+    const auto release = [&]() noexcept {
+        for (auto it = added.rbegin(); it != added.rend(); ++it) {
+            if (it->instance.behavior != nullptr && it->destroy != nullptr) {
+                it->destroy(it->instance);
+            }
+        }
+    };
+    try {
+        for (std::size_t index = 0; index < prepared.size(); ++index) {
+            auto &behavior = prepared[index];
+            const auto sequence =
+                runtimeSpawnAttachmentSeq(boundary, spawn_index, index);
+            if (next_handle == 0 || next_handle > max_exact_json_integer) {
+                throw std::overflow_error(
+                    "BehaviorAttachmentHandle space exhausted");
+            }
+            if (std::any_of(attachments.begin(), attachments.end(),
+                            [&](const Attachment &attachment) {
+                                return attachment.info.attachment_seq ==
+                                       sequence;
+                            })) {
+                throw std::logic_error(
+                    "spawned behavior attachment sequence is already live");
+            }
+            Attachment next{
+                .info = BehaviorAttachmentInfo{
+                    .handle = BehaviorAttachmentHandle{next_handle},
+                    .attachment_seq = sequence,
+                    .entity = entity,
+                    .component_index = behavior.component_index,
+                    .component_origin = behavior.component_origin,
+                    .scene_object_index = 0,
+                    .scene_ordered = false,
+                    .stable_name = behavior.stable_name,
+                    .canonical_params = behavior.canonical_params,
+                    .owner = behavior.registration_owner,
+                    .pending = behavior.pending,
+                    .active = false,
+                    .runtime_spawned = true,
+                },
+                .raw_component = std::move(behavior.raw_component),
+            };
+            if (!next.info.pending) {
+                const auto *registration =
+                    internal::getBehaviorRegisterer().findByNameAndOwner(
+                        next.info.stable_name, next.info.owner);
+                if (registration == nullptr) {
+                    throw std::runtime_error(
+                        "behavior registration disappeared before spawn: " +
+                        next.info.stable_name);
+                }
+                next.instance =
+                    registration->create(next.info.canonical_params);
+                next.destroy = registration->destroy;
+            }
+            added.push_back(std::move(next));
+            ++next_handle;
+        }
+    } catch (...) {
+        release();
+        throw;
+    }
+
+    // Publication: one insertion that keeps the vector in attachment_seq
+    // order. Everything spawned sorts after the scene's own attachments.
+    std::vector<BehaviorAttachmentHandle> handles;
+    handles.reserve(added.size());
+    for (const auto &attachment : added) handles.push_back(attachment.info.handle);
+    try {
+        attachments.reserve(attachments.size() + added.size());
+    } catch (...) {
+        release();
+        throw;
+    }
+    for (auto &attachment : added) {
+        const auto position = std::upper_bound(
+            attachments.begin(), attachments.end(),
+            attachment.info.attachment_seq,
+            [](std::uint64_t sequence, const Attachment &candidate) {
+                return sequence < candidate.info.attachment_seq;
+            });
+        attachments.insert(position, std::move(attachment));
+    }
+
+    const auto deferred_base = deferred_mutations.size();
+    std::vector<BehaviorAttachmentHandle> initialized;
+    initialized.reserve(handles.size());
+    try {
+        for (const auto handle : handles) {
+            auto *attachment = findAttachment(handle);
+            if (attachment == nullptr || attachment->info.pending) continue;
+            invokeInit(*attachment);
+            // Look the attachment up again rather than keep a reference
+            // across game code.
+            attachment = findAttachment(handle);
+            attachment->initialized = true;
+            attachment->info.active = true;
+            initialized.push_back(handle);
+        }
+    } catch (...) {
+        for (auto it = initialized.rbegin(); it != initialized.rend(); ++it) {
+            if (auto *attachment = findAttachment(*it)) {
+                destroyInstance(*attachment, true);
+            }
+        }
+        for (const auto handle : handles) {
+            if (auto *attachment = findAttachment(handle)) {
+                destroyInstance(*attachment, false);
+            }
+        }
+        std::erase_if(attachments, [&](const Attachment &attachment) {
+            return std::find(handles.begin(), handles.end(),
+                             attachment.info.handle) != handles.end();
+        });
+        if (deferred_mutations.size() > deferred_base) {
+            deferred_mutations.resize(deferred_base);
+        }
+        throw;
+    }
+}
+
 void BehaviorAttachmentArena::applyDeferredMutations() {
     if (callback_depth != 0 || deferred_mutations.empty()) {
         return;
@@ -1060,8 +1212,10 @@ BehaviorAttachmentIdentity BehaviorAttachmentArena::reserveRuntimeAttachmentIden
     if (next_handle == 0 || next_handle > max_exact_json_integer) {
         throw std::overflow_error("BehaviorAttachmentHandle space exhausted");
     }
+    // The editor's reservations stay below the range runtime spawns own.
+    static_assert(runtime_spawn_attachment_seq_base <= max_exact_json_integer);
     if (next_attachment_seq == 0 ||
-        next_attachment_seq > max_exact_json_integer) {
+        next_attachment_seq >= runtime_spawn_attachment_seq_base) {
         throw std::overflow_error("runtime behavior attachment sequence space exhausted");
     }
     return BehaviorAttachmentIdentity{

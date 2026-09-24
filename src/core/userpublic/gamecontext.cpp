@@ -16,6 +16,7 @@
 #include "../gamelogic/behaviorarena.hpp"
 #include "../launchconfig.hpp"
 #include "../loader/scene.hpp"
+#include "../loader/runtimespawn.hpp"
 #include "../loader/effecttransaction.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../log.hpp"
@@ -237,8 +238,8 @@ Resolved<GameObjectId> ObjectsContext::materialize(const ObjectRef &ref) const {
     return GET_MODULE(SceneLoader).materializeObject(ref);
 }
 
-Resolved<WorldTransform> ObjectsContext::worldTransform(const ObjectRef &ref) const {
-    const auto object = materialize(ref);
+namespace {
+Resolved<WorldTransform> worldTransformOf(const Resolved<GameObjectId> &object) {
     if (!object) return object.error();
     const auto *world = GET_MODULE(ECSCore).getTemplatePublicModule()
                             .tryComponent<TransformComponent>(*object.get());
@@ -249,6 +250,28 @@ Resolved<WorldTransform> ObjectsContext::worldTransform(const ObjectRef &ref) co
                          world->rotation.z, world->rotation.w},
         .scale = vec3{world->scale.x, world->scale.y, world->scale.z},
     };
+}
+} // namespace
+
+Resolved<WorldTransform> ObjectsContext::worldTransform(const ObjectRef &ref) const {
+    return worldTransformOf(materialize(ref));
+}
+
+Resolved<GameObjectId> ObjectsContext::materialize(const TransientObjectRef &ref) const {
+    return GET_MODULE(RuntimeSpawner).materialize(ref);
+}
+
+Resolved<WorldTransform> ObjectsContext::worldTransform(const TransientObjectRef &ref) const {
+    return worldTransformOf(materialize(ref));
+}
+
+TransientObjectRef GameContext::spawn(std::string_view prefab,
+                                      const SpawnParams &params) const {
+    return GET_MODULE(RuntimeSpawner).spawn(prefab, params);
+}
+
+Resolved<TransientObjectRef> GameContext::destroy(const TransientObjectRef &ref) const {
+    return GET_MODULE(RuntimeSpawner).destroy(ref);
 }
 
 bool RenderContext::setDirectionalLightDirection(std::string_view name, vec3 direction) const {

@@ -206,11 +206,28 @@ class PELICAN_API RenderContext {
 // parent's placement, and the new placement of its children, arrive at the
 // next transform update. Until then a read of a parented object, or of a
 // child of the moved object, lags by a frame.
+//
+// The TransientObjectRef overloads read an object GameContext::spawn made.
+// Before the boundary that materializes it, and after the boundary that
+// destroys it, materialize() is object.not_materialized@1; a ref from an
+// earlier scene run is object.stale_authority@1.
 class PELICAN_API ObjectsContext {
   public:
     Resolved<ObjectRef> resolve(std::string_view name) const;
     Resolved<GameObjectId> materialize(const ObjectRef &ref) const;
     Resolved<WorldTransform> worldTransform(const ObjectRef &ref) const;
+    Resolved<GameObjectId> materialize(const TransientObjectRef &ref) const;
+    Resolved<WorldTransform> worldTransform(const TransientObjectRef &ref) const;
+};
+
+// What GameContext::spawn places. The prefab's parameters are given by name,
+// as a scene's prefab instance gives them; a parameter left out takes the
+// prefab's default. `name`, when given, is the name a raycast hit reports for
+// the object's collider.
+struct SpawnParams {
+    WorldTransform transform{};
+    nlohmann::json parameters = nlohmann::json::object();
+    std::optional<std::string> name;
 };
 
 // The pointer and the cursor. Reached through GameContext::input(). Actions
@@ -290,6 +307,30 @@ class PELICAN_API GameContext {
     std::optional<SpriteViewComponent> spriteView(GameObjectId id) const;
     [[nodiscard]] bool setSpriteView(GameObjectId id, const SpriteViewComponent &sprite) const;
     [[nodiscard]] bool setSpriteTexture(GameObjectId id, std::string_view texture) const;
+
+    // Makes one object from a single-object prefab of the project, the way a
+    // scene's prefab instance is made: the prefab expands through the same
+    // resolver, is checked against this build the same way, and its
+    // components become the object's -- a collider joins the physics world,
+    // a behavior is attached and gets onInit. The object is never written to
+    // the scene document, so saving the scene leaves it out, and it lives as
+    // long as the scene run: loading a scene (the same one included) ends it.
+    //
+    // The request is checked now and throws SpawnError, by name, when it
+    // cannot be met. The object itself is made at the next frame boundary,
+    // before any game code of the next frame runs, whether spawn is called
+    // from a behavior callback or not; until then materialize() of the
+    // returned ref is object.not_materialized@1. Requests made before one
+    // boundary are carried out in the order they were made.
+    TransientObjectRef spawn(std::string_view prefab, const SpawnParams &params) const;
+    // Ends an object spawn made, at the next frame boundary, in request
+    // order with the spawns: its behaviors get onDestroy (last attached
+    // first), then its collider leaves the physics world and the object is
+    // removed. Returns the ref when the destroy was queued;
+    // object.stale_authority@1 for a ref of an earlier scene run, and
+    // object.not_materialized@1 for an object already destroyed or already
+    // queued for it.
+    [[nodiscard]] Resolved<TransientObjectRef> destroy(const TransientObjectRef &ref) const;
 
     double random();
     int randomInt(int min, int max);

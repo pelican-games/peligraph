@@ -32,7 +32,7 @@ MUTATORS = {
     "randomFloat", "setSeed", "playSound", "stopSound", "setBusVolume",
     "loadScene", "debugText", "setGameSettings", "saveSettings", "saveData",
     "add", "createWithComponents", "remove", "removeAll",
-    "setText", "setVisible", "setValue",
+    "setText", "setVisible", "setValue", "spawn", "destroy",
     "setCursorMode",
 }
 HOST_ENTRANCES = {"emit"}

@@ -1486,6 +1486,29 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
   target_compile_definitions(pelican_test_gp1_object_ref_test PRIVATE
     PELICAN_GP1_OBJECT_REF_FIXTURE="$<TARGET_FILE:pelican_gp1_object_ref_fixture>")
 endif()
+# GP-2: ctx.spawn / ctx.destroy. The build-feature gate half runs in every
+# build (run_build_units_smoke.cmake runs its [pg1] tag in the physics-OFF
+# build); the lifecycle half is made from a game DLL against the SDK this
+# test executable exports, as gp1_object_ref_test does.
+pelican_define_test(gp2_spawn_gate_test GROUP core_foundation pelican_core)
+pelican_define_test(gp2_spawn_test pelican_core glm)
+if(WIN32 AND COMMAND pelican_configure_game_logic_target)
+  set_target_properties(pelican_test_gp2_spawn_test PROPERTIES
+    ENABLE_EXPORTS TRUE)
+  if(MSVC)
+    target_link_options(pelican_test_gp2_spawn_test PRIVATE
+      "/WHOLEARCHIVE:$<TARGET_LINKER_FILE:pelican_core>")
+  endif()
+  add_library(pelican_gp2_spawn_fixture SHARED
+    fixtures/gp2_spawn/behavior.cpp)
+  set_target_properties(pelican_gp2_spawn_fixture PROPERTIES
+    OUTPUT_NAME "pelican_gp2_spawn_fixture")
+  pelican_configure_game_logic_target(pelican_gp2_spawn_fixture
+    HOST_TARGET pelican_test_gp2_spawn_test
+    ROLE gp2-spawn NO_INVENTORY)
+  target_compile_definitions(pelican_test_gp2_spawn_test PRIVATE
+    PELICAN_GP2_SPAWN_FIXTURE="$<TARGET_FILE:pelican_gp2_spawn_fixture>")
+endif()
 # The test-only graph module lives with the test that needs it; the production
 # archives are checked for its symbol below.
 target_sources(pelican_test_curve_test PRIVATE graphtestopaquemodule.cpp)

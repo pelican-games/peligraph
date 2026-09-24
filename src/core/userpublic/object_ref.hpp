@@ -14,6 +14,7 @@ namespace Pelican {
 
 namespace internal {
 struct ObjectRefAccess;
+struct TransientObjectRefAccess;
 } // namespace internal
 
 // The run of the scene an ObjectRef was resolved in. Every scene load -- a
@@ -49,6 +50,70 @@ class ObjectRef {
 
     ObjectAuthority authority_{};
     std::uint64_t object_id_ = 0;
+};
+
+// An object the game made at run time with GameContext::spawn. It is not in
+// the authored scene and has no authoring object id: it is named by where it
+// was made -- the scene run (authority), the frame boundary of that run that
+// materializes it (1 is the first boundary after the run began) and its
+// place among that boundary's spawns and destroys. The same game input makes
+// the same boundary and index in every run, so only the authority differs
+// between two runs of one scene.
+//
+// It is a different type from ObjectRef on purpose: an authored ref and a
+// transient ref share the authority but never the domain, so passing one
+// where the other is meant does not compile. A default-constructed ref names
+// nothing and is refused as stale.
+class TransientObjectRef {
+  public:
+    TransientObjectRef() = default;
+
+    ObjectAuthority authority() const noexcept { return authority_; }
+    std::uint64_t boundary() const noexcept { return boundary_; }
+    std::uint32_t spawnIndex() const noexcept { return spawn_index_; }
+
+    bool operator==(const TransientObjectRef &) const = default;
+
+  private:
+    friend struct internal::TransientObjectRefAccess;
+    TransientObjectRef(ObjectAuthority authority, std::uint64_t boundary,
+                       std::uint32_t spawn_index) noexcept
+        : authority_{authority}, boundary_{boundary}, spawn_index_{spawn_index} {}
+
+    ObjectAuthority authority_{};
+    std::uint64_t boundary_ = 0;
+    std::uint32_t spawn_index_ = 0;
+};
+
+// Why GameContext::spawn refused a request, by name. Nothing was queued.
+//   <word>.module_unavailable@1   the prefab has a component this build left
+//                                 out (a collider without physics), the name
+//                                 a scene load gives the same component
+//   prefab_* / behavior_type_unknown@1
+//                                 the prefab or its parameters do not resolve,
+//                                 under the names a scene load uses
+//   object.spawn_outside_scene@1  no scene is loaded
+//   object.spawn_component_unsupported@1
+//                                 the prefab has a light or a camera, which a
+//                                 spawned object cannot carry yet
+//   object.name_reserved_by_authored@1
+//                                 the requested name is an authored object's
+//   object.name_duplicate@1       another spawned object of this scene run has
+//                                 the requested name
+//   object.spawn_sequence_exhausted@1
+//                                 the scene run's boundary, a boundary's spawn
+//                                 count or a prefab's behavior count ran past
+//                                 what an attachment identifier can hold
+//   object.spawn_invalid@1        a component of the expanded prefab does not
+//                                 decode
+class SpawnError final : public std::runtime_error {
+    std::string code_;
+
+  public:
+    SpawnError(std::string code, const std::string &detail)
+        : std::runtime_error(code + ": " + detail), code_{std::move(code)} {}
+
+    const std::string &code() const noexcept { return code_; }
 };
 
 // Why an object could not be resolved, materialized or read. When more than

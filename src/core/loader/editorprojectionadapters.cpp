@@ -195,6 +195,9 @@ struct SceneObjectProjectionAdapter::Impl {
     std::vector<EditorProjectionRuntimeObjectBinding> next_bindings;
     SceneLoader *scene_loader = nullptr;
     std::vector<SceneRuntimeObjectBinding> loader_bindings;
+    // GP-2: a runtime spawn or destroy, which has no authoring object id and
+    // no place in the runtime object bindings.
+    bool transient = false;
 
     std::optional<ECSEntityMutationToken> entity;
     std::optional<StagedModelInstance> staged_model;
@@ -224,7 +227,7 @@ struct SceneObjectProjectionAdapter::Impl {
         return found->entity;
     }
 
-    void prepareSpawn(const ResolvedSceneView &next_scene,
+    void prepareSpawn(std::span<const ResolvedObject> scene_objects,
                       const ResolvedObject &object) {
         std::vector<SpawnLoad> loads;
         std::vector<ComponentId> ids;
@@ -254,7 +257,7 @@ struct SceneObjectProjectionAdapter::Impl {
         }
 
         const bool has_child = object.name && std::any_of(
-            next_scene.objects.begin(), next_scene.objects.end(),
+            scene_objects.begin(), scene_objects.end(),
             [&](const auto &candidate) {
                 return candidate.parent && *candidate.parent == *object.name;
             });
@@ -280,11 +283,11 @@ struct SceneObjectProjectionAdapter::Impl {
         const TransformComponent *parent_world = nullptr;
         if (object.parent) {
             const auto parent = std::find_if(
-                next_scene.objects.begin(), next_scene.objects.end(),
+                scene_objects.begin(), scene_objects.end(),
                 [&](const auto &candidate) {
                     return candidate.name && *candidate.name == *object.parent;
                 });
-            if (parent == next_scene.objects.end()) {
+            if (parent == scene_objects.end()) {
                 throw std::runtime_error("spawn parent is absent");
             }
             const auto runtime = std::find_if(
@@ -394,12 +397,91 @@ struct SceneObjectProjectionAdapter::Impl {
                     local->parent = *parent_entity;
                 }
             }));
+        if (transient) return;
         next_bindings = bindings;
         next_bindings.push_back(EditorProjectionRuntimeObjectBinding{
             .authoring_object_id = prepared_target,
             .entity = entity->entity(),
         });
         (void)bindingMap(next_bindings);
+    }
+
+    // GP-2: physics of a runtime spawn or destroy. The current bindings stay
+    // as they are -- this is not a scene's re-preparation -- apart from the
+    // runtime_only ones whose entity is gone, which an editor edit drops the
+    // same way (appendRuntimePhysicsBindings).
+    std::vector<PhysWorld::Binding> keptPhysicsBindings() const {
+        std::vector<PhysWorld::Binding> next;
+        next.reserve(old_physics->bindings.size() + 2U);
+        for (const auto &binding : old_physics->bindings) {
+            if (!binding.runtime_only) next.push_back(binding);
+        }
+        appendRuntimePhysicsBindings(next, *old_physics, ecs);
+        return next;
+    }
+
+    void prepareTransientSpawnPhysics(const ResolvedObject &object,
+                                      const std::string &identity_name) {
+        const auto created = entity->entity();
+        std::optional<PhysWorld::Binding> model_binding;
+        if (const auto *model_component =
+                findResolvedComponent(&object, "simplemodelview")) {
+            const auto &data = std::any_cast<const SimpleModelViewCodecData &>(
+                model_component->requireRuntimeValue());
+            if (!data.model.empty()) {
+                model_binding = makeModelPhysicsBinding(
+                    models->getModelTemplateByName(data.model), identity_name,
+                    created);
+            }
+        }
+        const auto *collider_component = findResolvedComponent(&object, "collider");
+        if (collider_component == nullptr && !model_binding) return;
+        if (physics == nullptr) {
+            throw std::runtime_error(
+                "editor_projection_participant_missing@1: collider");
+        }
+        old_physics = physics->snapshotPrepared();
+        auto next = keptPhysicsBindings();
+        if (model_binding) {
+            model_binding->runtime_only = true;
+            next.push_back(std::move(*model_binding));
+        }
+        if (collider_component != nullptr) {
+            ColliderComponent collider;
+            collider_component->runtime_codec->applyRuntime(
+                collider_component->requireRuntimeValue(), &collider);
+            next.push_back(PhysWorld::Binding{
+                .identity = {.name = identity_name},
+                .metadata = phys::ColliderQueryMetadata{
+                    .layer = collider.layer,
+                    .mask = collider.mask,
+                    .trigger = collider.trigger,
+                    .one_way = collider.one_way,
+                },
+                .collider = collider,
+                .transform_source = created,
+                .runtime_only = true,
+            });
+        }
+        const std::array unpublished{created};
+        next_physics = physics->prepareBindings(std::move(next), unpublished);
+    }
+
+    void prepareTransientDestroyPhysics(EntityId target) {
+        if (physics == nullptr) return;
+        old_physics = physics->snapshotPrepared();
+        auto next = keptPhysicsBindings();
+        const auto removed = std::erase_if(next, [&](const auto &binding) {
+            const auto *source =
+                std::get_if<GameObjectId>(&binding.transform_source);
+            return binding.runtime_only && source != nullptr &&
+                   *source == target;
+        });
+        if (removed == 0) {
+            old_physics.reset();
+            return;
+        }
+        next_physics = physics->prepareBindings(std::move(next));
     }
 
     void prepareDestroy() {
@@ -649,6 +731,51 @@ SceneObjectProjectionAdapter::preparedTargetObject() const noexcept {
     return impl_->prepared_target;
 }
 
+void SceneObjectProjectionAdapter::prepareTransientSpawn(
+    const ResolvedObject &object, const std::string &identity_name) {
+    if (impl_->entity) {
+        throw std::logic_error("scene object projection is already prepared");
+    }
+    if (object.parent) {
+        throw std::logic_error("a runtime spawn has no parent");
+    }
+    for (const auto &component : object.components) {
+        if (component.name == "light" || component.name == "camera") {
+            throw std::logic_error(
+                "a runtime spawn cannot carry a light or a camera");
+        }
+    }
+    if (findResolvedComponent(&object, "simplemodelview") != nullptr &&
+        (impl_->models == nullptr || impl_->renderer == nullptr)) {
+        throw std::runtime_error(
+            "editor_projection_participant_missing@1: renderer");
+    }
+    impl_->transient = true;
+    impl_->prepared_target = AuthoringObjectId{};
+    impl_->next_bindings.clear();
+    impl_->prepareSpawn({}, object);
+    impl_->prepareTransientSpawnPhysics(object, identity_name);
+}
+
+void SceneObjectProjectionAdapter::prepareTransientDestroy(EntityId target) {
+    if (impl_->entity) {
+        throw std::logic_error("scene object projection is already prepared");
+    }
+    if (!impl_->ecs.isAlive(target)) {
+        throw std::runtime_error(
+            "destroy target has no live runtime entity binding");
+    }
+    impl_->transient = true;
+    impl_->prepared_target = AuthoringObjectId{};
+    impl_->next_bindings.clear();
+    impl_->entity.emplace(ECSEntityMutation::prepareDestroy(impl_->ecs, target));
+    impl_->prepareTransientDestroyPhysics(target);
+}
+
+EntityId SceneObjectProjectionAdapter::preparedEntity() const noexcept {
+    return impl_->entity ? impl_->entity->entity() : invalidEntityId;
+}
+
 void SceneObjectProjectionAdapter::prepare(
     const EditorProjectionPrepareContext &context) {
     impl_->next_bindings.clear();
@@ -698,7 +825,7 @@ void SceneObjectProjectionAdapter::prepare(
         if (next_scene == nullptr) {
             throw std::logic_error("spawn scene query disappeared");
         }
-        impl_->prepareSpawn(*next_scene, *next_object);
+        impl_->prepareSpawn(next_scene->objects, *next_object);
     } else {
         impl_->prepareDestroy();
     }

@@ -232,6 +232,18 @@
     },
     {
       "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "ObjectsContext",
+      "signature": "Resolved<GameObjectId>materialize(const TransientObjectRef&ref)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "ObjectsContext",
+      "signature": "Resolved<WorldTransform>worldTransform(const TransientObjectRef&ref)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
       "class": "UiContext",
       "signature": "explicit UiContext(std::string_view document_key)noexcept",
       "classification": "getter"
@@ -401,6 +413,20 @@
       "signature": "[[nodiscard]] bool setSpriteTexture(GameObjectId id,std::string_view texture)const",
       "classification": "mutator",
       "manifest": "covered.candidate-or-retired-reject"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "TransientObjectRef spawn(std::string_view prefab,const SpawnParams&params)const",
+      "classification": "mutator",
+      "manifest": "covered.spawn-queue"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "[[nodiscard]] Resolved<TransientObjectRef>destroy(const TransientObjectRef&ref)const",
+      "classification": "mutator",
+      "manifest": "covered.spawn-queue"
     },
     {
       "header": "src/core/userpublic/gamecontext.hpp",

@@ -1527,9 +1527,14 @@ struct BehaviorParticipant final : TransactionParticipant {
                 });
             }
         }
+        // GP-2: a scene load ends the run its spawned objects belong to. Their
+        // entities retire with every other old entity, so their behaviors
+        // are not carried into the new run: they get onDestroy with the
+        // scene's own retired behaviors when the load commits.
         t.behavior_candidate =
             GET_MODULE(BehaviorAttachmentArena).prepareSceneReconciliation(
-                std::move(bound_behaviors));
+                std::move(bound_behaviors), {},
+                BehaviorSpawnedAttachments::retire);
     }
     void publish() noexcept override {
         static_assert(noexcept(std::declval<PreparedBehaviorSceneReconciliation &>()
@@ -2014,6 +2019,7 @@ struct ObjectResolutionRun {
     SceneAuthority authority{};
     const ResolvedSceneView *scene = nullptr;
     bool bindings_live = true;
+    const ResolvedScene *resolved = nullptr;
 };
 
 ObjectResolutionRun objectResolutionRun(const SceneLoader &loader) {
@@ -2024,6 +2030,9 @@ ObjectResolutionRun objectResolutionRun(const SceneLoader &loader) {
             .scene = pending->scene,
             .bindings_live = pending->bindings_published != nullptr &&
                              *pending->bindings_published,
+            .resolved = pending->projection != nullptr
+                            ? &pending->projection->resolved()
+                            : nullptr,
         };
     }
     const auto &config = GET_MODULE(ProjectBasicConfig);
@@ -2033,6 +2042,7 @@ ObjectResolutionRun objectResolutionRun(const SceneLoader &loader) {
     return ObjectResolutionRun{
         .authority = config.activeSceneAuthority(),
         .scene = config.resolvedScene().findScene(config.currentSceneId()),
+        .resolved = &config.resolvedScene(),
     };
 }
 
@@ -2069,6 +2079,13 @@ Resolved<GameObjectId> SceneLoader::materializeObject(const ObjectRef &ref) cons
         return binding.object_id;
     }
     return ObjectError::not_materialized;
+}
+
+SceneObjectRun SceneLoader::objectRun() const {
+    const auto run = objectResolutionRun(*this);
+    return SceneObjectRun{.authority = run.authority,
+                          .scene = run.scene,
+                          .resolved = run.resolved};
 }
 
 std::optional<GameObjectId> SceneLoader::objectId(std::string_view name) const {

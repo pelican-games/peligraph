@@ -79,6 +79,22 @@ class SceneObjectProjectionAdapter final : public EditorProjectionAdapter {
     ~SceneObjectProjectionAdapter();
     void connectRuntimeBindings(SceneLoader &loader) noexcept;
 
+    // GP-2: a runtime spawn (GameContext::spawn) or its destroy, prepared
+    // without a document. `object` is the prefab expansion the ResolvedScene
+    // seam produced for the spawn; it has no parent and is in no scene. Its
+    // ECS entity and renderer instance are staged exactly as an editor spawn
+    // stages them. Its collider, and its model's collision mesh, join
+    // physics as runtime_only bindings named `identity_name` (the
+    // loadTransientGltf precedent), so an editor edit keeps them and a scene
+    // load drops them. Neither touches the scene's runtime object bindings,
+    // the camera or the lights, and behaviors are the arena's. Publication,
+    // rollback and finish are the adapter's own; prepare() is not called.
+    void prepareTransientSpawn(const ResolvedObject &object,
+                               const std::string &identity_name);
+    void prepareTransientDestroy(EntityId entity);
+    // The entity the prepared spawn creates or the destroy removes.
+    EntityId preparedEntity() const noexcept;
+
     EditorProjectionAdapterKind kind() const noexcept override;
     std::string_view name() const noexcept override;
     EditorProjectionPublicationMode publicationMode() const noexcept override;

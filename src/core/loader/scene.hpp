@@ -47,6 +47,16 @@ struct SceneRuntimeObjectBinding {
     GameObjectId object_id = invalidGameObjectId;
 };
 
+// The scene run game code addresses: the run being loaded while a load's
+// callbacks run, otherwise the live one. `scene` is its resolved scene, null
+// when no scene is loaded, and `resolved` the resolved document it belongs
+// to (its prefab registry, bindable provider and defaults).
+struct SceneObjectRun {
+    SceneAuthority authority{};
+    const ResolvedSceneView *scene = nullptr;
+    const ResolvedScene *resolved = nullptr;
+};
+
 namespace internal {
 // Pure resolved-projection gate used before SceneLoader mutates any runtime
 // state. It is also the configuration-matrix seam for named feature errors.
@@ -222,6 +232,9 @@ DECLARE_MODULE(SceneLoader) {
     // The live object a ref names, refused as stale when the ref belongs to
     // another scene run.
     Resolved<GameObjectId> materializeObject(const ObjectRef &ref) const;
+    // GP-2: the run resolveObject names objects in, which is also the run a
+    // runtime spawn is queued into.
+    SceneObjectRun objectRun() const;
     std::optional<GameObjectId> objectId(std::string_view name) const;
     std::optional<std::string> objectName(GameObjectId object) const;
     bool hasObjectTransform(std::string_view name) const;

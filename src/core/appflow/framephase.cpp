@@ -6,6 +6,7 @@
 #include "../ecs/core.hpp"
 #include "../ecs/predefined/animationsystem.hpp"
 #include "../gamelogic/behaviorarena.hpp"
+#include "../loader/runtimespawn.hpp"
 #include "../loader/scene.hpp"
 #include "../os/inputstate.hpp"
 #include "../os/inputsequence.hpp"
@@ -57,6 +58,7 @@ struct FrameStateModules {
     EngineTime &engine_time;
     SeqPlayer &seq_player;
     SceneLoader &scene_loader;
+    RuntimeSpawner &runtime_spawner;
 };
 
 // GP-4: this machine's window-to-framebuffer conversion. With a window, its
@@ -114,6 +116,7 @@ FrameStateModules resolveFrameStateModules() {
         GET_MODULE(EngineTime),
         GET_MODULE(SeqPlayer),
         GET_MODULE(SceneLoader),
+        GET_MODULE(RuntimeSpawner),
     };
 }
 
@@ -157,6 +160,11 @@ void updateFrameState() {
     // phase can observe game/runtime state.
     if (modules.reload_service != nullptr) modules.reload_service->applyFrame();
     invokeEditorCommitQueueHook();
+    // GP-2: the boundary where GameContext::spawn / destroy land -- after the
+    // other boundary operations above, which may replace the scene run, and
+    // before any game code of this frame, so a request made anywhere during
+    // the previous frame is in place for all of this one.
+    modules.runtime_spawner.applyBoundary();
     GameContext game_context;
     forEachFramePhase([&](FramePhase phase) {
         switch (phase) {

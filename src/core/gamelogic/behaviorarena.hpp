@@ -78,7 +78,44 @@ struct BehaviorAttachmentInfo {
     bool activation_failed = false;
     std::string activation_error;
     std::uint8_t activation_delay = 0;
+    // GP-2: attached by a runtime spawn (GameContext::spawn). Its
+    // attachment_seq is runtimeSpawnAttachmentSeq's, and a scene load retires
+    // it with the run it was spawned in.
+    bool runtime_spawned = false;
 };
+
+// Whether a scene reconciliation carries the attachments runtime spawns made
+// (an editor edit inside the same scene run) or retires them (a scene load,
+// which ends the run).
+enum class BehaviorSpawnedAttachments : std::uint8_t {
+    carry,
+    retire,
+};
+
+// GP-2: the runtime half of design_object_behaviors 4-2's attachment
+// identity. A scene load packs (object declaration index, component index);
+// an editor transaction reserves one from (commit_seq, command index,
+// attachment index); a runtime spawn has no commit_seq, and its
+// attachment_seq is fixed by
+//   (the spawn's boundary in its scene run, its index among that boundary's
+//    spawns, the behavior's index among the spawned object's behaviors)
+// alone, so the same input gives the same attachment_seq in every run of the
+// scene. The value is runtime_spawn_attachment_seq_base plus the tuple
+// packed as 28 / 16 / 8 bits: above every scene-load value of a scene with
+// fewer than 2^20 objects and every editor reservation, below 2^53 so the
+// JSON wire carries it exactly, and ordered by the tuple.
+inline constexpr std::uint64_t runtime_spawn_attachment_seq_base =
+    std::uint64_t{1} << 52U;
+inline constexpr std::uint64_t runtime_spawn_boundary_limit =
+    std::uint64_t{1} << 28U;
+inline constexpr std::uint64_t runtime_spawn_index_limit =
+    std::uint64_t{1} << 16U;
+inline constexpr std::uint64_t runtime_spawn_attachment_limit =
+    std::uint64_t{1} << 8U;
+// Throws std::length_error when a part is past its field.
+std::uint64_t runtimeSpawnAttachmentSeq(std::uint64_t boundary,
+                                        std::uint64_t spawn_index,
+                                        std::uint64_t attachment_index);
 
 struct BehaviorAttachmentIdentity {
     BehaviorAttachmentHandle handle = invalidBehaviorAttachmentHandle;
@@ -238,7 +275,20 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
     std::unique_ptr<PreparedBehaviorSceneReconciliation>
     prepareSceneReconciliation(
         std::vector<BoundSceneBehaviorAttachment> desired,
-        const OriginTransitionMap &origin_transition = {});
+        const OriginTransitionMap &origin_transition = {},
+        BehaviorSpawnedAttachments spawned = BehaviorSpawnedAttachments::carry);
+
+    // GP-2: attaches the behaviors of one runtime spawn to its entity, which
+    // must already be live, and runs their onInit in attachment_seq order --
+    // the activation barrier of a scene load, for one object. `prepared` is
+    // the spawned object's behaviors in component order; the i-th gets
+    // runtimeSpawnAttachmentSeq(boundary, spawn_index, i). When an onInit
+    // throws, the ones already initialized get onDestroy (last first), every
+    // attachment this call added is removed, deferred mutations queued by
+    // those callbacks are dropped, and the exception propagates.
+    void attachSpawned(GameObjectId entity,
+                       std::vector<PreparedSceneBehaviorAttachment> prepared,
+                       std::uint64_t boundary, std::uint64_t spawn_index);
 
     void deferCreateObject(LocalTransformComponent transform);
     void deferCreateSpriteObject(LocalTransformComponent transform,
