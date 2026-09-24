@@ -26,6 +26,11 @@ SceneFormatDocument normalizeSceneDataJson(
     const nlohmann::json &scene_data,
     std::uint64_t first_authoring_object_id = 1);
 
+// How the identity runtimeObjectIdentityName derives for an unnamed object
+// begins. An authored name cannot begin so (an object name is [a-zA-Z0-9_]),
+// and a spawned object's name is refused if it does (GP-2b).
+inline constexpr std::string_view runtime_object_identity_prefix = "pelican://";
+
 // Preserve an authored name when one exists; otherwise derive the canonical
 // internal display identity used by runtime and authoring tools. Callers own
 // the meaning of object_number (for example, a session object id or a

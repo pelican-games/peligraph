@@ -306,7 +306,8 @@ std::string runtimeObjectIdentityName(std::string_view scene_id,
         throw std::invalid_argument(
             "runtime object identity requires a scene and non-zero object number");
     }
-    return "pelican://scene/" + std::string{scene_id} +
+    return std::string{runtime_object_identity_prefix} + "scene/" +
+           std::string{scene_id} +
            "/authoring-object/" + std::to_string(object_number);
 }
 

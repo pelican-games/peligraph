@@ -98,6 +98,10 @@ class TransientObjectRef {
 //                                 spawned object cannot carry yet
 //   object.name_reserved_by_authored@1
 //                                 the requested name is an authored object's
+//   object.name_reserved_by_engine@1
+//                                 the requested name begins with `spawn:` or
+//                                 `pelican://`, the forms the engine names an
+//                                 object nobody named by
 //   object.name_duplicate@1       another spawned object of this scene run has
 //                                 the requested name
 //   object.spawn_sequence_exhausted@1

@@ -1,24 +1,28 @@
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/core.hpp"
 #include "../src/core/ecs/predefined.hpp"
+#include "../src/core/loader/authoringscenedocument.hpp"
 #include "../src/core/loader/basicconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/runtimespawn.hpp"
 #include "../src/core/loader/scene.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/phys/physworld.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
 #include "scene_load_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <vector>
 
 // GP-2 acceptance 5: ctx.spawn asks the build-feature gate a scene load asks
 // (PG-1's resolvedObjectFeatureRefusal), of the prefab as it expanded. The
@@ -114,6 +118,95 @@ TEST_CASE("GP-2 a spawned prefab passes the build-feature gate a scene load asks
     spawner.applyBoundary();
 #endif
     REQUIRE(ctx.objects().materialize(mark).ok());
+}
+
+// GP-2b: the engine names an unnamed spawn `spawn:<boundary>.<index>` (the
+// name its collider takes), and an unnamed authored object
+// `pelican://scene/<scene>/authoring-object/<n>`. A name game code gives
+// shares that collider name space. Were `spawn:2.1` accepted, it would take
+// boundary 2's index 0, the unnamed spawn after it index 1 -- the same
+// collider name -- and that spawn would fail at the boundary. It is refused
+// at the call as object.name_reserved_by_engine@1, and the unnamed spawn
+// lands.
+TEST_CASE("GP-2b a spawn name in a form the engine gives is refused by name",
+          "[gp2b][gp2][spawn][errors]") {
+    setupLogger();
+    const Sandbox sandbox;
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(sandbox.root, false);
+    GET_MODULE(ProjectSource).setProjectData(projectJson().dump());
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    test_support::loadScene(GET_MODULE(SceneLoader), SceneId{"main"});
+    auto &spawner = GET_MODULE(RuntimeSpawner);
+    spawner.applyBoundary(); // boundary 1; the next spawns land at boundary 2
+
+#if PELICAN_WITH_PHYSICS
+    // The collision needs colliders: both spawns bind one.
+    constexpr auto prefab = "solid";
+#else
+    constexpr auto prefab = "mark";
+#endif
+    const GameContext ctx;
+    const auto answer = [&](std::string name) -> std::string {
+        SpawnParams params;
+        params.name = std::move(name);
+        try {
+            (void)ctx.spawn(prefab, params);
+            return "accepted";
+        } catch (const SpawnError &error) {
+            return error.code();
+        }
+    };
+#if PELICAN_WITH_PHYSICS
+    const auto runtimeColliders = [] {
+        std::vector<std::string> names;
+        for (const auto &binding : GET_MODULE(PhysWorld).snapshotPrepared().bindings) {
+            if (binding.runtime_only) names.push_back(binding.identity.name);
+        }
+        std::sort(names.begin(), names.end());
+        return names;
+    };
+#endif
+
+    CHECK(answer("spawn:2.1") == "object.name_reserved_by_engine@1");
+    const auto unnamed = ctx.spawn(prefab, SpawnParams{});
+    spawner.applyBoundary(); // boundary 2
+    REQUIRE(ctx.objects().materialize(unnamed).ok());
+#if PELICAN_WITH_PHYSICS
+    REQUIRE(runtimeColliders() == std::vector<std::string>{"spawn:2.0"});
+#endif
+
+    // The prefix alone, and the authored form.
+    CHECK(answer("spawn:") == "object.name_reserved_by_engine@1");
+    CHECK(answer("pelican://scene/main/authoring-object/1") ==
+          "object.name_reserved_by_engine@1");
+    // The prefix is reserved, not the word: its letters without the colon
+    // are the caller's to use.
+    REQUIRE(answer("spawn_3_0") == "accepted");
+    REQUIRE(spawner.stats().queued == 1U);
+    spawner.applyBoundary(); // boundary 3
+    REQUIRE(spawner.stats().live == 2U);
+#if PELICAN_WITH_PHYSICS
+    REQUIRE(runtimeColliders() == std::vector<std::string>{"spawn:2.0", "spawn_3_0"});
+#endif
+}
+
+// The authored half of the reservation is the scene format's own: an object
+// name is [a-zA-Z0-9_], so no authored object can take either engine form
+// and the parser needs no new rule (the scene format does not change).
+TEST_CASE("GP-2b an authored object cannot take a name in a form the engine gives",
+          "[gp2b][gp2][scene]") {
+    for (const auto *name : {"spawn:2.0", "pelican://scene/main/authoring-object/1"}) {
+        const Json document{
+            {"schema", "pelican.scene"},
+            {"version", 2},
+            {"scenes", {{"main", {{"objects", Json::array({{{"name", name},
+                                                            {"components", Json::array()}}})}}}}},
+        };
+        INFO(name);
+        REQUIRE_THROWS_WITH(AuthoringSceneDocument::load(document.dump(), SceneRevision{1}),
+                            Catch::Matchers::ContainsSubstring("object name must match"));
+    }
 }
 
 } // namespace Pelican

@@ -12,6 +12,7 @@
 #include "../phys/physworld.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "../userpublic/gamecontext.hpp"
+#include "../../project/sceneformat.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -180,6 +181,17 @@ TransientObjectRef RuntimeSpawner::spawn(std::string_view prefab,
             refuse("object.spawn_invalid@1",
                    "a spawned object's name, when given, must not be empty");
         }
+        // GP-2b: the forms the engine gives objects nobody named. Refused
+        // here, by name, whatever the scene format allows an object name to
+        // be.
+        for (const auto prefix :
+             {runtime_spawn_name_prefix, runtime_object_identity_prefix}) {
+            if (name.starts_with(prefix)) {
+                refuse("object.name_reserved_by_engine@1",
+                       "'" + name + "' begins with '" + std::string{prefix} +
+                           "', the form the engine names an unnamed object by");
+            }
+        }
         if (std::any_of(run.scene->objects.begin(), run.scene->objects.end(),
                         [&](const ResolvedObject &object) {
                             return object.name && *object.name == name;
@@ -266,7 +278,8 @@ TransientObjectRef RuntimeSpawner::spawn(std::string_view prefab,
         .index = index,
         .name = params.name,
         .identity_name = params.name ? *params.name
-                                     : "spawn:" + std::to_string(boundary) +
+                                     : std::string{runtime_spawn_name_prefix} +
+                                           std::to_string(boundary) +
                                            "." + std::to_string(index),
         .object = std::move(object),
         .behaviors = std::move(behaviors),

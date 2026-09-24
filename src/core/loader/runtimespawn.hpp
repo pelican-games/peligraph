@@ -18,6 +18,13 @@ namespace Pelican {
 
 struct SpawnParams;
 
+// GP-2b: the name an unnamed spawn is given, `spawn:<boundary>.<index>`. Its
+// collider is bound under that name, in the name space SpawnParams::name
+// shares, so spawn refuses a requested name that starts with this prefix (or
+// with runtime_object_identity_prefix, the form an unnamed authored object is
+// given) as object.name_reserved_by_engine@1.
+inline constexpr std::string_view runtime_spawn_name_prefix = "spawn:";
+
 // GP-2: objects game code makes and ends while a scene runs
 // (GameContext::spawn / destroy).
 //

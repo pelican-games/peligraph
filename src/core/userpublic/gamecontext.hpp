@@ -223,7 +223,8 @@ class PELICAN_API ObjectsContext {
 // What GameContext::spawn places. The prefab's parameters are given by name,
 // as a scene's prefab instance gives them; a parameter left out takes the
 // prefab's default. `name`, when given, is the name a raycast hit reports for
-// the object's collider.
+// the object's collider; without one the engine names it
+// `spawn:<boundary>.<index>`, and a given name may not begin with `spawn:`.
 struct SpawnParams {
     WorldTransform transform{};
     nlohmann::json parameters = nlohmann::json::object();
