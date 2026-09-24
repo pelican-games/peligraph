@@ -119,7 +119,7 @@ Outliner の右クリックと **Scene** toolbar の **Add Object** は同じ 1 
 - **選択**: Outliner の読み直しを最短の間隔に縮め、新しい object が Outliner に出た時点でそれを選び、Inspector に出します
   ([`MainWindow::selectSpawnedObject()`](../../src/devstudio/view/mainwindow.cpp#L1007))。
 - **Undo**: coalesce key を付けないので、Undo 1 回で Add 1 回が戻ります。Inspector の別の編集が進行中なら送らず、
-  Inspector の notice に理由が出ます([`InspectorModel::spawnObject()`](../../src/devstudio/model/inspectormodel.cpp#L2203))。
+  Inspector の notice に理由が出ます([`InspectorModel::spawnObject()`](../../src/devstudio/model/inspectormodel.cpp#L2290))。
 - Add Object は常に押せます。project が開いていない・engine の準備ができていないときは、status bar に
   `Add Object needs an open project with its engine running.` と出るだけです。
 - ⚠ spawn は Studio が最後に見た scene revision で送ります。他の client が編集した直後は `stale_revision` で断られるので、
@@ -1043,7 +1043,7 @@ driver の stdout / stderr は、cp932 の console で出せない文字があ�
 
 **回し方**: [`tools/studio_drive.py`](../../tools/studio_drive.py#L982)(Python 3.11以上、標準ライブラリだけ)が Studio を
 `--automation --project --tab` で起動し、step を順に送り、`report.json` を書きます。ctest からは
-`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L2924)) —— **実物の窓が要るので
+`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L2933)) —— **実物の窓が要るので
 `QT_QPA_PLATFORM=offscreen` は掛けません**。fixture の project は temp に 2 つ複製されるので、シナリオは
 文書を書き換えてよく、「ディスクから読み直す」も試せます([複製](../../test/run_studio_scenario.cmake#L30))。
 CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが見つかった`AUTO`）が必要です。
@@ -1162,8 +1162,8 @@ viewport に重なっていても写りません([窓の内容の読み取り](.
 ### Inspector のグラフ装着
 
 Inspector の `Add component...` / `Ray geometry...` の下、**properties の scroll 領域より上**に
-**Attached graphs** グループがあります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L213)。
-properties は [:219](../../src/devstudio/view/inspectorwidget.cpp#L239) の `pelican.inspectorProperties` です)。
+**Attached graphs** グループがあります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L214)。
+properties は [:219](../../src/devstudio/view/inspectorwidget.cpp#L240) の `pelican.inspectorProperties` です)。
 選択中のオブジェクトを owner とする `graph.instance` の一覧と、**Attach...** / **Detach** / **Refresh** です。
 
 **装着する**: **Attach...** で `Attach graph` ダイアログが開きます。`Definition` で definition を選ぶと、
