@@ -1207,6 +1207,82 @@ void configureGameLogicReloadRpcHandler(
         });
 }
 
+// F-5. The shader participant, applied now because a client asked. This is
+// the reload_game_logic shape: the runtime participant is invoked with an
+// explicit trigger between frames, and it -- not this handler -- decides
+// whether the request may pass the file watch's gate.
+void configureShaderReloadRpcHandler(
+    RpcServer &server, watch::ReloadService *reload_service,
+    ShaderReloadRpcHooks hooks) {
+    server.setHandler(
+        "reload_shaders",
+        [reload_service, hooks = std::move(hooks)](
+            const nlohmann::json &params) {
+            const auto &object = requireObjectParams(params, "reload_shaders");
+            if (!object.empty()) {
+                throw JsonRpcHandlerError(
+                    JsonRpcErrorCodes::invalidParams,
+                    "reload_shaders takes no parameters");
+            }
+            if (reload_service == nullptr) {
+                throw JsonRpcHandlerError(
+                    JsonRpcErrorCodes::applicationError,
+                    "reload_shaders: reload service is unavailable",
+                    nlohmann::ordered_json{
+                        {"error_code", std::string{
+                                           watch::shaderReloadUnavailableErrorCode}},
+                        {"error_fields",
+                         {{"reason", "reload service is unavailable"}}},
+                    });
+            }
+            if (hooks.before_apply) hooks.before_apply();
+            const auto result = reload_service->applyRuntimeNow(
+                watch::shaderReloadParticipantName,
+                watch::RuntimeReloadTrigger::requested);
+            const auto fields = result.error_fields.is_object()
+                                    ? result.error_fields
+                                    : nlohmann::ordered_json::object();
+            if (result.error_code == watch::shaderReloadUnavailableErrorCode) {
+                throw JsonRpcHandlerError(
+                    JsonRpcErrorCodes::applicationError,
+                    "reload_shaders: this engine does not reload shaders (" +
+                        fields.value("reason", std::string{}) + ")",
+                    nlohmann::ordered_json{
+                        {"error_code", result.error_code},
+                        {"error_fields", fields},
+                    });
+            }
+            if (result.failed()) {
+                // The message is the compile log as the reload service wrote
+                // it, which is also what reload status keeps as last_error.
+                throw JsonRpcHandlerError(
+                    JsonRpcErrorCodes::applicationError, result.error,
+                    nlohmann::ordered_json{
+                        {"error_code",
+                         result.error_code.empty()
+                             ? std::string{watch::shaderReloadFailedErrorCode}
+                             : result.error_code},
+                        {"error_fields", fields},
+                    });
+            }
+            if (!result.committed) {
+                return nlohmann::json{{"committed", false},
+                                      {"attempted", false}};
+            }
+            const auto &changes = reload_service->lastShaderReloadChanges();
+            auto changed = nlohmann::json::array();
+            for (const auto &key : changes.changed) {
+                changed.push_back(watch::assetKeyString(key));
+            }
+            return nlohmann::json{
+                {"committed", true},
+                {"changed", std::move(changed)},
+                {"cache_hits", changes.cache_hits},
+                {"cache_misses", changes.cache_misses},
+            };
+        });
+}
+
 } // namespace internal
 
 void internal::loadSceneResolutionBoundary(
@@ -1244,6 +1320,13 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             },
             .after_apply = [&pending_transforms] {
                 pending_transforms.clear();
+            },
+        });
+    internal::configureShaderReloadRpcHandler(
+        server, modules.reload_service,
+        internal::ShaderReloadRpcHooks{
+            .before_apply = [&editor_rpc] {
+                editor_rpc.forceAbortPreview("reload");
             },
         });
 

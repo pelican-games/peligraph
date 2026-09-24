@@ -7723,6 +7723,244 @@ TEST_CASE("F-3 the shader reload status is read after a write, a bounded "
     }
 }
 
+// F-5. A write to a watched shader asks the engine to recompile: once per
+// burst of writes, one request at a time, and its answer -- not a reading of
+// the file watch's gate -- is what the panel shows.
+TEST_CASE("F-5 a shader write sends one reload_shaders, one at a time, and "
+          "reads the status once after it",
+          "[devstudio][frame-plan][f5][shader-reload][q2]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto shader =
+        std::filesystem::path{temporary.path().toStdWString()} / "a.frag";
+    {
+        std::ofstream file{shader, std::ios::binary};
+        file << "#version 450\nvoid main(){}\n";
+    }
+    std::vector<qint64> reads;
+    std::vector<qint64> reloads;
+    std::vector<ShaderReloadOutcome> outcomes;
+    ShaderReloadFollower follower{ShaderReloadFollower::Hooks{
+        .request_status =
+            [&](QString *) {
+                reads.push_back(static_cast<qint64>(reads.size()) + 9000);
+                return reads.back();
+            },
+        .apply = [](const ShaderReloadMarks &, const ShaderReloadReading &,
+                    bool) {},
+        .request_reload =
+            [&](QString *) {
+                reloads.push_back(static_cast<qint64>(reloads.size()) + 7000);
+                return reloads.back();
+            },
+        .reloaded =
+            [&](const ShaderReloadOutcome &outcome) {
+                outcomes.push_back(outcome);
+            },
+    }};
+    const auto status = QByteArray::fromStdString(
+        Json{{"reload",
+              {{"runtime",
+                {{"pelican.shaders",
+                  {{"attempted", 1},
+                   {"applied", 1},
+                   {"failed", 0},
+                   {"last_error", nullptr},
+                   {"details", {{"enabled", false},
+                                {"gate_reason", "rpc driver"}}}}}}}}}}
+            .dump());
+    const auto wait = [](int ms) { QTest::qWait(ms); };
+    const auto settle = ShaderReloadFollower::ReloadDebounceMs + 150;
+
+    follower.setSources(NodeShaderSources{{"pass", {shader}}});
+    wait(50);
+    REQUIRE(reads.size() == 1);
+    REQUIRE(follower.receive(reads.back(), status));
+    CHECK(reloads.empty());
+
+    SECTION("a burst of writes is one request") {
+        follower.sourceChanged();
+        wait(50);
+        follower.sourceChanged();
+        wait(50);
+        follower.sourceChanged();
+        CHECK(reloads.empty());
+        wait(settle);
+        REQUIRE(reloads.size() == 1);
+        // No status read before the engine has answered.
+        CHECK(reads.size() == 1);
+
+        // A write while it is in flight waits for it.
+        follower.sourceChanged();
+        wait(settle);
+        CHECK(reloads.size() == 1);
+
+        REQUIRE(follower.receive(
+            reloads.front(),
+            QByteArray{R"({"committed":true,"changed":["project://shaders/a.frag"],"cache_hits":0,"cache_misses":1})"}));
+        REQUIRE(outcomes.size() == 1);
+        CHECK(outcomes.front().kind == ShaderReloadOutcome::Kind::committed);
+        CHECK(outcomes.front().changed ==
+              QStringList{QStringLiteral("project://shaders/a.frag")});
+        // Then the one it held back, and one status read for the marks.
+        CHECK(reloads.size() == 2);
+        wait(50);
+        CHECK(reads.size() == 2);
+        CHECK(follower.receive(reads.back(), status));
+        CHECK(follower.receive(reloads.back(),
+                               QByteArray{R"({"committed":false,"attempted":false})"}));
+        CHECK(outcomes.back().kind == ShaderReloadOutcome::Kind::unchanged);
+        // Nothing moved: no read follows, and idle stays idle.
+        wait(1000);
+        CHECK(reads.size() == 2);
+        CHECK(reloads.size() == 2);
+    }
+
+    SECTION("a refusal is read by its error_code") {
+        follower.sourceChanged();
+        wait(settle);
+        REQUIRE(reloads.size() == 1);
+        // Someone else's id is not ours.
+        CHECK_FALSE(follower.reject(reloads.back() + 1,
+                                    QStringLiteral("shader_reload_failed@1"),
+                                    QStringLiteral("x")));
+        const QString log = QStringLiteral(
+            "Shader compile failed: a.frag\na.frag:2: error: 'vaule0' : "
+            "undeclared identifier\n");
+        REQUIRE(follower.reject(reloads.back(),
+                                QStringLiteral("shader_reload_failed@1"), log));
+        REQUIRE(outcomes.size() == 1);
+        CHECK(outcomes.back().kind == ShaderReloadOutcome::Kind::failed);
+        CHECK(outcomes.back().message == log);
+        // The failure the engine keeps is read once for the marks.
+        wait(50);
+        CHECK(reads.size() == 2);
+        // The one-line failure that follows the rejection is already handled.
+        CHECK_FALSE(follower.fail(reloads.back(), QStringLiteral("RPC -32000: x")));
+
+        follower.sourceChanged();
+        wait(settle);
+        REQUIRE(reloads.size() == 2);
+        REQUIRE(follower.reject(
+            reloads.back(), QStringLiteral("shader_reload_unavailable@1"),
+            QStringLiteral("reload_shaders: this engine does not reload "
+                           "shaders (replay)")));
+        CHECK(outcomes.back().kind == ShaderReloadOutcome::Kind::unavailable);
+
+        follower.sourceChanged();
+        wait(settle);
+        REQUIRE(reloads.size() == 3);
+        REQUIRE(follower.fail(reloads.back(),
+                              QStringLiteral("RPC -32601: Method not found")));
+        CHECK(outcomes.back().kind == ShaderReloadOutcome::Kind::error);
+    }
+
+    SECTION("the write itself, on disk, is what sends it") {
+        {
+            std::ofstream file{shader, std::ios::binary | std::ios::trunc};
+            file << "#version 450\nvoid main(){ }\n";
+        }
+        for (int tick = 0; tick < 60 && reloads.empty(); ++tick) wait(50);
+        CHECK(reloads.size() == 1);
+    }
+}
+
+// F-5. What the panel does with reload_shaders' answer: a compile failure
+// marks the node that reads the file and hands its log on; a commit takes
+// both down; and only the engine's refusal says the engine does not reload
+// shaders -- a shut file watch in get_status says nothing now.
+TEST_CASE("F-5 the reload answer marks, clears, and names a refusal",
+          "[devstudio][frame-plan][f5][shader-reload]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = std::filesystem::path{temporary.path().toStdWString()};
+    std::filesystem::create_directories(root / "shaders");
+    {
+        std::ofstream project{root / "project.json", std::ios::binary};
+        project << Json{{"schema", "pelican.project"},
+                        {"version", 1},
+                        {"name", "f5-reload"}}
+                       .dump();
+        std::ofstream shader{root / "shaders" / "tint.frag", std::ios::binary};
+        shader << "#version 450\nvoid main(){}\n";
+    }
+    EditingFixture fixture;
+    for (auto &node : fixture.wire["nodes"]) {
+        if (node.at("name") != "wp343_mixed_a") continue;
+        node["shader_resolution"] = Json{
+            {"state", "resolved"},
+            {"stages",
+             Json::array(
+                 {{{"stage", "fragment"},
+                   {"declared_ref", "project://shaders/tint"},
+                   {"effective_ref", "project://shaders/tint"},
+                   {"origin", "authored"},
+                   {"source_open_ref", "project://shaders/tint.frag"}}})}};
+    }
+    std::vector<QString> logs;
+    fixture.widget.setShaderReloadLogAction(
+        [&](const QString &message) { logs.push_back(message); });
+    fixture.widget.setProjectRoot(root);
+    fixture.open();
+    auto &logical = fixture.logical();
+    REQUIRE(nodeItem(logical, "wp343_mixed_a") != nullptr);
+    const auto marked = [&] {
+        StringSet names;
+        for (QGraphicsItem *item :
+             itemsOfKind(logical, FramePlanNodeShaderErrorItem))
+            names.insert(item->data(FramePlanNameRole).toString().toStdString());
+        return names;
+    };
+    const auto path =
+        std::filesystem::canonical(root / "shaders" / "tint.frag").string();
+    const QString log = QString::fromStdString(
+        "Shader compile failed: " + path + "\n" + path +
+        ":3: error: 'vaule0' : undeclared identifier\n");
+
+    // A shut file watch, read from get_status, is not news any more.
+    fixture.widget.receiveShaderReloadStatus(QByteArray::fromStdString(
+        Json{{"reload",
+              {{"runtime",
+                {{"pelican.shaders",
+                  {{"attempted", 0},
+                   {"applied", 0},
+                   {"failed", 0},
+                   {"last_error", nullptr},
+                   {"details", {{"enabled", false},
+                                {"gate_reason", "rpc driver"}}}}}}}}}}
+            .dump()));
+    CHECK_FALSE(statusText(fixture.widget)
+                    .contains(QStringLiteral("does not reload shaders")));
+
+    fixture.widget.receiveShaderReloadOutcome(ShaderReloadOutcome{
+        .kind = ShaderReloadOutcome::Kind::failed, .message = log});
+    CHECK(marked() == StringSet{"wp343_mixed_a"});
+    REQUIRE(logs.size() == 1);
+    CHECK(logs.back() == log);
+
+    fixture.widget.receiveShaderReloadOutcome(ShaderReloadOutcome{
+        .kind = ShaderReloadOutcome::Kind::committed,
+        .changed = {QStringLiteral("project://shaders/tint.frag")}});
+    CHECK(marked().empty());
+    REQUIRE(logs.size() == 2);
+    CHECK(logs.back().isEmpty());
+
+    fixture.widget.receiveShaderReloadOutcome(ShaderReloadOutcome{
+        .kind = ShaderReloadOutcome::Kind::unavailable,
+        .message = QStringLiteral(
+            "reload_shaders: this engine does not reload shaders (replay)")});
+    CHECK(statusText(fixture.widget) ==
+          QStringLiteral("A shader file changed; this engine does not reload "
+                         "shaders (replay)."));
+    // A reload that commits later takes that line down again.
+    fixture.widget.receiveShaderReloadOutcome(ShaderReloadOutcome{
+        .kind = ShaderReloadOutcome::Kind::committed});
+    CHECK_FALSE(statusText(fixture.widget)
+                    .contains(QStringLiteral("does not reload shaders")));
+}
+
 // --- F-1. Render targets declared from the Frame Plan.
 
 namespace {

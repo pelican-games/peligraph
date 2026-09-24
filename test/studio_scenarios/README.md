@@ -101,6 +101,11 @@ reply, which is how `view_state` and `menu_list` are checked.
 * `value` is a literal; `value_of` is what an earlier step wrote down with
   `remember`. With neither, the step only reads (and remembers), and passes.
 * `op` is `eq` (the default), `ne`, `gt`, `ge`, `lt`, `le` or `contains`.
+* `retry_ms` asks again, a fifth of a second apart, until the answer
+  satisfies the step or the time is up, as it does on `rpc_equals`. What the
+  engine draws after a shader file is saved arrives on the engine's clock:
+  `fullscreen_pass_from_template` asks for a `screen` screenshot until its
+  `distinct_colors` says the new shader is on screen.
 * A gesture is judged by which way a number moved, not by where it landed: the
   scale a view chooses is the view's business, and a scenario that hard-codes it
   is checking arithmetic instead of checking the gesture.
@@ -309,7 +314,10 @@ The Pass Editor's F-3 controls are named like the rest:
 `pelican.fullscreenPass.openExistingShader` and
 `pelican.fullscreenPass.compileLog` (the log under the form, whose text is
 `pelican.shaderCompileLog.text`). A node whose shader failed to reload carries
-a drawn badge, `node_shader_error#<pass name>`. Under automation Studio does
+a drawn badge, `node_shader_error#<pass name>`. F-5: Studio asks the engine to
+reload its shaders (`reload_shaders`) 200 ms after a write to a file a drawn
+node reads; a refusal marks the node and, while the Pass Editor is open, puts
+the log under its form. Under automation Studio does
 not hand a shader to the desktop: "opening" one prints
 `automation: shader source open <path>` to its log instead.
 

@@ -58,8 +58,83 @@
 #include <functional>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 namespace PelicanStudio {
 namespace {
+
+#ifdef _WIN32
+// The window's own composed content, children included -- the embedded
+// engine too -- whatever else is on the desktop in front of it. A screen
+// grab reads the desktop, so a window of another application lying over the
+// viewport ends up in the picture (a scenario on a machine in use went red
+// that way twice). Empty when the window cannot be printed.
+QImage printWindowRegion(QWidget *top_level, const QRect &global_rect) {
+    if (top_level == nullptr) return {};
+    const auto hwnd = reinterpret_cast<HWND>(top_level->winId());
+    RECT window_rect{};
+    if (hwnd == nullptr || !GetWindowRect(hwnd, &window_rect)) return {};
+    const int width = window_rect.right - window_rect.left;
+    const int height = window_rect.bottom - window_rect.top;
+    if (width <= 0 || height <= 0) return {};
+    HDC screen_dc = GetDC(nullptr);
+    HDC memory_dc = CreateCompatibleDC(screen_dc);
+    HBITMAP bitmap = CreateCompatibleBitmap(screen_dc, width, height);
+    HGDIOBJ previous = SelectObject(memory_dc, bitmap);
+    constexpr UINT RenderFullContent = 0x00000002; // PW_RENDERFULLCONTENT
+    const bool printed = PrintWindow(hwnd, memory_dc, RenderFullContent) != FALSE;
+    QImage image;
+    if (printed) {
+        BITMAPINFO info{};
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = width;
+        info.bmiHeader.biHeight = -height;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+        image = QImage(width, height, QImage::Format_RGB32);
+        if (GetDIBits(memory_dc, bitmap, 0, static_cast<UINT>(height),
+                      image.bits(), &info, DIB_RGB_COLORS) == 0)
+            image = {};
+    }
+    SelectObject(memory_dc, previous);
+    DeleteObject(bitmap);
+    DeleteDC(memory_dc);
+    ReleaseDC(nullptr, screen_dc);
+    if (image.isNull()) return {};
+    // GetWindowRect and the widget's global rect are both in physical pixels
+    // only at 100 % scaling; scale the widget rect by the window's ratio.
+    const qreal ratio = top_level->devicePixelRatioF();
+    const QRect physical{
+        static_cast<int>(global_rect.x() * ratio) - window_rect.left,
+        static_cast<int>(global_rect.y() * ratio) - window_rect.top,
+        static_cast<int>(global_rect.width() * ratio),
+        static_cast<int>(global_rect.height() * ratio)};
+    const QRect clipped = physical.intersected(image.rect());
+    if (clipped.isEmpty()) return {};
+    return image.copy(clipped);
+}
+
+bool isOneColour(const QImage &image) {
+    if (image.isNull()) return true;
+    const QImage rgb = image.convertToFormat(QImage::Format_RGB32);
+    const QRgb first = rgb.pixel(0, 0);
+    for (int y = 0; y < rgb.height(); ++y) {
+        const auto *row = reinterpret_cast<const QRgb *>(rgb.constScanLine(y));
+        for (int x = 0; x < rgb.width(); ++x)
+            if (row[x] != first) return false;
+    }
+    return true;
+}
+#endif
 
 constexpr auto BadRequest = "automation.bad_request@1";
 constexpr auto WidgetMissing = "automation.widget_missing@1";
@@ -1653,7 +1728,22 @@ AutomationReply commandScreenshot(const AutomationHost &host,
     const QString mode =
         request.value(QStringLiteral("mode")).toString(QStringLiteral("widget"));
     QPixmap pixmap;
+    QString capture = mode;
     if (mode == QLatin1String("screen")) {
+#ifdef _WIN32
+        // The window's own content first; the desktop only when the window
+        // could not be printed or printed as one flat colour (a swapchain
+        // that the compositor does not hand to PrintWindow).
+        const QImage printed = printWindowRegion(
+            target.owner != nullptr ? target.owner->window() : nullptr,
+            globalRect(target));
+        if (!isOneColour(printed)) {
+            pixmap = QPixmap::fromImage(printed);
+            capture = QStringLiteral("print_window");
+        }
+#endif
+    }
+    if (mode == QLatin1String("screen") && pixmap.isNull()) {
         QScreen *screen = QGuiApplication::primaryScreen();
         if (target.owner != nullptr && target.owner->window() != nullptr &&
             target.owner->window()->windowHandle() != nullptr)
@@ -1667,7 +1757,7 @@ AutomationReply commandScreenshot(const AutomationHost &host,
     } else if (mode == QLatin1String("widget")) {
         pixmap = target.isSceneItem() ? target.view->grab()
                                       : target.owner->grab();
-    } else {
+    } else if (mode != QLatin1String("screen")) {
         return AutomationReply::failure(
             BadRequest, QStringLiteral("mode must be widget or screen"));
     }
@@ -1688,6 +1778,7 @@ AutomationReply commandScreenshot(const AutomationHost &host,
     QJsonObject reply{
         {QStringLiteral("path"), QFileInfo(path).absoluteFilePath()},
         {QStringLiteral("mode"), mode},
+        {QStringLiteral("capture"), capture},
         {QStringLiteral("width"), pixmap.width()},
         {QStringLiteral("height"), pixmap.height()},
         {QStringLiteral("distinct_colors"), static_cast<int>(colors.size())},

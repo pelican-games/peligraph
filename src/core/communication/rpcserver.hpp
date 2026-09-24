@@ -117,6 +117,15 @@ void configureGameLogicReloadRpcHandler(
 nlohmann::json gameLogicParticipantRpcStatus(
     const watch::ReloadService *reload_service);
 
+struct ShaderReloadRpcHooks {
+    std::function<void()> before_apply;
+};
+
+// F-5. reload_shaders: the shader participant applied now, on request.
+void configureShaderReloadRpcHandler(
+    RpcServer &server, watch::ReloadService *reload_service,
+    ShaderReloadRpcHooks hooks = {});
+
 // Shared by the production load_scene handler and the non-GPU wire contract
 // test. The loader callback may throw a type-preserving resolution failure;
 // this boundary is the sole conversion to JSON-RPC error.data.

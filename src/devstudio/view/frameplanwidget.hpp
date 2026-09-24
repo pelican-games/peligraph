@@ -18,6 +18,7 @@ class QString;
 namespace PelicanStudio {
 
 class EmbeddedViewport;
+struct ShaderReloadOutcome;
 
 class FramePlanWidget final : public QWidget {
     struct Impl;
@@ -68,6 +69,14 @@ class FramePlanWidget final : public QWidget {
     // for tests and for a caller that already holds a reply.
     // A failure no drawn node reads is one line on the panel's status line.
     void receiveShaderReloadStatus(const QByteArray &status_json);
+    // F-5. A write to a watched shader file asks the engine to recompile
+    // (reload_shaders). What it refuses with is shown here as marks, and
+    // handed to this action as the whole log -- empty text when a reload
+    // committed and the log should go.
+    void setShaderReloadLogAction(std::function<void(const QString &)> action);
+    // The answer to a reload_shaders request, handed in the way the RPC
+    // reply is (tests use it without an engine).
+    void receiveShaderReloadOutcome(const ShaderReloadOutcome &outcome);
 
     ToolLayoutSnapshot toolLayoutSnapshot() const;
 

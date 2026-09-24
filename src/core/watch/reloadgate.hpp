@@ -28,6 +28,11 @@ DECLARE_MODULE(ReloadGate) {
     ReloadGateSnapshot snapshot() const;
     bool enabled() const;
     bool shaderReloadEnabled() const;
+    // F-5. An explicit request (the reload_shaders RPC) is not the file
+    // watch: it passes a gate that is shut only because an RPC client drives
+    // the frames, or because nobody asked for the watch. The determinism
+    // reasons still refuse it; the reason is returned, empty when allowed.
+    std::string explicitShaderReloadRefusal() const;
 
   private:
     void updateLocked();

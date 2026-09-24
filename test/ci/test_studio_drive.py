@@ -96,6 +96,62 @@ class StudioDriveShutdownTest(unittest.TestCase):
         self.assertNotIn("studio_exit_code_note", report)
 
 
+
+class ResultRetryTest(unittest.TestCase):
+    """F-5: a `result` step with `retry_ms` asks again until satisfied."""
+
+    class FakeRun:
+        def __init__(self, readings: list[int]) -> None:
+            self.readings = list(readings)
+            self.calls = 0
+            self.remembered: dict = {}
+            self.steps: list = []
+            self.records: list[dict] = []
+
+        def call(self, request: dict, timeout: float) -> dict:
+            self.calls += 1
+            value = self.readings.pop(0) if len(self.readings) > 1 else self.readings[0]
+            return {"ok": True, "result": {"distinct_colors": value}}
+
+        def record(self, *args, **kwargs) -> None:
+            self.records.append(kwargs)
+
+        def capture(self, name: str) -> None:
+            return None
+
+    step = {
+        "expect": "result",
+        "command": {"cmd": "screenshot", "mode": "screen"},
+        "path": "distinct_colors",
+        "op": "gt",
+        "value": 100,
+    }
+
+    def test_without_retry_one_reading_decides(self) -> None:
+        run = self.FakeRun([1, 1, 500])
+        with mock.patch.object(studio_drive.time, "sleep"):
+            self.assertFalse(studio_drive.run_expect_step(run, dict(self.step), "x"))
+        self.assertEqual(run.calls, 1)
+
+    def test_retry_reads_until_the_answer_moves(self) -> None:
+        run = self.FakeRun([1, 1, 500])
+        with mock.patch.object(studio_drive.time, "sleep"):
+            self.assertTrue(studio_drive.run_expect_step(
+                run, dict(self.step, retry_ms=60000), "x"))
+        self.assertEqual(run.calls, 3)
+
+    def test_retry_gives_up_when_the_time_is_up(self) -> None:
+        run = self.FakeRun([1])
+        clock = iter([0.0, 0.0, 0.5, 1.0, 2.0, 3.0, 4.0])
+        with (
+            mock.patch.object(studio_drive.time, "sleep"),
+            mock.patch.object(studio_drive.time, "monotonic", lambda: next(clock)),
+        ):
+            self.assertFalse(studio_drive.run_expect_step(
+                run, dict(self.step, retry_ms=1000), "x"))
+        self.assertGreater(run.calls, 1)
+
+
 class StudioDriveFileStepTest(unittest.TestCase):
     # F-4: a project made by File > New Project lives under the run's
     # artifacts, not in the project copy, and a file step has to reach it.

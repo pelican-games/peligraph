@@ -31,3 +31,8 @@ target_link_libraries(pelican_studio_automation
         nlohmann_json
         pelican_studio_viewport
 )
+
+if(WIN32)
+    # The window-content screenshot (PrintWindow, GetDIBits).
+    target_link_libraries(pelican_studio_automation PRIVATE user32 gdi32)
+endif()

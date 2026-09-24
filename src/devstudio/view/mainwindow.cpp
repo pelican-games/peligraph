@@ -81,6 +81,11 @@ const QString &lastToolLayoutName() {
 }
 
 QString applicationConfigDirectory() {
+    // A run that must not read or leave a person's layouts -- the
+    // automation scenarios -- names a directory of its own.
+    const QString overridden =
+        qEnvironmentVariable("PELICAN_STUDIO_CONFIG_DIR");
+    if (!overridden.isEmpty()) return overridden;
     return QStandardPaths::writableLocation(
         QStandardPaths::AppConfigLocation);
 }
@@ -277,6 +282,10 @@ void MainWindow::createWorkspace() {
         this, tr("Pass Editor"),
         QStringLiteral("pelican.fullscreenPassDock"), fullscreen_pass_);
     fullscreen_pass_->setCommittedAction([this] { frame_plan_->refresh(); });
+    // F-5: a shader reload's log also goes under the Pass Editor's form.
+    frame_plan_->setShaderReloadLogAction([this](const QString &message) {
+        fullscreen_pass_->showShaderReloadLog(message);
+    });
     connect(render_features_, &RenderFeaturesWidget::renderConfigCommitted, this, [this] { frame_plan_->refresh(); });
     frame_plan_->setNodeOrderAction([this](const QString &graph, const QStringList &names, quint64 generation) {
         render_features_->editFrameNodeOrder(graph, names, generation);

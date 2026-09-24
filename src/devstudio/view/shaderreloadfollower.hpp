@@ -2,6 +2,8 @@
 
 #include "shaderdiagnostics.hpp"
 
+#include <QString>
+#include <QStringList>
 #include <QtGlobal>
 
 #include <functional>
@@ -11,15 +13,42 @@
 class QByteArray;
 class QFileSystemWatcher;
 class QObject;
-class QString;
+class QTimer;
 
 namespace PelicanStudio {
 
-// F-3. Reads the engine's shader reload status when, and only when, there is
-// a reason to think it moved: a shader file a drawn node reads was written.
+// F-5. What one reload_shaders request came back with.
+struct ShaderReloadOutcome {
+    enum class Kind {
+        // The engine recompiled what moved and draws it now.
+        committed,
+        // Nothing the engine compiles had moved.
+        unchanged,
+        // A shader did not compile; `message` is the engine's log, the same
+        // text reload status keeps as last_error.
+        failed,
+        // A determinism gate (replay, strict assets) refuses the request;
+        // `message` is the reason the engine gave.
+        unavailable,
+        // Anything else: the request could not be sent or answered.
+        error,
+    };
+    Kind kind = Kind::error;
+    QString message;
+    QStringList changed;
+};
+
+// F-3 / F-5. Follows the shader files the drawn nodes read. A write to one
+// of them asks the engine to recompile (reload_shaders, once per burst of
+// writes, one request at a time), and then reads its shader reload status
+// once so the marks follow what the engine now says.
+//
+// Without a `request_reload` hook it is F-3's follower: after a write it
+// reads the status a bounded number of times, and nothing more.
+//
 // Studio has no idle clock that reads get_status (Q-2 stopped them), and this
-// adds none -- the reads it makes are a bounded run after a file change, plus
-// one when the set of files it watches changes.
+// adds none -- every request it makes follows a file change, plus one read
+// when the set of files it watches changes.
 class ShaderReloadFollower {
   public:
     struct Hooks {
@@ -30,6 +59,10 @@ class ShaderReloadFollower {
         std::function<void(const ShaderReloadMarks &,
                            const ShaderReloadReading &, bool after_change)>
             apply;
+        // F-5. Sends reload_shaders; the id the reply will carry, or 0.
+        std::function<qint64(QString *error)> request_reload;
+        // F-5. The answer to a reload_shaders request.
+        std::function<void(const ShaderReloadOutcome &)> reloaded;
     };
 
     // After a change the engine needs its watcher's debounce and a frame
@@ -38,6 +71,8 @@ class ShaderReloadFollower {
     static constexpr int FirstReadDelayMs = 300;
     static constexpr int FollowReadIntervalMs = 250;
     static constexpr int MaxFollowReads = 16;
+    // F-5. An editor's save is often several writes; they are one request.
+    static constexpr int ReloadDebounceMs = 200;
 
     explicit ShaderReloadFollower(Hooks hooks);
     ~ShaderReloadFollower();
@@ -50,10 +85,15 @@ class ShaderReloadFollower {
     void setSources(NodeShaderSources sources);
     [[nodiscard]] const NodeShaderSources &sources() const noexcept;
 
-    // The get_status reply for a request this follower made. False when the
-    // id is someone else's.
-    bool receive(qint64 request_id, const QByteArray &status_json);
-    bool fail(qint64 request_id);
+    // The reply for a request this follower made. False when the id is
+    // someone else's.
+    bool receive(qint64 request_id, const QByteArray &result_json);
+    // F-5. The engine refused a request this follower made, with the
+    // error_code its JSON-RPC error carried. False when the id is someone
+    // else's.
+    bool reject(qint64 request_id, const QString &error_code,
+                const QString &message);
+    bool fail(qint64 request_id, const QString &message = {});
 
     // A get_status result handed in directly (tests, and any caller that
     // already has one). Marks are applied; no follow-up read is started.
@@ -63,13 +103,17 @@ class ShaderReloadFollower {
     void sourceChanged();
 
     [[nodiscard]] qint64 pendingRequest() const noexcept;
+    [[nodiscard]] qint64 pendingReload() const noexcept;
     [[nodiscard]] int readsLeft() const noexcept;
 
   private:
     void scheduleRead(int delay_ms);
     void read();
+    void readOnce();
     void handle(const QByteArray &status_json, bool following);
     void rewatch();
+    void sendReload();
+    void finishReload(const ShaderReloadOutcome &outcome);
 
     Hooks hooks_;
     NodeShaderSources sources_;
@@ -77,10 +121,16 @@ class ShaderReloadFollower {
     // of them outlives this object.
     std::unique_ptr<QObject> context_;
     QFileSystemWatcher *watcher_ = nullptr;
+    QTimer *reload_debounce_ = nullptr;
     qint64 pending_ = 0;
     bool pending_follows_ = false;
     bool read_scheduled_ = false;
+    // A read wanted while another was in flight: made when that one lands.
+    bool read_again_ = false;
     int reads_left_ = 0;
+    qint64 pending_reload_ = 0;
+    // A write that landed while a reload was in flight: one more reload.
+    bool reload_again_ = false;
     std::optional<ShaderReloadReading> last_reading_;
     std::optional<ShaderReloadReading> baseline_;
 };

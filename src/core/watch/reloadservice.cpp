@@ -199,7 +199,8 @@ RuntimeReloadSummary ReloadService::applyRuntimeBoundary(RuntimeReloadBoundary b
     return summary;
 }
 
-RuntimeReloadResult ReloadService::applyRuntimeNow(std::string_view name) {
+RuntimeReloadResult ReloadService::applyRuntimeNow(std::string_view name,
+                                                   RuntimeReloadTrigger trigger) {
     ensureBuiltInParticipants();
     const auto found = std::ranges::find(participants_, name, &ReloadParticipant::name);
     if (found == participants_.end()) {
@@ -213,7 +214,7 @@ RuntimeReloadResult ReloadService::applyRuntimeNow(std::string_view name) {
                          "' has no runtime transaction"};
     }
     requested_runtime_reloads_.erase(found->name);
-    return invokeRuntimeParticipant(*found, RuntimeReloadTrigger::manual);
+    return invokeRuntimeParticipant(*found, trigger);
 }
 
 AuthoredRuntimeReloadResult ReloadService::applyAuthoredCandidate(
@@ -479,9 +480,19 @@ RuntimeReloadResult ReloadService::forceShaderReload() {
 
     RuntimeReloadResult runtime{.attempted = true};
     std::vector<AssetKey> changed_keys;
+    last_shader_reload_changes_ = {};
     try {
-        auto prepared = library->prepareReloadAll();
+        // F-5: only the units whose compile identity moved are republished,
+        // so an explicit request with nothing to do attempts nothing.
+        auto changed = library->prepareReloadChanged();
+        auto &prepared = changed.prepared;
         changed_keys = prepared.changed_keys;
+        last_shader_reload_changes_ = {
+            .changed = changed_keys,
+            .cache_hits = prepared.cache_hits,
+            .cache_misses = prepared.cache_misses,
+        };
+        if (!changed.error.empty()) throw std::runtime_error(changed.error);
         if (prepared.empty()) {
             runtime.attempted = false;
             return runtime;
@@ -505,7 +516,15 @@ RuntimeReloadResult ReloadService::forceShaderReload() {
     } catch (...) {
         runtime.error = "unknown forced shader reload failure";
     }
-    if (!runtime.committed) library->recordReloadFailure(changed_keys, runtime.error);
+    if (runtime.committed) {
+        shader_publication_pending_ = true;
+        return runtime;
+    }
+    library->recordReloadFailure(changed_keys, runtime.error);
+    auto changed = nlohmann::ordered_json::array();
+    for (const auto &key : changed_keys) changed.push_back(assetKeyString(key));
+    runtime.error_code = std::string{shaderReloadFailedErrorCode};
+    runtime.error_fields = {{"changed", std::move(changed)}};
     return runtime;
 }
 
@@ -563,7 +582,20 @@ void ReloadService::ensureBuiltInParticipants() {
                         return result;
                     }
                     auto *gate = FastModuleContainer::tryGet<ReloadGate>();
-                    if (gate == nullptr || !gate->shaderReloadEnabled()) return RuntimeReloadResult{};
+                    if (gate == nullptr) return RuntimeReloadResult{};
+                    if (!gate->shaderReloadEnabled()) {
+                        // F-5: an explicit request passes a gate shut only
+                        // for the file watch (an RPC driver, or no watch
+                        // asked for); replay and strict assets refuse it.
+                        if (trigger != RuntimeReloadTrigger::requested) return RuntimeReloadResult{};
+                        auto refusal = gate->explicitShaderReloadRefusal();
+                        if (!refusal.empty()) {
+                            return RuntimeReloadResult{
+                                .error_code = std::string{shaderReloadUnavailableErrorCode},
+                                .error_fields = {{"reason", std::move(refusal)}},
+                            };
+                        }
+                    }
                     if (trigger == RuntimeReloadTrigger::poll) return RuntimeReloadResult{};
                     return forceShaderReload();
                 },

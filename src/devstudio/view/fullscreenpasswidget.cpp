@@ -156,6 +156,9 @@ struct FullscreenPassWidget::Impl {
     QPushButton *open_existing_shader = nullptr;
     QLabel *shader_template_notice = nullptr;
     ShaderCompileLogPanel *compile_log = nullptr;
+    // F-5: what a shader reload failure put in the log, so a later commit
+    // takes down that log and not an authoring rejection shown since.
+    QString reload_log_text;
     std::optional<std::filesystem::path> project_root;
     std::function<bool(const std::filesystem::path &)> shader_open_action;
     QLineEdit *skinned_vertex_shader = nullptr;
@@ -2685,6 +2688,21 @@ void FullscreenPassWidget::setShaderSourceOpenAction(
             "shader source open action must not be empty");
     }
     impl_->shader_open_action = std::move(action);
+}
+
+void FullscreenPassWidget::showShaderReloadLog(const QString &message) {
+    auto &impl = *impl_;
+    if (message.isEmpty()) {
+        if (!impl.reload_log_text.isEmpty() &&
+            impl.compile_log->logText() == impl.reload_log_text)
+            impl.compile_log->clear();
+        impl.reload_log_text.clear();
+        return;
+    }
+    // Only an open Pass Editor takes the log; the canvas marks are the rest.
+    if (!isVisible()) return;
+    if (impl.compile_log->showMessage(message))
+        impl.reload_log_text = impl.compile_log->logText();
 }
 
 void FullscreenPassWidget::receiveResult(const QByteArray &result_json) {

@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "fullscreen_pass_from_template",
-  "description": "F-3: build a fullscreen pass shader and all from Studio. Add fullscreen pass opens the Pass Editor after a node; New... writes the fragment shader for the chosen input into the project and puts its stem in the form; a syntax error written into that file is refused by the engine's preflight and shown whole under the form, which keeps what was typed; the repaired file saves and the pass appears on the canvas. Then the file is broken again, which is what a person does in their own editor: Studio notices the write and asks the engine once, and says in the panel's status line that this engine does not reload shaders (Studio launches it with --rpc) instead of marking a node it cannot know about.",
+  "description": "F-3 / F-5: build a fullscreen pass shader and all from Studio, then change it the way a person does, in their own editor. Add fullscreen pass opens the Pass Editor after a node; New... writes the fragment shader for the chosen input into the project and puts its stem in the form; a syntax error written into that file is refused by the engine's preflight and shown whole under the form, which keeps what was typed; the repaired file saves and the pass, which writes the lit colour the viewport shows, appears on the canvas. Then the file is edited: Studio notices the write and asks the engine to reload its shaders (reload_shaders), and the viewport changes. A syntax error saved the same way marks the pass on the canvas and puts the log under the Pass Editor's form while the engine keeps drawing what it had; fixed, the mark and the log go.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -72,10 +72,10 @@
       "text": "engine://fullscreen"
     },
     {
-      "label": "read the lit colour",
+      "label": "read the albedo the G-buffer holds",
       "cmd": "select",
       "name": "pelican.fullscreenPass.inputTarget",
-      "text": "lit_color"
+      "text": "gbuffer_albedo"
     },
     {
       "label": "as input 0",
@@ -83,10 +83,10 @@
       "name": "pelican.fullscreenPass.addInput"
     },
     {
-      "label": "write the target the fixture declared for this pass, chosen from the declared targets",
+      "label": "write the lit colour, which is what the viewport shows, chosen from the declared targets",
       "cmd": "select",
       "name": "pelican.fullscreenPass.colorTarget",
-      "text": "f3_template_output"
+      "text": "lit_color"
     },
     {
       "label": "as colour output 0",
@@ -124,7 +124,7 @@
       "label": "and reads the one input with the engine's macro",
       "file": "contains",
       "path": "{project}/shaders/f3_tinted.frag",
-      "text": "PELICAN_DECLARE_INPUT_0(in_lit_color);"
+      "text": "PELICAN_DECLARE_INPUT_0(in_gbuffer_albedo);"
     },
     {
       "label": "a typo, typed in the author's own editor",
@@ -204,38 +204,129 @@
       "timeout_ms": 180000
     },
     {
-      "label": "the new pass is drawn on the canvas, as a reader of the lit colour it is looking at (the Pass Editor is in front, so drawn is the question, not on screen)",
+      "label": "the new pass is drawn on the canvas, as a writer of the lit colour it is looking at (the Pass Editor is in front, so drawn is the question, not on screen)",
       "cmd": "wait",
       "name": "pelican.framePlanLogicalView::node#f3_tinted",
       "missing": false,
       "timeout_ms": 180000
     },
     {
-      "label": "the typo again, saved in the author's editor",
+      "label": "the viewport shows what the pass draws: the albedo of a scene with nothing in it",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/fullscreen_pass_from_template_before.png"
+      },
+      "path": "distinct_colors",
+      "op": "lt",
+      "value": 100,
+      "retry_ms": 60000
+    },
+    {
+      "label": "a gradient instead, saved in the author's editor",
       "file": "replace",
       "path": "{project}/shaders/f3_tinted.frag",
       "old": "    outColor = value0;",
-      "new": "    outColor = vaule0;"
+      "new": "    outColor = vec4(inUV, 0.5, 1.0);"
     },
     {
-      "label": "Studio saw the write, asked the engine, and says the engine does not reload shaders",
+      "label": "Studio saw the write and asked the engine to reload: the viewport draws the gradient",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/fullscreen_pass_from_template_gradient.png"
+      },
+      "path": "distinct_colors",
+      "op": "gt",
+      "value": 100,
+      "retry_ms": 30000
+    },
+    {
+      "label": "a typo in the gradient, saved in the author's editor",
+      "file": "replace",
+      "path": "{project}/shaders/f3_tinted.frag",
+      "old": "    outColor = vec4(inUV, 0.5, 1.0);",
+      "new": "    outColor = vec4(inUV, 0.5, 1.0) + vaule0;"
+    },
+    {
+      "label": "the engine refused it, and the pass whose shader it is carries the mark",
       "cmd": "wait",
-      "name": "pelican.framePlanStatus",
-      "contains": "does not reload shaders",
+      "name": "pelican.framePlanLogicalView::node_shader_error#f3_tinted",
+      "missing": false,
       "timeout_ms": 30000
     },
     {
-      "label": "so no node is marked for an error the engine never compiled",
+      "label": "the Pass Editor is open, so the log is under its form",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node_shader_error#f3_tinted",
-      "missing": true,
-      "timeout_ms": 5000
+      "name": "pelican.fullscreenPass.compileLog",
+      "visible": true,
+      "timeout_ms": 10000
     },
     {
-      "label": "a picture of the Frame Plan with the new pass",
+      "label": "and it names the typo",
+      "cmd": "wait",
+      "name": "pelican.shaderCompileLog.text",
+      "contains": "vaule0",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the engine keeps drawing the gradient it had",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/fullscreen_pass_from_template_refused.png"
+      },
+      "path": "distinct_colors",
+      "op": "gt",
+      "value": 100,
+      "retry_ms": 30000
+    },
+    {
+      "label": "a picture of the Frame Plan with the marked pass",
       "expect": "screenshot",
       "name": "pelican.framePlan",
       "path": "fullscreen_pass_from_template_canvas.png"
+    },
+    {
+      "label": "the typo, fixed",
+      "file": "replace",
+      "path": "{project}/shaders/f3_tinted.frag",
+      "old": " + vaule0;",
+      "new": ";"
+    },
+    {
+      "label": "the mark goes",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_shader_error#f3_tinted",
+      "missing": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "and so does the log",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.compileLog",
+      "visible": false,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "and the viewport draws the gradient",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/fullscreen_pass_from_template_repaired.png"
+      },
+      "path": "distinct_colors",
+      "op": "gt",
+      "value": 100,
+      "retry_ms": 30000
     }
   ]
 }

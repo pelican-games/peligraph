@@ -69,6 +69,11 @@ class EmbeddedViewport final : public QWidget {
     void inspectorRpcSucceeded(qint64 request_id,
                                const QByteArray &result_json);
     void inspectorRpcFailed(qint64 request_id, const QString &message);
+    // F-5. Emitted just before inspectorRpcFailed when the engine answered
+    // with a JSON-RPC error: its data.error_code (empty when it named none)
+    // and its message as the engine wrote it.
+    void inspectorRpcRejected(qint64 request_id, const QString &error_code,
+                              const QString &message);
     void engineInputActiveChanged(bool active);
 
   private:

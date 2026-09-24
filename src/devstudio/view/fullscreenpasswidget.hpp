@@ -56,6 +56,10 @@ class FullscreenPassWidget final : public QWidget {
     void setProjectRoot(const std::filesystem::path &project_root);
     void setShaderSourceOpenAction(
         std::function<bool(const std::filesystem::path &)> action);
+    // F-5. A shader reload the engine refused: its log goes under the form
+    // while the Pass Editor is open. Empty text takes down a log that a
+    // reload put there (a reload that committed).
+    void showShaderReloadLog(const QString &message);
     void receiveResult(const QByteArray &result_json);
     void receiveAuthoringConfig(const QByteArray &config_json);
 };

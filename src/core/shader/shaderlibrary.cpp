@@ -8,6 +8,8 @@
 #include "../vkcore/deletionqueue.hpp"
 #include "../../project/materiallowering.hpp"
 #include "../../project/shadersourceresolver.hpp"
+#include <picosha2.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -388,6 +390,11 @@ ShaderBundle ShaderLibrary::buildFromSpirv(
     auto rt_module = inspectRayTracingSpirv(spirv, diagnostic_uri);
     const auto &selected = selectRayTracingEntryPoint(
         rt_module, expected_stage, "main", diagnostic_uri);
+    {
+        const auto *bytes = reinterpret_cast<const unsigned char *>(spirv.data());
+        bundle.spirv_sha256 = picosha2::hash256_hex_string(
+            bytes, bytes + spirv.size_bytes());
+    }
     bundle.reflection = reflect(spirv);
     bundle.reflection.selected_entry_point = selected.key;
     bundle.reflection.ray_tracing_module = std::move(rt_module);
@@ -1110,6 +1117,50 @@ PreparedShaderReload ShaderLibrary::prepareReloadAll() const {
     return prepareUnits(units, std::move(changed));
 }
 
+ShaderLibrary::ChangedShaderReload ShaderLibrary::prepareReloadChanged() const {
+    ChangedShaderReload result;
+    auto &merged = result.prepared;
+    for (std::size_t index = 0; index < reload_units.size(); ++index) {
+        const auto &source = reload_units[index].primary_source;
+        PreparedShaderReload prepared;
+        try {
+            prepared = prepareUnits({index}, {source});
+        } catch (const std::exception &error) {
+            if (!result.error.empty()) result.error += "; ";
+            result.error += error.what();
+            merged.changed_keys.push_back(source);
+            continue;
+        }
+        const bool unchanged =
+            !prepared.candidates.empty() &&
+            std::ranges::all_of(prepared.candidates, [&](const auto &candidate) {
+                const auto &published = bundles.get(candidate.id).spirv_sha256;
+                return !published.empty() &&
+                       published == candidate.replacement.spirv_sha256;
+            });
+        // A unit whose last reload failed is republished once it compiles,
+        // even to what is already published: that is what clears its error.
+        if (unchanged && !units_failed_since_publish.contains(index)) continue;
+        merged.cache_hits += prepared.cache_hits;
+        merged.cache_misses += prepared.cache_misses;
+        for (auto &candidate : prepared.candidates) {
+            merged.candidates.push_back(std::move(candidate));
+        }
+        for (auto &[key, document] : prepared.surface_documents) {
+            merged.surface_documents.emplace(key, std::move(document));
+        }
+        for (auto &update : prepared.surface_recipe_updates) {
+            merged.surface_recipe_updates.push_back(std::move(update));
+        }
+        merged.changed_keys.push_back(source);
+    }
+    std::ranges::sort(merged.changed_keys);
+    merged.changed_keys.erase(
+        std::unique(merged.changed_keys.begin(), merged.changed_keys.end()),
+        merged.changed_keys.end());
+    return result;
+}
+
 void ShaderLibrary::activatePrepared(PreparedShaderReload &prepared) {
     for (auto &candidate : prepared.candidates) {
         using std::swap;
@@ -1142,6 +1193,7 @@ void ShaderLibrary::finalizePrepared(const PreparedShaderReload &prepared) {
         affected_units.insert(candidate.reload_unit);
     }
     for (const auto unit_index : affected_units) {
+        units_failed_since_publish.erase(unit_index);
         auto &unit = reload_units.at(unit_index);
         std::vector<watch::AssetKey> dependencies{unit.primary_source};
         for (const auto id : unit.bundle_ids) {
@@ -1175,6 +1227,17 @@ void ShaderLibrary::recordReloadFailure(
             bundles.get(id).log = std::string{error};
         }
     }
+    // F-5: the units the failure is about are those whose own source was
+    // named; the dependency closure also takes in every unit whose include
+    // roots hold the file. With no unit named, it is the closure.
+    std::set<std::size_t> named;
+    for (const auto unit_index : units) {
+        const auto &source = reload_units[unit_index].primary_source;
+        if (std::ranges::find(changed_keys, source) != changed_keys.end())
+            named.insert(unit_index);
+    }
+    const auto &failed = named.empty() ? units : named;
+    units_failed_since_publish.insert(failed.begin(), failed.end());
 }
 
 ShaderReloadTrackingStatus ShaderLibrary::reloadTrackingStatus() const noexcept {
@@ -1248,6 +1311,9 @@ void ShaderLibrary::rollbackRegistrations(
         bundle_ids.pop_back();
     }
     reload_units.resize(checkpoint.reload_unit_count);
+    std::erase_if(units_failed_since_publish, [&](std::size_t unit) {
+        return unit >= reload_units.size();
+    });
     unit_by_bundle.swap(checkpoint.unit_by_bundle);
     units_by_dependency.swap(
         checkpoint.units_by_dependency);

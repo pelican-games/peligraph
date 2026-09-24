@@ -30,6 +30,7 @@ import argparse
 import json
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import threading
@@ -689,26 +690,60 @@ def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
                 return _fail(
                     run, kind, label, step, None, "a result step needs a command", started
                 )
-            reply = run.call(request, timeout=float(step.get("wait_s", 120)))
-            if not reply.get("ok"):
-                error = reply.get("error") or {}
-                return _fail(
-                    run,
-                    kind,
-                    label,
-                    request,
-                    reply,
-                    f"{error.get('code', 'error')}: {error.get('message', '')}",
-                    started,
-                )
             path = str(step.get("path", ""))
-            try:
-                actual = follow(reply["result"], path)
-            except (PathError, ValueError) as error:
-                return _fail(run, kind, label, request, reply, f"{path}: {error}", started)
+            has_expectation = "value" in step or "value_of" in step
+            expected: Any = None
+            shown = ""
+            if "value" in step:
+                expected = step["value"]
+                shown = json.dumps(expected)
+            elif "value_of" in step:
+                expected = run.remembered.get(str(step["value_of"]), _MISSING)
+                if expected is _MISSING:
+                    return _fail(
+                        run,
+                        kind,
+                        label,
+                        request,
+                        None,
+                        f"no earlier step remembered \"{step['value_of']}\"",
+                        started,
+                    )
+                shown = f"{step['value_of']} ({json.dumps(expected)})"
+            op = str(step.get("op", "eq"))
+            # Like `rpc_equals`, `retry_ms` asks the same question again until
+            # the answer satisfies the step or the time is up: what the engine
+            # draws after a file is saved arrives on the engine's clock, not
+            # the driver's.  Without it the step is a single reading.
+            deadline = time.monotonic() + float(step.get("retry_ms", 0)) / 1000.0
+            while True:
+                reply = run.call(request, timeout=float(step.get("wait_s", 120)))
+                if not reply.get("ok"):
+                    error = reply.get("error") or {}
+                    return _fail(
+                        run,
+                        kind,
+                        label,
+                        request,
+                        reply,
+                        f"{error.get('code', 'error')}: {error.get('message', '')}",
+                        started,
+                    )
+                try:
+                    actual = follow(reply["result"], path)
+                except (PathError, ValueError) as error:
+                    return _fail(run, kind, label, request, reply, f"{path}: {error}", started)
+                if not has_expectation:
+                    break
+                try:
+                    satisfied = compare(op, actual, expected)
+                except (ValueError, TypeError) as error:
+                    return _fail(run, kind, label, request, reply, str(error), started)
+                if satisfied or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.2)
             if step.get("remember"):
                 run.remembered[str(step["remember"])] = actual
-            has_expectation = "value" in step or "value_of" in step
             if not has_expectation:
                 run.record(
                     "expect",
@@ -721,27 +756,6 @@ def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
                     started=started,
                 )
                 return True
-            if "value" in step:
-                expected = step["value"]
-                shown = json.dumps(expected)
-            else:
-                expected = run.remembered.get(str(step["value_of"]), _MISSING)
-                if expected is _MISSING:
-                    return _fail(
-                        run,
-                        kind,
-                        label,
-                        request,
-                        reply,
-                        f"no earlier step remembered \"{step['value_of']}\"",
-                        started,
-                    )
-                shown = f"{step['value_of']} ({json.dumps(expected)})"
-            op = str(step.get("op", "eq"))
-            try:
-                satisfied = compare(op, actual, expected)
-            except (ValueError, TypeError) as error:
-                return _fail(run, kind, label, request, reply, str(error), started)
             if not satisfied:
                 return _fail(
                     run,
@@ -999,6 +1013,14 @@ def main() -> int:
     env = dict(os.environ)
     if arguments.player is not None:
         env["PELICAN_STUDIO_PLAYER"] = str(arguments.player)
+    # Studio keeps its dock layouts per project in the user's config
+    # directory and restores them on the next start, so one scenario (or a
+    # person using Studio) would hand the next its windows. Each run starts
+    # from the default layout in a directory of its own.
+    studio_config = artifacts / "studio_config"
+    shutil.rmtree(studio_config, ignore_errors=True)
+    studio_config.mkdir(parents=True, exist_ok=True)
+    env["PELICAN_STUDIO_CONFIG_DIR"] = str(studio_config.resolve())
 
     variables = {
         "project": str(arguments.project.resolve()),

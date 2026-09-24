@@ -2712,10 +2712,16 @@ void rebindFullscreenInputs(RenderFrameModules &modules) {
 }
 
 bool consumeShaderReloadPublication(ShaderHotReloadModules &modules) {
-    return modules.reload_service != nullptr &&
-           modules.reload_service
-                   ->applyRuntimeBoundary(watch::RuntimeReloadBoundary::render_start)
-                   .committed != 0;
+    if (modules.reload_service == nullptr) return false;
+    const bool committed =
+        modules.reload_service
+            ->applyRuntimeBoundary(watch::RuntimeReloadBoundary::render_start)
+            .committed != 0;
+    // F-5: reload_shaders commits between frames, outside this boundary;
+    // its publication is consumed here all the same.
+    const bool explicit_publication =
+        modules.reload_service->takeShaderPublication();
+    return committed || explicit_publication;
 }
 
 class OutputRelowerRequired final

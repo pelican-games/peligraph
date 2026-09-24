@@ -41,6 +41,9 @@ struct ShaderBundle {
     std::vector<SpvLinkBinding> binding_table;
     std::string cache_key;
     bool cache_hit = false;
+    // F-5: what the module is, as bytes. Two builds that produce the same
+    // SPIR-V are the same shader, whatever else moved around them.
+    std::string spirv_sha256;
     // Set only by loadGeneratedSource(); authored references cannot assert
     // the validator exceptions reserved for engine-generated RT stages.
     bool engine_generated = false;
@@ -158,6 +161,8 @@ DECLARE_MODULE(ShaderLibrary) {
     std::vector<ReloadUnit> reload_units;
     std::unordered_map<ShaderBundleId, std::size_t, ShaderBundleId::Hash> unit_by_bundle;
     std::map<watch::AssetKey, std::vector<std::size_t>> units_by_dependency;
+    // F-5: units a reload failed on and nothing has republished since.
+    std::set<std::size_t> units_failed_since_publish;
     ShaderLibraryModuleMode module_mode = ShaderLibraryModuleMode::create_modules;
     mutable ShaderCompiler compiler;
 
@@ -285,6 +290,18 @@ DECLARE_MODULE(ShaderLibrary) {
         std::span<const SurfaceShaderReloadOverride>
             surface_overrides) const;
     PreparedShaderReload prepareReloadAll() const;
+    // F-5. What an explicit reload_shaders request compiles: every reload
+    // unit is rebuilt, and only those whose SPIR-V differs from what is
+    // published, or whose last reload failed, are kept. (The cache key is no use here: it conservatively
+    // covers every file under the include roots, so a sibling's edit moves
+    // it.) Units that do not compile are not thrown one at a
+    // time: their messages are joined by "; " into `error`, and their
+    // primary sources join `prepared.changed_keys`.
+    struct ChangedShaderReload {
+        PreparedShaderReload prepared;
+        std::string error;
+    };
+    ChangedShaderReload prepareReloadChanged() const;
     void recordReloadFailure(std::span<const watch::AssetKey> changed_keys,
                              std::string_view error);
     ShaderReloadTrackingStatus reloadTrackingStatus() const noexcept;

@@ -398,6 +398,12 @@ struct FramePlanWidget::Impl {
     // F-3: the engine's shader reload status, read after a shader file a node
     // reads is written.
     std::unique_ptr<ShaderReloadFollower> reload_follower;
+    // F-5: where a shader reload's log goes besides the marks (the Pass
+    // Editor's log under its form); empty text clears it.
+    std::function<void(const QString &)> shader_reload_log_action;
+    // The status line a shader reload put up, so a later success takes down
+    // that line and nothing else.
+    QString shown_reload_notice;
     std::function<void(const QString &, const QString &)> preset_pass_edit_action;
     std::function<void(const QString &)> task_edit_action;
     std::function<void(const QString &, const QStringList &)> task_connection_action;
@@ -465,6 +471,17 @@ struct FramePlanWidget::Impl {
                            const ShaderReloadReading &reading,
                            bool after_change) {
                         applyShaderReloadMarks(marks, reading, after_change);
+                    },
+                // F-5: a write asks the engine to recompile.
+                .request_reload =
+                    [this](QString *error) -> qint64 {
+                    if (!viewport.rpcReady()) return 0;
+                    return viewport.requestRpc(QStringLiteral("reload_shaders"),
+                                               QJsonObject{}, error);
+                },
+                .reloaded =
+                    [this](const ShaderReloadOutcome &outcome) {
+                        applyShaderReloadOutcome(outcome);
                     },
             });
         owner.setFont(studioPanelFont());
@@ -908,6 +925,13 @@ struct FramePlanWidget::Impl {
             [this](qint64 request_id, const QByteArray &result_json) {
                 receiveRpcResult(request_id, result_json);
             });
+        // F-5: a refused reload_shaders is read by its error_code.
+        QObject::connect(
+            &viewport, &EmbeddedViewport::inspectorRpcRejected, &owner,
+            [this](qint64 request_id, const QString &error_code,
+                   const QString &message) {
+                (void)reload_follower->reject(request_id, error_code, message);
+            });
         QObject::connect(
             &viewport, &EmbeddedViewport::inspectorRpcFailed, &owner,
             [this](qint64 request_id, const QString &message) {
@@ -1060,23 +1084,87 @@ struct FramePlanWidget::Impl {
     void applyShaderReloadMarks(const ShaderReloadMarks &marks,
                                 const ShaderReloadReading &reading,
                                 bool after_change) {
+        (void)after_change;
         std::map<std::string, QString> nodes;
         for (const auto &[node, line] : marks.nodes)
             nodes.emplace(node, text(line));
         logical_scene->setShaderErrorMarks(std::move(nodes));
-        QString notice;
-        QString detail;
+        // The panel's own status line: it is where the marks are. F-5: a
+        // shut file watch is no longer news here -- Studio asks the engine
+        // itself, and says so only when the engine refuses (see below).
         if (!marks.unmatched.empty()) {
-            notice = owner.tr("Shader reload failed: %1")
-                         .arg(text(marks.unmatched.front()));
-            detail = text(reading.last_error);
-        } else if (after_change && reading.reported && !reading.enabled) {
-            notice = owner.tr("A shader file changed; this engine does not "
-                              "reload shaders (%1).")
-                         .arg(text(reading.gate_reason));
+            showReloadNotice(owner.tr("Shader reload failed: %1")
+                                 .arg(text(marks.unmatched.front())),
+                             text(reading.last_error));
+        } else if (reading.last_error.empty()) {
+            clearReloadNotice();
         }
-        // The panel's own status line: it is where the marks are.
-        if (!notice.isEmpty()) showStatus(notice, detail);
+    }
+
+    // --- F-5. The answer to reload_shaders, which a write to a watched
+    // shader file sends.
+    void applyShaderReloadOutcome(const ShaderReloadOutcome &outcome) {
+        using Kind = ShaderReloadOutcome::Kind;
+        switch (outcome.kind) {
+        case Kind::committed:
+            clearReloadNotice();
+            logical_scene->setShaderErrorMarks({});
+            if (shader_reload_log_action) shader_reload_log_action({});
+            break;
+        case Kind::unchanged:
+            break;
+        case Kind::failed: {
+            // Marked now from the engine's own words; the status read that
+            // follows says the same thing from reload status.
+            ShaderReloadReading reading;
+            reading.reported = true;
+            reading.last_error = outcome.message.toStdString();
+            applyShaderReloadMarks(
+                shaderReloadMarks(reading, reload_follower->sources()),
+                reading, true);
+            if (shader_reload_log_action)
+                shader_reload_log_action(outcome.message);
+            break;
+        }
+        case Kind::unavailable:
+            showReloadNotice(
+                owner.tr("A shader file changed; this engine does not "
+                         "reload shaders (%1).")
+                    .arg(unavailableReason(outcome.message)),
+                outcome.message);
+            break;
+        case Kind::error:
+            if (!outcome.message.isEmpty())
+                showReloadNotice(owner.tr("Could not ask the engine to "
+                                          "reload shaders: %1")
+                                     .arg(oneLine(outcome.message)),
+                                 outcome.message);
+            break;
+        }
+    }
+
+    // "reload_shaders: this engine does not reload shaders (replay)" ->
+    // "replay".
+    static QString unavailableReason(const QString &message) {
+        const auto open = message.lastIndexOf(QLatin1Char('('));
+        const auto close = message.lastIndexOf(QLatin1Char(')'));
+        if (open >= 0 && close > open)
+            return message.mid(open + 1, close - open - 1);
+        return message;
+    }
+
+    void showReloadNotice(const QString &line, const QString &detail) {
+        shown_reload_notice = line;
+        showStatus(line, detail);
+    }
+
+    // Only a line a shader reload put there: the status row also says what
+    // the panel is showing.
+    void clearReloadNotice() {
+        if (!shown_reload_notice.isEmpty() &&
+            status->text() == shown_reload_notice)
+            showStatus({});
+        shown_reload_notice.clear();
     }
 
     // --- N-8. Every canvas gesture ends here: one authoring RPC, or one line
@@ -1666,7 +1754,7 @@ struct FramePlanWidget::Impl {
     }
 
     void receiveFailure(qint64 request_id, const QString &message) {
-        if (reload_follower->fail(request_id)) return;
+        if (reload_follower->fail(request_id, message)) return;
         if (request_id == pending_gpu_timing_request) {
             pending_gpu_timing_request = 0;
             logical_scene->setGpuTiming(FramePlanGpuTimingSnapshot{
@@ -2561,6 +2649,16 @@ void FramePlanWidget::refresh() { impl_->requestRefresh(); }
 
 void FramePlanWidget::receiveShaderReloadStatus(const QByteArray &status_json) {
     impl_->reload_follower->consume(status_json);
+}
+
+void FramePlanWidget::receiveShaderReloadOutcome(
+    const ShaderReloadOutcome &outcome) {
+    impl_->applyShaderReloadOutcome(outcome);
+}
+
+void FramePlanWidget::setShaderReloadLogAction(
+    std::function<void(const QString &)> action) {
+    impl_->shader_reload_log_action = std::move(action);
 }
 
 

@@ -96,6 +96,13 @@
       "value": 100
     },
     {
+      "label": "the viewport picture is the window's own content, so a window of another application lying over Studio cannot end up in it",
+      "expect": "result",
+      "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/new_blank_project_viewport_capture.png"},
+      "path": "capture",
+      "value": "print_window"
+    },
+    {
       "label": "a picture of the window for the reader of this report",
       "expect": "screenshot",
       "path": "new_blank_project_window.png"

@@ -370,7 +370,7 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
             });
     connect(&process_, &EngineProcess::rpcErrorReceived, this,
             [this](qint64 request_id, int code, const QString &message,
-                   const QJsonValue &) {
+                   const QJsonValue &data) {
                 // An engine that refuses the probe still answered it: what the
                 // readiness probe establishes is that the RPC loop is running,
                 // not that this particular method exists.
@@ -379,6 +379,15 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                     return;
                 }
                 if (!pending_pick_requests_.remove(request_id)) {
+                    // F-5: the engine's own words and error_code first, for
+                    // a caller that tells one refusal from another; then the
+                    // one-line failure every caller already reads.
+                    emit inspectorRpcRejected(
+                        request_id,
+                        data.toObject()
+                            .value(QStringLiteral("error_code"))
+                            .toString(),
+                        message);
                     emit inspectorRpcFailed(
                         request_id,
                         tr("RPC %1: %2").arg(code).arg(message));

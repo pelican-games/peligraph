@@ -16,6 +16,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -30,6 +31,11 @@ namespace Pelican::watch {
 
 inline constexpr std::string_view materialReloadParticipantName = "pelican.materials";
 inline constexpr std::string_view shaderReloadParticipantName = "pelican.shaders";
+// F-5. The reload_shaders RPC's refusals.
+inline constexpr std::string_view shaderReloadFailedErrorCode =
+    "shader_reload_failed@1";
+inline constexpr std::string_view shaderReloadUnavailableErrorCode =
+    "shader_reload_unavailable@1";
 inline constexpr std::string_view gameLogicReloadParticipantName = "pelican.game_logic";
 inline constexpr std::string_view modelReloadParticipantName = "pelican.models";
 inline constexpr std::string_view renderPipelineReloadParticipantName =
@@ -180,7 +186,25 @@ DECLARE_MODULE(ReloadService) {
     void setup(const PathResolver &resolver);
     void applyFrame();
     RuntimeReloadSummary applyRuntimeBoundary(RuntimeReloadBoundary boundary);
-    RuntimeReloadResult applyRuntimeNow(std::string_view name);
+    RuntimeReloadResult applyRuntimeNow(
+        std::string_view name,
+        RuntimeReloadTrigger trigger = RuntimeReloadTrigger::manual);
+    // F-5. What the last explicit shader reload found to have moved: the
+    // primary sources it recompiled (or failed to), and its cache counts.
+    struct ShaderReloadChanges {
+        std::vector<AssetKey> changed;
+        std::size_t cache_hits = 0;
+        std::size_t cache_misses = 0;
+    };
+    const ShaderReloadChanges &lastShaderReloadChanges() const noexcept {
+        return last_shader_reload_changes_;
+    }
+    // True once after an explicit shader reload committed outside the
+    // render_start boundary: the renderer rebinds its fullscreen inputs, as
+    // it does after a publication billed at that boundary.
+    bool takeShaderPublication() noexcept {
+        return std::exchange(shader_publication_pending_, false);
+    }
     AuthoredRuntimeReloadResult applyAuthoredCandidate(
         std::string_view name,
         RenderConfigCandidateDocumentSet candidate,
@@ -266,6 +290,8 @@ DECLARE_MODULE(ReloadService) {
     std::unordered_map<std::string, RuntimeParticipantStatus> runtime_status_;
     std::unordered_set<std::string> requested_runtime_reloads_;
     std::optional<RuntimeReloadResult> pending_shader_runtime_result_;
+    ShaderReloadChanges last_shader_reload_changes_;
+    bool shader_publication_pending_ = false;
     std::uint64_t shader_cache_hits_ = 0;
     std::uint64_t shader_cache_misses_ = 0;
     MaterialContainer *material_participant_source_ = nullptr;

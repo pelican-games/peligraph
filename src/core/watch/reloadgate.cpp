@@ -42,4 +42,11 @@ ReloadGateSnapshot ReloadGate::snapshot() const {
 bool ReloadGate::enabled() const { return snapshot().enabled; }
 bool ReloadGate::shaderReloadEnabled() const { return enabled(); }
 
+std::string ReloadGate::explicitShaderReloadRefusal() const {
+    std::scoped_lock lock{mutex_};
+    if (replay_) return "replay";
+    if (strict_) return "strict assets";
+    return {};
+}
+
 } // namespace Pelican::watch
