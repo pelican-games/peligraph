@@ -522,7 +522,7 @@ feature は**パラメータ化**できます。`features` 配列は文字列の
 - **`$名前` プレースホルダも展開しません。** `"width": "$resolution"` のような**物理宣言側の `$名前` は文字列のまま残り**、後の編集が define だけでなく物理フィールドにも届きます(✅P-2a-1c の逸脱裁定)。
 - **値の優先順位は `instance parameters` > `bound_parameters` > 宣言の `default`** です([featurecompose.cpp:1393](../../src/project/featurecompose.cpp#L1401))。つまり **`bound_parameters` は「派生 feature 自身の既定値」**であって、インスタンス側の上書きを禁じるものではありません(以前の版の「併記と instance 上書きは拒否」という記述は誤りでした)。
 - 拒否されるのは **2 度目の materialize** です。`bound_parameters` を既に持つ文書をもう一度展開しようとすると `Render feature '<名前>' is already materialized and cannot be materialized again` になります([featurecompose.cpp:2874](../../src/project/featurecompose.cpp#L2882))。
-- 一方、**展開前の**パラメータ付き feature の pass を直接編集することはできません(`Parameterized feature passes must be edited in their source document.`)。materialize 済みなら pass は束縛済みなので、その場で編集できます([renderconfigeditor.cpp:76](../../src/core/communication/renderconfigeditor.cpp#L144))。
+- 一方、**展開前の**パラメータ付き feature の pass を直接編集することはできません(`Parameterized feature passes must be edited in their source document.`)。materialize 済みなら pass は束縛済みなので、その場で編集できます([renderconfigeditor.cpp:76](../../src/core/communication/renderconfigeditor.cpp#L145))。
 
 展開後はノード宣言やshader define、必要ならprovider用の`bound_parameters`を直接編集します。
 `edit_render_features`の`materialize`操作は、この展開文書の新規保存と選択instanceの参照切替を
@@ -2680,7 +2680,7 @@ geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation
 
 ### 移植プロファイルとの相互作用
 
-layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1530))。
+layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1514))。
 
 ## 6.16 rendering config の 2 つの root —— legacy root と `pelican.graph` root(✅P-2a-4a/4b)
 
@@ -2712,7 +2712,7 @@ rendering config のファイルは **2 つの root 形**のどちらかです�
 
 - `buffers` と `compute_tasks` は `pelican.graph` root では **グラフが所有します**。`rendering` 節に書くと lowering が名前付きで拒否します。
 - Studio と RPC の authoring(`get_render_features` / `edit_render_features` / `materialize` / `--feature-overlay`)は、どちらの root でも同じ 1 つの locator([`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L37))を通って `rendering` 節を読み書きします。graph root なのに `rendering` が無い(あるいは object でない)文書への編集は、黙って root にキーを作らず `render_config_section_unlocated` で拒否されます。
-- **ただし「1 箇所」なのは読み書きの locator までです。**byte-lossless の書き込み経路は同じ規則を鍵の側から判定していて、上の 6 キーかどうかを [`isGraphRootKey()`](../../src/project/renderconfigdocument.cpp#L418) で見てから root と節を振り分けます([withSectionValue()](../../src/project/renderconfigdocument.cpp#L658))。さらにレイトレの読み出しは**同じ規則をその場で書き直しており**、`rendering` が無いときは例外ではなく**空 object** として続行します([raygrouplayout.cpp:1465](../../src/core/shader/raygrouplayout.cpp#L1476))—— つまり「節が無い」ときの振る舞いは経路によって違います。
+- **ただし「1 箇所」なのは読み書きの locator までです。**byte-lossless の書き込み経路は同じ規則を鍵の側から判定していて、上の 6 キーかどうかを [`isGraphRootKey()`](../../src/project/renderconfigdocument.cpp#L418) で見てから root と節を振り分けます([withSectionValue()](../../src/project/renderconfigdocument.cpp#L658))。さらにレイトレの読み出しは**同じ規則をその場で書き直しており**、`rendering` が無いときは例外ではなく**空 object** として続行します([raygrouplayout.cpp:1465](../../src/core/shader/raygrouplayout.cpp#L1460))—— つまり「節が無い」ときの振る舞いは経路によって違います。
 - 新規プロジェクト(`pelican_cli project init`、[第10章](10_tools.md))が生成する config は `pelican.graph` root です。
 - 既存の legacy root を移すには、ファイル全体を `rendering` の値にして上の 5 キーを足すだけです。`test/fixtures/graph_root_example/` が実物の対比(出荷 `example` の節と、preset を選ぶ `animgraph_demo` の節)を持っています。
 - web ビューアは `pelican.graph` root をまだ読めません([第9章](09_web.md) §9.3)。

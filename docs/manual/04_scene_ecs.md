@@ -107,7 +107,7 @@
 | 形 | `{scene: <シーン ID の文字列>, object: <正の整数>}` の **2 キーちょうど**。欠けても増えても `graph owner requires scene and positive authoring object id`([graphcomposition.cpp:97](../../src/project/graphcomposition.cpp#L98)) |
 | `object` の正体 | **authoring object id**。保存時に各 object の `authoring_object_id` として記録され、削除・並べ替え・保存・再読込を跨いでも同じ対象を指します。ID のない旧文書は従来どおり文書全体の宣言順で採番され、最初の保存で永続化されます。ID は `scene_tree` で確認してください([authoringscenedocument.cpp](../../src/core/loader/authoringscenedocument.cpp)) |
 | 解決 | ロード後の束縛表を線形に走査し、その id を持つ生きたオブジェクトを探します([SceneLoader::graphOwnerObject()](../../src/core/loader/scenegraphruntime.cpp#L35)) |
-| 見つからないとき | **エラーではなく inactive**。その instance の scope は評価されず、`LOG_WARNING` が出ます(`graph instance owner does not match any object in this scene: <scope>, <scope>, …`)。**1 行にまとまります** —— そのとき初めて報告する scope を `", "` で連ねて 1 回だけ出し、同じ scope は二度言いません([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L61))。「言った」という記憶は**シーンのロードで消えます**([scene.cpp:730](../../src/core/loader/scene.cpp#L712))ので、次のシーンでは同じ scope がまた 1 回報告されます。姿勢では「rest pose のまま動かない」に見えます |
+| 見つからないとき | **エラーではなく inactive**。その instance の scope は評価されず、`LOG_WARNING` が出ます(`graph instance owner does not match any object in this scene: <scope>, <scope>, …`)。**1 行にまとまります** —— そのとき初めて報告する scope を `", "` で連ねて 1 回だけ出し、同じ scope は二度言いません([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L61))。「言った」という記憶は**シーンのロードで消えます**([scene.cpp:730](../../src/core/loader/scene.cpp#L713))ので、次のシーンでは同じ scope がまた 1 回報告されます。姿勢では「rest pose のまま動かない」に見えます |
 | 別のオブジェクトを指したとき | id が**実在する別のオブジェクト**だった場合は黙って**そちらに適用**されます。姿勢の sink のように適用できない相手(カメラなど)なら、オブジェクト名入りで失敗します(`pose graph sink resolution for Camera failed with animation status …` — [posegraphruntime.cpp:181](../../src/core/animation/posegraphruntime.cpp#L187)) |
 
 `authoring_object_id` と文書直下の `next_authoring_object_id` は、保存・読込用の予約フィールドです。ID は正の整数で、同じ文書の別シーンも含めて重複できません。`next_authoring_object_id` は使用済み ID より大きい次の採番値を保持するため、最大番号の object を削除してもその番号を再利用しません。ID のない object を保存済み文書へ追加すると、この採番値以降が割り当てられます。外部エディタで object を移動するときは ID を一緒に移動し、複製して新しい object にするときは複製側の ID を外してください。重複・不正な型・採番値との矛盾はロード時に拒否されます。
@@ -338,7 +338,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 ## 4.3 シーンロードの流れ
 
-[`SceneLoader::load(SceneLoadRequest)`](../../src/core/loader/scene.cpp#L1609) は **1 つのトランザクション**です(✅WP380a〜e)。**トランザクション**とは、途中の状態を外から見せず「全部成功して切り替わる」か「1 つも変わらない」かのどちらかにする実行単位のことです([用語集](14_glossary.md))。「旧シーンを消してから新シーンを作る」のではなく、新シーンの候補を全部作って一斉に切り替え、失敗したら全部を旧シーンに戻します。
+[`SceneLoader::load(SceneLoadRequest)`](../../src/core/loader/scene.cpp#L1610) は **1 つのトランザクション**です(✅WP380a〜e)。**トランザクション**とは、途中の状態を外から見せず「全部成功して切り替わる」か「1 つも変わらない」かのどちらかにする実行単位のことです([用語集](14_glossary.md))。「旧シーンを消してから新シーンを作る」のではなく、新シーンの候補を全部作って一斉に切り替え、失敗したら全部を旧シーンに戻します。
 
 **この経路は 1 本だけ**です。起動時のロード / rpc `load_scene` / `ctx.loadScene()` の遅延適用(pending)/ エディタからのスナップショット import は、入口([SceneLoadRoot](../../src/core/loader/sceneload.hpp#L82))が違うだけで同じ executor を通ります。実際の処理順:
 
@@ -377,7 +377,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 retire 中の `onDestroy` は「自分の最終状態」を読めます。entity はもう unpublish されていますが、`ctx.localTransform(self)` / `ctx.spriteView(self)` は**破棄トークンが持つスナップショット**を返します([retiredComponent](../../src/core/loader/effecttransaction.cpp#L462))。書き込み側(`setLocalTransform` / `setSpriteView` / `setSpriteTexture`)は throw せず **false** を返し、`SceneRetiredObjectMutationRejected` として `effect_errors` に積まれます([rejectRetiredMutation](../../src/core/loader/effecttransaction.cpp#L473))。
 
 - `onDestroy` は `noexcept` なので、この段の fallible API(`playSound` / `saveData` など)は**例外を投げずに `effect_errors` へ**回されます。呼び出し側のゲームコードは戻り値だけ見ればよく、握りつぶしではなく記録されます。
-- retire 中の `loadScene(name)` は、**commit 済みのシーン集合**に対して解決されます([requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1811))。旧シーンにしか無い名前を書くと `scene not found in committed projection: X` になり、`scene_retire_load_rejected@1` として記録されます。
+- retire 中の `loadScene(name)` は、**commit 済みのシーン集合**に対して解決されます([requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1812))。旧シーンにしか無い名前を書くと `scene not found in committed projection: X` になり、`scene_retire_load_rejected@1` として記録されます。
 
 ### commit したのに作用が失敗したとき
 
