@@ -103,7 +103,7 @@ pelican2/
 5. **描画** — [renderer.cpp](../../src/core/vkcore/renderer.cpp) `executeRenderingPasses` → `executePlannedFrameGraph`。✅WP64 で一本化済み: 全構成が FramePlan(描画の前に確定させたノード列 + 依存レベル + バリアの計画 — [frameplanner.hpp](../../src/core/renderingpass/frameplanner.hpp#L159))順で実行される。ノード種別(`render` / `compute` / `anchor` / `snapshot_copy` / `output_transform`)の dispatch も同ファイル
 6. **終了処理** — [teardown.cpp](../../src/core/appflow/teardown.cpp) `RuntimeTeardownGuard` が例外経路でも waitIdle → 物理 → ECS → モデルの順に noexcept で掃除
 
-## 12.4 1 フレームの流れ(中核は [`framephase.cpp` 内](../../src/core/appflow/framephase.cpp#L140) `updateFrameState`。headless も同順)
+## 12.4 1 フレームの流れ(中核は [`framephase.cpp` 内](../../src/core/appflow/framephase.cpp#L143) `updateFrameState`。headless も同順)
 
 ```
 ①時刻を進める                appflow/enginetime.cpp … realtime か fixed_step(1/fps)
@@ -129,7 +129,7 @@ pelican2/
 | `project.json` | [第3章](03_project_format.md) | 純ロジック: [project/projectformat.cpp](../../src/project/projectformat.cpp) `parseProjectEnvelopeJson()` / engine adapter: [loader/basicconfig.cpp](../../src/core/loader/basicconfig.cpp) |
 | パス参照(project:// / engine:// / user:// / #) | [第3章](03_project_format.md) | 純ロジック: [project/projectpathresolver.cpp](../../src/project/projectpathresolver.cpp) / engine resource・ログadapter: [loader/pathresolver.cpp](../../src/core/loader/pathresolver.cpp) |
 | `*.scene.json`(pelican.scene v2。MG-2b から v2 だけ) | [第4章](04_scene_ecs.md) | 純ロジック(エンベロープ・識別子): [project/sceneformat.cpp](../../src/project/sceneformat.cpp) / **コンポーネント受理仕様の正**: [loader/componentcodec.cpp](../../src/core/loader/componentcodec.cpp) の codec テーブル / 振り分け・バインド: [loader/scene.cpp](../../src/core/loader/scene.cpp) |
-| scene の `behavior` コンポーネント | [第4章](04_scene_ecs.md)・[第8章](08_gameplay.md) | [`prepareSceneBehaviorAttachments()`](../../src/core/gamelogic/behaviorarena.cpp#L82) `prepareSceneBehaviorAttachments()`(`scene.cpp` は `behavior` を ECS 経路から外すだけ) |
+| scene の `behavior` コンポーネント | [第4章](04_scene_ecs.md)・[第8章](08_gameplay.md) | [`prepareSceneBehaviorAttachments()`](../../src/core/gamelogic/behaviorarena.cpp#L95) `prepareSceneBehaviorAttachments()`(`scene.cpp` は `behavior` を ECS 経路から外すだけ) |
 | `asset_data.json`(`pelican.asset_data` v2。MG-2b から v2 だけ) | [第5章](05_assets.md) | 純ロジック(エンベロープ・models/materials/textures): [project/assetdataformat.cpp](../../src/project/assetdataformat.cpp) / model 登録: [asset/model.cpp](../../src/core/asset/model.cpp) / project material 登録: [material/projectmaterialasset.cpp](../../src/core/material/projectmaterialasset.cpp) |
 | `.vrma`(VRM Animation GLB) | [第5章](05_assets.md) | デコード: [loader/vrmadecoder.cpp](../../src/core/loader/vrmadecoder.cpp)(拡張子 `.vrma` が alias ゲート)/ リターゲット: [animation/vrmaretarget.cpp](../../src/core/animation/vrmaretarget.cpp)(版付き profile v1)/ 統合: [animation/animationservice.cpp](../../src/core/animation/animationservice.cpp) |
 | rendering config | [第6章](06_rendering.md) | [renderingpass/](../../src/core/renderingpass) の *jsonparser 群(RT フォーマット 45 種: [renderingpassjsonhelpers.cpp](../../src/core/renderingpass/renderingpassjsonhelpers.cpp) `format_names` / パス種別 **14 種**: 一覧と鍵の所有は [project/passfieldownership.hpp](../../src/project/passfieldownership.hpp)。形の規則の正本は [project/passshapepolicy.cpp](../../src/project/passshapepolicy.cpp)) |
@@ -186,7 +186,7 @@ pelican2/
 
 ### ゲーム API 面(facade)
 
-ゲームコードが見てよいのは [userpublic/](../../src/core/userpublic) だけです。全 API の入口 = [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L266)。オブジェクト生成ビルダーは [gameobjects.hpp](../../src/core/userpublic/gameobjects.hpp)(`GameObjects::add().addComponent<...>().finish()`)、システム/イベント登録マクロは [gamesystem.hpp](../../src/core/userpublic/gamesystem.hpp) と [events.hpp](../../src/core/userpublic/events.hpp)、決定的乱数(PCG32)は [deterministicrng.cpp](../../src/core/userpublic/deterministicrng.cpp)。
+ゲームコードが見てよいのは [userpublic/](../../src/core/userpublic) だけです。全 API の入口 = [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L283)。オブジェクト生成ビルダーは [gameobjects.hpp](../../src/core/userpublic/gameobjects.hpp)(`GameObjects::add().addComponent<...>().finish()`)、システム/イベント登録マクロは [gamesystem.hpp](../../src/core/userpublic/gamesystem.hpp) と [events.hpp](../../src/core/userpublic/events.hpp)、決定的乱数(PCG32)は [deterministicrng.cpp](../../src/core/userpublic/deterministicrng.cpp)。
 
 オブジェクト単位の毎フレーム処理は [behavior.hpp](../../src/core/userpublic/behavior.hpp) の `Behavior` 基底 + `PELICAN_REGISTER_BEHAVIOR`([`PELICAN_REGISTER_BEHAVIOR()`](../../src/core/userpublic/details/behavior/registerer.hpp#L385))で、`BehaviorContext` は `GameContext` を継承して `self()` / `params<T>()` などを足したものです。パラメータの schema は [details/schema/structfieldschema.hpp](../../src/core/userpublic/details/schema/structfieldschema.hpp)(WP150 の共通 field descriptor。component codec と同じ機構を共有しています)。
 
@@ -205,7 +205,7 @@ pelican2/
    `overflow` を立てる = **順序の観測を黙って捨てない**)、5 つの
    [`SceneLoadRoot`](../../src/core/loader/sceneload.hpp#L82)(startup / rpc / pending / import v1 / v2)、
    import 側の [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275)。
-2. [`scene.cpp`](../../src/core/loader/scene.cpp#L1641) の `SceneLoader::load` —— executor 本体。
+2. [`scene.cpp`](../../src/core/loader/scene.cpp#L1646) の `SceneLoader::load` —— executor 本体。
    phase は `prepare → early_publish → publish → activate → commit_metadata → retire → flush → finish` で、
    **記録するのは executor ではなく各 participant** です(WP380c/d)。
    `load()` 自身は 18 個の [`SceneLoadParticipant`](../../src/core/loader/sceneloadparticipant.hpp#L55) を

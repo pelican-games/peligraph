@@ -25280,6 +25280,42 @@ engine の変更 / 移行の手順そのもの / 移行の取り消し(backup �
 - **テキスト入力の欄(受け入れ 4)**: 増やしていない(画面はボタン 2 つ)
 - **穴**: gate で止める 15 秒の窓の timeout は止めているが test は無い / 移行の画面を出している間、Frame Plan・Pass・Graph の panel は前の project の root を持ったまま / 移行の後の offline open が parse error になると、移行だけの player が開き直すか Don't Open まで残る / offline の検査は、crash が残した transaction を復旧しない(player は書くので復旧する)/ MainWindow の配線そのものに直接の test は無い(panel・viewport・model の層にはある)
 
+### Q-10: 別 session の engine 変更への Studio の追従(まとめ)—— root の task、audio.playback の新しい欄、音声 format の拒否文
+
+**下段(Studio のみ)。実装者: Claude(Opus)。**
+
+#### 前提(別 session の着地)
+- MG-2b(8b86ddf2): rendering は `pelican.graph` root だけ。graph root の `rendering` 節には `buffers` / `compute_tasks` を書けない。editor の「root scope の compute task を編集する」経路には到達しない(Q-8 の決定 4 の積み残し)。新規の task は `add_compute_task`(project:// feature)なので影響なし
+- AU-1(feca9dce): `audio.playback` に入力と parameter が増えた(`position`、`bus`、`wrap`、`source_begin` / `source_end` / `speed` / `delay`)。`events` は任意の入力になった。Studio に埋め込んだ player は実際の audio device で鳴る(`get_status` の `audio.backend` = `device`)
+- AU-2(e68573a2): 音声の asset は WAV と Ogg Vorbis。拡張子と先頭 bytes が食い違うと `audio.format_unsupported@1`
+- Q-6 に code → 文の対応表がある(`inspectormodel` の純関数)
+
+#### 決定
+1. **root の task**: Task Editor / Frame Plan の Edit task… で root scope の task(古い表示や fixture で出たら)を開くと、generic な失敗ではなく「この rendering 文書の root には task を置けない(MG-2b 以後)。feature か graph node(`render.compute`)で」の 1 行と code。engine が返す code を確かめて Q-6 の対応表の流儀で文にする。新規の task の追加が今どおり動くこと(test で確認)
+2. **audio.playback**: Graph Canvas の palette と右側の parameter 欄で新しい parameter を表示・編集できること。`bus` は project の bus の一覧(engine か文書から取れるなら)で選べるように、取れないなら記録。未接続の `events` を警告しない
+3. **音声 format の拒否**: `audio.format_unsupported@1` を Q-6 の対応表に足し、Inspector の asset の選択 / Add component で読める 1 文に(「拡張子と中身が合いません(WAV か Ogg Vorbis)」相当)
+4. **シナリオの音**: シナリオ中は無音にできるなら無音に(既存の起動引数や環境変数を使う。無ければ記録だけ)
+
+#### 受け入れ
+1. 各項目の widget / model test(root の task の拒否の文、palette の新しい欄、format の文)。核の 1 本に変異
+2. 触った面の既存 test 緑(`-L studio_cpu -LE gpu`)。非 GPU 全数は統合側
+3. 報告にテキスト入力の欄
+
+#### 着地(2026-09-25、42e40772)
+- **決定 1**: engine は root の task を一覧に載せたまま、code の無い「編集できない」(`editable: false` と英語の理由)として返す。実際に edit / remove を送ると `compute_task_not_editable` で断るので、その code を文に付けた。判定は「catalog の行の `source_reference` が rendering 文書そのもので `provider_feature` が空」([root の task の判定](../src/devstudio/view/frameplanedit.cpp#L447))。catalog の行が古く editable と言っていても判定が先で、何も送らずに `<task>: rendering root holds no tasks; use a feature or a render.compute node. The engine refuses an edit of it (compute_task_not_editable).` で断る([断りの文](../src/devstudio/view/frameplanedit.cpp#L454))
+  - **Frame Plan**: 接続・切断・dispatch・Delete が同じ文で止まり、dispatch の帯を出さない。status 行は `oneLine` で 90 文字・最初の 1 文までなので、文を 2 つに分け、status 行には前半、code を含む全文は tooltip に。root の reference は authoring context の `source_reference`([root の reference を入れる所](../src/devstudio/view/frameplanwidget.cpp#L1342))
+  - **Task Editor**: notice に全文、Apply task / Delete task / 宣言欄 / 接続表 / dispatch フォームを止める([Task Editor の判定](../src/devstudio/view/renderfeatureswidget.cpp#L382))。送る中身(add / edit / 断り)は純関数 `computeTaskEditorRequest` に移し、test が同じ関数を読む([送る中身を決める所](../src/devstudio/view/frameplanedit.cpp#L482))。新しい task は今どおり `add_compute_task`
+- **決定 2**: 増えた port(`position` / `source_begin` / `source_end` / `speed` / `delay`)と任意の `events` は engine の catalog から描かれ、必須は `time` だけ。未接続の `events` は notice にならない。Graph タブの詳細表の上に **Sound / Bus / Wrap** の欄(`pelican.graphCanvasAudioRow`、選んだ node が `audio.playback` のときだけ。[欄を合わせる所](../src/devstudio/view/graphcanvaswidget.cpp#L2659))
+  - **Sound**(打つこともできる combo)= `asset`。一覧は project の `.wav` / `.ogg`(大文字小文字を問わない、`.` で始まる folder を除く)を Studio が歩いて作る([音声を探す所](../src/devstudio/model/graphcanvasmodel.cpp#L124))。音声を列挙する RPC が無いため。palette で置くと最初の音声が `asset` に入る([置くときに asset を入れる所](../src/devstudio/model/graphcanvasmodel.cpp#L1330))
+  - **Bus** = `se` / `bgm`。engine が受け取るのはこの 2 つだけで、一覧にする RPC が無いので **Studio が持つ**([bus の一覧](../src/devstudio/model/graphcanvasmodel.cpp#L171))。project の bus の一覧を文書から取る経路も無い
+  - **Wrap** = `once` / `repeat` / `ping_pong`。`position` を繋いだ node では無効(wrap は `audio.playback_mapping_conflict@1` になるため)
+  - 既に効いている値を選んでも何も送らない。それ以外は `set_node_parameters` 1 回
+- **決定 3**: Q-6 の表に `audio.format_unsupported@1` →「`Sound extension and contents disagree (WAV or Ogg Vorbis)`」、短い語 `unsupported sound`。**今この code は Inspector にも Add component にも届かない**(音声を取る component が無く、engine の asset の一覧に音声の種別が無い)。届く所は Graph タブで、graph の編集の preflight の拒否(`render_pipeline_preflight_failed`)が message の頭にこの code を持つ。拒否の code か message に表の code があれば表の文にする純関数 `knownRefusalDescription` を足し([表の code を拾う所](../src/devstudio/model/inspectormodel.cpp#L633))、Graph の notice の組み立てがそれを通す
+- **決定 4 は記録だけ**: player は窓があれば(headless でなければ)device を選び、切り替える起動引数・環境変数が無い([backend を選ぶ所](../src/core/audio/audio.cpp#L446))。engine の switch を別 session に依頼した(V0-ADD の表の AU-3)
+- **test**: `devstudio_frameplan_graph_test` の `Q-10 a task at the rendering document's root is refused by name; a new task is still added`、`devstudio_graphcanvas_scene_test` の `Q-10 audio.playback: its new ports come from the catalog, and the sound, bus and wrap are picked from lists` / `Q-10 the project's sounds: .wav and .ogg in any case, outside dot folders`、`devstudio_graphcanvas_test` の `Q-10 a sound refused while a graph edit is prepared reads as one sentence`、`devstudio_inspector_test` の `Q-10 a sound whose extension and contents disagree reads as one sentence`。変異(commit の記録): root の task を決して root と判定しない → 8 か所の検査が赤
+- **テキスト入力の欄(受け入れ 3)**: 新しい欄のうち打てるのは Sound だけ(打つこともできる combo。project に音声があれば一覧から選べて打たずに済む。一覧に無い path も打てばそのまま送る)。Bus / Wrap は選ぶだけ
+- **穴**: シナリオの無音は engine の switch 待ち(AU-3)/ `render.compute` node から来た task も root の下に並ぶので、同じ root の文になる / Task Editor が root の reference を知るのは Render Features が `get_render_features` を読んだ後(それより前は engine の英語の理由のまま)/ palette で置いた `audio.playback` は `events` か `position` を繋ぐまで engine が読み込まない(`audio playback requires events or a position`。既定の扱いを別 session に確認、AU-3 の後半)/ 任意の数値の port は繋ぐことでしか値を入れられない(既存の挙動)
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**

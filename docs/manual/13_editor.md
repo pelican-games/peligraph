@@ -102,8 +102,16 @@ component を `available: false` と、`unavailable_reason` に code を入れ�
 ([Add と宣言欄を止める所](../../src/devstudio/view/componentaddlist.cpp#L41))。説明欄の 1 行目は読める文と code です
 (例: `This build has no physics module (physics.module_unavailable@1)`)。code と文・短い語の対応表は Studio に 1 つで
 ([使えない component の文の表](../../src/devstudio/model/inspectormodel.cpp#L580))、今ある code は `animation` / `audio` / `physics` /
-`xr` / `vat` / `seqplayer` の `.module_unavailable@1` と `pelican.ray_instance_requires_layout_v2@1` の 7 つです。表に無い code は
+`xr` / `vat` / `seqplayer` の `.module_unavailable@1`、`pelican.ray_instance_requires_layout_v2@1`、`audio.format_unsupported@1` の 8 つです。表に無い code は
 code のまま出ます。
+
+- **音声の format の拒否も表に入りました(✅Q-10)。**`audio.format_unsupported@1`(AU-2。音声は WAV と Ogg Vorbis で、拡張子と先頭の
+  bytes が食い違うとこの code)の文は `Sound extension and contents disagree (WAV or Ogg Vorbis)`、短い語は `— unsupported sound` です。
+  ただし着地時の記録では、**今この code が Inspector や Add component に届く経路はありません**(音声を取る component が無く、
+  engine の asset の一覧に音声の種別が無い)。今この文が出るのは **Graph タブの notice** で、graph の編集の preflight の拒否
+  (`render_pipeline_preflight_failed`)が message の頭にこの code を持っているときです。表の code を、拒否の code か message の中に
+  持っていれば表の文にします([`knownRefusalDescription()`](../../src/devstudio/model/inspectormodel.cpp#L633)。Graph タブは拒否を notice に
+  する [`diagnostic()`](../../src/devstudio/model/graphcanvasmodel.cpp#L19) でこれを通します)。
 
 - **理由が code でない行は止めません。**`available: false` でも `unavailable_reason` が文(`simplemodelview` の
   `A model reference is required.` など。既定値だけでは足りず入力が要る、の意味)なら、その行は普通に並び、宣言に値を入れれば
@@ -715,6 +723,26 @@ task切替や失敗時には入力を保持し、**Refresh**で破棄・再取�
 他の保存が先行した場合は古い入力のまま上書きせず競合になります。
 共有engine文書は読み取り専用です。Frame PlanのEdit taskはcompilerが公開する`authored_name`で元taskを選び、XR用の実行時名からも同じ宣言を開きます。
 
+**rendering 文書の root の task は名前付きで断ります(✅Q-10)。**MG-2b から rendering は `pelican.graph` root だけで、その root の
+`rendering` 節には `compute_tasks` を書けません。engine は root の task を一覧に載せたまま、code の無い「編集できない」
+(`editable: false` と英語の理由)として返し、実際に edit / remove を送ると `compute_task_not_editable` で断ります。Studio は、
+catalog の行の `source_reference` が rendering 文書そのもので `provider_feature` が空の task を root の task とみなし
+([判定](../../src/devstudio/view/frameplanedit.cpp#L447))、**何も送らずに**次の文で断ります(着地前は engine の英語の理由がそのまま出ていました):
+`<task>: rendering root holds no tasks; use a feature or a render.compute node. The engine refuses an edit of it (compute_task_not_editable).`
+([断りの文](../../src/devstudio/view/frameplanedit.cpp#L454))。catalog の行が古く「編集できる」と言っていても、この判定が先です。
+
+- **Frame Plan**: その task への接続・切断、dispatch、Delete がこの文で止まり、dispatch の帯も出ません。status 行は 90 文字で最初の
+  1 文までなので、**status 行には前半の 1 文だけ**が出て、code を含む全文は status 行の tooltip にあります
+  ([1 行にする規則 `oneLine()`](../../src/devstudio/view/panelhelp.hpp#L92))。rendering 文書の reference は authoring context の
+  `source_reference` から取ります([root の reference を入れる所](../../src/devstudio/view/frameplanwidget.cpp#L1342))。
+- **Task Editor**(Render Features の Tasks... / Frame Plan の Edit task...): root の task を選ぶと、下の notice に全文(code まで)が出て、
+  宣言欄は読み取り専用、**Apply task**・**Delete task**・接続表・dispatch フォームは押せません([root の task を見分ける所](../../src/devstudio/view/renderfeatureswidget.cpp#L382))。
+  送る中身(add / edit / 断り)は [`computeTaskEditorRequest()`](../../src/devstudio/view/frameplanedit.cpp#L482) が決めます。
+- **新しい task は今までどおり**です。New compute / New ray tracing は `add_compute_task` で、指定した `project://` の feature に作ります。
+- **分かっている穴**(着地時の記録): `render.compute` node から来た task も root の下に並ぶので、同じ「root の task」の文になります
+  (文は「`render.compute` node で」と言いますが、その task は既に node から来ています)。Task Editor が root の reference を知るのは
+  Render Features が `get_render_features` の応答を読んだ後で、それより前は engine の「編集できない」と英語の理由のままです。
+
 Frame Planのtask詳細にある **Callable record settings** は、取得時点のCPU側実行時設定です。
 同じ情報はRaw JSONの`runtime_callable_records`にも含まれます。
 record indexごとにフィールド名・型・offset・値を示し、GameContextからの動的変更も含みます。
@@ -908,7 +936,7 @@ Inspector の導線(次節)は専用の RPC を持たず、**普通の `ops` を
 **上段の操作列**(左から): `Scope:` のコンボ(`root` と definition 名)、その右のパンくず、右端に
 `Values from:` のコンボ、`Refresh`([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L2162))。
 その下に必要なときだけ 1 行の notice が出ます。本体は左がキャンバス、右が選択ノードの詳細表(`Field` / `Value`)で、
-詳細表の上に `Label:` の入力欄・**Rename**・**Add node...** が並びます(選んだ node が `pelican.ui` の sink なら、その下に「UI node」の欄。✅Q-8、下の段落)。
+詳細表の上に `Label:` の入力欄・**Rename**・**Add node...** が並びます(選んだ node が `pelican.ui` の sink なら、その下に「UI node」の欄。✅Q-8、下の段落。`audio.playback` なら Sound / Bus / Wrap の欄。✅Q-10、下の段落)。
 
 1. **scope を選ぶ** —— `root` は文書そのもの、definition 名はその本体です。root の `graph.instance` ノードを
    **ダブルクリック**すると、その definition の中へ降ります。パンくずで戻ります。
@@ -978,6 +1006,29 @@ Undoはノードの宣言順・設定・接続と配置を一緒に復元しま�
   ([UI 文書を読む所](../../src/devstudio/model/graphcanvasmodel.cpp#L91))。欄を出す直前と palette を開く直前に読み直すので、開いた後に
   文書を書き換えても一覧はそれに従います。読めないときは欄の placeholder が理由(`project.json names no UI document
   (basic_config.ui_config_json)` など)を言います。
+
+**`audio.playback` の欄(✅Q-10)**: AU-1 で `audio.playback` に入力と parameter が増えました。
+
+- **増えた port は engine の catalog から来ます。**`position`・`source_begin`・`source_end`・`speed`・`delay` と `events` は Studio が
+  他の op と同じく catalog から描き、必須は `time` だけです([engine の宣言](../../src/project/graphmodule.cpp#L321))。`events` は任意の
+  入力なので、繋いでいなくても Studio は問題として扱いません。任意の数値の port に値を入れるのは、今は繋ぐことでだけです(既存の挙動)。
+- **port でない 3 つの parameter は、詳細表の上の欄です**(`pelican.graphCanvasAudioRow`。選んだ node が `audio.playback` のときだけ。
+  [欄を合わせる所](../../src/devstudio/view/graphcanvaswidget.cpp#L2659)):
+  - **Sound**(`pelican.graphCanvasAudioAsset`、打つこともできる一覧)= parameter `asset`。一覧は project の中の `.wav` / `.ogg`
+    (大文字小文字は問わない。`.` で始まる folder は見ない)を `project://...` で並べたものです([音声を探す所](../../src/devstudio/model/graphcanvasmodel.cpp#L124))。
+    音声の一覧を返す RPC は無いので Studio が folder を歩きます。project を開いたとき、選ぶ node が変わったとき、palette を開く直前に探し直します。見つからなければ
+    placeholder が理由(`no .wav or .ogg file in the project` など)を言います。打った path はそのまま送り、中身は engine が確かめます。
+  - **Bus**(`pelican.graphCanvasAudioBus`、選ぶだけ)= `se` / `bgm`。engine が受け取るのはこの 2 つだけで、それを一覧にする RPC が無いので、
+    **一覧は Studio が持っています**([bus の一覧](../../src/devstudio/model/graphcanvasmodel.cpp#L171))。文書に別の値があれば、それも一覧に出します(engine が名前付きで断ります)。
+  - **Wrap**(`pelican.graphCanvasAudioWrap`、選ぶだけ)= `once` / `repeat` / `ping_pong`。`position` を繋いだ node(分解版)は wrap を
+    持てない(持つと `audio.playback_mapping_conflict@1`)ので、そのときは欄が無効です。
+  - 選ぶか Enter で `set_node_parameters` 1 回です。既に効いている値(Bus / Wrap は、鍵が無ければ一覧の先頭の既定値)を選んでも何も送りません
+    ([送る所](../../src/devstudio/view/graphcanvaswidget.cpp#L2702))。
+- **palette で置くと、project の最初の音声が `asset` に入ります**([置くときに asset を入れる所](../../src/devstudio/model/graphcanvasmodel.cpp#L1330))。
+  必須の `time` には上の (1) のとおり種の定数が繋がり、任意の `events` / `position` は空のままです。⚠ engine は `events` も `position` も
+  繋がっていない `audio.playback` を読み込まない(`audio playback requires events or a position: <id>`)ので、**置いただけでは
+  読み込まれません**。どちらかを繋いでください(一体版でも `events` を任意にし、未接続なら最初の frame で始める変更が engine 側の AU-3 として台帳に載っています。未着地)。
+- 音声の format の拒否(`audio.format_unsupported@1`)は、この tab の notice に Q-6 の表の文で出ます(§13.1「Studioでcomponentを追加する」)。
 
 **位置と折り畳みはセッション内の状態です。**`(scope, ノード id)` を鍵に覚えていて、**文書には書きません**。
 revision が変わって消えたノードの位置は捨てられます。初期配置は最長経路による段組みで、辺は必ず左から右へ進みます。
@@ -1253,7 +1304,7 @@ debounce の間)は、notice が **「Saving the graph change...」** になり�
 ([定義](../../src/devstudio/view/graphcanvasreadcapability.hpp#L31))は「汎用の RPC メソッド」を表現できない形をしていて、
 `get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` / `get_edit_result` の
 5 つだけを名前で持ちます。それ以外を要求すると `The graph canvas cannot issue <method>.` になります
-([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L2920))。キャンバスから preset を fork したり pass を触ったりは
+([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L2507))。キャンバスから preset を fork したり pass を触ったりは
 **できない**、というのが型で保証されています。
 
 ### Studio の自動化面(`--automation`)
@@ -1337,7 +1388,7 @@ driver の stdout / stderr は、cp932 の console で出せない文字があ�
 
 **回し方**: [`tools/studio_drive.py`](../../tools/studio_drive.py#L982)(Python 3.11以上、標準ライブラリだけ)が Studio を
 `--automation --project --tab` で起動し、step を順に送り、`report.json` を書きます。ctest からは
-`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L3095)) —— **実物の窓が要るので
+`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L3118)) —— **実物の窓が要るので
 `QT_QPA_PLATFORM=offscreen` は掛けません**。fixture の project は temp に 2 つ複製されるので、シナリオは
 文書を書き換えてよく、「ディスクから読み直す」も試せます([複製](../../test/run_studio_scenario.cmake#L30))。
 CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが見つかった`AUTO`）が必要です。
@@ -1348,6 +1399,12 @@ CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが�
 driver は run ごとに `{artifacts}/studio_config` を空にして作り、この変数で渡します([渡し方](../../tools/studio_drive.py#L1025))。
 以前のシナリオは、前の run(や人が使った Studio)が利用者の設定 directory に残した dock の layout を復元し、自分の
 layout をそこに残していました。テーマの選択はこの directory ではなく `QSettings` に残るので、この変数の影響を受けません。
+
+⚠ **シナリオの間も音が鳴ります(Q-10 の時点)。**Studio に埋め込んだ player は headless ではないので、audio の backend に実物の
+device を選びます(`get_status` の `audio.backend` が `device`。headless の player だけが `offline`。
+[`preferredAudioBackend()`](../../src/core/audio/audio.cpp#L446))。シナリオの間だけ無音にする起動引数や環境変数はまだ無く、driver も
+何も渡しません。音を鳴らす project のシナリオは、回した機械の speaker から音が出ます。backend を起動時に選ぶ switch
+(`--audio-backend` と `PELICAN_AUDIO_BACKEND`)が engine 側の AU-3 として台帳に載っています(未着地)。
 
 **report.json は AI が読む形です**([組み立て](../../tools/studio_drive.py#L1136)): `verdict`(`green` / `red`)と
 `ok` / `failed_steps`、`summary`(step ごとに 1 行)、`failures`(送った命令・返ってきた応答・言葉での理由・
