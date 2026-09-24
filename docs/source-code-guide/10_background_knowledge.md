@@ -473,7 +473,7 @@ glTF の頂点データは 3 層に分かれています。`buffer` が生バイ
 
 **このリポジトリでは**: `getDataFromAccessor()` の `readComponentByType()`(595〜607 行)は `std::memcpy(&value, ...)` で読んだ生の整数を `static_cast<OutType>(value)` するだけで `/255` を掛けないため、UNORM 属性を渡すと 255 倍(short なら 65535 倍)ずれた値が出ます。エンジンはこの復号を丸ごと避けるため、モーフ差分やアニメーションを運ぶ経路では FLOAT しか読まず、`readMorphDeltaAccessor()`(780〜784 行)と `src/core/loader/vrmadecoder.cpp` の `readFloatAccessor()`(327〜329 行)が「非 normalized の FLOAT + 期待する type」を明示的に要求して弾きます。正規化整数属性は v1 の契約外なので、255 倍ずれた頂点を素通しするより load 時点でエラーにする方針です。
 
-**2026-09-04 追記 — 復号そのものは実装されています。**上の「復号を丸ごと避ける」は現在のコードには当てはまりません。[normalizedIntegerComponent()](../../src/core/model/gltfaccessorreader.hpp#L70) が上記の復号式(unsigned は `value / max`、signed は `max(value / max, -1)`)をそのまま持ち、[getDataFromAccessor()](../../src/core/model/gltf.cpp#L1331) が `accessor.normalized` のとき [readNormalizedScalar()](../../src/core/model/gltfaccessorreader.hpp#L87) / [readNormalizedVector()](../../src/core/model/gltfaccessorreader.hpp#L110) へ分岐します。除数に `std::numeric_limits<InType>::max()`(127 / 255 / 32767 / 65535)を使うのが仕様どおりで、128 や 32768 ではありません。変わっていないのは `readComponentByType()` の側で、こちらは今も `static_cast` するだけなので、normalized な accessor を非正規化の読み口へ回すと 255 倍ずれます。分岐の入口で「normalized なのに行き先が整数」を例外にしているのはそのためです。モーフ差分と VRMA サンプラが FLOAT のみを要求する点は変わりません。
+**2026-09-04 追記 — 復号そのものは実装されています。**上の「復号を丸ごと避ける」は現在のコードには当てはまりません。[normalizedIntegerComponent()](../../src/core/model/gltfaccessorreader.hpp#L70) が上記の復号式(unsigned は `value / max`、signed は `max(value / max, -1)`)をそのまま持ち、[getDataFromAccessor()](../../src/core/model/gltf.cpp#L1429) が `accessor.normalized` のとき [readNormalizedScalar()](../../src/core/model/gltfaccessorreader.hpp#L87) / [readNormalizedVector()](../../src/core/model/gltfaccessorreader.hpp#L110) へ分岐します。除数に `std::numeric_limits<InType>::max()`(127 / 255 / 32767 / 65535)を使うのが仕様どおりで、128 や 32768 ではありません。変わっていないのは `readComponentByType()` の側で、こちらは今も `static_cast` するだけなので、normalized な accessor を非正規化の読み口へ回すと 255 倍ずれます。分岐の入口で「normalized なのに行き先が整数」を例外にしているのはそのためです。モーフ差分と VRMA サンプラが FLOAT のみを要求する点は変わりません。
 
 ### node.weights と mesh.weights の優先順位
 
@@ -509,19 +509,19 @@ glTF のノード変換は `matrix`(列優先の 16 要素)か `translation` / `
 
 glTF 2.0 の `node.matrix` は 16 個の数値の配列ですが、**並びは column-major(列優先)**と仕様で決まっています(Concepts 章 → Nodes and Hierarchy 節)。つまり先頭 4 要素が第 1 列で、平行移動成分は添字 12・13・14 に来ます。GLM の `glm::mat4` も列優先なので、16 要素をそのまま流し込めば正しく入ります。row-major 前提の行列ライブラリへ同じ順で入れると転置されたものになり、回転と平行移動が入れ替わった見た目になります。`node.matrix` と TRS(`translation` / `rotation` / `scale`)は排他で、両方を持つノードは不正です。
 
-**使用場所**: [InternalGltfLoader::nodeTransform()](../../src/core/model/gltf.cpp#L1402) / [InternalGltfLoader::nodeRestPose()](../../src/core/model/gltf.cpp#L1445)
+**使用場所**: [InternalGltfLoader::nodeTransform()](../../src/core/model/gltf.cpp#L1500) / [InternalGltfLoader::nodeRestPose()](../../src/core/model/gltf.cpp#L1543)
 
 ### animation channel の出力 accessor の型は target_path で決まる
 
 glTF のアニメーションは channel(何を動かすか)と sampler(いつ・どんな値か)の組でできています。channel の `target.path` が `"translation"` / `"scale"` なら sampler の output accessor は VEC3、`"rotation"` なら VEC4(四元数、`[x, y, z, w]` 順)、`"weights"` ならスカラーの列(モーフターゲット数 × キーフレーム数)です。つまり**出力の型は宣言されているのではなく target_path から決まる**ので、読み込み側は path ごとに期待する型を切り替えて accessor を検証します。input accessor は常に秒を表すスカラーの単調増加列で、補間は `STEP` / `LINEAR` / `CUBICSPLINE` のいずれかです(CUBICSPLINE は 1 キーあたり接線込みで 3 倍の要素を持ちます)。
 
-**使用場所**: [InternalGltfLoader::loadAnimationClip()](../../src/core/model/gltf.cpp#L1477) / [readFloatAccessor()](../../src/core/loader/vrmadecoder.cpp#L320)
+**使用場所**: [InternalGltfLoader::loadAnimationClip()](../../src/core/model/gltf.cpp#L1575) / [readFloatAccessor()](../../src/core/loader/vrmadecoder.cpp#L320)
 
 ### JOINTS_0 / WEIGHTS_0(skin ローカルの joint index と重みの正規化)
 
 スキンメッシュの頂点属性 `JOINTS_0` は 4 本ぶんの joint 番号、`WEIGHTS_0` はそれに対応する 4 つの重みです。ここで押さえるべきは 2 点あります。1 つ目、**JOINTS_0 の番号は `skin.joints` 配列の中の添字**であって、glTF のノード番号でも、複数の skin を 1 本のパレットへ詰めたときの絶対番号でもありません。複数 skin を同じ行列パレットに載せるなら、skin ごとの先頭オフセットを足して絶対番号へ直す必要があります。2 つ目、**重みは合計 1** でなければ、パレット合成が伸び縮みします(仕様も正規化を要求しています)。合計が 0 の頂点は「スキンされていない」ので、割り算をしてはいけません。
 
-**使用場所**: [InternalGltfLoader::loadMesh()](../../src/core/model/gltf.cpp#L2170)(joint 番号の範囲検査と `joint_offset` の加算) / [VertBufContainer::addSkinnedPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L451)(`sum > 0` のときだけ 4 成分を合計で割る)
+**使用場所**: [InternalGltfLoader::loadMesh()](../../src/core/model/gltf.cpp#L2268)(joint 番号の範囲検査と `joint_offset` の加算) / [VertBufContainer::addSkinnedPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L451)(`sum > 0` のときだけ 4 成分を合計で割る)
 
 ## 10.3 C++ とビルドのイディオム
 
@@ -585,7 +585,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 `std::vector<bool>` は標準が規定する部分特殊化で、実装は 1 要素 1 ビットに詰めてよいことになっています。その代償として `operator[]` が返すのは `bool&` ではなくプロキシ型 `std::vector<bool>::reference` で、`bool *` を返す `data()` は存在せず、範囲 for で `for (auto &b : v)` と書くとコンパイルエラーになります(`auto` か `auto &&` なら通ります)。個々の要素にアドレスが無いため、他のコンテナと同じ「要素への参照・ポインタが取れる」前提が崩れる、というのが有名な落とし穴です。一方で、添字代入・`push_back`・`std::fill` はプロキシ経由で普通に動くので、ビット列として使う分には素直に使えます。要素のアドレスが必要なときは `std::vector<char>` や `std::deque<bool>`、固定長なら `std::bitset` に替えるのが定石です。
 
-**このリポジトリでは**: `src/core/renderer/polygoninstancecontainer.hpp` の `model_history_valid` / `morph_history_valid`(232・248 行)、`src/core/renderer/modelinstanceslots.hpp` の `alive_`。どちらもインスタンスごとの 1 ビットのフラグ列として、`std::fill(..., true/false)`(polygoninstancecontainer.cpp:723・745・767 行)と添字代入(495・509 行)だけで扱い、要素のアドレスもポインタも取りません。`history_valid` が false のスロットは `triggerUpdate(const DrawQueueFramePlan &)` で `previous = current` にして(571〜578 行)テンポラル履歴(モーションベクタ)の初期状態を表し、`alive_` はスロット生存の可否そのものです。プロキシ参照の落とし穴(`bool&` や `data()` が取れない)を踏まない使い方に限定したうえで、インスタンス数ぶんのビット列をコンパクトに持てます。逆に「参照が要る」側の例が [InternalGltfLoader::headRelatedNodes()](../../src/core/model/gltf.cpp#L583) で(2026-09-04 追記)、ノードごとの判定結果を一度だけ計算してキャッシュするメモ化テーブルを `std::vector<std::uint8_t>` で持ち、その `const &` を返します。`std::vector<bool>` だと返せるのがプロキシになるため、真偽値の列でも `uint8_t` を選ぶのはこの理由です。
+**このリポジトリでは**: `src/core/renderer/polygoninstancecontainer.hpp` の `model_history_valid` / `morph_history_valid`(232・248 行)、`src/core/renderer/modelinstanceslots.hpp` の `alive_`。どちらもインスタンスごとの 1 ビットのフラグ列として、`std::fill(..., true/false)`(polygoninstancecontainer.cpp:723・745・767 行)と添字代入(495・509 行)だけで扱い、要素のアドレスもポインタも取りません。`history_valid` が false のスロットは `triggerUpdate(const DrawQueueFramePlan &)` で `previous = current` にして(571〜578 行)テンポラル履歴(モーションベクタ)の初期状態を表し、`alive_` はスロット生存の可否そのものです。プロキシ参照の落とし穴(`bool&` や `data()` が取れない)を踏まない使い方に限定したうえで、インスタンス数ぶんのビット列をコンパクトに持てます。逆に「参照が要る」側の例が [InternalGltfLoader::headRelatedNodes()](../../src/core/model/gltf.cpp#L681) で(2026-09-04 追記)、ノードごとの判定結果を一度だけ計算してキャッシュするメモ化テーブルを `std::vector<std::uint8_t>` で持ち、その `const &` を返します。`std::vector<bool>` だと返せるのがプロキシになるため、真偽値の列でも `uint8_t` を選ぶのはこの理由です。
 
 ### std::filesystem の error_code オーバーロード(投げない版)
 
@@ -657,7 +657,7 @@ GPU 資源のように「今すぐには壊せない」ものを溜める破棄�
 
 C++ のムーブは、移動元を「有効だが未規定の状態」にします。標準ライブラリの型なら破棄と再代入は必ず安全ですが、それ以外に何が保証されるかは型ごとの契約です。自前のトークン型では、この未規定さを**能動的に使う**ことがあります — ムーブされた側を「もう commit してはいけない」印にして、二重コミットを型の側で潰す、という書き方です。読む側から見ると「ムーブしたあとに何もしていないのに状態が変わる」ように見えるので、契約がコメントか名前に書かれていないと読めません。
 
-**使用場所**: [ProjectBasicConfig::importSceneDocument()](../../src/core/loader/basicconfig.cpp#L798)(トークンを move して以降を無効化する)
+**使用場所**: [ProjectBasicConfig::importSceneDocument()](../../src/core/loader/basicconfig.cpp#L802)(トークンを move して以降を無効化する)
 
 ### 型消去: std::any と any_cast
 
@@ -849,7 +849,7 @@ POSIX と違い、Windows ではファイルを開くときに「他のプロセ
 
 `std::filesystem::canonical(p)` は実在するパスしか正規化できず、存在しなければ例外(または `error_code`)になります。対して `weakly_canonical(p)` は「存在する先頭部分だけを解決し、残りは字句的に正規化する」ので、これから作るファイルのパスにも使えます。Windows 固有の落とし穴が**ルート名**で、`path::has_root_name()` は `C:` や `\\server` の有無を返します。`C:\dir`(ルート名 + ルートディレクトリ)は絶対パスですが、`C:dir` は「ドライブ C の**カレントディレクトリ**からの相対」であり、しかも `current_path()` がドライブごとに存在するため、プロセスのカレントだけでは決まりません。この曖昧な形は受け付けずに拒否するのが安全です。
 
-**使用場所**: [weaklyCanonicalOrAbsolute()](../../src/core/communication/rpcserver.cpp#L955) / [absoluteCapturePath()](../../src/core/communication/rpcserver.cpp#L947) / [projectRootString()](../../src/core/communication/rpcserver.cpp#L899) / [resolveDeclaration()](../../src/core/asset/model.cpp#L232)
+**使用場所**: [weaklyCanonicalOrAbsolute()](../../src/core/communication/rpcserver.cpp#L955) / [absoluteCapturePath()](../../src/core/communication/rpcserver.cpp#L947) / [projectRootString()](../../src/core/communication/rpcserver.cpp#L899) / [resolveDeclaration()](../../src/core/asset/model.cpp#L248)
 
 ## 10.5 アルゴリズムとデータ処理の定番
 
@@ -1075,7 +1075,7 @@ Vulkan のラスタライズ規則では、整数のフレームバッファ座�
 
 **このリポジトリでは**: `src/core/phys/physquery.cpp` の `normalizedQuat()`(99 行)と `closestPointOnSegment()`(226 行)、`src/core/phys/physworld.cpp` の `normalized()`(65 行)、`src/core/phys/joltphysicsprovider.cpp` の `normalizeOr()`(143 行)が、正規化の割り算前に `len_sq = dot(v,v)` を `kEpsilon * kEpsilon`(kEpsilon=1e-5)と比べ、下回れば単位クォータニオンや端点・フォールバックベクトルを返して割り算を回避します。`normalizedQuat()` はコライダ変換の `rotateVector()` などが通る要所です。ε を二乗するのが要点で、`len_sq <= kEpsilon` のままだと実効の長さ閾値が `sqrt(1e-5)≈3.2e-3` と約 300 倍緩くなり、ほぼ縮退した回転/線分がガードをすり抜けて極小長で割られ、NaN/inf が raycast や overlap の結果に伝播して決定的物理が壊れます。
 
-**長さそのものが要るときは `std::hypot`**(2026-09-04 追記)。比較ではなく実際の長さが必要な場面では、`sqrt(x*x + y*y + z*z)` は途中の二乗でオーバーフロー / アンダーフローしますが、`std::hypot` は内部で桁を揃えるためその範囲で耐えます(C++17 で 3 引数版が入りました)。[parseBasicCameraUp()](../../src/core/loader/basicconfig.cpp#L241) が `basic_config.camera.up` の長さを `std::hypot` で測り、0 なら基底が作れないので設定エラーにします。
+**長さそのものが要るときは `std::hypot`**(2026-09-04 追記)。比較ではなく実際の長さが必要な場面では、`sqrt(x*x + y*y + z*z)` は途中の二乗でオーバーフロー / アンダーフローしますが、`std::hypot` は内部で桁を揃えるためその範囲で耐えます(C++17 で 3 引数版が入りました)。[parseBasicCameraUp()](../../src/core/loader/basicconfig.cpp#L242) が `basic_config.camera.up` の長さを `std::hypot` で測り、0 なら基底が作れないので設定エラーにします。
 
 ### NaN はあらゆる比較で false — `isfinite` を先に置く
 
@@ -1114,7 +1114,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 `glm::quat` のコンストラクタは **`{w, x, y, z}` の順**で成分を取ります(メンバ変数としての `.x .y .z .w` の並びとは別の話です)。一方 glTF の `rotation`、多くのワイヤ形式、そして人が書く JSON は `[x, y, z, w]` の順で格納します。したがって配列から読むときは必ず並べ替えが要り、忘れると「軸と角度が入れ替わった」ような、しかし一見それらしく見える回転になります。型は同じなのでコンパイラは何も言いません。
 
-**使用場所**: [InternalGltfLoader::nodeTransform()](../../src/core/model/gltf.cpp#L1402) / [requireQuatField()](../../src/core/communication/rpcserver.cpp#L289)(配列の 0,1,2,3 を x,y,z,w に読んでから `glm::quat{w, x, y, z}` を組む)
+**使用場所**: [InternalGltfLoader::nodeTransform()](../../src/core/model/gltf.cpp#L1500) / [requireQuatField()](../../src/core/communication/rpcserver.cpp#L289)(配列の 0,1,2,3 を x,y,z,w に読んでから `glm::quat{w, x, y, z}` を組む)
 
 ### TRS の合成順序と world → local の逆算
 
@@ -1128,7 +1128,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 頂点位置を行列 M で変換するとき、法線に同じ M を掛けると、**非一様スケールやせん断があった場合に面と垂直でなくなります**。正しくは M の左上 3×3 の逆転置行列 `transpose(inverse(mat3(M)))` を掛けます(接平面上のベクトルとの内積が 0 に保たれる、という条件から導かれるので「normal matrix」と呼ばれます)。回転と一様スケールだけなら逆転置は元の行列の定数倍になるので、正規化してしまえば同じ結果になり、この違いが表に出ません。接線(tangent)は面に**平行**なベクトルなので本来は M をそのまま掛ける方が理屈に合いますが、同じ normal matrix を使う実装も多くあります。
 
-**使用場所**: [InternalGltfLoader::transformVertexData()](../../src/core/model/gltf.cpp#L613)(`glm::transpose(glm::inverse(glm::mat3{transform}))` を法線と接線の両方に掛け、長さが 0 でないときだけ正規化する)
+**使用場所**: [InternalGltfLoader::transformVertexData()](../../src/core/model/gltf.cpp#L711)(`glm::transpose(glm::inverse(glm::mat3{transform}))` を法線と接線の両方に掛け、長さが 0 でないときだけ正規化する)
 
 ### 切り上げ除算と mip 寸法のシフト
 

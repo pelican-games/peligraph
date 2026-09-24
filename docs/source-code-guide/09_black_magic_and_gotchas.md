@@ -375,7 +375,7 @@ ID 割当を engine-wide schema として管理する必要がある点は変わ
 cannot unregister component '<name>': dependent ECS system '<sys>' remains
 ```
 
-この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L2139))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
+この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L2147))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
 
 ### custom Component の現状
 
@@ -1055,7 +1055,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: 失敗しうる作業(確保・検証・容量チェック・id 採番)を prepare に全部集め、publish を `noexcept` の swap 列にして「公開後は失敗しない」を型で固定し、finish は「もう巻き戻さない」と決まってから初めて破棄・`deinit` を行う。
 
-**どこに出るか**: loader は [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1627) が prepare → early_publish → publish → activate → commit_metadata の 5 段。ECS は [`ECSArchetypeMigrationAdapter`](../../src/core/ecs/archetypemigration.hpp#L45) のヘッダコメントが「Publication must not fail」を宣言し、**公開済みの実体**に `cb_deinit` を呼ぶのは [`finishPublished()`](../../src/core/ecs/archetypemigration.cpp#L352) とその逆手順の [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229) だけ(未公開の候補側は `discardPrepared()` / `deinitializeStaged()` / `rollbackCreate()` が担当する)。描画は [`stagePreparedSceneModel()`](../../src/core/renderer/polygoninstancecontainer.cpp#L623) が容量検査と確保、物理は [`PhysWorld::prepareBindings()`](../../src/core/phys/physworld.cpp#L286)、behavior は [`PreparedBehaviorAttachmentEdits::publish()`](../../src/core/gamelogic/behaviorarena.cpp#L459)、アセットは [`model.cpp` の validate/stage](../../src/core/asset/model.cpp#L602)。
+**どこに出るか**: loader は [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1627) が prepare → early_publish → publish → activate → commit_metadata の 5 段。ECS は [`ECSArchetypeMigrationAdapter`](../../src/core/ecs/archetypemigration.hpp#L45) のヘッダコメントが「Publication must not fail」を宣言し、**公開済みの実体**に `cb_deinit` を呼ぶのは [`finishPublished()`](../../src/core/ecs/archetypemigration.cpp#L352) とその逆手順の [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229) だけ(未公開の候補側は `discardPrepared()` / `deinitializeStaged()` / `rollbackCreate()` が担当する)。描画は [`stagePreparedSceneModel()`](../../src/core/renderer/polygoninstancecontainer.cpp#L623) が容量検査と確保、物理は [`PhysWorld::prepareBindings()`](../../src/core/phys/physworld.cpp#L286)、behavior は [`PreparedBehaviorAttachmentEdits::publish()`](../../src/core/gamelogic/behaviorarena.cpp#L459)、アセットは [`model.cpp` の validate/stage](../../src/core/asset/model.cpp#L657)。
 
 **読むときの手順**: まず `publish` の宣言に `noexcept` が付いているかを見て、付いていれば「この関数より前に全ての失敗が済んでいる」と読み替えます。次に、その関数が触るメンバが *candidate* 側か *live* 側かを 1 つずつ確かめてください。
 
@@ -1095,7 +1095,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: 本番コードの分岐上に注入点を置き、「この分岐を壊すとどのテストが赤くなるか」を名指しできるようにする。manifest の `mutation_id` 列がその索引。
 
-**どこに出るか**: scene load の入口は [`sceneLoadMutationEnabled()`](../../src/core/loader/sceneloadfault.cpp#L33) と [manifest の `root.import.versioned` 行](../../src/core/loader/sceneparticipantmanifest.cpp#L173)、保存の TOCTOU 窓は [`BeforeReplace` の注入位置](../../src/core/loader/basicconfig.cpp#L994)、SBT は [production branch observer](../../src/core/shader/pipelinefactory.cpp#L1710)、TLAS は [`overrideRayTracingTlasRecordOffsetForTesting`](../../src/core/renderer/accelerationstructure.cpp#L818)、present は [本物の `presentKHR` を呼んでから戻り値だけ差し替える](../../src/core/vkcore/swapchainframetarget.cpp#L2606)。
+**どこに出るか**: scene load の入口は [`sceneLoadMutationEnabled()`](../../src/core/loader/sceneloadfault.cpp#L33) と [manifest の `root.import.versioned` 行](../../src/core/loader/sceneparticipantmanifest.cpp#L173)、保存の TOCTOU 窓は [`BeforeReplace` の注入位置](../../src/core/loader/basicconfig.cpp#L998)、SBT は [production branch observer](../../src/core/shader/pipelinefactory.cpp#L1710)、TLAS は [`overrideRayTracingTlasRecordOffsetForTesting`](../../src/core/renderer/accelerationstructure.cpp#L818)、present は [本物の `presentKHR` を呼んでから戻り値だけ差し替える](../../src/core/vkcore/swapchainframetarget.cpp#L2606)。
 
 **読むときの手順**: [第3章「注入口はproductionバイナリに存在しない」](03_project_and_loading.md)を先に読んでください。注入点は「テスト用の別経路」ではなく**本番経路そのもの**で、経路を差し替える方向に直すと A/B が破綻します。
 
@@ -1127,17 +1127,17 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **答え**: 白灰黒 DFS です。done は再計算を省くメモ化で、active への再入が循環。active と done を分けないと「親を共有する複数の子」を循環と誤報します。歩く機構は `resolveParentOrder()` 1 つで、scene load([scene.cpp の呼び出し](../../src/core/loader/scene.cpp#L1340))・編集 transaction・preview が同じ template を使い、**誰を起点にするか(participant filter)と、循環 / 不在親で何を投げるかだけが呼び手ごと**です。scene load では循環・未知親・曖昧親が parse 段で既に弾かれているので、ここでの active への再入は内部不整合として `logic_error` です(投影は early_publish 内、entity 生成・親リンク後・behavior の `onInit` より前)。parse 段側の DFS は[第3章「3値のDFSが名前を出す」](03_project_and_loading.md)が本体です。
 
-#### [`ProjectBasicConfig::saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L913) — 複数の注入点と baseline 再検証
+#### [`ProjectBasicConfig::saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L917) — 複数の注入点と baseline 再検証
 
 **分からなくなること**: baseline を取ったのに、置換直前でもう一度検証するのはなぜか。
 
-**答え**: [第3章「保存のTOCTOU窓」](03_project_and_loading.md)が本体です。1 点だけ補うと、[919 行のコメント](../../src/core/loader/basicconfig.cpp#L919)が baseline を「scene bytes + prefab read-set」の 1 つの不変物として固定すると明言しており、注入点は各区間の外部変更をテストで作るためのものです。
+**答え**: [第3章「保存のTOCTOU窓」](03_project_and_loading.md)が本体です。1 点だけ補うと、[919 行のコメント](../../src/core/loader/basicconfig.cpp#L923)が baseline を「scene bytes + prefab read-set」の 1 つの不変物として固定すると明言しており、注入点は各区間の外部変更をテストで作るためのものです。
 
-#### [`ProjectBasicConfig::publishSceneDocument()`](../../src/core/loader/basicconfig.cpp#L722) — revision と resolver generation が進む条件
+#### [`ProjectBasicConfig::publishSceneDocument()`](../../src/core/loader/basicconfig.cpp#L726) — revision と resolver generation が進む条件
 
 **分からなくなること**: revision と resolver generation がいつ進むのか(prepare で進むのか、publish で進むのか)。
 
-**答え**: **公開 1 回につき 1 進みます**。prepare しただけでは進みません。不変式は「公開した projection の値 + 1 に揃っている」ことで、初回公開はこの関数の中で [`++scene_metadata.next_scene_revision`](../../src/core/loader/basicconfig.cpp#L747) が、2 回目以降は [`publishPreparedSceneState()`](../../src/core/loader/basicconfig.cpp#L758) が `revision + 1` / `generation + 1` を代入して揃えます。上限到達は[関数先頭の 2 つの `overflow_error`](../../src/core/loader/basicconfig.cpp#L723) が公開自体を止めます。lazy init 側の入口は [`sceneProjectionState()`](../../src/core/loader/basicconfig.cpp#L778) です。
+**答え**: **公開 1 回につき 1 進みます**。prepare しただけでは進みません。不変式は「公開した projection の値 + 1 に揃っている」ことで、初回公開はこの関数の中で [`++scene_metadata.next_scene_revision`](../../src/core/loader/basicconfig.cpp#L751) が、2 回目以降は [`publishPreparedSceneState()`](../../src/core/loader/basicconfig.cpp#L762) が `revision + 1` / `generation + 1` を代入して揃えます。上限到達は[関数先頭の 2 つの `overflow_error`](../../src/core/loader/basicconfig.cpp#L727) が公開自体を止めます。lazy init 側の入口は [`sceneProjectionState()`](../../src/core/loader/basicconfig.cpp#L782) です。
 
 #### [`PreparedEffectTransaction::errors_`](../../src/core/loader/effecttransaction.hpp#L125) — なぜ capacity + 1 か
 
@@ -1161,11 +1161,11 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [`loadColliderComponent()`](../../src/core/loader/scene.cpp#L288) | `runtime_codec` の null 検査 | なぜ `logic_error` なのか | resolver が具体 component に codec を必ず付ける契約なので、null は authoring の誤りではなく内部不整合。同関数の `ResolutionFailureException` 経路(= 作者の誤り)と行き先を分けている |
 | [`loadTransientGltf()`](../../src/core/loader/scene.cpp#L2043) | 二重予約と `owns_resources` | なぜ 2 回予約するのか | ハッシュノードとバケット成長を**パース・GPU staging より前**に確保し(コメントが明言)、entity 生成後の公開が確保できない = transaction を割れないようにする。容量拒否は副作用の無い [`inspect()`(WP110)](../../src/core/loader/scene.cpp#L2082) + `preflightModelInstance` で先に行う |
 | [`displayObjectName()`](../../src/core/loader/scene.cpp#L278) | 診断用の表示名 | 常に `<unnamed>` に見える | 空のときだけ `<unnamed>` を返す 1 行。identity ではなく**表示**なので、同一性の判定に使わない |
-| [`scenePersistenceBaseline()`](../../src/core/loader/basicconfig.cpp#L374) | prefab closure と read-set | baseline が何の複合か | scene ファイルの digest + resolve が実際に読んだ prefab 集合(name/path/digest)。registry に無い prefab が closure にあれば `logic_error` |
+| [`scenePersistenceBaseline()`](../../src/core/loader/basicconfig.cpp#L378) | prefab closure と read-set | baseline が何の複合か | scene ファイルの digest + resolve が実際に読んだ prefab 集合(name/path/digest)。registry に無い prefab が closure にあれば `logic_error` |
 | [`SceneMetadataState`](../../src/core/loader/basicconfig.hpp#L104) | 3 本の番号の役割分担 | revision / generation / object_id の違い | revision = authoring document の改訂、resolver generation = 解決結果の世代(読み手のキャッシュ無効化)、next_authoring_object_id = 宣言 ID の払い出し高水位(scene をまたいで再利用しない) |
-| [`temporaryScenePath()`](../../src/core/loader/basicconfig.cpp#L441) | atomic カウンタ + nonce | 2 系統ある理由 | atomic は同一プロセス内の連続 save、steady_clock nonce は別プロセス・再起動・前回の残骸 tmp。保存先と同じ親ディレクトリに置くので `EXDEV` を踏まない |
-| [`JsonLoader` の CLI / project / default 3 層](../../src/core/loader/basicconfig.cpp#L61) と [prefab_registry 構築](../../src/core/loader/basicconfig.cpp#L633) | 設定のフォールスルー | 初期化順序の根拠 | 優先順位は実装どおり(CLI > project > default)。**順序をその形にした理由はコードにも文書にも無く、未執筆** |
-| [`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L798) | import のトランザクション意味論 | schema version 1/2 の扱い | **未執筆**(§9.23.10 の gate 順序と対で読む必要がある) |
+| [`temporaryScenePath()`](../../src/core/loader/basicconfig.cpp#L445) | atomic カウンタ + nonce | 2 系統ある理由 | atomic は同一プロセス内の連続 save、steady_clock nonce は別プロセス・再起動・前回の残骸 tmp。保存先と同じ親ディレクトリに置くので `EXDEV` を踏まない |
+| [`JsonLoader` の CLI / project / default 3 層](../../src/core/loader/basicconfig.cpp#L62) と [prefab_registry 構築](../../src/core/loader/basicconfig.cpp#L637) | 設定のフォールスルー | 初期化順序の根拠 | 優先順位は実装どおり(CLI > project > default)。**順序をその形にした理由はコードにも文書にも無く、未執筆** |
+| [`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L802) | import のトランザクション意味論 | schema version 1/2 の扱い | **未執筆**(§9.23.10 の gate 順序と対で読む必要がある) |
 | [`CallbackPhase`](../../src/core/loader/effecttransaction.hpp#L29) と [destroy 経路](../../src/core/loader/effecttransaction.cpp#L156) | activate / destroy / flush | destroy でだけ再送出しない理由 | destroy の呼び出し元は `noexcept` かつ**既に commit 済みで rollback 不能**なので、throw は terminate か中途半端な破棄にしかならない。固定長診断へ落として `CommittedWithEffectFailure` として報告する |
 | [`busValue()`](../../src/core/loader/effecttransaction.cpp#L31) / [`effectErrors`](../../src/core/loader/effecttransaction.cpp#L603) | const 版の copy、ErrorFields 分岐 | 何を分けているのか | **未執筆**(根拠がコードにない) |
 
@@ -1523,11 +1523,11 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **答え**: デストラクタや deferred 解放経路は `noexcept` で、そこで動的確保すると `bad_alloc` を投げうるため**報告自体が失敗します**。固定 8 要素のインライン配列なら確保も例外もなしに記録でき、溢れは件数だけ残します。同じ設計は §9.21「`ReleaseReport` は heap を使わない」でも扱っています。
 
-#### [parse → validate → stage](../../src/core/asset/model.cpp#L602) — 3 段階と `sameRigLayout`
+#### [parse → validate → stage](../../src/core/asset/model.cpp#L657) — 3 段階と `sameRigLayout`
 
 **分からなくなること**: どの段で GPU に触るのか、どの差分が `compatibility_revision` を進めるのか。
 
-**答え**: parse は IO / デコードのみ、[`validate`](../../src/core/asset/model.cpp#L602) は `inspect` で **GPU コミットなしのプレビュー template** を作って `sameRigLayout` でリグ差分を判定、[`stage`](../../src/core/asset/model.cpp#L610) で初めて実 GPU コミットとリビジョン付与です。失敗しても live に触れずに巻き戻せます。rig_changed(joint_nodes・親子・skin_bindings のレイアウト一致)**だけ**が `compatibility_revision` を進めます。
+**答え**: parse は IO / デコードのみ、[`validate`](../../src/core/asset/model.cpp#L657) は `inspect` で **GPU コミットなしのプレビュー template** を作って `sameRigLayout` でリグ差分を判定、[`stage`](../../src/core/asset/model.cpp#L665) で初めて実 GPU コミットとリビジョン付与です。失敗しても live に触れずに巻き戻せます。rig_changed(joint_nodes・親子・skin_bindings のレイアウト一致)**だけ**が `compatibility_revision` を進めます。
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
@@ -1538,16 +1538,16 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [`allocateRange()`](../../src/core/model/vertbufcontainer.cpp#L95) | free list + high water mark | 2 系統ある理由 | まず free list を first-fit で走査して解放済みレンジを再利用し(**リロード周回でバッファが際限なく伸びるのを防ぐ**)、合う穴が無いときだけ high water mark を進め、そこで初めて `ensure*Capacity` の再確保が起きる |
 | [`content_revision` / `compatibility_revision`](../../src/core/model/modeltemplate.hpp#L159) | 2 本の版 | 分ける理由 | content は毎リロード必ず進む「中身が変わった」印、compatibility はリグレイアウトが変わったときだけ進む「バインドを張り直す必要がある」印。後者だけが staged resource の互換性キーとして公開されるので、**内容だけの更新で依存側の再解決を誘発しない** |
 | [importer mapping の安定座標](../../src/core/model/modeltemplate.hpp#L83) | mesh/primitive/node index | 「regrouping を生き延びる」の意味 | ソース GLB 上の**安定座標**で、GPU 側の allocation offset とは意図的に分離されている。再グループ化で offset が変わっても、それらの座標で addressing されたインポータ由来のマテリアル割当はそのまま解決できる |
-| [`publishBatch()`](../../src/core/asset/model.cpp#L425) / [`retireReloadPayload()`](../../src/core/asset/model.cpp#L771) | 公開と退役 | 逆にできない理由 | WP382c では renderer の rebuild を prepare し、participant の publish で template と instance を新世代へ張り替える。旧 payload は coordinator の退役経路から GPU resource の遅延解放へ渡す。旧 primitive レンジを公開前に解放すると、生きた draw の参照を壊しうる |
+| [`publishBatch()`](../../src/core/asset/model.cpp#L459) / [`retireReloadPayload()`](../../src/core/asset/model.cpp#L826) | 公開と退役 | 逆にできない理由 | WP382c では renderer の rebuild を prepare し、participant の publish で template と instance を新世代へ張り替える。旧 payload は coordinator の退役経路から GPU resource の遅延解放へ渡す。旧 primitive レンジを公開前に解放すると、生きた draw の参照を壊しうる |
 | [`DeferredRelease` の `acquire()`](../../src/core/model/vertbufcontainer.cpp#L588) | lease semantics | null のとき何が起きたか | §9.23.4 の `GpuSubmissionLease` と同じ(フェンス完了まで生かす券)。lease が null なら既に回収済み |
 | [`deferOldBuffer()`](../../src/core/model/vertbufcontainer.cpp#L135) | 旧バッファの遅延破棄 | いつ drain されるか | DeletionQueue(submission fence 完了時)。→ §9.12 |
 | [例外時の morph range](../../src/core/model/vertbufcontainer.cpp#L390) | 部分 cleanup | 解放されない範囲がある | **未執筆**(`vertex_allocated` フラグの cleanup 範囲を確かめる必要がある) |
 | [morph metadata の空 vector 埋め](../../src/core/model/vertbufcontainer.cpp#L562) | ゼロクリア | なぜ空 vector か | **未執筆**(根拠がコードにない) |
 | [`deferred_callbacks` の初期化位置](../../src/core/model/vertbufcontainer.cpp#L74) | メンバ初期化順 | なぜその位置か | **未執筆**(根拠がコードにない) |
-| [`Impl` の所有関係](../../src/core/asset/model.cpp#L310) | PayloadTracker / CommitBatch / ModelPayload / PendingCandidate | 誰が誰を持つか | **未執筆**(3 段階 staging の実装詳細) |
-| [`const void*` での payload 追跡](../../src/core/asset/model.cpp#L591) | 型を消した比較 | なぜ型を消すのか | **未執筆**(根拠がコードにない) |
+| [`Impl` の所有関係](../../src/core/asset/model.cpp#L344) | PayloadTracker / CommitBatch / ModelPayload / PendingCandidate | 誰が誰を持つか | **未執筆**(3 段階 staging の実装詳細) |
+| [`const void*` での payload 追跡](../../src/core/asset/model.cpp#L646) | 型を消した比較 | なぜ型を消すのか | **未執筆**(根拠がコードにない) |
 | [`source_material_index` が optional](../../src/core/model/modeltemplate.hpp#L134) / [bounds](../../src/core/model/modeltemplate.hpp#L70) | 任意性と空間 | bounds は local か world か | **未執筆**。ただし「スキニングは後で現在のパレットから適用」とコメントされているので local space と読める |
-| [material bindings のパス解決](../../src/core/asset/model.cpp#L154) | reference からの解決 | fragment を返しうるか | **未執筆**(根拠がコードにない) |
+| [material bindings のパス解決](../../src/core/asset/model.cpp#L161) | reference からの解決 | fragment を返しうるか | **未執筆**(根拠がコードにない) |
 
 ### 9.23.9 editor journal
 
@@ -1862,29 +1862,29 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 ### 9.23.17 glTF
 
-#### [`next_generated_material = -2`](../../src/core/model/gltf.cpp#L1210) — 負値が生成マテリアルを示す
+#### [`next_generated_material = -2`](../../src/core/model/gltf.cpp#L1308) — 負値が生成マテリアルを示す
 
 **分からなくなること**: マテリアル ID に負値が現れる理由。
 
-**答え**: [第3章「-1を空けて負へ伸ばす」](03_project_and_loading.md)が本体です。1 点だけ補うと、[型そのもの](../../src/core/model/gltf.cpp#L735)が `int` で、glTF の material index は 0 以上しか取らず −1 が「マテリアル無し」なので、−2 から負方向へ数えれば単一のキー空間でソース index と絶対に衝突しません。
+**答え**: [第3章「-1を空けて負へ伸ばす」](03_project_and_loading.md)が本体です。1 点だけ補うと、[型そのもの](../../src/core/model/gltf.cpp#L833)が `int` で、glTF の material index は 0 以上しか取らず −1 が「マテリアル無し」なので、−2 から負方向へ数えれば単一のキー空間でソース index と絶対に衝突しません。
 
-#### [`resolveFragmentCandidate()`](../../src/core/model/gltf.cpp#L1745) — full_path と alias
+#### [`resolveFragmentCandidate()`](../../src/core/model/gltf.cpp#L1843) — full_path と alias
 
 **分からなくなること**: 2 通りの指定が両方一致したときに、なぜエラーにするのか。
 
 **答え**: `full_path` はシーングラフ上の一意な経路指定、alias は node 名 / mesh 名という短縮指定で、**短縮名は複数の経路に出現しうる**からです。複数一致したらローダが勝手に選ばずエラーにして、呼び出し側にフルパスでの曖昧性解消を要求します(重複フルパス自体はその手前で拒否)。
 
-#### [VRM firstPerson auto の primitive 分割](../../src/core/model/gltf.cpp#L1007) — なぜ分けるしかないのか
+#### [VRM firstPerson auto の primitive 分割](../../src/core/model/gltf.cpp#L1105) — なぜ分けるしかないのか
 
 **分からなくなること**: 三角形単位の可視性を、なぜ primitive を増やして表すのか。
 
 **答え**: [第3章「頭に触れたら三角ごと」](03_project_and_loading.md)が本体です。1 点だけ補うと、可視性は `PrimitiveViewVisibility` として **primitive 単位の属性**なので、同一 primitive を both 用と third_person_only 用の 2 つの index セットに分割して別 primitive として登録するしかありません。
 
-#### [morph target layout の generation](../../src/core/model/gltf.cpp#L46) — 何を追跡する世代か
+#### [morph target layout の generation](../../src/core/model/gltf.cpp#L47) — 何を追跡する世代か
 
 **分からなくなること**: GPU 割り当てとの関係。
 
-**答え**: プロセス全体で単調増加する**「不変なモデル世代の identity」**([`morphtarget.hpp` のコメント](../../src/core/model/morphtarget.hpp#L40))で、[ロード完了時に 1 つの `MorphTargetLayout` へ付与](../../src/core/model/gltf.cpp#L2437)されます。リロードでレイアウトが差し替わったことを消費側が検出でき、かつ **GPU 割り当て順に依存しない**同定ができます。
+**答え**: プロセス全体で単調増加する**「不変なモデル世代の identity」**([`morphtarget.hpp` のコメント](../../src/core/model/morphtarget.hpp#L40))で、[ロード完了時に 1 つの `MorphTargetLayout` へ付与](../../src/core/model/gltf.cpp#L2535)されます。リロードでレイアウトが差し替わったことを消費側が検出でき、かつ **GPU 割り当て順に依存しない**同定ができます。
 
 #### [`geometry_allocation_id`](../../src/core/model/modeltemplate.hpp#L98) — 何を識別し、どこで使うか
 
@@ -1894,19 +1894,19 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
-| [palette 超過](../../src/core/model/gltf.cpp#L2201) | error でなく `skinned=false` | 落とさない理由 | [コメント](../../src/core/model/gltf.cpp#L2202)どおり**「v1 パレット超過のスキンを持つアセットも読み込めなければならない」**(WP38 以前は skin を丸ごと無視していた挙動とのパリティ)。明示的にそのスキンをアニメーションで使った場合だけ `selectSkin` が例外にする |
-| [`transformVertexData()`](../../src/core/model/gltf.cpp#L613) | morph の有無で normal 正規化を分ける | 正規化しない場合がある理由 | morph がある場合、base normal/tangent を正規化すると**同じ normal_transform を掛けただけの morph delta と線形空間が食い違い、`normal + Σw·delta` の合成が壊れる**ため、非正規化のまま残して合成後にシェーダ側で正規化させる |
-| [`selectSkin()`](../../src/core/model/gltf.cpp#L1545) | 複数 skin を 1 パレットへ | joint_offset の意味 | → [第3章「128枚の結合palette」](03_project_and_loading.md) |
-| [`gltfSurface()`](../../src/core/model/gltf.cpp#L1303) | `engine://` surface の解決 | authoring 由来を受けない理由 | ローダは glTF のソース値を運ぶだけで、**routing とラッパ選択は project 側の lowering が行い**、その結果選ばれる `engine://surfaces/openpbr/*.surface` を組み込みリソースから解決・パース・キャッシュする。非 engine 参照は例外 |
-| [`skinnedMaterial()`](../../src/core/model/gltf.cpp#L812) | skinned variant の複製 | 複製が要る理由 | 同じ glTF マテリアルが skinned / 非 skinned の両方の primitive から参照されうるが、**skinned 側は別 vert shader と `skinned = true` が要る**ため別登録が必要。`local_material_id` をキーに memo 化する |
-| [`authored_reference` があるときだけ IR を計算](../../src/core/model/gltf.cpp#L2058) | normalized_alpha_ir の条件 | 空のままにする理由 | **typed な project / path-resolver 経路だけが authored provenance を持ち、IR の identity は authored reference から作られる**ので、inspection や legacy 直接ロードでは identity を捏造せず空のままにする(→ §9.23.5 の profile 表) |
-| [`selectLoad()`](../../src/core/model/gltf.cpp#L1802) | animation_only | mesh を読まない理由 | animation fragment は **CPU 側のクリップ / スキンデータのみ**を持ち、意図的に無関係な mesh・material・texture・ECS ボーンリソースを一切作らない(`roots` が空なので mesh 経路にも入らない) |
-| [`meshMorphTargetCount()`](../../src/core/model/gltf.cpp#L1335) | 全 primitive で同数を要求 | 揃える理由 | `mesh.weights` / `node.weights` は **mesh 単位で 1 本の配列**で、`appendMorphDefaults` も mesh 単位で 1 つの `morph_weight_offset` ブロックしか確保しないので、primitive ごとに数が違うと 1 本の weight レンジを共有できない。→ [第3章「morphはnode単位で切る」](03_project_and_loading.md) |
-| [morph accessor の sparse 拒否](../../src/core/model/gltf.cpp#L663) | morph accessor の制限 | 2 つの理由 | sparse は morph target v1 のデコード経路が未実装なので明示拒否。finite 検査は delta が GPU バッファと bounds ソースに入るため、**NaN/Inf が bounds とドローソートを汚染するのを入口で止める** |
-| [`collectNodeOccurrence()`](../../src/core/model/gltf.cpp#L1598) | (node_index, full_path) で重複検出 | DAG を許す理由 | 同一 node が複数の親から参照される再利用を許しつつ、**同じ (node, path) の再訪だけを打ち切る**ため。パスが違えば別インスタンスとして記録され、同じパスでの再帰は 1 回で止まる |
-| [`~LiveGltfResourceSink()`](../../src/core/model/gltf.cpp#L475) / [`finish()`](../../src/core/model/gltf.cpp#L537) | release と finish の排他 | `committed_` の意味 | → §9.22「三段トランザクション」(`committed_` が「もう解放してはいけない」印)。詳細は**未執筆** |
-| [`firstPersonAnnotation()`](../../src/core/model/gltf.cpp#L557) / [`headRelatedNodes()`](../../src/core/model/gltf.cpp#L583) | 4 値とメモ化 | 分割の入力 | 上記 VRM 分割の入力。詳細は**未執筆** |
-| [lowering → surface compilation → routing](../../src/core/model/gltf.cpp#L1998) / [named_materials の構築](../../src/core/model/gltf.cpp#L2420) / [VAT テクスチャ](../../src/core/model/gltf.cpp#L780) | 3 段の材質処理 | 段の切れ目 | **未執筆**(→ [第3章「逸脱がforwardへ落とす」](03_project_and_loading.md) が routing 側の一部を扱う) |
+| [palette 超過](../../src/core/model/gltf.cpp#L2299) | error でなく `skinned=false` | 落とさない理由 | [コメント](../../src/core/model/gltf.cpp#L2300)どおり**「v1 パレット超過のスキンを持つアセットも読み込めなければならない」**(WP38 以前は skin を丸ごと無視していた挙動とのパリティ)。明示的にそのスキンをアニメーションで使った場合だけ `selectSkin` が例外にする |
+| [`transformVertexData()`](../../src/core/model/gltf.cpp#L711) | morph の有無で normal 正規化を分ける | 正規化しない場合がある理由 | morph がある場合、base normal/tangent を正規化すると**同じ normal_transform を掛けただけの morph delta と線形空間が食い違い、`normal + Σw·delta` の合成が壊れる**ため、非正規化のまま残して合成後にシェーダ側で正規化させる |
+| [`selectSkin()`](../../src/core/model/gltf.cpp#L1643) | 複数 skin を 1 パレットへ | joint_offset の意味 | → [第3章「128枚の結合palette」](03_project_and_loading.md) |
+| [`gltfSurface()`](../../src/core/model/gltf.cpp#L1401) | `engine://` surface の解決 | authoring 由来を受けない理由 | ローダは glTF のソース値を運ぶだけで、**routing とラッパ選択は project 側の lowering が行い**、その結果選ばれる `engine://surfaces/openpbr/*.surface` を組み込みリソースから解決・パース・キャッシュする。非 engine 参照は例外 |
+| [`skinnedMaterial()`](../../src/core/model/gltf.cpp#L910) | skinned variant の複製 | 複製が要る理由 | 同じ glTF マテリアルが skinned / 非 skinned の両方の primitive から参照されうるが、**skinned 側は別 vert shader と `skinned = true` が要る**ため別登録が必要。`local_material_id` をキーに memo 化する |
+| [`authored_reference` があるときだけ IR を計算](../../src/core/model/gltf.cpp#L2156) | normalized_alpha_ir の条件 | 空のままにする理由 | **typed な project / path-resolver 経路だけが authored provenance を持ち、IR の identity は authored reference から作られる**ので、inspection や legacy 直接ロードでは identity を捏造せず空のままにする(→ §9.23.5 の profile 表) |
+| [`selectLoad()`](../../src/core/model/gltf.cpp#L1900) | animation_only | mesh を読まない理由 | animation fragment は **CPU 側のクリップ / スキンデータのみ**を持ち、意図的に無関係な mesh・material・texture・ECS ボーンリソースを一切作らない(`roots` が空なので mesh 経路にも入らない) |
+| [`meshMorphTargetCount()`](../../src/core/model/gltf.cpp#L1433) | 全 primitive で同数を要求 | 揃える理由 | `mesh.weights` / `node.weights` は **mesh 単位で 1 本の配列**で、`appendMorphDefaults` も mesh 単位で 1 つの `morph_weight_offset` ブロックしか確保しないので、primitive ごとに数が違うと 1 本の weight レンジを共有できない。→ [第3章「morphはnode単位で切る」](03_project_and_loading.md) |
+| [morph accessor の sparse 拒否](../../src/core/model/gltf.cpp#L761) | morph accessor の制限 | 2 つの理由 | sparse は morph target v1 のデコード経路が未実装なので明示拒否。finite 検査は delta が GPU バッファと bounds ソースに入るため、**NaN/Inf が bounds とドローソートを汚染するのを入口で止める** |
+| [`collectNodeOccurrence()`](../../src/core/model/gltf.cpp#L1696) | (node_index, full_path) で重複検出 | DAG を許す理由 | 同一 node が複数の親から参照される再利用を許しつつ、**同じ (node, path) の再訪だけを打ち切る**ため。パスが違えば別インスタンスとして記録され、同じパスでの再帰は 1 回で止まる |
+| [`~LiveGltfResourceSink()`](../../src/core/model/gltf.cpp#L573) / [`finish()`](../../src/core/model/gltf.cpp#L560) | release と finish の排他 | `committed_` の意味 | → §9.22「三段トランザクション」(`committed_` が「もう解放してはいけない」印)。詳細は**未執筆** |
+| [`firstPersonAnnotation()`](../../src/core/model/gltf.cpp#L655) / [`headRelatedNodes()`](../../src/core/model/gltf.cpp#L681) | 4 値とメモ化 | 分割の入力 | 上記 VRM 分割の入力。詳細は**未執筆** |
+| [lowering → surface compilation → routing](../../src/core/model/gltf.cpp#L2096) / [named_materials の構築](../../src/core/model/gltf.cpp#L2518) / [VAT テクスチャ](../../src/core/model/gltf.cpp#L878) | 3 段の材質処理 | 段の切れ目 | **未執筆**(→ [第3章「逸脱がforwardへ落とす」](03_project_and_loading.md) が routing 側の一部を扱う) |
 
 ### 9.23.18 領域をまたぐ 3 つの規約
 
