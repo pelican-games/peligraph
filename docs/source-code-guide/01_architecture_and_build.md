@@ -160,7 +160,7 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 | [`watch/`](../../src/core/watch) | FileWatcher、ContentDigest、reload gate/queue/transaction/service | [`watch::ReloadService`](../../src/core/watch/reloadservice.hpp#L182) |
 | [`loader/`](../../src/core/loader) | 設定、path/埋め込み資源のruntime adapter、scene、画像 | [`ProjectBasicConfig`](../../src/core/loader/basicconfig.hpp#L72)、[`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)。純粋な解決規則は [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) |
 | [`ecs/`](../../src/core/ecs) | 内部ECSのファサード、Componentメタデータ、組み込みSystem | [`ECSCore`](../../src/core/ecs/core.hpp#L13)、[`ComponentInfoManager`](../../src/core/ecs/componentinfo.hpp#L60) |
-| [`userpublic/`](../../src/core/userpublic) | ゲームコード向け公開APIとECS実体テンプレート | [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L233)、[`GameObjects`](../../src/core/userpublic/gameobjects.hpp#L31) |
+| [`userpublic/`](../../src/core/userpublic) | ゲームコード向け公開APIとECS実体テンプレート | [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L236)、[`GameObjects`](../../src/core/userpublic/gameobjects.hpp#L31) |
 | [`os/`](../../src/core/os) | GLFW window、生入力、Action map | [`InputStateCore`](../../src/core/os/inputstate.hpp#L206)、[`InputActionMap`](../../src/core/os/actionmap.hpp#L65) |
 | [`renderingpass/`](../../src/core/renderingpass) | 描画宣言のパース、検証、frame graph、compute task、RT | [`PassDefinition`](../../src/core/renderingpass/renderingpass.hpp#L458)、[`FramePlan`](../../src/core/renderingpass/frameplanner.hpp#L159) |
 | [`renderer/`](../../src/core/renderer) | material/fullscreen/UI/debug/shadowの実描画。frameresources / projectionjitter / temporal / sprite* / velocitypasscontainer / shadowdepthpasscontainer / atlasassetresource が追加 | [`MaterialRenderer`](../../src/core/renderer/materialrender.hpp#L39)、[`Camera`](../../src/core/renderer/camera.hpp#L20) |
@@ -173,7 +173,7 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 | [`fullscreenpass/`](../../src/core/fullscreenpass) | fullscreen pipelineと入力descriptor | [`FullscreenPassContainer`](../../src/core/fullscreenpass/fullscreenpasscontainer.hpp#L50) |
 | [`light/`](../../src/core/light) | scene lightとlight UBO | [`LightContainer`](../../src/core/light/lightcontainer.hpp#L29) |
 | [`phys/`](../../src/core/phys) | CPU幾何クエリとscene binding | [`PhysWorld`](../../src/core/phys/physworld.hpp#L42)、[`phys::Shape`](../../src/core/phys/physquery.hpp#L43) |
-| [`audio/`](../../src/core/audio) | WAV decode、miniaudio backend、voice/bus | [`Audio`](../../src/core/audio/audio.hpp#L24) |
+| [`audio/`](../../src/core/audio) | WAV decode、miniaudio backend、voice/bus | [`Audio`](../../src/core/audio/audio.hpp#L41) |
 | [`persistence/`](../../src/core/persistence) | settings/save slot、原子的書き換え | [`Persistence`](../../src/core/persistence/persistence.hpp#L39) |
 | [`playback/`](../../src/core/playback) | transform sequenceとVAT再生 | [`SeqPlayer`](../../src/core/playback/seqplayer.hpp#L51)、[`VatPlayer`](../../src/core/playback/vatplayer.hpp#L12) |
 | [`communication/`](../../src/core/communication) | stdio JSON-RPCと編集RPC一式（コマンド、journal、preview、asset query、windowed host） | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L55)、[`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp)、[`EditorJournal`](../../src/core/communication/editorjournal.hpp) |
@@ -218,8 +218,8 @@ v0（共通グラフ・姿勢グラフ・package）で増えた入口は次の�
 | [`project/packagemanifest.hpp`](../../src/project/packagemanifest.hpp#L60) | `pelican.package` v1 と install / uninstall（[第3章 §3.16](03_project_and_loading.md)） |
 | [`core/animation/posegraph.hpp`](../../src/core/animation/posegraph.hpp#L61) / [`posegraphruntime.hpp`](../../src/core/animation/posegraphruntime.hpp#L62) | `pose.*` のコンパイルと評価。`PELICAN_WITH_ANIMATION=ON` のときだけビルドされます |
 | [`core/animation/animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L1) | OFFビルドの顔。交渉入口だけ残し、out 引数が null なら `invalid_argument`、それ以外は `unsupported_version` を返します |
-| [`core/loader/scenegraphruntime.cpp`](../../src/core/loader/scenegraphruntime.cpp#L54) | `graph.instance` の owner 解決、評価stateの世代移送、publish snapshot（[第3章 §3.5](03_project_and_loading.md)） |
-| [`core/userpublic/valuegraph.hpp`](../../src/core/userpublic/valuegraph.hpp#L111) | lowered IR とその評価器（[第3章 §3.15](03_project_and_loading.md)） |
+| [`core/loader/scenegraphruntime.cpp`](../../src/core/loader/scenegraphruntime.cpp#L59) | `graph.instance` の owner 解決、評価stateの世代移送、publish snapshot（[第3章 §3.5](03_project_and_loading.md)） |
+| [`core/userpublic/valuegraph.hpp`](../../src/core/userpublic/valuegraph.hpp#L152) | lowered IR とその評価器（[第3章 §3.15](03_project_and_loading.md)） |
 | [`core/communication/animationstatus.hpp`](../../src/core/communication/animationstatus.hpp#L18) | `get_status.animation` のJSON化（AG-3a） |
 | [`devcli/packagecommand.hpp`](../../src/devcli/packagecommand.hpp#L16) / [`graphcatalogcommand.hpp`](../../src/devcli/graphcatalogcommand.hpp#L8) | `pelican_cli package` と `pelican_cli graph-catalog` |
 | [`player/package_sdk_header.hpp.in`](../../src/player/package_sdk_header.hpp.in) | package 用転送ヘッダの雛形（§1.2） |
@@ -267,7 +267,7 @@ registryの各行が持つキーのうち、この節で効くのは2つです�
 | フラグ | ON時 | OFF時の動作 |
 |---|---|---|
 | `PELICAN_RUNTIME_SHADER_COMPILER` | Vulkan SDK版shadercでGLSLを実行時コンパイル、feature合成可 | shadercをリンクせず、source shader/feature利用時に明示エラー |
-| `PELICAN_WITH_AUDIO` | miniaudioと`Audio`実装をリンク | `GameContext`音声APIが`BuildFeatureDisabledError`。共通グラフの `pelican.audio` module（`audio.playback` / `audio.volume` / `audio.pitch`）も登録されないので、`audio.*` を書いた文書は `graph.operation_unregistered@1`（[`#if PELICAN_WITH_AUDIO`](../../src/project/graphmodule.cpp#L309)）。`pelican.event.playback_control@1` は `pelican.value` 側の型なのでOFFでも残る |
+| `PELICAN_WITH_AUDIO` | miniaudioと`Audio`実装をリンク | `GameContext`音声APIが`BuildFeatureDisabledError`。共通グラフの `pelican.audio` module（`audio.playback` / `audio.volume` / `audio.pitch`）も登録されないので、`audio.*` を書いた文書は `graph.operation_unregistered@1`（[`#if PELICAN_WITH_AUDIO`](../../src/project/graphmodule.cpp#L310)）。`pelican.event.playback_control@1` は `pelican.value` 側の型なのでOFFでも残る |
 | `PELICAN_WITH_VAT` | VAT parser/player、VAT shaderをリンク | GLBにVAT extrasがあれば明示エラー、playerはstub |
 | `PELICAN_WITH_EXR` | tinyexrでEXRロード | EXR指定時に明示エラー |
 | `PELICAN_WITH_RPC` | stdio RPC server | [`rpcserver_stub.cpp`](../../src/core/communication/rpcserver_stub.cpp#L1) |
@@ -300,7 +300,7 @@ ABIの交渉入口（`getApiV1` / `getPoseStagingServiceV1` / `getApplicationSer
 
 両方ONならJoltを優先し、内蔵providerはregistryの連動宣言に従って強制的にOFFへ戻されます（[`FORCES_ON_CONTRAST PELICAN_WITH_BUILTIN_PHYSICS=OFF`](../../cmake/pelican_feature_registry.cmake#L204)）。この2つだけはPUBLICではなく [`target_compile_definitions(pelican_core PRIVATE ...)`](../../src/core/CMakeLists.txt#L21) のPRIVATE compile definitionです。両方OFF（provider 0本）でも `PELICAN_WITH_PHYSICS=ON` ならクエリサービスはあり、ゲーム DLL が provider を登録していないクエリは空の結果ではなく [`phys::ProviderUnavailableError`](../../src/core/phys/physquery.hpp#L102)（`physics.provider_unavailable@1`）を投げます（PG-2。[`PhysWorld::raycastAll()` の変換](../../src/core/phys/physworld.cpp#L570)）。
 
-機能OFF時にヘッダのAPI形状を消すのではなく、できる限り同じ入口を保ち、明示的な「このバイナリでは無効」エラーへ寄せています。共通例外は [`BuildFeatureDisabledError`](../../src/core/build_features.hpp#L20) です。ゲームコードの facade（`ctx.audio()` / `ctx.physics()` と、その後ろの scene effect transaction）は、その派生の [`BuildFeatureCallDisabledError`](../../src/core/build_features.hpp#L45) を投げます（PG-2）。`code()` が `build_feature_disabled@1`、`feature()` がオプション名で、散文の message は基底と同じです。Status を返す `ctx.animation()` は例外にせず `not_found` を返します（規則は [`AnimationContext` の前のコメント](../../src/core/userpublic/gamecontext.hpp#L105)）。
+機能OFF時にヘッダのAPI形状を消すのではなく、できる限り同じ入口を保ち、明示的な「このバイナリでは無効」エラーへ寄せています。共通例外は [`BuildFeatureDisabledError`](../../src/core/build_features.hpp#L20) です。ゲームコードの facade（`ctx.audio()` / `ctx.physics()` と、その後ろの scene effect transaction）は、その派生の [`BuildFeatureCallDisabledError`](../../src/core/build_features.hpp#L45) を投げます（PG-2）。`code()` が `build_feature_disabled@1`、`feature()` がオプション名で、散文の message は基底と同じです。Status を返す `ctx.animation()` は例外にせず `not_found` を返します（規則は [`AnimationContext` の前のコメント](../../src/core/userpublic/gamecontext.hpp#L108)）。
 
 実装の差し替え方は、サブディレクトリのCMakeが `.cpp` を選ぶ形です。たとえば [`src/core/renderdoc/CMakeLists.txt`](../../src/core/renderdoc/CMakeLists.txt) は `PELICAN_WITH_RENDERDOC` により `renderdoccapture.cpp` か `renderdoccapture_stub.cpp` のどちらかだけを `pelican_core` へ追加します。フラグ自体は [`src/core/CMakeLists.txt`](../../src/core/CMakeLists.txt) でPUBLICなcompile definitionとしても公開されるため、他のサブシステムからも `#if PELICAN_WITH_RENDERDOC` で参照できます。
 

@@ -106,8 +106,8 @@
 |---|---|
 | 形 | `{scene: <シーン ID の文字列>, object: <正の整数>}` の **2 キーちょうど**。欠けても増えても `graph owner requires scene and positive authoring object id`([graphcomposition.cpp:97](../../src/project/graphcomposition.cpp#L98)) |
 | `object` の正体 | **authoring object id**。保存時に各 object の `authoring_object_id` として記録され、削除・並べ替え・保存・再読込を跨いでも同じ対象を指します。ID のない旧文書は従来どおり文書全体の宣言順で採番され、最初の保存で永続化されます。ID は `scene_tree` で確認してください([authoringscenedocument.cpp](../../src/core/loader/authoringscenedocument.cpp)) |
-| 解決 | ロード後の束縛表を線形に走査し、その id を持つ生きたオブジェクトを探します([SceneLoader::graphOwnerObject()](../../src/core/loader/scenegraphruntime.cpp#L35)) |
-| 見つからないとき | **エラーではなく inactive**。その instance の scope は評価されず、`LOG_WARNING` が出ます(`graph instance owner does not match any object in this scene: <scope>, <scope>, …`)。**1 行にまとまります** —— そのとき初めて報告する scope を `", "` で連ねて 1 回だけ出し、同じ scope は二度言いません([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L61))。「言った」という記憶は**シーンのロードで消えます**([scene.cpp:730](../../src/core/loader/scene.cpp#L740))ので、次のシーンでは同じ scope がまた 1 回報告されます。姿勢では「rest pose のまま動かない」に見えます |
+| 解決 | ロード後の束縛表を線形に走査し、その id を持つ生きたオブジェクトを探します([SceneLoader::graphOwnerObject()](../../src/core/loader/scenegraphruntime.cpp#L40)) |
+| 見つからないとき | **エラーではなく inactive**。その instance の scope は評価されず、`LOG_WARNING` が出ます(`graph instance owner does not match any object in this scene: <scope>, <scope>, …`)。**1 行にまとまります** —— そのとき初めて報告する scope を `", "` で連ねて 1 回だけ出し、同じ scope は二度言いません([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L66))。「言った」という記憶は**シーンのロードで消えます**([scene.cpp:730](../../src/core/loader/scene.cpp#L744))ので、次のシーンでは同じ scope がまた 1 回報告されます。姿勢では「rest pose のまま動かない」に見えます |
 | 別のオブジェクトを指したとき | id が**実在する別のオブジェクト**だった場合は黙って**そちらに適用**されます。姿勢の sink のように適用できない相手(カメラなど)なら、オブジェクト名入りで失敗します(`pose graph sink resolution for Camera failed with animation status …` — [posegraphruntime.cpp:181](../../src/core/animation/posegraphruntime.cpp#L187)) |
 
 `authoring_object_id` と文書直下の `next_authoring_object_id` は、保存・読込用の予約フィールドです。ID は正の整数で、同じ文書の別シーンも含めて重複できません。`next_authoring_object_id` は使用済み ID より大きい次の採番値を保持するため、最大番号の object を削除してもその番号を再利用しません。ID のない object を保存済み文書へ追加すると、この採番値以降が割り当てられます。外部エディタで object を移動するときは ID を一緒に移動し、複製して新しい object にするときは複製側の ID を外してください。重複・不正な型・採番値との矛盾はロード時に拒否されます。
@@ -347,7 +347,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 ## 4.3 シーンロードの流れ
 
-[`SceneLoader::load(SceneLoadRequest)`](../../src/core/loader/scene.cpp#L1637) は **1 つのトランザクション**です(✅WP380a〜e)。**トランザクション**とは、途中の状態を外から見せず「全部成功して切り替わる」か「1 つも変わらない」かのどちらかにする実行単位のことです([用語集](14_glossary.md))。「旧シーンを消してから新シーンを作る」のではなく、新シーンの候補を全部作って一斉に切り替え、失敗したら全部を旧シーンに戻します。
+[`SceneLoader::load(SceneLoadRequest)`](../../src/core/loader/scene.cpp#L1641) は **1 つのトランザクション**です(✅WP380a〜e)。**トランザクション**とは、途中の状態を外から見せず「全部成功して切り替わる」か「1 つも変わらない」かのどちらかにする実行単位のことです([用語集](14_glossary.md))。「旧シーンを消してから新シーンを作る」のではなく、新シーンの候補を全部作って一斉に切り替え、失敗したら全部を旧シーンに戻します。
 
 **この経路は 1 本だけ**です。起動時のロード / rpc `load_scene` / `ctx.loadScene()` の遅延適用(pending)/ エディタからのスナップショット import は、入口([SceneLoadRoot](../../src/core/loader/sceneload.hpp#L82))が違うだけで同じ executor を通ります。実際の処理順:
 
@@ -377,20 +377,20 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 | `playSound` / `stopSound` / `setBusVolume` | 音は鳴らず、voice slot だけ予約。flush で実際に再生 |
 | `setGameSettings` / `saveSettings` / `saveData` | shadow に書き、ディスクへは flush で atomic 書き込み |
 
-**読み取りは自分の書き込みを見ます。** ロード中の `isPlaying(h)` は「さっき staging した `playSound` のハンドル」に true を返し、その後 `stopSound` すれば false。`loadData(slot)` は staging 済みの `saveData` の中身をそのまま返し、`listSaves()` にも staging 済みスロットが並びます — ただし**まだ書いていないので `timestamp` は 0**([listSaves](../../src/core/loader/effecttransaction.cpp#L407))。`gameSettings()` も同じく shadow を返します。
+**読み取りは自分の書き込みを見ます。** ロード中の `isPlaying(h)` は「さっき staging した `playSound` のハンドル」に true を返し、その後 `stopSound` すれば false。`loadData(slot)` は staging 済みの `saveData` の中身をそのまま返し、`listSaves()` にも staging 済みスロットが並びます — ただし**まだ書いていないので `timestamp` は 0**([listSaves](../../src/core/loader/effecttransaction.cpp#L409))。`gameSettings()` も同じく shadow を返します。
 
 **構造変更(mutation = entity の生成・削除・localtransform の書き換え)の直接呼び出しは名前付きで拒否されます。** トランザクション中に behavior のコールバック**外**から `GameObjects::create` / `remove` / `setLocalTransform` を呼ぶと、その呼び出し自体が [`SceneTransactionMutationRejected{api: ...}`](../../src/core/userpublic/gameobjects.hpp#L20)(`std::logic_error` の派生。`api` にはねられた API 名が入ります)を投げます([gameobjects.cpp](../../src/core/userpublic/gameobjects.cpp#L14) が入口ごとに判定。`removeAll` は behavior のコールバック中でも拒否)。踏むのは主に、ゲーム DLL のコンポーネント JSON ローダから ECS を触ろうとしたときです。
 
 ### 旧シーンの onDestroy が見えるもの
 
-retire 中の `onDestroy` は「自分の最終状態」を読めます。entity はもう unpublish されていますが、`ctx.localTransform(self)` / `ctx.spriteView(self)` は**破棄トークンが持つスナップショット**を返します([retiredComponent](../../src/core/loader/effecttransaction.cpp#L462))。書き込み側(`setLocalTransform` / `setSpriteView` / `setSpriteTexture`)は throw せず **false** を返し、`SceneRetiredObjectMutationRejected` として `effect_errors` に積まれます([rejectRetiredMutation](../../src/core/loader/effecttransaction.cpp#L473))。
+retire 中の `onDestroy` は「自分の最終状態」を読めます。entity はもう unpublish されていますが、`ctx.localTransform(self)` / `ctx.spriteView(self)` は**破棄トークンが持つスナップショット**を返します([retiredComponent](../../src/core/loader/effecttransaction.cpp#L464))。書き込み側(`setLocalTransform` / `setSpriteView` / `setSpriteTexture`)は throw せず **false** を返し、`SceneRetiredObjectMutationRejected` として `effect_errors` に積まれます([rejectRetiredMutation](../../src/core/loader/effecttransaction.cpp#L475))。
 
 - `onDestroy` は `noexcept` なので、この段の fallible API(`playSound` / `saveData` など)は**例外を投げずに `effect_errors` へ**回されます。呼び出し側のゲームコードは戻り値だけ見ればよく、握りつぶしではなく記録されます。
-- retire 中の `loadScene(name)` は、**commit 済みのシーン集合**に対して解決されます([requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1842))。旧シーンにしか無い名前を書くと `scene not found in committed projection: X` になり、`scene_retire_load_rejected@1` として記録されます。
+- retire 中の `loadScene(name)` は、**commit 済みのシーン集合**に対して解決されます([requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1846))。旧シーンにしか無い名前を書くと `scene not found in committed projection: X` になり、`scene_retire_load_rejected@1` として記録されます。
 
 ### commit したのに作用が失敗したとき
 
-flush で音やディスク書き込みが失敗しても、**シーンは新しいまま**です。この結果は [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として返り、rpc の `load_scene` は例外ではなく `{"name": ..., "committed": true, "effect_errors": [...]}` を返します([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1680))。`effect_errors` の各要素は `{api, error_code, error_fields, phase}` で、`api` は `playSound` / `saveData` などの公開 API 名、`phase` は `activate` / `destroy` / `flush` のどれかです。
+flush で音やディスク書き込みが失敗しても、**シーンは新しいまま**です。この結果は [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として返り、rpc の `load_scene` は例外ではなく `{"name": ..., "committed": true, "effect_errors": [...]}` を返します([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1702))。`effect_errors` の各要素は `{api, error_code, error_fields, phase}` で、`api` は `playSound` / `saveData` などの公開 API 名、`phase` は `activate` / `destroy` / `flush` のどれかです。
 
 - 「シーンは切り替わらなかった」= commit 前の失敗は従来どおり**例外**です。両者を混同しないでください。
 - staging できる作用は 256 件までです。257 件目からは**控えに積まれず、実行もされません**(`playSound` は無効なハンドルを返します)。捨てた件数だけが `effect_outbox_full@1{dropped: N}` という 1 件のエラーにまとめて記録されます([reserveEntry](../../src/core/loader/effecttransaction.cpp#L119))。
@@ -425,7 +425,7 @@ ECS の実装(WP62・R5-core ✅)は archetype/chunk 方式ですが、ゲーム
 
 ### 名前でシーンオブジェクトを引く — `ctx.objects()`(✅GP-1)
 
-ゲームコードからシーンのオブジェクトを名前で探すときは、[`GameContext::objects()`](../../src/core/userpublic/gamecontext.hpp#L287) を使います。手順は 3 段です。
+ゲームコードからシーンのオブジェクトを名前で探すときは、[`GameContext::objects()`](../../src/core/userpublic/gamecontext.hpp#L290) を使います。手順は 3 段です。
 
 1. `resolve(name)` — 名前を 1 回だけ引き、**`ObjectRef`** を返します。ref は名前を持たず、「どのシーンの実行(run)で解決したか」と「シーン内の宣言 ID(authoring object id — §4.1)」の組です。
 2. `materialize(ref)` — 今生きている `GameObjectId` を返します。

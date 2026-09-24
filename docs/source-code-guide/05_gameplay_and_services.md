@@ -4,7 +4,7 @@
 
 ## 5.1 `GameContext`は公開ファサード
 
-ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L233) が主要サービスを薄く包みます。面は根と7つのドメインファサードに分かれ、物理 / 音 / アニメーション / セーブ / 描画 / シーンオブジェクトの名前解決 / UI は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L282) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L283) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L284) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L285) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L286) / [`objects()`](../../src/core/userpublic/gamecontext.hpp#L287)（GP-1）/ [`ui()`](../../src/core/userpublic/gamecontext.hpp#L288)（GP-3）が返す値越しに呼びます。ファサードは空のクラス（[`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L48) / [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L83) / [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L110) / [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L119) / [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L134) / [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L192)）で、状態もポインタも持たないので、返り値を持ち回っても何も持っていないのと同じです。例外は [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L220) で、`ui(document_key)` の key を `std::string_view` のまま 1 本だけ持ちます（`ui()` なら空の view）。key の文字列はファサードを使い終わるまで生かしておく必要があります。委譲先は分割前と同じです。
+ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L236) が主要サービスを薄く包みます。面は根と7つのドメインファサードに分かれ、物理 / 音 / アニメーション / セーブ / 描画 / シーンオブジェクトの名前解決 / UI は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L285) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L286) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L287) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L288) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L289) / [`objects()`](../../src/core/userpublic/gamecontext.hpp#L290)（GP-1）/ [`ui()`](../../src/core/userpublic/gamecontext.hpp#L291)（GP-3）が返す値越しに呼びます。ファサードは空のクラス（[`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L48) / [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L83) / [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L113) / [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L122) / [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L137) / [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L195)）で、状態もポインタも持たないので、返り値を持ち回っても何も持っていないのと同じです。例外は [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L223) で、`ui(document_key)` の key を `std::string_view` のまま 1 本だけ持ちます（`ui()` なら空の view）。key の文字列はファサードを使い終わるまで生かしておく必要があります。委譲先は分割前と同じです。
 
 | API群 | 委譲先 | 実装へジャンプ |
 |---|---|---|
@@ -20,11 +20,11 @@
 | audio（`audio().playSound` ほか） | `Audio`またはfeature disabled error | [`AudioContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L457) |
 | UI の書き込み（`ui().setText` / `setVisible` / `setValue`、GP-3） | `RenderingPassContainer::isFeatureEnabled("ui")` → `ui::UiModule::queueWrite`（`ui.*` sink との衝突は公開中の世代の `uiSinkBindings()` を見る） | [`UiContext::setText()`](../../src/core/userpublic/gamecontext.cpp#L217) / [`writeUi()`](../../src/core/userpublic/gamecontext.cpp#L194) |
 | scene object の名前解決（`objects().resolve` / `materialize` / `worldTransform`、GP-1） | `SceneLoader::resolveObject` / `materializeObject`、world は ECS の `TransformComponent` | [`ObjectsContext::resolve()`](../../src/core/userpublic/gamecontext.cpp#L229) |
-| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L629) |
-| debug text（`render().debugText`） | `DebugText` | [`RenderContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L641) |
-| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L270) |
-| animation graph（`animation().setParameter` / `forceState`） | `AnimationSystem` | [`AnimationContext::setParameter()`](../../src/core/userpublic/gamecontext.cpp#L470) |
-| settings（根）/ save（`save()`） | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L645) / [`SaveContext::saveData()`](../../src/core/userpublic/gamecontext.cpp#L672) |
+| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L634) |
+| debug text（`render().debugText`） | `DebugText` | [`RenderContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L646) |
+| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L273) |
+| animation graph（`animation().setParameter` / `forceState`） | `AnimationSystem` | [`AnimationContext::setParameter()`](../../src/core/userpublic/gamecontext.cpp#L475) |
+| settings（根）/ save（`save()`） | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L650) / [`SaveContext::saveData()`](../../src/core/userpublic/gamecontext.cpp#L677) |
 
 class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport修飾されています。game DLL境界を越えて使われるためです。
 
@@ -34,7 +34,7 @@ class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport�
 
 ### ライト操作API ✅実装済み（WP142 / LIGHT0）
 
-[`gamecontext.hpp` 内](../../src/core/userpublic/gamecontext.hpp#L136) の4本（`RenderContext` のメンバーなので `ctx.render().setDirectionalLightDirection(...)` の形で呼びます）は、scene定義済みライトを**名前で引いて**更新します。いずれも `[[nodiscard]] bool` を返し、その名前のライトが無ければ`false`です。委譲先は [`LightContainer`](../../src/core/light/lightcontainer.hpp) の同名setterです。
+[`gamecontext.hpp` 内](../../src/core/userpublic/gamecontext.hpp#L139) の4本（`RenderContext` のメンバーなので `ctx.render().setDirectionalLightDirection(...)` の形で呼びます）は、scene定義済みライトを**名前で引いて**更新します。いずれも `[[nodiscard]] bool` を返し、その名前のライトが無ければ`false`です。委譲先は [`LightContainer`](../../src/core/light/lightcontainer.hpp) の同名setterです。
 
 ```cpp
 [[nodiscard]] bool setDirectionalLightDirection(std::string_view name, vec3 direction) const;
@@ -535,11 +535,11 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 
 ## 5.9 Audio
 
-公開型は [`Audio`](../../src/core/audio/audio.hpp#L24) です。
+公開型は [`Audio`](../../src/core/audio/audio.hpp#L41) です。
 
 ### backend interface
 
-実装内部の [`Audio::Backend`](../../src/core/audio/audio.cpp#L255) がvirtual interfaceで、二実装があります。
+実装内部の [`Audio::Backend`](../../src/core/audio/audio.cpp#L290) がvirtual interfaceで、二実装があります。
 
 - `MiniaudioBackend`: 実deviceへ再生
 - `NullAudioBackend`: headless/RPC、またはdevice初期化失敗時
@@ -548,13 +548,13 @@ headlessでもplay/stop/isPlayingの状態遷移は模倣されるため、ゲ�
 
 ### decodeとvoice
 
-[`Audio::playSound()`](../../src/core/audio/audio.cpp#L489) は`PathResolver`でbytesを読み、WAVをfloat sampleへdecodeし、backend voice IDを型付き`SoundHandle`へ包みます。現公開playは全てSE busです。
+[`Audio::playSound()`](../../src/core/audio/audio.cpp#L634) は`PathResolver`でbytesを読み、WAVをfloat sampleへdecodeし、backend voice IDを型付き`SoundHandle`へ包みます。現公開playは全てSE busです。
 
 busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更時はlive voice全てへ再適用します。
 
 ### prepare / commit の縫い目と provisional handle ✅実装済み
 
-`playSound()` 自身が4本の小さなAPIの合成になっています（ヘッダのコメントが規範 — 「decodeとエンジン側の容量はcommit前に全部用意し、backend呼び出しだけを失敗しうるflushに残す」、[`audio.hpp` 内](../../src/core/audio/audio.hpp#L62)）。
+`playSound()` 自身が4本の小さなAPIの合成になっています（ヘッダのコメントが規範 — 「decodeとエンジン側の容量はcommit前に全部用意し、backend呼び出しだけを失敗しうるflushに残す」、[`audio.hpp` 内](../../src/core/audio/audio.hpp#L136)）。
 
 ```text
 prepareSound(path)     # PathResolver + WAV decode。shared_ptr を作るのはここ
@@ -563,11 +563,11 @@ prepareVoiceSlot(h)    # voices への emplace(= ノード確保)まで。backen
 commitPreparedPlay(h)  # backend->play() の後、既存ノードへ scalar を代入するだけ
 ```
 
-この分割が効くのは §3.5 の effect transaction 経由のときです。`playSound()` が返す `SoundHandle` は **transaction中はまだ鳴っていない予約**で、実際の `backend->play()` は flush で走ります。`commitPreparedPlay()` が最後にやるのは `slot->second.backend_id = backend_id` の1代入だけなので、確保に伴う失敗が commit 後に起きません（[そのコメント](../../src/core/audio/audio.cpp#L547)）。predicate側もoutboxを見ます — transaction中の `isPlaying()` は、outboxに play があれば `true`、stop があれば `false`、どちらも無ければ実 backend へ問い合わせます（[`PreparedEffectTransaction::isPlaying()`](../../src/core/loader/effecttransaction.cpp#L272)）。
+この分割が効くのは §3.5 の effect transaction 経由のときです。`playSound()` が返す `SoundHandle` は **transaction中はまだ鳴っていない予約**で、実際の `backend->play()` は flush で走ります。`commitPreparedPlay()` が最後にやるのは `slot->second.backend_id = backend_id` の1代入だけなので、確保に伴う失敗が commit 後に起きません（[そのコメント](../../src/core/audio/audio.cpp#L736)）。predicate側もoutboxを見ます — transaction中の `isPlaying()` は、outboxに play があれば `true`、stop があれば `false`、どちらも無ければ実 backend へ問い合わせます（[`PreparedEffectTransaction::isPlaying()`](../../src/core/loader/effecttransaction.cpp#L274)）。
 
 `next_handle` のcursorは **rollbackしません**。manifestが `audio.handle_cursor` を `non_rollback` / `u64-gap-named-v1` として明示的に持っている（§3.5 の 7）のはこのためで、失敗した load が消費した番号は欠番として残ります。番号の再利用でハンドルが別の音を指すより、穴が空くほうが安全、という選択です。
 
-失敗の非対称も見ておく価値があります。[`commitPreparedStop()`](../../src/core/audio/audio.cpp#L552) は `voices` から**先に**eraseしてから `backend->destroy()` を呼び、destroyが投げたら「backend voiceが残っているかもしれない」と明記したログ（`audio_stop_failed@1`）を出して投げ直します。エンジン側の帳簿は必ず一貫させ、backend側の取りこぼしは診断で見せる、という向きです。
+失敗の非対称も見ておく価値があります。[`commitPreparedStop()`](../../src/core/audio/audio.cpp#L742) は `voices` から**先に**eraseしてから `backend->destroy()` を呼び、destroyが投げたら「backend voiceが残っているかもしれない」と明記したログ（`audio_stop_failed@1`）を出して投げ直します。エンジン側の帳簿は必ず一貫させ、backend側の取りこぼしは診断で見せる、という向きです。
 
 ## 5.10 Persistence
 
@@ -589,11 +589,11 @@ commitPreparedPlay(h)  # backend->play() の後、既存ノードへ scalar を�
 
 audioと同じく、persistenceも「用意」と「書き込み」に割れています。[`prepareDataWrite()`](../../src/core/persistence/persistence.cpp#L313) と [`prepareSettingsWrite()`](../../src/core/persistence/persistence.cpp#L256) が [`PreparedWrite`](../../src/core/persistence/persistence.hpp#L46) を作り、[`commitPreparedWrite()`](../../src/core/persistence/persistence.cpp#L326) が `atomicWrite()` を1回呼ぶだけです。`PreparedWrite` が持つのは `path` / `bytes`（dump済み）/ `resource_key` / `slot` / `overlay_data` で、**JSONのdumpもpath解決もcommit前**に終わっています。
 
-`resource_key` は [`canonicalResourceKey()`](../../src/core/persistence/persistence.cpp#L40) が作る文字列で、`weakly_canonical()` の `generic_string()` に `"path:"` を前置し、**Windowsでは小文字化**します。「同じファイルへの2回目の書き込み」を判定するのがこのキーの唯一の仕事です。effect transactionの [`saveData()`](../../src/core/loader/effecttransaction.cpp#L352) / [`saveSettings()`](../../src/core/loader/effecttransaction.cpp#L326) は outbox を `resource_key` で引き、既にあれば**その entry を上書きして sequence を付け替えます**（coalesce）。したがって同じslotへ100回保存しても、flushで実際にディスクへ触るのは1回です。slot名が違っても大文字小文字だけの差なら同じキーになるので、Windowsで2回書いて片方が消える、という取りこぼしも起きません。
+`resource_key` は [`canonicalResourceKey()`](../../src/core/persistence/persistence.cpp#L40) が作る文字列で、`weakly_canonical()` の `generic_string()` に `"path:"` を前置し、**Windowsでは小文字化**します。「同じファイルへの2回目の書き込み」を判定するのがこのキーの唯一の仕事です。effect transactionの [`saveData()`](../../src/core/loader/effecttransaction.cpp#L354) / [`saveSettings()`](../../src/core/loader/effecttransaction.cpp#L328) は outbox を `resource_key` で引き、既にあれば**その entry を上書きして sequence を付け替えます**（coalesce）。したがって同じslotへ100回保存しても、flushで実際にディスクへ触るのは1回です。slot名が違っても大文字小文字だけの差なら同じキーになるので、Windowsで2回書いて片方が消える、という取りこぼしも起きません。
 
-読み取り側は `overlay_data` を使います。[`loadData()`](../../src/core/loader/effecttransaction.cpp#L378) は outbox に同じ `resource_key` の未flush entry があればその `overlay_data` を返し、無ければディスクを読みます。[`listSaves()`](../../src/core/loader/effecttransaction.cpp#L407) はディスクの一覧に未flushのslotを**足し**、既にある行のtimestampは**ゼロへ潰して**からslot名でsortします（まだ書かれていないので実時刻は存在しない、という表現です）。manifest はこの2つを `read_only` として持ちます（§3.5 の 7）。
+読み取り側は `overlay_data` を使います。[`loadData()`](../../src/core/loader/effecttransaction.cpp#L380) は outbox に同じ `resource_key` の未flush entry があればその `overlay_data` を返し、無ければディスクを読みます。[`listSaves()`](../../src/core/loader/effecttransaction.cpp#L409) はディスクの一覧に未flushのslotを**足し**、既にある行のtimestampは**ゼロへ潰して**からslot名でsortします（まだ書かれていないので実時刻は存在しない、という表現です）。manifest はこの2つを `read_only` として持ちます（§3.5 の 7）。
 
-読み取りの失敗は専用の例外 [`PersistenceReadError`](../../src/core/persistence/persistence.hpp#L16) で、`path()` と `reason()` を分けて持ちます。effect transaction はこれだけを他の例外と区別して捕まえ、`persistence_read_failed` として**path と reason を別フィールドで**記録します（[`loadData()` の catch](../../src/core/loader/effecttransaction.cpp#L391)）。それ以外の例外は `persistence_overlay_failed` になります — 「ディスクが読めなかった」と「overlayの組み立てで壊れた」を混ぜないための2本立てです。
+読み取りの失敗は専用の例外 [`PersistenceReadError`](../../src/core/persistence/persistence.hpp#L16) で、`path()` と `reason()` を分けて持ちます。effect transaction はこれだけを他の例外と区別して捕まえ、`persistence_read_failed` として**path と reason を別フィールドで**記録します（[`loadData()` の catch](../../src/core/loader/effecttransaction.cpp#L393)）。それ以外の例外は `persistence_overlay_failed` になります — 「ディスクが読めなかった」と「overlayの組み立てで壊れた」を混ぜないための2本立てです。
 
 ## 5.11 Debug text
 
@@ -619,7 +619,7 @@ audioと同じく、persistenceも「用意」と「書き込み」に割れて�
 - [`animation/abi_v1.hpp`](../../src/core/userpublic/animation/abi_v1.hpp#L1)（animation provider ABI v1。[`AnimationSourceHandle`](../../src/core/userpublic/animation/abi_v1.hpp#L39) と `claim_source` / `release_source` / `handoff_source` / `sample_animation_source_at`、WP178）
 - [`animation/animgraph.hpp`](../../src/core/userpublic/animation/animgraph.hpp#L1)（`pelican.anim_graph` v1 の `DocumentV1` / `EvaluatorV1`）。これは姿勢を駆動する**2つの装着様式の片方**です（§5.16）
 - [`animation/pose_staging_v1.hpp`](../../src/core/userpublic/animation/pose_staging_v1.hpp#L91)（staged pose を読む追加交渉面。`animation/abi_v1.hpp` は凍結のまま、こちらがcapability bitで伸びます。§5.17）
-- [`valuegraph.hpp`](../../src/core/userpublic/valuegraph.hpp#L111)（共通グラフの values 分割の評価器。プロジェクトが書く文書形式ではなく内部IRなので、[第3章 §3.15](03_project_and_loading.md) を先に読んでください）
+- [`valuegraph.hpp`](../../src/core/userpublic/valuegraph.hpp#L152)（共通グラフの values 分割の評価器。プロジェクトが書く文書形式ではなく内部IRなので、[第3章 §3.15](03_project_and_loading.md) を先に読んでください）
 
 > 🧩 **難所 — N-way ブレンドの符号正準化**([`blendQuaternions()`](../../src/core/animation/animationprobe.cpp#L401) / [`blendNormal()`](../../src/core/animation/animationjobs.cpp#L313))
 >
@@ -969,7 +969,7 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 ## 5.15 scene transaction中の公開API（effect transaction sink） ✅実装済み
 
-§3.5 の 3 の executor が開いている間、この章で見てきた公開APIの**行き先が差し替わります**。差し替えの主体は [`activeEffectTransaction()`](../../src/core/loader/effecttransaction.cpp#L756) が返すポインタで、実体は `thread_local` な1変数です（[その宣言](../../src/core/loader/effecttransaction.cpp#L20)）。設定するのはRAIIの [`EffectTransactionScope`](../../src/core/loader/effecttransaction.cpp#L760) だけで、直前の値を退避して戻すので入れ子でも壊れません。`nullptr` のとき（= 通常フレーム）は全APIが従来どおりmoduleへ直行します。
+§3.5 の 3 の executor が開いている間、この章で見てきた公開APIの**行き先が差し替わります**。差し替えの主体は [`activeEffectTransaction()`](../../src/core/loader/effecttransaction.cpp#L758) が返すポインタで、実体は `thread_local` な1変数です（[その宣言](../../src/core/loader/effecttransaction.cpp#L20)）。設定するのはRAIIの [`EffectTransactionScope`](../../src/core/loader/effecttransaction.cpp#L762) だけで、直前の値を退避して戻すので入れ子でも壊れません。`nullptr` のとき（= 通常フレーム）は全APIが従来どおりmoduleへ直行します。
 
 ### どのAPIがどう曲がるか
 
@@ -996,16 +996,16 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 ### 退役済みobjectのsnapshot view
 
-`retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1624)）、2つの向きに使います。
+`retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1628)）、2つの向きに使います。
 
-- **読み**: [`retiredComponent(id, component_id)`](../../src/core/loader/effecttransaction.cpp#L462) が destroy token の中のcomponentを返し、`GameContext::localTransform()` / `spriteView()` がそれを**先に**引きます（[`GameContext::localTransform()`](../../src/core/userpublic/gamecontext.cpp#L123)）。だから `onDestroy` から自分の最後のtransformを読めます。
-- **書き**: [`rejectRetiredMutation(api, id)`](../../src/core/loader/effecttransaction.cpp#L473) が同じ列を引き、当たれば `SceneRetiredObjectMutationRejected` を診断へ1件積んで `true` を返します。呼び手のsetterは `false` を返すだけで**throwしません**（`onDestroy` は `noexcept` です）。
+- **読み**: [`retiredComponent(id, component_id)`](../../src/core/loader/effecttransaction.cpp#L464) が destroy token の中のcomponentを返し、`GameContext::localTransform()` / `spriteView()` がそれを**先に**引きます（[`GameContext::localTransform()`](../../src/core/userpublic/gamecontext.cpp#L123)）。だから `onDestroy` から自分の最後のtransformを読めます。
+- **書き**: [`rejectRetiredMutation(api, id)`](../../src/core/loader/effecttransaction.cpp#L475) が同じ列を引き、当たれば `SceneRetiredObjectMutationRejected` を診断へ1件積んで `true` を返します。呼び手のsetterは `false` を返すだけで**throwしません**（`onDestroy` は `noexcept` です）。
 
-`onDestroy` の間だけ phase を切り替えるのが [`EffectDestroyScope`](../../src/core/loader/effecttransaction.cpp#L768) で、使うのは [`BehaviorAttachmentArena::destroyInstance()` の中の1行](../../src/core/gamelogic/behaviorarena.cpp#L890) の1箇所です。phase が `destroy` の間は、各sinkのcatch節が**例外を診断へ変換して飲みます**（それ以外の phase では `throw` し直します。例えば `playSound()` の catch は、先頭の1行 `if (phase_ != CallbackPhase::destroy) throw;` で再送出し、destroy のときだけ [診断を積む `record(sequence, ErrorApi::play_sound, ...)`](../../src/core/loader/effecttransaction.cpp#L161) へ進みます）。`onDestroy` が `noexcept` である以上、そこから投げれば `std::terminate` なので、「捨てる」ではなく「記録して返る」に倒してあります。
+`onDestroy` の間だけ phase を切り替えるのが [`EffectDestroyScope`](../../src/core/loader/effecttransaction.cpp#L770) で、使うのは [`BehaviorAttachmentArena::destroyInstance()` の中の1行](../../src/core/gamelogic/behaviorarena.cpp#L890) の1箇所です。phase が `destroy` の間は、各sinkのcatch節が**例外を診断へ変換して飲みます**（それ以外の phase では `throw` し直します。例えば `playSound()` の catch は、先頭の1行 `if (phase_ != CallbackPhase::destroy) throw;` で再送出し、destroy のときだけ [診断を積む `record(sequence, ErrorApi::play_sound, ...)`](../../src/core/loader/effecttransaction.cpp#L163) へ進みます）。`onDestroy` が `noexcept` である以上、そこから投げれば `std::terminate` なので、「捨てる」ではなく「記録して返る」に倒してあります。
 
-`PELICAN_WITH_AUDIO=OFF` のビルドでは、音の5つの sink（`playSound` / `stopSound` / `setBusVolume` / `busVolume` / `isPlaying`）の本体が [`throwBuildFeatureCallDisabled()`](../../src/core/build_features.hpp#L58) の1行になり、transaction の外の `AudioContext` と同じ [`BuildFeatureCallDisabledError`](../../src/core/build_features.hpp#L45) を投げます（PG-2）。この型は ABI を固定した `BuildFeatureDisabledError` の派生で、`code()` が `build_feature_disabled@1`、`feature()` が `"PELICAN_WITH_AUDIO"` です。散文の message（`This binary was built with PELICAN_WITH_AUDIO=OFF: playSound is unavailable`）は PG-2 の前と同じです。activate 相ではこの例外がそのまま呼び手へ出て、destroy 相では同じ catch が `ErrorCode::build_feature_disabled` として記録します。記録を文字列へ起こす [`effectErrors()` の該当行](../../src/core/loader/effecttransaction.cpp#L643) は `BuildFeatureCallDisabledError::error_code` を返すので、例外の `code()` と `effect_errors` の `error_code` は同じ定数から出ます。同じ理由で `loadScene()` も phase で分かれ、`destroy` 中は [`requestLoadDuringRetire()`](../../src/core/loader/effecttransaction.cpp#L448) 経由になり、拒否されれば `scene_retire_load_rejected@1` が記録されます。
+`PELICAN_WITH_AUDIO=OFF` のビルドでは、音の5つの sink（`playSound` / `stopSound` / `setBusVolume` / `busVolume` / `isPlaying`）の本体が [`throwBuildFeatureCallDisabled()`](../../src/core/build_features.hpp#L58) の1行になり、transaction の外の `AudioContext` と同じ [`BuildFeatureCallDisabledError`](../../src/core/build_features.hpp#L45) を投げます（PG-2）。この型は ABI を固定した `BuildFeatureDisabledError` の派生で、`code()` が `build_feature_disabled@1`、`feature()` が `"PELICAN_WITH_AUDIO"` です。散文の message（`This binary was built with PELICAN_WITH_AUDIO=OFF: playSound is unavailable`）は PG-2 の前と同じです。activate 相ではこの例外がそのまま呼び手へ出て、destroy 相では同じ catch が `ErrorCode::build_feature_disabled` として記録します。記録を文字列へ起こす [`effectErrors()` の該当行](../../src/core/loader/effecttransaction.cpp#L645) は `BuildFeatureCallDisabledError::error_code` を返すので、例外の `code()` と `effect_errors` の `error_code` は同じ定数から出ます。同じ理由で `loadScene()` も phase で分かれ、`destroy` 中は [`requestLoadDuringRetire()`](../../src/core/loader/effecttransaction.cpp#L450) 経由になり、拒否されれば `scene_retire_load_rejected@1` が記録されます。
 
-**facade 側の同じ扱い(PG-2b)。** 上の catch は transaction の sink の中にあるので、transaction を通らない facade(`soundState` と `setSoundVolume` / `setSoundPitch` / `setSoundPaused` の build 側、physics の 5 query)は PG-2b まで destroy 相の分岐を持たず、機能を外した build や provider 0 本の build で `onDestroy` から呼ぶと `std::terminate` でした。今は `AudioContext` の 9 本と `PhysicsContext` の 5 本がすべて [`answerEmptyInDestroy()`](../../src/core/userpublic/gamecontext.cpp#L330) で包まれ、`BuildFeatureCallDisabledError` か `phys::ProviderUnavailableError` を捕まえると [`absorbDestroyRefusal()`](../../src/core/loader/effecttransaction.cpp#L791) に渡します。scene transaction があればその phase が `destroy` のときだけ `build_feature_disabled@1` / `physics.provider_unavailable@1` を effect error として積み、transaction が無ければ `EffectDestroyScope` が立てる thread-local の深さ([`destroy_scope_depth`](../../src/core/loader/effecttransaction.cpp#L23))で「破棄 callback の中」かを見て engine log に出します。どちらでも facade は既定値(無効 handle / `false` / `0` / `nullopt` / 空の配列)を返します。activate 相と通常の呼び出しでは `absorbDestroyRefusal()` が `false` を返し、facade はそのまま投げ直します。残した穴: `setRayTracingDispatchExtent` / `setRayTracingCallableRecord` は transaction 中の呼び出しを [`SceneTransactionMutationRejected`](../../src/core/userpublic/gamecontext.cpp#L260) で投げ、`answerEmptyInDestroy()` で包まれていないので、scene load 中の `onDestroy`(`noexcept`)から呼ぶと terminate しえます(コードからの推論。実行では未確認)。
+**facade 側の同じ扱い(PG-2b)。** 上の catch は transaction の sink の中にあるので、transaction を通らない facade(`soundState` と `setSoundVolume` / `setSoundPitch` / `setSoundPaused` の build 側、physics の 5 query)は PG-2b まで destroy 相の分岐を持たず、機能を外した build や provider 0 本の build で `onDestroy` から呼ぶと `std::terminate` でした。今は `AudioContext` の 9 本と `PhysicsContext` の 5 本がすべて [`answerEmptyInDestroy()`](../../src/core/userpublic/gamecontext.cpp#L330) で包まれ、`BuildFeatureCallDisabledError` か `phys::ProviderUnavailableError` を捕まえると [`absorbDestroyRefusal()`](../../src/core/loader/effecttransaction.cpp#L793) に渡します。scene transaction があればその phase が `destroy` のときだけ `build_feature_disabled@1` / `physics.provider_unavailable@1` を effect error として積み、transaction が無ければ `EffectDestroyScope` が立てる thread-local の深さ([`destroy_scope_depth`](../../src/core/loader/effecttransaction.cpp#L23))で「破棄 callback の中」かを見て engine log に出します。どちらでも facade は既定値(無効 handle / `false` / `0` / `nullopt` / 空の配列)を返します。activate 相と通常の呼び出しでは `absorbDestroyRefusal()` が `false` を返し、facade はそのまま投げ直します。残した穴: `setRayTracingDispatchExtent` / `setRayTracingCallableRecord` は transaction 中の呼び出しを [`SceneTransactionMutationRejected`](../../src/core/userpublic/gamecontext.cpp#L260) で投げ、`answerEmptyInDestroy()` で包まれていないので、scene load 中の `onDestroy`(`noexcept`)から呼ぶと terminate しえます(コードからの推論。実行では未確認)。
 
 ### coalesceの規則
 
@@ -1014,18 +1014,18 @@ outboxのentryは呼び出しごとに1件ではありません。
 | API | 規則 |
 |---|---|
 | `playSound` | 常に新規。handleが違えば別の音なのでまとめられない |
-| `stopSound` | **同じtransaction内のplayを指していれば、そのplay entryごと消す**（[`findPlay()` に当たる経路](../../src/core/loader/effecttransaction.cpp#L177)）。`cancelPreparedVoice()` で予約slotも返す |
+| `stopSound` | **同じtransaction内のplayを指していれば、そのplay entryごと消す**（[`findPlay()` に当たる経路](../../src/core/loader/effecttransaction.cpp#L179)）。`cancelPreparedVoice()` で予約slotも返す |
 | `stopSound`（重複 / 鳴っていないhandle） | 何も積まない |
-| `setBusVolume` | bus名で既存entryを探し、あれば `volume` と `sequence` を**上書き**（[その上書き](../../src/core/loader/effecttransaction.cpp#L221)） |
+| `setBusVolume` | bus名で既存entryを探し、あれば `volume` と `sequence` を**上書き**（[その上書き](../../src/core/loader/effecttransaction.cpp#L223)） |
 | `saveData` / `saveSettings` | `resource_key` で既存entryを上書き（§5.10） |
 
-上書きのとき `sequence` を新しい値へ**進める**のが要点です。flushは `0..next_sequence_-1` を順に走査して、その番号のentryを実行します（[`flush()` のループ](../../src/core/loader/effecttransaction.cpp#L498)）。したがって coalesce された副作用は「最初に呼ばれた位置」ではなく「最後に呼ばれた位置」で実行されます — 音量を上げてから保存したのか、保存してから上げたのかが保たれます。
+上書きのとき `sequence` を新しい値へ**進める**のが要点です。flushは `0..next_sequence_-1` を順に走査して、その番号のentryを実行します（[`flush()` のループ](../../src/core/loader/effecttransaction.cpp#L500)）。したがって coalesce された副作用は「最初に呼ばれた位置」ではなく「最後に呼ばれた位置」で実行されます — 音量を上げてから保存したのか、保存してから上げたのかが保たれます。
 
 `next_sequence_` は**読み取りAPIや拒否でも**進みます（`gameSettings()` も `isPlaying()` も `rejectRetiredMutation()` も先頭で `next_sequence_++`）。番号はentryの索引ではなく「transaction内での呼び出し順」で、診断の並べ替えキーでもあります。
 
 ### 診断は固定slot、公開用JSONはcommit後
 
-診断の記録は [`record()`](../../src/core/loader/effecttransaction.cpp#L97) の1本で、`std::string` も `nlohmann::json` も作りません — `errors_` は `sceneEffectCapacity + 1 = 257` 個の [`FixedEffectError`](../../src/core/loader/effecttransaction.hpp#L124) の配列で、文字列は `FixedText<512>` / `FixedText<384>` へ `memcpy` するだけ（溢れた分は切り詰め）です。`api` / `code` / `fields` / `phase` はすべて enum で、人間が読む文字列へ起こすのは [`effectErrors()`](../../src/core/loader/effecttransaction.cpp#L676) — つまり **commit後**です。そこで `sequence` 昇順に並べ替えてから `CommittedWithEffectFailure::EffectError`（`api` / `error_code` / `error_fields` / `phase`）へ変換します。
+診断の記録は [`record()`](../../src/core/loader/effecttransaction.cpp#L97) の1本で、`std::string` も `nlohmann::json` も作りません — `errors_` は `sceneEffectCapacity + 1 = 257` 個の [`FixedEffectError`](../../src/core/loader/effecttransaction.hpp#L124) の配列で、文字列は `FixedText<512>` / `FixedText<384>` へ `memcpy` するだけ（溢れた分は切り詰め）です。`api` / `code` / `fields` / `phase` はすべて enum で、人間が読む文字列へ起こすのは [`effectErrors()`](../../src/core/loader/effecttransaction.cpp#L678) — つまり **commit後**です。そこで `sequence` 昇順に並べ替えてから `CommittedWithEffectFailure::EffectError`（`api` / `error_code` / `error_fields` / `phase`）へ変換します。
 
 溢れ方は2種類あり、**扱いが違います**。
 
