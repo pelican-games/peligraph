@@ -1,7 +1,7 @@
 {
  "schema": "pelican.wp364.parent_manifest",
  "version": 3,
- "source_commit": "d5ea0c5bdca4d5ea2d2437f50e6c8cb80f1fcf72",
+ "source_commit": "b9f16ae600931020deb06dab2b7adc9d50152428",
  "note": "blob_sha256 hashes the git blob (LF). Test must normalize working-tree CRLF->LF for eol==lf entries before hashing; compare eol==binary raw.",
  "projects": {
   "animgraph_demo": {
@@ -361,8 +361,8 @@
     {
      "path": "projects/vrm_xr_demo/README.md",
      "eol": "lf",
-     "blob_sha256": "3ae217af31ef814ea74cacffd5405b1c2e036e90f61e51ffdb725061cfe8f137",
-     "blob_bytes": 2603
+     "blob_sha256": "bcc23b00b3324bcf2b00c257bb81936ec931e5b444e3c54d4a417923e6674db9",
+     "blob_bytes": 2582
     },
     {
      "path": "projects/vrm_xr_demo/assets/asset_data.json",

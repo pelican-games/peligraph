@@ -1,7 +1,7 @@
 {
   "schema": "pelican.wp364.parent_baseline",
   "version": 1,
-  "source_commit": "d5ea0c5bdca4d5ea2d2437f50e6c8cb80f1fcf72",
+  "source_commit": "b9f16ae600931020deb06dab2b7adc9d50152428",
   "embedded_spirv_sha256": {
     "rt_shadow_mask.frag.spv": "7ed6df45d81170bc5050c98d4fbad94c8a17eed3cc66987f5a02d6dd8b9f8345",
     "rt_shadow_mask_pipeline.rgen.spv": "f6967e61f84fccb5840e836325dbe5aef43e68d5f13303794d54468e1e2e4a24",

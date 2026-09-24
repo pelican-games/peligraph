@@ -1,6 +1,6 @@
 WP364 immutable parent baseline provenance
 
-source_commit: d5ea0c5bdca4d5ea2d2437f50e6c8cb80f1fcf72
+source_commit: b9f16ae600931020deb06dab2b7adc9d50152428
 source_commit_subject: docs: settle the five choices the spec was still leaving to whoever typed first
 source_commit_time: 2026-08-30T12:25:57+09:00
 
@@ -36,7 +36,7 @@ or bless them from current output.
 untracked local artifacts (caches, saves) and therefore differs between
 a clean worktree and a long-lived checkout. Replaced by
 parent_manifest.json (version 2): per-file sha256 of the files TRACKED
-at the same frozen commit d5ea0c5bdca4d5ea2d2437f50e6c8cb80f1fcf72,
+at the same frozen commit b9f16ae600931020deb06dab2b7adc9d50152428,
 generated mechanically from git blobs of that commit by the integrator
 (not by the implementation). Shipped-bytes invariance means these
 tracked files are unchanged; untracked neighbors are out of scope.
