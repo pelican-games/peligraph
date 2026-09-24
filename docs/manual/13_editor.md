@@ -67,6 +67,11 @@ dialog の Creates 欄にその path が出ます。雛形は **Standard 3D scen
   作ったフォルダは残ります(開かないだけです)。
 - **Browse...** は OS のフォルダ選択(modal の `QFileDialog`)です。自動化面からは操作できないので、
   シナリオはフォルダ欄(`pelican.newProject.location`)に直接 type します。
+- **フォルダと名前は埋まった状態で開きます(✅T-1)。**フォルダは前回 Create した場所です(Studio の設定ディレクトリの
+  `new_project.ini` に残します。初回や、その場所がもう無いときは Documents)。名前はそのフォルダにまだ同名の項目が無い
+  最小の `project_NNN`(3 桁、`project_001` から)です([空いている名前を探す所](../../src/devstudio/view/newprojectdialog.cpp#L58))。
+  フォルダを変えると名前も付け直しますが、自分で打った名前は変えません。T-1 より前はフォルダが常に Documents、名前が
+  `NewProject` でした。
 
 F-2 のときは、project を切り替えた直後の status bar に
 `Modal transform polling failed: pelican_player exited before returning an RPC response` が出ることがありました
@@ -125,13 +130,17 @@ behavior候補の`key`は`behavior:型名`、`behavior_type`は登録名です�
 
 Outliner の右クリックと **Scene** toolbar の **Add Object** は同じ 1 つの menu です
 ([Add Object の menu を作る所](../../src/devstudio/view/mainwindow.cpp#L1013))。項目は **Empty** / **Cube (built-in)** /
-**Plane (built-in)** / **Sphere (built-in)** で、自動化面の action 名は `pelican.outliner.addObject.empty` / `cube` /
-`plane` / `sphere` です。
+**Plane (built-in)** / **Sphere (built-in)** / **Floor** で、自動化面の action 名は `pelican.outliner.addObject.empty` / `cube` /
+`plane` / `sphere` / `floor` です。
 
-- **送るもの**: scene の `edit` 1 回に `spawn` op 1 つです([`addObjectDeclaration()`](../../src/devstudio/model/inspectormodel.cpp#L444))。
-  transform は原点で、形なら `simplemodelview.model` に `engine://primitives/<kind>`、Empty は transform だけです。
+- **Floor(✅T-1)** は床として置いた Plane です。Plane の基本形を原点の少し下(`pos` が (0, -0.5, 0))に、広く
+  (`scale` が (8, 1, 8))置きます([`addObjectDeclaration()`](../../src/devstudio/model/inspectormodel.cpp#L444))。名前は `Floor`、
+  `Floor_001`… です。T-1 より前は Plane を置いてから Inspector で位置と大きさを打っていました。
+
+- **送るもの**: scene の `edit` 1 回に `spawn` op 1 つです(上の `addObjectDeclaration()`)。
+  transform は原点(Floor だけは上のとおり)で、形なら `simplemodelview.model` に `engine://primitives/<kind>`(Floor は `plane`)、Empty は transform だけです。
   置き先の scene は選択中の object の scene(無ければ engine が最初に言った scene)で、選択中の object の子にはなりません。
-- **名前**: 種類の名前(`Empty` / `Cube` / `Plane` / `Sphere`)が空いていればそれ、使われていれば `Cube_001`、`Cube_002`…
+- **名前**: 種類の名前(`Empty` / `Cube` / `Plane` / `Sphere` / `Floor`)が空いていればそれ、使われていれば `Cube_001`、`Cube_002`…
   の最小の空き番号です([`uniqueObjectName()`](../../src/devstudio/model/inspectormodel.cpp#L429))。Blender は `Cube.001` と
   書きますが、scene の object 名は `[a-zA-Z0-9_]` だけなので `_` にしています。
 - **選択**: Outliner の読み直しを最短の間隔に縮め、新しい object が Outliner に出た時点でそれを選び、Inspector に出します
@@ -150,7 +159,7 @@ Outliner の右クリックと **Scene** toolbar の **Add Object** は同じ 1 
   `Add Object needs an open project with its engine running.` と出るだけです。
 - ⚠ spawn は Studio が最後に見た scene revision で送ります。他の client が編集した直後は `stale_revision` で断られるので、
   もう一度押してください。また、engine が断った spawn の名前も Studio は使用中と数えたままなので、次の Add はその次の
-  番号になります。Empty / Plane / Sphere は単体 test だけで、シナリオが通すのは Cube です。
+  番号になります。Empty / Plane / Sphere は単体 test だけで、シナリオが通すのは Cube と Floor です。
 
 **Inspector の model 欄は選ぶ欄です(✅G-2)。**`simplemodelview.model` は打つ欄ではなく combo
 (`pelican.inspectorModelChoice`)です([model 欄の選択肢の並び](../../src/devstudio/model/inspectormodel.cpp#L542))。
@@ -164,6 +173,18 @@ asset が `id [status]` で並びます。
 `pelican.inspectorNumeric.<component>.<field>` です([数値欄の名前の付け方](../../src/devstudio/view/inspectorwidget.cpp#L1769))。
 G-5 より前は、どの vector も最初の列が同じ名前でした。シナリオは欄が有効になるのを待って打ち、Return で commit し、
 欄がその値を持つまで待ちます([シナリオの README](../../test/studio_scenarios/README.md#L334))。
+
+**回転は角度で入れます(✅T-1)。**`transform.rotation` は X / Y / Z の 3 欄(度、小数 2 桁、自動化面の名前は
+`pelican.inspectorEuler.transform.rotation.0` 〜 `.2`)で見せて編集します([回転の欄を作る所](../../src/devstudio/view/inspectorwidget.cpp#L1820))。
+回転は X、Y、Z の順に固定軸の回りにかかります(Rz·Ry·Rx)。保存されるのは今までどおり quaternion `[x, y, z, w]` で、
+変換は Studio がします([角度と quaternion の変換](../../src/devstudio/model/inspectormodel.cpp#L476))。読むときは X と Z が
+(-180, 180]、Y が [-90, 90] で、Y が ±90 のときは X を 0 にして残りを Z に寄せます。欄の右の **Quaternion** の toggle を開くと、
+quaternion の 4 欄(G-5 からの `pelican.inspectorVector.transform.rotation.<列>`)が出て、そちらでも編集できます。開閉は欄を
+作り直しても保たれます。viewport の gizmo の回転は今までどおりです。
+
+**表示の桁で同じなら、変えていません(✅T-1)。**数値欄は、保存された値を欄の桁で丸めたものと表示が同じなら「値は変わって
+いない」と数えます([表示の桁で比べる所](../../src/devstudio/view/inspectorwidget.cpp#L567))。T-1 より前は、focus を置いて離れただけで
+丸めた値(`0.38268343` の代わりに `0.3827`)が commit されていました。角度の欄も、同じ回転を表していれば送りません。
 
 **Inspector の欄の編集と commit(✅Q-7)**
 
@@ -801,7 +822,7 @@ Inspector の導線(次節)は専用の RPC を持たず、**普通の `ops` を
 **上段の操作列**(左から): `Scope:` のコンボ(`root` と definition 名)、その右のパンくず、右端に
 `Values from:` のコンボ、`Refresh`([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L2149))。
 その下に必要なときだけ 1 行の notice が出ます。本体は左がキャンバス、右が選択ノードの詳細表(`Field` / `Value`)で、
-詳細表の上に `Label:` の入力欄・**Rename**・**Add node...** が並びます。
+詳細表の上に `Label:` の入力欄・**Rename**・**Add node...** が並びます(選んだ node が `pelican.ui` の sink なら、その下に「UI node」の欄。✅Q-8、下の段落)。
 
 1. **scope を選ぶ** —— `root` は文書そのもの、definition 名はその本体です。root の `graph.instance` ノードを
    **ダブルクリック**すると、その definition の中へ降ります。パンくずで戻ります。
@@ -853,6 +874,25 @@ Undoはノードの宣言順・設定・接続と配置を一緒に復元しま�
 `set_input{null}` をそのまま送り、`unconnected graph input` の拒否を notice に出します。値を持つ instance の port は
 (戻り先の `parameters` が残っているので)切断できます。
 
+**`pelican.ui` の sink の node を選ぶ(✅Q-8)**: palette の `ui.value` / `ui.visible`(GP-3 の `pelican.ui` module の 2 つの sink)は、
+書き込む UI node の path を parameter `node` に持ちます。
+
+- **置くと `node` が入っています。**palette で置くと、project の UI 文書の最初の path が `parameters.node` に入ります
+  ([置くときに node を入れる所](../../src/devstudio/model/graphcanvasmodel.cpp#L1250))。`ui.value` は最初の gauge(engine が値を書けるのは
+  gauge だけで、他の widget は `ui.property_mismatch@1` で断られます)、`ui.visible` は文書の最初の node(root)です。UI 文書が
+  読めなければ `node` を書かずに送り、engine の名前付きの拒否になります。Q-8 より前は `node` が空のまま出て、置くと必ず
+  `ui sink requires a node path` で断られていました。
+- **詳細表の上に「UI node」の欄が出ます。**選んだ node が `ui.value` / `ui.visible` のときだけ、打つこともできる一覧
+  (`pelican.graphCanvasUiNode`)が出ます([UI node の欄を合わせる所](../../src/devstudio/view/graphcanvaswidget.cpp#L2541))。項目は UI 文書の
+  node の path(root からの id を `/` で繋いだもの)で、`ui.value` では gauge だけです
+  ([一覧を gauge に絞る所](../../src/devstudio/model/graphcanvasmodel.cpp#L121))。一覧から選ぶか、打って Enter で `set_node_parameters`
+  1 回です。一覧に無い path はそのまま送られ、engine が名前付きで断ります。
+- **一覧の出所は project の UI 文書です。**UI の木を返す RPC は無いので、Studio が `project.json` の
+  `basic_config.ui_config_json` が指す文書を engine と同じ project path resolver で読みます
+  ([UI 文書を読む所](../../src/devstudio/model/graphcanvasmodel.cpp#L83))。欄を出す直前と palette を開く直前に読み直すので、開いた後に
+  文書を書き換えても一覧はそれに従います。読めないときは欄の placeholder が理由(`project.json names no UI document
+  (basic_config.ui_config_json)` など)を言います。
+
 **位置と折り畳みはセッション内の状態です。**`(scope, ノード id)` を鍵に覚えていて、**文書には書きません**。
 revision が変わって消えたノードの位置は捨てられます。初期配置は最長経路による段組みで、辺は必ず左から右へ進みます。
 
@@ -880,7 +920,7 @@ QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L26) に
 
 **応答性(Q-2)**: Studio は何も起きていない間は engine にほぼ問い合わせません(modal transform は gesture 中か engine 窓が focus を持つ間だけ、scene tree は revision が動かなければ 2 秒に 1 回、GPU 計時は panel が見えている間だけ)。Frame Plan の応答は 1 回だけ parse し、キャンバスは背景と grid を cache します。それでも Debug build は Release の 6〜19 倍遅いので、体感を見るなら Release 版で。project を開いた直後の固まりは Q-4 で消えました: Studio は engine の窓 thread が応答するまで埋め込みを待ち、その間は viewport に「Loading …(n s)」を出します。engine が log を書き続ける限り待ち、黙ったまま 120 秒(`PELICAN_STUDIO_ENGINE_LOAD_TIMEOUT_MS`)で停止します。Frame Plan の帯の editor も Graph と同じ規則(窓の瞬きで閉じない、再描画で残る、Escape で取消)です。
 
-**Frame Plan のノード編集(N-8)**: Frame Plan でも出力ソケットから編集できる pass / task の入力ソケットへ**通常ドラッグ**で接続でき、入力ソケットを空所へドラッグするか辺を Delete で切断します。どれも既存の `edit_preset_pass` / `edit_compute_task` を宣言丸ごとで 1 回送るだけで、engine の pass や fork 前の preset、feature の pass は吸着せず理由を 1 行で出します。shader stem と task の dispatch は行の帯でその場編集、それ以外は node の double-click で今までの dialog。右クリック「Add fullscreen pass…」は Pass Editor をその node の後ろに prefill して開き、Delete は authored pass(`remove_authored_pass`)と task(`remove_compute_task`)を消します。Shift ドラッグは今までどおり dialog です。node の位置・reroute・tie・group は Graph の `layout` の `frame_plan` に一緒に保存されます。rendering 文書が legacy 形(root が `pelican.graph` でない)の project では保存されず、その旨と file 名を 1 行で出します。
+**Frame Plan のノード編集(N-8)**: Frame Plan でも出力ソケットから編集できる pass / task の入力ソケットへ**通常ドラッグ**で接続でき、入力ソケットを空所へドラッグするか辺を Delete で切断します。どれも既存の `edit_preset_pass` / `edit_compute_task` を宣言丸ごとで 1 回送るだけで、engine の pass や fork 前の preset、feature の pass は吸着せず理由を 1 行で出します。shader stem と task の dispatch は行の帯でその場編集(shader の帯は Pass Editor の Pick... と同じ一覧を部分一致で補完します。打った文字はそのままです。✅T-1。[帯の補完を付ける所](../../src/devstudio/view/frameplangraphics.cpp#L3879))、それ以外は node の double-click で今までの dialog。右クリック「Add fullscreen pass…」は Pass Editor をその node の後ろに prefill して開き、Delete は authored pass(`remove_authored_pass`)と task(`remove_compute_task`)を消します。Shift ドラッグは今までどおり dialog です。node の位置・reroute・tie・group は Graph の `layout` の `frame_plan` に一緒に保存されます。N-8 のときは rendering 文書が legacy 形(root が `pelican.graph` でない)なら保存せず、その旨と file 名を 1 行で出していました。MG-2b から engine は legacy root を読み込みで `render_config.legacy_root@1` と断るので、そういう project を Studio で開いて canvas に届くことはなく、この 1 行も出ません(Studio 側の分岐は残っています)。
 
 **direct root の pass を Studio で編集する(✅F-6)**: Blank pipeline の project のように root が自分で pass を
 宣言し preset を選ばない(`config_kind` が `direct`)とき、engine が `editable_root_pass` として出す pass(例: `present`)は、
@@ -936,6 +976,11 @@ pass は右クリックした / 選んだ node の後に入り、無ければ gr
   depth 1 枠が付きます。枠の見出しには contract が要求する format が出ます。
 - **各枠**は宣言済みの target を選ぶか、新しい名前を打つ combo です。横に `empty` / `declared` /
   `new: made as <format>` が出ます。
+- **枠は開いた時点で埋まっています(✅T-1)。**form を開いたときと contract を変えたときに、全部の枠に名前が入ります
+  ([開いた時点の枠を決める所](../../src/devstudio/view/materialpassedit.cpp#L141))。役割の既定名(下の `scene_color` など)の target が
+  既に宣言されていて、format が枠の要求と合う(`format` が無ければ `format_class` が合う)ならそれを使い、それ以外の枠は
+  Create missing targets と同じ新しい名前です。そのまま Save でき、どの枠も選び直す・消すことができます。T-1 より前は枠が
+  空で開き、Create missing targets を押していました。
 - **Create missing targets** は空いた枠だけを既定の名前で埋めます: `scene_color`、`gbuffer_albedo` / `gbuffer_normal` /
   `gbuffer_material` / `gbuffer_worldpos` / `gbuffer_emissive`、`scene_depth`(宣言済みか他の枠が使っていれば `_2`…)。
   作る format は contract の表どおりで、forward の color は `explicit(R16G16B16A16_SFLOAT)`、G-buffer の albedo と
@@ -1012,8 +1057,13 @@ Open はそのファイルを使って開きます([書き込み](../../src/devs
   位置の順に**読み、`pelican_frame.glsl` の光源と `pelican_lighting_v1.glsl` で照らして scene-linear の色を出す短い shader
   です([Deferred lighting の雛形の lighting include](../../src/devstudio/resources/fullscreen_lighting_pass.frag.in#L9))。clustered
   lighting は light list に resource port が要るので `#undef` しています。選ぶと下の **Uses scene lights** と **Camera position**
-  が入り(外しはしません)、入力の欄の下に役割名(`inputs: 0 albedo, 1 normal, ...`)が出ます。**入力は自動では埋まりません** ——
-  役割名の順に自分で Add してください。足りない役割は shader の中で名前付きの定数になるので、compile は通ります。
+  が入り(外しはしません)、入力の欄の下に役割名(`inputs: 0 albedo, 1 normal, ...`)が出ます。**入力が空なら自動で埋まります
+  (✅T-1)**: G-1 の既定名 `gbuffer_albedo` / `gbuffer_normal` / `gbuffer_material` / `gbuffer_worldpos` / `gbuffer_emissive` を
+  役割の順に入れ、その名前の target が無ければ、役割の語(`albedo`、`worldpos` か `world_position` など)を名前に含む宣言済み
+  target が 1 つだけのときそれを入れます([入力を埋める所](../../src/devstudio/view/fullscreenshadertemplate.cpp#L396))。**最初に
+  当てはまらない役割で止まります** —— 入力は位置で読まれるので、1 つ飛ばすと後ろの役割がずれるためです。ambient occlusion は
+  埋めません。既に入力があれば触りません。埋まらなかった役割は役割名の順に自分で Add してください。足りない役割は shader の中で
+  名前付きの定数になるので、compile は通ります。T-1 より前は入力が自動では埋まりませんでした。
 - **Tone map** —— scene-linear の色(入力 0)を Reinhard で表示用にします
   ([Tone map の雛形の Reinhard](../../src/devstudio/resources/fullscreen_tonemap_pass.frag.in#L31))。engine の `output_transform` は
   表示の encode だけで tone map しないので、tone map はここで 1 回です。project の `hdr` feature が有効なら `hdr_tonemap` が
@@ -1023,6 +1073,21 @@ Open はそのファイルを使って開きます([書き込み](../../src/devs
 名前)なら雛形の名前(`deferred_lighting` / `tone_map`、Pass-through は `fullscreen_pass`。使われていれば `_2`…)を入れ、
 shader 名を pass 名から付けます。自分で打った名前は上書きしません([雛形の名前の提案](../../src/devstudio/view/fullscreenpasswidget.cpp#L1121))。
 保存した後も form はその名前を持ったままです。
+
+**shader は一覧から選べます(✅T-1)。**Fragment と Vertex の欄の横に **Pick...** の一覧
+(`pelican.fullscreenPass.shader.fragmentChoice` / `pelican.fullscreenPass.shader.vertexChoice`)があります
+([一覧を欄の横に置く所](../../src/devstudio/view/fullscreenpasswidget.cpp#L833))。並びは project の `shaders/` の `.frag`(Vertex は
+`.vert`)を名前順に `project://shaders/<名前>` で、その後に engine の fullscreen shader(Fragment は `engine://fullscreen` /
+`engine://scene_present` / `engine://output_transform` / `engine://ssao` / `engine://ssao_blur`、Vertex は `engine://fullscreen`)です
+([一覧の中身](../../src/devstudio/view/fullscreenshadertemplate.cpp#L347))。選ぶとその stem が欄に入り、一覧は「Pick...」に戻ります。
+欄には今までどおり何でも打て、欄の名前(`pelican.fullscreenPass.shader.fragment` など)も変わりません。一覧は New… で shader を
+作った後と plan を読み直したときに読み直します。Frame Plan の shader の帯も同じ一覧で補完します(下の N-8 の段落)。
+
+**出力の一覧から新しい target を作れます(✅T-1)。**color 出力の一覧の最後は `New target: <pass>_color...` です(pass 名の英数字
+以外は `_`、pass 名が空なら `fullscreen_pass_color`、使われていれば `_2`…。[名前の提案](../../src/devstudio/view/fullscreenshadertemplate.cpp#L381))。
+選ぶと Frame Plan の New render target の form(F-1)がその名前入りで開き、OK で target が commit されると、その target が
+この pass の color 出力に足されます。plan の読み直しで変わったのがその target が増えたことだけなら、Pass Editor の下書きは
+捨てません([下書きを残す判定](../../src/devstudio/view/fullscreenpasswidget.cpp#L2701))。
 
 **既にある shader を読む pass の New…(✅G-5)**: pass が既に `shaders/<pass 名>.frag` を読んでいるとき(Blank pipeline の
 `present` を開いて New… を押したときなど)、名前の提案は `<pass 名>_<雛形>`(`present_tone_map` / `present_deferred_lighting`)で、
@@ -1046,6 +1111,10 @@ shader 名を pass 名から付けます。自分で打った名前は上書き�
   書けない**(attachment object が受けるのは `target` / `subresource` / `load_op` / `store_op` だけ)ので、pass の
   **`clear_colors`**(出力名が鍵)に入ります。swapchain に書く出力の `clear_colors` の鍵が、swapchain → display の正規化の
   下でどうなるかは未確認です。
+  clear colour の欄の横には **Colour...**(`pelican.fullscreenPass.outputClearColorPick.<番号>`。✅T-1)があり、OS の色選択
+  (modal の `QColorDialog`、alpha つき)で選んだ色を欄に `r, g, b, a` で書きます
+  ([色を選んで欄に書く所](../../src/devstudio/view/fullscreenpasssettings.cpp#L253))。色選択は自動化面から操作できないので、欄への
+  直接入力も残っています。
 
 保存は今までどおり `add_authored_pass` / `edit_preset_pass` で、edit は宣言から変わった field だけを送ります(変えずに
 保存すれば送らず、外すと `null` で消します)。
@@ -1257,21 +1326,26 @@ drag すると viewport の中央に背景とも前の gradient とも違う色�
 検査されず、forward の pass を足す編集も「前の世代が使っていた route の消失だけを断る」旧規則を通っていた)、forward に
 戻っています。
 ✅G-5 の 2 本は、第二段階の筋書きを Blank pipeline から Studio の操作だけで追います。
-`forward_loop_from_scratch`(112 step)は File > New Project... で Blank pipeline の project を作り、Add Object で Cube と Plane を
-置いて、Plane を Inspector の transform の欄で床にします(`pelican.inspectorVector.transform.pos.1` に `-0.5`、`.scale.0` と
-`.scale.2` に `8`)。Add material pass... で Forward opaque を Create missing targets と forward の既定つきで Save すると、scene が
+`forward_loop_from_scratch`(98 step)は File > New Project... で Blank pipeline の project を作り(名前は提案された
+`project_001` のまま)、Add Object で Cube と Floor を置きます(Floor が箱の下にあり広いことを Inspector の欄で見ます)。
+Add material pass... は枠が埋まった状態で開くので、Forward opaque を forward の既定つきでそのまま Save すると、scene が
 未保存なので再起動の前に Save / Discard / Cancel が出て、Save で箱と床を保存してから engine が再起動します。続けて `present` を
-見出しで開き、Inputs に `scene_color` を Add し、New... の Tone map で `present_tone_map` を作って Save すると、viewport の箱・床・
-背景が互いに違う色(前の gradient とも違う色)になります。別の project を開いて戻っても同じ 3 色です
+見出しで開き、Inputs に `scene_color` を Add し、New... の Tone map で `present_tone_map` を作り、Fragment の Pick... の一覧からも
+同じ stem を選べることを見て Save すると、viewport の箱・床・背景が互いに違う色(前の gradient とも違う色)になります。
+別の project を開いて戻っても同じ 3 色です
 ([forward ループのシナリオ](../../test/studio_scenarios/forward_loop_from_scratch.json))。
-`deferred_loop_from_scratch`(148 step)は同じ出だしに加えて Cube を縦軸の回りに回し(`.transform.rotation.1` と `.3`)、
-Add material pass... の Deferred geometry で G-buffer 5 枚と `scene_depth` を作ります(route は既定のままなので再起動は
-求められません)。New render target... で `lit_color` を作り、canvas の Target を **Whole frame** にして `deferred_geometry` を
-見出しで選び、Add fullscreen pass... で G-buffer 5 枚を読み `lit_color` に書く pass を New... の Deferred lighting で作ります
-(置き場所は `deferred_geometry` の後で、engine はこの pass を geometry と `present` の間で走らせます)。`present` は Tone map で
-`lit_color` を読みます。光源が箱の 2 面を違う色に塗ること、Inspector で光源の向き(`pelican.inspectorVector.light.direction.0`)を
-変えると光の離れた面の色が変わることを見ます
+`deferred_loop_from_scratch`(115 step)は同じ出だしに加えて Cube を縦軸の回りに回し(`pelican.inspectorEuler.transform.rotation.1`
+に `45` を打ち、quaternion の欄 `pelican.inspectorVector.transform.rotation.1` が `0.3827` になることを見ます)、
+Add material pass... の Deferred geometry で G-buffer 5 枚と `scene_depth` を作ります(枠は埋まって開きます。route は既定の
+ままなので再起動は求められません)。canvas の Target を **Whole frame** にして `deferred_geometry` を見出しで選び、
+Add fullscreen pass... の New... で Deferred lighting を選ぶと、入力に G-buffer 5 枚が役割の順に自動で入ります。color 出力は
+一覧の `New target: deferred_lighting_color...` で作ります(New render target の form が名前入りで開き、OK で pass の出力に
+入ります)。この pass は `deferred_geometry` の後に置かれ、engine はこれを geometry と `present` の間で走らせます。`present` は
+Tone map で `deferred_lighting_color` を読みます。光源が箱の 2 面を違う色に塗ること、Inspector で光源の向き
+(`pelican.inspectorVector.light.direction.0`)を変えると光の離れた面の色が変わることを見ます
 ([deferred ループのシナリオ](../../test/studio_scenarios/deferred_loop_from_scratch.json))。
+✅T-1 でこの 2 本を、T-1 が消した入力を使わない形に直しました。打つ欄は forward が 1 つ(New Project のフォルダ。以前は 5)、
+deferred が 3 つ(フォルダ・回転の角度・光源の向き。以前は 9)です。
 G-5 の時点では lighting の pass の置き場所だけを手で迂回していました(`present` の後に足してから、`file` step で fragment の
 `insert` を書き換えていた)。preview の変種が geometry の fragment を `insert: "before:present"` の文字列で外し、それを anchor に
 する lighting の fragment だけが残って、合成が `render feature pass insert anchor was not found` で落ちていたためです。✅G-6 で

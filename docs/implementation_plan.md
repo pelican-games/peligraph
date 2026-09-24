@@ -25080,6 +25080,90 @@ engine 側の変更 / Inspector の見た目の改修 / 回転の角度入力(�
   1. list を持つ component(`pelican_ray_instance` など)は、今も commit のたびに欄を作り直す。list の key に `scene_revision` が入っていて([list の key を作る所](../src/devstudio/model/inspectormodel.cpp#L1456))、構造の文字列が毎回変わるため
   2. 待っている spawn は engine が止まると黙って捨てられる(Outliner の下の 1 行が消えるだけで、捨てたとは言わない)
 
+### T-1: 手で打つ量を減らす —— 記録した 35 件のうち、選択肢・既定値・自動命名で消せるもの(利用者指示 2026-09-24「テキスト入力の工程は削減可能性を考えたい」)
+
+**下段(Studio のみ)。実装者: Claude(Opus)。利用者の指示で、Studio でテキストを打つ工程を 1 件ずつ記録した(35 件。以下の番号はその記録の表の #)。**
+
+#### 決定(この WP で消す・減らすもの)
+1. **Add Object に「Floor」**(#28): 原点の少し下(y = -0.5)に、広い(scale 8 × 1 × 8)Plane を置く。名前は `Floor`(連番は既存の規則)
+2. **回転を角度で入れる**(#29): Inspector の transform の rotation を、quaternion の 4 欄ではなく Euler の角度 3 欄(度、XYZ の順)で見せて編集する。保存は今までどおり quaternion(変換は Studio 側。往復で値が変わらないことを test で)。quaternion の生の欄は「詳細」に残す
+3. **Fragment shader を一覧から選ぶ**(#7 / #16): Pass Editor の Fragment 欄と、Frame Plan canvas の shader stem の帯を、project の `shaders/` の `.frag`(と engine の既知の fullscreen shader)を列挙した combo(打つこともできる)に
+4. **出力に「新しい target」を直接**(#30): Pass Editor の出力の combo に「New target: `<pass>_color`…」の項目。選ぶと F-1 の form を名前入りで開き、作ったらその出力に入れる
+5. **Deferred lighting の入力を自動で埋める**(#24): 雛形で Deferred lighting を選んだとき、入力の 5 枠に、名前が役割に一致する宣言済み target(`gbuffer_albedo` など。G-1 の既定名)を自動で入れる。一致しない枠は空のまま
+6. **Add material pass… を開いた時点で target の枠を埋める**(#18): 「Create missing」を押さなくても、空いた枠に役割名の新しい target(作る予定)を入れておく。format の合う既存 target があればそれを優先
+7. **New Project の既定**(#1 / #2 / #27): 置き場所は前回の場所(初回は Documents)、名前は空いている `project_001` 形式
+8. **クリア色を色選択で**(#21): Pass Editor の出力のクリア色の欄の横に色選択のボタン(QColorDialog は modal なので、automation 用に欄への直接入力も残す)
+9. **Vertex を combo に**(#19): 既定 `engine://fullscreen` のまま、既知の vertex shader の combo に
+
+#### やらないこと(記録に残す)
+JSON 欄の form 化(#13 compute task、#26 Add component の宣言、#33 list の行、#11 / #23 raster の draw / state)は schema からの form 生成が要るので別 WP。#35(`pelican.ui` の node)は Q-8。
+
+#### 受け入れ
+1. 各項目の純関数 / widget test(Euler ↔ quaternion の往復、Floor の spawn の中身、shader の列挙、自動で埋まる入力、既定名の連番)。核の 2 本に変異
+2. G-5 のシナリオ 2 本(`forward_loop_from_scratch` / `deferred_loop_from_scratch`)を、この WP で消した入力を使わない形に直して緑(Floor を使う、shader を combo で選ぶ、入力の自動埋めを使う)。**直した後のシナリオで打っている欄を報告に列挙**(減ったことを示す)
+3. 触った面の既存 test 緑。非 GPU 全数は統合側
+4. テキスト入力の記録に「T-1 で解消」を書き足す材料として、項目ごとに「解消 / 軽減 / 残り」を報告
+
+#### 着地(2026-09-25、3a95e979)
+- **記録の 35 件のうち 9 件を T-1 が引き受けた**(commit の記録)。項目ごとの結果:
+  - 解消: Floor / Pass Editor の fragment・vertex の shader の一覧 / 出力の一覧からの New target / Deferred lighting の入力の自動埋め / Add material pass… の枠を開いた時点で埋める / New Project の名前
+  - 軽減: 回転を Euler 角で(回転の gizmo は残り)/ canvas の shader の帯の補完 / New Project の置き場所を覚える / クリア色の色選択
+  - 残り: JSON 欄(#11 #13 #23 #26 #33。schema からの form 生成が要る)/ 光源の向き / 回転の gizmo
+- **中身**:
+  1. **Floor**: Add Object の menu の最後に **Floor**(`pelican.outliner.addObject.floor`)。spawn は Plane の基本形(`engine://primitives/plane`)を `pos` (0, -0.5, 0)・`scale` (8, 1, 8) で置き、名前は `Floor` / `Floor_001`…([Floor の spawn の中身](../src/devstudio/model/inspectormodel.cpp#L444))
+  2. **回転**: `transform.rotation` は X / Y / Z の 3 欄(度、小数 2 桁、`pelican.inspectorEuler.transform.rotation.<列>`)。適用は X → Y → Z(固定軸、Rz·Ry·Rx)。保存は今までどおり quaternion `[x, y, z, w]`([角度と quaternion の変換](../src/devstudio/model/inspectormodel.cpp#L476))。quaternion の 4 欄は **Quaternion** の toggle の下に残る(開閉は欄を作り直しても保つ。[回転の欄](../src/devstudio/view/inspectorwidget.cpp#L1820))
+  3. **shader の一覧**: Pass Editor の Fragment / Vertex の欄の横に **Pick...** の一覧(`pelican.fullscreenPass.shader.fragmentChoice` / `.vertexChoice`)。並びは project の `shaders/` の `.frag`(Vertex は `.vert`)を名前順、その後に engine の fullscreen shader(Fragment: `engine://fullscreen` / `scene_present` / `output_transform` / `ssao` / `ssao_blur`、Vertex: `engine://fullscreen`。[shader の一覧を作る所](../src/devstudio/view/fullscreenshadertemplate.cpp#L347))。選ぶと stem が欄に入り、一覧は「Pick...」に戻る。New… の後と plan の読み直しで一覧を読み直す。欄自身の名前は automation のために据え置き。Frame Plan の shader の帯は同じ一覧で補完する(部分一致の popup。打った文字はそのまま)
+  4. **New target**: color 出力の一覧の最後に `New target: <pass>_color...`(pass 名の英数字以外は `_`、空なら `fullscreen_pass`、使われていれば `_2`…。[名前の提案](../src/devstudio/view/fullscreenshadertemplate.cpp#L381))。選ぶと Frame Plan の New render target の form がその名前入りで開き、form が作った target の commit の後、Pass Editor の color 出力に足される
+  5. **Deferred lighting の入力**: 入力が空のときに雛形で Deferred lighting を選ぶと、G-1 の名前(`gbuffer_albedo` / `gbuffer_normal` / `gbuffer_material` / `gbuffer_worldpos` / `gbuffer_emissive`)を shader が読む順に入れる。その名前が無ければ、役割の語(`albedo`、`worldpos` か `world_position` など)を含む宣言済み target が 1 つだけのときそれを入れる([入力を埋める所](../src/devstudio/view/fullscreenshadertemplate.cpp#L396))。ambient occlusion の枠は埋めない
+  6. **material pass の枠**: form を開いたとき・contract を変えたときに全部の枠を埋める([開いた時点の枠](../src/devstudio/view/materialpassedit.cpp#L141))
+  7. **New Project**: 置き場所は前回 Create した場所(Studio の設定ディレクトリの `new_project.ini`、鍵 `new_project/last_location`。無い・消えていれば Documents)、名前はその場所に同名の項目が無い最小の `project_NNN`(3 桁、001 から。[空いている名前](../src/devstudio/view/newprojectdialog.cpp#L58))。名前は置き場所を変えると付け直すが、自分で打った名前は変えない
+  8. **クリア色**: 出力ごとの行のクリア色の欄の横に **Colour...**(`pelican.fullscreenPass.outputClearColorPick.<番号>`)。QColorDialog(alpha あり)で選んだ色を欄に `r, g, b, a` で書く([色を選ぶ所](../src/devstudio/view/fullscreenpasssettings.cpp#L253))。欄への直接入力は残る
+- **仕様からずれた所**:
+  1. shader の「combo(打つこともできる)」は、欄の横の **Pick...** の一覧にした。編集できる combo は項目が変わると打った文字を書き換えるため(実装者の報告)
+  2. Deferred lighting の入力の自動埋めは、**最初に一致しない役割で止まる**(飛ばして後ろを埋めない)。入力は位置で読まれるので、1 つ飛ばすと後ろの役割がずれる
+  3. material pass の枠で既存の target を使い回すのは、**役割の既定名で format が合うものだけ**(format が無ければ `format_class` が合うもの)。それ以外は Create missing targets と同じ新しい名前(使われていれば `_2`…)
+  4. New target で plan が変わっても、変わったのが頼んだ target が増えたことだけなら **Pass Editor の下書きを捨てない**([下書きを残す判定](../src/devstudio/view/fullscreenpasswidget.cpp#L2701))
+  5. 数値欄は、**保存された値を表示の桁で丸めたものと同じなら「変わっていない」**と数える([表示の桁で比べる所](../src/devstudio/view/inspectorwidget.cpp#L567))。欄を離れただけで丸めた値が commit されていたのを直した(回転の角度の欄も、同じ回転を表していれば送らない)
+- **シナリオ**: G-5 の 2 本を直して緑(commit の記録)。打つ欄は `forward_loop_from_scratch`(98 step)が 1 つ(New Project の置き場所 `pelican.newProject.location`。以前は 5)、`deferred_loop_from_scratch`(115 step)が 3 つ(置き場所、`pelican.inspectorEuler.transform.rotation.1` に `45`、`pelican.inspectorVector.light.direction.0` に `0.5`。以前は 9)。床は Add Object > Floor、shader は Pick... で選び直し、deferred の lighting の入力は自動埋め、出力は `New target: deferred_lighting_color...`
+- **test**: `devstudio_inspector_test` の `T-1 Add Object > Floor spawns a wide plane just under the origin` / `T-1 rotation angles and the stored quaternion round trip`、`devstudio_inspector_widget_test` の `T-1 a rotation is typed as angles and stored as the quaternion`、`devstudio_fullscreen_pass_test` の shader の一覧・Deferred lighting の自動埋め・New target・クリア色の 4 本、`devstudio_frameplan_graph_test` の帯の補完・material pass の枠の 2 本、`devstudio_newproject_test` の既定の 1 本
+- **変異(commit の記録)**: 回転の符号を 1 つ反転 / 度をそのまま送る → 赤。自動埋めを「止まる」でなく「飛ばす」に / 自動埋めの呼び出しを外す → 赤
+- **残り**: JSON 欄(#11 #13 #23 #26 #33)は schema からの form 生成が要る(別 WP)。光源の向き。回転の gizmo
+
+### Q-8: 別 session の engine 変更への Studio の追従 —— physics の無い build の picking、`pelican.ui` の node を選ぶ
+
+**下段(Studio のみ)。実装者: Claude(Opus)。**
+
+#### 前提(別 session の着地から)
+- PG-2(2b925354): physics の provider が 0 本の構成で、RPC `raycast` と Studio の preview の picking(raycast / overlap)が error `physics.provider_unavailable@1` を返す
+- PG-2b(着地予定): physics OFF の build でも RPC `raycast` が `hit: null` ではなく JSON-RPC の error(code -32000、data に `{code: "physics.module_unavailable@1", requirement, option}`)を返す
+- GP-3(a922733b): graph catalog に `pelican.ui` module が常時載る。sink `ui.value` / `ui.visible`、parameter `node` = UI node の path。Graph Canvas の palette に出る。今は node の path を手で打つ(テキスト入力の記録 #35)
+
+#### 決定
+1. **picking**: viewport の click で選ぶ(picking)が上の 2 つの code で断られたら、黙って何も選ばないのではなく、status に 1 行「この build には physics が無いので、viewport の click では選べません(Outliner から選んでください)」+ code。同じ文を毎 click 出さない(project を開いて最初の 1 回、または 10 秒に 1 回)。picking 以外の経路(gizmo など)が同じ RPC を使うなら同じ扱い
+2. **`pelican.ui` の node**: Graph Canvas で `ui.value` / `ui.visible` の node の `node` parameter を編集するとき、project の UI 文書の node の path を一覧(combo、打つこともできる)で出す。一覧の出所は engine の RPC(UI の木を返すものがあれば)か、project の UI 文書を Studio が読む(どちらか既存に合う方。理由を報告)。一覧に無い path を打ったら engine が名前付きで拒否する今の挙動のまま
+3. palette に `pelican.ui` の 2 つの sink が出て、置いて装着できることを確認(出ない・置けないなら直す)
+4. **MG-2b への追従**(別 session、着地中): rendering は `pelican.graph` root だけになり、graph root の `rendering` 節には `buffers` / `compute_tasks` を書けない。Studio の Task Editor / Frame Plan の Edit task… が root scope の compute task を編集する経路は到達しなくなる。root の task を開いたときの表示が名前付きの拒否(「root には task を置けない。feature か graph node で」)になることを確認し、generic な失敗なら直す。**新規の task は `add_compute_task`(project:// feature を作る)なので影響なし**を確認
+
+#### 受け入れ
+1. picking の拒否 2 code で status に 1 行(widget / model test、fake の RPC 応答で)。連打で行が増えない
+2. `ui.*` の node の `node` 欄が一覧を出す(scene test)。一覧は UI 文書の node の path
+3. palette に `ui.value` / `ui.visible`(scene test か既存の palette test)
+4. 触った面の既存 test 緑。非 GPU 全数は統合側
+5. 報告にテキスト入力の欄の一覧(#35 を消せたか)
+
+#### やらないこと
+engine の変更 / physics の無い build での代わりの picking(GPU picking への切り替えなど)。
+
+#### 着地(2026-09-25、480ee117)
+- **決定 1 は取り下げた**: Studio の viewport の click の picking は engine の GPU の picking の読み戻し(RPC `pick_object`。[Studio が pick_object を送る所](../src/devstudio/viewport/embeddedviewport.cpp#L545)、engine 側は renderer の `readPickingPixel`)で、physics を通らない。Studio は `raycast` を呼ばない(`src/devstudio` に呼び出しが無い)ので、2 つの code に届く経路が無かった
+- **決定 3 で本物の bug が見つかった**: palette には 2 つの sink が出ていたが、置くと必ず engine が `ui sink requires a node path` で断っていた(`node` が空のまま出ていた。[engine の拒否](../src/core/userpublic/valuegraph.cpp#L131))。置くときに UI 文書の最初の path を `parameters.node` に入れて直した([置くときに node を入れる所](../src/devstudio/model/graphcanvasmodel.cpp#L1250))。`ui.value` は最初の gauge(engine が値を書くのは gauge だけで、他の widget には `ui.property_mismatch@1`)、`ui.visible` は文書の最初の node(root)。UI 文書が読めなければ `node` を書かずに出し、engine の名前付きの拒否になる
+- **決定 2**: Graph タブの詳細表の上に **UI node** の欄(`pelican.graphCanvasUiNode`、打つこともできる combo)。選んだ node が `ui.value` / `ui.visible` のときだけ出る([UI node の欄を合わせる所](../src/devstudio/view/graphcanvaswidget.cpp#L2541))。一覧は UI 文書の node の path(root からの id を `/` で繋いだもの)で、`ui.value` は gauge だけ([一覧を絞る所](../src/devstudio/model/graphcanvasmodel.cpp#L121))。一覧から選ぶか、打って Enter で `set_node_parameters` 1 回。一覧に無い path はそのまま送り、engine が名前付きで拒否する
+  - 一覧の出所は **project の UI 文書**: `project.json` の `basic_config.ui_config_json` が指す文書を、engine と同じ project path resolver で読む([UI 文書を読む所](../src/devstudio/model/graphcanvasmodel.cpp#L83))。理由: UI の木を返す RPC が無い。欄を出す直前と palette を開く直前に読み直す。読めないときは欄の placeholder が理由を言う(`project.json names no UI document (basic_config.ui_config_json)` など)
+- **決定 4(MG-2b の root scope の compute task への追従)は未着手**。MG-2b(8b86ddf2)の記録も、editor の root scope の compute task の経路は到達しなくなったまま、掃除の WP に回すとしている
+- **確認**: headless の player で、node の入った sink は commit し、旧い空の sink は今までどおり拒否される(commit の記録)
+- **test**(`devstudio_graphcanvas_scene_test`): `Q-8 a ui sink's node field lists the UI document, and the palette …` / `Q-8 without a UI document the field says why and the palette …` / `Q-8 the UI document's paths are the engine's: ids joined from the root`。変異(commit の記録): path を出さない → 赤 / 置くときに node を入れない → 赤
+- **テキスト入力の欄(受け入れ 5)**: #35 は、UI 文書に当てはまる node があれば打たずに済む(置いた時点で入り、別の node は一覧から選ぶ)。打つ欄は残る
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**

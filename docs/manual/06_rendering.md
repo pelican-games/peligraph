@@ -1,6 +1,6 @@
 # 第6章 レンダリング
 
-対象: pelican2(2026-07-31 に全域再確認、2026-09-04 に §6.15(レイトレの宣言層)を追記、2026-09-17 に §6.5 / §6.11 / §6.16 を更新し §6.17(共通グラフのノード語彙)を追記。HEAD=`82054c05`)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-31 に全域再確認、2026-09-04 に §6.15(レイトレの宣言層)を追記、2026-09-17 に §6.5 / §6.11 / §6.16 を更新し §6.17(共通グラフのノード語彙)を追記、2026-09-25 に §6.16 を MG-2b(root は `pelican.graph` だけ)に合わせて書き直し。HEAD=`82054c05`)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -14,7 +14,7 @@
 - OpenXR ステレオレンダリング(論理フレーム = 左右眼をまとめた 1 単位 / feature policy / ミラー)
 - グラフ variant(flat / XR / preview)と、GPU デバッグラベル・GPU タイミング・VRAM の見方
 - レイトレーシングの宣言層 — `ray_group_layout`(レイトレのシェーダと資源の並びを宣言する形式。読める版は 3 だけ)、`acceleration_structure` 規則、`pelican_ray_instance`
-- rendering config の 2 つの root(legacy root / `pelican.graph` root)と、**共通グラフのノード語彙**(module / op / 型 / sink、`definitions` と `graph.instance`、入力の 4 mode)
+- rendering config の root(`pelican.graph` root だけ。旧い legacy root は MG-2b から読めません)と、**共通グラフのノード語彙**(module / op / 型 / sink、`definitions` と `graph.instance`、入力の 4 mode)
 
 ## 6.1 全体像
 
@@ -61,7 +61,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
 
 このほか `target_planning`(§6.6)、`vulkan_plan_pins` / `vulkan_physical_fragments`(§6.6)、`xr`(§6.12)もトップレベルキーです。
 
-> **root は 2 つあります。** 上の表は **legacy root**(キーがファイルの最上位に並ぶ形)の説明です。`"schema": "pelican.graph"` を名乗るファイルでは、**上の表のキーは全部 `rendering` の下に入り**、最上位には共通グラフ自身の 5 キーだけが並びます。出荷 `projects/example` はこちらです。どちらが何を所有するかは **§6.16** を読んでください。
+> **上の表のキーはファイルの最上位ではなく `rendering` の下に書きます。** rendering config のファイルは `"schema": "pelican.graph"` を名乗る **`pelican.graph` root** で、最上位には共通グラフ自身の 5 キーだけが並び、**上の表のキーは全部 `rendering` の下に入ります**。ただし `buffers` と `compute_tasks` は `rendering` の下にも書けません(共通グラフのノードか task feature で書きます)。上の表のキーを最上位に直接並べた旧い形(legacy root)は、MG-2b から `render_config.legacy_root@1` で断られます。詳しくは **§6.16** を読んでください。
 
 名前の重複(RT・パス・バッファ)はすべて hard error です。
 
@@ -506,7 +506,7 @@ feature は**パラメータ化**できます。`features` 配列は文字列の
   シェーダ側は `#include "pelican_resource_ports.glsl"`(合成時に生成される per-pass の port ヘッダ)を読み、`pelican_load_<port 名>(0u)` というアクセサで値を取ります —— **その port を割り当てていないパスは、アクセサの名前でコンパイルに失敗します**([bloom_composite.frag](../../src/core/resources/bloom_composite.frag))。なお同梱 bloom のシェーダは in-tree では **GLSL ソースだけ**で、`.spv` は生成物です(`src/core/resources/.gitignore`)。`.spv` しか無い環境のエンジンシェーダは define 付きの config では使えません(§6.11 の `Shader defines and generated includes require GLSL source, not SPIR-V`)。
 
   `binding: "buffer"` を宣言したのに同名の `runtime_f32` バッファが無い/型が違う、`binding: "buffer"` と `shader_define: true` の併記、float 以外、`initial_f32` の手書き、未知の binding 名 —— どれも名前付きの compose エラーです。
-- **`binding: "buffer"` の値は毎フレーム書き換えられます。** `pelican.graph` root(§6.16)の `render.scalar` ノードに `parameters.target` としてバッファ名を書き、その `value` 入力に曲線などを繋ぐと、publish のたびにその値が GPU バッファへ載ります(パスが読む前に書かれます)。`target` は宣言済みのフレームグラフバッファ名に解決され、無ければ `unbound frame graph output: <名前>` の hard error、サイズ/`host_source` が合わなければ `incompatible frame graph output buffer: <名前>` です —— 綴り間違いが「動かない曲線」になることはありません。`set_parameters` で初期値を変えるのは再 compose を伴う編集操作、`render.scalar` は再 compose なしの毎フレーム駆動、と役割が分かれます。**legacy root ではグラフを持てない**ので、この駆動は `pelican.graph` root のプロジェクトだけの話です。
+- **`binding: "buffer"` の値は毎フレーム書き換えられます。** `pelican.graph` root(§6.16)の `render.scalar` ノードに `parameters.target` としてバッファ名を書き、その `value` 入力に曲線などを繋ぐと、publish のたびにその値が GPU バッファへ載ります(パスが読む前に書かれます)。`target` は宣言済みのフレームグラフバッファ名に解決され、無ければ `unbound frame graph output: <名前>` の hard error、サイズ/`host_source` が合わなければ `incompatible frame graph output buffer: <名前>` です —— 綴り間違いが「動かない曲線」になることはありません。`set_parameters` で初期値を変えるのは再 compose を伴う編集操作、`render.scalar` は再 compose なしの毎フレーム駆動、と役割が分かれます。MG-2b から rendering config は `pelican.graph` root だけなので、どのプロジェクトでもこの駆動が使えます。
 - `scalars` の `shader_define`(bool・既定 `true`)を `false` にすると、そのパラメータは値付き define を**出しません**。物理 planning や runtime adapter から UBO へ送る値に付けます — `true` のままだと値を変えるたびにシェーダキャッシュキーが変わり、**全シェーダが再コンパイル**されます。同梱では `cube_capture.json` の 6 スカラー全部、`planar_reflection.json` の `prefilter_radius` 以外、`shadow_directional.json` の `cascade_count` 以外、および `sky_ambient.json` の 5 スカラー全部が `false` です。
 - `shader_assets`は`shader`の型付きslotだけへ完全一致の`$name`として置けます。compute taskの文字列`shader`、またはgraphics passの`shader.vertex|skinned_vertex|fragment|compute`と宣言stageが一致しなければcompose時に拒否します。`skinned_vertex`は`vertex` stageです。instance値は`engine://`にも`project://`にもでき、feature JSONを複製せずalgorithm assetだけを交換できます。
 - `shader_define: true` のスカラーは **`PELICAN_FEATURE_<FEATURE名>_<PARAM名>=<値>`** の値付き define に lower され、graphics/fullscreen/computeの全shader recipeへ渡ります(float は 9 桁 round-trip 表記。値を変えるとシェーダキャッシュキーも変わる = 正しく再コンパイル)。
@@ -2693,16 +2693,15 @@ geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation
 
 layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1519))。
 
-## 6.16 rendering config の 2 つの root —— legacy root と `pelican.graph` root(✅P-2a-4a/4b)
+## 6.16 rendering config の root —— `pelican.graph` root(✅P-2a-4a/4b、MG-2b)
 
-rendering config のファイルは **2 つの root 形**のどちらかです。どちらもエンジンが受理し、v0 の間はどちらも消えません。
+rendering config のファイルは **`pelican.graph` root** です。最上位には共通グラフ自身のキーだけが並び、§6.2 の表のキーは全部 `rendering` の下に入ります。出荷プロジェクト 7 本(`animgraph_demo` / `example` / `pathtrace_demo` / `posegraph_demo` / `raytracing_demo` / `sprite_demo` / `vrm_xr_demo`)も、`pelican_cli project init` が作る新規プロジェクトもこの形です。
 
-| | legacy root | `pelican.graph` root |
-|---|---|---|
-| 最上位のキー | §6.2 の表のキーがそのまま並ぶ | `schema` / `version` / `definitions` / `nodes` / `outputs` の **5 つだけ** |
-| §6.2 の表のキー | 最上位 | **`rendering` の下**(`rendering.features`、`rendering.render_targets`、…) |
-| 共通グラフ(ノード)を持てるか | **持てない** | 持てる |
-| 出荷プロジェクト(全 7 本) | `animgraph_demo` / `sprite_demo` / `vrm_xr_demo` / `raytracing_demo` / `pathtrace_demo` | `example`(✅P-2a-4b)と **`posegraph_demo`**(✅P-2b) |
+| | `pelican.graph` root |
+|---|---|
+| 最上位のキー | `schema` / `version` / `definitions` / `nodes` / `outputs`(と N-6 からは editor 用の `layout`) |
+| §6.2 の表のキー | **`rendering` の下**(`rendering.features`、`rendering.render_targets`、…)。ただし `buffers` / `compute_tasks` は書けない(下) |
+| 共通グラフ(ノード) | 最上位の `definitions` / `nodes` / `outputs` に書く(§6.17) |
 
 ```json
 {
@@ -2719,14 +2718,14 @@ rendering config のファイルは **2 つの root 形**のどちらかです�
 }
 ```
 
-**規則は 1 つだけです**: `schema` / `version` / `definitions` / `nodes` / `outputs`(と N-6 からは editor 用の `layout`)は共通グラフが所有し、**それ以外の rendering config のキーは全部 `rendering` 節に属します**。エンジンはこの形を composer の入口で legacy 形へ lower してからパスを組むので、`rendering` 節の中身が同じなら **描画結果は完全に同じ**です(`projects/example` の移行はピクセル不変)。
+**規則は 1 つだけです**: `schema` / `version` / `definitions` / `nodes` / `outputs`(と `layout`)は共通グラフが所有し、**それ以外の rendering config のキーは全部 `rendering` 節に属します**。エンジンは composer の入口でこの文書を平らな rendering config へ lower してからパスを組みます([lowerRenderGraphDocument()](../../src/project/rendergraphcomposition.cpp#L21))。`rendering` 節は、旧い legacy root(下)を最上位に置いたときと同じ意味で読まれます。
 
-- `buffers` と `compute_tasks` は `pelican.graph` root では **グラフが所有します**。`rendering` 節に書くと lowering が名前付きで拒否します。
-- Studio と RPC の authoring(`get_render_features` / `edit_render_features` / `materialize` / `--feature-overlay`)は、どちらの root でも同じ 1 つの locator([`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36))を通って `rendering` 節を読み書きします。graph root なのに `rendering` が無い(あるいは object でない)文書への編集は、黙って root にキーを作らず `render_config_section_unlocated` で拒否されます。
+- **旧い legacy root は読めません(MG-2b)。**§6.2 の表のキーを最上位に直接並べた形は、起動時の読み込み([読み込みで legacy root を断る所](../../src/core/renderingpass/renderingpassconfigloader.cpp#L24))、`--feature-overlay` の重ね合わせ、レイトレの設定の読み出し、Studio / RPC の編集文書のどれもが `render_config.legacy_root@1` で断ります([`RenderConfigLegacyRoot`](../../src/project/renderconfigdocument.hpp#L35))。v0 は形式ごとに版を 1 つだけ持ち、旧い形は変換せず書き直す方針です。直すには、旧いファイル全体を `rendering` の値にして上の 5 キーを足します(`{"schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {}, "rendering": <旧い root>}`)。MG-2b は出荷の legacy root 5 本(`animgraph_demo` / `sprite_demo` / `vrm_xr_demo` / `raytracing_demo` / `pathtrace_demo`)をこの手で包みました。
+- `buffers` と `compute_tasks` は **グラフが所有します**。lowering は `render.buffer` / `render.compute` などのノードの接続からこの 2 つを作るので、`rendering` 節に書くと `render graph derives field from connections: buffers` のように名前付きで拒否します。buffer と compute task は graph node か task feature で書きます。
+- Studio と RPC の authoring(`get_render_features` / `edit_render_features` / `materialize` / `--feature-overlay`)は、同じ 1 つの locator([`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36))を通って `rendering` 節を読み書きします。locator は `pelican.graph` root でない文書を `render_config.legacy_root@1` で断り(MG-2b より前はその文書自身を節として扱っていました)、graph root なのに `rendering` が無い(あるいは object でない)文書への編集は、黙って root にキーを作らず `render_config_section_unlocated` で拒否します。
 - **ただし「1 箇所」なのは読み書きの locator までです。**byte-lossless の書き込み経路は同じ規則を鍵の側から判定していて、上の 6 キーかどうかを [`isGraphRootKey()`](../../src/project/renderconfigdocument.cpp#L426) で見てから root と節を振り分けます([withSectionValue()](../../src/project/renderconfigdocument.cpp#L654))。さらにレイトレの読み出しは**同じ規則をその場で書き直しており**、`rendering` が無いときは例外ではなく**空 object** として続行します([raygrouplayout.cpp:1465](../../src/core/shader/raygrouplayout.cpp#L1465))—— つまり「節が無い」ときの振る舞いは経路によって違います。
-- 新規プロジェクト(`pelican_cli project init`、[第10章](10_tools.md))が生成する config は `pelican.graph` root です。
-- 既存の legacy root を移すには、ファイル全体を `rendering` の値にして上の 5 キーを足すだけです。`test/fixtures/graph_root_example/` が実物の対比(出荷 `example` の節と、preset を選ぶ `animgraph_demo` の節)を持っています。
-- web ビューアは `pelican.graph` root をまだ読めません([第9章](09_web.md) §9.3)。
+- `test/fixtures/graph_root_example/` は、出荷 `example` の節と、preset を選ぶ `animgraph_demo` の節を `rendering` の下に移した実物です(P-2a-4a)。
+- web ビューアは `pelican.graph` root をまだ読めません([第9章](09_web.md) §9.3)。MG-2b の記録は、web ビューア(WEB-1)と外部の USD import の道具が追従する必要があるとしています。
 
 `nodes` に何を書けるか(`value.*` / `render.*` / `pose.*` / `graph.instance` のノード語彙、`definitions` の使い方、owner の宣言)は **次の §6.17** です。GUI から装着を足す・外す手順は [第13章 エディタ](13_editor.md) の「グラフの装着を編集する」、語の索引は [用語集](14_glossary.md)、実物の手順は `projects/posegraph_demo/README.md` にあります。
 
@@ -2734,7 +2733,7 @@ rendering config のファイルは **2 つの root 形**のどちらかです�
 
 §6.16 の `pelican.graph` root が持つ `definitions` / `nodes` / `outputs` の中身が **共通グラフ**です。「共通」というのは **値(スカラー)・描画・アニメーションが 1 つのノード語彙を共有する**という意味で、曲線を 1 本引いて、その値を GPU バッファにも姿勢のブレンド率にも送れます。`projects/posegraph_demo/passes/main.json` が最短の実物です(曲線 → 姿勢ブレンド)。
 
-> **legacy root にはグラフがありません。** この節の話はすべて `pelican.graph` root のプロジェクトだけの話です(§6.16)。
+> MG-2b から rendering config は `pelican.graph` root だけなので(§6.16)、この節の話はどのプロジェクトにも当てはまります。
 
 ### module — 語彙の単位
 
