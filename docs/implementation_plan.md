@@ -24810,7 +24810,7 @@ delete / duplicate / reparent(OL-1。engine の op 契約待ち)/ Outliner の k
 
 #### 着地(2026-09-24、fb2960e0)
 - **Add Object**: 1 つの menu(`pelican.outliner.addObjectMenu`)を Outliner の右クリックと新しい **Scene** toolbar(`pelican.sceneToolbar`、button `pelican.outliner.addObjectButton`)の両方が出す。項目は Empty / Cube (built-in) / Plane (built-in) / Sphere (built-in)(action `pelican.outliner.addObject.{empty,cube,plane,sphere}`)。scene は選択中の object の scene、無ければ engine が最初に言った scene。親は付けない
-- **送るもの**: scene の `edit` 1 回に `spawn` op 1 つ(transform は原点、形なら `simplemodelview.model = engine://primitives/<kind>`)。coalesce key を付けないので Undo 1 回で Add 1 回が戻る。Inspector の別の編集が進行中なら断る
+- **送るもの**: scene の `edit` 1 回に `spawn` op 1 つ(transform は原点、形なら `simplemodelview.model = engine://primitives/<kind>`)。coalesce key を付けないので Undo 1 回で Add 1 回が戻る。Inspector の別の編集が進行中なら断る(Q-7 で変更: 断らずに 1 本だけ待ち、編集が終わってから送る。2 本目は断る)
 - **名前(起票からの逸脱)**: `Cube`、次は **`Cube_001`**(Blender の最小の空き番号。scene の object 名は `[a-zA-Z0-9_]` だけなので `.` ではなく `_`)。Outliner にまだ出ていない直前の spawn の名前も使用中に数える
 - **選択**: Outliner の refresh を最短間隔に縮め、新しい object が Outliner に出た時点で選択し Inspector に出す
 - **Inspector の model 欄**: `simplemodelview.model` は打つ欄から選ぶ欄(`pelican.inspectorModelChoice`)になった。並びは基本形 3 つ(名前で)→ 区切り → `list_assets` が言う project の model(engine の基本形は二重に出さない)→ 今の値がどれでもなければその値。選ぶとすぐ commit。Add component の選択肢も同じ読み方(`[builtin]` の札なし)。テキスト入力の欄が 1 つ減った
@@ -24918,7 +24918,7 @@ engine 側の変更 / 機能を入れる導線(build の案内)。
 
 #### 着地(2026-09-24、0c49aad8)
 - **止める行の見分け(起票からの逸脱)**: 止めるのは `unavailable_reason` が **code**(小文字・数字・`_` の `.` 区切りの名前 + `@` + 数字。`isComponentUnavailableCode`)の行だけ。`available: false` でも理由が文の行(`simplemodelview` の「A model reference is required.」= 既定値だけでは足りず入力が要る)は、今までどおり並び Add できる(宣言に値を入れて足す筋で、`simplemodelview` はそうして足す)。起票の決定 1 / 2 は `available: false` の行を全部止める書き方だった
-- **一覧**: code の行は使える行の後ろ(各群の中は catalog の順)に、disabled の文字色で並び、名前の後ろに ` — not in this build`(module の 6 つ)/ ` — needs ray layout v2`(`pelican.ray_instance_requires_layout_v2@1`)/ Studio の知らない code は ` — unavailable`。行は選べる(理由を読むため)
+- **一覧**: code の行は使える行の後ろ(各群の中は catalog の順)に、disabled の文字色で並び、名前の後ろに ` — not in this build`(module の 6 つ)/ ` — needs ray layout v2`(`pelican.ray_instance_requires_layout_v2@1`)/ Studio の知らない code は ` — unavailable`。行は選べる(理由を読むため)(Q-7 で変更: MG-2a の追従で、ray instance の短い語は ` — needs a ray layout`、文は `This project has no ray group layout`。code 名は据え置き)
 - **止めるもの**: Add、asset の一覧と「Use selected assets」を無効にし、宣言欄を読み取り専用にする
 - **説明欄**: 1 行目が「文 (code)」(例 `This build has no physics module (physics.module_unavailable@1)`)。知らない code は code だけ。panel は 1 行目しか見せないので理由を先頭に置いた
 - **置き場**: code → 文・短い語の表(7 行)と行の並びは `inspectormodel` の純関数(`componentUnavailableSentence` / `componentUnavailableDescription` / `componentUnavailableTag` / `componentAddRows`。[component の使えない理由の対応表](../src/devstudio/model/inspectormodel.cpp#L511))。combo を埋めて controls を止めるのは新しい `src/devstudio/view/componentaddlist.cpp`(`fillComponentAddTypes` / `applyComponentAddAvailability`)
@@ -24974,9 +24974,9 @@ engine の新機能 / shadow・SSAO / forward_transparent のループ。
 - **テキスト入力の欄(受け入れ 5。シナリオが type したもの)**: `pelican.newProject.location`(`{artifacts}`)/ `pelican.newProject.name`(`forward_loop` / `deferred_loop`)/ `pelican.inspectorVector.transform.pos.1`(`-0.5`)/ `pelican.inspectorVector.transform.scale.0` と `.scale.2`(`8`)/ B だけ `pelican.inspectorVector.transform.rotation.1`(`0.3827`)・`.rotation.3`(`0.9239`)・`pelican.renderTargetForm.name`(`lit_color`)・`pelican.inspectorVector.light.direction.0`(`0.5`)
 - **記録した穴**:
   1. **(engine、G-6 へ)** authored fragment の pass は、別の authored fragment の pass を anchor にできない。authoring context は `after:deferred_geometry` を挿入位置の候補に出し([挿入位置の候補を作る所](../src/core/communication/renderconfigeditor.cpp#L1931))、`add_authored_pass` はそれを受けるが、root の合成が `render feature pass insert anchor was not found` で失敗する([anchor が見つからない throw](../src/project/featurecompose.cpp#L1976))。候補は「先頭の前」と「各 pass の後」なので、geometry が `present` の前にあると `before:present` は候補から消える。lighting を `present` の後に置くと、`present` は後の出力を読めないので `lit_color` を読ませられない
-  2. **(Studio)** Inspector の編集が commit 中のときに押した Add Object は、status bar の `Could not add <名前>: Finish the active inspector edit before adding an object.`(8 秒)と Inspector の notice で断られるだけで、後で送り直さない
+  2. **(Studio)** Inspector の編集が commit 中のときに押した Add Object は、status bar の `Could not add <名前>: Finish the active inspector edit before adding an object.`(8 秒)と Inspector の notice で断られるだけで、後で送り直さない(Q-7 で変更: 1 本だけ待ち、編集が終わってから送る。status bar と Outliner の下の 1 行 `pelican.outlinerNotice` で言う)
   3. **(Studio)** Pass Editor は authoring の失敗を `authoring failed` の 1 語で出し、理由は tooltip(`Render authoring failed: ...`)にしか無い。1 の原因にはたどり着けなかった(実装者の報告では engine log にも理由がある。未確認)
-  4. **(Studio)** Inspector は commit のたびに欄を作り直すので、打って commit していない値は失われる。欄に focus があると Refresh が止まる(実装者の報告。focus で欄の編集が始まる所までは `inspectorwidget.cpp` で確認、Refresh が止まる経路は未確認)。シナリオは欄が有効になるのを待って打ち、Return で commit し、欄がその値を持つまで待つ
+  4. **(Studio)** Inspector は commit のたびに欄を作り直すので、打って commit していない値は失われる。欄に focus があると Refresh が止まる(実装者の報告。focus で欄の編集が始まる所までは `inspectorwidget.cpp` で確認、Refresh が止まる経路は未確認)。シナリオは欄が有効になるのを待って打ち、Return で commit し、欄がその値を持つまで待つ(Q-7 で変更: 構造が変わらなければ欄は作り直さず値だけ差し替え、打ちかけの値は残る。focus だけでは編集が始まらないので Refresh は押せる。Refresh が止まる経路は `refreshBlocked()` と確認した。list を持つ component は今も作り直す)
 
 ### G-6: 作った pass を別の pass の置き場所の基準にできる —— preview 変種の feature 除外を pass の性質で判定し、除外を依存先まで伝え、編集時に全変種を確かめる(G-5 が見つけた穴。第二段階の最後の段差。v2: 敵対レビューの FATAL 1 / MAJOR 4 を反映)
 
@@ -25022,7 +25022,58 @@ anchor の候補の規則(`before:<先頭>` / `after:<any>`)の変更 / preview 
 - **記録した穴**:
   1. parameter を持つ feature(`$source` など)は、bind の前の文書で依存を比べるので、依存を見落としうる(`include_feature` は feature を読んだ直後、bind の前に呼ばれる。見落とす例は実装者の報告で、未確認)
   2. data-only の preview の合成は、読む resource が有るかを確かめない。`history: true` の target の fragment は preview から外れるが、root の `present` がその target を読み続けていても編集時には断られない(`render_preview` にその target が無い可能性。実装者の報告、未確認)
-  3. シナリオ `deferred_loop_from_scratch` は G-6 の step を全部通るが、最後に Inspector が busy のまま残って赤で終わる。engine の preflight を外しても同じなので G-6 とは別に記録(Q-7 へ)。受け入れ 4 の他のシナリオの結果は commit の記録に無い(未確認)
+  3. シナリオ `deferred_loop_from_scratch` は G-6 の step を全部通るが、最後に Inspector が busy のまま残って赤で終わる。engine の preflight を外しても同じなので G-6 とは別に記録(Q-7 へ)。受け入れ 4 の他のシナリオの結果は commit の記録に無い(未確認)(Q-7 で解決: 原因は Inspector の欄の focus が始めた、誰も終わらせない編集。Q-7 の後、このシナリオと `forward_loop_from_scratch` は 2 回ずつ緑)
+
+### Q-7: Inspector が busy のまま戻らない + Inspector まわりの小穴(G-5 / G-6 のシナリオと MG-2a が見つけた)
+
+**下段(Studio のみ)。実装者: Claude(Opus)。**
+
+#### 前提
+- G-6 の実装者の実測: シナリオ `deferred_loop_from_scratch` が 2 回とも赤。1 回目は step 29(Add Object の直後、render を何も編集する前)、2 回目は 148 step 中の step 146「the Inspector is idle」。**Inspector の欄が enabled にならず**、終了時に Studio が 30 秒以内に閉じない。engine 側の G-6 の preflight を無効にしても同じ形で落ちる。G-5 の実装者は同じシナリオを 4 回連続で緑にしていた(差: develop の先端には G-6 のほか、別 session の GP-1(7a87bbe4、`get_components` の `local_trs` が root の object でも authored の local 値を返す)、MG-2a、PG-1 が入った)
+- G-5 が記録した小穴: (a) Inspector の編集が確定途中に Add Object を押すと、status bar に 8 秒だけ「Could not add …」で終わる(`mainwindow.cpp:1041` 付近、原因は `inspectormodel.cpp:2249` の busy)(b) Inspector は確定のたびに欄を作り直すので、途中で打った値が消え、欄に focus があるだけで Refresh も押せない
+- MG-2a(別 session)で ray group layout が v3 だけになった: Q-6 の短い語 `— needs ray layout v2` と文は「layout が無い」意味に直す(code 名 `pelican.ray_instance_requires_layout_v2@1` は据え置き)。`src/devstudio/view/inspectorwidget.cpp:913-914` の `layout_v1_q` の表示は到達しないので消す
+
+#### 決定
+1. **busy のまま戻らない原因を特定して直す**: Inspector の session / 編集の状態機械(`inspectormodel.cpp` の busy の立ち下がり)を、G-4 の engine 再起動(`restartEngine`)、project の開き直し、spawn、transform の編集の組み合わせで追う。再現を widget / scene test に落としてから直す(対照: 修正を外すと busy のまま)
+2. **Add Object を busy の間に押したら**、黙って断らず、確定を待ってから送る(待ち行列 1 本。既に 1 つ待っていたら新しいもので置き換えず、2 つ目は断って理由を status と Outliner の近くに出す)
+3. **確定のたびに欄を作り直さない**: 値だけ差し替える(focus を持つ欄と、打ちかけの欄は上書きしない)。Refresh は focus があっても押せる
+4. **MG-2a の追従**: Q-6 の短い語と文を「layout が無い」に(`— needs a ray layout` / 「This project has no ray group layout (pelican.ray_instance_requires_layout_v2@1)」相当)、`layout_v1_q` の表示を削除
+5. シナリオ `deferred_loop_from_scratch` と `forward_loop_from_scratch` を 2 回ずつ緑
+
+#### 受け入れ
+1. busy の再現 test(修正を外すと赤)
+2. Add Object の待ち: busy の間に押すと、確定後に spawn が 1 回(対照: 待たずに断る旧挙動で赤)
+3. 欄の作り直し: 打ちかけの値が確定の往復で残る / focus があっても Refresh が押せる
+4. Q-6 の test を新しい文に合わせて緑
+5. シナリオ 2 本 × 2 回緑。触った面の既存 test 緑。非 GPU 全数は統合側
+6. 報告にテキスト入力の欄の一覧
+
+#### やらないこと
+engine 側の変更 / Inspector の見た目の改修 / 回転の角度入力(テキスト入力の削減 WP で)。
+
+#### 着地(2026-09-25、565d3742)
+- **busy のまま戻らなかった原因**: model の busy は下りていた。Inspector を止めていたのは、view が始めて誰も終わらせない編集だった(commit の記録の 5 段。行番号は起票時 = 565d3742^ のもの)
+  1. Return で欄が commit し、Inspector が busy になる
+  2. widget は busy の間、focus を持つ欄も含めて全部の欄を disabled にしていた(`src/devstudio/view/inspectorwidget.cpp:998-1011`)
+  3. focus を持つ欄が disabled になったので、Qt が focus を同じ vector の次の列へ送った(シナリオでは `pos.1` → `pos.2`)
+  4. その欄の FocusIn が編集を始めた(`inspectorwidget.cpp:1653` の `case QEvent::FocusIn` → `beginNumeric`。テキスト欄も `:1675` で同じ)
+  5. model の `beginWidgetEdit`(`src/devstudio/model/inspectormodel.cpp:1927-1938`)は、preview がまだ commit 中の key への begin を受け入れた。key は `editing_widgets` に残り、`refreshBlocked()`(`:725`、preview があるか `editing_widgets` が空でない)が focus が離れるまで真のまま —— refresh は先送り、Refresh は押せず、他の欄も disabled、`InspectorWidget::sceneEditPending()`(busy か `refreshBlocked()`)が真なので、窓を閉じるときに未保存の問いが出た(`MainWindow::closeEvent`。シナリオは Studio が 30 秒以内に閉じず赤)
+- **間欠だった理由**: FocusIn は窓が active のときにしか来ないので、窓の前後関係で出たり出なかったりした。G-5 は 4 回続けて緑、G-6 は step 29 と step 146 で赤(commit の記録)
+- **直したこと(3 つ)**:
+  1. focus だけでは編集を始めない。数値欄とテキスト欄の FocusIn の case を消した。数値欄の編集は値が変わったとき(`numericChanged`)か欄の上で button を押したときに始まる([focus では編集を始めない所](../src/devstudio/view/inspectorwidget.cpp#L1909))。Inspector が idle でなければ何も始めない([busy の間は編集を始めない所](../src/devstudio/view/inspectorwidget.cpp#L1820))。数値欄の FocusOut は、同じ vector の別の列へ移るときは編集を終えない
+  2. focus を持つ欄は busy の間も enabled のまま。focus が次の欄へ押し出されない([focus を持つ欄を止めない所](../src/devstudio/view/inspectorwidget.cpp#L1201))
+  3. model は commit 中・abort 中の key への begin を断る(`preview_is_ending`。[commit 中の key への begin を断る所](../src/devstudio/model/inspectormodel.cpp#L1992))
+  - busy の間に focus のある欄へ打った値は欄に残り、欄を離れるか Return で、Inspector が idle になってから 1 回の編集として送る(`commitHeldValue` → `flushDeferredCommit`。[idle になってから送る所](../src/devstudio/view/inspectorwidget.cpp#L540))。欄が消えていたり、model が既に同じ値を持っていれば送らない
+- **欄を作り直さない(決定 3)**: 描くものの構造(object、prefab の parameter、component の並びと状態、欄の key・種類・範囲・enum・単位、list の key と行。authored で schema に合う欄の値は含めない)を文字列にし(`structureSignature`。[作り直すかを決める文字列](../src/devstudio/view/inspectorwidget.cpp#L568))、前に描いたものと同じなら値だけ差し替える(`applyValues`。[値だけ差し替える所](../src/devstudio/view/inspectorwidget.cpp#L622))。編集中の欄・送り待ちの値を持つ欄・打ちかけの欄(数値欄は表示の文字列が値の文字列と違う、テキスト欄は modified)は上書きしない。runtime の行は文字だけ差し替える。focus だけでは編集が始まらないので、focus があっても Refresh は押せる
+- **Add Object の待ち(決定 2)**: `InspectorModel::spawnObject` は `SpawnOutcome`(`Refused` / `Sent` / `Queued`)を返す([Add Object を待たせる所](../src/devstudio/model/inspectormodel.cpp#L2348))。busy か `refreshBlocked()` の間に押すと 1 本だけ待ち、Inspector が idle になった時点(`takeRpcRequests` の先頭の `flushQueuedSpawn`。[待っている spawn を送る所](../src/devstudio/model/inspectormodel.cpp#L783))で、終わった編集が残した revision の上に送る。既に 1 本待っていれば新しいものは置き換えず `Could not add <名前>: <待っている名前> is already waiting to be added; add another once it is in.` で断る。待ちに入ると status bar(8 秒)と Outliner の下の新しい 1 行(`pelican.outlinerNotice`。[Outliner の下の 1 行](../src/devstudio/view/mainwindow.cpp#L252))に `Adding <名前> after the current edit.`、断ると同じ 2 か所に `Could not add …`([Add の結果を出す所](../src/devstudio/view/mainwindow.cpp#L1057))。1 行は、新しい object が選ばれたとき・次の Add がすぐ送られたとき・engine の RPC が使えなくなったときに消える。session の開始と停止で待ち行列を捨てる
+- **MG-2a の追従(決定 4)**: 対応表の ray instance の行は、文 `This project has no ray group layout`・短い語 `needs a ray layout`(code 名 `pelican.ray_instance_requires_layout_v2@1` は据え置き。[対応表の ray instance の行](../src/devstudio/model/inspectormodel.cpp#L520))。到達しない `layout_v1_q` の表示(出所の `Layout v1: row q` と優先順位の `Row q (layout v1)`)と、tooltip の `Layout v1 uses row q as custom index.` を消した
+- **test**: `devstudio_inspector_widget_test`(新、Qt offscreen。本物の RPC transport の上で engine の代わりに test が答える。子 process は `process_fixture_child` の新しい `rpc-hold` モード)の `Q-7 a committed field gives the Inspector back`(`pos.1` に `-0.5` を打って Return → commit の後、`sceneEditPending()` が偽、Refresh と `scale.0` が enabled、`pos.1` は同じ widget のまま focus と値を持つ)/ `Q-7 focus holds nothing, and half-typed text survives a round trip`(focus だけなら Refresh が押せる / `scale.0` に打ちかけた `1.` が、別の欄の commit と、focus を置いたままの Refresh の後も残る)/ `devstudio_inspector_test` の `Q-7 Add object during an edit waits for it and spawns once` / `Q-7 a released edit cannot be begun again while it commits`。Q-6 の test は新しい文と短い語に合わせた
+- **変異(実装者の報告)**: M1 3 つの修正を外す → 3 本が赤(focus が `pos.2` に移る、シナリオと同じ形)/ M2 busy の間は待たずに断る → 2 本が赤
+- **シナリオ**: `deferred_loop_from_scratch` と `forward_loop_from_scratch` が 2 回ずつ緑(commit の記録)。シナリオの JSON は変えていない
+- **テキスト入力の欄(受け入れ 6)**: この WP の差分に打つ欄の増減は無い(Outliner の下の 1 行は label)
+- **記録した穴**:
+  1. list を持つ component(`pelican_ray_instance` など)は、今も commit のたびに欄を作り直す。list の key に `scene_revision` が入っていて([list の key を作る所](../src/devstudio/model/inspectormodel.cpp#L1456))、構造の文字列が毎回変わるため
+  2. 待っている spawn は engine が止まると黙って捨てられる(Outliner の下の 1 行が消えるだけで、捨てたとは言わない)
 
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 

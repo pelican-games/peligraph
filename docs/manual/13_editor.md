@@ -92,7 +92,7 @@ procedural geometryは複数選択でき、1件なら`asset`、複数なら`asse
 **この build で使えない component は灰色で並びます(✅Q-6)。**`get_component_add_candidates` は、build で外した機能の
 component を `available: false` と、`unavailable_reason` に code を入れて返します(PG-1)。Studio はそういう行を**使える行の後ろに
 灰色で**並べ、名前の後ろに短い語を付けます: module の無い build なら `— not in this build`、
-`pelican.ray_instance_requires_layout_v2@1`(project に ray group layout が無い。MG-2a から layout は version 3 だけで、code の名前は変えていません)なら `— needs ray layout v2`(この短い語は Q-7 で直す予定です。説明欄の文 `Ray instances need ray group layout v2` も今は v2 のままです)、Studio の知らない code なら `— unavailable` です。
+`pelican.ray_instance_requires_layout_v2@1`(project に ray group layout が無い。MG-2a から layout は version 3 だけで、code の名前は変えていません)なら `— needs a ray layout`(説明欄の文は `This project has no ray group layout`。✅Q-7 で「layout が無い」意味に直しました)、Studio の知らない code なら `— unavailable` です。
 行は選べますが、選ぶと **Add**・asset の一覧・**Use selected assets** が押せなくなり、宣言 JSON は読み取り専用になります
 ([Add と宣言欄を止める所](../../src/devstudio/view/componentaddlist.cpp#L41))。説明欄の 1 行目は読める文と code です
 (例: `This build has no physics module (physics.module_unavailable@1)`)。code と文・短い語の対応表は Studio に 1 つで
@@ -136,11 +136,16 @@ Outliner の右クリックと **Scene** toolbar の **Add Object** は同じ 1 
   書きますが、scene の object 名は `[a-zA-Z0-9_]` だけなので `_` にしています。
 - **選択**: Outliner の読み直しを最短の間隔に縮め、新しい object が Outliner に出た時点でそれを選び、Inspector に出します
   ([`MainWindow::selectSpawnedObject()`](../../src/devstudio/view/mainwindow.cpp#L1078))。
-- **Undo**: coalesce key を付けないので、Undo 1 回で Add 1 回が戻ります。Inspector の別の編集が進行中なら送らず、
-  Inspector の notice に理由が出ます([`InspectorModel::spawnObject()`](../../src/devstudio/model/inspectormodel.cpp#L2348))。
-  ⚠ Inspector の値の commit が終わる前に押した Add Object も同じで、status bar に
-  `Could not add <名前>: Finish the active inspector edit before adding an object.` が 8 秒出るだけです。後で送り直しはしないので、
-  commit が終わってからもう一度押してください。
+- **Undo**: coalesce key を付けないので、Undo 1 回で Add 1 回が戻ります。
+- **Inspector の編集の途中で押した Add Object は待ちます(✅Q-7)**: Inspector の値の編集が進行中(commit の途中を含む)に
+  押すと、spawn は 1 本だけ待ち、Inspector の手が空いた時点で、その編集が残した scene revision の上に送られます
+  ([`InspectorModel::spawnObject()`](../../src/devstudio/model/inspectormodel.cpp#L2348))。待っている間は status bar(8 秒)と
+  Outliner の下の 1 行(`pelican.outlinerNotice`)に `Adding <名前> after the current edit.` が出ます
+  ([Add Object の結果を status bar と Outliner に出す所](../../src/devstudio/view/mainwindow.cpp#L1057))。既に 1 本待っているときに
+  押した 2 本目は、置き換えずに断ります。同じ 2 か所に
+  `Could not add <名前>: <待っている名前> is already waiting to be added; add another once it is in.` が出るので、
+  1 本目が入ってからもう一度押してください。Outliner の下の 1 行は、新しい object が選ばれたときに消えます。
+  ⚠ 待っている spawn は engine が止まると捨てられ、そのことは言われません(1 行が消えるだけです)。
 - Add Object は常に押せます。project が開いていない・engine の準備ができていないときは、status bar に
   `Add Object needs an open project with its engine running.` と出るだけです。
 - ⚠ spawn は Studio が最後に見た scene revision で送ります。他の client が編集した直後は `stale_revision` で断られるので、
@@ -157,9 +162,28 @@ asset が `id [status]` で並びます。
 **Inspector の数値欄の名前(✅G-5)**: 自動化面から届くように、数値の欄は 1 つずつ名前を持ちます。vector の列は
 `pelican.inspectorVector.<component>.<field>.<列>`(例: `pelican.inspectorVector.transform.scale.2`)、数 1 つは
 `pelican.inspectorNumeric.<component>.<field>` です([数値欄の名前の付け方](../../src/devstudio/view/inspectorwidget.cpp#L1715))。
-G-5 より前は、どの vector も最初の列が同じ名前でした。⚠ Inspector は commit のたびに欄を作り直すので、打っただけで commit
-していない値は次の作り直しで消えます。シナリオは欄が有効になるのを待って打ち、Return で commit し、欄がその値を持つまで
-待ちます([シナリオの README](../../test/studio_scenarios/README.md#L334))。
+G-5 より前は、どの vector も最初の列が同じ名前でした。シナリオは欄が有効になるのを待って打ち、Return で commit し、
+欄がその値を持つまで待ちます([シナリオの README](../../test/studio_scenarios/README.md#L334))。
+
+**Inspector の欄の編集と commit(✅Q-7)**
+
+- **focus だけでは編集になりません。**編集は、値を打つ(値が変わる)か欄の上で mouse の button を押したときに始まります
+  ([focus で編集を始めなくなった所](../../src/devstudio/view/inspectorwidget.cpp#L1909))。欄に focus を置いたままでも
+  **Refresh** は押せ、他の欄も止まりません。vector の中で列を移るあいだは 1 つの編集のままです。
+- **busy の間に打った値は、手が空いてから送られます。**別の編集の commit の途中(Inspector が busy)は他の欄が止まりますが、
+  focus のある欄は止まりません([busy でも focus のある欄は止めない所](../../src/devstudio/view/inspectorwidget.cpp#L1201))。
+  そこへ打った値は欄に残り、欄を離れるか Return を押すと、Inspector の手が空いてから 1 回の編集として送られます
+  ([手が空いてから値を送る所](../../src/devstudio/view/inspectorwidget.cpp#L540))。その間に欄が消えた(別の object を選んだなど)か、
+  値が既に同じなら何も送りません。
+- **commit の往復で欄は作り直さず、値だけ差し替えます**([値だけを差し替える所](../../src/devstudio/view/inspectorwidget.cpp#L622))。
+  編集中の欄・送り待ちの値を持つ欄・打ちかけの欄(`1.` のように、表示がまだ値と一致しない欄)は上書きしません。作り直すのは
+  描くものが変わったとき(別の object、component の追加・削除、欄の種類や範囲が変わるなど)だけです
+  ([作り直すかどうかを決める所](../../src/devstudio/view/inspectorwidget.cpp#L568))。
+  ⚠ list を持つ component(`pelican_ray_instance` など)は、list の key に scene revision が入っているので、今も commit のたびに
+  作り直されます(打ちかけの値はそこでは消えます)。
+- G-6 までは、commit のたびに欄を作り直し、focus だけで編集が始まっていました。commit の間に止まった欄から Qt が focus を
+  次の欄へ送り、その focus が始めた編集を誰も終わらせないので、Inspector が busy のまま残り(Refresh も他の欄も止まり、
+  窓を閉じると未保存の問いが出る)、窓が active のときだけ起きる間欠の故障になっていました。
 
 ### 起動のしかた
 
@@ -1213,9 +1237,10 @@ Add material pass... の Deferred geometry で G-buffer 5 枚と `scene_depth` �
 G-5 の時点では lighting の pass の置き場所だけを手で迂回していました(`present` の後に足してから、`file` step で fragment の
 `insert` を書き換えていた)。preview の変種が geometry の fragment を `insert: "before:present"` の文字列で外し、それを anchor に
 する lighting の fragment だけが残って、合成が `render feature pass insert anchor was not found` で落ちていたためです。✅G-6 で
-preview の判定と除外の伝播が直り([第6章 §6.13](06_rendering.md))、迂回はなくなりました。⚠ このシナリオは G-6 の step を全部
-通りますが、最後に Inspector が busy のまま残って赤で終わります(engine の変種の preflight を外しても同じ。実装者の報告で、
-Q-7 で扱います)。
+preview の判定と除外の伝播が直り([第6章 §6.13](06_rendering.md))、迂回はなくなりました。G-6 の時点では、このシナリオは
+最後に Inspector が busy のまま残って赤で終わっていました。原因は Inspector の欄の focus が始めた、誰も終わらせない編集で
+(§13.1「Inspector の欄の編集と commit」)、✅Q-7 の後はこのシナリオと `forward_loop_from_scratch` が 2 回ずつ緑です
+(Q-7 の commit の記録)。
 `graph_reroute_tie` の node の drag は、✅Q-5 から窓の画素ではなく canvas の位置(`"scene"`)で終わります。F-5 から run は
 毎回既定 layout で始まるので、窓の画素で置くと node が入力の列より左に来て、続く click が別の node に当たっていました
 (bundle の drag はまだ窓の画素です)。
