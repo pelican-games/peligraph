@@ -81,8 +81,9 @@ catalog は 3 module / 21 op になり、下表の `pose.*` 6 本(`pose.blend` /
 **`PELICAN_WITH_AUDIO=OFF` build では `pelican.audio` module が無い**。下表の `audio.*` 3 本(`audio.pitch` / `audio.playback` / `audio.volume`)が消え、
 catalog は 3 module / 24 op(animation も OFF なら 2 module / 18 op)になる。`audio.*` を書いた文書は `graph.operation_unregistered@1`。
 `event.playback` とその出力型 `pelican.event.playback_control@1` は `pelican.value` に属するので残る(PG-1 で型を `pelican.value` へ移した)。
-同じ test は `WITH_AUDIO` を受け取って `pelican.audio` と `audio.*` の有無を確かめるが、module 数の期待値(3、animation ON なら 4)と
-この表との照合は `pelican.audio` がある前提のままで、AUDIO=OFF build でこの test が通るかは未確認。
+同じ test は `WITH_AUDIO` と `WITH_ANIMATION` の両方を受け取り、module 数(2 + audio + animation)と、この表のうち
+build から外した unit の op(`audio.*` / `pose.*`)だけが欠けてよいことを確かめる(`de84fddb`。AUDIO=OFF は catalog から
+`pelican.audio` を抜いた出力で確認、修正前の script はそれを「expected 4 built-in modules, got 3」で落とす)。
 
 <!-- graph-op-table:begin -->
 | op | module | domain | evaluation | change | sink | ports | inputs | outputs |

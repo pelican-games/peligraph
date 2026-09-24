@@ -230,8 +230,8 @@ module → types / operations / sinks の順に並びます。**並びは名前�
 `std::map`、types と sinks は明示的に sort)。登録順に依存しないので、module を足しても既存の行は動きません。
 
 [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake#L23)(ctest 名 `devcli_graph_catalog`)は
-module 数(既定 4、`PELICAN_WITH_ANIMATION=OFF` で 3)、各 operation が `domain` / `evaluation` /
-**`change.default`**(`change` は入れ子の object で、script が読むのはその `default`。[読む位置](../../test/run_devcli_graph_catalog.cmake#L56))/ `sink` を
+module 数(既定 4。`PELICAN_WITH_ANIMATION=OFF` と `PELICAN_WITH_AUDIO=OFF` でそれぞれ 1 減る)、各 operation が `domain` / `evaluation` /
+**`change.default`**(`change` は入れ子の object で、script が読むのはその `default`。[読む位置](../../test/run_devcli_graph_catalog.cmake#L59))/ `sink` を
 持つこと、`value.trigger_clock` の評価分類が `replay`、`render.buffer` の parameter change が `rebuild` であることを
 見ます。**さらに `docs/v0_freeze.md` の操作表と突き合わせます** —— 表は `<!-- graph-op-table:begin -->` /
 `<!-- graph-op-table:end -->` のコメントで区切られており、script の中のコメントがその理由です。
