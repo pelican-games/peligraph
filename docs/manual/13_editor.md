@@ -49,6 +49,30 @@ Features と Inspector の装着操作はその履歴の対象外です(§13.5�
 画面を切り替えます。保存失敗・接続断・編集中で保存できない場合は、現在のプロジェクトを維持します。
 Graph タブの変更は編集ごとにファイルへ保存されるため、この確認はシーン編集が対象です。
 
+### Studio で新しい project を作る
+
+**File > New Project...**(Open Project... の 1 つ上。✅F-2)は、フォルダ・名前・雛形を選ぶ dialog を開きます
+([dialog](../../src/devstudio/view/newprojectdialog.cpp#L55))。作られるのは「フォルダ/名前」のディレクトリで、
+dialog の Creates 欄にその path が出ます。雛形は **Standard 3D scene**(`pelican_cli project init` の既定と同じ)と
+**Blank pipeline**(preset も features も持たず、fullscreen pass `present` 1 本が gradient を描くだけ)の 2 つで、
+中身は `pelican_cli project init --template standard|blank` と同じ関数が書きます([第10章 §10.4](10_tools.md))。
+
+- **既にファイルがあるフォルダは拒否します。**dialog は閉じず、`initializeProjectTemplate()` の文言
+  (`project init target directory is not empty: <path>`)を dialog の下に出し、何も書きません。
+  名前が空・`/` や `\` を含む・`.` / `..` の場合も dialog の中で断ります。
+- **書いた project は Open Project と同じ経路で開きます**
+  ([接続](../../src/devstudio/view/mainwindow.cpp#L693))。シーンに未保存の編集があれば上の
+  Save / Discard / Cancel が出ます。ただし雛形は**確認より前にディスクへ書かれている**ので、Cancel しても
+  作ったフォルダは残ります(開かないだけです)。
+- **Browse...** は OS のフォルダ選択(modal の `QFileDialog`)です。自動化面からは操作できないので、
+  シナリオはフォルダ欄(`pelican.newProject.location`)に直接 type します。
+
+⚠ **既知の表示ノイズ(F-2 で記録、未修正)**: project を切り替えた直後、status bar に
+`Modal transform polling failed: pelican_player exited before returning an RPC response` が出ることがあります。
+gizmo の `get_modal_transform` polling が、切替で終了した古い engine に宛てた要求の失敗を出しているもの
+([文言](../../src/devstudio/model/gizmomodel.cpp#L1062))で、切替そのものの失敗ではありません。
+また、Studio で作った project でも `project.json` の `generator` は `"pelican_cli project init"` のままです。
+
 ### Studioでcomponentを追加する
 
 Inspectorの **Add component...** で登録済みの型を選び、**Add**で追加します。
@@ -669,8 +693,8 @@ objectName が付いていて(`pelican.file.*` / `pelican.view.panels.*` / `peli
 
 **シナリオは JSON で、`test/studio_scenarios/<名前>.json` に置きます**(書式は
 [README](../../test/studio_scenarios/README.md#L55))。step は「命令をそのまま送るもの」か「期待」で、期待は
-`rpc_equals`(engine の応答の `path` が `value`)/ `text_equals` / `visible` / `list_count` / `screenshot`(保存のみ)の
-5 種です。`{project}` / `{artifacts}` と `--var NAME=VALUE` は step のすべての文字列に差し込まれます。
+`rpc_equals`(engine の応答の `path` が `value`)/ `result`(任意の命令を送り、応答の `path` を記録するか `value` と比べる)/
+`text_equals` / `visible` / `list_count` / `screenshot`(保存のみ)の 6 種です([判定](../../tools/studio_drive.py#L609))。`{project}` / `{artifacts}` と `--var NAME=VALUE` は step のすべての文字列に差し込まれます。
 `"probe_no_automation": true` を書くと、**先に flag 無しの Studio を起こして socket が無いことを確かめて**から本番を起動します。
 最初の失敗で run は止まります。
 
@@ -688,7 +712,7 @@ CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが�
 `studio_exit_code` と `studio_shutdown_forced` も記録します。最後の shutdown step は
 **exit 0、強制終了なし**を要求し、異常終了・タイムアウトによる強制停止も report と driver の失敗になります。
 
-現在のシナリオは **10 本**です。
+現在のシナリオは **11 本**です。
 `graph_read` は fixture を Graph タブで開き、`list` が objectName を返すこと・無い名前が
 `automation.widget_missing@1` で断られること・キャンバスが描いたものが `get_graph_instances` の中身と合うことを見ます
 ([シナリオ](../../test/studio_scenarios/graph_read.json))。`graph_edit_roundtrip` は**実物の engine で**値の帯を
@@ -699,11 +723,17 @@ drag で動かし、`view_state` で結果を読む)、`menu_actions`(popup を�
 `action` で発火する)、`graph_canvas_zoom_pan`(N-3 が入った Graph キャンバスの zoom / fit / pan)です。
 加えて `theme_switch`、`graph_auto_layout`、`graph_reroute_tie`、`graph_observe_roundtrip`、
 `frameplan_edit_roundtrip` がテーマ・配置・配線・値の観測・Frame Plan編集の往復を確認します。
+✅F-2 の `new_blank_project` は File > New Project... の dialog にフォルダ(`{artifacts}` の下)・名前・Blank pipeline を
+入れて Create し、開き直った Frame Plan に `present` と `output_transform` があること、viewport の screen モードの
+screenshot が 100 色を超えること(gradient が出ていること)を見ます([シナリオ](../../test/studio_scenarios/new_blank_project.json))。
 
 ⚠ **2 つの注意。**(1) `open_project` に**今開いている directory** を渡すと何も起きません(`EmbeddedViewport::openProject`
 がそう作られています)。ディスクから読み直させたいときは、別の project を開いてから戻ります。
 (2) `screenshot` の既定(`widget` モード)は Qt の widget 木を描くので、**埋め込まれた engine の窓は写りません**
 (別 HWND です)。engine が描いた絵が要るときは `"mode": "screen"` を使い、窓が隠れていない必要があります。
+`screenshot` の応答は `path` / `mode` / `width` / `height` に加えて **`distinct_colors`**(絵に含まれる色の数)を返します
+(✅F-2、[応答](../../src/devstudio/automation/automationcommands.cpp#L1665))。消去されただけの viewport は 1 色なので、
+`result` step で `distinct_colors` を読めば「engine が何か描いたか」を PNG を開かずに判定できます。
 
 **この面が最初の往復で本物のバグを見つけました。**値の帯を click → type → Enter すると「Graph change saved.」と
 出るのに古い値が保存される —— `QDoubleSpinBox` の `keyboardTracking=false` と、editor の filter が Enter を先に

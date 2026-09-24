@@ -97,9 +97,9 @@ package は「エンジンのツリーの外で書かれ、プロジェクトへ
 
 [`src/devcli/CMakeLists.txt`](../../src/devcli/CMakeLists.txt#L1) が作る配布支援CLIです。サブコマンドは `assets`、`bake-camera`、`import`、`dist-config`、`package`(X-1: install / list / inspect)、`project`、`dump-lowered-material`、`vrm`、`graph-catalog`(共通グラフの module / op / 型の一覧、AG-0) の**9系統**です（[`src/devcli/main.cpp` の分岐](../../src/devcli/main.cpp#L15) と [usage文字列](../../src/devcli/main.cpp#L43)。`main()` は9本の `if` を上から並べるだけで、どれにも一致しなければ usage を出して `-1` を返します）。Vulkan実行時全体ではなく `pelican_project` と必要な純粋処理を中心にリンクします。
 
-`project init` が書き出す雛形は、[`templateFiles()`](../../src/devcli/projectinit.cpp#L288) が返すファイル名と文字列定数の対で全量が決まります。「新規プロジェクトの既定形」を知りたいときはここだけ読めば足ります。
+`project init` が書き出す雛形は、[`templateFiles()`](../../src/project/projecttemplate.cpp#L329) が返すファイル名と文字列定数の対で全量が決まります。「新規プロジェクトの既定形」を知りたいときはここだけ読めば足ります。F-2 でこのファイルは `pelican_cli` から `pelican_project` へ移り（[`src/project/projecttemplate.hpp`](../../src/project/projecttemplate.hpp)）、`pelican_cli` の [`projectinit.cpp`](../../src/devcli/projectinit.cpp#L27) は `--template standard|blank` を読んで `initializeProjectTemplate()` を呼ぶだけになりました。Studio の File > New Project... も同じ関数を呼ぶので、「新しいプロジェクトが何を持つか」の答えは1箇所です。`templateFiles()` は `ProjectTemplate` を引数に取り、`Blank` のときだけ `shaders/present.frag` を足し、`passes/main_rendering_config.json` の中身を切り替えます（以下は既定の `standard` の説明です）。
 
-このうち `passes/main_rendering_config.json` の内容は二段で決まります。WP240a（`87f5e68`）で111行の手書き宣言からpresetを指す2キーへ置き換わり、さらにP-2a-4bで**`pelican.graph` root で包む**形になりました。文字列定数 [`rendering_config_json`](../../src/devcli/projectinit.cpp#L200) が持つのは `rendering` 節の中身だけで、外側は [`renderingConfigJson()`](../../src/devcli/projectinit.cpp#L208) が [`wrapLegacyRenderingConfig()`](../../src/project/renderconfigsection.hpp#L62) を1回通して作ります（[第3章 §3.14](03_project_and_loading.md)）。雛形が書き出す実物は次の形です。
+このうち `passes/main_rendering_config.json` の内容は二段で決まります。WP240a（`87f5e68`）で111行の手書き宣言からpresetを指す2キーへ置き換わり、さらにP-2a-4bで**`pelican.graph` root で包む**形になりました。文字列定数 [`rendering_config_json`](../../src/project/projecttemplate.cpp#L198) が持つのは `rendering` 節の中身だけで、外側は [`renderingConfigJson()`](../../src/project/projecttemplate.cpp#L249) が [`wrapLegacyRenderingConfig()`](../../src/project/renderconfigsection.hpp#L62) を1回通して作ります（[第3章 §3.14](03_project_and_loading.md)）。雛形が書き出す実物は次の形です。
 
 ```json
 {
@@ -118,7 +118,7 @@ package は「エンジンのツリーの外で書かれ、プロジェクトへ
 }
 ```
 
-雛形の `code/CMakeLists.txt` は [`code_cmake`](../../src/devcli/projectinit.cpp#L225) の2行で、`pelican_game_sources(game.cpp)` の**後**に `pelican_packages()` を呼びます（順序の理由は次の「packageのビルド」）。
+雛形の `code/CMakeLists.txt` は [`code_cmake`](../../src/project/projecttemplate.cpp#L265) の2行で、`pelican_game_sources(game.cpp)` の**後**に `pelican_packages()` を呼びます（順序の理由は次の「packageのビルド」）。
 
 読む順序は次の3点です。
 

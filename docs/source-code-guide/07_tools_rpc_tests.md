@@ -47,7 +47,7 @@ command ごとに独立した `run...Command(argc, argv)` を持つ構成で、�
 
 ## 7.2 `project init`: 実行可能な最小 project の生成器
 
-[`runProjectInitCommand()`](../../src/devcli/projectinit.cpp#L27) は、空であることを確認した directory に template file 群を書きます。template の一覧は [`templateFiles()`](../../src/devcli/projectinit.cpp#L288) にあります。
+[`runProjectInitCommand()`](../../src/devcli/projectinit.cpp#L27) は `--template standard|blank`(既定 `standard`)を読んで [`initializeProjectTemplate()`](../../src/project/projecttemplate.cpp#L382) を呼ぶだけで、空であることを確認した directory に template file 群を書くのはこちらです。F-2 で雛形は `pelican_cli` から `pelican_project` の [`projecttemplate.{hpp,cpp}`](../../src/project/projecttemplate.hpp) へ移り、Studio の File > New Project... も同じ関数を呼びます。template の一覧は [`templateFiles()`](../../src/project/projecttemplate.cpp#L329) にあります。
 
 主な生成物は次です。
 
@@ -60,18 +60,20 @@ command ごとに独立した `run...Command(argc, argv)` を持つ構成で、�
 | `input/profiles/keyboard.json` | input profile |
 | `passes/main_rendering_config.json` | 描画 pipeline preset と feature の選択(次項) |
 | `ui/ui_overlay.json` | 2D UI overlay |
-| `code/CMakeLists.txt`, `code/game.cpp` | game system を組み込む project code。生成される CMakeLists.txt は `pelican_game_sources()` を呼ぶため、game code は **DLL**(`pelican_game_logic`)としてビルドされます。X-1 以降は `pelican_packages()` の 1 行が**その後ろに**続きます([template](../../src/devcli/projectinit.cpp#L225)) —— package の object は、先に作られた game logic DLL へ合流するので順序が効きます |
+| `code/CMakeLists.txt`, `code/game.cpp` | game system を組み込む project code。生成される CMakeLists.txt は `pelican_game_sources()` を呼ぶため、game code は **DLL**(`pelican_game_logic`)としてビルドされます。X-1 以降は `pelican_packages()` の 1 行が**その後ろに**続きます([template](../../src/project/projecttemplate.cpp#L265)) —— package の object は、先に作られた game logic DLL へ合流するので順序が効きます |
 | `.gitattributes`, `.gitignore`, `README.md` | asset/LFS と利用案内 |
 
-template は外部 resource file ではなく、[`projectinit.cpp` 内の raw string](../../src/devcli/projectinit.cpp#L91) です。schema を変更した場合、example project だけでなくここも更新しないと、新規 project が古い形式で生成されます。
+template は外部 resource file ではなく、[`projecttemplate.cpp` 内の raw string](../../src/project/projecttemplate.cpp#L89) です。schema を変更した場合、example project だけでなくここも更新しないと、新規 project が古い形式で生成されます。
 
 この command の end-to-end 仕様は [`run_devcli_project_init.cmake`](../../test/run_devcli_project_init.cmake) です。file が揃っているかの確認だけでなく、生成した project directory を **prebuilt の `pelican_player`** に `--headless --frames 2 --render-out` で食わせ、exit 0・出力に `Validation Error` / `VUID-` が出ないこと・PNG が空でないことまで見ます(生成された `code/game.cpp` を build する経路ではありません)。空でない directory を拒否し、そのエラーが directory 名を含むことも同じ script が固定しています。実 device を要するので CTest では `gpu` label 付きです([`test/CMakeLists.txt`](../../test/CMakeLists.txt) の `devcli_project_init_command`)。
+
+**`blank` 雛形(F-2)。**`--template blank` は上の 16 エントリに `shaders/present.frag` を足し、`passes/main_rendering_config.json` の `rendering` 節だけを差し替えます。中身は `pipeline` キーの無い direct config で、preset・`features`・`render_targets` を持たず、fullscreen pass `present` 1 本が `display` へ UV の gradient を書きます([`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L211))。同じ `run_devcli_project_init.cmake` がこの project を headless で 2 frame 描かせ、PNG が 100 色以上で、最も多い 1 色以外の画素が 9 割以上(最多色が 1 割以下)であることを `pelican_test_png_nonuniform_check` で見ます([検査](../../test/run_devcli_project_init.cmake#L224))。ファイルの形は GPU 無しの `devcli_project_templates`([`run_devcli_project_templates.cmake`](../../test/run_devcli_project_templates.cmake))が見ます —— 既定と `--template standard` の 16 ファイルが F-2 前の出力と SHA-256 で一致すること、blank の形、知らない template 名の拒否です。
 
 ### 生成される rendering config は preset 参照の `pelican.graph` root(WP240a → P-2a-4b)
 
 `passes/main_rendering_config.json` の template は 111 行の手書き設定から数行になり、さらに
 **`pelican.graph` root** になりました。ソースに置かれているのは「節の中身」だけです
-([`rendering_config_json`](../../src/devcli/projectinit.cpp#L200))。
+([`rendering_config_json`](../../src/project/projecttemplate.cpp#L198))。
 
 ```json
 {
@@ -85,7 +87,7 @@ template は外部 resource file ではなく、[`projectinit.cpp` 内の raw st
 
 生成されるファイルはこれを [`wrapLegacyRenderingConfig()`](../../src/project/renderconfigsection.hpp#L62) に通した結果で、
 `schema: "pelican.graph"` / `version: 1` / 空の `definitions` / `nodes` / `outputs` と、上の object を
-`rendering` メンバとして持ちます([生成](../../src/devcli/projectinit.cpp#L208))。**包み方が 1 関数しかない**ので、
+`rendering` メンバとして持ちます([生成](../../src/project/projecttemplate.cpp#L249))。**包み方が 1 関数しかない**ので、
 出荷 project と fixture が「同じ規則で包まれたか」を値の比較で言えます —— 慣習として 2 箇所に書くのをやめた形です。
 どのキーがどちらの層に属するかは [`isGraphRootKey()`](../../src/project/renderconfigdocument.hpp#L15) が決めます。
 
@@ -93,7 +95,7 @@ template は外部 resource file ではなく、[`projectinit.cpp` 内の raw st
 
 読む位置が一段動いたのがこの変更の要点です。
 
-- `project init` が **何を書くか** → [`rendering_config_json`](../../src/devcli/projectinit.cpp#L200) を `wrapLegacyRenderingConfig()` に通した `pelican.graph` root(上の block はその `rendering` 節の中身で、ファイルの全文ではありません)
+- `project init` が **何を書くか** → [`rendering_config_json`](../../src/project/projecttemplate.cpp#L198) を `wrapLegacyRenderingConfig()` に通した `pelican.graph` root(上の block はその `rendering` 節の中身で、ファイルの全文ではありません)
 - 生成された project が **実際にどの pass を回すか** → [`src/core/resources/render_pipelines/hybrid_v1.json`](../../src/core/resources/render_pipelines/hybrid_v1.json) と [`src/core/resources/features/shadow_directional.json`](../../src/core/resources/features/shadow_directional.json)
 
 preset 側の `main_render` グラフは deferred_geometry / ssao_pass / ssao_blur_pass / deferred_lighting / forward_opaque / `__snapshot_opaque_color` / `__snapshot_opaque_depth` / forward_transparent / scene_present で、`shadow_depth` は preset ではなく feature 側が足します。つまり新規 project は最初から forward・半透明・opaque snapshot・directional shadow を持ちます。preset と feature をどう解決して 1 本のグラフにするかは[第6章](06_rendering_vulkan_shader.md)の担当です。

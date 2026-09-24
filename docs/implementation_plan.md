@@ -24322,6 +24322,49 @@ engine 側の起動短縮 / Studio 起動の並列化 / 別 thread の RPC。
 
 完了記録(2026-09-18、`06787ace`): project open 中の UI thread 最大停止(automation 経由で `text` を連打して計測): Debug `playground_pose` **2203 → 34 ms**、Debug `example` **17065 → 34 ms**(embed の瞬間だけ 464 / 553 ms)、Release 598 → <20 ms、1326 → <20 ms。Loading の notice(`pelican.viewportLoadingNotice`)が load 中「(n s)」を数える。Frame Plan 到着 → 表示 **349 → 192 ms**(Debug、playground_pose)。test: viewport test(gate を外す変異で label が出ず silence test が 1200 s 固まる = 固まりの再現 / log を生存とみなさない変異で起動中の engine を殺す / embed で ready にする変異で `rpcReady` が偽陽性)、Frame Plan graph test(focus 規則 / carry / Escape の 3 変異で赤)、raw JSON tab の test。非 GPU 全数 1747/1747、シナリオ 9/10(赤は Q-3 が無い tree のため。着地時に Q-3 と merge)。driver `<作業ディレクトリ>/bench/q4open.py` `q4pop.py` `q4win.py`。
 
+### F-2: 空に近い project から始める —— blank 雛形と Studio の New Project(利用者指示 2026-09-24「0 から組める」第一段階)
+
+**中段(devcli の雛形 + Studio の menu)。実装者: Claude(Opus)。第二の流儀を作らない: 雛形の中身は 1 箇所に置き(起票時は `projectinit.cpp`、決定 3 で library へ移す)、CLI と Studio は同じ関数を呼ぶ。F 系列の第一段で、続きは F-1(render target の著作)/ F-3(shader の雛形とコンパイルエラーの表示)/ F-4(端から端までのシナリオで追う)。**
+
+#### 前提(2026-09-24、develop 6b68386a)
+- `pelican_cli project init <dir>`(`src/devcli/projectinit.cpp`)は `templateFiles()` の 16 ファイルを書く。rendering は `pipeline.preset = engine://render_pipelines/hybrid_v1.json` + 2 features を `wrapLegacyRenderingConfig` で graph root に包んで `passes/main_rendering_config.json` に置く。`initializeProjectTemplate(dir)` は `projectinit.hpp` で公開されているが、`projectinit.cpp` は `pelican_cli` の executable に直接入っていて(`src/devcli/CMakeLists.txt`)Studio からは link できない
+- preset は必須ではない: `pipeline` key が無ければ direct config(`renderpipeline.cpp:673-675`)。direct の最小例 `projects/pathtrace_demo/rendering.json` = fullscreen pass `present` 1 本が `swapchain` に書く(vertex `engine://fullscreen`、fragment `project://shaders/present`)
+- engine は必ず `output_transform`(display → swapchain)と 8 つの canonical anchor を足す(`featurecompose.cpp:31-32`, `:291-301`, `:429-436`)。HDR が有効だと「scene pass が swapchain / display に書く」ことを要求(`:325-326`)。pass 0 本で HDR 無効だと display を誰も書かず画面は不定(推測)
+- Studio の File menu に Open Project…(`mainwindow.cpp:526-533`)、開く処理は `MainWindow::openProject` / `openProjectNow`(:686, :797)。未保存変更の保護(35c82db6)がある
+
+#### 決定
+1. **雛形を 2 つに**: `standard`(今日の中身、既定)と `blank`。`pelican_cli project init <dir> [--template standard|blank]`
+2. **blank の rendering**: direct config(preset 無し、features 無し)で `render_targets` 無し、fullscreen pass **1 本** `present`(`input: []`、`output.color: ["display"]`、vertex `engine://fullscreen`、fragment `project://shaders/present`)。`shaders/present.frag` は UV の gradient を出す 10 行程度(入力を読まない)。graph root で包むのは standard と同じ `wrapLegacyRenderingConfig`。scene / input / ui / code / asset は standard と同じ(3D の model は置かない)。HDR の既定が有効でも起動できることを確かめる(`display` に書く pass があるので通るはず。通らなければ台帳に書いて blank の設定で明示)
+3. **雛形の置き場を library に**: `projectinit.{hpp,cpp}` の「雛形のファイル一覧と書き出し」(`templateFiles` / `initializeProjectTemplate`)を `pelican_project`(または Studio と CLI の両方が link している既存の library。新しい library は作らない)へ移し、`pelican_cli` の argparse 部分だけ devcli に残す。関数は `initializeProjectTemplate(dir, ProjectTemplate)` に
+4. **Studio: File → New Project…**(Open Project… の上): dialog で親フォルダ / 名前 / 雛形(Standard 3D scene・Blank pipeline)を選ぶ → `initializeProjectTemplate` → 既存の `openProject` でそのまま開く(未保存変更の保護を通る)。既にファイルがある場所は拒否(`ensureWritableProjectRoot` の文言を dialog に)。`--automation` の menu_list に出る objectName を付ける(`pelican.file.newProject`)
+5. **automation**: シナリオ `new_blank_project`: New Project…(dialog に type)→ Blank → OK → engine が起動 → Frame Plan に `present` と `output_transform` → screenshot が一様でない(gradient が出ている)ことを report に。書き出し先は test の一時 directory(repo の中に作らない)
+
+#### 受け入れ(§4 規約 10)
+1. CLI test(既存の project init test があれば拡張): `--template blank` で direct config(`pipeline` key 無し)、pass 1 本、`shaders/present.frag` がある / 既定は今日と byte 一致(対照: 既定を blank にする変異で赤)
+2. blank project が headless で起動し、1 frame 描ける(既存の headless smoke / project catalog の仕組みに乗せる。GPU label)。`display` に書かれた画素が一様でない(readback があれば。無ければ台帳に書く)
+3. Studio の widget / scene test: New Project… の dialog が `initializeProjectTemplate` を選んだ雛形で呼び、成功で openProject、既存 directory で拒否文言
+4. 非 GPU 全数緑、シナリオ全数緑(新 `new_blank_project`)。`pelican_cli project init` の既存挙動は不変
+
+#### やらないこと
+雛形の追加(forward / deferred の雛形は第二段階)/ project の名前変更・移動 / 雛形の外部化(user template)。
+
+#### 着地(2026-09-24、d4097528)
+- **雛形は `pelican_project` へ**: `src/project/projecttemplate.{hpp,cpp}`(`ProjectTemplate { Standard, Blank }`、`projectTemplateName` / `projectTemplateFromName` / `projectTemplates`、`initializeProjectTemplate(dir, ProjectTemplate = Standard)`)。`templateFiles(kind)` は standard の 16 ファイルに、Blank のときだけ `shaders/present.frag` を足す(17 ファイル)。違うのは `passes/main_rendering_config.json` の `rendering` 節だけで、scene / input / ui / code / asset は共通。`src/devcli/projectinit.cpp` は argparse(`--template`、既定 `standard`、知らない名前は `unknown project template: <name> (expected standard|blank)`)だけになった
+- **blank**: `pipeline` key の無い direct config。preset・`features`・`render_targets` 無し、fullscreen pass `present` 1 本(`input: []`、`output.color: ["display"]`、vertex `engine://fullscreen`、fragment `project://shaders/present`)。`shaders/present.frag` は入力を読まず `vec4(inUV.x, inUV.y, 0.5, 1.0)` を書く。**HDR の既定が有効なままで gradient が描かれた**(`present` が `display` に書くので HDR の要求を満たす)ため、blank に HDR の設定は要らない
+- **Studio**: File > New Project...(Open Project... の上、objectName `pelican.file.newProject`)。dialog は `pelican.newProjectDialog`、部品は `pelican.newProject.{location,name,template,path,notice,create,cancel,browse}`。作るのは「フォルダ/名前」。Create は `initializeProjectTemplate` を呼び、成功したときだけ閉じて通常の `openProject` へ渡す(未保存 scene の Save / Discard / Cancel が効く。雛形は確認の前に書かれるので、Cancel しても作ったフォルダは残る)。空でないフォルダは `initializeProjectTemplate` の文言(`project init target directory is not empty: <path>`)を notice に出して拒否。Exit は separator の後、File menu の末尾へ移った
+- **automation**: `screenshot` の応答に `distinct_colors`(絵の色数)。消去されただけの viewport は 1 色
+- **test**:
+  - `devcli_project_templates`(新、GPU 無し、`test/run_devcli_project_templates.cmake`): 既定と `--template standard` の 16 ファイルが F-2 前の出力と SHA-256 で一致 / blank の形(direct config・pass 1 本・`shaders/present.frag`)/ 知らない名前の拒否と無書き出し
+  - `devcli_project_init_command`(拡張、GPU): blank を headless で 2 frame 描かせ、`pelican_test_png_nonuniform_check` で 100 色以上・最多色以外の画素 9 割以上
+  - `devstudio_newproject_test`(新、3 case): 選んだ雛形が書かれて root が渡る(Blank / Standard)/ 空でないフォルダの拒否文言 / menu の位置と、clean な窓は開き、未保存の窓は prompt を出す
+  - シナリオ `new_blank_project`(新): dialog に `{artifacts}`・名前・Blank pipeline を入れて Create → Frame Plan に `present` と `output_transform` → viewport の screen screenshot が `distinct_colors > 100`。`menu_actions` の File menu の件数は 3 → 4
+- **変異で赤を確認**(各々戻して緑): 既定を blank に反転 → `devcli_project_templates` の digest 不一致 / shader を定数色に → headless の PNG が rejected、シナリオの `distinct_colors` が 1 / dialog が常に Standard を書く → `devstudio_newproject_test` の 2 case が赤 / 拒否文言を出さない → 赤
+- **記録した穴**:
+  1. Browse... は modal の `QFileDialog` で自動化面から操作できない(シナリオはフォルダ欄に type する)
+  2. Studio が作った project でも `project.json` の `generator` は `"pelican_cli project init"` のまま
+  3. project を切り替えると status bar に `Modal transform polling failed: pelican_player exited before returning an RPC response` が出る(切替で古い engine が終了するため。gizmo の modal polling の失敗表示。後で直すノイズ)
+- **F 系列の残り**: F-1(render target の著作)/ F-3(shader の雛形とコンパイルエラー)/ F-4(端から端までのシナリオで追う)
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**

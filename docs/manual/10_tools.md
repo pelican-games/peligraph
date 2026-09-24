@@ -424,21 +424,40 @@ pelican_cli <assets|bake-camera|import|dist-config|package|project|dump-lowered-
 
 エラーは stderr+終了コード -1、成功は 1 行サマリ+終了コード 0。
 
-### `pelican_cli project init <dir>`(✅WP57)
+### `pelican_cli project init <dir> [--template standard|blank]`(✅WP57 / ✅F-2)
 
 空(または未存在)ディレクトリに雛形一式を生成します。生成直後に `pelican_player --project <dir>` でそのまま起動できます。詳細は [第2章](02_getting_started.md)。
+空でないディレクトリは `project init target directory is not empty: <dir>` で拒否し、何も書きません。
 
-生成される `passes/main_rendering_config.json` は **`pelican.graph` root** です。著作した内容
+雛形の中身は [`src/project/projecttemplate.cpp`](../../src/project/projecttemplate.cpp) の 1 箇所にあり(`pelican_project`)、
+CLI は `--template` を読んで [`initializeProjectTemplate()`](../../src/project/projecttemplate.cpp#L382) を呼ぶだけです
+([CLI 側](../../src/devcli/projectinit.cpp#L27))。Studio の File > New Project... も同じ関数を呼びます([第13章](13_editor.md))。
+`--template` は 2 つです。
+
+- **`standard`**(既定): 以下で説明する 3D シーン向けの 16 エントリ。F-2 の前に `project init` が書いていたものと
+  byte 単位で同じです(`devcli_project_templates` が SHA-256 で固定)。
+- **`blank`**: `standard` と同じ 16 エントリに `shaders/present.frag` を足した 17 エントリ。違うのは
+  `passes/main_rendering_config.json` の `rendering` 節だけで、`pipeline` キーが無い **direct config** です
+  (preset も `features` も `render_targets` もありません)。中身は fullscreen pass `present` 1 本
+  (`input: []`、`output.color: ["display"]`、vertex `engine://fullscreen`、fragment `project://shaders/present`)で、
+  `shaders/present.frag` は入力を読まずに UV の gradient を書きます
+  ([雛形](../../src/project/projecttemplate.cpp#L211))。engine は direct config にも canonical anchor と
+  `display` を読む `output_transform` を足すので、描かれる frame は「project が書いた pass 1 本 + engine の終端」です。
+  scene / input / ui / code / asset は `standard` と同じです(3D の model は置きません)。
+
+知らない名前は `unknown project template: <name> (expected standard|blank)` で拒否します。
+
+生成される `passes/main_rendering_config.json` は **`pelican.graph` root** です(両方の雛形で同じ)。`standard` で著作した内容
 (`pipeline.preset` = `engine://render_pipelines/hybrid_v1.json`、`features` = `shadow_directional` と
 `sky_ambient` の 2 本)は `rendering` オブジェクトの中に入り、包む処理は
 [`wrapLegacyRenderingConfig()`](../../src/project/renderconfigsection.hpp#L62) の 1 箇所だけです
-([呼び出し側](../../src/devcli/projectinit.cpp#L208)。著作した文字列そのものは [:200](../../src/devcli/projectinit.cpp#L200))。`render_targets` / `rendering_passes` は preset が持つので
+([呼び出し側](../../src/project/projecttemplate.cpp#L249)。著作した文字列そのものは [:198](../../src/project/projecttemplate.cpp#L198))。`render_targets` / `rendering_passes` は preset が持つので
 project は書きません —— `run_devcli_project_init.cmake` は**まず root が `pelican.graph` で `rendering` が
 object であることを確かめてから**、節の中に禁止メンバが無いことを見ます
 ([検査](../../test/run_devcli_project_init.cmake#L48)。順序が逆だと、節ごと消えたときに検査が素通りします)。
 
 生成される `code/CMakeLists.txt` は 2 行で、`pelican_game_sources(game.cpp)` の**後に**
-`pelican_packages()` を呼びます([template](../../src/devcli/projectinit.cpp#L225))。順序が意味を持ちます ——
+`pelican_packages()` を呼びます([template](../../src/project/projecttemplate.cpp#L265))。順序が意味を持ちます ——
 package の object は、その前に作られたゲームロジック DLL へ合流するからです。
 
 ### `pelican_cli import ...`(✅WP21/79/84)
