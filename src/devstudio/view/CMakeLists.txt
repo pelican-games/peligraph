@@ -40,6 +40,8 @@ add_library(pelican_studio_view STATIC
     shaderreloadfollower.hpp
     inspectorwidget.cpp
     inspectorwidget.hpp
+    outlinertree.cpp
+    outlinertree.hpp
     componentaddlist.cpp
     componentaddlist.hpp
     graphattachmentwidget.cpp

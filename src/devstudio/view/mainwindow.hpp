@@ -43,8 +43,11 @@ class FramePlanWidget;
 class GraphCanvasWidget;
 class FullscreenPassWidget;
 class InspectorWidget;
+class OutlinerTree;
 class RenderFeaturesWidget;
 enum class AddObjectKind : std::uint8_t;
+struct SceneEditOutcome;
+enum class SceneEditKind : std::uint8_t;
 
 class MainWindow : public QMainWindow {
   public:
@@ -94,7 +97,7 @@ class MainWindow : public QMainWindow {
     std::optional<ToolLayoutPresetManager> tool_layout_presets_;
     std::array<QDockWidget *, DockCount> docks_{};
     QListWidget *project_list_ = nullptr;
-    QTreeWidget *outliner_ = nullptr;
+    OutlinerTree *outliner_ = nullptr;
     // Q-7: one line under the Outliner for what became of an Add object.
     QLabel *outliner_notice_ = nullptr;
     EmbeddedViewport *viewport_ = nullptr;
@@ -136,9 +139,24 @@ class MainWindow : public QMainWindow {
     // G-2: Add object. One menu, shown by the Outliner's right click and by
     // the Scene toolbar, so a scenario fires the same four named actions.
     QMenu *add_object_menu_ = nullptr;
-    // The object just spawned, by scene and name, until the Outliner shows
-    // it and it can be selected there.
-    std::optional<std::pair<std::string, std::string>> pending_spawn_selection_;
+    // The name a spawn took, by scene, until it is in (or refused): the next
+    // Add Object numbers past it.
+    std::optional<std::pair<std::string, std::string>> pending_spawn_name_;
+    // OL-1: the object an edit created (a spawn, a duplicate, an undone
+    // delete), by scene and authoring id, until the Outliner shows it and it
+    // can be selected there.
+    std::optional<std::pair<std::string, std::uint64_t>> pending_created_selection_;
+    // OL-1: the one Outliner edit in flight (the Inspector's session takes
+    // one at a time): what it was about, by name for its refusal, and where
+    // the selection goes when a delete commits.
+    struct OutlinerEdit {
+        std::uint64_t subject_id = 0;
+        std::string subject_name;
+        std::string target_name;
+        std::optional<OutlinerObjectKey> select_after;
+    };
+    std::optional<OutlinerEdit> pending_outliner_edit_;
+    QMenu *outliner_menu_ = nullptr;
 
     void createWorkspace();
     void createMenus();
@@ -164,8 +182,22 @@ class MainWindow : public QMainWindow {
     void populateOutliner();
     void createAddObjectMenu();
     void addObject(AddObjectKind kind);
-    // Selects the pending spawned object once the Outliner holds it.
-    void selectSpawnedObject();
+    // Selects the pending created object once the Outliner holds it.
+    void selectCreatedObject();
+    // OL-1: Duplicate, Delete, and a row dropped on another.
+    void duplicateSelectedObject();
+    void deleteSelectedObject();
+    void deleteObject(const OutlinerObjectKey &key);
+    void moveObject(const OutlinerObjectKey &dragged,
+                    const std::optional<OutlinerObjectKey> &onto,
+                    bool preserve_local);
+    void refuseObjectMove(const OutlinerObjectKey &dragged,
+                          const std::optional<OutlinerObjectKey> &onto);
+    bool submitOutlinerEdit(SceneEditKind kind, const OutlinerObject &subject,
+                            nlohmann::json operation, const QString &description,
+                            OutlinerEdit pending);
+    void sceneEditCompleted(const SceneEditOutcome &outcome);
+    void updateOutlinerActions();
     void requestOutlinerRefresh();
     // The modal poll runs while, and only while, a modal transform could be
     // under way. Called wherever one of the three facts it reads can move.

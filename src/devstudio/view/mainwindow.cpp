@@ -5,7 +5,9 @@
 #include "fullscreenshadertemplate.hpp"
 #include "graphcanvaswidget.hpp"
 #include "inspectorwidget.hpp"
+#include "outlinertree.hpp"
 #include "../model/inspectormodel.hpp"
+#include "../model/outlineredit.hpp"
 #include "newprojectdialog.hpp"
 #include "panelhelp.hpp"
 #include "renderfeatureswidget.hpp"
@@ -36,9 +38,11 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QScopeGuard>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSet>
 #include <QSignalBlocker>
 #include <QStandardPaths>
 #include <QStatusBar>
@@ -65,9 +69,6 @@
 
 namespace PelicanStudio {
 namespace {
-
-constexpr int SceneIdRole = Qt::UserRole;
-constexpr int DeclarationIndexRole = Qt::UserRole + 1;
 
 // `scene_tree` carries the engine's own `scene_revision`, so a reply that did
 // not move it is an answer Studio already had. The outliner keeps the quick
@@ -133,25 +134,18 @@ QString displayPath(const std::filesystem::path &path) {
 #endif
 }
 
-std::optional<OutlinerObjectKey> objectKey(QTreeWidgetItem *item) {
-    if (item == nullptr) {
-        return std::nullopt;
-    }
-    const QVariant scene_id = item->data(0, SceneIdRole);
-    const QVariant declaration_index =
-        item->data(0, DeclarationIndexRole);
-    if (!scene_id.isValid() || !declaration_index.isValid()) {
-        return std::nullopt;
-    }
-    bool valid_index = false;
-    const qulonglong index = declaration_index.toULongLong(&valid_index);
-    if (!valid_index || index > std::numeric_limits<std::size_t>::max()) {
-        return std::nullopt;
-    }
-    return OutlinerObjectKey{
-        .scene_id = scene_id.toString().toStdString(),
-        .declaration_index = static_cast<std::size_t>(index),
-    };
+// What keeps a row's open/closed state across a rebuild: the scene, and for
+// an object its authoring id (OL-1), which a duplicate or a delete before it
+// does not move.
+QString rowIdentity(const QTreeWidgetItem *item) {
+    const QString scene = item->data(0, OutlinerSceneIdRole).toString();
+    const QVariant id = item->data(0, OutlinerAuthoringIdRole);
+    return id.isValid() ? scene + QLatin1Char('#') + id.toString() : scene;
+}
+
+bool sameObject(const OutlinerObjectKey &left, const OutlinerObjectKey &right) {
+    return left.scene_id == right.scene_id &&
+           left.authoring_object_id == right.authoring_object_id;
 }
 
 } // namespace
@@ -231,18 +225,29 @@ void MainWindow::createWorkspace() {
     docks_[ProjectDock] =
         makeDock(this, tr("Project"), QStringLiteral("pelican.projectDock"), project_list_);
 
-    outliner_ = new QTreeWidget(this);
+    outliner_ = new OutlinerTree(this);
     // The tree itself is named, not only its dock: picking a scene object is
     // the first step of every attach, and a scenario has to be able to name
     // the thing it clicks in.
     outliner_->setObjectName(QStringLiteral("pelican.outliner"));
     outliner_->setHeaderLabel(tr("Scene / Object"));
     outliner_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    outliner_->setDragDropMode(QAbstractItemView::NoDragDrop);
     connect(outliner_, &QTreeWidget::currentItemChanged, this,
             [this](QTreeWidgetItem *current, QTreeWidgetItem *) {
                 selectOutlinerItem(current);
             });
+    // OL-1: Duplicate (Ctrl+D), Delete (Del) and a row dragged onto another.
+    connect(outliner_->duplicateAction(), &QAction::triggered, this,
+            [this] { duplicateSelectedObject(); });
+    connect(outliner_->deleteAction(), &QAction::triggered, this,
+            [this] { deleteSelectedObject(); });
+    outliner_->setDropAction([this](const OutlinerTree::Drop &drop) {
+        moveObject(drop.dragged, drop.onto, drop.preserve_local);
+    });
+    outliner_->setRefusedDropAction([this](const OutlinerTree::Drop &drop) {
+        refuseObjectMove(drop.dragged, drop.onto);
+    });
+    updateOutlinerActions();
     // Q-7: Add object says here, under the tree it adds to, when its object
     // has to wait for an edit or cannot be added.
     auto *outliner_panel = new QWidget(this);
@@ -462,8 +467,12 @@ void MainWindow::createWorkspace() {
                 }
                 outliner_refresh_timer_->stop();
                 pending_outliner_request_ = 0;
-                // A spawn still waiting went with the engine (Q-7).
+                // A spawn still waiting went with the engine (Q-7), and so
+                // did any Outliner edit (OL-1).
                 setPanelNotice(outliner_notice_, {});
+                pending_spawn_name_.reset();
+                pending_created_selection_.reset();
+                pending_outliner_edit_.reset();
                 pending_gizmo_requests_.clear();
                 gizmo_model_.stopSession();
                 dispatchGizmoModel();
@@ -521,6 +530,8 @@ void MainWindow::createWorkspace() {
         // the Inspector has finished handling the reply before doing either.
         QTimer::singleShot(0, this, [this] { sceneStateChanged(); });
     });
+    inspector_->setSceneEditCompletedAction(
+        [this](const SceneEditOutcome &outcome) { sceneEditCompleted(outcome); });
 }
 
 void MainWindow::updateModalTransformPolling() {
@@ -937,7 +948,9 @@ void MainWindow::openProjectNow(const QString &path) {
         outliner_refresh_timer_->stop();
         pending_outliner_request_ = 0;
         inspector_->resetSceneSaveState();
-        pending_spawn_selection_.reset();
+        pending_spawn_name_.reset();
+        pending_created_selection_.reset();
+        pending_outliner_edit_.reset();
         endGizmoSessionForProjectSwitch(opened_project.projectRoot());
         project_model_ = std::move(opened_project);
         tool_layout_presets_.emplace(
@@ -978,11 +991,21 @@ void MainWindow::populateOutliner() {
     project_list_->addItem(displayPath(model.projectRoot()));
     project_list_->setEnabled(true);
 
+    // OL-1: a row that was open stays open, and one that was closed stays
+    // closed, by the object's authoring id -- through a duplicate, a delete,
+    // a move and an undo alike. A row not seen before opens if it is a scene
+    // and stays closed if it is an object.
+    QSet<QString> expanded;
+    QSet<QString> collapsed;
+    for (QTreeWidgetItemIterator row{outliner_}; *row != nullptr; ++row) {
+        ((*row)->isExpanded() ? expanded : collapsed).insert(rowIdentity(*row));
+    }
+
     outliner_->clear();
     for (const auto &scene : model.scenes()) {
         auto *scene_item = new QTreeWidgetItem(
             outliner_, QStringList{QString::fromStdString(scene.scene_id)});
-        scene_item->setData(0, SceneIdRole,
+        scene_item->setData(0, OutlinerSceneIdRole,
                             QString::fromStdString(scene.scene_id));
 
         std::vector<QTreeWidgetItem *> object_items;
@@ -990,11 +1013,14 @@ void MainWindow::populateOutliner() {
         for (const auto &object : scene.objects) {
             auto *item = new QTreeWidgetItem(
                 QStringList{QString::fromStdString(object.display_name)});
-            item->setData(0, SceneIdRole,
+            item->setData(0, OutlinerSceneIdRole,
                           QString::fromStdString(object.key.scene_id));
             item->setData(
-                0, DeclarationIndexRole,
+                0, OutlinerDeclarationIndexRole,
                 QVariant::fromValue<qulonglong>(object.key.declaration_index));
+            item->setData(
+                0, OutlinerAuthoringIdRole,
+                QVariant::fromValue<qulonglong>(object.key.authoring_object_id));
             object_items.push_back(item);
         }
 
@@ -1007,7 +1033,12 @@ void MainWindow::populateOutliner() {
             }
         }
     }
-    outliner_->expandToDepth(0);
+    for (QTreeWidgetItemIterator row{outliner_}; *row != nullptr; ++row) {
+        const QString identity = rowIdentity(*row);
+        (*row)->setExpanded(
+            expanded.contains(identity) ||
+            (!collapsed.contains(identity) && (*row)->parent() == nullptr));
+    }
 }
 
 void MainWindow::createAddObjectMenu() {
@@ -1037,10 +1068,19 @@ void MainWindow::createAddObjectMenu() {
                 [this, kind = kind] { addObject(kind); });
     }
 
+    // OL-1: the right-click menu is the row's first -- Duplicate and Delete,
+    // switched off with nothing selected -- and then Add Object.
+    outliner_menu_ = new QMenu(this);
+    outliner_menu_->setObjectName(QStringLiteral("pelican.outliner.contextMenu"));
+    outliner_menu_->addAction(outliner_->duplicateAction());
+    outliner_menu_->addAction(outliner_->deleteAction());
+    outliner_menu_->addSeparator();
+    outliner_menu_->addMenu(add_object_menu_);
     outliner_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(outliner_, &QWidget::customContextMenuRequested, this,
             [this](const QPoint &position) {
-                add_object_menu_->popup(outliner_->viewport()->mapToGlobal(position));
+                updateOutlinerActions();
+                outliner_menu_->popup(outliner_->viewport()->mapToGlobal(position));
             });
 
     auto *scene_toolbar = addToolBar(tr("Scene"));
@@ -1079,8 +1119,8 @@ void MainWindow::addObject(AddObjectKind kind) {
     taken.reserve(scene->objects.size() + 1);
     for (const auto &object : scene->objects) taken.push_back(object.display_name);
     // A spawn the Outliner has not shown yet still holds its name.
-    if (pending_spawn_selection_ && pending_spawn_selection_->first == scene->scene_id)
-        taken.push_back(pending_spawn_selection_->second);
+    if (pending_spawn_name_ && pending_spawn_name_->first == scene->scene_id)
+        taken.push_back(pending_spawn_name_->second);
     const std::string name = uniqueObjectName(addObjectBaseName(kind), taken);
 
     QString error;
@@ -1093,7 +1133,10 @@ void MainWindow::addObject(AddObjectKind kind) {
         setPanelNotice(outliner_notice_, oneLine(message), message);
         return;
     }
-    pending_spawn_selection_ = std::pair{scene->scene_id, name};
+    // OL-1: the new object is selected by the id its committed edit names
+    // (sceneEditCompleted); the name is held only so the next Add Object
+    // numbers past it.
+    pending_spawn_name_ = std::pair{scene->scene_id, name};
     // Ask quickly: the new object is selected as soon as the Outliner has it.
     setOutlinerRefreshInterval(OutlinerRefreshMinimumIntervalMs);
     if (outcome == SpawnOutcome::Queued) {
@@ -1108,25 +1151,220 @@ void MainWindow::addObject(AddObjectKind kind) {
     statusBar()->showMessage(tr("Adding %1...").arg(shown_name), 3000);
 }
 
-void MainWindow::selectSpawnedObject() {
-    if (!pending_spawn_selection_ || !project_model_) return;
-    const auto &[scene_id, name] = *pending_spawn_selection_;
-    for (const auto &scene : project_model_->scenes()) {
-        if (scene.scene_id != scene_id) continue;
-        for (const auto &object : scene.objects) {
-            if (object.display_name != name) continue;
-            pending_spawn_selection_.reset();
-            setPanelNotice(outliner_notice_, {});
-            const SelectionUpdate update = selection_model_.selectFromOutliner(object.key);
-            if (update.kind == SelectionUpdateKind::failed) {
-                statusBar()->showMessage(QString::fromStdString(update.message), 5000);
-                return;
-            }
-            viewport_->setPickingNotice({});
-            refreshSelectionViews();
-            return;
-        }
+void MainWindow::selectCreatedObject() {
+    if (!pending_created_selection_ || !project_model_) return;
+    const OutlinerObjectKey key{.scene_id = pending_created_selection_->first,
+                                .authoring_object_id = pending_created_selection_->second};
+    // Not in the Outliner yet: the next scene_tree brings it.
+    if (project_model_->findObject(key) == nullptr) return;
+    pending_created_selection_.reset();
+    setPanelNotice(outliner_notice_, {});
+    const SelectionUpdate update = selection_model_.selectFromOutliner(key);
+    if (update.kind == SelectionUpdateKind::failed) {
+        statusBar()->showMessage(QString::fromStdString(update.message), 5000);
+        return;
     }
+    viewport_->setPickingNotice({});
+    refreshSelectionViews();
+}
+
+void MainWindow::updateOutlinerActions() {
+    const auto &selected = selection_model_.selected();
+    const bool has_object = project_model_ && selected &&
+                            project_model_->findObject(*selected) != nullptr;
+    outliner_->duplicateAction()->setEnabled(has_object);
+    outliner_->deleteAction()->setEnabled(has_object);
+}
+
+bool MainWindow::submitOutlinerEdit(SceneEditKind kind, const OutlinerObject &subject,
+                                    nlohmann::json operation, const QString &description,
+                                    OutlinerEdit pending) {
+    if (!project_model_ || !viewport_->rpcReady()) {
+        statusBar()->showMessage(
+            tr("%1 needs an open project with its engine running.").arg(description), 5000);
+        return false;
+    }
+    QString error;
+    const auto outcome = inspector_->submitSceneEdit(
+        kind, subject.key.authoring_object_id, std::move(operation),
+        description.toStdString(), &error);
+    if (outcome == SpawnOutcome::Refused) {
+        statusBar()->showMessage(error, 8000);
+        setPanelNotice(outliner_notice_, oneLine(error), error);
+        return false;
+    }
+    pending_outliner_edit_ = std::move(pending);
+    setPanelNotice(outliner_notice_, {});
+    setOutlinerRefreshInterval(OutlinerRefreshMinimumIntervalMs);
+    statusBar()->showMessage(description + QStringLiteral("..."), 3000);
+    return true;
+}
+
+void MainWindow::duplicateSelectedObject() {
+    const auto &selected = selection_model_.selected();
+    const OutlinerObject *object =
+        project_model_ && selected ? project_model_->findObject(*selected) : nullptr;
+    if (object == nullptr) {
+        statusBar()->showMessage(tr("Select an object in the Outliner to duplicate it."), 5000);
+        return;
+    }
+    (void)submitOutlinerEdit(
+        SceneEditKind::Duplicate, *object, duplicateObjectOperation(*object),
+        tr("Duplicate %1").arg(QString::fromStdString(object->display_name)),
+        {.subject_id = object->key.authoring_object_id, .subject_name = object->display_name});
+}
+
+void MainWindow::deleteSelectedObject() {
+    const auto &selected = selection_model_.selected();
+    const OutlinerObject *object =
+        project_model_ && selected ? project_model_->findObject(*selected) : nullptr;
+    if (object == nullptr) {
+        statusBar()->showMessage(tr("Select an object in the Outliner to delete it."), 5000);
+        return;
+    }
+    // Asked once, and only when the object takes others with it: a lone
+    // object comes back with one Undo.
+    const std::size_t children = project_model_->descendantCount(*object);
+    if (children == 0) {
+        deleteObject(object->key);
+        return;
+    }
+    const QString name = QString::fromStdString(object->display_name);
+    auto *prompt = new QMessageBox(
+        QMessageBox::Question, tr("Delete Object"),
+        children == 1 ? tr("Delete %1? The 1 object under it is deleted too.").arg(name)
+                      : tr("Delete %1? The %2 objects under it are deleted too.")
+                            .arg(name)
+                            .arg(static_cast<qulonglong>(children)),
+        QMessageBox::NoButton, this);
+    prompt->setObjectName(QStringLiteral("pelican.outliner.deleteConfirm"));
+    prompt->setAttribute(Qt::WA_DeleteOnClose);
+    QPushButton *confirm = prompt->addButton(tr("Delete"), QMessageBox::DestructiveRole);
+    confirm->setObjectName(QStringLiteral("pelican.outliner.deleteConfirm.delete"));
+    QPushButton *cancel = prompt->addButton(QMessageBox::Cancel);
+    cancel->setObjectName(QStringLiteral("pelican.outliner.deleteConfirm.cancel"));
+    prompt->setDefaultButton(cancel);
+    const OutlinerObjectKey key = object->key;
+    connect(prompt, &QMessageBox::buttonClicked, this,
+            [this, confirm, key](QAbstractButton *button) {
+                if (button == confirm) deleteObject(key);
+            });
+    // open(), not exec(): a scenario answers it as a person does.
+    prompt->open();
+}
+
+void MainWindow::deleteObject(const OutlinerObjectKey &key) {
+    const OutlinerObject *object = project_model_ ? project_model_->findObject(key) : nullptr;
+    if (object == nullptr) return;
+    (void)submitOutlinerEdit(
+        SceneEditKind::Destroy, *object, destroyObjectOperation(*object),
+        tr("Delete %1").arg(QString::fromStdString(object->display_name)),
+        {.subject_id = object->key.authoring_object_id,
+         .subject_name = object->display_name,
+         .select_after = selectionAfterDestroy(*project_model_, *object)});
+}
+
+void MainWindow::moveObject(const OutlinerObjectKey &dragged,
+                            const std::optional<OutlinerObjectKey> &onto,
+                            bool preserve_local) {
+    if (!project_model_) return;
+    const OutlinerDropPlan plan = planOutlinerDrop(
+        *project_model_, dragged, onto,
+        preserve_local ? ReparentPreserve::Local : ReparentPreserve::World);
+    if (plan.kind == OutlinerDropKind::Unchanged) return;
+    if (plan.kind == OutlinerDropKind::Refused) {
+        const QString message = QString::fromStdString(plan.refusal);
+        statusBar()->showMessage(message, 8000);
+        setPanelNotice(outliner_notice_, oneLine(message), message);
+        return;
+    }
+    const OutlinerObject *child = project_model_->findObject(dragged);
+    const OutlinerObject *parent = onto ? project_model_->findObject(*onto) : nullptr;
+    const QString child_name = QString::fromStdString(child->display_name);
+    (void)submitOutlinerEdit(
+        SceneEditKind::Reparent, *child, plan.operation,
+        parent != nullptr
+            ? tr("Move %1 under %2").arg(child_name, QString::fromStdString(parent->display_name))
+            : tr("Move %1 to the scene root").arg(child_name),
+        {.subject_id = child->key.authoring_object_id,
+         .subject_name = child->display_name,
+         .target_name = parent != nullptr ? parent->display_name : std::string{}});
+}
+
+void MainWindow::refuseObjectMove(const OutlinerObjectKey &dragged,
+                                  const std::optional<OutlinerObjectKey> &onto) {
+    if (!project_model_) return;
+    const OutlinerObject *child = project_model_->findObject(dragged);
+    if (child == nullptr) return;
+    QString message;
+    if (onto) {
+        const OutlinerDropPlan plan =
+            planOutlinerDrop(*project_model_, dragged, onto, ReparentPreserve::World);
+        message = QString::fromStdString(plan.refusal);
+    }
+    if (message.isEmpty())
+        message = tr("%1 cannot be moved into another scene.")
+                      .arg(QString::fromStdString(child->display_name));
+    statusBar()->showMessage(message, 8000);
+    setPanelNotice(outliner_notice_, oneLine(message), message);
+}
+
+void MainWindow::sceneEditCompleted(const SceneEditOutcome &outcome) {
+    std::optional<OutlinerEdit> edit;
+    if ((outcome.kind == SceneEditKind::Duplicate || outcome.kind == SceneEditKind::Destroy ||
+         outcome.kind == SceneEditKind::Reparent) &&
+        pending_outliner_edit_ && pending_outliner_edit_->subject_id == outcome.subject_id) {
+        edit = std::move(pending_outliner_edit_);
+        pending_outliner_edit_.reset();
+    }
+    std::string spawned_name;
+    if (outcome.kind == SceneEditKind::Spawn && pending_spawn_name_) {
+        spawned_name = pending_spawn_name_->second;
+        pending_spawn_name_.reset();
+    }
+    if (!outcome.committed) {
+        // An undo or redo the engine refused is the Inspector's to report,
+        // as it always was.
+        if (outcome.kind == SceneEditKind::Undo || outcome.kind == SceneEditKind::Redo) return;
+        const QString message = QString::fromStdString(sceneEditRefusalSentence(
+            outcome, edit ? edit->subject_name : spawned_name,
+            edit ? edit->target_name : std::string{}));
+        statusBar()->showMessage(message, 8000);
+        setPanelNotice(outliner_notice_, oneLine(message), message);
+        return;
+    }
+    switch (outcome.kind) {
+    case SceneEditKind::Spawn:
+    case SceneEditKind::Duplicate:
+    case SceneEditKind::Undo:
+    case SceneEditKind::Redo:
+        // What the edit made (a copy's root, a new object, an object an undo
+        // brought back) is selected by the id the engine gave it.
+        if (const auto created = createdObjectToSelect(
+                outcome.created_objects,
+                outcome.kind == SceneEditKind::Duplicate ? outcome.subject_id : 0)) {
+            pending_created_selection_ =
+                std::pair{created->scene_id, created->authoring_object_id};
+            selectCreatedObject();
+        }
+        break;
+    case SceneEditKind::Destroy:
+        if (edit && edit->select_after && project_model_ &&
+            project_model_->findObject(*edit->select_after) != nullptr) {
+            const SelectionUpdate update =
+                selection_model_.selectFromOutliner(*edit->select_after);
+            if (update.applied()) {
+                viewport_->setPickingNotice({});
+                refreshSelectionViews();
+            }
+        }
+        break;
+    case SceneEditKind::Reparent:
+        // The selection is the object, by id, wherever it now hangs.
+        break;
+    }
+    setOutlinerRefreshInterval(OutlinerRefreshMinimumIntervalMs);
+    requestOutlinerRefresh();
 }
 
 void MainWindow::requestOutlinerRefresh() {
@@ -1165,13 +1403,12 @@ void MainWindow::completeOutlinerRpc(
             return;
         }
         setOutlinerRefreshInterval(OutlinerRefreshMinimumIntervalMs);
-        const auto selected = selection_model_.selected();
-        if (selected && project_model_->findObject(*selected) == nullptr) {
-            (void)selection_model_.selectFromOutliner(std::nullopt);
-        }
+        // OL-1: the selected object is kept by its authoring id, wherever
+        // the new tree declares it; cleared only when it is gone.
+        (void)selection_model_.followProject();
         populateOutliner();
         refreshSelectionViews();
-        selectSpawnedObject();
+        selectCreatedObject();
     } catch (const std::exception &error) {
         const auto message =
             tr("Invalid scene_tree response: %1")
@@ -1191,7 +1428,7 @@ void MainWindow::failOutlinerRpc(qint64 request_id,
 
 void MainWindow::selectOutlinerItem(QTreeWidgetItem *item) {
     const SelectionUpdate update =
-        selection_model_.selectFromOutliner(objectKey(item));
+        selection_model_.selectFromOutliner(outlinerObjectKey(item));
     if (update.kind == SelectionUpdateKind::failed) {
         statusBar()->showMessage(QString::fromStdString(update.message), 5000);
         return;
@@ -1463,6 +1700,7 @@ void MainWindow::refreshSelectionViews() {
     const auto &selection = selection_model_.selected();
     gizmo_model_.setSelection(selection);
     dispatchGizmoModel();
+    updateOutlinerActions();
     if (!selection) {
         outliner_->setCurrentItem(nullptr);
         outliner_->clearSelection();
@@ -1473,7 +1711,8 @@ void MainWindow::refreshSelectionViews() {
     QTreeWidgetItem *selected_item = nullptr;
     for (QTreeWidgetItemIterator iterator{outliner_}; *iterator != nullptr;
          ++iterator) {
-        if (objectKey(*iterator) == selection) {
+        const auto key = outlinerObjectKey(*iterator);
+        if (key && sameObject(*key, *selection)) {
             selected_item = *iterator;
             break;
         }

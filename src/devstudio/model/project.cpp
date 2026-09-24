@@ -274,9 +274,10 @@ bool ProjectOutlinerModel::updateSceneTree(
         }
         const auto &source = *ordered[index];
         OutlinerObject object{
-            .key = {scene_id, index},
+            .key = {scene_id, index, source.authoring_object_id},
             .display_name = Pelican::runtimeObjectIdentityName(
                 scene_id, source.authoring_object_id, source.name),
+            .name = source.name,
         };
         if (source.parent) {
             const auto parent = named_indices.find(*source.parent);
@@ -316,17 +317,70 @@ bool ProjectOutlinerModel::updateSceneTree(
 
 const OutlinerObject *
 ProjectOutlinerModel::findObject(const OutlinerObjectKey &key) const noexcept {
+    const OutlinerScene *scene = findScene(key.scene_id);
+    if (scene == nullptr) return nullptr;
+    if (key.authoring_object_id != 0) {
+        // OL-1: the id, wherever a duplicate, a delete or an undo has moved
+        // the object in the declaration order since the key was taken.
+        for (const auto &object : scene->objects) {
+            if (object.key.authoring_object_id == key.authoring_object_id) {
+                return &object;
+            }
+        }
+        return nullptr;
+    }
+    if (key.declaration_index >= scene->objects.size()) return nullptr;
+    return &scene->objects[key.declaration_index];
+}
+
+const OutlinerScene *
+ProjectOutlinerModel::findScene(const std::string &scene_id) const noexcept {
     for (const auto &scene : scenes_) {
-        if (scene.scene_id != key.scene_id ||
-            key.declaration_index >= scene.objects.size()) {
-            continue;
-        }
-        const auto &object = scene.objects[key.declaration_index];
-        if (object.key == key) {
-            return &object;
-        }
+        if (scene.scene_id == scene_id) return &scene;
     }
     return nullptr;
+}
+
+const OutlinerObject *
+ProjectOutlinerModel::parentOf(const OutlinerObject &object) const noexcept {
+    if (!object.parent_declaration_index) return nullptr;
+    const OutlinerScene *scene = findScene(object.key.scene_id);
+    if (scene == nullptr ||
+        *object.parent_declaration_index >= scene->objects.size()) {
+        return nullptr;
+    }
+    return &scene->objects[*object.parent_declaration_index];
+}
+
+bool ProjectOutlinerModel::isSelfOrDescendant(
+    const OutlinerObject &ancestor,
+    const OutlinerObject &candidate) const noexcept {
+    if (ancestor.key.scene_id != candidate.key.scene_id) return false;
+    // A parent chain the engine accepted has no cycle; the bound only keeps a
+    // malformed reply from looping.
+    const OutlinerScene *scene = findScene(candidate.key.scene_id);
+    const std::size_t bound = scene == nullptr ? 0 : scene->objects.size();
+    const OutlinerObject *current = &candidate;
+    for (std::size_t step = 0; current != nullptr && step <= bound; ++step) {
+        if (current->key.declaration_index == ancestor.key.declaration_index) {
+            return true;
+        }
+        current = parentOf(*current);
+    }
+    return false;
+}
+
+std::size_t ProjectOutlinerModel::descendantCount(
+    const OutlinerObject &object) const noexcept {
+    const OutlinerScene *scene = findScene(object.key.scene_id);
+    if (scene == nullptr) return 0;
+    std::size_t count = 0;
+    for (const auto &candidate : scene->objects) {
+        if (&candidate != &object && isSelfOrDescendant(object, candidate)) {
+            ++count;
+        }
+    }
+    return count;
 }
 
 } // namespace PelicanStudio

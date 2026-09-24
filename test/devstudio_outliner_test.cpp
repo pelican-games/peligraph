@@ -1,3 +1,4 @@
+#include "outlineredit.hpp"
 #include "project.hpp"
 #include "selection.hpp"
 #include "sceneformat.hpp"
@@ -26,6 +27,7 @@
 
 namespace {
 
+using PelicanStudio::OutlinerObjectKey;
 using PelicanStudio::OutlinerScene;
 using PelicanStudio::ProjectOutlinerModel;
 using PelicanStudio::SelectionModel;
@@ -432,4 +434,200 @@ TEST_CASE("Studio outliner follows RPC snapshot and structure revisions instead 
               << updated.objects[0].display_name
               << " structure_child=" << updated.objects[1].display_name
               << " revision=" << *model.sceneRevision() << '\n';
+}
+
+namespace {
+
+// OL-1: a scene tree whose objects carry the authoring ids given, in the
+// order given -- what the engine answers after a duplicate put a copy in the
+// middle, or an undo took one out.
+nlohmann::json idTree(std::uint64_t revision, const nlohmann::json &objects) {
+    nlohmann::json result{{"scene_revision", revision},
+                          {"scene_id", "main"},
+                          {"objects", nlohmann::json::array()}};
+    for (std::size_t index = 0; index < objects.size(); ++index) {
+        nlohmann::json object{{"authoring_object_id", objects.at(index).at("id")},
+                              {"declaration_index", index},
+                              {"components", nlohmann::json::array()}};
+        if (objects.at(index).contains("name")) object["name"] = objects.at(index).at("name");
+        if (objects.at(index).contains("parent"))
+            object["parent"] = objects.at(index).at("parent");
+        result["objects"].push_back(std::move(object));
+    }
+    return result;
+}
+
+struct OutlinerEditFixture {
+    ProjectSandbox sandbox;
+    ProjectOutlinerModel model;
+
+    OutlinerEditFixture() : model{open()} {
+        // Camera, Cube, Floor, and Floor's child Leg with Leg's child Toe.
+        REQUIRE(model.updateSceneTree(idTree(1, nlohmann::json::parse(R"([
+            {"id": 1, "name": "Camera"},
+            {"id": 2, "name": "Cube"},
+            {"id": 3, "name": "Floor"},
+            {"id": 4, "name": "Leg", "parent": "Floor"},
+            {"id": 5, "name": "Toe", "parent": "Leg"}
+        ])"))));
+    }
+
+    ProjectOutlinerModel open() {
+        sandbox.write("project.json", R"json({
+  "schema":"pelican.project","version":1,"name":"ol1",
+  "basic_config":{"scene_data_json":"scenes/main.scene.json"}
+})json");
+        sandbox.write("scenes/main.scene.json", R"json({
+  "schema":"pelican.scene","version":2,"scenes":{"main":{"objects":[]}}
+})json");
+        return ProjectOutlinerModel::open(sandbox.root);
+    }
+
+    const PelicanStudio::OutlinerObject &object(std::string_view name) const {
+        for (const auto &candidate : requireScene(model, "main").objects)
+            if (candidate.name == name) return candidate;
+        FAIL("no object " << name);
+    }
+};
+
+} // namespace
+
+TEST_CASE("OL-1 the selection keeps its object by authoring id when a copy lands before it",
+          "[devstudio][outliner][selection][ol1][negative-contrast]") {
+    OutlinerEditFixture fixture;
+    SelectionModel selection;
+    selection.bindProject(&fixture.model);
+    REQUIRE(selection.selectFromOutliner(fixture.object("Floor").key).applied());
+    REQUIRE(selection.selected()->declaration_index == 2);
+    REQUIRE(selection.selected()->authoring_object_id == 3);
+
+    // Duplicate Cube: Cube_copy1 is declared right after Cube, so Floor and
+    // everything after it move down one.
+    REQUIRE(fixture.model.updateSceneTree(idTree(2, nlohmann::json::parse(R"([
+        {"id": 1, "name": "Camera"},
+        {"id": 2, "name": "Cube"},
+        {"id": 6, "name": "Cube_copy1"},
+        {"id": 3, "name": "Floor"},
+        {"id": 4, "name": "Leg", "parent": "Floor"},
+        {"id": 5, "name": "Toe", "parent": "Leg"}
+    ])"))));
+    CHECK(selection.followProject().kind == SelectionUpdateKind::changed);
+    REQUIRE(selection.selected());
+    // Still Floor -- not Cube_copy1, which now stands where Floor stood.
+    CHECK(selection.selected()->authoring_object_id == 3);
+    CHECK(selection.selected()->declaration_index == 3);
+    CHECK(fixture.model.findObject(*selection.selected())->name == "Floor");
+    CHECK(selection.followProject().kind == SelectionUpdateKind::unchanged);
+
+    // An index-only key (a pick) is answered with the whole key.
+    REQUIRE(selection.selectFromOutliner(OutlinerObjectKey{.scene_id = "main",
+                                                           .declaration_index = 2})
+                .applied());
+    CHECK(selection.selected()->authoring_object_id == 6);
+
+    // Undo of the duplicate: the copy is gone, and a selection of it is
+    // cleared rather than moved onto whatever is at its index now.
+    REQUIRE(fixture.model.updateSceneTree(idTree(3, nlohmann::json::parse(R"([
+        {"id": 1, "name": "Camera"},
+        {"id": 2, "name": "Cube"},
+        {"id": 3, "name": "Floor"},
+        {"id": 4, "name": "Leg", "parent": "Floor"},
+        {"id": 5, "name": "Toe", "parent": "Leg"}
+    ])"))));
+    CHECK(selection.followProject().kind == SelectionUpdateKind::changed);
+    CHECK_FALSE(selection.selected());
+}
+
+TEST_CASE("OL-1 Outliner edits name their object by authoring id",
+          "[devstudio][outliner][ol1]") {
+    using PelicanStudio::ReparentPreserve;
+    OutlinerEditFixture fixture;
+    const auto &cube = fixture.object("Cube");
+    const auto &floor = fixture.object("Floor");
+    const auto &leg = fixture.object("Leg");
+
+    CHECK(PelicanStudio::duplicateObjectOperation(cube) ==
+          nlohmann::json{{"op", "duplicate"}, {"object_id", 2}});
+    CHECK(PelicanStudio::destroyObjectOperation(floor) ==
+          nlohmann::json{{"op", "destroy"}, {"object_id", 3}});
+    CHECK(PelicanStudio::reparentObjectOperation(cube, &floor, ReparentPreserve::World) ==
+          nlohmann::json{{"op", "reparent"}, {"object_id", 2}, {"new_parent_id", 3},
+                         {"preserve", "world"}});
+    CHECK(PelicanStudio::reparentObjectOperation(leg, nullptr, ReparentPreserve::Local) ==
+          nlohmann::json{{"op", "reparent"}, {"object_id", 4}, {"new_parent_id", nullptr},
+                         {"preserve", "local"}});
+
+    // Delete asks only when it takes others with it.
+    CHECK(fixture.model.descendantCount(cube) == 0);
+    CHECK(fixture.model.descendantCount(floor) == 2);
+    CHECK(fixture.model.descendantCount(leg) == 1);
+
+    // After a delete: the parent, else the sibling declared before, else none.
+    CHECK(PelicanStudio::selectionAfterDestroy(fixture.model, fixture.object("Toe")) ==
+          leg.key);
+    CHECK(PelicanStudio::selectionAfterDestroy(fixture.model, floor) == cube.key);
+    CHECK_FALSE(PelicanStudio::selectionAfterDestroy(fixture.model, fixture.object("Camera")));
+}
+
+TEST_CASE("OL-1 a drop goes under a row, to the root, or keeps its own transform with Alt",
+          "[devstudio][outliner][ol1][drop]") {
+    using PelicanStudio::OutlinerDropKind;
+    using PelicanStudio::ReparentPreserve;
+    using PelicanStudio::planOutlinerDrop;
+    OutlinerEditFixture fixture;
+    const auto key = [&](std::string_view name) { return fixture.object(name).key; };
+
+    // Onto a row: under it, where it is on screen.
+    auto plan = planOutlinerDrop(fixture.model, key("Cube"), key("Floor"), ReparentPreserve::World);
+    REQUIRE(plan.kind == OutlinerDropKind::Reparent);
+    CHECK(plan.operation == nlohmann::json{{"op", "reparent"}, {"object_id", 2},
+                                           {"new_parent_id", 3}, {"preserve", "world"}});
+    // Between rows: to the root.
+    plan = planOutlinerDrop(fixture.model, key("Leg"), std::nullopt, ReparentPreserve::World);
+    REQUIRE(plan.kind == OutlinerDropKind::Reparent);
+    CHECK(plan.operation.at("new_parent_id").is_null());
+    CHECK(plan.operation.at("preserve") == "world");
+    // Alt: its own transform, moving with the new parent.
+    plan = planOutlinerDrop(fixture.model, key("Cube"), key("Toe"), ReparentPreserve::Local);
+    REQUIRE(plan.kind == OutlinerDropKind::Reparent);
+    CHECK(plan.operation.at("new_parent_id") == 5);
+    CHECK(plan.operation.at("preserve") == "local");
+
+    // Under its own child or grandchild: refused before the engine would say
+    // cycle_detected, by name.
+    plan = planOutlinerDrop(fixture.model, key("Floor"), key("Toe"), ReparentPreserve::World);
+    CHECK(plan.kind == OutlinerDropKind::Refused);
+    CHECK(plan.refusal == "Floor cannot go under Toe: Toe is inside Floor.");
+    CHECK(plan.operation.is_null());
+
+    // Where it already is: nothing to send.
+    CHECK(planOutlinerDrop(fixture.model, key("Leg"), key("Floor"), ReparentPreserve::World).kind ==
+          OutlinerDropKind::Unchanged);
+    CHECK(planOutlinerDrop(fixture.model, key("Cube"), std::nullopt, ReparentPreserve::World).kind ==
+          OutlinerDropKind::Unchanged);
+    CHECK(planOutlinerDrop(fixture.model, key("Cube"), key("Cube"), ReparentPreserve::World).kind ==
+          OutlinerDropKind::Unchanged);
+}
+
+TEST_CASE("OL-1 the object to select is the one the committed edit created",
+          "[devstudio][outliner][ol1]") {
+    using PelicanStudio::createdObjectToSelect;
+    // A duplicate of Floor copies Floor, Leg and Toe; the one to select is
+    // the copy of Floor, whatever order they are listed in.
+    const auto created = nlohmann::json::parse(R"([
+        {"object_id": 7, "scene_id": "main", "declaration_index": 6, "name": "Leg_copy1",
+         "source_object_id": 4},
+        {"object_id": 6, "scene_id": "main", "declaration_index": 5, "name": "Floor_copy1",
+         "source_object_id": 3},
+        {"object_id": 8, "scene_id": "main", "declaration_index": 7, "name": "Toe_copy1",
+         "source_object_id": 5}
+    ])");
+    const auto copy = createdObjectToSelect(created, 3);
+    REQUIRE(copy);
+    CHECK(*copy == OutlinerObjectKey{.scene_id = "main", .declaration_index = 5,
+                                     .authoring_object_id = 6});
+    // A spawn, or an undone delete: the first one named.
+    CHECK(createdObjectToSelect(created)->authoring_object_id == 7);
+    CHECK_FALSE(createdObjectToSelect(nlohmann::json::array()));
+    CHECK_FALSE(createdObjectToSelect(created, 99));
 }

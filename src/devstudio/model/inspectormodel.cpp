@@ -631,6 +631,59 @@ std::string componentUnavailableTag(std::string_view code) {
     return entry ? std::string{entry->tag} : std::string{"unavailable"};
 }
 
+std::string sceneEditRefusalSentence(const SceneEditOutcome &outcome, std::string_view object,
+                                     std::string_view target) {
+    const std::string name = object.empty() ? std::string{"the object"} : std::string{object};
+    const std::string parent = target.empty() ? std::string{"its new parent"} : std::string{target};
+    const char *verb = "change";
+    switch (outcome.kind) {
+    case SceneEditKind::Spawn: verb = "add"; break;
+    case SceneEditKind::Duplicate: verb = "duplicate"; break;
+    case SceneEditKind::Destroy: verb = "delete"; break;
+    case SceneEditKind::Reparent: verb = "move"; break;
+    case SceneEditKind::Undo: verb = "undo"; break;
+    case SceneEditKind::Redo: verb = "redo"; break;
+    }
+    const std::string &code = outcome.code;
+    const std::string cannot = std::string{"Cannot "} + verb + " " + name;
+    const std::string under = "Cannot move " + name + " under " + parent;
+    // Q-6's table: a build without the module says so the way Add component
+    // does.
+    if (!componentUnavailableSentence(code).empty())
+        return cannot + ": " + componentUnavailableDescription(code) + ".";
+    if (code == "closure_unresolvable") return name + " is no longer in the scene.";
+    if (code == "editor_preview_unsupported@1")
+        return cannot + " while a live preview is open; finish the preview first.";
+    if (code == "stale_revision")
+        return "The scene changed before " + name + " could be " +
+               (outcome.kind == SceneEditKind::Destroy ? std::string{"deleted"}
+                                                       : std::string{verb} + "d") +
+               "; try again.";
+    if (outcome.kind == SceneEditKind::Reparent) {
+        if (code == "cycle_detected")
+            return under + ": " + parent + " is inside " + name + ".";
+        if (code == "parent_not_found")
+            return under + ": " + parent + " is not a named object in this scene.";
+        if (code == "schema_violation")
+            return name + " has no name, so it cannot be moved to another parent.";
+        if (code == "zero_scale")
+            return under + ": a zero scale on the way leaves no place to keep it.";
+        if (code == "non_finite_transform")
+            return under + ": its transform there would not be a finite number.";
+        if (code == "trs_unrepresentable")
+            return under + " where it is: that place is not a position, rotation and "
+                           "scale under it. Hold Alt to keep its own transform instead.";
+        if (code == "preserve_missing")
+            return under + ": the move did not say which transform to keep.";
+    }
+    if (outcome.kind == SceneEditKind::Duplicate && code == "schema_violation")
+        return cannot + ": the copy has no place in the scene's order.";
+    const std::string detail = code.empty() ? outcome.message
+                               : outcome.message.empty() ? code
+                                                         : code + " - " + outcome.message;
+    return cannot + (detail.empty() ? std::string{"."} : ": " + detail);
+}
+
 std::vector<ComponentAddRow> componentAddRows(const Json &catalog) {
     std::vector<ComponentAddRow> rows;
     const auto candidates = catalog.find("candidates");
@@ -697,6 +750,9 @@ struct InspectorModel::Impl {
         std::string description;
         std::string component_slot;
         bool poll_in_flight = false;
+        // OL-1: set for an edit the Outliner follows to its end.
+        std::optional<SceneEditKind> scene_edit;
+        std::uint64_t scene_edit_subject = 0;
     };
 
     struct RequestState {
@@ -710,6 +766,8 @@ struct InspectorModel::Impl {
         std::string component_slot;
         std::uint64_t snapshot_revision = 0;
         std::uint64_t ray_catalog_epoch = 0;
+        std::optional<SceneEditKind> scene_edit;
+        std::uint64_t scene_edit_subject = 0;
     };
 
     struct PreviewState {
@@ -772,6 +830,31 @@ struct InspectorModel::Impl {
         std::string name;
     };
     std::optional<QueuedSpawn> queued_spawn;
+    // OL-1: the last spawn, Outliner edit, undo or redo to finish.
+    std::optional<SceneEditOutcome> last_scene_edit;
+    std::uint64_t scene_edit_serial = 0;
+
+    void recordSceneEdit(std::optional<SceneEditKind> kind, std::uint64_t subject,
+                         const Json *result, std::string failure = {}) {
+        if (!kind) return;
+        SceneEditOutcome outcome{.serial = ++scene_edit_serial,
+                                 .kind = *kind,
+                                 .subject_id = subject};
+        if (result != nullptr) {
+            outcome.committed = result->value("status", std::string{}) == "committed";
+            if (outcome.committed) {
+                const auto created = result->find("created_objects");
+                if (created != result->end() && created->is_array())
+                    outcome.created_objects = *created;
+            } else {
+                outcome.code = resultErrorCode(*result);
+                outcome.message = resultErrorMessage(*result);
+            }
+        } else {
+            outcome.message = std::move(failure);
+        }
+        last_scene_edit = std::move(outcome);
+    }
 
     void setNotice(InspectorNoticeKind kind, std::string message) {
         notice = {.kind = kind, .message = std::move(message)};
@@ -844,7 +927,8 @@ struct InspectorModel::Impl {
                                                     {"object", std::move(object)}}})}},
               {.purpose = RequestPurpose::EditSubmit,
                .selection_generation = selection_generation,
-               .description = "Add " + name});
+               .description = "Add " + name,
+               .scene_edit = SceneEditKind::Spawn});
     }
 
     // The waiting spawn goes out once nothing is in flight and no field is
@@ -1040,6 +1124,7 @@ struct InspectorModel::Impl {
 
     void handleEditCompletion(const Json &result,
                               const PendingEdit &pending) {
+        recordSceneEdit(pending.scene_edit, pending.scene_edit_subject, &result);
         const std::string status =
             result.value("status", std::string{});
         if (status == "committed") {
@@ -1133,7 +1218,8 @@ struct InspectorModel::Impl {
                    {"base_revision", snapshot->scene_revision}},
               {.purpose = RequestPurpose::EditSubmit,
                .selection_generation = selection_generation,
-               .description = description});
+               .description = description,
+               .scene_edit = redo ? SceneEditKind::Redo : SceneEditKind::Undo});
     }
 
     void sendPreviewRequest(PreviewRequestKind kind) {
@@ -1184,6 +1270,15 @@ struct InspectorModel::Impl {
 
     void applySelection(std::optional<OutlinerObjectKey> next) {
         if (selection == next) {
+            return;
+        }
+        // OL-1: the same object, moved in the declaration order by an edit
+        // (a duplicate before it, an undo). The panel still shows it; only
+        // where it stands has changed.
+        if (selection && next && selection->scene_id == next->scene_id &&
+            selection->authoring_object_id != 0 &&
+            selection->authoring_object_id == next->authoring_object_id) {
+            selection = std::move(next);
             return;
         }
         selection = std::move(next);
@@ -1550,21 +1645,34 @@ struct InspectorModel::Impl {
             throw std::runtime_error("scene_tree objects must be an array");
         }
 
+        // OL-1: a selection that knows its object's authoring id is that
+        // object wherever it stands now; one that does not is the object at
+        // its declaration index.
         std::optional<std::uint64_t> authoring_object_id;
         for (const Json &object : objects) {
+            const auto id = unsignedInteger(
+                requiredField(object, "authoring_object_id", "scene_tree object"),
+                "scene_tree authoring_object_id", false);
+            if (selection->authoring_object_id != 0) {
+                if (id == selection->authoring_object_id) {
+                    authoring_object_id = id;
+                    break;
+                }
+                continue;
+            }
             const auto index = sizeValue(
                 requiredField(object, "declaration_index", "scene_tree object"),
                 "scene_tree declaration_index");
             if (index == selection->declaration_index) {
-                authoring_object_id = unsignedInteger(
-                    requiredField(object, "authoring_object_id", "scene_tree object"),
-                    "scene_tree authoring_object_id", false);
+                authoring_object_id = id;
                 break;
             }
         }
         if (!authoring_object_id) {
             throw std::runtime_error(
-                "scene_tree does not contain the selected declaration_index");
+                selection->authoring_object_id != 0
+                    ? "scene_tree does not contain the selected object"
+                    : "scene_tree does not contain the selected declaration_index");
         }
         queue("get_components",
               Json{{"scene_id", selection->scene_id},
@@ -1662,6 +1770,8 @@ struct InspectorModel::Impl {
         PendingEdit pending{
             .description = state.description,
             .component_slot = state.component_slot,
+            .scene_edit = state.scene_edit,
+            .scene_edit_subject = state.scene_edit_subject,
         };
         if (result.value("status", std::string{}) == "accepted") {
             pending.ticket = requiredString(result, "ticket", "edit response");
@@ -1827,6 +1937,8 @@ struct InspectorModel::Impl {
                     return candidate.ticket == state.ticket;
                 });
             if (pending != pending_edits.end()) {
+                recordSceneEdit(pending->scene_edit, pending->scene_edit_subject, nullptr,
+                                message);
                 pending_edits.erase(pending);
             }
             requestRefresh(true);
@@ -1853,6 +1965,7 @@ struct InspectorModel::Impl {
             break;
         case RequestPurpose::EditSubmit:
             scene_revision_uncertain = true;
+            recordSceneEdit(state.scene_edit, state.scene_edit_subject, nullptr, message);
             requestRefresh(true);
             break;
         case RequestPurpose::Save:
@@ -2444,6 +2557,37 @@ SpawnOutcome InspectorModel::spawnObject(const std::string &scene_id, Json objec
 std::optional<std::string> InspectorModel::queuedSpawnName() const {
     if (!impl_->queued_spawn) return std::nullopt;
     return impl_->queued_spawn->name;
+}
+
+SpawnOutcome InspectorModel::submitSceneEdit(SceneEditKind kind, std::uint64_t subject_id,
+                                             Json operation, std::string description) {
+    if (!impl_->spawnReady()) {
+        impl_->setNotice(InspectorNoticeKind::Error,
+                         "The engine editor session is not ready.");
+        return SpawnOutcome::Refused;
+    }
+    impl_->flushQueuedSpawn();
+    if (busy() || refreshBlocked()) {
+        impl_->setNotice(InspectorNoticeKind::Error,
+                         "Finish the edit in progress first, then " + description + " again.");
+        return SpawnOutcome::Refused;
+    }
+    impl_->invalidateRayOccurrences();
+    // No coalesce key: each is its own undo step.
+    impl_->queue("edit",
+                 Json{{"actor_id", *impl_->actor_id},
+                      {"base_revision", *impl_->current_scene_revision},
+                      {"operations", Json::array({std::move(operation)})}},
+                 {.purpose = Impl::RequestPurpose::EditSubmit,
+                  .selection_generation = impl_->selection_generation,
+                  .description = std::move(description),
+                  .scene_edit = kind,
+                  .scene_edit_subject = subject_id});
+    return SpawnOutcome::Sent;
+}
+
+const std::optional<SceneEditOutcome> &InspectorModel::lastSceneEdit() const noexcept {
+    return impl_->last_scene_edit;
 }
 
 void InspectorModel::abortActivePreview() {

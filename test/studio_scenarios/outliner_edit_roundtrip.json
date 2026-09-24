@@ -1,0 +1,418 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "outliner_edit_roundtrip",
+  "description": "OL-1: the Outliner duplicates, moves and deletes objects, and keeps its selection by authoring id. A Blank pipeline project gets a Cube and a Floor. Duplicate on Cube sends one duplicate edit; the copy, Cube_copy1, is declared right after Cube and is the one selected (by the created_objects its committed edit names). Dragging its row onto Floor's makes it Floor's child, keeping it where it is; the Inspector's Undo puts it back at the root, still selected. Delete (no children, so no question) removes it and selects the sibling before it, Cube. After Save, the engine is stopped and started again on the saved scene: Cube's authoring id is the same, and the selection is still Cube.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up, so the switch to the new project is something that happens",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout: the panel layout is the desktop's, saved by whichever Studio closed last",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "File > New Project...",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts, never the repository",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name",
+      "cmd": "type",
+      "name": "pelican.newProject.name",
+      "text": "outliner_project"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed, because the template is on disk",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the new project's frame plan has its one pass: the switch to its engine is done",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine answers editor RPC and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the Outliner is on screen",
+      "cmd": "wait",
+      "name": "pelican.outliner",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the blank scene holds the template's two objects",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects.$len",
+      "value": 2,
+      "retry_ms": 60000
+    },
+    {
+      "label": "Add Object > Cube",
+      "cmd": "action",
+      "name": "pelican.outliner.addObject.cube"
+    },
+    {
+      "label": "the engine has Cube third",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects[2].name",
+      "value": "Cube",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and Cube is selected, by the id its committed spawn named",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Cube\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Add Object > Floor",
+      "cmd": "action",
+      "name": "pelican.outliner.addObject.floor"
+    },
+    {
+      "label": "the engine has Floor fourth",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects[3].name",
+      "value": "Floor",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and Floor is selected",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Floor\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "click Cube's row",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "Cube"
+    },
+    {
+      "label": "Cube is selected",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Cube\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the Inspector has read Cube, so its session is idle",
+      "cmd": "wait",
+      "name": "pelican.inspectorModelChoice",
+      "text": "Cube (built-in)",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Duplicate (Ctrl+D), as the Outliner's menu holds it",
+      "cmd": "action",
+      "name": "pelican.outliner.duplicate"
+    },
+    {
+      "label": "the copy is declared right after Cube, so Floor moved down one",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects[3].name",
+      "value": "Cube_copy1",
+      "retry_ms": 60000
+    },
+    {
+      "label": "Floor is fifth now",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects[4].name",
+      "value": "Floor"
+    },
+    {
+      "label": "the copy is the one selected, not Cube and not whatever took Floor's old place",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Cube_copy1\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the Inspector has read the copy",
+      "cmd": "wait",
+      "name": "pelican.inspectorModelChoice",
+      "text": "Cube (built-in)",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "drag Cube_copy1's row onto Floor's: one reparent under Floor, kept where it is",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.outliner::row#Cube_copy1"
+      },
+      "to": {
+        "name": "pelican.outliner::row#Floor"
+      },
+      "steps": 8
+    },
+    {
+      "label": "the engine has Cube_copy1 under Floor",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects[3].parent",
+      "value": "Floor",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and the copy is still the one selected, wherever it hangs",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Cube_copy1\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "its row is on screen, under Floor's opened row",
+      "cmd": "wait",
+      "name": "pelican.outliner::row#Cube_copy1",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the Inspector's Undo is ready once it has read the moved copy",
+      "cmd": "wait",
+      "name": "pelican.inspectorUndo",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Undo",
+      "cmd": "click",
+      "name": "pelican.inspectorUndo"
+    },
+    {
+      "label": "the copy is back at the root: its declaration names no parent",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "scene_tree",
+        "params": {
+          "scene_id": "default_scene"
+        }
+      },
+      "path": "result.objects[3]",
+      "op": "excludes",
+      "value": "parent",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and it is still the one selected",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Cube_copy1\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the Inspector has read it again before the delete",
+      "cmd": "wait",
+      "name": "pelican.inspectorUndo",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Delete (Del): nothing is under the copy, so nothing is asked",
+      "cmd": "action",
+      "name": "pelican.outliner.delete"
+    },
+    {
+      "label": "the engine is back to four objects",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects.$len",
+      "value": 4,
+      "retry_ms": 60000
+    },
+    {
+      "label": "no question was put",
+      "cmd": "wait",
+      "name": "pelican.outliner.deleteConfirm",
+      "missing": true,
+      "timeout_ms": 5000
+    },
+    {
+      "label": "the sibling declared before it, Cube, is selected",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Cube\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the copy's row is gone",
+      "cmd": "wait",
+      "name": "pelican.outliner::row#Cube_copy1",
+      "missing": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the Inspector has read Cube before Save",
+      "cmd": "wait",
+      "name": "pelican.inspectorModelChoice",
+      "text": "Cube (built-in)",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "File > Save Scene",
+      "cmd": "action",
+      "name": "pelican.file.saveScene"
+    },
+    {
+      "label": "the save is done",
+      "cmd": "wait",
+      "name": "pelican.inspectorNotice",
+      "contains": "Scene saved",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the saved scene has no copy",
+      "file": "contains",
+      "path": "{artifacts}/outliner_project/scenes/main.scene.json",
+      "text": "Cube_copy1",
+      "value": false
+    },
+    {
+      "label": "Cube's authoring id, before the engine is started again",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "scene_tree",
+        "params": {
+          "scene_id": "default_scene"
+        }
+      },
+      "path": "result.objects[2].authoring_object_id",
+      "remember": "cube_id"
+    },
+    {
+      "label": "stop the engine",
+      "cmd": "click",
+      "name": "pelican.viewportStop"
+    },
+    {
+      "label": "it has stopped",
+      "cmd": "wait",
+      "name": "pelican.viewportRestart",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "start it again: it reads the saved scene",
+      "cmd": "click",
+      "name": "pelican.viewportRestart"
+    },
+    {
+      "label": "the restarted engine answers editor RPC and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "Cube is still third",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects[2].name",
+      "value": "Cube",
+      "retry_ms": 60000
+    },
+    {
+      "label": "with the authoring id it had before: saved, and read back",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "scene_tree",
+        "params": {
+          "scene_id": "default_scene"
+        }
+      },
+      "path": "result.objects[2].authoring_object_id",
+      "value_of": "cube_id"
+    },
+    {
+      "label": "the selection is still Cube: the Outliner kept it by that id",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Cube\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "and the Inspector read Cube from the new engine by it",
+      "cmd": "wait",
+      "name": "pelican.inspectorModelChoice",
+      "text": "Cube (built-in)",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "a picture of the window for the reader of this report",
+      "expect": "screenshot",
+      "path": "outliner_edit_roundtrip_window.png"
+    }
+  ]
+}

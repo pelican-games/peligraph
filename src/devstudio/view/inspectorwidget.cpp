@@ -146,6 +146,9 @@ struct InspectorWidget::Impl {
         std::numeric_limits<std::uint64_t>::max();
     bool rebuilding = false;
     std::function<void()> scene_state_changed;
+    // OL-1: told of each spawn, Outliner edit, undo and redo that finished.
+    std::function<void(const SceneEditOutcome &)> scene_edit_completed;
+    std::uint64_t reported_scene_edit_serial = 0;
     bool reported_scene_dirty = false;
     bool reported_scene_busy = false;
     std::uint64_t reported_save_completion = 0;
@@ -412,7 +415,8 @@ struct InspectorWidget::Impl {
         const InspectorObjectSnapshot &snapshot = *model.snapshot();
         GizmoTransformBinding binding{
             .selection = {.scene_id = snapshot.scene_id,
-                          .declaration_index = snapshot.declaration_index},
+                          .declaration_index = snapshot.declaration_index,
+                          .authoring_object_id = snapshot.authoring_object_id},
         };
         const auto component = std::find_if(
             snapshot.components.begin(), snapshot.components.end(),
@@ -482,6 +486,17 @@ struct InspectorWidget::Impl {
     SpawnOutcome spawnObject(const std::string &scene_id, Json object,
                              QString *error) {
         const auto outcome = model.spawnObject(scene_id, std::move(object));
+        if (outcome == SpawnOutcome::Refused && error != nullptr)
+            *error = QString::fromStdString(model.notice().message);
+        synchronize();
+        dispatchRequests();
+        return outcome;
+    }
+
+    SpawnOutcome submitSceneEdit(SceneEditKind kind, std::uint64_t subject_id, Json operation,
+                                 const std::string &description, QString *error) {
+        const auto outcome =
+            model.submitSceneEdit(kind, subject_id, std::move(operation), description);
         if (outcome == SpawnOutcome::Refused && error != nullptr)
             *error = QString::fromStdString(model.notice().message);
         synchronize();
@@ -1198,6 +1213,16 @@ struct InspectorWidget::Impl {
             reported_scene_busy = scene_busy;
             reported_save_completion = save_completion;
             if (scene_state_changed) scene_state_changed();
+        }
+        if (const auto &edit = model.lastSceneEdit();
+            edit && edit->serial != reported_scene_edit_serial) {
+            reported_scene_edit_serial = edit->serial;
+            // After this panel has finished with the reply: what the window
+            // does with it (a new selection) comes back into this panel.
+            if (scene_edit_completed)
+                QTimer::singleShot(0, &owner, [this, outcome = *edit] {
+                    if (scene_edit_completed) scene_edit_completed(outcome);
+                });
         }
         const auto &snapshot = model.snapshot();
         graph_attachments->setOwner(snapshot && snapshot->authoring_object_id != 0
@@ -2136,6 +2161,17 @@ bool InspectorWidget::saveScene() { return impl_->saveScene(); }
 SpawnOutcome InspectorWidget::spawnObject(const std::string &scene_id,
                                           nlohmann::json object, QString *error) {
     return impl_->spawnObject(scene_id, std::move(object), error);
+}
+
+SpawnOutcome InspectorWidget::submitSceneEdit(SceneEditKind kind, std::uint64_t subject_id,
+                                              nlohmann::json operation,
+                                              const std::string &description, QString *error) {
+    return impl_->submitSceneEdit(kind, subject_id, std::move(operation), description, error);
+}
+
+void InspectorWidget::setSceneEditCompletedAction(
+    std::function<void(const SceneEditOutcome &)> action) {
+    impl_->scene_edit_completed = std::move(action);
 }
 
 bool InspectorWidget::hasUnsavedSceneChanges() const noexcept {

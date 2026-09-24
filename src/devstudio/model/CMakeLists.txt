@@ -1,6 +1,8 @@
 add_library(pelican_studio_outliner STATIC
     project.cpp
     selection.cpp
+    outlineredit.cpp
+    outlineredit.hpp
 )
 
 set_target_properties(pelican_studio_outliner PROPERTIES CXX_STANDARD 20)

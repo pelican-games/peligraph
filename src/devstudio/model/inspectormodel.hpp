@@ -217,6 +217,44 @@ enum class SpawnOutcome : std::uint8_t {
     Queued,
 };
 
+// OL-1: the edits that add, remove or move objects. The Outliner follows each
+// to its end: the object it created is selected (by the created_objects the
+// committed ticket names, not by searching for a name), and a refusal is said
+// in one line under the tree.
+enum class SceneEditKind : std::uint8_t {
+    Spawn,
+    Duplicate,
+    Destroy,
+    Reparent,
+    Undo,
+    Redo,
+};
+
+struct SceneEditOutcome {
+    // Moves with every outcome, so a view can tell a new one from the last.
+    std::uint64_t serial = 0;
+    SceneEditKind kind = SceneEditKind::Spawn;
+    // The authoring id of the object the edit was about; 0 for a spawn, an
+    // undo and a redo.
+    std::uint64_t subject_id = 0;
+    bool committed = false;
+    // A refusal's code ("cycle_detected", "physics.module_unavailable@1");
+    // empty when committed, or when the transport failed before any answer.
+    std::string code;
+    // The refusal as the engine (or the transport) worded it.
+    std::string message;
+    // The committed ticket's created_objects, as the engine sent them.
+    nlohmann::json created_objects = nlohmann::json::array();
+};
+
+// One line for a refused Outliner edit: `object` is the name of the object the
+// edit was about and `target` the parent a reparent aimed at (either may be
+// empty). A physics-OFF refusal reads as Q-6's sentence; a code Studio has no
+// sentence for reads as the code with the engine's message.
+[[nodiscard]] std::string sceneEditRefusalSentence(const SceneEditOutcome &outcome,
+                                                   std::string_view object,
+                                                   std::string_view target = {});
+
 // Qt-independent state machine for the public editor RPC surface. The view
 // dispatches takeRpcRequests() over any transport and feeds the replies back
 // through receiveRpcResult()/receiveRpcFailure().
@@ -287,6 +325,15 @@ class InspectorModel {
     SpawnOutcome spawnObject(const std::string &scene_id, nlohmann::json object);
     // The name of the object waiting to be added, if one is.
     std::optional<std::string> queuedSpawnName() const;
+    // OL-1: one `edit` carrying one duplicate, destroy or reparent op from the
+    // Outliner, on the scene revision last observed, through this session's
+    // actor and undo stack. Needs no selection. Refused (the reason in
+    // notice()) while another edit is in flight or a field is held: unlike a
+    // new object, these name an object the edit in flight may be changing.
+    SpawnOutcome submitSceneEdit(SceneEditKind kind, std::uint64_t subject_id,
+                                 nlohmann::json operation, std::string description);
+    // The last spawn, Outliner edit, undo or redo to reach its end.
+    const std::optional<SceneEditOutcome> &lastSceneEdit() const noexcept;
     void abortActivePreview();
     void undo();
     void redo();

@@ -42,10 +42,17 @@ void SelectionModel::advanceRevision() {
 
 SelectionUpdate SelectionModel::applySelection(
     std::optional<OutlinerObjectKey> selection) {
-    if (selection &&
-        (project_ == nullptr || project_->findObject(*selection) == nullptr)) {
-        return failed(
-            "selection does not identify an object in the opened project");
+    if (selection) {
+        const OutlinerObject *object =
+            project_ == nullptr ? nullptr : project_->findObject(*selection);
+        if (object == nullptr) {
+            return failed(
+                "selection does not identify an object in the opened project");
+        }
+        // OL-1: what is kept is the object's whole key, its authoring id
+        // with it, even when the caller named it by declaration index (a
+        // pick does).
+        selection = object->key;
     }
 
     if (selected_ == selection) {
@@ -59,6 +66,19 @@ void SelectionModel::bindProject(const ProjectOutlinerModel *project) {
     advanceRevision();
     project_ = project;
     selected_.reset();
+}
+
+SelectionUpdate SelectionModel::followProject() {
+    if (!selected_) return {.kind = SelectionUpdateKind::unchanged};
+    const OutlinerObject *object =
+        project_ == nullptr ? nullptr : project_->findObject(*selected_);
+    if (object == nullptr) {
+        selected_.reset();
+        return {.kind = SelectionUpdateKind::changed};
+    }
+    if (object->key == *selected_) return {.kind = SelectionUpdateKind::unchanged};
+    selected_ = object->key;
+    return {.kind = SelectionUpdateKind::changed};
 }
 
 SelectionUpdate SelectionModel::selectFromOutliner(

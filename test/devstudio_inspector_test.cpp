@@ -2184,3 +2184,133 @@ TEST_CASE("Q-6 a component this build cannot take reads as a sentence and its co
     CHECK(rows.at(5).blocked == "teleport.module_unavailable@2");
     CHECK(componentAddRows(Json::object()).empty());
 }
+
+TEST_CASE("OL-1 an Outliner edit is one edit on the session, and its end names what it created",
+          "[devstudio][inspector][outliner][ol1]") {
+    using PelicanStudio::SceneEditKind;
+    InspectorHarness harness;
+    harness.model.startSession();
+    harness.reply(harness.take("open_editor_session"),
+                  {{"actor_id", 9}, {"display_name", "Pelican Studio Inspector"}});
+    REQUIRE(harness.model.takeRpcRequests().empty());
+    // Nothing selected in the Inspector, and no revision read yet: not ready.
+    CHECK(harness.model.submitSceneEdit(SceneEditKind::Duplicate, 2,
+                                        Json{{"op", "duplicate"}, {"object_id", 2}},
+                                        "Duplicate Cube") == SpawnOutcome::Refused);
+    CHECK(harness.model.takeRpcRequests().empty());
+    harness.model.observeSceneRevision(5);
+
+    // Duplicate Cube: exactly the op the Outliner built, on the revision it
+    // read, as its own undo step.
+    REQUIRE(harness.model.submitSceneEdit(SceneEditKind::Duplicate, 2,
+                                          Json{{"op", "duplicate"}, {"object_id", 2}},
+                                          "Duplicate Cube") == SpawnOutcome::Sent);
+    const auto duplicate = harness.take("edit");
+    CHECK(duplicate.params == Json{{"actor_id", 9},
+                                   {"base_revision", 5},
+                                   {"operations", Json::array({{{"op", "duplicate"},
+                                                                {"object_id", 2}}})}});
+    // One at a time: a second Outliner edit while this one is in flight is
+    // refused, not queued behind it.
+    CHECK(harness.model.submitSceneEdit(SceneEditKind::Destroy, 2,
+                                        Json{{"op", "destroy"}, {"object_id", 2}},
+                                        "Delete Cube") == SpawnOutcome::Refused);
+    CHECK(harness.model.takeRpcRequests().empty());
+    CHECK_FALSE(harness.model.lastSceneEdit());
+
+    harness.reply(duplicate, {{"status", "accepted"}, {"ticket", "edit:1"}});
+    harness.model.pollPendingOperations();
+    const Json created = Json::array({{{"object_id", 6},
+                                       {"scene_id", "main"},
+                                       {"declaration_index", 2},
+                                       {"name", "Cube_copy1"},
+                                       {"source_object_id", 2}}});
+    harness.reply(harness.take("get_edit_result"),
+                  {{"status", "committed"},
+                   {"committed_revision", 6},
+                   {"affected_authoring_ids", Json::array({6})},
+                   {"created_objects", created}});
+    const auto &done = harness.model.lastSceneEdit();
+    REQUIRE(done);
+    CHECK(done->kind == SceneEditKind::Duplicate);
+    CHECK(done->subject_id == 2);
+    CHECK(done->committed);
+    CHECK(done->created_objects == created);
+    const auto first_serial = done->serial;
+
+    // A move under its own child: the engine's code comes back with it.
+    REQUIRE(harness.model.submitSceneEdit(
+                SceneEditKind::Reparent, 3,
+                Json{{"op", "reparent"}, {"object_id", 3}, {"new_parent_id", 5},
+                     {"preserve", "world"}},
+                "Move Floor under Toe") == SpawnOutcome::Sent);
+    const auto move = harness.take("edit");
+    CHECK(move.params.at("base_revision") == 6);
+    harness.reply(move, {{"status", "rejected"},
+                         {"error", {{"code", "cycle_detected"}, {"message", "cycle"}}}});
+    const auto &refused = harness.model.lastSceneEdit();
+    REQUIRE(refused);
+    CHECK(refused->serial > first_serial);
+    CHECK(refused->kind == SceneEditKind::Reparent);
+    CHECK_FALSE(refused->committed);
+    CHECK(refused->code == "cycle_detected");
+    CHECK(PelicanStudio::sceneEditRefusalSentence(*refused, "Floor", "Toe") ==
+          "Cannot move Floor under Toe: Toe is inside Floor.");
+}
+
+TEST_CASE("OL-1 a spawn's end names the object it created",
+          "[devstudio][inspector][add-object][ol1]") {
+    using PelicanStudio::AddObjectKind;
+    using PelicanStudio::SceneEditKind;
+    using PelicanStudio::addObjectDeclaration;
+    InspectorHarness harness;
+    harness.model.startSession();
+    harness.reply(harness.take("open_editor_session"),
+                  {{"actor_id", 9}, {"display_name", "Pelican Studio Inspector"}});
+    harness.model.observeSceneRevision(3);
+    REQUIRE(harness.model.spawnObject("main", addObjectDeclaration(AddObjectKind::Cube, "Cube")) ==
+            SpawnOutcome::Sent);
+    harness.reply(harness.take("edit"), {{"status", "accepted"}, {"ticket", "spawn:1"}});
+    harness.model.pollPendingOperations();
+    harness.reply(harness.take("get_edit_result"),
+                  {{"status", "committed"},
+                   {"committed_revision", 4},
+                   {"created_objects", Json::array({{{"object_id", 12},
+                                                     {"scene_id", "main"},
+                                                     {"declaration_index", 2},
+                                                     {"name", "Cube"}}})}});
+    const auto &done = harness.model.lastSceneEdit();
+    REQUIRE(done);
+    CHECK(done->kind == SceneEditKind::Spawn);
+    CHECK(done->committed);
+    CHECK(done->created_objects.at(0).at("object_id") == 12);
+}
+
+TEST_CASE("OL-1 a refused Outliner edit reads as one sentence",
+          "[devstudio][inspector][outliner][ol1]") {
+    using PelicanStudio::SceneEditKind;
+    using PelicanStudio::SceneEditOutcome;
+    using PelicanStudio::sceneEditRefusalSentence;
+    // Physics OFF: the same sentence Add component shows (Q-6).
+    const SceneEditOutcome physics{.kind = SceneEditKind::Duplicate,
+                                   .code = "physics.module_unavailable@1",
+                                   .message = "physics component requires the physics module"};
+    CHECK(sceneEditRefusalSentence(physics, "Crate") ==
+          "Cannot duplicate Crate: " +
+              PelicanStudio::componentUnavailableDescription("physics.module_unavailable@1") +
+              ".");
+    CHECK(sceneEditRefusalSentence(physics, "Crate").find("This build has no physics module") !=
+          std::string::npos);
+    CHECK(sceneEditRefusalSentence({.kind = SceneEditKind::Destroy,
+                                    .code = "closure_unresolvable"},
+                                   "Cube") == "Cube is no longer in the scene.");
+    CHECK(sceneEditRefusalSentence({.kind = SceneEditKind::Reparent,
+                                    .code = "parent_not_found"},
+                                   "Cube", "Floor") ==
+          "Cannot move Cube under Floor: Floor is not a named object in this scene.");
+    // A code with no sentence of its own still says what failed and why.
+    CHECK(sceneEditRefusalSentence({.kind = SceneEditKind::Duplicate,
+                                    .code = "invalid_params",
+                                    .message = "unknown field"},
+                                   "Cube") == "Cannot duplicate Cube: invalid_params - unknown field");
+}

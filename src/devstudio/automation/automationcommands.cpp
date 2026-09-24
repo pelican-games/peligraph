@@ -8,6 +8,7 @@
 
 #include <optional>
 #include <cmath>
+#include <cstring>
 #include <QAction>
 #include <QAbstractButton>
 #include <QAbstractItemView>
@@ -190,6 +191,9 @@ struct Target {
     QWidget *owner = nullptr; // the named widget, for geometry and text
     QGraphicsView *view = nullptr;
     QGraphicsItem *item = nullptr;
+    // OL-1: one row of a list or tree, `<view>::row#<text>`, where it stands
+    // in the view's viewport.
+    std::optional<QRect> row;
 
     [[nodiscard]] bool valid() const noexcept { return widget != nullptr; }
     [[nodiscard]] bool isSceneItem() const noexcept { return item != nullptr; }
@@ -315,6 +319,42 @@ std::vector<std::pair<QString, QGraphicsItem *>> sceneItems(
 
 QString itemText(const QGraphicsItem &item);
 
+// OL-1: `<list or tree>::row#<text>` is the row a person reads as <text>,
+// among the rows the view shows (a folded branch's rows are not on screen).
+// The view is scrolled to it, so a drag can start or end on it.
+Target resolveItemViewRow(const AutomationHost &host, const QString &view_name,
+                          const QString &row_name) {
+    Target target;
+    const QString prefix = QStringLiteral("row#");
+    auto *view = qobject_cast<QAbstractItemView *>(findWidget(host, view_name));
+    if (view == nullptr || view->model() == nullptr || !row_name.startsWith(prefix))
+        return target;
+    const QString text = row_name.mid(prefix.size());
+    auto *tree = qobject_cast<QTreeView *>(view);
+    QModelIndex found;
+    const std::function<void(const QModelIndex &)> walk = [&](const QModelIndex &parent) {
+        const int count = view->model()->rowCount(parent);
+        for (int row = 0; row < count && !found.isValid(); ++row) {
+            const QModelIndex child = view->model()->index(row, 0, parent);
+            if (!child.isValid()) continue;
+            if (child.data(Qt::DisplayRole).toString() == text) {
+                found = child;
+                return;
+            }
+            if (tree != nullptr && tree->isExpanded(child)) walk(child);
+        }
+    };
+    walk(QModelIndex{});
+    if (!found.isValid()) return target;
+    view->scrollTo(found);
+    const QRect rect = view->visualRect(found);
+    if (rect.isEmpty()) return target;
+    target.widget = view->viewport();
+    target.owner = view;
+    target.row = rect;
+    return target;
+}
+
 Target resolveTarget(const AutomationHost &host, const QString &name) {
     Target target;
     if (name.isEmpty()) return target;
@@ -327,7 +367,10 @@ Target resolveTarget(const AutomationHost &host, const QString &name) {
         return target;
     }
     QGraphicsView *view = findGraphicsView(host, name.left(separator));
-    if (view == nullptr) return target;
+    if (view == nullptr)
+        return resolveItemViewRow(
+            host, name.left(separator),
+            name.mid(separator + static_cast<int>(std::strlen(SceneSeparator))));
     // One drawn thing can be several items: a value pill is a rounded rect with
     // the number as its child, and both carry the same identity. The one that
     // can answer `text` is the one a scenario means, and either of them sits at
@@ -398,10 +441,15 @@ QString targetText(const Target &target) {
 bool targetVisible(const Target &target) {
     if (target.isSceneItem())
         return target.item->isVisible() && target.view->isVisible();
+    if (target.row)
+        return target.owner != nullptr && target.owner->isVisible() &&
+               target.widget->rect().intersects(*target.row);
     return target.owner != nullptr && target.owner->isVisible();
 }
 
 QRect globalRect(const Target &target) {
+    if (target.row)
+        return QRect(target.widget->mapToGlobal(target.row->topLeft()), target.row->size());
     if (target.isSceneItem()) {
         const QRect local =
             target.view->mapFromScene(target.item->sceneBoundingRect())
@@ -420,6 +468,7 @@ QJsonArray rectJson(const QRect &rect) {
 
 // Where inside `target.widget` a synthetic press lands.
 QPoint hotspot(const Target &target) {
+    if (target.row) return target.row->center();
     if (target.isSceneItem()) {
         const QPointF centre = target.item->sceneBoundingRect().center();
         return target.view->mapFromScene(centre);

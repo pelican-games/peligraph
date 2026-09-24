@@ -41,6 +41,14 @@ class InspectorWidget final : public QWidget {
     // reason is in *error.
     SpawnOutcome spawnObject(const std::string &scene_id, nlohmann::json object,
                              QString *error);
+    // OL-1: the Outliner's Duplicate, Delete and drag, through the same
+    // session. Refused while another edit is in flight; the reason in *error.
+    SpawnOutcome submitSceneEdit(SceneEditKind kind, std::uint64_t subject_id,
+                                 nlohmann::json operation, const std::string &description,
+                                 QString *error);
+    // Called, once the reply has been handled, for each spawn, Outliner edit,
+    // undo and redo that reached its end.
+    void setSceneEditCompletedAction(std::function<void(const SceneEditOutcome &)> action);
     bool hasUnsavedSceneChanges() const noexcept;
     bool sceneEditPending() const noexcept;
     bool sceneSaveInFlight() const noexcept;
