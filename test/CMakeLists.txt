@@ -2723,6 +2723,10 @@ target_compile_definitions(pelican_test_featurecompose_test PRIVATE
 )
 
 pelican_define_test(renderconfigeditor_test GROUP render_pipeline pelican_core)
+if(MSVC)
+  # Past the object format's section limit in RelWithDebInfo (C1128).
+  target_compile_options(pelican_test_renderconfigeditor_test PRIVATE /bigobj)
+endif()
 target_compile_definitions(pelican_test_renderconfigeditor_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
