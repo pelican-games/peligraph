@@ -6801,6 +6801,9 @@ std::size_t g4AuthoringFileCount(const RenderTargetHarness &harness) {
 
 } // namespace
 
+#if PELICAN_RUNTIME_SHADER_COMPILER
+// Registered only where the runtime shader compiler is on: without it the
+// forward default is refused by name (the G-4 test at the end of this file).
 TEST_CASE("G-4 add_authored_pass sets material_route_default in the same candidate set and asks for a restart",
           "[render-config-editor][g4][material-pass]") {
     const bool direct = GENERATE(true, false);
@@ -6834,6 +6837,7 @@ TEST_CASE("G-4 add_authored_pass sets material_route_default in the same candida
     CHECK(judged_fragment);
     CHECK(g4RootRouteDefault(harness) == MaterialRouteDefault::forward);
 }
+#endif
 
 TEST_CASE("G-4 an ordinary add says nothing about a restart, and a bad value is refused by name",
           "[render-config-editor][g4][material-pass]") {
@@ -6894,6 +6898,9 @@ TEST_CASE("G-4 the renderer's material_route_unserved@1 comes back as a named re
     CHECK(g4AuthoringFileCount(harness) == files_before);
 }
 
+#if PELICAN_RUNTIME_SHADER_COMPILER
+// Registered only where the runtime shader compiler is on: without it the
+// forward default is refused by name (the G-4 test at the end of this file).
 TEST_CASE("G-4 set_material_route_default rides the root-edit ticket and asks for a restart",
           "[render-config-editor][g4]") {
     const bool direct = GENERATE(true, false);
@@ -6923,6 +6930,7 @@ TEST_CASE("G-4 set_material_route_default rides the root-edit ticket and asks fo
     REQUIRE_THROWS(harness.service->setMaterialRouteDefault(
         {{"base_source_digest", harness.digest()}, {"material_route_default", 1}}));
 }
+#endif
 
 #if !PELICAN_RUNTIME_SHADER_COMPILER
 // Registered only where the runtime shader compiler is off: the engine could

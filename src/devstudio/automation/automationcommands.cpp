@@ -134,6 +134,33 @@ bool isOneColour(const QImage &image) {
     }
     return true;
 }
+
+// Whether the desktop at the rect shows this window (or a child of it, the
+// embedded engine included) rather than another application's window lying
+// over it. Samples a grid of points; any point owned by another top-level
+// window means a desktop grab would read that window instead.
+bool desktopShowsWindow(QWidget *top_level, const QRect &global_rect) {
+    if (top_level == nullptr || global_rect.isEmpty()) return false;
+    const auto hwnd = reinterpret_cast<HWND>(top_level->winId());
+    if (hwnd == nullptr) return false;
+    const qreal ratio = top_level->devicePixelRatioF();
+    constexpr int Steps = 4;
+    for (int iy = 0; iy <= Steps; ++iy) {
+        for (int ix = 0; ix <= Steps; ++ix) {
+            const double fx = (ix + 0.5) / (Steps + 1);
+            const double fy = (iy + 0.5) / (Steps + 1);
+            const POINT point{
+                static_cast<LONG>((global_rect.x() +
+                                   fx * global_rect.width()) * ratio),
+                static_cast<LONG>((global_rect.y() +
+                                   fy * global_rect.height()) * ratio)};
+            const HWND at = WindowFromPoint(point);
+            if (at == nullptr || GetAncestor(at, GA_ROOT) != hwnd)
+                return false;
+        }
+    }
+    return true;
+}
 #endif
 
 constexpr auto BadRequest = "automation.bad_request@1";
@@ -1729,17 +1756,26 @@ AutomationReply commandScreenshot(const AutomationHost &host,
         request.value(QStringLiteral("mode")).toString(QStringLiteral("widget"));
     QPixmap pixmap;
     QString capture = mode;
+    bool desktop_obstructed = false;
     if (mode == QLatin1String("screen")) {
 #ifdef _WIN32
         // The window's own content first; the desktop only when the window
         // could not be printed or printed as one flat colour (a swapchain
-        // that the compositor does not hand to PrintWindow).
-        const QImage printed = printWindowRegion(
-            target.owner != nullptr ? target.owner->window() : nullptr,
-            globalRect(target));
-        if (!isOneColour(printed)) {
+        // that the compositor does not hand to PrintWindow). One flat colour
+        // is also what a viewport legitimately shows (a cleared target, the
+        // albedo of an empty scene), so the desktop replaces it only when
+        // the desktop there shows this window: another application's window
+        // lying over the viewport is not a better picture of it.
+        QWidget *top_level =
+            target.owner != nullptr ? target.owner->window() : nullptr;
+        const QRect where = globalRect(target);
+        const QImage printed = printWindowRegion(top_level, where);
+        if (!printed.isNull() &&
+            (!isOneColour(printed) ||
+             !desktopShowsWindow(top_level, where))) {
             pixmap = QPixmap::fromImage(printed);
             capture = QStringLiteral("print_window");
+            desktop_obstructed = isOneColour(printed);
         }
 #endif
     }
@@ -1783,6 +1819,11 @@ AutomationReply commandScreenshot(const AutomationHost &host,
         {QStringLiteral("height"), pixmap.height()},
         {QStringLiteral("distinct_colors"), static_cast<int>(colors.size())},
     };
+    // The printed picture was one colour and was kept because another window
+    // covered the viewport on the desktop; a reader of the report can tell a
+    // flat viewport from a flat print this way.
+    if (desktop_obstructed)
+        reply.insert(QStringLiteral("desktop_obstructed"), true);
     if (!wanted_pixels.empty()) {
         QJsonArray pixels;
         for (const QPointF &at : wanted_pixels) {

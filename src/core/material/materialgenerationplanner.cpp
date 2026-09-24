@@ -741,11 +741,12 @@ MaterialGenerationPlanner::resolveLiveMaterialBindings(
     if (!bindings.empty()) {
         return bindings;
     }
-    // G-4: the same rule as registration. A graph with no material pass at
-    // all (an RT-only project) legitimately draws no material; a graph with
-    // one must serve every registered material, whether or not the published
-    // graph did. MaterialGenerationPlanner::requireEveryMaterialServed names
-    // every such material first; this is the per-material backstop.
+    // G-4: the same rule as registration. A graph with one material pass must
+    // serve every registered material, whether or not the published graph
+    // did. A graph with no material pass at all (an RT-only project) draws
+    // no material, but may not drop a route the published graph consumed;
+    // MaterialGenerationPlanner::requireEveryMaterialServed has refused both
+    // already, and this is the per-material backstop for the first.
     if (!generationHasMaterialPasses(generation)) {
         return std::nullopt;
     }
@@ -778,7 +779,19 @@ MaterialGenerationPlanner::candidateRoute(
 void MaterialGenerationPlanner::requireEveryMaterialServed(
     const MaterialContainer &container,
     const RendererRuntimeGeneration &generation) {
-    if (!generationHasMaterialPasses(generation)) return;
+    // Two rules, one code. A candidate with any material pass must serve
+    // every registered material. A candidate with none (an RT-only graph)
+    // may draw no material, but it may not drop a route the published graph
+    // did consume. With nothing published yet (a ray-tracing startup
+    // generation stays staged until its first submitted frame) no route was
+    // consumed, so there is nothing to drop.
+    const bool has_material_passes =
+        generationHasMaterialPasses(generation);
+    std::shared_ptr<const RendererRuntimeGeneration> previous;
+    if (!has_material_passes) {
+        previous = GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+        if (previous == nullptr) return;
+    }
     std::vector<UnservedMaterialRoute> unserved;
     container.materials.forEach(
         [&](GlobalMaterialId,
@@ -786,10 +799,19 @@ void MaterialGenerationPlanner::requireEveryMaterialServed(
             // A candidate that declares a new material_route_default is
             // judged by the routes the restart will lower materials to.
             const auto candidate = candidateRoute(container, material);
-            if (generationServesMaterial(
-                    generation, candidate.route,
-                    candidate.shader_contract,
-                    material.exact_pass)) {
+            if (has_material_passes) {
+                if (generationServesMaterial(
+                        generation, candidate.route,
+                        candidate.shader_contract,
+                        material.exact_pass)) {
+                    return;
+                }
+            } else if (materialBindingsForGeneration(
+                           *previous, material.route,
+                           material.shader_contract,
+                           material.exact_pass)
+                           .empty()) {
+                // The published graph did not draw it either.
                 return;
             }
             auto entry = std::find_if(
