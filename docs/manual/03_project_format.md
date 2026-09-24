@@ -173,7 +173,7 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
 | `default_scene_id` | string | `"default_scene"` | 起動時にロードするシーン ID |
 | `scene_data_json` | 参照 | `"scenes/main.scene.json"` | シーン定義 JSON への参照 |
 | `asset_data_json` | 参照 | `"assets/asset_data.json"` | アセット登録 JSON への参照 |
-| `rendering_config_json` | 参照 | `"passes/main_rendering_config.json"` | レンダリング構成への参照(下記「rendering config の 2 つの root」) |
+| `rendering_config_json` | 参照 | `"passes/main_rendering_config.json"` | レンダリング構成への参照(下記「rendering config の root」) |
 | `default_rendering_pass` | string | `"main_render"` | rendering config 内で使う `rendering_passes[].name`(graph root では `rendering.rendering_passes[].name`) |
 | `ui_config_json` | 参照 | `"ui/ui_overlay.json"` | UI ドキュメント(pelican.ui)への参照 |
 | `input_actions_json` | 参照 | **既定なし(任意)** | 入力アクション定義。未指定ならアクション層は未構成 |
@@ -201,7 +201,7 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
 - **`features` / `render_targets` / `rendering_passes` などを最上位に直接並べた旧い形(legacy root)は、MG-2b から読めません。** 起動時の読み込み([renderingpassconfigloader.cpp](../../src/core/renderingpass/renderingpassconfigloader.cpp#L24))、`--feature-overlay` の重ね合わせ、ray tracing の設定の読み込み、Studio / RPC の編集文書のどれもが `render_config.legacy_root@1` で断ります([`RenderConfigLegacyRoot`](../../src/project/renderconfigdocument.hpp#L35))。直すには、旧いファイル全体を `rendering` の値にして上の 5 キーを足します。`rendering` の中身は旧い root と同じ意味で読まれます。
 - **`rendering` 節には `buffers` / `compute_tasks` を書けません。** この 2 つは共通グラフのノード(`render.buffer` / `render.compute`)の接続から lowering が作るので、節に書くと `render graph derives field from connections: buffers` のように拒否されます([lowerRenderGraphDocument()](../../src/project/rendergraphcomposition.cpp#L21))。buffer と compute task は graph node か task feature で書きます。
 
-`pelican.graph` root は web ビューア未対応です([第9章](09_web.md) §9.3)。
+`pelican.graph` root は web ビューア未対応です。web は v0 形式への追従中(WEB-1)で、それまで web は新しい出荷 sample を開けません([第9章](09_web.md) §9.3)。
 
 ## 3.3 パス参照と PathResolver
 

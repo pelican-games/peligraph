@@ -44,8 +44,8 @@ project が持てる文書と、parser が受ける version。`schema` と `vers
 | `pelican.input_profile` | 1 | `src/core/os/actionmap.cpp` | |
 | `pelican.transform_seq` | 1 | `src/core/playback/seqplayer.cpp` | camera bake の出力 |
 | `pelican.settings` | 1 | `src/core/persistence/persistence.cpp` | `user://` 側 |
-| `pelican.ray_group_layout` | 3 | `src/core/shader/raygrouplayout.cpp` | 出荷 raytracing_demo は 3。MG-2a で 1〜2 の読み手を撤去し、3 以外は `pelican.ray_group_layout.version_unsupported@1` |
-| `pelican.ray_bindings` | 2 | `src/core/shader/raygrouplayout.cpp` | 出荷 raytracing_demo は 2。MG-2a で 1 の読み手を撤去し、2 以外は `pelican.ray_bindings.version_unsupported@1` |
+| `pelican.ray_group_layout` | 3 | `src/core/shader/raygrouplayout.cpp` | 出荷 raytracing_demo / pathtrace_demo は 3。MG-2a で 1〜2 の読み手を撤去し、3 以外は `pelican.ray_group_layout.version_unsupported@1` |
+| `pelican.ray_bindings` | 2 | `src/core/shader/raygrouplayout.cpp` | 出荷 raytracing_demo / pathtrace_demo は 2。MG-2a で 1 の読み手を撤去し、2 以外は `pelican.ray_bindings.version_unsupported@1` |
 | `pelican.graph_catalog` | 1 | `src/project/graphmodule.cpp` | `pelican_cli graph-catalog` の出力(§1.3) |
 | `pelican.project_catalog_smoke` | 1 | `test/run_project_catalog_smoke.cmake` | project ごとの smoke 閾値 |
 
@@ -249,7 +249,7 @@ v0 の後に回すもの(v1 計画「やらない」): 双方向 bind / 任意�
 native ABI の永久互換 / 任意 module の unload / マーケットプレイスと細分化された repo 群。
 
 **複合 undo は v0 では約束しない**(`### R-2:` の裁定)。scene journal の対象は
-scene 編集 12 op で、Graph Canvas は graph 専用の基本 Undo/Redo を持つ（§4.1）。
+scene 編集 13 op(OL-1 で `duplicate` が加わった)で、Graph Canvas は graph 専用の基本 Undo/Redo を持つ（§4.1）。
 graph の履歴は CAS で保存し、外部編集後は無効化する。render config 全体の編集は
 CAS + transaction による失敗時の原状維持が契約で、文書単位の rollback は内部にある。
 **scene journal と graph / render config を 1 本の履歴へ束ねる複合 Undo**は v1 の項目として残す。

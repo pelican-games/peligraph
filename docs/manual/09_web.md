@@ -61,7 +61,7 @@ web 側の作業単位は **WW**(Web Work Package)という番号で `implementa
 
 ### rendering config の web 対応範囲
 
-web が理解するのは([第6章](06_rendering.md) の語彙のうち): RT フォーマット 7 種(**エンジン側は 45 種**)・usage 6 種、パス 3 種 `material` / `fullscreen` / `ui`(**エンジン側は 8 種 + `PELICAN_WITH_IMGUI` ビルド時のみの `imgui` = 8+1 種**)、`push_constants` 3 種、従来の G-buffer 5 枚契約です。**`"schema": "pelican.graph"` を名乗る rendering config(rendering config 全体が `rendering` の下に入る root。[第6章 §6.16](06_rendering.md))は web 未対応なので、その root を持つ config は web 側で明示的に拒否する必要があります**(エンジン側は P-2a-4b で出荷 `projects/example` をこの形に移しました)。未知キーとして読み飛ばすと `render_targets` 0 枚・`rendering_passes` 0 本の**空 config として受理**してしまい、「web は pelican より緩くしてはならない」に違反します —— この拡張については web の追随順は「無視 → 対応」ではなく「**拒否** → 対応」です(読み飛ばしが緩い方向になる拡張だから)。my_webpage 側の追随は WW 起票待ちで、pelican2 側からは状態を確認できません。native の `pelican.material_outputs` v1（任意枚数・float/SINT/UINT output）と`material_output_states`（output別blend/write-mask）はまだ web 未対応なので、そのキーを持つ config は web 側で**明示的に拒否**する必要があります。未知キーとして読み飛ばして5枚扱いにするとサブセット原則違反です。`shadow_depth` / `debug_draw` / `debug_text` / `features` / `compute_tasks` も web 未対応です。互換の正は `my_webpage/docs/pelican2-webgpu-compat.md` を参照してください。
+web が理解するのは([第6章](06_rendering.md) の語彙のうち): RT フォーマット 7 種(**エンジン側は 45 種**)・usage 6 種、パス 3 種 `material` / `fullscreen` / `ui`(**エンジン側は 8 種 + `PELICAN_WITH_IMGUI` ビルド時のみの `imgui` = 8+1 種**)、`push_constants` 3 種、従来の G-buffer 5 枚契約です。**`"schema": "pelican.graph"` を名乗る rendering config(rendering config 全体が `rendering` の下に入る root。[第6章 §6.16](06_rendering.md))は web 未対応なので、その root を持つ config は web 側で明示的に拒否する必要があります**(エンジン側は MG-2b から rendering config をこの root だけにし、最上位に rendering のキーを直接並べた旧い形は `render_config.legacy_root@1` で拒否します。出荷 7 本もすべてこの形です)。未知キーとして読み飛ばすと `render_targets` 0 枚・`rendering_passes` 0 本の**空 config として受理**してしまい、「web は pelican より緩くしてはならない」に違反します —— この拡張については web の追随順は「無視 → 対応」ではなく「**拒否** → 対応」です(読み飛ばしが緩い方向になる拡張だから)。web は v0 形式への追従中(WEB-1)です。それまで web は新しい出荷 sample を開けません。my_webpage 側の状態は pelican2 側からは確認できません。native の `pelican.material_outputs` v1（任意枚数・float/SINT/UINT output）と`material_output_states`（output別blend/write-mask）はまだ web 未対応なので、そのキーを持つ config は web 側で**明示的に拒否**する必要があります。未知キーとして読み飛ばして5枚扱いにするとサブセット原則違反です。`shadow_depth` / `debug_draw` / `debug_text` / `features` / `compute_tasks` も web 未対応です。互換の正は `my_webpage/docs/pelican2-webgpu-compat.md` を参照してください。
 
 括弧内のエンジン側の数はサブセット原則の実測値です(2026-07-28 時点。いずれも [renderingpassjsonhelpers.cpp](../../src/core/renderingpass/renderingpassjsonhelpers.cpp) が正 — RT フォーマットは `stringToFormat` の表、パス種別は `makePassInfo` の分岐)。**web の語彙はエンジンの語彙の真部分集合**(= web の語はすべてエンジン側にもあり、かつエンジン側と完全一致ではない)であり、これは「web は pelican より厳しくてよいが緩くしてはならない」に適合しています。エンジン側の RT フォーマットとパス種別の説明は [第6章](06_rendering.md) を参照してください。
 
@@ -89,6 +89,8 @@ npm run shaders:spirv -- <project-dir>
 - 補足: `engine://` の stem(`engine://fullscreen` 等)は web では fetch されず、Shader Dock 内蔵の合成 WGSL で代替描画されます。実際に `<stem>.wgsl` が fetch されるのはプロジェクト内 stem だけです。
 
 ## 9.5 プロジェクトを web 互換に保つチェックリスト
+
+> **MG-2b からの注意:** native は rendering config を `pelican.graph` root だけ、scene / asset_data を version 2 だけ読みます。web は `pelican.graph` root に未対応(§9.3)なので、今は native と web の両方で開ける rendering config を書けません。web は v0 形式への追従中(WEB-1)で、それまで web は新しい出荷 sample を開けません。以下は WEB-1 の後も残る項目として読んでください。
 
 - [ ] カメラは `yfov`(**ラジアン**)/ `znear` / `zfar` で書く(旧 `fov_y`/`near`/`far` は native で hard error)
 - [ ] シェーダ参照はすべて拡張子なしの stem。WGSL を書いたら `npm run shaders:spirv` で `.spv` を並置
@@ -124,9 +126,9 @@ npm run shaders:spirv -- <project-dir>
 
 ### scene 対応に着手するときの追随項目(2026-07-21 追記)
 
-scene JSON の web 対応(WW4)は未着手のままですが、**その間にエンジン側の scene v1 の受理仕様が動きました**。web が scene に着手するときは、以下がエンジン側の正であることを前提にしてください(サブセット原則より、web はこれ**以上に緩く**なってはいけません)。
+scene JSON の web 対応(WW4)は未着手のままですが、**その間にエンジン側の scene の受理仕様が動きました**(2026-07-21 の追記時点では v1。MG-2b からエンジンは `pelican.scene` / `pelican.asset_data` とも version 2 だけを読み、v1 は `pelican.<schema>.version_unsupported@1` です。web は v0 形式への追従中(WEB-1)で、それまで web は新しい出荷 sample を開けません)。web が scene に着手するときは、以下がエンジン側の正であることを前提にしてください(サブセット原則より、web はこれ**以上に緩く**なってはいけません)。
 
-5. **scene v1 に `behavior` コンポーネントが入った(✅WP155/162/167)** — オブジェクトの `components` に `{"name": "behavior", "type": "<登録名>", "params": {...}}` を書けるようになりました。`type` は必須の非空文字列、`params` は任意 object です。振り分けは [src/core/loader/scene.cpp](../../src/core/loader/scene.cpp)(`behavior` だけ ECS 経路から外れる)、受理は [src/core/gamelogic/behaviorarena.cpp](../../src/core/gamelogic/behaviorarena.cpp) の `prepareSceneBehaviorAttachments()` が担当します。詳細は [第4章](04_scene_ecs.md) / [第8章](08_gameplay.md)。
+5. **scene に `behavior` コンポーネントが入った(✅WP155/162/167)** — オブジェクトの `components` に `{"name": "behavior", "type": "<登録名>", "params": {...}}` を書けるようになりました。`type` は必須の非空文字列、`params` は任意 object です。振り分けは [src/core/loader/scene.cpp](../../src/core/loader/scene.cpp)(`behavior` だけ ECS 経路から外れる)、受理は [src/core/gamelogic/behaviorarena.cpp](../../src/core/gamelogic/behaviorarena.cpp) の `prepareSceneBehaviorAttachments()` が担当します。詳細は [第4章](04_scene_ecs.md) / [第8章](08_gameplay.md)。
 6. **コンポーネントの受理仕様が component codec に一本化され、closed schema になった(✅WP151)** — `transform` / `simplemodelview` / `camera` / `light` / `collider` / `animation` / `sprite_view` の 7 コンポーネントは [src/core/loader/componentcodec.cpp](../../src/core/loader/componentcodec.cpp) の codec テーブルが受理仕様の正です。いずれも**未知キーを名指しで拒否する closed schema**で、フィールドの必須/任意と既定値は codec ごとに決まります(例: `transform` の `pos` / `rotation` / `scale` はすべて任意で既定値あり)。web が scene を読むときは、コンポーネント側の `ref()` 実装ではなくこの codec テーブルを鏡像の元にしてください。
 7. **可変長の宣言とprocedural geometryの追随(2026-09-05更新)**
    - `List` / `Flags`と`$list`のwire形はengineに実装済みです。WP382dでは`pelican_ray_instance.overrides`が`List`を使用します。

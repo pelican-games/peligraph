@@ -30,9 +30,9 @@ Pelican2 の**使い方と設計を人間向けに解説する公式マニュア
 | [第1章 エンジン全体像](01_overview.md) | Pelican2 とは何か。リポジトリ地図・レイヤ規則・横断的な設計原則・開発体制 |
 | [第2章 ビルドと起動](02_getting_started.md) | 必要環境、ビルド、example の起動、最初のプロジェクト作成、ヘッドレス実行、テスト |
 | [第3章 プロジェクト形式](03_project_format.md) | project.json のスキーマ(`requires` = 機能ユニットの要求を含む)、PathResolver(project:// / engine:// / user:// / #フラグメント)、asset store、**package**(外から持ち込んで project に複製する)、**共有部品(render component)**の export / import |
-| [第4章 シーンと ECS](04_scene_ecs.md) | pelican.scene v1、コンポーネント全種、シーンロードの流れ、ECS の要点、シーン遷移 |
+| [第4章 シーンと ECS](04_scene_ecs.md) | pelican.scene v2、コンポーネント全種、シーンロードの流れ、ECS の要点、シーン遷移 |
 | [第5章 アセットパイプライン](05_assets.md) | 二層モデル、asset_data.json、DCC 連携(import / transform_seq / VAT)、対応形式一覧 |
-| [第6章 レンダリング](06_rendering.md) | rendering config(2 つの root)、パス種別、feature、フレームグラフ、シェーダ基盤(stem / ホットリロード / set 規約)、**共通グラフのノード語彙**(§6.17) |
+| [第6章 レンダリング](06_rendering.md) | rendering config(`pelican.graph` root)、パス種別、feature、フレームグラフ、シェーダ基盤(stem / ホットリロード / set 規約)、**共通グラフのノード語彙**(§6.17) |
 | [第7章 入力と UI](07_input_ui.md) | 入力四層、actions.json、アクションセットスタック、UI の現状、debug_text HUD |
 | [第8章 ゲームロジック](08_gameplay.md) | ゲームコードの書き方(システムと **オブジェクト behavior**)、GameContext、イベント、カメラ、物理クエリ、決定性、オーディオ、永続化 |
 | [第9章 Web プロファイル](09_web.md) | サブセット原則、web ビューアでの開き方、シェーダ stem と WGSL、web 互換チェックリスト |

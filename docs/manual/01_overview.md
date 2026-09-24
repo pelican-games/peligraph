@@ -53,7 +53,7 @@ Pelican2 は **C++20 / Vulkan(vulkan.hpp)/ Windows(MSVC)** のゲームエンジ
 ## 1.2 データフロー(起動から画面まで)
 
 ```
-project.json ──┬─ scene_data_json ──▶ pelican.scene v1 ─▶ ECS(オブジェクト)
+project.json ──┬─ scene_data_json ──▶ pelican.scene v2 ─▶ ECS(オブジェクト)
 (マニフェスト) │                                        ├▶ LightContainer(light)
                │                                        ├▶ PhysWorld(collider)
                │                                        └▶ BehaviorAttachmentArena(behavior)
@@ -160,7 +160,7 @@ vkcore(Vulkan 低層)
 
 > **設計決定 7(プロジェクト読み取り専有):** エンジン実行時、プロジェクトディレクトリには何も書かない。**例外は利用者が明示的に行う編集の保存だけ**で、書き込みはすべて名前の付いた操作から始まります。書き込み先は `user://` に分離(複数インスタンス並行起動の安全根拠)。パス解決は cwd を使わず、常にプロジェクトルート基準+脱出禁止([第3章](03_project_format.md))。※**「編集の保存」の範囲は v0 で広がりました**: シーンの保存と `features[]` の編集([第13章](13_editor.md))に加えて、`install_package`(`project://packages/<ns>/` への複製 + `project.json` の `packages` への記録 — [第3章 §3.11](03_project_format.md))、`uninstall_package`(その取り消し)、`import_render_feature`(`project://` に feature ファイルを 1 本新規作成 — [第3章 §3.12](03_project_format.md))、`materialize`(engine 参照の feature を project 側の派生として保存 — [第6章](06_rendering.md))が project に書きます。どれも利用者が明示的に呼んだときだけで、エンジンが自発的に書くものはありません。`export_render_feature` の書き先は project ではなく `user://components/` です。
 
-> **設計決定 8(schema + version ゲート):** 新しい交換形式の JSON には必ず `schema` と `version` を付け、不一致は hard error(規約 R10)。`asset_data.json` は `pelican.asset_data` v1 として strict v1 化済み。凍結対象の schema 一覧は [../v0_freeze.md](../v0_freeze.md) §1.1(31 種)。※ui_overlay.json と **legacy root の** rendering config には歴史的経緯で未適用です。rendering config を `pelican.graph` root で書いた場合は文書の最上位が共通グラフ文書なので `schema: pelican.graph` / `version: 1` を厳密に検査します(出荷 `example` と `posegraph_demo`、`pelican_cli project init` の雛形がこの形 — [第3章 §3.2](03_project_format.md))。
+> **設計決定 8(schema + version ゲート):** 新しい交換形式の JSON には必ず `schema` と `version` を付け、不一致は hard error(規約 R10)。v0 では 1 つの形式に 1 つの版だけを読みます(旧い版は移行せず書き直す)。`pelican.scene` と `pelican.asset_data` は version 2 だけで、それ以外は `pelican.<schema>.version_unsupported@1`(✅MG-2b。[sceneformat.cpp](../../src/project/sceneformat.cpp#L123) / [assetdataformat.cpp](../../src/project/assetdataformat.cpp#L112))。凍結対象の schema 一覧は [../v0_freeze.md](../v0_freeze.md) §1.1(31 種)。rendering config は MG-2b から `pelican.graph` root だけで、文書の最上位が共通グラフ文書なので `schema: pelican.graph` / `version: 1` を厳密に検査します。最上位に rendering のキーを直接並べた旧い形(legacy root)は `render_config.legacy_root@1` で拒否されます([第3章 §3.2](03_project_format.md))。`ui_overlay.json` も `pelican.ui` / `version: 1` を検査します([document.cpp](../../src/core/ui/document.cpp#L372))。
 
 > **設計決定 9(API ではなくデータ契約):** 外部ツール(DCC・DAM・エディタ)との統合はプラグイン API ではなくファイル契約(glTF ハブ、pelican.import、asset store)と JSON-RPC で行う。エディタ(devstudio)にも特権はない(D0: 編集操作はまず rpc メソッドとして定義される)。※WP149〜172 でこの原則が実装に落ちた: 編集 / undo / redo / 保存 / プレビューはすべて JSON-RPC メソッドとして定義され、player 内の ImGui Inspector も rpc と**同じ `EditorCommandService`** を呼ぶ([editorcommandservice.hpp](../../src/core/communication/editorcommandservice.hpp) / [inspector.cpp](../../src/core/imgui/inspector.cpp))。詳細は [第13章](13_editor.md)。
 

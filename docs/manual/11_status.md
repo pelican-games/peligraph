@@ -68,7 +68,7 @@ implementation archive」によります(WP1〜179 は 2026-07-19 調査、WP180
 | 22 | pointcache | 予約 |
 | 23 | KTX2 | (WP92 として実装済み) |
 | 24 | 音声 | (WP51 = A1 として実装済み) |
-| 25 | pelican.scene v1 | 済 |
+| 25 | pelican.scene v1(MG-2b からエンジンは version 2 だけを読む) | 済 |
 | 26 | EXR リーダ(tinyexr・限定スコープ) | 済 |
 | 27 | コマンド層 stage 2(stdio JSON-RPC 2.0) | 済 |
 | 28 | feature 合成基盤 | 済 |
@@ -127,7 +127,7 @@ implementation archive」によります(WP1〜179 は 2026-07-19 調査、WP180
 | 76 | マテリアル M2b-2 — values バインダ | 済 | .surface params → std140 SSBO、textures 辞書 binding(SRGB/UNORM view)、render_state | CLI: `pelican_cli dump-lowered-material <surface>` |
 | 77 | コンテナ K1 — #フラグメント実ロード | 済 | glb の `#mesh/#material/#node/#animation` 部分ロード | asset_data / scene から `foo.glb#mesh/名前` 参照が使える |
 | 78 | マテリアル M3a — B 層ソース経路 | 済 | .surface コードスニペット → テンプレート合成(`pelican_*_v1` フック反射、engine:// GLSL ライブラリ) | .surface に `pelican_surface_v1` 等を書くだけでカスタムシェーダ。standard/toon は同経路の dogfood |
-| 79 | コンテナ K2 — glTF シーン抽出 + 親子 | 済 | scene v1 に `objects[].parent` 追加 + glTF ノード階層の抽出 | CLI: `pelican_cli import gltf --extract-scene <glb>`。JSON: scene v1 `parent` キー |
+| 79 | コンテナ K2 — glTF シーン抽出 + 親子 | 済 | scene v1 に `objects[].parent` 追加 + glTF ノード階層の抽出 | CLI: `pelican_cli import gltf --extract-scene <glb>`。JSON: scene の `parent` キー(当時は v1。MG-2b から devcli の glTF importer は scene version 2 を書く) |
 | 80 | マテリアル M3b — spv-link | 済 | SPIR-V リンクの experimental バックエンド(既定は WP78 ソース経路) | build: `PELICAN_WITH_SPIRV_LINK=ON` + runtime: `PELICAN_SPV_LINK=experimental`。昇格判定は保留 |
 | 81 | コンテナ K3 — pelican-import-tools | 済(別リポジトリ) | Python 製外部ツール: psd_extract + atlas_pack(決定的パッキング) | 出力: `pelican.atlas` v1 JSON(`#sprite/<名前>` の解決先) |
 | 82 | 起動高速化 | 済 | シェーダディスクキャッシュ(`.pelican/shader_cache/`)+ モデルロード並列化(決定的) | 起動 1 行レポート + `get_status.startup`。2 回目以降の起動が大幅短縮 |
@@ -172,7 +172,7 @@ implementation archive」によります(WP1〜179 は 2026-07-19 調査、WP180
 | 116 | M-PBR0a — OpenPBR 表現/routing ABI | 済 | lighting hook + forward 経路・per-material custom texture override・`{opaque,mask,blend}×{single,double}` 6 variant routing・primitive binding ABI | JSON: pelican.material に `alpha_mode` / `double_sided` / texture override(additive)+ `pelican.material_bindings` v1 |
 | 117 | M-PBR0b — openpbr surface + 写像表 | 済 | wrapper-B(薄い `.surface` ×6 + 単一 GLSL include)で OpenPBR Surface 1.1.1 subset を特権なし実装 | 第 3 の stdlib surface `openpbr`(standard/toon と同格)。example にサンプル球 |
 | 118 | U-USD0a — USD ツール選定 spike | 済(レポートのみ) | **usd-core==26.5 採用**。UsdMtlx は wheel 非同梱 → MaterialX は authored 値のみに縮退確定 | 成果物 = spike レポート + import-tools の probe |
-| 119 | U-USD0b — USD コンポジション/静的ジオメトリ変換 | 済 | import-tools に production `usd` レシピ(USD/USDZ → GLB + scene v1 断片。決定的・SHA-256 二回一致) | import-tools CLI。エンジン側は fixture + golden |
+| 119 | U-USD0b — USD コンポジション/静的ジオメトリ変換 | 済 | import-tools に production `usd` レシピ(USD/USDZ → GLB + scene v1 断片。決定的・SHA-256 二回一致) | import-tools CLI。エンジン側は fixture + golden。MG-2b からエンジンは scene version 2 だけを読むので、外部 import-tools の追従が要る(MG-2b の記録。import-tools 側の現状は未確認) |
 | 120 | VRM-S1 — application sink | 監査停止 → 分割 | morph 描画機構の全経路不在を検出した正しい停止 → S1a/M-INST0/S1b に再編 | (停止レポートが S1a/S1b 仕様の正) |
 | 121 | VRM-S1a — glTF morph target 描画機構 | 済 | POSITION/NORMAL/TANGENT delta の共有 GPU storage + per-instance weight(N/N-1)を全 vertex path で skinning 前に適用(VRM 非依存) | glb の `primitive.targets` + `mesh/node.weights` がそのまま描画に効く |
 | 122 | M-INST0 — per-instance material override ABI | 済 | instance 単位の factor/UV multiplier override(N/N-1・generation)。override なし instance はコスト 0 | renderer 内部 ABI(公開面は WP123b 経由) |
@@ -456,7 +456,7 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 | [design_shader_freedom_kit.md](../design_shader_freedom_kit.md) [SF] | — | シェーダ基盤(実装済み) | [第6章](06_rendering.md) |
 | [design_headless_rendering.md](../design_headless_rendering.md) [HL] | — | ヘッドレス描画(実装済み) | [第2章](02_getting_started.md)・[第6章](06_rendering.md) |
 | [animation_abi_v1.md](../animation_abi_v1.md) | **Frozen / normative** | アニメーション ABI v1(正本 header = `abi_v1.hpp`) | [第8章](08_gameplay.md) |
-| [v0_freeze.md](../v0_freeze.md) | **v0 凍結一覧(正本)・2026-09-17** | 「v0 で動かさないと約束する面」の実名一覧: 文書 schema 31 種 / RPC 89 method(基盤 29 + エディタ 60) / 共通グラフの module・op・型・sink / ABI と版 / package manifest の最小形 / 2 つの root と 2 つの装着様式。加えて撤去・維持の裁定、約束しないもの、既知の穴、各段の SHA | 全章(面ごとの詳細は各章。RPC の params は [第10章](10_tools.md) が正本) |
+| [v0_freeze.md](../v0_freeze.md) | **v0 凍結一覧(正本)・2026-09-17** | 「v0 で動かさないと約束する面」の実名一覧: 文書 schema 31 種 / RPC 89 method(基盤 29 + エディタ 60) / 共通グラフの module・op・型・sink / ABI と版 / package manifest の最小形 / rendering config の root と 2 つの装着様式。加えて撤去・維持の裁定、約束しないもの、既知の穴、各段の SHA | 全章(面ごとの詳細は各章。RPC の params は [第10章](10_tools.md) が正本) |
 
 ### ドラフト(実装済み or 実装中)
 
@@ -566,7 +566,7 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 
 - **transform_seq は `rot`、scene / rpc は `rotation`**(意図的な別スキーマ判定)。
 - **カメラの `yfov` はラジアン、ライトのコーン角は度、`--camera` の fov も度**。
-- **schema/version エンベロープの有無が形式ごとに異なる**: scene / asset_data / input_actions / import / material / render_feature / frame_plan / ui / anim_graph / atlas / input_seq / settings にはあり、**legacy root の** rendering config にはない。※`pelican.graph` root で書いた rendering config は文書の最上位が共通グラフ文書なので `schema` / `version` を持ち、厳密に検査されます(出荷 `example` / `posegraph_demo` と `project init` の雛形。[第3章 §3.2](03_project_format.md))。**「rendering config にエンベロープが無い」は legacy root についてだけ正しい**、と読んでください。
+- **rendering config のエンベロープは共通グラフのもの**: scene / asset_data / input_actions / import / material / render_feature / frame_plan / ui / anim_graph / atlas / input_seq / settings は自分の `schema` / `version` を持ちます。rendering config は MG-2b から `pelican.graph` root だけなので、最上位の `schema` は `pelican.graph`(`version: 1`)で、`pelican.render_config` のような独自の schema 名はありません。エンベロープを持たない旧い形(legacy root)は `render_config.legacy_root@1` で拒否されます([第3章 §3.2](03_project_format.md))。
 - **3 つの `requires` は別の語彙**: project.json の `requires`(ビルド機能ユニットの名前の配列)/ package manifest の `requires`(`{engine_min_version, sdk_abi, capabilities}`)/ feature の `integrations[].requires`(他の feature 名)。[第3章 §3.2](03_project_format.md) に対照表があります。
 - **3 つの `component` も別の語彙**: ECS のコンポーネント([第4章](04_scene_ecs.md))/ `pelican.render_component` = 共有部品([第3章 §3.12](03_project_format.md))/ package manifest の `provides.components`(= その共有部品のディレクトリを指す配列。[第3章 §3.11](03_project_format.md))。
 
@@ -574,7 +574,7 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 
 **約束の内側にあるが、今日は塞がっていないもの**です。正本は [../v0_freeze.md](../v0_freeze.md) §4(そこから台帳の該当節を引けます)。マニュアルの読者に影響が出るものだけをここに挙げます:
 
-1. **`graph.instance.owner` の authoring object id が永続でない** —— シーンにオブジェクトを挿入して保存すると装着先がずれます。不一致は**無音で inactive**(警告ログが 1 回出るだけ)、実在する別のオブジェクトを指してしまった場合は黙ってそちらに適用されます([第4章 §4.1](04_scene_ecs.md))。永続オブジェクト id(`design_object_identity.md` の ID-1〜4)は未実装。
+1. **(解消)`graph.instance.owner` の authoring object id は保存と再読込を跨いで保たれます** —— scene の保存が `authoring_object_id` と `next_authoring_object_id` を書き、読み込みがそれを使います(`efb30dad`、[sceneformat.cpp](../../src/project/sceneformat.cpp#L45)。[../v0_freeze.md](../v0_freeze.md) §4.1)。OL-1 で、owner より前のオブジェクトを `duplicate` し、先頭にもう 1 つ挿入してから保存・再読込しても owner が同じオブジェクトを指すことを `test/sceneformat_test.cpp` の `[ol1]` が確かめています。解決できない owner が**無音で inactive**(警告ログが 1 回出るだけ)になる挙動は残ります([第4章 §4.1](04_scene_ecs.md))。
 2. **姿勢側の値スナップショットが無い** —— `get_graph_values` / `get_graph_node_values` が返すのは**描画側で publish した値**で、`source: "rendering"` を必ず返します。姿勢の評価は別の評価状態で走るので、event / trigger で駆動するノードがある文書では姿勢側が実際に食った値と**恒久的にずれ得ます**(event の無い文書ではずれません)。
 3. **values パーティションは 1 フレームに 2 回評価されます** —— 描画側と姿勢側がそれぞれ評価するためです。入力が同じなので値は同じですが、**状態を持つノード(`value.trigger_clock` / `value.event_clock` / `audio.playback`)は 2 つの状態を並走させます**。1 回に束ねるのは v0 の後。
 4. **`get_graph_values` は入れ子の instance を返しません**(root の instance の入力 port だけ)。展開木の全ノードが要るときは `get_graph_node_values` を使います。
@@ -587,7 +587,7 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 
 「まだ無い」ではなく、**v0 の契約として約束しない**と決めたものです(正本は [../v0_freeze.md](../v0_freeze.md) §3):
 
-- **複合 undo** —— journal / undo の対象は**シーン編集の 12 op だけ**です(それ以外は `method_unavailable`)。rendering config の編集が約束するのは **CAS + トランザクション**、つまり「失敗したら何も変わらない」まで。文書単位の巻き戻しは内部にありますが、**シーンの undo スタックと rendering config の編集を 1 本に束ねる複合 undo は v0 の外**です(`### R-2:` の裁定)。グラフの編集(`edit_graph_document`)も journal に載らないので undo できません。
+- **複合 undo** —— journal / undo の対象は**シーン編集の 13 op だけ**です(OL-1 で `duplicate` が加わった)(それ以外は `method_unavailable`)。rendering config の編集が約束するのは **CAS + トランザクション**、つまり「失敗したら何も変わらない」まで。文書単位の巻き戻しは内部にありますが、**シーンの undo スタックと rendering config の編集を 1 本に束ねる複合 undo は v0 の外**です(`### R-2:` の裁定)。グラフの編集(`edit_graph_document`)は scene の journal には載りませんが、Graph Canvas は graph 専用の基本 Undo/Redo を持ちます(CAS で適用し、外部で変更されたら履歴を捨てる。`0d41aeba`、[v0 凍結一覧 §4.1](../v0_freeze.md))。scene と graph を跨ぐ 1 本の履歴は v0 の外です。
 - **代表ゲームの射程** —— 代表は `projects/example` で、触るのは入力・ECS 生成と `setLocalTransform`・VRM 表情・ライトアニメーションまでです。**物理クエリ・音・save/load・UI 操作・behavior のサンプルは v1**(example のシーンに collider は 0、リポジトリに音声ファイルは 0、[../example_assets.md](../example_assets.md) が新規バイナリを禁じ、`playSound` は `PELICAN_WITH_AUDIO=OFF` で throw するため「外せる」と両立しません)。
 - そのほか v1 計画から: 全ドメインの高度な最適化と完全な seek / 任意の式言語と双方向 bind / 全 RT 機能の方式間互換 / native ABI の永久互換 / 稼働中の任意 module の unload。
 

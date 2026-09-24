@@ -877,5 +877,5 @@ walk.apply(ctx, id, local_time);   // local_time はゲームが管理(例: 接�
 - [../design_persistence.md](../design_persistence.md) — user:// と設定/セーブ三区分
 - [../design_animation_graph.md](../design_animation_graph.md) — アニメーショングラフと公開評価器の設計(§8.13)
 - [../animation_abi_v1.md](../animation_abi_v1.md) — 凍結 C-ABI(自作評価器の面)の正
-- [../v0_freeze.md](../v0_freeze.md) — v0 の凍結一覧。§1.6 が「2 つの root と 2 つの装着様式」、§1.3 が共通グラフの op / 型 / sink
+- [../v0_freeze.md](../v0_freeze.md) — v0 の凍結一覧。§1.6 が「rendering config の root と 2 つの装着様式」、§1.3 が共通グラフの op / 型 / sink
 - [第4章 シーンと ECS](04_scene_ecs.md) / [第7章 入力と UI](07_input_ui.md) / [第10章 ツールリファレンス](10_tools.md) / [第13章 エディタ](13_editor.md)
