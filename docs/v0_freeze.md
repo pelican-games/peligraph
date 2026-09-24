@@ -75,6 +75,8 @@ engine が開く文書の `(schema, version)` は、**その engine に移行の
 | `pelican.project_catalog_smoke` | 1 | `test/run_project_catalog_smoke.cmake` | project ごとの smoke 閾値 |
 | `pelican.project_migration_backup` | 1 | `src/project/projectmigration.cpp` | `project migrate` の apply が退避先 `.pelican/migration/<時刻>/migration.json` に書く記録(MG-1)。`.` で始まるディレクトリの下なので、移行の検出は見ない |
 
+入力の収録 `pelican.input_seq`(GP-4 から v2 で書き、v2 と v1 を読む。`src/core/os/inputsequence.cpp`)は表に載せない。`--record-input` / `start_input_record` が呼び手の指定した場所に書く JSONL で、project が持つ文書ではないため、移行の約束の対象にせず手順も登録していない(版の読み分けは parser が持つ。[manual 7 章 §7.3](manual/07_input_ui.md))。
+
 ### 1.2 RPC method 名
 
 **v0 時点の一覧(記録)。不変は約束しない**([設計 §1.4](design_v0_production_gaps.md)、利用者の意図 2026-09-24)。

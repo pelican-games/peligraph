@@ -4,37 +4,39 @@
 
 ## 5.1 `GameContext`は公開ファサード
 
-ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L236) が主要サービスを薄く包みます。面は根と7つのドメインファサードに分かれ、物理 / 音 / アニメーション / セーブ / 描画 / シーンオブジェクトの名前解決 / UI は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L285) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L286) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L287) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L288) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L289) / [`objects()`](../../src/core/userpublic/gamecontext.hpp#L290)（GP-1）/ [`ui()`](../../src/core/userpublic/gamecontext.hpp#L291)（GP-3）が返す値越しに呼びます。ファサードは空のクラス（[`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L48) / [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L83) / [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L113) / [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L122) / [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L137) / [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L195)）で、状態もポインタも持たないので、返り値を持ち回っても何も持っていないのと同じです。例外は [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L223) で、`ui(document_key)` の key を `std::string_view` のまま 1 本だけ持ちます（`ui()` なら空の view）。key の文字列はファサードを使い終わるまで生かしておく必要があります。委譲先は分割前と同じです。
+ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L266) が主要サービスを薄く包みます。面は根と8つのドメインファサードに分かれ、物理 / 音 / アニメーション / セーブ / 描画 / ポインタとカーソル / シーンオブジェクトの名前解決 / UI は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L315) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L316) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L317) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L318) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L319) / [`input()`](../../src/core/userpublic/gamecontext.hpp#L320)（GP-4）/ [`objects()`](../../src/core/userpublic/gamecontext.hpp#L321)（GP-1）/ [`ui()`](../../src/core/userpublic/gamecontext.hpp#L322)（GP-3）が返す値越しに呼びます。ファサードは空のクラス（[`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L49) / [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L84) / [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L114) / [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L123) / [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L138) / [`InputContext`](../../src/core/userpublic/gamecontext.hpp#L226) / [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L209)）で、状態もポインタも持たないので、返り値を持ち回っても何も持っていないのと同じです。例外は [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L253) で、`ui(document_key)` の key を `std::string_view` のまま 1 本だけ持ちます（`ui()` なら空の view）。key の文字列はファサードを使い終わるまで生かしておく必要があります。委譲先は分割前と同じです。
 
 | API群 | 委譲先 | 実装へジャンプ |
 |---|---|---|
-| Action入力（`actionPose()`含む） | `Actions` / `InputActionsRuntime` | [`gamecontext.cpp` 内](../../src/core/userpublic/gamecontext.cpp#L37) |
-| 時刻（`frameIndex()`含む） | `EngineTime` | [`GameContext::time()`](../../src/core/userpublic/gamecontext.cpp#L65) |
-| ログ | quill logger | [`GameContext::logInfo()`](../../src/core/userpublic/gamecontext.cpp#L77) |
-| object/transform | `GameObjects` | [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L89) |
-| sprite（`createSpriteObject`/`spriteView`/`setSpriteView`/`setSpriteTexture`） | `GameObjects` / sprite runtime | [`GameContext::createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L102) |
-| light（`render().setDirectionalLightDirection` ほか4本） | `LightContainer` | [`RenderContext::setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.cpp#L251) |
-| physics query（`physics().raycastAll`/`raycastClosest`/`overlapAll`/`shapeCastAll`/`shapeCastClosest` + [`phys::QueryFilter`](../../src/core/phys/physquery.hpp#L78)） | physics service | [`PhysicsContext::raycastAll()`](../../src/core/userpublic/gamecontext.cpp#L364) |
-| camera（`render().setCamera`） | `Camera` | [`RenderContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L433) |
-| 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L437) |
-| audio（`audio().playSound` ほか） | `Audio`またはfeature disabled error | [`AudioContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L457) |
-| UI の書き込み（`ui().setText` / `setVisible` / `setValue`、GP-3） | `RenderingPassContainer::isFeatureEnabled("ui")` → `ui::UiModule::queueWrite`（`ui.*` sink との衝突は公開中の世代の `uiSinkBindings()` を見る） | [`UiContext::setText()`](../../src/core/userpublic/gamecontext.cpp#L217) / [`writeUi()`](../../src/core/userpublic/gamecontext.cpp#L194) |
-| scene object の名前解決（`objects().resolve` / `materialize` / `worldTransform`、GP-1） | `SceneLoader::resolveObject` / `materializeObject`、world は ECS の `TransformComponent` | [`ObjectsContext::resolve()`](../../src/core/userpublic/gamecontext.cpp#L229) |
-| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L634) |
-| debug text（`render().debugText`） | `DebugText` | [`RenderContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L646) |
-| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L273) |
-| animation graph（`animation().setParameter` / `forceState`） | `AnimationSystem` | [`AnimationContext::setParameter()`](../../src/core/userpublic/gamecontext.cpp#L475) |
-| settings（根）/ save（`save()`） | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L650) / [`SaveContext::saveData()`](../../src/core/userpublic/gamecontext.cpp#L677) |
+| Action入力（`actionPose()`含む） | `Actions` / `InputActionsRuntime` | [`gamecontext.cpp` 内](../../src/core/userpublic/gamecontext.cpp#L40) |
+| 時刻（`frameIndex()`含む） | `EngineTime` | [`GameContext::time()`](../../src/core/userpublic/gamecontext.cpp#L68) |
+| ログ | quill logger | [`GameContext::logInfo()`](../../src/core/userpublic/gamecontext.cpp#L80) |
+| object/transform | `GameObjects` | [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L92) |
+| sprite（`createSpriteObject`/`spriteView`/`setSpriteView`/`setSpriteTexture`） | `GameObjects` / sprite runtime | [`GameContext::createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L105) |
+| light（`render().setDirectionalLightDirection` ほか4本） | `LightContainer` | [`RenderContext::setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.cpp#L254) |
+| physics query（`physics().raycastAll`/`raycastClosest`/`overlapAll`/`shapeCastAll`/`shapeCastClosest` + [`phys::QueryFilter`](../../src/core/phys/physquery.hpp#L78)） | physics service | [`PhysicsContext::raycastAll()`](../../src/core/userpublic/gamecontext.cpp#L367) |
+| camera（`render().setCamera`） | `Camera` | [`RenderContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L436) |
+| 画面の点から ray（`render().screenRay`、GP-4） | `EngineLaunchConfig::xr_active` の検査 → [`Camera::rayThroughPixel()`](../../src/core/renderer/camera.cpp#L391)。戻り値は `Resolved<phys::Ray, RenderError>` | [`RenderContext::screenRay()`](../../src/core/userpublic/gamecontext.cpp#L440) |
+| pointer / cursor（`input().pointer` / `setCursorMode`、GP-4） | `InputState::pointer()`（フレーム先頭の `beginFrame()` で換算済みの値）/ `InputState::requestCursorMode()`（窓への適用は次のフレームの [`Window::applyCursorMode()`](../../src/core/os/window.cpp#L316)） | [`InputContext::pointer()`](../../src/core/userpublic/gamecontext.cpp#L454) / [`InputContext::setCursorMode()`](../../src/core/userpublic/gamecontext.cpp#L458) |
+| 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L462) |
+| audio（`audio().playSound` ほか） | `Audio`またはfeature disabled error | [`AudioContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L482) |
+| UI の書き込み（`ui().setText` / `setVisible` / `setValue`、GP-3） | `RenderingPassContainer::isFeatureEnabled("ui")` → `ui::UiModule::queueWrite`（`ui.*` sink との衝突は公開中の世代の `uiSinkBindings()` を見る） | [`UiContext::setText()`](../../src/core/userpublic/gamecontext.cpp#L220) / [`writeUi()`](../../src/core/userpublic/gamecontext.cpp#L197) |
+| scene object の名前解決（`objects().resolve` / `materialize` / `worldTransform`、GP-1） | `SceneLoader::resolveObject` / `materializeObject`、world は ECS の `TransformComponent` | [`ObjectsContext::resolve()`](../../src/core/userpublic/gamecontext.cpp#L232) |
+| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L659) |
+| debug text（`render().debugText`） | `DebugText` | [`RenderContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L671) |
+| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L303) |
+| animation graph（`animation().setParameter` / `forceState`） | `AnimationSystem` | [`AnimationContext::setParameter()`](../../src/core/userpublic/gamecontext.cpp#L500) |
+| settings（根）/ save（`save()`） | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L675) / [`SaveContext::saveData()`](../../src/core/userpublic/gamecontext.cpp#L702) |
 
 class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport修飾されています。game DLL境界を越えて使われるためです。
 
-`GameContext`自体は状態を持ちません。実体は [`updateFrameState()` のローカル変数1個](../../src/core/appflow/framephase.cpp#L143) で、フレームごとに作られてフレームを抜けると消えます（= 自動記憶域。ヒープにも moduleにも置かれていません）。5フェーズの各所へは参照として渡るだけなので、Systemが`GameContext*`を保存しても次フレームには無効になります。
+`GameContext`自体は状態を持ちません。実体は [`updateFrameState()` のローカル変数1個](../../src/core/appflow/framephase.cpp#L160) で、フレームごとに作られてフレームを抜けると消えます（= 自動記憶域。ヒープにも moduleにも置かれていません）。5フェーズの各所へは参照として渡るだけなので、Systemが`GameContext*`を保存しても次フレームには無効になります。
 
 上の表は**通常フレームでの**委譲先です。**scene load transaction** は、scene の読み込みを prepare から finish までの1つの取引として扱う [第3章 §3.5 の 3](03_project_and_loading.md) の executor のことで、「開いている間」はその段の列を実行中という意味です（[用語集](../manual/14_glossary.md)）。開いている間（behaviorの `onInit` / `onDestroy` や、component JSON loaderから呼ばれた場合）は、同じAPIの行き先がcandidateやoutboxへ差し替わり、一部は拒否されます。分類とその根拠は §5.15 にまとめてあります。
 
 ### ライト操作API ✅実装済み（WP142 / LIGHT0）
 
-[`gamecontext.hpp` 内](../../src/core/userpublic/gamecontext.hpp#L139) の4本（`RenderContext` のメンバーなので `ctx.render().setDirectionalLightDirection(...)` の形で呼びます）は、scene定義済みライトを**名前で引いて**更新します。いずれも `[[nodiscard]] bool` を返し、その名前のライトが無ければ`false`です。委譲先は [`LightContainer`](../../src/core/light/lightcontainer.hpp) の同名setterです。
+[`gamecontext.hpp` 内](../../src/core/userpublic/gamecontext.hpp#L140) の4本（`RenderContext` のメンバーなので `ctx.render().setDirectionalLightDirection(...)` の形で呼びます）は、scene定義済みライトを**名前で引いて**更新します。いずれも `[[nodiscard]] bool` を返し、その名前のライトが無ければ`false`です。委譲先は [`LightContainer`](../../src/core/light/lightcontainer.hpp) の同名setterです。
 
 ```cpp
 [[nodiscard]] bool setDirectionalLightDirection(std::string_view name, vec3 direction) const;
@@ -172,19 +174,19 @@ flowchart LR
 
 [`Window`](../../src/core/os/window.hpp#L17) がGLFW callbackを`InputEvent`へ変換します。RPCの`inject_input`も同じ`InputState.queueEvents()`へ合流するため、下流は入力源を区別しません。
 
-XRセッション中は **XR action backend** もこの層に入ります。`syncActions()`の結果を`internal::setInputActionBackendFrame()`と`queuePoseSamples()`でInputStateへ流し込みます（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L570)）。また [`InputSequenceRuntime`](../../src/core/os/inputsequence.hpp#L45) によるrecord/replayが、この層のevent queue境界に挿入されます。record/replayは `--record-input` / `--replay`（[第2章 §2.1](02_runtime_lifecycle.md)）で、記録・再生されるのは**この層の順序付き `InputEvent` 列とフレーム境界のmarker**です — 上位のL3 snapshotやL4のAction結果ではありません（再生時はそれらを記録から復元するのではなく、注入した event 列から**同じ手順で作り直します**）。番号合わせの詳細は次の難所にあります。
+XRセッション中は **XR action backend** もこの層に入ります。`syncActions()`の結果を`internal::setInputActionBackendFrame()`と`queuePoseSamples()`でInputStateへ流し込みます（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L570)）。また [`InputSequenceRuntime`](../../src/core/os/inputsequence.hpp#L61) によるrecord/replayが、この層のevent queue境界に挿入されます。record/replayは `--record-input` / `--replay`（[第2章 §2.1](02_runtime_lifecycle.md)）で、記録・再生されるのは**この層の順序付き `InputEvent` 列とフレーム境界のmarker**（GP-4 の v2 からは、窓座標 → framebuffer ピクセルの換算も。下の「pointer の換算とカーソル」）です — 上位のL3 snapshotやL4のAction結果ではありません（再生時はそれらを記録から復元するのではなく、注入した event 列から**同じ手順で作り直します**）。番号合わせの詳細は次の難所にあります。
 
 ### L2: 順序付きInputEvent
 
-[`InputStateCore::queueEvent()`](../../src/core/os/inputstate.cpp#L335) がプロセス内単調増加`event_seq`を付けます。記録済みsequenceを注入する場合は単調性を検証し、勝手に番号を付け替えません。
+[`InputStateCore::queueEvent()`](../../src/core/os/inputstate.cpp#L379) がプロセス内単調増加`event_seq`を付けます。記録済みsequenceを注入する場合は単調性を検証し、勝手に番号を付け替えません。
 
 eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../src/core/os/inputstate.hpp#L86)）。
 
-> 🧩 **難所 — リプレイ番号の平行移動**([`InputSequenceRuntime::prepareFrame()`](../../src/core/os/inputsequence.cpp#L425))
+> 🧩 **難所 — リプレイ番号の平行移動**([`InputSequenceRuntime::prepareFrame()`](../../src/core/os/inputsequence.cpp#L487))
 >
 > **何をする所か**: 記録ファイルの 1 フレーム分の `InputEvent` 列を、実行中の `InputState` の event queue へ注入します。上の「勝手に番号を付け替えません」の裏側で、**番号を合わせているのはこちら側**です。
 >
-> **素朴に読むと**: [`queueEvent()`](../../src/core/os/inputstate.cpp#L335) は注入された `event_seq` が `next_event_seq` 未満なら `recorded input event sequence is not monotonic` を投げます。記録ファイルの生の番号は 0 始まりなので、再生を始める頃には既に window event で `next_event_seq` が進んでおり、そのまま流すと開始と同時に例外です。そこで再生側が「現在の `nextEventSequence()` − 記録の先頭 event の番号」を**最初の非空フレームで一度だけ**求め、以後は全 event に同じ値を足して**平行移動**します。毎フレーム引き直したくなりますが、そうすると記録中の `event_seq` の**間隔**(同フレーム内の前後だけでなく、フレームを跨いだ差)が潰れ、記録の相対順序が保存されません。オーバーフロー検査を `event_seq + offset` で書けないのも読み解きが要ります — 足した瞬間に `std::uint64_t` が巻いて検査自体が無意味になるので、`unassigned_sequence - 1 - offset` を右辺に置く「足す前に足せるか調べる」定石になっています。`unassigned_sequence`(= `uint64` の最大値)は「番号未割り当て」を表す番兵値(sentinel — 取り得ない値を 1 つ予約して「値なし」を表す手法)で、`queueEvent()` 側にも `event_seq == unassigned_sequence - 1` なら `next_event_seq` を番兵へ固定して以後の自動採番を止める枝があり、この上限検査と対になっています。
+> **素朴に読むと**: [`queueEvent()`](../../src/core/os/inputstate.cpp#L379) は注入された `event_seq` が `next_event_seq` 未満なら `recorded input event sequence is not monotonic` を投げます。記録ファイルの生の番号は 0 始まりなので、再生を始める頃には既に window event で `next_event_seq` が進んでおり、そのまま流すと開始と同時に例外です。そこで再生側が「現在の `nextEventSequence()` − 記録の先頭 event の番号」を**最初の非空フレームで一度だけ**求め、以後は全 event に同じ値を足して**平行移動**します。毎フレーム引き直したくなりますが、そうすると記録中の `event_seq` の**間隔**(同フレーム内の前後だけでなく、フレームを跨いだ差)が潰れ、記録の相対順序が保存されません。オーバーフロー検査を `event_seq + offset` で書けないのも読み解きが要ります — 足した瞬間に `std::uint64_t` が巻いて検査自体が無意味になるので、`unassigned_sequence - 1 - offset` を右辺に置く「足す前に足せるか調べる」定石になっています。`unassigned_sequence`(= `uint64` の最大値)は「番号未割り当て」を表す番兵値(sentinel — 取り得ない値を 1 つ予約して「値なし」を表す手法)で、`queueEvent()` 側にも `event_seq == unassigned_sequence - 1` なら `next_event_seq` を番兵へ固定して以後の自動採番を止める枝があり、この上限検査と対になっています。
 >
 > **骨子**:
 > ```text
@@ -200,13 +202,13 @@ eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../
 
 ### L3: InputSnapshot
 
-[`beginFrame()`](../../src/core/os/inputstate.cpp#L373) がpending列を一回処理し、down/pushed/released、mouse position、mouse deltaを生成します。
+[`beginFrame()`](../../src/core/os/inputstate.cpp#L417) がpending列を一回処理し、down/pushed/released、mouse position、mouse deltaを生成します。
 
 - 同一フレーム内のdown→upもevent順からedgeを導出。
 - mouse cursor差分とinjectされたaxis deltaを加算。
 - snapshotはtrivially copyable/standard layout（前者は「memcpyで丸ごと複製・保存してよい型」、後者は「メンバの並びがC構造体と同じで先頭アドレスから素直に読める型」を指すC++の型カテゴリ名です）で、記録・再生しやすい値型。
 
-[`FrameInput`](../../src/core/os/inputstate.hpp#L173) はsnapshotに加え、そのフレームのordered event `span`を貸し出します。spanのownerは`InputStateCore`です。次の`beginFrame()`まで保持するとdebug assertになります（[`FrameInputBorrowState`](../../src/core/os/inputstate.hpp#L162)、コメントは [`inputstate.hpp` 内](../../src/core/os/inputstate.hpp#L172)）。
+[`FrameInput`](../../src/core/os/inputstate.hpp#L217) はsnapshotに加え、そのフレームのordered event `span`を貸し出します。spanのownerは`InputStateCore`です。次の`beginFrame()`まで保持するとdebug assertになります（[`FrameInputBorrowState`](../../src/core/os/inputstate.hpp#L206)、コメントは [`inputstate.hpp` 内](../../src/core/os/inputstate.hpp#L216)）。
 
 ### L4: Action map
 
@@ -214,7 +216,7 @@ eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../
 
 起動時だけ必要な道具の入力は [`applyInputActionOverlays()`](../../src/project/inputactionoverlay.cpp#L194) で project actions の後ろへ合成します。bundle URI は `EngineLaunchConfig::input_action_overlays` にだけあり、`ProjectBasicConfig` には入りません。project profile は project 定義だけ、overlay profile はその overlay 定義だけを相手に検証してから binding を併合するため、片方の profile がもう片方の action を偶然取り込むこともありません。action / action set の同名は衝突名を含む例外です。入力 runtime の project-only 読み込みは [`loadInputActionsRuntimeSourceFromProject()`](../../src/core/userpublic/userinput.cpp#L28)、明示的な startup-overlay 経路は [`loadInputActionsRuntimeSourceWithStartupActionOverlays()`](../../src/core/userpublic/userinput.cpp#L42) に分かれています。
 
-action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L150) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L315)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1094) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
+action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L182) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L315)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1094) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
 
 Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`pose`型は実装済みで（WP130/132）、[`InputActionFrame::pose()`](../../src/core/os/actionmap.cpp#L873) は`poses` mapから返し、未サンプルならdefaultの`ActionPose`を返します。XR pose providerがない環境（flat）ではpose sampleが来ないため常にdefaultです。
 
@@ -244,6 +246,15 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 
 `InputConsumptionMask`はAction用snapshotのkey/mouseだけをzero化します。公開 [`UserInput`](../../src/core/userpublic/userinput.cpp#L350) が読む元snapshotは変更しません。UIなどがActionだけを抑止しつつ、diagnosticがraw inputを見られる構造です。
 
+### pointer の換算とカーソル（GP-4）
+
+`InputEvent` と `InputSnapshot` は**窓座標のまま**です。framebuffer ピクセルへ換算するのは、公開の pointer（`ctx.input().pointer()`）と UI の入力ルータの2か所だけで、ImGui は窓座標を読みます。
+
+- 換算は値型 [`PointerTransform`](../../src/core/os/inputstate.hpp#L159)（軸ごとの `scale_x` / `scale_y` と framebuffer の幅・高さ。0×0 は「不明」）です。生きている窓では [`Window::pointerTransform()`](../../src/core/os/window.cpp#L310) が [`pointerTransformFor()`](../../src/core/os/inputstate.cpp#L56)（framebuffer ÷ 窓の大きさ。どちらかが 0 の軸は 1）で作り、窓の無い headless では [`livePointerTransform()`](../../src/core/appflow/framephase.cpp#L65) が倍率 1・framebuffer = `RenderTarget` の extent にします。
+- `freeze_input` 相で [`InputSequenceRuntime::prepareFrame()`](../../src/core/os/inputsequence.cpp#L487) が次のフレームの換算を `InputState::setPointerTransform()` に渡し、`beginFrame()` がそれをフレームの換算として固定して、[`pointerStateFor()`](../../src/core/os/inputstate.cpp#L74) で `PointerState` を作ります。換算は `FrameInput::pointer_transform` として貸し出され、UI ルータ（[`routeFrameInput()` の換算](../../src/core/ui/inputrouter.cpp#L122)）と収録が同じ値を読みます。
+- 再生中の `prepareFrame()` は、その機械の換算ではなく**記録の換算**を渡します（v1 の記録で framebuffer が不明なときだけ、幅・高さをその機械のものにします）。収録は各フレームの換算を `InputSequenceFrame::pointer_transform` に残し、[`toJsonLines()`](../../src/core/os/inputsequence.cpp#L373) がヘッダと「前のフレームと違うフレームのマーカー」に `content_scale` / `framebuffer` を書きます。v2 のヘッダは2つとも必須、v1 のマーカーにあれば拒否です（[`parsePointerTransform()`](../../src/core/os/inputsequence.cpp#L115)）。`clear()` は換算を消しません（窓の性質であって入力ではないため）。
+- カーソルは `InputState` が `CursorModeStatus{requested, effective, embedded}` を持ちます。`setCursorMode` は `requested` を書くだけで、通常のフレームループが `window.process()` の直後に [`Window::applyCursorMode()`](../../src/core/os/window.cpp#L316) を呼び、[`effectiveCursorMode()`](../../src/core/os/inputstate.cpp#L85)（埋め込みなら `locked` → `normal`）を GLFW の input mode へ、変わったときだけ適用します（[呼び出し](../../src/core/appflow/loop.cpp#L739)）。埋め込みの判定は `--rpc` かつ窓 style に `WS_CHILD`（Windows だけ）。headless のループはこれを呼ばないので `effective` は既定の `normal` のままです。
+
 ## 5.6 Camera
 
 [`Camera`](../../src/core/renderer/camera.hpp#L20) は次を一つのmoduleで管理します。
@@ -254,15 +265,17 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 - active camera名
 - optional orbit/follow/fly controller定義
 
-加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L112) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L117) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1525)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L737)）です。
+加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L112) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L117) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1525)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L587)）です。
+
+GP-4 の [`rayThroughPixel()`](../../src/core/renderer/camera.cpp#L391) は、framebuffer ピクセルの位置を projection と view の逆行列（double で計算）で world の ray にします。NDC は `2 × px ÷ viewport − 1` で y を反転せず（平面描画のフレームが NDC を framebuffer へ写す向き。コメントは gizmo の `projectPoint` を参照）、深度 0（near 面）と 1（far 面）の2点を戻して、起点を near 面上の点、方向をその差の正規化にします。公開面は `RenderContext::screenRay()` で、XR 中の拒否と有限性の検査はそちらが持ちます。
 
 ### scene cameraロード
 
 [`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L361) はscene JSONを再正規化し、`camera` componentを持つobjectを抽出します。最初のcameraを初期表示へ使い、名前付きcameraはmapへ保存します。
 
-`RenderContext::setCamera(name)`(`ctx.render().setCamera`)は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L432) を呼び、以後そのcameraのpose/projectionをactiveにします。
+`RenderContext::setCamera(name)`(`ctx.render().setCamera`)は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L452) を呼び、以後そのcameraのpose/projectionをactiveにします。
 
-このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L80)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L375) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L298)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L423) を通るため、このフラグの影響を受けません。
+このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L80)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L375) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L298)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L443) を通るため、このフラグの影響を受けません。
 
 ### controller
 
@@ -294,7 +307,7 @@ controllerは名前bindingからtarget transformを毎回resolveし、scene遷�
 > quat_cast(mat3{right, up, dir})
 > ```
 >
-> **手がかり**: `projectWorldUp()` は `ProjectBasicConfig` が既に読み取った `basic_config.camera.up` を正規化します。`worldUpFor()` はその up と dir がほぼ平行(内積の絶対値が 0.98 超)なら、宣言 up と最も平行でない canonical 軸へ退避します。+Y 規約では従来どおり +Z を選びますが、up 自体が +Z の project では +X を選ぶため、退避先まで平行になることはありません。同じ処理を [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L113) 経由で orbit / follow が共有し、fly も直接使います。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L423) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
+> **手がかり**: `projectWorldUp()` は `ProjectBasicConfig` が既に読み取った `basic_config.camera.up` を正規化します。`worldUpFor()` はその up と dir がほぼ平行(内積の絶対値が 0.98 超)なら、宣言 up と最も平行でない canonical 軸へ退避します。+Y 規約では従来どおり +Z を選びますが、up 自体が +Z の project では +X を選ぶため、退避先まで平行になることはありません。同じ処理を [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L113) 経由で orbit / follow が共有し、fly も直接使います。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L443) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
 >
 > **不変条件**: 外積の順は `right = cross(up, dir)` / `up = cross(dir, right)`(+Z 前方の巡回順)を保つ。`quat_cast` へ渡す前に必ず直交化する。project up を固定軸へ読み替えず、極点の fallback も宣言 up に対して非平行な軸を選ぶ。
 
@@ -750,7 +763,7 @@ class PELICAN_API Behavior {
 > behavior boundary. A deferred create has no live EntityId yet and
 > therefore returns invalidGameObjectId.
 
-WP380e 以降、遅延は `BehaviorContext` の override だけの性質ではありません。基底の [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L89) / [`createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L102) 自身が [`internal::behaviorCallbackActive()`](../../src/core/gamelogic/behaviorarena.cpp#L1485) を見て、behavior callback の中なら arena へ defer し `invalidGameObjectId` を返します。つまり behavior から `GameContext` として呼んでも即時生成には落ちません（`removeObject` は両者とも [`GameObjects::remove()`](../../src/core/userpublic/gameobjects.cpp#L32) 経由で、遅延するかは同関数の [`routeBehaviorObjectRemoval()`](../../src/core/userpublic/gameobjects.cpp#L41) が決めます）。
+WP380e 以降、遅延は `BehaviorContext` の override だけの性質ではありません。基底の [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L92) / [`createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L105) 自身が [`internal::behaviorCallbackActive()`](../../src/core/gamelogic/behaviorarena.cpp#L1485) を見て、behavior callback の中なら arena へ defer し `invalidGameObjectId` を返します。つまり behavior から `GameContext` として呼んでも即時生成には落ちません（`removeObject` は両者とも [`GameObjects::remove()`](../../src/core/userpublic/gameobjects.cpp#L32) 経由で、遅延するかは同関数の [`routeBehaviorObjectRemoval()`](../../src/core/userpublic/gameobjects.cpp#L41) が決めます）。
 
 ### 登録マクロ
 
@@ -991,25 +1004,26 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 | `reject.direct-gameobjects` | `GameObjects::add` / `createWithComponents` / `remove` / `removeAll` / `setLocalTransform` | `SceneTransactionMutationRejected` を**throw** |
 | `nonparticipant.frame-lifetime` | `debugText` | 曲がらない（フレーム寿命。§3.5 の 7 の `frame_lifetime`） |
 | `nonparticipant.ui-document` | `ui().setText` / `setVisible` / `setValue`（GP-3） | 曲がらない。UI 文書は scene の参加者ではなく、書き込みは `UiModule` の command buffer に積まれて次のフレーム境界で入る。load が失敗しても残る（[manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L222)） |
+| `nonparticipant.window-cursor` | `input().setCursorMode`（GP-4） | 曲がらない。カーソルのモードは scene ではなく窓のもので、load 中に頼んでも load の成否に関係なく次のフレームで適用される（[manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L228)） |
 
 縫い目が1つではない点に注意してください。`shadow_outbox.*` と、退役済みobjectを見る `covered.candidate-or-retired-reject` だけが `activeEffectTransaction()` を読みます。RNG・pending scene・eventは**それぞれ自前のscope**（`RngSequenceScope` / `PendingSceneTransactionScope` / `EventOutboxScope`）を持ち、light / camera は分岐すら持ちません。executorがこれら全部を同じ寿命で開く（§3.5 の 3）ので、外から見た挙動が揃います。
 
 `reject` だけがthrowです。[`GameObjects::create()`](../../src/core/userpublic/gameobjects.cpp#L14) は「transactionが開いている、かつ behavior callback中ではない」ときに [`SceneTransactionMutationRejected`](../../src/core/userpublic/gameobjects.hpp#L20) を投げます。behavior callback中なら別のエラー（`logic_error`。`BehaviorContext` を使え）になるので、2つの理由が混ざりません。`removeAll()` だけは behavior callback かどうかに関係なく、transactionが開いていれば拒否します（[その分岐](../../src/core/userpublic/gameobjects.cpp#L48)）。
 
-**deferの入口は `BehaviorContext` だけではありません。** `GameContext::createObject()` / `createSpriteObject()` は基底クラスのままでも、behavior callback中なら [`deferCreateObject()`](../../src/core/userpublic/gamecontext.cpp#L91) / [`deferCreateSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L106) へ回ります。`behavior.hpp` のコメントが規範です — 「`BehaviorContext` からでも、その `GameContext` 基底からでも、behavior callback中の構造変更は次のbehavior境界で適用される。deferされたcreateにはまだ live な `EntityId` が無いので `invalidGameObjectId` を返す」（[そのコメント](../../src/core/userpublic/behavior.hpp#L50)）。基底の側だけ素通りだと、`ctx` を `GameContext&` で受け取るヘルパ関数経由で即時createができてしまいます。
+**deferの入口は `BehaviorContext` だけではありません。** `GameContext::createObject()` / `createSpriteObject()` は基底クラスのままでも、behavior callback中なら [`deferCreateObject()`](../../src/core/userpublic/gamecontext.cpp#L94) / [`deferCreateSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L109) へ回ります。`behavior.hpp` のコメントが規範です — 「`BehaviorContext` からでも、その `GameContext` 基底からでも、behavior callback中の構造変更は次のbehavior境界で適用される。deferされたcreateにはまだ live な `EntityId` が無いので `invalidGameObjectId` を返す」（[そのコメント](../../src/core/userpublic/behavior.hpp#L50)）。基底の側だけ素通りだと、`ctx` を `GameContext&` で受け取るヘルパ関数経由で即時createができてしまいます。
 
 ### 退役済みobjectのsnapshot view
 
 `retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1628)）、2つの向きに使います。
 
-- **読み**: [`retiredComponent(id, component_id)`](../../src/core/loader/effecttransaction.cpp#L464) が destroy token の中のcomponentを返し、`GameContext::localTransform()` / `spriteView()` がそれを**先に**引きます（[`GameContext::localTransform()`](../../src/core/userpublic/gamecontext.cpp#L123)）。だから `onDestroy` から自分の最後のtransformを読めます。
+- **読み**: [`retiredComponent(id, component_id)`](../../src/core/loader/effecttransaction.cpp#L464) が destroy token の中のcomponentを返し、`GameContext::localTransform()` / `spriteView()` がそれを**先に**引きます（[`GameContext::localTransform()`](../../src/core/userpublic/gamecontext.cpp#L126)）。だから `onDestroy` から自分の最後のtransformを読めます。
 - **書き**: [`rejectRetiredMutation(api, id)`](../../src/core/loader/effecttransaction.cpp#L475) が同じ列を引き、当たれば `SceneRetiredObjectMutationRejected` を診断へ1件積んで `true` を返します。呼び手のsetterは `false` を返すだけで**throwしません**（`onDestroy` は `noexcept` です）。
 
 `onDestroy` の間だけ phase を切り替えるのが [`EffectDestroyScope`](../../src/core/loader/effecttransaction.cpp#L770) で、使うのは [`BehaviorAttachmentArena::destroyInstance()` の中の1行](../../src/core/gamelogic/behaviorarena.cpp#L890) の1箇所です。phase が `destroy` の間は、各sinkのcatch節が**例外を診断へ変換して飲みます**（それ以外の phase では `throw` し直します。例えば `playSound()` の catch は、先頭の1行 `if (phase_ != CallbackPhase::destroy) throw;` で再送出し、destroy のときだけ [診断を積む `record(sequence, ErrorApi::play_sound, ...)`](../../src/core/loader/effecttransaction.cpp#L163) へ進みます）。`onDestroy` が `noexcept` である以上、そこから投げれば `std::terminate` なので、「捨てる」ではなく「記録して返る」に倒してあります。
 
 `PELICAN_WITH_AUDIO=OFF` のビルドでは、音の5つの sink（`playSound` / `stopSound` / `setBusVolume` / `busVolume` / `isPlaying`）の本体が [`throwBuildFeatureCallDisabled()`](../../src/core/build_features.hpp#L58) の1行になり、transaction の外の `AudioContext` と同じ [`BuildFeatureCallDisabledError`](../../src/core/build_features.hpp#L45) を投げます（PG-2）。この型は ABI を固定した `BuildFeatureDisabledError` の派生で、`code()` が `build_feature_disabled@1`、`feature()` が `"PELICAN_WITH_AUDIO"` です。散文の message（`This binary was built with PELICAN_WITH_AUDIO=OFF: playSound is unavailable`）は PG-2 の前と同じです。activate 相ではこの例外がそのまま呼び手へ出て、destroy 相では同じ catch が `ErrorCode::build_feature_disabled` として記録します。記録を文字列へ起こす [`effectErrors()` の該当行](../../src/core/loader/effecttransaction.cpp#L645) は `BuildFeatureCallDisabledError::error_code` を返すので、例外の `code()` と `effect_errors` の `error_code` は同じ定数から出ます。同じ理由で `loadScene()` も phase で分かれ、`destroy` 中は [`requestLoadDuringRetire()`](../../src/core/loader/effecttransaction.cpp#L450) 経由になり、拒否されれば `scene_retire_load_rejected@1` が記録されます。
 
-**facade 側の同じ扱い(PG-2b)。** 上の catch は transaction の sink の中にあるので、transaction を通らない facade(`soundState` と `setSoundVolume` / `setSoundPitch` / `setSoundPaused` の build 側、physics の 5 query)は PG-2b まで destroy 相の分岐を持たず、機能を外した build や provider 0 本の build で `onDestroy` から呼ぶと `std::terminate` でした。今は `AudioContext` の 9 本と `PhysicsContext` の 5 本がすべて [`answerEmptyInDestroy()`](../../src/core/userpublic/gamecontext.cpp#L330) で包まれ、`BuildFeatureCallDisabledError` か `phys::ProviderUnavailableError` を捕まえると [`absorbDestroyRefusal()`](../../src/core/loader/effecttransaction.cpp#L793) に渡します。scene transaction があればその phase が `destroy` のときだけ `build_feature_disabled@1` / `physics.provider_unavailable@1` を effect error として積み、transaction が無ければ `EffectDestroyScope` が立てる thread-local の深さ([`destroy_scope_depth`](../../src/core/loader/effecttransaction.cpp#L23))で「破棄 callback の中」かを見て engine log に出します。どちらでも facade は既定値(無効 handle / `false` / `0` / `nullopt` / 空の配列)を返します。activate 相と通常の呼び出しでは `absorbDestroyRefusal()` が `false` を返し、facade はそのまま投げ直します。残した穴: `setRayTracingDispatchExtent` / `setRayTracingCallableRecord` は transaction 中の呼び出しを [`SceneTransactionMutationRejected`](../../src/core/userpublic/gamecontext.cpp#L260) で投げ、`answerEmptyInDestroy()` で包まれていないので、scene load 中の `onDestroy`(`noexcept`)から呼ぶと terminate しえます(コードからの推論。実行では未確認)。
+**facade 側の同じ扱い(PG-2b)。** 上の catch は transaction の sink の中にあるので、transaction を通らない facade(`soundState` と `setSoundVolume` / `setSoundPitch` / `setSoundPaused` の build 側、physics の 5 query)は PG-2b まで destroy 相の分岐を持たず、機能を外した build や provider 0 本の build で `onDestroy` から呼ぶと `std::terminate` でした。今は `AudioContext` の 9 本と `PhysicsContext` の 5 本がすべて [`answerEmptyInDestroy()`](../../src/core/userpublic/gamecontext.cpp#L333) で包まれ、`BuildFeatureCallDisabledError` か `phys::ProviderUnavailableError` を捕まえると [`absorbDestroyRefusal()`](../../src/core/loader/effecttransaction.cpp#L793) に渡します。scene transaction があればその phase が `destroy` のときだけ `build_feature_disabled@1` / `physics.provider_unavailable@1` を effect error として積み、transaction が無ければ `EffectDestroyScope` が立てる thread-local の深さ([`destroy_scope_depth`](../../src/core/loader/effecttransaction.cpp#L23))で「破棄 callback の中」かを見て engine log に出します。どちらでも facade は既定値(無効 handle / `false` / `0` / `nullopt` / 空の配列)を返します。activate 相と通常の呼び出しでは `absorbDestroyRefusal()` が `false` を返し、facade はそのまま投げ直します。残した穴: `setRayTracingDispatchExtent` / `setRayTracingCallableRecord` は transaction 中の呼び出しを [`SceneTransactionMutationRejected`](../../src/core/userpublic/gamecontext.cpp#L263) で投げ、`answerEmptyInDestroy()` で包まれていないので、scene load 中の `onDestroy`(`noexcept`)から呼ぶと terminate しえます(コードからの推論。実行では未確認)。
 
 ### coalesceの規則
 
@@ -1040,12 +1054,12 @@ outboxのentryは呼び出しごとに1件ではありません。
 
 ### 公開APIの棚卸しは双方向
 
-上の分類表が現実と食い違わないことを機械で確かめるのが [`tools/public_api_inventory.py`](../../tools/public_api_inventory.py#L1) です。`gamecontext.hpp` / `gameobjects.hpp` / `behavior.hpp` の3ヘッダから public な関数宣言を素の走査で拾い（[`public_functions()`](../../tools/public_api_inventory.py#L67)）、名前と戻り値の形から `mutator` / `host_entrance` / `getter` へ分類したうえで、runtime manifest と**両方向**に突き合わせます。
+上の分類表が現実と食い違わないことを機械で確かめるのが [`tools/public_api_inventory.py`](../../tools/public_api_inventory.py#L1) です。`gamecontext.hpp` / `gameobjects.hpp` / `behavior.hpp` の3ヘッダから public な関数宣言を素の走査で拾い（[`public_functions()`](../../tools/public_api_inventory.py#L69)）、名前と戻り値の形から `mutator` / `host_entrance` / `getter` へ分類したうえで、runtime manifest と**両方向**に突き合わせます。
 
-- mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L168)）
-- manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L175)）
+- mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L170)）
+- manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L177)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3389)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3392)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 

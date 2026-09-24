@@ -390,7 +390,7 @@ retire 中の `onDestroy` は「自分の最終状態」を読めます。entity
 
 ### commit したのに作用が失敗したとき
 
-flush で音やディスク書き込みが失敗しても、**シーンは新しいまま**です。この結果は [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として返り、rpc の `load_scene` は例外ではなく `{"name": ..., "committed": true, "effect_errors": [...]}` を返します([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1712))。`effect_errors` の各要素は `{api, error_code, error_fields, phase}` で、`api` は `playSound` / `saveData` などの公開 API 名、`phase` は `activate` / `destroy` / `flush` のどれかです。
+flush で音やディスク書き込みが失敗しても、**シーンは新しいまま**です。この結果は [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として返り、rpc の `load_scene` は例外ではなく `{"name": ..., "committed": true, "effect_errors": [...]}` を返します([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1722))。`effect_errors` の各要素は `{api, error_code, error_fields, phase}` で、`api` は `playSound` / `saveData` などの公開 API 名、`phase` は `activate` / `destroy` / `flush` のどれかです。
 
 - 「シーンは切り替わらなかった」= commit 前の失敗は従来どおり**例外**です。両者を混同しないでください。
 - staging できる作用は 256 件までです。257 件目からは**控えに積まれず、実行もされません**(`playSound` は無効なハンドルを返します)。捨てた件数だけが `effect_outbox_full@1{dropped: N}` という 1 件のエラーにまとめて記録されます([reserveEntry](../../src/core/loader/effecttransaction.cpp#L119))。
@@ -425,7 +425,7 @@ ECS の実装(WP62・R5-core ✅)は archetype/chunk 方式ですが、ゲーム
 
 ### 名前でシーンオブジェクトを引く — `ctx.objects()`(✅GP-1)
 
-ゲームコードからシーンのオブジェクトを名前で探すときは、[`GameContext::objects()`](../../src/core/userpublic/gamecontext.hpp#L290) を使います。手順は 3 段です。
+ゲームコードからシーンのオブジェクトを名前で探すときは、[`GameContext::objects()`](../../src/core/userpublic/gamecontext.hpp#L321) を使います。手順は 3 段です。
 
 1. `resolve(name)` — 名前を 1 回だけ引き、**`ObjectRef`** を返します。ref は名前を持たず、「どのシーンの実行(run)で解決したか」と「シーン内の宣言 ID(authoring object id — §4.1)」の組です。
 2. `materialize(ref)` — 今生きている `GameObjectId` を返します。

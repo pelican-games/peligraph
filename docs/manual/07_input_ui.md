@@ -6,7 +6,8 @@
 
 - 入力システムの四層構造と、**順序付き FrameInput**(WP69)
 - `actions.json`(アクション定義)と `pelican.input_profile`(バインディング)の**分離**(WP91・破壊的変更)
-- ゲームパッド対応と、収録・リプレイ(`pelican.input_seq`)
+- ゲームパッド対応と、収録・リプレイ(`pelican.input_seq` v2)
+- ポインタの位置(framebuffer ピクセル)とカーソルのモード(`ctx.input()`、GP-4)
 - 実装済みの UI 基盤 `pelican.ui` v1(ウィジェット・レイアウト・イベント emit)と、ゲームコード(`ctx.ui()`)・共通グラフ(`ui.*` sink)から UI を書く方法(GP-3)
 - テキスト HUD(`debug_text`)の使い方
 
@@ -118,7 +119,7 @@ L1 の要点(✅WP69 で改訂):
 - アクティブな profile に `pad:` binding が 1 つも無ければゲームパッドは**一切ポーリングされません**(パージ可能原則)。切断時は保持ボタンの release + 軸ゼロが発行されます。マッピングは GLFW 内蔵の SDL_GameControllerDB。
 - 修飾 chord は列挙した修飾キーがすべて押されている間だけ成立し、列挙していない修飾キーは無視します。修飾なし binding の従来の意味は変わらないため、同じ set に `mouse:middle` と `mouse:shift+middle` を別 action として置けば Shift+MMB では両方が成立します。pan / orbit 等の意味上の優先順位は利用側で決めます。
 - profile の版は v1 のままです。field や既存 control の意味を変えず、従来は不正だった control 語彙を加えたためです。parser は引き続き version 1 だけを受理します。詳しい判断理由は[入力アーキテクチャ §2](../design_input_actions.md#wheel--修飾-chord-と-profile-の版wp271)を参照してください。
-- `pose` type は ✅WP132 で実動作になりました(XR 起動時のみ供給 — [第8章](08_gameplay.md) の `actionPose`)。**pose を含む actions.json は `--record-input` / リプレイが名指しで拒否されます**(input_seq v1 の仕様)。カーソルロックは 📐未実装です。
+- `pose` type は ✅WP132 で実動作になりました(XR 起動時のみ供給 — [第8章](08_gameplay.md) の `actionPose`)。**pose を含む actions.json は `--record-input` / リプレイが名指しで拒否されます**(input_seq の仕様。v2 でも同じ)。カーソルのロックは ✅GP-4 でゲームコードから頼めるようになりました(下の「ポインタとカーソル」)。
 
 ### アクションセットのスタックと消費
 
@@ -133,6 +134,22 @@ void update(Pelican::GameContext &ctx) {
     if (ctx.actionPressed("jump")) { /* ... */ }
 }
 ```
+
+### ポインタとカーソル(✅GP-4)
+
+ポインタの位置とカーソルのモードは、アクションではなく [`ctx.input()`](../../src/core/userpublic/gamecontext.hpp#L320) が返す [`InputContext`](../../src/core/userpublic/gamecontext.hpp#L226) で扱います。ポインタをアクションにしないのは、axis2 のアクションが [-1, 1] に clamp され、同じアクションの binding どうしで足し合わされる(§7.2)ので、ピクセルの位置を運べないためです。
+
+```cpp
+const auto pointer = ctx.input().pointer();       // PointerState{position_px, inside}
+if (pointer.inside) { /* pointer.position_px は framebuffer ピクセル */ }
+ctx.input().setCursorMode(Pelican::CursorMode::locked);   // normal / hidden / locked
+```
+
+- **`pointer()`** は [`PointerState`](../../src/core/userpublic/userinput.hpp#L143) を返します。位置は framebuffer ピクセル(左上原点、+y が下)で、OS が報告する窓座標を軸ごとに `px = 窓座標 × framebuffer の大きさ ÷ 窓の大きさ` で換算したものです([`pointerTransformFor()`](../../src/core/os/inputstate.cpp#L56))。大きさが 0 の軸は 1 倍、headless は窓が無いので 1 倍で、framebuffer は出力先の大きさです。
+- `inside` は位置が分かっていて(カーソルの event が来ている)、0 ≤ px < framebuffer の大きさのとき true です([`pointerStateFor()`](../../src/core/os/inputstate.cpp#L74))。位置は clamp しません。
+- **`setCursorMode(mode)`** は `normal` / `hidden` / `locked`([`CursorMode`](../../src/core/userpublic/userinput.hpp#L151))。次のフレームで GLFW の窓に反映されます。埋め込みの窓(`--rpc` で起動し、Studio の viewport として `WS_CHILD` にされた窓)では `locked` を `normal` として扱います([`effectiveCursorMode()`](../../src/core/os/inputstate.cpp#L85))。状態は rpc `get_status` の `input.cursor {requested, effective, embedded}` で見えます。
+- 換算するのは**ポインタと UI の入力ルータの 2 か所だけ**です。[`InputSnapshot`](../../src/core/os/inputstate.hpp#L61) と入力 event は窓座標のままで、ImGui も窓座標をそのまま読みます(GP-4 で変えていません)。
+- 画面の点を通る ray(`ctx.render().screenRay`)と使用例、残した穴は [第8章 §8.4「input() と screenRay」](08_gameplay.md) にあります。
 
 ### 旧形式からの移行(2026-07-10 以前のプロジェクト)
 
@@ -155,16 +172,21 @@ void update(Pelican::GameContext &ctx) {
 ]}}
 ```
 
+`mouse_move` の `x` / `y` は**窓座標**です(framebuffer ピクセルではありません)。注入した移動は OS からの移動と同じ event になり、`ctx.input().pointer()` と UI の入力ルータがフレームの換算で framebuffer ピクセルにします([注入の受け口](../../src/core/communication/rpcserver.cpp#L864))。headless は 1 倍なので、窓座標とピクセルは同じ値です。
+
 ### 収録とリプレイ(✅WP89 = I3)
 
-順序付き入力イベント列を **`pelican.input_seq` v1(JSONL)** として収録・再生できます。同一ビルド + プロジェクト + シードで**完全再現**(PNG byte 一致で結合テスト済み)。
+順序付き入力イベント列を **`pelican.input_seq`(JSONL)** として収録・再生できます。収録は v2 で書き、再生は v2 と v1 を読みます(✅GP-4 で v2)。同一ビルド + プロジェクト + シードで**完全再現**(PNG byte 一致で結合テスト済み)。
 
 ```sh
 pelican_player --project mygame --record-input session.jsonl   # 収録
 pelican_player --project mygame --replay session.jsonl         # リプレイ(ホットリロード自動無効)
 ```
 
-- ファイルはヘッダ行 `{schema, version, fps, generator}` + `{"frame":N}` 境界マーカー + イベント行(`button` / `cursor_move` / `axis` / `scroll` / `character` / `pad_button` / `pad_axis`)。
+- ファイルはヘッダ行 `{schema, version, fps, generator, content_scale, framebuffer}` + `{"frame":N}` 境界マーカー + イベント行(`button` / `cursor_move` / `axis` / `scroll` / `character` / `pad_button` / `pad_axis`)。
+- **v2 の換算の記録**: ヘッダの `content_scale: [x, y]` と `framebuffer: [幅, 高さ]` が、最初のフレームで窓座標を framebuffer ピクセルへ換算した値です。途中のフレームで換算が変わったら(窓の大きさを変えた、別の倍率の画面へ移したなど)、そのフレームのマーカーにも同じ 2 つを書きます([`toJsonLines()`](../../src/core/os/inputsequence.cpp#L373))。再生はこの記録の換算を使うので、倍率の違う機械で再生しても、`pointer()` と UI が見るピクセルは収録時と同じです([`prepareFrame()`](../../src/core/os/inputsequence.cpp#L487))。
+- **v1 の読み方**: v1 には換算の記録が無いので、全フレームを content scale 1 として読みます(v1 の窓座標は書かれた当時その意味でした)。framebuffer は記録に無いので、再生している機械のものを使います。v1 のマーカーに `content_scale` / `framebuffer` があれば「version 2 が要る」として拒否し、version が 1 と 2 以外なら拒否します([版の検査](../../src/core/os/inputsequence.cpp#L308))。v2 のヘッダでは 2 つとも必須です。
+- 収録ファイルは `--record-input` / `start_input_record` で指定した場所に書く JSONL で、project の文書ではありません。そのため MG-1 の移行(第3章 §3.13)の対象ではなく、v1 → v2 の移行手順は登録していません。v1 のファイルはそのまま再生できます。
 - rpc からは `start_input_record` / `stop_input_record` / `start_input_replay` / `stop_input_replay`。リプレイ中の `inject_input` は拒否されます。
 - **カメラ焼き出し**: `pelican_cli bake-camera --replay session.jsonl --project mygame` で、リプレイ中のカメラ軌跡を `pelican.transform_seq` v1 として `imports/pelican-camera/<name>/` に着地させられます(pelican.import manifest 付き — DCC への逆輸出)。
 
@@ -238,7 +260,7 @@ UI の中身を実行時に変える口は 2 つあります。ゲームコー�
 
 #### `ctx.ui()` — ゲームコードから書く
 
-[`GameContext::ui()`](../../src/core/userpublic/gamecontext.hpp#L291) はプロジェクトの UI 文書を、`ui(document_key)` は文書の `key` を名指しして [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L223) を返します。v0 の UI 文書は 1 本なので、`key` が違えば `ui.node_unknown@1` です。
+[`GameContext::ui()`](../../src/core/userpublic/gamecontext.hpp#L322) はプロジェクトの UI 文書を、`ui(document_key)` は文書の `key` を名指しして [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L253) を返します。v0 の UI 文書は 1 本なので、`key` が違えば `ui.node_unknown@1` です。
 
 ```cpp
 auto ui = ctx.ui();
@@ -259,7 +281,7 @@ if (auto r = ui.setText("root/hud/score", "SCORE 120"); !r)
 | 3 | `ui.property_mismatch@1` | node の型がその性質を持たない(例: gauge への `setText`)、または `setValue` の値が有限でない |
 | 4 | `ui.sink_conflict@1` | 公開中の rendering config の `ui.*` sink が同じ (path, 性質) を書いている(下記) |
 
-- **書き込みは呼んだ時点で検査され、フレーム境界で適用されます。** 受け付けた書き込みは列に積まれ、そのフレームのゲームコードがすべて走ったあと、描画の前に一度にまとめて入ります([commitFrameWrites() の呼び出し](../../src/core/appflow/framephase.cpp#L214))。断られた書き込みは何も積みません。
+- **書き込みは呼んだ時点で検査され、フレーム境界で適用されます。** 受け付けた書き込みは列に積まれ、そのフレームのゲームコードがすべて走ったあと、描画の前に一度にまとめて入ります([commitFrameWrites() の呼び出し](../../src/core/appflow/framephase.cpp#L231))。断られた書き込みは何も積みません。
 - `setText` で文字列を変えると、`label` / `button` の大きさ(`content` 軸の固有サイズ)を測り直します。測り直すのは固有サイズが文字列から測られた node だけで、`intrinsic_size` を文書に書いた node はそのままです([syncDocumentFromArena()](../../src/core/ui/module.cpp#L350))。
 - **scene load 中に書いても、load の transaction には入りません。** 公開 API の分類は `nonparticipant.ui-document` で([manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L222))、UI 文書は scene の参加者ではないので、load が失敗しても書き込みは次のフレーム境界で入ります。
 
@@ -291,7 +313,7 @@ graph module **`pelican.ui`**(version 1)は常に登録されます(UI にはビ
   - `ui.feature_unreferenced@1` — `ui.*` sink を持つ config が `engine://features/ui.json` を参照していない
   - `ui.node_unknown@1` / `ui.property_mismatch@1` — `parameters.node` の path が無い / その node が性質を持たない(例: `ui.value` の先が label)
   - `ui.sink_conflict@1` — 2 本の sink が同じ (path, 性質) を書く
-- **sink とゲームコードがぶつかったら sink が勝ちます。** sink が書いている (path, 性質) へ `ctx.ui()` で書くと、その書き込みが `ui.sink_conflict@1` で断られます([uiSinkClaims()](../../src/core/userpublic/gamecontext.cpp#L177))。同じ node の別の性質(sink が `value` を書いている gauge への `setVisible` など)は受け付けます。
+- **sink とゲームコードがぶつかったら sink が勝ちます。** sink が書いている (path, 性質) へ `ctx.ui()` で書くと、その書き込みが `ui.sink_conflict@1` で断られます([uiSinkClaims()](../../src/core/userpublic/gamecontext.cpp#L180))。同じ node の別の性質(sink が `value` を書いている gauge への `setVisible` など)は受け付けます。
 - UI feature を参照していないプロジェクトは、ゲームコードの経路でも sink の経路でも `ui.feature_unreferenced@1` になります。
 
 #### GP-3 が残した穴
@@ -300,14 +322,18 @@ graph module **`pelican.ui`**(version 1)は常に登録されます(UI にはビ
 - 文書で `visibility: "collapsed"` にした node は、`setVisible(true)` でも描かれません。collapsed の node はレイアウトに載らず([place()](../../src/core/ui/layout.cpp#L142))、描画はレイアウトの無い node を飛ばします。
 - 衝突の検出は**公開済み**の rendering config の sink を見ます。最初の publish より前の `ctx.ui()` の書き込みでは、sink との衝突を検出しません(公開中の世代が無ければ「sink は無い」と答えるため)。
 
+### ポインタの座標(✅GP-4)
+
+UI の入力ルータは、カーソル event の窓座標を、ポインタ(§7.2「ポインタとカーソル」)と同じフレームの換算で framebuffer ピクセルにしてから hit 判定します([`routeFrameInput()` の換算](../../src/core/ui/inputrouter.cpp#L122))。GP-4 より前は窓座標をそのままピクセルとして扱っていた(表示倍率 1 を仮定していた)ので、倍率が 1 でない画面ではクリックの位置と widget の位置が食い違っていたはずです(差分からの推論。旧挙動の実行では未確認)。リプレイでは記録の換算を使うので、倍率の違う機械で収録したものも同じピクセルで判定されます。ImGui は窓座標のまま読むので変わっていません。
+
 ### 残っている未実装(明示)
 
-- 🚧 DPI スケール(配管はあるが常に 1.0)
+- 🚧 UI のスケール(UI 単位 → ピクセルの `ui_scale`。配管はあるが常に 1.0。上のポインタの換算とは別のもの)
 - 📐 エンジン標準スキン(現状は色をノードのプロパティで直指定)/ `PELICAN_REGISTER_WIDGET` とツールウィジェットパック / UI のホットリロード(U3)
 
 ## 7.5 テキスト HUD — debug_text(✅WP54 / WP169)
 
-使い方は不変です — rendering config に `engine://features/debug_text.json` を 1 行 + ゲームコードから `ctx.render().debugText(x, y, text)`。座標はピクセル・左上原点、feature を参照しなければ完全 no-op、golden は tolerance 0 です。API は C-8 の facade 分割で `GameContext` から [`RenderContext::debugText`](../../src/core/userpublic/gamecontext.hpp#L159) へ移りました。`color`(既定 白 `{1, 1, 1, 1}`)と `scale`(既定 1)は引数で渡せ、省略したときだけ白・等倍です。
+使い方は不変です — rendering config に `engine://features/debug_text.json` を 1 行 + ゲームコードから `ctx.render().debugText(x, y, text)`。座標はピクセル・左上原点、feature を参照しなければ完全 no-op、golden は tolerance 0 です。API は C-8 の facade 分割で `GameContext` から [`RenderContext::debugText`](../../src/core/userpublic/gamecontext.hpp#L160) へ移りました。`color`(既定 白 `{1, 1, 1, 1}`)と `scale`(既定 1)は引数で渡せ、省略したときだけ白・等倍です。
 
 ✅WP169 で、`debug_text` と `pelican.ui` の**ビットマップレイアウトが単一実装に統一**されました。以前は「フォントテーブルだけ共有・配置計算は別実装」でしたが、現在はどちらも [src/core/ui/bitmapfont.cpp](../../src/core/ui/bitmapfont.cpp) の `BitmapFont::layout()` を通ります。**見た目・座標・API は不変**で(既存 golden と凍結ハッシュはすべて維持、golden 更新 0)、production の `DebugText` と `UiRenderer` を同一オフスクリーン RT に描いた 96×80 RGBA8 の全 30,720 byte が一致することを `test/debugtext_ui_compat_test.cpp`(GPU ラベル付きの Catch2 テスト)がゲートしています。
 
@@ -333,11 +359,12 @@ GPU 経路自体は意図的に別のままです(`DebugText` は専用 atlas + 
 | 入力 L1(順序付き FrameInput + 消費マスク) | ✅ WP37/69 |
 | アクション層 + プロファイル分離 | ✅ WP39/91 |
 | rpc inject_input(ゲームパッド含む) | ✅ WP49/91 |
-| 収録・リプレイ(I3、input_seq v1 + bake-camera) | ✅ WP89 |
+| 収録・リプレイ(I3、input_seq + bake-camera) | ✅ WP89(GP-4 で v2 = 換算の記録。v1 も読む) |
 | ゲームパッド(I4) | ✅ WP91 |
 | OpenXR 入力(Touch action set + pose) | ✅ WP130/132(v1 は Touch のみ・pose の収録は非対応) |
-| カーソルロック(I4 残件) | 📐 未実装 |
-| pelican.ui v1(U0/U1/U2) | ✅ WP75/87/93(スキン・DPI は 🚧/📐) |
+| ポインタの位置(framebuffer ピクセル)/ カーソルのモード(I4 残件のロックを含む)/ `screenRay` | ✅ GP-4(埋め込みの窓ではロックしない。残した穴は第8章 §8.4) |
+| UI の入力ルータの表示倍率対応 | ✅ GP-4 |
+| pelican.ui v1(U0/U1/U2) | ✅ WP75/87/93(スキン・`ui_scale` は 🚧/📐) |
 | gauge 描画 / ゲーム→UI 更新 API(`ctx.ui()`)/ `ui.value`・`ui.visible` sink | ✅ GP-3(子を連れて隠せない等の穴は §7.4「GP-3 が残した穴」) |
 | ui_overlay.json(旧 images 形式) | ❌ 削除済み(WP87) |
 | イベント payload スキーマ | ✅ WP71 |
@@ -354,6 +381,7 @@ GPU 経路自体は意図的に別のままです(`DebugText` は専用 atlas + 
 | 呼び出し | 外した build での答え |
 |---|---|
 | `ctx.actionPressed` / `actionReleased` / `actionHeld` / `actionAxis1` / `actionAxis2` | 変わらない(入力のアクション層はビルドユニットではない) |
+| `ctx.input().pointer` / `setCursorMode`、`ctx.render().screenRay` | 変わらない(GP-4。どれもビルドユニットではない) |
 | `ctx.actionPose` | 分岐は無い。`PELICAN_WITH_OPENXR=OFF` の build では XR が起動しないので、flat 起動と同じく `valid = false` の既定値が返る(throw しない。§8.4 の actionPose) |
 | `ctx.render().debugText` | 変わらない。`debug_text` はビルドユニットではなく rendering config の feature で、参照していなければ no-op(§7.5) |
 | `ctx.ui().setText` / `setVisible` / `setValue` | 変わらない。UI はビルドユニットではなく rendering config の feature で、参照していなければ例外ではなく `ui.feature_unreferenced@1` が返る(§7.4) |

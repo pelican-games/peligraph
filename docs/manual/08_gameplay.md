@@ -9,6 +9,7 @@
 - **オブジェクト behavior**(`PELICAN_REGISTER_BEHAVIOR` — シーンに貼れる振る舞い。✅WP155/162/167)
 - イベント層(emit と購読、フレーム境界配送)
 - シーン遷移・カメラ(コントローラ含む)・物理クエリ(shapeCast / moveAndSlide)の使い方
+- ポインタの位置(framebuffer ピクセル)・カーソルのモード・画面の点を通る ray(`ctx.input()` / `screenRay`、✅GP-4)
 - 決定性(固定ループ順序・決定的乱数・シード)— 「なぜ毎回同じ結果になるのか」
 - オーディオ・永続化(設定/セーブ)・2D スプライトの操作
 - アニメーション — **姿勢の 2 つの装着様式**(`animation` コンポーネント / 共通グラフの `graph.instance` + `pose.*`)、root motion、観測、`PELICAN_WITH_ANIMATION=OFF` の見え方
@@ -136,9 +137,9 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 
 ## 8.4 GameContext API 一覧
 
-`GameContext` は状態を持たない薄いファサードです([gamecontext.hpp](../../src/core/userpublic/gamecontext.hpp))。面は「根 + 7 つのドメインファサード」に分かれています — 根には入力・時刻・ログ・オブジェクト・乱数・シーン・イベント・設定が残り、物理 / 音 / アニメーション / セーブ / 描画 / シーンオブジェクトの名前解決 / UI は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L285) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L286) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L287) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L288) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L289) / [`objects()`](../../src/core/userpublic/gamecontext.hpp#L290) / [`ui()`](../../src/core/userpublic/gamecontext.hpp#L291) 経由です。ファサードはどれも**状態を持たない空の値**(`ui(document_key)` の返す `UiContext` だけは文書の key を view で持つので、key の文字列を使い終わるまで生かしておきます)なので、`ctx.audio().playSound(...)` は 1 回の呼び出しであって検索ではありません。
+`GameContext` は状態を持たない薄いファサードです([gamecontext.hpp](../../src/core/userpublic/gamecontext.hpp))。面は「根 + 8 つのドメインファサード」に分かれています — 根には入力(アクション)・時刻・ログ・オブジェクト・乱数・シーン・イベント・設定が残り、物理 / 音 / アニメーション / セーブ / 描画 / ポインタとカーソル / シーンオブジェクトの名前解決 / UI は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L315) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L316) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L317) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L318) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L319) / [`input()`](../../src/core/userpublic/gamecontext.hpp#L320) / [`objects()`](../../src/core/userpublic/gamecontext.hpp#L321) / [`ui()`](../../src/core/userpublic/gamecontext.hpp#L322) 経由です。ファサードはどれも**状態を持たない空の値**(`ui(document_key)` の返す `UiContext` だけは文書の key を view で持つので、key の文字列を使い終わるまで生かしておきます)なので、`ctx.audio().playSound(...)` は 1 回の呼び出しであって検索ではありません。
 
-### 根 `GameContext`([宣言](../../src/core/userpublic/gamecontext.hpp#L236))
+### 根 `GameContext`([宣言](../../src/core/userpublic/gamecontext.hpp#L266))
 
 | カテゴリ | API | 備考 |
 |---|---|---|
@@ -156,19 +157,21 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 
 | ファサード | API | 備考 |
 |---|---|---|
-| [`physics()`](../../src/core/userpublic/gamecontext.hpp#L285) → [`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L48) | `raycastAll(ray, filter)` / `raycastClosest(ray, filter)` / `overlapAll(shape, filter)` / `shapeCastAll(shape, delta, filter)` / `shapeCastClosest(shape, delta, filter)` | §8.8。`filter` は省略可。`PELICAN_WITH_PHYSICS` 無しビルドでは全問い合わせが `BuildFeatureCallDisabledError`(`build_feature_disabled@1`)、provider が 0 本のビルドでは `phys::ProviderUnavailableError`(`physics.provider_unavailable@1`)。どちらも「何にも当たらなかった」とは答えません(下の「機能を外した build」) |
-| [`audio()`](../../src/core/userpublic/gamecontext.hpp#L286) → [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L83) | `playSound(path)` / `playSound(path, bus)`→SoundHandle / `stopSound(h)` / `setBusVolume(bus,v)` / `busVolume(bus)` / `isPlaying(h)` / `setSoundVolume(h,v)` / `setSoundPitch(h,p)` / `setSoundPaused(h,b)` / `soundState(h)`→optional | §8.11。`PELICAN_WITH_AUDIO` 無しビルドは `BuildFeatureCallDisabledError`(`build_feature_disabled@1`。下の「機能を外した build」) |
-| [`animation()`](../../src/core/userpublic/gamecontext.hpp#L287) → [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L113) | `setParameter(object, name, value)`→`Animation::Status` / `forceState(object, state)`→`Animation::Status` | **`animation` コンポーネントの `graph`**(`pelican.anim_graph`)に装着された評価器を動かす。初回装着の前と取り外し後は `not_found`、シーンのロード/破棄トランザクション中は `phase_order_error`([宣言](../../src/core/userpublic/gamecontext.hpp#L115)) |
-| [`save()`](../../src/core/userpublic/gamecontext.hpp#L288) → [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L122) | `saveData(slot, json)` / `loadData(slot)`→optional / `listSaves()`→`SlotInfo` 列 | §8.12(✅WP65) |
-| [`render()`](../../src/core/userpublic/gamecontext.hpp#L289) → [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L137) ライト | `setDirectionalLightDirection(name, dir)` / `setDirectionalLightIntensity(name, f)` / `setPointLightPosition(name, pos)` / `setSpotLightDirection(name, dir)` — いずれも→bool | ✅WP142。[第4章](04_scene_ecs.md) §4.2 の light をオブジェクト `name` で指す。未知名は例外ではなく **false** が返る |
+| [`physics()`](../../src/core/userpublic/gamecontext.hpp#L315) → [`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L49) | `raycastAll(ray, filter)` / `raycastClosest(ray, filter)` / `overlapAll(shape, filter)` / `shapeCastAll(shape, delta, filter)` / `shapeCastClosest(shape, delta, filter)` | §8.8。`filter` は省略可。`PELICAN_WITH_PHYSICS` 無しビルドでは全問い合わせが `BuildFeatureCallDisabledError`(`build_feature_disabled@1`)、provider が 0 本のビルドでは `phys::ProviderUnavailableError`(`physics.provider_unavailable@1`)。どちらも「何にも当たらなかった」とは答えません(下の「機能を外した build」) |
+| [`audio()`](../../src/core/userpublic/gamecontext.hpp#L316) → [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L84) | `playSound(path)` / `playSound(path, bus)`→SoundHandle / `stopSound(h)` / `setBusVolume(bus,v)` / `busVolume(bus)` / `isPlaying(h)` / `setSoundVolume(h,v)` / `setSoundPitch(h,p)` / `setSoundPaused(h,b)` / `soundState(h)`→optional | §8.11。`PELICAN_WITH_AUDIO` 無しビルドは `BuildFeatureCallDisabledError`(`build_feature_disabled@1`。下の「機能を外した build」) |
+| [`animation()`](../../src/core/userpublic/gamecontext.hpp#L317) → [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L114) | `setParameter(object, name, value)`→`Animation::Status` / `forceState(object, state)`→`Animation::Status` | **`animation` コンポーネントの `graph`**(`pelican.anim_graph`)に装着された評価器を動かす。初回装着の前と取り外し後は `not_found`、シーンのロード/破棄トランザクション中は `phase_order_error`([宣言](../../src/core/userpublic/gamecontext.hpp#L116)) |
+| [`save()`](../../src/core/userpublic/gamecontext.hpp#L318) → [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L123) | `saveData(slot, json)` / `loadData(slot)`→optional / `listSaves()`→`SlotInfo` 列 | §8.12(✅WP65) |
+| [`render()`](../../src/core/userpublic/gamecontext.hpp#L319) → [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L138) ライト | `setDirectionalLightDirection(name, dir)` / `setDirectionalLightIntensity(name, f)` / `setPointLightPosition(name, pos)` / `setSpotLightDirection(name, dir)` — いずれも→bool | ✅WP142。[第4章](04_scene_ecs.md) §4.2 の light をオブジェクト `name` で指す。未知名は例外ではなく **false** が返る |
 | `render()` カメラ | `setCamera(name)` | §8.9 |
-| `render()` 値グラフ | `setValueGraphParameter(object, parameter, value)`→bool / `emitValueGraphEvent(object, input, command)`→bool / `setRenderValues(buffer, values)`→bool | **共通グラフ(pass 文書)の `graph.instance`** の入力を実行時に上書きする。`std::nullopt` で上書きを取り消す。edge が供給しているポートを狙うと `graph.override_shadowed@1`([宣言](../../src/core/userpublic/gamecontext.hpp#L154)。[第6章](06_rendering.md) §6.17) |
+| `render()` 値グラフ | `setValueGraphParameter(object, parameter, value)`→bool / `emitValueGraphEvent(object, input, command)`→bool / `setRenderValues(buffer, values)`→bool | **共通グラフ(pass 文書)の `graph.instance`** の入力を実行時に上書きする。`std::nullopt` で上書きを取り消す。edge が供給しているポートを狙うと `graph.override_shadowed@1`([宣言](../../src/core/userpublic/gamecontext.hpp#L155)。[第6章](06_rendering.md) §6.17) |
 | `render()` HUD | `debugText(x, y, text, color, scale)` | colorはRGBA、scaleは整数倍率。省略時は白・等倍。debug_text feature 未参照時は no-op([第7章](07_input_ui.md)) |
 | `render()` レイトレーシング | `setRayTracingCallableRecord(task, index, values)` / `setRayTracingDispatchExtent(task, w, h, d)` | ゲーム/更新スレッドから呼ぶ。値は task の `callable_record` schema に合う必要があり、不正な更新は前の値を残す |
-| [`objects()`](../../src/core/userpublic/gamecontext.hpp#L290) → [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L195) | `resolve(name)`→`Resolved<ObjectRef>` / `materialize(ref)`→`Resolved<GameObjectId>` / `worldTransform(ref)`→`Resolved<WorldTransform>` | ✅GP-1。シーンオブジェクトを名前で引き、ワールド変換を読む。失敗は例外ではなく名前付きエラー(下の「objects()」) |
-| [`ui()`](../../src/core/userpublic/gamecontext.hpp#L291) / `ui(document_key)` → [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L223) | `setText(path, text)` / `setVisible(path, bool)` / `setValue(path, float)` → いずれも [`UiWriteResult`](../../src/core/userpublic/ui_write.hpp#L39) | ✅GP-3。UI 文書の node を path(root からの `id` を `/` でつないだもの)で指して書く。text は label / button、value は gauge、visible は全 node。書き込みはフレーム境界で適用。失敗は例外ではなく `ui.feature_unreferenced@1` / `ui.node_unknown@1` / `ui.property_mismatch@1` / `ui.sink_conflict@1`(この順で先のもの)。`ui.*` sink が書いている (path, 性質) はグラフのもので、ここからは書けない([第7章](07_input_ui.md) §7.4「ゲームコードと共通グラフから UI を書く」) |
+| `render()` 画面の点から ray | [`screenRay(position_px)`](../../src/core/userpublic/gamecontext.hpp#L174)→`Resolved<phys::Ray, RenderError>` | ✅GP-4。framebuffer ピクセルの位置を通る world の ray。失敗は例外ではなく `render.screen_ray_unavailable@1`(XR が有効)/ `render.screen_position_invalid@1`(有限でない値)。下の「input() と screenRay」 |
+| [`input()`](../../src/core/userpublic/gamecontext.hpp#L320) → [`InputContext`](../../src/core/userpublic/gamecontext.hpp#L226) | `pointer()`→[`PointerState`](../../src/core/userpublic/userinput.hpp#L143) / `setCursorMode(mode)`([`CursorMode`](../../src/core/userpublic/userinput.hpp#L151) = `normal` / `hidden` / `locked`) | ✅GP-4。ポインタの位置を framebuffer ピクセルで読み、カーソルの表示とロックを頼む。ボタンと軸はこれまでどおりアクション(根の「入力」)で読む。下の「input() と screenRay」 |
+| [`objects()`](../../src/core/userpublic/gamecontext.hpp#L321) → [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L209) | `resolve(name)`→`Resolved<ObjectRef>` / `materialize(ref)`→`Resolved<GameObjectId>` / `worldTransform(ref)`→`Resolved<WorldTransform>` | ✅GP-1。シーンオブジェクトを名前で引き、ワールド変換を読む。失敗は例外ではなく名前付きエラー(下の「objects()」) |
+| [`ui()`](../../src/core/userpublic/gamecontext.hpp#L322) / `ui(document_key)` → [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L253) | `setText(path, text)` / `setVisible(path, bool)` / `setValue(path, float)` → いずれも [`UiWriteResult`](../../src/core/userpublic/ui_write.hpp#L39) | ✅GP-3。UI 文書の node を path(root からの `id` を `/` でつないだもの)で指して書く。text は label / button、value は gauge、visible は全 node。書き込みはフレーム境界で適用。失敗は例外ではなく `ui.feature_unreferenced@1` / `ui.node_unknown@1` / `ui.property_mismatch@1` / `ui.sink_conflict@1`(この順で先のもの)。`ui.*` sink が書いている (path, 性質) はグラフのもので、ここからは書けない([第7章](07_input_ui.md) §7.4「ゲームコードと共通グラフから UI を書く」) |
 
-> **この 3 本は「アニメーションの API」ですが、対象が 2 つに分かれていて互いに委譲しません(✅AG-1b 決定 5)。ファサード分割もその線を引き直しただけで、行き先は変わっていません。** `render().setValueGraphParameter` が触るのは **pass 文書の `graph.instance`** の入力ポート、`animation().setParameter` / `animation().forceState` が触るのは **シーンの `animation` コンポーネント**が持つ評価器です(前者は [gamecontext.cpp:406](../../src/core/userpublic/gamecontext.cpp#L570) で `SceneLoader` へ、後者は [:319](../../src/core/userpublic/gamecontext.cpp#L475) / [:329](../../src/core/userpublic/gamecontext.cpp#L485) で `AnimationSystem` へ行きます)。**姿勢の装着様式が 2 つある**(§8.13)ことがそのまま API に出ています。同じ owner に両方は付かないので、「どちらを呼ぶか」は装着の仕方で決まります。
+> **この 3 本は「アニメーションの API」ですが、対象が 2 つに分かれていて互いに委譲しません(✅AG-1b 決定 5)。ファサード分割もその線を引き直しただけで、行き先は変わっていません。** `render().setValueGraphParameter` が触るのは **pass 文書の `graph.instance`** の入力ポート、`animation().setParameter` / `animation().forceState` が触るのは **シーンの `animation` コンポーネント**が持つ評価器です(前者は [gamecontext.cpp:406](../../src/core/userpublic/gamecontext.cpp#L595) で `SceneLoader` へ、後者は [:319](../../src/core/userpublic/gamecontext.cpp#L500) / [:329](../../src/core/userpublic/gamecontext.cpp#L510) で `AnimationSystem` へ行きます)。**姿勢の装着様式が 2 つある**(§8.13)ことがそのまま API に出ています。同じ owner に両方は付かないので、「どちらを呼ぶか」は装着の仕方で決まります。
 >
 > 同じ `graph.instance` 側には `render().emitValueGraphEvent(object, input, command)` もあります。`input` は **`event.playback` ノードの(展開後の)id** で、そこから `value.event_clock` / `audio.playback` の `events` ポートへ再生制御イベントが流れます([valuegraph.cpp:302](../../src/core/userpublic/valuegraph.cpp#L466))。
 >
@@ -176,23 +179,23 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 
 ### 機能を外した build でゲームコードの呼び出しが返すもの(✅PG-2 / PG-2b)
 
-ビルドユニット([第2章](02_getting_started.md) の「機能ユニット」)を外した build でも、`GameContext` の関数はすべて残ります。呼んだときの答えは、関数が値を返すか `Status` を返すかで 2 通りに分かれます。値を返す facade(audio / physics)は例外を 1 種類だけ投げ、`Status` を返す facade(animation)は外した build でも `Status` で答えます([規則のコメント](../../src/core/userpublic/gamecontext.hpp#L108))。ただし `noexcept` の `onDestroy` の中だけは、audio / physics も投げずに空で答えます(✅PG-2b。表の「`onDestroy` の中」の 2 行)。
+ビルドユニット([第2章](02_getting_started.md) の「機能ユニット」)を外した build でも、`GameContext` の関数はすべて残ります。呼んだときの答えは、関数が値を返すか `Status` を返すかで 2 通りに分かれます。値を返す facade(audio / physics)は例外を 1 種類だけ投げ、`Status` を返す facade(animation)は外した build でも `Status` で答えます([規則のコメント](../../src/core/userpublic/gamecontext.hpp#L109))。ただし `noexcept` の `onDestroy` の中だけは、audio / physics も投げずに空で答えます(✅PG-2b。表の「`onDestroy` の中」の 2 行)。
 
 | 呼び出し | build | 返るもの |
 |---|---|---|
 | `ctx.audio()` の 9 関数(`playSound` の 2 つの overload を含む) | `PELICAN_WITH_AUDIO=OFF` | [`BuildFeatureCallDisabledError`](../../src/core/build_features.hpp#L45) を投げる。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_AUDIO"`、`what()` = `This binary was built with PELICAN_WITH_AUDIO=OFF: playSound is unavailable`(呼んだ関数名が入る) |
 | 同上を `onInit` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | `playSound` / `stopSound` / `setBusVolume` / `busVolume` / `isPlaying` は同じ例外を投げる。`setSoundVolume` / `setSoundPitch` / `setSoundPaused` は build を見る前に `false` を返す(ロード中は ON の build でも `false`) |
-| 同上を `onDestroy` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | 9 本とも例外にならず、空で答える: 無効な `SoundHandle` / `false` / `0.0` / `soundState` は `nullopt`(✅PG-2b。[`soundState` の包み](../../src/core/userpublic/gamecontext.cpp#L613))。拒否は記録に残る: scene のロード/破棄トランザクションの中ではロード結果の `effect_errors` に `build_feature_disabled@1`(`phase` は `destroy`)、トランザクションの無い `onDestroy`(プレイ中の object 削除、ゲーム DLL の解放、`deactivateAll`)では engine log に `build_feature_disabled@1 in a destruction callback: …`。トランザクションの中の `setSoundVolume` / `setSoundPitch` / `setSoundPaused` は、ON の build と同じく build を見る前に `false` を返すので何も記録されない |
+| 同上を `onDestroy` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | 9 本とも例外にならず、空で答える: 無効な `SoundHandle` / `false` / `0.0` / `soundState` は `nullopt`(✅PG-2b。[`soundState` の包み](../../src/core/userpublic/gamecontext.cpp#L638))。拒否は記録に残る: scene のロード/破棄トランザクションの中ではロード結果の `effect_errors` に `build_feature_disabled@1`(`phase` は `destroy`)、トランザクションの無い `onDestroy`(プレイ中の object 削除、ゲーム DLL の解放、`deactivateAll`)では engine log に `build_feature_disabled@1 in a destruction callback: …`。トランザクションの中の `setSoundVolume` / `setSoundPitch` / `setSoundPaused` は、ON の build と同じく build を見る前に `false` を返すので何も記録されない |
 | `ctx.physics()` の 5 本を `onDestroy` の中で呼ぶ | `PELICAN_WITH_PHYSICS=OFF`、または provider が 0 本 | 例外にならず、空で答える: `raycastAll` / `overlapAll` / `shapeCastAll` は空の配列、`raycastClosest` / `shapeCastClosest` は `nullopt`(✅PG-2b)。これは「何にも当たらなかった」と同じ答えで、見分けられるのは記録だけです。記録は audio と同じ場所(トランザクションの中なら `effect_errors`、無ければ engine log)に、`build_feature_disabled@1` か `physics.provider_unavailable@1` で残る |
-| `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=OFF` | `BuildFeatureCallDisabledError`。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_PHYSICS"`。rpc の `raycast` は JSON-RPC の error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。✅PG-2b。[受け口](../../src/core/communication/rpcserver.cpp#L1115)) |
+| `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=OFF` | `BuildFeatureCallDisabledError`。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_PHYSICS"`。rpc の `raycast` は JSON-RPC の error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。✅PG-2b。[受け口](../../src/core/communication/rpcserver.cpp#L1120)) |
 | `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=ON` で provider が 0 本(`PELICAN_WITH_BUILTIN_PHYSICS` と `PELICAN_WITH_JOLT_PHYSICS` が両方 OFF) | ゲーム DLL がそのクエリの provider を登録していなければ [`phys::ProviderUnavailableError`](../../src/core/phys/physquery.hpp#L102) を投げる。`code()` = `physics.provider_unavailable@1`。空の結果(「何にも当たらなかった」)は返さない。rpc の `raycast` も同じ場合は JSON-RPC の error(code `-32000`、message はこの例外の `what()`)を返す |
 | `ctx.animation().setParameter` / `forceState` | `PELICAN_WITH_ANIMATION=OFF` | 例外ではなく `Animation::Status::not_found`。シーンのロード/破棄トランザクションの中では、ON の build と同じく `phase_order_error` |
 
 - `BuildFeatureCallDisabledError` は `BuildFeatureDisabledError` の派生です。PG-2 より前から `BuildFeatureDisabledError` や `std::runtime_error` で受けていたコードは、そのまま受け取れます。名前で分岐したいときは `code()` を見てください。型の定義は [build_features.hpp](../../src/core/build_features.hpp#L45)、`phys::ProviderUnavailableError` は `gamecontext.hpp` が include している `phys/physquery.hpp` にあります。
 - provider 0 本の build では、トリガー更新は例外を投げません。`OverlapEnter` / `OverlapExit` を出さず、それまでの overlap の組をそのまま持ち続けます([physworld.cpp のコメント](../../src/core/phys/physworld.cpp#L564))。
 - `PELICAN_WITH_PHYSICS=OFF` の build の rpc `raycast` は、PG-2b から stub の [`PhysWorld::raycastClosest()`](../../src/core/phys/physworld_stub.cpp#L108) に問い合わせず、params を見る前に上の JSON-RPC error で断ります。PG-2b より前は stub の空の答えがそのまま `{"hit": null}` になり、「外れ」と区別できませんでした。
-- activate 相(`onInit`)と、ロードの外の通常の呼び出しは、PG-2b の後も上の表のとおり投げます。空で答えるのは `onDestroy` の中だけです([規則のコメント](../../src/core/userpublic/gamecontext.hpp#L42))。
-- 残した穴: `render()` の `setRayTracingDispatchExtent` / `setRayTracingCallableRecord` は、scene のトランザクション中の呼び出しを `SceneTransactionMutationRejected` で投げます([トランザクション中の拒否](../../src/core/userpublic/gamecontext.cpp#L260))。PG-2b の包みの外なので、ロード中の `onDestroy` から呼ぶと `std::terminate` になりえます(コードからの推論。実行では未確認)。
+- activate 相(`onInit`)と、ロードの外の通常の呼び出しは、PG-2b の後も上の表のとおり投げます。空で答えるのは `onDestroy` の中だけです([規則のコメント](../../src/core/userpublic/gamecontext.hpp#L43))。
+- 残した穴: `render()` の `setRayTracingDispatchExtent` / `setRayTracingCallableRecord` は、scene のトランザクション中の呼び出しを `SceneTransactionMutationRejected` で投げます([トランザクション中の拒否](../../src/core/userpublic/gamecontext.cpp#L263))。PG-2b の包みの外なので、ロード中の `onDestroy` から呼ぶと `std::terminate` になりえます(コードからの推論。実行では未確認)。
 - `animation` の OFF build の挙動は凍結 ABI の契約です(§8.13「`PELICAN_WITH_ANIMATION=OFF` の見え方」)。
 
 ### objects() — シーンオブジェクトを名前で引いてワールドを読む(✅GP-1)
@@ -224,7 +227,7 @@ void update(Pelican::GameContext &ctx) {
 }
 ```
 
-`Resolved<T>`([宣言](../../src/core/userpublic/object_ref.hpp#L79))は「値、または値が無い理由の名前」です。`ok()` / `if (r)` で判定し、`get()` は値が無ければ null、`value()` は値が無ければエラー名で始まる `std::logic_error` を投げます。`errorName()` は値があるとき空です。
+`Resolved<T, E>`([宣言](../../src/core/userpublic/object_ref.hpp#L87))は「値、または値が無い理由の名前」です。`ok()` / `if (r)` で判定し、`get()` は値が無ければ null、`value()` は値が無ければエラー名で始まる `std::logic_error` を投げます。`errorName()` は値があるとき空です。`E` はそのファサードのエラーの enum で、既定は `ObjectError` です。`objects()` の 3 本は `Resolved<T>`(= `Resolved<T, ObjectError>`)を、`render().screenRay` は `Resolved<phys::Ray, RenderError>` を返します(✅GP-4 で `E` を足しました。GP-1 の `Resolved<T>` はそのまま書けます)。エラー名は enum ごとの [`errorCodeName()`](../../src/core/userpublic/object_ref.hpp#L80) から引きます。
 
 | エラー名(`ObjectError`) | いつ出るか |
 |---|---|
@@ -242,6 +245,68 @@ void update(Pelican::GameContext &ctx) {
 - **`worldTransform` は「今の」ワールド変換を読みます。** ワールドは毎フレームの transform 更新で local から作り直されます。`setLocalTransform` はそのオブジェクトのワールドを即座に書きますが、親が無いものとして書くので、**親を持つオブジェクトや、動かしたオブジェクトの子を直後に読むと、次の transform 更新まで 1 フレーム前の値**になります。親の無いオブジェクト自身はすぐ正しく読めます。
 - **ワールド変換(`TransformComponent`)を直接書いても、次のフレームで local の値に戻ります。** 位置は `setLocalTransform` で変えてください([第4章 §4.4](04_scene_ecs.md))。
 - `load_gltf` で置いた一時オブジェクト(transient)を指す ref はまだ出しません。
+
+### input() と screenRay — クリックした先を調べる(✅GP-4)
+
+ポインタの位置は [`ctx.input().pointer()`](../../src/core/userpublic/gamecontext.cpp#L454) で、その位置を通る world の ray は [`ctx.render().screenRay()`](../../src/core/userpublic/gamecontext.cpp#L440) で得られます。ray は §8.8 の物理クエリにそのまま渡せます。
+
+```cpp
+void update(Pelican::GameContext &ctx) {
+    // "click" は actions.json の button アクション(例: mouse:left に bind)
+    if (!ctx.actionPressed("click")) return;
+    const auto pointer = ctx.input().pointer();
+    if (!pointer.inside) return;                      // 窓の外、またはまだ動いていない
+
+    const auto ray = ctx.render().screenRay(pointer.position_px);
+    if (!ray) {
+        ctx.logWarning(ray.errorName());              // XR 中は render.screen_ray_unavailable@1
+        return;
+    }
+    if (const auto hit = ctx.physics().raycastClosest(ray.value())) {
+        ctx.logInfo(hit->id);                         // 当たった collider のオブジェクト名
+    }
+}
+```
+
+**`pointer()`**([`PointerState`](../../src/core/userpublic/userinput.hpp#L143) = `{position_px, inside}`)
+
+- 位置は **framebuffer ピクセル**です。原点は framebuffer の左上、+x が右、+y が下で、ピクセル (i, j) は [i, i+1) × [j, j+1) を覆います。
+- OS はカーソルを窓座標で報告します。それを軸ごとに `px = 窓座標 × framebuffer の大きさ ÷ 窓の大きさ` で換算します([`pointerTransformFor()`](../../src/core/os/inputstate.cpp#L56))。表示倍率 200% の画面なら、窓座標 (10, 20) はピクセル (20, 40) です。窓の大きさが 0 の軸(最小化など)は 1 倍です。headless では窓が無いので 1 倍で、framebuffer は出力先の大きさです([`livePointerTransform()`](../../src/core/appflow/framephase.cpp#L65))。
+- `inside` は、位置が分かっていて(入力を最後に clear してからカーソルの event が来ている)、かつ 0 ≤ px < framebuffer の大きさのとき true です([`pointerStateFor()`](../../src/core/os/inputstate.cpp#L74))。最初のカーソル event までは `position_px` は (0, 0) で `inside` は false です。
+- 位置は clamp せず、どのアクションとも合成しません。ロック中のカーソルや、窓の外で捕まえたカーソルは framebuffer の外の位置を返しえます。
+- **ポインタはアクションではありません。** アクションの axis2 は [-1, 1] に clamp され、同じアクションの binding どうしで足し合わされる(第7章 §7.2)ので、ピクセルの位置を運べないためです。
+- 値はフレーム先頭の入力凍結で決まり、そのフレームの中では変わりません。
+
+**`setCursorMode(mode)`**
+
+- `normal` はカーソルを見せ、`hidden` は窓の上にあるときだけ隠し、`locked` は隠して窓の中に閉じ込め、移動量を制限なしで報告します(GLFW の disabled cursor)。
+- 反映は**次のフレーム**です。通常のフレームループが窓の event を処理した直後に、前のフレームで頼まれたモードを窓へ適用します([`applyCursorMode()` の呼び出し](../../src/core/appflow/loop.cpp#L739))。
+- 別の窓に埋め込まれた窓(`--rpc` で起動し、Studio の viewport として `WS_CHILD` にされた窓)では、`locked` を `normal` として扱います。ロックすると Studio 側のカーソルまで奪うためです([`Window::applyCursorMode()`](../../src/core/os/window.cpp#L316))。`hidden` はそのまま効きます。埋め込みの判定は Windows でだけ行います。
+- 頼んだモードと効いているモードは rpc `get_status` の `input.cursor {requested, effective, embedded}` で見えます([第10章](10_tools.md))。headless には窓が無いので、頼んでも `effective` は `normal` のままです。
+- scene load の途中に頼んでも load の transaction には入りません。分類は `nonparticipant.window-cursor` で([manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L228))、load の成否に関係なく次のフレームで適用されます。
+
+**`screenRay(position_px)`**
+
+- 今の主 camera の projection と view の逆行列で、framebuffer ピクセルの位置を world の ray にします([`Camera::rayThroughPixel()`](../../src/core/renderer/camera.cpp#L391))。逆行列は double で計算します。
+- NDC は `2 × px ÷ 幅 − 1`(y も同じ式で、**反転しません**)。平面描画のフレームが NDC を framebuffer へ写す向きに合わせてあります。幅と高さは camera の viewport(出力先の大きさ)です。
+- 起点は near 面上、方向は正規化済み、`max_distance` は `phys::Ray` の既定値です。framebuffer の外の位置にも ray を返します。
+- camera は呼んだ時点のものを読みます。同じ update の中で先に camera を動かしていれば、動かした後の camera の ray です。
+- 失敗は [`RenderError`](../../src/core/userpublic/render_error.hpp#L11)(新しいヘッダ `render_error.hpp`。`gamecontext.hpp` が取り込みます)で返ります。名前は [`renderErrorName()`](../../src/core/userpublic/render_error.hpp#L20) でも引けます。
+
+| エラー名(`RenderError`) | いつ出るか |
+|---|---|
+| `render.screen_position_invalid@1`(`screen_position_invalid`) | 位置が有限の数でない(NaN / 無限大) |
+| `render.screen_ray_unavailable@1`(`screen_ray_unavailable`) | XR が有効。左右の目がそれぞれ別の view なので、画面の 1 点に 1 本の ray が決まらない |
+
+位置の検査が先なので、XR 中に NaN を渡すと `render.screen_position_invalid@1` です。
+
+**GP-4 が残した穴**
+
+- 埋め込みの窓で `locked` を無視する挙動は、判定の純関数の test でしか確かめていません(Studio の中での実機確認は未確認)。
+- カーソルモードの反映は 1 フレーム遅れます。
+- `inside` の出入り(enter / leave)は記録していません。
+- gizmo と modal transform は独自の `gizmoContentScale` で換算しており、窓座標 → ピクセルの換算が 2 系統あります。
+- 「画面の 1 点に 1 本の ray が決まらない(複数の view で描いている)」の判定は `xr_active` だけです。
 
 ### actionPose(✅WP132 — XR 姿勢入力)
 
@@ -554,7 +619,7 @@ if (auto hit = ctx.physics().shapeCastClosest(player, {0, -4, 0})) {
 - **プロバイダの選択はビルド時**です: `PELICAN_WITH_BUILTIN_PHYSICS`(既定 ON)/ `PELICAN_WITH_JOLT_PHYSICS`(既定 OFF。両方 ON なら Jolt が勝つ)。project.json や実行時の切替はありません。クエリ契約(順序・タイブレーク)はプロバイダによらずエンジン側が所有するため、通常は意識不要です。ゲーム DLL から capability 単位で provider をオーバーレイする上級拡張点(`physics/abi_v2.hpp` — raycast だけ独自実装し残りはフォールバック、等)もあります。
 - transform 追従は現行では毎フレーム再収集(BVH = bounding volume hierarchy、形状を包む箱を木に組んで判定候補を絞る加速構造。それを持たないという意味 — 計測してから見直す方針)。capsule の軸はローカル Y、box は OBB(回転対応)です。
 - `debug_draw` feature を rendering config で参照していると collider のワイヤフレームが描画されます([第6章](06_rendering.md))。
-- rpc の query は `raycast`([受け口](../../src/core/communication/rpcserver.cpp#L1115)。`origin` / `direction` / `max_distance` を受けて最近傍 1 件を返す)だけです。provider が 0 本のビルドと `PELICAN_WITH_PHYSICS=OFF` のビルド(✅PG-2b)では、この `raycast` も「当たらなかった」ではなく JSON-RPC の error を返します(§8.4「機能を外した build」)。
+- rpc の query は `raycast`([受け口](../../src/core/communication/rpcserver.cpp#L1120)。`origin` / `direction` / `max_distance` を受けて最近傍 1 件を返す)だけです。provider が 0 本のビルドと `PELICAN_WITH_PHYSICS=OFF` のビルド(✅PG-2b)では、この `raycast` も「当たらなかった」ではなく JSON-RPC の error を返します(§8.4「機能を外した build」)。
 - 📐未実装: rpc の overlap / shapeCast、メッシュコライダ/BVH、剛体シミュレーション。
 
 ### 8.7.1 side-scroller controller(WP109)
@@ -598,10 +663,10 @@ Builtin/Jolt/game DLL provider の交換、ゲーム独自 controller への置�
 決定性を構成する要素(✅すべて実装済み):
 
 1. フレームループの固定順序(§8.3)と rpc `step_frame` の同一順序
-2. 入力はフレーム頭のスナップショットで凍結(WP37)—— フレーム開始時に、前フレーム以降に OS から届いた入力を 1 回だけ切り出し([beginFrame](../../src/core/os/inputstate.cpp#L373))、そのフレーム中は誰が何度読んでも同じ値です(途中で届いた入力は次フレームの分として待ちます)
+2. 入力はフレーム頭のスナップショットで凍結(WP37)—— フレーム開始時に、前フレーム以降に OS から届いた入力を 1 回だけ切り出し([beginFrame](../../src/core/os/inputstate.cpp#L417))、そのフレーム中は誰が何度読んでも同じ値です(途中で届いた入力は次フレームの分として待ちます)
 3. システム実行順 = order → 名前の辞書順
 4. イベント配送 = 次フレーム頭・emit 順
-5. 物理のタイブレーク(同じ距離・同じ TOI に並んだヒットの順序決め)= stable `ColliderId` → entity 世代 → shape ordinal(名前は最終手段)。無フィルタ専用だった単引数版 `raycastClosest(ray)` は廃止され、[`raycastClosest(ray, filter = {})`](../../src/core/userpublic/gamecontext.hpp#L55) 1 本になりました(filter を省いても規則は同じ。「フィルタ無しで全 collider」が要るときは `phys::every_collider_filter` を渡します)。最近傍 1 件を選ぶときの同距離クラスタの決着だけは、どの filter でも文字列 id の昇順です([physworld.cpp](../../src/core/phys/physworld.cpp#L591))
+5. 物理のタイブレーク(同じ距離・同じ TOI に並んだヒットの順序決め)= stable `ColliderId` → entity 世代 → shape ordinal(名前は最終手段)。無フィルタ専用だった単引数版 `raycastClosest(ray)` は廃止され、[`raycastClosest(ray, filter = {})`](../../src/core/userpublic/gamecontext.hpp#L56) 1 本になりました(filter を省いても規則は同じ。「フィルタ無しで全 collider」が要るときは `phys::every_collider_filter` を渡します)。最近傍 1 件を選ぶときの同距離クラスタの決着だけは、どの filter でも文字列 id の昇順です([physworld.cpp](../../src/core/phys/physworld.cpp#L591))
 6. 乱数 = PCG32 + 固定シード(`basic_config.seed` / `ctx.setSeed` / rpc `set_seed`)
 7. シーン切替 = フレーム境界適用
 8. ヘッドレス実行 = 固定ステップ時刻(dt = 1/fps)
@@ -631,7 +696,7 @@ ctx.audio().stopSound(h);
   - 形式の方針は [資産形式の方針](../design_asset_format_policy.md) §1.1、一覧は [第5章](05_assets.md) §5.8。
 - 再生バックエンドは miniaudio(0.11.25)で、Ogg Vorbis の decoder は miniaudio に同梱の stb_vorbis です(`PELICAN_WITH_AUDIO` の中だけで有効)。
 - **10 秒を超える音は streaming で鳴ります**(✅AU-2。長さは header で判断)。全体を decode せず、符号化されたままの bytes を 1 つだけ持ち、voice ごとに自分の decoder で再生しながら読みます。下の「長い音の streaming」を見てください。
-- `playSound(path)` は se バスで鳴ります。**`playSound(path, bus)`**([宣言](../../src/core/userpublic/gamecontext.hpp#L88))は `"se"` か `"bgm"` を受け、それ以外(`"master"` を含む)は `Unknown audio bus: <名前> (a voice plays on se or bgm)` で投げます。master は se と bgm の両方に掛かる音量で、voice を載せる先ではありません。実効音量は master × 各バスです。
+- `playSound(path)` は se バスで鳴ります。**`playSound(path, bus)`**([宣言](../../src/core/userpublic/gamecontext.hpp#L89))は `"se"` か `"bgm"` を受け、それ以外(`"master"` を含む)は `Unknown audio bus: <名前> (a voice plays on se or bgm)` で投げます。master は se と bgm の両方に掛かる音量で、voice を載せる先ではありません。実効音量は master × 各バスです。
 - **同じアセットの decode は 1 回です**(✅AU-1)。decode した結果はアセットの正規化した参照を鍵に保持し、ディスク上のファイルなら更新時刻とサイズも鍵に含めます(置き換えたファイルは decode し直す)。合計の上限は 256 MB で、超えたときは **どの voice も持っていないもの**から捨てます([`decodedCacheBudget`](../../src/core/audio/audio.cpp#L408))。`playSound`、グラフの voice、rendering config 登録時のアセット検査が同じ decode を共有します。streaming の音(10 秒超)も同じ cache に入りますが、持つのは PCM ではなく符号化された bytes で、上限にはその大きさで数えます。
 - `PELICAN_WITH_AUDIO=OFF` ビルドで音 API を呼ぶと、どのフラグで無効化されたかを言うエラー(`BuildFeatureCallDisabledError`、`code()` = `build_feature_disabled@1`)になります。`onDestroy` の中だけは例外にならず `effect_errors` に積まれます(§8.4「機能を外した build」)。
 - **シーンロード中(behavior の `onInit` / `onDestroy`)に呼ぶと、再生・停止・バス音量はロードの成功後にまとめて適用されます**(§8.4 の囲み・[第4章 §4.3](04_scene_ecs.md))。`isPlaying` / `busVolume` はその予約を反映した値を返します。
