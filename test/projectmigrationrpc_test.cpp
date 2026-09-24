@@ -152,4 +152,36 @@ TEST_CASE("the migration-only endpoint refuses everything else by name until it 
     CHECK_NOTHROW(requireProjectMigrationNotRequired(project.root, registry));
 }
 
+TEST_CASE("apply_project_migration names a transaction directory another writer holds",
+          "[mg1b][project-migration][rpc]") {
+    CorpusCopy project{"example"};
+    const auto registry = testRegistry();
+    std::istringstream input;
+    std::ostringstream output;
+    RpcServer server{input, output};
+    configureProjectMigrationRpcHandlers(server, project.root, registry);
+    const auto plan = Json::parse(server.processLine(request(1, "plan_project_migration")));
+    const auto expected = plan.at("result").at("expected");
+    const auto scene_before = readBytes(project.root / "scenes/main.scene.json");
+
+    auto lock = ProjectDocumentTransactionLock::acquire(project.root);
+    const auto refused = Json::parse(server.processLine(
+        request(2, "apply_project_migration", {{"expected", expected}})));
+    CAPTURE(refused.dump());
+    CHECK(refused.at("error").at("code") == -32000);
+    CHECK(refused.at("error").at("data").at("error_code") ==
+          std::string{projectMigrationTransactionBusyCode});
+    const auto directory = lock.directory().generic_u8string();
+    CHECK(refused.at("error").at("data").at("error_fields").at("path") ==
+          std::string{reinterpret_cast<const char *>(directory.data()), directory.size()});
+    CHECK(fs::is_directory(lock.directory()));
+    CHECK(readBytes(project.root / "scenes/main.scene.json") == scene_before);
+
+    lock.release();
+    const auto applied = Json::parse(server.processLine(
+        request(3, "apply_project_migration", {{"expected", expected}})));
+    CAPTURE(applied.dump());
+    CHECK(applied.at("result").at("applied") == true);
+}
+
 } // namespace Pelican

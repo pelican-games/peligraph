@@ -125,6 +125,77 @@ ProjectDocumentCommitReceipt commitProjectDocuments(
     std::span<const ProjectCandidateDocument> documents,
     const ProjectDocumentCommitFault &fault = {});
 
+// MG-1b: the transaction directory is the lock. Every writer takes it by
+// creating `.pelican/render-authoring.transaction` itself (create_directory
+// fails when the name is taken, in one operation), and holds it until the
+// directory is gone. The directory records no owner, so from outside, a
+// directory another process is committing through right now and one a writer
+// that stopped left behind look the same. Only the gate that opens a project
+// (recoverProjectDocumentTransaction) may read it as a leftover; a writer
+// that finds it stops instead.
+class ProjectDocumentTransactionBusy final : public std::runtime_error {
+    std::filesystem::path path_;
+
+  public:
+    explicit ProjectDocumentTransactionBusy(std::filesystem::path directory);
+    const std::filesystem::path &path() const noexcept { return path_; }
+};
+
+class ProjectDocumentTransactionLock;
+
+// commitProjectDocuments through a directory the caller already holds. It
+// does not look for another writer -- the directory is the caller's -- and it
+// takes the directory over from the lock: from here on the commit removes it,
+// or, when its own rollback fails, leaves it for recovery, and the lock no
+// longer touches it. A commit that changes nothing, or refuses before it
+// writes (a document that moved), leaves the lock holding the directory.
+ProjectDocumentCommitReceipt commitProjectDocuments(
+    ProjectDocumentTransactionLock &lock,
+    std::span<const ProjectCandidateDocument> documents,
+    const ProjectDocumentCommitFault &fault = {});
+
+class ProjectDocumentTransactionLock {
+    std::filesystem::path project_root_;
+    std::filesystem::path directory_;
+    bool held_ = false;
+    // `.pelican` did not exist and acquire() made it; release() removes it
+    // again when it is empty, so a lock taken for nothing leaves nothing.
+    bool created_metadata_directory_ = false;
+
+    ProjectDocumentTransactionLock(std::filesystem::path project_root,
+                                   std::filesystem::path directory,
+                                   bool created_metadata_directory) noexcept;
+
+    friend ProjectDocumentCommitReceipt commitProjectDocuments(
+        ProjectDocumentTransactionLock &lock,
+        std::span<const ProjectCandidateDocument> documents,
+        const ProjectDocumentCommitFault &fault);
+
+  public:
+    // Creates the project's transaction directory. A directory that is
+    // already there -- another writer's, a leftover, the MG-2a format -- is
+    // ProjectDocumentTransactionBusy, and is neither read nor touched.
+    static ProjectDocumentTransactionLock acquire(
+        const std::filesystem::path &project_root);
+
+    ProjectDocumentTransactionLock(ProjectDocumentTransactionLock &&other) noexcept;
+    ProjectDocumentTransactionLock &operator=(ProjectDocumentTransactionLock &&) = delete;
+    ProjectDocumentTransactionLock(const ProjectDocumentTransactionLock &) = delete;
+    ProjectDocumentTransactionLock &operator=(const ProjectDocumentTransactionLock &) = delete;
+    // release()
+    ~ProjectDocumentTransactionLock();
+
+    bool held() const noexcept { return held_; }
+    // Canonical.
+    const std::filesystem::path &projectRoot() const noexcept { return project_root_; }
+    const std::filesystem::path &directory() const noexcept { return directory_; }
+
+    // Removes the directory, which holds nothing while the lock has it. A
+    // removal that fails leaves the directory; the next open's recovery
+    // removes an empty one.
+    void release() noexcept;
+};
+
 // Defensive support for a participant that violates the required
 // commit-callback/noexcept-publication protocol after the source commit.
 void rollbackCommittedProjectDocuments(ProjectDocumentCommitReceipt receipt);

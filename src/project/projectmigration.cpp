@@ -432,6 +432,29 @@ OrderedJson digestsJson(const std::map<std::string, std::string> &digests) {
     return result;
 }
 
+ProjectDocumentTransactionLock acquireApplyTransaction(
+    const std::filesystem::path &root) {
+    try {
+        return ProjectDocumentTransactionLock::acquire(root);
+    } catch (const ProjectDocumentTransactionBusy &busy) {
+        const auto path = utf8(busy.path());
+        throw ProjectMigrationError(
+            std::string{projectMigrationTransactionBusyCode},
+            {{"path", path},
+             {"message",
+              "the project document transaction directory '" + path +
+                  "' is in use: an engine or Studio that has this project open "
+                  "may be saving through it, or a writer that stopped left it "
+                  "behind. Close every engine and Studio that has the project "
+                  "open and apply again; opening the project resolves a "
+                  "directory that was left behind"}});
+    } catch (const std::exception &error) {
+        throw ProjectMigrationError(
+            std::string{projectMigrationApplyFailedCode},
+            {{"message", error.what()}});
+    }
+}
+
 } // namespace
 
 ProjectMigrationError::ProjectMigrationError(std::string code,
@@ -686,9 +709,13 @@ ProjectMigrationApplyResult applyProjectMigration(
     const DocumentMigrationRegistry &registry,
     const ProjectMigrationApplyOptions &options) {
     const auto root = canonicalRoot(project_root);
-    // A transaction a crash left behind is resolved first, exactly as opening
-    // the project would, so the plan reads the documents as they stand.
-    recoverProjectDocumentTransaction(root);
+    // MG-1b: the transaction directory first, and nothing else when it is
+    // taken. Recovering here would roll back a transaction that has no
+    // committed marker yet -- which is also what the commit of an engine or
+    // Studio that has this project open looks like while it runs. The plan is
+    // read under the lock, so no editor commit moves a document between the
+    // plan and the commit (the CAS still catches a hand edit).
+    auto lock = acquireApplyTransaction(root);
 
     ProjectMigrationApplyResult result;
     result.plan = planProjectMigration(root, registry);
@@ -760,7 +787,7 @@ ProjectMigrationApplyResult applyProjectMigration(
     // (b) One transaction for every document: a failure before its commit
     // marker rolls each applied document back to the bytes it had.
     try {
-        (void)commitProjectDocuments(root, candidates, options.fault);
+        (void)commitProjectDocuments(lock, candidates, options.fault);
     } catch (const std::exception &error) {
         removeBackup(backup);
         throw ProjectMigrationError(std::string{projectMigrationApplyFailedCode},

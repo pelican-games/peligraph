@@ -55,6 +55,12 @@ inline constexpr std::string_view projectMigrationApplyFailedCode =
     "project.migration_apply_failed@1";
 inline constexpr std::string_view projectMigrationProjectMissingCode =
     "project.migration_project_missing@1";
+// MG-1b: apply found the project's document transaction directory taken --
+// by an engine or Studio that has the project open and is committing an edit,
+// or left behind by a writer that stopped; from outside the two look the same.
+// Nothing is read, recovered or waited for. {path: the directory, message}.
+inline constexpr std::string_view projectMigrationTransactionBusyCode =
+    "project.migration_transaction_busy@1";
 
 // What a step is told about the document it rewrites.
 struct ProjectContext {
@@ -206,12 +212,20 @@ struct ProjectMigrationApplyResult {
     nlohmann::ordered_json toJson() const;
 };
 
-// recover -> plan -> CAS -> (a) copy every document it writes to
+// lock -> plan -> CAS -> (a) copy every document it writes to
 // .pelican/migration/<timestamp>/ (b)+(c) replace the migrated documents and
 // project.json's `saved_by_engine` in one project document transaction. A
 // failure inside the transaction rolls every document back and removes the
 // backup, and is reported as project.migration_apply_failed@1 {message}.
 // Nothing to migrate writes nothing.
+//
+// MG-1b: the lock is the project's transaction directory, taken before the
+// plan is read and held through the commit. apply never recovers a
+// transaction: a directory that is already there may be another process's
+// commit in progress, and rolling it back would undo that edit. It stops with
+// project.migration_transaction_busy@1 instead and leaves the directory as it
+// is; the gate that opens the project (requireProjectMigrationNotRequired) is
+// where a leftover is resolved.
 ProjectMigrationApplyResult applyProjectMigration(
     const std::filesystem::path &project_root,
     const DocumentMigrationRegistry &registry,

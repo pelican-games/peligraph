@@ -18,6 +18,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <span>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -478,6 +479,167 @@ TEST_CASE("a document that is not an envelope is not a document",
     std::vector<std::string> paths;
     for (const auto &detection : detections) paths.push_back(detection.path);
     CHECK(paths == std::vector<std::string>{"late/scene.json", "scene.json"});
+}
+
+TEST_CASE("apply stops by name while another writer's commit holds the transaction directory",
+          "[mg1b][project-migration][transaction]") {
+    TemporaryDirectory temp;
+    const auto root = copyCorpusProject(temp, "example");
+    const auto registry = testRegistry();
+    const auto scene_path = root / "scenes/main.scene.json";
+    const auto scene_before = readBytes(scene_path);
+    const auto directory = projectDocumentTransactionDirectory(fs::weakly_canonical(root));
+
+    // The editor of an engine that has this project open saves a scene edit:
+    // the scene is already replaced on disk, the manifest says prepared and
+    // there is no committed marker yet. That is exactly what recovery rolls
+    // back. apply runs at that moment.
+    auto edited = OrderedJson::parse(scene_before);
+    edited["mg1b_edited"] = true;
+    const auto scene_edited = edited.dump(2) + "\n";
+    const ProjectCandidateDocument edit{
+        .reference = "scenes/main.scene.json",
+        .normalized_reference = "scenes/main.scene.json",
+        .path = scene_path,
+        .operation = ProjectDocumentOperation::replace,
+        .expected = {ProjectDocumentExistence::present, projectDocumentDigest(scene_before)},
+        .bytes = scene_edited,
+    };
+    std::string code;
+    OrderedJson fields;
+    std::map<std::string, std::string> held_before;
+    std::map<std::string, std::string> held_after;
+    std::string scene_during;
+    bool commit_threw = false;
+    try {
+        (void)commitProjectDocuments(
+            root, std::span{&edit, 1}, [&](std::size_t index, const ProjectCandidateDocument &) {
+                if (index != 0) return; // the committed marker's call
+                held_before = snapshot(directory);
+                try {
+                    (void)applyProjectMigration(root, registry);
+                } catch (const ProjectMigrationError &error) {
+                    code = error.code();
+                    fields = error.fields();
+                }
+                held_after = snapshot(directory);
+                scene_during = readBytes(scene_path);
+            });
+    } catch (const std::exception &) {
+        commit_threw = true;
+    }
+
+    CHECK(code == std::string{projectMigrationTransactionBusyCode});
+    CHECK(fields.at("path") ==
+          std::string{reinterpret_cast<const char *>(directory.generic_u8string().c_str())});
+    // The directory and everything in it stayed, and the edit was not undone.
+    CHECK(held_before.contains("manifest.json"));
+    CHECK_FALSE(held_before.contains("committed"));
+    CHECK(held_after == held_before);
+    CHECK(scene_during == scene_edited);
+    // The editor's commit finished as if apply had never run.
+    CHECK_FALSE(commit_threw);
+    CHECK(readBytes(scene_path) == scene_edited);
+    CHECK_FALSE(fs::exists(directory));
+    CHECK_FALSE(fs::exists(root / ".pelican" / "migration"));
+
+    // With the directory gone, the same apply goes through, on the edited scene.
+    const auto result = applyProjectMigration(root, registry);
+    CHECK(result.applied);
+    const auto migrated = OrderedJson::parse(readBytes(scene_path));
+    CHECK(migrated.at("version") == 3);
+    CHECK(migrated.at("mg1b_edited") == true);
+}
+
+TEST_CASE("apply stops by name on a transaction directory left behind, which only opening resolves",
+          "[mg1b][project-migration][transaction]") {
+    TemporaryDirectory temp;
+    const auto root = copyCorpusProject(temp, "example");
+    const auto registry = testRegistry();
+    const auto original = snapshot(root);
+    // A writer that stopped before its manifest: from outside it is the same
+    // directory as a writer still staging.
+    const auto directory = projectDocumentTransactionDirectory(fs::weakly_canonical(root));
+    fs::create_directories(directory);
+    writeBytes(directory / "0.before", "staged");
+
+    const auto error = requireMigrationError([&] { applyProjectMigration(root, registry); });
+    CHECK(error.code() == std::string{projectMigrationTransactionBusyCode});
+    CHECK_THAT(error.what(), Catch::Matchers::StartsWith(
+                                 "project.migration_transaction_busy@1: {\"path\":"));
+    CHECK(fs::exists(directory / "0.before"));
+    // The CLI names it too, and writes nothing.
+    const auto cli = runCli(registry, {"--project", root.string()});
+    CHECK(cli.exit_code != 0);
+    CHECK_THAT(cli.err, Catch::Matchers::StartsWith("project.migration_transaction_busy@1: "));
+    CHECK_FALSE(fs::exists(root / ".pelican" / "migration"));
+
+    // Opening the project is where a leftover is resolved.
+    CHECK(migrationErrorCode([&] { requireProjectMigrationNotRequired(root, registry); }) ==
+          std::string{projectMigrationRequiredCode});
+    CHECK_FALSE(fs::exists(directory));
+    CHECK(snapshot(root) == original);
+    CHECK(applyProjectMigration(root, registry).applied);
+}
+
+TEST_CASE("an editor commit that meets apply's held directory is refused, and apply completes",
+          "[mg1b][project-migration][transaction]") {
+    TemporaryDirectory temp;
+    const auto root = copyCorpusProject(temp, "example");
+    const auto registry = testRegistry();
+    const auto project_path = root / "project.json";
+    const auto project_before = readBytes(project_path);
+    const ProjectCandidateDocument edit{
+        .reference = "project.json",
+        .normalized_reference = "project.json",
+        .path = project_path,
+        .operation = ProjectDocumentOperation::replace,
+        .expected = {ProjectDocumentExistence::present, projectDocumentDigest(project_before)},
+        .bytes = project_before + "\n",
+    };
+    const auto editorCommit = [&] {
+        try {
+            (void)commitProjectDocuments(root, std::span{&edit, 1});
+        } catch (const std::exception &error) {
+            return std::string{error.what()};
+        }
+        return std::string{};
+    };
+
+    // apply holds the directory from before it reads the plan: once while it
+    // writes the backup (nothing in the directory yet), once mid-commit.
+    std::string while_backing_up;
+    std::string while_committing;
+    ProjectMigrationApplyOptions options;
+    options.timestamp = [&] {
+        while_backing_up = editorCommit();
+        return std::string{"20260925T000000Z"};
+    };
+    options.fault = [&](std::size_t index, const ProjectCandidateDocument &) {
+        if (index == 0) while_committing = editorCommit();
+    };
+    const auto result = applyProjectMigration(root, registry, options);
+    CHECK(result.applied);
+    CHECK_THAT(while_backing_up, Catch::Matchers::ContainsSubstring(
+                                     "another render authoring transaction or recovery is active"));
+    CHECK_THAT(while_committing, Catch::Matchers::ContainsSubstring(
+                                     "another render authoring transaction or recovery is active"));
+    CHECK_FALSE(fs::exists(projectDocumentTransactionDirectory(fs::weakly_canonical(root))));
+
+    // A lock held by hand stops apply the same way; released, apply finds
+    // nothing left to do and leaves no metadata directory behind.
+    TemporaryDirectory fresh;
+    const auto settled = copyCorpusProject(fresh, "sprite_demo");
+    {
+        auto lock = ProjectDocumentTransactionLock::acquire(settled);
+        CHECK(lock.held());
+        CHECK(migrationErrorCode([&] {
+                  applyProjectMigration(settled, builtinDocumentMigrationRegistry());
+              }) == std::string{projectMigrationTransactionBusyCode});
+    }
+    CHECK_FALSE(fs::exists(settled / ".pelican"));
+    CHECK_FALSE(applyProjectMigration(settled, builtinDocumentMigrationRegistry()).applied);
+    CHECK_FALSE(fs::exists(settled / ".pelican"));
 }
 
 } // namespace Pelican

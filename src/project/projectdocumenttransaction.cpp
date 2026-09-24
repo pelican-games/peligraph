@@ -755,13 +755,20 @@ void projectDocumentAtomicReplaceForTesting(
     atomicReplace(source, destination);
 }
 
-ProjectDocumentCommitReceipt commitProjectDocuments(
-    const std::filesystem::path &project_root_input,
+namespace {
+
+// The commit itself. `take_over` is empty for a writer that takes the
+// transaction directory here; for one that already holds it (a
+// ProjectDocumentTransactionLock), it is called once, right before the first
+// byte is written into that directory, and from then on the directory is this
+// commit's to remove or to leave for recovery.
+ProjectDocumentCommitReceipt commitDocuments(
+    const std::filesystem::path &project_root,
     std::span<const ProjectCandidateDocument> documents,
-    const ProjectDocumentCommitFault &fault) {
-    const auto project_root = weaklyCanonical(
-        project_root_input, "could not normalize render authoring project root");
+    const ProjectDocumentCommitFault &fault,
+    const std::function<void()> &take_over) {
     ProjectDocumentCommitReceipt receipt{.project_root = project_root};
+    const bool directory_held = static_cast<bool>(take_over);
 
     // A prior committed transaction may have left only cleanup artifacts
     // because a scanner held the metadata directory. It is safe to verify and
@@ -770,7 +777,9 @@ ProjectDocumentCommitReceipt commitProjectDocuments(
     const auto existing_directory =
         projectDocumentTransactionDirectory(project_root);
     std::error_code existing_error;
-    if (std::filesystem::exists(existing_directory, existing_error)) {
+    if (directory_held) {
+        // The directory is the caller's own lock, and holds nothing yet.
+    } else if (std::filesystem::exists(existing_directory, existing_error)) {
         if (existing_error) {
             throw std::runtime_error(existing_error.message());
         }
@@ -836,15 +845,19 @@ ProjectDocumentCommitReceipt commitProjectDocuments(
 
     const auto directory = projectDocumentTransactionDirectory(project_root);
     std::error_code error;
-    std::filesystem::create_directories(directory.parent_path(), error);
-    if (error) {
-        throw std::runtime_error(
-            "could not create render authoring metadata directory: " +
-            error.message());
-    }
-    if (!std::filesystem::create_directory(directory, error) || error) {
-        throw std::runtime_error(
-            "another render authoring transaction or recovery is active");
+    if (directory_held) {
+        take_over();
+    } else {
+        std::filesystem::create_directories(directory.parent_path(), error);
+        if (error) {
+            throw std::runtime_error(
+                "could not create render authoring metadata directory: " +
+                error.message());
+        }
+        if (!std::filesystem::create_directory(directory, error) || error) {
+            throw std::runtime_error(
+                "another render authoring transaction or recovery is active");
+        }
     }
 
     Json manifest{
@@ -1000,6 +1013,121 @@ ProjectDocumentCommitReceipt commitProjectDocuments(
                 rollback_error.what());
         }
         std::rethrow_exception(original);
+    }
+}
+
+// An empty directory this process created, removed again. A scanner that
+// looked in may hold it for a moment; anything inside it means it is no
+// longer only a lock, and it stays.
+void removeEmptyLockDirectory(const std::filesystem::path &directory) noexcept {
+#ifdef _WIN32
+    constexpr unsigned int retry_count = 500;
+#else
+    constexpr unsigned int retry_count = 1;
+#endif
+    for (unsigned int attempt = 0; attempt < retry_count; ++attempt) {
+        std::error_code error;
+        std::filesystem::remove(directory, error);
+        if (!error) return;
+#ifdef _WIN32
+        if (error.value() != ERROR_ACCESS_DENIED &&
+            error.value() != ERROR_SHARING_VIOLATION &&
+            error.value() != ERROR_LOCK_VIOLATION) {
+            return;
+        }
+        Sleep(2);
+#endif
+    }
+}
+
+} // namespace
+
+ProjectDocumentCommitReceipt commitProjectDocuments(
+    const std::filesystem::path &project_root,
+    std::span<const ProjectCandidateDocument> documents,
+    const ProjectDocumentCommitFault &fault) {
+    return commitDocuments(
+        weaklyCanonical(project_root,
+                        "could not normalize render authoring project root"),
+        documents, fault, {});
+}
+
+ProjectDocumentCommitReceipt commitProjectDocuments(
+    ProjectDocumentTransactionLock &lock,
+    std::span<const ProjectCandidateDocument> documents,
+    const ProjectDocumentCommitFault &fault) {
+    if (!lock.held_) {
+        throw std::logic_error(
+            "commitProjectDocuments was given a transaction lock that no longer "
+            "holds its directory");
+    }
+    return commitDocuments(lock.project_root_, documents, fault,
+                           [&lock] { lock.held_ = false; });
+}
+
+ProjectDocumentTransactionBusy::ProjectDocumentTransactionBusy(
+    std::filesystem::path directory)
+    : std::runtime_error{"the project document transaction directory is in use: " +
+                         utf8PathString(directory)},
+      path_{std::move(directory)} {}
+
+ProjectDocumentTransactionLock::ProjectDocumentTransactionLock(
+    std::filesystem::path project_root, std::filesystem::path directory,
+    bool created_metadata_directory) noexcept
+    : project_root_{std::move(project_root)}, directory_{std::move(directory)},
+      held_{true}, created_metadata_directory_{created_metadata_directory} {}
+
+ProjectDocumentTransactionLock::ProjectDocumentTransactionLock(
+    ProjectDocumentTransactionLock &&other) noexcept
+    : project_root_{std::move(other.project_root_)},
+      directory_{std::move(other.directory_)}, held_{other.held_},
+      created_metadata_directory_{other.created_metadata_directory_} {
+    other.held_ = false;
+}
+
+ProjectDocumentTransactionLock::~ProjectDocumentTransactionLock() { release(); }
+
+ProjectDocumentTransactionLock ProjectDocumentTransactionLock::acquire(
+    const std::filesystem::path &project_root_input) {
+    auto project_root = weaklyCanonical(
+        project_root_input, "could not normalize render authoring project root");
+    auto directory = projectDocumentTransactionDirectory(project_root);
+    const auto metadata = directory.parent_path();
+    std::error_code error;
+    const bool created_metadata =
+        std::filesystem::create_directory(metadata, error);
+    if (error) {
+        throw std::runtime_error(
+            "could not create render authoring metadata directory: " +
+            error.message());
+    }
+    // The one operation that decides who holds the directory: it fails when
+    // the name is taken, whoever took it and whatever it holds.
+    if (std::filesystem::create_directory(directory, error) && !error) {
+        return ProjectDocumentTransactionLock{std::move(project_root),
+                                              std::move(directory),
+                                              created_metadata};
+    }
+    std::error_code exists_error;
+    const bool taken = std::filesystem::exists(directory, exists_error);
+    if (created_metadata) {
+        std::error_code ignored;
+        std::filesystem::remove(metadata, ignored);
+    }
+    if (taken) throw ProjectDocumentTransactionBusy{std::move(directory)};
+    throw std::runtime_error(
+        "could not create the project document transaction directory " +
+        utf8PathString(directory) + ": " + error.message());
+}
+
+void ProjectDocumentTransactionLock::release() noexcept {
+    if (!held_) return;
+    held_ = false;
+    removeEmptyLockDirectory(directory_);
+    if (created_metadata_directory_) {
+        // Only while empty: a backup or another writer's directory keeps it.
+        std::error_code ignored;
+        std::filesystem::remove(directory_.parent_path(), ignored);
     }
 }
 
