@@ -1577,7 +1577,7 @@ layout の有無と宣言の有無で、解決値と名前付き拒否は次の�
 |---:|---|---|
 | 1 | layout 自体が無い(`LegacyNoLayout`) | row snapshot を作らず、TLAS は legacy: custom index は **登録順の連番**、mask/flags は canonical defaults([`lowerRayTracingTlasInstancePlan()` の legacy 分岐](../../src/core/renderer/accelerationstructure.cpp#L718)) |
 | 2 | layout の `version` が 3 以外(1 / 2 を含む) | parse で [`pelican.ray_group_layout.version_unsupported@1`](../../src/core/shader/raygrouplayout.cpp#L844)。`acceleration_structure` の有無を見る前に落ちます。`ray_as_declaration_requires_layout_v2@1` はもう作られません |
-| 3 | layout が無い project の scene に builtin の `pelican_ray_instance` がある | scene load で [`pelican.ray_instance_requires_layout_v2@1`](../../src/core/loader/scene.cpp#L113)。code 名は公開時のまま据え置きで、今の意味は「layout が無い」です。resolver 側にあった同じ code の検査は、layout が無ければ resolver が呼ばれないので消えました |
+| 3 | layout が無い project の scene に builtin の `pelican_ray_instance` がある | scene load で [`pelican.ray_instance_requires_layout_v2@1`](../../src/core/loader/scene.cpp#L114)。code 名は公開時のまま据え置きで、今の意味は「layout が無い」です。resolver 側にあった同じ code の検査は、layout が無ければ resolver が呼ばれないので消えました |
 | 4 | layout、`acceleration_structure` 無し | 全 row が canonical defaults。**`custom_index` は 0 であって `q` ではありません**(出所は `engine_default`) |
 | 5 | layout + `defaults` だけ | `defaults` の4値がそのまま全 row へ |
 | 6 | layout + material rule が1つ当たる | その row の `geometry_flags` だけが rule 値へ([rule 値の代入](../../src/core/shader/raygrouplayout.cpp#L1580)) |

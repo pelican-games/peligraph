@@ -238,7 +238,7 @@ emit のソースには static 値のほか `stable_id` / `drag_delta_ui` / `wid
 
 ## 7.5 テキスト HUD — debug_text(✅WP54 / WP169)
 
-使い方は不変です — rendering config に `engine://features/debug_text.json` を 1 行 + ゲームコードから `ctx.render().debugText(x, y, text)`。座標はピクセル・左上原点、feature を参照しなければ完全 no-op、golden は tolerance 0 です。API は C-8 の facade 分割で `GameContext` から [`RenderContext::debugText`](../../src/core/userpublic/gamecontext.hpp#L123) へ移りました。`color`(既定 白 `{1, 1, 1, 1}`)と `scale`(既定 1)は引数で渡せ、省略したときだけ白・等倍です。
+使い方は不変です — rendering config に `engine://features/debug_text.json` を 1 行 + ゲームコードから `ctx.render().debugText(x, y, text)`。座標はピクセル・左上原点、feature を参照しなければ完全 no-op、golden は tolerance 0 です。API は C-8 の facade 分割で `GameContext` から [`RenderContext::debugText`](../../src/core/userpublic/gamecontext.hpp#L124) へ移りました。`color`(既定 白 `{1, 1, 1, 1}`)と `scale`(既定 1)は引数で渡せ、省略したときだけ白・等倍です。
 
 ✅WP169 で、`debug_text` と `pelican.ui` の**ビットマップレイアウトが単一実装に統一**されました。以前は「フォントテーブルだけ共有・配置計算は別実装」でしたが、現在はどちらも [src/core/ui/bitmapfont.cpp](../../src/core/ui/bitmapfont.cpp) の `BitmapFont::layout()` を通ります。**見た目・座標・API は不変**で(既存 golden と凍結ハッシュはすべて維持、golden 更新 0)、production の `DebugText` と `UiRenderer` を同一オフスクリーン RT に描いた 96×80 RGBA8 の全 30,720 byte が一致することを `test/debugtext_ui_compat_test.cpp`(GPU ラベル付きの Catch2 テスト)がゲートしています。
 

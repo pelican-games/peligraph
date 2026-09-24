@@ -87,7 +87,7 @@
 
 **prepare / publish / commit** — pelican2 全体で繰り返される 3 点セット。**prepare** で「投げうる準備(確保・コピー・検証)」を全部済ませ、**publish** は失敗しようのない差し替えだけにし、**commit** で外から見える状態を確定させます。publish が no-throw なので「半分だけ適用された状態」が原理的に作れません。初出: [第4章 §4.3](04_scene_ecs.md#43-シーンロードの流れ)。
 
-**retire(退役)** — 旧シーンを片付ける段。ここで旧オブジェクトの `onDestroy` が走り、旧 entity は既に unpublish 済みなので**新シーンからは見えません**。retire 中に新たなシーンロードを要求しても拒否されます。初出: [第4章 §4.3](04_scene_ecs.md#43-シーンロードの流れ)。([scene.cpp の requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1812))
+**retire(退役)** — 旧シーンを片付ける段。ここで旧オブジェクトの `onDestroy` が走り、旧 entity は既に unpublish 済みなので**新シーンからは見えません**。retire 中に新たなシーンロードを要求しても拒否されます。初出: [第4章 §4.3](04_scene_ecs.md#43-シーンロードの流れ)。([scene.cpp の requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1842))
 
 **staging(ステージング)** — 「作用を実行せず、実行可能な形にして取っておく」こと。ロード中に `playSound` や `saveData` を呼ぶと、その場では鳴らず・書かず、**実行に必要な準備だけ済ませた entry** がトランザクションに積まれます。溜めた分が実際に外へ出るのは、ロードの 8 段のうち **flush** 段(`commit` に成功したときだけ)です。具体例: `onInit` で `playSound("bgm")` を呼ぶと、その場では voice slot の予約だけが起き、音が鳴るのは flush 段です(ロードが失敗すれば予約ごと消え、鳴りません)。初出: [第4章 ロード中の「作用」](04_scene_ecs.md#ロード中の作用はトランザクションに溜まるwp380be)。([PreparedEffectTransaction](../../src/core/loader/effecttransaction.hpp#L27) / [SceneLoadPhase](../../src/core/loader/sceneload.hpp#L27))
 
@@ -125,7 +125,7 @@
 
 **behavior(オブジェクト behavior)** — シーンの**オブジェクトに貼り付ける**ゲームコードの単位。`behavior` コンポーネントに型名と params を書くと、ゲーム DLL 側に登録された C++ クラスが実体化されます。もう一つの書き方であるゲームシステム(世界全体を回す)との使い分けは §8.5.7 にあります。初出: [第8章 §8.5](08_gameplay.md#85-オブジェクト-behavior--もう一つのゲームコードの書き方wp155162167)。
 
-**GameContext** — ゲームコードがエンジンに触るための**公開ファサード**(唯一の窓口)。状態を持たず、毎フレーム作られて渡されます。入力・カメラ・物理クエリ・音・保存・乱数などがここに集まっています。初出: [第8章 §8.4](08_gameplay.md#84-gamecontext-api-一覧)。([GameContext](../../src/core/userpublic/gamecontext.hpp#L138))
+**GameContext** — ゲームコードがエンジンに触るための**公開ファサード**(唯一の窓口)。状態を持たず、毎フレーム作られて渡されます。入力・カメラ・物理クエリ・音・保存・乱数などがここに集まっています。初出: [第8章 §8.4](08_gameplay.md#84-gamecontext-api-一覧)。([GameContext](../../src/core/userpublic/gamecontext.hpp#L167))
 
 **order(順序値)と総順序** — ゲームシステムの実行順を決める整数。同じ `order` のシステムは**名前の辞書順**で並ぶので、全システムに一意な順序が決まります(= 総順序)。これが決定性の土台の 1 つです。初出: [第8章 §8.3](08_gameplay.md#83-ゲームシステムの登録と実行順序wp43)。
 

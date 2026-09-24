@@ -4,7 +4,7 @@
 
 ## 5.1 `GameContext`は公開ファサード
 
-ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L138) が主要サービスを薄く包みます。面は根と5つのドメインファサードに分かれ、物理 / 音 / アニメーション / セーブ / 描画は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L187) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L188) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L189) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L190) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L191) が返す値越しに呼びます。ファサードは空のクラス（[`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L32) / [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L56) / [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L77) / [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L86) / [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L101)）で、状態もポインタも持たないので、返り値を持ち回っても何も持っていないのと同じです。委譲先は分割前と同じです。
+ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L167) が主要サービスを薄く包みます。面は根と5つのドメインファサードに分かれ、物理 / 音 / アニメーション / セーブ / 描画は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L216) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L217) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L218) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L219) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L220) が返す値越しに呼びます。ファサードは空のクラス（[`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L33) / [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L57) / [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L78) / [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L87) / [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L102)）で、状態もポインタも持たないので、返り値を持ち回っても何も持っていないのと同じです。委譲先は分割前と同じです。
 
 | API群 | 委譲先 | 実装へジャンプ |
 |---|---|---|
@@ -13,16 +13,16 @@
 | ログ | quill logger | [`GameContext::logInfo()`](../../src/core/userpublic/gamecontext.cpp#L73) |
 | object/transform | `GameObjects` | [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L85) |
 | sprite（`createSpriteObject`/`spriteView`/`setSpriteView`/`setSpriteTexture`） | `GameObjects` / sprite runtime | [`GameContext::createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L98) |
-| light（`render().setDirectionalLightDirection` ほか4本） | `LightContainer` | [`RenderContext::setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.cpp#L169) |
-| physics query（`physics().raycastAll`/`raycastClosest`/`overlapAll`/`shapeCastAll`/`shapeCastClosest` + [`phys::QueryFilter`](../../src/core/phys/physquery.hpp#L76)） | physics service | [`PhysicsContext::raycastAll()`](../../src/core/userpublic/gamecontext.cpp#L225) |
-| camera（`render().setCamera`） | `Camera` | [`RenderContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L284) |
-| 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L288) |
-| audio（`audio().playSound` ほか） | `Audio`またはfeature disabled error | [`AudioContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L308) |
-| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L462) |
-| debug text（`render().debugText`） | `DebugText` | [`RenderContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L474) |
-| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L175) |
-| animation graph（`animation().setParameter` / `forceState`） | `AnimationSystem` | [`AnimationContext::setParameter()`](../../src/core/userpublic/gamecontext.cpp#L319) |
-| settings（根）/ save（`save()`） | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L478) / [`SaveContext::saveData()`](../../src/core/userpublic/gamecontext.cpp#L505) |
+| light（`render().setDirectionalLightDirection` ほか4本） | `LightContainer` | [`RenderContext::setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.cpp#L191) |
+| physics query（`physics().raycastAll`/`raycastClosest`/`overlapAll`/`shapeCastAll`/`shapeCastClosest` + [`phys::QueryFilter`](../../src/core/phys/physquery.hpp#L76)） | physics service | [`PhysicsContext::raycastAll()`](../../src/core/userpublic/gamecontext.cpp#L247) |
+| camera（`render().setCamera`） | `Camera` | [`RenderContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L306) |
+| 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L310) |
+| audio（`audio().playSound` ほか） | `Audio`またはfeature disabled error | [`AudioContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L330) |
+| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L484) |
+| debug text（`render().debugText`） | `DebugText` | [`RenderContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L496) |
+| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L204) |
+| animation graph（`animation().setParameter` / `forceState`） | `AnimationSystem` | [`AnimationContext::setParameter()`](../../src/core/userpublic/gamecontext.cpp#L341) |
+| settings（根）/ save（`save()`） | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L500) / [`SaveContext::saveData()`](../../src/core/userpublic/gamecontext.cpp#L527) |
 
 class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport修飾されています。game DLL境界を越えて使われるためです。
 
@@ -32,7 +32,7 @@ class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport�
 
 ### ライト操作API ✅実装済み（WP142 / LIGHT0）
 
-[`gamecontext.hpp` 内](../../src/core/userpublic/gamecontext.hpp#L103) の4本（`RenderContext` のメンバーなので `ctx.render().setDirectionalLightDirection(...)` の形で呼びます）は、scene定義済みライトを**名前で引いて**更新します。いずれも `[[nodiscard]] bool` を返し、その名前のライトが無ければ`false`です。委譲先は [`LightContainer`](../../src/core/light/lightcontainer.hpp) の同名setterです。
+[`gamecontext.hpp` 内](../../src/core/userpublic/gamecontext.hpp#L104) の4本（`RenderContext` のメンバーなので `ctx.render().setDirectionalLightDirection(...)` の形で呼びます）は、scene定義済みライトを**名前で引いて**更新します。いずれも `[[nodiscard]] bool` を返し、その名前のライトが無ければ`false`です。委譲先は [`LightContainer`](../../src/core/light/lightcontainer.hpp) の同名setterです。
 
 ```cpp
 [[nodiscard]] bool setDirectionalLightDirection(std::string_view name, vec3 direction) const;
@@ -993,7 +993,7 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 ### 退役済みobjectのsnapshot view
 
-`retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1597)）、2つの向きに使います。
+`retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1624)）、2つの向きに使います。
 
 - **読み**: [`retiredComponent(id, component_id)`](../../src/core/loader/effecttransaction.cpp#L462) が destroy token の中のcomponentを返し、`GameContext::localTransform()` / `spriteView()` がそれを**先に**引きます（[`GameContext::localTransform()`](../../src/core/userpublic/gamecontext.cpp#L119)）。だから `onDestroy` から自分の最後のtransformを読めます。
 - **書き**: [`rejectRetiredMutation(api, id)`](../../src/core/loader/effecttransaction.cpp#L473) が同じ列を引き、当たれば `SceneRetiredObjectMutationRejected` を診断へ1件積んで `true` を返します。呼び手のsetterは `false` を返すだけで**throwしません**（`onDestroy` は `noexcept` です）。
@@ -1029,12 +1029,12 @@ outboxのentryは呼び出しごとに1件ではありません。
 
 ### 公開APIの棚卸しは双方向
 
-上の分類表が現実と食い違わないことを機械で確かめるのが [`tools/public_api_inventory.py`](../../tools/public_api_inventory.py#L1) です。`gamecontext.hpp` / `gameobjects.hpp` / `behavior.hpp` の3ヘッダから public な関数宣言を素の走査で拾い（[`public_functions()`](../../tools/public_api_inventory.py#L64)）、名前と戻り値の形から `mutator` / `host_entrance` / `getter` へ分類したうえで、runtime manifest と**両方向**に突き合わせます。
+上の分類表が現実と食い違わないことを機械で確かめるのが [`tools/public_api_inventory.py`](../../tools/public_api_inventory.py#L1) です。`gamecontext.hpp` / `gameobjects.hpp` / `behavior.hpp` の3ヘッダから public な関数宣言を素の走査で拾い（[`public_functions()`](../../tools/public_api_inventory.py#L65)）、名前と戻り値の形から `mutator` / `host_entrance` / `getter` へ分類したうえで、runtime manifest と**両方向**に突き合わせます。
 
-- mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L165)）
-- manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L172)）
+- mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L166)）
+- manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L173)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3222)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3244)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 

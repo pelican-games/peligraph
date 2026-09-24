@@ -2627,7 +2627,7 @@ layout(無し / 有り)× `acceleration_structure` 宣言 × `pelican_ray_instan
 
 `pelican.ray_instance_requires_layout_v2@1` と、procedural geometry を layout 無しで書いたときの `pelican.ray_group_type_requires_layout_v3@1` は、公開したときの名前を据え置いています。名前に版が入っていますが、今の意味はどちらも「ray group layout が無い」です。
 
-2 は scene load 時の検査です([scene.cpp](../../src/core/loader/scene.cpp#L63))。**ゲーム DLL が `pelican_ray_instance` という名前のコンポーネントを自分で登録している場合は素通しします** — 名前の所有者が外部なら、組み込みの規則を当てないためです。
+2 は scene load 時の検査です([scene.cpp](../../src/core/loader/scene.cpp#L64))。**ゲーム DLL が `pelican_ray_instance` という名前のコンポーネントを自分で登録している場合は素通しします** — 名前の所有者が外部なら、組み込みの規則を当てないためです。
 
 ### `pelican_ray_instance` コンポーネント
 

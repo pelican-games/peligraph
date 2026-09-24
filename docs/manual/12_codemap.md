@@ -186,7 +186,7 @@ pelican2/
 
 ### ゲーム API 面(facade)
 
-ゲームコードが見てよいのは [userpublic/](../../src/core/userpublic) だけです。全 API の入口 = [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L138)。オブジェクト生成ビルダーは [gameobjects.hpp](../../src/core/userpublic/gameobjects.hpp)(`GameObjects::add().addComponent<...>().finish()`)、システム/イベント登録マクロは [gamesystem.hpp](../../src/core/userpublic/gamesystem.hpp) と [events.hpp](../../src/core/userpublic/events.hpp)、決定的乱数(PCG32)は [deterministicrng.cpp](../../src/core/userpublic/deterministicrng.cpp)。
+ゲームコードが見てよいのは [userpublic/](../../src/core/userpublic) だけです。全 API の入口 = [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L167)。オブジェクト生成ビルダーは [gameobjects.hpp](../../src/core/userpublic/gameobjects.hpp)(`GameObjects::add().addComponent<...>().finish()`)、システム/イベント登録マクロは [gamesystem.hpp](../../src/core/userpublic/gamesystem.hpp) と [events.hpp](../../src/core/userpublic/events.hpp)、決定的乱数(PCG32)は [deterministicrng.cpp](../../src/core/userpublic/deterministicrng.cpp)。
 
 オブジェクト単位の毎フレーム処理は [behavior.hpp](../../src/core/userpublic/behavior.hpp) の `Behavior` 基底 + `PELICAN_REGISTER_BEHAVIOR`([`PELICAN_REGISTER_BEHAVIOR()`](../../src/core/userpublic/details/behavior/registerer.hpp#L385))で、`BehaviorContext` は `GameContext` を継承して `self()` / `params<T>()` などを足したものです。パラメータの schema は [details/schema/structfieldschema.hpp](../../src/core/userpublic/details/schema/structfieldschema.hpp)(WP150 の共通 field descriptor。component codec と同じ機構を共有しています)。
 
@@ -205,7 +205,7 @@ pelican2/
    `overflow` を立てる = **順序の観測を黙って捨てない**)、5 つの
    [`SceneLoadRoot`](../../src/core/loader/sceneload.hpp#L82)(startup / rpc / pending / import v1 / v2)、
    import 側の [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L276)。
-2. [`scene.cpp`](../../src/core/loader/scene.cpp#L1610) の `SceneLoader::load` —— executor 本体。
+2. [`scene.cpp`](../../src/core/loader/scene.cpp#L1637) の `SceneLoader::load` —— executor 本体。
    phase は `prepare → early_publish → publish → activate → commit_metadata → retire → flush → finish` で、
    **記録するのは executor ではなく各 participant** です(WP380c/d)。
    `load()` 自身は 18 個の [`SceneLoadParticipant`](../../src/core/loader/sceneloadparticipant.hpp#L55) を
