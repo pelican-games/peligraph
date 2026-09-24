@@ -82,6 +82,11 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `layers` | 任意 | 正整数。2Dは省略時1でarray容量を表し、XRの内部view数とはphysical loweringで最大値を取る。cubeは省略時6、明示時も6固定 |
 | `usage` | ✔ | `COLOR_ATTACHMENT` / `DEPTH_STENCIL_ATTACHMENT` / `SAMPLED` / `STORAGE` / `TRANSFER_DST` / `TRANSFER_SRC` |
 
+> **Studio から宣言できます(✅F-1)。**Frame Plan の **New render target...** は、この表の宣言を
+> `project://passes/authoring/render-targets.json`(`render_targets[]` だけを持つ editor 管理の feature。root の `features[]`
+> に自動で足されます)に書きます。Studio が編集・削除できるのはこの file の target だけで、root や preset、他の feature で
+> 宣言した target は読み取り専用です。RPC は `edit_render_targets`、拒否の一覧は [第13章 §13.5](13_editor.md) にあります。
+
 runtime cubemapは資源形状だけを宣言し、六面をViewFamilyの6 viewとはみなしません(**view** = 1 つの視点、**ViewFamily** = 同じ内容を描く視点の束のこと。§6.12・[用語集](14_glossary.md))。
 
 ```json

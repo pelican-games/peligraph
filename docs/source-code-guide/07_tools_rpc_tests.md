@@ -878,7 +878,7 @@ root だけの編集が definition のバイト列を動かさないようにす
 **`noexcept` で、`std::exception` の失敗を entry として報告します** —— `project.json` が読めなければ package は 0 個、
 package の文書が壊れていれば `available: false` + `unavailable_reason` の行として並びます。ただし
 **「全部の失敗が行になる」わけではありません**: `std::exception` を継承しない例外を捕まえる
-[`catch (...)`](../../src/core/communication/renderconfigeditor.cpp#L432) は `continue` するだけなので、
+[`catch (...)`](../../src/core/communication/renderconfigeditor.cpp#L579) は `continue` するだけなので、
 その package は entry を 1 つも残さずに catalog から落ちます(記録した穴)。
 
 これは行儀の問題ではありません。catalog は **editor service の構築時**に作られるので、ここで例外が抜けると

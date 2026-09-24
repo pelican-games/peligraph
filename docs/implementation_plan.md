@@ -24365,6 +24365,104 @@ engine 側の起動短縮 / Studio 起動の並列化 / 別 thread の RPC。
   3. project を切り替えると status bar に `Modal transform polling failed: pelican_player exited before returning an RPC response` が出る(切替で古い engine が終了するため。gizmo の modal polling の失敗表示。後で直すノイズ)
 - **F 系列の残り**: F-1(render target の著作)/ F-3(shader の雛形とコンパイルエラー)/ F-4(端から端までのシナリオで追う)
 
+### F-1: render target を Studio から宣言する —— 作成 / 編集 / 削除(利用者指示 2026-09-24「0 から組める」第一段階)
+
+**中段(engine の additive RPC 1 つ + Studio)。実装者: Claude(Opus)。第二の流儀を作らない: 書き込みは `add_authored_pass` と同じ「managed feature fragment + 候補集合 preflight + ticket」の経路に乗せる。**
+
+#### 前提(Explore 2026-09-24、develop 6b68386a)
+- render target の宣言は `render_targets[]`。置き場は direct root の `rendering` / preset の `config` / feature 文書(`featurecompose.cpp:3230-3246`)。parser は `parseRenderTargetDefinitionsFromJson`(`src/core/renderingpass/rendertargetjsonparser.cpp:230-325`): 必須 `name`(一意、予約名は拒否)・`extent_scale`(>0)・`format`・`usage[]`、任意 `format_class`(scene / display / data / `explicit(FMT)`)・`role`(color / data)・`width`+`height`(両方)・`history`・`clear_color[4]`・`format_candidates[]`・`mip_levels`(整数 / "full")・`dimension`(2d / cube)・`layers`
+- `display` は engine が必ず足す予約名(`featurecompose.cpp:223-252`、宣言すると "Render target name is reserved…")。`swapchain` は `display` の別名
+- **render target を書く editor RPC は無い**(`editorrpchandlers.cpp:180-281` の一覧)。読むのは `get_compute_task_authoring.resources[]`(`renderconfigeditor.cpp:1807-1817`、合成後の `render_targets` / `buffers` を `{name, kind, declaration_json}` で。出所は無い)
+- preset root(`pipeline.preset`)は root に `render_targets` を置けない(`renderpipeline.cpp:721-729` の `requireOnlyKeys`)→ **feature に置くのが direct / preset 両方で通る唯一の場所**
+- `add_authored_pass`(`renderconfigeditor.cpp:2409-2571`)は `project://passes/authoring/pass-<id>.json` の managed fragment(schema `pelican.render_feature`、managed marker、`runtime_shader_compiler: "optional"`)を作り root の `features[]` に参照を足す。ticket → `get_edit_result`。失敗は `render_pipeline_preflight_failed`(`:2722-2740`)。`get_render_authoring_context.managed_fragments` に出る
+- Studio: Frame Plan canvas(N-8)は resource node を描き、pass への接続 / 切断、Add fullscreen pass、Delete、帯編集を持つ。要求の組み立ては `src/devstudio/view/frameplanedit.{hpp,cpp}` の `FramePlanEditRequest`(送らずに payload か refusal を返す純関数)
+
+#### 決定
+1. **engine: `edit_render_targets` RPC を 1 つ足す**。`{base_source_digest, ops[]}`、op は `{op:"add", target:<宣言 object>}` / `{op:"replace", name, target:<宣言 object>}`(改名は `target.name` を変えて可。旧名を参照する pass があれば下の名前付き拒否)/ `{op:"remove", name}`。ops は順に候補文書へ当て、最後に 1 回 preflight → ticket(`add_authored_pass` と同じ tail を再利用)。全部通るか全部拒否か
+2. **置き場は 1 つの managed fragment** `project://passes/authoring/render-targets.json`(pelican.render_feature、managed marker、`render_targets[]` だけ)。無ければ最初の add で作って root の `features[]` に参照を足す。空になっても消さない(参照も残す)
+3. **編集できるのはその fragment に宣言された target だけ**。他所(root / preset / 他 feature / engine)の target を replace / remove すると **`render_target_not_editable`**(fields: `name`, `source`)。add で既存名(どこの宣言でも)と衝突 → **`render_target_exists`**。remove / 改名で旧名をまだ読む・書く pass / task があれば **`render_target_referenced`**(fields: `name`, `users[]` = pass / task 名)。予約名(`display` / `swapchain`)→ **`render_target_reserved`**。宣言の形の誤りは parser の文言を `render_pipeline_preflight_failed` で(新しい検査器を書かない)
+4. **読む側**: `get_render_authoring_context` に `render_targets[]` を足す: `{name, declaration, editable, source}`。`source` は `"authoring"`(managed fragment)/ `"root"` / `"preset"` / `"feature:<reference>"` / `"engine"`(`display`)。合成の出所が取れない場合は `"composed"` とし、その理由を台帳に書く(推測で埋めない)
+5. **Studio**: Frame Plan canvas の空所の右クリックと toolbar に **New render target…**。form は名前 / 種類(Scene color・Display・Data・Explicit + format combo)/ 大きさ(画面比 `extent_scale`、または固定 `width`×`height`)/ usage(engine が受ける値の checkbox。値の一覧は parser から取る)/ history / clear color。既定値は「画面と同じ大きさの scene color、sampled + color attachment」で、名前だけ入れれば作れる。編集できる resource node の double-click で同じ form(replace)、Delete で remove。編集できない node は form を読み取り専用で開き、1 行で出所。要求の組み立ては `frameplanedit` に純関数として置く(N-8 と同じ形)。拒否は既存の notice 行に `code` に応じた 1 文(referenced なら使っている pass 名を並べる)。Pass Editor / Add fullscreen pass の入出力の選択肢に宣言済み target(新しく作ったもの含む)が出ること(既に出ているなら確認だけ)
+6. **automation**: シナリオ `render_target_authoring`(fixture は graph root の project): New render target → 名前を type → OK → Frame Plan に node → double-click で extent を変える → `rpc get_render_authoring_context` で値 → Delete → 消える。referenced の拒否も 1 回見る(既存 pass の入力に使ってから remove)
+
+#### 受け入れ(§4 規約 10: 何を取り消したら落ちるか)
+1. `renderconfigeditor_test`: add → fragment が出来て `features[]` に参照、`get_render_authoring_context.render_targets` に `editable:true, source:"authoring"` / replace / remove / 名前付き拒否それぞれ(対照: fragment 以外を editable と見なす変異で `render_target_not_editable` の test が赤、参照検査を外す変異で `render_target_referenced` が赤)/ digest CAS の拒否 / 形の誤りで preflight 拒否、文書は変わらない
+2. direct root と preset root の両方で add が通り、描画 pipeline に target が現れる(RPC test で 2 fixture)
+3. Studio の純関数 test: form の値 → payload(既定値で `extent_scale:1`、固定大きさで `width`/`height`)/ 編集不可 node の Delete は RPC を作らず refusal
+4. scene / widget test: New render target… の form から OK で `edit_render_targets` が 1 回
+5. 既存の Frame Plan / Pass Editor / renderconfigeditor test 全数緑、非 GPU 全数緑、シナリオ全数緑(新 `render_target_authoring` 含む)
+
+#### やらないこと
+他所で宣言された target の編集(fork / materialize の後でも)/ buffers の宣言 / `render_target_overrides` の UI / target の並べ替え / undo。
+
+#### 着地(2026-09-24、17372f99)
+- **engine**: editor RPC `edit_render_targets {base_source_digest, ops[]}`(`src/core/communication/renderconfigeditor.cpp` の `RenderConfigEditorService::editRenderTargets`、handler は `editorrpchandlers.cpp`)。op の形(`add` は `{op, target}`、`replace` は `{op, name, target}`、`remove` は `{op, name}`、`target.name` は空でない文字列)は何も読む前に検査し、崩れていれば invalid argument。書くのは `project://passes/authoring/render-targets.json` 1 つ(`pelican.render_feature`、`name: "authored_render_targets"`、`runtime_shader_compiler: "optional"`、managed marker の `id: "render-targets"`、中身は `render_targets[]` だけ)。無ければ最初の要求で作って root の `features[]` に足す。tail は `add_authored_pass` と同じ `enqueueAuthoredPassTicket`(root が byte 同一のまま fragment だけ変わる編集のために `edits_additional_documents` を足した)。複数 op は順に当て、途中の 1 つが拒否されれば全部入らない
+- **名前付き拒否**: `render_target_not_editable`(`name`・`source`)/ `render_target_exists`(`name`・`source`)/ `render_target_referenced`(`name`・`users[]`)/ `render_target_reserved`(`display` / `swapchain`)/ **`render_target_not_found`**(起票に無い。fragment にも合成結果にも無い名前の replace / remove)。形の誤りは `parseRenderTargetDefinitionsFromJson` の文言のまま `render_pipeline_preflight_failed`(participant `pelican.render_targets`)。参照の検査は新しい走査器を書かず、frame planner の `parseFrameGraphDefinitionsFromConfigJson` が読む node の reads / reads_history / writes / resource_accesses から使用者を引く(`@history` などの接尾辞は落として数える)。ほかに fragment の外部変更・参照されていない既存 file は `external_modification`
+- **fragment は `managed_fragments` に出さない**: pass を持たないので、pass の削除候補として出ないようにした。`remove_authored_pass` にこの fragment を渡すと `render_target_not_editable`(「edit_render_targets で編集する」)で断る
+- **`get_render_authoring_context` に 3 つ**: `render_targets[]`(`{name, declaration, editable, source}`。editable な target には fragment の宣言そのもの `authored_declaration` も付く。**editable を先に、残りをその後に**並べる)/ `render_target_fragment`(上の参照)/ `render_target_vocabulary`(`formats` / `usage` は parser の表 `imageFormatNames()` / `imageUsageFlagNames()` から。usage の表は `renderingpassjsonhelpers.cpp` で 1 つにまとめた。`format_classes` は `scene` / `display` / `data` / `explicit`)
+- **`source` の決め方**: `display` は `engine`、fragment にあれば `authoring`、composer の provenance が feature を指せば `feature:<reference>`、root / preset の文書に書いてあれば `root` / `preset`、provenance が engine なら `engine`。**`composed` になるのは、文書にも composer の provenance にも出所が無いときだけ**(例: graph の合成で出来た target)。推測で埋めない
+- **Studio**: Frame Plan の toolbar ボタン **New render target...**(`pelican.framePlanNewRenderTarget`)と、canvas の空所の右クリックの同名 action(`pelican.framePlan.newRenderTarget`)が form(`pelican.renderTargetForm`、非 modal の `RenderTargetForm`)を開く。欄は名前 / 種類(Scene color・Display・Data・Explicit format + format combo)/ 大きさ(Screen ratio か Fixed size)/ usage の checkbox(engine の語彙から)/ history / clear color(`r, g, b, a` の任意欄)。既定は「画面比 1 の scene color、`R16G16B16A16_SFLOAT`、`COLOR_ATTACHMENT` + `SAMPLED`」。**固定大きさでも `extent_scale: 1` を残す**(parser が必須にしているため。起票の「extent_scale は落とす」は採れなかった)。canvas は Target combo(`pelican.framePlanTarget`)で選んだ target を resource node(合成名 `resource_node#<name>`)として描き、double-click で form、click で選んで Delete で remove。作った / 改名した target は次の描画で Target combo の選択になる。編集できない target は form を読み取り専用で開き、出所を 1 行(「the screen output the engine provides」「a target of preset hybrid_v1」など)。要求は `frameplanedit` の純関数(`renderTargetDeclaration` / `framePlanRenderTarget{Add,Replace,Remove}Request`、拒否文は `framePlanRenderTargetRejection`)。replace は fragment の宣言を土台にするので form に無い欄(`mip_levels` など)はそのまま残る
+- **test**:
+  - `renderconfigeditor_test`: direct graph root と hybrid_v1 preset root の両方で add → fragment と `features[]` の参照、context の先頭に `editable: true` / `source: "authoring"`、`managed_fragments` は空、frame plan の resources に出る → replace → 改名 → remove(fragment と参照は残る)。拒否: root(`source: "root"`)と engine feature(`source: "feature:engine://features/bloom.json"`)の not_editable / exists / reserved / referenced(remove と改名の両方、`users` = 書いている pass)/ parser の拒否 / 古い digest / `remove_authored_pass` での fragment 削除、どれも文書は byte 不変。fragment が無いときの not_found、2 op の一括、2 つ目が拒否されたら 1 つ目も入らない
+  - `devstudio_frameplan_graph_test`: form の値 → 宣言(名前だけ / 固定大きさ / replace の土台 / 編集不可は RPC を作らない / 空の名前 / code ごとの拒否文)、widget で New render target の OK が `edit_render_targets` 1 回、resource node を click → Delete で remove 1 回
+  - シナリオ `render_target_authoring`(新、fixture `test/fixtures/studio_render_target_authoring`: fragment に `f1_referenced_target` があり、feature の pass `f1_writer_pass` がそれを書く): action で form → 名前だけ → OK → node → engine の `render_targets[1]` が `authoring`・`extent_scale 1` → double-click → 0.5 → engine が 0.5 → Delete → 消える → fixture の target を Delete → `f1_writer_pass` を名指しする拒否、target は残る
+- **変異で赤を確認**(各々戻して緑。変異の中身は実装者の log の変異名と赤になった check から読んだもの): 固定大きさの宣言を崩す(S1)/ 編集不可の remove で RPC を作る(S2)→ 純関数 test / form の送信の対応を崩す(W1)/ resource node の Delete を外す(W2)→ widget test / not_editable(M1)・referenced(M2)・reserved(M3)・exists(M4)・parser(M5)・digest CAS(M6)を外す → 拒否の test / root の `features[]` 参照を足さない(M7)・全 target を editable と見なす(M8)→ add / replace / remove の test。シナリオも変異で step 15(engine が extent 0.5 を持つ)が赤(変異の中身は記録に無く未確認)
+- **起票からの逸脱**: 固定大きさの `extent_scale: 1`(上)/ `render_target_not_found` の追加 / fragment を `managed_fragments` から外した / context に `authored_declaration`・`render_target_fragment`・`render_target_vocabulary` を足した
+- **記録した穴**:
+  1. Pass Editor の入出力の選択肢に新しい target が出ることは、コードを読んだのと engine test(target が `frame_plan.resources` に出る)でしか確かめていない。Pass Editor の combo 自体を見る test は無い
+  2. canvas の空所の右クリックからの New render target...、読み取り専用の form、clear color の欄には test が無い
+- **着地前の偽の赤(build の衛生、F-1 / F-2 のコードの問題ではない)**: 着地前、Studio のシナリオが全部 "Studio did not exit within 30 seconds" で落ちた。原因は **header 依存が 0 件で記録された Ninja の object**。PowerShell から build を始めると cl の `/showIncludes` の接頭辞が別の code page で出て、ninja が依存を 1 つも記録しなかった。そのため F-2 が `MainWindow` に `QPointer` を 1 つ足しても `uimain.cpp.obj` は作り直されず、古い大きさの `MainWindow` のまま終了時に stack を越えて書いていた。依存 0 件の object を消して Git bash から build し直して直った。古い object を焼き直す変異で固まりが再現した。**教訓: Ninja の build は Git bash から始める。依存 0 件の object が残っていれば header の変更が伝わらない**
+- worktree での非 GPU 全数は 1790/1791。赤の 1 件は `WP364 immutable parent fixtures remain byte exact`(develop では 0c09ad62 で直した test。worktree の base が修正より前だったためと見られる、未確認)。着地の family gate 17/17
+
+### F-3: fullscreen pass を shader ごと Studio で作る —— shader の雛形、compile エラーを node に(利用者指示 2026-09-24「0 から組める」第一段階)
+
+**中段(Studio のみ。engine は読むだけ)。実装者: Claude(Opus)。第二の流儀を作らない: pass の追加・編集は既存の `add_authored_pass` / `edit_preset_pass`(N-8 の canvas と Pass Editor)、エラーは engine が既に返しているものを表示するだけ。**
+
+#### 前提(Explore 2026-09-24、develop 6b68386a)
+- shader 参照は拡張子無しの stem(`project://shaders/foo`、拡張子付きは throw、`shaderreference.cpp:100-112`)。stage が拡張子を決める(`.frag` / `.vert` / `.comp`…、`shaderlibrary.cpp:37-49`)。言語は GLSL(`.spv` fallback)。runtime compile は `PELICAN_RUNTIME_SHADER_COMPILER`(shaderc)で、OFF の build は `.spv` しか受けない
+- 最小の fullscreen fragment の実例: `projects/pathtrace_demo/shaders/present.frag`(13 行、`#include "pelican_sets.glsl"` / `"pelican_view.glsl"`、`PELICAN_DECLARE_INPUT_0(name)` / `PELICAN_TEXTURE_2D_0(name, uv)`、`layout(location=0) in vec2 inUV`)。vertex は `engine://fullscreen`(`engine://fullscreen` の fragment は 324 行の deferred lighting なので雛形にしない)。N 番目の入力の macro 形は `src/core/resources/shaders/include/pelican_view.glsl` を読んで確かめる
+- compile エラーの出方は 2 つ: 編集 ticket の拒否 `render_pipeline_preflight_failed`(message に "Shader compile failed: <path>\n<log>"、`participant: pelican.render_pipeline`、`renderconfigeditor.cpp:2722-2740`, `:2804-2813`)/ file watch の hot reload の reload status(`runtime[].last_error` / `last_reload_error`、`watch/reloadservice.cpp:1231-1260`。RPC への露出は `rpcserver.cpp:1389` 付近。どの method で読めるかを確認すること)
+- Studio には shader を外部エディタで開く経路がある(`frameplanwidget.cpp` の "Opened shader source")。Pass Editor(`fullscreenpasswidget.cpp`)は shader を stem の文字列で受ける。N-8 の「Add fullscreen pass…」は Pass Editor を prefill して開く
+
+#### 決定
+1. **shader の雛形から作る**: Pass Editor の fragment shader 欄の横に **New…**。名前(既定 = pass 名)を受け、`<project>/shaders/<name>.frag` を**雛形から書き**、欄に `project://shaders/<name>` を入れる。雛形は Studio の resource(`src/devstudio/resources/`)で、**その時点の入力の数だけ** `PELICAN_DECLARE_INPUT_i` と sample 行を生成し、入力 0 個なら UV の gradient、1 個以上なら入力 0 をそのまま出す。既存ファイルがあれば上書きしない(「既にある。開きますか」)。書いた後に外部エディタで開く(既存の経路)。ファイルは engine の文書ではない(config の digest に入らない)ので Studio が直接書いてよいが、project の外には書かない
+2. **compile エラーを見える場所に**: Pass Editor の保存 / canvas の add・edit が `render_pipeline_preflight_failed` で拒否され message が "Shader compile failed" を含むとき、notice 行ではなく **form の下の折りたたみ欄**に log 全文(等幅、行番号付きで path:line を強調)。form は開いたまま。hot reload の失敗は reload status を既存の poll に相乗り(新しい timer を足さない。Q-2 の idle 予算を守る)し、`last_error` の path が pass の shader に当たるとき、その **pass node に赤い印**と tooltip に log の先頭行。直ったら消える。当てられない error は status bar に 1 行
+3. **入出力の選択**: Pass Editor の input / output が宣言済み target の一覧から選べること(F-1 の target と `display` を含む)。既に選べるなら確認だけ
+4. **automation**: シナリオ `fullscreen_pass_from_template`(fixture: graph root の project、`runtime_shader_compiler` が効く Debug build 前提): Add fullscreen pass… → New… で shader 作成 → Save → node が出る → shader ファイルに構文エラーを書き込む(file 書き込みの command が無ければ工夫。無理なら scene test で代替し台帳に書く)→ node に印 → 直す → 印が消える
+
+#### 受け入れ(§4 規約 10)
+1. 純関数 test: 入力 0 / 1 / 3 個の雛形生成が期待の macro 行を含み、GLSL として compile できる(runtime compiler OFF 構成では skip ではなく「その test を登録しない」)/ 既存ファイルは上書きしない(対照: 存在確認を外す変異で赤)
+2. widget test: preflight 拒否の message を渡すと折りたたみ欄に log、form の値は残る(対照: notice 行に流す旧経路に戻す変異で赤)
+3. scene test: reload status の fake に path の当たる error → 該当 node に印、当たらない → 印なし、error が消える → 印が消える
+4. 既存の Pass Editor / Frame Plan test 全数緑、非 GPU 全数緑、シナリオ全数緑
+5. Q-2 の idle RPC 率を悪化させない: reload status のための新しい定期 RPC を足していないこと
+
+#### やらないこと
+Studio 内の shader テキストエディタ / vertex shader の雛形 / compute・RT shader の雛形 / raster・material pass の追加(第二段階)/ `.spv` build(runtime compiler OFF)の対応。
+
+#### 着地(2026-09-24、ef8296ec)
+- **雛形**: `src/devstudio/resources/fullscreen_pass.frag.in`(`#include "pelican_sets.glsl"` / `"pelican_view.glsl"`、`inUV`、`outColor`)。生成は `src/devstudio/view/fullscreenshadertemplate.{hpp,cpp}` の `fullscreenFragmentShaderTemplate`: 画像の入力 i ごとに `PELICAN_DECLARE_INPUT_i(<識別子>);  // <resource>` と `PELICAN_TEXTURE_2D_i(<識別子>, inUV)` の 1 行、最初の画像入力を `outColor` へ。入力 0 個は `vec4(inUV, 0.0, 1.0)`。buffer の入力は宣言せず「自分で宣言する」注釈 1 行、8 個目以降(`pelican_view.glsl` の macro は 0〜7)も注釈。名前は英数字・`_`・`-` だけ(区切り・`.`・drive を受けない = `<project>/shaders` の外に出られない)。`writeShaderTemplate` は既にファイルがあれば**触らずに** `created: false` を返す
+- **Pass Editor**: fragment 欄の横に **New…**(`pelican.fullscreenPass.newFragmentShader`。project が無いと無効)。押すと下に名前の行(`shaderTemplateName`、既定は pass 名の使えない文字を `_` にしたもの)と **Create** が出る。Create で書き、欄に `project://shaders/<name>` を入れ、desktop の既定の editor で開く。既にあれば notice に「already exists」と **Open**(`openExistingShader`: 上書きせずにその stem を使って開く)
+- **compile log**: 保存が拒否され message に "Shader compile failed" があれば、form の下の `ShaderCompileLogPanel`(`pelican.fullscreenPass.compileLog`、本文 `pelican.shaderCompileLog.text`)が開いて log 全文(等幅、行番号、`file:line` を強調、折りたためる)。notice 行は「shader compile failed; see the log below」だけ。form の値は残る。commit で消える
+- **node の印**: 既存の poll は無かった(Q-2 が idle の `get_status` を止めた)ので、`ShaderReloadFollower`(`shaderreloadfollower.{hpp,cpp}`)が描いている node の shader file を `QFileSystemWatcher` で見て、**書かれたときだけ** `get_status` を読む(300 ms 待って最初の 1 回、以後 250 ms おきに reading が動くまで、**最大 16 回**)。定期の timer は無い。見る file の集合が変わったときにも 1 回読む。読むのは `get_status` の `reload.runtime["pelican.shaders"]`(`shaderdiagnostics.cpp` の `readShaderReloadStatus`)で、`last_error` の path が node の shader に当たればその node に赤い badge(`node_shader_error#<pass>`、tooltip に log の先頭行)、当たらない error は **Frame Plan panel の status 行**(`pelican.framePlanStatus`)に 1 行
+- **印は今の Studio では出ない**: Studio の engine は `--rpc` で起動し、その ReloadGate は `rpc driver` を理由に閉じている(`src/core/watch/reloadgate.cpp`)。file を書いても engine は shader を reload しないので、印は実際には出ず、status 行が「A shader file changed; this engine does not reload shaders (rpc driver).」と言う。**F-5 が明示の `reload_shaders` RPC を足す**
+- **入出力**: Pass Editor の input / output は既に frame plan の `resources[]` から作る combo だった(確認だけ)
+- **automation**: `tools/studio_drive.py` に driver 自身が行う `file` step(`write` / `replace` / `contains` / `exists`。path は `{project}` の複製の中だけ、`replace` は `old` がちょうど 1 か所のときだけ)。stdout / stderr は `errors="backslashreplace"` にして cp932 の console で止まらない。`--automation` の下では shader を desktop で開かず `automation: shader source open <path>` を log に出す(`uimain.cpp`)
+- **シナリオの順の変更**: 起票は「保存 → 構文エラー → 印 → 直す → 消える」だったが、上の gate で印が出ないので、`fullscreen_pass_from_template` は「Add fullscreen pass → 名前・vertex・入力 `lit_color`・出力(fixture が宣言した `f3_template_output`)→ New… → Create(stem と `PELICAN_DECLARE_INPUT_0` を確認)→ `file replace` で構文エラー → Save → preflight の拒否で log が開き typo を名指し、form の値が残る → 直す → Save → commit で log が消え node が描かれる → もう一度 typo を書く → status 行が「does not reload shaders」と言い、`node_shader_error#f3_tinted` は現れない」にした
+- **test**:
+  - `devstudio_shadertemplate_compile_test`(新、**`PELICAN_RUNTIME_SHADER_COMPILER` の build でだけ登録**): 入力 0 / 1 / 3(history の読みを含む)/ buffer 入力の雛形が期待の行を持ち、engine の compiler で compile できる
+  - `devstudio_fullscreen_pass_test`: 既存ファイルを上書きしない / New… が入力に合わせて書き、開き、既存ファイルでは Open を出す / compile log が form の下に出て値が残る
+  - `devstudio_frameplan_graph_test`: path の当たる node だけに印、2 つの失敗で 2 node、当たらない error は印なしで 1 行、error が消えると印が消える / follower は書き込みの後だけ読み、上限があり、idle では読まない(1.5 s 待って増えない)、gate が閉じた engine には 1 回だけ、disk への実際の書き込みで読みが始まる
+  - シナリオ `fullscreen_pass_from_template`(新、fixture `test/fixtures/studio_fullscreen_pass_from_template`)
+- **変異で赤を確認**(各々戻して緑。変異の中身は実装者の log の赤になった check から読んだもの): 存在確認を外す(M1)→ 上書きしない test と New… の test が赤(`// mine` が雛形で上書きされる)/ 雛形が macro 行を出さない(M2)→ compile test が赤 / log を form の下に出さない(M3)→ compile log の test が赤 / error が消えても印を下ろさない(M4)・path を当てない(M4b)→ 印の test が赤 / idle で余分に読む(M5)→ follower の test が赤(要求 2 件、期待 1 件)
+- **起票からの逸脱**: poll への相乗りは不可能(上)なので file watch 起点の有限回の読み / 当たらない error は status bar でなく Frame Plan panel の status 行 / シナリオの順(上)
+- **記録した穴**:
+  1. node の印は F-5(明示の reload)まで Studio の実物では観測できない(scene test では fake の reading で確認)
+  2. canvas の直接編集(帯の shader stem など)が compile 失敗で拒否されたときは、今も status の 1 行だけ(log 欄は Pass Editor にしか無い)
+  3. New… の名前の行は New pass を押すまで見えたまま
+- worktree での非 GPU 全数は 1802/1803(赤は F-1 と同じ `WP364 immutable parent fixtures remain byte exact`)。シナリオ `fullscreen_pass_from_template` は緑。着地の family gate 24/24
+- **F 系列の残り**: F-4(端から端までのシナリオ)/ F-5(明示の `reload_shaders` RPC。F-3 の印を観測可能にする)
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
