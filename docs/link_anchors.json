@@ -1509,7 +1509,7 @@
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/model/gltf.cpp|auto split の variant 登録": "variants.push_back(",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/model/gltf.cpp|この検査": "if (morph_target_layout->default_weights.size() >",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/model/gltf.cpp|その return": "return offset;",
-    "docs/source-code-guide/03_project_and_loading.md|../../src/core/model/gltf.cpp|その throw": "throw std::runtime_error(",
+    "docs/source-code-guide/03_project_and_loading.md|../../src/core/model/gltf.cpp|その throw": "\"glTF node '\" +",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/model/gltf.cpp|その位置": "skeletal_data->joint_nodes.insert(skeletal_data->joint_nodes.end(), skin.joints.begin(), skin.joints.end());",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/model/gltf.cpp|参照箇所": "<< \"' in '\" << fragmentReference() << \"'; matches: \";",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/model/gltf.cpp|同じ構造体": "std::unordered_map<ModelLocalMaterialId, std::uint32_t> generated_material_sources;",

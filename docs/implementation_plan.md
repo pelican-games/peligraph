@@ -24846,6 +24846,10 @@ transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復
 - GUI session(F / G / Q 系列)と並走する。台帳・`src/devstudio` に書く前に一言送る。着地は相手の状態を見て直列
 - WP 名は GUI session の `G-*` と衝突しないよう `GP-*` を使う
 
+#### 完了記録
+
+- **GP-5**(2026-09-24、`702c8346`): `engine://primitives/{cube,plane,sphere}` を `simplemodelview.model` に書けば asset_data 無しで解決する(`src/core/model/engineprimitives.*`、生成したメモリ上の glTF を既存の読み込み経路へ合流: `GltfLoader::prepareEnginePrimitive`)。解決は `ModelAssetContainer::getModelTemplateByName` の中なので scene load・editor の spawn / edit・実行時生成が同じ検査を通る。未知名は `model.primitive_unknown@1`。sphere は 32 × 16 分割、既定 material は `pelican.primitive.default`(灰色の OpenPBR)。material の差し替えは asset_data に `path: engine://primitives/<name>` で宣言して既存の `material_bindings` を通す(bindings の `model` は文字列一致で照合)。受け入れ: RPC の spawn → capture → 保存 → 開き直し(GPU)/ 3 種の digest を固定値で(CPU)/ 宣言 primitive の material binding(GPU)。変異 6 本(解決の分岐、面の幅 0、未知名の拒否、既定 material、分割数、bindings の破棄)で各 test が赤、戻して緑。W1 67 / 67。非 GPU 全数は 1797 / 1823 で、残り 26 は test 内で CMake を configure する系が Git bash から Ninja を見つけられないもの(vcvars 下の再実行で 90 / 90)。実装は Claude(Opus)subagent、codex 不使用。**残した穴**: Studio 向けの `list_assets` が宣言 primitive を `missing` と出す / model の選択肢に 3 種が出ない(→ GP-5b、GUI session の依頼)。sphere の digest の固定値は MSVC x64 の `sin` / `cos` に依存。blank 雛形の frame は mesh を描く pass を持たない(GUI session の G-1 / G-5 が扱う)
+
 ### 未了項目と再開順
 
 > この節は当時の実装・検証・再開順の記録を保存している。現在の残件は [v0 凍結一覧 §4](v0_freeze.md#4-v0-の状態と再検証) と [v1 計画](v1_development_plan.md) を参照し、以下の「未了」「次は」をそのまま作業指示にしない。
