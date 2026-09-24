@@ -949,6 +949,7 @@ void MainWindow::openProjectNow(const QString &path) {
         refreshSelectionViews();
         frame_plan_->setProjectRoot(project_model_->projectRoot());
         fullscreen_pass_->setProjectRoot(project_model_->projectRoot());
+        graph_canvas_->setProjectRoot(project_model_->projectRoot());
         viewport_->openProject(displayPath(project_model_->projectRoot()));
         statusBar()->showMessage(
             tr("Opened %1. %2")

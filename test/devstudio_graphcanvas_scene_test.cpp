@@ -1,4 +1,5 @@
 #include "graphcanvaswidget.hpp"
+#include "graphmodule.hpp"
 #include "studiotheme.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -35,6 +36,7 @@
 #include <QStringList>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -2596,4 +2598,246 @@ TEST_CASE("Q-5 a placement save coming back keeps the scene and what is picked o
         CHECK_FALSE(nodeItem(scene, QStringLiteral("left"))->data(Marked).toBool());
         picked();
     }
+}
+
+// Q-8. The ui.* sinks GP-3 added to the catalog: the palette offers them,
+// places one the engine would load, and the node's `node` field lists the
+// paths of the project's UI document instead of asking for one to be typed.
+namespace {
+struct UiProject {
+    std::filesystem::path root;
+
+    UiProject() {
+        root = std::filesystem::temp_directory_path() /
+               ("pelican_q8_ui_" +
+                std::to_string(std::chrono::steady_clock::now()
+                                   .time_since_epoch()
+                                   .count()));
+        std::filesystem::create_directories(root / "ui");
+        std::ofstream{root / "project.json"} << R"json({
+ "schema":"pelican.project","version":1,"name":"q8_ui",
+ "basic_config":{"ui_config_json":"ui/hud.json"}})json";
+        // Document order is list order: a panel, a label and two gauges.
+        std::ofstream{root / "ui" / "hud.json"} << R"json({
+ "schema":"pelican.ui","version":1,"key":"q8_hud","revision":"q8",
+ "root":{"id":"root","type":"panel","children":[
+  {"id":"hud","type":"panel","children":[
+   {"id":"label","type":"label","text":"HI"},
+   {"id":"meter","type":"gauge"},
+   {"id":"fuel","type":"gauge"}]}]}})json";
+    }
+    ~UiProject() {
+        std::error_code ignored;
+        std::filesystem::remove_all(root, ignored);
+    }
+};
+
+// The catalog the engine answers get_graph_catalog with, not a hand-built one:
+// whether the palette offers the ui.* sinks is a question about that reply.
+Json engineCatalog() {
+    return Json::parse(Pelican::makeBuiltinGraphModuleRegistry().catalog().dump());
+}
+
+Json uiSinkDocument() {
+    return {{"nodes", Json::array({
+                {{"id", "clock"}, {"op", "value.input"},
+                 {"parameters", {{"name", "time"}}}, {"inputs", Json::object()},
+                 {"outputs", Json::array({"value"})}},
+                {{"id", "meter_sink"}, {"op", "ui.value"},
+                 {"parameters", {{"node", "root/hud/meter"}}},
+                 {"inputs", {{"value", {{"node", "clock"}, {"port", "value"}}}}},
+                 {"outputs", Json::array()}},
+                {{"id", "label_sink"}, {"op", "ui.visible"},
+                 {"parameters", {{"node", "root/hud/label"}}},
+                 {"inputs", {{"value", {{"node", "clock"}, {"port", "value"}}}}},
+                 {"outputs", Json::array()}},
+            })},
+            {"definitions", Json::object()}};
+}
+
+QStringList comboItems(const QComboBox &combo) {
+    QStringList items;
+    for (int index = 0; index < combo.count(); ++index)
+        items.push_back(combo.itemText(index));
+    return items;
+}
+} // namespace
+
+TEST_CASE("Q-8 a ui sink's node field lists the UI document, and the palette "
+          "places one standing on it",
+          "[devstudio][graph-canvas][scene][graph-edit][q8]") {
+    (void)application();
+    const UiProject project;
+    RecordedCapability transport;
+    PelicanStudio::GraphCanvasWidget widget{transport.capability()};
+    widget.setProjectRoot(project.root);
+    widget.resize(900, 600);
+    widget.show();
+    QCoreApplication::processEvents();
+
+    const auto deliver = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        REQUIRE(transport.deliver);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    };
+    deliver(QStringLiteral("get_graph_instances"), context(uiSinkDocument()));
+    deliver(QStringLiteral("get_graph_catalog"), engineCatalog());
+    auto &model = widget.model();
+    REQUIRE(model.canEdit());
+
+    auto *row = widget.findChild<QWidget *>(
+        QStringLiteral("pelican.graphCanvasUiNodeRow"));
+    auto *field =
+        widget.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasUiNode"));
+    REQUIRE(row != nullptr);
+    REQUIRE(field != nullptr);
+    REQUIRE(field->isEditable());
+
+    const auto lastOps = [&] {
+        const qint64 edit = transport.idOf(QStringLiteral("edit_graph_document"));
+        REQUIRE(edit != 0);
+        return Json::parse(
+            transport.calls[static_cast<std::size_t>(edit - 1)].body.toStdString());
+    };
+
+    SECTION("the palette offers both sinks from the engine's own catalog") {
+        const auto offered = model.paletteOperations("ui.");
+        const auto has = [&](const char *op) {
+            return std::ranges::any_of(offered, [&](const auto &entry) {
+                return entry.op == op && entry.sink && !entry.structural;
+            });
+        };
+        REQUIRE(has("ui.value"));
+        REQUIRE(has("ui.visible"));
+    }
+
+    SECTION("a placed ui.value writes the first gauge and stands on its own value") {
+        REQUIRE(widget.scene().addFromPalette("ui.value"));
+        QCoreApplication::processEvents();
+        const auto ops = lastOps();
+        REQUIRE(ops.size() == 2);
+        REQUIRE(ops.at(0).at("node").at("op") == "value.constant");
+        REQUIRE(ops.at(1) ==
+                Json{{"op", "add_node"},
+                     {"scope", "root"},
+                     {"node", {{"id", "ui_value"},
+                               {"op", "ui.value"},
+                               {"outputs", Json::array()},
+                               {"inputs", {{"value", {{"node", "ui_value__value"},
+                                                      {"port", "value"}}}}},
+                               {"parameters", {{"node", "root/hud/meter"}}}}}});
+    }
+
+    SECTION("a placed ui.visible writes the first node of the document") {
+        REQUIRE(widget.scene().addFromPalette("ui.visible"));
+        QCoreApplication::processEvents();
+        const auto ops = lastOps();
+        REQUIRE(ops.back().at("node").at("parameters") == Json{{"node", "root"}});
+    }
+
+    SECTION("ui.value lists the gauges, ui.visible every node, and a pick is one edit") {
+        widget.scene().selectNode("meter_sink");
+        QCoreApplication::processEvents();
+        REQUIRE(row->isVisible());
+        // Only a gauge takes a value; anything else would be refused by name.
+        REQUIRE(comboItems(*field) ==
+                QStringList{QStringLiteral("root/hud/meter"),
+                            QStringLiteral("root/hud/fuel")});
+        REQUIRE(field->currentText() == QStringLiteral("root/hud/meter"));
+
+        widget.scene().selectNode("label_sink");
+        QCoreApplication::processEvents();
+        REQUIRE(comboItems(*field) ==
+                QStringList{QStringLiteral("root"), QStringLiteral("root/hud"),
+                            QStringLiteral("root/hud/label"),
+                            QStringLiteral("root/hud/meter"),
+                            QStringLiteral("root/hud/fuel")});
+        REQUIRE(field->currentText() == QStringLiteral("root/hud/label"));
+
+        const int before = transport.countOf(QStringLiteral("edit_graph_document"));
+        const int fuel = field->findText(QStringLiteral("root/hud/fuel"));
+        REQUIRE(fuel >= 0);
+        field->setCurrentIndex(fuel);
+        emit field->activated(fuel);
+        QCoreApplication::processEvents();
+        REQUIRE(transport.countOf(QStringLiteral("edit_graph_document")) == before + 1);
+        REQUIRE(lastOps() == Json::array({Json{{"op", "set_node_parameters"},
+                                               {"scope", "root"},
+                                               {"node", "label_sink"},
+                                               {"parameters",
+                                                {{"node", "root/hud/fuel"}}}}}));
+    }
+
+    SECTION("a typed path goes out as typed; the engine is the one that refuses it") {
+        widget.scene().selectNode("label_sink");
+        QCoreApplication::processEvents();
+        field->lineEdit()->setText(QStringLiteral("root/hud/nowhere"));
+        emit field->lineEdit()->returnPressed();
+        QCoreApplication::processEvents();
+        REQUIRE(lastOps().at(0).at("parameters") ==
+                Json{{"node", "root/hud/nowhere"}});
+        // It is not added to the list the document gave.
+        REQUIRE(field->findText(QStringLiteral("root/hud/nowhere")) < 0);
+    }
+
+    SECTION("the field is there only for a ui sink") {
+        widget.scene().selectNode("clock");
+        QCoreApplication::processEvents();
+        REQUIRE_FALSE(row->isVisible());
+    }
+}
+
+TEST_CASE("Q-8 without a UI document the field says why and the palette "
+          "leaves the path out",
+          "[devstudio][graph-canvas][scene][graph-edit][q8]") {
+    (void)application();
+    RecordedCapability transport;
+    PelicanStudio::GraphCanvasWidget widget{transport.capability()};
+    widget.resize(900, 600);
+    widget.show();
+    QCoreApplication::processEvents();
+    transport.deliver(transport.idOf(QStringLiteral("get_graph_instances")),
+                      QByteArray::fromStdString(context(uiSinkDocument()).dump()));
+    transport.deliver(transport.idOf(QStringLiteral("get_graph_catalog")),
+                      QByteArray::fromStdString(engineCatalog().dump()));
+    QCoreApplication::processEvents();
+
+    widget.scene().selectNode("meter_sink");
+    QCoreApplication::processEvents();
+    auto *field =
+        widget.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasUiNode"));
+    REQUIRE(field != nullptr);
+    REQUIRE(field->count() == 0);
+    REQUIRE(field->currentText() == QStringLiteral("root/hud/meter"));
+    REQUIRE(field->lineEdit()->placeholderText().contains(
+        QStringLiteral("no project is open")));
+
+    REQUIRE(widget.scene().addFromPalette("ui.value"));
+    QCoreApplication::processEvents();
+    const qint64 edit = transport.idOf(QStringLiteral("edit_graph_document"));
+    REQUIRE(edit != 0);
+    const auto ops = Json::parse(
+        transport.calls[static_cast<std::size_t>(edit - 1)].body.toStdString());
+    REQUIRE_FALSE(ops.back().at("node").contains("parameters"));
+}
+
+TEST_CASE("Q-8 the UI document's paths are the engine's: ids joined from the root",
+          "[devstudio][graph-canvas][q8]") {
+    const UiProject project;
+    const auto read = PelicanStudio::readProjectUiNodes(project.root);
+    REQUIRE(read.error.empty());
+    std::vector<std::string> paths;
+    for (const auto &node : read.nodes) paths.push_back(node.path);
+    REQUIRE(paths == std::vector<std::string>{"root", "root/hud", "root/hud/label",
+                                              "root/hud/meter", "root/hud/fuel"});
+    REQUIRE(read.nodes.at(3).type == "gauge");
+
+    // A project that names no UI document says so rather than listing nothing.
+    std::ofstream{project.root / "project.json"}
+        << R"json({"schema":"pelican.project","version":1,"name":"q8_none","basic_config":{}})json";
+    const auto none = PelicanStudio::readProjectUiNodes(project.root);
+    REQUIRE(none.nodes.empty());
+    REQUIRE(none.error.find("ui_config_json") != std::string::npos);
 }

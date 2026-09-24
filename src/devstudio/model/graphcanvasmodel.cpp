@@ -1,8 +1,13 @@
 #include "graphcanvasmodel.hpp"
 
+#include "projectformat.hpp"
+#include "projectpathresolver.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <fstream>
+#include <iterator>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -53,7 +58,76 @@ std::string semanticTypeName(const Json &owner, const char *key) {
 // declare its type. Composition expands it into value.parameter, whose output
 // is the scalar -- so that, and not "unknown", is what leaves its port.
 constexpr auto kGraphInputType = "pelican.value.scalar@1";
+
+void collectUiNodes(const Json &node, const std::string &parent,
+                    std::vector<GraphCanvasUiNode> &out) {
+    if (!node.is_object()) return;
+    const auto id = text(node, "id");
+    if (id.empty()) return;
+    auto path = parent.empty() ? id : parent + "/" + id;
+    out.push_back(GraphCanvasUiNode{path, text(node, "type")});
+    const auto children = node.find("children");
+    if (children == node.end() || !children->is_array()) return;
+    for (const auto &child : *children) collectUiNodes(child, path, out);
+}
 } // namespace
+
+std::vector<GraphCanvasUiNode> graphCanvasUiDocumentNodes(const Json &document) {
+    std::vector<GraphCanvasUiNode> nodes;
+    if (!document.is_object()) return nodes;
+    const auto root = document.find("root");
+    if (root != document.end()) collectUiNodes(*root, {}, nodes);
+    return nodes;
+}
+
+GraphCanvasUiNodesRead readProjectUiNodes(const std::filesystem::path &project_root) {
+    GraphCanvasUiNodesRead read;
+    try {
+        std::ifstream input{project_root / "project.json", std::ios::binary};
+        if (!input) {
+            read.error = "project.json could not be opened, so the UI document is unknown";
+            return read;
+        }
+        const std::string contents{std::istreambuf_iterator<char>{input},
+                                   std::istreambuf_iterator<char>{}};
+        const auto parsed = Pelican::parseProjectEnvelopeText(
+            contents, Pelican::ProjectEnvelopeParseOptions{.ignore_engine_version = true});
+        const auto &basic = parsed.envelope.basic_config;
+        const auto reference = basic.find("ui_config_json");
+        if (reference == basic.end() || !reference->is_string() ||
+            reference->get_ref<const std::string &>().empty()) {
+            read.error = "project.json names no UI document (basic_config.ui_config_json)";
+            return read;
+        }
+        Pelican::ProjectPathResolver resolver;
+        resolver.setup(project_root, false, parsed.envelope);
+        read.nodes = graphCanvasUiDocumentNodes(
+            Json::parse(resolver.loadText(reference->get<std::string>())));
+        if (read.nodes.empty())
+            read.error = "the UI document " + reference->get<std::string>() +
+                         " has no node with an id";
+    } catch (const std::exception &error) {
+        read.nodes.clear();
+        read.error = std::string{"the UI document could not be read: "} + error.what();
+    }
+    return read;
+}
+
+std::string_view GraphCanvasModel::uiNodeParameter(std::string_view op) noexcept {
+    return op == "ui.value" || op == "ui.visible" ? std::string_view{"node"}
+                                                  : std::string_view{};
+}
+
+std::vector<std::string> GraphCanvasModel::uiNodeChoices(std::string_view op) const {
+    std::vector<std::string> choices;
+    if (uiNodeParameter(op).empty()) return choices;
+    // A value write to anything but a gauge is ui.property_mismatch@1; the
+    // engine would refuse it by name, so the list does not offer it.
+    const bool value = op == "ui.value";
+    for (const auto &node : ui_nodes_)
+        if (!value || node.type == "gauge") choices.push_back(node.path);
+    return choices;
+}
 
 void GraphCanvasModel::request(RequestKind kind, std::string method, Json params) {
     const auto id = next_request_++;
@@ -1173,6 +1247,16 @@ Json GraphCanvasModel::addNodeOps(const std::string &op, const std::string &defi
         inputs[port] = Json{{"node", seed}, {"port", "value"}};
     }
     if (!inputs.empty()) node["inputs"] = std::move(inputs);
+    // Q-8. A ui.* sink without a node path is not a document the engine
+    // loads either ("ui sink requires a node path"). It arrives writing the
+    // first node the project's UI document offers for it; the details panel
+    // lists the rest. With no UI document read, the key stays out and the
+    // engine's refusal names what is missing.
+    if (const auto key = uiNodeParameter(op); !key.empty()) {
+        const auto choices = uiNodeChoices(op);
+        if (!choices.empty())
+            node["parameters"] = Json{{std::string{key}, choices.front()}};
+    }
     ops.push_back(Json{{"op", "add_node"}, {"scope", scope}, {"node", std::move(node)}});
     return ops;
 }

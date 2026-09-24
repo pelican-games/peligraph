@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -104,6 +105,34 @@ struct GraphCanvasScope {
     std::string label;
     bool root = false;
 };
+
+// Q-8. One node of the project's UI document, named the way a `ui.value` or
+// `ui.visible` sink names it: the ids from the root joined by "/" (the same
+// string the UI's emit calls stable_id). `type` is the widget type, which is
+// what decides whether a value can be written to it at all.
+struct GraphCanvasUiNode {
+    std::string path;
+    std::string type;
+
+    bool operator==(const GraphCanvasUiNode &) const = default;
+};
+
+// Every node of one UI document, in document order. A node without a string
+// id has no path and is skipped, with its children.
+std::vector<GraphCanvasUiNode> graphCanvasUiDocumentNodes(const nlohmann::json &document);
+
+struct GraphCanvasUiNodesRead {
+    std::vector<GraphCanvasUiNode> nodes;
+    // Why there are none, when there are none for a reason worth saying:
+    // project.json names no UI document, or the one it names cannot be read.
+    std::string error;
+};
+
+// The UI document project.json's basic_config.ui_config_json names, read the
+// way the engine reads it (through the project path resolver), and walked.
+// No engine RPC answers with the UI tree, and the document is the source of
+// truth for the paths anyway: an unknown path is refused by the engine by name.
+GraphCanvasUiNodesRead readProjectUiNodes(const std::filesystem::path &project_root);
 
 // One operation the "Add node..." palette can offer in the current scope.
 // `structural` marks graph.input and graph.instance: the catalog does not
@@ -205,6 +234,8 @@ class GraphCanvasModel {
     nlohmann::json layout_ = nlohmann::json::object();
     bool definitions_reported_ = false;
     bool context_received_ = false;
+
+    std::vector<GraphCanvasUiNode> ui_nodes_;
 
     bool catalog_requested_ = false;
     bool catalog_received_ = false;
@@ -436,6 +467,22 @@ class GraphCanvasModel {
     // and never two scrubs at once.
     bool scrub(double time);
     [[nodiscard]] bool scrubbing() const noexcept { return scrubbing_; }
+
+    // --- Q-8: the UI node a `ui.value` / `ui.visible` sink writes.
+
+    // The parameter an operation names a UI node in ("node" for the two ui.*
+    // sinks), or empty for every other operation.
+    [[nodiscard]] static std::string_view uiNodeParameter(std::string_view op) noexcept;
+    // What the Studio read from the project's UI document. Held here so the
+    // palette can seed a new sink with a node that exists.
+    void setUiNodes(std::vector<GraphCanvasUiNode> nodes) { ui_nodes_ = std::move(nodes); }
+    [[nodiscard]] const std::vector<GraphCanvasUiNode> &uiNodes() const noexcept {
+        return ui_nodes_;
+    }
+    // The paths the `node` field of this operation offers: for `ui.value` the
+    // gauges (the only widget whose value can be written), for `ui.visible`
+    // every node. Empty for an operation with no UI node parameter.
+    [[nodiscard]] std::vector<std::string> uiNodeChoices(std::string_view op) const;
 
     bool catalogReceived() const noexcept { return catalog_received_; }
     // The catalog's schema for one semantic type, or null when the catalog

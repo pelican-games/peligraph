@@ -8,6 +8,7 @@
 #include <QPointF>
 #include <QWidget>
 
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <memory>
@@ -454,6 +455,9 @@ class GraphCanvasWidget final : public QWidget {
     void receiveResult(qint64 request_id, const QByteArray &result_json);
     void receiveFailure(qint64 request_id, const QString &message);
     void setConnected(bool connected);
+    // Q-8. The project whose UI document names the nodes a ui.* sink can
+    // write. Read again whenever the list is about to be offered.
+    void setProjectRoot(const std::filesystem::path &project_root);
 
     GraphCanvasModel &model();
     GraphCanvasScene &scene();

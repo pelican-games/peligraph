@@ -2106,6 +2106,12 @@ struct GraphCanvasWidget::Impl {
     QLineEdit *label_edit = nullptr;
     QPushButton *apply_label = nullptr;
     QPushButton *add_node = nullptr;
+    // Q-8: the UI node a selected ui.value / ui.visible sink writes, chosen
+    // from the project's UI document (and still typeable).
+    QWidget *ui_node_row = nullptr;
+    QComboBox *ui_node = nullptr;
+    std::filesystem::path project_root;
+    std::string ui_nodes_error;
     QAction *auto_layout_action = nullptr;
     QAction *fit_view_action = nullptr;
     QAction *tie_action = nullptr;
@@ -2268,6 +2274,25 @@ struct GraphCanvasWidget::Impl {
             QObject::tr("Shift-drag a socket to connect; double-click an "
                         "instance to descend into its definition.")));
         side_layout->addLayout(label_row);
+        ui_node_row = new QWidget(side);
+        ui_node_row->setObjectName(QStringLiteral("pelican.graphCanvasUiNodeRow"));
+        auto *ui_node_layout = new QHBoxLayout(ui_node_row);
+        ui_node_layout->setContentsMargins(0, 0, 0, 0);
+        auto *ui_node_caption = new QLabel(QObject::tr("UI node"), ui_node_row);
+        ui_node_caption->setFont(studioSmallFont());
+        ui_node_layout->addWidget(ui_node_caption);
+        ui_node = new QComboBox(ui_node_row);
+        ui_node->setObjectName(QStringLiteral("pelican.graphCanvasUiNode"));
+        ui_node->setEditable(true);
+        // A path typed that the document does not have is sent as typed and
+        // refused by the engine by name; it is never added to the list.
+        ui_node->setInsertPolicy(QComboBox::NoInsert);
+        ui_node->setToolTip(QObject::tr(
+            "The path of the UI node this sink writes: the ids from the root "
+            "of the project's UI document, joined by \"/\"."));
+        ui_node_layout->addWidget(ui_node, 1);
+        side_layout->addWidget(ui_node_row);
+        ui_node_row->hide();
         details = new QTreeWidget(side);
         details->setObjectName(QStringLiteral("pelican.graphCanvasDetails"));
         details->setColumnCount(2);
@@ -2378,6 +2403,12 @@ struct GraphCanvasWidget::Impl {
         QObject::connect(label_edit, &QLineEdit::returnPressed, &view, rename);
         QObject::connect(add_node, &QPushButton::clicked, &view,
                          [this] { openPalette(); });
+        // Picking from the list and pressing Enter on a typed path are the
+        // two ways the field is finished; each sends one set_node_parameters.
+        QObject::connect(ui_node, &QComboBox::activated, &view,
+                         [this](int index) { commitUiNode(ui_node->itemText(index)); });
+        QObject::connect(ui_node->lineEdit(), &QLineEdit::returnPressed, &view,
+                         [this] { commitUiNode(ui_node->currentText()); });
 
         // ready() reports the current state synchronously, which happens while
         // the widget's pointer to this Impl is still null. Every handler works
@@ -2493,10 +2524,67 @@ struct GraphCanvasWidget::Impl {
         value_instances->setCurrentIndex(index < 0 ? 0 : index);
     }
 
+    // Q-8. Read the project's UI document again. It is small, and reading it
+    // when it is about to be offered means an edit made to it since the
+    // project was opened is what the list shows.
+    void reloadUiNodes() {
+        if (project_root.empty()) {
+            model.setUiNodes({});
+            ui_nodes_error = "no project is open";
+            return;
+        }
+        auto read = readProjectUiNodes(project_root);
+        model.setUiNodes(std::move(read.nodes));
+        ui_nodes_error = std::move(read.error);
+    }
+
+    void syncUiNodeRow(const GraphCanvasNode *node) {
+        const auto key = node != nullptr
+                             ? GraphCanvasModel::uiNodeParameter(node->op)
+                             : std::string_view{};
+        if (key.empty()) {
+            ui_node_row->hide();
+            return;
+        }
+        reloadUiNodes();
+        const QSignalBlocker block{ui_node};
+        ui_node->clear();
+        for (const auto &path : model.uiNodeChoices(node->op))
+            ui_node->addItem(qtext(path));
+        const auto stored = node->parameters.find(std::string{key});
+        const QString current =
+            stored != node->parameters.end() && stored->is_string()
+                ? qtext(stored->get<std::string>())
+                : QString{};
+        ui_node->setCurrentIndex(ui_node->findText(current));
+        ui_node->setEditText(current);
+        ui_node->lineEdit()->setPlaceholderText(
+            ui_nodes_error.empty() ? QObject::tr("a UI node path")
+                                   : qtext(ui_nodes_error));
+        ui_node->setEnabled(model.canEdit());
+        ui_node_row->show();
+    }
+
+    void commitUiNode(const QString &text) {
+        const auto &selected = scene->selectedNode();
+        if (!selected || text.isEmpty()) return;
+        const auto nodes = model.nodes();
+        const auto found = std::ranges::find(nodes, *selected, &GraphCanvasNode::id);
+        if (found == nodes.end()) return;
+        const auto key = std::string{GraphCanvasModel::uiNodeParameter(found->op)};
+        if (key.empty()) return;
+        const auto path = text.toStdString();
+        const auto stored = found->parameters.find(key);
+        if (stored != found->parameters.end() && *stored == path) return;
+        if (model.setNodeParameter(*selected, key, path)) dispatch();
+    }
+
     // The "Add node..." palette: the catalog, narrowed by domain and by what
     // the user types, and an instance also needs the definition it stands on.
     void openPalette() {
         if (!model.canEdit()) return;
+        // A new ui.* sink is seeded with a node the UI document has.
+        reloadUiNodes();
         QDialog dialog{&view};
         dialog.setObjectName(QStringLiteral("pelican.graphCanvasPalette"));
         dialog.setWindowTitle(QObject::tr("Add node"));
@@ -2580,15 +2668,18 @@ struct GraphCanvasWidget::Impl {
         add_node->setEnabled(model.canEdit());
         if (!selected) {
             label_edit->clear();
+            syncUiNodeRow(nullptr);
             return;
         }
         const auto nodes = model.nodes();
         const auto found = std::ranges::find(nodes, *selected, &GraphCanvasNode::id);
         if (found == nodes.end()) {
             label_edit->clear();
+            syncUiNodeRow(nullptr);
             return;
         }
         label_edit->setText(qtext(found->label));
+        syncUiNodeRow(&*found);
         const auto row = [this](const QString &field, const QString &value) {
             auto *item = new QTreeWidgetItem(details);
             item->setText(0, field);
@@ -2807,6 +2898,12 @@ void GraphCanvasWidget::receiveResult(qint64 request_id,
 void GraphCanvasWidget::receiveFailure(qint64 request_id,
                                        const QString &message) {
     impl_->deliverFailure(request_id, message);
+}
+
+void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root) {
+    impl_->project_root = project_root;
+    impl_->reloadUiNodes();
+    impl_->showDetails();
 }
 
 GraphCanvasModel &GraphCanvasWidget::model() { return impl_->model; }
