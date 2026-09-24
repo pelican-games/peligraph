@@ -869,7 +869,7 @@ TEST_CASE("PG-1 a build without the audio unit rejects an audio document by name
     // PELICAN_WITH_AUDIO makes to the common graph.
     const auto document = nlohmann::json::parse(R"({"schema":"pelican.graph","version":1,
       "nodes":[
-        {"id":"clock","op":"value.input","parameters":{"name":"time"},"outputs":["value"]},
+        {"id":"clock","op":"value.input","parameters":{"name":"scene_time"},"outputs":["value"]},
         {"id":"cue","op":"event.playback","outputs":["events"]},
         {"id":"sound","op":"audio.playback","parameters":{"asset":"project://tone.wav"},
          "inputs":{"time":{"node":"clock","port":"value"},"events":{"node":"cue","port":"events"}},
@@ -883,6 +883,7 @@ TEST_CASE("PG-1 a build without the audio unit rejects an audio document by name
     const auto au1_document = nlohmann::json::parse(R"({"schema":"pelican.graph","version":1,
       "nodes":[
         {"id":"clock","op":"value.input","parameters":{"name":"time"},"outputs":["value"]},
+        {"id":"scene","op":"value.input","parameters":{"name":"scene_time"},"outputs":["value"]},
         {"id":"cue","op":"event.playback","outputs":["events"]},
         {"id":"map","op":"value.playback","parameters":{"wrap":"repeat","duration":2},
          "inputs":{"elapsed":{"node":"clock","port":"value"}},"outputs":["value"]},
@@ -891,7 +892,7 @@ TEST_CASE("PG-1 a build without the audio unit rejects an audio document by name
          "outputs":["voice"]},
         {"id":"loop","op":"audio.playback","parameters":{"asset":"project://bgm.wav","wrap":"repeat",
          "source_begin":0.5,"speed":1},
-         "inputs":{"time":{"node":"clock","port":"value"},"events":{"node":"cue","port":"events"}},
+         "inputs":{"time":{"node":"scene","port":"value"},"events":{"node":"cue","port":"events"}},
          "outputs":["voice"]}],
       "outputs":{}})");
 #if PELICAN_WITH_AUDIO

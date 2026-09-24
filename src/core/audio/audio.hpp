@@ -106,11 +106,17 @@ DECLARE_MODULE(Audio) {
     bool voice_volumes_dirty = false;
     std::uint64_t next_handle = 1;
     // AU-1 decision 7: one decode per asset, shared by every voice that plays
-    // it and by the rendering config's check that the asset decodes.
+    // it and by the rendering config's check that the asset decodes. A sound
+    // longer than the streaming threshold (AU-2) is never decoded whole: its
+    // entry holds the encoded bytes and the header, and each voice decodes as
+    // it plays.
     mutable std::mutex decode_mutex;
     mutable std::map<std::string, DecodedEntry, std::less<>> decoded_sounds;
     mutable std::size_t decode_count = 0;
     std::size_t seek_count = 0;
+    // AU-2 decision 3: longer sounds than this stream, a decoder per voice.
+    double streaming_threshold_seconds;
+    std::size_t streamed_voice_count = 0;
 
     float effectiveVolume(AudioBus bus) const;
     void updateVoiceVolumes();
@@ -170,7 +176,13 @@ DECLARE_MODULE(Audio) {
 
     std::size_t voiceCountForTesting() const noexcept;
     std::size_t backendVoiceCountForTesting() const noexcept;
+    // Whole-sound decodes: a streamed sound is never counted here.
     std::size_t decodeCountForTesting() const noexcept;
+    // Voices started on a decoder of their own (streamed sounds).
+    std::size_t streamedVoiceCountForTesting() const noexcept { return streamed_voice_count; }
+    // Sounds longer than `seconds` stream from then on; what the cache holds
+    // is let go so each asset is read again under the new threshold.
+    void setStreamingThresholdForTesting(double seconds);
     std::size_t seekCountForTesting() const noexcept { return seek_count; }
     std::size_t seekCountForTesting(SoundHandle handle) const noexcept;
 };

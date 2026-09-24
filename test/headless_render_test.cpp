@@ -11120,9 +11120,12 @@ TEST_CASE("common graph state survives staged ray pipeline publication", "[headl
         const unsigned char wav[]{'R','I','F','F',44,0,0,0,'W','A','V','E','f','m','t',' ',16,0,0,0,
             1,0,1,0,64,31,0,0,128,62,0,0,2,0,16,0,'d','a','t','a',8,0,0,0,0,0,0,0,0,0,0,0};
         writeTextFile(temp_dir / "tone.wav", std::string(reinterpret_cast<const char *>(wav), sizeof(wav)));
+        // AU-2: a voice reads its (scene-stamped) events on scene_time.
+        document["nodes"].push_back({{"id", "scene_time"}, {"op", "value.input"},
+            {"parameters", {{"name", "scene_time"}}}, {"outputs", {"value"}}});
         document["nodes"].push_back({{"id", "voice"}, {"op", "audio.playback"},
             {"parameters", {{"asset", "project://tone.wav"}}},
-            {"inputs", {{"time", {{"node", "time"}, {"port", "value"}}},
+            {"inputs", {{"time", {{"node", "scene_time"}, {"port", "value"}}},
                         {"events", {{"node", "commands"}, {"port", "events"}}}}}, {"outputs", {"voice"}}});
 #endif
         writeTextFile(config_path, document.dump());

@@ -3,12 +3,21 @@
 #include "../launchconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../log.hpp"
+#include "../../project/graphcomposition.hpp"
+
+// AU-2: Ogg Vorbis through the stb_vorbis that ships with miniaudio. Its
+// declarations come before miniaudio so miniaudio compiles its Vorbis
+// decoding backend; its implementation is included at the end of this file,
+// after miniaudio's, as miniaudio's own tools do.
+#define STB_VORBIS_HEADER_ONLY
+#include <extras/stb_vorbis.c>
 
 #define MINIAUDIO_IMPLEMENTATION
 #include <miniaudio.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
@@ -19,6 +28,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -30,13 +40,29 @@ constexpr std::size_t busIndex(AudioBus bus) {
     return static_cast<std::size_t>(bus);
 }
 
+// AU-2 decision 1: the two formats an asset can be.
+enum class SoundFormat : std::uint8_t { wav, ogg };
+
+// A sound as the voices read it. A short one is decoded once and its samples
+// are shared by every voice; a long one (AU-2 decision 3) keeps only its
+// encoded bytes and what its header says, and each voice decodes it as it
+// plays through a decoder of its own.
 struct DecodedSound {
+    SoundFormat format = SoundFormat::wav;
     std::uint32_t channels = 0;
     std::uint32_t sample_rate = 0;
     std::vector<float> samples;
+    std::shared_ptr<const std::vector<std::byte>> encoded; // set when streamed
+    std::uint64_t streamed_frames = 0;
 
+    bool streamed() const { return encoded != nullptr; }
     std::uint64_t frameCount() const {
+        if (streamed()) return streamed_frames;
         return channels == 0 ? 0 : static_cast<std::uint64_t>(samples.size() / channels);
+    }
+    // What the sound keeps in memory: its samples, or its encoded bytes.
+    std::size_t residentBytes() const {
+        return streamed() ? encoded->size() : samples.size() * sizeof(float);
     }
 };
 
@@ -145,7 +171,18 @@ float decodeFloatSample(const std::byte *sample, std::uint16_t bits_per_sample) 
     return std::clamp(value, -1.0f, 1.0f);
 }
 
-DecodedSound decodeWav(std::span<const std::byte> bytes) {
+struct WavLayout {
+    WavFormat format;
+    std::size_t data_offset = 0;
+    std::size_t data_size = 0;
+
+    std::uint64_t frameCount() const { return data_size / format.block_align; }
+};
+
+// Everything decodeWav checks before it reads a sample. A streamed WAV is held
+// to the same rules through this, so the length of a sound never decides which
+// WAV files are accepted.
+WavLayout parseWav(std::span<const std::byte> bytes) {
     WavReader reader{bytes};
     if (!reader.fourcc(0, "RIFF") || !reader.fourcc(8, "WAVE")) {
         throw std::runtime_error("Invalid WAV: missing RIFF/WAVE header");
@@ -214,14 +251,21 @@ DecodedSound decodeWav(std::span<const std::byte> bytes) {
     if (data_size == 0 || (data_size % format.block_align) != 0) {
         throw std::runtime_error("Invalid WAV: data chunk size does not match format");
     }
+    return WavLayout{format, data_offset, data_size};
+}
 
-    const auto frame_count = data_size / format.block_align;
+DecodedSound decodeWav(std::span<const std::byte> bytes) {
+    const auto layout = parseWav(bytes);
+    const auto &format = layout.format;
+    const auto bytes_per_sample = static_cast<std::uint16_t>(format.bits_per_sample / 8);
+    const auto frame_count = static_cast<std::size_t>(layout.frameCount());
     DecodedSound decoded;
+    decoded.format = SoundFormat::wav;
     decoded.channels = format.channels;
     decoded.sample_rate = format.sample_rate;
     decoded.samples.reserve(frame_count * format.channels);
 
-    const auto *data = reader.data(data_offset);
+    const auto *data = WavReader{bytes}.data(layout.data_offset);
     for (std::size_t frame = 0; frame < frame_count; ++frame) {
         const auto frame_offset = frame * format.block_align;
         for (std::uint16_t channel = 0; channel < format.channels; ++channel) {
@@ -239,6 +283,122 @@ DecodedSound decodeWav(std::span<const std::byte> bytes) {
 std::string maErrorMessage(const char *operation, ma_result result) {
     return std::string{operation} + " failed with miniaudio result " + std::to_string(result);
 }
+
+bool bytesAt(std::span<const std::byte> bytes, std::size_t offset, std::string_view expected) {
+    if (offset > bytes.size() || expected.size() > bytes.size() - offset) return false;
+    for (std::size_t i = 0; i < expected.size(); ++i)
+        if (static_cast<unsigned char>(bytes[offset + i]) != static_cast<unsigned char>(expected[i])) return false;
+    return true;
+}
+
+// What the first bytes say the file is: RIFF/WAVE, or an Ogg stream whose
+// first packet is a Vorbis identification header. Ogg carrying anything else
+// (Opus, FLAC) is not Ogg Vorbis.
+std::string_view soundSignature(std::span<const std::byte> bytes) {
+    if (bytesAt(bytes, 0, "RIFF") && bytesAt(bytes, 8, "WAVE")) return "wav";
+    if (bytesAt(bytes, 0, "OggS") && bytes.size() > 26) {
+        const auto first_packet = std::size_t{27} + static_cast<unsigned char>(bytes[26]);
+        if (bytesAt(bytes, first_packet, std::string_view{"\x01vorbis", 7})) return "ogg";
+    }
+    return "unknown";
+}
+
+std::string soundExtension(std::string_view path) {
+    const auto slash = path.find_last_of("/\\");
+    const auto name = slash == std::string_view::npos ? path : path.substr(slash + 1);
+    const auto dot = name.rfind('.');
+    std::string extension{dot == std::string_view::npos ? std::string_view{} : name.substr(dot)};
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return extension;
+}
+
+// AU-2 decision 1: the extension and the first bytes must both name the same
+// supported format. Anything else is refused by name before any decoding.
+SoundFormat detectSoundFormat(std::string_view path, std::span<const std::byte> bytes) {
+    const auto extension = soundExtension(path);
+    const auto signature = soundSignature(bytes);
+    if (extension == ".wav" && signature == "wav") return SoundFormat::wav;
+    if (extension == ".ogg" && signature == "ogg") return SoundFormat::ogg;
+    throw GraphRegistryError("audio.format_unsupported@1",
+        {{"asset", std::string{path}}, {"extension", extension}, {"signature", std::string{signature}},
+         {"supported", nlohmann::json::array({".wav (RIFF/WAVE)", ".ogg (Ogg Vorbis)"})}});
+}
+
+ma_decoder_config decoderConfig(SoundFormat format) {
+    // Float samples at the source's own channels and rate: the cursor stays in
+    // source frames, and the engine converts the rest as it does for a buffer.
+    auto config = ma_decoder_config_init(ma_format_f32, 0, 0);
+    config.encodingFormat = format == SoundFormat::ogg ? ma_encoding_format_vorbis : ma_encoding_format_wav;
+    return config;
+}
+
+class ScopedDecoder {
+    ma_decoder decoder_{};
+    bool initialized_ = false;
+
+  public:
+    ScopedDecoder(SoundFormat format, std::span<const std::byte> bytes) {
+        const auto config = decoderConfig(format);
+        const auto result = ma_decoder_init_memory(bytes.data(), bytes.size(), &config, &decoder_);
+        if (result != MA_SUCCESS)
+            throw std::runtime_error(std::string{format == SoundFormat::ogg ? "Invalid Ogg Vorbis: " : "Invalid WAV: "} +
+                                     maErrorMessage("ma_decoder_init_memory", result));
+        initialized_ = true;
+    }
+    ScopedDecoder(const ScopedDecoder &) = delete;
+    ScopedDecoder &operator=(const ScopedDecoder &) = delete;
+    ~ScopedDecoder() {
+        if (initialized_) ma_decoder_uninit(&decoder_);
+    }
+    ma_decoder *get() { return &decoder_; }
+};
+
+// A sound's format, channels, rate and length from its header, decoding no
+// sample: the WAV rules of parseWav, or the Vorbis headers and the last
+// page's position.
+DecodedSound readSoundHeader(SoundFormat format, std::span<const std::byte> bytes) {
+    DecodedSound header;
+    header.format = format;
+    if (format == SoundFormat::wav) {
+        const auto layout = parseWav(bytes);
+        header.channels = layout.format.channels;
+        header.sample_rate = layout.format.sample_rate;
+        header.streamed_frames = layout.frameCount();
+        return header;
+    }
+    ScopedDecoder decoder{format, bytes};
+    ma_format sample_format{};
+    ma_uint32 channels = 0;
+    ma_uint32 sample_rate = 0;
+    auto result = ma_decoder_get_data_format(decoder.get(), &sample_format, &channels, &sample_rate, nullptr, 0);
+    if (result != MA_SUCCESS)
+        throw std::runtime_error("Invalid Ogg Vorbis: " + maErrorMessage("ma_decoder_get_data_format", result));
+    ma_uint64 length = 0;
+    result = ma_decoder_get_length_in_pcm_frames(decoder.get(), &length);
+    if (result != MA_SUCCESS || length == 0 || channels == 0 || sample_rate == 0)
+        throw std::runtime_error("Invalid Ogg Vorbis: the stream has no length, channels or sample rate");
+    header.channels = channels;
+    header.sample_rate = sample_rate;
+    header.streamed_frames = length;
+    return header;
+}
+
+// The whole sound, from the header readSoundHeader already read.
+DecodedSound decodeOgg(std::span<const std::byte> bytes, DecodedSound decoded) {
+    ScopedDecoder decoder{SoundFormat::ogg, bytes};
+    decoded.samples.resize(static_cast<std::size_t>(decoded.streamed_frames) * decoded.channels);
+    ma_uint64 read = 0;
+    const auto result = ma_decoder_read_pcm_frames(decoder.get(), decoded.samples.data(), decoded.streamed_frames, &read);
+    if ((result != MA_SUCCESS && result != MA_AT_END) || read == 0)
+        throw std::runtime_error("Invalid Ogg Vorbis: " + maErrorMessage("ma_decoder_read_pcm_frames", result));
+    decoded.samples.resize(static_cast<std::size_t>(read) * decoded.channels);
+    decoded.streamed_frames = 0;
+    return decoded;
+}
+
+// AU-2 decision 3: a sound longer than this is streamed rather than decoded.
+constexpr double defaultStreamingThresholdSeconds = 10.0;
 
 // The device-less engine's format. Fixed so what a test reads back does not
 // depend on the machine it runs on.
@@ -391,8 +551,12 @@ class MiniaudioBackend final : public Audio::Backend {
     struct MiniaudioVoice {
         std::shared_ptr<const DecodedSound> decoded;
         ma_audio_buffer_ref buffer{};
+        // A streamed sound (AU-2): this voice's own decoder over the shared
+        // encoded bytes, read by the mixer as it plays.
+        ma_decoder decoder{};
         ma_sound sound{};
         bool buffer_initialized = false;
+        bool decoder_initialized = false;
         bool sound_initialized = false;
         bool paused = false;
 
@@ -405,9 +569,17 @@ class MiniaudioBackend final : public Audio::Backend {
                 ma_sound_stop(&sound);
                 ma_sound_uninit(&sound);
             }
+            if (decoder_initialized) {
+                ma_decoder_uninit(&decoder);
+            }
             if (buffer_initialized) {
                 ma_audio_buffer_ref_uninit(&buffer);
             }
+        }
+
+        ma_data_source *source() {
+            return decoder_initialized ? static_cast<ma_data_source *>(&decoder)
+                                       : static_cast<ma_data_source *>(&buffer);
         }
     };
 
@@ -450,18 +622,34 @@ class MiniaudioBackend final : public Audio::Backend {
         voice->decoded = std::move(sound);
         const auto length = voice->decoded->frameCount();
 
-        // The decoded samples are shared between voices; each voice reads them
-        // through its own reference with its own cursor, range and loop point.
-        auto result = ma_audio_buffer_ref_init(ma_format_f32, voice->decoded->channels,
-                                               voice->decoded->samples.data(), length, &voice->buffer);
-        if (result != MA_SUCCESS) {
-            throw std::runtime_error(maErrorMessage("ma_audio_buffer_ref_init", result));
+        ma_result result = MA_SUCCESS;
+        if (voice->decoded->streamed()) {
+            // AU-2 decision 3: a decoder per voice, so each has its own cursor
+            // over the one copy of the encoded bytes.
+            const auto &bytes = *voice->decoded->encoded;
+            const auto config = decoderConfig(voice->decoded->format);
+            result = ma_decoder_init_memory(bytes.data(), bytes.size(), &config, &voice->decoder);
+            if (result != MA_SUCCESS) {
+                throw std::runtime_error(maErrorMessage("ma_decoder_init_memory", result));
+            }
+            voice->decoder_initialized = true;
+        } else {
+            // The decoded samples are shared between voices; each voice reads them
+            // through its own reference with its own cursor, range and loop point.
+            result = ma_audio_buffer_ref_init(ma_format_f32, voice->decoded->channels,
+                                              voice->decoded->samples.data(), length, &voice->buffer);
+            if (result != MA_SUCCESS) {
+                throw std::runtime_error(maErrorMessage("ma_audio_buffer_ref_init", result));
+            }
+            voice->buffer.sampleRate = voice->decoded->sample_rate;
+            voice->buffer_initialized = true;
         }
-        voice->buffer.sampleRate = voice->decoded->sample_rate;
-        voice->buffer_initialized = true;
+        // Range, loop point and start are the data source's, streamed or not:
+        // the same frames mean the same place in either.
+        auto *source = voice->source();
 
         if (setup.end != 0 && setup.end < length) {
-            result = ma_data_source_set_range_in_pcm_frames(&voice->buffer, 0, setup.end);
+            result = ma_data_source_set_range_in_pcm_frames(source, 0, setup.end);
             if (result != MA_SUCCESS)
                 throw std::runtime_error(maErrorMessage("ma_data_source_set_range_in_pcm_frames", result));
         }
@@ -469,15 +657,15 @@ class MiniaudioBackend final : public Audio::Backend {
             // AU-1 decision 2: the loop is the data source's own loop point, so
             // the frame after loop_end - 1 is loop_begin with no seek between.
             const auto loop_end = setup.loop_end == 0 ? length : (std::min)(setup.loop_end, length);
-            result = ma_data_source_set_loop_point_in_pcm_frames(&voice->buffer, setup.loop_begin, loop_end);
+            result = ma_data_source_set_loop_point_in_pcm_frames(source, setup.loop_begin, loop_end);
             if (result != MA_SUCCESS)
                 throw std::runtime_error(maErrorMessage("ma_data_source_set_loop_point_in_pcm_frames", result));
-            result = ma_data_source_set_looping(&voice->buffer, MA_TRUE);
+            result = ma_data_source_set_looping(source, MA_TRUE);
             if (result != MA_SUCCESS)
                 throw std::runtime_error(maErrorMessage("ma_data_source_set_looping", result));
         }
         if (setup.start != 0) {
-            result = ma_data_source_seek_to_pcm_frame(&voice->buffer, (std::min)(setup.start, length));
+            result = ma_data_source_seek_to_pcm_frame(source, (std::min)(setup.start, length));
             if (result != MA_SUCCESS)
                 throw std::runtime_error(maErrorMessage("ma_data_source_seek_to_pcm_frame", result));
         }
@@ -486,7 +674,7 @@ class MiniaudioBackend final : public Audio::Backend {
         // loop is asked for here as well as on the buffer.
         const ma_uint32 flags = MA_SOUND_FLAG_NO_SPATIALIZATION | (setup.loop ? MA_SOUND_FLAG_LOOPING : 0u);
         result = ma_sound_init_from_data_source(&engine,
-                                                &voice->buffer,
+                                                source,
                                                 flags,
                                                 nullptr,
                                                 &voice->sound);
@@ -600,7 +788,7 @@ class MiniaudioBackend final : public Audio::Backend {
     std::uint32_t channels() const noexcept override { return ma_engine_get_channels(&engine); }
 };
 
-Audio::Audio() {
+Audio::Audio() : streaming_threshold_seconds{defaultStreamingThresholdSeconds} {
     const auto preferred = preferredAudioBackend(GET_MODULE(EngineLaunchConfig).headless);
     try {
         backend = std::make_unique<MiniaudioBackend>(preferred);
@@ -669,12 +857,26 @@ Audio::PreparedSound Audio::prepareSound(std::string_view path, AudioBus bus) co
         if (found != decoded_sounds.end() && found->second.stamp == stamp)
             return PreparedSound{found->second.decoded, std::string{path}, bus};
     }
-    const auto bytes = resolver.loadBytes(path);
-    auto decoded = std::make_shared<const DecodedSound>(
-        decodeWav(std::span<const std::byte>{bytes.data(), bytes.size()}));
-    const auto size = decoded->samples.size() * sizeof(float);
+    auto bytes = resolver.loadBytes(path);
+    const std::span<const std::byte> view{bytes.data(), bytes.size()};
+    const auto format = detectSoundFormat(path, view);
+    // AU-2 decision 3. The header says how long the sound is; a long one is
+    // not decoded here -- not for the rendering config's check, not for a
+    // voice -- and keeps only its encoded bytes, which each voice's decoder
+    // reads as it plays.
+    auto header = readSoundHeader(format, view);
+    const bool streamed = static_cast<double>(header.streamed_frames) >
+                          streaming_threshold_seconds * static_cast<double>(header.sample_rate);
+    std::shared_ptr<const DecodedSound> decoded;
+    if (streamed) {
+        header.encoded = std::make_shared<const std::vector<std::byte>>(std::move(bytes));
+        decoded = std::make_shared<const DecodedSound>(std::move(header));
+    } else {
+        decoded = std::make_shared<const DecodedSound>(format == SoundFormat::ogg ? decodeOgg(view, std::move(header)) : decodeWav(view));
+    }
+    const auto size = decoded->residentBytes();
     std::lock_guard lock{decode_mutex};
-    ++decode_count;
+    if (!streamed) ++decode_count;
     std::size_t total = size;
     for (const auto &[name, entry] : decoded_sounds)
         if (name != key) total += entry.bytes;
@@ -687,6 +889,16 @@ Audio::PreparedSound Audio::prepareSound(std::string_view path, AudioBus bus) co
     }
     decoded_sounds.insert_or_assign(key, DecodedEntry{stamp, decoded, size});
     return PreparedSound{std::move(decoded), std::string{path}, bus};
+}
+
+void Audio::setStreamingThresholdForTesting(double seconds) {
+    if (!std::isfinite(seconds) || seconds < 0.0)
+        throw std::invalid_argument("audio streaming threshold must be finite and non-negative");
+    std::lock_guard lock{decode_mutex};
+    streaming_threshold_seconds = seconds;
+    // Voices keep what they play; the cache forgets, so the next prepare reads
+    // each asset again and decides by the new threshold.
+    decoded_sounds.clear();
 }
 
 double Audio::lengthSeconds(const PreparedSound &sound) {
@@ -737,6 +949,7 @@ void Audio::commitPreparedPlay(SoundHandle handle,
     // after the backend call is only this non-throwing scalar publication.
     slot->second.backend_id = backend_id;
     slot->second.bus = sound.bus;
+    if (decoded->streamed()) ++streamed_voice_count;
 }
 
 void Audio::commitPreparedStop(SoundHandle handle,
@@ -883,6 +1096,7 @@ SoundHandle Audio::playVoice(const PreparedSound &sound, const VoiceStart &start
     voice.loop_frames = setup.loop ? setup.loop_end - setup.loop_begin : 0;
     voice.source_rate = rate;
     voice.held = start.paused;
+    if (decoded->streamed()) ++streamed_voice_count;
     return handle;
 }
 
@@ -983,3 +1197,14 @@ std::size_t Audio::seekCountForTesting(SoundHandle handle) const noexcept {
 }
 
 } // namespace Pelican
+
+// stb_vorbis's implementation, after miniaudio's (see the top of the file).
+#if defined(_MSC_VER) && !defined(__clang__)
+#pragma warning(push)
+#pragma warning(disable : 4100 4244 4245 4456 4457 4701 4996)
+#endif
+#undef STB_VORBIS_HEADER_ONLY
+#include <extras/stb_vorbis.c>
+#if defined(_MSC_VER) && !defined(__clang__)
+#pragma warning(pop)
+#endif

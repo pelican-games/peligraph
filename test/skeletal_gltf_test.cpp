@@ -1636,9 +1636,13 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     const unsigned char wav[]{'R','I','F','F',44,0,0,0,'W','A','V','E','f','m','t',' ',16,0,0,0,
         1,0,1,0,64,31,0,0,128,62,0,0,2,0,16,0,'d','a','t','a',8,0,0,0,0,0,0,0,0,0,0,0};
     writeText(root / "tone.wav", {reinterpret_cast<const char *>(wav), sizeof(wav)});
+    // AU-2: a voice reads its (scene-stamped) events on scene_time.
+    event_document["definitions"]["scaled_curve"]["nodes"].push_back({
+        {"id", "scene_time"}, {"op", "value.input"}, {"parameters", {{"name", "scene_time"}}},
+        {"outputs", {"value"}}});
     event_document["definitions"]["scaled_curve"]["nodes"].push_back({
         {"id", "sound"}, {"op", "audio.playback"}, {"parameters", {{"asset", "project://tone.wav"}}},
-        {"inputs", {{"time", {{"node", "time"}, {"port", "value"}}},
+        {"inputs", {{"time", {{"node", "scene_time"}, {"port", "value"}}},
                     {"events", {{"node", "commands"}, {"port", "events"}}}}}, {"outputs", {"voice"}}});
     for (const auto *op : {"audio.volume", "audio.pitch"})
         event_document["definitions"]["scaled_curve"]["nodes"].push_back({

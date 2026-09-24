@@ -95,7 +95,18 @@ Json lowerAudioPlayback(const Json &node, const Json &parameters, const Json &in
             {{"node", id}, {"parameters", std::move(mapping)}});
     if (!position && !inputs.contains("events"))
         throw std::invalid_argument("unconnected graph input: " + id + ".events");
-    if (inputs.contains("events")) lowered["events"] = inputs.at("events").at("node");
+    if (inputs.contains("events")) {
+        lowered["events"] = inputs.at("events").at("node");
+        // AU-2 (the rest of decision 8): events are always stamped on scene
+        // time, and a node reads their arrival with its `time` input. Read on
+        // any other clock -- app time, which keeps running across scenes --
+        // they would arrive at the wrong moment, so `time` must come from
+        // scene_time alone whenever events are connected.
+        const auto time_clock = clockSources(inputs.at("time"));
+        if (time_clock != std::set<std::string>{"scene_time"})
+            throw GraphRegistryError("audio.clock_mismatch@1",
+                {{"node", id}, {"events_clock", Json::array({"scene_time"})}, {"time_clock", time_clock}});
+    }
     if (position) {
         lowered["position"] = source(inputs.at("position"));
         // Decision 8: events are stamped on the clock the node reads them

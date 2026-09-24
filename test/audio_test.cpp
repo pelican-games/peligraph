@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -267,12 +268,17 @@ TEST_CASE("GameContext audio reports invalid inputs", "[audio]") {
     ensureLogger();
     Sandbox sandbox;
     writeText(sandbox.root / "bad.wav", "not a wav");
+    // RIFF/WAVE by its first bytes, but its fmt chunk runs past the end.
+    writeText(sandbox.root / "broken.wav", std::string_view{"RIFF\x20\0\0\0WAVEfmt \x10\0\0\0\x01\0", 22});
 
     FastModuleContainer modules;
     configureNullAudioProject(sandbox);
 
     GameContext context;
+    // AU-2: first bytes that are not a WAV's are not a WAV, whatever the name says.
     REQUIRE_THROWS_WITH(context.audio().playSound("project://bad.wav"),
+                        Catch::Matchers::ContainsSubstring("audio.format_unsupported@1"));
+    REQUIRE_THROWS_WITH(context.audio().playSound("project://broken.wav"),
                         Catch::Matchers::ContainsSubstring("Invalid WAV"));
     REQUIRE_THROWS_WITH(context.audio().playSound("project://missing.wav"),
                         Catch::Matchers::ContainsSubstring("Failed to open file"));
@@ -367,7 +373,9 @@ struct VoiceRig {
         graph = std::make_shared<const ValueGraph::Graph>(document.dump());
     }
     void emit(std::string_view input, Animation::CurvePlaybackCommand command) {
-        REQUIRE(graph->emitEvent(scene().graphEvaluationState(graph), input, command, time().now()));
+        // Stamped on scene time, as SceneLoader::emitGraphEvent does.
+        REQUIRE(graph->emitEvent(scene().graphEvaluationState(graph), input, command,
+                                 time().now() - scene().sceneStartTime()));
     }
     ValueGraph::PublishResult publish() {
         auto &loader = scene();
@@ -443,7 +451,7 @@ TEST_CASE("AU-1 a voice follows its position through a time jump, a paused clock
     VoiceRig rig;
     writeSineWav(rig.sandbox.root / "tone.wav", 2.0);
     rig.load(graphDocument({
-        inputNode("now", "time"), eventsNode("cue"), eventsNode("voice_cue"),
+        inputNode("now", "scene_time"), eventsNode("cue"), eventsNode("voice_cue"),
         {{"id", "clock"}, {"op", "value.event_clock"},
          {"inputs", {{"time", edge("now")}, {"events", edge("cue", "events")}}}, {"outputs", {"value"}}},
         {{"id", "map"}, {"op", "value.playback"},
@@ -521,13 +529,13 @@ TEST_CASE("AU-1 the integrated and the decomposed voice point at the same source
     // The same map written twice: once as audio.playback's own parameters,
     // once as value.playback feeding its position.
     const auto integrated = graphDocument({
-        inputNode("now", "time"), eventsNode("cue"),
+        inputNode("now", "scene_time"), eventsNode("cue"),
         {{"id", "voice"}, {"op", "audio.playback"},
          {"parameters", {{"asset", "project://tone.wav"}, {"wrap", "repeat"}, {"source_begin", 0.5},
                          {"source_end", 1.0}}},
          {"inputs", {{"time", edge("now")}, {"events", edge("cue", "events")}}}, {"outputs", {"voice"}}}});
     const auto decomposed = graphDocument({
-        inputNode("now", "time"), eventsNode("cue"),
+        inputNode("now", "scene_time"), eventsNode("cue"),
         {{"id", "clock"}, {"op", "value.event_clock"},
          {"inputs", {{"time", edge("now")}, {"events", edge("cue", "events")}}}, {"outputs", {"value"}}},
         {{"id", "map"}, {"op", "value.playback"},
@@ -594,7 +602,7 @@ TEST_CASE("AU-1 an integrated voice on its loop point comes back to the graph's 
     VoiceRig rig;
     writeSineWav(rig.sandbox.root / "tone.wav", 2.0);
     rig.load(graphDocument({
-        inputNode("now", "time"), eventsNode("cue"),
+        inputNode("now", "scene_time"), eventsNode("cue"),
         {{"id", "voice"}, {"op", "audio.playback"},
          {"parameters", {{"asset", "project://tone.wav"}, {"wrap", "repeat"}, {"source_begin", 0.5},
                          {"source_end", 1.5}}},
@@ -621,7 +629,7 @@ TEST_CASE("AU-1 a bgm voice follows the Bgm bus and not the Se bus", "[audio][au
     VoiceRig rig;
     writeConstantWav(rig.sandbox.root / "level.wav", 1.0, 0.5);
     rig.load(graphDocument({
-        inputNode("now", "time"), eventsNode("cue"),
+        inputNode("now", "scene_time"), eventsNode("cue"),
         {{"id", "voice"}, {"op", "audio.playback"},
          {"parameters", {{"asset", "project://level.wav"}, {"bus", "bgm"}, {"wrap", "repeat"}}},
          {"inputs", {{"time", edge("now")}, {"events", edge("cue", "events")}}}, {"outputs", {"voice"}}}}));
@@ -666,7 +674,7 @@ TEST_CASE("AU-1 a volume curve reaches each frame's value over that frame", "[au
     VoiceRig rig;
     writeConstantWav(rig.sandbox.root / "level.wav", 2.0, 0.5);
     rig.load(graphDocument({
-        inputNode("now", "time"), eventsNode("cue"),
+        inputNode("now", "scene_time"), eventsNode("cue"),
         {{"id", "voice"}, {"op", "audio.playback"},
          {"parameters", {{"asset", "project://level.wav"}, {"wrap", "repeat"}}},
          {"inputs", {{"time", edge("now")}, {"events", edge("cue", "events")}}}, {"outputs", {"voice"}}},
@@ -712,7 +720,7 @@ TEST_CASE("AU-1 an asset decodes once however many voices play it", "[audio][au1
     VoiceRig rig;
     writeSineWav(rig.sandbox.root / "tone.wav", 0.5);
     rig.load(graphDocument({
-        inputNode("now", "time"), eventsNode("cue"),
+        inputNode("now", "scene_time"), eventsNode("cue"),
         {{"id", "voice"}, {"op", "audio.playback"}, {"parameters", {{"asset", "project://tone.wav"}}},
          {"inputs", {{"time", edge("now")}, {"events", edge("cue", "events")}}}, {"outputs", {"voice"}}}}));
     // What the rendering config registration does to check the asset.
@@ -782,7 +790,7 @@ TEST_CASE("AU-1 a document that mixes the two forms or two clocks is refused by 
     REQUIRE_THROWS_WITH(ValueGraph::Graph{graphDocument({inputNode("now", "time"),
         voice({{"wrap", "repeat"}}, {{"time", edge("now")}})}).dump()},
         Catch::Matchers::ContainsSubstring("unconnected graph input: voice.events"));
-    REQUIRE_THROWS_WITH(ValueGraph::Graph{graphDocument({inputNode("now", "time"), eventsNode("cue"),
+    REQUIRE_THROWS_WITH(ValueGraph::Graph{graphDocument({inputNode("now", "scene_time"), eventsNode("cue"),
         voice({{"bus", "master"}}, {{"time", edge("now")}, {"events", edge("cue", "events")}})}).dump()},
         Catch::Matchers::ContainsSubstring("unknown audio bus"));
 }
@@ -883,6 +891,400 @@ TEST_CASE("AU-1 a scene change stops the graph's voices and a time-clocked BGM c
         rig.time().advance();
     }
     REQUIRE(peak(rig.mixed) > 0.4);
+}
+
+// ---------------------------------------------------------------------------
+// AU-2: Ogg Vorbis, streaming, the format check and events on scene time. The
+// one audio binary in the repository is test/fixtures/audio/sine440_1s.ogg:
+// 1 s of a 440 Hz sine at amplitude 0.5, mono, 48 kHz (see its provenance).
+
+namespace {
+
+std::filesystem::path oggFixture() {
+    return std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" / "audio" / "sine440_1s.ogg";
+}
+
+void copyOggFixture(const std::filesystem::path &to) {
+    std::filesystem::create_directories(to.parent_path());
+    std::filesystem::copy_file(oggFixture(), to, std::filesystem::copy_options::overwrite_existing);
+}
+
+double sine440(double seconds) {
+    return 0.5 * std::sin(2.0 * 3.14159265358979323846 * 440.0 * seconds);
+}
+
+// The integrated form: audio.playback's own map, looping over [begin, end).
+nlohmann::json loopingVoice(std::string asset, double begin, double end) {
+    return graphDocument({
+        inputNode("now", "scene_time"), eventsNode("cue"),
+        {{"id", "voice"}, {"op", "audio.playback"},
+         {"parameters", {{"asset", std::move(asset)}, {"wrap", "repeat"}, {"source_begin", begin},
+                         {"source_end", end}}},
+         {"inputs", {{"time", edge("now")}, {"events", edge("cue", "events")}}}, {"outputs", {"voice"}}}});
+}
+
+// The decomposed form: the same map as value.playback, feeding position.
+nlohmann::json followingVoice(std::string asset, double begin, double end) {
+    return graphDocument({
+        inputNode("now", "scene_time"), eventsNode("cue"),
+        {{"id", "clock"}, {"op", "value.event_clock"},
+         {"inputs", {{"time", edge("now")}, {"events", edge("cue", "events")}}}, {"outputs", {"value"}}},
+        {{"id", "map"}, {"op", "value.playback"},
+         {"parameters", {{"wrap", "repeat"}, {"source_begin", begin}, {"source_end", end}, {"duration", end - begin}}},
+         {"inputs", {{"elapsed", edge("clock")}}}, {"outputs", {"value"}}},
+        {{"id", "voice"}, {"op", "audio.playback"}, {"parameters", {{"asset", std::move(asset)}}},
+         {"inputs", {{"time", edge("now")}, {"events", edge("cue", "events")}, {"position", edge("map")}}},
+         {"outputs", {"voice"}}}});
+}
+
+struct LoopRun {
+    std::vector<double> cursors;
+    std::vector<float> mixed;
+    std::uint32_t channels = 0;
+    std::size_t seeks = 0;
+    std::size_t decodes = 0;
+    std::size_t streamed = 0;
+};
+
+// 1.5 s of one voice over [0.5, 1.0): the loop point is crossed twice. A
+// threshold of zero leaves the streaming threshold at its default.
+LoopRun runLoop(const nlohmann::json &document, double threshold) {
+    using Command = Animation::CurvePlaybackCommand;
+    VoiceRig rig;
+    if (threshold > 0.0) rig.audio().setStreamingThresholdForTesting(threshold);
+    writeSineWav(rig.sandbox.root / "tone.wav", 2.0);
+    copyOggFixture(rig.sandbox.root / "tone.ogg");
+    rig.load(document);
+    rig.emit("cue", Command::start);
+    LoopRun result;
+    for (int i = 0; i < 90; ++i) {
+        (void)rig.publish();
+        result.cursors.push_back(rig.cursor("voice"));
+        (void)rig.mix();
+        rig.time().advance();
+    }
+    result.mixed = rig.mixed;
+    result.channels = rig.audio().outputChannels();
+    result.seeks = rig.audio().seekCountForTesting(rig.voice("voice"));
+    result.decodes = rig.audio().decodeCountForTesting();
+    result.streamed = rig.audio().streamedVoiceCountForTesting();
+    return result;
+}
+
+// The integrated voice held its own loop point: never sought, always on
+// [0.5, 1.0), and it did come back to 0.5.
+void requireNativeLoop(const LoopRun &run) {
+    REQUIRE(run.seeks == 0);
+    bool looped = false;
+    for (std::size_t i = 0; i < run.cursors.size(); ++i) {
+        CAPTURE(i, run.cursors[i]);
+        REQUIRE(run.cursors[i] >= 0.5 - 1e-9);
+        REQUIRE(run.cursors[i] < 1.0);
+        if (i > 0 && run.cursors[i] < run.cursors[i - 1]) looped = true;
+    }
+    REQUIRE(looped);
+}
+
+// The decomposed voice points where the integrated one does, modulo the loop.
+void requireSameSourceTime(const LoopRun &one, const LoopRun &split) {
+    REQUIRE(one.cursors.size() == split.cursors.size());
+    REQUIRE(split.seeks >= 2);
+    for (std::size_t i = 0; i < one.cursors.size(); ++i) {
+        CAPTURE(i, one.cursors[i], split.cursors[i]);
+        REQUIRE(split.cursors[i] < 1.0 + followTolerance);
+        const auto apart = std::fmod(std::abs(one.cursors[i] - split.cursors[i]), 0.5);
+        REQUIRE((std::min)(apart, 0.5 - apart) <= followTolerance);
+    }
+}
+
+double largestStep(const LoopRun &run) {
+    double largest = 0.0;
+    for (std::size_t n = run.channels; n < run.mixed.size(); n += run.channels)
+        largest = (std::max)(largest, static_cast<double>(std::abs(run.mixed[n] - run.mixed[n - run.channels])));
+    return largest;
+}
+
+// Where the samples of one mixed frame are the sine from `source_seconds` on:
+// the largest difference, first channel. The engine's resampler may hold a
+// sample or two back, so the best of those few lags counts; a wrong place in
+// the source is off by far more (one sample of a 440 Hz sine is 0.029).
+double sineError(const std::vector<float> &samples, std::uint32_t channels, double source_seconds) {
+    double best = std::numeric_limits<double>::infinity();
+    for (int lag = 0; lag <= 2; ++lag) {
+        double error = 0.0;
+        for (std::size_t n = static_cast<std::size_t>(lag); n * channels < samples.size(); ++n)
+            error = (std::max)(error, std::abs(static_cast<double>(samples[n * channels]) -
+                                               sine440(source_seconds + static_cast<double>(n - lag) / voiceRate)));
+        best = (std::min)(best, error);
+    }
+    return best;
+}
+
+// A WAV whose every sample says where it is: -0.5 at 0 s, rising to 0.5 at 2 s.
+double ramp(double seconds) {
+    return (seconds - 1.0) / 2.0;
+}
+
+// Where in `samples` (first channel) the ramp from `source_seconds` begins: the
+// offset k for which every sample from k on is ramp(source_seconds + (n - k)
+// / rate), and the largest difference there.
+std::pair<std::size_t, double> rampOffset(const std::vector<float> &samples, std::uint32_t channels,
+                                          double source_seconds, std::size_t most) {
+    std::pair<std::size_t, double> best{0, std::numeric_limits<double>::infinity()};
+    const auto frames = samples.size() / channels;
+    for (std::size_t k = 0; k <= most && k < frames; ++k) {
+        double error = 0.0;
+        for (std::size_t n = k; n < frames && error < best.second; ++n)
+            error = (std::max)(error, std::abs(static_cast<double>(samples[n * channels]) -
+                                               ramp(source_seconds + static_cast<double>(n - k) / voiceRate)));
+        if (error < best.second) best = {k, error};
+    }
+    return best;
+}
+
+// The decomposed voice over [0, 1) of the source, then a set_time jump: one
+// seek, and the voice follows from the new position. With the ramp, the
+// samples say where the voice is: the ones mixed after the seek are the
+// source from the sought frame on. (What miniaudio already held in its
+// processing cache -- up to 1024 frames read before the seek -- is mixed
+// first; the cursor reports the sought frame at once.)
+void requireFollowSeek(std::string asset, double threshold, double lossy) {
+    using Command = Animation::CurvePlaybackCommand;
+    VoiceRig rig;
+    if (threshold > 0.0) rig.audio().setStreamingThresholdForTesting(threshold);
+    writeSineWav(rig.sandbox.root / "tone.wav", 2.0);
+    writeGeneratedWav(rig.sandbox.root / "ramp.wav", 2.0, ramp);
+    copyOggFixture(rig.sandbox.root / "tone.ogg");
+    const bool ramped = asset.ends_with("ramp.wav");
+    rig.load(followingVoice(std::move(asset), 0.0, 1.0));
+    rig.emit("cue", Command::start);
+    const auto channels = rig.audio().outputChannels();
+    // The first frame starts at the source's beginning.
+    (void)rig.publish();
+    const auto first = rig.mix();
+    if (ramped) {
+        const auto [offset, error] = rampOffset(first, channels, 0.0, 2);
+        CAPTURE(offset, error);
+        REQUIRE(error < lossy);
+    } else REQUIRE(sineError(first, channels, 0.0) < lossy);
+    rig.time().advance();
+    for (int i = 0; i < 10; ++i) (void)rig.frame();
+    const auto voice = rig.voice("voice");
+    REQUIRE(rig.audio().seekCountForTesting(voice) == 0);
+    rig.time().setTime(rig.time().now() + 0.3);
+    const auto published = rig.publish();
+    REQUIRE(rig.audio().seekCountForTesting(voice) == 1);
+    const auto target = rig.cursor("voice");
+    REQUIRE(std::abs(target - rig.value(published, "map")) <= followTolerance);
+    CAPTURE(target);
+    std::vector<float> after = rig.mix();
+    rig.time().advance();
+    for (int i = 0; i < 10; ++i) {
+        const auto frame = rig.publish();
+        REQUIRE(std::abs(rig.cursor("voice") - rig.value(frame, "map")) <= followTolerance);
+        const auto samples = rig.mix();
+        if (i == 0) after.insert(after.end(), samples.begin(), samples.end());
+        rig.time().advance();
+    }
+    REQUIRE(rig.audio().seekCountForTesting(voice) == 1);
+    REQUIRE(rig.voice("voice") == voice);
+    if (ramped) {
+        // Two frames from the seek on: the sought frame appears within the
+        // cache's length and the ramp runs on from it without a gap.
+        const auto [offset, error] = rampOffset(after, channels, target, 1100);
+        CAPTURE(offset, error);
+        REQUIRE(offset <= 1100);
+        REQUIRE(error < lossy);
+    }
+}
+
+// The first bytes of an Ogg stream whose first packet is Opus, not Vorbis.
+std::string oggOpusHead() {
+    std::string page{"OggS", 4};
+    page += std::string{"\x00\x02", 2};          // version, first page
+    page += std::string(8, '\0');                 // granule position
+    page += std::string{"\x01\x00\x00\x00", 4};  // serial
+    page += std::string(4, '\0');                 // sequence
+    page += std::string(4, '\0');                 // checksum
+    page += std::string{"\x01\x13", 2};          // one segment of 19 bytes
+    page += std::string{"OpusHead\x01\x01\x38\x01\x80\xbb\x00\x00\x00\x00\x00", 19};
+    return page;
+}
+
+} // namespace
+
+TEST_CASE("AU-2 an Ogg Vorbis asset plays, seeks and loops on its own loop point", "[audio][au2][au2-ogg]") {
+    // Under the default threshold the 1 s fixture is decoded whole, once.
+    const auto one = runLoop(loopingVoice("project://tone.ogg", 0.5, 1.0), 0.0);
+    REQUIRE(one.decodes == 1);
+    REQUIRE(one.streamed == 0);
+    requireNativeLoop(one);
+    // What was mixed is the fixture's sine, from 0.5 s on ...
+    const std::vector<float> first(one.mixed.begin(), one.mixed.begin() + frameSamples * one.channels);
+    REQUIRE(sineError(first, one.channels, 0.5) < 0.03);
+    // ... and it runs on across the loop point without a step: 440 Hz at 0.5
+    // moves at most 0.029 a sample, and the encoding is within 0.012.
+    REQUIRE(largestStep(one) < 0.06);
+    REQUIRE(peak(one.mixed) > 0.45);
+    // The decomposed form follows the same source time, sought at each loop.
+    requireSameSourceTime(one, runLoop(followingVoice("project://tone.ogg", 0.5, 1.0), 0.0));
+    requireFollowSeek("project://tone.ogg", 0.0, 0.03);
+
+    // GameContext::playSound plays an Ogg asset as it does a WAV one.
+    VoiceRig rig;
+    copyOggFixture(rig.sandbox.root / "tone.ogg");
+    const auto prepared = rig.audio().prepareSound("project://tone.ogg");
+    REQUIRE(std::abs(Audio::lengthSeconds(prepared) - 1.0) < 1e-9);
+    const auto sound = GameContext{}.audio().playSound("project://tone.ogg");
+    REQUIRE(rig.audio().decodeCountForTesting() == 1);
+    REQUIRE(sineError(rig.mix(), rig.audio().outputChannels(), 0.0) < 0.03);
+    GameContext{}.audio().stopSound(sound);
+}
+
+TEST_CASE("AU-2 a sound longer than the streaming threshold is read by a decoder per voice, never decoded whole",
+          "[audio][au2][au2-stream]") {
+    // The threshold is lowered to 0.25 s so the 2 s WAV and the 1 s Ogg stream.
+    constexpr double threshold = 0.25;
+    for (const std::string asset : {"project://tone.wav", "project://tone.ogg"}) {
+        CAPTURE(asset);
+        const auto decoded = runLoop(loopingVoice(asset, 0.5, 1.0), 0.0);
+        REQUIRE(decoded.decodes == 1);
+        REQUIRE(decoded.streamed == 0);
+        const auto streamed = runLoop(loopingVoice(asset, 0.5, 1.0), threshold);
+        REQUIRE(streamed.decodes == 0);
+        REQUIRE(streamed.streamed == 1);
+        // The integrated form keeps its sample-accurate loop point ...
+        requireNativeLoop(streamed);
+        // ... and streaming changes where the samples come from, not what they are.
+        REQUIRE(streamed.mixed.size() == decoded.mixed.size());
+        double apart = 0.0;
+        for (std::size_t n = 0; n < streamed.mixed.size(); ++n)
+            apart = (std::max)(apart, static_cast<double>(std::abs(streamed.mixed[n] - decoded.mixed[n])));
+        REQUIRE(apart < 1e-5);
+        // The decomposed form follows it and seeks the streamed voice.
+        const auto split = runLoop(followingVoice(asset, 0.5, 1.0), threshold);
+        REQUIRE(split.decodes == 0);
+        REQUIRE(split.streamed == 1);
+        requireSameSourceTime(streamed, split);
+        requireFollowSeek(asset, threshold, asset.ends_with(".ogg") ? 0.03 : 1e-3);
+    }
+    // A streamed voice is sought to the frame, as a decoded one is: the ramp's
+    // samples say where each voice went.
+    requireFollowSeek("project://ramp.wav", 0.0, 1e-4);
+    requireFollowSeek("project://ramp.wav", threshold, 1e-4);
+
+    // The rendering config's check reads the header only, and every voice
+    // opens its own decoder over the one copy of the encoded bytes.
+    VoiceRig rig;
+    rig.audio().setStreamingThresholdForTesting(threshold);
+    writeSineWav(rig.sandbox.root / "tone.wav", 2.0);
+    const auto prepared = rig.audio().prepareSound("project://tone.wav");
+    REQUIRE(std::abs(Audio::lengthSeconds(prepared) - 2.0) < 1e-9);
+    REQUIRE(rig.audio().decodeCountForTesting() == 0);
+    const auto first = GameContext{}.audio().playSound("project://tone.wav");
+    (void)rig.mix();
+    const auto second = GameContext{}.audio().playSound("project://tone.wav");
+    REQUIRE(rig.audio().streamedVoiceCountForTesting() == 2);
+    REQUIRE(rig.audio().decodeCountForTesting() == 0);
+    // Two cursors of their own: the first has read a frame (and what the mixer
+    // reads ahead), the second nothing yet.
+    REQUIRE(rig.audio().soundState(first)->position_seconds.value() >= frameSeconds - 1e-9);
+    REQUIRE(rig.audio().soundState(second)->position_seconds.value() == 0.0);
+    GameContext{}.audio().stopSound(first);
+    GameContext{}.audio().stopSound(second);
+    // Under the threshold, the same asset is decoded whole again.
+    rig.audio().setStreamingThresholdForTesting(10.0);
+    (void)rig.audio().prepareSound("project://tone.wav");
+    REQUIRE(rig.audio().decodeCountForTesting() == 1);
+}
+
+TEST_CASE("AU-2 an asset whose extension or first bytes are not WAV or Ogg Vorbis is refused by name",
+          "[audio][au2][au2-format]") {
+    ensureLogger();
+    Sandbox sandbox;
+    writeTinyPcmWav(sandbox.root / "tone.wav");
+    std::filesystem::copy_file(sandbox.root / "tone.wav", sandbox.root / "upper.WAV");
+    std::filesystem::copy_file(sandbox.root / "tone.wav", sandbox.root / "wav_bytes.ogg");
+    std::filesystem::copy_file(sandbox.root / "tone.wav", sandbox.root / "tone.mp3");
+    std::filesystem::copy_file(sandbox.root / "tone.wav", sandbox.root / "no_extension");
+    copyOggFixture(sandbox.root / "tone.ogg");
+    copyOggFixture(sandbox.root / "ogg_bytes.wav");
+    writeText(sandbox.root / "opus.ogg", oggOpusHead());
+
+    FastModuleContainer modules;
+    configureNullAudioProject(sandbox);
+    auto &audio = GET_MODULE(Audio);
+    const auto refused = [&](const std::string &asset, std::string_view extension, std::string_view signature) {
+        CAPTURE(asset);
+        try {
+            (void)audio.prepareSound(asset);
+            FAIL("accepted: " << asset);
+        } catch (const GraphRegistryError &error) {
+            REQUIRE(error.code() == "audio.format_unsupported@1");
+            REQUIRE(error.detail().at("asset") == asset);
+            REQUIRE(error.detail().at("extension") == std::string{extension});
+            REQUIRE(error.detail().at("signature") == std::string{signature});
+        }
+    };
+    // The name and the bytes disagree.
+    refused("project://wav_bytes.ogg", ".ogg", "wav");
+    refused("project://ogg_bytes.wav", ".wav", "ogg");
+    // A format this build does not play, by name or by content.
+    refused("project://tone.mp3", ".mp3", "wav");
+    refused("project://no_extension", "", "wav");
+    refused("project://opus.ogg", ".ogg", "unknown");
+    REQUIRE(audio.decodeCountForTesting() == 0);
+    // The same refusal from game code.
+    REQUIRE_THROWS_WITH(GameContext{}.audio().playSound("project://ogg_bytes.wav"),
+                        Catch::Matchers::ContainsSubstring("audio.format_unsupported@1"));
+    // The controls: both agree, whatever the extension's case.
+    REQUIRE_NOTHROW(audio.prepareSound("project://tone.wav"));
+    REQUIRE_NOTHROW(audio.prepareSound("project://upper.WAV"));
+    REQUIRE_NOTHROW(audio.prepareSound("project://tone.ogg"));
+    REQUIRE(audio.decodeCountForTesting() == 3);
+}
+
+TEST_CASE("AU-2 events read on any clock but scene_time are refused by name",
+          "[audio][au2][au2-clock]") {
+    const auto voice = [](nlohmann::json parameters, nlohmann::json inputs) {
+        parameters["asset"] = "project://tone.wav";
+        return nlohmann::json{{"id", "voice"}, {"op", "audio.playback"}, {"parameters", std::move(parameters)},
+                              {"inputs", std::move(inputs)}, {"outputs", {"voice"}}};
+    };
+    const auto map = [](std::string clock) {
+        return nlohmann::json{{"id", "map"}, {"op", "value.playback"},
+            {"parameters", {{"duration", 1}}}, {"inputs", {{"elapsed", edge(std::move(clock))}}}, {"outputs", {"value"}}};
+    };
+    const auto mismatch = [](const nlohmann::json &document) {
+        try {
+            const ValueGraph::Graph graph{document.dump()};
+            FAIL("accepted: " << document.dump());
+        } catch (const GraphRegistryError &error) {
+            REQUIRE(error.code() == "audio.clock_mismatch@1");
+            REQUIRE(error.detail().at("node") == "voice");
+            REQUIRE(error.detail().at("events_clock") == nlohmann::json::array({"scene_time"}));
+            return error.detail().at("time_clock");
+        }
+        return nlohmann::json{};
+    };
+    // The integrated form, its events read on app time.
+    REQUIRE(mismatch(graphDocument({inputNode("now", "time"), eventsNode("cue"),
+        voice({{"wrap", "repeat"}}, {{"time", edge("now")}, {"events", edge("cue", "events")}})})) ==
+        nlohmann::json::array({"time"}));
+    // The decomposed form with events, everything on app time: one clock, but
+    // not the one the events are stamped on.
+    REQUIRE(mismatch(graphDocument({inputNode("now", "time"), eventsNode("cue"), map("now"),
+        voice({}, {{"time", edge("now")}, {"events", edge("cue", "events")}, {"position", edge("map")}})})) ==
+        nlohmann::json::array({"time"}));
+    // A time that reads no clock at all.
+    REQUIRE(mismatch(graphDocument({{{"id", "fixed"}, {"op", "value.constant"}, {"parameters", {{"value", 1.0}}},
+                                     {"outputs", {"value"}}}, eventsNode("cue"),
+        voice({}, {{"time", edge("fixed")}, {"events", edge("cue", "events")}})})) == nlohmann::json::array());
+    // The controls: events on scene_time, or app time with no events.
+    REQUIRE_NOTHROW(ValueGraph::Graph{graphDocument({inputNode("scene", "scene_time"), eventsNode("cue"),
+        voice({{"wrap", "repeat"}}, {{"time", edge("scene")}, {"events", edge("cue", "events")}})}).dump()});
+    REQUIRE_NOTHROW(ValueGraph::Graph{graphDocument({inputNode("now", "time"), map("now"),
+        voice({{"bus", "bgm"}}, {{"time", edge("now")}, {"position", edge("map")}})}).dump()});
 }
 
 } // namespace Pelican

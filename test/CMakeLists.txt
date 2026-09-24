@@ -3194,6 +3194,10 @@ endif()
 
 if(PELICAN_WITH_AUDIO)
 pelican_define_test(audio_test GROUP core_diagnostics pelican_core)
+# AU-2: the Ogg Vorbis fixture under test/fixtures/audio.
+target_compile_definitions(pelican_test_audio_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 endif()
 
 add_executable(pelican_test_audio_disabled_probe audio_disabled_probe.cpp)
