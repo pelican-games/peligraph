@@ -123,8 +123,8 @@ package は「エンジンのツリーの外で書かれ、プロジェクトへ
 読む順序は次の3点です。
 
 - preset本体は [`src/core/resources/render_pipelines/hybrid_v1.json`](../../src/core/resources/render_pipelines/hybrid_v1.json)。[`b_embed(pelican_resources render_pipelines/hybrid_v1.json)`](../../src/core/resources/CMakeLists.txt#L87) でエンジンへ埋め込まれるので、`engine://` で解決されます。
-- `pipeline.preset` の展開は純粋層の [`resolveRenderPipelinePreset()`](../../src/project/renderpipeline.cpp#L667) が行います。`schema` は `pelican.render_pipeline`、`version` は1固定で、presetが更にpresetを指すことは禁止です。authored側の `features` / `shader_defines` / `graph_transforms` は追記される一方、`render_strategy` / `snapshots` / `target_planning` の上書きは明示エラーになります。この「部分上書きを許さず、構造を変えたいならpresetを丸ごと自分のプロジェクトへコピーして自前宣言に切り替える」やり方を、本ガイドでは **eject 方針**と呼びます（用意された既定の中に留まるか、そこから降りて全部を自分で持つか、の二択にする、という意味です）。
-- 呼び出し側は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2905) の先頭で、preset展開はfeature解析より前に走ります。
+- `pipeline.preset` の展開は純粋層の [`resolveRenderPipelinePreset()`](../../src/project/renderpipeline.cpp#L836) が行います。`schema` は `pelican.render_pipeline`、`version` は1固定で、presetが更にpresetを指すことは禁止です。authored側の `features` / `shader_defines` / `graph_transforms` は追記される一方、`render_strategy` / `snapshots` / `target_planning` の上書きは明示エラーになります。この「部分上書きを許さず、構造を変えたいならpresetを丸ごと自分のプロジェクトへコピーして自前宣言に切り替える」やり方を、本ガイドでは **eject 方針**と呼びます（用意された既定の中に留まるか、そこから降りて全部を自分で持つか、の二択にする、という意味です）。
+- 呼び出し側は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2913) の先頭で、preset展開はfeature解析より前に走ります。
 
 旧テンプレートはgbuffer_pass / ssao_pass / ssao_blur_pass / presentの4passで、`present` が `uses_light_data: true` によりライティングとpresentを兼ねる構成でした。新しい既定は deferred_geometry → ssao_pass → ssao_blur_pass → deferred_lighting → forward_opaque → `snapshot_copy` 2本 → forward_transparent → scene_present という並びで、forward・半透明・snapshotを持ちます。「新規プロジェクトが最初から何を描くか」が変わっているので、この節より先の章を読むときの前提として押さえておきます。
 
@@ -158,7 +158,7 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 | [`openxr/`](../../src/core/openxr) | OpenXR discovery/session/action/composition/mirror（独立static lib） | [`OpenXr::SessionRuntime`](../../src/core/openxr/openxrsession.hpp#L135) |
 | [`ui/`](../../src/core/ui) | 2D UI（document/layout/atlas/bitmapfont/input routing） | [`ui::UiModule`](../../src/core/ui/module.hpp#L30) |
 | [`watch/`](../../src/core/watch) | FileWatcher、ContentDigest、reload gate/queue/transaction/service | [`watch::ReloadService`](../../src/core/watch/reloadservice.hpp#L182) |
-| [`loader/`](../../src/core/loader) | 設定、path/埋め込み資源のruntime adapter、scene、画像 | [`ProjectBasicConfig`](../../src/core/loader/basicconfig.hpp#L70)、[`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)。純粋な解決規則は [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) |
+| [`loader/`](../../src/core/loader) | 設定、path/埋め込み資源のruntime adapter、scene、画像 | [`ProjectBasicConfig`](../../src/core/loader/basicconfig.hpp#L72)、[`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)。純粋な解決規則は [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) |
 | [`ecs/`](../../src/core/ecs) | 内部ECSのファサード、Componentメタデータ、組み込みSystem | [`ECSCore`](../../src/core/ecs/core.hpp#L13)、[`ComponentInfoManager`](../../src/core/ecs/componentinfo.hpp#L60) |
 | [`userpublic/`](../../src/core/userpublic) | ゲームコード向け公開APIとECS実体テンプレート | [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L138)、[`GameObjects`](../../src/core/userpublic/gameobjects.hpp#L31) |
 | [`os/`](../../src/core/os) | GLFW window、生入力、Action map | [`InputStateCore`](../../src/core/os/inputstate.hpp#L206)、[`InputActionMap`](../../src/core/os/actionmap.hpp#L65) |
@@ -314,7 +314,7 @@ ABIの交渉入口（`getApiV1` / `getPoseStagingServiceV1` / `getApplicationSer
 | nlohmann/json | project/scene/rendering/RPC/保存など全JSON |
 | shaderc | GLSLからSPIR-V（[`ShaderCompiler`](../../src/core/shader/shadercompiler.hpp#L39)）。runtime compiler ON時だけVulkan SDK版をリンクし、暗黙のFetchContent fallbackは行わない |
 | SPIRV-Reflect | descriptor/push constant/vertex input抽出（[`reflect()`](../../src/core/shader/shaderreflection.hpp#L66)） |
-| tinygltf | glTF/GLB/VRMロード（[`GltfLoader`](../../src/core/model/gltf.cpp#L2548)） |
+| tinygltf | glTF/GLB/VRMロード（[`GltfLoader`](../../src/core/model/gltf.cpp#L2538)） |
 | stb / tinyexr | PNG等とEXRの画像ロード |
 | miniaudio | 音声backend |
 | OpenXR SDK | loader + headers（[OpenXR-SDK-Sourceの取得](../../CMakeLists.txt#L271)、`PELICAN_WITH_OPENXR` 時） |

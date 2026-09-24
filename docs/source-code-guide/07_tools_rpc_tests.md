@@ -344,7 +344,7 @@ process 終了時も pending request を失敗にするため、入力 pipe や 
 到達は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp#L106) が view 表示なしで検査します。
 
 読む前に、応答の階層だけ掴んでおきます。`get_frame_plan` の 1 応答の中に、名前の層と物理の層が入れ子で
-入っています([組み立ては `Renderer::currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L3885))。
+入っています([組み立ては `Renderer::currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L3889))。
 
 ```text
 get_frame_plan 応答 = pelican.frame_plan v1
@@ -353,7 +353,7 @@ get_frame_plan 応答 = pelican.frame_plan v1
 ```
 
 Graph タブが読む応答も同じ読み方をします。1 応答に「今の版」と「文書の 2 つの層」が入っています
-([組み立ては `getGraphInstances()`](../../src/core/communication/renderconfigeditor.cpp#L2151))。
+([組み立ては `getGraphInstances()`](../../src/core/communication/renderconfigeditor.cpp#L2185))。
 
 ```text
 get_graph_instances 応答
@@ -676,8 +676,8 @@ Studio の target を必要としません)。
   ([L476](../../test/devstudio_frameplan_test.cpp#L476) / [L588](../../test/devstudio_frameplan_test.cpp#L588) /
   [L686](../../test/devstudio_frameplan_test.cpp#L686) / L689 / L722–L724 / L793 / L841)と
   `devstudio_frameplan_graph_test.cpp` の **2 箇所**
-  ([Target combo の項目数の検査(F-7 から Whole frame の 1 件を足して 23)](../../test/devstudio_frameplan_graph_test.cpp#L5142) /
-  [L5896](../../test/devstudio_frameplan_graph_test.cpp#L5829))で、
+  ([Target combo の項目数の検査(F-7 から Whole frame の 1 件を足して 23)](../../test/devstudio_frameplan_graph_test.cpp#L5144) /
+  [L5896](../../test/devstudio_frameplan_graph_test.cpp#L5831))で、
   多い方は graph test ではなく frameplan test です。同じ commit で `devstudio_*` の 4 テストが
   **読みだけで編集され、実行されていない**ことも同じ完了記録 `e1c326c1` の申告で(Studio 無しの
   worktree では走らないため、primary の全数で見る、という運用です)、本章で実行を確かめてはいません。
@@ -783,7 +783,7 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 
 #### 編集系(60) ✅実装済み(WP153〜WP172 で始まり、range はそこを大きく越えます)
 
-すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L399) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L282) です。
+すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L400) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L282) です。
 
 | method | 実装行 | 概要 |
 |---|---|---|
@@ -806,16 +806,16 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 | `edit_render_features` | [feature 編集](../../src/core/communication/editorrpchandlers.cpp#L198) | render feature 構成を編集する |
 | `get_scene_acceleration_structures` / `edit_scene_acceleration_structures` | 名前付きASの取得・編集 | AS定義とdigestを取得し、既存render config ticketで変更・保存する |
 | `get_render_authoring_context` | [authoring context](../../src/core/communication/editorrpchandlers.cpp#L201) | authored pass 編集に必要な target / resource context を返す |
-| `add_authored_pass` | [pass 追加](../../src/core/communication/editorrpchandlers.cpp#L267) | authored pass を追加する |
-| `remove_authored_pass` | [pass 削除](../../src/core/communication/editorrpchandlers.cpp#L270) | authored pass を削除する |
-| `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/editorrpchandlers.cpp#L276) / [登録 `get_preview_result`](../../src/core/communication/editorrpchandlers.cpp#L279) | 非同期結果取得 |
-| `query_journal` | [登録 `query_journal`](../../src/core/communication/editorrpchandlers.cpp#L282) | ジャーナル照会 |
-| `get_graph_instances` | [instance 一覧](../../src/core/communication/editorrpchandlers.cpp#L222) | 共通グラフ文書の `source_digest` / `instances[]` / root の `nodes[]` / `definitions` 本体 |
-| `edit_graph_instances` | [装着編集](../../src/core/communication/editorrpchandlers.cpp#L225) | owner 付き root instance の attach / detach。中では `editGraphDocument()` の ops へ翻訳 |
-| `edit_graph_document` | [文書編集](../../src/core/communication/editorrpchandlers.cpp#L228) | `ops[]` を順に当てて最後に 1 回展開。全部通るか文書ごと拒否か |
-| `get_graph_values` | [instance 入力の値](../../src/core/communication/editorrpchandlers.cpp#L231) | publish 済み snapshot の読み。再評価しない |
-| `get_graph_node_values` | [node 出力の値](../../src/core/communication/editorrpchandlers.cpp#L234) | 展開木の node ごとの出力。`source: "rendering"` |
-| `get_graph_catalog` | [module catalog](../../src/core/communication/editorrpchandlers.cpp#L237) | `builtinGraphModuleRegistry().catalog()` をそのまま(§7.5c と同じ値) |
+| `add_authored_pass` | [pass 追加](../../src/core/communication/editorrpchandlers.cpp#L270) | authored pass を追加する |
+| `remove_authored_pass` | [pass 削除](../../src/core/communication/editorrpchandlers.cpp#L273) | authored pass を削除する |
+| `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/editorrpchandlers.cpp#L279) / [登録 `get_preview_result`](../../src/core/communication/editorrpchandlers.cpp#L282) | 非同期結果取得 |
+| `query_journal` | [登録 `query_journal`](../../src/core/communication/editorrpchandlers.cpp#L285) | ジャーナル照会 |
+| `get_graph_instances` | [instance 一覧](../../src/core/communication/editorrpchandlers.cpp#L225) | 共通グラフ文書の `source_digest` / `instances[]` / root の `nodes[]` / `definitions` 本体 |
+| `edit_graph_instances` | [装着編集](../../src/core/communication/editorrpchandlers.cpp#L228) | owner 付き root instance の attach / detach。中では `editGraphDocument()` の ops へ翻訳 |
+| `edit_graph_document` | [文書編集](../../src/core/communication/editorrpchandlers.cpp#L231) | `ops[]` を順に当てて最後に 1 回展開。全部通るか文書ごと拒否か |
+| `get_graph_values` | [instance 入力の値](../../src/core/communication/editorrpchandlers.cpp#L234) | publish 済み snapshot の読み。再評価しない |
+| `get_graph_node_values` | [node 出力の値](../../src/core/communication/editorrpchandlers.cpp#L237) | 展開木の node ごとの出力。`source: "rendering"` |
+| `get_graph_catalog` | [module catalog](../../src/core/communication/editorrpchandlers.cpp#L240) | `builtinGraphModuleRegistry().catalog()` をそのまま(§7.5c と同じ値) |
 | `export_render_feature` | [部品の書き出し](../../src/core/communication/editorrpchandlers.cpp#L186) | feature 1 つを `user://components/<name>/` へ |
 | `import_render_feature` | [部品の取り込み](../../src/core/communication/editorrpchandlers.cpp#L189) | project 外の component ディレクトリを未作成の `project://` feature として取り込む |
 | `install_package` | [package の vendoring](../../src/core/communication/editorrpchandlers.cpp#L192) | `<project>/packages/<ns>/` へ複製し catalog を作り直す |
@@ -826,10 +826,10 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 | `fork_render_pipeline` | [preset の fork](../../src/core/communication/editorrpchandlers.cpp#L204) | 選択中 preset を project ファイルへ複製し、root の参照も切り替える |
 | `edit_preset_pass` | [preset pass 編集](../../src/core/communication/editorrpchandlers.cpp#L207) | project preset の pass(fullscreen / material / raster)を部分編集する |
 | `edit_region_replacement` | [領域の差し替え](../../src/core/communication/editorrpchandlers.cpp#L210) | project preset のタグ付き領域に provider を指定 / 解除する |
-| `get_compute_task_authoring` / `edit_compute_task` / `add_compute_task` / `remove_compute_task` | [取得](../../src/core/communication/editorrpchandlers.cpp#L213) / [置換](../../src/core/communication/editorrpchandlers.cpp#L240) / [追加](../../src/core/communication/editorrpchandlers.cpp#L249) / [削除](../../src/core/communication/editorrpchandlers.cpp#L252) | compute / RT task 宣言の著作面 |
+| `get_compute_task_authoring` / `edit_compute_task` / `add_compute_task` / `remove_compute_task` | [取得](../../src/core/communication/editorrpchandlers.cpp#L213) / [置換](../../src/core/communication/editorrpchandlers.cpp#L243) / [追加](../../src/core/communication/editorrpchandlers.cpp#L252) / [削除](../../src/core/communication/editorrpchandlers.cpp#L255) | compute / RT task 宣言の著作面 |
 | `get_frame_node_order` / `edit_frame_node_order` | [順序の取得](../../src/core/communication/editorrpchandlers.cpp#L216) / [順序の保存](../../src/core/communication/editorrpchandlers.cpp#L219) | root の `frame_node_order`(手で決めた node 順)の読みと保存 |
-| `get_procedural_assets` / `edit_procedural_asset` | [一覧](../../src/core/communication/editorrpchandlers.cpp#L243) / [編集](../../src/core/communication/editorrpchandlers.cpp#L246) | procedural asset の宣言。`edit` の op ではなく独立した RPC です |
-| `get_ray_callable_records` / `edit_ray_callable_records` | [callable の読み](../../src/core/communication/editorrpchandlers.cpp#L255) / [初期値の置換](../../src/core/communication/editorrpchandlers.cpp#L258) | task ごとの callable record schema と初期値上書き |
+| `get_procedural_assets` / `edit_procedural_asset` | [一覧](../../src/core/communication/editorrpchandlers.cpp#L246) / [編集](../../src/core/communication/editorrpchandlers.cpp#L249) | procedural asset の宣言。`edit` の op ではなく独立した RPC です |
+| `get_ray_callable_records` / `edit_ray_callable_records` | [callable の読み](../../src/core/communication/editorrpchandlers.cpp#L258) / [初期値の置換](../../src/core/communication/editorrpchandlers.cpp#L261) | task ごとの callable record schema と初期値上書き |
 
 上 11 行(19 メソッド)は P-2a 系・RT 系・prefab 系で足された分で、params と戻り値の正本は
 [manual 第13章](../manual/13_editor.md)です。この表と `editorrpchandlers.cpp` の登録を突き合わせるときは、
@@ -856,7 +856,7 @@ N-2 で **全 op が任意の `scope` を取る**ようになりました
 ([解決](../../src/project/graphcomposition.cpp#L386))。既定は `"root"`、definition 名を書くとその本体が対象で、
 `root` は予約語なので同名の definition は指せません。これに合わせて
 `edit_graph_document` の書き戻しも 2 段になり、root の `nodes` は常に、`definitions` は
-**変化したときだけ**書き戻します([判定](../../src/core/communication/renderconfigeditor.cpp#L2232)) ——
+**変化したときだけ**書き戻します([判定](../../src/core/communication/renderconfigeditor.cpp#L2266)) ——
 root だけの編集が definition のバイト列を動かさないようにするためです。
 
 名前付きの拒否は `GraphRegistryError` が運びます: `graph.node_duplicate@1` / `graph.node_missing@1` /
@@ -875,11 +875,11 @@ root だけの編集が definition のバイト列を動かさないようにす
 `list_render_features` が返す各 entry には `source` が付きます。値は **`"engine"` と `"package"` の 2 つだけ**で、
 `project://features/*.json` に手で置いた文書は catalog に載りません
 ([entry の定義](../../src/core/communication/renderconfigeditor.hpp#L31))。package 側の列挙は
-[`enumeratePackageRenderFeatureDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L644) で、
+[`enumeratePackageRenderFeatureDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L678) で、
 **`noexcept` で、`std::exception` の失敗を entry として報告します** —— `project.json` が読めなければ package は 0 個、
 package の文書が壊れていれば `available: false` + `unavailable_reason` の行として並びます。ただし
 **「全部の失敗が行になる」わけではありません**: `std::exception` を継承しない例外を捕まえる
-[package の文書を読む `readPackageFeatureDocuments` の呼び出しを包む `catch (...)`](../../src/core/communication/renderconfigeditor.cpp#L661) は `continue` するだけなので、
+[package の文書を読む `readPackageFeatureDocuments` の呼び出しを包む `catch (...)`](../../src/core/communication/renderconfigeditor.cpp#L695) は `continue` するだけなので、
 その package は entry を 1 つも残さずに catalog から落ちます(記録した穴)。
 
 これは行儀の問題ではありません。catalog は **editor service の構築時**に作られるので、ここで例外が抜けると
@@ -1336,7 +1336,7 @@ with PelicanRpc("projects/example") as rpc:
 
 engine 内蔵の開発者 UI に、読み取り専用の [`AssetBrowserPanel`](../../src/core/imgui/assetbrowser.hpp#L36) と schema 駆動の [`InspectorPanel`](../../src/core/imgui/inspector.hpp#L167) が加わりました。表示は `ImGuiSystem` のメニュー `Asset Browser` / `Inspector` から切り替えます([`imguisystem.cpp` 内](../../src/core/imgui/imguisystem.cpp#L373))。
 
-> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L489) が用意されています。コメントが規範です。
+> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L491) が用意されています。コメントが規範です。
 >
 > The ImGui WP consumes the same typed service. This fake is deliberately kept
 > free of ImGui headers so equivalence is testable in the CPU-only suite.

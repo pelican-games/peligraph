@@ -179,7 +179,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 | `unpack_prefab` | `object`(このほかのキーは拒否) | prefab インスタンスを素のオブジェクトへ展開 |
 
 `get_procedural_assets` / `edit_procedural_asset` は **`edit` の op ではなく独立した RPC メソッド**です
-([登録](../../src/core/communication/editorrpchandlers.cpp#L243))。`edit_procedural_asset` は
+([登録](../../src/core/communication/editorrpchandlers.cpp#L246))。`edit_procedural_asset` は
 `base_source_digest` と `asset_name` を取り、編集は `aabb` / `record`、新規は `operation: "create"` と両方の値、
 削除は `operation: "delete"` だけです。実行モデルはレンダー設定側(§13.5)と同じ digest CAS です。
 
@@ -232,7 +232,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 | `list_assets` | `{store?}` | アセット一覧(id / 種別 / パス / store / 状態)。状態は `loaded`・`missing`・`declared`(inline の procedural)・`builtin`(engine の基本形、store `engine`) |
 | `query_journal` | `{after_transaction_id?}` | 編集履歴(undo の種) |
 | `can_edit` / `can_preview` | `{}` | 編集・プレビューの可否と理由 |
-| `get_graph_instances` | `{}` | 共通グラフ文書の `source_reference` / `source_digest` / `instances[]`(`graph.instance` だけ)/ root の `nodes[]` 全体 / `definitions` 本体([get_graph_instances の実装](../../src/core/communication/renderconfigeditor.cpp#L2151)) |
+| `get_graph_instances` | `{}` | 共通グラフ文書の `source_reference` / `source_digest` / `instances[]`(`graph.instance` だけ)/ root の `nodes[]` 全体 / `definitions` 本体([get_graph_instances の実装](../../src/core/communication/renderconfigeditor.cpp#L2185)) |
 | `get_graph_catalog` | `{}` | 登録済みグラフモジュールのカタログ(`pelican.graph_catalog` v1。`pelican_cli graph-catalog` と同じ値 — [第10章](10_tools.md) §10.4) |
 | `get_graph_values` | `{instance}` | その instance の入力 port の実効値 `{port, value, source, connected\|parameter}` と `published` / `generation` / `frame`。**publish 時の snapshot を読むだけで再評価しません** |
 | `get_graph_node_values` | `{instance?}` | 展開木の全ノードの出力値(`{node, expanded, outputs}`)と `source:"rendering"`。`instance` 省略で root から |
@@ -245,7 +245,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 
 **解決に失敗したコンポーネントも消えません(✅WP378)。** authored / generated のどちらの直下にも
 `resolution_error` が付き、`get_components` は**成功応答のまま**それを返します
-([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1792))。形は 2 通りで、
+([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1797))。形は 2 通りで、
 typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化していない旧分岐は
 `{legacy_branch_id, message}` です(正は
 [`resolutionFailureJson()`](../../src/core/loader/resolutionresult.hpp#L114))。
@@ -308,7 +308,7 @@ replay と `--strict-assets` の engine は今までどおり断ります([越�
 | メソッド | 何をするか |
 |---|---|
 | `get_render_features` | 著作 config の現在の `features[]`、`source_reference`、`source_digest`、runtime の状態を返す |
-| `list_render_features` | **engine が可用性を判定した**カタログ。各項目に `available` が付き、**`unavailable_reason` は `available` が false の項目にだけ現れる**(使える項目には鍵ごと無い)。`source` はその文書の出所で、engine 内蔵なら `"engine"`、`project://packages/<ns>/` に vendoring された package のものなら `"package"` の 2 値だけです([catalog entry](../../src/core/communication/renderconfigeditor.hpp#L35))。読めない package 文書は**カタログから消えるのではなく** `available:false` + `unavailable_reason` として並びます([package の列挙](../../src/core/communication/renderconfigeditor.cpp#L670)) |
+| `list_render_features` | **engine が可用性を判定した**カタログ。各項目に `available` が付き、**`unavailable_reason` は `available` が false の項目にだけ現れる**(使える項目には鍵ごと無い)。`source` はその文書の出所で、engine 内蔵なら `"engine"`、`project://packages/<ns>/` に vendoring された package のものなら `"package"` の 2 値だけです([catalog entry](../../src/core/communication/renderconfigeditor.hpp#L35))。読めない package 文書は**カタログから消えるのではなく** `available:false` + `unavailable_reason` として並びます([package の列挙](../../src/core/communication/renderconfigeditor.cpp#L704)) |
 | `edit_render_features` | `base_source_digest` と `operations[]` を受け、**チケットを返す**。結果は `get_edit_result` か `step_frame` の `edit_results[]` |
 | `edit_render_features` / `materialize` | operationに`op: "materialize"`・`scope: "root"`または`"preset"`・`index`・`destination_reference`・`base_feature_digest`を指定。presetの場合は`base_preset_digest`も必要。具体値へ展開したfeatureを未作成のprojectファイルに保存し、元instanceをその参照へ置換する。featureのdigestは`get_render_features.feature_instances[].feature_document_digest`、presetのdigestは同entryの`source_digest`を使う。engine presetは先にforkする。Studio からの入口は Render Features の **Make editable...** |
 | `get_scene_acceleration_structures` | 名前付きTLASの`definitions[]`、taskの接続先`task_connections[]`、編集元の`source_digest`、三角形座標系とレイアウトの編集可否・digestを含む`triangle_geometry`を返す |
@@ -317,16 +317,16 @@ replay と `--strict-assets` の engine は今までどおり断ります([越�
 | `edit_ray_callable_records` | `base_source_digest`と`task_records` objectで初期値の上書き指定全体を置換。既存の編集ticketを返す |
 | `fork_render_pipeline` | `base_source_digest`・`base_preset_digest`・`destination_reference`で選択中presetを新しいprojectファイルへコピーし、rootの参照先も切り替える |
 | `edit_region_replacement` | `base_source_digest`・`base_preset_digest`・`graph`・`region`でproject presetのタグ付き領域を指定。`provider`に登録済みprovider名を指定するとコンパイル時の差し替えを選択し、`null`なら差し替え要求を除去して元のノード構成を使用する。元のpass・設定・接続は保持する。現在の指定は`get_render_authoring_context`の各graphの`region_replacements`で取得できる。標準feature全体の展開操作ではない |
-| `edit_preset_pass` | `base_source_digest`・`base_preset_digest`・`graph`・`pass_name`でproject presetのpassを指定。fullscreenは`input`・`output`・`shader`と任意の`ray_query`・`uses_light_data`・`push_constants`・`clear_colors`(後の 3 つは ✅G-3。省略は保持、`null` で削除。[G-3 の 3 field の受け取り](../../src/core/communication/renderconfigeditor.cpp#L2636))、materialは`input`・`output`・`ray_query`の1項目以上。rasterはさらに`shader`・`draw`・`raster_state`を部分編集できる。省略項目は保持、rasterの`raster_state: null`は既定状態へ戻す。書き先は 3 つ: project preset(`base_preset_digest`)/ project feature(`base_feature_digest`)/ **direct root 自身**(✅F-6。root が preset を選ばず、要求がどちらの digest も持たないとき。`base_source_digest` が root の digest を兼ね、root の `rendering.rendering_passes` の pass を編集する)。置換規則は 3 つとも同じ関数です([direct root の書き先](../../src/core/communication/renderconfigeditor.cpp#L2728)) |
+| `edit_preset_pass` | `base_source_digest`・`base_preset_digest`・`graph`・`pass_name`でproject presetのpassを指定。fullscreenは`input`・`output`・`shader`と任意の`ray_query`・`uses_light_data`・`push_constants`・`clear_colors`(後の 3 つは ✅G-3。省略は保持、`null` で削除。[G-3 の 3 field の受け取り](../../src/core/communication/renderconfigeditor.cpp#L2705))、materialは`input`・`output`・`ray_query`の1項目以上。rasterはさらに`shader`・`draw`・`raster_state`を部分編集できる。省略項目は保持、rasterの`raster_state: null`は既定状態へ戻す。書き先は 3 つ: project preset(`base_preset_digest`)/ project feature(`base_feature_digest`)/ **direct root 自身**(✅F-6。root が preset を選ばず、要求がどちらの digest も持たないとき。`base_source_digest` が root の digest を兼ね、root の `rendering.rendering_passes` の pass を編集する)。置換規則は 3 つとも同じ関数です([direct root の書き先](../../src/core/communication/renderconfigeditor.cpp#L2797)) |
 | `get_compute_task_authoring` | compute/RT taskの元宣言・編集可否・保存先とdigestを取得する |
 | `edit_compute_task` | `base_source_digest`・`base_task_source_digest`・`task_name`・`task`でtask宣言を置換する。名前は保持する |
 | `add_compute_task` | `base_source_digest`・`destination_reference`・`task`で新規project featureにtaskを作り、rootのfeaturesへ追加する |
 | `remove_compute_task` | `base_source_digest`・`base_task_source_digest`・`task_name`で元文書からtaskを削除する |
-| `edit_render_targets` | `base_source_digest`・`ops[]`(✅F-1)。op は `{op:"add", target}` / `{op:"replace", name, target}`(`target.name` を変えれば改名)/ `{op:"remove", name}`。書くのは managed fragment `project://passes/authoring/render-targets.json` 1 つだけで、最初の要求で作って root の `features[]` に足す(空になっても消さない)。ops は順に当て、最後に 1 回 preflight して ticket を返す —— **全部入るか、何も入らないか**。名前付きの拒否は下の 6 種([edit_render_targets の実装](../../src/core/communication/renderconfigeditor.cpp#L3080)) |
-| `add_authored_pass` | `base_source_digest`・`graph`・`insert`(authoring context の挿入位置の token)・`pass`。pass 1 つを managed fragment `project://passes/authoring/pass-<id>.json` に書き、root の `features[]` に足して preflight し、ticket を返す。受ける `type` は `fullscreen` と **`material`**(✅G-1)だけで、それ以外は `authored_pass_type_unavailable`(detail は `requested_type` と **`supported_types`**(配列)。[add_authored_pass の種類の門](../../src/core/communication/renderconfigeditor.cpp#L2830))。material pass の形の検査は下の段落 |
+| `edit_render_targets` | `base_source_digest`・`ops[]`(✅F-1)。op は `{op:"add", target}` / `{op:"replace", name, target}`(`target.name` を変えれば改名)/ `{op:"remove", name}`。書くのは managed fragment `project://passes/authoring/render-targets.json` 1 つだけで、最初の要求で作って root の `features[]` に足す(空になっても消さない)。ops は順に当て、最後に 1 回 preflight して ticket を返す —— **全部入るか、何も入らないか**。名前付きの拒否は下の 6 種([edit_render_targets の実装](../../src/core/communication/renderconfigeditor.cpp#L3190)) |
+| `add_authored_pass` | `base_source_digest`・`graph`・`insert`(authoring context の挿入位置の token)・`pass`。pass 1 つを managed fragment `project://passes/authoring/pass-<id>.json` に書き、root の `features[]` に足して preflight し、ticket を返す。受ける `type` は `fullscreen` と **`material`**(✅G-1)だけで、それ以外は `authored_pass_type_unavailable`(detail は `requested_type` と **`supported_types`**(配列)。[add_authored_pass の種類の門](../../src/core/communication/renderconfigeditor.cpp#L2901))。material pass の形の検査は下の段落 |
 | `edit_graph_document` | `base_source_digest`と`ops[]`で共通グラフ文書を編集する(§13.5「グラフの装着を編集する」)。ops は順に候補文書へ当て、最後に 1 回だけ展開する — **全部通るか、文書ごと拒否か**のどちらか |
-| `edit_graph_instances` | `base_source_digest`・`attach[]`・`detach[]`。owner を持つ root instance の装着 / 取り外しだけを扱い、中身は `edit_graph_document` の ops へ翻訳される([edit_graph_instances の実装](../../src/core/communication/renderconfigeditor.cpp#L2182)) |
-| `export_render_feature` | `scope`(`root` / `preset`)と`index`で feature 1 つを `user://components/<name>/` へ書き出す。`engine://` の feature は `render_component_engine_reference` で拒否([export の実装](../../src/core/communication/renderconfigeditor.cpp#L1121)) |
+| `edit_graph_instances` | `base_source_digest`・`attach[]`・`detach[]`。owner を持つ root instance の装着 / 取り外しだけを扱い、中身は `edit_graph_document` の ops へ翻訳される([edit_graph_instances の実装](../../src/core/communication/renderconfigeditor.cpp#L2216)) |
+| `export_render_feature` | `scope`(`root` / `preset`)と`index`で feature 1 つを `user://components/<name>/` へ書き出す。`engine://` の feature は `render_component_engine_reference` で拒否([export の実装](../../src/core/communication/renderconfigeditor.cpp#L1155)) |
 | `import_render_feature` | `base_source_digest`・`source_dir`(project 外の絶対パス)・`destination_reference`(未作成の`project://`)。component が要求する render target を project が宣言していなければ `render_component_requires_missing` |
 | `install_package` | `source_dir`(project 外の絶対パス)。`<project>/packages/<namespace>/` へ複製して`project.json`に記録し、catalog を作り直す。返すのは`namespace`・`package_version`・`sha256`・`feature_references`・`feature_names` |
 | `uninstall_package` | `namespace`。root config と選択中 preset の全文字列を走査し、まだ参照が残っていれば`package_in_use`(参照を列挙)で**何も消しません** |
@@ -345,26 +345,26 @@ feature だけだからです。拒否は次の 6 種で、どれも文書を 1 
 | `render_pipeline_preflight_failed` | 宣言の形の誤り。文言は parser(`parseRenderTargetDefinitionsFromJson`)のまま、participant は `pelican.render_targets` | `participant`・`fragment_reference` |
 
 使用者の検査は新しい走査器ではなく、frame planner と同じ `parseFrameGraphDefinitionsFromConfigJson` の読みから引きます
-([使用者](../../src/core/communication/renderconfigeditor.cpp#L563))。
+([使用者](../../src/core/communication/renderconfigeditor.cpp#L597))。
 
 読む側は `get_render_authoring_context` です。`render_targets[]` は合成後の全 target を
 `{name, declaration, editable, source}` で返し、`editable` なもの(= fragment のもの)には fragment に書いてある宣言
-そのもの `authored_declaration` が付きます。並びは editable なものが先です([組み立て](../../src/core/communication/renderconfigeditor.cpp#L2017))。
+そのもの `authored_declaration` が付きます。並びは editable なものが先です([組み立て](../../src/core/communication/renderconfigeditor.cpp#L2051))。
 `source` は `authoring`(fragment)/ `root` / `preset` / `feature:<reference>` / `engine`(`display` など)で、
 **文書にも合成器の出所記録にも出所が無いときだけ `composed`** になります(graph の合成で出来た target など。
-[出所の判定](../../src/core/communication/renderconfigeditor.cpp#L502))。ほかに `render_target_fragment`(fragment の参照)と
+[出所の判定](../../src/core/communication/renderconfigeditor.cpp#L536))。ほかに `render_target_fragment`(fragment の参照)と
 `render_target_vocabulary`(`formats` / `usage` は parser 自身の表、`format_classes` は `scene` / `display` / `data` /
 `explicit`)が付きます。fragment は pass を持たないので `managed_fragments` には出ません。
 
 **material pass を足す(✅G-1)。**`add_authored_pass` は fullscreen に加えて `type: "material"` を受けます(raster は
 scene を描かないので受けません)。合成だけでは material pass の color の枚数・depth・format を見ないので、engine は
 合成した候補の中の新しい pass を、load と同じ parser(`parsePassDefinitionFromJson`)に候補の render target で通します
-([`validateAuthoredMaterialPass()`](../../src/core/communication/renderconfigeditor.cpp#L333))。contract と枚数が合わない、
+([`validateAuthoredMaterialPass()`](../../src/core/communication/renderconfigeditor.cpp#L367))。contract と枚数が合わない、
 depth が無い、swapchain に書く、format が違う、といった誤りは parser の文言のまま `render_pipeline_preflight_failed` で
 断られ、文書は変わりません。この検査の target の大きさは仮の 1920×1080 です(parser が見るのは 1 pass の出力どうしの比
 だけです)。`format_class: scene` の target の format は、running pipeline の有効な feature に `hdr` があるかで決まります。
 その一覧は `get_render_authoring_context` の **`enabled_feature_names`** にも出ます
-([context の enabled_feature_names](../../src/core/communication/renderconfigeditor.cpp#L1966))。Studio はこれで、新しく作る
+([context の enabled_feature_names](../../src/core/communication/renderconfigeditor.cpp#L2000))。Studio はこれで、新しく作る
 G-buffer の target を HDR / SDR のどちらの format にするかを決めます(context が言わなければ HDR と読みます)。
 
 Render Featuresの **Parameters...**で、選択中 feature instance の scalar パラメータを編集できます
@@ -372,14 +372,14 @@ Render Featuresの **Parameters...**で、選択中 feature instance の scalar 
 `get_render_features.feature_instances[].parameter_schema` がその宣言です。**materialize 済みの
 feature でも `parameter_schema` は返ります** —— ただし宣言の `default` は、その派生が焼き込まれた
 `bound_parameters` の値で上書きされます。したがって**元の engine 既定値は RPC からは見えません**
-([上書き箇所](../../src/core/communication/renderconfigeditor.cpp#L907))。
+([上書き箇所](../../src/core/communication/renderconfigeditor.cpp#L941))。
 `parameter_schema` が `null` の feature は「編集できるパラメータを宣言していない」ので、
 `reason` を表示するだけで dialog は開きません。
 
 Render Featuresの **Make editable...**は materialize(§13.5 の表)です。押せるのは
 `feature_instances[].materializable` が true の項目だけで、false のときは `materialize_reason` が出ます ——
 engine preset の feature なら「先に project へ fork する」、すでに `bound_parameters` を持つ派生なら
-「これはもう materialize 済み」の 2 通りです([materializable の判定](../../src/core/communication/renderconfigeditor.cpp#L898))。
+「これはもう materialize 済み」の 2 通りです([materializable の判定](../../src/core/communication/renderconfigeditor.cpp#L932))。
 保存先は未作成の `project://` ファイルで、**Apply**で元 instance の参照がその派生に差し替わります。
 materialize しても scalar の宣言は消えません —— 宣言を残したまま `bound_parameters` に値を持つので、
 **materialize の後も Parameters... で編集できます**。
@@ -414,7 +414,7 @@ color attachment objectは表示されるJSON欄で設定を保持・編集し�
 
 **direct root の pass(✅F-6)。**preset を選ばない root(Blank pipeline の project など、`config_kind` が `direct`)が
 自分で宣言した pass は、authoring context で `editable_root_pass: true` と合成前の `root_declaration` を持ちます
-([`editable_root_pass` を付ける所](../../src/core/communication/renderconfigeditor.cpp#L1846))。engine が足した pass(`output_transform` など)と
+([`editable_root_pass` を付ける所](../../src/core/communication/renderconfigeditor.cpp#L1880))。engine が足した pass(`output_transform` など)と
 feature の pass は `false` で、root が宣言していても編集できる種類(fullscreen / material / raster と一部の補助 pass。
 preset の pass と同じ判定)でなければ `false` です。これを `base_source_digest` だけで `edit_preset_pass` に渡すと、root の文書が
 書き換わります —— root の `rendering_passes` の list を 1 つの値として書き直し、文書のほかの部分は byte のまま残します。
@@ -503,7 +503,7 @@ Frame Planの **Order nodes...** で現在のgraphのノードをUp/Downで並�
 - 書き込みは原子的置換で、**engine が文書を所有します。編集側はファイルに触れません。**
 - **v1 は `operations` が最大 1 要素**。`op` は `add` / `remove` / `set_parameters` / `materialize` の 4 つで、
   それ以外は `edit_render_features operation op must be 'add', 'remove' or 'set_parameters'` です
-  ([その throw](../../src/core/communication/renderconfigeditor.cpp#L1505))。`set_parameters` は既定が
+  ([その throw](../../src/core/communication/renderconfigeditor.cpp#L1539))。`set_parameters` は既定が
   `scope: "root"` で、preset の feature を編集するときだけ `scope: "preset"` + `base_preset_digest` を添えます
   (engine preset のままなら `project_preset_required`)。
 - **可用性の判定は engine 側**です。studio が理由を組み立てることはありません。
@@ -527,8 +527,8 @@ Frame Planの **Order nodes...** で現在のgraphのノードをUp/Downで並�
 ([`initialize()`](../../src/project/renderconfigdocument.cpp#L590))。
 `rendering` オブジェクトそのものが無い graph root は、書き込む場所が無いので
 **名前付きで断られます** —— 受付の応答は `render_config_section_unlocated`
-(**編集 op の経路だけ `{method}` が付きます** —— [renderconfigeditor.cpp:1325](../../src/core/communication/renderconfigeditor.cpp#L1570)。
-pipeline の preflight([:887](../../src/core/communication/renderconfigeditor.cpp#L1115))と fork([:1753](../../src/core/communication/renderconfigeditor.cpp#L2079))は
+(**編集 op の経路だけ `{method}` が付きます** —— [renderconfigeditor.cpp:1325](../../src/core/communication/renderconfigeditor.cpp#L1604)。
+pipeline の preflight([:887](../../src/core/communication/renderconfigeditor.cpp#L1149))と fork([:1753](../../src/core/communication/renderconfigeditor.cpp#L2113))は
 同じ code を data 無しで返します)、
 engine 内部の例外名は
 [`RenderConfigSectionUnlocated`](../../src/project/renderconfigdocument.cpp#L414) です。
@@ -600,7 +600,7 @@ op の形が壊れているだけのもの(`ops` が配列でない、`source` �
   どちらも**何も書きません**。
 - **1 操作 = 1 op 列 = 1 チケット**。同じフレームに 2 本目を投げても、後から来た方が CAS で落ちます。
   結果は `get_edit_result`(ヘッドレスなら `step_frame` の `edit_results[]`)で受け取ります。
-- 書き戻しは root の `nodes` が常に、`definitions` は**変化したときだけ**です([definitions の書き戻し](../../src/core/communication/renderconfigeditor.cpp#L2232))。
+- 書き戻しは root の `nodes` が常に、`definitions` は**変化したときだけ**です([definitions の書き戻し](../../src/core/communication/renderconfigeditor.cpp#L2266))。
   root だけを触った編集は、definition のバイト列を 1 文字も動かしません。
 
 ⚠ **`add_node` / `remove_node` で owner 付きの `graph.instance` を直接足す・消すことはできます。**
@@ -756,7 +756,7 @@ target は、書く pass の出力ソケットとして既に描かれている�
 
 **Frame Plan で material pass を足す(✅G-1)**: toolbar の **Add material pass...**(`pelican.framePlanAddMaterialPass`)か、
 canvas の右クリック(node の上でも空所でも)の同名 action(`pelican.framePlan.addMaterialPass`)で form
-(`pelican.materialPassForm`)が開きます([material pass の form](../../src/devstudio/view/materialpassform.cpp#L23))。
+(`pelican.materialPassForm`)が開きます([material pass の form](../../src/devstudio/view/materialpassform.cpp#L24))。
 pass は右クリックした / 選んだ node の後に入り、無ければ graph の先頭です(form の最初の行がどちらかを言います)。
 
 - **Contract**: Forward opaque / Forward transparent / Deferred geometry (G-buffer) / Legacy G-buffer(Forward opaque で
@@ -778,7 +778,7 @@ pass は右クリックした / 選んだ node の後に入り、無ければ gr
 context の digest で `add_authored_pass` 1 回([Save の 2 本目 add_authored_pass](../../src/devstudio/view/materialpassedit.cpp#L208))。
 新しい target が無ければ後者だけです。**pass が断られても、先に作った target は宣言されたまま残ります** —— form はそれを
 Save の前に言い、拒否の status 行も残った target の名前を並べます
-([拒否で残る target の文](../../src/devstudio/view/frameplanwidget.cpp#L1448))。いらなければ node から Delete してください。
+([拒否で残る target の文](../../src/devstudio/view/frameplanwidget.cpp#L1459))。いらなければ node から Delete してください。
 既存の target を枠に選んだとき、Studio は format を先に検査しません(engine の preflight が上の段落の検査をします)。
 入力(`screen_inputs` など)の欄はまだありません。
 ⚠ 今は、material pass を持つ pipeline は material が取るすべての route に受ける pass を持たないと load に失敗します。
@@ -1136,7 +1136,7 @@ Studio 専用の裏口はありません(D0)。
   `set_parameters` と `materialize` はさらに `invalid_feature_parameters`(index が範囲外、`parameters` が
   object でない、参照を持たない entry を指した)と `project_preset_required`(engine preset のまま preset 側を編集した)、
   `feature_destination_exists` / `invalid_feature_destination`(materialize の保存先)を足します
-  ([set_parameters の検査](../../src/core/communication/renderconfigeditor.cpp#L1407))。
+  ([set_parameters の検査](../../src/core/communication/renderconfigeditor.cpp#L1441))。
 - **グラフ編集の語彙はさらに別系統**です。`graph.` で始まる名前付きの拒否と、形が違うだけの
   `invalid_graph_document` / `invalid_graph_attachment`、それに render config と共通の
   `external_modification` / `stale_source_digest` / `render_config_section_unlocated` です(§13.5)。
@@ -1340,7 +1340,7 @@ scene のロードは 1 つのトランザクションになりました([第4�
   (`{path, reason}` / `{slot, reason}` / `{bus, reason}` / `{dropped}` など。正は
   [effecttransaction.cpp](../../src/core/loader/effecttransaction.cpp#L686))です。
 - `import_scene_snapshot` の応答にも同じ `committed` / `effect_errors` が付きます
-  ([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L2017))。
+  ([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L2022))。
   **`{"status":"imported","scene_revision":N,"current_scene_id":"…"}` だけを期待する
   厳密一致のクライアントは壊れます。**
 - 代表的な `error_code`: `effect_outbox_full@1{dropped}`(1 回の scene load で 256 件を超えた分)/
