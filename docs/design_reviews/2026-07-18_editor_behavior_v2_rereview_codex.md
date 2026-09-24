@@ -1,7 +1,7 @@
 # エディタツーリング v2 + object behavior v2 再レビュー
 
 日付: 2026-07-18  
-対象 commit: `4ac2ff086c4c60c514328e58fb226be87d4a5c5b`  
+対象 commit: `07017f06dea43f86be570ba7ef0bb833d6857133`  
 対象: `docs/design_editor_tooling.md` v2、`docs/design_object_behaviors.md` v2  
 方法: 前回レビューの E-1〜E-7 / B-1〜B-7、§4 の逐語条件、§5 の最小提出物と、現行 C++ の静的照合。依頼どおりビルド・実行は行っていない。
 

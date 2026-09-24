@@ -231,7 +231,7 @@ TEST_CASE(
     REQUIRE(bits(execution_total) == execution_order_bits);
 
     // This is the exact destructive comparator and subsequent addition order
-    // from git show 29a0615^:src/core/vkcore/rendertiming.cpp.
+    // from git show 6e5c368^:src/core/vkcore/rendertiming.cpp.
     auto parent_samples = frame.samples;
     std::sort(
         parent_samples.begin(), parent_samples.end(),

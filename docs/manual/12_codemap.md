@@ -2,7 +2,7 @@
 
 対象: pelican2(2026-07-21 に全域再測定、2026-09-04 に scene transaction / game DLL ABI /
 schema v3 / GPU lease の新入りを追記、2026-09-17 に v0 で入った共通グラフ / package /
-rendering config の節 / オフライン時刻の行を追記。HEAD=`990b9eaa`)/ このマニュアルはコードを正とする
+rendering config の節 / オフライン時刻の行を追記。HEAD=`82054c05`)/ このマニュアルはコードを正とする
 
 この章は他章と目的が違います。第1〜11章が「エンジンを**使う**ための説明書」なのに対し、この章は「エンジンの**中身を読む**ための地図」です。冒頭の「このマニュアルはコードを正とする」は、**設計文書と実装が食い違ったら実装の挙動を本文に書き、食い違いそのものは [第11章 §11.3](11_status.md) に台帳化する**、という本マニュアル全体の原則です([第0章](00_index.md))。より深いクラス単位の解説(ライフサイクル・インターフェース索引・落とし穴集)は [../source-code-guide/](../source-code-guide/README.md) —— アーキテクチャ / ランタイム / ロード / ECS / ゲームプレイ / 描画 / ツールと RPC の 7 章に、クラス索引(第8章)・落とし穴集(第9章)・背景知識(第10章)・レイトレ(第11章)が続く構成で、索引は同ディレクトリの README です。本章は入口・概観、詳細はそちらへ。すべての節にソースへの相対リンクを張ってあるので、エディタ(VS Code 等)や GitHub 上でクリックしながら読み進められます。
 
@@ -316,7 +316,7 @@ owner の払い出しと builtin 登録は game DLL のヘッダから外れ、
     ```
 - **ツールの使い方の実例** → [test/](../../test) の `run_*.cmake` / `run_*.ps1`(player / pelican_cli を実際に子プロセス起動する結合テスト。現在 **54 本** = `.cmake` 50 + `.ps1` 4。うち `.cmake` 2 本(`run_project_code_smoke.cmake` / `run_package_template_smoke.cmake`)は `add_test` に登録されておらず、手で `cmake -P` するものです)。特に `run_rpc_headless.cmake` は RPC セッションの生きたサンプル、`run_physics_trigger_behavior.ps1` は scene の `behavior` コンポーネント + トリガーイベントの最小実例です
 - **CI gate を読む** → [test/ci/run_cpu_gate.py](../../test/ci/run_cpu_gate.py)(CPU ゲートのローカル再現)/ [test/ci/test_golden_inventory.py](../../test/ci/test_golden_inventory.py)(golden 登録の gate)/ [test/contract_boundary_gate.py](../../test/contract_boundary_gate.py)(境界契約の機械 gate。依存の pin や ABI の offset/size をコードから独立に検査)。ワークフロー定義は [.github/workflows/](../../.github/workflows)、運用の正は [../ci.md](../ci.md)
-- テスト登録は `pelican_define_test(<name> [libs...])`([test/CMakeLists.txt](../../test/CMakeLists.txt)。**呼び出し 197 箇所**。※これは「登録した実行ファイル」の数で、`ctest` の件数ではありません —— Catch2 の TEST_CASE ごとに登録されるため、全数は構成によって変わります。直近の全数実測は **1947 / 1947**(GPU 込み、source `83645084`。[../v0_freeze.md](../v0_freeze.md) §6)、[第11章](11_status.md) §11.1)。GPU 必須テストはデバイス列挙失敗時 SKIP で、`gpu` label のものは launcher の lease 経由で直列化されます([第10章](10_tools.md) §10.9)
+- テスト登録は `pelican_define_test(<name> [libs...])`([test/CMakeLists.txt](../../test/CMakeLists.txt)。**呼び出し 197 箇所**。※これは「登録した実行ファイル」の数で、`ctest` の件数ではありません —— Catch2 の TEST_CASE ごとに登録されるため、全数は構成によって変わります。直近の全数実測は **1947 / 1947**(GPU 込み、source `450f2866`。[../v0_freeze.md](../v0_freeze.md) §6)、[第11章](11_status.md) §11.1)。GPU 必須テストはデバイス列挙失敗時 SKIP で、`gpu` label のものは launcher の lease 経由で直列化されます([第10章](10_tools.md) §10.9)
 
 ## 関連文書
 

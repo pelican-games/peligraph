@@ -5,7 +5,7 @@
 
 - `docs/render_mechanism_coverage.md` v2
 - `docs/render_authoring_ergonomics.md` v1
-- commit `0579614` / `c283a2e` と、その時点の現行コード・テスト
+- commit `2f8118b` / `8a458a2` と、その時点の現行コード・テスト
 
 ## 1. 結論
 

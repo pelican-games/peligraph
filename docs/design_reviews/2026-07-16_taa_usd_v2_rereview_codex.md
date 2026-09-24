@@ -263,7 +263,7 @@ composition/normalization/localization/safety の記述だけである
 > 反転後の順序を固定し、USD prim/subset path から出力 GLB mesh/primitive index への
 > mapping が geometry の決定的 sort 後にも一致する fixture を U-USD0b gate に置く。」
 
-## 2.6 KTX2 manifest 修正 `a8cc24b` の評価
+## 2.6 KTX2 manifest 修正 `5263689` の評価
 
 修正の方向は正しい。parser は `khronos.ktx2` を明示 allowlist に足し、明示された
 version が 2 以外なら reject する (`src/project/importmanifest.cpp:134-156`)。test も v2 の

@@ -14,7 +14,7 @@ was introduced.
 
 ## glTF producer convergence
 
-Implementation range 1 landed first and independently as `4fa1586`. glTF core
+Implementation range 1 landed first and independently as `6ac48d4`. glTF core
 materials no longer construct a partial `MaterialInfo` beside the normal
 material compiler. They are adapted to a surface document and run through
 `lowerGltfMaterial` and `applyLoweredMaterialForRoute`.

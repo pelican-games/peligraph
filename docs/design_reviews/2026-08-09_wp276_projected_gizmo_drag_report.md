@@ -19,7 +19,7 @@
 
 ## 欠陥 3 の修正前 red gate
 
-修正前の WP275 commit `ee1be90070242a9187a8cef03589a6eca8d5a10e` を detached clone にし、
+修正前の WP275 commit `db9be8d63927e06ce2ff83f192f4e5e5180030c2` を detached clone にし、
 既存の `Devstudio save scene persists committed authoring edits only while idle` へだけ次の
 観測を追加して実行した。
 

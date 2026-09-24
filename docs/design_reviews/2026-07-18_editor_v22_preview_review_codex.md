@@ -4,7 +4,7 @@
 
 対象: `docs/design_editor_tooling.md` v2.2 の §1-4 / §1-5 のみ
 
-根拠ツリー: `agent/review-v22` (`8a4551b`)
+根拠ツリー: `agent/review-v22` (`cfb1361`)
 
 ## 0. 結論
 

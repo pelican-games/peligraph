@@ -235,7 +235,7 @@ instance/draw-owned layer、opaque/transparent phaseを跨ぐvariant queue、run
 
 G 番号は v3 で意味を修正した。v2 の G2/G13 をそのまま参照してはならない。
 
-v21 で全 18 項目を `5a4f95e` 時点の実装へ再照合した。**判定が動いたのは G8 と G15 の 2 項目だけ**で、
+v21 で全 18 項目を `ef76292` 時点の実装へ再照合した。**判定が動いたのは G8 と G15 の 2 項目だけ**で、
 新設が必要なギャップは見つからなかった。WP238a(共通`FrameExecutionPlan`)、WP238c(complete
 physical plan)、WP238d(`NativeScope` executor)、WP238e(`NativeScope` Vulkan fixture)は
 engine の source を書く人向けの拡張であり、

@@ -99,7 +99,7 @@ package は「エンジンのツリーの外で書かれ、プロジェクトへ
 
 `project init` が書き出す雛形は、[`templateFiles()`](../../src/devcli/projectinit.cpp#L288) が返すファイル名と文字列定数の対で全量が決まります。「新規プロジェクトの既定形」を知りたいときはここだけ読めば足ります。
 
-このうち `passes/main_rendering_config.json` の内容は二段で決まります。WP240a（`d58f841`）で111行の手書き宣言からpresetを指す2キーへ置き換わり、さらにP-2a-4bで**`pelican.graph` root で包む**形になりました。文字列定数 [`rendering_config_json`](../../src/devcli/projectinit.cpp#L200) が持つのは `rendering` 節の中身だけで、外側は [`renderingConfigJson()`](../../src/devcli/projectinit.cpp#L208) が [`wrapLegacyRenderingConfig()`](../../src/project/renderconfigsection.hpp#L62) を1回通して作ります（[第3章 §3.14](03_project_and_loading.md)）。雛形が書き出す実物は次の形です。
+このうち `passes/main_rendering_config.json` の内容は二段で決まります。WP240a（`87f5e68`）で111行の手書き宣言からpresetを指す2キーへ置き換わり、さらにP-2a-4bで**`pelican.graph` root で包む**形になりました。文字列定数 [`rendering_config_json`](../../src/devcli/projectinit.cpp#L200) が持つのは `rendering` 節の中身だけで、外側は [`renderingConfigJson()`](../../src/devcli/projectinit.cpp#L208) が [`wrapLegacyRenderingConfig()`](../../src/project/renderconfigsection.hpp#L62) を1回通して作ります（[第3章 §3.14](03_project_and_loading.md)）。雛形が書き出す実物は次の形です。
 
 ```json
 {

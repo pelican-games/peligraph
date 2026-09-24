@@ -1,6 +1,6 @@
 # 第13章 エディタとエディタ RPC
 
-対象: pelican2(2026-09-17 時点、HEAD=`990b9eaa`)/ このマニュアルはコードを正とする
+対象: pelican2(2026-09-17 時点、HEAD=`82054c05`)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -601,7 +601,7 @@ QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L26) に
 ノードの body と縁・見出しの字・値の帯の色をテーマの表から引き直して描き直します。**ソケットの型別の色だけは
 テーマに依存しません**(型の識別色なので、どちらのテーマでも同じ色です。テーマが決めるのは縁と、どの型とも
 言えないソケットの色)。既定は `dark` で、`dark` のキャンバスの色は N-5 以前の色と同じ値です(完了記録
-`43f032b1`)。
+`6a26eef3`)。
 
 **Auto layout(✅N-4)**: Graph と Frame Plan の右クリック menu「Auto layout」(`pelican.graphCanvas.autoLayout` / `pelican.framePlan.autoLayout`)で、その scope の手置き位置を捨てて層配置(最長経路の列、辺は lane を通って node を横切らない、列内の並びは重心法、行は最小間隔で重ならない)に戻します。動かした node は通常の refresh では保持されます。中ボタンのパンは描画が view に収まっていても動きます。
 
@@ -929,18 +929,18 @@ with PelicanRpc(["pelican_player", "--headless", "--rpc", "--project", "mygame"]
 | scene load の commit 後 effect 失敗を result で返す | ✅WP380b/380e |
 | game DLL の startup / ロード前診断を status に出す | ✅WP381/381a |
 | 可変長宣言(`List` / `$list`)の**行編集** | ✅RPCとQt Inspectorの追加・削除・移動・行内field編集 |
-| `graph.instance` の装着と入力の供給元(Inspector の 4 導線) | ✅P-1 `b960edf7` |
-| feature パラメータの編集と materialize(`set_parameters` / `materialize`) | ✅P-2a-1c `9e4081b4` |
-| authoring 面が graph root の `rendering` 節を読む / 共有部品の export・import | ✅P-2a-4a + P-2a-3 `5100be5f` |
-| package の install / uninstall(RPC と `pelican_cli package`) | ✅X-1 `3f72b71d`。**Studio に package の UI はありません**(カタログ経由で見えるだけ) |
-| `get_status.animation` と `get_graph_node_values` | ✅AG-3a `9862ebdd` |
-| Studio の render-tools dock に Graph タブ(読む) | ✅N-1 `2c6828e4` |
-| ノードの見た目(見出し + 型付きソケット。形は JSON で足す) | ✅N-1b `373f62ee` |
-| ノードキャンバスの編集(接続 / 切断 / 値 / 追加 / 削除 / ラベル / definition の中) | ✅N-2 `02a3d285` |
-| Studio の自動化面(`--automation` + シナリオ + report。**実物の窓と engine を通す e2e**) | ✅Q-1 `06829720` |
-| Frame Plan のノードの見た目を共通グラフと揃える / 2 つのキャンバス共通のズーム・パン・fit | ✅N-3 `dd088c2a` |
-| Studio のテーマ(View ▸ Theme のライト / ダーク。両キャンバスが追随、QSettings `studio/theme` に保存) | ✅N-5 `43f032b1` |
-| 時間軸 view・definition scope の値表示 | ✅AG-3b(`5d64bd6e`。出力 port の帯、Live、Timeline 帯と scrub。シナリオ `graph_observe_roundtrip`) |
+| `graph.instance` の装着と入力の供給元(Inspector の 4 導線) | ✅P-1 `3611e390` |
+| feature パラメータの編集と materialize(`set_parameters` / `materialize`) | ✅P-2a-1c `e3a2d3d0` |
+| authoring 面が graph root の `rendering` 節を読む / 共有部品の export・import | ✅P-2a-4a + P-2a-3 `7e983ed9` |
+| package の install / uninstall(RPC と `pelican_cli package`) | ✅X-1 `64eae566`。**Studio に package の UI はありません**(カタログ経由で見えるだけ) |
+| `get_status.animation` と `get_graph_node_values` | ✅AG-3a `32d9a20b` |
+| Studio の render-tools dock に Graph タブ(読む) | ✅N-1 `edafc41d` |
+| ノードの見た目(見出し + 型付きソケット。形は JSON で足す) | ✅N-1b `6c47a8a4` |
+| ノードキャンバスの編集(接続 / 切断 / 値 / 追加 / 削除 / ラベル / definition の中) | ✅N-2 `f2eccbfd` |
+| Studio の自動化面(`--automation` + シナリオ + report。**実物の窓と engine を通す e2e**) | ✅Q-1 `c026002d` |
+| Frame Plan のノードの見た目を共通グラフと揃える / 2 つのキャンバス共通のズーム・パン・fit | ✅N-3 `d8d7387d` |
+| Studio のテーマ(View ▸ Theme のライト / ダーク。両キャンバスが追随、QSettings `studio/theme` に保存) | ✅N-5 `6a26eef3` |
+| 時間軸 view・definition scope の値表示 | ✅AG-3b(`ce5e96c0`。出力 port の帯、Live、Timeline 帯と scrub。シナリオ `graph_observe_roundtrip`) |
 | グラフ編集の undo / redo | ✅Graph タブのセッション内100操作。digest照合付き逆編集。scene journalとは独立 |
 
 Qt Inspectorは再帰schemaのListを行IDと値の一覧で表示します。`Add`で行の値をJSON入力し、`Edit`で選択行の値を変更、`Remove`で削除、`Up`/`Down`で順序を変えます。`$row`や`next_id`を入力する必要はありません。移動は同じ行IDを保持し、通常のUndo/Redoと保存を使用します。省略されたListにも行を追加できます。generated・pending・read-onlyのcomponentとList内部のネストしたListは編集対象外です。

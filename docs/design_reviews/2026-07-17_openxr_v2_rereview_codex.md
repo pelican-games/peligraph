@@ -4,8 +4,8 @@
 
 対象: `docs/design_openxr.md` v2
 
-照合 commit: `e66077ae8cf7`
-方法: v2、前回レビュー、関連する build-tier 規約、OpenXR 1.1.61 の静的照合。依頼どおりビルド・実機実行・既存ファイル変更は行っていない。前回レビューが根拠にした renderer/input/loop 等の実装ファイルには、照合 commit `8884788418c8` から本 commit まで変更がないことも確認した。
+照合 commit: `fa9ce61e84e3`
+方法: v2、前回レビュー、関連する build-tier 規約、OpenXR 1.1.61 の静的照合。依頼どおりビルド・実機実行・既存ファイル変更は行っていない。前回レビューが根拠にした renderer/input/loop 等の実装ファイルには、照合 commit `2a4b14bd51ea` から本 commit まで変更がないことも確認した。
 
 ## 判定
 

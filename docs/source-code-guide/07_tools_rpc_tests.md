@@ -434,7 +434,7 @@ N-1b でソケットの語彙が加わりました: [`SocketShape` / `SocketStyl
 proxy target を作ります —— view の `.cpp` を直接 compile する scene test も、同じ埋め込みテーブルを link できるようにするためです。
 抽出が Frame Plan の挙動を変えていないことは、`devstudio_frameplan_graph_test`(2,133 assertion)と
 `devstudio_fullscreen_pass_test`(803 assertion)が**全数不変**であることで押さえました
-(assertion 数と「不変」の判定は N-1 の完了記録 `2c6828e4` による。本章で実測し直したものではありません)。
+(assertion 数と「不変」の判定は N-1 の完了記録 `edafc41d` による。本章で実測し直したものではありません)。
 
 N-5 で色が 1 枚の表に集まりました。[`StudioTheme`](../../src/devstudio/view/studiotheme.hpp#L44) は
 `{name, label, style, palette, canvas{background, grid, edge, edge_selected, node_body, node_border,
@@ -645,7 +645,7 @@ Studio の target を必要としません)。
 | `studio_scenario_*`(`gpu`、Q-1 / Q-1b / N-5。**10 本**: `graph_read` / `graph_edit_roundtrip` / `canvas_zoom_pan` / `menu_actions` / `graph_canvas_zoom_pan` / `theme_switch` / `graph_auto_layout` / `graph_reroute_tie` / `graph_observe_roundtrip` / `frameplan_edit_roundtrip`) | **実物の窓 + 実物の engine の e2e**。`--automation` 無しで socket が無いこと、`list` が objectName を返すこと、無い名前が `automation.widget_missing@1` になること、キャンバスが描いたものと `get_graph_instances` の一致、値の帯の click → type → Enter が engine に届き、**ディスク経由で再読込しても残る**こと。**対照**は「期待するノード数を 1 ずらす」と「`setNodeParameter` を止める」(後者は `wait_timeout`)。Q-1b の 3 本は gesture(wheel / 押したままの move / 中ボタン drag)を `view_state` の数値の**向き**で、メニューを `menu_list` / `action` で確かめます。N-5 の `theme_switch` は View ▸ Theme で light / dark を切り替えて両方を撮ります |
 
 表の assertion 数(2,133 / 803 / 139 / 62)と各行の**対照**は、いずれも当該 WP の完了記録による報告値です
-(N-1 = `2c6828e4`、N-2 = `02a3d285`)。本章で走らせ直して数えたものではありません。
+(N-1 = `edafc41d`、N-2 = `f2eccbfd`)。本章で走らせ直して数えたものではありません。
 
 ここから、閉じた穴と残っている穴が読めます。
 
@@ -665,10 +665,10 @@ Studio の target を必要としません)。
 
 ### 検証の穴(記録)
 
-- **P-2a-3 / P-2a-4a(`5100be5f`)は `SKIP_DEVSTUDIO=ON` の worktree で実装されたため、Features dock は
-  未検証のまま着地しました**(完了記録 `5100be5f` による。本章で再現したわけではありません)。engine 側の
+- **P-2a-3 / P-2a-4a(`7e983ed9`)は `SKIP_DEVSTUDIO=ON` の worktree で実装されたため、Features dock は
+  未検証のまま着地しました**(完了記録 `7e983ed9` による。本章で再現したわけではありません)。engine 側の
   RPC は非 GPU / GPU 両方で見ていますが、dock の側は別 session の Studio 入り build を待ちました。
-- **`test/fixtures/devstudio/example_frame_plan.json` は再凍結されていません**(P-2b `d236822b` の記録)。
+- **`test/fixtures/devstudio/example_frame_plan.json` は再凍結されていません**(P-2b `e1c326c1` の記録)。
   production 経路で取り直した plan は resource 22 → 23(`bloom.intensity`)、arena 89 → 90、decision 131 → 133 です。
   追随が要る数値は、現物を数えると `devstudio_frameplan_test.cpp` の **9 箇所**
   ([L476](../../test/devstudio_frameplan_test.cpp#L476) / [L588](../../test/devstudio_frameplan_test.cpp#L588) /
@@ -676,7 +676,7 @@ Studio の target を必要としません)。
   `devstudio_frameplan_graph_test.cpp` の **2 箇所**
   ([L5210](../../test/devstudio_frameplan_graph_test.cpp#L5127) / [L5896](../../test/devstudio_frameplan_graph_test.cpp#L5813))で、
   多い方は graph test ではなく frameplan test です。同じ commit で `devstudio_*` の 4 テストが
-  **読みだけで編集され、実行されていない**ことも同じ完了記録 `d236822b` の申告で(Studio 無しの
+  **読みだけで編集され、実行されていない**ことも同じ完了記録 `e1c326c1` の申告で(Studio 無しの
   worktree では走らないため、primary の全数で見る、という運用です)、本章で実行を確かめてはいません。
 
 > **設計決定:** **エンジン側の編集面 — 編集系 RPC 60 メソッド(§7.7)と ImGui inspector / asset browser(§7.12) — が正準です**。Qt Inspector も別の編集実装を持たず、その RPC を呼ぶ公開 client です。ImGui は同じ [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L282) を process 内 adapter から呼びますが、Studio は `pelican_project` と JSON-RPC だけへリンクする D0 境界を保ちます。
@@ -858,9 +858,9 @@ root だけの編集が definition のバイト列を動かさないようにす
 
 名前付きの拒否は `GraphRegistryError` が運びます: `graph.node_duplicate@1` / `graph.node_missing@1` /
 `graph.input_unknown@1` / `graph.output_referenced@1` / `graph.input_referenced@1` /
-`graph.nested_instance@1` / `graph.input_scope@1` / `graph.definition_immutable@1` / `graph.layout_invalid@1`(N-6、`set_layout` の検証)。N-2(`02a3d285`)が足したのは
+`graph.nested_instance@1` / `graph.input_scope@1` / `graph.definition_immutable@1` / `graph.layout_invalid@1`(N-6、`set_layout` の検証)。N-2(`f2eccbfd`)が足したのは
 **この並びの 5〜7 番目**、つまり `graph.input_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1` で、
-末尾の `graph.definition_immutable@1` はそれより前(`b960edf7`)からあります。N-2 の 3 つは
+末尾の `graph.definition_immutable@1` はそれより前(`3611e390`)からあります。N-2 の 3 つは
 「instance は root に立ち、境界 port は definition の中にある」という片側ずつの所属を名前で言うためのものです
 ([分岐](../../src/project/graphcomposition.cpp#L788))。形が壊れているだけのものは名前を持たず
 `invalid_graph_document` に落ちます。
@@ -881,7 +881,7 @@ package の文書が壊れていれば `available: false` + `unavailable_reason`
 
 これは行儀の問題ではありません。catalog は **editor service の構築時**に作られるので、ここで例外が抜けると
 **player が起動しきらず、Studio がその project を開けなくなります**。X-1 の対照実験(enumerator を fatal に
-戻す変異)では player が戻らず、**ctest が 1,560 秒で timeout しました**(完了記録 `3f72b71d`)。
+戻す変異)では player が戻らず、**ctest が 1,560 秒で timeout しました**(完了記録 `64eae566`)。
 「壊れたデータは名前付きの行になる。列挙そのものは失敗しない」が不変条件です。
 
 > 🧩 **難所 — 曖昧な重なり判定**([`stablePathsOverlap()`](../../src/core/communication/editorjournal.cpp#L2553) / [`structuralDomainsOverlap()`](../../src/core/communication/editorjournal.cpp#L2624) / [`recordOverlaps()`](../../src/core/communication/editorjournal.cpp#L2718))
@@ -1214,7 +1214,7 @@ compiler OFF を明示し、WP354 の frame-plan model と widget の2件を
 
 ### exact SKIP policy: 3 つ目の結果を塞ぐ
 
-両 gate が共有する判定は [`test/ci/skip_policy.py`](../../test/ci/skip_policy.py) にあります(`71d8d44` で `run_cpu_gate.py` から切り出されました)。module docstring が規範です。
+両 gate が共有する判定は [`test/ci/skip_policy.py`](../../test/ci/skip_policy.py) にあります(`03d134d` で `run_cpu_gate.py` から切り出されました)。module docstring が規範です。
 
 > A test has three outcomes, and the dangerous one is the third: a failing test is
 > red and gets looked at, but a skipped test stays green while not existing.
@@ -1244,7 +1244,7 @@ compiler OFF を明示し、WP354 の frame-plan model と widget の2件を
 >
 > **不変条件**: allowlist は完全一致の CTest 名のみ(重複行もエラー)。列挙した名前は必ず一度は現れること。**gate は `ctest` が緑でも落としうる**。
 
-### GPU gate(`run_gpu_gate.py`)✅追加(`71d8d44`)
+### GPU gate(`run_gpu_gate.py`)✅追加(`03d134d`)
 
 CI0 は `ctest -LE gpu` なので、`gpu` label の側 — golden 画像比較、validation layer、player の process integration — は **これまで常設の回帰網の外**にありました。[`test/ci/run_gpu_gate.py`](../../test/ci/run_gpu_gate.py) はその反対側を回す gate です。**workflow はまだありません**(`.github/workflows/` は CPU gate と configuration smoke の2本だけ)。Vulkan device のある機械で手で叩きます。運用の正は [`docs/ci.md`](../ci.md) です。
 

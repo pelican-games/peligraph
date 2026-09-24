@@ -95,8 +95,8 @@ GPU登録前に名指しrejectされることを固定した。
 
 | commit | 内容 |
 |---|---|
-| `22b38b3` | target固有format capability evidenceとpure fragment verifier |
-| `e23f7e6` | authoring候補、実device query、runtime assignment、hot reload実描画 |
+| `945fad0` | target固有format capability evidenceとpure fragment verifier |
+| `44c78fa` | authoring候補、実device query、runtime assignment、hot reload実描画 |
 
 ## 5. ローカル検証
 

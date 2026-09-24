@@ -76,8 +76,8 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 |---|---|---|---|
 | RT1 / RT2 | raygen・miss・closest-hit・any-hit、再帰、SBT addressing、material ABI | 台帳 WP364〜368 に実装・検証記録あり。今回の統合ログで WP367 の本番 any-hit 試験が成功 | stage/record/material の結び付きの可視化、設定変更と GPU 結果を試す教材は完了未判定 |
 | RT3-1 | instance mask/flags/custom index と geometry flags | WP374/374a 着地済み。WP384-fix 後の対象 GPU/RPC 4 件が統合ログで成功 | 個体編集→GPU 効果→保存→再読込を GUI から通す。既存 RPC の証拠を GUI 完了とは扱わない |
-| CARRIER-RT3 | 再帰 schema、可変長行、occurrence、個体ごとの geometry override | WP382a/b/383 着地済み。382b-fix は 36ad3444 に着地(関連37/37、レビュー残余あり)、382c は 23cb5153 に着地(W1 98/98、レビュー残余あり)、382d は4ce4117dに統合(W1 95/95) | 行の追加・削除・移動、対象 geometry の選択、override の出所表示。複合undo等の残余を閉じ、CARRIER-STUDIO との接続を確認 |
-| RT3-2 | static AABB と intersection shader、三角形との混在 | WP386a/b統合済み。球のreport・reload・変更行列、procedural assetの新規作成・bounds/record編集・未使用定義削除RPC・保存・component装着・runtime反映を実GPU確認。専用Studio画面を接続。386cの数値基礎はae29fc98まで保存、追加数値基盤は保留 | 新画面とmixed geometryの実編集操作を確認する。学習サンプルは後回し、数値oracleの完成を次機能の条件にしない |
+| CARRIER-RT3 | 再帰 schema、可変長行、occurrence、個体ごとの geometry override | WP382a/b/383 着地済み。382b-fix は 6289434c に着地(関連37/37、レビュー残余あり)、382c は 345123b8 に着地(W1 98/98、レビュー残余あり)、382d は2958ac42に統合(W1 95/95) | 行の追加・削除・移動、対象 geometry の選択、override の出所表示。複合undo等の残余を閉じ、CARRIER-STUDIO との接続を確認 |
+| RT3-2 | static AABB と intersection shader、三角形との混在 | WP386a/b統合済み。球のreport・reload・変更行列、procedural assetの新規作成・bounds/record編集・未使用定義削除RPC・保存・component装着・runtime反映を実GPU確認。専用Studio画面を接続。386cの数値基礎は6fec9a44まで保存、追加数値基盤は保留 | 新画面とmixed geometryの実編集操作を確認する。学習サンプルは後回し、数値oracleの完成を次機能の条件にしない |
 | RT4 | callable、per-in-flight の動的 record | callable実行・reload、動的recordの宣言・更新・submission寿命管理、GameContext public APIを実装。Studioから初期値の永続編集も接続 | 新しい初期値dialogの実操作確認は残る |
 | RT5 | 変形 geometry の毎 frame rebuild/refit | skin/morph/VAT のcompute変形、初回BLAS buildと以後のrefitを接続。個体別変形・VAT補間のヒット追随、モデル変更時rebuildを実GPU確認 | 出力allocation削減と性能計測は残る。使用中のASを変更しない方式 |
 | RT6 | dispatch 一般化・indirect、AS graph node、複数 TLAS、複数 geometry BLAS | 3D・間接dispatch、名前付きTLAS構築とconsumerの交互配置・選択（compute/RT/material/raster）、共有AS前の独立compute・material・fullscreen/raster・sprite実行、複数triangle geometry BLAS/refit、明示worldモードで異transform個体の結合・移動rebuild・morph refit、単一componentの複数AABB asset/BLAS結合を実装・実GPU確認 | 補助描画6種のray query宣言・AS選択とUI/ImGuiのAS非依存化は実装済み。AABBは明示的なworldモードと変換recordで異transform結合に対応。triangle worldモードはScene AS画面から保存・GPU反映へ接続済み |
@@ -126,15 +126,15 @@ v0 は機能の総数ではなく、**約束する制作体験**で切る。
 
 | 段 | 内容 | 閉じ方 |
 |---|---|---|
-| **AG-0 登録契約と purge** ✅ `adb73793` | module が型(opaque handle + identity + 世代)・op(`GraphOperationContracts`)・sink を登録する契約を明文化。animation を外した build で共通グラフが compile・評価・描画できる | `PELICAN_WITH_ANIMATION` OFF の build と test。未登録の型・op を使う文書は `graph.type_unregistered@1` 等で名前付き拒否 |
-| **AG-1 pose モジュール** ✅ 1a `5bc79586` / 1b `945ad8aa` | `pelican.pose@1` の型・op・sink、pose graph 経路のloop/speed/start_timeとowner単位の排他を実装。v0はanimation componentのclip/graph経路も維持する | 共通graph経路のparityとOFF buildのfail-fastを確認。経路の一本化とtyped eventの拡張はv1 |
-| **P-1 パラメータ mode と由来** ✅ `b960edf7` | Inspector の欄に mode(固定値 / 接続)と導線(曲線で制御 / 別の出力に接続 / 供給元を開く)。「接続」は共通グラフの edge そのもの(Inspector と graph は同じ edge の別 view)。parameter 宣言に「変更時の扱い」を持たせる。`get_status` の実効値に instance・port・時計を載せる | GUI で「曲線で制御」→ 文書に `value.curve` / `value.playback` と edge が生える。graph 側で edge を消すと欄が固定値に戻る。分類「値だけ」以外の欄は接続不可と表示され、RPC でも拒否 |
-| **P-2 往復のパイロット 2 本**(a ✅ 1a `70982870` / 1b `a1233ddd` / 1c `9e4081b4` / 2 `62f09ce0` / 4a+3 `5100be5f`。b ✅ P-2b `393f9d30`)| (a) Bloom: 使う → 供給元を接続 → 内部を見る(参照を保つ)→ このプロジェクト用に派生 → 共有部品として保存 → 別プロジェクトで使う。(b) 曲線駆動の blend: 姿勢部品で同じ往復(AG-1 の受け入れを兼ねる) | 「内部を見る」で materialize されない(標準部品の更新を受け続ける)。派生後は元を変えない。保存した部品が別プロジェクトで同じ出力 |
-| **AG-2 root motion** ✅ `584afc15` | v0はclip_sampleから根の移動量を抽出し、個体のmovementへ渡す | clipによる移動と出力を外した対照を確認。state_machine / blend経由と回転量はv1 |
-| **O-1 オフライン出力** ✅ `405cd319` | `--start-time`による初期状態からのreplayと連番出力 | 同じ時刻のframe等価をbytesで確認。評価分類の強制と状態を進めないread-only renderはv1 |
-| **X-1 持ち出し** ✅ `3f72b71d`(package manifest / vendoring / namespace 付き catalog / 公開 SDK だけの include を compile で判定)| 本体ツリー外のテンプレート repo(graph / feature パックが主力、native 拡張は SDK とビルド条件を固定)。package manifest とカタログ(Studio 検索・CLI 一覧・エージェント向け) | シナリオ「拡張して持ち出す」の test |
-| **AG-3 観測と view** ✅ 3a `9862ebdd` / 3b `5d64bd6e` | `get_status.animation` / `get_graph_node_values`と、Studioの値の帯・Live・Timelineを接続 | `graph_observe_roundtrip`で装着→編集→観測→保存→再読込。pose/event固有の未確認範囲は凍結一覧§4 |
-| **R 群(整理・操作感・サンプル・凍結)** ✅ R-1 `aa56a1af` / R-3 `979b40f7` | 二つの正本の撤去/維持を裁定し、サンプル索引・凍結一覧・requiresを整備。2026-09-22の追加修正は凍結一覧§5 | 最終release構成の確認後にtagを判断する。複合Undoと代表ゲームの拡張はv1 |
+| **AG-0 登録契約と purge** ✅ `c9085d6f` | module が型(opaque handle + identity + 世代)・op(`GraphOperationContracts`)・sink を登録する契約を明文化。animation を外した build で共通グラフが compile・評価・描画できる | `PELICAN_WITH_ANIMATION` OFF の build と test。未登録の型・op を使う文書は `graph.type_unregistered@1` 等で名前付き拒否 |
+| **AG-1 pose モジュール** ✅ 1a `ee751752` / 1b `129eb218` | `pelican.pose@1` の型・op・sink、pose graph 経路のloop/speed/start_timeとowner単位の排他を実装。v0はanimation componentのclip/graph経路も維持する | 共通graph経路のparityとOFF buildのfail-fastを確認。経路の一本化とtyped eventの拡張はv1 |
+| **P-1 パラメータ mode と由来** ✅ `3611e390` | Inspector の欄に mode(固定値 / 接続)と導線(曲線で制御 / 別の出力に接続 / 供給元を開く)。「接続」は共通グラフの edge そのもの(Inspector と graph は同じ edge の別 view)。parameter 宣言に「変更時の扱い」を持たせる。`get_status` の実効値に instance・port・時計を載せる | GUI で「曲線で制御」→ 文書に `value.curve` / `value.playback` と edge が生える。graph 側で edge を消すと欄が固定値に戻る。分類「値だけ」以外の欄は接続不可と表示され、RPC でも拒否 |
+| **P-2 往復のパイロット 2 本**(a ✅ 1a `60e95f53` / 1b `6e04c7c8` / 1c `e3a2d3d0` / 2 `340f8537` / 4a+3 `7e983ed9`。b ✅ P-2b `400820f0`)| (a) Bloom: 使う → 供給元を接続 → 内部を見る(参照を保つ)→ このプロジェクト用に派生 → 共有部品として保存 → 別プロジェクトで使う。(b) 曲線駆動の blend: 姿勢部品で同じ往復(AG-1 の受け入れを兼ねる) | 「内部を見る」で materialize されない(標準部品の更新を受け続ける)。派生後は元を変えない。保存した部品が別プロジェクトで同じ出力 |
+| **AG-2 root motion** ✅ `37cc55ba` | v0はclip_sampleから根の移動量を抽出し、個体のmovementへ渡す | clipによる移動と出力を外した対照を確認。state_machine / blend経由と回転量はv1 |
+| **O-1 オフライン出力** ✅ `fcbe1a98` | `--start-time`による初期状態からのreplayと連番出力 | 同じ時刻のframe等価をbytesで確認。評価分類の強制と状態を進めないread-only renderはv1 |
+| **X-1 持ち出し** ✅ `64eae566`(package manifest / vendoring / namespace 付き catalog / 公開 SDK だけの include を compile で判定)| 本体ツリー外のテンプレート repo(graph / feature パックが主力、native 拡張は SDK とビルド条件を固定)。package manifest とカタログ(Studio 検索・CLI 一覧・エージェント向け) | シナリオ「拡張して持ち出す」の test |
+| **AG-3 観測と view** ✅ 3a `32d9a20b` / 3b `ce5e96c0` | `get_status.animation` / `get_graph_node_values`と、Studioの値の帯・Live・Timelineを接続 | `graph_observe_roundtrip`で装着→編集→観測→保存→再読込。pose/event固有の未確認範囲は凍結一覧§4 |
+| **R 群(整理・操作感・サンプル・凍結)** ✅ R-1 `96d5e1d8` / R-3 `be4c60a4` | 二つの正本の撤去/維持を裁定し、サンプル索引・凍結一覧・requiresを整備。2026-09-22の追加修正は凍結一覧§5 | 最終release構成の確認後にtagを判断する。複合Undoと代表ゲームの拡張はv1 |
 
 #### v0 の現状と残り（2026-09-22）
 
@@ -149,8 +149,8 @@ AG / P / O / X / R / N / Q の着地 SHA は [v0 凍結一覧 §5](v0_freeze.md#
 | v1 の機能・操作拡張 | scene と graph/render config を束ねる複合 Undo、外部 definition 参照と create/delete/copy、package の shader・名前空間・catalog 拡張、read-only render と評価分類の強制、代表ゲームの物理・音・save/load・UI。個々の仕様は既存 WP / 設計に従う |
 | 未予定の操作改善候補 | parameter_dependent な render op の palette form、seed constant 自動掃除、必須入力 disconnect UX、Features dock の export/import UI、node text elision、animation sink / scrub の GPU coverage。現状の不足を利用操作で確認してから選ぶ |
 
-Graph Canvas の基本 Undo は `df5fb880` で実装済み。render config 全体や scene journal と跨る複合 Undo は別の未完了項目である。
-scene owner ID の永続化も `352eea58` で実装済みのため、新規開発候補には戻さない。
+Graph Canvas の基本 Undo は `0d41aeba` で実装済み。render config 全体や scene journal と跨る複合 Undo は別の未完了項目である。
+scene owner ID の永続化も `efb30dad` で実装済みのため、新規開発候補には戻さない。
 
 #### 部品の 3 操作(Houdini HDA を参照)
 

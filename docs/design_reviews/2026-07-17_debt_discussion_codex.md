@@ -53,7 +53,7 @@ Claude の棚卸しは、実バグ、未達の test gate、意図された設計
 
 現行 renderer は frame graph が未登録なら例外を投げ、登録済みなら無条件に `executePlannedFrameGraph` を呼ぶ。legacy fallback 分岐はない（`src/core/vkcore/renderer.cpp:798-804`）。runtime record も `FramePlan` と node 列だけで、旧 `has_compute` flag を持たない（`src/core/renderingpass/framegraphruntime.hpp:27-30`）。実行 node と plan の name/kind 一致も検査される（`src/core/vkcore/renderer.cpp:589-594`）。golden gate は実行順と plan 順を比較する（`test/golden_image_test.cpp:4102-4105`）。
 
-撤去報告も既に存在し、削除と残存参照 0 件を記録している（`docs/design_reviews/2026-07-10_wp64_report.md:11-16,118`）。履歴上も A/B trace gate の `c207fec` と撤去の `fa33a0e` があり、後者は現 branch に含まれる。
+撤去報告も既に存在し、削除と残存参照 0 件を記録している（`docs/design_reviews/2026-07-10_wp64_report.md:11-16,118`）。履歴上も A/B trace gate の `45ffcff` と撤去の `09096bb` があり、後者は現 branch に含まれる。
 
 判定は「Claude の事実誤認」である。WP34/35 に暗黙吸収されたのではなく、独立 WP64 として完了している。必要なのは CI 上の既存 gate 維持だけで、R4 監査を debt wave の先頭に置く理由はない。
 

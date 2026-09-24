@@ -254,23 +254,23 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 
 | 項目 | 現在の状態と根拠 |
 |---|---|
-| `graph.instance.owner` の ID | scene 保存時に `authoring_object_id` と採番上限を永続化。先行 object の削除・順序変更後の保存/再読込でも owner が別個体へ変わらない。`352eea58`、`sceneformat_test` の `[persistent-identity]` と prefab 回帰 |
-| Graph Canvas の基本 Undo/Redo | graph 専用の履歴を CAS で適用し、外部変更後は破棄する。ノード・接続と配置の掃除を同じ transaction に含めて復元する。`df5fb880`、Studio の `[graph-history]` と編集 op の `[graph-undo]` 回帰。scene と跨る複合 Undo は §3 の範囲外 |
-| 未保存 scene の close/project 切替 | Save / Discard / Cancel を経由し、保存失敗時は切り替えない。`35c82db6`、model/widget 回帰と実 Studio 操作 |
-| Studio の終了 crash | Windows の保存・project 切替後のアクセス違反を再現し、viewport 破棄前に通知を切断して修正。`b14ba957`、`[shutdown]` 回帰。scenario も異常終了・強制終了を失敗とする |
-| configure の `requires` 無視 | configure と test sweep が同じ `projectrequirements.def` を参照し、OFF build で非対応の sample DLL target を作らない。`f9b4c221` |
-| 複数 build による配布物の上書き | runtime は `<build>/dist/<config>/`、配布物は `cmake --install --component Runtime` で集約する。`f9b4c221`。現行 Windows の Release build と絶対パスの prefix への Runtime install は成功。配布物の確認範囲は §6 |
+| `graph.instance.owner` の ID | scene 保存時に `authoring_object_id` と採番上限を永続化。先行 object の削除・順序変更後の保存/再読込でも owner が別個体へ変わらない。`efb30dad`、`sceneformat_test` の `[persistent-identity]` と prefab 回帰 |
+| Graph Canvas の基本 Undo/Redo | graph 専用の履歴を CAS で適用し、外部変更後は破棄する。ノード・接続と配置の掃除を同じ transaction に含めて復元する。`0d41aeba`、Studio の `[graph-history]` と編集 op の `[graph-undo]` 回帰。scene と跨る複合 Undo は §3 の範囲外 |
+| 未保存 scene の close/project 切替 | Save / Discard / Cancel を経由し、保存失敗時は切り替えない。`e2a5ab7b`、model/widget 回帰と実 Studio 操作 |
+| Studio の終了 crash | Windows の保存・project 切替後のアクセス違反を再現し、viewport 破棄前に通知を切断して修正。`a4bfeec2`、`[shutdown]` 回帰。scenario も異常終了・強制終了を失敗とする |
+| configure の `requires` 無視 | configure と test sweep が同じ `projectrequirements.def` を参照し、OFF build で非対応の sample DLL target を作らない。`be35b7de` |
+| 複数 build による配布物の上書き | runtime は `<build>/dist/<config>/`、配布物は `cmake --install --component Runtime` で集約する。`be35b7de`。現行 Windows の Release build と絶対パスの prefix への Runtime install は成功。配布物の確認範囲は §6 |
 | Studio が `raytracing_demo` を開けないという旧指摘 | 現行 Windows の Runtime stage で起動、`scene_tree` / `get_frame_plan`、capture、別projectへの切替と戻りによる再読込、正常終了を確認。RT の二球の画像も確認した。他の OS / GPU の保証ではない |
 | 出荷 sample の Studio 起動 | `example` / `raytracing_demo` / `pathtrace_demo` / `sprite_demo` / `animgraph_demo` / `posegraph_demo` / `vrm_xr_demo` の 7 本を現行 Windows Runtime stage で起動・capture・別 project を介した再読込・正常終了まで確認。機能全組合せや GPU 全数とは区別する |
 | 新規 project からの編集・保存 | CLI init → Studio で位置編集 → FileSaveScene → 完全終了 → Studio 再起動を確認。authoring ID が維持され、`get_components` の authoring/runtime 両方で保存位置が一致し、capture・正常終了まで通過 |
-| Studio で開いた ray tracing project の起動直後 | shader cache が効いて起動が速いと、窓の出力より先に最初の frame が来る。出力待ちで飛ばした frame が staged な起動 generation を巻き戻し、次の frame が `Renderer logical frame requires a compiled render pipeline` で落ちていた(pathtrace_demo の開き直しで 5 回中 2 回)。飛ばした frame では巻き戻さず、公開前の live material 検査も「取り除く経路が無い」として受け入れる。`a0e7820d` / `1bed0335`。開き直し 10 / 10 |
-| Studio 終了時に player が空回りする | Studio が viewport の親窓を先に壊すと、埋め込み player は close flag が立たないまま surface を毎 frame 作り直し(`ErrorSurfaceLostKHR` 168〜172 行)、Studio に kill されるまで回っていた。main loop が Win32 の窓の実在を見て止まる。`d8249a3a`。配布確認が終了時の player log で 3 件以下を検査し、修正を外すと赤 |
-| player のログが 1 ファイルに混ざる | 全 player が Studio の cwd の `pelican.log` に追記していた。player に `--log-file`(起動ごとに切り詰め)を足し、Studio は `<project>/.pelican/logs/player.log` を渡す。既定の `pelican.log` 追記は維持。`48d5b3cb`、`devstudio_viewport_test` と配布確認 |
-| engine の準備完了の判定 | engine は最初の frame より前に RPC に答えるので、capture や frame plan を待つ側が名前付きの「まだ」エラーを再試行していた。`get_status` に `render.published_frames`、automation の `wait_engine` に `frames` を足した。Frame Plan dock は公開前の plan を「失敗」と表示せず上限付き(250 ms × 40)で問い直す。dock の失敗表示は `1bed0335` 以後の再現 6 回では出ておらず、上限付きの保険として入れた。`90806c80` |
-| staged な ray tracing 世代の行き先 | 公開 / 次の frame へ持ち越し / 巻き戻しの 3 つを `StagedRuntimeRollbackGuard` にまとめ、`published()` / `keepForNextFrame()` で名指しする。`RenderTarget` に test seam を足し、出力に image の無い frame を 2 回飛ばしても staged の世代が残り次の frame で公開される GPU テストを追加。`keepForNextFrame()` を外すと赤。`90806c80` |
-| indirect command の padding | `RenderCommand` は 34 バイトの field を 36 バイトに詰めており、末尾 2 バイトの padding にスタックの残りが入って、GPU へ上げるバイト列が実行ごとに変わっていた。`state_batched_v1` の byte 比較がこの build で 40 回中 34 回赤。padding を 0 初期化の名前付きメンバーにし、`has_unique_object_representations` を static_assert。GPU が読む stride と先頭の Vulkan command は不変。`f4ba9913`。0 / 40 |
-| 配布確認の手順 | scratch の script だった確認を `test/ci/run_distribution_check.py` に移し、出荷 sample を `projects/` から自動で数える。手順は [CI 運用](ci.md)。`8813ab82` |
-| editor の gate 判定の一本化 | journal・render config・procedural asset が同じ `EditorGateEpoch` で受理後の commit 可否を判定し、遷移は型付きの `ReloadTransitionFacts` を 1 つの counter が数える。閉じて開き直した gate を procedural asset が見逃す穴も閉じた。`c3830d32` |
+| Studio で開いた ray tracing project の起動直後 | shader cache が効いて起動が速いと、窓の出力より先に最初の frame が来る。出力待ちで飛ばした frame が staged な起動 generation を巻き戻し、次の frame が `Renderer logical frame requires a compiled render pipeline` で落ちていた(pathtrace_demo の開き直しで 5 回中 2 回)。飛ばした frame では巻き戻さず、公開前の live material 検査も「取り除く経路が無い」として受け入れる。`7cb39996` / `e5995d88`。開き直し 10 / 10 |
+| Studio 終了時に player が空回りする | Studio が viewport の親窓を先に壊すと、埋め込み player は close flag が立たないまま surface を毎 frame 作り直し(`ErrorSurfaceLostKHR` 168〜172 行)、Studio に kill されるまで回っていた。main loop が Win32 の窓の実在を見て止まる。`62245846`。配布確認が終了時の player log で 3 件以下を検査し、修正を外すと赤 |
+| player のログが 1 ファイルに混ざる | 全 player が Studio の cwd の `pelican.log` に追記していた。player に `--log-file`(起動ごとに切り詰め)を足し、Studio は `<project>/.pelican/logs/player.log` を渡す。既定の `pelican.log` 追記は維持。`a21b28e5`、`devstudio_viewport_test` と配布確認 |
+| engine の準備完了の判定 | engine は最初の frame より前に RPC に答えるので、capture や frame plan を待つ側が名前付きの「まだ」エラーを再試行していた。`get_status` に `render.published_frames`、automation の `wait_engine` に `frames` を足した。Frame Plan dock は公開前の plan を「失敗」と表示せず上限付き(250 ms × 40)で問い直す。dock の失敗表示は `e5995d88` 以後の再現 6 回では出ておらず、上限付きの保険として入れた。`f4a5e2cd` |
+| staged な ray tracing 世代の行き先 | 公開 / 次の frame へ持ち越し / 巻き戻しの 3 つを `StagedRuntimeRollbackGuard` にまとめ、`published()` / `keepForNextFrame()` で名指しする。`RenderTarget` に test seam を足し、出力に image の無い frame を 2 回飛ばしても staged の世代が残り次の frame で公開される GPU テストを追加。`keepForNextFrame()` を外すと赤。`f4a5e2cd` |
+| indirect command の padding | `RenderCommand` は 34 バイトの field を 36 バイトに詰めており、末尾 2 バイトの padding にスタックの残りが入って、GPU へ上げるバイト列が実行ごとに変わっていた。`state_batched_v1` の byte 比較がこの build で 40 回中 34 回赤。padding を 0 初期化の名前付きメンバーにし、`has_unique_object_representations` を static_assert。GPU が読む stride と先頭の Vulkan command は不変。`47cbf3cf`。0 / 40 |
+| 配布確認の手順 | scratch の script だった確認を `test/ci/run_distribution_check.py` に移し、出荷 sample を `projects/` から自動で数える。手順は [CI 運用](ci.md)。`053b1e0b` |
+| editor の gate 判定の一本化 | journal・render config・procedural asset が同じ `EditorGateEpoch` で受理後の commit 可否を判定し、遷移は型付きの `ReloadTransitionFacts` を 1 つの counter が数える。閉じて開き直した gate を procedural asset が見逃す穴も閉じた。`f9b43662` |
 | 同一 logical frame の再描画 | 通常動作中の Studio で `render_frame` を重ねた際、GPU timing の sample ID が重複して fatal になる不具合を修正。同じ logical frame の同じ範囲を再記録しない。全 GPU gate の結果は §6 で別に扱う |
 | Release の runtime 診断 | file のみだったログ出力を file + stderr に戻し、Studio の Engine Log とテストの捕捉 stderr へ届くよう修正。JSON-RPC の stdout は維持 |
 | 既に閉じた旧指摘 | export の `.tmp-<pid>` 掃除と `structfieldjson.hpp` 複製は R-1、canvas の余白/pan は N-4、inline editor の意図しない FocusOut は Q-3 で解消。着地記録は §5 / 実装台帳 |
@@ -288,8 +288,8 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 | AS / shader の同一性 | `WP386` の signed-zero transform identity、shader source 改行と cache key |
 | graph root と preset の組合せ | `P-2a-4a` / `P-2a-3` の `region_replacements`、Frame Plan fixture と現在の生成結果 |
 | export / 一時ファイル | per-process temp root 修正後の並列 `renderconfigeditor`、GPU lease log の残留。古い `%TEMP%` 件数を現在の原因の証拠にしない |
-| Debug 専用 WSI 故障注入 | `wsi_fault_window_player` は Release で注入 hook がなく明示 skip。2026-09-24 に Debug build(`f4ba9913`)で実行し、注入 6 回・surface 作り直し 5 回・公開 2 回で通過 |
-| Debug の production PDB 配線 | `crash_symbol_production_wiring` は実際の Debug Studio が残した symbol archive を読むため Debug 構成だけで登録する。2026-09-24 に Debug build で実行し、Studio の `f4ba9913` の PDB が archive されていることを確認 |
+| Debug 専用 WSI 故障注入 | `wsi_fault_window_player` は Release で注入 hook がなく明示 skip。2026-09-24 に Debug build(`47cbf3cf`)で実行し、注入 6 回・surface 作り直し 5 回・公開 2 回で通過 |
+| Debug の production PDB 配線 | `crash_symbol_production_wiring` は実際の Debug Studio が残した symbol archive を読むため Debug 構成だけで登録する。2026-09-24 に Debug build で実行し、Studio の `47cbf3cf` の PDB が archive されていることを確認 |
 | オフライン時刻の上限 | `O-1` の `--start-time` / `llround` 境界。入力範囲の拒否と通常 replay の区別 |
 
 最終 revision の GPU / Studio gate と配布物の結果はrelease完了時に §6 へ記録する。部分確認や過去の全数成功で代用しない。
@@ -300,97 +300,97 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 
 | 段 | SHA |
 |---|---|
-| AG-0 登録契約と purge | `adb73793` |
-| AG-1a pose module | `5bc79586` |
-| AG-1b pose graph 経路の parity と排他 | `945ad8aa` |
-| AG-2 root motion | `584afc15` |
-| AG-3a 定義内の値(engine 側) | `9862ebdd` |
-| P-1 パラメータの供給元と由来 | `b960edf7` |
-| P-2a-1a anchor 明示と撤去 | `70982870` |
-| P-2a-1b Bloom の feature 化 | `a1233ddd` |
-| P-2a-1c define 化と materialize 後の編集 | `9e4081b4` |
-| P-2a-2 runtime 値(`binding: buffer`) | `62f09ce0` |
-| P-2a-3 + P-2a-4a 共有部品の公開 / graph root の `rendering` 節 | `5100be5f` |
-| P-2a-4b 出荷 project の graph root | `d236822b`(+ Studio hotfix `2f2aadce`)|
-| P-2b posegraph_demo と `requires` | `393f9d30` |
-| O-1 オフライン出力(`--start-time`) | `405cd319` |
-| X-1 持ち出し(package) | `3f72b71d` |
-| R1-2 committed marker | `edf4bd43` |
-| R-1 撤去 / 維持の表と安い穴 | `aa56a1af` |
-| N-1 共通グラフの読み取りキャンバス | `2c6828e4` |
-| N-1b 見出しとソケット欄 | `373f62ee` |
-| N-2 canvas の編集 op | `02a3d285` |
-| R-3 サンプル索引と本文書 | `979b40f7` |
-| Q-1 Studio automation surface | `06829720` |
-| N-3 Frame Plan の共有 node 描画 + zoom / pan / fit | `dd088c2a` |
-| Q-1b 自動化面の pointer / menu / view_state | `026268ee` |
-| N-5 Studio theme light / dark | `43f032b1` |
-| N-4 自動配置(層配置)とパン | `af6e335f` |
-| AG-3b 観測の Studio 面(値の帯 / Live / Timeline / e2e) | `5d64bd6e` |
-| N-7 パネルの文字を減らす | `5865a6fd` |
-| N-6 配線の制御点と置き場所の永続化 | `fd02e356` |
-| N-8 Frame Plan のノード編集 | `6c71c5af` |
-| Q-2 Studio の応答性(idle polling / parse 1 回 / canvas cache) | `cb76c164` |
-| Q-3 帯の inline editor の focus 規則(窓の瞬きで閉じない) | `9be4113f` |
-| Q-4 project open の固まり(embed の待ち方)/ Frame Plan fill / Frame Plan editor 規則 | `0547c0ac` |
-| scene owner ID の永続化 | `352eea58` |
-| 未保存 scene の終了・project 切替ガード | `35c82db6` |
-| Graph Canvas の基本 Undo/Redo と配置の同時復元 | `df5fb880` |
-| Studio 終了通知の遮断と scenario 異常終了判定 | `b14ba957` |
-| build ごとの runtime 配置・Runtime install・構成 gate 整理 | `f9b4c221` |
-| Graph Canvas の描画・配置組み立ての責務分離 | `6fd3e1f6` |
-| ビルド機能台帳と実装履歴の分離 | `249da0e4` |
-| Release の診断ログと PowerShell runner | `2d4f747d` |
-| 同一 logical frame の再描画時の GPU timing 重複防止 | `48144f66` |
-| Studio scenario の必須化・GPU 分類・構成別 gate | `dd26441b` |
-| 描画 fixture の終了手順と固定 cache hash 検査の整理 | `86d521a2` |
-| viewport resize で受理済みの編集が捨てられる不具合 | `7652fb09` |
-| path tracing の出荷 sample(PT-1a〜1c、camera の viewport 修正) | `77a6fff7` |
-| editor の gate 判定の一本化と型付きの遷移 counter | `c3830d32` |
-| Studio で開いた ray tracing project の起動直後の fatal | `a0e7820d` / `1bed0335` |
-| Studio 終了時の player の空回り | `d8249a3a` |
-| player の project ごとのログ(`--log-file`) | `48d5b3cb` |
-| 公開 frame 数による準備完了・staged 世代の行き先と test seam・Frame Plan dock の問い直し | `90806c80` |
-| 配布確認の repo 化(`run_distribution_check.py`) | `8813ab82` |
-| Studio の fatal テストを project ごとの log に合わせる | `b6863aae` |
-| `RenderCommand` の padding を無くす | `f4ba9913` |
+| AG-0 登録契約と purge | `c9085d6f` |
+| AG-1a pose module | `ee751752` |
+| AG-1b pose graph 経路の parity と排他 | `129eb218` |
+| AG-2 root motion | `37cc55ba` |
+| AG-3a 定義内の値(engine 側) | `32d9a20b` |
+| P-1 パラメータの供給元と由来 | `3611e390` |
+| P-2a-1a anchor 明示と撤去 | `60e95f53` |
+| P-2a-1b Bloom の feature 化 | `6e04c7c8` |
+| P-2a-1c define 化と materialize 後の編集 | `e3a2d3d0` |
+| P-2a-2 runtime 値(`binding: buffer`) | `340f8537` |
+| P-2a-3 + P-2a-4a 共有部品の公開 / graph root の `rendering` 節 | `7e983ed9` |
+| P-2a-4b 出荷 project の graph root | `e1c326c1`(+ Studio hotfix `d69a4226`)|
+| P-2b posegraph_demo と `requires` | `400820f0` |
+| O-1 オフライン出力(`--start-time`) | `fcbe1a98` |
+| X-1 持ち出し(package) | `64eae566` |
+| R1-2 committed marker | `cc95a732` |
+| R-1 撤去 / 維持の表と安い穴 | `96d5e1d8` |
+| N-1 共通グラフの読み取りキャンバス | `edafc41d` |
+| N-1b 見出しとソケット欄 | `6c47a8a4` |
+| N-2 canvas の編集 op | `f2eccbfd` |
+| R-3 サンプル索引と本文書 | `be4c60a4` |
+| Q-1 Studio automation surface | `c026002d` |
+| N-3 Frame Plan の共有 node 描画 + zoom / pan / fit | `d8d7387d` |
+| Q-1b 自動化面の pointer / menu / view_state | `cd9e243f` |
+| N-5 Studio theme light / dark | `6a26eef3` |
+| N-4 自動配置(層配置)とパン | `142a34fc` |
+| AG-3b 観測の Studio 面(値の帯 / Live / Timeline / e2e) | `ce5e96c0` |
+| N-7 パネルの文字を減らす | `434c4534` |
+| N-6 配線の制御点と置き場所の永続化 | `5bd02967` |
+| N-8 Frame Plan のノード編集 | `8e48473f` |
+| Q-2 Studio の応答性(idle polling / parse 1 回 / canvas cache) | `bf2776fc` |
+| Q-3 帯の inline editor の focus 規則(窓の瞬きで閉じない) | `c90fde90` |
+| Q-4 project open の固まり(embed の待ち方)/ Frame Plan fill / Frame Plan editor 規則 | `06787ace` |
+| scene owner ID の永続化 | `efb30dad` |
+| 未保存 scene の終了・project 切替ガード | `e2a5ab7b` |
+| Graph Canvas の基本 Undo/Redo と配置の同時復元 | `0d41aeba` |
+| Studio 終了通知の遮断と scenario 異常終了判定 | `a4bfeec2` |
+| build ごとの runtime 配置・Runtime install・構成 gate 整理 | `be35b7de` |
+| Graph Canvas の描画・配置組み立ての責務分離 | `2d996200` |
+| ビルド機能台帳と実装履歴の分離 | `af9c0b82` |
+| Release の診断ログと PowerShell runner | `0bbcd249` |
+| 同一 logical frame の再描画時の GPU timing 重複防止 | `3d7454b7` |
+| Studio scenario の必須化・GPU 分類・構成別 gate | `86c42502` |
+| 描画 fixture の終了手順と固定 cache hash 検査の整理 | `104b53ec` |
+| viewport resize で受理済みの編集が捨てられる不具合 | `ba82495f` |
+| path tracing の出荷 sample(PT-1a〜1c、camera の viewport 修正) | `05959a0f` |
+| editor の gate 判定の一本化と型付きの遷移 counter | `f9b43662` |
+| Studio で開いた ray tracing project の起動直後の fatal | `7cb39996` / `e5995d88` |
+| Studio 終了時の player の空回り | `62245846` |
+| player の project ごとのログ(`--log-file`) | `a21b28e5` |
+| 公開 frame 数による準備完了・staged 世代の行き先と test seam・Frame Plan dock の問い直し | `f4a5e2cd` |
+| 配布確認の repo 化(`run_distribution_check.py`) | `053b1e0b` |
+| Studio の fatal テストを project ごとの log に合わせる | `777b4824` |
+| `RenderCommand` の padding を無くす | `47cbf3cf` |
 
 ## 6. v0.1.0 tag の手順
 
-2026-09-17 の engine 全数 1947 / 1947（`83645084`）は履歴である。
+2026-09-17 の engine 全数 1947 / 1947（`450f2866`）は履歴である。
 その構成には現在の全 Studio scenario が含まれず、現行 release の gate 通過とは扱わない。
 tag は利用者が v0 を閉じる判断をした時点で付ける。
 
 2026-09-22 のローカル検証は Windows / MSVC、Qt 6.10.3、Python 3.12、Vulkan SDK 1.4.x の
 `build-v0` / Release で実施した。Studio、Python tests、runtime shader compiler は ON。
-CPU / GPU / Studio gate、配布 stage、Debug 専用の確認は、2026-09-24 に `f4ba9913` で行った(Release build、
+CPU / GPU / Studio gate、配布 stage、Debug 専用の確認は、2026-09-24 に `47cbf3cf` で行った(Release build、
 そこから作った Runtime install の `build-v0/stage`、同じ tree の Debug build)。以後の revision で tag を
 付けるときは、その revision で同じ確認をやり直す。
 
 | 確認範囲 | 結果と制約 |
 |---|---|
 | Release build / Runtime install | 成功。install prefix は絶対パスを使用 |
-| CPU gate | 2026-09-24、`f4ba9913`。1,793 件中 1,792 PASS、directory symlink 権限による allowlisted skip 1 件、失敗 0。`build-v0/test_artifacts/v0-cpu-final6/` の CTest と exact SKIP policy が根拠 |
-| 配布 stage の出荷 sample | 2026-09-24、`f4ba9913`。`test/ci/run_distribution_check.py` で 7 / 7。起動・最初の frame を待って capture → 別 project へ切替 → 元の project を再読込・capture → Frame Plan dock が失敗表示で止まっていない → 正常終了を確認。同じ project の open が no-op になる経路ではない。project ごとの player log があり、Studio 終了時に生きていた player の surface lost は 7 本とも 0 回。`build-v0/test_artifacts/distribution/run-20260924-003010-57332/report.json` |
-| 配布 stage の新規 project | 2026-09-24、`f4ba9913`。同じ確認の中で CLI init → 位置編集 → 保存 → 完全終了 → Studio 再起動で authoring ID と保存値の持続、capture、正常終了を確認 |
-| 全 GPU gate | 2026-09-24、`f4ba9913`。275 件中 274 PASS、Debug 専用 WSI の allowlisted skip 1 件、失敗 0。実窓 Studio scenario 10 件はすべて観測・通過し、exact SKIP policy も PASS。`build-v0/test_artifacts/v0-gpu-final6/` が根拠 |
-| Studio CPU gate | 2026-09-24、`f4ba9913`。compiler ON なので空の allowlist で実行し、263 件中 263 PASS、skip 0、exact SKIP policy PASS。`build-v0/test_artifacts/v0-studio-final6/` が根拠 |
-| Debug 専用の確認 | 2026-09-24、`f4ba9913` の Debug build。`wsi_fault_window_player`(注入 6 回・surface 作り直し 5 回・公開 2 回)と `crash_symbol_production_wiring`(Studio の `f4ba9913` の PDB が archive 済み)がどちらも通過 |
+| CPU gate | 2026-09-24、`47cbf3cf`。1,793 件中 1,792 PASS、directory symlink 権限による allowlisted skip 1 件、失敗 0。`build-v0/test_artifacts/v0-cpu-final6/` の CTest と exact SKIP policy が根拠 |
+| 配布 stage の出荷 sample | 2026-09-24、`47cbf3cf`。`test/ci/run_distribution_check.py` で 7 / 7。起動・最初の frame を待って capture → 別 project へ切替 → 元の project を再読込・capture → Frame Plan dock が失敗表示で止まっていない → 正常終了を確認。同じ project の open が no-op になる経路ではない。project ごとの player log があり、Studio 終了時に生きていた player の surface lost は 7 本とも 0 回。`build-v0/test_artifacts/distribution/run-20260924-003010-57332/report.json` |
+| 配布 stage の新規 project | 2026-09-24、`47cbf3cf`。同じ確認の中で CLI init → 位置編集 → 保存 → 完全終了 → Studio 再起動で authoring ID と保存値の持続、capture、正常終了を確認 |
+| 全 GPU gate | 2026-09-24、`47cbf3cf`。275 件中 274 PASS、Debug 専用 WSI の allowlisted skip 1 件、失敗 0。実窓 Studio scenario 10 件はすべて観測・通過し、exact SKIP policy も PASS。`build-v0/test_artifacts/v0-gpu-final6/` が根拠 |
+| Studio CPU gate | 2026-09-24、`47cbf3cf`。compiler ON なので空の allowlist で実行し、263 件中 263 PASS、skip 0、exact SKIP policy PASS。`build-v0/test_artifacts/v0-studio-final6/` が根拠 |
+| Debug 専用の確認 | 2026-09-24、`47cbf3cf` の Debug build。`wsi_fault_window_player`(注入 6 回・surface 作り直し 5 回・公開 2 回)と `crash_symbol_production_wiring`(Studio の `47cbf3cf` の PDB が archive 済み)がどちらも通過 |
 
 GPU gate の経緯: 09-22 初回の失敗 4 件は、Studio への fatal ログ通知、WP366/WP384 の frame publication
 fixture 終了、`physics_trigger_behavior_e2e`、`behavior_project_e2e`(初回ログは `v0-gpu-final/`)。
 修正後の再実行では `studio_scenario_graph_observe_roundtrip` が 1 件失敗した(`v0-gpu-verified/`)。
 Inspector から graph を装着する編集が、受付後の viewport resize で `gate_closed` として捨てられていた。
 resize が render pipeline を再 lowering して reload 状態の `details.generation` を更新し、それが editor の
-遷移 epoch の hash に入っていたためである。`7652fb09` で遷移 epoch を scene、watcher、各 participant の
-reload 結果だけから作るよう修正し、`c3830d32` で gate 判定を 1 つの規則と型付きの counter にまとめた。
+遷移 epoch の hash に入っていたためである。`ba82495f` で遷移 epoch を scene、watcher、各 participant の
+reload 結果だけから作るよう修正し、`f9b43662` で gate 判定を 1 つの規則と型付きの counter にまとめた。
 
-配布確認の経緯: `b798a31f` の配布確認で、Studio から pathtrace_demo を開き直すと player が落ちる不具合が見つかった
-(上の §4.1「Studio で開いた ray tracing project の起動直後」)。`a0e7820d` で直したとき `get_frame_plan` も
+配布確認の経緯: `fc1a6cb5` の配布確認で、Studio から pathtrace_demo を開き直すと player が落ちる不具合が見つかった
+(上の §4.1「Studio で開いた ray tracing project の起動直後」)。`7cb39996` で直したとき `get_frame_plan` も
 公開前の staged な generation を返すように変えたが、公開前の generation を非公開とする WP384 の契約に反し、
-全 GPU gate の WP366/WP384 frame publication test が検出した。`1bed0335` でその部分だけ取り消した。
+全 GPU gate の WP366/WP384 frame publication test が検出した。`e5995d88` でその部分だけ取り消した。
 
-v0 に足した 6 項目(`d8249a3a`〜`8813ab82`)の後、`e5737c87` の確認で 2 件赤が出た。全 GPU gate の `devstudio_engine_failure_test` は player の log を player の横の `pelican.log` と固定しており、project ごとの log へ移した変更と食い違った(`b6863aae` で修正。控えの run が同じファイルを切り詰めることも検査する)。CPU gate の `state_batched_v1` は `RenderCommand` の padding を比べていた(§4.1、`f4ba9913`)。上の表はその後の `f4ba9913` での最終確認である。
+v0 に足した 6 項目(`62245846`〜`053b1e0b`)の後、`50f1fbda` の確認で 2 件赤が出た。全 GPU gate の `devstudio_engine_failure_test` は player の log を player の横の `pelican.log` と固定しており、project ごとの log へ移した変更と食い違った(`777b4824` で修正。控えの run が同じファイルを切り詰めることも検査する)。CPU gate の `state_batched_v1` は `RenderCommand` の padding を比べていた(§4.1、`47cbf3cf`)。上の表はその後の `47cbf3cf` での最終確認である。
 
 1. 対象 revision と構成を固定する。Studio ON、Python 3.11 以上と `PELICAN_PYTHON_TESTS=ON`、runtime shader compiler ON を使う。必要な機能の基準値は [ビルド機能台帳](build_features.md)、実行コマンドは [CI 運用](ci.md) を参照する。
 2. 影響範囲の CPU 回帰と最終 GPU gate を通し、Studio CPU gate と実窓 scenario が未登録・skip になっていないことを確認する。`run_gpu_gate.py --engine-only` は限定検証用であり release 判定には使わない。古い件数を成功条件に固定しない。

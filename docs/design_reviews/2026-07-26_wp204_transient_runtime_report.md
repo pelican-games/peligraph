@@ -73,8 +73,8 @@ attachment内容をrender scope後まで永続化しない契約である。
 
 | commit | 内容 |
 |---|---|
-| `ae0ae67` | materialized/tile-localから独立したtransient候補とautomatic Store lowering |
-| `9d43393` | device/format gate、representation assignment、runtime image allocation、実Vulkan test |
+| `07dba51` | materialized/tile-localから独立したtransient候補とautomatic Store lowering |
+| `0c28269` | device/format gate、representation assignment、runtime image allocation、実Vulkan test |
 
 ## 6. ローカル検証
 

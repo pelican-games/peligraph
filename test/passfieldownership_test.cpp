@@ -840,7 +840,7 @@ TEST_CASE(
                 continue;
             }
 
-            // 9568042^ recorded this exact command for every shipped
+            // 8824e52^ recorded this exact command for every shipped
             // fullscreen pass. WP357 changes only the three entries above.
             CHECK(draw == parent_command);
             REQUIRE_FALSE(

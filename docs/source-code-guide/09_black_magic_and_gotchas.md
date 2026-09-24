@@ -845,7 +845,7 @@ behavior コールバック実行中 / DLL リロード中の追加ゲートは 
 
 受理した編集を commit してよいかの判定は、journal・render config・procedural asset の 3 つの editor が同じ [`EditorGateEpoch`](../../src/core/communication/editorgate.hpp#L18) で行います。gate の観測(開閉・理由・`transition_epoch`)が前回と違えば epoch を進め、受理時の epoch と commit 時の epoch が違えば `gate_closed` です。閉じてから開き直した gate も変化として数えます。
 
-`details` は participant の自己記述で、たとえば window を resize すると render pipeline の再 lowering が `details.generation` を進めます。以前は reload 状態の JSON 全体を hash していたため、受付と frame 境界の間に viewport の大きさが変わるだけで編集が `gate_closed` で捨てられ、v0 の GPU gate で `studio_scenario_graph_observe_roundtrip` が負荷次第で落ちていました(`7652fb09` で応急修正、上の形への一本化で構造ごと解消)。**participant に状態を足すときは、遷移なら `ReloadTransitionFacts` の側、観測値なら `details` の側に置いてください。**
+`details` は participant の自己記述で、たとえば window を resize すると render pipeline の再 lowering が `details.generation` を進めます。以前は reload 状態の JSON 全体を hash していたため、受付と frame 境界の間に viewport の大きさが変わるだけで編集が `gate_closed` で捨てられ、v0 の GPU gate で `studio_scenario_graph_observe_roundtrip` が負荷次第で落ちていました(`ba82495f` で応急修正、上の形への一本化で構造ごと解消)。**participant に状態を足すときは、遷移なら `ReloadTransitionFacts` の側、観測値なら `details` の側に置いてください。**
 
 ### 6. 編集コミットはフレーム境界に 1 点だけ
 
@@ -1264,7 +1264,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: frame が途中で終わったとき、staged な ray tracing の世代を巻き戻すのか残すのか。
 
-**答え**: 記録 object は staged な世代を巻き戻す guard を持ち、frame が途中で失敗すれば巻き戻します。ただし窓の出力にまだ image が無くて frame を飛ばす場合(`OutputTemporarilyUnavailable`)は、GPU の作業も確定もしていないので **guard を外して残します**。ray tracing の起動世代は最初に提出した frame で初めて公開されるので、ここで巻き戻すと公開済みの世代が 1 つも無くなり、次の frame が `Renderer logical frame requires a compiled render pipeline` で落ちます。Studio に埋め込んだ player は shader cache が効くと窓の出力より先に最初の frame が来るので、この経路を実際に通ります(`a0e7820d`)。出力の条件が変わった場合(`OutputRelowerRequired`)は今まで通り巻き戻して作り直します。公開前の世代は非公開のままで、`get_frame_plan` はその間「plan が登録されていない」と答えます(WP384 の契約)。
+**答え**: 記録 object は staged な世代を巻き戻す guard を持ち、frame が途中で失敗すれば巻き戻します。ただし窓の出力にまだ image が無くて frame を飛ばす場合(`OutputTemporarilyUnavailable`)は、GPU の作業も確定もしていないので **guard を外して残します**。ray tracing の起動世代は最初に提出した frame で初めて公開されるので、ここで巻き戻すと公開済みの世代が 1 つも無くなり、次の frame が `Renderer logical frame requires a compiled render pipeline` で落ちます。Studio に埋め込んだ player は shader cache が効くと窓の出力より先に最初の frame が来るので、この経路を実際に通ります(`7cb39996`)。出力の条件が変わった場合(`OutputRelowerRequired`)は今まで通り巻き戻して作り直します。公開前の世代は非公開のままで、`get_frame_plan` はその間「plan が登録されていない」と答えます(WP384 の契約)。
 
 3 つの行き先(公開 / 次の frame へ持ち越し / 巻き戻し)は [`StagedRuntimeRollbackGuard`](../../src/core/vkcore/renderer.cpp#L3040) の上のコメントにまとめてあり、呼び手は `published()` と `keepForNextFrame()` で行き先を名指しします。どちらでもない終わり方は destructor が巻き戻します。この経路はふつう実窓でしか通らないので、GPU テスト「a frame skipped for want of an output image keeps the staged ray-tracing startup generation」は [`RenderTargetTestAccess`](../../test/rendertarget_testaccess.hpp#L14) で次の N frame を「出力に image が無い」にして、2 frame 飛ばしても staged の世代が残り、次の frame が同じ世代を公開することを確かめます。`keepForNextFrame()` を外すと赤になります。
 

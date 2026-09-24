@@ -1,6 +1,6 @@
 # 第10章 ツールリファレンス
 
-対象: pelican2(2026-09-17 時点、HEAD=`990b9eaa`)/ このマニュアルはコードを正とする
+対象: pelican2(2026-09-17 時点、HEAD=`82054c05`)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -299,7 +299,7 @@ selection の硬いエラーは `error.data.code` でも判別できます。宣
 `import_scene_snapshot` の result に `committed` / `effect_errors`、`get_components` の各
 component に `resolution_error`。
 
-2026-09 の追加(AG-3a、`9862ebdd`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L2041)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L168))。読み取り専用で `edit_*` の CAS には乗らない。
+2026-09 の追加(AG-3a、`32d9a20b`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L2041)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L168))。読み取り専用で `edit_*` の CAS には乗らない。
 
 **`get_graph_values` と `get_graph_node_values` は問いが違います。**前者は `instance` 必須で、その
 **instance の入力 port だけ**を `{port, value, source, connected|parameter}` として返します(`source` は
@@ -813,12 +813,12 @@ process/window 結線は WP251、汎用 ID バッファ picking + RPC は WP262�
 WP264、Frame Plan パネルは WP269 で入りました。engine の汎用 gizmo feature/RPC は WP274 で入り、
 Studio の preview lease を使うドラッグ接続は WP275 で入りました。複数 client WebSocket は
 未接続です。起動主体が宣言する editor feature overlay は WP289 で入りました。2026-09 の作業単位は
-記号 ID です: Inspector のグラフ装着と 4 導線は P-1(`b960edf7`)、feature パラメータと materialize は
-P-2a-1c(`9e4081b4`)、graph root の節を読む authoring 面と共有部品の export / import は
-P-2a-4a + P-2a-3(`5100be5f`)、package は X-1(`3f72b71d`)、`get_status.animation` と
-`get_graph_node_values` は AG-3a(`9862ebdd`)、Graph タブは N-1(`2c6828e4`)/ N-1b(`373f62ee`)/
-N-2(`02a3d285`)、自動化面は Q-1(`06829720`)、Frame Plan のノードの見た目と 2 つのキャンバス共通の
-ズーム・パン・fit は N-3(`dd088c2a`)で入りました。ツール自作の入口は
+記号 ID です: Inspector のグラフ装着と 4 導線は P-1(`3611e390`)、feature パラメータと materialize は
+P-2a-1c(`e3a2d3d0`)、graph root の節を読む authoring 面と共有部品の export / import は
+P-2a-4a + P-2a-3(`7e983ed9`)、package は X-1(`64eae566`)、`get_status.animation` と
+`get_graph_node_values` は AG-3a(`32d9a20b`)、Graph タブは N-1(`edafc41d`)/ N-1b(`6c47a8a4`)/
+N-2(`f2eccbfd`)、自動化面は Q-1(`c026002d`)、Frame Plan のノードの見た目と 2 つのキャンバス共通の
+ズーム・パン・fit は N-3(`d8d7387d`)で入りました。ツール自作の入口は
 `pelican_project`、JSON-RPC/`pelican_rpc.py`、ImGui の三つです。
 
 **まだ無いもの(名前で書きます)。**

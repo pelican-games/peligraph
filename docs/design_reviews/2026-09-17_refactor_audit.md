@@ -1,6 +1,6 @@
 # リファクタ監査: 作りが悪い箇所・複雑すぎる箇所の確定リスト
 
-日付: 2026-09-17(source `990b9eaa`)
+日付: 2026-09-17(source `82054c05`)
 入力: 領域別監査 6 体(Opus subagent、読み取り専用)の報告 → [raw](2026-09-17_refactor_audit_raw.md)。
 判定: Fable。実害を伴う主張は本書の §1 に挙げたものを Fable が source を開いて再確認した。
 それ以外の行数・重複行数は各 agent が実測した値で、Fable は追試していない。
@@ -192,7 +192,7 @@ SPIR-V reader は 3 実装(`rtspirvinspection`、`spvlink`、`shadercompiler` �
 ## 6. 段 B 以降の詳細(2026-09-18、利用者の求めに応じて)
 
 各項目は「今の形 → 変える形 → 何で確認するか → リスク → 何が楽になるか」の順。
-行番号は `990b9eaa` 時点。B は挙動不変の機械的差し替えなので独立 commit、C 以降は関連機能を触る WP に同梱する。
+行番号は `82054c05` 時点。B は挙動不変の機械的差し替えなので独立 commit、C 以降は関連機能を触る WP に同梱する。
 
 ### 段 B: 受け皿が既にあるものへの差し替え
 
@@ -485,7 +485,7 @@ material = `materialcontainer.cpp` の screen input 構築、fullscreen = `fulls
 
 積み残し(段 C から D への申し送り): C-2 の sprite / collider / camera、C-8 の `PhysWorld` 内部 overload と `setCamera` の `void`、C-4 の outer `catch(...)` → `out_of_memory` 2 箇所、C-3 / C-6 / C-10 が動かした doclink。
 
-追記(C-10 の GLSL 外出しは取り下げ): `engine://` に置いた 4 行の no-op closest-hit は `engineShaderUniverseSha256()`(`shadercompiler.cpp`、whitelist 拡張子の embedded shader 全部を 1 digest に畳む)に加わり、全 shader cache key を動かして WP364 の frozen parent oracle(`test/fixtures/wp364/parent_baseline.json`、過去 2 回 `9e4081b4` / `62f09ce0` で再凍結)を再び再凍結させる。4 行の literal のためにその費用は払わないと裁定し、GLSL は `computetaskcontainer.cpp` 内に戻した(理由の comment 付き)。副産物の指摘: whitelist は `.rint` / `.rcall` を含まないので、intersection / callable の embedded source を編集しても cache key が動かない(hit 系は全部動く)。別の小 item。
+追記(C-10 の GLSL 外出しは取り下げ): `engine://` に置いた 4 行の no-op closest-hit は `engineShaderUniverseSha256()`(`shadercompiler.cpp`、whitelist 拡張子の embedded shader 全部を 1 digest に畳む)に加わり、全 shader cache key を動かして WP364 の frozen parent oracle(`test/fixtures/wp364/parent_baseline.json`、過去 2 回 `e3a2d3d0` / `340f8537` で再凍結)を再び再凍結させる。4 行の literal のためにその費用は払わないと裁定し、GLSL は `computetaskcontainer.cpp` 内に戻した(理由の comment 付き)。副産物の指摘: whitelist は `.rint` / `.rcall` を含まないので、intersection / callable の embedded source を編集しても cache key が動かない(hit 系は全部動く)。別の小 item。
 
 ## 11. 段 D 第 1 波の実施記録(2026-09-19)
 
@@ -545,6 +545,6 @@ C-2 の設計調査(phase 1)の結論: camera は宣言経路に載せても lea
 | item | 変更 | 備考 |
 |---|---|---|
 | `RenderTargetFrameSelector`(§12 で打ち止め) | 名前を `RenderTargetRead` にして入れた(`src/core/renderingpass/rendertargetread.hpp`)。`bool history_read` と `frame_index` の組を 1 つの値にし、`...ForFrame` の重複 5 組を削除。`surfaceIndex(id, RenderTargetRead)` が「読みたい面」を index にする唯一の場所になった。frame 無しは container の history frame、frame 付きは `frame & 1` の parity という 2 つの式はそのまま残す。`RenderTargetImageViewResolver`、`passInputCubeImageView`、compute task、layout tracker の内部呼び出し、golden harness も同じ型に | 当時 123 と数えた call site は、実際に変わったのは約 35 + container 内の委譲 7。旧 `getImageSubresourceView`(frame 無し)は `(history_frame_index & 1) ^ prev` だったのが `history_frame_index ^ prev` になるが、`history_frame_index` は 0 か 1 しか取らない(代入は `= 0` と `^= 1u` だけ)ので同値。layout tracker の公開 API(bool だけで frame を持たない)と `ResolvedPassInput{history, parity}`(data record。既定値の意味が変わる)は残置 |
-| GPU へ raw bytes で上げる型の padding | `RenderCommand` の padding(`f4ba9913`)と同じ穴を探した。GPU 行き / byte hash の型 33 種のうち暗黙 padding を持つものは今は無い。検査の無かった 9 種(light の 3 record、`CommonSkinningVertStruct`、`DeformationJob`、`DebugDrawVertex`、`DebugTextVertex`、`GizmoVertex`、`sprite::GpuVertex`)に「sizeof = member の合計」の `static_assert` を足した。`GizmoVertex` に field を 1 つ足すと build が落ちることを確認 | `has_unique_object_representations` は float を含む型で常に false なので使えない(`RenderCommand` は float を持たないので使える)。`RayTracingGeometrySnapshotRow` は enum の後に 7 byte の暗黙 padding があるが、hash は field ごとなので影響なし |
+| GPU へ raw bytes で上げる型の padding | `RenderCommand` の padding(`47cbf3cf`)と同じ穴を探した。GPU 行き / byte hash の型 33 種のうち暗黙 padding を持つものは今は無い。検査の無かった 9 種(light の 3 record、`CommonSkinningVertStruct`、`DeformationJob`、`DebugDrawVertex`、`DebugTextVertex`、`GizmoVertex`、`sprite::GpuVertex`)に「sizeof = member の合計」の `static_assert` を足した。`GizmoVertex` に field を 1 つ足すと build が落ちることを確認 | `has_unique_object_representations` は float を含む型で常に false なので使えない(`RenderCommand` は float を持たないので使える)。`RayTracingGeometrySnapshotRow` は enum の後に 7 byte の暗黙 padding があるが、hash は field ごとなので影響なし |
 | animation の `AssetTable` | 入れない。§12 の実測どおり、24 関数のうち 9 が既に他の部品をまたぎ、表を外に出しても読み手は移らない。不変条件の無い表に public accessor が 9 本増えるだけで、継ぎ目が悪くなる | 理由は `animationservice.cpp` の `Impl` の上のコメント |
 | camera codec の宣言 schema 化 | v0 には入れない。公開 SDK header の schema DSL(game DLL が構築する)に nested struct 種別を足すことになり、provider fingerprint が動いて保存済み journal / witness の replay が不一致になる。得られるのは `cloneCameraPath` と 8 組の copy table の削除だけ | v1 で起票するなら §13 の (a)(b) の 2 半分 |

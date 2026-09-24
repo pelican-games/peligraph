@@ -2,7 +2,7 @@
 
 日付: 2026-07-18
 
-対象: `docs/design_editor_tooling.md` v2.5 (`7debf1c`)
+対象: `docs/design_editor_tooling.md` v2.5 (`f1a85e0`)
 
 前回: `docs/design_reviews/2026-07-18_editor_v24_rereview_codex.md`
 
@@ -34,7 +34,7 @@ E-RPC1/JOURNAL0、E-HOST0、WATCH0、PREVIEW0 は登録可。SNAPSHOT0 も
 v2.4 レビューは、V22-C1〜C7 と snapshot 必須修正の逐語 8 block を
 Accept 済みである
 (`docs/design_reviews/2026-07-18_editor_v24_rereview_codex.md:38-56`)。
-v2.4 (`6b23a63`) から v2.5 (`7debf1c`) の差分を確認すると、当該 block は
+v2.4 (`aa95fa5`) から v2.5 (`f1a85e0`) の差分を確認すると、当該 block は
 変更されていない。現行の所在は次の通りである。
 
 | 既受理条件 | v2.5 の所在 | 判定 |

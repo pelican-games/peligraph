@@ -1,6 +1,6 @@
 # 色 v4 / UI v7 再審査 (round 4)
 
-対象: commit `974b924`。
+対象: commit `4f1cf8c`。
 
 ## 冒頭判定
 

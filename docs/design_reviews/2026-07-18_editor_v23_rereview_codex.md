@@ -4,7 +4,7 @@
 
 対象: `docs/design_editor_tooling.md` v2.3 の §1-4 / §1-5 / §1-6 / §3
 
-根拠ツリー: `agent/review-v23` (`da60b99`)
+根拠ツリー: `agent/review-v23` (`bd831ac`)
 
 ## 0. 結論
 

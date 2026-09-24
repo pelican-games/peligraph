@@ -25,7 +25,7 @@ FullscreenDrawCommand fullscreenDrawCommand(
         raster_state->topology ==
             RasterPrimitiveTopology::triangle_list;
 
-    // 9568042^ recorded {6,1,0,0} for every fullscreen pass. Only an
+    // 8824e52^ recorded {6,1,0,0} for every fullscreen pass. Only an
     // explicitly blended engine oversized triangle may narrow that command
     // to three vertices. The parser rejects an authored non-triangle-list
     // engine pass, while this condition keeps programmatic definitions on the

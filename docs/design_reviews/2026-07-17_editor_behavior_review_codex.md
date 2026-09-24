@@ -1,7 +1,7 @@
 # 編集系 RPC / エンジン内ツール v1 + object behavior v1 敵対レビュー
 
 日付: 2026-07-18  
-対象 commit: `33e5eca73d50bb4c6052ed5b7d0bdd6532ef94c2`  
+対象 commit: `bb0f884c590003c295ca60ff2a158f492159635b`  
 対象: `docs/design_editor_tooling.md` v1、`docs/design_object_behaviors.md` v1  
 方法: 文書と現行 C++ の静的照合。依頼どおりビルド・実行は行っていない。
 

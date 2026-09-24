@@ -1193,16 +1193,16 @@ complete raw physical planの公開形式はこの後回しリストから外し
 実行まで到達した(リストに残るのはそのgame-DLL ABIである)。`PassInfo`の未知custom pass kind
 ABIは外していない。
 
-- 技法ごとにengine中央のpass kindを増やす構造は、WP238b(`22840ef`)がbackend非依存の
+- 技法ごとにengine中央のpass kindを増やす構造は、WP238b(`c64c5fc`)がbackend非依存の
   `RasterPassContract`とauthoring kind `type: "raster"`として解消した。engine中央enumへ
   技法名を足す代わりに、open/versionedなimplementation IDを持つalgorithmが有限のoperationを
   生成し、backendはoperationだけをloweringする。ただし`PassInfo`自体は今もclosed variantで、
   `makePassInfo`は未知の`type`文字列をrejectする。未知pass kindの登録ABIと、direct draw以外の
   operation variant(indexed / indirect / mesh・task / custom vertex stream)は上のリストへ残る。
-- complete raw physical planはWP238c(`357d301`)が
+- complete raw physical planはWP238c(`974f8e6`)が
   `pelican.vulkan_complete_physical_plan` version 1として公開形式を固定し、
   eject / parse / fingerprint / strict same-layer verifierまで実装した。
-- `NativeScope`はWP238cのdata-only宣言に続き、WP238d(`5a4f95e`)が
+- `NativeScope`はWP238cのdata-only宣言に続き、WP238d(`ef76292`)が
   source-level executor provider registry、owner/generation code lease、prepare/rollback、
   typed runtime resource facade、renderer-generation retirementまで接続した。WP238eは
   さらにdefault compilerが保持する正確なlogical / device verification contextからの

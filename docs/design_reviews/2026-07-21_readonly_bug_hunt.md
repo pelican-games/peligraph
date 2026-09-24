@@ -2,7 +2,7 @@
 
 日付: 2026-07-21
 
-対象: branch `codex/rendering-phase1-refactor` / 基準コミット `5c3d38b`
+対象: branch `codex/rendering-phase1-refactor` / 基準コミット `1259d68`
 
 ## 手法
 

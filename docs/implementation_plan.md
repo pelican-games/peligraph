@@ -1,6 +1,6 @@
 # 実装指示書(コーディングエージェント向け)
 
-> **再開入口 (2026-09-22):** 最初に [v0 の凍結・再検証一覧](v0_freeze.md) と [v1 の現況・残件・開発運用](v1_development_plan.md) を読み、対象WPの仕様だけ確認する。本書末尾「未了項目と再開順」は日付付きの履歴を含み、最新の未完了リストではない。RT・Studio基盤は `96d9cb7e` に統合し、その後の追加は現況へ記録する。旧履歴の未commit・再開順を現在の状態として扱わない。v1 は RT 機能を十分に完成させ、最新の graphics pipeline をノードで操作・観測・学習できるものとし、RT3〜RT7 を小さなゲームの最小要件だけで削らない。
+> **再開入口 (2026-09-22):** 最初に [v0 の凍結・再検証一覧](v0_freeze.md) と [v1 の現況・残件・開発運用](v1_development_plan.md) を読み、対象WPの仕様だけ確認する。本書末尾「未了項目と再開順」は日付付きの履歴を含み、最新の未完了リストではない。RT・Studio基盤は `cb5c4c26` に統合し、その後の追加は現況へ記録する。旧履歴の未commit・再開順を現在の状態として扱わない。v1 は RT 機能を十分に完成させ、最新の graphics pipeline をノードで操作・観測・学習できるものとし、RT3〜RT7 を小さなゲームの最小要件だけで削らない。
 
 > 本書はWP仕様・共通規則と、その変更・検証履歴を扱う。以前に移動した完了WPは [implementation_archive.md](implementation_archive.md) を参照。どちらの履歴も新たな作業指示ではない。現行の対象が必要とする節だけ読み、全履歴を再審議しない。
 
@@ -449,10 +449,10 @@ retirementを同時にgateした。詳細は
 
 | 失敗テスト | 原因コミット | 直前の緑を確認したコミット | 所有 WP |
 |---|---|---|---|
-| fixed spatial upscale carries render/output extents and per-input sampling | `d1c8081` | `5a4f95e` | WP239a |
-| dependency-safe physical scopes reorder and fuse real Vulkan rendering | `d1c8081` | `5a4f95e` | WP239a |
-| hybrid_v1 preset registers and renders a headless frame | `79dca25` | `5ba40c7` | WP239b |
-| planar reflection executes a clipped secondary view family on the GPU | `272ea14` | `369ae47` | WP239c |
+| fixed spatial upscale carries render/output extents and per-input sampling | `6dcdb8c` | `ef76292` | WP239a |
+| dependency-safe physical scopes reorder and fuse real Vulkan rendering | `6dcdb8c` | `ef76292` | WP239a |
+| hybrid_v1 preset registers and renders a headless frame | `7ebe71d` | `78b940e` | WP239b |
+| planar reflection executes a clipped secondary view family on the GPU | `aa47ccc` | `d46e7b1` | WP239c |
 
 **この 4 件が長期間放置された理由を WP の一部として扱う**。CI0 の CPU gate は
 `ctest -LE gpu`（[`ci.md`](ci.md)）なので `gpu` ラベルは常設の回帰網に入っていない。
@@ -472,14 +472,14 @@ Python を PATH に置いていない環境では SPIRV-Tools の configure が�
 
 **完了結果（2026-07-31）**:
 
-- WP239a は `4c1c88c`、WP239b は `9a8b7de`、WP239c は `70d0e51` で修正した。
+- WP239a は `1a38ed9`、WP239b は `d868795`、WP239c は `1d31b69` で修正した。
 - 4 件の直接再現テストは全て緑。
 - 最新 configure/build 後の `ctest -C Debug -LE gpu` は **942 / 942 passed**
   （環境依存 1 skipped）、`ctest -C Debug -L gpu` は **121 / 121 passed**
   （既知 4 skipped、実時間 402 秒）。
 - 全 CPU gate で、SPIR-V link の stage 別 export 漏れと directional shadow の古い
-  `shared_2d` 期待値も検出した。前者は `be67a6f` で実装修正し、後者は
-  `1a938ba` で `family_array` 契約へ更新した。
+  `shared_2d` 期待値も検出した。前者は `721a6a8` で実装修正し、後者は
+  `1f8fc7e` で `family_array` 契約へ更新した。
 - WP239b の判定は
   [`2026-07-31_wp239b_family_array_binding_report.md`](design_reviews/2026-07-31_wp239b_family_array_binding_report.md)、
   WP239c の判定は
@@ -488,7 +488,7 @@ Python を PATH に置いていない環境では SPIRV-Tools の configure が�
 
 ### WP239a: complete-plan verification context の reload 回帰
 
-**目的**: `d1c8081`（WP238e）が追加した verification context 検証が、通常の
+**目的**: `6dcdb8c`（WP238e）が追加した verification context 検証が、通常の
 rendering pipeline reload を全面的に拒否している。これを解消し、WP238e が守ろうとした
 「complete physical plan の検証入力は実 device facts と一致する」という保証は維持する。
 
@@ -507,7 +507,7 @@ render pipeline reload failed: ...（同文）
    （`headless_render_test.cpp:2723` と `:3641`）。
 2. throw 元は `vulkanrendercompilerprogram.cpp` の verification context 検証ループ
    （`physical.target_plan_compilation.verification_contexts` を回す箇所）。
-3. `d1c8081` は `renderingsamplecount.cpp` の `compileRenderingTargetPlans()` で
+3. `6dcdb8c` は `renderingsamplecount.cpp` の `compileRenderingTargetPlans()` で
    `topology` と `format_capabilities` を非 const 化して verification context へ
    `std::move` するよう変えている。
 4. `targetrenderplanning_test` の CPU verifier 群は緑。**CPU テストは reload 経路を
@@ -531,14 +531,14 @@ render pipeline reload failed: ...（同文）
 - `ctest -C Debug -L gpu` が全数緑（4 skipped は Vulkan 非依存の既存 SKIP のみ）
 - `ctest -C Debug -LE gpu` が緑
 - verification context 検証の失敗が、8 条件それぞれ別のメッセージで名指しされる
-- reload 経路を通る CPU テストが追加され、`d1c8081` を revert すると赤になる
+- reload 経路を通る CPU テストが追加され、`6dcdb8c` を revert すると赤になる
 - `git diff --check` クリーン
 
 依存: なし。見積: 中。**HEAD が壊れている状態なので最優先**。
 
 ### WP239b: hybrid_v1 の screen input view-family binding 回帰
 
-**目的**: `79dca25`（producer view-family arrays）以降、hybrid_v1 preset の material
+**目的**: `7ebe71d`（producer view-family arrays）以降、hybrid_v1 preset の material
 screen input が期待と別の image view に束縛されている。正しい束縛先を決定し、実装か
 テストのどちらが陳腐化しているかを判定して閉じる。
 
@@ -554,7 +554,7 @@ with expansion:
 **確定している事実**:
 
 1. **要素数は両辺とも 1 で、中身の image view が別物**。配列長の問題ではない。
-2. `79dca25` は shadow map を producer view-family array としてモデル化し、
+2. `7ebe71d` は shadow map を producer view-family array としてモデル化し、
    `materialcontainer.cpp` / `materialscreeninput.{cpp,hpp}` / `shaderresourceinterface.cpp`
    / `render_pass_executor.cpp` を同時に変えている。
 3. テストは family 非依存の `RenderTargetContainer::getImageView(shadow_map)` を期待値に
@@ -580,7 +580,7 @@ with expansion:
 
 ### WP239c: planar reflection resource port の image-view ABI 回帰
 
-**目的**: `272ea14`（WP232、mip 越し planar reflection filter）が
+**目的**: `aa47ccc`（WP232、mip 越し planar reflection filter）が
 `materialcontainer.cpp` に追加した image-view ABI 一致検査が、planar reflection の
 golden GPU ケースを拒否している。ABI 検査と feature 側の宣言のどちらが正かを決めて閉じる。
 
@@ -593,8 +593,8 @@ pass 'planar_reflection_forward_transparent'
 
 **確定している事実**:
 
-1. `272ea14` の直前（`369ae47`）では同テストが緑。
-2. このエラー文言を導入したコミットは `272ea14` ただ 1 つ。
+1. `aa47ccc` の直前（`d46e7b1`）では同テストが緑。
+2. このエラー文言を導入したコミットは `aa47ccc` ただ 1 つ。
 3. 対象は transparent 側の pass（`planar_reflection_forward_transparent`）。
    WP228 が入れた planar transparent capture との組み合わせで出ている。
 
@@ -839,7 +839,7 @@ hybrid_v1 の `forward_transparent` が空のままなのはこれが直接原�
 - glTF material producer を `lowerGltfMaterial` → `applyLoweredMaterialForRoute` へ収束した。
   `alphaMode` / `alphaCutoff` / `doubleSided` は `gltf.cpp` の個別分岐ではなく、
   `{opaque,mask,blend}_{single,double}` の routing から得る。これは
-  `4fa1586` として実装範囲 1 だけを先行コミットした。
+  `6ac48d4` として実装範囲 1 だけを先行コミットした。
 - `asset_data.json` を `pelican.asset_data` strict v1 とし、path-only の `materials[]` を追加した。
   runtime owner が surface parse、material lowering、shader compile、GPU material/variant 登録を行い、
   engine/project texture resolver と values/texture reload を既存の監視経路へ接続する。
@@ -865,7 +865,7 @@ hybrid_v1 の `forward_transparent` が空のままなのはこれが直接原�
 
 **完了（2026-08-01）**。実装境界、原因、検証結果は
 [`design_reviews/2026-08-01_wp241_skip_failures_report.md`](design_reviews/2026-08-01_wp241_skip_failures_report.md)
-を正とする。実装範囲1は独立コミット `b623fe3` として先行し、隠れていた2系統の
+を正とする。実装範囲1は独立コミット `f91ab28` として先行し、隠れていた2系統の
 例外が4件すべてで実際の失敗になることを確認してからfixtureを修正した。
 
 **目的**: `gpu` ラベルの 4 件が、engine の fail-fast エラーを握り潰して `SKIP` として
@@ -926,7 +926,7 @@ WP240 系列(preset 既定化 → 背景と環境光 → project 空間 material
 需要順の不足リスト 4 位・5 位にあたる。どちらも「**詰む**」判定である。
 「部屋に電球を何個か置いて影を落とす」という最も普通の要求で、この 2 つに同時にぶつかる。
 
-**確定している事実(2026-07-31、`93cf13b` で確認)**:
+**確定している事実(2026-07-31、`dff6436` で確認)**:
 
 1. **影を落とせるのは inventory index 0 のライト 1 灯だけ。** 判定は 2 箇所に
    独立して書かれている。forward は `pelican_lighting_v1.glsl` の `pelican_shadow()`
@@ -3269,18 +3269,18 @@ Pelican fatal error : material route 'forward_transparent' with shader contract
 'forward_scene_color_v1' has no compatible registered material pass
 ```
 
-**最初の不良コミットは `4fa1586`(2026-07-31)**「feat(material): converge glTF through material lowering」。
-親 `dd18ae6` は正常で、両方を実際にビルドして確認済み。約 100 コミット前であり、
+**最初の不良コミットは `6ac48d4`(2026-07-31)**「feat(material): converge glTF through material lowering」。
+親 `556c354` は正常で、両方を実際にビルドして確認済み。約 100 コミット前であり、
 レイトレ系および devstudio 系のコミットは無関係。
 
 **引き金は `assets/models/AliciaSolid.vrm`** — このプロジェクトで
-`alphaMode: BLEND` を含む唯一のアセット。4fa1586 が glTF/VRM のマテリアルを
+`alphaMode: BLEND` を含む唯一のアセット。6ac48d4 が glTF/VRM のマテリアルを
 semantic material lowering に通すようにしたため、BLEND が
 `engine://surfaces/openpbr/blend_double.surface` に写り、
 `render_state.blend != opaque` から `MaterialRouteClass::forward_transparent` に分類され、
 `MaterialPassContract::forward_transparent_v1` を要求する。
 `projects/example/passes/main_rendering_config.json` は透過フォワードパスを宣言していない
-(このファイルは 2026-07-12 から未変更。**設定は前から不完全で、4fa1586 が初めて問うた**)。
+(このファイルは 2026-07-12 から未変更。**設定は前から不完全で、6ac48d4 が初めて問うた**)。
 
 **注意**: `materials/depth_fade.material.json` と `refract.material.json` は引き金では**ない**。
 両方削除しても同じエラーになることを確認済み。
@@ -3805,7 +3805,7 @@ rpc で `scene_tree` → `pick_object` → `set_gizmo` → `render_frame` → `c
 
 #### 受け入れ条件
 
-- **修正前の `projects/example`(4fa1586〜d3c378a の状態)でこの層が落ちること**を確認すること。
+- **修正前の `projects/example`(6ac48d4〜db5df3b の状態)でこの層が落ちること**を確認すること。
   確認方法を報告に書くこと。落ちないなら 9 日間の欠陥を捕まえられない
 - **`animgraph_demo` の UI マーカーを外した状態で落ちること**を確認すること。
   今の「一様でない」判定より強いことの確認である
@@ -4608,7 +4608,7 @@ example で「feature を 1 つ切る」と消えるのは UI パスだけで、
 
 ## WP301〜303 の敵対レビューで出た追補(WP308〜WP311)
 
-2026-08-16、マージ済みの `2a86029` / `a22132b` / `d7bd6a5` に対して
+2026-08-16、マージ済みの `af2218c` / `60e32c1` / `b7f08fb` に対して
 **別モデル(codex)による敵対レビュー**を掛けた。3 本すべてで実害のある指摘が出た。
 
 **共通する見落としの方向**: Claude 側の検証は「テストが噛むか」を**一箇所でしか確かめていなかった**。
@@ -4635,7 +4635,7 @@ WP301 はヘルパを無効化して落ちることは確かめたが、**本番
 **5 件のうち 4 件は今日より前から落ちていた。**
 321 / 334 / 350 / 356 はすべて `test/viewfamily_test.cpp` にあり、
 このファイルは WP301〜303 が**触っていない**
-(`git diff --name-only 65ea95c..HEAD` に現れない)。
+(`git diff --name-only 2a2660a..HEAD` に現れない)。
 そして `grep -c PELICAN_WITH_OPENXR test/viewfamily_test.cpp` は **0**。
 
 **つまり OpenXR OFF 構成は誰もビルドしておらず、腐っていた。**
@@ -5993,7 +5993,7 @@ canonical port order と variant 予算が要る。
 (`b_embed` で生ソースだけ埋め込み、`embed_shader` に無い)。
 **生成 include を使うシェーダーは、そもそも焼かれていない。**
 
-#### 実験(ブランチ `exp/unbake`、コミット `f4f5f14`)
+#### 実験(ブランチ `exp/unbake`、コミット `b1ffc81`)
 
 `ssao_blur.frag` について:
 
@@ -7080,7 +7080,7 @@ attachment と transfer は既に推論されている。
 **既にできていること(レビューの「触れない」は過大):**
 
 - 許可鍵に `features` があり、preset 解決は feature 適用より**前**に走るので、
-  **feature 経由で preset のパスへ加算的に届く**(commit 83d9c52 で出荷済み)
+  **feature 経由で preset のパスへ加算的に届く**(commit e9481a8 で出荷済み)
 - `render_target_overrides` は preset 供給の render target の
   `format` / `usage` / `format_candidates` / `width` / `height` を**上書き代入する**
 
@@ -8552,7 +8552,7 @@ studio 側の判定の変更(本 WP は情報を運ぶところまで)。
 
 ### WP326: WP324 がエンジンの検証を 3 箇所で弱めた(最優先)
 
-**WP324(`0980ad6`)のマージ後の敵対レビューで確認。**
+**WP324(`2172a99`)のマージ後の敵対レビューで確認。**
 `renderingpassvalidation.cpp` から 127 行を削って評価器へ委譲したが、**等価になっていない。**
 出荷中の宣言はすべて通る(23 JSON・63 パスを再パースして違反 0 件を確認済み)が、
 **以前は拒否されていた入力が受理されるようになった。**
@@ -8598,7 +8598,7 @@ buffer 定義側に予約名の検査は無い。
 
 #### 受け入れ条件(§4 規約 10)
 
-- **後退 1〜3 それぞれについて、`0980ad6^`(WP324 前)が拒否し `0980ad6` が受理する
+- **後退 1〜3 それぞれについて、`2172a99^`(WP324 前)が拒否し `2172a99` が受理する
   具体的な JSON を、テストの中で実際にパースして拒否されること。**
   同じテストの中で、**正当な近傍**(`@history` を付けた material 入力、
   `swapchain` でない buffer 名、正しい形の fullscreen)が受理されることを検査すること
@@ -8698,7 +8698,7 @@ core とフォームが共に不当になること**、および解決された�
 4. **公開低水準 API が旧版より弱いまま。**
    `parseDepthOutputTargetFromJson` / `parseInputTargetsFromJson` /
    `parseInputResourcesFromJson` に `"swapchain"` を直接渡すと、
-   `0980ad6^` は名前付きエラーで拒否したが現在は特別 ID を返す。
+   `2172a99^` は名前付きエラーで拒否したが現在は特別 ID を返す。
 5. **出荷コーパステストが shape 終端を通っていない**(resolve/compile で止まる)。
 6. **複合不正 JSON の診断順序が変わった**(解決前に shape 検証するため、
    より局所的な「存在しない名前」が隠れる)。
@@ -8796,7 +8796,7 @@ core とフォームが共に不当になること**、および解決された�
 - **生 JSON から `PassShapeValidatedConfig` を構築できないことを、
   実行時ではなく `static_assert` または `try_compile` で示すこと**
 - **公開低水準 API に `"swapchain"` を直接渡したときの挙動が、
-  `0980ad6^` と同じ名前付きエラーであること**(または当該 API が到達不能になっていること)
+  `2172a99^` と同じ名前付きエラーであること**(または当該 API が到達不能になっていること)
 - **診断段階が仕様どおりであること。**複合不正 JSON について、
   どの段階のどの error code が出るかを固定すること
 - **構成マトリクスを明示すること。**
@@ -9069,7 +9069,7 @@ if 連鎖がそれを歩き、配列がその名前を投影する形にする�
 
 ### WP332: カタログの嘘と、no-op でない no-op を直す
 
-**WP331(`07dff76`)のマージ後のコードレビューで確認。**
+**WP331(`3fc80c7`)のマージ後のコードレビューで確認。**
 **§4 規則 11 の中段**(`pelican_project` と複数経路)。**仕様レビューは省き、コードレビューのみ。**
 
 レビューは 7 件を挙げたが、**直すのは 2 件と、既に記録済みの宿題 1 件である。**
@@ -9617,7 +9617,7 @@ materialization reason が `arbitrary` の resource 数を 16 で固定してい
 **次は「条件付きソケットの表現」。**それが決まるまで `fullscreen.frag` は動かせない。
 
 
-### WP338: `engine://ssao` を生成 include へ移す【マージ済み `1b20452`】
+### WP338: `engine://ssao` を生成 include へ移す【マージ済み `32fc7ae`】
 
 **設計は第 5 版の `### 完了までの順序` 段階 A・B。**
 
@@ -9681,7 +9681,7 @@ RenderTargetReadback readRenderTargetForTesting(
 `embed_shader(ssao.frag)` を外し、`engineresources.cpp` の `.spv` 登録 2 行と
 `test/fixtures/project_format/engine_resources.json` の 1 行を追随させる。
 
-**実験で確認済み**(ブランチ `exp/unbake` / コミット `f4f5f14`)——
+**実験で確認済み**(ブランチ `exp/unbake` / コミット `b1ffc81`)——
 `ssao_blur.frag` で同じ手順が configure / build / 1137 件緑を通った。
 
 **3. 生成 include の accessor へ移す**
@@ -9767,7 +9767,7 @@ OFF 対応を作るのは WP211(dist-bake)であり、完了の前提ではな�
 
 ### WP339: `engine://ssao_blur` を生成 include へ移す(第 4 版)
 
-**設計は第 5 版の `### 完了までの順序` 段階 A・B。WP338(`1b20452`)の続き。**
+**設計は第 5 版の `### 完了までの順序` 段階 A・B。WP338(`32fc7ae`)の続き。**
 
 **§4 規則 11 の上段。仕様 + コード。**
 
@@ -10090,7 +10090,7 @@ array かどうかを決めるのは `resolveShaderResourceImageViewDimension` �
 - **`1.0 / vec2(pelican_size_<port>())` という形は新しくない** ——
   出荷中の `standard_prefilter.comp` が既に踏んでいる(しかも `view: family_array`)。
   **新しいのは graphics(fragment)パスで踏むことである**
-- **`agent/wp336`(未マージ、`31f0971`)は同じ `ssao_blur.frag` に
+- **`agent/wp336`(未マージ、`556abc0`)は同じ `ssao_blur.frag` に
   `//! pelican.fullscreen v1` ヘッダを載せ、ソケット名 `ssaoInput` を宣言している。**
   本 WP はその宣言を削除し、名前を JSON 側の port 名へ移す。
   **WP336 を後で畳むときは前提を読み直すこと。本 WP は WP336 に依存しない**
@@ -10119,7 +10119,7 @@ positional fallback を足す / binding allocator と descriptor writer の変�
 
 **ただし `ssao.frag` は WP338 で既に同じ状態にある**(生成 include を使い、
 `pelican_sample_world(offset.xy, ...)` で再投影座標を読む)。
-**したがってこの経路は `1b20452` の時点で main に入っている。本 WP は 1 本広げるだけである。**
+**したがってこの経路は `32fc7ae` の時点で main に入っている。本 WP は 1 本広げるだけである。**
 
 **`access: "sampled"` はこれを止めない** ——
 `local_reads[input]` が立てば port の `access` を読まずに input attachment に落ちる
@@ -10155,11 +10155,11 @@ src/core/resources/taa_resolve.frag:19,33
 (`vulkanrendercompilerprogram.cpp:54-60`)。
 **その一覧を一般化するか別の stem を足した瞬間に、`ssao_blur` と同じ壊れ方をする。段階 B の残作業。**
 
-依存: WP338(マージ済み `1b20452`)。見積: 中。
+依存: WP338(マージ済み `32fc7ae`)。見積: 中。
 
 ---
 
-#### コードレビュー(codex、`f4ae961` 直後)の仕分け
+#### コードレビュー(codex、`1a7c9e6` 直後)の仕分け
 
 **受理不可 6 件。うち 2 件は Claude 側で算術を再現して確認した。**
 
@@ -10264,7 +10264,7 @@ sampled 化は `gbuffer_normal` / `gbuffer_worldpos`(WP338)と `ssao_output`(WP3
 
 **B2 は footprint の宣言場所を 3 → 4 に増やす。**
 そして **B2 が値を差し込む地点(`frameplanner.cpp:753` の直前)は
-`agent/wp336`(`31f0971`)が既に占有している** ——
+`agent/wp336`(`556abc0`)が既に占有している** ——
 同ブランチの diff は `@@ -747,9 +826,43 @@ parseRenderNodeFromJson` を触っている。
 
 **さらに B1/B2 が塞ぐのは 2 枚の扉のうち 1 枚の一部だけである** ——
@@ -10518,7 +10518,7 @@ Blender のグループノードと同じ形である。
 
 **1. この機能は一度作られて、削除されている。**
 
-`a460471`(2026-08-18、「view a target and its immediate neighbourhood instead of the whole graph」)が
+`0eed655`(2026-08-18、「view a target and its immediate neighbourhood instead of the whole graph」)が
 `GroupDefinition` / `VisibleEntity` / `discoverGroups()` / `entityPath()` / `addEntityLabel()` を
 丸ごと落とした。**残骸が残っている:**
 
@@ -10701,7 +10701,7 @@ provenance でグループを作ると**1 個の overlay が 2 グループに�
 依存: 無し。見積: 中。
 ---
 
-#### コードレビュー(codex、`f045358` 直後)の仕分け
+#### コードレビュー(codex、`d96c40e` 直後)の仕分け
 
 **判定 Reject。実害 5 件 + テストの偽陰性 2 件。全部直す(WP341a)。**
 **production は studio 内で閉じたまま。**
@@ -10759,7 +10759,7 @@ BFS に上限も打ち切りも無く、自己ループ・孤立ノード・外�
   1 item をグループへ畳み、ラベルは全メンバ数を表示する。**
   中へ入ると subtree 外だった全メンバへ表示が広がる。
   **WP341 がこの挙動を明記していなかった。仕様として受け入れる**
-  (subtree 表示は「対象の近傍を見せる」`a460471` の意図であり、
+  (subtree 表示は「対象の近傍を見せる」`0eed655` の意図であり、
   グループはその外側のメンバも持つのが正しい)
 - `resetGraph()` は RPC の切断・再接続・failure から呼ばれるので、
   **その経路でドラッグ位置が失われる。**WP341 が明示的に要求した挙動である
@@ -10880,15 +10880,15 @@ WP341 の「凸でないグループは畳まず理由を出す」がそのま�
 subgraph replacement の provider を書く動機がそこで初めて立つ。**
 `for` はその provider として実装される。
 
-依存: WP341(マージ済み `f045358` / `a341fc2`)。見積: 小〜中。
+依存: WP341(マージ済み `d96c40e` / `895ffa1`)。見積: 小〜中。
 ---
 
-#### コードレビュー(codex、`922a5bf` 直後)の仕分け
+#### コードレビュー(codex、`120b25f` 直後)の仕分け
 
 **判定 Reject。実害 1 件 + テスト/契約の欠陥 4 件。全部直す(WP343a)。**
 **production は studio 内で閉じたまま。**
 
-**再発しなかったこと(重要)** —— `a341fc2` で直した 2 つの穴は今回踏んでいない:
+**再発しなかったこと(重要)** —— `895ffa1` で直した 2 つの穴は今回踏んでいない:
 正常系は実 JSON → resolve → compile → plan → wire → physical plan を通り、
 `state == available` も直接検査している。メンバ消失検査も item kind 非依存である。
 
@@ -11065,7 +11065,7 @@ parser は空文字だけを拒否し、trim も case-fold もしない。
 subgraph replacement を compute に広げるか、feature が `graph_transforms` を
 要求できるようにするか。
 
-依存: WP343a(マージ済み `287ff81`)。見積: 小。
+依存: WP343a(マージ済み `bf2f384`)。見積: 小。
 ---
 
 ### WP347: 見えている部分木の同期を辺に描く
@@ -12896,7 +12896,7 @@ gizmo + picking + gpu_timing   339.5 秒
 sample ごとに `sampleJson()` で 11 キーの JSON を作り直す。**
 例のプロジェクトは ~20 パス + overlay で、1 フレームあたり 5〜6 千個の JSON を組み直す計算になる。
 
-**これは WP351 が作ったものではない。`23012e8^` の `publishSnapshot()` を読んで確認した ——
+**これは WP351 が作ったものではない。`48aad4d^` の `publishSnapshot()` を読んで確認した ——
 履歴全体の走査も `sampleJson` も毎フレーム発行も、すべて WP351 以前から存在する。**
 **WP351 は平均の走査を上に足したので悪化はさせている。内訳は測っていない。**
 
@@ -13396,7 +13396,7 @@ HiZ ピラミッド、輝度リダクション(自動露出)、GPU カリング 
 
 #### 保留中の紐付け
 
-- **wp336(`31f0971`、<作業ディレクトリ>/wp336)は「シェーダが読み範囲を宣言する」実装で、
+- **wp336(`556abc0`、<作業ディレクトリ>/wp336)は「シェーダが読み範囲を宣言する」実装で、
   WP345 の問題圏に属する。WP345 の書き直しと同時に採否を決める。単独で破棄しない**
 - WP352/WP351b への遡及コードレビュー(§10)は WP353 のレビューと同じ回で依頼する
 
@@ -13808,7 +13808,7 @@ authoring 文書は参照を保持(編集の真実)、`SceneLoader` が展開(fe
 - 表・統計のようなデータ資産(Unity の ScriptableObject 相当)は registry の
   汎用データ種別として置けるが、**リポジトリに需要の証拠がまだ無い。投機として記録のみ**
 
-#### コードレビュー(codex、af3882a / 880dbeb / 29a0615 まとめて)の仕分け
+#### コードレビュー(codex、5451dbe / 1b4065b / 6e5c368 まとめて)の仕分け
 
 **実害 4 + 偽対照 2 = 直す(WP355)。記録のみ 3。**
 
@@ -13862,7 +13862,7 @@ headless の画素対照は本物(ON 構成) / 窓 30 の意味は旧版と等�
 5. **pass-wide Load + attachment Clear/DontCare**(color / depth 両方)を追加し、
    raw / typed 双方で resolved op・reads・footprints を検査
 6. 全合計(nodes JSON / logical total / view total)を **canonical 順の pointer span** で
-   加算し、親版 `29a0615^` と**ビット一致**に戻す。
+   加算し、親版 `6e5c368^` と**ビット一致**に戻す。
    **対照**: 宣言順と実行順が異なる fixture(`golden_harness.cpp:1119-1139` の形)で、
    修正前の実行順加算ならビットが変わることを先に確かめる。
    `visits` は**実走査の計測に置き換える**か、eager reference publisher との
@@ -14027,7 +14027,7 @@ XR 範囲外 / purgeability / D0 / pass 順不変。
 
 依存: WP352、WP353、WP355。見積: **大**(oracle と段別 readback の分)。
 
-#### コードレビュー(134f9a3 = WP355)の仕分け
+#### コードレビュー(a3a15f5 = WP355)の仕分け
 
 **元 6 指摘は実質閉鎖**(判定表はレビュー本文)。旧拒否→新受理ゼロ、出荷 68 JSON /
 129 pass 走査で plan 全一致、WP325 期待値は完全一致 6 フィールドで「緩め」ではない。
@@ -14156,7 +14156,7 @@ WP355a が fail-fast 検証で「音」に変える。**構築子の再設計は
 以降     R5 → R6
 ```
 
-#### コードレビュー(9568042 = WP357)の仕分け
+#### コードレビュー(8824e52 = WP357)の仕分け
 
 **Reject: 実害 3・懸念 2・指摘 1。**壊せなかった側: oracle 本体の独立性(標準ライブラリのみ)/
 出荷 35 本中 raster_state は UB 3 本のみで他 32 本の command 不変 / 個別 peel と Load/Clear
@@ -14196,7 +14196,7 @@ golden が書かれない / 5: 片側だけ刺激を変えると hash 不一致�
 
 依存: WP357。見積: 中。
 
-#### コードレビュー(e867099 = WP354)の仕分け
+#### コードレビュー(c617e2d = WP354)の仕分け
 
 **実装本体は健全**(D0 / 未知 enum の fail-fast / resolver / 出荷 19 JSON 影響なし、を
 レビューが独立確認)。**穴は門番側に 3 + 懸念 2。CI 掲載の欠落 1。**
@@ -14205,7 +14205,7 @@ golden が書かれない / 5: 片側だけ刺激を変えると hash 不一致�
 
 1. **[実害] strip の baseline が偽物**: `pre_wp354.json` は実 pre-WP 出力でなく
    (name/kind のみ + 新設 profile を含む)、比較は `appendShaderResolution` 直叩き。
-   **`e867099^` の実 renderer 出力を immutable baseline として固定**し、
+   **`c617e2d^` の実 renderer 出力を immutable baseline として固定**し、
    現行値も production 経路(`currentFramePlanJson`)から取得。全 node の field 存在確認 →
    許可 pointer のみ除去 → recursive diff 0 件。profile の扱いを明示
 2. **[実害] raw planner 不変が null overload のみ**: 実在 `CompiledRenderPipeline` を渡した
@@ -14421,7 +14421,7 @@ DLL fixture 経路と ABI 条件 / staged SDK 不在(→ 落とした)/ rawJson 
 
 依存: 無し。見積: 大。
 
-#### コードレビュー(0bec09b = WP360)の仕分け
+#### コードレビュー(ef66457 = WP360)の仕分け
 
 **削除 94 分岐の全数照合。実害 6(いずれも出荷 scene では未発火を実測確認)+
 第二パーサ残存 4 + テスト感度 6。壊せなかった: first-camera 継承順序 / physics OFF /
@@ -15096,7 +15096,7 @@ behavior に限定。authored は pending のまま / prefab 由来の不在は 
 
 #### プレファブ U1 完成宣言(2026-08-30)
 
-WP361(b6b4666)→ WP361a(2d0e0ce)→ WP362(直前 + 5fd8923)→ WP361b(c4f2287)。
+WP361(03ccbd9)→ WP361a(fcf645f)→ WP362(直前 + 89e528a)→ WP361b(fcf39cb)。
 統合: 全数 1433 ×2 緑(GPU 直列込み・PELICAN_TEST_PROJECTS_DIR 付き)、doclink 2341 ok。
 設計 v4 の U1 出荷単位が全機能で成立: 文書・registry・v2 ゲート・4 相 resolver・
 Generated identity(gid)・wire union・read-only 表示・SnapshotV2 closure・
@@ -15110,7 +15110,7 @@ U2〜U4)。WP361b の §10 レビューの指摘は宣言どおり無条件で�
 WP361b の §10 で実害 5 件(うち #2 は **Inspector の behavior 編集が実 producer の
 `attachment_handle` を新 gate が拒否して死ぬ** —— 検証済み: 新 whitelist に無い /
 inspector.cpp:780 は付ける / 深層 parser :710 は許可)+ テスト感度 2 件。
-台帳のみ宣言の再延長はしない。**スキル §0 の規定どおり c4f2287 を revert(6c68181)し、
+台帳のみ宣言の再延長はしない。**スキル §0 の規定どおり fcf39cb を revert(df4d385)し、
 一度でやり直す。** U1 完成宣言は WP361b v2 の緑まで保留に訂正する。
 
 7 件の記録(v2 の仕様源):
@@ -15152,12 +15152,12 @@ D. **seq 0 は sentinel にしない**: 欠落は optional / field 存在で表�
 E. current 側にも rich payload(camera/light/collider)の肯定対照 + destroy 後の
    孤児検査(prepareSpecials 削除で落ちること)
 
-依存: WP361a、WP362(revert 6c68181 の上)。
+依存: WP361a、WP362(revert df4d385 の上)。
 
 #### U1 完成宣言の確定(WP361b v2 統合緑)
 
-WP361b v2(7040f23)統合: 全数 1434 ×2 緑(GPU 直列込み)、doclink 2341 ok。
-revert(6c68181)を挟んだ経緯ごと記録: WP361b 初版は Inspector の実 request
+WP361b v2(da4c5d7)統合: 全数 1434 ×2 緑(GPU 直列込み)、doclink 2341 ok。
+revert(df4d385)を挟んだ経緯ごと記録: WP361b 初版は Inspector の実 request
 (`attachment_handle`)を新 gate が拒否する等 5 件で不合格 → パッチでなく revert +
 やり直し(処方 A〜E)。保留していた完成宣言はこれで確定。
 WP361b v2 の §10 指摘は無条件で台帳のみ(打ち切り最終)。
@@ -15172,7 +15172,7 @@ prepare 時の古い row を保持したまま最終 publish し、破棄済み 
 基準の正規化が拒否 / **light-only object(出荷 example に 14 個・vrm_xr に 1 個)の
 destroy が runtime binding 必須化で失敗** / reparent の preserve enum が selector より
 後 / 「実 producer」テストが producer を呼んでいない / rich fixture が実値を見ない。
-宣言どおりパッチは重ねない。**7040f23 を revert(2 度目)し、この系譜
+宣言どおりパッチは重ねない。**da4c5d7 を revert(2 度目)し、この系譜
 (WP361b → v2)をここで打ち切る。**
 
 #### 裁定: エディタ lifecycle × arena の合流は「修正」ではなく「設計」だった
@@ -15359,7 +15359,7 @@ design_raytracing.md §7 に「callable data の検証は RT4 で」の note を
 ##### 現在地(この節を書いた時点)
 
 - HEAD 系譜: WP364(RT1a)マージ済み、統合で fixture 測定欠陥 1 件 →
-  per-file manifest(凍結 SHA d5ea0c5 由来)生成済み・テスト置き換えを
+  per-file manifest(凍結 SHA b9f16ae 由来)生成済み・テスト置き換えを
   codex が実装中(worktree <作業ディレクトリ>/wp364fix)。**次の作業 = その回収 → 統合再走 →
   §10 コードレビュー → 仕分け(修正パッケージは WP364a を 1 回だけ)**
 - 全数の基準値: 1450(統合 fixture 修正後に ±数件動く。「ちょうど N ×2」を毎回記録)
@@ -15479,7 +15479,7 @@ git blob + `git ls-files --eol` から機械生成(実装は再生成しない)�
 
 #### WP364(RT1a)完了(2026-08-30)
 
-本体 b1449f02 + fixture 修正 089b9ebe(+ manifest v3 と autocrlf 裁定 90e1bb81)。
+本体 d37c5c19 + fixture 修正 3e5b67d6(+ manifest v3 と autocrlf 裁定 5d8a2112)。
 統合: 全数 **1450 ×2 緑**(GPU 直列込み・`PELICAN_TEST_PROJECTS_DIR` 付き)、
 doclink 2341 ok / 0 stale。基準値 N=1450(前 WP は 1432)。
 
@@ -15490,7 +15490,7 @@ operand 定数性 + payload 変数型による到達 group 検証 / triangles �
 絶対規則 / `max_recursion`(facts 比較・1/1/2 の create-info 観測・reload 維持)/
 `RayTracingRuntimeFacts` + 純 validator + 4 配線 / CPU 参照オラクル(v3 の数値・
 演算列・丸め)+ sentinel。error code 10 種。
-出荷 4 project と既存 RT feature は bytes 不変(親版 fixture = 凍結 SHA d5ea0c5、
+出荷 4 project と既存 RT feature は bytes 不変(親版 fixture = 凍結 SHA b9f16ae、
 per-file manifest v3 + eol 分類で検証)。
 
 統合中に閉じた 2 件(閉ループ内・連鎖に数えない): fixture の測定範囲欠陥
@@ -15531,7 +15531,7 @@ per-file manifest v3 + eol 分類で検証)。
    併せて現コミットの `git ls-files -- projects/<name>` と manifest の path 集合を
    **完全一致**で検査(欠落・余剰の双方)、`tracked_file_count` も検査、
    path confinement(`..`・絶対パス)も拒否。正規化は不要になる(裁定
-   「不変 = コミット blob」に一致する形での実装。90e1bb81 の裁定は維持、
+   「不変 = コミット blob」に一致する形での実装。5d8a2112 の裁定は維持、
    実装が裁定に追いついていなかった)
 3. **配線証明が静的ソース文字列の代理条件**(実害・§4 規約 10 違反):
    `test_wp364_raytracing_wiring_mutations.cmake` は関数名の文字列有無しか見ず、
@@ -15574,7 +15574,7 @@ matrix は SKIP_DEVSTUDIO 両構成 + SPIRV_LINK ON/OFF。
   差し替え交差器で(post-hoc の区間反転を廃止)
 - CI の compiler OFF / SPIRV_LINK OFF job で RT1a target を build/run
 
-**RT1a はここで確定**(本体 b1449f02 / fixture 089b9ebe / 証拠 WP364a)。
+**RT1a はここで確定**(本体 d37c5c19 / fixture 3e5b67d6 / 証拠 WP364a)。
 連鎖打ち切り済み: 以降の指摘は台帳のみ。次は先行裁定どおり **WP365(RT1b)**。
 
 ### WP365: RT1b —— SBT addressing と record ABI(3 domain の実体化)
@@ -15590,7 +15590,7 @@ matrix は SKIP_DEVSTUDIO 両構成 + SPIRV_LINK ON/OFF。
 `OpTraceRayKHR` の operand 定数性 + payload 変数型)/ `RayTracingRuntimeFacts` と
 純 validator + 4 配線(delegate 注入点つき)/ CPU 参照オラクル(外向き丸め済み)/
 create observer の `validator_digest`(missIndex・sbtRecordOffset・到達 target・
-payload 型を含む)/ 親版 fixture(凍結 SHA d5ea0c5、git blob 直接比較)。
+payload 型を含む)/ 親版 fixture(凍結 SHA b9f16ae、git blob 直接比較)。
 
 #### 3 domain(design v4 §3。実装はこの語彙を使う)
 
@@ -16168,7 +16168,7 @@ matrix は #10 のとおり実行まで。
 
 #### wp336(shader footprint 宣言)の裁定: 保留継続(2026-08-31、利用者判断)
 
-worktree `<作業ディレクトリ>/wp336`、branch `agent/wp336`、独自コミット **1 本**(`31f09712`)。
+worktree `<作業ディレクトリ>/wp336`、branch `agent/wp336`、独自コミット **1 本**(`556abc05`)。
 現ブランチから **143 遅れ**(以前この節に書いた「1196 先行」は main 基準の数え方で
 誤解を招くため訂正する。現ブランチとの差分は 1 コミット)。
 
@@ -17548,7 +17548,7 @@ unpack(372b)/ rename・`ObjectReferenceIndex`・CAS(372c)/ dry-run(372d)/
 
 依存: WP361 + WP361a + WP362。
 
-#### WP372a 完了(統合済み、`a6272980`)
+#### WP372a 完了(統合済み、`03d51afd`)
 
 **全数 1497/1497 緑**(GPU 171 件を直列で含む。基準 1494 → +3)。
 `SKIP_DEVSTUDIO` OFF 構成 + `PELICAN_TEST_PROJECTS_DIR` あり。doclink 2341 ok。
@@ -18077,7 +18077,7 @@ WP372b の仕様変更・写像の意味論の変更・`makeEditorRuntimeService
 受け入れが本番と同じ関数を呼んでいるかを、**変異で**確かめること ——
 エージェントの「この変異で落ちる」という報告は、**当てて確かめるまで主張にすぎない**。
 
-#### WP372b + WP372b-fix 完了(統合済み、`2620f640` + `a7ef7eef`)
+#### WP372b + WP372b-fix 完了(統合済み、`3029dab1` + `d24288ac`)
 
 **全数 1502/1502 緑**(GPU 171 件を直列で含む。1497 → +5)。`SKIP_DEVSTUDIO` 両構成。
 出荷 4 project と `src/core/resources/` の bytes 不変。
@@ -19899,7 +19899,7 @@ v2 の「4 変異」は 3 個 + assertion 要件だった。「context factory �
 
 
 
-#### WP375 完了記録(統合側。2026-09-02、`e855c032`)
+#### WP375 完了記録(統合側。2026-09-02、`dd367e03`)
 
 **新規**: `src/core/communication/editorprojectionplan.{hpp,cpp}`(plan / materialize / `EditorProjectionContext` / route matrix)、
 `test/wp375_editor_projection_test.cpp`。18 ファイル(+1830 / -808)。継続 4 回(GPU 失敗 4 件 → 受け入れ c/d の是正 → named code)。
@@ -19942,11 +19942,11 @@ v2 の「4 変異」は 3 個 + assertion 要件だった。「context factory �
 ### WP375a: 非アクティブ scene の prefab 編集が active scene の behavior を全削除する(WP375 コードレビューの致命後退 1 件 + 実害 3 件 + 自己参照 oracle)
 
 **§4 規則 11 上段(core の複数経路)。コードレビューのみ(§10)。見積: 中。WP375 → 375a の 1 段で打ち切る(連鎖上限。致命後退なので一度だけ延長)。**
-**依存: なし(WP375 統合済み `e855c032`)。WP379 / WP380a は本 WP の統合後に投入する(同じ planner / factory を触る)。**
+**依存: なし(WP375 統合済み `dd367e03`)。WP379 / WP380a は本 WP の統合後に投入する(同じ planner / factory を触る)。**
 
 #### 何が壊れているか(コードレビュー `rev375` が確認)
 
-1. **致命後退**: 旧 factory は `if (scene_id != current_scene) continue;`(`e855c032^:editorruntimefactory.cpp:99`)で非アクティブ scene の prefab 編集を
+1. **致命後退**: 旧 factory は `if (scene_id != current_scene) continue;`(`dd367e03^:editorruntimefactory.cpp:99`)で非アクティブ scene の prefab 編集を
    document-only にしていた。新 planner はこの filter を持たず、非アクティブ scene の `set_prefab_parameter` が **その scene の behavior 集合をグローバルな
    `BehaviorAttachmentArena` に reconciliation** する。対象 scene に behavior が無ければ **active scene の behavior が全部消える**
 2. **実害**: `BehaviorBatch` の set / add / remove は `boundEditorEntity()` が空なら**型検査より先に黙って return** する
@@ -20010,7 +20010,7 @@ v2 の「4 変異」は 3 個 + assertion 要件だった。「context factory �
   BlueSpot(出荷 example)は compiler OFF では surface source が無く load 不能 → smoke と同じ gate で **`SKIP("shipping example requires the runtime shader compiler")`**
 - **検証(worktree、Claude)**: 通常構成 build 0 error / 非 GPU **1217 / 1217** / WP375 系 GPU **19 / 19**(修正 (i)(ii) 後)/ compiler OFF build 0 error + WP375 系 **19 / 19**(BlueSpot は named SKIP)/ 修正 (iii)(iv) 後の ON 側 WP375 系 **19 / 19**
 - **統合側の変異 F1**(planner の active-scene filter を再び消す = WP375 の後退を再現): **赤**(`WP375a inactive prefab RPC is document-only …` が落ちる)。残留 0
-- 統合後 main(`1aeafc59`、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列、`-j4`): **1534 件中 1532 緑**。落ちた 2 件(`WP375a inactive prefab …` / `WP375a production set routes …`)は
+- 統合後 main(`792155d5`、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列、`-j4`): **1534 件中 1532 緑**。落ちた 2 件(`WP375a inactive prefab …` / `WP375a production set routes …`)は
   **`pelican_wp375_behavior_fixture.dll` の shadow copy 衝突**(`gamelogicreload.cpp:249` "shadow copy failed: The process cannot access the file")。shadow dir が
   `<DLL dir>/.pelican-hot-reload` で **同じ fixture DLL を使うテスト process 間で共有**され、`-j4` で衝突する。単独再実行 **2 / 2 緑**。既知の穴に記録(shadow dir を process ごとに分ける = WP381 の loader 変更に同梱)
 - コードレビュー `rev375a`(同夜、fast 無し): **reject**。致命: `DocumentOnly` が Committed 限定で **Preview の inactive light が active の light を置換**(出荷 example で到達)。実害: pending behavior の journal handle が DLL reload 後に stale。検証欠落: RPC OFF guard が非 RPC case まで消す。→ **WP375b**(375a の修正の完成として 1 回だけ)。#4〜#6 は記録。壊せなかった: Committed 全 op の DocumentOnly、undo の scene routing、snapshot import、inverse token の即時 rollback、統合側の 2 修正は代理条件ではない
@@ -20020,7 +20020,7 @@ v2 の「4 変異」は 3 個 + assertion 要件だった。「context factory �
 **§4 規則 11 上段。コードレビューのみ(§10)。見積: 小〜中。**
 **連鎖: WP375 → 375a → 375b。375a は WP375 が落とした filter を Committed にだけ戻したので、同じ後退が Preview に残った(= 375a の修正の完成であって新しい輪ではない)。
 これ以降 WP375 系で致命が出たら、起票ではなく revert を先に検討する。**
-**依存: なし(WP375a 統合済み `1aeafc59`)。WP379 / WP380a と並列(planner / preview / journal / test CMake を触る。統合時に main を取り込む)。**
+**依存: なし(WP375a 統合済み `792155d5`)。WP379 / WP380a と並列(planner / preview / journal / test CMake を触る。統合時に main を取り込む)。**
 
 #### 何が壊れているか(コードレビュー `rev375a` が出荷 example で到達を確認)
 
@@ -20060,7 +20060,7 @@ v2 の「4 変異」は 3 個 + assertion 要件だった。「context factory �
 - `rev375a` #6: BlueSpot 受け入れは local asset に依存(smoke と同じ。hermetic 化は asset 同梱方針の決定後)
 
 
-#### WP375b 完了記録(統合側。2026-09-03、`c61ce078`)
+#### WP375b 完了記録(統合側。2026-09-03、`267c7b80`)
 
 - **実装(codex、fast 無し)**: planner の `DocumentOnly` を Preview にも適用(abort / forced-abort の restore でも canonical operation を保持し、inactive は `DocumentOnly`、active は
   Light / Transform participant へ)。裁定: inactive preview は名前付き拒否ではなく **document-only**(表示 runtime は active の projection であり inactive を表示する viewport は無い。
@@ -20083,7 +20083,7 @@ v2 の「4 変異」は 3 個 + assertion 要件だった。「context factory �
 **§4 規則 11 中段。コードレビューのみ(§10)。見積: 小〜中。**
 **連鎖: WP375 → 375a → 375b → 375c。375c は「修正が作った後退」の一度限りの延長(#1 #3 は 375b が作った)。#2 は 375b の identity 再解決が不完全だったもの。
 これ以降 WP375 系で実害が出たら、起票せず WP375b/c を revert して設計からやり直す。**
-**依存: なし(WP375b 統合済み `c61ce078`)。WP378 / WP379a / WP380a と並列(planner / journal / test CMake / production test を触るので統合時に main を取り込み、衝突は継続で解消)。**
+**依存: なし(WP375b 統合済み `267c7b80`)。WP378 / WP379a / WP380a と並列(planner / journal / test CMake / production test を触るので統合時に main を取り込み、衝突は継続で解消)。**
 
 #### 何が壊れているか(コードレビュー `rev375b` が確認)
 
@@ -20121,7 +20121,7 @@ v2 の「4 変異」は 3 個 + assertion 要件だった。「context factory �
 - 全数(着手時に実測)/ `SKIP_DEVSTUDIO` 両構成 / RPC ON/OFF / 出荷 4 project bytes 不変 / golden 不変 / GPU は統合側で直列
 
 
-#### WP375c 完了記録(統合側。2026-09-03、`25d2f967`)
+#### WP375c 完了記録(統合側。2026-09-03、`dc26bcbb`)
 
 - **実装(codex sol、fast 無し。段は本来「中段」で足りた)**: lifecycle preview の判定を inactive `DocumentOnly` shortcut より前に置き、inactive の add / remove / reparent preview を
   `editor_preview_unsupported@1` で拒否。forced abort の restore 失敗は `EditorPreviewAbortError`(`editor_preview_forced_abort_failed@1`)として伝播し reload / replay / load_scene が無視しない。
@@ -20315,7 +20315,7 @@ M1 は **WP374 時点ですり抜けていた変異**(8/8 緑のまま)であり
 処置: `requireVulkanDevice` を `loadWp374aScene` 内の `configureWp374aRuntime(root)` の直後へ移動。
 SKIP の意味論(device 無しで Catch `SKIP`)は保たれる。
 
-##### 統合(2026-09-02): WP374 + WP374a を `8af06f3f` として squash merge
+##### 統合(2026-09-02): WP374 + WP374a を `470ea2e8` として squash merge
 
 - worktree での最終確認: **1376/1376 緑(GPU 直列含む)**、WP374a は GPU 実行体に 6 本・非 GPU 0 本
 - 分離後の受け入れ: `raytracing_rt3_1_production_test`(`GPU` 登録)+ 共有 `raytracing_rt3_1_fixture.hpp`
@@ -20550,7 +20550,7 @@ version gate は「外部 `ray_instance` を持つ project が layout v2 を有�
 
 
 
-#### WP377 完了記録(統合側。2026-09-02、`8b216770`)
+#### WP377 完了記録(統合側。2026-09-02、`2592f455`)
 
 - **統合側の変異 3 本(エージェントは GPU 禁止のため build までで UNMET 報告)**: V(reuse 前の profile 検証を消す)/ M3(BLAS cache 鍵から
   flags を消す)/ M4(Vulkan に空 flags)—— いずれも **`WP374a F G F geometry flags rebuild exact resident keys and change any-hit on GPU`
@@ -20559,7 +20559,7 @@ version gate は「外部 `ray_instance` を持つ project が layout v2 を有�
   統合後 main **1516 / 1516 緑**(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列)
 - `RayProfileAccelerationStructureFlagsOverrideForTesting` は payload・guard・thread_local・全読み取り点とも消えた。到達不能だった TLAS-geometry 検証も削除
 - コードレビュー `rev377`: 実害 1(拒否世代の SBT 残留)+ 受け入れ弱化 3 → **WP377a** として起票・投入。#6(設計文書の「現状」表)は docs で処理
-- **構成 matrix(コードレビュー #5 の要求。統合側で取得、`d875e58b` 時点)**:
+- **構成 matrix(コードレビュー #5 の要求。統合側で取得、`54997983` 時点)**:
   compile: OpenXR OFF / ImGui OFF / `SKIP_DEVSTUDIO=ON` とも **build 0 error**。compiler ON + GPU: 対象 case(`WP377 authored ray_instance force opaque …`)**非 SKIP で Passed**、
   WP377 の 3 段 sequence(`WP369 production material alpha profile …` 内)は全数 1516 / 1526 に含まれ Passed。
   **compiler OFF の全数: 1363 件中 29 失敗**。うち **4 件は WP375 の新 acceptance a〜d**(compiler OFF の分岐を持たない → WP375a で修正)。
@@ -20570,7 +20570,7 @@ version gate は「外部 `ray_instance` を持つ project が layout v2 を有�
 ### WP377a: 拒否された世代の SBT が frame resources に残る(WP377 コードレビューの実害 1 件 + 受け入れ弱化 3 件)
 
 **§4 規則 11 中段。コードレビューのみ(§10)。見積: 小。WP377 → 377a の 1 段で打ち切る(連鎖上限)。**
-**依存: なし(WP377 統合済み `8b216770`。WP375 と触るファイルが重ならない)。**
+**依存: なし(WP377 統合済み `2592f455`。WP375 と触るファイルが重ならない)。**
 
 #### 何が壊れているか(コードレビュー `rev377` が制御フローで確認。連続描画の破壊までは未確認)
 
@@ -20603,7 +20603,7 @@ WP377 のテストは throw 直後に終わり、この状態を検査してい�
 
 レビュー #5(構成 matrix の証拠)は統合側で取る(WP377 完了記録に追記)。#6(設計文書の「現状」表)は docs で処理済み。
 
-#### WP377a 完了記録(統合側。2026-09-02、`a3f318fb`)
+#### WP377a 完了記録(統合側。2026-09-02、`01eba2fa`)
 
 - **実装**: SBT activation を `recordFrame()` 成功後へ移動 + `beginLogicalFrame` の無条件 lease reset を廃止(「最後に記録成功した世代を active とする」構造)。
   validator は数値 identity を受け取り違反時だけ診断文字列を構築。production reload test に失敗直後の状態(runtime generation / staged=0 / TLAS / resident BLAS / 旧 SBT lease)、
@@ -20854,7 +20854,7 @@ legacy: `"resolution_error": { "legacy_branch_id": "collider.radius_non_positive
 E-3a(commit noexcept / internal の伝播 / generation guard)と E-3b(broad catch 撤去)の節は、本 WP 統合後に切る。
 
 
-#### WP378 完了記録(統合側。2026-09-03、`a8b8102e`)
+#### WP378 完了記録(統合側。2026-09-03、`ed8911ea`)
 
 - **実装(codex、fast 無し)**: move-only `ResolutionResult<T, E>` / `UserDataViolation` / `LegacyResolutionText` / `LegacyRejectException` / `ResolutionFailureException`(`resolutionresult.hpp`。
   copy 禁止・move 許可・`std::any` 不可を static_assert)。projection は `ResolutionResult<EditorProjectionPlan, ProjectionPlanFailure>`。broad catch は残し(決定 11)、`legacyReject(id, …)` が
@@ -21045,7 +21045,7 @@ migration / alias / ambiguity エラー / owner の module id / 他 builtin の�
 仕様レビューは 2 巡で打ち切り。見積: **中**(決定 G の owner 移設 15 call site と決定 F の 2 ingress が増えた)。
 
 
-#### WP379 完了記録(統合側。2026-09-03、`51841eb3`)
+#### WP379 完了記録(統合側。2026-09-03、`f7d53a93`)
 
 - **実装(codex、fast 無し)**: builtin を `pelican_ray_instance` に統一(登録・codec・scene preflight・TLAS / RayLayout 診断)。未登録 component の共通 cause
   `component_unknown@1{name}`(`ComponentUnknownError`。SceneLoader と RPC が同じ cause、snapshot は `snapshot_invalid` の inner detail)。
@@ -21066,7 +21066,7 @@ migration / alias / ambiguity エラー / owner の module id / 他 builtin の�
 ### WP379a: 外部 DLL が engine owner を自称できる(WP379 コードレビューの致命 1 + 実害 3 + テスト欠陥 2)
 
 **§4 規則 11 上段。コードレビューのみ(§10)。見積: 小〜中。連鎖: WP379 → 379a で打ち切り(致命の修正として 1 回だけ)。**
-**依存: なし(WP379 統合済み `51841eb3`)。WP381(loader)と並列: 本 WP は `gamelogicreload.cpp` を触らない(shutdown 順の共有関数は `pelican_core.cpp` 側)。**
+**依存: なし(WP379 統合済み `f7d53a93`)。WP381(loader)と並列: 本 WP は `gamelogicreload.cpp` を触らない(shutdown 順の共有関数は `pelican_core.cpp` 側)。**
 
 #### 何が壊れているか(コードレビュー `rev379` が確認)
 
@@ -21112,7 +21112,7 @@ migration / alias / ambiguity エラー / owner の module id / 他 builtin の�
 `rev379` #4 の非 Windows(実 `.so` fixture)は Linux CI ができたときに。
 
 
-#### WP379a 完了記録(統合側。2026-09-03、`da115e69`)
+#### WP379a 完了記録(統合側。2026-09-03、`670bf580`)
 
 - **実装(codex、fast 無し)**: engine registrar と owner allocator を game-DLL 公開面から分離(host-only の `registrationownerhost.hpp` / `enginecomponentregistrar.hpp`)。
   実 SHARED DLL が `registerEngineComponent` / `allocateRegistrationOwner` を使う **build 拒否テスト 2 本**。RPC に production registry の存在確認を注入
@@ -21352,7 +21352,7 @@ refresh root(決定 10)/ ModelAsset の participant 化(決定 12)/ 公開 mutat
 **WP380a は仕様レビューを 2 巡で打ち切り、WP375 統合後に着手する。** 見積: 大(決定 11 の型変更が 5 call site に及ぶ)。
 
 
-#### WP380a 完了記録(統合側。2026-09-03、`80dc33c3`)
+#### WP380a 完了記録(統合側。2026-09-03、`b3db1787`)
 
 - **実装(codex、fast 無し)**: `SceneLoadRequest = Borrowed | Owned` + typed import callback + `PreCommitFailure.phase ∈ {prepare, early_publish, activate}`(`sceneload.hpp`)。
   scene 専用 executor `prepare → early_publish → noexcept candidate publish → activate → metadata commit(1 struct の noexcept swap)→ retire(次フレーム queue)→ outbox flush`(`scene.cpp:415〜`)。
@@ -21363,15 +21363,15 @@ refresh root(決定 10)/ ModelAsset の participant 化(決定 12)/ 公開 mutat
 - **統合側で見つけた受け入れの穴**: participant ごとの drop / bypass 変異(81 行)は **manifest に mutation ID が並んでいるだけで、どのテストも実行していない**(代理条件)。
   root 5 件の切断変異も同じ。→ 継続で **SceneLoadFaultInjector**(phase × participant 名、production では nullptr)を入れ、Light publish drop / ECS rollback bypass / event outbox discard bypass /
   metadata swap 分割 + root 5 件を同一テスト内で有効化する形に。GPU の A/B/C/D は統合側で回す
-- **main 取り込み**: base 77885050 の後に WP375a / WP375b / WP379 が統合されており、衝突(production test / test CMake / prefab test / factory / gamelogicreload)は継続で解消
+- **main 取り込み**: base 612e43e0 の後に WP375a / WP375b / WP379 が統合されており、衝突(production test / test CMake / prefab test / factory / gamelogicreload)は継続で解消
 - **統合側の GPU 実行(取り込み前、base 上)**: 18 件中 17 緑、**主受け入れ `WP380 A B C D …` が SEGFAULT** → 継続で判定: 直接原因はテストの `setupLogger()` 抜け(初期化前 logger 参照)。
   クラッシュ解消後に **実装欠陥 1 件**が露出: `Camera::publishPrepared()` が一部 scalar を代入していて rollback token に旧 camera が戻らない → 修正。fixture export は `loaded_copy` から解決。GPU 1 / 1 緑
 - **継続で足したもの**: `SceneLoadFaultInjector`(phase × participant × mutation ID、production は nullptr)。root 5 件 + event / RNG(3)/ pending scene は CPU で有効 / 無効を同一テスト内で切替(緑)。
-  Light publish drop / ECS rollback bypass / metadata document-first は GPU(統合側)。main(39ceaa28)取り込みは textual conflict 2 ファイル(test CMake / sceneformat_test)+ 意味監査 4 ファイル。
+  Light publish drop / ECS rollback bypass / metadata document-first は GPU(統合側)。main(5199fa7f)取り込みは textual conflict 2 ファイル(test CMake / sceneformat_test)+ 意味監査 4 ファイル。
   ただし worktree の git index が sandbox で書けず、**取り込みは working tree への適用のみ**(branch は base のまま。統合側でコミット → main merge → squash)
 - **統合側の検証(worktree、main 内容適用後)**: WP380 / WP379 / WP375 / WP374a / WP377 系 **51 / 51 緑**(GPU 含む。SEGFAULT 解消後)
 - **統合側の変異(production レベル、injector を経由しない)**: **M1**(`LightContainer::publishPrepared` を no-op)**赤** / **M2**(executor の ECS create rollback を bypass)**赤**(いずれも `WP380 A B C D …`)。残留 0
-- **main 取り込み**: agent の working-tree 適用 + git の 3-way で 10 ファイル衝突(docs 6 は main 側、test 4 は worktree 側を採用)。pre-commit の doclink が 9 件 unresolved で止まるため merge / squash は `--no-verify`、docs は `docs-writer`(opus)が段落ごと書き直して `489f9b72` `42a3bfa5`
+- **main 取り込み**: agent の working-tree 適用 + git の 3-way で 10 ファイル衝突(docs 6 は main 側、test 4 は worktree 側を採用)。pre-commit の doclink が 9 件 unresolved で止まるため merge / squash は `--no-verify`、docs は `docs-writer`(opus)が段落ごと書き直して `e12ac10e` `c2bb3848`
 - 全数(統合後 main、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列、`-j4`): **1557 件中 1552 緑**。4 件は fixture DLL の shadow copy 衝突(既知 flake。単独 4 / 4 緑。WP381 の pid 別 shadow dir で解消予定)。
   **1 件は実害**: `Studio receives the running example fatal text …`(単独でも赤): forward_transparent pass を消した example を起動すると、期待の config fatal より先に
   `glTF morph vertex metadata exceeds renderer capacity of 262144 static vertices`(`vertbufcontainer.cpp:252`、`vertex_offset > maxMorphVerticesPerPool`)。失敗経路で model が二重に upload されている疑い(WP380a の startup root 配線 / warm cache)。→ **WP380a-fix を上段で起票**
@@ -21379,7 +21379,7 @@ refresh root(決定 10)/ ModelAsset の participant 化(決定 12)/ 公開 mutat
 
 
 
-#### WP381 完了記録(統合側。2026-09-03、`e06c7b08`)
+#### WP381 完了記録(統合側。2026-09-03、`ad909570`)
 
 - **実装(codex、fast 無し)**: `gameLogicAbiVersion = 2` + C linkage の `pelican_game_logic_epoch_v2()`(process-local nonce)を全 game DLL が `gamelogic_entry.cpp` 経由で通常 import。
   4 入口を `pelican_register_behavior_v2 / pelican_register_event_v2 / pelican_emit_v2 / pelican_register_system_v2` に改名し旧 export を除去(`__registerComponent` と provider `getApiV1` は不変。
@@ -21403,13 +21403,13 @@ refresh root(決定 10)/ ModelAsset の participant 化(決定 12)/ 公開 mutat
 - **統合側の変異(2 回目、継続後)**: 基準 10 / 10 → **M1**(`initialize()` の reload 委譲を外す)赤 / **M2**(raw 診断の結果を常時受理)赤 2 / 2(`legacy entrance inventory …` が production loader 経由で観測)。残留 0
 - **統合側の変異**: (記入)
 - **main 取り込み**(`merge-resolver` agent、opus): 衝突 6 ファイル(event registerer の outbox + 改名、rpcserver.hpp/.cpp の両側追加、test CMake の option 集合、docs 2)。WP380a の typed rebuild は WP381 の loader 内で生存を確認。worktree で非 GPU 1264 / 1264、GPU 含む WP 系 gate は出荷 example の ignored asset を copy して緑
-- 全数(統合後 main、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列、`-j4`): **1586 件中 1583 緑**。#71 Studio fatal = WP380a の後退(WP380a-fix 統合待ち)。**WP381 の inventory テスト 2 件が単独でも赤**: `targets.size() == 19` の literal に対し main の構成では 23(SKIP_DEVSTUDIO=OFF + 後続 WP の fixture DLL)。「exact 19」は 1 構成の実測値であって受け入れの意図(property から生成され完全)ではない → literal を外し inventory を走査する形に修正(Claude agent、`5dabe347`。9 role exact + 全 entry の分類 + loader 全件の PE 監査。dead な count define も削除)。WP381 系 10 / 10 緑
+- 全数(統合後 main、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列、`-j4`): **1586 件中 1583 緑**。#71 Studio fatal = WP380a の後退(WP380a-fix 統合待ち)。**WP381 の inventory テスト 2 件が単独でも赤**: `targets.size() == 19` の literal に対し main の構成では 23(SKIP_DEVSTUDIO=OFF + 後続 WP の fixture DLL)。「exact 19」は 1 構成の実測値であって受け入れの意図(property から生成され完全)ではない → literal を外し inventory を走査する形に修正(Claude agent、`7eb5f4fc`。9 role exact + 全 entry の分類 + loader 全件の PE 監査。dead な count define も削除)。WP381 系 10 / 10 緑
 - コードレビュー `rev381`(codex sol、上段): **Reject**(実害 6 + 設計懸念 2 + 指摘 1)。inventory の literal(#1)は修正済み。reader の section 境界 / 上限なし / poll の無音 starvation / startup 失敗の隠蔽 / pid dir 未掃除 / epoch 3 重定義 → **WP381a**(中段、terra + high)。provider-only 旧 DLL では raw 診断が唯一の enforcement(#2)= 主張の範囲を訂正(コード不変)。壊せなかった: 全 root で診断が LoadLibrary より前、bound import、frozen fixture の include 分離、RPC の clear、WP380a の typed rebuild、出荷 4 DLL の anchor
 
 ### WP381a: raw PE reader の境界と上限、poll の starvation、startup 失敗の可視化(WP381 コードレビューの実害 6)
 
 **§4 規則 11 中段(機構は確定。堅牢化と可視化)。実装者: `gpt-5.6-terra` + `high`。コードレビューは統合側変異 + Claude。見積: 小〜中。連鎖: WP381 → 381a で打ち切り。**
-**依存: なし(WP381 統合済み `e06c7b08`、inventory の literal は `5dabe347` で修正済み)。**
+**依存: なし(WP381 統合済み `ad909570`、inventory の literal は `7eb5f4fc` で修正済み)。**
 
 #### 何が壊れているか(コードレビュー `rev381` が確認)
 
@@ -21449,7 +21449,7 @@ refresh root(決定 10)/ ModelAsset の participant 化(決定 12)/ 公開 mutat
 `rev381` #9(設計文書の旧入口名)は docs-writer。RPC OFF の別 build はレビューで未実行(統合側で実施)。
 
 
-#### WP381a 完了記録(統合側。2026-09-03、`11fd0071`)
+#### WP381a 完了記録(統合側。2026-09-03、`6f48d617`)
 
 - **実装(codex terra + high、中段)**: descriptor ごとに directory 範囲・同一 section・ファイル境界を検査(`descriptor_out_of_bounds`)。ファイル全体の読み込みを廃止し header と必要 section だけを ifstream で読む。
   256 MiB / descriptor 4096 / thunk 65536 / import 文字列 4 KiB の上限(`too_large`)。sharing violation 3 回で `game_logic_source_busy@1{path, retries}` を pending status に出し、解除後の poll で再試行。
@@ -21467,7 +21467,7 @@ refresh root(決定 10)/ ModelAsset の participant 化(決定 12)/ 公開 mutat
 ### WP380a-fix: 失敗した scene load が vertex pool を消費し、出荷 example の config fatal を別の fatal で隠す
 
 **§4 規則 11 上段(出荷挙動)。コードレビューのみ(§10)。見積: 小。WP380a の後追い(致命ではないが利用者に見える診断の後退)。**
-**依存: なし(WP380a 統合済み `80dc33c3`)。**
+**依存: なし(WP380a 統合済み `b3db1787`)。**
 
 #### 何が壊れているか(統合側の全数で確認。単独でも再現)
 
@@ -21490,7 +21490,7 @@ smoke(`project_catalog_headless_smoke`、正常 config)は緑。つまり **失�
 ModelAsset の participant 化(裁定は維持)/ 容量の引き上げ(症状を隠す)。
 
 
-#### WP380a-fix 完了記録(統合側。2026-09-03、`f8cd134d`)
+#### WP380a-fix 完了記録(統合側。2026-09-03、`aaa3c348`)
 
 - **原因(codex)**: WP380a の startup `SceneLoader::load` が prepare 中に `ModelAssetContainer` を初期化し model を upload する。rendering config が壊れていると Renderer の検証で失敗するが、
   その前に upload 済み(`scene.cpp:518` → `model.cpp`)。同一 process の再試行で同じ model がもう一度 upload され、morph 頂点の pool offset が 262144 を超えた。
@@ -21503,7 +21503,7 @@ ModelAsset の participant 化(裁定は維持)/ 容量の引き上げ(症状を
 - **統合側の検証と変異(`mutation-runner` agent、opus)**: 基準 WP380a 系 + Studio fatal の GPU 20 / 20。**A**(Renderer 検証を prepare の後へ戻す)→ Studio fatal が `morph vertex … 262144` の別 fatal になり赤(material route の失敗が最初に出ない = 直すこと 2 の機構そのもの)/ **B1**(失敗 candidate の解放を無効化)/ **B2**(`~Impl` の登録済み model 解放を無効化)→ いずれも index 使用量 `46356 == 0` で赤(fixture は warm と failing に同じ DamagedHelmet を使うので両者が独立に観測される)。残留 0、md5 一致、assertion dialog なし。所見: (a)(b) は同一 TEST_CASE の前半・後半で、赤の帰属は assertion 行で読む(分割は WP380b 以降の宿題)。agent の指摘: Git Bash の `sed -i` は CR を落とすので `grep -c MUT` だけでは残留検査にならず、md5 での復元確認が要る
 - **main 取り込み**(`merge-resolver` agent、WP381 / WP379a の後): 衝突なし。pelican_core.cpp は WP379a の terminal shutdown helper と本 WP の Renderer 検証順序が別領域で両立(行を引用して確認)。merge 後 非 GPU 1398 / 1400(2 件は既知の -j flake、単独緑)
 - 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1591 / 1591**。WP379a 着地時の赤 1(Studio fatal の morph vertex 262144)が消えた
-- コードレビュー `rev380a`(codex sol、上段。WP380a + fix、`f8cd134d`): **Reject**(実害 2 + 設計懸念 4)。連鎖は 380a-fix で打ち切り(WP380 → 380a → 380a-fix)なので**新 WP は起票せず WP380b の入力として記録**(再開節参照)。
+- コードレビュー `rev380a`(codex sol、上段。WP380a + fix、`aaa3c348`): **Reject**(実害 2 + 設計懸念 4)。連鎖は 380a-fix で打ち切り(WP380 → 380a → 380a-fix)なので**新 WP は起票せず WP380b の入力として記録**(再開節参照)。
   (1) executor の phase 順序が v3 決定と違う: `activate` → `metadata.commit` → `behavior_candidate->finish()`(scene.cpp:920-921)→ retire → flush。規範は commit_metadata → retire → flush → finish で、旧 behavior の `onDestroy` が走る時点で旧 entity は既に非 live(統合側で順序は確認、挙動は未検証)/
   (2) fix の失敗 candidate 解放は `releaseGeometryNow` の複数処理を 1 つの try に入れ、途中失敗を log のみで成功扱い(morph delta・後続 primitive が未返却になりうる)/
   (3) 5 root のテストは helper と手書き request で直接呼び、RPC が `SceneLoadRoot::rpc` を渡さない変異を通す / (4) manifest 90 行のうち executor の `sceneLoadMutationEnabled` call site は 6、trigger pair は全 scene で 0 /
@@ -21754,7 +21754,7 @@ validate の二重 load 解消 / manifest(CARRIER-STUDIO は final artifact の 
 ### WP380b: effect transaction —— behavior が transaction 中に Pelican API 経由で行った作用は、rollback で消えるか名前付きで残る
 
 **§4 規則 11 上段(core の executor と公開 API の契約を変える)。実装者: `gpt-5.6-sol` + max。仕様レビュー(codex、上段)→ 実装 → 統合側変異 → コードレビュー。見積: 大。**
-**依存: **WP380c(executor hardening)の後**。WP380a + WP380a-fix(`f8cd134d`)統合済み、WP381(frozen fixture の機構)統合済み。規範: `docs/design_object_identity.md` v4 §9 修正 A(effect sink)・修正 B(executor)。WP380 v3 決定 2・4・6・7・8・9 を受ける(§4 の段割り v2 は本節で切り直し)。**
+**依存: **WP380c(executor hardening)の後**。WP380a + WP380a-fix(`aaa3c348`)統合済み、WP381(frozen fixture の機構)統合済み。規範: `docs/design_object_identity.md` v4 §9 修正 A(effect sink)・修正 B(executor)。WP380 v3 決定 2・4・6・7・8・9 を受ける(§4 の段割り v2 は本節で切り直し)。**
 
 #### 今日の対照(§4 規約 10)
 
@@ -21859,7 +21859,7 @@ registry の transaction-local 化(ID-A)/ refresh root の participant 化(WP380
 
 
 
-#### WP380b 完了記録(統合側。2026-09-03、`5fed6612`)
+#### WP380b 完了記録(統合側。2026-09-03、`550743c6`)
 
 - **実装(codex sol max、上段)**: `EffectTransaction`(src/core/loader/effecttransaction.*)を scene load の activate〜retire に thread-local で設置し、`GameContext` の各 mutator が sink を見る。
   audio(play / stop_existing / bus_volume)と persistence(game_settings / save_data / save_settings)は shadow + outbox、`loadData` / `listSaves` は outbox overlay(pending は `timestamp == 0`)、
@@ -21872,7 +21872,7 @@ registry の transaction-local 化(ID-A)/ refresh root の participant 化(WP380
 - **統合側の変異(`mutation-runner` agent、opus。GPU 含む。1 回目、対象 52)**: **基準が赤 1** = GPU の production test「frozen v2 DLL effects rollback and committed RPC effect failures」が `PathResolver setup called more than once`(:3334)で B の import 前に落ち、WP380b の assertion が 1 つも走っていなかった(codex は GPU を回していない)。M1(play の即時化)赤 :140 / M2(save の即時化)赤 :84 / M4(façade が捨てる)赤 :205 / M6(cursor を戻す)赤 :146 / M7b(removeAll の reject 除去)赤 :137 / M8(timestamp を now に)赤 :133。**生存 2**: M3(retire の resolver を candidate に)= fixture の `only_d` が B と C の両方にあり非対称が無い / M5(RPC の結果形を error に)= 実 handler を通す assertion が GPU test にしか無く未実行。M7(create の reject 除去)は ECS の別例外で偶然赤 → 4 件を codex(sol)に差し戻し。**2 回目**: runtime setup を 1 回に統合して production test が末尾まで到達、fixture を B は E だけ / C は D だけの非対称に、実 `RpcServer` の `load_scene` handler で `{committed: true, effect_errors}` と error 不在を観測、create は登録済み component で「throw しない」ことで落ちる形に。codex の再変異: resolver を candidate に → :3399 赤 / RPC を error に → :3417 赤 / create の reject 除去 → :142 赤。GPU 対象 52 / 52、非 GPU 1287 / 1287。統合側の再確認(M3)は resolver の別分岐(scene.cpp:1026、retire 経路は :1034)に当たり緑 = **無効な再確認**(worktree は着地で削除済み)。codex の :3399 赤を採用し、rev380b に観点として渡す
 - **main 取り込み**(`merge-resolver` agent、WP380d の後。merge 352ff61d): 衝突は scene.cpp の commit 末尾 1 箇所のみ。WP380d の「batch が finish を 1 回記録、token は記録しない」を取り、その後に WP380b の `CommittedWithEffectFailure` return を置く。effect transaction の flush は `(void)phase_trace` で trace に書かず 8 要素を保つ。manifest は衝突なし(WP380d は触っていない)で、WP380b の audio 行は `effect` role、`handle_cursor` は `non_rollback`、reject 行は ID 無しで WP380d の role 制約(real 10 行)と両立。merge 後 非 GPU 1287 / 1287
 - 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1621 / 1621**。doclink 84 件追従、未解決 0
-- コードレビュー `rev380b`(codex sol、上段。`5fed6612`): **Reject**(致命 2 + 実害 5 + 設計懸念 3)。(1) component registerer の callback は early publish で走るが effect scope は activate 直前に設置され、全 scope を迂回 /
+- コードレビュー `rev380b`(codex sol、上段。`550743c6`): **Reject**(致命 2 + 実害 5 + 設計懸念 3)。(1) component registerer の callback は early publish で走るが effect scope は activate 直前に設置され、全 scope を迂回 /
   (2) `flush() noexcept` と destroy façade が JSON・`std::string` を生成し allocation 失敗で terminate / (3) staging error と flush error の順序が call order でない / (4) 固定容量 256 の overflow が無音、tombstone が容量を占有 /
   (5) `GameContext::createObject*` は inventory で deferred だが base 実装は callback 中に `logic_error` / (6) persistence の resource key が Windows の case を区別し同一物理ファイルに 2 回書く / (7) read error が `nullopt` に縮退 /
   (8) inventory JSON と manifest が未接続 / (9)(10) frozen audit の partial TU、受け入れ文言の不一致(記録)。→ **WP380e**(上段、sol max)で 1〜8 を直す。連鎖は 380e で打ち切り。
@@ -21977,7 +21977,7 @@ M0 は rev380a の実害を閉じる段階で、M1/M2 と独立に出荷でき�
 ### WP380c: executor hardening —— rev380a の実害と代理条件を、effect transaction の前に閉じる
 
 **§4 規則 11 上段(core の executor 順序・release API・root 配線を触る)。実装者: `gpt-5.6-sol` + max。仕様レビューは WP380b 第 2 巡と一体。見積: 中。**
-**依存: WP380a + fix(`f8cd134d`)統合済み。WP380b(effect transaction)は本 WP の後。起票の経緯: WP380b v1 の M0 を仕様レビュー #15 で切り出した(挙動が変わり、単独で出荷できる)。**
+**依存: WP380a + fix(`aaa3c348`)統合済み。WP380b(effect transaction)は本 WP の後。起票の経緯: WP380b v1 の M0 を仕様レビュー #15 で切り出した(挙動が変わり、単独で出荷できる)。**
 
 #### 今日の対照(§4 規約 10)
 
@@ -22041,7 +22041,7 @@ effect sink / audio / persistence / `CommittedWithEffectFailure` の中身 / onD
 
 
 
-#### WP380c 完了記録(統合側。2026-09-03、`aa7f65a7`)
+#### WP380c 完了記録(統合側。2026-09-03、`5a17627d`)
 
 - **実装(codex sol max、上段)**: executor を `commit_metadata → retire → flush → finish` に並べ替え、prepare で確保した固定長 phase trace を `SceneLoadCommitted` に載せる。
   GPU release は `ReleaseReport{array<ReleaseError,8>, overflow_count}`(heap なし)を返し、geometry は列・primitive ごとに例外を隔離。`ModelAssetContainer` が失敗 candidate の report を集約し
@@ -22053,7 +22053,7 @@ effect sink / audio / persistence / `CommittedWithEffectFailure` の中身 / onD
 - **統合側の変異(`mutation-runner` agent、opus。GPU 含む。1 回目)**: **基準が赤 1**(`rng_sequence.current_seed` / `increment` の行は injector を有効化しても field が変わらない。codex は GPU を走らせていないので未検出)。M2(RPC root を startup に)赤 / M3(pending root)赤 / M4(morph 失敗後の継続を外す)赤 ×2(後続 primitive の index と失敗 allocation 自身の morph range を別々に観測)/ M5(`release_errors` 変換除去)赤。**生存 1**: M1a = finish ループを commit 直後へ戻し `record()` を残す → 全緑(trace は executor の record 文だけが書き、処理と結び付いていない。record も動かす M1b だけ赤)。root 4 つが 1 TEST_CASE の loop で REQUIRE 中断するため独立性が読めない → 3 件を codex(sol)に差し戻し。**2 回目**: trace は各 participant(metadata / renderer publish / behavior publish・activate・finish / retirement enqueue / outbox flush / entity finish)が渡された固定長 trace に自分で記録し、executor には `record()` 文が無い(連続重複は 1 つにまとめる)。`rng_sequence.current_seed` は fixture の behavior が activation 中に `setSeed` で実値を変える。`increment` は固定 PCG stream で独立に変わる production 経路が無いので `invariant` role にして ID を外した。root 4 つは `DYNAMIC_SECTION` に分離。codex 自身の再変異: finish ループを commit 直後へ(record 不変)→ :2499 で赤 / RPC root を startup に → :3089 で赤、他 3 root は緑。GPU 対象 20 / 20、非 GPU 1279 / 1279。統合側の再確認(M1a、finish 2 ループを `metadata.commit(phase_trace)` 直後へ、record は participant 側のまま)→ :2499 の exact sequence で赤。残留 0
 - **main 取り込み**: main は起票 commit から動いていないので衝突なし(merge-resolver 不要)
 - 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1609 / 1609**。doclink は 256 件追従、未解決 12(executor / release / manifest の anchor 移動 → docs-writer)
-- コードレビュー `rev380c`(codex sol、上段。`aa7f65a7`): **Reject**(実害 3 + 設計懸念 3 + 仕様不整合 1)。(1) 空 scene で `finish` が記録されず trace が 7 要素 / (2) material・texture の隔離が無く report は常に material 0 の 1 件 /
+- コードレビュー `rev380c`(codex sol、上段。`5a17627d`): **Reject**(実害 3 + 設計懸念 3 + 仕様不整合 1)。(1) 空 scene で `finish` が記録されず trace が 7 要素 / (2) material・texture の隔離が無く report は常に material 0 の 1 件 /
   (3) `ReleaseReport` が 6 箇所で捨てられ deferred の `overflow_count` は log されない / (4) trace を受ける participant が phase 内の一部(RNG・pending・renderer retirement・Seq/Vat/Camera/Light/Physics は trace 無し)で順序変異が生存、9 件目は黙って捨てる /
   (5) root・release テストに injector OFF の否定対照が無い / (6) symbol gate は名前 1 本(別名・header inline・release setter がすり抜け)。仕様不整合: real participant は 10 行(`increment` を invariant にした結果。本記録の 11 は誤り → 訂正)。
   → **WP380d**(中段、terra + high)で 6 件を直す。連鎖は 380d で打ち切り。壊せなかった: 5 root の配線(startup / RPC 実 handler / frame tick / import)、vertbuf の primitive 別隔離と 6 列 baseline、manifest の role 検査(実行時)、分割テストの登録、出荷 4 project の tree ID 一致
@@ -22141,7 +22141,7 @@ WP380c → WP380b の順。**仕様レビューは第 2 巡で打ち切り**(§0
 ### WP380d: executor hardening の取りこぼし(rev380c の実害 3 + 設計懸念 3)
 
 **§4 規則 11 中段(機構は WP380c で確定。隔離の範囲と観測の穴を埋める)。実装者: `gpt-5.6-terra` + `high`。コードレビューは統合側変異 + Claude。見積: 小〜中。連鎖: WP380c → 380d で打ち切り。**
-**依存: WP380c(`aa7f65a7`)統合済み。WP380b(実装中)と executor / manifest を共有するので、**WP380d を先に着地**させ WP380b は merge-resolver で追従する。**
+**依存: WP380c(`5a17627d`)統合済み。WP380b(実装中)と executor / manifest を共有するので、**WP380d を先に着地**させ WP380b は merge-resolver で追従する。**
 
 #### 何が壊れているか(`rev380c` が確認)
 
@@ -22178,7 +22178,7 @@ WP380c → WP380b の順。**仕様レビューは第 2 巡で打ち切り**(§0
 manifest の role 制約は Catch2 実行時保証(static ではない)。ID-A で registry を触るときに static 化を検討する。
 
 
-#### WP380d 完了記録(統合側。2026-09-03、`f85fbbe1`)
+#### WP380d 完了記録(統合側。2026-09-03、`4f6f83b7`)
 
 - **実装(codex terra + high、中段。2 回に分けて投入)**: 1 回目は shell tool の 120 秒上限で全体 build が止まり、production 側(trace 入口の全 participant 化と `overflow` flag、material / texture の resource 単位隔離、`[[nodiscard]]` + `ReleaseErrorSink`、gate の 3 条件)だけで
   テストが +1 行のまま報告された。統合側で全体 build(エラー 0)と非 GPU 1280 / 1280 を確認してから、背景 build の指示を付けて差し戻し。2 回目で texture / material injector の OFF / ON と 6 列 baseline、deferred 9 件失敗の `overflow_count == 1`、
@@ -22195,7 +22195,7 @@ manifest の role 制約は Catch2 実行時保証(static ではない)。ID-A �
 **規範: `docs/design_declaration_carrier.md` v4(§2 決定 1〜5、§7 修正 1・2・4・8、§8 修正 α β δ ε η θ。§8 補遺で撤回されたもの = section / `build_id` / C wire / `schema_v1` 予約は作らない)、`docs/design_raytracing.md` §11 v4(決定 14〜18。row 粒度は「先送り」とされた本 WP の対象)、`docs/design_object_identity.md` v4 §9(participant seam)。**
 **前提(すべて統合済み): GLABI-2 = WP381/381a、RAY-NAMESPACE = WP379/379a、ID-B = WP380a〜d + WP380b(executor、trace、effect sink)。RT3-1 = WP374/374a(object 単位の `pelican_ray_instance` と material 鍵規則)。**
 
-#### 今日の対照(§4 規約 10。実測は HEAD `610124b5`)
+#### 今日の対照(§4 規約 10。実測は HEAD `91d476db`)
 
 - `pelican_ray_instance` は **object 単位**の固定 leaf(`mask` U8 / `instance_flags` U32 bitmask / `custom_index` U24。[rayinstance.hpp:37](../src/core/userpublic/components/rayinstance.hpp#L37)、
   [componentcodec.cpp:1005](../src/core/loader/componentcodec.cpp#L1005))。1 object が 2 primitive を持てば row は 2 つだが([polygoninstancecontainer.cpp:1163](../src/core/renderer/polygoninstancecontainer.cpp#L1163) の `DrawStableIdentity`)、
@@ -22494,18 +22494,18 @@ occurrence row の `mask` / `instance_flags` / `custom_index` は `OptionalOverr
 **WP383(中段、terra + high)∥ WP382a(上段、sol max)→ WP382b → WP382c → WP382d**。仕様レビューは打ち切り。各 WP は着地後にコードレビュー(上段は codex、中段は統合側変異 + Claude)。
 
 
-#### WP383 完了記録(統合側。2026-09-04、`1d5a0a05`)
+#### WP383 完了記録(統合側。2026-09-04、`498dec1f`)
 
 - **実装(codex terra + high、中段)**: `MaterialRowIdentity`(typed union)を raygrouplayout に 1 箇所で作り、gate / bindings lookup / AS rule lookup / material reference が同じ値を見る。`source_material_index` を producer(gltf / modeltemplate / polygoninstancecontainer)から AS snapshot まで optional に配線し、欠損を 0 に戻さない。`A && I && !V` は `pelican.ray_material_index_out_of_range@1`。WP374 の「document と asset の同時一致は曖昧」対照は v3 の document 優先に更新。受け入れは production `resolveRaySceneRows` 経由の 5 軸 32 組 parametrized test
 - **agent の変異 / 検証**: gate 無効化 → :269 が 18 件赤 / document lookup 無効化 → :276 が 8 件赤。復元後 54 assertions 緑。**全体 build は 120 秒上限で中断**(背景実行の指示を書いたが従わず)→ 非 GPU 全数・両構成・bytes は統合側
-- **統合側の検証(worktree)**: 全体 build で headless_render_test の 2 行が optional 化に未追随(Claude が修正、d0a4656c)。非 GPU 1290 / 1293 で **WP366 の 3 テストが赤**(`ray_binding_selector_unresolved@1`): 私の truth table `D && N → Document` が name の無い document material を Asset / Unavailable に落としていた = **仕様の誤り**。台帳の決定 33 に訂正(document の存在が勝つ、name は optional。fa2a68f5)を書き、terra に差し戻し。訂正後(1f148b4b): terra は sandbox で background build を完走できず未検証 → 統合側で全体 build エラー 0、非 GPU 1292 / 1293(WP334b は -j flake、単独緑)、WP366 の 3 テストは緑に戻った
+- **統合側の検証(worktree)**: 全体 build で headless_render_test の 2 行が optional 化に未追随(Claude が修正、d0a4656c)。非 GPU 1290 / 1293 で **WP366 の 3 テストが赤**(`ray_binding_selector_unresolved@1`): 私の truth table `D && N → Document` が name の無い document material を Asset / Unavailable に落としていた = **仕様の誤り**。台帳の決定 33 に訂正(document の存在が勝つ、name は optional。f33fb978)を書き、terra に差し戻し。訂正後(1f148b4b): terra は sandbox で background build を完走できず未検証 → 統合側で全体 build エラー 0、非 GPU 1292 / 1293(WP334b は -j flake、単独緑)、WP366 の 3 テストは緑に戻った
 - **統合側の変異(`mutation-runner` agent、opus。GPU 28 件を含む基準 125 / 125)**: M1(訂正前の規則に戻す)赤(WP366 の 3 本 + 5 軸の `D=1,N=0` 8 行)/ M2(document selector の name 一致を外す)赤(WP374 resolver :161 :180 :220)/ M3(out_of_range を Unavailable に畳む)赤 :283 / M5(lookup だけ旧 3 field)赤 :312 の 8 行(`D=1,N=0,A=1,I=1,V=1` で gate=Document・lookup=Asset の食い違いを観測)。**生存**: M4 / M4b / M4c(optional index の欠損分岐は PIC でも gltf でも production 経路で一度も走らない = fixture が無い)。M2 も 5 軸テスト自身は落ちない(selector 側の name が row 側と連動)→ terra に 3 回目の差し戻し。**3 回目**: material 無し(index 付き)の GLB fixture を足し、SceneLoader → PIC → AS row resolver で `source_material_index` が absent、identity が `Unavailable` になることを GPU production test で観測(欠損を `optional{0u}` に戻す変異は PIC / gltf の両方で :530 :551 赤)。5 軸に selector name の独立ケース(欠損・不一致・selector name 無し)を追加(name 一致除去で :260 :266 赤)。指定 ctest 28 / 28(GPU 8)、非 GPU 全数は WP335 / WP331 の -j flake のみ(単独緑)。production source の diff は改行のみで復元済み。所見: **並行 build の MSBuild node reuse で他 worktree の出力がログに混入**し、exit 0 だけでは変異入りバイナリで測った証拠にならない(`MSBUILDDISABLENODEREUSE=1` + obj / exe の mtime で確認)
 - **main 取り込み**: 衝突なし(main は docs のみ)
 - 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **100% tests passed, 0 tests failed out of 1628**。doclink 6 件追従、未解決 0
 - コードレビュー: 中段のため codex レビューは行わず、統合側変異(GPU 28 件含む 125 / 125 → 3 回目後 28 / 28)+ Claude レビューで代替
 
 
-#### WP382a 完了記録(統合側。2026-09-04、`a79360e3`)
+#### WP382a 完了記録(統合側。2026-09-04、`c49ba868`)
 
 - **実装(codex sol max、上段)**: `SchemaNode`(Leaf / Flags / List{RowSchema}、depth 2、list の list は compile 拒否)、presence 3 値(`OptionalOverride` は `std::optional<T>`)、`$` 名予約、`$list` object container(`v` / `next_id` 検証)と `$row` の剥離・復元、重複 row id・素の配列・`$list` 欠落・未知 v の名前付き拒否。behavior / event / component の独立 v3 registration 型と入口(List / Flags を含むときだけ `if constexpr` で v3)、v2 record は `static_assert(sizeof)` で凍結、raw import 診断が v3 入口を認識し host v2 に対して `game_logic_abi_stale@1{found: v3, host: v2}` を LoadLibrary 前に出す。fingerprint は tag・順序・default・presence・range・vocabulary 名と値・全子 node を含み provider descriptor へ伝播。`overrides` は `ray_instance_overrides_not_enabled@1`。fixture: test/fixtures/wp382a_schema/(v3 DLL)
 - **agent の変異 / 検証**: reload guard の `!=` → `==` で同一宣言 :1166 と 4 変異(default / order / vocabulary / presence):1186 が赤、復元後 39 assertions 緑。全体 build / RPC OFF / `SKIP_DEVSTUDIO=OFF` build、非 GPU 1297 / 1297(1 skip)、出荷 4 project 差分なし。deps cache は `C:/pb/off/_deps`(旧 RPC OFF build の cache。worktree 外なので消えない)
@@ -22513,30 +22513,30 @@ occurrence row の `mask` / `instance_flags` / `custom_index` は `OptionalOverr
 - **統合側の変異(`mutation-runner` agent、opus。基準 83 / 83、GPU 4 件含む)**: M1(reader の v3 認識を v2 に)赤 :1108 / M3(重複 row id 拒否除去)赤 :55 / M4(OptionalOverride の absent を default に)赤 :92 :1136 / M5(vocabulary 値を fingerprint から外す)赤 :1186 / M6(`overrides` を黙って受理)赤 :153 / M7(常に v2)赤 :1103 :1186 / M8(v2 record に field 追加)static_assert で build 落ち(期待どおり)。**生存 1**: M2 = `$list.next_id` の検証 3 箇所を消しても緑(negative テストが `next_id` 欠落と `next_id <= max id` を作っていない)→ Claude が 2 ケースを追加し、v2 branch の fingerprint helper に `static_assert(!schemaRequiresV3)`(再帰 schema が v2 の扉を通れない compile 契約)を足した(21e9818b)。追加後の自己変異: `next_id <= max` の検査を消す → :55 で赤。残留 0
 - **main 取り込み**: 衝突なし(WP383 は別ファイル群)
 - 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1633 / 1633**。doclink 84 件追従、未解決 0
-- コードレビュー `rev382a`(codex sol、上段。`a79360e3`): **Reject**(致命 1 + 実害 4 + 設計懸念 3)。(1) reload の fingerprint 検証が behavior 専用で、event / component の v3 schema は version bump なしで通る /
+- コードレビュー `rev382a`(codex sol、上段。`c49ba868`): **Reject**(致命 1 + 実害 4 + 設計懸念 3)。(1) reload の fingerprint 検証が behavior 専用で、event / component の v3 schema は version bump なしで通る /
   (2) Behavior の raw authored tree を canonical encode で上書きしたまま(presence が消える)/ (3) presence・再帰 schema が RPC / Studio / event lookup / external component catalog / provider に届かない /
   (4) `Flags` の `contains` が 1 bit 重なりで真、合成値・0 が往復しない / (5) encoder が `$list` invariants を検証せず、`RowIdExhausted` が無い / (6) range の `-0.0` が別 fingerprint /
   (7) `SchemaNode` が所有型で static init 中に heap / (8) v2 凍結が `sizeof` だけ、frozen fixture は component のみ。→ **WP382a-fix**(上段)で 1・3〜8、**WP382b** で 2。連鎖は 382a-fix で打ち切り。
   壊せなかった: reader の v3 分類(v3-only / v2+v3 / delay-load)、`$list` の decode 側拒否(behavior / event / component / prefab 展開後)、`overrides` の拒否、出荷 4 project と golden の tracked bytes
 
-#### WP382b 完了記録(統合側。2026-09-04、`6e44120e`)
+#### WP382b 完了記録(統合側。2026-09-04、`612c4148`)
 
 - **実装(codex sol max、上段。`622eac4d` + probe `dd82f7de`)**: journal の行 op `insert_component_field` / `remove_component_field`、行 address `{object, component witness, list_path, row_id, leaf_path}`、`before: row_id | end`、永続 high-water `next_id`、raw patch → typed validation → raw / typed atomic publish(authored tree は再 encode しない)、`ListIndexAddressingRejected`(index が実在する leaf を指しても拒否し値は不変。probe で固定)、CAS domain `component_list_row`
 - **統合側の変異**: 圧縮前の変異ランナー報告(3 件)は文脈から失われ、手元に残るのは index guard の変異(`fieldPathUsesListIndex` の呼び出しを外す → `wp382b_editor_test.cpp:629` で赤)だけ。残りの検出力は rev382b(codex)に攻めさせる
 - **main 取り込み(merge-resolver、opus。`3b8097cf`)**: 作業ブランチ(WP385 の lease + **WP382a-fix の `Schema::Node` 所有型**)を merge。textual 衝突 0、意味的衝突 56 件(`editorjournal.cpp` が旧 `SchemaNode` の `tag` / `children` / `presence` / `default_json` を直読み)→ 行 op は `Schema::Node`(`internal::hostSchemaNode` で 1 回変換)を歩く形に。行 op の validator は WP382a-fix が decode / encode 共用にした codec を `canonicalize_params` 経由で通る。非 GPU 1309 / 1311(赤 2 は WP334b の -j16 flake、単独で緑)、WP382 系 59 / 59
 - 全数: 統合 build エラー 0、1656 中 1653 緑。赤 3 のうち `contract_projection_gate` は既知。**`WP357 shipping fullscreen manifest …`(35 → 51)と `project_catalog_headless_smoke`(`pelican_catalog_showcase_game_logic.dll` 欠落)は、作業ツリーに未追跡で置かれた `projects/showcase/`(利用者側の作業中)を test が `projects/` 走査で拾ったもの**で、本 WP の退行ではない(showcase を除けば緑。tracked な 4 project は不変)
 - 記録: `ComponentCodec::schemaNode()` は flat の `SchemaNode` を返すままで、built-in codec の行 address 解決は lookup ごとに `Schema::Node` へ変換している(hot になれば共有 cache。記録のみ)
-- コードレビュー: rev382b(codex、`6e44120e`)= **不合格**。致命 1(legacy `set_component_value` で `/rows/$list/next_id` を巻き戻せて row ID が再利用される)+ 実害 3(add / remove の undo が raw を canonical 再 encode、`structuralDomainsOverlap` が object 一致で先に真、`ListIndexAddressingRejected` が set の 2 形だけ)+ test 1(bytes 比較が構造等価)→ **WP382b-fix** に全件。壊せなかった項目: addressed 3 op の raw 局所 patch、Behavior の `source_json_exact`、row lookup の `$row.id` 走査、出荷 4 project と `src/core/resources` の tree hash 一致
+- コードレビュー: rev382b(codex、`612c4148`)= **不合格**。致命 1(legacy `set_component_value` で `/rows/$list/next_id` を巻き戻せて row ID が再利用される)+ 実害 3(add / remove の undo が raw を canonical 再 encode、`structuralDomainsOverlap` が object 一致で先に真、`ListIndexAddressingRejected` が set の 2 形だけ)+ test 1(bytes 比較が構造等価)→ **WP382b-fix** に全件。壊せなかった項目: addressed 3 op の raw 局所 patch、Behavior の `source_json_exact`、row lookup の `$row.id` 走査、出荷 4 project と `src/core/resources` の tree hash 一致
 
 #### WP382c 統合・検証記録(2026-09-05、残余あり)
 
-`23cb5153` に squash。旧 worktree の実装 `6e1fa40c` に現ブランチを取り込み、コード競合なし、文書 4 件の競合を統合側正本で解消。移動・変更された 5 箇所の文書参照と model reload の説明を現行経路へ更新した。レビュー対象 `a3bd913c` と squash の `src/`・`test/` は同一(追加 merge は文書だけ)。着地後、未保存差分なしとコード一致を確認し `<作業ディレクトリ>/wp382c` / `agent/wp382c` を削除済み。ログ・レビューは worktree 外に保存。
+`345123b8` に squash。旧 worktree の実装 `6e1fa40c` に現ブランチを取り込み、コード競合なし、文書 4 件の競合を統合側正本で解消。移動・変更された 5 箇所の文書参照と model reload の説明を現行経路へ更新した。レビュー対象 `a3bd913c` と squash の `src/`・`test/` は同一(追加 merge は文書だけ)。着地後、未保存差分なしとコード一致を確認し `<作業ディレクトリ>/wp382c` / `agent/wp382c` を削除済み。ログ・レビューは worktree 外に保存。
 
 - 実装: `CanonicalModelAssetKey`、`occurrence_id_v1`、glTF の extras.id / path / accessor digest、共有 scene diagnostics、`get_ray_occurrences` / `resolve_ray_occurrence`、model reload participant、catalog と instance の一括 publish。
 - merge 後 worktree build 成功。非 GPU **1319 件中成功 1318・skip 1・失敗 0**、89.08 秒。RT family / occurrence / reload の W1 は **98/98 成功**、163.54 秒(GPU ラベル 44 件)。対象 exe の更新時刻も確認。出荷 projects と `src/core/resources/` の差分なし。
 - ログ: `<作業ディレクトリ>/wp382c_resume_build_20260905.log`、`<作業ディレクトリ>/wp382c_resume_cpu_20260905.log`、`<作業ディレクトリ>/wp382c_resume_w1_20260905.log`。統合 Studio ON build も成功(`<作業ディレクトリ>/int_wp382c_build_20260905.log`)。
 - 統合全数 **1669 件中成功 1666・skip 1・失敗 2**、698.60 秒。`<作業ディレクトリ>/int_wp382c_20260905/ctest.log` と `done` に保存。既知の `contract_projection_gate` に加え、Studio の fatal 伝達試験が失敗した。下記の試験修正後、当該試験は **1/1 成功**。全数を修正後に再走した結果とは扱わない。
-- **統合時の試験修正(`13aad5b7`):** Studio の fatal 伝達試験は `--headless` で子プロセスを起動していたが、EmbeddedViewport は 15 秒で native window が現れなければ kill する。WP382c 後のモデル読み込みがこの期限を超え、fatal が出る前に打ち切られた。単独再実行でも再現し、stderr で読み込み途中の終了を確認。壊れた設定側も製品と同じ windowed 起動へ変更し、fatal 本文 / Frame Plan 表示 / RPC stdout の既存条件と正常設定の対照を全て維持した。再 build 後の exe 更新時刻を確認し、**1/1 成功、46.31 秒**。ログは `<作業ディレクトリ>/wp382c_studio_diag_20260905.log`(修正前)と `<作業ディレクトリ>/wp382c_studio_windowed_20260905.log`(修正後)。この起動条件変更を取り消すと既存の fatal 非空条件で落ちることを実測済み。製品の timeout やエラー処理は変更していない。読み込みの性能評価は別途必要で、今回性能改善をしたとは扱わない。
+- **統合時の試験修正(`e2a1974f`):** Studio の fatal 伝達試験は `--headless` で子プロセスを起動していたが、EmbeddedViewport は 15 秒で native window が現れなければ kill する。WP382c 後のモデル読み込みがこの期限を超え、fatal が出る前に打ち切られた。単独再実行でも再現し、stderr で読み込み途中の終了を確認。壊れた設定側も製品と同じ windowed 起動へ変更し、fatal 本文 / Frame Plan 表示 / RPC stdout の既存条件と正常設定の対照を全て維持した。再 build 後の exe 更新時刻を確認し、**1/1 成功、46.31 秒**。ログは `<作業ディレクトリ>/wp382c_studio_diag_20260905.log`(修正前)と `<作業ディレクトリ>/wp382c_studio_windowed_20260905.log`(修正後)。この起動条件変更を取り消すと既存の fatal 非空条件で落ちることを実測済み。製品の timeout やエラー処理は変更していない。読み込みの性能評価は別途必要で、今回性能改善をしたとは扱わない。
 - 変異 M1/M2/M3a/M3b の赤実測、RPC OFF / Studio ON の検証は引き継ぎ報告。今回同じ変異を反復していない。`Animation::reloadAsset()` は publish の noexcept 内で呼ばれるが自身は noexcept ではなく、OOM 等で terminate しうる既知残余を維持。
 - **rev382c:** Fable 5.1、読み取り限定。致命的な欠陥は報告なし。ただし下記の指摘があり、無指摘合格ではない。Codex がコードと仕様を照合し、追加 WP の全件起票はしない。原文と裁定は `<作業ディレクトリ>/rev382c_fable_20260905/review.md`。
 
@@ -22551,7 +22551,7 @@ occurrence row の `mask` / `instance_flags` / `custom_index` は `OptionalOverr
 ### WP380e: effect transaction の取りこぼし(rev380b の致命 2 + 実害 5 + 設計懸念 1)
 
 **§4 規則 11 上段(executor の scope 配置と noexcept 契約を変える)。実装者: `gpt-5.6-sol` + max。コードレビューは統合側変異 + Claude(連鎖の最後なので codex レビューは掛けない)。見積: 中。連鎖: WP380b → 380e で打ち切り(以後の指摘は記録のみ)。**
-**依存: WP380b(`5fed6612`)統合済み。WP382(CARRIER-RT3)の participant seam は本 WP の後に載る。**
+**依存: WP380b(`550743c6`)統合済み。WP382(CARRIER-RT3)の participant seam は本 WP の後に載る。**
 
 #### 何が壊れているか(`rev380b` が確認)
 
@@ -22595,7 +22595,7 @@ occurrence row の `mask` / `instance_flags` / `custom_index` は `OptionalOverr
 frozen audit の partial TU(記録)/ 受け入れ文言の統一(記録)/ CARRIER-RT3 の participant(WP382)。
 
 
-#### WP380e 完了記録(統合側。2026-09-04、`7b84c55d`)
+#### WP380e 完了記録(統合側。2026-09-04、`ccb79285`)
 
 - **実装(codex sol max、上段)**: effect / event / RNG / pending scope を最初の game-DLL callback より前(early publish 前、scene.cpp:626)へ。診断は 256 slot + overflow 専用 slot の固定領域に enum code・整数・固定長 buffer で書き、JSON / string 化は commit 後。全 effect API を単一 sequence で採番し staging / flush を sequence 順に materialize。provisional stop は entry を erase、257 件目以降は `effect_outbox_full@1{dropped}`。base `GameContext::createObject*` も callback 中は arena に defer。persistence key は `weakly_canonical` + Windows case-fold。`persistence_read_failed@1{path, reason}`、`nullopt` は不在のみ。runtime public API manifest を足し inventory generator が双方向検査
 - **agent の変異 / 検証**: 変異 = scope を activate 直前へ / sort 除去(:419)/ tombstone 復活(:386)/ case-fold 除去(:134)/ 未登録 overload の追加 → generator が拒否。allocation-free の単体テストは `operator new` 0 回(empty flush・persistence failure flush)。通常 1292 / 1292(1 skip)、`SKIP_DEVSTUDIO=OFF` build、AUDIO OFF 1283 / 1283、RPC OFF build、出荷 4 project bytes 不変。GPU production 1 / 1(codex が直列で実行)
@@ -22652,11 +22652,11 @@ frame transaction を WP380 の executor に載せ替えること(別機構の�
 ### WP384-fix: 三相 publication が RT3-1 の row 更新と descriptor の寿命を壊した(着地後の致命後退。連鎖はここで打ち切り)
 
 **§4 規則 11 上段(renderer の frame transaction)。実装者: `gpt-5.6-sol`。統合側変異 + rev384(codex)で閉じる。見積: 小〜中。連鎖: WP384 → WP384-fix で打ち切り(以後の指摘は記録のみ)。**
-**依存: WP384(`b5abdf9d`)統合済み。WP386a はこの後(同じ renderer / AS の面を触る)。**
+**依存: WP384(`3e1149df`)統合済み。WP386a はこの後(同じ renderer / AS の面を触る)。**
 
 #### 何が壊れているか(統合側の全数 1658 で発見。worktree の W1 は WP384 系だけしか回していなかった)
 
-直列でも再現する赤 4 件(`b5abdf9d` の HEAD、`ctest -j1`):
+直列でも再現する赤 4 件(`3e1149df` の HEAD、`ctest -j1`):
 
 1. `WP374a two same-material chairs honor instance mask and removal in GPU output`([headless_render_test.cpp:14225](../test/headless_render_test.cpp#L14225)): mask を戻した frame で pixel が戻らない(`masked.bytes != restored.bytes` が偽)。→ **row digest が同じでも instance mask / flags / custom index が変わった frame を published bundle の再利用経路(決定 13 `tryReuseFrame`)が「不変」と扱っている**疑い
 2. `WP374a F G F geometry flags rebuild exact resident keys and change any-hit on GPU`([headless_render_test.cpp:13886](../test/headless_render_test.cpp#L13886)): `vkFreeDescriptorSets` の validation error(`descriptorPool-parameter` / `pDescriptorSets-00310`)の後に `waitForFences: ErrorDeviceLost`。→ **`RtDescriptorBundle` の退役で、pool が先に破棄された後に set を free している**(bundle と pool の破棄順、または generation の退役 fence 前に pool を destroy)疑い
@@ -22665,7 +22665,7 @@ frame transaction を WP380 の executor に載せ替えること(別機構の�
 
 **2026-09-05 原因・着地の追記:** 上記は起票時の疑い。引き継ぎの原因調査では (2) の pool 破棄順は主因でなく、DeviceLost 後の二次症状だった。
 実際には同じ handle の RT pipeline 内容が hot reload で変わったときも旧 SBT を再利用していた。
-`6a881375` では instance/geometry flags 等と material generation に加え **RT pipeline 内容世代**を再利用条件へ加え、active diagnostics の move も修正した。
+`29c80e12` では instance/geometry flags 等と material generation に加え **RT pipeline 内容世代**を再利用条件へ加え、active diagnostics の move も修正した。
 今回 `renderer.cpp` の pipeline generation の輸送と `tryReuseFrame()` の比較を確認した。
 統合ログで上記 4 件は全て Passed。後続の再実行で全数を完走した。既知 gate の失敗と rev384 の残余は下の完了記録を参照。
 
@@ -22686,10 +22686,10 @@ frame transaction を WP380 の executor に載せ替えること(別機構の�
 WP384 の設計変更(三相・bundle・seal は維持)/ WP386a の内容 / 再利用経路の性能改善。
 #### WP384 / WP384-fix 完了記録(2026-09-05、既知 gate 失敗と残余を区別)
 
-実装は `b5abdf9d` / `6a881375`、文書追従 `c89d4f70`。三相 submit → publication callback → output publication、immutable RT descriptor bundle、最初の実 submit での retirement batch seal を導入し、fix で instance/geometry flags と material/pipeline 内容世代を再利用判定へ加えた。
+実装は `3e1149df` / `29c80e12`、文書追従 `e6c248e1`。三相 submit → publication callback → output publication、immutable RT descriptor bundle、最初の実 submit での retirement batch seal を導入し、fix で instance/geometry flags と material/pipeline 内容世代を再利用判定へ加えた。
 起票時の pool 破棄順の疑いは主因ではなく、pipeline 内容更新後の旧 SBT 再利用による DeviceLost の二次症状だった(引き継ぎの原因調査)。
 
-- **今回の統合全数:** HEAD `108cfc48`、既存 Debug build、OpenXR ON / Studio ON / SPIRV_LINK ON / Python AUTO。`ctest -j4` が **1658 件中 Passed 1656、Skipped 1、Failed 1**、658.35 秒で完走。ログは `<作業ディレクトリ>/int_wp384fix_resume_20260905/ctest.log`、`done` は `EXIT=8`。
+- **今回の統合全数:** HEAD `b3934506`、既存 Debug build、OpenXR ON / Studio ON / SPIRV_LINK ON / Python AUTO。`ctest -j4` が **1658 件中 Passed 1656、Skipped 1、Failed 1**、658.35 秒で完走。ログは `<作業ディレクトリ>/int_wp384fix_resume_20260905/ctest.log`、`done` は `EXIT=8`。
 - 失敗は既知の `contract_projection_gate` のみ(source inventory の不一致)。前回の `0xc0000142` 連続異常終了は今回は再現せず。原因の解明完了とは扱わない。
 - WP374a F G F / chairs / RPC rows と WP367 production anyhit の修正対象 4 件は全て Passed。WP384 sequential XR seal も今回は Passed。引き継ぎで showcase 由来とされた shipping manifest / project catalog の 2 件も今回は Passed。利用者の project は変更していない。
 - スキップは `PathResolver rejects symlink escapes after canonicalization`。旧 W1 は 52 件失敗 0、うち sequential XR 1 skip。OpenXR OFF と変異 4 種の実測は引き継ぎ報告によるもので、今回再実行したものとは区別する。
@@ -22861,7 +22861,7 @@ WP385(中段、terra + high)を先に投入(検証ループが速くなる)。WP
 
 
 
-#### WP385 完了記録(統合側。2026-09-04、`bbf0dc66`)
+#### WP385 完了記録(統合側。2026-09-04、`f0955c8d`)
 
 - **実装(codex terra + high、中段。1 回目)**: `pelican_gpu_lease_run`(test/gpu_lease_run.cpp: `Globalpelican_gpu_lease_v1` named mutex、holder pid、既定 20 分、`PELICAN_GPU_LEASE=off`、Job Object kill-on-close + suspended child → Job 登録 → resume、Linux は flock + `XDG_RUNTIME_DIR` 必須 + token / sentinel / log)、`RESOURCE_LOCK` を `pelican_gpu` に統一、GPU label の timeout を `1200 + intrinsic + 60`、Catch discovery 出力の GPU lane を launcher で包む後処理(patch_catch_gpu_lease_tests.py)、json-v1 inventory 検査(test/ci/verify_gpu_lease_inventory.py)、gpu_lease_config.cmake、tools/worktree.sh(manifest)。production は不変。**全体 build は 120 秒で止まり**(bg helper 導入前の run)、Catch GPU lane・衝突・timeout・Job Object・変異は未実施
 - **2 回目(Claude Opus general-purpose subagent)**: 後処理 script の 2 バグ(discovery 出力の glob が `POST_BUILD` の実名 `{target}-<hash>_tests.cmake` に合わず 0 件 / `add_test( [==[…]==]` と裸の `LABELS gpu` に regex が合わない)を token 化で修正し、マッチ 0 件は build を落とす guard。inventory gate は label ⇔ lock ⇔ launcher の 3 者一致と `TIMEOUT` の厳密一致(生成物 `gpu_lease_timeouts.json`)。launcher に acquire / release の monotonic log、Windows の collision sentinel、holder section の session namespace fallback(非昇格で `holder_pid=0` になっていた)、token = pid + 開始時刻 + 連番、`PELICAN_GPU_LEASE_NAME`。wrapper は generator 不一致も拒否。受け入れ: 実 Catch GPU test × 2 process で区間が重ならず(gap 1.16 ms)、off では 1.33 s 重なる対照 / ctest 2 本並走で両方 exit 0 / timeout 5 s で exit 124 + `gpu_lease_timeout@1{holder_pid, waited_seconds}` / Job Object で孫が消える / json-v1 197 / 197 / 197 / manifest の generator 差替えで拒否。変異 7 種すべて赤。非 GPU 1306 / 1307(赤は `contract_projection_gate` = **main でも同じ 17 行で赤**。WP385 の範囲外、既知の穴へ)、GPU 対象 6 / 6
@@ -22873,7 +22873,7 @@ WP385(中段、terra + high)を先に投入(検証ループが速くなる)。WP
 ### WP382a-fix: 再帰 schema が reload 検証と catalog に届く(rev382a の致命 1 + 実害 4 + 設計懸念 3)
 
 **§4 規則 11 上段(reload 検証・RPC catalog・ABI 凍結を触る)。実装者: `gpt-5.6-sol` + max。コードレビューは統合側変異 + Claude(連鎖の最後)。見積: 中。連鎖: WP382a → 382a-fix で打ち切り。rev382a #2(raw の上書き)は WP382b の決定 2 が閉じる(ここでは扱わない)。**
-**依存: WP382a(`a79360e3`)統合済み。WP382b は本 WP の後(同じ schema / RPC の面を触るため)。**
+**依存: WP382a(`c49ba868`)統合済み。WP382b は本 WP の後(同じ schema / RPC の面を触るため)。**
 
 #### 何が壊れているか(`rev382a` が確認)
 
@@ -22912,7 +22912,7 @@ raw / typed 分離(WP382b)/ Studio の UI / mixed v2+v3 と delay-load v3 の DL
 
 
 
-#### WP382a-fix 完了記録(統合側。2026-09-04、`036eaad3`)
+#### WP382a-fix 完了記録(統合側。2026-09-04、`91d13b1e`)
 
 - **実装(codex sol max、上段)**: 三 registry 共通の reload snapshot `{kind, key, version, fingerprint}`(event / component v3 に version と fingerprint を追加)、固定 descriptor → 所有型 `Schema::Node` の変換を v3 入口で(src/core/schemanodeadapter.*)、RPC serializer が tag / presence / default / 全子 / Flags の名前と数値を出し external component catalog・event lookup・`ComponentInfo::schema_v3`・prefab provider を再帰 node に接続、Flags は consteval で nonzero one-hot(合成値 / 0 の negative compile fixture)、`contains` は全 bit 包含、`$list` validator を decode / encode 共用(`RowIdExhausted` 追加)、range の `-0.0` 正規化、`SchemaNode` を固定容量 constexpr 化(static init の allocation 0 を probe で固定)、v2 record の `sizeof` + `alignof` + 全 `offsetof` 凍結と並べ替えの negative fixture、frozen v2 DLL が 3 種を登録して callback まで実行
 - **agent の変異 / 検証**: snapshot を behavior-only に戻す → :1213 で 8 変異が誤 commit / presence serialize 除去 → :276 / descriptor を所有型に → :116 で compile 失敗。非 GPU 1304 / 1304、RPC OFF・`SKIP_DEVSTUDIO=OFF` build、negative compile + probe 4 / 4、出荷 4 project 差分なし
@@ -22926,7 +22926,7 @@ raw / typed 分離(WP382b)/ Studio の UI / mixed v2+v3 と delay-load v3 の DL
 ### WP382b-fix: legacy の pointer から `$list` を書き換えられる(rev382b の致命 1 + 実害 3 + test 1。連鎖はここで打ち切り)
 
 **§4 規則 11 上段(editor journal の identity / undo 契約)。実装者: `gpt-5.6-sol`。コードレビューは統合側変異 + Claude(連鎖の最後)。見積: 中。連鎖: WP382b → 382b-fix で打ち切り(以後の指摘は記録のみ)。**
-**依存: WP382b(`6e44120e`)統合済み。WP382c(`agent/wp382c`、未着地)は `editorjournal.cpp` を触らないが同じ面の test を持つので、着地順は 384-fix → 382c → 382b-fix。**
+**依存: WP382b(`612c4148`)統合済み。WP382c(`agent/wp382c`、未着地)は `editorjournal.cpp` を触らないが同じ面の test を持つので、着地順は 384-fix → 382c → 382b-fix。**
 
 #### 何が壊れているか(`rev382b` が確認)
 
@@ -22958,20 +22958,20 @@ WP382c / d の範囲 / Studio の UI / journal の他 op の見直し。
 
 #### 2026-09-05 WP382b-fix 統合・レビュー記録
 
-`36ad3444` に統合。legacy pointer の List 構造編集拒否を共通化し、add / remove / spawn の raw を保存、undo / redo でも row ID の高水位を維持する。独立した attachment の undo は許可し、object 破棄等の構造衝突は残す。
+`6289434c` に統合。legacy pointer の List 構造編集拒否を共通化し、add / remove / spawn の raw を保存、undo / redo でも row ID の高水位を維持する。独立した attachment の undo は許可し、object 破棄等の構造衝突は残す。
 
 - 元の修正: 関連35/35、非GPU全数1316件(成功1315・skip1)、変異5件が期待どおり失敗して復元後成功。RPC OFF / Studio ON でもbuildと関連35/35成功。報告 `<作業ディレクトリ>/wp382bfix_report_20260905.md`。
 - WP386a統合後の作業ツリー: RPC ON / Studio ON の全buildとRT family込みW1 65/65成功。`<作業ディレクトリ>/wp382bfix_integrate_build.log`、`<作業ディレクトリ>/wp382bfix_integrate_w1.log`。
 - Fable review #2の新規過少衝突を実入口で再現: AのBehavior行編集後、Bが同indexへ同値Behaviorを追加すると、AのundoがBのコピーを変更する。domainにcomponent slotを持たせ、Behavior行とattachment構造変更を衝突させて修正。同じattachmentならundo成功、別componentの独立行もundo成功を対照とした。最終関連37/37・883 assertions成功。`<作業ディレクトリ>/wp382bfix_review2_report.md`。同じ全数と変異5件は反復していない。
 - レビュー残余(連鎖を延長しない): #1 spawn/add→List編集を含む複合undo/redoで高水位のpostconditionが過剰衝突する既存問題、#3 legacy Behavior field編集が別attachmentまで過剰衝突する既存問題をGUI接続・v1前の残項目とする。#4 rawで省略されたDefaulted fieldへのlegacy setはinsertが先に必要という現行方針に整合し、救済分岐は追加しない。Studio呼出元の適合は未確認。詳細 `<作業ディレクトリ>/rev382bfix_fable_20260905/review.md`。
-- 統合先 `36ad3444`: playerと影響するecs_editor実行体のbuild成功、関連37/37・883 assertions成功。`<作業ディレクトリ>/wp382bfix_primary_build.log`、`<作業ディレクトリ>/wp382bfix_primary_tests.log`。全数1677件の記録は直前WP386a時点のものを参照し、今回のHEADで全数成功したとは扱わない。doclinkは3873件すべて有効。
+- 統合先 `6289434c`: playerと影響するecs_editor実行体のbuild成功、関連37/37・883 assertions成功。`<作業ディレクトリ>/wp382bfix_primary_build.log`、`<作業ディレクトリ>/wp382bfix_primary_tests.log`。全数1677件の記録は直前WP386a時点のものを参照し、今回のHEADで全数成功したとは扱わない。doclinkは3873件すべて有効。
 
 ### WP386: RT3-2 —— static AABB + `.rint`(手続き幾何)を、描画されない geometry の AS 供給経路ごと入れる
 
 **§4 規則 11 上段(asset 形式・AS 供給経路・pipeline の group 型・SPIR-V 検査・oracle を触る)。実装者: `gpt-5.6-sol` + max。仕様レビュー(codex)2 巡 → 実装 → 統合側変異 → コードレビュー。見積: 大(milestone 3)。**
 **規範: `docs/design_raytracing.md` §4-P(v3 = 4-P.7 が最終)、§11 v4(決定 6(b)・8・13・19: RT3-2 の位置づけ)、§3(shader record・`maxRayHitAttributeSize`)。前提: RT3-1(WP374/374a/377/383)統合済み。CARRIER-RT3 とは独立(per-occurrence override は AABB 行にも後で載るが、本 WP は object 単位)。**
 
-#### 今日の対照(§4 規約 10。実測は HEAD `3a7c158a`)
+#### 今日の対照(§4 規約 10。実測は HEAD `cf629b27`)
 
 - `vk::GeometryTypeKHR::eAabbs` は repo に **0 件**。BLAS build は triangles 固定([accelerationstructure.cpp:860](../src/core/renderer/accelerationstructure.cpp#L860))、`BlasVariantKey` は `(geometry_allocation_id, geometry_flags)` で geometry の種別を持たない
 - hit group の schema は `closesthit / anyhit / type("triangles" のみ)`([computetask.cpp:1370](../src/core/renderingpass/computetaskdefinitionjson.cpp)、当時の行。file は C-10 で分割済み)。`intersection` は **語彙として存在し必ず拒否**(`pelican.ray_tracing.unsupported_shader_stage@1`。[computetask.cpp:1252](../src/core/renderingpass/computetaskdefinitionjson.cpp)、:1458)。pipeline は `eTrianglesHitGroup` だけ作り `intersectionShader = unused`([pipelinefactory.cpp:699](../src/core/shader/pipelinefactory.cpp#L699))
@@ -23120,7 +23120,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### WP386 仕様レビュー第 2 巡(不合格・12 件)と v3 —— **決定差分(v3 > v2 > v1。仕様レビューは 2 巡で打ち切り、残余はコードレビューへ)**
 
-仕分け: **直す 12**(全件)。実測 HEAD は `81082d14`(v1 の `3a7c158a` から docs のみ移動、対照の事実は不変)。
+仕分け: **直す 12**(全件)。実測 HEAD は `11e592dc`(v1 の `cf629b27` から docs のみ移動、対照の事実は不変)。
 
 ##### 決定 17(#1): identity は **scene load generation 内で安定**。永続 object ID は本 WP の範囲外
 
@@ -23197,7 +23197,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 未公開の旧 SBT 行番号 `q` を維持するためだけの互換分岐は不要。決定23等の旧 SBT / TLAS bytes 不変要求は、旧割り当ての固定としては撤回する。現行割り当ての決定性、GPU が意図した形状 / shader / record を読むこと、誤った SBT offset の検出、保存した設定の意味と出荷 source を保つ。旧内部番号に合わせた期待値はこれらの意味を検査する形へ改める。今回 layout v3 にだけ新 identity を適用する互換分岐案を撤回し、全 layout で同じ identity 生成を使う。永続 row ID と保存 bytes の契約を緩める裁定ではない。保守的な分岐・重複検査の整理方針は [v1 開発方針](v1_development_plan.md)を参照。
 ##### WP386a 統合・レビュー記録 (2026-09-05、残余あり)
 
-コードは `b7cb1825` に squash。元実装 `60118cb6` に WP384-fix / WP382c を mergeし、renderer・AS の3競合を解消。WP384の共同publication、submission lease、reuse判定と、procedural kind / generation rootを両立させた。`-0.0` を identity で正規化。layoutなしで procedural component が通る欠落は、実SceneLoaderで `ray_group_type_requires_layout_v3@1` に拒否する対照を追加して修正した。
+コードは `82e4594c` に squash。元実装 `60118cb6` に WP384-fix / WP382c を mergeし、renderer・AS の3競合を解消。WP384の共同publication、submission lease、reuse判定と、procedural kind / generation rootを両立させた。`-0.0` を identity で正規化。layoutなしで procedural component が通る欠落は、実SceneLoaderで `ray_group_type_requires_layout_v3@1` に拒否する対照を追加して修正した。
 
 - ビルド: merge後と最終worktree build成功。非GPU全数 **1324件中成功1323・skip1・失敗0** (72.49秒、最終のload gate / 試験調整前)。最終W1は **60/60成功**、GPU17件を含む、69.49秒。ログは `<作業ディレクトリ>/wp386a_resume_cpu.log`、`<作業ディレクトリ>/wp386a_final_build.log`、`<作業ディレクトリ>/wp386a_final_w1.log`。
 - 旧qの固定を外したGPU対照: WP366はGPUが返したqの範囲・一意性を確かめ、既知の形状のmarker / record / tintと該当SBTを照合。誤ったq*Rオフセットは実GPUで検出。WP374aは現行の正準順で先行するobjectを追加し、qが変わってもcustom indexとrecordが保たれることを検査。旧番号を保つためのlayout別分岐は入れていない。
@@ -23213,15 +23213,15 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 
 
-#### R0 完了記録(統合側。2026-09-17、`36e8115f` + inventory `4d80f284`)
+#### R0 完了記録(統合側。2026-09-17、`6f5ecffc` + inventory `5143d8ef`)
 
-- **基準取り**(`<作業ディレクトリ>/baseline_0916/`): HEAD `fc48b30d` で 1864 件中 29 件が赤(9/6〜9/12 の実装が全数を回さずに積まれていた)。分類は `triage.md`。
+- **基準取り**(`<作業ディレクトリ>/baseline_0916/`): HEAD `bdf9547e` で 1864 件中 29 件が赤(9/6〜9/12 の実装が全数を回さずに積まれていた)。分類は `triage.md`。
 - **6 クラスタを Opus 6 本で並列修正**(各 worktree、production の変更は最小):
-  - C1 skeletal / 共通グラフ GPU(5): 空 SECTION 4 件に assertion を書く。`set_time` harness は 9/7 の「公開 revision = frameIndex」変更(`bff9e540`)に追随して `advance()` を足す(production の temporal history reset を消す変異で赤)
+  - C1 skeletal / 共通グラフ GPU(5): 空 SECTION 4 件に assertion を書く。`set_time` harness は 9/7 の「公開 revision = frameIndex」変更(`59b19eba`)に追随して `advance()` を足す(production の temporal history reset を消す変異で赤)
   - C2 RT の production AS(5): RT5 で skin / morph / VAT が AS 対象になった override matrix、WP382d で named reject が load 時に出るようになった 2 件、RT6 の空 SECTION 2 件。すべて test 側
   - C3 fixture と資源(8 → 7 + golden): resource registry の 9 id(9/6 の 6 commit 由来)、WP364 の cache key(`engineShaderUniverseSha256` が全 GLSL を畳む)、public API manifest に 5 mutator(`refuse.transaction-scope`)、scene extract test に `main_rendering_config.json`、hybrid preset test は rename でなく define で reload を印す、空 SECTION 2 件
-  - C4 エディタ(5): 空 SECTION 4 件を `GENERATE` に、**production 1 件**: fullscreen pass editor が `clearDraft()` で save の tooltip を毎回消していた(`7af6fd95`)
-  - C5 物理と SEGFAULT(3): 空 SECTION 2 件、**production 1 件**: `currentFramePlanJson()` が `GET_MODULE(ComputeTaskContainer)` で Vulkan を bootstrap し CPU test で null logger を踏んだ(`9f4e324b`)→ `tryGet`
+  - C4 エディタ(5): 空 SECTION 4 件を `GENERATE` に、**production 1 件**: fullscreen pass editor が `clearDraft()` で save の tooltip を毎回消していた(`fb739bf3`)
+  - C5 物理と SEGFAULT(3): 空 SECTION 2 件、**production 1 件**: `currentFramePlanJson()` が `GET_MODULE(ComputeTaskContainer)` で Vulkan を bootstrap し CPU test で null logger を踏んだ(`40905f5e`)→ `tryGet`
   - C6 corpus と gate(3): `raytracing_demo` の `catalog_smoke.json`(負対照から閾値 350 / 0.5)、WP357 の census 35 → 36(`present` に blend 無し、規則は不変)、projection gate に `punctualshadowview.cpp` を登録
 - **golden**: 影 3 枚(PCF、境界 1 pixel)と trace の `recorded`、skeletal toon harness の `advance()`。TAA harness に `advance()` を入れると jitter の位相が変わり golden が全部動くので入れない(検証済み)。inventory manifest を再生成
 - **副産物(記録)**: primary の shader source 9 本が非正規の改行で cache key が worktree と違った(正規化済み。hash が改行に依存するのは R1 の候補)/ worktree では smoke が未登録(`SKIP_DEVSTUDIO=ON` 固定)/ `atomicReplace` の間欠 `Access is denied`(修正候補付き)/ `setTime` だけの呼び手が animation frame を公開できない(O-1 の裁定)/ `looks_mutating` が `Animation::Status` 戻りを getter 扱いにする(public API gate の穴)/ RT6 world procedural BLAS は -j4 で flake、直列で緑 / **Studio が `projects/raytracing_demo` を開けない**(別 session の実測 2026-09-17: 埋め込み engine が "starting main loop" 直後に `Renderer logical frame requires a compiled render pipeline`([renderer.cpp:4869](../src/core/vkcore/renderer.cpp#L4869))で exit 1。同 binary は headless と `--rpc --feature-overlay editor --editor-transform` では 8 s 走る = Studio が接続後に行う何か(preview variant / frame plan 要求)が原因。`example` は開ける。未修正、R 群の候補)
@@ -23231,7 +23231,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 **§4 規則 11 中段(`src/project` の純粋層 + core の backend 接続。出荷物の挙動は「未登録の op / 型を名前付きで拒否する」だけ変わる)。実装者: Claude(Fable + Opus subagent。codex は上限中)。検証: 統合側変異 + Claude。見積: 小〜中。**
 **規範: `v1_development_plan.md`「v0 の約束と『往復』」AG-0、`design_graph_composition.md`。前提: 共通グラフ `pelican.graph` v1(`expandGraphDocument` / `validateGraphPorts` / `partitionGraphDocument`)統合済み。**
 
-#### 今日の対照(§4 規約 10。実測は HEAD `f8d0c09b`)
+#### 今日の対照(§4 規約 10。実測は HEAD `de2b5a21`)
 
 - op の契約は **静的な表** [`valueGraphOperationContracts()`](../src/project/graphpartition.cpp#L82)(value.* / event.* / audio.* / render.scalar)と、[`partitionGraphDocument()`](../src/project/graphpartition.cpp#L116) の resolver に **ハードコードされた `render.*` の分岐**。module が op を足す入口は無い
 - 型は [`makeBuiltinLogicalTypeRegistry()`](../src/project/logicalrendertype.hpp#L152) の built-in だけ(`registerSchema` の呼び手は [logicalrendertype.cpp](../src/project/logicalrendertype.cpp) 内の 9 箇所のみ)。module が型を足す入口は無い
@@ -23296,10 +23296,10 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1)/ 変更時の扱いの GUI(P-1)/ RPC の catalog(P-1)/ package manifest のファイル形式(X-1)。
 
-#### AG-0 完了記録(統合側。2026-09-17、`adb73793`)
+#### AG-0 完了記録(統合側。2026-09-17、`c9085d6f`)
 
 - 実装(Opus、`agent/ag0` `a49e6898`): 決定 1〜6 すべて。受け入れ 6 件を変異で赤確認(未登録 op / 未登録型 / 二重登録 / 静的表の復活 = 二重登録で赤 / backend の named reject(値・描画)/ test-only module の production 混入 = dumpbin gate で赤 / catalog の evaluation 分類)。OFF 構成(`SKIP_DEVSTUDIO=OFF`、`PELICAN_WITH_RPC=OFF`)build 成功、出荷 4 project bytes 不変
-- 統合側: W1(worktree、gate 家族込み直列)緑、全数 **1869 / 1869**(AG-0 の test 5 件増)。着地時の docs 追従で CLI の usage 行のリンクを再 anchor(`3817eebe`)
+- 統合側: W1(worktree、gate 家族込み直列)緑、全数 **1869 / 1869**(AG-0 の test 5 件増)。着地時の docs 追従で CLI の usage 行のリンクを再 anchor(`9d719441`)
 - 記録: 実装時の裁定(上)。コードレビュー(codex)は枠が戻ってから rev_ag0 として掛ける
 
 ### AG-1a: pose module —— `pelican.pose@1` を共通グラフの登録型にし、既存の評価器を node で包む(v0「往復」の段 2a)
@@ -23355,7 +23355,7 @@ pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1
 
 
 
-#### AG-1a 完了記録(統合側。2026-09-17、`5bc79586`)
+#### AG-1a 完了記録(統合側。2026-09-17、`ee751752`)
 
 - 実装(Opus、`agent/ag1a` `b59276e3` → 作業ブランチ merge `44e224d5`): 決定 1〜4 + `PELICAN_WITH_ANIMATION`。受け入れ 1〜4 を変異で赤確認(publish を消す → GPU 姿勢が rest のまま / `setParameter` の同期を消す → value port で遷移しない / rig 比較を消す → layout が混ざる / writer の重複判定を消す → 二重 publish = `duplicate_revision`)。OFF 構成: dumpbin で animation の symbol ON 4384 / OFF 0、共通グラフ test 緑、pose 文書は `graph.operation_unregistered@1`。`SKIP_DEVSTUDIO=OFF` / `PELICAN_WITH_RPC=OFF` build(後者の既存の未ガード test target 1 つは記録)
 - 統合側: merge の衝突 8 file は AG-0 の二重(内容同一)、`skeletal_gltf_test.cpp` は R0 の assertion と AG-1a の case が自動 merge。W1 緑、全数 **1876 件中 1875 緑 + `Studio receives the running example fatal text …` 1 件は -j4 の flake(直列で緑、45.9 s)**
@@ -23364,7 +23364,7 @@ pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1
 ### AG-1b: pose graph 経路を component 経路と同じ挙動に揃え、owner 単位で排他する(v0「往復」の段 2b。v3 = 最終)
 
 **§4 規則 11 中段(animation の runtime と scene の prepare。文書形式と ABI は変えない)。実装者: Claude(Fable + Opus)。設計レビューは 2 巡(`<作業ディレクトリ>/dr_ag1b.md` 19 件、`<作業ディレクトリ>/dr_ag1b_r2.md` 15 件)で打ち切り。残余はコードレビューへ。見積: 中。**
-**規範: `v1_development_plan.md` AG-1、`design_animation_graph.md` §3、`design_graph_composition.md`。前提: AG-1a 統合済み(`5bc79586`)。**
+**規範: `v1_development_plan.md` AG-1、`design_animation_graph.md` §3、`design_graph_composition.md`。前提: AG-1a 統合済み(`ee751752`)。**
 
 #### 裁定の変更(第 2 巡の結論)
 
@@ -23395,9 +23395,9 @@ pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1
 - 決定 2: `pose_scalars` は `SceneLoader::GraphRuntime::pose_evaluation` に移し、renderer 側と同じ `synchronizeGraphRuntime` / `prepareGraphRuntimeTransfer` で reset / transfer。`PoseGraphRuntime::retireUnreferenced()` は **死んでいた**(attachment が `shared_ptr` を持つので weak_ptr が expire せず、退役した世代が object を claim し続けていた)→ `retainOnly(live)` に置換し、これが移送 API を兼ねる(退役する attachment の `EvaluatorV1` を donor として保持し、owner + node id + anim_graph 文書が一致すれば `rebind()` で採用)。`SinkTrace` に現在 state 名を足した(cursor の「現在」印は `StatusTraceV1` に無く、`animgraph.hpp` は凍結面なので載せない)
 - 決定 4: `publishAnimationFrame(id, writer, frame, …)` に writer token(slot の generation 付き)。同 revision の別 writer は `authority_conflict`、同 writer の 2 回目は `duplicate_revision`。clip 経路と service sink がそれぞれ名乗る。**台帳の「今日 = clip 装着は黙って二重書き」は誤り**: AG-1a の文書レベルの proxy(`component_writer`)が既に拒否していた。弱かったのは proxy が唯一の砦だったことで、token を消す変異で proxy が盲目になり黙って二重書きになる(実測)
 - `pose.clip_sample` は `parameters` object を **必須**にした(factory が `node.at("parameters")`。契約の締め付け。in-tree に無 parameter の node は無い)
-- **既知の穴(記録)**: (a) 同一 process で live renderer のまま `SceneLoader::load` を 2 回呼ぶと `load` 内(次に `~SceneLoader`)で hang する(13 分超、CPU 10 s)。既存 test に live renderer 下の scene 再読込は無い。AG-1b の差分はその経路を触っていないが無関係の証明は無い。**単独 WP の候補**(「放棄された scene transaction の teardown hang」の記録と同根か要確認)。受け入れ 2 の対照は「文書を変えた再公開では initial state」に置換した / (b) `test/raytracing_rt3_1_production_test.cpp:1796` の `runWp374aRpcBytes` が `#if PELICAN_WITH_RPC` の外(既記録)/ (c) worktree の GPU で `VRMA-I0 …` / `gizmo feature draws …` / `WP386a procedural participant …` の 3 件が SEGFAULT(AG-1b 前の `c2c43170` でも再現)。primary の全数(`b960edf7`)では緑だったので **worktree 環境依存の疑い**。着地の全数で確認する
+- **既知の穴(記録)**: (a) 同一 process で live renderer のまま `SceneLoader::load` を 2 回呼ぶと `load` 内(次に `~SceneLoader`)で hang する(13 分超、CPU 10 s)。既存 test に live renderer 下の scene 再読込は無い。AG-1b の差分はその経路を触っていないが無関係の証明は無い。**単独 WP の候補**(「放棄された scene transaction の teardown hang」の記録と同根か要確認)。受け入れ 2 の対照は「文書を変えた再公開では initial state」に置換した / (b) `test/raytracing_rt3_1_production_test.cpp:1796` の `runWp374aRpcBytes` が `#if PELICAN_WITH_RPC` の外(既記録)/ (c) worktree の GPU で `VRMA-I0 …` / `gizmo feature draws …` / `WP386a procedural participant …` の 3 件が SEGFAULT(AG-1b 前の `edb2c356` でも再現)。primary の全数(`3611e390`)では緑だったので **worktree 環境依存の疑い**。着地の全数で確認する
 
-#### AG-1b 完了記録(統合側。2026-09-17、`945ad8aa`)
+#### AG-1b 完了記録(統合側。2026-09-17、`129eb218`)
 
 - 実装(Opus、`agent/ag1b`): 決定 1〜6。受け入れ 1・2・4 を変異で赤確認(wrap を戻す → clamped / offset clip で姿勢差 / donor の採用を消す → state が initial に戻る / writer token を消す → proxy が盲目になり黙って二重書き)。OFF 構成は別 build で `[animation-off]` 緑。非 GPU 1463 緑
 - 統合側: worktree が Ninja で configure されていて素の環境の build が壊れた(標準ヘッダ不在 60 error → 古い exe で SEGFAULT 24 件)→ VS generator で configure し直し。W1 は RT6 named TLAS の **既知の間欠 `Access is denied`** で 3 回止まり 4 回目で緑。全数 **1886 件中 1885 緑 + 同じ間欠 1 件**(primary で直列再実行して緑)。この間欠は `agent/r1-atomic`(POSIX rename)で修正中
@@ -23469,7 +23469,7 @@ pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1
 - `PELICAN_WITH_RPC=OFF` で `test/raytracing_rt3_1_production_test.cpp` が落ちる既知の穴(AG-1a の裁定に記録済み)は P-1 以前から
 - **着地 gate**: 新 test 名 `instance inputs …` / `instance parameters …` は従来の family regex に当たらない。P-1 の gate に足した
 
-#### P-1 完了記録(統合側。2026-09-17、`b960edf7`)
+#### P-1 完了記録(統合側。2026-09-17、`3611e390`)
 
 - 実装(Opus、`agent/p1`): 裁定 1〜8 と決定 1〜6 すべて。受け入れ 1〜4 を変異で赤確認(GUI の導線を消す / curve の点数を変えて bytes 不一致 / 二重指定の拒否を戻す / snapshot の退避を空に / `override_shadowed` を `return false` に)。非 GPU 1621 緑、関連 159 緑、GPU graph 系 17 緑。`design_graph_composition.md` の「二重指定は拒否」の段落を優先順に訂正
 - 統合側: W1 緑、全数 **1883 / 1883**。着地時の docs 追従 48 行
@@ -23508,7 +23508,7 @@ journal / undo(R 群)/ component 欄(P-1b)/ feature parameter / definition 内�
 
 実装時の裁定(2026-09-17、`agent/p2a1a`): 対照の実測は **trace が赤、画素は緑**(`hdr_off` で `HighLuminanceExtraction` が scene bucket に落ち、`Bloom_Threshold_RT` が SRGB → UNORM。`renderer_execution_traces.json` が捕まえ、`wp73_rgba8_hashes.json` と PNG は通った)。以後の P-2a の受け入れは「画素不変」に加えて **`canonical_frame_plan_trace.txt` と `renderer_execution_traces.json` の不変**を書く。`canonicalBucket` には **3 つ目の名前判定 `lighting_pass`**(:274-276)が残る(`example_renderingpass_data.json:67-70` の `lighting_pass` が swapchain を書くので死んでいない。射程外、記録)。受け入れ文の「bucket 0」は誤りで、anchor 無しの pass は **scene bucket**(`__anchor_sprite` より前)に並ぶ。
 
-完了記録(2026-09-17、`70982870`): 3 file(`example` の 13 pass に `canonical_anchor: post_ldr`、`featurecompose.cpp` の Bloom 名判定 2 箇所の撤去、`hdr_on` / `hdr_off` fixture の anchor と `format_class` 明示)。W1(触った面 + RT family、166 件)は 165 緑、赤は **RT6 named TLAS の `manifest.json: Access is denied`**(R1 の既知の穴。1a は transaction 経路を触らない)が飽和負荷下で 2 回連続 → **W1 を飛ばして squash**した(`land.sh` の `SKIP_W1=1`。この運用は R1-2 が着地するまで)。全数は着地後の統合 build で確認(下の進捗に反映)。WP364 の `parent_manifest.json` は config が 13285 → 13831 bytes になったので 1b が着地するまで赤(1b が post-1b の blob に更新する)。
+完了記録(2026-09-17、`60e95f53`): 3 file(`example` の 13 pass に `canonical_anchor: post_ldr`、`featurecompose.cpp` の Bloom 名判定 2 箇所の撤去、`hdr_on` / `hdr_off` fixture の anchor と `format_class` 明示)。W1(触った面 + RT family、166 件)は 165 緑、赤は **RT6 named TLAS の `manifest.json: Access is denied`**(R1 の既知の穴。1a は transaction 経路を触らない)が飽和負荷下で 2 回連続 → **W1 を飛ばして squash**した(`land.sh` の `SKIP_W1=1`。この運用は R1-2 が着地するまで)。全数は着地後の統合 build で確認(下の進捗に反映)。WP364 の `parent_manifest.json` は config が 13285 → 13831 bytes になったので 1b が着地するまで赤(1b が post-1b の blob に更新する)。
 
 #### P-2a-1b: Bloom を `engine://features/bloom.json` に(中〜大。P-2a-1a の後)
 
@@ -23519,7 +23519,7 @@ journal / undo(R 群)/ component 欄(P-1b)/ feature parameter / definition 内�
 
 受け入れ: golden 2 種 + trace が bytes 不変 / `bloom.json` を消すと `example` は `unknown_render_feature` / WP357 oracle 2 本が feature の pass を読んで緑(config 名読みに戻す変異で `WP357 shipping pass not found`)/ materialize → 派生の段数編集で画素が変わり `bloom.json` 不変 / `example` 以外の出荷 3 project bytes 不変
 
-実装時の裁定と完了記録(2026-09-17、`a1233ddd`): 15 file。13 pass + 9 RT は `src/core/resources/features/bloom.json` へ逐語移設(anchor は 1a のまま `post_ldr`、`insert: after:post_ldr`)、`example` は `features: [bloom, ui]`。golden 2 種 + `canonical_frame_plan_trace.txt` + `renderer_execution_traces.json` は bytes 不変(実装者の実測)。裁定: (1) `get_render_features` は pass 一覧を返さない(reference と parameter 面だけ)。「内部を見る」は engine 参照の feature 文書を読むことで足りるとし、RPC は増やさない。(2) feature 文書が無いときの `example` の失敗は `unknown_render_feature` ではなく engine resource registry の `Unknown engine resource id`。受け入れの文言はこの実測に合わせる。(3) `devstudio_fullscreen_pass_test` は `example_frame_plan.json` の Bloom の形の対照を失った(config から Bloom が消えたため。記録)。(4) `graphvariantpolicy` の substring heuristic が `bloom.json` を見るようになった(挙動変化なし)。(5) materialize → 派生の段数を 2 に編集で 3600 画素が変わり engine の `bloom.json` は不変。**着地 gate は利用者指示(2026-09-17「どんどん進めて後でテスト」)により build + 非 GPU 55 件だけ**。GPU 込みの全数は P-2 を閉じるときに 1 回。WP364 の `parent_manifest.json` は post-1b の blob に更新済み。
+実装時の裁定と完了記録(2026-09-17、`6e04c7c8`): 15 file。13 pass + 9 RT は `src/core/resources/features/bloom.json` へ逐語移設(anchor は 1a のまま `post_ldr`、`insert: after:post_ldr`)、`example` は `features: [bloom, ui]`。golden 2 種 + `canonical_frame_plan_trace.txt` + `renderer_execution_traces.json` は bytes 不変(実装者の実測)。裁定: (1) `get_render_features` は pass 一覧を返さない(reference と parameter 面だけ)。「内部を見る」は engine 参照の feature 文書を読むことで足りるとし、RPC は増やさない。(2) feature 文書が無いときの `example` の失敗は `unknown_render_feature` ではなく engine resource registry の `Unknown engine resource id`。受け入れの文言はこの実測に合わせる。(3) `devstudio_fullscreen_pass_test` は `example_frame_plan.json` の Bloom の形の対照を失った(config から Bloom が消えたため。記録)。(4) `graphvariantpolicy` の substring heuristic が `bloom.json` を見るようになった(挙動変化なし)。(5) materialize → 派生の段数を 2 に編集で 3600 画素が変わり engine の `bloom.json` は不変。**着地 gate は利用者指示(2026-09-17「どんどん進めて後でテスト」)により build + 非 GPU 55 件だけ**。GPU 込みの全数は P-2 を閉じるときに 1 回。WP364 の `parent_manifest.json` は post-1b の blob に更新済み。
 
 #### P-2a-1c: Bloom の parameter(define)と materialize 後の編集(中。1b の後)
 
@@ -23528,7 +23528,7 @@ journal / undo(R 群)/ component 欄(P-1b)/ feature parameter / definition 内�
 
 受け入れ: `set_parameters{threshold}` → 画素が変わる(define の再 compose)/ 既定値で golden 不変 / materialize 後に `intensity` を変えると画素が変わる(今日 = 効かない)/ fixture の shader_defines を消すと `#error` で名前付きに落ちる
 
-実装時の裁定と完了記録(2026-09-17、`9e4081b4`): 13 file。`bloom.json` に `threshold / knee / intensity`、2 shader は `#error` + `float(define)`(`scalarDefineValue` が `2.0f` を `"2"` と出すので float() で包む。生成側の修正は別途、記録)、`embed_shader()` が build 時 `.spv` に既定値を渡す。materialize は **`parameters.scalars` を残し `bound_parameters` に値を持ち、scalar の `$name` と define は compose 時に再生成**(優先: instance parameters > bound_parameters > 宣言 default)。**指示からの逸脱(採る)**: `shadow_directional / shadow_point / shadow_spot / cube_capture / planar_reflection` の派生も `$resolution` を焼かずに残す(scalar が define と物理 field の両方に効くので、片方だけ焼くと materialize 後の編集が無音で部分適用になる。composed config は不変を assert)。`get_render_features` は materialized でも `parameter_schema` を返し、宣言の `default` を bound 値で上書き(engine の元 default は RPC から見えなくなる、記録)。受け入れ: golden 4 種 + trace + hashes 不変 / `set_parameters{threshold: 1.5}` で 14400 画素(対照: shader を const に戻すと 0)/ materialize 後 `intensity` 編集で 14400 画素(対照 1: 優先順位から bound を外すと 0、対照 2: 1c 前の規則に戻すと `Materialized render feature 'bloom' requires a bound_parameters object …`)/ fixture の `shader_defines` を消すと `#error PELICAN_FEATURE_BLOOM_THRESHOLD must be defined`。WP364 の `parent_baseline.json` は engine shader universe hash に連動して 4 key を再凍結(shader 編集のたびに再凍結が要る tripwire、記録)。**穴(記録)**: (1) `.spv` だけの engine shader は define 付き config で使えない(`debug_texture.frag` / `shader_lab_*` が stem 経由で該当。TAA 以来の形)(2) 既定値が `bloom.json` / `resources/CMakeLists.txt` / hdr fixture の 3 箇所にあり一致を assert しない(3) pass 本文に `$scalar` を残した派生を `editPresetPass` が literal に凍結し得る(出荷 feature には無い)(4) worktree には gitignored corpus が無く `project_catalog_headless_smoke` は primary でしか見えない。gate: build + 非 GPU 家族(利用者指示)。
+実装時の裁定と完了記録(2026-09-17、`e3a2d3d0`): 13 file。`bloom.json` に `threshold / knee / intensity`、2 shader は `#error` + `float(define)`(`scalarDefineValue` が `2.0f` を `"2"` と出すので float() で包む。生成側の修正は別途、記録)、`embed_shader()` が build 時 `.spv` に既定値を渡す。materialize は **`parameters.scalars` を残し `bound_parameters` に値を持ち、scalar の `$name` と define は compose 時に再生成**(優先: instance parameters > bound_parameters > 宣言 default)。**指示からの逸脱(採る)**: `shadow_directional / shadow_point / shadow_spot / cube_capture / planar_reflection` の派生も `$resolution` を焼かずに残す(scalar が define と物理 field の両方に効くので、片方だけ焼くと materialize 後の編集が無音で部分適用になる。composed config は不変を assert)。`get_render_features` は materialized でも `parameter_schema` を返し、宣言の `default` を bound 値で上書き(engine の元 default は RPC から見えなくなる、記録)。受け入れ: golden 4 種 + trace + hashes 不変 / `set_parameters{threshold: 1.5}` で 14400 画素(対照: shader を const に戻すと 0)/ materialize 後 `intensity` 編集で 14400 画素(対照 1: 優先順位から bound を外すと 0、対照 2: 1c 前の規則に戻すと `Materialized render feature 'bloom' requires a bound_parameters object …`)/ fixture の `shader_defines` を消すと `#error PELICAN_FEATURE_BLOOM_THRESHOLD must be defined`。WP364 の `parent_baseline.json` は engine shader universe hash に連動して 4 key を再凍結(shader 編集のたびに再凍結が要る tripwire、記録)。**穴(記録)**: (1) `.spv` だけの engine shader は define 付き config で使えない(`debug_texture.frag` / `shader_lab_*` が stem 経由で該当。TAA 以来の形)(2) 既定値が `bloom.json` / `resources/CMakeLists.txt` / hdr fixture の 3 箇所にあり一致を assert しない(3) pass 本文に `$scalar` を残した派生を `editPresetPass` が literal に凍結し得る(出荷 feature には無い)(4) worktree には gitignored corpus が無く `project_catalog_headless_smoke` は primary でしか見えない。gate: build + 非 GPU 家族(利用者指示)。
 
 #### P-2a-2: feature parameter の runtime 値(1c の後。GPU の曲線確認は P-2a-4 の後)
 
@@ -23537,7 +23537,7 @@ journal / undo(R 群)/ component 欄(P-1b)/ feature parameter / definition 内�
 3. Bloom の `intensity` を `binding: buffer` に
 4. **受け入れ**: `set_parameters{intensity}` が buffer の初期値を変えて画素が変わる(再 compose はする。「再 compose 無し」は撤回)/ 既存 7 feature の挙動不変 / golden 不変 / **共通グラフからの毎 frame 駆動(GPU)は `pelican.graph` root が要るので P-2a-4 の後に受け入れる**(記録)
 
-実装時の裁定と完了記録(2026-09-17、`62f09ce0`): 18 file。scalar 宣言に `binding: define | buffer`(`ScalarParameterBinding`、`shader_define` の既定は `binding == define`。`binding: buffer` + `shader_define: true` / 非 float / 未知の binding 名 / `<feature>.<scalar>` の buffer 宣言欠落・型違い / 手書きの `initial_f32` は名前付き拒否)。bound 値は materialize の capture の **後**に composed の buffer entry へ `initial_f32` として書く(派生は宣言を未解決のまま保つ = 1c の形)。frame graph 側は `FrameGraphBufferDefinition::initial_f32`(`runtime_f32` かつ 4 byte につき 1 float を要求)で registration 時に `runtime_values` を seed(今日は zero fill)。`copyBufferState` は value graph と source documents が同一のときだけ `runtime_values` を持ち越すので、`set_parameters`(source 変更)で新しい初期値が古い staged 値に隠されない。Bloom: `intensity` を `binding: buffer`、`buffers: [{bloom.intensity, size 4, persistent, runtime_f32}]`、`FinalBloomComposite` の 3 本目の入力 + `resource_ports.bloomIntensity`、`bloom_composite.frag` は `pelican_load_bloomIntensity(0u)`(define と `#error` は撤去)。**`bloom_composite.frag.spv` は build・登録から外す**(per-pass 生成の port header を include する shader は build 時に compile できない。`ssao.frag` と同じ source-only。1c 以来 define で `.spv` fallback は既に使えなかったので退行無し、記録)。**`physicaltargetplanwire.cpp` の逸脱(採る)**: lowering と physical の resource 集合比較が、plan 自身が `pelican.plan.semantic_resource_elided@1` と記録した resource を引くようになった(`bloom.intensity` は rendering pass が読む frame graph buffer で物理計画されず elided になる。`WP318 flat compiler feature toggle purges…` が `pelican_test PhysicalResourceCount == 0` で最初に捕まえた。stash で変更前は緑を確認)。受け入れ: `set_parameters{intensity: 0.25}` で 14400 画素(対照: `initial_f32` を書かない変異で 0 画素、canonical が 228 に落ち 3 CHECK 赤)/ `pelican.graph` root の `value.constant → render.scalar{target: bloom.intensity}` で 14400 画素、`set_parameters` の frame と byte 一致(対照: sink を消すと 0、既定 2.0 を書くと 0)/ `binding: buffer` + `shader_define: true` は名前付き(対照: guard を消すと "expected a named rejection")/ `canonical_frame_plan_trace.txt` と `wp73_rgba8_hashes.json` 不変、`renderer_execution_traces.json` は 4 箇所(`FinalBloomComposite` の `input_buffers: [] → [bloom.intensity]`)のみ再生成、golden 緑、1c の test 不変 = materialize が binding と buffer 宣言を保つ / 非 GPU 1623、家族 124/124、GPU 全数 256 中 3 赤は個別再走で緑(RT6 ×2 は R1 の間欠、Studio fatal text は flake)。**render.scalar の解決経路(記録)**: `valuegraph.cpp:99-113` が `$binding/<node>` + `{render_buffer, target}` に lowering(target は素の文字列)、`renderingpassconfigregistration.cpp:1088-1096` が `program.buffer_bindings` で名前解決(`unbound frame graph output` / `incompatible …`)、`renderer.cpp:5368` の writer が `stageRuntimeValues`、`:5396` の `uploadRuntimeValues()` が pass 実行前に GPU 書き(frame N の publish は frame N の pass が読む)。port binding 番号 = `input_targets.size() + buffer_index`(composite の sampler 0/1 は不変、`bloom.intensity` は 2)。**穴(記録)**: frame graph buffer entry は unknown key を拒否しない(`initial_f32` の綴り違いは無音で 0 始まり)/ `pelican.plan.resource_purged@1`(unused)は wire 比較を今も壊す(elided だけ直した)/ rendering pass が読む frame graph buffer は物理計画されず Studio の physical overlay に出ない(clustered / punctual shadow の buffer と同じ既存挙動)/ 既定値は `bloom.json` と hdr fixture の `initial_f32` の 2 箇所 / `binding: buffer` は float 1 つだけ / `test/fixtures/devstudio/example_frame_plan.json` は `bloom.intensity` 入力の無い古い plan(node 数の assert なので通る)/ 出荷 project からの毎 frame 曲線駆動は P-2a-4b(example の graph root 化)まで無い。**merge で見つけた実 bug(採る)**: P-2a-3 の `renderComponentRequiredTargets()` は feature 自身の `render_targets` しか除外せず、P-2a-2 が composite の `input` に足した `bloom.intensity`(feature 自身の `buffers[]`)を host 要件に数えて import が `render_component_requires_missing` になった。除外集合を `{render_targets, buffers}` に(merge-resolver が修正、P-2a-3 test の契約どおり)。gate: build + 非 GPU 家族(利用者指示)。
+実装時の裁定と完了記録(2026-09-17、`340f8537`): 18 file。scalar 宣言に `binding: define | buffer`(`ScalarParameterBinding`、`shader_define` の既定は `binding == define`。`binding: buffer` + `shader_define: true` / 非 float / 未知の binding 名 / `<feature>.<scalar>` の buffer 宣言欠落・型違い / 手書きの `initial_f32` は名前付き拒否)。bound 値は materialize の capture の **後**に composed の buffer entry へ `initial_f32` として書く(派生は宣言を未解決のまま保つ = 1c の形)。frame graph 側は `FrameGraphBufferDefinition::initial_f32`(`runtime_f32` かつ 4 byte につき 1 float を要求)で registration 時に `runtime_values` を seed(今日は zero fill)。`copyBufferState` は value graph と source documents が同一のときだけ `runtime_values` を持ち越すので、`set_parameters`(source 変更)で新しい初期値が古い staged 値に隠されない。Bloom: `intensity` を `binding: buffer`、`buffers: [{bloom.intensity, size 4, persistent, runtime_f32}]`、`FinalBloomComposite` の 3 本目の入力 + `resource_ports.bloomIntensity`、`bloom_composite.frag` は `pelican_load_bloomIntensity(0u)`(define と `#error` は撤去)。**`bloom_composite.frag.spv` は build・登録から外す**(per-pass 生成の port header を include する shader は build 時に compile できない。`ssao.frag` と同じ source-only。1c 以来 define で `.spv` fallback は既に使えなかったので退行無し、記録)。**`physicaltargetplanwire.cpp` の逸脱(採る)**: lowering と physical の resource 集合比較が、plan 自身が `pelican.plan.semantic_resource_elided@1` と記録した resource を引くようになった(`bloom.intensity` は rendering pass が読む frame graph buffer で物理計画されず elided になる。`WP318 flat compiler feature toggle purges…` が `pelican_test PhysicalResourceCount == 0` で最初に捕まえた。stash で変更前は緑を確認)。受け入れ: `set_parameters{intensity: 0.25}` で 14400 画素(対照: `initial_f32` を書かない変異で 0 画素、canonical が 228 に落ち 3 CHECK 赤)/ `pelican.graph` root の `value.constant → render.scalar{target: bloom.intensity}` で 14400 画素、`set_parameters` の frame と byte 一致(対照: sink を消すと 0、既定 2.0 を書くと 0)/ `binding: buffer` + `shader_define: true` は名前付き(対照: guard を消すと "expected a named rejection")/ `canonical_frame_plan_trace.txt` と `wp73_rgba8_hashes.json` 不変、`renderer_execution_traces.json` は 4 箇所(`FinalBloomComposite` の `input_buffers: [] → [bloom.intensity]`)のみ再生成、golden 緑、1c の test 不変 = materialize が binding と buffer 宣言を保つ / 非 GPU 1623、家族 124/124、GPU 全数 256 中 3 赤は個別再走で緑(RT6 ×2 は R1 の間欠、Studio fatal text は flake)。**render.scalar の解決経路(記録)**: `valuegraph.cpp:99-113` が `$binding/<node>` + `{render_buffer, target}` に lowering(target は素の文字列)、`renderingpassconfigregistration.cpp:1088-1096` が `program.buffer_bindings` で名前解決(`unbound frame graph output` / `incompatible …`)、`renderer.cpp:5368` の writer が `stageRuntimeValues`、`:5396` の `uploadRuntimeValues()` が pass 実行前に GPU 書き(frame N の publish は frame N の pass が読む)。port binding 番号 = `input_targets.size() + buffer_index`(composite の sampler 0/1 は不変、`bloom.intensity` は 2)。**穴(記録)**: frame graph buffer entry は unknown key を拒否しない(`initial_f32` の綴り違いは無音で 0 始まり)/ `pelican.plan.resource_purged@1`(unused)は wire 比較を今も壊す(elided だけ直した)/ rendering pass が読む frame graph buffer は物理計画されず Studio の physical overlay に出ない(clustered / punctual shadow の buffer と同じ既存挙動)/ 既定値は `bloom.json` と hdr fixture の `initial_f32` の 2 箇所 / `binding: buffer` は float 1 つだけ / `test/fixtures/devstudio/example_frame_plan.json` は `bloom.intensity` 入力の無い古い plan(node 数の assert なので通る)/ 出荷 project からの毎 frame 曲線駆動は P-2a-4b(example の graph root 化)まで無い。**merge で見つけた実 bug(採る)**: P-2a-3 の `renderComponentRequiredTargets()` は feature 自身の `render_targets` しか除外せず、P-2a-2 が composite の `input` に足した `bloom.intensity`(feature 自身の `buffers[]`)を host 要件に数えて import が `render_component_requires_missing` になった。除外集合を `{render_targets, buffers}` に(merge-resolver が修正、P-2a-3 test の契約どおり)。gate: build + 非 GPU 家族(利用者指示)。
 
 #### 送り(別 WP)
 
@@ -23607,13 +23607,13 @@ journal / undo(R 群)/ component 欄(P-1b)/ feature parameter / definition 内�
 4. 出荷 5 project bytes 不変、既存 RPC test 不変。
 
 
-完了記録(2026-09-17、`5100be5f`。P-2a-4a と P-2a-3 を 1 commit で): 4a は `renderconfigdocument.*` に `isGraphRootKey` / `RenderConfigSectionUnlocated` / `withSectionValue`(lexical scanner を `locateObjectMembers` + `locateSectionMembers` に一般化、offset は絶対なので digest = 文書全体の CAS は不変)、`renderconfigeditor.cpp` は `renderingSectionOf()`(throw)/ `renderingSectionOrEmpty()`(読みは寛容)の 1 対に全経路を通し rejection `render_config_section_unlocated`、overlay は `rendering.features` に足し `render_config.section_unlocated@1`。`withRootValue` 11 箇所: `features` / `rendering_passes` / ray 3 key / `pipeline` / `frame_node_order` / `compute_tasks` の 9 箇所が `withSectionValue`、`nodes` の 2 箇所(:1438 / :1460)は root のまま(N-2 領域)。fixture `test/fixtures/graph_root_example/`(example の config を包む + `preset_main.json` = animgraph_demo を包む)。受け入れ: `get_render_features` 3(probe 込み。対照 M1: reader を root に戻すと `0 == 3`)/ byte 正確な節編集 8 経路 + 文書 level の byte test(対照 M2a: 5 test 赤、root key 集合に `pipeline` が増える; M2b: `initialize` root 固定で "requires a top-level features array")/ root materialize が `rendering.features[0]` を書き換え region 解除も節側(対照 M3: `region.bloom` と `region.ssao` が残る)/ GPU: graph root と legacy で 0 画素差、派生の段数 2 で 3600 画素 / overlay が `rendering.features` に 5 feature、root に `features` 無し(対照 M4 赤)/ preset + graph root = legacy animgraph と composed 一致 / composed・feature・pass・RT・frame plan node・依存 edge が legacy example と一致 / 非 GPU 1483→1485、GPU 家族 21/21。P-2a-3 は `src/project/rendercomponent.*`(`buildRenderComponent` = 全文字列 `project://` 走査 + `engine://` 拒否 + manifest `requires.render_targets`、`writeRenderComponent` = `<name>.tmp-<pid>` → `feature.json` → `component.json` → directory rename、`readRenderComponent` = envelope + sha256)+ RPC `export_render_feature{scope, index}` / `import_render_feature{base_source_digest, source_dir, destination_reference}`。受け入れ: materialize → export(`feature.json` は派生と byte 一致、`requires.render_targets == [lit_color, swapchain]`)→ 第二 project へ import が 1 transaction で `rendering.features` に追加、frame plan に `FinalBloomComposite`。対照: component dir を消しても import 先は不変(複製)。GPU: canonical と 3600 画素差、export 元と 0 画素差 / 名前付き 8 種(`render_component_engine_reference` / `_destination_exists` / `_digest_mismatch` / `_invalid` / `_source_inside_project` / `feature_destination_exists` / `_requires_missing` = `[lit_color]`(`swapchain` は engine 所有で報告しない)/ `_project_reference` を出荷 `raytracing_demo/features/spheres.json` で観測。対照 C1〜C3 赤)/ export は project 内 bytes を変えず、不正 component は transaction の前に拒否。**穴(記録)**: `compute_tasks` の root 分岐は graph root では lowering が `forbid` するので到達不能(F1 の専用名は作らず 1 規則)/ preset + graph root では `rendering.rendering_passes[i].region_replacements` が composed に届かない(既存の lowering 挙動)/ `requires.render_targets` は compute / ray の image binding を見ない / import の契約検査は import 先の節 + preset だけ(他 feature の宣言は数えない = 保守的)/ 中断した export の `.tmp-<pid>` は掃除されない / overlay は semantic(dump/reparse)で authoring は byte 正確の 2 流儀(S13、comment に明記)/ Studio の Features dock は未検証(worktree は `SKIP_DEVSTUDIO=ON`)/ `devcli project init` と manual は 4b / X-1。事故(記録): 実装者が自作 test の dangling 参照で Debug CRT の modal dialog に詰まり、**自分の test exe を PID 指定で 1 回 kill**(名前 kill ではない。報告あり)。gate: build + 非 GPU 家族(利用者指示)。
+完了記録(2026-09-17、`7e983ed9`。P-2a-4a と P-2a-3 を 1 commit で): 4a は `renderconfigdocument.*` に `isGraphRootKey` / `RenderConfigSectionUnlocated` / `withSectionValue`(lexical scanner を `locateObjectMembers` + `locateSectionMembers` に一般化、offset は絶対なので digest = 文書全体の CAS は不変)、`renderconfigeditor.cpp` は `renderingSectionOf()`(throw)/ `renderingSectionOrEmpty()`(読みは寛容)の 1 対に全経路を通し rejection `render_config_section_unlocated`、overlay は `rendering.features` に足し `render_config.section_unlocated@1`。`withRootValue` 11 箇所: `features` / `rendering_passes` / ray 3 key / `pipeline` / `frame_node_order` / `compute_tasks` の 9 箇所が `withSectionValue`、`nodes` の 2 箇所(:1438 / :1460)は root のまま(N-2 領域)。fixture `test/fixtures/graph_root_example/`(example の config を包む + `preset_main.json` = animgraph_demo を包む)。受け入れ: `get_render_features` 3(probe 込み。対照 M1: reader を root に戻すと `0 == 3`)/ byte 正確な節編集 8 経路 + 文書 level の byte test(対照 M2a: 5 test 赤、root key 集合に `pipeline` が増える; M2b: `initialize` root 固定で "requires a top-level features array")/ root materialize が `rendering.features[0]` を書き換え region 解除も節側(対照 M3: `region.bloom` と `region.ssao` が残る)/ GPU: graph root と legacy で 0 画素差、派生の段数 2 で 3600 画素 / overlay が `rendering.features` に 5 feature、root に `features` 無し(対照 M4 赤)/ preset + graph root = legacy animgraph と composed 一致 / composed・feature・pass・RT・frame plan node・依存 edge が legacy example と一致 / 非 GPU 1483→1485、GPU 家族 21/21。P-2a-3 は `src/project/rendercomponent.*`(`buildRenderComponent` = 全文字列 `project://` 走査 + `engine://` 拒否 + manifest `requires.render_targets`、`writeRenderComponent` = `<name>.tmp-<pid>` → `feature.json` → `component.json` → directory rename、`readRenderComponent` = envelope + sha256)+ RPC `export_render_feature{scope, index}` / `import_render_feature{base_source_digest, source_dir, destination_reference}`。受け入れ: materialize → export(`feature.json` は派生と byte 一致、`requires.render_targets == [lit_color, swapchain]`)→ 第二 project へ import が 1 transaction で `rendering.features` に追加、frame plan に `FinalBloomComposite`。対照: component dir を消しても import 先は不変(複製)。GPU: canonical と 3600 画素差、export 元と 0 画素差 / 名前付き 8 種(`render_component_engine_reference` / `_destination_exists` / `_digest_mismatch` / `_invalid` / `_source_inside_project` / `feature_destination_exists` / `_requires_missing` = `[lit_color]`(`swapchain` は engine 所有で報告しない)/ `_project_reference` を出荷 `raytracing_demo/features/spheres.json` で観測。対照 C1〜C3 赤)/ export は project 内 bytes を変えず、不正 component は transaction の前に拒否。**穴(記録)**: `compute_tasks` の root 分岐は graph root では lowering が `forbid` するので到達不能(F1 の専用名は作らず 1 規則)/ preset + graph root では `rendering.rendering_passes[i].region_replacements` が composed に届かない(既存の lowering 挙動)/ `requires.render_targets` は compute / ray の image binding を見ない / import の契約検査は import 先の節 + preset だけ(他 feature の宣言は数えない = 保守的)/ 中断した export の `.tmp-<pid>` は掃除されない / overlay は semantic(dump/reparse)で authoring は byte 正確の 2 流儀(S13、comment に明記)/ Studio の Features dock は未検証(worktree は `SKIP_DEVSTUDIO=ON`)/ `devcli project init` と manual は 4b / X-1。事故(記録): 実装者が自作 test の dangling 参照で Debug CRT の modal dialog に詰まり、**自分の test exe を PID 指定で 1 回 kill**(名前 kill ではない。報告あり)。gate: build + 非 GPU 家族(利用者指示)。
 #### やらないこと
 `user://` への materialize / `--user-dir` の Studio 対応 / shader を含む pack と cross-project の解決(X-1)/ Studio UI / CLI / manual(X-1 でまとめて)。
 
 ### X-1: 持ち出し —— package manifest、本体ツリー外の template、project への vendoring と catalog(v0「拡張して持ち出す」の段。v2)
 
-**§4 規則 11 上段。実装者: Claude(Fable + Opus)。設計レビュー 1 巡(Opus、`<作業ディレクトリ>/dr_x1_ag3.md`: 致命 3 / 大 4 / 小 5)で v2、打ち切り。事実: `<作業ディレクトリ>/facts_x1.md`(file:line は `38139f5e` 前のツリー基準で 20〜50 行ずれる。実装者は anchor を grep で引き直すこと)。前提: P-2a-3(`5100be5f`)。**
+**§4 規則 11 上段。実装者: Claude(Fable + Opus)。設計レビュー 1 巡(Opus、`<作業ディレクトリ>/dr_x1_ag3.md`: 致命 3 / 大 4 / 小 5)で v2、打ち切り。事実: `<作業ディレクトリ>/facts_x1.md`(file:line は `38139f5e` 前のツリー基準で 20〜50 行ずれる。実装者は anchor を grep で引き直すこと)。前提: P-2a-3(`7e983ed9`)。**
 
 #### 前提(レビューで検算済み)
 - manifest 5 種のどれも namespace / engine・SDK 要件 / dependencies / provided を持たない。`project.json` の parser は whitelist pull(unknown key は読み飛ばす。reader 12 経路すべて)、writer は `project init` の文字列リテラル 1 本 → **additive な `packages` key は安全**(未文書 key `prefabs` の前例)。
@@ -23639,7 +23639,7 @@ journal / undo(R 群)/ component 欄(P-1b)/ feature parameter / definition 内�
 5. 出荷 5 project bytes 不変、`project init` の期待更新は `pelican_packages()` の 1 行だけ、既存 `list_render_features` test 不変(package 無し project)。
 
 
-完了記録(2026-09-17、`3f72b71d`): 新規 12 + 変更 17 file。`src/project/packagemanifest.*`(`pelican.package` v1 の parser、tree digest、install / uninstall、installed の読み、package feature 文書の読み)、`src/devcli/packagecommand.*`(`package install | list | inspect`)、`src/player/package_sdk_header.hpp.in`。**namespace は文書に入る**(vendoring 時に feature の `name` を `<ns>.<name>` に書き換え、対照 M1: 書き換えを消すと "the vendored feature name is 'glow'")。catalog: `list_render_features` に `source: "package"`、壊れた package 文書は `available: false` + `unavailable_reason`(対照 M2: enumerator を fatal に戻すと player が戻らず ctest timeout 1560 s = F2 の形そのもの)。install 前検査は全部名前付きで **最初の 1 byte を書く前**(`package_manifest_missing` / `_manifest_invalid` / `_engine_too_new` / `_dependency_missing` / `_feature_invalid` / `_already_installed` / `_sdk_abi_mismatch`)。`uninstall_package` は参照中 `package_in_use`(参照を列挙)。`pelican_cli package list` が vendored file の sha256 を検算(`modified` + `package_digest_mismatch`)= B4 の本物の gate。**code**: `pelican_package_sources()` は package ごとの OBJECT library を project の game logic DLL に `target_sources($<TARGET_OBJECTS>)` で合流(別 DLL 無し)、include は `${CMAKE_BINARY_DIR}/pelican_package_sdk/include`(`PELICAN_AUTO_STAGE_SDK` と同じ集合を **forwarding header** で公開: copy だと `phys/physquery.hpp` の相対 include が壊れる)+ `src/schema` だけで `src/core` 無し。`pelican_packages()` は `packages/*/package.json` を glob し `*.tmp-*` と code 無しを skip、`add_subdirectory(<abs>/code <binary dir>)`。`project init` の `code/CMakeLists.txt` に `pelican_packages()` の 1 行(`pelican_game_sources` の後、順序が load-bearing、`run_devcli_project_init.cmake` が assert)。受け入れ: `package_install_smoke`(ctest、GPU)で install → `packages` 1 entry、`name == acme.glowkit.glow`、catalog に `source: package` / `edit_render_features{add}` で capture が byte で変わり、`%TEMP%` の source を消しても描ける、uninstall は参照中 `package_in_use` → 外すと `uninstalled` / CLI 3 種 / `run_package_template_smoke.cmake`(**ctest 未登録**、`-DPELICAN_PACKAGE_TEMPLATE_SMOKE_DEPS=<primary>/build/_deps`)で `-DPELICAN_PROJECT=<temp>` の configure + build + headless で `acme.glowkit: package system running`。**対照 1**: package の `system.cpp` に `#include "vkcore/renderer.hpp"` → `error C1083: include ファイルを開けません 'vkcore/renderer.hpp'`(公開 SDK だけで build、の判定が初めて実測された)。対照 2: `sdk_abi: 999` → `package_sdk_abi_mismatch`。非 GPU 1491、家族 33/33、`projects/` bytes 不変。manual `03_project_format.md` に package 節。**穴(記録)**: Bloom の shader は define prefix `PELICAN_FEATURE_<NAME>_` を要求するので namespace 付きの派生から使えない(template は `engine://bloom_upsample` を使用)/ `.spv` のみの engine shader は define 付き feature で使えず、package は自前 shader を持てない(S5、X-2)/ pass 名と RT 名は namespace されない(2 package の同名 pass は衝突)/ `ProjectEnvelope` は `packages` を落とす(将来の writer の穴、S1)/ `graphvariantpolicy.cpp` の substring heuristic(`ui`, `taa`, `mirror`, `present` …)に当たる namespace は preview variant から無音で外れる(S2)/ `get_graph_catalog` は package を見ない、`provides.components` は消費者無し / sha256 は engine 起動時には検算しない / code smoke は `<repo>/dist_debug/pelican_cli.exe` を上書きする(build tree 間の汚染)/ code smoke は `-DPELICAN_WITH_OPENXR=OFF` が要る(from-scratch の OpenXR SDK は Python generator を要求)/ `uninstall_package` の参照走査は root config と preset だけ / 変異 M1 で test group を再 build せず偽緑を一度踏んだ(測定衛生)。gate: build + 非 GPU 家族(利用者指示)。
+完了記録(2026-09-17、`64eae566`): 新規 12 + 変更 17 file。`src/project/packagemanifest.*`(`pelican.package` v1 の parser、tree digest、install / uninstall、installed の読み、package feature 文書の読み)、`src/devcli/packagecommand.*`(`package install | list | inspect`)、`src/player/package_sdk_header.hpp.in`。**namespace は文書に入る**(vendoring 時に feature の `name` を `<ns>.<name>` に書き換え、対照 M1: 書き換えを消すと "the vendored feature name is 'glow'")。catalog: `list_render_features` に `source: "package"`、壊れた package 文書は `available: false` + `unavailable_reason`(対照 M2: enumerator を fatal に戻すと player が戻らず ctest timeout 1560 s = F2 の形そのもの)。install 前検査は全部名前付きで **最初の 1 byte を書く前**(`package_manifest_missing` / `_manifest_invalid` / `_engine_too_new` / `_dependency_missing` / `_feature_invalid` / `_already_installed` / `_sdk_abi_mismatch`)。`uninstall_package` は参照中 `package_in_use`(参照を列挙)。`pelican_cli package list` が vendored file の sha256 を検算(`modified` + `package_digest_mismatch`)= B4 の本物の gate。**code**: `pelican_package_sources()` は package ごとの OBJECT library を project の game logic DLL に `target_sources($<TARGET_OBJECTS>)` で合流(別 DLL 無し)、include は `${CMAKE_BINARY_DIR}/pelican_package_sdk/include`(`PELICAN_AUTO_STAGE_SDK` と同じ集合を **forwarding header** で公開: copy だと `phys/physquery.hpp` の相対 include が壊れる)+ `src/schema` だけで `src/core` 無し。`pelican_packages()` は `packages/*/package.json` を glob し `*.tmp-*` と code 無しを skip、`add_subdirectory(<abs>/code <binary dir>)`。`project init` の `code/CMakeLists.txt` に `pelican_packages()` の 1 行(`pelican_game_sources` の後、順序が load-bearing、`run_devcli_project_init.cmake` が assert)。受け入れ: `package_install_smoke`(ctest、GPU)で install → `packages` 1 entry、`name == acme.glowkit.glow`、catalog に `source: package` / `edit_render_features{add}` で capture が byte で変わり、`%TEMP%` の source を消しても描ける、uninstall は参照中 `package_in_use` → 外すと `uninstalled` / CLI 3 種 / `run_package_template_smoke.cmake`(**ctest 未登録**、`-DPELICAN_PACKAGE_TEMPLATE_SMOKE_DEPS=<primary>/build/_deps`)で `-DPELICAN_PROJECT=<temp>` の configure + build + headless で `acme.glowkit: package system running`。**対照 1**: package の `system.cpp` に `#include "vkcore/renderer.hpp"` → `error C1083: include ファイルを開けません 'vkcore/renderer.hpp'`(公開 SDK だけで build、の判定が初めて実測された)。対照 2: `sdk_abi: 999` → `package_sdk_abi_mismatch`。非 GPU 1491、家族 33/33、`projects/` bytes 不変。manual `03_project_format.md` に package 節。**穴(記録)**: Bloom の shader は define prefix `PELICAN_FEATURE_<NAME>_` を要求するので namespace 付きの派生から使えない(template は `engine://bloom_upsample` を使用)/ `.spv` のみの engine shader は define 付き feature で使えず、package は自前 shader を持てない(S5、X-2)/ pass 名と RT 名は namespace されない(2 package の同名 pass は衝突)/ `ProjectEnvelope` は `packages` を落とす(将来の writer の穴、S1)/ `graphvariantpolicy.cpp` の substring heuristic(`ui`, `taa`, `mirror`, `present` …)に当たる namespace は preview variant から無音で外れる(S2)/ `get_graph_catalog` は package を見ない、`provides.components` は消費者無し / sha256 は engine 起動時には検算しない / code smoke は `<repo>/dist_debug/pelican_cli.exe` を上書きする(build tree 間の汚染)/ code smoke は `-DPELICAN_WITH_OPENXR=OFF` が要る(from-scratch の OpenXR SDK は Python generator を要求)/ `uninstall_package` の参照走査は root config と preset だけ / 変異 M1 で test group を再 build せず偽緑を一度踏んだ(測定衛生)。gate: build + 非 GPU 家族(利用者指示)。
 #### やらないこと
 install / export / find_package / `user://` や cross-project の解決 / graph の外部定義参照(P-2b-2)/ package ごとの別 DLL / marketplace / Studio の package UI(dock は catalog 経由で見えるだけ)。
 
@@ -23666,7 +23666,7 @@ install / export / find_package / `user://` や cross-project の解決 / graph 
 4. `get_status` の key 集合は `animation` 1 つ増(RPC smoke の contract 表を更新)。`get_graph_values` bytes 不変、凍結 ABI 不変、golden 不変、非 GPU 全数。
 
 
-完了記録(2026-09-17、`9862ebdd`): 21 file。`SinkTrace` に `owner / source(clip | state_machine)/ cursors[{clip, time_seconds, normalized_phase}] / transition_* / root_motion / root_delta` を追加(clip_sample は毎 frame の sample 時刻と phase を binding に記録 = B5 の新規 state、state_machine は `getStatus()` を丸ごと copy)。component 経路は `AnimationSystem::componentTrace()`(`component_graph` は evaluator、`component_clip` は clip 経路と同じ `sampleTime` 算術、clip 境界は model+clip で memo)。`src/core/communication/animationstatus.*`(`#if PELICAN_WITH_ANIMATION` 内、OFF は `{available:false}` の実 symbol)を `get_status.animation` に。`PublishResult::node_values` は **`std::vector<std::optional<double>>`**(spec の `vector<double>` から逸脱、採る: inactive scope で skip された node を 0 と区別)、`PublishedInstanceInputs::{graph, node_values}`、`Graph::nodeIds() / outputNodes()`。`get_graph_node_values` は `EditorCommandService` 経由、filter は `GraphNodeOrigin::instance_path` の prefix で展開木を辿る(S8)、lowering 合成 node(`$upload/…`、`$binding/…`)は出ない。受け入れ: clip mode `source: pose_graph_clip`、`cursors[0].clip == "Turn"`、t=0.5 s で `normalized_phase == 0.25`(**fixture の Turn は 2 s なので spec の 0.5 ではなく 0.25**、記録)、state machine は `transition.active` と `progress ∈ [0,1)` を観測(test 文書の idle→walk に `duration: 0.3` を追加。既定 0 では同 frame で完了し観測不能)、root motion `root_delta[0] − 2/60 = 2.78e-8`(対照 `none` は `root_motion: false`、`root_delta` key 無し)/ OFF: `animation_off_scene_test` で `available: false` かつ key 1 つ、`rpc_color_contract_test`(GPU、実 RPC server)で ON `available: true` / OFF `false` / `get_graph_node_values{instance: "left"}` → `sum` 7.5、`gain` 2.5、`bias` 5、`buffer` は `outputs: {}`; 2 回連続 byte 一致(draw counter 不変); publish 前 `published: false`; `clock → gain` の変種で 5.5 → 7.25; `instance` 省略で root の `clock` 0.5 と `node == expanded` / `$pose/…`: root に `pose.clip_sample` を足すと `pose.outputs.time == 0.5` → 1.5、OFF は `graph.operation_unregistered@1` で文書が載らない / `get_status` の key +1、`get_graph_values` 不変、ON 非 GPU 1488、GPU 家族 49/49、OFF 非 GPU 1441/1442(赤 1 は `build` と `build_off` が `dist_debug/pelican_cli.exe` を共有する環境の穴、両方向で再 build して緑を確認)。**穴(記録)**: `component_graph` / `component_clip` sink の test 無し(fixture が無い。`pose_hash` は 0)/ `componentTrace()` の clip 境界 memo は hot reload で無効化されない(phase の報告だけに影響)/ pose 側 snapshot は無し(B6、`source: "rendering"` で明示)/ 完了した transition は `{active:false, target:"", progress:0}` で「未開始」と区別できない(凍結 `StatusTraceV1` の挙動)/ `graphcanvasreadcapability.cpp` の read method 一覧に `get_graph_node_values` が無い(AG-3b 側)/ `docs/manual/10_tools.md:126` の RPC 表に `animation` と `get_graph_node_values` を足す(本記録と同時)。gate: build + 非 GPU 家族(利用者指示)。
+完了記録(2026-09-17、`32d9a20b`): 21 file。`SinkTrace` に `owner / source(clip | state_machine)/ cursors[{clip, time_seconds, normalized_phase}] / transition_* / root_motion / root_delta` を追加(clip_sample は毎 frame の sample 時刻と phase を binding に記録 = B5 の新規 state、state_machine は `getStatus()` を丸ごと copy)。component 経路は `AnimationSystem::componentTrace()`(`component_graph` は evaluator、`component_clip` は clip 経路と同じ `sampleTime` 算術、clip 境界は model+clip で memo)。`src/core/communication/animationstatus.*`(`#if PELICAN_WITH_ANIMATION` 内、OFF は `{available:false}` の実 symbol)を `get_status.animation` に。`PublishResult::node_values` は **`std::vector<std::optional<double>>`**(spec の `vector<double>` から逸脱、採る: inactive scope で skip された node を 0 と区別)、`PublishedInstanceInputs::{graph, node_values}`、`Graph::nodeIds() / outputNodes()`。`get_graph_node_values` は `EditorCommandService` 経由、filter は `GraphNodeOrigin::instance_path` の prefix で展開木を辿る(S8)、lowering 合成 node(`$upload/…`、`$binding/…`)は出ない。受け入れ: clip mode `source: pose_graph_clip`、`cursors[0].clip == "Turn"`、t=0.5 s で `normalized_phase == 0.25`(**fixture の Turn は 2 s なので spec の 0.5 ではなく 0.25**、記録)、state machine は `transition.active` と `progress ∈ [0,1)` を観測(test 文書の idle→walk に `duration: 0.3` を追加。既定 0 では同 frame で完了し観測不能)、root motion `root_delta[0] − 2/60 = 2.78e-8`(対照 `none` は `root_motion: false`、`root_delta` key 無し)/ OFF: `animation_off_scene_test` で `available: false` かつ key 1 つ、`rpc_color_contract_test`(GPU、実 RPC server)で ON `available: true` / OFF `false` / `get_graph_node_values{instance: "left"}` → `sum` 7.5、`gain` 2.5、`bias` 5、`buffer` は `outputs: {}`; 2 回連続 byte 一致(draw counter 不変); publish 前 `published: false`; `clock → gain` の変種で 5.5 → 7.25; `instance` 省略で root の `clock` 0.5 と `node == expanded` / `$pose/…`: root に `pose.clip_sample` を足すと `pose.outputs.time == 0.5` → 1.5、OFF は `graph.operation_unregistered@1` で文書が載らない / `get_status` の key +1、`get_graph_values` 不変、ON 非 GPU 1488、GPU 家族 49/49、OFF 非 GPU 1441/1442(赤 1 は `build` と `build_off` が `dist_debug/pelican_cli.exe` を共有する環境の穴、両方向で再 build して緑を確認)。**穴(記録)**: `component_graph` / `component_clip` sink の test 無し(fixture が無い。`pose_hash` は 0)/ `componentTrace()` の clip 境界 memo は hot reload で無効化されない(phase の報告だけに影響)/ pose 側 snapshot は無し(B6、`source: "rendering"` で明示)/ 完了した transition は `{active:false, target:"", progress:0}` で「未開始」と区別できない(凍結 `StatusTraceV1` の挙動)/ `graphcanvasreadcapability.cpp` の read method 一覧に `get_graph_node_values` が無い(AG-3b 側)/ `docs/manual/10_tools.md:126` の RPC 表に `animation` と `get_graph_node_values` を足す(本記録と同時)。gate: build + 非 GPU 家族(利用者指示)。
 #### やらないこと
 Studio UI(AG-3b)/ event の観測・注入 / 時間軸 RPC / scrub の新規則 / pose 側 snapshot / 定義の編集(N-2)。
 
@@ -23675,8 +23675,8 @@ Studio UI(AG-3b)/ event の観測・注入 / 時間軸 RPC / scrub の新規則 
 **§4 規則 11 中段(Studio 内。engine は AG-3a の RPC のみ消費)。実装者: Claude(Opus)。v1 計画 AG-3 行の受け入れ「GUI から 装着 → 編集 → 観測 → 保存 → 再読込 を 1 経路」はこの節が持つ。**
 
 #### 前提
-- AG-3a(`9862ebdd`): `get_status.animation{available, sinks[]{owner, node, source, cursors[], frame_revision, pose_hash, state?, transition?, root_delta?}}`、`get_graph_node_values{instance?}` → `{instance, generation, frame, published, source, nodes[]{node, expanded, outputs{port: value}}}`(publish 時の snapshot。`instance` 省略で root の展開木全体。rendering / animation の node は `outputs: {}`)
-- N-2(`02a3d285`): canvas は root / 定義 scope の読み書き。`Values from` は root scope の instance 入力にだけ効く(`get_graph_values`)。`GraphCanvasReadCapability` は method を列挙で絞る(`get_graph_node_values` は未登録)
+- AG-3a(`32d9a20b`): `get_status.animation{available, sinks[]{owner, node, source, cursors[], frame_revision, pose_hash, state?, transition?, root_delta?}}`、`get_graph_node_values{instance?}` → `{instance, generation, frame, published, source, nodes[]{node, expanded, outputs{port: value}}}`(publish 時の snapshot。`instance` 省略で root の展開木全体。rendering / animation の node は `outputs: {}`)
+- N-2(`f2eccbfd`): canvas は root / 定義 scope の読み書き。`Values from` は root scope の instance 入力にだけ効く(`get_graph_values`)。`GraphCanvasReadCapability` は method を列挙で絞る(`get_graph_node_values` は未登録)
 - Studio は今日 `get_status` を呼ばない。実 engine を起動する Studio test は `devstudio_engine_*`(GPU)に前例がある(要確認)。O-1 裁定: scrub = `set_time{t}` + 1 frame(temporal history は reset される)
 
 #### 決定
@@ -23700,11 +23700,11 @@ palette に `parameter_dependent` op(`render.*`)を足す parameter form / 種�
 
 実装時の裁定(2026-09-17、`agent/n1`): root scope の観測は「watch している instance がある」ことを gate にした(決定 1 の文言どおり。owner 付き instance の無い root だけの文書では出力の帯が出ない。外すなら `requestObservation` の条件 1 つ、記録)。`enterInstance` は降りた先の instance(owner 付き)を自動で watch する(挙動変更。scene test の「request が出ない」assertion 3 つを「edit が出ない」に書き換え)。Live 中に inline editor が開いていると repopulate を飛ばして次 tick で追いつく(editor を消さないため)。`get_status` → `get_graph_node_values` の順で同じ tick の時計を刻む。同時に飛ぶ pair は 1 組まで(遅い engine で queue を作らない)。scrub は edit slot にも read slot にも乗せない。`select`(automation)は combo では index を直接置く(popup は modal loop で、返事を持つ命令からは入れない。item view は本物の click)。**e2e が示した事実**: graph の永続化は `save_scene` ではなく `edit_graph_instances` / `edit_graph_document` の commit(`commitRenderConfigCandidateDocuments` が `passes/main.json` を promote)。**穴**: animation sink の e2e が無い(`studio_automation_graph` に pose sink が無い。model test のみ)/ scrub の GPU 検証無し(model と widget のみ。temporal history を reset するので永続化の経路の途中に置かなかった)/ docs の Graph tab 記述(manual 10 :760、13 :515-521、:629)は AG-3b の docs commit で追随。
 
-完了記録(2026-09-17、`5d64bd6e`): model(`graphcanvasmodel`)に node 値の overlay(`get_graph_node_values{instance?}`、定義 scope は instance 経由、root は instance 省略)、Live、Timeline の ring buffer(2400 sample、`time` / `frame` / 選択 node の数値 port ≤4 / owner 一致 sink の `phase` `progress`。instance・node・scope・接続が変わると空にする)、scrub(`set_time{t}` → `render_frame{}`)、animation sink の owner filter。capability に `requestGraphNodeValues` / `requestStatus`(読み)と `requestSetTime` / `requestRenderFrame`(書き、明示)。view に出力行の `graph_value_band`、`Live` checkbox、折り畳みの `Timeline` 帯(`GraphTimelineStrip`、左 press / drag で scrub)、`GraphCanvasWidget::poll()`(250 ms、test が時計になれる)。automation に `select` と `wait{enabled}`。test: model 5 case(対照: overlay を外す / Live の request を外す / scrub の順序を入れ替える / owner 比較を外す)、scene 3 case(帯の描画 / Live・Timeline・scrub の widget 経路 / capability から `get_graph_node_values` を外すと名前入りの notice)、automation 3 case、非 GPU 全数 1716/1716、**シナリオ `graph_observe_roundtrip`(54 step、32 s、実 engine)**: Outliner で `Camera` を `select` → Inspector の Attach dialog で `gain_curve_2` を装着 → canvas で降りて `sum/value` の帯 = 10(RPC でも 10)→ Timeline を開き Live で sample が貯まる → 帯を 4.5 に編集 → 帯 = 10.5 → 別複製を開くと 2 node(session の記憶ではない)→ 戻すと 3 node・gain 4.5・帯 10.5。対照: capability から外すと step 19 が `wait_timeout` / 永続化(`atomicReplace` の promote)を飛ばすと再読込で `nodes.$len expected 3, got 2`。8 シナリオ全部緑。v1 計画 AG-3 行の受け入れ「GUI から 装着 → 編集 → 観測 → 保存 → 再読込 を 1 経路」はこのシナリオが持つ。
+完了記録(2026-09-17、`ce5e96c0`): model(`graphcanvasmodel`)に node 値の overlay(`get_graph_node_values{instance?}`、定義 scope は instance 経由、root は instance 省略)、Live、Timeline の ring buffer(2400 sample、`time` / `frame` / 選択 node の数値 port ≤4 / owner 一致 sink の `phase` `progress`。instance・node・scope・接続が変わると空にする)、scrub(`set_time{t}` → `render_frame{}`)、animation sink の owner filter。capability に `requestGraphNodeValues` / `requestStatus`(読み)と `requestSetTime` / `requestRenderFrame`(書き、明示)。view に出力行の `graph_value_band`、`Live` checkbox、折り畳みの `Timeline` 帯(`GraphTimelineStrip`、左 press / drag で scrub)、`GraphCanvasWidget::poll()`(250 ms、test が時計になれる)。automation に `select` と `wait{enabled}`。test: model 5 case(対照: overlay を外す / Live の request を外す / scrub の順序を入れ替える / owner 比較を外す)、scene 3 case(帯の描画 / Live・Timeline・scrub の widget 経路 / capability から `get_graph_node_values` を外すと名前入りの notice)、automation 3 case、非 GPU 全数 1716/1716、**シナリオ `graph_observe_roundtrip`(54 step、32 s、実 engine)**: Outliner で `Camera` を `select` → Inspector の Attach dialog で `gain_curve_2` を装着 → canvas で降りて `sum/value` の帯 = 10(RPC でも 10)→ Timeline を開き Live で sample が貯まる → 帯を 4.5 に編集 → 帯 = 10.5 → 別複製を開くと 2 node(session の記憶ではない)→ 戻すと 3 node・gain 4.5・帯 10.5。対照: capability から外すと step 19 が `wait_timeout` / 永続化(`atomicReplace` の promote)を飛ばすと再読込で `nodes.$len expected 3, got 2`。8 シナリオ全部緑。v1 計画 AG-3 行の受け入れ「GUI から 装着 → 編集 → 観測 → 保存 → 再読込 を 1 経路」はこのシナリオが持つ。
 
 ### P-2b: posegraph_demo —— 姿勢の blend を曲線で駆動する学習 project(v0「作る」の実物。v2)
 
-**§4 規則 11 上段(新 project、smoke corpus、OFF build の扱い)。実装者: Claude(Fable + Opus)。設計レビュー 1 巡(Opus、`<作業ディレクトリ>/dr_p2b.md`: 致命 5 / 大 11 / 小 7)で v2、打ち切り。前提: AG-1b、P-1、AG-2(`584afc15`)、P-2a-4a(`5100be5f`)。事実: `<作業ディレクトリ>/facts_ag2.md` §6、`<作業ディレクトリ>/facts_p2a34.md`、`<作業ディレクトリ>/facts_x1.md` §3・§7、レビューの実 decode。**
+**§4 規則 11 上段(新 project、smoke corpus、OFF build の扱い)。実装者: Claude(Fable + Opus)。設計レビュー 1 巡(Opus、`<作業ディレクトリ>/dr_p2b.md`: 致命 5 / 大 11 / 小 7)で v2、打ち切り。前提: AG-1b、P-1、AG-2(`37cc55ba`)、P-2a-4a(`7e983ed9`)。事実: `<作業ディレクトリ>/facts_ag2.md` §6、`<作業ディレクトリ>/facts_p2a34.md`、`<作業ディレクトリ>/facts_x1.md` §3・§7、レビューの実 decode。**
 
 #### 前提(レビューで検算済み)
 - `animgraph_demo.gltf`(3202 byte、base64 埋め込みの text で tracked): clip 長 1 s、key 0/0.25/0.5/0.75/1.0、**t=1 s は両 clip が identity のループ境界**。quat z = sin(10°) は半角なので **Walk は ±20°、Run は ±50°**。t=0.25 s で weight 0 / 0.5 / 1 → TipJoint の model 行列 `[0].y` = sin20° 0.342 / sin35° 0.574 / sin50° 0.766。
@@ -23729,15 +23729,15 @@ palette に `parameter_dependent` op(`render.*`)を足す parameter form / 種�
 5. 出荷 5 project bytes 不変、`catalog_smoke.json` v1、README に「読む順序」「何を変えると何が起きるか」の 2 節(Walk / Run の実角度、weight の意味、`set_input` の手順)。
 
 
-完了記録(2026-09-17、`393f9d30`): 新 project 10 file + production 3 + test 6。scene は `Hero`(`transform{pos [0,-1,0]}` + `localtransform`(同 TRS)+ `simplemodelview`)を先頭、`Camera` を 2 番目、instance `hero_walk_run{owner: {default_scene, 1}}`(GPU test が `hero_authoring_id == 1` を assert = scene.json の並び替えは静かに壊れない)。曲線: `clock = value.input{scene_time} → cycle = value.playback{duration 4, wrap repeat, source 0..4} → blend_curve = value.curve{(0,0)(0.5,1)(4,0)} → weight`(parameters の `weight: 0.0` は edge の下に残す)。**`requires`**: `ProjectEnvelope::requirements`、語彙は `{animation}` の表(`projectRequirementOption` → `PELICAN_WITH_ANIMATION`)、未知は `project.requires_unknown@1`(既知一覧付き)、OFF は `parseProjectEnvelopeJson` が **既存の `animation.module_unavailable@1`**(名前は表の列で、要求名から派生させない = 3 本目の名前を作らない)。player は project parse の例外を捕まえて名前を出し exit 1(今日は abort)。corpus を舐める `passfieldownership_test` と `run_project_catalog_smoke.cmake` は `requires` を読んで名前付き skip 行、smoke の anim 検査は `pelican.graph` の `"pose.` op でも掛かる。受け入れ: smoke 6 project 緑(posegraph_demo `distinct_colors 26 / non_modal 0.1078`; 対照: 定義の clock を `value.constant` + edge 削除で "frame 10 is byte-identical to frame 1"、`"pose.` 分岐を殺すと同じ凍結 project が通る = 旧 script は盲目)/ GPU `scene_time == 0.25` で `[0].y` = **0.573576(sin 35°)**、disconnect → parameter 0 で **0.342020**、parameter 1 で **0.766044**、owner 99(不在)→ rest pose のまま(spec の 0.342 は誤りで **rest = 0.0**、無音の穴を test で固定)、owner 2(Camera)→ **名前付き** "pose graph sink resolution for Camera failed with animation status 12" / OFF build: player `animation.module_unavailable@1: … requires: ["animation"] cannot be satisfied`、sweep は `skip posegraph_demo: requires animation (PELICAN_WITH_ANIMATION=OFF)`、`requires: ["physics"]` → `project.requires_unknown@1`(対照: `requires` を消すと OFF sweep が `graph.operation_unregistered@1 {hero_walk_run/mix, pose.blend}` で赤)/ canvas widget test(root + `walk_run`、instance の `weight` が `blend_curve` から接続)/ 出荷 5 project bytes 不変、README に 2 節(Walk ±20° / Run ±50°、weight、`set_input` 手順)。**穴(記録)**: `animgraph_demo`(と `vrm_xr_demo`)は `*.anim_graph.json` を持つのに `requires` が無く、OFF build の smoke corpus で先に落ちる → **R-3 で `requires: ["animation"]` を 2 project に足す**(出荷 bytes の変更、意図した 1 行)/ owner 誤りは「不在 id は無音、存在する別 object は名前付き」の 2 面(永続 id は v1)/ 実装中に build が 2 回、session 外の何かに kill された(別 session に照会)/ `%TEMP%` に 3282 個(今日の分。1 日より古いものは掃除済み)。gate: build + 非 GPU 家族(利用者指示)。
+完了記録(2026-09-17、`400820f0`): 新 project 10 file + production 3 + test 6。scene は `Hero`(`transform{pos [0,-1,0]}` + `localtransform`(同 TRS)+ `simplemodelview`)を先頭、`Camera` を 2 番目、instance `hero_walk_run{owner: {default_scene, 1}}`(GPU test が `hero_authoring_id == 1` を assert = scene.json の並び替えは静かに壊れない)。曲線: `clock = value.input{scene_time} → cycle = value.playback{duration 4, wrap repeat, source 0..4} → blend_curve = value.curve{(0,0)(0.5,1)(4,0)} → weight`(parameters の `weight: 0.0` は edge の下に残す)。**`requires`**: `ProjectEnvelope::requirements`、語彙は `{animation}` の表(`projectRequirementOption` → `PELICAN_WITH_ANIMATION`)、未知は `project.requires_unknown@1`(既知一覧付き)、OFF は `parseProjectEnvelopeJson` が **既存の `animation.module_unavailable@1`**(名前は表の列で、要求名から派生させない = 3 本目の名前を作らない)。player は project parse の例外を捕まえて名前を出し exit 1(今日は abort)。corpus を舐める `passfieldownership_test` と `run_project_catalog_smoke.cmake` は `requires` を読んで名前付き skip 行、smoke の anim 検査は `pelican.graph` の `"pose.` op でも掛かる。受け入れ: smoke 6 project 緑(posegraph_demo `distinct_colors 26 / non_modal 0.1078`; 対照: 定義の clock を `value.constant` + edge 削除で "frame 10 is byte-identical to frame 1"、`"pose.` 分岐を殺すと同じ凍結 project が通る = 旧 script は盲目)/ GPU `scene_time == 0.25` で `[0].y` = **0.573576(sin 35°)**、disconnect → parameter 0 で **0.342020**、parameter 1 で **0.766044**、owner 99(不在)→ rest pose のまま(spec の 0.342 は誤りで **rest = 0.0**、無音の穴を test で固定)、owner 2(Camera)→ **名前付き** "pose graph sink resolution for Camera failed with animation status 12" / OFF build: player `animation.module_unavailable@1: … requires: ["animation"] cannot be satisfied`、sweep は `skip posegraph_demo: requires animation (PELICAN_WITH_ANIMATION=OFF)`、`requires: ["physics"]` → `project.requires_unknown@1`(対照: `requires` を消すと OFF sweep が `graph.operation_unregistered@1 {hero_walk_run/mix, pose.blend}` で赤)/ canvas widget test(root + `walk_run`、instance の `weight` が `blend_curve` から接続)/ 出荷 5 project bytes 不変、README に 2 節(Walk ±20° / Run ±50°、weight、`set_input` 手順)。**穴(記録)**: `animgraph_demo`(と `vrm_xr_demo`)は `*.anim_graph.json` を持つのに `requires` が無く、OFF build の smoke corpus で先に落ちる → **R-3 で `requires: ["animation"]` を 2 project に足す**(出荷 bytes の変更、意図した 1 行)/ owner 誤りは「不在 id は無音、存在する別 object は名前付き」の 2 面(永続 id は v1)/ 実装中に build が 2 回、session 外の何かに kill された(別 session に照会)/ `%TEMP%` に 3282 個(今日の分。1 日より古いものは掃除済み)。gate: build + 非 GPU 家族(利用者指示)。
 
-完了記録(2026-09-17、`d236822b`): 34 file。`src/project/renderconfigsection.hpp`(header-only: `isRenderGraphRoot` / `renderingSectionOf`(throw)/ `renderingSectionOrEmpty` / **`wrapLegacyRenderingConfig`** = 唯一の包み方。`renderconfigeditor.cpp` の 4a のローカル locator を削除して共有)。`projects/example/passes/main_rendering_config.json` は graph root(本文は `rendering` の下に逐語、手書きの整形は保つ)、README 更新。**parser 棚卸し(src/ 全域、authored 文書を root で読む関数は 3 つ)**: `parseFrameGraphDefinitionsFromConfigJson`([frameplanner.cpp:1745]、graph root で無音の空 → 節を読み `rendering` 無しは名前付き。対照 M2: `frame planner example plan JSON matches fixture` が `graphs.size() == 1` で赤)/ `validatePassFieldOwnershipInConfig` の authored 呼び出し([renderpipeline.cpp:1035]、順序だけの差: 対照 M3 は「preset loader に到達する前に ownership error」)/ `DefaultVulkanRenderCompilerProgram::compile` の `frame_node_order`([vulkanrendercompilerprogram.cpp:947]、graph root では cross-variant の "unknown graph" 拒否が真空だった。対照 M4)。既に正しかったもの: `loadRayTracingProjectConfig`、`applyRenderFeatureOverlays`、`AuthoredRenderConfigDocument`、composed 経由の全 parser。`fullscreenpasswidget.cpp` の `consumeAuthoringConfig` も節を読む(production 呼び手 0)。`project init` は節を literal に持ち `wrapLegacyRenderingConfig` で出力、`run_devcli_project_init.cmake` は `schema == pelican.graph` + object `rendering` を先に検査してから節内の禁止 key を見る(対照 M5: 節に `render_targets: []` で赤、M5b: legacy root を出すと赤 = 真空化しない)。25 箇所: 読み 15(locator)/ 書き 10 グループ(`shippingBloomConfig` と `wp343GroupingAuthoredExample` は `buffers` を splice するので **節の copy = legacy root のまま**。graph root は `rendering.buffers` を forbid する)/ 再凍結 2(`wp364/parent_manifest.json`: config 5492 → 5981 bytes `d52b322b…`、**README も** 1710 → 4086 `647829f4…`。manifest は project の全 tracked file を pin する)/ `example_main_render.json` は plan が byte 同一で不要。受け入れ: golden / hashes / trace / execution traces / plan fixture bytes 不変(対照 M1: `features` を `rendering` の外に残すと 4 test 赤)/ fixture == `wrapLegacyRenderingConfig(example の rendering)` を 2 重に assert(対照 M6)/ spec の grep 0 件は **成立しない**(81 件は composed config や legacy fixture の読み。「出荷 example の root を読む site は 0」に読み替え)/ `modal_transform_record_replay_player`(唯一の `--feature-overlay` e2e)緑 / 非 GPU 1490/1491(赤 1 は `WP364 … byte exact` が HEAD の blob を見るため commit 前は必ず赤、sha256 の再計算で 0 不一致)/ GPU 41/41 直列 / manual 4 箇所(`06_rendering.md` §6.16「2 つの root」+ §6.5 の `binding: buffer` / `render.scalar{target}`、`03_project_format.md`、`09_web.md` は「graph root は web で明示的に拒否」)。**穴(記録)**: `test/fixtures/devstudio/example_frame_plan.json` は再凍結していない(production 経路で取り直した plan は resource 22 → 23(`bloom.intensity`)、arena 89 → 90、decision 131 → 133 で、`devstudio_frameplan_test.cpp` の数値 3 箇所 + `devstudio_frameplan_graph_test.cpp` の ~9 箇所の追随が要り、Studio 無しの worktree では検証できない → **Studio 入りの build で別途**)/ `renderpipeline.cpp:1035` は順序だけの修正 / 4 つの `devstudio_*` test は読みで編集(未実行、primary の全数で見る)/ 対照 M2 は `--target` の部分 build で偽緑を一度踏んだ(全体 build で再測)。gate: build + 非 GPU 家族(利用者指示)。
+完了記録(2026-09-17、`e1c326c1`): 34 file。`src/project/renderconfigsection.hpp`(header-only: `isRenderGraphRoot` / `renderingSectionOf`(throw)/ `renderingSectionOrEmpty` / **`wrapLegacyRenderingConfig`** = 唯一の包み方。`renderconfigeditor.cpp` の 4a のローカル locator を削除して共有)。`projects/example/passes/main_rendering_config.json` は graph root(本文は `rendering` の下に逐語、手書きの整形は保つ)、README 更新。**parser 棚卸し(src/ 全域、authored 文書を root で読む関数は 3 つ)**: `parseFrameGraphDefinitionsFromConfigJson`([frameplanner.cpp:1745]、graph root で無音の空 → 節を読み `rendering` 無しは名前付き。対照 M2: `frame planner example plan JSON matches fixture` が `graphs.size() == 1` で赤)/ `validatePassFieldOwnershipInConfig` の authored 呼び出し([renderpipeline.cpp:1035]、順序だけの差: 対照 M3 は「preset loader に到達する前に ownership error」)/ `DefaultVulkanRenderCompilerProgram::compile` の `frame_node_order`([vulkanrendercompilerprogram.cpp:947]、graph root では cross-variant の "unknown graph" 拒否が真空だった。対照 M4)。既に正しかったもの: `loadRayTracingProjectConfig`、`applyRenderFeatureOverlays`、`AuthoredRenderConfigDocument`、composed 経由の全 parser。`fullscreenpasswidget.cpp` の `consumeAuthoringConfig` も節を読む(production 呼び手 0)。`project init` は節を literal に持ち `wrapLegacyRenderingConfig` で出力、`run_devcli_project_init.cmake` は `schema == pelican.graph` + object `rendering` を先に検査してから節内の禁止 key を見る(対照 M5: 節に `render_targets: []` で赤、M5b: legacy root を出すと赤 = 真空化しない)。25 箇所: 読み 15(locator)/ 書き 10 グループ(`shippingBloomConfig` と `wp343GroupingAuthoredExample` は `buffers` を splice するので **節の copy = legacy root のまま**。graph root は `rendering.buffers` を forbid する)/ 再凍結 2(`wp364/parent_manifest.json`: config 5492 → 5981 bytes `d52b322b…`、**README も** 1710 → 4086 `647829f4…`。manifest は project の全 tracked file を pin する)/ `example_main_render.json` は plan が byte 同一で不要。受け入れ: golden / hashes / trace / execution traces / plan fixture bytes 不変(対照 M1: `features` を `rendering` の外に残すと 4 test 赤)/ fixture == `wrapLegacyRenderingConfig(example の rendering)` を 2 重に assert(対照 M6)/ spec の grep 0 件は **成立しない**(81 件は composed config や legacy fixture の読み。「出荷 example の root を読む site は 0」に読み替え)/ `modal_transform_record_replay_player`(唯一の `--feature-overlay` e2e)緑 / 非 GPU 1490/1491(赤 1 は `WP364 … byte exact` が HEAD の blob を見るため commit 前は必ず赤、sha256 の再計算で 0 不一致)/ GPU 41/41 直列 / manual 4 箇所(`06_rendering.md` §6.16「2 つの root」+ §6.5 の `binding: buffer` / `render.scalar{target}`、`03_project_format.md`、`09_web.md` は「graph root は web で明示的に拒否」)。**穴(記録)**: `test/fixtures/devstudio/example_frame_plan.json` は再凍結していない(production 経路で取り直した plan は resource 22 → 23(`bloom.intensity`)、arena 89 → 90、decision 131 → 133 で、`devstudio_frameplan_test.cpp` の数値 3 箇所 + `devstudio_frameplan_graph_test.cpp` の ~9 箇所の追随が要り、Studio 無しの worktree では検証できない → **Studio 入りの build で別途**)/ `renderpipeline.cpp:1035` は順序だけの修正 / 4 つの `devstudio_*` test は読みで編集(未実行、primary の全数で見る)/ 対照 M2 は `--target` の部分 build で偽緑を一度踏んだ(全体 build で再測)。gate: build + 非 GPU 家族(利用者指示)。
 #### やらないこと
 IK / event / state_machine の demo / 外部定義参照(P-2b-2)/ example の移行(P-2a-4b)/ owner id の永続化 / root motion の demo / Studio の新 UI(AG-3b)。
 
 ### P-2a-4b: `projects/example` を `pelican.graph` root に移す(出荷 project の意図した変更。v2)
 
-**§4 規則 11 上段。実装者: Claude(Fable + Opus)。設計レビュー 1 巡(Opus、`<作業ディレクトリ>/dr_r_p2a4b.md` 致命 4・大 12)で v2、打ち切り。前提: P-2a-4a(`5100be5f`)、P-2a-2(`62f09ce0`)。事実: `<作業ディレクトリ>/facts_p2a34.md` §6 + レビューの検算。**
+**§4 規則 11 上段。実装者: Claude(Fable + Opus)。設計レビュー 1 巡(Opus、`<作業ディレクトリ>/dr_r_p2a4b.md` 致命 4・大 12)で v2、打ち切り。前提: P-2a-4a(`7e983ed9`)、P-2a-2(`340f8537`)。事実: `<作業ディレクトリ>/facts_p2a34.md` §6 + レビューの検算。**
 
 #### 前提(検算済み)
 - root 形を読む 25 箇所 / 11 file のうち **7 グループは文書を書き換える**(`authored["features"] = …` 等)= 読み helper では閉じない。`wp364/parent_manifest.json:220-223` は HEAD blob の sha256 + 5492 byte を pin。`featurecompose_test.cpp:3239` は fixture の**定義**(`graph_root.at("rendering") == legacy example`)を assert。`parseFrameGraphDefinitionsFromConfigJson`([frameplanner.cpp:1745-1756])は graph root で **throw せず空を返す**。`run_devcli_project_init.cmake:68-75` の禁止 key 検査は graph root で**真空で通る**。`run_preset_project_headless.cmake` は animgraph_demo 専用(example の代理条件ではない)。
@@ -23760,7 +23760,7 @@ IK / event / state_machine の demo / 外部定義参照(P-2b-2)/ example の移
 5. Studio: Features dock に bloom / ui(4a の widget test の形)。出荷 4 project bytes 不変。manual 4 箇所。
 
 
-完了記録(2026-09-17、`aa56a1af`): 表 11 行は code の撤去 0 行(理由は `docs/v0_freeze.md` §2)。安い穴: (1) RPC OFF: 2 TEST_CASE の RPC 区間を `#if PELICAN_WITH_RPC` + `SKIP` に。OFF build で `1 skipped`(398 / 17 assertion は走る)、ON の assertion 数 414 / 100 は不変(対照: HEAD に戻すと OFF で `error C3861: 'runWp374aRpcBytes'`)。(2) export の `removeStaleStagingDirectories()`(末尾が全部数字の pid だけ、自 pid は保持。対照: 呼び出しを消すと赤)。(3) temp root: **flake は再現しなかった**(`-LE gpu -j16` 3 回 + renderconfigeditor 50 件の 10 回 stress が全部緑)ので機構だけ入れた(per-process `TemporaryRoot`、`-j16` 中の `%TEMP%` 直下に fixture dir 0)。受け入れの「×3 緑」は前後を判別しない(記録)。**真の候補**: `test/gpu_lease_run.cpp:94` が lease log を消さず `%TEMP%` に `pelican_gpu_lease_v1.<pid>.log` が 3358 個(GPU run でだけ積もる = 非 GPU の再現が緑だった理由)。(4) `schemaRangeJson` の `StructFieldRange` 版を削除(残るのは `StructFieldRangeDescriptor` 版 + 呼び手 1、doc anchor は `numericRange()` に付け替え)。(5) owner 不一致: `LOG_WARNING`(quill)を `synchronizeGraphRuntime` から。**最初の版(graph 世代 key)は GPU 全数が捕まえた**(4 test で 12 行 = `GameObjects::remove()` 後の republish という「正常な一時状態」)→ memo を scene scope(`graph_owner_resolved_scopes` / `_reported_scopes`、`graph_runtime.clear()` と一緒に clear)に。新 test は quill の sink を読んで 1 行を assert、変異 4 本(LOG を消す / 既報 guard を消す = 31・61 行 / resolved を owners に = destroy 後 1 行 / clear を消す = 再 load 0 行)全部赤。(6) `docs/ci.md:48` を `pelican_gpu` に。非 GPU 1494 ×3、**GPU 253/253 直列(1142 s)**、doclink 0 unresolved。**穴(記録)**: lease log の掃除(上)/ staging sweep は生きている他 process の dir も消す(`processIsAlive()` は `gamelogicreload.cpp` にある)/ `makeTempProjectDir()`(`sceneformat_test.cpp:148`)は steady_clock だけで命名。gate: build + 非 GPU 家族(利用者指示)。
+完了記録(2026-09-17、`96d5e1d8`): 表 11 行は code の撤去 0 行(理由は `docs/v0_freeze.md` §2)。安い穴: (1) RPC OFF: 2 TEST_CASE の RPC 区間を `#if PELICAN_WITH_RPC` + `SKIP` に。OFF build で `1 skipped`(398 / 17 assertion は走る)、ON の assertion 数 414 / 100 は不変(対照: HEAD に戻すと OFF で `error C3861: 'runWp374aRpcBytes'`)。(2) export の `removeStaleStagingDirectories()`(末尾が全部数字の pid だけ、自 pid は保持。対照: 呼び出しを消すと赤)。(3) temp root: **flake は再現しなかった**(`-LE gpu -j16` 3 回 + renderconfigeditor 50 件の 10 回 stress が全部緑)ので機構だけ入れた(per-process `TemporaryRoot`、`-j16` 中の `%TEMP%` 直下に fixture dir 0)。受け入れの「×3 緑」は前後を判別しない(記録)。**真の候補**: `test/gpu_lease_run.cpp:94` が lease log を消さず `%TEMP%` に `pelican_gpu_lease_v1.<pid>.log` が 3358 個(GPU run でだけ積もる = 非 GPU の再現が緑だった理由)。(4) `schemaRangeJson` の `StructFieldRange` 版を削除(残るのは `StructFieldRangeDescriptor` 版 + 呼び手 1、doc anchor は `numericRange()` に付け替え)。(5) owner 不一致: `LOG_WARNING`(quill)を `synchronizeGraphRuntime` から。**最初の版(graph 世代 key)は GPU 全数が捕まえた**(4 test で 12 行 = `GameObjects::remove()` 後の republish という「正常な一時状態」)→ memo を scene scope(`graph_owner_resolved_scopes` / `_reported_scopes`、`graph_runtime.clear()` と一緒に clear)に。新 test は quill の sink を読んで 1 行を assert、変異 4 本(LOG を消す / 既報 guard を消す = 31・61 行 / resolved を owners に = destroy 後 1 行 / clear を消す = 再 load 0 行)全部赤。(6) `docs/ci.md:48` を `pelican_gpu` に。非 GPU 1494 ×3、**GPU 253/253 直列(1142 s)**、doclink 0 unresolved。**穴(記録)**: lease log の掃除(上)/ staging sweep は生きている他 process の dir も消す(`processIsAlive()` は `gamelogicreload.cpp` にある)/ `makeTempProjectDir()`(`sceneformat_test.cpp:148`)は steady_clock だけで命名。gate: build + 非 GPU 家族(利用者指示)。
 #### やらないこと
 他 4 project の移行 / example への node 追加 / posegraph_demo の変更 / web 側の実装(記録のみ)。
 
@@ -23812,7 +23812,7 @@ IK / event / state_machine の demo / 外部定義参照(P-2b-2)/ example の移
 受け入れ: 索引 2 行 + 数と tree の訂正 / README 6 本が 2 節 / `docs/v0_freeze.md` の catalog 部分が拡張 test で ON == / OFF ⊇ / tag の手順は記録のみ。
 追記(2026-09-17、P-2b の完了記録から): `animgraph_demo` と `vrm_xr_demo` は `*.anim_graph.json` を持つのに `requires` が無く、OFF build の smoke corpus で先に落ちる。R-3 で両 project の `project.json` に `requires: ["animation"]` を足す(出荷 bytes の意図した 1 行の変更。OFF build の smoke が 2 project を名前付き skip して残りを走る、が受け入れ)。
 
-完了記録(2026-09-17、`979b40f7`。merge で P-2a-4b の example README と 2 節構成を手で統合し、WP364 manifest の README 1 + R-3 の README 3・project.json 2 を再固定): `docs/v0_freeze.md`(新規 305 行: 1 凍結するもの = schema 31 種の表 / RPC 87 method(params は `10_tools.md` 参照)/ ON build の catalog op 27 本の表(OFF は `pelican.pose` 無しと注記)/ ABI(abi_v1、pose_staging の capability 4 bit、game logic ABI 2、`current_engine_version 0.1.0`)/ package manifest の最小形 / 2 つの root と 2 つの装着様式、2 R-1 の表 11 行、3 約束しないもの(v1 計画 + R-2 の複合 undo + 代表ゲームの射程)、4 既知の穴(facts_r §7 + 新規 3 件 + configure 時の corpus DLL の段落)、5 v0 で入ったもの(SHA)、6 tag の手順)。索引: `02_getting_started.md` 5 行、`01_overview.md` tree 6 本、README 6 本が 2 節(新しい文章は 0)。`animgraph_demo` / `vrm_xr_demo` に `requires: ["animation"]`。`run_devcli_graph_catalog.cmake` +92 行(doc の op 表 == ON の集合、⊇ OFF の集合。対照 3 本: 行を消す / 改名 / 架空の op を足す、全部名前付きで赤)。`run_project_catalog_smoke.cmake` +39 行: editor 宣言を持つ project が `requires` で skip されたら editor lane を名前付き skip(対照: 宣言も skip も無い corpus は今日どおり "no editor smoke declaration" で赤)。受け入れ: OFF smoke が `skip animgraph_demo / posegraph_demo / vrm_xr_demo` + `skip editor lane: vrm_xr_demo requires animation` で残り 3 project 緑、exit 0 / ON smoke 62 PNG の manifest sha256 `72aab55e…` が 4 回連続一致(`requires` 追加前後で bytes 不変)/ catalog test ON `#1917` / OFF `#267` 緑 / 家族 96/96 / doclink 0 unresolved。**穴(記録、freeze doc §4 にも)**: `PELICAN_TEST_PROJECTS_DIR` を向けた OFF build は `test/CMakeLists.txt:2750-2752` の configure 時 glob が skip されるべき project の game logic DLL target を作り `EvaluatorV1` の未解決 symbol 9 件ずつで link に失敗する(修正は glob 内で `requires` を読んで `pelican_add_catalog_game_logic()` を呼ばない、語彙は C++ 側の表を再利用)/ `dist_debug/` は source tree 直下で `build` と `build_off` が `pelican_cli` を上書きし合う(ON / OFF の catalog test を同時に測れない)/ `docs/v0_freeze.md` は doclink の `DOC_DIRS` 外なので `#L` link を持たない / `animgraph_demo` / `vrm_xr_demo` の README は `requires` を説明しない。tag は未実施(全数の後、統合側)。gate: build + 非 GPU 家族(利用者指示)。
+完了記録(2026-09-17、`be4c60a4`。merge で P-2a-4b の example README と 2 節構成を手で統合し、WP364 manifest の README 1 + R-3 の README 3・project.json 2 を再固定): `docs/v0_freeze.md`(新規 305 行: 1 凍結するもの = schema 31 種の表 / RPC 87 method(params は `10_tools.md` 参照)/ ON build の catalog op 27 本の表(OFF は `pelican.pose` 無しと注記)/ ABI(abi_v1、pose_staging の capability 4 bit、game logic ABI 2、`current_engine_version 0.1.0`)/ package manifest の最小形 / 2 つの root と 2 つの装着様式、2 R-1 の表 11 行、3 約束しないもの(v1 計画 + R-2 の複合 undo + 代表ゲームの射程)、4 既知の穴(facts_r §7 + 新規 3 件 + configure 時の corpus DLL の段落)、5 v0 で入ったもの(SHA)、6 tag の手順)。索引: `02_getting_started.md` 5 行、`01_overview.md` tree 6 本、README 6 本が 2 節(新しい文章は 0)。`animgraph_demo` / `vrm_xr_demo` に `requires: ["animation"]`。`run_devcli_graph_catalog.cmake` +92 行(doc の op 表 == ON の集合、⊇ OFF の集合。対照 3 本: 行を消す / 改名 / 架空の op を足す、全部名前付きで赤)。`run_project_catalog_smoke.cmake` +39 行: editor 宣言を持つ project が `requires` で skip されたら editor lane を名前付き skip(対照: 宣言も skip も無い corpus は今日どおり "no editor smoke declaration" で赤)。受け入れ: OFF smoke が `skip animgraph_demo / posegraph_demo / vrm_xr_demo` + `skip editor lane: vrm_xr_demo requires animation` で残り 3 project 緑、exit 0 / ON smoke 62 PNG の manifest sha256 `72aab55e…` が 4 回連続一致(`requires` 追加前後で bytes 不変)/ catalog test ON `#1917` / OFF `#267` 緑 / 家族 96/96 / doclink 0 unresolved。**穴(記録、freeze doc §4 にも)**: `PELICAN_TEST_PROJECTS_DIR` を向けた OFF build は `test/CMakeLists.txt:2750-2752` の configure 時 glob が skip されるべき project の game logic DLL target を作り `EvaluatorV1` の未解決 symbol 9 件ずつで link に失敗する(修正は glob 内で `requires` を読んで `pelican_add_catalog_game_logic()` を呼ばない、語彙は C++ 側の表を再利用)/ `dist_debug/` は source tree 直下で `build` と `build_off` が `pelican_cli` を上書きし合う(ON / OFF の catalog test を同時に測れない)/ `docs/v0_freeze.md` は doclink の `DOC_DIRS` 外なので `#L` link を持たない / `animgraph_demo` / `vrm_xr_demo` の README は `requires` を説明しない。tag は未実施(全数の後、統合側)。gate: build + 非 GPU 家族(利用者指示)。
 ### AG-2: root motion —— clip の根の移動を個体の transform に渡す(v0「作る」の段 5。v2)
 
 **§4 規則 11 上段。実装者: Claude(Fable + Opus)。設計レビュー第 1 巡(Opus、`<作業ディレクトリ>/dr_ag2.md`: 致命 5 / 大 10)で v1 の「第二の sink」「pose handle の sideband」「dt からの差分」を全部撤回 → v2。第 2 巡 1 回で打ち切り。事実: `<作業ディレクトリ>/facts_ag2.md`。**
@@ -23855,7 +23855,7 @@ IK / event / state_machine の demo / 外部定義参照(P-2b-2)/ example の移
 - **N10**: 受け入れ 5 の分類は unit(production の消費者は O-1)。**N12**: O-1 の格子外 `setTime` では seek 扱いで最後の部分 delta(t − k/fps 分)が落ちる。記録。
 - 事実訂正: 共有 fixture `writeGltf` を使う file は 18 ではなく 4。
 
-完了記録(2026-09-17、`584afc15`): 14 file(+2 test)。v2 決定 1〜6 と v3 裁定 N1〜N12 のとおり。追加面は `pose_staging_v1.hpp` の `resolve_rig_source_node{rig, clip, source_node} → {layout index, channel_kind_mask}`(capability bit `pose_staging_rig_source_node_mapping`、service version は 1 のまま)。component key は **`localtransform`**(hierarchy 参加者にしか自動で付かないので fixture は手で宣言。出荷 project に宣言は無い、記録)。owner → EntityId は bind 時に `scene.graphOwnerObject(owner)` で解決し `(index<<32)|generation` の opaque token を attachment に cache、適用は **非捕捉の関数 pointer**(`apply_root_translation`)で `GameObjects::setLocalTransform`(N9 の dangling を構造で塞ぐ。`src/core/animation` は ECS header を include しない)。N6: duration 0 は bind 時に `pose.root_motion_unsupported@1`(無名の "needs a nonzero duration" より前)。N8: channel 一覧は bind 時に取れたので translation channel 無しも同名で拒否(「delta 恒久 0 で通す」の fallback は不使用)。受け入れ(10 GENERATE mode の GPU test `skeletal_rootmotion_test`): 30 frame → pos.x 1.0、pin で model[3].x 0(対照 `none`: 0 / 1.0 = その場でずれる。pin 行を消す変異で `1.0f < 0.0001f` 赤)/ 90 frame 3.0、speed −1 → −1.0、speed 2.5 → 5.0(loops 項を消す変異で 2.0 / 2.0 / 4.0 に潰れる)/ seek: setTime 後 1.0 のまま、さらに 30 frame で 2.0(`drop_root_previous` を消す変異で seek ごとに 0.0667 過走。**N1 の形 = revision を保存しない変異では個体が永久に止まる**、5 mode 全部赤 = 第 2 巡が予言した故障が赤になる)/ 名前付き 4 種 + `pose.root_motion_shared@1` を payload 付きで観測 / 分類: extract → replay、none → direct、`pose.state_machine` は replay のまま(N3 の退行 guard)/ 非 GPU 1469、`-R "pose|skeletal|root motion|graph_catalog|morph"` 69/69(GPU 19、parity・sink_conflict・layout_mismatch・golden 込み)/ `PELICAN_WITH_ANIMATION=OFF` build 0 errors。継ぎ目無し loop(末尾 key = 先頭 key)は net 0 = 動かない(test mode で固定。manual の 1 行は本記録で代替、記録)。**穴(記録)**: attach 時の `pose.root_node_unknown@1`(layout 範囲外)は test 無し / N4 の「別 owner の sink から同じ node」は instance 境界を pose port が跨げるか未確認で未構築 / VRMA clip は `resolveClipResource` が知らず `pose.root_node_unknown@1` の誤った名前になる(到達不能)/ 回転量は落とす(v0)/ `devcli_graph_catalog` が `pelican_cli` の古い増分 link で一度 "expected 4 built-in modules, got 3"(強制 relink で緑。着地 gate の誤帰属に注意)/ callback false・transaction throw の経路は未 test。gate: build + 非 GPU 家族(利用者指示)。
+完了記録(2026-09-17、`37cc55ba`): 14 file(+2 test)。v2 決定 1〜6 と v3 裁定 N1〜N12 のとおり。追加面は `pose_staging_v1.hpp` の `resolve_rig_source_node{rig, clip, source_node} → {layout index, channel_kind_mask}`(capability bit `pose_staging_rig_source_node_mapping`、service version は 1 のまま)。component key は **`localtransform`**(hierarchy 参加者にしか自動で付かないので fixture は手で宣言。出荷 project に宣言は無い、記録)。owner → EntityId は bind 時に `scene.graphOwnerObject(owner)` で解決し `(index<<32)|generation` の opaque token を attachment に cache、適用は **非捕捉の関数 pointer**(`apply_root_translation`)で `GameObjects::setLocalTransform`(N9 の dangling を構造で塞ぐ。`src/core/animation` は ECS header を include しない)。N6: duration 0 は bind 時に `pose.root_motion_unsupported@1`(無名の "needs a nonzero duration" より前)。N8: channel 一覧は bind 時に取れたので translation channel 無しも同名で拒否(「delta 恒久 0 で通す」の fallback は不使用)。受け入れ(10 GENERATE mode の GPU test `skeletal_rootmotion_test`): 30 frame → pos.x 1.0、pin で model[3].x 0(対照 `none`: 0 / 1.0 = その場でずれる。pin 行を消す変異で `1.0f < 0.0001f` 赤)/ 90 frame 3.0、speed −1 → −1.0、speed 2.5 → 5.0(loops 項を消す変異で 2.0 / 2.0 / 4.0 に潰れる)/ seek: setTime 後 1.0 のまま、さらに 30 frame で 2.0(`drop_root_previous` を消す変異で seek ごとに 0.0667 過走。**N1 の形 = revision を保存しない変異では個体が永久に止まる**、5 mode 全部赤 = 第 2 巡が予言した故障が赤になる)/ 名前付き 4 種 + `pose.root_motion_shared@1` を payload 付きで観測 / 分類: extract → replay、none → direct、`pose.state_machine` は replay のまま(N3 の退行 guard)/ 非 GPU 1469、`-R "pose|skeletal|root motion|graph_catalog|morph"` 69/69(GPU 19、parity・sink_conflict・layout_mismatch・golden 込み)/ `PELICAN_WITH_ANIMATION=OFF` build 0 errors。継ぎ目無し loop(末尾 key = 先頭 key)は net 0 = 動かない(test mode で固定。manual の 1 行は本記録で代替、記録)。**穴(記録)**: attach 時の `pose.root_node_unknown@1`(layout 範囲外)は test 無し / N4 の「別 owner の sink から同じ node」は instance 境界を pose port が跨げるか未確認で未構築 / VRMA clip は `resolveClipResource` が知らず `pose.root_node_unknown@1` の誤った名前になる(到達不能)/ 回転量は落とす(v0)/ `devcli_graph_catalog` が `pelican_cli` の古い増分 link で一度 "expected 4 built-in modules, got 3"(強制 relink で緑。着地 gate の誤帰属に注意)/ callback false・transaction throw の経路は未 test。gate: build + 非 GPU 家族(利用者指示)。
 #### やらないこと
 sink の追加 / `root_delta` port / state_machine・blend の root motion / 回転量 / movement・physics step / transform の writer token / VRMA hips の自動解釈 / Studio UI。
 
@@ -23889,7 +23889,7 @@ sink の追加 / `root_delta` port / state_machine・blend の root motion / 回
 
 実装時の裁定(v3、2026-09-17。実装者が v2 の代替案を提示: `renderLogicalFrame` の末尾は無条件に temporal history を進める([renderer.cpp:6028-6044](../src/core/vkcore/renderer.cpp#L6028))ので「読むだけの描画」は game 状態と音に限って定義できる / `publish()` は audio writer 無しだと `unavailable` を積む / process 間 bytes 一致の前例は `run_input_record_replay_headless.cmake` 1 本だけで出荷規模の決定性は未測定 / `builtinGraphModuleRegistry()` は固定で test module は production に届かない):
 
-実装時の裁定(v4)と完了記録(2026-09-17、`405cd319`): 7 file。**実装は v3 の裁定どおり `--at` ではなく `--start-time <秒>`**(`llround(秒·fps)` で parse 時に frame 番号へ量子化、`launchconfig` は `start_frames` を持ち engine に「frame 間の時刻」を渡さない)。warm-up は `start_frames − 1` frame(capture 無し)で、**最初に capture する frame が t の frame**(`--start-time 2.0 --frames 2 --fps 60` の 0001 == 通常 run の 0120、0002 == 0121。`--start-time 0` は通常 run と同一)。名前付き: `offline.time_invalid@1`(負 / 非有限 / 非数)、`offline.headless_required@1`(`--headless` 無し)、`offline.mode_conflict@1`(`--rpc` / `--replay` / `--record-input` / `--bake-camera-output` と併用。`--frames` は併用であって衝突ではない = v2 の「排他」を撤回)。stderr `offline: start_time=… start_frame=… replay=… frames=…`。**評価分類の消費者は配管ごと作らない**(v3 (c) の「読み手だけ残す」も撤回: 検査の無い読み手は死んだ API)。`graph.evaluation_requires_state@1` の改名(3 op、`{node, op}` 付き)は実施。**`RenderIntent{step, read}` は実装しない**: 今日の `render_frame` ×2 で既に `get_graph_values` は同一(`frame` は frameIndex で再描画では進まず、clock は同 t で冪等)なので受け入れ 3 は read の有無を判別できない。差が出るのは `inject_event` を挟んだ 2 回目の発火と `PublishedInstanceInputs` の再刻印だけで、audio writer を捨てるには「no-op で true を返す writer」+ staged transfer の除外が要る。v0 後(記録)。受け入れ: 決定性 gate = 別 session の実測(5 project × 121 × 2 process、605 PNG 一致)+ 本 worktree で `raytracing_demo` / `sprite_demo` / fixture project(121 × 2、fixture は 15 種の画で 0 差分)/ replay 等価(上。対照: `llround` → `floor(t·fps − ε)` で `start_frame=119` になり byte 比較で赤。byte 検査を stderr 検査より前に置いた)/ 名前付き 3 種は parse 時に決まり GPU に届かない / 改名の対照: 旧の無名 `invalid_argument` に戻すと unit が `value.trigger_clock requires evaluation state: clocked` で赤 / 非 GPU 1468 緑(`-j16` で temp dir を共有する renderconfigeditor 6 件が赤 → 直列で緑)/ GPU 247 中 244 緑(赤 3 は worktree に gitignored 資産が無い WP375a/b と、R1-2 前の branch での RT6 named TLAS)。**穴(記録)**: `llround` の overflow(≈1e17 s は `frame < 0` の前に溢れる)/ fixture の oracle は 121 frame 中 15 種の画で、隣接 frame の同一は 119/120/121 だけ assert / worktree は出荷 project を走らせられない(資産無し、DLL 無し、smoke 未登録)。gate: build + 非 GPU 家族(利用者指示)。台帳 O-1 行の「記録が要るノードには named reject」は v3 の裁定で v0 から外れたまま。
+実装時の裁定(v4)と完了記録(2026-09-17、`fcbe1a98`): 7 file。**実装は v3 の裁定どおり `--at` ではなく `--start-time <秒>`**(`llround(秒·fps)` で parse 時に frame 番号へ量子化、`launchconfig` は `start_frames` を持ち engine に「frame 間の時刻」を渡さない)。warm-up は `start_frames − 1` frame(capture 無し)で、**最初に capture する frame が t の frame**(`--start-time 2.0 --frames 2 --fps 60` の 0001 == 通常 run の 0120、0002 == 0121。`--start-time 0` は通常 run と同一)。名前付き: `offline.time_invalid@1`(負 / 非有限 / 非数)、`offline.headless_required@1`(`--headless` 無し)、`offline.mode_conflict@1`(`--rpc` / `--replay` / `--record-input` / `--bake-camera-output` と併用。`--frames` は併用であって衝突ではない = v2 の「排他」を撤回)。stderr `offline: start_time=… start_frame=… replay=… frames=…`。**評価分類の消費者は配管ごと作らない**(v3 (c) の「読み手だけ残す」も撤回: 検査の無い読み手は死んだ API)。`graph.evaluation_requires_state@1` の改名(3 op、`{node, op}` 付き)は実施。**`RenderIntent{step, read}` は実装しない**: 今日の `render_frame` ×2 で既に `get_graph_values` は同一(`frame` は frameIndex で再描画では進まず、clock は同 t で冪等)なので受け入れ 3 は read の有無を判別できない。差が出るのは `inject_event` を挟んだ 2 回目の発火と `PublishedInstanceInputs` の再刻印だけで、audio writer を捨てるには「no-op で true を返す writer」+ staged transfer の除外が要る。v0 後(記録)。受け入れ: 決定性 gate = 別 session の実測(5 project × 121 × 2 process、605 PNG 一致)+ 本 worktree で `raytracing_demo` / `sprite_demo` / fixture project(121 × 2、fixture は 15 種の画で 0 差分)/ replay 等価(上。対照: `llround` → `floor(t·fps − ε)` で `start_frame=119` になり byte 比較で赤。byte 検査を stderr 検査より前に置いた)/ 名前付き 3 種は parse 時に決まり GPU に届かない / 改名の対照: 旧の無名 `invalid_argument` に戻すと unit が `value.trigger_clock requires evaluation state: clocked` で赤 / 非 GPU 1468 緑(`-j16` で temp dir を共有する renderconfigeditor 6 件が赤 → 直列で緑)/ GPU 247 中 244 緑(赤 3 は worktree に gitignored 資産が無い WP375a/b と、R1-2 前の branch での RT6 named TLAS)。**穴(記録)**: `llround` の overflow(≈1e17 s は `frame < 0` の前に溢れる)/ fixture の oracle は 121 frame 中 15 種の画で、隣接 frame の同一は 119/120/121 だけ assert / worktree は出荷 project を走らせられない(資産無し、DLL 無し、smoke 未登録)。gate: build + 非 GPU 家族(利用者指示)。台帳 O-1 行の「記録が要るノードには named reject」は v3 の裁定で v0 から外れたまま。
 - **採る**: (a) `--at` を撤回し **`--start-time <秒>` + `--frames N`**。`start_frames = llround(t·fps)` を parse 時に整数へ落とす(t は fps 格子に量子化、記録)。frame 0 から `start_frames` 回 advance + render(capture 無し)→ 以後 N 枚を出力。headless 以外での `--start-time` は名前付き error。格子外の `setTime` サンプルは撤回。(b) **決定性 gate を先に測る**: corpus project 1 本を `--headless --frames 121 --fps 60` で別 process 2 回 → 全 PNG bytes 一致。不一致なら O-1 を止めて決定性の穴を先に起票(連鎖上限 1)。(c) **評価分類の強制(`recorded` / `baked`)は v0 では作らない**: 宣言者が無く test module は production に届かないので印にしかならない。最初に `recorded` を宣言する op の WP が検査を足す(台帳 O-1 行の「記録が要るノードには named reject」はこの裁定で v0 から外す)。無名の stateless 拒否 3 箇所の `graph.evaluation_requires_state@1` への改名は行う。(d) **条件付き**: `RenderIntent{step, read}` で `render_frame` を read(value graph の publish を `EvaluationState` のコピーで行い、audio writer は捨てる writer、`PublishedInstanceInputs` は更新しない。`flushPendingTransforms` / `seq_player` / temporal history は今日どおり)— 小さく収まり既存 gate(`run_rpc_headless` / catalog smoke editor lane / `run_gpu_timing_headless` / golden)が緑のときだけ。
 - **採らない**: `pelican_cli render` subcommand と manifest(送り)。
 - 受け入れは (1) 決定性 gate 121 枚 × 2 process、(2) `--start-time 2.0 --frames 1 --fps 60` の `0001` == `--frames 120` の `0120`(対照: `floor(t·fps − ε)` に壊す変異で `0119` 側に落ちる / 非 headless で名前付き error)、(3) read の `render_frame` ×2 で `get_graph_values` の frame と clock 値が不変(対照: read → step)、(4) 既存 gate と出荷 4 project bytes 不変、(5) 改名した拒否の unit。
@@ -23928,7 +23928,7 @@ jump / 複数 t / EXR / 音のオフライン出力 / `pelican_cli` の描画 su
 
 実装時の裁定(2026-09-17、`agent/n1`): 値の重ねは `get_graph_values` が返す **instance の入力 port だけ**(定義内の node port の値は AG-3 の RPC 待ち)。`GraphCanvasReadCapability`(3 method に絞る struct)の `ready` handler は widget の `Impl` 構築中に同期で呼ばれるため、`Impl` 直接に配線した(`setConnected` 経由は null 参照で落ちる)。scope 切替(breadcrumb / double-click)は Qt が dispatch 中の item を消すので `QMetaObject::invokeMethod` で遅延。`--tab` は `openProject` の **後**に当てる(project を開くと tool layout が復元されて tab が戻るため)。`repopulate()` が refresh ごとに選択を消す(N-2 で直す。記録)/ catalog の読みは 1 回だけで失敗時に再試行しない(`GraphAttachmentModel` と同じ、記録)。
 
-完了記録(2026-09-17、`2c6828e4`): model `graphcanvasmodel`、共有部品 `nodegraphics`、view `graphcanvaswidget` + `GraphCanvasScene`、`graphcanvasreadcapability`、`pelican.renderTools` の 3 枚目 tab「Graph」、`pelican_studio --project <dir> --tab frame_plan|render_features|graph`。test: `devstudio_graphcanvas_test`(model、139 assertions、対照 = definitions 無し / catalog 無し / overlay 撤去の変異)、`devstudio_graphcanvas_scene_test`(Qt offscreen、62 assertions、対照 = column 固定 / 位置保持撤去 / prune 撤去 / double-click 撤去の変異)。Frame Plan の既存 test(`devstudio_frameplan_graph_test` 2133 / `devstudio_fullscreen_pass_test` 803)は抽出後も全数緑。着地 gate は build + Studio 系の非 GPU test(速度優先の運用)。実物: `<作業ディレクトリ>/playground`(`example` を `pelican.graph` root に変換した repo 外の project)を `--project` で開き、root と 2 定義が描けることを目視。**Studio は `projects/raytracing_demo` を開けない**(engine が `Renderer logical frame requires a compiled render pipeline` で exit 1。既知の穴、R 群候補、実装セッションが記録済み)。
+完了記録(2026-09-17、`edafc41d`): model `graphcanvasmodel`、共有部品 `nodegraphics`、view `graphcanvaswidget` + `GraphCanvasScene`、`graphcanvasreadcapability`、`pelican.renderTools` の 3 枚目 tab「Graph」、`pelican_studio --project <dir> --tab frame_plan|render_features|graph`。test: `devstudio_graphcanvas_test`(model、139 assertions、対照 = definitions 無し / catalog 無し / overlay 撤去の変異)、`devstudio_graphcanvas_scene_test`(Qt offscreen、62 assertions、対照 = column 固定 / 位置保持撤去 / prune 撤去 / double-click 撤去の変異)。Frame Plan の既存 test(`devstudio_frameplan_graph_test` 2133 / `devstudio_fullscreen_pass_test` 803)は抽出後も全数緑。着地 gate は build + Studio 系の非 GPU test(速度優先の運用)。実物: `<作業ディレクトリ>/playground`(`example` を `pelican.graph` root に変換した repo 外の project)を `--project` で開き、root と 2 定義が描けることを目視。**Studio は `projects/raytracing_demo` を開けない**(engine が `Renderer logical frame requires a compiled render pipeline` で exit 1。既知の穴、R 群候補、実装セッションが記録済み)。
 
 ### N-1b: ノードの見た目 —— 見出し(型名 + ラベル)とソケット欄を分ける(利用者レビュー 1 巡目、2026-09-17)
 
@@ -23958,7 +23958,7 @@ jump / 複数 t / EXR / 音のオフライン出力 / `pelican_cli` の描画 su
 
 実装時の裁定(2026-09-17、`agent/n1`): catalog の型 schema に `display{shape, color}` を載せる engine 側は **見送り**(型宣言は `SemanticTypeSchema`(`logicalrendertype.hpp:108`)で、`graphmodule.{hpp,cpp}` の外に及ぶ)。Studio 側の解決順 (i) は実装済みで、宣言が来れば何も変えずに効く(scene test が宣言付き catalog で「宣言が表に勝つ」ことを assert)。`graph.input` / `graph.instance` は catalog に無い構造 op なので、`graph.input` の出力型は Studio 側の規則(scalar)で与えた(composition とずれても検出できない、記録)。値の帯の source は文書由来の値を `stored` と表記(`get_graph_values` の 4 語とは別。publish を見ていないものを publish と言わないため)。node 面から `definition` 名が消えた(右 pane にはある)/ 長い名前は省略されない / 折り畳み矢印は飾り → いずれも N-2 で扱う。
 
-完了記録(2026-09-17、`373f62ee`): `nodegraphics` に `SocketShape` / `SocketStyle` / `socketStyleFor` / `socketPath` / `curveGeometryBetween` と既定表の読み込み、`graphcanvaswidget` の node item を見出し帯 + 出力欄 + 入力欄に、`src/devstudio/resources/graph_socket_styles.json`(既定表。型を足すのは JSON 編集)、`pelican_studio_resources` の embed proxy。test: scene test に 3 case(解決順 / 見出しとソケット中心 = 辺の端点 / 値の帯)、対照 5 種(既定表を空に / 辺を node 縁に戻す / 宣言を無視 / 見出しを id に / 接続済みを無視)で赤を実測、`renderconfigeditor_test` に「`label` が loader と commit を通る」節、fixture `test/fixtures/graph_node_visuals/`。Frame Plan 系 3 test 不変、非 GPU 全数 1646/1646。実物は playground で目視(利用者レビュー 2 巡目 → N-2 の 3 指摘)。
+完了記録(2026-09-17、`6c47a8a4`): `nodegraphics` に `SocketShape` / `SocketStyle` / `socketStyleFor` / `socketPath` / `curveGeometryBetween` と既定表の読み込み、`graphcanvaswidget` の node item を見出し帯 + 出力欄 + 入力欄に、`src/devstudio/resources/graph_socket_styles.json`(既定表。型を足すのは JSON 編集)、`pelican_studio_resources` の embed proxy。test: scene test に 3 case(解決順 / 見出しとソケット中心 = 辺の端点 / 値の帯)、対照 5 種(既定表を空に / 辺を node 縁に戻す / 宣言を無視 / 見出しを id に / 接続済みを無視)で赤を実測、`renderconfigeditor_test` に「`label` が loader と commit を通る」節、fixture `test/fixtures/graph_node_visuals/`。Frame Plan 系 3 test 不変、非 GPU 全数 1646/1646。実物は playground で目視(利用者レビュー 2 巡目 → N-2 の 3 指摘)。
 
 ### N-2: 共通グラフのノードキャンバス(繋ぐ・書く)—— 折り畳み、辺の接続 / 切断、値のその場編集、ノードの追加 / 削除、定義の中の編集
 
@@ -23992,7 +23992,7 @@ undo / 複数選択・矩形選択 / コピー & ペースト / `copy_definition
 
 実装時の裁定(2026-09-17、`agent/n2`): (1) 必須入力を持つ op の追加は `add_node` 1 つでは通らない(`validateGraphPorts` が未接続の必須入力を拒否)ので、palette は必須 **scalar** 入力ごとに `value.constant` を同じ ops 列で先に足す(1 操作 1 ticket 1 CAS は保つ)。種の定数は後で本物を繋いでも残る(削除は手動、記録)。(2) 通常 node の必須入力の切断は `set_input{null}` を送り、engine が `unconnected graph input` で拒否するのを notice に出す(定数を再挿入して黙って通す方を取らなかった)。instance の port(値を持つ)は切断できる。(3) 必須の非 scalar 入力を持つ op(`value.event_clock.events` 等)は palette で弾かず engine の拒否をそのまま。(4) palette は `ports == declared` の op と構造 op 2 つだけ。`render.*` の `parameter_dependent` op は port が parameter で決まり、form が無いので足せない(次)。(5) `graph.input_scope@1` は format より狭い(root の `graph.input` は展開器が受けるが editor は拒否。既存文書は読める)。(6) 定義名 `root` は指せない(root の token)。(7) `SKIP_DEVSTUDIO=ON` build は未確認(engine 側は全 gate が通る同じ compile)。(8) undo 無し(v0)。
 
-完了記録(2026-09-17、`02a3d285`): engine = `graphcomposition.cpp`(全 edit op に `scope`、`set_node_label`、`graph.input_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1`、定義の `outputs` も `graph.output_referenced@1` の対象)、`renderconfigeditor.cpp`(`definitions` の書き戻し、変化したときだけ)。Studio = model に Submit/Result と 6 操作、view に折り畳み・ソケットドラッグ接続・辺選択 Delete・入力側ドラッグで切断・値の帯のその場編集・見出し double-click でラベル・右クリック palette・Delete で node 削除・選択保持、capability に `requestEditGraphDocument` / `requestEditResult`、Inspector「ソースを開く」→ Graph tab の該当 node。test: `renderconfigeditor_test` に定義 scope の 2 節(対照 M1 `set_node_label` 撤去 / M2 scope 無視 / M3 書き戻し撤去 で赤を実測)、scene test に 8 case(対照 M4 `canConnect` 常真 / M5 折り畳み無効 / M6 全 key 送信 で赤)、非 GPU 全数 1654/1654、Frame Plan / Inspector 系不変。1 操作 = 1 `edit_graph_document`(connect / disconnect / pill / add / remove / label の JSON は台帳の上の裁定と report に記録)。
+完了記録(2026-09-17、`f2eccbfd`): engine = `graphcomposition.cpp`(全 edit op に `scope`、`set_node_label`、`graph.input_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1`、定義の `outputs` も `graph.output_referenced@1` の対象)、`renderconfigeditor.cpp`(`definitions` の書き戻し、変化したときだけ)。Studio = model に Submit/Result と 6 操作、view に折り畳み・ソケットドラッグ接続・辺選択 Delete・入力側ドラッグで切断・値の帯のその場編集・見出し double-click でラベル・右クリック palette・Delete で node 削除・選択保持、capability に `requestEditGraphDocument` / `requestEditResult`、Inspector「ソースを開く」→ Graph tab の該当 node。test: `renderconfigeditor_test` に定義 scope の 2 節(対照 M1 `set_node_label` 撤去 / M2 scope 無視 / M3 書き戻し撤去 で赤を実測)、scene test に 8 case(対照 M4 `canConnect` 常真 / M5 折り畳み無効 / M6 全 key 送信 で赤)、非 GPU 全数 1654/1654、Frame Plan / Inspector 系不変。1 操作 = 1 `edit_graph_document`(connect / disconnect / pill / add / remove / label の JSON は台帳の上の裁定と report に記録)。
 
 ### Q-1: Studio の自動化面 —— AI だけで GUI の動作確認を完結させる(利用者指示 2026-09-17「GUI の動作確認を AI のみで完結できないか。人だけで行うより確実」)
 
@@ -24022,7 +24022,7 @@ undo / 複数選択・矩形選択 / コピー & ペースト / `copy_definition
 
 実装時の裁定(2026-09-17、`agent/n2`): キャンバス内の node / ソケット / 値の帯 / inline editor は widget ではないので `<view>::<kind>#<node>[/<port>]` の合成名で指し、`list` が列挙する。`type` / `key` は item 経由で埋め込み widget に届く(窓の activation に依存しない)。**この面が最初の往復で見つけた本物のバグ**: 値の帯を click → type → Enter で「Graph change saved.」と出るのに古い値が保存された(`QDoubleSpinBox` の `keyboardTracking=false` と、editor の filter が Enter を先に消費する組合せ。scene test の合成 Enter では通っていた)→ `commitInlineEdit` で `interpretText()` を呼ぶ修正(`--automation` 無しでも挙動が変わる唯一の変更)。「保存を抜くと赤」は成立しない(engine が最初の RPC 往復で commit する)→ 受け入れ 3 の対照は「`set_node_parameters` を送らない変異」と「保存待ちと値検査を両方外す」の 2 つで実測。Studio は `quit` 後に 0xC0000005 で落ちる(既知)ので driver は終了コードを見ない(report に `studio_exit_code_note`)。widget モードの screenshot では埋め込み engine viewport が黒(別 HWND、`mode: screen` は未検証)。pipe は無認証(flag 時のみ)。`SKIP_DEVSTUDIO=ON` は configure のみ確認(`studio_scenario_*` が 0 件)。
 
-完了記録(2026-09-17、`06829720`): `src/devstudio/automation/{automationserver, automationcommands}`(static lib、Qt6::Network + Qt6::Test。flag 無しでは構築しない)、`--automation <名前>`、命令 `list / click / double_click / drag / key / type / text / wait / wait_engine / rpc / open_project / screenshot / quit`、名前付き error `automation.widget_missing@1` ほか 9 種、`tools/studio_drive.py`(uv、stdlib のみ、`report.json` に verdict / step 要約 / 失敗理由 + 送受信 + screenshot)、`test/run_studio_scenario.cmake`(fixture を temp に 2 複製)、fixture `test/fixtures/studio_automation_graph/`、シナリオ `graph_read`(14 step、9 s)/ `graph_edit_roundtrip`(19 step、16 s、実 engine)。対照: node 数を 1 ずらす変異で step 8 が赤 / `setNodeParameter` を止める変異で step 10 の wait_timeout。非 GPU 全数 1674/1674。GPU lease の inventory gate 通過(264 gpu test)。**Opus agent が driver を回して report を読み「緑」と「変異は step 8 で赤(理由付き)」を返した = AI だけで GUI の動作確認が閉じる**(利用者指示)。 **追記(Q-3 `9be4113f` で判明)**: `graph_edit_roundtrip` の「緑」はこの機械では `06829720` の時点で成立していなかった(窓の activation の瞬きで editor が閉じる。環境依存)。Q-3 で修正。
+完了記録(2026-09-17、`c026002d`): `src/devstudio/automation/{automationserver, automationcommands}`(static lib、Qt6::Network + Qt6::Test。flag 無しでは構築しない)、`--automation <名前>`、命令 `list / click / double_click / drag / key / type / text / wait / wait_engine / rpc / open_project / screenshot / quit`、名前付き error `automation.widget_missing@1` ほか 9 種、`tools/studio_drive.py`(uv、stdlib のみ、`report.json` に verdict / step 要約 / 失敗理由 + 送受信 + screenshot)、`test/run_studio_scenario.cmake`(fixture を temp に 2 複製)、fixture `test/fixtures/studio_automation_graph/`、シナリオ `graph_read`(14 step、9 s)/ `graph_edit_roundtrip`(19 step、16 s、実 engine)。対照: node 数を 1 ずらす変異で step 8 が赤 / `setNodeParameter` を止める変異で step 10 の wait_timeout。非 GPU 全数 1674/1674。GPU lease の inventory gate 通過(264 gpu test)。**Opus agent が driver を回して report を読み「緑」と「変異は step 8 で赤(理由付き)」を返した = AI だけで GUI の動作確認が閉じる**(利用者指示)。 **追記(Q-3 `c90fde90` で判明)**: `graph_edit_roundtrip` の「緑」はこの機械では `c026002d` の時点で成立していなかった(窓の activation の瞬きで editor が閉じる。環境依存)。Q-3 で修正。
 
 ### N-3: Frame Plan のノードを共通グラフと同じ見た目に(利用者レビュー 3 巡目、2026-09-17「frame plan も似たような方が良い」)
 
@@ -24053,7 +24053,7 @@ Frame Plan と Graph の統合キャンバス / Frame Plan の操作変更 / 位
 
 実装時の裁定(2026-09-17、`agent/n1`): ズーム上限は仕様の 3 ではなく **4.0**(WP318 の既存 test が Frame Plan のホイール上限を 4.0 で固定。上限は操作であって見た目ではないので既存 test を優先。両キャンバスで共通)。「カーソル位置が不動」は画素ではなく `transformationAnchor() == AnchorUnderMouse` で assert(offscreen では `QCursor::pos` 依存で 3 回に 1 回落ちる。flaky を出荷しない)。行の並びは resource **名順**(WP318 が入力配列の順序を無視することを固定している。宣言順を出すなら model に安定 index が要る、記録)。AS ソケットは `usage` に `ACCELERATION_STRUCTURE` を含む resource から引くが出荷 plan には無く、実データでは未検証(記録)。`FramePlanNodeMaximumWidth = 360` で長い名前は中略(tooltip に全名)。Graph の右クリックは「Add node… / Fit view」の 2 段になった(1 click 増、test 無し、記録)。Frame Plan の zoom / scroll は graph + group scope で key され、target や depth の変更では refit しない(`F` で回復、記録)。
 
-完了記録(2026-09-17、`dd088c2a`): `nodegraphics` に `SocketStyle::outline_width` と共有の `NodeCanvasView`(カーソル中心ホイールズーム 0.25〜4.0、中ボタン / Space+左のパン、`F` = fit、`showScope()` = 未見の scope は fit・再訪は復元)、`frameplangraphics` の node を見出し帯 + GPU 計時行 + 出力行 + 入力行に、`framePlanSocketFacts()`(resource 種別 → `frame_plan.image / buffer / acceleration_structure / swapchain / history`、`graph_socket_styles.json` に 5 entry 追加)、ソケット間の辺配線、辺ラベルは tooltip へ、選択で無関係の辺を薄く、context menu「Fit view」、`frameplanwidget` と `graphcanvaswidget` は同じ view を使う。test: `devstudio_frameplan_graph_test` に 4 case 追加(3 段 / 型別ソケット / 辺の端点 = ソケット中心 / zoom・pan・fit)、対照 4 種(辺を node 矩形に戻す / `frame_plan.*` を表から消す / 未見 scope を fit しない / ソケット起点の drag を止める)で赤を実測。**変えた既存 assertion は全部 appearance**(quotient の drop 一覧に sub-item を追加 / 「shape 1 + label 1」→「shape 1 + label ≥1」×11 / 辺ラベル text → tooltip / WP318 drag test の label 期待を撤去 / Shift drag の request 数 1→2 はソケット起点の gesture が先に増えたため)。model / RPC / 位置 key / group / breadcrumb / 計時 / convex hull の assertion は不変。Frame Plan 50/50、fullscreen 26/26、非 GPU 全数 1678/1678。
+完了記録(2026-09-17、`d8d7387d`): `nodegraphics` に `SocketStyle::outline_width` と共有の `NodeCanvasView`(カーソル中心ホイールズーム 0.25〜4.0、中ボタン / Space+左のパン、`F` = fit、`showScope()` = 未見の scope は fit・再訪は復元)、`frameplangraphics` の node を見出し帯 + GPU 計時行 + 出力行 + 入力行に、`framePlanSocketFacts()`(resource 種別 → `frame_plan.image / buffer / acceleration_structure / swapchain / history`、`graph_socket_styles.json` に 5 entry 追加)、ソケット間の辺配線、辺ラベルは tooltip へ、選択で無関係の辺を薄く、context menu「Fit view」、`frameplanwidget` と `graphcanvaswidget` は同じ view を使う。test: `devstudio_frameplan_graph_test` に 4 case 追加(3 段 / 型別ソケット / 辺の端点 = ソケット中心 / zoom・pan・fit)、対照 4 種(辺を node 矩形に戻す / `frame_plan.*` を表から消す / 未見 scope を fit しない / ソケット起点の drag を止める)で赤を実測。**変えた既存 assertion は全部 appearance**(quotient の drop 一覧に sub-item を追加 / 「shape 1 + label 1」→「shape 1 + label ≥1」×11 / 辺ラベル text → tooltip / WP318 drag test の label 期待を撤去 / Shift drag の request 数 1→2 はソケット起点の gesture が先に増えたため)。model / RPC / 位置 key / group / breadcrumb / 計時 / convex hull の assertion は不変。Frame Plan 50/50、fullscreen 26/26、非 GPU 全数 1678/1678。
 
 ### Q-1b: 自動化面の入力の穴 —— ホイール、マウス移動、ボタン別ドラッグ、メニュー / ショートカット(利用者質問 2026-09-17「マウス操作・キーボード入力・ショートカットを表現できてる?」への答えから)
 
@@ -24076,7 +24076,7 @@ Frame Plan と Graph の統合キャンバス / Frame Plan の操作変更 / 位
 
 実装時の裁定(2026-09-17、`agent/n2`): `key` に `route: widget | window` を足した(既定 widget は Q-1 どおりで shortcut map に届かない。window route が人のキー経路 = QAction の shortcut を実際に鳴らす)。**Q-1 の穴を 1 つ直した**: pointer 系の event が `QAbstractScrollArea` の frame に投げられて捨てられていた(`click{name: <QGraphicsView>}` は無音で何もしなかった)→ 全 pointer 命令が `pointerReceiver()` で viewport に写す。`QTest::mouseMove` はボタン無しだと event を出さないので、`move` / `press` / `release` / `drag` は保持ボタン状態を持った `QMouseEvent` を自前で合成する(パンは `buttons()` を読むため)。`move` は OS カーソルを動かさないので `underMouse()` / tooltip は検査できない(記録)。context menu は popup ごとに stack-local `QMenu` を作るので action を名前で引けない(Frame Plan と Graph の「Fit view」「Add node…」は `action` の対象外。名前付き QAction に変えるのは N-4 の「Auto layout」と一緒に)。Qt offscreen test で `QApplication` より先に widget を作ると MSVC の modal dialog で CTest が timeout まで無音で止まる(記録)。
 
-完了記録(2026-09-17、`026268ee`): 命令 `wheel / move / press / release / drag{button} / action{name|text, menu?} / menu_list{name?, pattern?} / view_state{name}`、`list` に `shortcut`、`key` に `route`。menu bar / dock toggle / gizmo toolbar の QAction に objectName(`pelican.file.*` / `pelican.view.panels.*` / `pelican.gizmo.*`)。test: `devstudio_automation_input_test`(Qt offscreen、11 case / 115 assertions。対照: `wheel` を dispatch から外す変異で `automation.unknown_command@1` ×3)。シナリオ: `canvas_zoom_pan`(Frame Plan: wheel で 400% / 25% の clamp を production の zoom label で照合、middle drag でパン、`view_state`)/ `menu_actions`(`menu_list` の shortcut `Ctrl+S` / `Esc`、`action` で gizmo と dock toggle、disabled は `bad_request`)/ `graph_canvas_zoom_pan`(N-3 の Graph canvas: wheel → `scale` 増、middle drag → `center` 移動、`F` → fit)。対照: `FramePlanGraphicsView::wheelEvent` の scale を消す変異で `canvas_zoom_pan` step 6 が `scale 1 is not gt 1` で赤。非 GPU 全数 1686/1686。着地前に 5 シナリオを GPU lane で直列実行して緑を確認。
+完了記録(2026-09-17、`cd9e243f`): 命令 `wheel / move / press / release / drag{button} / action{name|text, menu?} / menu_list{name?, pattern?} / view_state{name}`、`list` に `shortcut`、`key` に `route`。menu bar / dock toggle / gizmo toolbar の QAction に objectName(`pelican.file.*` / `pelican.view.panels.*` / `pelican.gizmo.*`)。test: `devstudio_automation_input_test`(Qt offscreen、11 case / 115 assertions。対照: `wheel` を dispatch から外す変異で `automation.unknown_command@1` ×3)。シナリオ: `canvas_zoom_pan`(Frame Plan: wheel で 400% / 25% の clamp を production の zoom label で照合、middle drag でパン、`view_state`)/ `menu_actions`(`menu_list` の shortcut `Ctrl+S` / `Esc`、`action` で gizmo と dock toggle、disabled は `bad_request`)/ `graph_canvas_zoom_pan`(N-3 の Graph canvas: wheel → `scale` 増、middle drag → `center` 移動、`F` → fit)。対照: `FramePlanGraphicsView::wheelEvent` の scale を消す変異で `canvas_zoom_pan` step 6 が `scale 1 is not gt 1` で赤。非 GPU 全数 1686/1686。着地前に 5 シナリオを GPU lane で直列実行して緑を確認。
 
 着地前の実測(2026-09-17): 5 シナリオを GPU lane で直列実行。有効化した `graph_canvas_zoom_pan` が 1 度赤 = **N-3 のパンは scroll bar 経由で、内容が view に収まっていると動かない**(使い勝手の穴。N-4 で view transform の平行移動に直す)。シナリオは「2 notch ズームしてからパン」に並べ替えて緑。
 
@@ -24105,7 +24105,7 @@ Frame Plan と Graph の統合キャンバス / Frame Plan の操作変更 / 位
 
 実装時の裁定(2026-09-17、`agent/n1`): 既定テーマは **`dark`**(表の `default`。dark のキャンバス値は着地前の色と byte 一致 → 既存の色 assertion は 1 つも変えていない)、`light` は palette 無し = Qt 既定 + 明るいキャンバス。listener は Qt signal ではなく素の関数表(scene test の target が AUTOMOC 無しで view を compile するため)。`list` / `click` が名前付き `QAction` に届くようにした(menu 項目は widget を持たない。Q-1b の `action` と重なるが `click` で自然に書ける)。`unknown` 型のソケット fill / outline は表から外しテーマの `heading_text` / `node_border` に。**穴**: Graph canvas の node rim は `node_border`、Frame Plan の rim は `heading_text`(N-3 の「同じ見た目」が pen まで届いていない。記録)/ Frame Plan のテーマ追随は scene test 無し / Frame Plan の warning・coverage・group・breadcrumb と logical edge の色、status label と inline editor の stylesheet はまだ固定色 / light の platform style 復元は `QStyleFactory::keys()` の名前一致という推定 / シナリオ `theme_switch` は開発者の実 QSettings を書く(最後に既定 `dark` に戻す。`--settings-dir` の redirect は後)。
 
-完了記録(2026-09-17、`43f032b1`): `studiotheme.{hpp,cpp}`(`StudioTheme{name, label, style, palette, canvas, domain_tint, source_tint}`、`currentStudioTheme` / `setCurrentStudioTheme` / listener / `applyStudioThemeToApplication` / QSettings `studio/theme`)、`studio_themes.json`(b_embed)、View ▸ Theme menu(`pelican.view.theme.<name>`、checkable・排他、起動時に保存値を適用)、Graph canvas と Frame Plan が body / rim / text / pill / edge / grid をテーマから読み切替で再描画、`NodeCanvasView::drawBackground` が両キャンバスの背景と grid。test: scene test「テーマの色で描き切替に追随」(対照: listener を外す変異で `scene_test.cpp:1287` が赤)/ widget test「View menu で切替 → QSettings → 次の窓が引き継ぐ」(対照: `storeStudioThemeName` を外す変異で `layoutpreset_test.cpp:523` が赤)/ 非 GPU 全数 1682/1682 / シナリオ `theme_switch`(dark と light のスクリーンショット)を含む 3 本緑。
+完了記録(2026-09-17、`6a26eef3`): `studiotheme.{hpp,cpp}`(`StudioTheme{name, label, style, palette, canvas, domain_tint, source_tint}`、`currentStudioTheme` / `setCurrentStudioTheme` / listener / `applyStudioThemeToApplication` / QSettings `studio/theme`)、`studio_themes.json`(b_embed)、View ▸ Theme menu(`pelican.view.theme.<name>`、checkable・排他、起動時に保存値を適用)、Graph canvas と Frame Plan が body / rim / text / pill / edge / grid をテーマから読み切替で再描画、`NodeCanvasView::drawBackground` が両キャンバスの背景と grid。test: scene test「テーマの色で描き切替に追随」(対照: listener を外す変異で `scene_test.cpp:1287` が赤)/ widget test「View menu で切替 → QSettings → 次の窓が引き継ぐ」(対照: `storeStudioThemeName` を外す変異で `layoutpreset_test.cpp:523` が赤)/ 非 GPU 全数 1682/1682 / シナリオ `theme_switch`(dark と light のスクリーンショット)を含む 3 本緑。
 
 ### N-4: ノードの自動配置の改良 —— 見やすい層配置(利用者指示 2026-09-17「ノードの見やすい自動配置アルゴリズムの改良は欲しい」)
 
@@ -24136,7 +24136,7 @@ Frame Plan と Graph の統合キャンバス / Frame Plan の操作変更 / 位
 
 実装時の裁定(2026-09-17、`agent/n1`): **パンは view transform の平行移動では動かない**(`QGraphicsView::setTransform` が `centerView()` で最後の中心に戻す。N-3 の Frame Plan pan test が捕まえた)→ view が「内容より viewport 1 つ分大きい」自前の scene rect を持ち(`growPanRoom`)、見る位置は `centerOn` で置く。`fitView` はその余白を先に捨てる。Frame Plan の層は呼び手の column 規則を渡せる(`options.columns`。畳んだ group は可視 member の最小 column、boundary stub は 1 つ外、という既存規則を保つ)。ordering の交差数は隣接層のもの(描画 polyline の幾何交差ではない。fixture では一致、一般には不一致あり得る。記録)。縦の配置は isotonic regression(pool-adjacent-violators)で最小間隔の鎖に対して解くので、重なり 0 は事後検査ではなく構造。dummy の高さ 10 / 間隔 16。`reversed_edges` は 3 fixture とも空。**穴**: 辺の端の node を drag すると bend が捨てられ直線に戻る(再配置しない)/ Frame Plan の「Auto layout」は graph 全体の手置き位置を捨てる(group scope で絞る key が無い)/ `edgeSpan` は出すが上限を assert しない(Frame Plan は 2592 → 6243 に増えた。旧配置が短かったのは絡んでいたから)/ `NodeGraphStaggerOffset` は未使用のまま残置。
 
-完了記録(2026-09-17、`af6e335f`): `nodelayout.{hpp,cpp}`(Qt 非依存 `layoutNodeGraph(nodes, edges, options) → boxes / columns / bends / reversed_edges / crossings`。段: 集約 → 層(最長経路、閉路は DFS の back edge を逆向き)→ dummy lane → 重心 sweep 4 往復(最良を保持、同点は id)→ isotonic regression の縦配置 4 pass → 層ごとの幅と `HorizontalGap`、bend は列の左右端 2 点で辺は列内で水平)。両キャンバスが呼ぶ。`autoLayout()` と名前付き QAction(`pelican.graphCanvas.autoLayout / fitView`、`pelican.framePlan.autoLayout / fitView`)、automation に `layout_stats`。test: `devstudio_nodelayout_test`(Qt 無し。fixture 4 つで旧規則を再実装して実測: posegraph_demo root 0→0、`walk_run` 辺の node 貫通 1→0、`graph_node_visuals` 0→0、**example Frame Plan 交差 133→44、貫通 41→0**、重なり 0、左→右、決定的。対照: sweep 0 回で 179 / dummy 無しで貫通 1 / 押し広げ無しで overlap 2 / pan を scroll に戻すと `19.0 > 79.0` が赤)、scene test 2 case(Auto layout は当該 scope の位置だけ捨てる、RPC は出ない)、Frame Plan 50 case / 2166 assertions で**幾何 assertion の変更ゼロ**、非 GPU 全数 1705/1705、シナリオ 7 本緑(`graph_auto_layout` 新規: drag → `action` で戻る、`layout_stats` 交差 0 / 重なり 0。`graph_canvas_zoom_pan` に倍率 1 でのパン step を追加)。
+完了記録(2026-09-17、`142a34fc`): `nodelayout.{hpp,cpp}`(Qt 非依存 `layoutNodeGraph(nodes, edges, options) → boxes / columns / bends / reversed_edges / crossings`。段: 集約 → 層(最長経路、閉路は DFS の back edge を逆向き)→ dummy lane → 重心 sweep 4 往復(最良を保持、同点は id)→ isotonic regression の縦配置 4 pass → 層ごとの幅と `HorizontalGap`、bend は列の左右端 2 点で辺は列内で水平)。両キャンバスが呼ぶ。`autoLayout()` と名前付き QAction(`pelican.graphCanvas.autoLayout / fitView`、`pelican.framePlan.autoLayout / fitView`)、automation に `layout_stats`。test: `devstudio_nodelayout_test`(Qt 無し。fixture 4 つで旧規則を再実装して実測: posegraph_demo root 0→0、`walk_run` 辺の node 貫通 1→0、`graph_node_visuals` 0→0、**example Frame Plan 交差 133→44、貫通 41→0**、重なり 0、左→右、決定的。対照: sweep 0 回で 179 / dummy 無しで貫通 1 / 押し広げ無しで overlap 2 / pan を scroll に戻すと `19.0 > 79.0` が赤)、scene test 2 case(Auto layout は当該 scope の位置だけ捨てる、RPC は出ない)、Frame Plan 50 case / 2166 assertions で**幾何 assertion の変更ゼロ**、非 GPU 全数 1705/1705、シナリオ 7 本緑(`graph_auto_layout` 新規: drag → `action` で戻る、`layout_stats` 交差 0 / 重なり 0。`graph_canvas_zoom_pan` に倍率 1 でのパン step を追加)。
 
 ### N-7: パネルの文字を減らす —— 説明文を消し、状態は 1 行、詳細は tooltip へ(利用者指示 2026-09-17「テキストで表示されてるものが多すぎる。ノードはまだいいが、他の tab や文字情報が乗りまくっている場所」)
 
@@ -24172,7 +24172,7 @@ node の表示(別)/ 右 pane の再設計 / 文言の翻訳 / アイコンフ�
 
 実装時の裁定(2026-09-17、`agent/n1`): 説明文の移し先は「関係する control の tooltip」を第一、パネル右上の `?`(`panelhelp.hpp`、`QDesktopServices` で `docs/manual/13_editor.md#<anchor>` を開く)を第二にした。notice は `setPanelNotice` 1 経路(先頭の 1 文 ≤ 90 字 + 全文 tooltip、空なら hidden)。`graphattachmentwidget`(Inspector 内)は未予算(記録)。Graph 右 pane の上限 150 は実測 25 の 6 倍で拘束していない(記録)。manual の anchor は日本語見出しの slug で未検証、`.md` を editor で開くと fragment は無視される(記録)。着地前に見つけた既存の flake: `canvas_zoom_pan` が Frame Plan 取得前にホイールし、取得後の初回 fit で倍率が戻る競合(素の HEAD で 3/3 赤)→ `pelican.framePlanStatus` に `passes` が出るのを待つ step を wheel の直前に挿入(3/3 緑)。逆向きの競合(取得が 250 ms 以内に来ると `scale eq 1.0` が落ちる)は残る(記録)。
 
-完了記録(2026-09-17、`5865a6fd`): 可視文字(label / group title / button / tree、tooltip 除く)Pass Editor 約 1592 → 352(上限 400)、Render Features 約 371 → 167(300)、Frame Plan 約 580 → 258(300)、Inspector 約 160 → 119(200。dialog の説明 ≈540 字は tooltip へ)、Graph 右 pane 33 → 25。Pass Editor の Validation axes 8 文 → 記号 1 行 + tooltip、layout 復元の `QMessageBox` 2 つ → status bar 1 行、フォントは `StudioFonts{family, fallback, size, size_small}` をテーマ表に(`Segoe UI` / `Yu Gothic UI`、12 / 11)。test: `devstudio_paneltext_test`(予算 5 パネル、tooltip への移動、notice の hidden 規則、テーマ font。対照: 上限を半分で 4 case 赤 / `?` の tooltip を空で赤 / notice を常時表示で赤)、非 GPU 全数 1722/1722、シナリオ 8/8。before / after のスクリーンショット `<作業ディレクトリ>/n7_shots/`(repo 外)。
+完了記録(2026-09-17、`434c4534`): 可視文字(label / group title / button / tree、tooltip 除く)Pass Editor 約 1592 → 352(上限 400)、Render Features 約 371 → 167(300)、Frame Plan 約 580 → 258(300)、Inspector 約 160 → 119(200。dialog の説明 ≈540 字は tooltip へ)、Graph 右 pane 33 → 25。Pass Editor の Validation axes 8 文 → 記号 1 行 + tooltip、layout 復元の `QMessageBox` 2 つ → status bar 1 行、フォントは `StudioFonts{family, fallback, size, size_small}` をテーマ表に(`Segoe UI` / `Yu Gothic UI`、12 / 11)。test: `devstudio_paneltext_test`(予算 5 パネル、tooltip への移動、notice の hidden 規則、テーマ font。対照: 上限を半分で 4 case 赤 / `?` の tooltip を空で赤 / notice を常時表示で赤)、非 GPU 全数 1722/1722、シナリオ 8/8。before / after のスクリーンショット `<作業ディレクトリ>/n7_shots/`(repo 外)。
 
 ### N-6: 配線の制御点 —— 自動配置の曲げを操作可能な reroute にし、似た曲げを「結束バンド」で束ね、配置を文書に残す(利用者指示 2026-09-17)
 
@@ -24204,7 +24204,7 @@ node の表示(別)/ 右 pane の再設計 / 文言の翻訳 / アイコンフ�
 
 実装時の裁定(2026-09-17〜18、`agent/n2`): 辺は**入力側 `{node, port}`** で一意に名指す。`set_layout` は scope の `layout` member を丸ごと置換(`null` で消す)。検証は「名指した node / 辺がその scope に存在」「座標は有限」「未知 key 無し」で `graph.layout_invalid@1`、斜線 id や他定義の node は `graph.definition_immutable@1`、未知 scope は `invalid_graph_document`。**layout だけの op 列は `apply_candidate` を通さず文書を書く**(`Ticket::source_only`。再 compose 無しの実測: `recomposed:false`、`apply_calls` / `published_generation` / frame plan / catalog 不変。続く `set_node_label` は動かし、layout の bytes は保つ)。`renderconfigdocument.cpp` の `isGraphRootKey` に `layout` を足した(1 key)。自動配置は lane を 2 点の reroute にし、同じ列で node 間隔(74)以内の lane は 1 つの tie に(`bundleDocument`: reroute 0 / tie 1 of 2、`flyoverDocument`: reroute 2 / tie 0)。**シナリオが見つけたバグ**: tie は担う辺の平均 x に置かれ node の上に載ることがあるが z が node(2)より下(1.5)で、press が node を掴んでいた → 制御点を z 2.5 / 2.6 に(scene test に zValue の assert)。**穴**: 300 ms の debounce 中に project を切り替えると置き場所の編集が失われ得る(scope 変更は flush、context reset は未 flush)/ `set_layout{null}` は `withRootValue` が root key を消せないので `"layout": {}` が残る(挙動は同じ、bytes は非同一)/ `rpc_equals` に `retry_ms` を足した(debounce 後の観測。「Graph change saved.」は連番を持たないので gate にできない)/ Frame Plan の位置は対象外 / 別 Studio の変更は次の refresh で見える(push 無し)。
 
-完了記録(2026-09-18、`fd02e356`): engine = `graphcomposition.{hpp,cpp}`(`set_layout`、`graph.layout_invalid@1`、`EditScope::container`、op 一覧コメント更新: **6 op / 9 名前付き拒否**)、`renderconfigeditor.{hpp,cpp}`(`source_only` の commit 経路、`get_graph_instances` が scope ごとに `layout` を返す)、`renderconfigdocument.cpp`(`layout` を root key に)。Studio = `graphcanvasmodel`(`layout_` / `scopeLayout` / `setLayout`)、`graphcanvaswidget`(+≈1000: reroute item / tie item、`GraphCanvasLayout` の JSON 双方向、辺の double-click で挿入・Delete・Tie together・Untie・reverse、Ctrl 追加選択、auto layout が reroute / tie を出す、300 ms debounce で `set_layout` 1 回、文書が正でセッション表は fallback、node drag で bends を捨てる行の撤去)。test: `renderconfigeditor_test`(対照: op 撤去で 5 箇所赤 / `layout_only` を false にすると再 compose の assert 3 箇所赤)、scene test(対照: bends を捨てる行を戻すと `edgeBends(...).contains(control)` 赤 / drag をセッション表だけにすると `layoutPending()` 赤)、非 GPU 全数 1721/1721、シナリオ `graph_reroute_tie`(37 step、23.7 s: Auto layout → reroute が出る → node drag で曲げが残る → 2 本を Tie → 束を drag で両方動く → 別複製に無い / 戻すと残る)。
+完了記録(2026-09-18、`5bd02967`): engine = `graphcomposition.{hpp,cpp}`(`set_layout`、`graph.layout_invalid@1`、`EditScope::container`、op 一覧コメント更新: **6 op / 9 名前付き拒否**)、`renderconfigeditor.{hpp,cpp}`(`source_only` の commit 経路、`get_graph_instances` が scope ごとに `layout` を返す)、`renderconfigdocument.cpp`(`layout` を root key に)。Studio = `graphcanvasmodel`(`layout_` / `scopeLayout` / `setLayout`)、`graphcanvaswidget`(+≈1000: reroute item / tie item、`GraphCanvasLayout` の JSON 双方向、辺の double-click で挿入・Delete・Tie together・Untie・reverse、Ctrl 追加選択、auto layout が reroute / tie を出す、300 ms debounce で `set_layout` 1 回、文書が正でセッション表は fallback、node drag で bends を捨てる行の撤去)。test: `renderconfigeditor_test`(対照: op 撤去で 5 箇所赤 / `layout_only` を false にすると再 compose の assert 3 箇所赤)、scene test(対照: bends を捨てる行を戻すと `edgeBends(...).contains(control)` 赤 / drag をセッション表だけにすると `layoutPending()` 赤)、非 GPU 全数 1721/1721、シナリオ `graph_reroute_tie`(37 step、23.7 s: Auto layout → reroute が出る → node drag で曲げが残る → 2 本を Tie → 束を drag で両方動く → 別複製に無い / 戻すと残る)。
 
 ### N-8: Frame Plan のノード編集 —— キャンバスから接続 / 切断、追加 / 削除、その場編集、配置の永続化(利用者指示 2026-09-18「frame plan 側のノード編集もできるようにしてほしい」)
 
@@ -24239,7 +24239,7 @@ preset pass / feature pass の delete RPC / pass の rename / `render_targets`(e
 
 実装時の裁定(2026-09-18、`agent/n1`): 全 gesture は既存 RPC の**丸ごと置換 payload**を authoring context の現在の宣言から組む(`frameplanedit.{hpp,cpp}`、Qt 非依存)。編集できない pass は吸着せず、`passRefusal` が理由(fork / materialize / feature_edit_reason)を 1 行で返す。node drag は Frame Plan 自身の RPC を持たず、Graph tab の `layout` に相乗りして 1 回の `set_layout` で出る(`layout_foreign_` を merge)。`layout.frame_plan` は graph ごとに `nodes / reroutes / ties / groups` の 4 key だけ、名前は照合しない(pass 名は文書の外で決まる。`nodes` 側が同じ名前を拒む対照を test に)。legacy root の判定は推測でなく `get_graph_instances.root_schema`(6 行の additive)で、notice は理由と file 名(「`<source_reference>` は legacy 形」)を出し、write 失敗は RPC の error code がそのまま出る。fixture は `studio_frameplan_edit_roundtrip/`(共有 fixture に pass を足すと他のシナリオの node 数が変わるため。CMake は `test/fixtures/studio_<name>/project.json` があればそれを優先)。**穴**: `graph_edit_roundtrip` シナリオが素の primary で赤(inline editor が出て ~500 ms で消え `type` が届かない。N-8 とは無関係、次で直す)/ `canvas_zoom_pan` の step 2(`scale == 1.0`)は初回 fit との競合で fragile / `wp375c_ctest_inventory_contract` が 213 s(O(n²))/ preset・feature pass の delete、rename、`render_targets`、typed load-op、legacy root 変換、並べ替え、undo は範囲外のまま。
 
-完了記録(2026-09-18、`6c71c5af`): 接続 = 出力ソケット → pass の通常ドラッグで `edit_preset_pass` 1 回(`input` +1、他 field は宣言どおり。task は `edit_compute_task` の `reads`)/ 切断 = 入力ソケットを空所へ or 辺を Delete / 帯 = shader stem と task の dispatch / Delete = `remove_authored_pass` `remove_compute_task` / 右クリック「Add fullscreen pass…」= Pass Editor を右クリック node の後ろ(engine の anchor 位置 1)に prefill、「Add compute task…」= 既存 dialog、double-click = 詳細 dialog / Shift ドラッグ不変(test 6744)。engine: `requireLayout` が `frame_plan` を形だけ検査、`get_graph_instances.root_schema`。test: Frame Plan 5 case(対照 M1 payload を空に / M5 理由を消す)、Pass Editor(M2 prefill を外す)、scene(M4 merge を外す)、RPC(M3 `frame_plan` の許可を外す。materialize / export の byte 一致に `frame_plan` を追加、layout だけの編集で generation / catalog 不変)、非 GPU 全数 1734/1734、シナリオ `frameplan_edit_roundtrip`(28 step、42.8 s: 接続 → engine の plan に読みが出る → 切断 → drag → `layout.frame_plan` に位置 → Add で Pass Editor の位置 1 → 別複製は空 → 再読込で残る)。
+完了記録(2026-09-18、`8e48473f`): 接続 = 出力ソケット → pass の通常ドラッグで `edit_preset_pass` 1 回(`input` +1、他 field は宣言どおり。task は `edit_compute_task` の `reads`)/ 切断 = 入力ソケットを空所へ or 辺を Delete / 帯 = shader stem と task の dispatch / Delete = `remove_authored_pass` `remove_compute_task` / 右クリック「Add fullscreen pass…」= Pass Editor を右クリック node の後ろ(engine の anchor 位置 1)に prefill、「Add compute task…」= 既存 dialog、double-click = 詳細 dialog / Shift ドラッグ不変(test 6744)。engine: `requireLayout` が `frame_plan` を形だけ検査、`get_graph_instances.root_schema`。test: Frame Plan 5 case(対照 M1 payload を空に / M5 理由を消す)、Pass Editor(M2 prefill を外す)、scene(M4 merge を外す)、RPC(M3 `frame_plan` の許可を外す。materialize / export の byte 一致に `frame_plan` を追加、layout だけの編集で generation / catalog 不変)、非 GPU 全数 1734/1734、シナリオ `frameplan_edit_roundtrip`(28 step、42.8 s: 接続 → engine の plan に読みが出る → 切断 → drag → `layout.frame_plan` に位置 → Add で Pass Editor の位置 1 → 別複製は空 → 再読込で残る)。
 
 ### Q-2: Studio の応答性 —— 計ってから直す(利用者指摘 2026-09-18「GUI の挙動が少しもっさりしている」)
 
@@ -24268,7 +24268,7 @@ Vulkan validation は原因ではない(headless `step_frame` +34% のみ)。
 
 実装時の裁定(2026-09-18、`agent/n2`): (1) idle: Graph tab 56.0 → **0.5 RPC/秒**、Frame Plan 58.0 → **1.5**(`get_gpu_timing` は本物の live 読み)。`get_modal_transform` の「engine 窓が focus を持つ」判定は `GetGUIThreadInfo(0)`(child thread を渡すと常に「持つ」になり 9/秒残った)。Graph / attachment / Inspector の timer は一度止めて `graph_observe_roundtrip` が赤になり戻した(それらは request pump で、`enterInstance` / `revealNode` / `beginWidgetEdit` 等は自分で flush しない。止めるには mutating path 全部に flush が要る = 別 slice)。(2) `get_frame_plan`: reply 到着 → scene ready は playground_pose 426 → 380 ms、example 616 → 580 ms(Debug)。残り ~85% は `populate()`(tree 6 本 + scene 再構築)なので worker thread 化は見送り(次の標的)。最初の probe は削った 2 pass の後に置いてあり差が出なかった → 位置を直して再計測。(3) view: Frame Plan パン 66.3 → **34.6 ms**、Graph パン 44.1 → 32.4、ズームはほぼ不変(viewport 全体を invalidate するため)。(4) **診断: Studio から example を開くと固まるのは engine でも handshake でもなく、`NativeWindowHost::embed()` の `SetWindowLongPtrW(GWL_STYLE)` が engine 窓の thread に WM_STYLECHANGING を send して、その thread が main loop 開始(`loop.cpp:390`)まで message を pump しないので UI thread が model load の残り時間だけ block する**(窓は 0.19 s で見えるのに `SendMessageW(WM_NULL)` が 14.8 s 後に返る)。Release でも 1.1〜1.4 s 固まる。直しは embed を「窓 thread が pump している」まで遅らせ、`WindowDiscoveryTimeoutMs = 15000` の kill を「まだ load 中」で再基準化し、文言も変える = 2 file の 3 変更(**Q-4**)。**穴**: Release の before / after は未計測(私の release Studio が link 対象を掴んでいた)/ idle の往復 p95(~8 ms)は変わらず(効いたのは engine 側の描画 thread の 19 ms/秒と reply 処理 60 回/秒)/ `pointer_focus_timer_` は 200 Hz のまま(RPC 無し。gesture 開始の遅延に効くので残置)/ Studio は `--vulkan-validation` を渡さないので Debug engine は常に validation + sync validation あり / `canvas_zoom_pan` と `graph_edit_roundtrip` の赤は既存(Q-3)。
 
-完了記録(2026-09-18、`cb76c164`): `gizmomodel`(`gizmoModalPollIntervalMs`)、`mainwindow`(`updateModalTransformPolling`、`engineInputActiveChanged`)、`inspectormodel` / `graphattachmentmodel` / `graphcanvasmodel`(poll 述語)、`frameplanwidget`(gpu timing の gate)、`engineprocess`(reply 行の 1 回走査、`result` bytes をそのまま)、`embeddedviewport`(`serializeJsonValue` 削除、`engineInputActiveChanged`)、`nativewindowhost`、`nodegraphics`(`CacheBackground` + `DontSavePainterState`、grid cache)。test 6 本 + `rpc-envelope` fixture mode(`process_fixture_child.cpp`)。非 GPU 全数 1734/1734。計測: `<作業ディレクトリ>/q2_perf_report.md`、driver は `<作業ディレクトリ>/bench/`。Release 版 Studio の launcher `<作業ディレクトリ>/studio_rel.cmd`(別 build tree `<作業ディレクトリ>/n2/build_rel`、`PELICAN_STUDIO_PLAYER` で RelWithDebInfo の player を指す)。
+完了記録(2026-09-18、`bf2776fc`): `gizmomodel`(`gizmoModalPollIntervalMs`)、`mainwindow`(`updateModalTransformPolling`、`engineInputActiveChanged`)、`inspectormodel` / `graphattachmentmodel` / `graphcanvasmodel`(poll 述語)、`frameplanwidget`(gpu timing の gate)、`engineprocess`(reply 行の 1 回走査、`result` bytes をそのまま)、`embeddedviewport`(`serializeJsonValue` 削除、`engineInputActiveChanged`)、`nativewindowhost`、`nodegraphics`(`CacheBackground` + `DontSavePainterState`、grid cache)。test 6 本 + `rpc-envelope` fixture mode(`process_fixture_child.cpp`)。非 GPU 全数 1734/1734。計測: `<作業ディレクトリ>/q2_perf_report.md`、driver は `<作業ディレクトリ>/bench/`。Release 版 Studio の launcher `<作業ディレクトリ>/studio_rel.cmd`(別 build tree `<作業ディレクトリ>/n2/build_rel`、`PELICAN_STUDIO_PLAYER` で RelWithDebInfo の player を指す)。
 
 ### Q-3: 値の帯の inline editor が勝手に閉じる —— 窓の activation の瞬きと再描画に耐える(2026-09-18。`graph_edit_roundtrip` シナリオの赤の根本)
 
@@ -24276,8 +24276,8 @@ Vulkan validation は原因ではない(headless `step_frame` +34% のみ)。
 
 #### 診断(実測)
 - 症状: `studio_scenario_graph_edit_roundtrip` の step 7 の `wait` は editor を見つけるが、~500 ms 後の step 8 `type` で `automation.widget_missing@1`。
-- 原因: `InlineEditFilter::eventFilter`(N-2 `02a3d285` から不変)が **あらゆる `FocusOut` で commit** していた。editor を開くと focus が engine の native 窓(`pelican.viewportHost`)から main window へ移り、Qt が 1 loop の間 `ApplicationInactive` を報告し、`Qt::ActiveWindowFocusReason` の `FocusOut` が editor を閉じて**古い値を保存**する。Alt-Tab で離れても同じ = 本物の欠陥。`repopulate` は editor 中は呼ばれていない(`synchronize()` の guard は効いていた)。
-- **bisect**: `06829720`(このシナリオを導入した Q-1 の commit)でも赤、`dd088c2a` / `43f032b1` / `5d64bd6e` でも赤。**この機械では一度も緑になっていない**(Q-1 の完了記録の「シナリオ緑」は別の tree での結果で、この機械では成立していなかった。`83645084` の全数 1947/1947 は Q-1 より前なのでこのシナリオを一度も回していない)。activation の瞬きは環境依存で、他の機械では緑に見え得る。
+- 原因: `InlineEditFilter::eventFilter`(N-2 `f2eccbfd` から不変)が **あらゆる `FocusOut` で commit** していた。editor を開くと focus が engine の native 窓(`pelican.viewportHost`)から main window へ移り、Qt が 1 loop の間 `ApplicationInactive` を報告し、`Qt::ActiveWindowFocusReason` の `FocusOut` が editor を閉じて**古い値を保存**する。Alt-Tab で離れても同じ = 本物の欠陥。`repopulate` は editor 中は呼ばれていない(`synchronize()` の guard は効いていた)。
+- **bisect**: `c026002d`(このシナリオを導入した Q-1 の commit)でも赤、`d8d7387d` / `6a26eef3` / `ce5e96c0` でも赤。**この機械では一度も緑になっていない**(Q-1 の完了記録の「シナリオ緑」は別の tree での結果で、この機械では成立していなかった。`450f2866` の全数 1947/1947 は Q-1 より前なのでこのシナリオを一度も回していない)。activation の瞬きは環境依存で、他の機械では緑に見え得る。
 
 #### 決定
 1. `FocusOut` のうち `Qt::ActiveWindowFocusReason` / `Qt::PopupFocusReason` は「窓を貸しただけ」なので edit を終えない。Enter / Escape / 本物の focus 移動(別 widget へ)は今日どおり(表計算の規則)
@@ -24290,7 +24290,7 @@ Vulkan validation は原因ではない(headless `step_frame` +34% のみ)。
 
 実装時の裁定: `restoreInlineEdit` は `model_->canEdit()` に依存する(digest 無し / 切断の瞬間に rebuild が来ると carry した text は落ちる。redraw を defer する仕組みは未整備、記録)。**Frame Plan の inline editor(N-8)は鏡像の欠陥**(再描画で無条件 `closeInlineEditor()`、`FocusOut` も Escape も無い)→ Q-4 に畳む。Studio 終了時の 0xC0000005 は scenario の verdict から除外されたままで、本物の teardown crash が見えない(既知)。
 
-完了記録(2026-09-18、`9be4113f`): `graphcanvaswidget.{cpp,hpp}`(focus reason の guard、`CarriedInlineEdit` / `carryInlineEdit` / `restoreInlineEdit`)、scene test 2 case。
+完了記録(2026-09-18、`c90fde90`): `graphcanvaswidget.{cpp,hpp}`(focus reason の guard、`CarriedInlineEdit` / `carryInlineEdit` / `restoreInlineEdit`)、scene test 2 case。
 
 ### Q-4: project を開いた直後の固まり —— 埋め込みが engine の窓 thread を待たない(Q-2 の診断から。利用者指摘「もっさり」の残り)
 
@@ -24320,7 +24320,7 @@ engine 側の起動短縮 / Studio 起動の並列化 / 別 thread の RPC。
 
 実装時の裁定(2026-09-18、`agent/n2`): attach は純関数の policy(`engineattach.{hpp,cpp}`、`EngineAttachPolicy::decide(window_present, now_ms)` → `search_window` / `give_up_no_window` / `probe_window` / `give_up_no_response`)。probe は `SendMessageTimeoutW(WM_NULL, SMTO_ABORTIFHUNG | SMTO_NORMAL, 10 ms)`(最初の 1 s は 25 ms 周期、以後 150 ms)。**両方の期限は engine の最後の log 行から数える**(`EngineProcess::outputReceived` → `engineSpoke`)ので load 中の engine は殺さない(log が動いている限り待つ = 上限無し、記録)。`rpc_ready_` は embed 後の最初の `get_status` の返事で立てる(embed で立てない)。`engine_stop_reason_` で意図した停止の理由を exit code に上書きされないようにした。`PELICAN_STUDIO_ENGINE_LOAD_TIMEOUT_MS` で 120 s を上書き可(test で give-up 経路に届くため)。**残る 0.2〜0.55 s** は `SetParent` + resize の瞬間に engine が swapchain を作り直す時間(engine 側、範囲外)。Studio が埋め込み窓を 2 回 resize する(footer の高さ変化)のは Studio 側で消せる(記録)。populate: `raw_json` は engine の bytes をそのまま持ち JSON tab が前面のときだけ整形、tree 7 本の先頭列を fill 中だけ `Interactive` にして 1 回で測る(`TreeFillGuard`)。Frame Plan editor: `closeInlineEditor` の teardown で filter に FocusOut が飛び別の editor に commit していた → filter を先に外す / **Escape は `pelican.framePlanLeaveGroup` の shortcut が先に取っていた** → action が開いている edit を先に取り消す。**穴**: scene の別所 click で編集が捨てられる(N-8 の経路、記録)/ `GraphCanvasScene::closeEditor` に同じ teardown の疑い(記録)/ attach 後の初回 fill 0.25〜0.5 s(Graph repopulate と outliner)。
 
-完了記録(2026-09-18、`0547c0ac`): project open 中の UI thread 最大停止(automation 経由で `text` を連打して計測): Debug `playground_pose` **2203 → 34 ms**、Debug `example` **17065 → 34 ms**(embed の瞬間だけ 464 / 553 ms)、Release 598 → <20 ms、1326 → <20 ms。Loading の notice(`pelican.viewportLoadingNotice`)が load 中「(n s)」を数える。Frame Plan 到着 → 表示 **349 → 192 ms**(Debug、playground_pose)。test: viewport test(gate を外す変異で label が出ず silence test が 1200 s 固まる = 固まりの再現 / log を生存とみなさない変異で起動中の engine を殺す / embed で ready にする変異で `rpcReady` が偽陽性)、Frame Plan graph test(focus 規則 / carry / Escape の 3 変異で赤)、raw JSON tab の test。非 GPU 全数 1747/1747、シナリオ 9/10(赤は Q-3 が無い tree のため。着地時に Q-3 と merge)。driver `<作業ディレクトリ>/bench/q4open.py` `q4pop.py` `q4win.py`。
+完了記録(2026-09-18、`06787ace`): project open 中の UI thread 最大停止(automation 経由で `text` を連打して計測): Debug `playground_pose` **2203 → 34 ms**、Debug `example` **17065 → 34 ms**(embed の瞬間だけ 464 / 553 ms)、Release 598 → <20 ms、1326 → <20 ms。Loading の notice(`pelican.viewportLoadingNotice`)が load 中「(n s)」を数える。Frame Plan 到着 → 表示 **349 → 192 ms**(Debug、playground_pose)。test: viewport test(gate を外す変異で label が出ず silence test が 1200 s 固まる = 固まりの再現 / log を生存とみなさない変異で起動中の engine を殺す / embed で ready にする変異で `rpcReady` が偽陽性)、Frame Plan graph test(focus 規則 / carry / Escape の 3 変異で赤)、raw JSON tab の test。非 GPU 全数 1747/1747、シナリオ 9/10(赤は Q-3 が無い tree のため。着地時に Q-3 と merge)。driver `<作業ディレクトリ>/bench/q4open.py` `q4pop.py` `q4win.py`。
 
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
@@ -24345,7 +24345,7 @@ engine 側の起動短縮 / Studio 起動の並列化 / 別 thread の RPC。
 4. 既存の `-R "authoring|transaction|renderconfig"` 緑、RT6 named TLAS ×3 直列緑、非 GPU 全数
 
 
-完了記録(2026-09-17、`edf4bd43`): 3 file(+334 行の test)。`committed` marker は `linkExclusive`(hard link の排他 create)で別 file、`manifest.json` は 1 回書いて上書きしない。`transactionDecision` が marker → digest 一致 → 旧形式 `status: "committed"` の順に読む(書き手は無し)。**追加で閉じた穴**: `removeTransactionDirectory` は `manifest.json` を先に消す(列挙順で `committed` が先に消えると「prepared だけ残る」= recovery が rollback してしまう)。commit-fault の継ぎ目は marker の後にもう 1 回鳴り、fixture が process を止められる。受け入れ: replace route counter 0(旧形式変異で +1)/ 704 round interleaved: R1 の乗り物(`Project preset pass edits publish without changing the root document`)で **A(新) 0 / 704、B(旧形式) 33 / 704**(完走。B は全部 `manifest.json via FileRenameInfoEx: Access is denied. (5)`。R1 の 24/704 より負荷の高い機械)。台帳の乗り物(飽和 commit test)は A 0 / B 704(B は全部「manifest が committed に再公開された」assertion、間欠は再現せず)/ recovery 4 経路 + 「cleanup 中断で manifest だけ残らない」の 5 本目、crash 注入の子 process で緑 / `-R "authoring|transaction|renderconfig|RenderConfig" -LE gpu` 30/30、非 GPU 全数 1475、RT6 named TLAS ×3 直列緑。**事故(記録)**: 実装中に作業ツリーの `publishCommittedMarker` が実装者以外の何か(`// MUTATION(R1-2 control)` ラベル)に書き換えられ、A/B の binary 1 本を汚染した。実装者が復元して md5 を固定し全部再測。出所は不明(他 worktree の agent の誤爆か、compaction 前の mutation-runner の残り)。**運用の教訓: 1 worktree に 1 agent、変異は実装者自身のスクリプトでだけ当てる。** gate は W1 skip(実装者の計測を採用、利用者指示の軽い gate)。`agent/r1-atomic`(R1 の POSIX rename 単独)は r1-marker に含まれるので branch を削除。
+完了記録(2026-09-17、`cc95a732`): 3 file(+334 行の test)。`committed` marker は `linkExclusive`(hard link の排他 create)で別 file、`manifest.json` は 1 回書いて上書きしない。`transactionDecision` が marker → digest 一致 → 旧形式 `status: "committed"` の順に読む(書き手は無し)。**追加で閉じた穴**: `removeTransactionDirectory` は `manifest.json` を先に消す(列挙順で `committed` が先に消えると「prepared だけ残る」= recovery が rollback してしまう)。commit-fault の継ぎ目は marker の後にもう 1 回鳴り、fixture が process を止められる。受け入れ: replace route counter 0(旧形式変異で +1)/ 704 round interleaved: R1 の乗り物(`Project preset pass edits publish without changing the root document`)で **A(新) 0 / 704、B(旧形式) 33 / 704**(完走。B は全部 `manifest.json via FileRenameInfoEx: Access is denied. (5)`。R1 の 24/704 より負荷の高い機械)。台帳の乗り物(飽和 commit test)は A 0 / B 704(B は全部「manifest が committed に再公開された」assertion、間欠は再現せず)/ recovery 4 経路 + 「cleanup 中断で manifest だけ残らない」の 5 本目、crash 注入の子 process で緑 / `-R "authoring|transaction|renderconfig|RenderConfig" -LE gpu` 30/30、非 GPU 全数 1475、RT6 named TLAS ×3 直列緑。**事故(記録)**: 実装中に作業ツリーの `publishCommittedMarker` が実装者以外の何か(`// MUTATION(R1-2 control)` ラベル)に書き換えられ、A/B の binary 1 本を汚染した。実装者が復元して md5 を固定し全部再測。出所は不明(他 worktree の agent の誤爆か、compaction 前の mutation-runner の残り)。**運用の教訓: 1 worktree に 1 agent、変異は実装者自身のスクリプトでだけ当てる。** gate は W1 skip(実装者の計測を採用、利用者指示の軽い gate)。`agent/r1-atomic`(R1 の POSIX rename 単独)は r1-marker に含まれるので branch を削除。
 #### やらないこと
 
 transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復活。
@@ -24369,13 +24369,13 @@ transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復
 - 個体削除時のGPU資源回収と再生成を接続。scopeの所有者・依存から停止する描画宣言を除外し、実行時object IDの変更をフレーム境界で一括検出して既存の候補公開経路へ渡す。全体グラフの保存文書は変更しない。公開済みroot/依存JSONを使い、未反映のディスク編集を所有者更新へ混入させない。同じ失敗入力を毎フレーム再コンパイルしない。継続するbufferのGPU内容・未送信host値、兄弟のparameter・再生状態・voiceを維持する。画像・temporal historyは既存の描画世代再構築と同じく初期化する。
 - 回収の検証: Studio/Playerビルド、CPU curve 20件/221 assertions、通常GPU skeletal 11件/1182 assertions、RT遅延公開1件/45 assertions成功（build/.codex_bg/graph_ownership_build5.log / graph_ownership_curve_final.log / graph_ownership_gpu_final.log / graph_ownership_rt_final.log）。旧世代参照中の実buffer保持、フレーム完了・旧世代解放・DeletionQueue処理後の実buffer消失、再生成後の新bufferと描画再開を確認。RT submit失敗でも旧世代・保存内容・voiceを維持し、明示再試行で回収できる。停止node除外を戻すと実buffer回収確認、状態copyを除くと共有bufferの値保持、世代寿命を短絡すると旧ID保持確認が落ちる対照設計（個別コード変異未実施）。SceneLoaderのグラフ状態をscenegraphruntime.cppへ分離し、所有者解決とparameter変換を共通化。候補音声の蓄積・公開をPreparedGraphRuntimeTransferへ集約した。以下の過去記録にあるGUI装着・個体削除時GPU回収の未了記述は、この記録と次項で解消済み。
 
-- Inspectorのグラフ装着GUIを `b302a71c` に統合。選択個体のscene/authoring object IDで装着一覧を表示し、定義・初期scalar parameterを指定した追加と解除を既存RPCへ接続。GraphAttachmentModelが通信・ticket・選択世代を管理し、Widgetは表示と入力を担当する。保存競合時は草稿を保持してsourceを再取得できる。Studio/Playerビルド、モデル5件/106 assertions、Widget1件/34 assertions成功（graph_ownership_build4.log / graph_ownership_model.log / graph_ownership_widget.log）。初期値3.5e-12、二個体の識別、古い応答の無視、確定前の二重送信防止、解除と競合後の再送信を確認。全体ノード編集UIとscene別graph選択は別の残件。
+- Inspectorのグラフ装着GUIを `919f516f` に統合。選択個体のscene/authoring object IDで装着一覧を表示し、定義・初期scalar parameterを指定した追加と解除を既存RPCへ接続。GraphAttachmentModelが通信・ticket・選択世代を管理し、Widgetは表示と入力を担当する。保存競合時は草稿を保持してsourceを再取得できる。Studio/Playerビルド、モデル5件/106 assertions、Widget1件/34 assertions成功（graph_ownership_build4.log / graph_ownership_model.log / graph_ownership_widget.log）。初期値3.5e-12、二個体の識別、古い応答の無視、確定前の二重送信防止、解除と競合後の再送信を確認。全体ノード編集UIとscene別graph選択は別の残件。
 
 - 2026-09-08 装着更新時の状態引き継ぎ: Graphの宣言・上流依存・ownerが一致するnodeをIDで対応づけ、clock/event待ち行列とparameterを保持。parameter名とnode IDは区別する。Sceneのprivate候補はvoiceを借用し、公開成功時だけ所有権を移す。RT遅延公開は候補フレーム開始時の最新状態を使い、音声event/valueをsubmit・世代公開後へ延期する。候補失敗時は旧状態とvoiceを維持。共通グラフのrendering内にあるray_group_layout/ray_bindingsの読み込みも共通入口へ接続した。
 - 状態引き継ぎの確認: Playerビルド、CPU curve 19件/212 assertions、GPU skeletal 11件/1134 assertions、実RT遅延公開1件/26 assertions成功（graph_transfer_curve_final.log / graph_transfer_gpu.log / graph_transfer_rt_final_gpu.log）。ノード配列変更、owner・上流変更、独立parameter名、兄弟のvoice/parameter保持、追加GPU bufferの値と解除時の名前解決解除・voice停止を確認。RTではstaging後のpause受信、source失敗後の旧voice・イベント保持、再試行後のGPU値0.5とresume後0.75、共通グラフ全体を外した際の音声停止を確認。従来RT1b transactionも4490 assertions成功（graph_transfer_rt_gpu.logは新規fixtureの未解決selector失敗を含む途中ログであり、全体成功ではない。新規fixtureは修正後のfinalログを参照）。状態コピーを除くと経過値/voice確認、音声を先行反映すると失敗時のpause不変確認が落ちる対照設計（個別コード変異未実施）。次はGUIの装着経路、個体削除時の停止GPU資源回収、scene別graph選択。これらを装着RPCの完了に含めない。
 
 - **`graph.instance.owner` の authoring object id は保存 → 再読込を跨ぐと別個体を指しうる**(2026-09-17、P-1 の設計レビューで確認): id は load 時の宣言順連番([authoringscenedocument.cpp:38](../src/core/loader/authoringscenedocument.cpp#L38))、解決は線形走査で、ずれた先に生きた object があれば黙ってそれに適用([scenegraphruntime.cpp:33](../src/core/loader/scenegraphruntime.cpp#L33))。`design_object_identity.md` の ID-1〜4(永続 id)が未実装。共通グラフの装着は AG-1a 以降ここに乗っているので、**scene に object を挿入して保存すると装着先がずれる**。永続 object id は X-1 / R 群の前に単独 WP で(記録)。
-- **`setTime` だけで engine を駆動する headless 呼び手は animation frame を公開できない**(2026-09-16、R0 の C1 で判明): `bff9e540` で clip / graph の公開 revision を `EngineTime::frameIndex()` に揃えたため、`advance()` を呼ばない呼び手では revision が 0 のままで、`PolygonInstanceContainer::publishAnimationFrame`(`polygoninstancecontainer.cpp:1856`)が `frame_revision == 0` を拒否する。1 engine frame 内の 2 回の ECS update も `duplicate_revision` になる。set_time の golden harness は `advance()` を足して直した(test 側)。裁定候補: `frameIndex() == 0` を有効な最初の frame とするか、`setTime` が frame を進める契約にするか。O-1(オフライン出力の時間モデル)で決める(記録)。
+- **`setTime` だけで engine を駆動する headless 呼び手は animation frame を公開できない**(2026-09-16、R0 の C1 で判明): `59b19eba` で clip / graph の公開 revision を `EngineTime::frameIndex()` に揃えたため、`advance()` を呼ばない呼び手では revision が 0 のままで、`PolygonInstanceContainer::publishAnimationFrame`(`polygoninstancecontainer.cpp:1856`)が `frame_revision == 0` を拒否する。1 engine frame 内の 2 回の ECS update も `duplicate_revision` になる。set_time の golden harness は `advance()` を足して直した(test 側)。裁定候補: `frameIndex() == 0` を有効な最初の frame とするか、`setTime` が frame を進める契約にするか。O-1(オフライン出力の時間モデル)で決める(記録)。
 - **render authoring transaction の `atomicReplace` が `Access is denied` で間欠的に失敗する**(2026-09-16 記録 → 2026-09-17 に `agent/r1-atomic` で半分閉じた): 原因の一つは **real-time scanner が `READ|WRITE|DELETE` 共有で file を握っている間の `MoveFileExW(REPLACE_EXISTING)` が error 5 になる**こと(Win32 probe で決定的に再現。`FileRenameInfoEx` の POSIX rename は同条件で成功)。`atomicReplace` を POSIX rename 優先 + 名前付き fallback(FS 非対応時だけ)+ access error は retry、に置換。再現 test は新実装 200/200、旧実装は 9〜13/20 失敗、変異で元の文言が再現。**残り**: 飽和負荷(16 並列)の interleaved A/B で 36/704 → 24/704 と半減するだけで消えない(memory-mapped と delete-pending は除外済み、原因未特定)。構造的な次の一手 = **committed marker を生きた file の上書きではなく `atomicCreate`(hard link の排他 create)で別 file として作る**(transaction 形式の変更。R1 の単独 slice、記録)。`atomicCreate` の hard link は「名前の排他 publish」で、消せない
 - 2026-09-08 共通graph装着の保存経路: get_graph_instances/edit_graph_instancesを既存編集RPCへ追加。全体文書のroot graph.instanceへowner/definition/inputs/parametersを保存し、複数attach/detachを一つの描画候補・source CASへ渡す。重複・不正owner・未知定義・解除後の参照残留を拒否。Playerビルド、render-config-editor/render-feature 89件/2653 assertions成功（graph_attachment_build.log / graph_attachment_cpu.log）。二個体の初期parameter、保存再読込、片方の解除、source置換後の失敗から旧文書と世代へのrollbackを確認。次は実行中の兄弟のclock/event/parameter/voice引き継ぎとGPU経路。GUIの装着操作と個体削除時のGPU資源回収はまだ未完。
 
@@ -24400,15 +24400,15 @@ transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復
 
 - 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。専用ValueGraphComponentは追加しない。共通instance/型照合/buffer・image・compute構成、数値→GPU転送、通常Rendererの自動評価、描画世代と数値処理の同時更新、scene時計は接続済み。画像pass・feature共通instance・状態/イベント・Studio統合は残件。
 
-- meshのOverlap/Sweep/Trigger/初期めり込み解消は `0c81002e` まで統合済み。物理はここで区切り、RT・componentへ戻す。任意の凹meshの厳密最短MTDは次の必須項目にしない。
+- meshのOverlap/Sweep/Trigger/初期めり込み解消は `e60fef49` まで統合済み。物理はここで区切り、RT・componentへ戻す。任意の凹meshの厳密最短MTDは次の必須項目にしない。
 - RT4〜RT7の実行・接続・順序編集とcomponentのList/Defaulted/Undoを再照合。今回の限定照合ではRTの新たな実行機能欠落は確定せず、設計書のport接続未実装等の古い記述を訂正した。GUI通し操作・性能・配布が未確認であることを、機能そのものの未実装と混同しない。
-- animation componentのgraph装着は `bff9e540` に統合。clip XOR graphの保存、既存EvaluatorV1のphase登録/解除・tick、GameContextのparameter/state操作を接続し、clip切替・個体削除・scene reloadを確認した。個体別初期parameter overrideをparameters Listの保存・bind前適用へ追加。graph assetのscene準備時検証・編集失敗時の状態復元、GUI・汎用graph間接続は残件。同一instanceのmodel rebind・graph更新時刻・setTime通知の経路は個別実行未確認。VRMA自動監視は別残件。
+- animation componentのgraph装着は `59b19eba` に統合。clip XOR graphの保存、既存EvaluatorV1のphase登録/解除・tick、GameContextのparameter/state操作を接続し、clip切替・個体削除・scene reloadを確認した。個体別初期parameter overrideをparameters Listの保存・bind前適用へ追加。graph assetのscene準備時検証・編集失敗時の状態復元、GUI・汎用graph間接続は残件。同一instanceのmodel rebind・graph更新時刻・setTime通知の経路は個別実行未確認。VRMA自動監視は別残件。
 
-- 6種の補助描画のGUI/RPC編集も統合済み。picking/ImGuiのAS対応は `aad939ab`、shadow_depth/velocityは `06e19992`、補助shaderのdescriptor契約検査は `ea05340a`、debug_text/gizmoは `ea61aa74`、サイズ混在解析とdebug_draw組込みGLSLは `9e5c363b`、debug_drawは `3db130ca` に統合済み。UI描画のAS依存解除は `a408414a`、preset featureパラメーター編集は `c4c40590`、root featureパラメーター編集は `ccf086e0` に統合済み。
-- 作業ブランチは `codex/render-target-runtime-slice`。procedural asset新規作成は `d529cdce`、embed再生成修正は `b0c000a9`、その後のRT・Studio機能群は `96d9cb7e` に統合済み。下記の「未commit」「commit保留」は当時の記録で、現在は解消している。
-- `96d9cb7e` は、material/rasterのAS宣言と名前付きTLAS選択、初回spriteを含むAS前描画、world-space triangle BLAS結合、Frame Planドラッグ接続、procedural asset削除を含む。各機能の確認範囲は下の記録を参照し、統合全数を実行したとは扱わない。
+- 6種の補助描画のGUI/RPC編集も統合済み。picking/ImGuiのAS対応は `6c9ae71d`、shadow_depth/velocityは `be9db223`、補助shaderのdescriptor契約検査は `47950f0c`、debug_text/gizmoは `5460dec7`、サイズ混在解析とdebug_draw組込みGLSLは `8089e606`、debug_drawは `93016b49` に統合済み。UI描画のAS依存解除は `1d2f2954`、preset featureパラメーター編集は `4e887e3d`、root featureパラメーター編集は `c8352ced` に統合済み。
+- 作業ブランチは `codex/render-target-runtime-slice`。procedural asset新規作成は `55dc1a0d`、embed再生成修正は `d0956f95`、その後のRT・Studio機能群は `cb5c4c26` に統合済み。下記の「未commit」「commit保留」は当時の記録で、現在は解消している。
+- `cb5c4c26` は、material/rasterのAS宣言と名前付きTLAS選択、初回spriteを含むAS前描画、world-space triangle BLAS結合、Frame Planドラッグ接続、procedural asset削除を含む。各機能の確認範囲は下の記録を参照し、統合全数を実行したとは扱わない。
 - 利用者が「適切な頻度でコミットしてね」と許可済み。本タスクは統合担当として実装・影響範囲の確認・記録が揃った単位でcommitする。実装workerが独断でcommitしない規約は維持する。
-- `1878a3e0` で文書・開発運用を整理した後、利用者の指示で機能開発を再開。material passのray query編集を `73557204`、入出力編集を `d2f336a5`、raster接続編集を `2ecb5ae8` に統合し、続いてrasterのshader・draw・state編集をStudio/RPCへ接続した。次は [v1の残件](v1_development_plan.md) から対象を選び、旧worktreeや完了済みWPの再開プロンプトを使用しない。
+- `19026575` で文書・開発運用を整理した後、利用者の指示で機能開発を再開。material passのray query編集を `3b76a31a`、入出力編集を `e2a6acb0`、raster接続編集を `db49f4b6` に統合し、続いてrasterのshader・draw・state編集をStudio/RPCへ接続した。次は [v1の残件](v1_development_plan.md) から対象を選び、旧worktreeや完了済みWPの再開プロンプトを使用しない。
 - 文書・運用整理では、v1文書を短い入口にし、古い再開順・commit待ち・全数反復の指示との混同を解消した。build待ちの短周期確認・ログの大量読込み・重複調査を減らす手順と、コードの整理候補を記録。誤ったsource参照3件を修正し、doclink checkは3869件成功、auditは既知の別repo識別子 `bindPelicanScene` 1件のみ。source変更がないためbuild/GPU試験は実行しない。
 
 #### 機能別の実装・検証履歴
@@ -24749,7 +24749,7 @@ transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復
 - Playerと関連test build成功（build/.codex_bg/mesh-foundation-build.log）。BVH CPU4件33 assertions成功（mesh-foundation-cpu.log）。glTF取り込み/fragment4件111 assertions成功（mesh-foundation-regression.log）。不正shape検証のfixtureをprepareのみからinspectまで通すよう訂正し、古いfragment fixture3件に欠けていた標準描画設定を追加した。対照はAABB内triangle miss、非正規化rayのt、node変換と複数primitive index、旧fragment読み込み。個別変異、provider-onlyの別build、runtime mesh collider実行は未実施。
 
 **P3の次の接続単位 (2026-09-06):**
-- 基盤はe3f6d2a1。object transformを扱うBVH overloadの後、メッシュ入力を明示したprovider拡張→PhysWorldのprepared mesh bindings→glTF scene/model reload/編集participantへ順に接続する。これらが揃うまでコリジョン宣言を実用可能とは扱わない。
+- 基盤は8300e332。object transformを扱うBVH overloadの後、メッシュ入力を明示したprovider拡張→PhysWorldのprepared mesh bindings→glTF scene/model reload/編集participantへ順に接続する。これらが揃うまでコリジョン宣言を実用可能とは扱わない。
 - ProviderV2の登録はversionと既知capabilityを厳密に検査し、ShapeV1にmesh入力は無い。既存reserved fieldへpointerを詰めたり、game providerの選択を無視してPhysWorld wrapperだけでBVHを呼ぶ経路は追加しない。meshのvertex/index・transform・入力寿命を明示する拡張が必要。raycast/overlap/shapeCastの既存primitive機能は維持する。
 - serviceRaycastAllはcollectCollidersからphysicsruntimeを直接呼ぶため、RPC/C++ wrapperだけの接続ではGame DLL serviceに届かない。scene cutover、削除、通常collider編集、階層変更、model reloadの全候補生成でmeshの所有権とidentityを扱う。meshの移動形状やconvex生成は静的mesh colliderと別の要件として整理する。
 
@@ -24829,106 +24829,106 @@ transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復
 - 有限affine行列を対象にし、特異行列・非affine・非有限入力・表現不能なqueryはhitなし。provider/runtimeへの登録はまだ未実装であり、公開raycast RPCでmeshが使える段階ではない。
 - 関連test build成功（build/.codex_bg/mesh-world-build.log）、BVH関連7件59 assertions成功（mesh-world-test.log）。対照は非一様scale時のworld距離・反転winding法線・斜面のinverse-transpose・元geometry不変。local方向を再正規化すればworld距離が落ち、determinant符号を外せば反転法線が落ちる。個別変異は未実行。CPU query変更のためGPU試験は反復しない。
 
-**物理raycast RPC (2026-09-06、dc501247):**
+**物理raycast RPC (2026-09-06、9d22eb61):**
 - design_physics_queries.mdのP3に予定されていたraycast RPCが未接続だったため、PhysWorldの既存closest queryへ接続。有限origin/direction/max_distanceを受け、方向を正規化。名前/距離/位置/法線/collider identityとtrigger/one-way metadataを返す。物理providerや衝突計算の別実装は作らない。メッシュ/BVH/glb extrasの残件は別途照合する。
 - 物理query handlerの登録をまとめ、Playerの本番登録とwire testから共用。実コライダーのhitとtransform変更直後のmiss、ゼロ方向と負距離のinvalidParamsを確認する。
 - Player/関連test build成功（build/.codex_bg/raycast-rpc-build.log）。PhysWorld関連11件103 assertions成功（raycast-rpc-test.log）。物理queryの接続を戻すとRPC hitが返らず、旧transformのコピーへ置換すれば移動後missが落ちる。個別変異・load_gltf経由のRPCシナリオは未実行。GPUを使わないwireと実PhysWorldの確認であり、描画試験は追加しない。
 
-**Geometryの確定binding観測 (2026-09-06、ed13e666):**
+**Geometryの確定binding観測 (2026-09-06、bd5d4c9f):**
 - get_ray_occurrencesのentryへbindingを追加。公開済みscene planのqからgroup_index/material_index/geometry_index/geometry_flags/record_bytesを取得し、InspectorのRay geometryへ表示。テーブル未割当はnull。taskの物理SBTアドレス・record field値のデコード・優先規則の説明はこの情報には含めない。
 - material_reference/material_nameも表示。初回照合でscene commit直後のindex未割当とGPU側の割当済みindexの違いを確認し、前者は同じ公開snapshot、group/flags/recordサイズは描画rowと照合するよう修正。割当済みGPU indexの観測は残件。
 - StudioとGPU test build成功（build/.codex_bg/ray-binding-verified-build.log）。WP382dの既存occurrence GPU/RPC試験成功（ray-binding-verified-test.log）。初回buildのWindows maxマクロ衝突も修正。対照はrowのqと各返却値の対応であり、binding追加を戻すと該当assertionが落ちる。個別変異と実GUI操作は未実行。
 
-**ImGui Plan Viewer intersection対応 (2026-09-06、f9bf2cd5):**
+**ImGui Plan Viewer intersection対応 (2026-09-06、a565604d):**
 - Studioと同じintersection_slots受信漏れがImGuiのPlan Viewerにも存在したため、既存の疎hit slot parserで受信し、stage/slot/参照元/実効参照/.rintソースを表示する。closesthit/anyhitの重複描画を共通化してintersectionにも使用する。
 - Player build成功、関連テスト群build成功（build/.codex_bg/intersection-viewer-build.log、intersection-viewer-final-build.log）。Plan Viewer 3件143 assertions成功（intersection-viewer-test.log）。初回は追加テストのCatch matcher名前空間指定不足を修正。対照は既存shaderとintersectionの共存・slot番号・.rint参照保持・範囲外拒否。受信追加を戻せば正常payloadが拒否される。個別変異と実画面操作は未実行。
 
-**Studio intersection shader観測 (2026-09-06、c91c9062):**
+**Studio intersection shader観測 (2026-09-06、84049deb):**
 - エンジンが返すintersection_slotsをStudioが未知fieldとして拒否していた。FramePlanModelに疎な物理hit slotの受信を追加し、既存のstage/source検証をintersectionと.rintへ拡張。Frame PlanのShadersにhit slot別のintersectionとOpen操作を追加する。エンジンの描画・RPC payloadは変更しない。
 - RT stage/record/material全体の関連表示が完成したとは扱わない。今回はAABBを含むFrame Planの受信とintersection参照の欠落を修正する範囲。
 - StudioとFrame Planモデルtest build成功（build/.codex_bg/intersection-studio-build.log）、関連16件1396 assertions成功（intersection-studio-test.log）。既存疎slot fixtureにintersectionのslot番号・stage・.rint参照保持と範囲外拒否を追加。受信対応を取り消せば正常payloadが拒否される。個別変異・実GUI操作は未実行。
 
-**CARRIER-STUDIO geometry候補とoverride表示 (2026-09-06、337ffe74):**
+**CARRIER-STUDIO geometry候補とoverride表示 (2026-09-06、75aec046):**
 - InspectorのRay geometry画面にget_ray_occurrencesを接続。geometry/asset/material/eligibility/実効値を表示し、選択候補をpelican_ray_instanceの既存overrides Listへ追加。overrideのcomponent witness/行ID/適用状態/実効値と拒否理由を表示する。既存List編集・CAS・Undo/Redo経路を使用。優先規則全体の説明表示は未実装。
 - 選択・refresh・編集時に候補を無効化し、同revisionでも古い応答を受理しない。別object/曖昧候補/重複追加を拒否。現在のsnapshotから編集宛先を構築する。
 - Studio/Inspector build成功（build/.codex_bg/ray-inspector-final-build.log）。Inspector全体21件1472 assertions成功（ray-inspector-final-test.log）。対照は候補の適格性と選択identity、同revision refresh後の旧応答、既存Listへの要求内容。epoch照合を戻せば古い応答の拒否が落ちる。個別変異と実GUI操作は未実行。描画コード変更はなくGPU試験は反復しない。
 
-**CARRIER-STUDIO 省略fieldの既定値追加 (2026-09-06、062c048f):**
+**CARRIER-STUDIO 省略fieldの既定値追加 (2026-09-06、d976f373):**
 - Inspectorの未authored fieldへAdd defaultを追加。再帰schemaのdefaultを判定し、flat schemaは既存codecのdefault取得へ委ねる。選択fieldだけinsert_component_fieldへ送り、behavior attachment_index/handleとscene CASを保持。pending・read-only・処理中は追加しない。
 - Studio build成功、対象1件140 assertionsとInspector全体20件1305 assertions成功（build/.codex_bg/inspector-default-focused.log、inspector-default-final.log）。製品の描画変更はなくGPU試験は反復しない。実画面操作は未実施。
 - 初回テストはpending時の空widgetsにfront()してCRT assertion dialogを出した。プロセス終了を確認し、要求fieldのidentityを独立に生成して拒否を確認するfixtureへ修正。製品側のpending制限は変更していない。対照は値を送らず選択fieldだけ挿入することと、authored/pendingの拒否。個別変異は未実行。
 - 次はgeometry候補からoverrideを追加する選択画面と適用結果/実効値/対象欠落理由の表示。get_ray_occurrencesのentries/overrides/rejected_rowsを使い、編集は既存List操作へ接続する。返却override.addressのobjectとmutationのauthoring_object_idは異なるため、選択identityから構築する。機能全体は未完了。
 
-**CARRIER-STUDIO List編集 (2026-09-06、68ee52f2):**
+**CARRIER-STUDIO List編集 (2026-09-06、f1c4631d):**
 - InspectorModelがschema.nodeからListを列挙し、Qt Inspectorへ行ID/値一覧・Add/Edit/Remove/Up/Downを追加。JSONによる行値編集をschema leaf単位の既存set/insert/remove batchへ分解する。省略Listも表示し、generated/pending/read-only・List内部ネストは編集しない。scene/object/revisionを含むkeyと既存CAS・ticket・refreshを使用し、古いdialogの送信を拒否する。
 - 行移動RPCが未実装だったためmove_component_fieldを追加。既存addressとbefore/endでrow配列だけ並べ替え、ID・値・next_idを保持。behavior witness・canonical projection・journal Undo/Redoへ接続。remove+insertによるIDの再割当ては行わない。JSON pointerのescapeは既存処理を共有する。
 - Player/StudioとInspector build成功。移動core1件12 assertions成功、関連journal/WP382b41件947 assertions成功（build/.codex_bg/list-studio-move.log、list-studio-core-regression.log）。Inspector関連19件1165 assertions成功（list-studio-inspector.log）。実エンジン接続下の画面操作・新List操作の保存再読込は今回未実行。描画コードに変更がなくGPU試験は反復しない。
 - 対照: 並べ替えを戻せば順序が落ち、remove+insertへ置換すればID/next_id保持が落ちる。Inspectorは省略List・optional field差分・選択変更・ID改変拒否を確認。個別変異は未実行。
 - 次はList以外の省略Defaulted fieldのGUI実体化と、geometry occurrence選択/出所表示を現コードと照合する。機能全体の完了は未判定。
 
-**CARRIER model reload後のGPU状態同期 (2026-09-06、51cb9d5e):**
+**CARRIER model reload後のGPU状態同期 (2026-09-06、ee81d836):**
 - rev382c残余#1を修正。publishPreparedSceneはCPU swap後にdirtyだけを立て、triggerUpdateの描画準備前（空inventoryのreturn前）にcurrent skin palette・relative override全slot・absolute header/recordを同期する。CPUから消去されたoverrideはGPUでも消す。成功時だけdirtyを解除し、通常フレームで全uploadを反復しない。direct rebuildの単独absolute uploadはこの共通経路へ統一した。
 - relative overrideのGPU変換を通常publishと共通化。noexcept publishにGPU書込を戻さず、描画前までに後続のanimation更新・rollbackがあれば最終CPU状態を同期する。
 - Player/Studio build成功。既存golden fixtureでskin・relative・absoluteの3モードを描画し、変更の可視効果とwatch reload後の初期状態復帰を確認（1件15 assertions成功、build/.codex_bg/reload-gpu-sync-final.log）。全画像厳密一致ではなく変化した領域の誤差が1/5未満へ戻る対照。テスト登録はgolden_casesだけに置き、共有harnessをリンクする別groupへ重複登録しない。
 - 既存fragment reload/rig変更/rollback3件89 assertions成功（reload-gpu-sync-regression-final.log）。rig試験の旧「skinnedはAS行なし」をRT5の現行仕様へ更新し、skinned行とqの成立、旧occurrenceのみAbsentを確認。初回描画試験は16x16 fixtureに過大な面積条件を指定していたため修正した。初回失敗ログは保持。
 - 対照: 描画前の同期を外せば古い姿勢・色が残り復帰条件が落ちる。個別変異は未実行。GPU書込失敗注入・実Studio操作は今回未実行。機能全体の完了は未判定で、残る計画とCARRIER/Studio接続の照合を継続する。
 
-**CARRIER direct model参照のasset key (2026-09-06、81b1894c):**
+**CARRIER direct model参照のasset key (2026-09-06、f70d004b):**
 - rev382c残余#2を修正。ModelDeclarationのasset_keyをoptionalにし、asset表経由だけ論理名を設定する。直接参照のURI/絶対pathを論理名にせず、既存loaderのOccurrenceIdUnrepresentable / asset_key_missingを使用する。直接参照のgeometry読込とwatch reloadは維持する。
 - 同じGLBをasset表・相対node URI・絶対node URIから読込み、reload前後に表経由のID成立と直接参照の名前付き理由を確認。実GPU対象1件37 assertions成功、既存fragment reload/rollback2件53 assertions成功（build/.codex_bg/direct-asset-key-{build,test,regression}.log）。描画画像自体は今回の判定対象ではない。
 - 対照: URIをasset_keyへ戻すと直接参照のasset欠落・診断が落ち、全経路でkeyを省略するとasset表側のIDが落ちる。個別変異は未実行。
 - 次の残余#1は現存を確認: model reload参加経路はpublishPreparedSceneのCPU swapのみ。描画前triggerUpdateにはcurrent skin paletteとrelative/absolute material overrideの同期がなく、direct rebuildにだけabsolute uploadがある。publishでdirtyを立て、描画前の同期へまとめる修正を次に行う。source監査だけで描画後退を実測済みとはしない。
 
-**CARRIER List編集と生成操作の複合Undo/Redo (2026-09-06、e54c6297):**
+**CARRIER List編集と生成操作の複合Undo/Redo (2026-09-06、6fb344a2):**
 - rev382b-fix残余#1のspawn/add→List挿入→Undo×2→Redo×2を修正。postcondition比較をcomponent単体からobject/components/復元objectsへ展開し、schema上のList高水位を両側の大きい値へ揃えて比較する。raw文書自体を書き換える処理ではなく、row ID・値・その他のfieldは従来どおり比較する。任意JSONのnext_idを一括無視する方式は採用しない。
 - コンポーネント追加とobject生成の両経路で、Redo後の行ID=1・値・next_id=2を確認。対象1件28 assertions、最終journal34件787 assertions、WP382b関連14件260 assertions成功。ログはbuild/.codex_bg/list-creation-undo-{build,test,regression,carrier}.log。描画変更がなくGPU試験は反復しない。
 - 対照: object全体の調整を戻せばspawnのUndoが、片方向比較に戻せば追加のRedo連鎖が拒否される。個別変異は未実行。既存の他actor構造変更拒否・高水位の不正低下拒否も関連範囲に含む。unpack/destroyを含む専用の新試験は今回未追加。
 - 次はrev382cのmodel reload後GPU反映とdirect参照のasset keyを現行経路で確認する。機能全体の完了は未判定。
 
-**CARRIER Behavior fieldの独立Undo (2026-09-06、061e3a74):**
+**CARRIER Behavior fieldの独立Undo (2026-09-06、5a053f25):**
 - rev382b-fix残余#3を修正。legacy insert/remove fieldのvalue_field同士は、両方がattachmentを指定する場合に取り付け位置を区別する。同じ対象の競合とcomponent全体への構造変更の保護は維持する。
 - coordinator経由で別actorの別attachmentへの編集を残したUndoと、同じattachmentへの変更後のundo_conflictを確認。対象1件14 assertions、journal関連33件759 assertions成功（build/.codex_bg/attachment-undo-test.log、attachment-undo-regression.log）。CPU build成功。runtime描画変更がないためGPU試験は反復しない。
 - 対照は同一attachmentの拒否。attachment判定を戻すと独立Undoのacceptedが成立しない。個別変異は未実行。初回buildのテストマクロ不足は既存SECTION形式に修正済み。
 - #1のspawn/addとList編集の複合Undo/Redo、rev382cのreload後GPU反映・direct model参照のasset keyは引き続き照合・修正対象。今回の修正をCARRIER全体の完了とは扱わない。
 
-**RT7 補助描画のGUI/RPC編集 (2026-09-06、7e38d8c0):**
+**RT7 補助描画のGUI/RPC編集 (2026-09-06、aff65455):**
 - debug_draw/debug_text/gizmo/shadow_depth/velocity/pickingを、project preset/plain featureの既存編集経路に追加。出力・shader・ray_queryを部分更新し、省略項目・CAS・engine/parameterized featureの制限を維持。shader未指定からの一部overrideは他stageの既定値を保持し、skinned_vertexのnullはoverride削除となる。
 - Studioは元のtype/宣言を保持して出力先とshader/queryを編集する。shadowはfragment/色出力を隠し、velocity/pickingはスキンshader欄を持つ。通常inputを持たない既存形状に従って入力欄を隠し、RPCもinput編集を拒否。depthを使わない補助型の欄も隠す。
 - Player/Studio・CPU/Qt最終build成功（build/.codex_bg/aux-editor-final-build.log、aux-editor-cpu-build.log）。保存/再読込・feature CAS等のCPU成功（aux-editor-cpu.log）、補助6型と既存preset編集のQt3件・365 assertions成功（aux-editor-qt.log）。実エンジンに接続した手動操作は未実行。runtime変更はないため直前に成功済みのGPU描画試験を反復しない。
 - 初回fixtureに非対応input/depthを入れていた点を既存仕様へ修正した。保存比較はordered_jsonのキー順一致からJSON内容の一致へ改めた。対照は省略field保持・skinned override削除・CAS拒否・shadow形状保持であり、個別変異は未実行。
 - 次は計画の未了記録と現行コードを再照合し、実際の機能残件を確定する。古い「fullscreen以外」「生成variant editor」の記述を根拠に完了済みの作業を再実施しない。機能全体の完了は未判定。
 
-**RT6 pickingのAS宣言とImGui依存解除 (2026-09-06、aad939ab):**
+**RT6 pickingのAS宣言とImGui依存解除 (2026-09-06、6c9ae71d):**
 - pickingにray_query所有・JSON/typed lowering・runtime登録の伝播を追加し、既存VelocityPassContainerのpass別AS bindingを使用する。skinned_vertexの解析は維持。ImGuiは独自ImGui_ImplVulkan描画でframe ASを使わないため、UI同様にplannerで非依存とする。
 - Player/Studio・CPU/GPU build成功（build/.codex_bg/picking-query-build.log）。CPU2件・189 assertions成功（picking-query-cpu.log）：6種の宣言とUI/ImGuiのAS前順序。GPU pickingの5section・432 assertions成功（picking-query-gpu.log）：通常ID描画のAS前実行、左右/空TLASの選択、未宣言query拒否。ImGuiの実ウィンドウ描画は今回未実行。
 - 対照: passのAS伝播を外せばqueryの拒否/選択結果が落ち、依存解除を戻せばAS前順序が成立しない。個別変異は未実行。
 - 編集範囲を現コードと照合: renderconfigeditor.cppのfindPresetEditablePass/findFeatureEditablePassとeditPresetPass、fullscreenpasswidget.cppはfullscreen/material/rasterに限定される。次は6種の補助描画の入出力・shader・ray_queryを既存GUI/RPCへ接続。shadowはvertexのみ、velocity/pickingはskinned_vertexも扱う。material/rasterやfeature元パラメーター編集は完了済みで、生成variant専用editorは新設しない。
 
-**RT6 shadow_depth/velocityのAS宣言 (2026-09-06、06e19992):**
+**RT6 shadow_depth/velocityのAS宣言 (2026-09-06、be9db223):**
 - 両passにray_queryを追加し、省略/falseをAS非依存にする。宣言時の指定TLASをpass登録に保持してMaterialRendererの実際のbindingへ渡す。JSON/typed planner・共通所有規則・runtime compilerを接続し、regular/skinned pipeline descの両方へ宣言を伝播する。shadowのskinned shaderは既存の固定実装を維持する。
 - Player/Studio・CPU/GPU build成功（build/.codex_bg/geometry-query-build.log）、fixture最終GPU build成功（geometry-query-gpu-build.log）。CPU2件・163 assertions成功（geometry-query-cpu.log）。対象GPU10sectionと既存RTの計11section成功（geometry-query-gpu-first.log:392 assertions、geometry-query-gpu-rest.log:564 assertions）。shadowのvertex queryは深度、velocityのfragment queryはR16G16値で左右/空の選択を確認。AS前の通常描画と未宣言query拒否も成功。
 - GPU fixtureは既存fullscreen経路で深度をR32画像へ写し、読み戻す。最初は非対応の深度直接readbackとvelocity出力形式で失敗し修正、次に片面モデルが背面で消えたためモデルをカメラへ向けた。製品側の出力形式・カリングは変更していない。スキン付きqueryの専用GPU試験は今回未実行。
 - 対照: pass別AS bindingをscene固定へ戻すと左右/空の深度・値が落ち、依存解除を戻すとAS前順序が落ちる。個別変異は未実行。PickingはVelocityPassContainerを共有し非queryが既定となるが、planner側の依存とschemaのquery非対応は残る。次はpicking/ImGuiの扱いを確認する。
 
-**補助shaderのdescriptor契約検査 (2026-09-06、ea05340a):**
+**補助shaderのdescriptor契約検査 (2026-09-06、47950f0c):**
 - GraphicsPipelineDescに補助描画の固定descriptor契約を保持し、merged reflectionでVulkan生成前に検査する。debug_draw/gizmoはset3 binding0の単一storage buffer、debug_textは追加でbinding1の単一2D combined samplerを要求する。固定描画側が供給しないset3の追加bindingも拒否する。再読込にも同じdescが使われるため初回登録だけの検査にしない。
 - Player/Studio・GPU build成功（build/.codex_bg/aux-contract-build.log）、試験最終build成功（aux-contract-gpu-build.log）。GPU対象5section・429 assertions成功（aux-contract-gpu-final.log）：atlas欠落の初回拒否、互換性のないreload拒否と旧文字query描画継続、3種の組込み補助描画。初回試験で2フレーム目後の古い実行記録参照を検出し、reload確認を独立して終了するようfixtureを修正した。
 - 対照: 契約検査を外すとatlas欠落の拒否が成立せず、登録時だけに置くとreload拒否が成立しない。個別変異は未実行。今回の変更範囲は対象GPUで確認し、直前に成功済みのnamed-tlas全sectionは反復しない。次はshadow/velocityの明示AS宣言。
 
-**RT6 debug_text/gizmoのAS宣言 (2026-09-06、ea61aa74):**
+**RT6 debug_text/gizmoのAS宣言 (2026-09-06、5460dec7):**
 - 両passのray_query省略/falseをAS非依存にし、宣言時は指定TLASへ依存してdescriptorを選択する。shader/ray_queryの所有規則をdebug_drawと共有し、JSON/typed graph、runtime登録、pipeline descへ接続した。再読込は保持済みdescを使用する。
 - Player/Studio・CPU/GPU build終了コード0（build/.codex_bg/aux-query-build.log）、fixture修正後GPU buildも成功（aux-query-gpu-build.log）。CPU2件・135 assertions成功（aux-query-cpu.log）。AS前の文字・gizmo描画218 assertions成功（aux-query-gpu-first.log）、最終named-tlas全section 3120 assertions成功（aux-query-gpu-final.log）。左右・空の選択、未宣言query拒否と既存描画を含む。
 - 初回query用文字shaderがatlas bindingを省略しており、固定descriptor書込でVulkanエラー・device lossになった。fixtureを既存フォントinterface保持へ修正した後、単独query（aux-query-gpu-query.log）と上記全sectionが成功。失敗ログはaux-query-gpu.log。
 - 次の実害修正: 補助shaderの固定descriptor契約をGraphicsPipelineDescに保持し、生成/再読込時のmerged reflectionで検証する。DebugDraw/Gizmoはset3 binding0 storage buffer、DebugTextは加えてbinding1の2D combined samplerを要求する。登録時だけの検査ではreloadを守れない。shadow/velocityのAS依存細分化も残る。
 - 対照: named bindingをscene固定へ戻すと左右/空のヒット色が落ち、依存解除を戻すとAS前順序が落ちる。未宣言queryはpipeline生成で拒否。個別変異は未実行。新たな検証framework・配布toolは追加していない。
 
-**固定/画面連動サイズ混在とdebug_draw組込みshader修正 (2026-09-06、9e5c363b):**
+**固定/画面連動サイズ混在とdebug_draw組込みshader修正 (2026-09-06、8089e606):**
 - snapshotのbyte size解析をtarget単位にし、画面extent未確定のtargetだけを保留する。サイズ宣言のない論理graphの検査用途を維持し、確定後の不正形式・ゼロサイズは拒否する。
 - debug_drawのGLSL埋込みとengine resource登録を、既存debug_text/gizmoと揃えた。RTの共通defineがある場合も既存stem解決でソースを選べる。SPIR-Vへdefineを黙って無視する分岐は追加していない。GPU fixtureからproject shaderコピーを除去し、組込みshaderと固定32px targetを使う構成で確認する。
 - Player/Studio・CPU/GPU最終build終了コード0（build/.codex_bg/mixed-extent-final-build.log）。FramePlanner 35件成功（mixed-extent-cpu.log）。GPU named-tlas全section 1910 assertions成功（mixed-extent-gpu.log）、論理graphの判定調整後もAS前debug描画成功（mixed-extent-gpu-final.log）。最初のCPU試験でサイズを持たない論理graphへの過剰検査を検出し修正済み。
 - 対照: pending extentの区別を外せば混在サイズのsnapshot解析が失敗し、GLSL登録を戻せば共通define付きの組込みdebug shaderが拒否される。CPUは解決後のサイズ値と不正形式・ゼロサイズ拒否を確認。個別変異は未実行。次はdebug_text/gizmo等の明示AS宣言と依存細分化。
 
-**RT6 debug_drawのAS宣言 (2026-09-06、3db130ca):**
+**RT6 debug_drawのAS宣言 (2026-09-06、93016b49):**
 - debug_draw passのray_query省略/falseはAS非依存、宣言時は指定TLASへ依存する。共通parser・JSON/typed planner・runtime登録・pipeline宣言・pass別descriptor選択へ接続した。再読込は保持済みpipeline descを使用する。
 - Player/Studioと関連CPU/GPUのリンク完了（build/.codex_bg/debug-query-build.log）、GPU最終build終了コード0（debug-query-gpu-build.log）。CPUのAS順序2件・107 assertions成功（debug-query-cpu.log）。GPUのAS前描画125 assertions、関連named-tlas全section 1910 assertions成功（debug-query-gpu-first.log、debug-query-gpu.log）。左右・空TLASのヒット色、未宣言query拒否、後続RT出力も確認した。
 - 対照: AS非依存のloweringを戻せばAS前順序が成立せず、pass別AS bindingをscene固定へ戻せば左右・空のヒット結果が落ちる。allow_ray_query制御を外せば未宣言shaderの拒否が落ちる。個別変異は未実行。配布用toolや検証frameworkは追加していない。
@@ -24940,39 +24940,39 @@ transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復
 - 対照: UIのgraph依存解除を外せばUI→AS順序が成立せず、非query pipeline設定を外せばAS前のdescriptor利用条件を満たさない。個別変異は未実行。
 - 残件再点検: graph_variantsは内部展開結果であり、既存のfeatureパラメーター編集から再生成される。output_transformはlinear-sRGBから表示形式への固定終端（design_color_pipeline.md §0、output_transform.frag）。working-space切替は将来項目で、予定していない汎用generated-node editorを追加しない。残る具体的機能はユーザーshaderを持つ補助描画の宣言・AS依存細分化で、機能全体の目標は継続中。
 
-**RT7 preset featureパラメーター編集 (2026-09-06、c4c40590):**
+**RT7 preset featureパラメーター編集 (2026-09-06、4e887e3d):**
 - feature一覧へpreset.config.featuresを追加し、scope・所有元source/digestを表示する。project presetは同じParameters画面から変更でき、engine presetはforkが必要な理由を表示する。root/presetの同じindexを混同しないよう、編集中のscopeと文書digestを保持する。
 - set_parametersのpreset scopeは既存の追加文書transactionとpreset CASで保存する。root shadow overrideを新設せず、rootとfeatureの元ファイルを保持する。root/presetのmetadata生成とparameter patchは共通化した。
 - Player/Studio・CPU build成功（build/.codex_bg/preset-parameters-build.log）。対象CPU成功（preset-parameters-cpu.log）：presetへの上書き、リセット、再読込、全文保持とroot不変、stale digest・engine preset編集拒否、既存root編集。実GUI操作・GPU描画は未確認。
 - 対照: presetを候補へ渡さなければ保存・再読込が落ち、preset digestを外せば競合拒否が落ちる。個別変異は未実行。予定機能全体は未完了で、補助描画AS依存の細分化と生成variant編集範囲を継続する。
 
-**RT7 featureパラメーター編集 (2026-09-06、ccf086e0):**
+**RT7 featureパラメーター編集 (2026-09-06、c8352ced):**
 - get_render_featuresにroot features配列のinstance index・reference・authored parameters・parameter_schema・編集可否を追加。既存edit_render_featuresのset_parameters操作で対象entryだけを更新する。string参照は上書き指定時にref/parametersへ変換し、object entryの他フィールドを保持する。feature sourceは変更しない。
 - Render featuresのParametersフォームでfloat/int・bool・render target・shader assetを編集。上書きチェックOFFで既定値へ戻し、OKで準備、Applyで保存する。数値型・範囲をフォームで確認し、参照と最終整合性は既存binder/transactionへ委ねる。編集開始時root digestを保持してindexの再割当てを防ぐ。
 - rootに選択したengine/project featureが対象。preset内部だけのinstanceや生成variantの専用編集は残る。既存のobject feature entry削除制限を維持し、削除可否を別表示する。schema元は保存せず、UI読取後のschema変更は適用時の現行binderで検証する。
 - Player/Studio・対象CPU build成功（build/.codex_bg/feature-parameters-build.log）。対象CPU成功（feature-parameters-cpu.log）：上書き・既定値リセット・保存と再読込、feature source保持、root CAS、不正範囲拒否、保存後失敗の復元と既存feature制御を確認。実GUI操作とGPU描画確認は未実施。
 - 対照: root parameterを候補へ渡さなければ展開後の値確認が落ち、上書き削除を外せば既定値リセットが落ちる。個別変異は未実行。専用検証frameworkやGPU全数の反復は追加していない。
 
-**RT7 feature所有pass編集 (2026-09-06、7af6fd95):**
+**RT7 feature所有pass編集 (2026-09-06、fb739bf3):**
 - Frame PlanのEdit passからproject featureの明示的なfullscreen/material/raster宣言を既存フォームで編集する。contextにeditable_feature_pass・feature_declaration・feature_source_reference/digestと編集不可理由を追加。保存時はbase_feature_digestを送る。preset用RPCを共用し、元feature文書だけを既存の候補保存・CAS・publicationへ載せる。
 - 編集先は選択graph/nodeのtrusted provenanceから決め、ユーザー入力の保存パスは追加しない。同じfeatureを使うgraphにも変更が及ぶことをフォームで案内する。feature編集ではpreset全体のrouting欄を隠し、RPCでも変更を拒否する。
 - engine内蔵feature、parameters宣言を持つfeature、authored/runtime名が異なる生成variant、対応する明示passがないノードは対象外。生成された接続名を共通の元宣言へ保存しないための境界であり、これらの専用編集は残件。
 - Player/Studio・対象CPU/Qt build成功（build/.codex_bg/feature-pass-editor-build.log）。CPU3/3・379 assertions成功（feature-pass-editor-cpu.log）：3種類のfeature passの保存・再読込、rootと他設定の保持、古いdigest・受付後の外部変更、生成anchor/routing拒否と既存preset編集。Qt2/2・255 assertions成功（feature-pass-editor-qt.log）：feature/presetのフォーム・送信digest・routing非表示と既存編集を確認。
 - 対照: featureを候補文書に含めなければ保存・再読込が落ち、feature digestを使わなければ競合試験が落ちる。個別変異は未実行。描画コードは変更せずGPU全数は反復していない。実エンジン接続下の手動操作は未確認。
 
-**RT7 material contract・routing編集 (2026-09-06、8df9fb7e):**
+**RT7 material contract・routing編集 (2026-09-06、66c49843):**
 - project presetのmaterial pass編集画面にcontract選択とmaterial settings JSON、preset全graph共通のrouting JSONを追加。対象範囲・filter・variant・出力schema/state・resource宣言を編集し、削除したキーはnull patchで既定へ戻す。routing空欄は表を削除する。
 - edit_preset_passにmaterial_settingsとmaterial_routingを追加。既存preset候補の同一保存・検証・CAS・publicationへ載せ、他フィールドを保持する。routingはpreset.configへ保存し、contextのpreset_material_routingで返す。rootによるrouting上書きは既存schemaで許可されていない。非material passからの変更を拒否する。
 - Player/Studio・対象CPU/Qt build成功（build/.codex_bg/material-contract-editor-build.log）。CPU2/2・325 assertions成功（material-contract-editor-cpu.log）：contract/routing同時変更、削除・復元・再読込、設定保持、不整合と不存在route拒否、保存後失敗の復元。Qt2/2・148 assertions成功（material-contract-editor-qt.log）：フォーム編集・不正JSON・送信内容と既存material/raster編集を確認。Qt初回はDLL検索パス不足で起動できず、Qt binをPATHへ追加して実行した。
 - 対照: settings/routingを候補へ渡さなければ保存・再読込が落ち、null削除を外せば復元が落ちる。個別変異は未実行。runtime描画コードは変更せず、GPU全数は反復していない。実エンジン接続下のGUI手動操作・描画確認は残る。
 
-**RT7 AABB worldモードのGUI・保存 (2026-09-06、23c8cf68):**
+**RT7 AABB worldモードのGUI・保存 (2026-09-06、a5137381):**
 - Scene AS画面にAABB coordinate spaceを追加。getのprocedural_geometryで値・参照元・編集可否・理由を返し、procedural_spaceと共通base_layout_digestで既存のlayout保存へ接続する。triangle_spaceとの同時変更も一つの候補文書として保存・publicationする。
 - project layout v3かつengine_record procedural_transform宣言済みを編集対象とする。ABIを変える暗黙のrecord追加やshader書換えはしない。未対応layoutは理由を表示し、対応shaderの変換helper使用を案内する。
 - Player/Studio・関連test build成功（build/.codex_bg/aabb-editor-build.log、aabb-editor-cpu-build.log）。CPUのscene-as対象成功（aabb-editor-cpu.log）。両座標系の同時保存、AABBだけの変更、再読込、ABI・他設定の保持、未対応layout拒否と既存CAS・rollbackを確認。GPUは1/1・157 assertions成功（aabb-editor-gpu.log）。本番RPCで両方向の切替と保存、交差距離保持・TLAS個体数の反映を確認。
 - 対照: procedural_spaceを候補layoutへ渡さなければ保存内容・GPUの個体数切替が落ちる。ABIを暗黙変更すればCPUのABI保持が落ちる。個別変異は未実行。実エンジン接続下のGUI手動クリックは未確認。
 
-**RT6 異transform procedural AABBのworld結合 (2026-09-06、7f2a2dc6):**
+**RT6 異transform procedural AABBのworld結合 (2026-09-06、73865d07):**
 - layout v3にprocedural_space:geometry/worldを追加。worldはengine_recordのprocedural_transformを必須とし、元geometry→worldと逆変換の6 vec4を各occurrenceのSBTに保持する。宣言なしのlayout ABIは保持する。geometry/world切替はpayload宣言後のAS設定変更となる。
 - 元AABBとtransformからworld boundsを生成し、identity TLASへ載せる。既存のmask/flags/custom index・連続q/SBT・device上限を満たすAABB同士を結合する。同じassetの異なる個体でも変換を区別し、移動はBLAS keyとSBT行digestへ反映する。build入力bufferは既存submission寿命へ載せる。
 - generated helperはworld rayを元geometryへ戻し、方向を正規化せず`t`を維持する。組込みprocedural_sphereもpayload宣言時に対応する。位置・法線変換helperを追加。非有限・特異・非affine変換とfloat boundsのoverflowは拒否する。現行material_alpha_v1 profileの固定ABIは変更していない。
@@ -24981,7 +24981,7 @@ transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復
 - GPUでは同じassetの2個体に異位置・回転・反転・非一様scaleを与え、両モードの交差距離一致、worldの1 TLAS instance/geometryの2 instances、移動後の距離・rebuildと再利用を確認。新しい数学oracleやGPU全数の反復は追加していない。
 - 対照: world boundsとidentity TLASの対応、個体別の逆変換、移動のkey/digest反映を外すとGPUの距離・個体数・移動追随が落ちる。engine宣言確認を外すと同名user fieldの回帰試験が落ちる。個別変異は未実行。AABB worldはlayout JSONから指定する段階で、専用GUIは未接続。
 
-**RT7 triangle worldモードのGUI・保存 (2026-09-06、c20a2432):**
+**RT7 triangle worldモードのGUI・保存 (2026-09-06、1cc74798):**
 - Scene AS画面にTriangle coordinate spaceのgeometry/world選択を追加。適用時に変更があればtriangle_spaceとbase_layout_digestを既存edit_scene_acceleration_structuresへ送る。getのtriangle_geometryで値・参照元・編集可否・理由を表示する。
 - 参照先のproject ray group layout v2/v3を編集し、他のlayout/AS設定を保持する。rootの定義・接続とlayoutは既存の候補文書overlay・複数文書CAS・publication/rollbackにまとめる。rootの別overrideや専用保存機構は新設しない。
 - worldでは三角形のobject座標系がworldとなること、procedural AABBを変えないことを画面に説明する。engine所有・layout未指定・v1・読込不能は編集不可の理由を表示する。
@@ -24989,7 +24989,7 @@ transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復
 - GPUは既存multi-geometry caseの追加sectionだけを実行し1/1・46 assertions成功（world-editor-gpu.log）。本番RPCでworld→geometry→worldを保存・publicationし、BLAS/TLAS数1→2→1とshader座標8→808→8、layoutファイル反映を確認。全GPU suiteは反復していない。
 - 対照: 候補layoutをoverlayへ渡さなければGPU上のBLAS数/座標切替が落ち、layoutのCAS・復元を外せば競合・rollbackが落ちる。個別変異は未実行。Studioの実エンジン接続下での手動クリック操作は未確認。機能の次候補は異transform AABB結合で、学習サンプルと細かなGUI調整は後回しを継続する。
 
-**RT7 raster shader/draw/state編集 (2026-09-06、03ee3b32):**
+**RT7 raster shader/draw/state編集 (2026-09-06、c5daf0e1):**
 - rasterのedit_preset_passにshader/draw/raster_stateの部分編集を追加。省略項目は保持し、raster_state:nullは明示設定を削除する。既存のcandidate・複数文書CAS・publicationを共用する。materialとfullscreenへraster専用fieldを許可しない。
 - Studioではrasterにshader参照とdraw/state JSON欄を表示する。shaderの他キーを保持し、変更したfieldだけを送る。state欄を空にすると既定状態へ戻る。New passやmaterial選択時にdraw欄を隠し、既存の入力・出力・ray query編集も維持する。
 - draw/stateの判定は共通parseRasterPassContractをUIとRPC preflightで使用する。CPU graph loweringだけではdrawの数値制約を検証しないため、頂点数ゼロ等を保存前に拒否する。この共通parserは本番raster経路でも使用される。
@@ -24997,7 +24997,7 @@ transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復
 - 最終Studio/Qt build成功（raster-draw-ui-final-build.log）、Pass Editor Qt対象23/23成功（raster-draw-qt-final.log）。shader変更、draw変更、state削除の送信、頂点数ゼロと空shader時の保存不可、未編集設定保持、Refresh復帰を含む。doclink checkは3869件成功。
 - GPU描画中核・資源寿命は変更せず、既存raster描画の証拠を引き継ぐ。今回GPU再実行と個別変異は行っていない。対照は新field代入を外せば保存・再読込が落ち、state削除を外せば既定状態復帰が落ちる。共通draw検証を外せば頂点数ゼロの保存拒否が落ちる。実エンジン接続下の手動操作と、JSON欄を専用操作部品へ磨く作業は残る。
 
-**RT7 raster passの接続編集 (2026-09-06、2ecb5ae8):**
+**RT7 raster passの接続編集 (2026-09-06、db49f4b6):**
 - project presetのrasterを編集対象に追加し、input/output/ray_queryの部分変更を既存RPC・候補コンパイル・保存へ接続。shader/draw/raster_state等は保持し、このRPCでのshader変更は拒否する。専用の保存経路や互換分岐は追加しない。
 - Studioのmaterial接続編集を共用し、実際のtypeを保持して共通PassShapePolicyへ渡す。Frame Planドラッグ、入力追加、color/depth対象変更、attachment metadata保持、query/TLAS選択、取得失敗後の再読込に対応。保存ボタンをSave preset passへ統一した。
 - output_transformはcanonicalizePassesが終端に生成し、同名も予約するノードである。project presetの編集対象には追加していない。出力変換の編集要否は既存色管理設定との関係を整理して判断する。
@@ -25005,7 +25005,7 @@ transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復
 - Pass Editor Qt対象23/23成功（raster-connections-qt-final.log）。既存material caseをrasterにも適用し、隠したshader/draw/stateの保持とdepth設定を含めて確認。対照はrasterの対象判定撤去でcontext/保存が落ち、草稿をfullscreenとして作り直すとtype・draw/state保持とdepth形状が落ちる。個別変異は実行していない。
 - GPU描画中核・資源寿命は変更していないため既存raster/TLASの証拠を引き継ぎ、GPU再実行なし。手動の実エンジン接続操作、rasterのshader/draw/state専用編集は残る。
 
-**RT7 material passの入出力編集 (2026-09-06、d2f336a5):**
+**RT7 material passの入出力編集 (2026-09-06、e2a6acb0):**
 - edit_preset_passのmaterial編集はinput/output/ray_queryの1項目以上を受理し、省略項目を保持する。shader変更は引き続き拒否。既存のcandidate・compiler・複数文書CASとpublicationを使い、保存経路を増設しない。
 - Studioの共通入出力欄とshape検証をmaterialにも適用し、Frame Planからの入力ドラッグを接続。color attachment JSONを保持・編集でき、depthはtarget変更時に元のload/store等を保持する。materialにはfullscreen用shader必須判定を適用しない。ray queryだけの変更では未指定inputを新設せず、未変更の入出力をRPCへ送らない。
 - Player/Studio build成功（build/.codex_bg/material-connections-build.log、UI最終修正はmaterial-connections-ui-build.log）。CPU preset編集は1/1・171 assertions成功（material-connections-cpu-final.log、最終buildはmaterial-connections-cpu-build.log）。入力追加・削除、出力変更、保存・再読込、他設定保持、未定義入力と重複color拒否、保存後の失敗時のpreset/root/runtime復元を確認。
@@ -25013,7 +25013,7 @@ transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復
 - 既存Pass Editor Qt対象23/23成功（material-connections-qt-final.log）。materialドラッグ候補、入力追加、color/depth変更、attachment metadata保持、queryのみの保存、拒否後の草稿保持、Refreshとfullscreenへの復帰を含む。
 - 対照: materialのinput/output代入を外せば保存・再読込が落ち、depthを単純な文字列で上書きすればmetadata保持が落ちる。fullscreen用shader必須判定をmaterialに戻せば保存可否が落ちる。個別変異は実行していない。描画中核・GPU資源管理は変更していないため既存material/TLAS GPU証拠を引き継ぎ、GPU再実行なし。実エンジン接続下の手動操作とmaterial routing/contract専用編集は残る。
 
-**RT7 material passのray query編集 (2026-09-06、73557204):**
+**RT7 material passのray query編集 (2026-09-06、3b76a31a):**
 - project presetのmaterial passをget_render_authoring_contextの編集対象に追加。edit_preset_passはmaterialに限りray_queryのみを必須として受け付け、input/output/shaderの変更は拒否。bool/名前付きobjectを既存parserへ渡し、他のpass設定を保持して既存candidate・compiler・複数文書CAS・保存処理へ接続した。
 - Frame PlanのEdit preset passからPass Editorへ接続。material選択時はqueryの有効化とTLAS名を編集し、fullscreen専用shader/attachment欄は隠す。New passでfullscreenへ戻る。materialの入力ドラッグは未対応として案内する。
 - 読み取りレビューで、Frame Plan取得失敗後に宣言を再読込しないUI経路を発見。既存の再読込フラグを失効時に設定して復帰を修正。別の保存・回復機構は追加しない。
@@ -25028,7 +25028,7 @@ transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復
 - 対照: 一律AS依存を戻せばAS前配置がcycleになり、初期候補のfeature判定を外せばsprite可視pixelが0になる（後者は修正前のspriteas-gpu.logで実測）。個別の追加変異は実施せず、新test target・配布toolは追加しない。
 - 次はfullscreen以外の描画pass・feature所有ノードの編集、worldモード/material queryのGUI、異transform AABB結合など。画面全体の手動確認と性能・配布確認は残る。利用者の希望により、本区切りの統合後はいったん実装停止。
 
-**統合前の経過 (2026-09-06、Frame Planドラッグ接続):** 当時はcommitが自動承認審査に拒否され保留していた。その後、利用者の明示許可を受けて `b0c000a9` / `96d9cb7e` に統合済み。現在はcommit確認待ちではない。
+**統合前の経過 (2026-09-06、Frame Planドラッグ接続):** 当時はcommitが自動承認審査に拒否され保留していた。その後、利用者の明示許可を受けて `d0956f95` / `cb5c4c26` に統合済み。現在はcommit確認待ちではない。
 
 **RT7 fullscreen preset pass宛ドラッグ接続 (2026-09-06、未commit):**
 - Frame PlanのShiftドラッグをproject presetのfullscreen passへ接続。既存authoring contextで編集可能性を判定し、共有定義や対象外passを暗黙に保存しない。
@@ -25113,7 +25113,7 @@ transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復
 **Procedural asset Studio画面 (2026-09-06):**
 - Render FeaturesのProcedural assets...から既存assetを選び、Min/Max XYZとrecord JSONを編集してApply。前述RPCの保存・runtime公開を使用し、独立した実行経路は追加しない。
 - assets_json文字列を正確にparseして初期値を取得。assetごとの草稿・元保存世代を維持し、Refresh/retryや失敗後に暗黙rebaseしない。Reset selectedで選択中だけ最後に取得した保存値へ戻す。切断時の草稿保持、pending ticket再照会、空一覧・エラー表示を実装。
-- Tasksにあった整数丸め確認をjsonrpcrequest.hppへ抽出し共用。実Qt変換でrecordの数値/配列保持と非表現uint64拒否を確認（既存Qt target追加case1/1、build/.codex_bg/proceduralgui-rpc.log）。Studio/test target build成功（proceduralgui-build.log）。新画面の手動GUI操作は未確認。GPU/runtimeは変更せず0b6b9e85の証拠を引き継ぐ。
+- Tasksにあった整数丸め確認をjsonrpcrequest.hppへ抽出し共用。実Qt変換でrecordの数値/配列保持と非表現uint64拒否を確認（既存Qt target追加case1/1、build/.codex_bg/proceduralgui-rpc.log）。Studio/test target build成功（proceduralgui-build.log）。新画面の手動GUI操作は未確認。GPU/runtimeは変更せずfd786d74の証拠を引き継ぐ。
 
 **Procedural asset bounds/record編集 (2026-09-06):**
 - get_procedural_assets / edit_procedural_assetと既存get_edit_resultへ接続。原文digestのCAS、既存document transactionのatomic保存・回復を再利用。編集対象は既存assetのaabb/recordに限定し、他assetと参照表記を保持。scene journalのUndo/Saveとは別操作。専用Studio画面は上記の後続で接続。
@@ -25302,17 +25302,17 @@ transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復
 
 > 2026-09-05時点の履歴。下の番号付き順序は当時のもの。現在の再開先は本節冒頭の2026-09-06現況を参照する。
 
-作業ブランチは `codex/render-target-runtime-slice`、最新の機能着地は `6d25d9e0`(WP386b、WP382dは `4ce4117d`、WP382b-fixは `36ad3444`、WP386aは `b7cb1825`)。
+作業ブランチは `codex/render-target-runtime-slice`、最新の機能着地は `fd957fee`(WP386b、WP382dは `2958ac42`、WP382b-fixは `6289434c`、WP386aは `82e4594c`)。
 引き継ぎ入口は `<作業ディレクトリ>/handoff_codex_2026-09-05.md`。本節と各 WP の最終仕様を正とする。
 Codex の同時実行は 2 本まで、fast は使わない。実装者は commit せず統合側が記録・commit する。
 `<作業ディレクトリ>/wp336` と利用者の `projects/showcase/` は触らない。
 
 1. **WP384-fix の検証・記録・rev384 は収束。** 全数1658件中、成功1656・skip1・既知の contract_projection_gate 失敗1。修正対象4件とsequential XRは成功。残余とレビュー裁定は上の完了記録。WP382cの結果は次項。
-2. **WP382c は 23cb5153 に着地、統合検証と rev382c の記録済み。** merge後build、非GPU1319件失敗0(1skip)、W1 98/98成功。全数1669件では既知gateとStudio試験の2件失敗。Studio試験のheadless/window待機の不整合を修正し、単独1/1成功を確認した。レビュー残余は上の統合・検証記録へ分類。次はWP386a。
-3. **WP386a は b7cb1825 に着地、変異4件と rev386a の裁定済み。** `-0.0` 正規化を含む。W1 60/60。統合全数1677件は既知gateと一時Access deniedの2件失敗、後者は単独再実行成功。残余は直上の記録に集約し、386bのfeature有効化前に閉じる。
-4. **WP382b-fix は 36ad3444 に着地。** 高水位・raw復元・List pointer拒否・独立undoを修正。Fableが指摘したBehaviorコピーへの誤undoも実再現して修正、最終関連37/37成功。レビュー残余と構成別の証拠は上の統合記録。旧CLIプロンプトから再開しない。
-5. **WP382d は4ce4117dに統合。** overrides / presence / participant / inventoryを接続し、W1 95/95成功。Web専用拒否はWeb側への引き継ぎ事項で統合条件に含めない。実装とレビュー裁定、後続の効率整理、統合先の検証は下の記録を参照。次はWP386b。
-6. **WP386b は `6d25d9e0` に統合。WP386c数値基礎は `ae29fc98` まで保存し追加整備を保留。次は学習サンプルとRT4。** final SPIR-Vのscalar演算列・NoContraction・operand依存関係の分類、entry digest、active pipelineの `get_status.ray_tracing.procedural_oracle`、球のnear-root参考shader、hit attribute ABIとproceduralへの生成anyhit誤適用防止を接続。統合/rev386bの結果は直下の最新記録を正とする。機能提供は実描画・編集の確認で進め、数値oracleの完遂は条件にしない(最新の利用者裁定)。旧worktree `<作業ディレクトリ>/wp386b` は保存のみとし、次の実装は作業ブランチから始める。RT4/RT5 → RT6 → RT7 と CARRIER-STUDIO の対応を [v1 棚卸し](v1_development_plan.md)から具体化する。観測と最小 GUI 編集を engine 完成後まで一括延期しない。
+2. **WP382c は 345123b8 に着地、統合検証と rev382c の記録済み。** merge後build、非GPU1319件失敗0(1skip)、W1 98/98成功。全数1669件では既知gateとStudio試験の2件失敗。Studio試験のheadless/window待機の不整合を修正し、単独1/1成功を確認した。レビュー残余は上の統合・検証記録へ分類。次はWP386a。
+3. **WP386a は 82e4594c に着地、変異4件と rev386a の裁定済み。** `-0.0` 正規化を含む。W1 60/60。統合全数1677件は既知gateと一時Access deniedの2件失敗、後者は単独再実行成功。残余は直上の記録に集約し、386bのfeature有効化前に閉じる。
+4. **WP382b-fix は 6289434c に着地。** 高水位・raw復元・List pointer拒否・独立undoを修正。Fableが指摘したBehaviorコピーへの誤undoも実再現して修正、最終関連37/37成功。レビュー残余と構成別の証拠は上の統合記録。旧CLIプロンプトから再開しない。
+5. **WP382d は2958ac42に統合。** overrides / presence / participant / inventoryを接続し、W1 95/95成功。Web専用拒否はWeb側への引き継ぎ事項で統合条件に含めない。実装とレビュー裁定、後続の効率整理、統合先の検証は下の記録を参照。次はWP386b。
+6. **WP386b は `fd957fee` に統合。WP386c数値基礎は `6fec9a44` まで保存し追加整備を保留。次は学習サンプルとRT4。** final SPIR-Vのscalar演算列・NoContraction・operand依存関係の分類、entry digest、active pipelineの `get_status.ray_tracing.procedural_oracle`、球のnear-root参考shader、hit attribute ABIとproceduralへの生成anyhit誤適用防止を接続。統合/rev386bの結果は直下の最新記録を正とする。機能提供は実描画・編集の確認で進め、数値oracleの完遂は条件にしない(最新の利用者裁定)。旧worktree `<作業ディレクトリ>/wp386b` は保存のみとし、次の実装は作業ブランチから始める。RT4/RT5 → RT6 → RT7 と CARRIER-STUDIO の対応を [v1 棚卸し](v1_development_plan.md)から具体化する。観測と最小 GUI 編集を engine 完成後まで一括延期しない。
 
 **WP386c 数値基礎と開発負担の整理 (2026-09-05 再開):**
 - object-space・外起点・near-rootの球について、一般形27演算をf32丸め区間で評価する基礎を追加。sqrtはinversesqrt 2 ULPとdiv 2.5 ULPの継承を対称化、各演算の入力/出力のsubnormal保持・FTZを包含する。旧DenormPreserve必須を撤回し、最終entryのRTE/特殊値preserve mode・capabilityと実device propertiesを分類へ接続。RTX 5080の実GPUで球を包含した。
@@ -25355,7 +25355,7 @@ Codex の同時実行は 2 本まで、fast は使わない。実装者は commi
 - 影響範囲の既存3グループは planning **65/65**、runtime services **170成功/1skip** (symlink作成権限)、render pipeline **126/126**。新しい回帰はtask出力と未生成/後置の対照だけとし、画像完全一致や数値基盤の追加は行わない。旧raster限定検査を戻せばサンプル起動が失敗し、生成済み検査を取り除けば未生成/後置の負例が失敗する。
 - 数値基盤の残件は保留を維持。ここから先のRT機能実装の前提にはしない。
 
-**WP386c Fable再開レビュー (`f3efb908` 後、2026-09-05):**
+**WP386c Fable再開レビュー (`60c545e7` 後、2026-09-05):**
 - `claude-fable-5-1` / high、safe-mode、tools無効、session保存なし。承認されたsource/testのみを明示payloadとして送信し、追加のファイル探索や編集はさせていない。原文は `build/.codex_bg/wp386c_fable_authorized.json`。
 - 指摘1を採用: 球の算術区間をそのまま共通GPU包含述語へ渡すと、GPU側の4 ULP拡張によって実効許容域が狭くなっていた。三角形と同じ `padEndpoints` を球の返却時にも適用。**算術区間と、比較用に外向きf32丸め+4 ULPを施した `hit.t_interval` は区別する。** `t` の分岐/幅判定は従来どおり算術区間で行う。
 - 指摘2を採用: 小さなy offsetの球だけではFTZ処理の検出力を証明できなかった。入力FTZは `(2^-127)/(2^-126)` の0/0.5、出力FTZは `(2^-126)/2` の0/2^-127をscalar精度関数へ直接注入。球テストはtiny offsetの包含確認という名称へ訂正。
@@ -25365,7 +25365,7 @@ Codex の同時実行は 2 本まで、fast は使わない。実装者は commi
 - 重複確認を削除した最終CPUは **22ケース/405 assertions成功** (`build/.codex_bg/wp386c_review_final_cpu.log`)。変更はtest専用oracleと対応試験のみで、Player/Studioのコードは変わらず再build/全数の反復は行わない。
 
 **WP386b 統合・rev386b (2026-09-05、以下の未統合履歴より優先):**
-- コード `6d25d9e0`。通常loadを拒否しない演算列分類とactive pipelineの診断、球のGPU on/off/reload、AABB共有修正、record/AABB変更行列、同一identityでの登録順反転、SceneLoader activate失敗時の旧state復元を確認。配布用の検査ツールや新しい回復経路は追加していない。
+- コード `fd957fee`。通常loadを拒否しない演算列分類とactive pipelineの診断、球のGPU on/off/reload、AABB共有修正、record/AABB変更行列、同一identityでの登録順反転、SceneLoader activate失敗時の旧state復元を確認。配布用の検査ツールや新しい回復経路は追加していない。
 - worktree全buildとW1 **67/67成功**(87.28秒)。統合Studio ON全build成功、レビュー追加後の統合W1 **69/69成功**(GPU25、89.33秒、Studio2件を含む)。ログ `<作業ディレクトリ>/wp386b_w1_ctest.log` / `wp386b_integrated_w1_ctest.log`。RPC composition最終修正後もPlayer/Studio再build成功(`build/.codex_bg/wp386b_shipping_final.status` = DONE:0)。
 - 統合の非GPU広域確認は **1474件中1469成功・1skip・4失敗**(124.33秒)。今回のRPC直接module取得を既存のcompositionへ移し、旧scene fixtureの描画設定欠落2件を修正。最終関連 **9/9成功**(16.70秒、`<作業ディレクトリ>/wp386b_final_recheck_ctest.log`)。残りは既知の `contract_projection_gate`。広域全数の再実行成功とは扱わない。RPC/compiler両OFFの18+11ケース成功は前記構成証拠を引き継ぐ。
 - Fable 5.1読み取りreviewは確定した致命的実害なし。実compilerでpreciseを外した球をreloadし、mismatchと通常描画継続を同時に確認する指摘を採用、統合GPUで成功。CLIの日本語文字化けはUTF-8 byte入出力で再確認済み。最終応答 `<作業ディレクトリ>/rev386b_confirm.json`、裁定 `<作業ディレクトリ>/rev386b_adjudication.md`。
@@ -25391,7 +25391,7 @@ procedural geometryのasset変更・component追加削除・object spawn/destroy
 
 **2026-09-05 利用者との責任範囲の裁定:** Web専用エラー対応は別repoのWeb側へ引き継ぐ。WP382dのエンジン統合条件には含めない。決定32のWeb用code/surfaceはWeb側の追随仕様であり、このrepoの着地待ち条件ではない。my_webpageはbindPelicanSceneで未登録pelican_ray_instanceをunknown componentとして拒否することをコード確認済みで、黙殺ではない。共通codecのsurface制約とnative previewの専用拒否は実装・検証済み。別repoは変更せず、専用code/surfaceの対応はWeb担当への引き継ぎ事項とする。
 
-**WP382dは4ce4117dに統合済み。** 正本docsを作業treeへ取り込んだ後、W1の不足RT targetをbuildし、最終95/95成功(37 GPU label、92.83秒、`<作業ディレクトリ>/wp382d_w1_final_ctest.log`)でsquashした。初回の4件Not Runは未build targetであり、最終実行で解消。scene/frame別config parseは現在設定の独立prepareにより古いGPU owner設定の流用を避けており、初回再resolveの効率整理として後続へ記録する。意味論比較用の追加digestやfallbackは今回導入しない。統合先のplayer/Studioと対象test実行ファイルのbuildは成功。`build/.codex_bg/wp382d_integrated.log`と`wp382d_integrated_extra.log`が証拠。初回統合試験は136/136だったが41件に旧exeが含まれるため、その41件を再buildして別実行した。40/41成功、唯一の失敗は既存manifest試験の固定件数14(現16)だった。`1f34a8bc`で必要mutation IDの存在確認へ変更し、再build後1/1成功。したがって最新exeで確認した内訳は95 + 40 + 修正1 = 136件。ログは`<作業ディレクトリ>/wp382d_integrated_ctest.log`、`<作業ディレクトリ>/wp382d_integrated_extra_ctest.log`、`<作業ディレクトリ>/wp382d_manifest_contract_ctest.log`。全数・構成matrixはこの統合で再実行したとは扱わない。
+**WP382dは2958ac42に統合済み。** 正本docsを作業treeへ取り込んだ後、W1の不足RT targetをbuildし、最終95/95成功(37 GPU label、92.83秒、`<作業ディレクトリ>/wp382d_w1_final_ctest.log`)でsquashした。初回の4件Not Runは未build targetであり、最終実行で解消。scene/frame別config parseは現在設定の独立prepareにより古いGPU owner設定の流用を避けており、初回再resolveの効率整理として後続へ記録する。意味論比較用の追加digestやfallbackは今回導入しない。統合先のplayer/Studioと対象test実行ファイルのbuildは成功。`build/.codex_bg/wp382d_integrated.log`と`wp382d_integrated_extra.log`が証拠。初回統合試験は136/136だったが41件に旧exeが含まれるため、その41件を再buildして別実行した。40/41成功、唯一の失敗は既存manifest試験の固定件数14(現16)だった。`bb24e6e9`で必要mutation IDの存在確認へ変更し、再build後1/1成功。したがって最新exeで確認した内訳は95 + 40 + 修正1 = 136件。ログは`<作業ディレクトリ>/wp382d_integrated_ctest.log`、`<作業ディレクトリ>/wp382d_integrated_extra_ctest.log`、`<作業ディレクトリ>/wp382d_manifest_contract_ctest.log`。全数・構成matrixはこの統合で再実行したとは扱わない。
 
 既知失敗の引き継ぎ: `contract_projection_gate` と showcase を走査する 2 件は利用者作業との関連が報告されている。今回の全数ログの未完・連続異常終了を、それら 3 件だけの既知失敗と扱わない。利用者データを変更して試験を緑にしない。
 
@@ -25401,18 +25401,18 @@ procedural geometryのasset変更・component追加削除・object spawn/destroy
 2026-09-02 深夜 再開: `rev377a` `rev375a` を再投入、**WP379 と WP380a を並列投入**(worktree `<作業ディレクトリ>/wp379` / `<作業ディレクトリ>/wp380a`)。
 両レビューとも reject: `rev377a` の 2 件は連鎖上限で既知の穴へ、`rev375a` の致命(Preview の inactive light 置換)は **WP375b** として投入(worktree `<作業ディレクトリ>/wp375b`。WP375 系はこれで打ち切り。次に致命が出たら revert を先に検討)。
 **統合済みで残っているもの**
-- WP377a(`a3f318fb`)のコードレビュー `rev377a`: 判定前に中断。**再投入**(観点は `<作業ディレクトリ>/rev377a.txt`)
-- WP375a: **統合済み**(`1aeafc59`)。コードレビュー `rev375a` は再開後に投入(観点は完了記録の末尾)
+- WP377a(`01eba2fa`)のコードレビュー `rev377a`: 判定前に中断。**再投入**(観点は `<作業ディレクトリ>/rev377a.txt`)
+- WP375a: **統合済み**(`792155d5`)。コードレビュー `rev375a` は再開後に投入(観点は完了記録の末尾)
 
 **再開後の投入順**(すべて仕様確定済み。台帳の各節の最終差分が正)
 1. `rev377a` / `rev375a`(コードレビュー。read-only)
-2. **WP379**: 統合済み(`51841eb3`、2026-09-03)。→ **WP381**(v3。epoch anchor): **投入済み**(worktree `<作業ディレクトリ>/wp381`。shadow dir の process 分離を同梱)
-3. **WP375b**: 統合済み(`c61ce078`、全数 1544 / 1544)。**WP380a**(v3): 実装 1 回目が完了(参加者 drop / bypass 変異が manifest の ID だけで未実行 → fault injector 化の継続 + main 取り込みを投入)
+2. **WP379**: 統合済み(`f7d53a93`、2026-09-03)。→ **WP381**(v3。epoch anchor): **投入済み**(worktree `<作業ディレクトリ>/wp381`。shadow dir の process 分離を同梱)
+3. **WP375b**: 統合済み(`267c7b80`、全数 1544 / 1544)。**WP380a**(v3): 実装 1 回目が完了(参加者 drop / bypass 変異が manifest の ID だけで未実行 → fault injector 化の継続 + main 取り込みを投入)
 **WP379a**(rev379 の致命: engine registrar が DLL ヘッダに露出)を投入(worktree `<作業ディレクトリ>/wp379a`。WP379 系はこれで打ち切り)
 **WP375c**(rev375b の後退 2 件 + `attachment_seq`)を投入(worktree `<作業ディレクトリ>/wp375c`。WP375 系はこれで打ち切り。次に実害が出たら WP375b/c を revert)
 2026-09-03 深夜: WP380a(継続で SEGFAULT 解消 + injector 化 + main 取り込み)は統合中。WP381(実装完了。e2e `game_logic_dll_reload` の status clear 抜けを継続中)、WP378(実装完了。worktree で 1239 / 1239 + GPU 9 / 9)、WP379a(実装完了。検証中)は変異と統合待ち。WP380a 統合後に **docs 更新タスク**(source-code guide の scene ロード記述 9 リンクが旧経路のまま → 段落を executor の事実に書き直す。プロンプト `<作業ディレクトリ>/docs_wp380a.txt`)を codex に出す
 4. **WP378**(v3。E-0a): **投入済み**(worktree `<作業ディレクトリ>/wp378`、WP375b 統合直後に自動起動)
-5. **WP380c / WP380d / WP380b は 2026-09-03 に統合済み**(`aa7f65a7` / `f85fbbe1` / `5fed6612`)、**WP380e は 2026-09-04 に統合済み**(`7b84c55d`。380 系はここで打ち切り)。**CARRIER-RT3 = WP382 を 2026-09-03 に起票**(第 1 巡で 4 WP に分割: WP383 ∥ WP382a → b → c → d。enablement は 382d で開く。第 2 巡は 5 節一体。参加者 seam は WP380b/e の sink と WP380c/d の trace 入口に載る)、その後 CARRIER-STUDIO
+5. **WP380c / WP380d / WP380b は 2026-09-03 に統合済み**(`5a17627d` / `4f6f83b7` / `550743c6`)、**WP380e は 2026-09-04 に統合済み**(`ccb79285`。380 系はここで打ち切り)。**CARRIER-RT3 = WP382 を 2026-09-03 に起票**(第 1 巡で 4 WP に分割: WP383 ∥ WP382a → b → c → d。enablement は 382d で開く。第 2 巡は 5 節一体。参加者 seam は WP380b/e の sink と WP380c/d の trace 入口に載る)、その後 CARRIER-STUDIO
 6. **RT 系**: §4-P(procedural subset)は v3 で設計を打ち切り、**WP386 = RT3-2(static AABB + `.rint`)を 2026-09-04 に起票**(仕様レビュー待ち)。CARRIER-RT3 とは独立。その後 RT4 / RT5(carrier の list 宣言が前提)→ RT6 → RT7。穴埋め: WP384(frame transaction、仕様確定・未投入)、WP385 は統合済み
 
 **既知の穴(WP 化は別途判断)**

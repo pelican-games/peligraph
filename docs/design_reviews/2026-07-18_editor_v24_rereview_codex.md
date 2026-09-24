@@ -2,8 +2,8 @@
 
 日付: 2026-07-18
 
-対象: `docs/design_editor_tooling.md` v2.4 (`6b23a63`、根拠ツリー
-`agent/review-v24` のレビュー開始時 HEAD `e73ebe6`)
+対象: `docs/design_editor_tooling.md` v2.4 (`aa95fa5`、根拠ツリー
+`agent/review-v24` のレビュー開始時 HEAD `5e6b60a`)
 
 前回: `docs/design_reviews/2026-07-18_editor_v23_rereview_codex.md`
 
@@ -29,7 +29,7 @@ renderer inventory の PREVIEW0 gate と、§3 の復元済み dependency/owner 
 
 | 前回 §7 の必須修正 | 判定 | 要旨 |
 |---|---|---|
-| 1. V22-C1〜C7 + snapshot 逐語本文を不変にする | **Accept** | v2.3 (`da60b99`) と空白・改行を除いて 8 件全一致 |
+| 1. V22-C1〜C7 + snapshot 逐語本文を不変にする | **Accept** | v2.3 (`bd831ac`) と空白・改行を除いて 8 件全一致 |
 | 2. §1-6-1a ticket 全遷移 + §1-6-1b E-C4 | **Reject** | op/列は増えたが、execution-time lease state と stable result が閉じず、forced-abort は表の列ずれ。E-C4 error 名も 1a と不一致 |
 | 3. §1-6-2 renderer inventory | **Accept** | 指定 4 state 群を含む 12 行が literal 三分類。history は shared read/write とも suppressed で、現行実体とも整合 |
 | 4. §1-6-3 snapshot schema/sequence | **Reject** | encoding/digest/size/validation/失敗時非公開は改善。一方、schema の version/name/requiredness と named-schema sequence が未完 |
@@ -37,7 +37,7 @@ renderer inventory の PREVIEW0 gate と、§3 の復元済み dependency/owner 
 
 ## 1. 逐語本文の監査 — Accept
 
-v2.3 の正本 blob (`git show da60b99:docs/design_editor_tooling.md`) と v2.4 の各
+v2.3 の正本 blob (`git show bd831ac:docs/design_editor_tooling.md`) と v2.4 の各
 blockquote を、Markdown の `>` と空白・改行を除いて比較した。全 8 件が一致した。
 
 | 条件 | v2.4 の所在 | 結果 |

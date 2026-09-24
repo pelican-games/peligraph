@@ -62,8 +62,8 @@ barrierを任意のVulkan値で上書きするAPIは公開していない。
 
 | commit | 内容 |
 |---|---|
-| `ac13002` | typed target planning controls |
-| `d616d33` | versioned Vulkan plan pins and runtime bridge |
+| `301390c` | typed target planning controls |
+| `13def3d` | versioned Vulkan plan pins and runtime bridge |
 
 ## 4. ローカル検証
 

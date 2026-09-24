@@ -78,14 +78,14 @@ timing ring 自体は execution mode を持たないため、sequential と mult
 
 | commit | 内容 |
 |---|---|
-| `71e4999` | optional composition depth extension negotiation |
-| `aaac4b9` | 2-layer OpenXR stereo color swapchain |
-| `1b32812` | typed external composition depth export planning |
-| `c2787e3` | XR composition depth source materialization |
-| `3e20df0` | external depth export contract hardening |
-| `2ed8fde` | rendered composition depth copy/submission |
-| `67ad4ab` | measured device profile based multiview auto gate |
-| `7738f4f` | logical-frame GPU timing history/averages |
+| `a743084` | optional composition depth extension negotiation |
+| `5a353d7` | 2-layer OpenXR stereo color swapchain |
+| `35d1a91` | typed external composition depth export planning |
+| `fc4794a` | XR composition depth source materialization |
+| `64f0a81` | external depth export contract hardening |
+| `dde62e5` | rendered composition depth copy/submission |
+| `aa743eb` | measured device profile based multiview auto gate |
+| `7b4b613` | logical-frame GPU timing history/averages |
 
 ## 3. ローカル検証
 

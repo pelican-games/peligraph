@@ -91,9 +91,9 @@ pipelineは一つのgeneration transactionとして切り替わる。
 
 | commit | 内容 |
 |---|---|
-| `900cf37` | version 2 schema、automatic fingerprint、attachment verifier |
-| `1a6cf5c` | pass authoringからFrameGraph/physical attachment契約へのlowering |
-| `4d23f51` | runtime compiler、Vulkan/UI/ImGui実行、hot reload実描画 |
+| `919fd7e` | version 2 schema、automatic fingerprint、attachment verifier |
+| `c3b0429` | pass authoringからFrameGraph/physical attachment契約へのlowering |
+| `b3e9138` | runtime compiler、Vulkan/UI/ImGui実行、hot reload実描画 |
 
 ## 7. ローカル検証
 

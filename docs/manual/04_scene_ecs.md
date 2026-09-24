@@ -1,6 +1,6 @@
 # 第4章 シーンと ECS
 
-対象: pelican2(HEAD=`990b9eaa`・2026-09-17。2026-09-04 の内容に、v0 の段(`animation` の受理規則の訂正、姿勢の 2 つの装着様式、`graph.instance.owner`、root motion)を 2026-09-17 に反映)/ このマニュアルはコードを正とする
+対象: pelican2(HEAD=`82054c05`・2026-09-17。2026-09-04 の内容に、v0 の段(`animation` の受理規則の訂正、姿勢の 2 つの装着様式、`graph.instance.owner`、root motion)を 2026-09-17 に反映)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 

@@ -59,7 +59,7 @@
 
 ## 検証条件
 
-対象はディスク上の commit `eb32d4eabf411c25715bb417490e89bb0e93edf7` である。54 主張の判定は CONFIRMED 39、PARTIAL 11、REFUTED 4 となった。§1 の V1/V2 は再検証対象から除外したが、§3 が明示的に再掲した fence 群は既検証 V1 の契約と突き合わせた。
+対象はディスク上の commit `34a135626fea96e2c40fee18f8477d96c4d5e29c` である。54 主張の判定は CONFIRMED 39、PARTIAL 11、REFUTED 4 となった。§1 の V1/V2 は再検証対象から除外したが、§3 が明示的に再掲した fence 群は既検証 V1 の契約と突き合わせた。
 
 依存契約はリポジトリ本文の推測ではなく、`C:/src/pelican2/build-off-openxr/_deps/` の nlohmann-json 3.12.0、tinygltf、tinyexr、miniaudio、Dear ImGui 1.91.9b、GLFW 3.4、Quill、GLM の実ヘッダを読んだ。Vulkan は同 build の `CMakeCache.txt:1208` が指す SDK 1.4.309 を主証拠とし、pipeline の複数-success 契約は 1.3.296/1.4.309/1.4.350 でも同じであることを確認した。指示に従いビルドとテスト実行はしていない。
 

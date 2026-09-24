@@ -4,7 +4,7 @@
   "audit": {
     "work_package": "WP72/C0",
     "date": "2026-07-11",
-    "baseline_commit": "b7f5d599e6c144cb0eed583078ca0451b8e8b421",
+    "baseline_commit": "65a7855f4d57ac6134ccd5cf794982cf4eb304b3",
     "branch": "agent/wp72-color-audit",
     "evidence_policy": "Repository paths and 1-based source lines were measured at baseline_commit; absent facilities are reported as absent rather than inferred.",
     "scope": [

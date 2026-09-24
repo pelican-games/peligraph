@@ -1,6 +1,6 @@
 # 色 v3 / UI v6 / EventPayloadSchema v2 再審査 (round 3)
 
-対象: commit `d31d032`。
+対象: commit `ae45aff`。
 
 ## 冒頭判定
 

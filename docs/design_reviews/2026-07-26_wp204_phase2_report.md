@@ -106,9 +106,9 @@ gateで名指しrejectし、parse成功を実行可能性として扱わない�
 
 | commit | 内容 |
 |---|---|
-| `a0c1139` | physical fragment schema、fingerprint、pure verifier/linker |
-| `700589b` | pipeline authoring、strategy分離、runtime target bridge |
-| `47fc665` | OpenXR OFF/ONに追従するvariant fixture |
+| `034a493` | physical fragment schema、fingerprint、pure verifier/linker |
+| `2dfed3c` | pipeline authoring、strategy分離、runtime target bridge |
+| `ffcda80` | OpenXR OFF/ONに追従するvariant fixture |
 
 ## 4. ローカル検証
 

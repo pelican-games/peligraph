@@ -6,7 +6,7 @@ GPU tests no longer turn arbitrary engine exceptions into environment skips.
 The four reported tests execute on a Vulkan device, and the GPU gate completes
 with an empty allowlist and zero observed skips.
 
-Implementation range 1 landed first as `b623fe3`. Before either fixture was
+Implementation range 1 landed first as `f91ab28`. Before either fixture was
 fixed, all four tests were run and reproduced the two documented exceptions as
 real failures. The shared test helper now skips only the exact physical-device
 enumeration failure; every other initialization, shader, pipeline, reload, and
@@ -20,14 +20,14 @@ cleanup call the exact device-unavailable predicate and then rethrow.
 
 The RPC glTF transaction fixture authored a fullscreen-only pipeline while a
 live deferred standard material already existed. The runtime compatibility
-check was correct to reject it. Commit `d25aa7a` moves that fixture to the
+check was correct to reject it. Commit `5849159` moves that fixture to the
 standard `hybrid_v1` preset and its `main_render` program, preserving the
 material-pass contract exercised by the RPC operation.
 
 The three material-values reload fixtures lowered `wp76.surface`, including
 its custom textures, but paired the result with the standard fragment shader.
 That shader has no binding 7 for `albedo_detail`, so reflection validation was
-correct to reject it. Commit `b5bd5c4` compiles one shader bundle from the
+correct to reject it. Commit `f914488` compiles one shader bundle from the
 declared surface and shares it across the base and named-variant records.
 WP206b reload atomicity therefore runs rather than silently skipping.
 

@@ -1,7 +1,7 @@
 # Vulkan 同期・リソース状態バグハント監査
 
 - 監査日: 2026-07-26
-- 監査対象: `audit/sync` / `20efe46ab1683850c385d4640226707a9608a783`
+- 監査対象: `audit/sync` / `eed7eb1a20a00e3a4f9b1687939e22f2a3a19052`
 - 方法: ソースコードの読み取り専用静的監査。指示に従い build / test は実施していない。
 - 仕様根拠:
   - [Vulkan Guide: Swapchain Semaphore Reuse](https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html)
