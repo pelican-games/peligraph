@@ -103,6 +103,36 @@ procedural geometryの`single_field`は1件選択時に使う項目名です。
 behavior候補の`key`は`behavior:型名`、`behavior_type`は登録名です。`schema_fields`はparamsの項目で、
 再帰schemaを持つ型には`schema_node`も返します。候補取得はbehavior instanceを生成しません。
 
+### Studio で object を置く(✅G-2)
+
+Outliner の右クリックと **Scene** toolbar の **Add Object** は同じ 1 つの menu です
+([Add Object の menu を作る所](../../src/devstudio/view/mainwindow.cpp#L923))。項目は **Empty** / **Cube (built-in)** /
+**Plane (built-in)** / **Sphere (built-in)** で、自動化面の action 名は `pelican.outliner.addObject.empty` / `cube` /
+`plane` / `sphere` です。
+
+- **送るもの**: scene の `edit` 1 回に `spawn` op 1 つです([`addObjectDeclaration()`](../../src/devstudio/model/inspectormodel.cpp#L442))。
+  transform は原点で、形なら `simplemodelview.model` に `engine://primitives/<kind>`、Empty は transform だけです。
+  置き先の scene は選択中の object の scene(無ければ engine が最初に言った scene)で、選択中の object の子にはなりません。
+- **名前**: 種類の名前(`Empty` / `Cube` / `Plane` / `Sphere`)が空いていればそれ、使われていれば `Cube_001`、`Cube_002`…
+  の最小の空き番号です([`uniqueObjectName()`](../../src/devstudio/model/inspectormodel.cpp#L427))。Blender は `Cube.001` と
+  書きますが、scene の object 名は `[a-zA-Z0-9_]` だけなので `_` にしています。
+- **選択**: Outliner の読み直しを最短の間隔に縮め、新しい object が Outliner に出た時点でそれを選び、Inspector に出します
+  ([`MainWindow::selectSpawnedObject()`](../../src/devstudio/view/mainwindow.cpp#L1007))。
+- **Undo**: coalesce key を付けないので、Undo 1 回で Add 1 回が戻ります。Inspector の別の編集が進行中なら送らず、
+  Inspector の notice に理由が出ます([`InspectorModel::spawnObject()`](../../src/devstudio/model/inspectormodel.cpp#L2203))。
+- Add Object は常に押せます。project が開いていない・engine の準備ができていないときは、status bar に
+  `Add Object needs an open project with its engine running.` と出るだけです。
+- ⚠ spawn は Studio が最後に見た scene revision で送ります。他の client が編集した直後は `stale_revision` で断られるので、
+  もう一度押してください。また、engine が断った spawn の名前も Studio は使用中と数えたままなので、次の Add はその次の
+  番号になります。Empty / Plane / Sphere は単体 test だけで、シナリオが通すのは Cube です。
+
+**Inspector の model 欄は選ぶ欄です(✅G-2)。**`simplemodelview.model` は打つ欄ではなく combo
+(`pelican.inspectorModelChoice`)です([model 欄の選択肢の並び](../../src/devstudio/model/inspectormodel.cpp#L473))。
+並びは基本形 3 つ(`Cube (built-in)` などの名前で)→ 区切り → `list_assets` が言う project の model(engine の基本形は
+二重に出しません)→ 今の値がそのどれでもなければその値、です。選ぶとすぐ commit します(enum の combo と同じ)。
+Add component... の asset 一覧も同じ読み方で、基本形は `Cube (built-in)` の名前で先頭に並び、区切りの下に project の
+asset が `id [status]` で並びます。
+
 ### 起動のしかた
 
 ```sh
@@ -323,7 +353,8 @@ replay と `--strict-assets` の engine は今までどおり断ります([越�
 | `add_compute_task` | `base_source_digest`・`destination_reference`・`task`で新規project featureにtaskを作り、rootのfeaturesへ追加する |
 | `remove_compute_task` | `base_source_digest`・`base_task_source_digest`・`task_name`で元文書からtaskを削除する |
 | `edit_render_targets` | `base_source_digest`・`ops[]`(✅F-1)。op は `{op:"add", target}` / `{op:"replace", name, target}`(`target.name` を変えれば改名)/ `{op:"remove", name}`。書くのは managed fragment `project://passes/authoring/render-targets.json` 1 つだけで、最初の要求で作って root の `features[]` に足す(空になっても消さない)。ops は順に当て、最後に 1 回 preflight して ticket を返す —— **全部入るか、何も入らないか**。名前付きの拒否は下の 6 種([edit_render_targets の実装](../../src/core/communication/renderconfigeditor.cpp#L3190)) |
-| `add_authored_pass` | `base_source_digest`・`graph`・`insert`(authoring context の挿入位置の token)・`pass`。pass 1 つを managed fragment `project://passes/authoring/pass-<id>.json` に書き、root の `features[]` に足して preflight し、ticket を返す。受ける `type` は `fullscreen` と **`material`**(✅G-1)だけで、それ以外は `authored_pass_type_unavailable`(detail は `requested_type` と **`supported_types`**(配列)。[add_authored_pass の種類の門](../../src/core/communication/renderconfigeditor.cpp#L2901))。material pass の形の検査は下の段落 |
+| `add_authored_pass` | `base_source_digest`・`graph`・`insert`(authoring context の挿入位置の token)・`pass`。pass 1 つを managed fragment `project://passes/authoring/pass-<id>.json` に書き、root の `features[]` に足して preflight し、ticket を返す。受ける `type` は `fullscreen` と **`material`**(✅G-1)だけで、それ以外は `authored_pass_type_unavailable`(detail は `requested_type` と **`supported_types`**(配列)。[add_authored_pass の種類の門](../../src/core/communication/renderconfigeditor.cpp#L2901))。material pass の形の検査は下の段落。任意の **`material_route_default`**(`"auto"` / `"forward"`。✅G-4)を渡すと、pass と rendering 文書の root の既定を 1 つの ticket で変える(下の「material の route の既定」) |
+| `set_material_route_default` | `base_source_digest`・`material_route_default`(`"auto"` / `"forward"`)。root の既定だけを変える。root 編集の ticket に乗り、commit の結果に `restart_required: true`(✅G-4。[`RenderConfigEditorService::setMaterialRouteDefault()`](../../src/core/communication/renderconfigeditor.cpp#L2429)) |
 | `edit_graph_document` | `base_source_digest`と`ops[]`で共通グラフ文書を編集する(§13.5「グラフの装着を編集する」)。ops は順に候補文書へ当て、最後に 1 回だけ展開する — **全部通るか、文書ごと拒否か**のどちらか |
 | `edit_graph_instances` | `base_source_digest`・`attach[]`・`detach[]`。owner を持つ root instance の装着 / 取り外しだけを扱い、中身は `edit_graph_document` の ops へ翻訳される([edit_graph_instances の実装](../../src/core/communication/renderconfigeditor.cpp#L2216)) |
 | `export_render_feature` | `scope`(`root` / `preset`)と`index`で feature 1 つを `user://components/<name>/` へ書き出す。`engine://` の feature は `render_component_engine_reference` で拒否([export の実装](../../src/core/communication/renderconfigeditor.cpp#L1155)) |
@@ -366,6 +397,42 @@ depth が無い、swapchain に書く、format が違う、といった誤りは
 その一覧は `get_render_authoring_context` の **`enabled_feature_names`** にも出ます
 ([context の enabled_feature_names](../../src/core/communication/renderconfigeditor.cpp#L2000))。Studio はこれで、新しく作る
 G-buffer の target を HDR / SDR のどちらの format にするかを決めます(context が言わなければ HDR と読みます)。
+
+**material の route の既定と、受け皿の無い material の拒否(✅G-4)。**rendering 文書の root の `material_route_default`
+(`"auto"` / `"forward"`。意味と書ける場所は [第6章 §6.7](06_rendering.md))は編集 RPC からも変えられます。
+
+- `add_authored_pass` に `material_route_default` を渡すと、pass の fragment と root の key の変更が**同じ候補文書集合**に入り、
+  1 回の preflight・1 つの ticket になります([pass と route の既定を 1 つの候補に入れる所](../../src/core/communication/renderconfigeditor.cpp#L2908))。
+  下の受け皿の検査は、新しい既定で計算し直した route で行います。今の値と同じなら key は書かず、再起動も求めません。
+- `set_material_route_default` は既定だけを変えます(上の表)。
+- engine はこの key を**起動時に 1 回しか読まない**ので、値を変えた ticket の commit の結果(`get_edit_result` /
+  `step_frame` の `edit_results[]`)に **`restart_required: true`** が付きます
+  ([commit の結果に付ける restart_required](../../src/core/communication/renderconfigeditor.cpp#L3620))。engine を起動し直すまで、
+  route が変わる material は今の pipeline のまま描かれます。⚠ commit から再起動までの間に登録された material は、
+  古い既定で lowering されます。
+- runtime shader compiler の無い build で `"forward"` を頼むと、ticket を作る前に **`material_route_default_unavailable@1`**
+  (`value: "forward"`・`reason: "runtime_shader_compiler_disabled"`)で断られます。engine の組込 material の forward 版を
+  compile できないためです。
+
+**`material_route_unserved@1`**: pipeline に material pass が 1 つでもあるのに、登録済みの material(engine の組込を含む)の
+route を受ける pass が無い候補は、この code で断られ、文書は変わりません。**前の世代がその route を使っていたかどうかは
+問いません** —— G-4 の前は、最初から forward の pass だけにする編集が commit を通り、次の起動で落ちていました。足りない
+material を route ごとに全部集めて 1 回で断ります
+([`MaterialGenerationPlanner::requireEveryMaterialServed()`](../../src/core/material/materialgenerationplanner.cpp#L778))。
+`error` の直下に、他の拒否と同じく `ticket`・`participant` と並んで次の field が付きます。
+
+| field | 中身 |
+|---|---|
+| `rendering_config` | 検査した rendering 文書の参照 |
+| `unserved[]` | 受け皿の無い route ごとに `route`・`shader_contract`・`materials[]`・`hint`。`materials[]` の各項目は `name`(名前の無い material は `<unnamed>`)・`origin`(`builtin` / `document` / `asset` / `unknown`)・`source`(文書か asset の参照。組込には無い) |
+| `hint` | route ごとの hint を `; ` でつないだもの |
+
+route ごとの hint は 3 つです([route ごとの hint の文](../../src/project/renderpipeline.cpp#L688)):
+`forward_opaque` → forward_opaque_v1 の material pass を足す / `deferred_geometry` → root の `material_route_default` を
+`"forward"` にするか deferred_geometry_v1 の material pass を足す / `forward_transparent` → forward_transparent_v1 の
+material pass を足す。`message` は load 時の fatal と同じ読める 1 文です。code と fields は renderer の文字列の経路を
+`<code>: <JSON>` の形で通り、editor の completion handler が名前付きの拒否に戻します
+([文字列から拒否に戻す所](../../src/core/communication/renderconfigeditor.cpp#L3529))。
 
 Render Featuresの **Parameters...**で、選択中 feature instance の scalar パラメータを編集できます
 (`edit_render_features` の `set_parameters`)。欄は engine の `parameters` 宣言から作られ、
@@ -781,10 +848,27 @@ Save の前に言い、拒否の status 行も残った target の名前を並�
 ([拒否で残る target の文](../../src/devstudio/view/frameplanwidget.cpp#L1459))。いらなければ node から Delete してください。
 既存の target を枠に選んだとき、Studio は format を先に検査しません(engine の preflight が上の段落の検査をします)。
 入力(`screen_inputs` など)の欄はまだありません。
-⚠ 今は、material pass を持つ pipeline は material が取るすべての route に受ける pass を持たないと load に失敗します。
-engine の既定 material の route は `deferred_geometry` なので、forward の pass だけを足した project は起動しません
-(G-1 のシナリオの fixture が、誰も読まない pass を 2 つ持つのはこのためです。
-[fixture の説明](../../test/fixtures/studio_material_pass_authoring/README.md#L21))。この扱いは G-4 で直す予定です。
+
+**forward の既定を同じ Save で入れる(✅G-4)**: Contract が **Forward opaque** で、pipeline に `deferred_geometry_v1` /
+`legacy_gbuffer_v1` の material pass が無いとき、form に checkbox **Draw this project's materials with forward**
+(`pelican.materialPassForm.forwardDefault`、既定 on)が出ます([forward の既定の checkbox](../../src/devstudio/view/materialpassform.cpp#L64))。
+automatic な material(glTF の material、基本形の灰色、engine の組込)の route は既定では `deferred_geometry` なので、
+forward の pass だけの pipeline には受け皿が無く、engine は上の `material_route_unserved@1` で断ります。on のまま Save すると、
+`add_authored_pass` が pass と `material_route_default: "forward"` を 1 回で運び
+([payload に既定を載せる所](../../src/devstudio/view/materialpassedit.cpp#L237))、form の notice にも「pass と設定は一緒に
+保存され、engine が再起動する」旨が足されます。
+
+commit の結果に `restart_required` があると、Frame Plan の status 行に
+`Restarting the engine to apply the material route setting...` を出し、**同じ project で engine を止めて起動し直します**
+([`EmbeddedViewport::restartEngine()`](../../src/devstudio/viewport/embeddedviewport.cpp#L491))。gate はすぐ閉じ、新しい engine が
+readiness に答えると Frame Plan が戻ります。⚠ **保存していない scene の編集は、確認なしにこの再起動で失われます。**
+先に Save Scene してください(シナリオ `add_primitive_object` もそうしています)。
+
+`material_route_unserved@1` で断られると、status 行は
+`The engine refused the pass: No pass draws the <route> route, which <名前> take(s). To fix: <hint>.` の形で、material の名前
+(組込には `(engine built-in)`)と直し方を言います([`materialRouteUnservedNotice()`](../../src/devstudio/view/materialpassedit.cpp#L259))。
+G-1 のシナリオの fixture が持っていた、誰も読まない pass 2 つは G-4 で外しました
+([fixture の README の G-4 の段落](../../test/fixtures/studio_material_pass_authoring/README.md#L21))。
 
 **Pass Editor の form は scroll します(✅F-7)**: form は `QScrollArea`(`pelican.fullscreenPassScroll`)の中にあります。
 以前は form の最小の高さ(1,000 px 近く)が下の dock 領域を押し上げ、Pass Editor を開くと viewport が 60〜80 px の帯に
@@ -977,7 +1061,7 @@ layout をそこに残していました。テーマの選択はこの directory
 `studio_exit_code` と `studio_shutdown_forced` も記録します。最後の shutdown step は
 **exit 0、強制終了なし**を要求し、異常終了・タイムアウトによる強制停止も report と driver の失敗になります。
 
-現在のシナリオは **17 本**です。
+現在のシナリオは **18 本**です。
 `graph_read` は fixture を Graph タブで開き、`list` が objectName を返すこと・無い名前が
 `automation.widget_missing@1` で断られること・キャンバスが描いたものが `get_graph_instances` の中身と合うことを見ます
 ([シナリオ](../../test/studio_scenarios/graph_read.json))。`graph_edit_roundtrip` は**実物の engine で**値の帯を
@@ -1022,9 +1106,11 @@ Blank pipeline に切り替えても新しい graph が Whole frame で開き、
 同時にここへ残ります)に「polling failed」が無いこと(`excludes`)、New render target... で作った `scene_color` がその出力
 ソケットごと `present` と同じ canvas に描かれ、canvas が Whole frame のままであることを見ます
 ([シナリオ](../../test/studio_scenarios/whole_frame_first_steps.json))。
-✅G-1 の `material_pass_authoring`(38 step)は、model を 1 つ持つ direct root の fixture で、Add material pass... を名前で
-発火し、form が Forward opaque・名前 `forward_opaque`・graph の先頭で開くこと、Create missing targets が `scene_color` と
-`scene_depth` を contract の format で作ること、Save で engine がその 2 つを authoring fragment から宣言し、`forward_opaque` を
+✅G-1 の `material_pass_authoring`(43 step。G-4 で 38 から増えました)は、model を 1 つ持つ direct root の fixture で、
+Add material pass... を名前で発火し、form が Forward opaque・名前 `forward_opaque`・graph の先頭で開くこと、
+Create missing targets が `scene_color` と `scene_depth` を contract の format で作ること、forward の既定の checkbox が出て
+on であること(✅G-4)を見ます。Save の後は、Studio が engine を再起動し(status 行の「Restarting the engine」)、root に
+`material_route_default` が書かれ、engine がその 2 つの target を authoring fragment から宣言し、`forward_opaque` を
 forward opaque の material pass として最初に走らせることを見ます。続けて `present.frag` を `file` step で「入力 0 をそのまま
 出す」shader に書き換え、canvas で `scene_color` を `present` へ drag し、viewport が gradient から数色の絵になって中央の
 box の色が背景とも前の gradient とも違うことを確かめます
@@ -1034,6 +1120,17 @@ box の色が背景とも前の gradient とも違うことを確かめます
 Deferred lighting で作ります。viewport が 1 色でないこと(box が光源で照らされる)、`file` step で shader の light loop を
 切ると画面が 1 色になり、戻すと照らされた box が戻ることを見ます
 ([lighting 雛形のシナリオ](../../test/studio_scenarios/lighting_pass_template.json))。
+✅G-2 の `add_primitive_object`(57 step)は、File > New Project... で Blank pipeline の project を作り、Add Object > Cube を
+名前で発火して、engine の scene に `Cube` が 3 つ目の object として入ること、それが選択され Inspector の model 欄が
+`Cube (built-in)` を読むことを見てから Save Scene します。続けて Add material pass... で Forward opaque の pass を
+Create missing targets で足し、forward の既定の checkbox を on のまま Save して engine の再起動を待ち(✅G-4)、再起動した
+engine が保存済みの `Cube` を持つこと、`present.frag` を「入力 0 をそのまま出す」に書き換えて `scene_color` を `present` へ
+drag すると viewport の中央に背景とも前の gradient とも違う色の箱が出ることを確かめます。最後にもう一度 Add Object > Cube で
+`Cube_001` ができて選ばれること、Inspector が読み終えてから Save し直すことを見ます(閉じるときに確認が出ないように)
+([基本形のシナリオ](../../test/studio_scenarios/add_primitive_object.json))。G-2 の着地時は forward の pass だけでは箱が
+描かれず、Deferred geometry の pass で迂回していました。G-4 で理由が分かり(material pass が 1 つも無いうちに置いた cube は
+検査されず、forward の pass を足す編集も「前の世代が使っていた route の消失だけを断る」旧規則を通っていた)、forward に
+戻っています。
 `graph_reroute_tie` の node の drag は、✅Q-5 から窓の画素ではなく canvas の位置(`"scene"`)で終わります。F-5 から run は
 毎回既定 layout で始まるので、窓の画素で置くと node が入力の列より左に来て、続く click が別の node に当たっていました
 (bundle の drag はまだ窓の画素です)。

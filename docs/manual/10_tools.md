@@ -486,9 +486,15 @@ pelican_cli assets status --project mygame              # OK / MISSING / MISMATC
 
 リプレイを headless 実行し、カメラ軌跡を `imports/pelican-camera/<name>/` に `camera.transform_seq.jsonl` + `pelican.import` manifest として着地させます(DCC への逆輸出)。
 
-### `pelican_cli dump-lowered-material <surface>`(✅WP76)
+### `pelican_cli dump-lowered-material [--project <dir>] <surface> [material.json] [material-name]`(✅WP76)
 
 `.surface` の lowering 結果(std140 レイアウト・生成 GLSL)を stdout に出力します。「B は C の糖衣」の検証・デバッグ用です。
+`material.json` を渡すとその material で lowering します(文書に material が複数あれば `material-name` も要ります)。
+
+**`--project <dir>`(✅G-4)** を先頭に付けると、`<dir>/project.json` の `basic_config.rendering_config_json` が指す rendering
+文書を読み、その root の `material_route_default` で lowering します(engine が起動時に読むのと同じ値。
+[project の既定を読む所](../../src/devcli/materialcommand.cpp#L33))。`"forward"` の project では automatic な material の `route:` 行が
+`reason=default_forward` になります([第6章 §6.7](06_rendering.md))。付けなければ `"auto"` です。この option にはまだ test がありません。
 
 ### `pelican_cli dist-config <project> [--with rpc,seqplayer] [--out <file>]`(✅WP41)
 

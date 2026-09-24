@@ -24780,6 +24780,112 @@ material pass の追加(G-1)/ shadow・SSAO の雛形 / Studio 内の shader エ
   3. swapchain → display の正規化の下で `clear_colors` の鍵がどうなるかは未確認
   4. 保存した後も form は同じ名前を持ったまま
 
+### G-2: Outliner から形を置く —— Add object(Empty / Cube / Plane / Sphere)(第二段階。engine の基本形は別 session の GP-5)
+
+**下段(Studio のみ)。実装者: Claude(Opus)。第二の流儀を作らない: 生成は既存の scene 編集 `edit` の `spawn` op を 1 回。engine に新しい op は足さない。**
+
+#### 前提(2026-09-24、develop。GP-5 = 702c8346 着地済み)
+- 基本形の参照: component `simplemodelview` の field `model` に `"engine://primitives/cube"` / `plane` / `sphere`(大小文字を区別。未知は `model.primitive_unknown@1`)。既定の material は灰色の OpenPBR(`pelican.primitive.default`)。asset_data に登録しなくても解決する
+- spawn の形: `{"op":"spawn","scene_id":"default_scene","object":{"name":"Cube","components":[{"name":"transform",...},{"name":"simplemodelview","model":"engine://primitives/cube"}]}}`。undo / redo で同じ ID に戻るのは既存の保証。保存した scene にもこの形で残る
+- 注意: scene を開き直した直後は 1 frame 進めるまで model が capture に写らない(既存)。blank 雛形には mesh を描く pass が無いので、cube を置いても描く pass(G-1 の material pass)を組むまで画面に出ない
+- `list_assets` / `get_component_add_candidates` に 3 種を出すのは別 session の GP-5b(進行中)。**G-2 はそれに依存しない形で作る**(選択肢は Studio 側の固定の 3 種 + 既存の候補)
+- Outliner の key は今 declaration_index で、authoring id への切り替えは OL-1(別 session の engine 側が先)—— G-2 では触らない
+
+#### 決定
+1. **Outliner の右クリックと toolbar に「Add object」**: Empty / Cube / Plane / Sphere。選ぶと `spawn` を 1 回送る。名前は種類から自動(`Cube`、既にあれば Blender 式の連番)。transform は原点(選択中の object の子にはしない。reparent は OL-1)
+2. **生成後は新しい object を選択**し、Inspector に出す。viewport の gizmo もその object に
+3. **Inspector の model 欄**: `simplemodelview` の `model` を編集するとき、選択肢に 3 種の基本形を出す(GP-5b の候補と重複させない)
+4. automation: シナリオ `add_primitive_object`: blank project(F-2)→ Add object → Cube → Outliner に `Cube` → Inspector に基本形 → Add material pass…(G-1、Forward opaque、Create missing)→ present が scene_color を読む(F-6)→ viewport に灰色の箱 → もう一度 Add object → Cube → 連番の名前
+   - G-4 が未着地なので、forward だけの構成で既定の material の route(deferred_geometry)を受ける pass が無いと起動で落ちる可能性がある。落ちるなら迂回して報告に書く(G-4 で消す)
+
+#### 受け入れ(§4 規約 10)
+1. widget test: Add object → Cube で送られる `edit` が `spawn` 1 回、components に transform と `simplemodelview.model = engine://primitives/cube`、名前が `Cube`、2 回目は連番(対照: 連番を外す変異で赤)
+2. Inspector の model の選択肢に 3 種がある
+3. シナリオ `add_primitive_object` が緑(迂回した step があれば報告)
+4. 触った面の既存 test(Outliner / Inspector 関連)とシナリオが緑。非 GPU 全数は統合側でまとめて
+5. 報告にテキスト入力の欄の一覧(F 系列の共通規約)
+
+#### やらないこと
+delete / duplicate / reparent(OL-1。engine の op 契約待ち)/ Outliner の key の変更 / material の差し替え UI。
+
+#### 着地(2026-09-24、fb2960e0)
+- **Add Object**: 1 つの menu(`pelican.outliner.addObjectMenu`)を Outliner の右クリックと新しい **Scene** toolbar(`pelican.sceneToolbar`、button `pelican.outliner.addObjectButton`)の両方が出す。項目は Empty / Cube (built-in) / Plane (built-in) / Sphere (built-in)(action `pelican.outliner.addObject.{empty,cube,plane,sphere}`)。scene は選択中の object の scene、無ければ engine が最初に言った scene。親は付けない
+- **送るもの**: scene の `edit` 1 回に `spawn` op 1 つ(transform は原点、形なら `simplemodelview.model = engine://primitives/<kind>`)。coalesce key を付けないので Undo 1 回で Add 1 回が戻る。Inspector の別の編集が進行中なら断る
+- **名前(起票からの逸脱)**: `Cube`、次は **`Cube_001`**(Blender の最小の空き番号。scene の object 名は `[a-zA-Z0-9_]` だけなので `.` ではなく `_`)。Outliner にまだ出ていない直前の spawn の名前も使用中に数える
+- **選択**: Outliner の refresh を最短間隔に縮め、新しい object が Outliner に出た時点で選択し Inspector に出す
+- **Inspector の model 欄**: `simplemodelview.model` は打つ欄から選ぶ欄(`pelican.inspectorModelChoice`)になった。並びは基本形 3 つ(名前で)→ 区切り → `list_assets` が言う project の model(engine の基本形は二重に出さない)→ 今の値がどれでもなければその値。選ぶとすぐ commit。Add component の選択肢も同じ読み方(`[builtin]` の札なし)。テキスト入力の欄が 1 つ減った
+- **シナリオ `add_primitive_object`**: 着地時は forward だけの pipeline で箱が描かれなかったので **Deferred geometry の material pass を足し present が `gbuffer_albedo` を読む**形で迂回した(G-4 がその理由を見つけて forward に戻した。今は 57 step)。最後に scene を保存し、閉じるときの確認が出ないようにする
+- **test**: `devstudio_inspector_test`(Add object が spawn を 1 回、種類の名前と components / 2 回目は `Cube_001` / model の選択肢に基本形が 1 回ずつ)/ シナリオ
+- **変異**: 連番を外す → 赤 / 重複除去を外す → 赤
+- **記録した穴**:
+  1. engine が断った名前は、その Studio の run の間は次の候補から外れたまま
+  2. spawn は Studio が最後に見た revision で送る。他の client の編集の後は `stale_revision` になり、もう一度押す
+  3. Add Object は常に押せ、engine の準備ができていなければ status bar で言う
+  4. Empty / Plane / Sphere は単体 test だけ(シナリオは Cube)
+
+### G-4: forward だけの構成が組める —— 既定の route を pipeline が宣言し、受け皿の無い material を編集時に名前付きで拒否する(第二段階。v2: 敵対レビューの FATAL 2 / MAJOR 6 を反映)
+
+**上段(engine の material lowering と検証に触る)。実装者: Claude(Opus)。第二の流儀を作らない: route を決めるのは今日の `routeMaterial` の `render_path` の仕組みのまま。新しいのは「automatic の material にどの render_path を当てるか」を rendering 文書が宣言できることだけ。**
+
+**起票の経緯**: 初版の起票は敵対レビューで FATAL 2 / MAJOR 6 を受けた。指摘の中身は、engine の組込 material を数えていない / ticket の経路で名前付き code を運ぶ手段が無い / 検査が前世代の消費だけを見る / `deferred` 値を置く理由が無い(落とした)/ 既定を読む時点(snapshot)/ pass と既定を 1 回の ticket で保存する / Studio に再起動の経路が無い。v2 はこれらを下の前提と決定に反映したもの。
+
+#### 前提(2026-09-24、develop。調査 + レビューで確認済み)
+- route は material の lowering 時に決まり shader 契約も固定(`src/project/materiallowering.cpp` の `routeMaterial`)。`render_path` は auto / deferred / forward。project / pipeline 単位の既定は無い。glTF の material と GP-5 の `pelican.primitive.default` は automatic → opaque は deferred_geometry
+- pass の受け入れは route と shader 契約の完全一致(`materialPassAcceptsMaterial`)
+- 受け皿が無いと登録時に throw(`materialgenerationplanner.cpp`、登録単位で最初の 1 件で止まる)。反映時の拒否は `resolveLiveMaterialBindings` で、**前世代が消費していた route の消失だけ**を拒否する —— 最初から forward だけにする場面は commit が通り、次の open で fatal
+- 反映時の throw は renderer で文字列に潰され、editor は `render_pipeline_preflight_failed` で返す。名前付き code を文字列の先頭で運ぶ前例: `editor_preview_unsupported@1`
+- **engine の組込 material がある**: `mat_transparent`(既定 route = deferred_geometry / gbuffer_v1、`prepareRuntimeModules` の pass 登録後に構築)、`seqplayer.cpp` の組込 sphere、`gltf.cpp` の skinned fallback。いずれも名前が空で、拒否文では `<unnamed>`。forward 版の std_frag は runtime compiler が要る
+- `.material.json` の保存ごとに再 lowering し route 差を拒否する(`materialvaluesreloadhandler.cpp`)。lowering の外の呼び手: `devcli/materialcommand.cpp`、`imgui/planviewer.cpp`
+- Studio の engine 再起動の経路は project 切替専用(`embeddedviewport.cpp`)。`restart_required` を扱う所は無い
+
+#### 決定
+1. **`material_route_default`(rendering 文書の root の key)**: `"auto"`(既定。今日と byte 一致)/ `"forward"` の **2 値**(`deferred` は置かない)。automatic の material の lowering で、`forward` のとき既存の forward 経路で opaque → forward_opaque、透過 → forward_transparent。explicit な `render_path` が常に優先。dump の `reason=` は `default_forward`(`explicit_forward` と区別)
+   - 置けるのは direct root と preset root の root。preset の `config` 側・feature には置けない(置いたら名前付きで拒否)
+   - **値は engine 起動時に 1 回 snapshot** し、世代の publish では更新しない。読む所は 1 つ(`MaterialLoweringCapabilities` などの field)に集め、`devcli` と `planviewer` もそこから(CLI は project の rendering 文書を読む)
+2. **組込 material**: 名前を付ける(`pelican.builtin.transparent` など)。`forward` のとき **forward_opaque** で lowering し、forward 版の shader を runtime compiler で作る。**`PELICAN_RUNTIME_SHADER_COMPILER=OFF` の build で `forward` は名前付き拒否**(`material_route_default_unavailable@1`、reason)
+3. **受け皿の検査を 1 つの規則に**: 「pipeline に material pass が 1 つでもあるなら、登録済みの全 material(組込含む)に受け皿が要る」を、**編集 ticket の候補世代の検証でも**走らせる(前世代の消費の有無に関係なく)。全件を集めてから 1 回拒否
+   - code は `material_route_unserved@1`、fields: `unserved[]`(`route`, `shader_contract`, `materials[]`(名前と出所))、`hint`(route 別)
+   - ticket の経路では throw の message を `material_route_unserved@1: <JSON>` にし、completion handler が先頭の code を拒否の code に、本文を fields に写す(`editor_preview_unsupported@1` と同じ作法)
+   - load 時の fatal も同じ code と hint の文言(fatal のまま)。`devstudio_engine_failure_test` は code を読むように直す
+4. **設定と pass の追加を 1 回の ticket に**: `add_authored_pass` に任意の `material_route_default` を足し、fragment の作成と root の key の変更を**同じ候補文書集合**で preflight → 検証(3 は新しい既定で再計算した route で判定)→ commit。単独の変更は `set_material_route_default`(既存の root 編集 ticket に乗せる)。どちらも commit の結果に `restart_required: true`
+5. **Studio**
+   - G-1 の Add material pass… で Forward opaque を選び、pipeline に deferred_geometry を受ける pass が無いとき「この project の material を forward で描く」checkbox(既定 on)。Save は 4 の 1 回の ticket
+   - `restart_required` を受けたら**同じ project で engine を stop → start**。再起動中は Frame Plan の gate を閉じ、再起動中である旨を 1 行
+   - `material_route_unserved@1` は material 名と hint を notice に
+   - G-1 / G-2 の fixture の迂回(読まれない deferred の pass)を外す
+
+#### 受け入れ(§4 規約 10)
+1. lowering: `auto` は今日と byte 一致(`materiallowering_test` / `wp78_dump` 不変)/ `forward` で opaque glTF・`pelican.primitive.default`・組込が forward_opaque、透過が forward_transparent / explicit が既定に勝つ(対照: 既定を読まない変異で赤)
+2. GPU test: forward_opaque + present だけの direct root に `forward` で、基本形の cube が描ける(画素)。`auto` のままなら load が `material_route_unserved@1` で止まり、文言に route 別の hint と組込の名前
+3. 編集: 最初から forward だけにする add(`material_route_default` 無し)が `material_route_unserved@1` で拒否され文書は変わらない(**前世代に binding が無い場面**。対照: 検査を前世代の消費だけに戻す変異で commit して赤)/ `material_route_default: forward` 付きの add は commit し `restart_required: true` / runtime compiler OFF で `forward` が名前付き拒否
+4. Studio: checkbox 既定 on、Save が 1 回の ticket で `material_route_default` を運ぶ / `restart_required` で同じ project の engine が再起動して Frame Plan が戻る / 拒否の notice に material 名と hint
+5. 既存の `devstudio_engine_failure_test`(新 code)、`renderpipeline_resolve_test`、`featurecompose_test`、`renderconfigeditor_test`、material 値 reload の test が緑。G-1 のシナリオが迂回無しで緑。非 GPU 全数は統合側
+6. 報告にテキスト入力の欄の一覧
+
+#### やらないこと
+`deferred` の既定 / 新しい material_routing の policy / live の再 lowering(再起動で反映)/ material 単位の route の UI / deferred だけの構成での透過 material の救済。
+
+#### 着地(2026-09-24、135ab25a)
+- **G-2 の箱が黙って描かれなかった理由**: cube は material pass がまだ 1 つも無いうちに spawn されたので、登録時の検査は走らなかった(pass が無ければ検査しない)。その後 forward の pass を足す編集は、旧規則(前世代が消費していた route の消失だけを拒否)を通った。結果、cube の material(deferred_geometry)を受ける pass が無いまま commit し、何も言わずに描かれなかった
+- **engine**: rendering 文書の root の `material_route_default`(`"auto"` / `"forward"`、それ以外は名前付きで拒否)。automatic の material は `forward` で opaque → forward_opaque、blend / screen input → forward_transparent。explicit な `render_path` が勝つ。dump は `reason=default_forward`。direct root と preset root に置け、preset の `config` と feature では名前付きで拒否、合成した config には残さない
+- **snapshot(起票からの細部の逸脱)**: 値は **renderer を作るとき**(`Renderer::Renderer` → `ProjectBasicConfig::snapshotMaterialRouteDefault`)に 1 回読む。renderer の無い module 集合(loader・tool の test)では `auto` と読む。最初は必要になった時点で読む形にしたが、WP240c の test 2 本が壊れたのでこの形にした。plan viewer と `pelican_cli dump-lowered-material --project <dir>` も同じ `MaterialLoweringCapabilities` から読む
+- **組込 material**: 名前は `pelican.builtin.transparent`・`pelican.builtin.sphere`(sequence player)・`pelican.builtin.skinned_fallback`、それに起票の 3 つの外で **material を持たない glTF primitive の `pelican.builtin.default`**(コードで確認)。`forward` では空の standard surface を runtime compiler で forward_opaque に lowering する。runtime compiler の無い build では `forward` を `material_route_default_unavailable@1`(`value`・`reason: runtime_shader_compiler_disabled`)で断る(RPC では ticket の前、load では fatal)
+- **受け皿の検査**: `MaterialGenerationPlanner::requireEveryMaterialServed` が候補世代の反映の最初に、登録済みの全 material を候補の既定で再計算した route で見て、足りない route ごとにまとめて `material_route_unserved@1` を 1 回投げる。fields は `rendering_config`・`unserved[]`(`route`・`shader_contract`・`materials[]`(`name`・`origin` = `builtin` / `document` / `asset` / `unknown`・`source`)・`hint`)・`hint`(route ごとの hint を `; ` で連ねたもの)
+- **code の運び方(起票からの逸脱)**: renderer の文字列の経路に `<code>: <JSON>` で載せ、completion handler が code を拒否の code に戻す。fields は他の拒否と同じく **`error` の直下に平らに**(`ticket`・`participant` の横)置く。message は読める文(load の fatal と同じ文)
+- **load**: 同じ code・同じ hint の読める文で fatal のまま
+- **RPC**: `add_authored_pass` の任意の `material_route_default` は pass と同じ候補文書集合に入り、**今の値と違うときだけ** `restart_required: true`。`set_material_route_default`(`base_source_digest`・`material_route_default`)は root 編集の ticket に乗り、受理されれば commit の結果に `restart_required: true`
+- **commit〜再起動の間(起票からの細部の逸脱)**: route が変わる material は live の再計画から外し(再起動までは今の pipeline のまま)、受け皿の検査は再計算した route で判定する
+- **Studio**: Add material pass... の form に checkbox **Draw this project's materials with forward**(`pelican.materialPassForm.forwardDefault`)。Contract が Forward opaque で、pipeline に `deferred_geometry_v1` / `legacy_gbuffer_v1` の material pass が無いときだけ出て、既定 on。on なら notice に「pass と設定は一緒に保存され、engine が再起動する」旨が足される。`restart_required` を受けると Frame Plan の status 行に `Restarting the engine to apply the material route setting...` を出し、`EmbeddedViewport::restartEngine` が同じ project で engine を止めて起動し直す(gate はすぐ閉じる)。`material_route_unserved@1` は `The engine refused the pass: No pass draws the <route> route, which <名前> take(s). To fix: <hint>.` の 1 文(組込には `(engine built-in)`)
+- **fixture とシナリオ**: `studio_material_pass_authoring` の迂回の pass 2 つを外した。`material_pass_authoring` は checkbox が出て on であること・再起動の行・root に `material_route_default` が書かれたことを見る(43 step)。`add_primitive_object` は forward に戻り、2 回目の Save の前に Inspector が `Cube_001` を読み終えるのを待つ step が増えた(再起動後は Inspector の編集 session が新しく、Save は idle を待つため)
+- **test**: `materiallowering_test`(`auto` は不変、wp78 の dump 含む / `forward` で glTF・基本形・組込 / explicit が勝つ)/ `engine_primitives_test`(GPU: forward だけの direct root が cube を描く / 既定が無ければ load が名前で止まる)/ `renderconfigeditor_test`(走っている renderer を通した編集が、前に何も消費していなくても拒否される / 既定付きの add が `restart_required` で commit / 普通の add は再起動を言わない / `set_material_route_default` / runtime compiler OFF の拒否)/ `renderpipeline_resolve_test`(root の key の検証と合成に残らないこと / feature の拒否 / 文字列経路の往復)/ `devstudio_frameplan_graph_test`(form の checkbox / Save の payload / 拒否の notice)/ `devstudio_engine_failure_test`(新 code)/ シナリオ 2 本
+- **変異**: 既定を読まない / 検査を旧規則に戻す / 候補の既定を無視する —— どれも赤
+- **記録した穴**:
+  1. 再起動で、保存していない scene の編集は確認なしに失われる
+  2. commit〜再起動の間に登録された material は古い既定で lowering される
+  3. RT の段階的な publish は snapshot の既定で判定することがある
+  4. `pelican_cli dump-lowered-material --project` に test が無い
+  5. `devstudio_engine_failure_test` は Debug で fatal まで届かない(asset の検証に約 18 秒かかり、Studio の停止待ちの窓を越える)。player 自身は新しい code を出す
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**

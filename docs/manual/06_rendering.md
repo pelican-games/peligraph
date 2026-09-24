@@ -57,6 +57,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `draw_sort` | object | 描画順ポリシー(後述「描画順ポリシー」)✅WP183/184 |
 | `graph_transforms` | 配列 | 論理グラフ全体を変換する provider の順序付き chain(後述「差し替えプロバイダの入口」)✅WP202a |
 | `render_strategy` | object | renderer の seed config そのものを生成する provider の選択(同上)✅WP202b |
+| `material_route_default` | string | automatic な material に当てる route の既定。`"auto"`(省略時)/ `"forward"`(§6.7「material の route の既定」)✅G-4 |
 
 このほか `target_planning`(§6.6)、`vulkan_plan_pins` / `vulkan_physical_fragments`(§6.6)、`xr`(§6.12)もトップレベルキーです。
 
@@ -2069,6 +2070,52 @@ rangeへ`material_range`を後段適用します。
   flat、preview、sequential XR、multiviewでも同じlogical variant指定が保持されます。
 
 GPU への経路は params 宣言順の std140 レイアウト → set 2 binding 6 の `MaterialBuffer` SSBO です。値の同レイアウト・ホットリロードも効きます(✅WP105)。`pelican_cli dump-lowered-material <surface>` で生成物(lowered GLSL・レイアウト)を確認できます。
+
+### material の route の既定 `material_route_default`(✅G-4)
+
+material は lowering のときに **route**(どの種類の material pass が描くか)が決まります
+([route を決める `routeMaterial()`](../../src/project/materiallowering.cpp#L294))。`.material.json` の `render_path` が `"auto"`
+(省略時)の material、glTF の material、基本形の既定の material `pelican.primitive.default`、engine の組込 material は
+**automatic** で、blend か screen input を持てば `forward_transparent`、それ以外はほぼ `deferred_geometry` です(custom の
+lighting / ambient / BRDF hook を持つ opaque で deferred に載らないものは `forward_opaque`)。
+
+rendering 文書の root に `material_route_default` を置くと、automatic な material に当てる route を project 全体で変えられます。
+
+| 値 | automatic な material の route |
+|---|---|
+| `"auto"`(省略時と同じ) | 上の規則のまま(key が無かったときと byte 一致) |
+| `"forward"` | opaque → `forward_opaque`、blend または screen input → `forward_transparent`(`render_path: "forward"` と同じ規則) |
+
+- `render_path` を明示した material には効きません(明示が常に勝ちます)。`pelican_cli dump-lowered-material` の `route:` 行は、
+  既定で forward になった material を `reason=default_forward` と書きます(明示の forward は `explicit_forward`)。
+  CLI に `--project <dir>` を付けると、その project の rendering 文書の既定で lowering します([第10章](10_tools.md))。
+- **書ける場所は root だけ**です: preset を選ばない direct root と、preset を選ぶ root(`pelican.graph` root なら `rendering` の下)。
+  preset 文書の `config` と feature に書くと名前付きで断られます(`render pipeline preset config cannot own material_route_default` /
+  `render feature cannot declare material_route_default`)。値が `"auto"` / `"forward"` 以外なら
+  `rendering config material_route_default must be "auto" or "forward"` です
+  ([`readMaterialRouteDefault()`](../../src/project/renderpipeline.cpp#L654))。合成した config には残りません。
+- **engine は起動時に 1 回だけ読みます**(renderer を作るとき。[起動時の snapshot](../../src/core/vkcore/renderer.cpp#L3085))。
+  起動後に文書を書き換えても、編集 RPC で変えても、engine を起動し直すまで効きません。編集 RPC は `restart_required: true` を返し、
+  Studio はそれを受けて engine を再起動します([第13章](13_editor.md) §13.5)。renderer を持たない構成(loader や tool の test)では
+  `"auto"` と読みます。
+- engine の組込 material には名前があり、拒否の文に出ます: `pelican.builtin.transparent`(透過の fallback)・
+  `pelican.builtin.sphere`(sequence player の球)・`pelican.builtin.skinned_fallback`(material の無い skinned primitive)・
+  `pelican.builtin.default`(material の無い glTF primitive)
+  ([`StandardMaterialResource::builtinMaterialInfo()`](../../src/core/material/standardmaterialresource.cpp#L171))。
+  `"forward"` のとき組込は `forward_opaque` で描かれ、その forward 版の shader は runtime shader compiler で作ります。
+  **runtime shader compiler の無い build(`PELICAN_RUNTIME_SHADER_COMPILER=OFF`)では `"forward"` は使えず**、load は
+  `material_route_default_unavailable@1` で止まります。
+
+**受け皿の規則**: pipeline に material pass が 1 つでもあるなら、登録済みのすべての material(組込を含む)に、その route と
+shader 契約を受ける pass が要ります。material pass が 1 つも無い pipeline(RT だけの graph など)は material を描かないので
+検査しません。受け皿が無いと load は `material_route_unserved@1` の fatal で止まり、文は route と shader 契約・material の
+名前と出所(組込は `(engine built-in)`)・直し方の hint を言います([load 時の fatal の文](../../src/core/material/materialgenerationplanner.cpp#L249))。
+たとえば forward の pass だけの pipeline を `"auto"` のまま起動すると、
+`material_route_unserved@1: rendering config '<参照>' has no material pass for route 'deferred_geometry' (gbuffer_v1), needed by '<名前>' ...
+Hint: set material_route_default to "forward" on the rendering config root, or add a deferred_geometry_v1 material pass`
+の形で止まります。編集 RPC は同じ規則を編集の候補にも当て、同じ code で断ります([第13章](13_editor.md) §13.5)。forward の pass
+だけで組むときは `"forward"` を置けば automatic な material が forward の pass に集まります。ただし blend の material が
+あれば、`forward_transparent_v1` の pass も要ります(deferred だけの構成で透過 material を救う仕組みはありません)。
 
 ### OpenPBR — 第 3 の標準サーフェス(✅WP116/117)
 
