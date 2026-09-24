@@ -147,6 +147,7 @@ DECLARE_MODULE(MaterialContainer) {
         MaterialShaderContract shader_contract = MaterialShaderContract::gbuffer_v1;
         std::optional<MaterialOutputSchema> output_schema;
         std::optional<std::string> exact_pass;
+        std::optional<MaterialDefaultRoutes> default_routes;
         using PassInput = MaterialPassInputState;
         std::vector<PassInput> pass_inputs;
         std::vector<ShaderResourceInterfaceBinding>
@@ -229,6 +230,10 @@ DECLARE_MODULE(MaterialContainer) {
     std::unordered_map<std::string, PipelineHandle> pipelines;
     std::optional<PipelineHandle> default_pipeline;
     ResourceContainer<GlobalMaterialId, InternalMaterialInfo> materials;
+    // G-4: the material_route_default declared by the render-pipeline
+    // candidate being validated or planned, while one is. Unset, the engine's
+    // start-time snapshot applies.
+    std::optional<MaterialRouteDefault> candidate_route_default;
     std::unordered_map<GlobalTextureId,
                        std::unordered_set<GlobalMaterialId, GlobalMaterialId::Hash>,
                        GlobalTextureId::Hash>
@@ -381,6 +386,29 @@ DECLARE_MODULE(MaterialContainer) {
     MaterialRuntimeGenerationReloadPlan
     prepareRuntimeGenerationReload(
         const RendererRuntimeGeneration &generation);
+    // G-4: while a render-pipeline candidate is compiled, validated and
+    // planned, the two calls above judge a material that follows the default
+    // by the route the candidate's material_route_default gives it. Such a
+    // material whose route changes is left alone until the engine restarts
+    // and lowers it again.
+    class CandidateRouteDefaultScope {
+        MaterialContainer &container_;
+        std::optional<MaterialRouteDefault> previous_;
+
+      public:
+        CandidateRouteDefaultScope(MaterialContainer &container,
+                                   MaterialRouteDefault value)
+            : container_{container},
+              previous_{container.candidate_route_default} {
+            container_.candidate_route_default = value;
+        }
+        ~CandidateRouteDefaultScope() {
+            container_.candidate_route_default = previous_;
+        }
+        CandidateRouteDefaultScope(const CandidateRouteDefaultScope &) = delete;
+        CandidateRouteDefaultScope &operator=(
+            const CandidateRouteDefaultScope &) = delete;
+    };
 
     bool isRenderRequired(const PassDefinition &pass, GlobalMaterialId material) const;
     GlobalMaterialId resolveMaterialForPass(

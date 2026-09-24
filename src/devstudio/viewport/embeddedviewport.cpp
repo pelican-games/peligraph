@@ -16,6 +16,7 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QTimer>
+#include <utility>
 #include <QVBoxLayout>
 
 #include <functional>
@@ -298,9 +299,14 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                         : engine_stop_reason_);
                 const auto failure =
                     engine_failure_model_.finishRun(exit_code);
+                // G-4: a restart Studio asked for said so when it began.
+                const bool announced =
+                    std::exchange(restart_unavailable_announced_, false);
                 if (!shutting_down_) {
-                    emit engineRpcBecameUnavailable(
-                        tr("The engine viewport process stopped."));
+                    if (!announced) {
+                        emit engineRpcBecameUnavailable(
+                            tr("The engine viewport process stopped."));
+                    }
                     if (failure) {
                         emit engineProcessExitedWithFailure(
                             failure->fatal_error_line);
@@ -480,6 +486,37 @@ void EmbeddedViewport::openProject(const QString &project_root) {
     }
     restart_after_stop_ = false;
     startEngine();
+}
+
+void EmbeddedViewport::restartEngine(const QString &reason) {
+    if (project_root_.isEmpty()) {
+        return;
+    }
+    if (!process_.isRunning()) {
+        restart_after_stop_ = false;
+        startEngine();
+        return;
+    }
+    // Nothing may be sent to an engine that is going away: the gate closes
+    // now. The stop itself waits for the event loop, because the caller is
+    // usually answering one of this engine's replies.
+    const bool was_ready = rpc_ready_;
+    rpc_ready_ = false;
+    readiness_request_ = 0;
+    restart_after_stop_ = true;
+    engine_stop_reason_ = reason;
+    status_->setText(reason);
+    QTimer::singleShot(0, this, [this, reason, was_ready]() {
+        if (!restart_after_stop_ || !process_.isRunning()) {
+            return;
+        }
+        if (was_ready) {
+            restart_unavailable_announced_ = true;
+            emit engineRpcBecameUnavailable(reason);
+        }
+        stopEngine();
+        status_->setText(reason);
+    });
 }
 
 const OutlinerObjectKey *EmbeddedViewport::selectedObject() const noexcept {

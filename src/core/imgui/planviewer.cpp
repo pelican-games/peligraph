@@ -1,6 +1,7 @@
 #include "planviewer.hpp"
 
 #include "../loader/pathresolver.hpp"
+#include "../material/material.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../../project/materialformat.hpp"
 #include "../../project/shadersourceresolver.hpp"
@@ -571,9 +572,11 @@ std::vector<LoweredMaterial> loadRuntimeMaterials() {
         const auto document = parseMaterialFormatJson(document_json, surfaces);
         for (const auto &material : document.materials) {
             if (!material.surface) continue;
-            lowered.push_back(lowerMaterial(material, surfaces.at(*material.surface)));
+            lowered.push_back(lowerMaterial(material, surfaces.at(*material.surface),
+                                            projectMaterialLoweringCapabilities()));
             for (auto &variant :
-                 lowerMaterialVariants(material, surfaces)) {
+                 lowerMaterialVariants(material, surfaces,
+                                       projectMaterialLoweringCapabilities())) {
                 lowered.push_back(std::move(variant.material));
             }
         }

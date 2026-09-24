@@ -16,6 +16,14 @@ namespace Pelican {
 
 namespace {
 
+std::string activeRenderingConfigReference() {
+    const auto *project_config =
+        FastModuleContainer::tryGet<ProjectBasicConfig>();
+    return project_config == nullptr
+               ? std::string{"<active rendering configuration>"}
+               : project_config->renderingConfigReference();
+}
+
 vk::Format resolveMaterialColorFormat(
     GlobalRenderTargetId target) {
     if (isConcreteRenderTarget(target)) {
@@ -238,43 +246,20 @@ resolveMaterialPipelineRenderingContract(
                 info.exact_pass);
     if (bindings.empty()) {
         if (rendering_passes.hasMaterialPasses()) {
-            const auto selected =
-                info.exact_pass
-                    ? " exact pass '" +
-                          *info.exact_pass + "'"
-                    : std::string{};
-            const auto material_name =
-                info.name.empty()
-                    ? std::string{"<unnamed>"}
-                    : info.name;
-            const auto source_asset =
-                info.source_asset.empty()
-                    ? std::string{}
-                    : " from asset '" +
-                          info.source_asset + "'";
-            const auto *project_config =
-                FastModuleContainer::tryGet<
-                    ProjectBasicConfig>();
-            const auto config_source =
-                project_config == nullptr
-                    ? std::string{
-                          "<active rendering configuration>"}
-                    : project_config
-                          ->renderingConfigReference();
-            throw std::runtime_error(
-                "material '" + material_name + "'" +
-                source_asset + " requires route '" +
-                std::string{
-                    materialRouteClassName(
-                        info.route)} +
-                "' with shader contract '" +
-                std::string{
-                    materialShaderContractName(
-                        info.shader_contract)} +
-                "', but rendering config '" +
-                config_source +
-                "' has no compatible registered material pass" +
-                selected);
+            // G-4: the same rule, code and hint as an edit ticket's
+            // candidate check; at load it stays fatal, in readable text.
+            auto text = materialRouteUnservedText(
+                {UnservedMaterialRoute{
+                    info.route, info.shader_contract,
+                    {describeUnservedMaterial(
+                        info.name, info.source_document,
+                        info.source_asset)}}},
+                activeRenderingConfigReference());
+            if (info.exact_pass) {
+                text += " (the material selects exact pass '" +
+                        *info.exact_pass + "')";
+            }
+            throw std::runtime_error(text);
         }
         return defaultMaterialPipelineRenderingContract(
             info.shader_contract,
@@ -696,43 +681,136 @@ materialBindingsForGeneration(
     return bindings;
 }
 
-std::optional<std::vector<MaterialPassRenderingBinding>>
-resolveLiveMaterialBindings(
+static bool generationHasMaterialPasses(
+    const RendererRuntimeGeneration &generation) {
+    for (const auto rendering_pass_id :
+         generation.rendering_pass_ids) {
+        const auto *program =
+            generation.find(rendering_pass_id);
+        if (program == nullptr) {
+            throw std::logic_error(
+                "Render-pipeline candidate pass table is "
+                "inconsistent");
+        }
+        for (const auto &compiled :
+             program->rendering_pass.passes) {
+            if (compiled.definition.isMaterial()) return true;
+        }
+    }
+    return false;
+}
+
+static bool generationServesMaterial(
     const RendererRuntimeGeneration &generation,
-    const RendererRuntimeGeneration *previous,
-    GlobalMaterialId material_id,
     MaterialRouteClass route,
     MaterialShaderContract shader_contract,
     const std::optional<std::string> &exact_pass) {
+    for (const auto rendering_pass_id :
+         generation.rendering_pass_ids) {
+        const auto *program =
+            generation.find(rendering_pass_id);
+        if (program == nullptr) continue;
+        for (const auto &compiled :
+             program->rendering_pass.passes) {
+            const auto &pass = compiled.definition;
+            if (pass.isMaterial() &&
+                materialPassAcceptsMaterial(
+                    pass.materialInfo().contract, pass.name,
+                    route, shader_contract, exact_pass)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+std::optional<std::vector<MaterialPassRenderingBinding>>
+MaterialGenerationPlanner::resolveLiveMaterialBindings(
+    const MaterialContainer &container,
+    const RendererRuntimeGeneration &generation,
+    const MaterialContainer::InternalMaterialInfo &material) {
+    // A material the candidate's material_route_default moves to another
+    // route keeps its live pipeline until the restart lowers it again;
+    // requireEveryMaterialServed already judged it by its new route.
+    if (!candidateRoute(container, material).live) {
+        return std::nullopt;
+    }
     auto bindings = materialBindingsForGeneration(
-        generation, route, shader_contract,
-        exact_pass);
+        generation, material.route,
+        material.shader_contract, material.exact_pass);
     if (!bindings.empty()) {
         return bindings;
     }
-    // A registered material need not be drawn by this graph (for example an
-    // RT-only project). Preserve that state, but reject removal of a route
-    // which the published graph did consume. With nothing published yet (a
-    // ray-tracing startup generation stays staged until its first submitted
-    // frame, and a window output that appears first re-lowers it) no route
-    // was consumed, so there is nothing to remove.
-    if (previous == nullptr ||
-        materialBindingsForGeneration(
-            *previous, route, shader_contract,
-            exact_pass)
-            .empty()) {
+    // G-4: the same rule as registration. A graph with no material pass at
+    // all (an RT-only project) legitimately draws no material; a graph with
+    // one must serve every registered material, whether or not the published
+    // graph did. MaterialGenerationPlanner::requireEveryMaterialServed names
+    // every such material first; this is the per-material backstop.
+    if (!generationHasMaterialPasses(generation)) {
         return std::nullopt;
     }
-    throw std::runtime_error(
-        "render-pipeline candidate has no compatible "
-        "pass for live material " +
-        std::to_string(material_id.value) +
-        " (route '" +
-        std::string{materialRouteClassName(route)} +
-        "', shader contract '" +
-        std::string{materialShaderContractName(
-            shader_contract)} +
-        "')");
+    throw std::runtime_error(materialRouteUnservedMessage(
+        {UnservedMaterialRoute{
+            material.route, material.shader_contract,
+            {describeUnservedMaterial(material.name,
+                                      material.source_document,
+                                      material.source_asset)}}},
+        activeRenderingConfigReference()));
+}
+
+MaterialGenerationPlanner::CandidateRoute
+MaterialGenerationPlanner::candidateRoute(
+    const MaterialContainer &container,
+    const MaterialContainer::InternalMaterialInfo &material) {
+    if (!material.default_routes) {
+        return {material.route, material.shader_contract, true};
+    }
+    const auto route_default =
+        container.candidate_route_default.value_or(
+            projectMaterialLoweringCapabilities().route_default);
+    const auto route = material.default_routes->under(route_default);
+    if (route == material.route) {
+        return {material.route, material.shader_contract, true};
+    }
+    return {route, materialShaderContractForRoute(route), false};
+}
+
+void MaterialGenerationPlanner::requireEveryMaterialServed(
+    const MaterialContainer &container,
+    const RendererRuntimeGeneration &generation) {
+    if (!generationHasMaterialPasses(generation)) return;
+    std::vector<UnservedMaterialRoute> unserved;
+    container.materials.forEach(
+        [&](GlobalMaterialId,
+            const MaterialContainer::InternalMaterialInfo &material) {
+            // A candidate that declares a new material_route_default is
+            // judged by the routes the restart will lower materials to.
+            const auto candidate = candidateRoute(container, material);
+            if (generationServesMaterial(
+                    generation, candidate.route,
+                    candidate.shader_contract,
+                    material.exact_pass)) {
+                return;
+            }
+            auto entry = std::find_if(
+                unserved.begin(), unserved.end(),
+                [&](const UnservedMaterialRoute &existing) {
+                    return existing.route == candidate.route &&
+                           existing.shader_contract ==
+                               candidate.shader_contract;
+                });
+            if (entry == unserved.end()) {
+                unserved.push_back(
+                    {candidate.route, candidate.shader_contract, {}});
+                entry = std::prev(unserved.end());
+            }
+            entry->materials.push_back(describeUnservedMaterial(
+                material.name, material.source_document,
+                material.source_asset));
+        });
+    if (unserved.empty()) return;
+    throw std::runtime_error(materialRouteUnservedMessage(
+        unserved, activeRenderingConfigReference()));
 }
 
 std::vector<MaterialPassShaderInputBinding>
@@ -1050,18 +1128,14 @@ MaterialGenerationPlanner::liveRenderingContract(
 void MaterialGenerationPlanner::validateCompatibility(
     const MaterialContainer &container,
     const RendererRuntimeGeneration &generation) {
-    const auto previous =
-        GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+    requireEveryMaterialServed(container, generation);
     container.materials.forEach(
         [&](GlobalMaterialId material_id,
             const MaterialContainer::InternalMaterialInfo
                 &material) {
             const auto bindings =
                 resolveLiveMaterialBindings(
-                    generation, previous.get(),
-                    material_id, material.route,
-                    material.shader_contract,
-                    material.exact_pass);
+                    container, generation, material);
             if (!bindings) return;
 
             const auto live =
@@ -1123,10 +1197,10 @@ MaterialGenerationPlanner::prepareReload(
     const RendererRuntimeGeneration &generation) {
     using InternalMaterialInfo =
         MaterialContainer::InternalMaterialInfo;
-    // Called inside the renderer publication hook: compare against the live
-    // generation without reacquiring its publication mutex or selecting itself.
-    const auto previous =
-        GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+    // Called inside the renderer publication hook. G-4: the acceptance rule
+    // does not depend on the live generation; every registered material
+    // needs a pass whenever the candidate has any material pass.
+    requireEveryMaterialServed(container, generation);
     struct MetadataUpdate {
         GlobalMaterialId material;
         std::optional<MaterialOutputSchema>
@@ -1207,10 +1281,7 @@ MaterialGenerationPlanner::prepareReload(
             // lookup
             const auto bindings =
                 resolveLiveMaterialBindings(
-                    generation, previous.get(),
-                    material_id, material.route,
-                    material.shader_contract,
-                    material.exact_pass);
+                    container, generation, material);
             if (!bindings) return;
 
             const auto candidate_schema =

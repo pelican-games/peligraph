@@ -846,15 +846,7 @@ struct GeneratedMaterialRegistry {
             return material_infos.at(local_material_id);
         }
 
-        return MaterialInfo{
-            .vert_shader = std_mat.standardVertShader(),
-            .frag_shader = std_mat.standardFragShader(),
-            .base_color_texture = std_mat.whiteTexture(),
-            .metallic_roughness_texture = std_mat.metallicRoughnessDefaultTexture(),
-            .normal_texture = std_mat.normalDefaultTexture(),
-            .emissive_texture = std_mat.emissiveDefaultTexture(),
-            .occlusion_texture = std_mat.occlusionDefaultTexture(),
-        };
+        return std_mat.builtinMaterialInfo("default", std_mat.whiteTexture());
     }
 
     const std::byte *bufferViewData(const VatBufferViewSpan &span, size_t required_bytes) const {
@@ -910,13 +902,10 @@ struct GeneratedMaterialRegistry {
     ModelLocalMaterialId skinnedMaterial(int local_material_id) {
         if (const auto found = skinned_material_variants.find(local_material_id);
             found != skinned_material_variants.end()) return found->second;
-        auto info = local_material_id >= 0 ? material_infos.at(local_material_id) : MaterialInfo{
-            .vert_shader = std_mat.standardVertShader(), .frag_shader = std_mat.standardFragShader(),
-            .base_color_texture = std_mat.whiteTexture(),
-            .metallic_roughness_texture = std_mat.metallicRoughnessDefaultTexture(),
-            .normal_texture = std_mat.normalDefaultTexture(),
-            .emissive_texture = std_mat.emissiveDefaultTexture(),
-            .occlusion_texture = std_mat.occlusionDefaultTexture()};
+        auto info = local_material_id >= 0
+                        ? material_infos.at(local_material_id)
+                        : std_mat.builtinMaterialInfo("skinned_fallback",
+                                                      std_mat.whiteTexture());
         info.vert_shader = std_mat.skinnedVertShader();
         info.skinned = true;
         const auto generated = next_generated_material--;
@@ -2095,7 +2084,8 @@ struct InternalGltfLoader {
                 *definition.surface);
         const auto lowered =
             lowerMaterial(
-                definition, surface);
+                definition, surface,
+                projectMaterialLoweringCapabilities());
         const auto fragment_shader =
             compile_surface_shaders
                 ? std_mat.gltfFragmentShader(

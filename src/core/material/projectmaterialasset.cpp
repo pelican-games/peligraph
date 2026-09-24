@@ -10,6 +10,7 @@
 #include "../shader/shaderlibrary.hpp"
 #include "../watch/assetkey.hpp"
 #include "materialcontainer.hpp"
+#include "material.hpp"
 #include "materialshaderconfig.hpp"
 #include "projectmaterialtextureresolver.hpp"
 #include "standardmaterialresource.hpp"
@@ -341,10 +342,12 @@ ProjectMaterialAssetContainer::
             }
             auto lowered =
                 lowerMaterial(
-                    definition, found->second);
+                    definition, found->second,
+                    projectMaterialLoweringCapabilities());
             auto variants =
                 lowerMaterialVariants(
-                    definition, surfaces);
+                    definition, surfaces,
+                    projectMaterialLoweringCapabilities());
             prepared.push_back({
                 .document_index = document_index,
                 .definition =

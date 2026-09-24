@@ -107,6 +107,14 @@ std::string validateFeatureEnvelope(const nlohmann::json &feature, std::string_v
     if (feature.at("version").get<int>() != supported_feature_version) {
         throw std::runtime_error("render feature version is not supported: " + std::string{ref});
     }
+    // G-4: which route automatic materials take is a property of the whole
+    // project (read once at engine start), not of one composable feature.
+    if (feature.contains("material_route_default")) {
+        throw std::runtime_error(
+            "render feature cannot declare material_route_default; set it "
+            "on the rendering config root: " +
+            std::string{ref});
+    }
     return requireStringField(feature, "name", "render feature");
 }
 

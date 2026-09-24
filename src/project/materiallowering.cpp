@@ -284,18 +284,25 @@ MaterialRouteDecision automaticRoute(const SurfaceFormatDocument &surface,
             MaterialRouteReason::automatic_deferred_compatible};
 }
 
+MaterialRouteClass forwardRoute(const SurfaceFormatDocument &surface) {
+    const bool transparent = !surface.screen_inputs.empty() ||
+                             surface.render_state.blend != SurfaceBlendMode::opaque;
+    return transparent ? MaterialRouteClass::forward_transparent
+                       : MaterialRouteClass::forward_opaque;
+}
+
 MaterialRouteDecision routeMaterial(const MaterialDefinition &material,
                                     const SurfaceFormatDocument &surface,
-                                    const DeferredEligibility &eligibility) {
+                                    const DeferredEligibility &eligibility,
+                                    MaterialRouteDefault route_default) {
     if (material.render_path == MaterialRenderPath::automatic) {
+        if (route_default == MaterialRouteDefault::forward) {
+            return {forwardRoute(surface), MaterialRouteReason::default_forward};
+        }
         return automaticRoute(surface, eligibility);
     }
     if (material.render_path == MaterialRenderPath::forward) {
-        const bool transparent = !surface.screen_inputs.empty() ||
-                                 surface.render_state.blend != SurfaceBlendMode::opaque;
-        return {transparent ? MaterialRouteClass::forward_transparent
-                            : MaterialRouteClass::forward_opaque,
-                MaterialRouteReason::explicit_forward};
+        return {forwardRoute(surface), MaterialRouteReason::explicit_forward};
     }
     if (!surface.screen_inputs.empty()) {
         throw std::runtime_error("material '" + material.name +
@@ -540,9 +547,16 @@ LoweredMaterial lowerMaterial(const MaterialDefinition &material,
         }
     }
     lowered.deferred_eligibility = evaluateDeferredEligibility(material, surface);
-    const auto route = routeMaterial(material, surface, lowered.deferred_eligibility);
+    const auto route = routeMaterial(material, surface, lowered.deferred_eligibility,
+                                     capabilities.route_default);
     lowered.route = route.route;
     lowered.route_reason = route.reason;
+    if (material.render_path == MaterialRenderPath::automatic) {
+        lowered.default_routes = MaterialDefaultRoutes{
+            .automatic = automaticRoute(surface, lowered.deferred_eligibility).route,
+            .forward = forwardRoute(surface),
+        };
+    }
     lowered.exact_pass = material.exact_pass;
     lowered.target_pass = materialRouteClassName(route.route);
     if (lowered.route == MaterialRouteClass::deferred_geometry &&

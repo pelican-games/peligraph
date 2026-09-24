@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <stdexcept>
 #include <unordered_map>
@@ -637,8 +638,176 @@ std::string_view materialRouteReasonName(MaterialRouteReason reason) {
     case MaterialRouteReason::automatic_custom_lighting: return "automatic_custom_lighting";
     case MaterialRouteReason::explicit_deferred: return "explicit_deferred";
     case MaterialRouteReason::explicit_forward: return "explicit_forward";
+    case MaterialRouteReason::default_forward: return "default_forward";
     }
     return "unknown";
+}
+
+std::string_view materialRouteDefaultName(MaterialRouteDefault value) {
+    switch (value) {
+    case MaterialRouteDefault::automatic: return "auto";
+    case MaterialRouteDefault::forward: return "forward";
+    }
+    return "unknown";
+}
+
+MaterialRouteDefault readMaterialRouteDefault(
+    const nlohmann::json &rendering_section) {
+    if (!rendering_section.is_object()) return MaterialRouteDefault::automatic;
+    const auto found = rendering_section.find(materialRouteDefaultKey);
+    if (found == rendering_section.end()) return MaterialRouteDefault::automatic;
+    if (found->is_string()) {
+        const auto value = found->get<std::string>();
+        if (value == "auto") return MaterialRouteDefault::automatic;
+        if (value == "forward") return MaterialRouteDefault::forward;
+    }
+    throw std::runtime_error(
+        "rendering config material_route_default must be \"auto\" or "
+        "\"forward\": " + found->dump());
+}
+
+UnservedMaterial describeUnservedMaterial(std::string_view name,
+                                          std::string_view source_document,
+                                          std::string_view source_asset) {
+    UnservedMaterial material;
+    material.name = name.empty() ? std::string{"<unnamed>"} : std::string{name};
+    if (name.starts_with(builtinMaterialNamePrefix)) {
+        material.origin = "builtin";
+    } else if (!source_document.empty()) {
+        material.origin = "document";
+        material.source = std::string{source_document};
+    } else if (!source_asset.empty()) {
+        material.origin = "asset";
+        material.source = std::string{source_asset};
+    } else {
+        material.origin = "unknown";
+    }
+    return material;
+}
+
+std::string materialRouteUnservedHint(MaterialRouteClass route) {
+    switch (route) {
+    case MaterialRouteClass::forward_opaque:
+        return "add a forward_opaque_v1 material pass";
+    case MaterialRouteClass::deferred_geometry:
+        return "set material_route_default to \"forward\" on the rendering "
+               "config root, or add a deferred_geometry_v1 material pass";
+    case MaterialRouteClass::forward_transparent:
+        return "add a forward_transparent_v1 material pass";
+    }
+    return "add a material pass for this route";
+}
+
+nlohmann::json materialRouteUnservedFields(
+    const std::vector<UnservedMaterialRoute> &unserved,
+    std::string_view rendering_config) {
+    auto entries = nlohmann::json::array();
+    std::string hint;
+    for (const auto &route : unserved) {
+        auto materials = nlohmann::json::array();
+        for (const auto &material : route.materials) {
+            nlohmann::json entry{{"name", material.name},
+                                 {"origin", material.origin}};
+            if (!material.source.empty()) entry["source"] = material.source;
+            materials.push_back(std::move(entry));
+        }
+        const auto route_hint = materialRouteUnservedHint(route.route);
+        entries.push_back({
+            {"route", materialRouteClassName(route.route)},
+            {"shader_contract", materialShaderContractName(route.shader_contract)},
+            {"materials", std::move(materials)},
+            {"hint", route_hint},
+        });
+        if (!hint.empty()) hint += "; ";
+        hint += std::string{materialRouteClassName(route.route)} + ": " + route_hint;
+    }
+    return {
+        {"rendering_config", std::string{rendering_config}},
+        {"unserved", std::move(entries)},
+        {"hint", std::move(hint)},
+    };
+}
+
+std::string materialRouteUnservedMessage(
+    const std::vector<UnservedMaterialRoute> &unserved,
+    std::string_view rendering_config) {
+    return std::string{materialRouteUnservedCode} + ": " +
+           materialRouteUnservedFields(unserved, rendering_config).dump();
+}
+
+std::string materialRouteUnservedText(const nlohmann::json &fields) {
+    std::string text{materialRouteUnservedCode};
+    text += ": rendering config '" +
+            fields.value("rendering_config", std::string{}) +
+            "' has no material pass for";
+    bool first_route = true;
+    for (const auto &route : fields.value("unserved", nlohmann::json::array())) {
+        text += first_route ? " " : "; ";
+        first_route = false;
+        text += "route '" + route.value("route", std::string{}) + "' (" +
+                route.value("shader_contract", std::string{}) + "), needed by";
+        bool first_material = true;
+        for (const auto &material :
+             route.value("materials", nlohmann::json::array())) {
+            text += first_material ? " " : ", ";
+            first_material = false;
+            text += "'" + material.value("name", std::string{}) + "'";
+            const auto origin = material.value("origin", std::string{});
+            const auto source = material.value("source", std::string{});
+            if (origin == "builtin") {
+                text += " (engine built-in)";
+            } else if (!source.empty()) {
+                text += " (" + origin + " '" + source + "')";
+            }
+        }
+        text += ". Hint: " + route.value("hint", std::string{});
+    }
+    return text;
+}
+
+std::string materialRouteUnservedText(
+    const std::vector<UnservedMaterialRoute> &unserved,
+    std::string_view rendering_config) {
+    return materialRouteUnservedText(
+        materialRouteUnservedFields(unserved, rendering_config));
+}
+
+std::string materialRouteDefaultUnavailableMessage(std::string_view reason) {
+    return std::string{materialRouteDefaultUnavailableCode} + ": " +
+           nlohmann::json{
+               {"value", "forward"},
+               {"reason", std::string{reason}},
+               {"message",
+                "material_route_default \"forward\" needs the runtime shader "
+                "compiler to build the forward version of the engine's "
+                "built-in materials; this build has none"},
+           }
+               .dump();
+}
+
+std::optional<CodedRefusal> splitCodedRefusalMessage(std::string_view message) {
+    const auto separator = message.find(": ");
+    if (separator == std::string_view::npos) return std::nullopt;
+    const auto code = message.substr(0, separator);
+    const auto at = code.find('@');
+    if (at == std::string_view::npos || at == 0 || at + 1 == code.size()) {
+        return std::nullopt;
+    }
+    for (const auto ch : code.substr(0, at)) {
+        if (!(std::islower(static_cast<unsigned char>(ch)) ||
+              std::isdigit(static_cast<unsigned char>(ch)) || ch == '_' ||
+              ch == '.')) {
+            return std::nullopt;
+        }
+    }
+    for (const auto ch : code.substr(at + 1)) {
+        if (!std::isdigit(static_cast<unsigned char>(ch))) return std::nullopt;
+    }
+    const auto body = message.substr(separator + 2);
+    if (body.empty() || body.front() != '{') return std::nullopt;
+    auto fields = nlohmann::json::parse(body, nullptr, false);
+    if (fields.is_discarded() || !fields.is_object()) return std::nullopt;
+    return CodedRefusal{std::string{code}, std::move(fields)};
 }
 
 std::string_view deferredMaterialModelName(DeferredMaterialModel model) {
@@ -670,8 +839,17 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
     if (!authored_config.is_object()) {
         throw std::runtime_error("Rendering config must be an object");
     }
+    // G-4: the key is read once per engine start from the authored root
+    // (readMaterialRouteDefault). It is validated here so an edit ticket's
+    // preflight refuses a bad value, and it never reaches the composed config.
+    (void)readMaterialRouteDefault(authored_config);
     if (!authored_config.contains("pipeline")) {
-        return {authored_config, std::nullopt};
+        if (!authored_config.contains(materialRouteDefaultKey)) {
+            return {authored_config, std::nullopt};
+        }
+        auto stripped = authored_config;
+        stripped.erase(std::string{materialRouteDefaultKey});
+        return {std::move(stripped), std::nullopt};
     }
 
     const auto &pipeline = authored_config.at("pipeline");
@@ -715,6 +893,13 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
         throw std::runtime_error("render pipeline presets cannot recursively select a preset: " +
                                  reference);
     }
+    if (resolved.contains(materialRouteDefaultKey)) {
+        throw std::runtime_error(
+            "render pipeline preset config cannot own "
+            "material_route_default; set it on the rendering config root "
+            "that selects the preset: " +
+            reference);
+    }
 
     // Keep v1 deterministic.  Structural overrides use an explicit eject/copy
     // workflow so a preset update cannot silently reinterpret a deep merge.
@@ -725,7 +910,8 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
                      "vulkan_plan_pins",
                      "vulkan_physical_fragments", "xr",
                      "ray_group_layout", "ray_bindings", "scene_acceleration_structures",
-                     "ray_task_acceleration_structures", "ray_task_callable_records", "frame_node_order"},
+                     "ray_task_acceleration_structures", "ray_task_callable_records", "frame_node_order",
+                     "material_route_default"},
                     "rendering config using pipeline preset");
     for (const auto key : {"ray_group_layout", "ray_bindings", "scene_acceleration_structures",
                            "ray_task_acceleration_structures", "ray_task_callable_records", "frame_node_order"}) {

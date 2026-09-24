@@ -122,6 +122,9 @@ class RenderConfigEditorService {
         // there is no candidate to compile and nothing new to publish. It still
         // takes a ticket and the same CAS; it simply does not go to the runtime.
         bool source_only = false;
+        // G-4: the edit changes material_route_default, which the engine
+        // reads once at start. The committed result says restart_required.
+        bool restart_required = false;
     };
 
     struct ManagedDocumentBaseline {
@@ -205,7 +208,8 @@ class RenderConfigEditorService {
         RenderConfigCandidateDocumentSet candidate_documents,
         const std::string &reference,
         bool edits_additional_documents = false,
-        const AuthoredCandidateCheck &check = {});
+        const AuthoredCandidateCheck &check = {},
+        bool restart_required = false);
     nlohmann::ordered_json rejection(
         std::string code, std::string message,
         nlohmann::ordered_json details = nlohmann::ordered_json::object()) const;
@@ -235,6 +239,10 @@ class RenderConfigEditorService {
     nlohmann::ordered_json getComputeTaskAuthoring(const nlohmann::json &params) const;
     nlohmann::ordered_json getFrameNodeOrder(const nlohmann::json &params) const;
     nlohmann::ordered_json editFrameNodeOrder(const nlohmann::json &params);
+    // G-4: set the rendering root's material_route_default ("auto" or
+    // "forward") through the ordinary root-edit ticket. The committed result
+    // carries restart_required: true.
+    nlohmann::ordered_json setMaterialRouteDefault(const nlohmann::json &params);
     nlohmann::ordered_json editComputeTask(const nlohmann::json &params);
     nlohmann::ordered_json addComputeTask(const nlohmann::json &params);
     nlohmann::ordered_json removeComputeTask(const nlohmann::json &params);

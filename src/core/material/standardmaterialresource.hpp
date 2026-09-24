@@ -25,6 +25,13 @@ DECLARE_MODULE(StandardMaterialResource) {
     GlobalTextureId tex_metallic_roughness_default, tex_normal_default;
     GlobalTextureId tex_emissive_default;
     GlobalMaterialId mat_transparent;
+    // G-4: the fragment and route of the engine's built-in materials. With
+    // `material_route_default: "forward"` these are a runtime-compiled forward
+    // build of the standard fragment and forward_opaque; otherwise std_frag and
+    // deferred_geometry, as before.
+    ShaderBundleId builtin_frag;
+    MaterialRouteClass builtin_route =
+        MaterialRouteClass::deferred_geometry;
     std::vector<GltfFragmentShader>
         gltf_fragment_shaders;
 
@@ -56,6 +63,12 @@ DECLARE_MODULE(StandardMaterialResource) {
         const LoweredMaterial &lowered,
         std::vector<std::string> shader_defines);
     GlobalMaterialId standardTransparentMaterial() const { return mat_transparent; };
+    // G-4: a built-in material (the transparent fallback, the sequence
+    // player's sphere, a glTF primitive without a material) with the standard
+    // vertex shader, the default textures, the route the project's
+    // material_route_default selects, and a `pelican.builtin.<suffix>` name.
+    MaterialInfo builtinMaterialInfo(std::string_view suffix,
+                                     GlobalTextureId base_color_texture) const;
 };
 
 } // namespace Pelican

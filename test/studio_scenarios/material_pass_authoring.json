@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "material_pass_authoring",
-  "description": "G-1: Add material pass... on the Frame Plan adds a forward_opaque pass to a project with a model, Create missing targets makes scene_color and scene_depth in the same Save, and once present reads scene_color the model is on screen.",
+  "description": "G-1: Add material pass... on the Frame Plan adds a forward_opaque pass to a project with a model, Create missing targets makes scene_color and scene_depth in the same Save, and once present reads scene_color the model is on screen. G-4: the pipeline has no pass for deferred materials, so the form offers the forward default, checked; Save carries it with the pass and Studio restarts the engine on the same project.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -114,7 +114,22 @@
       "value": "stay declared"
     },
     {
-      "label": "Save: edit_render_targets, then add_authored_pass",
+      "label": "no pass takes deferred materials, so the form offers the forward default",
+      "cmd": "wait",
+      "name": "pelican.materialPassForm.forwardDefault",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "checked: the form says the engine restarts to apply it",
+      "expect": "result",
+      "command": {"cmd": "text", "name": "pelican.materialPassForm.notice"},
+      "path": "text",
+      "op": "contains",
+      "value": "the engine restarts"
+    },
+    {
+      "label": "Save: edit_render_targets, then one add_authored_pass carrying material_route_default",
       "cmd": "click",
       "name": "pelican.materialPassForm.ok"
     },
@@ -124,6 +139,26 @@
       "name": "pelican.materialPassForm.name",
       "visible": false,
       "timeout_ms": 10000
+    },
+    {
+      "label": "the commit asks for a restart, and Studio restarts the engine on the same project",
+      "cmd": "wait",
+      "name": "pelican.framePlanStatus",
+      "contains": "Restarting the engine",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the restarted engine answers editor RPC and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the root now routes the project's automatic materials forward",
+      "file": "contains",
+      "path": "{project}/passes/main.json",
+      "text": "material_route_default",
+      "value": true
     },
     {
       "label": "the engine declares scene_color, from the authoring fragment",
@@ -216,7 +251,7 @@
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
-      "path": "graphs[0].passes[3].root_declaration.input[0]",
+      "path": "graphs[0].passes[1].root_declaration.input[0]",
       "value": "scene_color",
       "retry_ms": 120000
     },

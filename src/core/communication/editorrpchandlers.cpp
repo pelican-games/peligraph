@@ -219,6 +219,9 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("edit_frame_node_order", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editFrameNodeOrder(params); });
     });
+    server.setHandler("set_material_route_default", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.setMaterialRouteDefault(params); });
+    });
     server.setHandler("get_graph_instances", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getGraphInstances(params); });
     });

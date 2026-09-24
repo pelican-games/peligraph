@@ -24,6 +24,7 @@
 #include "frameplangraphics.hpp"
 #include "frameplanwidget.hpp"
 #include "materialpassedit.hpp"
+#include "materialpassform.hpp"
 #include "shaderreloadfollower.hpp"
 #include "jsonrpcrequest.hpp"
 #include "taskconnectiongraphics.hpp"
@@ -69,6 +70,7 @@ TEST_CASE("Studio RPC preserves record values or refuses lossy integer transport
 #include <QAction>
 #include <QBrush>
 #include <QByteArray>
+#include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
 #include <QGraphicsItem>
@@ -8835,4 +8837,127 @@ TEST_CASE("G-1 Add material pass... makes the missing targets, then adds the "
         CHECK(shown.contains(QStringLiteral("gbuffer_albedo_2")));
     }
 }
+// --- G-4: a Forward opaque pass in a pipeline with no deferred pass.
+
+namespace {
+
+// A direct root whose only pass is `present`, with a forward pass's two
+// targets declared: what the G-1 fixture is once its probes are gone.
+FramePlanAuthoring g4PresentOnly() {
+    FramePlanAuthoring authoring;
+    authoring.received = true;
+    authoring.direct = true;
+    authoring.source_digest = RootDigest;
+    authoring.passes[{"main_render", "present"}].declaration =
+        Json{{"name", "present"}, {"type", "fullscreen"}};
+    authoring.order["main_render"] = {"present"};
+    authoring.anchors["main_render"] = {{0, "before:present"}, {1, "after:present"}};
+    authoring.render_targets["scene_color"].name = "scene_color";
+    authoring.render_targets["scene_depth"].name = "scene_depth";
+    return authoring;
+}
+
+MaterialPassFormValues g4ForwardValues(bool forward_default) {
+    MaterialPassFormValues values;
+    values.graph = "main_render";
+    values.insert = "before:present";
+    values.name = "forward_opaque";
+    values.contract = "forward_opaque_v1";
+    values.targets = {"scene_color", "scene_depth"};
+    values.forward_default = forward_default;
+    return values;
+}
+
+} // namespace
+
+TEST_CASE("G-4 Forward opaque with no deferred pass offers the forward default, and Save "
+          "carries it in the pass's own request",
+          "[devstudio][frame-plan][g4][material-pass]") {
+    auto authoring = g4PresentOnly();
+    CHECK_FALSE(materialPassPipelineHasDeferredPass(authoring));
+    CHECK(materialPassOffersForwardDefault(authoring, "forward_opaque_v1"));
+    CHECK_FALSE(materialPassOffersForwardDefault(authoring, "forward_transparent_v1"));
+    CHECK_FALSE(materialPassOffersForwardDefault(authoring, "deferred_geometry_v1"));
+
+    const auto request = materialPassAddRequest(authoring, g4ForwardValues(true));
+    INFO(request.refusal);
+    REQUIRE(request.sendable());
+    CHECK(request.method == "add_authored_pass");
+    CHECK(request.params.at("material_route_default") == "forward");
+    CHECK(request.params.at("pass").at("material_contract") == "forward_opaque_v1");
+    CHECK_FALSE(materialPassAddRequest(authoring, g4ForwardValues(false))
+                    .params.contains("material_route_default"));
+
+    // A pipeline that draws deferred materials already does not need it; a
+    // pass without a contract is a legacy G-buffer pass.
+    for (const auto &declaration :
+         {Json{{"type", "material"}, {"material_contract", "deferred_geometry_v1"}},
+          Json{{"type", "material"}, {"material_contract", "legacy_gbuffer_v1"}},
+          Json{{"type", "material"}}}) {
+        CAPTURE(declaration.dump());
+        auto with_gbuffer = authoring;
+        with_gbuffer.passes[{"main_render", "gbuffer"}].declaration = declaration;
+        CHECK(materialPassPipelineHasDeferredPass(with_gbuffer));
+        CHECK_FALSE(materialPassOffersForwardDefault(with_gbuffer, "forward_opaque_v1"));
+        CHECK_FALSE(materialPassAddRequest(with_gbuffer, g4ForwardValues(true))
+                        .params.contains("material_route_default"));
+    }
+}
+
+TEST_CASE("G-4 the form shows the forward default checked for Forward opaque only",
+          "[devstudio][frame-plan][g4][material-pass]") {
+    application();
+    MaterialPassForm form;
+    form.present(g4PresentOnly(), "main_render", "before:present", QStringLiteral("before present"));
+    QApplication::processEvents();
+    auto *checkbox = form.findChild<QCheckBox *>(
+        QStringLiteral("pelican.materialPassForm.forwardDefault"));
+    REQUIRE(checkbox != nullptr);
+    CHECK(checkbox->isVisible());
+    CHECK(checkbox->isChecked());
+    CHECK(form.values().forward_default);
+    auto *notice = form.findChild<QLabel *>(QStringLiteral("pelican.materialPassForm.notice"));
+    REQUIRE(notice != nullptr);
+    CHECK(notice->text().contains(QStringLiteral("restarts")));
+
+    checkbox->setChecked(false);
+    CHECK_FALSE(form.values().forward_default);
+    CHECK_FALSE(notice->text().contains(QStringLiteral("restarts")));
+
+    auto *contract = form.findChild<QComboBox *>(QStringLiteral("pelican.materialPassForm.contract"));
+    REQUIRE(contract != nullptr);
+    contract->setCurrentIndex(contract->findData(QStringLiteral("deferred_geometry_v1")));
+    QApplication::processEvents();
+    CHECK_FALSE(checkbox->isVisible());
+    CHECK_FALSE(form.values().forward_default);
+
+    // Presenting again starts from checked.
+    form.present(g4PresentOnly(), "main_render", "before:present", QStringLiteral("before present"));
+    QApplication::processEvents();
+    CHECK(checkbox->isVisible());
+    CHECK(checkbox->isChecked());
+    form.close();
+}
+
+TEST_CASE("G-4 a material_route_unserved@1 refusal names the materials and the fix",
+          "[devstudio][frame-plan][g4][material-pass]") {
+    const Json error{
+        {"code", "material_route_unserved@1"},
+        {"message", "material_route_unserved@1: ..."},
+        {"unserved",
+         Json::array({{{"route", "deferred_geometry"},
+                       {"shader_contract", "gbuffer_v1"},
+                       {"materials",
+                        Json::array({{{"name", "pelican.builtin.transparent"}, {"origin", "builtin"}},
+                                     {{"name", "box"}, {"origin", "asset"}, {"source", "project://box.glb"}}})},
+                       {"hint", "set material_route_default to \"forward\" on the rendering config "
+                                "root, or add a deferred_geometry_v1 material pass"}}})},
+    };
+    const auto notice = materialRouteUnservedNotice(error);
+    CHECK(notice.find("pelican.builtin.transparent (engine built-in), box") != std::string::npos);
+    CHECK(notice.find("deferred_geometry route") != std::string::npos);
+    CHECK(notice.find("To fix: set material_route_default") != std::string::npos);
+    CHECK(materialRouteUnservedNotice(Json{{"code", "render_pipeline_preflight_failed"}}).empty());
+}
+
 } // namespace PelicanStudio

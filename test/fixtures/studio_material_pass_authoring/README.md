@@ -18,10 +18,12 @@ letting "Create missing targets" make `scene_color` and `scene_depth`,
 rewrites `present.frag` to pass its input 0 through, and drags `scene_color`
 onto `present`. The box is then on screen.
 
-Two material passes are here only because G-4 has not landed. Today a
-pipeline with any material pass must have one for every route a material
-takes, or loading fails: the engine's own default material routes to
-`deferred_geometry`, which `g1_gbuffer` takes, and the box routes to
-`forward_opaque`, which `g1_forward_probe` takes until the scenario adds its
-own. Nothing reads what either writes. When G-4 lets a material with no pass
-go undrawn, both can go.
+The pipeline starts with no material pass at all. A pipeline with any
+material pass must have one for every route a material takes (G-4): the
+engine's own built-in materials and the box's glTF material are automatic,
+which is `deferred_geometry` by default. The pipeline has no pass for that,
+so the form offers "Draw this project's materials with forward", checked:
+Save sends the pass and `material_route_default: "forward"` in one
+`add_authored_pass`, and Studio restarts the engine on the same project to
+apply it. The box itself is `g1_flat`, whose `render_path` is `forward`
+either way.

@@ -84,6 +84,24 @@ struct MaterialLoweringCapabilities {
     std::size_t max_custom_textures = 25;
     bool color_attachment_blend = true;
     bool depth_attachment = true;
+    // G-4: the one place lowering reads the rendering document's
+    // `material_route_default`. The engine snapshots it once at start
+    // (projectMaterialLoweringCapabilities); tools pass what they read.
+    MaterialRouteDefault route_default = MaterialRouteDefault::automatic;
+};
+
+// G-4: for a material whose render_path is automatic, the route it takes
+// under each material_route_default. A candidate render pipeline that declares
+// a different default is checked against these, before the engine restarts
+// and lowers the material again.
+struct MaterialDefaultRoutes {
+    MaterialRouteClass automatic = MaterialRouteClass::deferred_geometry;
+    MaterialRouteClass forward = MaterialRouteClass::forward_opaque;
+
+    MaterialRouteClass under(MaterialRouteDefault value) const {
+        return value == MaterialRouteDefault::forward ? forward : automatic;
+    }
+    bool operator==(const MaterialDefaultRoutes &) const = default;
 };
 
 struct DeferredEligibility {
@@ -105,6 +123,8 @@ struct LoweredMaterial {
     std::vector<SurfaceResourcePortDefinition> resource_ports;
     MaterialRouteClass route = MaterialRouteClass::deferred_geometry;
     MaterialRouteReason route_reason = MaterialRouteReason::automatic_deferred_compatible;
+    // G-4: present when the material's render_path is automatic.
+    std::optional<MaterialDefaultRoutes> default_routes;
     DeferredEligibility deferred_eligibility;
     std::optional<std::string> exact_pass;
     // Compatibility projection retained for PlanViewer and older tooling.

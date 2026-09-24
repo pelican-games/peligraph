@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "add_primitive_object",
-  "description": "G-2: a Blank pipeline project (F-2) gets a shape without an asset. Add Object > Cube sends one spawn of engine://primitives/cube; the Outliner shows Cube and selects it, and the Inspector's model field reads the primitive. Add material pass... (G-1, Create missing targets) and present reading its output (F-6) put a grey box on screen; the pass is Deferred geometry, not Forward opaque, because the primitive's default material routes to deferred_geometry and nothing draws it in a forward pass until G-4. A second Cube is named Cube_001.",
+  "description": "G-2: a Blank pipeline project (F-2) gets a shape without an asset. Add Object > Cube sends one spawn of engine://primitives/cube; the Outliner shows Cube and selects it, and the Inspector's model field reads the primitive. Add material pass... (G-1, Create missing targets) adds a Forward opaque pass; the Blank pipeline has no pass for deferred materials and the primitive's default grey is automatic, so the form offers the forward default (G-4), checked, Save carries it with the pass and Studio restarts the engine on the same project. present reading the pass's output (F-6) then puts a grey box on screen. A second Cube is named Cube_001.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -200,16 +200,10 @@
       "value": "Forward opaque"
     },
     {
-      "label": "Deferred geometry instead, until G-4: the primitive's default grey is OpenPBR base, which routes to deferred_geometry, and a forward_opaque pass does not draw it (tried: the screen stays black)",
-      "cmd": "select",
-      "name": "pelican.materialPassForm.contract",
-      "text": "Deferred geometry (G-buffer)"
-    },
-    {
       "label": "the pass is named after the contract, with nothing typed",
       "expect": "text_equals",
       "name": "pelican.materialPassForm.name",
-      "value": "deferred_geometry"
+      "value": "forward_opaque"
     },
     {
       "label": "Create missing targets",
@@ -217,13 +211,31 @@
       "name": "pelican.materialPassForm.createMissing"
     },
     {
-      "label": "the albedo output is a new gbuffer_albedo",
+      "label": "the color output is a new scene_color",
       "expect": "text_equals",
-      "name": "pelican.materialPassForm.target.albedo",
-      "value": "gbuffer_albedo"
+      "name": "pelican.materialPassForm.target.color",
+      "value": "scene_color"
     },
     {
-      "label": "Save: edit_render_targets, then add_authored_pass",
+      "label": "no pass takes deferred materials, so the form offers the forward default",
+      "cmd": "wait",
+      "name": "pelican.materialPassForm.forwardDefault",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "checked: the form says the engine restarts to apply it",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.materialPassForm.notice"
+      },
+      "path": "text",
+      "op": "contains",
+      "value": "the engine restarts"
+    },
+    {
+      "label": "Save: edit_render_targets, then one add_authored_pass carrying material_route_default",
       "cmd": "click",
       "name": "pelican.materialPassForm.ok"
     },
@@ -235,23 +247,43 @@
       "timeout_ms": 10000
     },
     {
-      "label": "the engine runs deferred_geometry first",
+      "label": "the commit asks for a restart, and Studio restarts the engine on the same project",
+      "cmd": "wait",
+      "name": "pelican.framePlanStatus",
+      "contains": "Restarting the engine",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the restarted engine answers editor RPC and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the root now routes the project's automatic materials forward",
+      "file": "contains",
+      "path": "{artifacts}/primitive_project/passes/main_rendering_config.json",
+      "text": "material_route_default",
+      "value": true
+    },
+    {
+      "label": "the engine runs forward_opaque first",
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
       "path": "graphs[0].passes[0].name",
-      "value": "deferred_geometry",
+      "value": "forward_opaque",
       "retry_ms": 120000
     },
     {
-      "label": "the canvas draws it, writing gbuffer_albedo",
+      "label": "the canvas draws it, writing scene_color",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node_socket#deferred_geometry/out:gbuffer_albedo",
+      "name": "pelican.framePlanLogicalView::node_socket#forward_opaque/out:scene_color",
       "visible": true,
       "timeout_ms": 120000
     },
     {
-      "label": "the Cube is still in the running scene after the frame plan changed",
+      "label": "the Cube is in the scene the restarted engine loaded: it was saved before the pass was added",
       "expect": "rpc_equals",
       "method": "scene_tree",
       "params": {
@@ -265,7 +297,7 @@
       "label": "present.frag passes input 0 through, typed in the author's own editor",
       "file": "write",
       "path": "{artifacts}/primitive_project/shaders/present.frag",
-      "text": "#version 460\n#extension GL_GOOGLE_include_directive : require\n#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\nPELICAN_DECLARE_INPUT_0(in_albedo);  // gbuffer_albedo\n\nvoid main() {\n    outColor = PELICAN_TEXTURE_2D_0(in_albedo, inUV);\n}\n"
+      "text": "#version 460\n#extension GL_GOOGLE_include_directive : require\n#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\nPELICAN_DECLARE_INPUT_0(in_scene_color);  // scene_color\n\nvoid main() {\n    outColor = PELICAN_TEXTURE_2D_0(in_scene_color, inUV);\n}\n"
     },
     {
       "label": "show the whole graph so both ends of the drag are on screen",
@@ -280,10 +312,10 @@
       "timeout_ms": 60000
     },
     {
-      "label": "drag gbuffer_albedo from deferred_geometry onto present: one edit_preset_pass on the root",
+      "label": "drag scene_color from forward_opaque onto present: one edit_preset_pass on the root",
       "cmd": "drag",
       "from": {
-        "name": "pelican.framePlanLogicalView::node_socket#deferred_geometry/out:gbuffer_albedo"
+        "name": "pelican.framePlanLogicalView::node_socket#forward_opaque/out:scene_color"
       },
       "to": {
         "name": "pelican.framePlanLogicalView::node#present"
@@ -293,7 +325,7 @@
     {
       "label": "the canvas draws the read",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node_socket#present/in:gbuffer_albedo",
+      "name": "pelican.framePlanLogicalView::node_socket#present/in:scene_color",
       "visible": true,
       "timeout_ms": 120000
     },
@@ -422,6 +454,13 @@
       },
       "path": "text",
       "value": "Cube_001"
+    },
+    {
+      "label": "the Inspector has read Cube_001 before Save: its model field reads the primitive (after the restart the Inspector's editor session is new, and Save waits for an idle one)",
+      "cmd": "wait",
+      "name": "pelican.inspectorModelChoice",
+      "text": "Cube (built-in)",
+      "timeout_ms": 60000
     },
     {
       "label": "Save again, so closing Studio has nothing to ask",

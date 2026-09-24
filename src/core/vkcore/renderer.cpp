@@ -3079,6 +3079,10 @@ struct LogicalFrameSubmissionResources {
 } // namespace
 
 Renderer::Renderer() {
+    // G-4: snapshot `material_route_default` from the rendering document as it
+    // is at engine start, before any material is lowered. A later published
+    // edit does not change it; the editor reports restart_required instead.
+    GET_MODULE(ProjectBasicConfig).snapshotMaterialRouteDefault();
     const auto variants =
         loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays();
     flat_rendering_pass_id = variants.flat;

@@ -24,6 +24,7 @@
 #include "../src/project/vulkanviewplanning.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
 #ifdef _WIN32
@@ -244,6 +245,10 @@ struct ActualCpuRenderRuntime {
     Json frame_plan;
     bool fail_before_source_commit = false;
     bool fail_after_source_commit = false;
+    // G-4: stands in for the renderer's live-material check of the candidate
+    // generation; what it throws comes back as the apply error.
+    std::function<void(const RenderConfigCandidateDocumentSet &)>
+        validate_candidate;
     std::string post_commit_error;
     std::size_t apply_calls = 0;
     bool ray_query_available = true;
@@ -398,6 +403,13 @@ struct ActualCpuRenderRuntime {
         }
         if (fail_before_source_commit) {
             return {.error = "injected preflight failure"};
+        }
+        if (validate_candidate) {
+            try {
+                validate_candidate(documents);
+            } catch (const std::exception &error) {
+                return {.error = error.what()};
+            }
         }
         source_commit();
         if (fail_after_source_commit) {
@@ -6753,5 +6765,186 @@ TEST_CASE("G-1 a material pass of the wrong shape is refused in the parser's wor
         CHECK(readBytes(harness.project.render_config) == root_before);
     }
 }
+
+// --- G-4: material_route_default travels with the pass in one ticket.
+
+namespace {
+
+nlohmann::ordered_json g4AddForward(RenderTargetHarness &harness,
+                                    std::optional<std::string> route_default) {
+    const auto context = harness.context();
+    Json params{{"base_source_digest", context.at("source_digest").at("hex")},
+                {"graph", "main_render"},
+                {"insert", g1FirstAnchor(context)},
+                {"pass", g1MaterialPass("g4_forward", "forward_opaque_v1",
+                                        Json::array({"g4_color"}), "g4_depth")}};
+    if (route_default) params["material_route_default"] = *route_default;
+    return harness.service->addAuthoredPass(params);
+}
+
+MaterialRouteDefault g4RootRouteDefault(const RenderTargetHarness &harness) {
+    return readMaterialRouteDefault(
+        renderingSectionOrEmpty(Json::parse(readBytes(harness.project.render_config))));
+}
+
+std::size_t g4AuthoringFileCount(const RenderTargetHarness &harness) {
+    std::size_t count = 0;
+    const auto directory = harness.project.root / "passes" / "authoring";
+    if (!std::filesystem::exists(directory)) return 0;
+    for (const auto &entry : std::filesystem::directory_iterator{directory}) {
+        (void)entry;
+        ++count;
+    }
+    return count;
+}
+
+} // namespace
+
+TEST_CASE("G-4 add_authored_pass sets material_route_default in the same candidate set and asks for a restart",
+          "[render-config-editor][g4][material-pass]") {
+    const bool direct = GENERATE(true, false);
+    INFO((direct ? "direct graph root" : "hybrid_v1 preset root"));
+    RenderTargetHarness harness{direct};
+    harness.commit(Json::array({{{"op", "add"}, {"target", g1ForwardColor("g4_color")}},
+                                {{"op", "add"}, {"target", g1Depth("g4_depth")}}}));
+    REQUIRE(g4RootRouteDefault(harness) == MaterialRouteDefault::automatic);
+
+    // The runtime judges one candidate set: the new fragment and the root
+    // that names the forward default.
+    std::optional<MaterialRouteDefault> judged_default;
+    bool judged_fragment = false;
+    harness.runtime.validate_candidate = [&](const RenderConfigCandidateDocumentSet &documents) {
+        judged_default = readMaterialRouteDefault(
+            renderingSectionOrEmpty(Json::parse(documents.rootDocument().bytes)));
+        judged_fragment = std::ranges::any_of(documents.documents(), [](const auto &document) {
+            return document.operation == RenderConfigDocumentOperation::create &&
+                   document.bytes.find("g4_forward") != std::string::npos;
+        });
+    };
+    const auto accepted = g4AddForward(harness, "forward");
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    harness.service->commitPending();
+    const auto result = harness.service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("committed") == true);
+    CHECK(result.at("restart_required") == true);
+    CHECK(judged_default == MaterialRouteDefault::forward);
+    CHECK(judged_fragment);
+    CHECK(g4RootRouteDefault(harness) == MaterialRouteDefault::forward);
+}
+
+TEST_CASE("G-4 an ordinary add says nothing about a restart, and a bad value is refused by name",
+          "[render-config-editor][g4][material-pass]") {
+    RenderTargetHarness harness{true};
+    harness.commit(Json::array({{{"op", "add"}, {"target", g1ForwardColor("g4_color")}},
+                                {{"op", "add"}, {"target", g1Depth("g4_depth")}}}));
+    REQUIRE_THROWS_WITH(g4AddForward(harness, "deferred"),
+                        Catch::Matchers::ContainsSubstring("material_route_default") &&
+                            Catch::Matchers::ContainsSubstring("\"forward\""));
+    const auto accepted = g4AddForward(harness, std::nullopt);
+    REQUIRE(accepted.at("status") == "accepted");
+    harness.service->commitPending();
+    const auto result = harness.service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("committed") == true);
+    CHECK_FALSE(result.contains("restart_required"));
+    CHECK(g4RootRouteDefault(harness) == MaterialRouteDefault::automatic);
+}
+
+TEST_CASE("G-4 the renderer's material_route_unserved@1 comes back as a named rejection with its fields",
+          "[render-config-editor][g4][material-pass][rejection]") {
+    RenderTargetHarness harness{true};
+    harness.commit(Json::array({{{"op", "add"}, {"target", g1ForwardColor("g4_color")}},
+                                {{"op", "add"}, {"target", g1Depth("g4_depth")}}}));
+    const auto root_before = readBytes(harness.project.render_config);
+    const auto files_before = g4AuthoringFileCount(harness);
+    harness.runtime.validate_candidate = [](const RenderConfigCandidateDocumentSet &) {
+        throw std::runtime_error(materialRouteUnservedMessage(
+            {UnservedMaterialRoute{
+                MaterialRouteClass::deferred_geometry,
+                MaterialShaderContract::gbuffer_v1,
+                {describeUnservedMaterial("pelican.builtin.transparent", "", ""),
+                 describeUnservedMaterial("box", "", "project://box.glb")}}},
+            "project://passes/main.json"));
+    };
+    const auto accepted = g4AddForward(harness, std::nullopt);
+    REQUIRE(accepted.at("status") == "accepted");
+    harness.service->commitPending();
+    const auto result = harness.service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("status") == "rejected");
+    const auto &error = result.at("error");
+    CHECK(error.at("code") == "material_route_unserved@1");
+    CHECK(error.at("participant") == "pelican.render_pipeline");
+    CHECK(error.at("ticket") == accepted.at("ticket"));
+    REQUIRE(error.at("unserved").size() == 1);
+    CHECK(error.at("unserved").at(0).at("route") == "deferred_geometry");
+    CHECK(error.at("unserved").at(0).at("materials").at(0).at("name") ==
+          "pelican.builtin.transparent");
+    CHECK(error.at("unserved").at(0).at("materials").at(0).at("origin") == "builtin");
+    CHECK_THAT(error.at("hint").get<std::string>(),
+               Catch::Matchers::ContainsSubstring("material_route_default"));
+    CHECK_THAT(error.at("message").get<std::string>(),
+               Catch::Matchers::ContainsSubstring("'pelican.builtin.transparent' (engine built-in)") &&
+                   Catch::Matchers::ContainsSubstring("Hint: "));
+    // Nothing was written.
+    CHECK(readBytes(harness.project.render_config) == root_before);
+    CHECK(g4AuthoringFileCount(harness) == files_before);
+}
+
+TEST_CASE("G-4 set_material_route_default rides the root-edit ticket and asks for a restart",
+          "[render-config-editor][g4]") {
+    const bool direct = GENERATE(true, false);
+    INFO((direct ? "direct graph root" : "hybrid_v1 preset root"));
+    RenderTargetHarness harness{direct};
+    const auto set = [&](std::string value) {
+        const auto accepted = harness.service->setMaterialRouteDefault(
+            {{"base_source_digest", harness.digest()}, {"material_route_default", value}});
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        harness.service->commitPending();
+        return harness.service->getResult({{"ticket", accepted.at("ticket")}});
+    };
+    const auto forward = set("forward");
+    INFO(forward.dump());
+    CHECK(forward.at("committed") == true);
+    CHECK(forward.at("restart_required") == true);
+    CHECK(g4RootRouteDefault(harness) == MaterialRouteDefault::forward);
+    // The same value again changes no byte, so nothing needs a restart.
+    const auto again = set("forward");
+    INFO(again.dump());
+    CHECK_FALSE(again.value("restart_required", false));
+    const auto back = set("auto");
+    INFO(back.dump());
+    CHECK(back.at("restart_required") == true);
+    CHECK(g4RootRouteDefault(harness) == MaterialRouteDefault::automatic);
+    REQUIRE_THROWS(harness.service->setMaterialRouteDefault(
+        {{"base_source_digest", harness.digest()}, {"material_route_default", 1}}));
+}
+
+#if !PELICAN_RUNTIME_SHADER_COMPILER
+// Registered only where the runtime shader compiler is off: the engine could
+// not build the forward version of its built-in materials, so the editor
+// refuses the forward default by name before anything is written.
+TEST_CASE("G-4 without the runtime shader compiler the forward default is refused by name",
+          "[render-config-editor][g4][runtime-shader-compiler-off]") {
+    RenderTargetHarness harness{true};
+    harness.commit(Json::array({{{"op", "add"}, {"target", g1ForwardColor("g4_color")}},
+                                {{"op", "add"}, {"target", g1Depth("g4_depth")}}}));
+    const auto root_before = readBytes(harness.project.render_config);
+    const auto added = g4AddForward(harness, "forward");
+    INFO(added.dump());
+    CHECK(added.at("status") == "rejected");
+    CHECK(added.at("error").at("code") == "material_route_default_unavailable@1");
+    CHECK(added.at("error").at("reason") == "runtime_shader_compiler_disabled");
+    const auto set = harness.service->setMaterialRouteDefault(
+        {{"base_source_digest", harness.digest()}, {"material_route_default", "forward"}});
+    INFO(set.dump());
+    CHECK(set.at("error").at("code") == "material_route_default_unavailable@1");
+    harness.service->commitPending();
+    CHECK(readBytes(harness.project.render_config) == root_before);
+}
+#endif
 
 } // namespace Pelican

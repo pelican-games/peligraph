@@ -367,6 +367,7 @@ class EditorCommandService {
     nlohmann::ordered_json getComputeTaskAuthoring(const nlohmann::json &params) const;
     nlohmann::ordered_json getFrameNodeOrder(const nlohmann::json &params) const;
     nlohmann::ordered_json editFrameNodeOrder(const nlohmann::json &params);
+    nlohmann::ordered_json setMaterialRouteDefault(const nlohmann::json &params);
     nlohmann::ordered_json getGraphInstances(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphInstances(const nlohmann::json &params);
     nlohmann::ordered_json editGraphDocument(const nlohmann::json &params);
@@ -459,6 +460,7 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json editProceduralAsset(const nlohmann::json &params) const;
     nlohmann::ordered_json getFrameNodeOrder(const nlohmann::json &params) const;
     nlohmann::ordered_json editFrameNodeOrder(const nlohmann::json &params) const;
+    nlohmann::ordered_json setMaterialRouteDefault(const nlohmann::json &params) const;
     nlohmann::ordered_json getGraphInstances(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphInstances(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphDocument(const nlohmann::json &params) const;

@@ -9,6 +9,8 @@
 #include "projectsrc.hpp"
 #include "../../project/assetdataformat.hpp"
 #include "../../project/projectformat.hpp"
+#include "../../project/renderconfigsection.hpp"
+#include "../../project/renderpipeline.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -1052,6 +1054,19 @@ void ProjectBasicConfig::publishRenderingConfigJson(
     std::string prepared_json) noexcept {
     rendering_config_json =
         std::move(prepared_json);
+}
+
+void ProjectBasicConfig::snapshotMaterialRouteDefault() const {
+    if (material_route_default) return;
+    const auto root = nlohmann::json::parse(renderingConfigJson());
+    material_route_default =
+        readMaterialRouteDefault(renderingSectionOrEmpty(root));
+}
+
+MaterialRouteDefault ProjectBasicConfig::materialRouteDefault() const {
+    // Only the renderer takes the snapshot. A module graph without one (a
+    // loader or tool test) lowers as before the key existed.
+    return material_route_default.value_or(MaterialRouteDefault::automatic);
 }
 
 std::string ProjectBasicConfig::defaultRenderingPass() const { return default_rendering_pass; }

@@ -1100,6 +1100,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .output_schema =
             std::move(info.output_schema),
         .exact_pass = std::move(info.exact_pass),
+        .default_routes = info.default_routes,
         .pass_inputs = std::move(pass_inputs),
         .resource_interface =
             std::move(resource_interface),

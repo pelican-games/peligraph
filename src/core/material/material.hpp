@@ -85,6 +85,9 @@ struct MaterialInfo {
     MaterialShaderContract shader_contract = MaterialShaderContract::gbuffer_v1;
     std::optional<MaterialOutputSchema> output_schema;
     std::optional<std::string> exact_pass;
+    // G-4: the route under each material_route_default, for a material that
+    // follows the default (see LoweredMaterial::default_routes).
+    std::optional<MaterialDefaultRoutes> default_routes;
     std::vector<MaterialScreenInputContract> screen_inputs;
     std::vector<SurfaceResourcePortDefinition> resource_ports;
     // Authored identity retained through lowering so fail-fast pipeline
@@ -129,6 +132,11 @@ using LoweredMaterialTextureResolver =
 // retains the established semantic-dummy behavior.
 void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowered,
                           const LoweredMaterialTextureResolver &resolve_texture);
+
+// G-4: the lowering capabilities every engine-side lowering uses. Carries the
+// rendering document's `material_route_default` as snapshotted at engine start
+// (ProjectBasicConfig::materialRouteDefault); without a project it is `auto`.
+MaterialLoweringCapabilities projectMaterialLoweringCapabilities();
 
 // Opt-in route-aware application used by a hybrid pipeline.  The caller must
 // compile the surface with surfacePassForMaterialRoute(lowered.route); this

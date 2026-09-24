@@ -1,5 +1,6 @@
 #include "materialpassform.hpp"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QFormLayout>
 #include <QGridLayout>
@@ -60,6 +61,19 @@ MaterialPassForm::MaterialPassForm(QWidget *parent) : QDialog(parent) {
         "the contract requires."));
     layout->addWidget(create_missing_, 0, Qt::AlignLeft);
 
+    forward_default_ = new QCheckBox(
+        tr("Draw this project's materials with forward"), this);
+    forward_default_->setObjectName(
+        QStringLiteral("pelican.materialPassForm.forwardDefault"));
+    forward_default_->setChecked(true);
+    forward_default_->setToolTip(tr(
+        "The pipeline has no pass for deferred materials. Save also sets the "
+        "project's material_route_default to forward, so every material "
+        "without its own render_path (the engine's built-in ones included) "
+        "is drawn by forward passes. The engine restarts to apply it."));
+    forward_default_->hide();
+    layout->addWidget(forward_default_);
+
     notice_ = new QLabel(this);
     notice_->setObjectName(QStringLiteral("pelican.materialPassForm.notice"));
     notice_->setWordWrap(true);
@@ -92,7 +106,15 @@ MaterialPassForm::MaterialPassForm(QWidget *parent) : QDialog(parent) {
             name_->setText(text(proposed_name_));
         }
         layoutSlots();
+        updateForwardDefault();
     });
+    connect(forward_default_, &QCheckBox::toggled, this,
+            [this](bool) { updateSlotStates(); });
+}
+
+void MaterialPassForm::updateForwardDefault() {
+    forward_default_->setVisible(materialPassOffersForwardDefault(
+        authoring_, contract_->currentData().toString().toStdString()));
 }
 
 void MaterialPassForm::present(const FramePlanAuthoring &authoring,
@@ -115,6 +137,11 @@ void MaterialPassForm::present(const FramePlanAuthoring &authoring,
     proposed_name_ = materialPassDefaultName(
         authoring_, graph_, contract_->currentData().toString().toStdString());
     name_->setText(text(proposed_name_));
+    {
+        const QSignalBlocker block{forward_default_};
+        forward_default_->setChecked(true);
+    }
+    updateForwardDefault();
     layoutSlots();
     error_->clear();
     error_->hide();
@@ -172,14 +199,19 @@ void MaterialPassForm::updateSlotStates() {
             : is_new     ? tr("new: made as %1").arg(text(slots_[index].format))
                          : tr("declared"));
     }
-    notice_->setText(
+    QString notice =
         created.empty()
             ? tr("Save adds the pass.")
             : tr("Save first makes %n new render target(s) in one change, then "
                  "adds the pass in a second. If the engine refuses the pass, "
                  "the new targets stay declared; delete them from their nodes "
                  "if you do not want them.",
-                 nullptr, static_cast<int>(created.size())));
+                 nullptr, static_cast<int>(created.size()));
+    if (current.forward_default)
+        notice += QLatin1Char(' ') +
+                  tr("The pass and the forward setting are saved together, "
+                     "and the engine restarts to apply the setting.");
+    notice_->setText(notice);
 }
 
 void MaterialPassForm::fillMissing() {
@@ -202,6 +234,9 @@ MaterialPassFormValues MaterialPassForm::values() const {
     values.contract = contract_->currentData().toString().toStdString();
     for (const QComboBox *target : slot_targets_)
         values.targets.push_back(target->currentText().trimmed().toStdString());
+    values.forward_default =
+        forward_default_ != nullptr && forward_default_->isChecked() &&
+        materialPassOffersForwardDefault(authoring_, values.contract);
     return values;
 }
 

@@ -34,6 +34,11 @@ class EmbeddedViewport final : public QWidget {
     ~EmbeddedViewport() override;
 
     void openProject(const QString &project_root);
+    // G-4. Stops the running engine and starts it again on the same project,
+    // for a committed setting the engine reads only at start. The editor gate
+    // closes at once (engineRpcBecameUnavailable carries `reason`) and opens
+    // again when the new engine answers its readiness probe.
+    void restartEngine(const QString &reason);
     void bindSelectionModel(const SelectionModel *selection_model) noexcept {
         selection_model_ = selection_model;
     }
@@ -106,6 +111,8 @@ class EmbeddedViewport final : public QWidget {
     bool primary_pointer_owned_ = false;
     std::optional<QPoint> last_primary_pointer_position_;
     bool restart_after_stop_ = false;
+    // G-4: restartEngine already emitted engineRpcBecameUnavailable.
+    bool restart_unavailable_announced_ = false;
     bool shutting_down_ = false;
     bool rpc_ready_ = false;
     bool engine_input_active_ = false;

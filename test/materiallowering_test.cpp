@@ -665,4 +665,98 @@ TEST_CASE("glTF core materials converge through the six OpenPBR routing wrappers
                 "ADDITIVE"));
 }
 
+// G-4: `material_route_default: "forward"` sends every automatic material
+// down the explicit-forward route; an explicit render_path still wins, and
+// `auto` changes nothing (the dump goldens above stay byte-identical).
+TEST_CASE("G-4 the forward route default lowers automatic materials forward and never beats an explicit render_path",
+          "[material-lowering][routing][g4]") {
+    const auto opaque = parseSurfaceFormat(
+        "//! pelican.surface v1\n"
+        "//! language: glsl\n"
+        "\nvoid pelican_surface_v1(in PelicanSurfaceInputV1 i, inout PelicanSurfaceV1 s) {}\n",
+        "opaque.surface");
+    const auto blended = parseSurfaceFormat(
+        "//! pelican.surface v1\n"
+        "//! language: glsl\n"
+        "//! render_state: { blend: blend, cull: back, depth: read_only }\n"
+        "\nvoid pelican_surface_v1(in PelicanSurfaceInputV1 i, inout PelicanSurfaceV1 s) {}\n",
+        "blend.surface");
+    MaterialLoweringCapabilities forward;
+    forward.route_default = MaterialRouteDefault::forward;
+
+    MaterialDefinition automatic;
+    automatic.name = "automatic";
+
+    const auto opaque_auto = lowerMaterial(automatic, opaque);
+    REQUIRE(opaque_auto.route == MaterialRouteClass::deferred_geometry);
+    REQUIRE(opaque_auto.default_routes ==
+            MaterialDefaultRoutes{MaterialRouteClass::deferred_geometry,
+                                  MaterialRouteClass::forward_opaque});
+    REQUIRE(dumpLoweredMaterial(opaque_auto) ==
+            dumpLoweredMaterial(lowerMaterial(automatic, opaque, {})));
+
+    const auto opaque_forward = lowerMaterial(automatic, opaque, forward);
+    REQUIRE(opaque_forward.route == MaterialRouteClass::forward_opaque);
+    REQUIRE(opaque_forward.route_reason == MaterialRouteReason::default_forward);
+    REQUIRE(opaque_forward.default_routes == opaque_auto.default_routes);
+    REQUIRE_THAT(dumpLoweredMaterial(opaque_forward),
+                 Catch::Matchers::ContainsSubstring(
+                     "route: forward_opaque reason=default_forward"));
+
+    const auto blended_forward = lowerMaterial(automatic, blended, forward);
+    REQUIRE(blended_forward.route == MaterialRouteClass::forward_transparent);
+    REQUIRE(blended_forward.route_reason == MaterialRouteReason::default_forward);
+
+    // A variant without a render_path of its own follows the default too.
+    const auto defaults = lowerSurfaceDefaults(opaque, "opaque.surface", forward);
+    REQUIRE(defaults.route == MaterialRouteClass::forward_opaque);
+
+    MaterialDefinition deferred = automatic;
+    deferred.name = "explicit_deferred";
+    deferred.render_path = MaterialRenderPath::deferred;
+    const auto explicit_deferred = lowerMaterial(deferred, opaque, forward);
+    REQUIRE(explicit_deferred.route == MaterialRouteClass::deferred_geometry);
+    REQUIRE(explicit_deferred.route_reason == MaterialRouteReason::explicit_deferred);
+    REQUIRE_FALSE(explicit_deferred.default_routes.has_value());
+
+    MaterialDefinition explicit_forward = automatic;
+    explicit_forward.name = "explicit_forward";
+    explicit_forward.render_path = MaterialRenderPath::forward;
+    REQUIRE(lowerMaterial(explicit_forward, opaque, forward).route_reason ==
+            MaterialRouteReason::explicit_forward);
+}
+
+TEST_CASE("G-4 glTF core materials take the forward routes under the forward default",
+          "[material-lowering][gltf][g4]") {
+    const auto root = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                      "src" / "core" / "resources" / "surfaces" / "openpbr";
+    MaterialLoweringCapabilities forward;
+    forward.route_default = MaterialRouteDefault::forward;
+    for (const auto &[alpha_mode, route] :
+         {std::pair{std::string{"OPAQUE"}, MaterialRouteClass::forward_opaque},
+          std::pair{std::string{"MASK"}, MaterialRouteClass::forward_opaque},
+          std::pair{std::string{"BLEND"}, MaterialRouteClass::forward_transparent}}) {
+        CAPTURE(alpha_mode);
+        // GP-5's pelican.primitive.default is an ordinary opaque glTF
+        // material, so it is the OPAQUE row.
+        const auto definition = makeGltfCoreMaterialDefinition({
+            .name = "pelican.primitive.default",
+            .base = MaterialBase{},
+            .alpha_mode = alpha_mode,
+            .alpha_cutoff = 0.5,
+            .double_sided = false,
+        });
+        const auto surface = parseSurfaceFormat(
+            readText(root / (definition.surface->substr(
+                                 std::string{"engine://surfaces/openpbr/"}.size()))),
+            *definition.surface);
+        const auto lowered = lowerMaterial(definition, surface, forward);
+        REQUIRE(lowered.route == route);
+        REQUIRE(lowered.route_reason == MaterialRouteReason::default_forward);
+        REQUIRE(std::find(lowered.defines.begin(), lowered.defines.end(),
+                          "PELICAN_GBUFFER_MODEL_OPENPBR_BASE_V1") ==
+                lowered.defines.end());
+    }
+}
+
 } // namespace Pelican

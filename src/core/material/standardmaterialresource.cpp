@@ -128,15 +128,70 @@ void pelican_surface_v1(
 
     tex_emissive_default = tex_black;
 
-    mat_transparent = mat_con.registerMaterial(MaterialInfo{
+    builtin_frag = std_frag;
+    const auto capabilities = projectMaterialLoweringCapabilities();
+    if (capabilities.route_default == MaterialRouteDefault::forward) {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+        // The same empty standard surface as above, lowered through the
+        // project's default route: opaque, so forward_opaque. The generated
+        // fragment keeps the compact vertex ABI and reads the standard
+        // textures, so the built-ins look as they do on the deferred route.
+        constexpr std::string_view source_name =
+            "generated://standard_material_forward.surface";
+        const auto surface = parseSurfaceFormat(
+            R"surface(//! pelican.surface v1
+//! language: glsl
+
+void pelican_surface_v1(
+    in PelicanSurfaceInputV1 input_data,
+    inout PelicanSurfaceV1 surface) {
+}
+)surface",
+            source_name);
+        const auto lowered = lowerSurfaceDefaults(
+            surface, source_name, capabilities);
+        builtin_frag =
+            shader_library
+                .loadFromSurfaceForMaterial(
+                    surface, source_name, lowered,
+                    {"PELICAN_COMPACT_STANDARD_VERTEX_ABI"})
+                .fragment;
+        builtin_route = lowered.route;
+#else
+        throw std::runtime_error(
+            materialRouteDefaultUnavailableMessage(
+                "runtime_shader_compiler_disabled"));
+#endif
+    }
+
+    mat_transparent = mat_con.registerMaterial(
+        builtinMaterialInfo("transparent", tex_transparent));
+}
+
+MaterialInfo StandardMaterialResource::builtinMaterialInfo(
+    std::string_view suffix,
+    GlobalTextureId base_color_texture) const {
+    MaterialInfo info{
         .vert_shader = std_vert,
-        .frag_shader = std_frag,
-        .base_color_texture = tex_transparent,
+        .frag_shader = builtin_frag,
+        .base_color_texture = base_color_texture,
         .metallic_roughness_texture = tex_metallic_roughness_default,
         .normal_texture = tex_normal_default,
         .emissive_texture = tex_emissive_default,
         .occlusion_texture = tex_white,
-    });
+    };
+    info.route = builtin_route;
+    // Built-ins follow the default: deferred as before, forward_opaque when
+    // the project routes its automatic materials forward.
+    info.default_routes = MaterialDefaultRoutes{
+        .automatic = MaterialRouteClass::deferred_geometry,
+        .forward = MaterialRouteClass::forward_opaque,
+    };
+    info.shader_contract =
+        materialShaderContractForRoute(builtin_route);
+    info.name = std::string{builtinMaterialNamePrefix} +
+                std::string{suffix};
+    return info;
 }
 
 GlobalTextureId StandardMaterialResource::defaultTexture(MaterialDummyTexture fallback) const {

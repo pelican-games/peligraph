@@ -452,8 +452,11 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
     INFO("Frame Plan detail: " << broken_detail.toStdString());
     REQUIRE_FALSE(engine_fatal.isEmpty());
     REQUIRE(engine_fatal.contains(QStringLiteral("forward_transparent")));
+    // G-4: the load-time refusal carries the same named code and route hint
+    // as an edit ticket's rejection.
+    REQUIRE(engine_fatal.contains(QStringLiteral("material_route_unserved@1")));
     REQUIRE(engine_fatal.contains(QStringLiteral(
-        "has no compatible registered material pass")));
+        "add a forward_transparent_v1 material pass")));
     // This is EmbeddedViewport's production signal, not a test-side model.
     REQUIRE(broken.fatal_error_line == engine_fatal);
     // N-7 keeps a long diagnostic in the tooltip and shows its leading text

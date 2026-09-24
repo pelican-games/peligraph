@@ -37,6 +37,40 @@ namespace {
 using Json = nlohmann::json;
 using OrderedJson = nlohmann::ordered_json;
 
+#if PELICAN_RUNTIME_SHADER_COMPILER
+constexpr bool runtime_shader_compiler_available = true;
+#else
+constexpr bool runtime_shader_compiler_available = false;
+#endif
+
+// G-4: the value a request asks material_route_default to take.
+MaterialRouteDefault requestedMaterialRouteDefault(const Json &value,
+                                                   std::string_view method) {
+    if (value.is_string()) {
+        const auto &text = value.get_ref<const std::string &>();
+        if (text == "auto") return MaterialRouteDefault::automatic;
+        if (text == "forward") return MaterialRouteDefault::forward;
+    }
+    throw std::invalid_argument(std::string{method} +
+                                " material_route_default must be \"auto\" or \"forward\"");
+}
+
+// G-4: the codes whose "<code>: <JSON>" message the completion handler turns
+// back into a named rejection with fields.
+bool isCarriedRefusalCode(std::string_view code) {
+    return code == materialRouteUnservedCode ||
+           code == materialRouteDefaultUnavailableCode;
+}
+
+// A readable message for a carried refusal; the fields stay structured.
+std::string carriedRefusalMessage(const CodedRefusal &refusal) {
+    if (refusal.code == materialRouteUnservedCode) {
+        return materialRouteUnservedText(refusal.fields);
+    }
+    return refusal.code + ": " +
+           refusal.fields.value("message", refusal.fields.dump());
+}
+
 bool isEditableAuxiliaryPass(std::string_view type) {
     return type == "debug_draw" || type == "debug_text" || type == "gizmo" ||
            type == "shadow_depth" || type == "velocity" || type == "picking";
@@ -2392,6 +2426,41 @@ OrderedJson RenderConfigEditorService::editFrameNodeOrder(const Json &params) {
         });
 }
 
+OrderedJson RenderConfigEditorService::setMaterialRouteDefault(const Json &params) {
+    constexpr auto method = "set_material_route_default";
+    requireOnly(params, {"base_source_digest", "material_route_default"}, method);
+    const auto digest = requireString(params, "base_source_digest", method);
+    if (!params.contains("material_route_default")) {
+        throw std::invalid_argument(
+            std::string{method} + " requires material_route_default");
+    }
+    const auto value = requestedMaterialRouteDefault(
+        params.at("material_route_default"), method);
+    if (value == MaterialRouteDefault::forward &&
+        !runtime_shader_compiler_available) {
+        return rejection(
+            std::string{materialRouteDefaultUnavailableCode},
+            "material_route_default \"forward\" needs the runtime shader "
+            "compiler to build the forward version of the engine's built-in "
+            "materials; this build has none",
+            {{"value", "forward"},
+             {"reason", "runtime_shader_compiler_disabled"}});
+    }
+    auto accepted = queueRootEdit(digest, method,
+        [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+            candidate = candidate.withSectionValue(
+                materialRouteDefaultKey,
+                Json(std::string{materialRouteDefaultName(value)}).dump());
+            return std::nullopt;
+        });
+    // The engine reads the key once at start; a committed change says so.
+    if (accepted.value("status", std::string{}) == "accepted" &&
+        !pending_.empty()) {
+        pending_.back().restart_required = true;
+    }
+    return accepted;
+}
+
 OrderedJson RenderConfigEditorService::editComputeTask(const Json &params) {
     requireOnly(params, {"base_source_digest", "base_task_source_digest", "task_name", "task"}, "edit_compute_task");
     return changeComputeTask(params, false);
@@ -2763,7 +2832,7 @@ OrderedJson RenderConfigEditorService::enqueueAuthoredPassTicket(
     const std::string &base_digest, AuthoredRenderConfigDocument root,
     RenderConfigCandidateDocumentSet candidate_documents,
     const std::string &reference, bool edits_additional_documents,
-    const AuthoredCandidateCheck &check) {
+    const AuthoredCandidateCheck &check, bool restart_required) {
     try {
         // This is the decisive staged-file contrast: neither the feature nor
         // preset resolver may bypass the request-local document set.
@@ -2787,6 +2856,7 @@ OrderedJson RenderConfigEditorService::enqueueAuthoredPassTicket(
         .operation = std::move(operation),
         .fragment_reference = reference,
         .edits_additional_documents = edits_additional_documents,
+        .restart_required = restart_required,
     });
     results_[ticket_id] = {{"ticket", ticket_id}, {"status", "pending"}};
     return {{"ticket", ticket_id},
@@ -2798,7 +2868,8 @@ OrderedJson RenderConfigEditorService::enqueueAuthoredPassTicket(
 OrderedJson RenderConfigEditorService::addAuthoredPass(
     const Json &params) {
     requireOnly(params,
-                {"base_source_digest", "graph", "insert", "pass"},
+                {"base_source_digest", "graph", "insert", "pass",
+                 "material_route_default"},
                 "add_authored_pass");
     if (!dependencies_.normalize_reference ||
         !dependencies_.resolve_document_path ||
@@ -2833,6 +2904,25 @@ OrderedJson RenderConfigEditorService::addAuthoredPass(
             "add_authored_pass authors fullscreen and material passes only",
             {{"requested_type", pass_type},
              {"supported_types", OrderedJson::array({"fullscreen", "material"})}});
+    }
+    // G-4: the pass and the project's material_route_default travel in one
+    // candidate document set, so the candidate is judged with the routes the
+    // new default gives every material.
+    std::optional<MaterialRouteDefault> requested_route_default;
+    if (const auto found = params.find("material_route_default");
+        found != params.end()) {
+        requested_route_default =
+            requestedMaterialRouteDefault(*found, "add_authored_pass");
+        if (*requested_route_default == MaterialRouteDefault::forward &&
+            !runtime_shader_compiler_available) {
+            return rejection(
+                std::string{materialRouteDefaultUnavailableCode},
+                "material_route_default \"forward\" needs the runtime shader "
+                "compiler to build the forward version of the engine's "
+                "built-in materials; this build has none",
+                {{"value", "forward"},
+                 {"reason", "runtime_shader_compiler_disabled"}});
+        }
     }
 
     const auto gate = gateSnapshot();
@@ -2920,6 +3010,25 @@ OrderedJson RenderConfigEditorService::addAuthoredPass(
                     : AuthoredRenderConfigDocument::initialize(
                           document_.bytes());
     root = root.withFeatureAdded(reference);
+    bool restart_required = false;
+    if (requested_route_default) {
+        const auto current_route_default = readMaterialRouteDefault(
+            renderingSectionOrEmpty(Json::parse(document_.bytes())));
+        if (*requested_route_default != current_route_default) {
+            try {
+                root = root.withSectionValue(
+                    std::string{materialRouteDefaultKey},
+                    Json(std::string{materialRouteDefaultName(
+                             *requested_route_default)})
+                        .dump());
+            } catch (const RenderConfigSectionUnlocated &error) {
+                return rejection("render_config_section_unlocated",
+                                 error.what(),
+                                 {{"method", "add_authored_pass"}});
+            }
+            restart_required = true;
+        }
+    }
     const auto fragment_bytes = managedFragmentBytes(id, insert, *pass);
 
     std::vector<RenderConfigCandidateDocument> documents;
@@ -2972,7 +3081,8 @@ OrderedJson RenderConfigEditorService::addAuthoredPass(
     return enqueueAuthoredPassTicket("add_authored_pass", gate, base_digest,
                                      std::move(root),
                                      std::move(candidate_documents),
-                                     reference, false, check);
+                                     reference, false, check,
+                                     restart_required);
 }
 
 OrderedJson RenderConfigEditorService::removeAuthoredPass(
@@ -3416,6 +3526,23 @@ void RenderConfigEditorService::completeCommitTransaction(
             if (!rollback_error.empty()) {
                 details["rollback_error"] = rollback_error;
             }
+            // G-4: a named refusal the renderer carried as
+            // "<code>: <JSON>" keeps its code, and its fields beside
+            // ticket and participant.
+            if (rollback_error.empty() && !applied.staged) {
+                if (auto refusal =
+                        splitCodedRefusalMessage(applied.error);
+                    refusal && isCarriedRefusalCode(refusal->code)) {
+                    for (const auto &[key, value] :
+                         refusal->fields.items()) {
+                        if (!details.contains(key)) details[key] = value;
+                    }
+                    finish(rejection(refusal->code,
+                                     carriedRefusalMessage(*refusal),
+                                     std::move(details)));
+                    return;
+                }
+            }
             finish(rejection(
                 rollback_error.empty()
                     ? "render_pipeline_preflight_failed"
@@ -3487,6 +3614,10 @@ void RenderConfigEditorService::completeCommitTransaction(
         if (!applied.post_commit_error.empty()) {
             completed["post_commit_error"] =
                 applied.post_commit_error;
+        }
+        if (transaction->ticket.restart_required) {
+            // G-4: material_route_default is read once per engine start.
+            completed["restart_required"] = true;
         }
         finish(std::move(completed));
     } catch (const std::exception &caught) {

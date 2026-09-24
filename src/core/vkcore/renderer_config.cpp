@@ -31,6 +31,7 @@
 #include "rendertiming.hpp"
 #include "../../project/renderfeatureoverlay.hpp"
 #include "../../project/featurecompose.hpp"
+#include "../../project/renderconfigsection.hpp"
 #include "../../project/vulkanviewplanning.hpp"
 #if PELICAN_WITH_OPENXR
 #include "../openxr/openxrmirrorsink.hpp"
@@ -452,6 +453,24 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
     static_assert(std::is_nothrow_move_constructible_v<
                   RenderGraphVariantConfig>);
     ScopedLogTimer timer{"load default rendering pass from config"};
+
+    // G-4: live materials are judged by the routes this config's
+    // material_route_default gives them, for the whole compile, validation
+    // and planning of the candidate. The engine itself keeps its start-time
+    // snapshot until it restarts.
+    std::optional<MaterialContainer::CandidateRouteDefaultScope>
+        candidate_route_default;
+    if (auto *materials =
+            FastModuleContainer::tryGet<MaterialContainer>()) {
+        const auto parsed = nlohmann::json::parse(
+            rendering_config_json, nullptr, false);
+        if (!parsed.is_discarded()) {
+            candidate_route_default.emplace(
+                *materials,
+                readMaterialRouteDefault(
+                    renderingSectionOrEmpty(parsed)));
+        }
+    }
 
     const auto &config = GET_MODULE(ProjectBasicConfig);
     // The launch target owns the effective output extent. In particular,

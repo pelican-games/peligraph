@@ -1425,6 +1425,17 @@ struct FramePlanWidget::Impl {
                 requestAuthoringContext(true);
             }
             if (submitted_method == "add_authored_pass") material_targets_made.clear();
+            // G-4: the change is a setting the engine reads once at start
+            // (material_route_default). Restart the engine on the same
+            // project; the Frame Plan comes back when it is ready again.
+            if (response.value("restart_required", false)) {
+                const QString reason = owner.tr(
+                    "Restarting the engine to apply the material route setting...");
+                status->setStyleSheet({});
+                showStatus(reason);
+                viewport.restartEngine(reason);
+                return;
+            }
             // The refresh first, so its own "requesting..." line does not land
             // on top of the answer the user is waiting for. The summary line
             // replaces this one when the new plan arrives, which is the right
@@ -1619,9 +1630,14 @@ struct FramePlanWidget::Impl {
             return text(framePlanRenderTargetRejection(*error,
                                                        authoring.preset_name));
         if (error != response.end() && error->is_object() &&
-            submitted_method == "add_authored_pass")
+            submitted_method == "add_authored_pass") {
+            // G-4: name the materials no pass would draw, and the fix.
+            if (const auto notice = materialRouteUnservedNotice(*error);
+                !notice.empty())
+                return owner.tr("The engine refused the pass: %1").arg(text(notice));
             return owner.tr("The engine refused the pass: %1")
                 .arg(text(error->value("message", error->dump())));
+        }
         return responseError(response);
     }
 

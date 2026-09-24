@@ -1350,4 +1350,126 @@ TEST_CASE("WP181 compile and graph-plan failures precede publication",
     REQUIRE(publication.passes == 5);
 }
 
+// G-4: material_route_default sits on the rendering root -- a direct root, or
+// the root that selects a preset -- and nowhere else. The resolver validates
+// it and keeps it out of the composed config; the engine reads it once at
+// start from the authored root.
+TEST_CASE("G-4 material_route_default is a root key the resolver validates and never composes",
+          "[render-pipeline][g4]") {
+    auto direct = baseConfig();
+    REQUIRE(readMaterialRouteDefault(direct) == MaterialRouteDefault::automatic);
+    direct["material_route_default"] = "forward";
+    REQUIRE(readMaterialRouteDefault(direct) == MaterialRouteDefault::forward);
+    const auto direct_resolved = resolveRenderPipelinePreset(direct);
+    REQUIRE_FALSE(direct_resolved.config.contains("material_route_default"));
+    REQUIRE(direct_resolved.config.at("rendering_passes") ==
+            direct.at("rendering_passes"));
+
+    direct["material_route_default"] = "deferred";
+    REQUIRE_THROWS_WITH(resolveRenderPipelinePreset(direct),
+                        Catch::Matchers::ContainsSubstring("material_route_default") &&
+                            Catch::Matchers::ContainsSubstring("\"deferred\""));
+    direct["material_route_default"] = true;
+    REQUIRE_THROWS_WITH(readMaterialRouteDefault(direct),
+                        Catch::Matchers::ContainsSubstring("\"auto\" or \"forward\""));
+
+    const auto preset = [](bool owns_key) {
+        auto config = baseConfig();
+        if (owns_key) config["material_route_default"] = "forward";
+        return Json{{"schema", "pelican.render_pipeline"},
+                    {"version", 1},
+                    {"name", "g4_preset"},
+                    {"config", std::move(config)}}
+            .dump();
+    };
+    const Json preset_root{{"pipeline", {{"preset", "project://g4.pipeline.json"}}},
+                           {"material_route_default", "forward"}};
+    const auto from_preset = resolveRenderPipelinePreset(
+        preset_root, [&](std::string_view) { return preset(false); });
+    REQUIRE(readMaterialRouteDefault(preset_root) == MaterialRouteDefault::forward);
+    REQUIRE_FALSE(from_preset.config.contains("material_route_default"));
+
+    REQUIRE_THROWS_WITH(
+        resolveRenderPipelinePreset(
+            Json{{"pipeline", {{"preset", "project://g4.pipeline.json"}}}},
+            [&](std::string_view) { return preset(true); }),
+        Catch::Matchers::ContainsSubstring("preset config cannot own material_route_default"));
+
+    // The graph root keeps it in its rendering section, like every other key.
+    const auto graph_root = wrapLegacyRenderingConfig(
+        Json{{"material_route_default", "forward"}});
+    REQUIRE(readMaterialRouteDefault(renderingSectionOrEmpty(graph_root)) ==
+            MaterialRouteDefault::forward);
+}
+
+TEST_CASE("G-4 a render feature cannot declare material_route_default",
+          "[render-pipeline][g4]") {
+    auto feature = featureEnvelope("g4_feature");
+    feature["material_route_default"] = "forward";
+    auto config = baseConfig({"project://features/g4.json"});
+    REQUIRE_THROWS_WITH(
+        composeRenderFeatureConfig(
+            config,
+            RenderFeatureComposeDependencies{
+                .load_feature_json =
+                    [&](std::string_view) { return feature.dump(); },
+            }),
+        Catch::Matchers::ContainsSubstring("render feature cannot declare material_route_default"));
+}
+
+TEST_CASE("G-4 named refusals round-trip through the renderer's string channel",
+          "[render-pipeline][g4]") {
+    const std::vector<UnservedMaterialRoute> unserved{
+        {MaterialRouteClass::deferred_geometry, MaterialShaderContract::gbuffer_v1,
+         {describeUnservedMaterial("pelican.builtin.transparent", "", ""),
+          describeUnservedMaterial("box", "", "project://models/box.glb")}},
+        {MaterialRouteClass::forward_transparent,
+         MaterialShaderContract::forward_scene_color_v1,
+         {describeUnservedMaterial("glass", "project://materials/glass.material.json",
+                                   "")}},
+    };
+    const auto message = materialRouteUnservedMessage(unserved, "project://passes/main.json");
+    REQUIRE(message.starts_with("material_route_unserved@1: {"));
+    const auto refusal = splitCodedRefusalMessage(message);
+    REQUIRE(refusal.has_value());
+    REQUIRE(refusal->code == "material_route_unserved@1");
+    const auto &entries = refusal->fields.at("unserved");
+    REQUIRE(entries.size() == 2);
+    REQUIRE(entries[0].at("route") == "deferred_geometry");
+    REQUIRE(entries[0].at("shader_contract") == "gbuffer_v1");
+    REQUIRE(entries[0].at("materials")[0] ==
+            Json{{"name", "pelican.builtin.transparent"}, {"origin", "builtin"}});
+    REQUIRE(entries[0].at("materials")[1] ==
+            Json{{"name", "box"}, {"origin", "asset"}, {"source", "project://models/box.glb"}});
+    REQUIRE_THAT(entries[0].at("hint").get<std::string>(),
+                 Catch::Matchers::ContainsSubstring("material_route_default") &&
+                     Catch::Matchers::ContainsSubstring("deferred_geometry_v1"));
+    REQUIRE_THAT(entries[1].at("hint").get<std::string>(),
+                 Catch::Matchers::ContainsSubstring("forward_transparent_v1"));
+    REQUIRE(entries[1].at("materials")[0].at("origin") == "document");
+    REQUIRE(materialRouteUnservedHint(MaterialRouteClass::forward_opaque) ==
+            "add a forward_opaque_v1 material pass");
+
+    const auto text = materialRouteUnservedText(unserved, "project://passes/main.json");
+    REQUIRE(text == materialRouteUnservedText(refusal->fields));
+    REQUIRE_THAT(text, Catch::Matchers::StartsWith("material_route_unserved@1: ") &&
+                           Catch::Matchers::ContainsSubstring(
+                               "'pelican.builtin.transparent' (engine built-in)") &&
+                           Catch::Matchers::ContainsSubstring("Hint: set material_route_default"));
+
+    const auto unavailable = splitCodedRefusalMessage(
+        materialRouteDefaultUnavailableMessage("runtime_shader_compiler_disabled"));
+    REQUIRE(unavailable.has_value());
+    REQUIRE(unavailable->code == "material_route_default_unavailable@1");
+    REQUIRE(unavailable->fields.at("reason") == "runtime_shader_compiler_disabled");
+
+    for (const auto *other :
+         {"material '<unnamed>' requires route 'deferred_geometry'",
+          "pelican.ray_tracing.generation_rolled_back@1: staged generation was not published",
+          "Material_Route@1: {}", "code@x: {}", "code@1: [1]", "code@1: {not json"}) {
+        CAPTURE(other);
+        REQUIRE_FALSE(splitCodedRefusalMessage(other).has_value());
+    }
+}
+
 } // namespace Pelican

@@ -8,12 +8,17 @@
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/material/projectmaterialasset.hpp"
+#include "../src/core/material/materialcontainer.hpp"
+#include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/engineprimitives.hpp"
 #include "../src/core/vkcore/core.hpp"
+#include "../src/core/vkcore/renderer.hpp"
 #include "../src/project/projecttemplate.hpp"
+#include "../src/project/renderconfigsection.hpp"
 #include "vulkan_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -23,6 +28,7 @@
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <sstream>
 #include <stb_image.h>
 #include <string>
@@ -400,6 +406,244 @@ TEST_CASE("GP-5 a declared primitive takes its material from the existing materi
     const auto &plain = models.getModelTemplateByName("engine://primitives/plane");
     REQUIRE(plain.material_primitives.size() == 1);
     CHECK_FALSE(plain.material_primitives.front().material == red->material);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+namespace {
+
+// G-4: a direct root with one forward_opaque material pass and `present`,
+// which passes the pass's colour through. The forward pass clears to white,
+// so an unlit cube is a dark shape on white.
+void writeForwardOnlyProject(const std::filesystem::path &root, bool forward_default) {
+    Json rendering{
+        {"render_targets",
+         Json::array({{{"name", "scene_color"},
+                       {"extent_scale", 1.0},
+                       {"format", "R16G16B16A16_SFLOAT"},
+                       {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+                       {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}},
+                      {{"name", "scene_depth"},
+                       {"extent_scale", 1.0},
+                       {"format", "D32_SFLOAT"},
+                       {"format_class", "data"},
+                       {"usage", {"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"}}}})},
+        {"rendering_passes",
+         Json::array({{{"name", "main_render"},
+                       {"passes",
+                        Json::array({{{"name", "forward"},
+                                      {"type", "material"},
+                                      {"material_contract", "forward_opaque_v1"},
+                                      {"clear_color", {1.0, 1.0, 1.0, 1.0}},
+                                      {"output", {{"color", {"scene_color"}}, {"depth", "scene_depth"}}}},
+                                     {{"name", "present"},
+                                      {"type", "fullscreen"},
+                                      {"input", {"scene_color"}},
+                                      {"output", {{"color", {"display"}}, {"depth", nullptr}}},
+                                      {"shader",
+                                       {{"vertex", "engine://fullscreen"},
+                                        {"fragment", "project://shaders/present"}}}}})}}})},
+    };
+    if (forward_default) rendering["material_route_default"] = "forward";
+    writeFile(root / "passes/main_rendering_config.json",
+              wrapLegacyRenderingConfig(rendering).dump(2));
+    writeFile(root / "shaders/present.frag",
+              "#version 460\n#extension GL_GOOGLE_include_directive : require\n"
+              "#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\n"
+              "layout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n"
+              "PELICAN_DECLARE_INPUT_0(in_scene_color);\n\n"
+              "void main() {\n    outColor = PELICAN_TEXTURE_2D_0(in_scene_color, inUV);\n}\n");
+}
+
+} // namespace
+
+TEST_CASE("G-4 a forward-only direct root draws the basic cube once material_route_default is forward",
+          "[g4][primitives][material-routing][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("g4_forward");
+    const auto root = makeBlankProject(dir.root);
+    writeForwardOnlyProject(root, true);
+    const auto capture = dir.root / "capture.png";
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    const auto background = rpc.frame(capture);
+
+    const auto actor =
+        rpc.result("open_editor_session", {{"display_name", "G-4"}}).at("actor_id").get<std::uint64_t>();
+    const auto spawned = rpc.edit(actor, spawnCube("engine://primitives/cube"));
+    INFO(spawned.dump(2));
+    REQUIRE(spawned.at("status") == "committed");
+    const auto drawn = rpc.frame(capture);
+    CHECK(differingPixels(background, drawn) > 64);
+
+    // The cube's default material and every built-in follow the default.
+    auto &materials = GET_MODULE(MaterialContainer);
+    const auto &cube = GET_MODULE(ModelAssetContainer).getModelTemplateByName("engine://primitives/cube");
+    REQUIRE(cube.material_primitives.size() == 1);
+    CHECK(materials.routeForMaterial(cube.material_primitives.front().material) ==
+          MaterialRouteClass::forward_opaque);
+    auto &standard = GET_MODULE(StandardMaterialResource);
+    CHECK(materials.routeForMaterial(standard.standardTransparentMaterial()) ==
+          MaterialRouteClass::forward_opaque);
+    for (const auto *suffix : {"sphere", "skinned_fallback", "default"}) {
+        CAPTURE(suffix);
+        const auto info = standard.builtinMaterialInfo(suffix, standard.whiteTexture());
+        CHECK(info.route == MaterialRouteClass::forward_opaque);
+        CHECK(info.shader_contract == MaterialShaderContract::forward_scene_color_v1);
+        CHECK(info.name == std::string{"pelican.builtin."} + suffix);
+        CHECK(info.frag_shader != standard.standardFragShader());
+    }
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+TEST_CASE("G-4 a forward-only direct root without the forward default stops loading by name",
+          "[g4][primitives][material-routing][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("g4_auto");
+    const auto root = makeBlankProject(dir.root);
+    writeForwardOnlyProject(root, false);
+
+    std::string failure;
+    try {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        Rpc rpc;
+        const auto loaded = rpc.call("load_scene", {{"name", "default_scene"}});
+        if (loaded.contains("error")) {
+            failure = loaded.dump();
+        } else {
+            // The composition root's boot step (appflow/loop.cpp) makes the
+            // engine's built-in materials before the first frame.
+            GET_MODULE(Renderer).prepareRuntimeModules();
+        }
+        if (auto *core = FastModuleContainer::tryGet<VulkanManageCore>()) core->waitIdle();
+    } catch (const std::exception &error) {
+        failure = error.what();
+    }
+    INFO(failure);
+    CHECK(failure.find("material_route_unserved@1") != std::string::npos);
+    CHECK(failure.find("'pelican.builtin.transparent' (engine built-in)") != std::string::npos);
+    CHECK(failure.find("route 'deferred_geometry'") != std::string::npos);
+    CHECK(failure.find("Hint: set material_route_default to ") != std::string::npos);
+}
+
+TEST_CASE("G-4 an edit that leaves the engine's materials without a pass is refused through the running renderer",
+          "[g4][primitives][material-routing][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("g4_edit");
+    const auto root = makeBlankProject(dir.root);
+    // The blank project's own rendering section: `present` only, so no
+    // material pass and nothing for the previous generation to consume. The
+    // two targets a forward pass needs are declared already.
+    writeForwardOnlyProject(root, false);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    const auto present_reads = [&](bool scene_color) {
+        auto authored = Json::parse(readFile(rendering_path));
+        auto &passes = renderingSectionOf(authored).at("rendering_passes").at(0).at("passes");
+        if (passes.at(0).at("name") == "forward" && !scene_color) passes.erase(passes.begin());
+        for (auto &pass : passes)
+            if (pass.at("name") == "present")
+                pass["input"] = scene_color ? Json::array({"scene_color"}) : Json::array();
+        writeFile(rendering_path, authored.dump(2));
+    };
+    const auto present_frag = readFile(root / "shaders/present.frag");
+    present_reads(false);
+    writeFile(root / "shaders/present.frag",
+              "#version 460\nlayout(location = 0) in vec2 inUV;\n"
+              "layout(location = 0) out vec4 outColor;\n"
+              "void main() { outColor = vec4(inUV.x, inUV.y, 0.5, 1.0); }\n");
+    const auto capture = dir.root / "capture.png";
+
+    const auto forward_pass = Json{{"name", "forward"},
+                                   {"type", "material"},
+                                   {"material_contract", "forward_opaque_v1"},
+                                   {"clear_color", {1.0, 1.0, 1.0, 1.0}},
+                                   {"output", {{"color", {"scene_color"}}, {"depth", "scene_depth"}}}};
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        GET_MODULE(Renderer).prepareRuntimeModules();
+        (void)rpc.result("step_frame");
+        const auto add = [&](std::optional<std::string> route_default) {
+            const auto context = rpc.result("get_render_authoring_context");
+            Json params{{"base_source_digest", context.at("source_digest").at("hex")},
+                        {"graph", "main_render"},
+                        {"insert", "before:present"},
+                        {"pass", forward_pass}};
+            if (route_default) params["material_route_default"] = *route_default;
+            const auto accepted = rpc.result("add_authored_pass", params);
+            INFO(accepted.dump(2));
+            REQUIRE(accepted.at("status") == "accepted");
+            for (int attempt = 0; attempt < 8; ++attempt) {
+                (void)rpc.result("step_frame");
+                auto result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+                if (result.value("status", std::string{}) != "pending") return result;
+            }
+            FAIL("the authored pass ticket stayed pending");
+            return Json{};
+        };
+
+        // G-2's order: a cube is spawned while nothing draws materials, so
+        // its default grey is lowered deferred and registered unchecked.
+        const auto actor = rpc.result("open_editor_session", {{"display_name", "G-4"}})
+                               .at("actor_id")
+                               .get<std::uint64_t>();
+        const auto spawned = rpc.edit(actor, spawnCube("engine://primitives/cube"));
+        INFO(spawned.dump(2));
+        REQUIRE(spawned.at("status") == "committed");
+
+        // The previous generation drew no material at all. A forward-only
+        // pipeline still leaves the built-in material, and the cube's, without
+        // a pass: the edit is refused instead of leaving them undrawn.
+        const auto root_before = readFile(rendering_path);
+        const auto refused = add(std::nullopt);
+        INFO(refused.dump(2));
+        REQUIRE(refused.at("status") == "rejected");
+        const auto &error = refused.at("error");
+        CHECK(error.at("code") == "material_route_unserved@1");
+        REQUIRE(error.at("unserved").size() == 1);
+        CHECK(error.at("unserved").at(0).at("route") == "deferred_geometry");
+        const auto names = error.at("unserved").at(0).at("materials").dump();
+        CHECK(names.find("pelican.builtin.transparent") != std::string::npos);
+        CHECK(names.find(std::string{enginePrimitiveDefaultMaterialName}) != std::string::npos);
+        CHECK(names.find("engine://primitives/cube") != std::string::npos);
+        CHECK_THAT(error.at("hint").get<std::string>(),
+                   Catch::Matchers::ContainsSubstring("material_route_default"));
+        CHECK(readFile(rendering_path) == root_before);
+        CHECK_FALSE(std::filesystem::exists(root / "passes/authoring"));
+
+        // With the forward default in the same ticket, the candidate is
+        // judged by the routes the restart will give every material.
+        const auto committed = add(std::string{"forward"});
+        INFO(committed.dump(2));
+        REQUIRE(committed.at("committed") == true);
+        CHECK(committed.at("restart_required") == true);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    CHECK(readMaterialRouteDefault(renderingSectionOrEmpty(
+              Json::parse(readFile(rendering_path)))) == MaterialRouteDefault::forward);
+    // present reads what the new pass draws, as the scenario's drag makes it.
+    present_reads(true);
+    writeFile(root / "shaders/present.frag", present_frag);
+
+    // The restart: the same project, lowered forward, draws the cube.
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    const auto background = rpc.frame(capture);
+    const auto actor =
+        rpc.result("open_editor_session", {{"display_name", "G-4"}}).at("actor_id").get<std::uint64_t>();
+    const auto spawned = rpc.edit(actor, spawnCube("engine://primitives/cube"));
+    INFO(spawned.dump(2));
+    REQUIRE(spawned.at("status") == "committed");
+    CHECK(differingPixels(background, rpc.frame(capture)) > 64);
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 

@@ -1,6 +1,7 @@
 #include "materialvaluesreloadhandler.hpp"
 
 #include "../log.hpp"
+#include "material.hpp"
 #include "../vkcore/core.hpp"
 
 #include <algorithm>
@@ -107,7 +108,8 @@ LoweredMaterialBinding lowerMaterialBinding(
                 "' was not provided");
         }
         auto lowered = lowerMaterialVariant(
-            material, variant, surface->second);
+            material, variant, surface->second,
+            projectMaterialLoweringCapabilities());
         return {variant.surface, std::move(lowered.material)};
     }
     if (!material.surface) {
@@ -122,7 +124,8 @@ LoweredMaterialBinding lowerMaterialBinding(
             *material.surface + "' was not provided");
     }
     return {*material.surface,
-            lowerMaterial(material, surface->second)};
+            lowerMaterial(material, surface->second,
+                          projectMaterialLoweringCapabilities())};
 }
 
 std::string nonValuesSignature(const MaterialDefinition &material) {

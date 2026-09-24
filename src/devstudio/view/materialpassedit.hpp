@@ -66,7 +66,28 @@ struct MaterialPassFormValues {
     // One target name per slot of materialPassSlots(contract), empty where
     // nothing is chosen yet.
     std::vector<std::string> targets;
+    // G-4: Save also sets the project's material_route_default to "forward",
+    // in the same change as the pass. Only meaningful while
+    // materialPassOffersForwardDefault holds.
+    bool forward_default = false;
 };
+
+// G-4: whether some material pass of the pipeline takes the deferred_geometry
+// route: a deferred_geometry_v1 pass, or a legacy G-buffer pass (which accepts
+// every material with a G-buffer shader contract).
+bool materialPassPipelineHasDeferredPass(const FramePlanAuthoring &authoring);
+
+// G-4: the form offers "draw this project's materials forward" for a Forward
+// opaque pass in a pipeline that has no pass for deferred materials. Without
+// it, the engine's built-in materials and every automatic material have no
+// pass to be drawn by, and the engine refuses the pass.
+bool materialPassOffersForwardDefault(const FramePlanAuthoring &authoring,
+                                      const std::string &contract);
+
+// G-4: the notice for a material_route_unserved@1 refusal: which materials
+// have no pass, on which route, and what to do about it. Empty for any other
+// error.
+std::string materialRouteUnservedNotice(const nlohmann::json &error);
 
 // "Create missing targets": every empty slot gets the slot's default name, or
 // the default with _2, _3, ... when that name is declared already or another

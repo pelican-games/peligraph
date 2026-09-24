@@ -20,6 +20,8 @@ namespace Pelican {
 
 class ProjectBasicConfigProjectionTarget;
 class PathResolver;
+// Defined in project/renderpipeline.hpp.
+enum class MaterialRouteDefault;
 
 enum class SceneSaveErrorCode : std::uint8_t {
     ExternalModification,
@@ -122,6 +124,9 @@ DECLARE_MODULE(ProjectBasicConfig) {
     std::optional<SceneImportFaultPoint> scene_import_fault;
     mutable std::optional<std::string> asset_data_json;
     mutable std::optional<std::string> rendering_config_json;
+    // G-4: read from the rendering document once per engine start. A
+    // published edit does not change it; the engine restarts to apply one.
+    mutable std::optional<MaterialRouteDefault> material_route_default;
     mutable std::optional<std::string> ui_config_json;
     mutable std::optional<std::string> input_actions_json;
     mutable std::unordered_map<std::string, std::string> input_profile_jsons;
@@ -180,6 +185,12 @@ DECLARE_MODULE(ProjectBasicConfig) {
     std::string renderingConfigReference() const;
     void publishRenderingConfigJson(
         std::string prepared_json) noexcept;
+    // G-4: the rendering document's `material_route_default`, read once at
+    // engine start by the renderer (snapshotMaterialRouteDefault, which
+    // refuses a bad value by name). Before that, or without a renderer, it is
+    // `auto`. A published edit never changes it; the engine restarts.
+    void snapshotMaterialRouteDefault() const;
+    MaterialRouteDefault materialRouteDefault() const;
     std::string defaultRenderingPass() const;
     std::string uiConfigJson() const;
     std::optional<std::string> inputActionsJson() const;

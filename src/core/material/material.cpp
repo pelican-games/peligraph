@@ -1,8 +1,18 @@
 #include "material.hpp"
+#include "../loader/basicconfig.hpp"
 
 #include <stdexcept>
 
 namespace Pelican {
+
+MaterialLoweringCapabilities projectMaterialLoweringCapabilities() {
+    MaterialLoweringCapabilities capabilities;
+    if (const auto *config =
+            FastModuleContainer::tryGet<ProjectBasicConfig>()) {
+        capabilities.route_default = config->materialRouteDefault();
+    }
+    return capabilities;
+}
 
 void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowered) {
     destination.tags = lowered.tags;
@@ -10,6 +20,7 @@ void applyLoweredMaterial(MaterialInfo &destination, const LoweredMaterial &lowe
     destination.custom_values = lowered.values;
     destination.render_state = lowered.render_state;
     destination.route = lowered.route;
+    destination.default_routes = lowered.default_routes;
     // This overload is paired with SurfacePass::main.  Its five-MRT payload
     // is the legacy lit-material contract, even though it has the same
     // attachment count as the deferred G-buffer variant.

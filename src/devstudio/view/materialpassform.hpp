@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+class QCheckBox;
 class QComboBox;
 class QGridLayout;
 class QLabel;
@@ -50,6 +51,7 @@ class MaterialPassForm final : public QDialog {
     void layoutSlots();
     void updateSlotStates();
     void fillMissing();
+    void updateForwardDefault();
 
     Submit submit_;
     std::string graph_;
@@ -70,6 +72,9 @@ class MaterialPassForm final : public QDialog {
     QWidget *slot_box_ = nullptr;
     QGridLayout *slot_layout_ = nullptr;
     QPushButton *create_missing_ = nullptr;
+    // G-4: shown for a Forward opaque pass when no pass takes deferred
+    // materials; on by default.
+    QCheckBox *forward_default_ = nullptr;
     QLabel *notice_ = nullptr;
     QLabel *error_ = nullptr;
     QPushButton *ok_ = nullptr;

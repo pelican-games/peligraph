@@ -66,7 +66,88 @@ enum class MaterialRouteReason {
     automatic_custom_lighting,
     explicit_deferred,
     explicit_forward,
+    // G-4: an automatic material routed by the rendering document's
+    // `material_route_default: "forward"` rather than by its own render_path.
+    default_forward,
 };
+
+// G-4: the render_path an automatic material receives.  `automatic` is the
+// behavior from before the key existed; `forward` sends every automatic
+// material through the explicit-forward route.  An explicit render_path on a
+// material always wins.
+enum class MaterialRouteDefault {
+    automatic,
+    forward,
+};
+
+inline constexpr std::string_view materialRouteDefaultKey =
+    "material_route_default";
+
+std::string_view materialRouteDefaultName(MaterialRouteDefault value);
+
+// Reads the key from a rendering section root (a direct root, or the root that
+// selects a preset). Absent means `automatic`; any value other than "auto" or
+// "forward" is refused by name.
+MaterialRouteDefault readMaterialRouteDefault(
+    const nlohmann::json &rendering_section);
+
+// G-4: named refusals. An edit ticket carries them through the renderer's
+// string channel as "<code>: <JSON fields>"; the editor's completion handler
+// splits them back into a rejection code and fields
+// (splitCodedRefusalMessage). The load-time fatal uses the same code with
+// readable text (materialRouteUnservedText).
+inline constexpr std::string_view materialRouteUnservedCode =
+    "material_route_unserved@1";
+inline constexpr std::string_view materialRouteDefaultUnavailableCode =
+    "material_route_default_unavailable@1";
+
+// Built-in engine materials carry names under this prefix so a refusal can
+// name them instead of printing "<unnamed>".
+inline constexpr std::string_view builtinMaterialNamePrefix =
+    "pelican.builtin.";
+
+struct UnservedMaterial {
+    std::string name;
+    // "builtin", "document", "asset" or "unknown".
+    std::string origin;
+    // The document or asset reference; empty for a built-in.
+    std::string source;
+};
+
+struct UnservedMaterialRoute {
+    MaterialRouteClass route = MaterialRouteClass::deferred_geometry;
+    MaterialShaderContract shader_contract = MaterialShaderContract::gbuffer_v1;
+    std::vector<UnservedMaterial> materials;
+};
+
+UnservedMaterial describeUnservedMaterial(std::string_view name,
+                                          std::string_view source_document,
+                                          std::string_view source_asset);
+// What to add or set so the route has a receiving pass.
+std::string materialRouteUnservedHint(MaterialRouteClass route);
+// {"rendering_config", "unserved": [{route, shader_contract, materials: [{name,
+// origin, source?}], hint}], "hint"}.
+nlohmann::json materialRouteUnservedFields(
+    const std::vector<UnservedMaterialRoute> &unserved,
+    std::string_view rendering_config);
+// "material_route_unserved@1: <fields JSON>".
+std::string materialRouteUnservedMessage(
+    const std::vector<UnservedMaterialRoute> &unserved,
+    std::string_view rendering_config);
+// "material_route_unserved@1: material 'x' (...) requires route ... Hint: ...".
+std::string materialRouteUnservedText(
+    const std::vector<UnservedMaterialRoute> &unserved,
+    std::string_view rendering_config);
+// The same text from the fields a ticket rejection carries.
+std::string materialRouteUnservedText(const nlohmann::json &fields);
+std::string materialRouteDefaultUnavailableMessage(std::string_view reason);
+
+struct CodedRefusal {
+    std::string code;
+    nlohmann::json fields;
+};
+// Recognizes "<name>@<version>: <JSON object>" and nothing else.
+std::optional<CodedRefusal> splitCodedRefusalMessage(std::string_view message);
 
 enum class DeferredMaterialModel {
     standard_pbr_v1,

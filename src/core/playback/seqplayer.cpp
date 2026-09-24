@@ -163,15 +163,8 @@ CommonPolygonVertData makeSphereGeometry(uint32_t segments = 24, uint32_t rings 
 ModelTemplate createBuiltinSphereModel() {
     auto &std_material = GET_MODULE(StandardMaterialResource);
     auto &material_container = GET_MODULE(MaterialContainer);
-    const auto material = material_container.registerMaterial(MaterialInfo{
-        .vert_shader = std_material.standardVertShader(),
-        .frag_shader = std_material.standardFragShader(),
-        .base_color_texture = std_material.whiteTexture(),
-        .metallic_roughness_texture = std_material.metallicRoughnessDefaultTexture(),
-        .normal_texture = std_material.normalDefaultTexture(),
-        .emissive_texture = std_material.emissiveDefaultTexture(),
-        .occlusion_texture = std_material.occlusionDefaultTexture(),
-    });
+    const auto material = material_container.registerMaterial(
+        std_material.builtinMaterialInfo("sphere", std_material.whiteTexture()));
 
     auto primitive = GET_MODULE(VertBufContainer).addPrimitiveEntry(makeSphereGeometry());
 

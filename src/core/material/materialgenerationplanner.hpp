@@ -60,18 +60,6 @@ materialBindingsForGeneration(
     MaterialShaderContract shader_contract,
     const std::optional<std::string> &exact_pass);
 
-// The acceptance rule shared by the validator and the planner: the passes
-// a candidate generation offers this material, or nullopt when the graph
-// legitimately does not draw it at all. Throws when the candidate drops a
-// route the published graph did consume.
-std::optional<std::vector<MaterialPassRenderingBinding>>
-resolveLiveMaterialBindings(
-    const RendererRuntimeGeneration &generation,
-    const RendererRuntimeGeneration *previous,
-    GlobalMaterialId material_id,
-    MaterialRouteClass route,
-    MaterialShaderContract shader_contract,
-    const std::optional<std::string> &exact_pass);
 
 std::vector<MaterialPassShaderInputBinding>
 resolveGenerationShaderInputs(
@@ -135,6 +123,35 @@ struct MaterialGenerationPlanner {
         const RendererRuntimeGeneration &generation);
 
   private:
+    // G-4: the route and shader contract a live material has under the
+    // candidate's material_route_default. `live` is false when the material
+    // follows the default and the candidate moves it to another route; such a
+    // material keeps its live pipeline until the engine restarts.
+    struct CandidateRoute {
+        MaterialRouteClass route;
+        MaterialShaderContract shader_contract;
+        bool live = true;
+    };
+    static CandidateRoute candidateRoute(
+        const MaterialContainer &container,
+        const MaterialContainer::InternalMaterialInfo &material);
+    // G-4: every registered material, built-ins included, needs a receiving
+    // pass whenever the candidate has any material pass. Collects all the
+    // materials that have none and throws material_route_unserved@1 once.
+    static void requireEveryMaterialServed(
+        const MaterialContainer &container,
+        const RendererRuntimeGeneration &generation);
+    // The acceptance rule shared by registration, the validator and the
+    // planner (G-4): the passes a candidate generation offers this material,
+    // or nullopt when the generation has no material pass at all (an RT-only
+    // graph draws no material). A generation with any material pass must
+    // serve every registered material; otherwise this throws
+    // material_route_unserved@1.
+    static std::optional<std::vector<MaterialPassRenderingBinding>>
+    resolveLiveMaterialBindings(
+        const MaterialContainer &container,
+        const RendererRuntimeGeneration &generation,
+        const MaterialContainer::InternalMaterialInfo &material);
     // The live pipeline contract of one registered material, spelled once
     // instead of once per caller.
     static MaterialPipelineRenderingContract
