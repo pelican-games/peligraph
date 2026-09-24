@@ -69,6 +69,7 @@
 #include "../src/core/userpublic/details/component/registerer.hpp"
 #include "../src/core/userpublic/details/ecs/componentdeclare.hpp"
 #include "../src/core/userpublic/deterministicrng.hpp"
+#include "../src/core/userpublic/gamecontext.hpp"
 #include "../src/core/userpublic/pelican_core.hpp"
 #include "gltf_fragment_fixture.hpp"
 #include "morph_fixture.hpp"
@@ -878,6 +879,11 @@ TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
                 auto *transform = GET_MODULE(ECSCore).getTemplatePublicModule().tryComponent<TransformComponent>(*entity);
                 REQUIRE(transform);
                 transform->pos.z = 9.0F;
+                // GP-1: a scene object carries a localtransform, and the
+                // transform update recomposes the world from it.
+                auto *local = GET_MODULE(ECSCore).getTemplatePublicModule().tryComponent<LocalTransformComponent>(*entity);
+                REQUIRE(local);
+                local->pos.z = 9.0F;
             }
             expected_depth = 9;
             (void)sample(false);
@@ -4795,6 +4801,121 @@ TEST_CASE(
 }
 #endif
 
+#if PELICAN_WITH_RPC
+// GP-1 acceptance 3 and the save half of 4. The scene has no parent/child
+// link anywhere, so before GP-1 neither object carried a localtransform.
+// Everything below goes through the production editor composition: RPC edit,
+// the projection adapters, the ECS frame update, and save_scene.
+TEST_CASE(
+    "GP-1 editor-moved objects outside any hierarchy stay put across frames and save without localtransform",
+    "[gp1][rpc][production][localtransform][gpu]") {
+    setupLogger();
+    Wp374aProjectRoot project{"gp1_editor_transform"};
+    writeWp374aProject(project.path, std::nullopt, false, false, true);
+    std::uint64_t rpc_id = 910000;
+
+    FastModuleContainer modules;
+    loadWp374aScene(project.path);
+    auto service = makeEditorRuntimeService();
+    Wp375RuntimeScopeGuard runtime_scope{service};
+    const auto actor =
+        wp375OpenActor(*service, rpc_id, "GP-1 editor transform");
+    const GameContext ctx;
+    const auto world_of = [&](std::string_view name) {
+        const auto ref = ctx.objects().resolve(name);
+        INFO("resolve " << name << ": " << ref.errorName());
+        REQUIRE(ref.ok());
+        const auto world = ctx.objects().worldTransform(ref.value());
+        INFO("worldTransform " << name << ": " << world.errorName());
+        REQUIRE(world.ok());
+        return world.value();
+    };
+    const auto frames = [] {
+        GET_MODULE(ECSCore).update();
+        GET_MODULE(ECSCore).update();
+    };
+
+    // An object spawned by the editor with no parent and no child. Its
+    // localtransform is injected at spawn; the projection writes it with the
+    // world, or the next transform update moves the object to the zero local.
+    commitWp374aEdit(
+        *service, rpc_id, actor, wp375SceneRevision(*service, rpc_id),
+        Json::array(
+            {{{"op", "spawn"},
+              {"scene_id", "main"},
+              {"declaration_index", 1},
+              {"object",
+               {{"name", "Floating"},
+                {"components",
+                 Json::array({{{"name", "transform"},
+                               {"pos", {2.0, 1.0, -3.0}},
+                               {"rotation", {0.0, 0.0, 0.0, 1.0}},
+                               {"scale", {1.5, 1.5, 1.5}}}})}}}}}));
+    frames();
+    const auto spawned = world_of("Floating");
+    CHECK(spawned.pos.x == Catch::Approx(2.0));
+    CHECK(spawned.pos.y == Catch::Approx(1.0));
+    CHECK(spawned.pos.z == Catch::Approx(-3.0));
+    CHECK(spawned.scale.x == Catch::Approx(1.5));
+
+    // set_component_value on the loaded root and on the spawned one.
+    const auto object_id = [&](std::string_view name) {
+        return wp375Components(*service, rpc_id, name)
+            .at("authoring_object_id")
+            .get<std::uint64_t>();
+    };
+    commitWp374aEdit(
+        *service, rpc_id, actor, wp375SceneRevision(*service, rpc_id),
+        Json::array({{{"op", "set_component_value"},
+                      {"object_id", object_id("Chair")},
+                      {"component_slot", "transform"},
+                      {"field_path", "/pos"},
+                      {"value", {3.0, 0.5, 0.0}}},
+                     {{"op", "set_component_value"},
+                      {"object_id", object_id("Floating")},
+                      {"component_slot", "transform"},
+                      {"field_path", "/pos"},
+                      {"value", {-4.0, 1.0, 0.0}}}}));
+    frames();
+    const auto chair = world_of("Chair");
+    CHECK(chair.pos.x == Catch::Approx(3.0));
+    CHECK(chair.pos.y == Catch::Approx(0.5));
+    const auto floating = world_of("Floating");
+    CHECK(floating.pos.x == Catch::Approx(-4.0));
+    CHECK(floating.pos.y == Catch::Approx(1.0));
+    CHECK(floating.scale.x == Catch::Approx(1.5));
+
+    // Both carry a localtransform the game can write, and the write sticks.
+    const auto chair_id = ctx.objects().materialize(
+        ctx.objects().resolve("Chair").value());
+    REQUIRE(chair_id.ok());
+    REQUIRE(ctx.setLocalTransform(
+        chair_id.value(),
+        LocalTransformComponent{.scale = {1.0f, 1.0f, 1.0f},
+                                .rotation = {0.0f, 0.0f, 0.0f, 1.0f},
+                                .pos = {7.0f, 0.0f, 0.0f},
+                                .parent = invalidEntityId}));
+    frames();
+    CHECK(world_of("Chair").pos.x == Catch::Approx(7.0));
+
+    // The saved document holds what was authored and nothing the runtime
+    // added: no object carries a localtransform component.
+    wp375Save(*service, rpc_id);
+    const auto saved = Json::parse(readWp374aText(project.path / "scene.json"));
+    const auto &objects = saved.at("scenes").at("main").at("objects");
+    REQUIRE(objects.size() == 2);
+    for (const auto &object : objects) {
+        CAPTURE(object.dump());
+        for (const auto &component : object.at("components")) {
+            CHECK(component.at("name") != "localtransform");
+        }
+    }
+    REQUIRE(std::ranges::any_of(objects, [](const Json &object) {
+        return object.at("name") == "Floating";
+    }));
+}
+#endif
+
 #ifdef PELICAN_WP380_BEHAVIOR_FIXTURE
 namespace {
 
@@ -6890,6 +7011,10 @@ void main() {
     auto *transform = GET_MODULE(ECSCore).getTemplatePublicModule().tryComponent<TransformComponent>(*entity);
     REQUIRE(transform);
     transform->pos.z = 10.0f;
+    // GP-1: the transform update recomposes the world from the localtransform.
+    auto *local = GET_MODULE(ECSCore).getTemplatePublicModule().tryComponent<LocalTransformComponent>(*entity);
+    REQUIRE(local);
+    local->pos.z = 10.0f;
     const auto moved = sample(8.0f);
     if (world) CHECK(moved.blas_build_count > initial.blas_build_count);
     CHECK(sample(8.0f).blas_build_count == moved.blas_build_count);
@@ -7056,6 +7181,10 @@ void main() {
     auto *live_transform = GET_MODULE(ECSCore).getTemplatePublicModule().tryComponent<TransformComponent>(*entity);
     REQUIRE(live_transform);
     live_transform->pos.z = 2.0f;
+    // GP-1: the transform update recomposes the world from the localtransform.
+    auto *live_local = GET_MODULE(ECSCore).getTemplatePublicModule().tryComponent<LocalTransformComponent>(*entity);
+    REQUIRE(live_local);
+    live_local->pos.z = 2.0f;
     const auto check_live_transform = [&] {
         const auto inventory = GET_MODULE(PolygonInstanceContainer).rayAsInventory();
         REQUIRE(inventory);

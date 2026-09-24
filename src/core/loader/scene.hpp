@@ -4,6 +4,7 @@
 #include "../model/modeltemplate.hpp"
 #include "resolvedscene.hpp"
 #include "sceneload.hpp"
+#include "../userpublic/object_ref.hpp"
 #include "../userpublic/valuegraph.hpp"
 #include <details/ecs/entity.hpp>
 
@@ -190,6 +191,13 @@ DECLARE_MODULE(SceneLoader) {
     const std::optional<SceneId> &pendingSceneForTesting() const noexcept {
         return pending_scene_id;
     }
+    // GP-1: the one place a name becomes an ObjectRef. The name is looked up
+    // in the scene run that is live -- inside a scene load's callbacks, the
+    // run being loaded -- and the first declared object of that name wins.
+    Resolved<ObjectRef> resolveObject(std::string_view name) const;
+    // The live object a ref names, refused as stale when the ref belongs to
+    // another scene run.
+    Resolved<GameObjectId> materializeObject(const ObjectRef &ref) const;
     std::optional<GameObjectId> objectId(std::string_view name) const;
     std::optional<std::string> objectName(GameObjectId object) const;
     bool hasObjectTransform(std::string_view name) const;

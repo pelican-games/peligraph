@@ -201,6 +201,24 @@
     },
     {
       "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "ObjectsContext",
+      "signature": "Resolved<ObjectRef>resolve(std::string_view name)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "ObjectsContext",
+      "signature": "Resolved<GameObjectId>materialize(const ObjectRef&ref)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "ObjectsContext",
+      "signature": "Resolved<WorldTransform>worldTransform(const ObjectRef&ref)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
       "class": "GameContext",
       "signature": "bool actionsConfigured()const",
       "classification": "getter"
@@ -433,6 +451,12 @@
       "header": "src/core/userpublic/gamecontext.hpp",
       "class": "GameContext",
       "signature": "RenderContext render()const noexcept",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "ObjectsContext objects()const noexcept",
       "classification": "getter"
     },
     {

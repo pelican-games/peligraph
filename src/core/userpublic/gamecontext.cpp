@@ -166,6 +166,28 @@ bool GameContext::setSpriteTexture(GameObjectId id, std::string_view texture) co
     return ecs.setComponent<SpriteViewComponent>(id, replacement);
 }
 
+Resolved<ObjectRef> ObjectsContext::resolve(std::string_view name) const {
+    return GET_MODULE(SceneLoader).resolveObject(name);
+}
+
+Resolved<GameObjectId> ObjectsContext::materialize(const ObjectRef &ref) const {
+    return GET_MODULE(SceneLoader).materializeObject(ref);
+}
+
+Resolved<WorldTransform> ObjectsContext::worldTransform(const ObjectRef &ref) const {
+    const auto object = materialize(ref);
+    if (!object) return object.error();
+    const auto *world = GET_MODULE(ECSCore).getTemplatePublicModule()
+                            .tryComponent<TransformComponent>(*object.get());
+    if (world == nullptr) return ObjectError::missing_capability;
+    return WorldTransform{
+        .pos = vec3{world->pos.x, world->pos.y, world->pos.z},
+        .rotation = quat{world->rotation.x, world->rotation.y,
+                         world->rotation.z, world->rotation.w},
+        .scale = vec3{world->scale.x, world->scale.y, world->scale.z},
+    };
+}
+
 bool RenderContext::setDirectionalLightDirection(std::string_view name, vec3 direction) const {
     return GET_MODULE(LightContainer).setDirectionalLightDirection(
         std::string{name}, glm::vec3{direction.x, direction.y, direction.z});

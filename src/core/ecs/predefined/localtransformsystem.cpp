@@ -2,6 +2,7 @@
 
 #include "../core.hpp"
 #include "../../geomhelper/geomhelper.hpp"
+#include "../../loader/componentcodec.hpp"
 
 #include <stdexcept>
 #include <unordered_map>
@@ -9,6 +10,14 @@
 namespace Pelican {
 
 namespace {
+
+TransformComponent composeFromLocal(const TransformComponent *parent_world,
+                                    const LocalTransformComponent &local) noexcept {
+    return composeWorldTransform(parent_world,
+                                 TransformComponent{.pos = to_glm(local.pos),
+                                                    .rotation = to_glm(local.rotation),
+                                                    .scale = to_glm(local.scale)});
+}
 
 void updateTransformRecursively(EntityId entity_id, TransformComponent &world,
                                 LocalTransformComponent &local,
@@ -23,23 +32,22 @@ void updateTransformRecursively(EntityId entity_id, TransformComponent &world,
     }
     state[entity_id] = 1;
 
-    glm::vec3 parent_pos{0.0f};
-    glm::quat parent_rotation{1.0f, 0.0f, 0.0f, 0.0f};
-    glm::vec3 parent_scale{1.0f};
+    const TransformComponent *parent_world = nullptr;
     if (local.parent != invalidEntityId) {
-        if (auto *parent_world = ecs.tryComponent<TransformComponent>(local.parent)) {
+        if (auto *parent = ecs.tryComponent<TransformComponent>(local.parent)) {
             if (auto *parent_local = ecs.tryComponent<LocalTransformComponent>(local.parent)) {
-                updateTransformRecursively(local.parent, *parent_world, *parent_local, ecs, state);
+                updateTransformRecursively(local.parent, *parent, *parent_local, ecs, state);
             }
-            parent_pos = parent_world->pos;
-            parent_rotation = parent_world->rotation;
-            parent_scale = parent_world->scale;
+            parent_world = parent;
         }
     }
 
-    world.scale = parent_scale * to_glm(local.scale);
-    world.rotation = parent_rotation * to_glm(local.rotation);
-    world.pos = parent_pos + parent_rotation * (parent_scale * to_glm(local.pos));
+    // GP-1: every scene object with a transform now carries a localtransform,
+    // so this pass decides the world transform of roots too. It composes
+    // through the same function scene load uses, so a root recomputed here
+    // lands on the exact world its load produced (a near-unit authored
+    // rotation included) instead of drifting on the first frame.
+    world = composeFromLocal(parent_world, local);
     state[entity_id] = 2;
 }
 
@@ -60,6 +68,13 @@ void LocalTransformSystem::process(Query chunks) {
         auto localtransforms = std::get<LocalTransformComponent *>(chunk.components);
 
         for (size_t i = 0; i < chunk.count; ++i) {
+            // A root needs no parent walk and no visit bookkeeping: most scene
+            // objects are roots now that every one carries a localtransform,
+            // and recomputing one again as some child's parent is idempotent.
+            if (localtransforms[i].parent == invalidEntityId) {
+                transforms[i] = composeFromLocal(nullptr, localtransforms[i]);
+                continue;
+            }
             updateTransformRecursively(entity_ids[i], transforms[i], localtransforms[i], *ecs, state);
         }
     }

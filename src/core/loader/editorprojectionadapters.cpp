@@ -263,7 +263,10 @@ struct SceneObjectProjectionAdapter::Impl {
             throw std::runtime_error(
                 "hierarchy object spawn requires a transform component");
         }
-        if (hierarchy && !has_local) {
+        // GP-1: a spawned object with a transform carries a localtransform,
+        // as a loaded one does, whether or not it has a parent or a child.
+        // It is runtime state only and never enters the authored object.
+        if (has_transform && !has_local) {
             const auto id = components.getComponentIdByName("localtransform");
             loads.push_back(SpawnLoad{
                 .name = "localtransform",
@@ -326,7 +329,7 @@ struct SceneObjectProjectionAdapter::Impl {
                     LocalTransformComponent local{};
                     TransformCodecTarget target{
                         .world = &world,
-                        .local = hierarchy ? &local : nullptr,
+                        .local = &local,
                         .parent_world = parent_world,
                     };
                     transform_load->codec->applyRuntime(
@@ -376,9 +379,12 @@ struct SceneObjectProjectionAdapter::Impl {
                     }
                 }
                 if (transform_load != nullptr) {
+                    // The local is written with the world: the next transform
+                    // update recomputes the world from it, and a local left at
+                    // its zero value would move the object there.
                     TransformCodecTarget target{
                         .world = world,
-                        .local = hierarchy ? local : nullptr,
+                        .local = local,
                         .parent_world = parent_world,
                     };
                     transform_load->codec->applyRuntime(

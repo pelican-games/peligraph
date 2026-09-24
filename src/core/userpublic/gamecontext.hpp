@@ -8,6 +8,7 @@
 #include "export.hpp"
 #include "events.hpp"
 #include "gameobjects.hpp"
+#include "object_ref.hpp"
 #include "userinput.hpp"
 #include <handle.hpp>
 #include <phys/physquery.hpp>
@@ -135,6 +136,34 @@ class PELICAN_API RenderContext {
                                     std::uint32_t height, std::uint32_t depth) const;
 };
 
+// Scene objects found by name. Reached through GameContext::objects().
+//
+// resolve() looks a name up once, in the scene that is live (inside a scene
+// load's callbacks, the scene being loaded), and returns a ref bound to that
+// scene run. When several objects share a name, the first one the scene
+// declares is the one resolved. A name the scene does not declare is
+// object.not_materialized@1.
+//
+// materialize() and worldTransform() refuse a ref from an earlier scene run
+// -- the scene was loaded or reloaded since it was resolved -- with
+// object.stale_authority@1, and a declared object that has no live runtime
+// object (removed, or light-only) with object.not_materialized@1.
+// worldTransform() of a live object without a transform is
+// object.missing_capability@1.
+//
+// worldTransform() reads the world transform as it stands, which the
+// transform update recomputes once per frame. setLocalTransform() writes the
+// object's own world transform at once but as if it had no parent; its
+// parent's placement, and the new placement of its children, arrive at the
+// next transform update. Until then a read of a parented object, or of a
+// child of the moved object, lags by a frame.
+class PELICAN_API ObjectsContext {
+  public:
+    Resolved<ObjectRef> resolve(std::string_view name) const;
+    Resolved<GameObjectId> materialize(const ObjectRef &ref) const;
+    Resolved<WorldTransform> worldTransform(const ObjectRef &ref) const;
+};
+
 class PELICAN_API GameContext {
   public:
     bool actionsConfigured() const;
@@ -189,6 +218,7 @@ class PELICAN_API GameContext {
     AnimationContext animation() const noexcept { return {}; }
     SaveContext save() const noexcept { return {}; }
     RenderContext render() const noexcept { return {}; }
+    ObjectsContext objects() const noexcept { return {}; }
 };
 
 } // namespace Pelican

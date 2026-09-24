@@ -308,9 +308,9 @@ void AnimationSystem::updatePoseGraphs() {
             if (!object || !ecs.isAlive(*object)) return std::nullopt;
             // Root motion writes a local transform. An object without one has
             // nowhere to put the movement; the graph names that rather than
-            // extracting a displacement nobody applies. `localtransform` is
-            // added automatically only to an object that takes part in a
-            // parent/child scene, so a standalone individual has to declare it.
+            // extracting a displacement nobody applies. Every scene object with
+            // a transform is given one (GP-1); an object created with only a
+            // world transform, such as a transient glTF, still has none.
             if (!ecs.tryComponent<LocalTransformComponent>(*object)) return std::nullopt;
             return (static_cast<std::uint64_t>(object->index) << 32) | object->generation;
         };

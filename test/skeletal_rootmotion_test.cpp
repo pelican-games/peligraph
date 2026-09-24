@@ -76,8 +76,11 @@ TEST_CASE("a pose graph's root motion moves the individual",
     // what is left is the individual disappearing between the owner thread's
     // synchronize and the phase that writes it.
     const bool fails_in_phase = mode == "the individual goes away after the phase was prepared";
-    const bool expects_rejection = mode == "no local transform" ||
-                                   mode == "no translation channel" || mode == "no duration";
+    // GP-1: "no local transform" is a scene that declares none. It used to be
+    // refused as pose.root_motion_no_transform@1; every scene object with a
+    // transform now carries one, so it moves like "extract".
+    const bool expects_rejection =
+        mode == "no translation channel" || mode == "no duration";
 
     const auto root = std::filesystem::temp_directory_path() /
         ("pelican_root_motion_" +
@@ -144,10 +147,9 @@ void main() {
     writeText(root / "assets.json",
         R"({"schema":"pelican.asset_data","version":1,"models":[{"name":"mover","path":"mover.gltf"}]})");
     // No animation component: the graph is the only thing that can pose this
-    // object or move it. `localtransform` is declared by hand -- the loader adds
-    // one only to an object that takes part in a parent/child scene, and a
-    // parented individual would see its world transform recomposed a frame
-    // later, so the shape that is correct on the same frame is this one.
+    // object or move it. `localtransform` is declared here and left out in the
+    // "no local transform" mode; the loader gives every object with a
+    // transform one either way (GP-1), so both shapes move the same.
     auto scene_document = nlohmann::json::parse(R"({"schema":"pelican.scene","version":1,
       "scenes":{"default_scene":{"objects":[{"name":"Mover","components":[
         {"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
@@ -231,8 +233,7 @@ void main() {
             }
             if (frame == 0) publish();
         }
-        if (mode == "no local transform") REQUIRE(code == "pose.root_motion_no_transform@1");
-        else REQUIRE(code == "pose.root_motion_unsupported@1");
+        REQUIRE(code == "pose.root_motion_unsupported@1");
         service.reset();
         Animation::poseGraphRuntime().clear();
         return;
@@ -302,7 +303,7 @@ void main() {
 
     const auto step_frames = [&](int count) { for (int i = 0; i < count; ++i) animate(); };
 
-    if (mode == "extract" || mode == "none") {
+    if (mode == "extract" || mode == "none" || mode == "no local transform") {
         // Acceptance 1 and its control. Half the clip in thirty frames at
         // 1/60: the root is halfway along its two metres.
         step_frames(30);

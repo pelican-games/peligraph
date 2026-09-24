@@ -1398,6 +1398,28 @@ pelican_define_test(curve_test GROUP core_foundation pelican_core)
 # PG-1: the scene-load half of the build-feature gate, measured in every
 # build (run_build_units_smoke.cmake runs its [pg1] tag in the OFF builds).
 pelican_define_test(pg1_feature_gate_test GROUP core_foundation pelican_core)
+# GP-1: ObjectRef, the world transform read, and a localtransform on every
+# scene object with a transform. The test executable is the SDK export host
+# its fixture DLL links against, as pelican_player is for a shipped game DLL,
+# so the ctx.objects() calls it observes cross a real DLL boundary.
+pelican_define_test(gp1_object_ref_test pelican_core glm)
+if(WIN32 AND COMMAND pelican_configure_game_logic_target)
+  set_target_properties(pelican_test_gp1_object_ref_test PROPERTIES
+    ENABLE_EXPORTS TRUE)
+  if(MSVC)
+    target_link_options(pelican_test_gp1_object_ref_test PRIVATE
+      "/WHOLEARCHIVE:$<TARGET_LINKER_FILE:pelican_core>")
+  endif()
+  add_library(pelican_gp1_object_ref_fixture SHARED
+    fixtures/gp1_object_ref/behavior.cpp)
+  set_target_properties(pelican_gp1_object_ref_fixture PROPERTIES
+    OUTPUT_NAME "pelican_gp1_object_ref_fixture")
+  pelican_configure_game_logic_target(pelican_gp1_object_ref_fixture
+    HOST_TARGET pelican_test_gp1_object_ref_test
+    ROLE gp1-object-ref NO_INVENTORY)
+  target_compile_definitions(pelican_test_gp1_object_ref_test PRIVATE
+    PELICAN_GP1_OBJECT_REF_FIXTURE="$<TARGET_FILE:pelican_gp1_object_ref_fixture>")
+endif()
 # The test-only graph module lives with the test that needs it; the production
 # archives are checked for its symbol below.
 target_sources(pelican_test_curve_test PRIVATE graphtestopaquemodule.cpp)

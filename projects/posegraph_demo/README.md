@@ -17,8 +17,10 @@ failing later on an operation nobody registered.
    `passes/main.json`, and `requires` names the build feature above.
 2. **`scene.json`** -- two objects. `Hero` is **first** and `Camera` is second.
    That order is load-bearing; see "the owner is a position, not a name" below.
-   `Hero` carries `transform`, `localtransform` (the same TRS, so nothing moves
-   when the local transform system recomposes it) and `simplemodelview`.
+   `Hero` carries `transform` and `simplemodelview`. It does not declare a
+   `localtransform`: the engine gives every object with a transform one at
+   load, holding the same TRS, so nothing moves when the local transform
+   system recomposes it.
 3. **`passes/main.json`** -- the rendering config, written as a `pelican.graph`
    root. Three parts:
    - `definitions.walk_run` -- the reusable piece. A `value.input` reads

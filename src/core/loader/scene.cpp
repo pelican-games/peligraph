@@ -49,6 +49,7 @@
 #include <components/localtransform.hpp>
 #include <components/predefined.hpp>
 #include <filesystem>
+#include <glm/gtc/quaternion.hpp>
 #include <limits>
 #include <optional>
 #include <span>
@@ -183,12 +184,19 @@ struct EcsObjectLoad {
         nlohmann::json effective_json;
         const ComponentCodec *codec = nullptr;
         ComponentCodecValue decoded;
+        // GP-1: the localtransform a transform node is given when the scene
+        // declares none. It carries no JSON; the transform projection writes
+        // its value once the object's parent is known.
+        bool injected_local = false;
     };
 
     AuthoringObjectId authoring_object_id{};
     std::string name;
     std::string parent;
-    bool hierarchy_participant = false;
+    // GP-1: every object with a transform is a node of the transform
+    // hierarchy -- a root when it has no parent -- and carries a
+    // localtransform, whether or not the scene uses parents at all.
+    bool transform_node = false;
     std::vector<ComponentLoad> components;
     std::vector<ComponentId> components_id;
     std::vector<ColliderComponent> colliders;
@@ -203,6 +211,12 @@ struct PendingSceneTransaction {
     SceneLoader *loader = nullptr;
     const SceneProjectionState *projection = nullptr;
     std::optional<SceneId> *candidate = nullptr;
+    // GP-1: a callback inside the load resolves object names against the
+    // scene run being loaded, not the one it replaces.  Its runtime bindings
+    // are the loader's own only once the loader state has been published.
+    SceneAuthority authority{};
+    const ResolvedSceneView *scene = nullptr;
+    const bool *bindings_published = nullptr;
 };
 
 thread_local PendingSceneTransaction *active_pending_scene_transaction =
@@ -305,11 +319,9 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const ResolvedSceneView &scene,
     for (const auto &object : scene.objects) {
         if (object.parent) parent_names.insert(*object.parent);
     }
-    const bool scene_uses_parents = !parent_names.empty();
-    const auto local_transform_id = scene_uses_parents
-                                        ? std::optional<ComponentId>{
-                                              component_info_manager.getComponentIdByName("localtransform")}
-                                        : std::nullopt;
+    // Looked up only when an object needs one, so a scene whose objects carry
+    // no transform never asks the registry for it.
+    std::optional<ComponentId> local_transform_id;
 
     for (std::size_t object_index = 0; object_index < scene.objects.size();
          ++object_index) {
@@ -321,7 +333,8 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const ResolvedSceneView &scene,
         ecs_object.authoring_object_id = object.authoring_object_id;
         ecs_object.name = object_name;
         ecs_object.parent = parent_name;
-        ecs_object.hierarchy_participant = !parent_name.empty() || parent_names.contains(object_name);
+        const bool has_parent_link =
+            !parent_name.empty() || parent_names.contains(object_name);
         ecs_object.behaviors = std::move(behaviors_by_object[object_index]);
         ecs_object.components.reserve(object.components.size());
         ecs_object.components_id.reserve(object.components.size());
@@ -333,10 +346,11 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const ResolvedSceneView &scene,
             has_transform = has_transform || component_name == "transform";
             has_local_transform = has_local_transform || component_name == "localtransform";
         }
-        if (ecs_object.hierarchy_participant && !has_transform) {
+        if (has_parent_link && !has_transform) {
             throw std::runtime_error("parent hierarchy object '" + displayObjectName(object_name) +
                                      "' requires a transform component");
         }
+        ecs_object.transform_node = has_transform;
 
         for (const auto &component : object.components) {
             const auto &component_name = component.name;
@@ -378,12 +392,16 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const ResolvedSceneView &scene,
             });
             ecs_object.components_id.push_back(
                 getComponentIdForObject(component_info_manager, component_name, object_name));
-            if (ecs_object.hierarchy_participant && component_name == "transform" && !has_local_transform) {
-                auto local_component = component.effective_json;
-                local_component["name"] = "localtransform";
+            // The injected localtransform is runtime state only: it is not a
+            // component of the authored object, so a save never writes it.
+            if (ecs_object.transform_node && component_name == "transform" && !has_local_transform) {
                 ecs_object.components.push_back(EcsObjectLoad::ComponentLoad{
-                    .effective_json = std::move(local_component),
+                    .injected_local = true,
                 });
+                if (!local_transform_id) {
+                    local_transform_id =
+                        component_info_manager.getComponentIdByName("localtransform");
+                }
                 ecs_object.components_id.push_back(*local_transform_id);
             }
         }
@@ -446,6 +464,15 @@ void assignTransform(TransformComponent &dst, const SceneObjectTransform &src) {
 
 void applyComponentLoad(ComponentInfoManager &component_info_manager, void *target,
                         const EcsObjectLoad::ComponentLoad &component) {
+    if (component.injected_local) {
+        *static_cast<LocalTransformComponent *>(target) = LocalTransformComponent{
+            .scale = {1.0f, 1.0f, 1.0f},
+            .rotation = {0.0f, 0.0f, 0.0f, 1.0f},
+            .pos = {0.0f, 0.0f, 0.0f},
+            .parent = invalidEntityId,
+        };
+        return;
+    }
     if (component.codec == nullptr || component.codec->runtime_kind != ComponentCodecRuntimeKind::Ecs) {
         component_info_manager.loadByJson(target, component.effective_json);
         return;
@@ -1275,14 +1302,14 @@ struct EcsParticipant final : TransactionParticipant {
             }
         }
 
-        const bool scene_uses_parents = std::any_of(
-            t.ecs_objects.begin(), t.ecs_objects.end(), [](const auto &object) {
-                return object.hierarchy_participant;
-            });
-        if (scene_uses_parents) {
+        // GP-1: every transform node is projected here, in a scene with no
+        // parents at all as much as in one with them. A root's localtransform
+        // then holds its authored transform, so the next LocalTransformSystem
+        // pass recomputes the same world rather than a default one.
+        {
             for (std::size_t index = 0; index < t.ecs_objects.size(); ++index) {
                 const auto &object = t.ecs_objects[index];
-                if (!object.hierarchy_participant) continue;
+                if (!object.transform_node) continue;
                 auto *local = ecs.tryComponent<LocalTransformComponent>(
                     t.object_ids[index]);
                 if (local == nullptr) {
@@ -1317,13 +1344,13 @@ struct EcsParticipant final : TransactionParticipant {
                                                    index);
                 }
             }
-            // Only hierarchy participants are started; the parent link was
+            // Only transform nodes are started; the parent link was
             // validated just above, so the lookup stays `.at()` and a broken
             // link keeps raising its std::out_of_range here.
             resolveParentOrder(
                 t.ecs_objects.size(),
                 [&](std::size_t index) {
-                    return t.ecs_objects[index].hierarchy_participant;
+                    return t.ecs_objects[index].transform_node;
                 },
                 [&](std::size_t index) {
                     const auto &object = t.ecs_objects[index];
@@ -1711,6 +1738,9 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
         .loader = this,
         .projection = &transaction.metadata.projection(),
         .candidate = &transaction.pending_candidate,
+        .authority = candidate_authority,
+        .scene = transaction.scene,
+        .bindings_published = &loader_state.published_,
     };
     internal::EventOutboxScope event_scope{*transaction.event_outbox};
     internal::EffectTransactionScope effect_scope{
@@ -1961,6 +1991,83 @@ void SceneLoader::bindRuntimeObject(AuthoringObjectId authoring_object_id,
         SceneRuntimeObjectBinding{authoring_object_id, object_id});
 }
 
+namespace internal {
+// The only place an ObjectRef is minted.
+struct ObjectRefAccess {
+    static ObjectRef make(SceneAuthority authority,
+                          AuthoringObjectId object) noexcept {
+        return ObjectRef{ObjectAuthority{.run_nonce = authority.run_nonce,
+                                         .scene_epoch = authority.scene_epoch},
+                         object.value};
+    }
+};
+} // namespace internal
+
+namespace {
+
+// The scene run names are resolved in: the one being loaded while a load's
+// callbacks run, otherwise the one that is live.
+struct ObjectResolutionRun {
+    SceneAuthority authority{};
+    const ResolvedSceneView *scene = nullptr;
+    bool bindings_live = true;
+};
+
+ObjectResolutionRun objectResolutionRun(const SceneLoader &loader) {
+    if (const auto *pending = active_pending_scene_transaction;
+        pending != nullptr && pending->loader == &loader) {
+        return ObjectResolutionRun{
+            .authority = pending->authority,
+            .scene = pending->scene,
+            .bindings_live = pending->bindings_published != nullptr &&
+                             *pending->bindings_published,
+        };
+    }
+    const auto &config = GET_MODULE(ProjectBasicConfig);
+    if (config.currentSceneId().empty()) {
+        return ObjectResolutionRun{.authority = config.activeSceneAuthority()};
+    }
+    return ObjectResolutionRun{
+        .authority = config.activeSceneAuthority(),
+        .scene = config.resolvedScene().findScene(config.currentSceneId()),
+    };
+}
+
+} // namespace
+
+Resolved<ObjectRef> SceneLoader::resolveObject(std::string_view name) const {
+    const auto run = objectResolutionRun(*this);
+    if (run.scene == nullptr || name.empty()) {
+        return ObjectError::not_materialized;
+    }
+    // Declaration order, first wins -- the rule object_bindings has always
+    // had for a repeated name.
+    for (const auto &object : run.scene->objects) {
+        if (object.name && *object.name == name) {
+            return internal::ObjectRefAccess::make(run.authority,
+                                                   object.authoring_object_id);
+        }
+    }
+    return ObjectError::not_materialized;
+}
+
+Resolved<GameObjectId> SceneLoader::materializeObject(const ObjectRef &ref) const {
+    const auto run = objectResolutionRun(*this);
+    if (ref.authority() !=
+        ObjectAuthority{.run_nonce = run.authority.run_nonce,
+                        .scene_epoch = run.authority.scene_epoch}) {
+        return ObjectError::stale_authority;
+    }
+    if (!run.bindings_live) return ObjectError::not_materialized;
+    const auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    for (const auto &binding : runtime_object_bindings) {
+        if (binding.authoring_object_id.value != ref.objectId()) continue;
+        if (!ecs.isAlive(binding.object_id)) break;
+        return binding.object_id;
+    }
+    return ObjectError::not_materialized;
+}
+
 std::optional<GameObjectId> SceneLoader::objectId(std::string_view name) const {
     const auto found = object_bindings.find(std::string{name});
     if (found == object_bindings.end() ||
@@ -2016,6 +2123,28 @@ void SceneLoader::applyObjectTransform(std::string_view name, const SceneObjectT
     }
     assignTransform(*bound_transform, transform);
     (void)ecs.markComponentChanged(binding.object_id, ComponentIdByType<TransformComponent>::value);
+    // GP-1: a scene object's world transform is recomputed from its
+    // localtransform on every transform update, so a write to the world
+    // alone would be undone on the next frame. The local is the world seen
+    // from the parent (the world itself for a root).
+    if (auto *local = ecs.tryComponent<LocalTransformComponent>(binding.object_id)) {
+        const auto *parent = local->parent == invalidEntityId
+                                 ? nullptr
+                                 : ecs.tryComponent<TransformComponent>(local->parent);
+        glm::vec3 local_pos = transform.pos;
+        glm::quat local_rotation = transform.rotation;
+        glm::vec3 local_scale = transform.scale;
+        if (parent != nullptr) {
+            const auto parent_rotation_inverse = glm::inverse(parent->rotation);
+            local_pos = (parent_rotation_inverse * (transform.pos - parent->pos)) / parent->scale;
+            local_rotation = parent_rotation_inverse * transform.rotation;
+            local_scale = transform.scale / parent->scale;
+        }
+        local->pos = vec3{local_pos.x, local_pos.y, local_pos.z};
+        local->rotation = quat{local_rotation.x, local_rotation.y, local_rotation.z, local_rotation.w};
+        local->scale = vec3{local_scale.x, local_scale.y, local_scale.z};
+        (void)ecs.markComponentChanged(binding.object_id, ComponentIdByType<LocalTransformComponent>::value);
+    }
     if (simple_model_view != nullptr && simple_model_view->model_instance_id) {
         GET_MODULE(PolygonInstanceContainer)
             .setTrs(*simple_model_view->model_instance_id, transform.pos, transform.rotation, transform.scale);
