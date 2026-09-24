@@ -966,20 +966,20 @@ headless capture は [`RenderTarget::captureLastFrameToPng()`](../../src/core/vk
 
 ## 6.7 Offscreen render target と layout tracker
 
-frame target の color/depth と、frame graph 設定で宣言する offscreen target は別物です。後者は [`RenderTargetContainer`](../../src/core/renderingpass/rendertargetcontainer.hpp#L25) が、名前、format、固定/相対 extent、image、view を所有します。
+frame target の color/depth と、frame graph 設定で宣言する offscreen target は別物です。後者は [`RenderTargetContainer`](../../src/core/renderingpass/rendertargetcontainer.hpp#L26) が、名前、format、固定/相対 extent、image、view を所有します。
 
 ### view accessor は 2 本ある — scalar と layered
 
 同じ target から image view を取る口が 2 つあり、**どちらを使うかは消費側 shader の ABI が決めます**。WP239b で両者の契約が公開ヘッダのコメントとして明記されました。
 
 - [`getImageView()`](../../src/core/renderingpass/rendertargetcontainer.hpp#L156) は **scalar 互換アクセサ**です。array target であっても **layer 0 の `e2D` view** を返します(実体は `getImageLayerView(id, 0, ...)`)。
-- [`getLayeredImageView()`](../../src/core/renderingpass/rendertargetcontainer.hpp#L188) は **全 layer を張る `e2DArray` view を 1 本**返します。**layer 数が 1 でも同じ**です。
+- [`getLayeredImageView()`](../../src/core/renderingpass/rendertargetcontainer.hpp#L177) は **全 layer を張る `e2DArray` view を 1 本**返します。**layer 数が 1 でも同じ**です。
 
 後者の「1 layer でも layered」が WP239b の変更点です。それまでは layer 数 1 の family array に対してだけ `layer_count = 1` の `e2DArray` subresource view を別途生成していました。descriptor の shape(`e2DArray`)は変わらないので、これは束縛の意味を変える修正ではなく、同じ範囲の view を二重に作るのをやめる整理です。実際に落ちていたのは期待値の側でした — `hybrid_v1` の GPU テストが producer view-family array 導入前の scalar 契約のまま `getImageView()`(array target でも layer 0 の `e2D`)と比較しており、shader ABI が要求する layered view と一致しませんでした。WP239b はこの期待値を `getLayeredImageView()` へ直しています。現在は 1 layer でも canonical layered view へ統一され、同じ範囲の subresource view を重複生成しません。
 
 > 🧩 **難所 — `family_array` は物理 layout をまたいで 1 つの descriptor に正規化する**([`ensureScreenInputDescriptor()`](../../src/core/material/materialcontainer.cpp#L1868) / [`MaterialDescriptorBuilder::build()`](../../src/core/material/materialdescriptorbuilder.cpp#L442))
 >
-> **何をする所か**: `materialcontainer.cpp` はテクスチャ台帳・descriptor 組み立て・世代リロード計画の 3 つに分かれ、descriptor set を実際に作るのは [`MaterialDescriptorBuilder`](../../src/core/material/materialdescriptorbuilder.hpp#L116)、束縛する image view を選ぶ規則は material 側と fullscreen 側が共有する [`resolvePassInputImageView()`](../../src/core/renderingpass/passinputdescriptorvariant.cpp#L23) です。material が読む pass input(screen input)について、`.surface` の resource port が宣言した view 種別([`ShaderResourcePortView`](../../src/project/shaderresourceport.hpp#L24))と、pass 側の物理 view 種別([`PassInputViewDimension`](../../src/core/renderingpass/renderingpass.hpp#L348))を突き合わせ、実際に束縛する `vk::ImageView` と descriptor の次元を決めます。
+> **何をする所か**: `materialcontainer.cpp` はテクスチャ台帳・descriptor 組み立て・世代リロード計画の 3 つに分かれ、descriptor set を実際に作るのは [`MaterialDescriptorBuilder`](../../src/core/material/materialdescriptorbuilder.hpp#L116)、束縛する image view を選ぶ規則は material 側と fullscreen 側が共有する [`resolvePassInputImageView()`](../../src/core/renderingpass/passinputdescriptorvariant.cpp#L21) です。material が読む pass input(screen input)について、`.surface` の resource port が宣言した view 種別([`ShaderResourcePortView`](../../src/project/shaderresourceport.hpp#L24))と、pass 側の物理 view 種別([`PassInputViewDimension`](../../src/core/renderingpass/renderingpass.hpp#L348))を突き合わせ、実際に束縛する `vk::ImageView` と descriptor の次元を決めます。
 >
 > **素朴に読むと**: 名前の似た enum が 2 つあり、**同じ綴り(`shared_2d`)が両方にあって意味が違います**。宣言側 `ShaderResourcePortView`(`shared_2d` / `per_view` / `family_array` / `cube`)は **shader ABI**、つまり `sampler2D` か `sampler2DArray` かを決めます。pass 側 `PassInputViewDimension`(`shared_2d` / `sequential_2d` / `layered_2d_array` / `family_2d_array`)は **producer が view family をどう物理化したか**です。ここで効くのは、**1 本の material pipeline が複数の compatible pass variant で共有される**ことです。同じ transparent material が main view family でも planar reflection の secondary family でも使われるので、shader ABI を物理 layout ごとに変えるわけにいきません。そこで `family_array` を宣言した sampled resource に限り、`shared_2d`(1 view の scalar 表現)と `sequential_2d`(view を順次実行するが保存先は array-backed)を descriptor 境界で `family_2d_array` へ**正規化**します。`sequential_2d` が抜けていたのが WP239c の回帰で、planar reflection の capture target が `sampler2D` と判定され ABI mismatch を報告していました。物理 scheduler 側の `sequential_2d` lowering は変えていません。
 >
@@ -991,7 +991,7 @@ frame target の color/depth と、frame graph 設定で宣言する offscreen t
 >      descriptor_view_dimension = family_2d_array          # ABI を variant 間で固定
 > descriptor_dimension = descriptor_view_dimension ∈ {layered_2d_array, family_2d_array}
 >                        ? e2DArray : e2D
-> 束縛時: array_view なら getLayeredImageViewForFrame()      # 全 layer の canonical view
+> 束縛時: array_view なら getLayeredImageView()      # 全 layer の canonical view
 > ```
 >
 > **具体例**: port が `view: "family_array"` を宣言した sampled resource は、producer 側の物理化がどれであっても shader からは 1 種類に見えます。
@@ -1005,7 +1005,7 @@ frame target の color/depth と、frame graph 設定で宣言する offscreen t
 >
 > 2 行目が WP239c で足りていなかった行です。planar reflection の capture target は view を順次実行する `sequential_2d` として物理化されるので、正規化を通さないと descriptor が `e2D` になり、`sampler2DArray` を要求する shader と ABI mismatch で落ちていました。同じ transparent material が main family と planar reflection の secondary family の両方で使われる以上、shader ABI を物理化ごとに変えるわけにいかない、というのがこの正規化の理由です。
 >
-> **手がかり**: 正規化は `descriptor_dimension` だけでなく、descriptor に**保存する `view_dimension` そのもの**も `family_2d_array` へ書き換えます。これが `buildScreenInputDescriptor()` 側の分岐を array 経路へ振り向け、`getLayeredImageViewForFrame()` が選ばれる理由です(片方だけ直すと descriptor 型と束縛 view が食い違います)。緩めたのは sampled resource だけで、input attachment・通常の `shared_2d` / `per_view`・`cube`・layered multiview の検証規則はそのままです。ABI mismatch の例外文には shader 側・解決後 descriptor・宣言 port の 3 つの dimension が並ぶようになったので、次の不一致はメッセージだけで切り分けられます。directional shadow の入力契約が `family_array` であることは [`makeBuiltinMaterialPassInputContract()`](../../src/project/materialscreeninput.cpp#L63) にあり、対応する shader 側は `sampler2DArray` です([`pelican_lighting_v1.glsl` 内](../../src/core/resources/shaders/include/pelican_lighting_v1.glsl#L17))。テストは [`headless_render_test.cpp`](../../test/headless_render_test.cpp) の "hybrid_v1 preset registers and renders a headless frame"(shadow の束縛を `getLayeredImageView()` と比較)、[`golden_cases_test.cpp`](../../test/golden_cases_test.cpp) の "planar reflection executes a clipped secondary view family on the GPU"、CPU 側は [`targetplanning_test.cpp`](../../test/targetplanning_test.cpp)(`directional_shadow` の view policy が `family_array` であることを固定)です。
+> **手がかり**: 正規化は `descriptor_dimension` だけでなく、descriptor に**保存する `view_dimension` そのもの**も `family_2d_array` へ書き換えます。これが `buildScreenInputDescriptor()` 側の分岐を array 経路へ振り向け、`getLayeredImageView()` が選ばれる理由です(片方だけ直すと descriptor 型と束縛 view が食い違います)。緩めたのは sampled resource だけで、input attachment・通常の `shared_2d` / `per_view`・`cube`・layered multiview の検証規則はそのままです。ABI mismatch の例外文には shader 側・解決後 descriptor・宣言 port の 3 つの dimension が並ぶようになったので、次の不一致はメッセージだけで切り分けられます。directional shadow の入力契約が `family_array` であることは [`makeBuiltinMaterialPassInputContract()`](../../src/project/materialscreeninput.cpp#L63) にあり、対応する shader 側は `sampler2DArray` です([`pelican_lighting_v1.glsl` 内](../../src/core/resources/shaders/include/pelican_lighting_v1.glsl#L17))。テストは [`headless_render_test.cpp`](../../test/headless_render_test.cpp) の "hybrid_v1 preset registers and renders a headless frame"(shadow の束縛を `getLayeredImageView()` と比較)、[`golden_cases_test.cpp`](../../test/golden_cases_test.cpp) の "planar reflection executes a clipped secondary view family on the GPU"、CPU 側は [`targetplanning_test.cpp`](../../test/targetplanning_test.cpp)(`directional_shadow` の view policy が `family_array` であることを固定)です。
 >
 > **不変条件**: 1 layer の family array も canonical layered view を使うこと(同じ範囲の subresource view を重複生成しない)。`family_array` を宣言していない port view を array 化しないこと。descriptor の `view_dimension` と `descriptor_dimension` を同時に決めること。
 
@@ -1041,7 +1041,7 @@ layout transition は単なる状態ラベルではありません。[`makeTrans
 
 ### 現在の image barrier の注意点
 
-compute target は [`transitionResourcesForDispatch()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1738) で `eGeneral` へ遷移します。しかし tracker は old layout と new layout が同じなら [`transition()` から早期 return](../../src/core/vkcore/render_target_layout_tracker.cpp#L179) します。また frame graph の明示 RAW barrier 実装は [`bufferReadAfterWriteBarrier()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1903) で、buffer でなければ return します。
+compute target は [`transitionResourcesForDispatch()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1731) で `eGeneral` へ遷移します。しかし tracker は old layout と new layout が同じなら [`transition()` から早期 return](../../src/core/vkcore/render_target_layout_tracker.cpp#L180) します。また frame graph の明示 RAW barrier 実装は [`bufferReadAfterWriteBarrier()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1896) で、buffer でなければ return します。
 
 したがって調査時点では、同じ storage image を `GENERAL` のまま連続 compute task で write → read する場合、graph 上の順序は付きますが、その依存専用の image memory barrier は発行されません。layout が変わる compute → render などとは事情が違います。これは「設定に edge を書けば全 resource の同期も完全」という意味ではない、現在実装上の制約です。
 
@@ -1080,7 +1080,7 @@ descriptor は shader reflection の set 1、すなわち `PELICAN_SET_PASS_INPU
 2. resource が1個だけなら、それを使用。
 3. それ以外は binding の順番と resource 配列の順番を対応。
 
-buffer は storage buffer、render target は storage image でなければ [`createDescriptorSet()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1022) が例外にします。task 実行は graphics frame の command buffer 上で pipeline と set 1 を bind し、[`dispatch()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1816) を記録します。
+buffer は storage buffer、render target は storage image でなければ [`createDescriptorSet()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1022) が例外にします。task 実行は graphics frame の command buffer 上で pipeline と set 1 を bind し、[`dispatch()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1809) を記録します。
 
 ### buffer 宣言の実装済み範囲
 
@@ -1091,7 +1091,7 @@ buffer は storage buffer、render target は storage image でなければ [`cr
 - `host_source: "runtime_f32"` の buffer だけが `initial_f32` を持てます([`FrameGraphBufferDefinition::initial_f32`](../../src/core/renderingpass/framegraphbufferdefinition.hpp#L84))。parse は **float 配列であること**と、**宣言 `size` の 4 byte ごとにちょうど 1 要素**であることを検査し、どちらか外れると名前付きで落とします([`initial_f32` の parse](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L1164))。登録時には確保した CPU 側の値列へ [`std::copy` で先頭から書き込み](../../src/core/renderingpass/framegraphbuffercontainer.cpp#L96)、dirty を立てて GPU へ運びます。空なら 0 — この機能が入る前の全 buffer の挙動です。要点は**最初のフレームが未初期化値で描かれない**ことで、`render.scalar` の書き込みが届くのはそれを publish したフレームからです。文書に直接書くこともできますが、feature の scalar から導出される場合は authored な `initial_f32` は拒否されます(§6.1 の難所「`binding: buffer` は 5 つの宣言が噛み合って初めて成立する」)。
 - `dispatch.groups_from: {"port": "..."}` は typed image resource port の選択 mip extent と shader reflection の `local_size` から `ceil(extent / local_size)` を導出します。render target resize と compute shader reload の rebind 時にも再計算されます。
 - `dispatch.local_size` は受理しません。workgroup size の authority は compute shader の `layout(local_size_*=...)` と SPIR-V reflection です。
-- 実行後に group 数を変える API は [`setDispatchGroups()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1702) です。
+- 実行後に group 数を変える API は [`setDispatchGroups()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1695) です。
 
 設定 schema に項目があることと、runtime behavior が完成していることを区別して読む必要があります。
 

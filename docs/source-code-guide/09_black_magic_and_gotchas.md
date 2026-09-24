@@ -527,7 +527,7 @@ Light cap exceeded: <type> light #<ordinal> '<name>' will not be rendered (cap <
 ### barrier
 
 - ordered edge の同 resource write→read を barrier record にする。
-- 実行側 [`bufferReadAfterWriteBarrier()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1903) は storage buffer に `vk::BufferMemoryBarrier` を出す。compute consumerの`command_layout: "compute_dispatch"`とrender consumerの`indexed_draw` / `draw_count`では、通常のshader readに加えて`DrawIndirect` / `IndirectCommandRead`をdestinationへ含める。
+- 実行側 [`bufferReadAfterWriteBarrier()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1896) は storage buffer に `vk::BufferMemoryBarrier` を出す。compute consumerの`command_layout: "compute_dispatch"`とrender consumerの`indexed_draw` / `draw_count`では、通常のshader readに加えて`DrawIndirect` / `IndirectCommandRead`をdestinationへ含める。
 - image は layout tracker に依存。tracker のキーは `(rt_id, surface_index)` になり、history 付き target の現/旧 surface を別々に追跡します([`render_target_layout_tracker.cpp` 内](../../src/core/vkcore/render_target_layout_tracker.cpp#L51))。
 - layout が変われば layout transition が memory dependency を含む。
 - storage image が `GENERAL`→`GENERAL` のままなら tracker は早期 return するため、compute→compute の image RAW 専用 barrier は現在も出ない([同](../../src/core/vkcore/render_target_layout_tracker.cpp#L72))。
@@ -558,7 +558,7 @@ graph の node 順が正しいことと、Vulkan memory visibility が正しい�
 | `lifetime: persistent` | 済 | 実質全 buffer が container lifetime |
 | `lifetime: transient` | 済 | frame ごとの確保/recycle は未実装 |
 
-根拠は [`parseDispatch()`](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L838)、[`registerBuffers()`](../../src/core/renderingpass/framegraphbuffercontainer.cpp#L33)、[`registerComputeTask()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1304) です
+根拠は [`parseDispatch()`](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L838)、[`registerBuffers()`](../../src/core/renderingpass/framegraphbuffercontainer.cpp#L33)、[`registerComputeTask()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1297) です
 (旧 `computetask.cpp` はこの 3 ファイルに分割されました)。
 
 画像全体または特定 mip を処理する task は、`{"groups_from":{"port":"reduced_depth"}}` のように typed image port を指定できます。port の `subresource.mip`、render target の現在 extent、shader reflection の [`local_size`](../../src/core/shader/shaderreflection.hpp) を runtime が結合し、X/Y group 数を切り上げ除算で求めます。`local_size_z` は 2D image contract のため 1 が必須です。固定 `groups`、image-derived `groups_from`、GPU-produced `indirect` は相互排他的です。粒子数のような任意の scalar parameter 由来 dispatch はこの契約へ混ぜず、typed indirect command buffer または将来の別契約で扱います。
@@ -578,7 +578,7 @@ hot reload は shader compile と pipeline rebuild を transactional にしま�
 
 - shader reload の runtime 公開は **`RuntimeReloadBoundary::render_start`** の 1 点に集約されています。[`consumeShaderReloadPublication()`](../../src/core/vkcore/renderer.cpp#L2714) が `ReloadService::applyRuntimeBoundary(render_start)` を呼び、**その summary の `committed` が 0 でないときだけ** [`rebindFullscreenInputs()`](../../src/core/vkcore/renderer.cpp#L2681) が走ります。呼び出しは view の記録へ入る前([`renderer.cpp` の frame 前段](../../src/core/vkcore/renderer.cpp#L5584))で、shader 側の participant がこの boundary を宣言している箇所は [`reloadservice.cpp` の shader participant 登録](../../src/core/watch/reloadservice.cpp#L558) です。
 - `rebindFullscreenInputs()` が貼り直すのは 3 系統です — 公開済み generation 内の fullscreen / generic raster pass の input resource、material の screen input、compute task の render target。したがって **reload 専用の処理ではありません**。logical target の extent が変わった直後にも同じ関数が呼ばれます([`renderer.cpp` の extent 変更後](../../src/core/vkcore/renderer.cpp#L2784))。逆に言うと、この 3 系統の外側で descriptor を自前 cache している pass は、reload でも resize でも取り残されます。
-- compute descriptor set は [`registerComputeTask()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1304) 時に一度作り、hot reload path では作り直していません。
+- compute descriptor set は [`registerComputeTask()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1297) 時に一度作り、hot reload path では作り直していません。
 - material は [`MaterialContainer::prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L368) により surface/material 連動 reload に対応しました。UI/debug の descriptor ownership は各 container に分散したままです。
 
 したがって hot reload の安全な基本範囲は、既存 set/binding/type と push constant layout を保った shader body の変更です。layout-changing reload を正式対応するなら、pipeline 使用者ごとの descriptor rebuild notification が必要です。
@@ -1467,7 +1467,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **答え**: 対象が 2D array 次元で port の view が `per_view` または `family_array` のときに限り、`layer_count == 1`(かつ `base_array_layer == 0`)を `physical_view_count` に展開します。目的は「1 レイヤだけ書けば family 全体を指す」省略記法を許しつつ、**明示指定は論理 view 数と完全一致することを強制する**ことです。descriptor 側の正規化は[第6章「`family_array` は物理 layout をまたいで 1 つの descriptor に正規化する」](06_rendering_vulkan_shader.md)が本体です。
 
-#### [`sequential_layer`](../../src/core/renderingpass/computetaskcontainer.cpp#L1118) と [`shares_storage_layout`](../../src/core/renderingpass/computetaskcontainer.cpp#L1153)
+#### [`sequential_layer`](../../src/core/renderingpass/computetaskcontainer.cpp#L1118) と [`shares_storage_layout`](../../src/core/renderingpass/computetaskcontainer.cpp#L1155)
 
 **分からなくなること**: `base_array_layer += view_index` が要る構成と、sampled なのに `eGeneral` になる構成。
 
@@ -1480,8 +1480,8 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [`physical_view_count` の決定](../../src/core/renderingpass/computetaskcontainer.cpp#L277) | 論理 view との関係 | 2 つの view 数の別 | **未執筆**(§9.23.4 の view family と対) |
 | [sampled 判定](../../src/core/renderingpass/computetaskcontainer.cpp#L1090) | descriptor type の対応 | 対応表 | Vulkan の descriptor 種別の前提知識(→ [第10章](10_background_knowledge.md)) |
 | [`next_extra_binding`](../../src/core/renderingpass/computetaskcontainer.cpp#L148) | 同一 resource に複数 port | binding の割当規則 | **未執筆**(根拠がコードにない) |
-| [layered view の subresource range](../../src/core/renderingpass/computetaskcontainer.cpp#L1199) | mip の省略 | 既定値の規約 | **未執筆**(根拠がコードにない) |
-| [`descriptor_variant_count`](../../src/core/renderingpass/computetaskcontainer.cpp#L1467) と [(view × frame) の事前生成](../../src/core/renderingpass/computetaskcontainer.cpp#L1268) | 2 次元の事前確保 | 2 軸の意味 | → §9.23.7「variant 次元と parity 次元」(同じ 2 軸) |
+| [layered view の subresource range](../../src/core/renderingpass/computetaskcontainer.cpp#L1198) | mip の省略 | 既定値の規約 | **未執筆**(根拠がコードにない) |
+| [`descriptor_variant_count`](../../src/core/renderingpass/computetaskcontainer.cpp#L1460) と [(view × frame) の事前生成](../../src/core/renderingpass/computetaskcontainer.cpp#L1261) | 2 次元の事前確保 | 2 軸の意味 | → §9.23.7「variant 次元と parity 次元」(同じ 2 軸) |
 
 ### 9.23.7 material
 
@@ -1515,7 +1515,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: バッファを太らせただけなのに、なぜ世代を進めるのか。
 
-**答え**: **バッファを作り直すとデバイスアドレスが変わり、旧アドレス上に構築された BLAS が無効になる**からです。値は [`geometryAddressGeneration()`](../../src/core/model/vertbufcontainer.hpp#L114) として [renderer 側へ渡され](../../src/core/vkcore/renderer.cpp#L5116)、ray-query のジオメトリ / BLAS キャッシュ無効化キーになります。頂点側とインデックス側で[2 か所](../../src/core/model/vertbufcontainer.cpp#L376)進みます。
+**答え**: **バッファを作り直すとデバイスアドレスが変わり、旧アドレス上に構築された BLAS が無効になる**からです。値は [`geometryAddressGeneration()`](../../src/core/model/vertbufcontainer.hpp#L118) として [renderer 側へ渡され](../../src/core/vkcore/renderer.cpp#L5116)、ray-query のジオメトリ / BLAS キャッシュ無効化キーになります。頂点側とインデックス側で[2 か所](../../src/core/model/vertbufcontainer.cpp#L376)進みます。
 
 #### [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36) — 固定容量 8 + overflow_count
 

@@ -595,7 +595,7 @@ audioと同じく、persistenceも「用意」と「書き込み」に割れて�
 
 ## 5.11 Debug text
 
-`RenderContext::debugText(x,y,text,color,scale)`(`ctx.render().debugText`)は [`DebugText::text()`](../../src/core/renderer/debugtext.hpp#L73) へglyphをqueueします。描画configで`debug_text` featureが有効なときだけrendererが`DebugText` moduleを生成し、対応passで描画します。APIを呼べることと、passが画面へ出すことは別条件です。
+`RenderContext::debugText(x,y,text,color,scale)`(`ctx.render().debugText`)は [`DebugText::text()`](../../src/core/renderer/debugtext.hpp#L77) へglyphをqueueします。描画configで`debug_text` featureが有効なときだけrendererが`DebugText` moduleを生成し、対応passで描画します。APIを呼べることと、passが画面へ出すことは別条件です。
 
 ## 5.12 ゲームコードの推奨境界
 

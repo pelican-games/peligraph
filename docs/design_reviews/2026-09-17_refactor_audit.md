@@ -539,3 +539,12 @@ C-2 の設計調査(phase 1)の結論: camera は宣言経路に載せても lea
 得られるもの: `src/project/prefab.cpp` の `cloneCameraPath` と `prefabprovider.cpp` の 8 組 copy table が消える(`pointerFor()` が `/perspective/yfov` を自然に出す)。Studio は `schema.fields` を汎用に読むので変更なし。
 
 起票するなら独立に出荷できる 2 半分: (a) DSL に nested struct を足して自前 test で閉じる、(b) camera を再宣言し `fieldSchema()` を再帰平坦化、`cloneCameraPath` と copy table を削除、`get_components.parent.ndjson` を理由付きで再凍結。
+
+## 14. 最後の 2 件と、残す 2 件(2026-09-24)
+
+| item | 変更 | 備考 |
+|---|---|---|
+| `RenderTargetFrameSelector`(§12 で打ち止め) | 名前を `RenderTargetRead` にして入れた(`src/core/renderingpass/rendertargetread.hpp`)。`bool history_read` と `frame_index` の組を 1 つの値にし、`...ForFrame` の重複 5 組を削除。`surfaceIndex(id, RenderTargetRead)` が「読みたい面」を index にする唯一の場所になった。frame 無しは container の history frame、frame 付きは `frame & 1` の parity という 2 つの式はそのまま残す。`RenderTargetImageViewResolver`、`passInputCubeImageView`、compute task、layout tracker の内部呼び出し、golden harness も同じ型に | 当時 123 と数えた call site は、実際に変わったのは約 35 + container 内の委譲 7。旧 `getImageSubresourceView`(frame 無し)は `(history_frame_index & 1) ^ prev` だったのが `history_frame_index ^ prev` になるが、`history_frame_index` は 0 か 1 しか取らない(代入は `= 0` と `^= 1u` だけ)ので同値。layout tracker の公開 API(bool だけで frame を持たない)と `ResolvedPassInput{history, parity}`(data record。既定値の意味が変わる)は残置 |
+| GPU へ raw bytes で上げる型の padding | `RenderCommand` の padding(`f4ba9913`)と同じ穴を探した。GPU 行き / byte hash の型 33 種のうち暗黙 padding を持つものは今は無い。検査の無かった 9 種(light の 3 record、`CommonSkinningVertStruct`、`DeformationJob`、`DebugDrawVertex`、`DebugTextVertex`、`GizmoVertex`、`sprite::GpuVertex`)に「sizeof = member の合計」の `static_assert` を足した。`GizmoVertex` に field を 1 つ足すと build が落ちることを確認 | `has_unique_object_representations` は float を含む型で常に false なので使えない(`RenderCommand` は float を持たないので使える)。`RayTracingGeometrySnapshotRow` は enum の後に 7 byte の暗黙 padding があるが、hash は field ごとなので影響なし |
+| animation の `AssetTable` | 入れない。§12 の実測どおり、24 関数のうち 9 が既に他の部品をまたぎ、表を外に出しても読み手は移らない。不変条件の無い表に public accessor が 9 本増えるだけで、継ぎ目が悪くなる | 理由は `animationservice.cpp` の `Impl` の上のコメント |
+| camera codec の宣言 schema 化 | v0 には入れない。公開 SDK header の schema DSL(game DLL が構築する)に nested struct 種別を足すことになり、provider fingerprint が動いて保存済み journal / witness の replay が不一致になる。得られるのは `cloneCameraPath` と 8 組の copy table の削除だけ | v1 で起票するなら §13 の (a)(b) の 2 半分 |
