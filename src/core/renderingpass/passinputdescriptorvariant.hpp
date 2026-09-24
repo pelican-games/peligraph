@@ -1,6 +1,7 @@
 #pragma once
 
 #include "renderingpass.hpp"
+#include "rendertargetread.hpp"
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -26,8 +27,7 @@ struct PassInputDescriptorVariant {
 // binding paths reach this from their own branch with the same arguments.
 vk::ImageView passInputCubeImageView(
     const RenderTargetImageViewResolver &rt_views,
-    GlobalRenderTargetId target, bool history,
-    std::uint32_t parity);
+    GlobalRenderTargetId target, RenderTargetRead read);
 
 // How one descriptor variant sees the array layers of its target. The
 // two binding paths disagree about *when* each case applies -- material

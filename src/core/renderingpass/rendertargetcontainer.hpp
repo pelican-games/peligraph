@@ -6,6 +6,7 @@
 #include "../vkcore/image.hpp"
 #include "rendertargetdefinition.hpp"
 #include "rendertargetmetadata.hpp"
+#include "rendertargetread.hpp"
 #include "../../project/imagesubresource.hpp"
 #include <map>
 #include <optional>
@@ -138,60 +139,45 @@ DECLARE_MODULE(RenderTargetContainer) {
     void resetHistory();
     void advanceHistoryFrame();
     uint32_t historyFrameIndex() const { return history_frame_index; }
-    uint32_t surfaceIndex(GlobalRenderTargetId id, bool history_read = false) const;
+    // The one place a read turns into a surface index.
+    uint32_t surfaceIndex(GlobalRenderTargetId id, RenderTargetRead read = {}) const;
     GlobalRenderTargetId getRenderTargetIdByName(const std::string &name) const;
     // The registration name of one target. Diagnostics that only need the
     // identity say so without building a whole metadata value.
     std::string_view getRenderTargetName(
         GlobalRenderTargetId id) const;
     RenderTargetMetadata getMetadata(GlobalRenderTargetId id) const;
-    const ImageWrapper &getImage(GlobalRenderTargetId id, bool history_read = false) const;
-    const ImageWrapper &getImageForFrame(GlobalRenderTargetId id, bool history_read,
-                                         uint32_t frame_index) const;
+    const ImageWrapper &getImage(GlobalRenderTargetId id, RenderTargetRead read = {}) const;
     const ImageWrapper &getAttachmentImage(
-        GlobalRenderTargetId id, bool history_read = false) const;
+        GlobalRenderTargetId id, RenderTargetRead read = {}) const;
     // Scalar compatibility accessor. For an array render target this returns
     // an e2D view of layer 0; consumers whose ABI is an array must call
     // getLayeredImageView() instead.
-    vk::ImageView getImageView(GlobalRenderTargetId id, bool history_read = false) const;
-    vk::ImageView getImageViewForFrame(GlobalRenderTargetId id, bool history_read,
-                                       uint32_t frame_index) const;
+    vk::ImageView getImageView(GlobalRenderTargetId id, RenderTargetRead read = {}) const;
     vk::ImageView getImageSubresourceView(
         GlobalRenderTargetId id,
         ImageSubresourceRange subresource,
         ImageSubresourceViewDimension dimension,
-        bool history_read = false) const;
-    vk::ImageView getImageSubresourceViewForFrame(
-        GlobalRenderTargetId id,
-        ImageSubresourceRange subresource,
-        ImageSubresourceViewDimension dimension,
-        bool history_read,
-        std::uint32_t frame_index) const;
+        RenderTargetRead read = {}) const;
     vk::ImageView getImageLayerView(
         GlobalRenderTargetId id, std::uint32_t array_layer,
-        bool history_read = false) const;
-    vk::ImageView getImageLayerViewForFrame(
-        GlobalRenderTargetId id, std::uint32_t array_layer,
-        bool history_read, std::uint32_t frame_index) const;
+        RenderTargetRead read = {}) const;
     vk::ImageView getAttachmentImageView(
-        GlobalRenderTargetId id, bool history_read = false) const;
+        GlobalRenderTargetId id, RenderTargetRead read = {}) const;
     vk::ImageView getAttachmentImageLayerView(
         GlobalRenderTargetId id, std::uint32_t array_layer,
-        bool history_read = false) const;
+        RenderTargetRead read = {}) const;
     vk::ImageView getAttachmentImageSubresourceView(
         GlobalRenderTargetId id,
         ImageSubresourceRange subresource,
         ImageSubresourceViewDimension dimension,
-        bool history_read = false) const;
+        RenderTargetRead read = {}) const;
     // Returns one e2DArray view spanning every layer, including the
     // single-layer case. This is the descriptor view for family-array ABIs.
     vk::ImageView getLayeredImageView(
-        GlobalRenderTargetId id, bool history_read = false) const;
-    vk::ImageView getLayeredImageViewForFrame(
-        GlobalRenderTargetId id, bool history_read,
-        std::uint32_t frame_index) const;
+        GlobalRenderTargetId id, RenderTargetRead read = {}) const;
     vk::ImageView getLayeredAttachmentImageView(
-        GlobalRenderTargetId id, bool history_read = false) const;
+        GlobalRenderTargetId id, RenderTargetRead read = {}) const;
     bool hasSeparateAttachment(GlobalRenderTargetId id) const;
     vk::SampleCountFlagBits sampleCount(GlobalRenderTargetId id) const;
     vk::ResolveModeFlagBits resolveMode(GlobalRenderTargetId id) const;

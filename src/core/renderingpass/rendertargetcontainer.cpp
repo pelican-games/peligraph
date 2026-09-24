@@ -1183,10 +1183,13 @@ void RenderTargetContainer::advanceHistoryFrame() {
     history_frame_index ^= 1u;
 }
 
-uint32_t RenderTargetContainer::surfaceIndex(GlobalRenderTargetId id, bool history_read) const {
+uint32_t RenderTargetContainer::surfaceIndex(GlobalRenderTargetId id, RenderTargetRead read) const {
     const auto &rt = render_targets.get(id);
     if (!rt.history) return 0;
-    return history_read ? (history_frame_index ^ 1u) : history_frame_index;
+    if (read.frame) {
+        return (*read.frame & 1u) ^ (read.previous ? 1u : 0u);
+    }
+    return read.previous ? (history_frame_index ^ 1u) : history_frame_index;
 }
 
 GlobalRenderTargetId RenderTargetContainer::getRenderTargetIdByName(const std::string &name) const {
@@ -1223,36 +1226,23 @@ RenderTargetMetadata RenderTargetContainer::getMetadata(GlobalRenderTargetId id)
     };
 }
 
-const ImageWrapper &RenderTargetContainer::getImage(GlobalRenderTargetId id, bool history_read) const {
+const ImageWrapper &RenderTargetContainer::getImage(GlobalRenderTargetId id, RenderTargetRead read) const {
     return render_targets.get(id)
         .resources->images[
-            surfaceIndex(id, history_read)];
-}
-
-const ImageWrapper &RenderTargetContainer::getImageForFrame(GlobalRenderTargetId id, bool history_read,
-                                                            uint32_t frame_index) const {
-    const auto &rt = render_targets.get(id);
-    const uint32_t index = rt.history ? ((frame_index & 1u) ^ (history_read ? 1u : 0u)) : 0u;
-    return rt.resources->images[index];
+            surfaceIndex(id, read)];
 }
 
 const ImageWrapper &RenderTargetContainer::getAttachmentImage(
-    GlobalRenderTargetId id, bool history_read) const {
+    GlobalRenderTargetId id, RenderTargetRead read) const {
     const auto &rt = render_targets.get(id);
-    const auto surface = surfaceIndex(id, history_read);
+    const auto surface = surfaceIndex(id, read);
     return rt.samples > 1
                ? rt.resources->attachment_images[surface]
                : rt.resources->images[surface];
 }
 
-vk::ImageView RenderTargetContainer::getImageView(GlobalRenderTargetId id, bool history_read) const {
-    return getImageLayerView(id, 0, history_read);
-}
-
-vk::ImageView RenderTargetContainer::getImageViewForFrame(GlobalRenderTargetId id, bool history_read,
-                                                          uint32_t frame_index) const {
-    return getImageLayerViewForFrame(
-        id, 0, history_read, frame_index);
+vk::ImageView RenderTargetContainer::getImageView(GlobalRenderTargetId id, RenderTargetRead read) const {
+    return getImageLayerView(id, 0, read);
 }
 
 vk::ImageView
@@ -1260,25 +1250,9 @@ RenderTargetContainer::getImageSubresourceView(
     GlobalRenderTargetId id,
     ImageSubresourceRange subresource,
     ImageSubresourceViewDimension dimension,
-    bool history_read) const {
-    return getImageSubresourceViewForFrame(
-        id, subresource, dimension,
-        history_read, history_frame_index);
-}
-
-vk::ImageView
-RenderTargetContainer::getImageSubresourceViewForFrame(
-    GlobalRenderTargetId id,
-    ImageSubresourceRange subresource,
-    ImageSubresourceViewDimension dimension,
-    bool history_read,
-    std::uint32_t frame_index) const {
+    RenderTargetRead read) const {
     const auto &rt = render_targets.get(id);
-    const auto surface =
-        rt.history
-            ? ((frame_index & 1u) ^
-               (history_read ? 1u : 0u))
-            : 0u;
+    const auto surface = surfaceIndex(id, read);
     subresource =
         resolveImageSubresourceRange(
             subresource,
@@ -1335,9 +1309,9 @@ RenderTargetContainer::getImageSubresourceViewForFrame(
 
 vk::ImageView RenderTargetContainer::getImageLayerView(
     GlobalRenderTargetId id, std::uint32_t array_layer,
-    bool history_read) const {
+    RenderTargetRead read) const {
     const auto &rt = render_targets.get(id);
-    const auto surface = surfaceIndex(id, history_read);
+    const auto surface = surfaceIndex(id, read);
     if (array_layer >=
         rt.resources->image_layer_views[surface]
             .size()) {
@@ -1350,36 +1324,18 @@ vk::ImageView RenderTargetContainer::getImageLayerView(
         .get();
 }
 
-vk::ImageView
-RenderTargetContainer::getImageLayerViewForFrame(
-    GlobalRenderTargetId id, std::uint32_t array_layer,
-    bool history_read, uint32_t frame_index) const {
-    const auto &rt = render_targets.get(id);
-    const uint32_t index = rt.history ? ((frame_index & 1u) ^ (history_read ? 1u : 0u)) : 0u;
-    if (array_layer >=
-        rt.resources->image_layer_views[index]
-            .size()) {
-        throw std::out_of_range(
-            "render target array layer is out of range: " +
-            rt.name);
-    }
-    return rt.resources
-        ->image_layer_views[index][array_layer]
-        .get();
-}
-
 vk::ImageView RenderTargetContainer::getAttachmentImageView(
-    GlobalRenderTargetId id, bool history_read) const {
+    GlobalRenderTargetId id, RenderTargetRead read) const {
     return getAttachmentImageLayerView(
-        id, 0, history_read);
+        id, 0, read);
 }
 
 vk::ImageView
 RenderTargetContainer::getAttachmentImageLayerView(
     GlobalRenderTargetId id, std::uint32_t array_layer,
-    bool history_read) const {
+    RenderTargetRead read) const {
     const auto &rt = render_targets.get(id);
-    const auto surface = surfaceIndex(id, history_read);
+    const auto surface = surfaceIndex(id, read);
     const auto &views =
         rt.samples > 1
             ? rt.resources
@@ -1399,14 +1355,14 @@ RenderTargetContainer::getAttachmentImageSubresourceView(
     GlobalRenderTargetId id,
     ImageSubresourceRange subresource,
     ImageSubresourceViewDimension dimension,
-    bool history_read) const {
+    RenderTargetRead read) const {
     const auto &rt = render_targets.get(id);
     if (rt.samples <= 1) {
         return getImageSubresourceView(
-            id, subresource, dimension, history_read);
+            id, subresource, dimension, read);
     }
     const auto surface =
-        surfaceIndex(id, history_read);
+        surfaceIndex(id, read);
     subresource =
         resolveImageSubresourceRange(
             subresource,
@@ -1469,29 +1425,9 @@ RenderTargetContainer::getAttachmentImageSubresourceView(
 }
 
 vk::ImageView RenderTargetContainer::getLayeredImageView(
-    GlobalRenderTargetId id, bool history_read) const {
+    GlobalRenderTargetId id, RenderTargetRead read) const {
     const auto &rt = render_targets.get(id);
-    const auto surface = surfaceIndex(id, history_read);
-    return rt.resources->layered_image_views[surface]
-               ? rt.resources
-                     ->layered_image_views[surface]
-                     .get()
-               : rt.resources
-                     ->image_layer_views[surface]
-                     .front()
-                     .get();
-}
-
-vk::ImageView
-RenderTargetContainer::getLayeredImageViewForFrame(
-    GlobalRenderTargetId id, bool history_read,
-    std::uint32_t frame_index) const {
-    const auto &rt = render_targets.get(id);
-    const std::uint32_t surface =
-        rt.history
-            ? ((frame_index & 1u) ^
-               (history_read ? 1u : 0u))
-            : 0u;
+    const auto surface = surfaceIndex(id, read);
     return rt.resources->layered_image_views[surface]
                ? rt.resources
                      ->layered_image_views[surface]
@@ -1504,9 +1440,9 @@ RenderTargetContainer::getLayeredImageViewForFrame(
 
 vk::ImageView
 RenderTargetContainer::getLayeredAttachmentImageView(
-    GlobalRenderTargetId id, bool history_read) const {
+    GlobalRenderTargetId id, RenderTargetRead read) const {
     const auto &rt = render_targets.get(id);
-    const auto surface = surfaceIndex(id, history_read);
+    const auto surface = surfaceIndex(id, read);
     if (rt.samples > 1) {
         return rt.resources
                        ->layered_attachment_image_views[surface]
@@ -1518,7 +1454,7 @@ RenderTargetContainer::getLayeredAttachmentImageView(
                          .front()
                          .get();
     }
-    return getLayeredImageView(id, history_read);
+    return getLayeredImageView(id, read);
 }
 
 bool RenderTargetContainer::hasSeparateAttachment(

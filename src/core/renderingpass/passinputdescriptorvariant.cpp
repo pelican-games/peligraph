@@ -5,9 +5,8 @@ namespace Pelican {
 
 vk::ImageView passInputCubeImageView(
     const RenderTargetImageViewResolver &rt_views,
-    GlobalRenderTargetId target, bool history,
-    std::uint32_t parity) {
-    return rt_views.getImageSubresourceViewForFrame(
+    GlobalRenderTargetId target, RenderTargetRead read) {
+    return rt_views.getImageSubresourceView(
         target,
         ImageSubresourceRange{
             .base_mip_level = 0,
@@ -16,13 +15,14 @@ vk::ImageView passInputCubeImageView(
             .base_array_layer = 0,
             .layer_count = 6,
         },
-        ImageSubresourceViewDimension::cube, history,
-        parity);
+        ImageSubresourceViewDimension::cube, read);
 }
 
 vk::ImageView resolvePassInputImageView(
     const ResolvedPassInput &input,
     const RenderTargetImageViewResolver &rt_views) {
+    const auto read =
+        RenderTargetRead::forFrame(input.history, input.parity);
     if (input.subresource) {
         auto subresource = *input.subresource;
         if (input.layer_binding ==
@@ -32,24 +32,22 @@ vk::ImageView resolvePassInputImageView(
             subresource.layer_count = 1;
         }
         return rt_views
-            .getImageSubresourceViewForFrame(
+            .getImageSubresourceView(
                 input.target, subresource,
-                input.descriptor_dimension,
-                input.history, input.parity);
+                input.descriptor_dimension, read);
     }
     if (input.descriptor_dimension ==
         ImageSubresourceViewDimension::cube) {
         return passInputCubeImageView(
-            rt_views, input.target, input.history,
-            input.parity);
+            rt_views, input.target, read);
     }
     // The producer family is one array descriptor regardless of how the
     // physical target is laid out, so this dispatches on the declared view
     // and not on the descriptor dimension derived from it.
     if (input.view ==
         PassInputViewDimension::family_2d_array) {
-        return rt_views.getLayeredImageViewForFrame(
-            input.target, input.history, input.parity);
+        return rt_views.getLayeredImageView(
+            input.target, read);
     }
     if (input.logical_view_count &&
         input.view ==
@@ -57,12 +55,10 @@ vk::ImageView resolvePassInputImageView(
         return rt_views.arrayLayers(input.target) ==
                        *input.logical_view_count
                    ? rt_views
-                         .getLayeredImageViewForFrame(
-                             input.target,
-                             input.history,
-                             input.parity)
+                         .getLayeredImageView(
+                             input.target, read)
                    : rt_views
-                         .getImageSubresourceViewForFrame(
+                         .getImageSubresourceView(
                              input.target,
                              ImageSubresourceRange{
                                  .layer_count =
@@ -71,22 +67,19 @@ vk::ImageView resolvePassInputImageView(
                              },
                              ImageSubresourceViewDimension::
                                  two_d_array,
-                             input.history,
-                             input.parity);
+                             read);
     }
     if (input.layer_binding ==
         PassInputLayerBinding::per_variant) {
-        return rt_views.getImageLayerViewForFrame(
-            input.target, input.variant,
-            input.history, input.parity);
+        return rt_views.getImageLayerView(
+            input.target, input.variant, read);
     }
     if (input.layer_binding ==
         PassInputLayerBinding::whole_array) {
-        return rt_views.getLayeredImageViewForFrame(
-            input.target, input.history, input.parity);
+        return rt_views.getLayeredImageView(
+            input.target, read);
     }
-    return rt_views.getImageViewForFrame(
-        input.target, input.history, input.parity);
+    return rt_views.getImageView(input.target, read);
 }
 
 PassInputDescriptorWrites::PassInputDescriptorWrites(

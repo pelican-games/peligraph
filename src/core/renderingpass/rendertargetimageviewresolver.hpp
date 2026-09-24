@@ -1,6 +1,7 @@
 #pragma once
 
 #include "renderingpass.hpp"
+#include "rendertargetread.hpp"
 #include <string_view>
 #include <vulkan/vulkan.hpp>
 
@@ -13,21 +14,17 @@ class RenderTargetImageViewResolver {
 
   public:
     explicit RenderTargetImageViewResolver(const RenderTargetContainer &rt_container);
-    vk::ImageView getImageView(GlobalRenderTargetId id, bool history_read = false) const;
-    vk::ImageView getImageViewForFrame(GlobalRenderTargetId id, bool history_read,
-                                       uint32_t frame_index) const;
-    vk::ImageView getImageSubresourceViewForFrame(
+    vk::ImageView getImageView(GlobalRenderTargetId id, RenderTargetRead read = {}) const;
+    vk::ImageView getImageSubresourceView(
         GlobalRenderTargetId id,
         ImageSubresourceRange subresource,
         ImageSubresourceViewDimension dimension,
-        bool history_read,
-        std::uint32_t frame_index) const;
-    vk::ImageView getImageLayerViewForFrame(
+        RenderTargetRead read = {}) const;
+    vk::ImageView getImageLayerView(
         GlobalRenderTargetId id, std::uint32_t array_layer,
-        bool history_read, std::uint32_t frame_index) const;
-    vk::ImageView getLayeredImageViewForFrame(
-        GlobalRenderTargetId id, bool history_read,
-        std::uint32_t frame_index) const;
+        RenderTargetRead read = {}) const;
+    vk::ImageView getLayeredImageView(
+        GlobalRenderTargetId id, RenderTargetRead read = {}) const;
     std::uint32_t arrayLayers(
         GlobalRenderTargetId id) const;
     std::uint32_t mipLevels(

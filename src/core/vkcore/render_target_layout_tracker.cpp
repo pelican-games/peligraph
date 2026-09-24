@@ -135,7 +135,8 @@ void RenderTargetLayoutTracker::transition(
         image_kind = RenderTargetImageKind::resolved;
     }
 
-    const auto surface = rt_container.surfaceIndex(rt_id, history_read);
+    const RenderTargetRead read{.previous = history_read};
+    const auto surface = rt_container.surfaceIndex(rt_id, read);
     const auto key = layoutKey(rt_id, surface, image_kind);
     if (const auto alias_group =
             rt_container.aliasGroup(rt_id)) {
@@ -184,8 +185,8 @@ void RenderTargetLayoutTracker::transition(
 
     const auto &image =
         image_kind == RenderTargetImageKind::attachment
-            ? rt_container.getAttachmentImage(rt_id, history_read)
-            : rt_container.getImage(rt_id, history_read);
+            ? rt_container.getAttachmentImage(rt_id, read)
+            : rt_container.getImage(rt_id, read);
     vk_utils.changeImageLayoutCmd(
         cmd_buf, image, old_layout, new_layout,
         makeTransitionInfo(old_layout, new_layout,
@@ -206,7 +207,8 @@ void RenderTargetLayoutTracker::memoryDependency(
     bool history_read, vk::PipelineStageFlags shader_stages) {
     if (isSpecialRenderTarget(rt_id)) return;
 
-    const auto surface = rt_container.surfaceIndex(rt_id, history_read);
+    const RenderTargetRead read{.previous = history_read};
+    const auto surface = rt_container.surfaceIndex(rt_id, read);
     const auto dependency = [&](RenderTargetImageKind kind,
                                 bool require_preceding_access) {
         const auto key = layoutKey(rt_id, surface, kind);
@@ -228,8 +230,8 @@ void RenderTargetLayoutTracker::memoryDependency(
         }
         const auto &image =
             kind == RenderTargetImageKind::attachment
-                ? rt_container.getAttachmentImage(rt_id, history_read)
-                : rt_container.getImage(rt_id, history_read);
+                ? rt_container.getAttachmentImage(rt_id, read)
+                : rt_container.getImage(rt_id, read);
         const auto old_shader_stages =
             shader_access_stages.contains(key)
                 ? shader_access_stages.at(key)
@@ -266,7 +268,8 @@ vk::ImageLayout RenderTargetLayoutTracker::currentLayout(
     }
     const auto surface =
         rt_container != nullptr
-            ? rt_container->surfaceIndex(rt_id, history_read)
+            ? rt_container->surfaceIndex(
+                  rt_id, RenderTargetRead{.previous = history_read})
             : 0u;
     const auto key = layoutKey(rt_id, surface, image_kind);
     if (auto it = layouts.find(key); it != layouts.end()) {
@@ -291,7 +294,8 @@ void RenderTargetLayoutTracker::assumeLayout(
         image_kind = RenderTargetImageKind::resolved;
     }
     const auto surface =
-        rt_container.surfaceIndex(rt_id, history_read);
+        rt_container.surfaceIndex(
+            rt_id, RenderTargetRead{.previous = history_read});
     const auto key =
         layoutKey(rt_id, surface, image_kind);
     if (const auto alias_group =

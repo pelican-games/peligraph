@@ -13307,15 +13307,19 @@ void GoldenHarness::runFullscreenRebind() {
     const auto initial_compute_views_1 =
         compute_tasks.boundImageViewsForTesting(compute_task_id, 1);
     REQUIRE(initial_compute_views_0 == std::vector<vk::ImageView>{
-                                           render_targets.getImageViewForFrame(
-                                               compute_history, true, 0),
-                                           render_targets.getImageViewForFrame(
-                                               compute_history, false, 0)});
+                                           render_targets.getImageView(
+                                               compute_history,
+                                               RenderTargetRead::forFrame(true, 0)),
+                                           render_targets.getImageView(
+                                               compute_history,
+                                               RenderTargetRead::forFrame(false, 0))});
     REQUIRE(initial_compute_views_1 == std::vector<vk::ImageView>{
-                                           render_targets.getImageViewForFrame(
-                                               compute_history, true, 1),
-                                           render_targets.getImageViewForFrame(
-                                               compute_history, false, 1)});
+                                           render_targets.getImageView(
+                                               compute_history,
+                                               RenderTargetRead::forFrame(true, 1)),
+                                           render_targets.getImageView(
+                                               compute_history,
+                                               RenderTargetRead::forFrame(false, 1))});
     REQUIRE(initial_compute_views_0 != initial_compute_views_1);
     const auto initial_compute_revision =
         compute_tasks.bindingRevisionForTesting(compute_task_id);
@@ -13401,12 +13405,16 @@ void GoldenHarness::runFullscreenRebind() {
             hot_reload_compute_revision);
     REQUIRE(compute_tasks.boundImageViewsForTesting(compute_task_id, 0) ==
             std::vector<vk::ImageView>{
-                render_targets.getImageViewForFrame(compute_history, true, 0),
-                render_targets.getImageViewForFrame(compute_history, false, 0)});
+                render_targets.getImageView(
+                    compute_history, RenderTargetRead::forFrame(true, 0)),
+                render_targets.getImageView(
+                    compute_history, RenderTargetRead::forFrame(false, 0))});
     REQUIRE(compute_tasks.boundImageViewsForTesting(compute_task_id, 1) ==
             std::vector<vk::ImageView>{
-                render_targets.getImageViewForFrame(compute_history, true, 1),
-                render_targets.getImageViewForFrame(compute_history, false, 1)});
+                render_targets.getImageView(
+                    compute_history, RenderTargetRead::forFrame(true, 1)),
+                render_targets.getImageView(
+                    compute_history, RenderTargetRead::forFrame(false, 1))});
 
     renderer.render();
     GET_MODULE(VulkanManageCore).waitIdle();

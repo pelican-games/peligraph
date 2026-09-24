@@ -6,43 +6,35 @@ namespace Pelican {
 RenderTargetImageViewResolver::RenderTargetImageViewResolver(const RenderTargetContainer &rt_container)
     : rt_container{rt_container} {}
 
-vk::ImageView RenderTargetImageViewResolver::getImageView(GlobalRenderTargetId id, bool history_read) const {
-    return rt_container.getImageView(id, history_read);
-}
-
-vk::ImageView RenderTargetImageViewResolver::getImageViewForFrame(
-    GlobalRenderTargetId id, bool history_read, uint32_t frame_index) const {
-    return rt_container.getImageViewForFrame(id, history_read, frame_index);
+vk::ImageView RenderTargetImageViewResolver::getImageView(GlobalRenderTargetId id, RenderTargetRead read) const {
+    return rt_container.getImageView(id, read);
 }
 
 vk::ImageView
 RenderTargetImageViewResolver::
-    getImageSubresourceViewForFrame(
+    getImageSubresourceView(
         GlobalRenderTargetId id,
         ImageSubresourceRange subresource,
         ImageSubresourceViewDimension dimension,
-        bool history_read,
-        std::uint32_t frame_index) const {
+        RenderTargetRead read) const {
     return rt_container
-        .getImageSubresourceViewForFrame(
-            id, subresource, dimension,
-            history_read, frame_index);
+        .getImageSubresourceView(
+            id, subresource, dimension, read);
 }
 
 vk::ImageView
-RenderTargetImageViewResolver::getImageLayerViewForFrame(
+RenderTargetImageViewResolver::getImageLayerView(
     GlobalRenderTargetId id, std::uint32_t array_layer,
-    bool history_read, std::uint32_t frame_index) const {
-    return rt_container.getImageLayerViewForFrame(
-        id, array_layer, history_read, frame_index);
+    RenderTargetRead read) const {
+    return rt_container.getImageLayerView(
+        id, array_layer, read);
 }
 
 vk::ImageView
-RenderTargetImageViewResolver::getLayeredImageViewForFrame(
-    GlobalRenderTargetId id, bool history_read,
-    std::uint32_t frame_index) const {
-    return rt_container.getLayeredImageViewForFrame(
-        id, history_read, frame_index);
+RenderTargetImageViewResolver::getLayeredImageView(
+    GlobalRenderTargetId id, RenderTargetRead read) const {
+    return rt_container.getLayeredImageView(
+        id, read);
 }
 
 std::uint32_t RenderTargetImageViewResolver::arrayLayers(

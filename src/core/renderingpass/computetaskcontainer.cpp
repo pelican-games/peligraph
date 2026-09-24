@@ -1149,6 +1149,8 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
                                other.history_read ==
                                    resource.history_read;
                     });
+            const auto read = RenderTargetRead::forFrame(
+                resource.history_read, frame_index);
             vk::ImageView image_view;
             if (typed != nullptr &&
                 typed->port.subresource) {
@@ -1162,15 +1164,14 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
                 image_view =
                     cube
                         ? render_target_container
-                              .getImageSubresourceViewForFrame(
+                              .getImageSubresourceView(
                                   rt_id,
                                   subresource,
                                   ImageSubresourceViewDimension::
                                       cube,
-                                  resource.history_read,
-                                  frame_index)
+                                  read)
                         : render_target_container
-                              .getImageSubresourceViewForFrame(
+                              .getImageSubresourceView(
                                   rt_id,
                                   subresource,
                                   layered
@@ -1178,12 +1179,11 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
                                             two_d_array
                                       : ImageSubresourceViewDimension::
                                             two_d,
-                                  resource.history_read,
-                                  frame_index);
+                                  read);
             } else if (cube) {
                 image_view =
                     render_target_container
-                        .getImageSubresourceViewForFrame(
+                        .getImageSubresourceView(
                             rt_id,
                             ImageSubresourceRange{
                                 .base_mip_level = 0,
@@ -1194,12 +1194,11 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
                             },
                             ImageSubresourceViewDimension::
                                 cube,
-                            resource.history_read,
-                            frame_index);
+                            read);
             } else if (layered) {
                 image_view =
                     render_target_container
-                        .getImageSubresourceViewForFrame(
+                        .getImageSubresourceView(
                             rt_id,
                             ImageSubresourceRange{
                                 .layer_count =
@@ -1208,22 +1207,16 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
                             },
                             ImageSubresourceViewDimension::
                                 two_d_array,
-                            resource.history_read,
-                            frame_index);
+                            read);
             } else if (sequential_layer) {
                 image_view =
                     render_target_container
-                        .getImageLayerViewForFrame(
-                            rt_id, view_index,
-                            resource.history_read,
-                            frame_index);
+                        .getImageLayerView(
+                            rt_id, view_index, read);
             } else {
                 image_view =
                     render_target_container
-                        .getImageViewForFrame(
-                            rt_id,
-                            resource.history_read,
-                            frame_index);
+                        .getImageView(rt_id, read);
             }
             image_infos.push_back(vk::DescriptorImageInfo{
                 sampled
