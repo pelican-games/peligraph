@@ -390,7 +390,7 @@ retire 中の `onDestroy` は「自分の最終状態」を読めます。entity
 
 ### commit したのに作用が失敗したとき
 
-flush で音やディスク書き込みが失敗しても、**シーンは新しいまま**です。この結果は [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として返り、rpc の `load_scene` は例外ではなく `{"name": ..., "committed": true, "effect_errors": [...]}` を返します([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1722))。`effect_errors` の各要素は `{api, error_code, error_fields, phase}` で、`api` は `playSound` / `saveData` などの公開 API 名、`phase` は `activate` / `destroy` / `flush` のどれかです。
+flush で音やディスク書き込みが失敗しても、**シーンは新しいまま**です。この結果は [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として返り、rpc の `load_scene` は例外ではなく `{"name": ..., "committed": true, "effect_errors": [...]}` を返します([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1726))。`effect_errors` の各要素は `{api, error_code, error_fields, phase}` で、`api` は `playSound` / `saveData` などの公開 API 名、`phase` は `activate` / `destroy` / `flush` のどれかです。
 
 - 「シーンは切り替わらなかった」= commit 前の失敗は従来どおり**例外**です。両者を混同しないでください。
 - staging できる作用は 256 件までです。257 件目からは**控えに積まれず、実行もされません**(`playSound` は無効なハンドルを返します)。捨てた件数だけが `effect_outbox_full@1{dropped: N}` という 1 件のエラーにまとめて記録されます([reserveEntry](../../src/core/loader/effecttransaction.cpp#L119))。
@@ -425,7 +425,7 @@ ECS の実装(WP62・R5-core ✅)は archetype/chunk 方式ですが、ゲーム
 
 ### 名前でシーンオブジェクトを引く — `ctx.objects()`(✅GP-1)
 
-ゲームコードからシーンのオブジェクトを名前で探すときは、[`GameContext::objects()`](../../src/core/userpublic/gamecontext.hpp#L362) を使います。手順は 3 段です。
+ゲームコードからシーンのオブジェクトを名前で探すときは、[`GameContext::objects()`](../../src/core/userpublic/gamecontext.hpp#L363) を使います。手順は 3 段です。
 
 1. `resolve(name)` — 名前を 1 回だけ引き、**`ObjectRef`** を返します。ref は名前を持たず、「どのシーンの実行(run)で解決したか」と「シーン内の宣言 ID(authoring object id — §4.1)」の組です。
 2. `materialize(ref)` — 今生きている `GameObjectId` を返します。
@@ -445,7 +445,7 @@ ECS の実装(WP62・R5-core ✅)は archetype/chunk 方式ですが、ゲーム
 
 ゲームの途中で object を作る口は 2 つあります。
 
-| | `createObject(LocalTransformComponent)` / `createSpriteObject` | [`ctx.spawn(prefab, SpawnParams)`](../../src/core/userpublic/gamecontext.hpp#L325) |
+| | `createObject(LocalTransformComponent)` / `createSpriteObject` | [`ctx.spawn(prefab, SpawnParams)`](../../src/core/userpublic/gamecontext.hpp#L326) |
 |---|---|---|
 | 作るもの | transform(と sprite)だけの ECS entity | 単一 object の prefab を展開した object。collider・model・behavior も付く(light / camera は不可) |
 | 検査 | 無し | シーンのロードと同じ ResolvedScene の経路で展開し、prefab・parameter・build の機能をロードと同じ名前で拒否する |
@@ -458,7 +458,7 @@ spawn で作った object は **transient**(一時的)で、シーンに書い�
 - **保存されません。** シーン文書には書かれず、保存しても出ません。authoring object id(§4.1)も持ちません。
 - **シーンの実行と一緒に終わります。** シーンのロード(同じシーンの読み直しを含む)で、ほかの旧 entity と一緒に消えます。
 - **指す ref の型が違います。** authored の object は `resolve(name)` の `ObjectRef`、transient の object は `spawn` が返す `TransientObjectRef` で指します。どちらもシーンの実行(`ObjectAuthority`)を持ちますが別の型なので、取り違えるとコンパイルエラーです。`TransientObjectRef` は名前を持たず、「実体化した境界の番号と、その境界の中の番号」で object を指します。シーンが切り替わった後の ref は、どちらも `object.stale_authority@1` です。
-- **名前は任意です。** `SpawnParams::name` を渡すと collider の名前(raycast の当たりが報告する名前)になります。シーンに書かれた object の名前は `object.name_reserved_by_authored@1`、同じシーンの実行で spawn した別の object の名前は `object.name_duplicate@1` で拒否されます。`resolve(name)` では引けません。
+- **名前は任意です。** `SpawnParams::name` を渡すと collider の名前(raycast の当たりが報告する名前)になります。シーンに書かれた object の名前は `object.name_reserved_by_authored@1`、同じシーンの実行で spawn した別の object の名前は `object.name_duplicate@1` で拒否されます。engine が名前の無い object に付ける名前の接頭辞(名前の無い spawn の `spawn:<境界>.<番号>`、名前の無い authored object の `pelican://scene/<scene>/authoring-object/<n>`)、つまり **`spawn:` か `pelican://` で始まる名前は `object.name_reserved_by_engine@1`** で拒否されます(✅GP-2b)。authored の object の名前はシーン形式の規則 `[a-zA-Z0-9_]` によって、もともとこの形を取れません。`resolve(name)` では引けません。
 
 エラー名の一覧と使用例は [第8章 §8.4「実行時生成 — `ctx.spawn`」](08_gameplay.md) にあります。
 

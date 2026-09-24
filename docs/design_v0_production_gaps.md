@@ -269,7 +269,7 @@ GUI session の第二段階(forward / deferred の material ループを Studio 
   - `event.playback` は payload 無しの stream で命令は `start / pause / resume / reset`。
   - `value.playback`: delay → `sample_interval` の量子化 → speed → **wrap(`once / repeat / ping_pong`、文字列 parameter)** → `source_begin..end`。音源の進む速さは `(end-begin)/duration*|speed|`。数値の 6 項目は literal か edge(lowering で区別できる: `valuegraph.cpp:252-257`)。
   - graph 入力の時計は `time` / `delta_time` / `scene_time`。
-- `audio.playback`(`{asset}`、入力 `events` 必須・`time` → `voice`): **time はイベントの到着判定だけ**。start は常に `playSound` で新しい voice(`scenegraphruntime.cpp:153-172`)。lowering は未知の parameter を拒否(`keys(parameters, {"asset"})`)。
+- `audio.playback`(`{asset}`、入力 `events` 必須・`time` → `voice`): **time はイベントの到着判定だけ**。start は常に `playSound` で新しい voice(`scenegraphruntime.cpp:153-172`)。lowering は未知の parameter を拒否(`keys(parameters, {"asset"})`)。(**2026-09-25 注記: AU-3 `a8b03406` で `events` は任意に**。`events` も `position` も無い一体版は owner の最初の frame で開始する。§9 末尾の実装記録)
 - **scene の commit は `graph_runtime.clear()` だけで voice を止めない**(`scene.cpp:722-725`。stopAll の類は src に無い)。前の scene の voice は管理外のまま鳴り続ける = **既存の不具合**。scene 内の owner の交代・消失では stop。(**2026-09-25 注記: 実装時に誤りと判明**。`~GraphRuntime`(`scenegraphruntime.cpp`)が既に voice を止めていたので、`graph_runtime.clear()` で止まっていた。AU-1 `feca9dce` は commit に明示の停止(`loader.stopGraphVoices()`)を 1 行置いただけ)
 - イベントの時刻は scene 基準(`now - scene_start_time`)。
 - backend: voice は常に Se bus、WAV を全体 decode、start ごとに再 decode、looping / seek / fade 未使用。**headless と rpc は null backend**(cursor が無く「時計を捏造しない」方針: `audio.cpp:269-310, 450-453`)。Studio の player は rpc なので **Studio では音が鳴らない**。config 登録時の検査用 decode は全体 decode(`renderingpassconfigregistration.cpp:1028-1036`)。
@@ -292,7 +292,7 @@ GUI session の第二段階(forward / deferred の material ループを Studio 
    | 再生 | start イベント、または `events` 未接続なら owner の最初の frame | 毎 frame、voice の cursor と `position` の差を**音源の長さを法として**比べ、許容(既定 1 frame + 10 ms)を超えたら seek。`position` が進まない frame は voice を止める |
    | 一時停止 | pause イベント | `position` が進んでも鳴らさない(**イベントが優先**)。resume で再生へ |
    - position 接続時は `events` を任意にする(未接続なら「owner がある間は鳴る」)。
-4. **一体版の開始・停止**は今日どおりイベント(`events` 必須)。
+4. **一体版の開始・停止**は今日どおりイベント(`events` 必須)。(**2026-09-25 注記: AU-3 `a8b03406` で任意に**。`events` が無ければ分解版と同じく owner の最初の frame で開始する。§9 末尾の実装記録)
 5. **バス**: parameter `bus: "se" | "bgm"`(既定 `se`)。`parameter_changes` に rebuild を宣言。`GameContext` の `playSound` にも同じ指定(既定 Se)。
 6. **フェード**: `value.curve`(キーで音量の包絡)→ `audio.volume`。backend は frame ごとの目標値へ 1 frame かけて線形に寄せる。専用の fade API は作らない。
 7. **decode の 1 回化**: asset 単位で decode 済みの buffer を共有(WAV・短い Ogg)。config 登録時の検査は、streaming 対象(§9.3)では header だけ読む。
@@ -324,6 +324,8 @@ GUI session の第二段階(forward / deferred の material ループを Studio 
 ### 9.5 やらないこと(v1)
 
 3D 定位、音の書き出し(O-1 の音声出力)、ducking / sidechain、常駐 owner による無途切れの scene 跨ぎ、MP3 / FLAC、`event.playback` の語彙拡張。
+
+**実装の記録(AU-3 `a8b03406`、2026-09-25)**: GUI session の依頼で 2 点を足した。(1) **起動でバックエンドを名指しする**: player の `--audio-backend device|offline|null`、無ければ環境変数 `PELICAN_AUDIO_BACKEND`、それも無ければ決定 9 の既定(窓あり = device、headless = offline)。引数があると環境変数は読まず、空の環境変数は未設定の扱い(`src/player/main.cpp` の `audioBackendEnvironment`)。三語以外は起動を止めて `audio.backend_unknown@1`(どちらから来たかを文に含める)。名指しは `EngineLaunchConfig::audio_backend`(`std::optional`)に入り、`Audio::Audio()` が `value_or(preferredAudioBackend(headless))` で使う。名指しの `null` は何も開かず `NullAudioBackend` を置くだけなので `fallback_reason` は付かない。`device` / `offline` は開けなければ従来どおり null へ退避する。`AudioBackendKind` と名前の変換は audio OFF の build にもある `src/core/audio/audiobackendkind.hpp` へ移した。audio OFF の build は `null` だけを受け付け、`offline` / `device` は `This binary was built with PELICAN_WITH_AUDIO=OFF: --audio-backend <値> is unavailable`、環境変数は読まない(harness が起動する全 process に継承されるため)。`get_status.audio` の形は変えていない(`backend` は実効値)。Studio の QProcess は環境を継承するので、`PELICAN_AUDIO_BACKEND=null` で埋め込み player を無音にできる(scenario の driver `tools/studio_drive.py` が未設定・空のときに `null` を渡すのは `d616e35a`)。(2) **一体版でも `events` を任意に**(決定 4 を改める): lowering の「`position` も `events` も無ければ `unconnected graph input: <node>.events`」と IR の「audio playback requires events or a position」を外し、publish で `events` の無いノードが idle なら現在の `time` で開始する(`src/core/userpublic/valuegraph.cpp`)。一体版の elapsed はその frame から `time` の時計で数える(分解版と同じ規則)。`time` は必須のまま、`events` があるときの `audio.clock_mismatch@1` は変えていない。`events` が無ければ `time` の時計は問わない(`time` / `scene_time` / 時計の無い定数)。Studio の palette で置いた node は `scene_time → time` を 1 本繋いだ雛形で置かれる(`d616e35a`)。残した穴: `events` の無い voice は owner がいったん不活性になって戻ると頭から鳴り直す(不活性の間にノードの状態を捨てるため)。`wrap: once`(既定)で `events` が無いと最初の frame から 1 回だけ鳴る。test は `audio_test.cpp` の `[au3]`、`audio_backend_selection_refused` / `audio_backend_selection_player`(`test/run_audio_backend_selection.cmake`)、audio OFF は `run_build_units_smoke.cmake` の 4 ケース。着地時の報告は、変異 5 本で赤、非 GPU は全数緑、audio OFF の smoke は緑、W1 は 252/252。
 
 ## 10. 順序と依存
 

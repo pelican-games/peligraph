@@ -28,16 +28,16 @@ sequenceDiagram
 
 ### 段階A: `main()` でプロセス条件を確定
 
-入口は [`src/player/main.cpp` の `main()`](../../src/player/main.cpp#L604) です。先に [`parseLaunchConfig()`](../../src/player/main.cpp#L308) が次を決めます。
+入口は [`src/player/main.cpp` の `main()`](../../src/player/main.cpp#L655) です。先に [`parseLaunchConfig()`](../../src/player/main.cpp#L333) が次を決めます。
 
 - windowedかheadlessか
 - RPCを使うか（`--rpc`）
 - headlessの解像度・フレーム数・固定FPS
-- headlessの開始時刻（`--start-time`、[引数宣言](../../src/player/main.cpp#L322)。後述）
+- headlessの開始時刻（`--start-time`、[引数宣言](../../src/player/main.cpp#L352)。後述）
 - project rootと`project.json`
 - asset検証をstrictにするか
 - render出力、frame plan dump（`--dump-frame-plan`）
-- Vulkanのdebugオブジェクト名とコマンドラベル（`--gpu-labels` → [`EngineLaunchConfig::gpu_labels`](../../src/core/launchconfig.hpp#L72)）
+- Vulkanのdebugオブジェクト名とコマンドラベル（`--gpu-labels` → [`EngineLaunchConfig::gpu_labels`](../../src/core/launchconfig.hpp#L78)）
 - Vulkan validation + synchronization validation（`--vulkan-validation=off|on`。未指定は `_DEBUG` だけ ON）
 - sequence/VAT再生とcamera override
 - XRモード（`--xr off|auto|on`）
@@ -45,19 +45,19 @@ sequenceDiagram
 - 入力の記録/再生（`--record-input` / `--replay` / `--input-profile`）
 - camera bake（`--bake-camera-output`、headless + replay 必須）
 
-> **設計決定:** `--rpc` は `--headless` を要求しません（WP156。以後この文書に出る `WP<番号>` は work package = 台帳 [`docs/implementation_plan.md`](../implementation_plan.md) が「独立に依頼できる単位」として採番した作業の番号で、`-fix` / `a` / `b` は同じ作業の分割・追補です。[用語集](../manual/14_glossary.md)）。ヘルプ文言そのものが現在の契約です — `enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)`（[`main.cpp`](../../src/player/main.cpp#L311)）。headlessではRPCがフレーム進行を所有し、windowedではフレーム境界でだけdispatchされます。両者の違いは §2.4 で分解します。
+> **設計決定:** `--rpc` は `--headless` を要求しません（WP156。以後この文書に出る `WP<番号>` は work package = 台帳 [`docs/implementation_plan.md`](../implementation_plan.md) が「独立に依頼できる単位」として採番した作業の番号で、`-fix` / `a` / `b` は同じ作業の分割・追補です。[用語集](../manual/14_glossary.md)）。ヘルプ文言そのものが現在の契約です — `enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)`（[`main.cpp`](../../src/player/main.cpp#L336)）。headlessではRPCがフレーム進行を所有し、windowedではフレーム境界でだけdispatchされます。両者の違いは §2.4 で分解します。
 
-`--project` がなければ、実行ファイルの祖先から `projects/example/project.json` を探索します（[`configureImplicitProject()`](../../src/player/main.cpp#L234)）。明示projectなら、directoryまたは`project.json`そのものを受け付けます（[`configureExplicitProject()`](../../src/player/main.cpp#L249)）。
+`--project` がなければ、実行ファイルの祖先から `projects/example/project.json` を探索します（[`configureImplicitProject()`](../../src/player/main.cpp#L259)）。明示projectなら、directoryまたは`project.json`そのものを受け付けます（[`configureExplicitProject()`](../../src/player/main.cpp#L274)）。
 
 #### `--start-time`: 秒はここでフレーム番号になる ✅実装済み（O-1）
 
 `--start-time <秒>` は「その時刻から `--frames` 枚を出す」オフライン出力用の引数です。押さえる点は3つあります。
 
-**engineは frame 番号しか受け取りません。** 変換は [`parseStartFrame()`](../../src/player/main.cpp#L289) 1箇所だけで、`llround(seconds * fps)` によって固定ステップのタイムライン上のフレーム番号に落ちます（フレームとフレームの間の時刻は近い方のフレームへ丸められ、engineへ渡ることはありません）。結果は [`EngineLaunchConfig::start_frames`](../../src/core/launchconfig.hpp#L66) に入ります。非常に大きな秒数では `llround` が溢れますが、これは台帳 O-1 が既知の穴として記録している範囲で、実用的な入力では起きません。
+**engineは frame 番号しか受け取りません。** 変換は [`parseStartFrame()`](../../src/player/main.cpp#L314) 1箇所だけで、`llround(seconds * fps)` によって固定ステップのタイムライン上のフレーム番号に落ちます（フレームとフレームの間の時刻は近い方のフレームへ丸められ、engineへ渡ることはありません）。結果は [`EngineLaunchConfig::start_frames`](../../src/core/launchconfig.hpp#L72) に入ります。非常に大きな秒数では `llround` が溢れますが、これは台帳 O-1 が既知の穴として記録している範囲で、実用的な入力では起きません。
 
-**失敗は全部ひとつの名前になります。** argparse に `double` としてscanさせず、テキストのまま `std::stod` で読んで「文字を全部消費したか・有限か・非負か」を自分で確かめます（[検査](../../src/player/main.cpp#L298)）。綴り間違いも負の時刻も同じ `offline.time_invalid@1` で、理由は「そんなフレームは存在しない」の一言に畳めるからです。
+**失敗は全部ひとつの名前になります。** argparse に `double` としてscanさせず、テキストのまま `std::stod` で読んで「文字を全部消費したか・有限か・非負か」を自分で確かめます（[検査](../../src/player/main.cpp#L323)）。綴り間違いも負の時刻も同じ `offline.time_invalid@1` で、理由は「そんなフレームは存在しない」の一言に畳めるからです。
 
-**組み合わせの衝突は黙って無視しません。** 固定ステップのタイムラインが存在するのは headless だけなので、`--headless` が無ければ `offline.headless_required@1`。そして「このrunのフレームがどこから来るか」を決める引数なので、同じことを決める `--rpc` / `--replay` / `--record-input` / `--bake-camera-output` との併用は [`offline.mode_conflict@1`](../../src/player/main.cpp#L546) で、どのフラグと衝突したかを名前で返します。
+**組み合わせの衝突は黙って無視しません。** 固定ステップのタイムラインが存在するのは headless だけなので、`--headless` が無ければ `offline.headless_required@1`。そして「このrunのフレームがどこから来るか」を決める引数なので、同じことを決める `--rpc` / `--replay` / `--record-input` / `--bake-camera-output` との併用は [`offline.mode_conflict@1`](../../src/player/main.cpp#L597) で、どのフラグと衝突したかを名前で返します。
 
 ### 段階B: `run()` 前に共有moduleへ起動情報を注入
 
@@ -79,7 +79,7 @@ sequenceDiagram
 2. `StartupMetrics` を開始。
 3. **XR activationを決定**: [`resolveXrActivation()`](../../src/core/xractivation.hpp) がheadless/RPC/replay等のforced-offとOpenXR discovery hookから `launch_config.xr_active` を確定。
 4. constructorへ渡されたsettings JSONを`ProjectSource`の上書きsourceへ設定し、[`watch::ReloadGate.configureFromLaunch()`](../../src/core/watch/reloadgate.hpp) を呼ぶ。
-5. [`recoverRenderConfigDocumentTransaction()`](../../src/core/userpublic/pelican_core.cpp#L108) — プロセスのクラッシュをまたいだ project 文書の transaction を、`ProjectBasicConfig` や `Renderer` がdocument setのどれかを観測する**前**に決着させます。この transaction は project 文書全般のもので、rendering config の編集と `project migrate` の apply が共用します(MG-1 で実体が [`recoverProjectDocumentTransaction()`](../../src/project/projectdocumenttransaction.cpp#L1182) として `pelican_project` へ移り、ここで呼ぶ名前は [editor 側の別名](../../src/core/communication/renderconfigtransaction.hpp#L36) として残りました。ディレクトリと形式は変わっていません)。なお `pelican_player` は project.json を持つ project を開くとき、`PelicanCore::run()` より前、`parseProjectEnvelopeText` の手前の MG-1 の入口([`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L563)、[呼ぶ場所](../../src/player/main.cpp#L629))で同じ復旧を先に一度走らせます。この段の復旧はそのあとで、ふつうは片付けるものが残っていません。ここでいう document set は「rendering config の root 文書と、それが参照する feature JSON 断片を、1つのtransactionでまとめて書き換える単位」です（[`RenderConfigCandidateDocumentSet`](../../src/project/renderconfigdocument.hpp#L122)。ヘッダのコメントが `A render-authoring candidate is a document set, not a replacement string for the root document.` と書いています）。root だけ新版で断片が旧版、という中途半端な組み合わせを誰にも観測させないために、この復旧が最初に来ます。
+5. [`recoverRenderConfigDocumentTransaction()`](../../src/core/userpublic/pelican_core.cpp#L108) — プロセスのクラッシュをまたいだ project 文書の transaction を、`ProjectBasicConfig` や `Renderer` がdocument setのどれかを観測する**前**に決着させます。この transaction は project 文書全般のもので、rendering config の編集と `project migrate` の apply が共用します(MG-1 で実体が [`recoverProjectDocumentTransaction()`](../../src/project/projectdocumenttransaction.cpp#L1182) として `pelican_project` へ移り、ここで呼ぶ名前は [editor 側の別名](../../src/core/communication/renderconfigtransaction.hpp#L36) として残りました。ディレクトリと形式は変わっていません)。なお `pelican_player` は project.json を持つ project を開くとき、`PelicanCore::run()` より前、`parseProjectEnvelopeText` の手前の MG-1 の入口([`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L563)、[呼ぶ場所](../../src/player/main.cpp#L680))で同じ復旧を先に一度走らせます。この段の復旧はそのあとで、ふつうは片付けるものが残っていません。ここでいう document set は「rendering config の root 文書と、それが参照する feature JSON 断片を、1つのtransactionでまとめて書き換える単位」です（[`RenderConfigCandidateDocumentSet`](../../src/project/renderconfigdocument.hpp#L122)。ヘッダのコメントが `A render-authoring candidate is a document set, not a replacement string for the root document.` と書いています）。root だけ新版で断片が旧版、という中途半端な組み合わせを誰にも観測させないために、この復旧が最初に来ます。
    復旧が読む「このtransactionはcommit済みか」の答えは、`manifest.json` の中のフィールドではなく **`committed` という別ファイルが在るかどうか**です（[`committedMarkerName`](../../src/project/projectdocumenttransaction.cpp#L413)、判定は [`transactionDecision()`](../../src/project/projectdocumenttransaction.cpp#L498)）。commit側は `committed.next` を書いてから [`linkExclusive()`](../../src/project/projectdocumenttransaction.cpp#L306) で `committed` という**それまで存在しなかった名前**を作ります。生きているファイルを上書きしないので、「途中まで書けた commit 済み印」という状態が原理的に作れません（R1-2）。marker は自分が属する manifest の digest を持っていて、`manifest.json` が別物にすり替わっていれば [`render_authoring_manifest_mismatch@1`](../../src/project/projectdocumenttransaction.cpp#L510) で名前付きに落ちます —— 黙って rollback すると commit 済みの編集を消す破壊操作になるためです。旧形式(marker を持たず、`manifest.json` の `status: "committed"` で決定を記録していた形)のディレクトリは、MG-2a から**読みません**。[`rejectLegacyTransactionDirectory()`](../../src/project/projectdocumenttransaction.cpp#L488) が判定の先頭で `render_config.legacy_transaction_dir@1`(error_fields は `path`)を投げ、rollback も committed としての片付けもせずにディレクトリを残します。この段で投げられると `PelicanCore::run()` の catch が `Pelican fatal error` として記録し、起動はそこで終わります(player では先に MG-1 の入口の復旧が同じ例外に当たるので、stderr に 1 行出して exit 1 で終わります。コードを読んで確認、実行では未確認)。以前はこの形を committed として読む互換を残していましたが(旧形式の dir が残った project が二度と commit できなくなるのを避けるため)、MG-2a で「黙って読む」から「名前付きで止める」へ替わりました。片付けの手順は [manual 第3章 §3.1](../manual/03_project_format.md#31-プロジェクトとは) にあります。
 6. `Persistence`からsettingsを読み、audio設定を適用。
 7. [`configureRayLayoutModeBeforeComponentRegistration()`](../../src/core/userpublic/pelican_core.cpp#L38) — rendering configから ray layout の意味モードを求めて [`RayLayoutRuntimeState`](../../src/core/shader/raygrouplayout.hpp#L168) へ固定します。意味モードは `LegacyNoLayout` / `LayoutV3` の2値で（[`RayLayoutSemanticMode`](../../src/core/shader/raygrouplayout.hpp#L74)）、ray layout 文書が無い（`LegacyNoLayout`）かある（`LayoutV3`）かだけを表します。MG-2a より前は版ごとの `LayoutV1Q` / `LayoutV2` もありましたが、layout は version 3 だけを読むようになり、版差を運ぶ値とフィールド（`RayGroupLayout::version` / `semantic_mode` など）は消えました。どの値になるかは次の3つの判定だけで決まります。(1) rendering config の `rendering` 節に `ray_group_layout` key が無ければ(root は MG-2b から `pelican.graph` だけで、それ以外は [`RenderConfigLegacyRoot`](../../src/core/shader/raygrouplayout.cpp#L1464) で拒否) [`loadRayTracingProjectConfig()` が空を返し](../../src/core/shader/raygrouplayout.cpp#L1471)、[`rayLayoutSemanticMode()` の `config == nullptr` 枝](../../src/core/shader/raygrouplayout.cpp#L762)が `LegacyNoLayout` を返します（`ray_bindings` だけ書くと `pelican.ray_tracing.bindings_without_layout@1` で拒否）。(2) key があれば参照先の layout 文書を [`parseRayGroupLayout()`](../../src/core/shader/raygrouplayout.cpp#L822) が読み、読めれば [`rayLayoutSemanticMode()` の layout 有りの枝](../../src/core/shader/raygrouplayout.cpp#L763)が `LayoutV3` を返します。(3) 読めないのは2通りです。schema 名が違うか `version` が整数でなければ [schema エラー](../../src/core/shader/raygrouplayout.cpp#L838)、整数でも 3 以外(1 と 2 を含む)なら [`pelican.ray_group_layout.version_unsupported@1`](../../src/core/shader/raygrouplayout.cpp#L845) で拒否されます。旧版を旧い意味で読む分岐は残っていないので、version 1 / 2 の layout は version 3 の形(各 group に `type`)へ書き直すしかありません。組み込みComponent登録より前に置くのは、`pelican_ray_instance` の登録可否がこのモードで決まるためです（[`builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L177) が真になるのは `LayoutV3` のとき、つまり layout があるとき。§3.11）。プロセス寿命の間このモードは変えられません（変更しようとすると `pelican.ray_layout_mode_change_requires_restart@1`）。
@@ -530,7 +530,7 @@ flat画面では`render()`がactive Cameraを1-view providerとして渡しま�
 
 ### RPCディスパッチャは1個
 
-[`EngineRpcEndpoint`](../../src/core/communication/rpcserver.hpp#L140) が「状態を持つエンジンRPCディスパッチャ」を1個所有します。ヘッダのコメントが契約です — headlessは [`run()`](../../src/core/communication/rpcserver.cpp#L2138) がEOFまでブロックし、windowedのホストは [`processLine()`](../../src/core/communication/rpcserver.hpp#L100) を**フレーム境界でだけ**呼びます。`runEngineRpcServer()` はheadless用の薄いラッパです。
+[`EngineRpcEndpoint`](../../src/core/communication/rpcserver.hpp#L140) が「状態を持つエンジンRPCディスパッチャ」を1個所有します。ヘッダのコメントが契約です — headlessは [`run()`](../../src/core/communication/rpcserver.cpp#L2142) がEOFまでブロックし、windowedのホストは [`processLine()`](../../src/core/communication/rpcserver.hpp#L100) を**フレーム境界でだけ**呼びます。`runEngineRpcServer()` はheadless用の薄いラッパです。
 
 ### 編集セッションの生成点も1個
 
@@ -629,7 +629,7 @@ pollを駆動するのはreload serviceのruntime participant `game_logic` で�
 
 ### 起動時の失敗はRPC `status` まで運ばれる
 
-`initializeConfiguredGameLogic()` が `false` を返しても `run()` は続きます（§2.1 の 9番）。失敗の内容は `GameLogicReloader` に保存され、[`configuredGameLogicStatus()`](../../src/core/gamelogic/gamelogicreload.cpp#L951) から読めます。RPC `status` の `participants.game_logic`（[組み立て箇所](../../src/core/communication/rpcserver.cpp#L1527)）を作るのは [`gameLogicParticipantRpcStatus()`](../../src/core/communication/rpcserver.cpp#L1164) で、規則はコメントが規範です。
+`initializeConfiguredGameLogic()` が `false` を返しても `run()` は続きます（§2.1 の 9番）。失敗の内容は `GameLogicReloader` に保存され、[`configuredGameLogicStatus()`](../../src/core/gamelogic/gamelogicreload.cpp#L951) から読めます。RPC `status` の `participants.game_logic`（[組み立て箇所](../../src/core/communication/rpcserver.cpp#L1531)）を作るのは [`gameLogicParticipantRpcStatus()`](../../src/core/communication/rpcserver.cpp#L1168) で、規則はコメントが規範です。
 
 - reload serviceのruntime participant行があり、その `attempted` が0でない（= 一度は走った）なら、その行をそのまま返す。
 - participantが**まだ一度も試されていない**（`attempted == 0`）場合に限り、保存済みの起動時失敗（`status.error_code`）を優先する。

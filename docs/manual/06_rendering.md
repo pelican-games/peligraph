@@ -2315,7 +2315,7 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 | `render_config_section_unlocated`(RPC の拒否コード) | `pelican.graph` root なのに `rendering` 節が無い(あるいは object でない)文書を authoring RPC が編集しようとした。**黙って root にキーを作らない**([renderconfigeditor.cpp:887](../../src/core/communication/renderconfigeditor.cpp#L1165)。§6.16) |
 | `render_config.section_unlocated@1` | 同じ理由で `--feature-overlay` の適用先が見つからない([renderfeatureoverlay.cpp:142](../../src/project/renderfeatureoverlay.cpp#L144)) |
 | `graph.operation_unregistered@1` `{node, op}` | ノードの `op` をどの module も登録していない。綴り間違いのほか、**`PELICAN_WITH_ANIMATION=OFF` の build で `pose.*` を書いた**ときもこれ([graphmodule.cpp:199](../../src/project/graphmodule.cpp#L199)。§6.17) |
-| `graph.operation_unexecutable@1` `{backend, op, node}` | op は登録されているのに、それを実行する backend がこの build に無い。rendering 側は `backend: "pelican.render"` で、lowering できる 6 op 以外を rendering 区画に置いたときに出ます([rendergraphcomposition.cpp:58](../../src/project/rendergraphcomposition.cpp#L58))。姿勢側・値側にも同名の拒否があります([posegraph.cpp:91](../../src/core/animation/posegraph.cpp#L91) / [valuegraph.cpp:289](../../src/core/userpublic/valuegraph.cpp#L452)) |
+| `graph.operation_unexecutable@1` `{backend, op, node}` | op は登録されているのに、それを実行する backend がこの build に無い。rendering 側は `backend: "pelican.render"` で、lowering できる 6 op 以外を rendering 区画に置いたときに出ます([rendergraphcomposition.cpp:58](../../src/project/rendergraphcomposition.cpp#L58))。姿勢側・値側にも同名の拒否があります([posegraph.cpp:91](../../src/core/animation/posegraph.cpp#L91) / [valuegraph.cpp:289](../../src/core/userpublic/valuegraph.cpp#L455)) |
 | `graph.node_duplicate@1` / `graph.node_missing@1` / `graph.input_unknown@1` / `graph.input_referenced@1` / `graph.output_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1` / `graph.definition_immutable@1` / `graph.layout_invalid@1` | `edit_graph_document` の **9 つ**の名前付き拒否(重複 id / 不在 node / 不明な入力 port / まだ供給されている `graph.input` の削除 / まだ参照されている node の削除 / definition の中の `graph.instance` / root の `graph.input` / 編集できない scope)。正は [`editGraphDocument()` の宣言コメント](../../src/project/graphcomposition.hpp#L90)(9 つ全部を列挙しています。9 つ目 `graph.layout_invalid@1` は N-6 の `set_layout`)と throw 箇所([graphcomposition.cpp:363](../../src/project/graphcomposition.cpp#L364) 〜 [:534](../../src/project/graphcomposition.cpp#L828))。一覧は [第13章](13_editor.md) |
 | `graph.override_shadowed@1` `{parameter}` | edge が供給している入力に `setGraphParameter` で実行時の上書きをかけた。**黙って消えない**([scenegraphruntime.cpp:123](../../src/core/loader/scenegraphruntime.cpp#L129)。§6.17) |
 | `unconnected graph input: <node>.<port>` / `unconnected subgraph input: <名前>` | 必須入力に edge も `parameters` も `default` も無い([graphcomposition.cpp:323](../../src/project/graphcomposition.cpp#L324)、[:59](../../src/project/graphcomposition.cpp#L60)) |
@@ -2747,7 +2747,7 @@ op は **module** が登録します。登録済み module はエンジンに最
 | `pelican.pose` | 骨格姿勢(クリップ標本化・ブレンド・ステートマシン)と単一 writer の sink | 6 |
 | `pelican.ui` | UI の node の値と表示を書く sink(`ui.value` / `ui.visible`。parameter `node` = UI node の path) | 2 |
 
-合計 **29 op**(5 module)。`PELICAN_WITH_ANIMATION=OFF` の build では **`pelican.pose` module がそもそも登録されない**ので 4 module / 23 op、`PELICAN_WITH_AUDIO=OFF` では `pelican.audio` が無く 4 module / 26 op、両方 OFF で 3 module / 20 op になります(正本は [docs/v0_freeze.md](../v0_freeze.md) §1.3)([graphmodule.cpp:340](../../src/project/graphmodule.cpp#L374))。module の登録の仕方はエンジンが持ってくる場合も同じで、**「エンジンの特権」ではなく「登録契約」**です(feature が機構語彙に対してそうであるように。§6.5)。
+合計 **29 op**(5 module)。`PELICAN_WITH_ANIMATION=OFF` の build では **`pelican.pose` module がそもそも登録されない**ので 4 module / 23 op、`PELICAN_WITH_AUDIO=OFF` では `pelican.audio` が無く 4 module / 26 op、両方 OFF で 3 module / 20 op になります(正本は [docs/v0_freeze.md](../v0_freeze.md) §1.3)([graphmodule.cpp:340](../../src/project/graphmodule.cpp#L375))。module の登録の仕方はエンジンが持ってくる場合も同じで、**「エンジンの特権」ではなく「登録契約」**です(feature が機構語彙に対してそうであるように。§6.5)。
 
 - 登録が無い `op` を書いた文書は **`graph.operation_unregistered@1` `{node, op}`**。OFF build で `pose.*` を書いたときもこれです。
 - op は登録されているのに、それを実行する backend がいない場合は **`graph.operation_unexecutable@1` `{backend, op, node}`**。
@@ -2776,10 +2776,10 @@ op は **module** が登録します。登録済み module はエンジンに最
 | | `value.constant` / `value.parameter` | 固定値 / 外から差し替えられる値(instance の入力は展開時にこれになります) |
 | | `value.add` / `value.multiply` | 2 入力の算術 |
 | | `value.curve` | `time` を受けて `keys` のキーフレーム曲線を評価する |
-| | `value.playback` | `elapsed`(必須)を受けて再生位置を出す。`source_begin` / `source_end` / `duration` / `speed` / `delay` / `sample_interval` は**固定値なら `parameters`、駆動したいなら入力ポート**のどちらでも書けます(catalog では任意ポートとして並びます)。`wrap` は `parameters` 専用で `once`(既定)/ `repeat` / `ping_pong`([valuegraph.cpp:259](../../src/core/userpublic/valuegraph.cpp#L372)) |
+| | `value.playback` | `elapsed`(必須)を受けて再生位置を出す。`source_begin` / `source_end` / `duration` / `speed` / `delay` / `sample_interval` は**固定値なら `parameters`、駆動したいなら入力ポート**のどちらでも書けます(catalog では任意ポートとして並びます)。`wrap` は `parameters` 専用で `once`(既定)/ `repeat` / `ping_pong`([valuegraph.cpp:259](../../src/core/userpublic/valuegraph.cpp#L375)) |
 | | `value.trigger_clock` / `value.event_clock` | 状態を持つ時計(`replay`)。トリガ / イベント列で進む |
 | | `event.playback` | 再生制御イベント(`pelican.event.playback_control@1`)の発行口 |
-| | `value.morph_weight` | owner 付き instance の中でだけ使える読み口。`parameters.node` / `parameters.target`(どちらも glTF の index)が指すモーフターゲットの現在 weight を値として引き出す([valuegraph.cpp:180](../../src/core/userpublic/valuegraph.cpp#L291)) |
+| | `value.morph_weight` | owner 付き instance の中でだけ使える読み口。`parameters.node` / `parameters.target`(どちらも glTF の index)が指すモーフターゲットの現在 weight を値として引き出す([valuegraph.cpp:180](../../src/core/userpublic/valuegraph.cpp#L294)) |
 | `pelican.audio` | `audio.playback` | ボイスを 1 本鳴らす(`replay`)。入力は `time`(必須)と、任意の `events` / `position` / `source_begin` / `source_end` / `speed` / `delay`。parameter は `asset` / `bus`(`se` / `bgm`)/ `wrap`(`once` / `repeat` / `ping_pong`)と、写像の 4 つの固定値。写像を parameter で持つ一体版と、`position` に従う分解版があり、`asset` / `bus` / `wrap` の変更は rebuild([第8章](08_gameplay.md) §8.11) |
 | | `audio.volume` / `audio.pitch` | **sink**。値をボイスへ渡す |
 | `pelican.render` | `render.buffer` / `render.attribute` / `render.image` | フレームグラフの資源をグラフ側から宣言する |

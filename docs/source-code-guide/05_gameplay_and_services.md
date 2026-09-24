@@ -4,7 +4,7 @@
 
 ## 5.1 `GameContext`は公開ファサード
 
-ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L283) が主要サービスを薄く包みます。面は根と8つのドメインファサードに分かれ、物理 / 音 / アニメーション / セーブ / 描画 / ポインタとカーソル / シーンオブジェクトの名前解決 / UI は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L356) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L357) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L358) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L359) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L360) / [`input()`](../../src/core/userpublic/gamecontext.hpp#L361)（GP-4）/ [`objects()`](../../src/core/userpublic/gamecontext.hpp#L362)（GP-1）/ [`ui()`](../../src/core/userpublic/gamecontext.hpp#L363)（GP-3）が返す値越しに呼びます。ファサードは空のクラス（[`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L49) / [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L84) / [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L114) / [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L123) / [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L138) / [`InputContext`](../../src/core/userpublic/gamecontext.hpp#L243) / [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L214)）で、状態もポインタも持たないので、返り値を持ち回っても何も持っていないのと同じです。例外は [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L270) で、`ui(document_key)` の key を `std::string_view` のまま 1 本だけ持ちます（`ui()` なら空の view）。key の文字列はファサードを使い終わるまで生かしておく必要があります。委譲先は分割前と同じです。
+ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L284) が主要サービスを薄く包みます。面は根と8つのドメインファサードに分かれ、物理 / 音 / アニメーション / セーブ / 描画 / ポインタとカーソル / シーンオブジェクトの名前解決 / UI は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L357) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L358) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L359) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L360) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L361) / [`input()`](../../src/core/userpublic/gamecontext.hpp#L362)（GP-4）/ [`objects()`](../../src/core/userpublic/gamecontext.hpp#L363)（GP-1）/ [`ui()`](../../src/core/userpublic/gamecontext.hpp#L364)（GP-3）が返す値越しに呼びます。ファサードは空のクラス（[`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L49) / [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L84) / [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L114) / [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L123) / [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L138) / [`InputContext`](../../src/core/userpublic/gamecontext.hpp#L244) / [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L214)）で、状態もポインタも持たないので、返り値を持ち回っても何も持っていないのと同じです。例外は [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L271) で、`ui(document_key)` の key を `std::string_view` のまま 1 本だけ持ちます（`ui()` なら空の view）。key の文字列はファサードを使い終わるまで生かしておく必要があります。委譲先は分割前と同じです。
 
 | API群 | 委譲先 | 実装へジャンプ |
 |---|---|---|
@@ -25,7 +25,7 @@
 | 実行時生成（`spawn` / `destroy`、`TransientObjectRef` を受ける `objects().materialize` / `worldTransform`、GP-2） | `RuntimeSpawner`（下の「実行時生成」） | [`GameContext::spawn()`](../../src/core/userpublic/gamecontext.cpp#L268) / [`GameContext::destroy()`](../../src/core/userpublic/gamecontext.cpp#L273) / [`ObjectsContext::materialize()` の transient 版](../../src/core/userpublic/gamecontext.cpp#L260) |
 | scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L682) |
 | debug text（`render().debugText`） | `DebugText` | [`RenderContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L694) |
-| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L344) |
+| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L345) |
 | animation graph（`animation().setParameter` / `forceState`） | `AnimationSystem` | [`AnimationContext::setParameter()`](../../src/core/userpublic/gamecontext.cpp#L523) |
 | settings（根）/ save（`save()`） | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L698) / [`SaveContext::saveData()`](../../src/core/userpublic/gamecontext.cpp#L725) |
 
@@ -52,26 +52,26 @@ setterは対象ライトのstructを書き換えるだけです（[`LightContain
 
 ### 実行時生成 `RuntimeSpawner` ✅実装済み（GP-2）
 
-`GameContext::spawn()` / `destroy()` と、`TransientObjectRef` を受ける `ObjectsContext` の 2 本は、どれも [`DECLARE_MODULE(RuntimeSpawner)`](../../src/core/loader/runtimespawn.hpp#L39)（`src/core/loader/runtimespawn.{hpp,cpp}`）へ 1 行で委譲します。module は要求の待ち行列 `queue` と、実体化した object の表 `live`（scene run・境界・番号・entity・名前）を持ちます。
+`GameContext::spawn()` / `destroy()` と、`TransientObjectRef` を受ける `ObjectsContext` の 2 本は、どれも [`DECLARE_MODULE(RuntimeSpawner)`](../../src/core/loader/runtimespawn.hpp#L46)（`src/core/loader/runtimespawn.{hpp,cpp}`）へ 1 行で委譲します。module は要求の待ち行列 `queue` と、実体化した object の表 `live`（scene run・境界・番号・entity・名前）を持ちます。
 
 **公開型**（`object_ref.hpp` と `gamecontext.hpp`）:
 
-- [`TransientObjectRef`](../../src/core/userpublic/object_ref.hpp#L67) は `{ObjectAuthority, boundary, spawn_index}`。GP-1 の `ObjectAuthority` を共有しますが `ObjectRef` とは別の class なので、authored と transient の取り違えはコンパイルで弾かれます。作れるのは `runtimespawn.cpp` の [`internal::TransientObjectRefAccess`](../../src/core/loader/runtimespawn.cpp#L29) だけで、既定構築の ref（`boundary == 0`）は `stale_authority` です。
-- [`SpawnParams`](../../src/core/userpublic/gamecontext.hpp#L227) は `{WorldTransform transform, nlohmann::json parameters, std::optional<std::string> name}`。
-- [`SpawnError`](../../src/core/userpublic/object_ref.hpp#L109) は `std::runtime_error` の派生で `code()` を持ちます。名前の一覧は宣言の直前のコメントが正本です。
+- [`TransientObjectRef`](../../src/core/userpublic/object_ref.hpp#L67) は `{ObjectAuthority, boundary, spawn_index}`。GP-1 の `ObjectAuthority` を共有しますが `ObjectRef` とは別の class なので、authored と transient の取り違えはコンパイルで弾かれます。作れるのは `runtimespawn.cpp` の [`internal::TransientObjectRefAccess`](../../src/core/loader/runtimespawn.cpp#L30) だけで、既定構築の ref（`boundary == 0`）は `stale_authority` です。
+- [`SpawnParams`](../../src/core/userpublic/gamecontext.hpp#L228) は `{WorldTransform transform, nlohmann::json parameters, std::optional<std::string> name}`。
+- [`SpawnError`](../../src/core/userpublic/object_ref.hpp#L113) は `std::runtime_error` の派生で `code()` を持ちます。名前の一覧は宣言の直前のコメントが正本です。
 
-**要求の時点**（[`RuntimeSpawner::spawn()`](../../src/core/loader/runtimespawn.cpp#L150)）:
+**要求の時点**（[`RuntimeSpawner::spawn()`](../../src/core/loader/runtimespawn.cpp#L151)）:
 
 1. [`SceneLoader::objectRun()`](../../src/core/loader/scene.cpp#L2084) で「今ゲームコードが見ている scene run」を取ります。scene load の callback の中なら候補の run、それ以外は live の run です（GP-1 の `resolveObject` と同じ [`objectResolutionRun()`](../../src/core/loader/scene.cpp#L2025)）。scene が無ければ `object.spawn_outside_scene@1`。
 2. 位置を決めます: 境界の番号は「追跡中の run と同じなら `boundary_count + 1`、違えば 1」、番号は同じ run の spawn 要求がすでに何件積まれているか。どちらかが attachment_seq の欄（境界 2^28、番号 2^16）を超えるなら `object.spawn_sequence_exhausted@1`。
 3. 名前の検査（authored の名前・同じ run の live と待ち行列の名前）。
-4. [`expandPrefab()`](../../src/core/loader/runtimespawn.cpp#L118) が prefab instance 1 個だけの scene 文書を組み、live run の prefab registry・bindable provider・defaults で `ResolvedSceneResolver::resolve` を通します。scene load と同じ ResolvedScene seam なので、`prefab_*` の名前もそのまま出ます。object 型の parameter の対象は、live scene の同名 object の代役（名前と、parameter が要求する component だけ）を同じ文書に入れて解決させます（[`objectParameterStandIns()`](../../src/core/loader/runtimespawn.cpp#L79)）。
-5. PG-1 の `resolvedObjectFeatureRefusal()`（[spawn からの呼び出し](../../src/core/loader/runtimespawn.cpp#L226)。scene load の prepare と editor の `add_component` / `spawn` と同じ判定）、light / camera の拒否、behavior の準備（`prepareResolvedSceneBehaviorAttachments`）。
+4. [`expandPrefab()`](../../src/core/loader/runtimespawn.cpp#L119) が prefab instance 1 個だけの scene 文書を組み、live run の prefab registry・bindable provider・defaults で `ResolvedSceneResolver::resolve` を通します。scene load と同じ ResolvedScene seam なので、`prefab_*` の名前もそのまま出ます。object 型の parameter の対象は、live scene の同名 object の代役（名前と、parameter が要求する component だけ）を同じ文書に入れて解決させます（[`objectParameterStandIns()`](../../src/core/loader/runtimespawn.cpp#L80)）。
+5. PG-1 の `resolvedObjectFeatureRefusal()`（[spawn からの呼び出し](../../src/core/loader/runtimespawn.cpp#L238)。scene load の prepare と editor の `add_component` / `spawn` と同じ判定）、light / camera の拒否、behavior の準備（`prepareResolvedSceneBehaviorAttachments`）。
 6. 展開済みの `ResolvedObject` と behavior を `Request` として積み、ref を返します。
 
-**境界**: [`RuntimeSpawner::applyBoundary()`](../../src/core/loader/runtimespawn.cpp#L339) は [`updateFrameState()` から 1 回だけ](../../src/core/appflow/framephase.cpp#L167) 呼ばれます。置き場所は audio の回収・DLL reload の `applyFrame()`・editor の commit queue hook の**後**（これらは scene run を置き換えうる）、`forEachFramePhase` の最初の相（`freeze_events`）の**前**です。したがって前のフレームのどこで積んだ要求も、このフレームのゲームコードの全部から見えます。`applyBoundary()` は `ProjectBasicConfig::activeSceneAuthority()` が追跡中の run と違えば、run を切り替えて境界の数を 0 に戻し、別の run の `live` を捨ててから数を 1 進めます。待ち行列は swap して要求順に処理し、run が live でない要求（旧 run のもの、失敗した load 候補のもの）は黙って捨てます。1 件の失敗は `LOG_ERROR` に出して次の要求へ進みます。
+**境界**: [`RuntimeSpawner::applyBoundary()`](../../src/core/loader/runtimespawn.cpp#L352) は [`updateFrameState()` から 1 回だけ](../../src/core/appflow/framephase.cpp#L167) 呼ばれます。置き場所は audio の回収・DLL reload の `applyFrame()`・editor の commit queue hook の**後**（これらは scene run を置き換えうる）、`forEachFramePhase` の最初の相（`freeze_events`）の**前**です。したがって前のフレームのどこで積んだ要求も、このフレームのゲームコードの全部から見えます。`applyBoundary()` は `ProjectBasicConfig::activeSceneAuthority()` が追跡中の run と違えば、run を切り替えて境界の数を 0 に戻し、別の run の `live` を捨ててから数を 1 進めます。待ち行列は swap して要求順に処理し、run が live でない要求（旧 run のもの、失敗した load 候補のもの）は黙って捨てます。1 件の失敗は `LOG_ERROR` に出して次の要求へ進みます。
 
-**投影**: [`materialize(Request&)`](../../src/core/loader/runtimespawn.cpp#L386) は editor の spawn と同じ `SceneObjectProjectionAdapter` を、文書無しの入口 [`prepareTransientSpawn()`](../../src/core/loader/editorprojectionadapters.hpp#L92) で使います。ECS の entity と描画のインスタンスは editor の spawn と同じ staging、collider と model の衝突 mesh は `runtime_only` の physics binding（名前は `SpawnParams::name` か `spawn:<境界>.<番号>`）になり、scene の runtime object binding・camera・light には触りません。`publish()` の後に [`BehaviorAttachmentArena::attachSpawned()`](../../src/core/gamelogic/behaviorarena.hpp#L289) で behavior を付けて `onInit` を呼び、それが投げたら adapter を `rollback()` します（その spawn だけが戻る）。[`retire()`](../../src/core/loader/runtimespawn.cpp#L436) は逆順で、`preDestroyEntity()`（`onDestroy`）→ [`prepareTransientDestroy()`](../../src/core/loader/editorprojectionadapters.hpp#L94)（physics の binding を外し、entity を消す）です。
+**投影**: [`materialize(Request&)`](../../src/core/loader/runtimespawn.cpp#L399) は editor の spawn と同じ `SceneObjectProjectionAdapter` を、文書無しの入口 [`prepareTransientSpawn()`](../../src/core/loader/editorprojectionadapters.hpp#L92) で使います。ECS の entity と描画のインスタンスは editor の spawn と同じ staging、collider と model の衝突 mesh は `runtime_only` の physics binding（名前は `SpawnParams::name` か `spawn:<境界>.<番号>`）になり、scene の runtime object binding・camera・light には触りません。`publish()` の後に [`BehaviorAttachmentArena::attachSpawned()`](../../src/core/gamelogic/behaviorarena.hpp#L289) で behavior を付けて `onInit` を呼び、それが投げたら adapter を `rollback()` します（その spawn だけが戻る）。[`retire()`](../../src/core/loader/runtimespawn.cpp#L449) は逆順で、`preDestroyEntity()`（`onDestroy`）→ [`prepareTransientDestroy()`](../../src/core/loader/editorprojectionadapters.hpp#L94)（physics の binding を外し、entity を消す）です。
 
 **scene run の終わり**: scene load の behavior participant は arena の reconciliation を `BehaviorSpawnedAttachments::retire` で準備します（[behavior participant の指定](../../src/core/loader/scene.cpp#L1537)）。`runtime_spawned` の attachment は新しい vector へ運ばれず、load の commit 後の finish で旧 scene の behavior と一緒に `onDestroy` を受けます（rollback なら戻ります）。editor の編集の reconciliation（[`editorprojectionadapters.cpp` の呼び出し](../../src/core/loader/editorprojectionadapters.cpp#L1039)）は引数を省くので既定の `carry` で運びます。scene transaction 中の `spawn` / `destroy` の分類は `covered.spawn-queue`（§5.15）です。
 
@@ -576,11 +576,11 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 
 ## 5.9 Audio
 
-公開型は [`Audio`](../../src/core/audio/audio.hpp#L41) です。
+公開型は [`Audio`](../../src/core/audio/audio.hpp#L38) です。
 
 ### backend interface
 
-実装内部の [`Audio::Backend`](../../src/core/audio/audio.cpp#L450) がvirtual interfaceで、二実装があります。
+実装内部の [`Audio::Backend`](../../src/core/audio/audio.cpp#L441) がvirtual interfaceで、二実装があります。
 
 - `MiniaudioBackend`: 実deviceへ再生
 - 窓を持つ player(Studio の埋め込みを含む): 実 device。headless: device を開かない offline engine(miniaudio の noDevice。test が `mixOffline` で mix を読む)。`NullAudioBackend`: device を開けなかったときの退避だけ(理由は `backendFallbackReason()`、`get_status` の `audio.fallback_reason`)。AU-1 以前は headless / RPC が Null だった
@@ -593,13 +593,13 @@ headlessでもplay/stop/isPlayingの状態遷移は模倣されるため、ゲ�
 
 形式は WAV と Ogg Vorbis です(AU-2)。[`detectSoundFormat`](../../src/core/audio/audio.cpp#L318) が拡張子(小文字にしたもの)と先頭 bytes の両方で決め、食い違えば decode の前に `audio.format_unsupported@1` を投げます。Ogg Vorbis の decoder は miniaudio の `extras/stb_vorbis.c` で、ファイルの先頭で宣言だけを miniaudio より前に include し、実装はファイルの末尾で miniaudio の実装の後に include します(コードのコメントによれば miniaudio 自身の tools と同じ並べ方。miniaudio 側は未確認)。これで miniaudio が Vorbis の decoding backend を組み込みます。
 
-header が言う長さが 10 秒を超える音は streaming です。[`Audio::prepareSound()`](../../src/core/audio/audio.cpp#L839) は `readSoundHeader` で長さだけを読み、長ければ PCM を作らず、`DecodedSound::encoded`(符号化 bytes の `shared_ptr`)と header の値だけを cache に入れます。backend の [`play`](../../src/core/audio/audio.cpp#L620) は `streamed()` を見て、voice ごとに `ma_decoder_init_memory` で自分の decoder を開き、それを data source にします(短い音は従来どおり共有 PCM の上の `ma_audio_buffer_ref`)。範囲・ループ点・開始位置はどちらでも同じ data source の API に渡すので、一体版のネイティブループも分解版の seek も同じ意味で動きます。短い WAV は自前の `decodeWav` で、streaming の WAV は miniaudio の WAV decoder で読みますが、登録時の検査は長さによらず同じ `parseWav` の規則を通ります。
+header が言う長さが 10 秒を超える音は streaming です。[`Audio::prepareSound()`](../../src/core/audio/audio.cpp#L839) は `readSoundHeader` で長さだけを読み、長ければ PCM を作らず、`DecodedSound::encoded`(符号化 bytes の `shared_ptr`)と header の値だけを cache に入れます。backend の [`play`](../../src/core/audio/audio.cpp#L611) は `streamed()` を見て、voice ごとに `ma_decoder_init_memory` で自分の decoder を開き、それを data source にします(短い音は従来どおり共有 PCM の上の `ma_audio_buffer_ref`)。範囲・ループ点・開始位置はどちらでも同じ data source の API に渡すので、一体版のネイティブループも分解版の seek も同じ意味で動きます。短い WAV は自前の `decodeWav` で、streaming の WAV は miniaudio の WAV decoder で読みますが、登録時の検査は長さによらず同じ `parseWav` の規則を通ります。
 
 busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更時はlive voice全てへ再適用します。
 
 ### prepare / commit の縫い目と provisional handle ✅実装済み
 
-`playSound()` 自身が4本の小さなAPIの合成になっています（ヘッダのコメントが規範 — 「decodeとエンジン側の容量はcommit前に全部用意し、backend呼び出しだけを失敗しうるflushに残す」、[`audio.hpp` 内](../../src/core/audio/audio.hpp#L142)）。
+`playSound()` 自身が4本の小さなAPIの合成になっています（ヘッダのコメントが規範 — 「decodeとエンジン側の容量はcommit前に全部用意し、backend呼び出しだけを失敗しうるflushに残す」、[`audio.hpp` 内](../../src/core/audio/audio.hpp#L139)）。
 
 ```text
 prepareSound(path)     # PathResolver + 形式判定 + decode(streaming なら header だけ)。shared_ptr を作るのはここ
@@ -1089,7 +1089,7 @@ outboxのentryは呼び出しごとに1件ではありません。
 - mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L170)）
 - manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L177)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3415)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3441)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 
