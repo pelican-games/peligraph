@@ -261,7 +261,7 @@ if (auto r = ui.setText("root/hud/score", "SCORE 120"); !r)
 
 - **書き込みは呼んだ時点で検査され、フレーム境界で適用されます。** 受け付けた書き込みは列に積まれ、そのフレームのゲームコードがすべて走ったあと、描画の前に一度にまとめて入ります([commitFrameWrites() の呼び出し](../../src/core/appflow/framephase.cpp#L214))。断られた書き込みは何も積みません。
 - `setText` で文字列を変えると、`label` / `button` の大きさ(`content` 軸の固有サイズ)を測り直します。測り直すのは固有サイズが文字列から測られた node だけで、`intrinsic_size` を文書に書いた node はそのままです([syncDocumentFromArena()](../../src/core/ui/module.cpp#L350))。
-- **scene load 中に書いても、load の transaction には入りません。** 公開 API の分類は `nonparticipant.ui-document` で([manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L223))、UI 文書は scene の参加者ではないので、load が失敗しても書き込みは次のフレーム境界で入ります。
+- **scene load 中に書いても、load の transaction には入りません。** 公開 API の分類は `nonparticipant.ui-document` で([manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L222))、UI 文書は scene の参加者ではないので、load が失敗しても書き込みは次のフレーム境界で入ります。
 
 #### `ui.*` sink — 共通グラフから書く
 

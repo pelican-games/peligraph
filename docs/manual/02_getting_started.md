@@ -137,7 +137,7 @@ skip posegraph_demo: requires animation (PELICAN_WITH_ANIMATION=OFF)
 この 1 行は宣言したプロジェクトごとに出るので、OFF build では `animgraph_demo` / `posegraph_demo` /
 `vrm_xr_demo` の **3 行**が並びます([プロジェクトの skip 出力](../../test/run_project_catalog_smoke.cmake#L108))。
 飛ばされたプロジェクトがエディタ経路のレーンを持っていた場合は `skip editor lane: <project> requires …` が続き
-([editor lane の skip 出力](../../test/run_project_catalog_smoke.cmake#L288))、最後に「何件中何件を飛ばしたか」の要約が 1 行出ます。
+([editor lane の skip 出力](../../test/run_project_catalog_smoke.cmake#L296))、最後に「何件中何件を飛ばしたか」の要約が 1 行出ます。
 
 語彙・検証規則は [第3章 §3.2](03_project_format.md) の「機能ユニットの要求(`requires`)」にあります。
 
@@ -242,8 +242,8 @@ mygame/
 
 生成されるファイルは全 16 エントリで、一覧は [projecttemplate.cpp](../../src/project/projecttemplate.cpp) の `templateFiles()` が正本です(F-2 で `pelican_cli` から `pelican_project` へ移り、Studio の File > New Project... も同じ関数で書きます)。2 点だけ、生成物の形に約束があります(✅P-2a-4b / X-1):
 
-- **`passes/main_rendering_config.json` は `pelican.graph` root で生成されます** —— 最上位が `{"schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {}, "rendering": { … }}` で、pipeline preset と features は `rendering` 節の中です([renderingConfigJson()](../../src/project/projecttemplate.cpp#L249) が `wrapLegacyRenderingConfig` で包みます)。最初から共通グラフのノードを同じファイルに書ける形、ということです(2 つの root の違いは [第3章 §3.2](03_project_format.md))。
-- **`code/CMakeLists.txt` は 2 行**です —— `pelican_game_sources(game.cpp)` の**後に** `pelican_packages()`([projecttemplate.cpp:266](../../src/project/projecttemplate.cpp#L266))。`pelican_packages()` は `packages/*/` に複製済みで code を持つ package を build してゲームロジック DLL に合流させるので、**順序が意味を持ちます**(合流先の DLL が先に定義されている必要があります)。package を使わないうちは何もしません。
+- **`passes/main_rendering_config.json` は `pelican.graph` root で生成されます** —— 最上位が `{"schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {}, "rendering": { … }}` で、pipeline preset と features は `rendering` 節の中です([renderingConfigJson()](../../src/project/projecttemplate.cpp#L265) が `wrapLegacyRenderingConfig` で包みます)。最初から共通グラフのノードを同じファイルに書ける形、ということです(2 つの root の違いは [第3章 §3.2](03_project_format.md))。
+- **`code/CMakeLists.txt` は 2 行**です —— `pelican_game_sources(game.cpp)` の**後に** `pelican_packages()`([projecttemplate.cpp:266](../../src/project/projecttemplate.cpp#L279))。`pelican_packages()` は `packages/*/` に複製済みで code を持つ package を build してゲームロジック DLL に合流させるので、**順序が意味を持ちます**(合流先の DLL が先に定義されている必要があります)。package を使わないうちは何もしません。
 
 生成される `project.json`(実物・`src/project/projecttemplate.cpp` が出力):
 

@@ -196,15 +196,15 @@ pelican2/
 [第4章](04_scene_ecs.md) §4.3)。読み順:
 
 1. [`sceneload.hpp`](../../src/core/loader/sceneload.hpp) —— **型だけのヘッダ**(関数の実装を持たず、要求・結果・トレースの型定義だけを置く)。
-   [`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L223)(`Borrowed` = 既に commit 済みの
+   [`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L222)(`Borrowed` = 既に commit 済みの
    projection を借りる / `Owned` = 候補 metadata を `MetadataCommitToken` ごと持ち込む)、
-   結果の [`SceneLoadResult`](../../src/core/loader/sceneload.hpp#L189) =
-   `SceneLoadCommitted` | [`PreCommitFailure`](../../src/core/loader/sceneload.hpp#L139) |
-   [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L175)、
+   結果の [`SceneLoadResult`](../../src/core/loader/sceneload.hpp#L188) =
+   `SceneLoadCommitted` | [`PreCommitFailure`](../../src/core/loader/sceneload.hpp#L138) |
+   [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174)、
    固定長の [`SceneLoadPhaseTrace`](../../src/core/loader/sceneload.hpp#L40)(8 要素。溢れたら
    `overflow` を立てる = **順序の観測を黙って捨てない**)、5 つの
    [`SceneLoadRoot`](../../src/core/loader/sceneload.hpp#L82)(startup / rpc / pending / import v1 / v2)、
-   import 側の [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L276)。
+   import 側の [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275)。
 2. [`scene.cpp`](../../src/core/loader/scene.cpp#L1637) の `SceneLoader::load` —— executor 本体。
    phase は `prepare → early_publish → publish → activate → commit_metadata → retire → flush → finish` で、
    **記録するのは executor ではなく各 participant** です(WP380c/d)。
@@ -263,7 +263,7 @@ owner の払い出しと builtin 登録は game DLL のヘッダから外れ、
 
 ### ツール(devcli)
 
-[devcli/main.cpp](../../src/devcli/main.cpp) が **7 系統**のサブコマンド分岐(`assets` / `bake-camera` / `import` / `dist-config` / `project` / `dump-lowered-material` / `vrm`)、実装は [projectinit.cpp](../../src/devcli/projectinit.cpp)(`--template standard|blank` を読むだけ。雛形の中身は F-2 で `pelican_project` の [project/projecttemplate.cpp](../../src/project/projecttemplate.cpp) へ移り、正は [同ファイル](../../src/project/projecttemplate.cpp#L329) の `templateFiles()`。standard **16 エントリ** / blank 17 エントリ。Studio の File > New Project... も同じ関数を呼ぶ)・[importcommand.cpp](../../src/devcli/importcommand.cpp)(sha256 照合 → asset_data.json 追記・冪等)・[distconfig.cpp](../../src/devcli/distconfig.cpp)(プロジェクト内容から PELICAN_WITH_* を導出。GLB の JSON チャンクを直接パースして VAT 有無を判定する箇所が読みどころ)。外部ツールの子プロセス起動は [processrunner.cpp](../../src/devcli/processrunner.cpp) に集約されています(`import --rules` と `bake-camera` が利用)。
+[devcli/main.cpp](../../src/devcli/main.cpp) が **7 系統**のサブコマンド分岐(`assets` / `bake-camera` / `import` / `dist-config` / `project` / `dump-lowered-material` / `vrm`)、実装は [projectinit.cpp](../../src/devcli/projectinit.cpp)(`--template standard|blank` を読むだけ。雛形の中身は F-2 で `pelican_project` の [project/projecttemplate.cpp](../../src/project/projecttemplate.cpp) へ移り、正は [同ファイル](../../src/project/projecttemplate.cpp#L342) の `templateFiles()`。standard **16 エントリ** / blank 17 エントリ。Studio の File > New Project... も同じ関数を呼ぶ)・[importcommand.cpp](../../src/devcli/importcommand.cpp)(sha256 照合 → asset_data.json 追記・冪等)・[distconfig.cpp](../../src/devcli/distconfig.cpp)(プロジェクト内容から PELICAN_WITH_* を導出。GLB の JSON チャンクを直接パースして VAT 有無を判定する箇所が読みどころ)。外部ツールの子プロセス起動は [processrunner.cpp](../../src/devcli/processrunner.cpp) に集約されています(`import --rules` と `bake-camera` が利用)。
 
 ## 12.7 横断的な実装パターン(読むときの目印)
 

@@ -47,7 +47,7 @@ command ごとに独立した `run...Command(argc, argv)` を持つ構成で、�
 
 ## 7.2 `project init`: 実行可能な最小 project の生成器
 
-[`runProjectInitCommand()`](../../src/devcli/projectinit.cpp#L27) は `--template standard|blank`(既定 `standard`)を読んで [`initializeProjectTemplate()`](../../src/project/projecttemplate.cpp#L382) を呼ぶだけで、空であることを確認した directory に template file 群を書くのはこちらです。F-2 で雛形は `pelican_cli` から `pelican_project` の [`projecttemplate.{hpp,cpp}`](../../src/project/projecttemplate.hpp) へ移り、Studio の File > New Project... も同じ関数を呼びます。template の一覧は [`templateFiles()`](../../src/project/projecttemplate.cpp#L329) にあります。
+[`runProjectInitCommand()`](../../src/devcli/projectinit.cpp#L27) は `--template standard|blank`(既定 `standard`)を読んで [`initializeProjectTemplate()`](../../src/project/projecttemplate.cpp#L395) を呼ぶだけで、空であることを確認した directory に template file 群を書くのはこちらです。F-2 で雛形は `pelican_cli` から `pelican_project` の [`projecttemplate.{hpp,cpp}`](../../src/project/projecttemplate.hpp) へ移り、Studio の File > New Project... も同じ関数を呼びます。template の一覧は [`templateFiles()`](../../src/project/projecttemplate.cpp#L342) にあります。
 
 主な生成物は次です。
 
@@ -60,20 +60,20 @@ command ごとに独立した `run...Command(argc, argv)` を持つ構成で、�
 | `input/profiles/keyboard.json` | input profile |
 | `passes/main_rendering_config.json` | 描画 pipeline preset と feature の選択(次項) |
 | `ui/ui_overlay.json` | 2D UI overlay |
-| `code/CMakeLists.txt`, `code/game.cpp` | game system を組み込む project code。生成される CMakeLists.txt は `pelican_game_sources()` を呼ぶため、game code は **DLL**(`pelican_game_logic`)としてビルドされます。X-1 以降は `pelican_packages()` の 1 行が**その後ろに**続きます([template](../../src/project/projecttemplate.cpp#L265)) —— package の object は、先に作られた game logic DLL へ合流するので順序が効きます |
+| `code/CMakeLists.txt`, `code/game.cpp` | game system を組み込む project code。生成される CMakeLists.txt は `pelican_game_sources()` を呼ぶため、game code は **DLL**(`pelican_game_logic`)としてビルドされます。X-1 以降は `pelican_packages()` の 1 行が**その後ろに**続きます([template](../../src/project/projecttemplate.cpp#L278)) —— package の object は、先に作られた game logic DLL へ合流するので順序が効きます |
 | `.gitattributes`, `.gitignore`, `README.md` | asset/LFS と利用案内 |
 
-template は外部 resource file ではなく、[`projecttemplate.cpp` 内の raw string](../../src/project/projecttemplate.cpp#L89) です。schema を変更した場合、example project だけでなくここも更新しないと、新規 project が古い形式で生成されます。
+template は外部 resource file ではなく、[`projecttemplate.cpp` 内の raw string](../../src/project/projecttemplate.cpp#L87) です。schema を変更した場合、example project だけでなくここも更新しないと、新規 project が古い形式で生成されます。
 
 この command の end-to-end 仕様は [`run_devcli_project_init.cmake`](../../test/run_devcli_project_init.cmake) です。file が揃っているかの確認だけでなく、生成した project directory を **prebuilt の `pelican_player`** に `--headless --frames 2 --render-out` で食わせ、exit 0・出力に `Validation Error` / `VUID-` が出ないこと・PNG が空でないことまで見ます(生成された `code/game.cpp` を build する経路ではありません)。空でない directory を拒否し、そのエラーが directory 名を含むことも同じ script が固定しています。実 device を要するので CTest では `gpu` label 付きです([`test/CMakeLists.txt`](../../test/CMakeLists.txt) の `devcli_project_init_command`)。
 
-**`blank` 雛形(F-2)。**`--template blank` は上の 16 エントリに `shaders/present.frag` を足し、`passes/main_rendering_config.json` の `rendering` 節だけを差し替えます。中身は `pipeline` キーの無い direct config で、preset・`features`・`render_targets` を持たず、fullscreen pass `present` 1 本が `display` へ UV の gradient を書きます([`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L211))。同じ `run_devcli_project_init.cmake` がこの project を headless で 2 frame 描かせ、PNG が 100 色以上で、最も多い 1 色以外の画素が 9 割以上(最多色が 1 割以下)であることを `pelican_test_png_nonuniform_check` で見ます([検査](../../test/run_devcli_project_init.cmake#L224))。ファイルの形は GPU 無しの `devcli_project_templates`([`run_devcli_project_templates.cmake`](../../test/run_devcli_project_templates.cmake))が見ます —— 既定と `--template standard` の 16 ファイルが F-2 前の出力と SHA-256 で一致すること、blank の形、知らない template 名の拒否です。
+**`blank` 雛形(F-2)。**`--template blank` は上の 16 エントリに `shaders/present.frag` を足し、`passes/main_rendering_config.json` の `rendering` 節だけを差し替えます。中身は `pipeline` キーの無い direct config で、preset・`features`・`render_targets` を持たず、fullscreen pass `present` 1 本が `display` へ UV の gradient を書きます([`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L220))。同じ `run_devcli_project_init.cmake` がこの project を headless で 2 frame 描かせ、PNG が 100 色以上で、最も多い 1 色以外の画素が 9 割以上(最多色が 1 割以下)であることを `pelican_test_png_nonuniform_check` で見ます([検査](../../test/run_devcli_project_init.cmake#L224))。ファイルの形は GPU 無しの `devcli_project_templates`([`run_devcli_project_templates.cmake`](../../test/run_devcli_project_templates.cmake))が見ます —— 既定と `--template standard` の 16 ファイルが F-2 前の出力と SHA-256 で一致すること、blank の形、知らない template 名の拒否です。
 
 ### 生成される rendering config は preset 参照の `pelican.graph` root(WP240a → P-2a-4b)
 
 `passes/main_rendering_config.json` の template は 111 行の手書き設定から数行になり、さらに
 **`pelican.graph` root** になりました。ソースに置かれているのは「節の中身」だけです
-([`rendering_config_json`](../../src/project/projecttemplate.cpp#L198))。
+([`rendering_config_json`](../../src/project/projecttemplate.cpp#L197))。
 
 ```json
 {
@@ -95,7 +95,7 @@ template は外部 resource file ではなく、[`projecttemplate.cpp` 内の ra
 
 読む位置が一段動いたのがこの変更の要点です。
 
-- `project init` が **何を書くか** → [`rendering_config_json`](../../src/project/projecttemplate.cpp#L198) を `wrapLegacyRenderingConfig()` に通した `pelican.graph` root(上の block はその `rendering` 節の中身で、ファイルの全文ではありません)
+- `project init` が **何を書くか** → [`rendering_config_json`](../../src/project/projecttemplate.cpp#L197) を `wrapLegacyRenderingConfig()` に通した `pelican.graph` root(上の block はその `rendering` 節の中身で、ファイルの全文ではありません)
 - 生成された project が **実際にどの pass を回すか** → [`src/core/resources/render_pipelines/hybrid_v1.json`](../../src/core/resources/render_pipelines/hybrid_v1.json) と [`src/core/resources/features/shadow_directional.json`](../../src/core/resources/features/shadow_directional.json)
 
 preset 側の `main_render` グラフは deferred_geometry / ssao_pass / ssao_blur_pass / deferred_lighting / forward_opaque / `__snapshot_opaque_color` / `__snapshot_opaque_depth` / forward_transparent / scene_present で、`shadow_depth` は preset ではなく feature 側が足します。つまり新規 project は最初から forward・半透明・opaque snapshot・directional shadow を持ちます。preset と feature をどう解決して 1 本のグラフにするかは[第6章](06_rendering_vulkan_shader.md)の担当です。
@@ -676,13 +676,13 @@ Studio の target を必要としません)。
   ([L476](../../test/devstudio_frameplan_test.cpp#L476) / [L588](../../test/devstudio_frameplan_test.cpp#L588) /
   [L686](../../test/devstudio_frameplan_test.cpp#L686) / L689 / L722–L724 / L793 / L841)と
   `devstudio_frameplan_graph_test.cpp` の **2 箇所**
-  ([Target combo の項目数の検査(F-7 から Whole frame の 1 件を足して 23)](../../test/devstudio_frameplan_graph_test.cpp#L5144) /
-  [L5896](../../test/devstudio_frameplan_graph_test.cpp#L5831))で、
+  ([Target combo の項目数の検査(F-7 から Whole frame の 1 件を足して 23)](../../test/devstudio_frameplan_graph_test.cpp#L5170) /
+  [L5896](../../test/devstudio_frameplan_graph_test.cpp#L5857))で、
   多い方は graph test ではなく frameplan test です。同じ commit で `devstudio_*` の 4 テストが
   **読みだけで編集され、実行されていない**ことも同じ完了記録 `e1c326c1` の申告で(Studio 無しの
   worktree では走らないため、primary の全数で見る、という運用です)、本章で実行を確かめてはいません。
 
-> **設計決定:** **エンジン側の編集面 — 編集系 RPC 60 メソッド(§7.7)と ImGui inspector / asset browser(§7.12) — が正準です**。Qt Inspector も別の編集実装を持たず、その RPC を呼ぶ公開 client です。ImGui は同じ [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L282) を process 内 adapter から呼びますが、Studio は `pelican_project` と JSON-RPC だけへリンクする D0 境界を保ちます。
+> **設計決定:** **エンジン側の編集面 — 編集系 RPC 60 メソッド(§7.7)と ImGui inspector / asset browser(§7.12) — が正準です**。Qt Inspector も別の編集実装を持たず、その RPC を呼ぶ公開 client です。ImGui は同じ [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L258) を process 内 adapter から呼びますが、Studio は `pelican_project` と JSON-RPC だけへリンクする D0 境界を保ちます。
 
 ## 7.7 JSON-RPC を2層に分けて読む
 
@@ -783,7 +783,7 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 
 #### 編集系(60) ✅実装済み(WP153〜WP172 で始まり、range はそこを大きく越えます)
 
-すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L400) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L282) です。
+すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L373) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L258) です。
 
 | method | 実装行 | 概要 |
 |---|---|---|
@@ -993,7 +993,7 @@ package の文書が壊れていれば `available: false` + `unavailable_reason`
 >            rethrow(failure)
 > ```
 >
-> **手がかり**: 両メソッドはゲートを**2回**消費します(受理時のepochを実行直前に照合するので、prepare中に閉じて開き直したゲートも捕まります)。`prepareEditorPreviewProjection()` のコメント「候補revisionを使うが決してpublishしない」が、この検査が守っている性質そのものです。`projection_fault_hook` / `execution_fault_hook` はprepareやqueryの途中で任意にthrowさせる注入点で、テストはこれで「途中で失敗しても状態が動かない」を叩きます([`editorpreview_test.cpp` 内](../../test/editorpreview_test.cpp#L179) / [`editorpreviewprojection_test.cpp` 内](../../test/editorpreviewprojection_test.cpp#L134))。
+> **手がかり**: 両メソッドはゲートを**2回**消費します(受理時のepochを実行直前に照合するので、prepare中に閉じて開き直したゲートも捕まります)。`prepareEditorPreviewProjection()` のコメント「候補revisionを使うが決してpublishしない」が、この検査が守っている性質そのものです。`projection_fault_hook` / `execution_fault_hook` はprepareやqueryの途中で任意にthrowさせる注入点で、テストはこれで「途中で失敗しても状態が動かない」を叩きます([`editorpreview_test.cpp` 内](../../test/editorpreview_test.cpp#L182) / [`editorpreviewprojection_test.cpp` 内](../../test/editorpreviewprojection_test.cpp#L134))。
 >
 > **不変条件**: preview経路は `SceneRevision` を進めない。例外経路でも状態検査を通す(状態漏れの報告が元エラーより優先)。
 
@@ -1067,7 +1067,7 @@ cmake_parse_arguments(PELICAN_TEST
 |---|---|---|
 | pure parser/value | [`sceneformat_test.cpp`](../../test/sceneformat_test.cpp#L120)、[`materialformat_test.cpp`](../../test/materialformat_test.cpp#L104)、[`jsonrpc_test.cpp`](../../test/jsonrpc_test.cpp#L33) | schema、型変換、error 文言。GPU 不要 |
 | subsystem unit | [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L204)、[`inputstate_test.cpp`](../../test/inputstate_test.cpp#L9)、[`deletionqueue_test.cpp`](../../test/deletionqueue_test.cpp#L30) | lifecycle、generation、frame 境界、遅延破棄 |
-| headless runtime | [`headless_render_test.cpp`](../../test/headless_render_test.cpp#L96)、[`vulkan_headless_test.cpp`](../../test/vulkan_headless_test.cpp#L13) | window なし Vulkan、render/readback |
+| headless runtime | [`headless_render_test.cpp`](../../test/headless_render_test.cpp#L98)、[`vulkan_headless_test.cpp`](../../test/vulkan_headless_test.cpp#L13) | window なし Vulkan、render/readback |
 | process integration | [`run_rpc_headless.cmake`](../../test/run_rpc_headless.cmake#L1)、[`run_compute_headless.cmake`](../../test/run_compute_headless.cmake#L1)、devcli scripts | 実 executable、stdin/stdout、filesystem、終了 code |
 
 ### 執筆時点以降に増えた主なテスト群
@@ -1114,12 +1114,12 @@ cmake_parse_arguments(PELICAN_TEST
 | event の frame boundary | [`eventlayer_test.cpp`](../../test/eventlayer_test.cpp#L48) |
 | input queue、edge、borrow lifetime | [`inputstate_test.cpp`](../../test/inputstate_test.cpp#L14) |
 | action map と layer consumption | [`inputactions_test.cpp`](../../test/inputactions_test.cpp#L107) |
-| project/path/security | [`projectconfig_test.cpp`](../../test/projectconfig_test.cpp#L168)、[`pathresolver_test.cpp`](../../test/pathresolver_test.cpp#L157) |
+| project/path/security | [`projectconfig_test.cpp`](../../test/projectconfig_test.cpp#L188)、[`pathresolver_test.cpp`](../../test/pathresolver_test.cpp#L157) |
 | physics の幾何と world binding | [`physquery_test.cpp`](../../test/physquery_test.cpp#L112)、[`physworld_test.cpp`](../../test/physworld_test.cpp#L55) |
-| frame graph の順序/異常系 | [`frameplanner_test.cpp`](../../test/frameplanner_test.cpp#L256) |
+| frame graph の順序/異常系 | [`frameplanner_test.cpp`](../../test/frameplanner_test.cpp#L266) |
 | rendering JSON | [`renderingpass_helpers_test.cpp`](../../test/renderingpass_helpers_test.cpp#L21) |
 | shader compile/reflection/reload | [`shader_compiler_reflection_test.cpp`](../../test/shader_compiler_reflection_test.cpp#L32)、[`shader_library_test.cpp`](../../test/shader_library_test.cpp#L94) |
-| feature composition | [`featurecompose_test.cpp`](../../test/featurecompose_test.cpp#L359) |
+| feature composition | [`featurecompose_test.cpp`](../../test/featurecompose_test.cpp#L356) |
 | persistence の atomic save/path | [`persistence_test.cpp`](../../test/persistence_test.cpp#L81) |
 
 ### Golden image test
@@ -1336,7 +1336,7 @@ with PelicanRpc("projects/example") as rpc:
 
 engine 内蔵の開発者 UI に、読み取り専用の [`AssetBrowserPanel`](../../src/core/imgui/assetbrowser.hpp#L36) と schema 駆動の [`InspectorPanel`](../../src/core/imgui/inspector.hpp#L167) が加わりました。表示は `ImGuiSystem` のメニュー `Asset Browser` / `Inspector` から切り替えます([`imguisystem.cpp` 内](../../src/core/imgui/imguisystem.cpp#L373))。
 
-> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L491) が用意されています。コメントが規範です。
+> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L464) が用意されています。コメントが規範です。
 >
 > The ImGui WP consumes the same typed service. This fake is deliberately kept
 > free of ImGui headers so equivalence is testable in the CPU-only suite.

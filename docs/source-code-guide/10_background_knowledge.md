@@ -357,7 +357,7 @@ Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取�
 
 `VK_EXT_descriptor_indexing`(Vulkan 1.2 でコア入り)は、descriptor 配列を「実行時に決まる添字で引く」ための機能群です。`VkDescriptorSetLayoutBindingFlagsCreateInfo` に立てる `VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT` は「配列の一部の要素が未書き込みでも、シェーダがその要素を読まない限り有効」という緩和で、テクスチャ枠を N 個ぶん確保しておいて実際には数個しか埋めない bindless 構成には必須です。関連する緩和に `VARIABLE_DESCRIPTOR_COUNT` と `UPDATE_AFTER_BIND` があり、シェーダ側で非一様な添字を使うには `nonuniformEXT()` が要ります。**外部で引くときの名前**は Vulkan 仕様の "Descriptor Set Layout" 節と拡張名 `VK_EXT_descriptor_indexing` です。
 
-**使用場所**: [rayMaterialDescriptorBindingFlags()](../../src/core/shader/pipelinefactory.cpp#L205)(3 binding のうちテクスチャ配列にだけ `ePartiallyBound` を立てる) / [PipelineFactory::descriptorSetLayoutKeysFor()](../../src/core/shader/pipelinefactory.cpp#L486)(ray レイアウトのとき set 3 の `binding_flags` にそれを積み、`vk::DescriptorSetLayoutBindingFlagsCreateInfo` として layout 作成へ渡す) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1231)(生成される GLSL 側の `nonuniformEXT(row.texture_index)`)
+**使用場所**: [rayMaterialDescriptorBindingFlags()](../../src/core/shader/pipelinefactory.cpp#L205)(3 binding のうちテクスチャ配列にだけ `ePartiallyBound` を立てる) / [PipelineFactory::descriptorSetLayoutKeysFor()](../../src/core/shader/pipelinefactory.cpp#L486)(ray レイアウトのとき set 3 の `binding_flags` にそれを積み、`vk::DescriptorSetLayoutBindingFlagsCreateInfo` として layout 作成へ渡す) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1232)(生成される GLSL 側の `nonuniformEXT(row.texture_index)`)
 
 ### descriptor type の使い分け(combined image sampler / storage image / sampled image + sampler)
 
@@ -423,7 +423,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 `VK_KHR_ray_tracing_pipeline` のパイプラインは、ステージ配列(`pStages`)とグループ配列(`pGroups`)の 2 段でできています。グループは `GENERAL`(raygen / miss / callable)と `TRIANGLES_HIT_GROUP`(closest hit + 任意の any hit)などの種類を持ち、各グループは pStages 内の添字を指します。**グループの並び順がそのまま SBT(Shader Binding Table)の並び順**になります。`vkGetRayTracingShaderGroupHandlesKHR` で取れる不透明ハンドルは 1 個あたり `shaderGroupHandleSize` バイト、SBT の 1 レコードは `shaderGroupHandleAlignment` に、raygen / miss / hit / callable の**各領域の先頭アドレスは `shaderGroupBaseAlignment`** に揃える必要があります(いずれも `VkPhysicalDeviceRayTracingPipelinePropertiesKHR`)。`vkCmdTraceRaysKHR` に渡す 4 つの `VkStridedDeviceAddressRegionKHR` はこの stride で読まれます。
 
-**使用場所**: [PipelineFactory::createRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L705)(stage 配列と group 配列を組む) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L819)(ハンドルを領域ごとに詰め、確保したアドレスの余りから base alignment へ寄せる) / [packRayTracingHitTable()](../../src/core/shader/raygrouplayout.cpp#L2289)
+**使用場所**: [PipelineFactory::createRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L705)(stage 配列と group 配列を組む) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L819)(ハンドルを領域ごとに詰め、確保したアドレスの余りから base alignment へ寄せる) / [packRayTracingHitTable()](../../src/core/shader/raygrouplayout.cpp#L2294)
 
 **このコードベースでの注意**: base alignment を満たすために `total_size + (base_alignment - 1)` を確保し、実アドレスの余りから内部オフセットを決めています。確保したバッファの先頭が揃っている保証は無い、という前提での書き方です。
 
@@ -439,7 +439,7 @@ BLAS の三角形ジオメトリ(`VkAccelerationStructureGeometryTrianglesDataKH
 
 TLAS の各 instance は `VkGeometryInstanceFlagsKHR` を持ち、`FORCE_OPAQUE` は「このインスタンスは不透明として扱う」= **any-hit シェーダを呼ばない**、`FORCE_NO_OPAQUE` はその逆です。両方を同時に立てるのは矛盾なので、宣言側で弾く必要があります。any-hit シェーダは交差**候補**ごとに(順不同で、同じ交差に対して複数回)呼ばれ、`ignoreIntersectionEXT` でその候補を棄却します。三角形の hit attribute は組み込みで `vec2` の重心座標(残り 1 成分は `1 - u - v`)、プリミティブ番号は `gl_PrimitiveID` です。したがってアルファ抜きを any-hit で実装している構成で `FORCE_OPAQUE` を立てると、抜きが丸ごと無効になります。
 
-**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1649)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L531) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1231)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
+**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1649)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L531) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1232)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
 
 ### in-flight フレームと GPU 資源の寿命
 
@@ -731,7 +731,7 @@ DLL 境界を越えて渡す構造体は、両側が同じレイアウトでビ�
 
 C++20 の `std::bit_cast<To>(from)` は、同じサイズの型の間でビット列をそのまま読み替えます(`reinterpret_cast` や union 経由と違い未定義動作になりません)。浮動小数点をハッシュやダイジェストに入れるとき必ず問題になるのが `-0.0` で、`-0.0 == +0.0` は true なのにビット列は違うため、素直にバイト化すると「等しい値なのに違うダイジェスト」が出ます。バイト化の直前に `if (v == 0.0f) v = 0.0f;` と書いて符号を落とすのが定型です(NaN も同様にビット表現が一意でないので、そもそも弾くのが安全です)。
 
-**使用場所**: [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L162)(NaN を例外にし、`0.0F` を代入し直してから `bit_cast`) / [canonicalTransformIdentity()](../../src/core/renderer/accelerationstructure.cpp#L552) / [encodeRecord()](../../src/core/shader/raygrouplayout.cpp#L384)
+**使用場所**: [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L162)(NaN を例外にし、`0.0F` を代入し直してから `bit_cast`) / [canonicalTransformIdentity()](../../src/core/renderer/accelerationstructure.cpp#L552) / [encodeRecord()](../../src/core/shader/raygrouplayout.cpp#L385)
 
 ### 整数オーバーフローの事前検査
 
@@ -761,13 +761,13 @@ C++20 の `std::bit_cast<To>(from)` は、同じサイズの型の間でビッ�
 
 ラムダは自分自身を名前で呼べません(`auto` で宣言した変数の型が、その初期化子の中ではまだ決まっていないため)。回避策として、自分自身を第 1 引数で受け取り `self(self, ...)` の形で呼ぶイディオムがあります(Y コンビネータ風、C++23 の "deducing this" があれば不要になります)。JSON のように任意の深さを持つ木を、その場限りの述語で走査したいときによく使われます。
 
-**使用場所**: [UI document の木を下る `has_text`](../../src/core/ui/module.cpp#L157)(`self(self, child)` で子を再帰) / [親名の循環検出](../../src/project/sceneformat.cpp#L226)。`RpcServer::handleLine()` にあった `contains_resolution_error(contains_resolution_error, result)`(応答 JSON から `resolution_error` を再帰探索)は、名前付きの自己再帰関数 [`embedsResolutionError()`](../../src/core/communication/editorrpchandlers.cpp#L50) として editor 側へ移り、この形では残っていません。
+**使用場所**: [UI document の木を下る `has_text`](../../src/core/ui/module.cpp#L157)(`self(self, child)` で子を再帰) / [親名の循環検出](../../src/project/sceneformat.cpp#L233)。`RpcServer::handleLine()` にあった `contains_resolution_error(contains_resolution_error, result)`(応答 JSON から `resolution_error` を再帰探索)は、名前付きの自己再帰関数 [`embedsResolutionError()`](../../src/core/communication/editorrpchandlers.cpp#L50) として editor 側へ移り、この形では残っていません。
 
 ### コールバック連鎖(既存のフックを move して包む)
 
 すでにフックが刺さっているかもしれない場所へ自分の処理を足すとき、上書きすると先客の処理が消えます。定型は `auto previous = std::move(hook); hook = [previous = std::move(previous), ...] { if (previous) previous(); /* 自分の処理 */ };` で、旧フックをラムダに閉じ込めてから呼びます。先に旧フックを呼ぶか後に呼ぶかは意味が変わる(前処理か後処理か)ため、順序が契約になります。ムーブしてから包むのは、コピーによる二重実行を避けるためです。
 
-**使用場所**: [EditorCommandService::EditorCommandService()](../../src/core/communication/editorcommandservice.cpp#L635)(`frame_boundary_extension` の先客を呼んでから `commitPending()` を足す)
+**使用場所**: [EditorCommandService::EditorCommandService()](../../src/core/communication/editorcommandservice.cpp#L560)(`frame_boundary_extension` の先客を呼んでから `commitPending()` を足す)
 
 ## 10.4 OS・プロセス・ファイルの作法
 
@@ -991,7 +991,7 @@ SPIR-V モジュールは 32bit ワードの列です。先頭 5 ワードがヘ
 
 nlohmann::json は数値を「符号なし整数 / 符号付き整数 / 浮動小数」の 3 つに区別して保持し、`is_number_unsigned()` / `is_number_integer()` / `is_number_float()` で見分けられます(`is_number_integer()` は符号なしにも true を返すので、負値を拒否したいときは順序に注意が要ります)。`nlohmann::ordered_json` は `std::map` ではなく挿入順を保つ連想コンテナを使う別名で、出力の安定性が要るとき(差分を取る、ダイジェストを取る)に選びます。もう 1 つの落とし穴が `std::optional` の出力で、**値が無いときにキーへ代入しないとキー自体が消えます**。「キーはあるが null」を出したいなら明示的に `nullptr` を代入する必要があり、この 2 つは受け手にとって別物です。
 
-**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L69)(`is_number_unsigned()` を先に見て、次に `is_number_integer()` — この順でないと符号なしが符号付き枝へ落ちる) / [validateStructSigned()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L201)(同じ 2 段の順序) / [editorComponentQueryJson()](../../src/core/communication/editorcommandservice.cpp#L1788)(値が無ければ `OrderedJson(nullptr)` を明示的に置く)
+**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L69)(`is_number_unsigned()` を先に見て、次に `is_number_integer()` — この順でないと符号なしが符号付き枝へ落ちる) / [validateStructSigned()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L201)(同じ 2 段の順序) / [editorComponentQueryJson()](../../src/core/communication/editorcommandservice.cpp#L1587)(値が無ければ `OrderedJson(nullptr)` を明示的に置く)
 
 ### IEEE 754 の倍精度と JSON の「安全な整数」2^53−1
 

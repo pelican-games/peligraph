@@ -973,7 +973,7 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 ### どのAPIがどう曲がるか
 
-分類は文章ではなく**runtimeの表**として持たれています（[`public_api_manifest`](../../src/core/loader/sceneparticipantmanifest.cpp#L207)、型は [`ScenePublicApiManifestEntry`](../../src/core/loader/sceneparticipantmanifest.hpp#L50)）。分類名がそのまま挙動です。
+分類は文章ではなく**runtimeの表**として持たれています（[`public_api_manifest`](../../src/core/loader/sceneparticipantmanifest.cpp#L206)、型は [`ScenePublicApiManifestEntry`](../../src/core/loader/sceneparticipantmanifest.hpp#L50)）。分類名がそのまま挙動です。
 
 | 分類 | API | 実際の経路 |
 |---|---|---|
@@ -986,7 +986,7 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 | `shadow_outbox.*` | `playSound` / `stopSound` / `setBusVolume` / `setGameSettings` / `saveSettings` / `saveData` | shadow（transaction内の見かけ）を更新し、実副作用はoutboxへ積んでflushで実行 |
 | `reject.direct-gameobjects` | `GameObjects::add` / `createWithComponents` / `remove` / `removeAll` / `setLocalTransform` | `SceneTransactionMutationRejected` を**throw** |
 | `nonparticipant.frame-lifetime` | `debugText` | 曲がらない（フレーム寿命。§3.5 の 7 の `frame_lifetime`） |
-| `nonparticipant.ui-document` | `ui().setText` / `setVisible` / `setValue`（GP-3） | 曲がらない。UI 文書は scene の参加者ではなく、書き込みは `UiModule` の command buffer に積まれて次のフレーム境界で入る。load が失敗しても残る（[manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L223)） |
+| `nonparticipant.ui-document` | `ui().setText` / `setVisible` / `setValue`（GP-3） | 曲がらない。UI 文書は scene の参加者ではなく、書き込みは `UiModule` の command buffer に積まれて次のフレーム境界で入る。load が失敗しても残る（[manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L222)） |
 
 縫い目が1つではない点に注意してください。`shadow_outbox.*` と、退役済みobjectを見る `covered.candidate-or-retired-reject` だけが `activeEffectTransaction()` を読みます。RNG・pending scene・eventは**それぞれ自前のscope**（`RngSequenceScope` / `PendingSceneTransactionScope` / `EventOutboxScope`）を持ち、light / camera は分岐すら持ちません。executorがこれら全部を同じ寿命で開く（§3.5 の 3）ので、外から見た挙動が揃います。
 

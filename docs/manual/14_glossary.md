@@ -77,7 +77,7 @@
 
 **vendoring(ベンダリング)** — 外から持ち込んだものを**参照ではなく複製として自分のプロジェクトに取り込む**こと。`install_package` は package ディレクトリを丸ごと `project://packages/<namespace>/` へ copy し、`project.json.packages` に `{namespace, package_version, sha256}` を記録します。複製元が消えてもプロジェクトは動きます。**名前空間は文書の中にも入ります** —— 複製時に feature 文書の `name` が `<namespace>.<名前>` に書き換えられるので、名前を比較するすべての経路が同じ名前を見ます。初出: [第3章 §3.11](03_project_format.md#namespace-は文書の中に入る)。
 
-**section locator(`rendering` 節)** — rendering config が `pelican.graph` root の下に入るとき、「rendering config のキーはどこにあるか」を 1 箇所で決める仕組み。最上位が共通グラフの 5 キーなら `rendering` の下、そうでなければ最上位(legacy root)、と判定し([renderingSectionOf()](../../src/project/renderconfigsection.hpp#L37))、**バイト正確な編集**はその節の中で行います([`isGraphRootKey`](../../src/project/renderconfigdocument.hpp#L15) / [`withSectionValue`](../../src/project/renderconfigdocument.hpp#L83))。読み取りと書き込みが同じ locator を通るので、2 つの root 形に対して規則が 1 つで済みます。節を見つけられない文書は `render_config_section_unlocated`(RPC の拒否では `render_config.section_unlocated@1`)。初出: [第3章 §3.2](03_project_format.md#rendering-config-の-2-つの-rootp-2a-4a4b)・[第6章 §6.16](06_rendering.md)。
+**section locator(`rendering` 節)** — rendering config が `pelican.graph` root の下に入るとき、「rendering config のキーはどこにあるか」を 1 箇所で決める仕組み。最上位が共通グラフの 5 キーなら `rendering` の下、そうでなければ最上位(legacy root)、と判定し([renderingSectionOf()](../../src/project/renderconfigsection.hpp#L36))、**バイト正確な編集**はその節の中で行います([`isGraphRootKey`](../../src/project/renderconfigdocument.hpp#L15) / [`withSectionValue`](../../src/project/renderconfigdocument.hpp#L98))。読み取りと書き込みが同じ locator を通るので、2 つの root 形に対して規則が 1 つで済みます。節を見つけられない文書は `render_config_section_unlocated`(RPC の拒否では `render_config.section_unlocated@1`)。初出: [第3章 §3.2](03_project_format.md#rendering-config-の-2-つの-rootp-2a-4a4b)・[第6章 §6.16](06_rendering.md)。
 
 ---
 
@@ -207,7 +207,7 @@
 
 **ホットリロード(hot reload)** — 実行を止めずに、保存されたファイルを反映すること。対象はシェーダ・`.surface`・テクスチャ・マテリアル値・モデルコンテナ・ゲームロジック DLL で、**シーンは対象外**です。1 つの変更に影響する全バリアントを準備してからフレーム境界で一括公開し、どれか 1 つでも失敗すれば全体を破棄して旧世代を維持します(fail-soft)。初出: [第10章 §10.5](10_tools.md#105-ホットリロードwp9096110147162178)。
 
-**チケット(ticket)** — エディタの編集操作を**フレーム境界で適用する**ための受付票。受付時に前提条件を検査し、コミット時にもう一度検査します(受付から適用までの間に世界が動くため)。「トランザクション」という語がシーンロード・作用・編集の 3 か所で使われるので、編集の文脈ではチケットと呼び分けます。初出: [第13章 §13.3](13_editor.md#133-編集の実行モデル--チケットとフレーム境界)。([EditorCommandService](../../src/core/communication/editorcommandservice.hpp#L282))
+**チケット(ticket)** — エディタの編集操作を**フレーム境界で適用する**ための受付票。受付時に前提条件を検査し、コミット時にもう一度検査します(受付から適用までの間に世界が動くため)。「トランザクション」という語がシーンロード・作用・編集の 3 か所で使われるので、編集の文脈ではチケットと呼び分けます。初出: [第13章 §13.3](13_editor.md#133-編集の実行モデル--チケットとフレーム境界)。([EditorCommandService](../../src/core/communication/editorcommandservice.hpp#L258))
 
 **headless(ヘッドレス)** — ウィンドウを開かずに描画・実行するモード。時刻が固定ステップ(dt = 1/fps)になるためリプレイと golden テストの土台になり、CI から PNG を取り出せます。初出: [第2章 §2.5](02_getting_started.md#25-ヘッドレス実行ウィンドウなしで-png-を出す)。
 

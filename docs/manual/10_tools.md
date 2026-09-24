@@ -38,7 +38,7 @@
 | 引数 | 既定 | 意味 |
 |---|---|---|
 | `--project <dir\|project.json>` | (暗黙探索) | プロジェクトを開く。省略時は exe ディレクトリ → 祖先の `projects/example` を探索し、WARN を出す |
-| `--feature-overlay <uri>` | なし | `pelican.render_feature_overlay` v1 の feature bundle(= `schema` / `version` / `name` / `features` だけを持つ小さな JSON。`features` の各要素は feature 参照文字列か `{ref, parameters}` — [renderfeatureoverlay.cpp](../../src/project/renderfeatureoverlay.cpp#L16))を**この起動だけ**重ねる。公開 CLI なので Studio 以外の profiler 等も利用可能 |
+| `--feature-overlay <uri>` | なし | `pelican.render_feature_overlay` v1 の feature bundle(= `schema` / `version` / `name` / `features` だけを持つ小さな JSON。`features` の各要素は feature 参照文字列か `{ref, parameters}` — [renderfeatureoverlay.cpp](../../src/project/renderfeatureoverlay.cpp#L17))を**この起動だけ**重ねる。公開 CLI なので Studio 以外の profiler 等も利用可能 |
 | `--headless` | off | ウィンドウなし実行(時刻は固定ステップになる) |
 | `--rpc` | off | stdio JSON-RPC モード。**`--headless` は不要になりました**(✅WP156): ヘッドレスでは stdin を読み切るまでブロッキング、**ウィンドウモードではフレーム境界処理 + 有界キュー(既定 64 件)**。溢れると `busy` エラーを即返します。※`--rpc` を付けると ImGui UI は無効([第13章](13_editor.md)) |
 | `--frames <n>` | 3 | ヘッドレスのフレーム数。**0 = 無制限** |
@@ -430,7 +430,7 @@ pelican_cli <assets|bake-camera|import|dist-config|package|project|dump-lowered-
 空でないディレクトリは `project init target directory is not empty: <dir>` で拒否し、何も書きません。
 
 雛形の中身は [`src/project/projecttemplate.cpp`](../../src/project/projecttemplate.cpp) の 1 箇所にあり(`pelican_project`)、
-CLI は `--template` を読んで [`initializeProjectTemplate()`](../../src/project/projecttemplate.cpp#L382) を呼ぶだけです
+CLI は `--template` を読んで [`initializeProjectTemplate()`](../../src/project/projecttemplate.cpp#L395) を呼ぶだけです
 ([CLI 側](../../src/devcli/projectinit.cpp#L27))。Studio の File > New Project... も同じ関数を呼びます([第13章](13_editor.md))。
 `--template` は 2 つです。
 
@@ -441,7 +441,7 @@ CLI は `--template` を読んで [`initializeProjectTemplate()`](../../src/proj
   (preset も `features` も `render_targets` もありません)。中身は fullscreen pass `present` 1 本
   (`input: []`、`output.color: ["display"]`、vertex `engine://fullscreen`、fragment `project://shaders/present`)で、
   `shaders/present.frag` は入力を読まずに UV の gradient を書きます
-  ([雛形](../../src/project/projecttemplate.cpp#L211))。engine は direct config にも canonical anchor と
+  ([雛形](../../src/project/projecttemplate.cpp#L220))。engine は direct config にも canonical anchor と
   `display` を読む `output_transform` を足すので、描かれる frame は「project が書いた pass 1 本 + engine の終端」です。
   scene / input / ui / code / asset は `standard` と同じです(3D の model は置きません)。
 
@@ -451,13 +451,13 @@ CLI は `--template` を読んで [`initializeProjectTemplate()`](../../src/proj
 (`pipeline.preset` = `engine://render_pipelines/hybrid_v1.json`、`features` = `shadow_directional` と
 `sky_ambient` の 2 本)は `rendering` オブジェクトの中に入り、包む処理は
 [`wrapLegacyRenderingConfig()`](../../src/project/renderconfigsection.hpp#L62) の 1 箇所だけです
-([呼び出し側](../../src/project/projecttemplate.cpp#L249)。著作した文字列そのものは [:198](../../src/project/projecttemplate.cpp#L198))。`render_targets` / `rendering_passes` は preset が持つので
+([呼び出し側](../../src/project/projecttemplate.cpp#L249)。著作した文字列そのものは [:198](../../src/project/projecttemplate.cpp#L197))。`render_targets` / `rendering_passes` は preset が持つので
 project は書きません —— `run_devcli_project_init.cmake` は**まず root が `pelican.graph` で `rendering` が
 object であることを確かめてから**、節の中に禁止メンバが無いことを見ます
 ([検査](../../test/run_devcli_project_init.cmake#L48)。順序が逆だと、節ごと消えたときに検査が素通りします)。
 
 生成される `code/CMakeLists.txt` は 2 行で、`pelican_game_sources(game.cpp)` の**後に**
-`pelican_packages()` を呼びます([template](../../src/project/projecttemplate.cpp#L265))。順序が意味を持ちます ——
+`pelican_packages()` を呼びます([template](../../src/project/projecttemplate.cpp#L278))。順序が意味を持ちます ——
 package の object は、その前に作られたゲームロジック DLL へ合流するからです。
 
 ### `pelican_cli import ...`(✅WP21/79/84)
@@ -915,7 +915,7 @@ Python 3.11 以上を用意します。`uv` は不要です。完全な GPU gate
 対象の一覧は [`test/studio_scenarios/`](../../test/studio_scenarios/) が正本です。成果物(`report.json`、
 `studio.log`、スクリーンショット)は `build/test_artifacts/studio_scenarios/<名前>/` に残ります。
 - ゴールデンイメージテスト(**`inventory.json` の `cases[]` に登録されたものだけが対象。ディレクトリを置くだけでは走らない**。件数は [第6章](06_rendering.md) §6.10 が正)。
-- ctest 非登録のスモーク: `run_build_units_smoke.cmake`(IMGUI / PHYSICS 系を含む単独 OFF ビルド検証。`PELICAN_WITH_ANIMATION=OFF` は [`run_animation_smoke()`](../../test/run_build_units_smoke.cmake#L1088) が回し、[`verify_animation_absent()`](../../test/run_build_units_smoke.cmake#L1021) が「消えているべきものが消えている」を確かめます)、`run_project_code_smoke.cmake`、`run_package_template_smoke.cmake`(X-1。package 入りの一時 project を configure から build して headless で走らせるので、**primary worktree の依存ソースを** `-DPELICAN_PACKAGE_TEMPLATE_SMOKE_DEPS=<primary>/build/_deps` で渡します)。
+- ctest 非登録のスモーク: `run_build_units_smoke.cmake`(IMGUI / PHYSICS 系を含む単独 OFF ビルド検証。`PELICAN_WITH_ANIMATION=OFF` は [`run_animation_smoke()`](../../test/run_build_units_smoke.cmake#L1102) が回し、[`verify_animation_absent()`](../../test/run_build_units_smoke.cmake#L1035) が「消えているべきものが消えている」を確かめます)、`run_project_code_smoke.cmake`、`run_package_template_smoke.cmake`(X-1。package 入りの一時 project を configure から build して headless で走らせるので、**primary worktree の依存ソースを** `-DPELICAN_PACKAGE_TEMPLATE_SMOKE_DEPS=<primary>/build/_deps` で渡します)。
 - **CI(✅WP137/165)**: push/PRのWindows CPU gateに加え、手動/週次の
   build-unit OFF/Jolt/project-code/clean-clone matrixがあります。GPU testは
   `gpu` labelで除外し、`SKIP`はexact allowlist、retryなし。GPU CI2は未。

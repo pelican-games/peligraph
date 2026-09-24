@@ -91,9 +91,9 @@ RaySceneRow                             q / group / record / 解決済み AS 値
 | `geometry_identity` | `asset#allocation:index_offset:vertex_offset:mesh:primitive:node` | 同一 object 内で primitive を区別する第2キー |
 | [`geometry_match_identity`](../../src/core/shader/raygrouplayout.hpp#L252) | `allocation:index_offset:index_count:vertex_offset:vertex_count@<transform>` | **曖昧性 guard の等価域**。canonical sort キーと違い、物理的な GPU geometry 範囲と canonical transform だけを含みます |
 
-3本目だけ設計意図が違います。コメントが理由を書いています — authored 側の asset / mesh / node の別名が、**同じ位置にある同じ geometry を別物に見せてはいけない**からです。sort 後に隣接行を突き合わせ、`geometry_match_identity` が一致するのに group か record data が違えば [`pelican.ray_row_binding_ambiguous@1`](../../src/core/shader/raygrouplayout.cpp#L1733) で止めます。
+3本目だけ設計意図が違います。コメントが理由を書いています — authored 側の asset / mesh / node の別名が、**同じ位置にある同じ geometry を別物に見せてはいけない**からです。sort 後に隣接行を突き合わせ、`geometry_match_identity` が一致するのに group か record data が違えば [`pelican.ray_row_binding_ambiguous@1`](../../src/core/shader/raygrouplayout.cpp#L1738) で止めます。
 
-`q` は sort 後の添字で、行数が 2^24 を超えると [scene row q の24-bit上限診断](../../src/core/shader/raygrouplayout.cpp#L1745) です(instance SBT offset が 24 bit のため)。
+`q` は sort 後の添字で、行数が 2^24 を超えると [scene row q の24-bit上限診断](../../src/core/shader/raygrouplayout.cpp#L1750) です(instance SBT offset が 24 bit のため)。
 
 ### `MaterialRowIdentity`: gate と lookup が同じ値を見る
 
@@ -105,20 +105,20 @@ using MaterialRowIdentity =
                  MaterialRowIdentityUnavailable>;
 ```
 
-正準化は [`materialRowIdentity()`](../../src/core/shader/raygrouplayout.cpp#L60) の1関数だけが行い、規則は次です。
+正準化は [`materialRowIdentity()`](../../src/core/shader/raygrouplayout.cpp#L61) の1関数だけが行い、規則は次です。
 
 | 入力 | 結果 |
 |---|---|
 | `material_document` が非空 | [`MaterialRowDocumentIdentity{document, material_name}`](../../src/core/shader/raygrouplayout.hpp#L282)。**document の存在が勝ちます** |
 | document が空、`material_asset` が非空、`source_material_index` が有る | [`MaterialRowAssetIdentity{asset, source_material_index}`](../../src/core/shader/raygrouplayout.hpp#L287) |
-| 同上で index が `UINT32_MAX` | [`pelican.ray_material_index_out_of_range@1`](../../src/core/shader/raygrouplayout.cpp#L71) |
+| 同上で index が `UINT32_MAX` | [`pelican.ray_material_index_out_of_range@1`](../../src/core/shader/raygrouplayout.cpp#L72) |
 | それ以外 | [`MaterialRowIdentityUnavailable`](../../src/core/shader/raygrouplayout.hpp#L292) |
 
-**`material_name` は optional**です。単一 material の `.mat.json` のように名前を持たない document material があるので、「document かつ名前あり」を Document の条件にすると、それが Asset か Unavailable へ落ちて document selector が解決できなくなります。document selector 側も、名前が空なら名前を問わず一致し、名前付きなら一致を要求する非対称になっています([`rayAsSelectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L717))。
+**`material_name` は optional**です。単一 material の `.mat.json` のように名前を持たない document material があるので、「document かつ名前あり」を Document の条件にすると、それが Asset か Unavailable へ落ちて document selector が解決できなくなります。document selector 側も、名前が空なら名前を問わず一致し、名前付きなら一致を要求する非対称になっています([`rayAsSelectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L718))。
 
 もう1つの要点は `source_material_index` が `RaySceneRowInput` / snapshot の両方で `std::optional` であることです。コメントが規範を書いています — **欠損した index が黙って 0 になってはいけません**。glTF の直読みなどで material が無い primitive は index を持たず、identity は `Unavailable` になります。0 に丸めると、たまたま 0 番 material を指す asset selector が誤って一致します。
 
-この単一 identity は、AS rule の gate([`rayAsSelectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L717))、ray bindings の selector 照合([`selectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L469))、`material_reference` の生成、material 表の lookup がすべて同じ値を見ます。
+この単一 identity は、AS rule の gate([`rayAsSelectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L718))、ray bindings の selector 照合([`selectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L470))、`material_reference` の生成、material 表の lookup がすべて同じ値を見ます。
 
 ## `rt_shadow_mask` feature
 
@@ -156,7 +156,7 @@ SBT の byte layout は [`shaderbindingtable.cpp`](../../src/core/shader/shaderb
 
 ## AS 宣言を編集する RPC は「節 locator」を通る
 
-`scene_acceleration_structures` を読み書きする 2 本の RPC — [`getSceneAccelerationStructures()`](../../src/core/communication/renderconfigeditor.cpp#L1733) と [`editSceneAccelerationStructures()`](../../src/core/communication/renderconfigeditor.cpp#L1757) — は、rendering config の root を直接触りません。読みは [`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L47)、書きは [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L658) を通します。したがって **legacy root では最上位の `scene_acceleration_structures`、`pelican.graph` root では `rendering.scene_acceleration_structures`** が同じ 1 本の RPC で扱われ、呼び手はどちらの root かを知りません(root の 2 形は[第6章 §6.1](06_rendering_vulkan_shader.md) の「rendering config の root は 2 つある」)。
+`scene_acceleration_structures` を読み書きする 2 本の RPC — [`getSceneAccelerationStructures()`](../../src/core/communication/renderconfigeditor.cpp#L1733) と [`editSceneAccelerationStructures()`](../../src/core/communication/renderconfigeditor.cpp#L1757) — は、rendering config の root を直接触りません。読みは [`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49)、書きは [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L654) を通します。したがって **legacy root では最上位の `scene_acceleration_structures`、`pelican.graph` root では `rendering.scene_acceleration_structures`** が同じ 1 本の RPC で扱われ、呼び手はどちらの root かを知りません(root の 2 形は[第6章 §6.1](06_rendering_vulkan_shader.md) の「rendering config の root は 2 つある」)。
 
 read が返すのは 6 キーです。
 

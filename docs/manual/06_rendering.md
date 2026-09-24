@@ -2313,7 +2313,7 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 | `preview graph config requires rendering_passes` | 合成後の config に `rendering_passes` が無い(§6.13) |
 | `golden inventory: FAIL` + `- <issue>` | `test/golden/inventory.json` と `test/golden/` の実体が食い違う(§6.10) |
 | `render_config_section_unlocated`(RPC の拒否コード) | `pelican.graph` root なのに `rendering` 節が無い(あるいは object でない)文書を authoring RPC が編集しようとした。**黙って root にキーを作らない**([renderconfigeditor.cpp:887](../../src/core/communication/renderconfigeditor.cpp#L1165)。§6.16) |
-| `render_config.section_unlocated@1` | 同じ理由で `--feature-overlay` の適用先が見つからない([renderfeatureoverlay.cpp:142](../../src/project/renderfeatureoverlay.cpp#L142)) |
+| `render_config.section_unlocated@1` | 同じ理由で `--feature-overlay` の適用先が見つからない([renderfeatureoverlay.cpp:142](../../src/project/renderfeatureoverlay.cpp#L144)) |
 | `graph.operation_unregistered@1` `{node, op}` | ノードの `op` をどの module も登録していない。綴り間違いのほか、**`PELICAN_WITH_ANIMATION=OFF` の build で `pose.*` を書いた**ときもこれ([graphmodule.cpp:199](../../src/project/graphmodule.cpp#L199)。§6.17) |
 | `graph.operation_unexecutable@1` `{backend, op, node}` | op は登録されているのに、それを実行する backend がこの build に無い。rendering 側は `backend: "pelican.render"` で、lowering できる 6 op 以外を rendering 区画に置いたときに出ます([rendergraphcomposition.cpp:58](../../src/project/rendergraphcomposition.cpp#L58))。姿勢側・値側にも同名の拒否があります([posegraph.cpp:91](../../src/core/animation/posegraph.cpp#L91) / [valuegraph.cpp:289](../../src/core/userpublic/valuegraph.cpp#L303)) |
 | `graph.node_duplicate@1` / `graph.node_missing@1` / `graph.input_unknown@1` / `graph.input_referenced@1` / `graph.output_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1` / `graph.definition_immutable@1` / `graph.layout_invalid@1` | `edit_graph_document` の **9 つ**の名前付き拒否(重複 id / 不在 node / 不明な入力 port / まだ供給されている `graph.input` の削除 / まだ参照されている node の削除 / definition の中の `graph.instance` / root の `graph.input` / 編集できない scope)。正は [`editGraphDocument()` の宣言コメント](../../src/project/graphcomposition.hpp#L90)(9 つ全部を列挙しています。9 つ目 `graph.layout_invalid@1` は N-6 の `set_layout`)と throw 箇所([graphcomposition.cpp:363](../../src/project/graphcomposition.cpp#L364) 〜 [:534](../../src/project/graphcomposition.cpp#L828))。一覧は [第13章](13_editor.md) |
@@ -2585,7 +2585,7 @@ GUI では ImGui の `Pelican Engine Stats` → `Memory`(heap 別の Size / Usag
 
 - `ray_bindings` だけを書くと `pelican.ray_tracing.bindings_without_layout@1`。
 - `ray_group_layout` があるプロジェクトは**ランタイムシェーダコンパイラ必須**で、`PELICAN_RUNTIME_SHADER_COMPILER=OFF` のビルドでは `pelican.ray_tracing.layout_requires_runtime_compiler@1` になります。
-- layout 文書は `pelican.ray_group_layout` の **version 3 だけ**を、bindings 文書は `pelican.ray_bindings` の **version 2 だけ**を受理します(✅MG-2a)。ほかの整数版(古い 1 / 2 を含む)は `pelican.ray_group_layout.version_unsupported@1` / `pelican.ray_bindings.version_unsupported@1` で拒否され、メッセージに文書の参照が付きます([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L842))。旧版を旧い意味で読む経路は無く、自動移行もしないので、手で書き直します。layout version 1 / 2 は各 `groups[]` に `"type": "triangles"` を足して `version` を 3 に、bindings version 1 は `version` を 2 にします。⚠ version 1 の layout では行の `instance_custom_index` が q(行の正規順の添字)でしたが、version 3 では `pelican_ray_instance` の `custom_index` で宣言しない限り 0 です(shader に出る値が変わります)。
+- layout 文書は `pelican.ray_group_layout` の **version 3 だけ**を、bindings 文書は `pelican.ray_bindings` の **version 2 だけ**を受理します(✅MG-2a)。ほかの整数版(古い 1 / 2 を含む)は `pelican.ray_group_layout.version_unsupported@1` / `pelican.ray_bindings.version_unsupported@1` で拒否され、メッセージに文書の参照が付きます([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L843))。旧版を旧い意味で読む経路は無く、自動移行もしないので、手で書き直します。layout version 1 / 2 は各 `groups[]` に `"type": "triangles"` を足して `version` を 3 に、bindings version 1 は `version` を 2 にします。⚠ version 1 の layout では行の `instance_custom_index` が q(行の正規順の添字)でしたが、version 3 では `pelican_ray_instance` の `custom_index` で宣言しない限り 0 です(shader に出る値が変わります)。
 - group の型(`triangles` / `procedural`)は layout の `groups[].type` だけが持ちます。compute task 側の `hit_shaders` の group に `type` を書くと、値を問わず `pelican.ray_group_type_declared_in_task@1` です(MG-2a より前は `"triangles"` だけ受理していました)。
 
 layout の骨格:
@@ -2661,7 +2661,7 @@ scene JSON の `components` に書きます。
 
 ### AS 規則の material 鍵(✅WP383)
 
-`acceleration_structure.rules[]` は **material identity** で行を選び、その行の `geometry_flags` を差し替えます。identity は 3 種の直和で、**gate(規則を要求するか)と lookup(どの規則に当たるか)が同じ値を見ます**([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L60)):
+`acceleration_structure.rules[]` は **material identity** で行を選び、その行の `geometry_flags` を差し替えます。identity は 3 種の直和で、**gate(規則を要求するか)と lookup(どの規則に当たるか)が同じ値を見ます**([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L61)):
 
 | identity | 成立条件 | selector の書き方 |
 |---|---|---|
@@ -2691,7 +2691,7 @@ geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation
 
 ### 移植プロファイルとの相互作用
 
-layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1514))。
+layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1519))。
 
 ## 6.16 rendering config の 2 つの root —— legacy root と `pelican.graph` root(✅P-2a-4a/4b)
 
@@ -2722,8 +2722,8 @@ rendering config のファイルは **2 つの root 形**のどちらかです�
 **規則は 1 つだけです**: `schema` / `version` / `definitions` / `nodes` / `outputs`(と N-6 からは editor 用の `layout`)は共通グラフが所有し、**それ以外の rendering config のキーは全部 `rendering` 節に属します**。エンジンはこの形を composer の入口で legacy 形へ lower してからパスを組むので、`rendering` 節の中身が同じなら **描画結果は完全に同じ**です(`projects/example` の移行はピクセル不変)。
 
 - `buffers` と `compute_tasks` は `pelican.graph` root では **グラフが所有します**。`rendering` 節に書くと lowering が名前付きで拒否します。
-- Studio と RPC の authoring(`get_render_features` / `edit_render_features` / `materialize` / `--feature-overlay`)は、どちらの root でも同じ 1 つの locator([`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L37))を通って `rendering` 節を読み書きします。graph root なのに `rendering` が無い(あるいは object でない)文書への編集は、黙って root にキーを作らず `render_config_section_unlocated` で拒否されます。
-- **ただし「1 箇所」なのは読み書きの locator までです。**byte-lossless の書き込み経路は同じ規則を鍵の側から判定していて、上の 6 キーかどうかを [`isGraphRootKey()`](../../src/project/renderconfigdocument.cpp#L418) で見てから root と節を振り分けます([withSectionValue()](../../src/project/renderconfigdocument.cpp#L658))。さらにレイトレの読み出しは**同じ規則をその場で書き直しており**、`rendering` が無いときは例外ではなく**空 object** として続行します([raygrouplayout.cpp:1465](../../src/core/shader/raygrouplayout.cpp#L1460))—— つまり「節が無い」ときの振る舞いは経路によって違います。
+- Studio と RPC の authoring(`get_render_features` / `edit_render_features` / `materialize` / `--feature-overlay`)は、どちらの root でも同じ 1 つの locator([`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36))を通って `rendering` 節を読み書きします。graph root なのに `rendering` が無い(あるいは object でない)文書への編集は、黙って root にキーを作らず `render_config_section_unlocated` で拒否されます。
+- **ただし「1 箇所」なのは読み書きの locator までです。**byte-lossless の書き込み経路は同じ規則を鍵の側から判定していて、上の 6 キーかどうかを [`isGraphRootKey()`](../../src/project/renderconfigdocument.cpp#L426) で見てから root と節を振り分けます([withSectionValue()](../../src/project/renderconfigdocument.cpp#L654))。さらにレイトレの読み出しは**同じ規則をその場で書き直しており**、`rendering` が無いときは例外ではなく**空 object** として続行します([raygrouplayout.cpp:1465](../../src/core/shader/raygrouplayout.cpp#L1460))—— つまり「節が無い」ときの振る舞いは経路によって違います。
 - 新規プロジェクト(`pelican_cli project init`、[第10章](10_tools.md))が生成する config は `pelican.graph` root です。
 - 既存の legacy root を移すには、ファイル全体を `rendering` の値にして上の 5 キーを足すだけです。`test/fixtures/graph_root_example/` が実物の対比(出荷 `example` の節と、preset を選ぶ `animgraph_demo` の節)を持っています。
 - web ビューアは `pelican.graph` root をまだ読めません([第9章](09_web.md) §9.3)。

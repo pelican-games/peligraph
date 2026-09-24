@@ -665,7 +665,7 @@ teardown の最終段は phase で分岐します。
 | custom Component public registration | ID macro はあるが安定 public boot hook なし。ただし登録解除 API と重複拒否は入った。解除と engine owner 登録は WP379a で host 専用へ | [`component/registerer.hpp`](../../src/core/userpublic/details/component/registerer.hpp#L78) / [`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13) |
 | behavior attachment | ✅実装済み(WP155 / 162 / 167) | [`behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L170) |
 | 物理 trigger event | ✅実装済み(WP179) | [`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L698) |
-| 編集 RPC(query / snapshot / edit / undo / preview / journal) | ✅実装済み(WP153〜172) | [`editorcommandservice.hpp`](../../src/core/communication/editorcommandservice.hpp#L282) |
+| 編集 RPC(query / snapshot / edit / undo / preview / journal) | ✅実装済み(WP153〜172) | [`editorcommandservice.hpp`](../../src/core/communication/editorcommandservice.hpp#L258) |
 | ImGui inspector / asset browser | ✅実装済み(WP159 / 164 / 167)。ただし `--rpc` / headless / replay / golden / XR では無効 | [`inspector.hpp`](../../src/core/imgui/inspector.hpp#L167) |
 | preview graph(第3 variant) | 🚧実装済みだが CPU 模式ラスタ(WP172)。隔離契約が本体で、見た目の忠実度は保証しない | [`previewgraph.hpp`](../../src/core/renderingpass/previewgraph.hpp#L15) |
 | RenderDoc capture | 🚧受動のみ(WP140)。**エンジンは RenderDoc をロードしない** | [`renderdoccapture.hpp`](../../src/core/renderdoc/renderdoccapture.hpp#L66) |
@@ -801,7 +801,7 @@ WP144〜WP172 で、変更のプロトコルがコードベース全体で統一
 
 > **設計決定:** 新しい adapter を足すときは **prepare / rollback / publish の三点セットを必ず作ってください**。「途中まで適用された状態」を許す実装を1つ混ぜるだけで、その adapter だけでなく、**同じ `commit()` が束ねる transaction 全体**(= 編集・reload・scene 遷移が共有するこのプロトコル)の原子性が崩れます。他の adapter が正しく rollback できても、その 1 つが戻らなければ transaction は半端な状態で終わるからです。
 
-`load_gltf` の単一公開点がわかりやすい実例です([`instances.publishModelInstance()`](../../src/core/loader/scene.cpp#L2243))。
+`load_gltf` の単一公開点がわかりやすい実例です([`instances.publishModelInstance()`](../../src/core/loader/scene.cpp#L2242))。
 
 ```cpp
 // No operation below allocates: this is the single publication point for
@@ -822,7 +822,7 @@ instances.publishModelInstance(std::move(staged_instance));
 
 ### 3. CAS は `SceneRevision` で行う。ただし revision だけでは足りない
 
-`edit` は `base_revision` を伴い(これが節題の CAS — compare-and-swap、「読んだときの値から変わっていなければ書き換える」条件付き更新のことです)、ズレていれば `EditorEditErrorCode::stale_revision` です。**watch トークンは [`EditorWatchToken{scene_revision, preview_epoch}`](../../src/core/communication/editorcommandservice.hpp#L218) の 2 要素** で、preview の open/commit も epoch を進めます。`get_scene_revision` の戻り値を丸ごと持ち回ってください。
+`edit` は `base_revision` を伴い(これが節題の CAS — compare-and-swap、「読んだときの値から変わっていなければ書き換える」条件付き更新のことです)、ズレていれば `EditorEditErrorCode::stale_revision` です。**watch トークンは [`EditorWatchToken{scene_revision, preview_epoch}`](../../src/core/communication/editorcommandservice.hpp#L196) の 2 要素** で、preview の open/commit も epoch を進めます。`get_scene_revision` の戻り値を丸ごと持ち回ってください。
 
 ### 4. preview は lease(ticket)
 
@@ -914,12 +914,12 @@ TEST_CASE("...") {
 
 | skip していたテスト | 握り潰されていた engine の例外 |
 |---|---|
-| [`rpc_color_contract_test.cpp` 内](../../test/rpc_color_contract_test.cpp#L868) | [`MaterialContainer::validateRuntimeGenerationCompatibility()`](../../src/core/material/materialgenerationplanner.cpp#L1546) の `render-pipeline candidate has no compatible pass for live material 0 (route 'deferred_geometry', shader contract 'gbuffer_v1')` |
+| [`rpc_color_contract_test.cpp` 内](../../test/rpc_color_contract_test.cpp#L896) | [`MaterialContainer::validateRuntimeGenerationCompatibility()`](../../src/core/material/materialgenerationplanner.cpp#L1546) の `render-pipeline candidate has no compatible pass for live material 0 (route 'deferred_geometry', shader contract 'gbuffer_v1')` |
 | [`materialvaluesreload_test.cpp` 内](../../test/materialvaluesreload_test.cpp#L369) | [`validateMaterialTextureReflection()`](../../src/core/material/materialcontainer.cpp#L484) の `material texture 'albedo_detail' is absent from shader reflection at binding 7` |
 | [`materialvaluesreload_test.cpp` 内](../../test/materialvaluesreload_test.cpp#L491) | 同上 |
 | [`HR1-M watcher gate and 1000 reloads keep resources bounded`](../../test/materialvaluesreload_test.cpp#L766) | 同上 |
 
-`try` の位置は 2 通りありました。`materialvaluesreload_test.cpp` の 3 件は `FastModuleContainer modules;` から `waitIdle()` まで**本体まるごと**([`"HR1-M updates one same-layout material and rolls back invalid candidates"`](../../test/materialvaluesreload_test.cpp#L369) の `try` など)、`rpc_color_contract_test.cpp` は engine 起動部だけ([`runEngineRpcServer()`](../../test/rpc_color_contract_test.cpp#L391) を囲む `try`)ですが、fail-fast は起動時に出るので結果は同じです。
+`try` の位置は 2 通りありました。`materialvaluesreload_test.cpp` の 3 件は `FastModuleContainer modules;` から `waitIdle()` まで**本体まるごと**([`"HR1-M updates one same-layout material and rolls back invalid candidates"`](../../test/materialvaluesreload_test.cpp#L369) の `try` など)、`rpc_color_contract_test.cpp` は engine 起動部だけ([`runEngineRpcServer()`](../../test/rpc_color_contract_test.cpp#L405) を囲む `try`)ですが、fail-fast は起動時に出るので結果は同じです。
 
 > 🧩 **難所 — 捕まるものと捕まらないものが逆に見える**(`catch (const std::exception &)` と Catch2)
 >
@@ -937,7 +937,7 @@ TEST_CASE("...") {
 > SKIP(...)                     → TestSkipException                    → 素通り → skip
 > ```
 >
-> **手がかり**: 「capability が無い」と「実行して失敗した」を分ける方法は2つです。(1) **明示的な能力問い合わせ** — [XR segmented draw の multiview capability 検査](../../test/golden_harness.cpp#L11529) / [`.dynamic_rendering_local_read`](../../test/headless_render_test.cpp#L4944) を見て skip し、本体は囲まない。(2) **device 初期化エラーを厳密に絞って再送出** — [`requireVulkanDevice()`](../../test/vulkan_test_support.hpp) は `No suitable Vulkan physical device found` のときだけ skip し、それ以外は `throw;` します。後始末の catch も同じ判定を使い、非該当なら再送出します。**(1) が本来の形**で、(2) は既存テストを最小限の変更で救う形です。
+> **手がかり**: 「capability が無い」と「実行して失敗した」を分ける方法は2つです。(1) **明示的な能力問い合わせ** — [XR segmented draw の multiview capability 検査](../../test/golden_harness.cpp#L11632) / [`.dynamic_rendering_local_read`](../../test/headless_render_test.cpp#L4957) を見て skip し、本体は囲まない。(2) **device 初期化エラーを厳密に絞って再送出** — [`requireVulkanDevice()`](../../test/vulkan_test_support.hpp) は `No suitable Vulkan physical device found` のときだけ skip し、それ以外は `throw;` します。後始末の catch も同じ判定を使い、非該当なら再送出します。**(1) が本来の形**で、(2) は既存テストを最小限の変更で救う形です。
 >
 > **不変条件**: skip は「実行できない理由」を**問い合わせて**決める。`std::exception` を捕まえて skip にしない。どうしても囲むなら、囲む範囲を bring-up だけに限り、bring-up を抜けたら再送出する。
 
@@ -1087,7 +1087,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: (a) 内容の同一性を決める canonical key、(b) それを固定長にした digest、(c) 実行時の生存を証明する handle / lease。片方だけでは「内容は同じだが実体が死んでいる」と「実体は生きているが内容が変わった」を区別できない。
 
-**どこに出るか**: RT の行は [3 つの identity を同時に組み立て](../../src/core/renderer/accelerationstructure.cpp#L674)、マテリアル表は [`source_by_handle` と `source_by_key` の 2 名前空間](../../src/core/shader/raygrouplayout.cpp#L1830)を両方照合し、マテリアル側は [`ray_generation` と `ray_lease` の生成](../../src/core/material/materialcontainer.cpp#L803) の対で答えます。resolver は [`resolverInputsFingerprint()`](../../src/core/loader/resolvedscene.cpp#L756)、editor journal は [`attachment_handle` / `attachment_seq` / `attachment_identity`](../../src/core/communication/editorjournalops.cpp#L350) の 3 本立て。
+**どこに出るか**: RT の行は [3 つの identity を同時に組み立て](../../src/core/renderer/accelerationstructure.cpp#L674)、マテリアル表は [`source_by_handle` と `source_by_key` の 2 名前空間](../../src/core/shader/raygrouplayout.cpp#L1835)を両方照合し、マテリアル側は [`ray_generation` と `ray_lease` の生成](../../src/core/material/materialcontainer.cpp#L803) の対で答えます。resolver は [`resolverInputsFingerprint()`](../../src/core/loader/resolvedscene.cpp#L756)、editor journal は [`attachment_handle` / `attachment_seq` / `attachment_identity`](../../src/core/communication/editorjournalops.cpp#L350) の 3 本立て。
 
 **読むときの手順**: 「どちらが欠けたときにどのエラーコードになるか」を先に引いてください。三層のどれを検査しているかは、エラー名(`*_stale` / `*_ambiguous` / `*_mismatch`)がほぼそのまま表しています。
 
@@ -1095,7 +1095,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: 本番コードの分岐上に注入点を置き、「この分岐を壊すとどのテストが赤くなるか」を名指しできるようにする。manifest の `mutation_id` 列がその索引。
 
-**どこに出るか**: scene load の入口は [`sceneLoadMutationEnabled()`](../../src/core/loader/sceneloadfault.cpp#L33) と [manifest の `root.import.versioned` 行](../../src/core/loader/sceneparticipantmanifest.cpp#L200)、保存の TOCTOU 窓は [`BeforeReplace` の注入位置](../../src/core/loader/basicconfig.cpp#L1000)、SBT は [production branch observer](../../src/core/shader/pipelinefactory.cpp#L1710)、TLAS は [`overrideRayTracingTlasRecordOffsetForTesting`](../../src/core/renderer/accelerationstructure.cpp#L818)、present は [本物の `presentKHR` を呼んでから戻り値だけ差し替える](../../src/core/vkcore/swapchainframetarget.cpp#L2606)。
+**どこに出るか**: scene load の入口は [`sceneLoadMutationEnabled()`](../../src/core/loader/sceneloadfault.cpp#L30) と [manifest の `root.import.versioned` 行](../../src/core/loader/sceneparticipantmanifest.cpp#L199)、保存の TOCTOU 窓は [`BeforeReplace` の注入位置](../../src/core/loader/basicconfig.cpp#L988)、SBT は [production branch observer](../../src/core/shader/pipelinefactory.cpp#L1710)、TLAS は [`overrideRayTracingTlasRecordOffsetForTesting`](../../src/core/renderer/accelerationstructure.cpp#L818)、present は [本物の `presentKHR` を呼んでから戻り値だけ差し替える](../../src/core/vkcore/swapchainframetarget.cpp#L2606)。
 
 **読むときの手順**: [第3章「注入口はproductionバイナリに存在しない」](03_project_and_loading.md)を先に読んでください。注入点は「テスト用の別経路」ではなく**本番経路そのもの**で、経路を差し替える方向に直すと A/B が破綻します。
 
@@ -1119,7 +1119,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: 巨大な定数配列が何を数えた表で、行数がいくつなのか。
 
-**答え**: 「scene transaction に関与する**独立に観測できるフィールド 1 個 = 1 行**」の表で、snapshot 比較・変異テスト・契約テストが参照する唯一の分類権威です。列は [`SceneParticipantManifestEntry`](../../src/core/loader/sceneparticipantmanifest.hpp#L36) の **10 個**(owner / field / presence / role / prepare_owner / publication / rollback / retirement / snapshot_schema / mutation_id)で、「16 フィールド」は誤りです。行数も **100 行**(`manifest`)で、166 は配列末尾の行番号にすぎません。[`public_api_manifest`](../../src/core/loader/sceneparticipantmanifest.cpp#L207) は別表で 32 行です。
+**答え**: 「scene transaction に関与する**独立に観測できるフィールド 1 個 = 1 行**」の表で、snapshot 比較・変異テスト・契約テストが参照する唯一の分類権威です。列は [`SceneParticipantManifestEntry`](../../src/core/loader/sceneparticipantmanifest.hpp#L36) の **10 個**(owner / field / presence / role / prepare_owner / publication / rollback / retirement / snapshot_schema / mutation_id)で、「16 フィールド」は誤りです。行数も **100 行**(`manifest`)で、166 は配列末尾の行番号にすぎません。[`public_api_manifest`](../../src/core/loader/sceneparticipantmanifest.cpp#L206) は別表で 32 行です。
 
 #### [`resolveParentOrder()`](../../src/core/loader/componentcodec.hpp#L115) — 巡回検査の fresh→active→done
 
@@ -1127,11 +1127,11 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **答え**: 白灰黒 DFS です。done は再計算を省くメモ化で、active への再入が循環。active と done を分けないと「親を共有する複数の子」を循環と誤報します。歩く機構は `resolveParentOrder()` 1 つで、scene load([scene.cpp の呼び出し](../../src/core/loader/scene.cpp#L1350))・編集 transaction・preview が同じ template を使い、**誰を起点にするか(participant filter)と、循環 / 不在親で何を投げるかだけが呼び手ごと**です。scene load では循環・未知親・曖昧親が parse 段で既に弾かれているので、ここでの active への再入は内部不整合として `logic_error` です(投影は early_publish 内、entity 生成・親リンク後・behavior の `onInit` より前)。parse 段側の DFS は[第3章「3値のDFSが名前を出す」](03_project_and_loading.md)が本体です。
 
-#### [`ProjectBasicConfig::saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L919) — 複数の注入点と baseline 再検証
+#### [`ProjectBasicConfig::saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L907) — 複数の注入点と baseline 再検証
 
 **分からなくなること**: baseline を取ったのに、置換直前でもう一度検証するのはなぜか。
 
-**答え**: [第3章「保存のTOCTOU窓」](03_project_and_loading.md)が本体です。1 点だけ補うと、[919 行のコメント](../../src/core/loader/basicconfig.cpp#L925)が baseline を「scene bytes + prefab read-set」の 1 つの不変物として固定すると明言しており、注入点は各区間の外部変更をテストで作るためのものです。
+**答え**: [第3章「保存のTOCTOU窓」](03_project_and_loading.md)が本体です。1 点だけ補うと、[919 行のコメント](../../src/core/loader/basicconfig.cpp#L913)が baseline を「scene bytes + prefab read-set」の 1 つの不変物として固定すると明言しており、注入点は各区間の外部変更をテストで作るためのものです。
 
 #### [`ProjectBasicConfig::publishSceneDocument()`](../../src/core/loader/basicconfig.cpp#L728) — revision と resolver generation が進む条件
 
@@ -1152,14 +1152,14 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [`PendingSceneTransactionScope`](../../src/core/loader/scene.cpp#L225) | thread_local + RAII の ambient context | なぜ引数で渡さないのか | early publication が呼ぶ**全 game-DLL callback**に同じ transaction-local な effect を観測させるため。`requestLoad()` は `active_pending_scene_transaction->loader == this` を見て live ではなく candidate へ書く |
 | [run_nonce の初期化](../../src/core/loader/scene.cpp#L167) | `ticks ^ pointer`、0 を回避 | なぜ 0 を避けるのか | 0 は既定構築の `SceneAuthority{}`(= まだ何も commit していない)に予約されている |
 | [`stagePreparedSceneModel()`](../../src/core/renderer/polygoninstancecontainer.cpp#L623) と publish の分離 | 容量検査 + 確保 / 挿入 | なぜ 2 つに割るのか | stage が `ModelInstanceId` を返す失敗しうる側で、loader は公開前にその id を `SimpleModelViewComponent` へ書く必要があるから |
-| [`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L223) の Borrowed / Owned | 入口ごとの所有形 | 2 形態がある理由 | Borrowed は commit 済み projection の読み直し(metadata は複製されるだけ)、Owned は import root で未公開の候補を token ごと所有し、失敗時は token を捨てるだけ |
-| [`MetadataCommitToken`](../../src/core/loader/sceneload.hpp#L196) | opaque pointer | なぜ中身を隠すのか | 呼び手が「document だけ」「projection だけ」を公開できないようにするため。唯一の commit は `SceneMetadataState` 全体の swap |
+| [`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L222) の Borrowed / Owned | 入口ごとの所有形 | 2 形態がある理由 | Borrowed は commit 済み projection の読み直し(metadata は複製されるだけ)、Owned は import root で未公開の候補を token ごと所有し、失敗時は token を捨てるだけ |
+| [`MetadataCommitToken`](../../src/core/loader/sceneload.hpp#L195) | opaque pointer | なぜ中身を隠すのか | 呼び手が「document だけ」「projection だけ」を公開できないようにするため。唯一の commit は `SceneMetadataState` 全体の swap |
 | [transform → localtransform 自動付与](../../src/core/loader/scene.cpp#L397) | `transform` を持つ全 object への補完(GP-1) | なぜ loader が component を足すのか、足した local は保存されるのか | authored なのは local TRS、runtime の読み手は world の `TransformComponent`。`LocalTransformSystem` は local を持つ object の world を local から毎フレーム作り直す。GP-1 から scene の `localtransform` 宣言が無い全 transform object に足す(以前は scene に `parent` が 1 つでもあるときの親子参加者だけで、parent の無い scene では `setLocalTransform` が `false` を返していた — 解消済み)。足した分は JSON を持たない `injected_local` で、値は投影段が authored の transform から書く。authored object の component ではないので**保存には出ない**。world を直接書く経路(`SceneLoader::applyObjectTransform`・editor の spawn)は local も書く。足さないのは editor の `add_component` で後から足した `transform`(次の load まで)と `load_gltf` の transient object |
-| [`sceneLoadMutationEnabled()`](../../src/core/loader/sceneloadfault.cpp#L33) | SceneLoadRoot の 6 値 | 分類の意味 | 本番の入口は startup / rpc / pending / import_unversioned / import_versioned の **5 種**で、manifest の `role = production_root` 行(5 行)と 1:1。enum 先頭の `unspecified` だけは manifest 行も mutation id も持たない |
+| [`sceneLoadMutationEnabled()`](../../src/core/loader/sceneloadfault.cpp#L30) | SceneLoadRoot の 6 値 | 分類の意味 | 本番の入口は startup / rpc / pending / import_unversioned / import_versioned の **5 種**で、manifest の `role = production_root` 行(5 行)と 1:1。enum 先頭の `unspecified` だけは manifest 行も mutation id も持たない |
 | [`create_object` ラムダ](../../src/core/loader/scene.cpp#L1245) | prepareCreate → publish → finish | 三段の不変式 | → §9.22「三段トランザクション」/ [第4章「生成transactionの三段構え」](04_ecs_deep_dive.md) |
 | [`markComponentChanged`](../../src/core/loader/scene.cpp#L1332) | 親を書いた直後の版上げ | なぜ手動で呼ぶのか | `tryComponent<T>()` は生ポインタを返すだけで版を上げない(版を上げるのは [`setComponent()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L373) 側)。`local->parent` を直接書いた経路では手動で上げないと change detection が親リンクの変化を見落とす |
 | [`loadColliderComponent()`](../../src/core/loader/scene.cpp#L285) | `runtime_codec` の null 検査 | なぜ `logic_error` なのか | resolver が具体 component に codec を必ず付ける契約なので、null は authoring の誤りではなく内部不整合。同関数の `ResolutionFailureException` 経路(= 作者の誤り)と行き先を分けている |
-| [`loadTransientGltf()`](../../src/core/loader/scene.cpp#L2155) | 二重予約と `owns_resources` | なぜ 2 回予約するのか | ハッシュノードとバケット成長を**パース・GPU staging より前**に確保し(コメントが明言)、entity 生成後の公開が確保できない = transaction を割れないようにする。容量拒否は副作用の無い [`inspect()`(WP110)](../../src/core/loader/scene.cpp#L2194) + `preflightModelInstance` で先に行う |
+| [`loadTransientGltf()`](../../src/core/loader/scene.cpp#L2154) | 二重予約と `owns_resources` | なぜ 2 回予約するのか | ハッシュノードとバケット成長を**パース・GPU staging より前**に確保し(コメントが明言)、entity 生成後の公開が確保できない = transaction を割れないようにする。容量拒否は副作用の無い [`inspect()`(WP110)](../../src/core/loader/scene.cpp#L2193) + `preflightModelInstance` で先に行う |
 | [`displayObjectName()`](../../src/core/loader/scene.cpp#L275) | 診断用の表示名 | 常に `<unnamed>` に見える | 空のときだけ `<unnamed>` を返す 1 行。identity ではなく**表示**なので、同一性の判定に使わない |
 | [`scenePersistenceBaseline()`](../../src/core/loader/basicconfig.cpp#L380) | prefab closure と read-set | baseline が何の複合か | scene ファイルの digest + resolve が実際に読んだ prefab 集合(name/path/digest)。registry に無い prefab が closure にあれば `logic_error` |
 | [`SceneMetadataState`](../../src/core/loader/basicconfig.hpp#L106) | 3 本の番号の役割分担 | revision / generation / object_id の違い | revision = authoring document の改訂、resolver generation = 解決結果の世代(読み手のキャッシュ無効化)、next_authoring_object_id = 宣言 ID の払い出し高水位(scene をまたいで再利用しない) |
@@ -1188,7 +1188,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
 | [4 集合の照合](../../src/core/loader/resolvedscene.cpp#L644) | 全単射の検査 | なぜ 4 つも要るのか | `expected_*` は 2 つの snapshot から導いた真値、`actual_*` は map entries 側の実測。挿入の一意性 + 集合の完全一致で全単射を証明し、取りこぼし・重複・区間外 index へのエイリアスを排除する(これが `invertOriginTransitionMap` の健全性の前提) |
-| [`resolverInputsFingerprint()`](../../src/core/loader/resolvedscene.cpp#L756) | resolver 入力の SHA256 | 何のための指紋か | camera 既定投影 + sprite 既定の正準 SHA256 を closure に載せ、[期待値比較](../../src/core/communication/editorcommandservice.cpp#L405)で不一致なら stale として再解決を強制する |
+| [`resolverInputsFingerprint()`](../../src/core/loader/resolvedscene.cpp#L756) | resolver 入力の SHA256 | 何のための指紋か | camera 既定投影 + sprite 既定の正準 SHA256 を closure に載せ、[期待値比較](../../src/core/communication/editorcommandservice.cpp#L415)で不一致なら stale として再解決を強制する |
 | [`resolveComponent()`](../../src/core/loader/resolvedscene.cpp#L211) | origin タグと遷移規則 | authoring / generated / prefab の別 | origin は型で保持され(generated は gid・prefab・instance_id・component_key・digest を持つ)、非 generated 経路に生成マーカーが混入したら拒否する |
 | [behavior の canonicalize_params 呼び出し](../../src/core/loader/resolvedscene.cpp#L255) | behavior だけ別経路 | なぜコア codec を通さないのか | behavior はコア codec を持たず、**登録済み behavior の schema が受理の正**だから。[211 行のコメント](../../src/core/loader/resolvedscene.cpp#L255)どおり pre-WP360 の親 RPC 表現を再現するため、正準化結果を `source_json_exact["params"]` へ書き戻す |
 | [`ResolvedSceneResolver::resolve()`](../../src/core/loader/resolvedscene.cpp#L779) | 4 フェーズ | 相の前提と依存 | 1a は codec を見ずに instance 検証、1b は provider 検証後に具体 JSON へ置換、2 は authored-first / generated-second で materialize し transform 個数・重複名・gid 一意性を**デコード前に**強制、3 でオブジェクト同一性を凍結、4 で宣言順に canonicalize。「構成規則の違反は runtime decode より前に落とす」ため 2 が 4 に先行する |
@@ -1227,7 +1227,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [adapter の境界](../../src/core/ecs/archetypemigration.hpp#L41) | composition boundary | light / collider が別 adapter な理由 | コメントが "This is only a composition boundary. Light, collider, behavior, and other special attachments remain separate adapters owned by their respective projection WPs." と明記している |
 | [`registerComponent()`](../../src/core/ecs/componentinfo.cpp#L25) | ComponentId == index | 添字と ID が同一である帰結 | → §9.5「Component ID は dense index でもある」 |
 | [`recordDependencyLocked()`](../../src/core/container.hpp#L83) | 依存循環の実行時検出 | なぜ事前宣言できないのか | → §9.1 の難所「遅延生成の 49 行」(`construction_stack` と `recursive_mutex` の対) |
-| [root の近道](../../src/core/ecs/predefined/localtransformsystem.cpp#L74) | `LocalTransformSystem` が root を毎フレーム local から作り直す | `TransformComponent` を直接書いたのに次のフレームで元に戻る | GP-1 から scene の transform object は全部 local を持つので、root も毎フレーム `world = compose(local)` で上書きされる(以前は親子の無い object には local が無く、world の直書きが残っていた)。world を動かすなら local を書く: 公開 API は `setLocalTransform`、エンジン内は [`SceneLoader::applyObjectTransform()`](../../src/core/loader/scene.cpp#L2110) のように world と一緒に local も書く(親があれば親の world で逆算)。test で world を直接書いていたものも同じ理由で次フレームに戻る |
+| [root の近道](../../src/core/ecs/predefined/localtransformsystem.cpp#L74) | `LocalTransformSystem` が root を毎フレーム local から作り直す | `TransformComponent` を直接書いたのに次のフレームで元に戻る | GP-1 から scene の transform object は全部 local を持つので、root も毎フレーム `world = compose(local)` で上書きされる(以前は親子の無い object には local が無く、world の直書きが残っていた)。world を動かすなら local を書く: 公開 API は `setLocalTransform`、エンジン内は [`SceneLoader::applyObjectTransform()`](../../src/core/loader/scene.cpp#L2109) のように world と一緒に local も書く(親があれば親の world で逆算)。test で world を直接書いていたものも同じ理由で次フレームに戻る |
 
 ### 9.23.4 renderer / frame
 
@@ -1356,31 +1356,31 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: `q` が何番なのか、SBT のレコード番号とどう繋がるのか。
 
-**答え**: `q` は**正準ソート済み scene row 列の 0 起点連番**そのものです。この検査は TLAS 行が「静的シーンの正準置換」であることを保証し、q を配列添字として SBT / マテリアル表へ読み替えられるようにします。[`rayTracingInstanceRecordOffset(q, ray_type_count)`](../../src/core/shader/raygrouplayout.cpp#L2279) = `q * ray_type_count` は、1 インスタンスあたり ray_type_count 本の hit record を連続確保する前提での先頭 record 番号です。
+**答え**: `q` は**正準ソート済み scene row 列の 0 起点連番**そのものです。この検査は TLAS 行が「静的シーンの正準置換」であることを保証し、q を配列添字として SBT / マテリアル表へ読み替えられるようにします。[`rayTracingInstanceRecordOffset(q, ray_type_count)`](../../src/core/shader/raygrouplayout.cpp#L2284) = `q * ray_type_count` は、1 インスタンスあたり ray_type_count 本の hit record を連続確保する前提での先頭 record 番号です。
 
-#### [`index >= (1u << 24u)` の上限](../../src/core/shader/raygrouplayout.cpp#L1743) — 24 ビットの出所
+#### [`index >= (1u << 24u)` の上限](../../src/core/shader/raygrouplayout.cpp#L1748) — 24 ビットの出所
 
 **分からなくなること**: なぜ 2^24 なのか(エンジン都合か Vulkan 都合か)。
 
-**答え**: **Vulkan の `VkAccelerationStructureInstanceKHR::instanceShaderBindingTableRecordOffset` が 24 ビットのビットフィールド**だからです。GPU に載る値は `q * ray_type_count` なのでその積を 2^24−1 で制限し、行数側でも先に弾きます(`pelican.ray_row_count_limit@1`)。**別のフィールドですが**同じ 24 ビット幅の上限が [v2 の custom_index override の 24 ビット検査](../../src/core/shader/raygrouplayout.cpp#L1595) にも掛かります(こちらは `instanceCustomIndex` 側の 24 ビットで、超過は `pelican.ray_instance_field_range@1`)。
+**答え**: **Vulkan の `VkAccelerationStructureInstanceKHR::instanceShaderBindingTableRecordOffset` が 24 ビットのビットフィールド**だからです。GPU に載る値は `q * ray_type_count` なのでその積を 2^24−1 で制限し、行数側でも先に弾きます(`pelican.ray_row_count_limit@1`)。**別のフィールドですが**同じ 24 ビット幅の上限が [v2 の custom_index override の 24 ビット検査](../../src/core/shader/raygrouplayout.cpp#L1600) にも掛かります(こちらは `instanceCustomIndex` 側の 24 ビットで、超過は `pelican.ray_instance_field_range@1`)。
 
-#### [`resolveRaySceneRows()`](../../src/core/shader/raygrouplayout.cpp#L1514) — 同じ geometry_match_identity に別 binding を許さない
+#### [`resolveRaySceneRows()`](../../src/core/shader/raygrouplayout.cpp#L1519) — 同じ geometry_match_identity に別 binding を許さない
 
 **分からなくなること**: 「曖昧」と判定される条件が何を意味するのか。
 
 **答え**: geometry_match_identity は「同じ GPU ジオメトリ範囲が同じ transform で置かれている」ことしか意味しません。**物理的に区別できない同一ヒットに異なる group_index / record_data が割り当てられると、どちらのマテリアル束縛が当たるか決められない**ので、`pelican.ray_row_binding_ambiguous@1` で拒否します。
 
-#### [profile モードの material_index](../../src/core/shader/raygrouplayout.cpp#L2185) — なぜ `material_index == q` になるか
+#### [profile モードの material_index](../../src/core/shader/raygrouplayout.cpp#L2190) — なぜ `material_index == q` になるか
 
 **分からなくなること**: 通常モードとの表の作り方の違い。
 
-**答え**: profile では alpha override が **scene row ごとに異なり得る**(base_factor_a / uv_offset_scale / uv_rotation を行単位で上書きし、`uses_vertex_color` も行のジオメトリ属性依存)ため、1 行 1 エントリの per-row 表になります。キーが `"row:<q>:<material_reference>"` なので material_index は必然的に q と一致します。通常モードは行固有の上書きが無いので canonical key で参照し、同一マテリアルを 1 エントリに共有化してテーブルを縮めます([表の構築](../../src/core/shader/raygrouplayout.cpp#L1770))。
+**答え**: profile では alpha override が **scene row ごとに異なり得る**(base_factor_a / uv_offset_scale / uv_rotation を行単位で上書きし、`uses_vertex_color` も行のジオメトリ属性依存)ため、1 行 1 エントリの per-row 表になります。キーが `"row:<q>:<material_reference>"` なので material_index は必然的に q と一致します。通常モードは行固有の上書きが無いので canonical key で参照し、同一マテリアルを 1 エントリに共有化してテーブルを縮めます([表の構築](../../src/core/shader/raygrouplayout.cpp#L1775))。
 
-#### [硬コードされた頂点オフセット](../../src/core/shader/raygrouplayout.cpp#L1186) — `10u` / `3u` / `12u` の出所
+#### [硬コードされた頂点オフセット](../../src/core/shader/raygrouplayout.cpp#L1187) — `10u` / `3u` / `12u` の出所
 
 **分からなくなること**: 生成される GLSL に埋まる裸の定数がどこから来たのか。
 
-**答え**: [`CommonVertStruct`](../../src/core/model/vertbufcontainer.hpp#L23)(`vec3 pos; vec3 normal; vec4 tangent; vec2 texcoord; vec4 color`、[サイズ 64・offset 0/12/24/40/48 を static_assert で固定](../../src/core/model/vertbufcontainer.hpp#L36))です。バイトオフセットを word 単位に割ると normal = 3、texcoord = 10、color0 = 12 になります。生成側は [`makeRayGroupLayoutVirtualInclude()`](../../src/core/shader/raygrouplayout.cpp#L1044)。
+**答え**: [`CommonVertStruct`](../../src/core/model/vertbufcontainer.hpp#L23)(`vec3 pos; vec3 normal; vec4 tangent; vec2 texcoord; vec4 color`、[サイズ 64・offset 0/12/24/40/48 を static_assert で固定](../../src/core/model/vertbufcontainer.hpp#L36))です。バイトオフセットを word 単位に割ると normal = 3、texcoord = 10、color0 = 12 になります。生成側は [`makeRayGroupLayoutVirtualInclude()`](../../src/core/shader/raygrouplayout.cpp#L1045)。
 
 #### [`BlasVariantKey`](../../src/core/renderer/accelerationstructure.cpp#L916) — 一意性と再利用判定
 
@@ -1429,15 +1429,15 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [`RaySceneRow`](../../src/core/shader/raygrouplayout.hpp#L316) | uint32 max 初期化 | 何を表す値か | 「未解決」の sentinel。詳細は**未執筆** |
 | [`MaterialRowDocumentIdentity`](../../src/core/shader/raygrouplayout.hpp#L282) | document / asset / unavailable | 3 状態の使い分け | → [第11章「`MaterialRowIdentity`: gate と lookup が同じ値を見る」](11_ray_query_acceleration_structures.md) |
 | [`resolveRaySceneRows()` の宣言](../../src/core/shader/raygrouplayout.hpp#L526) | 引数と optional bindings | 何が任意なのか | **未執筆**(根拠がコードにない) |
-| [layout digest から AS 宣言を外すコメント](../../src/core/shader/raygrouplayout.cpp#L858) | ダイジェストの分離 | なぜ AS だけ外すのか | コメントどおり **AS 宣言はシェーダ / SBT の ABI に影響しない**ので、AS だけを変えたときにシェーダ・SBT のダイジェストが動いて不要な再コンパイル / 再構築が起きないよう構造的に分離する(AS 側は独立ダイジェスト) |
-| [`source_by_handle` / `source_by_key`](../../src/core/shader/raygrouplayout.cpp#L1830) | 2 名前空間の同時照合 | 両方見る理由 | 前者は(handle, generation, canonical_key)という**ランタイムのマテリアルリース同一性**、後者は**内容由来の正準キー同一性**で、別々に崩れうる(同一世代が違うデータを持つ / 別世代が同じキーに衝突する)。→ §9.22「identity / canonical key / lease の三層」 |
-| [`texture_identity`](../../src/core/shader/raygrouplayout.cpp#L1893) | profile_active での切替 | 参照先が変わる理由 | profile の表は base color 全体ではなく**アルファ専用 IR** を載せるので、テクスチャ参照も MASK のときだけ `alpha_texture_identity` を使い、非 MASK は空にする |
-| [`validateRayProfileGeometryAttributes()`](../../src/core/shader/raygrouplayout.cpp#L2231) | UV0 / COLOR_0 の必須化 | なぜ profile だけ必須か | profile の any-hit はアルファをテクスチャサンプルと頂点カラーから計算するので、texture_index が有効なら TEXCOORD_0 が、`uses_vertex_color` なら COLOR_0 が BLAS ジオメトリ側に実在しなければならない(欠ければ `pelican.ray_geometry_attribute_missing@1`) |
+| [layout digest から AS 宣言を外すコメント](../../src/core/shader/raygrouplayout.cpp#L859) | ダイジェストの分離 | なぜ AS だけ外すのか | コメントどおり **AS 宣言はシェーダ / SBT の ABI に影響しない**ので、AS だけを変えたときにシェーダ・SBT のダイジェストが動いて不要な再コンパイル / 再構築が起きないよう構造的に分離する(AS 側は独立ダイジェスト) |
+| [`source_by_handle` / `source_by_key`](../../src/core/shader/raygrouplayout.cpp#L1835) | 2 名前空間の同時照合 | 両方見る理由 | 前者は(handle, generation, canonical_key)という**ランタイムのマテリアルリース同一性**、後者は**内容由来の正準キー同一性**で、別々に崩れうる(同一世代が違うデータを持つ / 別世代が同じキーに衝突する)。→ §9.22「identity / canonical key / lease の三層」 |
+| [`texture_identity`](../../src/core/shader/raygrouplayout.cpp#L1898) | profile_active での切替 | 参照先が変わる理由 | profile の表は base color 全体ではなく**アルファ専用 IR** を載せるので、テクスチャ参照も MASK のときだけ `alpha_texture_identity` を使い、非 MASK は空にする |
+| [`validateRayProfileGeometryAttributes()`](../../src/core/shader/raygrouplayout.cpp#L2236) | UV0 / COLOR_0 の必須化 | なぜ profile だけ必須か | profile の any-hit はアルファをテクスチャサンプルと頂点カラーから計算するので、texture_index が有効なら TEXCOORD_0 が、`uses_vertex_color` なら COLOR_0 が BLAS ジオメトリ側に実在しなければならない(欠ければ `pelican.ray_geometry_attribute_missing@1`) |
 | [`alpha_override_mask`](../../src/core/shader/raygrouplayout.cpp#L2060) | override を行に持つ | material 側でない理由 | override は**マテリアルの改変ではなく「そのインスタンス配置におけるアルファの上書き」**で、同じマテリアルを共有する他の行に波及させてはいけないため、行に持って per-row 表に焼き込む |
-| [`normalized_*` フィールド](../../src/core/shader/raygrouplayout.cpp#L2019) | 誰が計算したか | 出所 | §9.23.17 の `normalized_alpha_ir`(glTF の material lowering)。[検証側](../../src/core/shader/raygrouplayout.cpp#L1857)は WP368a の authored reference 由来であることを要求する |
-| [material selector の 2 形態(document_material / asset_material)](../../src/core/shader/raygrouplayout.cpp#L658) / [`selectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L469) | document 形式と asset 形式 | 比較方法が違う理由 | **未執筆**(§9.23.7 の canonical key と対) |
-| [engine フィールドの必須化](../../src/core/shader/raygrouplayout.cpp#L947) | profile 有効時 | material_index と geometry_index の両方が要る理由 | **未執筆**(根拠がコードにない) |
-| [`validName()`](../../src/core/shader/raygrouplayout.cpp#L131) | 名前の文字集合 | どこ由来の制約か | 外部ツール契約 R7(`docs/external_tools_requirements.md`)と同系統。→ §9.23.11 |
+| [`normalized_*` フィールド](../../src/core/shader/raygrouplayout.cpp#L2024) | 誰が計算したか | 出所 | §9.23.17 の `normalized_alpha_ir`(glTF の material lowering)。[検証側](../../src/core/shader/raygrouplayout.cpp#L1862)は WP368a の authored reference 由来であることを要求する |
+| [material selector の 2 形態(document_material / asset_material)](../../src/core/shader/raygrouplayout.cpp#L659) / [`selectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L470) | document 形式と asset 形式 | 比較方法が違う理由 | **未執筆**(§9.23.7 の canonical key と対) |
+| [engine フィールドの必須化](../../src/core/shader/raygrouplayout.cpp#L948) | profile 有効時 | material_index と geometry_index の両方が要る理由 | **未執筆**(根拠がコードにない) |
+| [`validName()`](../../src/core/shader/raygrouplayout.cpp#L132) | 名前の文字集合 | どこ由来の制約か | 外部ツール契約 R7(`docs/external_tools_requirements.md`)と同系統。→ §9.23.11 |
 | [`ePartiallyBound` を binding 1 だけに](../../src/core/shader/pipelinefactory.cpp#L205) | set 3(ray material)の binding flags | なぜ binding 1 だけか | binding 1 だけが `rayBindlessTextureCapacity` 個の bindless サンプラ配列で、使うスロットはシーン依存でまばら。全スロットに有効な descriptor を書く義務を外すため必要で、単一 descriptor の binding 0/2 には不要 |
 | [`ray_query_frame_set` 必須化](../../src/core/shader/pipelinefactory.cpp#L1217) | frame set の TLAS binding | 無いと作成拒否になる理由 | RT パイプラインは frame set の TLAS binding を必ず参照する契約なので、reflection に現れなければ `pelican.ray_tracing.frame_tlas_required@1`(descriptor が無ければシーンをトレースできない)。この検査を通した後、ray table 使用時は続けて[bindless device 要件](../../src/core/shader/pipelinefactory.cpp#L1227)も検証する |
 | [production branch observer](../../src/core/shader/pipelinefactory.cpp#L1710) | SBT 書き込み直前の通知 | 本番に観測点がある理由 | コメントどおり「removing the actual GPU write or routing different bytes makes its A/B test fail」。→ §9.22「fault injection seam」 |
@@ -1619,39 +1619,39 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 ### 9.23.10 editor command service
 
-#### [5 つの PrefabError を dependency_failure に分類](../../src/core/communication/editorcommandservice.cpp#L1183) — 分類の基準
+#### [5 つの PrefabError を dependency_failure に分類](../../src/core/communication/editorcommandservice.cpp#L982) — 分類の基準
 
 **分からなくなること**: 同じ `PrefabError` がどうして 2 つの外部エラーに分かれるのか。
 
-**答え**: コメントどおり**「欠けている入力が受け側プロジェクトに属するか」**です。PrefabNotFound / PrefabBindingNotBindable / PrefabBindingInactive / PrefabProviderStale / PrefabDependencyMismatch は受信側の registry・provider・closure が揃っていないことを示すので `PrefabDependencyMismatch`、それ以外の prefab 意味検証失敗は payload 側の違反なので `SnapshotInvalid` に留めます。detail が [`/prefab_closure`](../../src/core/communication/editorcommandservice.cpp#L1194) になるのも「欠けている入力が closure だから」です。
+**答え**: コメントどおり**「欠けている入力が受け側プロジェクトに属するか」**です。PrefabNotFound / PrefabBindingNotBindable / PrefabBindingInactive / PrefabProviderStale / PrefabDependencyMismatch は受信側の registry・provider・closure が揃っていないことを示すので `PrefabDependencyMismatch`、それ以外の prefab 意味検証失敗は payload 側の違反なので `SnapshotInvalid` に留めます。detail が [`/prefab_closure`](../../src/core/communication/editorcommandservice.cpp#L993) になるのも「欠けている入力が closure だから」です。
 
-#### [`trackPreviewTransition()`](../../src/core/communication/editorcommandservice.cpp#L1729) — PreviewWatch の erase 条件
+#### [`trackPreviewTransition()`](../../src/core/communication/editorcommandservice.cpp#L1528) — PreviewWatch の erase 条件
 
 **分からなくなること**: watch がいつ消えるのか(成功時なのか失敗時なのか)。
 
 **答え**: `trackPreviewTransition` は応答が `status=="accepted"` のときだけ pending に積み、`synchronizePreviewWatch` が `getPreviewResult` を polling して open → lease 生成、updated → state 更新、commit/abort → lease 破棄と遷移させます。**erase は「status が accepted 以外になった」時点で一律**(kind 不一致も含む)で、加えて `hasOpenPreviewLease()` が false なら lease をリセットします。journal 側の状態機械は[第7章「preview leaseの状態機械」](07_tools_rpc_tests.md)。
 
-#### [generated component の出力](../../src/core/communication/editorcommandservice.cpp#L767) — editable 判定
+#### [generated component の出力](../../src/core/communication/editorcommandservice.cpp#L692) — editable 判定
 
 **分からなくなること**: 同じ component なのに、返る JSON の形が違う理由。
 
-**答え**: generated component は prefab 解決の産物で**authoring 側に対応する編集可能ソースが無い**ため、`resolved_json` + `editable=false` + schema missing を返します。behavior が editable になる条件は[直後の分岐](../../src/core/communication/editorcommandservice.cpp#L775)で、非 generated かつ behavior 登録が存在し、pending でなく、`behavior_canonical_params` が取れていること(このとき codec は `behavior_params`、schema は registration の params_schema)。出力の組み立ては [`editorComponentQueryJson()`](../../src/core/communication/editorcommandservice.cpp#L1788)。
+**答え**: generated component は prefab 解決の産物で**authoring 側に対応する編集可能ソースが無い**ため、`resolved_json` + `editable=false` + schema missing を返します。behavior が editable になる条件は[直後の分岐](../../src/core/communication/editorcommandservice.cpp#L700)で、非 generated かつ behavior 登録が存在し、pending でなく、`behavior_canonical_params` が取れていること(このとき codec は `behavior_params`、schema は registration の params_schema)。出力の組み立ては [`editorComponentQueryJson()`](../../src/core/communication/editorcommandservice.cpp#L1587)。
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
-| [`parsePrefabClosure()`](../../src/core/communication/editorcommandservice.cpp#L252) | closure を strict sorted 順に強制 | 順序を縛る理由 | closure は fingerprint / digest と突き合わせる**正準表現**なので、順序の自由度を残すと同一内容が別バイト列になり closure 一致判定が非決定的になる |
-| [normative validation order](../../src/core/communication/editorcommandservice.cpp#L415) / [gate 3](../../src/core/communication/editorcommandservice.cpp#L505) / [SNAPSHOT0 のコメント](../../src/core/communication/editorcommandservice.cpp#L1126) | 5 ゲートの評価順 | 順序そのものが契約である理由 | **SNAPSHOT0 が定めた 5 ゲートの評価順(version → size → digest → parse/semantic → closure)がワイヤ契約**で、どの入力不正がどのコードで返るかの優先順位を版間で固定する。「digest の algorithm 検査は gate 3 であってリクエスト形状検査ではない」ため前倒しできない |
+| [`parsePrefabClosure()`](../../src/core/communication/editorcommandservice.cpp#L262) | closure を strict sorted 順に強制 | 順序を縛る理由 | closure は fingerprint / digest と突き合わせる**正準表現**なので、順序の自由度を残すと同一内容が別バイト列になり closure 一致判定が非決定的になる |
+| [normative validation order](../../src/core/communication/editorcommandservice.cpp#L415) / [gate 3](../../src/core/communication/editorcommandservice.cpp#L449) / [SNAPSHOT0 のコメント](../../src/core/communication/editorcommandservice.cpp#L1126) | 5 ゲートの評価順 | 順序そのものが契約である理由 | **SNAPSHOT0 が定めた 5 ゲートの評価順(version → size → digest → parse/semantic → closure)がワイヤ契約**で、どの入力不正がどのコードで返るかの優先順位を版間で固定する。「digest の algorithm 検査は gate 3 であってリクエスト形状検査ではない」ため前倒しできない |
 | [`parseGetComponentsRequest()`](../../src/core/communication/editorcommandservice.cpp#L168) | id と name の排他 | なぜちょうど一方か | 宣言 id と名前は**独立な参照系**で、両方指定は互いに矛盾しうる(片方が別オブジェクトを指す)、両方省略は対象未定。`has_value() == has_value()` で強制 |
-| [`SceneRevision{1}` のダミー](../../src/core/communication/editorcommandservice.cpp#L1132) | import 検証用の使い捨て文書 | なぜ固定値でよいか | ここで作る `validated` は**ゲート 4 専用で公開されない**ため。実際に公開される revision は `import_scene_snapshot(...)` が返す `imported.revision` |
-| [`ResolvedSceneResolver::resolve()` の 5 引数](../../src/core/communication/editorcommandservice.cpp#L1179) | defaults / registry / provider を別に渡す | 分ける理由 | **未執筆**(§9.23.2 の resolver 入力 fingerprint と対) |
-| [runtime state と authored state の融合](../../src/core/communication/editorcommandservice.cpp#L725) | 2 つの状態の突き合わせ | size mismatch が `logic_error` な理由 | **未執筆**(runtime と authored の component 数は一致するのが不変式、という以上の根拠がコードにない) |
-| [`closureMismatchDetail()`](../../src/core/communication/editorcommandservice.cpp#L358) | 最初のズレで停止 | なぜ全部見ないか | **未執筆**(エラー detail の決定性を狙ったものと読めるが、根拠となる記述がない) |
-| [`render-config-edit-` プレフィックスの判定](../../src/core/communication/editorcommandservice.cpp#L1656) | ticket ルーティング | render config編集の共通ticketを既存結果照会へ送る | featureと名前付きASの編集が共用 |
-| [revision token が `edit_` の preview_epoch を吸収する行](../../src/core/communication/editorcommandservice.cpp#L844) | `edit_` の未確定分 | なぜ吸収するのか | **未執筆**(根拠がコードにない) |
-| [error detail のパス手組み(`root + "/scenes/" + index`)](../../src/core/communication/editorcommandservice.cpp#L277) | index 入り JSON pointer 風 | 手で組む理由 | **未執筆**(根拠がコードにない) |
+| [`SceneRevision{1}` のダミー](../../src/core/communication/editorcommandservice.cpp#L976) | import 検証用の使い捨て文書 | なぜ固定値でよいか | ここで作る `validated` は**ゲート 4 専用で公開されない**ため。実際に公開される revision は `import_scene_snapshot(...)` が返す `imported.revision` |
+| [`ResolvedSceneResolver::resolve()` の 5 引数](../../src/core/communication/editorcommandservice.cpp#L978) | defaults / registry / provider を別に渡す | 分ける理由 | **未執筆**(§9.23.2 の resolver 入力 fingerprint と対) |
+| [runtime state と authored state の融合](../../src/core/communication/editorcommandservice.cpp#L650) | 2 つの状態の突き合わせ | size mismatch が `logic_error` な理由 | **未執筆**(runtime と authored の component 数は一致するのが不変式、という以上の根拠がコードにない) |
+| [`closureMismatchDetail()`](../../src/core/communication/editorcommandservice.cpp#L368) | 最初のズレで停止 | なぜ全部見ないか | **未執筆**(エラー detail の決定性を狙ったものと読めるが、根拠となる記述がない) |
+| [`render-config-edit-` プレフィックスの判定](../../src/core/communication/editorcommandservice.cpp#L1455) | ticket ルーティング | render config編集の共通ticketを既存結果照会へ送る | featureと名前付きASの編集が共用 |
+| [revision token が `edit_` の preview_epoch を吸収する行](../../src/core/communication/editorcommandservice.cpp#L769) | `edit_` の未確定分 | なぜ吸収するのか | **未執筆**(根拠がコードにない) |
+| [error detail のパス手組み(`root + "/scenes/" + index`)](../../src/core/communication/editorcommandservice.cpp#L287) | index 入り JSON pointer 風 | 手で組む理由 | **未執筆**(根拠がコードにない) |
 | [`findScene()` の直後](../../src/core/communication/editorcommandservice.cpp#L1023) | scene 存在検査 | `selectScene()` も呼ぶのか | **呼びません**。ここは `findScene(current_scene) == nullptr` で `SceneNotFound` を投げるだけの存在検査で、選択の副作用はありません |
-| [import reload 後の再 catch](../../src/core/communication/editorcommandservice.cpp#L1182) | `PrefabError` の再捕捉 | 二重に捕まえる理由 | **未執筆**(根拠がコードにない) |
-| [`ordered_json` の扱い](../../src/core/communication/editorcommandservice.cpp#L668) | キー順序の保存 | いつ順序が意味を持つか | JSON ライブラリの前提知識(→ [第10章](10_background_knowledge.md))。使い分けの実例は §9.23.11 の `resolution_error` 行 |
+| [import reload 後の再 catch](../../src/core/communication/editorcommandservice.cpp#L1073) | `PrefabError` の再捕捉 | 二重に捕まえる理由 | **未執筆**(根拠がコードにない) |
+| [`ordered_json` の扱い](../../src/core/communication/editorcommandservice.cpp#L593) | キー順序の保存 | いつ順序が意味を持つか | JSON ライブラリの前提知識(→ [第10章](10_background_knowledge.md))。使い分けの実例は §9.23.11 の `resolution_error` 行 |
 
 ### 9.23.11 RPC
 
@@ -1665,7 +1665,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: 「失敗したのに committed:true」が起きる理由。
 
-**答え**: 型は [`variant<SceneLoadCommitted, PreCommitFailure, CommittedWithEffectFailure>`](../../src/core/loader/sceneload.hpp#L189) です。`load()` 自体は 3 状態を**戻り値で**返し、RPC の入口が通す [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L500) が `PreCommitFailure` だけを**例外に変換して再送出**します(従来の throwing 契約)。この経路ではシーンは差し替わりません。`CommittedWithEffectFailure` は「公開自体は成功したが個別 effect が失敗した」状態で、`load_scene` は `committed:true` のまま `effect_errors` を添えて返します(→ §9.23.1 の destroy フェーズ)。
+**答え**: 型は [`variant<SceneLoadCommitted, PreCommitFailure, CommittedWithEffectFailure>`](../../src/core/loader/sceneload.hpp#L188) です。`load()` 自体は 3 状態を**戻り値で**返し、RPC の入口が通す [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L500) が `PreCommitFailure` だけを**例外に変換して再送出**します(従来の throwing 契約)。この経路ではシーンは差し替わりません。`CommittedWithEffectFailure` は「公開自体は成功したが個別 effect が失敗した」状態で、`load_scene` は `committed:true` のまま `effect_errors` を添えて返します(→ §9.23.1 の destroy フェーズ)。
 
 #### [`parseGizmoSelection()`](../../src/core/communication/rpcserver.cpp#L493) — 2 つの identity を受ける理由
 
@@ -1925,13 +1925,13 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **素朴に読むと**: `pelican.graph` root の `rendering` 節を編集するなら、JSON を parse して部分木を取り出し、書き換えて dump し直せばよい、と読めます。
 
-**実際は**: 編集は最後まで **byte 列のまま**行われます。[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288) は root のメンバを字句走査する [`locateObjectMembers()`](../../src/project/renderconfigdocument.cpp#L194) を 2 回使い、まず root で `rendering` の値スパンを見つけ、その位置から同じ走査を節の中へ入れ直します。要点は**入れ子にしても offset を相対化しないこと**で、ヘッダのコメントがそれを規範として書いています — 「同じ bytes の中に位置づけるので、offset は絶対のまま、文書 digest は file 全体を覆い続ける」([コメント](../../src/project/renderconfigdocument.cpp#L286))。この性質があるので、節を編集しても CAS の単位([`renderConfigSourceDigest()`](../../src/project/renderconfigdocument.cpp#L410))は文書全体のままで変わりません。書き手は [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L658) 1 本で、legacy root と graph root 自身のキーは [`withRootValue()`](../../src/project/renderconfigdocument.cpp#L637) へ落ちます。
+**実際は**: 編集は最後まで **byte 列のまま**行われます。[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288) は root のメンバを字句走査する [`locateObjectMembers()`](../../src/project/renderconfigdocument.cpp#L194) を 2 回使い、まず root で `rendering` の値スパンを見つけ、その位置から同じ走査を節の中へ入れ直します。要点は**入れ子にしても offset を相対化しないこと**で、ヘッダのコメントがそれを規範として書いています — 「同じ bytes の中に位置づけるので、offset は絶対のまま、文書 digest は file 全体を覆い続ける」([コメント](../../src/project/renderconfigdocument.cpp#L286))。この性質があるので、節を編集しても CAS の単位([`renderConfigSourceDigest()`](../../src/project/renderconfigdocument.cpp#L410))は文書全体のままで変わりません。書き手は [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L654) 1 本で、legacy root と graph root 自身のキーは [`withRootValue()`](../../src/project/renderconfigdocument.cpp#L633) へ落ちます。
 
-読み手と書き手の非対称も意図です。[`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L37) は節が無ければ `RenderConfigSectionUnlocated` を投げ、[`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L47) は空 object を返します。**読みは節が無くても失敗せず、編集だけが `render_config_section_unlocated` という名前で拒否されます**([拒否の実例](../../src/core/communication/renderconfigeditor.cpp#L1165))。
+読み手と書き手の非対称も意図です。[`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36) は節が無ければ `RenderConfigSectionUnlocated` を投げ、[`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49) は空 object を返します。**読みは節が無くても失敗せず、編集だけが `render_config_section_unlocated` という名前で拒否されます**([拒否の実例](../../src/core/communication/renderconfigeditor.cpp#L1165))。
 
 **不変条件**: 節の中の offset を「節の先頭からの相対」に変えないこと(digest が節だけを覆う別物になり、CAS の意味が変わります)。読みの経路に `renderingSectionOf()` を使わないこと — 節を持たない graph root を読んだだけで例外になります。authored key の住所判定を各 caller が `if (graph)` で持たないこと。
 
-**読む場所**: [`renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L13) → [`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288) → [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L658)。
+**読む場所**: [`renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L13) → [`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288) → [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L654)。
 
 > **N-6 の例外**: `edit_graph_document` の op 列が `set_layout` だけのとき、editor は候補文書を `apply_candidate` に通さず(`Ticket::source_only`)、文書を書くだけで commit を終えます。「すべての commit は候補経路を通る」の唯一の例外で、置き場所は engine の挙動に触れないためです([経路](../../src/core/communication/renderconfigeditor.cpp#L2268))。
 

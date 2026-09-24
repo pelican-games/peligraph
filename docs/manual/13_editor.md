@@ -327,7 +327,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 
 **解決に失敗したコンポーネントも消えません(✅WP378)。** authored / generated のどちらの直下にも
 `resolution_error` が付き、`get_components` は**成功応答のまま**それを返します
-([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1808))。形は 2 通りで、
+([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1654))。形は 2 通りで、
 typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化していない旧分岐は
 `{legacy_branch_id, message}` です(正は
 [`resolutionFailureJson()`](../../src/core/loader/resolutionresult.hpp#L114))。
@@ -652,12 +652,12 @@ Frame Planの **Order nodes...** で現在のgraphのノードをUp/Downで並�
 
 **`pelican.graph` root では挿入先が 1 段下です。**root が `schema: "pelican.graph"` のとき、
 著作キー(`features` / `rendering_passes` / `pipeline` …)の在処を決めるのは
-[`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L37) で、
+[`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36) で、
 **`rendering` オブジェクトの中**になります(読み書きの locator はこの 1 本ですが、byte-lossless の
-書き込み側は同じ規則を [`isGraphRootKey()`](../../src/project/renderconfigdocument.cpp#L418) として
+書き込み側は同じ規則を [`isGraphRootKey()`](../../src/project/renderconfigdocument.cpp#L426) として
 鍵の側から持っています。N-6 からは editor 用の `layout` も graph 側の root キーです。[第6章](06_rendering.md) §6.16)。したがって初期化は `rendering.features` に
 `[]` を書き、**root 直下に `features` を生やしません**
-([`initialize()`](../../src/project/renderconfigdocument.cpp#L590))。
+([`initialize()`](../../src/project/renderconfigdocument.cpp#L593))。
 `rendering` オブジェクトそのものが無い graph root は、書き込む場所が無いので
 **名前付きで断られます** —— 受付の応答は `render_config_section_unlocated`
 (**編集 op の経路だけ `{method}` が付きます** —— [renderconfigeditor.cpp:1325](../../src/core/communication/renderconfigeditor.cpp#L1620)。
@@ -1552,7 +1552,7 @@ scene のロードは 1 つのトランザクションになりました([第4�
   (`{path, reason}` / `{slot, reason}` / `{bus, reason}` / `{dropped}` など。正は
   [effecttransaction.cpp](../../src/core/loader/effecttransaction.cpp#L706))です。
 - `import_scene_snapshot` の応答にも同じ `committed` / `effect_errors` が付きます
-  ([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L2033))。
+  ([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1820))。
   **`{"status":"imported","scene_revision":N,"current_scene_id":"…"}` だけを期待する
   厳密一致のクライアントは壊れます。**
 - 代表的な `error_code`: `effect_outbox_full@1{dropped}`(1 回の scene load で 256 件を超えた分)/
