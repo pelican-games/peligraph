@@ -336,10 +336,12 @@ material loop. The Inspector's number fields are
 `pelican.inspectorVector.<component>.<field>.<column>` (a vector, e.g.
 `pelican.inspectorVector.transform.scale.2`) and
 `pelican.inspectorNumeric.<component>.<field>` (one number); before G-5 every
-vector's first column shared one name. The Inspector rebuilds its fields after
-each commit, so a scenario waits for the field to be enabled, types, presses
-Return, and waits for the field to hold the value (`forward_loop_from_scratch`
-does it in that order). The unsaved-scene question is
+vector's first column shared one name. Since Q-7 the Inspector swaps values into
+its fields instead of rebuilding them after each commit, and a value typed while
+it is busy is sent once it is idle; a scenario still waits for the field to be
+enabled, types, presses Return, and waits for the field to hold the value
+(`forward_loop_from_scratch` does it in that order), which is what a person
+sees. Components with a list are still rebuilt on every commit. The unsaved-scene question is
 `pelican.unsavedScenePrompt`, with `.save`, `.discard` and `.cancel`; it is also
 asked before a restart the Frame Plan requests (`restart_required`), and Cancel
 leaves the running engine alone.
