@@ -13,7 +13,7 @@
 - マテリアル(`.surface` + `pelican.material` + **OpenPBR**(業界標準の物理ベース材質モデル))、テンポラル(前フレームの絵を使う技法一式 — history / velocity / **projection jitter / 標準 TAA**)、2D スプライト
 - OpenXR ステレオレンダリング(論理フレーム = 左右眼をまとめた 1 単位 / feature policy / ミラー)
 - グラフ variant(flat / XR / preview)と、GPU デバッグラベル・GPU タイミング・VRAM の見方
-- レイトレーシングの宣言層 — `ray_group_layout` v1 / v2(レイトレのシェーダと資源の並びを宣言する形式の版)、`acceleration_structure` 規則、`pelican_ray_instance`
+- レイトレーシングの宣言層 — `ray_group_layout`(レイトレのシェーダと資源の並びを宣言する形式。読める版は 3 だけ)、`acceleration_structure` 規則、`pelican_ray_instance`
 - rendering config の 2 つの root(legacy root / `pelican.graph` root)と、**共通グラフのノード語彙**(module / op / 型 / sink、`definitions` と `graph.instance`、入力の 4 mode)
 
 ## 6.1 全体像
@@ -2561,7 +2561,7 @@ GUI では ImGui の `Pelican Engine Stats` → `Memory`(heap 別の Size / Usag
 - 📐 未実装: buffer / pipeline / texture / sampler の網羅命名と submit 境界の queue label(D-P0b)、ImGui からのキャプチャボタン、XR 中のキャプチャ、Tracy、validation 常設 CI、crash 診断(minidump / `VK_EXT_device_fault`)。
 - 🚧 CPU フェーズ計測は `update` / `render` / `present_wait` の 3 区間が上のログに出るだけです(`get_status.cpu_timing` はありません)。
 
-## 6.15 レイトレーシングの宣言層 — ray layout v1 / v2 と `pelican_ray_instance`(✅RT3-1 = WP374/374a/377/379/383)
+## 6.15 レイトレーシングの宣言層 — ray layout v3 と `pelican_ray_instance`(✅RT3-1 = WP374/374a/377/379/383)
 
 §6.6 の `ray_tracing` compute task は「どのシェーダで trace するか」でした。この節はその手前、**何を TLAS に入れ、どんな Vulkan の operand で入れるか**をプロジェクト側から宣言する層です。`rt_shadow_mask` 系 feature(§6.5)は宣言層を使わずに動くので、この節は「レイトレの見た目をプロジェクトから制御したい」場合だけ必要です。
 
@@ -2576,16 +2576,17 @@ GUI では ImGui の `Pelican Engine Stats` → `Memory`(heap 別の Size / Usag
 
 - `ray_bindings` だけを書くと `pelican.ray_tracing.bindings_without_layout@1`。
 - `ray_group_layout` があるプロジェクトは**ランタイムシェーダコンパイラ必須**で、`PELICAN_RUNTIME_SHADER_COMPILER=OFF` のビルドでは `pelican.ray_tracing.layout_requires_runtime_compiler@1` になります。
-- layout 文書は `pelican.ray_group_layout` の **version 1 か 2 だけ**を受理します([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L835))。
+- layout 文書は `pelican.ray_group_layout` の **version 3 だけ**を、bindings 文書は `pelican.ray_bindings` の **version 2 だけ**を受理します(✅MG-2a)。ほかの整数版(古い 1 / 2 を含む)は `pelican.ray_group_layout.version_unsupported@1` / `pelican.ray_bindings.version_unsupported@1` で拒否され、メッセージに文書の参照が付きます([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L842))。旧版を旧い意味で読む経路は無く、自動移行もしないので、手で書き直します。layout version 1 / 2 は各 `groups[]` に `"type": "triangles"` を足して `version` を 3 に、bindings version 1 は `version` を 2 にします。⚠ version 1 の layout では行の `instance_custom_index` が q(行の正規順の添字)でしたが、version 3 では `pelican_ray_instance` の `custom_index` で宣言しない限り 0 です(shader に出る値が変わります)。
+- group の型(`triangles` / `procedural`)は layout の `groups[].type` だけが持ちます。compute task 側の `hit_shaders` の group に `type` を書くと、値を問わず `pelican.ray_group_type_declared_in_task@1` です(MG-2a より前は `"triangles"` だけ受理していました)。
 
-layout の骨格(`acceleration_structure` 以外は v1 / v2 共通):
+layout の骨格:
 
 ```json
 {
-  "schema": "pelican.ray_group_layout", "version": 2,
+  "schema": "pelican.ray_group_layout", "version": 3,
   "ray_types": ["primary", "shadow"],
   "default_group": "opaque",
-  "groups": [{"name": "opaque"}],
+  "groups": [{"name": "opaque", "type": "triangles"}],
   "misses": [{"name": "sky"}, {"name": "shadow_open"}],
   "record": [],
   "acceleration_structure": {
@@ -2600,36 +2601,33 @@ layout の骨格(`acceleration_structure` 以外は v1 / v2 共通):
 
 `acceleration_structure` は SBT の入力ではないので、layout の digest はこのキーを**取り除いてから**計算されます(AS 宣言だけを変えてもシェーダ record ABI の digest は動きません)。AS 宣言側には別の digest が付きます。
 
-### semantic mode はプロセス一生ものの 3 値
+### semantic mode はプロセス一生ものの 2 値
 
 起動時、コンポーネント登録より前に rendering config を先読みして `RayLayoutRuntimeState` を確定します([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp#L38))。
 
 | layout | semantic mode | 効果 |
 |---|---|---|
 | 無し | `LegacyNoLayout` | 宣言層は無効。`acceleration_structure` も `pelican_ray_instance` も書けない |
-| version 1 | `LayoutV1Q` | 行の `instance_custom_index` は**常に q(行の正規順の添字)で上書き**され、authored な値を持てない。`acceleration_structure` は書けない |
-| version 2 | `LayoutV2` | `acceleration_structure` と `pelican_ray_instance` が使える |
+| 有り(version 3) | `LayoutV3` | `acceleration_structure` と `pelican_ray_instance` が使える |
 
-同一プロセス内で mode が変わる差し替え(グラフのリロード等)は `pelican.ray_layout_mode_change_requires_restart@1` で拒否されます。組み込みの `pelican_ray_instance` codec は **mode が v2 のときだけ codec 表に載ります**([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L2197))。codec 表は既定で 7 件、v2 プロジェクトだけ 8 件目としてこれが載る、という形です([第4章](04_scene_ecs.md) §4.2 に「条件付き」として別項があります)。
+MG-2a より前は version 1(`LayoutV1Q`: 行の `instance_custom_index` を常に q で上書き)と version 2(`LayoutV2`)を別の mode として持っていましたが、どちらも消えました。同一プロセス内で mode が変わる差し替え(グラフのリロード等)は `pelican.ray_layout_mode_change_requires_restart@1` で拒否されます。組み込みの `pelican_ray_instance` codec は **layout があるときだけ codec 表に載ります**([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L2197))。codec 表は既定で 8 件、layout があるプロジェクトだけ 9 件目としてこれが載る、という形です([第4章](04_scene_ecs.md) §4.2 に「条件付き」として別項があります)。
 
-### 10 状態表
+### 状態表
 
-layout(無し / v1 / v2)× `acceleration_structure` 宣言 × `pelican_ray_instance` の組み合わせは 10 通りです(layout が無ければ AS 宣言の置き場所自体が無いので、その列は 2 通り)。
+layout(無し / 有り)× `acceleration_structure` 宣言 × `pelican_ray_instance` の組み合わせは 6 通りです(layout が無ければ AS 宣言の置き場所自体が無いので、その列は 2 通り)。layout の version が 3 でなければ、この表に入る前に layout の読み込みが `pelican.ray_group_layout.version_unsupported@1` で止まります。
 
 | # | layout | AS 宣言 | `pelican_ray_instance` | 結果 |
 |---|---|---|---|---|
 | 1 | 無し | — | 無 | 成功(宣言層は無効) |
 | 2 | 無し | — | 有 | `pelican.ray_instance_requires_layout_v2@1` |
-| 3 | v1 | 無 | 無 | 成功(`instance_custom_index` は q) |
-| 4 | v1 | 無 | 有 | `pelican.ray_instance_requires_layout_v2@1` |
-| 5 | v1 | 有 | 無 | `pelican.ray_as_declaration_requires_layout_v2@1` |
-| 6 | v1 | 有 | 有 | `pelican.ray_as_declaration_requires_layout_v2@1`(layout パースが先に落ちる) |
-| 7 | v2 | 無 | 無 | 成功(canonical 既定) |
-| 8 | v2 | 無 | 有 | 成功 |
-| 9 | v2 | 有 | 無 | 成功 |
-| 10 | v2 | 有 | 有 | 成功 |
+| 3 | 有り | 無 | 無 | 成功(canonical 既定。`instance_custom_index` は q ではなく 0) |
+| 4 | 有り | 無 | 有 | 成功 |
+| 5 | 有り | 有 | 無 | 成功 |
+| 6 | 有り | 有 | 有 | 成功 |
 
-2 と 4 は scene load 時の検査です([scene.cpp](../../src/core/loader/scene.cpp#L63))。**ゲーム DLL が `pelican_ray_instance` という名前のコンポーネントを自分で登録している場合は素通しします** — 名前の所有者が外部なら、組み込みの規則を当てないためです。
+`pelican.ray_instance_requires_layout_v2@1` と、procedural geometry を layout 無しで書いたときの `pelican.ray_group_type_requires_layout_v3@1` は、公開したときの名前を据え置いています。名前に版が入っていますが、今の意味はどちらも「ray group layout が無い」です。
+
+2 は scene load 時の検査です([scene.cpp](../../src/core/loader/scene.cpp#L63))。**ゲーム DLL が `pelican_ray_instance` という名前のコンポーネントを自分で登録している場合は素通しします** — 名前の所有者が外部なら、組み込みの規則を当てないためです。
 
 ### `pelican_ray_instance` コンポーネント
 
@@ -2665,7 +2663,7 @@ scene JSON の `components` に書きます。
 - selector の形はこの 2 通りだけで、混在(`document` + `source_material_index` など)は `pelican.ray_as_rule_malformed@1`。canonical 鍵が同じ規則が 2 つあれば `pelican.ray_as_duplicate_rule@1`、1 行が 2 規則に当たれば `pelican.ray_as_rule_ambiguous@1` です。
 - `document` selector は `material_name` を書かなければ名前を問わず一致し、書けば一致を要求します。
 - `source_material_index` は optional のまま運ばれ、**欠損を 0 に潰しません**。内部の「無し」番兵が identity へ届くと `pelican.ray_material_index_out_of_range@1`。
-- 規則が 1 つでもある v2 プロジェクトで identity が `Unavailable` の行があると `pelican.ray_as_row_material_identity_unavailable@1` です。規則が空(または AS 宣言が無い)なら identity は要求されません。
+- 規則が 1 つでもある layout で identity が `Unavailable` の行があると `pelican.ray_as_row_material_identity_unavailable@1` です。規則が空(または AS 宣言が無い)なら identity は要求されません。
 - モデル側で identity がどこから決まるかは [第5章](05_assets.md) を参照してください。
 
 `geometry_flags` に書けるのは `opaque` と `no_duplicate_any_hit_invocation` の 2 つで、`instance_flags` とは語彙が別です。

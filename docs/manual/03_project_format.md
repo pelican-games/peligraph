@@ -42,6 +42,22 @@
 | `.pelican/shader_cache/` | シェーダのコンパイルキャッシュ(✅WP82 — [第6章](06_rendering.md)) |
 | `.pelican/assets-hash-cache.json` | assets manifest の差分ハッシュキャッシュ(§3.4) |
 | `.pelican/logs/import-tools.log` | `pelican_cli import --rules` が起動した外部ツールのログ(§5.5) |
+| `.pelican/render-authoring.transaction/` | rendering config の編集(Studio / RPC)が root 文書と feature 断片をまとめて書き換える間だけ在る作業ディレクトリ(`manifest.json`・差し替え前の控え・commit 済みの印 `committed`)。正常に終われば消えます。プロセスが途中で落ちて残っていれば、次の起動で commit 済みなら文書を確かめてから消し、commit 前なら文書を元に戻してから消します |
+
+**旧形式の transaction ディレクトリ(`render_config.legacy_transaction_dir@1`)** ✅MG-2a
+
+v0 より前のエンジンは、commit の決定を別ファイル `committed` ではなく `manifest.json` の `"status": "committed"` に書いていました。この形で残ったディレクトリは**もう読みません**。起動時の復旧と rendering config 編集の commit のどちらも `render_config.legacy_transaction_dir@1` で止まり、ディレクトリには手を付けません([判定](../../src/core/communication/renderconfigtransaction.cpp#L488))。
+
+- 起動時: ログに `Pelican fatal error : render_config.legacy_transaction_dir@1: {"message":"…","path":"…"}` が出て、起動はそこで終わります。
+- 編集の commit 時: ticket の結果は `committed: false` で、`error.code` がこの名前、`error.path` がディレクトリのパスです。文書は書き換わりません。
+
+片付けの手順(メッセージの文面は「文書は commit 済みなので、この dir を手で消してから開き直す」):
+
+1. engine / Studio を閉じます。
+2. `path` に出たディレクトリ(`<project>/.pelican/render-authoring.transaction/`)を**丸ごと**消します。消すのはこのディレクトリだけで、`.pelican/` のほかの住人や project の文書には触りません。
+3. project を開き直します。
+
+**なぜ消して安全か**: 旧形式が `status` を `"committed"` に書き換えたのは、すべての文書を新しい内容で書き終えた後(commit の決定点)です。つまり文書はすでに commit 後の内容で、ディレクトリに残っているのは片付け前の控えだけです。旧形式のエンジンもこの状態では、各文書が新しい内容のままかを確かめてからディレクトリを消すだけで、文書を戻すことはしませんでした。手で消して省かれるのはこの確認だけです(commit の後で文書を手で変えていても、止まらずにその内容のまま開きます)。
 
 ## 3.2 project.json のスキーマ
 

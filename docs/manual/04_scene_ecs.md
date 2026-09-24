@@ -305,7 +305,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 ### pelican_ray_instance(条件付き)— ray tracing のインスタンス属性
 
-**プロジェクトの ray tracing 設定が ray layout の LayoutV2 セマンティクスで構成されているときだけ**登録される ECS コンポーネントです([predefined.cpp](../../src/core/ecs/predefined.cpp#L39) が `builtinRayInstanceEnabled()` を見ています。ray layout 自体は [第6章](06_rendering.md))。構成されていなければ登録も codec も無いので、書くと `component_unknown@1` です。
+**プロジェクトの ray tracing 設定が ray layout(`ray_group_layout`、読める版は 3 だけ)を持つときだけ**登録される ECS コンポーネントです([predefined.cpp](../../src/core/ecs/predefined.cpp#L39) が `builtinRayInstanceEnabled()` を見ています。ray layout 自体は [第6章](06_rendering.md))。構成されていなければ登録も codec も無いので、書くと `component_unknown@1` です。
 
 ```json
 { "name": "pelican_ray_instance", "mask": 255,

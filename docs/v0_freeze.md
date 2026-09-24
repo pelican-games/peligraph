@@ -44,8 +44,8 @@ project が持てる文書と、parser が受ける version。`schema` と `vers
 | `pelican.input_profile` | 1 | `src/core/os/actionmap.cpp` | |
 | `pelican.transform_seq` | 1 | `src/core/playback/seqplayer.cpp` | camera bake の出力 |
 | `pelican.settings` | 1 | `src/core/persistence/persistence.cpp` | `user://` 側 |
-| `pelican.ray_group_layout` | 1〜3 | `src/core/shader/raygrouplayout.cpp` | 出荷 raytracing_demo は 3 |
-| `pelican.ray_bindings` | 1〜2 | `src/core/shader/raygrouplayout.cpp` | 出荷 raytracing_demo は 2 |
+| `pelican.ray_group_layout` | 3 | `src/core/shader/raygrouplayout.cpp` | 出荷 raytracing_demo は 3。MG-2a で 1〜2 の読み手を撤去し、3 以外は `pelican.ray_group_layout.version_unsupported@1` |
+| `pelican.ray_bindings` | 2 | `src/core/shader/raygrouplayout.cpp` | 出荷 raytracing_demo は 2。MG-2a で 1 の読み手を撤去し、2 以外は `pelican.ray_bindings.version_unsupported@1` |
 | `pelican.graph_catalog` | 1 | `src/project/graphmodule.cpp` | `pelican_cli graph-catalog` の出力(§1.3) |
 | `pelican.project_catalog_smoke` | 1 | `test/run_project_catalog_smoke.cmake` | project ごとの smoke 閾値 |
 
@@ -220,7 +220,7 @@ v1 計画 R 群「表の各行を『撤去 / 維持(理由)』で閉じる」の
 | 3 `AnimationComponent::graph` + `pelican.anim_graph` 2 本 | **維持** | AG-1b で「一本化」を v0 から撤回、parity が v0 の約束。**2 つの装着様式は v0 の契約(owner 単位で排他)**(§1.6) |
 | 4 `AnimationComponent::parameters` | **維持** | 3 と同じ |
 | 5 `setGraphParameter` / `forceGraphState` | **維持** | 3 と同じ |
-| 6 `status == "committed"` の読み取り互換 | **維持(v0)** | 読み手は `renderconfigtransaction.cpp` の 2 箇所。消すと legacy dir のある project が**二度と commit できない wedge**になり、「prepared 扱いで rollback」は committed 済み編集を消す破壊操作。v1 で両読み手を同時に消す |
+| 6 `status == "committed"` の読み取り互換 | **撤去(MG-2a、`8af3227d`)**。R-1 の「維持(v0)」を置き換えた | R-1 の理由(黙った wedge と、rollback による破壊)は残るので、黙って読むのをやめ、両読み手を同時に**名前付きの停止**に替えた: 旧形式の dir は `render_config.legacy_transaction_dir@1`(path 付き)で止まり、dir は消さずに残る。手での片付けは [manual 3 章 §3.1](manual/03_project_format.md)。v0 より古い形式は作り直す、という 2026-09-24 の裁定([設計 §2](design_v0_production_gaps.md)) |
 | 7 `withRootValue("nodes")` ×2 | **維持** | graph root key の書き手。N-2 が `definitions` を足す |
 | 8 `compute_tasks` の root 分岐 | **維持** | 1 規則(locator)。graph root では lowering が forbid = 到達不能 |
 | 9 `bloom_composite.frag` の `.spv` 非対称 / `shader_lab_*` family | **維持(記録)** | source-only は P-2a-2 の裁定。`shader_lab_*` は 8 本 family で、`engine_resources.json` は web ミラー test の正本なので触らない |

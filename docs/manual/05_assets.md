@@ -125,7 +125,7 @@
 
 ### モデル材質の identity — レイトレの AS 規則が見る値(✅WP383)
 
-レイトレーシングを使うプロジェクトでは、ray layout v2 の `acceleration_structure.rules[]` が **material identity** で描画行を選びます([第6章](06_rendering.md) §6.15)。その identity がモデル側のどこから決まるかだけ、ここに書きます。
+レイトレーシングを使うプロジェクトでは、ray layout の `acceleration_structure.rules[]` が **material identity** で描画行を選びます([第6章](06_rendering.md) §6.15)。その identity がモデル側のどこから決まるかだけ、ここに書きます。
 
 identity は下の 3 種のうち**ちょうど 1 つ**の形を取ります(「直和」= どれか 1 つで、2 つを同時に持つことも、どれでもないこともない)。gate(規則を要求するか)と lookup(どの規則に当たるか)は**同じ値**を見ます([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L60)):
 
