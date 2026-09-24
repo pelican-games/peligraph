@@ -2738,7 +2738,7 @@ rendering config のファイルは **2 つの root 形**のどちらかです�
 
 ### module — 語彙の単位
 
-op は **module** が登録します。登録済み module はエンジンに 4 本で、どれも module version 1 です([graphmodule.cpp:286](../../src/project/graphmodule.cpp#L286))。
+op は **module** が登録します。登録済み module はエンジンに最大 5 本で、どれも module version 1 です([graphmodule.cpp:286](../../src/project/graphmodule.cpp#L286))。
 
 | module | 内容 | op |
 |---|---|---|
@@ -2746,8 +2746,9 @@ op は **module** が登録します。登録済み module はエンジンに 4 
 | `pelican.audio` | 音声ボイスと、それを駆動する値 sink | 3 |
 | `pelican.render` | GPU バッファ・属性・画像・パスと、スカラー公開 sink | 7 |
 | `pelican.pose` | 骨格姿勢(クリップ標本化・ブレンド・ステートマシン)と単一 writer の sink | 6 |
+| `pelican.ui` | UI の node の値と表示を書く sink(`ui.value` / `ui.visible`。parameter `node` = UI node の path) | 2 |
 
-合計 **27 op**。`PELICAN_WITH_ANIMATION=OFF` の build では **`pelican.pose` module がそもそも登録されない**ので、3 module / 21 op になります([graphmodule.cpp:340](../../src/project/graphmodule.cpp#L363))。module の登録の仕方はエンジンが持ってくる場合も同じで、**「エンジンの特権」ではなく「登録契約」**です(feature が機構語彙に対してそうであるように。§6.5)。
+合計 **29 op**(5 module)。`PELICAN_WITH_ANIMATION=OFF` の build では **`pelican.pose` module がそもそも登録されない**ので 4 module / 23 op、`PELICAN_WITH_AUDIO=OFF` では `pelican.audio` が無く 4 module / 26 op、両方 OFF で 3 module / 20 op になります(正本は [docs/v0_freeze.md](../v0_freeze.md) §1.3)([graphmodule.cpp:340](../../src/project/graphmodule.cpp#L363))。module の登録の仕方はエンジンが持ってくる場合も同じで、**「エンジンの特権」ではなく「登録契約」**です(feature が機構語彙に対してそうであるように。§6.5)。
 
 - 登録が無い `op` を書いた文書は **`graph.operation_unregistered@1` `{node, op}`**。OFF build で `pose.*` を書いたときもこれです。
 - op は登録されているのに、それを実行する backend がいない場合は **`graph.operation_unexecutable@1` `{backend, op, node}`**。
@@ -2829,7 +2830,7 @@ instance の入力ポート 1 本ごとに、値がどこから来ているか�
 
 ### sink — グラフの末端
 
-**sink** は出力ポートを持たず、受け取った値をエンジン側の何かへ渡して終わるノードです。v0 の sink は 5 本です。
+**sink** は出力ポートを持たず、受け取った値をエンジン側の何かへ渡して終わるノードです。v0 の sink は 7 本です(OFF にした module の sink はその分減ります)。
 
 | sink | 渡す先 |
 |---|---|
@@ -2837,6 +2838,7 @@ instance の入力ポート 1 本ごとに、値がどこから来ているか�
 | `audio.volume` / `audio.pitch` | 音声ボイス |
 | `pose.skeletal` | owner 個体の姿勢。**owner 1 個につき 1 本**で、2 本目は `pose.sink_conflict@1` |
 | `pose.transform` | (上記のとおり v0 では装着時に拒否) |
+| `ui.value` / `ui.visible` | UI の node の値 / 表示。owner に属さないので、**単一 writer の単位は `(文書, path, 性質)`**(二重 writer は準備時に `ui.sink_conflict@1`) |
 
 姿勢の sink が **owner 単位の単一 writer** であることが、`animation` コンポーネントとの排他の土台です([第8章](08_gameplay.md) §8.13、[第4章](04_scene_ecs.md) §4.2)。
 
@@ -2863,7 +2865,7 @@ RPC なら `get_graph_catalog`([第10章](10_tools.md))。どちらも同じ `pe
 
 読む順序は **`modules[].operations[]` → `op` → `domain` / `evaluation` / `change` → `inputs` / `outputs`** です。`sink: true` の op は `outputs` が空で、module の `sinks` 配列にも名前が出ます。`ports: "parameter_dependent"` の op は `inputs` / `outputs` のキー自体が無く、ノードの書きぶりで決まります。
 
-ON の build では 4 module / 27 op、OFF では 3 module / 21 op(差は `pose.*` の 6 本ちょうど)。この対応は `test/run_devcli_graph_catalog.cmake` が [docs/v0_freeze.md](../v0_freeze.md) §1.3 の表と機械照合しています —— **表と実装がずれたらテストが赤になります**。
+ANIMATION と AUDIO が ON の build では 5 module / 29 op。ANIMATION=OFF で 4 / 23(`pose.*` の 6 本が消える)、AUDIO=OFF で 4 / 26(`audio.*` の 3 本)、両方 OFF で 3 / 20。この対応は `test/run_devcli_graph_catalog.cmake` が [docs/v0_freeze.md](../v0_freeze.md) §1.3 の表と機械照合しています —— **表と実装がずれたらテストが赤になります**。
 
 > **`pelican.value_graph` はプロジェクトに書く形ではありません。** コードとテストにこの schema 名が出てきますが、これは合成後の内部表現(とテストの入口)です。プロジェクトが書くのは `pelican.graph` root の `nodes` / `definitions` だけです。
 
