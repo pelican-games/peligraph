@@ -3329,7 +3329,7 @@
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/communication/renderconfigeditor.cpp|`getGraphNodeValues()`": "OrderedJson RenderConfigEditorService::getGraphNodeValues(const Json &params) const {",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/communication/renderconfigeditor.cpp|`getGraphValues()`": "OrderedJson RenderConfigEditorService::getGraphValues(const Json &params) const {",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/communication/renderconfigeditor.cpp|`importRenderFeature()`": "OrderedJson RenderConfigEditorService::importRenderFeature(const Json &params) {",
-    "docs/source-code-guide/08_class_interface_index.md|../../src/core/communication/renderconfigeditor.cpp|`installPackage()`": "Pelican::installPackage(source, dependencies_.project_root);",
+    "docs/source-code-guide/08_class_interface_index.md|../../src/core/communication/renderconfigeditor.cpp|`installPackage()`": "OrderedJson RenderConfigEditorService::installPackage(const Json &params) {",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/communication/renderconfigeditor.cpp|`materializeRenderFeature()`": "OrderedJson RenderConfigEditorService::materializeRenderFeature(const std::string &base_digest, const Json &operation) {",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/communication/renderconfigeditor.cpp|`uninstallPackage()`": "OrderedJson RenderConfigEditorService::uninstallPackage(const Json &params) {",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/communication/renderconfigeditor.hpp|`renderconfigeditor.hpp`": "class RenderConfigEditorService {",
