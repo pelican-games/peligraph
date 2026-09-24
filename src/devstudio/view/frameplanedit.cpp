@@ -230,8 +230,37 @@ FramePlanAuthoring framePlanAuthoringFromContext(const Json &context) {
                 anchor.at("position").get<int>(), insert);
         }
     }
+    authoring.preset_name = textOr(preset, "name");
+    if (const auto targets = context.find("render_targets");
+        targets != context.end() && targets->is_array()) {
+        for (const auto &target : *targets) {
+            FramePlanRenderTarget row;
+            row.name = textOr(target, "name");
+            if (row.name.empty()) continue;
+            row.declaration = objectOr(target, "declaration");
+            row.authored = objectOr(target, "authored_declaration");
+            row.editable = target.value("editable", false);
+            row.source = textOr(target, "source");
+            authoring.render_targets.insert_or_assign(row.name, std::move(row));
+        }
+    }
+    const auto vocabulary = objectOr(context, "render_target_vocabulary");
+    for (const auto &[field, into] :
+         {std::pair{"formats", &authoring.render_target_formats},
+          std::pair{"usage", &authoring.render_target_usages}}) {
+        const auto values = vocabulary.find(field);
+        if (values == vocabulary.end() || !values->is_array()) continue;
+        for (const auto &value : *values)
+            if (value.is_string()) into->push_back(value.get<std::string>());
+    }
     authoring.received = true;
     return authoring;
+}
+
+const FramePlanRenderTarget *FramePlanAuthoring::findRenderTarget(
+    const std::string &name) const {
+    const auto found = render_targets.find(name);
+    return found == render_targets.end() ? nullptr : &found->second;
 }
 
 const FramePlanTaskAuthoring::Task *FramePlanTaskAuthoring::find(
@@ -487,6 +516,229 @@ std::vector<FramePlanInlineField> framePlanInlineFields(
                           found->get<std::string>()});
     }
     return fields;
+}
+
+// --- F-1: render targets.
+
+namespace {
+
+// The format a kind puts in `format`. Scene and display targets have theirs
+// chosen by the engine at compile time; the parser still needs a valid name.
+std::string formatForKind(const RenderTargetFormValues &values) {
+    if (values.kind == "display") return "B8G8R8A8_SRGB";
+    if (values.format.empty()) return "R16G16B16A16_SFLOAT";
+    return values.format;
+}
+
+std::string formatClassForKind(const RenderTargetFormValues &values) {
+    if (values.kind == "scene" || values.kind == "display" ||
+        values.kind == "data")
+        return values.kind;
+    return "explicit(" + formatForKind(values) + ")";
+}
+
+const FramePlanRenderTarget *editableTarget(const FramePlanAuthoring &authoring,
+                                            const std::string &name,
+                                            std::string &refusal) {
+    if (!authoring.received) {
+        refusal = "The render authoring context has not arrived yet.";
+        return nullptr;
+    }
+    const auto *row = authoring.findRenderTarget(name);
+    if (row == nullptr) {
+        refusal = name + " is not a render target in the current authoring "
+                         "context.";
+        return nullptr;
+    }
+    if (!row->editable) {
+        refusal = name + " cannot be changed here: it is " +
+                  framePlanRenderTargetOrigin(row->source, name,
+                                              authoring.preset_name) +
+                  ".";
+        return nullptr;
+    }
+    return row;
+}
+
+std::string formRefusal(const RenderTargetFormValues &values) {
+    if (values.name.empty()) return "A render target needs a name.";
+    if (values.usage.empty())
+        return values.name + ": choose at least one usage.";
+    if (values.fixed_size && (values.width == 0 || values.height == 0))
+        return values.name + ": a fixed size needs a width and a height.";
+    if (!values.fixed_size && !(values.extent_scale > 0.0))
+        return values.name + ": the screen ratio must be greater than zero.";
+    return {};
+}
+
+FramePlanEditRequest renderTargetRequest(const FramePlanAuthoring &authoring,
+                                         Json op) {
+    FramePlanEditRequest request;
+    request.method = "edit_render_targets";
+    request.params = Json{{"base_source_digest", authoring.source_digest},
+                          {"ops", Json::array({std::move(op)})}};
+    return request;
+}
+
+} // namespace
+
+RenderTargetFormValues renderTargetFormValues(const Json &declaration) {
+    RenderTargetFormValues values;
+    if (!declaration.is_object()) return values;
+    values.name = textOr(declaration, "name");
+    values.format = textOr(declaration, "format");
+    const auto format_class = textOr(declaration, "format_class");
+    if (format_class == "scene" || format_class == "display" ||
+        format_class == "data") {
+        values.kind = format_class;
+    } else {
+        values.kind = "explicit";
+        if (format_class.starts_with("explicit(") && format_class.ends_with(")"))
+            values.format = format_class.substr(9, format_class.size() - 10);
+    }
+    const auto width = declaration.find("width");
+    const auto height = declaration.find("height");
+    values.fixed_size = width != declaration.end() && height != declaration.end() &&
+                        width->is_number_unsigned() && height->is_number_unsigned();
+    if (values.fixed_size) {
+        values.width = width->get<std::uint32_t>();
+        values.height = height->get<std::uint32_t>();
+    }
+    if (const auto scale = declaration.find("extent_scale");
+        scale != declaration.end() && scale->is_number())
+        values.extent_scale = scale->get<double>();
+    values.usage.clear();
+    if (const auto usage = declaration.find("usage");
+        usage != declaration.end() && usage->is_array()) {
+        for (const auto &entry : *usage)
+            if (entry.is_string()) values.usage.push_back(entry.get<std::string>());
+    }
+    values.history = declaration.value("history", false);
+    if (const auto color = declaration.find("clear_color");
+        color != declaration.end() && color->is_array() && color->size() == 4 &&
+        std::ranges::all_of(*color, [](const Json &c) { return c.is_number(); })) {
+        std::array<double, 4> rgba{};
+        for (std::size_t index = 0; index < rgba.size(); ++index)
+            rgba[index] = color->at(index).get<double>();
+        values.clear_color = rgba;
+    }
+    return values;
+}
+
+Json renderTargetDeclaration(const RenderTargetFormValues &values,
+                             const Json &base) {
+    Json declaration = base.is_object() ? base : Json::object();
+    declaration["name"] = values.name;
+    declaration["format"] = formatForKind(values);
+    declaration["format_class"] = formatClassForKind(values);
+    if (values.fixed_size) {
+        declaration["extent_scale"] = 1.0;
+        declaration["width"] = values.width;
+        declaration["height"] = values.height;
+    } else {
+        declaration["extent_scale"] = values.extent_scale;
+        declaration.erase("width");
+        declaration.erase("height");
+    }
+    declaration["usage"] = values.usage;
+    if (values.history) declaration["history"] = true;
+    else declaration.erase("history");
+    if (values.clear_color)
+        declaration["clear_color"] = Json::array(
+            {(*values.clear_color)[0], (*values.clear_color)[1],
+             (*values.clear_color)[2], (*values.clear_color)[3]});
+    else declaration.erase("clear_color");
+    return declaration;
+}
+
+FramePlanEditRequest framePlanRenderTargetAddRequest(
+    const FramePlanAuthoring &authoring, const RenderTargetFormValues &values) {
+    if (!authoring.received)
+        return refuse("The render authoring context has not arrived yet.");
+    if (const auto reason = formRefusal(values); !reason.empty())
+        return refuse(reason);
+    return renderTargetRequest(
+        authoring,
+        Json{{"op", "add"}, {"target", renderTargetDeclaration(values)}});
+}
+
+FramePlanEditRequest framePlanRenderTargetReplaceRequest(
+    const FramePlanAuthoring &authoring, const std::string &name,
+    const RenderTargetFormValues &values) {
+    std::string refusal;
+    const auto *row = editableTarget(authoring, name, refusal);
+    if (row == nullptr) return refuse(refusal);
+    if (const auto reason = formRefusal(values); !reason.empty())
+        return refuse(reason);
+    const auto declaration = renderTargetDeclaration(values, row->authored);
+    if (declaration == row->authored)
+        return refuse(name + " already has exactly these settings.");
+    return renderTargetRequest(authoring, Json{{"op", "replace"},
+                                               {"name", name},
+                                               {"target", declaration}});
+}
+
+FramePlanEditRequest framePlanRenderTargetRemoveRequest(
+    const FramePlanAuthoring &authoring, const std::string &name) {
+    std::string refusal;
+    if (editableTarget(authoring, name, refusal) == nullptr)
+        return refuse(refusal);
+    return renderTargetRequest(authoring,
+                               Json{{"op", "remove"}, {"name", name}});
+}
+
+std::string framePlanRenderTargetOrigin(const std::string &source,
+                                        const std::string &name,
+                                        const std::string &preset_name) {
+    if (source == "engine")
+        return name == "display" ? "the screen output the engine provides"
+                                 : "a target the engine adds";
+    if (source == "authoring")
+        return "declared by this project's editor in "
+               "passes/authoring/render-targets.json";
+    if (source == "root") return "declared in the project's rendering document";
+    if (source == "preset")
+        return preset_name.empty() ? "a target of the rendering preset"
+                                   : "a target of preset " + preset_name;
+    if (source.starts_with("feature:"))
+        return "a target of feature " + source.substr(8);
+    return "made while the pipeline was composed, with no document the editor "
+           "can name";
+}
+
+std::string framePlanRenderTargetRejection(const Json &error,
+                                           const std::string &preset_name) {
+    const auto code = textOr(error, "code");
+    const auto name = textOr(error, "name");
+    const auto message = textOr(error, "message");
+    if (code == "render_target_referenced") {
+        std::vector<std::string> users;
+        if (const auto found = error.find("users");
+            found != error.end() && found->is_array())
+            for (const auto &user : *found)
+                if (user.is_string()) users.push_back(user.get<std::string>());
+        return name + " is still used by " + join(users) +
+               ": disconnect it there before deleting or renaming it.";
+    }
+    if (code == "render_target_not_editable")
+        return name + " cannot be changed here: it is " +
+               framePlanRenderTargetOrigin(textOr(error, "source"), name,
+                                           preset_name) +
+               ".";
+    if (code == "render_target_exists")
+        return "A render target named " + name + " already exists (" +
+               framePlanRenderTargetOrigin(textOr(error, "source"), name,
+                                           preset_name) +
+               ").";
+    if (code == "render_target_reserved")
+        return name + " is the engine's own name for the screen output: "
+                      "choose another name.";
+    if (code == "render_target_not_found")
+        return "No render target named " + name + " is declared.";
+    if (code == "render_pipeline_preflight_failed")
+        return "The engine refused the render target: " + message;
+    if (code.empty()) return message;
+    return code + ": " + message;
 }
 
 } // namespace PelicanStudio

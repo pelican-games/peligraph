@@ -119,6 +119,9 @@ inline constexpr auto FramePlanRowLabelItem = "node_row_label";
 // heading. A node that cannot be edited draws none: a band that refused on
 // Enter would be an invitation that is not one.
 inline constexpr auto FramePlanInlineFieldItem = "node_inline_field";
+// F-1: the selected target drawn as a node of its own, beside the passes that
+// touch it. Double-click opens its declaration; Delete asks to remove it.
+inline constexpr auto FramePlanResourceNodeItem = "resource_node";
 
 // A node's height follows its resource count rather than a constant, so the
 // numbers the scene draws with are published for the scene test to name.
@@ -232,6 +235,15 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
         inlineFieldProvider;
     // A node was moved, or the placement was dropped. The owner writes it.
     std::function<void()> placementChanged;
+    // F-1: double-click on the resource node, and Delete while it is picked.
+    std::function<void(const FramePlanNodeKey &)> resourceEditRequested;
+    std::function<void(const FramePlanNodeKey &)> resourceRemoveRequested;
+    // "New render target..." -- offered on a right-click over open canvas.
+    void setRenderTargetAction(QAction *action);
+    [[nodiscard]] const std::optional<FramePlanNodeKey> &pickedResource()
+        const noexcept {
+        return picked_resource_;
+    }
     // The two insert entries, named so the automation surface can fire them
     // without driving a popup -- the same arrangement N-4 made for placement.
     void setInsertActions(QAction *add_pass, QAction *add_task);
@@ -364,6 +376,10 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     };
     QAction *add_pass_action_ = nullptr;
     QAction *add_task_action_ = nullptr;
+    QAction *render_target_action_ = nullptr;
+    // F-1: the resource node the user clicked. Delete acts on it.
+    std::optional<FramePlanNodeKey> picked_resource_;
+    void applyResourcePick();
     std::optional<FramePlanNodeKey> context_node_;
     void clearConnectionGesture();
     void applyEdgeSelection();

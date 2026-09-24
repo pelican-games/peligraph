@@ -8,6 +8,7 @@
 #include "../viewport/embeddedviewport.hpp"
 #include "projectformat.hpp"
 #include "projectpathresolver.hpp"
+#include "rendertargetform.hpp"
 #include "shadersourceresolver.hpp"
 
 #include <QAbstractItemView>
@@ -428,6 +429,18 @@ struct FramePlanWidget::Impl {
     // a graph that is no longer shown would name passes that are not there.
     std::string placement_graph;
     bool placement_loaded = false;
+    // --- F-1: render targets.
+    RenderTargetForm *render_target_form = nullptr;
+    // The method of the edit in flight, so its rejection is read in its terms.
+    std::string submitted_method;
+    // The target the edit in flight names; it becomes the canvas target once
+    // the edit commits, so the new node is what the user sees next.
+    std::string submitted_target;
+    std::string pending_target_selection;
+    // A double-click that arrived before the context naming the target did,
+    // and a New render target... that arrived before any context at all.
+    std::string pending_form_target;
+    bool pending_new_target_form = false;
 
     Impl(FramePlanWidget &widget, EmbeddedViewport &embedded_viewport)
         : owner{widget}, viewport{embedded_viewport} {
@@ -521,6 +534,10 @@ struct FramePlanWidget::Impl {
             if (selected && preset_pass_edit_action)
                 preset_pass_edit_action(QString::fromStdString(selected->graph), QString::fromStdString(selected->name));
         });
+        auto *new_target = new QPushButton(owner.tr("New render target..."), &owner);
+        new_target->setObjectName(
+            QStringLiteral("pelican.framePlanNewRenderTarget"));
+        toolbar->addWidget(new_target);
         toolbar->addWidget(makePanelHelpButton(
             &owner, "pelican.framePlan.help", ManualFramePlanAnchor,
             owner.tr("Shift-drag: connect resources. The snapshot updates "
@@ -684,6 +701,27 @@ struct FramePlanWidget::Impl {
                     true);
         });
         logical_scene->setInsertActions(add_pass, add_task);
+        // F-1: named like the insert entries, and offered on a right-click
+        // over open canvas and on the toolbar.
+        auto *add_target = new QAction(
+            QStringLiteral("New render target..."), &owner);
+        add_target->setObjectName(
+            QStringLiteral("pelican.framePlan.newRenderTarget"));
+        owner.addAction(add_target);
+        QObject::connect(add_target, &QAction::triggered, &owner,
+                         [this] { openNewRenderTarget(); });
+        QObject::connect(new_target, &QPushButton::clicked, add_target,
+                         &QAction::trigger);
+        logical_scene->setRenderTargetAction(add_target);
+        logical_scene->resourceEditRequested =
+            [this](const FramePlanNodeKey &resource) {
+                openRenderTargetForm(resource.name);
+            };
+        logical_scene->resourceRemoveRequested =
+            [this](const FramePlanNodeKey &resource) {
+                submit(framePlanRenderTargetRemoveRequest(authoring,
+                                                          resource.name));
+            };
         auto *leave_group = new QAction(&owner);
         leave_group->setObjectName(
             QStringLiteral("pelican.framePlanLeaveGroup"));
@@ -823,6 +861,12 @@ struct FramePlanWidget::Impl {
                              pending_edit_request = 0;
                              pending_ticket_request = 0;
                              pending_ticket.clear();
+                             submitted_method.clear();
+                             submitted_target.clear();
+                             pending_target_selection.clear();
+                             pending_form_target.clear();
+                             pending_new_target_form = false;
+                             if (render_target_form) render_target_form->hide();
                              placement_loaded = false;
                              placement_graph.clear();
                              requestRefresh();
@@ -1041,6 +1085,7 @@ struct FramePlanWidget::Impl {
             : request.method == "remove_authored_pass" ? edit.removeAuthoredPass
             : request.method == "edit_compute_task"  ? edit.editComputeTask
             : request.method == "remove_compute_task" ? edit.removeComputeTask
+            : request.method == "edit_render_targets" ? edit.editRenderTargets
                                                       : nullptr;
         if (!sender) {
             showStatus(owner.tr("Canvas editing is unavailable: %1").arg(method));
@@ -1060,6 +1105,8 @@ struct FramePlanWidget::Impl {
             showStatus(oneLine(error), error);
             return;
         }
+        submitted_method = request.method;
+        submitted_target = submittedTargetName(request);
         status->setStyleSheet({});
         showStatus(owner.tr("%1: submitting...").arg(method));
     }
@@ -1087,6 +1134,17 @@ struct FramePlanWidget::Impl {
                 authoring = {};
             }
             if (model) populate();
+            if (std::exchange(pending_new_target_form, false) &&
+                authoring.received)
+                openNewRenderTarget();
+            if (!pending_form_target.empty()) {
+                const auto name = std::exchange(pending_form_target, {});
+                if (authoring.findRenderTarget(name) != nullptr)
+                    openRenderTargetForm(name);
+                else
+                    showStatus(text(name + " is not a render target in the "
+                                           "current authoring context."));
+            }
             return true;
         }
         if (request_id != 0 && request_id == pending_task_request) {
@@ -1129,7 +1187,7 @@ struct FramePlanWidget::Impl {
             const auto status_text = response.value("status", std::string{});
             if (status_text != "accepted" || !response.contains("ticket") ||
                 !response.at("ticket").is_string()) {
-                const QString message = responseError(response);
+                const QString message = rejectionText(response);
                 status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
                 showStatus(oneLine(message), message);
                 return;
@@ -1157,12 +1215,14 @@ struct FramePlanWidget::Impl {
             pending_ticket.clear();
             if (status_text != "committed" ||
                 !response.value("committed", false)) {
-                const QString message = responseError(response);
+                const QString message = rejectionText(response);
                 status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
                 showStatus(oneLine(message), message);
                 return;
             }
             status->setStyleSheet({});
+            if (submitted_method == "edit_render_targets")
+                pending_target_selection = submitted_target;
             // The refresh first, so its own "requesting..." line does not land
             // on top of the answer the user is waiting for. The summary line
             // replaces this one when the new plan arrives, which is the right
@@ -1233,6 +1293,94 @@ struct FramePlanWidget::Impl {
         if (stage.empty()) return;
         submit(framePlanPassShaderRequest(authoring, model->graph, node.name,
                                           stage, value.toStdString()));
+    }
+
+    // --- F-1: render targets.
+
+    static std::string submittedTargetName(const FramePlanEditRequest &request) {
+        if (request.method != "edit_render_targets") return {};
+        const auto ops = request.params.find("ops");
+        if (ops == request.params.end() || !ops->is_array() || ops->empty())
+            return {};
+        const auto &op = ops->back();
+        const auto target = op.find("target");
+        return target != op.end() && target->is_object()
+                   ? target->value("name", std::string{})
+                   : std::string{};
+    }
+
+    // An edit_render_targets rejection is read by its code; everything else
+    // keeps the line it always had.
+    QString rejectionText(const Json &response) const {
+        const auto error = response.find("error");
+        if (error != response.end() && error->is_object() &&
+            (submitted_method == "edit_render_targets" ||
+             error->value("code", std::string{}).starts_with("render_target_")))
+            return text(framePlanRenderTargetRejection(*error,
+                                                       authoring.preset_name));
+        return responseError(response);
+    }
+
+    RenderTargetForm &renderTargetForm() {
+        if (render_target_form == nullptr) {
+            render_target_form = new RenderTargetForm(&owner);
+            render_target_form->setSubmit(
+                [this](const RenderTargetFormValues &values) -> QString {
+                    const auto request =
+                        render_target_form->mode() ==
+                                RenderTargetForm::Mode::create
+                            ? framePlanRenderTargetAddRequest(authoring, values)
+                            : framePlanRenderTargetReplaceRequest(
+                                  authoring, render_target_form->editing(),
+                                  values);
+                    if (!request.sendable()) return text(request.refusal);
+                    submit(request);
+                    return {};
+                });
+        }
+        return *render_target_form;
+    }
+
+    void openNewRenderTarget() {
+        if (!authoring.received) {
+            // Opened as soon as the context that names the vocabulary arrives.
+            pending_new_target_form = true;
+            requestAuthoringContext();
+            showStatus(owner.tr(
+                "Reading the render authoring context..."));
+            return;
+        }
+        renderTargetForm().present(RenderTargetForm::Mode::create,
+                                   RenderTargetFormValues{},
+                                   authoring.render_target_formats,
+                                   authoring.render_target_usages);
+    }
+
+    void openRenderTargetForm(const std::string &name) {
+        const auto *row = authoring.findRenderTarget(name);
+        if (row == nullptr) {
+            // The context may simply be older than the plan on screen: ask
+            // for it once and open the form when it answers.
+            pending_form_target = name;
+            requestAuthoringContext();
+            return;
+        }
+        if (row->editable) {
+            renderTargetForm().present(
+                RenderTargetForm::Mode::edit,
+                renderTargetFormValues(row->authored.empty() ? row->declaration
+                                                             : row->authored),
+                authoring.render_target_formats,
+                authoring.render_target_usages);
+            return;
+        }
+        renderTargetForm().present(
+            RenderTargetForm::Mode::read_only,
+            renderTargetFormValues(row->declaration),
+            authoring.render_target_formats, authoring.render_target_usages,
+            owner.tr("Read-only: %1.")
+                .arg(text(framePlanRenderTargetOrigin(row->source, name,
+                                                      authoring.preset_name))));
     }
 
     void removeNode(const FramePlanNodeKey &node) {
@@ -1420,6 +1568,14 @@ struct FramePlanWidget::Impl {
                 } else if (same_graph && !previous_target.isEmpty()) {
                     selected_index = target->findText(previous_target,
                                                       Qt::MatchExactly);
+                }
+                // F-1: a target the user just created or renamed is the one
+                // the canvas shows next.
+                if (!pending_target_selection.empty()) {
+                    const int created = target->findText(
+                        text(pending_target_selection), Qt::MatchExactly);
+                    if (created >= 0) selected_index = created;
+                    pending_target_selection.clear();
                 }
                 target->setCurrentIndex(selected_index);
             }

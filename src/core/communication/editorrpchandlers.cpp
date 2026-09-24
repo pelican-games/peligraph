@@ -270,6 +270,9 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("remove_authored_pass", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.removeAuthoredPass(params); });
     });
+    server.setHandler("edit_render_targets", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.editRenderTargets(params); });
+    });
     server.setHandler("get_edit_result", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getEditResult(params); });
     });

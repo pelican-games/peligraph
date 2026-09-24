@@ -6809,6 +6809,7 @@ struct FramePlanEditRecorder {
         capability.removeAuthoredPass = record("remove_authored_pass");
         capability.editComputeTask = record("edit_compute_task");
         capability.removeComputeTask = record("remove_compute_task");
+        capability.editRenderTargets = record("edit_render_targets");
         capability.requestEditResult = [this](const QString &, QString *) {
             ticket_id = next_id++;
             return ticket_id;
@@ -7491,5 +7492,234 @@ TEST_CASE("N-8 a node drag writes one frame_plan placement, and a legacy root wr
     const auto notice = statusText(fixture.widget);
     CHECK(notice.contains(QStringLiteral("legacy")));
     CHECK(notice.contains(QStringLiteral("main.json")));
+}
+
+// --- F-1. Render targets declared from the Frame Plan.
+
+namespace {
+
+Json f1OwnedDeclaration() {
+    return Json{{"name", "f1_owned"},
+                {"extent_scale", 1.0},
+                {"format", "R16G16B16A16_SFLOAT"},
+                {"format_class", "scene"},
+                {"mip_levels", "full"},
+                {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}};
+}
+
+// The render target half of get_render_authoring_context: one target the
+// editor owns, the screen output, and a preset's target.
+Json withRenderTargets(Json context, const std::string &owned = "f1_owned") {
+    auto owned_declaration = f1OwnedDeclaration();
+    owned_declaration["name"] = owned;
+    context["pipeline_preset"]["name"] = "hybrid_v1";
+    context["render_targets"] = Json::array(
+        {Json{{"name", owned},
+              {"declaration", owned_declaration},
+              {"authored_declaration", owned_declaration},
+              {"editable", true},
+              {"source", "authoring"}},
+         Json{{"name", "display"},
+              {"declaration", {{"name", "display"}, {"format_class", "display"}}},
+              {"editable", false},
+              {"source", "engine"}},
+         Json{{"name", "gbuffer_albedo"},
+              {"declaration", {{"name", "gbuffer_albedo"}}},
+              {"editable", false},
+              {"source", "preset"}}});
+    context["render_target_vocabulary"] = {
+        {"formats", Json::array({"R8G8B8A8_UNORM", "R16G16B16A16_SFLOAT"})},
+        {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED", "STORAGE"})}};
+    return context;
+}
+
+} // namespace
+
+TEST_CASE("F-1 the render target form becomes the declaration the engine takes",
+          "[devstudio][frame-plan][f1][render-targets]") {
+    const auto authoring = framePlanAuthoringFromContext(
+        withRenderTargets(mixedAuthoringContext("main_render")));
+    REQUIRE(authoring.received);
+    REQUIRE(authoring.findRenderTarget("f1_owned") != nullptr);
+    CHECK(authoring.render_target_usages ==
+          std::vector<std::string>{"COLOR_ATTACHMENT", "SAMPLED", "STORAGE"});
+    CHECK(authoring.preset_name == "hybrid_v1");
+
+    SECTION("a name alone is a scene color target the size of the screen") {
+        RenderTargetFormValues values;
+        values.name = "f1_new";
+        const auto request = framePlanRenderTargetAddRequest(authoring, values);
+        REQUIRE(request.sendable());
+        CHECK(request.method == "edit_render_targets");
+        CHECK(request.params.at("base_source_digest") == RootDigest);
+        REQUIRE(request.params.at("ops").size() == 1);
+        const auto &op = request.params.at("ops").at(0);
+        CHECK(op.at("op") == "add");
+        CHECK(op.at("target") ==
+              Json{{"name", "f1_new"},
+                   {"extent_scale", 1.0},
+                   {"format", "R16G16B16A16_SFLOAT"},
+                   {"format_class", "scene"},
+                   {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}});
+    }
+
+    SECTION("a fixed size sends width and height, and the ratio does not travel") {
+        RenderTargetFormValues values;
+        values.name = "f1_fixed";
+        values.kind = "explicit";
+        values.format = "R8G8B8A8_UNORM";
+        values.fixed_size = true;
+        values.extent_scale = 0.5;
+        values.width = 512;
+        values.height = 256;
+        const auto target = framePlanRenderTargetAddRequest(authoring, values)
+                                .params.at("ops")
+                                .at(0)
+                                .at("target");
+        CHECK(target.at("width") == 512);
+        CHECK(target.at("height") == 256);
+        // The parser requires extent_scale even when the fixed extent wins,
+        // so the form's ratio (0.5) is replaced by the neutral 1.
+        CHECK(target.at("extent_scale") == 1.0);
+        CHECK(target.at("format_class") == "explicit(R8G8B8A8_UNORM)");
+    }
+
+    SECTION("a replace starts from the fragment's declaration") {
+        auto values = renderTargetFormValues(f1OwnedDeclaration());
+        CHECK(values.kind == "scene");
+        CHECK_FALSE(values.fixed_size);
+        values.extent_scale = 0.5;
+        const auto request =
+            framePlanRenderTargetReplaceRequest(authoring, "f1_owned", values);
+        REQUIRE(request.sendable());
+        const auto &op = request.params.at("ops").at(0);
+        CHECK(op.at("op") == "replace");
+        CHECK(op.at("name") == "f1_owned");
+        CHECK(op.at("target").at("extent_scale") == 0.5);
+        // A field the form does not show travels unchanged.
+        CHECK(op.at("target").at("mip_levels") == "full");
+        CHECK(framePlanRenderTargetReplaceRequest(
+                  authoring, "f1_owned",
+                  renderTargetFormValues(f1OwnedDeclaration()))
+                  .refusal.find("already") != std::string::npos);
+    }
+
+    SECTION("a target the editor does not own makes no RPC") {
+        const auto display = framePlanRenderTargetRemoveRequest(authoring, "display");
+        CHECK_FALSE(display.sendable());
+        CHECK(display.method.empty());
+        CHECK(display.refusal.find("screen output the engine provides") !=
+              std::string::npos);
+        const auto preset =
+            framePlanRenderTargetRemoveRequest(authoring, "gbuffer_albedo");
+        CHECK_FALSE(preset.sendable());
+        CHECK(preset.refusal.find("preset hybrid_v1") != std::string::npos);
+        const auto owned = framePlanRenderTargetRemoveRequest(authoring, "f1_owned");
+        REQUIRE(owned.sendable());
+        CHECK(owned.params.at("ops") ==
+              Json::array({Json{{"op", "remove"}, {"name", "f1_owned"}}}));
+    }
+
+    SECTION("an empty name is refused in the form") {
+        const auto request =
+            framePlanRenderTargetAddRequest(authoring, RenderTargetFormValues{});
+        CHECK_FALSE(request.sendable());
+        CHECK_FALSE(request.refusal.empty());
+    }
+
+    SECTION("a rejection is one sentence chosen by its code") {
+        const auto referenced = framePlanRenderTargetRejection(
+            Json{{"code", "render_target_referenced"},
+                 {"name", "f1_owned"},
+                 {"users", Json::array({"f1_writer", "f1_reader"})}});
+        CHECK(referenced.find("f1_owned") != std::string::npos);
+        CHECK(referenced.find("f1_writer, f1_reader") != std::string::npos);
+        const auto not_editable = framePlanRenderTargetRejection(
+            Json{{"code", "render_target_not_editable"},
+                 {"name", "gbuffer_albedo"},
+                 {"source", "preset"}},
+            "hybrid_v1");
+        CHECK(not_editable.find("preset hybrid_v1") != std::string::npos);
+    }
+}
+
+TEST_CASE("F-1 New render target sends one edit_render_targets from the form, "
+          "and the target's node takes Delete",
+          "[devstudio][frame-plan][f1][render-targets][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    fixture.widget.resize(1400, 900);
+    fixture.widget.show();
+    fixture.widget.setEditCapability(fixture.recorder.capability());
+    fixture.widget.receiveResult(QByteArray::fromStdString(fixture.wire.dump()));
+    fixture.graph = fixture.wire.at("graph").get<std::string>();
+    targetSelector(fixture.widget).setCurrentText("wp343_mixed_d_output");
+    QApplication::processEvents();
+    REQUIRE(fixture.recorder.result);
+    fixture.recorder.result(
+        fixture.recorder.context_id,
+        QByteArray::fromStdString(
+            withRenderTargets(mixedAuthoringContext(fixture.graph),
+                              "wp343_mixed_d_output")
+                .dump()));
+    QApplication::processEvents();
+
+    SECTION("the form's OK is one request with the typed name") {
+        auto *action = fixture.widget.findChild<QAction *>(
+            QStringLiteral("pelican.framePlan.newRenderTarget"));
+        REQUIRE(action != nullptr);
+        action->trigger();
+        QApplication::processEvents();
+        auto *form = fixture.widget.findChild<QWidget *>(
+            QStringLiteral("pelican.renderTargetForm"));
+        REQUIRE(form != nullptr);
+        CHECK(form->isVisible());
+        auto *name = form->findChild<QLineEdit *>(
+            QStringLiteral("pelican.renderTargetForm.name"));
+        REQUIRE(name != nullptr);
+        CHECK(form->findChild<QWidget *>(
+                  QStringLiteral("pelican.renderTargetForm.usage.STORAGE")) !=
+              nullptr);
+        name->setText(QStringLiteral("f1_from_form"));
+        auto *ok = form->findChild<QPushButton *>(
+            QStringLiteral("pelican.renderTargetForm.ok"));
+        REQUIRE(ok != nullptr);
+        QTest::mouseClick(ok, Qt::LeftButton);
+        QApplication::processEvents();
+        REQUIRE(fixture.recorder.submits == 1);
+        CHECK(fixture.recorder.method == QStringLiteral("edit_render_targets"));
+        const auto sent = Json::parse(
+            QJsonDocument(fixture.recorder.params).toJson().toStdString());
+        CHECK(sent.at("ops").at(0).at("op") == "add");
+        CHECK(sent.at("ops").at(0).at("target").at("name") == "f1_from_form");
+        CHECK(sent.at("ops").at(0).at("target").at("extent_scale") == 1.0);
+        CHECK_FALSE(form->isVisible());
+    }
+
+    SECTION("the selected target's node picks, and Delete removes it") {
+        auto &logical = fixture.logical();
+        const auto nodes = itemsOfKind(logical, FramePlanResourceNodeItem);
+        REQUIRE(nodes.size() == 1);
+        CHECK(nodes.front()->data(FramePlanNameRole).toString() ==
+              QStringLiteral("wp343_mixed_d_output"));
+        auto &view = logicalView(fixture.widget);
+        view.centerOn(nodes.front());
+        QApplication::processEvents();
+        const QPoint at =
+            view.mapFromScene(nodes.front()->sceneBoundingRect().center());
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, at);
+        QApplication::processEvents();
+        REQUIRE(logical.pickedResource().has_value());
+        view.setFocus();
+        QTest::keyClick(&view, Qt::Key_Delete);
+        QApplication::processEvents();
+        REQUIRE(fixture.recorder.submits == 1);
+        CHECK(fixture.recorder.method == QStringLiteral("edit_render_targets"));
+        const auto sent = Json::parse(
+            QJsonDocument(fixture.recorder.params).toJson().toStdString());
+        CHECK(sent.at("ops") ==
+              Json::array({Json{{"op", "remove"},
+                                {"name", "wp343_mixed_d_output"}}}));
+    }
 }
 } // namespace PelicanStudio

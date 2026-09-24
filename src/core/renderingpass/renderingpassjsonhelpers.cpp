@@ -72,7 +72,33 @@ constexpr std::array format_names{
     std::pair{"D32_SFLOAT", vk::Format::eD32Sfloat},
 };
 
+// F-1: the one table of usage names the parser accepts. Studio's render
+// target form offers exactly these, read from the engine rather than copied.
+constexpr std::array image_usage_names{
+    std::pair{"COLOR_ATTACHMENT", vk::ImageUsageFlagBits::eColorAttachment},
+    std::pair{"DEPTH_STENCIL_ATTACHMENT",
+              vk::ImageUsageFlagBits::eDepthStencilAttachment},
+    std::pair{"SAMPLED", vk::ImageUsageFlagBits::eSampled},
+    std::pair{"STORAGE", vk::ImageUsageFlagBits::eStorage},
+    std::pair{"TRANSFER_DST", vk::ImageUsageFlagBits::eTransferDst},
+    std::pair{"TRANSFER_SRC", vk::ImageUsageFlagBits::eTransferSrc},
+};
+
 } // namespace
+
+std::vector<std::string> imageFormatNames() {
+    std::vector<std::string> names;
+    names.reserve(format_names.size());
+    for (const auto &entry : format_names) names.emplace_back(entry.first);
+    return names;
+}
+
+std::vector<std::string> imageUsageFlagNames() {
+    std::vector<std::string> names;
+    names.reserve(image_usage_names.size());
+    for (const auto &entry : image_usage_names) names.emplace_back(entry.first);
+    return names;
+}
 
 vk::Format stringToFormat(const std::string &format_str) {
     const auto found = std::find_if(
@@ -106,17 +132,11 @@ vk::ImageUsageFlags stringToUsageFlags(const std::vector<std::string> &usage_str
     }
 
     vk::ImageUsageFlags flags;
-    static const std::unordered_map<std::string, vk::ImageUsageFlagBits> usage_map = {
-        {"COLOR_ATTACHMENT", vk::ImageUsageFlagBits::eColorAttachment},
-        {"DEPTH_STENCIL_ATTACHMENT", vk::ImageUsageFlagBits::eDepthStencilAttachment},
-        {"SAMPLED", vk::ImageUsageFlagBits::eSampled},
-        {"STORAGE", vk::ImageUsageFlagBits::eStorage},
-        {"TRANSFER_DST", vk::ImageUsageFlagBits::eTransferDst},
-        {"TRANSFER_SRC", vk::ImageUsageFlagBits::eTransferSrc},
-    };
-
     for (const auto &usage_str : usage_strs) {
-        if (auto it = usage_map.find(usage_str); it != usage_map.end()) {
+        const auto it = std::find_if(
+            image_usage_names.begin(), image_usage_names.end(),
+            [&](const auto &entry) { return entry.first == usage_str; });
+        if (it != image_usage_names.end()) {
             flags |= it->second;
         } else {
             throw std::runtime_error("Unknown image usage flag: " + usage_str);

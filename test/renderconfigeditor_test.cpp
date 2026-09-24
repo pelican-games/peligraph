@@ -24,6 +24,7 @@
 #include "../src/project/vulkanviewplanning.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #ifdef _WIN32
 #include <process.h>
@@ -39,6 +40,7 @@
 #include <iterator>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <set>
 #include <span>
 #include <sstream>
@@ -625,6 +627,8 @@ std::unique_ptr<RenderConfigEditorService> makeProjectService(
                         .pass_provenance =
                             std::move(composition.pass_provenance),
                         .pipeline_preset_bytes = std::move(preset_bytes),
+                        .resource_provenance =
+                            std::move(composition.resource_provenance),
                     };
                 },
             .feature_catalog = [&runtime] {
@@ -6043,6 +6047,327 @@ TEST_CASE(
     REQUIRE(containsName(composition.feature_names, "staged_feature"));
     REQUIRE(std::ranges::count(loaded, preset_reference) == 1);
     REQUIRE(std::ranges::count(loaded, feature_reference) == 1);
+}
+
+// --- F-1: render targets declared from the editor.
+
+namespace {
+
+const char *const renderTargetFragment =
+    "project://passes/authoring/render-targets.json";
+
+Json sceneTarget(std::string_view name, double extent_scale = 1.0) {
+    return Json{{"name", name},
+                {"extent_scale", extent_scale},
+                {"format", "R16G16B16A16_SFLOAT"},
+                {"format_class", "scene"},
+                {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}};
+}
+
+// One project, one engine-side service, and the calls a test makes against
+// them. `direct` picks the graph root that declares its own render_targets;
+// otherwise the root selects the engine preset hybrid_v1.
+struct RenderTargetHarness {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    ActualCpuRenderRuntime runtime;
+    std::unique_ptr<RenderConfigEditorService> service;
+
+    explicit RenderTargetHarness(bool direct) {
+        if (direct) writeBytes(project.render_config, graphRootFixture("main"));
+        resolver.setup(project.root, false);
+        service = makeProjectService(project, resolver, runtime);
+    }
+
+    nlohmann::ordered_json context() {
+        return service->getRenderAuthoringContext(Json::object());
+    }
+
+    std::string digest() {
+        return context().at("source_digest").at("hex").get<std::string>();
+    }
+
+    nlohmann::ordered_json edit(Json ops) {
+        return service->editRenderTargets(
+            {{"base_source_digest", digest()}, {"ops", std::move(ops)}});
+    }
+
+    nlohmann::ordered_json commit(Json ops) {
+        const auto accepted = edit(std::move(ops));
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        const auto result =
+            service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        return result;
+    }
+
+    std::optional<nlohmann::ordered_json> target(std::string_view name) {
+        const auto current = context();
+        for (const auto &row : current.at("render_targets"))
+            if (row.at("name") == std::string{name}) return row;
+        return std::nullopt;
+    }
+
+    std::filesystem::path fragmentPath() const {
+        return project.root / "passes" / "authoring" / "render-targets.json";
+    }
+
+    Json rootFeatures() const {
+        return renderingSectionOrEmpty(
+                   Json::parse(readBytes(project.render_config)))
+            .value("features", Json::array());
+    }
+
+    bool planHasResource(std::string_view name) const {
+        return std::ranges::any_of(
+            runtime.frame_plan.value("resources", Json::array()),
+            [&](const Json &resource) {
+                return resource.value("name", std::string{}) == name;
+            });
+    }
+};
+
+Json addOp(Json target) {
+    return Json::array({{{"op", "add"}, {"target", std::move(target)}}});
+}
+
+} // namespace
+
+TEST_CASE("F-1 edit_render_targets adds, replaces and removes a target in its managed fragment",
+          "[render-config-editor][f1][render-targets]") {
+    const bool direct = GENERATE(true, false);
+    INFO((direct ? "direct graph root" : "hybrid_v1 preset root"));
+    RenderTargetHarness harness{direct};
+    REQUIRE(harness.context().at("config_kind") ==
+            (direct ? "direct" : "preset"));
+    REQUIRE_FALSE(std::filesystem::exists(harness.fragmentPath()));
+
+    const auto added = harness.commit(addOp(sceneTarget("f1_probe")));
+    CHECK(added.at("operation") == "edit_render_targets");
+    CHECK(added.at("fragment_reference") == renderTargetFragment);
+
+    // The fragment exists, is referenced from the root, and is managed.
+    REQUIRE(std::filesystem::is_regular_file(harness.fragmentPath()));
+    const auto fragment = Json::parse(readBytes(harness.fragmentPath()));
+    CHECK(fragment.at("schema") == "pelican.render_feature");
+    CHECK(fragment.at("pelican_editor_managed").at("id") == "render-targets");
+    REQUIRE(fragment.at("render_targets").size() == 1);
+    CHECK(fragment.at("render_targets").at(0) == sceneTarget("f1_probe"));
+    CHECK(std::ranges::count(harness.rootFeatures(),
+                             Json(renderTargetFragment)) == 1);
+
+    // The context reports it first, editable, from the authoring fragment,
+    // and does not offer the fragment as an authored pass.
+    const auto context = harness.context();
+    REQUIRE_FALSE(context.at("render_targets").empty());
+    const auto &first = context.at("render_targets").at(0);
+    CHECK(first.at("name") == "f1_probe");
+    CHECK(first.at("editable") == true);
+    CHECK(first.at("source") == "authoring");
+    CHECK(Json(first.at("authored_declaration")) == sceneTarget("f1_probe"));
+    CHECK(context.at("managed_fragments").empty());
+    CHECK(context.at("render_target_fragment") == renderTargetFragment);
+    const auto &vocabulary = context.at("render_target_vocabulary");
+    CHECK(std::ranges::count(vocabulary.at("usage"), "SAMPLED") == 1);
+    CHECK(std::ranges::count(vocabulary.at("formats"), "R16G16B16A16_SFLOAT") ==
+          1);
+
+    // The engine's own pipeline carries it.
+    CHECK(harness.planHasResource("f1_probe"));
+
+    // Everything else says where it came from.
+    const auto display = harness.target("display");
+    REQUIRE(display);
+    CHECK(display->at("editable") == false);
+    CHECK(display->at("source") == "engine");
+    const auto albedo = harness.target("gbuffer_albedo");
+    REQUIRE(albedo);
+    CHECK(albedo->at("editable") == false);
+    CHECK(albedo->at("source") == (direct ? "root" : "preset"));
+
+    // Replace changes the declaration in place.
+    harness.commit(Json::array({{{"op", "replace"},
+                                 {"name", "f1_probe"},
+                                 {"target", sceneTarget("f1_probe", 0.5)}}}));
+    const auto replaced = harness.target("f1_probe");
+    REQUIRE(replaced);
+    CHECK(replaced->at("authored_declaration").at("extent_scale") == 0.5);
+    CHECK(Json::parse(readBytes(harness.fragmentPath()))
+              .at("render_targets")
+              .at(0)
+              .at("extent_scale") == 0.5);
+
+    // A rename is a replace with a new name.
+    harness.commit(Json::array({{{"op", "replace"},
+                                 {"name", "f1_probe"},
+                                 {"target", sceneTarget("f1_renamed", 0.5)}}}));
+    CHECK_FALSE(harness.target("f1_probe"));
+    CHECK(harness.target("f1_renamed"));
+    CHECK(harness.planHasResource("f1_renamed"));
+
+    // Remove leaves the fragment and its reference behind, empty.
+    harness.commit(
+        Json::array({{{"op", "remove"}, {"name", "f1_renamed"}}}));
+    CHECK_FALSE(harness.target("f1_renamed"));
+    CHECK_FALSE(harness.planHasResource("f1_renamed"));
+    REQUIRE(std::filesystem::is_regular_file(harness.fragmentPath()));
+    CHECK(Json::parse(readBytes(harness.fragmentPath()))
+              .at("render_targets")
+              .empty());
+    CHECK(std::ranges::count(harness.rootFeatures(),
+                             Json(renderTargetFragment)) == 1);
+}
+
+TEST_CASE("F-1 edit_render_targets refuses by name and leaves the documents alone",
+          "[render-config-editor][f1][render-targets][rejection]") {
+    RenderTargetHarness harness{true};
+    harness.commit(addOp(sceneTarget("f1_owned")));
+    const auto root_before = readBytes(harness.project.render_config);
+    const auto fragment_before = readBytes(harness.fragmentPath());
+    const auto unchanged = [&] {
+        CHECK(readBytes(harness.project.render_config) == root_before);
+        CHECK(readBytes(harness.fragmentPath()) == fragment_before);
+    };
+    const auto code = [](const nlohmann::ordered_json &response) {
+        INFO(response.dump());
+        REQUIRE(response.at("status") == "rejected");
+        return response.at("error").at("code").get<std::string>();
+    };
+
+    SECTION("a target declared elsewhere is not editable") {
+        const auto root = harness.edit(Json::array(
+            {{{"op", "replace"},
+              {"name", "gbuffer_albedo"},
+              {"target", sceneTarget("gbuffer_albedo", 0.5)}}}));
+        CHECK(code(root) == "render_target_not_editable");
+        CHECK(root.at("error").at("name") == "gbuffer_albedo");
+        CHECK(root.at("error").at("source") == "root");
+        const auto feature = harness.edit(Json::array(
+            {{{"op", "remove"}, {"name", "Bloom_Threshold_RT"}}}));
+        CHECK(code(feature) == "render_target_not_editable");
+        CHECK(feature.at("error").at("source") ==
+              "feature:engine://features/bloom.json");
+        unchanged();
+    }
+
+    SECTION("an added name that is declared anywhere already exists") {
+        const auto root = harness.edit(addOp(sceneTarget("gbuffer_albedo")));
+        CHECK(code(root) == "render_target_exists");
+        CHECK(root.at("error").at("source") == "root");
+        const auto own = harness.edit(addOp(sceneTarget("f1_owned")));
+        CHECK(code(own) == "render_target_exists");
+        CHECK(own.at("error").at("source") == "authoring");
+        const auto renamed = harness.edit(Json::array(
+            {{{"op", "replace"},
+              {"name", "f1_owned"},
+              {"target", sceneTarget("lit_color")}}}));
+        CHECK(code(renamed) == "render_target_exists");
+        unchanged();
+    }
+
+    SECTION("the engine's own names are reserved") {
+        CHECK(code(harness.edit(addOp(sceneTarget("display")))) ==
+              "render_target_reserved");
+        CHECK(code(harness.edit(Json::array(
+                  {{{"op", "remove"}, {"name", "swapchain"}}}))) ==
+              "render_target_reserved");
+        CHECK(code(harness.edit(Json::array(
+                  {{{"op", "replace"},
+                    {"name", "f1_owned"},
+                    {"target", sceneTarget("display")}}}))) ==
+              "render_target_reserved");
+        unchanged();
+    }
+
+    SECTION("a target a pass still writes cannot be removed or renamed") {
+        const auto pass = harness.service->addAuthoredPass(
+            {{"base_source_digest", harness.digest()},
+             {"graph", "main_render"},
+             {"insert", "after:ssao_pass"},
+             {"pass",
+              {{"name", "f1_writer"},
+               {"type", "fullscreen"},
+               {"input", Json::array({"gbuffer_normal"})},
+               {"output",
+                {{"color", Json::array({"f1_owned"})}, {"depth", nullptr}}},
+               {"shader",
+                {{"vertex", "engine://fullscreen"},
+                 {"fragment", "engine://fullscreen"}}}}}});
+        REQUIRE(pass.at("status") == "accepted");
+        harness.service->commitPending();
+        REQUIRE(harness.service->getResult({{"ticket", pass.at("ticket")}})
+                    .at("committed") == true);
+        const auto root_with_pass = readBytes(harness.project.render_config);
+
+        const auto removed = harness.edit(
+            Json::array({{{"op", "remove"}, {"name", "f1_owned"}}}));
+        CHECK(code(removed) == "render_target_referenced");
+        CHECK(removed.at("error").at("name") == "f1_owned");
+        CHECK(Json(removed.at("error").at("users")) == Json::array({"f1_writer"}));
+        const auto renamed = harness.edit(Json::array(
+            {{{"op", "replace"},
+              {"name", "f1_owned"},
+              {"target", sceneTarget("f1_elsewhere")}}}));
+        CHECK(code(renamed) == "render_target_referenced");
+        CHECK(readBytes(harness.project.render_config) == root_with_pass);
+        CHECK(readBytes(harness.fragmentPath()) == fragment_before);
+    }
+
+    SECTION("a malformed declaration fails preflight in the parser's words") {
+        const auto rejected =
+            harness.edit(addOp(sceneTarget("f1_negative", -1.0)));
+        CHECK(code(rejected) == "render_pipeline_preflight_failed");
+        CHECK(rejected.at("error").at("message").get<std::string>().find(
+                  "extent_scale must be positive") != std::string::npos);
+        unchanged();
+    }
+
+    SECTION("a stale base digest is refused before anything is read") {
+        const auto rejected = harness.service->editRenderTargets(
+            {{"base_source_digest", std::string(64, '0')},
+             {"ops", addOp(sceneTarget("f1_stale"))}});
+        CHECK(code(rejected) == "external_modification");
+        unchanged();
+    }
+
+    SECTION("the fragment cannot be removed as if it were an authored pass") {
+        const auto rejected = harness.service->removeAuthoredPass(
+            {{"base_source_digest", harness.digest()},
+             {"fragment_reference", std::string{renderTargetFragment}}});
+        CHECK(code(rejected) == "render_target_not_editable");
+        unchanged();
+    }
+}
+
+TEST_CASE("F-1 edit_render_targets on a missing fragment creates it only with the batch",
+          "[render-config-editor][f1][render-targets]") {
+    RenderTargetHarness harness{false};
+    const auto root_before = readBytes(harness.project.render_config);
+    // A remove with nothing authored names no target the editor owns.
+    const auto rejected = harness.edit(
+        Json::array({{{"op", "remove"}, {"name", "f1_nothing"}}}));
+    INFO(rejected.dump());
+    CHECK(rejected.at("error").at("code") == "render_target_not_found");
+    CHECK_FALSE(std::filesystem::exists(harness.fragmentPath()));
+    CHECK(readBytes(harness.project.render_config) == root_before);
+
+    // Two ops in one request are applied in order and land together.
+    harness.commit(Json::array({{{"op", "add"}, {"target", sceneTarget("f1_a")}},
+                                {{"op", "add"}, {"target", sceneTarget("f1_b")}}}));
+    const auto context = harness.context();
+    CHECK(context.at("render_targets").at(0).at("name") == "f1_a");
+    CHECK(context.at("render_targets").at(1).at("name") == "f1_b");
+
+    // All or nothing: the second op fails, so the first does not land either.
+    const auto fragment_before = readBytes(harness.fragmentPath());
+    const auto partial = harness.edit(
+        Json::array({{{"op", "remove"}, {"name", "f1_a"}},
+                     {{"op", "add"}, {"target", sceneTarget("display")}}}));
+    CHECK(partial.at("error").at("code") == "render_target_reserved");
+    CHECK(readBytes(harness.fragmentPath()) == fragment_before);
 }
 
 } // namespace Pelican

@@ -1,0 +1,187 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "render_target_authoring",
+  "description": "F-1: create a render target from the Frame Plan with only a name, see its node, double-click it to halve its size and read the new extent back from the engine, delete it and watch the node go, then try to delete a target a pass still writes and read the refusal that names the pass.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the engine viewport answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the first frame plan has arrived",
+      "cmd": "wait",
+      "name": "pelican.framePlanStatus",
+      "timeout_ms": 180000,
+      "contains": "main_render"
+    },
+    {
+      "label": "New render target..., fired by name rather than through a popup",
+      "cmd": "action",
+      "name": "pelican.framePlan.newRenderTarget"
+    },
+    {
+      "label": "the form is open",
+      "cmd": "wait",
+      "name": "pelican.renderTargetForm.name",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "type only a name",
+      "cmd": "type",
+      "name": "pelican.renderTargetForm.name",
+      "text": "f1_scenario_target"
+    },
+    {
+      "label": "OK",
+      "cmd": "click",
+      "name": "pelican.renderTargetForm.ok"
+    },
+    {
+      "label": "the new target becomes the canvas target and is drawn as a node",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::resource_node#f1_scenario_target",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the engine reports it after the fragment's own target, editable, from the authoring fragment",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "render_targets[1].source",
+      "value": "authoring",
+      "retry_ms": 60000
+    },
+    {
+      "label": "with the defaults a name alone gets: the size of the screen",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "render_targets[1].authored_declaration.extent_scale",
+      "value": 1.0
+    },
+    {
+      "label": "double-click the node to open its declaration",
+      "cmd": "double_click",
+      "name": "pelican.framePlanLogicalView::resource_node#f1_scenario_target"
+    },
+    {
+      "label": "the form is open again",
+      "cmd": "wait",
+      "name": "pelican.renderTargetForm.name",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the form opens on the target",
+      "cmd": "wait",
+      "name": "pelican.renderTargetForm.name",
+      "text": "f1_scenario_target",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "half the size of the screen",
+      "cmd": "type",
+      "name": "pelican.renderTargetForm.extentScale",
+      "text": "0.5"
+    },
+    {
+      "label": "OK",
+      "cmd": "click",
+      "name": "pelican.renderTargetForm.ok"
+    },
+    {
+      "label": "the engine holds the new extent",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "render_targets[1].authored_declaration.extent_scale",
+      "value": 0.5,
+      "retry_ms": 60000
+    },
+    {
+      "label": "the node is drawn again after the refresh",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::resource_node#f1_scenario_target",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "pick the node",
+      "cmd": "click",
+      "name": "pelican.framePlanLogicalView::resource_node#f1_scenario_target"
+    },
+    {
+      "label": "Delete",
+      "cmd": "key",
+      "name": "pelican.framePlanLogicalView",
+      "sequence": "Delete"
+    },
+    {
+      "label": "the node is gone",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::resource_node#f1_scenario_target",
+      "missing": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "and the engine no longer declares it: the fragment's own target is the only editable one left",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "render_targets[1].editable",
+      "value": false,
+      "retry_ms": 60000
+    },
+    {
+      "label": "look at the target the fixture's pass writes",
+      "cmd": "select",
+      "name": "pelican.framePlanTarget",
+      "text": "f1_referenced_target"
+    },
+    {
+      "label": "its node is drawn",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::resource_node#f1_referenced_target",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick it",
+      "cmd": "click",
+      "name": "pelican.framePlanLogicalView::resource_node#f1_referenced_target"
+    },
+    {
+      "label": "Delete it",
+      "cmd": "key",
+      "name": "pelican.framePlanLogicalView",
+      "sequence": "Delete"
+    },
+    {
+      "label": "the refusal names the pass that still writes it",
+      "cmd": "wait",
+      "name": "pelican.framePlanStatus",
+      "contains": "f1_writer_pass",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "and the target is still declared",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "render_targets[0].name",
+      "value": "f1_referenced_target"
+    },
+    {
+      "label": "a picture of the Frame Plan canvas for the reader of this report",
+      "expect": "screenshot",
+      "name": "pelican.framePlan",
+      "path": "render_target_authoring_canvas.png"
+    }
+  ]
+}

@@ -68,6 +68,10 @@ struct ResolvedRenderConfigAuthoringContext {
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
     std::vector<RenderPassProvenance> pass_provenance;
     std::optional<std::string> pipeline_preset_bytes;
+    // F-1: which document each composed render target / buffer came from.
+    // A resolver that leaves it empty makes every target that is not in the
+    // root, the preset or the managed fragment read as "composed".
+    std::vector<RenderResourceProvenance> resource_provenance;
 };
 
 struct RenderConfigEditorDependencies {
@@ -182,11 +186,15 @@ class RenderConfigEditorService {
     // The authored-pass tail shared by addAuthoredPass and
     // removeAuthoredPass: candidate-set preflight -> ticket enqueue ->
     // accepted response.  The operation name is the only difference.
+    // `edits_additional_documents` is set by an edit whose root can stay
+    // byte-identical (edit_render_targets on an existing fragment): without it
+    // the commit would answer "no change" and never write the fragment.
     nlohmann::ordered_json enqueueAuthoredPassTicket(
         std::string operation, const GateSnapshot &gate,
         const std::string &base_digest, AuthoredRenderConfigDocument root,
         RenderConfigCandidateDocumentSet candidate_documents,
-        const std::string &reference);
+        const std::string &reference,
+        bool edits_additional_documents = false);
     nlohmann::ordered_json rejection(
         std::string code, std::string message,
         nlohmann::ordered_json details = nlohmann::ordered_json::object()) const;
@@ -248,6 +256,11 @@ class RenderConfigEditorService {
     nlohmann::ordered_json addAuthoredPass(
         const nlohmann::json &params);
     nlohmann::ordered_json removeAuthoredPass(
+        const nlohmann::json &params);
+    // F-1: add / replace / remove render targets in the one managed fragment
+    // `project://passes/authoring/render-targets.json`, through the same
+    // candidate-set preflight and ticket as add_authored_pass.
+    nlohmann::ordered_json editRenderTargets(
         const nlohmann::json &params);
     nlohmann::ordered_json getResult(
         const nlohmann::json &params) const;

@@ -1,0 +1,27 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "f1_target_writer",
+  "passes": [
+    {
+      "insert": "after:lighting_pass",
+      "pass": {
+        "name": "f1_writer_pass",
+        "type": "fullscreen",
+        "input": [
+          "lit_color"
+        ],
+        "output": {
+          "color": [
+            "f1_referenced_target"
+          ],
+          "depth": null
+        },
+        "shader": {
+          "vertex": "engine://fullscreen",
+          "fragment": "engine://fullscreen"
+        }
+      }
+    }
+  ]
+}

@@ -11,6 +11,9 @@
 #include "renderconfigtransaction.hpp"
 
 #include "../loader/engineresources.hpp"
+#include "../renderingpass/frameplanner.hpp"
+#include "../renderingpass/renderingpassjsonhelpers.hpp"
+#include "../renderingpass/rendertargetjsonparser.hpp"
 #include "../vkcore/renderer_config.hpp"
 
 #include <algorithm>
@@ -338,6 +341,150 @@ bool isManagedFragmentPath(const std::filesystem::path &project_root,
         }
     }
     return candidate_it != candidate.end();
+}
+
+// --- F-1: render targets authored from the editor.
+
+// The one managed fragment every editor-authored render target lives in. It is
+// a feature because a feature is the one place a target can be declared under
+// both a direct root and a preset root (a preset root takes no render_targets).
+constexpr std::string_view renderTargetFragmentId = "render-targets";
+
+std::string renderTargetFragmentReference() {
+    return std::string{managedFragmentDirectory} +
+           std::string{renderTargetFragmentId} + ".json";
+}
+
+bool isReservedRenderTargetName(std::string_view name) {
+    return name == "display" || name == "swapchain";
+}
+
+std::vector<std::string> renderTargetNames(const Json &section) {
+    std::vector<std::string> names;
+    if (!section.is_object()) return names;
+    const auto targets = section.find("render_targets");
+    if (targets == section.end() || !targets->is_array()) return names;
+    for (const auto &target : *targets) {
+        if (target.is_object() && target.contains("name") &&
+            target.at("name").is_string())
+            names.push_back(target.at("name").get<std::string>());
+    }
+    return names;
+}
+
+OrderedJson fragmentRenderTargets(std::string_view bytes) {
+    const auto fragment = OrderedJson::parse(bytes);
+    const auto targets = fragment.find("render_targets");
+    if (targets == fragment.end()) return OrderedJson::array();
+    if (!targets->is_array())
+        throw std::runtime_error(
+            "the managed render target fragment's render_targets is not an array");
+    return *targets;
+}
+
+std::string renderTargetFragmentBytes(std::optional<std::string_view> existing,
+                                      OrderedJson targets) {
+    OrderedJson fragment =
+        existing ? OrderedJson::parse(*existing)
+                 : OrderedJson{
+                       {"schema", "pelican.render_feature"},
+                       {"version", 1},
+                       {"name", "authored_render_targets"},
+                       {"runtime_shader_compiler", "optional"},
+                       {std::string{managedMarkerField},
+                        {{"schema", "pelican.authored_render_fragment"},
+                         {"version", 1},
+                         {"owner", "pelican.devstudio"},
+                         {"id", renderTargetFragmentId}}},
+                   };
+    fragment["render_targets"] = std::move(targets);
+    return fragment.dump(2) + "\n";
+}
+
+// Where one composed render target was declared. The document reads come
+// first (the fragment, the root section, the preset's config) because they are
+// exact; the composer's provenance answers for features and for what the
+// engine added. A name nothing answers for is "composed" -- said, not guessed.
+struct RenderTargetOrigins {
+    std::set<std::string, std::less<>> authoring;
+    std::set<std::string, std::less<>> root;
+    std::set<std::string, std::less<>> preset;
+    std::map<std::string, RenderResourceProvenance, std::less<>> provenance;
+
+    [[nodiscard]] std::string source(const std::string &name) const {
+        if (name == "display") return "engine";
+        if (authoring.contains(name)) return "authoring";
+        if (const auto found = provenance.find(name);
+            found != provenance.end() &&
+            found->second.source == RenderPipelineProvenanceSource::feature) {
+            return "feature:" + (found->second.provider_reference.empty()
+                                     ? found->second.provider_feature
+                                     : found->second.provider_reference);
+        }
+        if (root.contains(name)) return "root";
+        if (preset.contains(name)) return "preset";
+        if (const auto found = provenance.find(name);
+            found != provenance.end() &&
+            found->second.source == RenderPipelineProvenanceSource::engine)
+            return "engine";
+        return "composed";
+    }
+};
+
+RenderTargetOrigins renderTargetOrigins(
+    const ResolvedRenderConfigAuthoringContext &resolved,
+    std::string_view root_bytes, const OrderedJson &fragment_targets) {
+    RenderTargetOrigins origins;
+    for (const auto &target : fragment_targets) {
+        if (target.is_object() && target.contains("name") &&
+            target.at("name").is_string())
+            origins.authoring.insert(target.at("name").get<std::string>());
+    }
+    try {
+        for (auto &name :
+             renderTargetNames(renderingSectionOrEmpty(Json::parse(root_bytes))))
+            origins.root.insert(std::move(name));
+    } catch (const std::exception &) {
+        // An unreadable root has no targets to claim.
+    }
+    if (resolved.pipeline_preset_bytes) {
+        try {
+            const auto preset = Json::parse(*resolved.pipeline_preset_bytes);
+            for (auto &name :
+                 renderTargetNames(preset.value("config", Json::object())))
+                origins.preset.insert(std::move(name));
+        } catch (const std::exception &) {
+        }
+    }
+    for (const auto &entry : resolved.resource_provenance) {
+        if (entry.kind == "render_target")
+            origins.provenance.insert_or_assign(entry.name, entry);
+    }
+    return origins;
+}
+
+// Who still reads or writes each render target: the planner's own reading of
+// the composed passes and tasks, not a second scanner of pass fields.
+std::map<std::string, std::vector<std::string>, std::less<>>
+renderTargetUsers(const Json &composed) {
+    std::map<std::string, std::vector<std::string>, std::less<>> users;
+    const auto add = [&users](std::string resource, const std::string &node) {
+        if (const auto at = resource.find('@'); at != std::string::npos)
+            resource.erase(at);
+        auto &names = users[resource];
+        if (std::find(names.begin(), names.end(), node) == names.end())
+            names.push_back(node);
+    };
+    for (const auto &graph : parseFrameGraphDefinitionsFromConfigJson(composed)) {
+        for (const auto &node : graph.nodes) {
+            for (const auto &resource : node.reads) add(resource, node.name);
+            for (const auto &resource : node.reads_history) add(resource, node.name);
+            for (const auto &resource : node.writes) add(resource, node.name);
+            for (const auto &access : node.resource_accesses)
+                add(access.resource, node.name);
+        }
+    }
+    return users;
 }
 
 } // namespace
@@ -1666,9 +1813,19 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
         });
     }
 
+    // F-1: the render target fragment is managed, but it holds no pass. It is
+    // reported below as render_targets[], and kept off this list so nothing
+    // offers to remove it as if it were an authored pass.
+    std::optional<std::string> target_fragment_key;
+    try {
+        if (dependencies_.normalize_reference)
+            target_fragment_key = dependencies_.normalize_reference(
+                renderTargetFragmentReference());
+    } catch (const std::exception &) {
+    }
     auto fragments = OrderedJson::array();
     for (const auto &[key, managed] : managed_documents_) {
-        (void)key;
+        if (target_fragment_key && key == *target_fragment_key) continue;
         auto pass_names = OrderedJson::array();
         const auto feature = Json::parse(managed.bytes);
         if (const auto entries = feature.find("passes");
@@ -1698,6 +1855,58 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
          resolved.pipeline_preset ? "preset" : "direct"},
         {"graphs", std::move(graphs)},
         {"managed_fragments", std::move(fragments)},
+    };
+
+    // F-1: every composed render target, where it was declared, and whether
+    // edit_render_targets may change it. The editable ones come first, in the
+    // fragment's own order, then the rest in composed order.
+    const auto managed_targets =
+        target_fragment_key ? managed_documents_.find(*target_fragment_key)
+                            : managed_documents_.end();
+    OrderedJson fragment_targets = OrderedJson::array();
+    if (managed_targets != managed_documents_.end()) {
+        try {
+            fragment_targets = fragmentRenderTargets(managed_targets->second.bytes);
+        } catch (const std::exception &) {
+            fragment_targets = OrderedJson::array();
+        }
+    }
+    const auto origins =
+        renderTargetOrigins(resolved, document_.bytes(), fragment_targets);
+    auto editable_targets = OrderedJson::array();
+    auto other_targets = OrderedJson::array();
+    for (const auto &declaration :
+         resolved.config.value("render_targets", Json::array())) {
+        if (!declaration.is_object() || !declaration.contains("name") ||
+            !declaration.at("name").is_string())
+            continue;
+        const auto name = declaration.at("name").get<std::string>();
+        const auto source = origins.source(name);
+        OrderedJson entry{{"name", name},
+                          {"declaration", declaration},
+                          {"editable", source == "authoring"},
+                          {"source", source}};
+        if (source == "authoring") {
+            const auto authored = std::find_if(
+                fragment_targets.begin(), fragment_targets.end(),
+                [&](const auto &target) {
+                    return target.is_object() &&
+                           target.value("name", std::string{}) == name;
+                });
+            if (authored != fragment_targets.end())
+                entry["authored_declaration"] = *authored;
+            editable_targets.push_back(std::move(entry));
+        } else {
+            other_targets.push_back(std::move(entry));
+        }
+    }
+    for (auto &entry : other_targets) editable_targets.push_back(std::move(entry));
+    result["render_targets"] = std::move(editable_targets);
+    result["render_target_fragment"] = renderTargetFragmentReference();
+    result["render_target_vocabulary"] = {
+        {"formats", imageFormatNames()},
+        {"usage", imageUsageFlagNames()},
+        {"format_classes", OrderedJson::array({"scene", "display", "data", "explicit"})},
     };
     if (resolved.pipeline_preset) {
         result["preset_material_routing"] = resolved.pipeline_preset_bytes
@@ -2377,7 +2586,7 @@ OrderedJson RenderConfigEditorService::enqueueAuthoredPassTicket(
     std::string operation, const GateSnapshot &gate,
     const std::string &base_digest, AuthoredRenderConfigDocument root,
     RenderConfigCandidateDocumentSet candidate_documents,
-    const std::string &reference) {
+    const std::string &reference, bool edits_additional_documents) {
     try {
         // This is the decisive staged-file contrast: neither the feature nor
         // preset resolver may bypass the request-local document set.
@@ -2398,6 +2607,7 @@ OrderedJson RenderConfigEditorService::enqueueAuthoredPassTicket(
         .candidate_documents = std::move(candidate_documents),
         .operation = std::move(operation),
         .fragment_reference = reference,
+        .edits_additional_documents = edits_additional_documents,
     });
     results_[ticket_id] = {{"ticket", ticket_id}, {"status", "pending"}};
     return {{"ticket", ticket_id},
@@ -2606,6 +2816,16 @@ OrderedJson RenderConfigEditorService::removeAuthoredPass(
     }
     const auto normalized =
         dependencies_.normalize_reference(reference);
+    // F-1: the render target fragment is not an authored pass. Removing it
+    // would drop every editor-authored target at once, around the per-target
+    // reference check edit_render_targets makes.
+    if (normalized ==
+        dependencies_.normalize_reference(renderTargetFragmentReference())) {
+        return rejection(
+            "render_target_not_editable",
+            "the render target fragment is edited with edit_render_targets",
+            {{"fragment_reference", reference}});
+    }
     const auto managed = managed_documents_.find(normalized);
     if (managed != managed_documents_.end()) {
         try {
@@ -2660,6 +2880,279 @@ OrderedJson RenderConfigEditorService::removeAuthoredPass(
                                      base_digest, std::move(root),
                                      std::move(candidate_documents),
                                      reference);
+}
+
+OrderedJson RenderConfigEditorService::editRenderTargets(const Json &params) {
+    constexpr std::string_view method = "edit_render_targets";
+    requireOnly(params, {"base_source_digest", "ops"}, method);
+    if (!dependencies_.normalize_reference ||
+        !dependencies_.resolve_document_path ||
+        !dependencies_.resolve_authoring_context) {
+        return rejection(
+            "method_unavailable",
+            "edit_render_targets requires the production document-set resolver",
+            {{"method", method}});
+    }
+    const auto base_digest =
+        requireString(params, "base_source_digest", method);
+    if (!isLowerHexDigest(base_digest)) {
+        throw std::invalid_argument(
+            "edit_render_targets base_source_digest must be 64 lowercase hex characters");
+    }
+    const auto ops = params.find("ops");
+    if (ops == params.end() || !ops->is_array() || ops->empty()) {
+        throw std::invalid_argument(
+            "edit_render_targets requires a non-empty ops array");
+    }
+    // The request's own shape is checked before anything is read: a malformed
+    // op is a caller error, not a rejection of the declaration it carries.
+    const auto targetName = [](const Json &op) -> std::string {
+        const auto target = op.find("target");
+        if (target == op.end() || !target->is_object() ||
+            !target->contains("name") || !target->at("name").is_string() ||
+            target->at("name").get_ref<const std::string &>().empty()) {
+            throw std::invalid_argument(
+                "edit_render_targets add and replace require a target object "
+                "with a non-empty string name");
+        }
+        return target->at("name").get<std::string>();
+    };
+    for (const auto &op : *ops) {
+        if (!op.is_object() || !op.contains("op") || !op.at("op").is_string())
+            throw std::invalid_argument(
+                "edit_render_targets ops entries require a string op");
+        const auto kind = op.at("op").get<std::string>();
+        if (kind == "add") {
+            requireOnly(op, {"op", "target"}, method);
+            (void)targetName(op);
+        } else if (kind == "replace") {
+            requireOnly(op, {"op", "name", "target"}, method);
+            (void)requireString(op, "name", method);
+            (void)targetName(op);
+        } else if (kind == "remove") {
+            requireOnly(op, {"op", "name"}, method);
+            (void)requireString(op, "name", method);
+        } else {
+            throw std::invalid_argument(
+                "edit_render_targets op must be add, replace or remove: " + kind);
+        }
+    }
+
+    const auto gate = gateSnapshot();
+    if (auto rejected = checkAuthoringPreconditions(
+            gate, base_digest, method,
+            "render target authoring is currently disabled")) {
+        return *rejected;
+    }
+
+    const auto reference = renderTargetFragmentReference();
+    const auto normalized = dependencies_.normalize_reference(reference);
+    const auto path = dependencies_.resolve_document_path(reference);
+    if (!isManagedFragmentPath(dependencies_.project_root, path)) {
+        return rejection(
+            "managed_fragment_namespace_violation",
+            "managed render fragments must resolve below project://passes/authoring/",
+            {{"reference", reference}});
+    }
+    const auto managed = managed_documents_.find(normalized);
+    const bool fragment_exists = managed != managed_documents_.end();
+    if (fragment_exists) {
+        try {
+            if (renderConfigSourceDigest(readFileBytes(managed->second.path)) !=
+                managed->second.digest) {
+                return rejection(
+                    "external_modification",
+                    "the render target fragment changed outside the editor",
+                    {{"fragment_reference", reference}});
+            }
+        } catch (const std::exception &error) {
+            return rejection("external_modification", error.what(),
+                             {{"fragment_reference", reference}});
+        }
+    } else {
+        std::error_code exists_error;
+        if (std::filesystem::exists(path, exists_error) || exists_error) {
+            return rejection(
+                "external_modification",
+                exists_error ? exists_error.message()
+                             : reference +
+                                   " exists but the render config does not "
+                                   "reference it: remove the file or add it "
+                                   "back to features[]",
+                {{"fragment_reference", reference}});
+        }
+    }
+
+    ResolvedRenderConfigAuthoringContext current;
+    OrderedJson targets = OrderedJson::array();
+    try {
+        current = dependencies_.resolve_authoring_context(currentDocumentSet());
+        if (fragment_exists)
+            targets = fragmentRenderTargets(managed->second.bytes);
+    } catch (const std::exception &error) {
+        return rejection("render_pipeline_preflight_failed", error.what(),
+                         {{"participant", "pelican.render_pipeline"},
+                          {"fragment_reference", reference}});
+    }
+    auto origins = renderTargetOrigins(current, document_.bytes(), targets);
+    std::set<std::string, std::less<>> declared;
+    for (auto &name : renderTargetNames(current.config))
+        declared.insert(std::move(name));
+    std::vector<std::string> initial_names;
+    for (const auto &target : targets)
+        if (target.is_object() && target.contains("name") &&
+            target.at("name").is_string())
+            initial_names.push_back(target.at("name").get<std::string>());
+
+    const auto reserved = [&](const std::string &name) {
+        return rejection(
+            "render_target_reserved",
+            "Render target name is reserved by the engine: " + name,
+            {{"name", name}});
+    };
+    const auto exists = [&](const std::string &name) {
+        return rejection(
+            "render_target_exists",
+            "A render target named " + name + " is already declared",
+            {{"name", name}, {"source", origins.source(name)}});
+    };
+    const auto notEditable = [&](const std::string &name) {
+        if (!declared.contains(name)) {
+            return rejection("render_target_not_found",
+                             "No render target named " + name + " is declared",
+                             {{"name", name}});
+        }
+        return rejection(
+            "render_target_not_editable",
+            name + " is declared outside the editor's render target fragment",
+            {{"name", name}, {"source", origins.source(name)}});
+    };
+    const auto findTarget = [&targets](const std::string &name) {
+        return std::find_if(targets.begin(), targets.end(),
+                            [&](const auto &target) {
+                                return target.is_object() &&
+                                       target.value("name", std::string{}) ==
+                                           name;
+                            });
+    };
+
+    for (const auto &op : *ops) {
+        const auto kind = op.at("op").get<std::string>();
+        if (kind == "add") {
+            const auto name = targetName(op);
+            if (isReservedRenderTargetName(name)) return reserved(name);
+            if (declared.contains(name)) return exists(name);
+            targets.push_back(OrderedJson(op.at("target")));
+            declared.insert(name);
+            // Named by this request: it is the fragment's from here on.
+            origins.authoring.insert(name);
+            continue;
+        }
+        const auto name = op.at("name").get<std::string>();
+        if (isReservedRenderTargetName(name)) return reserved(name);
+        const auto found = findTarget(name);
+        if (found == targets.end()) return notEditable(name);
+        if (kind == "remove") {
+            targets.erase(found);
+            declared.erase(name);
+            continue;
+        }
+        const auto renamed = targetName(op);
+        if (isReservedRenderTargetName(renamed)) return reserved(renamed);
+        if (renamed != name && declared.contains(renamed)) return exists(renamed);
+        *found = OrderedJson(op.at("target"));
+        declared.erase(name);
+        declared.insert(renamed);
+        origins.authoring.insert(renamed);
+    }
+
+    // A name the fragment declared and no longer does must have nobody left
+    // reading or writing it -- remove and rename both end here.
+    std::vector<std::string> dropped;
+    for (const auto &name : initial_names)
+        if (findTarget(name) == targets.end()) dropped.push_back(name);
+    if (!dropped.empty()) {
+        std::map<std::string, std::vector<std::string>, std::less<>> users;
+        try {
+            users = renderTargetUsers(current.config);
+        } catch (const std::exception &error) {
+            return rejection("render_pipeline_preflight_failed", error.what(),
+                             {{"participant", "pelican.render_pipeline"},
+                              {"fragment_reference", reference}});
+        }
+        for (const auto &name : dropped) {
+            const auto found = users.find(name);
+            if (found == users.end() || found->second.empty()) continue;
+            std::string listed;
+            for (const auto &user : found->second)
+                listed += (listed.empty() ? "" : ", ") + user;
+            return rejection(
+                "render_target_referenced",
+                name + " is still used by " + listed,
+                {{"name", name}, {"users", found->second}});
+        }
+    }
+
+    // The declaration's own shape is the parser's to judge, in its words.
+    try {
+        (void)parseRenderTargetDefinitionsFromJson(
+            Json{{"render_targets", Json(targets)}});
+    } catch (const std::exception &error) {
+        return rejection("render_pipeline_preflight_failed", error.what(),
+                         {{"participant", "pelican.render_targets"},
+                          {"fragment_reference", reference}});
+    }
+
+    const auto fragment_bytes = renderTargetFragmentBytes(
+        fragment_exists ? std::optional<std::string_view>{managed->second.bytes}
+                        : std::nullopt,
+        std::move(targets));
+    auto root = document_;
+    if (!fragment_exists) {
+        if (!root.hasFeaturesArray())
+            root = AuthoredRenderConfigDocument::initialize(document_.bytes());
+        root = root.withFeatureAdded(reference);
+    }
+
+    std::vector<RenderConfigCandidateDocument> documents;
+    documents.reserve(managed_documents_.size() + 2);
+    if (!fragment_exists) {
+        // As add_authored_pass: the dependency exists before the root names it.
+        documents.push_back(RenderConfigCandidateDocument{
+            .reference = reference,
+            .normalized_reference = normalized,
+            .path = path,
+            .operation = RenderConfigDocumentOperation::create,
+            .expected = {RenderConfigDocumentExistence::missing, {}},
+            .bytes = fragment_bytes,
+        });
+    }
+    documents.push_back(RenderConfigCandidateDocument{
+        .reference = dependencies_.source_reference,
+        .normalized_reference = source_normalized_reference_,
+        .path = dependencies_.source_path,
+        .operation = RenderConfigDocumentOperation::replace,
+        .expected = {RenderConfigDocumentExistence::present,
+                     document_.sourceDigest()},
+        .bytes = root.bytes(),
+    });
+    for (const auto &[key, baseline] : managed_documents_) {
+        documents.push_back(RenderConfigCandidateDocument{
+            .reference = baseline.reference,
+            .normalized_reference = baseline.normalized_reference,
+            .path = baseline.path,
+            .operation = RenderConfigDocumentOperation::replace,
+            .expected = {RenderConfigDocumentExistence::present,
+                         baseline.digest},
+            .bytes = key == normalized ? fragment_bytes : baseline.bytes,
+        });
+    }
+    RenderConfigCandidateDocumentSet candidate_documents{
+        source_normalized_reference_, std::move(documents)};
+    return enqueueAuthoredPassTicket(std::string{method}, gate, base_digest,
+                                     std::move(root),
+                                     std::move(candidate_documents), reference,
+                                     /*edits_additional_documents=*/true);
 }
 
 OrderedJson RenderConfigEditorService::getResult(

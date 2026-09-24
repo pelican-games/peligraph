@@ -13,6 +13,9 @@ namespace Pelican {
 vk::Format stringToFormat(const std::string &format_str);
 std::string formatToString(vk::Format format);
 vk::ImageUsageFlags stringToUsageFlags(const std::vector<std::string> &usage_strs);
+// The names stringToFormat / stringToUsageFlags accept, in table order.
+std::vector<std::string> imageFormatNames();
+std::vector<std::string> imageUsageFlagNames();
 PassInfo makePassInfo(const std::string &type_str);
 PassInfo makePassInfo(RenderPassType type);
 FullscreenPushConstantData stringToFullscreenPushConstantData(const std::string &data_str);

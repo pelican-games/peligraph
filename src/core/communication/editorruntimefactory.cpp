@@ -2104,6 +2104,8 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                 .pass_provenance =
                                     std::move(composed.pass_provenance),
                                 .pipeline_preset_bytes = std::move(preset_bytes),
+                                .resource_provenance =
+                                    std::move(composed.resource_provenance),
                             };
                         },
                     // X-1: the catalog is the engine's own set plus the

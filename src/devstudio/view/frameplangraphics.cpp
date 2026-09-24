@@ -1569,6 +1569,84 @@ bool containsMember(const std::vector<std::string> &members,
     return std::find(members.begin(), members.end(), target) != members.end();
 }
 
+// F-1. The selected target as a node: its name, its format and its size, drawn
+// to the left of the passes that touch it. It is the handle the target's own
+// gestures need -- a target nobody reads or writes yet has no socket at all.
+constexpr qreal ResourceNodeWidth = 210.0;
+constexpr qreal ResourceNodeHeight = 58.0;
+
+QGraphicsRectItem *addResourceNode(QGraphicsScene &scene,
+                                   const FramePlanModel &model,
+                                   const FramePlanResource &resource,
+                                   bool picked) {
+    const QRectF bounds = scene.itemsBoundingRect();
+    const QPointF origin =
+        scene.items().empty() || !bounds.isValid()
+            ? QPointF{0.0, 0.0}
+            : QPointF{bounds.left() - ResourceNodeWidth - 70.0, bounds.top()};
+    auto *node = scene.addRect(
+        QRectF{0.0, 0.0, ResourceNodeWidth, ResourceNodeHeight},
+        QPen{picked ? QColor{QStringLiteral("#f0c05a")}
+                    : QColor{QStringLiteral("#5f9fcf")},
+             picked ? 2.4 : 1.4},
+        QBrush{QColor{QStringLiteral("#1d2a36")}});
+    node->setPos(origin);
+    node->setZValue(2.0);
+    annotateIdentity(*node, FramePlanResourceNodeItem, model.graph,
+                     resource.name);
+    node->setData(FramePlanEdgePickedRole, picked);
+    QString size;
+    if (resource.extent) {
+        size = resource.extent->kind == "output_relative"
+                   ? QStringLiteral("screen x%1")
+                         .arg(resource.extent->scale_x, 0, 'g', 4)
+                   : QStringLiteral("%1 x %2")
+                         .arg(static_cast<qulonglong>(resource.extent->width))
+                         .arg(static_cast<qulonglong>(resource.extent->height));
+    }
+    node->setToolTip(QStringLiteral("%1\nDouble-click: edit the declaration. "
+                                    "Delete: remove it.")
+                         .arg(qtext(resource.name)));
+    auto *title = new QGraphicsSimpleTextItem(qtext(resource.name), node);
+    QFont title_font = title->font();
+    title_font.setBold(true);
+    title->setFont(title_font);
+    title->setBrush(QColor{QStringLiteral("#e8f1f8")});
+    title->setPos(10.0, 8.0);
+    title->setAcceptedMouseButtons(Qt::NoButton);
+    auto *facts = new QGraphicsSimpleTextItem(
+        QStringLiteral("render target  %1  %2")
+            .arg(qtext(resource.format), size),
+        node);
+    facts->setBrush(QColor{QStringLiteral("#9fb6c8")});
+    facts->setPos(10.0, 32.0);
+    facts->setAcceptedMouseButtons(Qt::NoButton);
+    // As wide as its longest line, so a long name or size is never cut.
+    const qreal width = std::max(
+        ResourceNodeWidth, std::max(title->boundingRect().width(),
+                                    facts->boundingRect().width()) +
+                               20.0);
+    node->setRect(QRectF{0.0, 0.0, width, ResourceNodeHeight});
+    if (!scene.items().empty() && bounds.isValid() && width > ResourceNodeWidth)
+        node->setPos(origin - QPointF{width - ResourceNodeWidth, 0.0});
+    return node;
+}
+
+std::optional<FramePlanNodeKey> resourceNodeAt(QGraphicsScene &scene,
+                                               QPointF point) {
+    for (QGraphicsItem *item : scene.items(point, Qt::IntersectsItemShape,
+                                           Qt::DescendingOrder)) {
+        for (QGraphicsItem *at = item; at != nullptr; at = at->parentItem()) {
+            if (itemKind(*at) != QLatin1String{FramePlanResourceNodeItem})
+                continue;
+            return FramePlanNodeKey{
+                at->data(FramePlanGraphRole).toString().toStdString(),
+                at->data(FramePlanNameRole).toString().toStdString()};
+        }
+    }
+    return std::nullopt;
+}
+
 PhysicalOverlaySummary addPhysicalOverlay(
     QGraphicsScene &scene, const FramePlanModel &model, qreal logical_bottom,
     const std::optional<FramePlanNodeKey> &selected_target) {
@@ -1837,6 +1915,7 @@ void FramePlanGraphicsScene::resetGraph() {
     closeInlineEditor();
     selected_edge_.reset();
     context_node_.reset();
+    picked_resource_.reset();
     rebuilding_ = true;
     clear();
     selected_node_.reset();
@@ -2895,6 +2974,19 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         label->setAcceptedMouseButtons(Qt::NoButton);
     }
 
+    if (picked_resource_ &&
+        (!selected_resource_ || *picked_resource_ != *selected_resource_))
+        picked_resource_.reset();
+    if (selected_resource_ && !scope_group) {
+        const auto resource = std::ranges::find(
+            model.resources, selected_resource_->name, &FramePlanResource::name);
+        if (resource != model.resources.end())
+            addResourceNode(*this, model, *resource,
+                            picked_resource_.has_value());
+    }
+    setProperty("pelicanPickedResource",
+                picked_resource_ ? qtext(picked_resource_->name) : QString{});
+
     const qreal logical_bottom = items().empty() ? 0.0
                                                  : itemsBoundingRect().bottom();
     const PhysicalOverlaySummary physical_overlay = addPhysicalOverlay(
@@ -3386,6 +3478,8 @@ void FramePlanGraphicsScene::contextMenuEvent(
                         Qt::QueuedConnection);
                 });
     }
+    if (!on_entity && render_target_action_ != nullptr)
+        menu.addAction(render_target_action_);
     if (!menu.actions().isEmpty()) menu.addSeparator();
     // The same two objects the automation surface fires by name, so a scenario
     // reaches them without driving a popup.
@@ -3657,6 +3751,21 @@ void FramePlanGraphicsScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
                 return;
             }
             if (editingInline()) closeInlineEditor();
+            if (const auto resource = resourceNodeAt(*this, event->scenePos())) {
+                picked_resource_ = resource;
+                if (selected_edge_) {
+                    selected_edge_.reset();
+                    applyEdgeSelection();
+                }
+                clearSelection();
+                applyResourcePick();
+                event->accept();
+                return;
+            }
+            if (picked_resource_) {
+                picked_resource_.reset();
+                applyResourcePick();
+            }
             if (QGraphicsItem *band = inlineFieldAt(*this, event->scenePos());
                 band != nullptr) {
                 const FramePlanNodeKey node{
@@ -3767,6 +3876,18 @@ void FramePlanGraphicsScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) 
 
 void FramePlanGraphicsScene::mouseDoubleClickEvent(
     QGraphicsSceneMouseEvent *event) {
+    if (const auto resource = resourceNodeAt(*this, event->scenePos());
+        resource && resourceEditRequested) {
+        event->accept();
+        const FramePlanNodeKey key = *resource;
+        QMetaObject::invokeMethod(
+            this,
+            [this, key] {
+                if (resourceEditRequested) resourceEditRequested(key);
+            },
+            Qt::QueuedConnection);
+        return;
+    }
     QGraphicsItem *semantic_item = itemAt(event->scenePos(), QTransform{});
     while (semantic_item != nullptr &&
            itemKind(*semantic_item) !=
@@ -3835,6 +3956,18 @@ void FramePlanGraphicsScene::keyPressEvent(QKeyEvent *event) {
                 [this, consumer, resources] {
                     if (resourceEdgeRequested)
                         resourceEdgeRequested(consumer, resources, false);
+                },
+                Qt::QueuedConnection);
+            return;
+        }
+        if (picked_resource_ && resourceRemoveRequested) {
+            const FramePlanNodeKey resource = *picked_resource_;
+            event->accept();
+            QMetaObject::invokeMethod(
+                this,
+                [this, resource] {
+                    if (resourceRemoveRequested)
+                        resourceRemoveRequested(resource);
                 },
                 Qt::QueuedConnection);
             return;
@@ -3937,6 +4070,28 @@ void FramePlanGraphicsScene::recordSelection() {
     }
     applyEdgeEmphasis();
     publishStateProperties();
+}
+
+void FramePlanGraphicsScene::setRenderTargetAction(QAction *action) {
+    render_target_action_ = action;
+}
+
+void FramePlanGraphicsScene::applyResourcePick() {
+    for (QGraphicsItem *item : items()) {
+        if (itemKind(*item) != QLatin1String{FramePlanResourceNodeItem})
+            continue;
+        const bool picked =
+            picked_resource_ &&
+            item->data(FramePlanNameRole).toString() ==
+                qtext(picked_resource_->name);
+        item->setData(FramePlanEdgePickedRole, picked);
+        if (auto *rect = dynamic_cast<QGraphicsRectItem *>(item))
+            rect->setPen(QPen{picked ? QColor{QStringLiteral("#f0c05a")}
+                                     : QColor{QStringLiteral("#5f9fcf")},
+                              picked ? 2.4 : 1.4});
+    }
+    setProperty("pelicanPickedResource",
+                picked_resource_ ? qtext(picked_resource_->name) : QString{});
 }
 
 void FramePlanGraphicsScene::publishStateProperties() {

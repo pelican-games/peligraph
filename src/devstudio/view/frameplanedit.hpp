@@ -2,6 +2,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <array>
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <string>
@@ -48,6 +50,20 @@ struct FramePlanAuthoringPass {
     bool managed = false;
 };
 
+// F-1. One row of get_render_authoring_context.render_targets[]: a composed
+// render target, where it was declared, and whether edit_render_targets may
+// change it. `authored` is the fragment's own declaration -- the one a replace
+// starts from -- and is empty for anything the editor does not own.
+struct FramePlanRenderTarget {
+    std::string name;
+    nlohmann::json declaration = nlohmann::json::object();
+    nlohmann::json authored = nlohmann::json::object();
+    bool editable = false;
+    // "authoring" | "root" | "preset" | "feature:<reference>" | "engine" |
+    // "composed"
+    std::string source;
+};
+
 struct FramePlanAuthoring {
     bool received = false;
     std::string source_digest;
@@ -60,6 +76,15 @@ struct FramePlanAuthoring {
     // engine offers. "Add pass after this node" is a position in these.
     std::map<std::string, std::vector<std::string>> order;
     std::map<std::string, std::vector<std::pair<int, std::string>>> anchors;
+    // F-1: the render targets, and the vocabulary the engine's parser accepts
+    // for them. The form offers exactly these values.
+    std::map<std::string, FramePlanRenderTarget> render_targets;
+    std::vector<std::string> render_target_formats;
+    std::vector<std::string> render_target_usages;
+    std::string preset_name;
+
+    [[nodiscard]] const FramePlanRenderTarget *findRenderTarget(
+        const std::string &name) const;
 
     [[nodiscard]] const FramePlanAuthoringPass *find(
         const std::string &graph, const std::string &pass) const;
@@ -143,5 +168,57 @@ std::vector<FramePlanInlineField> framePlanInlineFields(
     const FramePlanAuthoring &authoring, const FramePlanTaskAuthoring &tasks,
     const std::string &graph, const std::string &pass,
     const std::string &authored_task);
+
+// --- F-1: render targets.
+
+// What the New render target form holds. The defaults are the answer to "I
+// only typed a name": a scene color target the size of the screen that a pass
+// can draw into and another can sample.
+struct RenderTargetFormValues {
+    std::string name;
+    // "scene" | "display" | "data" | "explicit"
+    std::string kind = "scene";
+    std::string format = "R16G16B16A16_SFLOAT";
+    bool fixed_size = false;
+    double extent_scale = 1.0;
+    std::uint32_t width = 256;
+    std::uint32_t height = 256;
+    std::vector<std::string> usage{"COLOR_ATTACHMENT", "SAMPLED"};
+    bool history = false;
+    std::optional<std::array<double, 4>> clear_color;
+};
+
+// The form filled from a declaration, for the replace path and the read-only
+// view of a target the editor does not own.
+RenderTargetFormValues renderTargetFormValues(const nlohmann::json &declaration);
+
+// The declaration the form sends. `base` is the fragment's current one on a
+// replace, so the fields the form does not show (mip_levels, dimension, ...)
+// travel unchanged. A fixed size keeps `extent_scale: 1` beside width/height:
+// the engine's parser requires the member even when the fixed extent wins.
+nlohmann::json renderTargetDeclaration(
+    const RenderTargetFormValues &values,
+    const nlohmann::json &base = nlohmann::json::object());
+
+FramePlanEditRequest framePlanRenderTargetAddRequest(
+    const FramePlanAuthoring &authoring, const RenderTargetFormValues &values);
+FramePlanEditRequest framePlanRenderTargetReplaceRequest(
+    const FramePlanAuthoring &authoring, const std::string &name,
+    const RenderTargetFormValues &values);
+// A target the editor does not own makes no RPC: the refusal names where it
+// was declared, because that is the only place it can be deleted.
+FramePlanEditRequest framePlanRenderTargetRemoveRequest(
+    const FramePlanAuthoring &authoring, const std::string &name);
+
+// Where a target came from, in one line a person reads ("the screen output the
+// engine provides", "a target of preset hybrid_v1").
+std::string framePlanRenderTargetOrigin(const std::string &source,
+                                        const std::string &name,
+                                        const std::string &preset_name = {});
+
+// The notice line for an edit_render_targets rejection, chosen by its code.
+// A referenced target lists the passes and tasks still using it.
+std::string framePlanRenderTargetRejection(
+    const nlohmann::json &error, const std::string &preset_name = {});
 
 } // namespace PelicanStudio

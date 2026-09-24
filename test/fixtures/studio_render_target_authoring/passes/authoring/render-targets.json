@@ -1,0 +1,24 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "authored_render_targets",
+  "runtime_shader_compiler": "optional",
+  "pelican_editor_managed": {
+    "schema": "pelican.authored_render_fragment",
+    "version": 1,
+    "owner": "pelican.devstudio",
+    "id": "render-targets"
+  },
+  "render_targets": [
+    {
+      "name": "f1_referenced_target",
+      "extent_scale": 1.0,
+      "format": "B8G8R8A8_UNORM",
+      "format_class": "scene",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED"
+      ]
+    }
+  ]
+}

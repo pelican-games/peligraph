@@ -37,6 +37,9 @@ struct FramePlanEditCapability {
         editComputeTask;
     std::function<qint64(const QJsonObject &params, QString *error)>
         removeComputeTask;
+    // F-1: add / replace / remove render targets in the editor's fragment.
+    std::function<qint64(const QJsonObject &params, QString *error)>
+        editRenderTargets;
     std::function<qint64(const QString &ticket, QString *error)>
         requestEditResult;
     std::function<void(QObject *context, ResultHandler handler)> result;
