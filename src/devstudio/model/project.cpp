@@ -1,6 +1,7 @@
 #include "project.hpp"
 
 #include "projectformat.hpp"
+#include "projectmigration.hpp"
 #include "sceneformat.hpp"
 #include "prefab.hpp"
 
@@ -104,11 +105,41 @@ const std::string &requiredNonemptyString(const nlohmann::json &object,
     return found->get_ref<const std::string &>();
 }
 
+void requireNoMigration(const std::filesystem::path &project_root,
+                        const Pelican::DocumentMigrationRegistry &migrations) {
+    const auto detections =
+        Pelican::detectProjectMigration(project_root, migrations);
+    if (detections.empty()) return;
+    auto documents = nlohmann::ordered_json::array();
+    for (const auto &detection : detections) {
+        documents.push_back(nlohmann::ordered_json{
+            {"path", detection.path},
+            {"schema", detection.schema},
+            {"from", detection.from_version},
+            {"to", detection.to_version}});
+    }
+    const Pelican::ProjectMigrationError refusal{
+        std::string{Pelican::projectMigrationRequiredCode},
+        nlohmann::ordered_json{{"documents", std::move(documents)}}};
+    throw ProjectMigrationRequiredError(project_root, refusal.what());
+}
+
 } // namespace
 
 ProjectOutlinerModel
 ProjectOutlinerModel::open(const std::filesystem::path &project_path) {
+    return open(project_path, Pelican::builtinDocumentMigrationRegistry());
+}
+
+ProjectOutlinerModel
+ProjectOutlinerModel::open(const std::filesystem::path &project_path,
+                           const Pelican::DocumentMigrationRegistry &migrations) {
     const auto location = locateProject(project_path);
+    // MG-1: the player's gate, read-only. A document an earlier engine wrote
+    // is named as that, not refused by a parser under some other name and
+    // not read as if it were current. (Resolving a transaction a crash left
+    // behind writes, so it stays the player's.)
+    requireNoMigration(location.root, migrations);
     auto parsed_project = Pelican::parseProjectEnvelopeText(
         readTextFile(location.file, "project.json"));
 

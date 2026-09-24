@@ -62,6 +62,21 @@ class EmbeddedViewport final : public QWidget {
     bool currentEngineReady() const noexcept {
         return rpc_ready_ && !restart_pending_;
     }
+    // MG-1. The player stopped opening the project at
+    // project.migration_required@1 (projectMigrationRequired): it runs no
+    // engine and shows no window, and serves plan_project_migration and
+    // apply_project_migration only. Those two go through here, and only to
+    // that player -- never to a running engine (MG-1b); every editor request
+    // stays closed.
+    bool migrationGateOpen() const noexcept { return migration_gate_; }
+    // The project this viewport runs a player on, and whether one runs.
+    const QString &projectRoot() const noexcept { return project_root_; }
+    bool engineRunning() const noexcept { return process_.isRunning(); }
+    qint64 requestMigrationRpc(const QString &method,
+                               const QJsonObject &params,
+                               QString *error = nullptr);
+    // MG-1. Stops the engine and forgets the project; nothing starts again.
+    void closeProject(const QString &reason);
     // Q-4. The engine's window is a child of this panel: the re-parenting has
     // happened, so its thread was taking messages when it did.
     bool engineWindowEmbedded() const noexcept { return child_window_ != 0; }
@@ -94,6 +109,9 @@ class EmbeddedViewport final : public QWidget {
     void inspectorRpcRejected(qint64 request_id, const QString &error_code,
                               const QString &message);
     void engineInputActiveChanged(bool active);
+    // MG-1. `refusal` is the line the player wrote:
+    // "project.migration_required@1: {documents:[...]}".
+    void projectMigrationRequired(const QString &refusal);
 
   private:
     EngineProcess process_;
@@ -130,6 +148,7 @@ class EmbeddedViewport final : public QWidget {
     bool shutting_down_ = false;
     bool rpc_ready_ = false;
     bool restart_pending_ = false;
+    bool migration_gate_ = false;
     bool engine_input_active_ = false;
     // Q-4. Why this run of the engine was stopped, when Studio stopped it on
     // purpose. Kept so the exit notice does not overwrite the reason with

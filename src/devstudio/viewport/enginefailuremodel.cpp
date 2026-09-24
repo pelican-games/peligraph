@@ -17,6 +17,7 @@ void EngineFailureModel::beginRun() {
     recent_standard_error_lines_.clear();
     pending_line_.clear();
     last_fatal_error_line_.clear();
+    migration_required_line_.clear();
 }
 
 void EngineFailureModel::appendStandardError(const QString &output) {
@@ -66,6 +67,10 @@ qsizetype EngineFailureModel::maximumLines() const noexcept {
 void EngineFailureModel::appendLine(QString line) {
     if (line.contains(QStringLiteral("Pelican fatal error"))) {
         last_fatal_error_line_ = line;
+    }
+    if (migration_required_line_.isEmpty() &&
+        line.startsWith(QStringLiteral("project.migration_required@1: "))) {
+        migration_required_line_ = line;
     }
 
     recent_standard_error_lines_.push_back(std::move(line));

@@ -10,6 +10,7 @@
 #include "../model/outlineredit.hpp"
 #include "newprojectdialog.hpp"
 #include "panelhelp.hpp"
+#include "projectmigrationwidget.hpp"
 #include "renderfeatureswidget.hpp"
 #include "studiotheme.hpp"
 #include "../viewport/embeddedviewport.hpp"
@@ -217,6 +218,16 @@ void MainWindow::createWorkspace() {
     viewport_ = new EmbeddedViewport(workspace);
     viewport_->bindSelectionModel(&selection_model_);
     workspace_layout->addWidget(viewport_, 1);
+    migration_panel_ = new ProjectMigrationWidget(
+        [this](const QString &method, const QJsonObject &params,
+               QString *error) {
+            return viewport_->requestMigrationRpc(method, params, error);
+        },
+        workspace);
+    migration_panel_->hide();
+    // No stretch of its own: while the viewport is hidden its document list
+    // takes the space, and once migrated it is one line above the viewport.
+    workspace_layout->addWidget(migration_panel_);
 
     project_list_ = new QListWidget(this);
     project_list_->addItem(tr("No project open"));
@@ -427,6 +438,9 @@ void MainWindow::createWorkspace() {
             [this](const QString &output) { appendEngineOutput(output); });
     connect(viewport_, &EmbeddedViewport::engineProcessExitedWithFailure, this,
             [this](const QString &) {
+                // MG-1: a project that was not opened (Don't Open ends its
+                // migration player) has nothing in the log to look at.
+                if (!project_model_ && !migration_panel_->active()) return;
                 docks_[EngineLogDock]->show();
                 docks_[EngineLogDock]->raise();
             });
@@ -450,8 +464,50 @@ void MainWindow::createWorkspace() {
             [this](qint64 request_id, const QString &message) {
                 failViewportPick(request_id, message);
             });
+    // MG-1. The player stopped at the gate. Either Studio already knew (the
+    // offline open refused the project first) and the panel is waiting for
+    // it, or the player's check was the first to say so.
+    connect(viewport_, &EmbeddedViewport::projectMigrationRequired, this,
+            [this](const QString &refusal) {
+                if (!migration_panel_->active()) {
+                    if (!project_model_) return;
+                    const auto root = project_model_->projectRoot();
+                    beginProjectMigration(root, refusal);
+                    return;
+                }
+                migration_panel_->engineReady();
+            });
+    connect(migration_panel_, &ProjectMigrationWidget::migrated, this,
+            [this](const QString &root, const QString &backup_line) {
+                if (!backup_line.isEmpty()) {
+                    appendEngineOutput(backup_line + QLatin1Char('\n'));
+                }
+                // Out of the reply that said so: opening the project may ask
+                // a question of its own.
+                QTimer::singleShot(0, this, [this, root] {
+                    viewport_->show();
+                    // The documents are current now: the offline open reads
+                    // them, and the migration player gives way to an engine.
+                    openProjectNow(root);
+                });
+            });
+    connect(migration_panel_, &ProjectMigrationWidget::closeRequested, this,
+            [this](const QString &) {
+                endProjectMigration();
+                viewport_->closeProject(tr("The project was not opened."));
+                statusBar()->showMessage(
+                    tr("The project was not opened; nothing was changed."),
+                    8000);
+            });
+    connect(viewport_, &EmbeddedViewport::inspectorRpcRejected, this,
+            [this](qint64 request_id, const QString &error_code,
+                   const QString &message) {
+                (void)migration_panel_->acceptRpcRejection(
+                    request_id, error_code, message);
+            });
     connect(viewport_, &EmbeddedViewport::engineRpcBecameAvailable, this,
             [this] {
+                migration_panel_->engineOpenedWithoutMigrating();
                 pending_outliner_request_ = 0;
                 setOutlinerRefreshInterval(OutlinerRefreshMinimumIntervalMs);
                 outliner_refresh_timer_->start();
@@ -481,6 +537,8 @@ void MainWindow::createWorkspace() {
             [this](bool) { updateModalTransformPolling(); });
     connect(viewport_, &EmbeddedViewport::inspectorRpcSucceeded, this,
             [this](qint64 request_id, const QByteArray &result_json) {
+                if (migration_panel_->acceptRpcResult(request_id, result_json))
+                    return;
                 if (request_id != 0 && request_id == navigation_revision_request_) {
                     navigation_revision_request_ = 0;
                     try {
@@ -502,6 +560,8 @@ void MainWindow::createWorkspace() {
             });
     connect(viewport_, &EmbeddedViewport::inspectorRpcFailed, this,
             [this](qint64 request_id, const QString &message) {
+                if (migration_panel_->acceptRpcFailure(request_id, message))
+                    return;
                 if (request_id != 0 && request_id == navigation_revision_request_) {
                     cancelNavigation(tr("Could not check unsaved changes: %1").arg(message));
                     return;
@@ -974,16 +1034,90 @@ void MainWindow::openProjectNow(const QString &path) {
         frame_plan_->setProjectRoot(project_model_->projectRoot());
         fullscreen_pass_->setProjectRoot(project_model_->projectRoot());
         graph_canvas_->setProjectRoot(project_model_->projectRoot());
-        viewport_->openProject(displayPath(project_model_->projectRoot()));
+        const QString opened_root = displayPath(project_model_->projectRoot());
+        // MG-1: a migration just applied to this project leaves its one line
+        // on screen; any other project closes the panel.
+        if (migration_panel_->active() &&
+            !(migration_panel_->stage() ==
+                  ProjectMigrationWidget::Stage::migrated &&
+              migration_panel_->projectRoot() == opened_root)) {
+            endProjectMigration();
+        }
+        viewport_->show();
+        viewport_->openProject(opened_root);
+        if (viewport_->migrationGateOpen()) {
+            // The player on this project is the migration server, which
+            // holds nothing the editor can use. It gives way to an engine the
+            // way every restart does.
+            requestEngineRestart(
+                tr("The project was migrated; the engine starts again to "
+                   "open it."));
+        }
         statusBar()->showMessage(
-            tr("Opened %1. %2")
-                .arg(displayPath(project_model_->projectRoot()),
-                     tool_layout_notice),
-            5000);
+            tr("Opened %1. %2").arg(opened_root, tool_layout_notice), 5000);
+    } catch (const ProjectMigrationRequiredError &required) {
+        beginProjectMigration(required.projectRoot(),
+                              QString::fromUtf8(required.what()));
     } catch (const std::exception &error) {
         QMessageBox::warning(this, tr("Could Not Open Project"),
                              QString::fromUtf8(error.what()));
     }
+}
+
+void MainWindow::beginProjectMigration(
+    const std::filesystem::path &project_root, const QString &refusal) {
+    leaveCurrentProject(project_root);
+    const QString root = displayPath(project_root);
+    migration_panel_->begin(root, refusal);
+    viewport_->hide();
+    migration_panel_->show();
+    statusBar()->showMessage(
+        tr("%1 was saved in an earlier format.").arg(root), 8000);
+    const bool engine_on_this_project =
+        viewport_->engineRunning() &&
+        viewport_->projectRoot() == QDir(root).absolutePath();
+    if (engine_on_this_project && !viewport_->migrationGateOpen()) {
+        // An engine holds this project (or a player not yet heard from). It
+        // is stopped first: a migration is applied only by a player that
+        // started no engine (MG-1b), and this one starts again as that.
+        requestEngineRestart(
+            tr("The engine starts again to read the migration plan."));
+    } else {
+        viewport_->openProject(root);
+    }
+    // Already at the gate (the player said so first): ask now. Otherwise the
+    // player's projectMigrationRequired asks.
+    if (viewport_->migrationGateOpen()) migration_panel_->engineReady();
+}
+
+void MainWindow::endProjectMigration() {
+    migration_panel_->end();
+    migration_panel_->hide();
+    viewport_->show();
+}
+
+void MainWindow::leaveCurrentProject(
+    const std::filesystem::path &next_project_root) {
+    saveLastToolLayout();
+    outliner_refresh_timer_->stop();
+    pending_outliner_request_ = 0;
+    inspector_->resetSceneSaveState();
+    pending_spawn_name_.reset();
+    pending_created_selection_.reset();
+    pending_outliner_edit_.reset();
+    endGizmoSessionForProjectSwitch(next_project_root);
+    selection_model_.bindProject(nullptr);
+    project_model_.reset();
+    tool_layout_presets_.reset();
+    {
+        const QSignalBlocker block_outliner{outliner_};
+        outliner_->clear();
+    }
+    project_list_->clear();
+    project_list_->addItem(tr("No project open"));
+    project_list_->setEnabled(false);
+    refreshSelectionViews();
+    setWindowModified(false);
 }
 
 void MainWindow::setShaderSourceOpenAction(

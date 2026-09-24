@@ -694,6 +694,13 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     Qt6::Core
     Qt6::Widgets
   )
+
+  # MG-1 (GUI): the migration panel, driven by hand-written engine replies.
+  pelican_define_test(devstudio_projectmigration_test QT QT_OFFSCREEN
+    pelican_studio_view
+    Qt6::Core
+    Qt6::Widgets
+  )
 endif()
 
 if(WIN32 AND COMMAND pelican_configure_game_logic_target)

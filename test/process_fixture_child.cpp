@@ -94,6 +94,39 @@ void answerRpcOnStandardInput() {
     }
 }
 
+// MG-1. What pelican_player --rpc does when the project it opens needs
+// migrating (runProjectMigrationRpcServer): it says so on stderr, starts no
+// engine and shows no window, answers plan_project_migration, refuses every
+// other method by that same refusal, and ends when its input does.
+int runMigrationGateFixture() {
+    const char *refusal =
+        R"json(project.migration_required@1: {"documents":[{"path":"scenes/main.scene.json","schema":"pelican.scene","from":2,"to":3}]})json";
+    std::cerr << refusal << '\n' << std::flush;
+    std::string request;
+    while (std::getline(std::cin, request)) {
+        const long long id = rpcIntegerField(request, "id");
+        const std::string method = rpcStringField(request, "method");
+        if (method == "plan_project_migration") {
+            std::cout << "{\"id\":" << id
+                      << R"json(,"jsonrpc":"2.0","result":{"required":true,"documents":[],"expected":{"project.json":"sha256:00"}}})json"
+                      << '\n' << std::flush;
+            continue;
+        }
+        if (method == "apply_project_migration") {
+            std::cout << "{\"id\":" << id
+                      << R"json(,"jsonrpc":"2.0","result":{"required":true,"applied":true,"backup":".pelican/migration/fixture","restart_required":true}})json"
+                      << '\n' << std::flush;
+            continue;
+        }
+        std::cout << "{\"id\":" << id
+                  << R"json(,"jsonrpc":"2.0","error":{"code":-32000,"message":")json"
+                  << "project.migration_required@1: {}" << "\"}}\n"
+                  << std::flush;
+    }
+    std::cerr << "migration-gate-input-closed\n" << std::flush;
+    return 1;
+}
+
 #ifdef _WIN32
 
 // Q-4. What the engine does to Studio, in one fixture: a real top-level window
@@ -182,6 +215,9 @@ int main(int argc, char *argv[]) {
         return runViewportWindowFixture();
     }
 #endif
+    if (childMode() == "migration-gate") {
+        return runMigrationGateFixture();
+    }
     if (childMode() == "viewport-hang") {
         std::cout << "viewport-hang-ready\n" << std::flush;
         for (;;) std::this_thread::sleep_for(std::chrono::seconds{1});

@@ -15,6 +15,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -627,6 +628,139 @@ TEST_CASE("Q-9: once a restart is asked for, wait_engine waits for the new "
     CHECK_FALSE(waitEngine(100).ok);
     viewport.setRestartPending(false);
     CHECK(waitEngine(100).ok);
+}
+
+// MG-1 (GUI). A player whose project needs migrating writes the refusal on
+// stderr, starts no engine and shows no window, and serves the two migration
+// methods until its input ends. The fixture does exactly that.
+TEST_CASE("MG-1 a player stopped at migration_required is named, served for "
+          "the migration only, and closed through its input",
+          "[devstudio][viewport][mg1][migration][process]") {
+    EngineFixtureEnvironment fixture{/*pump_delay_ms=*/0,
+                                     /*heartbeat_ms=*/0,
+                                     /*rpc_delay_ms=*/0,
+                                     /*load_timeout_ms=*/60000};
+    qputenv("PELICAN_WP173_CHILD_MODE", "migration-gate");
+    int argument_count = 1;
+    char application_name[] = "pelican_viewport_migration_test";
+    char *arguments[] = {application_name};
+    QApplication application{argument_count, arguments};
+
+    EmbeddedViewport viewport;
+    viewport.resize(320, 200);
+    QLabel *status = namedLabel(viewport, "pelican.viewportStatus");
+    REQUIRE(status != nullptr);
+    QStringList refusals;
+    QString standard_error;
+    QHash<qint64, QByteArray> results;
+    QObject::connect(&viewport, &EmbeddedViewport::projectMigrationRequired,
+                     &application,
+                     [&](const QString &refusal) { refusals.push_back(refusal); });
+    QObject::connect(&viewport, &EmbeddedViewport::engineStandardErrorReceived,
+                     &application,
+                     [&](const QString &text) { standard_error += text; });
+    QObject::connect(&viewport, &EmbeddedViewport::inspectorRpcSucceeded,
+                     &application, [&](qint64 id, const QByteArray &json) {
+                         results.insert(id, json);
+                     });
+
+    viewport.openProject(QDir::tempPath());
+    REQUIRE(pumpUntil([&] { return !refusals.isEmpty(); }, 10000) >= 0);
+    REQUIRE(refusals.size() == 1);
+    REQUIRE(refusals.front().startsWith(
+        QStringLiteral("project.migration_required@1: {\"documents\"")));
+    REQUIRE(viewport.migrationGateOpen());
+    REQUIRE(status->text().contains(QStringLiteral("migrating")));
+
+    // Editor requests stay closed: this player is no engine.
+    REQUIRE_FALSE(viewport.rpcReady());
+    QString error;
+    REQUIRE(viewport.requestRpc(QStringLiteral("get_status"), {}, &error) == 0);
+    REQUIRE(viewport.requestMigrationRpc(QStringLiteral("get_status"), {},
+                                         &error) == 0);
+    // The migration ones are served.
+    const qint64 plan = viewport.requestMigrationRpc(
+        QStringLiteral("plan_project_migration"), {}, &error);
+    REQUIRE(plan != 0);
+    REQUIRE(pumpUntil([&] { return results.contains(plan); }, 10000) >= 0);
+    REQUIRE(QJsonDocument::fromJson(results.value(plan))
+                .object()
+                .value(QStringLiteral("required"))
+                .toBool());
+
+    // Not opening the project ends the player through its input -- it has no
+    // window to close -- and nothing is started again.
+    viewport.closeProject(QStringLiteral("The project was not opened."));
+    REQUIRE(pumpUntil(
+                [&] {
+                    return standard_error.contains(
+                        QStringLiteral("migration-gate-input-closed"));
+                },
+                10000) >= 0);
+    REQUIRE(pumpUntil([&] { return !viewport.migrationGateOpen(); }, 10000) >= 0);
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+    REQUIRE(status->text() == QStringLiteral("The project was not opened."));
+    REQUIRE(refusals.size() == 1);
+}
+
+// MG-1b. Recovery inside an apply can roll back an edit another process is
+// committing, so a migration is applied only by the player that started no
+// engine. An engine that has the project open is never asked, even though it
+// answers the method: it is stopped, and the project comes back through the
+// gate before anything is applied.
+TEST_CASE("MG-1b a migration is never sent to a running engine, only to the "
+          "player that started none after it",
+          "[devstudio][viewport][mg1][migration][process]") {
+    EngineFixtureEnvironment fixture{/*pump_delay_ms=*/0,
+                                     /*heartbeat_ms=*/0,
+                                     /*rpc_delay_ms=*/0,
+                                     /*load_timeout_ms=*/60000};
+    int argument_count = 1;
+    char application_name[] = "pelican_viewport_migration_order_test";
+    char *arguments[] = {application_name};
+    QApplication application{argument_count, arguments};
+
+    EmbeddedViewport viewport;
+    viewport.resize(320, 200);
+    QStringList refusals;
+    QHash<qint64, QByteArray> results;
+    QObject::connect(&viewport, &EmbeddedViewport::projectMigrationRequired,
+                     &application,
+                     [&](const QString &refusal) { refusals.push_back(refusal); });
+    QObject::connect(&viewport, &EmbeddedViewport::inspectorRpcSucceeded,
+                     &application, [&](qint64 id, const QByteArray &json) {
+                         results.insert(id, json);
+                     });
+    const QJsonObject apply_params{
+        {QStringLiteral("expected"),
+         QJsonObject{{QStringLiteral("project.json"),
+                      QStringLiteral("sha256:00")}}}};
+
+    // An engine with the project open, ready for editor requests.
+    viewport.openProject(QDir::tempPath());
+    REQUIRE(pumpUntil([&] { return viewport.rpcReady(); }, 20000) >= 0);
+    QString error;
+    REQUIRE(viewport.requestMigrationRpc(
+                QStringLiteral("apply_project_migration"), apply_params,
+                &error) == 0);
+    REQUIRE(error.contains(QStringLiteral("has this project open")));
+    REQUIRE(viewport.requestMigrationRpc(
+                QStringLiteral("plan_project_migration"), {}, &error) == 0);
+
+    // Stopped first; the next player stops at the gate, and is the one asked.
+    qputenv("PELICAN_WP173_CHILD_MODE", "migration-gate");
+    viewport.restartEngine(QStringLiteral("migrating"));
+    REQUIRE(pumpUntil([&] { return !refusals.isEmpty(); }, 20000) >= 0);
+    REQUIRE(viewport.migrationGateOpen());
+    REQUIRE_FALSE(viewport.rpcReady());
+    const qint64 apply = viewport.requestMigrationRpc(
+        QStringLiteral("apply_project_migration"), apply_params, &error);
+    REQUIRE(apply != 0);
+    REQUIRE(pumpUntil([&] { return results.contains(apply); }, 10000) >= 0);
+    REQUIRE(QJsonDocument::fromJson(results.value(apply))
+                .object()
+                .value(QStringLiteral("applied"))
+                .toBool());
 }
 
 #endif

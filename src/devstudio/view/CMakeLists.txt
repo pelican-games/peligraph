@@ -56,6 +56,8 @@ add_library(pelican_studio_view STATIC
     proceduralassetdialog.hpp
     newprojectdialog.cpp
     newprojectdialog.hpp
+    projectmigrationwidget.cpp
+    projectmigrationwidget.hpp
     taskconnectiongraphics.cpp
     taskconnectiongraphics.hpp
     renderfeatureswidget.cpp

@@ -7,6 +7,7 @@
 #include "../src/core/loader/resolvedscene.hpp"
 #include "../src/project/prefab.hpp"
 #include "../src/project/projectformat.hpp"
+#include "../src/project/projectmigration.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -630,4 +631,61 @@ TEST_CASE("OL-1 the object to select is the one the committed edit created",
     CHECK(createdObjectToSelect(created)->authoring_object_id == 7);
     CHECK_FALSE(createdObjectToSelect(nlohmann::json::array()));
     CHECK_FALSE(createdObjectToSelect(created, 99));
+}
+
+// MG-1 (GUI). Studio's offline open reads the project's documents before the
+// engine starts. A document an earlier engine wrote is named as that -- the
+// player's own refusal -- instead of being read as if it were current.
+TEST_CASE("MG-1 the offline open does not read a document that needs migrating",
+          "[devstudio][outliner][mg1][migration][offline]") {
+    ProjectSandbox sandbox;
+    sandbox.write("project.json", R"json({
+      "schema":"pelican.project","version":1,"name":"migration-offline",
+      "basic_config":{"scene_data_json":"scenes/main.scene.json"}
+    })json");
+    sandbox.write("scenes/main.scene.json", R"json({
+      "schema":"pelican.scene","version":2,
+      "scenes":{"main":{"objects":[{"name":"Lamp","components":[{"name":"transform"}]}]}}
+    })json");
+
+    // A later engine: pelican.scene moved from version 2 to 3.
+    Pelican::DocumentMigrationRegistry later;
+    later.registerStep(Pelican::DocumentMigrationStep{
+        .id = "test.scene_2_to_3",
+        .schema = "pelican.scene",
+        .from_version = 2,
+        .to_version = 3,
+        .description = "test step",
+        .plan = [](const nlohmann::ordered_json &document,
+                   const Pelican::ProjectContext &) {
+            return Pelican::StepResult{document, {}};
+        },
+    });
+
+    std::optional<std::string> refusal;
+    std::filesystem::path refused_root;
+    try {
+        (void)ProjectOutlinerModel::open(sandbox.root, later);
+    } catch (const PelicanStudio::ProjectMigrationRequiredError &error) {
+        refusal = error.what();
+        refused_root = error.projectRoot();
+    }
+    REQUIRE(refusal.has_value());
+    REQUIRE(refused_root == std::filesystem::canonical(sandbox.root));
+    // The same text the player writes when it stops at the gate, so the one
+    // screen reads both.
+    const std::string_view prefix = "project.migration_required@1: ";
+    REQUIRE(refusal->starts_with(prefix));
+    const auto fields = nlohmann::json::parse(refusal->substr(prefix.size()));
+    REQUIRE(fields.at("documents") ==
+            nlohmann::json::parse(R"json([{"path":"scenes/main.scene.json",
+              "schema":"pelican.scene","from":2,"to":3}])json"));
+
+    // The control: the engine that shipped (no steps) opens the same project.
+    const auto current = ProjectOutlinerModel::open(sandbox.root);
+    REQUIRE(current.projectName() == std::optional<std::string>{"migration-offline"});
+    REQUIRE(ProjectOutlinerModel::open(sandbox.root,
+                                       Pelican::DocumentMigrationRegistry{})
+                .projectName()
+                .has_value());
 }

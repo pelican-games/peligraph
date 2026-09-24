@@ -44,6 +44,7 @@ class GraphCanvasWidget;
 class FullscreenPassWidget;
 class InspectorWidget;
 class OutlinerTree;
+class ProjectMigrationWidget;
 class RenderFeaturesWidget;
 enum class AddObjectKind : std::uint8_t;
 struct SceneEditOutcome;
@@ -101,6 +102,9 @@ class MainWindow : public QMainWindow {
     // Q-7: one line under the Outliner for what became of an Add object.
     QLabel *outliner_notice_ = nullptr;
     EmbeddedViewport *viewport_ = nullptr;
+    // MG-1: shown instead of the viewport while the project being opened was
+    // written by an earlier engine.
+    ProjectMigrationWidget *migration_panel_ = nullptr;
     InspectorWidget *inspector_ = nullptr;
     FramePlanWidget *frame_plan_ = nullptr;
     RenderFeaturesWidget *render_features_ = nullptr;
@@ -171,6 +175,14 @@ class MainWindow : public QMainWindow {
     // root to openProject, so the unsaved-changes guard applies to it too.
     void chooseNewProject();
     void openProjectNow(const QString &path);
+    // MG-1. The project at `project_root` needs migrating: whatever was open
+    // is left, the migration panel takes the viewport's place, and the player
+    // is started on the project to serve the plan.
+    void beginProjectMigration(const std::filesystem::path &project_root,
+                               const QString &refusal);
+    void endProjectMigration();
+    // What opening another project resets, without opening one.
+    void leaveCurrentProject(const std::filesystem::path &next_project_root);
     void requestNavigation(Navigation destination, const QString &path = {});
     void checkNavigationRevision();
     void continueNavigation();

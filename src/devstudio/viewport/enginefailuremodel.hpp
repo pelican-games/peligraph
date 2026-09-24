@@ -24,6 +24,12 @@ class EngineFailureModel {
     std::optional<EngineFailurePresentation> finishRun(int exit_code);
 
     const QStringList &recentStandardErrorLines() const noexcept;
+    // MG-1. The line a player writes when the project it opens needs
+    // migrating ("project.migration_required@1: {...}"), once this run has
+    // written it; empty before.
+    const QString &migrationRequiredLine() const noexcept {
+        return migration_required_line_;
+    }
     qsizetype maximumLines() const noexcept;
 
   private:
@@ -31,6 +37,7 @@ class EngineFailureModel {
     QStringList recent_standard_error_lines_;
     QString pending_line_;
     QString last_fatal_error_line_;
+    QString migration_required_line_;
 
     void appendLine(QString line);
 };

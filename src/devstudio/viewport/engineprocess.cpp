@@ -367,6 +367,12 @@ void EngineProcess::kill() {
     }
 }
 
+void EngineProcess::closeInput() {
+    if (isRunning()) {
+        process_.closeWriteChannel();
+    }
+}
+
 bool EngineProcess::waitForStarted(int timeout_ms) {
     return process_.waitForStarted(timeout_ms);
 }

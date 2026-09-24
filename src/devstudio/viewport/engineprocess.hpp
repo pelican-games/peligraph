@@ -38,6 +38,9 @@ class EngineProcess final : public QObject {
     bool start(const EngineProcessLaunch &launch, QString *error = nullptr);
     void terminate();
     void kill();
+    // MG-1. Ends the child's standard input: a player that serves RPC and
+    // has no window (the migration server) ends when its input does.
+    void closeInput();
     bool waitForStarted(int timeout_ms);
     bool waitForFinished(int timeout_ms);
     qint64 requestRpc(const QString &method, const QJsonObject &params,

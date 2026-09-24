@@ -358,6 +358,28 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                 engine_failure_model_.appendStandardError(output);
                 emit engineStandardErrorReceived(output);
             });
+    // MG-1. A player whose project needs migrating says so on stderr and then
+    // serves the migration RPCs with no window: it is not an engine that is
+    // slow to show one, and it is not given up on for that.
+    connect(&process_, &EngineProcess::standardErrorReceived, this,
+            [this](const QString &) {
+                const QString &refusal =
+                    engine_failure_model_.migrationRequiredLine();
+                if (migration_gate_ || refusal.isEmpty() ||
+                    !process_.isRunning()) {
+                    return;
+                }
+                migration_gate_ = true;
+                window_discovery_timer_->stop();
+                setEngineLoadingNotice({});
+                status_->setText(tr("The project needs migrating before the "
+                                    "engine can open it."));
+                emit projectMigrationRequired(refusal);
+            });
+    connect(&process_, &EngineProcess::processStopped, this,
+            [this] { migration_gate_ = false; });
+    connect(&process_, &EngineProcess::processFailed, this,
+            [this] { migration_gate_ = false; });
     connect(&process_, &EngineProcess::rpcResultReceived, this,
             [this](qint64 request_id, const QByteArray &result_json) {
                 // Q-4: the readiness probe is Studio's own question and is
@@ -569,6 +591,47 @@ qint64 EmbeddedViewport::requestRpc(const QString &method,
     return process_.requestRpc(method, params, error);
 }
 
+qint64 EmbeddedViewport::requestMigrationRpc(const QString &method,
+                                             const QJsonObject &params,
+                                             QString *error) {
+    if (method != QStringLiteral("plan_project_migration") &&
+        method != QStringLiteral("apply_project_migration")) {
+        if (error != nullptr) {
+            *error = tr("%1 is not a migration request.").arg(method);
+        }
+        return 0;
+    }
+    // Only the player that stopped at the gate: it started no engine, so
+    // nothing else in this process holds the documents while apply rewrites
+    // them (MG-1b). A running engine answers these methods too, and is never
+    // asked: its project is migrated by starting it again, through the gate.
+    if (!migration_gate_) {
+        if (error != nullptr) {
+            *error = rpc_ready_
+                         ? tr("The engine has this project open; it is "
+                              "migrated only by a player that started no "
+                              "engine.")
+                         : tr("The engine is not ready for the migration "
+                              "yet.");
+        }
+        return 0;
+    }
+    return process_.requestRpc(method, params, error);
+}
+
+void EmbeddedViewport::closeProject(const QString &reason) {
+    project_root_.clear();
+    restart_after_stop_ = false;
+    setPickingNotice({});
+    if (!process_.isRunning()) {
+        status_->setText(reason);
+        restart_button_->setEnabled(false);
+        return;
+    }
+    engine_stop_reason_ = reason;
+    stopEngine();
+}
+
 void EmbeddedViewport::setPickingNotice(const QString &message) {
     picking_notice_->setText(message);
     picking_notice_->setVisible(!message.isEmpty());
@@ -625,7 +688,12 @@ void EmbeddedViewport::stopEngine() {
     const qint64 stopping_process_id = process_.processId();
     status_->setText(tr("Stopping engine..."));
     stop_button_->setEnabled(false);
-    if (child_window_ == 0 || !NativeWindowHost::requestClose(child_window_)) {
+    if (migration_gate_) {
+        // MG-1: the migration server has no window to close; it ends with
+        // its input.
+        process_.closeInput();
+    } else if (child_window_ == 0 ||
+               !NativeWindowHost::requestClose(child_window_)) {
         process_.terminate();
     }
     QTimer::singleShot(GracefulShutdownTimeoutMs, this, [this, stopping_process_id]() {

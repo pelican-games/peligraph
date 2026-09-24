@@ -4,12 +4,35 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json_fwd.hpp>
 
+namespace Pelican {
+class DocumentMigrationRegistry;
+}
+
 namespace PelicanStudio {
+
+// MG-1. What the offline open throws instead of reading a document an earlier
+// engine wrote: the same refusal the player stops at,
+// "project.migration_required@1: {documents:[{path, schema, from, to}]}",
+// and the project it names, so Studio can show the migration instead.
+class ProjectMigrationRequiredError : public std::runtime_error {
+    std::filesystem::path project_root_;
+
+  public:
+    ProjectMigrationRequiredError(std::filesystem::path project_root,
+                                  const std::string &refusal)
+        : std::runtime_error(refusal),
+          project_root_(std::move(project_root)) {}
+    const std::filesystem::path &projectRoot() const noexcept {
+        return project_root_;
+    }
+};
 
 // OL-1: an object is the authoring id the engine gave it (`scene_tree`'s
 // `authoring_object_id`), which a duplicate, a delete, a reparent or an undo
@@ -61,7 +84,14 @@ class ProjectOutlinerModel {
     std::optional<std::uint64_t> scene_revision_;
 
   public:
+    // Before any parser reads a document, the project's documents are read
+    // for their (schema, version) envelopes, as the player does: one that a
+    // registered migration step starts from is ProjectMigrationRequiredError.
+    // The one-argument form uses the engine's own steps.
     static ProjectOutlinerModel open(const std::filesystem::path &project_path);
+    static ProjectOutlinerModel open(
+        const std::filesystem::path &project_path,
+        const Pelican::DocumentMigrationRegistry &migrations);
     bool updateSceneTree(const nlohmann::json &scene_tree);
 
     const std::filesystem::path &projectRoot() const noexcept {
