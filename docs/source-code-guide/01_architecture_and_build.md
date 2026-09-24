@@ -99,7 +99,7 @@ package は「エンジンのツリーの外で書かれ、プロジェクトへ
 
 `project init` が書き出す雛形は、[`templateFiles()`](../../src/project/projecttemplate.cpp#L342) が返すファイル名と文字列定数の対で全量が決まります。「新規プロジェクトの既定形」を知りたいときはここだけ読めば足ります。F-2 でこのファイルは `pelican_cli` から `pelican_project` へ移り（[`src/project/projecttemplate.hpp`](../../src/project/projecttemplate.hpp)）、`pelican_cli` の [`projectinit.cpp`](../../src/devcli/projectinit.cpp#L27) は `--template standard|blank` を読んで `initializeProjectTemplate()` を呼ぶだけになりました。Studio の File > New Project... も同じ関数を呼ぶので、「新しいプロジェクトが何を持つか」の答えは1箇所です。`templateFiles()` は `ProjectTemplate` を引数に取り、`Blank` のときだけ `shaders/present.frag` を足し、`passes/main_rendering_config.json` の中身を切り替えます（以下は既定の `standard` の説明です）。
 
-このうち `passes/main_rendering_config.json` の内容は二段で決まります。WP240a（`87f5e68`）で111行の手書き宣言からpresetを指す2キーへ置き換わり、さらにP-2a-4bで**`pelican.graph` root で包む**形になりました。文字列定数 [`rendering_config_json`](../../src/project/projecttemplate.cpp#L197) が持つのは `rendering` 節の中身だけで、外側は [`renderingConfigJson()`](../../src/project/projecttemplate.cpp#L265) が [`wrapLegacyRenderingConfig()`](../../src/project/renderconfigsection.hpp#L62) を1回通して作ります（[第3章 §3.14](03_project_and_loading.md)）。雛形が書き出す実物は次の形です。
+このうち `passes/main_rendering_config.json` の内容は二段で決まります。WP240a（`87f5e68`）で111行の手書き宣言からpresetを指す2キーへ置き換わり、さらにP-2a-4bで**`pelican.graph` root** になりました。MG-2b からは文字列定数 [`rendering_config_json`](../../src/project/projecttemplate.cpp#L197) が graph root の全体をそのまま持ち、[`renderingConfigJson()`](../../src/project/projecttemplate.cpp#L265) はそれを返すだけです（以前それを包んでいた `wrapLegacyRenderingConfig()` は撤去されました。[第3章 §3.14](03_project_and_loading.md)）。雛形が書き出す実物は次の形です。
 
 ```json
 {
@@ -394,9 +394,9 @@ tools/worktree.sh test      <worktree> [-R ...]
 | プロジェクト | 用途 |
 |---|---|
 | [`projects/example`](../../projects/example) | 標準の検証プロジェクト。rendering configはP-2a-4bで **`pelican.graph` root** へ移り、`render_targets` / `rendering_passes` を自分で並べる従来の中身がその `rendering` 節に丸ごと入っています（[`main_rendering_config.json`](../../projects/example/passes/main_rendering_config.json)。`nodes` は空配列） |
-| [`projects/animgraph_demo`](../../projects/animgraph_demo) | アニメーショングラフ（`pelican.anim_graph` をanimation componentから指す様式）のデモ。WP240aでrendering configがpreset形へ移行済みで、root は legacy のまま2キーだけです（[`passes/main.json`](../../projects/animgraph_demo/passes/main.json)） |
+| [`projects/animgraph_demo`](../../projects/animgraph_demo) | アニメーショングラフ（`pelican.anim_graph` をanimation componentから指す様式）のデモ。WP240aでrendering configがpreset形へ移行済みで、MG-2b で `pelican.graph` root に包まれました（[`passes/main.json`](../../projects/animgraph_demo/passes/main.json)。`nodes` は空配列） |
 | [`projects/posegraph_demo`](../../projects/posegraph_demo) | 共通グラフの姿勢経路（`graph.instance` + `pose.*`）のデモ。`project.json` に `"requires": ["animation"]` を書く3つ（他はanimgraph_demoとvrm_xr_demo）のひとつで、rendering configは `pelican.graph` root に `definitions` / `nodes` と `rendering` 節を同居させた形（[`passes/main.json`](../../projects/posegraph_demo/passes/main.json)）。2つの装着様式を見比べるならanimgraph_demoとこの2つです |
-| [`projects/raytracing_demo`](../../projects/raytracing_demo) | ray query / 加速構造のデモ（[第11章](11_ray_query_acceleration_structures.md)）。rendering configは legacy root で、`ray_group_layout` / `ray_bindings` を持つのはこのprojectだけです（[`rendering.json`](../../projects/raytracing_demo/rendering.json)） |
+| [`projects/raytracing_demo`](../../projects/raytracing_demo) | ray query / 加速構造のデモ（[第11章](11_ray_query_acceleration_structures.md)）。rendering configは MG-2b で `pelican.graph` root に包まれました。`ray_group_layout` / `ray_bindings` を持つのはこの project と `pathtrace_demo` です（[`rendering.json`](../../projects/raytracing_demo/rendering.json)） |
 | [`projects/sprite_demo`](../../projects/sprite_demo) | 2Dスプライトのデモ |
 | [`projects/vrm_xr_demo`](../../projects/vrm_xr_demo) | VRM + XRのデモ |
 

@@ -4,8 +4,8 @@
 
 ## この章で学ぶこと
 
-- シーン形式 `pelican.scene` v1 の正確なスキーマと実物例
-- v1 で書けるコンポーネント全種類(必須/任意フィールド・既定値・単位)— **`behavior` を含む**
+- シーン形式 `pelican.scene` v2 の正確なスキーマと実物例
+- シーンに書けるコンポーネント全種類(必須/任意フィールド・既定値・単位)— **`behavior` を含む**
 - シーンがロードされてから ECS・ライト・物理に振り分けられるまでの流れ — **1 つのトランザクション**としての scene load
 - ランタイム ECS(世代付き ID・生成トランザクション)の、ゲーム開発者が知るべき要点
 - ゲーム DLL から ECS コンポーネントを登録する方法と、名前空間の規則
@@ -20,7 +20,7 @@
 ```json
 {
   "schema": "pelican.scene",
-  "version": 1,
+  "version": 2,
   "scenes": {
     "default_scene": {
       "objects": [
@@ -67,11 +67,11 @@
 | フィールド | 規則 |
 |---|---|
 | `schema` | **必須**。`"pelican.scene"` 以外は hard error |
-| `version` | **必須**。整数で **`1` か `2`**(0・負・3 以上は拒否。`2` は prefab(`pelican.prefab` 文書の展開。台帳 WP361)を使う scene 用。v1 に `prefab` を書くと `prefab_requires_scene_v2` で拒否) |
+| `version` | **必須**。整数で **`2` ちょうど**。それ以外は `pelican.scene.version_unsupported@1` で拒否します(✅MG-2b。[validateEnvelope](../../src/project/sceneformat.cpp#L110))。prefab(`pelican.prefab` 文書の展開。台帳 WP361)も書けます。MG-2b より前にあった version `1` は「prefab キーを受けない」ことだけが違う版で、今は読めません。手元に `1` のファイルがあれば `"version"` を `2` に書き換えるだけで読めます |
 | `scenes` | **必須**。`{ "<scene_id>": { "objects": [...] }, ... }` |
 
 - **hard error** とは、警告を出して続行するのではなく、その場で例外を投げてロードを打ち切る失敗のことです(エンベロープの検査なら [validateEnvelope](../../src/project/sceneformat.cpp#L110) が `std::runtime_error` を投げます)。シーンロードは 1 つのトランザクションなので(§4.3)、hard error になったシーンが半分だけ構築されて残ることはありません。
-- schema なしのレガシー形式、トップレベル `lights` セクションは **v1 では受理されません**(名指しのエラーで移行先を案内)。※設計文書には「WARN+自動解釈」と書かれていますが、WP63(strict v1 化)で意図的に廃止されており、実装が正です。
+- schema なしのレガシー形式、トップレベル `lights` セクションは**受理されません**(名指しのエラーで移行先を案内)。※設計文書には「WARN+自動解釈」と書かれていますが、WP63(strict v1 化)で意図的に廃止されており、実装が正です。
 - 本文の `WP63` / `✅WP79` のような `WP<数字>` は、エンジン側の作業単位(work package)に付く通し番号です([用語集](14_glossary.md))。「どの作業で入った仕様か」の目印として本文に添えています。
 - 起動時にロードされるのは `project.json` の `basic_config.default_scene_id` のシーンです。
 
@@ -118,7 +118,7 @@
 
 > **設計決定(ファイルパス禁止):** コンポーネントのパラメータにファイルパスを直接書くことは禁止。モデルは必ず `asset_data.json` の登録名(`model: "sotai"`)経由で参照する。パス解決規則の適用面を asset_data.json に限定し、シーン検証をエンジン・web・外部ツールで安価にするため。
 
-## 4.2 コンポーネント一覧(v1 で書けるものすべて)
+## 4.2 コンポーネント一覧(シーンに書けるものすべて)
 
 > **設計決定(受理仕様は component codec が正・✅WP151):** `transform` / `simplemodelview` / `camera` / `light` / `collider` / `animation` / `sprite_view` の 7 種は、**[componentcodec.cpp](../../src/core/loader/componentcodec.cpp) の codec が受理仕様の正**です(以前は各コンポーネントの `ref()` が正でした)。7 種はいずれも **closed schema** — 表に無いキーを書くと名指しのエラーになります。エディタの読み書き・インスペクタのウィジェット・保存の往復もすべてこの codec を通ります([第13章](13_editor.md))。`localtransform` だけは従来どおり `ref()` 経路です。
 
@@ -521,7 +521,8 @@ DECLARE_COMPONENT(MyComponent, 61);   // 0..63 の空き番号(エンジンは 0
 
 | メッセージ(抜粋) | 原因 |
 |---|---|
-| `scene data schema is not supported; use schema 'pelican.scene' with version 1 ...` | エンベロープ欠落・レガシー形式 |
+| `scene data schema is not supported; use schema 'pelican.scene' with a supported version and a 'scenes' object` | エンベロープ欠落・レガシー形式 |
+| `pelican.scene.version_unsupported@1: scene version 1 is not supported; this engine reads version 2 only` | `version` が `2` 以外(✅MG-2b)。`1` のファイルは `version` を `2` に書き換える |
 | `scene field 'lights' is not supported in v1; use named objects with a 'light' component` | 旧 lights セクション |
 | `scene not found: <id>` | `default_scene_id` / `loadScene` の指定ミス |
 | `component_unknown@1{"name":"X"}` | コンポーネント名のタイポ |

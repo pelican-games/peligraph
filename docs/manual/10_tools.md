@@ -92,10 +92,10 @@ pelican_player --project mygame --vulkan-validation=on                      # �
 `project.json` / scene / user 層には保存されず、overlay から追加された target と pass もその process の
 寿命にだけ存在します。
 
-**`pelican.graph` root では overlay も 1 段下に着きます。**root が `schema: "pelican.graph"` のとき、
-overlay は `rendering.features` に積まれます —— root 直下に積んでも lowering が読まないからです。
-`rendering` オブジェクトを持たない graph root は名前付きで断られます
-(`render_config.section_unlocated@1`。[分岐](../../src/project/renderfeatureoverlay.cpp#L138))。
+**overlay は `pelican.graph` root の 1 段下に着きます。**overlay は `rendering.features` に積まれます ——
+root 直下に積んでも lowering が読まないからです。`rendering` オブジェクトを持たない graph root は名前付きで断られます
+(`render_config.section_unlocated@1`)。`pelican.graph` root でない rendering config(旧い legacy root)は、
+MG-2b から overlay の前に `render_config.legacy_root@1` で断られます([分岐](../../src/project/renderfeatureoverlay.cpp#L138))。
 
 `--input-action-overlay` が読む文書は、厳密な `pelican.input_action_overlay` v1 envelope
 (`schema` / `version` / `name` / `actions` / 任意の `profile`)です。`actions` は
@@ -157,6 +157,7 @@ free-camera preset は overlay 側を選ぶため、両者は併用できます�
 | `load_gltf` | `{path, name?}` | glb の一時ロード(プロジェクト相対のみ) |
 | `load_scene` | `{name}` | シーン切替。応答は `{name, committed, effect_errors[]}`(✅WP380b/380e。commit 後の副作用の失敗は error ではなく result に出ます — [第13章](13_editor.md) §13.13) |
 | `set_camera` | `{name}` | シーン内カメラへ切替 |
+| `raycast` | `{origin, direction, max_distance}`(3 鍵ちょうど) | 最近傍 1 件を `{hit: {name, collider_id, shape_ordinal, distance, position, normal, trigger, one_way}}`、当たらなければ `{hit: null}`([受け口](../../src/core/communication/rpcserver.cpp#L1091))。`PELICAN_WITH_PHYSICS=OFF` の build では `hit: null` ではなく JSON-RPC error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。✅PG-2b)。provider が 0 本の build も `-32000`(message は `physics.provider_unavailable@1` の例外文。[第8章](08_gameplay.md) §8.4「機能を外した build」) |
 | `update_transforms` | `{objects, transforms}` | 次フレーム境界で適用。`rot` は名指し拒否(`rotation`) |
 | `inject_input` | `{events:[...]}` | 入力注入。`key_*` / `mouse_*` / `axis` + **`gamepadButtonDown` / `gamepadUp` / `gamepadAxis`**(リプレイ中は拒否) |
 | `inject_event` | `{type, payload}` | 登録済みゲームイベントの emit。payload は EventPayloadSchema で事前検証(✅WP71) |
@@ -166,8 +167,8 @@ free-camera preset は overlay 側を選ぶため、両者は併用できます�
 | `stop_input_record` | `{}` | 収録停止。`{path, frames, events}` |
 | `start_input_replay` | `{path}` | リプレイ開始(fixed-step 化・リロードゲート閉鎖) |
 | `stop_input_replay` | `{}` | リプレイ停止 |
-| `export_scene_snapshot` | `{schema_version:1, allow_pending?:false}` | current scene を含む全 **authoring document**(= 編集の正本としてメモリ上に持つシーン文書。シーンファイル 1 つにつき 1 文書で、ディスクの実物とは別 — [第13章](13_editor.md) §13.2)の deterministic semantic bytes、SHA-256、revision を返す |
-| `import_scene_snapshot` | `{schema_version:1, semantic_scene_bytes, digest, current_scene_id}` | disk を上書きせず、検証済み snapshot を in-memory scene source として reload する |
+| `export_scene_snapshot` | `{schema_version:2, allow_pending?:false}` | current scene を含む全 **authoring document**(= 編集の正本としてメモリ上に持つシーン文書。シーンファイル 1 つにつき 1 文書で、ディスクの実物とは別 — [第13章](13_editor.md) §13.2)の deterministic semantic bytes、SHA-256、revision、`prefab_closure` を返す。`schema_version` は `2` だけ(SnapshotV1 は MG-2b で撤去。`1` は `unsupported_snapshot_version`) |
+| `import_scene_snapshot` | `{schema_version:2, semantic_scene_bytes, digest, current_scene_id, prefab_closure}` | disk を上書きせず、検証済み snapshot を in-memory scene source として reload する |
 
 `pick_object` の座標は ID バッファ `picking_id` の左上原点で、`x` は右、`y` は下へ増えます。
 両方とも符号なし整数だけを受理し、範囲外は `-32602`、feature 無効または完了済みの
@@ -362,9 +363,10 @@ except PelicanRpcError as error:
 
 `export_scene_snapshot(params)` と `import_scene_snapshot(params)` も同じ素通し helper
 です。import の検証は client ではなく engine が、必ず version → 64 MiB → SHA-256 →
-parse/semantic → current scene の順で行います。失敗時は `PelicanRpcError.data` の
+parse/semantic → `prefab_closure` の照合 → current scene の順で行います。`schema_version` は `2` だけで、
+`1`(MG-2b で撤去した SnapshotV1)は他の鍵を見る前に `unsupported_snapshot_version` です。失敗時は `PelicanRpcError.data` の
 `code` が `unsupported_snapshot_version` / `snapshot_too_large` /
-`digest_mismatch` / `snapshot_invalid` / `scene_not_found` のいずれかになり、
+`digest_mismatch` / `snapshot_invalid` / `prefab_dependency_mismatch` / `scene_not_found` のいずれかになり、
 `snapshot_invalid` には `detail` も入ります。
 
 ### snapshot を使った安全なスイープ
@@ -378,14 +380,15 @@ from tools.pelican_rpc import PelicanRpc, PelicanRpcError
 
 with PelicanRpc("projects/mygame") as human:
     exported = human.export_scene_snapshot(
-        {"schema_version": 1, "allow_pending": False}
+        {"schema_version": 2, "allow_pending": False}
     )
     revision = exported["scene_revision"]  # R
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "semantic_scene_bytes": exported["semantic_scene_bytes"],
         "digest": exported["digest"],
         "current_scene_id": exported["current_scene_id"],
+        "prefab_closure": exported["prefab_closure"],
     }
 
     with PelicanRpc("projects/mygame") as scratch:
@@ -449,9 +452,10 @@ CLI は `--template` を読んで [`initializeProjectTemplate()`](../../src/proj
 
 生成される `passes/main_rendering_config.json` は **`pelican.graph` root** です(両方の雛形で同じ)。`standard` で著作した内容
 (`pipeline.preset` = `engine://render_pipelines/hybrid_v1.json`、`features` = `shadow_directional` と
-`sky_ambient` の 2 本)は `rendering` オブジェクトの中に入り、包む処理は
-[`wrapLegacyRenderingConfig()`](../../src/project/renderconfigsection.hpp#L62) の 1 箇所だけです
-([呼び出し側](../../src/project/projecttemplate.cpp#L249)。著作した文字列そのものは [:198](../../src/project/projecttemplate.cpp#L197))。`render_targets` / `rendering_passes` は preset が持つので
+`sky_ambient` の 2 本)は `rendering` オブジェクトの中に入ります。雛形の文字列は graph root をそのまま書いたもので
+([standard](../../src/project/projecttemplate.cpp#L197) / [blank](../../src/project/projecttemplate.cpp#L220)。
+[選ぶ関数](../../src/project/projecttemplate.cpp#L265))、以前それを包んでいた `wrapLegacyRenderingConfig()` は MG-2b で撤去しました
+(`standard` の生成物は撤去の前と同じバイト列で、`run_devcli_project_templates.cmake` の digest も変わっていません)。`render_targets` / `rendering_passes` は preset が持つので
 project は書きません —— `run_devcli_project_init.cmake` は**まず root が `pelican.graph` で `rendering` が
 object であることを確かめてから**、節の中に禁止メンバが無いことを見ます
 ([検査](../../test/run_devcli_project_init.cmake#L48)。順序が逆だと、節ごと消えたときに検査が素通りします)。
@@ -465,7 +469,7 @@ package の object は、その前に作られたゲームロジック DLL へ�
 DCC 納品物の取り込み。3 つの形があります:
 
 - `import <delivery_dir> --project <dir>` — `pelican.import` manifest の sha256 照合 → asset_data.json へ glb 登録(冪等)
-- `import gltf --extract-scene <glb> ...` — glTF のノード階層を scene v1(`parent` 付き)として抽出(✅WP79。[第5章](05_assets.md))
+- `import gltf --extract-scene <glb> ...` — glTF のノード階層を scene v2(`parent` 付き)として抽出(✅WP79。MG-2b から v2 を書く。[第5章](05_assets.md))
 - `import --rules ...` — `imports.rules.json`(glob → レシピ表)に従った一括取り込み(✅WP84)
 
 manifest の形式・実例は [第5章](05_assets.md) を参照してください。

@@ -18,8 +18,8 @@ project が持てる文書と、parser が受ける version。`schema` と `vers
 | schema | version | parser | 備考 |
 |---|---|---|---|
 | `pelican.project` | 1 | `src/project/projectformat.cpp` | `project.json`。`engine_min_version` と `requires` を持つ |
-| `pelican.scene` | 1〜2 | `src/project/sceneformat.cpp` | 保存は読み込んだ版を維持する。prefab は scene v2 を要求し、永続IDは両版で受理する |
-| `pelican.graph` | 1 | `src/project/graphcomposition.cpp` | 共通グラフ。`definitions` / `nodes` / `outputs` と `graph.instance` / `graph.input` |
+| `pelican.scene` | 2 | `src/project/sceneformat.cpp` | MG-2b で 1 の読み手を撤去し、2 以外は `pelican.scene.version_unsupported@1`(v1 は prefab キーを受けないことだけが違う版)。出荷 7 本と雛形・devcli の glTF / rules importer・import manifest の `pelican.scene` 出力は 2。SnapshotV1(scene v1 を運ぶ export / import)も撤去 |
+| `pelican.graph` | 1 | `src/project/graphcomposition.cpp` | 共通グラフ。`definitions` / `nodes` / `outputs` と `graph.instance` / `graph.input`。rendering config の root もこれだけ(§1.6) |
 | `pelican.value_graph` | 1 | `src/core/userpublic/valuegraph.cpp` | **内部 IR + test 面**。外部契約ではない(§2 行 1) |
 | `pelican.anim_graph` | 1 | `src/core/userpublic/animation/animgraph.cpp` | animation component が指す state machine 文書 |
 | `pelican.render_feature` | 1 | `src/project/featurecompose.cpp` | |
@@ -30,7 +30,7 @@ project が持てる文書と、parser が受ける version。`schema` と `vers
 | `pelican.package` | 1 | `src/project/packagemanifest.hpp` | §1.5 |
 | `pelican.assets` | 1 | `src/project/assetsmanifest.cpp` | `assets.manifest.json` |
 | `pelican.assets_cache` | 1 | `src/project/assetsmanifest.cpp` | 生成物 |
-| `pelican.asset_data` | 1〜2 | `src/project/assetdataformat.cpp` | 現行は 2 |
+| `pelican.asset_data` | 2 | `src/project/assetdataformat.cpp` | MG-2b で 1 の読み手を撤去し、2 以外は `pelican.asset_data.version_unsupported@1`(v1 は `procedural_geometry` を受けないことだけが違う版)。出荷 7 本と雛形は 2 |
 | `pelican.import` | 1 | `src/project/importmanifest.cpp` | |
 | `pelican.import_rules` | 1 | `src/project/importrules.cpp` | |
 | `pelican.material` | 1 | `src/project/materialformat.cpp` | |
@@ -190,13 +190,16 @@ key ごとの規約は [docs/manual/03_project_format.md](manual/03_project_form
 loader が解決する epoch anchor。project.json に記録される `sha256` は install 済み byte 全体の digest で、
 `package list` が再計算する。
 
-### 1.6 2 つの root と 2 つの装着様式
+### 1.6 rendering config の root と 2 つの装着様式
 
-**rendering config の root は 2 つある**。どちらも v0 の契約:
+**rendering config の root は `pelican.graph` root だけ**(MG-2b):
 
-- **legacy root** — `rendering` を最上位に持つ従来の render config。出荷 project の多くはこちら。
-- **`pelican.graph` root** — 共通グラフ文書の `rendering` key の下に同じ render config が入る形。
-  出荷では `example`(P-2a-4b で graph root 化)と `posegraph_demo` の 2 本がこの形。残り 4 本は legacy root のまま(`wrapLegacyRenderingConfig` が読み時に包む)。`graph.instance` を書けるのは graph root の下だけ。
+- 共通グラフ文書の `rendering` key の下に render config が入る形。出荷 7 本と `project init` の雛形(standard / blank)はすべてこの形。
+- `rendering` を最上位に直接持つ旧い形(legacy root)は、読み込み・feature overlay・ray tracing の設定・編集文書のどこでも
+  `render_config.legacy_root@1` で拒否する。P-2a-4b から雛形の生成が使っていた包み関数 `wrapLegacyRenderingConfig` は撤去し(雛形は graph root を直接書く)、
+  出荷の legacy root 5 本は graph root に書き換えた。
+- graph root の `rendering` 節には `buffers` / `compute_tasks` を書けない(lowering が拒否する)。graph node の `render.buffer` /
+  `render.compute` か task feature で書く。
 
 **姿勢の装着様式も 2 つある**。owner 単位で**排他**(同じ owner に両方は付かない):
 
@@ -224,7 +227,7 @@ v1 計画 R 群「表の各行を『撤去 / 維持(理由)』で閉じる」の
 | 5 `setGraphParameter` / `forceGraphState` | **維持** | 3 と同じ |
 | 6 `status == "committed"` の読み取り互換 | **撤去(MG-2a、`8af3227d`)**。R-1 の「維持(v0)」を置き換えた | R-1 の理由(黙った wedge と、rollback による破壊)は残るので、黙って読むのをやめ、両読み手を同時に**名前付きの停止**に替えた: 旧形式の dir は `render_config.legacy_transaction_dir@1`(path 付き)で止まり、dir は消さずに残る。手での片付けは [manual 3 章 §3.1](manual/03_project_format.md)。v0 より古い形式は作り直す、という 2026-09-24 の裁定([設計 §2](design_v0_production_gaps.md)) |
 | 7 `withRootValue("nodes")` ×2 | **維持** | graph root key の書き手。N-2 が `definitions` を足す |
-| 8 `compute_tasks` の root 分岐 | **維持** | 1 規則(locator)。graph root では lowering が forbid = 到達不能 |
+| 8 `compute_tasks` の root 分岐 | **維持** | 1 規則(locator)。graph root では lowering が forbid = 到達不能。**MG-2b で legacy root が無くなり、editor の root scope で `compute_tasks` / `buffers` を編集する経路は全体が到達不能になった**。掃除は台帳の MG-3(F-6 の root pass 編集 `findRootEditablePass` / `editRootPass` は到達可能なので残す) |
 | 9 `bloom_composite.frag` の `.spv` 非対称 / `shader_lab_*` family | **維持(記録)** | source-only は P-2a-2 の裁定。`shader_lab_*` は 8 本 family で、`engine_resources.json` は web ミラー test の正本なので触らない |
 | 10 `docs/ci.md` の `pelican_golden_gpu` | **撤去(docs)** | code は `pelican_gpu` に統合済み |
 | 11 overlay の semantic 流儀 vs authoring の byte 流儀 | **維持(記録)** | overlay は起動時の一時合成で文書に書き戻さない |

@@ -98,7 +98,7 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 |---|---|---|
 | `sceneProjectionState()` | [`sceneProjectionState()`](../../src/core/loader/basicconfig.cpp#L784) | authoring / resolved / revision / generation のpairを取得（初回は遅延load） |
 | `sceneDocument()` / `resolvedScene()` | [`sceneDocument()`](../../src/core/loader/basicconfig.cpp#L776) / [`resolvedScene()`](../../src/core/loader/basicconfig.cpp#L780) | 同じpairのauthoring側 / resolved側を取得 |
-| `updateSceneDocument()` | [`updateSceneDocument()`](../../src/core/loader/basicconfig.cpp#L795) | scene v1バイト列をprepareしてpairで差し替え |
+| `updateSceneDocument()` | [`updateSceneDocument()`](../../src/core/loader/basicconfig.cpp#L795) | scene（v2）バイト列をprepareしてpairで差し替え |
 | `invalidateSceneDocument()` | [`invalidateSceneDocument()`](../../src/core/loader/basicconfig.cpp#L799) | pairを破棄し、次回の再構築を強制 |
 | `importSceneDocument()` | [`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L804) | 外部由来のバイト列を取り込み、新しい `SceneRevision` を返す |
 | `saveSceneDocument()` | [`saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L907) | ディスクへ書き戻し、pairを公開し、`SceneSaveResult`（revision / digest / byte数）を返す |
@@ -281,7 +281,7 @@ behavior は executor の participant の 1 つです。entity を作った後�
 実物のscene JSONは次の形です（[`test/run_physics_trigger_behavior.ps1`](../../test/run_physics_trigger_behavior.ps1) が書き出すfixtureからの引用）。
 
 ```json
-{"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+{"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[
   {"name":"TriggerZone","components":[
     {"name":"transform","pos":[0,0,0]},
     {"name":"collider","shape":"sphere","radius":1.0,"trigger":true},
@@ -398,7 +398,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 | `read_only` | outboxを重ねて読むだけ | [`persistence.load_data_overlay`](../../src/core/loader/sceneparticipantmanifest.cpp#L190) / `list_saves_overlay` |
 | `reject` | transaction中は拒否する面 | [`gameobjects.direct_mutation`](../../src/core/loader/sceneparticipantmanifest.cpp#L192) / [`behavior_context.retired_self_setters`](../../src/core/loader/sceneparticipantmanifest.cpp#L193) |
 | `frame_lifetime` | フレーム寿命でtransactionの外 | [`debug_text.frame_text`](../../src/core/loader/sceneparticipantmanifest.cpp#L194) |
-| `production_root` | executorを呼ぶ**入口**の側 | [`root.startup` / `root.rpc` / `root.pending` / `root.import.unversioned` / `root.import.versioned`](../../src/core/loader/sceneparticipantmanifest.cpp#L196) |
+| `production_root` | executorを呼ぶ**入口**の側 | [`root.startup` / `root.rpc` / `root.pending` / `root.import.versioned`](../../src/core/loader/sceneparticipantmanifest.cpp#L196)（`root.import.unversioned` は MG-2b で SnapshotV1 と一緒に消えました） |
 | `excluded_wp380b` | 明示的な除外枠 | **現在この role の行は1つもありません**（enumと名前だけが存在） |
 
 `mutation_id` は「この行が主張する挙動を、実際に壊せる注入点」の名前です（[`scene_load_mutation`](../../src/core/loader/sceneload.hpp#L92)）。埋まっているのは実質のparticipant行だけで、`invariant` / `cache` / `non_rollback` / `reject` / `frame_lifetime` / `read_only` と `presence != real` の行では**空でなければならない**、というのが契約テスト側の要求です（[`scene_transaction_contract_test.cpp` 内](../../test/scene_transaction_contract_test.cpp#L141)。`real` なparticipantでmutation付きの行はちょうど10という数まで固定されています）。ビルドで消える面のIDも条件式で空になります（例: `rpc_presence == real ? scene_load_mutation::root_rpc : std::string_view{}`）。
@@ -446,7 +446,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 
 `GameContext::loadScene()`はrequest型です。RPCの`load_scene`は即時loadです。この違いは、ゲームSystem update中にECS全削除が起きないようにするためです。
 
-rootは列挙型として名前を持ちます（[`SceneLoadRoot`](../../src/core/loader/sceneload.hpp#L82)）。`unspecified` を除く5値がそのまま §3.5 の 7 の `production_root` 行に対応し、importだけは snapshot schema version で2つに割れます — [`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L804) が `snapshot_schema_version == 1` なら `import_unversioned`、それ以外なら `import_versioned` を選びます（[その三項演算子](../../src/core/loader/basicconfig.cpp#L867)）。
+rootは列挙型として名前を持ちます（[`SceneLoadRoot`](../../src/core/loader/sceneload.hpp#L82)）。`unspecified` を除く4値がそのまま §3.5 の 7 の `production_root` 行に対応します。以前は import が snapshot schema version で `import_unversioned`（SnapshotV1）と `import_versioned` に割れていましたが、MG-2b で SnapshotV1 が撤去され、[`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L804) は常に [`import_versioned`](../../src/core/loader/basicconfig.cpp#L857) で request を作ります。
 
 結果の扱いもrootごとに違います。startup / RPC / pending / import はいずれも [`requireSceneLoadCommitted()`](../../src/core/loader/sceneload.hpp#L295) を通して `PreCommitFailure` だけを例外へ戻しますが（ヘッダのコメントが規範 — 「pre-commit失敗は従来どおりthrow、commit済みのeffect失敗は成功なので呼び手へ返す」）、`CommittedWithEffectFailure` の運び方は分かれます。importは [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275) が `revision` と `load_result` を**組で**返すので、呼び手は「revisionは進んだが副作用が失敗した」を1つの値として受け取れます。`SceneRevision` への暗黙変換演算子があるため、revisionだけ見ていた既存の呼び手はそのまま動きます。startup と pending は `LOG_ERROR`、RPCは `effect_errors` 配列でJSONに載せます（§3.5 の 3）。
 
@@ -954,7 +954,7 @@ encode（[list の枝](../../src/core/userpublic/details/schema/structfieldjson.
 
 ### load とidentity
 
-[`AuthoringSceneDocument::load(scene_v1_bytes, revision, first_authoring_object_id)`](../../src/core/loader/authoringscenedocument.hpp#L114) が、`SceneRevision` とセッション内で安定な [`AuthoringObjectId`](../../src/core/loader/authoringscenedocument.hpp#L26) を割り当てます。`AuthoringObjectId` は名前でも配列添字でもないため、objectをrenameしても並べ替えても、エディタ側の参照は切れません。
+[`AuthoringSceneDocument::load(scene_v1_bytes, revision, first_authoring_object_id)`](../../src/core/loader/authoringscenedocument.hpp#L114)（引数名に `v1` が残っていますが、渡すのは scene v2 の文書です）が、`SceneRevision` とセッション内で安定な [`AuthoringObjectId`](../../src/core/loader/authoringscenedocument.hpp#L26) を割り当てます。`AuthoringObjectId` は名前でも配列添字でもないため、objectをrenameしても並べ替えても、エディタ側の参照は切れません。
 
 ### authoring query と raw authority
 
@@ -1095,28 +1095,25 @@ ABI側では [`AnimationClipKindV1`](../../src/core/userpublic/animation/abi_v1.
 
 テストは [`test/vrmadecoder_test.cpp`](../../test/vrmadecoder_test.cpp) / [`test/vrmaretarget_test.cpp`](../../test/vrmaretarget_test.cpp) / [`test/vrmasource_test.cpp`](../../test/vrmasource_test.cpp)（GPU）、fixtureは [`test/vrma_fixture_writer.cpp`](../../test/vrma_fixture_writer.cpp) + [`test/vrma_fixture.hpp`](../../test/vrma_fixture.hpp) が生成します。
 
-## 3.14 rendering configの根は2つある ✅実装済み（P-2a-4a / P-2a-4b）
+## 3.14 rendering configの根は `pelican.graph` だけ ✅実装済み（P-2a-4a / P-2a-4b / MG-2b）
 
-`rendering_config_json` が指すファイルの**根**は、v0では2形あります。どちらも契約で、片方が旧式なわけではありません。
+`rendering_config_json` が指すファイルの**根**は `pelican.graph` root だけです。共通グラフ文書の5キー（`schema` / `version` / `definitions` / `nodes` / `outputs`）の横に `rendering` キーがあり、rendering config の中身はその下に入ります。出荷7本と `devcli project init` の雛形がすべてこの形です。
 
-| 根 | 形 | 出荷プロジェクト |
-|---|---|---|
-| legacy root | `rendering` 相当の中身を最上位に直接書く | animgraph_demo / sprite_demo / vrm_xr_demo / raytracing_demo |
-| `pelican.graph` root | 共通グラフ文書の `rendering` キーの下に、同じ中身が丸ごと入る | example / posegraph_demo（`devcli project init` の雛形もこちら） |
+P-2a-4b までは、`rendering` 相当の中身を最上位に直接書く **legacy root** も契約でした。MG-2b でその読み手を撤去し、legacy root は `render_config.legacy_root@1`（[`RenderConfigLegacyRoot`](../../src/project/renderconfigdocument.hpp#L35)）で断ります。断る場所は、起動時にファイルを最初に読む [`loadRenderingPassConfigJsonFromString()`](../../src/core/renderingpass/renderingpassconfigloader.cpp#L16)、feature overlay の [`applyRenderFeatureOverlays()`](../../src/project/renderfeatureoverlay.cpp#L120)、ray tracing の [`loadRayTracingProjectConfig()`](../../src/core/shader/raygrouplayout.cpp#L1452)、編集文書の [`AuthoredRenderConfigDocument`](../../src/project/renderconfigdocument.cpp#L529) です。出荷の legacy root 5本は `{"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":<旧い根>}` に書き換えられました。
 
-`graph.instance` を書けるのは後者の根の下だけです。ただし legacy root へ書こうとしたときに名前付きで断られるわけではなく、単に `nodes` / `definitions` という置き場が無いだけです(`graph.nested_instance@1` / `graph.input_scope@1` は [`editGraphDocument()`](../../src/project/graphcomposition.cpp#L757) の編集経路だけの拒否で、definition の中と root の取り違えを指します)。
+**「authored な `rendering` キーがどこにあるか」を決める場所は1つ**で、[`src/project/renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L12) の小さなヘッダに全部入っています。読み手も書き手もここを呼ぶ規約で、各所が自前の `if (graph)` を育てないためです。
 
-**「authored な `rendering` キーがどこにあるか」を決める場所は1つ**で、[`src/project/renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L13) の小さなヘッダに全部入っています。読み手も書き手も生成器もここを呼ぶ規約で、各所が自前の `if (graph)` を育てないためです。
-
-- [`isRenderGraphRoot()`](../../src/project/renderconfigsection.hpp#L22) — `schema == "pelican.graph"` かどうかだけ。`nlohmann::json` 用と [`ordered_json` 用](../../src/project/renderconfigsection.hpp#L27)の 2 定義があるので、このヘッダは**4 つの名前 / 5 定義**です。
-- [`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36) — legacy root なら**自分自身**を、graph root なら `rendering` メンバを返します。graph root なのに `rendering` オブジェクトが無ければ [`RenderConfigSectionUnlocated`](../../src/project/renderconfigdocument.hpp#L20)（メッセージは `graph root render config has no rendering section object`）を投げます。
-- [`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49) — 同じ判定の**読み取り用**。節が無ければ空オブジェクトを返します。
+- [`isRenderGraphRoot()`](../../src/project/renderconfigsection.hpp#L22) — `schema == "pelican.graph"` かどうかだけ。`nlohmann::json` 用と [`ordered_json` 用](../../src/project/renderconfigsection.hpp#L27)の 2 定義があるので、このヘッダは**3 つの名前 / 4 定義**です。
+- [`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36) — `rendering` メンバを返します。根が `pelican.graph` でなければ `RenderConfigLegacyRoot` を、`rendering` オブジェクトが無ければ [`RenderConfigSectionUnlocated`](../../src/project/renderconfigdocument.hpp#L20)（メッセージは `graph root render config has no rendering section object`）を投げます。MG-2b より前は、graph root でない根に対して**根そのもの**を返していました。
+- [`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49) — 同じ判定の**読み取り用**。節が無ければ空オブジェクトを返します。legacy root はこちらでも断ります（`RenderConfigLegacyRoot` は捕まえません）。
 
 この2本の使い分けが不変条件です。**読みは節が無くても失敗せず（「ここには何も書かれていない」と答える）、編集だけが名前付きで断る。** graph root に `rendering` を持たない文書は正当（グラフだけを書いた文書）なので、読むたびに落ちては困る一方、そこへ authored な値を書こうとするのは行き先が無い操作だからです。
 
-**包み方も1本**です。[`wrapLegacyRenderingConfig()`](../../src/project/renderconfigsection.hpp#L62) が `schema` / `version` / `definitions` / `nodes` / `outputs` の5キーを付けて、渡された legacy 設定を `rendering` へ丸ごと入れます。`devcli project init` の雛形（[第1章 §1.2](01_architecture_and_build.md)）も、graph root のfixtureも、出荷プロジェクトも同じ関数を通るので、「fixtureと出荷設定が同じ規則で包まれている」ことを慣習ではなく**値の比較**で確かめられます。すでに `pelican.graph` のものを渡すと `invalid_argument` です。
+**包む関数はもうありません。** P-2a-4b では `wrapLegacyRenderingConfig()` が5キーを付けて legacy 設定を `rendering` へ入れる唯一の場所でしたが、読み手が graph root しか受けなくなったので MG-2b で撤去されました。雛形の [`rendering_config_json`](../../src/project/projecttemplate.cpp#L197) と [`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L220) は graph root の全文を直接書いています。
 
-編集側の唯一の書き手は [`AuthoredRenderConfigDocument::withSectionValue()`](../../src/project/renderconfigdocument.cpp#L654) で、legacy root と graph root 自身の5キー（`schema` / `version` / `definitions` / `nodes` / `outputs`）は根へ、それ以外は `rendering.<key>` へ書きます。この関数はJSONを組み直さず、元のバイト列の中で該当メンバの範囲を差し替えます（[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288)）。理由は digest がファイル全体のバイト列に対して取られるためで、詳細は[第6章](06_rendering_vulkan_shader.md)にあります。
+**`rendering` 節には `buffers` / `compute_tasks` を書けません。** graph root の lowering（[`lowerRenderGraphDocument()`](../../src/project/rendergraphcomposition.cpp#L21)）が、この2つを graph node（`render.buffer` / `render.compute`）の接続から作るため、節にあれば `render graph derives field from connections: <key>` で拒否します。この規則は MG-2b より前からあります。legacy root には lowering が無かったので根に書けましたが、legacy root が無くなったことでその書き方も無くなりました。テストで根に宣言していたものは task feature へ移されています。エディタの「root scope で compute_tasks / buffers を編集する」経路はこれで到達不能になり、後の掃除の WP（台帳の MG-3）に回っています。
+
+編集側の唯一の書き手は [`AuthoredRenderConfigDocument::withSectionValue()`](../../src/project/renderconfigdocument.cpp#L654) で、graph root 自身の5キー（`schema` / `version` / `definitions` / `nodes` / `outputs`）と editor の `layout` は根へ、それ以外は `rendering.<key>` へ書きます。この関数はJSONを組み直さず、元のバイト列の中で該当メンバの範囲を差し替えます（[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288)）。理由は digest がファイル全体のバイト列に対して取られるためで、詳細は[第6章](06_rendering_vulkan_shader.md)にあります。
 
 ## 3.15 共通グラフ文書 `pelican.graph` ✅実装済み（AG-0 / P-1）
 

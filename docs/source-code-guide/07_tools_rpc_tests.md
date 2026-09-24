@@ -67,35 +67,43 @@ template は外部 resource file ではなく、[`projecttemplate.cpp` 内の ra
 
 この command の end-to-end 仕様は [`run_devcli_project_init.cmake`](../../test/run_devcli_project_init.cmake) です。file が揃っているかの確認だけでなく、生成した project directory を **prebuilt の `pelican_player`** に `--headless --frames 2 --render-out` で食わせ、exit 0・出力に `Validation Error` / `VUID-` が出ないこと・PNG が空でないことまで見ます(生成された `code/game.cpp` を build する経路ではありません)。空でない directory を拒否し、そのエラーが directory 名を含むことも同じ script が固定しています。実 device を要するので CTest では `gpu` label 付きです([`test/CMakeLists.txt`](../../test/CMakeLists.txt) の `devcli_project_init_command`)。
 
-**`blank` 雛形(F-2)。**`--template blank` は上の 16 エントリに `shaders/present.frag` を足し、`passes/main_rendering_config.json` の `rendering` 節だけを差し替えます。中身は `pipeline` キーの無い direct config で、preset・`features`・`render_targets` を持たず、fullscreen pass `present` 1 本が `display` へ UV の gradient を書きます([`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L220))。同じ `run_devcli_project_init.cmake` がこの project を headless で 2 frame 描かせ、PNG が 100 色以上で、最も多い 1 色以外の画素が 9 割以上(最多色が 1 割以下)であることを `pelican_test_png_nonuniform_check` で見ます([検査](../../test/run_devcli_project_init.cmake#L224))。ファイルの形は GPU 無しの `devcli_project_templates`([`run_devcli_project_templates.cmake`](../../test/run_devcli_project_templates.cmake))が見ます —— 既定と `--template standard` の 16 ファイルが F-2 前の出力と SHA-256 で一致すること、blank の形、知らない template 名の拒否です。
+**`blank` 雛形(F-2)。**`--template blank` は上の 16 エントリに `shaders/present.frag` を足し、`passes/main_rendering_config.json` の `rendering` 節だけを差し替えます。中身は `pipeline` キーの無い direct config で、preset・`features`・`render_targets` を持たず、fullscreen pass `present` 1 本が `display` へ UV の gradient を書きます([`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L220))。同じ `run_devcli_project_init.cmake` がこの project を headless で 2 frame 描かせ、PNG が 100 色以上で、最も多い 1 色以外の画素が 9 割以上(最多色が 1 割以下)であることを `pelican_test_png_nonuniform_check` で見ます([検査](../../test/run_devcli_project_init.cmake#L224))。ファイルの形は GPU 無しの `devcli_project_templates`([`run_devcli_project_templates.cmake`](../../test/run_devcli_project_templates.cmake))が見ます —— 既定と `--template standard` の 16 ファイルが F-2 前の出力と SHA-256 で一致すること(MG-2b が `"version": 2` に変えた `scenes/main.scene.json` と `assets/asset_data.json` の 2 行だけは取り直し。`passes/main_rendering_config.json` の digest は変わっていません)、blank の形、知らない template 名の拒否です。
 
 ### 生成される rendering config は preset 参照の `pelican.graph` root(WP240a → P-2a-4b)
 
 `passes/main_rendering_config.json` の template は 111 行の手書き設定から数行になり、さらに
-**`pelican.graph` root** になりました。ソースに置かれているのは「節の中身」だけです
+**`pelican.graph` root** になりました。MG-2b からはソースのリテラルがファイルの全文です
 ([`rendering_config_json`](../../src/project/projecttemplate.cpp#L197))。
 
 ```json
 {
-  "pipeline": { "preset": "engine://render_pipelines/hybrid_v1.json" },
-  "features": [
-    "engine://features/shadow_directional.json",
-    "engine://features/sky_ambient.json"
-  ]
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "pipeline": {
+      "preset": "engine://render_pipelines/hybrid_v1.json"
+    },
+    "features": [
+      "engine://features/shadow_directional.json",
+      "engine://features/sky_ambient.json"
+    ]
+  }
 }
 ```
 
-生成されるファイルはこれを [`wrapLegacyRenderingConfig()`](../../src/project/renderconfigsection.hpp#L62) に通した結果で、
-`schema: "pelican.graph"` / `version: 1` / 空の `definitions` / `nodes` / `outputs` と、上の object を
-`rendering` メンバとして持ちます([生成](../../src/project/projecttemplate.cpp#L249))。**包み方が 1 関数しかない**ので、
-出荷 project と fixture が「同じ規則で包まれたか」を値の比較で言えます —— 慣習として 2 箇所に書くのをやめた形です。
+P-2a-4b から MG-2b までは、ソースに `rendering` 節の中身だけを置き、`wrapLegacyRenderingConfig()` で包んでいました。
+MG-2b でエンジンが graph root しか読まなくなったので包み関数は撤去され、リテラルは包んだ結果のバイト列をそのまま書いたものに
+なりました([選ぶ関数](../../src/project/projecttemplate.cpp#L265))。
 どのキーがどちらの層に属するかは [`isGraphRootKey()`](../../src/project/renderconfigdocument.hpp#L15) が決めます。
 
 旧 template は `render_targets` 8 本(gbuffer 5 枚 + depth + ssao 2 枚)と `rendering_passes` を自分で書き下し、pass は gbuffer_pass / ssao_pass / ssao_blur_pass / present の 4 つでした。末尾の `present` が `uses_light_data: true` を持ち、ライティングと present を兼ねていました。新 template はこの 2 つの member を **持ちません**。
 
 読む位置が一段動いたのがこの変更の要点です。
 
-- `project init` が **何を書くか** → [`rendering_config_json`](../../src/project/projecttemplate.cpp#L197) を `wrapLegacyRenderingConfig()` に通した `pelican.graph` root(上の block はその `rendering` 節の中身で、ファイルの全文ではありません)
+- `project init` が **何を書くか** → [`rendering_config_json`](../../src/project/projecttemplate.cpp#L197) の `pelican.graph` root(上の block がファイルの全文です)
 - 生成された project が **実際にどの pass を回すか** → [`src/core/resources/render_pipelines/hybrid_v1.json`](../../src/core/resources/render_pipelines/hybrid_v1.json) と [`src/core/resources/features/shadow_directional.json`](../../src/core/resources/features/shadow_directional.json)
 
 preset 側の `main_render` グラフは deferred_geometry / ssao_pass / ssao_blur_pass / deferred_lighting / forward_opaque / `__snapshot_opaque_color` / `__snapshot_opaque_depth` / forward_transparent / scene_present で、`shadow_depth` は preset ではなく feature 側が足します。つまり新規 project は最初から forward・半透明・opaque snapshot・directional shadow を持ちます。preset と feature をどう解決して 1 本のグラフにするかは[第6章](06_rendering_vulkan_shader.md)の担当です。
@@ -765,7 +773,7 @@ engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/commu
 | `cancel_modal_transform` | [modal cancel](../../src/core/communication/rpcserver.cpp#L1941) | player 側 modal transform に cancel を要求する |
 | `ack_modal_transform` | [modal ack](../../src/core/communication/rpcserver.cpp#L1965) | operation / revision が一致する modal transform snapshot を acknowledge する |
 | `query_gizmo_handle` | [状態なし hit query](../../src/core/communication/rpcserver.cpp) | リクエスト自身の selection/mode/物理 pixel を共通投影幾何へ渡し、contract 2 の `content_scale` と、handle に ID/axis/射影方向/論理 px 当たり変化量または `null` を返す |
-| `raycast` | [ray 問い合わせ](../../src/core/communication/rpcserver.cpp#L1092) | `origin` / `direction` / `max_distance` の 3 鍵ちょうどで `PhysWorld` に問い合わせる。登録は `configureEngineRpcHandlers()` が呼ぶ `configurePhysicsRpcHandlers()` の側 |
+| `raycast` | [ray 問い合わせ](../../src/core/communication/rpcserver.cpp#L1092) | `origin` / `direction` / `max_distance` の 3 鍵ちょうどで `PhysWorld` に問い合わせる。登録は `configureEngineRpcHandlers()` が呼ぶ `configurePhysicsRpcHandlers()` の側。`PELICAN_WITH_PHYSICS=OFF` の build では params を見る前に `-32000`・`data.code` = `physics.module_unavailable@1` で断る(PG-2b。stub の `hit: null` を「外れ」と読ませないため) |
 | `capture` | [`EngineRpcEndpoint::run()`](../../src/core/communication/rpcserver.cpp#L2096) | 最後の frame を PNG 保存 |
 
 二つのギズモ RPC は [`engine://features/gizmo.json`](../../src/core/resources/features/gizmo.json) が
@@ -791,7 +799,7 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 | `get_scene_revision` | [登録 `get_scene_revision`](../../src/core/communication/editorrpchandlers.cpp#L77) | `EditorWatchToken{scene_revision, preview_epoch}` + 最終トランザクション + preview lease |
 | `get_components` | [登録 `get_components`](../../src/core/communication/editorrpchandlers.cpp#L83) | 1 オブジェクトの `declaration_index` + authored / runtime JSON + schema |
 | `list_assets` | [登録 `list_assets`](../../src/core/communication/editorrpchandlers.cpp#L92) | asset カタログ(`id` / `kind` / `path` / `store` / `status`) |
-| `export_scene_snapshot` | [登録 `export_scene_snapshot`](../../src/core/communication/editorrpchandlers.cpp#L95) | semantic scene bytes + sha256 digest |
+| `export_scene_snapshot` | [登録 `export_scene_snapshot`](../../src/core/communication/editorrpchandlers.cpp#L95) | semantic scene bytes + sha256 digest + prefab closure。`schema_version` は 2 だけ(SnapshotV1 は MG-2b で撤去) |
 | `import_scene_snapshot` | [登録 `import_scene_snapshot`](../../src/core/communication/editorrpchandlers.cpp#L101) | digest 検証つき置換 |
 | `save_scene` | [登録 `save_scene`](../../src/core/communication/editorrpchandlers.cpp#L112) | 原子的な全文書保存 |
 | `open_editor_session` / `resume_editor_session` | [登録 `open_editor_session`](../../src/core/communication/editorrpchandlers.cpp#L126) / [登録 `resume_editor_session`](../../src/core/communication/editorrpchandlers.cpp#L129) | actor 登録・再接続 |

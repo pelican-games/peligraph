@@ -174,22 +174,25 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 >
 > 一方、**姿勢の評価器そのものは `GameContext` に載っていません** — 評価器を載せると標準の評価器だけが特権を持ってしまい、「評価器ごと自作できる」という設計が空文になるためです([../design_animation_graph.md](../design_animation_graph.md))。自作評価器は凍結 C-ABI 経由です(§8.13)。
 
-### 機能を外した build でゲームコードの呼び出しが返すもの(✅PG-2)
+### 機能を外した build でゲームコードの呼び出しが返すもの(✅PG-2 / PG-2b)
 
-ビルドユニット([第2章](02_getting_started.md) の「機能ユニット」)を外した build でも、`GameContext` の関数はすべて残ります。呼んだときの答えは、関数が値を返すか `Status` を返すかで 2 通りに分かれます。値を返す facade(audio / physics)は例外を 1 種類だけ投げ、`Status` を返す facade(animation)は外した build でも `Status` で答えます([規則のコメント](../../src/core/userpublic/gamecontext.hpp#L105))。
+ビルドユニット([第2章](02_getting_started.md) の「機能ユニット」)を外した build でも、`GameContext` の関数はすべて残ります。呼んだときの答えは、関数が値を返すか `Status` を返すかで 2 通りに分かれます。値を返す facade(audio / physics)は例外を 1 種類だけ投げ、`Status` を返す facade(animation)は外した build でも `Status` で答えます([規則のコメント](../../src/core/userpublic/gamecontext.hpp#L105))。ただし `noexcept` の `onDestroy` の中だけは、audio / physics も投げずに空で答えます(✅PG-2b。表の「`onDestroy` の中」の 2 行)。
 
 | 呼び出し | build | 返るもの |
 |---|---|---|
 | `ctx.audio()` の 9 本 | `PELICAN_WITH_AUDIO=OFF` | [`BuildFeatureCallDisabledError`](../../src/core/build_features.hpp#L45) を投げる。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_AUDIO"`、`what()` = `This binary was built with PELICAN_WITH_AUDIO=OFF: playSound is unavailable`(呼んだ関数名が入る) |
 | 同上を `onInit` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | `playSound` / `stopSound` / `setBusVolume` / `busVolume` / `isPlaying` は同じ例外を投げる。`setSoundVolume` / `setSoundPitch` / `setSoundPaused` は build を見る前に `false` を返す(ロード中は ON の build でも `false`) |
-| 同上を `onDestroy` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | 最初の 5 本は例外にならず、ロード結果の `effect_errors` に `build_feature_disabled@1` が積まれて既定値(無効な `SoundHandle` / `false` / `0.0`)が返る。`soundState` だけはトランザクション中の分岐を持たず([実装](../../src/core/userpublic/gamecontext.cpp#L608))ロード中も例外を投げるので、`noexcept` の `onDestroy` から呼ぶと `std::terminate` になるはずです(コードからの推論。実行では未確認) |
-| `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=OFF` | `BuildFeatureCallDisabledError`。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_PHYSICS"` |
+| 同上を `onDestroy` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | 9 本とも例外にならず、空で答える: 無効な `SoundHandle` / `false` / `0.0` / `soundState` は `nullopt`(✅PG-2b。[`soundState` の包み](../../src/core/userpublic/gamecontext.cpp#L608))。拒否は記録に残る: scene のロード/破棄トランザクションの中ではロード結果の `effect_errors` に `build_feature_disabled@1`(`phase` は `destroy`)、トランザクションの無い `onDestroy`(プレイ中の object 削除、ゲーム DLL の解放、`deactivateAll`)では engine log に `build_feature_disabled@1 in a destruction callback: …`。トランザクションの中の `setSoundVolume` / `setSoundPitch` / `setSoundPaused` は、ON の build と同じく build を見る前に `false` を返すので何も記録されない |
+| `ctx.physics()` の 5 本を `onDestroy` の中で呼ぶ | `PELICAN_WITH_PHYSICS=OFF`、または provider が 0 本 | 例外にならず、空で答える: `raycastAll` / `overlapAll` / `shapeCastAll` は空の配列、`raycastClosest` / `shapeCastClosest` は `nullopt`(✅PG-2b)。これは「何にも当たらなかった」と同じ答えで、見分けられるのは記録だけです。記録は audio と同じ場所(トランザクションの中なら `effect_errors`、無ければ engine log)に、`build_feature_disabled@1` か `physics.provider_unavailable@1` で残る |
+| `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=OFF` | `BuildFeatureCallDisabledError`。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_PHYSICS"`。rpc の `raycast` は JSON-RPC の error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。✅PG-2b。[受け口](../../src/core/communication/rpcserver.cpp#L1092)) |
 | `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=ON` で provider が 0 本(`PELICAN_WITH_BUILTIN_PHYSICS` と `PELICAN_WITH_JOLT_PHYSICS` が両方 OFF) | ゲーム DLL がそのクエリの provider を登録していなければ [`phys::ProviderUnavailableError`](../../src/core/phys/physquery.hpp#L102) を投げる。`code()` = `physics.provider_unavailable@1`。空の結果(「何にも当たらなかった」)は返さない。rpc の `raycast` も同じ場合は JSON-RPC の error(code `-32000`、message はこの例外の `what()`)を返す |
 | `ctx.animation().setParameter` / `forceState` | `PELICAN_WITH_ANIMATION=OFF` | 例外ではなく `Animation::Status::not_found`。シーンのロード/破棄トランザクションの中では、ON の build と同じく `phase_order_error` |
 
 - `BuildFeatureCallDisabledError` は `BuildFeatureDisabledError` の派生です。PG-2 より前から `BuildFeatureDisabledError` や `std::runtime_error` で受けていたコードは、そのまま受け取れます。名前で分岐したいときは `code()` を見てください。型の定義は [build_features.hpp](../../src/core/build_features.hpp#L45)、`phys::ProviderUnavailableError` は `gamecontext.hpp` が include している `phys/physquery.hpp` にあります。
 - provider 0 本の build では、トリガー更新は例外を投げません。`OverlapEnter` / `OverlapExit` を出さず、それまでの overlap の組をそのまま持ち続けます([physworld.cpp のコメント](../../src/core/phys/physworld.cpp#L564))。
-- `PELICAN_WITH_PHYSICS=OFF` の build の rpc `raycast` は、コードを読んだ限り、stub の [`PhysWorld::raycastClosest()`](../../src/core/phys/physworld_stub.cpp#L108) が空を返すので `{"hit": null}` になります(実行では未確認)。こちらは PG-2 の対象外で、`ctx.physics()` と答え方が揃っていません。
+- `PELICAN_WITH_PHYSICS=OFF` の build の rpc `raycast` は、PG-2b から stub の [`PhysWorld::raycastClosest()`](../../src/core/phys/physworld_stub.cpp#L108) に問い合わせず、params を見る前に上の JSON-RPC error で断ります。PG-2b より前は stub の空の答えがそのまま `{"hit": null}` になり、「外れ」と区別できませんでした。
+- activate 相(`onInit`)と、ロードの外の通常の呼び出しは、PG-2b の後も上の表のとおり投げます。空で答えるのは `onDestroy` の中だけです([規則のコメント](../../src/core/userpublic/gamecontext.hpp#L42))。
+- 残した穴: `render()` の `setRayTracingDispatchExtent` / `setRayTracingCallableRecord` は、scene のトランザクション中の呼び出しを `SceneTransactionMutationRejected` で投げます([トランザクション中の拒否](../../src/core/userpublic/gamecontext.cpp#L260))。PG-2b の包みの外なので、ロード中の `onDestroy` から呼ぶと `std::terminate` になりえます(コードからの推論。実行では未確認)。
 - `animation` の OFF build の挙動は凍結 ABI の契約です(§8.13「`PELICAN_WITH_ANIMATION=OFF` の見え方」)。
 
 ### objects() — シーンオブジェクトを名前で引いてワールドを読む(✅GP-1)
@@ -551,7 +554,7 @@ if (auto hit = ctx.physics().shapeCastClosest(player, {0, -4, 0})) {
 - **プロバイダの選択はビルド時**です: `PELICAN_WITH_BUILTIN_PHYSICS`(既定 ON)/ `PELICAN_WITH_JOLT_PHYSICS`(既定 OFF。両方 ON なら Jolt が勝つ)。project.json や実行時の切替はありません。クエリ契約(順序・タイブレーク)はプロバイダによらずエンジン側が所有するため、通常は意識不要です。ゲーム DLL から capability 単位で provider をオーバーレイする上級拡張点(`physics/abi_v2.hpp` — raycast だけ独自実装し残りはフォールバック、等)もあります。
 - transform 追従は現行では毎フレーム再収集(BVH = bounding volume hierarchy、形状を包む箱を木に組んで判定候補を絞る加速構造。それを持たないという意味 — 計測してから見直す方針)。capsule の軸はローカル Y、box は OBB(回転対応)です。
 - `debug_draw` feature を rendering config で参照していると collider のワイヤフレームが描画されます([第6章](06_rendering.md))。
-- rpc の query は `raycast`([受け口](../../src/core/communication/rpcserver.cpp#L1092)。`origin` / `direction` / `max_distance` を受けて最近傍 1 件を返す)だけです。provider が 0 本のビルドでは、この `raycast` も「当たらなかった」ではなく JSON-RPC の error を返します(§8.4「機能を外した build」)。
+- rpc の query は `raycast`([受け口](../../src/core/communication/rpcserver.cpp#L1092)。`origin` / `direction` / `max_distance` を受けて最近傍 1 件を返す)だけです。provider が 0 本のビルドと `PELICAN_WITH_PHYSICS=OFF` のビルド(✅PG-2b)では、この `raycast` も「当たらなかった」ではなく JSON-RPC の error を返します(§8.4「機能を外した build」)。
 - 📐未実装: rpc の overlap / shapeCast、メッシュコライダ/BVH、剛体シミュレーション。
 
 ### 8.7.1 side-scroller controller(WP109)

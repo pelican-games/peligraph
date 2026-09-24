@@ -78,15 +78,19 @@ so that switching modes never moves the number under you. It does not restore
 this project's curve; to get it back, rewrite the keys (or `git checkout` this
 file).
 
-**The owner is a position, not a name.** `owner: {"scene": "default_scene",
-"object": 1}` names the **first object in `scene.json`'s `objects` array** for
-that scene -- authoring ids are handed out by position, starting at 1, and they
-are not written down anywhere in the scene file. Move `Camera` to the front, or
-insert an object above `Hero`, and the instance now owns something that has no
-model. **Nothing reports this.** The instance simply lands in an inactive scope,
-the hero stands in its rest pose, and the log stays quiet. A persistent object
-id is a known gap in v0; until it exists, treat the object order in `scene.json`
-as part of the rendering config.
+**The owner is an authoring id, not a name.** `owner: {"scene": "default_scene",
+"object": 1}` names the object whose authoring id is 1. This `scene.json` has
+never been saved by the editor, so it carries no ids yet: they are handed out by
+position when the file loads, starting at 1, and id 1 is `Hero`, the first
+object in the `objects` array. While the file stays that way, move `Camera` to
+the front by hand, or insert an object above `Hero`, and the instance owns
+something that has no model (what is reported then is in manual chapter 4, under
+`graph.instance.owner`). Saving the scene from the editor (`save_scene`) writes
+every object's `authoring_object_id` and the document's
+`next_authoring_object_id` into the file; from then on an id travels with its
+object, so objects inserted or reordered before `Hero` no longer move the owner,
+and reopening the saved file keeps the same ids. The one exception is a scene
+snapshot import (`import_scene_snapshot`), which allocates fresh ids.
 
 **The clips.** `parameters.clip` on either `pose.clip_sample` node takes any
 clip name in the rig; `Jump` is the third one here. `pose.clip_sample` also

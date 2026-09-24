@@ -32,7 +32,7 @@
 ```json
 {
   "schema": "pelican.asset_data",
-  "version": 1,
+  "version": 2,
   "models": [
     { "name": "alicia",        "path": "assets/models/AliciaSolid.vrm" },
     { "name": "DamagedHelmet", "path": "assets/models/DamagedHelmet.glb" },
@@ -47,7 +47,7 @@
 
 仕様上の注意:
 
-- `schema: "pelican.asset_data"` と `version: 1` は必須です。現行版だけを受理する strict v1 で、旧い未版形式は受理しません。
+- `schema: "pelican.asset_data"` と `version: 2` は必須です。`2` 以外は `pelican.asset_data.version_unsupported@1` で拒否します(✅MG-2b。[assetdataformat.cpp](../../src/project/assetdataformat.cpp#L110))。MG-2b より前にあった version `1` は「`procedural_geometry` を受けない」ことだけが違う版で、今は読めません。手元に `1` のファイルがあれば `version` を `2` に書き換えるだけで読めます。旧い未版形式も受理しません。
 - `models` 配列は必須、各要素は `name` と `path`(プロジェクトルート基準)の両方が必須です。`path` には `#` フラグメント(§5.6)も書けます: `{"name":"selected","path":"assets/models/city.glb#mesh/LampPost"}`。任意キー `material_bindings`(`pelican.material_bindings` v1 への参照 — プリミティブ → マテリアルの whole-model 契約。✅WP116、fragment モデルには不可)も書けます。
 - **起動時に全件ロード**されます(✅WP82 で CPU 側は並列化・GPU 登録は宣言順直列 = 決定的)。ここでいう**宣言順**は上の `models` 配列に書いた順のことです。パース(CPU)は複数スレッドで走りますが、結果は添字順の配列に置かれ、GPU への登録は全ジョブの合流後にこの順で 1 件ずつ行われます([parallel_prepare.hpp](../../src/core/parallel_prepare.hpp#L20))。スレッドの完了順が実行ごとに揺れても GPU に載る順序は変わらない、というのが「決定的」の中身です([用語集](14_glossary.md))。ファイルが無ければ解決後の絶対パス入りで fail-fast。
 - **rendering config が壊れているとモデルは 1 件も upload されません(✅WP380a-fix)**: 起動時、レンダーグラフの検証と publish は scene の prepare より**前**に走ります([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp#L126))。マテリアル経路の誤りのような config の失敗が常に最初の起動エラーになり、頂点プールを消費しません。
@@ -65,7 +65,7 @@
 ```json
 {
   "schema": "pelican.asset_data",
-  "version": 1,
+  "version": 2,
   "models": [],
   "textures": [
     { "name": "demo_atlas", "path": "assets/demo.atlas.json", "sampler": "nearest" }
@@ -222,8 +222,8 @@ pelican_player --headless --project <dir> --frames 3 --size 160x90 --fps 30 \
 - `outputs[]` の各ファイルに **sha256 必須**。`pelican_cli import` が全数照合し、不一致は即エラー。
 - 出力の `schema` は 8 種のみ受理されます([importmanifest.cpp](../../src/project/importmanifest.cpp) の `validateOutputSchema`)。それ以外は `import manifest output schema is not supported` で拒否です。
   - `gltf` / `png` — `version` を**書いてはいけません**(書くとエラー)
-  - `pelican.transform_seq` / `pelican.scene` / `pelican.layout` / `pelican.atlas` — `version` は任意、書くなら `1`
-  - `pelican.material` — `version: 1` が**必須**
+  - `pelican.transform_seq` / `pelican.layout` / `pelican.atlas` / `pelican.material` — `version: 1` が**必須**(欠落も `requires version 1` で拒否)
+  - `pelican.scene` — `version: 2` が**必須**(✅MG-2b。エンジンが scene v2 しか読まないため、`1` を名乗る納品は `expected=2, actual=1` で拒否)
   - `khronos.ktx2` — `version: 2` が**必須**
 - glb だけが `asset_data.json` に自動登録されます(それ以外の schema は検証のみ)。
 - 実行は冪等(登録済みの name / path はスキップ)。
@@ -234,7 +234,9 @@ pelican_player --headless --project <dir> --frames 3 --size 160x90 --fps 30 \
 
 現状の注意: 変換ツール集 **pelican-import-tools は独立リポジトリとして実装済み**(✅WP81 = K3。Python 製 `psd_extract` + `atlas_pack`、出力は `pelican.atlas` + import manifest)ですが、本リポジトリには含まれません。Houdini アダプタも別リポジトリです。Blender ブリッジは依然 📐(FBX→glb の標準変換レーンは「Blender headless」と決定済み)。エンジン側の受け口(headless 描画・SeqPlayer・VAT・import・rules)はすべて完成しています。
 
-**USD レーン(✅WP118/119/124/240c)**: ここでいう**レーン**は「ある入力形式をランタイム層へ運ぶ、決まった経路一式(外部ツールのレシピ + 納品物の形 + manifest)」のことです。import-tools に production の `usd` レシピが入りました。USD/USDZ を「`model.glb` + `scene.json`(pelican.scene v1)+ `materials.json`(pelican.material v1 — OpenPBR values + routing)+ `material_bindings.json` + PNG 群 + `manifest.json`」の決定的 delivery に変換します(二回ビルドの hash 一致 gate 付き。toolchain は `usd-core==26.5` に pin)。**エンジンは USD を 1 byte も読みません**(二層モデル不変)。delivery の `materials.json` を `asset_data.json` の `materials[]` で索引すれば、engine runtime が OpenPBR material と primitive binding をロードします。`pelican_cli import --rules` のレシピ表に usd はありません。UsdMtlx は Windows wheel 非同梱のため外部 .mtlx は評価されず、authored 値のみ解釈されます。
+**USD レーン(✅WP118/119/124/240c)**: ここでいう**レーン**は「ある入力形式をランタイム層へ運ぶ、決まった経路一式(外部ツールのレシピ + 納品物の形 + manifest)」のことです。import-tools に production の `usd` レシピが入りました。USD/USDZ を「`model.glb` + `scene.json`(pelican.scene)+ `materials.json`(pelican.material v1 — OpenPBR values + routing)+ `material_bindings.json` + PNG 群 + `manifest.json`」の決定的 delivery に変換します(二回ビルドの hash 一致 gate 付き。toolchain は `usd-core==26.5` に pin)。**エンジンは USD を 1 byte も読みません**(二層モデル不変)。delivery の `materials.json` を `asset_data.json` の `materials[]` で索引すれば、engine runtime が OpenPBR material と primitive binding をロードします。`pelican_cli import --rules` のレシピ表に usd はありません。UsdMtlx は Windows wheel 非同梱のため外部 .mtlx は評価されず、authored 値のみ解釈されます。
+
+> ⚠ **MG-2b からエンジンは pelican.scene v2 しか読みません。** この repo の USD fixture(`test/fixtures/usd0b/` など)の manifest と `scene.json` は v2 に書き換えましたが、別 repo の import-tools の `usd` レシピが v2 を出すようになったかは未確認です(台帳の IMPORT-1)。v1 を名乗る delivery は `pelican_cli import` が `expected=2, actual=1` で断ります。
 
 import manifest の受理拡張: outputs の schema に `pelican.material`(v1)が追加され、**`khronos.ktx2` 出力には `version: 2` が必須**になりました(欠落・不一致は expected/actual 付きの名指しエラー)。
 
@@ -260,7 +262,7 @@ assets/models/city.glb#node/Root/Arm/Cube … フルパス(正準形)
 pelican_cli import gltf --extract-scene assets/models/city.glb
 ```
 
-glTF のノード階層を pelican.scene v1 として抽出します: メッシュノード → `simplemodelview` + `#node/<フルパス>` 参照、`KHR_lights_punctual` → `light`、カメラノード → `camera`、**ノード親子 → オブジェクトの `parent`**。ノード名は R7 識別子必須で、重複・循環は抽出時に検出されます。
+glTF のノード階層を pelican.scene v2 として抽出します(✅MG-2b で v1 から変更。[gltfsceneextract.cpp](../../src/devcli/gltfsceneextract.cpp)): メッシュノード → `simplemodelview` + `#node/<フルパス>` 参照、`KHR_lights_punctual` → `light`、カメラノード → `camera`、**ノード親子 → オブジェクトの `parent`**。ノード名は R7 識別子必須で、重複・循環は抽出時に検出されます。
 
 ### import ルール表(✅WP84 = K4)
 

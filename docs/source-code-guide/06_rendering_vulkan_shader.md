@@ -116,7 +116,7 @@ WP172 で **第3の variant「preview」** が加わりました。同じ `loadR
 
 ### preset envelope: 既定の rendering config は `pipeline.preset` + `features` の 2 キー(WP240a)
 
-`pelican_cli project init` が既定(`--template standard`)で書き出す rendering config は、**`pipeline.preset` と `features` の 2 キーだけ**になりました([`projecttemplate.cpp`](../../src/project/projecttemplate.cpp#L197) の `rendering_config_json` — 7 行の JSON リテラル。F-2 で雛形は `src/devcli/projectinit.cpp` から `pelican_project` へ移りました)。ただしファイルに落ちるのはこのリテラルそのものではなく、[`wrapLegacyRenderingConfig()`](../../src/project/renderconfigsection.hpp#L62) で `pelican.graph` root に包んだ形です([`renderingConfigJson()`](../../src/project/projecttemplate.cpp#L265))。参照先は engine 同梱の [`render_pipelines/hybrid_v1.json`](../../src/core/resources/render_pipelines/hybrid_v1.json) です。`projects/animgraph_demo` の [`passes/main.json`](../../projects/animgraph_demo/passes/main.json) も同じ 2 キーへ移りました(こちらは legacy root のまま、`features` が 3 本)。これは略記の導入ではなく **既定の描画経路そのものの入れ替え**です — 旧テンプレートは手書き 111 行で、pass は gbuffer / ssao / ssao_blur / present の 4 本、`present` が `uses_light_data: true` でライティングと present を兼ねており、forward 経路も半透明も snapshot も持っていませんでした。既定プロジェクトが踏むコードが変わっているので、「既定は deferred 4 pass だけ」という前提で読むと外します。
+`pelican_cli project init` が既定(`--template standard`)で書き出す rendering config は、**`pipeline.preset` と `features` の 2 キーだけ**になりました([`projecttemplate.cpp`](../../src/project/projecttemplate.cpp#L197) の `rendering_config_json`。F-2 で雛形は `src/devcli/projectinit.cpp` から `pelican_project` へ移りました)。この 2 キーは `pelican.graph` root の `rendering` 節の中にあります。MG-2b からはリテラル自体が graph root の全文で、[`renderingConfigJson()`](../../src/project/projecttemplate.cpp#L265) はそれをそのまま返します(以前の包み関数 `wrapLegacyRenderingConfig()` は撤去)。参照先は engine 同梱の [`render_pipelines/hybrid_v1.json`](../../src/core/resources/render_pipelines/hybrid_v1.json) です。`projects/animgraph_demo` の [`passes/main.json`](../../projects/animgraph_demo/passes/main.json) も同じ 2 キーへ移りました(`features` が 3 本。MG-2b で `pelican.graph` root に包まれました)。これは略記の導入ではなく **既定の描画経路そのものの入れ替え**です — 旧テンプレートは手書き 111 行で、pass は gbuffer / ssao / ssao_blur / present の 4 本、`present` が `uses_light_data: true` でライティングと present を兼ねており、forward 経路も半透明も snapshot も持っていませんでした。既定プロジェクトが踏むコードが変わっているので、「既定は deferred 4 pass だけ」という前提で読むと外します。
 
 展開の実体は [`resolveRenderPipelinePreset()`](../../src/project/renderpipeline.cpp#L836) で、呼び出し元は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2922) の**冒頭 1 箇所だけ**です([`featurecompose.cpp` 内](../../src/project/featurecompose.cpp#L2950))。つまり preset 展開は下の手順 1(feature 合成)の直前に、同じ関数の中で起きます。ソースファイルは書き換えません。
 
@@ -247,23 +247,21 @@ flowchart LR
     Compiled --> Runtime
 ```
 
-### rendering config の root は 2 つある(P-2a-4a / P-2a-4b)
+### rendering config の root は `pelican.graph` だけ(P-2a-4a / P-2a-4b / MG-2b)
 
-同じ rendering config が、2 通りの入れ物で出荷されます。
+rendering config は、共通グラフ文書(`schema` / `version` / `definitions` / `nodes` / `outputs` の 5 キー)の `rendering` メンバの下に入ります。出荷 project 7 本と雛形はすべてこの形です。
 
-- **legacy root** — `features` / `render_targets` / `rendering_passes` … がそのまま最上位にある従来の形。
-- **`pelican.graph` root** — 共通グラフ文書(`schema` / `version` / `definitions` / `nodes` / `outputs` の 5 キー)の `rendering` メンバの下に、legacy config が丸ごと入る形。`graph.instance` を書けるのはこの root の下だけです(legacy root には `nodes` / `definitions` 自体が無いので置き場が無い、というだけで、parse 時に名前付きで拒否されるわけではありません。`graph.nested_instance@1` / `graph.input_scope@1` は [`editGraphDocument()`](../../src/project/graphcomposition.cpp#L757) の編集経路にしか存在しません)。
+P-2a-4b までは、`features` / `render_targets` / `rendering_passes` … を最上位に直接並べた **legacy root** も受けていました。MG-2b でその読み手を撤去し、legacy root は読み込み・overlay・ray tracing の設定・編集文書のどこでも `render_config.legacy_root@1`([`RenderConfigLegacyRoot`](../../src/project/renderconfigdocument.hpp#L35))で拒否されます。
 
-出荷 project では [`projects/example/passes/main_rendering_config.json`](../../projects/example/passes/main_rendering_config.json) と [`projects/posegraph_demo/passes/main.json`](../../projects/posegraph_demo/passes/main.json) の **2 本**が graph root で、残りは legacy root です。
-
-読むときの要点は「どちらかを判定する `if` を各所が持たない」ことです。authored key の住所を決めるのは [`renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L13) の **4 つの名前(5 定義)**だけで(`isRenderGraphRoot()` は `ordered_json` 用の [overload](../../src/project/renderconfigsection.hpp#L27) を持ちます)、他のすべての reader / writer / generator はここを呼びます。
+読むときの要点は「authored key の住所を決める `if` を各所が持たない」ことです。住所を決めるのは [`renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L12) の **3 つの名前(4 定義)**だけで(`isRenderGraphRoot()` は `ordered_json` 用の [overload](../../src/project/renderconfigsection.hpp#L27) を持ちます)、他の reader / writer はここを呼びます。
 
 | 関数 | 役割 |
 |---|---|
 | [`isRenderGraphRoot()`](../../src/project/renderconfigsection.hpp#L22) | `schema == "pelican.graph"` かどうか |
-| [`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36) | 節そのものを返す。graph root に object の `rendering` が無ければ `RenderConfigSectionUnlocated` を投げる |
-| [`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49) | **読み取り専用の寛容版**。節が無ければ空 object を返す |
-| [`wrapLegacyRenderingConfig()`](../../src/project/renderconfigsection.hpp#L62) | legacy config を graph root で包む唯一の場所。`devcli project init` も fixture も出荷 config も同じ規則を通る |
+| [`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36) | 節そのものを返す。graph root でなければ `RenderConfigLegacyRoot`、object の `rendering` が無ければ `RenderConfigSectionUnlocated` を投げる |
+| [`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49) | **読み取り専用の寛容版**。節が無ければ空 object を返す(legacy root は断る) |
+
+P-2a-4b にあった 4 本目の `wrapLegacyRenderingConfig()`(legacy config を graph root で包む関数)は MG-2b で撤去されました。
 
 つまり **読みは節が無くても失敗せず、編集だけが名前付きで拒否される**という非対称が意図です。編集側の入口は [`AuthoredRenderConfigDocument::withSectionValue()`](../../src/project/renderconfigdocument.cpp#L654) で、byte を保ったまま `rendering.<key>` を差し替えます(graph root 自身のキーは root に書きます)。その byte 正確な locator の読みどころは [第9章 §9.24](09_black_magic_and_gotchas.md) の難所「byte 正確な節 locator と絶対 offset」にあります。
 

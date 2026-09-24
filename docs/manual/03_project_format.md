@@ -23,10 +23,10 @@
 | パス | 内容 | 参照元 |
 |---|---|---|
 | `project.json` | マニフェスト+基本設定 | 起動時に必ず読む |
-| `scenes/*.scene.json` | シーン定義(pelican.scene v1) | `basic_config.scene_data_json` |
+| `scenes/*.scene.json` | シーン定義(pelican.scene v2) | `basic_config.scene_data_json` |
 | `assets/asset_data.json` | モデル登録表 | `basic_config.asset_data_json` |
 | `assets/models/`, `assets/textures/`, `assets/audio/` | バイナリアセット置き場(規約) | asset_data.json 等から相対参照 |
-| `passes/*.json` | レンダリングパイプライン定義(rendering config。root 形は 2 つ、下記) | `basic_config.rendering_config_json` |
+| `passes/*.json` | レンダリングパイプライン定義(rendering config。`pelican.graph` root、下記) | `basic_config.rendering_config_json` |
 | `input/actions.json` | 入力アクション定義 | `basic_config.input_actions_json` |
 | `input/profiles/*.json` | バインディングプロファイル | `basic_config.input_profiles` |
 | `ui/*.json` | UI ドキュメント(pelican.ui v1) | `basic_config.ui_config_json` |
@@ -186,12 +186,9 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
 
 > **設計決定(fail-fast):** 旧キー名 `fov_y` / `near` / `far` は「黙って無視」ではなく `'fov_y' is not supported in v1; use 'yfov' (radians)` という**移行先を案内する名指しエラー**で拒否される(WP63)。「読めるふりをしない」— 警告止まりだと『動いたように見えて新機能の挙動だけ壊れる』事故になるため。互換受理の追加はプロジェクト規則で禁止されており、旧形式の変換は外部ツールの仕事。
 
-### rendering config の 2 つの root(✅P-2a-4a/4b)
+### rendering config の root(✅P-2a-4a/4b, MG-2b)
 
-`rendering_config_json` が指すファイルは、**2 つの root 形**のどちらかです。どちらもエンジンが受理し、v0 の間はどちらも消えません。
-
-- **legacy root**: `features` / `render_targets` / `rendering_passes` などがファイルの最上位に並ぶ形。出荷 `animgraph_demo` / `sprite_demo` / `vrm_xr_demo` / `raytracing_demo` の 4 つがこの形です。
-- **`pelican.graph` root**: 最上位は共通グラフの 5 キー(`schema` / `version` / `definitions` / `nodes` / `outputs`)**だけ**で、rendering config 全体が `rendering` の下に入ります。出荷 **`example`(`passes/main_rendering_config.json`)と `posegraph_demo`(`passes/main.json`)**、および `pelican_cli project init` が生成する新規プロジェクトがこの形です。共通グラフのノード(`graph.instance` を含む)を書けるのは**この root の下だけ**なので、姿勢グラフを装着する `posegraph_demo` はこの形である必要があります([第4章 §4.1](04_scene_ecs.md))。
+`rendering_config_json` が指すファイルは **`pelican.graph` root** です。最上位は共通グラフの 5 キー(`schema` / `version` / `definitions` / `nodes` / `outputs`)**だけ**で、rendering config 全体が `rendering` の下に入ります。出荷 7 本すべてと、`pelican_cli project init` が生成する新規プロジェクトがこの形です。共通グラフのノード(`graph.instance` を含む)は 5 キーの側に書きます([第4章 §4.1](04_scene_ecs.md))。
 
 ```json
 { "schema": "pelican.graph", "version": 1,
@@ -199,7 +196,10 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
   "rendering": { "features": [...], "render_targets": [...], "rendering_passes": [...] } }
 ```
 
-規則は 1 つです —— 上の 5 キーは共通グラフが所有し、**それ以外の rendering config のキーは全部 `rendering` 節に属します**。`rendering` 節の中身が同じなら描画結果は同じで、違いは「共通グラフのノードを同じファイルに持てるかどうか」だけです(legacy root は持てません)。キーごとの所有と移行手順は [第6章 §6.16](06_rendering.md) が正です。
+規則は 1 つです —— 上の 5 キーは共通グラフが所有し、**それ以外の rendering config のキーは全部 `rendering` 節に属します**。キーごとの所有は [第6章 §6.16](06_rendering.md) にあります。
+
+- **`features` / `render_targets` / `rendering_passes` などを最上位に直接並べた旧い形(legacy root)は、MG-2b から読めません。** 起動時の読み込み([renderingpassconfigloader.cpp](../../src/core/renderingpass/renderingpassconfigloader.cpp#L24))、`--feature-overlay` の重ね合わせ、ray tracing の設定の読み込み、Studio / RPC の編集文書のどれもが `render_config.legacy_root@1` で断ります([`RenderConfigLegacyRoot`](../../src/project/renderconfigdocument.hpp#L35))。直すには、旧いファイル全体を `rendering` の値にして上の 5 キーを足します。`rendering` の中身は旧い root と同じ意味で読まれます。
+- **`rendering` 節には `buffers` / `compute_tasks` を書けません。** この 2 つは共通グラフのノード(`render.buffer` / `render.compute`)の接続から lowering が作るので、節に書くと `render graph derives field from connections: buffers` のように拒否されます([lowerRenderGraphDocument()](../../src/project/rendergraphcomposition.cpp#L21))。buffer と compute task は graph node か task feature で書きます。
 
 `pelican.graph` root は web ビューア未対応です([第9章](09_web.md) §9.3)。
 
@@ -396,7 +396,7 @@ example の README にあった手書き sha256 表の役目は、この manifes
 
 ## 3.10 コンポーネント宣言スキーマ v3 — `Flags` と `List` の wire(✅WP382a)
 
-§3.9 まではドキュメント全体の話でした。この節は **1 個のコンポーネントの中身**をどう書くかです。ここでの **v3 はスキーマ宣言機構の版番号**で、シーン JSON の `version`(pelican.scene v1)とは別物です([用語集](14_glossary.md))。従来の登録経路が運べたのは平坦なフィールド列だけで、`Flags` / `List` のように**入れ子の語彙を持つ型**を運べるようにしたのが v3 です。対象は**ゲームコード側が登録するコンポーネント**(と event payload / behavior params)で、エンジン組み込みの codec 表のコンポーネント(既定 7 件 + ray layout v2 のときだけ増える `pelican_ray_instance`。[componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1982))はこの節の対象外です(平坦なフィールド列のまま)。
+§3.9 まではドキュメント全体の話でした。この節は **1 個のコンポーネントの中身**をどう書くかです。ここでの **v3 はスキーマ宣言機構の版番号**で、シーン JSON の `version`(pelican.scene v2)とは別物です([用語集](14_glossary.md))。従来の登録経路が運べたのは平坦なフィールド列だけで、`Flags` / `List` のように**入れ子の語彙を持つ型**を運べるようにしたのが v3 です。対象は**ゲームコード側が登録するコンポーネント**(と event payload / behavior params)で、エンジン組み込みの codec 表のコンポーネント(既定 7 件 + ray layout v2 のときだけ増える `pelican_ray_instance`。[componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1982))はこの節の対象外です(平坦なフィールド列のまま)。
 
 登録側の `schema` に `Flags<E>` か `List<Row>` が 1 つでも含まれると、登録は自動的に **v3 の入口**へ切り替わります([registerer.hpp](../../src/core/userpublic/details/component/registerer.hpp#L188))。判定は `schemaRequiresV3()` のコンパイル時定数なので、含まないコンポーネントの wire は 1 バイトも変わりません。scene JSON からの入口は従来と同じ「コンポーネント JSON をそのまま渡す」経路です([`ComponentInfoManager::loadByJson()`](../../src/core/ecs/componentinfo.cpp#L189))。
 

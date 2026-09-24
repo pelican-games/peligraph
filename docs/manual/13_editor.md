@@ -203,7 +203,7 @@ pelican_player --project mygame --headless --rpc
 
 > **設計決定(オーサリングとランタイムの分離):** 編集が書き換えるのは**メモリ上のオーサリング文書**であって、動いている ECS ではない。ECS 側は文書からの**投影**にすぎない。理由: 名前を持たないオブジェクトや、ライトだけ・collider だけのオブジェクトも一意に指せる ID が必要で、かつ「編集 → 失敗 → 完全に元通り」を保証するには、真実の置き場所を 1 つにする必要があるため。
 
-- 文書 1 つ = **シーンファイル 1 本**です。`pelican.scene` v1 のエンベロープ丸ごと —— そのファイルの `scenes` が宣言する全シーン、その中の全オブジェクト、その全コンポーネントの生 JSON —— を保持します([authoringscenedocument.hpp](../../src/core/loader/authoringscenedocument.hpp#L114))。プロジェクトに複数のシーンファイルがあれば文書も複数で、`export_scene_snapshot` はその全部を返します。
+- 文書 1 つ = **シーンファイル 1 本**です。`pelican.scene` v2 のエンベロープ丸ごと —— そのファイルの `scenes` が宣言する全シーン、その中の全オブジェクト、その全コンポーネントの生 JSON —— を保持します([authoringscenedocument.hpp](../../src/core/loader/authoringscenedocument.hpp#L114))。プロジェクトに複数のシーンファイルがあれば文書も複数で、`export_scene_snapshot` はその全部を返します。
 - **`AuthoringObjectId`**(セッション内で安定・1 始まり)と **`SceneRevision`**(単調増加)が編集の座標系です。ランタイムの `EntityId` は付随情報で、**同一性の代用にはしません**(オブジェクトが再生成されると変わるため)。
 - コンポーネントの受理・正規化は [第4章](04_scene_ecs.md) §4.2 の component codec が担当します。値を書くと**必ず codec の正規形に書き直されて**保存されます。ここでいう**正規形**は、書いた JSON をいったん codec で読み(`decodeAuthored()`)、その値からもう一度書き出した(`encodeCanonical()`)形のことです —— 鍵の並び・省略した既定値・数値の型が一意に決まるので、同じ意味の JSON は必ず同じバイト列になります([componentcodec.hpp](../../src/core/loader/componentcodec.hpp#L339))。
 
@@ -213,12 +213,12 @@ pelican_player --project mygame --headless --rpc
 
 ```json
 // 入力
-{"schema":"pelican.scene","version":1,"scenes":{"main":{"objects":[]}}}
+{"schema":"pelican.scene","version":2,"scenes":{"main":{"objects":[]}}}
 // 保存・スナップショット出力
-{"scenes":{"main":{"objects":[]}},"schema":"pelican.scene","version":1}
+{"scenes":{"main":{"objects":[]}},"schema":"pelican.scene","version":2}
 ```
 
-(実物: `test/fixtures/editor_command_service/export_scene_snapshot_v1.json`)
+(実物: `test/fixtures/editor_command_service/export_scene_snapshot_v1.json`。ファイル名に `v1` が残っていますが、中身は MG-2b から SnapshotV2 の要求と scene v2 の文書です)
 
 ## 13.3 編集の実行モデル — チケットとフレーム境界
 
@@ -239,9 +239,9 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 - **ウィンドウモードでは `step_frame` を呼ばないでください**。フレームは自然に進んでいるので、`step_frame` は余分に 1 フレーム進めてしまいます。代わりに `get_edit_result` / `get_scene_revision` をポーリングします。
 - ヘッドレスでは `step_frame` を呼んで進め、応答の `edit_results[]` で結果を受け取るのが基本形です。
 
-### 編集操作(operations)の 12 種
+### 編集操作(operations)の 13 種
 
-`edit` の `operations[]` には次の 12 種を並べます(正は
+`edit` の `operations[]` には次の 13 種を並べます(正は
 [`prepareRpcOperation()`](../../src/core/communication/editorjournal.cpp#L1598) の op 分岐)。1 回の `edit` は**全部成功か全部失敗**で、
 表に無い `op` は `method_unavailable{method, adapter}` です。
 
@@ -259,6 +259,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 | `set_prefab_parameter` | `object`(**`object_id` ではない**), `parameter`, `value` | prefab インスタンスのパラメータ上書き |
 | `unset_prefab_parameter` | `object`, `parameter` | 上書きを外して prefab 側の既定へ戻す(既定が無ければ拒否) |
 | `unpack_prefab` | `object`(このほかのキーは拒否) | prefab インスタンスを素のオブジェクトへ展開 |
+| `duplicate` | `object_id`, `declaration_index?`(このほかのキーは拒否) | 子孫ごと複製(✅OL-1。下記) |
 
 `get_procedural_assets` / `edit_procedural_asset` は **`edit` の op ではなく独立した RPC メソッド**です
 ([登録](../../src/core/communication/editorrpchandlers.cpp#L246))。`edit_procedural_asset` は
@@ -286,6 +287,42 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 - `behavior` を対象にするときは `component_slot: "behavior"` + `attachment_index` を指定し、`field_path` は `/params/...` に限られます([第8章](08_gameplay.md) §8.5)。
 - 数値は **2^53−1 以下の非負整数**が上限です(JSON の安全整数域)。
 - `spawn` した ID は undo → redo で**同じ ID に戻ります**(生成物の同一性が保たれる)。
+
+#### `duplicate` — 子孫ごと複製する(✅OL-1)
+
+`{"op":"duplicate","object_id":2}` は、object 2 とその子孫を 1 つのかたまりとして複製します([`prepareDuplicate()`](../../src/core/communication/editorjournalops.cpp#L1296))。
+
+- **置き場所**: 既定では元の subtree の直後に、元の宣言順のまま並びます。`declaration_index` を書くとそこに置きます。シーンの object 数を超える値は `schema_violation` です。
+- **名前**: 各 copy は `<名>_copy<N>` になります。`N` はそのシーンでまだ使われていない最小の番号で、object ごとに決まります(`Leaf_copy1` が既にあれば `Middle_copy1` と `Leaf_copy2`)。copy をもう一度複製すると `Middle_copy1_copy1` です([`copyName()`](../../src/core/communication/editorjournalops.cpp#L1279))。
+- **親**: subtree の中の `parent` は、付け替えた名前に向け直します。いちばん上の copy は元と同じ親の下に入ります。
+- **ID**: copy は新しい `AuthoringObjectId` を取ります。undo は 1 手で、copy をすべて消します。redo は同じ ID で戻します。
+- **prefab instance**: instance ごと複製し、copy の `prefab.instance_id` は engine が新しく付けます(`<元の instance_id>_copy<N>`)。
+- **feature 検査**: copy はそれぞれ `add_component` / `spawn` と同じ PG-1 の検査を通ります。たとえば physics を外した build で collider を持つ object を複製すると `physics.module_unavailable@1` です。
+- **共通グラフの装着**: rendering config の `graph.instance.owner` は元の object の ID を指したままで、copy には付きません(実装のコメントより)。
+- **プレビューは非対応**です。プレビューの投影計画は `duplicate` を `editor_preview_unsupported@1` で断ります([分岐](../../src/core/communication/editorprojectionplan.cpp#L850)。コードで確認。プレビュー経由のテストはありません)。
+- 知らないキー(たとえば `name`)を書いた要求は、`spawn` / `reparent` と同じく invalid params です。存在しない `object_id` は `closure_unresolvable` です。
+
+応答(`get_edit_result`。`test/editorjournal_test.cpp` の OL-1 の例。Middle(2)の子が Leaf(3)):
+
+```jsonc
+{"ticket":"edit-1","actor_id":1,"base_revision":1,"committed_revision":2,
+ "transaction_id":1,"operation":"edit","status":"committed",
+ "affected_authoring_ids":[5,6],
+ "created_objects":[
+   {"object_id":5,"scene_id":"main","declaration_index":3,"name":"Middle_copy1","source_object_id":2},
+   {"object_id":6,"scene_id":"main","declaration_index":4,"name":"Leaf_copy1","source_object_id":3}]}
+```
+
+(`ticket` / `base_revision` / `committed_revision` / `transaction_id` の値は説明用です。鍵と並びは [実装](../../src/core/communication/editorjournal.cpp#L2603) のとおり。)
+
+#### committed の応答に付く 2 つの鍵(✅OL-1)
+
+`edit` / `undo` / `redo` の committed の応答には、どの op でも次の 2 つが付きます([`appendCommittedIdentities()`](../../src/core/communication/editorjournal.cpp#L2603))。
+
+- `affected_authoring_ids` — その編集が触った object の `AuthoringObjectId` の配列。
+- `created_objects` — その編集で**新しく現れた** object の配列。1 要素は `{object_id, scene_id, declaration_index, name}` で、`duplicate` の copy には `source_object_id` も付きます。対象は `spawn`、`duplicate`、そして undo が戻した object(`destroy` の undo)です。何も作らない編集では空配列です。`duplicate` の undo も空で、redo は最初の応答と同じ列を返します。
+
+新しくできた object を選ぶのに、`scene_tree` を探し直す必要はありません。
 
 ## 13.4 同時編集 — actor と revision
 
@@ -358,8 +395,8 @@ ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/commu
 
 | メソッド | params |
 |---|---|
-| `export_scene_snapshot` | `{schema_version:1, allow_pending?}` |
-| `import_scene_snapshot` | `{schema_version:1, semantic_scene_bytes, digest, current_scene_id}` |
+| `export_scene_snapshot` | `{schema_version:2, allow_pending?}` |
+| `import_scene_snapshot` | `{schema_version:2, semantic_scene_bytes, digest, current_scene_id, prefab_closure}` |
 | `save_scene` | `{}`(フィールドを書くとエラー) |
 
 ### shader を読み直させる(✅F-5)
@@ -648,9 +685,10 @@ Frame Planの **Order nodes...** で現在のgraphのノードをUp/Downで並�
 最上位 `features` 鍵が無いと、以前はサービスごと作られず 3 メソッドとも
 「render config editor service is unavailable」で失敗しました。
 現在は**初期化操作が `features: []` を byte-lossless に挿入する**ので、
-手書きや legacy の config でも編集面が作られます。
+手書きの config でも編集面が作られます。最上位が `pelican.graph` でない config(旧い legacy root)は、
+MG-2b から起動時の読み込みで `render_config.legacy_root@1` になり、編集文書も同じ名前で断ります。
 
-**`pelican.graph` root では挿入先が 1 段下です。**root が `schema: "pelican.graph"` のとき、
+**挿入先は `rendering` の中です。**root は `schema: "pelican.graph"` で、
 著作キー(`features` / `rendering_passes` / `pipeline` …)の在処を決めるのは
 [`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36) で、
 **`rendering` オブジェクトの中**になります(読み書きの locator はこの 1 本ですが、byte-lossless の
@@ -1335,7 +1373,7 @@ Studio 専用の裏口はありません(D0)。
   [`editorEditErrorCodeName()`](../../src/core/communication/editorjournal.cpp#L3108)。**列挙子の名前とワイヤ上の
   コード名は一致しません** —— 新しいものは `@1` 付きです)。内訳:
   - 基本 21 種: `stale_revision` / `gate_closed` / `preview_lease_conflict` / `preview_lease_busy` / `not_lease_owner` / `ticket_not_found` / `undo_conflict` / `not_editable` / `schema_violation` / `component_unknown@1` / `duplicate_component` / `missing_component` / `name_conflict` / `parent_not_found` / `closure_unresolvable` / `cycle_detected` / `zero_scale` / `non_finite_transform` / `trs_unrepresentable` / `preserve_missing` / `method_unavailable`
-  - preview: `editor_preview_unsupported@1`(✅WP375c。列挙子は `preview_unsupported`。**inactive なシーンの add / remove / reparent プレビュー**はこれで拒否されます)
+  - preview: `editor_preview_unsupported@1`(✅WP375c。列挙子は `preview_unsupported`。**inactive なシーンの add / remove / reparent プレビュー**と、`duplicate` のプレビュー(✅OL-1)はこれで拒否されます)
   - prefab: `prefab_instance_id_collision` / `prefab_dependency_mismatch` / `prefab_provider_stale` / `prefab_parameter_required` / `prefab_parameter_unknown` / `prefab_parameter_type` / `unpack_must_be_singleton@1` / `prefab_digest_changed@1` / `prefab_provider_changed@1` / `prefab_behavior_dependency_changed@1`
   - origin 遷移(undo/redo の同一性検査): `origin_transition_*@1` 8 種
   - そのほか: `journal_integrity_error@1` / `behavior_type_unknown@1` / `runtime_binding_missing@1`
@@ -1404,7 +1442,9 @@ Studio 専用の裏口はありません(D0)。
 
 ### スナップショット(✅WP168)
 
-`export_scene_snapshot` は文書の意味的なバイト列とダイジェストを返し、`import_scene_snapshot` はそれを**検証してから**取り込みます。検証の順序(バージョン → サイズ上限 16 MiB → SHA-256 → パースと意味検証 → シーンの存在)は契約として固定されています。**どの段階で失敗しても、通常のプロジェクトのシーンファイル・キャッシュ・revision は一切変化しません**。
+`export_scene_snapshot` は文書の意味的なバイト列・ダイジェスト・`prefab_closure` を返し、`import_scene_snapshot` はそれを**検証してから**取り込みます。検証の順序(バージョン → サイズ上限 64 MiB → SHA-256 → パースと意味検証 → `prefab_closure` の照合 → シーンの存在)は契約として固定されています。
+
+`schema_version` は **`2` だけ**です(SnapshotV2)。scene v1 の文書を運んでいた SnapshotV1 は MG-2b で export / import とも撤去され、`schema_version: 1` は他の鍵を見る前に `unsupported_snapshot_version` で断られます([版を断る関数 `rejectSnapshotVersion`](../../src/core/communication/editorcommandservice.cpp#L210))。**どの段階で失敗しても、通常のプロジェクトのシーンファイル・キャッシュ・revision は一切変化しません**。
 
 snapshot は保存用の object ID を含みません。import は新しい ID を採番する操作で、同じ文書を保存して開き直す操作とは異なります。import 後に graph の装着先を指定するときは、新しい `scene_tree` の `authoring_object_id` を使ってください。snapshot の digest と保存ファイルの digest は、ID メタデータの分だけ異なります。
 
