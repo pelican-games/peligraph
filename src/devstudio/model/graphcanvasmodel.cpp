@@ -1044,6 +1044,18 @@ std::vector<std::string> GraphCanvasModel::valueInstances() const {
     return instances;
 }
 
+std::string GraphCanvasModel::sceneTimeNode() const {
+    const auto *nodes = scopeNodes(currentScope());
+    if (nodes == nullptr) return {};
+    for (const auto &node : *nodes) {
+        if (!node.is_object() || text(node, "op") != "value.input") continue;
+        const auto parameters = node.find("parameters");
+        if (parameters == node.end() || !parameters->is_object()) continue;
+        if (text(*parameters, "name") == "scene_time") return text(node, "id");
+    }
+    return {};
+}
+
 std::string GraphCanvasModel::scopeToken() const {
     const auto &scope = currentScope();
     // The engine spells the root document "root"; the canvas spells it with the
@@ -1304,6 +1316,23 @@ Json GraphCanvasModel::addNodeOps(const std::string &op, const std::string &defi
         // loads, so the node arrives standing on its own constant -- which is
         // also the number the row's pill then edits.
         if (semanticTypeName(input, "accepted_type") != kGraphInputType) continue;
+        // Q-11. A voice reads its sound along `time`; a constant there would
+        // hold it on its first sample. It arrives on the scene clock instead
+        // -- the scope's own scene_time when it has one, a new one otherwise
+        // -- and so starts on its owner's first frame (AU-3). The clock and
+        // the node go out as one edit, so one Undo takes both back.
+        if (isAudioPlayback(op) && port == "time") {
+            auto clock = sceneTimeNode();
+            if (clock.empty()) {
+                clock = suggestNodeId("scene_time");
+                ops.push_back(Json{{"op", "add_node"}, {"scope", scope},
+                    {"node", Json{{"id", clock}, {"op", "value.input"},
+                                  {"parameters", Json{{"name", "scene_time"}}},
+                                  {"outputs", Json::array({"value"})}}}});
+            }
+            inputs[port] = Json{{"node", clock}, {"port", "value"}};
+            continue;
+        }
         const auto seed = id + "__" + port;
         ops.push_back(Json{{"op", "add_node"}, {"scope", scope},
             {"node", Json{{"id", seed}, {"op", "value.constant"},

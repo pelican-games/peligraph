@@ -1,5 +1,6 @@
 #include "graphcanvaswidget.hpp"
 #include "graphmodule.hpp"
+#include "graphpartition.hpp"
 #include "studiotheme.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -2977,15 +2978,15 @@ TEST_CASE("Q-10 audio.playback: its new ports come from the catalog, and the sou
         REQUIRE(widget.scene().addFromPalette("audio.playback"));
         QCoreApplication::processEvents();
         const auto ops = lastOps();
-        REQUIRE(ops.size() == 2);
-        // Only the required scalar is seeded: an optional events port is
-        // left open rather than wired to something the user did not ask for.
-        REQUIRE(ops.at(0).at("node").at("id") == "audio_playback__time");
-        const auto &node = ops.at(1).at("node");
+        // Q-11: the scope already reads scene_time ("now"), and the new voice
+        // reads it too -- no second clock, no constant. Only the required
+        // `time` is wired: an optional events port is left open rather than
+        // wired to something the user did not ask for.
+        REQUIRE(ops.size() == 1);
+        const auto &node = ops.at(0).at("node");
         CHECK(node.at("op") == "audio.playback");
         CHECK(node.at("parameters") == Json{{"asset", "project://music/theme.ogg"}});
-        CHECK(node.at("inputs") ==
-              Json{{"time", {{"node", "audio_playback__time"}, {"port", "value"}}}});
+        CHECK(node.at("inputs") == Json{{"time", {{"node", "now"}, {"port", "value"}}}});
     }
 
     SECTION("the fields show what is stored, and one pick is one edit") {
@@ -3046,6 +3047,78 @@ TEST_CASE("Q-10 audio.playback: its new ports come from the catalog, and the sou
         QCoreApplication::processEvents();
         CHECK_FALSE(row->isVisible());
     }
+}
+
+// Q-11. A voice placed where no node reads scene_time brings its own, wired
+// to `time` in the same edit: the engine loads it as placed, it starts on its
+// owner's first frame (AU-3), and one Undo takes back the clock with it.
+TEST_CASE("Q-11 a placed audio.playback reads a new scene clock, and one Undo "
+          "takes both back",
+          "[devstudio][graph-canvas][scene][graph-edit][graph-history][q11]") {
+    const auto catalog = engineCatalog();
+    if (!catalogHas(catalog, "audio.playback"))
+        SKIP("this build registers no pelican.audio module");
+    (void)application();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    // An app-time input is a clock, but not the one a voice reads its events
+    // on; it is not taken for scene_time.
+    const Json document{
+        {"nodes", Json::array({{{"id", "clock"}, {"op", "value.input"},
+                                {"parameters", {{"name", "time"}}},
+                                {"inputs", Json::object()},
+                                {"outputs", Json::array({"value"})}}})},
+        {"definitions", Json::object()}};
+    answer(model, document, catalog);
+    scene.setModel(&model);
+    model.setAudioAssets({"project://sounds/hit.wav"});
+    REQUIRE(model.canEdit());
+
+    REQUIRE(scene.addFromPalette("audio.playback"));
+    const auto forward = takeEdit(model);
+    const auto &ops = forward.at("ops");
+    REQUIRE(ops.size() == 2);
+    CHECK(ops.at(0) == Json{{"op", "add_node"}, {"scope", "root"},
+                            {"node", {{"id", "scene_time"}, {"op", "value.input"},
+                                      {"parameters", {{"name", "scene_time"}}},
+                                      {"outputs", Json::array({"value"})}}}});
+    const auto &voice = ops.at(1).at("node");
+    CHECK(voice.at("id") == "audio_playback");
+    CHECK(voice.at("inputs") ==
+          Json{{"time", {{"node", "scene_time"}, {"port", "value"}}}});
+
+    // The document the edit leaves is one the engine's graph validation takes:
+    // every required input is connected, and typed as it expects.
+    auto placed = document;
+    placed["schema"] = "pelican.graph";
+    placed["version"] = 1;
+    placed["outputs"] = Json::object();
+    for (const auto &op : ops) placed["nodes"].push_back(op.at("node"));
+    const auto registry = Pelican::makeBuiltinGraphModuleRegistry();
+    CHECK_NOTHROW(Pelican::partitionGraphDocument(placed, registry));
+
+    // Commit it the way the engine does, then Undo once.
+    const auto polls = model.takeRpcRequests();
+    REQUIRE(polls.size() == 1);
+    REQUIRE(polls.front().method == "get_edit_result");
+    model.receiveRpcResult(polls.front().request_id,
+        Json{{"status", "committed"}, {"source_digest", {{"hex", "source-b"}}}}.dump());
+    const auto reads = model.takeRpcRequests();
+    REQUIRE(reads.size() == 1);
+    REQUIRE(reads.front().method == "get_graph_instances");
+    auto snapshot = context(placed);
+    snapshot["source_digest"]["hex"] = "source-b";
+    model.receiveRpcResult(reads.front().request_id, snapshot.dump());
+    scene.repopulate();
+    REQUIRE(model.canUndo());
+    REQUIRE(model.undo());
+    const auto undo = takeEdit(model);
+    REQUIRE(undo.at("ops").size() == 2);
+    CHECK(undo.at("ops").at(0) ==
+          Json{{"op", "remove_node"}, {"scope", "root"}, {"node", "audio_playback"}});
+    CHECK(undo.at("ops").at(1) ==
+          Json{{"op", "remove_node"}, {"scope", "root"}, {"node", "scene_time"}});
 }
 
 TEST_CASE("Q-10 the project's sounds: .wav and .ogg in any case, outside dot folders",

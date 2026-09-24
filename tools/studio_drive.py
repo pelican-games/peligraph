@@ -40,6 +40,8 @@ from typing import Any
 
 REPORT_SCHEMA = "pelican.studio_scenario_report"
 REPORT_VERSION = 1
+# The player reads it when no --audio-backend is given (AU-3).
+AUDIO_BACKEND_VARIABLE = "PELICAN_AUDIO_BACKEND"
 
 
 class AutomationError(RuntimeError):
@@ -1015,6 +1017,12 @@ def main() -> int:
     env = dict(os.environ)
     if arguments.player is not None:
         env["PELICAN_STUDIO_PLAYER"] = str(arguments.player)
+    # Q-11: a scenario is silent. Studio's embedded player inherits this
+    # environment and, told `null`, never opens the audio device (AU-3). A
+    # caller that already chose a backend keeps it; an empty value is unset to
+    # the player too, so it is replaced like an absent one.
+    if not env.get(AUDIO_BACKEND_VARIABLE):
+        env[AUDIO_BACKEND_VARIABLE] = "null"
     # Studio keeps its dock layouts per project in the user's config
     # directory and restores them on the next start, so one scenario (or a
     # person using Studio) would hand the next its windows. Each run starts

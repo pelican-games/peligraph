@@ -12,6 +12,22 @@
       "timeout_ms": 180000
     },
     {
+      "label": "the embedded player plays through the null audio backend the driver named (Q-11)",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "audio.backend",
+      "value": "null"
+    },
+    {
+      "label": "it was named, not fallen back to: no fallback_reason beside it",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "audio.$len",
+      "value": 2
+    },
+    {
       "label": "the Graph tab is the one on screen",
       "cmd": "wait",
       "name": "pelican.graphCanvas",

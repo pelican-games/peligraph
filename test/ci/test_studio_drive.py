@@ -41,13 +41,17 @@ class StudioDriveShutdownTest(unittest.TestCase):
             ]
             with (
                 mock.patch.object(sys, "argv", argv),
-                mock.patch.object(studio_drive, "Studio", return_value=studio),
+                mock.patch.object(
+                    studio_drive, "Studio", return_value=studio
+                ) as studio_class,
                 mock.patch.object(studio_drive, "Watchdog", return_value=watchdog),
                 mock.patch.object(studio_drive.Channel, "connect", return_value=channel),
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
                 result = studio_drive.main()
+            # The environment Studio was started in (Studio(command, log, env)).
+            self.launch_env = studio_class.call_args.args[2]
             channel.close.assert_called_once()
             return result, json.loads(report_path.read_text(encoding="utf-8")), studio
 
@@ -95,6 +99,34 @@ class StudioDriveShutdownTest(unittest.TestCase):
         self.assertEqual(report["studio_shutdown_forced"], forced)
         self.assertNotIn("studio_exit_code_note", report)
 
+
+
+class StudioDriveAudioBackendTest(unittest.TestCase):
+    """Q-11: a scenario runs silent unless its caller chose a backend."""
+
+    run_scenario = StudioDriveShutdownTest.run_scenario
+
+    def launch_env_with(self, value: str | None) -> dict[str, str]:
+        with mock.patch.dict(studio_drive.os.environ):
+            studio_drive.os.environ.pop("PELICAN_AUDIO_BACKEND", None)
+            if value is not None:
+                studio_drive.os.environ["PELICAN_AUDIO_BACKEND"] = value
+            result, _, _ = self.run_scenario(0)
+        self.assertEqual(result, 0)
+        return self.launch_env
+
+    def test_studio_starts_with_the_null_backend(self) -> None:
+        self.assertEqual(self.launch_env_with(None)["PELICAN_AUDIO_BACKEND"], "null")
+
+    def test_an_empty_value_is_unset_and_gets_null(self) -> None:
+        self.assertEqual(self.launch_env_with("")["PELICAN_AUDIO_BACKEND"], "null")
+
+    def test_a_backend_the_caller_chose_is_kept(self) -> None:
+        for chosen in ("device", "offline"):
+            with self.subTest(chosen=chosen):
+                self.assertEqual(
+                    self.launch_env_with(chosen)["PELICAN_AUDIO_BACKEND"], chosen
+                )
 
 
 class ResultRetryTest(unittest.TestCase):

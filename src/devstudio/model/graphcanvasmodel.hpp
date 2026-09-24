@@ -361,6 +361,9 @@ class GraphCanvasModel {
                                      std::string_view port, int depth) const;
     const nlohmann::json *findNode(std::string_view scope,
                                    std::string_view id) const;
+    // Q-11. The id of the scope's first value.input reading scene_time, or
+    // empty. A placed audio.playback reads its time from it.
+    [[nodiscard]] std::string sceneTimeNode() const;
     // One gesture is one op list, one ticket and one CAS: two edits in the same
     // frame cannot both land.
     bool submitOps(nlohmann::json ops);
