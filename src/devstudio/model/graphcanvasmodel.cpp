@@ -20,6 +20,14 @@ std::string diagnostic(const Json &response) {
     const auto &error = response.at("error");
     if (error.is_string()) return error.get<std::string>();
     auto message = error.value("message", std::string{"The graph read failed."});
+    // Q-10: a code Studio has a sentence for reads as that sentence, also when
+    // it arrives inside the message of a broader refusal (a sound refused
+    // while the render pipeline prepared the edit).
+    const auto code_text = error.contains("code") && error.at("code").is_string()
+                               ? error.at("code").get<std::string>()
+                               : std::string{};
+    if (auto known = knownRefusalDescription(code_text, message); !known.empty())
+        return known;
     if (error.contains("code")) {
         const auto &code = error.at("code");
         message += " (" + (code.is_string() ? code.get<std::string>() : code.dump()) + ")";
@@ -111,6 +119,63 @@ GraphCanvasUiNodesRead readProjectUiNodes(const std::filesystem::path &project_r
         read.error = std::string{"the UI document could not be read: "} + error.what();
     }
     return read;
+}
+
+GraphCanvasAudioAssetsRead readProjectAudioAssets(const std::filesystem::path &project_root) {
+    GraphCanvasAudioAssetsRead read;
+    if (project_root.empty()) {
+        read.error = "no project is open";
+        return read;
+    }
+    std::error_code error;
+    std::filesystem::recursive_directory_iterator walk{
+        project_root, std::filesystem::directory_options::skip_permission_denied, error};
+    if (error) {
+        read.error = "the project folder could not be read: " + error.message();
+        return read;
+    }
+    try {
+        for (auto end = std::filesystem::recursive_directory_iterator{}; walk != end;
+             walk.increment(error)) {
+            if (error) break;
+            const auto &entry = *walk;
+            std::error_code kind;
+            if (entry.is_directory(kind)) {
+                const auto name = entry.path().filename().u8string();
+                if (!name.empty() && name.front() == u8'.') walk.disable_recursion_pending();
+                continue;
+            }
+            auto extension = entry.path().extension().u8string();
+            std::ranges::transform(extension, extension.begin(), [](char8_t letter) {
+                return letter < 0x80 ? static_cast<char8_t>(std::tolower(letter)) : letter;
+            });
+            if (extension != u8".wav" && extension != u8".ogg") continue;
+            const auto relative = entry.path().lexically_relative(project_root).generic_u8string();
+            if (relative.empty() || relative.starts_with(u8"..")) continue;
+            read.assets.push_back("project://" +
+                                  std::string{relative.begin(), relative.end()});
+        }
+    } catch (const std::exception &caught) {
+        read.error = std::string{"the project folder could not be read: "} + caught.what();
+    }
+    std::ranges::sort(read.assets);
+    if (read.assets.empty() && read.error.empty())
+        read.error = "no .wav or .ogg file in the project";
+    return read;
+}
+
+bool GraphCanvasModel::isAudioPlayback(std::string_view op) noexcept {
+    return op == "audio.playback";
+}
+
+const std::vector<std::string> &GraphCanvasModel::audioBusChoices() {
+    static const std::vector<std::string> buses{"se", "bgm"};
+    return buses;
+}
+
+const std::vector<std::string> &GraphCanvasModel::audioWrapChoices() {
+    static const std::vector<std::string> wraps{"once", "repeat", "ping_pong"};
+    return wraps;
 }
 
 std::string_view GraphCanvasModel::uiNodeParameter(std::string_view op) noexcept {
@@ -1257,6 +1322,13 @@ Json GraphCanvasModel::addNodeOps(const std::string &op, const std::string &defi
         if (!choices.empty())
             node["parameters"] = Json{{std::string{key}, choices.front()}};
     }
+    // Q-10. audio.playback has no port for the sound it plays, and without
+    // one the engine cannot lower it. It arrives on the project's first
+    // sound; the `asset` field lists the rest. With none found, the key stays
+    // out and the engine's refusal names what is missing. Its optional ports
+    // (events, position, the time map) are left for the user to connect.
+    if (isAudioPlayback(op) && !audio_assets_.empty())
+        node["parameters"] = Json{{"asset", audio_assets_.front()}};
     ops.push_back(Json{{"op", "add_node"}, {"scope", scope}, {"node", std::move(node)}});
     return ops;
 }

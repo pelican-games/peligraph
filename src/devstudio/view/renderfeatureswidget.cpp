@@ -1,4 +1,5 @@
 #include "renderfeatureswidget.hpp"
+#include "frameplanedit.hpp"
 #include "panelhelp.hpp"
 #include "proceduralassetdialog.hpp"
 #include "jsonrpcrequest.hpp"
@@ -279,6 +280,9 @@ public:
 class ComputeTaskDialog final : public QDialog {
   EmbeddedViewport &viewport;
   std::function<void()> committed;
+  // Q-10: the rendering document's own reference, asked for each time it is
+  // needed because Render features may learn it after this dialog opened.
+  std::function<QString()> root_reference;
   QComboBox *task_box;
   QPlainTextEdit *editor;
   QLabel *source;
@@ -369,6 +373,20 @@ class ComputeTaskDialog final : public QDialog {
     const int index = task_box->currentIndex();
     return index < 0 || index >= tasks.size() ? QJsonObject{}
                                               : tasks[index].toObject();
+  }
+  QString rootReference() const {
+    return root_reference ? root_reference() : QString{};
+  }
+  // Q-10 (MG-2b): a task at the rendering document's root has no declaration
+  // to write back, whatever the catalog row says.
+  bool atRoot(const QJsonObject &task) const {
+    return !task.isEmpty() &&
+           framePlanTaskAtRoot(task.value("source_reference").toString().toStdString(),
+                               task.value("provider_feature").toString().toStdString(),
+                               rootReference().toStdString());
+  }
+  bool editableRow(const QJsonObject &task) const {
+    return task.value("editable").toBool() && !atRoot(task);
   }
   void loadDispatch() {
     const auto task =
@@ -554,7 +572,7 @@ class ComputeTaskDialog final : public QDialog {
     const bool idle = request_id == 0 && ticket.isEmpty();
     task_box->setEnabled(idle);
     const bool creating = creationIndex() >= 0;
-    const bool editable = creating || selected().value("editable").toBool();
+    const bool editable = creating || editableRow(selected());
     destination->setVisible(creating);
     destination->setEnabled(idle);
     apply->setText(creating ? tr("Create task") : tr("Apply task"));
@@ -599,7 +617,10 @@ class ComputeTaskDialog final : public QDialog {
                              task.value("kind").toString(),
                              task.value("source_reference").toString()));
     notice->setText(
-        task.value("editable").toBool()
+        atRoot(task)
+            ? QString::fromStdString(framePlanRootTaskRefusal(
+                  task.value("name").toString().toStdString()))
+        : task.value("editable").toBool()
             ? tr("Edit the task declaration. Keep its name unchanged.")
             : task.value("read_only_reason")
                   .toString(tr("This task source is read-only.")));
@@ -643,37 +664,46 @@ class ComputeTaskDialog final : public QDialog {
                           .arg(error.offset));
       return;
     }
-    QJsonObject exact_task;
+    // Q-10: what goes out -- add, edit, or a refusal by name -- is decided
+    // by computeTaskEditorRequest, the same function the tests read.
+    const int creation = creationIndex();
+    ComputeTaskEditorSubmit submission;
+    submission.creating = creation >= 0;
+    if (submission.creating) {
+      submission.base_source_digest =
+          new_drafts[creation].root_digest.toStdString();
+      submission.destination_reference = destination->text().toStdString();
+    } else {
+      const auto draft = drafts.value(task.value("name").toString());
+      submission.base_source_digest = draft.root_digest.toStdString();
+      submission.task_name = task.value("name").toString().toStdString();
+      submission.task_source_digest = draft.source_digest.toStdString();
+      submission.source_reference =
+          task.value("source_reference").toString().toStdString();
+      submission.provider_feature =
+          task.value("provider_feature").toString().toStdString();
+      submission.editable = task.value("editable").toBool();
+      submission.root_reference = rootReference().toStdString();
+    }
+    QJsonObject params;
     try {
-      exact_task = exactJsonRpcObject(Json::parse(editor->toPlainText().toStdString()));
+      const auto outgoing = computeTaskEditorRequest(
+          submission, Json::parse(editor->toPlainText().toStdString()));
+      if (!outgoing.sendable()) {
+        notice->setText(QString::fromStdString(outgoing.refusal));
+        return;
+      }
+      params = exactJsonRpcObject(outgoing.params);
+      submitted_creation = creation;
+      submitted_name = document.object().value("name").toString();
+      request(Request::Submit, QString::fromStdString(outgoing.method), params);
     } catch (const std::exception &error) {
       notice->setText(QString::fromUtf8(error.what()));
-      return;
     }
-    submitted_creation = creationIndex();
-    submitted_name = document.object().value("name").toString();
-    if (submitted_creation >= 0) {
-      request(
-          Request::Submit, QStringLiteral("add_compute_task"),
-          {{"base_source_digest", new_drafts[submitted_creation].root_digest},
-           {"destination_reference", destination->text()},
-           {"task", exact_task}});
-      return;
-    }
-    if (document.object().value("name") != task.value("name")) {
-      notice->setText(tr("The task name cannot be changed."));
-      return;
-    }
-    const auto draft = drafts.value(task.value("name").toString());
-    request(Request::Submit, QStringLiteral("edit_compute_task"),
-            {{"base_source_digest", draft.root_digest},
-             {"base_task_source_digest", draft.source_digest},
-             {"task_name", task.value("name")},
-             {"task", exact_task}});
   }
   void removeTask() {
     const auto task = selected();
-    if (!task.value("editable").toBool())
+    if (!editableRow(task))
       return;
     submitted_creation = -1;
     submitted_name = task.value("name").toString();
@@ -792,9 +822,10 @@ class ComputeTaskDialog final : public QDialog {
 
 public:
   ComputeTaskDialog(EmbeddedViewport &embedded, QWidget *parent, QString task,
-                    std::function<void()> on_committed, const QStringList &outputs = {})
+                    std::function<void()> on_committed, const QStringList &outputs = {},
+                    std::function<QString()> root = {})
       : QDialog(parent), viewport(embedded), committed(std::move(on_committed)),
-        requested_task(std::move(task)) {
+        root_reference(std::move(root)), requested_task(std::move(task)) {
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowTitle(tr("Compute and ray tracing tasks"));
     setObjectName(QStringLiteral("pelican.computeTasks"));
@@ -1794,6 +1825,9 @@ struct RenderFeaturesWidget::Impl {
 
     RenderFeaturesWidget &owner;
     EmbeddedViewport &viewport;
+    // Q-10: get_render_features' source_reference, the rendering document
+    // itself. The Task Editor refuses a task declared there by name.
+    QString root_reference;
     QListWidget *current = nullptr;
     QTreeWidget *catalog = nullptr;
     QPushButton *add = nullptr;
@@ -2394,6 +2428,8 @@ struct RenderFeaturesWidget::Impl {
             QStringLiteral("source_digest")).toObject();
         source_digest = digest.value(
             QStringLiteral("hex")).toString();
+        root_reference = response.value(
+            QStringLiteral("source_reference")).toString();
         current->clear();
         for (const auto &value : response.value("feature_instances").toArray()) {
                 const auto instance = value.toObject();
@@ -2574,7 +2610,7 @@ void RenderFeaturesWidget::editComputeTaskConnection(const QString &name, const 
     auto *dialog = new ComputeTaskDialog(impl_->viewport, this, name, [this] {
         impl_->requestRefresh();
         emit renderConfigCommitted();
-    }, outputs);
+    }, outputs, [this] { return impl_->root_reference; });
     dialog->show();
 }
 

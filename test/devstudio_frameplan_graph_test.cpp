@@ -7020,6 +7020,9 @@ struct EditingFixture {
     Json wire = mixedEditingWire();
     Json catalog = authoredTaskCatalog();
     std::string graph;
+    // Q-10: the rendering document the authoring context names, when a test
+    // needs the canvas to know it.
+    std::string root_reference;
 
     void open() {
         widget.resize(1400, 900);
@@ -7031,7 +7034,8 @@ struct EditingFixture {
         subtreeDepth(widget).setValue(64);
         QApplication::processEvents();
         REQUIRE(recorder.result);
-        const auto context = mixedAuthoringContext(graph);
+        auto context = mixedAuthoringContext(graph);
+        if (!root_reference.empty()) context["source_reference"] = root_reference;
         recorder.result(recorder.context_id,
                         QByteArray::fromStdString(context.dump()));
         recorder.result(recorder.task_id,
@@ -7162,6 +7166,106 @@ TEST_CASE("N-8 a plain drag between sockets edits the declaration through one RP
         CHECK(sent.at("task").at("shader") == "project://shaders/consume.comp");
         CHECK(sent.at("task").at("dispatch") ==
               Json{{"groups", Json::array({1, 1, 1})}});
+    }
+}
+
+// Q-10. MG-2b: the root of the rendering document holds no tasks. A task the
+// catalog still attributes to it -- a stale reading, or a fixture -- is
+// refused by name before anything is sent, on the canvas and in the Task
+// Editor, and a new task still goes out as add_compute_task.
+TEST_CASE("Q-10 a task at the rendering document's root is refused by name; a new task is still added",
+          "[devstudio][frame-plan][q10][canvas-edit]") {
+    using PelicanStudio::ComputeTaskEditorSubmit;
+    using PelicanStudio::computeTaskEditorRequest;
+    using PelicanStudio::framePlanRootTaskRefusal;
+    using PelicanStudio::framePlanTaskAtRoot;
+    const std::string root = "project://rendering.json";
+    const std::string line =
+        "authored_consumer: rendering root holds no tasks; use a feature or a "
+        "render.compute node.";
+    const std::string sentence =
+        line + " The engine refuses an edit of it (compute_task_not_editable).";
+    CHECK(framePlanRootTaskRefusal("authored_consumer") == sentence);
+
+    // The rule: the root document, and no feature providing the task.
+    CHECK(framePlanTaskAtRoot(root, "", root));
+    CHECK_FALSE(framePlanTaskAtRoot(root, "gpu_particles", root));
+    CHECK_FALSE(framePlanTaskAtRoot("project://passes/task.json", "", root));
+    CHECK_FALSE(framePlanTaskAtRoot("engine://pipelines/forward.json", "", root));
+    // Not told where the root is: nothing claimed.
+    CHECK_FALSE(framePlanTaskAtRoot(root, "", ""));
+
+    SECTION("the canvas: a drag onto the root task sends nothing and says why") {
+        application();
+        EditingFixture fixture;
+        fixture.catalog = authoredTaskCatalog();
+        // A stale catalog that still calls the root task editable.
+        fixture.catalog.at("tasks").at(0)["source_reference"] = root;
+        fixture.root_reference = root;
+        fixture.open();
+        auto &logical = fixture.logical();
+        fixture.dragSocket(QStringLiteral("wp343_mixed_a"),
+                           QStringLiteral("wp343_mixed_a_output"),
+                           QStringLiteral("output"),
+                           nodeItem(logical, "wp343_mixed_b"));
+        CHECK(fixture.recorder.submits == 0);
+        // The status line is the first sentence; the code is in its tooltip.
+        CHECK(statusText(fixture.widget) == QString::fromStdString(line));
+        auto *status = fixture.widget.findChild<QLabel *>(
+            QStringLiteral("pelican.framePlanStatus"));
+        REQUIRE(status != nullptr);
+        CHECK(status->toolTip() == QString::fromStdString(sentence));
+        // Nor does it offer its dispatch for retyping.
+        CHECK(bandItem(logical, QStringLiteral("wp343_mixed_b"),
+                       QStringLiteral("dispatch")) == nullptr);
+    }
+
+    SECTION("the Task Editor: an edit is refused, a new task is added as before") {
+        const Json task{{"name", "authored_consumer"},
+                        {"shader", "project://shaders/consume.comp"},
+                        {"dispatch", {{"groups", Json::array({1, 1, 1})}}}};
+        ComputeTaskEditorSubmit edit;
+        edit.base_source_digest = RootDigest;
+        edit.task_name = "authored_consumer";
+        edit.task_source_digest = TaskDigest;
+        edit.source_reference = root;
+        edit.editable = true;
+        edit.root_reference = root;
+        const auto refused = computeTaskEditorRequest(edit, task);
+        CHECK_FALSE(refused.sendable());
+        CHECK(refused.refusal == sentence);
+
+        // The control: the same edit of a task a feature declares goes out.
+        edit.source_reference = "project://passes/task.json";
+        edit.provider_feature = "task_feature";
+        const auto sent = computeTaskEditorRequest(edit, task);
+        REQUIRE(sent.sendable());
+        CHECK(sent.method == "edit_compute_task");
+        CHECK(sent.params == Json{{"base_source_digest", RootDigest},
+                                  {"base_task_source_digest", TaskDigest},
+                                  {"task_name", "authored_consumer"},
+                                  {"task", task}});
+
+        // A new task: add_compute_task into the project:// feature it names,
+        // whatever the root holds.
+        ComputeTaskEditorSubmit create;
+        create.creating = true;
+        create.base_source_digest = RootDigest;
+        create.destination_reference = "project://passes/new_compute.json";
+        create.root_reference = root;
+        const Json fresh{{"name", "new_compute"}};
+        const auto added = computeTaskEditorRequest(create, fresh);
+        REQUIRE(added.sendable());
+        CHECK(added.method == "add_compute_task");
+        CHECK(added.params == Json{{"base_source_digest", RootDigest},
+                                   {"destination_reference", "project://passes/new_compute.json"},
+                                   {"task", fresh}});
+
+        // A renamed task is refused as it always was.
+        auto renamed = task;
+        renamed["name"] = "other";
+        CHECK(computeTaskEditorRequest(edit, renamed).refusal ==
+              "The task name cannot be changed.");
     }
 }
 

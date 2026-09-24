@@ -134,6 +134,18 @@ struct GraphCanvasUiNodesRead {
 // truth for the paths anyway: an unknown path is refused by the engine by name.
 GraphCanvasUiNodesRead readProjectUiNodes(const std::filesystem::path &project_root);
 
+// Q-10. The sounds a project holds, as the `asset` of an audio.playback node
+// names them ("project://sounds/hit.wav"). No engine RPC lists them -- they
+// are files the node names directly, not asset_data entries -- so the Studio
+// walks the project for the two extensions AU-2 plays (.wav and .ogg, in any
+// case), skipping dot directories (.pelican and the like). Sorted.
+struct GraphCanvasAudioAssetsRead {
+    std::vector<std::string> assets;
+    // Why there are none, when there are none for a reason worth saying.
+    std::string error;
+};
+GraphCanvasAudioAssetsRead readProjectAudioAssets(const std::filesystem::path &project_root);
+
 // One operation the "Add node..." palette can offer in the current scope.
 // `structural` marks graph.input and graph.instance: the catalog does not
 // declare their ports, and each belongs to one side of the scope boundary.
@@ -236,6 +248,7 @@ class GraphCanvasModel {
     bool context_received_ = false;
 
     std::vector<GraphCanvasUiNode> ui_nodes_;
+    std::vector<std::string> audio_assets_;
 
     bool catalog_requested_ = false;
     bool catalog_received_ = false;
@@ -483,6 +496,23 @@ class GraphCanvasModel {
     // gauges (the only widget whose value can be written), for `ui.visible`
     // every node. Empty for an operation with no UI node parameter.
     [[nodiscard]] std::vector<std::string> uiNodeChoices(std::string_view op) const;
+
+    // --- Q-10: the three parameters of `audio.playback` that are not ports.
+
+    [[nodiscard]] static bool isAudioPlayback(std::string_view op) noexcept;
+    // The buses a voice plays on. The engine takes exactly these two
+    // ("unknown audio bus: ... (a voice plays on se or bgm)") and names them
+    // nowhere a client can read, so the list is held here, beside the
+    // engine's default first.
+    [[nodiscard]] static const std::vector<std::string> &audioBusChoices();
+    // How the integrated time map wraps, the engine's default first.
+    [[nodiscard]] static const std::vector<std::string> &audioWrapChoices();
+    // The project's sounds, read by the widget. The palette seeds a new node
+    // with the first; the `asset` field lists them all.
+    void setAudioAssets(std::vector<std::string> assets) { audio_assets_ = std::move(assets); }
+    [[nodiscard]] const std::vector<std::string> &audioAssets() const noexcept {
+        return audio_assets_;
+    }
 
     bool catalogReceived() const noexcept { return catalog_received_; }
     // The catalog's schema for one semantic type, or null when the catalog

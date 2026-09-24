@@ -941,6 +941,34 @@ TEST_CASE("Graph history never replays across another writer or a reconnect",
     REQUIRE(h.client.model.takeRpcRequests().empty());
 }
 
+TEST_CASE("Q-10 a sound refused while a graph edit is prepared reads as one sentence",
+          "[studio][graph-canvas][q10]") {
+    GraphHistoryHarness h;
+    h.open();
+    REQUIRE(h.client.model.setNodeLabel("clock", "Clock"));
+    const auto submitted = h.client.take("edit_graph_document");
+    h.client.reply(submitted, {{"status", "accepted"}, {"ticket", "edit"}});
+    const auto poll = h.client.take("get_edit_result");
+    // What the render pipeline answers when Audio::prepareSound refuses the
+    // asset: its own code, and AU-2's code at the head of the message.
+    h.client.reply(poll, {{"status", "rejected"}, {"committed", false},
+                          {"error", {{"code", "render_pipeline_preflight_failed"},
+                                     {"message", R"(audio.format_unsupported@1 {"asset":"project://a.ogg",)"
+                                                 R"("extension":".ogg","signature":"wav"})"},
+                                     {"ticket", "edit"}}}});
+    const auto notice = h.client.model.notice();
+    CHECK(notice.kind == PelicanStudio::InspectorNoticeKind::Error);
+    CHECK(notice.message ==
+          "Sound extension and contents disagree (WAV or Ogg Vorbis) (audio.format_unsupported@1)");
+
+    // The control: a refusal Studio has no sentence for keeps its own words.
+    h.refresh();
+    REQUIRE(h.client.model.setNodeLabel("clock", "Clock again"));
+    h.client.reply(h.client.take("edit_graph_document"),
+                   {{"error", {{"code", "invalid_graph_document"}, {"message", "Rejected edit"}}}});
+    CHECK(h.client.model.notice().message == "Rejected edit (invalid_graph_document)");
+}
+
 TEST_CASE("Rejected graph edits retain history but successful branches discard Redo",
           "[studio][graph-canvas][graph-history]") {
     GraphHistoryHarness h;

@@ -1337,6 +1337,9 @@ struct FramePlanWidget::Impl {
             } catch (const std::exception &) {
                 authoring = {};
             }
+            // Q-10: the catalog names each task's document; only the
+            // context names the root one.
+            task_authoring.root_reference = authoring.source_reference;
             if (model) populate();
             if (std::exchange(pending_new_target_form, false) &&
                 authoring.received)
@@ -1369,6 +1372,7 @@ struct FramePlanWidget::Impl {
             } catch (const std::exception &) {
                 task_authoring = {};
             }
+            task_authoring.root_reference = authoring.source_reference;
             if (model) populate();
             return true;
         }

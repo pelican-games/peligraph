@@ -2185,6 +2185,46 @@ TEST_CASE("Q-6 a component this build cannot take reads as a sentence and its co
     CHECK(componentAddRows(Json::object()).empty());
 }
 
+TEST_CASE("Q-10 a sound whose extension and contents disagree reads as one sentence",
+          "[devstudio][inspector][component-addition][q10]") {
+    using PelicanStudio::componentAddRows;
+    using PelicanStudio::componentUnavailableDescription;
+    using PelicanStudio::knownRefusalDescription;
+
+    const std::string code = "audio.format_unsupported@1";
+    const std::string sentence = "Sound extension and contents disagree (WAV or Ogg Vorbis)";
+    CHECK(PelicanStudio::isComponentUnavailableCode(code));
+    CHECK(PelicanStudio::componentUnavailableSentence(code) == sentence);
+    const auto description = componentUnavailableDescription(code);
+    CHECK(description == sentence + " (" + code + ")");
+    // The same one-line limits as the rest of Q-6's table.
+    CHECK(description.size() <= 90);
+    CHECK(description.find(". ") == std::string::npos);
+    CHECK(PelicanStudio::componentUnavailableTag(code) == "unsupported sound");
+
+    // Add component: a candidate refused with the code reads as the sentence.
+    const Json catalog{{"candidates", Json::array({
+        {{"key", "voice"}, {"name", "voice"}, {"available", false},
+         {"unavailable_reason", code}},
+    })}};
+    const auto rows = componentAddRows(catalog);
+    REQUIRE(rows.size() == 1);
+    CHECK_FALSE(rows.at(0).addable);
+    CHECK(rows.at(0).blocked == description);
+    CHECK(rows.at(0).label == "voice \xE2\x80\x94 unsupported sound");
+
+    // As its own code, or inside the message of a broader refusal -- the way
+    // a graph edit's render pipeline preparation carries it.
+    CHECK(knownRefusalDescription(code, "") == description);
+    CHECK(knownRefusalDescription(
+              "render_pipeline_preflight_failed",
+              code + R"( {"asset":"project://a.ogg","extension":".ogg","signature":"wav"})") ==
+          description);
+    // Nothing Studio knows: nothing claimed.
+    CHECK(knownRefusalDescription("render_pipeline_preflight_failed", "Invalid WAV").empty());
+    CHECK(knownRefusalDescription("", "").empty());
+}
+
 TEST_CASE("OL-1 an Outliner edit is one edit on the session, and its end names what it created",
           "[devstudio][inspector][outliner][ol1]") {
     using PelicanStudio::SceneEditKind;

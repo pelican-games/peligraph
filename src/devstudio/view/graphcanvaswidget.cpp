@@ -18,6 +18,7 @@
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFont>
+#include <QFormLayout>
 #include <QGraphicsPathItem>
 #include <QGraphicsPolygonItem>
 #include <QGraphicsProxyWidget>
@@ -2110,6 +2111,18 @@ struct GraphCanvasWidget::Impl {
     // from the project's UI document (and still typeable).
     QWidget *ui_node_row = nullptr;
     QComboBox *ui_node = nullptr;
+    // Q-10: the three parameters of a selected audio.playback node that are
+    // not ports -- the sound (the project's .wav / .ogg files, still
+    // typeable), the bus and the wrap (the engine's own values, chosen).
+    QWidget *audio_row = nullptr;
+    QComboBox *audio_asset = nullptr;
+    QComboBox *audio_bus = nullptr;
+    QComboBox *audio_wrap = nullptr;
+    std::string audio_assets_error;
+    // The node the audio fields were last filled for. A redraw of the same
+    // node (Live reads four times a second) neither walks the project again
+    // nor overwrites a sound being typed.
+    std::string audio_row_node;
     std::filesystem::path project_root;
     std::string ui_nodes_error;
     QAction *auto_layout_action = nullptr;
@@ -2293,6 +2306,34 @@ struct GraphCanvasWidget::Impl {
         ui_node_layout->addWidget(ui_node, 1);
         side_layout->addWidget(ui_node_row);
         ui_node_row->hide();
+        audio_row = new QWidget(side);
+        audio_row->setObjectName(QStringLiteral("pelican.graphCanvasAudioRow"));
+        auto *audio_layout = new QFormLayout(audio_row);
+        audio_layout->setContentsMargins(0, 0, 0, 0);
+        const auto audioCombo = [this](const char *name, bool editable) {
+            auto *combo = new QComboBox(audio_row);
+            combo->setObjectName(QString::fromLatin1(name));
+            combo->setEditable(editable);
+            if (editable) combo->setInsertPolicy(QComboBox::NoInsert);
+            return combo;
+        };
+        audio_asset = audioCombo("pelican.graphCanvasAudioAsset", true);
+        audio_asset->setToolTip(QObject::tr(
+            "The sound this voice plays: a .wav or .ogg file of the project. "
+            "Its extension and its contents have to agree."));
+        audio_bus = audioCombo("pelican.graphCanvasAudioBus", false);
+        audio_bus->setToolTip(QObject::tr("The bus the voice plays on."));
+        audio_wrap = audioCombo("pelican.graphCanvasAudioWrap", false);
+        const auto caption = [this](const QString &text) {
+            auto *label = new QLabel(text, audio_row);
+            label->setFont(studioSmallFont());
+            return label;
+        };
+        audio_layout->addRow(caption(QObject::tr("Sound")), audio_asset);
+        audio_layout->addRow(caption(QObject::tr("Bus")), audio_bus);
+        audio_layout->addRow(caption(QObject::tr("Wrap")), audio_wrap);
+        side_layout->addWidget(audio_row);
+        audio_row->hide();
         details = new QTreeWidget(side);
         details->setObjectName(QStringLiteral("pelican.graphCanvasDetails"));
         details->setColumnCount(2);
@@ -2409,6 +2450,18 @@ struct GraphCanvasWidget::Impl {
                          [this](int index) { commitUiNode(ui_node->itemText(index)); });
         QObject::connect(ui_node->lineEdit(), &QLineEdit::returnPressed, &view,
                          [this] { commitUiNode(ui_node->currentText()); });
+        // Q-10: the same two ways for the sound; bus and wrap are only picked.
+        QObject::connect(audio_asset, &QComboBox::activated, &view, [this](int index) {
+            commitAudio("asset", audio_asset->itemText(index));
+        });
+        QObject::connect(audio_asset->lineEdit(), &QLineEdit::returnPressed, &view,
+                         [this] { commitAudio("asset", audio_asset->currentText()); });
+        QObject::connect(audio_bus, &QComboBox::activated, &view, [this](int index) {
+            commitAudio("bus", audio_bus->itemText(index));
+        });
+        QObject::connect(audio_wrap, &QComboBox::activated, &view, [this](int index) {
+            commitAudio("wrap", audio_wrap->itemText(index));
+        });
 
         // ready() reports the current state synchronously, which happens while
         // the widget's pointer to this Impl is still null. Every handler works
@@ -2579,12 +2632,103 @@ struct GraphCanvasWidget::Impl {
         if (model.setNodeParameter(*selected, key, path)) dispatch();
     }
 
+    // Q-10. The project's sounds, read again whenever they are about to be
+    // offered, as the UI document is.
+    void reloadAudioAssets() {
+        auto read = readProjectAudioAssets(project_root);
+        model.setAudioAssets(std::move(read.assets));
+        audio_assets_error = std::move(read.error);
+    }
+
+    // One of bus / wrap: the engine's values, and the stored one kept visible
+    // even when it is not among them (the engine refuses it by name). An
+    // absent key shows the engine's default, which is the list's first.
+    static void fillChoice(QComboBox &combo, const std::vector<std::string> &choices,
+                           const nlohmann::json &parameters, const char *key) {
+        combo.clear();
+        for (const auto &choice : choices) combo.addItem(qtext(choice));
+        const auto stored = parameters.find(key);
+        QString current = qtext(choices.front());
+        if (stored != parameters.end() && stored->is_string()) {
+            current = qtext(stored->get<std::string>());
+            if (combo.findText(current) < 0) combo.addItem(current);
+        }
+        combo.setCurrentIndex(combo.findText(current));
+    }
+
+    void syncAudioRow(const GraphCanvasNode *node) {
+        if (node == nullptr || !GraphCanvasModel::isAudioPlayback(node->op)) {
+            audio_row->hide();
+            audio_row_node.clear();
+            return;
+        }
+        const bool same_node = audio_row_node == node->id;
+        if (!same_node) reloadAudioAssets();
+        audio_row_node = node->id;
+        const QSignalBlocker block_asset{audio_asset};
+        const QSignalBlocker block_bus{audio_bus};
+        const QSignalBlocker block_wrap{audio_wrap};
+        if (!(same_node && audio_asset->lineEdit()->hasFocus())) {
+            audio_asset->clear();
+            for (const auto &asset : model.audioAssets()) audio_asset->addItem(qtext(asset));
+            const auto stored = node->parameters.find("asset");
+            const QString asset = stored != node->parameters.end() && stored->is_string()
+                                      ? qtext(stored->get<std::string>())
+                                      : QString{};
+            audio_asset->setCurrentIndex(audio_asset->findText(asset));
+            audio_asset->setEditText(asset);
+        }
+        audio_asset->lineEdit()->setPlaceholderText(
+            audio_assets_error.empty() ? QObject::tr("project://....wav or .ogg")
+                                       : qtext(audio_assets_error));
+        fillChoice(*audio_bus, GraphCanvasModel::audioBusChoices(), node->parameters, "bus");
+        fillChoice(*audio_wrap, GraphCanvasModel::audioWrapChoices(), node->parameters, "wrap");
+        // A voice that follows `position` has no time map of its own: a wrap
+        // there is audio.playback_mapping_conflict@1.
+        const bool follows_position = std::ranges::any_of(node->inputs, [](const auto &port) {
+            return port.port == "position" && port.connected;
+        });
+        const bool editable = model.canEdit();
+        audio_asset->setEnabled(editable);
+        audio_bus->setEnabled(editable);
+        audio_wrap->setEnabled(editable && !follows_position);
+        audio_wrap->setToolTip(
+            follows_position
+                ? QObject::tr("This voice follows its position input, so it has no wrap.")
+                : QObject::tr("How the sound wraps when its events play it past the end."));
+        audio_row->show();
+    }
+
+    void commitAudio(const char *key, const QString &text) {
+        const auto &selected = scene->selectedNode();
+        if (!selected || text.isEmpty()) return;
+        const auto nodes = model.nodes();
+        const auto found = std::ranges::find(nodes, *selected, &GraphCanvasNode::id);
+        if (found == nodes.end() || !GraphCanvasModel::isAudioPlayback(found->op)) return;
+        const auto value = text.toStdString();
+        const auto stored = found->parameters.find(key);
+        if (stored != found->parameters.end()) {
+            if (*stored == value) return;
+        } else {
+            // Picking the default already in effect changes nothing, and
+            // writing it would put a wrap on a node that may not take one.
+            const std::string_view name{key};
+            const auto *defaults = name == "bus"    ? &GraphCanvasModel::audioBusChoices()
+                                   : name == "wrap" ? &GraphCanvasModel::audioWrapChoices()
+                                                    : nullptr;
+            if (defaults != nullptr && defaults->front() == value) return;
+        }
+        if (model.setNodeParameter(*selected, key, value)) dispatch();
+    }
+
     // The "Add node..." palette: the catalog, narrowed by domain and by what
     // the user types, and an instance also needs the definition it stands on.
     void openPalette() {
         if (!model.canEdit()) return;
         // A new ui.* sink is seeded with a node the UI document has.
         reloadUiNodes();
+        // A new audio.playback, with a sound the project has.
+        reloadAudioAssets();
         QDialog dialog{&view};
         dialog.setObjectName(QStringLiteral("pelican.graphCanvasPalette"));
         dialog.setWindowTitle(QObject::tr("Add node"));
@@ -2669,6 +2813,7 @@ struct GraphCanvasWidget::Impl {
         if (!selected) {
             label_edit->clear();
             syncUiNodeRow(nullptr);
+            syncAudioRow(nullptr);
             return;
         }
         const auto nodes = model.nodes();
@@ -2676,10 +2821,12 @@ struct GraphCanvasWidget::Impl {
         if (found == nodes.end()) {
             label_edit->clear();
             syncUiNodeRow(nullptr);
+            syncAudioRow(nullptr);
             return;
         }
         label_edit->setText(qtext(found->label));
         syncUiNodeRow(&*found);
+        syncAudioRow(&*found);
         const auto row = [this](const QString &field, const QString &value) {
             auto *item = new QTreeWidgetItem(details);
             item->setText(0, field);
@@ -2903,6 +3050,8 @@ void GraphCanvasWidget::receiveFailure(qint64 request_id,
 void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root) {
     impl_->project_root = project_root;
     impl_->reloadUiNodes();
+    impl_->reloadAudioAssets();
+    impl_->audio_row_node.clear();
     impl_->showDetails();
 }
 

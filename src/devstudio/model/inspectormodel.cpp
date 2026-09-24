@@ -577,7 +577,7 @@ struct UnavailableComponentText {
 // Q-6: the codes PG-1 answers with. A new code reads as itself until a row
 // is added here.
 constexpr std::string_view NotInThisBuild = "not in this build";
-constexpr std::array<UnavailableComponentText, 7> UnavailableComponentTexts{{
+constexpr std::array<UnavailableComponentText, 8> UnavailableComponentTexts{{
     {"animation.module_unavailable@1", "This build has no animation module", NotInThisBuild},
     {"audio.module_unavailable@1", "This build has no audio module", NotInThisBuild},
     {"physics.module_unavailable@1", "This build has no physics module", NotInThisBuild},
@@ -588,6 +588,10 @@ constexpr std::array<UnavailableComponentText, 7> UnavailableComponentTexts{{
     // it means now is that the project declares no ray group layout at all.
     {"pelican.ray_instance_requires_layout_v2@1", "This project has no ray group layout",
      "needs a ray layout"},
+    // AU-2: a sound plays only when its extension and its first bytes both
+    // say WAV, or both say Ogg Vorbis.
+    {"audio.format_unsupported@1", "Sound extension and contents disagree (WAV or Ogg Vorbis)",
+     "unsupported sound"},
 }};
 
 const UnavailableComponentText *findUnavailableComponentText(std::string_view code) {
@@ -624,6 +628,15 @@ std::string componentUnavailableDescription(std::string_view code) {
     const auto sentence = componentUnavailableSentence(code);
     if (sentence.empty()) return std::string{code};
     return sentence + " (" + std::string{code} + ")";
+}
+
+std::string knownRefusalDescription(std::string_view code, std::string_view message) {
+    if (findUnavailableComponentText(code) != nullptr)
+        return componentUnavailableDescription(code);
+    for (const auto &entry : UnavailableComponentTexts)
+        if (message.find(entry.code) != std::string_view::npos)
+            return componentUnavailableDescription(entry.code);
+    return {};
 }
 
 std::string componentUnavailableTag(std::string_view code) {

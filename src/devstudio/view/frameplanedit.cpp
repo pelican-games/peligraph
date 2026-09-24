@@ -314,6 +314,8 @@ FramePlanTaskAuthoring framePlanTaskAuthoringFromCatalog(const Json &catalog) {
         row.digest = textOr(objectOr(task, "source_digest"), "hex");
         row.editable = task.value("editable", false);
         row.read_only_reason = textOr(task, "read_only_reason");
+        row.source_reference = textOr(task, "source_reference");
+        row.provider_feature = textOr(task, "provider_feature");
         authoring.tasks.insert_or_assign(row.name, std::move(row));
     }
     authoring.received = true;
@@ -442,6 +444,66 @@ FramePlanEditRequest framePlanPassRemoveRequest(
     return request;
 }
 
+bool framePlanTaskAtRoot(std::string_view source_reference,
+                         std::string_view provider_feature,
+                         std::string_view root_reference) {
+    return !root_reference.empty() && provider_feature.empty() &&
+           source_reference == root_reference;
+}
+
+std::string framePlanRootTaskRefusal(std::string_view task) {
+    const std::string name = task.empty() ? std::string{"This task"} : std::string{task};
+    // The first sentence is the status line (at most 90 characters, cut at
+    // ". "); the code follows it, for the tooltip and the Task Editor.
+    return name +
+           ": rendering root holds no tasks; use a feature or a "
+           "render.compute node. The engine refuses an edit of it (" +
+           std::string{FramePlanRootTaskCode} + ").";
+}
+
+namespace {
+
+// Why a task cannot be changed from here, or empty when it can. A root task
+// is refused by name even if a stale catalog still calls it editable.
+std::string lockedTaskReason(const FramePlanTaskAuthoring &authoring,
+                             const FramePlanTaskAuthoring::Task &row,
+                             const char *fallback) {
+    if (framePlanTaskAtRoot(row.source_reference, row.provider_feature,
+                            authoring.root_reference))
+        return framePlanRootTaskRefusal(row.name);
+    if (row.editable) return {};
+    return row.name + ": " +
+           (row.read_only_reason.empty() ? std::string{fallback}
+                                         : row.read_only_reason);
+}
+
+} // namespace
+
+FramePlanEditRequest computeTaskEditorRequest(const ComputeTaskEditorSubmit &submit,
+                                              const Json &task) {
+    FramePlanEditRequest request;
+    if (submit.creating) {
+        request.method = "add_compute_task";
+        request.params = Json{{"base_source_digest", submit.base_source_digest},
+                              {"destination_reference", submit.destination_reference},
+                              {"task", task}};
+        return request;
+    }
+    if (!task.is_object() || task.value("name", Json{}) != Json(submit.task_name))
+        return refuse("The task name cannot be changed.");
+    if (framePlanTaskAtRoot(submit.source_reference, submit.provider_feature,
+                            submit.root_reference))
+        return refuse(framePlanRootTaskRefusal(submit.task_name));
+    if (!submit.editable)
+        return refuse(submit.task_name + ": this task cannot be edited here.");
+    request.method = "edit_compute_task";
+    request.params = Json{{"base_source_digest", submit.base_source_digest},
+                          {"base_task_source_digest", submit.task_source_digest},
+                          {"task_name", submit.task_name},
+                          {"task", task}};
+    return request;
+}
+
 FramePlanEditRequest framePlanTaskResourceRequest(
     const FramePlanTaskAuthoring &authoring, const std::string &task,
     const std::vector<std::string> &resources, bool connect) {
@@ -450,11 +512,10 @@ FramePlanEditRequest framePlanTaskResourceRequest(
     const auto *row = authoring.find(task);
     if (row == nullptr)
         return refuse(task + " is not a task in the current catalog.");
-    if (!row->editable)
-        return refuse(task + ": " +
-                      (row->read_only_reason.empty()
-                           ? std::string{"this task cannot be edited here."}
-                           : row->read_only_reason));
+    if (auto reason = lockedTaskReason(authoring, *row,
+                                       "this task cannot be edited here.");
+        !reason.empty())
+        return refuse(std::move(reason));
     const auto change =
         applyResources(declaredReads(row->declaration), resources, connect);
     if (!change.changed)
@@ -479,11 +540,10 @@ FramePlanEditRequest framePlanTaskDispatchRequest(
     const auto *row = authoring.find(task);
     if (row == nullptr)
         return refuse(task + " is not a task in the current catalog.");
-    if (!row->editable)
-        return refuse(task + ": " +
-                      (row->read_only_reason.empty()
-                           ? std::string{"this task cannot be edited here."}
-                           : row->read_only_reason));
+    if (auto reason = lockedTaskReason(authoring, *row,
+                                       "this task cannot be edited here.");
+        !reason.empty())
+        return refuse(std::move(reason));
     auto dispatch = Json::parse(dispatch_json, nullptr, false);
     if (dispatch.is_discarded() || !dispatch.is_object())
         return refuse(task + ": the dispatch must be a JSON object.");
@@ -507,11 +567,10 @@ FramePlanEditRequest framePlanTaskRemoveRequest(
     const auto *row = authoring.find(task);
     if (row == nullptr)
         return refuse(task + " is not a task in the current catalog.");
-    if (!row->editable)
-        return refuse(task + ": " +
-                      (row->read_only_reason.empty()
-                           ? std::string{"this task cannot be removed here."}
-                           : row->read_only_reason));
+    if (auto reason = lockedTaskReason(authoring, *row,
+                                       "this task cannot be removed here.");
+        !reason.empty())
+        return refuse(std::move(reason));
     FramePlanEditRequest request;
     request.method = "remove_compute_task";
     request.params = Json{{"base_source_digest", authoring.source_digest},
@@ -527,7 +586,9 @@ std::vector<FramePlanInlineField> framePlanInlineFields(
     std::vector<FramePlanInlineField> fields;
     if (!authored_task.empty()) {
         const auto *row = tasks.find(authored_task);
-        if (row == nullptr || !row->editable) return fields;
+        if (row == nullptr ||
+            !lockedTaskReason(tasks, *row, "").empty())
+            return fields;
         const auto dispatch = objectOr(row->declaration, "dispatch");
         if (dispatch.empty()) return fields;
         fields.push_back({"dispatch", "dispatch", dispatch.dump()});

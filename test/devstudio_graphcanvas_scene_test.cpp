@@ -2841,3 +2841,232 @@ TEST_CASE("Q-8 the UI document's paths are the engine's: ids joined from the roo
     REQUIRE(none.nodes.empty());
     REQUIRE(none.error.find("ui_config_json") != std::string::npos);
 }
+
+// Q-10. AU-1 gave audio.playback a position input, the integrated time map
+// (source_begin / source_end / speed / delay as ports) and three parameters
+// that are no port at all: the sound, the bus and the wrap. The ports come
+// from the catalog like any other; the three parameters are fields.
+namespace {
+struct AudioProject {
+    std::filesystem::path root;
+
+    AudioProject() {
+        root = std::filesystem::temp_directory_path() /
+               ("pelican_q10_audio_" +
+                std::to_string(std::chrono::steady_clock::now()
+                                   .time_since_epoch()
+                                   .count()));
+        std::filesystem::create_directories(root / "sounds");
+        std::filesystem::create_directories(root / "music");
+        std::filesystem::create_directories(root / ".pelican");
+        std::ofstream{root / "project.json"}
+            << R"json({"schema":"pelican.project","version":1,"name":"q10_audio","basic_config":{}})json";
+        // Only the name decides what is listed; the engine checks the bytes.
+        std::ofstream{root / "sounds" / "hit.wav"} << "RIFF";
+        std::ofstream{root / "sounds" / "LOUD.WAV"} << "RIFF";
+        std::ofstream{root / "music" / "theme.ogg"} << "OggS";
+        std::ofstream{root / "music" / "notes.txt"} << "not a sound";
+        std::ofstream{root / "music" / "take.mp3"} << "ID3";
+        // Studio's own folder is not the project's content.
+        std::ofstream{root / ".pelican" / "cache.wav"} << "RIFF";
+    }
+    ~AudioProject() {
+        std::error_code ignored;
+        std::filesystem::remove_all(root, ignored);
+    }
+};
+
+bool catalogHas(const Json &catalog, std::string_view op) {
+    for (const auto &module : catalog.at("modules"))
+        for (const auto &operation : module.at("operations"))
+            if (operation.value("op", std::string{}) == op) return true;
+    return false;
+}
+
+Json audioDocument() {
+    const auto edge = [](const char *node, const char *port = "value") {
+        return Json{{"node", node}, {"port", port}};
+    };
+    return {{"nodes", Json::array({
+                {{"id", "now"}, {"op", "value.input"},
+                 {"parameters", {{"name", "scene_time"}}}, {"inputs", Json::object()},
+                 {"outputs", Json::array({"value"})}},
+                {{"id", "cue"}, {"op", "event.playback"}, {"inputs", Json::object()},
+                 {"outputs", Json::array({"events"})}},
+                // The integrated form: started by its events, no wrap stored.
+                {{"id", "voice"}, {"op", "audio.playback"},
+                 {"parameters", {{"asset", "project://sounds/hit.wav"}}},
+                 {"inputs", {{"time", edge("now")}, {"events", edge("cue", "events")}}},
+                 {"outputs", Json::array({"voice"})}},
+                // The decomposed form: follows its position, no events at all.
+                {{"id", "follower"}, {"op", "audio.playback"},
+                 {"parameters", {{"asset", "project://music/theme.ogg"}, {"bus", "bgm"}}},
+                 {"inputs", {{"time", edge("now")}, {"position", edge("now")}}},
+                 {"outputs", Json::array({"voice"})}},
+            })},
+            {"definitions", Json::object()}};
+}
+} // namespace
+
+TEST_CASE("Q-10 audio.playback: its new ports come from the catalog, and the sound, "
+          "bus and wrap are picked from lists",
+          "[devstudio][graph-canvas][scene][graph-edit][q10]") {
+    const auto catalog = engineCatalog();
+    if (!catalogHas(catalog, "audio.playback"))
+        SKIP("this build registers no pelican.audio module");
+    (void)application();
+    const AudioProject project;
+    RecordedCapability transport;
+    PelicanStudio::GraphCanvasWidget widget{transport.capability()};
+    widget.setProjectRoot(project.root);
+    widget.resize(900, 600);
+    widget.show();
+    QCoreApplication::processEvents();
+    const auto deliver = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    };
+    deliver(QStringLiteral("get_graph_instances"), context(audioDocument()));
+    deliver(QStringLiteral("get_graph_catalog"), catalog);
+    auto &model = widget.model();
+    REQUIRE(model.canEdit());
+    const auto lastOps = [&] {
+        const qint64 edit = transport.idOf(QStringLiteral("edit_graph_document"));
+        REQUIRE(edit != 0);
+        return Json::parse(
+            transport.calls[static_cast<std::size_t>(edit - 1)].body.toStdString());
+    };
+    auto *row = widget.findChild<QWidget *>(QStringLiteral("pelican.graphCanvasAudioRow"));
+    auto *asset = widget.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasAudioAsset"));
+    auto *bus = widget.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasAudioBus"));
+    auto *wrap = widget.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasAudioWrap"));
+    REQUIRE(row != nullptr);
+    REQUIRE(asset != nullptr);
+    REQUIRE(bus != nullptr);
+    REQUIRE(wrap != nullptr);
+    const QStringList sounds{QStringLiteral("project://music/theme.ogg"),
+                             QStringLiteral("project://sounds/LOUD.WAV"),
+                             QStringLiteral("project://sounds/hit.wav")};
+
+    SECTION("every port AU-1 added is drawn, and events is not required") {
+        const auto nodes = model.nodes();
+        const auto voice = std::ranges::find(nodes, std::string{"voice"},
+                                         &PelicanStudio::GraphCanvasNode::id);
+        REQUIRE(voice != nodes.end());
+        std::map<std::string, bool> required;
+        for (const auto &port : voice->inputs) {
+            CHECK(port.declared);
+            required[port.port] = port.required;
+        }
+        CHECK(required == std::map<std::string, bool>{
+                              {"delay", false}, {"events", false}, {"position", false},
+                              {"source_begin", false}, {"source_end", false},
+                              {"speed", false}, {"time", true}});
+        // The node that follows its position leaves events unconnected, and
+        // nothing on the canvas calls that a problem.
+        CHECK(model.notice().kind != PelicanStudio::InspectorNoticeKind::Error);
+    }
+
+    SECTION("the palette offers it, and places it on the project's first sound") {
+        const auto offered = model.paletteOperations("audio.");
+        CHECK(std::ranges::any_of(offered, [](const auto &entry) {
+            return entry.op == "audio.playback" && !entry.structural;
+        }));
+        REQUIRE(widget.scene().addFromPalette("audio.playback"));
+        QCoreApplication::processEvents();
+        const auto ops = lastOps();
+        REQUIRE(ops.size() == 2);
+        // Only the required scalar is seeded: an optional events port is
+        // left open rather than wired to something the user did not ask for.
+        REQUIRE(ops.at(0).at("node").at("id") == "audio_playback__time");
+        const auto &node = ops.at(1).at("node");
+        CHECK(node.at("op") == "audio.playback");
+        CHECK(node.at("parameters") == Json{{"asset", "project://music/theme.ogg"}});
+        CHECK(node.at("inputs") ==
+              Json{{"time", {{"node", "audio_playback__time"}, {"port", "value"}}}});
+    }
+
+    SECTION("the fields show what is stored, and one pick is one edit") {
+        widget.scene().selectNode("voice");
+        QCoreApplication::processEvents();
+        REQUIRE(row->isVisible());
+        REQUIRE(asset->isEditable());
+        CHECK(comboItems(*asset) == sounds);
+        CHECK(asset->currentText() == QStringLiteral("project://sounds/hit.wav"));
+        CHECK_FALSE(bus->isEditable());
+        CHECK(comboItems(*bus) == QStringList{QStringLiteral("se"), QStringLiteral("bgm")});
+        CHECK(bus->currentText() == QStringLiteral("se"));
+        CHECK_FALSE(wrap->isEditable());
+        CHECK(comboItems(*wrap) == QStringList{QStringLiteral("once"), QStringLiteral("repeat"),
+                                               QStringLiteral("ping_pong")});
+        CHECK(wrap->currentText() == QStringLiteral("once"));
+        CHECK(wrap->isEnabled());
+
+        // Picking the default already in effect sends nothing.
+        emit wrap->activated(0);
+        QCoreApplication::processEvents();
+        CHECK(transport.countOf(QStringLiteral("edit_graph_document")) == 0);
+
+        const int bgm = bus->findText(QStringLiteral("bgm"));
+        bus->setCurrentIndex(bgm);
+        emit bus->activated(bgm);
+        QCoreApplication::processEvents();
+        REQUIRE(transport.countOf(QStringLiteral("edit_graph_document")) == 1);
+        CHECK(lastOps() == Json::array({Json{
+                               {"op", "set_node_parameters"}, {"scope", "root"},
+                               {"node", "voice"},
+                               {"parameters", {{"asset", "project://sounds/hit.wav"},
+                                               {"bus", "bgm"}}}}}));
+    }
+
+    SECTION("a sound can still be typed; it goes out as typed") {
+        widget.scene().selectNode("voice");
+        QCoreApplication::processEvents();
+        asset->lineEdit()->setText(QStringLiteral("project://elsewhere/cue.ogg"));
+        emit asset->lineEdit()->returnPressed();
+        QCoreApplication::processEvents();
+        CHECK(lastOps().at(0).at("parameters") ==
+              Json{{"asset", "project://elsewhere/cue.ogg"}});
+        CHECK(asset->findText(QStringLiteral("project://elsewhere/cue.ogg")) < 0);
+    }
+
+    SECTION("a voice that follows its position offers no wrap") {
+        widget.scene().selectNode("follower");
+        QCoreApplication::processEvents();
+        REQUIRE(row->isVisible());
+        CHECK(bus->currentText() == QStringLiteral("bgm"));
+        CHECK(asset->currentText() == QStringLiteral("project://music/theme.ogg"));
+        CHECK_FALSE(wrap->isEnabled());
+    }
+
+    SECTION("the fields are there only for audio.playback") {
+        widget.scene().selectNode("now");
+        QCoreApplication::processEvents();
+        CHECK_FALSE(row->isVisible());
+    }
+}
+
+TEST_CASE("Q-10 the project's sounds: .wav and .ogg in any case, outside dot folders",
+          "[devstudio][graph-canvas][q10]") {
+    const AudioProject project;
+    const auto read = PelicanStudio::readProjectAudioAssets(project.root);
+    CHECK(read.error.empty());
+    CHECK(read.assets == std::vector<std::string>{"project://music/theme.ogg",
+                                                  "project://sounds/LOUD.WAV",
+                                                  "project://sounds/hit.wav"});
+    // No project, or a project without a sound: the field says why.
+    CHECK(PelicanStudio::readProjectAudioAssets({}).error == "no project is open");
+    const auto empty = std::filesystem::temp_directory_path() /
+                       ("pelican_q10_silent_" +
+                        std::to_string(std::chrono::steady_clock::now()
+                                           .time_since_epoch()
+                                           .count()));
+    std::filesystem::create_directories(empty);
+    const auto silent = PelicanStudio::readProjectAudioAssets(empty);
+    std::error_code ignored;
+    std::filesystem::remove_all(empty, ignored);
+    CHECK(silent.assets.empty());
+    CHECK(silent.error == "no .wav or .ogg file in the project");
+}

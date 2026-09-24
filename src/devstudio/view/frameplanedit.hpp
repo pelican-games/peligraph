@@ -7,6 +7,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -117,10 +118,17 @@ struct FramePlanTaskAuthoring {
         std::string digest;
         bool editable = false;
         std::string read_only_reason;
+        // Q-10: where the declaration lives, and the feature that provides
+        // it (empty for anything no feature provides).
+        std::string source_reference;
+        std::string provider_feature;
     };
     bool received = false;
     std::string source_digest;
     std::map<std::string, Task> tasks;
+    // Q-10: the rendering document's own reference, from the authoring
+    // context. The catalog does not carry it; the canvas fills it in.
+    std::string root_reference;
 
     [[nodiscard]] const Task *find(const std::string &name) const;
 };
@@ -162,6 +170,48 @@ FramePlanEditRequest framePlanTaskDispatchRequest(
 
 FramePlanEditRequest framePlanTaskRemoveRequest(
     const FramePlanTaskAuthoring &authoring, const std::string &task);
+
+// --- Q-10: a task at the rendering document's root.
+
+// MG-2b: rendering is a pelican.graph root, and that root's `rendering`
+// section cannot declare compute_tasks (the lowering derives them from
+// render.compute nodes). A task the catalog attributes to the root document
+// itself -- no feature provides it -- therefore has no declaration Studio can
+// write back, and the engine answers edit_compute_task / remove_compute_task
+// for it with this code.
+inline constexpr std::string_view FramePlanRootTaskCode = "compute_task_not_editable";
+
+// The catalog row's source is the root document (the `source_reference` of
+// get_render_authoring_context or get_render_features) and no feature
+// provides it. An unknown root reference answers false: nothing is claimed
+// about a task whose place Studio has not been told.
+[[nodiscard]] bool framePlanTaskAtRoot(std::string_view source_reference,
+                                       std::string_view provider_feature,
+                                       std::string_view root_reference);
+
+// What is said instead: one sentence for the status line (what to do), then
+// one that carries the code.
+[[nodiscard]] std::string framePlanRootTaskRefusal(std::string_view task);
+
+// Q-10. What the Task Editor sends for Apply / Create task. The decision lives
+// here so a test can read it without the dialog: a new task still goes out as
+// add_compute_task into the project:// feature it names, whatever the catalog
+// holds, and an edit of a root task is refused before anything is sent.
+struct ComputeTaskEditorSubmit {
+    bool creating = false;
+    std::string destination_reference;
+    std::string base_source_digest;
+    // Editing: the catalog row the editor shows.
+    std::string task_name;
+    std::string task_source_digest;
+    std::string source_reference;
+    std::string provider_feature;
+    bool editable = false;
+    std::string root_reference;
+};
+
+FramePlanEditRequest computeTaskEditorRequest(const ComputeTaskEditorSubmit &submit,
+                                              const nlohmann::json &task);
 
 // --- The in-place bands a node offers.
 

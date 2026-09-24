@@ -196,6 +196,13 @@ modelReferenceChoices(std::string_view current,
 // The short word after the name in the list: "not in this build",
 // "needs a ray layout", or "unavailable" for a code Studio does not know.
 [[nodiscard]] std::string componentUnavailableTag(std::string_view code);
+// Q-10: a refusal that carries a code of that table, either as its own code
+// or inside its message -- a sound the render pipeline refused while
+// preparing a graph edit arrives as render_pipeline_preflight_failed with
+// "audio.format_unsupported@1 {...}" as the message. Answers the table's
+// "<sentence> (<code>)", or empty when neither names a code Studio knows.
+[[nodiscard]] std::string knownRefusalDescription(std::string_view code,
+                                                  std::string_view message);
 
 struct ComponentAddRow {
     std::size_t candidate = 0;  // index into the catalog's "candidates"
