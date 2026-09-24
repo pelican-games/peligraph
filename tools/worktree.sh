@@ -13,15 +13,18 @@ build="$worktree/build"
 manifest="$build/pelican_worktree_manifest.json"
 export MSBUILDDISABLENODEREUSE=1
 export CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-16}"
-manifest_python="%APPDATA%/uv/python/cpython-3.12-windows-x86_64-none/python.exe"
+# Machine-specific locations; override through the environment.
+uv_python="${PELICAN_WORKTREE_PYTHON:-$(cygpath -m "$APPDATA")/uv/python/cpython-3.12-windows-x86_64-none/python.exe}"
+qt_prefix="${PELICAN_WORKTREE_QT_PREFIX:-$(cygpath -m "$USERPROFILE")/Qt/6.10.3/msvc2022_64}"
+manifest_python="$(cygpath -u "$uv_python")"
 
 primary=$(git -C "$worktree" worktree list --porcelain | awk '/^worktree / { print substr($0,10); exit }')
 deps="$primary/build/_deps"
 
 configure_args=(
-  -DCMAKE_PREFIX_PATH=C:/Qt/6.10.3/msvc2022_64
+  -DCMAKE_PREFIX_PATH="$qt_prefix"
   -DPELICAN_WITH_SPIRV_LINK=ON -DSKIP_DEVSTUDIO=ON
-  -DPython3_EXECUTABLE=%APPDATA%/uv/python/cpython-3.12-windows-x86_64-none/python.exe
+  -DPython3_EXECUTABLE="$uv_python"
 )
 for dep in argparse battery-embed catch2 glfw glm imgui_vendor miniaudio nlohmann openxr_sdk picosha2 quill spirv_headers spirv_reflect spirv_tools stb tinyexr tinygltf vma-hpp; do
   source_dir="$deps/$dep-src"

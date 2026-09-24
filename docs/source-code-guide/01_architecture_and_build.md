@@ -383,9 +383,9 @@ tools/worktree.sh build     <worktree> [--target ...]
 tools/worktree.sh test      <worktree> [-R ...]
 ```
 
-`configure` は primary worktree（`git worktree list` の先頭）の `build/_deps/<dep>-src` を `FETCHCONTENT_SOURCE_DIR_<DEP>` で指し直し、`MSBUILDDISABLENODEREUSE=1` を立てます。そのうえで **manifest** `build/pelican_worktree_manifest.json` を書きます（[`write_manifest`](../../tools/worktree.sh#L41)）。中身は generator、config、依存ソース root、node reuse の有無、ラッパが決めた引数の fingerprint、追加引数の fingerprint です。
+`configure` は primary worktree（`git worktree list` の先頭）の `build/_deps/<dep>-src` を `FETCHCONTENT_SOURCE_DIR_<DEP>` で指し直し、`MSBUILDDISABLENODEREUSE=1` を立てます。そのうえで **manifest** `build/pelican_worktree_manifest.json` を書きます（[`write_manifest`](../../tools/worktree.sh#L44)）。中身は generator、config、依存ソース root、node reuse の有無、ラッパが決めた引数の fingerprint、追加引数の fingerprint です。
 
-`build` / `test` は先に [`check_manifest`](../../tools/worktree.sh#L54) を通し、ラッパ側の半分を再計算して**一致しなければ名指しで止まります**（`WP385: worktree manifest mismatch; reconfigure through tools/worktree.sh configure`）。manifest が無ければ `configure` を促して exit 2 です。狙いは「別の generator・別の依存 root・node reuse 有効のまま作ったビルドツリーへ、あとから build/test だけ掛ける」という取り違えを、緑のまま通さないことです。
+`build` / `test` は先に [`check_manifest`](../../tools/worktree.sh#L57) を通し、ラッパ側の半分を再計算して**一致しなければ名指しで止まります**（`WP385: worktree manifest mismatch; reconfigure through tools/worktree.sh configure`）。manifest が無ければ `configure` を促して exit 2 です。狙いは「別の generator・別の依存 root・node reuse 有効のまま作ったビルドツリーへ、あとから build/test だけ掛ける」という取り違えを、緑のまま通さないことです。
 
 `PELICAN_WORKTREE_GENERATOR=Ninja` のときだけ、Git Bash が `vcvars64.bat` の環境を保持できないため `cmd.exe` に `call vcvars && cmake` を1プロセスで実行させます。
 
