@@ -153,7 +153,7 @@ pelican_player --project mygame --headless --rpc
 
 - 文書 1 つ = **シーンファイル 1 本**です。`pelican.scene` v1 のエンベロープ丸ごと —— そのファイルの `scenes` が宣言する全シーン、その中の全オブジェクト、その全コンポーネントの生 JSON —— を保持します([authoringscenedocument.hpp](../../src/core/loader/authoringscenedocument.hpp#L114))。プロジェクトに複数のシーンファイルがあれば文書も複数で、`export_scene_snapshot` はその全部を返します。
 - **`AuthoringObjectId`**(セッション内で安定・1 始まり)と **`SceneRevision`**(単調増加)が編集の座標系です。ランタイムの `EntityId` は付随情報で、**同一性の代用にはしません**(オブジェクトが再生成されると変わるため)。
-- コンポーネントの受理・正規化は [第4章](04_scene_ecs.md) §4.2 の component codec が担当します。値を書くと**必ず codec の正規形に書き直されて**保存されます。ここでいう**正規形**は、書いた JSON をいったん codec で読み(`decodeAuthored()`)、その値からもう一度書き出した(`encodeCanonical()`)形のことです —— 鍵の並び・省略した既定値・数値の型が一意に決まるので、同じ意味の JSON は必ず同じバイト列になります([componentcodec.hpp](../../src/core/loader/componentcodec.hpp#L333))。
+- コンポーネントの受理・正規化は [第4章](04_scene_ecs.md) §4.2 の component codec が担当します。値を書くと**必ず codec の正規形に書き直されて**保存されます。ここでいう**正規形**は、書いた JSON をいったん codec で読み(`decodeAuthored()`)、その値からもう一度書き出した(`encodeCanonical()`)形のことです —— 鍵の並び・省略した既定値・数値の型が一意に決まるので、同じ意味の JSON は必ず同じバイト列になります([componentcodec.hpp](../../src/core/loader/componentcodec.hpp#L339))。
 
 ### 保存の往復について(weak round-trip)
 
@@ -190,7 +190,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 ### 編集操作(operations)の 12 種
 
 `edit` の `operations[]` には次の 12 種を並べます(正は
-[`prepareRpcOperation()`](../../src/core/communication/editorjournal.cpp#L1596) の op 分岐)。1 回の `edit` は**全部成功か全部失敗**で、
+[`prepareRpcOperation()`](../../src/core/communication/editorjournal.cpp#L1598) の op 分岐)。1 回の `edit` は**全部成功か全部失敗**で、
 表に無い `op` は `method_unavailable{method, adapter}` です。
 
 | op | 主なフィールド | 意味 |
@@ -275,7 +275,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 
 **解決に失敗したコンポーネントも消えません(✅WP378)。** authored / generated のどちらの直下にも
 `resolution_error` が付き、`get_components` は**成功応答のまま**それを返します
-([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1797))。形は 2 通りで、
+([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1808))。形は 2 通りで、
 typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化していない旧分岐は
 `{legacy_branch_id, message}` です(正は
 [`resolutionFailureJson()`](../../src/core/loader/resolutionresult.hpp#L114))。
@@ -1043,7 +1043,7 @@ driver の stdout / stderr は、cp932 の console で出せない文字があ�
 
 **回し方**: [`tools/studio_drive.py`](../../tools/studio_drive.py#L982)(Python 3.11以上、標準ライブラリだけ)が Studio を
 `--automation --project --tab` で起動し、step を順に送り、`report.json` を書きます。ctest からは
-`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L2920)) —— **実物の窓が要るので
+`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L2924)) —— **実物の窓が要るので
 `QT_QPA_PLATFORM=offscreen` は掛けません**。fixture の project は temp に 2 つ複製されるので、シナリオは
 文書を書き換えてよく、「ディスクから読み直す」も試せます([複製](../../test/run_studio_scenario.cmake#L30))。
 CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが見つかった`AUTO`）が必要です。
@@ -1217,7 +1217,7 @@ Studio 専用の裏口はありません(D0)。
 - **ただし `edit_render_features` はこの区別に従いません。**フレーム境界の preflight で落ちた場合も `status` は `"rejected"` です。また **追加情報は `payload` の中ではなく `error` の直下**に置かれます。
 - **シーン編集**の安定コードは **43 種**です(正は
   [`EditorEditErrorCode`](../../src/core/communication/editorjournal.hpp#L49) と、その名前を返す
-  [`editorEditErrorCodeName()`](../../src/core/communication/editorjournal.cpp#L2982)。**列挙子の名前とワイヤ上の
+  [`editorEditErrorCodeName()`](../../src/core/communication/editorjournal.cpp#L3013)。**列挙子の名前とワイヤ上の
   コード名は一致しません** —— 新しいものは `@1` 付きです)。内訳:
   - 基本 21 種: `stale_revision` / `gate_closed` / `preview_lease_conflict` / `preview_lease_busy` / `not_lease_owner` / `ticket_not_found` / `undo_conflict` / `not_editable` / `schema_violation` / `component_unknown@1` / `duplicate_component` / `missing_component` / `name_conflict` / `parent_not_found` / `closure_unresolvable` / `cycle_detected` / `zero_scale` / `non_finite_transform` / `trs_unrepresentable` / `preserve_missing` / `method_unavailable`
   - preview: `editor_preview_unsupported@1`(✅WP375c。列挙子は `preview_unsupported`。**inactive なシーンの add / remove / reparent プレビュー**はこれで拒否されます)
@@ -1227,7 +1227,7 @@ Studio 専用の裏口はありません(D0)。
 - **`not_editable` と `component_unknown@1` の切り分け(✅WP379/379a)**: `add_component` は
   production の component registry に問い合わせます。**登録されているが editor codec が無い**なら
   `not_editable`、**そもそも登録されていない**なら `component_unknown@1{"name": "…"}` です
-  ([editorjournal.cpp](../../src/core/communication/editorjournal.cpp#L212))。以前は実 DLL が登録した
+  ([editorjournal.cpp](../../src/core/communication/editorjournal.cpp#L214))。以前は実 DLL が登録した
   codec 無しコンポーネントも一律「未登録」と報告していました。
 - **`edit_render_features` はこの 21 種では尽きない別系統**です。共通するのは `gate_closed` だけで、ほかに `unknown_render_feature` / `restart_required_feature` / `render_feature_unavailable` / `render_feature_not_enabled` / `external_modification` / `stale_source_digest` / `render_pipeline_preflight_failed` / `render_config_rollback_failed` / `render_pipeline_commit_protocol_error` を返します(§13.5)。
   `set_parameters` と `materialize` はさらに `invalid_feature_parameters`(index が範囲外、`parameters` が
@@ -1431,13 +1431,13 @@ scene のロードは 1 つのトランザクションになりました([第4�
   「シーンは切り替わったが、`onInit` が呼んだ `playSound` / `saveData` / `setBusVolume` の一部が失敗した」
   ことを表すのが `effect_errors` で、**空配列なら全部成功**です。
 - 1 要素は `{api, error_code, error_fields, phase}` の 4 鍵ちょうどです(正は
-  [`effectErrorsJson()`](../../src/core/loader/scene.cpp#L502))。`api` は
+  [`effectErrorsJson()`](../../src/core/loader/scene.cpp#L484))。`api` は
   `playSound` / `saveData` / `loadScene` などの**公開 API 名**、`phase` は
   `activate` / `destroy` / `flush` の 3 値、`error_fields` はコードごとに決まった固定の鍵
   (`{path, reason}` / `{slot, reason}` / `{bus, reason}` / `{dropped}` など。正は
   [effecttransaction.cpp](../../src/core/loader/effecttransaction.cpp#L686))です。
 - `import_scene_snapshot` の応答にも同じ `committed` / `effect_errors` が付きます
-  ([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L2022))。
+  ([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L2033))。
   **`{"status":"imported","scene_revision":N,"current_scene_id":"…"}` だけを期待する
   厳密一致のクライアントは壊れます。**
 - 代表的な `error_code`: `effect_outbox_full@1{dropped}`(1 回の scene load で 256 件を超えた分)/

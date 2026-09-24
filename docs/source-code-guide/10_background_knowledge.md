@@ -439,7 +439,7 @@ BLAS の三角形ジオメトリ(`VkAccelerationStructureGeometryTrianglesDataKH
 
 TLAS の各 instance は `VkGeometryInstanceFlagsKHR` を持ち、`FORCE_OPAQUE` は「このインスタンスは不透明として扱う」= **any-hit シェーダを呼ばない**、`FORCE_NO_OPAQUE` はその逆です。両方を同時に立てるのは矛盾なので、宣言側で弾く必要があります。any-hit シェーダは交差**候補**ごとに(順不同で、同じ交差に対して複数回)呼ばれ、`ignoreIntersectionEXT` でその候補を棄却します。三角形の hit attribute は組み込みで `vec2` の重心座標(残り 1 成分は `1 - u - v`)、プリミティブ番号は `gl_PrimitiveID` です。したがってアルファ抜きを any-hit で実装している構成で `FORCE_OPAQUE` を立てると、抜きが丸ごと無効になります。
 
-**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1648)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L531) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1251)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
+**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1649)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L531) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1251)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
 
 ### in-flight フレームと GPU 資源の寿命
 
@@ -615,7 +615,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 「いま実行中のトランザクション」「いま登録中のオブザーバ」のような、呼び出しの深いところまで届けたい文脈を、引数で引き回さずに参照するためのイディオムです。名前空間スコープの `thread_local` なポインタに現在値を置き、その差し替えを RAII クラス(コンストラクタで `std::exchange` して旧値を保存、デストラクタで書き戻す)に閉じ込めます。RAII にしておけば例外で抜けても必ず前の値に戻り、入れ子も正しく動きます。`thread_local` なのでスレッドごとに独立し、別スレッドの実行中トランザクションを踏むことがありません。素の大域変数 + 手書きの復元にすると、途中の `return` や例外で復元を飛ばした瞬間に「終わったはずのトランザクションが実行中に見える」壊れ方をします。
 
-**使用場所**: [PendingSceneTransactionScope](../../src/core/loader/scene.cpp#L228) / [thread_local な active_effect_transaction の宣言](../../src/core/loader/effecttransaction.cpp#L18) / [ScopedRenderPipelineCompanionReloadObserver のコンストラクタ](../../src/core/watch/reloadservice.cpp#L24)
+**使用場所**: [PendingSceneTransactionScope](../../src/core/loader/scene.cpp#L210) / [thread_local な active_effect_transaction の宣言](../../src/core/loader/effecttransaction.cpp#L18) / [ScopedRenderPipelineCompanionReloadObserver のコンストラクタ](../../src/core/watch/reloadservice.cpp#L24)
 
 ### スコープガード(巻き戻しをデストラクタに置き、成功時に無効化する)
 
@@ -639,7 +639,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 2 つの 32bit 値を 1 つの 64bit に詰める `(hi << 32) | lo` は、単なる節約ではなく「2 つのキーの辞書順比較を、整数 1 回の比較で行う」ための表現です(上位に来た値が優先される)。復元はシフトとマスクで、詰める前に両方が 32bit に収まることを確かめておかないと静かに桁が落ちます。関連する定型が `(1u << n) - 1u`(下位 n ビットを立てる)で、n がビット幅と同じときは左シフトが未定義になるため別扱いが要ります。フラグ集合では「同時に立ってはいけない組み合わせ」を `(x & A) != 0 && (x & B) != 0` の形で検査するのが定石です。
 
-**使用場所**: [sceneBehaviorAttachmentSeq()](../../src/core/gamelogic/behaviorarena.cpp#L72)(32bit を超える入力を `length_error` で弾いてから詰める) / [refreshSceneAttachmentSequence()](../../src/core/gamelogic/behaviorarena.cpp#L442) / [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L250)(view_count 32 のときだけ `UINT32_MAX` へ分岐) / [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1648)(相反フラグの検査)
+**使用場所**: [sceneBehaviorAttachmentSeq()](../../src/core/gamelogic/behaviorarena.cpp#L72)(32bit を超える入力を `length_error` で弾いてから詰める) / [refreshSceneAttachmentSequence()](../../src/core/gamelogic/behaviorarena.cpp#L442) / [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L250)(view_count 32 のときだけ `UINT32_MAX` へ分岐) / [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1649)(相反フラグの検査)
 
 ### shared_ptr / weak_ptr による寿命の「リース」
 
@@ -663,19 +663,19 @@ C++ のムーブは、移動元を「有効だが未規定の状態」にしま�
 
 `std::any` は「任意の 1 個のコピー可能な値」を型を隠して保持する箱で、取り出しは `std::any_cast<T>` です。型が違えば `std::bad_any_cast` を投げます(ポインタ版は null を返します)。異なるコーデックが返す異種の値を 1 つのコンテナで運ぶような場面で、共通の基底クラスを作らずに済ませる手段になります。取り出し側は必ず失敗しうるので、`bad_any_cast` をその境界の例外契約(たとえば `std::invalid_argument`)へ翻訳しておくと、呼び出し側が 1 種類の失敗だけを見ればよくなります。
 
-**使用場所**: [codecValue()](../../src/core/loader/componentcodec.cpp#L421)(`any_cast` の失敗を `invalid_argument` に翻訳) / [prepareSceneBindings()](../../src/core/loader/scene.cpp#L308)
+**使用場所**: [codecValue()](../../src/core/loader/componentcodec.cpp#L422)(`any_cast` の失敗を `invalid_argument` に翻訳) / [prepareSceneBindings()](../../src/core/loader/scene.cpp#L290)
 
 ### Result 型で例外型を境界の外に出さない
 
 モジュールの内側では例外で失敗を運びつつ、外向きの API では成功/失敗を値(`Result` 型)で返す、という二層構造です。境界の関数が内部例外だけを `catch` して `Result::failure()` に畳むことで、呼び出し側が実装都合の例外型を知らずに済みます。重要なのは「どの例外を捕まえるか」で、内部の型だけを捕まえて `std::exception` や `...` を素通しにするか、あるいは全部畳んで種類を失うか、を意識的に決める必要があります。前者なら想定外のバグは伝播し、後者ならすべてが「失敗」に見えます。
 
-**使用場所**: [componentcodec.cpp の decode ラッパテンプレート](../../src/core/loader/componentcodec.cpp#L55)
+**使用場所**: [componentcodec.cpp の decode ラッパテンプレート](../../src/core/loader/componentcodec.cpp#L56)
 
 ### std::variant + std::visit + if constexpr のディスパッチ
 
 `std::variant` の中身で分岐する定型は、`std::visit` に総称ラムダを渡し、その中で `using T = std::decay_t<decltype(value)>;` として `if constexpr (std::same_as<T, X>)` で枝を書く形です。`std::visit` は全ての候補型を扱えることをコンパイル時に要求するので、型を足したときに「その枝を書き忘れた」がコンパイルエラーになります(`switch` の default と違って取りこぼせません)。`std::monostate` は「値が入っていない」を表すための空の型で、必ず別扱いの枝が要ります。総称ラムダの中で `if constexpr` を使うと、偽の枝は実体化されないので、その型に無いメンバを参照する枝も書けます。これは同じ理由でテンプレート引数ごとのコード生成一般に使われ、依存名の中でメンバーテンプレートを呼ぶときは `obj.template f<...>()` の `.template` 修飾が要ります(パーサに「これはテンプレート」と教えるため)。
 
-**使用場所**: [numericRange()](../../src/core/imgui/inspector.cpp#L38) / [freezeJournalOperation()](../../src/core/communication/editorjournal.cpp#L1955) / [PipelineFactory::rebuildPrepared()](../../src/core/shader/pipelinefactory.cpp#L1878) / [appendBehaviorEventHandlerAt()](../../src/core/userpublic/details/behavior/registerer.hpp#L137)(`if constexpr` の枝と `lookup.template operator()<Index>()`)
+**使用場所**: [numericRange()](../../src/core/imgui/inspector.cpp#L38) / [freezeJournalOperation()](../../src/core/communication/editorjournal.cpp#L1957) / [PipelineFactory::rebuildPrepared()](../../src/core/shader/pipelinefactory.cpp#L1878) / [appendBehaviorEventHandlerAt()](../../src/core/userpublic/details/behavior/registerer.hpp#L137)(`if constexpr` の枝と `lookup.template operator()<Index>()`)
 
 ### fold 式と std::apply(タプルライク型の全要素処理)
 
@@ -689,7 +689,7 @@ C++20 の `consteval` 関数は必ず定数評価されます。定数評価の�
 
 **使用場所**: [validateFloatingRange()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L414)(範囲が非有限、または min > max なら文字列を throw) / [field()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L486)(フィールド名が空、または予約接頭辞 `$` で始まるなら throw)
 
-**このコードベースでの注意**: 同じ `consteval` でも、[structFieldType()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L369) と [legacyBranchDescriptorsAreStrictlyOrdered()](../../src/core/loader/componentcodec.cpp#L1966) は `throw` ではなく `static_assert`(前者は `always_false_v` のフォールバック、後者は戻り値を呼び出し側の `static_assert` が見る形)で落とします。「引数の値に対する検査」は throw、「型やテーブル全体に対する検査」は `static_assert`、という使い分けです。
+**このコードベースでの注意**: 同じ `consteval` でも、[structFieldType()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L369) と [legacyBranchDescriptorsAreStrictlyOrdered()](../../src/core/loader/componentcodec.cpp#L1967) は `throw` ではなく `static_assert`(前者は `always_false_v` のフォールバック、後者は戻り値を呼び出し側の `static_assert` が見る形)で落とします。「引数の値に対する検査」は throw、「型やテーブル全体に対する検査」は `static_assert`、という使い分けです。
 
 ### __COUNTER__ と ADL タグディスパッチによる「登録済みの型の列挙」
 
@@ -713,7 +713,7 @@ C++20 の `concept` と `requires` 式は「この型がこう使えるか」を
 
 `std::array<T, N>` は N ごとに別の型なので、そのまま非テンプレートの関数に渡せません。`std::span<const T>`(C++20)はポインタと個数の組を持つ非所有のビューで、`array` でも `vector` でも生配列でも同じ引数型で受けられるようにします。所有しないので**元の配列より長生きしてはいけない**のが唯一にして最大の注意点で、テンポラリから作った span を返すと即座にダングリングになります。
 
-**使用場所**: [fieldSpan()](../../src/core/loader/componentcodec.cpp#L1875) / [ReleaseReport](../../src/core/model/modelresourcerelease.hpp#L36)(`view()` が固定長配列の先頭 N 件を span で返す)
+**使用場所**: [fieldSpan()](../../src/core/loader/componentcodec.cpp#L1876) / [ReleaseReport](../../src/core/model/modelresourcerelease.hpp#L36)(`view()` が固定長配列の先頭 N 件を span で返す)
 
 ### 関数スコープ static の一度きり初期化
 
@@ -731,7 +731,7 @@ DLL 境界を越えて渡す構造体は、両側が同じレイアウトでビ�
 
 C++20 の `std::bit_cast<To>(from)` は、同じサイズの型の間でビット列をそのまま読み替えます(`reinterpret_cast` や union 経由と違い未定義動作になりません)。浮動小数点をハッシュやダイジェストに入れるとき必ず問題になるのが `-0.0` で、`-0.0 == +0.0` は true なのにビット列は違うため、素直にバイト化すると「等しい値なのに違うダイジェスト」が出ます。バイト化の直前に `if (v == 0.0f) v = 0.0f;` と書いて符号を落とすのが定型です(NaN も同様にビット表現が一意でないので、そもそも弾くのが安全です)。
 
-**使用場所**: [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L134)(NaN を例外にし、`0.0F` を代入し直してから `bit_cast`) / [canonicalTransformIdentity()](../../src/core/renderer/accelerationstructure.cpp#L552) / [encodeRecord()](../../src/core/shader/raygrouplayout.cpp#L384)
+**使用場所**: [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L162)(NaN を例外にし、`0.0F` を代入し直してから `bit_cast`) / [canonicalTransformIdentity()](../../src/core/renderer/accelerationstructure.cpp#L552) / [encodeRecord()](../../src/core/shader/raygrouplayout.cpp#L384)
 
 ### 整数オーバーフローの事前検査
 
@@ -985,19 +985,19 @@ SPIR-V モジュールは 32bit ワードの列です。先頭 5 ワードがヘ
 
 `/a/b/0` の形でJSON 文書内の 1 か所を指す標準記法が **JSON Pointer(RFC 6901)** です。`/` 区切りの各トークンはオブジェクトのキーか配列の添字で、空文字列のポインタは文書全体を指します。キーに `/` や `~` が含まれる場合のエスケープがあり、**`~0` が `~`、`~1` が `/`** です。復号は RFC 6901 が順序まで規定していて、**先に `~1` → `/`、後から `~0` → `~`** の順でなければなりません。逆順にすると `~01` が `~1`(正解)ではなく `/` になります。nlohmann::json では `json::json_pointer` 型で表現し、`at(pointer)` は不在で例外、`operator[]` は不在の位置を作ってしまう、という違いがあります。エラー報告の「どのフィールドが悪いか」を機械可読に返す用途で広く使われます。
 
-**使用場所**: [prepareSet()](../../src/core/communication/editorjournalops.cpp#L647)(`Json::json_pointer{field_path}` でフィールド位置を解決) / [parseEditorMutationRequest()](../../src/core/communication/editorjournal.cpp#L2826)(構築できるかだけを検査する) / [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L134)(エラーに `/resolver_inputs/<field>` を載せる)
+**使用場所**: [prepareSet()](../../src/core/communication/editorjournalops.cpp#L647)(`Json::json_pointer{field_path}` でフィールド位置を解決) / [parseEditorMutationRequest()](../../src/core/communication/editorjournal.cpp#L2857)(構築できるかだけを検査する) / [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L162)(エラーに `/resolver_inputs/<field>` を載せる)
 
 ### nlohmann::json の型判定・キー順・JSON null
 
 nlohmann::json は数値を「符号なし整数 / 符号付き整数 / 浮動小数」の 3 つに区別して保持し、`is_number_unsigned()` / `is_number_integer()` / `is_number_float()` で見分けられます(`is_number_integer()` は符号なしにも true を返すので、負値を拒否したいときは順序に注意が要ります)。`nlohmann::ordered_json` は `std::map` ではなく挿入順を保つ連想コンテナを使う別名で、出力の安定性が要るとき(差分を取る、ダイジェストを取る)に選びます。もう 1 つの落とし穴が `std::optional` の出力で、**値が無いときにキーへ代入しないとキー自体が消えます**。「キーはあるが null」を出したいなら明示的に `nullptr` を代入する必要があり、この 2 つは受け手にとって別物です。
 
-**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L67)(`is_number_unsigned()` を先に見て、次に `is_number_integer()` — この順でないと符号なしが符号付き枝へ落ちる) / [validateStructSigned()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L201)(同じ 2 段の順序) / [editorComponentQueryJson()](../../src/core/communication/editorcommandservice.cpp#L1777)(値が無ければ `OrderedJson(nullptr)` を明示的に置く)
+**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L69)(`is_number_unsigned()` を先に見て、次に `is_number_integer()` — この順でないと符号なしが符号付き枝へ落ちる) / [validateStructSigned()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L201)(同じ 2 段の順序) / [editorComponentQueryJson()](../../src/core/communication/editorcommandservice.cpp#L1788)(値が無ければ `OrderedJson(nullptr)` を明示的に置く)
 
 ### IEEE 754 の倍精度と JSON の「安全な整数」2^53−1
 
 JSON の数値には型の区別が無く、多くの実装(JavaScript の `JSON.parse` を含む)は倍精度浮動小数点で受けます。IEEE 754 の倍精度は仮数部が 53 ビットなので、**絶対値が 2^53 = 9007199254740992 を超える整数は 1 刻みで表せません**。したがって「往復しても壊れない整数」の上限は 2^53−1 = 9007199254740991(JavaScript の `Number.MAX_SAFE_INTEGER`)です。64bit の ID をそのまま JSON に載せる設計は、この値域で切るか、文字列として運ぶかのどちらかを選ぶ必要があります。
 
-**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L67)(`maxExactJsonInteger` を超える値を `invalid_argument`) / [BehaviorAttachmentArena::reserveRuntimeAttachmentIdentity()](../../src/core/gamelogic/behaviorarena.cpp#L1057)(ハンドル空間の枯渇として `overflow_error`) / [max_exact_struct_json_integer の定義](../../src/core/userpublic/details/schema/structfieldjson.hpp#L199)
+**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L69)(`maxExactJsonInteger` を超える値を `invalid_argument`) / [BehaviorAttachmentArena::reserveRuntimeAttachmentIdentity()](../../src/core/gamelogic/behaviorarena.cpp#L1057)(ハンドル空間の枯渇として `overflow_error`) / [max_exact_struct_json_integer の定義](../../src/core/userpublic/details/schema/structfieldjson.hpp#L199)
 
 **このコードベースでの注意**: 境界の取り方が 2 つあります。journal と behavior arena は 2^53−1(9007199254740991)を上限に、スキーマ検証側は 2^53(9007199254740992)を上限にしています。前者が「安全な整数」の定義どおり、後者は 2^53 ちょうどを許す(表現自体は可能な)側です。
 
@@ -1108,7 +1108,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 四元数 q でベクトル v を回すとき、`q * v * conj(q)` を素直に計算する代わりに `t = 2 * cross(q.xyz, v); v' = v + q.w * t + cross(q.xyz, t)` と展開するのが標準的です。行列を作らずに済み、乗算回数も少なくなります。この式は q が単位四元数であることを前提にしているので、上の判定を通っていない値を渡すと大きさまで変わります。
 
-**使用場所**: [requireNonZeroQuat()](../../src/core/loader/componentcodec.cpp#L406)(`norm_squared <= epsilon` を拒否するだけで正規化はしない) / [rotateVector()](../../src/core/phys/physquery.cpp#L107)(上の展開形) / [normalizedQuat()](../../src/core/phys/physquery.cpp#L97)
+**使用場所**: [requireNonZeroQuat()](../../src/core/loader/componentcodec.cpp#L407)(`norm_squared <= epsilon` を拒否するだけで正規化はしない) / [rotateVector()](../../src/core/phys/physquery.cpp#L107)(上の展開形) / [normalizedQuat()](../../src/core/phys/physquery.cpp#L97)
 
 ### GLM の quat コンストラクタ引数順は (w, x, y, z)
 
@@ -1122,7 +1122,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 親の world 変換から子の local を復元するときは、この逆を逆順に当てます — 並進を引き、親回転の逆を掛け、親スケールで割る。スケールで割る以上、**成分が 0 に近い親スケールでは逆算が発散します**ので、閾値を置いて拒否するのが定石です。非一様スケールと回転が混ざると local の scale が一意に決まらない(せん断が生じる)ことにも注意が要ります。
 
-**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2213)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L649)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
+**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2213)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L650)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
 
 ### 法線の変換は transpose(inverse(M))
 
@@ -1188,7 +1188,7 @@ OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメー
 
 **使用場所**: [`SemanticTypeId`](../../src/project/logicalrendertype.hpp#L24) / [`SemanticTypeSchema`](../../src/project/logicalrendertype.hpp#L108) / [`LogicalType`](../../src/project/logicalrendertype.hpp#L128)(構成子 + semantic + 引数)/ [`LogicalTypeRegistry::canonicalize()`](../../src/project/logicalrendertype.hpp#L146) / 不透明型の実例は [`pelican.pose@1` の説明](../../src/project/posegraphmodule.hpp#L11)
 
-**このコードベースでの注意**: 登録されている semantic は 11 種です。値・音・イベントの 3 つ(`pelican.value.scalar@1` / `pelican.audio.voice@1` / `pelican.event.playback_control@1`)に加えて、`pelican.render` module が 6 つ(`storage_buffer@1` / `attribute@1` / `color_signal@1` / `depth@1` / `legacy_opaque_image@1` / `legacy_opaque_resource@1`、[`logicalrendertype.cpp`](../../src/project/logicalrendertype.cpp#L580) を [`graphmodule.cpp`](../../src/project/graphmodule.cpp#L331) が登録し、[`renderPorts()`](../../src/project/graphmodule.cpp#L55) 経由でポートに現れます)、pose module が 2 つ(`pelican.pose@1` / `pelican.rig@1`、[`posegraphmodule.cpp`](../../src/project/posegraphmodule.cpp#L74))です。`opaque` を持つのは姿勢とリグの 2 つで、ただし `pelican.rig@1` はポートには現れません(ノードの parameter として名前で指定します)。Studio 側は**型名にソケットの形を割り当てる表**を JSON で持っており、新しい型は C++ を書かずに [`graph_socket_styles.json`](../../src/devstudio/resources/graph_socket_styles.json) へ名前を足すだけで絵が付きます。
+**このコードベースでの注意**: 登録されている semantic は 11 種です。値・音・イベントの 3 つ(`pelican.value.scalar@1` / `pelican.audio.voice@1` / `pelican.event.playback_control@1`)に加えて、`pelican.render` module が 6 つ(`storage_buffer@1` / `attribute@1` / `color_signal@1` / `depth@1` / `legacy_opaque_image@1` / `legacy_opaque_resource@1`、[`logicalrendertype.cpp`](../../src/project/logicalrendertype.cpp#L583) を [`graphmodule.cpp`](../../src/project/graphmodule.cpp#L337) が登録し、[`renderPorts()`](../../src/project/graphmodule.cpp#L55) 経由でポートに現れます)、pose module が 2 つ(`pelican.pose@1` / `pelican.rig@1`、[`posegraphmodule.cpp`](../../src/project/posegraphmodule.cpp#L74))です。`opaque` を持つのは姿勢とリグの 2 つで、ただし `pelican.rig@1` はポートには現れません(ノードの parameter として名前で指定します)。Studio 側は**型名にソケットの形を割り当てる表**を JSON で持っており、新しい型は C++ を書かずに [`graph_socket_styles.json`](../../src/devstudio/resources/graph_socket_styles.json) へ名前を足すだけで絵が付きます。
 
 ### 評価の分類(direct / replay / baked / recorded)と変更の費用(value / recompile / rebuild)
 

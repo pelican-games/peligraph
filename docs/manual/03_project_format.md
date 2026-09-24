@@ -111,9 +111,9 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
 | 事項 | 中身 |
 |---|---|
 | 語彙 | **ビルド機能ユニットのレジストリに載っている名前**です。`animation` は `PELICAN_WITH_ANIMATION` を指します([第2章 §2.2](02_getting_started.md))。今日の表は 1 行だけ([projectformat.cpp:80](../../src/project/projectformat.cpp#L80))で、`knownProjectRequirements()` がその一覧を返します |
-| 検証の時 | **parse 時**。[parseProjectRequirements()](../../src/project/projectformat.cpp#L112)が配列であること・非空文字列であること・表にある名前であることを見ます |
+| 検証の時 | **parse 時**。[parseProjectRequirements()](../../src/project/projectformat.cpp#L118)が配列であること・非空文字列であること・表にある名前であることを見ます |
 | 未知の名前 | `project.requires_unknown@1: project.json requires 'physics', which this engine does not know; known requirements: animation` —— **既知の一覧を添えて**拒否します |
-| 満たせないビルド | 名前は新設せず、そのユニットが既に使っている `animation.module_unavailable@1` を出します([projectformat.cpp:181](../../src/project/projectformat.cpp#L183))。`pelican_player` はこれを捕まえて 1 行表示して exit 1 します |
+| 満たせないビルド | 名前は新設せず、そのユニットが既に使っている `animation.module_unavailable@1` を出します([projectformat.cpp:181](../../src/project/projectformat.cpp#L189))。`pelican_player` はこれを捕まえて 1 行表示して exit 1 します |
 | コーパス側 | **プロジェクト群を舐めるテスト・スモークも同じ値を読みます**。満たせない要求を持つプロジェクトは失敗ではなく**名前付きの skip**(`skip posegraph_demo: requires animation (PELICAN_WITH_ANIMATION=OFF)`)になります。OFF build では宣言した 3 つ分の行と、必要なら `skip editor lane: …`、最後に件数の要約が出ます([第2章 §2.2](02_getting_started.md)) |
 | 出荷での宣言 | `animgraph_demo` / `vrm_xr_demo` / `posegraph_demo` の 3 つ |
 
@@ -366,7 +366,7 @@ example の README にあった手書き sha256 表の役目は、この manifes
 
 ## 3.10 コンポーネント宣言スキーマ v3 — `Flags` と `List` の wire(✅WP382a)
 
-§3.9 まではドキュメント全体の話でした。この節は **1 個のコンポーネントの中身**をどう書くかです。ここでの **v3 はスキーマ宣言機構の版番号**で、シーン JSON の `version`(pelican.scene v1)とは別物です([用語集](14_glossary.md))。従来の登録経路が運べたのは平坦なフィールド列だけで、`Flags` / `List` のように**入れ子の語彙を持つ型**を運べるようにしたのが v3 です。対象は**ゲームコード側が登録するコンポーネント**(と event payload / behavior params)で、エンジン組み込みの codec 表のコンポーネント(既定 7 件 + ray layout v2 のときだけ増える `pelican_ray_instance`。[componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1981))はこの節の対象外です(平坦なフィールド列のまま)。
+§3.9 まではドキュメント全体の話でした。この節は **1 個のコンポーネントの中身**をどう書くかです。ここでの **v3 はスキーマ宣言機構の版番号**で、シーン JSON の `version`(pelican.scene v1)とは別物です([用語集](14_glossary.md))。従来の登録経路が運べたのは平坦なフィールド列だけで、`Flags` / `List` のように**入れ子の語彙を持つ型**を運べるようにしたのが v3 です。対象は**ゲームコード側が登録するコンポーネント**(と event payload / behavior params)で、エンジン組み込みの codec 表のコンポーネント(既定 7 件 + ray layout v2 のときだけ増える `pelican_ray_instance`。[componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1982))はこの節の対象外です(平坦なフィールド列のまま)。
 
 登録側の `schema` に `Flags<E>` か `List<Row>` が 1 つでも含まれると、登録は自動的に **v3 の入口**へ切り替わります([registerer.hpp](../../src/core/userpublic/details/component/registerer.hpp#L188))。判定は `schemaRequiresV3()` のコンパイル時定数なので、含まないコンポーネントの wire は 1 バイトも変わりません。scene JSON からの入口は従来と同じ「コンポーネント JSON をそのまま渡す」経路です([`ComponentInfoManager::loadByJson()`](../../src/core/ecs/componentinfo.cpp#L189))。
 

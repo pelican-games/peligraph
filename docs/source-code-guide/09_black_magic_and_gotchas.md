@@ -375,7 +375,7 @@ ID 割当を engine-wide schema として管理する必要がある点は変わ
 cannot unregister component '<name>': dependent ECS system '<sys>' remains
 ```
 
-この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L2147))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
+この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L2150))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
 
 ### custom Component の現状
 
@@ -473,18 +473,18 @@ non-force system は matching chunk の component version と `last_run_tick` �
 
 ## 9.8 Camera、light、collider はすべて同じ ECS component ではない
 
-scene の `components` 配列に見えても runtime binding は一様ではありません。[`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L308) が分岐します。系統は **4 つ**になりました。
+scene の `components` 配列に見えても runtime binding は一様ではありません。[`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L290) が分岐します。系統は **4 つ**になりました。
 
 | scene name | runtime 経路 |
 |---|---|
 | `transform`, `simplemodelview`, `camera` | ComponentInfo 経由で ECS chunk へ作成 |
 | `light` | ECS へ入れず `LightLoadEntry` として `LightContainer::prepareLoad()` → `publishPrepared()`(scene load は 2 段を直接使い、`load()` は通らない) |
 | `collider` | ECS へ入れず `ColliderComponent` を parse し `PhysWorld::prepareSceneBindings()` → `publishPrepared()`。`PELICAN_WITH_PHYSICS` OFF の build では collider を含む scene は明示エラー([`throwBuildFeatureDisabled()`](../../src/core/loader/scene.cpp#L151)) |
-| `behavior` | ECS へ入れず [`prepareSceneBehaviorAttachments()`](../../src/core/gamelogic/behaviorarena.cpp#L82) 経由で `BehaviorAttachmentArena` へ([`component_name == "behavior"`](../../src/core/loader/scene.cpp#L385))。`type` は非空文字列必須。game DLL 未ロードなら **pending** 扱いで警告のみ |
+| `behavior` | ECS へ入れず [`prepareSceneBehaviorAttachments()`](../../src/core/gamelogic/behaviorarena.cpp#L82) 経由で `BehaviorAttachmentArena` へ([`component_name == "behavior"`](../../src/core/loader/scene.cpp#L367))。`type` は非空文字列必須。game DLL 未ロードなら **pending** 扱いで警告のみ |
 
 `ColliderComponent` に `init/deinit` があっても、現在の scene loader は special case です。`ECSCoreTemplatePublic::tryComponent<ColliderComponent>()` で取れる通常 ECS component だとは考えないでください。behavior も同様で、ECS の component として問い合わせても見つかりません。
 
-behavior は scene load executor(第 3 章 §3.5 の 3。WP380a)の participant の 1 つです。candidate は [`prepareSceneReconciliation()`](../../src/core/loader/scene.cpp#L1517) で作られ、publish 段で `noexcept` に swap され([`behavior_candidate->publish()`](../../src/core/loader/scene.cpp#L1523))、`onInit` は activate 段([`behavior_candidate->activate()`](../../src/core/loader/scene.cpp#L1525))で走ります。activate は executor で**唯一の失敗しうる段**で、投げると [`rollback` ラムダ](../../src/core/loader/scene.cpp#L1711) が renderer / ECS / camera / light / physics / behavior / event outbox / RNG / pending scene を**全部**旧世代へ戻し、結果は [`PreCommitFailure{phase = activate}`](../../src/core/loader/scene.cpp#L1763) です。document / projection / current scene / authority の commit([`metadata.commit()`](../../src/core/loader/scene.cpp#L625))はその後なので旧世代のままです。「behavior 型名を間違えると scene が半分だけロードされる」「document は新、runtime は旧」ということはありません(型名の誤りはそもそも prepare 段で落ちます)。旧経路の `clearRuntimeScene()` は `load()` から呼ばれません。
+behavior は scene load executor(第 3 章 §3.5 の 3。WP380a)の participant の 1 つです。candidate は [`prepareSceneReconciliation()`](../../src/core/loader/scene.cpp#L1499) で作られ、publish 段で `noexcept` に swap され([`behavior_candidate->publish()`](../../src/core/loader/scene.cpp#L1505))、`onInit` は activate 段([`behavior_candidate->activate()`](../../src/core/loader/scene.cpp#L1507))で走ります。activate は executor で**唯一の失敗しうる段**で、投げると [`rollback` ラムダ](../../src/core/loader/scene.cpp#L1693) が renderer / ECS / camera / light / physics / behavior / event outbox / RNG / pending scene を**全部**旧世代へ戻し、結果は [`PreCommitFailure{phase = activate}`](../../src/core/loader/scene.cpp#L1745) です。document / projection / current scene / authority の commit([`metadata.commit()`](../../src/core/loader/scene.cpp#L607))はその後なので旧世代のままです。「behavior 型名を間違えると scene が半分だけロードされる」「document は新、runtime は旧」ということはありません(型名の誤りはそもそも prepare 段で落ちます)。旧経路の `clearRuntimeScene()` は `load()` から呼ばれません。
 
 ### ライトのマジックネームは撤去された(WP142 / LIGHT0)
 
@@ -671,7 +671,7 @@ teardown の最終段は phase で分岐します。
 | RenderDoc capture | 🚧受動のみ(WP140)。**エンジンは RenderDoc をロードしない** | [`renderdoccapture.hpp`](../../src/core/renderdoc/renderdoccapture.hpp#L66) |
 | VRMA decode / retarget / AnimationSource | ✅実装済み(WP176 / 177 / 178) | [`vrmadecoder.hpp`](../../src/core/loader/vrmadecoder.hpp) / [`vrmaretarget.hpp`](../../src/core/animation/vrmaretarget.hpp) |
 | `.vrma` の root motion 抽出(容器側) | 📐設計スロットのみ。`VrmaRootMotionPolicy` は `preserve_hips_translation` の 1 値だけ。**ただし root motion 自体は v0 で出荷済み**で、容器ではなく共通グラフ側の `pose.clip_sample{root_motion: "extract"}` が担います(AG-2)。抽出・pin・オブジェクトへの加算は §9.24 の難所「unwrapped time から作る root delta」 | [`VrmaRootMotionPolicy`](../../src/core/animation/vrmaretarget.hpp#L21) / [`poseClipSampleExtractsRootMotion()`](../../src/project/posegraphmodule.hpp#L45) / [`extractRootMotion()`](../../src/core/animation/posegraphruntime.cpp#L322) |
-| authoring 側のオブジェクト宣言 identity | ✅実装済み(WP360)。raw viewとstageは [`AuthoringSceneAuthority`](../../src/core/loader/authoringsceneauthority.hpp#L35) に隔離し、runtime読者はidentityを保存した単一の [`ResolvedScene`](../../src/core/loader/resolvedscene.hpp#L244) を読む | [`SceneProjectionState`](../../src/core/loader/resolvedscene.hpp#L302) |
+| authoring 側のオブジェクト宣言 identity | ✅実装済み(WP360)。raw viewとstageは [`AuthoringSceneAuthority`](../../src/core/loader/authoringsceneauthority.hpp#L35) に隔離し、runtime読者はidentityを保存した単一の [`ResolvedScene`](../../src/core/loader/resolvedscene.hpp#L267) を読む | [`SceneProjectionState`](../../src/core/loader/resolvedscene.hpp#L325) |
 
 optional build feature には stub 実装もあります。たとえば SeqPlayer/VAT/RPC/audio/physics/renderdoc は build option により実装または disabled behavior が選ばれます。header が同じでも build artifact の能力は [`build_features.hpp`](../../src/core/build_features.hpp#L1) と各 `*_stub.cpp` を確認してください。
 
@@ -801,7 +801,7 @@ WP144〜WP172 で、変更のプロトコルがコードベース全体で統一
 
 > **設計決定:** 新しい adapter を足すときは **prepare / rollback / publish の三点セットを必ず作ってください**。「途中まで適用された状態」を許す実装を1つ混ぜるだけで、その adapter だけでなく、**同じ `commit()` が束ねる transaction 全体**(= 編集・reload・scene 遷移が共有するこのプロトコル)の原子性が崩れます。他の adapter が正しく rollback できても、その 1 つが戻らなければ transaction は半端な状態で終わるからです。
 
-`load_gltf` の単一公開点がわかりやすい実例です([`instances.publishModelInstance()`](../../src/core/loader/scene.cpp#L2131))。
+`load_gltf` の単一公開点がわかりやすい実例です([`instances.publishModelInstance()`](../../src/core/loader/scene.cpp#L2113))。
 
 ```cpp
 // No operation below allocates: this is the single publication point for
@@ -988,8 +988,8 @@ skip が緑を汚さない以上、`ctest` の exit code だけでは検出で�
 
 | 行 | 理由 |
 |---|---|
-| [`phase_trace.record(SceneLoadPhase::flush)`](../../src/core/loader/scene.cpp#L1774) | 直後の `pending_scene_id.swap()` は participant 型を持たない |
-| [`phase_trace.record(SceneLoadPhase::finish)`](../../src/core/loader/scene.cpp#L1781) | **退役 batch 自体が 1 人の participant**。entity 0 件の scene でも `finish` を観測できるようにする |
+| [`phase_trace.record(SceneLoadPhase::flush)`](../../src/core/loader/scene.cpp#L1756) | 直後の `pending_scene_id.swap()` は participant 型を持たない |
+| [`phase_trace.record(SceneLoadPhase::finish)`](../../src/core/loader/scene.cpp#L1763) | **退役 batch 自体が 1 人の participant**。entity 0 件の scene でも `finish` を観測できるようにする |
 
 逆向きの例も1つあります。[`PreparedEffectTransaction::flush()`](../../src/core/loader/effecttransaction.cpp#L492) は `phase_trace` を受け取りながら `(void)phase_trace;` で**使いません**。コメントが理由を書いています — `flush` の印は `EventOutbox` が1つだけ持つ、という取り決めです。「引数にあるのだから記録すべきだ」と足すと、`record()` の重複抑止に助けられて症状は出ないまま、印の所有者が2人になります。
 
@@ -1001,15 +1001,15 @@ skip が緑を汚さない以上、`ctest` の exit code だけでは検出で�
 
 ### effect sink の有効範囲は「early publish の前から flush まで」
 
-scene load 中に game DLL のコールバック(component の JSON loader を含む)が `playSound()` や `saveData()` を呼ぶと、それは即時実行ではなく [`PreparedEffectTransaction`](../../src/core/loader/effecttransaction.hpp#L27) に溜まります。scope を張る位置が要点で、[`EffectTransactionScope`](../../src/core/loader/scene.cpp#L1733) は **early publish より前**、prepare が終わった直後に張られます。コメントが規範です — 「early publication が呼ぶ component JSON loader を含め、**すべての game-DLL コールバックが同じ transaction-local な effect を観測**しなければならない」。
+scene load 中に game DLL のコールバック(component の JSON loader を含む)が `playSound()` や `saveData()` を呼ぶと、それは即時実行ではなく [`PreparedEffectTransaction`](../../src/core/loader/effecttransaction.hpp#L27) に溜まります。scope を張る位置が要点で、[`EffectTransactionScope`](../../src/core/loader/scene.cpp#L1715) は **early publish より前**、prepare が終わった直後に張られます。コメントが規範です — 「early publication が呼ぶ component JSON loader を含め、**すべての game-DLL コールバックが同じ transaction-local な effect を観測**しなければならない」。
 
-したがって「publish の直前で張れば十分」という縮め方は誤りです。prepare 中の loader が本物の audio / persistence を直接叩き、rollback しても戻らない副作用が残ります。逆側の端は [`effect_transaction->flush(...)`](../../src/core/loader/scene.cpp#L1621) で、commit 後の noexcept tail の中にあります。
+したがって「publish の直前で張れば十分」という縮め方は誤りです。prepare 中の loader が本物の audio / persistence を直接叩き、rollback しても戻らない副作用が残ります。逆側の端は [`effect_transaction->flush(...)`](../../src/core/loader/scene.cpp#L1603) で、commit 後の noexcept tail の中にあります。
 
 ### `noexcept` の commit tail の中で文字列や JSON を作らない
 
-metadata の commit 以降は「失敗しない尾部」です。executor はその区間の全操作が `noexcept` であることを [`static_assert` の列](../../src/core/loader/scene.cpp#L623)で固定しています。ここで `std::string` を組んだり `nlohmann::json` を作ったりすると、`bad_alloc` が `noexcept` 関数から伝播して `std::terminate` になります。
+metadata の commit 以降は「失敗しない尾部」です。executor はその区間の全操作が `noexcept` であることを [`static_assert` の列](../../src/core/loader/scene.cpp#L605)で固定しています。ここで `std::string` を組んだり `nlohmann::json` を作ったりすると、`bad_alloc` が `noexcept` 関数から伝播して `std::terminate` になります。
 
-実装はその制約を明示しています。effect のエラーは固定長 record([`FixedText<512>` / `FixedText<384>`](../../src/core/loader/effecttransaction.hpp#L102))に詰めておき、**公開用の文字列と JSON は tail を抜けてから**作ります([`effectErrors()` の呼び出し](../../src/core/loader/scene.cpp#L1789) の直前のコメントが「deliberately materialized only after the noexcept commit tail」)。同じ理由で `SceneLoadPhaseTrace` も固定長です。
+実装はその制約を明示しています。effect のエラーは固定長 record([`FixedText<512>` / `FixedText<384>`](../../src/core/loader/effecttransaction.hpp#L102))に詰めておき、**公開用の文字列と JSON は tail を抜けてから**作ります([`effectErrors()` の呼び出し](../../src/core/loader/scene.cpp#L1771) の直前のコメントが「deliberately materialized only after the noexcept commit tail」)。同じ理由で `SceneLoadPhaseTrace` も固定長です。
 
 ### `createObject()` は基底の `GameContext` から呼んでも defer される
 
@@ -1055,7 +1055,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: 失敗しうる作業(確保・検証・容量チェック・id 採番)を prepare に全部集め、publish を `noexcept` の swap 列にして「公開後は失敗しない」を型で固定し、finish は「もう巻き戻さない」と決まってから初めて破棄・`deinit` を行う。
 
-**どこに出るか**: loader は [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1627) が prepare → early_publish → publish → activate → commit_metadata の 5 段。ECS は [`ECSArchetypeMigrationAdapter`](../../src/core/ecs/archetypemigration.hpp#L45) のヘッダコメントが「Publication must not fail」を宣言し、**公開済みの実体**に `cb_deinit` を呼ぶのは [`finishPublished()`](../../src/core/ecs/archetypemigration.cpp#L352) とその逆手順の [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229) だけ(未公開の候補側は `discardPrepared()` / `deinitializeStaged()` / `rollbackCreate()` が担当する)。描画は [`stagePreparedSceneModel()`](../../src/core/renderer/polygoninstancecontainer.cpp#L623) が容量検査と確保、物理は [`PhysWorld::prepareBindings()`](../../src/core/phys/physworld.cpp#L286)、behavior は [`PreparedBehaviorAttachmentEdits::publish()`](../../src/core/gamelogic/behaviorarena.cpp#L459)、アセットは [`model.cpp` の validate/stage](../../src/core/asset/model.cpp#L657)。
+**どこに出るか**: loader は [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1609) が prepare → early_publish → publish → activate → commit_metadata の 5 段。ECS は [`ECSArchetypeMigrationAdapter`](../../src/core/ecs/archetypemigration.hpp#L45) のヘッダコメントが「Publication must not fail」を宣言し、**公開済みの実体**に `cb_deinit` を呼ぶのは [`finishPublished()`](../../src/core/ecs/archetypemigration.cpp#L352) とその逆手順の [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229) だけ(未公開の候補側は `discardPrepared()` / `deinitializeStaged()` / `rollbackCreate()` が担当する)。描画は [`stagePreparedSceneModel()`](../../src/core/renderer/polygoninstancecontainer.cpp#L623) が容量検査と確保、物理は [`PhysWorld::prepareBindings()`](../../src/core/phys/physworld.cpp#L286)、behavior は [`PreparedBehaviorAttachmentEdits::publish()`](../../src/core/gamelogic/behaviorarena.cpp#L459)、アセットは [`model.cpp` の validate/stage](../../src/core/asset/model.cpp#L657)。
 
 **読むときの手順**: まず `publish` の宣言に `noexcept` が付いているかを見て、付いていれば「この関数より前に全ての失敗が済んでいる」と読み替えます。次に、その関数が触るメンバが *candidate* 側か *live* 側かを 1 つずつ確かめてください。
 
@@ -1063,7 +1063,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: 「戻せないのに失敗しうる」状態を作らないため、コミット点以降に呼ぶ全関数が throw しないことを **20 個の `static_assert(noexcept(...))`** でコンパイル時に固定する。「確保もしない」の側は static_assert では固定できないので、報告構造を固定長にすることで担保する。
 
-**どこに出るか**: [`scene.cpp` の static_assert 群](../../src/core/loader/scene.cpp#L1064) が publish/finish/retire/flush を固定し、不可逆点は [`metadata.commit()`](../../src/core/loader/scene.cpp#L625) の単一 metadata swap 1 点。公開用の文字列と JSON は [tail を抜けてから materialize](../../src/core/loader/scene.cpp#L1787) します。ECS 側の同じ宣言は [archetypemigration.hpp のヘッダコメント](../../src/core/ecs/archetypemigration.hpp#L44)、`noexcept` の中で確保しないための固定長報告は [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36)、同じ理由の固定長診断が [`PreparedEffectTransaction::errors_`](../../src/core/loader/effecttransaction.hpp#L125)。
+**どこに出るか**: [`scene.cpp` の static_assert 群](../../src/core/loader/scene.cpp#L1054) が publish/finish/retire/flush を固定し、不可逆点は [`metadata.commit()`](../../src/core/loader/scene.cpp#L607) の単一 metadata swap 1 点。公開用の文字列と JSON は [tail を抜けてから materialize](../../src/core/loader/scene.cpp#L1769) します。ECS 側の同じ宣言は [archetypemigration.hpp のヘッダコメント](../../src/core/ecs/archetypemigration.hpp#L44)、`noexcept` の中で確保しないための固定長報告は [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36)、同じ理由の固定長診断が [`PreparedEffectTransaction::errors_`](../../src/core/loader/effecttransaction.hpp#L125)。
 
 **読むときの手順**: `PreCommitFailure` が取りうる phase 値の集合を先に見てください。prepare / early_publish / activate の 3 つしかないこと自体が、「それ以降は失敗しない」の裏返しです(→ §9.21 の「`noexcept` の commit tail の中で文字列や JSON を作らない」)。
 
@@ -1071,7 +1071,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: 後に触ったものから先に戻す。既に live へ公開したものを逆トークン/逆 swap で旧世代へ戻すのが *cleanup*、一度も公開していない候補をスコープ終了で捨てるだけなのが *discard* で、後者は「何もしない」のが正しい rollback。
 
-**どこに出るか**: [`scene.cpp` の rollback ラムダ](../../src/core/loader/scene.cpp#L1711) は [`rollback_order` の表](../../src/core/loader/scene.cpp#L1701) をそのまま回すだけで、順は behavior → physics → light → camera → VatPlayer → SeqPlayer → loader state → renderer → procedural → ECS 退役(destroyed の inverse token を `rbegin` から) → ECS(created を `rbegin` から) → event outbox → RNG → pending scene。ECS は [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229)、behavior arena は [`activate()`](../../src/core/gamelogic/behaviorarena.cpp#L605) の失敗時に `activated` を逆順に破棄、シェーダは [`discard_new_layouts` ラムダ](../../src/core/shader/pipelinefactory.cpp#L1914) が「今回追加した分だけ」を消し、journal は [子孫を declaration_index 降順に並べてから削除](../../src/core/communication/editorjournalops.cpp#L1133)。
+**どこに出るか**: [`scene.cpp` の rollback ラムダ](../../src/core/loader/scene.cpp#L1693) は [`rollback_order` の表](../../src/core/loader/scene.cpp#L1683) をそのまま回すだけで、順は behavior → physics → light → camera → VatPlayer → SeqPlayer → loader state → renderer → procedural → ECS 退役(destroyed の inverse token を `rbegin` から) → ECS(created を `rbegin` から) → event outbox → RNG → pending scene。ECS は [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229)、behavior arena は [`activate()`](../../src/core/gamelogic/behaviorarena.cpp#L605) の失敗時に `activated` を逆順に破棄、シェーダは [`discard_new_layouts` ラムダ](../../src/core/shader/pipelinefactory.cpp#L1914) が「今回追加した分だけ」を消し、journal は [子孫を declaration_index 降順に並べてから削除](../../src/core/communication/editorjournalops.cpp#L1133)。
 
 **読むときの手順**: rollback の本体を読む前に「この参加者は公開済みか」を判定してください。event outbox / rng / pending scene のように**何もしないのが正しい**参加者を「巻き戻し漏れ」と誤読するのが最も多い間違いです。
 
@@ -1087,7 +1087,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: (a) 内容の同一性を決める canonical key、(b) それを固定長にした digest、(c) 実行時の生存を証明する handle / lease。片方だけでは「内容は同じだが実体が死んでいる」と「実体は生きているが内容が変わった」を区別できない。
 
-**どこに出るか**: RT の行は [3 つの identity を同時に組み立て](../../src/core/renderer/accelerationstructure.cpp#L674)、マテリアル表は [`source_by_handle` と `source_by_key` の 2 名前空間](../../src/core/shader/raygrouplayout.cpp#L1865)を両方照合し、マテリアル側は [`ray_generation` と `ray_lease` の生成](../../src/core/material/materialcontainer.cpp#L803) の対で答えます。resolver は [`resolverInputsFingerprint()`](../../src/core/loader/resolvedscene.cpp#L728)、editor journal は [`attachment_handle` / `attachment_seq` / `attachment_identity`](../../src/core/communication/editorjournalops.cpp#L350) の 3 本立て。
+**どこに出るか**: RT の行は [3 つの identity を同時に組み立て](../../src/core/renderer/accelerationstructure.cpp#L674)、マテリアル表は [`source_by_handle` と `source_by_key` の 2 名前空間](../../src/core/shader/raygrouplayout.cpp#L1865)を両方照合し、マテリアル側は [`ray_generation` と `ray_lease` の生成](../../src/core/material/materialcontainer.cpp#L803) の対で答えます。resolver は [`resolverInputsFingerprint()`](../../src/core/loader/resolvedscene.cpp#L756)、editor journal は [`attachment_handle` / `attachment_seq` / `attachment_identity`](../../src/core/communication/editorjournalops.cpp#L350) の 3 本立て。
 
 **読むときの手順**: 「どちらが欠けたときにどのエラーコードになるか」を先に引いてください。三層のどれを検査しているかは、エラー名(`*_stale` / `*_ambiguous` / `*_mismatch`)がほぼそのまま表しています。
 
@@ -1107,11 +1107,11 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 ### 9.23.1 loader / scene transaction
 
-#### [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1627) — 5 段の責務と、どこから不可逆か
+#### [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1609) — 5 段の責務と、どこから不可逆か
 
 **分からなくなること**: prepare / early_publish / publish / activate / commit_metadata のどこを越えると引き返せなくなるのか。
 
-**答え**: prepare は live に触れず candidate だけを作ります(authority 消費・metadata token・resolved 検証・各サブシステムの候補・retirement queue の容量予約)。early_publish は ECS entity 生成 / component 適用 / 親子 transform 投影 / 旧 entity の unpublish で、逆トークンで戻せます。publish は `noexcept` swap の列、activate は `behavior_candidate->activate()` の 1 行で「全 participant が候補に切り替わった後に失敗しうる」唯一の段です。**不可逆点は [`metadata.commit()`](../../src/core/loader/scene.cpp#L625) の単一 metadata swap** で、コメントが "The commit point is exactly one metadata swap" と明記しています。
+**答え**: prepare は live に触れず candidate だけを作ります(authority 消費・metadata token・resolved 検証・各サブシステムの候補・retirement queue の容量予約)。early_publish は ECS entity 生成 / component 適用 / 親子 transform 投影 / 旧 entity の unpublish で、逆トークンで戻せます。publish は `noexcept` swap の列、activate は `behavior_candidate->activate()` の 1 行で「全 participant が候補に切り替わった後に失敗しうる」唯一の段です。**不可逆点は [`metadata.commit()`](../../src/core/loader/scene.cpp#L607) の単一 metadata swap** で、コメントが "The commit point is exactly one metadata swap" と明記しています。
 
 **台帳**: manifest 側の語彙は WP375(inverse token)/ WP380(mutation id の同居)。
 
@@ -1125,7 +1125,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: なぜ 3 値なのか、なぜ既に検証済みのはずの循環をもう一度見るのか。
 
-**答え**: 白灰黒 DFS です。done は再計算を省くメモ化で、active への再入が循環。active と done を分けないと「親を共有する複数の子」を循環と誤報します。歩く機構は `resolveParentOrder()` 1 つで、scene load([scene.cpp の呼び出し](../../src/core/loader/scene.cpp#L1340))・編集 transaction・preview が同じ template を使い、**誰を起点にするか(participant filter)と、循環 / 不在親で何を投げるかだけが呼び手ごと**です。scene load では循環・未知親・曖昧親が parse 段で既に弾かれているので、ここでの active への再入は内部不整合として `logic_error` です(投影は early_publish 内、entity 生成・親リンク後・behavior の `onInit` より前)。parse 段側の DFS は[第3章「3値のDFSが名前を出す」](03_project_and_loading.md)が本体です。
+**答え**: 白灰黒 DFS です。done は再計算を省くメモ化で、active への再入が循環。active と done を分けないと「親を共有する複数の子」を循環と誤報します。歩く機構は `resolveParentOrder()` 1 つで、scene load([scene.cpp の呼び出し](../../src/core/loader/scene.cpp#L1322))・編集 transaction・preview が同じ template を使い、**誰を起点にするか(participant filter)と、循環 / 不在親で何を投げるかだけが呼び手ごと**です。scene load では循環・未知親・曖昧親が parse 段で既に弾かれているので、ここでの active への再入は内部不整合として `logic_error` です(投影は early_publish 内、entity 生成・親リンク後・behavior の `onInit` より前)。parse 段側の DFS は[第3章「3値のDFSが名前を出す」](03_project_and_loading.md)が本体です。
 
 #### [`ProjectBasicConfig::saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L919) — 複数の注入点と baseline 再検証
 
@@ -1147,20 +1147,20 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
-| [`rollback` ラムダ](../../src/core/loader/scene.cpp#L1711) | 失敗時の巻き戻し | 順序の原則と、何もしない参加者 | → §9.22「rollback は公開の逆順」 |
-| [static_assert 群](../../src/core/loader/scene.cpp#L1064) | commit tail の `noexcept` 固定 | 20 個の表明が何を守るか | → §9.22「`noexcept` なコミットテール」 |
-| [`PendingSceneTransactionScope`](../../src/core/loader/scene.cpp#L228) | thread_local + RAII の ambient context | なぜ引数で渡さないのか | early publication が呼ぶ**全 game-DLL callback**に同じ transaction-local な effect を観測させるため。`requestLoad()` は `active_pending_scene_transaction->loader == this` を見て live ではなく candidate へ書く |
-| [run_nonce の初期化](../../src/core/loader/scene.cpp#L183) | `ticks ^ pointer`、0 を回避 | なぜ 0 を避けるのか | 0 は既定構築の `SceneAuthority{}`(= まだ何も commit していない)に予約されている |
+| [`rollback` ラムダ](../../src/core/loader/scene.cpp#L1693) | 失敗時の巻き戻し | 順序の原則と、何もしない参加者 | → §9.22「rollback は公開の逆順」 |
+| [static_assert 群](../../src/core/loader/scene.cpp#L1054) | commit tail の `noexcept` 固定 | 20 個の表明が何を守るか | → §9.22「`noexcept` なコミットテール」 |
+| [`PendingSceneTransactionScope`](../../src/core/loader/scene.cpp#L210) | thread_local + RAII の ambient context | なぜ引数で渡さないのか | early publication が呼ぶ**全 game-DLL callback**に同じ transaction-local な effect を観測させるため。`requestLoad()` は `active_pending_scene_transaction->loader == this` を見て live ではなく candidate へ書く |
+| [run_nonce の初期化](../../src/core/loader/scene.cpp#L165) | `ticks ^ pointer`、0 を回避 | なぜ 0 を避けるのか | 0 は既定構築の `SceneAuthority{}`(= まだ何も commit していない)に予約されている |
 | [`stagePreparedSceneModel()`](../../src/core/renderer/polygoninstancecontainer.cpp#L623) と publish の分離 | 容量検査 + 確保 / 挿入 | なぜ 2 つに割るのか | stage が `ModelInstanceId` を返す失敗しうる側で、loader は公開前にその id を `SimpleModelViewComponent` へ書く必要があるから |
 | [`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L223) の Borrowed / Owned | 入口ごとの所有形 | 2 形態がある理由 | Borrowed は commit 済み projection の読み直し(metadata は複製されるだけ)、Owned は import root で未公開の候補を token ごと所有し、失敗時は token を捨てるだけ |
 | [`MetadataCommitToken`](../../src/core/loader/sceneload.hpp#L196) | opaque pointer | なぜ中身を隠すのか | 呼び手が「document だけ」「projection だけ」を公開できないようにするため。唯一の commit は `SceneMetadataState` 全体の swap |
-| [transform → localtransform 自動挿入](../../src/core/loader/scene.cpp#L398) | 親子を持つ object への補完 | なぜ codec が component を足すのか | authored なのは local TRS、runtime の読み手は world の `TransformComponent`、codec が `LocalTransformComponent` を自動で足すのは親子を持つ object だけ — この食い違いを埋める唯一の経路 |
+| [transform → localtransform 自動挿入](../../src/core/loader/scene.cpp#L380) | 親子を持つ object への補完 | なぜ codec が component を足すのか | authored なのは local TRS、runtime の読み手は world の `TransformComponent`、codec が `LocalTransformComponent` を自動で足すのは親子を持つ object だけ — この食い違いを埋める唯一の経路 |
 | [`sceneLoadMutationEnabled()`](../../src/core/loader/sceneloadfault.cpp#L33) | SceneLoadRoot の 6 値 | 分類の意味 | 本番の入口は startup / rpc / pending / import_unversioned / import_versioned の **5 種**で、manifest の `role = production_root` 行(5 行)と 1:1。enum 先頭の `unspecified` だけは manifest 行も mutation id も持たない |
-| [`create_object` ラムダ](../../src/core/loader/scene.cpp#L1235) | prepareCreate → publish → finish | 三段の不変式 | → §9.22「三段トランザクション」/ [第4章「生成transactionの三段構え」](04_ecs_deep_dive.md) |
-| [`markComponentChanged`](../../src/core/loader/scene.cpp#L1322) | 親を書いた直後の版上げ | なぜ手動で呼ぶのか | `tryComponent<T>()` は生ポインタを返すだけで版を上げない(版を上げるのは [`setComponent()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L373) 側)。`local->parent` を直接書いた経路では手動で上げないと change detection が親リンクの変化を見落とす |
-| [`loadColliderComponent()`](../../src/core/loader/scene.cpp#L288) | `runtime_codec` の null 検査 | なぜ `logic_error` なのか | resolver が具体 component に codec を必ず付ける契約なので、null は authoring の誤りではなく内部不整合。同関数の `ResolutionFailureException` 経路(= 作者の誤り)と行き先を分けている |
-| [`loadTransientGltf()`](../../src/core/loader/scene.cpp#L2043) | 二重予約と `owns_resources` | なぜ 2 回予約するのか | ハッシュノードとバケット成長を**パース・GPU staging より前**に確保し(コメントが明言)、entity 生成後の公開が確保できない = transaction を割れないようにする。容量拒否は副作用の無い [`inspect()`(WP110)](../../src/core/loader/scene.cpp#L2082) + `preflightModelInstance` で先に行う |
-| [`displayObjectName()`](../../src/core/loader/scene.cpp#L278) | 診断用の表示名 | 常に `<unnamed>` に見える | 空のときだけ `<unnamed>` を返す 1 行。identity ではなく**表示**なので、同一性の判定に使わない |
+| [`create_object` ラムダ](../../src/core/loader/scene.cpp#L1217) | prepareCreate → publish → finish | 三段の不変式 | → §9.22「三段トランザクション」/ [第4章「生成transactionの三段構え」](04_ecs_deep_dive.md) |
+| [`markComponentChanged`](../../src/core/loader/scene.cpp#L1304) | 親を書いた直後の版上げ | なぜ手動で呼ぶのか | `tryComponent<T>()` は生ポインタを返すだけで版を上げない(版を上げるのは [`setComponent()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L373) 側)。`local->parent` を直接書いた経路では手動で上げないと change detection が親リンクの変化を見落とす |
+| [`loadColliderComponent()`](../../src/core/loader/scene.cpp#L270) | `runtime_codec` の null 検査 | なぜ `logic_error` なのか | resolver が具体 component に codec を必ず付ける契約なので、null は authoring の誤りではなく内部不整合。同関数の `ResolutionFailureException` 経路(= 作者の誤り)と行き先を分けている |
+| [`loadTransientGltf()`](../../src/core/loader/scene.cpp#L2025) | 二重予約と `owns_resources` | なぜ 2 回予約するのか | ハッシュノードとバケット成長を**パース・GPU staging より前**に確保し(コメントが明言)、entity 生成後の公開が確保できない = transaction を割れないようにする。容量拒否は副作用の無い [`inspect()`(WP110)](../../src/core/loader/scene.cpp#L2064) + `preflightModelInstance` で先に行う |
+| [`displayObjectName()`](../../src/core/loader/scene.cpp#L260) | 診断用の表示名 | 常に `<unnamed>` に見える | 空のときだけ `<unnamed>` を返す 1 行。identity ではなく**表示**なので、同一性の判定に使わない |
 | [`scenePersistenceBaseline()`](../../src/core/loader/basicconfig.cpp#L380) | prefab closure と read-set | baseline が何の複合か | scene ファイルの digest + resolve が実際に読んだ prefab 集合(name/path/digest)。registry に無い prefab が closure にあれば `logic_error` |
 | [`SceneMetadataState`](../../src/core/loader/basicconfig.hpp#L106) | 3 本の番号の役割分担 | revision / generation / object_id の違い | revision = authoring document の改訂、resolver generation = 解決結果の世代(読み手のキャッシュ無効化)、next_authoring_object_id = 宣言 ID の払い出し高水位(scene をまたいで再利用しない) |
 | [`temporaryScenePath()`](../../src/core/loader/basicconfig.cpp#L447) | atomic カウンタ + nonce | 2 系統ある理由 | atomic は同一プロセス内の連続 save、steady_clock nonce は別プロセス・再起動・前回の残骸 tmp。保存先と同じ親ディレクトリに置くので `EXDEV` を踏まない |
@@ -1171,35 +1171,35 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 ### 9.23.2 resolver / componentcodec / prefab
 
-#### [`validateOriginTransitionMap()`](../../src/core/loader/resolvedscene.cpp#L465) — gid / component_key / authored_index の三者
+#### [`validateOriginTransitionMap()`](../../src/core/loader/resolvedscene.cpp#L493) — gid / component_key / authored_index の三者
 
 **分からなくなること**: 3 つの識別子が何を結び、この検査が何を守っているのか。
 
-**答え**: `component_key` は prefab 側のスロット名、`gid = prefabGeneratedId(instance_id, component_key)` はシーン内で一意な生成物 ID、`final_authored_index` は unpack 後に authored 配列のどこへ着地したかです。三つ組は「prefab 展開済み snapshot → authored snapshot」の遷移が**損失なく可逆な改名**であることを守ります。[`buildOriginTransitionMap()`](../../src/core/loader/resolvedscene.cpp#L598) が作り、[`invertOriginTransitionMap()`](../../src/core/loader/resolvedscene.cpp#L656) が反転させます。**この表は editor journal(§9.23.9)と behavior arena(§9.23.16)でも同じものが使われます。**
+**答え**: `component_key` は prefab 側のスロット名、`gid = prefabGeneratedId(instance_id, component_key)` はシーン内で一意な生成物 ID、`final_authored_index` は unpack 後に authored 配列のどこへ着地したかです。三つ組は「prefab 展開済み snapshot → authored snapshot」の遷移が**損失なく可逆な改名**であることを守ります。[`buildOriginTransitionMap()`](../../src/core/loader/resolvedscene.cpp#L626) が作り、[`invertOriginTransitionMap()`](../../src/core/loader/resolvedscene.cpp#L684) が反転させます。**この表は editor journal(§9.23.9)と behavior arena(§9.23.16)でも同じものが使われます。**
 
 **台帳**: 生成 ID のバイト定義は [prefab.hpp のコメント](../../src/project/prefab.hpp#L224)どおり WP361 v4。
 
-#### [`ComponentCodec::completeDefaults()` の camera 補完](../../src/core/loader/componentcodec.cpp#L2172) — aspect を継承しない
+#### [`ComponentCodec::completeDefaults()` の camera 補完](../../src/core/loader/componentcodec.cpp#L2174) — aspect を継承しない
 
 **分からなくなること**: 省略されたフィールドが「既定から継承される」ものと「クリアされる」ものに分かれる基準。
 
-**答え**: camera の既定補完は `resolveComponent()` の中の分岐ではなくなりました。resolver は codec へ[一行で委譲する](../../src/core/loader/resolvedscene.cpp#L274)だけで、規則は [`completeCameraDefaults()`](../../src/core/loader/componentcodec.cpp#L1084) にあります。その中の[コメント](../../src/core/loader/componentcodec.cpp#L1120)が "aspect is intentionally not inherited when it is omitted" と書いているとおり、**aspect はビューポート由来の値**なので、**projection を明示したうえで** aspect を省略したときは継承せずクリアします(`projection` 自体を書かなければ既定の投影を丸ごと継承するので、そのときは aspect にも既定値が入ります)。perspective は yfov、orthographic は xmag/ymag が必須で、既定の projection kind が同種のときだけ既定値へフォールバックできます(異種なら `camera.*_required_for_*` 違反)。znear/zfar は両方で継承、ortho では aspect を reset します。
+**答え**: camera の既定補完は `resolveComponent()` の中の分岐ではなくなりました。resolver は codec へ[一行で委譲する](../../src/core/loader/resolvedscene.cpp#L302)だけで、規則は [`completeCameraDefaults()`](../../src/core/loader/componentcodec.cpp#L1085) にあります。その中の[コメント](../../src/core/loader/componentcodec.cpp#L1121)が "aspect is intentionally not inherited when it is omitted" と書いているとおり、**aspect はビューポート由来の値**なので、**projection を明示したうえで** aspect を省略したときは継承せずクリアします(`projection` 自体を書かなければ既定の投影を丸ごと継承するので、そのときは aspect にも既定値が入ります)。perspective は yfov、orthographic は xmag/ymag が必須で、既定の projection kind が同種のときだけ既定値へフォールバックできます(異種なら `camera.*_required_for_*` 違反)。znear/zfar は両方で継承、ortho では aspect を reset します。
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
-| [4 集合の照合](../../src/core/loader/resolvedscene.cpp#L616) | 全単射の検査 | なぜ 4 つも要るのか | `expected_*` は 2 つの snapshot から導いた真値、`actual_*` は map entries 側の実測。挿入の一意性 + 集合の完全一致で全単射を証明し、取りこぼし・重複・区間外 index へのエイリアスを排除する(これが `invertOriginTransitionMap` の健全性の前提) |
-| [`resolverInputsFingerprint()`](../../src/core/loader/resolvedscene.cpp#L728) | resolver 入力の SHA256 | 何のための指紋か | camera 既定投影 + sprite 既定の正準 SHA256 を closure に載せ、[期待値比較](../../src/core/communication/editorcommandservice.cpp#L405)で不一致なら stale として再解決を強制する |
-| [`resolveComponent()`](../../src/core/loader/resolvedscene.cpp#L183) | origin タグと遷移規則 | authoring / generated / prefab の別 | origin は型で保持され(generated は gid・prefab・instance_id・component_key・digest を持つ)、非 generated 経路に生成マーカーが混入したら拒否する |
-| [behavior の canonicalize_params 呼び出し](../../src/core/loader/resolvedscene.cpp#L227) | behavior だけ別経路 | なぜコア codec を通さないのか | behavior はコア codec を持たず、**登録済み behavior の schema が受理の正**だから。[211 行のコメント](../../src/core/loader/resolvedscene.cpp#L227)どおり pre-WP360 の親 RPC 表現を再現するため、正準化結果を `source_json_exact["params"]` へ書き戻す |
-| [`ResolvedSceneResolver::resolve()`](../../src/core/loader/resolvedscene.cpp#L751) | 4 フェーズ | 相の前提と依存 | 1a は codec を見ずに instance 検証、1b は provider 検証後に具体 JSON へ置換、2 は authored-first / generated-second で materialize し transform 個数・重複名・gid 一意性を**デコード前に**強制、3 でオブジェクト同一性を凍結、4 で宣言順に canonicalize。「構成規則の違反は runtime decode より前に落とす」ため 2 が 4 に先行する |
-| [`name != "behavior"` の重複検査](../../src/core/loader/resolvedscene.cpp#L886) | 重複 component の拒否 | behavior だけ通る理由 | behavior は 1 オブジェクトに複数付けられる唯一の種別(`type` で区別)。gid 一意性は behavior にも等しく適用される。なおこの重複検査が走るのは **prefab instance の merged component 集合に対してだけ**で、素の object の重複はこの経路では見ていない |
-| [`requireNonZeroQuat()`](../../src/core/loader/componentcodec.cpp#L406) | 四元数の検査 | なぜ正規化しないのか | 弾くのは長さゼロの退化四元数だけで(`OutOfRange` "must be a non-zero quaternion")、値には触れない。宣言 schema は成分ごとの range しか持てないので、値全体の規則であるこの検査だけが手書きで残る。正規化しない理由は関数のコメントに書かれた: decode → `encodeCanonical` のバイト厳密な往復を守るためで、正規化するのは world への合成側([`composeWorldTransform()`](../../src/core/loader/componentcodec.cpp#L2251)) |
-| [`projectTransform()`](../../src/core/loader/componentcodec.cpp#L649) | 親からの逆変換 | 順序と epsilon の意味 | `applyTransform` の合成を厳密に逆順で解く(親並進を引く → 親回転の逆 → 親スケールで割る)。epsilon は親スケールの軸が 0 近傍のとき inf/NaN を静かに作らず `transform.parent.scale` の OutOfRange として名指しで落とすため |
-| [camera.controller の二重指定](../../src/core/loader/componentcodec.cpp#L988) | nested と非 nested | どちらが優先か | **優先順位は存在しません**。両方あれば `UnknownField` で拒否するので、`controller = nested_controller` の代入に到達するのは非 nested が無いときだけです(「nested 優先」は誤読) |
-| [`decodeRayInstanceFlags()`](../../src/core/loader/componentcodec.cpp#L1648) | instance_flags の decode | 制約と排他の理由 | 「文字列配列」「既知 4 名のみ」「重複禁止」「`force_opaque` と `force_no_opaque` は排他」。最後は AS インスタンスフラグとして同時指定が矛盾するため。各失敗は `LegacyBranchDescriptor` 表に登録された `pelican_ray_instance.*` の安定 branch id を持つ(**その id を何に使うかを述べた記述はコードにない**) |
-| [`decodeCollider()`](../../src/core/loader/componentcodec.cpp#L1348) | normalized にしてから宣言 schema | なぜ二段なのか | **向きが逆です**。受理の唯一の権威は codec の宣言 schema 側で、[`ColliderComponent::loadFromJsonArchive()`](../../src/core/userpublic/components/collider.cpp#L39)(= `ref()` 経路)は `requireComponentCodec("collider")` を引いてこの codec へ委譲します。前段の `normalized` が残るのは、`shape` 自体の既定(`sphere`)と shape 依存の既定値(sphere/capsule の radius、box の half_extents、capsule の half_height)が codec 側の正準既定だからで、加えて **その shape が読まない鍵を `erase` してから** schema へ渡します(`{"shape":"sphere","half_height":-1}` が受理されたままなのはこのため。宣言 range に見せると落ちる)。値全体の規則(厳密な正値、どの shape にどれが効くか)は JSON を通らない生成経路のために [`ColliderComponent::validate()`](../../src/core/userpublic/components/collider.cpp#L47) に残ります |
-| [`decodeSchemaFieldsWithLegacyBranches()`](../../src/core/loader/componentcodec.cpp#L604) | schema の失敗を v1 の branch id へ訳す | 宣言化で拒否 id が変わらない理由 | `decodeSchemaFields` を try で包み、`StructFieldValidationError` の path と [`reasonOf()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L136) の `StructFieldErrorReason` を規則表([collider の表](../../src/core/loader/componentcodec.cpp#L1262))で引いて、旧手書きパーサと同じ `collider.*` / `sprite_view.*` の branch id で `legacyReject` する。表に無い理由は素通しで `<codec>.schema_validation` になるので、[`legacyRulesAreTotal()`](../../src/core/loader/componentcodec.cpp#L550) の `static_assert` が「その field の型と presence から到達しうる理由」を全部覆っているかを **compile 時に**要求する。shape のように規則が分岐する field は `discriminant` を持ち、[`legacyRuleDiscriminantsAgree()`](../../src/core/loader/componentcodec.cpp#L571) が「どの shape でも同じ理由集合を覆う」ことを課す |
-| [`decodeCamera()`](../../src/core/loader/componentcodec.cpp#L876) / [`findCameraNumber()`](../../src/core/loader/componentcodec.cpp#L807) | nested / fallback / type 推論 | 既定値表が読めない | 個別規則はコードから読めるが、**既定値の一覧表としては未執筆**(camera defaults 表と対で図示が要る) |
+| [4 集合の照合](../../src/core/loader/resolvedscene.cpp#L644) | 全単射の検査 | なぜ 4 つも要るのか | `expected_*` は 2 つの snapshot から導いた真値、`actual_*` は map entries 側の実測。挿入の一意性 + 集合の完全一致で全単射を証明し、取りこぼし・重複・区間外 index へのエイリアスを排除する(これが `invertOriginTransitionMap` の健全性の前提) |
+| [`resolverInputsFingerprint()`](../../src/core/loader/resolvedscene.cpp#L756) | resolver 入力の SHA256 | 何のための指紋か | camera 既定投影 + sprite 既定の正準 SHA256 を closure に載せ、[期待値比較](../../src/core/communication/editorcommandservice.cpp#L405)で不一致なら stale として再解決を強制する |
+| [`resolveComponent()`](../../src/core/loader/resolvedscene.cpp#L211) | origin タグと遷移規則 | authoring / generated / prefab の別 | origin は型で保持され(generated は gid・prefab・instance_id・component_key・digest を持つ)、非 generated 経路に生成マーカーが混入したら拒否する |
+| [behavior の canonicalize_params 呼び出し](../../src/core/loader/resolvedscene.cpp#L255) | behavior だけ別経路 | なぜコア codec を通さないのか | behavior はコア codec を持たず、**登録済み behavior の schema が受理の正**だから。[211 行のコメント](../../src/core/loader/resolvedscene.cpp#L255)どおり pre-WP360 の親 RPC 表現を再現するため、正準化結果を `source_json_exact["params"]` へ書き戻す |
+| [`ResolvedSceneResolver::resolve()`](../../src/core/loader/resolvedscene.cpp#L779) | 4 フェーズ | 相の前提と依存 | 1a は codec を見ずに instance 検証、1b は provider 検証後に具体 JSON へ置換、2 は authored-first / generated-second で materialize し transform 個数・重複名・gid 一意性を**デコード前に**強制、3 でオブジェクト同一性を凍結、4 で宣言順に canonicalize。「構成規則の違反は runtime decode より前に落とす」ため 2 が 4 に先行する |
+| [`name != "behavior"` の重複検査](../../src/core/loader/resolvedscene.cpp#L903) | 重複 component の拒否 | behavior だけ通る理由 | behavior は 1 オブジェクトに複数付けられる唯一の種別(`type` で区別)。gid 一意性は behavior にも等しく適用される。なおこの重複検査が走るのは **prefab instance の merged component 集合に対してだけ**で、素の object の重複はこの経路では見ていない |
+| [`requireNonZeroQuat()`](../../src/core/loader/componentcodec.cpp#L407) | 四元数の検査 | なぜ正規化しないのか | 弾くのは長さゼロの退化四元数だけで(`OutOfRange` "must be a non-zero quaternion")、値には触れない。宣言 schema は成分ごとの range しか持てないので、値全体の規則であるこの検査だけが手書きで残る。正規化しない理由は関数のコメントに書かれた: decode → `encodeCanonical` のバイト厳密な往復を守るためで、正規化するのは world への合成側([`composeWorldTransform()`](../../src/core/loader/componentcodec.cpp#L2277)) |
+| [`projectTransform()`](../../src/core/loader/componentcodec.cpp#L650) | 親からの逆変換 | 順序と epsilon の意味 | `applyTransform` の合成を厳密に逆順で解く(親並進を引く → 親回転の逆 → 親スケールで割る)。epsilon は親スケールの軸が 0 近傍のとき inf/NaN を静かに作らず `transform.parent.scale` の OutOfRange として名指しで落とすため |
+| [camera.controller の二重指定](../../src/core/loader/componentcodec.cpp#L989) | nested と非 nested | どちらが優先か | **優先順位は存在しません**。両方あれば `UnknownField` で拒否するので、`controller = nested_controller` の代入に到達するのは非 nested が無いときだけです(「nested 優先」は誤読) |
+| [`decodeRayInstanceFlags()`](../../src/core/loader/componentcodec.cpp#L1649) | instance_flags の decode | 制約と排他の理由 | 「文字列配列」「既知 4 名のみ」「重複禁止」「`force_opaque` と `force_no_opaque` は排他」。最後は AS インスタンスフラグとして同時指定が矛盾するため。各失敗は `LegacyBranchDescriptor` 表に登録された `pelican_ray_instance.*` の安定 branch id を持つ(**その id を何に使うかを述べた記述はコードにない**) |
+| [`decodeCollider()`](../../src/core/loader/componentcodec.cpp#L1349) | normalized にしてから宣言 schema | なぜ二段なのか | **向きが逆です**。受理の唯一の権威は codec の宣言 schema 側で、[`ColliderComponent::loadFromJsonArchive()`](../../src/core/userpublic/components/collider.cpp#L39)(= `ref()` 経路)は `requireComponentCodec("collider")` を引いてこの codec へ委譲します。前段の `normalized` が残るのは、`shape` 自体の既定(`sphere`)と shape 依存の既定値(sphere/capsule の radius、box の half_extents、capsule の half_height)が codec 側の正準既定だからで、加えて **その shape が読まない鍵を `erase` してから** schema へ渡します(`{"shape":"sphere","half_height":-1}` が受理されたままなのはこのため。宣言 range に見せると落ちる)。値全体の規則(厳密な正値、どの shape にどれが効くか)は JSON を通らない生成経路のために [`ColliderComponent::validate()`](../../src/core/userpublic/components/collider.cpp#L47) に残ります |
+| [`decodeSchemaFieldsWithLegacyBranches()`](../../src/core/loader/componentcodec.cpp#L605) | schema の失敗を v1 の branch id へ訳す | 宣言化で拒否 id が変わらない理由 | `decodeSchemaFields` を try で包み、`StructFieldValidationError` の path と [`reasonOf()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L136) の `StructFieldErrorReason` を規則表([collider の表](../../src/core/loader/componentcodec.cpp#L1263))で引いて、旧手書きパーサと同じ `collider.*` / `sprite_view.*` の branch id で `legacyReject` する。表に無い理由は素通しで `<codec>.schema_validation` になるので、[`legacyRulesAreTotal()`](../../src/core/loader/componentcodec.cpp#L551) の `static_assert` が「その field の型と presence から到達しうる理由」を全部覆っているかを **compile 時に**要求する。shape のように規則が分岐する field は `discriminant` を持ち、[`legacyRuleDiscriminantsAgree()`](../../src/core/loader/componentcodec.cpp#L572) が「どの shape でも同じ理由集合を覆う」ことを課す |
+| [`decodeCamera()`](../../src/core/loader/componentcodec.cpp#L877) / [`findCameraNumber()`](../../src/core/loader/componentcodec.cpp#L808) | nested / fallback / type 推論 | 既定値表が読めない | 個別規則はコードから読めるが、**既定値の一覧表としては未執筆**(camera defaults 表と対で図示が要る) |
 
 ### 9.23.3 ECS
 
@@ -1551,41 +1551,41 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 ### 9.23.9 editor journal
 
-#### [OriginTransitionMap の journal 側](../../src/core/communication/editorjournal.cpp#L1558) — forward / inverse の向き
+#### [OriginTransitionMap の journal 側](../../src/core/communication/editorjournal.cpp#L1560) — forward / inverse の向き
 
 **分からなくなること**: 同じ表を「展開」と「復元」の両方で使うとき、方向がどこで反転するのか。
 
-**答え**: 表の意味論は §9.23.2 が本体です。反転は [`invertOriginTransitionMap()`](../../src/core/loader/resolvedscene.cpp#L656) が **entries はそのままに direction フラグだけ入れ替える**実装で、`unpack_prefab` = GeneratedToAuthored / `restore_prefab` = AuthoredToGenerated が [journal の整合検査](../../src/core/communication/editorjournalintegrity.cpp#L160)で強制されます。エントリは [`OriginTransitionEntry`](../../src/core/loader/resolvedscene.hpp#L124) の 5 フィールドです。
+**答え**: 表の意味論は §9.23.2 が本体です。反転は [`invertOriginTransitionMap()`](../../src/core/loader/resolvedscene.cpp#L684) が **entries はそのままに direction フラグだけ入れ替える**実装で、`unpack_prefab` = GeneratedToAuthored / `restore_prefab` = AuthoredToGenerated が [journal の整合検査](../../src/core/communication/editorjournalintegrity.cpp#L160)で強制されます。エントリは [`OriginTransitionEntry`](../../src/core/loader/resolvedscene.hpp#L124) の 5 フィールドです。
 
 #### [`attachment_handle` / `attachment_seq` / witness](../../src/core/communication/editorjournalops.cpp#L350) — 3 識別子の主キー
 
 **分からなくなること**: どれが主キーで、どれが照合用なのか。
 
-**答え**: **`attachment_handle` が主キー相当**(runtime arena が採番する不透明な実体ハンドル。0 は無効)、`attachment_seq` は `(object_index<<32)|component_index` の**宣言位置由来の順序キー**、`attachment_identity`(witness)は object / component_index / behavior type / origin から作る**内容照合用の指紋**で、[resolver が返した runtime identity と食い違えば](../../src/core/communication/editorjournal.cpp#L1825) `journal_integrity_error` です。→ §9.22「identity / canonical key / lease の三層」。
+**答え**: **`attachment_handle` が主キー相当**(runtime arena が採番する不透明な実体ハンドル。0 は無効)、`attachment_seq` は `(object_index<<32)|component_index` の**宣言位置由来の順序キー**、`attachment_identity`(witness)は object / component_index / behavior type / origin から作る**内容照合用の指紋**で、[resolver が返した runtime identity と食い違えば](../../src/core/communication/editorjournal.cpp#L1827) `journal_integrity_error` です。→ §9.22「identity / canonical key / lease の三層」。
 
 #### [`sceneBehaviorAttachmentSeq()`](../../src/core/gamelogic/behaviorarena.cpp#L72) — 存在する関数
 
 **分からなくなること**: journal 側から呼ばれているこの名前が、どこで定義されているのか。
 
-**答え**: **behavior arena 側に実在します**(宣言は [`behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L167))。`sceneBehaviorAttachmentSeq(object_index, component_index)` は両者が u32 に収まるか検査して上位 / 下位 32bit に詰めた 64bit を返すだけの関数で、journal は [1950 行付近](../../src/core/communication/editorjournal.cpp#L1816)でこれを呼びます。
+**答え**: **behavior arena 側に実在します**(宣言は [`behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L167))。`sceneBehaviorAttachmentSeq(object_index, component_index)` は両者が u32 に収まるか検査して上位 / 下位 32bit に詰めた 64bit を返すだけの関数で、journal は [1950 行付近](../../src/core/communication/editorjournal.cpp#L1818)でこれを呼びます。
 
-#### [`structuralDomainsOverlap()`](../../src/core/communication/editorjournal.cpp#L2624) — kind が競合検出でどう使われるか
+#### [`structuralDomainsOverlap()`](../../src/core/communication/editorjournal.cpp#L2655) — kind が競合検出でどう使われるか
 
 **分からなくなること**: `kind` 文字列が判定にどう効くのか。
 
 **答え**: まず **object 集合・同一 scene 内の name_reservation・declaration_index の交差**で判定し、その後の追加規則として **`component_slot` と `value_field` の組み合わせに限り「同一 object かつ同一 slot」を衝突**とみなします(スロット追加 / 削除と同スロットの値編集を競合扱いにする)。他の kind(prefab_parameter / behavior_params / behavior_attachment / parent_edge / object_existence / object_subtree)は自分が載せた object / index / name フィールド経由で交差判定されます。
 
-#### [パス重複と domain 重複](../../src/core/communication/editorjournal.cpp#L2553) — 両方が要る理由
+#### [パス重複と domain 重複](../../src/core/communication/editorjournal.cpp#L2584) — 両方が要る理由
 
 **分からなくなること**: JSON パスが重ならなければ安全ではないのか。
 
-**答え**: [第7章「曖昧な重なり判定」](07_tools_rpc_tests.md)が本体です。1 点だけ補うと、`stablePathsOverlap` は `/authoring_objects/7` と `/authoring_objects/7/...` のような**祖先・子孫関係しか見ない**ので、パス表現が異なるまま同一意味領域に触れる編集(名前予約・declaration_index・同一 slot への異種 op)を取りこぼします。だから [`recordOverlaps()`](../../src/core/communication/editorjournal.cpp#L2718) が両者を OR で結びます。
+**答え**: [第7章「曖昧な重なり判定」](07_tools_rpc_tests.md)が本体です。1 点だけ補うと、`stablePathsOverlap` は `/authoring_objects/7` と `/authoring_objects/7/...` のような**祖先・子孫関係しか見ない**ので、パス表現が異なるまま同一意味領域に触れる編集(名前予約・declaration_index・同一 slot への異種 op)を取りこぼします。だから [`recordOverlaps()`](../../src/core/communication/editorjournal.cpp#L2749) が両者を OR で結びます。
 
-#### [`last_writers`](../../src/core/communication/editorjournal.cpp#L3187) — 「active writer history」の意味
+#### [`last_writers`](../../src/core/communication/editorjournal.cpp#L3219) — 「active writer history」の意味
 
 **分からなくなること**: 履歴という名前なのに、undo で要素が消える理由。
 
-**答え**: [コメント](../../src/core/communication/editorjournal.cpp#L3187)どおり**その write_set を現在保持している有効な書き手のスタック**であって、積まれた操作の履歴ではありません。よって undo は「取り消された書き手を除去する」操作なので [top を pop](../../src/core/communication/editorjournal.cpp#L3581) し、redo は[新しい transaction を top として push](../../src/core/communication/editorjournal.cpp#L3591) します。
+**答え**: [コメント](../../src/core/communication/editorjournal.cpp#L3219)どおり**その write_set を現在保持している有効な書き手のスタック**であって、積まれた操作の履歴ではありません。よって undo は「取り消された書き手を除去する」操作なので [top を pop](../../src/core/communication/editorjournal.cpp#L3611) し、redo は[新しい transaction を top として push](../../src/core/communication/editorjournal.cpp#L3621) します。
 
 #### [`final_authored_index` の連続性](../../src/core/communication/editorjournalintegrity.cpp#L211) — `max()` はスキップではない
 
@@ -1595,36 +1595,36 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
-| [gate epoch と transition_epoch](../../src/core/communication/editorjournal.cpp#L3272) | 2 つのエポック | 違い | `transition_epoch` は**ゲート提供側(runtime の `EditorTransitionCounter`)が数える外部の状態遷移カウンタ**、[`gate_tracker`](../../src/core/communication/editorjournal.cpp#L3194)(`EditorGateEpoch`)の epoch はその観測が変わるたびに進む**内部の単調エポック**。受理時に epoch を控え、[commit 時に食い違えば](../../src/core/communication/editorjournal.cpp#L3969)拒否する。transition の変化は必ず epoch を進めるので、比べるのは epoch だけでよい |
-| [`requireRevertPreconditions()`](../../src/core/communication/editorjournal.cpp#L3417) | undo 前の 3 段検証 | 何を見ているか | → [第7章「undo前提の三段検証」](07_tools_rpc_tests.md) |
-| [`Impl::preview` の reservation と lease](../../src/core/communication/editorjournal.cpp#L3165) | 予約と実効リース | 2 つある理由 | reservation は `open_preview` を受理した瞬間(まだ frame boundary 前)の**先行予約**、lease はプレビュー適用後の**実効リース**。[`requireNoLeaseOverlap()`](../../src/core/communication/editorjournal.cpp#L3396) が両者と新規編集の重複を見て `preview_lease_conflict`。状態機械は[第7章「preview leaseの状態機械」](07_tools_rpc_tests.md) |
-| [unpack の単独 op 強制](../../src/core/communication/editorjournal.cpp#L2018) | batch の形の制限 | なぜ 1 command か | unpack は object subtree 全体を作り替え、その inverse を `origin_transition` 込みの forward/inverse ペアとして**受理時点で確定**させる必要があるため。他 op と混ぜるとこの単一ペアの整合検査が成立しない |
+| [gate epoch と transition_epoch](../../src/core/communication/editorjournal.cpp#L3304) | 2 つのエポック | 違い | `transition_epoch` は**ゲート提供側(runtime の `EditorTransitionCounter`)が数える外部の状態遷移カウンタ**、[`gate_tracker`](../../src/core/communication/editorjournal.cpp#L3226)(`EditorGateEpoch`)の epoch はその観測が変わるたびに進む**内部の単調エポック**。受理時に epoch を控え、[commit 時に食い違えば](../../src/core/communication/editorjournal.cpp#L3999)拒否する。transition の変化は必ず epoch を進めるので、比べるのは epoch だけでよい |
+| [`requireRevertPreconditions()`](../../src/core/communication/editorjournal.cpp#L3447) | undo 前の 3 段検証 | 何を見ているか | → [第7章「undo前提の三段検証」](07_tools_rpc_tests.md) |
+| [`Impl::preview` の reservation と lease](../../src/core/communication/editorjournal.cpp#L3197) | 予約と実効リース | 2 つある理由 | reservation は `open_preview` を受理した瞬間(まだ frame boundary 前)の**先行予約**、lease はプレビュー適用後の**実効リース**。[`requireNoLeaseOverlap()`](../../src/core/communication/editorjournal.cpp#L3426) が両者と新規編集の重複を見て `preview_lease_conflict`。状態機械は[第7章「preview leaseの状態機械」](07_tools_rpc_tests.md) |
+| [unpack の単独 op 強制](../../src/core/communication/editorjournal.cpp#L2041) | batch の形の制限 | なぜ 1 command か | unpack は object subtree 全体を作り替え、その inverse を `origin_transition` 込みの forward/inverse ペアとして**受理時点で確定**させる必要があるため。他 op と混ぜるとこの単一ペアの整合検査が成立しない |
 | [`prefabGeneratedId()`](../../src/project/prefab.cpp#L1060) | gid の生成 | アルゴリズム | ドメイン分離タグ `"pelican.prefab.gid.v1"` / `instance_id` / `component_key` を**長さ前置で連結**したバイト列の SHA-256 の先頭 16 バイトを hex 化し `gid_` を前置する([宣言側コメント](../../src/project/prefab.hpp#L224)= WP361 v4)。component_key は `component.id`、無ければ `component.name` |
-| [`canonicalBehaviorComponent()`](../../src/core/communication/editorjournal.cpp#L258) | behavior だけ codec を通さない | 理由 | behavior attachment は登録済み codec を持つ通常 component ではなく `{name,type,params}` の固定形で、**型登録が DLL 由来で欠けている可能性がある**。未登録でも情報を落とさず保持し、「レジストリが生きている(名前拒否)」と「DLL 不在(pending attachment)」をコミット境界で区別するため |
+| [`canonicalBehaviorComponent()`](../../src/core/communication/editorjournal.cpp#L260) | behavior だけ codec を通さない | 理由 | behavior attachment は登録済み codec を持つ通常 component ではなく `{name,type,params}` の固定形で、**型登録が DLL 由来で欠けている可能性がある**。未登録でも情報を落とさず保持し、「レジストリが生きている(名前拒否)」と「DLL 不在(pending attachment)」をコミット境界で区別するため |
 | [子孫の降順ソート](../../src/core/communication/editorjournalops.cpp#L1133) | prepareDestroy の並べ替え | 降順の理由 | 子孫から順に remove を積む必要があり、降順で削除すれば**削除に伴う後続要素のインデックスずれが未処理分に波及しない**。同時に inverse(restore_objects)が逆順で元の宣言位置に挿し戻せる |
 | [`field_path` の `/name` 禁止](../../src/core/communication/editorjournalops.cpp#L658) | 値編集の対象制限 | なぜ name だけ禁止か | `name` は **component のスロット同一性(と object 名前予約)を決める識別子**なので、値編集経路で書き換えられると slot / domain 計算が破綻する。detail も "field_path must be a JSON pointer and cannot change name" と明言 |
-| [`prefabGeneratedMarkerRule`](../../src/core/communication/editorjournal.cpp#L1513) | マーカー削除と body 検証 | 何を消すのか | 上記 gid / OriginTransitionMap と一体。詳細は**未執筆** |
-| [unpack の forward/inverse 整合](../../src/core/communication/editorjournal.cpp#L1583) | commit 時の structural_changes | 何を突き合わせるか | **未執筆**(根拠がコードにない) |
-| [`behaviorAttachmentWitness()`](../../src/core/communication/editorjournal.cpp#L562) | witness の組み立て | generated と authored の分岐 | witness 自体は常に 4 フィールド(`authoring_object_id` / `authored_component_occurrence` / `type` / `origin`)。分岐するのは [`origin` の中身](../../src/core/communication/editorjournal.cpp#L536)で、authored は 2 フィールド(`kind` / `authoring_component_index`)、generated は 6 フィールド(`kind` / `stable_generated_id` / `prefab` / `instance_id` / `component_key` / `digest_sha256`) |
-| [`expanded_components`](../../src/core/communication/editorjournalintegrity.cpp#L23) と [末尾からの削除](../../src/core/communication/editorjournal.cpp#L1447) | 展開区間の位置 | 逆操作が末尾削除でよい理由 | unpack は authored 配列の**末尾に展開区間を置く**ので、逆操作は末尾から authority.size() 分を削るだけでよい(→ final_authored_index の連続性) |
+| [`prefabGeneratedMarkerRule`](../../src/core/communication/editorjournal.cpp#L1515) | マーカー削除と body 検証 | 何を消すのか | 上記 gid / OriginTransitionMap と一体。詳細は**未執筆** |
+| [unpack の forward/inverse 整合](../../src/core/communication/editorjournal.cpp#L1585) | commit 時の structural_changes | 何を突き合わせるか | **未執筆**(根拠がコードにない) |
+| [`behaviorAttachmentWitness()`](../../src/core/communication/editorjournal.cpp#L564) | witness の組み立て | generated と authored の分岐 | witness 自体は常に 4 フィールド(`authoring_object_id` / `authored_component_occurrence` / `type` / `origin`)。分岐するのは [`origin` の中身](../../src/core/communication/editorjournal.cpp#L538)で、authored は 2 フィールド(`kind` / `authoring_component_index`)、generated は 6 フィールド(`kind` / `stable_generated_id` / `prefab` / `instance_id` / `component_key` / `digest_sha256`) |
+| [`expanded_components`](../../src/core/communication/editorjournalintegrity.cpp#L23) と [末尾からの削除](../../src/core/communication/editorjournal.cpp#L1449) | 展開区間の位置 | 逆操作が末尾削除でよい理由 | unpack は authored 配列の**末尾に展開区間を置く**ので、逆操作は末尾から authority.size() 分を削るだけでよい(→ final_authored_index の連続性) |
 | [behavior edit の attachment_index](../../src/core/communication/editorjournalops.cpp#L71) | 必須引数 | なぜ必須か | 同一 object に複数の behavior が付くので index なしでは対象が決まらない(→ §9.23.2 の「behavior だけ重複可」) |
-| [`closureJson()`](../../src/core/communication/editorjournal.cpp#L376) | previous/next による linked-list | 宣言順の復元 | → [第3章「closureがidentityを運ぶ」](03_project_and_loading.md) |
-| [`resolvePrefabInstance` の context 引数](../../src/core/communication/editorjournal.cpp#L1236) | scene_id / parameter / json_pointer | 何を運ぶか | **未執筆**(根拠がコードにない) |
-| [replay 時の witness 再検証](../../src/core/communication/editorjournal.cpp#L1902) | rebind | undo/redo で張り替わる理由 | **未執筆**(根拠がコードにない) |
-| [`projection_state->revision() == source.revision()`](../../src/core/communication/editorjournal.cpp#L2030) | incremental update | 判定の意味 | **未執筆**(根拠がコードにない) |
+| [`closureJson()`](../../src/core/communication/editorjournal.cpp#L378) | previous/next による linked-list | 宣言順の復元 | → [第3章「closureがidentityを運ぶ」](03_project_and_loading.md) |
+| [`resolvePrefabInstance` の context 引数](../../src/core/communication/editorjournal.cpp#L1238) | scene_id / parameter / json_pointer | 何を運ぶか | **未執筆**(根拠がコードにない) |
+| [replay 時の witness 再検証](../../src/core/communication/editorjournal.cpp#L1904) | rebind | undo/redo で張り替わる理由 | **未執筆**(根拠がコードにない) |
+| [`projection_state->revision() == source.revision()`](../../src/core/communication/editorjournal.cpp#L2053) | incremental update | 判定の意味 | **未執筆**(根拠がコードにない) |
 | [`ReparentPreserve`](../../src/core/communication/editorjournalops.cpp#L1188) | Local / World | transform 計算への影響 | → [第3章「preserve-worldの逆算」](03_project_and_loading.md) |
 | [behavior canonical 化の `old_component` 保持](../../src/core/communication/editorjournalops.cpp#L275) | retain する理由 | 何のために残すか | コメントどおり「`BehaviorParamsPolicy` の既定値は編集可能な authored view の一部なので、field pointer を解決する前に一時オブジェクトへ展開する。その間 `old_component` は inverse / raw 復元のために**逐語のまま**保持する」 |
-| [`domainObjects` / `domainNames` / `domainIndices` の定義](../../src/core/communication/editorjournal.cpp#L2562) ほか(prefab_cas フラグ、generated_id と component_slot の排他、`operationsUsePrefabParameters`、`forceAbort` と preview_boundary、`normalizeBehaviorAttachmentIdentities`、`batchWriteSet` の集約、`coalesce_key`、`finalizeRevertJournal` の逆順再構築) | 競合判定の下請けと journal の細部 | 個々の規則 | **未執筆**(いずれも根拠がコードにない。エラーコードの `@1` は §9.23.18 の契約バージョン) |
+| [`domainObjects` / `domainNames` / `domainIndices` の定義](../../src/core/communication/editorjournal.cpp#L2593) ほか(prefab_cas フラグ、generated_id と component_slot の排他、`operationsUsePrefabParameters`、`forceAbort` と preview_boundary、`normalizeBehaviorAttachmentIdentities`、`batchWriteSet` の集約、`coalesce_key`、`finalizeRevertJournal` の逆順再構築) | 競合判定の下請けと journal の細部 | 個々の規則 | **未執筆**(いずれも根拠がコードにない。エラーコードの `@1` は §9.23.18 の契約バージョン) |
 
 ### 9.23.10 editor command service
 
-#### [5 つの PrefabError を dependency_failure に分類](../../src/core/communication/editorcommandservice.cpp#L1172) — 分類の基準
+#### [5 つの PrefabError を dependency_failure に分類](../../src/core/communication/editorcommandservice.cpp#L1183) — 分類の基準
 
 **分からなくなること**: 同じ `PrefabError` がどうして 2 つの外部エラーに分かれるのか。
 
-**答え**: コメントどおり**「欠けている入力が受け側プロジェクトに属するか」**です。PrefabNotFound / PrefabBindingNotBindable / PrefabBindingInactive / PrefabProviderStale / PrefabDependencyMismatch は受信側の registry・provider・closure が揃っていないことを示すので `PrefabDependencyMismatch`、それ以外の prefab 意味検証失敗は payload 側の違反なので `SnapshotInvalid` に留めます。detail が [`/prefab_closure`](../../src/core/communication/editorcommandservice.cpp#L1183) になるのも「欠けている入力が closure だから」です。
+**答え**: コメントどおり**「欠けている入力が受け側プロジェクトに属するか」**です。PrefabNotFound / PrefabBindingNotBindable / PrefabBindingInactive / PrefabProviderStale / PrefabDependencyMismatch は受信側の registry・provider・closure が揃っていないことを示すので `PrefabDependencyMismatch`、それ以外の prefab 意味検証失敗は payload 側の違反なので `SnapshotInvalid` に留めます。detail が [`/prefab_closure`](../../src/core/communication/editorcommandservice.cpp#L1194) になるのも「欠けている入力が closure だから」です。
 
-#### [`trackPreviewTransition()`](../../src/core/communication/editorcommandservice.cpp#L1718) — PreviewWatch の erase 条件
+#### [`trackPreviewTransition()`](../../src/core/communication/editorcommandservice.cpp#L1729) — PreviewWatch の erase 条件
 
 **分からなくなること**: watch がいつ消えるのか(成功時なのか失敗時なのか)。
 
@@ -1634,22 +1634,22 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: 同じ component なのに、返る JSON の形が違う理由。
 
-**答え**: generated component は prefab 解決の産物で**authoring 側に対応する編集可能ソースが無い**ため、`resolved_json` + `editable=false` + schema missing を返します。behavior が editable になる条件は[直後の分岐](../../src/core/communication/editorcommandservice.cpp#L775)で、非 generated かつ behavior 登録が存在し、pending でなく、`behavior_canonical_params` が取れていること(このとき codec は `behavior_params`、schema は registration の params_schema)。出力の組み立ては [`editorComponentQueryJson()`](../../src/core/communication/editorcommandservice.cpp#L1777)。
+**答え**: generated component は prefab 解決の産物で**authoring 側に対応する編集可能ソースが無い**ため、`resolved_json` + `editable=false` + schema missing を返します。behavior が editable になる条件は[直後の分岐](../../src/core/communication/editorcommandservice.cpp#L775)で、非 generated かつ behavior 登録が存在し、pending でなく、`behavior_canonical_params` が取れていること(このとき codec は `behavior_params`、schema は registration の params_schema)。出力の組み立ては [`editorComponentQueryJson()`](../../src/core/communication/editorcommandservice.cpp#L1788)。
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
 | [`parsePrefabClosure()`](../../src/core/communication/editorcommandservice.cpp#L252) | closure を strict sorted 順に強制 | 順序を縛る理由 | closure は fingerprint / digest と突き合わせる**正準表現**なので、順序の自由度を残すと同一内容が別バイト列になり closure 一致判定が非決定的になる |
-| [normative validation order](../../src/core/communication/editorcommandservice.cpp#L415) / [gate 3](../../src/core/communication/editorcommandservice.cpp#L505) / [SNAPSHOT0 のコメント](../../src/core/communication/editorcommandservice.cpp#L1115) | 5 ゲートの評価順 | 順序そのものが契約である理由 | **SNAPSHOT0 が定めた 5 ゲートの評価順(version → size → digest → parse/semantic → closure)がワイヤ契約**で、どの入力不正がどのコードで返るかの優先順位を版間で固定する。「digest の algorithm 検査は gate 3 であってリクエスト形状検査ではない」ため前倒しできない |
+| [normative validation order](../../src/core/communication/editorcommandservice.cpp#L415) / [gate 3](../../src/core/communication/editorcommandservice.cpp#L505) / [SNAPSHOT0 のコメント](../../src/core/communication/editorcommandservice.cpp#L1126) | 5 ゲートの評価順 | 順序そのものが契約である理由 | **SNAPSHOT0 が定めた 5 ゲートの評価順(version → size → digest → parse/semantic → closure)がワイヤ契約**で、どの入力不正がどのコードで返るかの優先順位を版間で固定する。「digest の algorithm 検査は gate 3 であってリクエスト形状検査ではない」ため前倒しできない |
 | [`parseGetComponentsRequest()`](../../src/core/communication/editorcommandservice.cpp#L168) | id と name の排他 | なぜちょうど一方か | 宣言 id と名前は**独立な参照系**で、両方指定は互いに矛盾しうる(片方が別オブジェクトを指す)、両方省略は対象未定。`has_value() == has_value()` で強制 |
-| [`SceneRevision{1}` のダミー](../../src/core/communication/editorcommandservice.cpp#L1121) | import 検証用の使い捨て文書 | なぜ固定値でよいか | ここで作る `validated` は**ゲート 4 専用で公開されない**ため。実際に公開される revision は `import_scene_snapshot(...)` が返す `imported.revision` |
-| [`ResolvedSceneResolver::resolve()` の 5 引数](../../src/core/communication/editorcommandservice.cpp#L1168) | defaults / registry / provider を別に渡す | 分ける理由 | **未執筆**(§9.23.2 の resolver 入力 fingerprint と対) |
+| [`SceneRevision{1}` のダミー](../../src/core/communication/editorcommandservice.cpp#L1132) | import 検証用の使い捨て文書 | なぜ固定値でよいか | ここで作る `validated` は**ゲート 4 専用で公開されない**ため。実際に公開される revision は `import_scene_snapshot(...)` が返す `imported.revision` |
+| [`ResolvedSceneResolver::resolve()` の 5 引数](../../src/core/communication/editorcommandservice.cpp#L1179) | defaults / registry / provider を別に渡す | 分ける理由 | **未執筆**(§9.23.2 の resolver 入力 fingerprint と対) |
 | [runtime state と authored state の融合](../../src/core/communication/editorcommandservice.cpp#L725) | 2 つの状態の突き合わせ | size mismatch が `logic_error` な理由 | **未執筆**(runtime と authored の component 数は一致するのが不変式、という以上の根拠がコードにない) |
 | [`closureMismatchDetail()`](../../src/core/communication/editorcommandservice.cpp#L358) | 最初のズレで停止 | なぜ全部見ないか | **未執筆**(エラー detail の決定性を狙ったものと読めるが、根拠となる記述がない) |
-| [`render-config-edit-` プレフィックスの判定](../../src/core/communication/editorcommandservice.cpp#L1645) | ticket ルーティング | render config編集の共通ticketを既存結果照会へ送る | featureと名前付きASの編集が共用 |
+| [`render-config-edit-` プレフィックスの判定](../../src/core/communication/editorcommandservice.cpp#L1656) | ticket ルーティング | render config編集の共通ticketを既存結果照会へ送る | featureと名前付きASの編集が共用 |
 | [revision token が `edit_` の preview_epoch を吸収する行](../../src/core/communication/editorcommandservice.cpp#L844) | `edit_` の未確定分 | なぜ吸収するのか | **未執筆**(根拠がコードにない) |
 | [error detail のパス手組み(`root + "/scenes/" + index`)](../../src/core/communication/editorcommandservice.cpp#L277) | index 入り JSON pointer 風 | 手で組む理由 | **未執筆**(根拠がコードにない) |
-| [`findScene()` の直後](../../src/core/communication/editorcommandservice.cpp#L1012) | scene 存在検査 | `selectScene()` も呼ぶのか | **呼びません**。ここは `findScene(current_scene) == nullptr` で `SceneNotFound` を投げるだけの存在検査で、選択の副作用はありません |
-| [import reload 後の再 catch](../../src/core/communication/editorcommandservice.cpp#L1171) | `PrefabError` の再捕捉 | 二重に捕まえる理由 | **未執筆**(根拠がコードにない) |
+| [`findScene()` の直後](../../src/core/communication/editorcommandservice.cpp#L1023) | scene 存在検査 | `selectScene()` も呼ぶのか | **呼びません**。ここは `findScene(current_scene) == nullptr` で `SceneNotFound` を投げるだけの存在検査で、選択の副作用はありません |
+| [import reload 後の再 catch](../../src/core/communication/editorcommandservice.cpp#L1182) | `PrefabError` の再捕捉 | 二重に捕まえる理由 | **未執筆**(根拠がコードにない) |
 | [`ordered_json` の扱い](../../src/core/communication/editorcommandservice.cpp#L668) | キー順序の保存 | いつ順序が意味を持つか | JSON ライブラリの前提知識(→ [第10章](10_background_knowledge.md))。使い分けの実例は §9.23.11 の `resolution_error` 行 |
 
 ### 9.23.11 RPC
@@ -1664,7 +1664,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: 「失敗したのに committed:true」が起きる理由。
 
-**答え**: 型は [`variant<SceneLoadCommitted, PreCommitFailure, CommittedWithEffectFailure>`](../../src/core/loader/sceneload.hpp#L189) です。`load()` 自体は 3 状態を**戻り値で**返し、RPC の入口が通す [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L490) が `PreCommitFailure` だけを**例外に変換して再送出**します(従来の throwing 契約)。この経路ではシーンは差し替わりません。`CommittedWithEffectFailure` は「公開自体は成功したが個別 effect が失敗した」状態で、`load_scene` は `committed:true` のまま `effect_errors` を添えて返します(→ §9.23.1 の destroy フェーズ)。
+**答え**: 型は [`variant<SceneLoadCommitted, PreCommitFailure, CommittedWithEffectFailure>`](../../src/core/loader/sceneload.hpp#L189) です。`load()` 自体は 3 状態を**戻り値で**返し、RPC の入口が通す [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L472) が `PreCommitFailure` だけを**例外に変換して再送出**します(従来の throwing 契約)。この経路ではシーンは差し替わりません。`CommittedWithEffectFailure` は「公開自体は成功したが個別 effect が失敗した」状態で、`load_scene` は `committed:true` のまま `effect_errors` を添えて返します(→ §9.23.1 の destroy フェーズ)。
 
 #### [`parseGizmoSelection()`](../../src/core/communication/rpcserver.cpp#L492) — 2 つの identity を受ける理由
 
@@ -1912,7 +1912,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 - **診断・トレース JSON は外部から読まれる前提で書かれています。** `basicconfig` の保存診断、`effecttransaction` の effect 診断、`renderer` のフレームトレース、`rpcserver` の status JSON はいずれも RPC / ログ越しに外部ツールが読む出力です。契約側の明文は `docs/external_tools_requirements.md` の **R8**(JSON-RPC 2.0 / NDJSON フレーミング)と **R10**(出力に schema 名 + version を埋め、互換を壊す変更は version を上げる)で、**個々の診断 JSON のどのキーまでが契約かを定めた記述は無く、未執筆**です。
 - **エラーコードには `@1` が付きます。** `pelican.ray_row_count_limit@1`、`pelican.ray_profile_opaque_as@1`、`pelican.ray_tracing.frame_tlas_required@1`、editor 側の各コードがこの形です。`docs/design_error_contract.md` も `UserDataError` の `code` を「名前付き、`@1` 付き」と書いていますが、**この番号が何の版で、いつ上げるのかを定めた記述はコードにも文書にも無く、未執筆**です(「コード名の意味の版」と読むのは推測)。
-- **表示用文字列は identity ではありません。** [`displayObjectName()`](../../src/core/loader/scene.cpp#L278) の `<unnamed>` のような値は診断出力の見た目で、同一性の判定には使いません。identity 側は §9.22「identity / canonical key / lease の三層」を参照してください。
+- **表示用文字列は identity ではありません。** [`displayObjectName()`](../../src/core/loader/scene.cpp#L260) の `<unnamed>` のような値は診断出力の見た目で、同一性の判定には使いません。identity 側は §9.22「identity / canonical key / lease の三層」を参照してください。
 
 なお **「機械判定できる subset を先に固定する」**(`docs/design_raytracing.md` §4 / §4-P の規範表。「決定論的適合部分集合」という語自体は文書にありません)という考え方 — GPU や数値の非決定性を避けるため、形状と数値範囲を先に制限してから比較する — は RT だけのものではありません。physics の tie-break(§9.23.15)、draw order の tie-break(§9.23.4 の `declaration_ordinal`)にも同じ発想が現れます。
 

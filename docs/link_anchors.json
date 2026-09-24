@@ -1384,7 +1384,7 @@
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/scene.cpp|`enqueueSceneRetirement()`": "GET_MODULE(PolygonInstanceContainer).enqueueSceneRetirement(",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/scene.cpp|`event_outbox->flush()`": "t.event_outbox->flush(t.phase_trace);",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/scene.cpp|`event_outbox->prepare()`": "t.scene_loaded_event = t.event_outbox->prepare(",
-    "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/scene.cpp|`flush()`": "void flush() override {",
+    "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/scene.cpp|`flush()`": "void flush() override { t.publishPendingScene(); }",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/scene.cpp|`metadata.commit()`": "metadata.commit(phase_trace);",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/scene.cpp|`next_authority_epoch++`": "candidate_authority = SceneAuthority{run_nonce, next_authority_epoch++};",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/scene.cpp|`object_bindings.swap()`": "loader.object_bindings.swap(candidate_object_bindings);",

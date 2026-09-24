@@ -607,7 +607,7 @@ auto slots  = ctx.save().listSaves();                         // SaveContext::Sl
 
 > **「姿勢の正本を 1 本にまとめる」は v0 では撤回されました(✅AG-1b)。** 一本化には「シーンが持つ派生プログラムの置き場」と「評価器の状態を写す API」が先に要り、v0 にはどちらもありません。**v0 が約束するのは 2 つの経路の parity**(`loop` / `speed` / `start_time` の意味、位相、パラメータ編集をまたいだ状態の保持)**と owner 単位の排他**の 2 つだけです([docs/v0_freeze.md](../v0_freeze.md) §1.6)。
 
-`animation` コンポーネントの受理キーは `name` / `clip` / `graph` / `parameters` / `speed` / `loop` / `start_time` の 7 つですが、**`graph` を書いた場合 `speed` / `loop` / `start_time` は拒否されます**(`field 'animation.<鍵>' is clip-only; graph states define their playback clocks`)。逆に `parameters`(グラフの初期パラメータ)は `graph` のときだけ書けます([componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L1459))。
+`animation` コンポーネントの受理キーは `name` / `clip` / `graph` / `parameters` / `speed` / `loop` / `start_time` の 7 つですが、**`graph` を書いた場合 `speed` / `loop` / `start_time` は拒否されます**(`field 'animation.<鍵>' is clip-only; graph states define their playback clocks`)。逆に `parameters`(グラフの初期パラメータ)は `graph` のときだけ書けます([componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L1460))。
 
 ### ゲームコードから見た層
 
