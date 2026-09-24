@@ -761,7 +761,7 @@ C++20 の `std::bit_cast<To>(from)` は、同じサイズの型の間でビッ�
 
 ラムダは自分自身を名前で呼べません(`auto` で宣言した変数の型が、その初期化子の中ではまだ決まっていないため)。回避策として、自分自身を第 1 引数で受け取り `self(self, ...)` の形で呼ぶイディオムがあります(Y コンビネータ風、C++23 の "deducing this" があれば不要になります)。JSON のように任意の深さを持つ木を、その場限りの述語で走査したいときによく使われます。
 
-**使用場所**: [UI document の木を下る `has_text`](../../src/core/ui/module.cpp#L143)(`self(self, child)` で子を再帰) / [親名の循環検出](../../src/project/sceneformat.cpp#L226)。`RpcServer::handleLine()` にあった `contains_resolution_error(contains_resolution_error, result)`(応答 JSON から `resolution_error` を再帰探索)は、名前付きの自己再帰関数 [`embedsResolutionError()`](../../src/core/communication/editorrpchandlers.cpp#L50) として editor 側へ移り、この形では残っていません。
+**使用場所**: [UI document の木を下る `has_text`](../../src/core/ui/module.cpp#L157)(`self(self, child)` で子を再帰) / [親名の循環検出](../../src/project/sceneformat.cpp#L226)。`RpcServer::handleLine()` にあった `contains_resolution_error(contains_resolution_error, result)`(応答 JSON から `resolution_error` を再帰探索)は、名前付きの自己再帰関数 [`embedsResolutionError()`](../../src/core/communication/editorrpchandlers.cpp#L50) として editor 側へ移り、この形では残っていません。
 
 ### コールバック連鎖(既存のフックを move して包む)
 

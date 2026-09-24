@@ -21,7 +21,7 @@ Runtime object
 | project.json封筒 | [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L234) | [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L639) |
 | path参照 | [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) | [`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)（module寿命、ログ、engine resource注入） |
 | scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L261) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1637) |
-| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2922) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1483) |
+| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2922) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1522) |
 | JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L55) |
 | asset manifest | [`parse/generate/verify`](../../src/project/assetsmanifest.hpp#L60) | [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L11) |
 | material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) | runtime接続済み（WP116〜117, 122）。`.surface`は [`surfacecompiler`](../../src/core/shader/surfacecompiler.cpp) でGLSL/SPIR-V化されpipelineへ。`.material.json`は [`lowerMaterial()`](../../src/project/materiallowering.hpp#L160) → [`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L343) |
@@ -386,7 +386,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 
 以前は audio にだけ4値目の `uninstalled` がありましたが、PG-2 で消えました。audio を外したビルドでも scene の callback が音の effect（`playSound` / `stopSound` / `setBusVolume`）を積もうとすることはあり、effect transaction がそれを `build_feature_disabled@1` で拒否するので、audio は `stub` です。seqplayer の宣言は scene 文書ではなく起動オプション `--play-seq` から来ます。それでも `stub` に入れてあり、「scene に来うる」を厳密に読めば `absent` になりうる行です（PG-2 が残した論点）。
 
-`role` は10値あり（[`SceneManifestRole`](../../src/core/loader/sceneparticipantmanifest.hpp#L20)、名前は [`sceneManifestRoleName()`](../../src/core/loader/sceneparticipantmanifest.cpp#L275)）、**executorの外に居るものも明示的に載る**のが要点です。
+`role` は10値あり（[`SceneManifestRole`](../../src/core/loader/sceneparticipantmanifest.hpp#L20)、名前は [`sceneManifestRoleName()`](../../src/core/loader/sceneparticipantmanifest.cpp#L280)）、**executorの外に居るものも明示的に載る**のが要点です。
 
 | role | 意味 | 例 |
 |---|---|---|
@@ -436,7 +436,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 
 **評価stateが2つある理由**は [第2章 §2.5](02_runtime_lifecycle.md) に書いたとおりです。[`graphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L143)（描画側）と [`poseGraphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L147)（姿勢側）は同じ `GraphRuntime` の別メンバで、[`prepareGraphRuntimeTransfer()`](../../src/core/loader/scenegraphruntime.cpp#L201) はグラフ世代が変わるとき両方をまとめて移送します（片方だけ置いていくと、描画側が走り続けたまま姿勢側のクロックだけが初期状態へ戻ります）。owner が変わった scope は移送後に `resetState()` で落とされます。
 
-**publish snapshot**。描画側の評価が実際に各instance入力ポートへ何を流したかは、[`publishGraphValues()`](../../src/core/loader/scenegraphruntime.cpp#L138) が `graph_values`（[`PublishedInstanceInputs`](../../src/core/userpublic/valuegraph.hpp#L70)）として置いていきます。読み手がグラフを評価し直すとクロックが進みイベントが消費されるので、**描いた世代の値を読む道はこの1本だけ**です。snapshot は値の並び順を決めた `Graph` を `shared_ptr` で**保持**します（借用ではありません）—— 世代が入れ替わった後に読んだ人でも、その値に対応する名前が手元にあるようにするためです。
+**publish snapshot**。描画側の評価が実際に各instance入力ポートへ何を流したかは、[`publishGraphValues()`](../../src/core/loader/scenegraphruntime.cpp#L138) が `graph_values`（[`PublishedInstanceInputs`](../../src/core/userpublic/valuegraph.hpp#L80)）として置いていきます。読み手がグラフを評価し直すとクロックが進みイベントが消費されるので、**描いた世代の値を読む道はこの1本だけ**です。snapshot は値の並び順を決めた `Graph` を `shared_ptr` で**保持**します（借用ではありません）—— 世代が入れ替わった後に読んだ人でも、その値に対応する名前が手元にあるようにするためです。
 
 ## 3.6 即時loadと要求load
 
@@ -638,7 +638,7 @@ instances.publishModelInstance(std::move(staged_instance));
 | `pelican.material` / `pelican.material_bindings` | 1 | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744) / [`parsePrimitiveMaterialBindingJson()`](../../src/project/materialformat.cpp#L767) | 本節「material / surface」 |
 | `pelican.import` / `pelican.import_rules` | 1 | [`importmanifest.cpp`](../../src/project/importmanifest.cpp#L244) / [`parseImportRulesJson()`](../../src/project/importrules.cpp#L196) | 本節「import manifest / import rules」 |
 
-1つだけ性格の違うものがあります。**`pelican.value_graph` はプロジェクトが書く形式ではありません。** `pelican.graph` の values 分割を評価器向けに落とした**内部IR**で、[`ValueGraph::Graph`](../../src/core/userpublic/valuegraph.hpp#L101) のコンストラクタが受ける文字列がこの形です。直書きのIRを読む経路が残っているのはテストのためで（IR側はlowering結果の真上位集合なので、bindings decodeの名前付き拒否はこの形でしか到達できません）、production で `Graph` を作るのは [`renderingpassconfigregistration.cpp` の構築点](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L923) の1箇所、入力は `pelican.graph` だけです。プロジェクト側の文書としては扱わないでください（§3.15）。
+1つだけ性格の違うものがあります。**`pelican.value_graph` はプロジェクトが書く形式ではありません。** `pelican.graph` の values 分割を評価器向けに落とした**内部IR**で、[`ValueGraph::Graph`](../../src/core/userpublic/valuegraph.hpp#L111) のコンストラクタが受ける文字列がこの形です。直書きのIRを読む経路が残っているのはテストのためで（IR側はlowering結果の真上位集合なので、bindings decodeの名前付き拒否はこの形でしか到達できません）、production で `Graph` を作るのは [`renderingpassconfigregistration.cpp` の構築点](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L956) の1箇所、入力は `pelican.graph` だけです。プロジェクト側の文書としては扱わないでください（§3.15）。
 
 > 🧩 **難所 — 端数は先頭から配る**([`distribute()`](../../src/core/ui/layout.cpp#L93))
 >
@@ -682,7 +682,7 @@ instances.publishModelInstance(std::move(staged_instance));
 
 [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2922) はfeature JSONを順番に読み、render target、buffer、pass、compute taskを追加し、限定的なoverrideを適用します。名前衝突、曖昧anchor、未知override fieldは即時エラーです。shader defineも重複排除して集約します。
 
-runtime側の入口は [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1483) です。[`loadRenderGraphVariantsFromConfigData()`](../../src/core/vkcore/renderer_config.cpp#L450) が `ProjectBasicConfig::renderingConfigJson()` の文字列と起動ターゲットの実extentを渡し、flat（OpenXR有効時は `#xr` も）とpreviewを **1回の登録トランザクション** として受け取ります。
+runtime側の入口は [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1522) です。[`loadRenderGraphVariantsFromConfigData()`](../../src/core/vkcore/renderer_config.cpp#L450) が `ProjectBasicConfig::renderingConfigJson()` の文字列と起動ターゲットの実extentを渡し、flat（OpenXR有効時は `#xr` も）とpreviewを **1回の登録トランザクション** として受け取ります。
 
 起動主体が feature を足す公開面は `pelican_player --feature-overlay <uri>` です。文書の厳密な
 v1 検証と加算は [`applyRenderFeatureOverlays()`](../../src/project/renderfeatureoverlay.cpp#L119) が担当し、
@@ -1169,11 +1169,11 @@ animation  … 姿勢（pose.*）。同じフレームの values より 1 段 �
 
 ### lowered IR と評価器（`ValueGraph`）
 
-values 分割を評価器向けに落とした形が `pelican.value_graph`（§3.9 のとおり**内部IR**）で、[`ValueGraph::Graph`](../../src/core/userpublic/valuegraph.hpp#L101) がそれを読んで評価します。
+values 分割を評価器向けに落とした形が `pelican.value_graph`（§3.9 のとおり**内部IR**）で、[`ValueGraph::Graph`](../../src/core/userpublic/valuegraph.hpp#L111) がそれを読んで評価します。
 
-- 文書は不変で、状態を持つopは外の [`EvaluationState`](../../src/core/userpublic/valuegraph.hpp#L83) を更新します。`evaluate()` はサービスへ何も publish しません。
+- 文書は不変で、状態を持つopは外の [`EvaluationState`](../../src/core/userpublic/valuegraph.hpp#L93) を更新します。`evaluate()` はサービスへ何も publish しません。
 - 状態を渡さずに状態依存opを評価しようとした場合は「引数が足りない」ではなく、**このバックエンドに唯一できないこと**として名前で断ります —— `graph.evaluation_requires_state@1` に、聞いたノードと**authoring文書の綴りの**op名を添えます（[`statelessEvaluationRejected()`](../../src/core/userpublic/valuegraph.cpp#L48)。lowered schema はモジュール名前空間を落とすので、拒否を読む側にその事情を知らせない配慮です）。
-- [`publish()`](../../src/core/userpublic/valuegraph.hpp#L170) は評価に加えてサービスへの書き込みまで行い、[`PublishResult`](../../src/core/userpublic/valuegraph.hpp#L52) を返します。`instance_inputs` は各instance入力ポートが実際に何を食べたか、`node_values` は**全ノードの値**（グラフ自身のノード順、そのフレームで非活性だったノードは値なし＝0を捏造しない）です。全ノードの計算は宣言出力を射影する前に済んでいるので、これを持ち帰る費用はvector 1本ぶんです。
+- [`publish()`](../../src/core/userpublic/valuegraph.hpp#L180) は評価に加えてサービスへの書き込みまで行い、[`PublishResult`](../../src/core/userpublic/valuegraph.hpp#L62) を返します。`instance_inputs` は各instance入力ポートが実際に何を食べたか、`node_values` は**全ノードの値**（グラフ自身のノード順、そのフレームで非活性だったノードは値なし＝0を捏造しない）です。全ノードの計算は宣言出力を射影する前に済んでいるので、これを持ち帰る費用はvector 1本ぶんです。
 
 runtime 側の持ち方（誰がどの `EvaluationState` を使うか、snapshot をどこへ置くか）は §3.5 の「load 後: sceneが抱えるグラフ runtime」です。
 
