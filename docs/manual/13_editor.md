@@ -61,7 +61,7 @@ dialog の Creates 欄にその path が出ます。雛形は **Standard 3D scen
   (`project init target directory is not empty: <path>`)を dialog の下に出し、何も書きません。
   名前が空・`/` や `\` を含む・`.` / `..` の場合も dialog の中で断ります。
 - **書いた project は Open Project と同じ経路で開きます**
-  ([接続](../../src/devstudio/view/mainwindow.cpp#L719))。シーンに未保存の編集があれば上の
+  ([接続](../../src/devstudio/view/mainwindow.cpp#L721))。シーンに未保存の編集があれば上の
   Save / Discard / Cancel が出ます。ただし雛形は**確認より前にディスクへ書かれている**ので、Cancel しても
   作ったフォルダは残ります(開かないだけです)。
 - **Browse...** は OS のフォルダ選択(modal の `QFileDialog`)です。自動化面からは操作できないので、
@@ -71,7 +71,7 @@ F-2 のときは、project を切り替えた直後の status bar に
 `Modal transform polling failed: pelican_player exited before returning an RPC response` が出ることがありました
 (gizmo の `get_modal_transform` polling が、切替で終了した古い engine に宛てた要求の失敗を出していたもの。
 [文言](../../src/devstudio/model/gizmomodel.cpp#L1062))。**✅F-7 で出なくなりました**: 別の project へ切り替える前に
-gizmo の session を終え、返答待ちの要求を忘れます([切替の前処理](../../src/devstudio/view/mainwindow.cpp#L1195))。
+gizmo の session を終え、返答待ちの要求を忘れます([切替の前処理](../../src/devstudio/view/mainwindow.cpp#L1240))。
 今開いている project の開き直しは engine がそのまま残るので、session も続きます。
 なお、Studio で作った project でも `project.json` の `generator` は `"pelican_cli project init"` のままです。
 
@@ -106,7 +106,7 @@ behavior候補の`key`は`behavior:型名`、`behavior_type`は登録名です�
 ### Studio で object を置く(✅G-2)
 
 Outliner の右クリックと **Scene** toolbar の **Add Object** は同じ 1 つの menu です
-([Add Object の menu を作る所](../../src/devstudio/view/mainwindow.cpp#L923))。項目は **Empty** / **Cube (built-in)** /
+([Add Object の menu を作る所](../../src/devstudio/view/mainwindow.cpp#L968))。項目は **Empty** / **Cube (built-in)** /
 **Plane (built-in)** / **Sphere (built-in)** で、自動化面の action 名は `pelican.outliner.addObject.empty` / `cube` /
 `plane` / `sphere` です。
 
@@ -117,7 +117,7 @@ Outliner の右クリックと **Scene** toolbar の **Add Object** は同じ 1 
   の最小の空き番号です([`uniqueObjectName()`](../../src/devstudio/model/inspectormodel.cpp#L427))。Blender は `Cube.001` と
   書きますが、scene の object 名は `[a-zA-Z0-9_]` だけなので `_` にしています。
 - **選択**: Outliner の読み直しを最短の間隔に縮め、新しい object が Outliner に出た時点でそれを選び、Inspector に出します
-  ([`MainWindow::selectSpawnedObject()`](../../src/devstudio/view/mainwindow.cpp#L1007))。
+  ([`MainWindow::selectSpawnedObject()`](../../src/devstudio/view/mainwindow.cpp#L1052))。
 - **Undo**: coalesce key を付けないので、Undo 1 回で Add 1 回が戻ります。Inspector の別の編集が進行中なら送らず、
   Inspector の notice に理由が出ます([`InspectorModel::spawnObject()`](../../src/devstudio/model/inspectormodel.cpp#L2290))。
 - Add Object は常に押せます。project が開いていない・engine の準備ができていないときは、status bar に
@@ -691,7 +691,7 @@ Inspector の導線(次節)は専用の RPC を持たず、**普通の `ops` を
 ### Studio のノードキャンバス(Graph タブ)
 
 **置き場所**: `View > Panels > Frame Plan` の dock(`pelican.framePlanDock`)にある 3 枚目のタブ「Graph」です
-([タブの追加](../../src/devstudio/view/mainwindow.cpp#L277))。dock は増えていません。起動時から開いておきたい場合は
+([タブの追加](../../src/devstudio/view/mainwindow.cpp#L278))。dock は増えていません。起動時から開いておきたい場合は
 `pelican_studio --project <dir> --tab graph`([第10章](10_tools.md) §10.7)。
 
 **上段の操作列**(左から): `Scope:` のコンボ(`root` と definition 名)、その右のパンくず、右端に
@@ -764,7 +764,7 @@ Logical graph も同じ view** です。**まだ見ていない scope は自動�
 キーボードを持ちます。[条件](../../src/devstudio/view/nodegraphics.cpp#L717))。
 
 **テーマはライトとダークの 2 つです(✅N-5)。**切り替えは **View ▸ Theme ▸ Light / Dark**
-([メニューの構築](../../src/devstudio/view/mainwindow.cpp#L511))で、**再起動は要りません** —— 選んだ名前は
+([メニューの構築](../../src/devstudio/view/mainwindow.cpp#L513))で、**再起動は要りません** —— 選んだ名前は
 QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L26) に残り、次に開いた窓は
 そのテーマで始まります。追随するのは **Graph タブと Frame Plan の両方のキャンバス**で、背景・grid・辺・
 ノードの body と縁・見出しの字・値の帯の色をテーマの表から引き直して描き直します。**ソケットの型別の色だけは
@@ -789,7 +789,7 @@ fork は要りません(fork する preset がありません)。
 偽の pass(編集できる種類でないもの)を開くと、Pass Editor は保存できない draft を読み込まず、notice 行に
 「`<pass>`: not editable in a direct root」、tooltip に root の参照と「..., which selects no preset, and the engine offers no
 editable declaration of it. Edit that file by hand.」を出します
-([direct root の Pass Editor の拒否](../../src/devstudio/view/fullscreenpasswidget.cpp#L2037))。canvas も同じ文で断り、
+([direct root の Pass Editor の拒否](../../src/devstudio/view/fullscreenpasswidget.cpp#L2062))。canvas も同じ文で断り、
 engine が足した pass には「is added by the engine; it has no declaration in the project to edit.」と言います。どちらも
 fork は勧めません([direct root の canvas の拒否](../../src/devstudio/view/frameplanedit.cpp#L126))。Pass Editor は pass を
 選ぶと最初に form を空にするので、断られた pass の下に前の pass の下書きが残ることはありません(✅F-7)。
@@ -845,7 +845,7 @@ pass は右クリックした / 選んだ node の後に入り、無ければ gr
 context の digest で `add_authored_pass` 1 回([Save の 2 本目 add_authored_pass](../../src/devstudio/view/materialpassedit.cpp#L208))。
 新しい target が無ければ後者だけです。**pass が断られても、先に作った target は宣言されたまま残ります** —— form はそれを
 Save の前に言い、拒否の status 行も残った target の名前を並べます
-([拒否で残る target の文](../../src/devstudio/view/frameplanwidget.cpp#L1459))。いらなければ node から Delete してください。
+([拒否で残る target の文](../../src/devstudio/view/frameplanwidget.cpp#L1467))。いらなければ node から Delete してください。
 既存の target を枠に選んだとき、Studio は format を先に検査しません(engine の preflight が上の段落の検査をします)。
 入力(`screen_inputs` など)の欄はまだありません。
 
@@ -872,7 +872,7 @@ G-1 のシナリオの fixture が持っていた、誰も読まない pass 2 �
 
 **Pass Editor の form は scroll します(✅F-7)**: form は `QScrollArea`(`pelican.fullscreenPassScroll`)の中にあります。
 以前は form の最小の高さ(1,000 px 近く)が下の dock 領域を押し上げ、Pass Editor を開くと viewport が 60〜80 px の帯に
-潰れ、dock を閉じても戻りませんでした([置き場](../../src/devstudio/view/mainwindow.cpp#L290))。**その潰れた状態を
+潰れ、dock を閉じても戻りませんでした([置き場](../../src/devstudio/view/mainwindow.cpp#L291))。**その潰れた状態を
 既に保存した layout は、そのままでは戻りません** —— splitter を引くか、**Layout > Reset to Default** で直してください。
 
 **fullscreen pass を shader ごと作る(✅F-3)**: Pass Editor の Fragment 欄の横に **New…**
@@ -902,7 +902,7 @@ Open はそのファイルを使って開きます([書き込み](../../src/devs
 
 **打つものが減りました(✅G-3)**: Vertex 欄の既定は `engine://fullscreen` です。New… は、pass 名が空(か New… 自身が入れた
 名前)なら雛形の名前(`deferred_lighting` / `tone_map`、Pass-through は `fullscreen_pass`。使われていれば `_2`…)を入れ、
-shader 名を pass 名から付けます。自分で打った名前は上書きしません([雛形の名前の提案](../../src/devstudio/view/fullscreenpasswidget.cpp#L1010))。
+shader 名を pass 名から付けます。自分で打った名前は上書きしません([雛形の名前の提案](../../src/devstudio/view/fullscreenpasswidget.cpp#L1036))。
 保存した後も form はその名前を持ったままです。
 
 **pass の設定欄(✅G-3)**: fullscreen pass の form に 2 つの欄が増えました(add / edit の両方)。
@@ -929,7 +929,7 @@ shader 名を pass 名から付けます。自分で打った名前は上書き�
 ある)と、form の下の折りたためる欄(`pelican.fullscreenPass.compileLog`)に log 全文が等幅で出ます。行番号が付き、
 log が名指す `file:line` は強調されます。notice 行は「shader compile failed; see the log below」だけで、**form に打った
 値はそのまま残る**ので、shader を直してもう一度 Save できます。成功すると欄は消えます
-([経路](../../src/devstudio/view/fullscreenpasswidget.cpp#L1098))。canvas の帯で直接 stem を変えて compile で断られた
+([経路](../../src/devstudio/view/fullscreenpasswidget.cpp#L1123))。canvas の帯で直接 stem を変えて compile で断られた
 ときは、今も status の 1 行だけです。
 
 **shader を外のエディタで保存すると画面が変わる —— reload と失敗の印(F-3 / ✅F-5)**: Frame Plan は描いている node の
@@ -950,7 +950,7 @@ Q-2 の何もしない間の RPC は増えません。答えごとに:
 - それ以外の失敗: 「Could not ask the engine to reload shaders: ...」。
 
 読み直しか失敗の後には `get_status` の `reload.runtime["pelican.shaders"]` を 1 回読み、印を engine の記録に合わせます
-([答えの扱い](../../src/devstudio/view/frameplanwidget.cpp#L1141))。
+([答えの扱い](../../src/devstudio/view/frameplanwidget.cpp#L1148))。
 
 **配線の制御点と置き場所(N-6)**: 辺の double-click で **reroute**(通過点)が入り、drag で動き、Delete で消えます。node を動かしても reroute は動きません。制御点や辺を 2 つ以上選んで右クリック **Tie together** で 1 つの **tie**(結束バンド)になり、辺は等間隔で平行に通ります(**Untie** で戻す、double-click で並びを反転)。**Auto layout** は lane を reroute と tie として出します。node の位置・reroute・tie は文書の scope ごとの `layout`(editor 用、engine は無視)に `set_layout` で残り、次に開いても同じ図です。Frame Plan の位置はまだセッション内です。
 
@@ -1050,7 +1050,7 @@ CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが�
 `uv`は不要で、完全なGPU gateは全scenarioの登録・実行を必須にします([CI運用](../ci.md))。
 
 **run ごとに空の設定 directory を使います(✅F-5)。**Studio は環境変数 **`PELICAN_STUDIO_CONFIG_DIR`** があれば、利用者の
-設定 directory の代わりにそこへ dock の layout を読み書きします([置き場の決定](../../src/devstudio/view/mainwindow.cpp#L90))。
+設定 directory の代わりにそこへ dock の layout を読み書きします([置き場の決定](../../src/devstudio/view/mainwindow.cpp#L91))。
 driver は run ごとに `{artifacts}/studio_config` を空にして作り、この変数で渡します([渡し方](../../tools/studio_drive.py#L1025))。
 以前のシナリオは、前の run(や人が使った Studio)が利用者の設定 directory に残した dock の layout を復元し、自分の
 layout をそこに残していました。テーマの選択はこの directory ではなく `QSettings` に残るので、この変数の影響を受けません。
@@ -1187,7 +1187,7 @@ properties は [:219](../../src/devstudio/view/inspectorwidget.cpp#L240) の `pe
 1. **Control with a curve** —— 前節のノード集合を作って繋ぎます(`edit_graph_document`)。
 2. **Connect to another output** —— `Connect input` ダイアログで別ノードの出力を選び、**Connect** で `set_input`。
 3. **Open the source** —— Graph タブを前に出し、その producer を選択します
-   ([繋ぎ込み](../../src/devstudio/view/mainwindow.cpp#L311))。接続されていない port で押すと
+   ([繋ぎ込み](../../src/devstudio/view/mainwindow.cpp#L313))。接続されていない port で押すと
    「これは開ける供給元を持たない、保存された値だ」と notice が出ます。
 4. **Disconnect** —— `set_input{null}`。**mode が `connected` のときだけ押せます**
    ([有効化](../../src/devstudio/view/graphattachmentwidget.cpp#L261))。他の 3 つは常に押せます。
