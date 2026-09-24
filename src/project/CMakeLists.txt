@@ -32,6 +32,7 @@ add_library(pelican_project
     prefab.cpp
     projectformat.cpp
     projectpathresolver.cpp
+    projecttemplate.cpp
     rasterpass.cpp
     rendercomponent.cpp
     renderconfigdocument.cpp

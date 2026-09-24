@@ -7,6 +7,9 @@ endif()
 if(NOT DEFINED OUT_DIR)
     message(FATAL_ERROR "OUT_DIR is required")
 endif()
+if(NOT DEFINED PNG_NONUNIFORM_CHECK)
+    message(FATAL_ERROR "PNG_NONUNIFORM_CHECK is required")
+endif()
 
 file(REMOVE_RECURSE "${OUT_DIR}")
 file(MAKE_DIRECTORY "${OUT_DIR}")
@@ -178,3 +181,52 @@ file(SIZE "${OUT_DIR}/frames/init.png" png_size)
 if(png_size EQUAL 0)
     message(FATAL_ERROR "generated project output PNG is empty")
 endif()
+
+# F-2: the blank template draws its own frame. Its one pass, `present`, writes
+# `display` from a UV gradient and reads nothing, so a frame that came out as a
+# single flat colour means the pass did not run -- a black or cleared
+# swapchain would be exactly that. The file shape is checked by
+# run_devcli_project_templates.cmake; this is the part that needs the GPU.
+set(blank_dir "${OUT_DIR}/blank_project")
+execute_process(
+    COMMAND "${CLI}" project init "${blank_dir}" --template blank
+    RESULT_VARIABLE blank_init_result
+    OUTPUT_VARIABLE blank_init_stdout
+    ERROR_VARIABLE blank_init_stderr
+)
+if(NOT blank_init_result EQUAL 0)
+    message(FATAL_ERROR "project init --template blank failed with ${blank_init_result}\nstdout:\n${blank_init_stdout}\nstderr:\n${blank_init_stderr}")
+endif()
+execute_process(
+    COMMAND "${PLAYER}"
+        --headless
+        --project "${blank_dir}"
+        --frames 2
+        --size 160x90
+        --fps 30
+        --render-out "${OUT_DIR}/frames/blank.png"
+    RESULT_VARIABLE blank_player_result
+    OUTPUT_VARIABLE blank_player_stdout
+    ERROR_VARIABLE blank_player_stderr
+)
+if(NOT blank_player_result EQUAL 0)
+    message(FATAL_ERROR "blank project failed in pelican_player with ${blank_player_result}\nstdout:\n${blank_player_stdout}\nstderr:\n${blank_player_stderr}")
+endif()
+if(blank_player_stdout MATCHES "Validation Error|VUID-" OR blank_player_stderr MATCHES "Validation Error|VUID-")
+    message(FATAL_ERROR "blank project emitted Vulkan validation errors\nstdout:\n${blank_player_stdout}\nstderr:\n${blank_player_stderr}")
+endif()
+if(NOT EXISTS "${OUT_DIR}/frames/blank.png")
+    message(FATAL_ERROR "blank project did not render an output PNG")
+endif()
+# 160x90 across a gradient in two channels: well over a hundred colours, and
+# no one colour covering most of the frame.
+execute_process(
+    COMMAND "${PNG_NONUNIFORM_CHECK}" "${OUT_DIR}/frames/blank.png" 100 0.9
+    RESULT_VARIABLE blank_image_result
+    OUTPUT_VARIABLE blank_image_stdout
+    ERROR_VARIABLE blank_image_stderr
+)
+if(NOT blank_image_result EQUAL 0)
+    message(FATAL_ERROR "blank project's frame is not the gradient its pass draws\nstdout:\n${blank_image_stdout}\nstderr:\n${blank_image_stderr}")
+endif()
+message(STATUS "blank project frame: ${blank_image_stdout}")

@@ -267,7 +267,15 @@ Three things worth knowing before writing a scenario:
 * `screenshot` in the default `widget` mode renders the Qt widget tree, which
   does not include the embedded engine window (a foreign child window). Use
   `"mode": "screen"` when the picture has to show what the engine drew; that
-  mode needs the window to be unobstructed.
+  mode needs the window to be unobstructed. The reply carries
+  `distinct_colors`, the number of different colours in the picture, so a
+  `result` step can ask whether the engine drew anything at all (a cleared
+  viewport is one colour). `new_blank_project` is the example.
+* A dialog is filled in the way a panel is: it is shown with `open()`, not
+  `exec()`, so its controls are named widgets like any other. File > New
+  Project... is `pelican.newProjectDialog`, with `pelican.newProject.location`,
+  `.name`, `.template` (a combo: `select` it by the label a person reads),
+  `.notice` (why Create was refused) and `.create`.
 
 ## Gestures a canvas is driven with
 

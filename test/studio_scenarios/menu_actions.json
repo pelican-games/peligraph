@@ -14,11 +14,11 @@
       "timeout_ms": 60000
     },
     {
-      "label": "the File menu holds the three entries the source puts there",
+      "label": "the File menu holds the four entries the source puts there",
       "expect": "result",
       "command": {"cmd": "menu_list", "pattern": "pelican.file."},
       "path": "count",
-      "value": 3
+      "value": 4
     },
     {
       "label": "Save Scene is listed under File, by the path a person reads",

@@ -591,6 +591,17 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     PELICAN_TEST_FRAME_PLAN_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/devstudio/example_frame_plan.json"
   )
+
+  # F-2: File > New Project... -- the dialog writes the picked template
+  # through the same function as `pelican_cli project init`, and the window
+  # opens it through openProject.
+  pelican_define_test(devstudio_newproject_test QT QT_OFFSCREEN
+    pelican_studio_layout
+    pelican_studio_view
+    pelican_project
+    Qt6::Core
+    Qt6::Widgets
+  )
 endif()
 
 if(WIN32 AND COMMAND pelican_configure_game_logic_target)
@@ -2739,10 +2750,21 @@ add_test(
     COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
         -DCLI=$<TARGET_FILE:pelican_cli>
         -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPNG_NONUNIFORM_CHECK=$<TARGET_FILE:pelican_test_png_nonuniform_check>
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_project_init
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_project_init.cmake
 )
 pelican_gpu_test_properties(devcli_project_init_command ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+
+# F-2: the templates `project init` writes, as files -- the standard one byte
+# for byte as it was, the blank one's shape. No player, so no GPU lane.
+add_test(
+    NAME devcli_project_templates
+    COMMAND ${CMAKE_COMMAND}
+        -DCLI=$<TARGET_FILE:pelican_cli>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_project_templates
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_project_templates.cmake
+)
 
 # X-1: install a package into a freshly created project and drive it through
 # the catalog, the editor RPC and the GPU.  The code half needs a player

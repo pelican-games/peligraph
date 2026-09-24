@@ -34,6 +34,8 @@ add_library(pelican_studio_view STATIC
     graphcanvasreadcapability.hpp
     proceduralassetdialog.cpp
     proceduralassetdialog.hpp
+    newprojectdialog.cpp
+    newprojectdialog.hpp
     taskconnectiongraphics.cpp
     taskconnectiongraphics.hpp
     renderfeatureswidget.cpp

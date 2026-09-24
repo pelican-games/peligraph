@@ -4,6 +4,7 @@
 #include "fullscreenpasswidget.hpp"
 #include "graphcanvaswidget.hpp"
 #include "inspectorwidget.hpp"
+#include "newprojectdialog.hpp"
 #include "renderfeatureswidget.hpp"
 #include "studiotheme.hpp"
 #include "../viewport/embeddedviewport.hpp"
@@ -525,9 +526,11 @@ void MainWindow::createMenus() {
     menuBar()->setObjectName(QStringLiteral("pelican.menuBar"));
     QMenu *file_menu = menuBar()->addMenu(tr("&File"));
     file_menu->setObjectName(QStringLiteral("pelican.fileMenu"));
-    QAction *exit_action = file_menu->addAction(tr("E&xit"));
-    exit_action->setObjectName(QStringLiteral("pelican.file.exit"));
-    connect(exit_action, &QAction::triggered, this, &QWidget::close);
+    QAction *new_project_action = file_menu->addAction(tr("&New Project..."));
+    new_project_action->setObjectName(
+        QStringLiteral("pelican.file.newProject"));
+    connect(new_project_action, &QAction::triggered, this,
+            [this]() { chooseNewProject(); });
     QAction *open_project_action = file_menu->addAction(tr("&Open Project..."));
     open_project_action->setObjectName(
         QStringLiteral("pelican.file.openProject"));
@@ -545,6 +548,10 @@ void MainWindow::createMenus() {
                 5000);
         }
     });
+    file_menu->addSeparator();
+    QAction *exit_action = file_menu->addAction(tr("E&xit"));
+    exit_action->setObjectName(QStringLiteral("pelican.file.exit"));
+    connect(exit_action, &QAction::triggered, this, &QWidget::close);
 
     QMenu *view_menu = menuBar()->addMenu(tr("&View"));
     view_menu->setObjectName(QStringLiteral("pelican.viewMenu"));
@@ -681,6 +688,19 @@ void MainWindow::chooseProject() {
     if (!directory.isEmpty()) {
         openProject(directory);
     }
+}
+
+void MainWindow::chooseNewProject() {
+    if (new_project_dialog_) {
+        new_project_dialog_->raise();
+        new_project_dialog_->activateWindow();
+        return;
+    }
+    auto *dialog = new NewProjectDialog(
+        this, [this](const QString &root) { openProject(root); });
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    new_project_dialog_ = dialog;
+    dialog->open();
 }
 
 void MainWindow::openProject(const QString &path) {

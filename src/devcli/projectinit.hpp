@@ -1,16 +1,10 @@
 #pragma once
 
-#include <filesystem>
-
 namespace Pelican::DevCli {
 
-struct ProjectInitResult {
-    std::filesystem::path project_root;
-    int files_written = 0;
-};
-
-ProjectInitResult initializeProjectTemplate(const std::filesystem::path &project_dir);
-
+// `pelican_cli project init <dir> [--template standard|blank]`. The templates
+// themselves live in pelican_project (projecttemplate.hpp), where Studio's
+// File > New Project... reaches the same function.
 int runProjectCommand(int argc, char *argv[]);
 
 } // namespace Pelican::DevCli

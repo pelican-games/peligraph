@@ -1,0 +1,104 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "new_blank_project",
+  "description": "F-2: start from nothing. File > New Project... is filled in the way a person fills it -- a folder under this run's own artifacts, a name, the Blank pipeline template -- and Create writes the template and opens it through the window's ordinary Open Project. The engine that comes up runs the one pass the template authored, `present`, followed by the `output_transform` the engine always adds, and the viewport shows the gradient that pass draws rather than one flat colour.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up, so the switch to the new project is something that happens",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "File > New Project... is a named entry",
+      "expect": "result",
+      "command": {"cmd": "menu_list", "pattern": "pelican.file.newProject"},
+      "path": "actions[0].menu",
+      "op": "contains",
+      "value": "File"
+    },
+    {
+      "label": "fire it by name, with no popup in between",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts, never the repository",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name",
+      "cmd": "type",
+      "name": "pelican.newProject.name",
+      "text": "blank_project"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "the template box reads what was picked",
+      "expect": "text_equals",
+      "name": "pelican.newProject.template",
+      "value": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed, because the template is on disk",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the new project's frame plan has the pass the template authored",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "and the output transform the engine adds after it",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#output_transform",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the new engine answers editor RPC and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "it is the gradient `present` draws, not one flat colour",
+      "expect": "result",
+      "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/new_blank_project_viewport.png"},
+      "path": "distinct_colors",
+      "op": "gt",
+      "value": 100
+    },
+    {
+      "label": "a picture of the window for the reader of this report",
+      "expect": "screenshot",
+      "path": "new_blank_project_window.png"
+    }
+  ]
+}

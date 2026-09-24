@@ -1652,11 +1652,22 @@ AutomationReply commandScreenshot(const AutomationHost &host,
         return AutomationReply::failure(
             ScreenshotFailed,
             QStringLiteral("could not write %1").arg(path));
+    // F-2: how many different colours the picture holds, so a scenario can
+    // ask "did the engine draw something" of a report instead of a reader
+    // having to open the PNG. A cleared or never-presented viewport is one
+    // colour; a gradient is hundreds.
+    const QImage image = pixmap.toImage().convertToFormat(QImage::Format_RGB32);
+    QSet<QRgb> colors;
+    for (int y = 0; y < image.height(); ++y) {
+        const auto *row = reinterpret_cast<const QRgb *>(image.constScanLine(y));
+        for (int x = 0; x < image.width(); ++x) colors.insert(row[x]);
+    }
     return AutomationReply::success(QJsonObject{
         {QStringLiteral("path"), QFileInfo(path).absoluteFilePath()},
         {QStringLiteral("mode"), mode},
         {QStringLiteral("width"), pixmap.width()},
         {QStringLiteral("height"), pixmap.height()},
+        {QStringLiteral("distinct_colors"), static_cast<int>(colors.size())},
     });
 }
 

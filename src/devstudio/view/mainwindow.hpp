@@ -23,6 +23,7 @@ class QLabel;
 class QListWidget;
 class QMenu;
 class QMessageBox;
+class QDialog;
 class QPlainTextEdit;
 class QString;
 class QTreeWidget;
@@ -111,6 +112,7 @@ class MainWindow : public QMainWindow {
     std::uint64_t navigation_save_completion_ = 0;
     bool close_authorized_ = false;
     QPointer<QMessageBox> navigation_prompt_;
+    QPointer<QDialog> new_project_dialog_;
 
     void createWorkspace();
     void createMenus();
@@ -121,6 +123,9 @@ class MainWindow : public QMainWindow {
     // The stored preference, applied before the first widget is built.
     void applyStoredTheme();
     void chooseProject();
+    // File > New Project...: the dialog writes a template and hands the new
+    // root to openProject, so the unsaved-changes guard applies to it too.
+    void chooseNewProject();
     void openProjectNow(const QString &path);
     void requestNavigation(Navigation destination, const QString &path = {});
     void checkNavigationRevision();
