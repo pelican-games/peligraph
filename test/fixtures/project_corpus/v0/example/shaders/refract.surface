@@ -1,0 +1,14 @@
+//! pelican.surface v1
+//! language: glsl
+//! params:
+//!   - { name: distortion, type: float, default: 0.025, min: 0.0, max: 0.1 }
+//! screen_inputs: [opaque_color]
+//! render_state: { blend: blend, cull: back, depth: read_only, depth_compare: less_equal }
+
+void pelican_surface_v1(in PelicanSurfaceInputV1 surface_input,
+                        inout PelicanSurfaceV1 surface) {
+    vec2 offset = surface.normal.xy * pelican_param_distortion();
+    vec4 behind = pelican_screen_opaque_color(surface_input.uv + offset);
+    surface.base_color = vec4(behind.rgb, 0.55);
+    surface.emissive = behind.rgb;
+}

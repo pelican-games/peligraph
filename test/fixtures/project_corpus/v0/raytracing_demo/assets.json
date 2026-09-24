@@ -1,0 +1,9 @@
+{
+  "schema": "pelican.asset_data",
+  "version": 2,
+  "models": [], "textures": [], "materials": [],
+  "procedural_geometry": [
+    {"name": "large_sphere", "kind": "aabb_v1", "aabb": {"min": [-1.25, -1.25, -1.25], "max": [1.25, 1.25, 1.25]}, "record": {"radius": 1.2, "center": [0, 0, 0]}},
+    {"name": "small_sphere", "kind": "aabb_v1", "aabb": {"min": [-0.8, -0.8, -0.8], "max": [0.8, 0.8, 0.8]}, "record": {"radius": 0.75, "center": [0, 0, 0]}}
+  ]
+}

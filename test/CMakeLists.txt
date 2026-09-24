@@ -2122,6 +2122,8 @@ if(WIN32)
             -DPRODUCTION_SOURCES="$<JOIN:$<TARGET_PROPERTY:pelican_core,SOURCES>,|>"
             -DPROJECT_SOURCES="$<JOIN:$<TARGET_PROPERTY:pelican_project,SOURCES>,|>"
             -DGRAPH_TEST_MODULE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/graphtestopaquemodule.cpp
+            -DMIGRATION_TEST_STEP_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/projectmigrationteststep.cpp
+            -DCLI_SOURCES="$<JOIN:$<TARGET_PROPERTY:pelican_cli,SOURCES>,|>"
             -DSCENE_FAULT_TEST_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/sceneloadfault_testing.cpp
             -DMODEL_RELEASE_FAULT_TEST_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/modelreleasefault_testing.cpp
             -DMODEL_RELOAD_FAULT_TEST_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/modelreloadfault_testing.cpp
@@ -2710,6 +2712,30 @@ target_compile_definitions(pelican_test_packagemanifest_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
+# MG-1: the document migration registry, the raw-envelope gate, plan/apply on
+# the project document transaction, and `project migrate` itself (its source is
+# compiled in so the test-only step reaches it). The step lives in
+# projectmigrationteststep.cpp and nowhere in production
+# (wp380c_production_has_no_fault_setter_symbol).
+pelican_define_test(projectmigration_test pelican_project argparse)
+target_sources(pelican_test_projectmigration_test PRIVATE
+    projectmigrationteststep.cpp
+    ${CMAKE_SOURCE_DIR}/src/devcli/projectmigratecommand.cpp
+)
+target_compile_definitions(pelican_test_projectmigration_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+if(PELICAN_WITH_RPC)
+    # plan_project_migration / apply_project_migration and the migration-only
+    # endpoint an --rpc player serves when the gate stops.
+    pelican_define_test(projectmigrationrpc_test GROUP core_foundation pelican_core)
+    target_sources(pelican_test_projectmigrationrpc_test PRIVATE
+        projectmigrationteststep.cpp)
+    target_compile_definitions(pelican_test_projectmigrationrpc_test PRIVATE
+        PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    )
+endif()
+
 # This executable deliberately links no product library other than
 # pelican_project. It is the build-level D0 proof that project.json, scene data,
 # and asset data can be opened without pulling in pelican_core.
@@ -2936,6 +2962,29 @@ add_test(
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_project_templates
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_project_templates.cmake
 )
+
+# MG-1: the shipped `project migrate` on a fresh project and on the v0 corpus:
+# no steps at v0, so nothing to do and nothing written. No player.
+add_test(
+    NAME devcli_project_migrate
+    COMMAND ${CMAKE_COMMAND}
+        -DCLI=$<TARGET_FILE:pelican_cli>
+        -DCORPUS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/project_corpus/v0
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_project_migrate
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_project_migrate.cmake
+)
+
+# MG-1: the player's gate recovers an interrupted project document transaction
+# before project.json is parsed.
+add_test(
+    NAME player_open_recovers_before_parse
+    COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+        -DCLI=$<TARGET_FILE:pelican_cli>
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/player_open_recovers_before_parse
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_player_open_recovery.cmake
+)
+pelican_gpu_test_properties(player_open_recovers_before_parse ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
 
 # X-1: install a package into a freshly created project and drive it through
 # the catalog, the editor RPC and the GPU.  The code half needs a player

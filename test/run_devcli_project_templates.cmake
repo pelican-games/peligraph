@@ -44,6 +44,10 @@ endfunction()
 # changed in either file. passes/main_rendering_config.json is now written as
 # the pelican.graph root directly instead of wrapped at run time; its bytes
 # (and so its row) did not change.
+#
+# MG-1 (2026-09-25) re-took the project.json row: `project init` records the
+# engine that wrote the project as `"saved_by_engine": "0.1.0"`, one line after
+# engine_min_version; nothing else in the file changed.
 set(standard_digests
     ".gitattributes=53ca7dbd7bae3d4305c235b965e0af1b77aa1a6b0afa1ffcb8b8301e44c82955"
     ".gitignore=45658c9867458757f8857156830c81a4aabec1ac1b68dda97a9bed3c42c3f8a7"
@@ -58,7 +62,7 @@ set(standard_digests
     "input/actions.json=0f02c5b9badd6adce192b8a65e197f09c4ed1f137f3852477365f4a8c1c41d74"
     "input/profiles/keyboard.json=86d35286615bce33adfb6bf9a9c1b54e02d30e9b85b35cd1513f14538657d97c"
     "passes/main_rendering_config.json=81163814279c3171d67a654ec510ed0698daa1636ca22327b0894013976e000b"
-    "project.json=a869d958975225db7dc00796b8882811d1f8d038d6948d6b1e987689fdd68431"
+    "project.json=3dcd6a1c8a649988bdb70894d375b8478472f094da44fe20f90b598382fff2b7"
     "scenes/main.scene.json=c6ec9bab9c5fab7f326b9c556330dd7fb94db85d97780eddfe39c795c3808fcb"
     "ui/ui_overlay.json=f9cf52bb037434a9aa098e11a18fd12587bad51bf07928db10899b1da952a2ac"
 )

@@ -1,0 +1,10 @@
+{
+  "schema": "pelican.atlas",
+  "version": 1,
+  "pages": [{"image": "demo.png", "size": [16, 16]}],
+  "sprites": {
+    "full": {"page": 0, "rect": [0, 0, 16, 16]},
+    "left": {"page": 0, "rect": [0, 0, 8, 16]},
+    "right": {"page": 0, "rect": [8, 0, 16, 16]}
+  }
+}

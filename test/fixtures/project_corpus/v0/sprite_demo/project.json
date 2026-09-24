@@ -1,0 +1,32 @@
+{
+  "schema": "pelican.project",
+  "version": 1,
+  "name": "WP109 Side-Scroller Vertical Slice",
+  "engine_min_version": "0.1.0",
+  "requires": ["physics"],
+  "basic_config": {
+    "window_title": "Pelican WP109 Side-Scroller Vertical Slice",
+    "window_size": {"width": 960, "height": 540},
+    "fullscreen": false,
+    "framerate": 60,
+    "sprite": {"pixels_per_unit": 16.0},
+    "camera": {
+      "type": "orthographic",
+      "xmag": 3.0,
+      "ymag": 1.6875,
+      "znear": 0.1,
+      "zfar": 100.0,
+      "up": [0, 1, 0],
+      "sprite": {"pixel_perfect": "strict", "sort": "declaration"}
+    },
+    "default_scene_id": "default_scene",
+    "scene_data_json": "scene.json",
+    "asset_data_json": "assets.json",
+    "rendering_config_json": "passes/main.json",
+    "ui_config_json": "ui/ui.json",
+    "default_rendering_pass": "main",
+    "input_actions_json": "input/actions.json",
+    "input_profiles": {"keyboard": "input/keyboard.json"},
+    "input_profile": "keyboard"
+  }
+}

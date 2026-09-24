@@ -1,5 +1,7 @@
 #pragma once
 
+#include "projectdocumenttransaction.hpp"
+
 #include <cstddef>
 #include <filesystem>
 #include <stdexcept>
@@ -109,38 +111,13 @@ std::string renderConfigSourceDigest(std::string_view bytes);
 
 // A render-authoring candidate is a document set, not a replacement string
 // for the root document. References use PathResolver's canonical key so an
-// alias cannot bypass the request-local overlay.
-enum class RenderConfigDocumentOperation {
-    create,
-    replace,
-    erase,
-};
-
-enum class RenderConfigDocumentExistence {
-    missing,
-    present,
-};
-
-struct RenderConfigDocumentExpectedState {
-    RenderConfigDocumentExistence existence =
-        RenderConfigDocumentExistence::missing;
-    std::string digest;
-
-    bool operator==(const RenderConfigDocumentExpectedState &) const = default;
-};
-
-struct RenderConfigCandidateDocument {
-    std::string reference;
-    std::string normalized_reference;
-    std::filesystem::path path;
-    RenderConfigDocumentOperation operation =
-        RenderConfigDocumentOperation::replace;
-    RenderConfigDocumentExpectedState expected;
-    // Empty for erase; otherwise the exact candidate bytes.
-    std::string bytes;
-
-    bool operator==(const RenderConfigCandidateDocument &) const = default;
-};
+// alias cannot bypass the request-local overlay. The members are the project
+// document transaction's (MG-1), which the render config editor shares with
+// `project migrate`.
+using RenderConfigDocumentOperation = ProjectDocumentOperation;
+using RenderConfigDocumentExistence = ProjectDocumentExistence;
+using RenderConfigDocumentExpectedState = ProjectDocumentExpectedState;
+using RenderConfigCandidateDocument = ProjectCandidateDocument;
 
 class RenderConfigCandidateDocumentSet {
     std::string root_normalized_reference_;

@@ -1,0 +1,39 @@
+{
+  "schema": "pelican.ui",
+  "version": 1,
+  "key": "example_overlay",
+  "revision": "wp87-u1",
+  "direction": "ltr",
+  "root": {
+    "id": "root",
+    "type": "panel",
+    "children": [
+      {
+        "id": "ui_test",
+        "type": "image",
+        "sprite": "assets/textures/ui.atlas.json#sprite/ui_test",
+        "layer": 1,
+        "layout": {
+          "x": {"mode": "fixed", "value": 1925},
+          "y": {"mode": "fixed", "value": 1085},
+          "anchor_min": [0.5, 0.5],
+          "anchor_max": [0.5, 0.5],
+          "offsets": [-962, -542, 963, 543]
+        }
+      },
+      {
+        "id": "explosion",
+        "type": "image",
+        "sprite": "assets/textures/ui.atlas.json#sprite/explosion",
+        "layer": 2,
+        "layout": {
+          "x": {"mode": "fixed", "value": 1000},
+          "y": {"mode": "fixed", "value": 1000},
+          "anchor_min": [0.8, 0.5],
+          "anchor_max": [0.8, 0.5],
+          "offsets": [-500, -500, 500, 500]
+        }
+      }
+    ]
+  }
+}

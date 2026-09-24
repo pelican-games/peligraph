@@ -1,0 +1,12 @@
+{
+  "schema": "pelican.atlas",
+  "version": 1,
+  "pages": [
+    {"image": "Frame84.png", "size": [3208, 1808]},
+    {"image": "explosion06.png", "size": [1000, 1000]}
+  ],
+  "sprites": {
+    "ui_test": {"page": 0, "rect": [0, 0, 3208, 1808]},
+    "explosion": {"page": 1, "rect": [0, 0, 1000, 1000]}
+  }
+}

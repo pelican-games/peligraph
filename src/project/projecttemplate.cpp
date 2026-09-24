@@ -1,5 +1,7 @@
 #include "projecttemplate.hpp"
 
+#include "projectformat.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <array>
@@ -90,6 +92,7 @@ constexpr std::string_view project_json = R"json({
   "name": "pelican-project",
   "generator": "pelican_cli project init",
   "engine_min_version": "0.1.0",
+  "saved_by_engine": "@PELICAN_ENGINE_VERSION@",
   "basic_config": {
     "window_title": "Pelican Project",
     "window_size": {
@@ -338,10 +341,22 @@ extensions as non-text and includes commented Git LFS tracking lines you can ena
 
 constexpr std::string_view gitkeep = "\n";
 
+// MG-1: `project init` is one of the two writers of `saved_by_engine` (the
+// other is `project migrate`), so the record names the engine that wrote it.
+std::string_view projectJson() {
+    static const std::string text = [] {
+        std::string result{project_json};
+        constexpr std::string_view token = "@PELICAN_ENGINE_VERSION@";
+        result.replace(result.find(token), token.size(), pelicanEngineVersion);
+        return result;
+    }();
+    return text;
+}
+
 
 std::vector<TemplateFile> templateFiles(ProjectTemplate kind) {
     std::vector<TemplateFile> files{
-        {"project.json", project_json},
+        {"project.json", projectJson()},
         {"scenes/main.scene.json", scene_json},
         {"assets/asset_data.json", asset_data_json},
         {"assets/.gitkeep", gitkeep},

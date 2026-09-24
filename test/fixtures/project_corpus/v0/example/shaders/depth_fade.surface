@@ -1,0 +1,18 @@
+//! pelican.surface v1
+//! language: glsl
+//! params:
+//!   - { name: fade_distance, type: float, default: 0.5, min: 0.001, max: 10.0 }
+//! screen_inputs: [linear_view_depth]
+//! render_state: { blend: blend, cull: back, depth: read_only, depth_compare: less_equal }
+
+void pelican_surface_v1(in PelicanSurfaceInputV1 surface_input,
+                        inout PelicanSurfaceV1 surface) {
+    float scene_depth =
+        pelican_screen_linear_view_depth(surface_input.uv).r;
+    float fragment_depth =
+        -(pelicanFrame.view * vec4(surface_input.world_position, 1.0)).z;
+    float fade = clamp((scene_depth - fragment_depth) /
+                           pelican_param_fade_distance(),
+                       0.0, 1.0);
+    surface.base_color.a *= fade;
+}

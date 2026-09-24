@@ -11,9 +11,23 @@
 
 namespace Pelican {
 
+// The version of this engine, as `engine_min_version` compares it and as
+// project.json's `saved_by_engine` records it.
+inline constexpr std::string_view pelicanEngineVersion = "0.1.0";
+
+// `engine_min_version` names a version newer than this engine.
+inline constexpr std::string_view projectEngineTooOldCode =
+    "project.engine_too_old@1";
+
 struct ProjectEnvelope {
     std::optional<std::string> name;
     std::optional<std::string> engine_min_version;
+    // MG-1: which engine last wrote project.json through `project init` or
+    // `project migrate`. A record for people and diagnostics only: nothing
+    // decides anything by it (a migration is decided by each document's own
+    // `(schema, version)`), and a value that is not a string is ignored rather
+    // than refused, as an engine before MG-1 ignores the whole key.
+    std::optional<std::string> saved_by_engine;
     // `requires` in project.json: the build features this project cannot run
     // without. Kept in authoring order; `requires` itself is a C++ keyword.
     std::vector<std::string> requirements;
@@ -23,7 +37,7 @@ struct ProjectEnvelope {
 };
 
 struct ProjectEnvelopeParseOptions {
-    std::string_view current_engine_version = "0.1.0";
+    std::string_view current_engine_version = pelicanEngineVersion;
     bool ignore_engine_version = false;
 };
 

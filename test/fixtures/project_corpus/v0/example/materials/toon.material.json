@@ -1,0 +1,13 @@
+{
+  "schema": "pelican.material",
+  "version": 1,
+  "materials": [
+    {
+      "name": "example_toon",
+      "surface": "project://shaders/toon.surface",
+      "values": {
+        "tint": [1.0, 0.32, 0.08, 1.0]
+      }
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "schema": "pelican.input_profile",
+  "version": 1,
+  "name": "touch",
+  "bindings": [
+    {"action": "move", "binding": "xr:/user/hand/left/input/thumbstick"},
+    {"action": "jump", "binding": "xr:/user/hand/right/input/a/click"}
+  ]
+}

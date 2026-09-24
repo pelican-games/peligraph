@@ -73,9 +73,11 @@ TEST_CASE("pelican.project envelope validation is engine independent",
 
     invalid = valid;
     invalid["engine_min_version"] = "999.0.0";
+    // MG-1: the refusal has a name.
     REQUIRE_THROWS_WITH(
         parseProjectEnvelopeJson(invalid),
-        Catch::Matchers::ContainsSubstring("newer than this engine"));
+        Catch::Matchers::StartsWith("project.engine_too_old@1: ") &&
+            Catch::Matchers::ContainsSubstring("newer than this engine"));
 
     const auto ignored = parseProjectEnvelopeJson(
         invalid, {.ignore_engine_version = true});
@@ -83,6 +85,29 @@ TEST_CASE("pelican.project envelope validation is engine independent",
     REQUIRE_THAT(
         ignored.warnings.front(),
         Catch::Matchers::ContainsSubstring("--ignore-engine-version"));
+}
+
+// MG-1: `saved_by_engine` is a record. It is read for display, and adding it
+// is not a format change: an engine that predates it ignores the key (the
+// envelope parser reads only the keys it knows), and so does this one when
+// the value is not a string.
+TEST_CASE("pelican.project saved_by_engine is a record, not a contract",
+          "[project-format][mg1]") {
+    auto project = nlohmann::json{
+        {"schema", "pelican.project"},
+        {"version", 1},
+        {"basic_config", {{"scene_data_json", "scene.json"}}},
+    };
+    REQUIRE_FALSE(parseProjectEnvelopeJson(project).envelope.saved_by_engine);
+    project["saved_by_engine"] = std::string{pelicanEngineVersion};
+    REQUIRE(parseProjectEnvelopeJson(project).envelope.saved_by_engine ==
+            std::string{pelicanEngineVersion});
+    // A version newer than this engine is not a refusal: only
+    // engine_min_version is.
+    project["saved_by_engine"] = "999.0.0";
+    REQUIRE(parseProjectEnvelopeJson(project).warnings.empty());
+    project["saved_by_engine"] = 7;
+    REQUIRE_FALSE(parseProjectEnvelopeJson(project).envelope.saved_by_engine);
 }
 
 // P-2b: a project says up front which build features it cannot run without.

@@ -1,0 +1,12 @@
+{
+  "schema": "pelican.project_catalog_smoke",
+  "version": 1,
+  "minimum_distinct_colors": 50,
+  "minimum_non_modal_ratio": 0.04,
+  "editor": {
+    "pick_x": 96,
+    "pick_y": 96,
+    "scene_id": "default_scene",
+    "declaration_index": 1
+  }
+}

@@ -1,8 +1,9 @@
-#include "renderconfigtransaction.hpp"
+#include "projectdocumenttransaction.hpp"
 
-#include "../log.hpp"
+#include <picosha2.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <ctime>
 #include <fstream>
@@ -67,8 +68,13 @@ std::mutex &routeMutex() {
     return mutex;
 }
 
-RenderConfigAtomicReplaceRoutes &routeState() {
-    static RenderConfigAtomicReplaceRoutes state;
+std::atomic<ProjectDocumentTransactionWarningSink> &warningSink() {
+    static std::atomic<ProjectDocumentTransactionWarningSink> sink{nullptr};
+    return sink;
+}
+
+ProjectDocumentAtomicReplaceRoutes &routeState() {
+    static ProjectDocumentAtomicReplaceRoutes state;
     return state;
 }
 
@@ -85,11 +91,9 @@ void noteLegacyFallback(const std::filesystem::path &destination,
         ++state.legacy_fallbacks;
         state.last_fallback_reason = reason;
     }
-    if (logger != nullptr) {
-        LOG_WARNING(logger,
-                    "render authoring atomic replace fell back to MoveFileExW "
-                    "for {}: {}",
-                    destination.string(), reason);
+    if (const auto sink = warningSink().load()) {
+        sink("render authoring atomic replace fell back to MoveFileExW for " +
+             destination.string() + ": " + reason);
     }
 }
 
@@ -215,9 +219,9 @@ void atomicReplace(const std::filesystem::path &source,
             if (!std::filesystem::is_regular_file(destination,
                                                   state_error) ||
                 state_error ||
-                renderConfigSourceDigest(readBytes(destination)) !=
+                projectDocumentDigest(readBytes(destination)) !=
                     expected_digest) {
-                throw RenderConfigExternalModification{
+                throw ProjectDocumentExternalModification{
                     "render authoring document changed while an atomic replacement was retried: " +
                     destination.string()};
             }
@@ -304,7 +308,7 @@ void linkExclusive(const std::filesystem::path &source,
     std::error_code error;
     std::filesystem::create_hard_link(source, destination, error);
     if (error) {
-        throw RenderConfigExternalModification{
+        throw ProjectDocumentExternalModification{
             "render authoring create destination is no longer missing: " +
             destination.string()};
     }
@@ -358,23 +362,23 @@ std::filesystem::path pathFromUtf8(std::string_view value) {
         std::u8string{begin, begin + value.size()}};
 }
 
-std::string operationName(RenderConfigDocumentOperation operation) {
+std::string operationName(ProjectDocumentOperation operation) {
     switch (operation) {
-    case RenderConfigDocumentOperation::create: return "create";
-    case RenderConfigDocumentOperation::replace: return "replace";
-    case RenderConfigDocumentOperation::erase: return "delete";
+    case ProjectDocumentOperation::create: return "create";
+    case ProjectDocumentOperation::replace: return "replace";
+    case ProjectDocumentOperation::erase: return "delete";
     }
     throw std::logic_error("unknown render config document operation");
 }
 
-RenderConfigDocumentOperation operationFromName(std::string_view value) {
-    if (value == "create") return RenderConfigDocumentOperation::create;
-    if (value == "replace") return RenderConfigDocumentOperation::replace;
-    if (value == "delete") return RenderConfigDocumentOperation::erase;
+ProjectDocumentOperation operationFromName(std::string_view value) {
+    if (value == "create") return ProjectDocumentOperation::create;
+    if (value == "replace") return ProjectDocumentOperation::replace;
+    if (value == "delete") return ProjectDocumentOperation::erase;
     throw std::runtime_error("render authoring recovery manifest has unknown operation");
 }
 
-void requireExpectedState(const RenderConfigCandidateDocument &document) {
+void requireExpectedState(const ProjectCandidateDocument &document) {
     std::error_code error;
     const bool exists = std::filesystem::exists(document.path, error);
     if (error) {
@@ -382,9 +386,9 @@ void requireExpectedState(const RenderConfigCandidateDocument &document) {
                                  error.message());
     }
     if (document.expected.existence ==
-        RenderConfigDocumentExistence::missing) {
+        ProjectDocumentExistence::missing) {
         if (exists) {
-            throw RenderConfigExternalModification{
+            throw ProjectDocumentExternalModification{
                 "render authoring document was created outside the editor: " +
                 document.reference};
         }
@@ -392,13 +396,13 @@ void requireExpectedState(const RenderConfigCandidateDocument &document) {
     }
     if (!exists || !std::filesystem::is_regular_file(document.path, error) ||
         error) {
-        throw RenderConfigExternalModification{
+        throw ProjectDocumentExternalModification{
             "render authoring document was removed outside the editor: " +
             document.reference};
     }
-    const auto digest = renderConfigSourceDigest(readBytes(document.path));
+    const auto digest = projectDocumentDigest(readBytes(document.path));
     if (digest != document.expected.digest) {
-        throw RenderConfigExternalModification{
+        throw ProjectDocumentExternalModification{
             "render authoring document changed outside the editor: " +
             document.reference};
     }
@@ -430,7 +434,7 @@ std::string writeManifest(const std::filesystem::path &directory,
     const auto bytes = manifest.dump(2) + "\n";
     writeBytes(temporary, bytes);
     atomicCreate(temporary, destination);
-    return renderConfigSourceDigest(bytes);
+    return projectDocumentDigest(bytes);
 }
 
 std::string utcTimestamp() {
@@ -500,9 +504,9 @@ TransactionDecision transactionDecision(
             Json::parse(readBytes(committedMarkerPath(directory)));
         const auto recorded =
             marker.value("manifest_digest", std::string{});
-        const auto actual = renderConfigSourceDigest(manifest_bytes);
+        const auto actual = projectDocumentDigest(manifest_bytes);
         if (recorded != actual) {
-            throw RenderConfigExternalModification{
+            throw ProjectDocumentExternalModification{
                 "render_authoring_manifest_mismatch@1: the committed marker in " +
                 directory.string() + " was written for manifest digest " +
                 recorded + " but manifest.json now digests " + actual};
@@ -519,7 +523,7 @@ TransactionDecision transactionDecision(
 
 struct RecoveryEntry {
     std::filesystem::path destination;
-    RenderConfigDocumentOperation operation;
+    ProjectDocumentOperation operation;
     std::string expected_digest;
     std::string next_digest;
     std::filesystem::path backup;
@@ -579,7 +583,7 @@ void restoreBytes(const std::filesystem::path &directory,
     writeBytes(temporary, bytes);
     if (destination_exists) {
         atomicReplace(temporary, destination,
-                      renderConfigSourceDigest(readBytes(destination)));
+                      projectDocumentDigest(readBytes(destination)));
     } else {
         atomicCreate(temporary, destination);
     }
@@ -600,10 +604,10 @@ void rollbackPrepared(
             continue;
         }
         const auto current_digest = exists
-                                        ? renderConfigSourceDigest(
+                                        ? projectDocumentDigest(
                                               readBytes(entry.destination))
                                         : std::string{};
-        if (entry.operation == RenderConfigDocumentOperation::create) {
+        if (entry.operation == ProjectDocumentOperation::create) {
             if (!exists) continue;
             if (current_digest == entry.next_digest) {
                 std::filesystem::remove(entry.destination, error);
@@ -617,9 +621,9 @@ void rollbackPrepared(
 
         if (exists && current_digest == entry.expected_digest) continue;
         const bool is_candidate_state =
-            (entry.operation == RenderConfigDocumentOperation::replace &&
+            (entry.operation == ProjectDocumentOperation::replace &&
              exists && current_digest == entry.next_digest) ||
-            (entry.operation == RenderConfigDocumentOperation::erase &&
+            (entry.operation == ProjectDocumentOperation::erase &&
              !exists);
         if (!is_candidate_state) {
             if (conflict.empty()) {
@@ -641,7 +645,7 @@ void rollbackPrepared(
         restoreBytes(directory, entry.destination, backup, index, exists);
     }
     if (!conflict.empty()) {
-        throw RenderConfigExternalModification{conflict};
+        throw ProjectDocumentExternalModification{conflict};
     }
 }
 
@@ -706,6 +710,15 @@ void removeTransactionDirectory(const std::filesystem::path &directory) {
 
 } // namespace
 
+std::string projectDocumentDigest(std::string_view bytes) {
+    return picosha2::hash256_hex_string(bytes.begin(), bytes.end());
+}
+
+void setProjectDocumentTransactionWarningSink(
+    ProjectDocumentTransactionWarningSink sink) noexcept {
+    warningSink().store(sink);
+}
+
 RenderConfigLegacyTransactionDirectory::RenderConfigLegacyTransactionDirectory(
     std::filesystem::path directory)
     : std::runtime_error{[&directory] {
@@ -726,36 +739,36 @@ nlohmann::json RenderConfigLegacyTransactionDirectory::errorFields() const {
     return {{"path", utf8PathString(path_)}};
 }
 
-std::filesystem::path renderConfigTransactionDirectory(
+std::filesystem::path projectDocumentTransactionDirectory(
     const std::filesystem::path &project_root) {
     return project_root / ".pelican" / "render-authoring.transaction";
 }
 
-RenderConfigAtomicReplaceRoutes renderConfigAtomicReplaceRoutesForTesting() {
+ProjectDocumentAtomicReplaceRoutes projectDocumentAtomicReplaceRoutesForTesting() {
     const std::lock_guard<std::mutex> guard{routeMutex()};
     return routeState();
 }
 
-void renderConfigAtomicReplaceForTesting(
+void projectDocumentAtomicReplaceForTesting(
     const std::filesystem::path &source,
     const std::filesystem::path &destination) {
     atomicReplace(source, destination);
 }
 
-RenderConfigDocumentCommitReceipt commitRenderConfigCandidateDocuments(
+ProjectDocumentCommitReceipt commitProjectDocuments(
     const std::filesystem::path &project_root_input,
-    const RenderConfigCandidateDocumentSet &documents,
-    const RenderConfigDocumentCommitFault &fault) {
+    std::span<const ProjectCandidateDocument> documents,
+    const ProjectDocumentCommitFault &fault) {
     const auto project_root = weaklyCanonical(
         project_root_input, "could not normalize render authoring project root");
-    RenderConfigDocumentCommitReceipt receipt{.project_root = project_root};
+    ProjectDocumentCommitReceipt receipt{.project_root = project_root};
 
     // A prior committed transaction may have left only cleanup artifacts
     // because a scanner held the metadata directory. It is safe to verify and
     // clean that terminal state. A prepared/no-manifest directory may belong
     // to an active writer and remains an exclusive transaction lock.
     const auto existing_directory =
-        renderConfigTransactionDirectory(project_root);
+        projectDocumentTransactionDirectory(project_root);
     std::error_code existing_error;
     if (std::filesystem::exists(existing_directory, existing_error)) {
         if (existing_error) {
@@ -776,7 +789,7 @@ RenderConfigDocumentCommitReceipt commitRenderConfigCandidateDocuments(
                 Json::parse(readBytes(existing_manifest)));
         }
         if (has_manifest && hasCommittedMarker(existing_directory)) {
-            recoverRenderConfigDocumentTransaction(project_root);
+            recoverProjectDocumentTransaction(project_root);
         } else {
             throw std::runtime_error(
                 "another render authoring transaction or recovery is active");
@@ -786,12 +799,12 @@ RenderConfigDocumentCommitReceipt commitRenderConfigCandidateDocuments(
     }
 
     struct Changed {
-        const RenderConfigCandidateDocument *document = nullptr;
+        const ProjectCandidateDocument *document = nullptr;
         std::optional<std::string> before;
         std::string next_digest;
     };
     std::vector<Changed> changed;
-    for (const auto &document : documents.documents()) {
+    for (const auto &document : documents) {
         const auto destination = weaklyCanonical(
             document.path, "could not normalize render authoring destination");
         if (!isWithin(project_root, destination)) {
@@ -802,26 +815,26 @@ RenderConfigDocumentCommitReceipt commitRenderConfigCandidateDocuments(
         requireExpectedState(document);
         std::optional<std::string> before;
         if (document.expected.existence ==
-            RenderConfigDocumentExistence::present) {
+            ProjectDocumentExistence::present) {
             before = readBytes(document.path);
         }
         const bool same =
-            document.operation == RenderConfigDocumentOperation::replace &&
+            document.operation == ProjectDocumentOperation::replace &&
             before && *before == document.bytes;
         if (!same) {
             changed.push_back(Changed{
                 .document = &document,
                 .before = std::move(before),
                 .next_digest =
-                    document.operation == RenderConfigDocumentOperation::erase
+                    document.operation == ProjectDocumentOperation::erase
                         ? std::string{}
-                        : renderConfigSourceDigest(document.bytes),
+                        : projectDocumentDigest(document.bytes),
             });
         }
     }
     if (changed.empty()) return receipt;
 
-    const auto directory = renderConfigTransactionDirectory(project_root);
+    const auto directory = projectDocumentTransactionDirectory(project_root);
     std::error_code error;
     std::filesystem::create_directories(directory.parent_path(), error);
     if (error) {
@@ -858,7 +871,7 @@ RenderConfigDocumentCommitReceipt commitRenderConfigCandidateDocuments(
                 writeBytes(directory / backup_name, *item.before);
                 encoded["backup"] = backup_name;
             }
-            if (document.operation != RenderConfigDocumentOperation::erase) {
+            if (document.operation != ProjectDocumentOperation::erase) {
                 const auto stage_name = std::to_string(index) + ".next";
                 writeBytes(directory / stage_name, document.bytes);
                 encoded["stage"] = stage_name;
@@ -889,7 +902,7 @@ RenderConfigDocumentCommitReceipt commitRenderConfigCandidateDocuments(
 
         // Recheck every expected document after staging, including unchanged
         // overlay documents, before the first destination mutation.
-        for (const auto &document : documents.documents()) {
+        for (const auto &document : documents) {
             requireExpectedState(document);
         }
         const auto manifest_digest = writeManifest(directory, manifest);
@@ -911,12 +924,12 @@ RenderConfigDocumentCommitReceipt commitRenderConfigCandidateDocuments(
             const auto &document = *changed[index].document;
             requireExpectedState(document);
             const auto &encoded = manifest["documents"].at(index);
-            if (document.operation == RenderConfigDocumentOperation::create) {
+            if (document.operation == ProjectDocumentOperation::create) {
                 atomicCreate(directory /
                                  pathFromUtf8(encoded.at("stage").get<std::string>()),
                              document.path);
             } else if (document.operation ==
-                       RenderConfigDocumentOperation::replace) {
+                       ProjectDocumentOperation::replace) {
                 atomicReplace(directory /
                                   pathFromUtf8(encoded.at("stage").get<std::string>()),
                               document.path,
@@ -935,12 +948,12 @@ RenderConfigDocumentCommitReceipt commitRenderConfigCandidateDocuments(
         }
 
         for (const auto &item : changed) {
-            receipt.entries.push_back(RenderConfigDocumentCommitReceiptEntry{
+            receipt.entries.push_back(ProjectDocumentCommitReceiptEntry{
                 .path = item.document->path,
                 .before_bytes = item.before,
                 .after_bytes =
                     item.document->operation ==
-                            RenderConfigDocumentOperation::erase
+                            ProjectDocumentOperation::erase
                         ? std::optional<std::string>{}
                         : std::optional<std::string>{item.document->bytes},
             });
@@ -990,9 +1003,9 @@ RenderConfigDocumentCommitReceipt commitRenderConfigCandidateDocuments(
     }
 }
 
-void rollbackCommittedRenderConfigDocuments(
-    RenderConfigDocumentCommitReceipt receipt) {
-    const auto directory = renderConfigTransactionDirectory(
+void rollbackCommittedProjectDocuments(
+    ProjectDocumentCommitReceipt receipt) {
+    const auto directory = projectDocumentTransactionDirectory(
         weaklyCanonical(receipt.project_root,
                         "could not normalize rollback project root"));
     std::error_code error;
@@ -1009,14 +1022,14 @@ void rollbackCommittedRenderConfigDocuments(
             const bool exists = std::filesystem::exists(entry.path, error);
             if (error) throw std::runtime_error(error.message());
             if (entry.after_bytes) {
-                if (!exists || renderConfigSourceDigest(readBytes(entry.path)) !=
-                                   renderConfigSourceDigest(*entry.after_bytes)) {
-                    throw RenderConfigExternalModification{
+                if (!exists || projectDocumentDigest(readBytes(entry.path)) !=
+                                   projectDocumentDigest(*entry.after_bytes)) {
+                    throw ProjectDocumentExternalModification{
                         "render authoring document changed before defensive rollback: " +
                         entry.path.string()};
                 }
             } else if (exists) {
-                throw RenderConfigExternalModification{
+                throw ProjectDocumentExternalModification{
                     "deleted render authoring document was recreated before defensive rollback: " +
                     entry.path.string()};
             }
@@ -1038,11 +1051,11 @@ void rollbackCommittedRenderConfigDocuments(
     }
 }
 
-void recoverRenderConfigDocumentTransaction(
+void recoverProjectDocumentTransaction(
     const std::filesystem::path &project_root_input) {
     const auto project_root = weaklyCanonical(
         project_root_input, "could not normalize recovery project root");
-    const auto directory = renderConfigTransactionDirectory(project_root);
+    const auto directory = projectDocumentTransactionDirectory(project_root);
     std::error_code error;
     if (!std::filesystem::exists(directory, error)) {
         if (error) throw std::runtime_error(error.message());
@@ -1069,16 +1082,16 @@ void recoverRenderConfigDocumentTransaction(
                                                   manifest)) {
             const bool exists = std::filesystem::exists(entry.destination, error);
             if (error) throw std::runtime_error(error.message());
-            if (entry.operation == RenderConfigDocumentOperation::erase) {
+            if (entry.operation == ProjectDocumentOperation::erase) {
                 if (exists) {
-                    throw RenderConfigExternalModification{
+                    throw ProjectDocumentExternalModification{
                         "committed render fragment deletion was not durable: " +
                         entry.destination.string()};
                 }
             } else if (!exists ||
-                       renderConfigSourceDigest(readBytes(entry.destination)) !=
+                       projectDocumentDigest(readBytes(entry.destination)) !=
                            entry.next_digest) {
-                throw RenderConfigExternalModification{
+                throw ProjectDocumentExternalModification{
                     "committed render authoring document changed before recovery: " +
                     entry.destination.string()};
             }

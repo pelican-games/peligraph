@@ -24,6 +24,7 @@ target_sources(pelican_core PRIVATE
     rpcserver.cpp
     windowedrpchost.cpp
     editorrpchandlers.cpp
+    projectmigrationrpc.cpp
 )
 else()
 target_sources(pelican_core PRIVATE
@@ -43,6 +44,5 @@ target_sources(pelican_core PRIVATE
     editorpreviewservice.cpp
     editorprojectionplan.cpp
     renderconfigeditor.cpp
-    renderconfigtransaction.cpp
     editorruntimefactory.cpp
 )

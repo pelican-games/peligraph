@@ -1,0 +1,14 @@
+{
+  "schema": "pelican.scene",
+  "version": 2,
+  "scenes": {"main": {"objects": [
+    {"name": "LargeSphere", "components": [
+      {"name": "transform", "pos": [-1.15, 0, 6], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+      {"name": "pelican_procedural_geometry", "asset": "large_sphere"}
+    ]},
+    {"name": "SmallSphere", "components": [
+      {"name": "transform", "pos": [1.15, -0.35, 5], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+      {"name": "pelican_procedural_geometry", "asset": "small_sphere"}
+    ]}
+  ]}}
+}

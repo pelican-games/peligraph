@@ -1,0 +1,13 @@
+{
+  "schema": "pelican.material",
+  "version": 1,
+  "materials": [
+    {
+      "name": "example_refract",
+      "surface": "project://shaders/refract.surface",
+      "values": {
+        "distortion": 0.025
+      }
+    }
+  ]
+}

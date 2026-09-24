@@ -227,7 +227,17 @@ std::vector<ConfigCase> staticRenderingConfigCases() {
         if (!std::filesystem::exists(root)) {
             continue;
         }
-        for (const auto &entry : std::filesystem::recursive_directory_iterator(root)) {
+        for (auto it = std::filesystem::recursive_directory_iterator(root);
+             it != std::filesystem::recursive_directory_iterator(); ++it) {
+            const auto &entry = *it;
+            // MG-1: the project corpus is a frozen copy of the shipped
+            // projects for the migration tests. Like projects/ (of which only
+            // example is read here), its feature-composed rendering configs
+            // are not flat frame-plan fixtures.
+            if (entry.is_directory() && entry.path().filename() == "project_corpus") {
+                it.disable_recursion_pending();
+                continue;
+            }
             if (!entry.is_regular_file() || entry.path().extension() != ".json") {
                 continue;
             }

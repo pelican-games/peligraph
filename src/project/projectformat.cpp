@@ -182,6 +182,8 @@ parseProjectEnvelopeJson(const nlohmann::json &project,
 
     ProjectEnvelopeParseResult result;
     result.envelope.name = optionalNonEmptyString(project, "name");
+    result.envelope.saved_by_engine =
+        optionalNonEmptyString(project, "saved_by_engine");
     // A project that names a module this build left out stops here, with the
     // name the animation module already uses when a scene needs it. Opening
     // such a project is not a graph problem to be discovered node by node.
@@ -217,7 +219,8 @@ parseProjectEnvelopeJson(const nlohmann::json &project,
     }
 
     const auto message =
-        "project.json engine_min_version " +
+        std::string{projectEngineTooOldCode} +
+        ": project.json engine_min_version " +
         *result.envelope.engine_min_version +
         " is newer than this engine (" +
         std::string{options.current_engine_version} + ")";

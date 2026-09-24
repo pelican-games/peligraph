@@ -4,6 +4,7 @@
 #include "animationstatus.hpp"
 #include "editorrpchandlers.hpp"
 #include "editorruntimefactory.hpp"
+#include "projectmigrationrpc.hpp"
 #include "../startup.hpp"
 
 #include "../appflow/framephase.hpp"
@@ -39,6 +40,7 @@
 #include "../playback/seqplayer.hpp"
 #include "../phys/physworld.hpp"
 #include "../../project/projectformat.hpp"
+#include "../../project/projectmigration.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
@@ -1553,6 +1555,14 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                    ? render_timing->nodeAverageJson()
                    : disabledGpuTimingNodeAverageStatusJson();
     });
+
+    // MG-1. A running engine answers plan_project_migration too: an empty plan
+    // unless a document moved back under it. A project that needs migration
+    // never gets this far; the player serves these two methods on their own
+    // (runProjectMigrationRpcServer).
+    configureProjectMigrationRpcHandlers(
+        server, modules.path_resolver.projectRoot(),
+        builtinDocumentMigrationRegistry());
 
     configureEditorRpcHandlers(
         server, editor_rpc,

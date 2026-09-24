@@ -1,0 +1,10 @@
+{
+  "schema": "pelican.asset_data",
+  "version": 2,
+  "models": [
+    {
+      "name": "posegraph_demo",
+      "path": "assets/posegraph_demo.gltf"
+    }
+  ]
+}

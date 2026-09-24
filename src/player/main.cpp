@@ -13,6 +13,7 @@
 #include <pelican_core.hpp>
 
 #include "../core/build_features.hpp"
+#include "../core/communication/projectmigrationrpc.hpp"
 #include "../core/container.hpp"
 #include "../core/launchconfig.hpp"
 #include "../core/loader/assetsverification.hpp"
@@ -21,6 +22,7 @@
 #include "../core/log.hpp"
 #include "../project/inputactionoverlay.hpp"
 #include "../project/projectformat.hpp"
+#include "../project/projectmigration.hpp"
 
 namespace {
 
@@ -28,6 +30,7 @@ struct ParsedLaunchConfig {
     Pelican::EngineLaunchConfig engine;
     std::string log_file;
     std::filesystem::path project_root;
+    std::filesystem::path project_file;
     std::optional<std::string> project_json;
     std::optional<std::filesystem::path> user_dir_override;
     bool project_explicit = false;
@@ -238,6 +241,7 @@ void configureImplicitProject(ParsedLaunchConfig &parsed, char *argv0) {
         }
     }
     if (std::filesystem::is_regular_file(project_file)) {
+        parsed.project_file = project_file;
         parsed.project_json = readTextFile(project_file);
     }
 }
@@ -268,6 +272,7 @@ void configureExplicitProject(ParsedLaunchConfig &parsed, const std::string &val
         throw std::runtime_error("--project project.json file not found: " + project_file.string());
     }
 
+    parsed.project_file = project_file;
     parsed.project_json = readTextFile(project_file);
     parsed.project_explicit = true;
 }
@@ -612,6 +617,45 @@ int main(int argc, char *argv[]) {
     Pelican::FastModuleContainer::get<Pelican::EngineLaunchConfig>() = launch_config;
     auto &path_resolver = Pelican::FastModuleContainer::get<Pelican::PathResolver>();
     if (parsed_launch_config.project_json) {
+        // MG-1: the one gate on the way into a project, ahead of every parser.
+        // The player, Studio's player (--rpc) and every tool that launches a
+        // player open a project here. It resolves a document transaction a
+        // crash left behind, then reads each document's raw (schema, version)
+        // envelope; one that a registered migration step starts from stops the
+        // project by name before a parser can refuse it by another. Under
+        // --rpc the player then serves plan/apply_project_migration instead of
+        // the engine, so Studio can migrate and start a new player.
+        try {
+            Pelican::requireProjectMigrationNotRequired(
+                parsed_launch_config.project_root);
+            // Recovery may have put project.json back to the bytes it had
+            // before an interrupted write; what was read at argument time is
+            // then stale.
+            parsed_launch_config.project_json =
+                readTextFile(parsed_launch_config.project_file);
+        } catch (const Pelican::ProjectMigrationError &error) {
+            std::cerr << error.what() << std::endl;
+            if (error.code() != Pelican::projectMigrationRequiredCode) {
+                return 1;
+            }
+            if (launch_config.rpc) {
+                return Pelican::runProjectMigrationRpcServer(
+                           std::cin, std::cout,
+                           parsed_launch_config.project_root, error,
+                           Pelican::builtinDocumentMigrationRegistry())
+                           ? 0
+                           : 1;
+            }
+            std::cerr << "run `pelican_cli project migrate --project "
+                      << parsed_launch_config.project_root.string()
+                      << "` to move these documents to this engine's versions"
+                      << std::endl;
+            return 1;
+        } catch (const std::exception &error) {
+            std::cerr << error.what() << std::endl;
+            return 1;
+        }
+
         // A project.json that names a build feature this player was built
         // without stops here by name (animation.module_unavailable@1), rather
         // than as an unhandled exception on the way out of main.

@@ -60,6 +60,30 @@ foreach(production_sources IN ITEMS "${PRODUCTION_SOURCES}" "${PROJECT_SOURCES}"
   endif()
 endforeach()
 
+# MG-1: the test-only migration step proves the migration path end to end. No
+# shipped archive or tool may carry it: pelican_core, pelican_project and
+# pelican_cli by source, the two archives by symbol and by step id.
+foreach(archive_symbols IN ITEMS "${symbols}" "${project_symbols}")
+  foreach(needle IN ITEMS "registerTestSceneKeyRenameMigrationStep"
+                          "testSceneKeyRenameStepId"
+                          "pelican.test.scene_key_rename")
+    string(FIND "${archive_symbols}" "${needle}" step_index)
+    if(NOT step_index EQUAL -1)
+      message(FATAL_ERROR "test-only migration step leaked into a production archive: ${needle}")
+    endif()
+  endforeach()
+endforeach()
+foreach(production_sources IN ITEMS "${PRODUCTION_SOURCES}" "${PROJECT_SOURCES}" "${CLI_SOURCES}")
+  string(FIND "${production_sources}" "projectmigrationteststep" source_index)
+  if(NOT source_index EQUAL -1)
+    message(FATAL_ERROR
+      "test-only migration step source leaked into production: ${MIGRATION_TEST_STEP_SOURCE}")
+  endif()
+endforeach()
+if(NOT DEFINED MIGRATION_TEST_STEP_SOURCE OR NOT EXISTS "${MIGRATION_TEST_STEP_SOURCE}")
+  message(FATAL_ERROR "the test-only migration step source is missing: ${MIGRATION_TEST_STEP_SOURCE}")
+endif()
+
 foreach(header IN ITEMS "${SCENE_HEADER}" "${RELEASE_HEADER}" "${INSTANCE_HEADER}")
   if(NOT EXISTS "${header}")
     message(FATAL_ERROR "production fault header is missing: ${header}")

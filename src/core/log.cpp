@@ -1,6 +1,8 @@
 #include "log.hpp"
 #include "config.hpp"
 
+#include "../project/projectdocumenttransaction.hpp"
+
 #include <quill/Backend.h>
 #include <quill/Frontend.h>
 #include <quill/LogMacros.h>
@@ -95,6 +97,14 @@ void setupLogger(bool reserve_stdout_for_protocol) {
     logger = quill::Frontend::create_or_get_logger(
         "pelican", createProtocolSinks());
 #endif
+
+    // The project document transaction lives in pelican_project, which has
+    // no logger; its replace-route fallback is reported through this one.
+    setProjectDocumentTransactionWarningSink([](std::string_view message) {
+        if (logger != nullptr) {
+            LOG_WARNING(logger, "{}", message);
+        }
+    });
 
     LOG_INFO(logger, "pelican log start");
 }

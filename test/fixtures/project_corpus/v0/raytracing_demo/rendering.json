@@ -1,0 +1,17 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "ray_group_layout": "ray_layout.json",
+    "ray_bindings": "ray_bindings.json",
+    "features": ["project://features/spheres.json"],
+    "rendering_passes": [{"name": "main_render", "passes": [
+      {"name": "present", "type": "fullscreen",
+       "input": ["ray_color"], "output": {"color": ["swapchain"], "depth": null},
+       "shader": {"vertex": "engine://fullscreen", "fragment": "project://shaders/present"}}
+    ]}]
+  }
+}

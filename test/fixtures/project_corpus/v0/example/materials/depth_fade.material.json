@@ -1,0 +1,13 @@
+{
+  "schema": "pelican.material",
+  "version": 1,
+  "materials": [
+    {
+      "name": "example_depth_fade",
+      "surface": "project://shaders/depth_fade.surface",
+      "values": {
+        "fade_distance": 0.5
+      }
+    }
+  ]
+}

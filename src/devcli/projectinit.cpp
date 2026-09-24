@@ -1,5 +1,8 @@
 #include "projectinit.hpp"
 
+#include "projectmigratecommand.hpp"
+
+#include "../project/projectmigration.hpp"
 #include "../project/projecttemplate.hpp"
 
 #include <argparse/argparse.hpp>
@@ -54,6 +57,11 @@ int runProjectCommand(int argc, char *argv[]) {
         }
         return 0;
     }
+    if (argc > 1 && std::string_view{argv[1]} == "migrate") {
+        return runProjectMigrateCommand(argc - 1, argv + 1,
+                                        builtinDocumentMigrationRegistry(),
+                                        std::cout, std::cerr);
+    }
 
     std::cerr << "unknown project subcommand";
     if (argc > 1) {
@@ -61,6 +69,7 @@ int runProjectCommand(int argc, char *argv[]) {
     }
     std::cerr << std::endl;
     std::cerr << "usage: pelican_cli project init <dir> [--template " << templateChoices() << "]" << std::endl;
+    std::cerr << "       pelican_cli project migrate --project <dir|project.json> [--dry-run]" << std::endl;
     return -1;
 }
 

@@ -1,0 +1,1 @@
+{"schema":"pelican.input_profile","version":1,"name":"keyboard","bindings":[{"action":"move","binding":"kbd:wasd"},{"action":"jump","binding":"kbd:space"}]}

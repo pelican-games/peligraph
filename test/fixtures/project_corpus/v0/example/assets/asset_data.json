@@ -1,0 +1,22 @@
+{
+  "schema": "pelican.asset_data",
+  "version": 2,
+  "models": [
+    {
+      "name": "DamagedHelmet",
+      "path": "assets/models/DamagedHelmet.glb"
+    },
+    {
+      "name": "sponza",
+      "path": "assets/models/sponza.glb"
+    },
+    {
+      "name": "sotai",
+      "path": "assets/models/Sotai_D.glb"
+    },
+    {
+      "name": "character",
+      "path": "assets/models/character.glb"
+    }
+  ]
+}

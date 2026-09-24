@@ -1,0 +1,57 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {
+    "walk_run": {
+      "nodes": [
+        {"id": "weight", "op": "graph.input", "default": 0.0},
+        {"id": "clock", "op": "value.input", "parameters": {"name": "scene_time"},
+         "outputs": ["value"]},
+        {"id": "walk", "op": "pose.clip_sample",
+         "parameters": {"rig": "project://assets/posegraph_demo.gltf", "clip": "Walk"},
+         "inputs": {"time": {"node": "clock", "port": "value"}},
+         "outputs": ["pose"]},
+        {"id": "run", "op": "pose.clip_sample",
+         "parameters": {"rig": "project://assets/posegraph_demo.gltf", "clip": "Run"},
+         "inputs": {"time": {"node": "clock", "port": "value"}},
+         "outputs": ["pose"]},
+        {"id": "mix", "op": "pose.blend",
+         "inputs": {"a": {"node": "walk", "port": "pose"},
+                    "b": {"node": "run", "port": "pose"},
+                    "weight": {"node": "weight", "port": "value"}},
+         "outputs": ["pose"]},
+        {"id": "out", "op": "pose.skeletal",
+         "inputs": {"pose": {"node": "mix", "port": "pose"}},
+         "outputs": []}
+      ],
+      "outputs": {}
+    }
+  },
+  "nodes": [
+    {"id": "clock", "op": "value.input", "parameters": {"name": "scene_time"},
+     "outputs": ["value"]},
+    {"id": "cycle", "op": "value.playback",
+     "inputs": {"elapsed": {"node": "clock", "port": "value"}},
+     "parameters": {"duration": 4.0, "wrap": "repeat", "source_begin": 0.0, "source_end": 4.0},
+     "outputs": ["value"]},
+    {"id": "blend_curve", "op": "value.curve",
+     "inputs": {"time": {"node": "cycle", "port": "value"}},
+     "parameters": {"keys": [{"time": 0.0, "value": 0.0},
+                             {"time": 0.5, "value": 1.0},
+                             {"time": 4.0, "value": 0.0}]},
+     "outputs": ["value"]},
+    {"id": "hero_walk_run", "op": "graph.instance", "definition": "walk_run",
+     "owner": {"scene": "default_scene", "object": 1},
+     "parameters": {"weight": 0.0},
+     "inputs": {"weight": {"node": "blend_curve", "port": "value"}}}
+  ],
+  "outputs": {},
+  "rendering": {
+    "pipeline": {"preset": "engine://render_pipelines/hybrid_v1.json"},
+    "features": [
+      "engine://features/shadow_directional.json",
+      "engine://features/sky_ambient.json",
+      "engine://features/ui.json"
+    ]
+  }
+}

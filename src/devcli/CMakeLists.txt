@@ -13,6 +13,7 @@ target_sources(pelican_cli PRIVATE
   packagecommand.cpp
   processrunner.cpp
   projectinit.cpp
+  projectmigratecommand.cpp
   rulesimport.cpp
   vrmcommand.cpp
   ../core/model/vatformat.cpp

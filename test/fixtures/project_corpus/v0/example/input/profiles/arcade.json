@@ -1,0 +1,9 @@
+{
+  "schema": "pelican.input_profile",
+  "version": 1,
+  "name": "arcade",
+  "bindings": [
+    {"action": "move", "binding": "pad:left_stick", "deadzone": 0.25, "invert_y": true},
+    {"action": "jump", "binding": "pad:b"}
+  ]
+}

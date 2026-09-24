@@ -1,0 +1,13 @@
+{
+  "schema": "pelican.ray_group_layout", "version": 3,
+  "ray_types": ["primary"], "default_group": "sphere",
+  "groups": [{"name": "sphere", "type": "procedural"}],
+  "misses": [{"name": "sky"}],
+  "engine_record": ["material_index", "geometry_index", "geometry_kind"],
+  "record": [{"name": "radius", "type": "f32"}, {"name": "center", "type": "vec3"}],
+  "acceleration_structure": {
+    "defaults": {"mask": 255, "instance_flags": [], "geometry_flags": []},
+    "procedural_defaults": {"geometry_flags": ["opaque"]},
+    "rules": []
+  }
+}

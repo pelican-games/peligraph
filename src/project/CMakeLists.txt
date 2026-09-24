@@ -30,7 +30,9 @@ add_library(pelican_project
     passshapepolicy.cpp
     physicaltargetplanwire.cpp
     prefab.cpp
+    projectdocumenttransaction.cpp
     projectformat.cpp
+    projectmigration.cpp
     projectpathresolver.cpp
     projecttemplate.cpp
     rasterpass.cpp
