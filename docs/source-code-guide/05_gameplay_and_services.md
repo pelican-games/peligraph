@@ -548,7 +548,11 @@ headlessでもplay/stop/isPlayingの状態遷移は模倣されるため、ゲ�
 
 ### decodeとvoice
 
-[`Audio::playSound()`](../../src/core/audio/audio.cpp#L822) は`PathResolver`でbytesを読み、WAVをfloat sampleへdecodeし、backend voice IDを型付き`SoundHandle`へ包みます。bus は `playSound(path)` が SE、`playSound(path, "bgm")` と graph の `audio.playback{bus:"bgm"}` が BGM です(AU-1)。decode 済みの buffer は asset ごとに cache され、同じ音源の start で decode し直しません。
+[`Audio::playSound()`](../../src/core/audio/audio.cpp#L822) は`PathResolver`でbytesを読み、形式を判定してfloat sampleへdecodeし、backend voice IDを型付き`SoundHandle`へ包みます。bus は `playSound(path)` が SE、`playSound(path, "bgm")` と graph の `audio.playback{bus:"bgm"}` が BGM です(AU-1)。decode 済みの buffer は asset ごとに cache され、同じ音源の start で decode し直しません。
+
+形式は WAV と Ogg Vorbis です(AU-2)。[`detectSoundFormat`](../../src/core/audio/audio.cpp#L318) が拡張子(小文字にしたもの)と先頭 bytes の両方で決め、食い違えば decode の前に `audio.format_unsupported@1` を投げます。Ogg Vorbis の decoder は miniaudio の `extras/stb_vorbis.c` で、ファイルの先頭で宣言だけを miniaudio より前に include し、実装はファイルの末尾で miniaudio の実装の後に include します(コードのコメントによれば miniaudio 自身の tools と同じ並べ方。miniaudio 側は未確認)。これで miniaudio が Vorbis の decoding backend を組み込みます。
+
+header が言う長さが 10 秒を超える音は streaming です。[`Audio::prepareSound()`](../../src/core/audio/audio.cpp#L839) は `readSoundHeader` で長さだけを読み、長ければ PCM を作らず、`DecodedSound::encoded`(符号化 bytes の `shared_ptr`)と header の値だけを cache に入れます。backend の [`play`](../../src/core/audio/audio.cpp#L620) は `streamed()` を見て、voice ごとに `ma_decoder_init_memory` で自分の decoder を開き、それを data source にします(短い音は従来どおり共有 PCM の上の `ma_audio_buffer_ref`)。範囲・ループ点・開始位置はどちらでも同じ data source の API に渡すので、一体版のネイティブループも分解版の seek も同じ意味で動きます。短い WAV は自前の `decodeWav` で、streaming の WAV は miniaudio の WAV decoder で読みますが、登録時の検査は長さによらず同じ `parseWav` の規則を通ります。
 
 busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更時はlive voice全てへ再適用します。
 
@@ -557,7 +561,7 @@ busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更�
 `playSound()` 自身が4本の小さなAPIの合成になっています（ヘッダのコメントが規範 — 「decodeとエンジン側の容量はcommit前に全部用意し、backend呼び出しだけを失敗しうるflushに残す」、[`audio.hpp` 内](../../src/core/audio/audio.hpp#L142)）。
 
 ```text
-prepareSound(path)     # PathResolver + WAV decode。shared_ptr を作るのはここ
+prepareSound(path)     # PathResolver + 形式判定 + decode(streaming なら header だけ)。shared_ptr を作るのはここ
 reserveSoundHandle()   # next_handle を 1 つ消費。0 と max は overflow_error
 prepareVoiceSlot(h)    # voices への emplace(= ノード確保)まで。backend_id は 0
 commitPreparedPlay(h)  # backend->play() の後、既存ノードへ scalar を代入するだけ
@@ -1041,7 +1045,7 @@ outboxのentryは呼び出しごとに1件ではありません。
 - mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L168)）
 - manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L175)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3378)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3382)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 

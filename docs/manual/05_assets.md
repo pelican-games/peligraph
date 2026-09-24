@@ -15,7 +15,7 @@
 ## 5.1 二層モデル — この章で最も重要な原則
 
 > **設計決定(二層モデル):** アセット形式は 2 層に分かれる。
-> - **ランタイム層** = エンジンが直接読む**閉じた小集合**: glTF/glb/VRM、**.vrma(VRM Animation。glb コンテナだが別 alias ゲート — §5.2)**、PNG/JPG、EXR(限定スコープ)、WAV、JSON/JSONL、SPIR-V/GLSL。この集合への追加は設計文書([../design_asset_format_policy.md](../design_asset_format_policy.md))の改訂が門番。
+> - **ランタイム層** = エンジンが直接読む**閉じた小集合**: glTF/glb/VRM、**.vrma(VRM Animation。glb コンテナだが別 alias ゲート — §5.2)**、PNG/JPG、EXR(限定スコープ)、WAV・Ogg Vorbis(音声。AU-2 で Ogg Vorbis を追加)、JSON/JSONL、SPIR-V/GLSL。この集合への追加は設計文書([../design_asset_format_policy.md](../design_asset_format_policy.md))の改訂が門番。
 > - **ソース層** = FBX・USD・PSD・.hip(Houdini)など。**エンジンは 1 バイトも読まない**(FBX SDK・USD・Alembic をリンクしない — ライセンス・ビルド時間・保守のため)。外部ツールでランタイム層形式に変換し、`imports/` に納品物として着地させる。
 >
 > 変換は「明示的・決定的・ファイルとして残る」。Unity/Unreal 式の隠れインポートキャッシュは不採用。変換結果の出所は `pelican.import` manifest が記録する。
@@ -287,7 +287,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 
 - バイナリの sha256 台帳は **assets manifest(✅WP66)** です: `pelican_cli assets manifest / verify / status` で生成・照合し、起動時にも検証されます([第3章](03_project_format.md) §3.4)。example の README にあった手書き表はこれに置き換わりました。
 - 置き場所を外部化したい場合は asset store([第3章](03_project_format.md) §3.4)を使います。
-- `pelican_cli project init` が生成する `.gitattributes` は `*.glb -text` 等の改行変換防止(CRLF 事故防止)+ LFS 行のコメントアウトを含みます。
+- `pelican_cli project init` が生成する `.gitattributes` は `*.glb -text` 等の改行変換防止(CRLF 事故防止)+ LFS 行のコメントアウトを含みます。⚠️ 並ぶのは `*.glb` / `*.vrm` / `*.png` / `*.wav` / `*.spv` で、**`*.ogg` はまだありません**(AU-2 で Ogg Vorbis を足したときに雛形を直していない)。Ogg を置く project は `*.ogg -text` を自分で足してください([雛形](../../src/project/projecttemplate.cpp#L300))。
 
 ## 5.8 対応形式の一覧(実装状況付き)
 
@@ -298,7 +298,8 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 | PNG / JPG | テクスチャ・UI 画像 | ✅ |
 | EXR(限定スコープ) | HDR テクスチャ | ✅ WP26(`PELICAN_WITH_EXR`) |
 | KTX2(制限サブセット) | 圧縮テクスチャ(RGBA8/BC7/BC5) | ✅ WP92 |
-| WAV | SE([第8章](08_gameplay.md)) | ✅ WP51(`PELICAN_WITH_AUDIO`) |
+| WAV(PCM / IEEE float) | 音(SE・BGM。[第8章](08_gameplay.md) §8.11) | ✅ WP51(`PELICAN_WITH_AUDIO`) |
+| Ogg Vorbis | 音(SE・BGM。[第8章](08_gameplay.md) §8.11) | ✅ AU-2(`PELICAN_WITH_AUDIO`)。Opus / FLAC を入れた Ogg は不可。判定は下の「音声形式」 |
 | pelican.atlas | スプライト/UI のアトラス | ✅ WP103 |
 | pelican.transform_seq(JSONL) | TRS 焼き込みアニメ | ✅ WP17(`PELICAN_WITH_SEQPLAYER`) |
 | pelican.vat(glb extras) | 頂点アニメ | ✅ WP20(`PELICAN_WITH_VAT`) |
@@ -314,6 +315,19 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 | PSD(外部展開) | UI ソース | ✅ K3(外部 pelican-import-tools が展開。エンジンは読まない) |
 | USD / USDZ | ソース層(エンジンは読まない) | ✅ 外部 pelican-import-tools の `usd` レシピ(WP118/119/124 — §5.5)。UsdSkel / camera / anim は 📐U-USD1 以降 |
 | FBX / .hip | ソース層(エンジンは読まない) | — 外部変換のみ |
+
+### 音声形式(✅AU-2)
+
+エンジンが鳴らせる音は **WAV と Ogg Vorbis** の 2 つです(2026-09-24 利用者裁定。MP3 / FLAC は需要が出てから)。`playSound` でもグラフの `audio.playback` の `asset` でも同じ規則で、**拡張子と先頭 bytes が同じ形式を指すときだけ**受け付けます([`detectSoundFormat`](../../src/core/audio/audio.cpp#L318))。
+
+| 形式 | 拡張子(大文字小文字は区別しない) | 先頭 bytes |
+|---|---|---|
+| WAV | `.wav` | `RIFF` …… `WAVE` |
+| Ogg Vorbis | `.ogg` | `OggS` で、最初の packet が `\x01vorbis` |
+
+- それ以外は decode の前に `audio.format_unsupported@1` `{asset, extension, signature, supported}` で拒否されます。拡張子と中身が食い違うもの(中身が WAV の `.ogg` など)や、Opus / FLAC を入れた `.ogg` もここで止まります。
+- 10 秒を超える音は全体を decode せず streaming で鳴ります(第8章 §8.11「長い音の streaming」)。
+- 方針の正は [資産形式の方針](../design_asset_format_policy.md) §1.1 です。
 
 ## 関連文書
 

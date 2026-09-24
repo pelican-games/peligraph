@@ -1,7 +1,9 @@
 # アセットフォーマット方針: ランタイム二層モデル
 
 対象読者: エンジン担当 + DCC/ツール側担当。
-ステータス: v1.1 ドラフト(2026-07-02。レビュー 1 巡反映: EXR をランタイム層へ
+ステータス: v1.2(2026-09-25。音声を「WAV のみ」から **WAV + Ogg Vorbis** に改めた
+(2026-09-24 利用者裁定、AU-2 `e68573a2`。§1 の音声の行と §1.1)。以下は v1.1 の記録)。
+v1.1 ドラフト(2026-07-02。レビュー 1 巡反映: EXR をランタイム層へ
 限定昇格(すぐ使うため)、音声は WAV のみで開始、USD は関心ありとして変換レーンを
 早期候補に。FBX = Blender headless は承認済み)。
 前提: `external_tools_requirements.md`(R1〜R10)、`design_project_dcc_houdini.md`
@@ -42,7 +44,7 @@ BVH / WAV ...)をプロジェクトでどう取り回すかを 1 枚で決める
 | 画像(開発レーン) | PNG / JPG | **実装済み**(stb_image) | 可搬・可読を優先 |
 | 画像(GPU レディレーン) | **KTX2 + Basis Universal** | **将来追加を本書で予告**(WP 候補) | ミップ済み・BCn transcode・glTF 側は KHR_texture_basisu。リーダは libktx |
 | 画像(HDR レーン) | **EXR(限定スコープ)** | **追加決定(2026-07-02 レビュー: すぐ使う)。WP 候補** | リーダは **tinyexr(ヘッダオンリー)**。single-part・half/float・非 deep のみ。用途は IBL/HDRI・LUT。大量テクスチャ運用になったら KTX2 HDR へ最適化移行 |
-| 音声 | **WAV(PCM)のみで開始** | **未実装**(sound モジュールは空) | 実装時に miniaudio 系ヘッダオンリーを第一候補。圧縮レーン(Ogg 系)はサイズが問題になってから(§6 未決 1)。MP3 は採用しない |
+| 音声 | **WAV + Ogg Vorbis**(2026-09-24 利用者裁定、AU-2)。**MP3 / FLAC は需要が出てから** | **実装済み**(WAV = WP51、Ogg Vorbis = AU-2 `e68573a2`。`PELICAN_WITH_AUDIO` の中だけ) | 再生は miniaudio 0.11.25。Ogg Vorbis の decoder は miniaudio の `extras/stb_vorbis.c`(別の依存は足していない)。WAV は PCM と IEEE float。判定の規則は §1.1 |
 | 設定・データ | JSON / JSONL(schema+version 必須、R10) | 実装済み | |
 | シェーダ | GLSL / .spv / WGSL(stem 規約) | [PFW] §4 | |
 
@@ -50,6 +52,27 @@ BVH / WAV ...)をプロジェクトでどう取り回すかを 1 枚で決める
   リンクせず tinyexr(ヘッダオンリー)を使う。deep・multi-part・タイル等の
   高機能は非対応のまま(必要になったらソース層で KTX2 に変換して受ける)。
 - **DDS は採用しない**(KTX2 が上位互換。二重にしない)。
+
+### 1.1 音声形式の判定(AU-2)
+
+音声の asset は、**拡張子と先頭 bytes が同じ形式を指すときだけ**受け付ける
+(`src/core/audio/audio.cpp` の `detectSoundFormat`)。
+
+| 形式 | 拡張子(大文字小文字は区別しない) | 先頭 bytes |
+|------|------|------|
+| WAV | `.wav` | offset 0 が `RIFF`、offset 8 が `WAVE` |
+| Ogg Vorbis | `.ogg` | offset 0 が `OggS`、かつ最初の page の最初の packet が `\x01vorbis`(Vorbis の identification header) |
+
+- どちらにも当たらないものは、decode の前に `audio.format_unsupported@1` で拒否する。
+  detail は `asset`(渡された参照)/ `extension`(小文字にした拡張子。無ければ空文字)/
+  `signature`(先頭 bytes の判定: `wav` / `ogg` / `unknown`)/ `supported`(受け付ける形式の一覧)。
+- 拡張子と中身が食い違うもの(中身が WAV の `.ogg`、中身が Ogg の `.wav`)も拒否する。
+  拡張子の書き換えで別の decoder に渡ることは無い。
+- **Opus や FLAC を入れた Ogg は Ogg Vorbis ではない**(最初の packet が `\x01vorbis` でない)ので
+  `signature: unknown` で拒否する。
+- 判定を通った後の検査は形式ごと: WAV は chunk・`fmt `・`data` の整合(PCM / IEEE float、
+  byte 単位の bit 深度、block align)を読み、Ogg Vorbis は decoder で header と長さを読む。
+  ここで壊れていれば形式名付きの散文(`Invalid WAV: ...` / `Invalid Ogg Vorbis: ...`)で止まる。
 
 ## 2. ソース層 → 変換レーン対応表
 
@@ -118,6 +141,8 @@ WP23(KTX2)より先に着手してよい。
 
 1. 圧縮音声レーン(Ogg Vorbis/Opus)の導入時期(WAV のファイルサイズが
    問題になってから。コーデック選択もその時点で)
+   —— **決着(2026-09-24 利用者裁定、AU-2 `e68573a2` で実装)**: Ogg Vorbis を入れた(§1.1)。
+   Opus 入りの Ogg は受け付けない。MP3 / FLAC は需要が出てから
 2. EXR → KTX2 HDR への最適化移行時期(tinyexr 直読みで当面は足りる想定)
 3. `pelican-import-tools` リポジトリの作成時期(houdini-adapter と同時が候補)
 4. USD 変換レーン(usd→glb)の試作時期(関心あり。Blender 経由 vs guc の

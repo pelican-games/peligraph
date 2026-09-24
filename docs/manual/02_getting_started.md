@@ -101,7 +101,7 @@ ON のまま配布します。OFF は必要な shader variant を全て事前生
 | `PELICAN_WITH_SEQPLAYER` | `pelican.transform_seq` 再生 |
 | `PELICAN_WITH_VAT` | `pelican.vat`(GLB)再生 |
 | `PELICAN_WITH_EXR` | EXR 読み込み |
-| `PELICAN_WITH_AUDIO` | WAV SE 再生 |
+| `PELICAN_WITH_AUDIO` | 音の再生(WAV / Ogg Vorbis、se / bgm バス。miniaudio と同梱の stb_vorbis はこの中だけで有効)。⚠️ feature registry の DESCRIPTION は「WAV sound-effect」のまま([pelican_feature_registry.cmake](../../cmake/pelican_feature_registry.cmake#L122)) |
 | `PELICAN_WITH_ANIMATION` | スケルタルアニメーションの評価器と `pelican.pose` グラフ module(✅AG-1a。[pelican_feature_registry.cmake:146](../../cmake/pelican_feature_registry.cmake#L149)、`SMOKE_ID animation`) |
 | `PELICAN_WITH_IMGUI` | ImGui 開発者 UI(F1 トグル・Plan Viewer)。配布では dist-config が常時 OFF([第10章](10_tools.md)) |
 | `PELICAN_WITH_OPENXR` | OpenXR(PCVR)ランタイム。開発既定 ON・**配布は `dist-config --with openxr` を指定した時だけ ON** |

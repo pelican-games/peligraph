@@ -77,7 +77,7 @@ F-2 のときは、project を切り替えた直後の status bar に
 `Modal transform polling failed: pelican_player exited before returning an RPC response` が出ることがありました
 (gizmo の `get_modal_transform` polling が、切替で終了した古い engine に宛てた要求の失敗を出していたもの。
 [文言](../../src/devstudio/model/gizmomodel.cpp#L1062))。**✅F-7 で出なくなりました**: 別の project へ切り替える前に
-gizmo の session を終え、返答待ちの要求を忘れます([切替の前処理](../../src/devstudio/view/mainwindow.cpp#L1537))。
+gizmo の session を終え、返答待ちの要求を忘れます([切替の前処理](../../src/devstudio/view/mainwindow.cpp#L1548))。
 今開いている project の開き直しは engine がそのまま残るので、session も続きます。
 なお、Studio で作った project でも `project.json` の `generator` は `"pelican_cli project init"` のままです。
 
@@ -129,7 +129,7 @@ behavior候補の`key`は`behavior:型名`、`behavior_type`は登録名です�
 ### Studio で object を置く(✅G-2)
 
 Outliner の右クリックと **Scene** toolbar の **Add Object** は同じ 1 つの menu です
-([Add Object の menu を作る所](../../src/devstudio/view/mainwindow.cpp#L1044))。項目は **Empty** / **Cube (built-in)** /
+([Add Object の menu を作る所](../../src/devstudio/view/mainwindow.cpp#L1055))。項目は **Empty** / **Cube (built-in)** /
 **Plane (built-in)** / **Sphere (built-in)** / **Floor** で、自動化面の action 名は `pelican.outliner.addObject.empty` / `cube` /
 `plane` / `sphere` / `floor` です。
 
@@ -144,14 +144,14 @@ Outliner の右クリックと **Scene** toolbar の **Add Object** は同じ 1 
   の最小の空き番号です([`uniqueObjectName()`](../../src/devstudio/model/inspectormodel.cpp#L429))。Blender は `Cube.001` と
   書きますが、scene の object 名は `[a-zA-Z0-9_]` だけなので `_` にしています。
 - **選択**: Outliner の読み直しを最短の間隔に縮め、committed の応答の `created_objects` が名乗る object が Outliner に
-  出た時点でそれを選び、Inspector に出します([`MainWindow::selectCreatedObject()`](../../src/devstudio/view/mainwindow.cpp#L1154))。
+  出た時点でそれを選び、Inspector に出します([`MainWindow::selectCreatedObject()`](../../src/devstudio/view/mainwindow.cpp#L1165))。
   ✅OL-1 から authoring id で選びます(それまでは名前で選び直していました)。
 - **Undo**: coalesce key を付けないので、Undo 1 回で Add 1 回が戻ります。
 - **Inspector の編集の途中で押した Add Object は待ちます(✅Q-7)**: Inspector の値の編集が進行中(commit の途中を含む)に
   押すと、spawn は 1 本だけ待ち、Inspector の手が空いた時点で、その編集が残した scene revision の上に送られます
   ([`InspectorModel::spawnObject()`](../../src/devstudio/model/inspectormodel.cpp#L2530))。待っている間は status bar(8 秒)と
   Outliner の下の 1 行(`pelican.outlinerNotice`)に `Adding <名前> after the current edit.` が出ます
-  ([Add Object の結果を status bar と Outliner に出す所](../../src/devstudio/view/mainwindow.cpp#L1130))。既に 1 本待っているときに
+  ([Add Object の結果を status bar と Outliner に出す所](../../src/devstudio/view/mainwindow.cpp#L1141))。既に 1 本待っているときに
   押した 2 本目は、置き換えずに断ります。同じ 2 か所に
   `Could not add <名前>: <待っている名前> is already waiting to be added; add another once it is in.` が出るので、
   1 本目が入ってからもう一度押してください。Outliner の下の 1 行は、新しい object が選ばれたときに消えます。
@@ -216,11 +216,11 @@ Outliner の行の右クリックの menu の先頭に **Duplicate** と **Delet
 
 - **Duplicate(Ctrl+D)**: 選択中の object を子孫ごと複製します。copy の名前は engine が付けます(`Cube_copy1` など)。
   複製の後は、committed の応答の `created_objects` のうち、`source_object_id` が複製元のもの(copy の根)を選びます
-  ([Duplicate を送る所](../../src/devstudio/view/mainwindow.cpp#L1203))。
+  ([Duplicate を送る所](../../src/devstudio/view/mainwindow.cpp#L1214))。
 - **Delete(Del)**: 選択中の object を消します。子孫も一緒に消えます。**子孫があるときだけ** 1 回問います
   (`Delete <名前>? The N objects under it are deleted too.`、既定の button は Cancel。自動化面の名前は
   `pelican.outliner.deleteConfirm` と `.delete` / `.cancel`)。子孫が無ければ問わずに消します(Undo で戻せるので)。
-  消した後は親を、親が無ければ前に宣言された兄弟を選びます([Delete の確認](../../src/devstudio/view/mainwindow.cpp#L1217))。
+  消した後は親を、親が無ければ前に宣言された兄弟を選びます([Delete の確認](../../src/devstudio/view/mainwindow.cpp#L1228))。
 - Ctrl+D と Del は **Outliner に focus があるときだけ**効きます。Inspector の欄で押した Del は文字を消すだけです
   ([Outliner の shortcut](../../src/devstudio/view/outlinertree.cpp#L57))。
 - **drag で親を付け替えます**。行を掴んで別の行の上で離すと([落とし先の判定](../../src/devstudio/view/outlinertree.cpp#L81)):
@@ -237,7 +237,7 @@ Outliner の行の右クリックの menu の先頭に **Duplicate** と **Delet
   消えたときだけ外れます([id で選択を引き直す所](../../src/devstudio/model/selection.cpp#L71))。保存した scene を engine が
   読み直したとき(engine の再起動)も、id が同じなので選択は残ります。**別の project を開くと選択は外れます**。
   Undo / Redo で object が戻ってきたとき(Delete の Undo など)は、その応答の `created_objects` の object を選びます
-  ([committed の後に選ぶ所](../../src/devstudio/view/mainwindow.cpp#L1312))。
+  ([committed の後に選ぶ所](../../src/devstudio/view/mainwindow.cpp#L1323))。
 - **断られたとき**は、status bar(8 秒)と Outliner の下の 1 行(`pelican.outlinerNotice`)に 1 文で出ます
   ([断りの文](../../src/devstudio/model/inspectormodel.cpp#L634))。例: engine が `cycle_detected` で断った付け替えは `Cannot move <名前> under <親>: <親> is inside <名前>.`、
   preview 中は `Cannot duplicate <名前> while a live preview is open; finish the preview first.`、physics の無い build で
@@ -1052,7 +1052,7 @@ forward の pass だけの pipeline には受け皿が無く、engine は上の 
 
 commit の結果に `restart_required` があると、Frame Plan の status 行に
 `Restarting the engine to apply the material route setting...` を出し、**同じ project で engine を止めて起動し直します**
-([`EmbeddedViewport::restartEngine()`](../../src/devstudio/viewport/embeddedviewport.cpp#L491))。gate はすぐ閉じ、新しい engine が
+([`EmbeddedViewport::restartEngine()`](../../src/devstudio/viewport/embeddedviewport.cpp#L493))。gate はすぐ閉じ、新しい engine が
 readiness に答えると Frame Plan が戻ります。
 
 **保存していない scene の編集があれば、再起動の前に問います(✅G-5)**: project の切替と同じ Save / Discard / Cancel が
@@ -1234,7 +1234,7 @@ debounce の間)は、notice が **「Saving the graph change...」** になり�
 チャネルは**逐次**で、命令の実行中に次の行が来たら `automation.busy@1` で断ります
 ([判定](../../src/devstudio/automation/automationserver.cpp#L102))。認証はありません(flag を付けたときだけ開く口です)。
 
-**命令は 20 個**です([一覧](../../src/devstudio/automation/automationcommands.cpp#L1892)):
+**命令は 20 個**です([一覧](../../src/devstudio/automation/automationcommands.cpp#L1896)):
 `list` / `click` / `double_click` / `drag` / `wheel` / `move` / `press` / `release` / `key` / `type` / `text` /
 `action` / `menu_list` / `view_state` / `wait` / `wait_engine` / `rpc` /
 `open_project` / `screenshot` / `quit`。`rpc` は `EmbeddedViewport` 経由で engine へ送り、応答をそのまま返します。
@@ -1283,7 +1283,7 @@ driver の stdout / stderr は、cp932 の console で出せない文字があ�
 
 **回し方**: [`tools/studio_drive.py`](../../tools/studio_drive.py#L982)(Python 3.11以上、標準ライブラリだけ)が Studio を
 `--automation --project --tab` で起動し、step を順に送り、`report.json` を書きます。ctest からは
-`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L3081)) —— **実物の窓が要るので
+`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L3085)) —— **実物の窓が要るので
 `QT_QPA_PLATFORM=offscreen` は掛けません**。fixture の project は temp に 2 つ複製されるので、シナリオは
 文書を書き換えてよく、「ディスクから読み直す」も試せます([複製](../../test/run_studio_scenario.cmake#L30))。
 CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが見つかった`AUTO`）が必要です。
@@ -1428,10 +1428,10 @@ desktop の grab に戻ります。見えているかは、撮る範囲の 5×5 
 どちらで撮ったかは応答の **`capture`**(`print_window` / `screen`)に出ます。着地時に別の窓の重なりで 2 本のシナリオが
 赤になったための変更です。
 `screenshot` の応答は `path` / `mode` / `capture` / `width` / `height`(と、上の場合だけ `desktop_obstructed`)に加えて **`distinct_colors`**(絵に含まれる色の数)を返します
-(✅F-2、[screenshot の distinct_colors](../../src/devstudio/automation/automationcommands.cpp#L1869))。消去されただけの viewport は 1 色なので、
+(✅F-2、[screenshot の distinct_colors](../../src/devstudio/automation/automationcommands.cpp#L1873))。消去されただけの viewport は 1 色なので、
 `result` step で `distinct_colors` を読めば「engine が何か描いたか」を PNG を開かずに判定できます。
 **`"pixels": [[x, y], ...]`**(✅F-4)を付けると、応答にその各点の色が `"#rrggbb"` の配列 `pixels` で返ります
-([screenshot の pixels の読み取り](../../src/devstudio/automation/automationcommands.cpp#L1876))。x / y は絵の幅・高さに
+([screenshot の pixels の読み取り](../../src/devstudio/automation/automationcommands.cpp#L1880))。x / y は絵の幅・高さに
 対する 0〜1 の割合なので、窓の大きさを知らずに書けます。配列でない・2 要素でない・範囲外なら `automation.bad_request@1` です。
 `result` step の `remember` で 1 点の色を覚え、別の点を `value_of` と `op`(`eq` / `ne`)で比べれば「同じ縞の下も同じ色、隣の縞は違う色」の
 ように、output transform がどんな色にしても絵の形を判定できます。

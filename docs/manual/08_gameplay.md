@@ -610,23 +610,29 @@ Builtin/Jolt/game DLL provider の交換、ゲーム独自 controller への置�
 
 ウィンドウモードの時刻は実測 dt(上限 0.1 秒でクランプ)なので、厳密なリプレイ互換が必要な検証はヘッドレスで行ってください。
 
-## 8.11 オーディオ(✅A1 = WP51、AU-1 `feca9dce`)
+## 8.11 オーディオ(✅A1 = WP51、AU-1 `feca9dce`、AU-2 `e68573a2`)
 
 音を鳴らす道は 2 本あります。ゲームコードから 1 回鳴らす `ctx.audio().playSound`(下の「ゲームコードから鳴らす」)と、共通グラフの `audio.playback` ノード(下の「グラフで鳴らす」)です。グラフの voice は「今どこを鳴らすか」をグラフの時計が決めるので、ループ・一時停止・シーンをまたぐ BGM・フェードをグラフの中で組めます。
 
 ### ゲームコードから鳴らす
 
 ```cpp
-auto h = ctx.audio().playSound("assets/audio/shot.wav");     // WAV のみ。se バスで鳴る
-auto m = ctx.audio().playSound("assets/audio/theme.wav", "bgm"); // バスを名指し(AU-1)
+auto h = ctx.audio().playSound("assets/audio/shot.wav");     // se バスで鳴る
+auto m = ctx.audio().playSound("assets/audio/theme.ogg", "bgm"); // バスを名指し(AU-1)。Ogg Vorbis(AU-2)
 ctx.audio().setBusVolume("se", 0.5f);                        // バスは master / bgm / se の 3 固定
 bool playing = ctx.audio().isPlaying(h);
 ctx.audio().stopSound(h);
 ```
 
-- 対応フォーマットは **WAV のみ**(厳格なパーサ。規格逸脱ファイルは名指しで拒否)。再生バックエンドは miniaudio です。
+- 対応フォーマットは **WAV と Ogg Vorbis** です(✅AU-2。MP3 / FLAC は需要が出てから)。**拡張子(大文字小文字は区別しない)と先頭 bytes が同じ形式を指すときだけ**受け付けます([`detectSoundFormat`](../../src/core/audio/audio.cpp#L318))。
+  - `.wav` は先頭が `RIFF`、8 byte 目から `WAVE`。中身は PCM か IEEE float で、規格から外れたもの(chunk の食い違い、block align の不一致など)は `Invalid WAV: ...` で拒否します。
+  - `.ogg` は先頭が `OggS` で、最初の packet が Vorbis の識別 header(`\x01vorbis`)であること。**Opus や FLAC を入れた Ogg は通りません。**
+  - それ以外(`.mp3`、拡張子なし、中身が WAV の `.ogg` のような食い違い)は、decode の前に **`audio.format_unsupported@1`** `{asset, extension, signature, supported}` で拒否します。`signature` は先頭 bytes の判定(`wav` / `ogg` / `unknown`)です。`playSound` からもこの名前の例外が出ます。
+  - 形式の方針は [資産形式の方針](../design_asset_format_policy.md) §1.1、一覧は [第5章](05_assets.md) §5.8。
+- 再生バックエンドは miniaudio(0.11.25)で、Ogg Vorbis の decoder は miniaudio に同梱の stb_vorbis です(`PELICAN_WITH_AUDIO` の中だけで有効)。
+- **10 秒を超える音は streaming で鳴ります**(✅AU-2。長さは header で判断)。全体を decode せず、符号化されたままの bytes を 1 つだけ持ち、voice ごとに自分の decoder で再生しながら読みます。下の「長い音の streaming」を見てください。
 - `playSound(path)` は se バスで鳴ります。**`playSound(path, bus)`**([宣言](../../src/core/userpublic/gamecontext.hpp#L88))は `"se"` か `"bgm"` を受け、それ以外(`"master"` を含む)は `Unknown audio bus: <名前> (a voice plays on se or bgm)` で投げます。master は se と bgm の両方に掛かる音量で、voice を載せる先ではありません。実効音量は master × 各バスです。
-- **同じアセットの decode は 1 回です**(✅AU-1)。decode した結果はアセットの正規化した参照を鍵に保持し、ディスク上のファイルなら更新時刻とサイズも鍵に含めます(置き換えたファイルは decode し直す)。合計の上限は 256 MB で、超えたときは **どの voice も持っていないもの**から捨てます([`decodedCacheBudget`](../../src/core/audio/audio.cpp#L408))。`playSound`、グラフの voice、rendering config 登録時のアセット検査が同じ decode を共有します。
+- **同じアセットの decode は 1 回です**(✅AU-1)。decode した結果はアセットの正規化した参照を鍵に保持し、ディスク上のファイルなら更新時刻とサイズも鍵に含めます(置き換えたファイルは decode し直す)。合計の上限は 256 MB で、超えたときは **どの voice も持っていないもの**から捨てます([`decodedCacheBudget`](../../src/core/audio/audio.cpp#L408))。`playSound`、グラフの voice、rendering config 登録時のアセット検査が同じ decode を共有します。streaming の音(10 秒超)も同じ cache に入りますが、持つのは PCM ではなく符号化された bytes で、上限にはその大きさで数えます。
 - `PELICAN_WITH_AUDIO=OFF` ビルドで音 API を呼ぶと、どのフラグで無効化されたかを言うエラー(`BuildFeatureCallDisabledError`、`code()` = `build_feature_disabled@1`)になります。`onDestroy` の中だけは例外にならず `effect_errors` に積まれます(§8.4「機能を外した build」)。
 - **シーンロード中(behavior の `onInit` / `onDestroy`)に呼ぶと、再生・停止・バス音量はロードの成功後にまとめて適用されます**(§8.4 の囲み・[第4章 §4.3](04_scene_ecs.md))。`isPlaying` / `busVolume` はその予約を反映した値を返します。
 
@@ -659,11 +665,11 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 | 種類 | 名前 | 意味 |
 |---|---|---|
-| 入力(必須) | `time` | このノードの時計。`events` を使うなら `scene_time` を繋ぐ(下記) |
+| 入力(必須) | `time` | このノードの時計。`events` を繋ぐなら `scene_time` だけから来ること(違えば拒否。下記) |
 | 入力(任意) | `events` | 再生制御イベント(`event.playback` の出力) |
 | 入力(任意) | `position` | 分解版の「今鳴らす音源の秒」 |
 | 入力(任意) | `source_begin` / `source_end` / `speed` / `delay` | 一体版の写像を edge で駆動するとき |
-| parameter | `asset` | 鳴らす WAV(必須) |
+| parameter | `asset` | 鳴らす WAV / Ogg Vorbis(必須) |
 | parameter | `bus` | `se`(既定)/ `bgm` |
 | parameter | `wrap` | `once`(既定)/ `repeat` / `ping_pong` |
 | parameter | `source_begin` / `source_end` / `speed` / `delay` | 一体版の写像を固定値で書くとき |
@@ -731,14 +737,17 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 - 各ノードは **idle / playing / paused** の状態機械を持ちます。`start` で(もう一度 `start` すれば voice を作り直して)playing、`pause` で paused、`resume` で playing に戻り、`reset` で idle(voice を止める)。
 - `position` と写像(`wrap` / `source_begin` / `source_end` / `speed` / `delay` のどれか。parameter でも edge でも)を 1 ノードに同時に書くと **`audio.playback_mapping_conflict@1`** `{node, parameters}`([valuegraph.cpp](../../src/core/userpublic/valuegraph.cpp#L94))。
-- `events` と `position` を両方繋ぎ、`time` が読む時計と `position` が読む時計(上流の `value.input` の `time` / `scene_time`)が違うと **`audio.clock_mismatch@1`** `{node, events_clock, position_clock}`([valuegraph.cpp](../../src/core/userpublic/valuegraph.cpp#L107))。
+- `events` を繋いだノードで、`time` が読む時計(上流を辿って届く `value.input` のうち `time` / `scene_time` の名前の集合)が **`scene_time` だけ**でないと **`audio.clock_mismatch@1`** `{node, events_clock: ["scene_time"], time_clock}`(✅AU-2、[events の時計の検査](../../src/core/userpublic/valuegraph.cpp#L107))。`time` に `time` を繋いだもの、`time` と `scene_time` の両方が届くもの、**時計の無い定数**(`time_clock` が空)も拒否されます。一体版にも分解版にも掛かります。
+- さらに `position` も繋いだノードで、`position` が読む時計が `time` の時計と違うと **`audio.clock_mismatch@1`** `{node, events_clock, position_clock}`([position の時計の検査](../../src/core/userpublic/valuegraph.cpp#L119))。`position` の上流に時計が無いとき(定数など)はこの検査をしません。
 - `bus` が `se` / `bgm` 以外なら `unknown audio bus: <名前> (a voice plays on se or bgm)`。
 
-#### events を使うなら `time` に `scene_time`
+#### events を使うなら `time` は `scene_time`(✅AU-2 で強制)
 
-イベントは **シーン時刻**で刻印されます(`emitValueGraphEvent` はシーン開始からの経過時間を付けて積む)。ノードはそのイベントを `time` 入力の時刻と比べて取り出すので、**`events` を使うノードの `time` には `scene_time` を繋いでください**。`time`(アプリ時刻)を繋ぐと、`start` から数えた経過時間がシーン開始時刻の分だけ多くなり、再生位置がその分ずれます。
+イベントは **シーン時刻**で刻印されます(`emitValueGraphEvent` はシーン開始からの経過時間を付けて積む)。ノードはそのイベントを `time` 入力の時刻と比べて取り出すので、`time`(アプリ時刻)で読むと `start` から数えた経過時間がシーン開始時刻の分だけ多くなり、再生位置がその分ずれます。
 
-⚠️ これは現時点では **規約**で、`events` があって `time` に `time` を繋いだ文書はまだ拒否されません(AU-2 で拒否にする予定)。`position` 側の時計が違う場合だけは上の `audio.clock_mismatch@1` で拒否されます。
+そのため **`events` を繋いだ `audio.playback` の `time` は `scene_time` だけから来なければならず**、違えばグラフを lowering する時点で上の `audio.clock_mismatch@1` で拒否されます。AU-1 の時点ではこれは規約で拒否されませんでしたが、AU-2 から強制です。AU-1 のころに `events` と `time` を組んだ文書は、`time` を `scene_time` に繋ぎ替えてください。アプリ時刻で鳴らしたい BGM は、次の「`time` に繋いで events 無し」の形で組みます。
+
+⚠️ この検査は `audio.playback` だけです。**`value.event_clock` で `events` と `time` の時計を組み合わせた場合は検査していません**(同じずれが起きても拒否されない)。
 
 #### シーンをまたいで鳴り続ける BGM — `time` に繋いで events 無し
 
@@ -792,13 +801,24 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 `audio.volume` の値は **そのフレームの長さ(dt)をかけて直線で寄せます**([`rampSoundVolume`](../../src/core/loader/scenegraphruntime.cpp#L262))。フレーム境界で段が付かず、曲線を折れ線でなぞる音量になります。最初のフレームはその値から始まります(上の例なら無音から)。`audio.pitch` は寄せずにその値を設定します。
 
-### 残した穴(AU-1 の時点)
+### 長い音の streaming(✅AU-2)
+
+- header が言う長さが **10 秒を超える**音は、WAV でも Ogg Vorbis でも streaming で鳴ります(判定は [`Audio::prepareSound()`](../../src/core/audio/audio.cpp#L839)、10 秒は [`defaultStreamingThresholdSeconds`](../../src/core/audio/audio.cpp#L401))。
+- 全体を decode しません。**rendering config 登録時のアセット検査も header だけを読みます**(WAV は短い WAV と同じ chunk の規則、Ogg Vorbis は decoder で header と長さを読む)。
+- decode の cache が持つのは PCM ではなく **符号化された bytes** で、同じアセットを鳴らす voice の間で 1 つを共有します。voice はそれぞれ自分の decoder(`ma_decoder`)を持ち、再生しながら読みます。
+- 一体版のネイティブループも、分解版の seek も、decode 済みの音と同じ意味で動きます(範囲・ループ点・開始位置は同じ frame 番号で指定します)。
+- bytes は **ディスクから少しずつ読むのではなく、メモリに読み込んだものから** decode します(miniaudio の stb_vorbis に、ワイド文字のパスでファイルを開く入口が無いため)。streaming で減るのは PCM に展開した分のメモリで、ファイルの大きさ分はメモリに載ります。
+- 10 秒は固定です。変えられるのはテスト用の口(`Audio::setStreamingThresholdForTesting`)だけで、project や rendering config からは変えられません。
+
+### 残した穴(AU-2 の時点)
 
 - **`ping_pong` と負の `speed`** はネイティブループにならず追従で鳴るので、**逆向きに進む区間では毎フレーム seek** になります。
+- **seek の直後に、seek 前の音が少し鳴ります。** miniaudio の `ma_sound` が processing cache に読み込んでいた seek 前の frame(最大 1024 frame、48 kHz で約 21 ms)が先に混ざり、その後に seek 先の音になります(voice の位置は seek 先をすぐ返します)。分解版のループ点(seek で戻る所)にはその分の余分な音が混ざります。AU-1 から続く miniaudio の挙動です。
+- **streaming の音は、本体が壊れていても登録時には分かりません**(登録時の検査は header だけ)。再生すると名前付きのエラーにならず、無音で終わります。
+- `value.event_clock` の `time` に `time` を繋いで `events` と組み合わせた文書は検査していません(上の「events を使うなら `time` は `scene_time`」)。
 - **ヘッドレスの本番実行では voice が進みません。** `offline` バックエンドのエンジンを誰も回さない(PCM を読み出す呼び出し元がいない)ためです。音の書き出しは v1 です。
 - **窓付き player の実機で音を聞いての確認はまだです**(自動テストはデバイスを開けることの確認と、`offline` エンジンの PCM で行っています)。
-- 上の「events を使うなら `scene_time`」は規約で、`time` を繋いだ文書を拒否するのは AU-2 です。
-- Ogg / ストリーミングは AU-2、3D 音響は 📐未実装です。
+- MP3 / FLAC は需要が出てから、3D 音響は 📐未実装です。
 
 ## 8.12 永続化(✅WP65)
 
