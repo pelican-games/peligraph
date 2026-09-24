@@ -61,3 +61,10 @@ Their blob_sha256 / blob_bytes entries in parent_manifest.json are re-frozen
 from `git show HEAD:<path> | sha256sum` at that commit. No other entry, no
 cache key and no frame plan projection changed. The engine shader universe
 is untouched (the C-10 GLSL resource was withdrawn for exactly that reason).
+
+2026-09-24 integration amendment: PG-1 (commit 533d8d6c) added
+`"requires": ["physics"]` to projects/sprite_demo/project.json, since the
+demo's scene carries colliders and its code tests the ground. That entry's
+blob_sha256 / blob_bytes are re-frozen from `git show HEAD:<path> | sha256sum`
+(962 -> 989 bytes). No other entry, no cache key and no frame plan
+projection changed.

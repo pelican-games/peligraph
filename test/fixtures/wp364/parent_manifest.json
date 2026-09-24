@@ -326,8 +326,8 @@
     {
      "path": "projects/sprite_demo/project.json",
      "eol": "lf",
-     "blob_sha256": "4e48698400b19125c5722a81414464cfe97e8bf77cc5d0ecf9d936b140be290c",
-     "blob_bytes": 962
+     "blob_sha256": "9ddea2e228bb977a7ae5a62422e7fca8f3f3ded2e2a3a6b7fa9eafb4ea89cd42",
+     "blob_bytes": 989
     },
     {
      "path": "projects/sprite_demo/scene.json",
