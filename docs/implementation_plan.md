@@ -25340,6 +25340,7 @@ transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復
 | OL-1 | 構造編集での authoring id の書き出し、`duplicate` op(engine 側。Outliner の GUI は GUI session) | §8 | — |
 | AU-1 | scene commit で voice を止める修正、一体版 / 分解版の再生位置、bus、フェード、decode 1 回、Studio で音を出す | §9.2 | PG-1 |
 | AU-2 | Ogg・streaming | §9.3 | AU-1 |
+| AU-3 | GUI session の依頼(2026-09-25): 音の backend を起動時に選ぶ `--audio-backend device\|offline\|null` と env `PELICAN_AUDIO_BACKEND`(scenario を黙らせる)/ 一体版でも `events` を任意にし、未接続なら owner の最初の frame で開始(分解版と同じ規則。`time` は必須のまま、Studio が scene_time を繋ぐ雛形を出す) | §9 | AU-2 |
 | GP-2 | `ctx.spawn`(collider・behavior 付き、runtime の attachment 識別子) | §5 | GP-1、PG-1 |
 
 着地の順(案): GP-5 → MG-2a → MG-2b → PG-1 → GP-1 →(PG-2 / MG-1 / GP-3 を並行)→ GP-4 → OL-1 → AU-1 → AU-2 → GP-2。WEB-1 は MG-2b の後、別 repo で。(着地済み: GP-5 / GP-5b / PG-1 / MG-2a / GP-1 / PG-2 / GP-3 / PG-2b / MG-2b / OL-1 / AU-1 / MG-1 / AU-2 / GP-4)
