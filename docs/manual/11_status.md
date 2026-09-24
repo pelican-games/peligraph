@@ -558,7 +558,7 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 4. **project.json の `name` が必須になっていない**([PF] は必須)。欠落は黙って `user://` 無効化に落ちる。
 5. **audio の `playMusic` が存在しない**(設計の API 表にはある)。全 voice は se バス固定。
 6. **rpc `raycast` を2026-09-06に接続**。origin/direction/max_distanceから既存PhysWorldのclosest hitを返す。PhysicsContext(旧 GameContext 直下)/PhysWorldの`shapeCast` all/closestは既存WP107の範囲であり、今回RPCには追加しない。
-7. **`debugText` の色・倍率指定を2026-09-06に接続**。`debugText(x,y,text,color,scale)`。省略時は白・等倍(C-8 の facade 分割後は [`RenderContext::debugText`](../../src/core/userpublic/gamecontext.hpp#L124) = `ctx.render().debugText`)。
+7. **`debugText` の色・倍率指定を2026-09-06に接続**。`debugText(x,y,text,color,scale)`。省略時は白・等倍(C-8 の facade 分割後は [`RenderContext::debugText`](../../src/core/userpublic/gamecontext.hpp#L143) = `ctx.render().debugText`)。
 8. **OpenXR のセッション再生成はループ未配線**: [design_openxr.md](../design_openxr.md) §9 は swapchain/session 喪失時の再生成を規定するが、現行ループは teardown 要求で終了する(unwind・判定までは実装済み)。
 9. **旧 sequential XR は Meta XR Simulator で検証済みだが、WP203c/WP204 の現実装と物理 HMD は未確認**: Simulator v201.0 で1000 frame/3分超/validation 0 は WP136/138 時点の旧 composition 経路。2-layer color/depth array、multiview、tile-local local read、Quest Link実機表示・入力、対象GPUの性能profile/帯域効果、standaloneは外部gate待ち。rpc は常に flat 駆動のため `get_status.xr.active=true` を rpc から観測する手段がない。
 

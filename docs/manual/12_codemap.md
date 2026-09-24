@@ -186,7 +186,7 @@ pelican2/
 
 ### ゲーム API 面(facade)
 
-ゲームコードが見てよいのは [userpublic/](../../src/core/userpublic) だけです。全 API の入口 = [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L167)。オブジェクト生成ビルダーは [gameobjects.hpp](../../src/core/userpublic/gameobjects.hpp)(`GameObjects::add().addComponent<...>().finish()`)、システム/イベント登録マクロは [gamesystem.hpp](../../src/core/userpublic/gamesystem.hpp) と [events.hpp](../../src/core/userpublic/events.hpp)、決定的乱数(PCG32)は [deterministicrng.cpp](../../src/core/userpublic/deterministicrng.cpp)。
+ゲームコードが見てよいのは [userpublic/](../../src/core/userpublic) だけです。全 API の入口 = [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L186)。オブジェクト生成ビルダーは [gameobjects.hpp](../../src/core/userpublic/gameobjects.hpp)(`GameObjects::add().addComponent<...>().finish()`)、システム/イベント登録マクロは [gamesystem.hpp](../../src/core/userpublic/gamesystem.hpp) と [events.hpp](../../src/core/userpublic/events.hpp)、決定的乱数(PCG32)は [deterministicrng.cpp](../../src/core/userpublic/deterministicrng.cpp)。
 
 オブジェクト単位の毎フレーム処理は [behavior.hpp](../../src/core/userpublic/behavior.hpp) の `Behavior` 基底 + `PELICAN_REGISTER_BEHAVIOR`([`PELICAN_REGISTER_BEHAVIOR()`](../../src/core/userpublic/details/behavior/registerer.hpp#L385))で、`BehaviorContext` は `GameContext` を継承して `self()` / `params<T>()` などを足したものです。パラメータの schema は [details/schema/structfieldschema.hpp](../../src/core/userpublic/details/schema/structfieldschema.hpp)(WP150 の共通 field descriptor。component codec と同じ機構を共有しています)。
 
@@ -216,9 +216,9 @@ pelican2/
    [`EffectTransactionScope`](../../src/core/loader/effecttransaction.hpp#L188) は
    **最初の game-DLL callback より前**に張られ、rollback なら捨て、commit なら flush します。
    診断は固定 slot に enum + 整数で書く(`flush()` は noexcept かつ allocation-free)。
-4. [`sceneparticipantmanifest.hpp`](../../src/core/loader/sceneparticipantmanifest.hpp#L32) ——
+4. [`sceneparticipantmanifest.hpp`](../../src/core/loader/sceneparticipantmanifest.hpp#L36) ——
    **build から生成される participant の表**。誰が prepare / publish / rollback / retire を持つかと、
-   [公開 API 行の分類](../../src/core/loader/sceneparticipantmanifest.hpp#L46)を持ちます。
+   [公開 API 行の分類](../../src/core/loader/sceneparticipantmanifest.hpp#L50)を持ちます。
    [`tools/public_api_inventory.py`](../../tools/public_api_inventory.py) がこの表と公開ヘッダを
    双方向に突き合わせます([第10章](10_tools.md) §10.10)。
 5. [`sceneloadfault.hpp`](../../src/core/loader/sceneloadfault.hpp#L12) —— テスト専用の fault injection

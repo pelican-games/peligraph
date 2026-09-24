@@ -95,7 +95,7 @@
 
 **flush** — 溜めた作用を**実際に実行する**段(8 段の 7 番目)。ここで初めて音が鳴り、セーブが書かれます。commit 済みの後なので、flush で失敗してもシーン切替は巻き戻らず、失敗は `effect_errors` として報告されます。初出: [第4章 commit したのに作用が失敗したとき](04_scene_ecs.md#commit-したのに作用が失敗したとき)。
 
-**participant(参加者)** — 1 回のシーンロードで状態を遷移させる**当事者**のこと(ECS・レンダラ・物理・ゲームロジック・永続化など)。誰がどの段で何をしたかを行にした `sceneParticipantManifest` があり、テストと診断が「取りこぼした参加者」を名指しできます。初出: [第13章 §13.13](13_editor.md#1313-シーン遷移とゲームロジックの結果wp378380b380e381381a)。([SceneParticipantManifestEntry](../../src/core/loader/sceneparticipantmanifest.hpp#L32))
+**participant(参加者)** — 1 回のシーンロードで状態を遷移させる**当事者**のこと(ECS・レンダラ・物理・ゲームロジック・永続化など)。誰がどの段で何をしたかを行にした `sceneParticipantManifest` があり、テストと診断が「取りこぼした参加者」を名指しできます。初出: [第13章 §13.13](13_editor.md#1313-シーン遷移とゲームロジックの結果wp378380b380e381381a)。([SceneParticipantManifestEntry](../../src/core/loader/sceneparticipantmanifest.hpp#L36))
 
 **codec(component codec)** — コンポーネントの**受理仕様**。JSON ↔ canonical ↔ runtime の 3 層を 1 つの表で往復させ、組み込みコンポーネントについては未知キーを拒否します(closed schema)。エディタが値を書き戻すと codec の正規形に整形されます。codec を持たない名前のコンポーネントは、保持はされますが編集面では扱えません。初出: [第12章 §12.5](12_codemap.md#125-データ--コード対応表json-はどこで読まれるか)。([ComponentCodecState](../../src/core/loader/componentcodec.hpp#L49))
 
@@ -125,7 +125,7 @@
 
 **behavior(オブジェクト behavior)** — シーンの**オブジェクトに貼り付ける**ゲームコードの単位。`behavior` コンポーネントに型名と params を書くと、ゲーム DLL 側に登録された C++ クラスが実体化されます。もう一つの書き方であるゲームシステム(世界全体を回す)との使い分けは §8.5.7 にあります。初出: [第8章 §8.5](08_gameplay.md#85-オブジェクト-behavior--もう一つのゲームコードの書き方wp155162167)。
 
-**GameContext** — ゲームコードがエンジンに触るための**公開ファサード**(唯一の窓口)。状態を持たず、毎フレーム作られて渡されます。入力・カメラ・物理クエリ・音・保存・乱数などがここに集まっています。初出: [第8章 §8.4](08_gameplay.md#84-gamecontext-api-一覧)。([GameContext](../../src/core/userpublic/gamecontext.hpp#L167))
+**GameContext** — ゲームコードがエンジンに触るための**公開ファサード**(唯一の窓口)。状態を持たず、毎フレーム作られて渡されます。入力・カメラ・物理クエリ・音・保存・乱数などがここに集まっています。初出: [第8章 §8.4](08_gameplay.md#84-gamecontext-api-一覧)。([GameContext](../../src/core/userpublic/gamecontext.hpp#L186))
 
 **order(順序値)と総順序** — ゲームシステムの実行順を決める整数。同じ `order` のシステムは**名前の辞書順**で並ぶので、全システムに一意な順序が決まります(= 総順序)。これが決定性の土台の 1 つです。初出: [第8章 §8.3](08_gameplay.md#83-ゲームシステムの登録と実行順序wp43)。
 

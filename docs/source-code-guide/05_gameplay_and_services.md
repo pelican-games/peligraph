@@ -4,7 +4,7 @@
 
 ## 5.1 `GameContext`は公開ファサード
 
-ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L167) が主要サービスを薄く包みます。面は根と6つのドメインファサードに分かれ、物理 / 音 / アニメーション / セーブ / 描画 / シーンオブジェクトの名前解決は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L216) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L217) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L218) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L219) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L220) / [`objects()`](../../src/core/userpublic/gamecontext.hpp#L221)（GP-1）が返す値越しに呼びます。ファサードは空のクラス（[`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L33) / [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L57) / [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L78) / [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L87) / [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L102) / [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L160)）で、状態もポインタも持たないので、返り値を持ち回っても何も持っていないのと同じです。委譲先は分割前と同じです。
+ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L186) が主要サービスを薄く包みます。面は根と6つのドメインファサードに分かれ、物理 / 音 / アニメーション / セーブ / 描画 / シーンオブジェクトの名前解決は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L235) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L236) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L237) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L238) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L239) / [`objects()`](../../src/core/userpublic/gamecontext.hpp#L240)（GP-1）が返す値越しに呼びます。ファサードは空のクラス（[`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L40) / [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L70) / [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L97) / [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L106) / [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L121) / [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L179)）で、状態もポインタも持たないので、返り値を持ち回っても何も持っていないのと同じです。委譲先は分割前と同じです。
 
 | API群 | 委譲先 | 実装へジャンプ |
 |---|---|---|
@@ -14,16 +14,16 @@
 | object/transform | `GameObjects` | [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L85) |
 | sprite（`createSpriteObject`/`spriteView`/`setSpriteView`/`setSpriteTexture`） | `GameObjects` / sprite runtime | [`GameContext::createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L98) |
 | light（`render().setDirectionalLightDirection` ほか4本） | `LightContainer` | [`RenderContext::setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.cpp#L191) |
-| physics query（`physics().raycastAll`/`raycastClosest`/`overlapAll`/`shapeCastAll`/`shapeCastClosest` + [`phys::QueryFilter`](../../src/core/phys/physquery.hpp#L76)） | physics service | [`PhysicsContext::raycastAll()`](../../src/core/userpublic/gamecontext.cpp#L247) |
-| camera（`render().setCamera`） | `Camera` | [`RenderContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L306) |
-| 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L310) |
-| audio（`audio().playSound` ほか） | `Audio`またはfeature disabled error | [`AudioContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L330) |
+| physics query（`physics().raycastAll`/`raycastClosest`/`overlapAll`/`shapeCastAll`/`shapeCastClosest` + [`phys::QueryFilter`](../../src/core/phys/physquery.hpp#L78)） | physics service | [`PhysicsContext::raycastAll()`](../../src/core/userpublic/gamecontext.cpp#L257) |
+| camera（`render().setCamera`） | `Camera` | [`RenderContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L316) |
+| 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L320) |
+| audio（`audio().playSound` ほか） | `Audio`またはfeature disabled error | [`AudioContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L340) |
 | scene object の名前解決（`objects().resolve` / `materialize` / `worldTransform`、GP-1） | `SceneLoader::resolveObject` / `materializeObject`、world は ECS の `TransformComponent` | [`ObjectsContext::resolve()`](../../src/core/userpublic/gamecontext.cpp#L169) |
-| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L484) |
-| debug text（`render().debugText`） | `DebugText` | [`RenderContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L496) |
-| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L204) |
-| animation graph（`animation().setParameter` / `forceState`） | `AnimationSystem` | [`AnimationContext::setParameter()`](../../src/core/userpublic/gamecontext.cpp#L341) |
-| settings（根）/ save（`save()`） | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L500) / [`SaveContext::saveData()`](../../src/core/userpublic/gamecontext.cpp#L527) |
+| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L494) |
+| debug text（`render().debugText`） | `DebugText` | [`RenderContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L506) |
+| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L223) |
+| animation graph（`animation().setParameter` / `forceState`） | `AnimationSystem` | [`AnimationContext::setParameter()`](../../src/core/userpublic/gamecontext.cpp#L351) |
+| settings（根）/ save（`save()`） | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L510) / [`SaveContext::saveData()`](../../src/core/userpublic/gamecontext.cpp#L537) |
 
 class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport修飾されています。game DLL境界を越えて使われるためです。
 
@@ -33,7 +33,7 @@ class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport�
 
 ### ライト操作API ✅実装済み（WP142 / LIGHT0）
 
-[`gamecontext.hpp` 内](../../src/core/userpublic/gamecontext.hpp#L104) の4本（`RenderContext` のメンバーなので `ctx.render().setDirectionalLightDirection(...)` の形で呼びます）は、scene定義済みライトを**名前で引いて**更新します。いずれも `[[nodiscard]] bool` を返し、その名前のライトが無ければ`false`です。委譲先は [`LightContainer`](../../src/core/light/lightcontainer.hpp) の同名setterです。
+[`gamecontext.hpp` 内](../../src/core/userpublic/gamecontext.hpp#L123) の4本（`RenderContext` のメンバーなので `ctx.render().setDirectionalLightDirection(...)` の形で呼びます）は、scene定義済みライトを**名前で引いて**更新します。いずれも `[[nodiscard]] bool` を返し、その名前のライトが無ければ`false`です。委譲先は [`LightContainer`](../../src/core/light/lightcontainer.hpp) の同名setterです。
 
 ```cpp
 [[nodiscard]] bool setDirectionalLightDirection(std::string_view name, vec3 direction) const;
@@ -301,7 +301,7 @@ controllerは名前bindingからtarget transformを毎回resolveし、scene遷�
 
 physicsはビルドフラグ `PELICAN_WITH_PHYSICS` の配下にあります（OFFでは **stub 実装**、つまり「同じ宣言を持つが中身を持たない差し替え版」に切り替わります。呼ぶと投げる形なので、colliderを含むsceneは明示エラーです。実物は本節末の `physworld_stub.cpp`）。
 
-この章で扱うクエリは3種類です。**raycast** は点と方向（[`Ray`](../../src/core/phys/physquery.hpp#L17)）を飛ばして当たったcolliderを返し、**overlap** はいま重なっているcolliderを列挙し、**shapeCast** はその中間 — Sphere / Box / Capsule を**向きを固定したまま** `delta` だけ平行移動させて、最初に当たるcolliderと接触時刻を返します（「太さのあるraycast」。契約は [`ShapeCastHit` の上のコメント](../../src/core/phys/physquery.hpp#L132) が正で、`delta` がゼロなら「いまの貫通をどれだけ押し出せば解けるか」だけを問う query になります — 通常形状の押し出し量が後述のMTDです。meshの近似補正はフラグで区別します）。
+この章で扱うクエリは3種類です。**raycast** は点と方向（[`Ray`](../../src/core/phys/physquery.hpp#L19)）を飛ばして当たったcolliderを返し、**overlap** はいま重なっているcolliderを列挙し、**shapeCast** はその中間 — Sphere / Box / Capsule を**向きを固定したまま** `delta` だけ平行移動させて、最初に当たるcolliderと接触時刻を返します（「太さのあるraycast」。契約は [`ShapeCastHit` の上のコメント](../../src/core/phys/physquery.hpp#L154) が正で、`delta` がゼロなら「いまの貫通をどれだけ押し出せば解けるか」だけを問う query になります — 通常形状の押し出し量が後述のMTDです。meshの近似補正はフラグで区別します）。
 
 クエリ実装は **provider ABI** で差し替え可能です（WP107系列）。ABI は application binary interface で、ここでは「C互換の関数ポインタ表」という意味です — [`ProviderV2`](../../src/core/userpublic/physics/abi_v2.hpp#L91) は `context` と `raycast_all` / `overlap_all` / `shape_cast_all` の3本を並べた `std::is_standard_layout_v` 固定の構造体で、先頭に `struct_size` と `version` を置いてあります。ヘッダ / クラスではなくこの形にしてあるので、別ビルドのDLLが実装を差し込めます（fixtureが [`test/fixtures/physics_provider_dll/`](../../test/fixtures/physics_provider_dll)）。差し替えても結果の並びが変わらない理由は下の「εクラスタの全順序」にあります（[用語集](../manual/14_glossary.md) の「provider」「ABI」）。
 
@@ -338,7 +338,7 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 
 ### 純粋クエリ層
 
-[`physquery.hpp`](../../src/core/phys/physquery.hpp#L12) はSphere、oriented Box、Capsuleを`std::variant`で表します（[`Shape`](../../src/core/phys/physquery.hpp#L41)）。クエリは [`QueryFilter`](../../src/core/phys/physquery.hpp#L76) と [`ShapeCastHit`](../../src/core/phys/physquery.hpp#L149) を持ち、実装はaggregate/contract/sweepに分割されています。
+[`physquery.hpp`](../../src/core/phys/physquery.hpp#L14) はSphere、oriented Box、Capsuleを`std::variant`で表します（[`Shape`](../../src/core/phys/physquery.hpp#L43)）。クエリは [`QueryFilter`](../../src/core/phys/physquery.hpp#L78) と [`ShapeCastHit`](../../src/core/phys/physquery.hpp#L171) を持ち、実装はaggregate/contract/sweepに分割されています。
 
 `raycastClosest`は距離最小を選び、距離がepsilon内で同じなら文字列ID昇順を tie-break（同値になったときの順序決定）に使います。`overlapAll`もIDをsortして返すため、sceneの内部登録順に結果が左右されません。
 
@@ -359,9 +359,9 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 >          ^anchor (+1e-5 まで) ^新 anchor    0.100008 を anchor にして連鎖させない
 > ```
 >
-> **手がかり**: `queryTieEpsilon` は `shapeCastTieEpsilon` = 1e-5F([`physqueryinternal.hpp` 内](../../src/core/phys/physqueryinternal.hpp#L7))。[`colliderIdentityLess()`](../../src/core/phys/physquerycontract.cpp#L60) は collider_id → entity → shape_ordinal → name の辞書式で、collider_id が一意なのでほぼ 1 段目で決まります。なお [`PhysWorld::raycastClosest()`](../../src/core/phys/physworld.cpp#L572) が同距離クラスタから 1 件を選ぶときの決着は**この順序ではなく**文字列 id(`hit.id`)の比較です。無フィルタ専用だった単引数版が消えて `raycastClosest(ray, filter)` 1 本になったので、この規則は**どの filter でも同じ**ように働きます(変数名は [`better_legacy_tie`](../../src/core/phys/physworld.cpp#L585) のまま残っていますが、新旧 2 経路が並存しているわけではありません。「フィルタ無し」相当が要るときは [`phys::every_collider_filter`](../../src/core/phys/physquery.hpp#L90) を渡します)。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L352) の "shapeCastAll shares filters and canonical TOI identity ordering" と [微小形状の長距離精度](../../test/physquery_test.cpp#L134)。
+> **手がかり**: `queryTieEpsilon` は `shapeCastTieEpsilon` = 1e-5F([`physqueryinternal.hpp` 内](../../src/core/phys/physqueryinternal.hpp#L7))。[`colliderIdentityLess()`](../../src/core/phys/physquerycontract.cpp#L60) は collider_id → entity → shape_ordinal → name の辞書式で、collider_id が一意なのでほぼ 1 段目で決まります。なお [`PhysWorld::raycastClosest()`](../../src/core/phys/physworld.cpp#L578) が同距離クラスタから 1 件を選ぶときの決着は**この順序ではなく**文字列 id(`hit.id`)の比較です。無フィルタ専用だった単引数版が消えて `raycastClosest(ray, filter)` 1 本になったので、この規則は**どの filter でも同じ**ように働きます(変数名は [`better_legacy_tie`](../../src/core/phys/physworld.cpp#L591) のまま残っていますが、新旧 2 経路が並存しているわけではありません。「フィルタ無し」相当が要るときは [`phys::every_collider_filter`](../../src/core/phys/physquery.hpp#L92) を渡します)。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L352) の "shapeCastAll shares filters and canonical TOI identity ordering" と [微小形状の長距離精度](../../test/physquery_test.cpp#L134)。
 >
-> **不変条件**: 1 回目の comparator に ε を持ち込まない(strict weak ordering を壊さない)。クラスタは必ず先頭要素の生の値にアンカーし、連鎖させない。`orderXxxHits` は provider 側ではなく **host 側で最後に呼ぶ**。runtime 側の呼び出しは共有スケルトン [`decodeHits()`](../../src/core/phys/physicsruntime.cpp#L324) の末尾 1 箇所へ集約され、各クエリ入口は並べ替え関数を `order` 引数として渡すだけになりました([overlap の引き渡し](../../src/core/phys/physicsruntime.cpp#L947) / [shapeCast の引き渡し](../../src/core/phys/physicsruntime.cpp#L1057) / [raycast の引き渡し](../../src/core/phys/physicsruntime.cpp#L909))。生 hit の翻訳が全件通ったあとにだけ走る、provider の列挙順を結果へ漏らさない最後の関門であることは変わりません(例外は mesh と primitive の hit を連結する `PhysWorld::queryOverlapAll()` で、連結後にもう一度 `orderOverlapHits` を呼びます — [連結後の再ソート](../../src/core/phys/physworld.cpp#L613))。
+> **不変条件**: 1 回目の comparator に ε を持ち込まない(strict weak ordering を壊さない)。クラスタは必ず先頭要素の生の値にアンカーし、連鎖させない。`orderXxxHits` は provider 側ではなく **host 側で最後に呼ぶ**。runtime 側の呼び出しは共有スケルトン [`decodeHits()`](../../src/core/phys/physicsruntime.cpp#L324) の末尾 1 箇所へ集約され、各クエリ入口は並べ替え関数を `order` 引数として渡すだけになりました([overlap の引き渡し](../../src/core/phys/physicsruntime.cpp#L947) / [shapeCast の引き渡し](../../src/core/phys/physicsruntime.cpp#L1057) / [raycast の引き渡し](../../src/core/phys/physicsruntime.cpp#L909))。生 hit の翻訳が全件通ったあとにだけ走る、provider の列挙順を結果へ漏らさない最後の関門であることは変わりません(例外は mesh と primitive の hit を連結する `PhysWorld::queryOverlapAll()` で、連結後にもう一度 `orderOverlapHits` を呼びます — [連結後の再ソート](../../src/core/phys/physworld.cpp#L619))。
 
 > 🧩 **難所 — GJK 最近点の全列挙**([`closestToOrigin()`](../../src/core/phys/physquerysweep.cpp#L373) / [`closestForSubset()`](../../src/core/phys/physquerysweep.cpp#L310))
 >
@@ -404,13 +404,13 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 > 40 回使い切ったら nullopt(偽陽性より偽陰性を選ぶ)
 > ```
 >
-> **手がかり**: ループの**前**に 3 つの早期経路があります — sphere-sphere の解析的初期接触、`overlaps()` が真なら EPA へ、`delta≈0` なら nullopt。つまりこのループは「最初は離れている」場合専用で、`last_separated_time = 0` から安全に始められます。`normal` の向きの規約は [法線の契約](../../src/core/phys/physquery.hpp#L134) のコメントが正。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp) の "shapeCast prevents thin-collider tunneling for every standard shape pair" と退化形状 corpus。
+> **手がかり**: ループの**前**に 3 つの早期経路があります — sphere-sphere の解析的初期接触、`overlaps()` が真なら EPA へ、`delta≈0` なら nullopt。つまりこのループは「最初は離れている」場合専用で、`last_separated_time = 0` から安全に始められます。`normal` の向きの規約は [法線の契約](../../src/core/phys/physquery.hpp#L156) のコメントが正。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp) の "shapeCast prevents thin-collider tunneling for every standard shape pair" と退化形状 corpus。
 >
 > **不変条件**: `step` の下限を消さない(終了しなくなります)。逆に大きくすると TOI を飛び越えて貫通を見逃します。`kDistanceTolerance`(2e-5)は ABI 層の `shapeCastContactEpsilonV2`(1e-5)とは別物で、ABI 検証は `time_of_impact <= 1 + 1e-5` を要求するため、`1 + kDistanceTolerance` 超過の判定を緩めると host 側で `provider_error` になります。
 
 > 🧩 **難所 — EPA の四面体と面選択**([`penetration()`](../../src/core/phys/physquerysweep.cpp#L657) / [`closestCanonicalFace()`](../../src/core/phys/physquerysweep.cpp#L621))
 >
-> **何をする所か**: 初期貫通しているペアの MTD(minimum translation distance — 貫通を解消する最小の押し出し量。このコードベースでは [`ShapeCastHit`](../../src/core/phys/physquery.hpp#L149) の契約どおり `normal * penetration_depth`、つまり向きと深さの対を指します)を EPA で求めます。通常形状の`shapeCast`が`initial_overlap = true`で返す`penetration_depth` / `normal`の出どころです。meshの近似押し戻しは`approximate_depenetration`で区別します。EPA そのものの説明（GJK が「交差している」で止まった後、その単体を種に多面体を膨らませて原点に最も近い面を探す）は [第10章 §10.5](10_background_knowledge.md) にあります。
+> **何をする所か**: 初期貫通しているペアの MTD(minimum translation distance — 貫通を解消する最小の押し出し量。このコードベースでは [`ShapeCastHit`](../../src/core/phys/physquery.hpp#L171) の契約どおり `normal * penetration_depth`、つまり向きと深さの対を指します)を EPA で求めます。通常形状の`shapeCast`が`initial_overlap = true`で返す`penetration_depth` / `normal`の出どころです。meshの近似押し戻しは`approximate_depenetration`で区別します。EPA そのものの説明（GJK が「交差している」で止まった後、その単体を種に多面体を膨らませて原点に最も近い面を探す）は [第10章 §10.5](10_background_knowledge.md) にあります。
 >
 > **素朴に読むと**: 2 か所が初見でまず読めません。(a) [`enclosingTetrahedron()`](../../src/core/phys/physquerysweep.cpp#L544) が **26 方向サンプル + 4 点の総当り**という力技になっている理由。EPA は原点を内包する四面体からしか始められませんが、GJK が返す終端 simplex は点 / 線分 / 三角形かもしれません。通常は次元を 1 つずつ上げる増分構成をしますが退化ケースの分岐が多いので、ここでは {-1,0,1}³ の 26 方向で support 点(support 関数 — 与えた方向 d に対し、形状上で dot(p, d) が最大になる点、つまりその方向の一番端の点を返す関数。凸形状はこの関数だけで完全に表現でき、GJK / EPA の反復はこの関数の呼び出しだけで進みます)を足し、`C(n,4)` を総当りして**最小重心座標が最大**の四面体を選びます。「原点を最も余裕を持って内包する = 最も条件の良い面が張れる」という選び方で、この最大化が抜けるとほぼ退化した四面体を掴み、`makeFace()` が全滅して `faces.size() != 4` で `nullopt` へ落ちます。(b) `closestCanonicalFace()` の三重条件。同心の箱のような対称ペアでは**同じ深さの面が同時に何枚も存在**し、float 誤差と面の生成順で勝者が変わると MTD の向きがコンパイラ依存になります。そこで最小距離から `shapeCastTieEpsilon` 以内の面だけを候補にし、**符号反転した法線**(= 実際に返る MTD 方向)に対する辞書式キー `(dot(n, preferred), n.x, n.y, n.z)` の最大を採ります。`preferred` は `normalize(-delta)`(delta=0 なら +X)なので「動いてきた方向へ押し返す面」が優先されます。条件式の `!canonicalNormalGreater(selected, candidate, ...)` は「先の比較が偽で、かつ逆向きも偽」= キー完全一致 を表す遠回りな書き方で、そのときだけ頂点インデックス三つ組の辞書順で決めます。
 >
@@ -426,7 +426,7 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 >
 > **手がかり**: `addBoundaryEdge` の「逆向き辺があれば消す、なければ積む」は可視面群の**シルエット抽出**の定石で、ここを理解しないと穴の張り直しが読めません。`facePenetration()` は 3 頂点で `closestToOrigin()` を再利用して接触点を出します(直前の難所と繋がります)。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L301) の "shapeCast reports deterministic initial-overlap minimum translation"。
 >
-> **不変条件**: MTD の tie-break キーと `preferred` の定義は [MTDの優先方向](../../src/core/phys/physquery.hpp#L144)の**公開契約**です(変えると `shapeCast` の外向き API が変わります)。`penetration()` が `nullopt` を返しても `shapeCast` は落ちず GJK の法線 + depth 0 へ縮退するので、この fallback を消すと退化ペアで hit が消えます。`makeFace()` の向き正規化(距離が負なら反転)は「原点が内部にある」前提なので、四面体選択を緩めるとこの前提が壊れます。
+> **不変条件**: MTD の tie-break キーと `preferred` の定義は [MTDの優先方向](../../src/core/phys/physquery.hpp#L166)の**公開契約**です(変えると `shapeCast` の外向き API が変わります)。`penetration()` が `nullopt` を返しても `shapeCast` は落ちず GJK の法線 + depth 0 へ縮退するので、この fallback を消すと退化ペアで hit が消えます。`makeFace()` の向き正規化(距離が負なら反転)は「原点が内部にある」前提なので、四面体選択を緩めるとこの前提が壊れます。
 
 ### World binding層
 
@@ -443,7 +443,7 @@ builtin providerは **broad phase spatial index** を持たず、queryごとに�
 
 呼び出し元は専用のゲームSystem `PhysicsTriggerSystem` です（[`PhysicsTriggerSystem`](../../src/core/phys/physworld.cpp#L34)）。orderは `std::numeric_limits<int>::max()` なので、組み込み`BuiltinCameraControllerSystem`（10000）を含む**すべてのゲームSystemの後**に走ります。
 
-[`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L692) は、
+[`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L698) は、
 `trigger=true` collider ごとに provider の overlap query を行い、full
 `EntityId` の canonical pair set を前 frame と比較します。pair 全体を sort /
 unique してから sorted merge するため、provider の列挙順には依存しません。
@@ -459,7 +459,7 @@ event は特別な即時 callback ではなく通常のE1 queueへ入り、次�
 typed System/Behavior handlerへ配送されます。trigger query と rigid-body responseは
 独立であり、現在も Jolt は query providerだけです。
 
-> 🧩 **難所 — 差分は 1 パスのマージ**([`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L692))
+> 🧩 **難所 — 差分は 1 パスのマージ**([`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L698))
 >
 > **何をする所か**: trigger collider ごとの overlap 結果から entity ペア集合を作り、前フレームの集合と差分を取って `OverlapEnter` / `OverlapExit` を emit します。
 >
@@ -518,7 +518,7 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 >  └────────┘   下から: support < plane              → 素通り
 > ```
 >
-> **手がかり**: 渡される `shape` は `moveAndSlide()` の**その反復の開始姿勢**(`result.shape`)であって元の入力形状ではないので、滑った後の再接触は滑り後の姿勢で判定されます。`hit.position` が「静止 collider 側の点」であることは [接触位置の契約](../../src/core/phys/physquery.hpp#L133)に依存しています。粗いフィルタ `filter.include_one_way` は**クエリから丸ごと除外**する経路で、細かい方向判定はこの関数側にあります(二層になっているのを見落としやすい)。テストは [`platformer_controller_test.cpp`](../../test/platformer_controller_test.cpp#L247) の "one-way floors pass from below, catch from above, and can be disabled"。
+> **手がかり**: 渡される `shape` は `moveAndSlide()` の**その反復の開始姿勢**(`result.shape`)であって元の入力形状ではないので、滑った後の再接触は滑り後の姿勢で判定されます。`hit.position` が「静止 collider 側の点」であることは [接触位置の契約](../../src/core/phys/physquery.hpp#L155)に依存しています。粗いフィルタ `filter.include_one_way` は**クエリから丸ごと除外**する経路で、細かい方向判定はこの関数側にあります(二層になっているのを見落としやすい)。テストは [`platformer_controller_test.cpp`](../../test/platformer_controller_test.cpp#L247) の "one-way floors pass from below, catch from above, and can be disabled"。
 >
 > **不変条件**: `projectedRadius()` は純粋層の `support()` と同じ形状規約に一致していること(ずれると乗れる / 抜けるが形状ごとに食い違います)。比較は当該反復の**開始姿勢**に対して行う。`one_way_tolerance >= skin_width` が実質の前提です(既定 2e-4 vs 1e-4)。
 
@@ -562,7 +562,7 @@ prepareVoiceSlot(h)    # voices への emplace(= ノード確保)まで。backen
 commitPreparedPlay(h)  # backend->play() の後、既存ノードへ scalar を代入するだけ
 ```
 
-この分割が効くのは §3.5 の effect transaction 経由のときです。`playSound()` が返す `SoundHandle` は **transaction中はまだ鳴っていない予約**で、実際の `backend->play()` は flush で走ります。`commitPreparedPlay()` が最後にやるのは `slot->second.backend_id = backend_id` の1代入だけなので、確保に伴う失敗が commit 後に起きません（[そのコメント](../../src/core/audio/audio.cpp#L547)）。predicate側もoutboxを見ます — transaction中の `isPlaying()` は、outboxに play があれば `true`、stop があれば `false`、どちらも無ければ実 backend へ問い合わせます（[`PreparedEffectTransaction::isPlaying()`](../../src/core/loader/effecttransaction.cpp#L271)）。
+この分割が効くのは §3.5 の effect transaction 経由のときです。`playSound()` が返す `SoundHandle` は **transaction中はまだ鳴っていない予約**で、実際の `backend->play()` は flush で走ります。`commitPreparedPlay()` が最後にやるのは `slot->second.backend_id = backend_id` の1代入だけなので、確保に伴う失敗が commit 後に起きません（[そのコメント](../../src/core/audio/audio.cpp#L547)）。predicate側もoutboxを見ます — transaction中の `isPlaying()` は、outboxに play があれば `true`、stop があれば `false`、どちらも無ければ実 backend へ問い合わせます（[`PreparedEffectTransaction::isPlaying()`](../../src/core/loader/effecttransaction.cpp#L267)）。
 
 `next_handle` のcursorは **rollbackしません**。manifestが `audio.handle_cursor` を `non_rollback` / `u64-gap-named-v1` として明示的に持っている（§3.5 の 7）のはこのためで、失敗した load が消費した番号は欠番として残ります。番号の再利用でハンドルが別の音を指すより、穴が空くほうが安全、という選択です。
 
@@ -588,11 +588,11 @@ commitPreparedPlay(h)  # backend->play() の後、既存ノードへ scalar を�
 
 audioと同じく、persistenceも「用意」と「書き込み」に割れています。[`prepareDataWrite()`](../../src/core/persistence/persistence.cpp#L313) と [`prepareSettingsWrite()`](../../src/core/persistence/persistence.cpp#L256) が [`PreparedWrite`](../../src/core/persistence/persistence.hpp#L46) を作り、[`commitPreparedWrite()`](../../src/core/persistence/persistence.cpp#L326) が `atomicWrite()` を1回呼ぶだけです。`PreparedWrite` が持つのは `path` / `bytes`（dump済み）/ `resource_key` / `slot` / `overlay_data` で、**JSONのdumpもpath解決もcommit前**に終わっています。
 
-`resource_key` は [`canonicalResourceKey()`](../../src/core/persistence/persistence.cpp#L40) が作る文字列で、`weakly_canonical()` の `generic_string()` に `"path:"` を前置し、**Windowsでは小文字化**します。「同じファイルへの2回目の書き込み」を判定するのがこのキーの唯一の仕事です。effect transactionの [`saveData()`](../../src/core/loader/effecttransaction.cpp#L352) / [`saveSettings()`](../../src/core/loader/effecttransaction.cpp#L326) は outbox を `resource_key` で引き、既にあれば**その entry を上書きして sequence を付け替えます**（coalesce）。したがって同じslotへ100回保存しても、flushで実際にディスクへ触るのは1回です。slot名が違っても大文字小文字だけの差なら同じキーになるので、Windowsで2回書いて片方が消える、という取りこぼしも起きません。
+`resource_key` は [`canonicalResourceKey()`](../../src/core/persistence/persistence.cpp#L40) が作る文字列で、`weakly_canonical()` の `generic_string()` に `"path:"` を前置し、**Windowsでは小文字化**します。「同じファイルへの2回目の書き込み」を判定するのがこのキーの唯一の仕事です。effect transactionの [`saveData()`](../../src/core/loader/effecttransaction.cpp#L347) / [`saveSettings()`](../../src/core/loader/effecttransaction.cpp#L321) は outbox を `resource_key` で引き、既にあれば**その entry を上書きして sequence を付け替えます**（coalesce）。したがって同じslotへ100回保存しても、flushで実際にディスクへ触るのは1回です。slot名が違っても大文字小文字だけの差なら同じキーになるので、Windowsで2回書いて片方が消える、という取りこぼしも起きません。
 
-読み取り側は `overlay_data` を使います。[`loadData()`](../../src/core/loader/effecttransaction.cpp#L378) は outbox に同じ `resource_key` の未flush entry があればその `overlay_data` を返し、無ければディスクを読みます。[`listSaves()`](../../src/core/loader/effecttransaction.cpp#L407) はディスクの一覧に未flushのslotを**足し**、既にある行のtimestampは**ゼロへ潰して**からslot名でsortします（まだ書かれていないので実時刻は存在しない、という表現です）。manifest はこの2つを `read_only` として持ちます（§3.5 の 7）。
+読み取り側は `overlay_data` を使います。[`loadData()`](../../src/core/loader/effecttransaction.cpp#L373) は outbox に同じ `resource_key` の未flush entry があればその `overlay_data` を返し、無ければディスクを読みます。[`listSaves()`](../../src/core/loader/effecttransaction.cpp#L402) はディスクの一覧に未flushのslotを**足し**、既にある行のtimestampは**ゼロへ潰して**からslot名でsortします（まだ書かれていないので実時刻は存在しない、という表現です）。manifest はこの2つを `read_only` として持ちます（§3.5 の 7）。
 
-読み取りの失敗は専用の例外 [`PersistenceReadError`](../../src/core/persistence/persistence.hpp#L16) で、`path()` と `reason()` を分けて持ちます。effect transaction はこれだけを他の例外と区別して捕まえ、`persistence_read_failed` として**path と reason を別フィールドで**記録します（[`loadData()` の catch](../../src/core/loader/effecttransaction.cpp#L391)）。それ以外の例外は `persistence_overlay_failed` になります — 「ディスクが読めなかった」と「overlayの組み立てで壊れた」を混ぜないための2本立てです。
+読み取りの失敗は専用の例外 [`PersistenceReadError`](../../src/core/persistence/persistence.hpp#L16) で、`path()` と `reason()` を分けて持ちます。effect transaction はこれだけを他の例外と区別して捕まえ、`persistence_read_failed` として**path と reason を別フィールドで**記録します（[`loadData()` の catch](../../src/core/loader/effecttransaction.cpp#L386)）。それ以外の例外は `persistence_overlay_failed` になります — 「ディスクが読めなかった」と「overlayの組み立てで壊れた」を混ぜないための2本立てです。
 
 ## 5.11 Debug text
 
@@ -968,11 +968,11 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 ## 5.15 scene transaction中の公開API（effect transaction sink） ✅実装済み
 
-§3.5 の 3 の executor が開いている間、この章で見てきた公開APIの**行き先が差し替わります**。差し替えの主体は [`activeEffectTransaction()`](../../src/core/loader/effecttransaction.cpp#L736) が返すポインタで、実体は `thread_local` な1変数です（[その宣言](../../src/core/loader/effecttransaction.cpp#L18)）。設定するのはRAIIの [`EffectTransactionScope`](../../src/core/loader/effecttransaction.cpp#L740) だけで、直前の値を退避して戻すので入れ子でも壊れません。`nullptr` のとき（= 通常フレーム）は全APIが従来どおりmoduleへ直行します。
+§3.5 の 3 の executor が開いている間、この章で見てきた公開APIの**行き先が差し替わります**。差し替えの主体は [`activeEffectTransaction()`](../../src/core/loader/effecttransaction.cpp#L731) が返すポインタで、実体は `thread_local` な1変数です（[その宣言](../../src/core/loader/effecttransaction.cpp#L18)）。設定するのはRAIIの [`EffectTransactionScope`](../../src/core/loader/effecttransaction.cpp#L735) だけで、直前の値を退避して戻すので入れ子でも壊れません。`nullptr` のとき（= 通常フレーム）は全APIが従来どおりmoduleへ直行します。
 
 ### どのAPIがどう曲がるか
 
-分類は文章ではなく**runtimeの表**として持たれています（[`public_api_manifest`](../../src/core/loader/sceneparticipantmanifest.cpp#L180)、型は [`ScenePublicApiManifestEntry`](../../src/core/loader/sceneparticipantmanifest.hpp#L46)）。分類名がそのまま挙動です。
+分類は文章ではなく**runtimeの表**として持たれています（[`public_api_manifest`](../../src/core/loader/sceneparticipantmanifest.cpp#L207)、型は [`ScenePublicApiManifestEntry`](../../src/core/loader/sceneparticipantmanifest.hpp#L50)）。分類名がそのまま挙動です。
 
 | 分類 | API | 実際の経路 |
 |---|---|---|
@@ -996,10 +996,10 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 `retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1624)）、2つの向きに使います。
 
-- **読み**: [`retiredComponent(id, component_id)`](../../src/core/loader/effecttransaction.cpp#L462) が destroy token の中のcomponentを返し、`GameContext::localTransform()` / `spriteView()` がそれを**先に**引きます（[`GameContext::localTransform()`](../../src/core/userpublic/gamecontext.cpp#L119)）。だから `onDestroy` から自分の最後のtransformを読めます。
-- **書き**: [`rejectRetiredMutation(api, id)`](../../src/core/loader/effecttransaction.cpp#L473) が同じ列を引き、当たれば `SceneRetiredObjectMutationRejected` を診断へ1件積んで `true` を返します。呼び手のsetterは `false` を返すだけで**throwしません**（`onDestroy` は `noexcept` です）。
+- **読み**: [`retiredComponent(id, component_id)`](../../src/core/loader/effecttransaction.cpp#L457) が destroy token の中のcomponentを返し、`GameContext::localTransform()` / `spriteView()` がそれを**先に**引きます（[`GameContext::localTransform()`](../../src/core/userpublic/gamecontext.cpp#L119)）。だから `onDestroy` から自分の最後のtransformを読めます。
+- **書き**: [`rejectRetiredMutation(api, id)`](../../src/core/loader/effecttransaction.cpp#L468) が同じ列を引き、当たれば `SceneRetiredObjectMutationRejected` を診断へ1件積んで `true` を返します。呼び手のsetterは `false` を返すだけで**throwしません**（`onDestroy` は `noexcept` です）。
 
-`onDestroy` の間だけ phase を切り替えるのが [`EffectDestroyScope`](../../src/core/loader/effecttransaction.cpp#L748) で、使うのは [`BehaviorAttachmentArena::destroyInstance()` の中の1行](../../src/core/gamelogic/behaviorarena.cpp#L890) の1箇所です。phase が `destroy` の間は、各sinkのcatch節が**例外を診断へ変換して飲みます**（それ以外の phase では `throw` し直します — 例えば [`playSound()` の catch](../../src/core/loader/effecttransaction.cpp#L156)）。`onDestroy` が `noexcept` である以上、そこから投げれば `std::terminate` なので、「捨てる」ではなく「記録して返る」に倒してあります。同じ理由で `loadScene()` も phase で分かれ、`destroy` 中は [`requestLoadDuringRetire()`](../../src/core/loader/effecttransaction.cpp#L448) 経由になり、拒否されれば `scene_retire_load_rejected@1` が記録されます。
+`onDestroy` の間だけ phase を切り替えるのが [`EffectDestroyScope`](../../src/core/loader/effecttransaction.cpp#L743) で、使うのは [`BehaviorAttachmentArena::destroyInstance()` の中の1行](../../src/core/gamelogic/behaviorarena.cpp#L890) の1箇所です。phase が `destroy` の間は、各sinkのcatch節が**例外を診断へ変換して飲みます**（それ以外の phase では `throw` し直します — 例えば [`playSound()` の catch](../../src/core/loader/effecttransaction.cpp#L156)）。`onDestroy` が `noexcept` である以上、そこから投げれば `std::terminate` なので、「捨てる」ではなく「記録して返る」に倒してあります。同じ理由で `loadScene()` も phase で分かれ、`destroy` 中は [`requestLoadDuringRetire()`](../../src/core/loader/effecttransaction.cpp#L443) 経由になり、拒否されれば `scene_retire_load_rejected@1` が記録されます。
 
 ### coalesceの規則
 
@@ -1008,18 +1008,18 @@ outboxのentryは呼び出しごとに1件ではありません。
 | API | 規則 |
 |---|---|
 | `playSound` | 常に新規。handleが違えば別の音なのでまとめられない |
-| `stopSound` | **同じtransaction内のplayを指していれば、そのplay entryごと消す**（[`findPlay()` に当たる経路](../../src/core/loader/effecttransaction.cpp#L173)）。`cancelPreparedVoice()` で予約slotも返す |
+| `stopSound` | **同じtransaction内のplayを指していれば、そのplay entryごと消す**（[`findPlay()` に当たる経路](../../src/core/loader/effecttransaction.cpp#L172)）。`cancelPreparedVoice()` で予約slotも返す |
 | `stopSound`（重複 / 鳴っていないhandle） | 何も積まない |
-| `setBusVolume` | bus名で既存entryを探し、あれば `volume` と `sequence` を**上書き**（[その上書き](../../src/core/loader/effecttransaction.cpp#L218)） |
+| `setBusVolume` | bus名で既存entryを探し、あれば `volume` と `sequence` を**上書き**（[その上書き](../../src/core/loader/effecttransaction.cpp#L216)） |
 | `saveData` / `saveSettings` | `resource_key` で既存entryを上書き（§5.10） |
 
-上書きのとき `sequence` を新しい値へ**進める**のが要点です。flushは `0..next_sequence_-1` を順に走査して、その番号のentryを実行します（[`flush()` のループ](../../src/core/loader/effecttransaction.cpp#L498)）。したがって coalesce された副作用は「最初に呼ばれた位置」ではなく「最後に呼ばれた位置」で実行されます — 音量を上げてから保存したのか、保存してから上げたのかが保たれます。
+上書きのとき `sequence` を新しい値へ**進める**のが要点です。flushは `0..next_sequence_-1` を順に走査して、その番号のentryを実行します（[`flush()` のループ](../../src/core/loader/effecttransaction.cpp#L493)）。したがって coalesce された副作用は「最初に呼ばれた位置」ではなく「最後に呼ばれた位置」で実行されます — 音量を上げてから保存したのか、保存してから上げたのかが保たれます。
 
 `next_sequence_` は**読み取りAPIや拒否でも**進みます（`gameSettings()` も `isPlaying()` も `rejectRetiredMutation()` も先頭で `next_sequence_++`）。番号はentryの索引ではなく「transaction内での呼び出し順」で、診断の並べ替えキーでもあります。
 
 ### 診断は固定slot、公開用JSONはcommit後
 
-診断の記録は [`record()`](../../src/core/loader/effecttransaction.cpp#L92) の1本で、`std::string` も `nlohmann::json` も作りません — `errors_` は `sceneEffectCapacity + 1 = 257` 個の [`FixedEffectError`](../../src/core/loader/effecttransaction.hpp#L107) の配列で、文字列は `FixedText<512>` / `FixedText<384>` へ `memcpy` するだけ（溢れた分は切り詰め）です。`api` / `code` / `fields` / `phase` はすべて enum で、人間が読む文字列へ起こすのは [`effectErrors()`](../../src/core/loader/effecttransaction.cpp#L603) — つまり **commit後**です。そこで `sequence` 昇順に並べ替えてから `CommittedWithEffectFailure::EffectError`（`api` / `error_code` / `error_fields` / `phase`）へ変換します。
+診断の記録は [`record()`](../../src/core/loader/effecttransaction.cpp#L92) の1本で、`std::string` も `nlohmann::json` も作りません — `errors_` は `sceneEffectCapacity + 1 = 257` 個の [`FixedEffectError`](../../src/core/loader/effecttransaction.hpp#L107) の配列で、文字列は `FixedText<512>` / `FixedText<384>` へ `memcpy` するだけ（溢れた分は切り詰め）です。`api` / `code` / `fields` / `phase` はすべて enum で、人間が読む文字列へ起こすのは [`effectErrors()`](../../src/core/loader/effecttransaction.cpp#L598) — つまり **commit後**です。そこで `sequence` 昇順に並べ替えてから `CommittedWithEffectFailure::EffectError`（`api` / `error_code` / `error_fields` / `phase`）へ変換します。
 
 溢れ方は2種類あり、**扱いが違います**。
 
@@ -1035,7 +1035,7 @@ outboxのentryは呼び出しごとに1件ではありません。
 - mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L166)）
 - manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L173)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3265)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3268)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 
