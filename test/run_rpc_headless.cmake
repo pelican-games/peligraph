@@ -22,6 +22,10 @@ endif()
 # enforcing WP351's "a few KiB" polling budget and rejecting attached history.
 set(WP351_GPU_TIMING_RESPONSE_MAX_BYTES 4096)
 
+# AU-3: this run checks the headless default backend (offline); a harness that
+# silences its players through the environment must not decide it.
+unset(ENV{PELICAN_AUDIO_BACKEND})
+
 file(REMOVE_RECURSE "${OUT_DIR}")
 file(MAKE_DIRECTORY
     "${OUT_DIR}/project/assets"

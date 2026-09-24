@@ -14,6 +14,7 @@
 #include "scene_load_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
@@ -786,10 +787,11 @@ TEST_CASE("AU-1 a document that mixes the two forms or two clocks is refused by 
                                  {"position", edge("map")}})}).dump()});
     REQUIRE_NOTHROW(ValueGraph::Graph{graphDocument({inputNode("now", "time"), inputNode("scene", "scene_time"),
         map("now"), voice({{"bus", "bgm"}}, {{"time", edge("scene")}, {"position", edge("map")}})}).dump()});
-    // The integrated form still needs its events.
-    REQUIRE_THROWS_WITH(ValueGraph::Graph{graphDocument({inputNode("now", "time"),
-        voice({{"wrap", "repeat"}}, {{"time", edge("now")}})}).dump()},
-        Catch::Matchers::ContainsSubstring("unconnected graph input: voice.events"));
+    // AU-3: the integrated form no longer needs its events (it was refused
+    // as "unconnected graph input: voice.events" here until then); without
+    // them its time may come from any clock.
+    REQUIRE_NOTHROW(ValueGraph::Graph{graphDocument({inputNode("now", "time"),
+        voice({{"wrap", "repeat"}}, {{"time", edge("now")}})}).dump()});
     REQUIRE_THROWS_WITH(ValueGraph::Graph{graphDocument({inputNode("now", "scene_time"), eventsNode("cue"),
         voice({{"bus", "master"}}, {{"time", edge("now")}, {"events", edge("cue", "events")}})}).dump()},
         Catch::Matchers::ContainsSubstring("unknown audio bus"));
@@ -1285,6 +1287,103 @@ TEST_CASE("AU-2 events read on any clock but scene_time are refused by name",
         voice({{"wrap", "repeat"}}, {{"time", edge("scene")}, {"events", edge("cue", "events")}})}).dump()});
     REQUIRE_NOTHROW(ValueGraph::Graph{graphDocument({inputNode("now", "time"), map("now"),
         voice({{"bus", "bgm"}}, {{"time", edge("now")}, {"position", edge("map")}})}).dump()});
+}
+
+// AU-3: an audio.playback placed with only its `time` plays. With neither
+// events nor a position the voice starts on its owner's first frame -- the
+// decomposed form's rule -- and the integrated map's elapsed time counts from
+// there, on whichever clock `time` reads.
+TEST_CASE("AU-3 an integrated voice with neither events nor a position starts on its owner's first frame",
+          "[audio][au3][au3-default-start]") {
+    const std::string clock = GENERATE(as<std::string>{}, "scene_time", "time");
+    CAPTURE(clock);
+    VoiceRig rig;
+    writeGeneratedWav(rig.sandbox.root / "ramp.wav", 2.0, ramp);
+    rig.load(graphDocument({inputNode("now", clock),
+        {{"id", "voice"}, {"op", "audio.playback"}, {"parameters", {{"asset", "project://ramp.wav"}}},
+         {"inputs", {{"time", edge("now")}}}, {"outputs", {"voice"}}}}));
+    REQUIRE(rig.audio().backendKind() == AudioBackendKind::offline);
+    // The owner's first frame comes half a second in: the voice starts there,
+    // at the source's beginning, not half a second into it.
+    for (int i = 0; i < 30; ++i) rig.time().advance();
+    (void)rig.publish();
+    const auto voice = rig.voice("voice");
+    const auto [offset, error] = rampOffset(rig.mix(), rig.audio().outputChannels(), 0.0, 2);
+    CAPTURE(offset, error);
+    REQUIRE(error < 1e-4);
+    rig.time().advance();
+    // From there the offline engine's cursor runs with the graph's time.
+    for (int i = 1; i <= 30; ++i) {
+        (void)rig.publish();
+        CAPTURE(i, rig.cursor("voice"));
+        REQUIRE(std::abs(rig.cursor("voice") - i * frameSeconds) <= followTolerance);
+        (void)rig.mix();
+        rig.time().advance();
+    }
+    REQUIRE(rig.voice("voice") == voice);
+    REQUIRE(rig.audio().seekCountForTesting(voice) == 0);
+    REQUIRE(peak(rig.mixed) > 0.4);
+}
+
+TEST_CASE("AU-3 without events a voice's time may read any clock; with them, scene_time alone",
+          "[audio][au3][au3-clock]") {
+    const auto voice = [](nlohmann::json inputs) {
+        return nlohmann::json{{"id", "voice"}, {"op", "audio.playback"},
+                              {"parameters", {{"asset", "project://tone.wav"}, {"wrap", "repeat"}}},
+                              {"inputs", std::move(inputs)}, {"outputs", {"voice"}}};
+    };
+    // No events: app time, scene time, or a time that reads no clock at all.
+    REQUIRE_NOTHROW(ValueGraph::Graph{graphDocument({inputNode("now", "time"),
+        voice({{"time", edge("now")}})}).dump()});
+    REQUIRE_NOTHROW(ValueGraph::Graph{graphDocument({inputNode("now", "scene_time"),
+        voice({{"time", edge("now")}})}).dump()});
+    REQUIRE_NOTHROW(ValueGraph::Graph{graphDocument({{{"id", "fixed"}, {"op", "value.constant"},
+        {"parameters", {{"value", 1.0}}}, {"outputs", {"value"}}}, voice({{"time", edge("fixed")}})}).dump()});
+    // The lowered schema says the same.
+    REQUIRE_NOTHROW(ValueGraph::Graph{nlohmann::json{{"schema", "pelican.value_graph"}, {"version", 1},
+        {"nodes", nlohmann::json::array({{{"id", "now"}, {"op", "input"}, {"name", "time"}},
+            {{"id", "voice"}, {"op", "audio_playback"}, {"time", "now"}, {"asset", "project://tone.wav"}}})},
+        {"outputs", nlohmann::json::object()}, {"bindings", nlohmann::json::array()}}.dump()});
+    // Events read on app time are still audio.clock_mismatch@1 (AU-2).
+    try {
+        const ValueGraph::Graph graph{graphDocument({inputNode("now", "time"), eventsNode("cue"),
+            voice({{"time", edge("now")}, {"events", edge("cue", "events")}})}).dump()};
+        FAIL("events read on app time were accepted");
+    } catch (const GraphRegistryError &error) {
+        REQUIRE(error.code() == "audio.clock_mismatch@1");
+        REQUIRE(error.detail().at("node") == "voice");
+        REQUIRE(error.detail().at("events_clock") == nlohmann::json::array({"scene_time"}));
+        REQUIRE(error.detail().at("time_clock") == nlohmann::json::array({"time"}));
+    }
+}
+
+TEST_CASE("AU-3 the backend a launch names is the one Audio opens", "[audio][au3][au3-backend]") {
+    for (const auto kind : {AudioBackendKind::device, AudioBackendKind::offline, AudioBackendKind::null})
+        REQUIRE(audioBackendKindFromName(audioBackendKindName(kind)) == kind);
+    // Names are exact.
+    REQUIRE_FALSE(audioBackendKindFromName("Null"));
+    REQUIRE_FALSE(audioBackendKindFromName(""));
+    REQUIRE_FALSE(audioBackendKindFromName("speakers"));
+    ensureLogger();
+    {
+        // A named null opens nothing, so it has no fallback to report.
+        FastModuleContainer modules;
+        GET_MODULE(EngineLaunchConfig).headless = true;
+        GET_MODULE(EngineLaunchConfig).audio_backend = AudioBackendKind::null;
+        const auto &audio = GET_MODULE(Audio);
+        REQUIRE(audio.backendKind() == AudioBackendKind::null);
+        REQUIRE(audio.backendFallbackReason().empty());
+    }
+    {
+        // A window would open the device; the launch named the offline engine.
+        FastModuleContainer modules;
+        GET_MODULE(EngineLaunchConfig).headless = false;
+        GET_MODULE(EngineLaunchConfig).rpc = true;
+        GET_MODULE(EngineLaunchConfig).audio_backend = AudioBackendKind::offline;
+        const auto &audio = GET_MODULE(Audio);
+        REQUIRE(audio.backendKind() == AudioBackendKind::offline);
+        REQUIRE(audio.backendFallbackReason().empty());
+    }
 }
 
 } // namespace Pelican

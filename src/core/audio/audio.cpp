@@ -434,15 +434,6 @@ AudioBus audioVoiceBusFromName(std::string_view bus) {
     throw std::runtime_error("Unknown audio bus: " + std::string{bus} + " (a voice plays on se or bgm)");
 }
 
-std::string_view audioBackendKindName(AudioBackendKind kind) {
-    switch (kind) {
-    case AudioBackendKind::device: return "device";
-    case AudioBackendKind::offline: return "offline";
-    case AudioBackendKind::null: return "null";
-    }
-    return "null";
-}
-
 AudioBackendKind preferredAudioBackend(bool headless) noexcept {
     return headless ? AudioBackendKind::offline : AudioBackendKind::device;
 }
@@ -789,7 +780,16 @@ class MiniaudioBackend final : public Audio::Backend {
 };
 
 Audio::Audio() : streaming_threshold_seconds{defaultStreamingThresholdSeconds} {
-    const auto preferred = preferredAudioBackend(GET_MODULE(EngineLaunchConfig).headless);
+    // AU-3: the backend the launch named, else the one the window decides.
+    const auto &launch = GET_MODULE(EngineLaunchConfig);
+    const auto preferred = launch.audio_backend.value_or(preferredAudioBackend(launch.headless));
+    if (preferred == AudioBackendKind::null) {
+        // Named, not fallen back to: nothing opens, so there is no reason to
+        // report beyond the backend itself.
+        backend = std::make_unique<NullAudioBackend>();
+        LOG_INFO(logger, "audio backend: null (named at launch)");
+        return;
+    }
     try {
         backend = std::make_unique<MiniaudioBackend>(preferred);
         LOG_INFO(logger, "audio backend: {}", audioBackendKindName(preferred));

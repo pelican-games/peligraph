@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -9,6 +10,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <pelican_core.hpp>
 
@@ -102,6 +104,29 @@ Pelican::XrMode parseXrMode(const std::string &value) {
     }
     throw std::runtime_error("--xr must be one of: off, auto, on");
 }
+
+// AU-3: the audio backend a launch names. `source` is where the name came
+// from, so the refusal says which of the two to fix.
+Pelican::AudioBackendKind parseAudioBackend(const std::string &value, std::string_view source) {
+    if (const auto kind = Pelican::audioBackendKindFromName(value)) {
+        return *kind;
+    }
+    throw std::runtime_error(std::string{Pelican::audioBackendUnknownCode} + ": " + std::string{source} +
+                             " must be one of: device, offline, null: " + value);
+}
+
+#if PELICAN_WITH_AUDIO
+constexpr const char *audioBackendEnvironmentName = "PELICAN_AUDIO_BACKEND";
+
+// An empty variable is an unset one, as a shell that clears it leaves it.
+std::optional<std::string> audioBackendEnvironment() {
+    const auto *value = std::getenv(audioBackendEnvironmentName);
+    if (value == nullptr || value[0] == '\0') {
+        return std::nullopt;
+    }
+    return std::string{value};
+}
+#endif
 
 Pelican::VulkanValidationMode
 parseVulkanValidationMode(const std::string &value) {
@@ -315,6 +340,11 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .default_value(std::string{"off"})
         .metavar("off|auto|on")
         .help("select OpenXR activation (runtime default: off)");
+    program.add_argument("--audio-backend")
+        .default_value(std::string{})
+        .metavar("device|offline|null")
+        .help("select the audio mixer (default: device with a window, offline headless; "
+              "PELICAN_AUDIO_BACKEND when this is absent)");
     program.add_argument("--frames")
         .default_value(3)
         .scan<'i', int>()
@@ -418,6 +448,27 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         config.headless = program.get<bool>("--headless");
         config.rpc = program.get<bool>("--rpc");
         config.xr_mode = parseXrMode(program.get<std::string>("--xr"));
+        // AU-3: which mixer the voices reach. The argument wins and leaves the
+        // environment unread; the variable lets a harness (Studio's scenario
+        // runs) silence every player it starts without changing command lines.
+        if (program.is_used("--audio-backend")) {
+            const auto name = program.get<std::string>("--audio-backend");
+            config.audio_backend = parseAudioBackend(name, "--audio-backend");
+#if !PELICAN_WITH_AUDIO
+            // Silence is what this build does already; nothing else can open.
+            if (*config.audio_backend != Pelican::AudioBackendKind::null) {
+                Pelican::throwBuildFeatureDisabled("PELICAN_WITH_AUDIO",
+                                                   "--audio-backend " + name + " is unavailable");
+            }
+#endif
+        }
+#if PELICAN_WITH_AUDIO
+        // A build without audio leaves the variable unread: it is inherited by
+        // every process a harness starts, and such a player is silent anyway.
+        else if (const auto name = audioBackendEnvironment()) {
+            config.audio_backend = parseAudioBackend(*name, audioBackendEnvironmentName);
+        }
+#endif
 #if !PELICAN_WITH_RPC
         if (config.rpc) {
             Pelican::throwBuildFeatureDisabled("PELICAN_WITH_RPC", "--rpc is unavailable");

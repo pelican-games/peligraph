@@ -178,6 +178,10 @@ nlohmann::json openXrStatusJson(const EngineLaunchConfig &launch_config) {
 // device-less engine of a headless run, or the null fallback.
 // The player creates Audio before the module graph freezes; a host that never
 // did reports no backend rather than opening one to answer.
+// AU-3: a backend named at launch (--audio-backend / PELICAN_AUDIO_BACKEND)
+// reports the same way, with no field of its own: `backend` is what took
+// effect, and a named backend that did not is the only other case, which
+// fallback_reason already names ("device: ..."). A named null never falls back.
 nlohmann::json audioStatusJson() {
 #if PELICAN_WITH_AUDIO
     const auto *audio = FastModuleContainer::tryGet<Audio>();

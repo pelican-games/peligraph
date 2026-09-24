@@ -65,6 +65,9 @@ InstanceInputSource instanceInputSourceOf(GraphInstanceInputSource source) {
 // source_begin, source_end, speed, delay -- each literal or an edge) and is
 // started and stopped by its events; the decomposed one follows `position`,
 // the source second any graph computes. One node is one or the other.
+// In either form `events` is optional (AU-3): without them the owner's first
+// frame starts the voice, and the integrated map's elapsed time is counted
+// from that frame on the `time` input's clock.
 constexpr std::string_view audioMappingKeys[] = {"wrap", "source_begin", "source_end", "speed", "delay"};
 
 Json lowerAudioPlayback(const Json &node, const Json &parameters, const Json &inputs,
@@ -93,8 +96,8 @@ Json lowerAudioPlayback(const Json &node, const Json &parameters, const Json &in
     if (position && !mapping.empty())
         throw GraphRegistryError("audio.playback_mapping_conflict@1",
             {{"node", id}, {"parameters", std::move(mapping)}});
-    if (!position && !inputs.contains("events"))
-        throw std::invalid_argument("unconnected graph input: " + id + ".events");
+    // A node without events names no scene-stamped arrival, so its `time` may
+    // come from any clock -- app time for a BGM that carries on across scenes.
     if (inputs.contains("events")) {
         lowered["events"] = inputs.at("events").at("node");
         // AU-2 (the rest of decision 8): events are always stamped on scene
@@ -344,8 +347,8 @@ Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : mo
             if (node.audio_events) node.dependencies.push_back(resolve(authored.at("events")));
             node.audio_position = authored.contains("position");
             if (node.audio_position) node.dependencies.push_back(resolve(authored.at("position")));
-            if (!node.audio_events && !node.audio_position)
-                throw std::invalid_argument("audio playback requires events or a position: " + node.id);
+            // Neither events nor a position (AU-3): the voice starts on its
+            // owner's first frame and plays the map from there (publish).
             // The integrated time map (decision 2). The source's own length is
             // the range's end unless source_end says otherwise, and the range's
             // length is its duration: speed 1 plays the source in real time.

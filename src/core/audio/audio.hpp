@@ -3,6 +3,7 @@
 #include "../container.hpp"
 #include "../handle.hpp"
 #include "../userpublic/audio.hpp"
+#include "./audiobackendkind.hpp"
 
 #include <array>
 #include <cstddef>
@@ -29,13 +30,9 @@ AudioBus audioBusFromName(std::string_view bus);
 // voice of its own.
 AudioBus audioVoiceBusFromName(std::string_view bus);
 
-// AU-1 decision 9. A player with a window mixes into the audio device (the
-// Studio's embedded player among them). A headless run mixes into a
-// device-less engine that nothing reads unless a caller asks for its PCM, so
-// its cursors are the frames actually mixed, not a clock made up for them.
-// The null backend is what either falls back to when its engine cannot open.
-enum class AudioBackendKind : std::uint8_t { device, offline, null };
-std::string_view audioBackendKindName(AudioBackendKind kind);
+// AudioBackendKind and its names live in audiobackendkind.hpp, which every
+// build has: the player reads a launch's --audio-backend with or without audio.
+// The backend a launch that names none gets: the window decides.
 AudioBackendKind preferredAudioBackend(bool headless) noexcept;
 
 DECLARE_MODULE(Audio) {

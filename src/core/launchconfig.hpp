@@ -1,5 +1,6 @@
 #pragma once
 
+#include "./audio/audiobackendkind.hpp"
 #include "./container.hpp"
 
 #include <array>
@@ -45,6 +46,11 @@ DECLARE_MODULE(EngineLaunchConfig) {
     // golden harnesses set these when they are not already using headless.
     bool input_replay = false;
     bool golden_mode = false;
+    // AU-3: the audio backend the launch named (--audio-backend, else the
+    // PELICAN_AUDIO_BACKEND environment variable). Absent, the window decides:
+    // device with one, offline headless. A named device that cannot open still
+    // falls back to null.
+    std::optional<AudioBackendKind> audio_backend;
     XrMode xr_mode = XrMode::off;
     // Keep the command-line intent after activation normalizes xr_mode.  XR1a
     // needs this once, before GPU resources exist, to distinguish auto

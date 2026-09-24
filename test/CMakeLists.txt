@@ -2567,6 +2567,31 @@ if(PELICAN_WITH_RPC)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_headless.cmake
     )
     pelican_gpu_test_properties(rpc_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+    # AU-3: the audio backend named at launch -- --audio-backend over
+    # PELICAN_AUDIO_BACKEND over the window's default -- is what get_status
+    # reports, and a name none of the three stops the launch by name. The
+    # refusal comes from the argument parser, so that half needs no GPU.
+    if(PELICAN_WITH_AUDIO)
+        add_test(
+            NAME audio_backend_selection_player
+            COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+                -DPLAYER=$<TARGET_FILE:pelican_player>
+                -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+                -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/audio_backend_selection_player
+                -DMODE=status
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/run_audio_backend_selection.cmake
+        )
+        pelican_gpu_test_properties(audio_backend_selection_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+        add_test(
+            NAME audio_backend_selection_refused
+            COMMAND ${CMAKE_COMMAND}
+                -DPLAYER=$<TARGET_FILE:pelican_player>
+                -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+                -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/audio_backend_selection_refused
+                -DMODE=refusal
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/run_audio_backend_selection.cmake
+        )
+    endif()
     add_test(
         NAME rpc_set_camera_headless_player
         COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
@@ -3353,6 +3378,7 @@ set(PELICAN_RUNTIME_SHADER_PROCESS_TESTS
     free_camera_runtime_overlay_player
     vrm_xr_demo_rpc_player
     rpc_headless_player
+    audio_backend_selection_player
     rpc_set_camera_headless_player
     rpc_scene_flow_headless_player
     rpc_inject_input_headless_player

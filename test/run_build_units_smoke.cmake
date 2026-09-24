@@ -996,6 +996,33 @@ function(run_audio_smoke)
         "audio.module_unavailable@1"
         "${audio_player}" --headless --project "${audio_requires_project}" --frames 1 --size 64x64
     )
+    # AU-3: --audio-backend in a build without audio. A backend it cannot open
+    # is the OFF error, as --xr on is; null, the silence it has anyway, is
+    # accepted (the run goes on to stop at the project's requires); a name
+    # none of the three is refused as in any build. The environment variable
+    # is left unread: a harness sets it for every player it starts.
+    expect_disabled_error(
+        "audio_backend_offline"
+        "PELICAN_WITH_AUDIO"
+        "${audio_player}" --headless --audio-backend offline --project "${audio_requires_project}" --frames 1
+    )
+    expect_named_error(
+        "audio_backend_unknown"
+        "audio.backend_unknown@1"
+        "${audio_player}" --headless --audio-backend speakers --project "${audio_requires_project}" --frames 1
+    )
+    expect_named_error(
+        "audio_backend_null"
+        "audio.module_unavailable@1"
+        "${audio_player}" --headless --audio-backend null --project "${audio_requires_project}" --frames 1
+    )
+    set(ENV{PELICAN_AUDIO_BACKEND} speakers)
+    expect_named_error(
+        "audio_backend_environment_unread"
+        "audio.module_unavailable@1"
+        "${audio_player}" --headless --project "${audio_requires_project}" --frames 1
+    )
+    unset(ENV{PELICAN_AUDIO_BACKEND})
     clean_successful_build("${audio_build_dir}")
 endfunction()
 

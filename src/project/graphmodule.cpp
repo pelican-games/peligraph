@@ -314,10 +314,11 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
     // sound is prepared.
     // AU-1: audio.playback is one voice in either of two forms. The
     // integrated one carries value.playback's time map (wrap, source_begin,
-    // source_end, speed, delay; the numbers literal or an edge) and is started
-    // by its events; the decomposed one follows `position`, and its events are
-    // optional. Which asset and bus the voice plays, and how it wraps, are
-    // fixed when the voice starts, so changing them rebuilds.
+    // source_end, speed, delay; the numbers literal or an edge); the
+    // decomposed one follows `position`. In both, events are optional (AU-3):
+    // without them the owner's first frame starts the voice, so a node placed
+    // with only its `time` plays. Which asset and bus the voice plays, and how
+    // it wraps, are fixed when the voice starts, so changing them rebuilds.
     auto playback = value({{"time", required}, {"events", optional_events}, {"position", optional},
             {"source_begin", optional}, {"source_end", optional}, {"speed", optional},
             {"delay", optional}}, {{"voice", voice}}, GraphOperationEvaluation::replay);
