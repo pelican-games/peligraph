@@ -455,13 +455,18 @@ std::uint64_t GameContext::seed() const {
 }
 
 SoundHandle AudioContext::playSound(std::string_view path) const {
+    return playSound(path, "se");
+}
+
+SoundHandle AudioContext::playSound(std::string_view path, std::string_view bus) const {
     return answerEmptyInDestroy(EffectApi::play_sound, [&]() -> SoundHandle {
         if (auto *effect = internal::activeEffectTransaction()) {
-            return effect->playSound(path);
+            return effect->playSound(path, bus);
         }
 #if PELICAN_WITH_AUDIO
-        return GET_MODULE(Audio).playSound(path);
+        return GET_MODULE(Audio).playSound(path, audioVoiceBusFromName(bus));
 #else
+        (void)bus;
         audioDisabled("playSound");
 #endif
     });

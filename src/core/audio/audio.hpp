@@ -7,9 +7,14 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace Pelican {
 
@@ -20,6 +25,18 @@ enum class AudioBus : std::uint8_t {
 };
 
 AudioBus audioBusFromName(std::string_view bus);
+// The bus a voice plays on: "se" or "bgm". Master scales both and carries no
+// voice of its own.
+AudioBus audioVoiceBusFromName(std::string_view bus);
+
+// AU-1 decision 9. A player with a window mixes into the audio device (the
+// Studio's embedded player among them). A headless run mixes into a
+// device-less engine that nothing reads unless a caller asks for its PCM, so
+// its cursors are the frames actually mixed, not a clock made up for them.
+// The null backend is what either falls back to when its engine cannot open.
+enum class AudioBackendKind : std::uint8_t { device, offline, null };
+std::string_view audioBackendKindName(AudioBackendKind kind);
+AudioBackendKind preferredAudioBackend(bool headless) noexcept;
 
 DECLARE_MODULE(Audio) {
   public:
@@ -27,6 +44,35 @@ DECLARE_MODULE(Audio) {
     struct PreparedSound {
         std::shared_ptr<const void> decoded;
         std::string source;
+        AudioBus bus = AudioBus::Se;
+    };
+    // How a graph voice starts (AU-1 decision 2): where in the source, on
+    // which bus, and whether the source loops at a sample-accurate loop point.
+    struct VoiceStart {
+        AudioBus bus = AudioBus::Se;
+        double start = 0.0;              // source seconds
+        bool loop = false;
+        double loop_begin = 0.0;         // source seconds
+        std::optional<double> loop_end;  // source seconds; the end of the source when absent
+        // With loop == false, where the voice ends. The end of the source when absent.
+        std::optional<double> end;
+        float rate = 1.0f;               // multiplied into the voice's pitch
+        bool paused = false;
+    };
+    // What a graph voice does this frame (AU-1 decision 3). With a position
+    // the voice follows it: its cursor is compared with the position modulo
+    // the source length (modulo the loop, for a voice on its own loop point)
+    // and sought when the two are further apart than `tolerance`. Without one
+    // the voice runs on its own clock.
+    struct VoiceDrive {
+        bool paused = false;
+        std::optional<double> position;  // source seconds
+        double tolerance = 0.0;          // seconds
+        float rate = 1.0f;
+        // A followed voice that ran to its end is sought back and restarted.
+        // A voice on its own loop point that ended is left ended unless the
+        // position is further than `tolerance` from it.
+        bool restart_ended = true;
     };
 
   private:
@@ -34,13 +80,37 @@ DECLARE_MODULE(Audio) {
         AudioBus bus = AudioBus::Se;
         std::uint64_t backend_id = 0;
         float volume = 1.0f;
+        float pitch = 1.0f;
+        float rate = 1.0f;
+        // A graph voice belongs to the graph runtime that started it: it stays
+        // when its source ends, because the graph decides when it goes.
+        bool graph = false;
+        bool held = false;
+        bool volume_set = false;
+        std::size_t seeks = 0;
+        std::uint64_t length_frames = 0;
+        std::uint64_t loop_frames = 0; // the loop's length when the source loops on its own
+        std::uint32_t source_rate = 0;
+    };
+    struct DecodedEntry {
+        std::optional<std::pair<std::int64_t, std::uintmax_t>> stamp;
+        std::shared_ptr<const void> decoded;
+        std::size_t bytes = 0;
     };
 
     std::unique_ptr<Backend> backend;
+    // Why the preferred backend did not open, when the null one stands in.
+    std::string fallback_reason;
     std::unordered_map<SoundHandle, Voice, SoundHandle::Hash> voices;
     std::array<float, 3> bus_volumes{1.0f, 1.0f, 1.0f};
     bool voice_volumes_dirty = false;
     std::uint64_t next_handle = 1;
+    // AU-1 decision 7: one decode per asset, shared by every voice that plays
+    // it and by the rendering config's check that the asset decodes.
+    mutable std::mutex decode_mutex;
+    mutable std::map<std::string, DecodedEntry, std::less<>> decoded_sounds;
+    mutable std::size_t decode_count = 0;
+    std::size_t seek_count = 0;
 
     float effectiveVolume(AudioBus bus) const;
     void updateVoiceVolumes();
@@ -50,18 +120,23 @@ DECLARE_MODULE(Audio) {
     ~Audio();
 
     SoundHandle playSound(std::string_view path);
+    SoundHandle playSound(std::string_view path, AudioBus bus);
     void stopSound(SoundHandle handle);
     void setBusVolume(std::string_view bus, float volume);
     float busVolume(std::string_view bus) const;
     bool isPlaying(SoundHandle handle) const;
     bool setSoundVolume(SoundHandle handle, float volume);
+    // The same volume reached linearly over `seconds` of mixed audio rather
+    // than at once (AU-1 decision 6: a graph writes one target per frame).
+    bool rampSoundVolume(SoundHandle handle, float volume, double seconds);
     bool setSoundPitch(SoundHandle handle, float pitch);
     bool setSoundPaused(SoundHandle handle, bool paused);
     std::optional<SoundPlaybackState> soundState(SoundHandle handle) const;
 
     // Effect-transaction seam. Decoding and all engine-side capacity are
     // prepared before commit; backend calls remain in the fallible flush.
-    PreparedSound prepareSound(std::string_view path) const;
+    PreparedSound prepareSound(std::string_view path, AudioBus bus = AudioBus::Se) const;
+    static double lengthSeconds(const PreparedSound &sound);
     SoundHandle reserveSoundHandle();
     void reserveEffectVoices(std::size_t count);
     void prepareVoiceSlot(SoundHandle handle);
@@ -74,12 +149,30 @@ DECLARE_MODULE(Audio) {
     void commitBusVolume(std::string_view bus, float volume);
     std::uint64_t nextHandleForTesting() const noexcept { return next_handle; }
 
+    // Graph voices (AU-1). The graph runtime starts one per audio.playback
+    // node and drives it once per frame.
+    SoundHandle playVoice(const PreparedSound &sound, const VoiceStart &start);
+    void driveVoice(SoundHandle handle, const VoiceDrive &drive);
+    // The source length of a graph voice in seconds; 0 when there is none.
+    double voiceLengthSeconds(SoundHandle handle) const noexcept;
+
     // Called at the shared logical-frame boundary. Completed backend voices
     // are destroyed here rather than accumulating until Audio teardown.
     void update();
 
+    AudioBackendKind backendKind() const noexcept;
+    const std::string &backendFallbackReason() const noexcept { return fallback_reason; }
+    // The device-less engine only: mixes `frames` frames and returns them
+    // interleaved at outputChannels() channels. Throws on any other backend.
+    std::vector<float> mixOffline(std::uint64_t frames);
+    std::uint32_t outputSampleRate() const noexcept;
+    std::uint32_t outputChannels() const noexcept;
+
     std::size_t voiceCountForTesting() const noexcept;
     std::size_t backendVoiceCountForTesting() const noexcept;
+    std::size_t decodeCountForTesting() const noexcept;
+    std::size_t seekCountForTesting() const noexcept { return seek_count; }
+    std::size_t seekCountForTesting(SoundHandle handle) const noexcept;
 };
 
 } // namespace Pelican

@@ -732,6 +732,10 @@ struct SceneLoadContext {
 
     void commitSceneIdentity() noexcept {
         loader.scene_start_time = candidate_scene_start_time;
+        // AU-1 decision 1: the voices the graphs started belong to the scene
+        // being replaced. Stopped here, before the runtimes that hold their
+        // handles go, so none keeps playing unmanaged into the next scene.
+        loader.stopGraphVoices();
         loader.graph_runtime.clear();
         // The unmatched-owner memos belong to the scene that was live, not to
         // the one being committed: a document that could not bind an object

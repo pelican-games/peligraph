@@ -261,6 +261,7 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
     const GraphInputContract optional{required.accepted_type, false};
     const GraphInputContract events{exactLogicalTypePattern(*types, event)};
     [[maybe_unused]] const GraphInputContract optional_voice{exactLogicalTypePattern(*types, voice), false};
+    [[maybe_unused]] const GraphInputContract optional_events{events.accepted_type, false};
     const std::map<std::string, LogicalType> value_output{{"value", scalar}};
     const auto declared = [](std::map<std::string, GraphInputContract> inputs,
                              std::map<std::string, LogicalType> outputs,
@@ -311,13 +312,23 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
     // pose module is: a build without audio never registers these operations,
     // so a document naming one is graph.operation_unregistered@1 before any
     // sound is prepared.
+    // AU-1: audio.playback is one voice in either of two forms. The
+    // integrated one carries value.playback's time map (wrap, source_begin,
+    // source_end, speed, delay; the numbers literal or an edge) and is started
+    // by its events; the decomposed one follows `position`, and its events are
+    // optional. Which asset and bus the voice plays, and how it wraps, are
+    // fixed when the voice starts, so changing them rebuilds.
+    auto playback = value({{"time", required}, {"events", optional_events}, {"position", optional},
+            {"source_begin", optional}, {"source_end", optional}, {"speed", optional},
+            {"delay", optional}}, {{"voice", voice}}, GraphOperationEvaluation::replay);
+    playback.contract.parameter_changes = {{"asset", GraphParameterChange::rebuild},
+        {"bus", GraphParameterChange::rebuild}, {"wrap", GraphParameterChange::rebuild}};
     registry.registerModule(GraphModuleManifest{
         "pelican.audio", 1,
         "Sound playback voices and the value sinks that drive them.",
         builtinAudioTypeSchemas(),
         {
-            {"audio.playback", value({{"time", required}, {"events", events}}, {{"voice", voice}},
-                GraphOperationEvaluation::replay)},
+            {"audio.playback", std::move(playback)},
             {"audio.volume", value({{"value", required}, {"voice", optional_voice}}, {})},
             {"audio.pitch", value({{"value", required}, {"voice", optional_voice}}, {})},
         },

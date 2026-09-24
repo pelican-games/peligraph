@@ -133,12 +133,13 @@ bool PreparedEffectTransaction::reserveEntry(
     return false;
 }
 
-SoundHandle PreparedEffectTransaction::playSound(std::string_view path) {
+SoundHandle PreparedEffectTransaction::playSound(std::string_view path, std::string_view bus) {
     const auto sequence = next_sequence_++;
     try {
 #if PELICAN_WITH_AUDIO
+        const auto voice_bus = audioVoiceBusFromName(bus);
         if (!reserveEntry(sequence)) return SoundHandle{};
-        auto sound = audio_->prepareSound(path);
+        auto sound = audio_->prepareSound(path, voice_bus);
         const auto handle = audio_->reserveSoundHandle();
         entries_.push_back(Entry{
             .kind = EntryKind::play,
@@ -154,6 +155,7 @@ SoundHandle PreparedEffectTransaction::playSound(std::string_view path) {
         }
         return handle;
 #else
+        (void)bus;
         throwBuildFeatureCallDisabled("PELICAN_WITH_AUDIO", "playSound");
 #endif
     } catch (...) {

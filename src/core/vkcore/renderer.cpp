@@ -5631,6 +5631,9 @@ void Renderer::LogicalFrameRecorder::publishFrameValueGraph() {
                                      frame_graph.inactive_graph_scopes.end());
         const auto inputs = collectGraphInputs(*frame_graph.value_graph, scene,
             inactive_graph_scopes, engine_time.now(), engine_time.dt());
+        // AU-1: the voices, their sinks and the sound resolver come from the
+        // scene, staged into the generation change when there is one.
+        const auto audio = scene.graphAudioWriters(frame_graph.value_graph, staged_graph_transfer.get());
         auto published = frame_graph.value_graph->publish(GameContext{}, inputs, {},
             [&](std::string_view name, std::span<const float> values) {
                 const auto found = frame_graph.buffer_bindings.find(std::string{name});
@@ -5638,16 +5641,7 @@ void Renderer::LogicalFrameRecorder::publishFrameValueGraph() {
                     modules.frame_graph_resources.stageRuntimeValues(found->second, values);
             }, staged_graph_transfer ? staged_graph_transfer->parameters() : scene.graphParameterValues(frame_graph.value_graph),
             inactive_graph_scopes, staged_graph_transfer ? &staged_graph_transfer->evaluation() : &scene.graphEvaluationState(frame_graph.value_graph),
-            [&](std::string_view node, Animation::CurvePlaybackCommand command) {
-                if (staged_graph_transfer)
-                    return staged_graph_transfer->stageAudioEvent(node, command);
-                return scene.applyGraphAudioEvent(frame_graph.value_graph, node, command);
-            }, [&](std::string_view node) {
-                return scene.graphSound(frame_graph.value_graph, node);
-            }, staged_graph_transfer ? ValueGraph::AudioValueWriter{
-                [&](std::string_view node, bool voice, ValueGraph::AudioValueKind kind, float value) {
-                    return staged_graph_transfer->stageAudioValue(node, voice, kind, value);
-                }} : ValueGraph::AudioValueWriter{},
+            audio.voices, audio.sounds, audio.values,
             // GP-3: ui.* sinks land in the UI before this frame's UI pass
             // draws. Preparation checked every target against the document.
             [](std::string_view path, ValueGraph::UiSinkProperty property, float value) {

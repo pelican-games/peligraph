@@ -33,6 +33,9 @@
 #if PELICAN_WITH_OPENXR
 #include "../openxr/openxrsession.hpp"
 #endif
+#if PELICAN_WITH_AUDIO
+#include "../audio/audio.hpp"
+#endif
 #include "../playback/seqplayer.hpp"
 #include "../phys/physworld.hpp"
 #include "../../project/projectformat.hpp"
@@ -166,6 +169,24 @@ nlohmann::json openXrStatusJson(const EngineLaunchConfig &launch_config) {
     }
 #endif
     return inactiveOpenXrStatusJson();
+}
+
+// AU-1 decision 9: which mixer this player's voices reach -- the audio device
+// (a player with a window, the Studio's embedded one among them), the
+// device-less engine of a headless run, or the null fallback.
+// The player creates Audio before the module graph freezes; a host that never
+// did reports no backend rather than opening one to answer.
+nlohmann::json audioStatusJson() {
+#if PELICAN_WITH_AUDIO
+    const auto *audio = FastModuleContainer::tryGet<Audio>();
+    if (audio == nullptr) return nlohmann::json{{"available", true}, {"backend", nullptr}};
+    nlohmann::json status{{"available", true},
+                          {"backend", std::string{audioBackendKindName(audio->backendKind())}}};
+    if (!audio->backendFallbackReason().empty()) status["fallback_reason"] = audio->backendFallbackReason();
+    return status;
+#else
+    return nlohmann::json{{"available", false}};
+#endif
 }
 
 const nlohmann::json &requireObjectParams(const nlohmann::json &params, const std::string &method) {
@@ -1401,6 +1422,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             // it. Absent the animation module the section is
             // {"available": false} and nothing else.
             {"animation", internal::animationStatusJson()},
+            {"audio", audioStatusJson()},
             {"seed", GameContext{}.seed()},
             {"xr", openXrStatusJson(modules.launch_config)},
             {"renderdoc", renderdoc.status},

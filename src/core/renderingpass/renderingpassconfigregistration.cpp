@@ -1064,6 +1064,8 @@ void RegistrationStages::prepare() {
     // A build without audio never gets here with a voice: pelican.audio is not
     // registered, so the document naming audio.playback was already refused as
     // graph.operation_unregistered@1 while it was lowered.
+    // The check that every voice's asset decodes is also its one decode
+    // (AU-1 decision 7): Audio keeps the buffer, and the voices share it.
     if (value_graph) {
         for (const auto &[node, asset] : value_graph->audioSources())
             (void)GET_MODULE(Audio).prepareSound(asset);

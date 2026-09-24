@@ -86,6 +86,8 @@ DECLARE_MODULE(SceneLoader) {
         ValueGraph::EvaluationState pose_evaluation;
         std::map<std::string, GameObjectId> owners;
         ValueGraph::SoundBindings sounds;
+        // The start (AudioVoiceDirective::epoch) each voice in `sounds` plays.
+        std::map<std::string, std::uint64_t, std::less<>> sound_epochs;
     };
     using GraphRuntimes = std::map<std::weak_ptr<const ValueGraph::Graph>, GraphRuntime, std::owner_less<>>;
     GraphRuntimes graph_runtime;
@@ -172,10 +174,33 @@ DECLARE_MODULE(SceneLoader) {
         const std::shared_ptr<const ValueGraph::Graph> &graph);
     bool emitGraphEvent(std::shared_ptr<const ValueGraph::Graph> graph, GameObjectId object,
                         std::string_view input, Animation::CurvePlaybackCommand command);
-    bool applyGraphAudioEvent(const std::shared_ptr<const ValueGraph::Graph> &graph,
-                             std::string_view node, Animation::CurvePlaybackCommand command);
+    // AU-1: make one audio.playback node's voice what the graph asks for this
+    // frame -- start it (again, under a new epoch), stop it, hold it, or keep
+    // it on its position. False when the node has no voice to drive here.
+    bool applyGraphVoice(const std::shared_ptr<const ValueGraph::Graph> &graph,
+                         std::string_view node, const ValueGraph::AudioVoiceDirective &directive);
+    // An audio.volume / audio.pitch sink's value. A volume is reached over
+    // this frame's length (decision 6), not at once.
+    bool applyGraphAudioValue(const std::shared_ptr<const ValueGraph::Graph> &graph, std::string_view node,
+                              bool voice, ValueGraph::AudioValueKind kind, float value);
     std::optional<SoundHandle> graphSound(const std::shared_ptr<const ValueGraph::Graph> &graph,
                                         std::string_view node) const;
+    class PreparedGraphRuntimeTransfer;
+    // The audio half of one frame's Graph::publish, shared by the renderer and
+    // by a caller without one (the device-less audio tests), so both drive
+    // voices through the same code. With a staged generation change the
+    // writers stage into it; the transfer applies them once it is published.
+    struct GraphAudioWriters {
+        ValueGraph::AudioVoiceWriter voices;
+        ValueGraph::SoundResolver sounds;
+        ValueGraph::AudioValueWriter values;
+    };
+    GraphAudioWriters graphAudioWriters(const std::shared_ptr<const ValueGraph::Graph> &graph,
+                                        PreparedGraphRuntimeTransfer *staged);
+    // AU-1 decision 1: a scene commit stops every voice a graph started in the
+    // scene it replaces. A voice that should carry on is started again by the
+    // next scene's owner of the same name (decision 8).
+    void stopGraphVoices() noexcept;
     // What the last published draw generation fed each instance input port.
     // Written by the publishing pass; read-only afterwards. Evaluating the
     // graph again to answer the question would advance its clocks and consume
@@ -183,7 +208,6 @@ DECLARE_MODULE(SceneLoader) {
     void publishGraphValues(ValueGraph::PublishedInstanceInputs snapshot);
     const ValueGraph::PublishedInstanceInputs &graphValues() const noexcept { return graph_values; }
     void updateGraphRuntime();
-    class PreparedGraphRuntimeTransfer;
     std::unique_ptr<PreparedGraphRuntimeTransfer> prepareGraphRuntimeTransfer(
         const std::shared_ptr<const ValueGraph::Graph> &previous,
         const std::shared_ptr<const ValueGraph::Graph> &next);
@@ -217,18 +241,19 @@ class SceneLoader::PreparedGraphRuntimeTransfer {
     // Borrowed until publication. Destroying a rejected candidate cannot stop
     // voices still owned by the old runtime.
     ValueGraph::SoundBindings retained_sounds_;
+    std::map<std::string, std::uint64_t, std::less<>> retained_sound_epochs_;
     struct AudioValue {
         std::string node;
         ValueGraph::AudioValueKind kind;
         float value;
     };
-    std::vector<std::pair<std::string, Animation::CurvePlaybackCommand>> audio_events_;
+    std::vector<std::pair<std::string, ValueGraph::AudioVoiceDirective>> audio_voices_;
     std::vector<AudioValue> audio_values_;
     bool committed_ = false;
   public:
     ValueGraph::ParameterValues parameters() const;
     ValueGraph::EvaluationState &evaluation();
-    bool stageAudioEvent(std::string_view node, Animation::CurvePlaybackCommand command);
+    bool stageAudioVoice(std::string_view node, const ValueGraph::AudioVoiceDirective &directive);
     bool stageAudioValue(std::string_view node, bool voice, ValueGraph::AudioValueKind kind, float value);
     void publishAudio(const std::shared_ptr<const ValueGraph::Graph> &graph);
     void commit() noexcept;

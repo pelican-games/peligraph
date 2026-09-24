@@ -227,6 +227,7 @@ constexpr std::array public_api_manifest{
     ScenePublicApiManifestEntry{"GameContext", "float randomFloat(float min,float max)", "covered.rng-sequence"},
     ScenePublicApiManifestEntry{"GameContext", "void setSeed(std::uint64_t seed)", "covered.rng-sequence"},
     ScenePublicApiManifestEntry{"AudioContext", "SoundHandle playSound(std::string_view path)const", "shadow_outbox.audio-play"},
+    ScenePublicApiManifestEntry{"AudioContext", "SoundHandle playSound(std::string_view path,std::string_view bus)const", "shadow_outbox.audio-play"},
     ScenePublicApiManifestEntry{"AudioContext", "void stopSound(SoundHandle handle)const", "shadow_outbox.audio-stop"},
     ScenePublicApiManifestEntry{"AudioContext", "void setBusVolume(std::string_view bus,float volume)const", "shadow_outbox.audio-bus-volume"},
     ScenePublicApiManifestEntry{"AudioContext", "bool setSoundVolume(SoundHandle handle,float volume)const", "refuse.transaction-scope"},

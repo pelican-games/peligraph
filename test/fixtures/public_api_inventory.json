@@ -42,6 +42,13 @@
     {
       "header": "src/core/userpublic/gamecontext.hpp",
       "class": "AudioContext",
+      "signature": "SoundHandle playSound(std::string_view path,std::string_view bus)const",
+      "classification": "mutator",
+      "manifest": "shadow_outbox.audio-play"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "AudioContext",
       "signature": "void stopSound(SoundHandle handle)const",
       "classification": "mutator",
       "manifest": "shadow_outbox.audio-stop"

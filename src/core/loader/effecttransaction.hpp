@@ -172,7 +172,7 @@ class PreparedEffectTransaction {
         retired_objects_ = objects;
     }
 
-    SoundHandle playSound(std::string_view path);
+    SoundHandle playSound(std::string_view path, std::string_view bus = "se");
     void stopSound(SoundHandle handle);
     void setBusVolume(std::string_view bus, float volume);
     float busVolume(std::string_view bus);

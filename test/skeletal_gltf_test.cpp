@@ -1762,7 +1762,10 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     test_support::loadScene(scene, "default_scene");
     REQUIRE_FALSE(context.audio().soundState(right_voice));
     auto temporary_graph = std::make_shared<const ValueGraph::Graph>(event_document.dump());
-    REQUIRE(scene.applyGraphAudioEvent(temporary_graph, "right/sound", Command::start));
+    ValueGraph::AudioVoiceDirective started;
+    started.phase = ValueGraph::AudioVoiceDirective::Phase::playing;
+    started.epoch = 1;
+    REQUIRE(scene.applyGraphVoice(temporary_graph, "right/sound", started));
     const auto temporary_voice = requireSound(temporary_graph, "right/sound");
     temporary_graph.reset();
     scene.updateGraphRuntime();

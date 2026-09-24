@@ -878,18 +878,38 @@ TEST_CASE("PG-1 a build without the audio unit rejects an audio document by name
         {"id":"volume","op":"audio.volume","inputs":{"value":{"node":"level","port":"value"},
          "voice":{"node":"sound","port":"voice"}},"outputs":[]}],
       "outputs":{}})");
+    // AU-1: the voice's new forms -- a position to follow, a bus, the
+    // integrated time map -- are the same operation, so the same refusal.
+    const auto au1_document = nlohmann::json::parse(R"({"schema":"pelican.graph","version":1,
+      "nodes":[
+        {"id":"clock","op":"value.input","parameters":{"name":"time"},"outputs":["value"]},
+        {"id":"cue","op":"event.playback","outputs":["events"]},
+        {"id":"map","op":"value.playback","parameters":{"wrap":"repeat","duration":2},
+         "inputs":{"elapsed":{"node":"clock","port":"value"}},"outputs":["value"]},
+        {"id":"bgm","op":"audio.playback","parameters":{"asset":"project://bgm.wav","bus":"bgm"},
+         "inputs":{"time":{"node":"clock","port":"value"},"position":{"node":"map","port":"value"}},
+         "outputs":["voice"]},
+        {"id":"loop","op":"audio.playback","parameters":{"asset":"project://bgm.wav","wrap":"repeat",
+         "source_begin":0.5,"speed":1},
+         "inputs":{"time":{"node":"clock","port":"value"},"events":{"node":"cue","port":"events"}},
+         "outputs":["voice"]}],
+      "outputs":{}})");
 #if PELICAN_WITH_AUDIO
     REQUIRE(builtinGraphModuleRegistry().contains("audio.playback"));
     REQUIRE(builtinGraphModuleRegistry().isSink("audio.volume"));
     REQUIRE_NOTHROW(partitionGraphDocument(document));
     const ValueGraph::Graph graph{document.dump()};
     REQUIRE(graph.audioSources().size() == 1);
+    const ValueGraph::Graph au1_graph{au1_document.dump()};
+    REQUIRE(au1_graph.audioSources().size() == 2);
 #else
     for (const auto &attempt : std::vector<std::function<void()>>{
              [&] { (void)partitionGraphDocument(document); },
              // The runtime's own entry: the value graph a rendering config
              // prepares is built from this constructor.
-             [&] { const ValueGraph::Graph graph{document.dump()}; }}) {
+             [&] { const ValueGraph::Graph graph{document.dump()}; },
+             [&] { (void)partitionGraphDocument(au1_document); },
+             [&] { const ValueGraph::Graph graph{au1_document.dump()}; }}) {
         try {
             attempt();
             FAIL("an audio document was accepted without the audio unit");

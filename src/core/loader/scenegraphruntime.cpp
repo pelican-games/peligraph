@@ -13,6 +13,11 @@
 
 namespace Pelican {
 namespace {
+#if PELICAN_WITH_AUDIO
+// How far an integrated voice on its own loop point may stand from the graph's
+// time before it is brought back (AU-1).
+constexpr double nativeResyncSeconds = 0.25;
+#endif
 ValueGraph::ParameterValues parameterValues(const auto &parameters) {
     ValueGraph::ParameterValues values;
     for (const auto &[name, parameter] : parameters) values.emplace(name, parameter.value);
@@ -102,6 +107,7 @@ SceneLoader::GraphRuntime &SceneLoader::synchronizeGraphRuntime(
             }
             return !audio->soundState(entry.second);
         });
+    std::erase_if(runtime.sound_epochs, [&](const auto &entry) { return !runtime.sounds.contains(entry.first); });
 #endif
     runtime.owners = std::move(owners);
     auto &parameters = runtime.parameters;
@@ -156,29 +162,144 @@ bool SceneLoader::emitGraphEvent(std::shared_ptr<const ValueGraph::Graph> graph,
                             GET_MODULE(EngineTime).now() - scene_start_time);
 }
 
-bool SceneLoader::applyGraphAudioEvent(const std::shared_ptr<const ValueGraph::Graph> &graph,
-                                     std::string_view node, Animation::CurvePlaybackCommand command) {
+bool SceneLoader::applyGraphVoice(const std::shared_ptr<const ValueGraph::Graph> &graph,
+                                  std::string_view node, const ValueGraph::AudioVoiceDirective &directive) {
 #if PELICAN_WITH_AUDIO
+    using Phase = ValueGraph::AudioVoiceDirective::Phase;
     const auto source = graph->audioSources().find(std::string{node});
     if (source == graph->audioSources().end() || !graph->nodeActive(node, inactiveGraphScopes(*graph))) return false;
-    auto &sounds = synchronizeGraphRuntime(graph).sounds;
+    auto &runtime = synchronizeGraphRuntime(graph);
     auto &audio = GET_MODULE(Audio);
-    const auto existing = sounds.find(node);
-    if (command == Animation::CurvePlaybackCommand::start) {
-        const auto sound = audio.playSound(source->second);
-        if (existing != sounds.end()) {
+    const auto existing = runtime.sounds.find(node);
+    const auto epoch = runtime.sound_epochs.find(node);
+    if (directive.phase == Phase::idle) {
+        if (existing != runtime.sounds.end()) {
             audio.stopSound(existing->second);
-            existing->second = sound;
-        } else sounds.emplace(std::string{node}, sound);
-    } else if (existing != sounds.end()) {
-        if (command == Animation::CurvePlaybackCommand::reset) {
-            audio.stopSound(existing->second);
-            sounds.erase(existing);
-        } else audio.setSoundPaused(existing->second, command == Animation::CurvePlaybackCommand::pause);
+            runtime.sounds.erase(existing);
+        }
+        if (epoch != runtime.sound_epochs.end()) runtime.sound_epochs.erase(epoch);
+        return true;
     }
+    const bool restart = existing == runtime.sounds.end() || epoch == runtime.sound_epochs.end() ||
+                         epoch->second != directive.epoch;
+    std::optional<Audio::PreparedSound> prepared;
+    if (restart) prepared = audio.prepareSound(source->second, audioVoiceBusFromName(directive.bus));
+    const auto length = prepared ? Audio::lengthSeconds(*prepared) : audio.voiceLengthSeconds(existing->second);
+    // The follow tolerance of decision 3: one frame, and 10 ms for the jitter
+    // between the frame clock and the mixer.
+    Audio::VoiceDrive drive;
+    drive.tolerance = (std::max)(GET_MODULE(EngineTime).dt(), 0.0) + 0.010;
+    Audio::VoiceStart start;
+    start.bus = audioVoiceBusFromName(directive.bus);
+    if (directive.follows_position) {
+        drive.position = directive.position;
+        drive.paused = directive.phase == Phase::paused || !directive.advancing;
+        start.start = length > 0.0 ? std::fmod(directive.position, length) : 0.0;
+        if (start.start < 0.0) start.start += length;
+    } else {
+        // The integrated form: value.playback's time map over the source.
+        auto settings = directive.mapping;
+        if (directive.end_from_source) settings.source_end = length;
+        settings.duration = settings.source_end - settings.source_begin;
+        if (!(settings.duration > 0.0))
+            throw std::invalid_argument("audio playback range is empty: " + std::string{node});
+        const auto time = Animation::mapCurveTime(settings, directive.elapsed);
+        const bool waiting = directive.elapsed < settings.delay;
+        drive.rate = static_cast<float>(std::abs(settings.speed));
+        start.start = time.source_time;
+        if (directive.native) {
+            // The backend holds the loop point, so the voice runs on its own
+            // clock and is never sought for the ordinary drift between the
+            // mixer and the frames. A gap no drift explains -- a set_time, a
+            // frame the engine clock clamped -- still brings it back to the
+            // graph's time.
+            drive.paused = directive.phase == Phase::paused || waiting;
+            if (time.active) {
+                drive.position = time.source_time;
+                drive.tolerance = (std::max)(drive.tolerance, nativeResyncSeconds);
+                drive.restart_ended = false;
+            }
+            start.loop = settings.wrap == Animation::CurveWrap::repeat;
+            start.loop_begin = settings.source_begin;
+            start.loop_end = settings.source_end;
+            if (!start.loop) start.end = settings.source_end;
+        } else {
+            drive.position = time.source_time;
+            drive.paused = directive.phase == Phase::paused || !time.active || !directive.advancing;
+        }
+    }
+    start.rate = drive.rate;
+    start.paused = drive.paused;
+    if (restart) {
+        const auto handle = audio.playVoice(*prepared, start);
+        if (existing != runtime.sounds.end()) {
+            audio.stopSound(existing->second);
+            existing->second = handle;
+        } else runtime.sounds.emplace(std::string{node}, handle);
+        runtime.sound_epochs.insert_or_assign(std::string{node}, directive.epoch);
+        return true;
+    }
+    audio.driveVoice(existing->second, drive);
     return true;
 #else
+    (void)graph;
+    (void)node;
+    (void)directive;
     return false;
+#endif
+}
+
+bool SceneLoader::applyGraphAudioValue(const std::shared_ptr<const ValueGraph::Graph> &graph, std::string_view node,
+                                       bool voice, ValueGraph::AudioValueKind kind, float value) {
+    // A sink naming a target rather than a voice has nothing to resolve here.
+    if (!voice) return false;
+    const auto sound = graphSound(graph, node);
+    // A connected producer can exist before start, or after reset.
+    if (!sound) return true;
+#if PELICAN_WITH_AUDIO
+    auto &audio = GET_MODULE(Audio);
+    return kind == ValueGraph::AudioValueKind::volume
+        ? audio.rampSoundVolume(*sound, value, (std::max)(GET_MODULE(EngineTime).dt(), 0.0))
+        : audio.setSoundPitch(*sound, value);
+#else
+    (void)kind;
+    (void)value;
+    return false;
+#endif
+}
+
+SceneLoader::GraphAudioWriters SceneLoader::graphAudioWriters(
+    const std::shared_ptr<const ValueGraph::Graph> &graph, PreparedGraphRuntimeTransfer *staged) {
+    GraphAudioWriters writers;
+    writers.voices = [this, graph, staged](std::string_view node, const ValueGraph::AudioVoiceDirective &directive) {
+        if (staged) return staged->stageAudioVoice(node, directive);
+        return applyGraphVoice(graph, node, directive);
+    };
+    writers.sounds = [this, graph](std::string_view node) { return graphSound(graph, node); };
+    writers.values = [this, graph, staged](std::string_view node, bool voice, ValueGraph::AudioValueKind kind,
+                                           float value) {
+        if (staged) return staged->stageAudioValue(node, voice, kind, value);
+        return applyGraphAudioValue(graph, node, voice, kind, value);
+    };
+    return writers;
+}
+
+void SceneLoader::stopGraphVoices() noexcept {
+#if PELICAN_WITH_AUDIO
+    auto *audio = FastModuleContainer::tryGet<Audio>();
+    for (auto &[graph, runtime] : graph_runtime) {
+        (void)graph;
+        if (audio)
+            for (const auto &[node, sound] : runtime.sounds) {
+                try {
+                    audio->stopSound(sound);
+                } catch (const std::exception &error) {
+                    if (logger) LOG_ERROR(logger, "graph voice {} did not stop at the scene commit: {}", node, error.what());
+                }
+            }
+        runtime.sounds.clear();
+        runtime.sound_epochs.clear();
+    }
 #endif
 }
 
@@ -227,6 +348,8 @@ std::unique_ptr<SceneLoader::PreparedGraphRuntimeTransfer> SceneLoader::prepareG
     for (const auto &[node, sound] : old.sounds)
         if (transferred.retained_nodes.contains(node) && next->nodeActive(node, changed))
             prepared->retained_sounds_.emplace(node, sound);
+    for (const auto &[node, epoch] : old.sound_epochs)
+        if (prepared->retained_sounds_.contains(node)) prepared->retained_sound_epochs_.emplace(node, epoch);
     return prepared;
 }
 
@@ -238,9 +361,9 @@ ValueGraph::EvaluationState &SceneLoader::PreparedGraphRuntimeTransfer::evaluati
     return prepared_.begin()->second.evaluation;
 }
 
-bool SceneLoader::PreparedGraphRuntimeTransfer::stageAudioEvent(
-    std::string_view node, Animation::CurvePlaybackCommand command) {
-    audio_events_.emplace_back(node, command);
+bool SceneLoader::PreparedGraphRuntimeTransfer::stageAudioVoice(
+    std::string_view node, const ValueGraph::AudioVoiceDirective &directive) {
+    audio_voices_.emplace_back(node, directive);
     return true;
 }
 
@@ -254,17 +377,13 @@ bool SceneLoader::PreparedGraphRuntimeTransfer::stageAudioValue(
 void SceneLoader::PreparedGraphRuntimeTransfer::publishAudio(
     const std::shared_ptr<const ValueGraph::Graph> &graph) {
     if (!committed_) throw std::logic_error("graph audio requires a published runtime");
-    for (const auto &[node, command] : audio_events_)
-        if (!scene_.applyGraphAudioEvent(graph, node, command))
-            throw std::runtime_error("published graph audio event is unavailable: " + node);
+    for (const auto &[node, directive] : audio_voices_)
+        if (!scene_.applyGraphVoice(graph, node, directive))
+            throw std::runtime_error("published graph voice is unavailable: " + node);
     for (const auto &value : audio_values_)
-        if (const auto sound = scene_.graphSound(graph, value.node)) {
-            const GameContext context;
-            const bool applied = value.kind == ValueGraph::AudioValueKind::volume
-                ? context.audio().setSoundVolume(*sound, value.value) : context.audio().setSoundPitch(*sound, value.value);
-            if (!applied) throw std::runtime_error("published graph voice is unavailable: " + value.node);
-        }
-    audio_events_.clear();
+        if (!scene_.applyGraphAudioValue(graph, value.node, true, value.kind, value.value))
+            throw std::runtime_error("published graph voice is unavailable: " + value.node);
+    audio_voices_.clear();
     audio_values_.clear();
 }
 
@@ -272,8 +391,15 @@ void SceneLoader::PreparedGraphRuntimeTransfer::commit() noexcept {
     if (committed_) return;
     const auto old = scene_.graph_runtime.find(previous_);
     if (old != scene_.graph_runtime.end()) {
-        for (const auto &[node, sound] : retained_sounds_) old->second.sounds.erase(node);
-        if (!prepared_.empty()) prepared_.begin()->second.sounds.swap(retained_sounds_);
+        for (const auto &[node, sound] : retained_sounds_) {
+            old->second.sounds.erase(node);
+            if (const auto epoch = old->second.sound_epochs.find(node); epoch != old->second.sound_epochs.end())
+                old->second.sound_epochs.erase(epoch);
+        }
+        if (!prepared_.empty()) {
+            prepared_.begin()->second.sounds.swap(retained_sounds_);
+            prepared_.begin()->second.sound_epochs.swap(retained_sound_epochs_);
+        }
         scene_.graph_runtime.erase(old);
     }
     scene_.graph_runtime.merge(prepared_);

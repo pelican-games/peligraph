@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <set>
 #include <nlohmann/json.hpp>
@@ -59,6 +60,67 @@ InstanceInputSource instanceInputSourceOf(GraphInstanceInputSource source) {
     throw std::invalid_argument("unknown graph instance input source");
 }
 
+// AU-1. audio.playback in two forms that mean the same thing (decision 2):
+// the integrated one carries value.playback's time map itself (wrap,
+// source_begin, source_end, speed, delay -- each literal or an edge) and is
+// started and stopped by its events; the decomposed one follows `position`,
+// the source second any graph computes. One node is one or the other.
+constexpr std::string_view audioMappingKeys[] = {"wrap", "source_begin", "source_end", "speed", "delay"};
+
+Json lowerAudioPlayback(const Json &node, const Json &parameters, const Json &inputs,
+                        const std::function<std::set<std::string>(const Json &)> &clockSources) {
+    keys(parameters, {"asset", "bus", "wrap", "source_begin", "source_end", "speed", "delay"});
+    const auto id = name(node.at("id"));
+    const auto source = [](const Json &endpoint) {
+        if (endpoint.at("port") != "value")
+            throw std::invalid_argument("scalar backend requires a value output port");
+        return endpoint.at("node");
+    };
+    Json lowered{{"id", id}, {"op", "audio_playback"}, {"asset", name(parameters.at("asset"))},
+                 {"time", source(inputs.at("time"))}};
+    if (parameters.contains("bus")) {
+        const auto bus = name(parameters.at("bus"));
+        if (bus != "se" && bus != "bgm")
+            throw std::invalid_argument("unknown audio bus: " + bus + " (a voice plays on se or bgm)");
+        lowered["bus"] = bus;
+    }
+    const bool position = inputs.contains("position");
+    auto mapping = Json::array();
+    for (const auto key : audioMappingKeys) {
+        const std::string field{key};
+        if (parameters.contains(field) || inputs.contains(field)) mapping.push_back(field);
+    }
+    if (position && !mapping.empty())
+        throw GraphRegistryError("audio.playback_mapping_conflict@1",
+            {{"node", id}, {"parameters", std::move(mapping)}});
+    if (!position && !inputs.contains("events"))
+        throw std::invalid_argument("unconnected graph input: " + id + ".events");
+    if (inputs.contains("events")) lowered["events"] = inputs.at("events").at("node");
+    if (position) {
+        lowered["position"] = source(inputs.at("position"));
+        // Decision 8: events are stamped on the clock the node reads them
+        // with. A position computed from another clock would put the two
+        // halves of one node on different time lines.
+        if (inputs.contains("events")) {
+            const auto events_clock = clockSources(inputs.at("time"));
+            const auto position_clock = clockSources(inputs.at("position"));
+            if (!events_clock.empty() && !position_clock.empty() && events_clock != position_clock)
+                throw GraphRegistryError("audio.clock_mismatch@1",
+                    {{"node", id}, {"events_clock", events_clock}, {"position_clock", position_clock}});
+        }
+    }
+    if (parameters.contains("wrap")) lowered["wrap"] = name(parameters.at("wrap"));
+    for (const auto key : audioMappingKeys) {
+        const std::string field{key};
+        if (field == "wrap") continue;
+        if (parameters.contains(field) && inputs.contains(field))
+            throw std::invalid_argument("input also defined as a parameter: " + field);
+        if (parameters.contains(field)) lowered[field] = number(parameters.at(field));
+        else if (inputs.contains(field)) lowered[field] = source(inputs.at(field));
+    }
+    return lowered;
+}
+
 Json lowerScalarGraph(const Json &authored, const GraphModuleRegistry &modules,
                       GraphInstanceOwners &owners,
                       ScopeDependencies &node_scopes, ScopeDependencies &output_scopes,
@@ -87,6 +149,33 @@ Json lowerScalarGraph(const Json &authored, const GraphModuleRegistry &modules,
     for (const auto &[output, endpoint] : expanded.outputs.items())
         if (endpoint.at("port") != "events" && endpoint.at("port") != "voice")
             result["outputs"][output] = Json::array({source(endpoint)});
+    std::map<std::string, const Json *, std::less<>> expanded_nodes;
+    for (const auto &node : expanded.nodes) expanded_nodes.emplace(name(node.at("id")), &node);
+    // The engine clocks an edge reads, however far upstream: the names of the
+    // value.input nodes it reaches among time and scene_time.
+    const auto clockSources = [&](const Json &endpoint) {
+        std::set<std::string> clocks;
+        std::set<std::string> seen;
+        std::vector<std::string> pending{name(endpoint.at("node"))};
+        while (!pending.empty()) {
+            auto id = std::move(pending.back());
+            pending.pop_back();
+            if (!seen.insert(id).second) continue;
+            const auto found = expanded_nodes.find(id);
+            if (found == expanded_nodes.end()) continue;
+            const auto &upstream = *found->second;
+            if (upstream.at("op") == "value.input") {
+                const auto input = upstream.value("parameters", Json::object()).value("name", std::string{});
+                if (input == "time" || input == "scene_time") clocks.insert(input);
+            }
+            const auto upstream_inputs = upstream.value("inputs", Json::object());
+            for (const auto &[port, edge] : upstream_inputs.items()) {
+                (void)port;
+                pending.push_back(name(edge.at("node")));
+            }
+        }
+        return clocks;
+    };
     for (const auto &node : expanded.nodes) {
         const auto op = name(node.at("op"));
         const auto parameters = node.value("parameters", Json::object());
@@ -97,11 +186,8 @@ Json lowerScalarGraph(const Json &authored, const GraphModuleRegistry &modules,
             continue;
         }
         if (op == "audio.playback") {
-            keys(parameters, {"asset"});
+            result["nodes"].push_back(lowerAudioPlayback(node, parameters, inputs, clockSources));
             const auto id = name(node.at("id"));
-            result["nodes"].push_back({{"id", id}, {"op", "audio_playback"},
-                {"asset", name(parameters.at("asset"))}, {"time", source(inputs.at("time"))},
-                {"events", inputs.at("events").at("node")}});
             const auto output = "$audio_time/" + id;
             output_scopes[output] = node_scopes.at(id);
             continue;
@@ -229,15 +315,67 @@ Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : mo
             keys(authored, {"id", "op"});
             node.op = Op::event_input;
             event_consumers_.emplace(node.id, std::vector<std::size_t>{});
-        } else if (op == "event_clock" || op == "audio_playback") {
-            if (op == "event_clock") keys(authored, {"id", "op", "time", "events"});
-            else {
-                keys(authored, {"id", "op", "time", "events", "asset"});
-                audio_sources_.emplace(node.id, name(authored.at("asset")));
-                audio_nodes_.push_back(i);
-            }
-            node.op = op == "event_clock" ? Op::event_clock : Op::audio_playback;
+        } else if (op == "event_clock") {
+            keys(authored, {"id", "op", "time", "events"});
+            node.op = Op::event_clock;
             node.dependencies = {resolve(authored.at("time")), resolve(authored.at("events"))};
+        } else if (op == "audio_playback") {
+            keys(authored, {"id", "op", "time", "events", "asset", "bus", "position",
+                            "wrap", "source_begin", "source_end", "speed", "delay"});
+            audio_sources_.emplace(node.id, name(authored.at("asset")));
+            audio_nodes_.push_back(i);
+            node.op = Op::audio_playback;
+            node.audio_bus = authored.value("bus", std::string("se"));
+            if (node.audio_bus != "se" && node.audio_bus != "bgm")
+                throw std::invalid_argument("unknown audio bus: " + node.audio_bus + " (a voice plays on se or bgm)");
+            node.dependencies = {resolve(authored.at("time"))};
+            node.audio_events = authored.contains("events");
+            if (node.audio_events) node.dependencies.push_back(resolve(authored.at("events")));
+            node.audio_position = authored.contains("position");
+            if (node.audio_position) node.dependencies.push_back(resolve(authored.at("position")));
+            if (!node.audio_events && !node.audio_position)
+                throw std::invalid_argument("audio playback requires events or a position: " + node.id);
+            // The integrated time map (decision 2). The source's own length is
+            // the range's end unless source_end says otherwise, and the range's
+            // length is its duration: speed 1 plays the source in real time.
+            node.playback_input_base = node.dependencies.size();
+            using Settings = Animation::CurvePlaybackSettings;
+            const std::pair<std::string_view, double Settings::*> fields[] = {
+                {"source_begin", &Settings::source_begin}, {"source_end", &Settings::source_end},
+                {"speed", &Settings::speed}, {"delay", &Settings::delay}};
+            node.playback.source_begin = 0.0;
+            bool literal = true;
+            for (const auto &[field, member] : fields) {
+                const auto found = authored.find(field);
+                if (found == authored.end()) continue;
+                if (node.audio_position)
+                    throw GraphRegistryError("audio.playback_mapping_conflict@1",
+                        {{"node", node.id}, {"parameters", Json::array({std::string{field}})}});
+                if (member == &Settings::source_end) node.audio_end_from_source = false;
+                if (found->is_string()) {
+                    node.dependencies.push_back(resolve(*found));
+                    node.playback_inputs.push_back(member);
+                    literal = false;
+                } else node.playback.*member = number(*found);
+            }
+            const auto wrap = authored.value("wrap", std::string("once"));
+            if (authored.contains("wrap") && node.audio_position)
+                throw GraphRegistryError("audio.playback_mapping_conflict@1",
+                    {{"node", node.id}, {"parameters", Json::array({"wrap"})}});
+            if (wrap == "once") node.playback.wrap = Animation::CurveWrap::once;
+            else if (wrap == "repeat") node.playback.wrap = Animation::CurveWrap::repeat;
+            else if (wrap == "ping_pong") node.playback.wrap = Animation::CurveWrap::ping_pong;
+            else throw std::invalid_argument("unknown playback wrap: " + wrap);
+            if (literal) {
+                const auto &mapping = node.playback;
+                if (mapping.speed == 0.0 || mapping.delay < 0.0 || mapping.source_begin < 0.0 ||
+                    (!node.audio_end_from_source && mapping.source_end <= mapping.source_begin))
+                    throw std::invalid_argument("invalid audio playback range, speed or delay: " + node.id);
+            }
+            // A loop point the backend can hold by itself: nothing in the map
+            // changes while the voice plays and it never runs backwards.
+            node.audio_native = !node.audio_position && literal && node.playback.speed > 0.0 &&
+                                node.playback.wrap != Animation::CurveWrap::ping_pong;
         } else if (op == "trigger_clock") {
             keys(authored, {"id", "op", "time", "trigger", "paused", "reset"});
             node.op = Op::trigger_clock;
@@ -308,9 +446,10 @@ Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : mo
         const auto &node = nodes_[i];
         for (std::size_t input = 0; input < node.dependencies.size(); ++input)
             if (nodes_[node.dependencies[input]].op == Op::event_input &&
-                !((node.op == Op::event_clock || node.op == Op::audio_playback) && input == 1))
+                !((node.op == Op::event_clock || (node.op == Op::audio_playback && node.audio_events)) &&
+                  input == 1))
                 throw std::invalid_argument("event stream cannot be used as a scalar input");
-        if (node.op != Op::event_clock && node.op != Op::audio_playback) continue;
+        if (node.op != Op::event_clock && !(node.op == Op::audio_playback && node.audio_events)) continue;
         const auto &source = nodes_[node.dependencies[1]];
         if (source.op != Op::event_input) throw std::invalid_argument("event clock requires an event source");
         event_consumers_.at(source.id).push_back(i);
@@ -468,6 +607,8 @@ Graph::StateTransfer Graph::transferState(const Graph &previous, const Evaluatio
             result.state.triggers_.emplace(index, trigger->second);
         if (const auto events = state.pending_.find(old->second); events != state.pending_.end())
             result.state.pending_.emplace(index, events->second);
+        if (const auto voice = state.voices_.find(old->second); voice != state.voices_.end())
+            result.state.voices_.emplace(index, voice->second);
     }
     return result;
 }
@@ -476,6 +617,7 @@ void Graph::resetState(EvaluationState &state, const InactiveScopes &scopes) con
     if (state.graph_ != this) throw std::invalid_argument("evaluation state belongs to a different graph");
     std::erase_if(state.triggers_, [&](const auto &entry) { return !nodeActive(nodes_[entry.first].id, scopes); });
     std::erase_if(state.pending_, [&](const auto &entry) { return !nodeActive(nodes_[entry.first].id, scopes); });
+    std::erase_if(state.voices_, [&](const auto &entry) { return !nodeActive(nodes_[entry.first].id, scopes); });
 }
 bool Graph::emitEvent(EvaluationState &state, std::string_view input,
                       Animation::CurvePlaybackCommand command, double time) const {
@@ -641,7 +783,7 @@ std::set<std::string> Graph::inputNames() const {
 PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
                              const SoundBindings &sounds, const RenderValueWriter &render_writer,
                              const ParameterValues &parameters, const InactiveScopes &inactive, EvaluationState *state,
-                             const AudioEventWriter &audio_writer, const SoundResolver &sound_resolver,
+                             const AudioVoiceWriter &voice_writer, const SoundResolver &sound_resolver,
                              const AudioValueWriter &audio_value_writer,
                              const UiValueWriter &ui_writer) const {
     PublishResult result;
@@ -677,16 +819,73 @@ PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
     for (const auto index : audio_nodes_) {
         const auto &node = nodes_[index];
         const auto time = outputs.find("$audio_time/" + node.id);
-        if (time == outputs.end()) continue;
-        auto &queue = state->pending_[index];
-        while (!queue.empty() && queue.front().time <= time->second[0]) {
-            if (!audio_writer || !audio_writer(node.id, queue.front().command)) {
-                result.unavailable.push_back("audio.playback:" + node.id);
-                break;
-            }
-            queue.erase(queue.begin());
-            ++result.applied;
+        if (time == outputs.end()) {
+            state->voices_.erase(index);
+            continue;
         }
+        const auto now = time->second[0];
+        using Phase = AudioVoiceDirective::Phase;
+        auto &voice = state->voices_[index];
+        const auto start = [&](double at) {
+            voice.phase = Phase::playing;
+            voice.started = at;
+            ++voice.epoch;
+            voice.last_position.reset();
+            voice.last_elapsed.reset();
+        };
+        // The state machine of decision 3. Events arrive in time order; a node
+        // without events plays from its owner's first frame.
+        if (node.audio_events) {
+            auto &queue = state->pending_[index];
+            while (!queue.empty() && queue.front().time <= now) {
+                const auto &event = queue.front();
+                switch (event.command) {
+                case Animation::CurvePlaybackCommand::start: start(event.time); break;
+                case Animation::CurvePlaybackCommand::pause:
+                    if (voice.phase == Phase::playing) {
+                        voice.phase = Phase::paused;
+                        voice.paused_at = event.time;
+                    }
+                    break;
+                case Animation::CurvePlaybackCommand::resume:
+                    if (voice.phase == Phase::paused) {
+                        voice.phase = Phase::playing;
+                        voice.started += event.time - voice.paused_at;
+                    }
+                    break;
+                case Animation::CurvePlaybackCommand::reset: voice.phase = Phase::idle; break;
+                }
+                queue.erase(queue.begin());
+                ++result.applied;
+            }
+        } else if (voice.phase == Phase::idle) start(now);
+        AudioVoiceDirective directive;
+        directive.phase = voice.phase;
+        directive.epoch = voice.epoch;
+        directive.bus = node.audio_bus;
+        const auto value = [&](std::size_t dependency) {
+            const auto &found = result.node_values[node.dependencies[dependency]];
+            if (!found) throw std::logic_error("audio playback input was not evaluated: " + node.id);
+            return *found;
+        };
+        if (node.audio_position) {
+            directive.follows_position = true;
+            directive.position = value(node.audio_events ? 2 : 1);
+            directive.advancing = !voice.last_position || *voice.last_position != directive.position;
+            voice.last_position = directive.position;
+        } else {
+            directive.mapping = node.playback;
+            for (std::size_t i = 0; i < node.playback_inputs.size(); ++i)
+                directive.mapping.*node.playback_inputs[i] = value(node.playback_input_base + i);
+            directive.end_from_source = node.audio_end_from_source;
+            directive.native = node.audio_native;
+            directive.elapsed = voice.phase == Phase::idle ? 0.0
+                : (voice.phase == Phase::paused ? voice.paused_at : now) - voice.started;
+            directive.advancing = !voice.last_elapsed || *voice.last_elapsed != directive.elapsed;
+            voice.last_elapsed = directive.elapsed;
+        }
+        if (!voice_writer ? directive.phase != Phase::idle : !voice_writer(node.id, directive))
+            result.unavailable.push_back("audio.playback:" + node.id);
     }
     for (std::size_t i = 0; i < bindings_.size(); ++i) {
         if (prepared[i].empty()) continue;

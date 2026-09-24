@@ -29,6 +29,35 @@ using AudioEventWriter = std::function<bool(std::string_view, Animation::CurvePl
 using SoundResolver = std::function<std::optional<SoundHandle>(std::string_view)>;
 enum class AudioValueKind { volume, pitch };
 using AudioValueWriter = std::function<bool(std::string_view, bool, AudioValueKind, float)>;
+// AU-1: what one audio.playback node asks of its voice this frame. The graph
+// owns the state machine (the node's events, its clock, whether its position
+// moved); whoever holds the voice makes it so.
+struct AudioVoiceDirective {
+    enum class Phase : std::uint8_t { idle, playing, paused };
+    Phase phase = Phase::idle;
+    // Bumped by every start. A voice started under another epoch is replaced.
+    std::uint64_t epoch = 0;
+    // "se" or "bgm". Points into the graph, which outlives the directive.
+    std::string_view bus = "se";
+    // The decomposed form: the source second the voice follows, taken modulo
+    // the source's length.
+    bool follows_position = false;
+    double position = 0.0;
+    // The integrated form: the node's own event clock read through the same
+    // time map value.playback applies. `duration` is the range's own length
+    // (speed 1 is real time); `source_end` is the source's length when
+    // `end_from_source`.
+    double elapsed = 0.0;
+    Animation::CurvePlaybackSettings mapping;
+    bool end_from_source = true;
+    // The mapping is a loop point the backend can hold on its own
+    // (wrap once/repeat, a constant positive speed, literal range and delay).
+    bool native = false;
+    // Whether the position (or the clock) moved since the last frame. A voice
+    // whose position stands still is held.
+    bool advancing = true;
+};
+using AudioVoiceWriter = std::function<bool(std::string_view node, const AudioVoiceDirective &)>;
 // GP-3: the pelican.ui sinks. ui.value writes a gauge's value, ui.visible a
 // node's visibility (non-zero shows it). The target is the node's path in the
 // project's UI document.
@@ -104,6 +133,18 @@ class EvaluationState {
         Animation::CurvePlaybackCommand command;
     };
     std::map<std::size_t, std::vector<Event>> pending_;
+    // AU-1: one audio.playback node's state machine -- idle until started,
+    // then playing or paused -- with the clock its events drive and the last
+    // position it was given.
+    struct Voice {
+        AudioVoiceDirective::Phase phase = AudioVoiceDirective::Phase::idle;
+        double started = 0.0;
+        double paused_at = 0.0;
+        std::uint64_t epoch = 0;
+        std::optional<double> last_position;
+        std::optional<double> last_elapsed;
+    };
+    std::map<std::size_t, Voice> voices_;
 };
 
 // Immutable scalar dataflow. Stateful nodes update an explicit EvaluationState;
@@ -177,12 +218,14 @@ class PELICAN_API Graph {
     // Missing/stopped targets are reported; other bindings can still apply.
     // A renderer may supply a writer resolving names against its retained
     // generation instead of the current global resource name table.
+    // Every active audio.playback node hands `voice_writer` one directive per
+    // call; a node whose directive is refused is reported unavailable.
     PublishResult publish(const GameContext &context, const Inputs &inputs,
                           const SoundBindings &sounds = {},
                           const RenderValueWriter &render_writer = {},
                           const ParameterValues &parameters = {},
                           const InactiveScopes &inactive = {}, EvaluationState *state = nullptr,
-                          const AudioEventWriter &audio_writer = {},
+                          const AudioVoiceWriter &voice_writer = {},
                           const SoundResolver &sound_resolver = {},
                           const AudioValueWriter &audio_value_writer = {},
                           const UiValueWriter &ui_writer = {}) const;
@@ -238,6 +281,15 @@ class PELICAN_API Graph {
         bool has_reset{};
         double pause_default{};
         double reset_default{};
+        // playback: the first dependency `playback_inputs` fills. audio_playback
+        // puts its optional events and position ahead of them.
+        std::size_t playback_input_base = 1;
+        // audio_playback (AU-1).
+        std::string audio_bus = "se";
+        bool audio_events{};
+        bool audio_position{};
+        bool audio_end_from_source = true;
+        bool audio_native{};
     };
     std::string document_;
     std::vector<Node> nodes_;

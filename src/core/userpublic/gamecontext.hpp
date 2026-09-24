@@ -83,6 +83,9 @@ class PELICAN_API PhysicsContext {
 class PELICAN_API AudioContext {
   public:
     SoundHandle playSound(std::string_view path) const;
+    // The same voice on a named bus: "se" (what the one-argument form plays
+    // on) or "bgm". Another name throws.
+    SoundHandle playSound(std::string_view path, std::string_view bus) const;
     void stopSound(SoundHandle handle) const;
     void setBusVolume(std::string_view bus, float volume) const;
     float busVolume(std::string_view bus) const;
