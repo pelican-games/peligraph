@@ -100,7 +100,7 @@ reply, which is how `view_state` and `menu_list` are checked.
 
 * `value` is a literal; `value_of` is what an earlier step wrote down with
   `remember`. With neither, the step only reads (and remembers), and passes.
-* `op` is `eq` (the default), `ne`, `gt`, `ge`, `lt`, `le` or `contains`.
+* `op` is `eq` (the default), `ne`, `gt`, `ge`, `lt`, `le`, `contains` or `excludes` (the text does not hold the value -- how a scenario says a message never appeared).
 * `retry_ms` asks again, a fifth of a second apart, until the answer
   satisfies the step or the time is up, as it does on `rpc_equals`. What the
   engine draws after a shader file is saved arrives on the engine's clock:

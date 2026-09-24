@@ -33,6 +33,7 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QScopeGuard>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QStandardPaths>
@@ -278,9 +279,21 @@ void MainWindow::createWorkspace() {
     fullscreen_pass_ = new FullscreenPassWidget(
         framePlanReadCapability(*viewport_),
         renderPassAuthoringCapability(*viewport_), this);
+    // F-7. The form is taller than most screens leave a bottom dock (close
+    // to a thousand pixels at its minimum), and a dock may not be smaller
+    // than what it holds: showing it pushed the dock area up until the
+    // viewport was a strip, and QMainWindow keeps the area's height when the
+    // dock closes again. Scrolled, the dock's floor is the scroll area's, so
+    // the dock takes the height it is given and hands it back.
+    auto *pass_editor_scroll = new QScrollArea(this);
+    pass_editor_scroll->setObjectName(
+        QStringLiteral("pelican.fullscreenPassScroll"));
+    pass_editor_scroll->setWidgetResizable(true);
+    pass_editor_scroll->setFrameShape(QFrame::NoFrame);
+    pass_editor_scroll->setWidget(fullscreen_pass_);
     docks_[FullscreenPassDock] = makeDock(
         this, tr("Pass Editor"),
-        QStringLiteral("pelican.fullscreenPassDock"), fullscreen_pass_);
+        QStringLiteral("pelican.fullscreenPassDock"), pass_editor_scroll);
     fullscreen_pass_->setCommittedAction([this] { frame_plan_->refresh(); });
     // F-5: a shader reload's log also goes under the Pass Editor's form.
     frame_plan_->setShaderReloadLogAction([this](const QString &message) {
@@ -831,6 +844,7 @@ void MainWindow::openProjectNow(const QString &path) {
         outliner_refresh_timer_->stop();
         pending_outliner_request_ = 0;
         inspector_->resetSceneSaveState();
+        endGizmoSessionForProjectSwitch(opened_project.projectRoot());
         project_model_ = std::move(opened_project);
         tool_layout_presets_.emplace(
             application_config_directory_,
@@ -1066,6 +1080,24 @@ void MainWindow::failGizmoRpc(qint64 request_id, const QString &message) {
     gizmo_model_.receiveRpcFailure(model_request_id,
                                    message.toStdString());
     dispatchGizmoModel();
+}
+
+void MainWindow::endGizmoSessionForProjectSwitch(
+    const std::filesystem::path &next_project_root) {
+    // Reopening the project that is open keeps its engine
+    // (EmbeddedViewport::openProject), so the session goes on too.
+    if (!viewport_->rpcReady()) return;
+    if (project_model_ &&
+        QDir(displayPath(project_model_->projectRoot())).absolutePath() ==
+            QDir(displayPath(next_project_root)).absolutePath())
+        return;
+    // The engine on its way out fails every request it has not answered
+    // ("exited before returning an RPC response"). Those are the switch, not
+    // a fault: forget them, and ask nothing more of that engine.
+    // engineRpcBecameAvailable starts the session with the new one.
+    pending_gizmo_requests_.clear();
+    gizmo_model_.stopSession();
+    updateModalTransformPolling();
 }
 
 void MainWindow::dispatchGizmoModel() {

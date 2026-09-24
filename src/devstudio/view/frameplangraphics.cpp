@@ -1017,6 +1017,26 @@ std::set<std::string, std::less<>> subtreeNodeNames(
     return visible;
 }
 
+// F-7: the whole frame is every pass, whatever it reads or writes.
+std::set<std::string, std::less<>> allNodeNames(const FramePlanModel &model) {
+    std::set<std::string, std::less<>> names;
+    for (const auto &node : model.nodes) names.insert(node.name);
+    return names;
+}
+
+// F-7: the declared targets no pass writes. Nothing else on the canvas has an
+// output socket for them, so each is drawn as a resource node of its own.
+std::vector<const FramePlanResource *> unwrittenResources(
+    const FramePlanModel &model) {
+    std::set<std::string, std::less<>> written;
+    for (const auto &node : model.nodes)
+        written.insert(node.writes.begin(), node.writes.end());
+    std::vector<const FramePlanResource *> unwritten;
+    for (const auto &resource : model.resources)
+        if (!written.contains(resource.name)) unwritten.push_back(&resource);
+    return unwritten;
+}
+
 QFont framePlanHeadingFont() {
     QFont font;
     font.setBold(true);
@@ -1576,22 +1596,17 @@ bool containsMember(const std::vector<std::string> &members,
 constexpr qreal ResourceNodeWidth = 210.0;
 constexpr qreal ResourceNodeHeight = 58.0;
 
-QGraphicsRectItem *addResourceNode(QGraphicsScene &scene,
-                                   const FramePlanModel &model,
-                                   const FramePlanResource &resource,
-                                   bool picked) {
-    const QRectF bounds = scene.itemsBoundingRect();
-    const QPointF origin =
-        scene.items().empty() || !bounds.isValid()
-            ? QPointF{0.0, 0.0}
-            : QPointF{bounds.left() - ResourceNodeWidth - 70.0, bounds.top()};
-    auto *node = scene.addRect(
-        QRectF{0.0, 0.0, ResourceNodeWidth, ResourceNodeHeight},
-        QPen{picked ? QColor{QStringLiteral("#f0c05a")}
-                    : QColor{QStringLiteral("#5f9fcf")},
-             picked ? 2.4 : 1.4},
-        QBrush{QColor{QStringLiteral("#1d2a36")}});
-    node->setPos(origin);
+// The node itself, not yet in a scene: F-7 needs its width before the layout
+// places it, and F-1 places it against what is already drawn.
+QGraphicsRectItem *makeResourceNode(const FramePlanModel &model,
+                                    const FramePlanResource &resource,
+                                    bool picked) {
+    auto *node = new QGraphicsRectItem(
+        QRectF{0.0, 0.0, ResourceNodeWidth, ResourceNodeHeight});
+    node->setPen(QPen{picked ? QColor{QStringLiteral("#f0c05a")}
+                             : QColor{QStringLiteral("#5f9fcf")},
+                      picked ? 2.4 : 1.4});
+    node->setBrush(QBrush{QColor{QStringLiteral("#1d2a36")}});
     node->setZValue(2.0);
     annotateIdentity(*node, FramePlanResourceNodeItem, model.graph,
                      resource.name);
@@ -1628,7 +1643,48 @@ QGraphicsRectItem *addResourceNode(QGraphicsScene &scene,
                                     facts->boundingRect().width()) +
                                20.0);
     node->setRect(QRectF{0.0, 0.0, width, ResourceNodeHeight});
-    if (!scene.items().empty() && bounds.isValid() && width > ResourceNodeWidth)
+    // F-7: the output socket. Dragging from it onto a pass asks that pass to
+    // read the target -- the same N-8 request an output socket on a pass
+    // makes -- so a target nothing writes yet still has a place to start the
+    // connection from. It is named like a pass's socket, with the target
+    // standing in for the node.
+    const DrawnRow row = framePlanRow(model, resource.name, false);
+    auto *socket = new QGraphicsPathItem(
+        socketPath(row.style.shape, row.style.size), node);
+    socket->setPos(width, ResourceNodeHeight / 2.0);
+    socket->setZValue(1.0);
+    socket->setBrush(row.style.fill);
+    socket->setPen(QPen{row.style.outline, row.style.outline_width});
+    socket->setToolTip(
+        QStringLiteral("%1\nDrag onto a pass to make it read this target.")
+            .arg(row.type.isEmpty() ? row.resource
+                                    : QStringLiteral("%1 : %2")
+                                          .arg(row.resource, row.type)));
+    socket->setData(FramePlanItemKindRole,
+                    QString::fromLatin1(FramePlanSocketItem));
+    socket->setData(FramePlanGraphRole, qtext(model.graph));
+    socket->setData(FramePlanNameRole, qtext(resource.name));
+    socket->setData(FramePlanPortRole, qtext(resource.name));
+    socket->setData(FramePlanSocketDirectionRole, QStringLiteral("output"));
+    socket->setAcceptedMouseButtons(Qt::NoButton);
+    return node;
+}
+
+QGraphicsRectItem *addResourceNode(QGraphicsScene &scene,
+                                   const FramePlanModel &model,
+                                   const FramePlanResource &resource,
+                                   bool picked) {
+    const QRectF bounds = scene.itemsBoundingRect();
+    const bool beside_drawing = !scene.items().empty() && bounds.isValid();
+    const QPointF origin =
+        beside_drawing
+            ? QPointF{bounds.left() - ResourceNodeWidth - 70.0, bounds.top()}
+            : QPointF{0.0, 0.0};
+    auto *node = makeResourceNode(model, resource, picked);
+    scene.addItem(node);
+    node->setPos(origin);
+    const qreal width = node->rect().width();
+    if (beside_drawing && width > ResourceNodeWidth)
         node->setPos(origin - QPointF{width - ResourceNodeWidth, 0.0});
     return node;
 }
@@ -1925,6 +1981,7 @@ void FramePlanGraphicsScene::resetGraph() {
     session_node_positions_.clear();
     current_model_.reset();
     current_target_.reset();
+    whole_frame_ = false;
     current_depth_ = 1;
     collapsed_groups_.clear();
     current_group_scope_.reset();
@@ -2050,9 +2107,19 @@ void FramePlanGraphicsScene::populate(
     current_model_ = model;
     current_target_ = selected_target;
     current_depth_ = std::max(0, depth);
+    whole_frame_ = false;
     // A proposal describes one exact plan snapshot. A normal frame-plan
     // refresh may change reachability even when every selected name survives,
     // so never carry the suggestion across populate().
+    convex_hull_proposal_.reset();
+    pruneGroupState();
+    renderCurrentGraph();
+}
+
+void FramePlanGraphicsScene::populateWholeFrame(const FramePlanModel &model) {
+    current_model_ = model;
+    current_target_.reset();
+    whole_frame_ = true;
     convex_hull_proposal_.reset();
     pruneGroupState();
     renderCurrentGraph();
@@ -2164,6 +2231,7 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         scope_group
             ? std::set<std::string, std::less<>>{
                   scope_group->members.begin(), scope_group->members.end()}
+            : whole_frame_ ? allNodeNames(model)
             : selected_resource_
                   ? subtreeNodeNames(model, selected_resource_->name,
                                      normalized_depth)
@@ -2609,6 +2677,53 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
     layout_options.vertical_gap = VerticalGap;
     for (const auto &[key, entity] : entities)
         layout_options.columns.emplace(key, entity.source_column);
+    // F-7: in the whole frame, each target no pass writes is a node of its
+    // own, placed by the same layout one column before the first pass that
+    // reads it -- or before the whole drawing, when nothing reads it yet.
+    struct LooseResource {
+        const FramePlanResource *resource = nullptr;
+        std::string layout_key;
+        QGraphicsRectItem *item = nullptr;
+    };
+    std::vector<LooseResource> loose_resources;
+    if (whole_frame_ && !scope_group) {
+        std::optional<int> first_column;
+        std::set<std::string, std::less<>> occupied_keys;
+        for (const auto &[key, entity] : entities) {
+            occupied_keys.insert(key);
+            first_column = std::min(first_column.value_or(entity.source_column),
+                                    entity.source_column);
+        }
+        for (const FramePlanResource *resource : unwrittenResources(model)) {
+            std::optional<int> reader_column;
+            for (const auto &node : model.nodes) {
+                if (!containsMember(node.reads, resource->name) &&
+                    !containsMember(node.history_reads, resource->name))
+                    continue;
+                const auto entity = entity_for_node.find(node.name);
+                if (entity == entity_for_node.end()) continue;
+                const int column = entities.at(entity->second).source_column;
+                reader_column =
+                    std::min(reader_column.value_or(column), column);
+            }
+            LooseResource loose{
+                .resource = resource,
+                .layout_key = uniqueSyntheticName(
+                    "__pelican_resource__:" + resource->name, occupied_keys),
+                .item = makeResourceNode(
+                    model, *resource,
+                    picked_resource_ && picked_resource_->graph == model.graph &&
+                        picked_resource_->name == resource->name),
+            };
+            layout_nodes.push_back(LayoutNode{loose.layout_key,
+                                              loose.item->rect().width(),
+                                              loose.item->rect().height()});
+            layout_options.columns.emplace(
+                loose.layout_key,
+                reader_column.value_or(first_column.value_or(0)) - 1);
+            loose_resources.push_back(std::move(loose));
+        }
+    }
     const NodeGraphLayout layout =
         layoutNodeGraph(layout_nodes, layout_edges, layout_options);
 
@@ -3037,9 +3152,22 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         label->setAcceptedMouseButtons(Qt::NoButton);
     }
 
-    if (picked_resource_ &&
-        (!selected_resource_ || *picked_resource_ != *selected_resource_))
-        picked_resource_.reset();
+    for (const LooseResource &loose : loose_resources) {
+        addItem(loose.item);
+        const auto placed = layout.boxes.find(loose.layout_key);
+        if (placed != layout.boxes.end())
+            loose.item->setPos(placed->second.x, placed->second.y);
+    }
+    const bool picked_is_drawn =
+        picked_resource_ &&
+        ((selected_resource_ && *picked_resource_ == *selected_resource_) ||
+         (picked_resource_->graph == model.graph &&
+          std::ranges::any_of(loose_resources,
+                              [&](const LooseResource &loose) {
+                                  return loose.resource->name ==
+                                         picked_resource_->name;
+                              })));
+    if (!picked_is_drawn) picked_resource_.reset();
     if (selected_resource_ && !scope_group) {
         const auto resource = std::ranges::find(
             model.resources, selected_resource_->name, &FramePlanResource::name);
@@ -3075,6 +3203,7 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
     setProperty("pelicanTarget",
                 selected_resource_ ? qtext(selected_resource_->name)
                                    : QString{});
+    setProperty("pelicanWholeFrame", whole_frame_);
     setProperty("pelicanSubtreeDepth", normalized_depth);
     setProperty("pelicanNodeRecordCount",
                 static_cast<qulonglong>(model.nodes.size()));
@@ -3815,7 +3944,10 @@ void FramePlanGraphicsScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
                 return;
             }
             if (editingInline()) closeInlineEditor();
-            if (const auto resource = resourceNodeAt(*this, event->scenePos())) {
+            // F-7: a resource node's socket is the start of a connection, not
+            // a pick of the node it sits on.
+            if (const auto resource = resourceNodeAt(*this, event->scenePos());
+                resource && !socketAt(*this, event->scenePos())) {
                 picked_resource_ = resource;
                 if (selected_edge_) {
                     selected_edge_.reset();

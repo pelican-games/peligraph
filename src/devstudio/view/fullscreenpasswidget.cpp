@@ -1803,6 +1803,10 @@ struct FullscreenPassWidget::Impl {
             authoringError(owner.tr("Finish the current request before selecting a pass."));
             return;
         }
+        // F-7: the form belongs to the pass asked for from here on. If the
+        // engine's context refuses it, the refusal is all the form shows --
+        // not the previous pass's draft under the new pass's refusal.
+        clearDraft();
         input_filter = std::move(outputs);
         requested_insert_after.reset();
         populateRoleCandidates();

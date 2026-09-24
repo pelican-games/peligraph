@@ -184,5 +184,15 @@ class StudioDriveFileStepTest(unittest.TestCase):
                         self.assertEqual(target.resolve().is_file(), allowed)
 
 
+class StudioDriveCompareTest(unittest.TestCase):
+    # F-7: "this message never appeared" is a question about a text, and
+    # `excludes` is the answer `contains` gives turned round.
+    def test_excludes_is_contains_turned_round(self) -> None:
+        log = "Opened x.\n[Studio gizmo] Modal transform polling failed: gone\n"
+        self.assertTrue(studio_drive.compare("contains", log, "polling failed"))
+        self.assertFalse(studio_drive.compare("excludes", log, "polling failed"))
+        self.assertTrue(studio_drive.compare("excludes", "Opened x.\n", "polling failed"))
+
+
 if __name__ == "__main__":
     unittest.main()

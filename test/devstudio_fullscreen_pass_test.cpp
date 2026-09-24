@@ -3178,4 +3178,70 @@ TEST_CASE("F-3 a shader that did not compile is shown whole under the form, "
               .toolTip()
               .contains(QStringLiteral("render pipeline candidate was rejected")));
 }
+
+TEST_CASE("F-7 a pass the Pass Editor refuses does not show the previous "
+          "pass's draft",
+          "[devstudio][fullscreen-pass][preset-pass-edit][f7]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    const Json existing{
+        {"name", "existing"},
+        {"type", "fullscreen"},
+        {"input", Json::array({"input"})},
+        {"output", {{"color", Json::array({"output"})}, {"depth", nullptr}}},
+        {"shader",
+         {{"vertex", "engine://fullscreen"},
+          {"fragment", "project://shaders/existing"}}}};
+    // A pass the context names but does not offer for editing: the engine
+    // added it, or the project's own root declares it.
+    const Json refused{{"name", "refused"}, {"type", "gizmo"}};
+    Json graph{
+        {"name", "edit_graph"},
+        {"passes",
+         Json::array({{{"name", "existing"},
+                       {"declaration", existing},
+                       {"editable_preset_pass", true},
+                       {"preset_declaration", existing}},
+                      {{"name", "refused"},
+                       {"declaration", refused},
+                       {"editable_preset_pass", false}}})},
+        {"anchor_candidates",
+         Json::array({{{"position", 0}, {"insert", "before:existing"}}})}};
+    Json context{
+        {"source_digest", {{"hex", std::string(64, 'a')}}},
+        {"pipeline_preset", {{"source_digest", {{"hex", std::string(64, 'b')}}}}},
+        {"graphs", Json::array({graph})}};
+    authoring.succeed(authoring.requests.back().id, context);
+    const auto plan = minimalFramePlan(
+        "edit_graph", Json::array({resource("input"), resource("output")}));
+    form.receiveResult(QByteArray::fromStdString(plan.dump()));
+
+    form.editPresetPass(QStringLiteral("edit_graph"), QStringLiteral("existing"));
+    authoring.succeed(authoring.requests.back().id, context);
+    refresh.succeed(refresh.requests.back(), QByteArray::fromStdString(plan.dump()));
+    auto &name = required<QLineEdit>(form, "pelican.fullscreenPass.name");
+    auto &fragment =
+        required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment");
+    auto &inputs = required<QListWidget>(form, "pelican.fullscreenPass.inputs");
+    // The control: the editable pass fills the form.
+    REQUIRE(name.text() == QStringLiteral("existing"));
+    REQUIRE(fragment.text() == QStringLiteral("project://shaders/existing"));
+    REQUIRE(inputs.count() == 1);
+
+    form.editPresetPass(QStringLiteral("edit_graph"), QStringLiteral("refused"));
+    authoring.succeed(authoring.requests.back().id, context);
+    refresh.succeed(refresh.requests.back(), QByteArray::fromStdString(plan.dump()));
+    // The refusal is said...
+    CHECK(required<QLabel>(form, "pelican.fullscreenPass.authoringStatus")
+              .toolTip()
+              .contains(QStringLiteral("Render authoring failed")));
+    // ...and nothing of the pass opened before it is left under it.
+    CHECK(name.text().isEmpty());
+    CHECK(fragment.text().isEmpty());
+    CHECK(inputs.count() == 0);
+    CHECK_FALSE(
+        required<QPushButton>(form, "pelican.fullscreenPass.save").isEnabled());
+}
 } // namespace PelicanStudio

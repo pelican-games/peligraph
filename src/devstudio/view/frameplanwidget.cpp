@@ -518,8 +518,9 @@ struct FramePlanWidget::Impl {
         target->setInsertPolicy(QComboBox::NoInsert);
         target->setMinimumContentsLength(18);
         target->setToolTip(owner.tr(
-            "Choose one logical render target. The graph shows only passes "
-            "within the selected resource depth."));
+            "Whole frame shows every pass, and every declared target no pass "
+            "writes as a node of its own. Choose one logical render target "
+            "to show only the passes within the selected resource depth."));
         toolbar->addWidget(target);
         toolbar->addWidget(new QLabel(owner.tr("Depth"), &owner));
         depth = new QSpinBox(&owner);
@@ -1693,6 +1694,7 @@ struct FramePlanWidget::Impl {
             const std::string previous_graph =
                 model ? model->graph : std::string{};
             const QString previous_target = target->currentText();
+            const bool was_whole_frame = wholeFrameSelected();
             FramePlanModel next = buildFramePlanModel(std::string_view{
                 result_json.constData(),
                 static_cast<std::size_t>(result_json.size())});
@@ -1710,27 +1712,32 @@ struct FramePlanWidget::Impl {
             {
                 const QSignalBlocker blocker{target};
                 target->clear();
+                // F-7: the whole frame comes first, and is what a graph the
+                // panel has not shown before opens on.
+                target->addItem(owner.tr("Whole frame"));
                 for (const auto &name : targets) {
                     target->addItem(text(name));
                 }
                 int selected_index = -1;
-                if (!targets.empty() && (!had_model || !same_graph)) {
-                    selected_index = 0;
+                if (!had_model || !same_graph || was_whole_frame) {
+                    selected_index = WholeFrameIndex;
                 } else if (same_graph && !previous_target.isEmpty()) {
-                    selected_index = target->findText(previous_target,
-                                                      Qt::MatchExactly);
+                    selected_index = targetIndex(previous_target);
                 }
                 // F-1: a target the user just created or renamed is the one
-                // the canvas shows next.
+                // the canvas shows next -- unless the canvas is showing the
+                // whole frame, which draws that target already, beside the
+                // passes it can be joined to.
                 if (!pending_target_selection.empty()) {
-                    const int created = target->findText(
-                        text(pending_target_selection), Qt::MatchExactly);
-                    if (created >= 0) selected_index = created;
+                    const int created =
+                        targetIndex(text(pending_target_selection));
+                    if (created >= 0 && selected_index != WholeFrameIndex)
+                        selected_index = created;
                     pending_target_selection.clear();
                 }
                 target->setCurrentIndex(selected_index);
             }
-            target->setEnabled(!targets.empty());
+            target->setEnabled(true);
             populate();
             // N-8: the placement the document keeps for the graph now on
             // screen, and the context the bands and the refusals need. Loading
@@ -1781,6 +1788,20 @@ struct FramePlanWidget::Impl {
         showFailure(message);
     }
 
+    // F-7: the Target combo's first entry is the whole frame, not a target;
+    // the targets follow it in name order.
+    static constexpr int WholeFrameIndex = 0;
+
+    bool wholeFrameSelected() const {
+        return target->currentIndex() == WholeFrameIndex;
+    }
+
+    int targetIndex(const QString &name) const {
+        for (int index = WholeFrameIndex + 1; index < target->count(); ++index)
+            if (target->itemText(index) == name) return index;
+        return -1;
+    }
+
     void populate() {
         const TreeFillGuard filling{passes,    resources, physical,
                                     decisions, backends,  barriers,
@@ -1794,12 +1815,16 @@ struct FramePlanWidget::Impl {
         materials->clear();
         raw_json->clear();
         raw_json_stale = true;
+        const bool whole_frame = wholeFrameSelected();
         const std::optional<FramePlanNodeKey> selected_target =
-            target->currentIndex() < 0
+            target->currentIndex() < 0 || whole_frame
                 ? std::nullopt
                 : std::optional<FramePlanNodeKey>{FramePlanNodeKey{
                       model->graph, target->currentText().toStdString()}};
-        logical_scene->populate(*model, selected_target, depth->value());
+        if (whole_frame)
+            logical_scene->populateWholeFrame(*model);
+        else
+            logical_scene->populate(*model, selected_target, depth->value());
         // The graph, and the group the canvas has descended into, are what the
         // Frame Plan calls a scope. A scope the session has not shown before --
         // which includes the first plan after a project is opened -- is fitted;
@@ -1858,7 +1883,8 @@ struct FramePlanWidget::Impl {
                 ? QStringLiteral("color: #388e3c;")
                 : QStringLiteral("color: #b36b00;"));
         const QString target_summary =
-            selected_target
+            whole_frame ? owner.tr("whole frame")
+            : selected_target
                 ? owner.tr("%1 @%2")
                       .arg(text(selected_target->name))
                       .arg(depth->value())

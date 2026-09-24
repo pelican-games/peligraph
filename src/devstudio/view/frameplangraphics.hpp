@@ -196,6 +196,13 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     void populate(const FramePlanModel &model,
                   const std::optional<FramePlanNodeKey> &selected_target,
                   int depth);
+    // F-7: the whole frame. Every pass is drawn, and every declared target no
+    // pass writes -- a target only declared so far among them -- is drawn as
+    // a resource node beside them, so the target and the pass that should
+    // read it are on one canvas and a drag can join them. populate() leaves
+    // this view again.
+    void populateWholeFrame(const FramePlanModel &model);
+    [[nodiscard]] bool wholeFrame() const noexcept { return whole_frame_; }
     void resetGraph();
     bool cancelConnectionGesture();
     std::function<void(const FramePlanNodeKey &, const FramePlanNodeKey &)> connectionRequested;
@@ -337,6 +344,7 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
         session_node_positions_;
     std::optional<FramePlanModel> current_model_;
     std::optional<FramePlanNodeKey> current_target_;
+    bool whole_frame_ = false;
     FramePlanGpuTimingSnapshot gpu_timing_;
     std::map<std::string, QString> shader_error_marks_;
     int current_depth_ = 1;

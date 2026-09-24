@@ -335,6 +335,8 @@ def compare(op: str, actual: Any, expected: Any) -> bool:
         return not equal(actual, expected)
     if op == "contains":
         return expected in actual
+    if op == "excludes":
+        return expected not in actual
     if op in {"gt", "ge", "lt", "le"}:
         left, right = float(actual), float(expected)
         return {

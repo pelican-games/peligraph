@@ -164,6 +164,11 @@ class MainWindow : public QMainWindow {
     void completeGizmoRpc(qint64 request_id,
                           const QByteArray &result_json);
     void failGizmoRpc(qint64 request_id, const QString &message);
+    // F-7: opening another project stops the engine that is running. What it
+    // still owes the gizmo is abandoned there, not reported as a failure: the
+    // session is ended before the switch and starts again with the new engine.
+    void endGizmoSessionForProjectSwitch(
+        const std::filesystem::path &next_project_root);
     void dispatchGizmoModel();
     void setGizmoMode(GizmoMode mode);
     void updateGizmoToolbar();

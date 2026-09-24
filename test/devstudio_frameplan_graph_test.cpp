@@ -914,7 +914,8 @@ Json mixedMembershipFeature(
 
 Json resolvedMixedMembershipFramePlan(
     bool overlapping,
-    std::size_t node_count = MixedFeatureNodes.size()) {
+    std::size_t node_count = MixedFeatureNodes.size(),
+    const Json &extra_render_targets = Json::array()) {
     Json authored = readJson(
         std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
         "example" / "passes" / "main_rendering_config.json");
@@ -922,6 +923,9 @@ Json resolvedMixedMembershipFramePlan(
         "engine://features/wp343_mixed_membership.json";
     Pelican::renderingSectionOf(authored)["features"] =
         Json::array({std::string{feature_reference}});
+    for (const auto &target : extra_render_targets)
+        Pelican::renderingSectionOf(authored)["render_targets"].push_back(
+            target);
 
     const std::string label =
         overlapping
@@ -1338,6 +1342,13 @@ QComboBox &targetSelector(FramePlanWidget &widget) {
         throw std::runtime_error("frame-plan target control was not installed");
     }
     return *selector;
+}
+
+// F-7: a graph opens on the whole frame. A test about one target's subtree
+// chooses the first target -- the one that used to be the default.
+void showFirstTarget(FramePlanWidget &widget) {
+    targetSelector(widget).setCurrentIndex(1);
+    QApplication::processEvents();
 }
 
 QSpinBox &subtreeDepth(FramePlanWidget &widget) {
@@ -5039,6 +5050,7 @@ TEST_CASE(
     widget.receiveResult(
         QByteArray::fromStdString(zero_dependencies.dump()));
     QApplication::processEvents();
+    showFirstTarget(widget);
     REQUIRE(logical.property("pelicanExecutionPlanState").toString() ==
             QStringLiteral("available"));
     REQUIRE(logical.property("pelicanExecutionPlanReasonCode")
@@ -5125,11 +5137,13 @@ TEST_CASE(
     QComboBox &selector = targetSelector(widget);
     QSpinBox &depth = subtreeDepth(widget);
 
-    REQUIRE(selector.count() == 22);
+    // F-7: the whole frame, then the 22 targets.
+    REQUIRE(selector.count() == 23);
+    REQUIRE(selector.itemText(0) == QStringLiteral("Whole frame"));
     REQUIRE(depth.value() == 1);
     REQUIRE(logical.property("pelicanNodeRecordCount").toULongLong() == 30);
 
-    for (int index = 0; index < selector.count(); ++index) {
+    for (int index = 1; index < selector.count(); ++index) {
         selector.setCurrentIndex(index);
         QApplication::processEvents();
         CAPTURE(selector.currentText().toStdString());
@@ -5951,6 +5965,7 @@ TEST_CASE(
     FramePlanWidget widget{&viewport};
     widget.receiveResult(QByteArray::fromStdString(optimized.dump()));
     QApplication::processEvents();
+    showFirstTarget(widget);
     QGraphicsScene &logical = scene(widget);
     REQUIRE(logical.property("pelicanPlanningProfile").toString() ==
             QStringLiteral("optimized"));
@@ -6050,6 +6065,7 @@ TEST_CASE(
         true, Pelican::RenderPipelineGraphVariant::flat);
     widget.receiveResult(QByteArray::fromStdString(flat.dump()));
     QApplication::processEvents();
+    showFirstTarget(widget);
     QGraphicsScene &logical = scene(widget);
     REQUIRE_FALSE(itemsOfKind(logical, FramePlanNodeItem).empty());
     REQUIRE(itemsOfKind(logical, FramePlanNodeItem).size() <= 5);
@@ -6068,6 +6084,7 @@ TEST_CASE(
             "physical_plan_missing");
     widget.receiveResult(QByteArray::fromStdString(preview.dump()));
     QApplication::processEvents();
+    showFirstTarget(widget);
     REQUIRE(logical.property("pelicanGraph").toString() ==
             QString::fromStdString(preview.at("graph").get<std::string>()));
     REQUIRE_FALSE(itemsOfKind(logical, FramePlanNodeItem).empty());
@@ -6104,6 +6121,7 @@ TEST_CASE(
         true, Pelican::RenderPipelineGraphVariant::xr);
     widget.receiveResult(QByteArray::fromStdString(xr.dump()));
     QApplication::processEvents();
+    showFirstTarget(widget);
     REQUIRE(logical.property("pelicanGraph").toString() ==
             QString::fromStdString(xr.at("graph").get<std::string>()));
     REQUIRE(logical.property("pelicanPhysicalResourceCount").toULongLong() ==
@@ -6582,6 +6600,9 @@ TEST_CASE(
 
     const auto nodes = itemsOfKind(logical, FramePlanNodeItem);
     REQUIRE_FALSE(nodes.empty());
+    // F-7: the whole frame is wider than the view; bring the node into it.
+    view.centerOn(nodes.front());
+    QApplication::processEvents();
     const QPoint press =
         view.mapFromScene(nodes.front()->sceneBoundingRect().center());
     REQUIRE(vp->rect().contains(press));
@@ -8333,6 +8354,128 @@ TEST_CASE("F-1 New render target sends one edit_render_targets from the form, "
         CHECK(sent.at("ops") ==
               Json::array({Json{{"op", "remove"},
                                 {"name", "wp343_mixed_d_output"}}}));
+    }
+}
+
+namespace {
+
+// F-7: the editing wire, with one more target the project declares and no
+// pass reads or writes yet -- the state a person is in right after "New
+// render target...".
+Json declaredOnlyEditingWire() {
+    static const Json resolved = resolvedMixedMembershipFramePlan(
+        false, MixedFeatureNodes.size(),
+        Json::array({Json{
+            {"name", "f7_declared_only"},
+            {"extent_scale", 1.0},
+            {"format", "R16G16B16A16_SFLOAT"},
+            {"format_class", "data"},
+            {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+        }}));
+    Json wire = resolved;
+    for (auto &node : wire["nodes"]) {
+        if (node.at("name") == "wp343_mixed_b") {
+            node["kind"] = "compute";
+            node["authored_name"] = "authored_consumer";
+        }
+    }
+    return wire;
+}
+
+} // namespace
+
+TEST_CASE("F-7 Whole frame is the first view of a graph, draws a target "
+          "nothing reads, and a drag from it asks a pass to read it once",
+          "[devstudio][frame-plan][f7][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    fixture.wire = declaredOnlyEditingWire();
+    fixture.widget.resize(1400, 900);
+    fixture.widget.show();
+    fixture.widget.setEditCapability(fixture.recorder.capability());
+    fixture.widget.receiveResult(QByteArray::fromStdString(fixture.wire.dump()));
+    fixture.graph = fixture.wire.at("graph").get<std::string>();
+    QApplication::processEvents();
+    REQUIRE(fixture.recorder.result);
+    fixture.recorder.result(
+        fixture.recorder.context_id,
+        QByteArray::fromStdString(mixedAuthoringContext(fixture.graph).dump()));
+    fixture.recorder.result(
+        fixture.recorder.task_id,
+        QByteArray::fromStdString(fixture.catalog.dump()));
+    QApplication::processEvents();
+
+    // A graph the panel has not shown before opens on the whole frame.
+    QComboBox &selector = targetSelector(fixture.widget);
+    CHECK(selector.currentIndex() == 0);
+    CHECK(selector.currentText() == QStringLiteral("Whole frame"));
+    auto &logical = fixture.logical();
+    REQUIRE(logical.wholeFrame());
+    CHECK(logical.property("pelicanWholeFrame").toBool());
+
+    // Every pass is on the canvas, whatever it touches.
+    for (const auto &node : fixture.wire.at("nodes"))
+        CHECK(nodeItem(logical, node.at("name").get<std::string>()) != nullptr);
+
+    // The declared-only target is a node of its own; a target a pass writes
+    // is not drawn a second time -- the pass's output socket is its handle.
+    QGraphicsItem *declared = nullptr;
+    for (QGraphicsItem *item : itemsOfKind(logical, FramePlanResourceNodeItem)) {
+        CHECK(item->data(FramePlanNameRole).toString() !=
+              QStringLiteral("wp343_mixed_d_output"));
+        if (item->data(FramePlanNameRole).toString() ==
+            QStringLiteral("f7_declared_only"))
+            declared = item;
+    }
+    REQUIRE(declared != nullptr);
+    CHECK(socketItem(logical, QStringLiteral("f7_declared_only"),
+                     QStringLiteral("f7_declared_only"),
+                     QStringLiteral("output")) != nullptr);
+
+    SECTION("a drag from its socket onto a pass is one request to read it") {
+        fixture.dragSocket(QStringLiteral("f7_declared_only"),
+                           QStringLiteral("f7_declared_only"),
+                           QStringLiteral("output"),
+                           nodeItem(logical, "wp343_mixed_a"));
+        REQUIRE(fixture.recorder.submits == 1);
+        CHECK(fixture.recorder.method == QStringLiteral("edit_preset_pass"));
+        const auto sent = Json::parse(
+            QJsonDocument(fixture.recorder.params).toJson().toStdString());
+        CHECK(sent.at("pass_name") == "wp343_mixed_a");
+        CHECK(sent.at("input") == Json::array({"f7_declared_only"}));
+        // The press on the socket started a connection; it did not pick the
+        // node it sits on.
+        CHECK_FALSE(logical.pickedResource().has_value());
+    }
+
+    SECTION("a click on the node's body still picks it") {
+        auto &view = logicalView(fixture.widget);
+        view.centerOn(declared);
+        QApplication::processEvents();
+        const QPoint at =
+            view.mapFromScene(declared->sceneBoundingRect().center());
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, at);
+        QApplication::processEvents();
+        REQUIRE(logical.pickedResource().has_value());
+        CHECK(logical.pickedResource()->name == "f7_declared_only");
+    }
+
+    SECTION("a refresh of the same graph stays on the whole frame, and a "
+            "chosen target is kept") {
+        fixture.widget.receiveResult(
+            QByteArray::fromStdString(fixture.wire.dump()));
+        QApplication::processEvents();
+        CHECK(selector.currentIndex() == 0);
+        CHECK(logical.wholeFrame());
+        selector.setCurrentText(QStringLiteral("wp343_mixed_d_output"));
+        QApplication::processEvents();
+        CHECK_FALSE(logical.wholeFrame());
+        fixture.widget.receiveResult(
+            QByteArray::fromStdString(fixture.wire.dump()));
+        QApplication::processEvents();
+        CHECK(selector.currentText() == QStringLiteral("wp343_mixed_d_output"));
+        CHECK(logical.property("pelicanTarget").toString() ==
+              QStringLiteral("wp343_mixed_d_output"));
     }
 }
 } // namespace PelicanStudio

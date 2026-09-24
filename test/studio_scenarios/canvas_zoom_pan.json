@@ -18,8 +18,7 @@
       "expect": "result",
       "command": {"cmd": "view_state", "name": "pelican.framePlanLogicalView"},
       "path": "scale",
-      "value": 1.0,
-      "remember": "scale_start"
+      "value": 1.0
     },
     {
       "label": "view_state reads the viewport, not a remembered number",
@@ -35,6 +34,15 @@
       "name": "pelican.framePlanStatus",
       "contains": "passes",
       "timeout_ms": 120000
+    },
+    {
+      "label": "the scale the first fit left -- Whole frame (F-7) fits every pass, so it is below 100 %; the wheel is measured from here",
+      "expect": "result",
+      "command": {"cmd": "view_state", "name": "pelican.framePlanLogicalView"},
+      "path": "scale",
+      "op": "gt",
+      "value": 0,
+      "remember": "scale_start"
     },
     {
       "label": "a wheel forward over the canvas",

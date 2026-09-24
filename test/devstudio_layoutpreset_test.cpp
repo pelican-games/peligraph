@@ -28,6 +28,8 @@
 #include <QTimer>
 #include <QWidget>
 
+#include <cstdlib>
+
 namespace {
 
 using PelicanStudio::LayoutPresetManager;
@@ -295,6 +297,62 @@ TEST_CASE("Devstudio restores the last panel layout at startup with an unsaved d
     REQUIRE(fallback_notice.contains(QStringLiteral("Last panel session")));
     REQUIRE(fallback_notice.contains(QStringLiteral("default"),
                                      Qt::CaseInsensitive));
+}
+
+TEST_CASE("F-7 opening and closing the Pass Editor leaves the viewport its "
+          "height",
+          "[devstudio][layout][workspace][f7]") {
+    QApplication &app = application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    PelicanStudio::MainWindow window{config.path()};
+    auto *viewport = window.findChild<QWidget *>(
+        QStringLiteral("pelican.viewportHost"));
+    auto *pass_editor = window.findChild<QDockWidget *>(
+        QStringLiteral("pelican.fullscreenPassDock"));
+    auto *frame_plan = window.findChild<QDockWidget *>(
+        QStringLiteral("pelican.framePlanDock"));
+    auto *panel_entry = window.findChild<QAction *>(
+        QStringLiteral("pelican.view.panels.fullscreenPassDock"));
+    REQUIRE(viewport != nullptr);
+    REQUIRE(pass_editor != nullptr);
+    REQUIRE(frame_plan != nullptr);
+    REQUIRE(panel_entry != nullptr);
+    // The window is as tall as a desktop lets it be; the offscreen platform
+    // would otherwise grow it to whatever the docks ask for.
+    window.setMaximumSize(1280, 800);
+    window.resize(1280, 800);
+    // A session that starts with the Pass Editor closed and the bottom docks
+    // at a working height.
+    window.show();
+    app.processEvents();
+    REQUIRE(panel_entry->isChecked());
+    panel_entry->trigger();
+    app.processEvents();
+    window.resizeDocks({frame_plan}, {260}, Qt::Vertical);
+    app.processEvents();
+    REQUIRE_FALSE(pass_editor->isVisible());
+    const int before = viewport->height();
+    INFO("viewport height before: " << before);
+    REQUIRE(before > 200);
+
+    // What the Frame Plan's "Edit pass" and "Add fullscreen pass..." do.
+    pass_editor->show();
+    pass_editor->raise();
+    app.processEvents();
+    REQUIRE(pass_editor->isVisible());
+    const int open = viewport->height();
+    INFO("viewport height with the Pass Editor in front: " << open);
+    // Closed from View > Panels, the way a person (and a scenario) does.
+    REQUIRE(panel_entry->isChecked());
+    panel_entry->trigger();
+    app.processEvents();
+    REQUIRE_FALSE(pass_editor->isVisible());
+    const int after = viewport->height();
+    INFO("viewport height after it closed: " << after);
+    CHECK(std::abs(after - before) <= 2);
+    // Opening it is not a reason to shrink the viewport to a strip either.
+    CHECK(open > before / 2);
 }
 
 TEST_CASE("Frame Plan tool layouts restore movable tabs and splitter state independently",

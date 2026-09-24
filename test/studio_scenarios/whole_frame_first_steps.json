@@ -1,0 +1,217 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "whole_frame_first_steps",
+  "description": "F-7: the Frame Plan opens on the whole frame; the Pass Editor opened and closed from View > Panels gives the viewport its height back; File > New Project switches engines without a modal-transform polling failure; and a render target made in the new project is drawn beside the pass that should read it, on the same canvas.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout: the panel layout is the desktop's, saved by whichever Studio closed last",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "the first frame plan arrives, shown as the whole frame",
+      "cmd": "wait",
+      "name": "pelican.framePlanStatus",
+      "timeout_ms": 180000,
+      "contains": "whole frame"
+    },
+    {
+      "label": "the Target box says so",
+      "expect": "text_equals",
+      "name": "pelican.framePlanTarget",
+      "value": "Whole frame"
+    },
+    {
+      "label": "the Pass Editor starts open in the default layout",
+      "expect": "result",
+      "command": {"cmd": "menu_list", "pattern": "pelican.view.panels.fullscreenPassDock"},
+      "path": "actions[0].checked",
+      "value": true
+    },
+    {
+      "label": "close it (View > Panels)",
+      "cmd": "action",
+      "name": "pelican.view.panels.fullscreenPassDock"
+    },
+    {
+      "label": "the viewport's height with the Pass Editor closed",
+      "expect": "result",
+      "command": {"cmd": "list", "pattern": "pelican.viewportHost"},
+      "path": "widgets[0].geometry[3]",
+      "remember": "viewport_height"
+    },
+    {
+      "label": "a viewport, not a strip",
+      "expect": "result",
+      "command": {"cmd": "list", "pattern": "pelican.viewportHost"},
+      "path": "widgets[0].geometry[3]",
+      "op": "gt",
+      "value": 200
+    },
+    {
+      "label": "open the Pass Editor (View > Panels)",
+      "cmd": "action",
+      "name": "pelican.view.panels.fullscreenPassDock"
+    },
+    {
+      "label": "it is open",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "and close it again",
+      "cmd": "action",
+      "name": "pelican.view.panels.fullscreenPassDock"
+    },
+    {
+      "label": "the viewport has its height back",
+      "expect": "result",
+      "command": {"cmd": "list", "pattern": "pelican.viewportHost"},
+      "path": "widgets[0].geometry[3]",
+      "op": "ge",
+      "value_of": "viewport_height"
+    },
+    {
+      "label": "File > New Project...",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name",
+      "cmd": "type",
+      "name": "pelican.newProject.name",
+      "text": "whole_frame_project"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the new project's present is on the canvas",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "a new graph opens on the whole frame",
+      "expect": "text_equals",
+      "name": "pelican.framePlanTarget",
+      "value": "Whole frame"
+    },
+    {
+      "label": "the engine that was switched away from is not reported as a polling failure",
+      "expect": "result",
+      "command": {"cmd": "text", "name": "pelican.engineLog"},
+      "path": "text",
+      "op": "excludes",
+      "value": "polling failed"
+    },
+    {
+      "label": "New render target..., fired by name",
+      "cmd": "action",
+      "name": "pelican.framePlan.newRenderTarget"
+    },
+    {
+      "label": "the form is open",
+      "cmd": "wait",
+      "name": "pelican.renderTargetForm.name",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "type only a name",
+      "cmd": "type",
+      "name": "pelican.renderTargetForm.name",
+      "text": "scene_color"
+    },
+    {
+      "label": "OK",
+      "cmd": "click",
+      "name": "pelican.renderTargetForm.ok"
+    },
+    {
+      "label": "the target nothing reads yet is a node, with a socket to drag from",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#scene_color/out:scene_color",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the canvas stayed on the whole frame",
+      "expect": "text_equals",
+      "name": "pelican.framePlanTarget",
+      "value": "Whole frame"
+    },
+    {
+      "label": "so present, which should read it, is on the same canvas",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "and so is the target's node",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::resource_node#scene_color",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "still no polling failure",
+      "expect": "result",
+      "command": {"cmd": "text", "name": "pelican.engineLog"},
+      "path": "text",
+      "op": "excludes",
+      "value": "polling failed"
+    },
+    {
+      "label": "a picture of the window for the reader of this report",
+      "expect": "screenshot",
+      "path": "whole_frame_first_steps_window.png"
+    }
+  ]
+}
