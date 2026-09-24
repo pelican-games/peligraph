@@ -333,6 +333,7 @@ if(TARGET pelican_studio_layout)
   pelican_define_test(devstudio_layoutpreset_test QT QT_OFFSCREEN
     pelican_studio_layout
     pelican_studio_view
+    pelican_studio_viewport
     Qt6::Core
     Qt6::Widgets)
 endif()
@@ -2411,14 +2412,17 @@ endif()
 if(TARGET pelican_studio_viewport)
   # Qt imported targets are directory-scoped; make the public viewport
   # interface visible in this sibling test directory.
-  find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
+  find_package(Qt6 REQUIRED COMPONENTS Core Test Widgets)
   add_executable(pelican_test_devstudio_engine_owner_fixture
     devstudio_engine_owner_fixture.cpp)
   set_target_properties(pelican_test_devstudio_engine_owner_fixture PROPERTIES
     CXX_STANDARD 20)
   target_link_libraries(pelican_test_devstudio_engine_owner_fixture PRIVATE
     pelican_studio_viewport Qt6::Core)
-  pelican_define_test(devstudio_viewport_test QT pelican_studio_viewport Qt6::Core Qt6::Widgets)
+  # Q-9: `wait_engine` is asked of a real (fixture) engine across a restart,
+  # the way the automation pipe asks it.
+  pelican_define_test(devstudio_viewport_test QT pelican_studio_viewport
+    pelican_studio_automation Qt6::Core Qt6::Test Qt6::Widgets)
   target_compile_definitions(pelican_test_devstudio_viewport_test PRIVATE
     PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
     PELICAN_ENGINE_OWNER_FIXTURE_PATH="$<TARGET_FILE:pelican_test_devstudio_engine_owner_fixture>"

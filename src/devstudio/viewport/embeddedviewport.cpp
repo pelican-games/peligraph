@@ -277,6 +277,7 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                 last_primary_pointer_position_.reset();
                 setEngineInputActive(false);
                 rpc_ready_ = false;
+                restart_pending_ = false;
                 readiness_request_ = 0;
                 child_window_ = 0;
                 setEngineLoadingNotice({});
@@ -330,6 +331,7 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
         last_primary_pointer_position_.reset();
         setEngineInputActive(false);
         rpc_ready_ = false;
+        restart_pending_ = false;
         readiness_request_ = 0;
         setEngineLoadingNotice({});
         restart_button_->setText(tr("Retry Engine"));
@@ -502,6 +504,7 @@ void EmbeddedViewport::restartEngine(const QString &reason) {
     // usually answering one of this engine's replies.
     const bool was_ready = rpc_ready_;
     rpc_ready_ = false;
+    restart_pending_ = false;
     readiness_request_ = 0;
     restart_after_stop_ = true;
     engine_stop_reason_ = reason;
@@ -590,6 +593,7 @@ void EmbeddedViewport::startEngine() {
 
     child_window_ = 0;
     rpc_ready_ = false;
+    restart_pending_ = false;
     readiness_request_ = 0;
     engine_stop_reason_.clear();
     setEngineLoadingNotice({});

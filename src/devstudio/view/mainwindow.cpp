@@ -806,6 +806,12 @@ void MainWindow::requestEngineRestart(const QString &reason) {
     }
     // Set first: with nothing unsaved the restart happens inside this call.
     pending_restart_reason_ = reason;
+    // Q-9. The restart has begun as far as anyone waiting for the engine is
+    // concerned. The engine keeps answering while the unsaved-edits question
+    // below is asked (it is asked of that engine), but it is the one about to
+    // be stopped: without the hold, `wait_engine` agreed with it and the next
+    // request found the engine gone.
+    viewport_->setRestartPending(true);
     requestNavigation(Navigation::Restart);
 }
 
@@ -912,6 +918,11 @@ void MainWindow::cancelNavigation(const QString &message) {
 }
 
 void MainWindow::resetNavigation() {
+    // Q-9. Declined, or about to go ahead -- completeNavigation restarts the
+    // engine right after this, and restartEngine closes the gate itself.
+    if (pending_navigation_ == Navigation::Restart) {
+        viewport_->setRestartPending(false);
+    }
     pending_navigation_ = Navigation::None;
     pending_project_path_.clear();
     pending_restart_reason_.clear();

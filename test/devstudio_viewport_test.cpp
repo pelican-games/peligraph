@@ -1,3 +1,5 @@
+#include "automationcommands.hpp"
+#include "automationserver.hpp"
 #include "embeddedviewport.hpp"
 #include "engineattach.hpp"
 #include "enginelogbuffer.hpp"
@@ -547,6 +549,84 @@ TEST_CASE("An engine that goes silent is stopped, and one that is still "
         REQUIRE_FALSE(loading->isHidden());
         REQUIRE(status->text().contains(QStringLiteral("Waiting for the engine")));
     }
+}
+
+// Q-9. The race behind `engine_not_ready` right after a G-4 restart. The
+// window asks the running engine about unsaved edits before it restarts it
+// (G-5), so for one round trip after the commit the old engine still answers
+// -- and `wait_engine` used to agree with it, and the next step found it gone.
+// Here the same `wait_engine` the automation pipe runs is asked across a
+// restart of a fixture engine that waits 700 ms before its first answer.
+TEST_CASE("Q-9: once a restart is asked for, wait_engine waits for the new "
+          "engine's first answer, not the old engine's",
+          "[devstudio][viewport][q9][restart][process]") {
+    EngineFixtureEnvironment fixture{/*pump_delay_ms=*/0,
+                                     /*heartbeat_ms=*/0,
+                                     /*rpc_delay_ms=*/700,
+                                     /*load_timeout_ms=*/60000};
+    int argument_count = 1;
+    char application_name[] = "pelican_viewport_restart_ready_test";
+    char *arguments[] = {application_name};
+    QApplication application{argument_count, arguments};
+
+    EmbeddedViewport viewport;
+    viewport.resize(320, 200);
+    AutomationHost host;
+    host.viewport = &viewport;
+    const auto waitEngine = [&](int timeout_ms) {
+        return runAutomationCommand(
+            host, QJsonObject{{QStringLiteral("cmd"), QStringLiteral("wait_engine")},
+                              {QStringLiteral("timeout_ms"), timeout_ms}});
+    };
+    // Each run of the fixture says this once, when its window is up and
+    // before it waits to answer. The second one is the restarted engine.
+    int engines_started = 0;
+    QElapsedTimer since_second_engine;
+    QObject::connect(&viewport, &EmbeddedViewport::engineOutputReceived,
+                     &application, [&](const QString &output) {
+                         if (!output.contains(QStringLiteral("viewport-window-ready")))
+                             return;
+                         if (++engines_started == 2) since_second_engine.start();
+                     });
+
+    viewport.openProject(QDir::tempPath());
+    const auto first = waitEngine(30000);
+    REQUIRE(first.ok);
+    REQUIRE(viewport.rpcReady());
+    REQUIRE(engines_started == 1);
+
+    // The commit answered restart_required and the window is asking the old
+    // engine about unsaved edits. It still answers -- that question goes to
+    // it -- but it is not the engine anyone waiting for "ready" wants.
+    viewport.setRestartPending(true);
+    CHECK(viewport.rpcReady());
+    CHECK_FALSE(viewport.currentEngineReady());
+    const auto during_question = waitEngine(300);
+    CHECK_FALSE(during_question.ok);
+    CHECK(during_question.code == QStringLiteral("automation.engine_not_ready@1"));
+
+    // The restart itself: not ready from the first instant, and still not
+    // ready while the old engine goes and the new one loads.
+    viewport.restartEngine(QStringLiteral("Q-9 restart"));
+    CHECK_FALSE(viewport.rpcReady());
+    CHECK_FALSE(viewport.currentEngineReady());
+    CHECK_FALSE(viewport.restartPending());
+
+    // Ready again only from the new process's answer to its readiness probe:
+    // the second engine is up, and 700 ms have passed since it said so.
+    const auto second = waitEngine(30000);
+    REQUIRE(second.ok);
+    CHECK(engines_started == 2);
+    CHECK(since_second_engine.isValid());
+    CHECK(since_second_engine.elapsed() >= 500);
+    CHECK(viewport.engineWindowEmbedded());
+
+    // A restart asked for and then declined (Cancel on the unsaved-edits
+    // question) leaves the engine that is running ready again.
+    viewport.setRestartPending(true);
+    CHECK_FALSE(waitEngine(100).ok);
+    viewport.setRestartPending(false);
+    CHECK(waitEngine(100).ok);
 }
 
 #endif

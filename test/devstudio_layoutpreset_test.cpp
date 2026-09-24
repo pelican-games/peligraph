@@ -1,4 +1,5 @@
 #include "layoutpreset.hpp"
+#include "embeddedviewport.hpp"
 #include "frameplanwidget.hpp"
 #include "mainwindow.hpp"
 #include "inspectorwidget.hpp"
@@ -703,12 +704,18 @@ TEST_CASE("G-5 an engine restart asks about unsaved scene edits first, and "
         return window.findChild<QMessageBox *>(
             QStringLiteral("pelican.unsavedScenePrompt"));
     };
+    // Q-9. While the question is open the engine running now is the one about
+    // to be stopped: the viewport holds "ready" for whoever waits on it.
+    PelicanStudio::EmbeddedViewport *viewport = window.engineViewport();
+    REQUIRE(viewport != nullptr);
+    REQUIRE_FALSE(viewport->restartPending());
 
     SECTION("with nothing unsaved the engine restarts at once") {
         window.requestEngineRestart(reason);
         QCoreApplication::processEvents();
         CHECK(prompt() == nullptr);
         CHECK(window.statusBar()->currentMessage() == reason);
+        CHECK_FALSE(viewport->restartPending());
     }
 
     SECTION("with unsaved edits the prompt comes first") {
@@ -721,8 +728,10 @@ TEST_CASE("G-5 an engine restart asks about unsaved scene edits first, and "
         auto *asked = prompt();
         REQUIRE(asked != nullptr);
         CHECK(asked->text().contains(QStringLiteral("engine restarts")));
-        // Nothing restarted while the question is open.
+        // Nothing restarted while the question is open, and the engine that
+        // is answering it does not count as ready (Q-9).
         CHECK(window.statusBar()->currentMessage() != reason);
+        CHECK(viewport->restartPending());
 
         SECTION("Cancel: no restart, and the setting is said to wait for the next start") {
             auto *cancel = asked->findChild<QAbstractButton *>(
@@ -738,6 +747,8 @@ TEST_CASE("G-5 an engine restart asks about unsaved scene edits first, and "
             CHECK(frame_plan_status->text().contains(
                 QStringLiteral("applies the next time the engine starts")));
             CHECK(inspector->hasUnsavedSceneChanges());
+            // Declined: the engine that stays is the current one again.
+            CHECK_FALSE(viewport->restartPending());
         }
         SECTION("Discard: the restart goes ahead") {
             auto *discard = asked->findChild<QAbstractButton *>(
@@ -748,11 +759,13 @@ TEST_CASE("G-5 an engine restart asks about unsaved scene edits first, and "
             QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
             CHECK(prompt() == nullptr);
             CHECK(window.statusBar()->currentMessage() == reason);
+            CHECK_FALSE(viewport->restartPending());
         }
         SECTION("Save that cannot start: no restart") {
             asked->button(QMessageBox::Save)->click();
             QCoreApplication::processEvents();
             CHECK(window.statusBar()->currentMessage() != reason);
+            CHECK_FALSE(viewport->restartPending());
             CHECK(frame_plan_status->text().contains(
                 QStringLiteral("applies the next time the engine starts")));
         }

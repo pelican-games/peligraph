@@ -1631,6 +1631,10 @@ SyncRpcOutcome callEngineRpc(const AutomationHost &host, const QString &method,
 // also waits until the engine has published that many logical frames
 // (get_status render.published_frames): the engine answers RPC before its
 // first frame, and capture or a published frame plan need a drawn one.
+// Q-9: "the engine" is the one running now, and not one a restart has been
+// asked to replace. Between a commit's restart_required and the stop, the old
+// engine still answers (Studio asks it about unsaved edits); agreeing with it
+// here let the next step find it gone.
 AutomationReply commandWaitEngine(const AutomationHost &host,
                                   const QJsonObject &request) {
     if (host.viewport == nullptr)
@@ -1647,7 +1651,7 @@ AutomationReply commandWaitEngine(const AutomationHost &host,
     QElapsedTimer elapsed;
     elapsed.start();
     for (;;) {
-        if (host.viewport->rpcReady()) break;
+        if (host.viewport->currentEngineReady()) break;
         if (elapsed.elapsed() >= timeout)
             return AutomationReply::failure(
                 EngineNotReady,

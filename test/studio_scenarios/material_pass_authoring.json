@@ -77,10 +77,10 @@
       "value": "forward_opaque"
     },
     {
-      "label": "its color output is empty",
+      "label": "its color output is already filled when the form opens (T-1): a new target in the format the contract requires",
       "expect": "text_equals",
       "name": "pelican.materialPassForm.state.color",
-      "value": "empty"
+      "value": "new: made as R16G16B16A16_SFLOAT"
     },
     {
       "label": "Create missing targets",

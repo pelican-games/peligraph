@@ -48,6 +48,20 @@ class EmbeddedViewport final : public QWidget {
     qint64 requestRpc(const QString &method, const QJsonObject &params,
                       QString *error = nullptr);
     bool rpcReady() const noexcept { return rpc_ready_; }
+    // Q-9. A restart has been asked for and has not begun: G-5 is still asking
+    // whether the scene has unsaved edits, and that question -- and a Save --
+    // go to the engine running now, so rpcReady() stays true. That engine is
+    // the one about to be stopped, though, and a caller waiting for "the
+    // engine is ready" is waiting for the one after it. restartEngine, a new
+    // start and a stop each end the hold; the window ends it on a decline.
+    void setRestartPending(bool pending) noexcept { restart_pending_ = pending; }
+    bool restartPending() const noexcept { return restart_pending_; }
+    // Q-9. The engine running now has started, embedded, and answered its
+    // readiness probe, and no restart is waiting to replace it. Not true
+    // again after a restart until the new process has answered.
+    bool currentEngineReady() const noexcept {
+        return rpc_ready_ && !restart_pending_;
+    }
     // Q-4. The engine's window is a child of this panel: the re-parenting has
     // happened, so its thread was taking messages when it did.
     bool engineWindowEmbedded() const noexcept { return child_window_ != 0; }
@@ -115,6 +129,7 @@ class EmbeddedViewport final : public QWidget {
     bool restart_unavailable_announced_ = false;
     bool shutting_down_ = false;
     bool rpc_ready_ = false;
+    bool restart_pending_ = false;
     bool engine_input_active_ = false;
     // Q-4. Why this run of the engine was stopped, when Studio stopped it on
     // purpose. Kept so the exit notice does not overwrite the reason with
