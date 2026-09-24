@@ -250,9 +250,9 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 | `set_component_value` | `object_id`, `component_slot`, `field_path`(JSON pointer), `value` | 値の変更。`/name` への書き込みは拒否 |
 | `add_component` | `object_id`, `component`(コンポーネント JSON) | コンポーネント追加 |
 | `remove_component` | `object_id`, `component_slot`(behavior は `attachment_index` も必須) | コンポーネント削除 |
-| `insert_component_field` | `address`, `value`, `position?`(behavior は `attachment_handle` / `attachment_seq`) | 可変長宣言(`List` / `$list`)に行を追加([insert の受理キー](../../src/core/communication/editorjournalops.cpp#L406)) |
-| `remove_component_field` | `address`(同上) | 行、または行の中の 1 フィールドを削除([remove の受理キー](../../src/core/communication/editorjournalops.cpp#L600)) |
-| `move_component_field` | `address`(`row_id`), `position`(`{"before":行ID}` か `{"end":true}`) | 行の並べ替え([move の受理キー](../../src/core/communication/editorjournalops.cpp#L567)。§13.12) |
+| `insert_component_field` | `address`, `value`, `position?`(behavior は `attachment_handle` / `attachment_seq`) | 可変長宣言(`List` / `$list`)に行を追加([insert の受理キー](../../src/core/communication/editorjournalops.cpp#L407)) |
+| `remove_component_field` | `address`(同上) | 行、または行の中の 1 フィールドを削除([remove の受理キー](../../src/core/communication/editorjournalops.cpp#L601)) |
+| `move_component_field` | `address`(`row_id`), `position`(`{"before":行ID}` か `{"end":true}`) | 行の並べ替え([move の受理キー](../../src/core/communication/editorjournalops.cpp#L568)。§13.12) |
 | `spawn` | `object`(+ `scene_id`) | オブジェクト生成。ID は engine が採番 |
 | `destroy` | `object_id` | 子孫ごと削除(逆操作用に全 JSON を保存) |
 | `reparent` | `object_id`, `new_parent_id`(null = ルート), `preserve`(`"local"` / `"world"`) | 親子の付け替え |
@@ -1332,7 +1332,7 @@ Studio 専用の裏口はありません(D0)。
 - **ただし `edit_render_features` はこの区別に従いません。**フレーム境界の preflight で落ちた場合も `status` は `"rejected"` です。また **追加情報は `payload` の中ではなく `error` の直下**に置かれます。
 - **シーン編集**の安定コードは **43 種**です(正は
   [`EditorEditErrorCode`](../../src/core/communication/editorjournal.hpp#L49) と、その名前を返す
-  [`editorEditErrorCodeName()`](../../src/core/communication/editorjournal.cpp#L3013)。**列挙子の名前とワイヤ上の
+  [`editorEditErrorCodeName()`](../../src/core/communication/editorjournal.cpp#L3108)。**列挙子の名前とワイヤ上の
   コード名は一致しません** —— 新しいものは `@1` 付きです)。内訳:
   - 基本 21 種: `stale_revision` / `gate_closed` / `preview_lease_conflict` / `preview_lease_busy` / `not_lease_owner` / `ticket_not_found` / `undo_conflict` / `not_editable` / `schema_violation` / `component_unknown@1` / `duplicate_component` / `missing_component` / `name_conflict` / `parent_not_found` / `closure_unresolvable` / `cycle_detected` / `zero_scale` / `non_finite_transform` / `trs_unrepresentable` / `preserve_missing` / `method_unavailable`
   - preview: `editor_preview_unsupported@1`(✅WP375c。列挙子は `preview_unsupported`。**inactive なシーンの add / remove / reparent プレビュー**はこれで拒否されます)
