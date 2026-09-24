@@ -260,7 +260,7 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
     const GraphInputContract required{exactLogicalTypePattern(*types, scalar)};
     const GraphInputContract optional{required.accepted_type, false};
     const GraphInputContract events{exactLogicalTypePattern(*types, event)};
-    const GraphInputContract optional_voice{exactLogicalTypePattern(*types, voice), false};
+    [[maybe_unused]] const GraphInputContract optional_voice{exactLogicalTypePattern(*types, voice), false};
     const std::map<std::string, LogicalType> value_output{{"value", scalar}};
     const auto declared = [](std::map<std::string, GraphInputContract> inputs,
                              std::map<std::string, LogicalType> outputs,
@@ -306,6 +306,11 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
                 GraphOperationEvaluation::replay)},
         },
         {}});
+#if PELICAN_WITH_AUDIO
+    // Registered only where something can play the voice, the same way the
+    // pose module is: a build without audio never registers these operations,
+    // so a document naming one is graph.operation_unregistered@1 before any
+    // sound is prepared.
     registry.registerModule(GraphModuleManifest{
         "pelican.audio", 1,
         "Sound playback voices and the value sinks that drive them.",
@@ -317,6 +322,7 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
             {"audio.pitch", value({{"value", required}, {"voice", optional_voice}}, {})},
         },
         {"audio.volume", "audio.pitch"}});
+#endif
     const auto render = [&](const char *op) {
         auto registration = declared({}, {}, GraphExecutionDomain::rendering,
             GraphOperationEvaluation::direct, GraphParameterChange::rebuild);

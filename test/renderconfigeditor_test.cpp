@@ -1147,14 +1147,15 @@ TEST_CASE("instance inputs change supply atomically and report what was drawn",
         for (const auto &module : catalog.at("modules"))
             namespaces.push_back(module.at("namespace").get<std::string>());
         CHECK(containsName(namespaces, "pelican.value"));
-        CHECK(containsName(namespaces, "pelican.audio"));
         CHECK(containsName(namespaces, "pelican.render"));
-#if PELICAN_WITH_ANIMATION
-        CHECK(containsName(namespaces, "pelican.pose"));
-        CHECK(namespaces.size() == 4);
-#else
-        CHECK(namespaces.size() == 3);
-#endif
+        std::size_t expected_modules = 2;
+        // pelican.audio and pelican.pose are registered only by the builds
+        // that carry their module.
+        CHECK(containsName(namespaces, "pelican.audio") == static_cast<bool>(PELICAN_WITH_AUDIO));
+        expected_modules += PELICAN_WITH_AUDIO ? 1 : 0;
+        CHECK(containsName(namespaces, "pelican.pose") == static_cast<bool>(PELICAN_WITH_ANIMATION));
+        expected_modules += PELICAN_WITH_ANIMATION ? 1 : 0;
+        CHECK(namespaces.size() == expected_modules);
     }
 }
 

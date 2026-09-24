@@ -42,9 +42,13 @@ class EditFailure final : public std::runtime_error {
   public:
     EditorEditErrorCode code;
     OrderedJson payload;
+    // The wire name when it is not fixed by `code`: a module_unavailable
+    // failure answers `<requirement>.module_unavailable@1`, the one name every
+    // path uses for the missing module. Empty means editorEditErrorCodeName.
+    std::string code_name;
 
     EditFailure(EditorEditErrorCode error_code, OrderedJson error_payload,
-                std::string message);
+                std::string message, std::string wire_code_name = {});
 };
 
 [[noreturn]] void editFailure(EditorEditErrorCode code, OrderedJson payload,

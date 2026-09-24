@@ -1025,16 +1025,15 @@ void RegistrationStages::prepare() {
                 dependencies.front().options),
             compiler_input);
     source_documents = std::make_shared<const RenderGraphDocumentSnapshot>(std::move(loaded_documents));
-    if (value_graph) {
-        if (!value_graph->audioSources().empty()) {
 #if PELICAN_WITH_AUDIO
-            for (const auto &[node, asset] : value_graph->audioSources())
-                (void)GET_MODULE(Audio).prepareSound(asset);
-#else
-            throw std::runtime_error("audio graph requires PELICAN_WITH_AUDIO");
-#endif
-        }
+    // A build without audio never gets here with a voice: pelican.audio is not
+    // registered, so the document naming audio.playback was already refused as
+    // graph.operation_unregistered@1 while it was lowered.
+    if (value_graph) {
+        for (const auto &[node, asset] : value_graph->audioSources())
+            (void)GET_MODULE(Audio).prepareSound(asset);
     }
+#endif
     if (ray_tracing_project != nullptr) {
         injectRayTracingJointTransactionPoint(
             RayTracingJointTransactionPoint::after_compile);

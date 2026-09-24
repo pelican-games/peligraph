@@ -562,6 +562,58 @@ std::vector<OperationCase> operationCases() {
 
 } // namespace
 
+// PG-1 acceptance 1, the editor half. add_component and spawn ask the same gate
+// scene load asks, over the object as it resolved after the operation, so a
+// component this build cannot run is refused by the module's name before the
+// document changes -- the same name scene load and a project's `requires`
+// use. The ON build is the contrast: the same operations commit.
+TEST_CASE("PG-1 add_component and spawn refuse a collider by the physics module's name",
+          "[pg1][journal][physics]") {
+    Harness harness;
+    const auto before = harness.target.document.encodeSemantic();
+    const Json add{{"op", "add_component"},
+                   {"object_id", 1},
+                   {"component", {{"name", "collider"}, {"shape", "box"},
+                                  {"half_extents", {1, 1, 1}}}}};
+    const Json spawn{{"op", "spawn"},
+                     {"scene_id", "main"},
+                     {"object", {{"name", "Crate"},
+                                 {"components", Json::array({
+                                     {{"name", "transform"}, {"pos", {0, 0, 0}},
+                                      {"rotation", {0, 0, 0, 1}}, {"scale", {1, 1, 1}}},
+                                     {{"name", "collider"}, {"shape", "sphere"},
+                                      {"radius", 0.5}}})}}}};
+#if PELICAN_WITH_PHYSICS
+    REQUIRE(harness.commit(add).at("status") == "committed");
+    REQUIRE(harness.commit(spawn).at("status") == "committed");
+    REQUIRE(harness.target.document.encodeSemantic() != before);
+#else
+    for (const auto &operation : {add, spawn}) {
+        CAPTURE(operation.at("op"));
+        const auto rejected = harness.enqueue(operation);
+        REQUIRE(rejected.at("status") == "rejected");
+        REQUIRE(rejected.at("error").at("code") == "physics.module_unavailable@1");
+        REQUIRE(rejected.at("error").at("payload").at("slot") == "collider");
+        REQUIRE(rejected.at("error").at("payload").at("requirement") == "physics");
+        REQUIRE_THAT(rejected.at("error").at("message").get<std::string>(),
+                     Catch::Matchers::ContainsSubstring("PELICAN_WITH_PHYSICS=OFF"));
+        std::cout << "PG1_EDIT op=" << operation.at("op").get<std::string>()
+                  << " state=OFF code=" << rejected.at("error").at("code").get<std::string>()
+                  << '\n';
+    }
+    // Refused before a byte of the document changed.
+    REQUIRE(harness.target.document.encodeSemantic() == before);
+    // A component the build has is still added: the refusal is about the
+    // module, not about add_component.
+    REQUIRE(harness.commit({{"op", "add_component"},
+                            {"object_id", 1},
+                            {"component", {{"name", "camera"}, {"type", "perspective"},
+                                           {"yfov", 0.75F}, {"znear", 2.0F},
+                                           {"zfar", 20.0F}}}})
+                .at("status") == "committed");
+#endif
+}
+
 TEST_CASE("WP378 journal maps typed decode failure and consumes canonical success",
           "[WP378][journal][component-codec][mutation]") {
     Harness harness;

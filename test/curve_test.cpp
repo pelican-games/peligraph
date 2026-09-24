@@ -12,6 +12,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
+#include <functional>
+#include <iostream>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -760,15 +762,18 @@ TEST_CASE("one operation has exactly one registering module",
     // Every operation the retired static contract table listed. Reviving that
     // table as a second registration is a named rejection, so the registry
     // cannot end up with two sources of truth for one operation.
-    const std::vector<std::pair<std::string, std::string>> retired_static_table{
+    std::vector<std::pair<std::string, std::string>> retired_static_table{
         {"value.input", "pelican.value"}, {"value.constant", "pelican.value"},
         {"value.parameter", "pelican.value"}, {"value.morph_weight", "pelican.value"},
         {"value.trigger_clock", "pelican.value"}, {"event.playback", "pelican.value"},
         {"value.event_clock", "pelican.value"}, {"value.add", "pelican.value"},
         {"value.multiply", "pelican.value"}, {"value.curve", "pelican.value"},
-        {"value.playback", "pelican.value"}, {"audio.playback", "pelican.audio"},
-        {"audio.volume", "pelican.audio"}, {"audio.pitch", "pelican.audio"},
-        {"render.scalar", "pelican.render"}};
+        {"value.playback", "pelican.value"}, {"render.scalar", "pelican.render"}};
+#if PELICAN_WITH_AUDIO
+    retired_static_table.insert(retired_static_table.end(),
+        {{"audio.playback", "pelican.audio"}, {"audio.volume", "pelican.audio"},
+         {"audio.pitch", "pelican.audio"}});
+#endif
     for (const auto &[op, owner] : retired_static_table) {
         auto registry = makeBuiltinGraphModuleRegistry();
         const GraphModuleManifest revived{"pelican.retired_static_table", 1,
@@ -802,10 +807,13 @@ TEST_CASE("one operation has exactly one registering module",
     const auto catalog = registry.catalog();
     for (const auto &module : catalog.at("modules"))
         namespaces.push_back(module.at("namespace").get<std::string>());
-    std::vector<std::string> expected{"pelican.audio", "pelican.render",
-                                      "pelican.test.opaque", "pelican.value"};
+    std::vector<std::string> expected{"pelican.render", "pelican.test.opaque",
+                                      "pelican.value"};
 #if PELICAN_WITH_ANIMATION
-    expected.insert(expected.begin() + 1, "pelican.pose");
+    expected.insert(expected.begin(), "pelican.pose");
+#endif
+#if PELICAN_WITH_AUDIO
+    expected.insert(expected.begin(), "pelican.audio");
 #endif
     REQUIRE(namespaces == expected);
 }
@@ -851,6 +859,51 @@ TEST_CASE("a build without the animation unit rejects a pose document by name",
     // either way.
     REQUIRE_NOTHROW(partitionGraphDocument(nlohmann::json::parse(graphCompositionFixture)));
     REQUIRE_NOTHROW(ValueGraph::Graph{graphCompositionFixture});
+}
+
+TEST_CASE("PG-1 a build without the audio unit rejects an audio document by name",
+          "[curve][graph-composition][graph-module][pg1]") {
+    using namespace Pelican;
+    // The same document either way: a clock driving a voice and the voice's
+    // volume. Whether pelican.audio is registered is the only difference
+    // PELICAN_WITH_AUDIO makes to the common graph.
+    const auto document = nlohmann::json::parse(R"({"schema":"pelican.graph","version":1,
+      "nodes":[
+        {"id":"clock","op":"value.input","parameters":{"name":"time"},"outputs":["value"]},
+        {"id":"cue","op":"event.playback","outputs":["events"]},
+        {"id":"sound","op":"audio.playback","parameters":{"asset":"project://tone.wav"},
+         "inputs":{"time":{"node":"clock","port":"value"},"events":{"node":"cue","port":"events"}},
+         "outputs":["voice"]},
+        {"id":"level","op":"value.constant","parameters":{"value":0.5},"outputs":["value"]},
+        {"id":"volume","op":"audio.volume","inputs":{"value":{"node":"level","port":"value"},
+         "voice":{"node":"sound","port":"voice"}},"outputs":[]}],
+      "outputs":{}})");
+#if PELICAN_WITH_AUDIO
+    REQUIRE(builtinGraphModuleRegistry().contains("audio.playback"));
+    REQUIRE(builtinGraphModuleRegistry().isSink("audio.volume"));
+    REQUIRE_NOTHROW(partitionGraphDocument(document));
+    const ValueGraph::Graph graph{document.dump()};
+    REQUIRE(graph.audioSources().size() == 1);
+#else
+    for (const auto &attempt : std::vector<std::function<void()>>{
+             [&] { (void)partitionGraphDocument(document); },
+             // The runtime's own entry: the value graph a rendering config
+             // prepares is built from this constructor.
+             [&] { const ValueGraph::Graph graph{document.dump()}; }}) {
+        try {
+            attempt();
+            FAIL("an audio document was accepted without the audio unit");
+        } catch (const GraphRegistryError &error) {
+            REQUIRE(error.code() == "graph.operation_unregistered@1");
+            REQUIRE(error.detail().at("op").get<std::string>().rfind("audio.", 0) == 0);
+            std::cout << "PG1_AUDIO_GRAPH state=OFF code=" << error.code()
+                      << " op=" << error.detail().at("op").get<std::string>() << '\n';
+        }
+    }
+    REQUIRE_FALSE(builtinGraphModuleRegistry().contains("audio.playback"));
+#endif
+    // The value and render sides of the common graph are unaffected.
+    REQUIRE_NOTHROW(partitionGraphDocument(nlohmann::json::parse(graphCompositionFixture)));
 }
 
 TEST_CASE("a registered operation without a backend is rejected by name",

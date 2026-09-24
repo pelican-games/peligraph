@@ -1,3 +1,12 @@
 // Shared by project parsing and the CMake project-corpus selection helpers.
 // Only explicitly declared names belong to project.json's public vocabulary.
+// The same rows name the module a component codec needs, and the capabilities
+// a package may require, so one word means one build option everywhere.
+// `physics` is the query service and collider world (PELICAN_WITH_PHYSICS);
+// a build with the service but no provider is not a requirement name.
 PELICAN_PROJECT_REQUIREMENT("animation", PELICAN_WITH_ANIMATION, "animation.module_unavailable@1")
+PELICAN_PROJECT_REQUIREMENT("audio", PELICAN_WITH_AUDIO, "audio.module_unavailable@1")
+PELICAN_PROJECT_REQUIREMENT("physics", PELICAN_WITH_PHYSICS, "physics.module_unavailable@1")
+PELICAN_PROJECT_REQUIREMENT("xr", PELICAN_WITH_OPENXR, "xr.module_unavailable@1")
+PELICAN_PROJECT_REQUIREMENT("vat", PELICAN_WITH_VAT, "vat.module_unavailable@1")
+PELICAN_PROJECT_REQUIREMENT("seqplayer", PELICAN_WITH_SEQPLAYER, "seqplayer.module_unavailable@1")

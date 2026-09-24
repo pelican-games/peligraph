@@ -442,6 +442,60 @@ function(expect_disabled_error label feature_name)
     endif()
 endfunction()
 
+# PG-1: a refusal that is not a thrown BuildFeatureDisabledError but a named
+# error, `<requirement>.module_unavailable@1` or a registry name.
+function(expect_named_error label code)
+    execute_process(
+        COMMAND ${ARGN}
+        WORKING_DIRECTORY "${SOURCE_DIR}"
+        RESULT_VARIABLE result
+        OUTPUT_VARIABLE stdout
+        ERROR_VARIABLE stderr
+    )
+    if(result EQUAL 0)
+        message(FATAL_ERROR "${label} unexpectedly succeeded
+stdout:
+${stdout}
+stderr:
+${stderr}")
+    endif()
+    string(FIND "${stdout}
+${stderr}" "${code}" code_index)
+    if(code_index EQUAL -1)
+        message(FATAL_ERROR "${label} did not report ${code}
+stdout:
+${stdout}
+stderr:
+${stderr}")
+    endif()
+endfunction()
+
+# PG-1 acceptance 1 in an OFF build: the [pg1] cases of the test binaries,
+# which assert the refusal by name where the build lacks the module and the
+# success where it has it -- scene load and rollback, the editor's
+# add_component and spawn, the Studio addition catalog, the requires words,
+# package capabilities and the graph registry.
+function(run_pg1_cases build_dir label)
+    foreach(group IN ITEMS core_foundation project_formats ecs_editor)
+        find_built_executable("${build_dir}" "pelican_test_group_${group}" pg1_group)
+        run_process("${label}_pg1_${group}" TRUE "${pg1_group}" "[pg1]")
+        message(STATUS "${label} [pg1] ${group}:
+${${label}_pg1_${group}_STDOUT}")
+    endforeach()
+endfunction()
+
+# A project whose only content is its `requires`: the player must refuse it
+# while reading project.json, before any scene or device work.
+function(write_requires_project root requirement)
+    write_empty_project("${root}")
+    file(READ "${root}/project.json" project_json)
+    string(REPLACE "\"engine_min_version\": \"0.1.0\","
+        "\"engine_min_version\": \"0.1.0\",
+  \"requires\": [\"${requirement}\"],"
+        project_json "${project_json}")
+    file(WRITE "${root}/project.json" "${project_json}")
+endfunction()
+
 function(write_common_project root)
     file(MAKE_DIRECTORY
         "${root}/assets"
@@ -570,6 +624,28 @@ endfunction()
 
 function(write_physics_project root)
     write_common_project("${root}")
+    # The common project's single `ui` pass is refused by the preview graph
+    # policy before any scene is read, so this project terminates in a plain
+    # fullscreen pass: the collider has to reach scene prepare to be refused.
+    file(WRITE "${root}/passes/main.json" [=[
+{
+  "features": ["engine://features/ui.json"],
+  "render_targets": [],
+  "rendering_passes": [
+    {
+      "name": "main",
+      "passes": [
+        {
+          "name": "present",
+          "type": "fullscreen",
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {"vertex": "engine://fullscreen", "fragment": "engine://fullscreen"}
+        }
+      ]
+    }
+  ]
+}
+]=])
     file(WRITE "${root}/assets/asset_data.json" "{\"schema\":\"pelican.asset_data\",\"version\":1,\"models\":[]}\n")
     file(WRITE "${root}/scenes/main.scene.json" [=[
 {
@@ -844,6 +920,15 @@ function(run_audio_smoke)
         "PELICAN_WITH_AUDIO"
         "${audio_probe}"
     )
+    run_pg1_cases("${audio_build_dir}" "audio")
+    find_built_executable("${audio_build_dir}" "pelican_player" audio_player)
+    set(audio_requires_project "${ARTIFACT_ROOT}/audio_requires_project")
+    write_requires_project("${audio_requires_project}" audio)
+    expect_named_error(
+        "audio_project_requires"
+        "audio.module_unavailable@1"
+        "${audio_player}" --headless --project "${audio_requires_project}" --frames 1 --size 64x64
+    )
     clean_successful_build("${audio_build_dir}")
 endfunction()
 
@@ -1041,11 +1126,24 @@ function(run_physics_smoke)
     find_built_executable("${physics_build_dir}" "pelican_player" physics_player)
     set(physics_project "${ARTIFACT_ROOT}/physics_project")
     write_physics_project("${physics_project}")
-    expect_disabled_error(
+    # PG-1: a collider is refused by the module's name, the same name the
+    # project's `requires: ["physics"]` below fails under.
+    expect_named_error(
         "physics_scene_collider"
-        "PELICAN_WITH_PHYSICS"
+        "physics.module_unavailable@1"
         "${physics_player}" --headless --project "${physics_project}" --frames 1 --size 64x64
     )
+    set(physics_requires_project "${ARTIFACT_ROOT}/physics_requires_project")
+    write_requires_project("${physics_requires_project}" physics)
+    expect_named_error(
+        "physics_project_requires"
+        "physics.module_unavailable@1"
+        "${physics_player}" --headless --project "${physics_requires_project}" --frames 1 --size 64x64
+    )
+    find_built_executable(
+        "${physics_build_dir}" "pelican_test_wp360_resolvedscene_test" physics_wp360_test)
+    run_process("physics_wp360_matrix" TRUE "${physics_wp360_test}" "[wp360][physics][matrix]")
+    run_pg1_cases("${physics_build_dir}" "physics")
     clean_successful_build("${physics_build_dir}")
 endfunction()
 

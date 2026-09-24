@@ -1,4 +1,5 @@
 #include "../src/project/packagemanifest.hpp"
+#include "../src/project/projectformat.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
@@ -210,6 +211,55 @@ TEST_CASE("X-1 install checks everything before it copies a byte",
     // Nothing above reached the project.
     REQUIRE_FALSE(std::filesystem::exists(project / "packages"));
     REQUIRE(readInstalledPackages(project).empty());
+}
+
+// PG-1 acceptance 3: `requires.capabilities` speaks the `requires` vocabulary of
+// project.json. An unknown word, a word this build left out and a word it has
+// are the three answers, and the first two are refused before a byte is copied.
+TEST_CASE("PG-1 install checks requires.capabilities by the requires vocabulary",
+          "[package][pg1]") {
+    Scratch scratch{"capabilities"};
+    const auto project = scratch.path() / "project";
+    writeProject(project);
+
+    const auto unknown = stagePackage(scratch.path() / "unknown", [](Json &m) {
+        m["requires"]["capabilities"] = Json::array({"physics", "telepathy"});
+    });
+    REQUIRE(rejectionCode([&] { (void)installPackage(unknown, project); }) ==
+            "package.capability_unknown@1");
+    try {
+        (void)installPackage(unknown, project);
+    } catch (const PackageError &error) {
+        REQUIRE(error.names() == std::vector<std::string>{"telepathy"});
+    }
+
+    // Every name is known before the first unavailable one is reported, so an
+    // unknown word after an OFF one is still the unknown-word answer.
+    const auto unknown_after = stagePackage(scratch.path() / "unknown_after", [](Json &m) {
+        m["requires"]["capabilities"] = Json::array({"audio", "physics", "telepathy"});
+    });
+    REQUIRE(rejectionCode([&] { (void)installPackage(unknown_after, project); }) ==
+            "package.capability_unknown@1");
+    REQUIRE_FALSE(std::filesystem::exists(project / "packages"));
+
+    // Each word this build left out answers under its module's name; each one
+    // it has installs. The same rows decide both.
+    for (const auto *word : {"animation", "audio", "physics", "xr", "vat", "seqplayer"}) {
+        CAPTURE(word);
+        const auto staged = stagePackage(scratch.path() / (std::string{"needs_"} + word),
+            [word](Json &m) {
+                m["namespace"] = std::string{"acme.needs_"} + word;
+                m["requires"]["capabilities"] = Json::array({word});
+            });
+        const auto code = rejectionCode([&] { (void)installPackage(staged, project); });
+        const auto unavailable = std::string{projectRequirementUnavailableCode(word)};
+        if (unavailable.empty()) {
+            REQUIRE(code == "accepted");
+        } else {
+            REQUIRE(unavailable == std::string{word} + ".module_unavailable@1");
+            REQUIRE(code == unavailable);
+        }
+    }
 }
 
 TEST_CASE("X-1 install vendors the package and puts the namespace in the "

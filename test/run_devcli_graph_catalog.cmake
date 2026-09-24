@@ -71,7 +71,14 @@ foreach(module_index RANGE ${last_module})
   endforeach()
 endforeach()
 
-set(expected_namespaces pelican.value pelican.audio pelican.render)
+set(expected_namespaces pelican.value pelican.render)
+set(expected_audio_operations "")
+if(WITH_AUDIO)
+  list(APPEND expected_namespaces pelican.audio)
+  set(expected_audio_operations audio.playback audio.volume audio.pitch)
+elseif("pelican.audio" IN_LIST seen_namespaces)
+  message(FATAL_ERROR "PELICAN_WITH_AUDIO=OFF still registered pelican.audio")
+endif()
 set(expected_pose_operations "")
 if(WITH_ANIMATION)
   list(APPEND expected_namespaces pelican.pose)
@@ -94,7 +101,7 @@ endforeach()
 foreach(expected IN ITEMS value.input value.constant value.parameter value.morph_weight
                           value.trigger_clock value.event_clock value.add value.multiply
                           value.curve value.playback event.playback
-                          audio.playback audio.volume audio.pitch
+                          ${expected_audio_operations}
                           render.scalar render.buffer render.attribute render.image
                           render.compute render.fullscreen render.raster)
   if(NOT expected IN_LIST seen_operations)

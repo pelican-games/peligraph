@@ -329,6 +329,12 @@ struct ComponentCodec {
     RuntimeProject runtime_project;
     EditorPrepare editor_prepare;
     EditorSwap editor_swap;
+    // The `requires` word (projectrequirements.def) of the module that gives
+    // this component its meaning at runtime; empty when the engine core does.
+    // The codec itself stays registered either way, so a build without the
+    // module still reads and writes the component -- only bringing it into a
+    // live scene is refused (resolvedObjectFeatureRefusal).
+    std::string_view required_feature{};
 
     ResolutionResult<ComponentCodecValue> decodeAuthored(
         const nlohmann::json &authored,
@@ -367,11 +373,25 @@ struct ComponentCodec {
                left.runtime_apply == right.runtime_apply &&
                left.runtime_project == right.runtime_project &&
                left.editor_prepare == right.editor_prepare &&
-               left.editor_swap == right.editor_swap;
+               left.editor_swap == right.editor_swap &&
+               left.required_feature == right.required_feature;
     }
 };
 
 std::span<const ComponentCodec> componentCodecs();
+
+// Every codec row this build carries, including the ones this runtime cannot
+// use right now (componentCodecs() is the subset scene resolution decodes
+// with). The Studio's addition catalog reads this and marks each row with
+// componentCodecUnavailableCode, so an unusable component is listed with its
+// reason instead of silently missing.
+std::span<const ComponentCodec> componentCodecRows();
+
+// Why `codec` cannot be added to a live scene now, by name, or empty:
+// `<requirement>.module_unavailable@1` when the build left out the module its
+// required_feature names, and pelican.ray_instance_requires_layout_v2@1 for
+// the builtin ray instance outside a layout-v2 ray tracing project.
+std::string_view componentCodecUnavailableCode(const ComponentCodec &codec);
 const ComponentCodec *findComponentCodec(std::string_view name) noexcept;
 const ComponentCodec &requireComponentCodec(std::string_view name);
 ComponentCodecQueryMetadata componentCodecQueryMetadata(std::string_view name) noexcept;

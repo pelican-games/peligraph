@@ -95,6 +95,9 @@ enum class EditorEditErrorCode : std::uint8_t {
     row_id_exhausted,
     list_container_missing,
     list_index_addressing_rejected,
+    // A component whose module this build left out. The wire code is the
+    // module's own `<requirement>.module_unavailable@1`, not this enum's name.
+    module_unavailable,
 };
 
 std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept;

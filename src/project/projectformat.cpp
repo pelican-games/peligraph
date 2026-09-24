@@ -108,6 +108,12 @@ std::string_view projectRequirementOption(std::string_view requirement) {
     return found ? found->option : std::string_view{};
 }
 
+std::string_view projectRequirementUnavailableCode(std::string_view requirement) {
+    const auto *found = findProjectRequirement(requirement);
+    return found != nullptr && !found->available ? found->unavailable_code
+                                                 : std::string_view{};
+}
+
 std::vector<std::string>
 parseProjectRequirements(const nlohmann::json &project) {
     std::vector<std::string> requirements;

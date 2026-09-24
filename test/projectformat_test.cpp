@@ -7,6 +7,8 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
+#include <iterator>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
@@ -87,7 +89,7 @@ TEST_CASE("pelican.project envelope validation is engine independent",
 // The name is read by the player and by every corpus that walks `projects/`,
 // so the vocabulary and the two failures live in one place.
 TEST_CASE("pelican.project requires names build features by a known vocabulary",
-          "[project-format][p2b][requires]") {
+          "[project-format][p2b][requires][pg1]") {
     const auto base = nlohmann::json{
         {"schema", "pelican.project"},
         {"version", 1},
@@ -97,14 +99,18 @@ TEST_CASE("pelican.project requires names build features by a known vocabulary",
     REQUIRE(parseProjectEnvelopeJson(base).envelope.requirements.empty());
     REQUIRE_FALSE(unsatisfiedProjectRequirement(base));
 
-    // The vocabulary is one name in v0. `physics` is a real build option, and
-    // still not a requirement name: the module namespace is X-1's decision,
-    // and a parser that guessed would settle it here.
-    REQUIRE(knownProjectRequirements() == std::vector<std::string>{"animation"});
+    // PG-1: one word per build module a project can depend on. `physics` is
+    // the query service and collider world; there is no word for "a provider
+    // is linked", and no word for a module nothing can depend on.
+    REQUIRE(knownProjectRequirements() ==
+            std::vector<std::string>{"animation", "audio", "physics", "xr", "vat",
+                                     "seqplayer"});
     REQUIRE(std::string{projectRequirementOption("animation")} ==
             "PELICAN_WITH_ANIMATION");
+    REQUIRE(std::string{projectRequirementOption("xr")} == "PELICAN_WITH_OPENXR");
+    REQUIRE(projectRequirementOption("rpc").empty());
     auto unknown = base;
-    unknown["requires"] = nlohmann::json::array({"physics"});
+    unknown["requires"] = nlohmann::json::array({"rpc"});
     REQUIRE_THROWS_WITH(parseProjectRequirements(unknown),
         Catch::Matchers::ContainsSubstring("project.requires_unknown@1"));
     REQUIRE_THROWS_WITH(parseProjectEnvelopeJson(unknown),
@@ -132,6 +138,59 @@ TEST_CASE("pelican.project requires names build features by a known vocabulary",
     REQUIRE_THROWS_WITH(parseProjectEnvelopeJson(animation),
         Catch::Matchers::ContainsSubstring("animation.module_unavailable@1"));
 #endif
+}
+
+// PG-1: every word of the vocabulary is decided by the macro the engine's own
+// code reads, and a build that left the module out refuses the project while
+// reading it, under `<word>.module_unavailable@1`. The same table answers for
+// a component's codec and a package's capabilities, so this is the one place
+// the words are pinned to their options.
+TEST_CASE("PG-1 every requires word opens or is refused by its module's name",
+          "[project-format][requires][pg1]") {
+    struct Row {
+        const char *word;
+        const char *option;
+        bool available;
+    };
+    const Row rows[] = {
+        {"animation", "PELICAN_WITH_ANIMATION", static_cast<bool>(PELICAN_WITH_ANIMATION)},
+        {"audio", "PELICAN_WITH_AUDIO", static_cast<bool>(PELICAN_WITH_AUDIO)},
+        {"physics", "PELICAN_WITH_PHYSICS", static_cast<bool>(PELICAN_WITH_PHYSICS)},
+        {"xr", "PELICAN_WITH_OPENXR", static_cast<bool>(PELICAN_WITH_OPENXR)},
+        {"vat", "PELICAN_WITH_VAT", static_cast<bool>(PELICAN_WITH_VAT)},
+        {"seqplayer", "PELICAN_WITH_SEQPLAYER", static_cast<bool>(PELICAN_WITH_SEQPLAYER)},
+    };
+    REQUIRE(knownProjectRequirements().size() == std::size(rows));
+    for (const auto &row : rows) {
+        CAPTURE(row.word);
+        const auto project = nlohmann::json{
+            {"schema", "pelican.project"},
+            {"version", 1},
+            {"name", "fixture"},
+            {"requires", nlohmann::json::array({row.word})},
+            {"basic_config", {{"scene_data_json", "scene.json"}}},
+        };
+        const auto code = std::string{row.word} + ".module_unavailable@1";
+        REQUIRE(std::string{projectRequirementOption(row.word)} == row.option);
+        if (row.available) {
+            REQUIRE(projectRequirementUnavailableCode(row.word).empty());
+            REQUIRE_FALSE(unsatisfiedProjectRequirement(project));
+            REQUIRE(parseProjectEnvelopeJson(project).envelope.requirements ==
+                    std::vector<std::string>{row.word});
+        } else {
+            REQUIRE(std::string{projectRequirementUnavailableCode(row.word)} == code);
+            REQUIRE(unsatisfiedProjectRequirement(project) == std::string{row.word});
+            REQUIRE_THROWS_WITH(parseProjectEnvelopeJson(project),
+                Catch::Matchers::ContainsSubstring(code) &&
+                    Catch::Matchers::ContainsSubstring(std::string{row.option} + "=OFF"));
+            std::cout << "PG1_REQUIRES word=" << row.word << " state=OFF code=" << code
+                      << '\n';
+        }
+    }
+    // A word outside the vocabulary has no unavailable code: it is not "off",
+    // it is unknown, and reading it says so under its own name.
+    REQUIRE(projectRequirementUnavailableCode("rpc").empty());
+    REQUIRE(projectRequirementUnavailableCode("").empty());
 }
 
 TEST_CASE("ProjectPathResolver returns diagnostics without an engine logger",

@@ -59,6 +59,12 @@ set_target_properties(pelican_project PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThre
 target_compile_definitions(pelican_project PUBLIC
     PELICAN_WITH_OPENXR=$<BOOL:${PELICAN_WITH_OPENXR}>
     PELICAN_WITH_ANIMATION=$<BOOL:${PELICAN_WITH_ANIMATION}>
+    # Every option projectrequirements.def names, and the audio module's
+    # conditional registration in graphmodule.cpp.
+    PELICAN_WITH_AUDIO=$<BOOL:${PELICAN_WITH_AUDIO}>
+    PELICAN_WITH_PHYSICS=$<BOOL:${PELICAN_WITH_PHYSICS}>
+    PELICAN_WITH_VAT=$<BOOL:${PELICAN_WITH_VAT}>
+    PELICAN_WITH_SEQPLAYER=$<BOOL:${PELICAN_WITH_SEQPLAYER}>
 )
 if(PELICAN_WITH_ANIMATION)
 target_sources(pelican_project PRIVATE posegraphmodule.cpp)

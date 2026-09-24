@@ -1386,6 +1386,9 @@ else()
 pelican_define_test(animation_off_scene_test GROUP core_foundation pelican_core)
 endif()
 pelican_define_test(curve_test GROUP core_foundation pelican_core)
+# PG-1: the scene-load half of the build-feature gate, measured in every
+# build (run_build_units_smoke.cmake runs its [pg1] tag in the OFF builds).
+pelican_define_test(pg1_feature_gate_test GROUP core_foundation pelican_core)
 # The test-only graph module lives with the test that needs it; the production
 # archives are checked for its symbol below.
 target_sources(pelican_test_curve_test PRIVATE graphtestopaquemodule.cpp)
@@ -2648,6 +2651,7 @@ add_test(
     COMMAND ${CMAKE_COMMAND}
         -DCLI=$<TARGET_FILE:pelican_cli>
         -DWITH_ANIMATION=$<BOOL:${PELICAN_WITH_ANIMATION}>
+        -DWITH_AUDIO=$<BOOL:${PELICAN_WITH_AUDIO}>
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_graph_catalog.cmake
 )
 

@@ -19,6 +19,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -197,7 +198,7 @@ nlohmann::json importRequestJson(
 } // namespace
 
 TEST_CASE("component addition catalog uses codec defaults and excludes attached slots",
-          "[editor-command][query][component-addition]") {
+          "[editor-command][query][component-addition][pg1]") {
     const auto document = AuthoringSceneDocument::load(
         readJson(authoringFixturePath()).dump(), SceneRevision{41});
     const auto service = makeQueryService(document);
@@ -213,12 +214,22 @@ TEST_CASE("component addition catalog uses codec defaults and excludes attached 
     });
     REQUIRE(collider != candidates.end());
     CHECK(collider->at("key") == "collider");
-    REQUIRE(collider->at("available") == true);
     const auto &codec = requireComponentCodec("collider");
-    const auto decoded = codec.decodeAuthored(collider->at("component"));
+    const auto decoded = codec.decodeAuthored(collider->at("component_template"));
     REQUIRE(decoded.hasValue());
-    CHECK(codec.encodeCanonical(decoded.value()) == collider->at("component"));
+    CHECK(codec.encodeCanonical(decoded.value()) == collider->at("component_template"));
+#if PELICAN_WITH_PHYSICS
+    REQUIRE(collider->at("available") == true);
     CHECK(collider->at("component_template") == collider->at("component"));
+#else
+    // PG-1 acceptance 2: listed, with the name add_component would be refused
+    // under, and nothing to add.
+    REQUIRE(collider->at("available") == false);
+    CHECK(collider->at("unavailable_reason") == "physics.module_unavailable@1");
+    CHECK_FALSE(collider->contains("component"));
+    std::cout << "PG1_ADD_CANDIDATE name=collider available=false reason="
+              << collider->at("unavailable_reason").get<std::string>() << '\n';
+#endif
     const auto model = std::find_if(candidates.begin(), candidates.end(), [](const auto &candidate) {
         return candidate.at("name") == "simplemodelview";
     });
@@ -237,6 +248,31 @@ TEST_CASE("component addition catalog uses codec defaults and excludes attached 
     const auto model_decoded = requireComponentCodec("simplemodelview").decodeAuthored(authored_model);
     REQUIRE(model_decoded.hasValue());
     CHECK(requireComponentCodec("simplemodelview").encodeCanonical(model_decoded.value()) == authored_model);
+}
+
+// PG-1: the builtin ray instance used to be cut off the end of the codec
+// catalog outside a layout-v2 ray tracing project, so the Studio could not
+// tell "not here" from "not in this project". It is listed now, unavailable,
+// under the name scene prepare refuses it with.
+TEST_CASE("PG-1 the ray instance row is listed unavailable outside a layout-v2 project",
+          "[editor-command][query][component-addition][pg1]") {
+    FastModuleContainer modules;
+    const auto document = AuthoringSceneDocument::load(
+        readJson(authoringFixturePath()).dump(), SceneRevision{41});
+    const auto service = makeQueryService(document);
+    const EditorCommandRpcAdapter rpc{service};
+    const auto response = rpc.getComponentAddCandidates({{"name", "MixedObject"}});
+    const auto &candidates = response.at("candidates");
+    const auto ray = std::find_if(candidates.begin(), candidates.end(), [](const auto &candidate) {
+        return candidate.at("name") == "pelican_ray_instance";
+    });
+    REQUIRE(ray != candidates.end());
+    CHECK(ray->at("available") == false);
+    CHECK(ray->at("unavailable_reason") == "pelican.ray_instance_requires_layout_v2@1");
+    CHECK_FALSE(ray->contains("component"));
+    // The decoding catalog is unchanged: outside layout v2 the name may belong
+    // to an external ECS registrar.
+    CHECK(findComponentCodec("pelican_ray_instance") == nullptr);
 }
 
 TEST_CASE("component asset choices include inline procedural assets and retain missing texture status",

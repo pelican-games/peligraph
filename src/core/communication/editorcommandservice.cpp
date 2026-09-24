@@ -888,22 +888,33 @@ OrderedJson EditorCommandService::getComponentAddCandidates(
     auto candidates = OrderedJson::array();
     const auto assets = dependencies_.assets ? dependencies_.assets() : std::vector<EditorAssetQueryResult>{};
     const auto schema_type_name = schemaTypeResolverOrDefault({});
-    for (const auto &codec : componentCodecs()) {
+    // Every codec row is listed, including those this build or this project
+    // cannot use: those carry available=false and the name add_component would
+    // be refused under, instead of silently missing from the list.
+    for (const auto &codec : componentCodecRows()) {
         if (codec.name == "behavior" || std::any_of(object.components.begin(), object.components.end(),
                 [&](const auto &component) { return component.name == codec.name; })) continue;
         OrderedJson candidate{{"key", codec.name}, {"name", codec.name}, {"available", false}};
+        const auto unavailable = componentCodecUnavailableCode(codec);
+        OrderedJson component_template{{"name", codec.name}};
         try {
             auto decoded = codec.decodeAuthored(Json{{"name", codec.name}});
-            if (decoded) {
-                candidate["component"] = codec.encodeCanonical(decoded.value());
+            if (decoded) component_template = codec.encodeCanonical(decoded.value());
+            if (!unavailable.empty()) {
+                // The template still shows what the component would hold, but
+                // there is no `component` to add.
+                candidate["unavailable_reason"] = std::string{unavailable};
+            } else if (decoded) {
+                candidate["component"] = component_template;
                 candidate["available"] = true;
             } else {
                 candidate["unavailable_reason"] = decoded.error().leaf_message;
             }
         } catch (const LegacyRejectException &error) {
-            candidate["unavailable_reason"] = error.what();
+            candidate["unavailable_reason"] =
+                unavailable.empty() ? std::string{error.what()} : std::string{unavailable};
         }
-        candidate["component_template"] = candidate.value("component", OrderedJson{{"name", codec.name}});
+        candidate["component_template"] = std::move(component_template);
         candidate["schema_fields"] = OrderedJson::array();
         for (const auto &field : codec.fieldSchema())
             candidate["schema_fields"].push_back(schemaFieldJson(field, schema_type_name));

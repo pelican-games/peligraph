@@ -554,15 +554,18 @@ void LogicalTypeRegistry::requireCanonical(const LogicalType &type) const {
 }
 
 std::vector<SemanticTypeSchema> builtinValueTypeSchemas() {
+    // The playback event stream belongs with the operations that produce and
+    // consume it (event.playback, value.event_clock), so a build without the
+    // audio module still types an event clock.
     return {SemanticTypeSchema{parseSemanticTypeId("pelican.value.scalar@1"),
-                               LogicalTypeConstructor::value, {}, {"numeric"}}};
+                               LogicalTypeConstructor::value, {}, {"numeric"}},
+            SemanticTypeSchema{parseSemanticTypeId("pelican.event.playback_control@1"),
+                               LogicalTypeConstructor::stream, {}, {"event"}}};
 }
 
 std::vector<SemanticTypeSchema> builtinAudioTypeSchemas() {
     return {SemanticTypeSchema{parseSemanticTypeId("pelican.audio.voice@1"),
-                               LogicalTypeConstructor::value, {}, {"voice"}},
-            SemanticTypeSchema{parseSemanticTypeId("pelican.event.playback_control@1"),
-                               LogicalTypeConstructor::stream, {}, {"event"}}};
+                               LogicalTypeConstructor::value, {}, {"voice"}}};
 }
 
 std::vector<SemanticTypeSchema> builtinRenderTypeSchemas() {

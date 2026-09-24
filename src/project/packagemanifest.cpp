@@ -632,6 +632,34 @@ PackageInstallResult installPackage(const std::filesystem::path &source_dir,
                        std::to_string(expected));
         }
     }
+    // PG-1: `requires.capabilities` speaks the project's `requires` vocabulary.
+    // Every name is checked before the first unavailable one is reported, the
+    // same order a project's `requires` is read in.
+    const auto known = knownProjectRequirements();
+    for (const auto &capability : manifest.requirements.capabilities) {
+        if (std::find(known.begin(), known.end(), capability) == known.end()) {
+            std::string vocabulary;
+            for (const auto &name : known) {
+                if (!vocabulary.empty()) vocabulary += ", ";
+                vocabulary += name;
+            }
+            reject("package.capability_unknown@1",
+                   "package " + manifest.name_space + " requires capability '" +
+                       capability + "', which this engine does not know; known "
+                       "capabilities: " + vocabulary,
+                   {capability});
+        }
+    }
+    for (const auto &capability : manifest.requirements.capabilities) {
+        if (const auto code = projectRequirementUnavailableCode(capability);
+            !code.empty()) {
+            reject(std::string{code},
+                   "package " + manifest.name_space + " requires capability '" +
+                       capability + "', but this build has " +
+                       std::string{projectRequirementOption(capability)} + "=OFF",
+                   {capability});
+        }
+    }
 
     const auto installed = readInstalledPackages(project_root);
     const auto destination =

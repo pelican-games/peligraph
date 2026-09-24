@@ -241,6 +241,29 @@ struct ResolvedSceneView {
     std::vector<ResolvedObject> objects;
 };
 
+// PG-1: why an object cannot enter a live scene in this build.
+struct ComponentFeatureRefusal {
+    // `<requirement>.module_unavailable@1`, the same name a project's
+    // `requires` fails under.
+    std::string code;
+    std::string requirement;
+    std::string option;
+    std::string component;
+    std::string object;
+    std::string message;
+};
+
+// The one build-feature gate for components. Every path that brings a
+// component into a live scene -- scene load and the editor's add_component and
+// spawn today, runtime spawn when it lands -- asks this of the object as it
+// resolved (prefab
+// expansion included), so no path can admit what another refuses. The codec
+// still decoded the component; tools that only read or save the scene never
+// ask. Returns the first component whose codec's required_feature this build
+// left out.
+std::optional<ComponentFeatureRefusal>
+resolvedObjectFeatureRefusal(const ResolvedObject &object);
+
 class ResolvedScene {
     SceneRevision revision_{};
     SceneResolverGeneration resolver_generation_{};

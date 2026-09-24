@@ -293,13 +293,16 @@ TEST_CASE("WP360 physics matrix consumes the resolved collider with a named OFF 
     std::cout << "WP360_PHYSICS_MATRIX feature=PELICAN_WITH_PHYSICS state=ON"
                  " collider_radius=0.375\n";
 #else
+    // PG-1: the collider is refused by the module's name, the same name a
+    // project's `requires: ["physics"]` fails under in this build.
     try {
         internal::validateResolvedSceneFeatureBindings(*scene);
         FAIL("physics OFF unexpectedly accepted a resolved collider");
-    } catch (const BuildFeatureDisabledError &error) {
-        REQUIRE(error.feature() == "PELICAN_WITH_PHYSICS");
-        REQUIRE(std::string{error.what()}.find("scene contains collider components") !=
+    } catch (const std::runtime_error &error) {
+        REQUIRE(std::string{error.what()}.rfind("physics.module_unavailable@1:", 0) == 0);
+        REQUIRE(std::string{error.what()}.find("PELICAN_WITH_PHYSICS=OFF") !=
                 std::string::npos);
+        REQUIRE(std::string{error.what()}.find("PhysicsProbe") != std::string::npos);
         std::cout << "WP360_PHYSICS_MATRIX feature=PELICAN_WITH_PHYSICS state=OFF"
                      " error='" << error.what() << "'\n";
     }

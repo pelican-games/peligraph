@@ -36,9 +36,11 @@ using OrderedJson = nlohmann::ordered_json;
 constexpr std::uint64_t maxExactJsonInteger = UINT64_C(9007199254740991);
 
 EditFailure::EditFailure(EditorEditErrorCode error_code,
-                         OrderedJson error_payload, std::string message)
+                         OrderedJson error_payload, std::string message,
+                         std::string wire_code_name)
     : std::runtime_error(std::move(message)), code{error_code},
-      payload(std::move(error_payload)) {}
+      payload(std::move(error_payload)),
+      code_name(std::move(wire_code_name)) {}
 
 [[noreturn]] void editFailure(EditorEditErrorCode code, OrderedJson payload,
                               std::string message) {
@@ -2003,6 +2005,27 @@ EditorCanonicalOperation freezeJournalOperation(
     return result;
 }
 
+// PG-1: an operation that brings components into the scene crosses the gate
+// scene load does, asked of the object as it resolved after the operation --
+// so a prefab spawn is judged by the components its expansion produced.
+void requireObjectFeatures(const ResolvedScene &resolved,
+                           AuthoringObjectId object_id) {
+    for (const auto &scene : resolved.scenes()) {
+        for (const auto &object : scene.objects) {
+            if (object.authoring_object_id != object_id) continue;
+            const auto refusal = resolvedObjectFeatureRefusal(object);
+            if (!refusal) return;
+            throw EditFailure{
+                EditorEditErrorCode::module_unavailable,
+                {{"object", object_id.value},
+                 {"slot", refusal->component},
+                 {"requirement", refusal->requirement},
+                 {"option", refusal->option}},
+                refusal->message, refusal->code};
+        }
+    }
+}
+
 PreparedBatch prepareBatch(const Json &raw_operations,
                            const AuthoringSceneDocument &source,
                            std::string_view current_scene,
@@ -2071,6 +2094,13 @@ PreparedBatch prepareBatch(const Json &raw_operations,
             for (const auto &closure : closures) {
                 prepared.inverse["closures"].push_back(closureJson(closure));
             }
+        }
+        const auto &op = prepared.forward.at("op");
+        if (op == "add_component" || op == "spawn") {
+            requireObjectFeatures(
+                local->projectionResolvedScene(),
+                AuthoringObjectId{prepared.forward.at("object_id")
+                                      .get<std::uint64_t>()});
         }
         batch.canonical_forward.push_back(
             freezeJournalOperation(prepared.forward,
@@ -2370,11 +2400,12 @@ OrderedJson writerJson(const EditorLastWriterStamp &stamp) {
             {"actor_id", stamp.actor_id.value}};
 }
 
-OrderedJson editErrorJson(EditorEditErrorCode code, const OrderedJson &payload,
-                          std::string_view message) {
-    OrderedJson result{{"code", editorEditErrorCodeName(code)},
-                       {"message", message},
-                       {"payload", payload}};
+OrderedJson editErrorJson(const EditFailure &failure) {
+    OrderedJson result{{"code", failure.code_name.empty()
+                                    ? std::string{editorEditErrorCodeName(failure.code)}
+                                    : failure.code_name},
+                       {"message", failure.what()},
+                       {"payload", failure.payload}};
     return result;
 }
 
@@ -3055,6 +3086,7 @@ std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept {
     case EditorEditErrorCode::trs_unrepresentable: return "trs_unrepresentable";
     case EditorEditErrorCode::preserve_missing: return "preserve_missing";
     case EditorEditErrorCode::method_unavailable: return "method_unavailable";
+    case EditorEditErrorCode::module_unavailable: return "module_unavailable@1";
     }
     return "method_unavailable";
 }
@@ -3301,8 +3333,7 @@ struct EditorEditCoordinator::Impl {
                 {"actor_id", actor.value},
                 {"base_revision", base.value},
                 {"status", "rejected"},
-                {"error", editErrorJson(failure.code, failure.payload,
-                                         failure.what())}};
+                {"error", editErrorJson(failure)}};
     }
 
     OrderedJson previewRejected(const PreviewRequest &request,
@@ -3312,8 +3343,7 @@ struct EditorEditCoordinator::Impl {
                 {"ticket", request.ticket},
                 {"actor_id", request.actor_id.value},
                 {"status", std::move(status)},
-                {"error", editErrorJson(failure.code, failure.payload,
-                                         failure.what())}};
+                {"error", editErrorJson(failure)}};
     }
 
     // The wire name of a ticket kind.  One function instead of the same three

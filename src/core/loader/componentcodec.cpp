@@ -14,6 +14,7 @@
 #include "../userpublic/components/rayinstance.hpp"
 #include "../userpublic/components/spriteview.hpp"
 #include "../userpublic/details/schema/structfieldjson.hpp"
+#include "../../project/projectformat.hpp"
 
 #include <glm/gtc/quaternion.hpp>
 
@@ -2011,14 +2012,15 @@ const std::array codecs{
                    EditorProjectionPolicy::Collider,
                    decodeResult<decodeCollider>,
                     encodeCollider, []() -> const SchemaNode & { static const auto node = SchemaNode::fromFlat(fieldSpan(collider_fields)); return node; },
-                   applyCollider, projectCollider, nullptr, nullptr},
+                   applyCollider, projectCollider, nullptr, nullptr,
+                   "physics"},
     ComponentCodec{"animation", ComponentCodecRuntimeKind::Ecs,
                    EditorProjectionPolicy::EcsCodec,
                    decodeResult<decodeAnimation>,
                     encodeAnimation, []() -> const SchemaNode & { static constexpr auto node = internal::materializeSchemaNode(animation_schema); return node; },
                    applyAnimation, projectAnimation,
                    prepareEcsEditorSwap<AnimationComponent>,
-                   swapEcsEditorToken<AnimationComponent>},
+                   swapEcsEditorToken<AnimationComponent>, "animation"},
     ComponentCodec{"sprite_view", ComponentCodecRuntimeKind::Ecs,
                    EditorProjectionPolicy::EcsCodec,
                    decodeResult<decodeSprite>, encodeSprite,
@@ -2195,10 +2197,34 @@ bool rayInstanceCodecEnabled() noexcept {
 std::span<const ComponentCodec> componentCodecs() {
     (void)componentCodecLegacyBranches();
     if (codec_catalog_override != nullptr) return *codec_catalog_override;
+    // The builtin ray instance stays out of the decoding catalog outside a
+    // layout-v2 project: there the name may belong to an external ECS
+    // registrar, and the resolver must leave its identity to that owner.
     return rayInstanceCodecEnabled()
                ? std::span<const ComponentCodec>{codecs}
                : std::span<const ComponentCodec>{codecs}.first(
                      codecs.size() - 1u);
+}
+
+std::span<const ComponentCodec> componentCodecRows() {
+    (void)componentCodecLegacyBranches();
+    if (codec_catalog_override != nullptr) return *codec_catalog_override;
+    return codecs;
+}
+
+std::string_view componentCodecUnavailableCode(const ComponentCodec &codec) {
+    if (!codec.required_feature.empty()) {
+        if (const auto code =
+                projectRequirementUnavailableCode(codec.required_feature);
+            !code.empty()) {
+            return code;
+        }
+    }
+    if (codec.name == "pelican_ray_instance" &&
+        codec_catalog_override == nullptr && !rayInstanceCodecEnabled()) {
+        return "pelican.ray_instance_requires_layout_v2@1";
+    }
+    return {};
 }
 
 namespace testing {

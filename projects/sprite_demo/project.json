@@ -3,6 +3,7 @@
   "version": 1,
   "name": "WP109 Side-Scroller Vertical Slice",
   "engine_min_version": "0.1.0",
+  "requires": ["physics"],
   "basic_config": {
     "window_title": "Pelican WP109 Side-Scroller Vertical Slice",
     "window_size": {"width": 960, "height": 540},

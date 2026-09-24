@@ -62,23 +62,18 @@ namespace Pelican {
 
 void internal::validateResolvedSceneFeatureBindings(
     const ResolvedSceneView &scene) {
-#if !PELICAN_WITH_ANIMATION
-    // Without the animation module nothing evaluates an animation component,
-    // so the object would be drawn in its rest pose forever. Say so at prepare
-    // -- the codec still decodes and encodes the component, so an OFF build's
-    // tools can still read and save the scene -- and let the load's own
-    // rollback keep whatever scene was already live.
+    // A component whose module this build left out (an animation without the
+    // animation module, a collider without physics) would sit in the scene
+    // doing nothing. Say so at prepare, by the module's name -- the codec still
+    // decodes and encodes the component, so an OFF build's tools can still
+    // read and save the scene -- and let the load's own rollback keep whatever
+    // scene was already live. The editor's add_component and spawn ask the
+    // same question of the same resolved object.
     for (const auto &object : scene.objects) {
-        for (const auto &component : object.components) {
-            if (component.name != "animation") continue;
-            throw std::runtime_error(
-                "animation.module_unavailable@1: this build has PELICAN_WITH_ANIMATION=OFF, "
-                "so the animation component on object '" +
-                object.name.value_or(std::to_string(object.authoring_object_id.value)) +
-                "' cannot be evaluated");
+        if (const auto refusal = resolvedObjectFeatureRefusal(object)) {
+            throw std::runtime_error(refusal->message);
         }
     }
-#endif
     const auto *ray_layout =
         FastModuleContainer::tryGet<RayLayoutRuntimeState>();
     const auto ray_mode = ray_layout != nullptr && ray_layout->configured()
@@ -142,19 +137,6 @@ void internal::validateResolvedSceneFeatureBindings(
             }
         }
     }
-#if !PELICAN_WITH_PHYSICS
-    for (const auto &object : scene.objects) {
-        if (std::any_of(object.components.begin(), object.components.end(),
-                        [](const auto &component) {
-                            return component.name == "collider";
-                        })) {
-            throwBuildFeatureDisabled("PELICAN_WITH_PHYSICS",
-                                      "scene contains collider components");
-        }
-    }
-#else
-    (void)scene;
-#endif
 }
 
 struct SceneLoader::RetirementState {

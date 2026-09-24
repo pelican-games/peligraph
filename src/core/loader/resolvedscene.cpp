@@ -2,6 +2,7 @@
 
 #include "authoringsceneauthority.hpp"
 #include "../userpublic/details/behavior/registerer.hpp"
+#include "../../project/projectformat.hpp"
 
 #include <picosha2.h>
 
@@ -71,6 +72,33 @@ const ComponentCodecValue &ResolvedComponent::requireRuntimeValue() const {
                                name);
     }
     return runtime_value;
+}
+
+std::optional<ComponentFeatureRefusal>
+resolvedObjectFeatureRefusal(const ResolvedObject &object) {
+    for (const auto &component : object.components) {
+        if (component.runtime_codec == nullptr) continue;
+        const auto code =
+            componentCodecUnavailableCode(*component.runtime_codec);
+        const auto &requirement = component.runtime_codec->required_feature;
+        // Only a missing module refuses here. The ray instance's layout gate
+        // has its own place in scene prepare and keeps its own timing.
+        if (code.empty() || requirement.empty()) continue;
+        ComponentFeatureRefusal refusal{
+            .code = std::string{code},
+            .requirement = std::string{requirement},
+            .option = std::string{projectRequirementOption(requirement)},
+            .component = component.name,
+            .object = object.name.value_or(
+                std::to_string(object.authoring_object_id.value)),
+        };
+        refusal.message = refusal.code + ": this build has " + refusal.option +
+                          "=OFF, so the " + refusal.component +
+                          " component on object '" + refusal.object +
+                          "' cannot be brought into a scene";
+        return refusal;
+    }
+    return std::nullopt;
 }
 
 SceneProjectionState::SceneProjectionState(AuthoringSceneDocument authoring,

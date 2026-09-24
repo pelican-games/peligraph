@@ -45,14 +45,21 @@ ProjectEnvelopeParseResult
 parseProjectEnvelopeText(std::string_view project_json,
                          const ProjectEnvelopeParseOptions &options = {});
 
-// The vocabulary of `requires`. P-2b knows exactly one name -- `animation`,
-// the build feature registry's name for PELICAN_WITH_ANIMATION -- because a
-// wider module namespace is X-1's decision, not this project's. An unknown
+// The vocabulary of `requires`: one name per build module a project, a
+// component codec or a package can need (projectrequirements.def). An unknown
 // name is `project.requires_unknown@1` rather than a silently ignored key.
 std::vector<std::string> knownProjectRequirements();
 
 // The build option a requirement stands for, e.g. `PELICAN_WITH_ANIMATION`.
+// Empty for a name outside the vocabulary.
 std::string_view projectRequirementOption(std::string_view requirement);
+
+// `<requirement>.module_unavailable@1` when this build left the module out;
+// empty when the build has it or the name is outside the vocabulary. Every
+// place that refuses something because a module is absent -- a project's
+// `requires`, a component's codec, a package's capabilities -- answers with
+// this one name.
+std::string_view projectRequirementUnavailableCode(std::string_view requirement);
 
 // Reads and validates `requires` without asking whether this build satisfies
 // it. Throws `project.requires_unknown@1` for a name outside the vocabulary.
