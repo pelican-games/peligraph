@@ -31,7 +31,7 @@ pelican_cli
 - `bake-camera`([`bakecameracommand.cpp`](../../src/devcli/bakecameracommand.cpp))は入力 replay から camera パスを bake します(player の `--bake-camera-output` と対。テスト: [`run_devcli_bake_camera.cmake`](../../test/run_devcli_bake_camera.cmake))。
 - `dump-lowered-material`([`materialcommand.cpp`](../../src/devcli/materialcommand.cpp))は material lowering 結果をダンプします(テスト: [`run_dump_lowered_material.cmake`](../../test/run_dump_lowered_material.cmake))。
 - `vrm`([`vrmcommand.cpp`](../../src/devcli/vrmcommand.cpp))は VRM semantic のダンプ/検査です(テスト: [`run_devcli_vrm_dump.cmake`](../../test/run_devcli_vrm_dump.cmake))。
-- `package`([`packagecommand.cpp`](../../src/devcli/packagecommand.cpp#L193))は package ディレクトリを project へ vendoring し、install 済みの digest を照合し、install せずに manifest を読みます(§7.5b。テスト: `package_install_smoke` —— [`package_install_smoke` の登録は `if(PELICAN_WITH_RPC)` の中](../../test/CMakeLists.txt#L2779)で登録され、GPU lease と 300 秒の intrinsic timeout が付きます —— と ctest 未登録の [`run_package_template_smoke.cmake`](../../test/run_package_template_smoke.cmake))。
+- `package`([`packagecommand.cpp`](../../src/devcli/packagecommand.cpp#L193))は package ディレクトリを project へ vendoring し、install 済みの digest を照合し、install せずに manifest を読みます(§7.5b。テスト: `package_install_smoke` —— [`package_install_smoke` の登録は `if(PELICAN_WITH_RPC)` の中](../../test/CMakeLists.txt#L2806)で登録され、GPU lease と 300 秒の intrinsic timeout が付きます —— と ctest 未登録の [`run_package_template_smoke.cmake`](../../test/run_package_template_smoke.cmake))。
 - `graph-catalog`([`graphcatalogcommand.cpp`](../../src/devcli/graphcatalogcommand.cpp#L10))は `builtinGraphModuleRegistry().catalog()` をそのまま印字します(§7.5c。テスト: [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake))。
 - 既存の `import` には `--rules` サブモード(ルールベース import、[`rulesimport.cpp`](../../src/devcli/rulesimport.cpp) + [`importrules.hpp`](../../src/project/importrules.hpp)、テスト: [`run_devcli_rules_import.cmake`](../../test/run_devcli_rules_import.cmake))と glTF scene 抽出([`gltfsceneextract.cpp`](../../src/devcli/gltfsceneextract.cpp)、テスト: [`run_devcli_gltf_extract.cmake`](../../test/run_devcli_gltf_extract.cmake))が加わりました。
 
@@ -245,7 +245,7 @@ module 数(既定 4、`PELICAN_WITH_ANIMATION=OFF` で 3)、各 operation が `d
 
 ## 7.6 Pelican Studio の現在位置
 
-Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L23) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L43) を表示します。
+Studio の起点は [`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5) です。Qt application を作る [`uimain()`](../../src/devstudio/view/uimain.cpp#L24) から [`MainWindow`](../../src/devstudio/view/mainwindow.hpp#L45) を表示します。
 
 **「full editor ではない」という言い方はもう正確ではありません。**scene(object / component / gizmo)、
 render config(`features[]` と feature パラメータ)、preset・pass・compute task、そして共通グラフの
@@ -316,7 +316,7 @@ Inspector / Output / Engine Log / Frame Plan / Pass Editor の7パネルを stab
 tab は CLI から選べます。`pelican_studio --project <dir> --tab frame_plan|render_features|graph` で、
 [名前の一覧](../../src/devstudio/view/mainwindow.cpp#L668)は `MainWindow` の static 関数にあり、
 **window を作る前**に [`main.cpp`](../../src/devstudio/main.cpp#L36) が綴りを検査して、未知なら console に
-理由を出して **exit 2** します。適用は `openProject()` の**後**です([順序](../../src/devstudio/view/uimain.cpp#L62))
+理由を出して **exit 2** します。適用は `openProject()` の**後**です([順序](../../src/devstudio/view/uimain.cpp#L71))
 —— project を開くとその project の tool layout が復元され、前面の tab が変わるためです。
 
 中央の [`EmbeddedViewport`](../../src/devstudio/viewport/embeddedviewport.hpp#L29) は
@@ -374,27 +374,27 @@ attachment load/store、material route、backend 非依存 execution facts へ�
 `physical_target_plan.attachments/resources` から昇格しますが、native scope、alias、physical decision
 など Compiled Plan Viewer 相当の低レベル情報は UI へ出しません。
 
-[`FullscreenPassWidget`](../../src/devstudio/view/fullscreenpasswidget.hpp#L21) は **下書き専用ではありません**。
-2 つの capability を取り([capability 2 つを受ける ctor](../../src/devstudio/view/fullscreenpasswidget.hpp#L28))、読みは
+[`FullscreenPassWidget`](../../src/devstudio/view/fullscreenpasswidget.hpp#L22) は **下書き専用ではありません**。
+2 つの capability を取り([capability 2 つを受ける ctor](../../src/devstudio/view/fullscreenpasswidget.hpp#L29))、読みは
 `FramePlanReadCapability`、書きは [`RenderPassAuthoringCapability`](../../src/devstudio/view/renderpassauthoringcapability.hpp#L19)
 (`get_render_authoring_context` / `add_authored_pass` / `remove_authored_pass` / `edit_preset_pass` /
 `get_edit_result` の 5 つだけ。context は `requestContext` という別名で持ちます。[結線](../../src/devstudio/view/renderpassauthoringcapability.cpp#L30))です。
 フォームは `fullscreen` 固定でもありません —— material の契約・設定・routing、raster の `Draw settings (JSON)` と
-`Raster state (JSON, optional)` の欄を持ちます([組み立て](../../src/devstudio/view/fullscreenpasswidget.cpp#L342))。
+`Raster state (JSON, optional)` の欄を持ちます([組み立て](../../src/devstudio/view/fullscreenpasswidget.cpp#L360))。
 ボタンは **Save authored pass** / **Remove authored pass** / **New pass**
-([構築](../../src/devstudio/view/fullscreenpasswidget.cpp#L542))で、preset 由来の pass を開いているときは
+([構築](../../src/devstudio/view/fullscreenpasswidget.cpp#L565))で、preset 由来の pass を開いているときは
 save の文言が **Save preset**(feature 由来なら **Save feature**)に変わります(N-7 で短くなった)
-([切り替え](../../src/devstudio/view/fullscreenpasswidget.cpp#L1619))。
+([切り替え](../../src/devstudio/view/fullscreenpasswidget.cpp#L1854))。
 変わっていないのは所有の向きです: 対象候補は `get_frame_plan` の `resources[]` から作り、フィールド所有・
 同一 graph の名前衝突・target 名／`frame_target` を Studio 単独で検査し、target usage や shader stem 解決は
 軸名付きの `Not checked` として残します。**ファイルは engine が書きます。**
 
 [`FramePlanWidget`](../../src/devstudio/view/frameplanwidget.hpp#L22) はその model を **9 枚の tool tab** に投影します ——
 Logical graph / Passes / Resources / Physical plan / Decisions / Backends / Barriers / Materials / Raw JSON
-([登録](../../src/devstudio/view/frameplanwidget.cpp#L796))。tab は掴んで並べ替えられ、その順序は保存されます。
+([登録](../../src/devstudio/view/frameplanwidget.cpp#L815))。tab は掴んで並べ替えられ、その順序は保存されます。
 **読み取り専用でもありません**: toolbar に **Order nodes...** / **Edit task...** / **Edit pass...** があり、
 `Shift-drag: connect resources` のラベルどおり **Shift + 左ドラッグ**で出力元から task / preset pass へ線を引くと、
-その編集画面が開きます([toolbar](../../src/devstudio/view/frameplanwidget.cpp#L496))。保存自体は
+その編集画面が開きます([toolbar](../../src/devstudio/view/frameplanwidget.cpp#L515))。保存自体は
 `RenderFeaturesWidget` と `FullscreenPassWidget` が持つ編集 RPC を通ります。
 初期状態は順序、名前、種別、入力、出力の pass 行だけで、
 attachment ops、resource use、material filter、前後 barrier は折りたたみ配下です。filter も全 tree の
@@ -447,7 +447,7 @@ heading_text, dim_text, pill_bg}, domain_tint, source_tint}` で、描画側は�
 C++ は要りません。切り替えの通知は Qt signal ではなく**素の関数リスト**
 ([理由はヘッダのコメント](../../src/devstudio/view/studiotheme.hpp#L89)) —— scene test が view の `.cpp` を
 moc 無しで compile するためで、`GraphCanvasWidget` は [repopulate](../../src/devstudio/view/graphcanvaswidget.cpp#L866)、
-Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphics.cpp#L1895) で追随します
+Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphics.cpp#L1896) で追随します
 (item は作られた時の色を抱えるので、描き直す以外に追随する道がありません)。**ソケットの型別の fill だけは
 テーマから引きません** —— 型の識別色は `graph_socket_styles.json` のままで、テーマが決めるのは縁と
 「どの型とも言えない」場合の fill です([分岐](../../src/devstudio/view/nodegraphics.cpp#L110))。
@@ -505,7 +505,7 @@ project と scene 文書を開き、scene と object の木を作ります。obj
 `(scene_id, declaration_index)` で、無名 object の表示名だけを engine と共有する
 `pelican://scene/<id>/authoring-object/<n>` 規則から作ります。
 
-[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L846) は model の索引を Qt item の
+[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L853) は model の索引を Qt item の
 data role に保持して Outliner dock へ写すだけです。project 読み込みと 2 scene・46/2 object、無名
 object の非圧縮、親子投影は [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp#L120) が
 GUI なしで検査します。RPC の `scene_tree` / `get_components` も 0 始まりの
@@ -575,7 +575,7 @@ Outliner の `(scene_id, declaration_index)` を `kind:declaration` の厳密な
 ### 自動化面: `--automation`(Q-1)
 
 Studio に**外から命令を入れる口**がここで 1 つだけ増えました。`--automation <名前>`
-([引数](../../src/devstudio/main.cpp#L16))が付いたときだけ、[`uimain()`](../../src/devstudio/view/uimain.cpp#L23) が
+([引数](../../src/devstudio/main.cpp#L16))が付いたときだけ、[`uimain()`](../../src/devstudio/view/uimain.cpp#L24) が
 [`AutomationServer`](../../src/devstudio/automation/automationserver.hpp#L36) を作り、`QLocalServer` を listen して
 `automation listening: <endpoint>` を stdout に出します(listen 失敗は **exit 3**)。**flag が無ければ server object が
 存在しない**ので socket も無く、出荷の起動経路は 1 命令も通りません。window より**先に**開くのは、driver が
@@ -602,9 +602,9 @@ protocol は**改行区切り JSON 1 行 = 1 命令**で、`{id, cmd, ...}` に 
 `text` は描かれた字ではなく item が data role に入れた値を優先します
 ([優先](../../src/devstudio/automation/automationcommands.cpp#L275))。
 
-driver は [`tools/studio_drive.py`](../../tools/studio_drive.py#L893)(stdlib のみ)。シナリオ JSON の step を順に送り、
+driver は [`tools/studio_drive.py`](../../tools/studio_drive.py#L960)(stdlib のみ)。シナリオ JSON の step を順に送り、
 `rpc_equals` / `text_equals` / `visible` / `list_count` / `screenshot` の期待を検査し、`verdict` / `summary` /
-`failures` / `steps` / `studio_log` を持つ `report.json` を書きます([組み立て](../../tools/studio_drive.py#L1029))。
+`failures` / `steps` / `studio_log` を持つ `report.json` を書きます([組み立て](../../tools/studio_drive.py#L1104))。
 最後の `shutdown` step で終了コード 0 と強制終了されていないことを検査します。異常終了や終了待ちのタイムアウトは
 失敗になり、`studio_exit_code` / `studio_shutdown_forced` と `failures` に結果を記録します。
 書式の正本は [`test/studio_scenarios/README.md`](../../test/studio_scenarios/README.md#L1) です。
@@ -626,7 +626,7 @@ modal ループに入りません。メニュー・dock・gizmo の action は `
 ([layout](../../test/CMakeLists.txt#L329) / [outliner](../../test/CMakeLists.txt#L340) /
 [inspector model](../../test/CMakeLists.txt#L376) / [gizmo model](../../test/CMakeLists.txt#L389) /
 [frame plan](../../test/CMakeLists.txt#L437) / [viewport + frame plan](../../test/CMakeLists.txt#L447) /
-[viewport](../../test/CMakeLists.txt#L2267))。`SKIP_DEVSTUDIO=ON` の build ではこれらの lib が作られないので、
+[viewport](../../test/CMakeLists.txt#L2294))。`SKIP_DEVSTUDIO=ON` の build ではこれらの lib が作られないので、
 **そのどれも登録されません** —— 緑でも走っていない、という形になるので、Studio を触った変更は
 Studio 入りの build で全数を見ます。**例外が 1 つ**あります: `devstudio_d0_boundary_negative` は
 どの囲いの中にもいない素の [`add_test()`](../../test/CMakeLists.txt#L263) なので、`SKIP_DEVSTUDIO=ON` でも
@@ -642,7 +642,7 @@ Studio の target を必要としません)。
 | `devstudio_graphattachment_test` | 装着・instance 入力の mode・4 導線が作る op 列 |
 | `devstudio_graphcanvas_test`(139 assertion) | `GraphCanvasModel`。**対照**は「reply から `definitions` を落とす」「catalog を返さない」「値の overlay を撤去する」の 3 変異 |
 | `devstudio_graphcanvas_scene_test`(62 assertion、`QT_OFFSCREEN`) | `GraphCanvasScene`。**対照**は「column を固定にする」「位置保持を撤去」「消えた node の位置を prune しない」「double-click を撤去」。N-2 で 8 case が加わり、その対照は「`canConnect` を常に true」「折り畳みを無効化」「parameters の全 key を送る」 |
-| `devstudio_engine_failure_test`(`GPU` + `GOLDEN` フラグ。ctest の label は `gpu` **だけ**で、`GOLDEN` が足すのは [`RESOURCE_LOCK pelican_gpu`](../../test/CMakeLists.txt#L177) です) | **失敗経路で実 `pelican_player` を起動する Studio テスト**。sandbox に複製した `projects/example` を壊して起動し、fatal 行が Studio に届くこと・RPC の stdout が枠を保つことを見ます。**実 player を起こす唯一のテストではありません** —— Q-1 のシナリオ群のほか、`if(NOT SKIP_DEVSTUDIO)` の中で Studio の引数 probe と実 player を回す [`vulkan_validation_runtime_player`](../../test/CMakeLists.txt#L2820) が Q-1 以前からいます |
+| `devstudio_engine_failure_test`(`GPU` + `GOLDEN` フラグ。ctest の label は `gpu` **だけ**で、`GOLDEN` が足すのは [`RESOURCE_LOCK pelican_gpu`](../../test/CMakeLists.txt#L177) です) | **失敗経路で実 `pelican_player` を起動する Studio テスト**。sandbox に複製した `projects/example` を壊して起動し、fatal 行が Studio に届くこと・RPC の stdout が枠を保つことを見ます。**実 player を起こす唯一のテストではありません** —— Q-1 のシナリオ群のほか、`if(NOT SKIP_DEVSTUDIO)` の中で Studio の引数 probe と実 player を回す [`vulkan_validation_runtime_player`](../../test/CMakeLists.txt#L2847) が Q-1 以前からいます |
 | `devstudio_d0_boundary_negative` | link boundary(下記) |
 | `studio_scenario_*`(`gpu`、Q-1 / Q-1b / N-5。**10 本**: `graph_read` / `graph_edit_roundtrip` / `canvas_zoom_pan` / `menu_actions` / `graph_canvas_zoom_pan` / `theme_switch` / `graph_auto_layout` / `graph_reroute_tie` / `graph_observe_roundtrip` / `frameplan_edit_roundtrip`) | **実物の窓 + 実物の engine の e2e**。`--automation` 無しで socket が無いこと、`list` が objectName を返すこと、無い名前が `automation.widget_missing@1` になること、キャンバスが描いたものと `get_graph_instances` の一致、値の帯の click → type → Enter が engine に届き、**ディスク経由で再読込しても残る**こと。**対照**は「期待するノード数を 1 ずらす」と「`setNodeParameter` を止める」(後者は `wait_timeout`)。Q-1b の 3 本は gesture(wheel / 押したままの move / 中ボタン drag)を `view_state` の数値の**向き**で、メニューを `menu_list` / `action` で確かめます。N-5 の `theme_switch` は View ▸ Theme で light / dark を切り替えて両方を撮ります |
 
@@ -657,7 +657,7 @@ Studio の target を必要としません)。
   click → type → Enter して engine に届かせ、別 project へ切り替えて戻る(= engine がディスクから読み直す)ところまで
   1 本で通します。**それ以外の authoring 側 Studio テストは今も canned reply のハーネスと mock の往復**で、
   装着(Inspector)側の e2e はまだありません。
-- **シナリオは GPU lane に登録します。**[scenario の登録条件](../../test/CMakeLists.txt#L2868)は
+- **シナリオは GPU lane に登録します。**[scenario の登録条件](../../test/CMakeLists.txt#L2895)は
   Studio target と `PELICAN_PYTHON_TESTS=ON`、またはPython 3.11以上が見つかった `AUTO` です。
   `uv` は不要です。`test/studio_scenarios/*.json` から CTest を作り、完全な `run_gpu_gate.py` は
   全scenarioの正確な名前を必須にします。未登録・未実行・skipを成功とは扱いません。
@@ -676,7 +676,7 @@ Studio の target を必要としません)。
   ([L476](../../test/devstudio_frameplan_test.cpp#L476) / [L588](../../test/devstudio_frameplan_test.cpp#L588) /
   [L686](../../test/devstudio_frameplan_test.cpp#L686) / L689 / L722–L724 / L793 / L841)と
   `devstudio_frameplan_graph_test.cpp` の **2 箇所**
-  ([L5210](../../test/devstudio_frameplan_graph_test.cpp#L5127) / [L5896](../../test/devstudio_frameplan_graph_test.cpp#L5813))で、
+  ([L5210](../../test/devstudio_frameplan_graph_test.cpp#L5128) / [L5896](../../test/devstudio_frameplan_graph_test.cpp#L5814))で、
   多い方は graph test ではなく frameplan test です。同じ commit で `devstudio_*` の 4 テストが
   **読みだけで編集され、実行されていない**ことも同じ完了記録 `e1c326c1` の申告で(Studio 無しの
   worktree では走らないため、primary の全数で見る、という運用です)、本章で実行を確かめてはいません。
@@ -1056,7 +1056,7 @@ cmake_parse_arguments(PELICAN_TEST
 |---|---|---|
 | `pelican_define_test()` | Catch2 executable。`GPU` フラグで `gpu` | 任意で `gpu` |
 | `add_test()` 直書き | cmake / ps1 script による process integration | 個別に `set_tests_properties` |
-| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L3128) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
+| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L3155) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
 
 3 本目は `PELICAN_PYTHON_TESTS`(既定 **OFF**、他に `AUTO` / `ON`)が有効なときだけ登録されます。CPU gate の workflow が configure に `-DPELICAN_PYTHON_TESTS=ON` を渡しているのはこのためで、手元の既定 configure では **これらのテストは CTest に存在しません**。`pelican_rpc_smoke` だけは `LABELS "gpu;python"` なので、CPU gate ではなく GPU gate の側に入ります。
 
@@ -1081,7 +1081,7 @@ cmake_parse_arguments(PELICAN_TEST
 | 2D / UI | `sprite_foundation_test` / `ui_foundation_test` |
 | event | `eventpayloadschema_test` + compile-time fixture([`run_event_schema_compile.cmake`](../../test/run_event_schema_compile.cmake)) |
 | process integration | [`run_game_logic_reload.ps1`](../../test/run_game_logic_reload.ps1) / [`run_input_record_replay_headless.cmake`](../../test/run_input_record_replay_headless.cmake) / [`run_vrm_xr_demo_rpc.cmake`](../../test/run_vrm_xr_demo_rpc.cmake) / [`run_spvlink_golden.cmake`](../../test/run_spvlink_golden.cmake) / run_devcli_{bake_camera, vrm_dump, rules_import, gltf_extract}.cmake |
-| editor RPC | `editorcommandservice_test` / `editorjournal_test` / `editorpreview_test` / `editorpreviewprojection_test` / `editorprojectiontransaction_test` / `componentcodec_test` / `windowedrpchost_test` / `renderconfigeditor_test`(render config・graph・共有部品の RPC。N-2 の定義 scope 編集と P-2a-4a の節 locator もここ。**package は入っていません** —— このファイルに `package` の語は 1 つもなく、manifest 側は [`packagemanifest_test`](../../test/CMakeLists.txt#L2540)、install の e2e は `package_install_smoke` が持ちます) |
+| editor RPC | `editorcommandservice_test` / `editorjournal_test` / `editorpreview_test` / `editorpreviewprojection_test` / `editorprojectiontransaction_test` / `componentcodec_test` / `windowedrpchost_test` / `renderconfigeditor_test`(render config・graph・共有部品の RPC。N-2 の定義 scope 編集と P-2a-4a の節 locator もここ。**package は入っていません** —— このファイルに `package` の語は 1 つもなく、manifest 側は [`packagemanifest_test`](../../test/CMakeLists.txt#L2567)、install の e2e は `package_install_smoke` が持ちます) |
 | Studio(Studio の target がある build にだけ登録。`SKIP_DEVSTUDIO=ON` では**存在しません**) | `devstudio_viewport_test` / `devstudio_outliner_test` / `devstudio_inspector_test` / `devstudio_gizmo_test` / `devstudio_layoutpreset_test` / `devstudio_frameplan_test` / `devstudio_frameplan_graph_test` / `devstudio_fullscreen_pass_test` / `devstudio_graphattachment_test` / `devstudio_graphcanvas_test` / `devstudio_graphcanvas_scene_test` / `devstudio_nodelayout_test` / `devstudio_automation_input_test` / `devstudio_engine_failure_test`(GPU)/ `studio_scenario_*`(GPU、10 本。Studio targetとPython製テスト有効時だけ)。何を固定するかは §7.6 の表。**`devstudio_d0_boundary_negative` だけは Studio の target 無しでも登録されます**(§7.6) |
 | ImGui panel | `assetbrowser_test` / `inspector_test`(`PELICAN_WITH_IMGUI` 時のみ) |
 | behavior | `behaviorarena_test` / `behavior_determinism_four_processes`(4 プロセス) / [`run_behavior_dll_reload.ps1`](../../test/run_behavior_dll_reload.ps1)(9 ケース) / [`run_behavior_project.ps1`](../../test/run_behavior_project.ps1) |
@@ -1094,7 +1094,7 @@ cmake_parse_arguments(PELICAN_TEST
 | 物理 | [`run_physics_trigger_behavior.ps1`](../../test/run_physics_trigger_behavior.ps1)(`physics_trigger_behavior_e2e`、GPU ラベル) |
 | CLI | `processrunner_test` / [`run_devcli_import_process.cmake`](../../test/run_devcli_import_process.cmake) / [`run_preset_project_headless.cmake`](../../test/run_preset_project_headless.cmake)(§7.2) / [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake)(§7.5c。catalog と `docs/v0_freeze.md` の表の照合を含む) |
 | package(X-1) | `packagemanifest_test`(manifest の純粋 parser と digest)/ `package_install_smoke`(**`PELICAN_WITH_RPC` のときだけ登録**。GPU lease + 300 秒。install → catalog → `edit_render_features` → 描画 → uninstall を実 player で)/ ctest 未登録の [`run_package_template_smoke.cmake`](../../test/run_package_template_smoke.cmake)(package の code を含む一時 project を configure から build。`-DPELICAN_PACKAGE_TEMPLATE_SMOKE_DEPS=<primary>/build/_deps` で primary の依存ソースを借ります) |
-| project corpus | ctest 名 [`project_catalog_headless_smoke`](../../test/CMakeLists.txt#L2959)、実装は [`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(登録は `if(TARGET pelican_test_studio_player_arguments)` の中 = **`SKIP_DEVSTUDIO=ON` では存在しません**。`PELICAN_TEST_PROJECTS_DIR` が空なら skip。出荷 project の走査。`project.json` の `requires` を満たせない project は**名前を出して skip** し、player の中で落ちません) |
+| project corpus | ctest 名 [`project_catalog_headless_smoke`](../../test/CMakeLists.txt#L2986)、実装は [`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(登録は `if(TARGET pelican_test_studio_player_arguments)` の中 = **`SKIP_DEVSTUDIO=ON` では存在しません**。`PELICAN_TEST_PROJECTS_DIR` が空なら skip。出荷 project の走査。`project.json` の `requires` を満たせない project は**名前を出して skip** し、player の中で落ちません) |
 | RPC | [`test/pelican_rpc_smoke.py`](../../test/pelican_rpc_smoke.py) / [`run_rpc_scene_flow_normalization_fixtures.cmake`](../../test/run_rpc_scene_flow_normalization_fixtures.cmake) + `test/fixtures/rpc_scene_flow/*.ndjson` |
 | 契約 gate | [`test/contract_boundary_gate.py`](../../test/contract_boundary_gate.py) + [`test/ci/test_contract_boundary_gate.py`](../../test/ci/test_contract_boundary_gate.py)(fixture: `test/fixtures/contract0/*.json`) |
 | CI gate 自体 | [`test/ci/test_skip_policy.py`](../../test/ci/test_skip_policy.py)(CTest 名 `ci_skip_policy_unit`)/ [`test/ci/test_golden_inventory.py`](../../test/ci/test_golden_inventory.py)(同 `golden_inventory_negative_fixtures`)。§7.9 の gate 自身を検査する |
@@ -1134,7 +1134,7 @@ WP174 / TEST0 で `golden_image_test.cpp` は **分割・廃止** されまし�
 | [`golden_ssao_test`](../../test/golden_ssao_test.cpp) | [`runSsaoFlatGolden()`](../../test/golden_harness.hpp#L33) 以下、SSAO の flat / XR sequential / XR multiview / cube / planar |
 | [`golden_ssao_blur_test`](../../test/golden_ssao_blur_test.cpp) | [`runSsaoBlurFlatOracle()`](../../test/golden_harness.hpp#L38) 以下、SSAO blur の oracle 比較 |
 
-`test/CMakeLists.txt` の [`pelican_golden_test_sources`](../../test/CMakeLists.txt#L1621) がこの 6 本を列挙し、全て `pelican_define_test(... GROUP golden_runtime GOLDEN GPU RUNTIME_SHADER pelican_golden_harness)` で登録されます。`GOLDEN` は `RESOURCE_LOCK pelican_gpu` を付けます([付与箇所](../../test/CMakeLists.txt#L177)。WP385 の統合前は `pelican_golden_gpu` という別名でした)。なお `golden_bloom_upsample_test` だけは `GROUP golden_bloom_upsample_runtime` の別登録で、このリストには入りません([登録](../../test/CMakeLists.txt#L1636))。
+`test/CMakeLists.txt` の [`pelican_golden_test_sources`](../../test/CMakeLists.txt#L1648) がこの 6 本を列挙し、全て `pelican_define_test(... GROUP golden_runtime GOLDEN GPU RUNTIME_SHADER pelican_golden_harness)` で登録されます。`GOLDEN` は `RESOURCE_LOCK pelican_gpu` を付けます([付与箇所](../../test/CMakeLists.txt#L177)。WP385 の統合前は `pelican_golden_gpu` という別名でした)。なお `golden_bloom_upsample_test` だけは `GROUP golden_bloom_upsample_runtime` の別登録で、このリストには入りません([登録](../../test/CMakeLists.txt#L1663))。
 
 inventory の各 case は labels off / on を 1 回ずつ描き、off の同じ `RenderedCase` から画像・hash・trace を検証します。labels の byte 不変条件は全 case で維持され、TAA と GPU timing の独立した決定性テストは別実行のままです。
 

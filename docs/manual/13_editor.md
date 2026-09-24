@@ -395,19 +395,19 @@ port名と型・アクセス等は保持するため、groups_from/rays_fromのp
 
 **Frame Plan のノードも共通グラフと同じ見た目になりました(N-3)。**見出し帯に pass 名と種別、その下に GPU 計時の 1 行、
 続けて**書く target の行(右端にソケット)と読む resource の行(左端にソケット)**が並びます
-([組み立て](../../src/devstudio/view/frameplangraphics.cpp#L1057))。ソケットの形は resource の種類で、
+([組み立て](../../src/devstudio/view/frameplangraphics.cpp#L1058))。ソケットの形は resource の種類で、
 `frame_plan.image`(丸)/ `frame_plan.buffer`(四角)/ `frame_plan.acceleration_structure`(菱形)/
 `frame_plan.swapchain`(六角)/ `frame_plan.history`(縁の太い丸)を
 [既定表の frame_plan.* 5 entry](../../src/devstudio/resources/graph_socket_styles.json#L28) が持ちます ——
-**Graph タブと同じ表・同じ解決順**です([種類の判定](../../src/devstudio/view/frameplangraphics.cpp#L1855))。
+**Graph タブと同じ表・同じ解決順**です([種類の判定](../../src/devstudio/view/frameplangraphics.cpp#L1856))。
 辺は**ソケット中心からソケット中心**へ引かれ、対応するソケットを持たない辺(折り畳んだグループ、境界の stub、
-resource を名指さない順序依存)だけがノード矩形へ落ちます([配線](../../src/devstudio/view/frameplangraphics.cpp#L252))。
+resource を名指さない順序依存)だけがノード矩形へ落ちます([配線](../../src/devstudio/view/frameplangraphics.cpp#L253))。
 辺のラベルは消えて tooltip になり、ノードを選ぶと触れていない辺が薄くなります
-([不透明度](../../src/devstudio/view/frameplangraphics.cpp#L4015))。
+([不透明度](../../src/devstudio/view/frameplangraphics.cpp#L4079))。
 **操作・RPC・model は変わっていません** —— ソケットはノード item の子なので、**Shift＋左ドラッグ**はソケットから
-始めてもノードの本体から始めても同じ接続になります([起点の解決](../../src/devstudio/view/frameplangraphics.cpp#L3515))。
+始めてもノードの本体から始めても同じ接続になります([起点の解決](../../src/devstudio/view/frameplangraphics.cpp#L3579))。
 行の並びは resource の**名前順**で宣言順ではなく、長い名前は中略されます(幅の上限
-[`FramePlanNodeMaximumWidth = 360`](../../src/devstudio/view/frameplangraphics.hpp#L129)。全名は同じ行の
+[`FramePlanNodeMaximumWidth = 360`](../../src/devstudio/view/frameplangraphics.hpp#L133)。全名は同じ行の
 ソケットの tooltip に `<resource> : <型>` として出ます)。
 
 Frame Planの **Order nodes...** で現在のgraphのノードをUp/Downで並べ、Applyで保存できます。
@@ -652,7 +652,7 @@ QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L26) に
 
 **口は 1 つだけです。**`pelican_studio --automation <名前>` で `QLocalServer`(Windows では `\\.\pipe\<名前>`)が開き、
 **改行区切りの JSON 1 行 = 1 命令**を受けます([flag](../../src/devstudio/main.cpp#L16) /
-[構築](../../src/devstudio/view/uimain.cpp#L36))。
+[構築](../../src/devstudio/view/uimain.cpp#L37))。
 
 ```text
 -> {"id": 4, "cmd": "click", "name": "pelican.graphCanvasRefresh"}
@@ -694,19 +694,19 @@ objectName が付いていて(`pelican.file.*` / `pelican.view.panels.*` / `peli
 **シナリオは JSON で、`test/studio_scenarios/<名前>.json` に置きます**(書式は
 [README](../../test/studio_scenarios/README.md#L55))。step は「命令をそのまま送るもの」か「期待」で、期待は
 `rpc_equals`(engine の応答の `path` が `value`)/ `result`(任意の命令を送り、応答の `path` を記録するか `value` と比べる)/
-`text_equals` / `visible` / `list_count` / `screenshot`(保存のみ)の 6 種です([判定](../../tools/studio_drive.py#L609))。`{project}` / `{artifacts}` と `--var NAME=VALUE` は step のすべての文字列に差し込まれます。
+`text_equals` / `visible` / `list_count` / `screenshot`(保存のみ)の 6 種です([判定](../../tools/studio_drive.py#L676))。`{project}` / `{artifacts}` と `--var NAME=VALUE` は step のすべての文字列に差し込まれます。
 `"probe_no_automation": true` を書くと、**先に flag 無しの Studio を起こして socket が無いことを確かめて**から本番を起動します。
 最初の失敗で run は止まります。
 
-**回し方**: [`tools/studio_drive.py`](../../tools/studio_drive.py#L893)(Python 3.11以上、標準ライブラリだけ)が Studio を
+**回し方**: [`tools/studio_drive.py`](../../tools/studio_drive.py#L960)(Python 3.11以上、標準ライブラリだけ)が Studio を
 `--automation --project --tab` で起動し、step を順に送り、`report.json` を書きます。ctest からは
-`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L2863)) —— **実物の窓が要るので
+`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L2890)) —— **実物の窓が要るので
 `QT_QPA_PLATFORM=offscreen` は掛けません**。fixture の project は temp に 2 つ複製されるので、シナリオは
 文書を書き換えてよく、「ディスクから読み直す」も試せます([複製](../../test/run_studio_scenario.cmake#L30))。
 CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが見つかった`AUTO`）が必要です。
 `uv`は不要で、完全なGPU gateは全scenarioの登録・実行を必須にします([CI運用](../ci.md))。
 
-**report.json は AI が読む形です**([組み立て](../../tools/studio_drive.py#L1029)): `verdict`(`green` / `red`)と
+**report.json は AI が読む形です**([組み立て](../../tools/studio_drive.py#L1104)): `verdict`(`green` / `red`)と
 `ok` / `failed_steps`、`summary`(step ごとに 1 行)、`failures`(送った命令・返ってきた応答・言葉での理由・
 **失敗した瞬間のスクリーンショット**)、`steps`(全文)、`studio_log`(Studio と engine の console 出力)。
 `studio_exit_code` と `studio_shutdown_forced` も記録します。最後の shutdown step は

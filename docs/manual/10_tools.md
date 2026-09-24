@@ -639,7 +639,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 ([一覧](../../src/devstudio/view/mainwindow.cpp#L668))。**未知の名前は window を作る前に console へ
 理由を出して終了コード 2** です([検査](../../src/devstudio/main.cpp#L36)) —— window を開いて「たまたま前にあった
 タブ」を見せると、綴り間違いが成功に見えるためです。`--tab` は `openProject` の**後**に適用されます
-([順序](../../src/devstudio/view/uimain.cpp#L62)) —— project を開くとその project のツール配置が復元され、
+([順序](../../src/devstudio/view/uimain.cpp#L71)) —— project を開くとその project のツール配置が復元され、
 どのタブが前かが変わるからです。
 
 見た目は **View ▸ Theme ▸ Light / Dark** で切り替えます(✅N-5。CLI の引数ではありません)。選択は QSettings の
@@ -650,9 +650,9 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 `wheel` / `move` / `press` / `release` / `key` / `type` / `text` / `action` / `menu_list` / `view_state` /
 `wait` / `wait_engine` / `rpc` / `open_project` / `screenshot` / `quit` の **20 命令**を受けます
 ([一覧](../../src/devstudio/automation/automationcommands.cpp#L1676))。**flag が無い起動では server object が
-作られないので socket は存在しません**([構築](../../src/devstudio/view/uimain.cpp#L36)) —— 出荷時の挙動は
+作られないので socket は存在しません**([構築](../../src/devstudio/view/uimain.cpp#L37)) —— 出荷時の挙動は
 変わりません。listen できたときだけ `automation listening: <endpoint>` を標準出力に出します
-([その 1 行](../../src/devstudio/view/uimain.cpp#L55))。開けなかったときは理由を出して **終了コード 3** です。
+([その 1 行](../../src/devstudio/view/uimain.cpp#L64))。開けなかったときは理由を出して **終了コード 3** です。
 
 `wait_engine` は engine が editor RPC に答えた時点で返ります。engine は**最初の frame を出す前に** RPC に
 答えるので、描画済みの frame が要る操作(`capture`、公開済みの frame plan)の前には `frames` を付けます。
@@ -660,7 +660,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 応答に `published_frames` を足します([commandWaitEngine()](../../src/devstudio/automation/automationcommands.cpp#L1482))。
 `published_frames` は renderer がその起動で公開した logical frame の数で、飛ばした frame は数えません。
 
-回す側は [`tools/studio_drive.py`](../../tools/studio_drive.py#L893)(`uv run`、標準ライブラリだけ)です。
+回す側は [`tools/studio_drive.py`](../../tools/studio_drive.py#L960)(`uv run`、標準ライブラリだけ)です。
 Studio を `--automation --project --tab` で起動し、シナリオ JSON(`test/studio_scenarios/<名前>.json`)の step を
 順に送り、期待を検査して `report.json` を書きます。
 
@@ -673,7 +673,7 @@ uv run tools/studio_drive.py --studio build/dist/Debug/pelican_studio.exe \
 ```
 
 report は `verdict`(`green` / `red`)・`summary`(step ごとに 1 行)・`failures`(送受信・理由・失敗時の
-スクリーンショット)・`studio_log` を持ちます([組み立て](../../tools/studio_drive.py#L1029))。
+スクリーンショット)・`studio_log` を持ちます([組み立て](../../tools/studio_drive.py#L1104))。
 最後の `shutdown` step は終了コード 0 での正常終了を検査します。異常終了・終了待ちのタイムアウト・watchdog による
 強制終了はシナリオの操作が成功していても失敗です。`studio_exit_code` と `studio_shutdown_forced` に結果を記録します。
 書式・命令表・名前の付け方は [README](../../test/studio_scenarios/README.md#L1) と
@@ -900,7 +900,7 @@ HEAD が動くと configure が再実行される。
 - 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。2026-07-10 以降の追加: `run_devcli_assets`(WP66)/ `run_event_schema_compile`(WP71)/ `run_dump_lowered_material`(WP76)/ `run_devcli_gltf_extract`(WP79)/ `run_spvlink_golden`(WP80)/ `run_devcli_rules_import`(WP84)/ `run_devcli_bake_camera` + `run_input_record_replay_headless`(WP89)/ `run_ui_u2_rpc_replay`(WP93)など。
 - 2026-09 の追加: [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake)(ctest 名 `devcli_graph_catalog`。`pelican_cli graph-catalog` の出力を検査し、**さらに `docs/v0_freeze.md` の操作表と突き合わせます** —— 表は `<!-- graph-op-table:begin -->` / `:end` のコメントで区切られていて、誰も比べない写しを 2 つ目の正にしないための仕掛けです)、`package_install_smoke`(X-1。install → カタログ → 描画 → uninstall を実 player で。`gpu` ラベル)、[`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(出荷 project の走査。`project.json` の `requires` が満たせない project は**名前を出して skip** し、player の中で落ちません)。
 - **Studio のシナリオ(Q-1)**: `test/studio_scenarios/*.json` は 1 本が 1 つの ctest `studio_scenario_<名前>` になり
-([登録](../../test/CMakeLists.txt#L2863))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
+([登録](../../test/CMakeLists.txt#L2890))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
 実物の player が埋まるので `QT_QPA_PLATFORM=offscreen` は掛けません。Studio target と Python 製テストを有効にし、
 Python 3.11 以上を用意します。`uv` は不要です。完全な GPU gate はシナリオの未登録・skip を失敗にするため、
 `SKIP_DEVSTUDIO=OFF` と `PELICAN_PYTHON_TESTS=ON` を指定します。[`run_studio_scenario.cmake`](../../test/run_studio_scenario.cmake#L30) が fixture
