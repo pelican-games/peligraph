@@ -72,7 +72,7 @@ F-2 のときは、project を切り替えた直後の status bar に
 `Modal transform polling failed: pelican_player exited before returning an RPC response` が出ることがありました
 (gizmo の `get_modal_transform` polling が、切替で終了した古い engine に宛てた要求の失敗を出していたもの。
 [文言](../../src/devstudio/model/gizmomodel.cpp#L1062))。**✅F-7 で出なくなりました**: 別の project へ切り替える前に
-gizmo の session を終え、返答待ちの要求を忘れます([切替の前処理](../../src/devstudio/view/mainwindow.cpp#L1299))。
+gizmo の session を終え、返答待ちの要求を忘れます([切替の前処理](../../src/devstudio/view/mainwindow.cpp#L1300))。
 今開いている project の開き直しは engine がそのまま残るので、session も続きます。
 なお、Studio で作った project でも `project.json` の `generator` は `"pelican_cli project init"` のままです。
 
@@ -124,7 +124,7 @@ behavior候補の`key`は`behavior:型名`、`behavior_type`は登録名です�
 ### Studio で object を置く(✅G-2)
 
 Outliner の右クリックと **Scene** toolbar の **Add Object** は同じ 1 つの menu です
-([Add Object の menu を作る所](../../src/devstudio/view/mainwindow.cpp#L1012))。項目は **Empty** / **Cube (built-in)** /
+([Add Object の menu を作る所](../../src/devstudio/view/mainwindow.cpp#L1013))。項目は **Empty** / **Cube (built-in)** /
 **Plane (built-in)** / **Sphere (built-in)** で、自動化面の action 名は `pelican.outliner.addObject.empty` / `cube` /
 `plane` / `sphere` です。
 
@@ -135,13 +135,13 @@ Outliner の右クリックと **Scene** toolbar の **Add Object** は同じ 1 
   の最小の空き番号です([`uniqueObjectName()`](../../src/devstudio/model/inspectormodel.cpp#L429))。Blender は `Cube.001` と
   書きますが、scene の object 名は `[a-zA-Z0-9_]` だけなので `_` にしています。
 - **選択**: Outliner の読み直しを最短の間隔に縮め、新しい object が Outliner に出た時点でそれを選び、Inspector に出します
-  ([`MainWindow::selectSpawnedObject()`](../../src/devstudio/view/mainwindow.cpp#L1110))。
+  ([`MainWindow::selectSpawnedObject()`](../../src/devstudio/view/mainwindow.cpp#L1111))。
 - **Undo**: coalesce key を付けないので、Undo 1 回で Add 1 回が戻ります。
 - **Inspector の編集の途中で押した Add Object は待ちます(✅Q-7)**: Inspector の値の編集が進行中(commit の途中を含む)に
   押すと、spawn は 1 本だけ待ち、Inspector の手が空いた時点で、その編集が残した scene revision の上に送られます
   ([`InspectorModel::spawnObject()`](../../src/devstudio/model/inspectormodel.cpp#L2417))。待っている間は status bar(8 秒)と
   Outliner の下の 1 行(`pelican.outlinerNotice`)に `Adding <名前> after the current edit.` が出ます
-  ([Add Object の結果を status bar と Outliner に出す所](../../src/devstudio/view/mainwindow.cpp#L1089))。既に 1 本待っているときに
+  ([Add Object の結果を status bar と Outliner に出す所](../../src/devstudio/view/mainwindow.cpp#L1090))。既に 1 本待っているときに
   押した 2 本目は、置き換えずに断ります。同じ 2 か所に
   `Could not add <名前>: <待っている名前> is already waiting to be added; add another once it is in.` が出るので、
   1 本目が入ってからもう一度押してください。Outliner の下の 1 行は、新しい object が選ばれたときに消えます。
@@ -761,7 +761,7 @@ Inspector の導線(次節)は専用の RPC を持たず、**普通の `ops` を
 `pelican_studio --project <dir> --tab graph`([第10章](10_tools.md) §10.7)。
 
 **上段の操作列**(左から): `Scope:` のコンボ(`root` と definition 名)、その右のパンくず、右端に
-`Values from:` のコンボ、`Refresh`([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L2143))。
+`Values from:` のコンボ、`Refresh`([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L2149))。
 その下に必要なときだけ 1 行の notice が出ます。本体は左がキャンバス、右が選択ノードの詳細表(`Field` / `Value`)で、
 詳細表の上に `Label:` の入力欄・**Rename**・**Add node...** が並びます。
 
@@ -781,7 +781,7 @@ Inspector の導線(次節)は専用の RPC を持たず、**普通の `ops` を
    [`graph_socket_styles.json`](../../src/devstudio/resources/graph_socket_styles.json#L1)(`pelican.studio.socket_styles` v1)で、
    **新しい型に形を与えるのに C++ を触る必要はありません** —— この JSON に名前を 1 行足すだけです。
 5. **右の詳細表** —— `label` / `type` / `domain` / `evaluation` / `id` / `sink` と、あれば `definition` /
-   `parameters` / `inputs` / `outputs`([組み立て](../../src/devstudio/view/graphcanvaswidget.cpp#L2609))。
+   `parameters` / `inputs` / `outputs`([組み立て](../../src/devstudio/view/graphcanvaswidget.cpp#L2700))。
    port の型が宣言されていなければ `(not declared)`、カタログをまだ取れていなければ `domain` / `evaluation` が
    `(catalog not fetched)` です。入力行の tooltip は、その port を**カタログが宣言した**(`declared by the catalog`)のか、
    **文書から読んだ**(`read from the document`)のかを区別します。
@@ -804,12 +804,12 @@ Undoはノードの宣言順・設定・接続と配置を一緒に復元しま�
 文字入力中のUndoは入力欄の履歴を使い、保存処理中のグラフへ重ねてUndoを送りません。
 
 型が合わないソケットには吸着しません —— **どちらかの型が宣言されていなければ通し、両方宣言されていれば
-同じ型のときだけ**通します([判定](../../src/devstudio/model/graphcanvasmodel.cpp#L1021))。
+同じ型のときだけ**通します([判定](../../src/devstudio/model/graphcanvasmodel.cpp#L1095))。
 
 ⚠ **2 つの注意。**
 (1) **必須の scalar 入力を持つ op を足すと、種の定数も一緒に足されます。**未接続の必須入力を持つ文書は engine が
 受け取らないので、パレットは必須の scalar 入力ごとに `value.constant` を**同じ ops 列で先に**足し、そこへ繋いだ
-状態のノードを作ります([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L1129))。1 操作 1 チケットは保たれます。
+状態のノードを作ります([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L1203))。1 操作 1 チケットは保たれます。
 後で本物の producer を繋いでも、**この定数は自動では消えません**(手で消します)。
 (2) **必須入力の切断は送られ、engine が断ります。**Studio は黙って定数を挿し直したりしません ——
 `set_input{null}` をそのまま送り、`unconnected graph input` の拒否を notice に出します。値を持つ instance の port は
@@ -1043,10 +1043,10 @@ Q-2 の何もしない間の RPC は増えません。答えごとに:
 
 **配置の保存は canvas を描き直しません(✅Q-5)**: node を drag した後、配置の変更がまだ送られていない間(300 ms の
 debounce の間)は、notice が **「Saving the graph change...」** になります(error の notice だけはこれより優先)
-([配置が未送信の間の notice](../../src/devstudio/view/graphcanvaswidget.cpp#L2738))。保存が返ると「Graph change saved.」です。
+([配置が未送信の間の notice](../../src/devstudio/view/graphcanvaswidget.cpp#L2829))。保存が返ると「Graph change saved.」です。
 以前は前の保存の「Graph change saved.」が残ったままだったので、その文を待つシナリオは今の保存を待てませんでした。
 また、**配置だけが変わった読み**(前の読みと `layout` 以外が同じ)では、model は node の値を消して読み直さず
-([配置だけの読みの判定](../../src/devstudio/model/graphcanvasmodel.cpp#L440))、canvas が既にその配置を描いていれば
+([配置だけの読みの判定](../../src/devstudio/model/graphcanvasmodel.cpp#L514))、canvas が既にその配置を描いていれば
 (自分の drag の保存が返ってきたとき)scene を作り直しません —— 選んでいる node・辺・reroute はそのまま残ります
 ([`GraphCanvasScene::followDocumentPlacement()`](../../src/devstudio/view/graphcanvaswidget.cpp#L570))。Undo や別の書き手が
 違う配置を書いた読みは描き直し、ほかの変更が混じった読みは描き直して選択を引き継ぎます。Frame Plan の配置の保存には、
@@ -1060,7 +1060,7 @@ debounce の間)は、notice が **「Saving the graph change...」** になり�
 ([定義](../../src/devstudio/view/graphcanvasreadcapability.hpp#L31))は「汎用の RPC メソッド」を表現できない形をしていて、
 `get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` / `get_edit_result` の
 5 つだけを名前で持ちます。それ以外を要求すると `The graph canvas cannot issue <method>.` になります
-([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L2682))。キャンバスから preset を fork したり pass を触ったりは
+([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L2773))。キャンバスから preset を fork したり pass を触ったりは
 **できない**、というのが型で保証されています。
 
 ### Studio の自動化面(`--automation`)
