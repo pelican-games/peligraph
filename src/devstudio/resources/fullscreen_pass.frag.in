@@ -1,0 +1,17 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_sets.glsl"
+#include "pelican_view.glsl"
+
+// Fragment shader of the fullscreen pass "@PASS_NAME@".
+//
+// The pass reads its inputs in the order its `input` list names them: input i
+// is declared with PELICAN_DECLARE_INPUT_i and read with PELICAN_TEXTURE_2D_i,
+// which follow the engine's own binding, multiview and local-read choices.
+
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+@INPUT_DECLARATIONS@
+void main() {
+@MAIN_BODY@
+}

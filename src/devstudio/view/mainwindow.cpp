@@ -831,6 +831,7 @@ void MainWindow::openProjectNow(const QString &path) {
         populateOutliner();
         refreshSelectionViews();
         frame_plan_->setProjectRoot(project_model_->projectRoot());
+        fullscreen_pass_->setProjectRoot(project_model_->projectRoot());
         viewport_->openProject(displayPath(project_model_->projectRoot()));
         statusBar()->showMessage(
             tr("Opened %1. %2")
@@ -841,6 +842,12 @@ void MainWindow::openProjectNow(const QString &path) {
         QMessageBox::warning(this, tr("Could Not Open Project"),
                              QString::fromUtf8(error.what()));
     }
+}
+
+void MainWindow::setShaderSourceOpenAction(
+    std::function<bool(const std::filesystem::path &)> action) {
+    frame_plan_->setShaderSourceOpenAction(action);
+    fullscreen_pass_->setShaderSourceOpenAction(std::move(action));
 }
 
 void MainWindow::populateOutliner() {

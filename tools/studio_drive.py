@@ -462,6 +462,8 @@ def step_label(step: dict[str, Any], index: int) -> str:
         return str(step["label"])
     if "cmd" in step:
         return str(step["cmd"])
+    if "file" in step:
+        return f"file {step['file']}"
     return f"{step.get('expect', 'step')} #{index}"
 
 
@@ -534,6 +536,71 @@ def run_command_step(run: Run, step: dict[str, Any], label: str) -> bool:
     if request.get("cmd") == "screenshot":
         run.screenshots.append(reply["result"]["path"])
     run.record("cmd", label, ok=True, request=request, response=reply, started=started)
+    return True
+
+
+def run_file_step(run: Run, step: dict[str, Any], label: str, project: Path) -> bool:
+    """A file in the project copy, touched or read the way an editor would.
+
+    F-3's scenario has to do what a person does between two Studio gestures:
+    edit the shader "New..." wrote, in an editor of their own.  Studio has no
+    command for that and should not grow one, so the driver does it itself --
+    and only inside the project copy, which is the one directory a scenario is
+    allowed to change.
+
+        {"file": "write",    "path": "{project}/x", "text": "..."}
+        {"file": "replace",  "path": "{project}/x", "old": "...", "new": "..."}
+        {"file": "contains", "path": "{project}/x", "text": "...", "value": true}
+        {"file": "exists",   "path": "{project}/x", "value": true}
+    """
+
+    started = time.monotonic()
+    action = str(step["file"])
+    request = {key: value for key, value in step.items() if key not in _META_KEYS}
+    try:
+        path = Path(str(step["path"])).resolve()
+        root = project.resolve()
+        if path != root and root not in path.parents:
+            raise ValueError(f"{path} is outside the project copy {root}")
+        if action == "write":
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(str(step["text"]).encode("utf-8"))
+            detail = f"wrote {path.name}"
+        elif action == "replace":
+            text = path.read_bytes().decode("utf-8")
+            old = str(step["old"])
+            if text.count(old) != 1:
+                raise ValueError(
+                    f"{path.name} holds {text.count(old)} copies of the text to replace"
+                )
+            path.write_bytes(text.replace(old, str(step["new"])).encode("utf-8"))
+            detail = f"replaced one span of {path.name}"
+        elif action == "contains":
+            found = str(step["text"]) in path.read_bytes().decode("utf-8")
+            if found != bool(step.get("value", True)):
+                raise ValueError(
+                    f"{path.name} {'holds' if found else 'does not hold'} {step['text']!r}"
+                )
+            detail = f"{path.name} {'holds' if found else 'does not hold'} the text"
+        elif action == "exists":
+            present = path.is_file()
+            if present != bool(step.get("value", True)):
+                raise ValueError(f"{path.name} {'exists' if present else 'is missing'}")
+            detail = f"{path.name} {'exists' if present else 'is missing'}"
+        else:
+            raise ValueError(f"unknown file action \"{action}\"")
+    except (OSError, ValueError, KeyError) as error:
+        run.record(
+            "file",
+            label,
+            ok=False,
+            request=request,
+            detail=str(error),
+            started=started,
+            screenshot=run.capture(f"step{len(run.steps) + 1}_failure"),
+        )
+        return False
+    run.record("file", label, ok=True, request=request, detail=detail, started=started)
     return True
 
 
@@ -910,6 +977,12 @@ def main() -> int:
         "--launch-timeout", type=float, default=120.0, help="seconds to wait for the channel"
     )
     arguments = parser.parse_args()
+    # A step's detail quotes what a panel says, and a panel may say it with a
+    # character the console's code page has no byte for (a "·"). The line is
+    # for a reader; it must not be what ends the run.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
 
     scenario = json.loads(arguments.scenario.read_text(encoding="utf-8"))
     name = scenario.get("name") or arguments.scenario.stem
@@ -975,6 +1048,8 @@ def main() -> int:
             label = step_label(step, index)
             if "expect" in step:
                 ok = run_expect_step(run, step, label)
+            elif "file" in step:
+                ok = run_file_step(run, step, label, arguments.project)
             elif "cmd" in step:
                 ok = run_command_step(run, step, label)
             else:

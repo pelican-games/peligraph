@@ -9,6 +9,7 @@
 #include <QColor>
 #include <QFont>
 #include <QFontMetricsF>
+#include <QGraphicsEllipseItem>
 #include <QGraphicsPathItem>
 #include <QGraphicsPolygonItem>
 #include <QGraphicsProxyWidget>
@@ -1981,6 +1982,68 @@ void FramePlanGraphicsScene::setGpuTiming(
     }
 }
 
+void FramePlanGraphicsScene::setShaderErrorMarks(
+    std::map<std::string, QString> marks) {
+    if (marks == shader_error_marks_) return;
+    shader_error_marks_ = std::move(marks);
+    applyShaderErrorMarks();
+}
+
+// F-3. A red badge on the heading's right corner, over everything the node
+// draws, with the first line of the compile log as its tooltip. The badge is
+// the node's child, so it moves with the node and goes when the node goes.
+void FramePlanGraphicsScene::applyShaderErrorMarks() {
+    std::vector<QGraphicsItem *> stale;
+    std::vector<QGraphicsItem *> nodes;
+    for (QGraphicsItem *item : items()) {
+        const QString kind = item->data(FramePlanItemKindRole).toString();
+        if (kind == QLatin1String{FramePlanNodeShaderErrorItem})
+            stale.push_back(item);
+        else if (kind == QLatin1String{FramePlanNodeItem})
+            nodes.push_back(item);
+    }
+    for (QGraphicsItem *item : stale) delete item;
+    std::size_t marked = 0;
+    for (QGraphicsItem *node : nodes) {
+        const QString shader_line = QStringLiteral("\nShader: ");
+        const QString tooltip = node->toolTip().section(shader_line, 0, 0);
+        const auto found = shader_error_marks_.find(
+            node->data(FramePlanNameRole).toString().toStdString());
+        if (found == shader_error_marks_.end()) {
+            node->setToolTip(tooltip);
+            continue;
+        }
+        constexpr qreal diameter = 16.0;
+        const QRectF bounds = node->boundingRect();
+        auto *badge = new QGraphicsEllipseItem(
+            QRectF{bounds.right() - diameter * 0.75,
+                   bounds.top() - diameter * 0.25, diameter, diameter},
+            node);
+        badge->setBrush(QColor{QStringLiteral("#d94c3d")});
+        badge->setPen(QPen{QColor{QStringLiteral("#ffffff")}, 1.4});
+        badge->setZValue(4.0);
+        badge->setData(FramePlanItemKindRole,
+                       QString::fromLatin1(FramePlanNodeShaderErrorItem));
+        badge->setData(FramePlanGraphRole, node->data(FramePlanGraphRole));
+        badge->setData(FramePlanNameRole, node->data(FramePlanNameRole));
+        badge->setToolTip(found->second);
+        badge->setAcceptedMouseButtons(Qt::NoButton);
+        auto *mark = new QGraphicsSimpleTextItem(QStringLiteral("!"), badge);
+        QFont font = mark->font();
+        font.setBold(true);
+        font.setPointSizeF(8.5);
+        mark->setFont(font);
+        mark->setBrush(QColor{QStringLiteral("#ffffff")});
+        const QRectF glyph = mark->boundingRect();
+        mark->setPos(badge->rect().center() - glyph.center());
+        mark->setAcceptedMouseButtons(Qt::NoButton);
+        node->setToolTip(tooltip + shader_line + found->second);
+        ++marked;
+    }
+    setProperty("pelicanShaderErrorMarkCount",
+                static_cast<qulonglong>(marked));
+}
+
 void FramePlanGraphicsScene::populate(
     const FramePlanModel &model,
     const std::optional<FramePlanNodeKey> &selected_target, int depth) {
@@ -3049,6 +3112,7 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
     publishBarrierCoverage(*this, barrier_coverage);
     publish_group_properties();
     publishStateProperties();
+    applyShaderErrorMarks();
     if (carried) restoreInlineEdit(*carried);
 }
 

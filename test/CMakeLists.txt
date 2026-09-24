@@ -461,6 +461,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   target_sources(pelican_test_devstudio_engine_failure_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanwidget.cpp)
   target_sources(pelican_test_devstudio_engine_failure_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/shaderdiagnostics.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/shaderreloadfollower.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/rendertargetform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplangraphics.cpp
@@ -504,6 +506,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodelayout.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/studiotheme.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/taskconnectiongraphics.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/shaderdiagnostics.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/shaderreloadfollower.cpp
   )
   # nodegraphics carries the socket default table, so a target that compiles it
   # needs the same embedded resource the application links.
@@ -572,6 +576,29 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   target_compile_definitions(pelican_test_devstudio_fullscreen_pass_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
   )
+
+  # F-3: the shader "New..." writes, put through the engine's own compiler.
+  # A build without the runtime compiler cannot compile GLSL at all, so there
+  # the test is not registered rather than registered and skipped.
+  if(PELICAN_RUNTIME_SHADER_COMPILER)
+    pelican_define_test(devstudio_shadertemplate_compile_test
+      pelican_core
+      pelican_shaderc)
+    target_sources(pelican_test_devstudio_shadertemplate_compile_test PRIVATE
+      ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp)
+    target_link_libraries(pelican_test_devstudio_shadertemplate_compile_test
+      PRIVATE pelican_studio_resources)
+    target_include_directories(
+      pelican_test_devstudio_shadertemplate_compile_test PRIVATE
+      ${CMAKE_SOURCE_DIR}/src/devstudio/view)
+    target_compile_definitions(
+      pelican_test_devstudio_shadertemplate_compile_test PRIVATE
+      PELICAN_RUNTIME_SHADER_COMPILER=1)
+    if(COMMAND pelican_copy_shaderc_runtime)
+      pelican_copy_test_shaderc_runtime(
+        pelican_test_devstudio_shadertemplate_compile_test)
+    endif()
+  endif()
 
   # N-7: the text budget. Each panel is built in its default state and every
   # string it puts on screen is counted, so "the panels say too much" becomes

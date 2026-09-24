@@ -5,3 +5,6 @@ b_embed_proxy_target(pelican_studio_view pelican_studio_resources)
 
 b_embed(pelican_studio_resources graph_socket_styles.json)
 b_embed(pelican_studio_resources studio_themes.json)
+# F-3: the fragment shader a new fullscreen pass starts from. The Pass Editor
+# fills in one declaration per input and writes it into the project.
+b_embed(pelican_studio_resources fullscreen_pass.frag.in)

@@ -6,6 +6,7 @@
 #include <QWidget>
 #include <QStringList>
 
+#include <filesystem>
 #include <memory>
 #include <functional>
 
@@ -50,6 +51,11 @@ class FullscreenPassWidget final : public QWidget {
     // and the shaders are the author's.
     void insertAuthoredPassAfter(const QString &graph, const QString &after_pass);
     void editPresetPassConnection(const QString &graph, const QString &pass_name, const QStringList &outputs);
+    // F-3. "New..." beside the fragment stem writes <root>/shaders/<name>.frag
+    // and opens it with this action (the desktop's own by default).
+    void setProjectRoot(const std::filesystem::path &project_root);
+    void setShaderSourceOpenAction(
+        std::function<bool(const std::filesystem::path &)> action);
     void receiveResult(const QByteArray &result_json);
     void receiveAuthoringConfig(const QByteArray &config_json);
 };

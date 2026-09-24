@@ -119,6 +119,10 @@ inline constexpr auto FramePlanRowLabelItem = "node_row_label";
 // heading. A node that cannot be edited draws none: a band that refused on
 // Enter would be an invitation that is not one.
 inline constexpr auto FramePlanInlineFieldItem = "node_inline_field";
+// F-3: a node whose shader the engine could not compile on its last reload.
+// It carries the node in FramePlanNameRole, and the first log line as its
+// tooltip; it is gone when the next reading has no error for the node.
+inline constexpr auto FramePlanNodeShaderErrorItem = "node_shader_error";
 // F-1: the selected target drawn as a node of its own, beside the passes that
 // touch it. Double-click opens its declaration; Delete asks to remove it.
 inline constexpr auto FramePlanResourceNodeItem = "resource_node";
@@ -208,6 +212,13 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     // the entries rather than building a throwaway one per right-click.
     void setMenuActions(QAction *auto_layout, QAction *fit_view);
     void setGpuTiming(FramePlanGpuTimingSnapshot snapshot);
+    // F-3: node name -> the first line of its shader's compile log. Kept
+    // across redraws; an empty map takes every mark down.
+    void setShaderErrorMarks(std::map<std::string, QString> marks);
+    [[nodiscard]] const std::map<std::string, QString> &shaderErrorMarks()
+        const noexcept {
+        return shader_error_marks_;
+    }
 
     // --- N-8: editing on the canvas.
 
@@ -327,6 +338,7 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     std::optional<FramePlanModel> current_model_;
     std::optional<FramePlanNodeKey> current_target_;
     FramePlanGpuTimingSnapshot gpu_timing_;
+    std::map<std::string, QString> shader_error_marks_;
     int current_depth_ = 1;
     using GroupStateKey = std::pair<std::string, std::string>;
     std::set<GroupStateKey> collapsed_groups_;
@@ -397,6 +409,7 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     // edge's own colour still says what the dependency is; the emphasis is
     // applied on top of it so a selection never hides that fact.
     void applyEdgeEmphasis();
+    void applyShaderErrorMarks();
     void pruneGroupState();
     bool installSessionGroup(std::vector<std::string> members);
     void recordSelection();

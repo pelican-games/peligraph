@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QString>
 #include <QStringList>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 
@@ -42,6 +43,14 @@ int uimain(int argc, char **argv, LaunchOptions options) {
             window.openProject(directory);
         };
         automation = std::make_unique<AutomationServer>(std::move(host));
+        // A scenario drives Studio, not the desktop: a shader "opened" under
+        // automation is written to the log instead of starting an editor.
+        window.setShaderSourceOpenAction(
+            [](const std::filesystem::path &path) {
+                std::cout << "automation: shader source open "
+                          << path.generic_string() << std::endl;
+                return true;
+            });
         QString error;
         const auto name = QString::fromStdString(options.automation);
         if (!automation->listen(name, &error)) {

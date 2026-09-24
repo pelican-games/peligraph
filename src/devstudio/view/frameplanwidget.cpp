@@ -8,6 +8,7 @@
 #include "../viewport/embeddedviewport.hpp"
 #include "projectformat.hpp"
 #include "projectpathresolver.hpp"
+#include "shaderreloadfollower.hpp"
 #include "rendertargetform.hpp"
 #include "shadersourceresolver.hpp"
 
@@ -394,6 +395,9 @@ struct FramePlanWidget::Impl {
     QString requested_hit_group;
     std::optional<Pelican::ProjectPathResolver> project_resolver;
     FramePlanWidget::ShaderSourceOpenAction shader_source_open_action;
+    // F-3: the engine's shader reload status, read after a shader file a node
+    // reads is written.
+    std::unique_ptr<ShaderReloadFollower> reload_follower;
     std::function<void(const QString &, const QString &)> preset_pass_edit_action;
     std::function<void(const QString &)> task_edit_action;
     std::function<void(const QString &, const QStringList &)> task_connection_action;
@@ -448,6 +452,21 @@ struct FramePlanWidget::Impl {
             return QDesktopServices::openUrl(QUrl::fromLocalFile(
                 QString::fromStdWString(path.wstring())));
         };
+        reload_follower = std::make_unique<ShaderReloadFollower>(
+            ShaderReloadFollower::Hooks{
+                .request_status =
+                    [this](QString *error) -> qint64 {
+                    if (!viewport.rpcReady()) return 0;
+                    return viewport.requestRpc(QStringLiteral("get_status"),
+                                               QJsonObject{}, error);
+                },
+                .apply =
+                    [this](const ShaderReloadMarks &marks,
+                           const ShaderReloadReading &reading,
+                           bool after_change) {
+                        applyShaderReloadMarks(marks, reading, after_change);
+                    },
+            });
         owner.setFont(studioPanelFont());
         auto *layout = new QVBoxLayout(&owner);
         layout->setContentsMargins(6, 6, 6, 6);
@@ -1017,6 +1036,49 @@ struct FramePlanWidget::Impl {
         setPanelNotice(status, line, detail.isEmpty() ? line : detail);
     }
 
+    // --- F-3. A shader that failed to reload is marked on the node that
+    // reads it. The files are the ones the Open button would open.
+    void followShaderSources() {
+        NodeShaderSources sources;
+        if (model && project_resolver) {
+            for (const auto &node : model->nodes) {
+                for (const auto &stage : node.shader_resolution.stages) {
+                    if (!stage.source_open_ref) continue;
+                    try {
+                        sources[node.name].push_back(
+                            Pelican::materializeShaderSourceOpenReference(
+                                *project_resolver, *stage.source_open_ref));
+                    } catch (const std::exception &) {
+                        // Not a file this project holds: nothing to watch.
+                    }
+                }
+            }
+        }
+        reload_follower->setSources(std::move(sources));
+    }
+
+    void applyShaderReloadMarks(const ShaderReloadMarks &marks,
+                                const ShaderReloadReading &reading,
+                                bool after_change) {
+        std::map<std::string, QString> nodes;
+        for (const auto &[node, line] : marks.nodes)
+            nodes.emplace(node, text(line));
+        logical_scene->setShaderErrorMarks(std::move(nodes));
+        QString notice;
+        QString detail;
+        if (!marks.unmatched.empty()) {
+            notice = owner.tr("Shader reload failed: %1")
+                         .arg(text(marks.unmatched.front()));
+            detail = text(reading.last_error);
+        } else if (after_change && reading.reported && !reading.enabled) {
+            notice = owner.tr("A shader file changed; this engine does not "
+                              "reload shaders (%1).")
+                         .arg(text(reading.gate_reason));
+        }
+        // The panel's own status line: it is where the marks are.
+        if (!notice.isEmpty()) showStatus(notice, detail);
+    }
+
     // --- N-8. Every canvas gesture ends here: one authoring RPC, or one line
     // that names the pass and says why there is no RPC to send.
 
@@ -1504,6 +1566,7 @@ struct FramePlanWidget::Impl {
     }
 
     void receiveRpcResult(qint64 request_id, const QByteArray &result_json) {
+        if (reload_follower->receive(request_id, result_json)) return;
         if (request_id == pending_gpu_timing_request) {
             pending_gpu_timing_request = 0;
             consumeGpuTimingResult(result_json);
@@ -1592,6 +1655,7 @@ struct FramePlanWidget::Impl {
             }
             requestAuthoringContext();
             requestTaskAuthoring();
+            followShaderSources();
             if (!requested_hit_group.isEmpty()) {
                 const auto group = std::exchange(requested_hit_group, QString{});
                 owner.openTasksForHitGroup(group);
@@ -1602,6 +1666,7 @@ struct FramePlanWidget::Impl {
     }
 
     void receiveFailure(qint64 request_id, const QString &message) {
+        if (reload_follower->fail(request_id)) return;
         if (request_id == pending_gpu_timing_request) {
             pending_gpu_timing_request = 0;
             logical_scene->setGpuTiming(FramePlanGpuTimingSnapshot{
@@ -2489,9 +2554,15 @@ void FramePlanWidget::setProjectRoot(
     Pelican::ProjectPathResolver resolver;
     resolver.setup(project_root, false, parsed.envelope);
     impl_->project_resolver = std::move(resolver);
+    impl_->followShaderSources();
 }
 
 void FramePlanWidget::refresh() { impl_->requestRefresh(); }
+
+void FramePlanWidget::receiveShaderReloadStatus(const QByteArray &status_json) {
+    impl_->reload_follower->consume(status_json);
+}
+
 
 void FramePlanWidget::openTasksForHitGroup(const QString &group) {
     if (group.isEmpty() || !impl_->task_edit_action) return;

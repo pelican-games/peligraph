@@ -1,4 +1,5 @@
 #include "fullscreenpasswidget.hpp"
+#include "fullscreenshadertemplate.hpp"
 #include "mainwindow.hpp"
 #include "renderfeatureswidget.hpp"
 #include "graphattachmentwidget.hpp"
@@ -38,6 +39,7 @@
 #include <QSpinBox>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QWidget>
 
@@ -2860,5 +2862,246 @@ TEST_CASE("The Frame Plan canvas opens the Pass Editor after the node it names",
     refresh.succeed(refresh.requests.back(),
                     QByteArray::fromStdString(plan.dump()));
     CHECK(position.value() == end_of_graph);
+}
+// --- F-3: a fullscreen pass made shader and all.
+
+namespace {
+
+Json f3AuthoringContext() {
+    const Json base{{"name", "base"},
+                    {"type", "fullscreen"},
+                    {"input", Json::array({"lit_color"})},
+                    {"output",
+                     {{"color", Json::array({"base_out"})}, {"depth", nullptr}}},
+                    {"shader",
+                     {{"vertex", "engine://fullscreen"},
+                      {"fragment", "engine://fullscreen"}}}};
+    return Json{
+        {"source_digest", {{"algorithm", "sha256"}, {"hex", std::string(64, 'a')}}},
+        {"config_kind", "direct"},
+        {"graphs",
+         Json::array({{{"name", "f3_graph"},
+                       {"passes", Json::array({{{"name", "base"},
+                                                {"declaration", base}}})},
+                       {"anchor_candidates",
+                        Json::array({{{"position", 0}, {"insert", "before:base"}},
+                                     {{"position", 1},
+                                      {"insert", "after:base"}}})}}})},
+        {"managed_fragments", Json::array()},
+    };
+}
+
+Json f3FramePlan() {
+    return minimalFramePlan(
+        "f3_graph",
+        Json::array({resource("lit_color"), resource("ssao_blur"),
+                     resource("base_out"), resource("tint_out"),
+                     resource("light_list", "buffer")}));
+}
+
+} // namespace
+
+TEST_CASE("F-3 a shader file is written only where none is",
+          "[devstudio][fullscreen-pass][f3][shader-template]") {
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = filesystemPath(temporary.path());
+
+    CHECK(isValidShaderTemplateName("tint_pass-2"));
+    for (const char *refused : {"", "../escape", "a/b", "a\\b", "a.b",
+                                "C:x", "-lead", "sp ace"})
+        CHECK_FALSE(isValidShaderTemplateName(refused));
+    CHECK_THROWS(writeShaderTemplate(root, "../escape", "x"));
+    CHECK(suggestedShaderTemplateName("tint pass") == "tint_pass");
+    CHECK(shaderTemplateReference("tint") == "project://shaders/tint");
+
+    const auto first = writeShaderTemplate(root, "tint", "first\n");
+    CHECK(first.created);
+    CHECK(first.path == root / "shaders" / "tint.frag");
+    CHECK(first.reference == "project://shaders/tint");
+    CHECK(readText(first.path) == "first\n");
+
+    // The control: the same call again finds the file and leaves it alone.
+    const auto second = writeShaderTemplate(root, "tint", "second\n");
+    CHECK_FALSE(second.created);
+    CHECK(second.path == first.path);
+    CHECK(readText(first.path) == "first\n");
+}
+
+TEST_CASE("F-3 New... writes the shader for the form's inputs and opens it, "
+          "and offers an existing file instead of replacing it",
+          "[devstudio][fullscreen-pass][f3][shader-template][widget]") {
+    (void)application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = filesystemPath(temporary.path());
+
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    std::vector<std::filesystem::path> opened;
+    form.setShaderSourceOpenAction([&](const std::filesystem::path &path) {
+        opened.push_back(path);
+        return true;
+    });
+    authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
+    form.receiveResult(QByteArray::fromStdString(f3FramePlan().dump()));
+
+    auto &new_shader =
+        required<QPushButton>(form, "pelican.fullscreenPass.newFragmentShader");
+    // Nowhere to write it until a project is open.
+    CHECK_FALSE(new_shader.isEnabled());
+    form.setProjectRoot(root);
+    REQUIRE(new_shader.isEnabled());
+
+    required<QLineEdit>(form, "pelican.fullscreenPass.name")
+        .setText(QStringLiteral("tint pass"));
+    chooseCandidate(form, "pelican.fullscreenPass.inputTarget",
+                    "pelican.fullscreenPass.addInput", "lit_color");
+    chooseCandidate(form, "pelican.fullscreenPass.inputTarget",
+                    "pelican.fullscreenPass.addInput", "light_list");
+    chooseCandidate(form, "pelican.fullscreenPass.inputTarget",
+                    "pelican.fullscreenPass.addInput", "ssao_blur");
+    new_shader.click();
+    auto &shader_name =
+        required<QLineEdit>(form, "pelican.fullscreenPass.shaderTemplateName");
+    CHECK(shader_name.text() == QStringLiteral("tint_pass"));
+    auto &create =
+        required<QPushButton>(form, "pelican.fullscreenPass.createFragmentShader");
+    create.click();
+
+    const auto path = root / "shaders" / "tint_pass.frag";
+    REQUIRE(std::filesystem::exists(path));
+    const auto written = readText(path);
+    // One declaration per image input, at the input's own position; the
+    // buffer is named for the author and not declared.
+    CHECK(written.find("PELICAN_DECLARE_INPUT_0(in_lit_color);") !=
+          std::string::npos);
+    CHECK(written.find("PELICAN_DECLARE_INPUT_2(in_ssao_blur);") !=
+          std::string::npos);
+    CHECK(written.find("PELICAN_DECLARE_INPUT_1") == std::string::npos);
+    CHECK(written.find("light_list) is a buffer") != std::string::npos);
+    auto &fragment =
+        required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment");
+    CHECK(fragment.text() == QStringLiteral("project://shaders/tint_pass"));
+    REQUIRE(opened.size() == 1);
+    CHECK(opened.back() == path);
+
+    // The author edits the file; a second New... for the same name finds it.
+    {
+        std::ofstream mine{path, std::ios::binary | std::ios::trunc};
+        mine << "// mine\n";
+    }
+    fragment.clear();
+    new_shader.click();
+    create.click();
+    CHECK(readText(path) == "// mine\n");
+    CHECK(fragment.text().isEmpty());
+    CHECK(opened.size() == 1);
+    auto &use_existing =
+        required<QPushButton>(form, "pelican.fullscreenPass.openExistingShader");
+    REQUIRE_FALSE(use_existing.isHidden());
+    CHECK(required<QLabel>(form, "pelican.fullscreenPass.shaderTemplateNotice")
+              .text()
+              .contains(QStringLiteral("already exists")));
+    use_existing.click();
+    CHECK(fragment.text() == QStringLiteral("project://shaders/tint_pass"));
+    REQUIRE(opened.size() == 2);
+    CHECK(opened.back() == path);
+    CHECK(readText(path) == "// mine\n");
+
+    // A name that would leave the shaders folder is refused before any write.
+    new_shader.click();
+    shader_name.setText(QStringLiteral("../escape"));
+    create.click();
+    CHECK_FALSE(std::filesystem::exists(root / "escape.frag"));
+    CHECK(opened.size() == 2);
+}
+
+TEST_CASE("F-3 a shader that did not compile is shown whole under the form, "
+          "and the form keeps what was typed",
+          "[devstudio][fullscreen-pass][f3][compile-log][widget]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
+    form.receiveResult(QByteArray::fromStdString(f3FramePlan().dump()));
+    driveMinimalDraft(form, "tint", "project://shaders/tint", "lit_color",
+                      "tint_out");
+    auto &save = required<QPushButton>(form, "pelican.fullscreenPass.save");
+    REQUIRE(save.isEnabled());
+    auto &log = required<QWidget>(form, "pelican.fullscreenPass.compileLog");
+    CHECK(log.isHidden());
+
+    const auto submit_and_reject = [&](const Json &error) {
+        save.click();
+        REQUIRE(authoring.requests.back().method ==
+                QStringLiteral("add_authored_pass"));
+        authoring.succeed(authoring.requests.back().id,
+                          {{"ticket", "f3-1"}, {"status", "accepted"}});
+        QApplication::processEvents();
+        REQUIRE(authoring.requests.back().method ==
+                QStringLiteral("get_edit_result"));
+        authoring.succeed(authoring.requests.back().id,
+                          {{"status", "rejected"},
+                           {"committed", false},
+                           {"error", error}});
+    };
+
+    const std::string shader_path = "C:/work/f3/shaders/tint.frag";
+    const std::string message =
+        "Shader compile failed: " + shader_path + "\n" + shader_path +
+        ":14: error: 'vaule0' : undeclared identifier\n" + shader_path +
+        ":14: error: 'assign' :  cannot convert from 'float' to "
+        "'layout( location=0) out highp 4-component vector of float'\n"
+        "2 errors generated.";
+    submit_and_reject({{"code", "render_pipeline_preflight_failed"},
+                       {"participant", "pelican.render_pipeline"},
+                       {"message", message}});
+
+    // The log is under the form, open, whole, numbered, with each place it
+    // names picked out.
+    REQUIRE_FALSE(log.isHidden());
+    auto &text = required<QPlainTextEdit>(form, "pelican.shaderCompileLog.text");
+    CHECK_FALSE(text.isHidden());
+    CHECK(text.toPlainText().contains(QStringLiteral(
+        "   1 | C:/work/f3/shaders/tint.frag:14: error: 'vaule0' : "
+        "undeclared identifier")));
+    CHECK(text.toPlainText().contains(QStringLiteral("   3 | 2 errors generated.")));
+    CHECK(log.property("pelicanCompileLocations").toStringList() ==
+          QStringList{QStringLiteral("C:/work/f3/shaders/tint.frag:14"),
+                      QStringLiteral("C:/work/f3/shaders/tint.frag:14")});
+    CHECK(text.extraSelections().size() == 2);
+    CHECK(required<QLabel>(form, "pelican.shaderCompileLog.summary").text() ==
+          QString::fromStdString(shader_path +
+                                 ":14: error: 'vaule0' : undeclared identifier"));
+    // The notice row says that it happened, not what the log says.
+    CHECK_FALSE(required<QLabel>(form, "pelican.fullscreenPass.authoringStatus")
+                    .toolTip()
+                    .contains(QStringLiteral("undeclared identifier")));
+
+    // Nothing the author typed is gone, and Save is there to try again.
+    CHECK(required<QLineEdit>(form, "pelican.fullscreenPass.name").text() ==
+          QStringLiteral("tint"));
+    CHECK(required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment")
+              .text() == QStringLiteral("project://shaders/tint"));
+    CHECK(required<QListWidget>(form, "pelican.fullscreenPass.inputs").count() == 1);
+    CHECK(required<QListWidget>(form, "pelican.fullscreenPass.colors").count() == 1);
+    CHECK(save.isEnabled());
+
+    // The fold is the author's.
+    required<QToolButton>(form, "pelican.shaderCompileLog.toggle").click();
+    CHECK(text.isHidden());
+    CHECK_FALSE(log.isHidden());
+
+    // A rejection that is not a compile log takes the old log away and goes
+    // to the notice row as before.
+    submit_and_reject({{"code", "render_pipeline_preflight_failed"},
+                       {"message", "render pipeline candidate was rejected"}});
+    CHECK(log.isHidden());
+    CHECK(required<QLabel>(form, "pelican.fullscreenPass.authoringStatus")
+              .toolTip()
+              .contains(QStringLiteral("render pipeline candidate was rejected")));
 }
 } // namespace PelicanStudio

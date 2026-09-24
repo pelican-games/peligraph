@@ -62,6 +62,12 @@ class FramePlanWidget final : public QWidget {
     void refreshAuthoringContext();
     void setProjectRoot(const std::filesystem::path &project_root);
     void setShaderSourceOpenAction(ShaderSourceOpenAction action);
+    // F-3. A get_status result: its shader reload failures become marks on
+    // the nodes whose shader they name. The widget reads get_status itself
+    // only after a watched shader file changes; this is the same ingestion,
+    // for tests and for a caller that already holds a reply.
+    // A failure no drawn node reads is one line on the panel's status line.
+    void receiveShaderReloadStatus(const QByteArray &status_json);
 
     ToolLayoutSnapshot toolLayoutSnapshot() const;
 

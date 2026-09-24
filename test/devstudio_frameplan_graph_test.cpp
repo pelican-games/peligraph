@@ -23,6 +23,7 @@
 #include "frameplaneditcapability.hpp"
 #include "frameplangraphics.hpp"
 #include "frameplanwidget.hpp"
+#include "shaderreloadfollower.hpp"
 #include "jsonrpcrequest.hpp"
 #include "taskconnectiongraphics.hpp"
 #include "taskresourceconnections.hpp"
@@ -7492,6 +7493,234 @@ TEST_CASE("N-8 a node drag writes one frame_plan placement, and a legacy root wr
     const auto notice = statusText(fixture.widget);
     CHECK(notice.contains(QStringLiteral("legacy")));
     CHECK(notice.contains(QStringLiteral("main.json")));
+}
+// F-3. A shader that failed to reload is marked on the node whose shader it
+// is, by the path the engine names; a failure no node reads marks nothing and
+// is said in one line; the mark goes when the error does.
+TEST_CASE("F-3 a shader reload failure marks the node that reads the file, "
+          "and only while it fails",
+          "[devstudio][frame-plan][f3][shader-reload]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = std::filesystem::path{temporary.path().toStdWString()};
+    std::filesystem::create_directories(root / "shaders");
+    {
+        std::ofstream project{root / "project.json", std::ios::binary};
+        project << Json{{"schema", "pelican.project"},
+                        {"version", 1},
+                        {"name", "f3-reload"}}
+                       .dump();
+        for (const char *file : {"tint.frag", "other.frag", "unread.frag"}) {
+            std::ofstream shader{root / "shaders" / file, std::ios::binary};
+            shader << "#version 450\nvoid main(){}\n";
+        }
+    }
+    const auto fragment = [](const std::string &stem) {
+        return Json{
+            {"state", "resolved"},
+            {"stages",
+             Json::array(
+                 {{{"stage", "vertex"},
+                   {"effective_ref", "engine://fullscreen"},
+                   {"origin", "engine_default"},
+                   {"source_open_ref", nullptr},
+                   {"source_open_reason", "embedded_engine_resource"}},
+                  {{"stage", "fragment"},
+                   {"declared_ref", "project://shaders/" + stem},
+                   {"effective_ref", "project://shaders/" + stem},
+                   {"origin", "authored"},
+                   {"source_open_ref",
+                    "project://shaders/" + stem + ".frag"}}})}};
+    };
+
+    EditingFixture fixture;
+    for (auto &node : fixture.wire["nodes"]) {
+        if (node.at("name") == "wp343_mixed_a")
+            node["shader_resolution"] = fragment("tint");
+        if (node.at("name") == "wp343_mixed_c")
+            node["shader_resolution"] = fragment("other");
+    }
+    fixture.widget.setProjectRoot(root);
+    fixture.open();
+    auto &logical = fixture.logical();
+    REQUIRE(nodeItem(logical, "wp343_mixed_a") != nullptr);
+    REQUIRE(nodeItem(logical, "wp343_mixed_c") != nullptr);
+
+    const auto marked = [&] {
+        StringSet names;
+        for (QGraphicsItem *item :
+             itemsOfKind(logical, FramePlanNodeShaderErrorItem))
+            names.insert(item->data(FramePlanNameRole).toString().toStdString());
+        return names;
+    };
+    const auto status = [](const Json &last_error) {
+        return QByteArray::fromStdString(
+            Json{{"reload",
+                  {{"state", "watching"},
+                   {"runtime",
+                    {{"pelican.shaders",
+                      {{"attempted", 2},
+                       {"applied", 1},
+                       {"failed", 1},
+                       {"last_error", last_error},
+                       {"details", {{"enabled", true}}}}}}}}}}
+                .dump());
+    };
+    // The engine writes the path it compiled, in its own spelling.
+    const auto engine_path = [&](const char *file) {
+        return std::filesystem::canonical(root / "shaders" / file).string();
+    };
+    const auto failure = [&](const char *file) {
+        const auto path = engine_path(file);
+        return "Shader compile failed: " + path + "\n" + path +
+               ":3: error: 'vaule0' : undeclared identifier\n"
+               "1 error generated.";
+    };
+    CHECK(marked().empty());
+
+    SECTION("the path names a node's fragment: that node, and only it") {
+        fixture.widget.receiveShaderReloadStatus(status(failure("tint.frag")));
+        CHECK(marked() == StringSet{"wp343_mixed_a"});
+        const auto marks = itemsOfKind(logical, FramePlanNodeShaderErrorItem);
+        REQUIRE(marks.size() == 1);
+        CHECK(marks.front()->toolTip() ==
+              QString::fromStdString(engine_path("tint.frag") +
+                                     ":3: error: 'vaule0' : undeclared "
+                                     "identifier"));
+        CHECK(marks.front()->parentItem() == nodeItem(logical, "wp343_mixed_a"));
+
+        // A redraw of the canvas keeps the mark on its node.
+        subtreeDepth(fixture.widget).setValue(63);
+        QApplication::processEvents();
+        CHECK(marked() == StringSet{"wp343_mixed_a"});
+
+        // The same shader fixed: the next reading has no error, the mark goes.
+        fixture.widget.receiveShaderReloadStatus(status(nullptr));
+        CHECK(marked().empty());
+    }
+
+    SECTION("two failures joined by the reload service mark both nodes") {
+        fixture.widget.receiveShaderReloadStatus(
+            status(failure("tint.frag") + "; " + failure("other.frag")));
+        CHECK(marked() == StringSet{"wp343_mixed_a", "wp343_mixed_c"});
+    }
+
+    SECTION("a file no drawn node reads marks nothing and is said in a line") {
+        fixture.widget.receiveShaderReloadStatus(status(failure("unread.frag")));
+        CHECK(marked().empty());
+        CHECK(statusText(fixture.widget)
+                  .startsWith(QStringLiteral("Shader reload failed: ")));
+    }
+}
+// F-3 / Q-2. The reload status is read because a shader was written, never
+// because time passed: one read when the watched files change, a bounded run
+// after a write that stops as soon as the engine's reading moves (or can never
+// move), and nothing at all while nobody writes.
+TEST_CASE("F-3 the shader reload status is read after a write, a bounded "
+          "number of times, and never on a clock",
+          "[devstudio][frame-plan][f3][shader-reload][q2]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto shader =
+        std::filesystem::path{temporary.path().toStdWString()} / "a.frag";
+    {
+        std::ofstream file{shader, std::ios::binary};
+        file << "#version 450\nvoid main(){}\n";
+    }
+    std::vector<qint64> requests;
+    std::vector<bool> applied_after_change;
+    ShaderReloadFollower follower{ShaderReloadFollower::Hooks{
+        .request_status =
+            [&](QString *) {
+                requests.push_back(static_cast<qint64>(requests.size()) + 9000);
+                return requests.back();
+            },
+        .apply =
+            [&](const ShaderReloadMarks &, const ShaderReloadReading &,
+                bool after_change) {
+                applied_after_change.push_back(after_change);
+            },
+    }};
+    const auto reading = [](std::uint64_t attempted, bool enabled) {
+        return QByteArray::fromStdString(
+            Json{{"reload",
+                  {{"runtime",
+                    {{"pelican.shaders",
+                      {{"attempted", attempted},
+                       {"applied", attempted},
+                       {"failed", 0},
+                       {"last_error", nullptr},
+                       {"details", {{"enabled", enabled}}}}}}}}}}
+                .dump());
+    };
+    const auto answer = [&](const QByteArray &status) {
+        REQUIRE(follower.pendingRequest() != 0);
+        REQUIRE(follower.receive(follower.pendingRequest(), status));
+    };
+    const auto wait = [](int ms) { QTest::qWait(ms); };
+
+    // Nothing watched: nothing read.
+    wait(100);
+    CHECK(requests.empty());
+
+    // A new set of files is read once, so marks start from what is known.
+    follower.setSources(NodeShaderSources{{"pass", {shader}}});
+    wait(50);
+    REQUIRE(requests.size() == 1);
+    answer(reading(1, true));
+    CHECK(applied_after_change == std::vector<bool>{false});
+    // The same set again is not a reason to ask.
+    follower.setSources(NodeShaderSources{{"pass", {shader}}});
+    // And idle is idle: no clock asks again.
+    wait(1500);
+    CHECK(requests.size() == 1);
+
+    SECTION("a write is followed until the engine's reading moves") {
+        follower.sourceChanged();
+        wait(ShaderReloadFollower::FirstReadDelayMs + 100);
+        REQUIRE(requests.size() == 2);
+        answer(reading(1, true)); // the engine has not got to it yet
+        wait(ShaderReloadFollower::FollowReadIntervalMs + 100);
+        REQUIRE(requests.size() == 3);
+        answer(reading(2, true)); // now it has
+        wait(1000);
+        CHECK(requests.size() == 3);
+        CHECK(applied_after_change.back());
+    }
+
+    SECTION("an engine that does not reload shaders is asked once") {
+        follower.sourceChanged();
+        wait(ShaderReloadFollower::FirstReadDelayMs + 100);
+        REQUIRE(requests.size() == 2);
+        answer(reading(1, false));
+        wait(1000);
+        CHECK(requests.size() == 2);
+    }
+
+    SECTION("an engine whose reading never moves is asked a bounded number "
+            "of times") {
+        follower.sourceChanged();
+        for (int read = 0; read < ShaderReloadFollower::MaxFollowReads + 4;
+             ++read) {
+            wait(ShaderReloadFollower::FirstReadDelayMs + 50);
+            if (follower.pendingRequest() == 0) break;
+            answer(reading(1, true));
+        }
+        wait(1000);
+        CHECK(requests.size() ==
+              1 + static_cast<std::size_t>(ShaderReloadFollower::MaxFollowReads));
+    }
+
+    SECTION("the write itself, on disk, is what starts the reads") {
+        {
+            std::ofstream file{shader, std::ios::binary | std::ios::trunc};
+            file << "#version 450\nvoid main(){ }\n";
+        }
+        for (int tick = 0; tick < 60 && requests.size() < 2; ++tick) wait(50);
+        CHECK(requests.size() == 2);
+    }
 }
 
 // --- F-1. Render targets declared from the Frame Plan.

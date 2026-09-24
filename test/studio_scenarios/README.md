@@ -277,6 +277,34 @@ Three things worth knowing before writing a scenario:
   `.name`, `.template` (a combo: `select` it by the label a person reads),
   `.notice` (why Create was refused) and `.create`.
 
+## Files in the project copy
+
+A third kind of step is done by the driver itself, not sent to Studio: a
+`file` step reads or writes one file in the project copy, the way a person
+does in an editor of their own between two gestures. The path has to be
+inside `{project}`; anything else fails the step.
+
+    {"file": "write",    "path": "{project}/shaders/x.frag", "text": "..."}
+    {"file": "replace",  "path": "{project}/shaders/x.frag", "old": "a", "new": "b"}
+    {"file": "contains", "path": "{project}/shaders/x.frag", "text": "...", "value": true}
+    {"file": "exists",   "path": "{project}/shaders/x.frag", "value": true}
+
+`replace` requires exactly one copy of `old`, so a step cannot quietly edit
+the wrong place. `fullscreen_pass_from_template` is the example: it breaks and
+repairs the shader the Pass Editor's "New..." wrote. Its fixture is
+`test/fixtures/studio_fullscreen_pass_from_template`.
+
+The Pass Editor's F-3 controls are named like the rest:
+`pelican.fullscreenPass.newFragmentShader` (New...),
+`pelican.fullscreenPass.shaderTemplateName`,
+`pelican.fullscreenPass.createFragmentShader`,
+`pelican.fullscreenPass.openExistingShader` and
+`pelican.fullscreenPass.compileLog` (the log under the form, whose text is
+`pelican.shaderCompileLog.text`). A node whose shader failed to reload carries
+a drawn badge, `node_shader_error#<pass name>`. Under automation Studio does
+not hand a shader to the desktop: "opening" one prints
+`automation: shader source open <path>` to its log instead.
+
 ## Gestures a canvas is driven with
 
 `press`, `move` and `release` share one piece of state: which buttons this

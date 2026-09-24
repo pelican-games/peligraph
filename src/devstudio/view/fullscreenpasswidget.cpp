@@ -4,7 +4,10 @@
 #include "../model/frameplanmodel.hpp"
 #include "../model/frameplanresourcekind.hpp"
 
+#include "fullscreenshadertemplate.hpp"
 #include "panelhelp.hpp"
+#include "shadercompilelogpanel.hpp"
+#include "shaderdiagnostics.hpp"
 #include "passfieldownership.hpp"
 #include "renderconfigsection.hpp"
 #include "passshapepolicy.hpp"
@@ -18,6 +21,7 @@
 #include <QClipboard>
 #include <QComboBox>
 #include <QCheckBox>
+#include <QDesktopServices>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -33,10 +37,12 @@
 #include <QSpinBox>
 #include <QStringList>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QVariant>
 
 #include <algorithm>
+#include <filesystem>
 #include <limits>
 #include <map>
 #include <optional>
@@ -140,6 +146,18 @@ struct FullscreenPassWidget::Impl {
     QLineEdit *name = nullptr;
     QLineEdit *vertex_shader = nullptr;
     QLineEdit *fragment_shader = nullptr;
+    // F-3: the fragment row carries "New...", which writes a starting shader
+    // into the project; the row under it asks for the file's name.
+    QWidget *fragment_row = nullptr;
+    QPushButton *new_fragment_shader = nullptr;
+    QWidget *shader_template_row = nullptr;
+    QLineEdit *shader_template_name = nullptr;
+    QPushButton *create_fragment_shader = nullptr;
+    QPushButton *open_existing_shader = nullptr;
+    QLabel *shader_template_notice = nullptr;
+    ShaderCompileLogPanel *compile_log = nullptr;
+    std::optional<std::filesystem::path> project_root;
+    std::function<bool(const std::filesystem::path &)> shader_open_action;
     QLineEdit *skinned_vertex_shader = nullptr;
     QCheckBox *ray_query = nullptr;
     QLineEdit *ray_query_scene = nullptr;
@@ -323,7 +341,7 @@ struct FullscreenPassWidget::Impl {
             QStringLiteral("pelican.fullscreenPass.shader.fragment"));
         fragment_shader->setPlaceholderText(
             owner.tr("enter a stem; assets are not enumerated here"));
-        form->addRow(owner.tr("Fragment"), fragment_shader);
+        buildShaderTemplateRows();
         skinned_vertex_shader = new QLineEdit(&owner);
         skinned_vertex_shader->setObjectName("pelican.fullscreenPass.shader.skinnedVertex");
         skinned_vertex_shader->setPlaceholderText(owner.tr("Blank uses the engine default"));
@@ -538,6 +556,11 @@ struct FullscreenPassWidget::Impl {
             QStringLiteral("pelican.fullscreenPass.copyJson"));
         layout->addWidget(copy_json);
 
+        compile_log = new ShaderCompileLogPanel(&owner);
+        compile_log->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.compileLog"));
+        layout->addWidget(compile_log);
+
         auto *authoring_controls = new QHBoxLayout;
         save = new QPushButton(owner.tr("Save"), &owner);
         save->setObjectName(
@@ -678,6 +701,214 @@ struct FullscreenPassWidget::Impl {
             });
     }
 
+    // --- F-3: a fullscreen pass is made shader and all.
+
+    void buildShaderTemplateRows() {
+        // The same desktop hand-off the Frame Plan's shader Open uses.
+        shader_open_action = [](const std::filesystem::path &path) {
+            return QDesktopServices::openUrl(QUrl::fromLocalFile(
+                QString::fromStdWString(path.wstring())));
+        };
+        fragment_row = new QWidget(&owner);
+        fragment_row->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.fragmentRow"));
+        auto *fragment_layout = new QHBoxLayout(fragment_row);
+        fragment_layout->setContentsMargins(0, 0, 0, 0);
+        fragment_layout->addWidget(fragment_shader, 1);
+        new_fragment_shader =
+            new QPushButton(owner.tr("New…"), fragment_row);
+        new_fragment_shader->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.newFragmentShader"));
+        fragment_layout->addWidget(new_fragment_shader);
+        form->addRow(owner.tr("Fragment"), fragment_row);
+
+        shader_template_row = new QWidget(&owner);
+        shader_template_row->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.shaderTemplateRow"));
+        auto *template_layout = new QHBoxLayout(shader_template_row);
+        template_layout->setContentsMargins(0, 0, 0, 0);
+        shader_template_name = new QLineEdit(shader_template_row);
+        shader_template_name->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.shaderTemplateName"));
+        shader_template_name->setToolTip(owner.tr(
+            "Written to shaders/<name>.frag in the project. Letters, digits, "
+            "'_' and '-'."));
+        create_fragment_shader =
+            new QPushButton(owner.tr("Create"), shader_template_row);
+        create_fragment_shader->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.createFragmentShader"));
+        open_existing_shader =
+            new QPushButton(owner.tr("Open"), shader_template_row);
+        open_existing_shader->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.openExistingShader"));
+        open_existing_shader->setToolTip(owner.tr(
+            "Uses the file that is already there and opens it; it is not "
+            "overwritten."));
+        open_existing_shader->hide();
+        shader_template_notice = new QLabel(shader_template_row);
+        shader_template_notice->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.shaderTemplateNotice"));
+        applyPanelNoticeStyle(shader_template_notice);
+        template_layout->addWidget(shader_template_name, 1);
+        template_layout->addWidget(create_fragment_shader);
+        template_layout->addWidget(open_existing_shader);
+        template_layout->addWidget(shader_template_notice, 1);
+        form->addRow(QString{}, shader_template_row);
+        form->setRowVisible(shader_template_row, false);
+        updateShaderTemplateAvailability();
+
+        QObject::connect(new_fragment_shader, &QPushButton::clicked, &owner,
+                         [this] { beginShaderTemplate(); });
+        QObject::connect(create_fragment_shader, &QPushButton::clicked,
+                         &owner, [this] { createShaderTemplate(); });
+        QObject::connect(shader_template_name, &QLineEdit::returnPressed,
+                         &owner, [this] { createShaderTemplate(); });
+        QObject::connect(open_existing_shader, &QPushButton::clicked, &owner,
+                         [this] { useExistingShaderTemplate(); });
+        QObject::connect(shader_template_name, &QLineEdit::textChanged,
+                         &owner, [this] {
+                             open_existing_shader->hide();
+                             setPanelNotice(shader_template_notice, {}, {});
+                         });
+    }
+
+    void updateShaderTemplateAvailability() {
+        new_fragment_shader->setEnabled(project_root.has_value());
+        new_fragment_shader->setToolTip(
+            project_root
+                ? owner.tr("Writes a fragment shader for the current inputs "
+                           "to shaders/<name>.frag, puts its stem here and "
+                           "opens it.")
+                : owner.tr("Open a project first: the shader is written "
+                           "into its shaders folder."));
+    }
+
+    void beginShaderTemplate() {
+        if (!project_root) return;
+        const QString proposed = text(suggestedShaderTemplateName(
+            name->text().trimmed().toStdString()));
+        {
+            const QSignalBlocker blocker{shader_template_name};
+            shader_template_name->setText(proposed);
+        }
+        open_existing_shader->hide();
+        create_fragment_shader->show();
+        setPanelNotice(shader_template_notice, {}, {});
+        form->setRowVisible(shader_template_row, true);
+        shader_template_name->setFocus();
+        shader_template_name->selectAll();
+    }
+
+    std::vector<FullscreenShaderTemplateInput> templateInputs() const {
+        std::vector<FullscreenShaderTemplateInput> result;
+        for (const auto &authored : selectedSequence(*inputs)) {
+            const auto reference =
+                Pelican::parsePassShapeInputReference(authored);
+            const auto found = resource_kinds.find(reference.name);
+            result.push_back(FullscreenShaderTemplateInput{
+                .resource = authored,
+                .image = found == resource_kinds.end() ||
+                         found->second !=
+                             Pelican::PassShapeResourceKind::buffer,
+            });
+        }
+        return result;
+    }
+
+    void templateNotice(const QString &shown, const QString &detail,
+                        bool failure) {
+        shader_template_notice->setStyleSheet(
+            failure ? QStringLiteral("color: #d94c3d;") : QString{});
+        setPanelNotice(shader_template_notice, shown, detail);
+    }
+
+    void openShaderFile(const std::filesystem::path &path,
+                        const QString &reference) {
+        const bool opened =
+            shader_open_action && shader_open_action(path);
+        if (!opened) {
+            templateNotice(owner.tr("could not open %1").arg(reference),
+                           owner.tr("The desktop could not open %1.")
+                               .arg(QString::fromStdWString(path.wstring())),
+                           true);
+        }
+    }
+
+    void createShaderTemplate() {
+        if (!project_root) return;
+        const auto shader_name =
+            shader_template_name->text().trimmed().toStdString();
+        if (!isValidShaderTemplateName(shader_name)) {
+            templateNotice(owner.tr("letters, digits, _ and - only"),
+                           owner.tr("A shader name is letters, digits, '_' "
+                                    "and '-', so it can only land in the "
+                                    "project's shaders folder."),
+                           true);
+            return;
+        }
+        try {
+            const auto pass_name = name->text().trimmed().isEmpty()
+                                       ? shader_name
+                                       : name->text().trimmed().toStdString();
+            const auto inputs_now = templateInputs();
+            const auto written = writeShaderTemplate(
+                *project_root, shader_name,
+                fullscreenFragmentShaderTemplate(pass_name, inputs_now));
+            const QString file =
+                QStringLiteral("shaders/%1.frag").arg(text(shader_name));
+            if (!written.created) {
+                // The author's file is theirs. Offer it; do not replace it.
+                open_existing_shader->show();
+                templateNotice(owner.tr("%1 already exists").arg(file),
+                               owner.tr("%1 is already in the project and was "
+                                        "left as it is. Open uses it for this "
+                                        "pass.")
+                                   .arg(file),
+                               true);
+                return;
+            }
+            fragment_shader->setText(text(written.reference));
+            templateNotice(owner.tr("created %1").arg(file),
+                           owner.tr("Wrote %1 with %2 input(s) and put %3 in "
+                                    "the fragment field.")
+                               .arg(file)
+                               .arg(static_cast<qulonglong>(inputs_now.size()))
+                               .arg(text(written.reference)),
+                           false);
+            openShaderFile(written.path, text(written.reference));
+        } catch (const std::exception &error) {
+            templateNotice(owner.tr("could not write the shader"),
+                           QString::fromUtf8(error.what()), true);
+        }
+    }
+
+    void useExistingShaderTemplate() {
+        if (!project_root) return;
+        const auto shader_name =
+            shader_template_name->text().trimmed().toStdString();
+        if (!isValidShaderTemplateName(shader_name)) return;
+        const auto path = shaderTemplatePath(*project_root, shader_name);
+        const QString reference = text(shaderTemplateReference(shader_name));
+        fragment_shader->setText(reference);
+        open_existing_shader->hide();
+        templateNotice(owner.tr("using %1").arg(reference), {}, false);
+        openShaderFile(path, reference);
+    }
+
+    // A rejected candidate. A shader that did not compile is shown whole,
+    // under the form, and the form keeps every value it holds; the notice row
+    // says only that it happened.
+    void rejectAuthoring(const Json &response) {
+        const QString message = responseError(response);
+        if (compile_log->showMessage(message)) {
+            authoringError(owner.tr("shader compile failed; see the log "
+                                    "below"));
+            return;
+        }
+        compile_log->clear();
+        authoringError(message);
+    }
+
     bool preservesPresetDeclaration() const {
         const auto pass_type = original_preset_pass.value("type", std::string{});
         return editing_preset_pass && pass_type != "fullscreen";
@@ -740,17 +971,21 @@ struct FullscreenPassWidget::Impl {
 
     void showPresetFields(bool preserve_declaration) {
         type->setText(preserve_declaration ? text(original_preset_pass.at("type").get<std::string>()) : QStringLiteral("fullscreen"));
-        for (auto *field : std::array<QWidget *, 5>{position, location, vertex_shader, fragment_shader, raster_state})
+        for (auto *field : std::array<QWidget *, 5>{position, location, vertex_shader, fragment_row, raster_state})
             form->setRowVisible(field, !preserve_declaration);
         if (editingRasterPass()) {
-            for (auto *field : std::array<QWidget *, 3>{vertex_shader, fragment_shader, raster_state})
+            for (auto *field : std::array<QWidget *, 3>{vertex_shader, fragment_row, raster_state})
                 form->setRowVisible(field, true);
         }
         form->setRowVisible(draw, editingRasterPass());
         if (editingAuxiliaryPass()) {
             form->setRowVisible(vertex_shader, true);
-            form->setRowVisible(fragment_shader, !editingShadowPass());
+            form->setRowVisible(fragment_row, !editingShadowPass());
         }
+        form->setRowVisible(shader_template_row, false);
+        // The stem field is inside the row now; it still says for itself
+        // whether it is shown.
+        fragment_shader->setHidden(!form->isRowVisible(fragment_row));
         form->setRowVisible(skinned_vertex_shader, editsSkinnedShader());
         auto *target_grid = qobject_cast<QGridLayout *>(targets->layout());
         const std::array visible_columns{!editingAuxiliaryPass(), !editingShadowPass(),
@@ -1853,7 +2088,7 @@ struct FullscreenPassWidget::Impl {
                 if (status != "accepted" ||
                     !response.contains("ticket") ||
                     !response.at("ticket").is_string()) {
-                    authoringError(responseError(response));
+                    rejectAuthoring(response);
                     return;
                 }
                 pending_ticket =
@@ -1878,10 +2113,11 @@ struct FullscreenPassWidget::Impl {
                 if (status != "committed" ||
                     !response.value("committed", false)) {
                     pending_ticket.clear();
-                    authoringError(responseError(response));
+                    rejectAuthoring(response);
                     return;
                 }
                 pending_ticket.clear();
+                compile_log->clear();
                 authoring_status->setStyleSheet({});
                 setPanelNotice(authoring_status, owner.tr("committed"),
                                owner.tr("Authored pass transaction committed "
@@ -2033,6 +2269,10 @@ struct FullscreenPassWidget::Impl {
         colors->clear();
         depth->setCurrentIndex(-1);
         position->setValue(0);
+        // F-3: a new draft starts without the last draft's shader log or its
+        // half-typed shader name.
+        compile_log->clear();
+        form->setRowVisible(shader_template_row, false);
         updating = false;
     }
 
@@ -2395,6 +2635,21 @@ void FullscreenPassWidget::editPresetPassConnection(const QString &graph, const 
 void FullscreenPassWidget::insertAuthoredPassAfter(const QString &graph,
                                                    const QString &after_pass) {
     impl_->beginAuthoredPassInsert(graph, after_pass);
+}
+
+void FullscreenPassWidget::setProjectRoot(
+    const std::filesystem::path &project_root) {
+    impl_->project_root = project_root;
+    impl_->updateShaderTemplateAvailability();
+}
+
+void FullscreenPassWidget::setShaderSourceOpenAction(
+    std::function<bool(const std::filesystem::path &)> action) {
+    if (!action) {
+        throw std::invalid_argument(
+            "shader source open action must not be empty");
+    }
+    impl_->shader_open_action = std::move(action);
 }
 
 void FullscreenPassWidget::receiveResult(const QByteArray &result_json) {

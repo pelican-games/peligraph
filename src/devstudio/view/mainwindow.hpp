@@ -14,6 +14,8 @@
 #include <QPointer>
 
 #include <array>
+#include <filesystem>
+#include <functional>
 #include <optional>
 
 class QDockWidget;
@@ -56,6 +58,12 @@ class MainWindow : public QMainWindow {
     [[nodiscard]] EmbeddedViewport *engineViewport() const noexcept {
         return viewport_;
     }
+    // F-3. How a shader file is handed to an editor, for both panels that
+    // open one (the Frame Plan's Open and the Pass Editor's New...). The
+    // desktop's own by default; the automation launch replaces it so a
+    // scenario never starts an application.
+    void setShaderSourceOpenAction(
+        std::function<bool(const std::filesystem::path &)> action);
 
   protected:
     void closeEvent(QCloseEvent *event) override;
