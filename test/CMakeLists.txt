@@ -630,6 +630,15 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     PELICAN_TEST_FRAME_PLAN_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/devstudio/example_frame_plan.json"
   )
 
+  # Q-6: the Add component list on real Qt widgets -- a candidate this build
+  # cannot take is greyed and turns Add and the declaration off.
+  pelican_define_test(devstudio_componentadd_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_inspector_model
+    Qt6::Core
+    Qt6::Widgets
+  )
+
   # F-2: File > New Project... -- the dialog writes the picked template
   # through the same function as `pelican_cli project init`, and the window
   # opens it through openProject.

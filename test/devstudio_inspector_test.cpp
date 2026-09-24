@@ -1897,3 +1897,91 @@ TEST_CASE("G-2 the simplemodelview model field offers the three primitives",
     CHECK(*harness.model.modelAssets() == engine_models);
     CHECK(harness.model.modelAssetsRevision() != revision);
 }
+
+TEST_CASE("Q-6 a component this build cannot take reads as a sentence and its code",
+          "[devstudio][inspector][component-addition][q6]") {
+    using PelicanStudio::componentAddRows;
+    using PelicanStudio::componentUnavailableDescription;
+    using PelicanStudio::componentUnavailableSentence;
+    using PelicanStudio::componentUnavailableTag;
+    using PelicanStudio::isComponentUnavailableCode;
+
+    struct Expected {
+        std::string code;
+        std::string sentence;
+        std::string tag;
+    };
+    const std::vector<Expected> known{
+        {"animation.module_unavailable@1", "This build has no animation module", "not in this build"},
+        {"audio.module_unavailable@1", "This build has no audio module", "not in this build"},
+        {"physics.module_unavailable@1", "This build has no physics module", "not in this build"},
+        {"xr.module_unavailable@1", "This build has no XR module", "not in this build"},
+        {"vat.module_unavailable@1", "This build has no VAT module", "not in this build"},
+        {"seqplayer.module_unavailable@1", "This build has no sequence player module", "not in this build"},
+        {"pelican.ray_instance_requires_layout_v2@1", "Ray instances need ray group layout v2",
+         "needs ray layout v2"},
+    };
+    for (const auto &entry : known) {
+        CAPTURE(entry.code);
+        CHECK(isComponentUnavailableCode(entry.code));
+        CHECK(componentUnavailableSentence(entry.code) == entry.sentence);
+        const auto description = componentUnavailableDescription(entry.code);
+        CHECK(description == entry.sentence + " (" + entry.code + ")");
+        // The description panel shows one line of at most 90 characters and
+        // cuts at the first ". "; the whole line has to survive both.
+        CHECK(description.size() <= 90);
+        CHECK(description.find(". ") == std::string::npos);
+        CHECK(componentUnavailableTag(entry.code) == entry.tag);
+    }
+
+    // A code Studio does not know reads as itself.
+    CHECK(isComponentUnavailableCode("teleport.module_unavailable@2"));
+    CHECK(componentUnavailableSentence("teleport.module_unavailable@2").empty());
+    CHECK(componentUnavailableDescription("teleport.module_unavailable@2") ==
+          "teleport.module_unavailable@2");
+    CHECK(componentUnavailableTag("teleport.module_unavailable@2") == "unavailable");
+    // A default that only needs input is a sentence, not a code.
+    CHECK_FALSE(isComponentUnavailableCode("A model reference is required."));
+    CHECK_FALSE(isComponentUnavailableCode("Set speed."));
+    CHECK_FALSE(isComponentUnavailableCode(""));
+    CHECK_FALSE(isComponentUnavailableCode("module@"));
+    CHECK_FALSE(isComponentUnavailableCode("physics@1"));
+
+    const Json catalog{{"object_id", 41}, {"scene_revision", 1}, {"candidates", Json::array({
+        {{"key", "physics_body"}, {"name", "physics_body"}, {"available", false},
+         {"unavailable_reason", "physics.module_unavailable@1"}},
+        {{"key", "collider"}, {"name", "collider"}, {"available", true}},
+        {{"key", "pelican_ray_instance"}, {"name", "pelican_ray_instance"}, {"available", false},
+         {"unavailable_reason", "pelican.ray_instance_requires_layout_v2@1"}},
+        {{"key", "simplemodelview"}, {"name", "simplemodelview"}, {"available", false},
+         {"unavailable_reason", "A model reference is required."}},
+        {{"key", "animator"}, {"name", "animator"}, {"available", false},
+         {"unavailable_reason", "teleport.module_unavailable@2"}},
+        {{"key", "behavior:spin"}, {"name", "behavior"}, {"behavior_type", "spin"}, {"available", true}},
+    })}};
+    const auto rows = componentAddRows(catalog);
+    REQUIRE(rows.size() == 6);
+    const std::string dash = "\xE2\x80\x94";
+    // The addable ones first, then the rest, each in the catalog's order.
+    std::vector<std::string> keys;
+    for (const auto &row : rows) keys.push_back(row.key);
+    CHECK(keys == std::vector<std::string>{"collider", "simplemodelview", "behavior:spin",
+                                           "physics_body", "pelican_ray_instance", "animator"});
+    CHECK(rows.at(0).candidate == 1);
+    CHECK(rows.at(0).label == "collider");
+    CHECK(rows.at(0).addable);
+    CHECK(rows.at(0).blocked.empty());
+    // Needs input, stays addable: the declaration is where the input goes.
+    CHECK(rows.at(1).label == "simplemodelview");
+    CHECK(rows.at(1).addable);
+    CHECK(rows.at(2).label == "Behavior: spin");
+    CHECK(rows.at(3).candidate == 0);
+    CHECK(rows.at(3).label == "physics_body " + dash + " not in this build");
+    CHECK_FALSE(rows.at(3).addable);
+    CHECK(rows.at(3).blocked == "This build has no physics module (physics.module_unavailable@1)");
+    CHECK(rows.at(4).label == "pelican_ray_instance " + dash + " needs ray layout v2");
+    CHECK_FALSE(rows.at(4).addable);
+    CHECK(rows.at(5).label == "animator " + dash + " unavailable");
+    CHECK(rows.at(5).blocked == "teleport.module_unavailable@2");
+    CHECK(componentAddRows(Json::object()).empty());
+}

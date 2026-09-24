@@ -497,6 +497,93 @@ modelReferenceChoices(std::string_view current,
     return choices;
 }
 
+namespace {
+
+struct UnavailableComponentText {
+    std::string_view code;
+    std::string_view sentence;
+    std::string_view tag;
+};
+
+// Q-6: the codes PG-1 answers with. A new code reads as itself until a row
+// is added here.
+constexpr std::string_view NotInThisBuild = "not in this build";
+constexpr std::array<UnavailableComponentText, 7> UnavailableComponentTexts{{
+    {"animation.module_unavailable@1", "This build has no animation module", NotInThisBuild},
+    {"audio.module_unavailable@1", "This build has no audio module", NotInThisBuild},
+    {"physics.module_unavailable@1", "This build has no physics module", NotInThisBuild},
+    {"xr.module_unavailable@1", "This build has no XR module", NotInThisBuild},
+    {"vat.module_unavailable@1", "This build has no VAT module", NotInThisBuild},
+    {"seqplayer.module_unavailable@1", "This build has no sequence player module", NotInThisBuild},
+    {"pelican.ray_instance_requires_layout_v2@1", "Ray instances need ray group layout v2",
+     "needs ray layout v2"},
+}};
+
+const UnavailableComponentText *findUnavailableComponentText(std::string_view code) {
+    const auto found = std::find_if(UnavailableComponentTexts.begin(), UnavailableComponentTexts.end(),
+                                    [code](const auto &entry) { return entry.code == code; });
+    return found == UnavailableComponentTexts.end() ? nullptr : &*found;
+}
+
+} // namespace
+
+bool isComponentUnavailableCode(std::string_view reason) {
+    // "<word>.<word>...@<version>": lowercase words, no spaces. A sentence
+    // has spaces and never an '@' followed only by digits.
+    const auto at = reason.rfind('@');
+    if (at == std::string_view::npos || at == 0 || at + 1 == reason.size()) return false;
+    const auto name = reason.substr(0, at);
+    const auto version = reason.substr(at + 1);
+    if (!std::all_of(version.begin(), version.end(), [](char c) { return c >= '0' && c <= '9'; }))
+        return false;
+    if (name.find('.') == std::string_view::npos || name.front() == '.' || name.back() == '.' ||
+        name.find("..") != std::string_view::npos)
+        return false;
+    return std::all_of(name.begin(), name.end(), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '.';
+    });
+}
+
+std::string componentUnavailableSentence(std::string_view code) {
+    const auto *entry = findUnavailableComponentText(code);
+    return entry ? std::string{entry->sentence} : std::string{};
+}
+
+std::string componentUnavailableDescription(std::string_view code) {
+    const auto sentence = componentUnavailableSentence(code);
+    if (sentence.empty()) return std::string{code};
+    return sentence + " (" + std::string{code} + ")";
+}
+
+std::string componentUnavailableTag(std::string_view code) {
+    const auto *entry = findUnavailableComponentText(code);
+    return entry ? std::string{entry->tag} : std::string{"unavailable"};
+}
+
+std::vector<ComponentAddRow> componentAddRows(const Json &catalog) {
+    std::vector<ComponentAddRow> rows;
+    const auto candidates = catalog.find("candidates");
+    if (candidates == catalog.end() || !candidates->is_array()) return rows;
+    for (std::size_t index = 0; index < candidates->size(); ++index) {
+        const auto &candidate = candidates->at(index);
+        ComponentAddRow row;
+        row.candidate = index;
+        row.key = candidate.value("key", std::string{});
+        row.label = candidate.contains("behavior_type")
+            ? "Behavior: " + candidate.at("behavior_type").get<std::string>()
+            : candidate.value("name", std::string{});
+        const auto reason = candidate.value("unavailable_reason", std::string{});
+        if (!candidate.value("available", false) && isComponentUnavailableCode(reason)) {
+            row.addable = false;
+            row.label += " \xE2\x80\x94 " + componentUnavailableTag(reason);
+            row.blocked = componentUnavailableDescription(reason);
+        }
+        rows.push_back(std::move(row));
+    }
+    std::stable_partition(rows.begin(), rows.end(), [](const auto &row) { return row.addable; });
+    return rows;
+}
+
 std::vector<std::string> modelAssetIds(const Json &list_assets_result) {
     const auto &assets = requiredField(list_assets_result, "assets", "list_assets result");
     if (!assets.is_array()) throw std::runtime_error("list_assets assets must be an array");

@@ -2,6 +2,7 @@
 
 #include "panelhelp.hpp"
 #include "graphattachmentwidget.hpp"
+#include "componentaddlist.hpp"
 
 #include "../model/inspectormodel.hpp"
 #include "../viewport/embeddedviewport.hpp"
@@ -700,13 +701,9 @@ struct InspectorWidget::Impl {
             const QSignalBlocker blocker{component_types};
             component_types->clear();
             if (catalog) {
-                for (const auto &candidate : catalog->at("candidates")) {
-                    const auto key = QString::fromStdString(candidate.at("key").get<std::string>());
-                    const auto label = candidate.contains("behavior_type")
-                        ? owner.tr("Behavior: %1").arg(QString::fromStdString(candidate.at("behavior_type").get<std::string>()))
-                        : QString::fromStdString(candidate.at("name").get<std::string>());
-                    component_types->addItem(label, key);
-                }
+                // Q-6: a candidate this build cannot take is listed after the
+                // rest, greyed, with a short word after its name.
+                fillComponentAddTypes(*component_types, componentAddRows(*catalog));
                 const int previous = component_types->findData(displayed_component);
                 if (previous >= 0) component_types->setCurrentIndex(previous);
             }
@@ -722,13 +719,13 @@ struct InspectorWidget::Impl {
             component_description->setText(QString::fromStdString(model.notice().message));
             return;
         }
-        const int index = component_types->currentIndex();
-        if (index < 0) {
+        const auto row = currentComponentAddRow(*component_types);
+        if (!row) {
             component_description->setText(owner.tr("No additional registered component types."));
             return;
         }
-        const auto &candidate = catalog->at("candidates").at(static_cast<std::size_t>(index));
-        synchronizeComponentAssets(candidate, ready);
+        const auto &candidate = catalog->at("candidates").at(row->candidate);
+        synchronizeComponentAssets(candidate, ready && row->addable);
         const auto name = QString::fromStdString(candidate.at("key").get<std::string>());
         if (displayed_component != name || !component_drafts.contains(name)) {
             displayed_component = name;
@@ -745,13 +742,19 @@ struct InspectorWidget::Impl {
                 QString::fromStdString(field.value("name", "")),
                 QString::fromStdString(field.value("type", ""))));
         }
-        confirm_add_component->setEnabled(ready);
+        applyComponentAddAvailability(*component_types, ready, *confirm_add_component,
+                                      *component_declaration);
         component_declaration->setToolTip(owner.tr("Edit the declaration, then Add. Use registered asset names for asset fields; the engine validates the values."));
-        QString description;
-        if (!fields.isEmpty()) description = (candidate.contains("behavior_type")
-            ? owner.tr("Params: %1") : owner.tr("Fields: %1")).arg(fields.join(", "));
-        if (!candidate.value("available", false))
-            description += "\n" + QString::fromStdString(candidate.value("unavailable_reason", ""));
+        // Q-6: why a row cannot be added comes first, since the panel shows
+        // only the first line: "This build has no physics module
+        // (physics.module_unavailable@1)".
+        QStringList lines;
+        if (!row->addable) lines.push_back(QString::fromStdString(row->blocked));
+        if (!fields.isEmpty()) lines.push_back((candidate.contains("behavior_type")
+            ? owner.tr("Params: %1") : owner.tr("Fields: %1")).arg(fields.join(", ")));
+        if (row->addable && !candidate.value("available", false))
+            lines.push_back(QString::fromStdString(candidate.value("unavailable_reason", "")));
+        QString description = lines.join("\n");
         if (model.notice().kind == InspectorNoticeKind::Error)
             description += "\n" + QString::fromStdString(model.notice().message);
         setPanelNotice(component_description, oneLine(description),

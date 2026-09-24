@@ -163,6 +163,33 @@ modelReferenceChoices(std::string_view current,
 // The model ids of a list_assets result, in its order.
 [[nodiscard]] std::vector<std::string> modelAssetIds(const nlohmann::json &list_assets_result);
 
+// Q-6: a component the engine lists but this build (or this scene) cannot
+// take. get_component_add_candidates names why with a code
+// ("physics.module_unavailable@1"); a candidate whose default merely needs
+// input ("A model reference is required.") carries a sentence instead and
+// stays addable once the declaration is filled in.
+[[nodiscard]] bool isComponentUnavailableCode(std::string_view reason);
+// The readable sentence for a code; empty for a code Studio does not know.
+// This is Studio's one table of them.
+[[nodiscard]] std::string componentUnavailableSentence(std::string_view code);
+// What the description shows: "<sentence> (<code>)", or the code alone.
+[[nodiscard]] std::string componentUnavailableDescription(std::string_view code);
+// The short word after the name in the list: "not in this build",
+// "needs ray layout v2", or "unavailable" for a code Studio does not know.
+[[nodiscard]] std::string componentUnavailableTag(std::string_view code);
+
+struct ComponentAddRow {
+    std::size_t candidate = 0;  // index into the catalog's "candidates"
+    std::string key;            // what add_component is asked for
+    std::string label;          // "physics — not in this build"
+    bool addable = true;        // false: Add and the declaration are off
+    std::string blocked;        // the description line when !addable
+};
+
+// The Add component list: every candidate once, the addable ones first,
+// each group in the catalog's order.
+[[nodiscard]] std::vector<ComponentAddRow> componentAddRows(const nlohmann::json &catalog);
+
 // Qt-independent state machine for the public editor RPC surface. The view
 // dispatches takeRpcRequests() over any transport and feeds the replies back
 // through receiveRpcResult()/receiveRpcFailure().
