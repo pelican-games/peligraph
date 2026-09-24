@@ -18,10 +18,13 @@ if(NOT schema STREQUAL "pelican.graph_catalog")
   message(FATAL_ERROR "unexpected catalog schema: ${schema}")
 endif()
 
-# pelican.pose is registered only when the animation unit is built, so the
-# catalog is the OFF build's observable difference too.
-set(expected_modules 3)
+# pelican.pose and pelican.audio are registered only when their units are
+# built (AG-0, PG-1), so the catalog is the OFF builds' observable difference.
+set(expected_modules 2)
 if(WITH_ANIMATION)
+  math(EXPR expected_modules "${expected_modules} + 1")
+endif()
+if(WITH_AUDIO)
   math(EXPR expected_modules "${expected_modules} + 1")
 endif()
 string(JSON module_count LENGTH "${catalog}" "modules")
@@ -183,28 +186,36 @@ foreach(documented_op IN LISTS documented_operations)
     list(APPEND unregistered_operations "${documented_op}")
   endif()
 endforeach()
-if(WITH_ANIMATION)
-  if(unregistered_operations)
-    message(FATAL_ERROR
-      "docs/v0_freeze.md lists operations this build does not register: "
-      "${unregistered_operations}")
-  endif()
-else()
-  # The freeze list claims exactly one difference for the OFF build.  Anything
-  # else missing means the table drifted from the catalog in a way the ON run
-  # would not have caught either.
-  foreach(documented_op IN LISTS unregistered_operations)
-    if(NOT documented_op MATCHES "^pose\\.")
-      message(FATAL_ERROR
-        "PELICAN_WITH_ANIMATION=OFF is missing ${documented_op}, which "
-        "docs/v0_freeze.md does not attribute to the pose module")
-    endif()
-  endforeach()
-  foreach(expected IN ITEMS pose.clip_sample pose.blend pose.state_machine
-                            pose.retarget pose.skeletal pose.transform)
-    if(NOT expected IN_LIST documented_operations)
-      message(FATAL_ERROR
-        "docs/v0_freeze.md no longer documents ${expected}")
-    endif()
-  endforeach()
+# The freeze table documents the ON build. A build without a unit may miss
+# exactly that unit's operations and nothing else; anything more means the
+# table drifted from the catalog in a way the ON run would not catch either.
+set(absent_unit_patterns "")
+set(absent_unit_operations "")
+if(NOT WITH_ANIMATION)
+  list(APPEND absent_unit_patterns "^pose\\.")
+  list(APPEND absent_unit_operations pose.clip_sample pose.blend pose.state_machine
+                                     pose.retarget pose.skeletal pose.transform)
 endif()
+if(NOT WITH_AUDIO)
+  list(APPEND absent_unit_patterns "^audio\\.")
+  list(APPEND absent_unit_operations audio.playback audio.volume audio.pitch)
+endif()
+foreach(documented_op IN LISTS unregistered_operations)
+  set(attributed FALSE)
+  foreach(pattern IN LISTS absent_unit_patterns)
+    if(documented_op MATCHES "${pattern}")
+      set(attributed TRUE)
+    endif()
+  endforeach()
+  if(NOT attributed)
+    message(FATAL_ERROR
+      "docs/v0_freeze.md lists ${documented_op}, which this build does not "
+      "register and no unit built out of it accounts for")
+  endif()
+endforeach()
+foreach(expected IN LISTS absent_unit_operations)
+  if(NOT expected IN_LIST documented_operations)
+    message(FATAL_ERROR
+      "docs/v0_freeze.md no longer documents ${expected}")
+  endif()
+endforeach()
