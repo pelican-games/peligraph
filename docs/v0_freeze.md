@@ -73,17 +73,17 @@ stdio JSON-RPC の枠組み(`jsonrpc` / `id` / `method` / `params`、名前付�
 `?` の付いた入力は任意。
 
 **`PELICAN_WITH_ANIMATION=OFF` build では `pelican.pose` module が無い**。
-catalog は 3 module / 21 op になり、下表の `pose.*` 6 本(`pose.blend` / `pose.clip_sample` /
+catalog は 4 module / 23 op になり、下表の `pose.*` 6 本(`pose.blend` / `pose.clip_sample` /
 `pose.retarget` / `pose.skeletal` / `pose.state_machine` / `pose.transform`)だけが消える。
 この関係は `test/run_devcli_graph_catalog.cmake` が「この表の op 集合 == ON の catalog、⊇ OFF の catalog」として検査する
 (表の範囲は下の 2 つのコメント行で区切る。行を足すときは ON の catalog に載る op だけ)。
 
 **`PELICAN_WITH_AUDIO=OFF` build では `pelican.audio` module が無い**。下表の `audio.*` 3 本(`audio.pitch` / `audio.playback` / `audio.volume`)が消え、
-catalog は 3 module / 24 op(animation も OFF なら 2 module / 18 op)になる。`audio.*` を書いた文書は `graph.operation_unregistered@1`。
+catalog は 4 module / 26 op(animation も OFF なら 3 module / 20 op)になる。`audio.*` を書いた文書は `graph.operation_unregistered@1`。
 `event.playback` とその出力型 `pelican.event.playback_control@1` は `pelican.value` に属するので残る(PG-1 で型を `pelican.value` へ移した)。
-同じ test は `WITH_AUDIO` と `WITH_ANIMATION` の両方を受け取り、module 数(2 + audio + animation)と、この表のうち
+同じ test は `WITH_AUDIO` と `WITH_ANIMATION` の両方を受け取り、module 数(3 + audio + animation。GP-3 までは 2 が基数で、`pelican.ui` が常に加わって 3 になった)と、この表のうち
 build から外した unit の op(`audio.*` / `pose.*`)だけが欠けてよいことを確かめる(`de84fddb`。AUDIO=OFF は catalog から
-`pelican.audio` を抜いた出力で確認、修正前の script はそれを「expected 4 built-in modules, got 3」で落とす)。
+`pelican.audio` を抜いた出力で確認、修正前の script はそれを「expected 4 built-in modules, got 3」で落とす。数は GP-3 前のもの)。
 
 <!-- graph-op-table:begin -->
 | op | module | domain | evaluation | change | sink | ports | inputs | outputs |
@@ -122,7 +122,7 @@ build から外した unit の op(`audio.*` / `pose.*`)だけが欠けてよい�
 catalog に module の型として載る型(semantic)は ON build で 11: `pelican.value` の `pelican.value.scalar@1` / `pelican.event.playback_control@1`、
 `pelican.audio` の `pelican.audio.voice@1`、`pelican.render` の `pelican.render.*` 6 種(`storage_buffer` / `attribute` /
 `color_signal` / `depth` / `legacy_opaque_image` / `legacy_opaque_resource`)、
-`pelican.pose` の `pelican.pose@1` / `pelican.rig@1`。AUDIO=OFF では `pelican.audio.voice@1` が、ANIMATION=OFF では pose の 2 つが catalog から消える
+`pelican.pose` の `pelican.pose@1` / `pelican.rig@1`。`pelican.ui` は型を持ち込まない(sink 2 本の入力 `value` は `pelican.value` の `pelican.value.scalar@1`)。AUDIO=OFF では `pelican.audio.voice@1` が、ANIMATION=OFF では pose の 2 つが catalog から消える
 (`pelican.audio.voice@1` は内部の組み込み型表 `makeBuiltinLogicalTypeRegistry()` には OFF でも残る)。値・姿勢・音の port を流れるのは render 6 種と rig を除く 4 つ(scalar / playback_control / voice / pose)で、
 `render.*` の op は解決時に `pelican.render.*` を自分の port に載せる(上表の parameter_dependent)。
 `pelican.rig@1` は登録だけで、どの port にも現れない(node の `parameters.rig` が指す同一性)。

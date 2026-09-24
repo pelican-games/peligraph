@@ -4,7 +4,7 @@
 
 ## 5.1 `GameContext`は公開ファサード
 
-ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L221) が主要サービスを薄く包みます。面は根と6つのドメインファサードに分かれ、物理 / 音 / アニメーション / セーブ / 描画 / シーンオブジェクトの名前解決は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L270) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L271) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L272) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L273) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L274) / [`objects()`](../../src/core/userpublic/gamecontext.hpp#L275)（GP-1）が返す値越しに呼びます。ファサードは空のクラス（[`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L41) / [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L71) / [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L98) / [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L107) / [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L122) / [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L180)）で、状態もポインタも持たないので、返り値を持ち回っても何も持っていないのと同じです。委譲先は分割前と同じです。
+ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L221) が主要サービスを薄く包みます。面は根と7つのドメインファサードに分かれ、物理 / 音 / アニメーション / セーブ / 描画 / シーンオブジェクトの名前解決 / UI は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L270) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L271) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L272) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L273) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L274) / [`objects()`](../../src/core/userpublic/gamecontext.hpp#L275)（GP-1）/ [`ui()`](../../src/core/userpublic/gamecontext.hpp#L276)（GP-3）が返す値越しに呼びます。ファサードは空のクラス（[`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L41) / [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L71) / [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L98) / [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L107) / [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L122) / [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L180)）で、状態もポインタも持たないので、返り値を持ち回っても何も持っていないのと同じです。例外は [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L208) で、`ui(document_key)` の key を `std::string_view` のまま 1 本だけ持ちます（`ui()` なら空の view）。key の文字列はファサードを使い終わるまで生かしておく必要があります。委譲先は分割前と同じです。
 
 | API群 | 委譲先 | 実装へジャンプ |
 |---|---|---|
@@ -18,6 +18,7 @@
 | camera（`render().setCamera`） | `Camera` | [`RenderContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L375) |
 | 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L379) |
 | audio（`audio().playSound` ほか） | `Audio`またはfeature disabled error | [`AudioContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L399) |
+| UI の書き込み（`ui().setText` / `setVisible` / `setValue`、GP-3） | `RenderingPassContainer::isFeatureEnabled("ui")` → `ui::UiModule::queueWrite`（`ui.*` sink との衝突は公開中の世代の `uiSinkBindings()` を見る） | [`UiContext::setText()`](../../src/core/userpublic/gamecontext.cpp#L216) / [`writeUi()`](../../src/core/userpublic/gamecontext.cpp#L193) |
 | scene object の名前解決（`objects().resolve` / `materialize` / `worldTransform`、GP-1） | `SceneLoader::resolveObject` / `materializeObject`、world は ECS の `TransformComponent` | [`ObjectsContext::resolve()`](../../src/core/userpublic/gamecontext.cpp#L228) |
 | scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L553) |
 | debug text（`render().debugText`） | `DebugText` | [`RenderContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L565) |
@@ -985,6 +986,7 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 | `shadow_outbox.*` | `playSound` / `stopSound` / `setBusVolume` / `setGameSettings` / `saveSettings` / `saveData` | shadow（transaction内の見かけ）を更新し、実副作用はoutboxへ積んでflushで実行 |
 | `reject.direct-gameobjects` | `GameObjects::add` / `createWithComponents` / `remove` / `removeAll` / `setLocalTransform` | `SceneTransactionMutationRejected` を**throw** |
 | `nonparticipant.frame-lifetime` | `debugText` | 曲がらない（フレーム寿命。§3.5 の 7 の `frame_lifetime`） |
+| `nonparticipant.ui-document` | `ui().setText` / `setVisible` / `setValue`（GP-3） | 曲がらない。UI 文書は scene の参加者ではなく、書き込みは `UiModule` の command buffer に積まれて次のフレーム境界で入る。load が失敗しても残る（[manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L223)） |
 
 縫い目が1つではない点に注意してください。`shadow_outbox.*` と、退役済みobjectを見る `covered.candidate-or-retired-reject` だけが `activeEffectTransaction()` を読みます。RNG・pending scene・eventは**それぞれ自前のscope**（`RngSequenceScope` / `PendingSceneTransactionScope` / `EventOutboxScope`）を持ち、light / camera は分岐すら持ちません。executorがこれら全部を同じ寿命で開く（§3.5 の 3）ので、外から見た挙動が揃います。
 

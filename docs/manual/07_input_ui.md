@@ -7,7 +7,7 @@
 - 入力システムの四層構造と、**順序付き FrameInput**(WP69)
 - `actions.json`(アクション定義)と `pelican.input_profile`(バインディング)の**分離**(WP91・破壊的変更)
 - ゲームパッド対応と、収録・リプレイ(`pelican.input_seq`)
-- 実装済みの UI 基盤 `pelican.ui` v1(ウィジェット・レイアウト・イベント emit)
+- 実装済みの UI 基盤 `pelican.ui` v1(ウィジェット・レイアウト・イベント emit)と、ゲームコード(`ctx.ui()`)・共通グラフ(`ui.*` sink)から UI を書く方法(GP-3)
 - テキスト HUD(`debug_text`)の使い方
 
 (`WP69` のような **WP** 番号は開発の作業単位です。読み方は [第1章 §1.0](01_overview.md)、状態の一覧は [第11章 §11.1](11_status.md)。)
@@ -214,7 +214,8 @@ pelican_player --project mygame --replay session.jsonl         # リプレイ(�
 
 - **機械可読スキーマが正**: [../schemas/pelican.ui.schema.json](../schemas/pelican.ui.schema.json)(`additionalProperties: false` の closed schema — 未知フィールドは拒否)。
 - トップレベル: `schema` / `version: 1` / `key`(1〜256 文字)/ `root` 必須、`revision` / `direction`(`"ltr"` のみ)任意。
-- **ウィジェット語彙 6 種**(語彙 = 書ける `type` の値の全集合。これ以外は拒否): `panel` / `image` / `label` / `button` / `gauge` / `stack`。ただし `gauge` は型・レイアウトのみで**描画は 🚧 未実装**。
+- **ウィジェット語彙 6 種**(語彙 = 書ける `type` の値の全集合。これ以外は拒否): `panel` / `image` / `label` / `button` / `gauge` / `stack`。
+- **`gauge` の描画(✅GP-3)**: 左端から伸びる横棒を 1 本描きます。棒の幅は **floor(ゲージの幅 × clamp(`value`, 0, 1))**(UI 単位)で、色は `color`。`color` を省くと既定色 `{96, 200, 120, 255}` になります([visitNodes() の gauge 分岐](../../src/core/ui/module.cpp#L106) / [既定色](../../src/core/ui/document.cpp#L243))。`value` は文書に書けるほか、実行時に `ctx.ui().setValue` と `ui.value` sink で書き換えられます(下の「ゲームコードと共通グラフから UI を書く」)。背景の枠は描かないので、地が要るなら親の `panel` に色を付けます。
 - 主なプロパティ: 共通 `id`(`^[a-z0-9_]+$`)/ `layout` / `visibility` / `enabled` / `hit_testable` / `layer` / `emit` / `children`。描画系 `sprite`(atlas 参照は `<name>.atlas.json#sprite/<名前>` 形式)/ `color` / `hover_color` / `pressed_color` / `text` / `text_color` / `nine_patch`(panel)。
 - レイアウト: 軸ごとの `mode: fixed|content|fill`(+ min/max/weight)、`anchor_min/max`、`offsets`、`stack`(horizontal/vertical)+ `gap` / `padding` / `align` / `justify`。計算は決定的(binary64 固定)。
   - `mode` は x 軸・y 軸それぞれに書き、その軸の長さの決め方を選びます: **`fixed`** = 書いた `value` をそのまま使う / **`content`** = 中身(子とテキスト・画像)から算出した固有サイズを使う / **`fill`** = 親 `stack` の余りを `weight` の比で分け合う。いずれも `min` / `max` で挟まれます([axisSize()](../../src/core/ui/layout.cpp#L76) と [distribute()](../../src/core/ui/layout.cpp#L93))。`content` の親の下に `fill` の子を置くと循環なので名指しエラーです。
@@ -231,9 +232,77 @@ pelican_player --project mygame --replay session.jsonl         # リプレイ(�
 
 emit のソースには static 値のほか `stable_id` / `drag_delta_ui` / `widget_value` が使えます。それぞれ、イベント payload のそのフィールドに **`stable_id`** = 発火したウィジェットの安定 ID(親からの `親id/子id` パス)、**`drag_delta_ui`** = 直前の位置からのドラッグ移動量 `[x, y]`(UI 座標)、**`widget_value(パス)`** = ウィジェット自身の現在値、を入れます([document.cpp](../../src/core/ui/document.cpp#L196) / [module.cpp](../../src/core/ui/module.cpp#L240))。rpc 経由のクリックとリプレイの決定性は結合テストで担保されています。
 
+### ゲームコードと共通グラフから UI を書く(✅GP-3)
+
+UI の中身を実行時に変える口は 2 つあります。ゲームコードの **`ctx.ui()`** と、共通グラフの **`ui.*` sink** です。どちらも「UI 文書のどの node の、どの性質か」を名指しして書きます。
+
+#### `ctx.ui()` — ゲームコードから書く
+
+[`GameContext::ui()`](../../src/core/userpublic/gamecontext.hpp#L276) はプロジェクトの UI 文書を、`ui(document_key)` は文書の `key` を名指しして [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L208) を返します。v0 の UI 文書は 1 本なので、`key` が違えば `ui.node_unknown@1` です。
+
+```cpp
+auto ui = ctx.ui();
+if (auto r = ui.setText("root/hud/score", "SCORE 120"); !r)
+    ctx.logWarning(r.errorName());                // 例: "ui.node_unknown@1"
+(void)ui.setValue("root/hud/hp", 0.35f);          // gauge の棒が幅の 35% になる
+(void)ui.setVisible("root/hud/pause_hint", false);
+```
+
+- **path** は root から自分までの `id` を `/` でつないだ文字列で、root の `id` も含みます(root `root` の子 `hud` の子 `score` なら `root/hud/score`)。`id` は兄弟の間でしか一意ではないので、node を区別するのは path です。emit の `stable_id` に入る文字列と同じです([path の組み立て](../../src/core/ui/document.cpp#L234))。
+- 書ける性質は node の型で決まります。`setText` は `label` / `button`、`setValue` は `gauge`、`setVisible` はすべての node です([uiNodeHasProperty()](../../src/core/ui/module.cpp#L300))。
+- 戻り値は [`UiWriteResult`](../../src/core/userpublic/ui_write.hpp#L39)(`[[nodiscard]]`)です。`ok()` / `operator bool` / `error()` / `errorName()` を持ち、失敗は例外ではなく戻り値で返ります。理由は [`UiWriteError`](../../src/core/userpublic/ui_write.hpp#L10) の 4 つで、複数当てはまるときは**この順で先のもの**を返します。
+
+| 順 | 名前 | いつ |
+|---|---|---|
+| 1 | `ui.feature_unreferenced@1` | rendering config が `engine://features/ui.json` を参照していない(UI が無いプロジェクト) |
+| 2 | `ui.node_unknown@1` | その path の node が無い、または `document_key` が文書の `key` と違う |
+| 3 | `ui.property_mismatch@1` | node の型がその性質を持たない(例: gauge への `setText`)、または `setValue` の値が有限でない |
+| 4 | `ui.sink_conflict@1` | 公開中の rendering config の `ui.*` sink が同じ (path, 性質) を書いている(下記) |
+
+- **書き込みは呼んだ時点で検査され、フレーム境界で適用されます。** 受け付けた書き込みは列に積まれ、そのフレームのゲームコードがすべて走ったあと、描画の前に一度にまとめて入ります([commitFrameWrites() の呼び出し](../../src/core/appflow/framephase.cpp#L214))。断られた書き込みは何も積みません。
+- `setText` で文字列を変えると、`label` / `button` の大きさ(`content` 軸の固有サイズ)を測り直します。測り直すのは固有サイズが文字列から測られた node だけで、`intrinsic_size` を文書に書いた node はそのままです([syncDocumentFromArena()](../../src/core/ui/module.cpp#L350))。
+- **scene load 中に書いても、load の transaction には入りません。** 公開 API の分類は `nonparticipant.ui-document` で([manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L223))、UI 文書は scene の参加者ではないので、load が失敗しても書き込みは次のフレーム境界で入ります。
+
+#### `ui.*` sink — 共通グラフから書く
+
+graph module **`pelican.ui`**(version 1)は常に登録されます(UI にはビルドユニットの ON / OFF が無いため。[登録](../../src/project/graphmodule.cpp#L354))。持ち込む op は sink 2 本です。
+
+| sink | 入力 | 書く先 |
+|---|---|---|
+| `ui.value` | `value`(スカラー) | `parameters.node` の path にある gauge の値 |
+| `ui.visible` | `value`(スカラー) | `parameters.node` の path にある node の表示。**0 以外で表示**、0 で非表示 |
+
+時刻で gauge を満たす例です(rendering config の `nodes` に置きます。形は GP-3 の結合テスト [run_gp3_ui_headless.cmake](../../test/run_gp3_ui_headless.cmake#L32) と同じです):
+
+```json
+"nodes": [
+  {"id": "clock", "op": "value.input", "parameters": {"name": "time"}, "inputs": {}, "outputs": ["value"]},
+  {"id": "fill", "op": "value.curve",
+   "parameters": {"keys": [{"time": 0, "value": 0}, {"time": 1, "value": 1}]},
+   "inputs": {"time": {"node": "clock", "port": "value"}}, "outputs": ["value"]},
+  {"id": "meter_sink", "op": "ui.value", "parameters": {"node": "root/hud/meter"},
+   "inputs": {"value": {"node": "fill", "port": "value"}}, "outputs": []}
+]
+```
+
+- sink の値は毎フレーム、グラフの publish の時点で UI へ直接入り、そのフレームの UI パスが描きます([renderer.cpp の ui_writer](../../src/core/vkcore/renderer.cpp#L5651))。
+- **単一 writer の単位は `(文書, path, 性質)`** です。`ui.*` の sink は owner に属さないので、`pose.*` の「owner 単位」とは単位が違います。同じ node でも `value` と `visible` は別の単位です。
+- rendering config を準備する時点で、次の理由で名前付きに断ります(準備で断られた config はどのフレームにも届きません。[validateUiSinks()](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L74)、衝突は [Graph の binding 検査](../../src/core/userpublic/valuegraph.cpp#L375)):
+  - `ui.feature_unreferenced@1` — `ui.*` sink を持つ config が `engine://features/ui.json` を参照していない
+  - `ui.node_unknown@1` / `ui.property_mismatch@1` — `parameters.node` の path が無い / その node が性質を持たない(例: `ui.value` の先が label)
+  - `ui.sink_conflict@1` — 2 本の sink が同じ (path, 性質) を書く
+- **sink とゲームコードがぶつかったら sink が勝ちます。** sink が書いている (path, 性質) へ `ctx.ui()` で書くと、その書き込みが `ui.sink_conflict@1` で断られます([uiSinkClaims()](../../src/core/userpublic/gamecontext.cpp#L176))。同じ node の別の性質(sink が `value` を書いている gauge への `setVisible` など)は受け付けます。
+- UI feature を参照していないプロジェクトは、ゲームコードの経路でも sink の経路でも `ui.feature_unreferenced@1` になります。
+
+#### GP-3 が残した穴
+
+- `setVisible(false)`(と `ui.visible` の 0)で消えるのは**その node 自身の quad だけ**で、子は描かれ続けます(描画の走査が子へ無条件に降りるため。[visitNodes() の子への再帰](../../src/core/ui/module.cpp#L136))。子ごと隠したいときは子にもそれぞれ書きます。
+- 文書で `visibility: "collapsed"` にした node は、`setVisible(true)` でも描かれません。collapsed の node はレイアウトに載らず([place()](../../src/core/ui/layout.cpp#L142))、描画はレイアウトの無い node を飛ばします。
+- 衝突の検出は**公開済み**の rendering config の sink を見ます。最初の publish より前の `ctx.ui()` の書き込みでは、sink との衝突を検出しません(公開中の世代が無ければ「sink は無い」と答えるため)。
+
 ### 残っている未実装(明示)
 
-- 🚧 `gauge` の描画 / ゲームコードから UI を書き換える公式 API(ラベル文字列・ゲージ値の更新など — UiCommandBuffer は内部のみ)/ DPI スケール(配管はあるが常に 1.0)
+- 🚧 DPI スケール(配管はあるが常に 1.0)
 - 📐 エンジン標準スキン(現状は色をノードのプロパティで直指定)/ `PELICAN_REGISTER_WIDGET` とツールウィジェットパック / UI のホットリロード(U3)
 
 ## 7.5 テキスト HUD — debug_text(✅WP54 / WP169)
@@ -268,7 +337,8 @@ GPU 経路自体は意図的に別のままです(`DebugText` は専用 atlas + 
 | ゲームパッド(I4) | ✅ WP91 |
 | OpenXR 入力(Touch action set + pose) | ✅ WP130/132(v1 は Touch のみ・pose の収録は非対応) |
 | カーソルロック(I4 残件) | 📐 未実装 |
-| pelican.ui v1(U0/U1/U2) | ✅ WP75/87/93(gauge 描画・ゲーム→UI 更新 API・スキン・DPI は 🚧/📐) |
+| pelican.ui v1(U0/U1/U2) | ✅ WP75/87/93(スキン・DPI は 🚧/📐) |
+| gauge 描画 / ゲーム→UI 更新 API(`ctx.ui()`)/ `ui.value`・`ui.visible` sink | ✅ GP-3(子を連れて隠せない等の穴は §7.4「GP-3 が残した穴」) |
 | ui_overlay.json(旧 images 形式) | ❌ 削除済み(WP87) |
 | イベント payload スキーマ | ✅ WP71 |
 | UI / 入力設定のホットリロード(U3 / HR2-I) | 📐(backlog Tier 1) |
@@ -279,13 +349,14 @@ GPU 経路自体は意図的に別のままです(`DebugText` は専用 atlas + 
 
 ### 機能を外した build での呼び出し(✅PG-2)
 
-この章のゲームコード向け API(アクション・pose・`debugText`)は、ビルドユニット([第2章](02_getting_started.md) の「機能ユニット」)を外しても答え方が変わりません。これらの実装(`userinput.cpp` と `gamecontext.cpp` の該当関数)には `PELICAN_WITH_*` による分岐がありません。外した build で答え方が変わるのは音と物理とアニメーションで、その一覧は [第8章 §8.4「機能を外した build」](08_gameplay.md) にあります。
+この章のゲームコード向け API(アクション・pose・`debugText`・`ui()`)は、ビルドユニット([第2章](02_getting_started.md) の「機能ユニット」)を外しても答え方が変わりません。これらの実装(`userinput.cpp` と `gamecontext.cpp` の該当関数)には `PELICAN_WITH_*` による分岐がありません。外した build で答え方が変わるのは音と物理とアニメーションで、その一覧は [第8章 §8.4「機能を外した build」](08_gameplay.md) にあります。
 
 | 呼び出し | 外した build での答え |
 |---|---|
 | `ctx.actionPressed` / `actionReleased` / `actionHeld` / `actionAxis1` / `actionAxis2` | 変わらない(入力のアクション層はビルドユニットではない) |
 | `ctx.actionPose` | 分岐は無い。`PELICAN_WITH_OPENXR=OFF` の build では XR が起動しないので、flat 起動と同じく `valid = false` の既定値が返る(throw しない。§8.4 の actionPose) |
 | `ctx.render().debugText` | 変わらない。`debug_text` はビルドユニットではなく rendering config の feature で、参照していなければ no-op(§7.5) |
+| `ctx.ui().setText` / `setVisible` / `setValue` | 変わらない。UI はビルドユニットではなく rendering config の feature で、参照していなければ例外ではなく `ui.feature_unreferenced@1` が返る(§7.4) |
 | `ctx.audio().playSound` など | `PELICAN_WITH_AUDIO=OFF` で `BuildFeatureCallDisabledError`(`code()` = `build_feature_disabled@1`)。詳細は第8章 |
 | `--rpc`(`inject_input` / 収録・リプレイの rpc) | ゲームコードの呼び出しではないが、`PELICAN_WITH_RPC=OFF` の build では起動時に [`runEngineRpcServer()` の stub](../../src/core/communication/rpcserver_stub.cpp#L7) が `BuildFeatureDisabledError`(`This binary was built with PELICAN_WITH_RPC=OFF: --rpc is unavailable`)を投げる。こちらは PG-2 の派生型ではなく基底型で、`code()` は無い |
 

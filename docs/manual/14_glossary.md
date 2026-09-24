@@ -232,7 +232,7 @@
 
 **root motion** — クリップに焼かれた「根(root)の移動」を、姿勢としてではなく**個体の移動**として使うこと。`pose.clip_sample{root_motion: "extract", root_node}` で有効になり、移動量は owner の `localtransform` に加算され、staged pose 側の根はクリップ先頭の位置に固定(pin)されます。移動量は**巻き戻す前の時刻(unwrapped time)の差**で取るので、`speed < 0` でも 1 フレームに 1 周以上進んでも同じ 1 つの式です。`set_time`(シーク)は移動ではないと扱われ、その 1 フレームの移動量は 0 になります。**回転量の抽出は v0 の射程外**。末尾キーを先頭キーと同じにした「継ぎ目無し」クリップは正味の移動が 0 = 動きません。初出: [第4章 §4.2](04_scene_ecs.md#localtransform)・[第8章 §8.13](08_gameplay.md)。
 
-**catalog(2 系統)** — 「今このビルドで何が使えるか」の一覧。**(1) グラフのカタログ** = 登録済み module / 型 / op / sink の語彙(`pelican_cli graph-catalog` と RPC `get_graph_catalog`。`PELICAN_WITH_ANIMATION` の ON / OFF で 4 module 27 op / 3 module 21 op と変わります)。**(2) feature のカタログ** = 使える render feature の一覧(RPC `list_render_features`。エンジン同梱と install 済み package が載り、`source` でどちらか分かります)。**(2) にプロジェクト内の素の `project://` feature は載りません**。初出: [第10章](10_tools.md)・[第3章 §3.11](03_project_format.md#311-package--本体ツリーの外から持ち込むx-1)。
+**catalog(2 系統)** — 「今このビルドで何が使えるか」の一覧。**(1) グラフのカタログ** = 登録済み module / 型 / op / sink の語彙(`pelican_cli graph-catalog` と RPC `get_graph_catalog`。`PELICAN_WITH_ANIMATION` の ON / OFF で 5 module 29 op / 4 module 23 op と変わります。数は `PELICAN_WITH_AUDIO=ON` の build。GP-3 で常に登録される `pelican.ui` の 2 op が加わりました)。**(2) feature のカタログ** = 使える render feature の一覧(RPC `list_render_features`。エンジン同梱と install 済み package が載り、`source` でどちらか分かります)。**(2) にプロジェクト内の素の `project://` feature は載りません**。初出: [第10章](10_tools.md)・[第3章 §3.11](03_project_format.md#311-package--本体ツリーの外から持ち込むx-1)。
 
 ---
 

@@ -565,10 +565,11 @@ install した feature は `list_render_features` の catalog に `source: "pack
 pelican_cli graph-catalog
 ```
 
-モジュールは既定 build で **4 本**(`pelican.value` / `pelican.audio` / `pelican.render` / `pelican.pose`)、
-`PELICAN_WITH_ANIMATION=OFF` では `pelican.pose` が消えて **3 本**です。この個数と、各操作が
+モジュールは既定 build で **5 本**(`pelican.value` / `pelican.audio` / `pelican.render` / `pelican.pose` / `pelican.ui`)、
+`PELICAN_WITH_ANIMATION=OFF` では `pelican.pose` が、`PELICAN_WITH_AUDIO=OFF` では `pelican.audio` が消えて 1 本ずつ減ります。
+`pelican.value` / `pelican.render` / `pelican.ui` の 3 本は常に登録されます(`pelican.ui` は GP-3 で加わった `ui.value` / `ui.visible` の sink。[第7章](07_input_ui.md) §7.4)。この個数と、各操作が
 `domain` / `evaluation` / `change` / `sink` を持つことは
-[`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake#L23)(ctest 名 `devcli_graph_catalog`)が
+[`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake#L24)(ctest 名 `devcli_graph_catalog`)が
 固定しています。出力はモジュール名・操作名・型・sink のどれも**名前順**です([catalog()](../../src/project/graphmodule.cpp#L227) が名前を鍵にした `std::map` を走り、型と sink は明示的に sort します)。登録順に依存しません。
 
 ## 10.5 ホットリロード(✅WP90/96〜110/147/162/178)
