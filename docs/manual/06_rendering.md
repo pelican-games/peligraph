@@ -64,6 +64,8 @@ project.json ──rendering_config_json──▶ rendering config JSON
 
 名前の重複(RT・パス・バッファ)はすべて hard error です。
 
+> **direct root(preset を選ばない root)が `rendering_passes` に自分で宣言した pass は、Studio の Pass Editor と Frame Plan から編集でき、root の文書に書き戻されます(✅F-6。RPC は `edit_preset_pass`、[第13章 §13.5](13_editor.md))。**
+
 ### render_targets
 
 | フィールド | 必須 | 内容 |

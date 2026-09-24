@@ -24514,6 +24514,137 @@ engine の新機能 / 第二段階(raster・material pass、forward / deferred)�
 - **起票からの逸脱**: 手順 4 は Studio を通らない(上)/ 手順 6 は別 project を開いて戻ることで確かめ、Studio を閉じて開き直してはいない / 専用 fixture は作らないが、Studio の起動と開き直しの行き先に共有 fixture の複製を使う
 - **F 系列の残り**: F-5(`reload_shaders`)/ F-6(direct root の pass の編集)/ F-7(Whole frame と穴 4〜6)。いずれも着手中
 
+### F-5: Studio の中で shader を直すと画面が変わる —— 明示の `reload_shaders` RPC(F-3 の発見。「0 から組める」第一段階)
+
+**中段(engine の additive RPC 1 つ + Studio の配線)。実装者: Claude(Opus)。第二の流儀を作らない: `reload_game_logic` と同じ「RPC が明示で頼んだときだけ runtime participant を今当てる」形。file watch の gate(`ReloadGate`)は開けない。**
+
+#### 前提(2026-09-24、develop)
+- Studio は player を必ず `--rpc` で起動する(`src/devstudio/viewport/studioplayerarguments.cpp`)。`ReloadGate::updateLocked`(`src/core/watch/reloadgate.cpp:27`)は `enabled = requested && !replay && !strict && !rpc` で、reason `"rpc driver"`。**Studio 下の engine は shader file の変更を拾わない**(F-3 が実測。台帳の既知事項、「gate を迂回しない」は既存契約)
+- 先例: `reload_game_logic` RPC(`src/core/communication/rpcserver.cpp:1145-1200`)は `reload_service->applyRuntimeNow(participant)` を明示で呼び、失敗を `error_code` 付きの JSON-RPC error で返す。前後に hook(`forceAbortPreview("reload")` など)
+- shader の runtime participant(`src/core/watch/reloadservice.cpp:555-575` 付近)は `apply(trigger)` の中で `gate->shaderReloadEnabled()` が偽なら何もしない。`trigger == poll` も何もしない。本体は `forceShaderReload()`(`:475-510`): `ShaderLibrary::prepareReloadAll` → `PipelineFactory::rebuildPrepared`、失敗は `recordReloadFailure(changed_keys, error)` で reload status(`runtime[].last_error` / `last_reload_error`)に残る
+- F-3(着地予定)は Studio 側で、node が読む shader file を `QFileSystemWatcher` で見て、書き込みのたびに get_status を有限回読み、reload の失敗を pass node の印にする。gate が閉じていれば「この engine は shader を reload しない」と 1 行出す
+
+#### 決定
+1. **engine: `reload_shaders` RPC**(params は空 object)。`applyRuntimeNow` で shader participant を**明示の trigger**(`RuntimeReloadTrigger::requested`)で当てる。participant は `requested` のとき **reason が `rpc_driver` だけなら gate を越えて**実行する(replay / strict_assets では今日どおり拒否 = 決定性の門は閉じたまま。その場合は `shader_reload_unavailable` + reason)。file watch の poll 経路は何も変えない
+2. 返り値: 成功 `{committed: true, changed: [shader の reference…], cache_hits, cache_misses}` / 変更無し `{committed: false, attempted: false}` / 失敗は JSON-RPC error `error_code: "shader_reload_failed"`、`error_fields: {changed:[…]}`、message に compile log(`forceShaderReload` の error 文字列そのまま)。reload status の `last_error` にも今日どおり残る
+3. 実行の時点: `reload_game_logic` と同じく RPC handler の中で即時(render の外、RPC は frame 境界で処理される前提を確かめること。違うなら participant の boundary = `render_start` に合わせて次 frame の頭で当て、結果は ticket でなく次の `get_status` で読む形にする。**どちらにしたかと理由を報告に書く**)。preview 中なら `forceAbortPreview("reload")` を先に呼ぶ(game logic と同じ hook)
+4. **Studio**: F-3 の watcher が書き込みを見たら、get_status を読む前に `reload_shaders` を 1 回呼ぶ(debounce 200 ms、同時 1 本)。失敗の message は F-3 と同じ場所(pass node の印 + tooltip、Pass Editor が開いていれば form 下の log 欄)に出す。成功で印を消す。「この engine は shader を reload しない」の 1 行は、RPC が `shader_reload_unavailable` を返したときだけ出す
+5. automation: F-3 のシナリオ `fullscreen_pass_from_template` の最後を「保存 → 画面が変わる(viewport の screenshot の `distinct_colors` か画素の比較)→ 構文エラーを書く → 印 → 直す → 印が消えて画面が戻る」に戻す
+
+#### 受け入れ(§4 規約 10)
+1. engine の RPC test(headless、GPU label): shader file を書き換えて `reload_shaders` → `committed:true` と `changed` にその reference / 構文エラーで `shader_reload_failed`、message に compile log、reload status の `last_error` / 無変更で `attempted:false`(対照: participant の gate 越えを外す変異で `--rpc` 下の test が `attempted:false` のまま赤)
+2. replay(または strict)構成で `shader_reload_unavailable`(対照: 門を無条件に越える変異で赤)
+3. file watch の poll 経路は `--rpc` 下で今日どおり何もしない(既存 test 不変)
+4. Studio の scene / widget test: watcher の書き込み → `reload_shaders` が 1 回(debounce で連続書き込みは 1 回)、失敗で印、成功で印が消える
+5. シナリオ `fullscreen_pass_from_template` で、保存後に viewport が変わり、構文エラーで印、直して消える。非 GPU 全数緑、シナリオ全数緑
+
+#### やらないこと
+file watch の gate を Studio 下で開けること / compute・RT shader の個別 reload(`prepareReloadAll` が全部を見るのでそのまま)/ Studio 内のテキストエディタ。
+
+#### 着地(2026-09-24、7d3f3565)
+- **engine**: RPC `reload_shaders`(params は空 object。鍵があれば invalid params)。handler は `src/core/communication/rpcserver.cpp` の `configureShaderReloadRpcHandler` で、先に `forceAbortPreview("reload")`(game logic と同じ hook)を呼び、`applyRuntimeNow("pelican.shaders", RuntimeReloadTrigger::requested)` で shader participant を当てる(`requested` は新しい trigger。`applyRuntimeNow` が trigger を受けるようにした)
+- **実行の時点(決定 3 の報告)**: RPC は frame 境界で処理される(windowed は `step.update` の中で render の前、headless は `render_frame` の間。commit の記録による)ので、handler の中で即時に当て、frame と frame の間で commit する。公開は次の `render_start` で `ReloadService::takeShaderPublication()` が拾い、fullscreen の入力を bind し直す(`src/core/vkcore/renderer.cpp` の `consumeShaderReloadPublication`)。ticket は無い
+- **gate(起票からの逸脱)**: 起票は「reason が `rpc_driver` だけなら越える」だったが、**replay でも strict assets でもなければ、明示の要求は閉じた gate を越える**にした。headless の engine は `shader_hot_reload=false`(file watch を頼んでいない)でも gate が閉じており、「rpc driver だけ」では headless の test が通らなかったため。拒否は `ReloadGate::explicitShaderReloadRefusal()`(`replay` / `strict assets`)が理由を返したときだけで、`shader_reload_unavailable@1`・`error_fields.reason`。file watch の poll 経路は `--rpc` の下で今日どおり何もしない(`requested` 以外の trigger は閉じた gate で帰る)
+- **変更の検出(起票からの逸脱)**: `prepareReloadAll` は空で返ってこなかった(cache の key が include root の下の全 file を含むため。実装者の報告)。そこで bundle に SPIR-V の sha256(`spirv_sha256`)を持たせ、`ShaderLibrary::prepareReloadChanged()` が unit ごとに準備して、公開中と同じ sha256 の unit を飛ばす。**前回の reload が失敗した unit は、変わっていなくても 1 回公開し直す**(それで error が消える)。Studio の外の file watch の hot reload にも同じく効く
+- **返り値**: 成功 `{committed: true, changed: [...], cache_hits, cache_misses}` / 何も変わっていない `{committed: false, attempted: false}` / 失敗は JSON-RPC error で `error_code: "shader_reload_failed@1"`、`error_fields.changed[]`、message は compile log(reload status の `last_error` に残る文と同じ)。reload service が無い engine は `shader_reload_unavailable@1`(reason `reload service is unavailable`)。**error code に `@1` が付く**のは起票からの逸脱
+- **Studio**: F-3 の `ShaderReloadFollower` に `request_reload` / `reloaded` の hook。描いている node の shader file への書き込みから **200 ms の debounce**(`ReloadDebounceMs`)で `reload_shaders` を 1 回、同時に 1 本(返答待ちの間の書き込みは、返答の後に 1 回分だけ送る)。commit か失敗の後に `get_status` を 1 回読んで、印を engine の reload status に合わせる(hook がある間、F-3 の最大 16 回の追い読みは起きない)。答えごとに: commit → 印・Frame Plan の status 行の reload の文・Pass Editor の log 欄を消す / `shader_reload_failed@1` → message から該当 node に印、Pass Editor が見えていれば form の下の log 欄(`FullscreenPassWidget::showShaderReloadLog`)/ `shader_reload_unavailable@1` → status 行に「A shader file changed; this engine does not reload shaders (<reason>).」(この文はこのときだけ)/ それ以外の失敗 → 「Could not ask the engine to reload shaders: ...」
+- **Studio に RPC の allow-list は無かった**(起票の前提と違う): Frame Plan は `viewport.requestRpc` で送る。拒否の `error_code` を読むために `EmbeddedViewport` に signal `inspectorRpcRejected(request_id, error_code, message)` を足した(既存の `inspectorRpcFailed` の前に出る)
+- **シナリオ `fullscreen_pass_from_template`(47 step)**: pass は `lighting_pass` の後に置き、`gbuffer_albedo` を読んで `lit_color` に書く(**逸脱**: F-3 の `f3_template_output` は画面に届かなかったので、fixture からその宣言を消した。誰も書かない target を読む pass は frame planner が "Pass input target is not produced as an earlier output" で断る)。F-3 の前半(雛形 → typo → preflight の log → 直して Save)の後、viewport が albedo を描く → `file` step で gradient を書く → Studio が reload を頼み viewport が gradient → typo → node に印、Pass Editor の log 欄が typo を名指す、engine は前の gradient を描き続ける → 直す → 印と log が消え、gradient に戻る
+- **automation**:
+  - `screenshot` の `screen` モードは、Studio の窓自身の合成済みの内容を `PrintWindow`(`PW_RENDERFULLCONTENT`)で読んで切り出す。窓が print できないか 1 色で出たときだけ desktop の grab に戻る。応答に **`capture`**(`print_window` / `screen`)。着地時に別の application の窓が viewport に重なって 2 本のシナリオが赤になったための変更。`new_blank_project` に `capture == "print_window"` の step
+  - Studio は **`PELICAN_STUDIO_CONFIG_DIR`** があればそこを設定 directory にする(`mainwindow.cpp` の `applicationConfigDirectory`)。`tools/studio_drive.py` は run ごとに空の `{artifacts}/studio_config` を作って渡す。シナリオは前の run(や人の Studio)が利用者の設定 directory に残した dock の layout を復元し、自分のものを残していた
+  - driver の `result` step が `retry_ms` を受ける(0.2 秒おきに問い直す。`rpc_equals` は前から受けていた)
+- **test**: `shader_reload_rpc_test`(新、GPU。`PELICAN_RUNTIME_SHADER_COMPILER` の build でだけ登録): commit / 無変更 / 失敗 / 回復、replay と strict の拒否、`--rpc` の下で poll 経路は閉じたまま / `devstudio_frameplan_graph_test` に 2 case(書き込みで `reload_shaders` が 1 回・同時 1 本・その後 status を 1 回、答えで印が付く・消える・unavailable を名指す)/ `test/ci/test_studio_drive.py` に `retry_ms` / シナリオ
+- **変異**: commit の記録は「各々変異で赤を見て、戻して緑」だけで、どの変異かは記録に無く未確認
+- **記録した穴**:
+  1. 描画の外で commit した公開の bind し直し(`takeShaderPublication`)には、噛む変異が無い(test の pass が入力を持たない)
+  2. reload のたびに全 unit を compile し直す(cache で安い。大きな project では未測定)
+- **既知の赤(F-5 の変更ではない)**: `studio_scenario_graph_reroute_tie`。drag の後に「Graph change saved.」を待つが、notice は前の step から既にそう言っているので待ちがすぐ返り、続く click が配置保存の scene 再構築と競って選択を落とす。F-5 無しの develop build でも同じく落ちる(commit の記録)。別の修正で直す
+
+### F-6: direct root が宣言する pass を編集できる —— `edit_preset_pass` の第三の書き先(F-4 が見つけた穴 1。「0 から組める」第一段階の最後の段差)
+
+**中段(engine の既存 RPC の書き先を 1 つ足す + Studio の表示)。実装者: Claude(Opus)。第二の流儀を作らない: 新しい RPC は作らず、`edit_preset_pass` が今日「project preset」と「project feature(`base_feature_digest`)」の 2 つに書くのと同じ形で、「direct root 自身」を 3 つ目の書き先にする。**
+
+#### 前提(2026-09-24、develop)
+- blank 雛形(F-2)は direct root(`pipeline` key 無し)で、`present` pass を root の `rendering.rendering_passes` に書く
+- `edit_preset_pass`(`src/core/communication/renderconfigeditor.cpp` の `editPresetPass`、2448 行付近)は、`base_feature_digest` が無いと preset を要求し、direct root では `project_preset_required`(「Fork the selected preset…」)で拒否する。authoring context の `editable_preset_pass` は preset の pass にだけ真(`:1737` 付近)
+- F-4 の Studio は、direct root の root pass を開くと「not editable in a direct root. Edit that file by hand」と言う(`fullscreenpasswidget.cpp`、`frameplanedit.cpp` の F-4 の分岐)。シナリオ `render_pipeline_from_scratch` の手順 4 は `file` step の手書きで迂回している
+- 書き込みの道具は既にある: root の文書は `AuthoredRenderConfigDocument`(`queueRootEdit` など)。feature の書き戻しは `base_feature_digest` の経路
+
+#### 決定
+1. **`edit_preset_pass` の書き先に「root」を足す**: `config_kind == "direct"` のとき、`base_preset_digest` / `base_feature_digest` の**どちらも無い**要求を「root の pass の編集」と読む(`base_source_digest` が root の digest を兼ねる)。対象 pass は root の `rendering.rendering_passes[graph].passes[]` の中で名前一致。置換規則(種類ごとの field 集合、省略は保持、raster の `raster_state: null`)は preset の経路と**同じ関数**を使う(複製しない)。書き込みは root 文書 1 つ、既存の root 編集 ticket
+2. preset root で `base_*_digest` が無い要求は今日どおり `project_preset_required`。direct root で pass が root に無い(feature 由来 / engine が足した `output_transform` や anchor)ときは **`root_pass_not_found`**(fields: graph, pass_name, provenance)
+3. **authoring context**: direct root の root pass に `editable_root_pass: true` と `root_declaration`(合成前の宣言)。engine の足した pass は偽
+4. **Studio**: Pass Editor と canvas(帯・drag 接続・Delete 以外の編集)は `editable_root_pass` を見て、`base_*_digest` 無しで `edit_preset_pass` を送る。F-4 の「Edit that file by hand」の分岐は、editable でないとき(engine の pass)だけに縮める
+5. **削除は対象外**(root の pass の削除 RPC は足さない。記録)
+
+#### 受け入れ(§4 規約 10)
+1. `renderconfigeditor_test`: direct root(blank 雛形と同じ形の fixture)で `present` の `input` を足す edit が commit し、root 文書にだけ反映、他の field は保持 / `output_transform` は `root_pass_not_found` / preset root で digest 無しは `project_preset_required`(今日どおり)/ digest CAS の拒否(対照: root の書き先を外す変異で 1 番目が `project_preset_required` に戻って赤)
+2. context: `editable_root_pass` が root pass に真、engine pass に偽(対照: 常に真にする変異で赤)
+3. Studio: Pass Editor で root pass を開いて Save → `edit_preset_pass` に `base_*_digest` が無い要求が 1 回(widget test)
+4. シナリオ `render_pipeline_from_scratch` の手順 4 を Studio の操作(Pass Editor で `present` の Inputs に `scene_color` を Add → Save、`present.frag` は `file` step で書き換えてから Save で preflight)に戻し、迂回(`file` step での root 手書きと開き直し)を消す。緑
+5. 非 GPU 全数緑、シナリオ全数緑
+
+#### やらないこと
+root pass の削除 / root pass の rename / legacy root の変換 / preset root の直接編集(fork は必須のまま)。
+
+#### 着地(2026-09-24、3f0b22cb)
+- **engine**: `edit_preset_pass` の第三の書き先。root が preset を選ばず、要求が `base_preset_digest` も `base_feature_digest` も持たないとき、`RenderConfigEditorService::editRootPass` が root の `rendering.rendering_passes` の中から graph と pass 名で探して編集する(`base_source_digest` が root の digest を兼ねる)。種類ごとの置換規則は `applyEditablePassFields` 1 つにまとめ、preset / feature / root の 3 経路がそれを呼ぶ(複製しない)。書き込みは既存の root 編集 ticket(`queueRootEdit`)で、**root の `rendering_passes` の list を 1 つの値として書き直す**(文書の残りは byte のまま)
+- **拒否**: `root_pass_not_found`(fields: `graph`・`pass_name`・`provenance`。feature の pass と engine が足した pass。出所が引けなければ `provenance: null`)/ **`root_routing_not_editable`**(起票に無い。`material_routing` 付きの要求。routing は preset のもの)/ preset root で digest が無い要求は今日どおり `project_preset_required`
+- **authoring context**: 各 pass に `editable_root_pass`(bool)、真のとき合成前の宣言 `root_declaration`
+- **Studio**: Pass Editor は `editable_root_pass` の pass を preset の pass と同じ form で開き、Save は `base_source_digest` だけで `edit_preset_pass` を送る(Save の tooltip は「Calls edit_preset_pass on the pass <root の参照> declares.」)。material routing の欄は preset の pass にだけ出す。canvas の要求(`frameplanedit` の `addDigests`)も root の pass には digest を足さない。「Edit that file by hand.」の拒否は、direct root が宣言していても engine が editable として出さない pass にだけ残し、文言を「..., which selects no preset, and the engine offers no editable declaration of it. Edit that file by hand.」にした
+- **シナリオ `render_pipeline_from_scratch`(97 step)**: 手順 4 を Studio の操作に戻した: `present` を見出しで開く → Save が root を書くこと・engine が root の pass として出すこと → Inputs で `scene_color` を Add → `present.frag` を `file` step で書き換え → Save(root への `edit_preset_pass`。preflight と pipeline 再構築が新しい `present.frag` を compile)→ engine の `present` と root の宣言が `scene_color` を読む。F-4 の迂回(`file` step での root の手書きと開き直し)は消えた。**node は見出しで選ぶ**(editable な node の中ほどは shader の帯で、押すとその場編集になるため)
+- **test**: `renderconfigeditor_test` に 2 case(root の編集が commit し、root だけを変え、他の field を保つ、frame plan が新しい入力を読む / engine の pass は `root_pass_not_found` / preset root は fork が要る / `editable_root_pass` は root 自身の pass にだけ真)/ `devstudio_fullscreen_pass_test`(Pass Editor が root digest だけで保存)/ `devstudio_frameplan_graph_test`(canvas が root の pass を root で編集)/ シナリオ
+- **変異**: commit の記録は「各々変異で赤を見て、戻して緑」だけで、どの変異かは記録に無く未確認
+- **起票からの逸脱**: `root_routing_not_editable` の追加 / root の `rendering_passes` を 1 つの値で書き直す
+- **記録した穴**:
+  1. root の pass を消す手段が無い(起票どおり対象外)
+  2. engine が編集しない種類の root pass は、今も「by hand」と言う
+  3. direct root の `material_routing` は表示されない
+
+### F-7: Frame Plan で「まだ誰も読んでいない resource」をつなげる + F-4 の Studio の小穴(「0 から組める」第一段階の仕上げ)
+
+**下段〜中段(Studio のみ)。実装者: Claude(Opus)。**
+
+#### 前提(F-4 の報告、2026-09-24)
+- **穴 2**: Frame Plan の canvas は Target combo で選んだ target に届く上流だけを描く(`src/devstudio/view/frameplanwidget.cpp:1714` 付近)。target を `display` にすると宣言だけされた `scene_color` は描かれず、`scene_color` にすると `present` が描かれない。**両方が同じ画面に並ばないので drag でつなげない**
+- **穴 4**: 読み込みを拒否された pass を開くと、Pass Editor のフォームに前の pass の下書きが残る(`fullscreenpasswidget.cpp` の `loadPresetPass` 付近)
+- **穴 5**: Pass Editor の dock を一度開くと viewport が高さ 60〜80 px まで潰れ、dock を閉じても戻らない。automation の viewport screenshot は画面の領域を撮るので、潰れた viewport は他の窓の重なりに弱い(F-4 の着地で 1 回偽の赤)
+- 穴 6(観察): project 切り替え後に status bar に「Modal transform polling failed: pelican_player exited before returning an RPC response.」(`src/devstudio/model/gizmomodel.cpp:1062` 付近)
+
+#### 決定
+1. **穴 2**: Target combo の先頭に **「Whole frame」**(全 target の和)を足し、選ぶとすべての pass と、宣言された全 render target(誰も読み書きしていないものも)を node として描く。宣言だけの target は F-1 の `resource_node#<name>` と同じ見た目で、その出力ソケットから pass の入力ソケットへ drag すると N-8 の接続(`edit_preset_pass` / F-6 着地後は root pass も)になる。**project を開いた直後の既定は Whole frame**(以前の選択が保存されていればそれ)。層配置は既存の nodelayout
+2. **穴 4**: 拒否された pass を開いたらフォームを空(または読み取り専用でその pass の宣言)にし、前の下書きを残さない
+3. **穴 5**: dock の開閉で viewport の高さが潰れない。原因(dock の最小サイズ、splitter / dock state の復元、`resizeDocks`)を特定して直す。Pass Editor を開いて閉じた後、viewport の高さが開く前と同じ(±2 px)
+4. **穴 6**: project の切り替え中に古い engine が終わるのは正常なので、その間の polling 失敗は status bar に出さない(新しい engine が ready になった後の失敗だけ出す)
+
+#### 受け入れ(§4 規約 10)
+1. scene test: Whole frame で、誰も読まない宣言済み target が node になり、そこから pass の入力へ drag すると接続の要求が 1 回(対照: Whole frame で宣言だけの target を描かない変異で赤)/ 既定が Whole frame
+2. widget test: 拒否された pass を開いた後、フォームに前の pass 名が無い(対照: clear を外す変異で赤)
+3. widget / scenario: Pass Editor の dock を開いて閉じた後、viewport の高さが元の ±2 px(対照: 修正を外す変異で赤)
+4. project 切り替えのシナリオ(`new_blank_project` など)で status bar に polling failed が出ない
+5. 既存 Frame Plan / Pass Editor test 全数緑、非 GPU 全数緑、シナリオ全数緑
+
+#### やらないこと
+engine 側の変更 / root pass の編集(F-6)/ canvas での並べ替え。
+
+#### 着地(2026-09-24、1068ab54)
+- **穴 2(Whole frame)**: Frame Plan の Target combo の先頭に **Whole frame**。まだ表示していない graph(project を開いた直後を含む)はそれで開き、refresh は選んでいたものを保つ。全 pass と、**どの pass も書かない宣言済み target** を F-1 の resource node(`resource_node#<名前>`)として描く(`FramePlanGraphicsScene::populateWholeFrame`)。置き場は同じ層配置で、それを最初に読む pass の 1 列左(読む pass が無ければ描画全体の左)。その出力ソケット(`node_socket#<名前>/out:<名前>`)から pass の入力へ drag すると N-8 の接続(`edit_preset_pass`。F-6 で direct root 自身の pass も)。status 行の target の要約は「whole frame」
+- **起票からの逸脱**:
+  - 起票の「宣言された全 target」は「**どの pass も書かない宣言済み target**」に縮めた。書かれている target は既に書く pass の出力ソケットとして描かれるため
+  - Whole frame で New render target... を作っても canvas は Whole frame のまま(F-1 の「作った target が次の選択」は target を選んでいるときだけ。Whole frame が新しい target を既に描くため)
+  - Target の選択はセッションをまたいで保存されない(起票の「以前の選択が保存されていればそれ」は無い)
+- **穴 4**: Pass Editor は pass を選ぶと最初に draft を消す(`clearDraft`)。拒否された pass の下に前の pass の draft が残らない
+- **穴 5**: Pass Editor の form を `QScrollArea`(`pelican.fullscreenPassScroll`)に入れた。form の最小の高さ(966 px)が下の dock 領域を押し上げて viewport を帯にし、dock を閉じても `QMainWindow` がその高さを保っていた。**既に潰れた viewport を含む利用者の保存済み layout は、splitter を引くか Layout > Reset to Default するまでそのまま**
+- **穴 6**: project の切り替えで、先に gizmo の session を終える(`MainWindow::endGizmoSessionForProjectSwitch`: 返答待ちの gizmo 要求を忘れ、session を止め、polling を更新する。今開いている project の開き直しは engine が残るので何もしない)。終わる engine への polling の失敗が status bar に出なくなった
+- `canvas_zoom_pan` は wheel を最初の fit が残した scale から測る(Whole frame は全 pass を fit するので 100 % を下回る)
+- **automation**: driver の比較 `op` に **`excludes`**(文字列がその値を含まない。「その文言が出なかった」の書き方)
+- **シナリオ `whole_frame_first_steps`**(新、33 step。専用 fixture は無く、共有の `test/fixtures/studio_automation_graph` の複製で起動): 既定 layout に戻す → 最初の frame plan が Whole frame で出る → Pass Editor を View > Panels で閉じて viewport の高さを覚え(200 px 超)、開いて閉じて高さが戻る → File > New Project... で Blank pipeline → 新しい graph も Whole frame、Engine Log の dock(`pelican.engineLog`。gizmo の失敗は status bar に出すのと同時にここへ `[Studio gizmo]` の行で残るので、消えてしまう status bar の代わりにこちらを見る)に「polling failed」が無い(`excludes`)→ New render target... で `scene_color` → その node の出力ソケットが出て、canvas は Whole frame のまま、`present` と同じ canvas に並ぶ → まだ polling failed が無い
+- **test**: `devstudio_frameplan_graph_test`(Whole frame が最初の表示、読まない target の node、その socket からの drag で `edit_preset_pass` 1 回)/ `devstudio_fullscreen_pass_test`(拒否された pass に前の draft が出ない)/ `devstudio_layoutpreset_test`(dock を開いて閉じた後の viewport の高さ)/ `test/ci/test_studio_drive.py`(`excludes`)/ シナリオ
+- **変異**: commit の記録は「各々変異で赤を見て、戻して緑」だけで、どの変異かは記録に無く未確認
+- **観察(未再現)**: 早い run の 2 回で、`pelican_player` が起動直後に exit 1 し、studio.log に何も残らなかった。再現していない。要観察
+- **F 系列(「0 から組める」第一段階)はこれで全部着地**。別に残るのは F-5 で記録した `graph_reroute_tie` の待ちの修正
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**

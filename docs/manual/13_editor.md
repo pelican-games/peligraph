@@ -67,11 +67,13 @@ dialog の Creates 欄にその path が出ます。雛形は **Standard 3D scen
 - **Browse...** は OS のフォルダ選択(modal の `QFileDialog`)です。自動化面からは操作できないので、
   シナリオはフォルダ欄(`pelican.newProject.location`)に直接 type します。
 
-⚠ **既知の表示ノイズ(F-2 で記録、未修正)**: project を切り替えた直後、status bar に
-`Modal transform polling failed: pelican_player exited before returning an RPC response` が出ることがあります。
-gizmo の `get_modal_transform` polling が、切替で終了した古い engine に宛てた要求の失敗を出しているもの
-([文言](../../src/devstudio/model/gizmomodel.cpp#L1062))で、切替そのものの失敗ではありません。
-また、Studio で作った project でも `project.json` の `generator` は `"pelican_cli project init"` のままです。
+F-2 のときは、project を切り替えた直後の status bar に
+`Modal transform polling failed: pelican_player exited before returning an RPC response` が出ることがありました
+(gizmo の `get_modal_transform` polling が、切替で終了した古い engine に宛てた要求の失敗を出していたもの。
+[文言](../../src/devstudio/model/gizmomodel.cpp#L1062))。**✅F-7 で出なくなりました**: 別の project へ切り替える前に
+gizmo の session を終え、返答待ちの要求を忘れます([切替の前処理](../../src/devstudio/view/mainwindow.cpp#L1085))。
+今開いている project の開き直しは engine がそのまま残るので、session も続きます。
+なお、Studio で作った project でも `project.json` の `generator` は `"pelican_cli project init"` のままです。
 
 ### Studioでcomponentを追加する
 
@@ -277,6 +279,27 @@ ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/commu
 | `import_scene_snapshot` | `{schema_version:1, semantic_scene_bytes, digest, current_scene_id}` |
 | `save_scene` | `{}`(フィールドを書くとエラー) |
 
+### shader を読み直させる(✅F-5)
+
+| メソッド | params | 返すもの | 拒否(`error.data` の `{error_code, error_fields}`) |
+|---|---|---|---|
+| `reload_shaders` | `{}`(鍵を書くと invalid params) | 読み直した: `{committed: true, changed: [shader の参照…], cache_hits, cache_misses}` / 何も変わっていない: `{committed: false, attempted: false}` | `shader_reload_failed@1`(compile 失敗。`error_fields.changed[]`、message は compile log で、`get_status` の `reload.runtime["pelican.shaders"].last_error` にも同じ文が残る)/ `shader_reload_unavailable@1`(`error_fields.reason` が `replay` か `strict assets`。reload service の無い engine も同じ code) |
+
+**file watch の gate は開けません。**`--rpc` で動く engine(Studio が起こす engine はすべてそう)は、reload gate が
+`rpc driver` を理由に閉じていて、shader file を保存しても自分では読み直しません。`reload_shaders` はそれを開けずに、
+**頼まれたその 1 回だけ** shader の runtime participant を当てます(`reload_game_logic` と同じ形。
+[handler](../../src/core/communication/rpcserver.cpp#L1214))。閉じた gate を越えるのは明示の要求だけで、
+replay と `--strict-assets` の engine は今までどおり断ります([越えてよいかの判定](../../src/core/watch/reloadservice.cpp#L590) /
+[`ReloadGate::explicitShaderReloadRefusal()`](../../src/core/watch/reloadgate.cpp#L45))。file watch の poll の経路は `--rpc` の下で
+今までどおり何もしません。
+
+- **いつ効くか**: RPC は frame 境界で処理されるので、handler の中で即時に準備・commit し、新しい shader は次の frame の
+  `render_start` で使われます(fullscreen pass の入力もそこで bind し直します)。preview 中なら先に preview を中止します。
+- **何を読み直すか**: SPIR-V の sha256 が公開中と違う unit だけです([`ShaderLibrary::prepareReloadChanged()`](../../src/core/shader/shaderlibrary.cpp#L1120))。
+  ただし前回の読み直しが失敗した unit は、中身が変わっていなくても 1 回公開し直します(それで失敗の記録が消えます)。
+  判定のために compile はするので、呼ぶたびに全 unit を compile し直します(cache が効くので軽い。大きな project での時間は未測定)。
+- Studio は shader file の保存を見て自分でこれを呼びます(§13.5「Studio のノードキャンバス」の「shader を外のエディタで保存すると画面が変わる」)。
+
 ### レンダー設定を編集する
 
 **シーン編集とは実行モデルが違います。**混ぜると壊れます。違う理由は対象が違うからです —— シーン編集の対象がメモリ上の `AuthoringSceneDocument`(正は `SceneRevision`)なのに対し、こちらは**ディスク上の rendering config ファイルそのもの**で、正はその sha256 digest です。したがって版の比較も、undo の有無も、書き込みの作法も別建てになります。
@@ -293,7 +316,7 @@ ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/commu
 | `edit_ray_callable_records` | `base_source_digest`と`task_records` objectで初期値の上書き指定全体を置換。既存の編集ticketを返す |
 | `fork_render_pipeline` | `base_source_digest`・`base_preset_digest`・`destination_reference`で選択中presetを新しいprojectファイルへコピーし、rootの参照先も切り替える |
 | `edit_region_replacement` | `base_source_digest`・`base_preset_digest`・`graph`・`region`でproject presetのタグ付き領域を指定。`provider`に登録済みprovider名を指定するとコンパイル時の差し替えを選択し、`null`なら差し替え要求を除去して元のノード構成を使用する。元のpass・設定・接続は保持する。現在の指定は`get_render_authoring_context`の各graphの`region_replacements`で取得できる。標準feature全体の展開操作ではない |
-| `edit_preset_pass` | `base_source_digest`・`base_preset_digest`・`graph`・`pass_name`でproject presetのpassを指定。fullscreenは`input`・`output`・`shader`と任意の`ray_query`、materialは`input`・`output`・`ray_query`の1項目以上。rasterはさらに`shader`・`draw`・`raster_state`を部分編集できる。省略項目は保持、rasterの`raster_state: null`は既定状態へ戻す |
+| `edit_preset_pass` | `base_source_digest`・`base_preset_digest`・`graph`・`pass_name`でproject presetのpassを指定。fullscreenは`input`・`output`・`shader`と任意の`ray_query`、materialは`input`・`output`・`ray_query`の1項目以上。rasterはさらに`shader`・`draw`・`raster_state`を部分編集できる。省略項目は保持、rasterの`raster_state: null`は既定状態へ戻す。書き先は 3 つ: project preset(`base_preset_digest`)/ project feature(`base_feature_digest`)/ **direct root 自身**(✅F-6。root が preset を選ばず、要求がどちらの digest も持たないとき。`base_source_digest` が root の digest を兼ね、root の `rendering.rendering_passes` の pass を編集する)。置換規則は 3 つとも同じ関数です([direct root の書き先](../../src/core/communication/renderconfigeditor.cpp#L2650)) |
 | `get_compute_task_authoring` | compute/RT taskの元宣言・編集可否・保存先とdigestを取得する |
 | `edit_compute_task` | `base_source_digest`・`base_task_source_digest`・`task_name`・`task`でtask宣言を置換する。名前は保持する |
 | `add_compute_task` | `base_source_digest`・`destination_reference`・`task`で新規project featureにtaskを作り、rootのfeaturesへ追加する |
@@ -375,6 +398,22 @@ color attachment objectは表示されるJSON欄で設定を保持・編集し�
 名前・配置・その他の描画設定は保持します。保存は既存の編集ticketを使い、失敗時はpresetとruntimeを戻します。
 元preset由来の編集可能なpassはauthoring contextに`editable_preset_pass: true`と
 合成前の`preset_declaration`を持ちます。engine共有preset、feature由来pass、生成されたAS/anchor nodeは対象外です。
+
+**direct root の pass(✅F-6)。**preset を選ばない root(Blank pipeline の project など、`config_kind` が `direct`)が
+自分で宣言した pass は、authoring context で `editable_root_pass: true` と合成前の `root_declaration` を持ちます
+([`editable_root_pass` を付ける所](../../src/core/communication/renderconfigeditor.cpp#L1779))。engine が足した pass(`output_transform` など)と
+feature の pass は `false` で、root が宣言していても編集できる種類(fullscreen / material / raster と一部の補助 pass。
+preset の pass と同じ判定)でなければ `false` です。これを `base_source_digest` だけで `edit_preset_pass` に渡すと、root の文書が
+書き換わります —— root の `rendering_passes` の list を 1 つの値として書き直し、文書のほかの部分は byte のまま残します。
+direct root での拒否は 2 つ増えました。
+
+| code | いつ | 付くもの |
+|---|---|---|
+| `root_pass_not_found` | その graph の root に、その名前の編集できる pass の宣言が無い(feature の pass、engine が足した pass) | `graph`・`pass_name`・`provenance`(出所が引けなければ `null`) |
+| `root_routing_not_editable` | `material_routing` を渡した(routing は preset のもので、direct root の pass では編集しない) | `graph`・`pass_name` |
+
+preset root で digest を持たない要求は、今までどおり `project_preset_required` です(fork が要ります)。root の pass を
+**消す**手段はありません。direct root の `material_routing` は Studio に表示されません。
 終端の`output_transform`もエンジン生成ノードなので、このpreset編集の対象にはなりません。
 **New pass**で新規追加モードへ戻れます。object形式のdepth attachmentはこのフォームでは未対応です。
 
@@ -659,14 +698,21 @@ QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L26) に
 
 **Frame Plan のノード編集(N-8)**: Frame Plan でも出力ソケットから編集できる pass / task の入力ソケットへ**通常ドラッグ**で接続でき、入力ソケットを空所へドラッグするか辺を Delete で切断します。どれも既存の `edit_preset_pass` / `edit_compute_task` を宣言丸ごとで 1 回送るだけで、engine の pass や fork 前の preset、feature の pass は吸着せず理由を 1 行で出します。shader stem と task の dispatch は行の帯でその場編集、それ以外は node の double-click で今までの dialog。右クリック「Add fullscreen pass…」は Pass Editor をその node の後ろに prefill して開き、Delete は authored pass(`remove_authored_pass`)と task(`remove_compute_task`)を消します。Shift ドラッグは今までどおり dialog です。node の位置・reroute・tie・group は Graph の `layout` の `frame_plan` に一緒に保存されます。rendering 文書が legacy 形(root が `pelican.graph` でない)の project では保存されず、その旨と file 名を 1 行で出します。
 
-**direct root の pass はまだ Studio から編集できません(F-4 の時点)**: Blank pipeline の project のように root が自分で pass を
-宣言し preset を選ばない(`config_kind` が `direct`)とき、engine の `edit_preset_pass` は fork された preset が無いので断ります。
-そのため Pass Editor はその pass(例: `present`)を開くと保存できない draft を読み込まず、notice 行に
-「`<pass>`: not editable in a direct root」と出し、tooltip に root の参照と「Edit that file by hand.」を出します
-([direct root の Pass Editor の拒否](../../src/devstudio/view/fullscreenpasswidget.cpp#L1844))。canvas の drag や帯の編集も
-同じ文で断り、engine が足した pass には「is added by the engine; it has no declaration in the project to edit.」と言います。
-どちらも fork は勧めません([direct root の canvas の拒否](../../src/devstudio/view/frameplanedit.cpp#L126))。今は root の文書を
-手で直してください。**この制限は F-6(direct root の pass の編集、着手中)で無くなる予定です。**
+**direct root の pass を Studio で編集する(✅F-6)**: Blank pipeline の project のように root が自分で pass を
+宣言し preset を選ばない(`config_kind` が `direct`)とき、engine が `editable_root_pass` として出す pass(例: `present`)は、
+Pass Editor でも canvas(drag での接続・切断、帯の編集)でも preset の pass と同じように編集でき、保存は
+`base_source_digest` だけを付けた `edit_preset_pass` で root の文書に書きます。Pass Editor の Save の tooltip は
+「Calls edit_preset_pass on the pass `<root の参照>` declares.」です。material routing の欄は preset の pass にだけ出ます。
+fork は要りません(fork する preset がありません)。
+
+**編集できないと言うのは、engine が編集を申し出ない pass だけになりました。**root が宣言していても `editable_root_pass` が
+偽の pass(編集できる種類でないもの)を開くと、Pass Editor は保存できない draft を読み込まず、notice 行に
+「`<pass>`: not editable in a direct root」、tooltip に root の参照と「..., which selects no preset, and the engine offers no
+editable declaration of it. Edit that file by hand.」を出します
+([direct root の Pass Editor の拒否](../../src/devstudio/view/fullscreenpasswidget.cpp#L1844))。canvas も同じ文で断り、
+engine が足した pass には「is added by the engine; it has no declaration in the project to edit.」と言います。どちらも
+fork は勧めません([direct root の canvas の拒否](../../src/devstudio/view/frameplanedit.cpp#L126))。Pass Editor は pass を
+選ぶと最初に form を空にするので、断られた pass の下に前の pass の下書きが残ることはありません(✅F-7)。
 
 **Frame Plan で render target を宣言する(✅F-1)**: toolbar の **New render target...**(`pelican.framePlanNewRenderTarget`)か、
 canvas の空所の右クリックの同名 action(`pelican.framePlan.newRenderTarget`)で form(`pelican.renderTargetForm`)が開きます
@@ -676,12 +722,29 @@ checkbox)・history・clear color(`r, g, b, a`、任意)です。**名前だけ�
 (`R16G16B16A16_SFLOAT`、`COLOR_ATTACHMENT` + `SAMPLED`)になります。Fixed size でも `extent_scale: 1` は書かれます
 (parser が必須にしているため。[宣言の組み立て](../../src/devstudio/view/frameplanedit.cpp#L649))。送るのは `edit_render_targets` 1 回です。
 canvas は **Target**(`pelican.framePlanTarget`)で選んだ target を resource node として描き(自動化面の合成名は
-`resource_node#<名前>`)、作った target は次の描画でそこに選ばれます。その node の **double-click** で同じ form が
+`resource_node#<名前>`)、作った target は次の描画でそこに選ばれます(Target が **Whole frame** のときは選び直さず、
+Whole frame のまま新しい target を描きます。下の段落)。その node の **double-click** で同じ form が
 replace として開き、click で選んで **Delete** で remove します。replace は fragment の宣言を土台にするので、form に無い
 欄(`mip_levels` など)は残ります。**他所で宣言された target は form が読み取り専用で開き**、出所を 1 行で出します
 (「the screen output the engine provides」「a target of preset hybrid_v1」など)。Delete しても RPC は出ず、同じ出所の
 文で断ります。engine の拒否は code ごとの 1 文になり、`render_target_referenced` なら使っている pass を並べます
 ([拒否の文](../../src/devstudio/view/frameplanedit.cpp#L730))。
+
+**Whole frame —— まだ誰も読まない target をつなぐ(✅F-7)**: Target combo の先頭は **Whole frame** です。まだ表示して
+いない graph(project を開いた直後を含む)はこれで開き、refresh の後は選んでいたものが残ります。選択は Studio を
+閉じると忘れます。Whole frame は**全 pass** と、**どの pass も書かない宣言済み target**(宣言しただけでまだ使っていない
+`scene_color` など)を 1 枚に描きます([`populateWholeFrame()`](../../src/devstudio/view/frameplangraphics.cpp#L2119))。
+後者は F-1 の resource node として、それを最初に読む pass の 1 列左(読む pass が無ければ描画全体の左)に置かれ、
+右端に出力ソケット(自動化面の合成名 `node_socket#<名前>/out:<名前>`)を持ちます
+([置き方](../../src/devstudio/view/frameplangraphics.cpp#L2680))。**このソケットから pass の入力ソケットへドラッグすると、
+N-8 の接続**(`edit_preset_pass` 1 回。direct root 自身の pass もこれで root に書かれます)になります。pass が書いている
+target は、書く pass の出力ソケットとして既に描かれているので、別の node にはなりません。Target で 1 つの target を
+選ぶと、今までどおりそこへ届く上流だけ(Depth の深さまで)を描きます。status 行の target の欄は「whole frame」と出ます。
+
+**Pass Editor の form は scroll します(✅F-7)**: form は `QScrollArea`(`pelican.fullscreenPassScroll`)の中にあります。
+以前は form の最小の高さ(1,000 px 近く)が下の dock 領域を押し上げ、Pass Editor を開くと viewport が 60〜80 px の帯に
+潰れ、dock を閉じても戻りませんでした([置き場](../../src/devstudio/view/mainwindow.cpp#L288))。**その潰れた状態を
+既に保存した layout は、そのままでは戻りません** —— splitter を引くか、**Layout > Reset to Default** で直してください。
 
 **fullscreen pass を shader ごと作る(✅F-3)**: Pass Editor の Fragment 欄の横に **New…**
 (`pelican.fullscreenPass.newFragmentShader`。project を開いていないと押せません)があります。押すと名前の行
@@ -701,15 +764,25 @@ log が名指す `file:line` は強調されます。notice 行は「shader comp
 ([経路](../../src/devstudio/view/fullscreenpasswidget.cpp#L913))。canvas の帯で直接 stem を変えて compile で断られた
 ときは、今も status の 1 行だけです。
 
-**shader の reload 失敗の印と、今の Studio で出ない理由(F-3)**: Frame Plan は描いている node の shader file を監視し、
-**書かれたときだけ** engine の `get_status` を読みます(少し待って 1 回、以後 reading が動くまで最大 16 回。定期の
-timer は無いので、Q-2 の何もしない間の RPC は増えません。[回数の上限](../../src/devstudio/view/shaderreloadfollower.hpp#L73))。
-`reload.runtime["pelican.shaders"].last_error` の path がある node の shader に当たれば、その node の見出しの右上に
-赤い印(`node_shader_error#<pass>`、tooltip に log の先頭行)を描き、当たらない失敗は Frame Plan の status 行に 1 行出します。
-**ただし Studio の下では印は出ません。**Studio は engine を `--rpc` で起こし、その reload gate は `rpc driver` を理由に
-閉じている([gate](../../src/core/watch/reloadgate.cpp#L32))ので、engine は file の変更で shader を読み直さず、失敗も
-報告しません。そのとき status 行は「A shader file changed; this engine does not reload shaders (rpc driver).」と
-言います。明示の reload(`reload_shaders` RPC)は F-5 で入る予定です(未着地)。
+**shader を外のエディタで保存すると画面が変わる —— reload と失敗の印(F-3 / ✅F-5)**: Frame Plan は描いている node の
+shader file を監視します。Studio は engine を `--rpc` で起こし、その reload gate は `rpc driver` を理由に閉じている
+([gate](../../src/core/watch/reloadgate.cpp#L32))ので、engine は file の変更を自分では拾いません。そこで Studio は、
+**書き込みが 200 ms 途切れたら `reload_shaders` を 1 回**送ります(同時に 1 本。返事を待つ間の書き込みは、返事の後に
+1 回分だけ送り直します。[debounce](../../src/devstudio/view/shaderreloadfollower.hpp#L75))。定期の timer は無いので、
+Q-2 の何もしない間の RPC は増えません。答えごとに:
+
+- **読み直した**: node の印、Frame Plan の status 行の reload の文、Pass Editor の log 欄を消します。viewport は次の
+  frame から新しい shader で描きます。
+- **compile 失敗**(`shader_reload_failed@1`): engine の log の path が node の shader に当たれば、その node の見出しの
+  右上に赤い印(`node_shader_error#<pass>`、tooltip に log の先頭行)を描き、当たらない失敗は status 行に 1 行出します。
+  **Pass Editor が開いていれば、form の下の log 欄**(保存の compile 失敗と同じ欄)にも log 全文が出ます。engine は前の
+  shader で描き続けます。
+- **engine が断った**(`shader_reload_unavailable@1`、replay / strict assets の engine): status 行に「A shader file
+  changed; this engine does not reload shaders (<理由>).」。この文はこのときだけ出ます。
+- それ以外の失敗: 「Could not ask the engine to reload shaders: ...」。
+
+読み直しか失敗の後には `get_status` の `reload.runtime["pelican.shaders"]` を 1 回読み、印を engine の記録に合わせます
+([答えの扱い](../../src/devstudio/view/frameplanwidget.cpp#L1107))。
 
 **配線の制御点と置き場所(N-6)**: 辺の double-click で **reroute**(通過点)が入り、drag で動き、Delete で消えます。node を動かしても reroute は動きません。制御点や辺を 2 つ以上選んで右クリック **Tie together** で 1 つの **tie**(結束バンド)になり、辺は等間隔で平行に通ります(**Untie** で戻す、double-click で並びを反転)。**Auto layout** は lane を reroute と tie として出します。node の位置・reroute・tie は文書の scope ごとの `layout`(editor 用、engine は無視)に `set_layout` で残り、次に開いても同じ図です。Frame Plan の位置はまだセッション内です。
 
@@ -773,6 +846,11 @@ objectName が付いていて(`pelican.file.*` / `pelican.view.panels.*` / `peli
 [README](../../test/studio_scenarios/README.md#L55))。step は「命令をそのまま送るもの」か「期待」で、期待は
 `rpc_equals`(engine の応答の `path` が `value`)/ `result`(任意の命令を送り、応答の `path` を記録するか `value` と比べる)/
 `text_equals` / `visible` / `list_count` / `screenshot`(保存のみ)の 6 種です([判定](../../tools/studio_drive.py#L685))。`{project}` / `{artifacts}` と `--var NAME=VALUE` は step のすべての文字列に差し込まれます。
+`result` の比べ方 `op` は `eq`(既定)/ `ne` / `gt` / `ge` / `lt` / `le` / `contains` / **`excludes`**(✅F-7。文字列がその値を
+含まない —— 「その文言は出なかった」の書き方。[比較](../../tools/studio_drive.py#L338))です。`result` も **`retry_ms`**(✅F-5)を受け、
+条件を満たすか時間が尽きるまで 0.2 秒おきに問い直します(`rpc_equals` は前から受けていました)。shader を保存した後に
+engine が描くものは engine の時計で届くので、`fullscreen_pass_from_template` は `screen` の screenshot をこれで待ちます
+([問い直し](../../tools/studio_drive.py#L716))。
 3 つ目の種類の **`file` step**(✅F-3)は Studio へ送らず、driver 自身が run の持つ directory の中の file を 1 つ読み書きします ——
 人が Studio の操作の合間に自分のエディタで file を直す、の代わりです。`write` / `replace`(`old` がちょうど 1 か所のときだけ)/
 `contains` / `exists` の 4 つです。書ける範囲は **`{project}`(fixture の複製)と `{artifacts}`(その run の成果物の置き場)の
@@ -790,13 +868,19 @@ driver の stdout / stderr は、cp932 の console で出せない文字があ�
 CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが見つかった`AUTO`）が必要です。
 `uv`は不要で、完全なGPU gateは全scenarioの登録・実行を必須にします([CI運用](../ci.md))。
 
+**run ごとに空の設定 directory を使います(✅F-5)。**Studio は環境変数 **`PELICAN_STUDIO_CONFIG_DIR`** があれば、利用者の
+設定 directory の代わりにそこへ dock の layout を読み書きします([置き場の決定](../../src/devstudio/view/mainwindow.cpp#L88))。
+driver は run ごとに `{artifacts}/studio_config` を空にして作り、この変数で渡します([渡し方](../../tools/studio_drive.py#L1025))。
+以前のシナリオは、前の run(や人が使った Studio)が利用者の設定 directory に残した dock の layout を復元し、自分の
+layout をそこに残していました。テーマの選択はこの directory ではなく `QSettings` に残るので、この変数の影響を受けません。
+
 **report.json は AI が読む形です**([組み立て](../../tools/studio_drive.py#L1136)): `verdict`(`green` / `red`)と
 `ok` / `failed_steps`、`summary`(step ごとに 1 行)、`failures`(送った命令・返ってきた応答・言葉での理由・
 **失敗した瞬間のスクリーンショット**)、`steps`(全文)、`studio_log`(Studio と engine の console 出力)。
 `studio_exit_code` と `studio_shutdown_forced` も記録します。最後の shutdown step は
 **exit 0、強制終了なし**を要求し、異常終了・タイムアウトによる強制停止も report と driver の失敗になります。
 
-現在のシナリオは **14 本**です。
+現在のシナリオは **15 本**です。
 `graph_read` は fixture を Graph タブで開き、`list` が objectName を返すこと・無い名前が
 `automation.widget_missing@1` で断られること・キャンバスが描いたものが `get_graph_instances` の中身と合うことを見ます
 ([シナリオ](../../test/studio_scenarios/graph_read.json))。`graph_edit_roundtrip` は**実物の engine で**値の帯を
@@ -809,32 +893,49 @@ drag で動かし、`view_state` で結果を読む)、`menu_actions`(popup を�
 `frameplan_edit_roundtrip` がテーマ・配置・配線・値の観測・Frame Plan編集の往復を確認します。
 ✅F-2 の `new_blank_project` は File > New Project... の dialog にフォルダ(`{artifacts}` の下)・名前・Blank pipeline を
 入れて Create し、開き直った Frame Plan に `present` と `output_transform` があること、viewport の screen モードの
-screenshot が 100 色を超えること(gradient が出ていること)を見ます([シナリオ](../../test/studio_scenarios/new_blank_project.json))。
+screenshot が 100 色を超えること(gradient が出ていること)、その screenshot の `capture` が `print_window` である
+こと(✅F-5)を見ます([シナリオ](../../test/studio_scenarios/new_blank_project.json))。
 ✅F-1 の `render_target_authoring` は New render target... を action で開いて名前だけで作り、engine の
 `render_targets[1]` が `source: "authoring"`・`extent_scale 1` であること、node の double-click で 0.5 にすると engine が
 0.5 を持つこと、Delete で消えること、fixture の pass が書いている target の Delete がその pass を名指しして断られ、
 target が残ることを追います([シナリオ](../../test/studio_scenarios/render_target_authoring.json))。
-✅F-3 の `fullscreen_pass_from_template` は Add fullscreen pass → New… → Create で shader を書き、`file` step で構文
-エラーを入れて Save が compile log 付きで断られ form の値が残ること、直して Save すると node が描かれること、もう一度
-壊すと status 行が「does not reload shaders」と言い印が出ないことを見ます
+✅F-3 / F-5 の `fullscreen_pass_from_template`(47 step)は、`lighting_pass` の後に `gbuffer_albedo` を読んで `lit_color`
+(画面に届く色)に書く pass を Add fullscreen pass → New… → Create で作り、`file` step で構文エラーを入れて Save が
+compile log 付きで断られ form の値が残ること、直して Save すると node が描かれ viewport が albedo を描くことを見ます。
+続けて(✅F-5)`file` step で shader を gradient に書き換えると Studio が `reload_shaders` を頼み viewport が gradient に
+なること、typo を書くと node に印・Pass Editor の log 欄が typo を名指し・engine は前の gradient を描き続けること、
+直すと印と log が消えて gradient に戻ることを追います
 ([シナリオ](../../test/studio_scenarios/fullscreen_pass_from_template.json))。自動化面の下では Studio は shader を
 desktop で開かず、`automation: shader source open <path>` を log に書きます([差し替え](../../src/devstudio/view/uimain.cpp#L50))。
-✅F-4 の `render_pipeline_from_scratch`(93 step)は「0 から組める」第一段階の筋書きを端から端まで追います:
+✅F-4 / F-6 の `render_pipeline_from_scratch`(97 step)は「0 から組める」第一段階の筋書きを端から端まで追います:
 File > New Project... で `{artifacts}` に Blank pipeline の project を作り(画面は `present` の gradient)、New render
 target... で `scene_color` を名前だけで宣言し、Add fullscreen pass... で `draw_pattern` を `present` の前に足して
 `scene_color` に書かせ、New... の雛形を `file` step で 8 本の縞に書き換えて Save します。`present` に `scene_color` を
-読ませる手順は**まだ Studio では通りません** —— Pass Editor は「present: not editable in a direct root」と断り(シナリオは
-この文言を確かめます)、canvas はまだ誰も読まない target を `present` と同じ画面に描かないので drag の元もありません。
-そこでシナリオは `file` step で root と `present.frag` を手で直し、別の project を開いて戻って engine に読み直させます。
+読ませる手順は、F-4 の時点では Studio で通らず `file` step の手書きで迂回していましたが、**✅F-6 から Studio の操作です**:
+`present` を見出しで開き(editable な node の中ほどは shader の帯で、押すとその場編集になるため)、Save が root を書くこと・
+engine が root の pass として出すことを確かめ、Inputs に `scene_color` を Add し、`present.frag` を `file` step で
+「入力 0 をそのまま出す」shader に書き換えてから Save します(root への `edit_preset_pass`。preflight と pipeline 再構築が
+新しい `present.frag` を compile します)。
 そのあと viewport の screenshot が 4 色以下で、同じ縞の上下が同じ色・隣の縞が違う色・手順 1 の gradient のその点とも
 違う色であること、canvas と engine が `draw_pattern` → `present` の順であることを見て、もう一度別の project を開いて
 戻っても同じであることを確かめます(Studio の再起動ではありません)([シナリオ](../../test/studio_scenarios/render_pipeline_from_scratch.json))。
+✅F-7 の `whole_frame_first_steps`(33 step)は、既定 layout に戻してから、最初の frame plan が Whole frame で出ること、
+Pass Editor を View > Panels で閉じた・開いた・閉じた後に viewport が帯にならず高さが戻ること、File > New Project... で
+Blank pipeline に切り替えても新しい graph が Whole frame で開き、Engine Log(`pelican.engineLog`。gizmo の失敗は status bar と
+同時にここへ残ります)に「polling failed」が無いこと(`excludes`)、New render target... で作った `scene_color` がその出力
+ソケットごと `present` と同じ canvas に描かれ、canvas が Whole frame のままであることを見ます
+([シナリオ](../../test/studio_scenarios/whole_frame_first_steps.json))。
 
 ⚠ **2 つの注意。**(1) `open_project` に**今開いている directory** を渡すと何も起きません(`EmbeddedViewport::openProject`
 がそう作られています)。ディスクから読み直させたいときは、別の project を開いてから戻ります。
 (2) `screenshot` の既定(`widget` モード)は Qt の widget 木を描くので、**埋め込まれた engine の窓は写りません**
-(別 HWND です)。engine が描いた絵が要るときは `"mode": "screen"` を使い、窓が隠れていない必要があります。
-`screenshot` の応答は `path` / `mode` / `width` / `height` に加えて **`distinct_colors`**(絵に含まれる色の数)を返します
+(別 HWND です)。engine が描いた絵が要るときは `"mode": "screen"` を使います。**✅F-5 から `screen` は、Studio の窓
+自身の合成済みの内容を `PrintWindow`(`PW_RENDERFULLCONTENT`)で読んで切り出す**ので、別の application の窓が
+viewport に重なっていても写りません([窓の内容の読み取り](../../src/devstudio/automation/automationcommands.cpp#L80))。
+窓が print できないか 1 色で出たときだけ、以前の desktop の grab に戻ります(このときは窓が隠れていない必要があります)。
+どちらで撮ったかは応答の **`capture`**(`print_window` / `screen`)に出ます。着地時に別の窓の重なりで 2 本のシナリオが
+赤になったための変更です。
+`screenshot` の応答は `path` / `mode` / `capture` / `width` / `height` に加えて **`distinct_colors`**(絵に含まれる色の数)を返します
 (✅F-2、[screenshot の distinct_colors](../../src/devstudio/automation/automationcommands.cpp#L1784))。消去されただけの viewport は 1 色なので、
 `result` step で `distinct_colors` を読めば「engine が何か描いたか」を PNG を開かずに判定できます。
 **`"pixels": [[x, y], ...]`**(✅F-4)を付けると、応答にその各点の色が `"#rrggbb"` の配列 `pixels` で返ります
