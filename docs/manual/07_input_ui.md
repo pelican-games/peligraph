@@ -277,6 +277,18 @@ GPU 経路自体は意図的に別のままです(`DebugText` は専用 atlas + 
 
 オーディオ(`ctx.audio().playSound` 等)は [第8章](08_gameplay.md) を参照してください。
 
+### 機能を外した build での呼び出し(✅PG-2)
+
+この章のゲームコード向け API(アクション・pose・`debugText`)は、ビルドユニット([第2章](02_getting_started.md) の「機能ユニット」)を外しても答え方が変わりません。これらの実装(`userinput.cpp` と `gamecontext.cpp` の該当関数)には `PELICAN_WITH_*` による分岐がありません。外した build で答え方が変わるのは音と物理とアニメーションで、その一覧は [第8章 §8.4「機能を外した build」](08_gameplay.md) にあります。
+
+| 呼び出し | 外した build での答え |
+|---|---|
+| `ctx.actionPressed` / `actionReleased` / `actionHeld` / `actionAxis1` / `actionAxis2` | 変わらない(入力のアクション層はビルドユニットではない) |
+| `ctx.actionPose` | 分岐は無い。`PELICAN_WITH_OPENXR=OFF` の build では XR が起動しないので、flat 起動と同じく `valid = false` の既定値が返る(throw しない。§8.4 の actionPose) |
+| `ctx.render().debugText` | 変わらない。`debug_text` はビルドユニットではなく rendering config の feature で、参照していなければ no-op(§7.5) |
+| `ctx.audio().playSound` など | `PELICAN_WITH_AUDIO=OFF` で `BuildFeatureCallDisabledError`(`code()` = `build_feature_disabled@1`)。詳細は第8章 |
+| `--rpc`(`inject_input` / 収録・リプレイの rpc) | ゲームコードの呼び出しではないが、`PELICAN_WITH_RPC=OFF` の build では起動時に [`runEngineRpcServer()` の stub](../../src/core/communication/rpcserver_stub.cpp#L7) が `BuildFeatureDisabledError`(`This binary was built with PELICAN_WITH_RPC=OFF: --rpc is unavailable`)を投げる。こちらは PG-2 の派生型ではなく基底型で、`code()` は無い |
+
 ## 関連文書
 
 - [../design_input_actions.md](../design_input_actions.md) — 入力四層・アクション層(I1〜I4 実装済み)

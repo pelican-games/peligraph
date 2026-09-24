@@ -377,7 +377,14 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 
 1行が1つの**独立に観測できるフィールド**（またはビルドrootの1本）で、列は `owner` / `field` / `presence` / `role` / `prepare_owner` / `publication` / `rollback` / `retirement` / `snapshot_schema` / `mutation_id` です（[`SceneParticipantManifestEntry`](../../src/core/loader/sceneparticipantmanifest.hpp#L36)）。粒度を粗くしない理由はソースのコメントが書いています — `"renderer state"` のようにまとめた1行を作ると、後から足したカウンタがsnapshot比較にもmutationテストにも掛からずに逃げます（[そのコメント](../../src/core/loader/sceneparticipantmanifest.cpp#L79)）。
 
-`presence` は4値で、**ビルド構成から導かれます**（[`SceneParticipantPresence`](../../src/core/loader/sceneparticipantmanifest.hpp#L14)）。physics / seqplayer / vatplayer は `real` か `stub`、XRとRPCは `real` か `absent`、audioは `real` か `uninstalled` です（[先頭の `#if` 群](../../src/core/loader/sceneparticipantmanifest.cpp#L9)）。「このビルドには無い」と「このビルドでは別物が入っている」を1つの `bool` へ潰さない、という区別です。
+`presence` は `real` / `stub` / `absent` の3値で、**ビルド構成から導かれます**（[`SceneParticipantPresence`](../../src/core/loader/sceneparticipantmanifest.hpp#L14)）。機能を持つビルドでは `real` で、機能を外したビルドで `stub` と `absent` のどちらになるかは、[`feature_divisions` の表](../../src/core/loader/sceneparticipantmanifest.cpp#L23) の1箇所で決まります（PG-2）。表の1行が1つのビルドモジュールで（[`SceneFeatureDivision`](../../src/core/loader/sceneparticipantmanifest.hpp#L58)）、規則は1つです。
+
+- 機能を外しても、その機能の**宣言が scene に来うる**なら `stub`。OFF ビルドは、その宣言を名前付きで拒否する部分だけを残します。何が scene に来て何が拒否するかは、行の `off_declaration` に書いてあります。
+- 来えないなら `absent`。`off_declaration` は空です。
+
+現在の割り当ては、`stub` が audio / animation / physics / vat / seqplayer、`absent` が xr / rpc / imgui です。participant 行は presence を行ごとに選ばず、[`presenceOf()`](../../src/core/loader/sceneparticipantmanifest.cpp#L58) でこの表を引きます。表に無い名前を引くと、`consteval` 関数の中の `throw` に評価が届くのでコンパイルが止まります。animation と imgui は自分の participant 行を持ちませんが、分類されないモジュールを残さないために表には行があります。表は [`sceneFeatureDivisions()`](../../src/core/loader/sceneparticipantmanifest.hpp#L77) で外から読めて、[PG-2 の契約テスト](../../test/scene_transaction_contract_test.cpp#L212) が「`stub` になるのは `off_declaration` が空でないときだけ」「codec に `required_feature` がある component のモジュールは `stub`」「participant 行の presence は表の値」を検査します。
+
+以前は audio にだけ4値目の `uninstalled` がありましたが、PG-2 で消えました。audio を外したビルドでも scene の callback が音の effect（`playSound` / `stopSound` / `setBusVolume`）を積もうとすることはあり、effect transaction がそれを `build_feature_disabled@1` で拒否するので、audio は `stub` です。seqplayer の宣言は scene 文書ではなく起動オプション `--play-seq` から来ます。それでも `stub` に入れてあり、「scene に来うる」を厳密に読めば `absent` になりうる行です（PG-2 が残した論点）。
 
 `role` は10値あり（[`SceneManifestRole`](../../src/core/loader/sceneparticipantmanifest.hpp#L20)、名前は [`sceneManifestRoleName()`](../../src/core/loader/sceneparticipantmanifest.cpp#L275)）、**executorの外に居るものも明示的に載る**のが要点です。
 

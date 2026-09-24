@@ -112,6 +112,7 @@ ON のまま配布します。OFF は必要な shader variant を全て事前生
 | `PELICAN_WITH_SPIRV_LINK` | experimental SPIR-V linker、pinned SPIRV-Tools、`pelican-spv-link` CLI（**既定 OFF**） |
 
 OFF でビルドした機能を使おうとすると、黙って無視されるのではなく `This binary was built with PELICAN_WITH_X=OFF: ...` という**名指しのエラー**で止まります(fail-fast 方針。[第1章](01_overview.md) 参照)。
+ゲームコードの呼び出し(`ctx.audio()` / `ctx.physics()` / `ctx.animation()`)が外した build で何を返すか(例外の型と `code()`、animation の `Status`、物理 provider が 0 本のとき)は [第8章 §8.4「機能を外した build」](08_gameplay.md) の表にまとめてあります。
 `PELICAN_WITH_STANDARD_RENDER_ALGORITHMS`だけは機構ではなく既定実装packageなので、
 OFFでも対応feature自体は利用できます。その場合はfeatureのshader asset parameterへ
 `project://`実装を明示し、存在しない既定`engine://render_algorithms/...`を選ばないでください。
