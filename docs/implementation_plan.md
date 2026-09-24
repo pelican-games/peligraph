@@ -24673,6 +24673,44 @@ engine 側の変更 / root pass の編集(F-6)/ canvas での並べ替え。
 
 transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復活。
 
+### V0-ADD: v0 に足す制作の土台 —— 移行・パージの揃え方・制作の致命 5 件・BGM・基本形(2026-09-24 利用者裁定)
+
+**規範は [design_v0_production_gaps.md](design_v0_production_gaps.md)(v2)。この節は WP の索引と運用の決めごとだけを持つ。各 WP の前提・決定・受け入れは設計の該当節が正本で、着地したら完了記録をこの節の該当行の下に足す。**
+
+#### 裁定(2026-09-24、利用者)
+
+- v0 の意味: 形式は v0 の後も変わってよい。**v0 は「前の版の project を後の版のソフトへ移行する仕組み」がある最初の版**。[v0 凍結一覧](v0_freeze.md) の「凍結」は MG-1 の着地時に「v0 形式の一覧と移行の約束」へ書き直す
+- v0 より古い形式は移行の対象にせず作り直す。web(`my_webpage`)も v0 形式に合わせて直す(WEB-1、エンジン先行)
+- 作り方: 既存の peligraph の仕様(登録契約・名前付きエラー・時間は port 値・CAS + RPC 先行)に載せる。BGM はキーイング / タイミング制御と一体にし、scene 跨ぎはアプリ時刻に繋ぐ。UI は facade と `ui.*` sink の両方。音声形式は WAV + Ogg
+- **codex は使用不可**(利用者指示)。仕様の敵対レビューと実装は Claude(Opus)の subagent で代替し、報告にそう書く
+
+#### WP 索引
+
+| WP | 内容 | 設計 | 前提 |
+|---|---|---|---|
+| GP-5 | 基本形の同梱(`engine://primitives/*`)。GUI session の第二段階の依頼 | §8a | — |
+| MG-2a | 旧形式の一掃(ray 系の旧版、`committed` の読み取り互換は名前付き停止へ、snapshot の版分岐) | §2 | — |
+| MG-2b | scene v1 / asset_data v1 / legacy root の一掃(出荷 7 project・雛形・test 27 本) | §2 | MG-2a |
+| WEB-1 | web の parser を v0 形式へ(別 repo) | §2 | MG-2b |
+| PG-1 | `requires` の語彙拡張、audio module の条件付き登録、codec の `required_feature` を ResolvedScene seam で 3 経路共有、Studio の追加候補、package の capabilities | §3.2 | — |
+| PG-2 | facade の OFF 時の失敗(`build_feature_disabled@1`、animation は Status のまま)、provider 0 本、participant 区分 | §3.3 | PG-1 |
+| MG-1 | 移行の枠(文書の `(schema, version)` 単位の手順登録、生 JSON での検出、plan / apply、CLI / RPC、corpus) | §1 | MG-2b |
+| GP-1 | `ObjectRef` の最小実装・world の読み取り・localtransform の全付与 | §4 | — |
+| GP-3 | `ctx.ui()`・`ui.*` sink・gauge の描画 | §6 | — |
+| GP-4 | pointer の状態・`screenRay`・カーソル(input sequence の版上げで移行手順を 1 本) | §7 | MG-1 |
+| OL-1 | 構造編集での authoring id の書き出し、`duplicate` op(engine 側。Outliner の GUI は GUI session) | §8 | — |
+| AU-1 | scene commit で voice を止める修正、一体版 / 分解版の再生位置、bus、フェード、decode 1 回、Studio で音を出す | §9.2 | PG-1 |
+| AU-2 | Ogg・streaming | §9.3 | AU-1 |
+| GP-2 | `ctx.spawn`(collider・behavior 付き、runtime の attachment 識別子) | §5 | GP-1、PG-1 |
+
+着地の順(案): GP-5 → MG-2a → MG-2b → PG-1 → GP-1 →(PG-2 / MG-1 / GP-3 を並行)→ GP-4 → OL-1 → AU-1 → AU-2 → GP-2。WEB-1 は MG-2b の後、別 repo で。
+
+#### 運用の決めごと
+
+- 台帳の規約に 1 行足す(MG-1 の着地から有効): **文書の `version` を上げる WP は、同じ WP で移行手順を 1 本登録し、corpus の移行 test を緑に保つ**
+- GUI session(F / G / Q 系列)と並走する。台帳・`src/devstudio` に書く前に一言送る。着地は相手の状態を見て直列
+- WP 名は GUI session の `G-*` と衝突しないよう `GP-*` を使う
+
 ### 未了項目と再開順
 
 > この節は当時の実装・検証・再開順の記録を保存している。現在の残件は [v0 凍結一覧 §4](v0_freeze.md#4-v0-の状態と再検証) と [v1 計画](v1_development_plan.md) を参照し、以下の「未了」「次は」をそのまま作業指示にしない。
