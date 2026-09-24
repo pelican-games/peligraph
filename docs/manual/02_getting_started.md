@@ -254,6 +254,7 @@ mygame/
   "name": "pelican-project",
   "generator": "pelican_cli project init",
   "engine_min_version": "0.1.0",
+  "saved_by_engine": "0.1.0",
   "basic_config": {
     "window_title": "Pelican Project",
     "window_size": { "width": 1280, "height": 720 },
@@ -408,7 +409,8 @@ cmake --build ./build --config Debug --target run_studio
 | `'fov_y' is not supported in v1; use 'yfov' (radians)` | カメラの旧キー名。`yfov`(ラジアン)/`znear`/`zfar` に書き換える |
 | モデルのファイルが見つからないエラー | example のバイナリアセット未配置(§2.3)。エラーには解決後の絶対パスが含まれるので、そのパスに置く |
 | `implicit project root = ...` の WARN | `--project` 未指定。明示すれば消える |
-| `engine_min_version` のエラー | プロジェクトが要求するエンジン版(現行 `0.1.0`)より新しい。`--ignore-engine-version` で WARN に降格可能 |
+| `project.engine_too_old@1`(`engine_min_version` のエラー) | プロジェクトが要求するエンジン版(現行 `0.1.0`)より新しい。`--ignore-engine-version` で WARN に降格可能 |
+| `project.migration_required@1` | 前の版のエンジンで作った文書がある。`pelican_cli project migrate --project <dir>` で移してから開き直す([第3章 §3.13](03_project_format.md))。v0 のエンジンは移行の手順を持たないので、v0 では出ません |
 | Qt が見つからず configure 失敗 | `-DCMAKE_PREFIX_PATH` に Qt のインストールパスを渡すか、`-DSKIP_DEVSTUDIO=ON` |
 | GPU テストが全部 SKIP | Vulkan デバイスが列挙できない環境(リモートデスクトップ等)。仕様どおりの挙動 |
 | rpc モードでログが出ない | rpc モードでは **stdout はプロトコル専用** —— JSON-RPC の応答行以外は何も流れません(ヘッドレスの blocking rpc / ウィンドウのフレーム境界 rpc のどちらも同じ)。ログは cwd の `pelican.log` に出ます(Release ビルドも同様)。`--log-file <path>` で起動ごとのファイルに分けられ、Studio が起動した player は `<project>/.pelican/logs/player.log` に出します |

@@ -1,23 +1,48 @@
-# v0 凍結一覧(pelican 0.1.0)
+# v0 形式の一覧と移行の約束(pelican 0.1.0)
+
+**文書名 `v0_freeze.md`(旧称「v0 凍結一覧」)は歴史的な名残で、中身は v0 形式の一覧と移行の約束**
+(2026-09-25、MG-1 `28bf3b40` の着地で書き直した。[設計 §1.4](design_v0_production_gaps.md)、2026-09-24 の利用者の意図)。
 
 v1 計画 [docs/v1_development_plan.md](v1_development_plan.md) の「v0 で凍結するもの / 広く約束しないもの」の
-5 行表を、実物の名前に展開した正本。**この文書が凍結の一覧であり、v1 計画の表は要約**。
+5 行表を、実物の名前に展開した正本で、v1 計画の表は要約。v1 計画の「凍結するもの」は、この文書の §1
+「v0 形式の一覧と移行の約束」の意味で読む(形を動かさない約束ではない。[設計 §1.4](design_v0_production_gaps.md)、利用者の意図 2026-09-24)。
 
-読み方: §1 が「動かさないと約束するもの」、§2 が「二つの正本のうちどちらを残したか」、
+読み方: §1 が「v0 形式の一覧と、後の版へ移せるという約束」(§1.2〜§1.4 は v0 時点の記録で、不変は約束しない)、
+§2 が「二つの正本のうちどちらを残したか」、
 §3 が「v0 では約束しないもの」、§4 が「解消済みの項目と現行構成で再検証するもの」、
-§5 が「v0 に入った変更の SHA」、§6 が tag の手順。
+§5 が「v0 に入った変更の SHA」、§6 が tag の手順(§1 の読み替えは [設計 §1.4](design_v0_production_gaps.md)、利用者の意図 2026-09-24)。
 
-## 1. 凍結するもの
+## 1. v0 形式の一覧と移行の約束
+
+**約束: v0 形式の project は、後の版で `pelican_cli project migrate`(または Studio の移行画面)により開ける状態にできる。自動で直せない箇所は名前付きで列挙される。**
+
+これは「形を動かさない」約束ではない。2026-09-24 に利用者は、v0 を「v0 以降でファイルフォーマットの変化はありえるが、
+今後のファイルフォーマットへの変換などある程度の対応を可能とするべき最初のヴァージョン」とし、
+「前のヴァージョンのプロジェクトをあとのヴァージョンのソフトに移行する仕組みは欲しい」と述べた。
+旧 §1「凍結するもの」は形を動かさない約束と読めてこの意図とずれていたので、[設計 §1.4](design_v0_production_gaps.md) のとおり書き直した。
+
+形式を変えるときの規則と、約束を支える仕組み([設計 §1.2](design_v0_production_gaps.md)、利用者の意図 2026-09-24):
+
+- **文書の `version` を上げる WP は、同じ WP で移行手順を 1 本登録し、`test/fixtures/project_corpus/v0/` の移行 test を緑に保つ**(台帳 V0-ADD の運用の決めごと。2026-09-25、MG-1 `28bf3b40` から有効)。
+- 移行の単位は engine の版ではなく**各文書の `(schema, version)`**。手順は 1 版ずつ(`from + 1 = to`)で、重複・版の飛び・循環は登録時に `project.migration_step_*@1` で拒否される。
+- 自動で直せない箇所は、手順が `manual_items`(`{code, pointer, message}`)として返し、plan / apply の応答に文書ごとに載る。
+- 仕組みの実体は MG-1(`28bf3b40`): 開く前の入口が各文書の `schema` / `version` を parser より前に生で読み、登録手順の起点に当たれば `project.migration_required@1` で止める。`plan`(dry-run)→ `apply`(`.pelican/migration/<時刻>/` へ退避し、1 つの transaction で書き換え、project.json の `saved_by_engine` を更新)。入口は CLI `pelican_cli project migrate` と RPC `plan_project_migration` / `apply_project_migration`。使い方は [manual 3 章 §3.13](manual/03_project_format.md) と [10 章 §10.4](manual/10_tools.md)。
+- **v0 時点の状態**: production の手順は 0 本(v0 は後の版が移行元にする最初の版)。Studio の移行画面はまだ無く(GUI session の別 WP)、今日の入口は CLI と RPC。移行の検出が見るのは project root の下だけで、root の外に mount した asset store と `user://` 側(`pelican.settings`)には届かない。
+
+§1.1 が約束の対象になる v0 形式の一覧で、§1.5 / §1.6 はその一部の形の補足。§1.2〜§1.4 は **v0 時点の一覧(記録)で、不変は約束しない**
+([設計 §1.4](design_v0_production_gaps.md)、利用者の意図 2026-09-24)。
 
 ### 1.1 文書 schema と version
 
-project が持てる文書と、parser が受ける version。`schema` と `version` の組は**厳密一致**で、
-知らない組は名前付きで拒否される。番号は文書ごとに独立で、op の意味・package・native ABI とは別の番号
-(v1 計画の「schema version の分離」)。
+project が持てる文書と、v0 の parser が受ける version(= **v0 形式の一覧**)。各 parser が受けるのは表の version だけで、
+番号は文書ごとに独立で、op の意味・package・native ABI とは別の番号(v1 計画の「schema version の分離」)。
+engine が開く文書の `(schema, version)` は、**その engine に移行の手順が登録されていれば(その組が手順の起点なら)、parser より前に `project.migration_required@1` で止まり、`project migrate` で移せる。手順が無く parser の受ける version でもなければ、parser が名前付きで拒否する**。
+後の版の engine は、この表の組を起点にする手順を持つことで v0 形式を開ける状態にする。v0 の engine は手順 0 本なので、表に無い組はすべて parser が拒否する
+(MG-1。[設計 §1.4](design_v0_production_gaps.md)、利用者の意図 2026-09-24)。
 
 | schema | version | parser | 備考 |
 |---|---|---|---|
-| `pelican.project` | 1 | `src/project/projectformat.cpp` | `project.json`。`engine_min_version` と `requires` を持つ |
+| `pelican.project` | 1 | `src/project/projectformat.cpp` | `project.json`。`engine_min_version` と `requires` を持つ。MG-1 で記録だけの `saved_by_engine` を足した(version は 1 のまま。MG-1 より前の player もこの key 入りで開けることを実物で確認) |
 | `pelican.scene` | 2 | `src/project/sceneformat.cpp` | MG-2b で 1 の読み手を撤去し、2 以外は `pelican.scene.version_unsupported@1`(v1 は prefab キーを受けないことだけが違う版)。出荷 7 本と雛形・devcli の glTF / rules importer・import manifest の `pelican.scene` 出力は 2。SnapshotV1(scene v1 を運ぶ export / import)も撤去 |
 | `pelican.graph` | 1 | `src/project/graphcomposition.cpp` | 共通グラフ。`definitions` / `nodes` / `outputs` と `graph.instance` / `graph.input`。rendering config の root もこれだけ(§1.6) |
 | `pelican.value_graph` | 1 | `src/core/userpublic/valuegraph.cpp` | **内部 IR + test 面**。外部契約ではない(§2 行 1) |
@@ -48,21 +73,31 @@ project が持てる文書と、parser が受ける version。`schema` と `vers
 | `pelican.ray_bindings` | 2 | `src/core/shader/raygrouplayout.cpp` | 出荷 raytracing_demo / pathtrace_demo は 2。MG-2a で 1 の読み手を撤去し、2 以外は `pelican.ray_bindings.version_unsupported@1` |
 | `pelican.graph_catalog` | 1 | `src/project/graphmodule.cpp` | `pelican_cli graph-catalog` の出力(§1.3) |
 | `pelican.project_catalog_smoke` | 1 | `test/run_project_catalog_smoke.cmake` | project ごとの smoke 閾値 |
+| `pelican.project_migration_backup` | 1 | `src/project/projectmigration.cpp` | `project migrate` の apply が退避先 `.pelican/migration/<時刻>/migration.json` に書く記録(MG-1)。`.` で始まるディレクトリの下なので、移行の検出は見ない |
 
 ### 1.2 RPC method 名
 
-stdio JSON-RPC の枠組み(`jsonrpc` / `id` / `method` / `params`、名前付き error)が凍結対象で、
+**v0 時点の一覧(記録)。不変は約束しない**([設計 §1.4](design_v0_production_gaps.md)、利用者の意図 2026-09-24)。
+method 名は後の版で足したり変えたりしうる。RPC は project の文書ではないので `project migrate` の対象でもない。
+
+stdio JSON-RPC の枠組み(`jsonrpc` / `id` / `method` / `params`、名前付き error)の v0 時点の形と method 名を記録する。
 **params と戻り値の表は [docs/manual/10_tools.md](manual/10_tools.md) が正本**(ここでは重複させない)。
 
-基盤 29 本(`src/core/communication/rpcserver.cpp` の登録):
+MG-1 で足した 2 本(`src/core/communication/projectmigrationrpc.cpp` の登録。engine では `rpcserver.cpp` の `configureEngineRpcHandlers` から登録し、開く前の入口で止まった `--rpc` player ではこの 2 本だけの endpoint になる): `plan_project_migration`, `apply_project_migration`
 
-`ack_modal_transform`, `cancel_modal_transform`, `capture`, `capture_gpu`, `get_frame_plan`, `get_gpu_timing`, `get_modal_transform`, `get_status`, `inject_event`, `inject_input`, `load_gltf`, `load_scene`, `pick_object`, `query_gizmo_drag_basis`, `query_gizmo_handle`, `raycast`, `reload_game_logic`, `render_frame`, `set_camera`, `set_gizmo`, `set_input_profile`, `set_seed`, `set_time`, `start_input_record`, `start_input_replay`, `step_frame`, `stop_input_record`, `stop_input_replay`, `update_transforms`
+基盤 30 本(`src/core/communication/rpcserver.cpp` の登録。`reload_shaders` は F-5 `7d3f3565` で追加):
+
+`ack_modal_transform`, `cancel_modal_transform`, `capture`, `capture_gpu`, `get_frame_plan`, `get_gpu_timing`, `get_modal_transform`, `get_status`, `inject_event`, `inject_input`, `load_gltf`, `load_scene`, `pick_object`, `query_gizmo_drag_basis`, `query_gizmo_handle`, `raycast`, `reload_game_logic`, `reload_shaders`, `render_frame`, `set_camera`, `set_gizmo`, `set_input_profile`, `set_seed`, `set_time`, `start_input_record`, `start_input_replay`, `step_frame`, `stop_input_record`, `stop_input_replay`, `update_transforms`
 
 エディタ拡張 60 本(`src/core/communication/editorrpchandlers.cpp` の登録。詳細は [docs/manual/13_editor.md](manual/13_editor.md)):
 
 `abort_preview`, `add_authored_pass`, `add_compute_task`, `can_edit`, `can_preview`, `commit_preview`, `edit`, `edit_compute_task`, `edit_frame_node_order`, `edit_graph_document`, `edit_graph_instances`, `edit_preset_pass`, `edit_procedural_asset`, `edit_ray_callable_records`, `edit_region_replacement`, `edit_render_features`, `edit_scene_acceleration_structures`, `eval_preview`, `export_render_feature`, `export_scene_snapshot`, `fork_render_pipeline`, `get_component_add_candidates`, `get_components`, `get_compute_task_authoring`, `get_edit_result`, `get_frame_node_order`, `get_graph_catalog`, `get_graph_instances`, `get_graph_node_values`, `get_graph_values`, `get_preview_result`, `get_procedural_assets`, `get_ray_callable_records`, `get_ray_occurrences`, `get_render_authoring_context`, `get_render_features`, `get_scene_acceleration_structures`, `get_scene_revision`, `import_render_feature`, `import_scene_snapshot`, `install_package`, `list_assets`, `list_render_features`, `open_editor_session`, `open_preview`, `query_journal`, `redo`, `remove_authored_pass`, `remove_compute_task`, `render_preview`, `resolve_ray_occurrence`, `resume_editor_session`, `save_scene`, `scene_tree`, `set_prefab_parameter`, `undo`, `uninstall_package`, `unpack_prefab`, `unset_prefab_parameter`, `update_preview`
 
 ### 1.3 共通グラフ: module / op / 型 / sink
+
+**v0 時点の一覧(記録)。不変は約束しない**([設計 §1.4](design_v0_production_gaps.md)、利用者の意図 2026-09-24)。
+module / op / 型 / sink は後の版で足したり変えたりしうる。下の op 表は `test/run_devcli_graph_catalog.cmake` が catalog と突き合わせる記録で、
+catalog が変われば表も同じ変更で直す。op を書いた文書(`pelican.graph` など)の書き方が変わる場合は、その文書の version を上げて移行手順を登録する(§1 の規則)。
 
 登録 module は最大 5 本(`pelican.value` / `pelican.audio` / `pelican.render` / `pelican.pose` / `pelican.ui`)で、いずれも module version 1。
 `pelican.value` と `pelican.render` と `pelican.ui`(GP-3、UI には build OFF の構成が無い)は常に登録され、`pelican.audio` は `PELICAN_WITH_AUDIO=ON`、`pelican.pose` は `PELICAN_WITH_ANIMATION=ON` の build でだけ登録される
@@ -133,12 +168,18 @@ pose の sink は **owner 単位の単一 writer**(二重 writer は `pose.sink_
 
 ### 1.4 ABI と版
 
+**v0 時点の一覧(記録)。不変は約束しない**([設計 §1.4](design_v0_production_gaps.md)、利用者の意図 2026-09-24。native ABI の永久互換を約束しないことは §3 にもある)。
+native ABI は project の文書ではないので `project migrate` の対象ではない。ただし下の**世代の管理**(ABI / descriptor / service の版番号、
+SDK の epoch、capability bit、`test/fixtures/userpublic_frozen/` の凍結 snapshot)は、それ自体が「形が変わったことを名前と番号で見分け、
+古い世代を固定として残す」互換の仕組みなので、その説明はこの節に残す。ここでいう「凍結 snapshot」は、ある世代の形を test が固定したもの
+(その世代の形は変えず、形を変えるときは新しい世代を足す)で、面そのものを今後変えないという約束ではない。
+
 | 面 | 版 | 置き場 |
 |---|---|---|
 | Animation ABI v1 | `abiVersionV1 = 1` / `descriptorVersionV1 = 1` | `src/core/userpublic/animation/abi_v1.hpp`([docs/animation_abi_v1.md](animation_abi_v1.md) が Frozen 宣言) |
 | pose staging service | descriptor 1 / service 1 | `src/core/userpublic/animation/pose_staging_v1.hpp` |
 | game logic SDK epoch | `PELICAN_GAME_LOGIC_ABI_VERSION = 2` | `src/core/userpublic/gamelogic.hpp` |
-| engine / 文書互換 | `current_engine_version = "0.1.0"` | `src/project/projectformat.hpp` |
+| engine の版 | `pelicanEngineVersion = "0.1.0"`(`ProjectEnvelopeParseOptions::current_engine_version` の既定値。MG-1 で名前付きの定数にした) | `src/project/projectformat.hpp` |
 | render provider ABI v1(5 面) | `abiVersionV1 = 1` / `descriptorVersionV1 = 1` | `src/core/userpublic/render/{draw_sort,pass_implementation,graph_transform,render_strategy,subgraph_replacement}_abi_v1.hpp` |
 | game logic SDK 面(C-8 の facade 分割後) | v3 snapshot | `test/fixtures/userpublic_frozen/v3/` |
 
@@ -162,8 +203,11 @@ pose staging の capability bit(`PoseStagingServiceCapabilityBitsV1`)は 4 本�
 | `pose_staging_source_node_mapping` | `1 << 2` | staged frame に対する glTF node → layout index |
 | `pose_staging_rig_source_node_mapping` | `1 << 3` | rig に対する同じ写像 + clip の channel kind(AG-2) |
 
-`current_engine_version` は project の `engine_min_version` を検査する側の版で、
-**format 互換の正本はこの定数**。tag は release marker であって互換の正本ではない(§6)。
+`pelicanEngineVersion` は project の `engine_min_version` を検査する側の版(新しすぎれば `project.engine_too_old@1`)で、
+`project init` と `project migrate` の apply が project.json の `saved_by_engine` に記録する版でもある。
+**文書形式の互換を決めるのはこの定数ではなく、各文書の `(schema, version)` と移行手順の登録表**(§1、MG-1)。
+`saved_by_engine` も記録だけで、何の判定にも使わない。tag は release marker であって互換の正本ではない(§6)
+([設計 §1.2-4 / §1.4](design_v0_production_gaps.md)、利用者の意図 2026-09-24)。
 
 ### 1.5 package manifest の最小形
 
@@ -239,6 +283,8 @@ v1 計画の「v0 では約束しないもの」列と「やらない」節、�
 
 | 領域 | v0 では約束しない |
 |---|---|
+| 文書形式 | 形を v0 のまま保つこと。約束するのは後の版へ移せること(§1。[設計 §1.4](design_v0_production_gaps.md)、利用者の意図 2026-09-24) |
+| RPC / graph の op / native ABI | 名前と形を v0 のまま保つこと(§1.2〜§1.4 は記録。[設計 §1.4](design_v0_production_gaps.md)、利用者の意図 2026-09-24) |
 | 文書・編集 | 保存の内部最適化、コンパイラの実装 |
 | 共通グラフ | 全 domain の高度な最適化、全種類の完全な seek |
 | パラメータ | 任意の式言語、双方向 bind |
@@ -414,5 +460,8 @@ v0 に足した 6 項目(`62245846`〜`053b1e0b`)の後、`50f1fbda` の確認�
 4. §4 の再検証結果と既知の制限、利用した revision・構成・実行範囲を記録し、文書・索引を commit する。
 5. 利用者の release 判断後に `git tag -a v0.1.0 -m "pelican v0 (format 0.1.0)"` を実行する。
 
-tag は **release marker** であり、format 互換の正本は `src/project/projectformat.hpp` の
-`current_engine_version`（`"0.1.0"`）。tag 名はこの定数に合わせる。
+tag は **release marker** であり、tag 名は `src/project/projectformat.hpp` の
+`pelicanEngineVersion`（`"0.1.0"`。`project init` / `project migrate` が `saved_by_engine` に書く版）に合わせる。
+tag も定数も文書形式の互換の正本ではない。v0 形式の project を後の版で開けるようにするのは §1 の移行の約束と、v0 形式の実物を固定した
+`test/fixtures/project_corpus/v0/` の corpus である([設計 §1.4](design_v0_production_gaps.md)、利用者の意図 2026-09-24)。
+手順 5 の tag message の「format 0.1.0」は engine の版 0.1.0 で出した v0 形式を指し、形式を固定する宣言ではない。

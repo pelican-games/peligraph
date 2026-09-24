@@ -1208,7 +1208,7 @@ OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメー
 
 **小さな例**: 「作業が完了した」ことをディレクトリに残したいとします。`state.json` の `status` を `"prepared"` → `"committed"` に書き換える設計は、(a) 書き換えの途中でクラッシュすると状態が読めない、(b) ウイルススキャナがそのファイルを開いていると置き換えに失敗しうる、という 2 つの弱点があります。**別名 `committed` を排他 create する**設計なら、書き換えは一度も起きず、「存在するかどうか」だけが決定になります。掃除の順序だけは考える必要があって、「決定の印」より先に「やることリスト」を消すのが安全側です — 逆順に消して途中で止まると、完了済みの作業が未完了に見えます。
 
-**使用場所**: [`linkExclusive()`](../../src/core/communication/renderconfigtransaction.cpp#L302)(hard link で名前を公開し、失敗は外部改変として報告)/ [`publishCommittedMarker()`](../../src/core/communication/renderconfigtransaction.cpp#L459) / [掃除の順序](../../src/core/communication/renderconfigtransaction.cpp#L676)
+**使用場所**: [`linkExclusive()`](../../src/project/projectdocumenttransaction.cpp#L306)(hard link で名前を公開し、失敗は外部改変として報告)/ [`publishCommittedMarker()`](../../src/project/projectdocumenttransaction.cpp#L463) / [掃除の順序](../../src/project/projectdocumenttransaction.cpp#L680)
 
 ### 内容アドレスによる vendoring(sha256 が同一性、ABI の本当の gate は別)
 

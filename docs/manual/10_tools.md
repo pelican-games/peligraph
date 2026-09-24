@@ -1,6 +1,6 @@
 # 第10章 ツールリファレンス
 
-対象: pelican2(2026-09-17 時点、HEAD=`82054c05`)/ このマニュアルはコードを正とする
+対象: pelican2(2026-09-17 時点、HEAD=`82054c05`。2026-09-25 に §10.3 の移行の 2 method と移行専用 endpoint、§10.4 の `project migrate` を MG-1(`28bf3b40`)に合わせて追記)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -162,6 +162,7 @@ free-camera preset は overlay 側を選ぶため、両者は併用できます�
 | `inject_input` | `{events:[...]}` | 入力注入。`key_*` / `mouse_*` / `axis` + **`gamepadButtonDown` / `gamepadUp` / `gamepadAxis`**(リプレイ中は拒否) |
 | `inject_event` | `{type, payload}` | 登録済みゲームイベントの emit。payload は EventPayloadSchema で事前検証(✅WP71) |
 | `reload_game_logic` | `{}` | ゲームロジック DLL を即時リロード(✅WP90) |
+| `reload_shaders` | `{}` | shader を読み直して公開する(✅F-5。file watch が閉じている `--rpc` の下でも、明示の要求は通る。返り値とエラーは[第 13 章](13_editor.md)の表) |
 | `set_input_profile` | `{name}` | 入力プロファイル切替(✅WP91) |
 | `start_input_record` | `{path}` | input_seq 収録開始(✅WP89) |
 | `stop_input_record` | `{}` | 収録停止。`{path, frames, events}` |
@@ -169,6 +170,8 @@ free-camera preset は overlay 側を選ぶため、両者は併用できます�
 | `stop_input_replay` | `{}` | リプレイ停止 |
 | `export_scene_snapshot` | `{schema_version:2, allow_pending?:false}` | current scene を含む全 **authoring document**(= 編集の正本としてメモリ上に持つシーン文書。シーンファイル 1 つにつき 1 文書で、ディスクの実物とは別 — [第13章](13_editor.md) §13.2)の deterministic semantic bytes、SHA-256、revision、`prefab_closure` を返す。`schema_version` は `2` だけ(SnapshotV1 は MG-2b で撤去。`1` は `unsupported_snapshot_version`) |
 | `import_scene_snapshot` | `{schema_version:2, semantic_scene_bytes, digest, current_scene_id, prefab_closure}` | disk を上書きせず、検証済み snapshot を in-memory scene source として reload する |
+| `plan_project_migration` | `{}`(省略可) | 前の版の文書を移す計画(dry-run。何も書かない)。`{project_root, required, engine_version, saved_by_engine, documents:[{path, schema, from, to, steps, digest, manual_items}], expected:{<path>: <sha256>}}`(✅MG-1。[第3章 §3.13](03_project_format.md)) |
+| `apply_project_migration` | `{expected:{<path>: <sha256>}}`(plan が返した `expected` をそのまま) | 移行を 1 つの transaction で適用。応答は plan の形 + `{applied, backup, saved_by_engine_after, restart_required}`。`expected` が今の文書と食い違えば何も書かずに `project.migration_plan_stale@1`。`expected` が無い / オブジェクトでない / 値が文字列でないものは `-32602` |
 
 `pick_object` の座標は ID バッファ `picking_id` の左上原点で、`x` は右、`y` は下へ増えます。
 両方とも符号なし整数だけを受理し、範囲外は `-32602`、feature 無効または完了済みの
@@ -316,6 +319,21 @@ component に `resolution_error`。
 `install_package` / `uninstall_package`(`project://packages/<ns>/` への vendoring)。params と返り値、
 `ops` の 5 種と `scope`、名前付きの拒否は [第13章](13_editor.md) §13.5 が正です。
 
+### 移行の 2 method と移行専用 endpoint(✅MG-1)
+
+`plan_project_migration` / `apply_project_migration`([実装](../../src/core/communication/projectmigrationrpc.cpp#L50))は
+`pelican_cli project migrate` の RPC 版です(流れと名前は [第3章 §3.13](03_project_format.md))。失敗は application error(-32000)で、
+`error.data` が `{error_code, error_fields}`(例: `error_code: "project.migration_plan_stale@1"`、`error_fields: {expected, actual}`)です。
+
+- **ふつうに動いている engine** も 2 つに答えます([登録](../../src/core/communication/rpcserver.cpp#L1563))。移行の要る project はそもそも入口で止まるので、ここに来るのは空の plan(`required: false`)です(動いている間に文書が前の版に戻された場合を除く)。
+- **移行専用 endpoint**: `--rpc` の player が開くときの入口で `project.migration_required@1` に当たると、engine を起動せずに
+  この 2 method **だけ**に答える JSON-RPC endpoint になります([`runProjectMigrationRpcServer()`](../../src/core/communication/projectmigrationrpc.cpp#L98)、
+  [player 側](../../src/player/main.cpp#L642))。ほかの method は application error で、message は入口が出した
+  `project.migration_required@1: {"documents":[…]}` です。apply が済んだ後は `project.migration_restart_required@1: {"message":"the project was migrated; start a new player to open it"}` に変わります。
+  入力が終われば終了し、終了コードは apply が行われたら 0、行われなかったら 1 です。移した project は新しい player で開き直します。
+  stderr には入口の 1 行(`project.migration_required@1: …`)が先に出ます。
+- Studio はまだこの endpoint を扱いません(移行の画面は GUI session の別 WP)。
+
 ### 実セッション例
 
 結合テスト `test/run_rpc_headless.cmake` が実際に流している入力(抜粋):
@@ -438,7 +456,8 @@ CLI は `--template` を読んで [`initializeProjectTemplate()`](../../src/proj
 `--template` は 2 つです。
 
 - **`standard`**(既定): 以下で説明する 3D シーン向けの 16 エントリ。F-2 の前に `project init` が書いていたものと
-  byte 単位で同じです(`devcli_project_templates` が SHA-256 で固定)。
+  byte 単位で同じでした(`devcli_project_templates` が SHA-256 で固定)。MG-1 から `project.json` だけが 1 行違い、
+  `engine_min_version` の次の行に `"saved_by_engine": "0.1.0"`(書いたエンジンの版。[第3章 §3.2](03_project_format.md))が入ります。
 - **`blank`**: `standard` と同じ 16 エントリに `shaders/present.frag` を足した 17 エントリ。違うのは
   `passes/main_rendering_config.json` の `rendering` 節だけで、`pipeline` キーが無い **direct config** です
   (preset も `features` も `render_targets` もありません)。中身は fullscreen pass `present` 1 本
@@ -463,6 +482,40 @@ object であることを確かめてから**、節の中に禁止メンバが�
 生成される `code/CMakeLists.txt` は 2 行で、`pelican_game_sources(game.cpp)` の**後に**
 `pelican_packages()` を呼びます([template](../../src/project/projecttemplate.cpp#L281))。順序が意味を持ちます ——
 package の object は、その前に作られたゲームロジック DLL へ合流するからです。
+
+### `pelican_cli project migrate --project <dir|project.json> [--dry-run]`(✅MG-1)
+
+前の版のエンジンで作った project の文書を、このエンジンの版へ移します。流れ(検出 → plan → apply → 退避先)と
+名前付きの失敗は [第3章 §3.13](03_project_format.md) が正です([CLI 側](../../src/devcli/projectmigratecommand.cpp#L38))。
+
+- `--project` は project のディレクトリか、その中の `project.json`。どちらでもないものは
+  `--project must point to a directory holding project.json, or to project.json: <path>`、`project.json` 以外の名前のファイルは
+  `--project file must be named project.json: <path>` で拒否します。
+- `--dry-run` は plan だけを出して何も書きません。付けなければ plan と apply を 1 回で行います(CAS の `expected` は渡しません)。
+- 結果は **stdout に JSON**(2 space の字下げ)で、終了コード 0。失敗は stderr に `<名前>: <fields JSON>` を 1 行出して終了コード -1。
+  この章の冒頭の「成功は 1 行サマリ」の例外です。
+
+v0 の engine は手順を 1 本も登録していないので、今日はどの project でも次の形になり、何も書きません
+(`project init` 直後の project での例。コードから組み立てたもので、実行して写した出力ではありません):
+
+```json
+{
+  "project_root": "C:/work/my_game",
+  "required": false,
+  "engine_version": "0.1.0",
+  "saved_by_engine": "0.1.0",
+  "documents": [],
+  "expected": {},
+  "dry_run": true
+}
+```
+
+`--dry-run` を付けないときは、この後ろに `"applied": false, "backup": null, "saved_by_engine_after": "0.1.0"` が入り、
+最後が `"dry_run": false` になります。移すものがあるときは、`documents[]` の各要素が
+`{path, schema, from, to, steps:[手順の id…], digest, manual_items:[{code, pointer, message}…]}`、`expected` が
+書き換える全文書と `project.json` の `{path: sha256}`、apply の後は `applied: true`・`backup: ".pelican/migration/<時刻>"`・
+`saved_by_engine_after` がこのエンジンの版になります。`manual_items` が空でない文書は、自動で直せなかった箇所を
+`pointer`(RFC 6901)の場所で手で直します。`saved_by_engine` は project.json に無ければ `null` です。
 
 ### `pelican_cli import ...`(✅WP21/79/84)
 
