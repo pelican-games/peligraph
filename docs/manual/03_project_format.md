@@ -338,7 +338,7 @@ example の README にあった手書き sha256 表の役目は、この manifes
 
 この原則の詳細と web ビューアでの開き方は [第9章](09_web.md) を参照してください。
 
-「エンジン先行」の現在地(2026-09-04 にコードを読んで確認):**§3.10 の `Flags` / `List` 行封筒も、レイトレの `pelican_ray_instance`([第6章](06_rendering.md) §6.15)も、web 側パーサはまだ知りません。** web の scene パーサが closed schema を持つのは組み込み 7 コンポーネント(`transform` / `light` / `camera` / `simplemodelview` / `collider` / `animation` / `sprite_view`)だけで、codec を持たない名前のコンポーネントは検証せず `opaque` として素通しします(`my_webpage/packages/pelican-webgpu/src/pelican2/componentCodec.ts` の codec 集合と `sceneFormat.ts` の `bindPelicanScene()`)。したがって `pelican_ray_instance` や `List` フィールドを持つコンポーネントを書いた scene は、**native では scene load 時に検証・拒否されるのに web では黙って通る**状態で、「明示拒否まで実装済み」ではありません。サブセット原則の向きとしては web が緩い側なので、web 側の追随待ちの項目です(web リポジトリは pelican2 の外にあるため、この 1 段落だけは pelican2 のコードでは検証できません)。
+「エンジン先行」の現在地(2026-09-04 にコードを読んで確認):**§3.10 の `Flags` / `List` 行封筒も、レイトレの `pelican_ray_instance`([第6章](06_rendering.md) §6.15)も、web 側パーサはまだ知りません。** web の scene パーサが closed schema を持つのは組み込み 7 コンポーネント(`transform` / `light` / `camera` / `simplemodelview` / `collider` / `animation` / `sprite_view`)だけで、codec を持たない名前のコンポーネントは検証せず `opaque` として素通しします(`my_webpage/packages/pelican-webgpu/src/pelican2/componentCodec.ts` の codec 集合と `sceneFormat.ts` の `bindPelicanScene()`。2026-09-25 に web リポジトリの作業 branch `agent/ww10a` で関数と `opaque` の分岐があることを再確認。web の `main` にはこのファイル自体がまだ merge されていません)。したがって `pelican_ray_instance` や `List` フィールドを持つコンポーネントを書いた scene は、**native では scene load 時に検証・拒否されるのに web では黙って通る**状態で、「明示拒否まで実装済み」ではありません。サブセット原則の向きとしては web が緩い側なので、web 側の追随待ちの項目です(web リポジトリは pelican2 の外にあるため、この 1 段落だけは pelican2 のコードでは検証できません)。
 
 ## 3.8 既知の食い違い(設計文書 vs 実装)
 
@@ -707,7 +707,7 @@ RPC [`import_render_feature{base_source_digest, source_dir, destination_referenc
 
 ### 流れ
 
-1. **手順の登録**: 1 本の手順は [`DocumentMigrationStep`](../../src/project/projectmigration.hpp#L88)`{id, schema, from_version, to_version, description, plan}` で、「`schema` の `from_version` 版の文書を `to_version` 版にする」関数 `plan(文書, ProjectContext) -> StepResult{document, manual_items}` を持ちます。`manual_items` は自動で直せなかった箇所の一覧 `{code, pointer(RFC 6901), message}` です。`plan` が返した文書の `version` は登録表が `to_version` に書き換えます。登録表 [`DocumentMigrationRegistry`](../../src/project/projectmigration.hpp#L97) は受け取った手順を丸ごと受けるか、名前付きで拒否するかのどちらかです([`registerStep()`](../../src/project/projectmigration.cpp#L443)):
+1. **手順の登録**: 1 本の手順は [`DocumentMigrationStep`](../../src/project/projectmigration.hpp#L94)`{id, schema, from_version, to_version, description, plan}` で、「`schema` の `from_version` 版の文書を `to_version` 版にする」関数 `plan(文書, ProjectContext) -> StepResult{document, manual_items}` を持ちます。`manual_items` は自動で直せなかった箇所の一覧 `{code, pointer(RFC 6901), message}` です。`plan` が返した文書の `version` は登録表が `to_version` に書き換えます。登録表 [`DocumentMigrationRegistry`](../../src/project/projectmigration.hpp#L103) は受け取った手順を丸ごと受けるか、名前付きで拒否するかのどちらかです([`registerStep()`](../../src/project/projectmigration.cpp#L466)):
 
    | 名前 | 拒否する手順 |
    |---|---|
@@ -716,7 +716,7 @@ RPC [`import_render_feature{base_source_digest, source_dir, destination_referenc
    | `project.migration_step_cycle@1` | `to_version <= from_version` |
    | `project.migration_step_gap@1` | `to_version > from_version + 1`(1 版ずつしか上げられない) |
 
-2. **検出(開く前の入口)**: `pelican_player` は project.json を持つ project を開くとき、**parser が文書を読む前に 1 か所だけ**入口を通ります([`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L540)、呼ぶのは [main.cpp](../../src/player/main.cpp#L629) の `parseProjectEnvelopeText` の手前)。Studio が起動する player(`--rpc`)も同じ入口を通ります。入口はまず、落ちたプロセスが残した transaction を復旧し(§3.1 の `.pelican/render-authoring.transaction/`)、次に project root の下の `*.json` を全部歩いて、**最上位の `schema`(文字列)と `version`(整数)だけ**を SAX で生のまま読みます。`.` で始まるディレクトリ(`.pelican` / `.git` など)と symlink のディレクトリには入りません。オブジェクトでない JSON や、`schema` / `version` を持たない JSON は文書として数えません。登録された手順の `from` に当たる文書が 1 本でもあれば、parser に渡さず次の名前で止めます:
+2. **検出(開く前の入口)**: `pelican_player` は project.json を持つ project を開くとき、**parser が文書を読む前に 1 か所だけ**入口を通ります([`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L563)、呼ぶのは [main.cpp](../../src/player/main.cpp#L629) の `parseProjectEnvelopeText` の手前)。Studio が起動する player(`--rpc`)も同じ入口を通ります。入口はまず、落ちたプロセスが残した transaction を復旧し(§3.1 の `.pelican/render-authoring.transaction/`)、次に project root の下の `*.json` を全部歩いて、**最上位の `schema`(文字列)と `version`(整数)だけ**を SAX で生のまま読みます。`.` で始まるディレクトリ(`.pelican` / `.git` など)と symlink のディレクトリには入りません。オブジェクトでない JSON や、`schema` / `version` を持たない JSON は文書として数えません。登録された手順の `from` に当たる文書が 1 本でもあれば、parser に渡さず次の名前で止めます:
 
    ```
    project.migration_required@1: {"documents":[{"path":"scenes/main.scene.json","schema":"pelican.scene","from":2,"to":3}]}
@@ -724,9 +724,16 @@ RPC [`import_render_feature{base_source_digest, source_dir, destination_referenc
 
    (`to` は登録された手順を辿った終点の版。上の例の版は説明用で、v0 にこの手順はありません。)`--rpc` でない player は、この行に続けて `` run `pelican_cli project migrate --project <root>` to move these documents to this engine's versions `` を stderr に出して exit 1 します。`--rpc` の player は engine を起動せず、移行の 2 method だけに答える endpoint になります([第10章 §10.3](10_tools.md))。parser の version 検査より前に走るので、project.json 自身の版が上がった場合も同じ名前で止まります。
 
-3. **plan(dry-run)**: [`planProjectMigration()`](../../src/project/projectmigration.cpp#L591) は何も書きません。対象の文書ごとに手順を順に当て、書き換え後の bytes、通った手順の `id`、`manual_items`、元の bytes の sha256(`digest`)を作ります。project.json は、手順の対象でなくても `saved_by_engine` を今のエンジンの版に書き換えた形を用意します(そのキーがあれば値だけを置き換え、無ければ `version` の直後に足します。ほかの bytes は変えません)。手順が投げた、オブジェクトでない値を返した、`schema` を変えた、のどれかは `project.migration_step_failed@1 {path, step, message}` です。
+3. **plan(dry-run)**: [`planProjectMigration()`](../../src/project/projectmigration.cpp#L614) は何も書きません。対象の文書ごとに手順を順に当て、書き換え後の bytes、通った手順の `id`、`manual_items`、元の bytes の sha256(`digest`)を作ります。project.json は、手順の対象でなくても `saved_by_engine` を今のエンジンの版に書き換えた形を用意します(そのキーがあれば値だけを置き換え、無ければ `version` の直後に足します。ほかの bytes は変えません)。手順が投げた、オブジェクトでない値を返した、`schema` を変えた、のどれかは `project.migration_step_failed@1 {path, step, message}` です。
 
-4. **apply**: [`applyProjectMigration()`](../../src/project/projectmigration.cpp#L684) は 復旧 → plan → CAS → 退避 → 置換 の順です。
+4. **apply**: [`applyProjectMigration()`](../../src/project/projectmigration.cpp#L707) は 排他 → plan → CAS → 退避 → 置換 の順です。
+   - **排他(✅MG-1b)**: 最初に transaction のディレクトリ(§3.1 の `.pelican/render-authoring.transaction/`)を**自分で作って**取ります([`ProjectDocumentTransactionLock`](../../src/project/projectdocumenttransaction.hpp#L157)。`create_directory` で取る方式で、エディタの commit と同じ)。取った状態で plan を読み、置換の commit までそのまま持ちます。ディレクトリが既にあれば取れず、**中を読まず、復旧もせず、待たずに**次の名前で止まります:
+
+     ```
+     project.migration_transaction_busy@1: {"path":"<project>/.pelican/render-authoring.transaction","message":"… Close every engine and Studio that has the project open and apply again; opening the project resolves a directory that was left behind"}
+     ```
+
+     ディレクトリには持ち主が書かれていないので、「同じ project を開いている engine や Studio が今 commit している」のと「落ちたプロセスの残骸」は区別できず、どちらも同じ名前で止まります。**その project を開いている engine と Studio をすべて閉じてから apply し直してください。** 残骸なら、project を一度開けば(開く入口の復旧で)片付きます。MG-2a の旧形式のディレクトリ(§3.1)も、apply は中を読まないので同じ名前で止まります。MG-1 の apply は最初に transaction の復旧を走らせていたので、commit 途中の別プロセスの編集を巻き戻しうりましたが、MG-1b(`09f9151d`)で復旧をやめてこの排他に替えました。書くものが無い apply は、作ったディレクトリを消して終わります。
    - **CAS**: 呼び手が plan で受け取った `expected`(書き換える全文書 + project.json の `{path: sha256}`)を渡すと、今の plan の組と完全に一致しなければ何も書かずに `project.migration_plan_stale@1 {expected, actual}` で止まります(RPC は必ず渡します。CLI は plan と apply を 1 回で行うので渡しません)。
    - **退避**: 書き換える文書(project.json を含む)の今の bytes を `.pelican/migration/<UTC 時刻 YYYYMMDDTHHMMSSZ>/` の下に同じ相対パスで複製し、plan の記録を `migration.json`(`schema: "pelican.project_migration_backup"`, `version: 1`)として置きます。同じ名前が既にあれば `-2`, `-3` … を付け、上書きはしません。
    - **置換**: 対象の文書と project.json(`saved_by_engine` の更新)を**1 つの transaction** で置き換えます。transaction は §3.1 の rendering config の編集と同じもの(同じディレクトリ・同じ形式)で、途中で失敗すれば全文書が元の bytes に戻り、退避先も消えて `project.migration_apply_failed@1 {message}` になります。退避の書き込みに失敗したときも同じ名前です。手順で書き換えた文書は 2 space の字下げで書き直されます(改行コードは元の文書に合わせます)。
@@ -738,7 +745,7 @@ RPC [`import_render_feature{base_source_digest, source_dir, destination_referenc
 
 ### 手順が 0 本の今
 
-production の登録表([`makeBuiltinDocumentMigrationRegistry()`](../../src/project/projectmigration.cpp#L509))は空です。空のときの検出は**ディレクトリを歩かずに**すぐ「無し」を返すので、開くときの入口で起きるのは transaction の復旧だけです。`pelican_cli project migrate` は `required: false`、`documents: []` を出して何も書きません(`saved_by_engine` も書きません)。`devcli_project_migrate` が、`project init` の直後の project と v0 の corpus 7 本のそれぞれで、dry-run と apply のどちらでもファイルが 1 バイトも変わらないことを確かめています。手順の働きは、test binary にだけ登録する手順(`pelican.scene` の最上位の key を 1 つ改名する from 2 → 3)で確かめています。
+production の登録表([`makeBuiltinDocumentMigrationRegistry()`](../../src/project/projectmigration.cpp#L532))は空です。空のときの検出は**ディレクトリを歩かずに**すぐ「無し」を返すので、開くときの入口で起きるのは transaction の復旧だけです。`pelican_cli project migrate` は `required: false`、`documents: []` を出して何も書きません(`saved_by_engine` も書きません)。`devcli_project_migrate` が、`project init` の直後の project と v0 の corpus 7 本のそれぞれで、dry-run と apply のどちらでもファイルが 1 バイトも変わらないことを確かめています。手順の働きは、test binary にだけ登録する手順(`pelican.scene` の最上位の key を 1 つ改名する from 2 → 3)で確かめています。
 
 **回帰素材**: v0 の出荷 project 7 本の JSON・shader・code(計 105 ファイル。gitignored な大容量資産は含めない)を `test/fixtures/project_corpus/v0/` に固定しています。後の版の手順はこの corpus を移して開けることを test で保ちます。
 
@@ -748,7 +755,8 @@ production の登録表([`makeBuiltinDocumentMigrationRegistry()`](../../src/pro
 - `pelican_cli` のほかのサブコマンド(project の文書を直接読み書きするもの)には入口がありません。
 - 退避先 `.pelican/migration/<時刻>/` を消す手段はありません(手で消します)。
 - 検出が歩くのは project root の下だけで、**root の外に mount した asset store の中の文書は見ません**。
-- コードを読んで気づいたこと(実行では未確認): apply は最初に transaction の復旧を走らせます。復旧は commit の印の無い transaction を「落ちたもの」として巻き戻すので、別のプロセス(例: 同じ project を開いている Studio)の rendering config の編集がちょうど commit の途中にあると、それを巻き戻しうると読めます。移行は、その project を開いているものをすべて閉じてから行ってください。
+- ~~apply が最初に transaction の復旧を走らせ、別のプロセスの commit 途中の編集を巻き戻しうる~~ → **解消(MG-1b、`09f9151d`)**。apply は復旧せず、transaction のディレクトリを取れなければ `project.migration_transaction_busy@1` で止まります(上の 4.)。
+- 開く入口の復旧は、排他を取らずにディレクトリを消します(MG-1 より前からの性質で、MG-1b でも変えていません)。
 
 ## 関連文書
 

@@ -12,10 +12,13 @@
 render_begin           # replaced by IFrameTarget::beginFrame(); ch06 explains the change
 try_render_begin       # same; blocking vs zero-wait is now the FrameBeginMode argument
 consumeExtentChanged   # no successor: the Renderer compares against internal_render_extent
+render_end             # replaced by IFrameTarget::submit() / abandon() in 993b45e3; a loop.cpp local of the same name hid it until af18788f
+buildScreenInputDescriptor # folded into resolvePassInputImageView() by 923ce648; ch06 names the old home
 
 # --- outside this repository by nature ---
 roundEven              # GLSL builtin, explained as background knowledge in ch10
 glfwWaitEvents         # GLFW API
+bindPelicanScene       # my_webpage (web repo) sceneFormat.ts, on its working branches (not on its main); ch03 names it
 
 # --- not an identifier at all ---
 runXxx                 # placeholder standing for the run* family in prose

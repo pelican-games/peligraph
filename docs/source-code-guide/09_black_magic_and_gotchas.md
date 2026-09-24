@@ -663,7 +663,7 @@ teardown の最終段は phase で分岐します。
 | swapchain capture | surface が TRANSFER_SRC を持てば windowed でも readback 実装済み。不可時のみ `capture unavailable_windowed` 例外 | [`swapchainframetarget.cpp`](../../src/core/vkcore/swapchainframetarget.cpp#L436) |
 | frame graph levels | 計算/JSON 出力のみ。runtime は直列 node loop | [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L1564) |
 | custom Component public registration | ID macro はあるが安定 public boot hook なし。ただし登録解除 API と重複拒否は入った。解除と engine owner 登録は WP379a で host 専用へ | [`component/registerer.hpp`](../../src/core/userpublic/details/component/registerer.hpp#L78) / [`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13) |
-| behavior attachment | ✅実装済み(WP155 / 162 / 167) | [`behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L207) |
+| behavior attachment | ✅実装済み(WP155 / 162 / 167) | [`behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L213) |
 | 物理 trigger event | ✅実装済み(WP179) | [`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L698) |
 | 編集 RPC(query / snapshot / edit / undo / preview / journal) | ✅実装済み(WP153〜172) | [`editorcommandservice.hpp`](../../src/core/communication/editorcommandservice.hpp#L258) |
 | ImGui inspector / asset browser | ✅実装済み(WP159 / 164 / 167)。ただし `--rpc` / headless / replay / golden / XR では無効 | [`inspector.hpp`](../../src/core/imgui/inspector.hpp#L167) |
@@ -1951,7 +1951,7 @@ marker は自分が属する manifest に digest で縛られます。[`transact
 
 **不変条件**: marker が見えたら rollback 経路に入らないこと。旧形式の dir を rollback も片付けもせず、名前付きで止めること。marker の公開を rename 系に戻さないこと。`manifest.json` を後から書き換えないこと(digest の束縛が切れます)。掃除で `manifest.json` を最初に消す順序を変えないこと。
 
-**読む場所**: [`linkExclusive()`](../../src/project/projectdocumenttransaction.cpp#L306) → [`publishCommittedMarker()`](../../src/project/projectdocumenttransaction.cpp#L463) → [`transactionDecision()`](../../src/project/projectdocumenttransaction.cpp#L498) → [commit 前の guard](../../src/project/projectdocumenttransaction.cpp#L783)。
+**読む場所**: [`linkExclusive()`](../../src/project/projectdocumenttransaction.cpp#L306) → [`publishCommittedMarker()`](../../src/project/projectdocumenttransaction.cpp#L463) → [`transactionDecision()`](../../src/project/projectdocumenttransaction.cpp#L498) → [commit 前の guard](../../src/project/projectdocumenttransaction.cpp#L792)。
 
 ### 難所 — unwrapped time から作る root delta(AG-2)
 

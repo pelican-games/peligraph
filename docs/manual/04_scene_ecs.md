@@ -441,6 +441,27 @@ ECS の実装(WP62・R5-core ✅)は archetype/chunk 方式ですが、ゲーム
 
 同じ名前が 2 つあれば宣言順で先のものが選ばれますが、シーン文書が同名を拒否する(§4.1)ので、ロードできたシーンでは起きません。シーンのロード中(behavior の `onInit` を含む)に呼ぶと、**ロード中の新しいシーン**で解決します。コード例と注意は [第8章 §8.4](08_gameplay.md) にあります。
 
+### 実行時に object を作る — `createObject` と `ctx.spawn`(✅GP-2)
+
+ゲームの途中で object を作る口は 2 つあります。
+
+| | `createObject(LocalTransformComponent)` / `createSpriteObject` | [`ctx.spawn(prefab, SpawnParams)`](../../src/core/userpublic/gamecontext.hpp#L325) |
+|---|---|---|
+| 作るもの | transform(と sprite)だけの ECS entity | 単一 object の prefab を展開した object。collider・model・behavior も付く(light / camera は不可) |
+| 検査 | 無し | シーンのロードと同じ ResolvedScene の経路で展開し、prefab・parameter・build の機能をロードと同じ名前で拒否する |
+| いつできるか | 通常はその場。behavior のコールバック中は次の behavior 境界(`invalidGameObjectId` を返す) | 常に次のフレーム境界(フレームの先頭、ゲームコードの前) |
+| 返すもの | `GameObjectId` | `TransientObjectRef`(`ctx.objects().materialize(ref)` で `GameObjectId` にする) |
+| 消し方 | `removeObject(id)` | `ctx.destroy(ref)`(次のフレーム境界で `onDestroy` → collider → entity の順) |
+
+spawn で作った object は **transient**(一時的)で、シーンに書いた **authored** の object とは次の点が違います。
+
+- **保存されません。** シーン文書には書かれず、保存しても出ません。authoring object id(§4.1)も持ちません。
+- **シーンの実行と一緒に終わります。** シーンのロード(同じシーンの読み直しを含む)で、ほかの旧 entity と一緒に消えます。
+- **指す ref の型が違います。** authored の object は `resolve(name)` の `ObjectRef`、transient の object は `spawn` が返す `TransientObjectRef` で指します。どちらもシーンの実行(`ObjectAuthority`)を持ちますが別の型なので、取り違えるとコンパイルエラーです。`TransientObjectRef` は名前を持たず、「実体化した境界の番号と、その境界の中の番号」で object を指します。シーンが切り替わった後の ref は、どちらも `object.stale_authority@1` です。
+- **名前は任意です。** `SpawnParams::name` を渡すと collider の名前(raycast の当たりが報告する名前)になります。シーンに書かれた object の名前は `object.name_reserved_by_authored@1`、同じシーンの実行で spawn した別の object の名前は `object.name_duplicate@1` で拒否されます。`resolve(name)` では引けません。
+
+エラー名の一覧と使用例は [第8章 §8.4「実行時生成 — `ctx.spawn`」](08_gameplay.md) にあります。
+
 ### transform は local から作られる(✅GP-1)
 
 **`LocalTransformSystem` は、localtransform を持つ全オブジェクトのワールド変換を毎フレーム local から作り直します。** GP-1 からは `transform` を持つシーンオブジェクトが全部 localtransform を持つので(§4.2)、親の無いオブジェクトも毎フレーム作り直されます。ここから 3 つのことが起きます。
@@ -541,7 +562,8 @@ DECLARE_COMPONENT(MyComponent, 61);   // 0..63 の空き番号(エンジンは 0
 | `project.requires_unknown@1` | `project.json` の `requires` に、このエンジンが知らない名前を書いた(既知の一覧がメッセージに付きます — [第3章 §3.2](03_project_format.md)) |
 | `pose.sink_conflict@1{owner, first, second}` | 同じオブジェクトに姿勢の writer が 2 つある(animation コンポーネント + `pose.skeletal`、または sink 2 本。§4.2) |
 | `pose.root_motion_no_transform@1{owner, node, object}` | `root_motion: "extract"` の装着先に `localtransform` が無い(`transform` の無いオブジェクトなど。§4.2 の localtransform) |
-| `object.stale_authority@1` / `object.not_materialized@1` / `object.missing_capability@1` | `ctx.objects()` の ref が古いシーンのもの / 実行時のオブジェクトが無い / `transform` が無い(§4.4) |
+| `object.stale_authority@1` / `object.not_materialized@1` / `object.missing_capability@1` | `ctx.objects()` の ref が古いシーンのもの / 実行時のオブジェクトが無い / `transform` が無い(§4.4)。spawn した object は次のフレーム境界まで `object.not_materialized@1` |
+| `object.spawn_*@1` / `object.name_*@1`(`SpawnError`) | `ctx.spawn` の拒否(§4.4「実行時に object を作る」、一覧は [第8章 §8.4](08_gameplay.md)) |
 | `graph.operation_unregistered@1{node, op}` | 文書が、この build に登録されていない op を使っている(OFF ビルドでの `pose.*` など。[第1章 §1.5](01_overview.md) 設計決定 12) |
 
 ## 4.6 既知の注意点

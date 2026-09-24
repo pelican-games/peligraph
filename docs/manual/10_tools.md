@@ -496,6 +496,11 @@ package の object は、その前に作られたゲームロジック DLL へ�
 - `--dry-run` は plan だけを出して何も書きません。付けなければ plan と apply を 1 回で行います(CAS の `expected` は渡しません)。
 - 結果は **stdout に JSON**(2 space の字下げ)で、終了コード 0。失敗は stderr に `<名前>: <fields JSON>` を 1 行出して終了コード -1。
   この章の冒頭の「成功は 1 行サマリ」の例外です。
+- **apply(`--dry-run` 無し)は、その project を開いている engine と Studio をすべて閉じてから実行します(✅MG-1b)。** apply は最初に
+  project の transaction のディレクトリ(`.pelican/render-authoring.transaction`)を自分で作って取り、既にあれば何も読まず・消さずに
+  `project.migration_transaction_busy@1: {"path": …, "message": …}` で止まります。message は「engine と Studio を閉じてから apply し直す。
+  残骸なら project を開けば解消する」という内容です。使用中と落ちたプロセスの残骸は区別できないので、どちらもこの名前です
+  (RPC の `apply_project_migration` も同じ。詳細は [第3章 §3.13](03_project_format.md) の 4.)。`--dry-run` は plan だけなので取りません。
 
 v0 の engine は手順を 1 本も登録していないので、今日はどの project でも次の形になり、何も書きません
 (`project init` 直後の project での例。コードから組み立てたもので、実行して写した出力ではありません):

@@ -147,6 +147,7 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 | 時刻 | `time()` / `deltaTime()` / `frameIndex()` | |
 | ログ | `logInfo/Warning/Error(msg)` | rpc モードでは stdout が使えないため、ログは必ずこれで |
 | オブジェクト | `createObject(LocalTransformComponent)` / `removeObject(id)`→bool / `localTransform(id)` / `setLocalTransform(id, t)`→bool | `setLocalTransform` は描画側へも即時伝播。ただし親の位置を掛けたワールドは次の transform 更新で揃う(下の「objects()」)。`transform` を持つシーンオブジェクトには localtransform が必ず付くので、親子の無いシーンでも `true` を返す(✅GP-1) |
+| 実行時生成 | [`spawn(prefab, SpawnParams)`](../../src/core/userpublic/gamecontext.hpp#L325)→`TransientObjectRef` / [`destroy(ref)`](../../src/core/userpublic/gamecontext.hpp#L333)→`Resolved<TransientObjectRef>` | ✅GP-2。単一 object の prefab から collider・behavior 付きの object を作り、消す。実体化と破棄は次のフレーム境界。`spawn` の拒否は `SpawnError` を投げる(`code()` で名前)。下の「実行時生成 — `ctx.spawn`」 |
 | スプライト | `createSpriteObject(transform, sprite)` / `spriteView(id)`→optional / `setSpriteView(id, s)`→bool / `setSpriteTexture(id, tex)`→bool | §8.14(✅WP103) |
 | 乱数 | `random()` / `randomInt(min,max)` / `randomFloat(min,max)` / `setSeed(u64)` / `seed()` | §8.10 |
 | シーン | `loadScene(name)` / `currentScene()` | §8.7 |
@@ -168,7 +169,7 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 | `render()` レイトレーシング | `setRayTracingCallableRecord(task, index, values)` / `setRayTracingDispatchExtent(task, w, h, d)` | ゲーム/更新スレッドから呼ぶ。値は task の `callable_record` schema に合う必要があり、不正な更新は前の値を残す |
 | `render()` 画面の点から ray | [`screenRay(position_px)`](../../src/core/userpublic/gamecontext.hpp#L174)→`Resolved<phys::Ray, RenderError>` | ✅GP-4。framebuffer ピクセルの位置を通る world の ray。失敗は例外ではなく `render.screen_ray_unavailable@1`(XR が有効)/ `render.screen_position_invalid@1`(有限でない値)。下の「input() と screenRay」 |
 | [`input()`](../../src/core/userpublic/gamecontext.hpp#L361) → [`InputContext`](../../src/core/userpublic/gamecontext.hpp#L243) | `pointer()`→[`PointerState`](../../src/core/userpublic/userinput.hpp#L143) / `setCursorMode(mode)`([`CursorMode`](../../src/core/userpublic/userinput.hpp#L151) = `normal` / `hidden` / `locked`) | ✅GP-4。ポインタの位置を framebuffer ピクセルで読み、カーソルの表示とロックを頼む。ボタンと軸はこれまでどおりアクション(根の「入力」)で読む。下の「input() と screenRay」 |
-| [`objects()`](../../src/core/userpublic/gamecontext.hpp#L362) → [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L214) | `resolve(name)`→`Resolved<ObjectRef>` / `materialize(ref)`→`Resolved<GameObjectId>` / `worldTransform(ref)`→`Resolved<WorldTransform>` | ✅GP-1。シーンオブジェクトを名前で引き、ワールド変換を読む。失敗は例外ではなく名前付きエラー(下の「objects()」) |
+| [`objects()`](../../src/core/userpublic/gamecontext.hpp#L362) → [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L214) | `resolve(name)`→`Resolved<ObjectRef>` / `materialize(ref)`→`Resolved<GameObjectId>` / `worldTransform(ref)`→`Resolved<WorldTransform>` | ✅GP-1。シーンオブジェクトを名前で引き、ワールド変換を読む。失敗は例外ではなく名前付きエラー(下の「objects()」)。`materialize` / `worldTransform` は `spawn` が返した `TransientObjectRef` も受ける([多重定義](../../src/core/userpublic/gamecontext.hpp#L219)。✅GP-2) |
 | [`ui()`](../../src/core/userpublic/gamecontext.hpp#L363) / `ui(document_key)` → [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L270) | `setText(path, text)` / `setVisible(path, bool)` / `setValue(path, float)` → いずれも [`UiWriteResult`](../../src/core/userpublic/ui_write.hpp#L39) | ✅GP-3。UI 文書の node を path(root からの `id` を `/` でつないだもの)で指して書く。text は label / button、value は gauge、visible は全 node。書き込みはフレーム境界で適用。失敗は例外ではなく `ui.feature_unreferenced@1` / `ui.node_unknown@1` / `ui.property_mismatch@1` / `ui.sink_conflict@1`(この順で先のもの)。`ui.*` sink が書いている (path, 性質) はグラフのもので、ここからは書けない([第7章](07_input_ui.md) §7.4「ゲームコードと共通グラフから UI を書く」) |
 
 > **この 3 本は「アニメーションの API」ですが、対象が 2 つに分かれていて互いに委譲しません(✅AG-1b 決定 5)。ファサード分割もその線を引き直しただけで、行き先は変わっていません。** `render().setValueGraphParameter` が触るのは **pass 文書の `graph.instance`** の入力ポート、`animation().setParameter` / `animation().forceState` が触るのは **シーンの `animation` コンポーネント**が持つ評価器です(前者は [gamecontext.cpp:406](../../src/core/userpublic/gamecontext.cpp#L618) で `SceneLoader` へ、後者は [:319](../../src/core/userpublic/gamecontext.cpp#L523) / [:329](../../src/core/userpublic/gamecontext.cpp#L533) で `AnimationSystem` へ行きます)。**姿勢の装着様式が 2 つある**(§8.13)ことがそのまま API に出ています。同じ owner に両方は付かないので、「どちらを呼ぶか」は装着の仕方で決まります。
@@ -244,7 +245,113 @@ void update(Pelican::GameContext &ctx) {
 - 同じ名前が 2 つあれば宣言順で先のものが選ばれますが、シーン文書が同名を拒否する([第4章 §4.1](04_scene_ecs.md))ので、ロードできたシーンでは起きません。
 - **`worldTransform` は「今の」ワールド変換を読みます。** ワールドは毎フレームの transform 更新で local から作り直されます。`setLocalTransform` はそのオブジェクトのワールドを即座に書きますが、親が無いものとして書くので、**親を持つオブジェクトや、動かしたオブジェクトの子を直後に読むと、次の transform 更新まで 1 フレーム前の値**になります。親の無いオブジェクト自身はすぐ正しく読めます。
 - **ワールド変換(`TransformComponent`)を直接書いても、次のフレームで local の値に戻ります。** 位置は `setLocalTransform` で変えてください([第4章 §4.4](04_scene_ecs.md))。
-- `load_gltf` で置いた一時オブジェクト(transient)を指す ref はまだ出しません。
+- `load_gltf` で置いた一時オブジェクト(transient)を指す ref はまだ出しません。ゲームコードが `spawn` で作った object は、`ObjectRef` ではなく `TransientObjectRef` で指します(次の節)。
+
+### 実行時生成 — `ctx.spawn`(✅GP-2)
+
+弾や破片のように、シーンに書いていない object をゲームの途中で作るときは [`ctx.spawn(prefab, params)`](../../src/core/userpublic/gamecontext.hpp#L325) を使います。作れるのは **object を 1 つだけ持つ prefab** から、collider と behavior を含めて 1 つです。`createObject` は transform だけの entity を作る口で、collider も behavior も付きません。
+
+prefab は project.json の `prefabs` に `{"name", "path"}` で登録した `pelican.prefab` 文書です。transform は prefab に書かず、`spawn` の引数で渡します。
+
+```json
+{
+  "schema": "pelican.prefab", "version": 1, "name": "bullet",
+  "parameters": [ { "name": "tag", "type": "string", "default": "none" } ],
+  "components": [
+    { "name": "collider", "shape": "sphere", "radius": 0.1 },
+    { "name": "behavior", "type": "bullet_motion", "params": { "tag": { "$param": "tag" } } }
+  ]
+}
+```
+
+弾を撃って、次のフレームで位置を読み、当たったら消す例です。
+
+```cpp
+#include <gamesystem.hpp>
+#include <optional>
+
+namespace {
+
+class Gun {
+  public:
+    void update(Pelican::GameContext &ctx) {
+        if (ctx.actionPressed("fire") && !bullet) {
+            Pelican::SpawnParams params;
+            params.transform.pos = Pelican::vec3{0.0f, 1.0f, 0.0f};
+            params.parameters = {{"tag", "player"}};   // prefab の parameter を名前で。省いたものは既定値
+            try {
+                bullet = ctx.spawn("bullet", params);  // ここではまだ object は無い
+            } catch (const Pelican::SpawnError &error) {
+                ctx.logWarning(error.code());          // 例: physics.module_unavailable@1
+            }
+            return;
+        }
+        if (!bullet) return;
+        // 次のフレームからは読める。同じフレームのうちは object.not_materialized@1
+        const auto world = ctx.objects().worldTransform(*bullet);
+        if (!world) {
+            if (world.error() == Pelican::ObjectError::stale_authority) bullet.reset();  // シーンが替わった
+            return;
+        }
+        if (world.value().pos.z > 50.0f) {
+            (void)ctx.destroy(*bullet);                // 消えるのは次のフレーム境界
+            bullet.reset();
+        }
+    }
+
+  private:
+    std::optional<Pelican::TransientObjectRef> bullet;
+};
+
+} // namespace
+
+PELICAN_REGISTER_SYSTEM(Gun, 100);
+```
+
+**フレーム境界の規則**
+
+- 要求は**呼んだ時点で検査して展開**します。prefab はシーンのロードと同じ ResolvedScene の経路で展開するので、prefab・parameter・build の機能の検査もロードと同じ答えになります。例えば `PELICAN_WITH_PHYSICS=OFF` の build で collider を持つ prefab を spawn すると、ロードと同じ `physics.module_unavailable@1` で拒否されます([検査の呼び出し](../../src/core/loader/runtimespawn.cpp#L226))。拒否されたときは何も積まれません。
+- **object ができるのは次のフレーム境界**です。境界はフレームの先頭、ゲームコードより前にあります([`updateFrameState()` の中](../../src/core/appflow/framephase.cpp#L167)。イベント配送・ECS・ゲームシステムより前)。behavior のコールバックの中から呼んでも外から呼んでも同じ境界です。
+- 境界より前に `materialize` / `worldTransform` を呼ぶと `object.not_materialized@1` です。境界の後のフレームでは、そのフレームのゲームコードの全部から見えます。
+- 1 つの境界の中では、要求を**呼んだ順**に実行します。spawn と destroy も混ぜて呼んだ順です。まだ実体化していない spawn を destroy すると、同じ境界で作ってから消します(`onInit` の後に `onDestroy`)。
+- 境界で起きること: ECS の entity と描画のインスタンスを作り、collider(と model の衝突 mesh)を物理に `runtime_only` で登録し、最後に behavior を付けて `onInit` を呼びます。`onInit` が例外を投げたら、**その spawn だけ**を巻き戻します(init 済みの behavior に `onDestroy`、entity・collider・描画を戻す)。ほかの spawn とシーンには影響しません。失敗は engine log に `runtime spawn of boundary … failed: …` と出て、ref はずっと `object.not_materialized@1` のままです。
+- `destroy` は、behavior の `onDestroy`(後に付いたものから)→ 物理から collider を外す → ECS の entity を消す、の順です([`retire()`](../../src/core/loader/runtimespawn.cpp#L436))。
+- `name` を渡すと、その object の collider に raycast が当たったときの名前(`hit->id`)になります。渡さなければ engine が `spawn:<境界>.<番号>` を付けます。
+
+**エラー名**
+
+`spawn` の拒否は [`SpawnError`](../../src/core/userpublic/object_ref.hpp#L109)(`std::runtime_error` の派生)で、`code()` が名前、`what()` は `<名前>: <説明>` です。
+
+| 名前 | いつ出るか |
+|---|---|
+| `<語>.module_unavailable@1` | prefab に、この build が外した機能の component がある(collider で physics が無いなど)。シーンのロードと同じ名前 |
+| `prefab_*` / `behavior_type_unknown@1` | prefab や parameter が解決できない、behavior の型が登録されていない。シーンのロードと同じ名前 |
+| `object.spawn_outside_scene@1` | シーンが読み込まれていない |
+| `object.spawn_component_unsupported@1` | prefab が light か camera を持つ |
+| `object.name_reserved_by_authored@1` | 渡した `name` がシーンに書かれた object の名前 |
+| `object.name_duplicate@1` | 渡した `name` を、このシーンの実行で spawn した別の object が使っている(待ち行列の中のものを含む) |
+| `object.spawn_sequence_exhausted@1` | 境界の番号・1 境界の spawn 数・prefab の behavior 数が、behavior の識別子に入る数(2^28 / 2^16 / 2^8)を超えた |
+| `object.spawn_invalid@1` | 展開した prefab の component が読めない、または `name` が空文字列 |
+
+`destroy` と、`TransientObjectRef` を受ける `materialize` / `worldTransform` は例外ではなく `Resolved` で答えます。`object.stale_authority@1` は前のシーン実行の ref(既定構築の ref も)、`object.not_materialized@1` は境界の前・もう消した・もう destroy を頼んだ ref です。
+
+**寿命**
+
+- spawn した object は**保存されません**。シーン文書には書かれず、保存しても出ません。
+- object は**シーンの実行と一緒に終わります**。シーンのロード(同じシーンの読み直しを含む)とエンジンの再起動で消え、その behavior には新しいシーンのロードが commit したときに `onDestroy` が呼ばれます([ロード側の指定](../../src/core/loader/scene.cpp#L1537))。ロードの前に積んだまま実体化していない要求は、捨てられます。
+- エンジンにはまだ play モードがないので、設計の「preview が終わるまで」を「シーンの実行が終わるまで」と読んでいます。play モードができたら見直します。
+- エディタの編集(同じシーンの実行の中)では、spawn した object の behavior と collider はそのまま残ります。
+- `TransientObjectRef` は `ObjectRef` とは別の型です。シーンの実行(`ObjectAuthority`)は共有しますが、authored の ref を渡すべきところに transient の ref を渡すとコンパイルエラーになります。中身は「シーンの実行・実体化した境界の番号(実行の始めから 1, 2, …)・その境界の中の番号」で、名前も authoring id も持ちません。
+
+**behavior の `attachment_seq`**: spawn した object の behavior の `attachment_seq` は、`(シーンの実行の中の境界の番号, その境界の中の spawn の番号, prefab の中の behavior の番号)` から決まります([`runtimeSpawnAttachmentSeq()`](../../src/core/gamelogic/behaviorarena.cpp#L82))。同じ入力なら 2 回の実行で同じ値になり、シーンに書いた behavior の後に並びます(シーンの object が 2^20 個未満のとき。§8.5.5)。
+
+**GP-2 が残した穴**
+
+- light / camera を持つ prefab は spawn できません(`object.spawn_component_unsupported@1`)。
+- prefab の object 型の parameter は、シーンにある同名 object の代役(名前と、parameter が要求する component だけの写し)を置いて解決します([`objectParameterStandIns()`](../../src/core/loader/runtimespawn.cpp#L79))。
+- シーンのロード中に旧シーンの behavior の `onDestroy` から spawn すると、要求が新しいシーンの実行に積まれ、シーンの切り替えを越えて object ができます。
+- 大量に spawn したときの負荷は測っていません。
+- object を複数持つ prefab は v1 です。
 
 ### input() と screenRay — クリックした先を調べる(✅GP-4)
 
@@ -474,12 +581,13 @@ struct CarrierParams {
 | `params<Params>()` | 型付きパラメータへの参照(型が違えば `std::logic_error`) |
 
 - `createObject` / `createSpriteObject` / `removeObject` も呼べますが、**構造変更は次の behavior 境界まで遅延**されます。生成系は常に `invalidGameObjectId` を返す(その場では ID が取れない)点に注意してください。
+- `spawn` / `destroy`(✅GP-2)は、コールバックの中でも外でも同じく次のフレーム境界で実行されます。`spawn` はその場で `TransientObjectRef` を返します(§8.4「実行時生成 — `ctx.spawn`」)。
 - `GameObjects::removeAll()` を behavior のコールバック中に呼ぶと `std::logic_error` になります。
 
 ### 8.5.5 実行順とライフサイクル(決定性)
 
 - behavior 全体は **`"BehaviorSystem"`(order = 50)という 1 個のゲームシステム**として、他のゲームシステムと同じ `(order, 型名)` の全順序に並びます。つまり `order < 50` のシステムは全 behavior より前、`order > 50` は後に走ります(ビルトインのカメラコントローラは 10000)。
-- attachment どうしの順序は `attachment_seq` の昇順。シーンロード時の seq は**宣言順**(オブジェクト順 → コンポーネント順)から決まります。
+- attachment どうしの順序は `attachment_seq` の昇順。シーンロード時の seq は**宣言順**(オブジェクト順 → コンポーネント順)から決まります。`ctx.spawn` で作った object の behavior の seq は `(境界の番号, その境界の中の spawn の番号, prefab の中の behavior の番号)` から決まり、シーンに書いた behavior より後に並びます(シーンの object が 2^20 個未満のとき。✅GP-2。§8.4「実行時生成 — `ctx.spawn`」)。
 - **生成**: シーンの entity/collider/light を publish した後、`attachment_seq` 昇順に `onInit`。途中で例外が出たら、それまでに init 済みのものを逆順に `onDestroy` して全部巻き戻し、例外を投げ直します(このとき失敗した本人の `onDestroy` は呼ばれません)。巻き戻るのは behavior だけではなく、scene load 全体が旧シーンに戻ります(entity・collider・light・カメラ・描画・`onInit` 中の `emit` / `loadScene()` も。✅WP380a、[第4章 §4.3](04_scene_ecs.md))。`SceneLoaded` の emit は commit の後です。
 - **破棄**: `attachment_seq` の**逆順**に `onDestroy`([destroyDetached](../../src/core/gamelogic/behaviorarena.cpp#L376))。`ctx.self()` から自分の transform / sprite を読めます — シーン切替の retire 段では entity は既に unpublish 済みなので、読めるのは**破棄トークンが持つ最終スナップショット**です。破棄トークンとは、unpublish のときにコンポーネントの値をそのまま退避しておく控えのことで、値が実際に壊れるのは retire の完了時です([finish](../../src/core/ecs/archetypemigration.cpp#L917))。
 - 更新・イベント配送はどちらも開始時に有効な attachment のスナップショットを取ってから走るため、途中で消えたオブジェクトは安全にスキップされます。
@@ -575,7 +683,7 @@ ctx.loadScene("scene_flow_second");   // 予約(名前はその場で検証。�
 
 ### 落とし穴: システム状態はシーン切替で消えない
 
-システムのインスタンスは static シングルトンなので、メンバに保持した `GameObjectId` は切替後「死んだ ID」になります(`setLocalTransform` / `removeObject` は false を返し、`localTransform` は例外になり得ます)。保持した `ObjectRef`(§8.4 の objects())も、切替後は `object.stale_authority@1` で拒否されます。**`SceneLoaded` の `onEvent` で状態をリセットする**(ref なら `resolve` し直す)のが正道です。「シーンをまたいで残るオブジェクト」(persistent)の仕組みは v1 にはありません。
+システムのインスタンスは static シングルトンなので、メンバに保持した `GameObjectId` は切替後「死んだ ID」になります(`setLocalTransform` / `removeObject` は false を返し、`localTransform` は例外になり得ます)。保持した `ObjectRef`(§8.4 の objects())も、切替後は `object.stale_authority@1` で拒否されます。**`spawn` した `TransientObjectRef` も同じで、シーンの切替(同じシーンの読み直しを含む)で stale になります。** spawn した object 自体も切替で消え、作り直されることはありません。同じフレームで `spawn` の後に `loadScene` を呼ぶと、その spawn は実体化しないまま捨てられます(切替がフレームの末尾、spawn の実体化が次のフレームの先頭のため)。**`SceneLoaded` の `onEvent` で状態をリセットする**(`ObjectRef` なら `resolve` し直す、`TransientObjectRef` は捨てて必要なら spawn し直す)のが正道です。「シーンをまたいで残るオブジェクト」(persistent)の仕組みは v1 にはありません。
 
 ## 8.8 物理クエリとトリガー(✅P1/P2/WP107/179)
 

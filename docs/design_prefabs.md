@@ -148,6 +148,8 @@ U3  authoring transaction 基盤(文書別 revision)→ パラメータ昇格
 U4  ctx.spawn(単一 object。1 spawn = 1 entity、リプレイ trace 同一)
 ```
 
+> 2026-09-25 GP-2(`f3375a7e`)で実装: U4 は `GameContext::spawn(prefab, SpawnParams{transform, parameters, name?})`→`TransientObjectRef` と `destroy(ref)` になった。prefab は要求の時点で、scene load と同じ ResolvedScene seam(prefab instance 1 個だけの scene 文書を live run の registry・provider・defaults で resolve)で展開・検査し、次の frame 境界(frame の先頭、game code の前)で 1 spawn = 1 entity として実体化する。object 型 parameter の対象は live scene の同名 object の代役で解決する。light / camera を持つ prefab は `object.spawn_component_unsupported@1` で拒否し、多 object の prefab は引き続き v1(§7 の前提待ち)。「リプレイ trace 同一」に向けて、behavior の attachment_seq を `(境界, 境界内の spawn 番号, prefab 内の behavior 番号)` だけから決め、同じ入力の 2 run で同じ id になるようにした(replay での trace の byte 一致そのものは未確認)。spawn した object は保存せず、scene run と一緒に終わる。実装は [runtimespawn.hpp](../src/core/loader/runtimespawn.hpp)、利用者向けは manual 第8章 §8.4「実行時生成 — `ctx.spawn`」。
+
 U1 が大きいのは意図的である —— ResolvedScene seam が実装本体であり、
 それ無しの「engine だけ展開」は Camera に見えない component を作る(v3 レビュー実証)。
 

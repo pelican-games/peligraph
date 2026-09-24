@@ -150,6 +150,8 @@ destroy:
 - 決定性 gate: 実行/イベント/lifecycle trace + RNG 結果を
   **新規 process 二回 + replay 二回で byte 一致**
 
+> 2026-09-25 GP-2(`f3375a7e`)で実装: 「frame 中 spawn」(`GameContext::spawn`)の attachment_seq は commit_seq を持たないので、engine-owned の単調カウンタではなく組 `(scene run 内の境界番号, その境界での spawn index, prefab 内の behavior index)` だけから決める。値は `2^52 | boundary<<24 | index<<8 | attachment`(28 / 16 / 8 bit、`runtimeSpawnAttachmentSeq`)で、scene load の値(object が 2^20 個未満の scene)と editor の予約より上、JSON で正確な 2^53 未満。同じ入力の 2 run で同じ id になる。editor 側は上の `(commit_seq, command index, attachment index)` の組のまま。spawn は次の frame 境界(game code の前)で参加し、onInit はその境界で呼ばれる。scene load は spawn 由来の attachment を運ばずに retire する。
+
 ## 5. G2 reload(B-6/B-7 の解)
 
 ### 5-1. reload 列(BEH1 改訂条件 — レビュー逐語)

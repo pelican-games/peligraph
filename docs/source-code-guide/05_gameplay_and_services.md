@@ -22,6 +22,7 @@
 | audio（`audio().playSound` ほか） | `Audio`またはfeature disabled error | [`AudioContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L505) |
 | UI の書き込み（`ui().setText` / `setVisible` / `setValue`、GP-3） | `RenderingPassContainer::isFeatureEnabled("ui")` → `ui::UiModule::queueWrite`（`ui.*` sink との衝突は公開中の世代の `uiSinkBindings()` を見る） | [`UiContext::setText()`](../../src/core/userpublic/gamecontext.cpp#L221) / [`writeUi()`](../../src/core/userpublic/gamecontext.cpp#L198) |
 | scene object の名前解決（`objects().resolve` / `materialize` / `worldTransform`、GP-1） | `SceneLoader::resolveObject` / `materializeObject`、world は ECS の `TransformComponent` | [`ObjectsContext::resolve()`](../../src/core/userpublic/gamecontext.cpp#L233) |
+| 実行時生成（`spawn` / `destroy`、`TransientObjectRef` を受ける `objects().materialize` / `worldTransform`、GP-2） | `RuntimeSpawner`（下の「実行時生成」） | [`GameContext::spawn()`](../../src/core/userpublic/gamecontext.cpp#L268) / [`GameContext::destroy()`](../../src/core/userpublic/gamecontext.cpp#L273) / [`ObjectsContext::materialize()` の transient 版](../../src/core/userpublic/gamecontext.cpp#L260) |
 | scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L682) |
 | debug text（`render().debugText`） | `DebugText` | [`RenderContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L694) |
 | event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L344) |
@@ -48,6 +49,33 @@ class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport�
 setterは対象ライトのstructを書き換えるだけです（[`LightContainer::setDirectionalLightDirection()`](../../src/core/light/lightcontainer.cpp#L380)）。GPUへ渡るのはframeごとで、[`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L491) がその時点の現在値をlight UBOへ詰め、shadow用のview-projectionとsky ambientと併せて `LightContainer::update()` を呼びます。ここでの shadow 用 view-projection は、directional shadow の view family に属する各 view（ライト × cascade）の `projection * view` 行列を並べたもので、shading 側が world 座標を shadow map の座標へ写すために使います（組み立ては同関数内の [`view_projections.push_back()`](../../src/core/vkcore/renderer.cpp#L541) の周辺）。ゲームSystemの`update()`から呼べばそのframeの描画に載る、という順序です。
 
 > **設計決定:** ライトの時間変化は**ユーザー空間の責務**です。engine側にライト名（`"KeyLight"`など）を見て時刻から値を書き換える経路はありません。[`LightContainer`](../../src/core/light/lightcontainer.hpp) が持つのは現在値の配列と名前→indexのmapだけで、時刻を受け取るAPIも、scene読み込み時の原本値を控える配列もありません。従ってsetterで上書きした値を元へ戻したければ、ユーザーコード側で覚えておく必要があります。実例は [`updateLightAnimation()`](../../projects/example/code/playercontrol.cpp#L31) で、`ctx.time()`から毎フレーム**絶対値を計算して**4本のsetterへ渡しています。移行時の注意は[第9章](09_black_magic_and_gotchas.md)を参照してください。
+
+### 実行時生成 `RuntimeSpawner` ✅実装済み（GP-2）
+
+`GameContext::spawn()` / `destroy()` と、`TransientObjectRef` を受ける `ObjectsContext` の 2 本は、どれも [`DECLARE_MODULE(RuntimeSpawner)`](../../src/core/loader/runtimespawn.hpp#L39)（`src/core/loader/runtimespawn.{hpp,cpp}`）へ 1 行で委譲します。module は要求の待ち行列 `queue` と、実体化した object の表 `live`（scene run・境界・番号・entity・名前）を持ちます。
+
+**公開型**（`object_ref.hpp` と `gamecontext.hpp`）:
+
+- [`TransientObjectRef`](../../src/core/userpublic/object_ref.hpp#L67) は `{ObjectAuthority, boundary, spawn_index}`。GP-1 の `ObjectAuthority` を共有しますが `ObjectRef` とは別の class なので、authored と transient の取り違えはコンパイルで弾かれます。作れるのは `runtimespawn.cpp` の [`internal::TransientObjectRefAccess`](../../src/core/loader/runtimespawn.cpp#L29) だけで、既定構築の ref（`boundary == 0`）は `stale_authority` です。
+- [`SpawnParams`](../../src/core/userpublic/gamecontext.hpp#L227) は `{WorldTransform transform, nlohmann::json parameters, std::optional<std::string> name}`。
+- [`SpawnError`](../../src/core/userpublic/object_ref.hpp#L109) は `std::runtime_error` の派生で `code()` を持ちます。名前の一覧は宣言の直前のコメントが正本です。
+
+**要求の時点**（[`RuntimeSpawner::spawn()`](../../src/core/loader/runtimespawn.cpp#L150)）:
+
+1. [`SceneLoader::objectRun()`](../../src/core/loader/scene.cpp#L2084) で「今ゲームコードが見ている scene run」を取ります。scene load の callback の中なら候補の run、それ以外は live の run です（GP-1 の `resolveObject` と同じ [`objectResolutionRun()`](../../src/core/loader/scene.cpp#L2025)）。scene が無ければ `object.spawn_outside_scene@1`。
+2. 位置を決めます: 境界の番号は「追跡中の run と同じなら `boundary_count + 1`、違えば 1」、番号は同じ run の spawn 要求がすでに何件積まれているか。どちらかが attachment_seq の欄（境界 2^28、番号 2^16）を超えるなら `object.spawn_sequence_exhausted@1`。
+3. 名前の検査（authored の名前・同じ run の live と待ち行列の名前）。
+4. [`expandPrefab()`](../../src/core/loader/runtimespawn.cpp#L118) が prefab instance 1 個だけの scene 文書を組み、live run の prefab registry・bindable provider・defaults で `ResolvedSceneResolver::resolve` を通します。scene load と同じ ResolvedScene seam なので、`prefab_*` の名前もそのまま出ます。object 型の parameter の対象は、live scene の同名 object の代役（名前と、parameter が要求する component だけ）を同じ文書に入れて解決させます（[`objectParameterStandIns()`](../../src/core/loader/runtimespawn.cpp#L79)）。
+5. PG-1 の `resolvedObjectFeatureRefusal()`（[spawn からの呼び出し](../../src/core/loader/runtimespawn.cpp#L226)。scene load の prepare と editor の `add_component` / `spawn` と同じ判定）、light / camera の拒否、behavior の準備（`prepareResolvedSceneBehaviorAttachments`）。
+6. 展開済みの `ResolvedObject` と behavior を `Request` として積み、ref を返します。
+
+**境界**: [`RuntimeSpawner::applyBoundary()`](../../src/core/loader/runtimespawn.cpp#L339) は [`updateFrameState()` から 1 回だけ](../../src/core/appflow/framephase.cpp#L167) 呼ばれます。置き場所は audio の回収・DLL reload の `applyFrame()`・editor の commit queue hook の**後**（これらは scene run を置き換えうる）、`forEachFramePhase` の最初の相（`freeze_events`）の**前**です。したがって前のフレームのどこで積んだ要求も、このフレームのゲームコードの全部から見えます。`applyBoundary()` は `ProjectBasicConfig::activeSceneAuthority()` が追跡中の run と違えば、run を切り替えて境界の数を 0 に戻し、別の run の `live` を捨ててから数を 1 進めます。待ち行列は swap して要求順に処理し、run が live でない要求（旧 run のもの、失敗した load 候補のもの）は黙って捨てます。1 件の失敗は `LOG_ERROR` に出して次の要求へ進みます。
+
+**投影**: [`materialize(Request&)`](../../src/core/loader/runtimespawn.cpp#L386) は editor の spawn と同じ `SceneObjectProjectionAdapter` を、文書無しの入口 [`prepareTransientSpawn()`](../../src/core/loader/editorprojectionadapters.hpp#L92) で使います。ECS の entity と描画のインスタンスは editor の spawn と同じ staging、collider と model の衝突 mesh は `runtime_only` の physics binding（名前は `SpawnParams::name` か `spawn:<境界>.<番号>`）になり、scene の runtime object binding・camera・light には触りません。`publish()` の後に [`BehaviorAttachmentArena::attachSpawned()`](../../src/core/gamelogic/behaviorarena.hpp#L289) で behavior を付けて `onInit` を呼び、それが投げたら adapter を `rollback()` します（その spawn だけが戻る）。[`retire()`](../../src/core/loader/runtimespawn.cpp#L436) は逆順で、`preDestroyEntity()`（`onDestroy`）→ [`prepareTransientDestroy()`](../../src/core/loader/editorprojectionadapters.hpp#L94)（physics の binding を外し、entity を消す）です。
+
+**scene run の終わり**: scene load の behavior participant は arena の reconciliation を `BehaviorSpawnedAttachments::retire` で準備します（[behavior participant の指定](../../src/core/loader/scene.cpp#L1537)）。`runtime_spawned` の attachment は新しい vector へ運ばれず、load の commit 後の finish で旧 scene の behavior と一緒に `onDestroy` を受けます（rollback なら戻ります）。editor の編集の reconciliation（[`editorprojectionadapters.cpp` の呼び出し](../../src/core/loader/editorprojectionadapters.cpp#L1039)）は引数を省くので既定の `carry` で運びます。scene transaction 中の `spawn` / `destroy` の分類は `covered.spawn-queue`（§5.15）です。
+
+残した穴（manual 第8章 §8.4 と同じ）: light / camera を持つ prefab は拒否 / object 型 parameter は代役で解決 / scene load 中の旧 behavior の `onDestroy` からの spawn は `objectRun()` が新しい run を返すので、切り替えを越えて新しい run に積まれる / 大量 spawn の負荷は未測定 / 多 object の prefab は v1。
 
 ## 5.2 ゲームSystemの形
 
@@ -854,9 +882,10 @@ PELICAN_REGISTER_BEHAVIOR(TriggerBehavior, "wp179_trigger_behavior", 1);
 |---|---|
 | scene由来 | `prepareResolvedSceneBehaviorAttachments()` → `prepareSceneReconciliation(desired)` → [`PreparedBehaviorSceneReconciliation`](../../src/core/gamelogic/behaviorarena.hpp#L176) の `publish()`（`noexcept`）/ `activate()`（`onInit`。唯一throwしうる）/ `rollback()` / `finish()`（`noexcept`）。scene load executor（[第3章 §3.5](03_project_and_loading.md)）が段ごとに呼ぶ。`publishSceneAttachments()` / `activatePublished()` は宣言が残っているが scene load からは呼ばれない |
 | 編集RPC由来 | `prepareEditorEdits(edits)` → [`PreparedBehaviorAttachmentEdits`](../../src/core/gamelogic/behaviorarena.hpp#L157) の `publish()` / `rollback()` / `finish()`（全て`noexcept`） |
+| 実行時生成（GP-2） | [`attachSpawned(entity, prepared, boundary, spawn_index)`](../../src/core/gamelogic/behaviorarena.hpp#L289)。`RuntimeSpawner` が境界で呼ぶ。生きている entity に付け、`attachment_seq` 順に `onInit`。投げたら init 済みを逆順に `onDestroy`、この呼び出しが足した attachment とそれらが積んだ deferred mutation を捨てて投げ直す。付いた attachment は `runtime_spawned = true` |
 | teardown | `deactivateAllForTeardown()` / `drainDeferredMutationsForTeardown()` / `releaseOwner(owner)` |
 
-attachment identityは [`BehaviorAttachmentIdentity{handle, attachment_seq}`](../../src/core/gamelogic/behaviorarena.hpp#L120) です。scene由来のseqは [`sceneBehaviorAttachmentSeq(object_index, component_index)`](../../src/core/gamelogic/behaviorarena.hpp#L204) が上位32bit/下位32bitへpackして作るので、同じsceneからは常に同じseqが出ます。編集の種別は [`BehaviorAttachmentEditKind`](../../src/core/gamelogic/behaviorarena.hpp#L133) の5種（`attach` / `remove` / `set_params` / `insert_component` / `remove_component`）です。
+attachment identityは [`BehaviorAttachmentIdentity{handle, attachment_seq}`](../../src/core/gamelogic/behaviorarena.hpp#L120) です。scene由来のseqは [`sceneBehaviorAttachmentSeq(object_index, component_index)`](../../src/core/gamelogic/behaviorarena.hpp#L204) が上位32bit/下位32bitへpackして作るので、同じsceneからは常に同じseqが出ます。editorの編集由来は `(commit_seq, command index, attachment index)` を引数に受ける [`reserveRuntimeAttachmentIdentity()`](../../src/core/gamelogic/behaviorarena.cpp#L1209) が予約する単調な値です（引数は今の実装では使っていません）。GP-2 の実行時生成由来は、commit_seq を持たないので組 `(scene run の中の境界の番号, その境界の中の spawn の番号, prefab の中の behavior の番号)` だけから [`runtimeSpawnAttachmentSeq()`](../../src/core/gamelogic/behaviorarena.cpp#L82) が `2^52 | boundary<<24 | spawn_index<<8 | behavior_index`（28 / 16 / 8 bit。超えたら `std::length_error`、spawn 側では先に `object.spawn_sequence_exhausted@1`）として作ります。以前の単調カウンタを置き換えたもので、同じ入力なら2回の実行で同じidになります。2^52 は object が 2^20 個未満のsceneのどの値よりも上、JSON で正確に運べる 2^53 未満で、editor の予約はこの値の手前で `overflow_error` にしてあります（[その判定](../../src/core/gamelogic/behaviorarena.cpp#L1217)）。編集の種別は [`BehaviorAttachmentEditKind`](../../src/core/gamelogic/behaviorarena.hpp#L133) の5種（`attach` / `remove` / `set_params` / `insert_component` / `remove_component`）です。
 
 teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-callbacks`と`deferred-mutations`がこのarenaに対応します。
 
@@ -1004,6 +1033,7 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 | `reject.direct-gameobjects` | `GameObjects::add` / `createWithComponents` / `remove` / `removeAll` / `setLocalTransform` | `SceneTransactionMutationRejected` を**throw** |
 | `nonparticipant.frame-lifetime` | `debugText` | 曲がらない（フレーム寿命。§3.5 の 7 の `frame_lifetime`） |
 | `nonparticipant.ui-document` | `ui().setText` / `setVisible` / `setValue`（GP-3） | 曲がらない。UI 文書は scene の参加者ではなく、書き込みは `UiModule` の command buffer に積まれて次のフレーム境界で入る。load が失敗しても残る（[manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L228)） |
+| `covered.spawn-queue` | `spawn` / `destroy`（GP-2） | その場では検査して積むだけ。要求は呼んだ時点で `objectRun()` が返す run（load の callback の中なら候補の run）に属し、次のフレーム境界で実行される。load が失敗した候補の run の要求は、境界で live でないので捨てられる（[spawn / destroy の manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L217)） |
 | `nonparticipant.window-cursor` | `input().setCursorMode`（GP-4） | 曲がらない。カーソルのモードは scene ではなく窓のもので、load 中に頼んでも load の成否に関係なく次のフレームで適用される（[manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L234)） |
 
 縫い目が1つではない点に注意してください。`shadow_outbox.*` と、退役済みobjectを見る `covered.candidate-or-retired-reject` だけが `activeEffectTransaction()` を読みます。RNG・pending scene・eventは**それぞれ自前のscope**（`RngSequenceScope` / `PendingSceneTransactionScope` / `EventOutboxScope`）を持ち、light / camera は分岐すら持ちません。executorがこれら全部を同じ寿命で開く（§3.5 の 3）ので、外から見た挙動が揃います。
