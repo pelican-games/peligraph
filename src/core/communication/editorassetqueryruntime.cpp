@@ -4,7 +4,9 @@
 #include "../container.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
+#include "../model/engineprimitives.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <nlohmann/json.hpp>
 #include <variant>
@@ -18,6 +20,19 @@ bool pathIsWithin(const std::filesystem::path &path, const std::filesystem::path
     return !relative.empty() && *relative.begin() != "..";
 }
 
+// GP-5b: an engine primitive has no file and no project store. It is listed
+// under the store "engine" with the status "builtin" whether it is the bare
+// reference or a model declared in asset_data with that reference as its path.
+constexpr std::string_view engine_store = "engine";
+constexpr std::string_view builtin_status = "builtin";
+
+bool isKnownEnginePrimitive(std::string_view reference) {
+    if (!isEnginePrimitiveReference(reference)) return false;
+    const auto names = enginePrimitiveNames();
+    return std::find(names.begin(), names.end(), reference.substr(enginePrimitivePrefix.size())) !=
+           names.end();
+}
+
 } // namespace
 
 std::vector<EditorAssetQueryResult> collectEditorAssets(std::string_view asset_data_json,
@@ -25,6 +40,18 @@ std::vector<EditorAssetQueryResult> collectEditorAssets(std::string_view asset_d
     std::vector<EditorAssetQueryResult> result;
     const auto asset_data = nlohmann::json::parse(asset_data_json);
     const auto stores = path_resolver.stores();
+
+    // GP-5b: the primitives are always there, first, so a model picker built
+    // from this list offers them ahead of the project's own models. The id is
+    // the reference itself: that is the value simplemodelview.model takes.
+    for (const auto name : enginePrimitiveNames()) {
+        auto reference = std::string{enginePrimitivePrefix} + std::string{name};
+        result.push_back(EditorAssetQueryResult{.id = reference,
+                                                .kind = "model",
+                                                .path = reference,
+                                                .store = std::string{engine_store},
+                                                .status = std::string{builtin_status}});
+    }
     if (!asset_data.is_object()) return result;
 
     for (auto category = asset_data.begin(); category != asset_data.end(); ++category) {
@@ -45,6 +72,20 @@ std::vector<EditorAssetQueryResult> collectEditorAssets(std::string_view asset_d
             if (!entry.contains("path") || !entry.at("path").is_string()) continue;
 
             const auto path_text = entry.at("path").get<std::string>();
+            // GP-5b: a model declared with an engine primitive as its path is
+            // generated, not read, so the file resolver below would call it
+            // missing. An unknown primitive name does not resolve: missing.
+            if (category.key() == "models" && isEnginePrimitiveReference(path_text)) {
+                result.push_back(EditorAssetQueryResult{
+                    .id = entry.at("name").get<std::string>(),
+                    .kind = kind,
+                    .path = path_text,
+                    .store = std::string{engine_store},
+                    .status = isKnownEnginePrimitive(path_text) ? std::string{builtin_status}
+                                                                : std::string{"missing"},
+                });
+                continue;
+            }
             std::filesystem::path resolved_path{path_text};
             bool exists = false;
             if (resolved_path.is_absolute()) {

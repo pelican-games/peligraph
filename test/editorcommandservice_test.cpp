@@ -274,7 +274,8 @@ TEST_CASE("editor asset collection includes inline geometry without requiring a 
         {"procedural_geometry", {{{"name", "sphere"}}}},
         {"models", {{{"name", "existing"}, {"path", authoringFixturePath().string()}},
                     {{"name", "no_file"}}}}}.dump(), resolver);
-    REQUIRE(assets.size() == 2);
+    // GP-5b: the three engine primitives lead every list.
+    REQUIRE(assets.size() == 5);
     const auto geometry = std::find_if(assets.begin(), assets.end(), [](const auto &asset) {
         return asset.id == "sphere";
     });
@@ -288,6 +289,112 @@ TEST_CASE("editor asset collection includes inline geometry without requiring a 
     REQUIRE(model != assets.end());
     CHECK(model->kind == "model");
     CHECK(model->status == "loaded");
+}
+
+namespace {
+
+const std::vector<std::string> engine_primitive_ids{
+    "engine://primitives/cube", "engine://primitives/plane", "engine://primitives/sphere"};
+
+EditorCommandService makeCollectedAssetService(const AuthoringSceneDocument &document,
+                                               std::string asset_data_json) {
+    return EditorCommandService{EditorCommandServiceDependencies{
+        .document = [&document]() -> const AuthoringSceneDocument & { return document; },
+        .resolved_scene = explicitResolvedProvider(document),
+        .current_scene_id = [] { return std::string{"main"}; },
+        .runtime_query = fakeRuntime,
+        .assets = [asset_data_json = std::move(asset_data_json)] {
+            PathResolver resolver;
+            return collectEditorAssets(asset_data_json, resolver);
+        },
+    }};
+}
+
+} // namespace
+
+TEST_CASE("list_assets names the engine primitives as builtin in a project without asset data",
+          "[editor-command][asset-picker][gp5b]") {
+    const auto document =
+        AuthoringSceneDocument::load(readJson(authoringFixturePath()).dump(), SceneRevision{41});
+    const auto service = makeCollectedAssetService(document, "{}");
+    const EditorCommandRpcAdapter rpc{service};
+    const auto listed = rpc.listAssets(nlohmann::json::object());
+    const auto &assets = listed.at("assets");
+    REQUIRE(assets.size() == 3);
+    for (std::size_t index = 0; index < engine_primitive_ids.size(); ++index) {
+        CAPTURE(index);
+        CHECK(assets[index] == nlohmann::ordered_json{{"id", engine_primitive_ids[index]},
+                                                      {"kind", "model"},
+                                                      {"path", engine_primitive_ids[index]},
+                                                      {"store", "engine"},
+                                                      {"status", "builtin"}});
+    }
+    CHECK(rpc.listAssets({{"store", "engine"}}).at("assets").size() == 3);
+    CHECK(rpc.listAssets({{"store", "project"}}).at("assets").empty());
+}
+
+TEST_CASE("list_assets does not call a model declared as an engine primitive missing",
+          "[editor-command][asset-picker][gp5b]") {
+    PathResolver resolver;
+    const auto assets = collectEditorAssets(nlohmann::json{
+        {"models", {{{"name", "box"}, {"path", "engine://primitives/cube"}},
+                    {{"name", "ball"}, {"path", "engine://primitives/sphere"}},
+                    {{"name", "cone"}, {"path", "engine://primitives/cone"}}}}}.dump(), resolver);
+    const auto find = [&](std::string_view id) -> const EditorAssetQueryResult & {
+        const auto found = std::find_if(assets.begin(), assets.end(), [&](const auto &asset) {
+            return asset.id == id;
+        });
+        REQUIRE(found != assets.end());
+        return *found;
+    };
+    for (const auto id : {"box", "ball"}) {
+        CAPTURE(id);
+        const auto &asset = find(id);
+        CHECK(asset.kind == "model");
+        CHECK(asset.store == "engine");
+        CHECK(asset.status == "builtin");
+    }
+    CHECK(find("box").path == "engine://primitives/cube");
+    // An unknown primitive name does not resolve, so it stays missing.
+    CHECK(find("cone").status == "missing");
+    CHECK(std::count_if(assets.begin(), assets.end(), [](const auto &asset) {
+              return asset.status == "missing";
+          }) == 1);
+}
+
+TEST_CASE("simplemodelview choices offer the engine primitives before the project's models",
+          "[editor-command][query][component-addition][asset-picker][gp5b]") {
+    const auto document =
+        AuthoringSceneDocument::load(readJson(authoringFixturePath()).dump(), SceneRevision{41});
+    const auto service = makeCollectedAssetService(document, nlohmann::json{
+        {"models", {{{"name", "existing"}, {"path", authoringFixturePath().string()}}}}}.dump());
+    const EditorCommandRpcAdapter rpc{service};
+    const auto catalog = rpc.getComponentAddCandidates({{"name", "MixedObject"}});
+    const auto &candidates = catalog.at("candidates");
+    const auto model = std::find_if(candidates.begin(), candidates.end(), [](const auto &candidate) {
+        return candidate.at("name") == "simplemodelview";
+    });
+    REQUIRE(model != candidates.end());
+    const auto &choices = model->at("asset_selection").at("choices");
+    REQUIRE(choices.size() == 4);
+    for (std::size_t index = 0; index < engine_primitive_ids.size(); ++index) {
+        CAPTURE(index);
+        CHECK(choices[index] == nlohmann::ordered_json{{"id", engine_primitive_ids[index]},
+                                                       {"path", engine_primitive_ids[index]},
+                                                       {"status", "builtin"}});
+    }
+    CHECK(choices[3].at("id") == "existing");
+    CHECK(choices[3].at("status") == "loaded");
+    // The chosen id is what the component takes: it decodes as authored.
+    auto authored = model->at("component_template");
+    authored["model"] = choices[0].at("id");
+    CHECK(requireComponentCodec("simplemodelview").decodeAuthored(authored).hasValue());
+    // A texture picker is not offered a mesh.
+    const auto sprite = std::find_if(candidates.begin(), candidates.end(), [](const auto &candidate) {
+        return candidate.at("name") == "sprite_view";
+    });
+    REQUIRE(sprite != candidates.end());
+    CHECK(sprite->at("asset_selection").at("choices").empty());
 }
 
 TEST_CASE("behavior addition catalog provides defaults without constructing an attachment",
