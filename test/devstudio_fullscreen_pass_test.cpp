@@ -2937,6 +2937,75 @@ TEST_CASE("F-6 the Pass Editor saves a direct root's own pass with the root dige
     CHECK(params.at("shader") == present.at("shader"));
 }
 
+TEST_CASE("G-5 New... on a pass that already reads shaders/<its name>.frag "
+          "proposes a new file, named after the kind, and leaves the old one",
+          "[devstudio][fullscreen-pass][shader-template][g5][widget]") {
+    (void)application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = filesystemPath(temporary.path());
+    std::filesystem::create_directories(root / "shaders");
+    {
+        std::ofstream mine{root / "shaders" / "present.frag", std::ios::binary};
+        mine << "// the gradient\n";
+    }
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    form.setShaderSourceOpenAction([](const std::filesystem::path &) { return true; });
+    form.setProjectRoot(root);
+    // A Blank pipeline project's present, as F-6's test reads it.
+    const Json present{{"name", "present"},
+                       {"type", "fullscreen"},
+                       {"input", Json::array()},
+                       {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+                       {"shader", {{"vertex", "engine://fullscreen"},
+                                   {"fragment", "project://shaders/present"}}}};
+    Json graph{{"name", "main_render"},
+               {"passes", Json::array({{{"name", "present"},
+                                        {"declaration", present},
+                                        {"editable_preset_pass", false},
+                                        {"editable_feature_pass", false},
+                                        {"editable_root_pass", true},
+                                        {"root_declaration", present},
+                                        {"provenance", {{"source", "project"},
+                                                        {"provider_feature", ""},
+                                                        {"provider_reference", ""}}}}})},
+               {"anchor_candidates", Json::array({{{"position", 0}, {"insert", "before:present"}},
+                                                  {{"position", 1}, {"insert", "after:present"}}})}};
+    const Json context{{"source_reference", "project://passes/main_rendering_config.json"},
+                       {"source_digest", {{"hex", std::string(64, 'a')}}},
+                       {"config_kind", "direct"},
+                       {"graphs", Json::array({graph})},
+                       {"managed_fragments", Json::array()}};
+    authoring.succeed(authoring.requests.back().id, context);
+    const auto plan = minimalFramePlan(
+        "main_render", Json::array({resource("scene_color"), resource("display")}));
+    form.receiveResult(QByteArray::fromStdString(plan.dump()));
+    form.editPresetPass(QStringLiteral("main_render"), QStringLiteral("present"));
+    authoring.succeed(authoring.requests.back().id, context);
+    refresh.succeed(refresh.requests.back(), QByteArray::fromStdString(plan.dump()));
+    REQUIRE(required<QLineEdit>(form, "pelican.fullscreenPass.name").text() ==
+            QStringLiteral("present"));
+    chooseCandidate(form, "pelican.fullscreenPass.inputTarget",
+                    "pelican.fullscreenPass.addInput", "scene_color");
+
+    required<QPushButton>(form, "pelican.fullscreenPass.newFragmentShader").click();
+    auto &shader_name =
+        required<QLineEdit>(form, "pelican.fullscreenPass.shaderTemplateName");
+    // Pass-through: the pass's own name is taken by the file it reads.
+    CHECK(shader_name.text() == QStringLiteral("present_2"));
+    auto &kind = required<QComboBox>(form, "pelican.fullscreenPass.shaderTemplateKind");
+    kind.setCurrentIndex(kind.findText(QStringLiteral("Tone map")));
+    CHECK(shader_name.text() == QStringLiteral("present_tone_map"));
+    required<QPushButton>(form, "pelican.fullscreenPass.createFragmentShader").click();
+    CHECK(required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment").text() ==
+          QStringLiteral("project://shaders/present_tone_map"));
+    const auto written = readText(root / "shaders" / "present_tone_map.frag");
+    CHECK(written.find("PELICAN_DECLARE_INPUT_0(in_scene_color);") != std::string::npos);
+    CHECK(readText(root / "shaders" / "present.frag") == "// the gradient\n");
+}
+
 // --- F-3: a fullscreen pass made shader and all.
 
 namespace {

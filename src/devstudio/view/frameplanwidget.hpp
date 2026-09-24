@@ -74,6 +74,13 @@ class FramePlanWidget final : public QWidget {
     // handed to this action as the whole log -- empty text when a reload
     // committed and the log should go.
     void setShaderReloadLogAction(std::function<void(const QString &)> action);
+    // G-4 / G-5. A commit that answers restart_required hands the restart to
+    // this action (the window asks about unsaved scene edits first); without
+    // one, the viewport restarts the engine at once. When the restart is
+    // declined, engineRestartDeclined says why on the status row and reads
+    // the plan the running engine now has.
+    void setEngineRestartAction(std::function<void(const QString &reason)> action);
+    void engineRestartDeclined(const QString &message);
     // The answer to a reload_shaders request, handed in the way the RPC
     // reply is (tests use it without an engine).
     void receiveShaderReloadOutcome(const ShaderReloadOutcome &outcome);

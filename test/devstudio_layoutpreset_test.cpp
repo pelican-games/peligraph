@@ -15,6 +15,7 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
 #include <QMainWindow>
 #include <QMenu>
 #include <QMessageBox>
@@ -679,4 +680,81 @@ TEST_CASE("Studio owns an asynchronous unsaved prompt through window destruction
     }
     CHECK(prompt.isNull());
     QCoreApplication::processEvents();
+}
+
+TEST_CASE("G-5 an engine restart asks about unsaved scene edits first, and "
+          "Cancel keeps the engine running",
+          "[devstudio][mainwindow][save][unsaved][g5]") {
+    (void)application();
+    QTemporaryDir application_config;
+    REQUIRE(application_config.isValid());
+    PelicanStudio::MainWindow window{application_config.path()};
+    auto *inspector = dynamic_cast<PelicanStudio::InspectorWidget *>(
+        window.findChild<QWidget *>(QStringLiteral("pelican.inspector")));
+    REQUIRE(inspector != nullptr);
+    auto *frame_plan_status =
+        window.findChild<QLabel *>(QStringLiteral("pelican.framePlanStatus"));
+    REQUIRE(frame_plan_status != nullptr);
+    window.show();
+    QCoreApplication::processEvents();
+    const QString reason =
+        QStringLiteral("Restarting the engine to apply the material route setting...");
+    const auto prompt = [&window] {
+        return window.findChild<QMessageBox *>(
+            QStringLiteral("pelican.unsavedScenePrompt"));
+    };
+
+    SECTION("with nothing unsaved the engine restarts at once") {
+        window.requestEngineRestart(reason);
+        QCoreApplication::processEvents();
+        CHECK(prompt() == nullptr);
+        CHECK(window.statusBar()->currentMessage() == reason);
+    }
+
+    SECTION("with unsaved edits the prompt comes first") {
+        inspector->observeSceneRevision(1);
+        inspector->observeSceneRevision(2);
+        QCoreApplication::processEvents();
+        REQUIRE(inspector->hasUnsavedSceneChanges());
+        window.requestEngineRestart(reason);
+        QCoreApplication::processEvents();
+        auto *asked = prompt();
+        REQUIRE(asked != nullptr);
+        CHECK(asked->text().contains(QStringLiteral("engine restarts")));
+        // Nothing restarted while the question is open.
+        CHECK(window.statusBar()->currentMessage() != reason);
+
+        SECTION("Cancel: no restart, and the setting is said to wait for the next start") {
+            auto *cancel = asked->findChild<QAbstractButton *>(
+                QStringLiteral("pelican.unsavedScenePrompt.cancel"));
+            REQUIRE(cancel != nullptr);
+            cancel->click();
+            QCoreApplication::processEvents();
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            CHECK(prompt() == nullptr);
+            CHECK(window.statusBar()->currentMessage() != reason);
+            CHECK(window.statusBar()->currentMessage().contains(
+                QStringLiteral("applies the next time the engine starts")));
+            CHECK(frame_plan_status->text().contains(
+                QStringLiteral("applies the next time the engine starts")));
+            CHECK(inspector->hasUnsavedSceneChanges());
+        }
+        SECTION("Discard: the restart goes ahead") {
+            auto *discard = asked->findChild<QAbstractButton *>(
+                QStringLiteral("pelican.unsavedScenePrompt.discard"));
+            REQUIRE(discard != nullptr);
+            discard->click();
+            QCoreApplication::processEvents();
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            CHECK(prompt() == nullptr);
+            CHECK(window.statusBar()->currentMessage() == reason);
+        }
+        SECTION("Save that cannot start: no restart") {
+            asked->button(QMessageBox::Save)->click();
+            QCoreApplication::processEvents();
+            CHECK(window.statusBar()->currentMessage() != reason);
+            CHECK(frame_plan_status->text().contains(
+                QStringLiteral("applies the next time the engine starts")));
+        }
+    }
 }

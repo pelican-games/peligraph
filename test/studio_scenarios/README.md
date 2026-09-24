@@ -331,6 +331,19 @@ slot is `color` for a forward contract, `albedo`, `normal`, `material`,
 `.notice`, `.error` and `.ok`. `material_pass_authoring` is the example; its
 fixture explains why it carries two material passes nobody reads.
 
+G-5 named what a person answers and types on the way from a blank project to a
+material loop. The Inspector's number fields are
+`pelican.inspectorVector.<component>.<field>.<column>` (a vector, e.g.
+`pelican.inspectorVector.transform.scale.2`) and
+`pelican.inspectorNumeric.<component>.<field>` (one number); before G-5 every
+vector's first column shared one name. The Inspector rebuilds its fields after
+each commit, so a scenario waits for the field to be enabled, types, presses
+Return, and waits for the field to hold the value (`forward_loop_from_scratch`
+does it in that order). The unsaved-scene question is
+`pelican.unsavedScenePrompt`, with `.save`, `.discard` and `.cancel`; it is also
+asked before a restart the Frame Plan requests (`restart_required`), and Cancel
+leaves the running engine alone.
+
 ## Gestures a canvas is driven with
 
 `press`, `move` and `release` share one piece of state: which buttons this

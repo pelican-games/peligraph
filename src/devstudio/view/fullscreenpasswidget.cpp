@@ -808,10 +808,36 @@ struct FullscreenPassWidget::Impl {
                            "into its shaders folder."));
     }
 
+    // The shader "New..." proposes: the pass's name. When the pass already
+    // reads shaders/<that name>.frag -- New... on an existing pass, such as
+    // the Blank pipeline's present -- the author is asking for a new shader
+    // for it, and the one it has stays theirs: the kind's name is appended
+    // (then _2, _3...) so the proposal is a file that is not there yet.
+    QString proposedShaderName() const {
+        const std::string base =
+            suggestedShaderTemplateName(name->text().trimmed().toStdString());
+        if (base.empty() || !project_root ||
+            fragment_shader->text().trimmed() !=
+                text(shaderTemplateReference(base)))
+            return text(base);
+        const auto kind = selectedTemplateKind();
+        const std::string stem =
+            kind == FullscreenShaderTemplateKind::pass_through
+                ? base
+                : base + "_" + std::string{fullscreenShaderTemplateKindName(kind)};
+        std::string candidate = stem;
+        std::error_code error;
+        for (int index = 2; isValidShaderTemplateName(candidate) &&
+                            std::filesystem::exists(
+                                shaderTemplatePath(*project_root, candidate), error);
+             ++index)
+            candidate = stem + "_" + std::to_string(index);
+        return isValidShaderTemplateName(candidate) ? text(candidate) : text(base);
+    }
+
     void beginShaderTemplate() {
         if (!project_root) return;
-        const QString proposed = text(suggestedShaderTemplateName(
-            name->text().trimmed().toStdString()));
+        const QString proposed = proposedShaderName();
         {
             const QSignalBlocker blocker{shader_template_name};
             shader_template_name->setText(proposed);
@@ -1017,8 +1043,7 @@ struct FullscreenPassWidget::Impl {
         }
         const QString shader_current = shader_template_name->text().trimmed();
         if (shader_current.isEmpty() || shader_current == auto_shader_name) {
-            auto_shader_name = text(suggestedShaderTemplateName(
-                name->text().trimmed().toStdString()));
+            auto_shader_name = proposedShaderName();
             const QSignalBlocker blocker{shader_template_name};
             shader_template_name->setText(auto_shader_name);
         }

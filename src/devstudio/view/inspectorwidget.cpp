@@ -1488,13 +1488,24 @@ struct InspectorWidget::Impl {
         }
     }
 
+    // G-5. One name per field, `<kind>.<component>.<field>`, so a scenario
+    // reaches the scale of a transform rather than whichever number box came
+    // first (every vector's first column used to share one name).
+    static QString fieldObjectName(const char *kind,
+                                   const InspectorWidgetDescriptor &descriptor) {
+        return QStringLiteral("%1.%2.%3")
+            .arg(QLatin1String(kind),
+                 QString::fromStdString(descriptor.component_slot),
+                 QString::fromStdString(descriptor.field_name));
+    }
+
     QWidget *makeNumericEditor(QWidget *parent,
                                const InspectorWidgetDescriptor &descriptor) {
         auto binding = std::make_unique<NumericBinding>();
         binding->field_key = descriptor.field_key;
         binding->kind = descriptor.kind;
         auto *editor = new QDoubleSpinBox(parent);
-        editor->setObjectName(QStringLiteral("pelican.inspectorNumeric"));
+        editor->setObjectName(fieldObjectName("pelican.inspectorNumeric", descriptor));
         configureNumeric(*editor, descriptor, false);
         editor->setValue(descriptor.value.get<double>());
         binding->editors.push_back(editor);
@@ -1525,7 +1536,8 @@ struct InspectorWidget::Impl {
         for (std::size_t index = 0; index < descriptor.columns; ++index) {
             auto *editor = new QDoubleSpinBox(container);
             editor->setObjectName(
-                QStringLiteral("pelican.inspectorVector%1").arg(index));
+                fieldObjectName("pelican.inspectorVector", descriptor) +
+                QStringLiteral(".%1").arg(index));
             configureNumeric(*editor, descriptor, true);
             editor->setValue(descriptor.value.at(index).get<double>());
             binding->editors.push_back(editor);

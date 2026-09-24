@@ -403,6 +403,13 @@ struct FramePlanWidget::Impl {
     // F-5: where a shader reload's log goes besides the marks (the Pass
     // Editor's log under its form); empty text clears it.
     std::function<void(const QString &)> shader_reload_log_action;
+    // G-5: who restarts the engine for a committed setting it reads only at
+    // start. The window sets it, so a scene with unsaved edits is asked about
+    // first; without it the viewport restarts at once.
+    std::function<void(const QString &)> engine_restart_action;
+    // Why the engine did not restart, kept until the refreshed plan's summary
+    // has been shown so that it is not the summary that stays on the row.
+    QString restart_declined_notice;
     // The status line a shader reload put up, so a later success takes down
     // that line and nothing else.
     QString shown_reload_notice;
@@ -1433,7 +1440,8 @@ struct FramePlanWidget::Impl {
                     "Restarting the engine to apply the material route setting...");
                 status->setStyleSheet({});
                 showStatus(reason);
-                viewport.restartEngine(reason);
+                if (engine_restart_action) engine_restart_action(reason);
+                else viewport.restartEngine(reason);
                 return;
             }
             // The refresh first, so its own "requesting..." line does not land
@@ -2085,6 +2093,9 @@ struct FramePlanWidget::Impl {
                 .arg(barrier_summary)
                 .arg(physical_summary, byteCount(model->response_bytes),
                      QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"))));
+        // G-5: a restart the user declined outlives the plan it refreshed.
+        if (!restart_declined_notice.isEmpty())
+            showStatus(std::exchange(restart_declined_notice, {}));
     }
 
     // Q-4. The reply, laid out for reading, is built only while somebody is
@@ -2854,6 +2865,23 @@ void FramePlanWidget::receiveShaderReloadOutcome(
 void FramePlanWidget::setShaderReloadLogAction(
     std::function<void(const QString &)> action) {
     impl_->shader_reload_log_action = std::move(action);
+}
+
+void FramePlanWidget::setEngineRestartAction(
+    std::function<void(const QString &reason)> action) {
+    impl_->engine_restart_action = std::move(action);
+}
+
+void FramePlanWidget::engineRestartDeclined(const QString &message) {
+    // The engine that committed the change is still the one running: read
+    // what it has now, as after any other commit, then say why nothing
+    // restarted.
+    impl_->restart_declined_notice = message;
+    impl_->requestAuthoringContext();
+    impl_->requestTaskAuthoring();
+    impl_->requestRefresh();
+    impl_->status->setStyleSheet({});
+    impl_->showStatus(message);
 }
 
 

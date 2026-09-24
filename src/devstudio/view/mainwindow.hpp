@@ -51,6 +51,11 @@ class MainWindow : public QMainWindow {
     MainWindow();
     explicit MainWindow(const QString &application_config_directory);
     void openProject(const QString &path);
+    // G-5. Restart the engine on the same project for a committed setting it
+    // reads only at start (the Frame Plan's restart_required). A scene with
+    // unsaved edits is asked about first -- Save / Discard / Cancel, the same
+    // prompt a project switch shows -- and Cancel leaves the engine running.
+    void requestEngineRestart(const QString &reason);
     // The render-tools tabs, by the id the command line uses. Kept here so the
     // launcher can reject an unknown name before a window exists.
     static QStringList renderToolsTabIds();
@@ -116,9 +121,10 @@ class MainWindow : public QMainWindow {
     QHash<qint64, quint64> pending_gizmo_requests_;
     std::uint64_t presented_gizmo_notice_revision_ = 0;
     std::uint64_t presented_gizmo_binding_revision_ = 0;
-    enum class Navigation { None, Close, Project };
+    enum class Navigation { None, Close, Project, Restart };
     Navigation pending_navigation_ = Navigation::None;
     QString pending_project_path_;
+    QString pending_restart_reason_;
     qint64 navigation_revision_request_ = 0;
     bool navigation_waiting_for_save_ = false;
     std::uint64_t navigation_save_completion_ = 0;
@@ -151,6 +157,7 @@ class MainWindow : public QMainWindow {
     void answerNavigationPrompt(int answer);
     void completeNavigation();
     void cancelNavigation(const QString &message = {});
+    void resetNavigation();
     void sceneStateChanged();
     void populateOutliner();
     void createAddObjectMenu();

@@ -10,6 +10,7 @@
 #include "studiotheme.hpp"
 #include "../viewport/embeddedviewport.hpp"
 
+#include <QAbstractButton>
 #include <QAction>
 #include <QActionGroup>
 #include <QAbstractItemView>
@@ -306,6 +307,7 @@ void MainWindow::createWorkspace() {
         render_features_->editFrameNodeOrder(graph, names, generation);
     });
     frame_plan_->setTaskEditAction([this](const QString &task) { render_features_->editComputeTask(task); });
+    frame_plan_->setEngineRestartAction([this](const QString &reason) { requestEngineRestart(reason); });
     // "Open the source" in the Inspector lands on the same node in the Graph
     // tab: the producer it names is a root node of the common graph.
     inspector_->setGraphSourceRevealAction(
@@ -738,6 +740,20 @@ void MainWindow::openProject(const QString &path) {
     requestNavigation(Navigation::Project, path);
 }
 
+void MainWindow::requestEngineRestart(const QString &reason) {
+    if (pending_navigation_ != Navigation::None) {
+        // Another question is already on screen; the setting waits for the
+        // next start rather than restarting under it.
+        const QString declined = tr("The engine was not restarted. The setting is saved and applies the next time the engine starts.");
+        statusBar()->showMessage(declined);
+        frame_plan_->engineRestartDeclined(declined);
+        return;
+    }
+    // Set first: with nothing unsaved the restart happens inside this call.
+    pending_restart_reason_ = reason;
+    requestNavigation(Navigation::Restart);
+}
+
 void MainWindow::requestNavigation(Navigation destination, const QString &path) {
     if (pending_navigation_ != Navigation::None) return;
     pending_navigation_ = destination;
@@ -766,11 +782,20 @@ void MainWindow::continueNavigation() {
         return;
     }
     if (navigation_prompt_) return;
+    const bool restarting = pending_navigation_ == Navigation::Restart;
     auto *prompt = new QMessageBox(QMessageBox::Warning, tr("Unsaved Scene Changes"),
-        tr("Save your scene changes before leaving this project?"),
+        restarting ? tr("Save your scene changes before the engine restarts?")
+                   : tr("Save your scene changes before leaving this project?"),
         QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, this);
+    if (restarting) {
+        prompt->setInformativeText(tr("The engine restarts to apply a setting it reads only at start, and the scene it holds is read again from disk. Cancel keeps this engine running; the setting is saved and applies the next time the engine starts."));
+    }
     navigation_prompt_ = prompt;
     prompt->setObjectName(QStringLiteral("pelican.unsavedScenePrompt"));
+    // Named, so a scenario answers the prompt the way a person does.
+    prompt->button(QMessageBox::Save)->setObjectName(QStringLiteral("pelican.unsavedScenePrompt.save"));
+    prompt->button(QMessageBox::Discard)->setObjectName(QStringLiteral("pelican.unsavedScenePrompt.discard"));
+    prompt->button(QMessageBox::Cancel)->setObjectName(QStringLiteral("pelican.unsavedScenePrompt.cancel"));
     prompt->setDefaultButton(QMessageBox::Save);
     prompt->setEscapeButton(QMessageBox::Cancel);
     prompt->setAttribute(Qt::WA_DeleteOnClose);
@@ -794,7 +819,9 @@ void MainWindow::answerNavigationPrompt(int answer) {
         if (!inspector_->sceneSaveInFlight() && !inspector_->saveScene()) {
             cancelNavigation(tr("Scene save is unavailable. Finish any active edit and retry. The project remains open."));
         } else {
-            statusBar()->showMessage(tr("Saving scene before leaving the project..."));
+            statusBar()->showMessage(pending_navigation_ == Navigation::Restart
+                                         ? tr("Saving scene before the engine restarts...")
+                                         : tr("Saving scene before leaving the project..."));
         }
     } else {
         cancelNavigation();
@@ -816,8 +843,23 @@ void MainWindow::sceneStateChanged() {
 }
 
 void MainWindow::cancelNavigation(const QString &message) {
+    const auto destination = pending_navigation_;
+    resetNavigation();
+    if (destination == Navigation::Restart) {
+        // The commit that asked for the restart is on disk: say so, on the
+        // Frame Plan that made it and here, until something else is said.
+        const QString declined = tr("The engine was not restarted. The setting is saved and applies the next time the engine starts.");
+        statusBar()->showMessage(message.isEmpty() ? declined : message + QLatin1Char(' ') + declined);
+        frame_plan_->engineRestartDeclined(declined);
+        return;
+    }
+    if (!message.isEmpty()) statusBar()->showMessage(message, 8000);
+}
+
+void MainWindow::resetNavigation() {
     pending_navigation_ = Navigation::None;
     pending_project_path_.clear();
+    pending_restart_reason_.clear();
     navigation_revision_request_ = 0;
     navigation_waiting_for_save_ = false;
     if (navigation_prompt_) {
@@ -825,14 +867,17 @@ void MainWindow::cancelNavigation(const QString &message) {
         navigation_prompt_ = nullptr;
         prompt->reject();
     }
-    if (!message.isEmpty()) statusBar()->showMessage(message, 8000);
 }
 
 void MainWindow::completeNavigation() {
     const auto destination = pending_navigation_;
     const auto path = pending_project_path_;
-    cancelNavigation();
-    if (destination == Navigation::Close) {
+    const auto restart_reason = pending_restart_reason_;
+    resetNavigation();
+    if (destination == Navigation::Restart) {
+        statusBar()->showMessage(restart_reason, 8000);
+        viewport_->restartEngine(restart_reason);
+    } else if (destination == Navigation::Close) {
         close_authorized_ = true;
         close();
     } else if (destination == Navigation::Project) {
