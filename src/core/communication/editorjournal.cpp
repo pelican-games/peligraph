@@ -1618,6 +1618,7 @@ PreparedOperation prepareRpcOperation(const Json &raw,
         return prepareSpawn(raw, document, current_scene, component_exists);
     if (op == "destroy") return prepareDestroy(raw, document);
     if (op == "reparent") return prepareReparent(raw, document);
+    if (op == "duplicate") return prepareDuplicate(raw, document);
     if (op == "set_prefab_parameter")
         return preparePrefabParameter(raw, document, registry, false);
     if (op == "unset_prefab_parameter")
@@ -1990,6 +1991,7 @@ EditorCanonicalOperation freezeJournalOperation(
                 std::same_as<Operation, EditorDestroyOperation> ||
                 std::same_as<Operation, EditorRemoveObjectsOperation> ||
                 std::same_as<Operation, EditorRestoreObjectsOperation> ||
+                std::same_as<Operation, EditorDuplicateOperation> ||
                 std::same_as<Operation, EditorSetPrefabParameterOperation> ||
                 std::same_as<Operation, EditorUnsetPrefabParameterOperation> ||
                 std::same_as<Operation, EditorUnpackPrefabOperation> ||
@@ -2094,6 +2096,25 @@ PreparedBatch prepareBatch(const Json &raw_operations,
             for (const auto &closure : closures) {
                 prepared.inverse["closures"].push_back(closureJson(closure));
             }
+        } else if (prepared.forward.at("op") == "duplicate") {
+            // OL-1: every copy took a fresh AuthoringObjectId, in declaration
+            // order. The journal records them so undo removes exactly these
+            // and redo restores the same identities.
+            OrderedJson created = OrderedJson::array();
+            for (const auto &change : result.structural_changes) {
+                if (change.kind != AuthoringStructuralChangeKind::Insert) continue;
+                created.push_back(change.authoring_object_id.value);
+                prepared.affected.push_back(change.authoring_object_id);
+            }
+            if (created.size() != prepared.forward.at("objects").size()) {
+                throw std::logic_error(
+                    "duplicate preflight inserted a different number of objects");
+            }
+            prepared.forward["object_ids"] = created;
+            prepared.structural_domain["objects"] = created;
+            for (auto it = created.rbegin(); it != created.rend(); ++it) {
+                prepared.inverse["object_ids"].push_back(*it);
+            }
         }
         const auto &op = prepared.forward.at("op");
         if (op == "add_component" || op == "spawn") {
@@ -2101,6 +2122,13 @@ PreparedBatch prepareBatch(const Json &raw_operations,
                 local->projectionResolvedScene(),
                 AuthoringObjectId{prepared.forward.at("object_id")
                                       .get<std::uint64_t>()});
+        } else if (op == "duplicate") {
+            // PG-1: a copy brings the source's components into the scene, so
+            // it crosses the same gate spawn does, copy by copy.
+            for (const auto &id : prepared.forward.at("object_ids")) {
+                requireObjectFeatures(local->projectionResolvedScene(),
+                                      AuthoringObjectId{id.get<std::uint64_t>()});
+            }
         }
         batch.canonical_forward.push_back(
             freezeJournalOperation(prepared.forward,
@@ -2219,7 +2247,7 @@ EditorProjectionCommand commandFromCanonical(const Json &operation,
     if (op == "remove_objects" || op == "destroy") {
         throw std::logic_error("multi-command canonical operation requires expansion");
     }
-    if (op == "restore_objects") {
+    if (op == "restore_objects" || op == "duplicate") {
         throw std::logic_error("restore canonical operation requires expansion");
     }
     if (op == "reparent") {
@@ -2342,6 +2370,28 @@ commandsFromCanonical(std::span<const OrderedJson> operations,
         } else if (op == "restore_objects") {
             for (const auto &closure : operation.at("closures")) {
                 current.push_back(makeRestoreObjectCommand(closureFromJson(closure)));
+            }
+        } else if (op == "duplicate") {
+            // A committed duplicate carries the closures of its copies, so a
+            // replay restores the same AuthoringObjectIds instead of
+            // allocating new ones (the spawn rule, per copy). The closures are
+            // in declaration order, so each one lands after its predecessor.
+            if (const auto closures = operation.find("closures");
+                closures != operation.end()) {
+                for (const auto &closure : *closures) {
+                    current.push_back(
+                        makeRestoreObjectCommand(closureFromJson(closure)));
+                }
+            } else {
+                const auto scene_id =
+                    requireString(operation, "scene_id", "journal duplicate");
+                auto index = static_cast<std::size_t>(exactUnsigned(
+                    operation.at("declaration_index"),
+                    "journal duplicate declaration_index"));
+                for (const auto &copy : operation.at("objects")) {
+                    current.push_back(makeInsertObjectCommand(
+                        scene_id, index++, copy.at("object")));
+                }
             }
         } else {
             current.push_back(commandFromCanonical(operation,
@@ -2543,6 +2593,51 @@ OrderedJson targetState(const Json &operations,
         }
     }
     return result;
+}
+
+// OL-1: what a committed ticket says about object identity. Every edit names
+// the AuthoringObjectIds it affected; an operation that brings objects into the
+// scene (spawn, duplicate, and the restore an undo of destroy makes) also names
+// each created object with its scene, declaration index and name, so a client
+// can select the new object without searching the tree for it.
+void appendCommittedIdentities(OrderedJson &result,
+                               const EditorJournalRecord &record,
+                               const AuthoringSceneDocument &document) {
+    OrderedJson affected = OrderedJson::array();
+    for (const auto id : record.affected_authoring_ids) affected.push_back(id.value);
+    result["affected_authoring_ids"] = std::move(affected);
+    OrderedJson created = OrderedJson::array();
+    const auto add = [&](std::uint64_t id, const OrderedJson *source) {
+        OrderedJson entry{{"object_id", id}};
+        try {
+            const auto object = requireObjectLocation(document, AuthoringObjectId{id});
+            entry["scene_id"] = object.scene_id;
+            entry["declaration_index"] = object.object_index;
+            entry["name"] = object.name ? OrderedJson(*object.name) : OrderedJson(nullptr);
+        } catch (const EditFailure &) {
+            return;
+        }
+        if (source != nullptr) entry["source_object_id"] = *source;
+        created.push_back(std::move(entry));
+    };
+    for (const auto &forward : record.ordered_forward) {
+        const auto op = forward.value("op", std::string{});
+        if (op == "spawn" && forward.contains("object_id")) {
+            add(forward.at("object_id").get<std::uint64_t>(), nullptr);
+        } else if (op == "duplicate") {
+            const auto &ids = forward.at("object_ids");
+            const auto &objects = forward.at("objects");
+            for (std::size_t index = 0; index < ids.size(); ++index) {
+                add(ids.at(index).get<std::uint64_t>(),
+                    &objects.at(index).at("source_object_id"));
+            }
+        } else if (op == "restore_objects") {
+            for (const auto &closure : forward.at("closures")) {
+                add(closure.at("authoring_object_id").get<std::uint64_t>(), nullptr);
+            }
+        }
+    }
+    result["created_objects"] = std::move(created);
 }
 
 std::string randomSessionToken() {
@@ -3534,6 +3629,16 @@ struct EditorEditCoordinator::Impl {
         // than allocating a new one. The committed closure supplies that
         // identity and declaration interval without changing the public RPC op.
         for (auto &forward : record.ordered_forward) {
+            if (forward.at("op") == "duplicate") {
+                // OL-1: the same rule for every copy of a duplicate.
+                OrderedJson closures = OrderedJson::array();
+                for (const auto &id : forward.at("object_ids")) {
+                    closures.push_back(closureJson(closureForObject(
+                        document(), AuthoringObjectId{id.get<std::uint64_t>()})));
+                }
+                forward["closures"] = std::move(closures);
+                continue;
+            }
             if (forward.at("op") != "spawn") continue;
             const auto id = AuthoringObjectId{forward.at("object_id").get<std::uint64_t>()};
             forward["closure"] = closureJson(closureForObject(document(), id));
@@ -4175,6 +4280,7 @@ struct EditorEditCoordinator::Impl {
                                    {"transaction_id", transaction_id},
                                    {"operation", ticketKindName(ticket.kind)},
                                    {"status", "committed"}};
+                appendCommittedIdentities(result, journal.back(), document());
                 if (ticket.source_transaction_id) {
                     result["source_transaction_id"] =
                         *ticket.source_transaction_id;

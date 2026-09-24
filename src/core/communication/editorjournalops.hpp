@@ -41,6 +41,8 @@ PreparedOperation prepareDestroy(const Json &raw,
                                  const AuthoringSceneDocument &document);
 PreparedOperation prepareReparent(const Json &raw,
                                   const AuthoringSceneDocument &document);
+PreparedOperation prepareDuplicate(const Json &raw,
+                                   const AuthoringSceneDocument &document);
 
 } // namespace EditorJournalInternal
 } // namespace Pelican

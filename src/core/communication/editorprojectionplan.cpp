@@ -263,6 +263,19 @@ EditorCanonicalOperation canonicalOperation(
         return EditorRestoreObjectsOperation{.objects = std::move(objects),
                                              .wire = wire};
     }
+    if (op == "duplicate") {
+        const auto scene_id = stringField(wire, "scene_id");
+        std::vector<EditorRestoreObject> objects;
+        for (const auto object_id : objectIds(wire)) {
+            objects.push_back(EditorRestoreObject{.object_id = object_id,
+                                                  .scene_id = scene_id});
+        }
+        return EditorDuplicateOperation{
+            .source_object_id = objectId(wire, "source_object_id"),
+            .objects = std::move(objects),
+            .wire = wire,
+        };
+    }
     if (op == "set_prefab_parameter" || op == "unset_prefab_parameter") {
         const auto object_id = objectId(wire, "object");
         const auto scene_id = requireObjectScene(state, object_id);
@@ -826,6 +839,17 @@ EditorProjectionPlan planEditorProjectionOrThrow(
                     if (context.mode() == EditorProjectionMode::Preview) {
                         planFailure("editor_preview_unsupported@1",
                                     "object restore has no live preview policy");
+                    }
+                    for (const auto &object : operation.objects) {
+                        appendLifecycleRoutes(plan, operation_index,
+                                              object.scene_id,
+                                              object.object_id);
+                    }
+                } else if constexpr (
+                    std::same_as<Operation, EditorDuplicateOperation>) {
+                    if (context.mode() == EditorProjectionMode::Preview) {
+                        planFailure("editor_preview_unsupported@1",
+                                    "duplicate has no live preview policy");
                     }
                     for (const auto &object : operation.objects) {
                         appendLifecycleRoutes(plan, operation_index,

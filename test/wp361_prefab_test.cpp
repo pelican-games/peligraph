@@ -1985,6 +1985,117 @@ TEST_CASE("WP361 journal preserves generated identity and records prefab spawn a
                 .origin.generated()->stable_generated_id == clone_gid);
 }
 
+// OL-1 acceptance 1, prefab. duplicate copies a prefab instance as an instance
+// (the prefab block, not its expansion) under a fresh instance_id, which the
+// journal records; the copy's Generated ids follow its own instance_id, and
+// undo / redo replay the recorded one.
+TEST_CASE("OL-1 duplicate copies a prefab instance under a recorded new instance_id",
+          "[ol1][wp361][prefab][journal][duplicate][undo-redo]") {
+    auto fixture = prepareFixture();
+    PrefabProjectionTarget target{fixture.document, fixture.registry,
+                                  fixture.provider};
+    EditorEditCoordinator edits{EditorEditRuntimeDependencies{
+        .document = [&]() -> const AuthoringSceneDocument & {
+            return target.projectionDocument();
+        },
+        .current_scene_id = [] { return std::string{"main"}; },
+        .execute = [&](const EditorEditExecutionRequest &request) {
+            EditorProjectionTransaction transaction{target,
+                                                    request.base_revision};
+            std::vector<EditorProjectionAdapter *> adapters;
+            return transaction.commit(request.commands, adapters);
+        },
+        .gate = [] { return EditorGateObservation{}; },
+        .prefab_registry = [&] {
+            return target.projectionResolvedScene().prefabRegistry();
+        },
+        .bindable_provider = [&] {
+            return target.projectionResolvedScene().bindableProvider();
+        },
+    }};
+    const auto actor =
+        edits.openSession({{"display_name", "ol1 prefab"}}).at("actor_id").get<std::uint64_t>();
+    const auto run = [&](Json accepted) {
+        REQUIRE(accepted.at("status") == "accepted");
+        edits.commitPending();
+        const auto result = edits.getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        return result;
+    };
+    const auto revision = [&] { return target.projectionDocument().revision().value; };
+    const auto objectNamed = [&](std::string_view name) -> const ResolvedObject * {
+        const auto &objects = target.projectionResolvedScene().findScene("main")->objects;
+        const auto found = std::find_if(objects.begin(), objects.end(),
+                                        [&](const auto &object) { return object.name == name; });
+        return found == objects.end() ? nullptr : &*found;
+    };
+    const auto source_id = instanceObject(target.projectionResolvedScene()).authoring_object_id;
+    const auto source_gid = generatedByKey(instanceObject(target.projectionResolvedScene()),
+                                           "sprite").origin.generated()->stable_generated_id;
+    const auto before = AuthoringSceneAuthority::encodeSemantic(target.projectionDocument());
+
+    const auto duplicated = run(edits.enqueue(
+        {{"actor_id", actor},
+         {"base_revision", revision()},
+         {"operations", Json::array({{{"op", "duplicate"}, {"object_id", source_id.value}}})}}));
+    const auto &forward = edits.journal().back().ordered_forward.front();
+    REQUIRE(forward.at("new_instance_ids") ==
+            OJson::array({{{"source_object_id", source_id.value},
+                           {"instance_id", "gi_main_copy1"}}}));
+    const auto *copy = objectNamed("Instance_copy1");
+    REQUIRE(copy != nullptr);
+    REQUIRE(copy->prefab_instance);
+    CHECK(copy->prefab_instance->instance_id == "gi_main_copy1");
+    // The copy is an instance of the same prefab with the same parameters.
+    const auto authoredNamed = [&](std::string_view name) {
+        for (const auto &object : AuthoringSceneAuthority::rawView(target.projectionDocument())
+                                      .documentJson().at("scenes").at("main").at("objects")) {
+            if (object.value("name", std::string{}) == name) return object;
+        }
+        FAIL("no authored object named " << name);
+        return Json{};
+    };
+    auto expected_copy = authoredNamed("Instance");
+    expected_copy["name"] = "Instance_copy1";
+    expected_copy["prefab"]["instance_id"] = "gi_main_copy1";
+    CHECK(authoredNamed("Instance_copy1") == expected_copy);
+    const auto copy_gid = generatedByKey(*copy, "sprite").origin.generated()->stable_generated_id;
+    CHECK(copy_gid != source_gid);
+    CHECK(generatedByKey(instanceObject(target.projectionResolvedScene()), "sprite")
+              .origin.generated()->stable_generated_id == source_gid);
+    const auto after = AuthoringSceneAuthority::encodeSemantic(target.projectionDocument());
+    const auto copy_id = copy->authoring_object_id;
+    CHECK(duplicated.at("created_objects").at(0).at("object_id") == copy_id.value);
+
+    // A second copy takes the next free instance_id.
+    const auto second = run(edits.enqueue(
+        {{"actor_id", actor},
+         {"base_revision", revision()},
+         {"operations", Json::array({{{"op", "duplicate"}, {"object_id", source_id.value}}})}}));
+    REQUIRE(objectNamed("Instance_copy2") != nullptr);
+    CHECK(objectNamed("Instance_copy2")->prefab_instance->instance_id == "gi_main_copy2");
+    (void)second;
+
+    const auto undo = [&] {
+        return run(edits.enqueueUndo({{"actor_id", actor}, {"base_revision", revision()}}));
+    };
+    const auto redo = [&] {
+        return run(edits.enqueueRedo({{"actor_id", actor}, {"base_revision", revision()}}));
+    };
+    (void)undo();
+    (void)undo();
+    CHECK(AuthoringSceneAuthority::encodeSemantic(target.projectionDocument()) == before);
+    CHECK(objectNamed("Instance_copy1") == nullptr);
+    (void)redo();
+    CHECK(AuthoringSceneAuthority::encodeSemantic(target.projectionDocument()) == after);
+    const auto *restored = objectNamed("Instance_copy1");
+    REQUIRE(restored != nullptr);
+    CHECK(restored->authoring_object_id == copy_id);
+    CHECK(restored->prefab_instance->instance_id == "gi_main_copy1");
+    CHECK(generatedByKey(*restored, "sprite").origin.generated()->stable_generated_id == copy_gid);
+}
+
 #if PELICAN_WITH_RPC
 TEST_CASE("WP361 real RpcServer exposes generated wire and refuses SnapshotV1 by name",
           "[wp361][prefab][rpc][readonly][persistence]") {

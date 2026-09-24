@@ -1360,6 +1360,8 @@ EditorProjectionResult materializeEditorProjection(
                             std::same_as<Operation,
                                          EditorRestoreObjectsOperation> ||
                             std::same_as<Operation,
+                                         EditorDuplicateOperation> ||
+                            std::same_as<Operation,
                                          EditorSetPrefabParameterOperation> ||
                             std::same_as<Operation,
                                          EditorUnsetPrefabParameterOperation> ||
@@ -1689,6 +1691,8 @@ EditorProjectionResult materializeEditorProjection(
                                          EditorRemoveObjectsOperation> ||
                             std::same_as<Operation,
                                          EditorRestoreObjectsOperation> ||
+                            std::same_as<Operation,
+                                         EditorDuplicateOperation> ||
                             std::same_as<Operation,
                                          EditorSetPrefabParameterOperation> ||
                             std::same_as<Operation,

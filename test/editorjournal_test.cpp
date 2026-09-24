@@ -614,6 +614,210 @@ TEST_CASE("PG-1 add_component and spawn refuse a collider by the physics module'
 #endif
 }
 
+namespace {
+
+struct Ol1Object {
+    std::uint64_t id = 0;
+    std::string name;
+    std::string parent;
+    Json authored;
+};
+
+std::vector<Ol1Object> ol1Objects(const Harness &harness) {
+    std::vector<Ol1Object> result;
+    const auto scenes = harness.target.document.query();
+    for (const auto &object : scenes.front().objects) {
+        result.push_back({object.authoring_object_id.value, object.name.value_or(""),
+                          object.parent.value_or(""), object.authoredJson()});
+    }
+    return result;
+}
+
+Json ol1Revert(Harness &harness, bool redo) {
+    const Json params{{"actor_id", harness.actor},
+                      {"base_revision", harness.target.document.revision().value}};
+    const auto accepted =
+        redo ? harness.edits->enqueueRedo(params) : harness.edits->enqueueUndo(params);
+    REQUIRE(accepted.at("status") == "accepted");
+    harness.edits->commitPending();
+    return harness.edits->getResult({{"ticket", accepted.at("ticket")}});
+}
+
+// The authored body a copy must have: the source's, renamed.
+Json ol1Renamed(Json authored, std::string name, std::optional<std::string> parent) {
+    authored["name"] = std::move(name);
+    if (parent) authored["parent"] = *parent;
+    return authored;
+}
+
+} // namespace
+
+// OL-1 acceptance 1. duplicate copies the object and its descendants as one
+// block right after the source subtree, under fresh AuthoringObjectIds and
+// `<name>_copy<N>` names, and the committed result names every copy. Undo
+// removes exactly the copies in one step; redo brings back the same ids.
+TEST_CASE("OL-1 duplicate copies a subtree under fresh ids and names, and undo and redo are one step",
+          "[ol1][journal][duplicate][undo][redo]") {
+    Harness harness;
+    const auto before = harness.target.document.encodeSemantic();
+    const auto source = ol1Objects(harness);
+    REQUIRE(source.size() == 4);
+
+    // Middle (2) has Leaf (3) under it; Other (4) is declared after them.
+    const auto duplicated = harness.commit({{"op", "duplicate"}, {"object_id", 2}});
+    INFO(duplicated.dump(2));
+    REQUIRE(duplicated.at("status") == "committed");
+    const auto after = ol1Objects(harness);
+    REQUIRE(after.size() == 6);
+    // The copies sit between the source subtree and Other, which keeps its id.
+    CHECK(after[3].id == 5);
+    CHECK(after[3].name == "Middle_copy1");
+    CHECK(after[3].parent == "Root");
+    CHECK(after[4].id == 6);
+    CHECK(after[4].name == "Leaf_copy1");
+    CHECK(after[4].parent == "Middle_copy1");
+    CHECK(after[5].id == 4);
+    CHECK(after[5].name == "Other");
+    for (std::size_t index = 0; index < 3; ++index) {
+        CHECK(after[index].id == source[index].id);
+        CHECK(after[index].authored == source[index].authored);
+    }
+    // Everything but the name and the in-subtree parent is the source's.
+    CHECK(after[3].authored == ol1Renamed(source[1].authored, "Middle_copy1", std::nullopt));
+    CHECK(after[4].authored == ol1Renamed(source[2].authored, "Leaf_copy1", "Middle_copy1"));
+
+    // The response names the created objects, in declaration order.
+    CHECK(duplicated.at("affected_authoring_ids") == nlohmann::ordered_json::array({5, 6}));
+    const auto &created = duplicated.at("created_objects");
+    REQUIRE(created.size() == 2);
+    CHECK(created[0] == nlohmann::ordered_json{{"object_id", 5},
+                                               {"scene_id", "main"},
+                                               {"declaration_index", 3},
+                                               {"name", "Middle_copy1"},
+                                               {"source_object_id", 2}});
+    CHECK(created[1] == nlohmann::ordered_json{{"object_id", 6},
+                                               {"scene_id", "main"},
+                                               {"declaration_index", 4},
+                                               {"name", "Leaf_copy1"},
+                                               {"source_object_id", 3}});
+
+    // The journal records the op as the thirteenth, with the ids it took.
+    const auto &record = harness.edits->journal().back();
+    REQUIRE(record.ordered_forward.size() == 1);
+    const auto &forward = record.ordered_forward.front();
+    CHECK(forward.at("op") == "duplicate");
+    CHECK(forward.at("source_object_id") == 2);
+    CHECK(forward.at("object_ids") == nlohmann::ordered_json::array({5, 6}));
+    CHECK(forward.at("closures").size() == 2);
+    CHECK(record.ordered_inverse.front() ==
+          nlohmann::ordered_json{{"op", "remove_objects"}, {"object_ids", {6, 5}}});
+    const auto forward_document = harness.target.document.encodeSemantic();
+
+    const auto undone = ol1Revert(harness, false);
+    INFO(undone.dump(2));
+    REQUIRE(undone.at("status") == "committed");
+    CHECK(harness.target.document.encodeSemantic() == before);
+    CHECK(harness.runtime == before);
+    CHECK(undone.at("created_objects").empty());
+
+    const auto redone = ol1Revert(harness, true);
+    INFO(redone.dump(2));
+    REQUIRE(redone.at("status") == "committed");
+    CHECK(harness.target.document.encodeSemantic() == forward_document);
+    CHECK(harness.runtime == forward_document);
+    const auto replayed = ol1Objects(harness);
+    REQUIRE(replayed.size() == 6);
+    CHECK(replayed[3].id == 5);
+    CHECK(replayed[4].id == 6);
+    CHECK(redone.at("created_objects") == created);
+
+    // Undo once more and a later insert reuses nothing: ids only move forward.
+    REQUIRE(ol1Revert(harness, false).at("status") == "committed");
+    const auto again = harness.commit({{"op", "duplicate"}, {"object_id", 2}});
+    REQUIRE(again.at("status") == "committed");
+    CHECK(again.at("affected_authoring_ids") == nlohmann::ordered_json::array({7, 8}));
+}
+
+// OL-1 acceptance 1, names. A copy takes the smallest free `_copy<N>`, in the
+// whole scene and among the copies of one operation.
+TEST_CASE("OL-1 duplicate avoids every name the scene already uses",
+          "[ol1][journal][duplicate][names]") {
+    Harness harness;
+    REQUIRE(harness.commit({{"op", "spawn"},
+                            {"scene_id", "main"},
+                            {"object", {{"name", "Leaf_copy1"},
+                                        {"components", Json::array()}}}})
+                .at("status") == "committed");
+    const auto first = harness.commit({{"op", "duplicate"}, {"object_id", 2}});
+    REQUIRE(first.at("status") == "committed");
+    CHECK(first.at("created_objects")[0].at("name") == "Middle_copy1");
+    CHECK(first.at("created_objects")[1].at("name") == "Leaf_copy2");
+    const auto second = harness.commit({{"op", "duplicate"}, {"object_id", 2}});
+    REQUIRE(second.at("status") == "committed");
+    CHECK(second.at("created_objects")[0].at("name") == "Middle_copy2");
+    CHECK(second.at("created_objects")[1].at("name") == "Leaf_copy3");
+    // The copy of a copy is named after the copy.
+    const auto third = harness.commit(
+        {{"op", "duplicate"},
+         {"object_id", first.at("created_objects")[0].at("object_id")}});
+    REQUIRE(third.at("status") == "committed");
+    CHECK(third.at("created_objects")[0].at("name") == "Middle_copy1_copy1");
+    CHECK(third.at("created_objects")[1].at("name") == "Leaf_copy2_copy1");
+    for (const auto &object : ol1Objects(harness)) {
+        if (object.name == "Leaf_copy2_copy1") CHECK(object.parent == "Middle_copy1_copy1");
+    }
+
+    // An explicit declaration_index places the block; out of range is refused.
+    const auto placed = harness.commit(
+        {{"op", "duplicate"}, {"object_id", 4}, {"declaration_index", 0}});
+    REQUIRE(placed.at("status") == "committed");
+    CHECK(placed.at("created_objects")[0].at("declaration_index") == 0);
+    CHECK(placed.at("created_objects")[0].at("name") == "Other_copy1");
+    const auto outside = harness.enqueue(
+        {{"op", "duplicate"}, {"object_id", 4}, {"declaration_index", 999}});
+    CHECK(outside.at("status") == "rejected");
+    CHECK(outside.at("error").at("code") == "schema_violation");
+    const auto missing = harness.enqueue({{"op", "duplicate"}, {"object_id", 999}});
+    CHECK(missing.at("status") == "rejected");
+    CHECK(missing.at("error").at("code") == "closure_unresolvable");
+    // Like spawn and reparent, an unknown field is an invalid request.
+    CHECK_THROWS_AS(harness.enqueue({{"op", "duplicate"}, {"object_id", 4}, {"name", "Chosen"}}),
+                    std::invalid_argument);
+}
+
+// OL-1 acceptance 4 / PG-1: duplicate crosses the gate spawn does. A copy of an
+// object with a collider -- or of a parent whose child has one -- is refused
+// by the physics module's name in a build without physics, before the document
+// changes. The ON build is the contrast.
+TEST_CASE("OL-1 duplicate refuses a copied collider by the physics module's name",
+          "[pg1][ol1][journal][physics]") {
+    Harness harness;
+    const auto before = harness.target.document.encodeSemantic();
+    const Json leaf{{"op", "duplicate"}, {"object_id", 3}};
+    const Json middle{{"op", "duplicate"}, {"object_id", 2}};
+#if PELICAN_WITH_PHYSICS
+    REQUIRE(harness.commit(leaf).at("status") == "committed");
+    REQUIRE(harness.commit(middle).at("status") == "committed");
+    REQUIRE(harness.target.document.encodeSemantic() != before);
+#else
+    for (const auto &operation : {leaf, middle}) {
+        CAPTURE(operation.dump());
+        const auto rejected = harness.enqueue(operation);
+        REQUIRE(rejected.at("status") == "rejected");
+        REQUIRE(rejected.at("error").at("code") == "physics.module_unavailable@1");
+        REQUIRE(rejected.at("error").at("payload").at("slot") == "collider");
+        REQUIRE(rejected.at("error").at("payload").at("requirement") == "physics");
+        std::cout << "PG1_EDIT op=duplicate object=" << operation.at("object_id")
+                  << " state=OFF code="
+                  << rejected.at("error").at("code").get<std::string>() << '\n';
+    }
+    REQUIRE(harness.target.document.encodeSemantic() == before);
+    // An object without a collider is still copied.
+    REQUIRE(harness.commit({{"op", "duplicate"}, {"object_id", 4}}).at("status") ==
+            "committed");
+#endif
+}
+
 TEST_CASE("WP378 journal maps typed decode failure and consumes canonical success",
           "[WP378][journal][component-codec][mutation]") {
     Harness harness;

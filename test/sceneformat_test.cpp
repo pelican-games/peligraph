@@ -1,3 +1,4 @@
+#include "../src/core/communication/editorjournal.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/componentinfo.hpp"
 #include "../src/core/ecs/predefined.hpp"
@@ -506,6 +507,113 @@ TEST_CASE("Saving after removing an earlier object preserves the graph owner on 
             REQUIRE(loader.graphOwnerObject(GraphInstanceOwner{"main", 2}) == hero);
             REQUIRE(loader.graphOwnerObject(GraphInstanceOwner{"main", 3}) == loader.objectId("Other"));
             REQUIRE_FALSE(loader.graphOwnerObject(GraphInstanceOwner{"main", 1}));
+        }
+    } catch (...) {
+        std::filesystem::remove_all(temp_dir);
+        throw;
+    }
+    std::filesystem::remove_all(temp_dir);
+}
+
+// OL-1 acceptance 2. A legacy scene hands out ids by position, and the graph
+// owner names Hero by that position. The editor journal then duplicates an
+// object declared before Hero and inserts another at the front, SAVE0 writes
+// the scene, and a fresh loader reopens it: the owner still resolves to Hero.
+// Without the ids in the file, Hero's position (and so its id) would move.
+TEST_CASE("OL-1 an owner keeps its object after duplicating and inserting before it, saving and reopening",
+          "[ol1][scene-format][authoring][save][graph-owner][persistent-identity]") {
+    ensureLogger();
+    const auto temp_dir = makeTempProjectDir();
+    try {
+        const auto source = nlohmann::json::parse(R"({"schema":"pelican.scene","version":2,
+            "scenes":{"main":{"objects":[
+            {"name":"Before","components":[{"name":"transform"}]},
+            {"name":"Hero","components":[{"name":"transform"}]},
+            {"name":"Other","components":[{"name":"transform"}]}]}}})");
+        writeText(temp_dir / "scene.json", source.dump());
+        writeText(temp_dir / "passes/main_rendering_config.json",
+                  R"({"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":{}})");
+        const nlohmann::json project{
+            {"schema", "pelican.project"}, {"version", 1},
+            {"engine_min_version", "0.1.0"},
+            {"basic_config", {{"default_scene_id", "main"}, {"scene_data_json", "scene.json"}}}};
+        const GraphInstanceOwner hero_owner{"main", 2};
+        std::uint64_t copy_id = 0;
+        std::uint64_t inserted_id = 0;
+        {
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(temp_dir, false);
+            GET_MODULE(ProjectSource).setProjectData(project.dump());
+            auto &config = GET_MODULE(ProjectBasicConfig);
+            const auto initial = AuthoringSceneAuthority::query(config.sceneDocument());
+            REQUIRE(initial.front().objects.at(1).name == "Hero");
+            REQUIRE(initial.front().objects.at(1).authoring_object_id.value == hero_owner.object);
+
+            ProjectBasicConfigProjectionTarget target{config};
+            EditorEditCoordinator edits{EditorEditRuntimeDependencies{
+                .document = [&]() -> const AuthoringSceneDocument & {
+                    return config.sceneDocument();
+                },
+                .current_scene_id = [] { return std::string{"main"}; },
+                .execute = [&](const EditorEditExecutionRequest &request) {
+                    EditorProjectionTransaction transaction{target, request.base_revision};
+                    std::vector<EditorProjectionAdapter *> adapters;
+                    return transaction.commit(request.commands, adapters);
+                },
+                .gate = [] { return EditorGateObservation{}; },
+            }};
+            const auto actor =
+                edits.openSession({{"display_name", "OL-1 owner"}}).at("actor_id");
+            const auto commit = [&](nlohmann::json operation) {
+                const auto accepted = edits.enqueue(
+                    {{"actor_id", actor},
+                     {"base_revision", config.sceneDocument().revision().value},
+                     {"operations", nlohmann::json::array({std::move(operation)})}});
+                REQUIRE(accepted.at("status") == "accepted");
+                edits.commitPending();
+                const auto result = edits.getResult({{"ticket", accepted.at("ticket")}});
+                INFO(result.dump(2));
+                REQUIRE(result.at("status") == "committed");
+                return result;
+            };
+            const auto duplicated = commit({{"op", "duplicate"}, {"object_id", 1}});
+            copy_id = duplicated.at("created_objects").at(0).at("object_id").get<std::uint64_t>();
+            CHECK(duplicated.at("created_objects").at(0).at("declaration_index") == 1);
+            const auto spawned = commit(
+                {{"op", "spawn"},
+                 {"scene_id", "main"},
+                 {"declaration_index", 0},
+                 {"object", {{"name", "Inserted"},
+                             {"components", nlohmann::json::array({{{"name", "transform"}}})}}}});
+            inserted_id = spawned.at("created_objects").at(0).at("object_id").get<std::uint64_t>();
+            // Hero is now fourth in the file; by position it would be id 4.
+            const auto edited = AuthoringSceneAuthority::query(config.sceneDocument());
+            REQUIRE(edited.front().objects.at(3).name == "Hero");
+            REQUIRE(edited.front().objects.at(3).authoring_object_id.value == hero_owner.object);
+
+            // The production SAVE0 path, the one save_scene runs.
+            (void)config.saveSceneDocument();
+            const auto saved = readJson(temp_dir / "scene.json");
+            const auto &objects = saved.at("scenes").at("main").at("objects");
+            REQUIRE(objects.at(3).at("name") == "Hero");
+            CHECK(objects.at(3).at("authoring_object_id") == hero_owner.object);
+        }
+        {
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(temp_dir, false);
+            GET_MODULE(ProjectSource).setProjectData(project.dump());
+            GET_MODULE(ECSPredefinedRegistration).reg();
+            auto &loader = GET_MODULE(SceneLoader);
+            test_support::loadScene(loader, SceneId{"main"});
+            const auto hero = loader.objectId("Hero");
+            REQUIRE(hero);
+            CHECK(loader.graphOwnerObject(hero_owner) == hero);
+            CHECK(loader.graphOwnerObject(GraphInstanceOwner{"main", 1}) ==
+                  loader.objectId("Before"));
+            CHECK(loader.graphOwnerObject(GraphInstanceOwner{"main", copy_id}) ==
+                  loader.objectId("Before_copy1"));
+            CHECK(loader.graphOwnerObject(GraphInstanceOwner{"main", inserted_id}) ==
+                  loader.objectId("Inserted"));
         }
     } catch (...) {
         std::filesystem::remove_all(temp_dir);

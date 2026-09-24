@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -1270,6 +1271,148 @@ PreparedOperation prepareReparent(const Json &raw,
                               {"descendants", std::move(descendants)},
                               {"preserve", preserve_name}},
     };
+}
+
+namespace {
+
+// `<base>_copy<N>` with the smallest N the scene does not use yet.
+std::string copyName(std::string_view base,
+                     const std::unordered_set<std::string> &taken) {
+    for (std::uint64_t suffix = 1;; ++suffix) {
+        auto candidate = std::string{base} + "_copy" + std::to_string(suffix);
+        if (!taken.contains(candidate)) return candidate;
+    }
+}
+
+} // namespace
+
+// OL-1: copy an object and its descendants. The copies keep their relative
+// declaration order as one contiguous block, by default right after the source
+// subtree. Each copy is renamed `<name>_copy<N>` and parent links inside the
+// subtree follow the renames; the root copy keeps the source's parent. A
+// prefab instance is copied as an instance under a fresh instance_id, which the
+// journal records. graph.instance owners are not copied: they name the source's
+// AuthoringObjectId, which the copy does not take.
+PreparedOperation prepareDuplicate(const Json &raw,
+                                   const AuthoringSceneDocument &document) {
+    constexpr auto context = "duplicate";
+    requireOnly(raw, {"op", "object_id", "declaration_index"}, context);
+    const auto object_id = AuthoringObjectId{
+        exactUnsigned(raw.at("object_id"), "duplicate object_id", true)};
+    const auto root = requireObjectLocation(document, object_id);
+    auto subtree = subtreeObjects(document, root);
+    std::sort(subtree.begin(), subtree.end(),
+              [](const auto &left, const auto &right) {
+                  return left.object_index < right.object_index;
+              });
+
+    std::unordered_set<std::string> names;
+    std::unordered_set<std::string> instance_ids;
+    std::size_t scene_size = 0;
+    for (const auto &object : objectLocations(document)) {
+        if (object.scene_id != root.scene_id) continue;
+        ++scene_size;
+        if (object.name) names.insert(*object.name);
+        const auto prefab = object.authored.find("prefab");
+        if (prefab == object.authored.end() || !prefab->is_object()) continue;
+        const auto instance = prefab->find("instance_id");
+        if (instance != prefab->end() && instance->is_string()) {
+            instance_ids.insert(instance->get<std::string>());
+        }
+    }
+
+    auto declaration_index = subtree.back().object_index + 1U;
+    if (const auto found = raw.find("declaration_index"); found != raw.end()) {
+        declaration_index = static_cast<std::size_t>(
+            exactUnsigned(*found, "duplicate declaration_index"));
+        if (declaration_index > scene_size) {
+            editFailure(EditorEditErrorCode::schema_violation,
+                        {{"object", object_id.value}, {"slot", nullptr},
+                         {"field_path", "/declaration_index"},
+                         {"detail", "declaration index is outside the scene"}},
+                        "duplicate declaration index is outside the scene");
+        }
+    }
+
+    std::unordered_map<std::string, std::string> renamed;
+    for (const auto &object : subtree) {
+        if (!object.name) continue;
+        auto copy = copyName(*object.name, names);
+        names.insert(copy);
+        renamed.emplace(*object.name, std::move(copy));
+    }
+
+    PreparedOperation result;
+    OrderedJson objects = OrderedJson::array();
+    OrderedJson new_instance_ids = OrderedJson::array();
+    OrderedJson name_reservations = OrderedJson::array();
+    OrderedJson declaration_indices = OrderedJson::array();
+    for (std::size_t index = 0; index < subtree.size(); ++index) {
+        const auto &object = subtree[index];
+        Json copy = object.authored;
+        if (object.name) {
+            copy["name"] = renamed.at(*object.name);
+            name_reservations.push_back(renamed.at(*object.name));
+            result.read_set.push_back("/scenes/" + root.scene_id +
+                                      "/name_reservations/" +
+                                      renamed.at(*object.name));
+        }
+        if (object.parent) {
+            if (const auto parent = renamed.find(*object.parent);
+                parent != renamed.end()) {
+                copy["parent"] = parent->second;
+            }
+        }
+        if (const auto prefab = copy.find("prefab");
+            prefab != copy.end() && prefab->is_object()) {
+            const auto instance = prefab->find("instance_id");
+            if (instance != prefab->end() && instance->is_string()) {
+                auto fresh = copyName(instance->get<std::string>(), instance_ids);
+                if (!isPrefabIdentifier(fresh)) {
+                    editFailure(
+                        EditorEditErrorCode::schema_violation,
+                        {{"object", object.object_id.value}, {"slot", nullptr},
+                         {"field_path", "/prefab/instance_id"},
+                         {"detail", "the copy's instance_id would not be a valid "
+                                    "prefab identifier: " + fresh}},
+                        "duplicate cannot name the copied prefab instance");
+                }
+                instance_ids.insert(fresh);
+                (*prefab)["instance_id"] = fresh;
+                new_instance_ids.push_back(
+                    {{"source_object_id", object.object_id.value},
+                     {"instance_id", std::move(fresh)}});
+            }
+        }
+        const auto target_index = declaration_index + index;
+        declaration_indices.push_back(target_index);
+        result.read_set.push_back("/authoring_objects/" +
+                                  std::to_string(object.object_id.value));
+        result.commands.push_back(
+            makeInsertObjectCommand(root.scene_id, target_index, copy));
+        objects.push_back({{"source_object_id", object.object_id.value},
+                           {"object", std::move(copy)}});
+    }
+
+    result.forward = {{"op", context},
+                      {"source_object_id", object_id.value},
+                      {"scene_id", root.scene_id},
+                      {"declaration_index", declaration_index},
+                      {"objects", std::move(objects)}};
+    if (!new_instance_ids.empty()) {
+        result.forward["new_instance_ids"] = std::move(new_instance_ids);
+    }
+    result.inverse = {{"op", "remove_objects"},
+                      {"object_ids", OrderedJson::array()}};
+    result.stable_target = "/scenes/" + root.scene_id + "/objects";
+    result.write_set = {"/scenes/" + root.scene_id + "/objects"};
+    result.structural_domain = {{"kind", "object_existence"},
+                                {"scene_id", root.scene_id},
+                                {"source", object_id.value},
+                                {"objects", OrderedJson::array()},
+                                {"name_reservations", std::move(name_reservations)},
+                                {"declaration_indices", std::move(declaration_indices)}};
+    return result;
 }
 
 } // namespace EditorJournalInternal

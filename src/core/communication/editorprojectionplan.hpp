@@ -211,6 +211,17 @@ struct EditorRestoreObjectsOperation {
                            const EditorRestoreObjectsOperation &) = default;
 };
 
+// OL-1: `duplicate` creates a copy of an object and its descendants.  The
+// created objects project like a restore: each one takes the object lifecycle
+// routes.  The source is only read, so it is not routed.
+struct EditorDuplicateOperation {
+    AuthoringObjectId source_object_id{};
+    std::vector<EditorRestoreObject> objects;
+    nlohmann::ordered_json wire;
+    friend bool operator==(const EditorDuplicateOperation &,
+                           const EditorDuplicateOperation &) = default;
+};
+
 struct EditorSetPrefabParameterOperation {
     AuthoringObjectId object_id{};
     std::string scene_id;
@@ -251,9 +262,10 @@ using EditorCanonicalOperation = std::variant<
     EditorSpawnOperation, EditorDestroyOperation,
     EditorRemoveObjectsOperation, EditorRestoreObjectsOperation,
     EditorSetPrefabParameterOperation, EditorUnsetPrefabParameterOperation,
-    EditorUnpackPrefabOperation, EditorRestorePrefabOperation>;
+    EditorUnpackPrefabOperation, EditorRestorePrefabOperation,
+    EditorDuplicateOperation>;
 
-// Terminal guard for the `if constexpr` chains that hand-expand the twelve
+// Terminal guard for the `if constexpr` chains that hand-expand the thirteen
 // alternatives above.  Without an `else` an alternative added to the variant
 // compiles and is silently ignored at run time; with
 // `else static_assert(editorCanonicalOperationUnhandled<Operation>)` every such

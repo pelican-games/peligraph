@@ -6,6 +6,7 @@
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
+#include "../src/core/loader/scene.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/material/projectmaterialasset.hpp"
 #include "../src/core/material/materialcontainer.hpp"
@@ -28,6 +29,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <sstream>
@@ -376,6 +378,136 @@ TEST_CASE("GP-5 a cube spawned over RPC into a blank project is drawn, saved and
         (void)rpc.result("step_frame");
         const auto reopened = rpc.frame(capture);
         CHECK(differingPixels(background, reopened) > 64);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+}
+
+// OL-1 acceptance 1-3 through the running engine: duplicate over RPC places a
+// copy of Crate between Crate and Hero, the copy is drawn and goes away and
+// comes back with undo and redo, save_scene writes the file, and a fresh engine
+// reopens it with the graph owner that named Hero still on Hero. The scene
+// starts without ids, so Hero's id is its position until the first save.
+TEST_CASE("OL-1 a copy duplicated before a graph owner over RPC survives save and reopen without moving the owner",
+          "[ol1][duplicate][rpc][graph-owner][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("ol1_duplicate");
+    const auto root = makeBlankProject(dir.root);
+    auto scene = Json::parse(readFile(root / "scenes/main.scene.json"));
+    auto &objects = scene.at("scenes").at("default_scene").at("objects");
+    REQUIRE(objects.size() == 2);
+    const auto primitive = [](std::string name, std::string model, double x) {
+        return Json{{"name", std::move(name)},
+                    {"components",
+                     Json::array({{{"name", "transform"},
+                                   {"pos", {x, 0.0, 0.0}},
+                                   {"rotation", {0.0, 0.0, 0.0, 1.0}},
+                                   {"scale", {0.5, 0.5, 0.5}}},
+                                  {{"name", "simplemodelview"}, {"model", std::move(model)}}})}};
+    };
+    objects.push_back(primitive("Crate", "engine://primitives/cube", -0.5));
+    objects.push_back(primitive("Hero", "engine://primitives/sphere", 0.5));
+    writeFile(root / "scenes/main.scene.json", scene.dump(2));
+    const GraphInstanceOwner hero_owner{"default_scene", 4};
+    const auto capture = dir.root / "capture.png";
+
+    const auto treeObject = [](const Json &tree, std::string_view name) {
+        for (const auto &object : tree.at("objects"))
+            if (object.value("name", std::string{}) == name) return object;
+        return Json{};
+    };
+
+    std::uint64_t copy_id = 0;
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("step_frame");
+        const auto initial_tree = rpc.result("scene_tree");
+        REQUIRE(treeObject(initial_tree, "Hero").at("authoring_object_id") == hero_owner.object);
+        REQUIRE(treeObject(initial_tree, "Crate").at("authoring_object_id") == 3);
+        auto &loader = GET_MODULE(SceneLoader);
+        REQUIRE(loader.graphOwnerObject(hero_owner) == loader.objectId("Hero"));
+        (void)rpc.frame(capture);
+
+        const auto actor = rpc.result("open_editor_session", {{"display_name", "OL-1"}}).at("actor_id")
+                               .get<std::uint64_t>();
+        const auto duplicated =
+            rpc.edit(actor, Json::array({{{"op", "duplicate"}, {"object_id", 3}}}));
+        INFO(duplicated.dump(2));
+        REQUIRE(duplicated.at("status") == "committed");
+        REQUIRE(duplicated.at("created_objects").size() == 1);
+        const auto &created = duplicated.at("created_objects").at(0);
+        CHECK(created.at("name") == "Crate_copy1");
+        CHECK(created.at("declaration_index") == 3);
+        CHECK(created.at("source_object_id") == 3);
+        copy_id = created.at("object_id").get<std::uint64_t>();
+        CHECK(copy_id == 5);
+        std::cout << "OL1_DUPLICATE_RESULT " << duplicated.dump() << '\n';
+
+        // scene_tree carries the ids; Hero moved to index 4 and kept id 4.
+        const auto tree = rpc.result("scene_tree");
+        CHECK(treeObject(tree, "Crate_copy1").at("authoring_object_id") == copy_id);
+        CHECK(treeObject(tree, "Crate_copy1").at("declaration_index") == 3);
+        CHECK(treeObject(tree, "Hero").at("authoring_object_id") == hero_owner.object);
+        CHECK(treeObject(tree, "Hero").at("declaration_index") == 4);
+        // The name table (objectId) is filled by scene load only, for spawn as
+        // for duplicate; the live copy is reached through its authoring id.
+        const GraphInstanceOwner copy_owner{"default_scene", copy_id};
+        const auto live_copy = loader.graphOwnerObject(copy_owner);
+        REQUIRE(live_copy);
+        CHECK(live_copy != loader.objectId("Crate"));
+        CHECK(loader.graphOwnerObject(hero_owner) == loader.objectId("Hero"));
+        // The copy is drawn by the same lifecycle route a spawn takes.
+        (void)rpc.frame(capture);
+
+        const auto revert = [&](std::string_view method) {
+            const auto revision = rpc.result("get_scene_revision").at("scene_revision");
+            const auto accepted =
+                rpc.result(method, {{"actor_id", actor}, {"base_revision", revision}});
+            REQUIRE(accepted.at("status") == "accepted");
+            (void)rpc.result("step_frame");
+            const auto result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+            INFO(result.dump(2));
+            REQUIRE(result.at("status") == "committed");
+            return result;
+        };
+        (void)revert("undo");
+        CHECK_FALSE(loader.graphOwnerObject(copy_owner));
+        CHECK(treeObject(rpc.result("scene_tree"), "Crate_copy1").is_null());
+        (void)rpc.frame(capture);
+        const auto redone = revert("redo");
+        CHECK(redone.at("created_objects") == duplicated.at("created_objects"));
+        CHECK(loader.graphOwnerObject(copy_owner));
+        CHECK(treeObject(rpc.result("scene_tree"), "Crate_copy1").at("authoring_object_id") ==
+              copy_id);
+        (void)rpc.frame(capture);
+
+        const auto saved = rpc.result("save_scene");
+        CHECK(saved.at("byte_count").get<std::uint64_t>() != 0);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+
+    const auto saved_scene = Json::parse(readFile(root / "scenes/main.scene.json"));
+    const auto &saved_objects = saved_scene.at("scenes").at("default_scene").at("objects");
+    REQUIRE(saved_objects.size() == 5);
+    CHECK(saved_objects.at(3).at("name") == "Crate_copy1");
+    CHECK(saved_objects.at(4).at("name") == "Hero");
+
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("step_frame");
+        const auto tree = rpc.result("scene_tree");
+        CHECK(treeObject(tree, "Hero").at("authoring_object_id") == hero_owner.object);
+        CHECK(treeObject(tree, "Crate_copy1").at("authoring_object_id") == copy_id);
+        auto &loader = GET_MODULE(SceneLoader);
+        REQUIRE(loader.objectId("Hero"));
+        CHECK(loader.graphOwnerObject(hero_owner) == loader.objectId("Hero"));
+        CHECK(loader.graphOwnerObject(GraphInstanceOwner{"default_scene", copy_id}) ==
+              loader.objectId("Crate_copy1"));
         GET_MODULE(VulkanManageCore).waitIdle();
     }
 }
