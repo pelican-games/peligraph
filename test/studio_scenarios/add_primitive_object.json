@@ -1,0 +1,451 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "add_primitive_object",
+  "description": "G-2: a Blank pipeline project (F-2) gets a shape without an asset. Add Object > Cube sends one spawn of engine://primitives/cube; the Outliner shows Cube and selects it, and the Inspector's model field reads the primitive. Add material pass... (G-1, Create missing targets) and present reading its output (F-6) put a grey box on screen; the pass is Deferred geometry, not Forward opaque, because the primitive's default material routes to deferred_geometry and nothing draws it in a forward pass until G-4. A second Cube is named Cube_001.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up, so the switch to the new project is something that happens",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout: the panel layout is the desktop's, saved by whichever Studio closed last",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "File > New Project...",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts, never the repository",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name",
+      "cmd": "type",
+      "name": "pelican.newProject.name",
+      "text": "primitive_project"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed, because the template is on disk",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the new project's frame plan has its one pass",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine answers editor RPC and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "before: present's gradient, read at the middle of the viewport",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/before_gradient.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "remember": "gradient_middle"
+    },
+    {
+      "label": "the Outliner has the template's objects before anything is added",
+      "cmd": "wait",
+      "name": "pelican.outliner",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the blank scene holds the template's two objects, the camera and the light",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects.$len",
+      "value": 2
+    },
+    {
+      "label": "Add Object > Cube, fired by name as the Outliner's right-click menu and the Scene toolbar both hold it",
+      "cmd": "action",
+      "name": "pelican.outliner.addObject.cube"
+    },
+    {
+      "label": "the engine has a third object, named Cube",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects[2].name",
+      "value": "Cube",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the new object is selected: the Inspector names it",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Cube\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "and the Outliner holds a row named Cube",
+      "expect": "result",
+      "command": {
+        "cmd": "select",
+        "name": "pelican.outliner",
+        "text": "Cube"
+      },
+      "path": "text",
+      "value": "Cube"
+    },
+    {
+      "label": "the Inspector's model field reads the engine primitive, by its built-in name",
+      "cmd": "wait",
+      "name": "pelican.inspectorModelChoice",
+      "text": "Cube (built-in)",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the model field lists the primitives: choosing the one it holds is a choice that exists",
+      "expect": "result",
+      "command": {
+        "cmd": "select",
+        "name": "pelican.inspectorModelChoice",
+        "text": "Cube (built-in)"
+      },
+      "path": "index",
+      "value": 0
+    },
+    {
+      "label": "File > Save Scene",
+      "cmd": "action",
+      "name": "pelican.file.saveScene"
+    },
+    {
+      "label": "the save is done",
+      "cmd": "wait",
+      "name": "pelican.inspectorNotice",
+      "contains": "Scene saved",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the saved scene holds the spawn's shape: a transform and the primitive's reference",
+      "file": "contains",
+      "path": "{artifacts}/primitive_project/scenes/main.scene.json",
+      "text": "engine://primitives/cube",
+      "value": true
+    },
+    {
+      "label": "Add material pass..., fired by name with nothing picked",
+      "cmd": "action",
+      "name": "pelican.framePlan.addMaterialPass"
+    },
+    {
+      "label": "the form is open",
+      "cmd": "wait",
+      "name": "pelican.materialPassForm.name",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Forward opaque is the contract it opens on",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.contract",
+      "value": "Forward opaque"
+    },
+    {
+      "label": "Deferred geometry instead, until G-4: the primitive's default grey is OpenPBR base, which routes to deferred_geometry, and a forward_opaque pass does not draw it (tried: the screen stays black)",
+      "cmd": "select",
+      "name": "pelican.materialPassForm.contract",
+      "text": "Deferred geometry (G-buffer)"
+    },
+    {
+      "label": "the pass is named after the contract, with nothing typed",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.name",
+      "value": "deferred_geometry"
+    },
+    {
+      "label": "Create missing targets",
+      "cmd": "click",
+      "name": "pelican.materialPassForm.createMissing"
+    },
+    {
+      "label": "the albedo output is a new gbuffer_albedo",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.target.albedo",
+      "value": "gbuffer_albedo"
+    },
+    {
+      "label": "Save: edit_render_targets, then add_authored_pass",
+      "cmd": "click",
+      "name": "pelican.materialPassForm.ok"
+    },
+    {
+      "label": "the form closed",
+      "cmd": "wait",
+      "name": "pelican.materialPassForm.name",
+      "visible": false,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the engine runs deferred_geometry first",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[0].name",
+      "value": "deferred_geometry",
+      "retry_ms": 120000
+    },
+    {
+      "label": "the canvas draws it, writing gbuffer_albedo",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#deferred_geometry/out:gbuffer_albedo",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the Cube is still in the running scene after the frame plan changed",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects[2].name",
+      "value": "Cube",
+      "retry_ms": 60000
+    },
+    {
+      "label": "present.frag passes input 0 through, typed in the author's own editor",
+      "file": "write",
+      "path": "{artifacts}/primitive_project/shaders/present.frag",
+      "text": "#version 460\n#extension GL_GOOGLE_include_directive : require\n#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\nPELICAN_DECLARE_INPUT_0(in_albedo);  // gbuffer_albedo\n\nvoid main() {\n    outColor = PELICAN_TEXTURE_2D_0(in_albedo, inUV);\n}\n"
+    },
+    {
+      "label": "show the whole graph so both ends of the drag are on screen",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
+    },
+    {
+      "label": "present is drawn",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "drag gbuffer_albedo from deferred_geometry onto present: one edit_preset_pass on the root",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.framePlanLogicalView::node_socket#deferred_geometry/out:gbuffer_albedo"
+      },
+      "to": {
+        "name": "pelican.framePlanLogicalView::node#present"
+      },
+      "steps": 8
+    },
+    {
+      "label": "the canvas draws the read",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#present/in:gbuffer_albedo",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the viewport now holds a shape: a handful of colours, not a gradient's thousands",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/after_box.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "distinct_colors",
+      "op": "le",
+      "value": 64,
+      "retry_ms": 120000
+    },
+    {
+      "label": "read the background in a corner",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/after_box.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[1]",
+      "remember": "background"
+    },
+    {
+      "label": "the box covers the middle, in a colour the background is not",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/after_box.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "background"
+    },
+    {
+      "label": "and not the gradient's colour there before",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/after_box.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "gradient_middle"
+    },
+    {
+      "label": "Add Object > Cube a second time",
+      "cmd": "action",
+      "name": "pelican.outliner.addObject.cube"
+    },
+    {
+      "label": "the engine has a fourth object, numbered as Blender numbers it, with _ where Blender writes . (the scene format takes [a-zA-Z0-9_] names only)",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects[3].name",
+      "value": "Cube_001",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and it is the one selected",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Cube_001\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the Outliner holds a row named Cube_001",
+      "expect": "result",
+      "command": {
+        "cmd": "select",
+        "name": "pelican.outliner",
+        "text": "Cube_001"
+      },
+      "path": "text",
+      "value": "Cube_001"
+    },
+    {
+      "label": "Save again, so closing Studio has nothing to ask",
+      "cmd": "action",
+      "name": "pelican.file.saveScene"
+    },
+    {
+      "label": "the second save is done",
+      "cmd": "wait",
+      "name": "pelican.inspectorNotice",
+      "contains": "Scene saved",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "and the saved scene names the second cube",
+      "file": "contains",
+      "path": "{artifacts}/primitive_project/scenes/main.scene.json",
+      "text": "Cube_001",
+      "value": true
+    },
+    {
+      "label": "a picture of the window for the reader of this report",
+      "expect": "screenshot",
+      "path": "add_primitive_object_window.png"
+    }
+  ]
+}

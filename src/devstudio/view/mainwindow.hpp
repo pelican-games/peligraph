@@ -14,9 +14,12 @@
 #include <QPointer>
 
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <string>
+#include <utility>
 
 class QDockWidget;
 class QAction;
@@ -41,6 +44,7 @@ class GraphCanvasWidget;
 class FullscreenPassWidget;
 class InspectorWidget;
 class RenderFeaturesWidget;
+enum class AddObjectKind : std::uint8_t;
 
 class MainWindow : public QMainWindow {
   public:
@@ -121,6 +125,12 @@ class MainWindow : public QMainWindow {
     bool close_authorized_ = false;
     QPointer<QMessageBox> navigation_prompt_;
     QPointer<QDialog> new_project_dialog_;
+    // G-2: Add object. One menu, shown by the Outliner's right click and by
+    // the Scene toolbar, so a scenario fires the same four named actions.
+    QMenu *add_object_menu_ = nullptr;
+    // The object just spawned, by scene and name, until the Outliner shows
+    // it and it can be selected there.
+    std::optional<std::pair<std::string, std::string>> pending_spawn_selection_;
 
     void createWorkspace();
     void createMenus();
@@ -143,6 +153,10 @@ class MainWindow : public QMainWindow {
     void cancelNavigation(const QString &message = {});
     void sceneStateChanged();
     void populateOutliner();
+    void createAddObjectMenu();
+    void addObject(AddObjectKind kind);
+    // Selects the pending spawned object once the Outliner holds it.
+    void selectSpawnedObject();
     void requestOutlinerRefresh();
     // The modal poll runs while, and only while, a modal transform could be
     // under way. Called wherever one of the three facts it reads can move.

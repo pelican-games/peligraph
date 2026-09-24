@@ -405,12 +405,118 @@ makeInspectorWidgetPlan(const Json &component,
     return result;
 }
 
+const std::vector<std::string> &enginePrimitiveModelReferences() {
+    static const std::vector<std::string> references{
+        "engine://primitives/cube",
+        "engine://primitives/plane",
+        "engine://primitives/sphere",
+    };
+    return references;
+}
+
+std::string_view addObjectBaseName(AddObjectKind kind) {
+    switch (kind) {
+    case AddObjectKind::Empty: return "Empty";
+    case AddObjectKind::Cube: return "Cube";
+    case AddObjectKind::Plane: return "Plane";
+    case AddObjectKind::Sphere: return "Sphere";
+    }
+    throw std::invalid_argument("unknown AddObjectKind");
+}
+
+std::string uniqueObjectName(std::string_view base,
+                             const std::vector<std::string> &taken) {
+    const auto used = [&taken](const std::string &name) {
+        return std::find(taken.begin(), taken.end(), name) != taken.end();
+    };
+    std::string name{base};
+    if (!used(name)) return name;
+    for (unsigned suffix = 1;; ++suffix) {
+        std::string number = std::to_string(suffix);
+        if (number.size() < 3) number.insert(0, 3 - number.size(), '0');
+        name = std::string{base} + "_" + number;
+        if (!used(name)) return name;
+    }
+}
+
+nlohmann::json addObjectDeclaration(AddObjectKind kind, const std::string &name) {
+    Json components = Json::array({
+        {{"name", "transform"},
+         {"pos", Json::array({0.0, 0.0, 0.0})},
+         {"rotation", Json::array({0.0, 0.0, 0.0, 1.0})},
+         {"scale", Json::array({1.0, 1.0, 1.0})}},
+    });
+    if (kind != AddObjectKind::Empty) {
+        const auto index = static_cast<std::size_t>(kind) - 1;
+        components.push_back({{"name", "simplemodelview"},
+                              {"model", enginePrimitiveModelReferences().at(index)}});
+    }
+    return Json{{"name", name}, {"components", std::move(components)}};
+}
+
+bool isModelReferenceField(const InspectorWidgetDescriptor &descriptor) {
+    return descriptor.component_slot == "simplemodelview" &&
+           descriptor.json_pointer == "/model" &&
+           descriptor.kind == InspectorWidgetKind::StringInput;
+}
+
+std::string builtinModelLabel(std::string_view reference) {
+    constexpr std::string_view prefix = "engine://primitives/";
+    if (!reference.starts_with(prefix) || reference.size() == prefix.size()) return {};
+    std::string label{reference.substr(prefix.size())};
+    if (label.front() >= 'a' && label.front() <= 'z')
+        label.front() = static_cast<char>(label.front() - 'a' + 'A');
+    return label + " (built-in)";
+}
+
+std::vector<ModelReferenceChoice>
+modelReferenceChoices(std::string_view current,
+                      const std::vector<std::string> &engine_models) {
+    std::vector<ModelReferenceChoice> choices;
+    const auto listed = [&choices](std::string_view value) {
+        return std::any_of(choices.begin(), choices.end(),
+                           [value](const auto &choice) { return choice.value == value; });
+    };
+    for (const auto &reference : enginePrimitiveModelReferences())
+        choices.push_back({reference, builtinModelLabel(reference), true});
+    for (const auto &id : engine_models) {
+        if (id.empty() || listed(id)) continue;
+        auto label = builtinModelLabel(id);
+        const bool builtin = !label.empty();
+        choices.push_back({id, builtin ? std::move(label) : id, builtin});
+    }
+    if (!current.empty() && !listed(current)) {
+        auto label = builtinModelLabel(current);
+        const bool builtin = !label.empty();
+        choices.push_back({std::string{current},
+                           builtin ? std::move(label) : std::string{current}, builtin});
+    }
+    // Built-ins first, then the project's, each in the order given.
+    std::stable_partition(choices.begin(), choices.end(),
+                          [](const auto &choice) { return choice.builtin; });
+    return choices;
+}
+
+std::vector<std::string> modelAssetIds(const Json &list_assets_result) {
+    const auto &assets = requiredField(list_assets_result, "assets", "list_assets result");
+    if (!assets.is_array()) throw std::runtime_error("list_assets assets must be an array");
+    std::vector<std::string> ids;
+    for (const auto &asset : assets) {
+        if (!asset.is_object() || asset.value("kind", std::string{}) != "model") continue;
+        const auto id = asset.find("id");
+        if (id != asset.end() && id->is_string() && !id->get_ref<const std::string &>().empty())
+            ids.push_back(id->get<std::string>());
+    }
+    return ids;
+}
+
 struct InspectorModel::Impl {
     enum class RequestPurpose : std::uint8_t {
         OpenSession,
         SceneTree,
         Components,
         ComponentAddCandidates,
+        ModelAssets,
         RayOccurrences,
         WatchPoll,
         WatchSync,
@@ -471,6 +577,9 @@ struct InspectorModel::Impl {
     bool pending_selection_set = false;
     std::optional<InspectorObjectSnapshot> snapshot;
     std::optional<Json> component_add_candidates;
+    // G-2: the model ids list_assets reported, for the model field.
+    std::optional<std::vector<std::string>> model_assets;
+    std::uint64_t model_assets_revision = 0;
     std::optional<Json> ray_occurrences;
     std::uint64_t ray_catalog_epoch = 0;
     InspectorNotice notice;
@@ -1278,6 +1387,7 @@ struct InspectorModel::Impl {
         }
 
         snapshot = parseObject(result);
+        requestModelAssets();
         component_add_candidates.reset();
         invalidateRayOccurrences();
         ++content_revision;
@@ -1291,6 +1401,31 @@ struct InspectorModel::Impl {
             refresh_pending = false;
             requestRefresh(sync);
         }
+    }
+
+    // The model field lists the project's models. Asked again each time an
+    // object with a simplemodelview is loaded, so an asset registered since
+    // shows up on the next selection.
+    void requestModelAssets() {
+        if (!connected || !actor_id || !snapshot) return;
+        const bool has_model_view = std::any_of(
+            snapshot->components.begin(), snapshot->components.end(),
+            [](const InspectorComponentSnapshot &component) {
+                return component.name == "simplemodelview" && !component.generated;
+            });
+        if (!has_model_view) return;
+        if (std::any_of(requests.begin(), requests.end(), [](const auto &request) {
+                return request.second.purpose == RequestPurpose::ModelAssets;
+            })) return;
+        queue("list_assets", Json::object(),
+              {.purpose = RequestPurpose::ModelAssets,
+               .selection_generation = selection_generation});
+    }
+
+    void resetModelAssets() {
+        if (!model_assets) return;
+        model_assets.reset();
+        ++model_assets_revision;
     }
 
     void handleWatch(const RequestState &state, const Json &result) {
@@ -1391,6 +1526,7 @@ struct InspectorModel::Impl {
             state.purpose != RequestPurpose::Save &&
             state.purpose != RequestPurpose::EditSubmit &&
             state.purpose != RequestPurpose::EditPoll &&
+            state.purpose != RequestPurpose::ModelAssets &&
             state.selection_generation != selection_generation) {
             return;
         }
@@ -1420,6 +1556,10 @@ struct InspectorModel::Impl {
                 setNotice(InspectorNoticeKind::Information,
                           "The object changed. Refresh the Inspector and load component types again.");
             }
+            break;
+        case RequestPurpose::ModelAssets:
+            model_assets = modelAssetIds(result);
+            ++model_assets_revision;
             break;
         case RequestPurpose::RayOccurrences:
             if (snapshot && snapshot->scene_revision == state.snapshot_revision &&
@@ -1466,6 +1606,7 @@ struct InspectorModel::Impl {
             state.purpose != RequestPurpose::Save &&
             state.purpose != RequestPurpose::EditSubmit &&
             state.purpose != RequestPurpose::EditPoll &&
+            state.purpose != RequestPurpose::ModelAssets &&
             state.selection_generation != selection_generation) {
             return;
         }
@@ -1521,6 +1662,9 @@ struct InspectorModel::Impl {
         case RequestPurpose::ComponentAddCandidates:
             component_add_candidates.reset();
             break;
+        case RequestPurpose::ModelAssets:
+            // The primitives are listed without it; nothing to report.
+            return;
         case RequestPurpose::RayOccurrences:
             if (state.ray_catalog_epoch != ray_catalog_epoch) return;
             ray_occurrences.reset();
@@ -1555,6 +1699,7 @@ void InspectorModel::startSession() {
     impl_->watch_request_in_flight = false;
     impl_->watch_poll_pending = false;
     impl_->watch_sync_pending = false;
+    impl_->resetModelAssets();
     impl_->clearSnapshot();
     impl_->setNotice(InspectorNoticeKind::Information,
                      "Opening the engine editor session...");
@@ -1582,6 +1727,7 @@ void InspectorModel::stopSession(std::string message) {
     impl_->watch_request_in_flight = false;
     impl_->watch_poll_pending = false;
     impl_->watch_sync_pending = false;
+    impl_->resetModelAssets();
     impl_->clearSnapshot();
     impl_->setNotice(message.empty() ? InspectorNoticeKind::None
                                      : InspectorNoticeKind::Information,
@@ -2012,6 +2158,14 @@ const std::optional<Json> &InspectorModel::componentAddCandidates() const noexce
     return impl_->component_add_candidates;
 }
 
+const std::optional<std::vector<std::string>> &InspectorModel::modelAssets() const noexcept {
+    return impl_->model_assets;
+}
+
+std::uint64_t InspectorModel::modelAssetsRevision() const noexcept {
+    return impl_->model_assets_revision;
+}
+
 bool InspectorModel::addComponent(std::string_view key) {
     if (!impl_->component_add_candidates) return false;
     const auto &catalog = *impl_->component_add_candidates;
@@ -2043,6 +2197,33 @@ bool InspectorModel::addComponent(std::string_view key, const Json &declaration)
                    {"component", declaration}};
     impl_->enqueueEdit(std::move(operation), "Add " + std::string{key}, component_name);
     impl_->component_add_candidates.reset();
+    return true;
+}
+
+bool InspectorModel::spawnObject(const std::string &scene_id, Json object) {
+    if (!impl_->connected || !impl_->actor_id || !impl_->current_scene_revision) {
+        impl_->setNotice(InspectorNoticeKind::Error,
+                         "The engine editor session is not ready.");
+        return false;
+    }
+    if (busy() || refreshBlocked()) {
+        impl_->setNotice(InspectorNoticeKind::Error,
+                         "Finish the active inspector edit before adding an object.");
+        return false;
+    }
+    const std::string name = object.value("name", std::string{});
+    impl_->invalidateRayOccurrences();
+    // No coalesce key: a new object is its own undo step, never folded into
+    // the property edit before it.
+    impl_->queue("edit",
+                 Json{{"actor_id", *impl_->actor_id},
+                      {"base_revision", *impl_->current_scene_revision},
+                      {"operations", Json::array({Json{{"op", "spawn"},
+                                                       {"scene_id", scene_id},
+                                                       {"object", std::move(object)}}})}},
+                 {.purpose = Impl::RequestPurpose::EditSubmit,
+                  .selection_generation = impl_->selection_generation,
+                  .description = "Add " + name});
     return true;
 }
 

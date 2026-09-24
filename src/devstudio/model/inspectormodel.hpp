@@ -112,6 +112,57 @@ std::vector<InspectorWidgetDescriptor>
 makeInspectorWidgetPlan(const nlohmann::json &component,
                         std::uint64_t authoring_object_id);
 
+// G-2: Outliner "Add object". What a new object starts as: an empty (a
+// transform only) or one of the engine's primitive shapes (GP-5).
+enum class AddObjectKind : std::uint8_t {
+    Empty,
+    Cube,
+    Plane,
+    Sphere,
+};
+
+// The model references GP-5 resolves without an asset. Studio lists them
+// itself, first, so a blank project has something to choose before the
+// engine's own catalogue says anything.
+[[nodiscard]] const std::vector<std::string> &enginePrimitiveModelReferences();
+
+// "Empty", "Cube", "Plane", "Sphere".
+[[nodiscard]] std::string_view addObjectBaseName(AddObjectKind kind);
+
+// Blender's rule: the base name if it is free, else the lowest free
+// "<base>_001", "<base>_002", ... Blender writes "Cube.001"; the scene format
+// takes object names of [a-zA-Z0-9_] only, so the separator is "_".
+[[nodiscard]] std::string uniqueObjectName(std::string_view base,
+                                           const std::vector<std::string> &taken);
+
+// The `object` of one `spawn` op: a transform at the origin and, for a
+// shape, a simplemodelview naming its engine primitive.
+[[nodiscard]] nlohmann::json addObjectDeclaration(AddObjectKind kind,
+                                                  const std::string &name);
+
+// How a built-in model reads in a list: "Cube (built-in)". Empty for a
+// reference that is not under engine://primitives/.
+[[nodiscard]] std::string builtinModelLabel(std::string_view reference);
+
+struct ModelReferenceChoice {
+    std::string value;  // what simplemodelview.model is set to
+    std::string label;  // what the list shows
+    bool builtin = false;
+};
+
+// The model field of a simplemodelview offers these: the three primitives
+// first (Studio's own fallback, so they are there before and without the
+// engine's catalogue), then the models list_assets reported, then the
+// authored value when it is none of those. A primitive the engine also
+// reports (GP-5b) is listed once.
+[[nodiscard]] bool isModelReferenceField(const InspectorWidgetDescriptor &descriptor);
+[[nodiscard]] std::vector<ModelReferenceChoice>
+modelReferenceChoices(std::string_view current,
+                      const std::vector<std::string> &engine_models = {});
+
+// The model ids of a list_assets result, in its order.
+[[nodiscard]] std::vector<std::string> modelAssetIds(const nlohmann::json &list_assets_result);
+
 // Qt-independent state machine for the public editor RPC surface. The view
 // dispatches takeRpcRequests() over any transport and feeds the replies back
 // through receiveRpcResult()/receiveRpcFailure().
@@ -168,8 +219,15 @@ class InspectorModel {
     bool canRequestComponentAddCandidates() const noexcept;
     bool requestComponentAddCandidates();
     const std::optional<nlohmann::json> &componentAddCandidates() const noexcept;
+    // G-2: the model ids list_assets last reported (asked when an object
+    // with a simplemodelview is loaded); the revision moves with each answer.
+    const std::optional<std::vector<std::string>> &modelAssets() const noexcept;
+    std::uint64_t modelAssetsRevision() const noexcept;
     bool addComponent(std::string_view key);
     bool addComponent(std::string_view key, const nlohmann::json &declaration);
+    // G-2: one `edit` carrying one `spawn` op, on the scene revision last
+    // observed. Needs no selection; refused while another edit is in flight.
+    bool spawnObject(const std::string &scene_id, nlohmann::json object);
     void abortActivePreview();
     void undo();
     void redo();

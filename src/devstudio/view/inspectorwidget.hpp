@@ -34,6 +34,11 @@ class InspectorWidget final : public QWidget {
                           nlohmann::json value);
     void finishGizmoEdit(std::string_view field_key, bool commit);
     bool saveScene();
+    // G-2: Add object. One `spawn` through the Inspector's editor session, so
+    // it shares its actor, its revision and its undo stack. On refusal the
+    // reason is in *error.
+    bool spawnObject(const std::string &scene_id, nlohmann::json object,
+                     QString *error);
     bool hasUnsavedSceneChanges() const noexcept;
     bool sceneEditPending() const noexcept;
     bool sceneSaveInFlight() const noexcept;

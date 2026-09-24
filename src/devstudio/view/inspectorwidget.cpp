@@ -144,6 +144,12 @@ struct InspectorWidget::Impl {
     std::uint64_t reported_save_completion = 0;
     std::vector<std::unique_ptr<NumericBinding>> numeric_bindings;
     std::vector<std::unique_ptr<TextBinding>> text_bindings;
+    struct ModelChoice {
+        QComboBox *choices = nullptr;
+        std::string current;
+    };
+    std::vector<ModelChoice> model_choices;
+    std::uint64_t shown_model_assets_revision = 0;
     std::vector<QWidget *> direct_editors;
     std::vector<std::pair<QPushButton *, std::size_t>> remove_buttons;
     std::vector<std::pair<QWidget *, std::string>> list_controls;
@@ -454,6 +460,16 @@ struct InspectorWidget::Impl {
         return started;
     }
 
+    bool spawnObject(const std::string &scene_id, Json object,
+                     QString *error) {
+        const bool started = model.spawnObject(scene_id, std::move(object));
+        if (!started && error != nullptr)
+            *error = QString::fromStdString(model.notice().message);
+        synchronize();
+        dispatchRequests();
+        return started;
+    }
+
     void dispatchRequests() {
         for (;;) {
             auto requests = model.takeRpcRequests();
@@ -620,11 +636,46 @@ struct InspectorWidget::Impl {
             component_assets->clear();
             component_assets->setSelectionMode(selection->at("multiple").get<bool>()
                 ? QAbstractItemView::ExtendedSelection : QAbstractItemView::SingleSelection);
-            for (const auto &choice : selection->at("choices")) {
-                const auto id = QString::fromStdString(choice.at("id").get<std::string>());
+            // G-2: built-in shapes read "Cube (built-in)" and come first,
+            // above a separator. For a simplemodelview Studio lists the three
+            // itself when the engine's catalogue does not (before GP-5b), and
+            // once each when it does.
+            std::vector<Json> choices(selection->at("choices").begin(),
+                                      selection->at("choices").end());
+            if (candidate.value("name", std::string{}) == "simplemodelview") {
+                std::vector<Json> fallback;
+                for (const auto &reference : enginePrimitiveModelReferences()) {
+                    if (std::none_of(choices.begin(), choices.end(), [&](const Json &choice) {
+                            return choice.value("id", std::string{}) == reference;
+                        }))
+                        fallback.push_back({{"id", reference}, {"path", reference},
+                                            {"status", "builtin"}});
+                }
+                choices.insert(choices.begin(), fallback.begin(), fallback.end());
+            }
+            const auto builtin = [](const Json &choice) {
+                return choice.value("status", std::string{}) == "builtin" ||
+                       !builtinModelLabel(choice.value("id", std::string{})).empty();
+            };
+            std::stable_partition(choices.begin(), choices.end(), builtin);
+            bool separated = false;
+            for (const auto &choice : choices) {
+                const auto id_text = choice.at("id").get<std::string>();
+                const auto id = QString::fromStdString(id_text);
                 const auto path = QString::fromStdString(choice.at("path").get<std::string>());
                 const auto status = QString::fromStdString(choice.at("status").get<std::string>());
-                auto *item = new QListWidgetItem(QStringLiteral("%1 [%2]").arg(id, status), component_assets);
+                if (!builtin(choice) && !separated && component_assets->count() > 0) {
+                    auto *separator = new QListWidgetItem(QStringLiteral("────────"), component_assets);
+                    separator->setFlags(Qt::NoItemFlags);
+                    separated = true;
+                }
+                QString label = QStringLiteral("%1 [%2]").arg(id, status);
+                if (builtin(choice)) {
+                    const auto named = builtinModelLabel(id_text);
+                    label = named.empty() ? owner.tr("%1 (built-in)").arg(id)
+                                          : QString::fromStdString(named);
+                }
+                auto *item = new QListWidgetItem(label, component_assets);
                 item->setToolTip(path);
                 item->setData(Qt::UserRole, id);
             }
@@ -960,6 +1011,11 @@ struct InspectorWidget::Impl {
         if (rendered_content_revision != model.contentRevision()) {
             rebuildProperties();
         }
+        if (shown_model_assets_revision != model.modelAssetsRevision()) {
+            shown_model_assets_revision = model.modelAssetsRevision();
+            for (const auto &entry : model_choices)
+                fillModelChoice(*entry.choices, entry.current);
+        }
     }
 
     void clearBindings() {
@@ -971,6 +1027,7 @@ struct InspectorWidget::Impl {
         default_buttons.clear();
         numeric_bindings.clear();
         text_bindings.clear();
+        model_choices.clear();
     }
 
     void rebuildProperties() {
@@ -1313,6 +1370,11 @@ struct InspectorWidget::Impl {
             break;
         }
         case InspectorWidgetKind::StringInput: {
+            if (isModelReferenceField(descriptor)) {
+                form.addRow(fieldLabel(descriptor),
+                            makeModelChoice(parent, descriptor));
+                break;
+            }
             auto binding = std::make_unique<TextBinding>();
             binding->field_key = descriptor.field_key;
             binding->editor = new QLineEdit(
@@ -1343,6 +1405,50 @@ struct InspectorWidget::Impl {
             break;
         }
         }
+    }
+
+    // G-2: a model is picked, not spelled. The built-in shapes first, a
+    // separator, then the project's models as list_assets reports them; the
+    // authored value is kept in the list whatever it is. A pick commits at
+    // once, like the enum combo; the automation `select` and a popup pick
+    // both arrive as a current-index change.
+    void fillModelChoice(QComboBox &choices, const std::string &current) {
+        const QSignalBlocker blocker{&choices};
+        choices.clear();
+        const auto &assets = model.modelAssets();
+        bool separated = false;
+        for (const auto &choice : modelReferenceChoices(
+                 current, assets ? *assets : std::vector<std::string>{})) {
+            if (!choice.builtin && !separated) {
+                choices.insertSeparator(choices.count());
+                separated = true;
+            }
+            choices.addItem(QString::fromStdString(choice.label),
+                            QString::fromStdString(choice.value));
+        }
+        choices.setCurrentIndex(
+            choices.findData(QString::fromStdString(current)));
+    }
+
+    QWidget *makeModelChoice(QWidget *parent,
+                             const InspectorWidgetDescriptor &descriptor) {
+        auto *choices = new QComboBox(parent);
+        choices->setObjectName(QStringLiteral("pelican.inspectorModelChoice"));
+        const auto current = descriptor.value.get<std::string>();
+        fillModelChoice(*choices, current);
+        direct_editors.push_back(choices);
+        model_choices.push_back({choices, current});
+        QObject::connect(
+            choices, &QComboBox::currentIndexChanged, &owner,
+            [this, choices, key = descriptor.field_key](int index) {
+                if (rebuilding || index < 0) return;
+                const auto value = choices->itemData(index).toString();
+                if (value.isEmpty()) return;
+                model.commitWidgetValue(key, value.toStdString());
+                synchronize();
+                dispatchRequests();
+            });
+        return choices;
     }
 
     void configureNumeric(QDoubleSpinBox &editor,
@@ -1616,6 +1722,11 @@ void InspectorWidget::finishGizmoEdit(std::string_view field_key,
 }
 
 bool InspectorWidget::saveScene() { return impl_->saveScene(); }
+
+bool InspectorWidget::spawnObject(const std::string &scene_id,
+                                  nlohmann::json object, QString *error) {
+    return impl_->spawnObject(scene_id, std::move(object), error);
+}
 
 bool InspectorWidget::hasUnsavedSceneChanges() const noexcept {
     return impl_->model.hasUnsavedChanges();

@@ -1724,3 +1724,176 @@ TEST_CASE("Inspector polls only for an edit in flight and a watched selection",
     REQUIRE_FALSE(harness.model.externalWatchWanted());
     REQUIRE_FALSE(harness.model.pendingPollWanted());
 }
+
+TEST_CASE("G-2 Add object spawns once, named by kind with Blender's numbering",
+          "[devstudio][inspector][add-object][g2]") {
+    using PelicanStudio::AddObjectKind;
+    using PelicanStudio::addObjectBaseName;
+    using PelicanStudio::addObjectDeclaration;
+    using PelicanStudio::uniqueObjectName;
+
+    CHECK(uniqueObjectName("Cube", {}) == "Cube");
+    CHECK(uniqueObjectName("Cube", {"Camera"}) == "Cube");
+    CHECK(uniqueObjectName("Cube", {"Cube"}) == "Cube_001");
+    CHECK(uniqueObjectName("Cube", {"Cube", "Cube_001"}) == "Cube_002");
+    // The lowest free number, as Blender does, not one past the highest.
+    CHECK(uniqueObjectName("Cube", {"Cube", "Cube_002"}) == "Cube_001");
+    CHECK(uniqueObjectName("Sphere", {"Cube"}) == "Sphere");
+
+    CHECK(addObjectDeclaration(AddObjectKind::Cube, "Cube") ==
+          Json::parse(R"({"name":"Cube","components":[
+              {"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+              {"name":"simplemodelview","model":"engine://primitives/cube"}]})"));
+    CHECK(addObjectDeclaration(AddObjectKind::Plane, "Plane").at("components").at(1).at("model") ==
+          "engine://primitives/plane");
+    CHECK(addObjectDeclaration(AddObjectKind::Sphere, "Sphere").at("components").at(1).at("model") ==
+          "engine://primitives/sphere");
+    const auto empty = addObjectDeclaration(AddObjectKind::Empty, "Empty");
+    REQUIRE(empty.at("components").size() == 1);
+    CHECK(empty.at("components").at(0).at("name") == "transform");
+
+    // An editor session with nothing selected: Add object needs no selection.
+    InspectorHarness harness;
+    harness.model.startSession();
+    harness.reply(harness.take("open_editor_session"),
+                  {{"actor_id", 9}, {"display_name", "Pelican Studio Inspector"}});
+    REQUIRE(harness.model.takeRpcRequests().empty());
+    CHECK_FALSE(harness.model.spawnObject("default_scene",
+                                          addObjectDeclaration(AddObjectKind::Cube, "Cube")));
+    CHECK(harness.model.takeRpcRequests().empty());
+    // The Outliner feeds the revision it read with scene_tree.
+    harness.model.observeSceneRevision(3);
+
+    // What MainWindow::addObject does: the names the Outliner shows, the
+    // next free one, one spawn.
+    std::vector<std::string> outliner{"Camera"};
+    const auto add = [&](AddObjectKind kind) {
+        const auto name = uniqueObjectName(addObjectBaseName(kind), outliner);
+        REQUIRE(harness.model.spawnObject("default_scene", addObjectDeclaration(kind, name)));
+        return harness.take("edit");
+    };
+
+    const auto first = add(AddObjectKind::Cube);
+    CHECK(first.params.at("actor_id") == 9);
+    CHECK(first.params.at("base_revision") == 3);
+    // Its own undo step: never coalesced into an Inspector property edit.
+    CHECK_FALSE(first.params.contains("coalesce_key"));
+    REQUIRE(first.params.at("operations").size() == 1);
+    CHECK(first.params.at("operations").at(0) ==
+          Json{{"op", "spawn"},
+               {"scene_id", "default_scene"},
+               {"object", addObjectDeclaration(AddObjectKind::Cube, "Cube")}});
+    // One at a time: the next spawn would be stale against this one.
+    CHECK_FALSE(harness.model.spawnObject("default_scene",
+                                          addObjectDeclaration(AddObjectKind::Cube, "Cube_001")));
+    CHECK(harness.model.takeRpcRequests().empty());
+    harness.reply(first, {{"status", "accepted"}, {"ticket", "spawn:1"}});
+    harness.model.pollPendingOperations();
+    harness.reply(harness.take("get_edit_result"),
+                  {{"status", "committed"}, {"committed_revision", 4}});
+    CHECK(harness.model.notice().kind == InspectorNoticeKind::Success);
+    CHECK(harness.model.takeRpcRequests().empty());
+    outliner.push_back("Cube");
+
+    const auto second = add(AddObjectKind::Cube);
+    CHECK(second.params.at("base_revision") == 4);
+    CHECK(second.params.at("operations").at(0).at("object").at("name") == "Cube_001");
+    CHECK(second.params.at("operations").at(0).at("object").at("components").at(1) ==
+          Json{{"name", "simplemodelview"}, {"model", "engine://primitives/cube"}});
+}
+
+TEST_CASE("G-2 the simplemodelview model field offers the three primitives",
+          "[devstudio][inspector][add-object][g2]") {
+    using PelicanStudio::builtinModelLabel;
+    using PelicanStudio::isModelReferenceField;
+    using PelicanStudio::modelReferenceChoices;
+
+    const std::vector<std::string> primitives{
+        "engine://primitives/cube", "engine://primitives/plane", "engine://primitives/sphere"};
+    CHECK(PelicanStudio::enginePrimitiveModelReferences() == primitives);
+    CHECK(builtinModelLabel("engine://primitives/cube") == "Cube (built-in)");
+    CHECK(builtinModelLabel("engine://primitives/sphere") == "Sphere (built-in)");
+    CHECK(builtinModelLabel("checker_box").empty());
+
+    const auto values = [](const auto &choices) {
+        std::vector<std::string> result;
+        for (const auto &choice : choices) result.push_back(choice.value);
+        return result;
+    };
+    // Studio's fallback: the three, labelled, before the engine says anything.
+    const auto fallback = modelReferenceChoices("engine://primitives/plane");
+    CHECK(values(fallback) == primitives);
+    CHECK(fallback.at(0).label == "Cube (built-in)");
+    CHECK(fallback.at(0).builtin);
+    CHECK(values(modelReferenceChoices("")) == primitives);
+    // The authored value stays choosable whatever it is.
+    auto with_asset = primitives;
+    with_asset.emplace_back("checker_box");
+    CHECK(values(modelReferenceChoices("checker_box")) == with_asset);
+    CHECK(modelReferenceChoices("checker_box").back().label == "checker_box");
+    CHECK_FALSE(modelReferenceChoices("checker_box").back().builtin);
+    // GP-5b: the engine lists the three first too. Each is shown once, and the
+    // project's models follow them.
+    const Json listed{{"assets", Json::array({
+        {{"id", "engine://primitives/cube"}, {"kind", "model"}, {"path", "engine://primitives/cube"},
+         {"store", "engine"}, {"status", "builtin"}},
+        {{"id", "engine://primitives/plane"}, {"kind", "model"}, {"path", "engine://primitives/plane"},
+         {"store", "engine"}, {"status", "builtin"}},
+        {{"id", "engine://primitives/sphere"}, {"kind", "model"}, {"path", "engine://primitives/sphere"},
+         {"store", "engine"}, {"status", "builtin"}},
+        {{"id", "checker_box"}, {"kind", "model"}, {"path", "project://checker_box.glb"},
+         {"store", "project"}, {"status", "ok"}},
+        {{"id", "sky"}, {"kind", "texture"}, {"path", "project://sky.png"},
+         {"store", "project"}, {"status", "ok"}}})}};
+    const auto engine_models = PelicanStudio::modelAssetIds(listed);
+    CHECK(engine_models == std::vector<std::string>{
+        "engine://primitives/cube", "engine://primitives/plane", "engine://primitives/sphere",
+        "checker_box"});
+    const auto merged = modelReferenceChoices("engine://primitives/cube", engine_models);
+    CHECK(values(merged) == with_asset);
+
+    const Json component{
+        {"name", "simplemodelview"},
+        {"component_index", 1},
+        {"authored_json", {{"model", "engine://primitives/cube"}, {"label", "box"}}},
+        {"schema", {{"state", "available"},
+                    {"fields", Json::array({{{"name", "model"}, {"type", "string"}},
+                                            {{"name", "label"}, {"type", "string"}}})}}}};
+    const auto plan = PelicanStudio::makeInspectorWidgetPlan(component, 41);
+    REQUIRE(plan.size() == 2);
+    CHECK(plan.at(0).kind == InspectorWidgetKind::StringInput);
+    CHECK(isModelReferenceField(plan.at(0)));
+    CHECK_FALSE(isModelReferenceField(plan.at(1)));
+    auto other = plan.at(0);
+    other.component_slot = "transform";
+    CHECK_FALSE(isModelReferenceField(other));
+
+    // Loading an object with a simplemodelview asks list_assets once, and
+    // its answer is what the field lists next to the primitives.
+    InspectorHarness harness;
+    harness.model.selectObject(OutlinerObjectKey{.scene_id = "main", .declaration_index = 2});
+    harness.model.startSession();
+    harness.reply(harness.take("open_editor_session"),
+                  {{"actor_id", 9}, {"display_name", "Pelican Studio Inspector"}});
+    harness.reply(harness.take("scene_tree"), sceneTreeResult());
+    auto result = componentResult();
+    auto model_view = component;
+    model_view["component_index"] = 2;
+    model_view["editable"] = true;
+    model_view["pending"] = false;
+    model_view["codec"] = {{"state", "registered"}};
+    result.at("components").push_back(model_view);
+    harness.reply(harness.take("get_components"), result);
+    auto requests = harness.model.takeRpcRequests();
+    REQUIRE(requests.size() == 2);
+    const auto assets = std::find_if(requests.begin(), requests.end(),
+                                     [](const auto &request) { return request.method == "list_assets"; });
+    REQUIRE(assets != requests.end());
+    CHECK(assets->params == Json::object());
+    CHECK_FALSE(harness.model.modelAssets());
+    const auto revision = harness.model.modelAssetsRevision();
+    harness.reply(*assets, listed);
+    REQUIRE(harness.model.modelAssets());
+    CHECK(*harness.model.modelAssets() == engine_models);
+    CHECK(harness.model.modelAssetsRevision() != revision);
+}

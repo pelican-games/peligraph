@@ -4,6 +4,7 @@
 #include "fullscreenpasswidget.hpp"
 #include "graphcanvaswidget.hpp"
 #include "inspectorwidget.hpp"
+#include "../model/inspectormodel.hpp"
 #include "newprojectdialog.hpp"
 #include "renderfeatureswidget.hpp"
 #include "studiotheme.hpp"
@@ -41,6 +42,7 @@
 #include <QTabWidget>
 #include <QTextCursor>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
 #include <QTimer>
@@ -685,6 +687,8 @@ void MainWindow::createMenus() {
         tr("Scale"), QStringLiteral("pelican.gizmo.scale"), GizmoMode::Scale,
         tr("Scale the selection along one axis"));
     gizmo_mode_actions_[0]->setChecked(true);
+
+    createAddObjectMenu();
 }
 
 QStringList MainWindow::renderToolsTabIds() {
@@ -844,6 +848,7 @@ void MainWindow::openProjectNow(const QString &path) {
         outliner_refresh_timer_->stop();
         pending_outliner_request_ = 0;
         inspector_->resetSceneSaveState();
+        pending_spawn_selection_.reset();
         endGizmoSessionForProjectSwitch(opened_project.projectRoot());
         project_model_ = std::move(opened_project);
         tool_layout_presets_.emplace(
@@ -915,6 +920,110 @@ void MainWindow::populateOutliner() {
     outliner_->expandToDepth(0);
 }
 
+void MainWindow::createAddObjectMenu() {
+    add_object_menu_ = new QMenu(tr("Add Object"), this);
+    add_object_menu_->setObjectName(QStringLiteral("pelican.outliner.addObjectMenu"));
+    const std::array entries{
+        std::pair{AddObjectKind::Empty, QStringLiteral("empty")},
+        std::pair{AddObjectKind::Cube, QStringLiteral("cube")},
+        std::pair{AddObjectKind::Plane, QStringLiteral("plane")},
+        std::pair{AddObjectKind::Sphere, QStringLiteral("sphere")},
+    };
+    for (const auto &[kind, id] : entries) {
+        // The shapes read as the Inspector's model list reads them.
+        const auto base = addObjectBaseName(kind);
+        const std::string label =
+            kind == AddObjectKind::Empty
+                ? std::string{base}
+                : builtinModelLabel(addObjectDeclaration(kind, std::string{base})
+                                        .at("components").at(1).at("model")
+                                        .get<std::string>());
+        QAction *action =
+            add_object_menu_->addAction(QString::fromStdString(label));
+        action->setObjectName(QStringLiteral("pelican.outliner.addObject.") + id);
+        connect(action, &QAction::triggered, this,
+                [this, kind = kind] { addObject(kind); });
+    }
+
+    outliner_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(outliner_, &QWidget::customContextMenuRequested, this,
+            [this](const QPoint &position) {
+                add_object_menu_->popup(outliner_->viewport()->mapToGlobal(position));
+            });
+
+    auto *scene_toolbar = addToolBar(tr("Scene"));
+    scene_toolbar->setObjectName(QStringLiteral("pelican.sceneToolbar"));
+    scene_toolbar->setMovable(true);
+    auto *add_button = new QToolButton(scene_toolbar);
+    add_button->setObjectName(QStringLiteral("pelican.outliner.addObjectButton"));
+    add_button->setText(tr("Add Object"));
+    add_button->setToolTip(tr("Add an empty or a primitive shape at the origin"));
+    add_button->setMenu(add_object_menu_);
+    add_button->setPopupMode(QToolButton::InstantPopup);
+    scene_toolbar->addWidget(add_button);
+}
+
+void MainWindow::addObject(AddObjectKind kind) {
+    if (!project_model_ || !viewport_->rpcReady()) {
+        statusBar()->showMessage(
+            tr("Add Object needs an open project with its engine running."), 5000);
+        return;
+    }
+    // The selected object's scene, else the first the engine reported. The
+    // new object is never parented to the selection: reparenting is OL-1.
+    const auto &scenes = project_model_->scenes();
+    const auto &selected = selection_model_.selected();
+    const auto scene = std::find_if(scenes.begin(), scenes.end(),
+        [&selected](const OutlinerScene &candidate) {
+            return !selected || candidate.scene_id == selected->scene_id;
+        });
+    if (scene == scenes.end()) {
+        statusBar()->showMessage(
+            tr("Add Object is unavailable until the Outliner has a scene."), 5000);
+        return;
+    }
+    std::vector<std::string> taken;
+    taken.reserve(scene->objects.size() + 1);
+    for (const auto &object : scene->objects) taken.push_back(object.display_name);
+    // A spawn the Outliner has not shown yet still holds its name.
+    if (pending_spawn_selection_ && pending_spawn_selection_->first == scene->scene_id)
+        taken.push_back(pending_spawn_selection_->second);
+    const std::string name = uniqueObjectName(addObjectBaseName(kind), taken);
+
+    QString error;
+    if (!inspector_->spawnObject(scene->scene_id, addObjectDeclaration(kind, name),
+                                 &error)) {
+        statusBar()->showMessage(tr("Could not add %1: %2")
+                                     .arg(QString::fromStdString(name), error),
+                                 8000);
+        return;
+    }
+    pending_spawn_selection_ = std::pair{scene->scene_id, name};
+    // Ask quickly: the new object is selected as soon as the Outliner has it.
+    setOutlinerRefreshInterval(OutlinerRefreshMinimumIntervalMs);
+    statusBar()->showMessage(tr("Adding %1...").arg(QString::fromStdString(name)), 3000);
+}
+
+void MainWindow::selectSpawnedObject() {
+    if (!pending_spawn_selection_ || !project_model_) return;
+    const auto &[scene_id, name] = *pending_spawn_selection_;
+    for (const auto &scene : project_model_->scenes()) {
+        if (scene.scene_id != scene_id) continue;
+        for (const auto &object : scene.objects) {
+            if (object.display_name != name) continue;
+            pending_spawn_selection_.reset();
+            const SelectionUpdate update = selection_model_.selectFromOutliner(object.key);
+            if (update.kind == SelectionUpdateKind::failed) {
+                statusBar()->showMessage(QString::fromStdString(update.message), 5000);
+                return;
+            }
+            viewport_->setPickingNotice({});
+            refreshSelectionViews();
+            return;
+        }
+    }
+}
+
 void MainWindow::requestOutlinerRefresh() {
     if (!project_model_ || pending_outliner_request_ != 0 ||
         !viewport_->rpcReady()) {
@@ -957,6 +1066,7 @@ void MainWindow::completeOutlinerRpc(
         }
         populateOutliner();
         refreshSelectionViews();
+        selectSpawnedObject();
     } catch (const std::exception &error) {
         const auto message =
             tr("Invalid scene_tree response: %1")
