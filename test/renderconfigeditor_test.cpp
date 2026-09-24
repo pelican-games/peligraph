@@ -1152,7 +1152,9 @@ TEST_CASE("instance inputs change supply atomically and report what was drawn",
             namespaces.push_back(module.at("namespace").get<std::string>());
         CHECK(containsName(namespaces, "pelican.value"));
         CHECK(containsName(namespaces, "pelican.render"));
-        std::size_t expected_modules = 2;
+        // pelican.ui is always registered: the UI has no build without it (GP-3).
+        CHECK(containsName(namespaces, "pelican.ui"));
+        std::size_t expected_modules = 3;
         // pelican.audio and pelican.pose are registered only by the builds
         // that carry their module.
         CHECK(containsName(namespaces, "pelican.audio") == static_cast<bool>(PELICAN_WITH_AUDIO));

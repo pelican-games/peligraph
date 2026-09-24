@@ -343,6 +343,23 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
             render("render.compute"), render("render.fullscreen"), render("render.raster"),
         },
         {"render.scalar"}});
+    // GP-3. The UI has no build without it, so the module always registers;
+    // whether a project has a UI is the render config's reference to the ui
+    // feature, checked when the config is prepared (ui.feature_unreferenced@1).
+    // Changing which node a sink writes rebuilds, as a render.scalar target does.
+    const auto ui_sink = [&] {
+        return declared({{"value", required}}, {}, GraphExecutionDomain::values,
+                        GraphOperationEvaluation::direct, GraphParameterChange::rebuild);
+    };
+    registry.registerModule(GraphModuleManifest{
+        "pelican.ui", 1,
+        "Sinks that write a UI node's value and visibility from the graph.",
+        {},
+        {
+            {"ui.value", ui_sink()},
+            {"ui.visible", ui_sink()},
+        },
+        {"ui.value", "ui.visible"}});
 #if PELICAN_WITH_ANIMATION
     // A module registers the same way whether the engine brings it or not; a
     // build without the animation backend simply never calls this, and a

@@ -15,7 +15,12 @@ struct SetRect { WidgetId target; RectI rect; };
 struct SetHovered { WidgetId target; bool hovered; };
 struct SetPressed { WidgetId target; bool pressed; };
 struct RemoveWidget { WidgetId target; };
-using UiCommand = std::variant<SetVisibility, SetEnabled, SetRect, SetHovered, SetPressed, RemoveWidget>;
+// GP-3: what game code writes through ctx.ui(). Applied with the rest at the
+// commit boundary, never while a frame is being drawn.
+struct SetText { WidgetId target; std::string text; };
+struct SetValue { WidgetId target; double value; };
+using UiCommand = std::variant<SetVisibility, SetEnabled, SetRect, SetHovered, SetPressed, RemoveWidget,
+                               SetText, SetValue>;
 
 struct CommitStatus {
     std::size_t applied = 0;

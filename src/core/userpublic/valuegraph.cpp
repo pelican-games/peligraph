@@ -124,6 +124,20 @@ Json lowerScalarGraph(const Json &authored, const GraphModuleRegistry &modules,
                 {"voice", voice}});
             continue;
         }
+        if (op == "ui.value" || op == "ui.visible") {
+            // The UI node is named by its path in the project's UI document.
+            keys(parameters, {"node"});
+            if (!parameters.contains("node"))
+                throw std::invalid_argument("ui sink requires a node path: " + name(node.at("id")));
+            const auto output = "$binding/" + name(node.at("id"));
+            if (result["outputs"].contains(output)) throw std::invalid_argument("reserved graph output: " + output);
+            result["outputs"][output] = Json::array({source(inputs.at("value"))});
+            output_scopes[output] = node_scopes.at(name(node.at("id")));
+            result["bindings"].push_back({{"output", output},
+                {"kind", op == "ui.value" ? "ui_value" : "ui_visible"},
+                {"target", name(parameters.at("node"))}});
+            continue;
+        }
         if (!parameters.is_object()) throw std::invalid_argument("node parameters must be an object");
         Json lowered = parameters;
         if (lowered.contains("id") || lowered.contains("op"))
@@ -328,7 +342,7 @@ Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : mo
     }
     if (const auto bindings = root.find("bindings"); bindings != root.end()) {
         if (!bindings->is_array()) throw std::invalid_argument("value graph bindings must be an array");
-        std::set<std::pair<std::string, std::string>> targets;
+        std::map<std::pair<std::string, std::string>, std::string> targets;
         for (const auto &binding : *bindings) {
             keys(binding, {"output", "kind", "target", "voice"});
             Binding decoded;
@@ -338,16 +352,35 @@ Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : mo
             if (decoded.kind == "render_buffer") decoded.type = Target::render_buffer;
             else if (decoded.kind == "sound_volume") decoded.type = Target::sound_volume;
             else if (decoded.kind == "sound_pitch") decoded.type = Target::sound_pitch;
+            else if (decoded.kind == "ui_value") decoded.type = Target::ui_value;
+            else if (decoded.kind == "ui_visible") decoded.type = Target::ui_visible;
             else throw std::invalid_argument("unknown value graph binding kind: " + decoded.kind);
+            const bool ui = decoded.type == Target::ui_value || decoded.type == Target::ui_visible;
+            // The sink's own id, as the lowering named its output.
+            const auto sink_node = decoded.output.starts_with("$binding/")
+                ? decoded.output.substr(std::string_view{"$binding/"}.size()) : decoded.output;
             decoded.voice = binding.value("voice", false);
             if (decoded.voice && (decoded.type == Target::render_buffer || !audio_sources_.contains(decoded.target)))
                 throw std::invalid_argument("voice binding requires an audio playback producer");
             const auto output = outputs_.find(decoded.output);
             if (output == outputs_.end()) throw std::invalid_argument("binding references unknown output: " + decoded.output);
             if (decoded.type != Target::render_buffer && output->second.size() != 1)
-                throw std::invalid_argument("audio binding requires one scalar output");
-            if (!targets.emplace(decoded.kind, decoded.target).second)
+                throw std::invalid_argument(ui ? "ui binding requires one scalar output"
+                                               : "audio binding requires one scalar output");
+            if (const auto [claimed, inserted] = targets.emplace(std::pair{decoded.kind, decoded.target}, sink_node);
+                !inserted) {
+                // One writer per (document, path, property): v0 has one UI
+                // document, so the path and the sink's property are the unit.
+                if (ui)
+                    throw GraphRegistryError("ui.sink_conflict@1",
+                        {{"path", decoded.target},
+                         {"property", decoded.type == Target::ui_value ? "value" : "visible"},
+                         {"sinks", Json::array({claimed->second, sink_node})}});
                 throw std::invalid_argument("duplicate value graph target: " + decoded.target);
+            }
+            if (ui)
+                ui_sinks_.push_back({sink_node, decoded.target,
+                    decoded.type == Target::ui_value ? UiSinkProperty::value : UiSinkProperty::visible});
             bindings_.push_back(std::move(decoded));
         }
     }
@@ -609,7 +642,8 @@ PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
                              const SoundBindings &sounds, const RenderValueWriter &render_writer,
                              const ParameterValues &parameters, const InactiveScopes &inactive, EvaluationState *state,
                              const AudioEventWriter &audio_writer, const SoundResolver &sound_resolver,
-                             const AudioValueWriter &audio_value_writer) const {
+                             const AudioValueWriter &audio_value_writer,
+                             const UiValueWriter &ui_writer) const {
     PublishResult result;
     const auto outputs = evaluateInternal(inputs, parameters, inactive, state, &result.node_values);
     // Convert and validate every value before changing any service.
@@ -661,6 +695,12 @@ PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
         if (binding.type == Target::render_buffer)
             applied = render_writer ? render_writer(binding.target, prepared[i])
                                     : context.render().setRenderValues(binding.target, prepared[i]);
+        else if (binding.type == Target::ui_value || binding.type == Target::ui_visible)
+            // Only the caller holds the UI; without a writer the sink is
+            // reported unavailable rather than dropped.
+            applied = ui_writer && ui_writer(binding.target,
+                binding.type == Target::ui_value ? UiSinkProperty::value : UiSinkProperty::visible,
+                prepared[i][0]);
         else if (audio_value_writer) {
             applied = audio_value_writer(binding.target, binding.voice,
                 binding.type == Target::sound_volume ? AudioValueKind::volume : AudioValueKind::pitch,

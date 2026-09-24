@@ -7,6 +7,7 @@
 #include "../userpublic/details/event/registerer.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <limits>
@@ -102,6 +103,17 @@ void visitNodes(const DocumentNode &node, const std::map<std::string, const Layo
         else if (state && state->hovered) color = node.hover_color;
         emitVisual(node, *layout->second, visuals.at(""), viewport, commands, color);
     }
+    if (visible && node.type == "gauge" && node.color[3] != 0 && layout != layouts.end()) {
+        // A horizontal bar from the left edge, as wide as the value's share
+        // of the gauge (0..1, clamped). The width is floored in ui units.
+        const auto fill = std::clamp(node.value, 0.0, 1.0);
+        auto bar = layout->second->rect_ui;
+        bar.right = bar.left + static_cast<std::int32_t>(
+            std::floor(static_cast<double>(bar.width()) * fill));
+        const auto &solid = visuals.at("");
+        appendQuad(commands, node, *layout->second, bar, solid.source_rect, solid, viewport,
+                   node.color, node.sampler);
+    }
     if (visible && (node.type == "label" || node.type == "button") &&
         layout != layouts.end() && !node.text.empty()) {
         const auto size = font.measure(node.text);
@@ -140,8 +152,10 @@ UiModule::UiModule(const nlohmann::json &document_json) : bitmap_font{BitmapFont
     requireDocument(parseUiDocument(document_json), document);
     visuals.emplace("", ResolvedVisual{});
     loadVisuals(document.root);
+    // Every node that can show text, not only the ones that start with some:
+    // ctx.ui().setText can give an empty label its first glyphs (GP-3).
     const auto has_text = [](const auto &self, const DocumentNode &node) -> bool {
-        if ((node.type == "label" || node.type == "button") && !node.text.empty()) return true;
+        if (node.type == "label" || node.type == "button") return true;
         return std::ranges::any_of(node.children, [&](const auto &child) { return self(self, child); });
     };
     if (has_text(has_text, document.root)) {
@@ -269,9 +283,100 @@ RouteFrameResult UiModule::routeFrameInput(Pelican::InputState &input, vk::Exten
         {static_cast<std::int32_t>(extent.width), static_cast<std::int32_t>(extent.height)}, ui_scale);
     last_route = input_router.routeFrameInput(input.currentFrameInput(), widget_arena, traversal, viewport,
                                                [&](const auto &event) { handlePointer(event); });
-    last_commit = command_buffer.commit(widget_arena);
+    last_commit = commitPending();
     if (last_route.consumed_pointer) input.consumePointerForActions();
     return last_route;
+}
+
+std::string_view uiPropertyName(UiProperty property) noexcept {
+    switch (property) {
+    case UiProperty::text: return "text";
+    case UiProperty::visible: return "visible";
+    case UiProperty::value: return "value";
+    }
+    return "unknown";
+}
+
+bool uiNodeHasProperty(std::string_view type, UiProperty property) noexcept {
+    switch (property) {
+    case UiProperty::text: return type == "label" || type == "button";
+    case UiProperty::visible: return true;
+    case UiProperty::value: return type == "gauge";
+    }
+    return false;
+}
+
+DocumentNode *UiModule::findMutableNode(std::string_view path) {
+    return const_cast<DocumentNode *>(findNode(path));
+}
+
+UiWriteStatus UiModule::checkTarget(std::string_view document_key, std::string_view path,
+                                    UiProperty property) const {
+    if (!document_key.empty() && document_key != document.key) return UiWriteStatus::node_unknown;
+    const auto *node = findNode(path);
+    if (node == nullptr) return UiWriteStatus::node_unknown;
+    if (!uiNodeHasProperty(node->type, property)) return UiWriteStatus::property_mismatch;
+    return UiWriteStatus::ok;
+}
+
+UiWriteStatus UiModule::queueWrite(std::string_view document_key, std::string_view path, UiWrite write,
+                                   const UiSinkClaims &claimed_by_sink) {
+    if (const auto status = checkTarget(document_key, path, write.property); status != UiWriteStatus::ok)
+        return status;
+    if (write.property == UiProperty::value && !std::isfinite(write.value))
+        return UiWriteStatus::property_mismatch;
+    if (claimed_by_sink && claimed_by_sink(path, write.property)) return UiWriteStatus::sink_conflict;
+    const auto id = widget_ids.find(path);
+    if (id == widget_ids.end()) return UiWriteStatus::node_unknown;
+    switch (write.property) {
+    case UiProperty::text: command_buffer.push(SetText{id->second, std::move(write.text)}); break;
+    case UiProperty::visible: command_buffer.push(SetVisibility{id->second, write.visible}); break;
+    case UiProperty::value: command_buffer.push(SetValue{id->second, write.value}); break;
+    }
+    return UiWriteStatus::ok;
+}
+
+CommitStatus UiModule::commitFrameWrites() {
+    last_commit = commitPending();
+    return last_commit;
+}
+
+CommitStatus UiModule::commitPending() {
+    auto status = command_buffer.commit(widget_arena);
+    syncDocumentFromArena();
+    return status;
+}
+
+void UiModule::syncDocumentFromArena() {
+    const auto sync = [&](const auto &self, DocumentNode &node) -> void {
+        if (const auto id = widget_ids.find(node.path); id != widget_ids.end()) {
+            if (const auto *state = widget_arena.resolve(id->second)) {
+                if (state->text != node.text) {
+                    node.text = state->text;
+                    if (node.intrinsic_from_text) node.intrinsic_size = measureTextIntrinsic(node.type, node.text);
+                }
+                node.value = state->value;
+            }
+        }
+        for (auto &child : node.children) self(self, child);
+    };
+    sync(sync, document.root);
+}
+
+bool UiModule::applySinkValue(std::string_view path, UiProperty property, double value) {
+    if (checkTarget({}, path, property) != UiWriteStatus::ok || !std::isfinite(value)) return false;
+    const auto id = widget_ids.find(path);
+    auto *state = id == widget_ids.end() ? nullptr : widget_arena.resolve(id->second);
+    if (state == nullptr) return false;
+    switch (property) {
+    case UiProperty::visible: state->visible = value != 0.0; return true;
+    case UiProperty::value:
+        state->value = value;
+        findMutableNode(path)->value = value;
+        return true;
+    case UiProperty::text: return false;
+    }
+    return false;
 }
 
 DrawBatch UiModule::buildFrame(vk::Extent2D extent, double ui_scale) const {

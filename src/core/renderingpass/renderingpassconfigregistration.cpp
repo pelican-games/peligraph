@@ -39,6 +39,7 @@
 #include "../renderer/gizmo.hpp"
 #include "../renderer/velocitypasscontainer.hpp"
 #include "../shader/pipelinefactory.hpp"
+#include "../ui/module.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
 #include "../vkcore/rendertarget.hpp"
@@ -61,6 +62,38 @@
 namespace Pelican {
 
 namespace {
+
+// GP-3: a ui.* sink writes a node of the project's UI document. The render
+// config that carries it must reference the ui feature -- that reference is
+// what gives a project a UI at all -- and the node it names must exist and
+// have the property. Checked while the config is prepared, before anything
+// is published, so a config that fails here never reaches a frame.
+// `features` are those of the variant whose feature list the container
+// publishes: the list RenderingPassContainer::isFeatureEnabled reads, and so
+// the one that decides whether the UI module exists at all.
+void validateUiSinks(const ValueGraph::Graph &graph, const std::vector<std::string> &features) {
+    const auto &sinks = graph.uiSinkBindings();
+    if (sinks.empty()) return;
+    if (std::find(features.begin(), features.end(), "ui") == features.end())
+        throw GraphRegistryError("ui.feature_unreferenced@1",
+            {{"node", sinks.front().node}, {"path", sinks.front().path}});
+    const auto &ui_module = GET_MODULE(ui::UiModule);
+    for (const auto &sink : sinks) {
+        const auto property = sink.property == ValueGraph::UiSinkProperty::value
+            ? ui::UiProperty::value : ui::UiProperty::visible;
+        switch (ui_module.checkTarget({}, sink.path, property)) {
+        case ui::UiWriteStatus::node_unknown:
+            throw GraphRegistryError("ui.node_unknown@1", {{"node", sink.node}, {"path", sink.path}});
+        case ui::UiWriteStatus::property_mismatch:
+            throw GraphRegistryError("ui.property_mismatch@1",
+                {{"node", sink.node}, {"path", sink.path},
+                 {"property", std::string{ui::uiPropertyName(property)}}});
+        case ui::UiWriteStatus::ok:
+        case ui::UiWriteStatus::sink_conflict:
+            break;
+        }
+    }
+}
 
 RenderingPassRuntimeDependencies toRuntimeDependencies(
     RenderingPassConfigRuntimeDependencies &dependencies,
@@ -1074,6 +1107,12 @@ void RegistrationStages::prepare() {
         dependencies[index].runtime.shader_defines =
             prepared_variants[index]
                 .compiled_pipeline->shader_defines;
+    }
+    if (value_graph) {
+        std::size_t feature_publisher = 0;
+        for (std::size_t index = 0; index < dependencies.size(); ++index)
+            if (dependencies[index].options.publish_enabled_features) feature_publisher = index;
+        validateUiSinks(*value_graph, prepared_variants[feature_publisher].compiled_pipeline->feature_names);
     }
     // Flat and XR variants may share logical target names. Allocate the union
     // of image usage plus the maximum layer count before the first mutable

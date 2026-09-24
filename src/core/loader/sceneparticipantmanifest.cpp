@@ -218,6 +218,11 @@ constexpr std::array public_api_manifest{
     ScenePublicApiManifestEntry{"RenderContext", "void setCamera(std::string_view name)const", "covered.candidate"},
     ScenePublicApiManifestEntry{"RenderContext", "void setRayTracingDispatchExtent(std::string_view task_name,std::uint32_t width,std::uint32_t height,std::uint32_t depth)const", "reject.transaction-scope"},
     ScenePublicApiManifestEntry{"RenderContext", "void setRayTracingCallableRecord(std::string_view task_name,std::uint32_t index,const nlohmann::json&values)const", "reject.transaction-scope"},
+    // GP-3: the UI document is not a scene participant. A write queued while a
+    // scene loads lands at the next frame boundary whatever the load's outcome.
+    ScenePublicApiManifestEntry{"UiContext", "[[nodiscard]] UiWriteResult setText(std::string_view path,std::string_view text)const", "nonparticipant.ui-document"},
+    ScenePublicApiManifestEntry{"UiContext", "[[nodiscard]] UiWriteResult setVisible(std::string_view path,bool visible)const", "nonparticipant.ui-document"},
+    ScenePublicApiManifestEntry{"UiContext", "[[nodiscard]] UiWriteResult setValue(std::string_view path,float value)const", "nonparticipant.ui-document"},
     ScenePublicApiManifestEntry{"GameContext", "double random()", "covered.rng-sequence"},
     ScenePublicApiManifestEntry{"GameContext", "int randomInt(int min,int max)", "covered.rng-sequence"},
     ScenePublicApiManifestEntry{"GameContext", "float randomFloat(float min,float max)", "covered.rng-sequence"},

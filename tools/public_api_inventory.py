@@ -15,6 +15,7 @@ HEADERS = (
     ("src/core/userpublic/gamecontext.hpp", "SaveContext"),
     ("src/core/userpublic/gamecontext.hpp", "RenderContext"),
     ("src/core/userpublic/gamecontext.hpp", "ObjectsContext"),
+    ("src/core/userpublic/gamecontext.hpp", "UiContext"),
     ("src/core/userpublic/gamecontext.hpp", "GameContext"),
     ("src/core/userpublic/gameobjects.hpp", "GameObjects"),
     ("src/core/userpublic/behavior.hpp", "BehaviorContext"),
@@ -30,6 +31,7 @@ MUTATORS = {
     "randomFloat", "setSeed", "playSound", "stopSound", "setBusVolume",
     "loadScene", "debugText", "setGameSettings", "saveSettings", "saveData",
     "add", "createWithComponents", "remove", "removeAll",
+    "setText", "setVisible", "setValue",
 }
 HOST_ENTRANCES = {"emit"}
 NON_MUTATING_VOID = {"logInfo", "logWarning", "logError"}

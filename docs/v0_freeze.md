@@ -64,10 +64,10 @@ stdio JSON-RPC の枠組み(`jsonrpc` / `id` / `method` / `params`、名前付�
 
 ### 1.3 共通グラフ: module / op / 型 / sink
 
-登録 module は最大 4 本(`pelican.value` / `pelican.audio` / `pelican.render` / `pelican.pose`)で、いずれも module version 1。
-`pelican.value` と `pelican.render` は常に登録され、`pelican.audio` は `PELICAN_WITH_AUDIO=ON`、`pelican.pose` は `PELICAN_WITH_ANIMATION=ON` の build でだけ登録される
+登録 module は最大 5 本(`pelican.value` / `pelican.audio` / `pelican.render` / `pelican.pose` / `pelican.ui`)で、いずれも module version 1。
+`pelican.value` と `pelican.render` と `pelican.ui`(GP-3、UI には build OFF の構成が無い)は常に登録され、`pelican.audio` は `PELICAN_WITH_AUDIO=ON`、`pelican.pose` は `PELICAN_WITH_ANIMATION=ON` の build でだけ登録される
 (`pelican.audio` の条件付き登録は PG-1 `533d8d6c` から。登録の `#if` は `src/project/graphmodule.cpp`)。
-下の表は **`PELICAN_WITH_ANIMATION=ON` かつ `PELICAN_WITH_AUDIO=ON` build の `pelican_cli graph-catalog` の出力**を展開したもの(4 module / op 27 本)。
+下の表は **`PELICAN_WITH_ANIMATION=ON` かつ `PELICAN_WITH_AUDIO=ON` build の `pelican_cli graph-catalog` の出力**を展開したもの(5 module / op 29 本)。
 `change` は parameter を変えたときの既定の扱い(`value` = 値だけ / `rebuild` = 作り直し)、
 `ports: parameter_dependent` の op は port 一覧を宣言せず node 自身の `inputs` / `outputs` から決まる。
 `?` の付いた入力は任意。
@@ -105,6 +105,8 @@ build から外した unit の op(`audio.*` / `pose.*`)だけが欠けてよい�
 | `render.image` | pelican.render | rendering | direct | rebuild | — | parameter_dependent | — | — |
 | `render.raster` | pelican.render | rendering | direct | rebuild | — | parameter_dependent | — | — |
 | `render.scalar` | pelican.render | values | direct | rebuild | sink | declared | `value` | — |
+| `ui.value` | pelican.ui | values | direct | rebuild | sink | declared | `value` | — |
+| `ui.visible` | pelican.ui | values | direct | rebuild | sink | declared | `value` | — |
 | `value.add` | pelican.value | values | direct | value | — | declared | `a`, `b` | `value`: pelican.value.scalar@1 |
 | `value.constant` | pelican.value | values | direct | value | — | declared | — | `value`: pelican.value.scalar@1 |
 | `value.curve` | pelican.value | values | direct | value | — | declared | `time` | `value`: pelican.value.scalar@1 |
@@ -125,8 +127,8 @@ catalog に module の型として載る型(semantic)は ON build で 11: `pelic
 `render.*` の op は解決時に `pelican.render.*` を自分の port に載せる(上表の parameter_dependent)。
 `pelican.rig@1` は登録だけで、どの port にも現れない(node の `parameters.rig` が指す同一性)。
 `pelican.pose@1` は **handle と layout 世代**が流れるのであって bytes ではない。
-sink は ON build で 5 本(`audio.pitch` / `audio.volume` / `render.scalar` / `pose.skeletal` / `pose.transform`。OFF にした module の sink はその分減る)で、
-pose の sink は **owner 単位の単一 writer**(二重 writer は `pose.sink_conflict@1`)。
+sink は ON build で 7 本(`audio.pitch` / `audio.volume` / `render.scalar` / `pose.skeletal` / `pose.transform` / `ui.value` / `ui.visible`。OFF にした module の sink はその分減る)で、
+pose の sink は **owner 単位の単一 writer**(二重 writer は `pose.sink_conflict@1`)。`ui.*` の sink は owner に属さないので、単一 writer の単位は `(文書, path, 性質)`(二重 writer は準備時に `ui.sink_conflict@1`、facade との衝突は facade が同じ名前で失敗し、sink が勝つ)。
 
 ### 1.4 ABI と版
 

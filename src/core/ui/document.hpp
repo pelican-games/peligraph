@@ -65,6 +65,9 @@ struct DocumentNode {
     std::string type;
     LayoutSpec layout;
     PointI intrinsic_size{};
+    // True when intrinsic_size was measured from `text` rather than authored,
+    // so a text written at run time (GP-3) measures it again.
+    bool intrinsic_from_text = false;
     Visibility visibility = Visibility::Visible;
     bool overflow_clip = false;
     bool enabled = true;
@@ -101,5 +104,9 @@ struct DocumentParseResult {
 };
 
 DocumentParseResult parseUiDocument(const nlohmann::json &json, EventLookup lookup = {});
+
+// The intrinsic size of a label or button showing `text` in the bundled font:
+// the glyph box, plus the button's padding.
+PointI measureTextIntrinsic(std::string_view type, std::string_view text);
 
 } // namespace Pelican::ui

@@ -206,6 +206,12 @@ void updateFrameState() {
             break;
         }
     });
+    // GP-3: what game code wrote through ctx.ui() this frame lands here, once,
+    // after every phase that runs game code and before the frame is drawn.
+    // The UI module is read directly rather than through modules.ui_module,
+    // which drops it when there is no render target to route input against.
+    if (auto *ui_module = FastModuleContainer::tryGet<ui::UiModule>())
+        ui_module->commitFrameWrites();
     modules.scene_loader.updateGraphRuntime();
     if (auto *camera_bake = FastModuleContainer::tryGet<CameraBakeRecorder>())
         camera_bake->recordFrame();

@@ -5647,7 +5647,16 @@ void Renderer::LogicalFrameRecorder::publishFrameValueGraph() {
             }, staged_graph_transfer ? ValueGraph::AudioValueWriter{
                 [&](std::string_view node, bool voice, ValueGraph::AudioValueKind kind, float value) {
                     return staged_graph_transfer->stageAudioValue(node, voice, kind, value);
-                }} : ValueGraph::AudioValueWriter{});
+                }} : ValueGraph::AudioValueWriter{},
+            // GP-3: ui.* sinks land in the UI before this frame's UI pass
+            // draws. Preparation checked every target against the document.
+            [](std::string_view path, ValueGraph::UiSinkProperty property, float value) {
+                auto *ui_module = FastModuleContainer::tryGet<ui::UiModule>();
+                return ui_module != nullptr && ui_module->applySinkValue(path,
+                    property == ValueGraph::UiSinkProperty::value ? ui::UiProperty::value
+                                                                  : ui::UiProperty::visible,
+                    value);
+            });
         if (!published.unavailable.empty())
             throw std::runtime_error("frame graph output is unavailable: " + published.unavailable.front());
         // Keep what this generation actually fed each instance input port. A

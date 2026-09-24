@@ -18,9 +18,10 @@ if(NOT schema STREQUAL "pelican.graph_catalog")
   message(FATAL_ERROR "unexpected catalog schema: ${schema}")
 endif()
 
+# pelican.ui is always registered (GP-3: the UI has no build without it).
 # pelican.pose and pelican.audio are registered only when their units are
 # built (AG-0, PG-1), so the catalog is the OFF builds' observable difference.
-set(expected_modules 2)
+set(expected_modules 3)
 if(WITH_ANIMATION)
   math(EXPR expected_modules "${expected_modules} + 1")
 endif()
@@ -74,7 +75,7 @@ foreach(module_index RANGE ${last_module})
   endforeach()
 endforeach()
 
-set(expected_namespaces pelican.value pelican.render)
+set(expected_namespaces pelican.value pelican.render pelican.ui)
 set(expected_audio_operations "")
 if(WITH_AUDIO)
   list(APPEND expected_namespaces pelican.audio)
@@ -106,7 +107,8 @@ foreach(expected IN ITEMS value.input value.constant value.parameter value.morph
                           value.curve value.playback event.playback
                           ${expected_audio_operations}
                           render.scalar render.buffer render.attribute render.image
-                          render.compute render.fullscreen render.raster)
+                          render.compute render.fullscreen render.raster
+                          ui.value ui.visible)
   if(NOT expected IN_LIST seen_operations)
     message(FATAL_ERROR "catalog is missing operation ${expected}")
   endif()

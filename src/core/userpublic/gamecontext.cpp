@@ -25,7 +25,10 @@
 #include "../renderer/camera.hpp"
 #include "../renderer/debugtext.hpp"
 #include "../renderingpass/computetask.hpp"
+#include "../ui/module.hpp"
+#include "valuegraph.hpp"
 
+#include <optional>
 #include <utility>
 
 namespace Pelican {
@@ -164,6 +167,62 @@ bool GameContext::setSpriteTexture(GameObjectId id, std::string_view texture) co
     replacement.texture = std::string{texture};
     replacement.validate();
     return ecs.setComponent<SpriteViewComponent>(id, replacement);
+}
+
+namespace {
+
+// Whether a ui.* sink of the published render config owns (path, property).
+// The published generation is the one whose graph writes the UI each frame.
+bool uiSinkClaims(const RenderingPassContainer &passes, std::string_view path, ui::UiProperty property) {
+    const auto generation = passes.snapshot();
+    if (generation == nullptr) return false;
+    const auto wanted = property == ui::UiProperty::value ? ValueGraph::UiSinkProperty::value
+                      : property == ui::UiProperty::visible ? ValueGraph::UiSinkProperty::visible
+                                                            : std::optional<ValueGraph::UiSinkProperty>{};
+    if (!wanted) return false;
+    for (const auto &[id, program] : generation->programs) {
+        (void)id;
+        const auto &graph = program.frame_graph.value_graph;
+        if (!graph) continue;
+        for (const auto &sink : graph->uiSinkBindings())
+            if (sink.property == *wanted && sink.path == path) return true;
+    }
+    return false;
+}
+
+UiWriteResult writeUi(std::string_view document_key, std::string_view path, ui::UiWrite write) {
+    auto &passes = GET_MODULE(RenderingPassContainer);
+    // A project has a UI when its render config references the ui feature;
+    // the module is not even created otherwise.
+    if (!passes.isFeatureEnabled("ui")) return UiWriteError::feature_unreferenced;
+    auto &module = GET_MODULE(ui::UiModule);
+    const auto status = module.queueWrite(document_key, path, std::move(write),
+        [&](std::string_view claimed_path, ui::UiProperty property) {
+            return uiSinkClaims(passes, claimed_path, property);
+        });
+    switch (status) {
+    case ui::UiWriteStatus::ok: return {};
+    case ui::UiWriteStatus::node_unknown: return UiWriteError::node_unknown;
+    case ui::UiWriteStatus::property_mismatch: return UiWriteError::property_mismatch;
+    case ui::UiWriteStatus::sink_conflict: return UiWriteError::sink_conflict;
+    }
+    return UiWriteError::node_unknown;
+}
+
+} // namespace
+
+UiContext::UiContext(std::string_view document_key) noexcept : document_key_{document_key} {}
+
+UiWriteResult UiContext::setText(std::string_view path, std::string_view text) const {
+    return writeUi(document_key_, path, {.property = ui::UiProperty::text, .text = std::string{text}});
+}
+
+UiWriteResult UiContext::setVisible(std::string_view path, bool visible) const {
+    return writeUi(document_key_, path, {.property = ui::UiProperty::visible, .visible = visible});
+}
+
+UiWriteResult UiContext::setValue(std::string_view path, float value) const {
+    return writeUi(document_key_, path, {.property = ui::UiProperty::value, .value = value});
 }
 
 Resolved<ObjectRef> ObjectsContext::resolve(std::string_view name) const {

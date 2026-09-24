@@ -9,6 +9,7 @@
 #include "events.hpp"
 #include "gameobjects.hpp"
 #include "object_ref.hpp"
+#include "ui_write.hpp"
 #include "userinput.hpp"
 #include <handle.hpp>
 #include <phys/physquery.hpp>
@@ -183,6 +184,40 @@ class PELICAN_API ObjectsContext {
     Resolved<WorldTransform> worldTransform(const ObjectRef &ref) const;
 };
 
+// The project's UI, written from game code. Reached through
+// GameContext::ui(), which addresses the project's UI document, or
+// GameContext::ui(document_key), which must name that document's `key`.
+//
+// A node is named by its path: the node ids from the root, root included,
+// joined by '/' (the root "root" with a child "hud" holding "score" is
+// "root/hud/score"). Ids are unique only among siblings, so the path, not
+// the id, is what tells two nodes apart.
+//
+// A write is checked when it is made and queued; accepted writes land
+// together at the frame boundary after game code runs, before the frame is
+// drawn. setText suits a label or a button, setValue a gauge (its bar fills
+// the share 0..1 of its width), setVisible any node. A refused write changes
+// nothing and says why (UiWriteError). A node property a ui.* graph sink
+// writes is the graph's: writing it here is ui.sink_conflict@1.
+//
+// The UI document is not part of a scene: a write made while a scene loads
+// stays even if that load fails.
+//
+// The facade holds the document key as a view; keep the string alive while
+// the facade is used.
+class PELICAN_API UiContext {
+  public:
+    // An empty key is the project's UI document.
+    explicit UiContext(std::string_view document_key) noexcept;
+
+    [[nodiscard]] UiWriteResult setText(std::string_view path, std::string_view text) const;
+    [[nodiscard]] UiWriteResult setVisible(std::string_view path, bool visible) const;
+    [[nodiscard]] UiWriteResult setValue(std::string_view path, float value) const;
+
+  private:
+    std::string_view document_key_;
+};
+
 class PELICAN_API GameContext {
   public:
     bool actionsConfigured() const;
@@ -238,6 +273,8 @@ class PELICAN_API GameContext {
     SaveContext save() const noexcept { return {}; }
     RenderContext render() const noexcept { return {}; }
     ObjectsContext objects() const noexcept { return {}; }
+    UiContext ui() const noexcept { return UiContext{std::string_view{}}; }
+    UiContext ui(std::string_view document_key) const noexcept { return UiContext{document_key}; }
 };
 
 } // namespace Pelican

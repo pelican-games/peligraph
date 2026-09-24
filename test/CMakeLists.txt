@@ -2620,6 +2620,28 @@ if(PELICAN_WITH_RPC)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ui_u2_rpc_replay.cmake
     )
     pelican_gpu_test_properties(ui_u2_rpc_replay_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+    # GP-3: ctx.ui() writes and ui.* graph sinks, seen in headless captures.
+    add_executable(
+        pelican_test_gp3_ui_player
+        ${CMAKE_SOURCE_DIR}/src/player/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/gp3_ui_probe.cpp
+    )
+    set_target_properties(pelican_test_gp3_ui_player PROPERTIES CXX_STANDARD 20)
+    target_link_libraries(pelican_test_gp3_ui_player PRIVATE pelican_core argparse)
+    target_include_directories(pelican_test_gp3_ui_player PRIVATE
+        ${Vulkan_INCLUDE_DIRS}
+        ${CMAKE_SOURCE_DIR}/projects/example
+    )
+    add_test(
+        NAME gp3_ui_headless_player
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+            -DPLAYER=$<TARGET_FILE:pelican_test_gp3_ui_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_test_gp3_ui_player>
+            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/gp3_ui_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_gp3_ui_headless.cmake
+    )
+    pelican_gpu_test_properties(gp3_ui_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
 endif()
 
 add_test(
@@ -3172,6 +3194,9 @@ target_compile_definitions(pelican_test_ui_foundation_test PRIVATE
 )
 
 pelican_define_test(sprite_foundation_test GROUP ui_foundation pelican_core)
+# GP-3: (document, path) writes, the commit boundary, the gauge bar and the
+# pelican.ui sinks' compile and publish, without a GPU.
+pelican_define_test(gp3_ui_write_test GROUP ui_foundation pelican_core)
 
 # UI semantic fixture coverage gate (design_ui_2d_foundation.md v8 §7).
 # Dependency-free node script; skipped when node is unavailable.
@@ -3214,6 +3239,7 @@ set(PELICAN_RUNTIME_SHADER_PROCESS_TESTS
     devcli_bake_camera_replay
     rpc_inject_event_headless_player
     ui_u2_rpc_replay_player
+    gp3_ui_headless_player
     compute_buffer_headless_player
     gpu_timing_headless_player
     frame_plan_dump_headless_player

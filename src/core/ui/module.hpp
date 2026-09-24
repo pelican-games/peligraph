@@ -10,7 +10,9 @@
 #include "../container.hpp"
 
 #include <filesystem>
+#include <functional>
 #include <map>
+#include <string_view>
 #include <optional>
 #include <nlohmann/json_fwd.hpp>
 #include <vulkan/vulkan.hpp>
@@ -18,6 +20,28 @@
 namespace Pelican { class InputState; }
 
 namespace Pelican::ui {
+
+// GP-3: the properties game code and the graph's ui.* sinks write. A node is
+// addressed by (document key, path); the path is the node ids from the root,
+// root included, joined by '/' (DocumentNode::path, the same string an emit's
+// stable_id carries). One writer per (document, path, property).
+enum class UiProperty { text, visible, value };
+std::string_view uiPropertyName(UiProperty property) noexcept;
+// text: label and button. value: gauge. visible: every node.
+bool uiNodeHasProperty(std::string_view type, UiProperty property) noexcept;
+
+enum class UiWriteStatus { ok, node_unknown, property_mismatch, sink_conflict };
+
+struct UiWrite {
+    UiProperty property = UiProperty::text;
+    std::string text;
+    bool visible = true;
+    double value = 0.0;
+};
+
+// Answers whether a graph sink owns (path, property) of the project's UI
+// document. The sink is the value's writer; a facade write there is refused.
+using UiSinkClaims = std::function<bool(std::string_view path, UiProperty property)>;
 
 struct UiTexturePage {
     std::uint16_t id = 0;
@@ -58,10 +82,32 @@ DECLARE_MODULE(UiModule) {
     const DocumentNode *findNode(std::string_view path) const;
     void handlePointer(const RoutedPointerEvent &event);
     void emitBindings(const DocumentNode &node, std::string_view trigger, const RoutedPointerEvent &event);
+    DocumentNode *findMutableNode(std::string_view path);
+    // After a commit: carry the runtime text and value back into the document
+    // the layout and the draw read.
+    void syncDocumentFromArena();
+    CommitStatus commitPending();
 
   public:
     UiModule();
     explicit UiModule(const nlohmann::json &document_json);
+
+    // GP-3. Whether (document_key, path) names a node that has `property`. An
+    // empty document_key is the project's UI document (v0 has one); any other
+    // key must equal that document's `key`.
+    UiWriteStatus checkTarget(std::string_view document_key, std::string_view path,
+                              UiProperty property) const;
+    // Queues a write for the next commit boundary. Refused, and nothing
+    // queued, when the node is unknown, lacks the property (or the value is
+    // not finite), or a sink owns the unit.
+    UiWriteStatus queueWrite(std::string_view document_key, std::string_view path, UiWrite write,
+                             const UiSinkClaims &claimed_by_sink = {});
+    // The frame boundary after game code ran and before the frame is drawn.
+    CommitStatus commitFrameWrites();
+    // A ui.* sink's value for this frame. The graph is the unit's only
+    // writer, so it lands at once rather than through the command buffer.
+    // False when the path names no node that has the property.
+    bool applySinkValue(std::string_view path, UiProperty property, double value);
 
     DrawBatch buildFrame(vk::Extent2D extent, double ui_scale = 1.0) const;
     RouteFrameResult routeFrameInput(Pelican::InputState &input, vk::Extent2D extent, double ui_scale = 1.0);

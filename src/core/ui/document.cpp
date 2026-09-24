@@ -239,6 +239,8 @@ DocumentNode parseNode(const Json &j, std::string parent, std::int32_t &decl, st
     if (!types.contains(node.type)) error(errors, UiErrorCode::UnknownWidgetType, json_path + "/type", "unknown widget type");
     if (node.type == "image" && !j.contains("color")) node.color = {255, 255, 255, 255};
     if (node.type == "button" && !j.contains("color")) node.color = {64, 72, 84, 255};
+    // A gauge draws its fill in `color`; left transparent it would draw nothing.
+    if (node.type == "gauge" && !j.contains("color")) node.color = {96, 200, 120, 255};
     if (j.contains("sprite")) {
         if (!j.at("sprite").is_string() || j.at("sprite").get_ref<const std::string &>().empty())
             error(errors, UiErrorCode::TypeMismatch, json_path + "/sprite", "sprite must be a non-empty #sprite reference");
@@ -306,12 +308,8 @@ DocumentNode parseNode(const Json &j, std::string parent, std::int32_t &decl, st
         if (!v.is_array() || v.size() != 2 || !i32(v[0]) || !i32(v[1])) error(errors, UiErrorCode::TypeMismatch, json_path + "/intrinsic_size", "expected two int32");
         else node.intrinsic_size = {*i32(v[0]), *i32(v[1])};
     } else if (node.type == "label" || node.type == "button") {
-        static const auto font = BitmapFont::bundledDebugFont();
-        node.intrinsic_size = font.measure(node.text);
-        if (node.type == "button") {
-            node.intrinsic_size.x += 16;
-            node.intrinsic_size.y += 8;
-        }
+        node.intrinsic_size = measureTextIntrinsic(node.type, node.text);
+        node.intrinsic_from_text = true;
     }
     if (j.contains("layout")) {
         const auto &l = j.at("layout");
@@ -356,6 +354,16 @@ DocumentNode parseNode(const Json &j, std::string parent, std::int32_t &decl, st
 }
 
 } // namespace
+
+PointI measureTextIntrinsic(std::string_view type, std::string_view text) {
+    static const auto font = BitmapFont::bundledDebugFont();
+    auto size = font.measure(text);
+    if (type == "button") {
+        size.x += 16;
+        size.y += 8;
+    }
+    return size;
+}
 
 DocumentParseResult parseUiDocument(const nlohmann::json &json, EventLookup lookup) {
     DocumentParseResult result;

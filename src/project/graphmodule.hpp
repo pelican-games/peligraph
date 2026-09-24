@@ -64,7 +64,7 @@ class GraphModuleRegistry {
     nlohmann::ordered_json catalog() const;
 };
 
-// pelican.value, pelican.audio and pelican.render: the operations the engine
+// pelican.value, pelican.audio, pelican.render and pelican.ui: the operations the engine
 // itself brings. Nothing here is special-cased by the graph; a module added
 // later registers the same way.
 GraphModuleRegistry makeBuiltinGraphModuleRegistry();

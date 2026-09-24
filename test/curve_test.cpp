@@ -808,7 +808,7 @@ TEST_CASE("one operation has exactly one registering module",
     for (const auto &module : catalog.at("modules"))
         namespaces.push_back(module.at("namespace").get<std::string>());
     std::vector<std::string> expected{"pelican.render", "pelican.test.opaque",
-                                      "pelican.value"};
+                                      "pelican.ui", "pelican.value"};
 #if PELICAN_WITH_ANIMATION
     expected.insert(expected.begin(), "pelican.pose");
 #endif

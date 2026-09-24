@@ -219,6 +219,33 @@
     },
     {
       "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "UiContext",
+      "signature": "explicit UiContext(std::string_view document_key)noexcept",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "UiContext",
+      "signature": "[[nodiscard]] UiWriteResult setText(std::string_view path,std::string_view text)const",
+      "classification": "mutator",
+      "manifest": "nonparticipant.ui-document"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "UiContext",
+      "signature": "[[nodiscard]] UiWriteResult setVisible(std::string_view path,bool visible)const",
+      "classification": "mutator",
+      "manifest": "nonparticipant.ui-document"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "UiContext",
+      "signature": "[[nodiscard]] UiWriteResult setValue(std::string_view path,float value)const",
+      "classification": "mutator",
+      "manifest": "nonparticipant.ui-document"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
       "class": "GameContext",
       "signature": "bool actionsConfigured()const",
       "classification": "getter"
@@ -457,6 +484,18 @@
       "header": "src/core/userpublic/gamecontext.hpp",
       "class": "GameContext",
       "signature": "ObjectsContext objects()const noexcept",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "UiContext ui()const noexcept",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "UiContext ui(std::string_view document_key)const noexcept",
       "classification": "getter"
     },
     {

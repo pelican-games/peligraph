@@ -29,6 +29,16 @@ using AudioEventWriter = std::function<bool(std::string_view, Animation::CurvePl
 using SoundResolver = std::function<std::optional<SoundHandle>(std::string_view)>;
 enum class AudioValueKind { volume, pitch };
 using AudioValueWriter = std::function<bool(std::string_view, bool, AudioValueKind, float)>;
+// GP-3: the pelican.ui sinks. ui.value writes a gauge's value, ui.visible a
+// node's visibility (non-zero shows it). The target is the node's path in the
+// project's UI document.
+enum class UiSinkProperty { value, visible };
+struct UiSinkBinding {
+    std::string node; // the sink node's expanded id
+    std::string path;
+    UiSinkProperty property = UiSinkProperty::value;
+};
+using UiValueWriter = std::function<bool(std::string_view path, UiSinkProperty, float)>;
 // Where an instance input port's value came from in one evaluation.
 // `connected` is an edge in the authoring document; `parameter` and `default`
 // are the document's stored scalar and the definition's declared default;
@@ -174,7 +184,12 @@ class PELICAN_API Graph {
                           const InactiveScopes &inactive = {}, EvaluationState *state = nullptr,
                           const AudioEventWriter &audio_writer = {},
                           const SoundResolver &sound_resolver = {},
-                          const AudioValueWriter &audio_value_writer = {}) const;
+                          const AudioValueWriter &audio_value_writer = {},
+                          const UiValueWriter &ui_writer = {}) const;
+    // Every ui.* sink, in document order. Static: a sink in an inactive scope
+    // still owns its (path, property), so which writer owns a unit does not
+    // change with scene lifetimes.
+    const std::vector<UiSinkBinding> &uiSinkBindings() const noexcept { return ui_sinks_; }
 
     const GraphInstanceOwner *scopeOwner(std::string_view node) const noexcept;
 
@@ -228,7 +243,8 @@ class PELICAN_API Graph {
     std::vector<Node> nodes_;
     std::vector<std::size_t> order_;
     std::map<std::string, std::vector<std::size_t>, std::less<>> outputs_;
-    enum class Target { render_buffer, sound_volume, sound_pitch };
+    enum class Target { render_buffer, sound_volume, sound_pitch, ui_value, ui_visible };
+    std::vector<UiSinkBinding> ui_sinks_;
     struct Binding {
         std::string output;
         std::string target;
