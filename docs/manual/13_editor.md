@@ -659,6 +659,15 @@ QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L26) に
 
 **Frame Plan のノード編集(N-8)**: Frame Plan でも出力ソケットから編集できる pass / task の入力ソケットへ**通常ドラッグ**で接続でき、入力ソケットを空所へドラッグするか辺を Delete で切断します。どれも既存の `edit_preset_pass` / `edit_compute_task` を宣言丸ごとで 1 回送るだけで、engine の pass や fork 前の preset、feature の pass は吸着せず理由を 1 行で出します。shader stem と task の dispatch は行の帯でその場編集、それ以外は node の double-click で今までの dialog。右クリック「Add fullscreen pass…」は Pass Editor をその node の後ろに prefill して開き、Delete は authored pass(`remove_authored_pass`)と task(`remove_compute_task`)を消します。Shift ドラッグは今までどおり dialog です。node の位置・reroute・tie・group は Graph の `layout` の `frame_plan` に一緒に保存されます。rendering 文書が legacy 形(root が `pelican.graph` でない)の project では保存されず、その旨と file 名を 1 行で出します。
 
+**direct root の pass はまだ Studio から編集できません(F-4 の時点)**: Blank pipeline の project のように root が自分で pass を
+宣言し preset を選ばない(`config_kind` が `direct`)とき、engine の `edit_preset_pass` は fork された preset が無いので断ります。
+そのため Pass Editor はその pass(例: `present`)を開くと保存できない draft を読み込まず、notice 行に
+「`<pass>`: not editable in a direct root」と出し、tooltip に root の参照と「Edit that file by hand.」を出します
+([direct root の Pass Editor の拒否](../../src/devstudio/view/fullscreenpasswidget.cpp#L1808))。canvas の drag や帯の編集も
+同じ文で断り、engine が足した pass には「is added by the engine; it has no declaration in the project to edit.」と言います。
+どちらも fork は勧めません([direct root の canvas の拒否](../../src/devstudio/view/frameplanedit.cpp#L124))。今は root の文書を
+手で直してください。**この制限は F-6(direct root の pass の編集、着手中)で無くなる予定です。**
+
 **Frame Plan で render target を宣言する(✅F-1)**: toolbar の **New render target...**(`pelican.framePlanNewRenderTarget`)か、
 canvas の空所の右クリックの同名 action(`pelican.framePlan.newRenderTarget`)で form(`pelican.renderTargetForm`)が開きます
 ([form](../../src/devstudio/view/rendertargetform.cpp#L36))。欄は名前・種類(Scene color / Display / Data / Explicit format と
@@ -764,9 +773,11 @@ objectName が付いていて(`pelican.file.*` / `pelican.view.panels.*` / `peli
 [README](../../test/studio_scenarios/README.md#L55))。step は「命令をそのまま送るもの」か「期待」で、期待は
 `rpc_equals`(engine の応答の `path` が `value`)/ `result`(任意の命令を送り、応答の `path` を記録するか `value` と比べる)/
 `text_equals` / `visible` / `list_count` / `screenshot`(保存のみ)の 6 種です([判定](../../tools/studio_drive.py#L682))。`{project}` / `{artifacts}` と `--var NAME=VALUE` は step のすべての文字列に差し込まれます。
-3 つ目の種類の **`file` step**(✅F-3)は Studio へ送らず、driver 自身が fixture の複製の中の file を 1 つ読み書きします ——
+3 つ目の種類の **`file` step**(✅F-3)は Studio へ送らず、driver 自身が run の持つ directory の中の file を 1 つ読み書きします ——
 人が Studio の操作の合間に自分のエディタで file を直す、の代わりです。`write` / `replace`(`old` がちょうど 1 か所のときだけ)/
-`contains` / `exists` の 4 つで、path が `{project}` の外なら step が失敗します([実装](../../tools/studio_drive.py#L542))。
+`contains` / `exists` の 4 つです。書ける範囲は **`{project}`(fixture の複製)と `{artifacts}`(その run の成果物の置き場)の
+2 つ**で、File > New Project でシナリオが作った project は `{artifacts}` の下にあるので、そこにも届きます(✅F-4)。
+それ以外の path(`..` で外へ出るものを含む)は step の失敗です([file step の範囲の検査](../../tools/studio_drive.py#L566))。
 driver の stdout / stderr は、cp932 の console で出せない文字があっても止まりません。
 `"probe_no_automation": true` を書くと、**先に flag 無しの Studio を起こして socket が無いことを確かめて**から本番を起動します。
 最初の失敗で run は止まります。
@@ -785,7 +796,7 @@ CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが�
 `studio_exit_code` と `studio_shutdown_forced` も記録します。最後の shutdown step は
 **exit 0、強制終了なし**を要求し、異常終了・タイムアウトによる強制停止も report と driver の失敗になります。
 
-現在のシナリオは **13 本**です。
+現在のシナリオは **14 本**です。
 `graph_read` は fixture を Graph タブで開き、`list` が objectName を返すこと・無い名前が
 `automation.widget_missing@1` で断られること・キャンバスが描いたものが `get_graph_instances` の中身と合うことを見ます
 ([シナリオ](../../test/studio_scenarios/graph_read.json))。`graph_edit_roundtrip` は**実物の engine で**値の帯を
@@ -808,14 +819,29 @@ target が残ることを追います([シナリオ](../../test/studio_scenarios
 壊すと status 行が「does not reload shaders」と言い印が出ないことを見ます
 ([シナリオ](../../test/studio_scenarios/fullscreen_pass_from_template.json))。自動化面の下では Studio は shader を
 desktop で開かず、`automation: shader source open <path>` を log に書きます([差し替え](../../src/devstudio/view/uimain.cpp#L50))。
+✅F-4 の `render_pipeline_from_scratch`(93 step)は「0 から組める」第一段階の筋書きを端から端まで追います:
+File > New Project... で `{artifacts}` に Blank pipeline の project を作り(画面は `present` の gradient)、New render
+target... で `scene_color` を名前だけで宣言し、Add fullscreen pass... で `draw_pattern` を `present` の前に足して
+`scene_color` に書かせ、New... の雛形を `file` step で 8 本の縞に書き換えて Save します。`present` に `scene_color` を
+読ませる手順は**まだ Studio では通りません** —— Pass Editor は「present: not editable in a direct root」と断り(シナリオは
+この文言を確かめます)、canvas はまだ誰も読まない target を `present` と同じ画面に描かないので drag の元もありません。
+そこでシナリオは `file` step で root と `present.frag` を手で直し、別の project を開いて戻って engine に読み直させます。
+そのあと viewport の screenshot が 4 色以下で、同じ縞の上下が同じ色・隣の縞が違う色・手順 1 の gradient のその点とも
+違う色であること、canvas と engine が `draw_pattern` → `present` の順であることを見て、もう一度別の project を開いて
+戻っても同じであることを確かめます(Studio の再起動ではありません)([シナリオ](../../test/studio_scenarios/render_pipeline_from_scratch.json))。
 
 ⚠ **2 つの注意。**(1) `open_project` に**今開いている directory** を渡すと何も起きません(`EmbeddedViewport::openProject`
 がそう作られています)。ディスクから読み直させたいときは、別の project を開いてから戻ります。
 (2) `screenshot` の既定(`widget` モード)は Qt の widget 木を描くので、**埋め込まれた engine の窓は写りません**
 (別 HWND です)。engine が描いた絵が要るときは `"mode": "screen"` を使い、窓が隠れていない必要があります。
 `screenshot` の応答は `path` / `mode` / `width` / `height` に加えて **`distinct_colors`**(絵に含まれる色の数)を返します
-(✅F-2、[応答](../../src/devstudio/automation/automationcommands.cpp#L1665))。消去されただけの viewport は 1 色なので、
+(✅F-2、[screenshot の distinct_colors](../../src/devstudio/automation/automationcommands.cpp#L1693))。消去されただけの viewport は 1 色なので、
 `result` step で `distinct_colors` を読めば「engine が何か描いたか」を PNG を開かずに判定できます。
+**`"pixels": [[x, y], ...]`**(✅F-4)を付けると、応答にその各点の色が `"#rrggbb"` の配列 `pixels` で返ります
+([screenshot の pixels の読み取り](../../src/devstudio/automation/automationcommands.cpp#L1695))。x / y は絵の幅・高さに
+対する 0〜1 の割合なので、窓の大きさを知らずに書けます。配列でない・2 要素でない・範囲外なら `automation.bad_request@1` です。
+`result` step の `remember` で 1 点の色を覚え、別の点を `value_of` と `op`(`eq` / `ne`)で比べれば「同じ縞の下も同じ色、隣の縞は違う色」の
+ように、output transform がどんな色にしても絵の形を判定できます。
 
 **この面が最初の往復で本物のバグを見つけました。**値の帯を click → type → Enter すると「Graph change saved.」と
 出るのに古い値が保存される —— `QDoubleSpinBox` の `keyboardTracking=false` と、editor の filter が Enter を先に

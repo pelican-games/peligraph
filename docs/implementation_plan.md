@@ -24463,6 +24463,57 @@ Studio 内の shader テキストエディタ / vertex shader の雛形 / comput
 - worktree での非 GPU 全数は 1802/1803(赤は F-1 と同じ `WP364 immutable parent fixtures remain byte exact`)。シナリオ `fullscreen_pass_from_template` は緑。着地の family gate 24/24
 - **F 系列の残り**: F-4(端から端までのシナリオ)/ F-5(明示の `reload_shaders` RPC。F-3 の印を観測可能にする)
 
+### F-4: 端から端 —— blank の project から、Studio だけで 2 pass の pipeline を組んで画面に出す(「0 から組める」第一段階の受け入れ)
+
+**下段(test と、見つかった穴の小修正)。実装者: Claude(Opus)。この WP の主目的は「利用者の筋書きが Studio の操作だけで最後まで通るか」を automation で確かめ、通らない所を名指しすること。**
+
+#### 筋書き(利用者が Studio でやること。これを 1 本のシナリオ `render_pipeline_from_scratch` にする)
+1. File → New Project… → Blank pipeline で作る(F-2)。画面は gradient(`present` が `display` に書く)
+2. Frame Plan で **New render target…** → 名前 `scene_color` だけ入れて OK(F-1)。既定 = 画面と同じ大きさの scene color
+3. **Add fullscreen pass…**(N-8)で pass `draw_pattern` を `present` の前に足す: 入力なし、出力 color = `scene_color`、fragment shader は **New…**(F-3)で雛形から作る。雛形(入力 0 個 = UV gradient)を、scenario の `file` step で「縞模様」など gradient と区別できる shader に書き換えてから Save
+4. `present` の入力に `scene_color` をつなぐ(canvas の drag か Pass Editor)。`present.frag` を「入力 0 をそのまま出す」shader に書き換える(`file` step)。F-5(shader の明示 reload)が未着地なので、shader の変更は **pass の保存(edit / add の ticket)で preflight と pipeline 再構築が走る**ことに頼ってよい。頼れないなら、それが穴
+5. viewport の screenshot が手順 1 の gradient と違う(縞模様が出ている)。`distinct_colors` と、可能なら特定の画素の比較で判定
+6. Studio を閉じて開き直しても同じ図と同じ画面(文書に残っている)
+
+#### やること
+- 上のシナリオを書いて通す。fixture は要らない(New Project で作る。置き場は `{artifacts}`)
+- **通らない step があれば**原因を 1 つずつ特定し、Studio 側の小さな欠落(1 関数 / 数十行)なら直す。engine 側が要る、または設計判断が要るもの(例: direct root の pass が `edit_preset_pass` で編集できない、`add_authored_pass` が direct root の `begin` / `before:` を出さない、など)は**直さずに**、その step を別の操作で迂回し、報告に「穴」として file:line と再現手順を書く
+- 既存シナリオと Studio test を壊さない
+
+#### 受け入れ
+1. シナリオ `render_pipeline_from_scratch` が緑(迂回した step があれば報告に列挙)
+2. 手順 5 の判定が本当に噛む: `draw_pattern` の shader を gradient のままにする変異で赤
+3. 非 GPU の devstudio 系全数緑、シナリオ全数緑
+
+#### やらないこと
+engine の新機能 / 第二段階(raster・material pass、forward / deferred)。
+
+#### 着地(2026-09-24、3dc6a95e)
+- **シナリオ `render_pipeline_from_scratch`**(新、**93 step**、`test/studio_scenarios/render_pipeline_from_scratch.json`)。専用 fixture は無い: Studio は共有の `test/fixtures/studio_automation_graph` の複製で起動し、New Project の置き場は `{artifacts}`、開き直しに使う「別の project」は同じ fixture のもう 1 つの複製 `{other_project}`(`test/run_studio_scenario.cmake`)
+  - 手順 1: `pelican.file.newProject` → `{artifacts}` に `blank_project`、Blank pipeline → Create。`present` が描かれ engine が 30 frame を出してから、viewport の screen モードの screenshot が 100 色を超え、同じ x の上下 2 点の色が違う(gradient)。上の点の色を `gradient_top` として覚える
+  - 手順 2: New render target... に `scene_color` だけ → resource node。engine の `render_targets[0]` が `source: "authoring"`・`extent_scale 1`・`format_class "scene"`
+  - 手順 3: `present` を選んで Add fullscreen pass... → 位置を 1(`present` の後)から 0 へ、名前 `draw_pattern`、vertex `engine://fullscreen`、color 出力 `scene_color` → New... → Create(stem と雛形の `vec4(inUV, 0.0, 1.0)` を確かめる)→ `file replace` で 8 本の縞に → Save。`add_authored_pass` の preflight と pipeline 再構築が縞の shader を compile し、engine の `graphs[0].passes[0]` が `draw_pattern` で `scene_color` に書く。まだ誰も読まないので画面は gradient のまま
+  - 手順 4: **Studio では通らない(穴 1・2)**。`present` の double-click で Pass Editor が「present: not editable in a direct root」を出し、field 所有の表示が `✓ fields` のまま(type の誤報が出ない)ことを確かめる。そのあと迂回として、`file` step で root(`passes/main_rendering_config.json`)の `"input": []` を `["scene_color"]` に、`present.frag` を「入力 0 をそのまま出す」shader に書き換え、別 project を開いて戻ることで engine にディスクから読ませる
+  - 手順 5: screenshot の `distinct_colors` が 4 以下、同じ縞の上下 2 点が同じ色、隣の縞の点が違う色、手順 1 の gradient のその点の色とも違う。canvas は Target `display`・深さ 64 で `draw_pattern` と `present/in:scene_color`・`draw_pattern/out:scene_color` を描き、engine は `draw_pattern`・`present` の順
+  - 手順 6: **Studio の再起動ではなく**、別 project を開いて戻ることで確かめる。同じ canvas・同じ engine の順・手順 5 と同じ画面の判定
+- **判定が噛むこと(受け入れ 2)**: 縞への書き換えの step を外すと、手順 5 の `distinct_colors` が 19926 > 4 で赤。さらにその `distinct_colors` の判定も外すと、画素の比較で赤(どの画素の step かは記録に無く未確認)
+- **Studio の修正**:
+  - Pass Editor: direct root が自分で宣言した pass(provenance `project`)を開くと、保存できない draft を読み込まず、notice 行に「`<pass>`: not editable in a direct root」、tooltip に「... declared in the project's own rendering config (`<root の参照>`), which selects no preset: Studio cannot edit a pass there yet. Edit that file by hand.」(`src/devstudio/view/fullscreenpasswidget.cpp`)。拒否された pass で「key 'type' not found」が出ていたのは、空の宣言から type を読んでいた `preservesPresetDeclaration` を直した
+  - canvas の拒否文(`src/devstudio/view/frameplanedit.cpp` の `passRefusal`): direct root の pass は上と同じ文、engine が足した pass は「... is added by the engine; it has no declaration in the project to edit.」。どちらも fork を勧めない(以前は無い preset の fork を求めていた)。`FramePlanAuthoring` に `direct`(`config_kind == "direct"`)と `source_reference` を足した
+- **automation**: `screenshot` が `pixels`(`[[x, y], ...]`、絵の幅・高さに対する 0〜1 の割合)を取り、応答に各点の色 `"#rrggbb"` の配列 `pixels` を足す。配列でない・2 要素でない・範囲外は `automation.bad_request@1`(`src/devstudio/automation/automationcommands.cpp` の `commandScreenshot`)。driver の `file` step の範囲を `{project}` の複製と `{artifacts}` の 2 つにした(それ以外は step の失敗。`tools/studio_drive.py` の `run_file_step`)
+- **test**: `devstudio_frameplan_graph_test` に F-4 の case(direct root の `present` の拒否文が root の参照と「selects no preset」を含み fork を言わない / engine の `gizmo_pass` は「added by the engine」/ 対照: preset root では fork を求める)/ `test/ci/test_studio_drive.py` に file step の範囲(project の複製と artifacts の中は通り、外と `..` で外へ出る path は拒否)/ `test/studio_scenarios/README.md` に `pixels` と file step の範囲
+- **その他の変異**(各々赤を確認し戻して緑、実装者の報告による。どの check が赤になったかは記録に無く未確認): Pass Editor の direct root 拒否を外す / draft の `type` の修正を戻す / canvas の拒否文を戻す / screenshot の `pixels` を外す / driver の `{artifacts}` の範囲を外す
+- **見つかった穴と行き先**:
+  1. (engine)direct root が宣言した pass は編集できない: `edit_preset_pass` は project に fork された preset が無ければ `project_preset_required` で断る(`src/core/communication/renderconfigeditor.cpp` の `RenderConfigEditorService::editPresetPass`)。Blank pipeline の `present` がこれに当たり、シナリオの手順 4 は手で行った → **F-6(着手中)**
+  2. (Studio)Frame Plan の canvas は選んだ target に届くものしか描かないので、宣言したがまだ誰も読まない target と、それをこれから読む pass が同じ画面に並ばない(手順 4 で drag の元が無い)→ **F-7(着手中、"Whole frame")**
+  3. 変わった shader を engine に読み直させる手段が、pass の保存か project の開き直ししか無い(Studio の engine は reload gate が閉じている。F-3 の着地を参照)→ **F-5(着手中、`reload_shaders`)**
+  4. 拒否された pass を開いても、Pass Editor の form に前の draft が残る → F-7
+  5. Pass Editor の dock を開くと viewport が 60〜80 px ほどに潰れ、そのまま戻らない。自動化の viewport の screenshot は画面の領域を読むので、別の窓が重なると偽の赤になり、着地時に 1 回それで赤になった(再実行で緑)→ F-7。engine の readback による screenshot は後の案
+  6. project を切り替えた後、status bar に「Modal transform polling failed: pelican_player exited before returning an RPC response.」が出る(文言は `src/devstudio/model/gizmomodel.cpp` と `src/devstudio/viewport/engineprocess.cpp` が組み立てる)→ F-7
+  - 4〜6 は実行中の観測の報告で、原因はコードで確かめていない(未確認)
+- **起票からの逸脱**: 手順 4 は Studio を通らない(上)/ 手順 6 は別 project を開いて戻ることで確かめ、Studio を閉じて開き直してはいない / 専用 fixture は作らないが、Studio の起動と開き直しの行き先に共有 fixture の複製を使う
+- **F 系列の残り**: F-5(`reload_shaders`)/ F-6(direct root の pass の編集)/ F-7(Whole frame と穴 4〜6)。いずれも着手中
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
