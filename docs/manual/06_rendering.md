@@ -2389,8 +2389,17 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 preview graph の合成規則(すべて起動時に検証されます):
 
 - 終端の `"swapchain"` 出力は**リクエストローカルな `preview_capture`** へ書き換えられます。swapchain イメージ・ミラーシンク・present キュー・共有 descriptor view は preview のプログラムに表現できません。
-- 名前または宣言面に `taa` / `velocity` / `motion_vector` / `projection_jitter` / `ui` / `imgui` / `mirror` / `present` を含む feature、`history: true` の RT を宣言する feature、`projection_jitter` を宣言する feature は**まるごと除外**されます(除外名は `excluded_feature_names` に記録され、composer の依存/アンカー検証はそのまま働きます)。
-- **config へ直書き**した同種の構成は除外できないため、名指しの起動エラーになります(§6.11 の `preview graph ...` 行)。`@history` の読み書きも同様です。ただし名前が `present` で終わる終端パスだけは、出力が request-local な終端(`preview_capture` / `display`)に解決されていて `mirror` / `ui` を含まない場合に限り保持されます。
+- feature は次のどれかに当たると**まるごと除外**されます(除外名は `excluded_feature_names` に記録され、composer の依存/アンカー検証はそのまま働きます。[preview と xr の判定](../../src/project/graphvariantpolicy.cpp#L617))。括弧の中は理由の名前です。
+  - feature 名が下の marker を語として含む(`unsafe_name`)
+  - `history: true` の RT を宣言する(`history`)/ `projection_jitter` を宣言する(`projection_jitter`)
+  - 名前に `velocity` / `motion_vector` を含む RT(ここだけは部分一致)か、`type: "velocity"` の pass を宣言する(`velocity`)
+  - `type: "ui"` の pass か、`insert` が `after:pelican_ui` / `before:pelican_ui` と**完全に一致する** pass を宣言する(`user_interface`)
+  - 宣言した RT の名前、または pass の `name` / `type` が marker を語として含む(`unsafe_surface`)
+- marker は `taa` / `velocity` / `motion_vector` / `projection_jitter` / `ui` / `imgui` / `mirror` / `present` で、✅G-6 から**語単位**で照合します。名前を英数字以外の文字・小文字から大文字への境・文字と数字の境で語に切り、小文字にして、marker の語の並びが続けて現れるかを見ます。marker の最後の語は末尾に `s` が付いても一致します(`motion_vectors` など)。`fluid_*`・`build_*`・`presentation` は一致せず、`final_present`・`debugUI` は一致します([語単位の照合](../../src/project/graphvariantpolicy.cpp#L79))。
+- pass の `insert` の文字列は、上の `pelican_ui` の 2 つを除いて判定に使いません。`insert: "before:present"` の feature は除外されません。swapchain に書くことも除外の理由ではありません。`hdr`・`bloom`・`debug_draw`・`gizmo` は swapchain に書きますが、上の書き換えで `preview_capture` に書いて残ります。
+- **除外は依存する feature に伝わります(✅G-6)。**除外された feature の pass・compute task・RT・buffer を後の feature が使っていれば、その feature も同じ変種で除外されます。「使う」は、`insert` の anchor にする / pass・compute task の `after` / `before` に書く / `pass_overrides`・`render_target_overrides` の key にする / pass・compute task の `input` / `output` で読み書きする(`<名前>@history` も)のどれかです。理由は `dependency` で、解決結果の診断 `feature_excluded` の detail は `preview:dependency:<依存先の feature 名>` です(この診断が RPC に出るかは未確認)。canonical anchor(`after:post_main` など)は、同じ名前の pass が feature にあっても依存になりません。`features[]` の順に 1 回走査して決めるので、依存で除外された feature に依存する feature も同じ走査で除外されます。xr 変種も同じ規則です(`xr:dependency:<名前>`。[依存の検出](../../src/project/graphvariantpolicy.cpp#L826))。
+- 編集 RPC は、候補を flat だけでなく preview(と、起動時に XR を始めた engine では xr)でも合成してから受けます。preview で合成できない編集は `render_pipeline_preflight_failed` に `variant: "preview"` が付いて断られます([第13章](13_editor.md))。
+- **config へ直書き**した同種の構成は除外できないため、名指しの起動エラーになります(§6.11 の `preview graph ...` 行)。`@history` の読み書きも同様です。ただし名前が `present` で終わる終端パスだけは、出力が request-local な終端(`preview_capture` / `display`)に解決されていて `mirror` / `ui` を語として含まない場合に限り保持されます。直書きの pass の名前も、上と同じ語単位で照合します。
 
 合成結果には `generation`(合成後 config の FNV ハッシュ)が付き、`render_preview` の応答に `graph_generation` として返ります。config を編集して再合成すると値が変わるので、エディタ側の再取得判定に使えます。
 

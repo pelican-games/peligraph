@@ -92,7 +92,7 @@ procedural geometryは複数選択でき、1件なら`asset`、複数なら`asse
 **この build で使えない component は灰色で並びます(✅Q-6)。**`get_component_add_candidates` は、build で外した機能の
 component を `available: false` と、`unavailable_reason` に code を入れて返します(PG-1)。Studio はそういう行を**使える行の後ろに
 灰色で**並べ、名前の後ろに短い語を付けます: module の無い build なら `— not in this build`、
-`pelican.ray_instance_requires_layout_v2@1` なら `— needs ray layout v2`、Studio の知らない code なら `— unavailable` です。
+`pelican.ray_instance_requires_layout_v2@1`(project に ray group layout が無い。MG-2a から layout は version 3 だけで、code の名前は変えていません)なら `— needs ray layout v2`(この短い語は Q-7 で直す予定です。説明欄の文 `Ray instances need ray group layout v2` も今は v2 のままです)、Studio の知らない code なら `— unavailable` です。
 行は選べますが、選ぶと **Add**・asset の一覧・**Use selected assets** が押せなくなり、宣言 JSON は読み取り専用になります
 ([Add と宣言欄を止める所](../../src/devstudio/view/componentaddlist.cpp#L41))。説明欄の 1 行目は読める文と code です
 (例: `This build has no physics module (physics.module_unavailable@1)`)。code と文・短い語の対応表は Studio に 1 つで
@@ -415,6 +415,20 @@ feature だけだからです。拒否は次の 6 種で、どれも文書を 1 
 `render_target_vocabulary`(`formats` / `usage` は parser 自身の表、`format_classes` は `scene` / `display` / `data` /
 `explicit`)が付きます。fragment は pass を持たないので `managed_fragments` には出ません。
 
+**編集は、起動時に登録した graph の変種の全部で合成してから受けます(✅G-6)。**engine は起動時に flat と一緒に preview の
+graph も組み、XR を始めたときは xr も組みます([第6章 §6.13](06_rendering.md))。render の編集の候補は、ticket を取る前に
+このすべてで合成されます。flat と preview は常に、xr は起動時に XR を始めた engine だけです(xr は history を持つ feature を
+拒否するので、XR を始めていない engine で xr を合成すると、TAA の project の編集がすべて断られてしまいます)。対象は root の
+文書を変える編集(`edit_render_features`・`edit_preset_pass`・`edit_graph_document` など)と、authored pass の系統
+(`add_authored_pass`・`remove_authored_pass`・`edit_render_targets`)です([変種を合成する preflight](../../src/core/communication/renderconfigeditor.cpp#L899))。
+flat で合成できない候補は今までどおり flat の経路で断られます。flat が通って preview か xr が合成できない候補は
+`render_pipeline_preflight_failed` に **`variant`**(`"preview"` / `"xr"`)が付いて断られ、文書は変わりません。`set_layout`
+だけの `edit_graph_document`(再 compose しない編集)と、context の読み取りは合成しません。Studio はこの拒否を、Pass Editor と
+Frame Plan の status 行に `The preview graph refused it: <code>: <message>` の 1 行で出します(以前の Pass Editor は
+`authoring failed` とだけ出し、理由は tooltip にしかありませんでした。[拒否の 1 行を作る所](../../src/devstudio/view/frameplanedit.cpp#L775))。
+例: `history: true` の target `trail` を足す編集は通りますが(preview はその fragment ごと外します)、direct root の `present` に
+`trail@history` を読ませる `edit_preset_pass` は preview で断られます。
+
 **material pass を足す(✅G-1)。**`add_authored_pass` は fullscreen に加えて `type: "material"` を受けます(raster は
 scene を描かないので受けません)。合成だけでは material pass の color の枚数・depth・format を見ないので、engine は
 合成した候補の中の新しい pass を、load と同じ parser(`parsePassDefinitionFromJson`)に候補の render target で通します
@@ -493,7 +507,7 @@ engine presetは先に **Fork preset...**でprojectへコピーしてくださ�
 Render Featuresの **Scene AS...** にある **Triangle coordinate space** で三角形の座標系を選べます。
 **Geometry space** は個体ごとの変換を使い、**World space** は変換を三角形へ適用して、条件が合う個体を同じBLASへまとめます。
 worldではhit shaderのobject座標系もworldになり、ObjectToWorld/WorldToObjectはidentityになります。procedural AABBは変わりません。
-project所有のray group layout v2/v3が編集対象です。**Apply**でAS定義・接続と一緒に保存し、失敗時は元設定を保持します。
+project所有のray group layout(version 3。MG-2a から他の version は読めません)が編集対象です。**Apply**でAS定義・接続と一緒に保存し、失敗時は元設定を保持します。
 
 fork後はFrame Planでfullscreen passを選び、**Edit preset pass...**で入出力とshader参照を編集できます。
 material/raster passを選ぶと、Pass Editorで入力・color/depth出力と **Use scene ray query** / **Scene acceleration structure** を編集できます。
@@ -1188,21 +1202,20 @@ drag すると viewport の中央に背景とも前の gradient とも違う色�
 見出しで開き、Inputs に `scene_color` を Add し、New... の Tone map で `present_tone_map` を作って Save すると、viewport の箱・床・
 背景が互いに違う色(前の gradient とも違う色)になります。別の project を開いて戻っても同じ 3 色です
 ([forward ループのシナリオ](../../test/studio_scenarios/forward_loop_from_scratch.json))。
-`deferred_loop_from_scratch`(157 step)は同じ出だしに加えて Cube を縦軸の回りに回し(`.transform.rotation.1` と `.3`)、
+`deferred_loop_from_scratch`(148 step)は同じ出だしに加えて Cube を縦軸の回りに回し(`.transform.rotation.1` と `.3`)、
 Add material pass... の Deferred geometry で G-buffer 5 枚と `scene_depth` を作ります(route は既定のままなので再起動は
-求められません)。New render target... で `lit_color` を作り、Add fullscreen pass... で G-buffer 5 枚を読み `lit_color` に書く
-pass を New... の Deferred lighting で作り、`present` は Tone map で `lit_color` を読みます。光源が箱の 2 面を違う色に塗ること、
-Inspector で光源の向き(`pelican.inspectorVector.light.direction.0`)を変えると光の離れた面の色が変わることを見ます
+求められません)。New render target... で `lit_color` を作り、canvas の Target を **Whole frame** にして `deferred_geometry` を
+見出しで選び、Add fullscreen pass... で G-buffer 5 枚を読み `lit_color` に書く pass を New... の Deferred lighting で作ります
+(置き場所は `deferred_geometry` の後で、engine はこの pass を geometry と `present` の間で走らせます)。`present` は Tone map で
+`lit_color` を読みます。光源が箱の 2 面を違う色に塗ること、Inspector で光源の向き(`pelican.inspectorVector.light.direction.0`)を
+変えると光の離れた面の色が変わることを見ます
 ([deferred ループのシナリオ](../../test/studio_scenarios/deferred_loop_from_scratch.json))。
-⚠ **deferred の方は 1 か所だけ手で迂回しています。**lighting の pass は geometry と `present` の間に要りますが、authoring context が
-出す挿入位置 `after:deferred_geometry` は `add_authored_pass` が受けても、root の合成が
-`render feature pass insert anchor was not found` で失敗します(authored fragment の pass は、別の authored fragment の pass を anchor にできません。
-[anchor が見つからないときの throw](../../src/project/featurecompose.cpp#L1985))。挿入位置の候補は「先頭の pass の前」と「各 pass の後」
-なので([挿入位置の候補の並び](../../src/core/communication/renderconfigeditor.cpp#L1956))、geometry が先頭にあると
-`before:present` は候補に出ません。`present` の後に置くと、`present` はそれより後の出力を読めません。そこでシナリオは Studio で
-`present` の後に足して Save し、`file` step で authoring fragment の `insert` を `before:present` に書き換えて、project を
-開き直します(この穴は別の WP で扱います)。`after:deferred_geometry` で足したときの失敗は、Pass Editor の status 行には
-`authoring failed` しか出ず、理由は tooltip(`Render authoring failed: ...`)にあります。
+G-5 の時点では lighting の pass の置き場所だけを手で迂回していました(`present` の後に足してから、`file` step で fragment の
+`insert` を書き換えていた)。preview の変種が geometry の fragment を `insert: "before:present"` の文字列で外し、それを anchor に
+する lighting の fragment だけが残って、合成が `render feature pass insert anchor was not found` で落ちていたためです。✅G-6 で
+preview の判定と除外の伝播が直り([第6章 §6.13](06_rendering.md))、迂回はなくなりました。⚠ このシナリオは G-6 の step を全部
+通りますが、最後に Inspector が busy のまま残って赤で終わります(engine の変種の preflight を外しても同じ。実装者の報告で、
+Q-7 で扱います)。
 `graph_reroute_tie` の node の drag は、✅Q-5 から窓の画素ではなく canvas の位置(`"scene"`)で終わります。F-5 から run は
 毎回既定 layout で始まるので、窓の画素で置くと node が入力の列より左に来て、続く click が別の node に当たっていました
 (bundle の drag はまだ窓の画素です)。
@@ -1345,7 +1358,7 @@ Studio 専用の裏口はありません(D0)。
 
 `width` / `height` は 1〜2048、`max_bytes` は最大 16 MiB、`camera` は `{object_id}` か明示的な `{position,target,up,projection}` のどちらか一方です。
 
-なお、プレビュー専用の**第 3 のレンダーグラフ variant**(flat / XR に続く `preview`)が起動時に必ずコンパイルされます。TAA・velocity・history・UI・XR ミラーなど「時間方向やスワップチェーンに依存する feature」は除外され、除外できない構成は**起動時にパス名入りで拒否**されます([第6章](06_rendering.md))。
+なお、プレビュー専用の**第 3 のレンダーグラフ variant**(flat / XR に続く `preview`)が起動時に必ずコンパイルされます。TAA・velocity・history・UI・XR ミラーなど、時間方向や UI・ミラーに依存する feature は除外されます。判定は feature の名前と、宣言した pass・RT の名前と種類によるもので(名前は語単位で照合)、pass の置き場所(`insert`)は `pelican_ui` の前後かどうかだけを見ます。swapchain に書くだけでは除外されません(preview では `preview_capture` への書き込みになります)。除外された feature の pass や RT を使う feature も、一緒に除外されます(✅G-6)。config に直書きした除外できない構成は**起動時にパス名入りで拒否**され、編集の候補を preview が合成できないときは `variant: "preview"` 付きで断られます(§13.5。規則の詳細は[第6章 §6.13](06_rendering.md))。
 
 ## 13.8 保存とスナップショット
 
@@ -1474,7 +1487,7 @@ Qt Inspectorは再帰schemaのListを行IDと値の一覧で表示します。`A
 
 geometryを選択すると、mask・instance flags・custom index・geometry flagsの実効値、適用元、優先順を項目別に表示します。
 最初の3項目は既定値→component→occurrence overrideで、未指定fieldは継承し、明示的な0は上書きです。
-geometry flagsは既定値とtriangleのgeometry rule、proceduralではその既定値から決まります。layout v1のcustom indexはrow qです。
+geometry flagsは既定値とtriangleのgeometry rule、proceduralではその既定値から決まります。layout v1(custom indexがrow qだった版)はMG-2aから読めず、`pelican.ray_group_layout.version_unsupported@1`で断られます(Studioの説明文には「Layout v1 uses row q as custom index.」がまだ残っています)。
 rule番号とoverride行IDも既存scene-planの出所情報から表示します。GPU値の読み戻しや解決規則の変更ではありません。
 
 `Related RT tasks...`は選択geometryのhit groupを使うtaskを、読み込み済みFrame Planから探します。
