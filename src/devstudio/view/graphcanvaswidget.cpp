@@ -555,15 +555,39 @@ void GraphCanvasScene::noteLayoutChange() {
     layout_sent_ = nlohmann::json{};
     if (layout_timer_ != nullptr)
         layout_timer_->start(GraphCanvasLayoutDebounceMs);
+    if (placementChanged) placementChanged();
 }
 
-void GraphCanvasScene::flushLayout() {
-    if (!layout_dirty_ || model_ == nullptr) return;
+nlohmann::json GraphCanvasScene::placementPayload() const {
     auto payload = graphCanvasLayoutToJson(layout_);
     // The other panel's members ride along: one `set_layout` replaces the whole
     // object, so leaving them out here is the same as deleting them.
     for (const auto &[key, value] : layout_foreign_.items())
         payload[key] = value;
+    return payload;
+}
+
+bool GraphCanvasScene::followDocumentPlacement() {
+    if (model_ == nullptr) return false;
+    const std::string scope = model_->currentScope();
+    if (scope != layout_scope_) return false;
+    const auto document = model_->scopeLayout(scope);
+    if (layout_dirty_) {
+        // The canvas is ahead of the document, and what it draws is its own
+        // placement whichever way this read went -- the same rule loadLayout
+        // applies. When the document now says exactly what was sent, the
+        // canvas has caught up and has nothing left in the air.
+        if (document == layout_sent_) layout_dirty_ = false;
+        return true;
+    }
+    // Nothing of this canvas's is in the air, so the document is the one to
+    // follow; it only needs no redraw when it already says what is drawn.
+    return document == placementPayload();
+}
+
+void GraphCanvasScene::flushLayout() {
+    if (!layout_dirty_ || model_ == nullptr) return;
+    auto payload = placementPayload();
     // Busy with the last edit, or no digest to hold the document still yet.
     // The change is kept rather than dropped: losing it would lose the drag.
     if (!model_->canEdit() || !model_->setLayout(layout_scope_, payload)) {
@@ -2092,6 +2116,7 @@ struct GraphCanvasWidget::Impl {
     QHash<qint64, quint64> transport_requests;
     std::uint64_t rendered_content = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t rendered_report = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t rendered_placement = std::numeric_limits<std::uint64_t>::max();
 
     explicit Impl(GraphCanvasWidget &owner, GraphCanvasReadCapability capability)
         : view{owner}, graph{std::move(capability)} {
@@ -2304,6 +2329,10 @@ struct GraphCanvasWidget::Impl {
         // Every canvas gesture is applied the moment it finishes, so the only
         // thing left to do here is post what the model already built.
         scene->editSubmitted = [this] { dispatch(); };
+        // Q-5: the notice says "Saving" the moment a placement changes, not
+        // when the wait before sending it runs out. Only the label: this runs
+        // from inside a drag and from inside a rebuild.
+        scene->placementChanged = [this] { showNotice(); };
         scene->addNodeRequested = [this](const QPointF &) { openPalette(); };
         scene->fitViewRequested = [this] { canvas->fitView(); };
         // A scope shown for the first time -- which includes the first draw
@@ -2681,16 +2710,39 @@ struct GraphCanvasWidget::Impl {
         // rendered marks are left behind, so the next tick draws it. N-6 adds
         // the other half of the same rule: a drag in progress is a hand on an
         // item, and rebuilding would delete what it is holding.
-        if ((content_changed || report_changed) && !scene->editingInline() &&
-            !scene->dragging()) {
+        const bool placement_changed =
+            rendered_placement != model.placementRevision();
+        if ((content_changed || report_changed || placement_changed) &&
+            !scene->editingInline() && !scene->dragging()) {
             rendered_content = model.contentRevision();
             rendered_report = model.reportRevision();
-            scene->repopulate();
-            syncScopeControls();
-            syncValueControls();
-            showDetails();
+            rendered_placement = model.placementRevision();
+            // Q-5: a read that only moved the placement -- the reply to the
+            // drag that was just made -- keeps the scene when the scene is
+            // already drawing it. Rebuilding there threw every item away and
+            // drew it again a moment after the person had gone on to use it.
+            const bool redraw = content_changed || report_changed ||
+                                !scene->followDocumentPlacement();
+            if (redraw) {
+                scene->repopulate();
+                syncScopeControls();
+                syncValueControls();
+                showDetails();
+            }
         }
-        const auto message = model.notice();
+        showNotice();
+        refresh->setEnabled(model.canRefresh());
+        synchronizeTimeline();
+    }
+
+    void showNotice() {
+        auto message = model.notice();
+        // Q-5: a placement change nobody has sent yet is not saved, whatever
+        // the last save said. Only an error outranks it: that is the one thing
+        // the user must still read.
+        if (scene->placementUnsent() && message.kind != InspectorNoticeKind::Error)
+            message = {InspectorNoticeKind::Information,
+                       "Saving the graph change..."};
         if (message.kind == InspectorNoticeKind::None) {
             notice->clear();
             notice->hide();
@@ -2703,8 +2755,6 @@ struct GraphCanvasWidget::Impl {
                                       : QStringLiteral("color: #7f8c8d;"));
             notice->show();
         }
-        refresh->setEnabled(model.canRefresh());
-        synchronizeTimeline();
     }
 };
 

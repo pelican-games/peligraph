@@ -253,6 +253,7 @@ class GraphCanvasModel {
     std::string ticket_;
     std::uint64_t content_revision_ = 0;
     std::uint64_t report_revision_ = 0;
+    std::uint64_t placement_revision_ = 0;
 
     struct HistoryEntry {
         nlohmann::json forward;
@@ -473,6 +474,13 @@ class GraphCanvasModel {
 
     auto contentRevision() const noexcept { return content_revision_; }
     auto reportRevision() const noexcept { return report_revision_; }
+    // Q-5. A read that differs from the one before only in where things are
+    // placed -- the reply to a node drag, a moved control point, the Frame
+    // Plan's member -- moves this one instead of contentRevision(): nothing
+    // the canvas draws a node from has changed, so the values reported against
+    // those nodes stay, and a canvas already drawing that placement has no
+    // reason to throw its items away and draw them again.
+    auto placementRevision() const noexcept { return placement_revision_; }
     bool busy() const noexcept { return pending_.has_value() || !ticket_.empty(); }
     bool canRefresh() const noexcept { return connected_ && !busy(); }
     // An edit needs a digest to compare against: without one there is nothing

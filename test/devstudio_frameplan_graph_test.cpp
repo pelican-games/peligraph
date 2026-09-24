@@ -7515,6 +7515,49 @@ TEST_CASE("N-8 a node drag writes one frame_plan placement, and a legacy root wr
     CHECK(notice.contains(QStringLiteral("legacy")));
     CHECK(notice.contains(QStringLiteral("main.json")));
 }
+// Q-5, the Frame Plan half. Its placement rides in the Graph tab's one
+// `set_layout`, and the reply to that write does not redraw this canvas at
+// all; the one redraw a placement causes here is the placement being read
+// back (the tab shown again, the capability handed over). That redraw keeps
+// what the person has picked.
+TEST_CASE("Q-5 a Frame Plan placement read back keeps the picked nodes",
+          "[devstudio][frame-plan][n8][placement][q5]") {
+    application();
+    EditingFixture fixture;
+    Json stored = Json::object();
+    fixture.widget.setLayoutCapability(FramePlanLayoutCapability{
+        .read = [&] { return stored; },
+        .write = [&](const nlohmann::json &frame_plan, QString *) {
+            stored = frame_plan;
+            return true;
+        }});
+    fixture.open();
+    auto &logical = fixture.logical();
+    QGraphicsItem *moved = nodeItem(logical, "wp343_mixed_a");
+    QGraphicsItem *other = nodeItem(logical, "wp343_mixed_c");
+    REQUIRE(moved != nullptr);
+    REQUIRE(other != nullptr);
+    moved->setPos(QPointF{321.0, -47.5});
+    QApplication::processEvents();
+    REQUIRE(stored.contains(fixture.graph));
+
+    moved->setSelected(true);
+    other->setSelected(true);
+    QApplication::processEvents();
+    REQUIRE(logical.selectedNodes().size() == 2);
+    // Items made by this draw carry a mark; a redraw makes new ones without it.
+    constexpr int Marked = Qt::UserRole + 905;
+    moved->setData(Marked, true);
+
+    fixture.widget.refreshAuthoringContext();
+    QApplication::processEvents();
+    // It really was drawn again, from what the document holds.
+    REQUIRE_FALSE(nodeItem(logical, "wp343_mixed_a")->data(Marked).toBool());
+    CHECK(nodeItem(logical, "wp343_mixed_a")->pos() == QPointF{321.0, -47.5});
+    CHECK(logical.selectedNodes().size() == 2);
+    CHECK(nodeItem(logical, "wp343_mixed_a")->isSelected());
+    CHECK(nodeItem(logical, "wp343_mixed_c")->isSelected());
+}
 // F-3. A shader that failed to reload is marked on the node whose shader it
 // is, by the path the engine names; a failure no node reads marks nothing and
 // is said in one line; the mark goes when the error does.

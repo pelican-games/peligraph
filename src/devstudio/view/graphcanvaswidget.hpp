@@ -221,6 +221,23 @@ class GraphCanvasScene final : public QGraphicsScene {
     }
     // A placement change is waiting for the debounce to run out.
     [[nodiscard]] bool layoutPending() const noexcept { return layout_dirty_; }
+    // Q-5. A placement change nothing has sent yet: the canvas is ahead of
+    // every request in the air. Whatever the last save said, this one has not
+    // been saved, so the panel says "Saving" rather than the older "saved" --
+    // which is also what lets a wait for "saved" wait for *this* change.
+    [[nodiscard]] bool placementUnsent() const noexcept {
+        return layout_dirty_ && layout_sent_.is_null();
+    }
+    // The canvas's placement changed (a drag, a control point, a bundle, the
+    // Frame Plan's member). The owner refreshes the notice from it.
+    std::function<void()> placementChanged;
+    // Q-5. The model read a document that differs from the last one only in
+    // placement. True when this canvas is already drawing what that document
+    // places -- its own save coming back, or a scope it is not showing -- so
+    // the owner keeps the scene, and with it the items the user has picked.
+    // False when the document places something else (an Undo, another
+    // writer), and the owner redraws.
+    bool followDocumentPlacement();
     // Send it now rather than when the timer says so. The gesture is finished
     // the moment the button comes up; the wait only exists so a drag of fifty
     // mouse moves is one edit instead of fifty.
@@ -394,6 +411,9 @@ class GraphCanvasScene final : public QGraphicsScene {
     void loadLayout(const std::string &scope);
     void pruneLayout();
     void noteLayoutChange();
+    // The whole `layout` object this canvas would write: its own members and
+    // the other panel's, which ride along.
+    [[nodiscard]] nlohmann::json placementPayload() const;
     [[nodiscard]] QVector<QPointF> bendsFor(const GraphCanvasEdge &edge) const;
     void applyEdgeBends();
     void moveReroute(const GraphCanvasEdgeKey &edge, std::size_t index,

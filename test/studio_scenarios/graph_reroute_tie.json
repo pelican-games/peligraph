@@ -87,16 +87,16 @@
       "remember": "control_y"
     },
     {
-      "label": "drag the node the edge lands on, well away from where it was",
+      "label": "drag the node the edge lands on, well away from where it was -- to a place on the canvas, not on the window, so what lies under the next clicks does not depend on how big the window is",
       "cmd": "drag",
       "from": {
         "name": "pelican.graphCanvasView::graph_node_header#sum"
       },
       "to": {
         "name": "pelican.graphCanvasView::graph_node_header#sum",
-        "point": [
-          60,
-          210
+        "scene": [
+          560,
+          250
         ]
       },
       "steps": 6

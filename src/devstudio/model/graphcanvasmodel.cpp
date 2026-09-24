@@ -415,23 +415,52 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         const auto definitions = response.find("definitions");
         // A reply without definitions is not a broken canvas: the root scope
         // is still the whole document the engine published. Say so and draw it.
-        definitions_reported_ = definitions != response.end() && definitions->is_object();
-        definitions_ = definitions_reported_ ? *definitions : Json::object();
+        const bool reported = definitions != response.end() && definitions->is_object();
+        auto incoming_definitions = reported ? *definitions : Json::object();
         // N-6: the root scope's placement. A reply from an engine that predates
         // it simply says nothing, which reads as "no placement yet".
         auto layout = response.value("layout", Json::object());
-        layout_ = layout.is_object() ? std::move(layout) : Json::object();
-        nodes_ = std::move(nodes);
+        if (!layout.is_object()) layout = Json::object();
         // N-8: an engine that predates this says nothing, which reads as "not a
         // graph root" -- the safe answer, because the placement is then not
         // written rather than written where it cannot be kept.
-        root_schema_ = response.value("root_schema", std::string{});
-        source_reference_ = response.value("source_reference", std::string{});
+        auto root_schema = response.value("root_schema", std::string{});
+        auto source_reference = response.value("source_reference", std::string{});
+        // Q-5: the reply to a `set_layout` -- the canvas's own drag coming
+        // back -- changes where things sit and nothing else. Every definition
+        // carries its placement inside it, so the comparison takes that member
+        // out of both sides before asking whether anything else moved.
+        const auto withoutPlacement = [](Json scopes) {
+            for (auto &[name, scope] : scopes.items()) {
+                (void)name;
+                if (scope.is_object()) scope.erase("layout");
+            }
+            return scopes;
+        };
+        const bool placement_only =
+            context_received_ && failure_.kind == InspectorNoticeKind::None &&
+            reported == definitions_reported_ && nodes == nodes_ &&
+            root_schema == root_schema_ && source_reference == source_reference_ &&
+            (layout != layout_ || incoming_definitions != definitions_) &&
+            withoutPlacement(incoming_definitions) == withoutPlacement(definitions_);
+        definitions_reported_ = reported;
+        definitions_ = std::move(incoming_definitions);
+        layout_ = std::move(layout);
+        nodes_ = std::move(nodes);
+        root_schema_ = std::move(root_schema);
+        source_reference_ = std::move(source_reference);
         digest_ = response.value("source_digest", Json::object()).value("hex", std::string{});
         if (!history_digest_.empty() && digest_ != history_digest_)
             clearHistory();
         context_received_ = true;
         failure_ = {};
+        if (placement_only) {
+            // The nodes, their ports and the scopes are the ones already
+            // drawn, so the values reported against them still stand: asking
+            // again would blank every value on the canvas for a round trip.
+            ++placement_revision_;
+            return;
+        }
         // The scope trail can name a definition the new document dropped.
         std::vector<std::string> trail{std::string{}};
         for (std::size_t index = 1; index < breadcrumb_.size(); ++index)

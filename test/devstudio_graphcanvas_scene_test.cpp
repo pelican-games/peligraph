@@ -5,6 +5,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <QAction>
 #include <QApplication>
 #include <QColor>
 #include <QCoreApplication>
@@ -2142,6 +2143,9 @@ struct RecordedCapability {
         QString method;
         QString instance;
         double time = 0;
+        // Q-5: what an edit carried, so a test can answer with the document
+        // that edit produced.
+        QByteArray body;
     };
     std::vector<Call> calls;
     qint64 next = 1;
@@ -2178,9 +2182,10 @@ struct RecordedCapability {
         seam.requestRenderFrame = [note](QString *) {
             return note(QStringLiteral("render_frame"));
         };
-        seam.requestEditGraphDocument = [note](const QString &, const QByteArray &,
-                                               QString *) {
-            return note(QStringLiteral("edit_graph_document"));
+        seam.requestEditGraphDocument = [this](const QString &,
+                                               const QByteArray &ops, QString *) {
+            calls.push_back(Call{QStringLiteral("edit_graph_document"), {}, 0, ops});
+            return next++;
         };
         seam.requestEditResult = [note](const QString &, QString *) {
             return note(QStringLiteral("get_edit_result"));
@@ -2484,4 +2489,111 @@ TEST_CASE("One set_layout carries both this canvas's placement and the Frame Pla
         CHECK(written.at("nodes").at("left").at("x") == elsewhere.x());
     }
     CHECK(fresh.layoutMember("frame_plan") == moved);
+}
+
+// Q-5. A drag's placement goes out after the debounce and comes back as a new
+// read of the document. That read used to rebuild the whole scene a moment
+// after the person had gone on to pick something. Driven through the widget,
+// because whether to keep the scene or rebuild it is the tab's decision.
+TEST_CASE("Q-5 a placement save coming back keeps the scene and what is picked on it",
+          "[devstudio][graph-canvas][scene][layout-persistence][q5]") {
+    (void)application();
+    RecordedCapability transport;
+    PelicanStudio::GraphCanvasWidget widget{transport.capability()};
+    widget.resize(900, 600);
+    widget.show();
+    QCoreApplication::processEvents();
+
+    const auto deliver = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        REQUIRE(transport.deliver);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    };
+    auto document = twoEdgeDocument();
+    deliver(QStringLiteral("get_graph_instances"), context(document));
+    deliver(QStringLiteral("get_graph_catalog"), visualCatalog());
+
+    auto &scene = widget.scene();
+    auto *notice =
+        widget.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasNotice"));
+    auto *tie = widget.findChild<QAction *>(
+        QStringLiteral("pelican.graphCanvas.tieTogether"));
+    REQUIRE(notice != nullptr);
+    REQUIRE(tie != nullptr);
+
+    // One save the way the engine answers it: accepted, then committed. The
+    // read of the document that follows is left to the caller, so what the
+    // canvas does in between can be looked at.
+    const auto save = [&] {
+        scene.flushLayout();
+        QCoreApplication::processEvents();
+        const qint64 edit = transport.idOf(QStringLiteral("edit_graph_document"));
+        REQUIRE(edit != 0);
+        const auto ops = Json::parse(
+            transport.calls[static_cast<std::size_t>(edit - 1)].body.toStdString());
+        REQUIRE(ops.size() == 1);
+        REQUIRE(ops.at(0).at("op") == "set_layout");
+        document["layout"] = ops.at(0).at("layout");
+        deliver(QStringLiteral("edit_graph_document"),
+                Json{{"status", "accepted"}, {"ticket", "q5"}});
+        deliver(QStringLiteral("get_edit_result"),
+                Json{{"status", "committed"}, {"committed", true}});
+    };
+
+    // A control point on one line, saved, so every kind of pick is there.
+    const PelicanStudio::GraphCanvasEdge gain{"clock", "value", "left", "gain"};
+    const PelicanStudio::GraphCanvasEdge bias{"clock", "value", "left", "bias"};
+    QGraphicsPathItem *bias_line =
+        edgeItem(scene, QStringLiteral("clock"), QStringLiteral("value"),
+                 QStringLiteral("left"), QStringLiteral("bias"));
+    REQUIRE(bias_line != nullptr);
+    REQUIRE(scene.insertReroute(bias, bias_line->path().pointAtPercent(0.5)));
+    save();
+    deliver(QStringLiteral("get_graph_instances"), context(document));
+    REQUIRE_FALSE(scene.layoutPending());
+    REQUIRE(notice->text() == QStringLiteral("Graph change saved."));
+
+    // Decision 2. The drag: the notice no longer says the last save was the
+    // end of it, so a wait for "saved" waits for this change, not the last.
+    QGraphicsItem *left = nodeItem(scene, QStringLiteral("left"));
+    REQUIRE(left != nullptr);
+    left->setPos(left->pos() + QPointF{60.0, 140.0});
+    CHECK(scene.placementUnsent());
+    CHECK(notice->text() == QStringLiteral("Saving the graph change..."));
+
+    // What the person does next: the control point, and a second line.
+    scene.selectReroute(PelicanStudio::GraphCanvasEdgeKey{"left", "bias"}, 0, false);
+    scene.selectEdge(gain, true);
+    REQUIRE(tie->isEnabled());
+    // Items made by this draw carry a mark; a rebuild makes new ones without it.
+    constexpr int Marked = Qt::UserRole + 905;
+    for (QGraphicsItem *item : scene.items()) item->setData(Marked, true);
+
+    save();
+    CHECK_FALSE(scene.placementUnsent());
+    CHECK(notice->text() == QStringLiteral("Graph change saved."));
+    const auto picked = [&] {
+        CHECK(scene.selectedReroutes().size() == 1);
+        CHECK(scene.selectedEdges().size() == 1);
+        CHECK(tie->isEnabled());
+    };
+
+    SECTION("the document places what was sent: the scene is kept") {
+        deliver(QStringLiteral("get_graph_instances"), context(document));
+        CHECK_FALSE(scene.layoutPending());
+        CHECK(nodeItem(scene, QStringLiteral("left"))->data(Marked).toBool());
+        picked();
+    }
+
+    SECTION("something else changed with it: redrawn, and the pick carried across") {
+        auto changed = document;
+        for (auto &node : changed.at("nodes"))
+            if (node.at("id") == "clock") node["label"] = "Clock";
+        deliver(QStringLiteral("get_graph_instances"), context(changed));
+        CHECK_FALSE(scene.layoutPending());
+        CHECK_FALSE(nodeItem(scene, QStringLiteral("left"))->data(Marked).toBool());
+        picked();
+    }
 }
