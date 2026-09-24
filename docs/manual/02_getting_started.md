@@ -242,8 +242,8 @@ mygame/
 
 生成されるファイルは全 16 エントリで、一覧は [projecttemplate.cpp](../../src/project/projecttemplate.cpp) の `templateFiles()` が正本です(F-2 で `pelican_cli` から `pelican_project` へ移り、Studio の File > New Project... も同じ関数で書きます)。2 点だけ、生成物の形に約束があります(✅P-2a-4b / X-1):
 
-- **`passes/main_rendering_config.json` は `pelican.graph` root で生成されます** —— 最上位が `{"schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {}, "rendering": { … }}` で、pipeline preset と features は `rendering` 節の中です([renderingConfigJson()](../../src/project/projecttemplate.cpp#L265) は graph root をそのまま書いた文字列を返します。包み関数 `wrapLegacyRenderingConfig` は MG-2b で撤去されました)。rendering config の root はこの形だけで、rendering のキーを最上位に直接並べた旧い形は `render_config.legacy_root@1` で拒否されます([第3章 §3.2](03_project_format.md))。
-- **`code/CMakeLists.txt` は 2 行**です —— `pelican_game_sources(game.cpp)` の**後に** `pelican_packages()`([projecttemplate.cpp:266](../../src/project/projecttemplate.cpp#L279))。`pelican_packages()` は `packages/*/` に複製済みで code を持つ package を build してゲームロジック DLL に合流させるので、**順序が意味を持ちます**(合流先の DLL が先に定義されている必要があります)。package を使わないうちは何もしません。
+- **`passes/main_rendering_config.json` は `pelican.graph` root で生成されます** —— 最上位が `{"schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {}, "rendering": { … }}` で、pipeline preset と features は `rendering` 節の中です([renderingConfigJson()](../../src/project/projecttemplate.cpp#L268) は graph root をそのまま書いた文字列を返します。包み関数 `wrapLegacyRenderingConfig` は MG-2b で撤去されました)。rendering config の root はこの形だけで、rendering のキーを最上位に直接並べた旧い形は `render_config.legacy_root@1` で拒否されます([第3章 §3.2](03_project_format.md))。
+- **`code/CMakeLists.txt` は 2 行**です —— `pelican_game_sources(game.cpp)` の**後に** `pelican_packages()`([projecttemplate.cpp:266](../../src/project/projecttemplate.cpp#L282))。`pelican_packages()` は `packages/*/` に複製済みで code を持つ package を build してゲームロジック DLL に合流させるので、**順序が意味を持ちます**(合流先の DLL が先に定義されている必要があります)。package を使わないうちは何もしません。
 
 生成される `project.json`(実物・`src/project/projecttemplate.cpp` が出力):
 
@@ -347,7 +347,7 @@ pelican_player --headless --project mygame --frames 10 --render-out out/%04d.png
 pelican_player --headless --project mygame --start-time 2.0 --frames 2 --fps 60 --render-out out/%04d.png
 ```
 
-- 秒はコマンドラインで **1 回だけ frame 番号に量子化**されます(`llround(秒 × fps)`。エンジンには「フレームの間の時刻」が渡りません — [parseStartFrame()](../../src/player/main.cpp#L284))。
+- 秒はコマンドラインで **1 回だけ frame 番号に量子化**されます(`llround(秒 × fps)`。エンジンには「フレームの間の時刻」が渡りません — [parseStartFrame()](../../src/player/main.cpp#L289))。
 - **飛ばすのではなく、そこまで回します。** `start_frame − 1` 枚を capture 無しで実行(warm-up)し、**最初に capture される frame が t の frame** です([loop.cpp:441](../../src/core/appflow/loop.cpp#L672))。グラフの時計・ゲームシステムの積分・アニメーションの評価器は時刻から逆算できないので、「その時刻に居た」と言える唯一の方法が全ステップを通ることだからです。`--start-time 0` は通常の run と同一です。
 - 実行時に stderr へ 1 行出ます: `offline: start_time=2 start_frame=120 replay=119 frames=2`。
 - **`--frames` とは併用できます**(枚数の指定)。**併用できないのは** `--rpc` / `--replay` / `--record-input` / `--bake-camera-output` の 4 つで、これらは「どの frame を出すか」を自分で決める経路だからです。

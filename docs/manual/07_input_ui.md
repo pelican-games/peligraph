@@ -358,7 +358,7 @@ GPU 経路自体は意図的に別のままです(`DebugText` は専用 atlas + 
 | `ctx.render().debugText` | 変わらない。`debug_text` はビルドユニットではなく rendering config の feature で、参照していなければ no-op(§7.5) |
 | `ctx.ui().setText` / `setVisible` / `setValue` | 変わらない。UI はビルドユニットではなく rendering config の feature で、参照していなければ例外ではなく `ui.feature_unreferenced@1` が返る(§7.4) |
 | `ctx.audio().playSound` など | `PELICAN_WITH_AUDIO=OFF` で `BuildFeatureCallDisabledError`(`code()` = `build_feature_disabled@1`)。詳細は第8章 |
-| `--rpc`(`inject_input` / 収録・リプレイの rpc) | ゲームコードの呼び出しではないが、`PELICAN_WITH_RPC=OFF` の build では起動時に [`runEngineRpcServer()` の stub](../../src/core/communication/rpcserver_stub.cpp#L7) が `BuildFeatureDisabledError`(`This binary was built with PELICAN_WITH_RPC=OFF: --rpc is unavailable`)を投げる。こちらは PG-2 の派生型ではなく基底型で、`code()` は無い |
+| `--rpc`(`inject_input` / 収録・リプレイの rpc) | ゲームコードの呼び出しではないが、`PELICAN_WITH_RPC=OFF` の build では起動時に [`runEngineRpcServer()` の stub](../../src/core/communication/rpcserver_stub.cpp#L8) が `BuildFeatureDisabledError`(`This binary was built with PELICAN_WITH_RPC=OFF: --rpc is unavailable`)を投げる。こちらは PG-2 の派生型ではなく基底型で、`code()` は無い |
 
 ## 関連文書
 

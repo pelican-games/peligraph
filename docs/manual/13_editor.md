@@ -435,7 +435,7 @@ typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化�
 **`resolution_error` を含む応答はキー順が保存されます** —— editor 側のハンドラが「応答木のどこかに
 `resolution_error` があるか」を見る述語 `embedsResolutionError` を登録時に添え
 ([editorrpchandlers.cpp](../../src/core/communication/editorrpchandlers.cpp#L50))、`RpcServer` はその述語が真を返した応答だけを
-ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1058))。
+ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1060))。
 
 ### セッションと編集
 
@@ -472,7 +472,7 @@ ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/commu
 **file watch の gate は開けません。**`--rpc` で動く engine(Studio が起こす engine はすべてそう)は、reload gate が
 `rpc driver` を理由に閉じていて、shader file を保存しても自分では読み直しません。`reload_shaders` はそれを開けずに、
 **頼まれたその 1 回だけ** shader の runtime participant を当てます(`reload_game_logic` と同じ形。
-[handler](../../src/core/communication/rpcserver.cpp#L1250))。閉じた gate を越えるのは明示の要求だけで、
+[handler](../../src/core/communication/rpcserver.cpp#L1252))。閉じた gate を越えるのは明示の要求だけで、
 replay と `--strict-assets` の engine は今までどおり断ります([越えてよいかの判定](../../src/core/watch/reloadservice.cpp#L590) /
 [`ReloadGate::explicitShaderReloadRefusal()`](../../src/core/watch/reloadgate.cpp#L45))。file watch の poll の経路は `--rpc` の下で
 今までどおり何もしません。
@@ -1283,7 +1283,7 @@ driver の stdout / stderr は、cp932 の console で出せない文字があ�
 
 **回し方**: [`tools/studio_drive.py`](../../tools/studio_drive.py#L982)(Python 3.11以上、標準ライブラリだけ)が Studio を
 `--automation --project --tab` で起動し、step を順に送り、`report.json` を書きます。ctest からは
-`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L3032)) —— **実物の窓が要るので
+`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L3081)) —— **実物の窓が要るので
 `QT_QPA_PLATFORM=offscreen` は掛けません**。fixture の project は temp に 2 つ複製されるので、シナリオは
 文書を書き換えてよく、「ディスクから読み直す」も試せます([複製](../../test/run_studio_scenario.cmake#L30))。
 CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが見つかった`AUTO`）が必要です。
@@ -1732,7 +1732,7 @@ scene のロードは 1 つのトランザクションになりました([第4�
 ### `get_status.participants.game_logic` の `error_code` / `error_fields`
 
 `get_status` に `participants.game_logic` が入りました。**まだ 1 度も reload を試していない
-起動直後でも、startup の初期化失敗がここに出ます**([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1157))。
+起動直後でも、startup の初期化失敗がここに出ます**([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1159))。
 
 - 試行済みなら `reload.runtime.game_logic` の内容(`configured` / `loaded` / `reloading` /
   `pending` / `source_busy_retries` / `generation` / `systems` / `source` / `loaded_copy` /

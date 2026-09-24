@@ -18,7 +18,7 @@ Runtime object
 
 | データ | 純粋層 | runtime層 |
 |---|---|---|
-| project.json封筒 | [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L234) | [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L639) |
+| project.json封筒 | [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L237) | [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L639) |
 | path参照 | [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) | [`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)（module寿命、ログ、engine resource注入） |
 | scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L268) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1641) |
 | render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2922) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1526) |
@@ -35,13 +35,13 @@ Runtime object
 - `raw_data`: `PelicanCore(settings)`へ直接渡した上書きJSON
 - `project_data`: playerが読んだ`project.json`全体
 
-`project.json` のschema/version/`engine_min_version`ゲートは、まず [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L234) が検証します。`--ignore-engine-version`で継続する場合も純粋層はログを出さずwarning文字列を返し、engine adapterだけがそれをquillへ渡します。検証規則の正本はこの関数だけで、`basicconfig.cpp`やdevcliに写しはありません。
+`project.json` のschema/version/`engine_min_version`ゲートは、まず [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L237) が検証します。`--ignore-engine-version`で継続する場合も純粋層はログを出さずwarning文字列を返し、engine adapterだけがそれをquillへ渡します。検証規則の正本はこの関数だけで、`basicconfig.cpp`やdevcliに写しはありません。
 
-[`ProjectEnvelope`](../../src/project/projectformat.hpp#L14) が持つのは `name` / `engine_min_version` / `requirements` / `basic_config` / `asset_stores` / `prefabs` の6つです。このうち `requirements` は P-2b で入った **`requires`** キーで（`requires` はC++のキーワードなのでフィールド名だけずらしてあります）、「このプロジェクトが無いと動かないビルド機能」を宣言します。
+[`ProjectEnvelope`](../../src/project/projectformat.hpp#L22) が持つのは `name` / `engine_min_version` / `requirements` / `basic_config` / `asset_stores` / `prefabs` の6つです。このうち `requirements` は P-2b で入った **`requires`** キーで（`requires` はC++のキーワードなのでフィールド名だけずらしてあります）、「このプロジェクトが無いと動かないビルド機能」を宣言します。
 
-- 語彙は [`knownProjectRequirements()`](../../src/project/projectformat.hpp#L51) が返す表だけが持ち、現在は **`animation` / `audio` / `physics` / `xr` / `vat` / `seqplayer` の6語**です（PG-1。各語が `PELICAN_WITH_ANIMATION` / `_AUDIO` / `_PHYSICS` / `_OPENXR` / `_VAT` / `_SEQPLAYER` の1つを指す）。表の行は `src/project/projectrequirements.def` で、同じ行をCMake側のコーパス選別（`cmake/pelican_project_requirements.cmake`）、component codecの `required_feature`、package の `requires.capabilities` の検査も読みます。知らない名前は黙って無視せず `project.requires_unknown@1` で拒否します（[`parseProjectRequirements()`](../../src/project/projectformat.cpp#L118)）。
-- このビルドが満たせない要求を書いたプロジェクトは、封筒のパースの時点で `<語>.module_unavailable@1`（例: `animation.module_unavailable@1`）を投げて止まります（[検査](../../src/project/projectformat.cpp#L189)）。ノードを1つずつ辿って「そんなopは知らない」と言われるより前に、名前で答えるためです。
-- 失敗させずに「このビルドでは開けない」だけ知りたい呼び手（`projects/` を舐めるテスト等）のために、[`unsatisfiedProjectRequirement()`](../../src/project/projectformat.hpp#L72) が最初の未充足要求を返す形も用意されています。
+- 語彙は [`knownProjectRequirements()`](../../src/project/projectformat.hpp#L65) が返す表だけが持ち、現在は **`animation` / `audio` / `physics` / `xr` / `vat` / `seqplayer` の6語**です（PG-1。各語が `PELICAN_WITH_ANIMATION` / `_AUDIO` / `_PHYSICS` / `_OPENXR` / `_VAT` / `_SEQPLAYER` の1つを指す）。表の行は `src/project/projectrequirements.def` で、同じ行をCMake側のコーパス選別（`cmake/pelican_project_requirements.cmake`）、component codecの `required_feature`、package の `requires.capabilities` の検査も読みます。知らない名前は黙って無視せず `project.requires_unknown@1` で拒否します（[`parseProjectRequirements()`](../../src/project/projectformat.cpp#L118)）。
+- このビルドが満たせない要求を書いたプロジェクトは、封筒のパースの時点で `<語>.module_unavailable@1`（例: `animation.module_unavailable@1`）を投げて止まります（[検査](../../src/project/projectformat.cpp#L191)）。ノードを1つずつ辿って「そんなopは知らない」と言われるより前に、名前で答えるためです。
+- 失敗させずに「このビルドでは開けない」だけ知りたい呼び手（`projects/` を舐めるテスト等）のために、[`unsatisfiedProjectRequirement()`](../../src/project/projectformat.hpp#L86) が最初の未充足要求を返す形も用意されています。
 
 もう一つ、X-1で `project.json` に増えた **`packages`** キーは `ProjectEnvelope` には入りません。読むのは [`readInstalledPackagesJson()`](../../src/project/packagemanifest.hpp#L103) で、1エントリは `{namespace, package_version, sha256}` の [`InstalledPackage`](../../src/project/packagemanifest.hpp#L70) です（§3.16）。封筒のパーサとvendoringの台帳を別の関数に分けてあるので、package を知らない読み手は `packages` を素通りできます。
 
@@ -326,7 +326,7 @@ prepare（失敗可）
 
 診断の記録は **allocation 禁止** です。[`record()`](../../src/core/loader/effecttransaction.cpp#L97) は [`errors_`](../../src/core/loader/effecttransaction.hpp#L142)（`sceneEffectCapacity + 1` 個の [`FixedEffectError`](../../src/core/loader/effecttransaction.hpp#L124)）の固定 slot を 1 つ取って、文字列も `FixedText<512>` / `FixedText<384>` へ `memcpy` するだけで、`std::string` も `json` も作りません。末尾の 1 slot は診断用ではなく **outbox 溢れ専用**で、[`reserveEntry()`](../../src/core/loader/effecttransaction.cpp#L119) が 256 件を超えて積めなかった**副作用の**件数を `effect_outbox_full@1` の `dropped` として数え続けます（診断そのものが 256 件を超えた場合は数えずに落ちます。非対称の理由は §5.15）。公開用の文字列と JSON は commit 後に初めて作られます — [`effectErrors()`](../../src/core/loader/scene.cpp#L1806) の呼び出しは `noexcept` の commit tail（`flush` / `finish`）を通過した**後**にあり、そこで固定 slot を sequence 順に並べて [`CommittedWithEffectFailure::EffectError`](../../src/core/loader/sceneload.hpp#L176) へ変換します。
 
-副作用の失敗は例外ではなく [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として `SceneLoadResult` に載り、**扱いは root ごと**です: startup は [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L141)、pending も [`LOG_ERROR`](../../src/core/loader/scene.cpp#L1874)、rpc の `load_scene` は [`response["effect_errors"]`](../../src/core/communication/rpcserver.cpp#L1722) として JSON で返し（失敗が無ければ空配列）、import は [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275) にそのまま入れて呼び手へ渡します。いずれも `committed` であることは変わりません（scene は載っている）。
+副作用の失敗は例外ではなく [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として `SceneLoadResult` に載り、**扱いは root ごと**です: startup は [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L141)、pending も [`LOG_ERROR`](../../src/core/loader/scene.cpp#L1874)、rpc の `load_scene` は [`response["effect_errors"]`](../../src/core/communication/rpcserver.cpp#L1732) として JSON で返し（失敗が無ければ空配列）、import は [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275) にそのまま入れて呼び手へ渡します。いずれも `committed` であることは変わりません（scene は載っている）。
 
 transient glTF 経路（`load_gltf`）は executor を通らず、従来どおり [`GameObjects::createWithComponents()`](../../src/core/loader/scene.cpp#L2227) の populate callback で作ります（§3.8 の「`load_gltf` はトランザクション」）。
 
@@ -422,7 +422,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 > ctest wp380c_... : dumpbin /symbols で「入っていないこと」を検査
 > ```
 >
-> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L2117) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L29)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[SOURCES 内の TU 照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[production header の列挙](../../test/run_wp380c_no_production_fault_setter.cmake#L63)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
+> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L2117) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L29)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[SOURCES 内の TU 照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[production header の列挙](../../test/run_wp380c_no_production_fault_setter.cmake#L87)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
 >
 > **不変条件**: setterの定義をヘッダへ書かない（inlineでも）。test-onlyのTUを `pelican_core` のソースへ足さない。`default_fault_injector_for_testing` の既定値をnullptr以外にしない。
 
@@ -440,7 +440,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 
 ## 3.6 即時loadと要求load
 
-- `SceneLoader::load(SceneLoadRequest)`はその場で全sceneを置換（commit まで到達した場合。§3.5 の 3）。production の root は startup（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L133)）/ RPC `load_scene`（[`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L1708)）/ pending apply / snapshot import（[`importSceneDocument()` からの `Owned` request](../../src/core/loader/basicconfig.cpp#L856)）で、いずれも [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L500) で `PreCommitFailure` を従来どおりの例外へ戻します。
+- `SceneLoader::load(SceneLoadRequest)`はその場で全sceneを置換（commit まで到達した場合。§3.5 の 3）。production の root は startup（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L133)）/ RPC `load_scene`（[`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L1718)）/ pending apply / snapshot import（[`importSceneDocument()` からの `Owned` request](../../src/core/loader/basicconfig.cpp#L856)）で、いずれも [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L500) で `PreCommitFailure` を従来どおりの例外へ戻します。
 - [`requestLoad()`](../../src/core/loader/scene.cpp#L1829) は存在確認後、scene IDだけをpendingへ保存。activate 段の behavior から呼ばれた場合は live ではなく candidate projection に対して存在確認し、要求も candidate 側に積みます（rollback で一緒に捨てる）。
 - [`applyPendingLoad()`](../../src/core/loader/scene.cpp#L1860) はフレームのゲーム更新末尾で、まず前回 commit 分の retirement queue を消費し、apply 時点の committed projection に late-bind した `Borrowed` request で実際にload。
 
@@ -627,7 +627,7 @@ instances.publishModelInstance(std::move(staged_instance));
 
 | schema | version | パーサ | 位置づけ |
 |---|---|---|---|
-| `pelican.project` | 1 | [`projectformat.cpp`](../../src/project/projectformat.cpp#L234) | `project.json`。`engine_min_version` と `requires`（§3.2） |
+| `pelican.project` | 1 | [`projectformat.cpp`](../../src/project/projectformat.cpp#L237) | `project.json`。`engine_min_version` と `requires`（§3.2） |
 | `pelican.scene` | 1〜2 | [`sceneformat.cpp`](../../src/project/sceneformat.cpp#L268) | 保存は元の版を維持。prefabはv2が前提。永続IDは両版で受理 |
 | `pelican.graph` | 1 | [`graphcomposition.cpp`](../../src/project/graphcomposition.cpp#L173) | 共通グラフ。`definitions` / `nodes` / `outputs`（§3.15） |
 | `pelican.render_feature` | 1 | [`featurecompose.cpp`](../../src/project/featurecompose.cpp#L2922) | 本節「render feature」 |
@@ -1099,17 +1099,17 @@ ABI側では [`AnimationClipKindV1`](../../src/core/userpublic/animation/abi_v1.
 
 `rendering_config_json` が指すファイルの**根**は `pelican.graph` root だけです。共通グラフ文書の5キー（`schema` / `version` / `definitions` / `nodes` / `outputs`）の横に `rendering` キーがあり、rendering config の中身はその下に入ります。出荷7本と `devcli project init` の雛形がすべてこの形です。
 
-P-2a-4b までは、`rendering` 相当の中身を最上位に直接書く **legacy root** も契約でした。MG-2b でその読み手を撤去し、legacy root は `render_config.legacy_root@1`（[`RenderConfigLegacyRoot`](../../src/project/renderconfigdocument.hpp#L35)）で断ります。断る場所は、起動時にファイルを最初に読む [`loadRenderingPassConfigJsonFromString()`](../../src/core/renderingpass/renderingpassconfigloader.cpp#L16)、feature overlay の [`applyRenderFeatureOverlays()`](../../src/project/renderfeatureoverlay.cpp#L120)、ray tracing の [`loadRayTracingProjectConfig()`](../../src/core/shader/raygrouplayout.cpp#L1452)、編集文書の [`AuthoredRenderConfigDocument`](../../src/project/renderconfigdocument.cpp#L529) です。出荷の legacy root 5本は `{"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":<旧い根>}` に書き換えられました。
+P-2a-4b までは、`rendering` 相当の中身を最上位に直接書く **legacy root** も契約でした。MG-2b でその読み手を撤去し、legacy root は `render_config.legacy_root@1`（[`RenderConfigLegacyRoot`](../../src/project/renderconfigdocument.hpp#L37)）で断ります。断る場所は、起動時にファイルを最初に読む [`loadRenderingPassConfigJsonFromString()`](../../src/core/renderingpass/renderingpassconfigloader.cpp#L16)、feature overlay の [`applyRenderFeatureOverlays()`](../../src/project/renderfeatureoverlay.cpp#L120)、ray tracing の [`loadRayTracingProjectConfig()`](../../src/core/shader/raygrouplayout.cpp#L1452)、編集文書の [`AuthoredRenderConfigDocument`](../../src/project/renderconfigdocument.cpp#L529) です。出荷の legacy root 5本は `{"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":<旧い根>}` に書き換えられました。
 
 **「authored な `rendering` キーがどこにあるか」を決める場所は1つ**で、[`src/project/renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L12) の小さなヘッダに全部入っています。読み手も書き手もここを呼ぶ規約で、各所が自前の `if (graph)` を育てないためです。
 
 - [`isRenderGraphRoot()`](../../src/project/renderconfigsection.hpp#L22) — `schema == "pelican.graph"` かどうかだけ。`nlohmann::json` 用と [`ordered_json` 用](../../src/project/renderconfigsection.hpp#L27)の 2 定義があるので、このヘッダは**3 つの名前 / 4 定義**です。
-- [`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36) — `rendering` メンバを返します。根が `pelican.graph` でなければ `RenderConfigLegacyRoot` を、`rendering` オブジェクトが無ければ [`RenderConfigSectionUnlocated`](../../src/project/renderconfigdocument.hpp#L20)（メッセージは `graph root render config has no rendering section object`）を投げます。MG-2b より前は、graph root でない根に対して**根そのもの**を返していました。
+- [`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36) — `rendering` メンバを返します。根が `pelican.graph` でなければ `RenderConfigLegacyRoot` を、`rendering` オブジェクトが無ければ [`RenderConfigSectionUnlocated`](../../src/project/renderconfigdocument.hpp#L22)（メッセージは `graph root render config has no rendering section object`）を投げます。MG-2b より前は、graph root でない根に対して**根そのもの**を返していました。
 - [`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49) — 同じ判定の**読み取り用**。節が無ければ空オブジェクトを返します。legacy root はこちらでも断ります（`RenderConfigLegacyRoot` は捕まえません）。
 
 この2本の使い分けが不変条件です。**読みは節が無くても失敗せず（「ここには何も書かれていない」と答える）、編集だけが名前付きで断る。** graph root に `rendering` を持たない文書は正当（グラフだけを書いた文書）なので、読むたびに落ちては困る一方、そこへ authored な値を書こうとするのは行き先が無い操作だからです。
 
-**包む関数はもうありません。** P-2a-4b では `wrapLegacyRenderingConfig()` が5キーを付けて legacy 設定を `rendering` へ入れる唯一の場所でしたが、読み手が graph root しか受けなくなったので MG-2b で撤去されました。雛形の [`rendering_config_json`](../../src/project/projecttemplate.cpp#L197) と [`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L220) は graph root の全文を直接書いています。
+**包む関数はもうありません。** P-2a-4b では `wrapLegacyRenderingConfig()` が5キーを付けて legacy 設定を `rendering` へ入れる唯一の場所でしたが、読み手が graph root しか受けなくなったので MG-2b で撤去されました。雛形の [`rendering_config_json`](../../src/project/projecttemplate.cpp#L200) と [`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L223) は graph root の全文を直接書いています。
 
 **`rendering` 節には `buffers` / `compute_tasks` を書けません。** graph root の lowering（[`lowerRenderGraphDocument()`](../../src/project/rendergraphcomposition.cpp#L21)）が、この2つを graph node（`render.buffer` / `render.compute`）の接続から作るため、節にあれば `render graph derives field from connections: <key>` で拒否します。この規則は MG-2b より前からあります。legacy root には lowering が無かったので根に書けましたが、legacy root が無くなったことでその書き方も無くなりました。テストで根に宣言していたものは task feature へ移されています。エディタの「root scope で compute_tasks / buffers を編集する」経路はこれで到達不能になり、後の掃除の WP（台帳の MG-3）に回っています。
 

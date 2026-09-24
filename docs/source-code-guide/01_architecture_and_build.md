@@ -8,7 +8,7 @@ Pelican2のコードは、最初から個々のクラスを読むより、次の
 
 | 領域 | 役割 | 主な入口 |
 |---|---|---|
-| 実行ファイル | 引数を読み、ライブラリを起動する | [`src/player/main.cpp`](../../src/player/main.cpp#L599)、[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L14)、[`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5)、[`src/spvlink/main.cpp`](../../src/spvlink/main.cpp#L1)（オフラインSPIR-VリンカCLI、[`spvlink.hpp`](../../src/core/shader/spvlink.hpp)を使用） |
+| 実行ファイル | 引数を読み、ライブラリを起動する | [`src/player/main.cpp`](../../src/player/main.cpp#L604)、[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L14)、[`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5)、[`src/spvlink/main.cpp`](../../src/spvlink/main.cpp#L1)（オフラインSPIR-VリンカCLI、[`spvlink.hpp`](../../src/core/shader/spvlink.hpp)を使用） |
 | 純粋ロジック | JSONやテキスト形式のパース・検証・合成。Vulkan不要 | [`src/project/CMakeLists.txt`](../../src/project/CMakeLists.txt#L1) |
 | エンジン本体 | ECS、入力、scene、描画、音声、物理、保存、RPC | [`src/core/CMakeLists.txt`](../../src/core/CMakeLists.txt) |
 | ゲーム/検証 | プロジェクト固有コード、fixture、単体・結合・golden test | [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L1)、[`test/CMakeLists.txt`](../../test/CMakeLists.txt#L61) |
@@ -53,7 +53,7 @@ flowchart TD
 
 ### `pelican_schema_leaf` と `pelican_schema_core_adapter`
 
-宣言は [`src/schema/CMakeLists.txt`](../../src/schema/CMakeLists.txt#L1) です。依存は `nlohmann_json` だけの STATIC ライブラリで、[`src/schema/schema.hpp`](../../src/schema/schema.hpp#L16) の `Pelican::Schema` 名前空間だけを持ちます。`FieldType` / [`FieldPresence`](../../src/schema/schema.hpp#L110) / [`Node`](../../src/schema/schema.hpp#L127) が、descriptor が core から project / Studio 側へ渡るときの**プロジェクト所有の再帰 wire モデル**です（`Node` 直前のコメントが規範）。ここでいう wire モデルとは、**層やプロセスの境界を越えて受け渡すためだけに定義した表現**のことです（配線の上を流れる形、という含み）。core 側の `SchemaNode` をそのまま渡さず、境界の手前で必ずこの型へ変換するので、core の内部型が project / Studio 側の型に染み出しません。`pelican_project` は PUBLIC にリンクします（[`target_link_libraries(pelican_project PUBLIC nlohmann_json pelican_schema_leaf PRIVATE picosha2)`](../../src/project/CMakeLists.txt#L73)）。
+宣言は [`src/schema/CMakeLists.txt`](../../src/schema/CMakeLists.txt#L1) です。依存は `nlohmann_json` だけの STATIC ライブラリで、[`src/schema/schema.hpp`](../../src/schema/schema.hpp#L16) の `Pelican::Schema` 名前空間だけを持ちます。`FieldType` / [`FieldPresence`](../../src/schema/schema.hpp#L110) / [`Node`](../../src/schema/schema.hpp#L127) が、descriptor が core から project / Studio 側へ渡るときの**プロジェクト所有の再帰 wire モデル**です（`Node` 直前のコメントが規範）。ここでいう wire モデルとは、**層やプロセスの境界を越えて受け渡すためだけに定義した表現**のことです（配線の上を流れる形、という含み）。core 側の `SchemaNode` をそのまま渡さず、境界の手前で必ずこの型へ変換するので、core の内部型が project / Studio 側の型に染み出しません。`pelican_project` は PUBLIC にリンクします（[`target_link_libraries(pelican_project PUBLIC nlohmann_json pelican_schema_leaf PRIVATE picosha2)`](../../src/project/CMakeLists.txt#L75)）。
 
 core 側からこの葉を使うための橋が [`pelican_schema_core_adapter`](../../src/core/communication/CMakeLists.txt#L1) で、`schemavocabularyadapter` 1 対だけを持つ別 STATIC ターゲットです。`pelican_core` へは PRIVATE にリンクされ（[同 L20](../../src/core/communication/CMakeLists.txt#L20)）、この 1 ターゲットだけが `/we4061 /we4062`（GCC/Clang では `-Wswitch-enum -Werror=switch-enum`）で **enum の網羅を error に上げて**います。ここでいう網羅とは、`switch` が対象 enum の全列挙子を `case` で明示的に書いているか、という意味です（MSVC の C4061 は `default` があっても未記述の列挙子を、C4062 は `default` が無い場合を指摘します）。語彙の追加が黙って落ちないようにするための局所設定です。
 
@@ -97,9 +97,9 @@ package は「エンジンのツリーの外で書かれ、プロジェクトへ
 
 [`src/devcli/CMakeLists.txt`](../../src/devcli/CMakeLists.txt#L1) が作る配布支援CLIです。サブコマンドは `assets`、`bake-camera`、`import`、`dist-config`、`package`(X-1: install / list / inspect)、`project`、`dump-lowered-material`、`vrm`、`graph-catalog`(共通グラフの module / op / 型の一覧、AG-0) の**9系統**です（[`src/devcli/main.cpp` の分岐](../../src/devcli/main.cpp#L15) と [usage文字列](../../src/devcli/main.cpp#L43)。`main()` は9本の `if` を上から並べるだけで、どれにも一致しなければ usage を出して `-1` を返します）。Vulkan実行時全体ではなく `pelican_project` と必要な純粋処理を中心にリンクします。
 
-`project init` が書き出す雛形は、[`templateFiles()`](../../src/project/projecttemplate.cpp#L342) が返すファイル名と文字列定数の対で全量が決まります。「新規プロジェクトの既定形」を知りたいときはここだけ読めば足ります。F-2 でこのファイルは `pelican_cli` から `pelican_project` へ移り（[`src/project/projecttemplate.hpp`](../../src/project/projecttemplate.hpp)）、`pelican_cli` の [`projectinit.cpp`](../../src/devcli/projectinit.cpp#L27) は `--template standard|blank` を読んで `initializeProjectTemplate()` を呼ぶだけになりました。Studio の File > New Project... も同じ関数を呼ぶので、「新しいプロジェクトが何を持つか」の答えは1箇所です。`templateFiles()` は `ProjectTemplate` を引数に取り、`Blank` のときだけ `shaders/present.frag` を足し、`passes/main_rendering_config.json` の中身を切り替えます（以下は既定の `standard` の説明です）。
+`project init` が書き出す雛形は、[`templateFiles()`](../../src/project/projecttemplate.cpp#L357) が返すファイル名と文字列定数の対で全量が決まります。「新規プロジェクトの既定形」を知りたいときはここだけ読めば足ります。F-2 でこのファイルは `pelican_cli` から `pelican_project` へ移り（[`src/project/projecttemplate.hpp`](../../src/project/projecttemplate.hpp)）、`pelican_cli` の [`projectinit.cpp`](../../src/devcli/projectinit.cpp#L30) は `--template standard|blank` を読んで `initializeProjectTemplate()` を呼ぶだけになりました。Studio の File > New Project... も同じ関数を呼ぶので、「新しいプロジェクトが何を持つか」の答えは1箇所です。`templateFiles()` は `ProjectTemplate` を引数に取り、`Blank` のときだけ `shaders/present.frag` を足し、`passes/main_rendering_config.json` の中身を切り替えます（以下は既定の `standard` の説明です）。
 
-このうち `passes/main_rendering_config.json` の内容は二段で決まります。WP240a（`87f5e68`）で111行の手書き宣言からpresetを指す2キーへ置き換わり、さらにP-2a-4bで**`pelican.graph` root** になりました。MG-2b からは文字列定数 [`rendering_config_json`](../../src/project/projecttemplate.cpp#L197) が graph root の全体をそのまま持ち、[`renderingConfigJson()`](../../src/project/projecttemplate.cpp#L265) はそれを返すだけです（以前それを包んでいた `wrapLegacyRenderingConfig()` は撤去されました。[第3章 §3.14](03_project_and_loading.md)）。雛形が書き出す実物は次の形です。
+このうち `passes/main_rendering_config.json` の内容は二段で決まります。WP240a（`87f5e68`）で111行の手書き宣言からpresetを指す2キーへ置き換わり、さらにP-2a-4bで**`pelican.graph` root** になりました。MG-2b からは文字列定数 [`rendering_config_json`](../../src/project/projecttemplate.cpp#L200) が graph root の全体をそのまま持ち、[`renderingConfigJson()`](../../src/project/projecttemplate.cpp#L268) はそれを返すだけです（以前それを包んでいた `wrapLegacyRenderingConfig()` は撤去されました。[第3章 §3.14](03_project_and_loading.md)）。雛形が書き出す実物は次の形です。
 
 ```json
 {
@@ -118,7 +118,7 @@ package は「エンジンのツリーの外で書かれ、プロジェクトへ
 }
 ```
 
-雛形の `code/CMakeLists.txt` は [`code_cmake`](../../src/project/projecttemplate.cpp#L278) の2行で、`pelican_game_sources(game.cpp)` の**後**に `pelican_packages()` を呼びます（順序の理由は次の「packageのビルド」）。
+雛形の `code/CMakeLists.txt` は [`code_cmake`](../../src/project/projecttemplate.cpp#L281) の2行で、`pelican_game_sources(game.cpp)` の**後**に `pelican_packages()` を呼びます（順序の理由は次の「packageのビルド」）。
 
 読む順序は次の3点です。
 
@@ -271,7 +271,7 @@ registryの各行が持つキーのうち、この節で効くのは2つです�
 | `PELICAN_WITH_VAT` | VAT parser/player、VAT shaderをリンク | GLBにVAT extrasがあれば明示エラー、playerはstub |
 | `PELICAN_WITH_EXR` | tinyexrでEXRロード | EXR指定時に明示エラー |
 | `PELICAN_WITH_RPC` | stdio RPC server | [`rpcserver_stub.cpp`](../../src/core/communication/rpcserver_stub.cpp#L1) |
-| [`PELICAN_WITH_ANIMATION`](../../cmake/pelican_feature_registry.cmake#L149) | skeletal animation評価器と `pelican.pose` graph module | `src/core/animation` の実装が外れて [`animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L1) だけになり、`pelican_project` から [`posegraphmodule.cpp` が外れます](../../src/project/CMakeLists.txt#L69)。帰結は4つ（下の段落） |
+| [`PELICAN_WITH_ANIMATION`](../../cmake/pelican_feature_registry.cmake#L149) | skeletal animation評価器と `pelican.pose` graph module | `src/core/animation` の実装が外れて [`animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L1) だけになり、`pelican_project` から [`posegraphmodule.cpp` が外れます](../../src/project/CMakeLists.txt#L71)。帰結は4つ（下の段落） |
 | `PELICAN_WITH_SEQPLAYER` | transform sequence parser/player | [`seqplayer_stub.cpp`](../../src/core/playback/seqplayer_stub.cpp#L1) |
 | `PELICAN_WITH_IMGUI` | 開発者UI（ImGui）をリンク | imguiモジュールなし |
 | `PELICAN_WITH_PHYSICS` | 物理クエリサービスとcollider world | [`physicsservice_stub.cpp`](../../src/core/phys/physicsservice_stub.cpp)、colliderを持つobjectは scene load の prepare でも editor の `add_component` / `spawn` でも `physics.module_unavailable@1`（[`resolvedObjectFeatureRefusal()`](../../src/core/loader/resolvedscene.cpp#L78)。下の 4 と同じ検査） |
@@ -284,7 +284,7 @@ registryの各行が持つキーのうち、この節で効くのは2つです�
 
 1. **catalog から `pelican.pose` が消える** — [`makeBuiltinGraphModuleRegistry()`](../../src/project/graphmodule.cpp#L253) が `registerPoseGraphModule()` を呼ばないので、`pelican_cli graph-catalog` の出力は（`PELICAN_WITH_AUDIO=ON` なら）5 moduleから4 moduleになり、`pose.blend` / `pose.clip_sample` / `pose.retarget` / `pose.skeletal` / `pose.state_machine` / `pose.transform` の6 opだけが落ちます。これを検査するのが [`test/run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake#L129) です。2 本の catalog を突き合わせるのではなく、**1 本の catalog を `WITH_ANIMATION` の期待値に照らします**（module 数は [3 + audio + animation](../../test/run_devcli_graph_catalog.cmake#L24)、名前空間と pose op の有無は [名前空間の期待値の組み立て](../../test/run_devcli_graph_catalog.cmake#L78)）。同じ実行が [`docs/v0_freeze.md` の op 表とも突き合わせ](../../test/run_devcli_graph_catalog.cmake#L125)、OFF build で欠けてよいのは外した unit の op だけ、という形で差を固定します。期待値の組み立ては `WITH_AUDIO` も受け取り（PG-1）、module 数は 3 に audio と animation の分を足し、freeze 表の照合は「外した unit の op（`audio.*` / `pose.*`）だけが欠けてよい」になっています（`de84fddb`）。基数の 3 は常に登録される `pelican.value` / `pelican.render` / `pelican.ui` で、`pelican.ui` は GP-3（`a922733b`）で加わりました。UI にはビルドユニットの ON / OFF が無いので、この module は build option で消えません。
 2. **`pose.*` を書いた文書は `graph.operation_unregistered@1`** — op 名の特別扱いが無いので、未登録という一般の理由でそのまま落ちます（§1.5）。
-3. **`requires: ["animation"]` を書いたprojectは開く前に落ちる** — 語彙は `animation` / `audio` / `physics` / `xr` / `vat` / `seqplayer` の6語で（[`knownProjectRequirements()`](../../src/project/projectformat.hpp#L51)。行は `src/project/projectrequirements.def`）、封筒のパース時点で `animation.module_unavailable@1` を投げます（[`parseProjectEnvelopeJson()` 内](../../src/project/projectformat.cpp#L188)）。node を1つずつ辿って気付く、という発見の仕方をさせないための前倒しです。
+3. **`requires: ["animation"]` を書いたprojectは開く前に落ちる** — 語彙は `animation` / `audio` / `physics` / `xr` / `vat` / `seqplayer` の6語で（[`knownProjectRequirements()`](../../src/project/projectformat.hpp#L65)。行は `src/project/projectrequirements.def`）、封筒のパース時点で `animation.module_unavailable@1` を投げます（[`parseProjectEnvelopeJson()` 内](../../src/project/projectformat.cpp#L190)）。node を1つずつ辿って気付く、という発見の仕方をさせないための前倒しです。
 4. **scene に animation component があれば prepare で落ちる** — [`validateResolvedSceneFeatureBindings()`](../../src/core/loader/scene.cpp#L64) が同じ `animation.module_unavailable@1` を、objectの名前を添えて投げます。判定本体は codec の `required_feature`（animation → `animation`、collider → `physics`）を見る [`resolvedObjectFeatureRefusal()`](../../src/core/loader/resolvedscene.cpp#L78) で、editor の `add_component` / `spawn` も同じ関数を呼びます（PG-1）。componentのcodec自体は残るのでOFFビルドのツールでもsceneを読み書きでき、[`AnimationSystem` の登録だけが消えます](../../src/core/ecs/predefined.cpp#L54)（「登録されているが何もしない」ではありません）。
 
 ABIの交渉入口（`getApiV1` / `getPoseStagingServiceV1` / `getApplicationServiceV1`）はOFFでもexportされ続けます。3つとも、out 引数が null なら `invalid_argument`、そうでなければ `unsupported_version` です（[`animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L13)）。SDKに対してビルドされたgame DLLが**ロードはできて、名前で「このバイナリにはアニメーションが無い」と分かる**ようにするためです。
@@ -442,8 +442,8 @@ fault injection の setter のように「テストからだけ触れて、製�
 | 条件 | 見るもの |
 |---|---|
 | test-only source が製品ターゲットに混ざっていない | `pelican_core` の `SOURCES` プロパティと test 側 TU のパス照合（[SOURCES の照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)） |
-| production header に setter の**定義**が無い | `scene.hpp` / `vertbufcontainer.hpp` を正規表現 `set[A-Za-z0-9_]*ForTesting[A-Za-z0-9_]*` + 実引数 + `{` で検査（[同 L36](../../test/run_wp380c_no_production_fault_setter.cmake#L69)） |
-| archive に symbol が無い | `dumpbin /symbols` の出力から4つの setter 名を探す（[同 L43](../../test/run_wp380c_no_production_fault_setter.cmake#L76)） |
+| production header に setter の**定義**が無い | `scene.hpp` / `vertbufcontainer.hpp` を正規表現 `set[A-Za-z0-9_]*ForTesting[A-Za-z0-9_]*` + 実引数 + `{` で検査（[同 L36](../../test/run_wp380c_no_production_fault_setter.cmake#L93)） |
+| archive に symbol が無い | `dumpbin /symbols` の出力から4つの setter 名を探す（[同 L43](../../test/run_wp380c_no_production_fault_setter.cmake#L100)） |
 
 3条件が要るのは、1条件ずつでは抜け道が残るからです。symbol 検査だけでは header inline（symbol が出ない）を通し、source 検査だけでは別名の setter を通します。この gate 自体は Windows（`dumpbin` のある構成）でのみ登録されます。
 
