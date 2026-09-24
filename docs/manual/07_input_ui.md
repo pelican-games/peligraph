@@ -238,7 +238,7 @@ UI の中身を実行時に変える口は 2 つあります。ゲームコー�
 
 #### `ctx.ui()` — ゲームコードから書く
 
-[`GameContext::ui()`](../../src/core/userpublic/gamecontext.hpp#L276) はプロジェクトの UI 文書を、`ui(document_key)` は文書の `key` を名指しして [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L208) を返します。v0 の UI 文書は 1 本なので、`key` が違えば `ui.node_unknown@1` です。
+[`GameContext::ui()`](../../src/core/userpublic/gamecontext.hpp#L288) はプロジェクトの UI 文書を、`ui(document_key)` は文書の `key` を名指しして [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L220) を返します。v0 の UI 文書は 1 本なので、`key` が違えば `ui.node_unknown@1` です。
 
 ```cpp
 auto ui = ctx.ui();
@@ -291,7 +291,7 @@ graph module **`pelican.ui`**(version 1)は常に登録されます(UI にはビ
   - `ui.feature_unreferenced@1` — `ui.*` sink を持つ config が `engine://features/ui.json` を参照していない
   - `ui.node_unknown@1` / `ui.property_mismatch@1` — `parameters.node` の path が無い / その node が性質を持たない(例: `ui.value` の先が label)
   - `ui.sink_conflict@1` — 2 本の sink が同じ (path, 性質) を書く
-- **sink とゲームコードがぶつかったら sink が勝ちます。** sink が書いている (path, 性質) へ `ctx.ui()` で書くと、その書き込みが `ui.sink_conflict@1` で断られます([uiSinkClaims()](../../src/core/userpublic/gamecontext.cpp#L176))。同じ node の別の性質(sink が `value` を書いている gauge への `setVisible` など)は受け付けます。
+- **sink とゲームコードがぶつかったら sink が勝ちます。** sink が書いている (path, 性質) へ `ctx.ui()` で書くと、その書き込みが `ui.sink_conflict@1` で断られます([uiSinkClaims()](../../src/core/userpublic/gamecontext.cpp#L177))。同じ node の別の性質(sink が `value` を書いている gauge への `setVisible` など)は受け付けます。
 - UI feature を参照していないプロジェクトは、ゲームコードの経路でも sink の経路でも `ui.feature_unreferenced@1` になります。
 
 #### GP-3 が残した穴
@@ -307,7 +307,7 @@ graph module **`pelican.ui`**(version 1)は常に登録されます(UI にはビ
 
 ## 7.5 テキスト HUD — debug_text(✅WP54 / WP169)
 
-使い方は不変です — rendering config に `engine://features/debug_text.json` を 1 行 + ゲームコードから `ctx.render().debugText(x, y, text)`。座標はピクセル・左上原点、feature を参照しなければ完全 no-op、golden は tolerance 0 です。API は C-8 の facade 分割で `GameContext` から [`RenderContext::debugText`](../../src/core/userpublic/gamecontext.hpp#L144) へ移りました。`color`(既定 白 `{1, 1, 1, 1}`)と `scale`(既定 1)は引数で渡せ、省略したときだけ白・等倍です。
+使い方は不変です — rendering config に `engine://features/debug_text.json` を 1 行 + ゲームコードから `ctx.render().debugText(x, y, text)`。座標はピクセル・左上原点、feature を参照しなければ完全 no-op、golden は tolerance 0 です。API は C-8 の facade 分割で `GameContext` から [`RenderContext::debugText`](../../src/core/userpublic/gamecontext.hpp#L156) へ移りました。`color`(既定 白 `{1, 1, 1, 1}`)と `scale`(既定 1)は引数で渡せ、省略したときだけ白・等倍です。
 
 ✅WP169 で、`debug_text` と `pelican.ui` の**ビットマップレイアウトが単一実装に統一**されました。以前は「フォントテーブルだけ共有・配置計算は別実装」でしたが、現在はどちらも [src/core/ui/bitmapfont.cpp](../../src/core/ui/bitmapfont.cpp) の `BitmapFont::layout()` を通ります。**見た目・座標・API は不変**で(既存 golden と凍結ハッシュはすべて維持、golden 更新 0)、production の `DebugText` と `UiRenderer` を同一オフスクリーン RT に描いた 96×80 RGBA8 の全 30,720 byte が一致することを `test/debugtext_ui_compat_test.cpp`(GPU ラベル付きの Catch2 テスト)がゲートしています。
 

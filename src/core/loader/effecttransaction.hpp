@@ -48,6 +48,10 @@ class PreparedEffectTransaction {
         std::optional<Persistence::PreparedWrite> write;
     };
 
+  public:
+    // The api / code / fields of a recorded effect error. Public so a facade
+    // can name its own refusal in a destruction callback
+    // (absorbDestroyRefusal below).
     enum class ErrorApi : std::uint8_t {
         play_sound,
         stop_sound,
@@ -65,6 +69,17 @@ class PreparedEffectTransaction {
         set_sprite_view,
         set_sprite_texture,
         effect_outbox,
+        // PG-2b: facade entries that record only the refusal of a module or
+        // provider the process does not have.
+        set_sound_volume,
+        set_sound_pitch,
+        set_sound_paused,
+        sound_state,
+        raycast_all,
+        raycast_closest,
+        overlap_all,
+        shape_cast_all,
+        shape_cast_closest,
     };
 
     enum class ErrorCode : std::uint8_t {
@@ -84,6 +99,7 @@ class PreparedEffectTransaction {
         audio_stop_failed,
         audio_bus_volume_failed,
         persistence_write_failed,
+        physics_provider_unavailable,
     };
 
     enum class ErrorFields : std::uint8_t {
@@ -99,6 +115,7 @@ class PreparedEffectTransaction {
         dropped,
     };
 
+  private:
     template <std::size_t Capacity> struct FixedText {
         std::array<char, Capacity> bytes{};
         std::uint16_t size = 0;
@@ -174,6 +191,13 @@ class PreparedEffectTransaction {
     bool rejectRetiredMutation(std::string_view api,
                                GameObjectId id) noexcept;
 
+    // PG-2b: in the destroy phase, records a facade's refusal as an effect
+    // error and returns true; in any other phase records nothing and returns
+    // false (the facade throws as it would anywhere else).
+    bool recordDestroyRefusal(ErrorApi api, ErrorCode code, ErrorFields fields,
+                              std::uint64_t value,
+                              std::string_view reason) noexcept;
+
     void flush(SceneLoadFaultInjector *injector,
                SceneLoadPhaseTrace &phase_trace) noexcept;
     std::vector<CommittedWithEffectFailure::EffectError>
@@ -194,13 +218,32 @@ class EffectTransactionScope {
     EffectTransactionScope &operator=(const EffectTransactionScope &) = delete;
 };
 
+// Brackets a destruction callback (Behavior::onDestroy, which is noexcept).
+// With a scene transaction running, the transaction is in its destroy phase
+// for the scope; without one, the scope still marks the thread as inside a
+// destruction callback for absorbDestroyRefusal.
 class EffectDestroyScope {
     PreparedEffectTransaction *transaction_ = nullptr;
     PreparedEffectTransaction::CallbackPhase previous_{};
   public:
     EffectDestroyScope() noexcept;
     ~EffectDestroyScope();
+    EffectDestroyScope(const EffectDestroyScope &) = delete;
+    EffectDestroyScope &operator=(const EffectDestroyScope &) = delete;
 };
+
+// PG-2b: a facade (ctx.audio(), ctx.physics()) that fails because this build
+// left its module out (build_feature_disabled@1) or no provider answers it
+// (physics.provider_unavailable@1) must not throw out of a noexcept
+// destruction callback. Inside one, this records the refusal -- as an effect
+// error of the scene transaction in its destroy phase, or, with no scene
+// transaction running, in the engine log -- and returns true; the facade then
+// answers empty. Anywhere else it returns false and the facade rethrows.
+bool absorbDestroyRefusal(PreparedEffectTransaction::ErrorApi api,
+                          PreparedEffectTransaction::ErrorCode code,
+                          PreparedEffectTransaction::ErrorFields fields,
+                          std::uint64_t value,
+                          std::string_view reason) noexcept;
 
 } // namespace internal
 } // namespace Pelican

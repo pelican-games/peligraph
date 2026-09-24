@@ -35,6 +35,7 @@
 #endif
 #include "../playback/seqplayer.hpp"
 #include "../phys/physworld.hpp"
+#include "../../project/projectformat.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
@@ -1090,6 +1091,20 @@ namespace internal {
 void configurePhysicsRpcHandlers(RpcServer &server, PhysWorld &physics) {
     server.setHandler("raycast", [&physics](const nlohmann::json &params) {
         constexpr auto method = "raycast";
+        // PG-2b: a build without physics has only PhysWorld's stub, whose
+        // queries answer nothing; "hit": null would read as a miss. Refuse by
+        // the name a project's `requires` fails under, as ctx.physics() does.
+        if (const auto code = projectRequirementUnavailableCode("physics");
+            !code.empty()) {
+            const auto option = projectRequirementOption("physics");
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::applicationError,
+                std::string{code} + ": this build has " + std::string{option} +
+                    "=OFF, so raycast has no physics world to query",
+                nlohmann::json{{"code", code},
+                               {"requirement", "physics"},
+                               {"option", option}});
+        }
         const auto &object = requireObjectParams(params, method);
         if (object.size() != 3 || !object.contains("origin") ||
             !object.contains("direction") || !object.contains("max_distance"))

@@ -3,6 +3,8 @@
 #include "scene.hpp"
 #include "sceneloadfault.hpp"
 #include "../build_features.hpp"
+#include "../log.hpp"
+#include "../phys/physquery.hpp"
 #include "../ecs/archetypemigration.hpp"
 #include <details/ecs/componentdeclare.hpp>
 
@@ -16,6 +18,9 @@
 namespace Pelican::internal {
 namespace {
 thread_local PreparedEffectTransaction *active_effect_transaction = nullptr;
+// How many destruction callbacks (EffectDestroyScope) enclose this thread's
+// current call, with or without a scene transaction (PG-2b).
+thread_local std::size_t destroy_scope_depth = 0;
 
 std::string_view currentExceptionWhat() noexcept {
     try {
@@ -594,6 +599,79 @@ void PreparedEffectTransaction::flush(SceneLoadFaultInjector *injector,
     }
 }
 
+namespace {
+using EffectErrorApi = PreparedEffectTransaction::ErrorApi;
+using EffectErrorCode = PreparedEffectTransaction::ErrorCode;
+
+std::string_view errorApiName(EffectErrorApi api) noexcept {
+    switch (api) {
+    case EffectErrorApi::play_sound: return "playSound";
+    case EffectErrorApi::stop_sound: return "stopSound";
+    case EffectErrorApi::set_bus_volume: return "setBusVolume";
+    case EffectErrorApi::bus_volume: return "busVolume";
+    case EffectErrorApi::is_playing: return "isPlaying";
+    case EffectErrorApi::game_settings: return "gameSettings";
+    case EffectErrorApi::set_game_settings: return "setGameSettings";
+    case EffectErrorApi::save_settings: return "saveSettings";
+    case EffectErrorApi::save_data: return "saveData";
+    case EffectErrorApi::load_data: return "loadData";
+    case EffectErrorApi::list_saves: return "listSaves";
+    case EffectErrorApi::load_scene: return "loadScene";
+    case EffectErrorApi::set_local_transform: return "setLocalTransform";
+    case EffectErrorApi::set_sprite_view: return "setSpriteView";
+    case EffectErrorApi::set_sprite_texture: return "setSpriteTexture";
+    case EffectErrorApi::effect_outbox: return "effect_outbox";
+    case EffectErrorApi::set_sound_volume: return "setSoundVolume";
+    case EffectErrorApi::set_sound_pitch: return "setSoundPitch";
+    case EffectErrorApi::set_sound_paused: return "setSoundPaused";
+    case EffectErrorApi::sound_state: return "soundState";
+    case EffectErrorApi::raycast_all: return "raycastAll";
+    case EffectErrorApi::raycast_closest: return "raycastClosest";
+    case EffectErrorApi::overlap_all: return "overlapAll";
+    case EffectErrorApi::shape_cast_all: return "shapeCastAll";
+    case EffectErrorApi::shape_cast_closest: return "shapeCastClosest";
+    }
+    return "effect_outbox";
+}
+
+std::string_view errorCodeName(EffectErrorCode code) noexcept {
+    switch (code) {
+    case EffectErrorCode::scene_retired_object_mutation_rejected:
+        return "SceneRetiredObjectMutationRejected";
+    case EffectErrorCode::effect_outbox_full: return "effect_outbox_full@1";
+    case EffectErrorCode::build_feature_disabled:
+        return BuildFeatureCallDisabledError::error_code;
+    case EffectErrorCode::audio_play_stage_failed:
+        return "audio_play_stage_failed@1";
+    case EffectErrorCode::audio_stop_stage_failed:
+        return "audio_stop_stage_failed@1";
+    case EffectErrorCode::audio_bus_volume_stage_failed:
+        return "audio_bus_volume_stage_failed@1";
+    case EffectErrorCode::audio_is_playing_stage_failed:
+        return "audio_is_playing_stage_failed@1";
+    case EffectErrorCode::persistence_shadow_failed:
+        return "persistence_shadow_failed@1";
+    case EffectErrorCode::persistence_stage_failed:
+        return "persistence_stage_failed@1";
+    case EffectErrorCode::persistence_overlay_failed:
+        return "persistence_overlay_failed@1";
+    case EffectErrorCode::persistence_read_failed:
+        return "persistence_read_failed@1";
+    case EffectErrorCode::scene_retire_load_rejected:
+        return "scene_retire_load_rejected@1";
+    case EffectErrorCode::audio_play_failed: return "audio_play_failed@1";
+    case EffectErrorCode::audio_stop_failed: return "audio_stop_failed@1";
+    case EffectErrorCode::audio_bus_volume_failed:
+        return "audio_bus_volume_failed@1";
+    case EffectErrorCode::persistence_write_failed:
+        return "persistence_write_failed@1";
+    case EffectErrorCode::physics_provider_unavailable:
+        return phys::ProviderUnavailableError::error_code;
+    }
+    return "effect_failure@1";
+}
+} // namespace
+
 std::vector<CommittedWithEffectFailure::EffectError>
 PreparedEffectTransaction::effectErrors() const {
     std::array<const FixedEffectError *, sceneEffectCapacity + 1U> ordered{};
@@ -608,61 +686,8 @@ PreparedEffectTransaction::effectErrors() const {
                   return left->sequence < right->sequence;
               });
 
-    const auto apiName = [](ErrorApi api) -> std::string_view {
-        switch (api) {
-        case ErrorApi::play_sound: return "playSound";
-        case ErrorApi::stop_sound: return "stopSound";
-        case ErrorApi::set_bus_volume: return "setBusVolume";
-        case ErrorApi::bus_volume: return "busVolume";
-        case ErrorApi::is_playing: return "isPlaying";
-        case ErrorApi::game_settings: return "gameSettings";
-        case ErrorApi::set_game_settings: return "setGameSettings";
-        case ErrorApi::save_settings: return "saveSettings";
-        case ErrorApi::save_data: return "saveData";
-        case ErrorApi::load_data: return "loadData";
-        case ErrorApi::list_saves: return "listSaves";
-        case ErrorApi::load_scene: return "loadScene";
-        case ErrorApi::set_local_transform: return "setLocalTransform";
-        case ErrorApi::set_sprite_view: return "setSpriteView";
-        case ErrorApi::set_sprite_texture: return "setSpriteTexture";
-        case ErrorApi::effect_outbox: return "effect_outbox";
-        }
-        return "effect_outbox";
-    };
-    const auto codeName = [](ErrorCode code) -> std::string_view {
-        switch (code) {
-        case ErrorCode::scene_retired_object_mutation_rejected:
-            return "SceneRetiredObjectMutationRejected";
-        case ErrorCode::effect_outbox_full: return "effect_outbox_full@1";
-        case ErrorCode::build_feature_disabled:
-            return BuildFeatureCallDisabledError::error_code;
-        case ErrorCode::audio_play_stage_failed:
-            return "audio_play_stage_failed@1";
-        case ErrorCode::audio_stop_stage_failed:
-            return "audio_stop_stage_failed@1";
-        case ErrorCode::audio_bus_volume_stage_failed:
-            return "audio_bus_volume_stage_failed@1";
-        case ErrorCode::audio_is_playing_stage_failed:
-            return "audio_is_playing_stage_failed@1";
-        case ErrorCode::persistence_shadow_failed:
-            return "persistence_shadow_failed@1";
-        case ErrorCode::persistence_stage_failed:
-            return "persistence_stage_failed@1";
-        case ErrorCode::persistence_overlay_failed:
-            return "persistence_overlay_failed@1";
-        case ErrorCode::persistence_read_failed:
-            return "persistence_read_failed@1";
-        case ErrorCode::scene_retire_load_rejected:
-            return "scene_retire_load_rejected@1";
-        case ErrorCode::audio_play_failed: return "audio_play_failed@1";
-        case ErrorCode::audio_stop_failed: return "audio_stop_failed@1";
-        case ErrorCode::audio_bus_volume_failed:
-            return "audio_bus_volume_failed@1";
-        case ErrorCode::persistence_write_failed:
-            return "persistence_write_failed@1";
-        }
-        return "effect_failure@1";
-    };
+    const auto apiName = errorApiName;
+    const auto codeName = errorCodeName;
     const auto phaseName = [](CallbackPhase phase) -> std::string_view {
         switch (phase) {
         case CallbackPhase::activate: return "activate";
@@ -742,6 +767,7 @@ EffectTransactionScope::~EffectTransactionScope() {
 
 EffectDestroyScope::EffectDestroyScope() noexcept
     : transaction_{active_effect_transaction} {
+    ++destroy_scope_depth;
     if (transaction_ != nullptr) {
         previous_ = transaction_->phase();
         transaction_->setPhase(
@@ -751,6 +777,41 @@ EffectDestroyScope::EffectDestroyScope() noexcept
 
 EffectDestroyScope::~EffectDestroyScope() {
     if (transaction_ != nullptr) transaction_->setPhase(previous_);
+    --destroy_scope_depth;
+}
+
+bool PreparedEffectTransaction::recordDestroyRefusal(
+    ErrorApi api, ErrorCode code, ErrorFields fields, std::uint64_t value,
+    std::string_view reason) noexcept {
+    if (phase_ != CallbackPhase::destroy) return false;
+    record(next_sequence_++, api, code, fields, {}, value, 0, reason);
+    return true;
+}
+
+bool absorbDestroyRefusal(PreparedEffectTransaction::ErrorApi api,
+                          PreparedEffectTransaction::ErrorCode code,
+                          PreparedEffectTransaction::ErrorFields fields,
+                          std::uint64_t value,
+                          std::string_view reason) noexcept {
+    if (auto *transaction = active_effect_transaction) {
+        // A scene transaction decides by its own phase, as its staged calls
+        // (playSound, loadData, ...) already do.
+        return transaction->recordDestroyRefusal(api, code, fields, value,
+                                                 reason);
+    }
+    if (destroy_scope_depth == 0) return false;
+    // A destruction callback outside a scene load (an object removed during
+    // play, a game DLL unloading) has no effect error list to carry the
+    // refusal, so the log carries it.
+    try {
+        if (logger != nullptr) {
+            LOG_ERROR(logger, "{} in a destruction callback: {} answered empty ({})",
+                      std::string{errorCodeName(code)},
+                      std::string{errorApiName(api)}, std::string{reason});
+        }
+    } catch (...) {
+    }
+    return true;
 }
 
 } // namespace Pelican::internal

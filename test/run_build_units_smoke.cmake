@@ -471,11 +471,25 @@ endfunction()
 # PG-2: the [pg2] cases -- every facade entry of the missing module fails with
 # build_feature_disabled@1 and the option, the animation facade stays a
 # Status, and the participant OFF divisions follow the rule.
+#
+# PG-2b: the lines after `label` are what the OFF build's [pg2] cases must
+# print (a refusal recorded in a noexcept onDestroy, the RPC raycast's name),
+# so a case compiled out by a wrong condition cannot pass by printing nothing.
+# A facade that throws out of onDestroy ends the run in std::terminate, which
+# the test turns into a PG2B_TERMINATE exit and run_process reports.
 function(run_pg2_cases build_dir label)
     find_built_executable("${build_dir}" "pelican_test_group_core_foundation" pg2_group)
     run_process("${label}_pg2_core_foundation" TRUE "${pg2_group}" "[pg2]")
     message(STATUS "${label} [pg2] core_foundation:
 ${${label}_pg2_core_foundation_STDOUT}")
+    foreach(expected IN LISTS ARGN)
+        string(FIND "${${label}_pg2_core_foundation_STDOUT}" "${expected}" expected_index)
+        if(expected_index EQUAL -1)
+            message(FATAL_ERROR "${label} [pg2] did not print '${expected}'
+stdout:
+${${label}_pg2_core_foundation_STDOUT}")
+        endif()
+    endforeach()
 endfunction()
 
 # PG-1: a refusal that is not a thrown BuildFeatureDisabledError but a named
@@ -957,7 +971,9 @@ function(run_audio_smoke)
         "${audio_probe}"
     )
     run_pg1_cases("${audio_build_dir}" "audio")
-    run_pg2_cases("${audio_build_dir}" "audio")
+    run_pg2_cases("${audio_build_dir}" "audio"
+        "PG2B_DESTROY_RECORDED api=soundState code=build_feature_disabled@1"
+        "PG2B_DESTROY_RECORDED api=playSound code=build_feature_disabled@1")
     find_built_executable("${audio_build_dir}" "pelican_player" audio_player)
     set(audio_requires_project "${ARTIFACT_ROOT}/audio_requires_project")
     write_requires_project("${audio_requires_project}" audio)
@@ -1148,7 +1164,9 @@ ${physics_provider_only_pg2_STDOUT}")
     endif()
     message(STATUS "physics_provider_only [pg2]:
 ${physics_provider_only_pg2_STDOUT}")
-    run_pg2_cases("${physics_provider_build_dir}" "physics_provider_only")
+    run_pg2_cases("${physics_provider_build_dir}" "physics_provider_only"
+        "PG2B_DESTROY_RECORDED api=raycastAll code=physics.provider_unavailable@1"
+        "PG2B_DESTROY_RECORDED api=shapeCastClosest code=physics.provider_unavailable@1")
     run_process(
         "physics_provider_only_game_dll"
         TRUE
@@ -1196,7 +1214,10 @@ function(run_physics_smoke)
         "${physics_build_dir}" "pelican_test_wp360_resolvedscene_test" physics_wp360_test)
     run_process("physics_wp360_matrix" TRUE "${physics_wp360_test}" "[wp360][physics][matrix]")
     run_pg1_cases("${physics_build_dir}" "physics")
-    run_pg2_cases("${physics_build_dir}" "physics")
+    run_pg2_cases("${physics_build_dir}" "physics"
+        "PG2B_DESTROY_RECORDED api=raycastAll code=build_feature_disabled@1"
+        "PG2B_DESTROY_RECORDED api=shapeCastClosest code=build_feature_disabled@1"
+        "PG2B_RPC_RAYCAST code=physics.module_unavailable@1")
     clean_successful_build("${physics_build_dir}")
 endfunction()
 

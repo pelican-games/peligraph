@@ -1422,6 +1422,14 @@ pelican_define_test(pg1_feature_gate_test GROUP core_foundation pelican_core)
 # PG-2: the call-time half -- the facades a build left the module out of --
 # measured in every build (the OFF builds run its [pg2] tag).
 pelican_define_test(pg2_facade_failure_test GROUP core_foundation pelican_core)
+# PG-2b: the same facades inside a noexcept onDestroy record the refusal
+# instead of throwing, and the RPC raycast of a build without physics refuses
+# by name. Its [pg2] cases run in the OFF builds with the PG-2 ones.
+pelican_define_test(pg2b_destroy_refusal_test GROUP core_foundation pelican_core)
+target_compile_definitions(pelican_test_pg2b_destroy_refusal_test PRIVATE
+    PELICAN_WITH_BUILTIN_PHYSICS=$<BOOL:${PELICAN_WITH_BUILTIN_PHYSICS}>
+    PELICAN_WITH_JOLT_PHYSICS=$<BOOL:${PELICAN_WITH_JOLT_PHYSICS}>
+)
 # GP-1: ObjectRef, the world transform read, and a localtransform on every
 # scene object with a transform. The test executable is the SDK export host
 # its fixture DLL links against, as pelican_player is for a shipped game DLL,

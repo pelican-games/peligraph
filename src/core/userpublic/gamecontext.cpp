@@ -29,6 +29,7 @@
 #include "valuegraph.hpp"
 
 #include <optional>
+#include <type_traits>
 #include <utility>
 
 namespace Pelican {
@@ -313,63 +314,120 @@ namespace {
 } // namespace
 #endif
 
+// PG-2b: Behavior::onDestroy is noexcept, so a facade that fails there
+// because the build left its module out, or no provider answers the query,
+// would end the process. Inside a destruction callback the refusal is
+// recorded instead (internal::absorbDestroyRefusal) and the facade answers
+// empty: a default-constructed value -- no hits, nullopt, an invalid handle,
+// false, 0. Every other failure, and every refusal outside a destruction
+// callback, still throws.
+namespace {
+using EffectApi = internal::PreparedEffectTransaction::ErrorApi;
+using EffectCode = internal::PreparedEffectTransaction::ErrorCode;
+using EffectFields = internal::PreparedEffectTransaction::ErrorFields;
+
+template <class Call>
+auto answerEmptyInDestroy(EffectApi api, EffectFields fields,
+                          std::uint64_t value, Call &&call) -> decltype(call()) {
+    using Answer = decltype(call());
+    try {
+        return call();
+    } catch (const BuildFeatureCallDisabledError &error) {
+        if (!internal::absorbDestroyRefusal(api, EffectCode::build_feature_disabled,
+                                            fields, value, error.what())) {
+            throw;
+        }
+    } catch (const phys::ProviderUnavailableError &error) {
+        if (!internal::absorbDestroyRefusal(
+                api, EffectCode::physics_provider_unavailable, fields, value,
+                error.what())) {
+            throw;
+        }
+    }
+    if constexpr (!std::is_void_v<Answer>) return Answer{};
+}
+
+template <class Call>
+auto answerEmptyInDestroy(EffectApi api, Call &&call) -> decltype(call()) {
+    return answerEmptyInDestroy(api, EffectFields::reason, 0,
+                                std::forward<Call>(call));
+}
+
+template <class Call>
+auto answerEmptyInDestroy(EffectApi api, SoundHandle handle, Call &&call)
+    -> decltype(call()) {
+    return answerEmptyInDestroy(api, EffectFields::handle_reason, handle.value,
+                                std::forward<Call>(call));
+}
+} // namespace
+
 std::vector<phys::RaycastQueryHit> PhysicsContext::raycastAll(
     const phys::Ray &ray, const phys::QueryFilter &filter) const {
+    return answerEmptyInDestroy(EffectApi::raycast_all, [&]() -> std::vector<phys::RaycastQueryHit> {
 #if PELICAN_WITH_PHYSICS
-    return GET_MODULE(PhysWorld).raycastAll(ray, filter);
+        return GET_MODULE(PhysWorld).raycastAll(ray, filter);
 #else
-    (void)ray;
-    (void)filter;
-    physicsDisabled("raycastAll");
+        (void)ray;
+        (void)filter;
+        physicsDisabled("raycastAll");
 #endif
+    });
 }
 
 std::optional<phys::RaycastQueryHit> PhysicsContext::raycastClosest(
     const phys::Ray &ray, const phys::QueryFilter &filter) const {
+    return answerEmptyInDestroy(EffectApi::raycast_closest, [&]() -> std::optional<phys::RaycastQueryHit> {
 #if PELICAN_WITH_PHYSICS
-    return GET_MODULE(PhysWorld).raycastClosest(ray, filter);
+        return GET_MODULE(PhysWorld).raycastClosest(ray, filter);
 #else
-    (void)ray;
-    (void)filter;
-    physicsDisabled("raycastClosest");
+        (void)ray;
+        (void)filter;
+        physicsDisabled("raycastClosest");
 #endif
+    });
 }
 
 std::vector<phys::OverlapHit> PhysicsContext::overlapAll(
     const phys::Shape &shape, const phys::QueryFilter &filter) const {
+    return answerEmptyInDestroy(EffectApi::overlap_all, [&]() -> std::vector<phys::OverlapHit> {
 #if PELICAN_WITH_PHYSICS
-    return GET_MODULE(PhysWorld).overlapAllHits(shape, filter);
+        return GET_MODULE(PhysWorld).overlapAllHits(shape, filter);
 #else
-    (void)shape;
-    (void)filter;
-    physicsDisabled("overlapAll");
+        (void)shape;
+        (void)filter;
+        physicsDisabled("overlapAll");
 #endif
+    });
 }
 
 std::vector<phys::ShapeCastQueryHit> PhysicsContext::shapeCastAll(
     const phys::Shape &moving_shape, vec3 delta,
     const phys::QueryFilter &filter) const {
+    return answerEmptyInDestroy(EffectApi::shape_cast_all, [&]() -> std::vector<phys::ShapeCastQueryHit> {
 #if PELICAN_WITH_PHYSICS
-    return GET_MODULE(PhysWorld).shapeCastAll(moving_shape, delta, filter);
+        return GET_MODULE(PhysWorld).shapeCastAll(moving_shape, delta, filter);
 #else
-    (void)moving_shape;
-    (void)delta;
-    (void)filter;
-    physicsDisabled("shapeCastAll");
+        (void)moving_shape;
+        (void)delta;
+        (void)filter;
+        physicsDisabled("shapeCastAll");
 #endif
+    });
 }
 
 std::optional<phys::ShapeCastQueryHit> PhysicsContext::shapeCastClosest(
     const phys::Shape &moving_shape, vec3 delta,
     const phys::QueryFilter &filter) const {
+    return answerEmptyInDestroy(EffectApi::shape_cast_closest, [&]() -> std::optional<phys::ShapeCastQueryHit> {
 #if PELICAN_WITH_PHYSICS
-    return GET_MODULE(PhysWorld).shapeCastClosest(moving_shape, delta, filter);
+        return GET_MODULE(PhysWorld).shapeCastClosest(moving_shape, delta, filter);
 #else
-    (void)moving_shape;
-    (void)delta;
-    (void)filter;
-    physicsDisabled("shapeCastClosest");
+        (void)moving_shape;
+        (void)delta;
+        (void)filter;
+        physicsDisabled("shapeCastClosest");
 #endif
+    });
 }
 
 void RenderContext::setCamera(std::string_view name) const {
@@ -397,14 +455,16 @@ std::uint64_t GameContext::seed() const {
 }
 
 SoundHandle AudioContext::playSound(std::string_view path) const {
-    if (auto *effect = internal::activeEffectTransaction()) {
-        return effect->playSound(path);
-    }
+    return answerEmptyInDestroy(EffectApi::play_sound, [&]() -> SoundHandle {
+        if (auto *effect = internal::activeEffectTransaction()) {
+            return effect->playSound(path);
+        }
 #if PELICAN_WITH_AUDIO
-    return GET_MODULE(Audio).playSound(path);
+        return GET_MODULE(Audio).playSound(path);
 #else
-    audioDisabled("playSound");
+        audioDisabled("playSound");
 #endif
+    });
 }
 
 Animation::Status AnimationContext::setParameter(GameObjectId object, std::string_view name, double value) const {
@@ -428,54 +488,62 @@ Animation::Status AnimationContext::forceState(GameObjectId object, std::string_
 }
 
 void AudioContext::stopSound(SoundHandle handle) const {
-    if (auto *effect = internal::activeEffectTransaction()) {
-        effect->stopSound(handle);
-        return;
-    }
+    return answerEmptyInDestroy(EffectApi::stop_sound, handle, [&]() -> void {
+        if (auto *effect = internal::activeEffectTransaction()) {
+            effect->stopSound(handle);
+            return;
+        }
 #if PELICAN_WITH_AUDIO
-    GET_MODULE(Audio).stopSound(handle);
+        GET_MODULE(Audio).stopSound(handle);
 #else
-    (void)handle;
-    audioDisabled("stopSound");
+        (void)handle;
+        audioDisabled("stopSound");
 #endif
+    });
 }
 
 void AudioContext::setBusVolume(std::string_view bus, float volume) const {
-    if (auto *effect = internal::activeEffectTransaction()) {
-        effect->setBusVolume(bus, volume);
-        return;
-    }
+    return answerEmptyInDestroy(EffectApi::set_bus_volume, [&]() -> void {
+        if (auto *effect = internal::activeEffectTransaction()) {
+            effect->setBusVolume(bus, volume);
+            return;
+        }
 #if PELICAN_WITH_AUDIO
-    GET_MODULE(Audio).setBusVolume(bus, volume);
+        GET_MODULE(Audio).setBusVolume(bus, volume);
 #else
-    (void)bus;
-    (void)volume;
-    audioDisabled("setBusVolume");
+        (void)bus;
+        (void)volume;
+        audioDisabled("setBusVolume");
 #endif
+    });
 }
 
 float AudioContext::busVolume(std::string_view bus) const {
-    if (auto *effect = internal::activeEffectTransaction()) {
-        return effect->busVolume(bus);
-    }
+    return answerEmptyInDestroy(EffectApi::bus_volume, [&]() -> float {
+        if (auto *effect = internal::activeEffectTransaction()) {
+            return effect->busVolume(bus);
+        }
 #if PELICAN_WITH_AUDIO
-    return GET_MODULE(Audio).busVolume(bus);
+        return GET_MODULE(Audio).busVolume(bus);
 #else
-    (void)bus;
-    audioDisabled("busVolume");
+        (void)bus;
+        audioDisabled("busVolume");
 #endif
+    });
 }
 
 bool AudioContext::isPlaying(SoundHandle handle) const {
-    if (auto *effect = internal::activeEffectTransaction()) {
-        return effect->isPlaying(handle);
-    }
+    return answerEmptyInDestroy(EffectApi::is_playing, handle, [&]() -> bool {
+        if (auto *effect = internal::activeEffectTransaction()) {
+            return effect->isPlaying(handle);
+        }
 #if PELICAN_WITH_AUDIO
-    return GET_MODULE(Audio).isPlaying(handle);
+        return GET_MODULE(Audio).isPlaying(handle);
 #else
-    (void)handle;
-    audioDisabled("isPlaying");
+        (void)handle;
+        audioDisabled("isPlaying");
 #endif
+    });
 }
 
 namespace {
@@ -516,38 +584,46 @@ bool RenderContext::setRenderValues(std::string_view buffer, std::span<const flo
 }
 
 bool AudioContext::setSoundVolume(SoundHandle handle, float volume) const {
-    if (internal::activeEffectTransaction()) return false;
+    return answerEmptyInDestroy(EffectApi::set_sound_volume, handle, [&]() -> bool {
+        if (internal::activeEffectTransaction()) return false;
 #if PELICAN_WITH_AUDIO
-    return GET_MODULE(Audio).setSoundVolume(handle, volume);
+        return GET_MODULE(Audio).setSoundVolume(handle, volume);
 #else
-    audioDisabled("setSoundVolume");
+        audioDisabled("setSoundVolume");
 #endif
+    });
 }
 
 bool AudioContext::setSoundPitch(SoundHandle handle, float pitch) const {
-    if (internal::activeEffectTransaction()) return false;
+    return answerEmptyInDestroy(EffectApi::set_sound_pitch, handle, [&]() -> bool {
+        if (internal::activeEffectTransaction()) return false;
 #if PELICAN_WITH_AUDIO
-    return GET_MODULE(Audio).setSoundPitch(handle, pitch);
+        return GET_MODULE(Audio).setSoundPitch(handle, pitch);
 #else
-    audioDisabled("setSoundPitch");
+        audioDisabled("setSoundPitch");
 #endif
+    });
 }
 
 std::optional<SoundPlaybackState> AudioContext::soundState(SoundHandle handle) const {
+    return answerEmptyInDestroy(EffectApi::sound_state, handle, [&]() -> std::optional<SoundPlaybackState> {
 #if PELICAN_WITH_AUDIO
-    return GET_MODULE(Audio).soundState(handle);
+        return GET_MODULE(Audio).soundState(handle);
 #else
-    audioDisabled("soundState");
+        audioDisabled("soundState");
 #endif
+    });
 }
 
 bool AudioContext::setSoundPaused(SoundHandle handle, bool paused) const {
-    if (internal::activeEffectTransaction()) return false;
+    return answerEmptyInDestroy(EffectApi::set_sound_paused, handle, [&]() -> bool {
+        if (internal::activeEffectTransaction()) return false;
 #if PELICAN_WITH_AUDIO
-    return GET_MODULE(Audio).setSoundPaused(handle, paused);
+        return GET_MODULE(Audio).setSoundPaused(handle, paused);
 #else
-    audioDisabled("setSoundPaused");
+        audioDisabled("setSoundPaused");
 #endif
+    });
 }
 
 void GameContext::loadScene(std::string_view name) const {

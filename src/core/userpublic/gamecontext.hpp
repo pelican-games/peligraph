@@ -38,6 +38,13 @@ namespace Pelican {
 // and Jolt providers both left out and no game provider registered for it --
 // answers no query either: it throws phys::ProviderUnavailableError,
 // physics.provider_unavailable@1 (phys/physquery.hpp).
+//
+// Except in a destruction callback (Behavior::onDestroy, which is noexcept):
+// there neither refusal is thrown. It is recorded -- during a scene load as a
+// build_feature_disabled@1 or physics.provider_unavailable@1 effect error,
+// otherwise in the engine log -- and the query answers empty (no hits,
+// nullopt). That empty answer is the same one "nothing was hit" gives; only
+// the record tells them apart.
 class PELICAN_API PhysicsContext {
   public:
     std::vector<phys::RaycastQueryHit> raycastAll(
@@ -64,10 +71,15 @@ class PELICAN_API PhysicsContext {
 // without PELICAN_WITH_AUDIO, as a BuildFeatureCallDisabledError whose code()
 // is build_feature_disabled@1 and feature() is "PELICAN_WITH_AUDIO". During
 // scene effect staging, playSound / stopSound / setBusVolume / busVolume /
-// isPlaying throw the same, except in a scene destruction callback, where the
-// refusal is recorded as a build_feature_disabled@1 effect error instead;
-// setSoundVolume / setSoundPitch / setSoundPaused return false there before
-// the build is asked.
+// isPlaying throw the same; setSoundVolume / setSoundPitch / setSoundPaused
+// return false there before the build is asked.
+//
+// Except in a destruction callback (Behavior::onDestroy, which is noexcept):
+// there no entry throws this refusal. It is recorded -- during a scene load as
+// a build_feature_disabled@1 effect error, otherwise in the engine log -- and
+// the entry answers empty: an invalid handle, false, 0, or nullopt from
+// soundState. The empty answer cannot be told from a real one (soundState's
+// nullopt is also "no such voice"); only the record tells them apart.
 class PELICAN_API AudioContext {
   public:
     SoundHandle playSound(std::string_view path) const;
