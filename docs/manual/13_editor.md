@@ -62,7 +62,7 @@ dialog の Creates 欄にその path が出ます。雛形は **Standard 3D scen
   (`project init target directory is not empty: <path>`)を dialog の下に出し、何も書きません。
   名前が空・`/` や `\` を含む・`.` / `..` の場合も dialog の中で断ります。
 - **書いた project は Open Project と同じ経路で開きます**
-  ([接続](../../src/devstudio/view/mainwindow.cpp#L774))。シーンに未保存の編集があれば上の
+  ([接続](../../src/devstudio/view/mainwindow.cpp#L834))。シーンに未保存の編集があれば上の
   Save / Discard / Cancel が出ます。ただし雛形は**確認より前にディスクへ書かれている**ので、Cancel しても
   作ったフォルダは残ります(開かないだけです)。
 - **Browse...** は OS のフォルダ選択(modal の `QFileDialog`)です。自動化面からは操作できないので、
@@ -77,7 +77,7 @@ F-2 のときは、project を切り替えた直後の status bar に
 `Modal transform polling failed: pelican_player exited before returning an RPC response` が出ることがありました
 (gizmo の `get_modal_transform` polling が、切替で終了した古い engine に宛てた要求の失敗を出していたもの。
 [文言](../../src/devstudio/model/gizmomodel.cpp#L1062))。**✅F-7 で出なくなりました**: 別の project へ切り替える前に
-gizmo の session を終え、返答待ちの要求を忘れます([切替の前処理](../../src/devstudio/view/mainwindow.cpp#L1548))。
+gizmo の session を終え、返答待ちの要求を忘れます([切替の前処理](../../src/devstudio/view/mainwindow.cpp#L1682))。
 今開いている project の開き直しは engine がそのまま残るので、session も続きます。
 なお、Studio で作った project でも `project.json` の `generator` は `"pelican_cli project init"` のままです。
 
@@ -129,7 +129,7 @@ behavior候補の`key`は`behavior:型名`、`behavior_type`は登録名です�
 ### Studio で object を置く(✅G-2)
 
 Outliner の右クリックと **Scene** toolbar の **Add Object** は同じ 1 つの menu です
-([Add Object の menu を作る所](../../src/devstudio/view/mainwindow.cpp#L1055))。項目は **Empty** / **Cube (built-in)** /
+([Add Object の menu を作る所](../../src/devstudio/view/mainwindow.cpp#L1189))。項目は **Empty** / **Cube (built-in)** /
 **Plane (built-in)** / **Sphere (built-in)** / **Floor** で、自動化面の action 名は `pelican.outliner.addObject.empty` / `cube` /
 `plane` / `sphere` / `floor` です。
 
@@ -144,14 +144,14 @@ Outliner の右クリックと **Scene** toolbar の **Add Object** は同じ 1 
   の最小の空き番号です([`uniqueObjectName()`](../../src/devstudio/model/inspectormodel.cpp#L429))。Blender は `Cube.001` と
   書きますが、scene の object 名は `[a-zA-Z0-9_]` だけなので `_` にしています。
 - **選択**: Outliner の読み直しを最短の間隔に縮め、committed の応答の `created_objects` が名乗る object が Outliner に
-  出た時点でそれを選び、Inspector に出します([`MainWindow::selectCreatedObject()`](../../src/devstudio/view/mainwindow.cpp#L1165))。
+  出た時点でそれを選び、Inspector に出します([`MainWindow::selectCreatedObject()`](../../src/devstudio/view/mainwindow.cpp#L1299))。
   ✅OL-1 から authoring id で選びます(それまでは名前で選び直していました)。
 - **Undo**: coalesce key を付けないので、Undo 1 回で Add 1 回が戻ります。
 - **Inspector の編集の途中で押した Add Object は待ちます(✅Q-7)**: Inspector の値の編集が進行中(commit の途中を含む)に
   押すと、spawn は 1 本だけ待ち、Inspector の手が空いた時点で、その編集が残した scene revision の上に送られます
   ([`InspectorModel::spawnObject()`](../../src/devstudio/model/inspectormodel.cpp#L2530))。待っている間は status bar(8 秒)と
   Outliner の下の 1 行(`pelican.outlinerNotice`)に `Adding <名前> after the current edit.` が出ます
-  ([Add Object の結果を status bar と Outliner に出す所](../../src/devstudio/view/mainwindow.cpp#L1141))。既に 1 本待っているときに
+  ([Add Object の結果を status bar と Outliner に出す所](../../src/devstudio/view/mainwindow.cpp#L1275))。既に 1 本待っているときに
   押した 2 本目は、置き換えずに断ります。同じ 2 か所に
   `Could not add <名前>: <待っている名前> is already waiting to be added; add another once it is in.` が出るので、
   1 本目が入ってからもう一度押してください。Outliner の下の 1 行は、新しい object が選ばれたときに消えます。
@@ -216,11 +216,11 @@ Outliner の行の右クリックの menu の先頭に **Duplicate** と **Delet
 
 - **Duplicate(Ctrl+D)**: 選択中の object を子孫ごと複製します。copy の名前は engine が付けます(`Cube_copy1` など)。
   複製の後は、committed の応答の `created_objects` のうち、`source_object_id` が複製元のもの(copy の根)を選びます
-  ([Duplicate を送る所](../../src/devstudio/view/mainwindow.cpp#L1214))。
+  ([Duplicate を送る所](../../src/devstudio/view/mainwindow.cpp#L1348))。
 - **Delete(Del)**: 選択中の object を消します。子孫も一緒に消えます。**子孫があるときだけ** 1 回問います
   (`Delete <名前>? The N objects under it are deleted too.`、既定の button は Cancel。自動化面の名前は
   `pelican.outliner.deleteConfirm` と `.delete` / `.cancel`)。子孫が無ければ問わずに消します(Undo で戻せるので)。
-  消した後は親を、親が無ければ前に宣言された兄弟を選びます([Delete の確認](../../src/devstudio/view/mainwindow.cpp#L1228))。
+  消した後は親を、親が無ければ前に宣言された兄弟を選びます([Delete の確認](../../src/devstudio/view/mainwindow.cpp#L1362))。
 - Ctrl+D と Del は **Outliner に focus があるときだけ**効きます。Inspector の欄で押した Del は文字を消すだけです
   ([Outliner の shortcut](../../src/devstudio/view/outlinertree.cpp#L57))。
 - **drag で親を付け替えます**。行を掴んで別の行の上で離すと([落とし先の判定](../../src/devstudio/view/outlinertree.cpp#L81)):
@@ -237,7 +237,7 @@ Outliner の行の右クリックの menu の先頭に **Duplicate** と **Delet
   消えたときだけ外れます([id で選択を引き直す所](../../src/devstudio/model/selection.cpp#L71))。保存した scene を engine が
   読み直したとき(engine の再起動)も、id が同じなので選択は残ります。**別の project を開くと選択は外れます**。
   Undo / Redo で object が戻ってきたとき(Delete の Undo など)は、その応答の `created_objects` の object を選びます
-  ([committed の後に選ぶ所](../../src/devstudio/view/mainwindow.cpp#L1323))。
+  ([committed の後に選ぶ所](../../src/devstudio/view/mainwindow.cpp#L1457))。
 - **断られたとき**は、status bar(8 秒)と Outliner の下の 1 行(`pelican.outlinerNotice`)に 1 文で出ます
   ([断りの文](../../src/devstudio/model/inspectormodel.cpp#L634))。例: engine が `cycle_detected` で断った付け替えは `Cannot move <名前> under <親>: <親> is inside <名前>.`、
   preview 中は `Cannot duplicate <名前> while a live preview is open; finish the preview first.`、physics の無い build で
@@ -248,6 +248,49 @@ Outliner の行の右クリックの menu の先頭に **Duplicate** と **Delet
   ([進行中なら断る所](../../src/devstudio/model/inspectormodel.cpp#L2562))。進行中の編集が同じ object を変えているかも
   しれないためで、1 本だけ待たせる Add Object(✅Q-7)とは扱いが違います。
 - rename・複数選択の一括操作・scene をまたぐ移動はありません。
+
+### Studio で旧版の project を開く(✅MG-1)
+
+前の版の engine が書いた文書を持つ project を開くと、Studio は viewport の代わりに**移行の画面**
+(`pelican.projectMigration`)を出し、計画を見せてから適用します。移行の仕組み(文書の `(schema, version)`、plan / apply、
+退避先、CLI)は [第3章 §3.13](03_project_format.md#313-前の版の-project-を移すmg-1) を見てください。v0 の時点では production に
+移行の手順が 1 本も無いので、この画面が出るのは手順が登録されてからです。
+
+- **Studio が気づく経路は 2 つです。**1 つは Studio 自身が project を読むとき(offline open)で、parser が文書を読む前に
+  player と同じ検出を走らせ、移行が要る文書があれば読まずに止めます([offline open の検出](../../src/devstudio/model/project.cpp#L108))。
+  検出は読むだけで、落ちたプロセスが残した transaction の復旧はしません(復旧は書くので player の側です)。もう 1 つは
+  player が stderr に書く `project.migration_required@1: {...}` の行です。移行が要る project では player は engine を起動せず
+  窓も出さないので、Studio はこの行を見た時点で窓の探索をやめ、同じ画面に回ります
+  ([gate で止まった player を見分ける所](../../src/devstudio/viewport/embeddedviewport.cpp#L361))。どちらのときも status bar に
+  `<project> was saved in an earlier format.` が出ます。
+- **画面**は、文書ごとに path・schema・形式(`v<from> → v<to>`)と、その下に手順(`step`)と手で直す項目(`fix by hand`)を
+  並べ、保存した engine の版と今の engine の版を 1 行で言います。手で直す項目がある文書は警告色で、ボタンの上に
+  `N place(s) must be fixed by hand after migrating; the rest is applied.` が出ます。engine は手順で書き換えられる所を適用し、
+  残りを報告するだけで止まらないので、**Migrate** は塞ぎません([手で直す項目の注意を出す所](../../src/devstudio/view/projectmigrationwidget.cpp#L353))。
+- **Migrate**(`pelican.projectMigration.migrate`)は `apply_project_migration` に plan が返した `expected` をそのまま載せて
+  1 回送ります([apply に plan の expected を載せる所](../../src/devstudio/view/projectmigrationwidget.cpp#L283))。**Don't Open**
+  (`pelican.projectMigration.close`)は何も変えずに project を閉じ、status bar に
+  `The project was not opened; nothing was changed.` が出ます。
+- **計画を読んだ後に外で文書が変わっていた**(`project.migration_plan_stale@1`)ときは、何も書かれていません。Studio は計画を
+  読み直して見せ直し、`The project changed on disk, so the plan was read again.` と言います。適用は、もう一度 Migrate を
+  押すまでしません([stale で計画を読み直す所](../../src/devstudio/view/projectmigrationwidget.cpp#L234))。適用が失敗したとき
+  (transaction が巻き戻ったなど)は、計画とボタンが残り、`The migration was not applied: <理由>` が出ます。
+- **成功すると**、画面は `Migrated to engine <版>.` と、前の文書を退避した場所の 1 行
+  `The previous documents were copied to <path>`(`pelican.projectMigration.backup`。project の下の `.pelican/migration/<時刻>/`)
+  だけになって viewport の上に残り、同じ行が Engine Log にも出ます([退避先の 1 行](../../src/devstudio/view/projectmigrationwidget.cpp#L374))。
+  続けて Studio は project を開き直し、engine を**再起動**します。再起動は Frame Plan と同じ `MainWindow::requestEngineRestart()` を
+  通るので、自動化面の `wait_engine` は新しい engine を待ちます(✅Q-9。[移行の後に engine を起動し直す所](../../src/devstudio/view/mainwindow.cpp#L1048))。
+  残った 2 行は別の project を開くと消えます。
+- **plan と apply は、engine を起動していない player にだけ送ります**(MG-1b)。apply は最初に transaction の復旧を走らせ、
+  別のプロセスが commit している途中の編集を巻き戻しうるためです。同じ project で engine が走っていれば先に止め、起動し直した
+  player が移行の入口で止まってから計画を問います([移行の RPC を gate の player にだけ送る所](../../src/devstudio/viewport/embeddedviewport.cpp#L608))。
+  Studio の検出が「移行が要る」と言うのに player が普通に開いたとき(Studio と player の build が食い違っている)は、再起動を
+  繰り返さずに `The engine opened this project without migrating it; Studio and its player disagree on the project's format.` と
+  言います。移行だけを受ける player は窓が無いので、閉じるときは標準入力を閉じて終わらせます。
+- 移行の取り消し(退避先からの復元)の UI はありません。
+- **分かっている穴**(着地時の記録): 移行の画面を出している間も、Frame Plan・Pass・Graph の panel は前の project の root を
+  持ったままです。移行の後の offline open が parse error になると、移行だけの player は開き直すか Don't Open まで残ります。
+  player の窓を 15 秒で諦める timeout は gate で止めていますが、その test はありません。
 
 ### 起動のしかた
 
@@ -859,7 +902,7 @@ Inspector の導線(次節)は専用の RPC を持たず、**普通の `ops` を
 ### Studio のノードキャンバス(Graph タブ)
 
 **置き場所**: `View > Panels > Frame Plan` の dock(`pelican.framePlanDock`)にある 3 枚目のタブ「Graph」です
-([タブの追加](../../src/devstudio/view/mainwindow.cpp#L298))。dock は増えていません。起動時から開いておきたい場合は
+([タブの追加](../../src/devstudio/view/mainwindow.cpp#L309))。dock は増えていません。起動時から開いておきたい場合は
 `pelican_studio --project <dir> --tab graph`([第10章](10_tools.md) §10.7)。
 
 **上段の操作列**(左から): `Scope:` のコンボ(`root` と definition 名)、その右のパンくず、右端に
@@ -951,7 +994,7 @@ Logical graph も同じ view** です。**まだ見ていない scope は自動�
 キーボードを持ちます。[条件](../../src/devstudio/view/nodegraphics.cpp#L717))。
 
 **テーマはライトとダークの 2 つです(✅N-5)。**切り替えは **View ▸ Theme ▸ Light / Dark**
-([メニューの構築](../../src/devstudio/view/mainwindow.cpp#L566))で、**再起動は要りません** —— 選んだ名前は
+([メニューの構築](../../src/devstudio/view/mainwindow.cpp#L626))で、**再起動は要りません** —— 選んだ名前は
 QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L26) に残り、次に開いた窓は
 そのテーマで始まります。追随するのは **Graph タブと Frame Plan の両方のキャンバス**で、背景・grid・辺・
 ノードの body と縁・見出しの字・値の帯の色をテーマの表から引き直して描き直します。**ソケットの型別の色だけは
@@ -1052,12 +1095,12 @@ forward の pass だけの pipeline には受け皿が無く、engine は上の 
 
 commit の結果に `restart_required` があると、Frame Plan の status 行に
 `Restarting the engine to apply the material route setting...` を出し、**同じ project で engine を止めて起動し直します**
-([`EmbeddedViewport::restartEngine()`](../../src/devstudio/viewport/embeddedviewport.cpp#L493))。gate はすぐ閉じ、新しい engine が
+([`EmbeddedViewport::restartEngine()`](../../src/devstudio/viewport/embeddedviewport.cpp#L515))。gate はすぐ閉じ、新しい engine が
 readiness に答えると Frame Plan が戻ります。
 
 **保存していない scene の編集があれば、再起動の前に問います(✅G-5)**: project の切替と同じ Save / Discard / Cancel が
 「Save your scene changes before the engine restarts?」の文で出ます
-([`MainWindow::requestEngineRestart()`](../../src/devstudio/view/mainwindow.cpp#L798))。未保存の編集が無ければ今までどおり
+([`MainWindow::requestEngineRestart()`](../../src/devstudio/view/mainwindow.cpp#L858))。未保存の編集が無ければ今までどおり
 すぐ再起動します。
 
 - **Save** は保存が終わってから再起動します。保存を始められなければ再起動しません。
@@ -1079,7 +1122,7 @@ G-1 のシナリオの fixture が持っていた、誰も読まない pass 2 �
 
 **Pass Editor の form は scroll します(✅F-7)**: form は `QScrollArea`(`pelican.fullscreenPassScroll`)の中にあります。
 以前は form の最小の高さ(1,000 px 近く)が下の dock 領域を押し上げ、Pass Editor を開くと viewport が 60〜80 px の帯に
-潰れ、dock を閉じても戻りませんでした([置き場](../../src/devstudio/view/mainwindow.cpp#L311))。**その潰れた状態を
+潰れ、dock を閉じても戻りませんでした([置き場](../../src/devstudio/view/mainwindow.cpp#L322))。**その潰れた状態を
 既に保存した layout は、そのままでは戻りません** —— splitter を引くか、**Layout > Reset to Default** で直してください。
 
 **fullscreen pass を shader ごと作る(✅F-3)**: Pass Editor の Fragment 欄の横に **New…**
@@ -1243,6 +1286,17 @@ debounce の間)は、notice が **「Saving the graph change...」** になり�
 `wait_timeout@1` / `screenshot_failed@1` / `project_failed@1` / `busy@1` / `command_threw@1` の 10 種です
 ([定数](../../src/devstudio/automation/automationcommands.cpp#L167))。
 
+**`wait_engine` は「今の」engine を待ちます(✅Q-9)。**Frame Plan の保存が engine の再起動を求めると(G-4)、Studio は再起動の
+前に古い engine へ未保存の編集を問います(G-5)。その往復の間も古い engine は editor RPC に答えるので、以前の `wait_engine` は
+その engine で通り、次の step が止まった engine に当たって `automation.engine_not_ready@1` で落ちていました。今は
+**再起動は頼まれた時点で始まったと数え**、そこから新しい engine の process が最初の `get_status` に答えるまで、`wait_engine` は
+通りません([wait_engine の判定](../../src/devstudio/automation/automationcommands.cpp#L1654)、
+[再起動待ちを立てる所](../../src/devstudio/view/mainwindow.cpp#L874))。Cancel などで再起動が見送られれば、すぐ今の engine で
+通ります。再起動を待っている間に Studio が送る editor RPC は古い engine に届き(未保存の問いと Save はそこへ届く必要が
+あるため)、engine が止まった後は既存の 1 行 `The engine viewport is not ready for editor RPC requests.` で断られます。
+Stop ボタンや project の切り替えのような普通の停止は、process が終わるまで ready を落としません(`open_project` はその終わりを
+待ちます)。
+
 **指し方は objectName です。**キャンバスの中に描かれたもの(ノード、ソケット、値の帯、その場編集の editor)は
 widget ではないので、`<view の objectName>::<種類>#<ノード id>[/<port>]` の合成名で指します ——
 例: `pelican.graphCanvasView::graph_value_pill#left/gain`([名前の生成](../../src/devstudio/automation/automationcommands.cpp#L209))。
@@ -1283,14 +1337,14 @@ driver の stdout / stderr は、cp932 の console で出せない文字があ�
 
 **回し方**: [`tools/studio_drive.py`](../../tools/studio_drive.py#L982)(Python 3.11以上、標準ライブラリだけ)が Studio を
 `--automation --project --tab` で起動し、step を順に送り、`report.json` を書きます。ctest からは
-`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L3085)) —— **実物の窓が要るので
+`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L3092)) —— **実物の窓が要るので
 `QT_QPA_PLATFORM=offscreen` は掛けません**。fixture の project は temp に 2 つ複製されるので、シナリオは
 文書を書き換えてよく、「ディスクから読み直す」も試せます([複製](../../test/run_studio_scenario.cmake#L30))。
 CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが見つかった`AUTO`）が必要です。
 `uv`は不要で、完全なGPU gateは全scenarioの登録・実行を必須にします([CI運用](../ci.md))。
 
 **run ごとに空の設定 directory を使います(✅F-5)。**Studio は環境変数 **`PELICAN_STUDIO_CONFIG_DIR`** があれば、利用者の
-設定 directory の代わりにそこへ dock の layout を読み書きします([置き場の決定](../../src/devstudio/view/mainwindow.cpp#L95))。
+設定 directory の代わりにそこへ dock の layout を読み書きします([置き場の決定](../../src/devstudio/view/mainwindow.cpp#L96))。
 driver は run ごとに `{artifacts}/studio_config` を空にして作り、この変数で渡します([渡し方](../../tools/studio_drive.py#L1025))。
 以前のシナリオは、前の run(や人が使った Studio)が利用者の設定 directory に残した dock の layout を復元し、自分の
 layout をそこに残していました。テーマの選択はこの directory ではなく `QSettings` に残るので、この変数の影響を受けません。
@@ -1470,7 +1524,7 @@ properties は [:219](../../src/devstudio/view/inspectorwidget.cpp#L272) の `pe
 1. **Control with a curve** —— 前節のノード集合を作って繋ぎます(`edit_graph_document`)。
 2. **Connect to another output** —— `Connect input` ダイアログで別ノードの出力を選び、**Connect** で `set_input`。
 3. **Open the source** —— Graph タブを前に出し、その producer を選択します
-   ([繋ぎ込み](../../src/devstudio/view/mainwindow.cpp#L358))。接続されていない port で押すと
+   ([繋ぎ込み](../../src/devstudio/view/mainwindow.cpp#L369))。接続されていない port で押すと
    「これは開ける供給元を持たない、保存された値だ」と notice が出ます。
 4. **Disconnect** —— `set_input{null}`。**mode が `connected` のときだけ押せます**
    ([有効化](../../src/devstudio/view/graphattachmentwidget.cpp#L261))。他の 3 つは常に押せます。

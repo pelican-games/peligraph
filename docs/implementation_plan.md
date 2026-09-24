@@ -25207,6 +25207,79 @@ rename / 複数選択の一括操作 / scene をまたぐ移動。
 - **テキスト入力の欄(受け入れ 4)**: 増やしていない
 - **穴**: Alt の drag と「行の間」は widget test だけ(シナリオは行の上への drag 1 回)。physics OFF の拒否の文は model test だけ。`add_primitive_object` が G-4 の再起動の直後に 1 回赤(`wait_engine` は通り、次の step が `automation.engine_not_ready@1`)。OL-1 の外の、再起動の readiness の競合で、原因は未確認。後の修正に回す
 
+### Q-9: engine の再起動の直後に「準備できた」と答えてから RPC を断る競合
+
+**下段(Studio のみの見込み)。実装者: Claude(Opus)。**
+
+#### 前提(2026-09-25 の実測)
+- G-4 の `restart_required` → `EmbeddedViewport::restartEngine`(同じ project で stop → start)の後、automation の `wait_engine` が通った直後の step が `automation.engine_not_ready@1: The engine viewport is not ready for editor RPC requests.` で落ちる
+  - `add_primitive_object` の step 38(1 回赤、再実行で緑。OL-1(GUI) の着地の穴に記録)
+  - `material_pass_authoring` の step 26(「the engine declares scene_color, from the authoring fragment」、rpc の step)
+- どちらも G-4 の再起動の直後。`wait_engine` が古い engine の状態か、再起動前の ready を見て通っている疑い(起票時の推測)
+- 関係する所: `src/devstudio/viewport/embeddedviewport.{hpp,cpp}`(`restartEngine`、`rpc_ready_`、Q-4 の attach の方針 `engineattach`)、`src/devstudio/automation/automationcommands.cpp`(`wait_engine` の判定)、G-5 の未保存の保護で再起動が MainWindow を通る経路
+
+#### 決定
+1. 原因を特定する(再起動の間に `rpc_ready_` / `wait_engine` が何を見ているか)。`wait_engine` は「**今の** engine の process が起動して、最初の `get_status` に応えた」ことだけで通るようにする(再起動の前の ready や、止めかけの engine を数えない)。再起動が始まった瞬間に ready を落とす
+2. 再起動中に Studio が送る editor RPC は、断らずに ready まで待たせるか、断るなら利用者に見える 1 行で(automation の `engine_not_ready` は、待つべき時に待っていないことの印なので、`wait_engine` 側で直すのが本筋)
+3. `test/studio_scenarios/material_pass_authoring.json` の step 13 の期待を T-1 に合わせる直しは統合側が作業ツリーに入れてある(「its color output is already filled when the form opens (T-1)…」)。そのまま残すこと
+
+#### 受け入れ
+1. 再現 test(widget / model): 再起動を始めた直後に ready が落ち、新しい process の最初の `get_status` の応答で上がる(対照: 落とさない変異で、再起動の直後に ready が true のまま → 赤)
+2. `material_pass_authoring` と `add_primitive_object` をそれぞれ 3 回連続で緑
+3. 触った面の既存 test 緑(`-L studio_cpu -LE gpu`)
+4. 報告にテキスト入力の欄(おそらく無し)
+
+#### 着地(2026-09-25、690464ef)
+- **原因**: 再起動は G-5 の未保存の確認を先に通る。`MainWindow::requestEngineRestart` は古い engine に scene の revision を問い、その答えが来てから `restartEngine` を呼び、そこで初めて ready が落ちていた。この往復の間、古い engine は ready のままで、`wait_engine` はそれで通っていた(commit の記録)
+- **直し**: `EmbeddedViewport` に「再起動待ち」の印を足した([再起動待ちの印](../src/devstudio/viewport/embeddedviewport.hpp#L57))。立てるのは `requestEngineRestart`(**再起動は頼まれた時点で始まったと数える**。engine が止まった時点ではない。[再起動待ちを立てる所](../src/devstudio/view/mainwindow.cpp#L874))。下ろすのは `restartEngine`・`startEngine`・停止・起動の失敗と、再起動が見送られたとき(`resetNavigation`。[見送りで下ろす所](../src/devstudio/view/mainwindow.cpp#L984))。`currentEngineReady()` = ready かつ再起動待ちでない([今の engine の ready](../src/devstudio/viewport/embeddedviewport.hpp#L62))。`wait_engine` はこれを待つので、新しい process が最初の `get_status` に応えるまで通らない([wait_engine が待つ判定](../src/devstudio/automation/automationcommands.cpp#L1654))
+- **決定 2 は「断る」側**: `rpcReady()` は変えていない。未保存の確認と Save は古い engine に届く必要があるため。再起動待ちの間に Studio が送る editor RPC は古い engine に届き、停止の後は既存の 1 行 `The engine viewport is not ready for editor RPC requests.` で断られる([停止の後に断る 1 行](../src/devstudio/viewport/embeddedviewport.cpp#L587))
+- **決定 3**: `material_pass_authoring` の期待を T-1 に合わせた(form を開いた時点で color の枠が埋まっている)
+- **test**: `devstudio_viewport_test` の `Q-9: once a restart is asked for, wait_engine waits for the new engine's first answer, not the old engine's`(700 ms 遅れて答える fixture engine と本物の `wait_engine`)。`devstudio_layoutpreset_test` の G-5 の再起動の test が、Cancel・Discard・Save の失敗をまたいで印を確かめる。変異(commit の記録): ready を保たない → 4 か所の検査が赤。シナリオ `material_pass_authoring` / `add_primitive_object` はそれぞれ 3 回連続で緑
+- **テキスト入力の欄(受け入れ 4)**: 増減なし
+- **穴**: 通常の停止(Stop ボタン、project の切り替え)は process が終わるまで ready を落とさない(`open_project` はそれを待っている)/ MainWindow で印を立てる・下ろす 2 行は、offscreen の G-5 の test とシナリオでしか覆っていない / Frame Plan の、再起動の action が無いときの予備の経路は `restartEngine` を直接呼び、印を立てない([action が無いときの予備の経路](../src/devstudio/view/frameplanwidget.cpp#L1461)。Studio の MainWindow は action を渡している)
+
+### MG-1(GUI): 旧版の project を開いたら、移行の計画を見せてから適用する(engine 側は別 session の MG-1)
+
+**中段(Studio のみ)。実装者: Claude(Opus)。engine の RPC は別 session の MG-1 が揃える。Studio は見せて送るだけ。**engine 側の記録は V0-ADD の MG-1 の完了記録(`28bf3b40`)と、表の MG-1b の行。
+
+#### 前提(別 session からの契約、2026-09-25)
+- `plan_project_migration {}` → `{project_root, required, engine_version, saved_by_engine, documents:[{path, schema, from, to, steps, digest, manual_items}], expected:{path:sha256}, dry_run}`
+- `apply_project_migration {expected:{path:digest}}` → plan と同じ中身 + `applied`, `backup`, `saved_by_engine_after`, `restart_required`
+- エラーは -32000、data `{error_code, error_fields}`。digest のずれは `project.migration_plan_stale@1`
+- `--rpc` の player は、開くときに移行が要ると分かると **engine を起動せず**、この 2 method だけを受ける endpoint を出す。他の method は `project.migration_required@1: {...}` で拒否。apply の後は `project.migration_restart_required@1`(player を起動し直す)
+- 起票時、Studio の offline open(`src/devstudio/model/project.cpp`)はこの検査を通っていなかった。production には移行の手順が 0 本(実害は無いが、画面を作るときに合わせる)
+- MG-1b(別 session の注記): apply の中の transaction の復旧は、別の process が commit している途中の編集を巻き戻しうる。**apply は engine を走らせていない player にだけ送る**
+
+#### 決定
+1. **開く流れ**: project を開いて engine が `project.migration_required@1` を返したら、Studio は viewport の代わりに「この project は旧版の形式です」の画面を出し、`plan_project_migration` を呼んで計画を見せる: 文書ごとに path、形式(`from` → `to`)、手順(`steps`)、手で直す項目(`manual_items`、あれば警告色)、保存した engine の版
+2. **適用**: 「移行する」ボタンで `apply_project_migration {expected}`(plan の `expected` をそのまま)。成功したら `backup` の場所を 1 行で見せ、engine を起動し直す(Q-9 の再起動の経路)。`project.migration_plan_stale@1` なら計画を読み直して見せ直す(「外で変わったので計画を作り直した」)。「開かない」で project を閉じる
+3. `manual_items` がある文書は、適用の前に「手で直す必要がある」を明示し、適用は止めない(engine が適用できる範囲を適用する)か、engine が止めるならその拒否を見せる(engine の挙動に合わせる。報告に書く)
+4. **offline open**(`project.cpp`)も同じ検査を通す: engine を起動する前に Studio が文書を読む所で、移行が要る形なら同じ画面に回す(Studio 単独で古い文書を黙って読まない)
+5. automation: 移行の手順が production に 0 本なので、test は fake の RPC 応答(plan / apply / stale / restart_required)で。シナリオは作らなくてよい(手順が入ったら追加)
+
+#### 受け入れ
+1. widget test: `project.migration_required@1` で移行の画面が出て、plan の文書・手順・manual_items が並ぶ / 「移行する」で apply が plan の `expected` で 1 回 / stale で plan を読み直す / 成功で backup の行と再起動 / 「開かない」で閉じる(対照: expected を送らない変異で赤)
+2. offline open が移行の要る文書を黙って読まない(model test)
+3. 触った面の既存 test 緑。非 GPU 全数は統合側
+4. 報告にテキスト入力の欄(増やさない)
+
+#### やらないこと
+engine の変更 / 移行の手順そのもの / 移行の取り消し(backup からの復元)の UI。
+
+#### 着地(2026-09-25、52547bee)
+- **Studio が知る経路は 2 つ**(決定 1 の「最初の `get_status` の拒否」ではない。移行だけの player は窓を出さないので `get_status` を送る段に来ない):
+  1. **offline open**: `ProjectOutlinerModel::open` が parser の前に `detectProjectMigration` を走らせ、player と同じ形 `project.migration_required@1: {documents:[{path, schema, from, to}]}` の `ProjectMigrationRequiredError` で断る([offline open の検査](../src/devstudio/model/project.cpp#L108))。読むだけで何も書かない(落ちた process が残した transaction の復旧は書くので、player の側に残した)
+  2. **player の stderr の拒否の行**: `project.migration_required@1: ` で始まる行を覚え([拒否の行を覚える所](../src/devstudio/viewport/enginefailuremodel.cpp#L72))、見えた時点で窓の探索(15 秒で諦める timer)を止めて `projectMigrationRequired` を出す([gate で止まった player を見分ける所](../src/devstudio/viewport/embeddedviewport.cpp#L361))
+  - どちらも viewport を隠し、代わりに移行の画面(`pelican.projectMigration`)を出す([移行の画面を出す所](../src/devstudio/view/mainwindow.cpp#L1067))
+- **画面**: 文書ごとに path・schema・`from` → `to`・手順、手で直す項目(警告色 `#d98c00`)、保存した engine の版と今の engine の版。**Migrate** は plan の `expected` をそのまま `apply_project_migration` に載せる([apply を送る所](../src/devstudio/view/projectmigrationwidget.cpp#L283))。**Don't Open** は project を閉じ、何も変えない
+- **決定 3 は「止めない」側**: engine は手順で書き換えられた所を適用し、残りを報告する(止めない)。画面は適用の前に `N place(s) must be fixed by hand after migrating; the rest is applied.` を出し、ボタンは塞がない([手で直す項目の注意](../src/devstudio/view/projectmigrationwidget.cpp#L353))
+- **stale**: plan を読み直して見せ直し、`The project changed on disk, so the plan was read again.`。適用はもう一度押すまでしない([stale で読み直す所](../src/devstudio/view/projectmigrationwidget.cpp#L234))
+- **成功**: `backup` の場所を 1 行(`The previous documents were copied to <path>`)で viewport の上と Engine Log に出し([成功の 1 行](../src/devstudio/view/projectmigrationwidget.cpp#L374))、`MainWindow::requestEngineRestart` を通して再起動する(Q-9 の再起動待ちの印が掛かる。[移行の後の再起動](../src/devstudio/view/mainwindow.cpp#L1048))。ほかに restart_required・適用の失敗(plan とボタンは残る)・engine が消えた・移行するものが無い、の応答も見せる
+- **MG-1b**: plan と apply は、gate で止まって engine を起動していない player にだけ送る([移行の RPC を gate の player にだけ送る所](../src/devstudio/viewport/embeddedviewport.cpp#L608))。同じ project で engine が走っていれば先に止め、起動し直した player が gate で止まってから送る([走っている engine を先に止める所](../src/devstudio/view/mainwindow.cpp#L1079))。offline の検査が「移行」と言うのに player が普通に開いた(build の食い違い)ときは、再起動を繰り返さずに画面がそう言う。移行だけの player は stdin を閉じて終わらせる([移行だけの player を閉じる所](../src/devstudio/viewport/embeddedviewport.cpp#L691))
+- **test**: 新しい `devstudio_projectmigration_test`(`MG-1 the migration panel shows the plan and applies exactly it` と、その中の stale / 成功 / restart / 失敗 / engine が消えた、`MG-1 Don't Open closes the project without migrating it`、`MG-1 a plan with nothing left to migrate opens the project`)、`devstudio_outliner_test` の `MG-1 the offline open does not read a document that needs migrating`、`devstudio_viewport_test` の `MG-1 a player stopped at migration_required is named, served for the migration only, and closed through its input` / `MG-1b a migration is never sent to a running engine, only to the player that started none after it`(`process_fixture_child` に gate の mode を足した)。変異(commit の記録): expected を空に → 赤 / offline の検査を外す → 赤 / 走っている engine への送信を許す → 赤
+- **テキスト入力の欄(受け入れ 4)**: 増やしていない(画面はボタン 2 つ)
+- **穴**: gate で止める 15 秒の窓の timeout は止めているが test は無い / 移行の画面を出している間、Frame Plan・Pass・Graph の panel は前の project の root を持ったまま / 移行の後の offline open が parse error になると、移行だけの player が開き直すか Don't Open まで残る / offline の検査は、crash が残した transaction を復旧しない(player は書くので復旧する)/ MainWindow の配線そのものに直接の test は無い(panel・viewport・model の層にはある)
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
