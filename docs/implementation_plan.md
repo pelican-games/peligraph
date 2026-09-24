@@ -24886,6 +24886,98 @@ delete / duplicate / reparent(OL-1。engine の op 契約待ち)/ Outliner の k
   4. `pelican_cli dump-lowered-material --project` に test が無い
   5. `devstudio_engine_failure_test` は Debug で fatal まで届かない(asset の検証に約 18 秒かかり、Studio の停止待ちの窓を越える)。player 自身は新しい code を出す
 
+#### 着地後の修正(2026-09-24、5ca18ee1)
+- **きっかけ**: 第二段階の全数(2142)に赤が 3 件
+- **material(G-4 の後退)**: 決定 3 で受け皿の検査を 1 つの規則に集めたとき、`requireEveryMaterialServed` は「候補世代に material pass が 1 つも無ければ何も見ない」で先に帰る形になり、**旧規則(公開中の世代が消費していた route の消失を拒否)が消えていた**。material pass を 1 つも持たない候補世代が、公開中の世代が material を描いている最中でも受理された(`raytracing_rt3_1_production_test` の `RT4 callable dispatch selects its SBT record and reloads its implementation` の、空の世代を `validateRuntimeGenerationCompatibility` / `prepareRuntimeGenerationReload` が断る `REQUIRE_THROWS` が throw しなくなった)。修正後は 2 つの規則を同じ `material_route_unserved@1` で当てる: material pass を持つ候補は登録済みの全 material に受け皿が要る / 持たない候補は公開中の世代が消費していた route を落としてはいけない(まだ何も公開していなければ受理 = 従来どおり。RT の起動時の世代は最初の frame を submit するまで公開されない)。validate と prepare の両方で走る([2 つの規則を当てる requireEveryMaterialServed](../src/core/material/materialgenerationplanner.cpp#L779))。`material_route_default` で material を別の route に移し、その route を受ける候補は今までどおり受理(G-4 の commit + `restart_required`)
+- **test の登録**: `renderconfigeditor_test` のうち `forward` の受理を期待する 2 本(`add_authored_pass` の既定付きの add / `set_material_route_default`)を、runtime shader compiler のある build でだけ登録する(隣の OFF 専用の拒否 test と対)。OFF の build では `forward` は名前付きで断られるので、この 2 本は赤になっていた
+- **automation(F-5 の `screen` モードの変更。F-5 の着地記録は書き換えず、ここに記録)**: F-5 の `screenshot` の `screen` モードは、1 色で出た `PrintWindow` の絵を desktop の grab で置き換えていた。1 色は step が正しく期待しうる絵(空の scene の albedo)で、そのとき desktop には viewport に重なった別の application の窓が写っていた。修正後、1 色の print を desktop の grab で置き換えるのは **Studio の窓が desktop のその場所で実際に見えているときだけ**(撮る範囲の 5×5 の点で `WindowFromPoint` の root が Studio の窓か。埋め込みの engine の窓は子なので含む)。見えていなければ print を残し、応答に `desktop_obstructed: true`([窓が見えているかの判定](../src/devstudio/automation/automationcommands.cpp#L142))。print できなかったときは今までどおり desktop の grab
+- **確認(commit の記録)**: RT4 緑(戻した分岐を外すと再び赤)/ G-4 の test と material・route の test 125 件 / OFF build の G-4 の test 8/8 / シナリオ 3 回(うち 1 回は画面全体を覆う窓の下で。古い fallback ではその下で赤)
+- **教訓**: 検査を 1 つの規則に集めたとき、削った分岐(旧規則)を見ている test は新機能の側に 1 本も無かった。気づいたのは隣の段の古い RT4 の test。集約の受け入れには「旧規則が断っていた場面が今も断られる」を対照として明示で並べる(記憶の「集約改修の等価性」と同じ形)
+
+### Q-6: Add component で、この build で使えない component を使えないと見せる(別 session の PG-1 = 533d8d6c 由来)
+
+**下段(Studio のみ)。実装者: Claude(Opus)。**
+
+#### 前提
+- `get_component_add_candidates` は、build で外した機能の component を `available: false` と `unavailable_reason: "<code>"` で返す(PG-1)。今出うる code は 7 つ: `animation.module_unavailable@1` / `audio.module_unavailable@1` / `physics.module_unavailable@1` / `xr.module_unavailable@1` / `vat.module_unavailable@1` / `seqplayer.module_unavailable@1` / `pelican.ray_instance_requires_layout_v2@1`。候補に実際に出るのは animation / physics / ray instance の 3 つ
+- Studio(起票時の `src/devstudio/view/inspectorwidget.cpp:700-760` 付近)は、説明欄の末尾に code を足すだけで、Add は押せる(engine が拒否する)
+
+#### 決定
+1. 一覧: `available: false` の行は灰色で、名前の後ろに短い語(`— not in this build` / `— needs ray layout v2`)。並びは使える行の後ろ
+2. その行を選ぶと Add は押せない(宣言欄も読み取り専用)
+3. 説明欄: 読める 1 文と code を並べる(例「This build has no physics module (physics.module_unavailable@1)」)。code → 文の対応表は Studio に 1 つ(知らない code は code をそのまま)
+4. 対応表と見せ方は純関数にして test する
+
+#### 受け入れ
+1. 純関数 test: 7 つの code が文になる / 知らない code はそのまま
+2. widget test: `available: false` の候補を渡すと、灰色(flag)、名前に短い語、選ぶと Add が無効、説明に文と code(対照: Add の無効化を外す変異で赤)
+3. 触った面の既存 test 緑。報告にテキスト入力の欄(おそらく無し)
+
+#### やらないこと
+engine 側の変更 / 機能を入れる導線(build の案内)。
+
+#### 着地(2026-09-24、0c49aad8)
+- **止める行の見分け(起票からの逸脱)**: 止めるのは `unavailable_reason` が **code**(小文字・数字・`_` の `.` 区切りの名前 + `@` + 数字。`isComponentUnavailableCode`)の行だけ。`available: false` でも理由が文の行(`simplemodelview` の「A model reference is required.」= 既定値だけでは足りず入力が要る)は、今までどおり並び Add できる(宣言に値を入れて足す筋で、`simplemodelview` はそうして足す)。起票の決定 1 / 2 は `available: false` の行を全部止める書き方だった
+- **一覧**: code の行は使える行の後ろ(各群の中は catalog の順)に、disabled の文字色で並び、名前の後ろに ` — not in this build`(module の 6 つ)/ ` — needs ray layout v2`(`pelican.ray_instance_requires_layout_v2@1`)/ Studio の知らない code は ` — unavailable`。行は選べる(理由を読むため)
+- **止めるもの**: Add、asset の一覧と「Use selected assets」を無効にし、宣言欄を読み取り専用にする
+- **説明欄**: 1 行目が「文 (code)」(例 `This build has no physics module (physics.module_unavailable@1)`)。知らない code は code だけ。panel は 1 行目しか見せないので理由を先頭に置いた
+- **置き場**: code → 文・短い語の表(7 行)と行の並びは `inspectormodel` の純関数(`componentUnavailableSentence` / `componentUnavailableDescription` / `componentUnavailableTag` / `componentAddRows`。[component の使えない理由の対応表](../src/devstudio/model/inspectormodel.cpp#L511))。combo を埋めて controls を止めるのは新しい `src/devstudio/view/componentaddlist.cpp`(`fillComponentAddTypes` / `applyComponentAddAvailability`)
+- **test**: `devstudio_inspector_test` の `Q-6 a component this build cannot take reads as a sentence and its code`(7 つの code が文と 1 行に収まる短い語になる / 知らない code はそのまま / 文は code でない / 使える行が先)/ `devstudio_componentadd_test`(新、Qt offscreen)の `Q-6 a candidate this build cannot take is greyed and cannot be added`(code の行が灰色で止まり、collider と simplemodelview は Add できる)
+- **変異**: Add の無効化を外す → 赤
+- **記録した穴**:
+  1. `inspectorwidget` の中の説明欄の行の順(理由が 1 行目に来ること)には test が無い
+  2. Add の handler(`confirm_add_component` の clicked)は自分で行を見直さない。ボタンが無効であることだけに頼っている
+
+### G-5: 第二段階の受け入れ —— blank から forward と deferred の material ループを Studio だけで組む(シナリオ 2 本 + 見つかった穴)
+
+**下段(test と Studio の小修正)。実装者: Claude(Opus)。F-4 と同じく、主目的は「利用者の筋書きが Studio の操作だけで最後まで通るか」を確かめ、通らない所を名指しすること。**
+
+#### 筋書き A: forward(シナリオ `forward_loop_from_scratch`)
+1. File → New Project… → Blank pipeline(F-2)
+2. Outliner → Add Object → Cube(G-2)。もう 1 つ Plane を置き、Inspector の transform で床にする(数値の編集。打つなら記録)
+3. Frame Plan → Add material pass… → Forward opaque、Create missing(`scene_color` / `scene_depth`)、「forward で描く」on(G-1 / G-4)→ Save → engine が再起動
+4. `present` の入力に `scene_color`(Pass Editor の Inputs か canvas の drag。F-6 / F-7)。`present.frag` を「入力 0 を出す」に(Pass Editor の New… の Tone map 雛形(G-3)で作り直すのが望ましい)
+5. viewport に灰色の箱と床(画素: 箱の中央と床と背景が別の色)
+6. 別の project を開いて戻る → 同じ図と画面
+
+#### 筋書き B: deferred(シナリオ `deferred_loop_from_scratch`)
+1〜2 は A と同じ
+3. Add material pass… → Deferred geometry、Create missing(G-buffer 5 枚 + depth)→ Save
+4. Add fullscreen pass… → New… → **Deferred lighting** 雛形(G-3)、入力に G-buffer 5 枚、出力 `lit_color`(New render target… で作る。F-1)、Uses scene lights / Camera position on
+5. `present` は `lit_color` を Tone map 雛形で読む
+6. viewport で箱の面が光源で塗り分けられる(面ごとに色が違う)/ 光源の向きを Inspector で変えると色が変わる(光源の component の編集)
+
+#### Studio の小修正(この WP で直す)
+- **再起動の前の未保存の scene**(G-4 の穴): `restart_required` で engine を再起動する前に、scene に未保存の編集があれば既存の「Save / Discard / Cancel」(project 切替と同じ保護、35c82db6)を出す。Cancel なら再起動しない(設定は保存済みなので、次の起動で反映される旨を 1 行)
+- 筋書きの途中で見つかった Studio 側の小さな欠落(1 関数 / 数十行)は直す。engine 側や設計判断が要るものは直さず、その step を迂回して報告に「穴」として file:line と再現手順
+
+#### 受け入れ
+1. シナリオ 2 本が緑(迂回した step があれば列挙)
+2. 画面の判定が噛む: A は forward pass を足さない変異で赤、B は lighting の雛形の光源ループを切る変異で赤(どちらも 1 回)
+3. 未保存の scene の保護: widget test で、未保存の編集があると再起動の前に dialog、Cancel で再起動しない
+4. 触った面の既存 test とシナリオが緑。非 GPU 全数は統合側
+5. 報告にテキスト入力の欄の一覧(この筋書きで打ったものを全部)
+
+#### やらないこと
+engine の新機能 / shadow・SSAO / forward_transparent のループ。
+
+#### 着地(2026-09-24、d5cd6f30)
+- **シナリオ A `forward_loop_from_scratch`(112 step)**: New Project の Blank pipeline → Add Object で Cube と Plane → Plane を Inspector の transform の欄で床に(位置 y = -0.5、scale x / z = 8)→ Add material pass… で Forward opaque を Create missing と forward の既定つきで Save → scene が未保存なので再起動の前に Save / Discard / Cancel が出て、Save で箱と床を保存してから engine が再起動 → `present` を見出しで開き、Inputs に `scene_color`、New… の Tone map で `present_tone_map` を作って Save → viewport の箱・床・背景の 3 点が互いに違い、前の gradient とも違う色 → 別の project を開いて戻っても同じ 3 色。迂回なし
+- **シナリオ B `deferred_loop_from_scratch`(157 step)**: A と同じ出だしに加えて Cube を縦軸の回りに回す(`transform.rotation` の 1 と 3 の列)→ Deferred geometry を Create missing(G-buffer 5 枚 + `scene_depth`)で Save(route は既定のままなので再起動は求められない)→ New render target… で `lit_color` → Add fullscreen pass… で G-buffer 5 枚を読み `lit_color` に書く pass を New… の Deferred lighting で(Uses scene lights と Camera position が入る)→ `present` は Tone map で `lit_color` を読む → 光源が箱の 2 面を違う色に塗る → Inspector で光源の向きを変えると、光の離れた面の色が変わる
+- **迂回した step(受け入れ 1)**: B の lighting pass の位置の 1 か所。geometry と `present` の間に置きたいが、下の engine の穴のため、Studio で `present` の後に足して Save し、Save Scene の後に `file` step で authoring fragment の `"insert": "after:present"` を `"before:present"` に書き換え、別の project を開いて戻る(以降の step は `deferred_lighting` が geometry と `present` の間で走ることを見る)
+- **Studio の修正**:
+  - **再起動の前の未保存の scene**: Frame Plan は `restart_required` の再起動を window の action(`FramePlanWidget::setEngineRestartAction`)に渡し、`MainWindow::requestEngineRestart` が project 切替と同じ未保存の保護(`Navigation::Restart`)に乗せる([再起動の前に未保存を問う所](../src/devstudio/view/mainwindow.cpp#L743))。未保存が無ければその場で再起動。ある場合の問いは「Save your scene changes before the engine restarts?」で、Save は保存の後に再起動、Discard はそのまま再起動、**Cancel は再起動せず今の engine を残し**、status bar と Frame Plan の status 行に `The engine was not restarted. The setting is saved and applies the next time the engine starts.`(Frame Plan は今の engine から plan を読み直す)。別の問いが出ている最中は問わずに同じ文で見送る。保存が始められなかったときも再起動しない。問いのボタンは `pelican.unsavedScenePrompt.save` / `.discard` / `.cancel`(project 切替・窓を閉じるときの問いも同じ名前)
+  - **Inspector の数値欄の名前**: `pelican.inspectorVector.<component>.<field>.<列>` / `pelican.inspectorNumeric.<component>.<field>`。以前はどの vector も最初の列が同じ名前で、シナリオが transform の scale に届かなかった
+  - **Pass Editor の New… の名前の提案**: pass が既に `shaders/<pass 名>.frag` を読んでいるとき(Blank pipeline の `present`)、提案は `<pass 名>_<雛形>`(`present_tone_map` など)で、そのファイルもあれば `_2`・`_3`… を足す(Pass-through は `<pass 名>_2` から)。前は今のファイルを提案し、Create が「already exists」になっていた
+- **test**: `devstudio_layoutpreset_test` の `G-5 an engine restart asks about unsaved scene edits first, and Cancel keeps the engine running`(未保存なし → すぐ再起動 / あり → 問いが先、Cancel で再起動せず次の起動の文、Discard で再起動、始められない Save で再起動せず)/ `devstudio_fullscreen_pass_test` の `G-5 New... on a pass that already reads shaders/<its name>.frag proposes a new file, named after the kind, and leaves the old one` / シナリオ 2 本(各 4 回続けて緑、commit の記録)
+- **変異**: 問わずに再起動 → widget test が赤 / A: forward pass を足さない → 画面の判定の前に engine の拒否(step 63)で赤 / B: 雛形の光源ループを切る → 2 面とも黒(step 142)で赤。step 番号は実装者の報告
+- **テキスト入力の欄(受け入れ 5。シナリオが type したもの)**: `pelican.newProject.location`(`{artifacts}`)/ `pelican.newProject.name`(`forward_loop` / `deferred_loop`)/ `pelican.inspectorVector.transform.pos.1`(`-0.5`)/ `pelican.inspectorVector.transform.scale.0` と `.scale.2`(`8`)/ B だけ `pelican.inspectorVector.transform.rotation.1`(`0.3827`)・`.rotation.3`(`0.9239`)・`pelican.renderTargetForm.name`(`lit_color`)・`pelican.inspectorVector.light.direction.0`(`0.5`)
+- **記録した穴**:
+  1. **(engine、G-6 へ)** authored fragment の pass は、別の authored fragment の pass を anchor にできない。authoring context は `after:deferred_geometry` を挿入位置の候補に出し([挿入位置の候補を作る所](../src/core/communication/renderconfigeditor.cpp#L1931))、`add_authored_pass` はそれを受けるが、root の合成が `render feature pass insert anchor was not found` で失敗する([anchor が見つからない throw](../src/project/featurecompose.cpp#L1976))。候補は「先頭の前」と「各 pass の後」なので、geometry が `present` の前にあると `before:present` は候補から消える。lighting を `present` の後に置くと、`present` は後の出力を読めないので `lit_color` を読ませられない
+  2. **(Studio)** Inspector の編集が commit 中のときに押した Add Object は、status bar の `Could not add <名前>: Finish the active inspector edit before adding an object.`(8 秒)と Inspector の notice で断られるだけで、後で送り直さない
+  3. **(Studio)** Pass Editor は authoring の失敗を `authoring failed` の 1 語で出し、理由は tooltip(`Render authoring failed: ...`)にしか無い。1 の原因にはたどり着けなかった(実装者の報告では engine log にも理由がある。未確認)
+  4. **(Studio)** Inspector は commit のたびに欄を作り直すので、打って commit していない値は失われる。欄に focus があると Refresh が止まる(実装者の報告。focus で欄の編集が始まる所までは `inspectorwidget.cpp` で確認、Refresh が止まる経路は未確認)。シナリオは欄が有効になるのを待って打ち、Return で commit し、欄がその値を持つまで待つ
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**

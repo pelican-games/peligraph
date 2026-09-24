@@ -44,7 +44,8 @@ Features と Inspector の装着操作はその履歴の対象外です(§13.5�
 ### Studio の未保存変更
 
 シーンに未保存の編集があると、ウィンドウタイトルに `*` が付きます。
-ウィンドウを閉じるときや別プロジェクトを開くときは、最新の scene revision を確認し、
+ウィンドウを閉じるときや別プロジェクトを開くとき、Frame Plan の保存が engine の再起動を求めたとき(✅G-5。§13.5
+「forward の既定を同じ Save で入れる」)は、最新の scene revision を確認し、
 **Save / Discard / Cancel** を表示します。Save は保存の成功と最新 revision の再確認を待ってから
 画面を切り替えます。保存失敗・接続断・編集中で保存できない場合は、現在のプロジェクトを維持します。
 Graph タブの変更は編集ごとにファイルへ保存されるため、この確認はシーン編集が対象です。
@@ -88,6 +89,23 @@ procedural geometryは複数選択でき、1件なら`asset`、複数なら`asse
 入力内容は通常のcomponent codecで検査します。
 追加は既存のjournalに記録され、Undo/Redoで取り消し・再適用できます。ディスクへの保存にはSaveを使います。
 
+**この build で使えない component は灰色で並びます(✅Q-6)。**`get_component_add_candidates` は、build で外した機能の
+component を `available: false` と、`unavailable_reason` に code を入れて返します(PG-1)。Studio はそういう行を**使える行の後ろに
+灰色で**並べ、名前の後ろに短い語を付けます: module の無い build なら `— not in this build`、
+`pelican.ray_instance_requires_layout_v2@1` なら `— needs ray layout v2`、Studio の知らない code なら `— unavailable` です。
+行は選べますが、選ぶと **Add**・asset の一覧・**Use selected assets** が押せなくなり、宣言 JSON は読み取り専用になります
+([Add と宣言欄を止める所](../../src/devstudio/view/componentaddlist.cpp#L41))。説明欄の 1 行目は読める文と code です
+(例: `This build has no physics module (physics.module_unavailable@1)`)。code と文・短い語の対応表は Studio に 1 つで
+([使えない component の文の表](../../src/devstudio/model/inspectormodel.cpp#L511))、今ある code は `animation` / `audio` / `physics` /
+`xr` / `vat` / `seqplayer` の `.module_unavailable@1` と `pelican.ray_instance_requires_layout_v2@1` の 7 つです。表に無い code は
+code のまま出ます。
+
+- **理由が code でない行は止めません。**`available: false` でも `unavailable_reason` が文(`simplemodelview` の
+  `A model reference is required.` など。既定値だけでは足りず入力が要る、の意味)なら、その行は普通に並び、宣言に値を入れれば
+  Add できます。code かどうかは「小文字・数字・`_` の `.` 区切りの名前 + `@` + 数字」の形で見分けます
+  ([`isComponentUnavailableCode()`](../../src/devstudio/model/inspectormodel.cpp#L530))。
+- ⚠ 止めているのは Add ボタンの有効・無効だけで、Add を押したときの処理は行を見直しません。
+
 ⚠ **Inspector にはもう 1 つ編集面があります。**`Add component...` / `Ray geometry...` の下、
 properties の一覧より**上**にある **Attached graphs** / **Instance inputs** がそれで、そちらは component ではなく共通グラフの `graph.instance` を
 扱い、**journal にも Undo にも載りません**(§13.5「Inspector のグラフ装着」)。
@@ -120,6 +138,9 @@ Outliner の右クリックと **Scene** toolbar の **Add Object** は同じ 1 
   ([`MainWindow::selectSpawnedObject()`](../../src/devstudio/view/mainwindow.cpp#L1052))。
 - **Undo**: coalesce key を付けないので、Undo 1 回で Add 1 回が戻ります。Inspector の別の編集が進行中なら送らず、
   Inspector の notice に理由が出ます([`InspectorModel::spawnObject()`](../../src/devstudio/model/inspectormodel.cpp#L2290))。
+  ⚠ Inspector の値の commit が終わる前に押した Add Object も同じで、status bar に
+  `Could not add <名前>: Finish the active inspector edit before adding an object.` が 8 秒出るだけです。後で送り直しはしないので、
+  commit が終わってからもう一度押してください。
 - Add Object は常に押せます。project が開いていない・engine の準備ができていないときは、status bar に
   `Add Object needs an open project with its engine running.` と出るだけです。
 - ⚠ spawn は Studio が最後に見た scene revision で送ります。他の client が編集した直後は `stale_revision` で断られるので、
@@ -132,6 +153,13 @@ Outliner の右クリックと **Scene** toolbar の **Add Object** は同じ 1 
 二重に出しません)→ 今の値がそのどれでもなければその値、です。選ぶとすぐ commit します(enum の combo と同じ)。
 Add component... の asset 一覧も同じ読み方で、基本形は `Cube (built-in)` の名前で先頭に並び、区切りの下に project の
 asset が `id [status]` で並びます。
+
+**Inspector の数値欄の名前(✅G-5)**: 自動化面から届くように、数値の欄は 1 つずつ名前を持ちます。vector の列は
+`pelican.inspectorVector.<component>.<field>.<列>`(例: `pelican.inspectorVector.transform.scale.2`)、数 1 つは
+`pelican.inspectorNumeric.<component>.<field>` です([数値欄の名前の付け方](../../src/devstudio/view/inspectorwidget.cpp#L1494))。
+G-5 より前は、どの vector も最初の列が同じ名前でした。⚠ Inspector は commit のたびに欄を作り直すので、打っただけで commit
+していない値は次の作り直しで消えます。シナリオは欄が有効になるのを待って打ち、Return で commit し、欄がその値を持つまで
+待ちます([シナリオの README](../../test/studio_scenarios/README.md#L334))。
 
 ### 起動のしかた
 
@@ -861,8 +889,23 @@ forward の pass だけの pipeline には受け皿が無く、engine は上の 
 commit の結果に `restart_required` があると、Frame Plan の status 行に
 `Restarting the engine to apply the material route setting...` を出し、**同じ project で engine を止めて起動し直します**
 ([`EmbeddedViewport::restartEngine()`](../../src/devstudio/viewport/embeddedviewport.cpp#L491))。gate はすぐ閉じ、新しい engine が
-readiness に答えると Frame Plan が戻ります。⚠ **保存していない scene の編集は、確認なしにこの再起動で失われます。**
-先に Save Scene してください(シナリオ `add_primitive_object` もそうしています)。
+readiness に答えると Frame Plan が戻ります。
+
+**保存していない scene の編集があれば、再起動の前に問います(✅G-5)**: project の切替と同じ Save / Discard / Cancel が
+「Save your scene changes before the engine restarts?」の文で出ます
+([`MainWindow::requestEngineRestart()`](../../src/devstudio/view/mainwindow.cpp#L743))。未保存の編集が無ければ今までどおり
+すぐ再起動します。
+
+- **Save** は保存が終わってから再起動します。保存を始められなければ再起動しません。
+- **Discard** はそのまま再起動します。新しい engine はディスクの scene を読むので、保存していない編集は消えます。
+- **Cancel** は再起動せず、**今の engine が走り続けます**。設定はもう保存されているので、status bar と Frame Plan の status 行に
+  `The engine was not restarted. The setting is saved and applies the next time the engine starts.` が出て、Frame Plan は
+  今の engine から plan を読み直します。
+- 別の問い(project の切替・窓を閉じる)が出ている最中に再起動が求められたときは、問わずに同じ文で再起動を見送ります。
+- 自動化面の名前は、問いが `pelican.unsavedScenePrompt`、ボタンが `pelican.unsavedScenePrompt.save` / `.discard` /
+  `.cancel` です(project の切替・窓を閉じるときの問いも同じ名前です)。
+
+G-4 の時点では、保存していない scene の編集は確認なしにこの再起動で失われていました。
 
 `material_route_unserved@1` で断られると、status 行は
 `The engine refused the pass: No pass draws the <route> route, which <名前> take(s). To fix: <hint>.` の形で、material の名前
@@ -904,6 +947,12 @@ Open はそのファイルを使って開きます([書き込み](../../src/devs
 名前)なら雛形の名前(`deferred_lighting` / `tone_map`、Pass-through は `fullscreen_pass`。使われていれば `_2`…)を入れ、
 shader 名を pass 名から付けます。自分で打った名前は上書きしません([雛形の名前の提案](../../src/devstudio/view/fullscreenpasswidget.cpp#L1036))。
 保存した後も form はその名前を持ったままです。
+
+**既にある shader を読む pass の New…(✅G-5)**: pass が既に `shaders/<pass 名>.frag` を読んでいるとき(Blank pipeline の
+`present` を開いて New… を押したときなど)、名前の提案は `<pass 名>_<雛形>`(`present_tone_map` / `present_deferred_lighting`)で、
+そのファイルもあれば `_2`、`_3`… を足します。Pass-through なら `<pass 名>_2` からです
+([既存の file を避ける shader 名の提案](../../src/devstudio/view/fullscreenpasswidget.cpp#L816))。以前は今読んでいるファイルの名前を
+提案したので、Create が「already exists」になっていました。今のファイルは上書きされずに残ります。
 
 **pass の設定欄(✅G-3)**: fullscreen pass の form に 2 つの欄が増えました(add / edit の両方)。
 
@@ -1061,7 +1110,7 @@ layout をそこに残していました。テーマの選択はこの directory
 `studio_exit_code` と `studio_shutdown_forced` も記録します。最後の shutdown step は
 **exit 0、強制終了なし**を要求し、異常終了・タイムアウトによる強制停止も report と driver の失敗になります。
 
-現在のシナリオは **18 本**です。
+現在のシナリオは **20 本**です。
 `graph_read` は fixture を Graph タブで開き、`list` が objectName を返すこと・無い名前が
 `automation.widget_missing@1` で断られること・キャンバスが描いたものが `get_graph_instances` の中身と合うことを見ます
 ([シナリオ](../../test/studio_scenarios/graph_read.json))。`graph_edit_roundtrip` は**実物の engine で**値の帯を
@@ -1131,6 +1180,29 @@ drag すると viewport の中央に背景とも前の gradient とも違う色�
 描かれず、Deferred geometry の pass で迂回していました。G-4 で理由が分かり(material pass が 1 つも無いうちに置いた cube は
 検査されず、forward の pass を足す編集も「前の世代が使っていた route の消失だけを断る」旧規則を通っていた)、forward に
 戻っています。
+✅G-5 の 2 本は、第二段階の筋書きを Blank pipeline から Studio の操作だけで追います。
+`forward_loop_from_scratch`(112 step)は File > New Project... で Blank pipeline の project を作り、Add Object で Cube と Plane を
+置いて、Plane を Inspector の transform の欄で床にします(`pelican.inspectorVector.transform.pos.1` に `-0.5`、`.scale.0` と
+`.scale.2` に `8`)。Add material pass... で Forward opaque を Create missing targets と forward の既定つきで Save すると、scene が
+未保存なので再起動の前に Save / Discard / Cancel が出て、Save で箱と床を保存してから engine が再起動します。続けて `present` を
+見出しで開き、Inputs に `scene_color` を Add し、New... の Tone map で `present_tone_map` を作って Save すると、viewport の箱・床・
+背景が互いに違う色(前の gradient とも違う色)になります。別の project を開いて戻っても同じ 3 色です
+([forward ループのシナリオ](../../test/studio_scenarios/forward_loop_from_scratch.json))。
+`deferred_loop_from_scratch`(157 step)は同じ出だしに加えて Cube を縦軸の回りに回し(`.transform.rotation.1` と `.3`)、
+Add material pass... の Deferred geometry で G-buffer 5 枚と `scene_depth` を作ります(route は既定のままなので再起動は
+求められません)。New render target... で `lit_color` を作り、Add fullscreen pass... で G-buffer 5 枚を読み `lit_color` に書く
+pass を New... の Deferred lighting で作り、`present` は Tone map で `lit_color` を読みます。光源が箱の 2 面を違う色に塗ること、
+Inspector で光源の向き(`pelican.inspectorVector.light.direction.0`)を変えると光の離れた面の色が変わることを見ます
+([deferred ループのシナリオ](../../test/studio_scenarios/deferred_loop_from_scratch.json))。
+⚠ **deferred の方は 1 か所だけ手で迂回しています。**lighting の pass は geometry と `present` の間に要りますが、authoring context が
+出す挿入位置 `after:deferred_geometry` は `add_authored_pass` が受けても、root の合成が
+`render feature pass insert anchor was not found` で失敗します(authored fragment の pass は、別の authored fragment の pass を anchor にできません。
+[anchor が見つからないときの throw](../../src/project/featurecompose.cpp#L1976))。挿入位置の候補は「先頭の pass の前」と「各 pass の後」
+なので([挿入位置の候補の並び](../../src/core/communication/renderconfigeditor.cpp#L1931))、geometry が先頭にあると
+`before:present` は候補に出ません。`present` の後に置くと、`present` はそれより後の出力を読めません。そこでシナリオは Studio で
+`present` の後に足して Save し、`file` step で authoring fragment の `insert` を `before:present` に書き換えて、project を
+開き直します(この穴は別の WP で扱います)。`after:deferred_geometry` で足したときの失敗は、Pass Editor の status 行には
+`authoring failed` しか出ず、理由は tooltip(`Render authoring failed: ...`)にあります。
 `graph_reroute_tie` の node の drag は、✅Q-5 から窓の画素ではなく canvas の位置(`"scene"`)で終わります。F-5 から run は
 毎回既定 layout で始まるので、窓の画素で置くと node が入力の列より左に来て、続く click が別の node に当たっていました
 (bundle の drag はまだ窓の画素です)。
@@ -1141,10 +1213,15 @@ drag すると viewport の中央に背景とも前の gradient とも違う色�
 (別 HWND です)。engine が描いた絵が要るときは `"mode": "screen"` を使います。**✅F-5 から `screen` は、Studio の窓
 自身の合成済みの内容を `PrintWindow`(`PW_RENDERFULLCONTENT`)で読んで切り出す**ので、別の application の窓が
 viewport に重なっていても写りません([窓の内容の読み取り](../../src/devstudio/automation/automationcommands.cpp#L80))。
-窓が print できないか 1 色で出たときだけ、以前の desktop の grab に戻ります(このときは窓が隠れていない必要があります)。
+窓が print できないとき、または 1 色で出て**しかも desktop のその場所に Studio の窓が実際に見えているとき**だけ、以前の
+desktop の grab に戻ります。見えているかは、撮る範囲の 5×5 の点で `WindowFromPoint` が Studio の窓(埋め込みの engine の窓を
+含む)を指すかで見ます([desktop に窓が見えているかの判定](../../src/devstudio/automation/automationcommands.cpp#L142))。
+別の窓が重なっていれば 1 色の print をそのまま使い、応答に **`desktop_obstructed: true`** を付けます。1 色は正しい絵でもあり得る
+(消去されただけの target、空の scene の albedo)ので、重なった別の application の窓を撮るより print を残します(G-4 の後の修正
+`5ca18ee1`。以前は 1 色なら必ず desktop に戻り、重なった窓を撮っていました)。
 どちらで撮ったかは応答の **`capture`**(`print_window` / `screen`)に出ます。着地時に別の窓の重なりで 2 本のシナリオが
 赤になったための変更です。
-`screenshot` の応答は `path` / `mode` / `capture` / `width` / `height` に加えて **`distinct_colors`**(絵に含まれる色の数)を返します
+`screenshot` の応答は `path` / `mode` / `capture` / `width` / `height`(と、上の場合だけ `desktop_obstructed`)に加えて **`distinct_colors`**(絵に含まれる色の数)を返します
 (✅F-2、[screenshot の distinct_colors](../../src/devstudio/automation/automationcommands.cpp#L1820))。消去されただけの viewport は 1 色なので、
 `result` step で `distinct_colors` を読めば「engine が何か描いたか」を PNG を開かずに判定できます。
 **`"pixels": [[x, y], ...]`**(✅F-4)を付けると、応答にその各点の色が `"#rrggbb"` の配列 `pixels` で返ります

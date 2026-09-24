@@ -2108,7 +2108,11 @@ rendering 文書の root に `material_route_default` を置くと、automatic �
 
 **受け皿の規則**: pipeline に material pass が 1 つでもあるなら、登録済みのすべての material(組込を含む)に、その route と
 shader 契約を受ける pass が要ります。material pass が 1 つも無い pipeline(RT だけの graph など)は material を描かないので
-検査しません。受け皿が無いと load は `material_route_unserved@1` の fatal で止まり、文は route と shader 契約・material の
+この検査はしません。ただし**編集や reload で入れ替える候補の pipeline が material pass を 1 つも持たないときは、公開中の世代が
+描いていた route を落としてはいけません**(同じ `material_route_unserved@1` で断ります。まだ何も公開していなければ通ります)
+([2 つの規則を当てる requireEveryMaterialServed](../../src/core/material/materialgenerationplanner.cpp#L779))。G-4 の直後はこの
+2 本目が抜けていて、material pass を全部外す候補が通っていました(G-4 の後の修正 `5ca18ee1` で戻しました)。
+受け皿が無いと load は `material_route_unserved@1` の fatal で止まり、文は route と shader 契約・material の
 名前と出所(組込は `(engine built-in)`)・直し方の hint を言います([load 時の fatal の文](../../src/core/material/materialgenerationplanner.cpp#L249))。
 たとえば forward の pass だけの pipeline を `"auto"` のまま起動すると、
 `material_route_unserved@1: rendering config '<参照>' has no material pass for route 'deferred_geometry' (gbuffer_v1), needed by '<名前>' ...
