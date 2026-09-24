@@ -4205,60 +4205,124 @@ TEST_CASE("Compute task creation and removal publish project features transactio
     }
 }
 
-TEST_CASE("Compute task editing resolves direct roots and project presets",
+TEST_CASE("Compute task editing resolves project presets",
           "[render-config-editor][compute-task-edit]") {
     // MG-2b: the root is a `pelican.graph` root, whose `rendering` section
     // cannot declare compute tasks (the graph owns them; the lowering refuses
-    // the key by name). So a root-declared task is no longer a case; the
-    // preset-declared one is.
-    for (const bool use_preset : {true}) {
-        CAPTURE(use_preset);
-        TemporaryAnimgraphProject project;
-        PathResolver resolver;
-        resolver.setup(project.root, false);
-        auto preset = Json::parse(resolver.loadText("engine://render_pipelines/hybrid_v1.json"));
-        const Json task{{"name", "owned_compute"}, {"shader", "project://shaders/probe"},
-                        {"dispatch", {{"groups", {1, 1, 1}}}}, {"schedule", "per_frame"}};
-        preset["config"]["compute_tasks"] = Json::array({task});
-        const auto preset_path = project.root / "passes" / "owned.json";
-        writeBytes(preset_path, preset.dump(2));
-        writeBytes(project.render_config, use_preset
-            ? Pelican::TestSupport::renderGraphRoot(Json{{"pipeline", {{"preset", "project://passes/owned.json"}}}}).dump(2)
-            : Pelican::TestSupport::renderGraphRoot(preset.at("config")).dump(2));
-        const auto root_before = readBytes(project.render_config);
-        ActualCpuRenderRuntime runtime;
-        auto service = makeProjectService(project, resolver, runtime);
-        const auto catalog = service->getComputeTaskAuthoring(Json::object());
-        REQUIRE(catalog.at("tasks").size() == 1);
-        const auto &selected = catalog.at("tasks")[0];
-        REQUIRE(selected.at("editable") == true);
-        auto changed = task;
-        changed["dispatch"]["groups"] = {2, 1, 1};
-        const auto accepted = service->editComputeTask({
-            {"base_source_digest", catalog.at("source_digest").at("hex")},
-            {"base_task_source_digest", selected.at("source_digest").at("hex")},
-            {"task_name", "owned_compute"}, {"task", changed}});
-        INFO(accepted.dump());
-        REQUIRE(accepted.at("status") == "accepted");
-        service->commitPending();
-        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
-        INFO(result.dump());
-        REQUIRE(result.at("committed") == true);
-        if (use_preset) REQUIRE(readBytes(project.render_config) == root_before);
-        service.reset();
-        service = makeProjectService(project, resolver, runtime);
-        REQUIRE(service->getComputeTaskAuthoring(Json::object()).at("tasks")[0].at("declaration") == changed);
-        const auto updated = service->getComputeTaskAuthoring(Json::object());
-        const auto removed = service->removeComputeTask({
-            {"base_source_digest", updated.at("source_digest").at("hex")},
-            {"base_task_source_digest", updated.at("tasks")[0].at("source_digest").at("hex")},
-            {"task_name", "owned_compute"}});
-        REQUIRE(removed.at("status") == "accepted");
-        service->commitPending();
-        REQUIRE(service->getResult({{"ticket", removed.at("ticket")}}).at("committed") == true);
-        REQUIRE(service->getComputeTaskAuthoring(Json::object()).at("tasks").empty());
-        if (use_preset) REQUIRE(readBytes(project.render_config) == root_before);
-    }
+    // the key by name). A task declared in a project preset is edited in the
+    // preset; the root's tasks are refused (MG-3, the test below).
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    auto preset = Json::parse(resolver.loadText("engine://render_pipelines/hybrid_v1.json"));
+    const Json task{{"name", "owned_compute"}, {"shader", "project://shaders/probe"},
+                    {"dispatch", {{"groups", {1, 1, 1}}}}, {"schedule", "per_frame"}};
+    preset["config"]["compute_tasks"] = Json::array({task});
+    const auto preset_path = project.root / "passes" / "owned.json";
+    writeBytes(preset_path, preset.dump(2));
+    writeBytes(project.render_config,
+        Pelican::TestSupport::renderGraphRoot(Json{{"pipeline", {{"preset", "project://passes/owned.json"}}}}).dump(2));
+    const auto root_before = readBytes(project.render_config);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto catalog = service->getComputeTaskAuthoring(Json::object());
+    REQUIRE(catalog.at("tasks").size() == 1);
+    const auto &selected = catalog.at("tasks")[0];
+    REQUIRE(selected.at("editable") == true);
+    auto changed = task;
+    changed["dispatch"]["groups"] = {2, 1, 1};
+    const auto accepted = service->editComputeTask({
+        {"base_source_digest", catalog.at("source_digest").at("hex")},
+        {"base_task_source_digest", selected.at("source_digest").at("hex")},
+        {"task_name", "owned_compute"}, {"task", changed}});
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    service->commitPending();
+    const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("committed") == true);
+    REQUIRE(readBytes(project.render_config) == root_before);
+    service.reset();
+    service = makeProjectService(project, resolver, runtime);
+    REQUIRE(service->getComputeTaskAuthoring(Json::object()).at("tasks")[0].at("declaration") == changed);
+    const auto updated = service->getComputeTaskAuthoring(Json::object());
+    const auto removed = service->removeComputeTask({
+        {"base_source_digest", updated.at("source_digest").at("hex")},
+        {"base_task_source_digest", updated.at("tasks")[0].at("source_digest").at("hex")},
+        {"task_name", "owned_compute"}});
+    REQUIRE(removed.at("status") == "accepted");
+    service->commitPending();
+    REQUIRE(service->getResult({{"ticket", removed.at("ticket")}}).at("committed") == true);
+    REQUIRE(service->getComputeTaskAuthoring(Json::object()).at("tasks").empty());
+    REQUIRE(readBytes(project.render_config) == root_before);
+}
+
+// MG-3: the rendering root holds no tasks. A task the composed config credits
+// to the root -- here one a render.compute node in the root graph declares --
+// is listed with the rest, read-only and with its reason, and an edit or a
+// removal of it is refused by name before anything is written.
+TEST_CASE("MG-3 a task credited to the rendering root is listed read-only and refused by name",
+          "[render-config-editor][compute-task-edit][mg3]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    // The blank template's shape (no `pipeline`, so nothing is a preset's),
+    // with one compute node in the root graph writing one buffer.
+    auto root = Pelican::TestSupport::renderGraphRoot(Json{
+        {"rendering_passes",
+         Json::array({{{"name", "main_render"},
+                       {"passes", Json::array({{{"name", "present"},
+                                                {"type", "fullscreen"},
+                                                {"input", Json::array()},
+                                                {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+                                                {"shader", {{"vertex", "engine://fullscreen"},
+                                                            {"fragment", "engine://fullscreen"}}}}})}}})}});
+    root["nodes"] = Json::array({
+        {{"id", "probe_data"}, {"op", "render.buffer"},
+         {"parameters", {{"size", 16}, {"element", "float"}}}, {"outputs", {"resource"}}},
+        {{"id", "probe"}, {"op", "render.compute"},
+         {"parameters", {{"shader", "project://shaders/probe"}, {"dispatch", {{"groups", {1, 1, 1}}}},
+                         {"ports", {{"values", {{"access", "write"}, {"element", "float"}}}}}}},
+         {"inputs", {{"values", {{"node", "probe_data"}, {"port", "resource"}}}}},
+         {"outputs", {"values"}}}});
+    writeBytes(project.render_config, root.dump(2));
+    const auto root_before = readBytes(project.render_config);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+
+    const auto catalog = service->getComputeTaskAuthoring(Json::object());
+    INFO(catalog.dump());
+    const auto &tasks = catalog.at("tasks");
+    const auto probe = std::find_if(tasks.begin(), tasks.end(), [](const auto &entry) {
+        return entry.at("name") == "probe";
+    });
+    // Listed, not left out: the canvas and the Task Editor show it.
+    REQUIRE(probe != tasks.end());
+    CHECK(probe->at("source_reference") == "passes/main.json");
+    CHECK(probe->at("editable") == false);
+    CHECK(probe->at("read_only_reason") == "The task is generated, not declared in this document");
+    CHECK_FALSE(probe->contains("provider_feature"));
+
+    Json task = probe->at("declaration");
+    task["dispatch"] = {{"groups", {2, 1, 1}}};
+    const Json edit{{"base_source_digest", catalog.at("source_digest").at("hex")},
+                    {"base_task_source_digest", std::string(64, '0')},
+                    {"task_name", "probe"},
+                    {"task", task}};
+    const auto edited = service->editComputeTask(edit);
+    INFO(edited.dump());
+    REQUIRE(edited.at("status") == "rejected");
+    CHECK(edited.at("error").at("code") == "compute_task_not_editable");
+
+    auto removal = edit;
+    removal.erase("task");
+    const auto removed = service->removeComputeTask(removal);
+    INFO(removed.dump());
+    REQUIRE(removed.at("status") == "rejected");
+    CHECK(removed.at("error").at("code") == "compute_task_not_editable");
+
+    service->commitPending();
+    CHECK(readBytes(project.render_config) == root_before);
 }
 
 TEST_CASE("Procedural asset edits reject a gate that closed and reopened before publication",

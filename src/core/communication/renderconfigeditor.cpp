@@ -2161,14 +2161,20 @@ OrderedJson RenderConfigEditorService::getComputeTaskAuthoring(const Json &param
         if (from_feature) entry["provider_feature"] = provenance->provider_feature;
         if (reference.starts_with("engine://")) {
             entry["read_only_reason"] = "This task belongs to a shared engine document. Copy it into the project to edit it.";
+        } else if (reference == dependencies_.source_reference) {
+            // MG-2b: the rendering root is a pelican.graph root, and its
+            // `rendering` section cannot declare tasks (the lowering refuses
+            // `compute_tasks` there, and it ran in the resolver above). A task
+            // the root is credited with was derived -- from a render.compute
+            // node, say -- so it is listed, read-only, and never edited here.
+            entry["read_only_reason"] = "The task is generated, not declared in this document";
         } else {
             try {
-                const auto bytes = reference == dependencies_.source_reference ? document_.bytes()
-                    : from_preset && context.pipeline_preset_bytes ? *context.pipeline_preset_bytes
+                const auto bytes = from_preset && context.pipeline_preset_bytes ? *context.pipeline_preset_bytes
                     : readFileBytes(dependencies_.resolve_document_path(reference));
                 auto source = OrderedJson::parse(bytes);
                 const auto &config = from_feature ? featureSourceFragment(source, provenance->provider_feature)
-                    : from_preset ? source.at("config") : renderingSectionOf(source);
+                    : source.at("config");
                 const auto declarations = config.find("compute_tasks");
                 if (declarations == config.end()) throw std::runtime_error("The task is generated, not declared in this document");
                 const auto original = std::find_if(declarations->begin(), declarations->end(),
@@ -2210,19 +2216,15 @@ OrderedJson RenderConfigEditorService::getFrameNodeOrder(const Json &params) con
 OrderedJson RenderConfigEditorService::getGraphInstances(const Json &params) const {
     requireOnly(params, {}, "get_graph_instances");
     const auto root = Json::parse(document_.bytes());
+    // MG-2b: the document is always a pelican.graph root (anything else is
+    // refused as render_config.legacy_root@1 before it becomes document_).
     auto instances = Json::array();
-    auto nodes = Json::array();
-    if (root.value("schema", std::string{}) == "pelican.graph") {
-        nodes = root.at("nodes");
-        for (const auto &node : nodes)
-            if (node.at("op") == "graph.instance") instances.push_back(node);
-    }
+    auto nodes = root.at("nodes");
+    for (const auto &node : nodes)
+        if (node.at("op") == "graph.instance") instances.push_back(node);
     return {{"source_reference", dependencies_.source_reference},
-        // N-8: what the root document actually is. A legacy rendering root has
-        // nowhere to put a `layout`, and an editor must be able to say that in
-        // those words rather than discover it as a failed write -- an empty
-        // `nodes` array does not separate the two, because a graph root is
-        // allowed to hold none.
+        // N-8: what the root document is. Since MG-2b it is always
+        // "pelican.graph"; the field stays because Studio reads it.
         {"root_schema", root.value("schema", std::string{})},
         {"source_digest", digestJson(document_.sourceDigest())},
         {"instances", std::move(instances)},
@@ -2368,8 +2370,8 @@ OrderedJson RenderConfigEditorService::getGraphNodeValues(const Json &params) co
                            {"nodes", std::move(nodes)}};
     };
     if (!snapshot.published || !snapshot.graph) return reply(OrderedJson::array());
+    // A pelican.graph root (MG-2b), so it always has a graph to expand.
     const auto root = Json::parse(document_.bytes());
-    if (root.value("schema", std::string{}) != "pelican.graph") return reply(OrderedJson::array());
     // Node ids come from the authored document's expansion, so every node the
     // canvas draws is listed -- including the rendering and animation domain
     // nodes the values partition has no value for, which are listed with no
@@ -2550,29 +2552,23 @@ OrderedJson RenderConfigEditorService::changeComputeTask(const Json &params, boo
             return rejection("compute_task_not_editable", "Select a task declared in a project-owned document");
         if (selected->at("source_digest").at("hex") != task_digest)
             return rejection("external_modification", "The task source changed since it was read");
+        // An editable task is declared in a project feature or a project
+        // preset, never in the rendering root (MG-2b: the catalog lists the
+        // root's tasks read-only, so the check above already refused them).
         const auto reference = selected->at("source_reference").get<std::string>();
-        const bool root = reference == dependencies_.source_reference;
-        const auto path = root ? dependencies_.source_path : dependencies_.resolve_document_path(reference);
-        const auto bytes = root ? document_.bytes() : readFileBytes(path);
+        const auto path = dependencies_.resolve_document_path(reference);
+        const auto bytes = readFileBytes(path);
         if (renderConfigSourceDigest(bytes) != task_digest)
             return rejection("external_modification", "The task source changed while the edit was prepared");
         auto source = OrderedJson::parse(bytes);
-        const bool preset = source.value("schema", std::string{}) == "pelican.render_pipeline";
         auto &config = source.value("schema", std::string{}) == "pelican.render_feature"
             ? featureSourceFragment(source, selected->at("provider_feature").get<std::string>())
-            : preset ? source.at("config") : renderingSectionOf(source);
+            : source.at("config");
         auto &declarations = config.at("compute_tasks");
         const auto original = std::find_if(declarations.begin(), declarations.end(), [&](const auto &entry) { return entry.at("name") == name; });
         if (original == declarations.end()) return rejection("compute_task_not_editable", "The source task is absent");
         if (remove) declarations.erase(original);
         else *original = params.at("task");
-        if (root) {
-            return queueRootEdit(base_digest, method,
-                [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
-                    candidate = candidate.withSectionValue("compute_tasks", declarations.dump(2));
-                    return std::nullopt;
-                });
-        }
         const std::array documents{RenderConfigCandidateDocument{
             .reference = reference, .normalized_reference = dependencies_.normalize_reference(reference),
             .path = path, .operation = RenderConfigDocumentOperation::replace,
