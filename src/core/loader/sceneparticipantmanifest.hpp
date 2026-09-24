@@ -6,11 +6,15 @@
 
 namespace Pelican {
 
+// How a participant exists in this build. `real` is a module the build has.
+// For a module the build left out, sceneFeatureDivisions() decides between
+// the other two by one rule: `stub` when something in a scene can still ask
+// for the module (the OFF build keeps the part that refuses it by name),
+// `absent` when nothing can.
 enum class SceneParticipantPresence : std::uint8_t {
     absent,
     stub,
     real,
-    uninstalled,
 };
 
 enum class SceneManifestRole : std::uint8_t {
@@ -49,8 +53,28 @@ struct ScenePublicApiManifestEntry {
     std::string_view classification;
 };
 
+// PG-2: one row per build module that can own part of a scene load, with the
+// presence its participant rows take in a build without it.
+struct SceneFeatureDivision {
+    // The module's name: its `requires` word where it has one.
+    std::string_view feature;
+    // The build option, e.g. PELICAN_WITH_PHYSICS.
+    std::string_view option;
+    bool enabled = false;
+    // What can still reach a scene in a build without the module, and what
+    // refuses it there. Empty when nothing can.
+    std::string_view off_declaration;
+    // stub exactly when off_declaration is not empty; absent otherwise.
+    SceneParticipantPresence off_presence = SceneParticipantPresence::absent;
+
+    constexpr SceneParticipantPresence presence() const noexcept {
+        return enabled ? SceneParticipantPresence::real : off_presence;
+    }
+};
+
 std::span<const SceneParticipantManifestEntry>
 sceneParticipantManifest() noexcept;
+std::span<const SceneFeatureDivision> sceneFeatureDivisions() noexcept;
 std::span<const ScenePublicApiManifestEntry>
 scenePublicApiManifest() noexcept;
 

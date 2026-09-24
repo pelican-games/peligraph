@@ -1,3 +1,4 @@
+#include "../src/core/loader/componentcodec.hpp"
 #include "../src/core/loader/sceneload.hpp"
 #include "../src/core/loader/sceneloadfault.hpp"
 #include "../src/core/loader/sceneparticipantmanifest.hpp"
@@ -106,7 +107,7 @@ TEST_CASE("WP380 field manifest is unique complete and build-derived",
 #if PELICAN_WITH_AUDIO
     constexpr auto expected_audio = SceneParticipantPresence::real;
 #else
-    constexpr auto expected_audio = SceneParticipantPresence::uninstalled;
+    constexpr auto expected_audio = SceneParticipantPresence::stub;
 #endif
 #if PELICAN_WITH_RPC
     constexpr auto expected_rpc = SceneParticipantPresence::real;
@@ -202,6 +203,91 @@ TEST_CASE("WP380 field manifest is unique complete and build-derived",
                       .mutation_id.empty());
     REQUIRE_FALSE(manifestRow("procedural", "retire_queue")
                       .mutation_id.empty());
+}
+
+// PG-2 acceptance 4: every module's OFF division follows the one rule, and
+// the table is pinned here so that putting a row back to an old division
+// (audio's former `uninstalled`, animation or the developer UI without a row)
+// fails in every build, not only in the OFF build that would show it.
+TEST_CASE("PG-2 participant OFF divisions follow the scene-declaration rule",
+          "[pg2][WP380][contract][manifest]") {
+    struct Expected {
+        std::string_view feature;
+        std::string_view option;
+        bool enabled;
+        SceneParticipantPresence off_presence;
+    };
+    constexpr auto stub = SceneParticipantPresence::stub;
+    constexpr auto absent = SceneParticipantPresence::absent;
+    const Expected expected[]{
+        {"physics", "PELICAN_WITH_PHYSICS", PELICAN_WITH_PHYSICS != 0, stub},
+        {"animation", "PELICAN_WITH_ANIMATION", PELICAN_WITH_ANIMATION != 0, stub},
+        {"audio", "PELICAN_WITH_AUDIO", PELICAN_WITH_AUDIO != 0, stub},
+        {"vat", "PELICAN_WITH_VAT", PELICAN_WITH_VAT != 0, stub},
+        {"seqplayer", "PELICAN_WITH_SEQPLAYER", PELICAN_WITH_SEQPLAYER != 0, stub},
+        {"xr", "PELICAN_WITH_OPENXR", PELICAN_WITH_OPENXR != 0, absent},
+        {"rpc", "PELICAN_WITH_RPC", PELICAN_WITH_RPC != 0, absent},
+        {"imgui", "PELICAN_WITH_IMGUI", PELICAN_WITH_IMGUI != 0, absent},
+    };
+
+    const auto divisions = sceneFeatureDivisions();
+    REQUIRE(divisions.size() == std::size(expected));
+    std::set<std::string> seen;
+    for (const auto &division : divisions) {
+        const std::string feature{division.feature};
+        CAPTURE(feature);
+        REQUIRE(seen.emplace(feature).second);
+        // The rule itself: stub exactly when something can reach the scene.
+        REQUIRE(division.off_presence ==
+                (division.off_declaration.empty() ? absent : stub));
+        REQUIRE(division.presence() ==
+                (division.enabled ? SceneParticipantPresence::real
+                                  : division.off_presence));
+        const auto found = std::find_if(
+            std::begin(expected), std::end(expected),
+            [&](const auto &row) { return row.feature == division.feature; });
+        REQUIRE(found != std::end(expected));
+        REQUIRE(std::string{division.option} == std::string{found->option});
+        REQUIRE(division.enabled == found->enabled);
+        REQUIRE(std::string{sceneParticipantPresenceName(division.off_presence)} ==
+                std::string{sceneParticipantPresenceName(found->off_presence)});
+    }
+
+    // A component whose codec needs a module is something a scene can declare
+    // in any build, so that module must be a stub when it is OFF.
+    for (const auto &codec : componentCodecRows()) {
+        if (codec.required_feature.empty()) continue;
+        CAPTURE(std::string{codec.name});
+        const auto division = std::find_if(
+            divisions.begin(), divisions.end(), [&](const auto &row) {
+                return row.feature == codec.required_feature;
+            });
+        REQUIRE(division != divisions.end());
+        REQUIRE(division->off_presence == stub);
+    }
+
+    // The participant rows take their presence from the division table.
+    const auto presenceOf = [&](std::string_view feature) {
+        const auto division = std::find_if(
+            divisions.begin(), divisions.end(),
+            [&](const auto &row) { return row.feature == feature; });
+        REQUIRE(division != divisions.end());
+        return division->presence();
+    };
+    constexpr std::pair<std::string_view, std::string_view> owned_rows[]{
+        {"physics", "physics"},     {"seqplayer", "seqplayer"},
+        {"vatplayer", "vat"},       {"renderer.xr", "xr"},
+        {"audio", "audio"},         {"root.rpc", "rpc"},
+    };
+    for (const auto &row : sceneParticipantManifest()) {
+        for (const auto &[owner, feature] : owned_rows) {
+            if (row.owner != owner) continue;
+            const std::string owner_name{row.owner};
+            const std::string field_name{row.field};
+            CAPTURE(owner_name, field_name);
+            REQUIRE(row.presence == presenceOf(feature));
+        }
+    }
 }
 
 TEST_CASE("WP380 manifest fixes exclusions and all five production call sites",

@@ -1419,6 +1419,9 @@ pelican_define_test(curve_test GROUP core_foundation pelican_core)
 # PG-1: the scene-load half of the build-feature gate, measured in every
 # build (run_build_units_smoke.cmake runs its [pg1] tag in the OFF builds).
 pelican_define_test(pg1_feature_gate_test GROUP core_foundation pelican_core)
+# PG-2: the call-time half -- the facades a build left the module out of --
+# measured in every build (the OFF builds run its [pg2] tag).
+pelican_define_test(pg2_facade_failure_test GROUP core_foundation pelican_core)
 # GP-1: ObjectRef, the world transform read, and a localtransform on every
 # scene object with a transform. The test executable is the SDK export host
 # its fixture DLL links against, as pelican_player is for a shipped game DLL,

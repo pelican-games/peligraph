@@ -562,6 +562,14 @@ OrderedJson raycastResult(const OrderedJson &scene, const Json &query,
     throwBuildFeatureDisabled(
         "PELICAN_WITH_PHYSICS",
         "eval_preview raycast queries require physics support");
+#elif !PELICAN_WITH_BUILTIN_PHYSICS
+    // The preview answers with the builtin geometry queries (physquery.cpp),
+    // which a build without the builtin provider does not compile. PG-2: say
+    // so by name instead of failing to link.
+    (void)scene;
+    (void)query;
+    (void)context;
+    throw phys::ProviderUnavailableError{"eval_preview raycast"};
 #else
     if (!query.contains("ray") || !query.at("ray").is_object()) {
         schemaError(std::string{context} + "/ray", "raycast query requires ray object");
@@ -609,6 +617,11 @@ OrderedJson overlapResult(const OrderedJson &scene, const Json &query,
     throwBuildFeatureDisabled(
         "PELICAN_WITH_PHYSICS",
         "eval_preview overlap queries require physics support");
+#elif !PELICAN_WITH_BUILTIN_PHYSICS
+    (void)scene;
+    (void)query;
+    (void)context;
+    throw phys::ProviderUnavailableError{"eval_preview overlap"};
 #else
     if (!query.contains("shape")) {
         schemaError(std::string{context} + "/shape",

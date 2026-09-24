@@ -442,6 +442,42 @@ function(expect_disabled_error label feature_name)
     endif()
 endfunction()
 
+# PG-2: a game-code facade in an OFF build. The probe's call must fail with
+# the prose BuildFeatureDisabledError message as before, and the probe prints
+# the code and feature it read from the thrown BuildFeatureCallDisabledError;
+# a code-less throw prints no such line.
+function(expect_facade_disabled label feature_name)
+    expect_disabled_error("${label}" "${feature_name}" ${ARGN})
+    execute_process(
+        COMMAND ${ARGN}
+        WORKING_DIRECTORY "${SOURCE_DIR}"
+        RESULT_VARIABLE result
+        OUTPUT_VARIABLE stdout
+        ERROR_VARIABLE stderr
+    )
+    set(expected "PG2_FACADE code=build_feature_disabled@1 feature=${feature_name}")
+    string(FIND "${stdout}
+${stderr}" "${expected}" expected_index)
+    if(expected_index EQUAL -1)
+        message(FATAL_ERROR "${label} did not fail with '${expected}'
+stdout:
+${stdout}
+stderr:
+${stderr}")
+    endif()
+    message(STATUS "${label}: ${expected}")
+endfunction()
+
+# PG-2: the [pg2] cases -- every facade entry of the missing module fails with
+# build_feature_disabled@1 and the option, the animation facade stays a
+# Status, and the participant OFF divisions follow the rule.
+function(run_pg2_cases build_dir label)
+    find_built_executable("${build_dir}" "pelican_test_group_core_foundation" pg2_group)
+    run_process("${label}_pg2_core_foundation" TRUE "${pg2_group}" "[pg2]")
+    message(STATUS "${label} [pg2] core_foundation:
+${${label}_pg2_core_foundation_STDOUT}")
+endfunction()
+
 # PG-1: a refusal that is not a thrown BuildFeatureDisabledError but a named
 # error, `<requirement>.module_unavailable@1` or a registry name.
 function(expect_named_error label code)
@@ -915,12 +951,13 @@ endfunction()
 function(run_audio_smoke)
     configure_and_build("audio" "PELICAN_WITH_AUDIO" audio_build_dir)
     find_built_executable("${audio_build_dir}" "pelican_test_audio_disabled_probe" audio_probe)
-    expect_disabled_error(
+    expect_facade_disabled(
         "audio_gamecontext_api"
         "PELICAN_WITH_AUDIO"
         "${audio_probe}"
     )
     run_pg1_cases("${audio_build_dir}" "audio")
+    run_pg2_cases("${audio_build_dir}" "audio")
     find_built_executable("${audio_build_dir}" "pelican_player" audio_player)
     set(audio_requires_project "${ARTIFACT_ROOT}/audio_requires_project")
     write_requires_project("${audio_requires_project}" audio)
@@ -1095,8 +1132,23 @@ function(run_builtin_physics_smoke)
         physics_provider_build_dir)
     verify_builtin_physics_absent("${physics_provider_build_dir}")
     verify_jolt_physics_absent("${physics_provider_build_dir}" "provider-only physics")
-    find_built_executable("${physics_provider_build_dir}" "pelican_test_physicsservice_test" physics_provider_test)
-    run_process("physics_provider_only_service" TRUE "${physics_provider_test}")
+    # physicsservice_test lives in the runtime_services test group (there is
+    # no standalone pelican_test_physicsservice_test any more); its cases carry
+    # [physics-service].
+    find_built_executable("${physics_provider_build_dir}" "pelican_test_group_runtime_services" physics_provider_test)
+    run_process("physics_provider_only_service" TRUE "${physics_provider_test}" "[physics-service]")
+    # PG-2 acceptance 3: with no provider, every ctx.physics() query is
+    # physics.provider_unavailable@1, not an empty answer.
+    run_process("physics_provider_only_pg2" TRUE "${physics_provider_test}" "[pg2]")
+    string(FIND "${physics_provider_only_pg2_STDOUT}"
+        "PG2_PROVIDER_UNAVAILABLE code=physics.provider_unavailable@1" pg2_index)
+    if(pg2_index EQUAL -1)
+        message(FATAL_ERROR "physics_provider_only_pg2 did not observe physics.provider_unavailable@1
+${physics_provider_only_pg2_STDOUT}")
+    endif()
+    message(STATUS "physics_provider_only [pg2]:
+${physics_provider_only_pg2_STDOUT}")
+    run_pg2_cases("${physics_provider_build_dir}" "physics_provider_only")
     run_process(
         "physics_provider_only_game_dll"
         TRUE
@@ -1118,7 +1170,7 @@ function(run_physics_smoke)
     run_process("physics_api_stub" TRUE "${physics_probe}")
     find_built_executable(
         "${physics_build_dir}" "pelican_test_physics_disabled_probe" physics_api_probe)
-    expect_disabled_error(
+    expect_facade_disabled(
         "physics_gamecontext_api"
         "PELICAN_WITH_PHYSICS"
         "${physics_api_probe}"
@@ -1144,6 +1196,7 @@ function(run_physics_smoke)
         "${physics_build_dir}" "pelican_test_wp360_resolvedscene_test" physics_wp360_test)
     run_process("physics_wp360_matrix" TRUE "${physics_wp360_test}" "[wp360][physics][matrix]")
     run_pg1_cases("${physics_build_dir}" "physics")
+    run_pg2_cases("${physics_build_dir}" "physics")
     clean_successful_build("${physics_build_dir}")
 endfunction()
 

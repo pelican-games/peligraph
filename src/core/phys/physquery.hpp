@@ -8,7 +8,9 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -90,6 +92,26 @@ struct QueryFilter {
 inline constexpr QueryFilter every_collider_filter{
     .layer = all_collision_layers,
     .mask = all_collision_layers,
+};
+
+// PG-2: a query that no provider answers. A build with the physics service
+// but neither the builtin nor the Jolt provider (the feature registry's
+// provider-only contrast) has nothing to run a query on until a game DLL
+// registers a provider for it; the query throws this rather than answering
+// "nothing was hit", which a game could not tell apart from an empty world.
+class ProviderUnavailableError final : public std::runtime_error {
+  public:
+    static constexpr std::string_view error_code = "physics.provider_unavailable@1";
+
+    // `query` is the query kind, e.g. "raycast".
+    explicit ProviderUnavailableError(std::string_view query)
+        : std::runtime_error(std::string{error_code} + ": no physics provider answers " +
+                             std::string{query} +
+                             " queries in this process (a build without the builtin "
+                             "provider answers only through a provider that covers the "
+                             "query)") {}
+
+    std::string_view code() const noexcept { return error_code; }
 };
 
 struct Collider {

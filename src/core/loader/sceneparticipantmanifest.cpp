@@ -6,41 +6,68 @@
 namespace Pelican {
 namespace {
 
-#if PELICAN_WITH_PHYSICS
-constexpr auto physics_presence = SceneParticipantPresence::real;
-#else
-constexpr auto physics_presence = SceneParticipantPresence::stub;
-#endif
+constexpr auto stub = SceneParticipantPresence::stub;
+constexpr auto absent = SceneParticipantPresence::absent;
 
-#if PELICAN_WITH_SEQPLAYER
-constexpr auto seq_presence = SceneParticipantPresence::real;
-#else
-constexpr auto seq_presence = SceneParticipantPresence::stub;
-#endif
+// PG-2: one rule places every build module's share of a scene load in a
+// build that left the module out.
+//   - A module whose declarations can still reach a scene without it is
+//     `stub`: the OFF build keeps the part that refuses the declaration by
+//     name. `off_declaration` says what reaches the scene and what refuses it.
+//   - A module nothing in a scene can ask for is `absent`.
+// So off_presence == (off_declaration.empty() ? absent : stub), and the
+// participant rows below take their presence from here instead of each
+// picking its own. A module with no transaction field of its own (animation,
+// whose component values ride on the ecs rows; the developer UI) still has
+// its row, so no module is left unclassified.
+constexpr std::array feature_divisions{
+    SceneFeatureDivision{"physics", "PELICAN_WITH_PHYSICS",
+        static_cast<bool>(PELICAN_WITH_PHYSICS),
+        "collider component: refused at scene prepare and by the editor as "
+        "physics.module_unavailable@1; PhysWorld's stub refuses any binding",
+        stub},
+    SceneFeatureDivision{"animation", "PELICAN_WITH_ANIMATION",
+        static_cast<bool>(PELICAN_WITH_ANIMATION),
+        "animation component: refused at scene prepare and by the editor as "
+        "animation.module_unavailable@1",
+        stub},
+    SceneFeatureDivision{"audio", "PELICAN_WITH_AUDIO",
+        static_cast<bool>(PELICAN_WITH_AUDIO),
+        "sound effects a scene callback stages (playSound, stopSound, "
+        "setBusVolume): the effect transaction refuses them as "
+        "build_feature_disabled@1",
+        stub},
+    SceneFeatureDivision{"vat", "PELICAN_WITH_VAT",
+        static_cast<bool>(PELICAN_WITH_VAT),
+        "a model whose GLB carries pelican.vat primitives: refused while the "
+        "model loads; the VAT player's stub refuses --play-vat",
+        stub},
+    SceneFeatureDivision{"seqplayer", "PELICAN_WITH_SEQPLAYER",
+        static_cast<bool>(PELICAN_WITH_SEQPLAYER),
+        "the transform sequence --play-seq places in the scene: the sequence "
+        "player's stub refuses it",
+        stub},
+    SceneFeatureDivision{"xr", "PELICAN_WITH_OPENXR",
+        static_cast<bool>(PELICAN_WITH_OPENXR), {}, absent},
+    SceneFeatureDivision{"rpc", "PELICAN_WITH_RPC",
+        static_cast<bool>(PELICAN_WITH_RPC), {}, absent},
+    SceneFeatureDivision{"imgui", "PELICAN_WITH_IMGUI",
+        static_cast<bool>(PELICAN_WITH_IMGUI), {}, absent},
+};
 
-#if PELICAN_WITH_VAT
-constexpr auto vat_presence = SceneParticipantPresence::real;
-#else
-constexpr auto vat_presence = SceneParticipantPresence::stub;
-#endif
+consteval SceneParticipantPresence presenceOf(std::string_view feature) {
+    for (const auto &division : feature_divisions) {
+        if (division.feature == feature) return division.presence();
+    }
+    throw "a participant row names a module without a division row";
+}
 
-#if PELICAN_WITH_OPENXR
-constexpr auto xr_presence = SceneParticipantPresence::real;
-#else
-constexpr auto xr_presence = SceneParticipantPresence::absent;
-#endif
-
-#if PELICAN_WITH_AUDIO
-constexpr auto audio_presence = SceneParticipantPresence::real;
-#else
-constexpr auto audio_presence = SceneParticipantPresence::uninstalled;
-#endif
-
-#if PELICAN_WITH_RPC
-constexpr auto rpc_presence = SceneParticipantPresence::real;
-#else
-constexpr auto rpc_presence = SceneParticipantPresence::absent;
-#endif
+constexpr auto physics_presence = presenceOf("physics");
+constexpr auto seq_presence = presenceOf("seqplayer");
+constexpr auto vat_presence = presenceOf("vat");
+constexpr auto xr_presence = presenceOf("xr");
+constexpr auto audio_presence = presenceOf("audio");
+constexpr auto rpc_presence = presenceOf("rpc");
 
 constexpr auto participant = SceneManifestRole::participant;
 constexpr auto real = SceneParticipantPresence::real;
@@ -231,13 +258,16 @@ scenePublicApiManifest() noexcept {
     return public_api_manifest;
 }
 
+std::span<const SceneFeatureDivision> sceneFeatureDivisions() noexcept {
+    return feature_divisions;
+}
+
 std::string_view sceneParticipantPresenceName(
     SceneParticipantPresence presence) noexcept {
     switch (presence) {
     case SceneParticipantPresence::absent: return "absent";
     case SceneParticipantPresence::stub: return "stub";
     case SceneParticipantPresence::real: return "real";
-    case SceneParticipantPresence::uninstalled: return "uninstalled";
     }
     return "unknown";
 }

@@ -557,11 +557,17 @@ Physics::Status PhysWorld::queryRaycastAll(
     return Physics::Status::ok;
 }
 
+// The query entries below turn a provider that cannot answer
+// (Physics::Status::unavailable: no builtin or Jolt provider compiled in and
+// no game provider covering the query) into physics.provider_unavailable@1
+// instead of an empty result, so "no provider" and "nothing was hit" stay
+// distinguishable (PG-2). Trigger updates keep their own reading of the same
+// status: an unavailable provider emits nothing and keeps the active pairs.
 std::vector<phys::RaycastQueryHit> PhysWorld::raycastAll(
     const phys::Ray &ray, const phys::QueryFilter &filter) const {
     std::vector<phys::RaycastQueryHit> hits;
     const auto status = queryRaycastAll(ray, &filter, hits);
-    if (status == Physics::Status::unavailable) return {};
+    if (status == Physics::Status::unavailable) throw phys::ProviderUnavailableError{"raycast"};
     if (status != Physics::Status::ok) {
         throw std::runtime_error("Physics query provider raycast failed with status " +
                                  std::to_string(static_cast<std::uint32_t>(status)));
@@ -620,7 +626,7 @@ std::vector<phys::OverlapHit> PhysWorld::overlapAllHits(
     const phys::Shape &shape, const phys::QueryFilter &filter) const {
     std::vector<phys::OverlapHit> hits;
     const auto status = queryOverlapAll(shape, &filter, hits);
-    if (status == Physics::Status::unavailable) return {};
+    if (status == Physics::Status::unavailable) throw phys::ProviderUnavailableError{"overlap"};
     if (status != Physics::Status::ok) {
         throw std::runtime_error("Physics query provider overlap failed with status " +
                                  std::to_string(static_cast<std::uint32_t>(status)));
@@ -664,7 +670,7 @@ std::vector<phys::ShapeCastQueryHit> PhysWorld::shapeCastAll(
     const phys::QueryFilter &filter) const {
     std::vector<phys::ShapeCastQueryHit> hits;
     const auto status = queryShapeCastAll(moving_shape, delta, &filter, hits);
-    if (status == Physics::Status::unavailable) return {};
+    if (status == Physics::Status::unavailable) throw phys::ProviderUnavailableError{"shape cast"};
     if (status != Physics::Status::ok) {
         throw std::runtime_error("Physics query provider shape cast failed with status " +
                                  std::to_string(static_cast<std::uint32_t>(status)));

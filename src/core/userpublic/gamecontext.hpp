@@ -29,7 +29,14 @@ namespace Pelican {
 //
 // Every query throws BuildFeatureDisabledError when the engine was built
 // without PELICAN_WITH_PHYSICS. A build without physics answers no query,
-// rather than answering "nothing was hit".
+// rather than answering "nothing was hit". The object thrown is a
+// BuildFeatureCallDisabledError (build_features.hpp): code() is
+// build_feature_disabled@1 and feature() is "PELICAN_WITH_PHYSICS".
+//
+// A build with physics but no provider that answers the query -- the builtin
+// and Jolt providers both left out and no game provider registered for it --
+// answers no query either: it throws phys::ProviderUnavailableError,
+// physics.provider_unavailable@1 (phys/physquery.hpp).
 class PELICAN_API PhysicsContext {
   public:
     std::vector<phys::RaycastQueryHit> raycastAll(
@@ -53,7 +60,13 @@ class PELICAN_API PhysicsContext {
 // Sound playback. Reached through GameContext::audio().
 //
 // Every entry throws BuildFeatureDisabledError when the engine was built
-// without PELICAN_WITH_AUDIO.
+// without PELICAN_WITH_AUDIO, as a BuildFeatureCallDisabledError whose code()
+// is build_feature_disabled@1 and feature() is "PELICAN_WITH_AUDIO". During
+// scene effect staging, playSound / stopSound / setBusVolume / busVolume /
+// isPlaying throw the same, except in a scene destruction callback, where the
+// refusal is recorded as a build_feature_disabled@1 effect error instead;
+// setSoundVolume / setSoundPitch / setSoundPaused return false there before
+// the build is asked.
 class PELICAN_API AudioContext {
   public:
     SoundHandle playSound(std::string_view path) const;
@@ -75,6 +88,12 @@ class PELICAN_API AudioContext {
 // Before the graph's first frame attachment, after its removal, and in a build
 // without PELICAN_WITH_ANIMATION, these return not_found. Scene
 // activation/destruction transactions return phase_order_error.
+//
+// The rule for a module this build left out: an API that answers with a
+// Status answers the missing module with a Status too, never an exception.
+// Animation::Status is frozen with the ABI, so the missing module is the
+// not_found above rather than a Status of its own; the facades that return
+// values (audio, physics) throw BuildFeatureCallDisabledError instead.
 class PELICAN_API AnimationContext {
   public:
     Animation::Status setParameter(GameObjectId object, std::string_view name,

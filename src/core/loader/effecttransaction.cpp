@@ -149,8 +149,7 @@ SoundHandle PreparedEffectTransaction::playSound(std::string_view path) {
         }
         return handle;
 #else
-        throwBuildFeatureDisabled("PELICAN_WITH_AUDIO",
-                                  "playSound is unavailable");
+        throwBuildFeatureCallDisabled("PELICAN_WITH_AUDIO", "playSound");
 #endif
     } catch (...) {
         if (phase_ != CallbackPhase::destroy) throw;
@@ -188,8 +187,7 @@ void PreparedEffectTransaction::stopSound(SoundHandle handle) {
                                  .handle = handle});
 #else
         (void)handle;
-        throwBuildFeatureDisabled("PELICAN_WITH_AUDIO",
-                                  "stopSound is unavailable");
+        throwBuildFeatureCallDisabled("PELICAN_WITH_AUDIO", "stopSound");
 #endif
     } catch (...) {
         if (phase_ != CallbackPhase::destroy) throw;
@@ -229,8 +227,7 @@ void PreparedEffectTransaction::setBusVolume(std::string_view bus,
 #else
         (void)bus;
         (void)volume;
-        throwBuildFeatureDisabled("PELICAN_WITH_AUDIO",
-                                  "setBusVolume is unavailable");
+        throwBuildFeatureCallDisabled("PELICAN_WITH_AUDIO", "setBusVolume");
 #endif
     } catch (...) {
         if (phase_ != CallbackPhase::destroy) throw;
@@ -252,8 +249,7 @@ float PreparedEffectTransaction::busVolume(std::string_view bus) {
         return busValue(audio_shadow_, bus);
 #else
         (void)bus;
-        throwBuildFeatureDisabled("PELICAN_WITH_AUDIO",
-                                  "busVolume is unavailable");
+        throwBuildFeatureCallDisabled("PELICAN_WITH_AUDIO", "busVolume");
 #endif
     } catch (...) {
         if (phase_ != CallbackPhase::destroy) throw;
@@ -281,8 +277,7 @@ bool PreparedEffectTransaction::isPlaying(SoundHandle handle) {
         return audio_->isPlaying(handle);
 #else
         (void)handle;
-        throwBuildFeatureDisabled("PELICAN_WITH_AUDIO",
-                                  "isPlaying is unavailable");
+        throwBuildFeatureCallDisabled("PELICAN_WITH_AUDIO", "isPlaying");
 #endif
     } catch (...) {
         if (phase_ != CallbackPhase::destroy) throw;
@@ -640,7 +635,7 @@ PreparedEffectTransaction::effectErrors() const {
             return "SceneRetiredObjectMutationRejected";
         case ErrorCode::effect_outbox_full: return "effect_outbox_full@1";
         case ErrorCode::build_feature_disabled:
-            return "build_feature_disabled@1";
+            return BuildFeatureCallDisabledError::error_code;
         case ErrorCode::audio_play_stage_failed:
             return "audio_play_stage_failed@1";
         case ErrorCode::audio_stop_stage_failed:

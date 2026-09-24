@@ -235,11 +235,21 @@ bool RenderContext::setSpotLightDirection(std::string_view name, vec3 direction)
         std::string{name}, glm::vec3{direction.x, direction.y, direction.z});
 }
 
+// PG-2: a facade whose module the build left out answers every call with one
+// failure, BuildFeatureCallDisabledError (build_feature_disabled@1 plus the
+// option name). The scene effect transaction throws the same type for the
+// audio calls it stages.
 #if !PELICAN_WITH_PHYSICS
 namespace {
 [[noreturn]] void physicsDisabled(const char *entry) {
-    throwBuildFeatureDisabled("PELICAN_WITH_PHYSICS",
-                              std::string{entry} + " is unavailable");
+    throwBuildFeatureCallDisabled("PELICAN_WITH_PHYSICS", entry);
+}
+} // namespace
+#endif
+#if !PELICAN_WITH_AUDIO
+namespace {
+[[noreturn]] void audioDisabled(const char *entry) {
+    throwBuildFeatureCallDisabled("PELICAN_WITH_AUDIO", entry);
 }
 } // namespace
 #endif
@@ -334,7 +344,7 @@ SoundHandle AudioContext::playSound(std::string_view path) const {
 #if PELICAN_WITH_AUDIO
     return GET_MODULE(Audio).playSound(path);
 #else
-    throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "playSound is unavailable");
+    audioDisabled("playSound");
 #endif
 }
 
@@ -367,7 +377,7 @@ void AudioContext::stopSound(SoundHandle handle) const {
     GET_MODULE(Audio).stopSound(handle);
 #else
     (void)handle;
-    throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "stopSound is unavailable");
+    audioDisabled("stopSound");
 #endif
 }
 
@@ -381,7 +391,7 @@ void AudioContext::setBusVolume(std::string_view bus, float volume) const {
 #else
     (void)bus;
     (void)volume;
-    throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "setBusVolume is unavailable");
+    audioDisabled("setBusVolume");
 #endif
 }
 
@@ -393,7 +403,7 @@ float AudioContext::busVolume(std::string_view bus) const {
     return GET_MODULE(Audio).busVolume(bus);
 #else
     (void)bus;
-    throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "busVolume is unavailable");
+    audioDisabled("busVolume");
 #endif
 }
 
@@ -405,7 +415,7 @@ bool AudioContext::isPlaying(SoundHandle handle) const {
     return GET_MODULE(Audio).isPlaying(handle);
 #else
     (void)handle;
-    throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "isPlaying is unavailable");
+    audioDisabled("isPlaying");
 #endif
 }
 
@@ -451,7 +461,7 @@ bool AudioContext::setSoundVolume(SoundHandle handle, float volume) const {
 #if PELICAN_WITH_AUDIO
     return GET_MODULE(Audio).setSoundVolume(handle, volume);
 #else
-    throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "setSoundVolume is unavailable");
+    audioDisabled("setSoundVolume");
 #endif
 }
 
@@ -460,7 +470,7 @@ bool AudioContext::setSoundPitch(SoundHandle handle, float pitch) const {
 #if PELICAN_WITH_AUDIO
     return GET_MODULE(Audio).setSoundPitch(handle, pitch);
 #else
-    throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "setSoundPitch is unavailable");
+    audioDisabled("setSoundPitch");
 #endif
 }
 
@@ -468,7 +478,7 @@ std::optional<SoundPlaybackState> AudioContext::soundState(SoundHandle handle) c
 #if PELICAN_WITH_AUDIO
     return GET_MODULE(Audio).soundState(handle);
 #else
-    throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "soundState is unavailable");
+    audioDisabled("soundState");
 #endif
 }
 
@@ -477,7 +487,7 @@ bool AudioContext::setSoundPaused(SoundHandle handle, bool paused) const {
 #if PELICAN_WITH_AUDIO
     return GET_MODULE(Audio).setSoundPaused(handle, paused);
 #else
-    throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "setSoundPaused is unavailable");
+    audioDisabled("setSoundPaused");
 #endif
 }
 

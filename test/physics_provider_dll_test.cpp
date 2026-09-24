@@ -179,6 +179,20 @@ constexpr const char *configuredProviderName() {
 #endif
 }
 
+// PG-2: with no provider compiled in, a query the DLL does not cover is
+// physics.provider_unavailable@1 rather than an empty answer.
+template <class Query>
+[[maybe_unused]] void requireProviderUnavailable(Query query) {
+    bool refused = false;
+    try {
+        (void)query();
+    } catch (const phys::ProviderUnavailableError &error) {
+        refused = true;
+        REQUIRE(std::string{error.code()} == "physics.provider_unavailable@1");
+    }
+    REQUIRE(refused);
+}
+
 } // namespace
 
 TEST_CASE("public game DLL physics provider survives reload rollback and in-flight unload",
@@ -209,23 +223,25 @@ TEST_CASE("public game DLL physics provider survives reload rollback and in-flig
 
     // The DLL replaces raycast only. Overlap remains independently available
     // from the configured backend, or unavailable in a provider-only build.
-    const auto fallback_overlap = world.overlapAll(
-        phys::Sphere{{3.0F, 0.0F, 0.0F}, 0.25F}, phys::every_collider_filter);
+    const auto fallback_overlap = [&] {
+        return world.overlapAll(
+            phys::Sphere{{3.0F, 0.0F, 0.0F}, 0.25F}, phys::every_collider_filter);
+    };
 #if PELICAN_WITH_JOLT_PHYSICS || PELICAN_WITH_BUILTIN_PHYSICS
-    REQUIRE(fallback_overlap == std::vector<std::string>{"target"});
+    REQUIRE(fallback_overlap() == std::vector<std::string>{"target"});
 #else
-    REQUIRE(fallback_overlap.empty());
+    requireProviderUnavailable(fallback_overlap);
 #endif
 
     // The initial V2 DLL does not claim shape cast. Capability routing
     // therefore falls through to the configured backend when present.
-    const auto initial_shape_cast = queryShapeCast(world);
 #if PELICAN_WITH_JOLT_PHYSICS || PELICAN_WITH_BUILTIN_PHYSICS
+    const auto initial_shape_cast = queryShapeCast(world);
     REQUIRE(initial_shape_cast);
     REQUIRE(initial_shape_cast->time_of_impact ==
             Catch::Approx(0.15F).margin(2.0e-4F));
 #else
-    REQUIRE_FALSE(initial_shape_cast);
+    requireProviderUnavailable([&] { return queryShapeCast(world); });
 #endif
 
     // The source DLL can be overwritten because the loader owns a shadow copy.
@@ -306,13 +322,13 @@ TEST_CASE("public game DLL physics provider survives reload rollback and in-flig
 
     reloader.shutdown();
     REQUIRE(physics_internal::activeProviderName() == configuredProviderName());
-    const auto shutdown_shape_cast = queryShapeCast(world);
 #if PELICAN_WITH_JOLT_PHYSICS || PELICAN_WITH_BUILTIN_PHYSICS
+    const auto shutdown_shape_cast = queryShapeCast(world);
     REQUIRE(shutdown_shape_cast);
     REQUIRE(shutdown_shape_cast->time_of_impact ==
             Catch::Approx(0.15F).margin(2.0e-4F));
 #else
-    REQUIRE_FALSE(shutdown_shape_cast);
+    requireProviderUnavailable([&] { return queryShapeCast(world); });
 #endif
 }
 

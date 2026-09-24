@@ -4,6 +4,7 @@
 #include "../src/core/log.hpp"
 #include "../src/core/phys/physicsruntime.hpp"
 #include "../src/core/phys/physworld.hpp"
+#include "../src/core/userpublic/gamecontext.hpp"
 #include "../src/core/userpublic/physics/abi_v3.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -12,8 +13,11 @@
 #include <array>
 #include <chrono>
 #include <exception>
+#include <iostream>
 #include <limits>
 #include <semaphore>
+#include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -289,6 +293,26 @@ constexpr const char *configuredProviderName() {
 #endif
 }
 
+// PG-2: a query no provider answers throws physics.provider_unavailable@1
+// instead of returning an empty result.
+template <class Query>
+[[maybe_unused]] void requireProviderUnavailable(Query query,
+                                                 std::string_view kind = {}) {
+    bool refused = false;
+    try {
+        (void)query();
+    } catch (const phys::ProviderUnavailableError &error) {
+        refused = true;
+        REQUIRE(std::string{error.code()} == "physics.provider_unavailable@1");
+        const std::string message{error.what()};
+        REQUIRE(message.starts_with("physics.provider_unavailable@1:"));
+        if (!kind.empty()) {
+            REQUIRE(message.find(std::string{kind} + " queries") != std::string::npos);
+        }
+    }
+    REQUIRE(refused);
+}
+
 } // namespace
 
 #if PELICAN_WITH_JOLT_PHYSICS || PELICAN_WITH_BUILTIN_PHYSICS
@@ -540,22 +564,29 @@ TEST_CASE("game-owned physics provider activates explicitly and is released by o
 
     // The game provider implements raycast only. Other capabilities fall back
     // independently to the configured provider when one is compiled in.
-    const auto fallback_overlap = world.overlapAll(
-        phys::Sphere{{3.0F, 0.0F, 0.0F}, 0.25F}, phys::every_collider_filter);
+    const auto fallback_overlap = [&] {
+        return world.overlapAll(
+            phys::Sphere{{3.0F, 0.0F, 0.0F}, 0.25F}, phys::every_collider_filter);
+    };
 #if PELICAN_WITH_JOLT_PHYSICS || PELICAN_WITH_BUILTIN_PHYSICS
-    REQUIRE(fallback_overlap == std::vector<std::string>{"first"});
+    REQUIRE(fallback_overlap() == std::vector<std::string>{"first"});
 #else
-    REQUIRE(fallback_overlap.empty());
+    // PG-2: nothing answers overlap in a provider-only build; that is a named
+    // failure, not an empty result.
+    requireProviderUnavailable(fallback_overlap);
 #endif
 
-    const auto fallback_shape_cast = world.shapeCastClosest(
-        phys::Sphere{{0.0F, 0.0F, 0.0F}, 0.5F},
-        {10.0F, 0.0F, 0.0F});
+    const auto fallback_shape_cast = [&] {
+        return world.shapeCastClosest(
+            phys::Sphere{{0.0F, 0.0F, 0.0F}, 0.5F},
+            {10.0F, 0.0F, 0.0F});
+    };
 #if PELICAN_WITH_JOLT_PHYSICS || PELICAN_WITH_BUILTIN_PHYSICS
-    REQUIRE(fallback_shape_cast);
-    REQUIRE(fallback_shape_cast->id == "first");
+    const auto fallback_shape_cast_hit = fallback_shape_cast();
+    REQUIRE(fallback_shape_cast_hit);
+    REQUIRE(fallback_shape_cast_hit->id == "first");
 #else
-    REQUIRE_FALSE(fallback_shape_cast);
+    requireProviderUnavailable(fallback_shape_cast);
 #endif
 
     const phys::QueryFilter ignore_first{.self = hits[0].identity.collider_id};
@@ -575,9 +606,46 @@ TEST_CASE("game-owned physics provider activates explicitly and is released by o
     REQUIRE(configured_hit->distance == Catch::Approx(2.0F));
 #else
     REQUIRE(physics_internal::activeProviderName().empty());
-    REQUIRE_FALSE(world.raycastClosest(
-        phys::Ray{{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, 10.0F},
-        phys::every_collider_filter).has_value());
+    requireProviderUnavailable([&] {
+        return world.raycastClosest(
+            phys::Ray{{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, 10.0F},
+            phys::every_collider_filter);
+    });
+#endif
+}
+
+// PG-2 acceptance 3. With no provider compiled in and none registered, every
+// query the game can make through ctx.physics() is
+// physics.provider_unavailable@1 -- an empty world included, so the answer
+// cannot be mistaken for "nothing was hit". With a provider the same calls
+// answer normally.
+TEST_CASE("PG-2 a query no provider answers is physics.provider_unavailable@1",
+          "[pg2][physics-service][provider-unavailable]") {
+    ensureLogger();
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    const GameContext context;
+    const auto physics = context.physics();
+    const phys::Ray ray{{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, 10.0F};
+    const phys::Sphere sphere{{0.0F, 0.0F, 0.0F}, 0.5F};
+    const vec3 delta{10.0F, 0.0F, 0.0F};
+#if PELICAN_WITH_JOLT_PHYSICS || PELICAN_WITH_BUILTIN_PHYSICS
+    REQUIRE(physics.raycastAll(ray).empty());
+    REQUIRE_FALSE(physics.raycastClosest(ray));
+    REQUIRE(physics.overlapAll(sphere).empty());
+    REQUIRE(physics.shapeCastAll(sphere, delta).empty());
+    REQUIRE_FALSE(physics.shapeCastClosest(sphere, delta));
+#else
+    REQUIRE(physics_internal::activeProviderName().empty());
+    requireProviderUnavailable([&] { return physics.raycastAll(ray); }, "raycast");
+    requireProviderUnavailable([&] { return physics.raycastClosest(ray); }, "raycast");
+    requireProviderUnavailable([&] { return physics.overlapAll(sphere); }, "overlap");
+    requireProviderUnavailable([&] { return physics.shapeCastAll(sphere, delta); },
+                               "shape cast");
+    requireProviderUnavailable([&] { return physics.shapeCastClosest(sphere, delta); },
+                               "shape cast");
+    std::cout << "PG2_PROVIDER_UNAVAILABLE code="
+              << phys::ProviderUnavailableError::error_code << '\n';
 #endif
 }
 
