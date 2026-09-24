@@ -497,6 +497,11 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     Qt6::Test
     Qt6::Widgets
   )
+  # The F series grew this file past the object format's section limit in
+  # RelWithDebInfo (C1128).
+  if(MSVC)
+    target_compile_options(pelican_test_devstudio_frameplan_graph_test PRIVATE /bigobj)
+  endif()
   target_sources(pelican_test_devstudio_frameplan_graph_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanwidget.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
