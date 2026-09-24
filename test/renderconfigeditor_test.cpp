@@ -1803,6 +1803,52 @@ TEST_CASE("scene AS triangle space edits publish the referenced layout atomicall
         CHECK(readBytes(project.render_config) == source_before);
         CHECK(runtime.frame_plan == plan_before);
     }
+    SECTION("MG-2a an older layout version is reported by name and is not editable") {
+        for (const int version : {1, 2}) {
+            INFO("layout version " << version);
+            auto old = layout;
+            old["version"] = version;
+            old["groups"] = Json::array({{{"name", "surface"}}});
+            writeBytes(layout_path, old.dump(2));
+            const auto current = service->getSceneAccelerationStructures(Json::object());
+            for (const auto *space : {"triangle_geometry", "procedural_geometry"}) {
+                INFO(space);
+                CHECK(current.at(space).at("editable") == false);
+                CHECK_THAT(current.at(space).at("reason").get<std::string>(),
+                           Catch::Matchers::ContainsSubstring(
+                               "pelican.ray_group_layout.version_unsupported@1"));
+            }
+        }
+    }
+    SECTION("MG-2a a transaction directory the previous format wrote stops the commit by name") {
+        const auto accepted = service->editSceneAccelerationStructures(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        const auto directory = renderConfigTransactionDirectory(project.root);
+        std::filesystem::create_directories(directory);
+        const auto manifest =
+            Json{{"schema", "pelican.render_authoring_transaction"},
+                 {"version", 1},
+                 {"status", "committed"},
+                 {"documents", Json::array()}}
+                .dump(2);
+        writeBytes(directory / "manifest.json", manifest);
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        CHECK(result.at("committed") == false);
+        CHECK(result.at("error").at("code") == "render_config.legacy_transaction_dir@1");
+        REQUIRE(result.at("error").contains("path"));
+        CHECK(std::filesystem::equivalent(
+            std::filesystem::path{result.at("error").at("path").get<std::string>()},
+            directory));
+        CHECK_THAT(result.at("error").at("message").get<std::string>(),
+                   Catch::Matchers::ContainsSubstring("delete this directory"));
+        // Nothing was published, and the directory is left for the developer.
+        CHECK(readBytes(directory / "manifest.json") == manifest);
+        CHECK(readBytes(project.render_config) == source_before);
+        CHECK(readBytes(layout_path) == layout_before);
+        CHECK(runtime.frame_plan == plan_before);
+    }
     SECTION("stale layout digest and invalid requests cannot publish") {
         auto stale = request;
         stale["base_layout_digest"] = std::string(64, '0');
@@ -1853,10 +1899,8 @@ TEST_CASE("scene AS triangle space edits publish the referenced layout atomicall
             CHECK(readBytes(project.render_config) == source_before);
         }
     }
-    SECTION("version two without AS settings gains only default AS settings and the chosen space") {
-        layout["version"] = 2;
+    SECTION("a layout without AS settings gains only default AS settings and the chosen space") {
         layout.erase("acceleration_structure");
-        layout["groups"][0].erase("type");
         writeBytes(layout_path, layout.dump(2));
         const auto current = service->getSceneAccelerationStructures(Json::object());
         REQUIRE(current.at("triangle_geometry").at("editable") == true);
@@ -6015,12 +6059,16 @@ TEST_CASE(
     writeBytes(project.render_config, candidate_root);
     std::filesystem::create_directories(transaction);
     writeBytes(transaction / "1.before", original_root);
-    writeBytes(transaction / "manifest.json",
-               manifest("committed").dump(2) + "\n");
-    recoverRenderConfigDocumentTransaction(project.root);
+    // MG-2a: `status: "committed"` in manifest.json is the previous format.
+    // Startup recovery stops on it by name and leaves every byte in place.
+    const auto legacy_manifest = manifest("committed").dump(2) + "\n";
+    writeBytes(transaction / "manifest.json", legacy_manifest);
+    REQUIRE_THROWS_AS(recoverRenderConfigDocumentTransaction(project.root),
+                      RenderConfigLegacyTransactionDirectory);
     REQUIRE(readBytes(project.render_config) == candidate_root);
     REQUIRE(readBytes(fragment_path) == fragment);
-    REQUIRE_FALSE(std::filesystem::exists(transaction));
+    REQUIRE(readBytes(transaction / "manifest.json") == legacy_manifest);
+    REQUIRE(readBytes(transaction / "1.before") == original_root);
 }
 
 TEST_CASE(

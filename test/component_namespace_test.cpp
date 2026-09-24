@@ -249,7 +249,7 @@ TEST_CASE("WP379 production engine registry has exactly seven unprefixed builtin
           "[WP379][component][namespace][registry][cpu][mutation]") {
     setupLogger();
     FastModuleContainer modules;
-    GET_MODULE(RayLayoutRuntimeState).configure(RayLayoutSemanticMode::LayoutV2);
+    GET_MODULE(RayLayoutRuntimeState).configure(RayLayoutSemanticMode::LayoutV3);
     GET_MODULE(ECSPredefinedRegistration).reg();
 
     const auto names = internal::componentRegistrationNames(

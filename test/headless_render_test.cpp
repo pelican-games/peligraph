@@ -532,10 +532,10 @@ void writeRt1bLayoutProject(
         R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"tree","path":"models/tree.glb","material_bindings":"materials/tree.bindings.json"}],"materials":[{"path":"materials/project.material.json"}],"textures":[]})json");
     writeTextFile(
         directory / "ray_layout.json",
-        R"json({"schema":"pelican.ray_group_layout","version":1,"ray_types":["primary","shadow"],"default_group":"opaque","groups":[{"name":"opaque"},{"name":"foliage"}],"misses":[{"name":"sky"},{"name":"shadow_open"}],"record":[{"name":"tint","type":"vec4"},{"name":"flags","type":"u32"}]})json");
+        R"json({"schema":"pelican.ray_group_layout","version":3,"ray_types":["primary","shadow"],"default_group":"opaque","groups":[{"name":"opaque","type":"triangles"},{"name":"foliage","type":"triangles"}],"misses":[{"name":"sky"},{"name":"shadow_open"}],"record":[{"name":"tint","type":"vec4"},{"name":"flags","type":"u32"}]})json");
     writeTextFile(
         directory / "ray_bindings.json",
-        R"json({"schema":"pelican.ray_bindings","version":1,"bindings":[{"material":{"asset":"models/tree.glb","source_material_index":2},"group":"opaque","record":{"tint":[1.0,0.0,0.0,1.0],"flags":101}},{"material":{"asset":"models/tree.glb","source_material_index":3},"group":"foliage","record":{"tint":[0.0,1.0,0.0,1.0],"flags":202}}]})json");
+        R"json({"schema":"pelican.ray_bindings","version":2,"bindings":[{"material":{"asset":"models/tree.glb","source_material_index":2},"group":"opaque","record":{"tint":[1.0,0.0,0.0,1.0],"flags":101}},{"material":{"asset":"models/tree.glb","source_material_index":3},"group":"foliage","record":{"tint":[0.0,1.0,0.0,1.0],"flags":202}}]})json");
     RayTracingRt31Fixture::writeWp366RaygenAndMissShaders(
         directory, writeTextFile);
     RayTracingRt31Fixture::writeWp366ClosestHitShaders(
@@ -636,7 +636,7 @@ void writeRt2bTableProject(
         R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"tree","path":"models/tree.glb","material_bindings":"materials/tree.bindings.json"}],"materials":[{"path":"materials/forest.material.json"}],"textures":[]})json");
     writeTextFile(
         directory / "ray_bindings.json",
-        R"json({"schema":"pelican.ray_bindings","version":1,"bindings":[{"material":{"asset":"models/tree.glb","source_material_index":0},"group":"opaque","record":{"tint":[1.0,0.0,0.0,1.0],"flags":101}},{"material":{"asset":"models/tree.glb","source_material_index":1},"group":"foliage","record":{"tint":[0.0,1.0,0.0,1.0],"flags":202}},{"material":{"document":"materials/forest.material.json"},"group":"opaque","record":{"tint":[0.25,0.5,0.75,1.0],"flags":303}}]})json");
+        R"json({"schema":"pelican.ray_bindings","version":2,"bindings":[{"material":{"asset":"models/tree.glb","source_material_index":0},"group":"opaque","record":{"tint":[1.0,0.0,0.0,1.0],"flags":101}},{"material":{"asset":"models/tree.glb","source_material_index":1},"group":"foliage","record":{"tint":[0.0,1.0,0.0,1.0],"flags":202}},{"material":{"document":"materials/forest.material.json"},"group":"opaque","record":{"tint":[0.25,0.5,0.75,1.0],"flags":303}}]})json");
 
     for (const auto shader_name : {"wp366_a.rgen", "wp366_b.rgen"}) {
         const auto path = directory / "shaders" / shader_name;
@@ -779,7 +779,7 @@ void writeWp369MaterialAlphaProject(
         R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"tree","path":"models/tree.glb","material_bindings":"materials/tree.bindings.json"}],"materials":[{"path":"materials/wp369.material.json"}],"textures":[]})json");
     nlohmann::json ray_bindings{
         {"schema", "pelican.ray_bindings"},
-        {"version", 1},
+        {"version", 2},
         {"bindings", nlohmann::json::array()},
     };
     for (const auto source : {0u, 1u, 2u, 3u, 4u, 5u, 7u}) {
@@ -801,7 +801,6 @@ void writeWp369MaterialAlphaProject(
 
     auto layout = nlohmann::json::parse(
         readTextFile(directory / "ray_layout.json"));
-    layout["version"] = 2;
     layout["engine_record"] = {
         "material_index", "geometry_index"};
     layout["portable_profile"] = "material_alpha_v1";
@@ -965,10 +964,10 @@ void writeRt2aAnyHitProject(
         R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(
         directory / "ray_layout.json",
-        R"json({"schema":"pelican.ray_group_layout","version":1,"ray_types":["primary","shadow"],"default_group":"single","groups":[{"name":"single"},{"name":"front"},{"name":"back"}],"misses":[{"name":"open"}],"record":[{"name":"marker","type":"u32"},{"name":"ray_marker","type":"u32"},{"name":"group_marker","type":"u32"}]})json");
+        R"json({"schema":"pelican.ray_group_layout","version":3,"ray_types":["primary","shadow"],"default_group":"single","groups":[{"name":"single","type":"triangles"},{"name":"front","type":"triangles"},{"name":"back","type":"triangles"}],"misses":[{"name":"open"}],"record":[{"name":"marker","type":"u32"},{"name":"ray_marker","type":"u32"},{"name":"group_marker","type":"u32"}]})json");
     writeTextFile(
         directory / "ray_bindings.json",
-        R"json({"schema":"pelican.ray_bindings","version":1,"bindings":[{"material":{"asset":"models/wp367_single.glb","source_material_index":0},"group":"single","record":{"marker":111,"ray_marker":1,"group_marker":1296}},{"material":{"asset":"models/wp367_front.glb","source_material_index":0},"group":"front","record":{"marker":222,"ray_marker":1,"group_marker":1312}},{"material":{"asset":"models/wp367_back.glb","source_material_index":0},"group":"back","record":{"marker":333,"ray_marker":1,"group_marker":1328}}]})json");
+        R"json({"schema":"pelican.ray_bindings","version":2,"bindings":[{"material":{"asset":"models/wp367_single.glb","source_material_index":0},"group":"single","record":{"marker":111,"ray_marker":1,"group_marker":1296}},{"material":{"asset":"models/wp367_front.glb","source_material_index":0},"group":"front","record":{"marker":222,"ray_marker":1,"group_marker":1312}},{"material":{"asset":"models/wp367_back.glb","source_material_index":0},"group":"back","record":{"marker":333,"ray_marker":1,"group_marker":1328}}]})json");
     std::filesystem::create_directories(directory / "shaders");
 
     const auto raygen = [](std::string_view output) {
@@ -1073,8 +1072,7 @@ void main() {
     }
 
     const auto hit_shaders = [](std::string_view lane) {
-        const auto group = [lane](std::string_view name,
-                                  bool explicit_type) {
+        const auto group = [lane](std::string_view name) {
             nlohmann::json result{
                 {"closesthit", "project://shaders/wp367_" +
                                    std::string{name}},
@@ -1082,14 +1080,13 @@ void main() {
                                std::string{lane} + "_" +
                                std::string{name}},
             };
-            if (explicit_type) result["type"] = "triangles";
             return result;
         };
         return nlohmann::json{
             {"shadow",
-             {{"single", group("single", true)},
-              {"front", group("front", false)},
-              {"back", group("back", true)}}},
+             {{"single", group("single")},
+              {"front", group("front")},
+              {"back", group("back")}}},
         };
     };
     const auto task = [&](std::string_view lane) {
@@ -1202,8 +1199,8 @@ void writeWp367NegativeAnyHitLoadProject(
     writeTextFile(
         directory / "ray_layout.json",
         kind == Wp367NegativeAnyHitLoadKind::unreached_payload_mismatch
-            ? R"json({"schema":"pelican.ray_group_layout","version":1,"ray_types":["shadow","unused"],"default_group":"only","groups":[{"name":"only"}],"misses":[{"name":"open"}],"record":[{"name":"marker","type":"u32"}]})json"
-            : R"json({"schema":"pelican.ray_group_layout","version":1,"ray_types":["shadow"],"default_group":"only","groups":[{"name":"only"}],"misses":[{"name":"open"}],"record":[{"name":"marker","type":"u32"}]})json");
+            ? R"json({"schema":"pelican.ray_group_layout","version":3,"ray_types":["shadow","unused"],"default_group":"only","groups":[{"name":"only","type":"triangles"}],"misses":[{"name":"open"}],"record":[{"name":"marker","type":"u32"}]})json"
+            : R"json({"schema":"pelican.ray_group_layout","version":3,"ray_types":["shadow"],"default_group":"only","groups":[{"name":"only","type":"triangles"}],"misses":[{"name":"open"}],"record":[{"name":"marker","type":"u32"}]})json");
     writeTextFile(
         directory / "shaders" / "wp367_negative.rgen",
         R"glsl(#version 460
@@ -1352,7 +1349,6 @@ void main() { if (ray_record.marker == 0xffffffffu) ignoreIntersectionEXT; }
         "hit_shaders": {
           "shadow": {
             "only": {
-              "type": "triangles",
               "closesthit": "project://shaders/wp367_negative",
               "anyhit": "project://shaders/wp367_negative"
             }
@@ -1385,8 +1381,7 @@ void main() { if (ray_record.marker == 0xffffffffu) ignoreIntersectionEXT; }
         ray["traced_ray_types"].push_back("unused");
         ray["hit_shaders"]["unused"] = {
             {"only",
-             {{"type", "triangles"},
-              {"closesthit",
+             {{"closesthit",
                "project://shaders/wp367_negative_unused"},
               {"anyhit",
                "project://shaders/wp367_negative_unused"}}},
@@ -11087,7 +11082,7 @@ TEST_CASE("common graph state survives staged ray pipeline publication", "[headl
     try {
         FastModuleContainer modules;
         writeRt1bLayoutProject(temp_dir);
-        writeTextFile(temp_dir / "ray_bindings.json", R"({"schema":"pelican.ray_bindings","version":1,"bindings":[]})");
+        writeTextFile(temp_dir / "ray_bindings.json", R"({"schema":"pelican.ray_bindings","version":2,"bindings":[]})");
         const auto config_path = temp_dir / "hybrid.json";
         auto document = nlohmann::json::parse(R"({"schema":"pelican.graph","version":1,
           "nodes":[{"id":"time","op":"value.input","parameters":{"name":"time"},"outputs":["value"]},
@@ -11291,7 +11286,7 @@ TEST_CASE("a frame skipped for want of an output image keeps the staged ray-trac
             RuntimeTeardownMode::terminal_shutdown};
         writeRt1bLayoutProject(temp_dir);
         writeTextFile(temp_dir / "ray_bindings.json",
-                      R"({"schema":"pelican.ray_bindings","version":1,"bindings":[]})");
+                      R"({"schema":"pelican.ray_bindings","version":2,"bindings":[]})");
         configureRayQueryTestRuntime(temp_dir);
         auto &vkcore = GET_MODULE(VulkanManageCore);
         if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
@@ -11446,7 +11441,7 @@ TEST_CASE(
                     "ray_layout.json"),
             };
             production_project.bindings = parseRayBindings(
-                R"json({"schema":"pelican.ray_bindings","version":1,"bindings":[{"material":{"document":"materials/project.material.json"},"group":"opaque","record":{"tint":[1.0,0.0,1.0,1.0],"flags":303}},{"material":{"asset":"models/tree.glb","source_material_index":1},"group":"foliage","record":{"tint":[0.0,1.0,1.0,1.0],"flags":404}}]})json",
+                R"json({"schema":"pelican.ray_bindings","version":2,"bindings":[{"material":{"document":"materials/project.material.json"},"group":"opaque","record":{"tint":[1.0,0.0,1.0,1.0],"flags":303}},{"material":{"asset":"models/tree.glb","source_material_index":1},"group":"foliage","record":{"tint":[0.0,1.0,1.0,1.0],"flags":404}}]})json",
                 production_project.layout,
                 "production-loader-bindings.json");
             const auto production_rows =
@@ -11613,21 +11608,21 @@ TEST_CASE(
                         sizeof(result));
             return result;
         };
-        const auto q_a = pixel(output_a, 0)[1];
-        const auto q_b = pixel(output_a, 1)[1];
-        REQUIRE(q_a < 2);
-        REQUIRE(q_b < 2);
-        REQUIRE(q_a != q_b);
+        // MG-2a: the second channel is the instance custom index. Layout v1
+        // wrote each row's q there; a version 3 row takes the layout default
+        // (0), so q is read from the SBT the rows were written to below.
+        constexpr auto custom_index =
+            rayAccelerationStructureCanonicalDefaults.custom_index;
         CHECK(pixel(output_a, 0) ==
-              std::array{0xa0u, q_a, 101u, std::bit_cast<std::uint32_t>(1.0f)});
+              std::array{0xa0u, custom_index, 101u, std::bit_cast<std::uint32_t>(1.0f)});
         CHECK(pixel(output_a, 1) ==
-              std::array{0xb0u, q_b, 202u, std::bit_cast<std::uint32_t>(0.0f)});
+              std::array{0xb0u, custom_index, 202u, std::bit_cast<std::uint32_t>(0.0f)});
         CHECK(pixel(output_a, 2) ==
               std::array{1280u, 0xffffffffu, 0u, 0u});
         CHECK(pixel(output_b, 0) ==
-              std::array{0xa1u, q_a, 101u, std::bit_cast<std::uint32_t>(1.0f)});
+              std::array{0xa1u, custom_index, 101u, std::bit_cast<std::uint32_t>(1.0f)});
         CHECK(pixel(output_b, 1) ==
-              std::array{0xb1u, q_b, 202u, std::bit_cast<std::uint32_t>(0.0f)});
+              std::array{0xb1u, custom_index, 202u, std::bit_cast<std::uint32_t>(0.0f)});
         CHECK(pixel(output_b, 2) ==
               std::array{1281u, 0xffffffffu, 1u, 0u});
 
@@ -11640,6 +11635,15 @@ TEST_CASE(
         const auto data_start =
             (capabilities.shader_group_handle_size + alignment - 1u) /
             alignment * alignment;
+        // The row pixel 0 hit (flags 101) is the q whose records carry 101.
+        const auto q_a = [&] {
+            std::uint32_t flags = 0;
+            std::memcpy(&flags,
+                        writes[0].hit_bytes.data() + data_start +
+                            sizeof(std::array<float, 4>),
+                        sizeof(flags));
+            return flags == 101u ? 0u : 1u;
+        }();
         for (const auto &write : writes) {
             REQUIRE(write.record_index_stride == 2);
             REQUIRE(write.record_count == 4);
@@ -11794,7 +11798,7 @@ TEST_CASE(
         const auto q_one_pixel = q_a == 1u ? 0u : 1u;
         const auto q_zero_pixel = 1u - q_one_pixel;
         auto wrong_a_expected = pixel(output_b, q_zero_pixel);
-        wrong_a_expected[1] = 1u; // custom index comes from the hit instance
+        wrong_a_expected[1] = custom_index; // from the hit instance
         CHECK(pixel(wrong_tlas_output_a, q_one_pixel) == wrong_a_expected);
         CHECK(pixel(wrong_tlas_output_b, q_one_pixel) ==
               pixel(output_a, q_one_pixel));
@@ -11909,8 +11913,9 @@ TEST_CASE(
             CHECK(write.record_count == 4);
         }
 
-        // Group order and raw whitespace each alter the generated virtual
-        // include salt. Observe the production disk keys plus request/miss
+        // Group order and ray-type order each alter the generated virtual
+        // include salt without changing what the shaders write (MG-2a:
+        // whitespace no longer does -- only v1 hashed raw bytes). Observe the production disk keys plus request/miss
         // counts through ReloadService, then remove the ComputeTask hookup in
         // the same path and require that the authored include no longer loads.
         const auto layout_path = temp_dir / "ray_layout.json";
@@ -11993,10 +11998,12 @@ TEST_CASE(
         apply_layout_change(layout_bytes, 1);
         const auto reordered_keys = cache_keys();
 
-        layout_bytes += "\n ";
+        std::swap(reordered_layout["ray_types"][0],
+                  reordered_layout["ray_types"][1]);
+        layout_bytes = reordered_layout.dump(2);
         apply_layout_change(layout_bytes, 2);
-        const auto whitespace_keys = cache_keys();
-        CHECK(whitespace_keys != reordered_keys);
+        const auto ray_type_order_keys = cache_keys();
+        CHECK(ray_type_order_keys != reordered_keys);
 
         const auto disabled_layout = layout_bytes + "\n\t";
         writeTextFile(layout_path, disabled_layout);
@@ -13827,8 +13834,13 @@ TEST_CASE(
         const auto snapshots = instances.rayQueryGeometryInstances();
         const auto rows = resolveRayTracingSceneRows(snapshots, project);
         REQUIRE(rows.rows.size() == 3);
+        // MG-2a: layout v1 wrote q into the instance custom index, and this
+        // test read q back through it. A version 3 row carries the layout's
+        // default custom index, so rows are told apart on the GPU by their
+        // u32 record, and the predicates match the custom index they have.
         struct RowIdentity {
             std::uint32_t q = 0;
+            std::uint32_t custom_index = 0;
             std::uint32_t record = 0;
         };
         const auto row_for = [&](std::string_view authored_reference) {
@@ -13845,7 +13857,8 @@ TEST_CASE(
                 throw std::runtime_error(
                     "WP367 row snapshot lost its u32 record");
             }
-            RowIdentity result{.q = row->q};
+            RowIdentity result{.q = row->q,
+                               .custom_index = row->instance_custom_index};
             std::memcpy(&result.record, row->record_data.data(),
                         sizeof(result.record));
             return result;
@@ -13863,13 +13876,13 @@ TEST_CASE(
         const auto single_predicate =
             RayTracingAnyHitIntegerPredicate::acceptMatching({
                 .primitive_id = 0,
-                .instance_custom_index = single.q,
+                .instance_custom_index = single.custom_index,
                 .record_u32 = single.record,
             });
         const auto overlap_predicate =
             RayTracingAnyHitIntegerPredicate::ignoreMatching({
                 .primitive_id = 0,
-                .instance_custom_index = front.q,
+                .instance_custom_index = front.custom_index,
                 .record_u32 = front.record,
             });
         const auto always_predicate =
@@ -13919,8 +13932,8 @@ TEST_CASE(
         const auto always_single = pixel(always, 0);
         const auto actual_overlap = pixel(actual, 1);
         const auto always_overlap = pixel(always, 1);
-        CHECK(actual_single[0] == single.q);
-        CHECK(always_single[0] == single.q);
+        CHECK(actual_single[0] == single.custom_index);
+        CHECK(always_single[0] == single.custom_index);
         CHECK(actual_single[2] == single.record);
         CHECK(always_single[2] == single.record);
         CHECK(actual_single[3] == wp367MarkerProof(
@@ -13929,8 +13942,8 @@ TEST_CASE(
         CHECK(always_single[3] == wp367MarkerProof(
                                       wp367ShadowRayMarker,
                                       wp367SingleGroup));
-        CHECK(actual_overlap[0] == back.q);
-        CHECK(always_overlap[0] == front.q);
+        CHECK(actual_overlap[0] == back.custom_index);
+        CHECK(always_overlap[0] == front.custom_index);
         CHECK(actual_overlap[2] == back.record);
         CHECK(always_overlap[2] == front.record);
         CHECK(actual_overlap[3] == wp367MarkerProof(
@@ -13952,9 +13965,9 @@ TEST_CASE(
                     RayTracingOracleVec3{x + 0.75, -0.75, z},
                     RayTracingOracleVec3{x, 0.75, z},
                 },
-                .record_id = row.q,
+                .record_id = row.record,
                 .primitive_id = 0,
-                .instance_custom_index = row.q,
+                .instance_custom_index = row.custom_index,
                 .record_u32 = row.record,
             };
         };
@@ -13972,10 +13985,10 @@ TEST_CASE(
         REQUIRE(cpu_single_always.hit);
         CHECK(rayTracingOracleContainsGpuHit(
             *cpu_single_actual.hit,
-            std::bit_cast<float>(actual_single[1]), actual_single[0]));
+            std::bit_cast<float>(actual_single[1]), actual_single[2]));
         CHECK(rayTracingOracleContainsGpuHit(
             *cpu_single_always.hit,
-            std::bit_cast<float>(always_single[1]), always_single[0]));
+            std::bit_cast<float>(always_single[1]), always_single[2]));
 
         const RayTracingOracleRay overlap_ray{
             .origin = {2.0, 0.0, 0.0},
@@ -13993,10 +14006,10 @@ TEST_CASE(
         REQUIRE(cpu_overlap_always.hit);
         CHECK(rayTracingOracleContainsGpuHit(
             *cpu_overlap_actual.hit,
-            std::bit_cast<float>(actual_overlap[1]), actual_overlap[0]));
+            std::bit_cast<float>(actual_overlap[1]), actual_overlap[2]));
         CHECK(rayTracingOracleContainsGpuHit(
             *cpu_overlap_always.hit,
-            std::bit_cast<float>(always_overlap[1]), always_overlap[0]));
+            std::bit_cast<float>(always_overlap[1]), always_overlap[2]));
 
         REQUIRE(writes.size() == 2);
         CHECK(writes[0].row_digest_sha256 ==
@@ -14099,21 +14112,21 @@ TEST_CASE(
                 "primitive_id",
                 RayTracingAnyHitIntegerPredicate::acceptMatching({
                     .primitive_id = 1,
-                    .instance_custom_index = single.q,
+                    .instance_custom_index = single.custom_index,
                     .record_u32 = single.record,
                 })},
             SingleNegativeControl{
                 "instance_custom_index",
                 RayTracingAnyHitIntegerPredicate::acceptMatching({
                     .primitive_id = 0,
-                    .instance_custom_index = single.q + 1u,
+                    .instance_custom_index = single.custom_index + 1u,
                     .record_u32 = single.record,
                 })},
             SingleNegativeControl{
                 "record_u32",
                 RayTracingAnyHitIntegerPredicate::acceptMatching({
                     .primitive_id = 0,
-                    .instance_custom_index = single.q,
+                    .instance_custom_index = single.custom_index,
                     .record_u32 = single.record + 1u,
                 })},
             SingleNegativeControl{
@@ -14167,7 +14180,7 @@ TEST_CASE(
         const auto restored = RendererTestAccess::readRenderTarget(renderer,
             "wp367_actual", ImageSubresourceRange{});
         const auto restored_single = pixel(restored, 0);
-        CHECK(restored_single[0] == single.q);
+        CHECK(restored_single[0] == single.custom_index);
         CHECK(restored_single[2] == single.record);
         CHECK(restored_single[3] == wp367MarkerProof(
                                          wp367ShadowRayMarker,
@@ -14175,7 +14188,7 @@ TEST_CASE(
         CHECK(rayTracingOracleContainsGpuHit(
             *cpu_single_actual.hit,
             std::bit_cast<float>(restored_single[1]),
-            restored_single[0]));
+            restored_single[2]));
 
         writeWp367AnyHitShader(
             temp_dir, "wp367_actual_front", always_predicate,
@@ -14200,14 +14213,14 @@ TEST_CASE(
         const auto reloaded_always = RendererTestAccess::readRenderTarget(renderer,
             "wp367_always", ImageSubresourceRange{});
         const auto reloaded_front = pixel(reloaded_actual, 1);
-        CHECK(reloaded_front[0] == front.q);
+        CHECK(reloaded_front[0] == front.custom_index);
         CHECK(reloaded_front[2] == front.record);
         CHECK(reloaded_front[3] == wp367MarkerProof(
                                         wp367ShadowRayMarker,
                                         wp367FrontGroup));
         CHECK(rayTracingOracleContainsGpuHit(
             *cpu_overlap_always.hit,
-            std::bit_cast<float>(reloaded_front[1]), reloaded_front[0]));
+            std::bit_cast<float>(reloaded_front[1]), reloaded_front[2]));
         CHECK(reloaded_always.bytes == always.bytes);
         REQUIRE(writes.size() == 2);
         CHECK(writes[0].row_digest_sha256 == rows.identity_digest_sha256);
@@ -14294,7 +14307,6 @@ void writeWp374aRt1bV2Project(
     writeRt1bLayoutProject(directory);
     auto layout = nlohmann::json::parse(
         readTextFile(directory / "ray_layout.json"));
-    layout["version"] = 2;
     layout["acceleration_structure"] = {
         {"defaults",
          {{"mask", 255},
@@ -14318,7 +14330,6 @@ void writeWp374aRt2aV2Project(
     writeRt2aAnyHitProject(directory);
     auto layout = nlohmann::json::parse(
         readTextFile(directory / "ray_layout.json"));
-    layout["version"] = 2;
     auto encoded_flags = nlohmann::json::array();
     if ((geometry_flags & rayGeometryOpaque) != 0) {
         encoded_flags.push_back("opaque");

@@ -714,7 +714,7 @@ TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
     const auto runCase = [&] {
     setupLogger();
     Wp374aProjectRoot project{"rt6_multi_geometry"};
-    writeWp374aProject(project.path, 2, true, true, true,
+    writeWp374aProject(project.path, 3, true, true, true,
         Json{{"name", "pelican_ray_instance"}, {"custom_index", 71}}, true);
     writeRt6MultiGeometryGlb(project.path / "models/chair.glb", deformed, distinct_instances);
     if (world_space) {
@@ -992,7 +992,7 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
     const auto runCase = [&] {
     setupLogger();
     Wp374aProjectRoot project{"rt6_named_tlas"};
-    writeWp374aProject(project.path, 2, true, true, true,
+    writeWp374aProject(project.path, 3, true, true, true,
         Json{{"name", "pelican_ray_instance"}, {"mask", 1}, {"custom_index", 71}}, true);
     TestMorphFixture::writeGlb(project.path / "models/chair.glb");
     auto scene = Json::parse(readWp374aText(project.path / "scene.json"));
@@ -1972,7 +1972,7 @@ TEST_CASE("RT5 shared skinned mesh instances trace their current skin and morph 
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
     Wp374aProjectRoot project{"rt5_deformation"};
-    writeWp374aProject(project.path, 2, true, false, true, std::nullopt, true);
+    writeWp374aProject(project.path, 3, true, false, true, std::nullopt, true);
     TestMorphFixture::writeGlb(project.path / "models/chair.glb", {.skinned = true});
     auto scene = Json::parse(readWp374aText(project.path / "scene.json"));
     auto left = scene["scenes"]["main"]["objects"][0];
@@ -2072,7 +2072,7 @@ TEST_CASE("RT5 VAT ray hits follow interpolated playback with loop and clamp",
     CAPTURE(loop);
     setupLogger();
     Wp374aProjectRoot project{"rt5_vat"};
-    writeWp374aProject(project.path, 2, true, false, true, std::nullopt, true);
+    writeWp374aProject(project.path, 3, true, false, true, std::nullopt, true);
     TestVatFixture::writeTinyVatGlb(project.path / "models/chair.glb", loop);
     auto scene = Json::parse(readWp374aText(project.path / "scene.json"));
     scene["scenes"]["main"]["objects"][0]["components"][0]["pos"] = {0.0, 0.0, 8.0};
@@ -2124,7 +2124,7 @@ TEST_CASE("WP382d authored occurrence masks and custom indices reach the product
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
     Wp374aProjectRoot project{"wp382d_occurrence_masks"};
-    writeWp374aProject(project.path, 2, true, true, true,
+    writeWp374aProject(project.path, 3, true, true, true,
         Json{{"name", "pelican_ray_instance"}, {"mask", 3}}, true);
     const auto feature_path = project.path / "features" / "wp377_profile_owner.json";
     auto feature = Json::parse(readWp374aText(feature_path));
@@ -2745,10 +2745,12 @@ TEST_CASE(
     constexpr std::array cases{
         Downgrade{"assets.json",
                   "pelican.asset_data_procedural_requires_v2@1"},
+        // MG-2a: an older ray document is refused as a version, not read in
+        // its old meaning.
         Downgrade{"ray_bindings.json",
-                  "pelican.ray_binding_selector_exactly_one@1"},
+                  "pelican.ray_bindings.version_unsupported@1"},
         Downgrade{"ray_layout.json",
-                  "pelican.ray_group_type_requires_layout_v3@1"},
+                  "pelican.ray_group_layout.version_unsupported@1"},
     };
     for (const auto &entry : cases) {
         DYNAMIC_SECTION(entry.file) {
@@ -2874,10 +2876,10 @@ TEST_CASE(
     // PolygonInstanceContainer to the AS resolver; an AS declaration with a
     // rule makes the resulting Unavailable identity observable.
     Wp374aProjectRoot project{"wp383_material_less"};
-    writeWp374aProject(project.path, 2, true, true, true);
+    writeWp374aProject(project.path, 3, true, true, true);
     TestGltfFragmentFixture::writeGlb(project.path / "models" / "chair.glb",
                                       false, true, false, true);
-    auto layout = wp374aLayout(2, true);
+    auto layout = wp374aLayout(3, true);
     writeWp374aText(project.path / "ray_layout.json", layout.dump(2));
 
     FastModuleContainer modules;
@@ -3825,7 +3827,7 @@ TEST_CASE(
                 force_opaque ? "wp377_force_opaque"
                              : "wp377_force_no_opaque"};
             writeWp374aProject(
-                project.path, 2, true, true, true,
+                project.path, 3, true, true, true,
                 Json{{"name", "pelican_ray_instance"},
                      {"instance_flags",
                       Json::array({force_opaque ? "force_opaque"
@@ -3874,17 +3876,20 @@ TEST_CASE("WP374a all ten root layout AS component states cross real SceneLoader
         State{1, std::nullopt, false, false, {}},
         State{2, std::nullopt, false, true,
               "pelican.ray_instance_requires_layout_v2@1"},
-        State{3, 1, false, false, {}},
+        // MG-2a: layout versions 1 and 2 are refused by name through the
+        // real SceneLoader, whatever the rest of the project declares.
+        State{3, 1, false, false,
+              "pelican.ray_group_layout.version_unsupported@1"},
         State{4, 1, false, true,
-              "pelican.ray_instance_requires_layout_v2@1"},
-        State{5, 1, true, false,
-              "pelican.ray_as_declaration_requires_layout_v2@1"},
-        State{6, 1, true, true,
-              "pelican.ray_as_declaration_requires_layout_v2@1"},
-        State{7, 2, false, false, {}},
-        State{8, 2, false, true, {}},
-        State{9, 2, true, false, {}},
-        State{10, 2, true, true, {}},
+              "pelican.ray_group_layout.version_unsupported@1"},
+        State{5, 2, true, false,
+              "pelican.ray_group_layout.version_unsupported@1"},
+        State{6, 2, true, true,
+              "pelican.ray_group_layout.version_unsupported@1"},
+        State{7, 3, false, false, {}},
+        State{8, 3, false, true, {}},
+        State{9, 3, true, false, {}},
+        State{10, 3, true, true, {}},
     };
 
     for (const auto &state : states) {
@@ -3893,7 +3898,7 @@ TEST_CASE("WP374a all ten root layout AS component states cross real SceneLoader
             Wp374aProjectRoot project{
                 "state_" + std::to_string(state.number)};
             const bool renderable =
-                state.with_component && state.layout_version == 2;
+                state.with_component && state.layout_version == 3;
             writeWp374aProject(project.path, state.layout_version,
                                 state.with_as, state.with_component,
                                 renderable);
@@ -3920,10 +3925,8 @@ TEST_CASE("WP374a all ten root layout AS component states cross real SceneLoader
             const auto mode = GET_MODULE(RayLayoutRuntimeState).mode();
             if (!state.layout_version) {
                 CHECK(mode == RayLayoutSemanticMode::LegacyNoLayout);
-            } else if (*state.layout_version == 1) {
-                CHECK(mode == RayLayoutSemanticMode::LayoutV1Q);
             } else {
-                CHECK(mode == RayLayoutSemanticMode::LayoutV2);
+                CHECK(mode == RayLayoutSemanticMode::LayoutV3);
             }
             if (state.with_component) {
                 const auto id = GET_MODULE(SceneLoader).objectId("Chair");
@@ -3950,7 +3953,7 @@ TEST_CASE(
     setupLogger();
 #if PELICAN_RUNTIME_SHADER_COMPILER
     Wp374aProjectRoot project{"rpc_full_route"};
-    writeWp374aProject(project.path, 2, true, false, true);
+    writeWp374aProject(project.path, 3, true, false, true);
     std::uint64_t rpc_id = 374000;
     std::uint64_t saved_object_id = 0;
 
@@ -4078,9 +4081,9 @@ TEST_CASE(
     Wp374aProjectRoot live_project{"wp379_unknown_rpc"};
     // Intentional old-name occurrence: the production SceneLoader negative.
     writeWp374aProject(
-        invalid_scene.path, 2, true, true, true,
+        invalid_scene.path, 3, true, true, true,
         Json{{"name", "ray_instance"}, {"marker", 379}});
-    writeWp374aProject(live_project.path, 2, true, false, true);
+    writeWp374aProject(live_project.path, 3, true, false, true);
 
     {
         FastModuleContainer modules;
@@ -4186,7 +4189,7 @@ TEST_CASE(
 #if PELICAN_RUNTIME_SHADER_COMPILER && defined(PELICAN_WP379_RAY_INSTANCE_FIXTURE)
     Wp374aProjectRoot project{"wp379_external_coexistence"};
     writeWp374aProject(
-        project.path, 2, true, true, true,
+        project.path, 3, true, true, true,
         Json{{"name", "pelican_ray_instance"}, {"mask", 37}});
     std::vector<std::array<std::uint32_t, 4>> control_row_values;
 
@@ -4417,8 +4420,8 @@ TEST_CASE(
 #if PELICAN_RUNTIME_SHADER_COMPILER
     Wp374aProjectRoot valid{"wp375_preflight_valid"};
     Wp374aProjectRoot invalid{"wp375_preflight_invalid"};
-    writeWp374aProject(valid.path, 2, true, true, true);
-    writeWp374aProject(invalid.path, 2, true, true, false);
+    writeWp374aProject(valid.path, 3, true, true, true);
+    writeWp374aProject(invalid.path, 3, true, true, false);
 
     {
         FastModuleContainer modules;
@@ -4442,7 +4445,7 @@ TEST_CASE(
     "[WP375][rpc][production][mutation-a][gpu]") {
     setupLogger();
     Wp374aProjectRoot project{"wp375_mutation_a"};
-    writeWp374aProject(project.path, 2, false, false, true);
+    writeWp374aProject(project.path, 3, false, false, true);
 #if !PELICAN_RUNTIME_SHADER_COMPILER
     FastModuleContainer modules;
     INFO("WP375 acceptance a compiler-OFF layout precedence");
@@ -5678,7 +5681,7 @@ TEST_CASE(
             {"rows", Json::array({{{"$row", {{"v", 1}, {"id", 3}}},
                 {"occurrence_id", "ffffffffffffffffffffffffffffffff"},
                 {"mask", 0}}})}}}};
-    writeWp374aProject(project.path, 2, true, true, true, declaration, true);
+    writeWp374aProject(project.path, 3, true, true, true, declaration, true);
     const Json settings{
         {"basic_config",
          {{"window_size", {{"width", 16}, {"height", 16}}},
@@ -6057,7 +6060,7 @@ TEST_CASE(
     // resolveRayOccurrence the RPC dependency in editorruntimefactory.cpp
     // forwards to.
     Wp374aProjectRoot project{"wp382c_resolve"};
-    writeWp374aProject(project.path, 2, true, false, true);
+    writeWp374aProject(project.path, 3, true, false, true);
     std::filesystem::create_directories(project.path / "models");
     // "chair" is authored twice in the scene: each of its occurrences is
     // reachable through two instances, so resolving one must stay ambiguous
@@ -6268,7 +6271,7 @@ TEST_CASE("WP382d component lifecycle publishes the candidate ray plan before a 
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
     Wp374aProjectRoot project{"wp382d_component_lifecycle"};
-    writeWp374aProject(project.path, 2, true, false, true);
+    writeWp374aProject(project.path, 3, true, false, true);
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
     loadWp374aScene(project.path);

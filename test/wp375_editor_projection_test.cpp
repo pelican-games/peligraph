@@ -74,7 +74,7 @@ EditorProjectionContext projectionContext(
         std::any_of(codecs.begin(), codecs.end(), [](const ComponentCodec &codec) {
             return codec.name == "pelican_ray_instance";
         })
-            ? EditorLayoutSemanticMode::LayoutV2
+            ? EditorLayoutSemanticMode::Layout
             : EditorLayoutSemanticMode::Legacy;
     const auto codec_generation =
         editorProjectionCodecGeneration(codecs, layout_mode, defaults);
@@ -491,7 +491,7 @@ EditorProjectionCommand insertFooCommand(std::int32_t value) {
 TEST_CASE("WP375 committed route matrix is exact for every canonical operation",
           "[WP375][plan][route-matrix][mutation]") {
     FastModuleContainer modules;
-    GET_MODULE(RayLayoutRuntimeState).configure(RayLayoutSemanticMode::LayoutV2);
+    GET_MODULE(RayLayoutRuntimeState).configure(RayLayoutSemanticMode::LayoutV3);
     test_support::SceneProjectionTarget target{matrixDocument()};
     const auto object_id = matrixObjectId(target);
     const auto context = projectionContext(EditorProjectionMode::Committed);
@@ -920,7 +920,7 @@ TEST_CASE(
 TEST_CASE("WP375 preview semantic gate exists only in the planner and covers every row",
           "[WP375][plan][preview][route-matrix]") {
     FastModuleContainer modules;
-    GET_MODULE(RayLayoutRuntimeState).configure(RayLayoutSemanticMode::LayoutV2);
+    GET_MODULE(RayLayoutRuntimeState).configure(RayLayoutSemanticMode::LayoutV3);
     test_support::SceneProjectionTarget target{matrixDocument()};
     const auto object_id = matrixObjectId(target);
     const auto context = projectionContext(EditorProjectionMode::Preview);
@@ -1018,7 +1018,7 @@ TEST_CASE("WP375 immutable context makes planning independent of ambient runtime
     const auto behavior_before = planOne(behavior_operation, target, context);
     internal::unregisterBehavior(behavior_token);
 
-    GET_MODULE(RayLayoutRuntimeState).configure(RayLayoutSemanticMode::LayoutV2);
+    GET_MODULE(RayLayoutRuntimeState).configure(RayLayoutSemanticMode::LayoutV3);
     {
         testing::ScopedComponentCodecCanonicalDefaults changed_defaults{
             ComponentCodecCanonicalDefaults{.collider_radius = 19.0F}};

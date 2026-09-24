@@ -28,8 +28,7 @@ enum class EditorBehaviorAvailability : std::uint8_t {
 enum class EditorLayoutSemanticMode : std::uint8_t {
     Unconfigured,
     Legacy,
-    LayoutV1,
-    LayoutV2,
+    Layout,
 };
 
 struct EditorBehaviorPolicy {

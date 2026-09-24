@@ -18,13 +18,18 @@ namespace Pelican::RayTracingRt31Fixture {
 
 using Json = nlohmann::json;
 
-inline Json layoutRoot(std::uint32_t version = 2) {
+// MG-2a: layouts are version 3, whose groups carry their type. Another
+// version is only written to be refused, in the shape it was written in
+// (versions 1 and 2 had untyped groups).
+inline Json layoutRoot(std::uint32_t version = 3) {
     return {
         {"schema", "pelican.ray_group_layout"},
         {"version", version},
         {"ray_types", {"primary", "shadow"}},
         {"default_group", "opaque"},
-        {"groups", {{{"name", "opaque"}}}},
+        {"groups", version >= 3
+                       ? Json{{{"name", "opaque"}, {"type", "triangles"}}}
+                       : Json{{{"name", "opaque"}}}},
         {"misses", {{{"name", "sky"}}, {{"name", "shadow_open"}}}},
         {"record", Json::array()},
     };
@@ -255,7 +260,7 @@ inline Json wp366TypedRayTracingTask(std::string name,
     };
 }
 
-inline RayGroupLayout v2Layout(std::optional<Json> acceleration =
+inline RayGroupLayout v3Layout(std::optional<Json> acceleration =
                             accelerationDeclaration()) {
     auto root = layoutRoot();
     if (acceleration) {

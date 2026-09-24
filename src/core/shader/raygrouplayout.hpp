@@ -69,18 +69,17 @@ enum class RayPortableProfile : std::uint8_t {
     material_alpha_v1,
 };
 
+// A project either has no ray group layout or has one, and a layout is
+// version 3: earlier versions are refused by name when the layout is parsed.
 enum class RayLayoutSemanticMode : std::uint8_t {
     LegacyNoLayout,
-    LayoutV1Q,
-    LayoutV2,
     LayoutV3,
 };
 
-constexpr bool requiresRayLayoutV2(
-    RayLayoutSemanticMode mode) noexcept {
-    return mode == RayLayoutSemanticMode::LayoutV2 ||
-           mode == RayLayoutSemanticMode::LayoutV3;
-}
+// The only versions each ray document is read in. Any other integer version
+// is `<schema>.version_unsupported@1`.
+inline constexpr std::uint32_t rayGroupLayoutVersion = 3;
+inline constexpr std::uint32_t rayBindingsVersion = 2;
 
 enum class RayGeometryKind : std::uint8_t {
     triangles,
@@ -130,8 +129,6 @@ struct RayAccelerationStructureDeclaration {
 
 struct RayGroupLayout {
     std::string source_reference;
-    std::uint32_t version = 1;
-    RayLayoutSemanticMode semantic_mode = RayLayoutSemanticMode::LayoutV1Q;
     std::string digest_sha256;
     std::string acceleration_structure_digest_sha256;
     std::vector<std::string> ray_types;
@@ -178,7 +175,7 @@ DECLARE_MODULE(RayLayoutRuntimeState) {
     bool configured() const noexcept { return configured_; }
     RayLayoutSemanticMode mode() const noexcept { return mode_; }
     bool builtinRayInstanceEnabled() const noexcept {
-        return configured_ && requiresRayLayoutV2(mode_);
+        return configured_ && mode_ == RayLayoutSemanticMode::LayoutV3;
     }
 };
 
@@ -219,7 +216,6 @@ struct RayMaterialBinding {
 
 struct RayBindings {
     std::string source_reference;
-    std::uint32_t version = 1;
     std::string digest_sha256;
     std::vector<RayMaterialBinding> bindings;
 };
@@ -320,7 +316,6 @@ nlohmann::ordered_json rayRecordFieldsJson(
 struct RaySceneRow {
     RaySceneSettingSources setting_sources;
     std::optional<std::size_t> binding_index;
-    RayLayoutSemanticMode semantic_mode = RayLayoutSemanticMode::LayoutV1Q;
     RayGeometryKind geometry_kind = RayGeometryKind::triangles;
     std::uint32_t q = 0;
     std::size_t source_index = 0;
@@ -379,7 +374,6 @@ struct RaySceneRowSnapshot {
     // Authored schema captured with these row bytes, excluding engine-owned fields.
     std::vector<RayRecordMemberLayout> record_members;
     std::uint64_t generation = 0;
-    RayLayoutSemanticMode semantic_mode = RayLayoutSemanticMode::LegacyNoLayout;
     std::string identity_digest_sha256;
     std::string material_table_digest_sha256;
     std::string geometry_table_digest_sha256;

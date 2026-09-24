@@ -54,7 +54,7 @@ using RayTracingRt31Fixture::accelerationDeclaration;
 using RayTracingRt31Fixture::layoutRoot;
 using RayTracingRt31Fixture::oakRule;
 using RayTracingRt31Fixture::rowInput;
-using RayTracingRt31Fixture::v2Layout;
+using RayTracingRt31Fixture::v3Layout;
 using RayTracingRt31Fixture::rowByAuthor;
 using RayTracingRt31Fixture::resolveProductionScene;
 
@@ -75,8 +75,6 @@ TEST_CASE("WP374 layout v2 owns AS parsing and separates SBT/AS digests",
     auto root = layoutRoot();
     root["acceleration_structure"] = accelerationDeclaration();
     const auto base = parseRayGroupLayout(root.dump(), "base.json");
-    REQUIRE(base.version == 2);
-    REQUIRE(base.semantic_mode == RayLayoutSemanticMode::LayoutV2);
     REQUIRE(base.acceleration_structure);
     CHECK(base.acceleration_structure->defaults.mask == 127);
     CHECK(base.acceleration_structure->defaults.instance_flags ==
@@ -94,13 +92,13 @@ TEST_CASE("WP374 layout v2 owns AS parsing and separates SBT/AS digests",
     CHECK(reloaded.acceleration_structure_digest_sha256 !=
           base.acceleration_structure_digest_sha256);
 
-    SECTION("v1 AS declaration loses before any scene component check") {
+    SECTION("a v1 AS declaration is refused as a version before its AS is read") {
         auto invalid = root;
         invalid["version"] = 1;
         CHECK_THROWS_WITH(
             parseRayGroupLayout(invalid.dump()),
             ContainsSubstring(
-                "pelican.ray_as_declaration_requires_layout_v2@1"));
+                "pelican.ray_group_layout.version_unsupported@1"));
     }
     SECTION("malformed and duplicate selectors fail during layout parse") {
         auto malformed = root;
@@ -137,7 +135,7 @@ TEST_CASE("WP374 layout v2 owns AS parsing and separates SBT/AS digests",
 
 TEST_CASE("WP374 production row resolver applies both two-level chains",
           "[WP374][ray-tracing][rt3-1][resolver][production][mutation]") {
-    const auto layout = v2Layout();
+    const auto layout = v3Layout();
     std::array inputs{
         rowInput("chair-b", "Pine", 0, 102),
         rowInput("chair-a", "Oak", 1, 101),
@@ -148,7 +146,6 @@ TEST_CASE("WP374 production row resolver applies both two-level chains",
         .custom_index = std::uint32_t{0x123456},
     };
     const auto rows = resolveRaySceneRows(inputs, layout, nullptr);
-    REQUIRE(rows.semantic_mode == RayLayoutSemanticMode::LayoutV2);
     REQUIRE(rows.rows.size() == 2);
 
     const auto &oak = rowByAuthor(rows, 101);
@@ -202,7 +199,7 @@ TEST_CASE("WP374 production row resolver applies both two-level chains",
               {"source_material_index", 1}}},
             {"geometry_flags", Json::array()},
         });
-        const auto canonical = v2Layout(std::move(declaration));
+        const auto canonical = v3Layout(std::move(declaration));
         const auto canonical_rows =
             resolveRaySceneRows(inputs, canonical, nullptr);
         CHECK(rowByAuthor(canonical_rows, 101).geometry_flags ==
@@ -257,7 +254,7 @@ TEST_CASE("WP383 canonical material identity drives AS gate and lookup",
     // equality requirement is only caught by the WP374 resolver unit tests.
     {
         auto named_declaration = accelerationDeclaration();
-        const auto named_layout = v2Layout(std::move(named_declaration));
+        const auto named_layout = v3Layout(std::move(named_declaration));
         auto unnamed_row = rowInput("wp383-name-absent", "Oak", 1, 3831);
         unnamed_row.material_name.clear();
         const auto unnamed_rows =
@@ -274,7 +271,7 @@ TEST_CASE("WP383 canonical material identity drives AS gate and lookup",
         auto unnamed_declaration = accelerationDeclaration();
         unnamed_declaration["rules"][0]["material"] =
             Json{{"document", "materials/multi.json"}};
-        const auto unnamed_layout = v2Layout(std::move(unnamed_declaration));
+        const auto unnamed_layout = v3Layout(std::move(unnamed_declaration));
         auto named_row = rowInput("wp383-selector-unnamed", "Oak", 1, 3833);
         const auto named_rows =
             resolveRaySceneRows(std::array{named_row}, unnamed_layout, nullptr);
@@ -293,9 +290,9 @@ TEST_CASE("WP383 canonical material identity drives AS gate and lookup",
         {"geometry_flags", Json::array({"no_duplicate_any_hit_invocation"})},
     });
     auto root = layoutRoot();
-    root["groups"] = Json::array({{{"name", "opaque"}},
-                                  {{"name", "document"}},
-                                  {{"name", "asset"}}});
+    root["groups"] = Json::array({{{"name", "opaque"}, {"type", "triangles"}},
+                                  {{"name", "document"}, {"type", "triangles"}},
+                                  {{"name", "asset"}, {"type", "triangles"}}});
     root["acceleration_structure"] = std::move(declaration);
     const auto layout = parseRayGroupLayout(root.dump(), "wp383-layout.json");
 
@@ -334,7 +331,7 @@ TEST_CASE("WP383 canonical material identity drives AS gate and lookup",
         }
         const auto bindings = parseRayBindings(
             Json{{"schema", "pelican.ray_bindings"},
-                 {"version", 1},
+                 {"version", 2},
                  {"bindings", Json::array({{{"material", std::move(material)},
                                               {"group", document_identity
                                                             ? "document"
@@ -356,24 +353,98 @@ TEST_CASE("WP383 canonical material identity drives AS gate and lookup",
     }
 }
 
-TEST_CASE("WP374 semantic modes preserve legacy and v1 custom-index ABIs",
-          "[WP374][ray-tracing][rt3-1][semantic-mode][legacy][mutation]") {
-    auto v1_root = layoutRoot(1);
-    const auto v1 = parseRayGroupLayout(v1_root.dump());
-    std::array inputs{
-        rowInput("z", "Oak", 0, 1),
-        rowInput("a", "Pine", 1, 2),
+TEST_CASE("MG-2a ray group layout v1 and v2 and ray bindings v1 are refused by name",
+          "[MG-2a][ray-tracing][rt3-1][version-unsupported][mutation]") {
+    const auto layout_code = "pelican.ray_group_layout.version_unsupported@1";
+    const auto bindings_code = "pelican.ray_bindings.version_unsupported@1";
+    // The shape the old versions were written in: v1/v2 groups have no type.
+    const auto old_layout = [](int version) {
+        return layoutRoot(static_cast<std::uint32_t>(version)).dump();
     };
-    const auto rows = resolveRaySceneRows(inputs, v1, nullptr);
-    REQUIRE(rows.semantic_mode == RayLayoutSemanticMode::LayoutV1Q);
-    for (const auto &row : rows.rows) {
-        CHECK(row.instance_custom_index == row.q);
+    SECTION("layout parse") {
+        for (const int version : {1, 2}) {
+            INFO("layout version " << version);
+            CHECK_THROWS_WITH(parseRayGroupLayout(old_layout(version), "old.json"),
+                              ContainsSubstring(layout_code) &&
+                                  ContainsSubstring("'old.json'"));
+            // The typed form does not make an old version readable.
+            auto typed = layoutRoot();
+            typed["version"] = version;
+            CHECK_THROWS_WITH(parseRayGroupLayout(typed.dump()),
+                              ContainsSubstring(layout_code));
+        }
+        CHECK_NOTHROW(parseRayGroupLayout(layoutRoot().dump()));
     }
-    inputs[0].ray_instance = RayInstanceComponent{.mask = 1};
-    CHECK_THROWS_WITH(
-        resolveRaySceneRows(inputs, v1, nullptr),
-        ContainsSubstring("pelican.ray_instance_requires_layout_v2@1"));
+    const auto layout = parseRayGroupLayout(layoutRoot().dump(), "layout.json");
+    const auto bindings_of = [](int version, bool procedural) {
+        Json entry = procedural
+            ? Json{{"procedural", "sphere_asset"}, {"group", "opaque"}}
+            : Json{{"material", {{"document", "materials/multi.json"}}},
+                   {"group", "opaque"},
+                   {"record", Json::object()}};
+        return Json{{"schema", "pelican.ray_bindings"},
+                    {"version", version},
+                    {"bindings", Json::array({entry})}}
+            .dump();
+    };
+    SECTION("bindings parse") {
+        for (const bool procedural : {false, true}) {
+            INFO("procedural selector " << procedural);
+            CHECK_THROWS_WITH(
+                parseRayBindings(bindings_of(1, procedural), layout, "old-bindings.json"),
+                ContainsSubstring(bindings_code) &&
+                    ContainsSubstring("'old-bindings.json'"));
+        }
+        CHECK_NOTHROW(parseRayBindings(bindings_of(2, false), layout));
+    }
+    SECTION("the project loader refuses either document by name") {
+        const Json root{{"ray_group_layout", "layout.json"},
+                        {"ray_bindings", "bindings.json"}};
+        const auto load = [&](std::string layout_bytes,
+                              std::string bindings_bytes) {
+            return loadRayTracingProjectConfig(
+                root,
+                [&](std::string_view reference) {
+                    return reference == "layout.json" ? layout_bytes
+                                                      : bindings_bytes;
+                },
+                true);
+        };
+        CHECK_THROWS_WITH(load(old_layout(1), bindings_of(2, false)),
+                          ContainsSubstring(layout_code));
+        CHECK_THROWS_WITH(load(old_layout(2), bindings_of(2, false)),
+                          ContainsSubstring(layout_code));
+        CHECK_THROWS_WITH(load(layoutRoot().dump(), bindings_of(1, false)),
+                          ContainsSubstring(bindings_code));
+        const auto loaded = load(layoutRoot().dump(), bindings_of(2, false));
+        REQUIRE(loaded);
+        CHECK(rayLayoutSemanticMode(loaded.get()) ==
+              RayLayoutSemanticMode::LayoutV3);
+    }
+    SECTION("the one version keeps none of v1's meaning") {
+        // v1 digested its raw bytes; the layout digest is of the parsed
+        // document, so spelling does not move it.
+        const auto spaced = parseRayGroupLayout(layoutRoot().dump(2) + "\n");
+        CHECK(spaced.digest_sha256 == layout.digest_sha256);
+        // v1 wrote the row's q into the instance custom index; a row now
+        // takes the layout's default like any other.
+        std::array inputs{
+            rowInput("z", "Oak", 0, 1),
+            rowInput("a", "Pine", 1, 2),
+        };
+        const auto rows = resolveRaySceneRows(inputs, layout, nullptr);
+        REQUIRE(rows.rows.size() == 2);
+        for (const auto &row : rows.rows) {
+            CHECK(row.instance_custom_index ==
+                  rayAccelerationStructureCanonicalDefaults.custom_index);
+            CHECK((row.setting_sources.custom_index == "engine_default"));
+        }
+        CHECK(rows.rows[1].q == 1);
+    }
+}
 
+TEST_CASE("WP374 a project without a layout keeps the legacy custom-index ABI",
+          "[WP374][ray-tracing][rt3-1][semantic-mode][legacy][mutation]") {
     std::array<RayQueryGeometryInstanceSnapshot, 2> geometry{};
     const std::array<std::size_t, 2> static_indices{1, 0};
     const auto legacy = lowerRayTracingTlasInstancePlan(
@@ -391,7 +462,7 @@ TEST_CASE("WP379 pelican_ray_instance codec is strict and version gated",
           "[WP374][ray-tracing][rt3-1][component-codec][version-gate][matrix]") {
     FastModuleContainer modules;
     auto &mode = GET_MODULE(RayLayoutRuntimeState);
-    mode.configure(RayLayoutSemanticMode::LayoutV2);
+    mode.configure(RayLayoutSemanticMode::LayoutV3);
     REQUIRE(componentCodecs().size() == 9);
     const auto &codec = requireComponentCodec("pelican_ray_instance");
     const auto decoded = decodeRayCodecOrThrow(codec, {
@@ -461,7 +532,7 @@ TEST_CASE("WP379 pelican_ray_instance codec is strict and version gated",
                                       {"custom_index", 0x1000000}}),
         ContainsSubstring("pelican.ray_instance_field_range@1"));
     CHECK_THROWS_WITH(
-        mode.configure(RayLayoutSemanticMode::LayoutV1Q),
+        mode.configure(RayLayoutSemanticMode::LegacyNoLayout),
         ContainsSubstring(
             "pelican.ray_layout_mode_change_requires_restart@1"));
 
@@ -503,7 +574,7 @@ TEST_CASE("WP382d occurrence rows preserve presence and resolve within their aut
     CHECK(rejected.error().fields.at("first_row_id") == 1);
     CHECK(rejected.error().fields.at("second_row_id") == 2);
 
-    RayTracingProjectConfig project{.layout = v2Layout(std::nullopt)};
+    RayTracingProjectConfig project{.layout = v3Layout(std::nullopt)};
     RayQueryGeometryInstanceSnapshot first{
         .asset_identity = 1, .authoring_object_id = 7,
         .ray_instance = declaration,
@@ -614,7 +685,7 @@ TEST_CASE("WP382d occurrence rows preserve presence and resolve within their aut
 
 TEST_CASE("RT5 declarations support deformation and reject ineligible geometry",
           "[WP374][ray-tracing][rt3-1][classification][production][mutation]") {
-    RayTracingProjectConfig project{.layout = v2Layout(std::nullopt)};
+    RayTracingProjectConfig project{.layout = v3Layout(std::nullopt)};
     auto instance = RayQueryGeometryInstanceSnapshot{
         .asset_identity = 1,
         .authoring_object_id = 77,

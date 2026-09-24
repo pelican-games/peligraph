@@ -52,10 +52,10 @@ std::uint32_t readWp368U32(std::span<const std::byte> bytes) {
 RayGroupLayout wp368Layout(nlohmann::json engine) {
     nlohmann::json root{
         {"schema", "pelican.ray_group_layout"},
-        {"version", 1},
+        {"version", 3},
         {"ray_types", {"primary"}},
         {"default_group", "opaque"},
-        {"groups", {{{"name", "opaque"}}}},
+        {"groups", {{{"name", "opaque"}, {"type", "triangles"}}}},
         {"misses", {{{"name", "sky"}}}},
         {"record", {{{"name", "tint"}, {"type", "vec4"}}}},
     };
@@ -150,9 +150,9 @@ loadWp368Sidecar(bool runtime_shader_compiler_enabled,
             if (loads != nullptr) ++*loads;
             if (reference == "layout.json") {
                 return std::string{R"json({
-                  "schema":"pelican.ray_group_layout","version":1,
+                  "schema":"pelican.ray_group_layout","version":3,
                   "ray_types":["primary"],"default_group":"opaque",
-                  "groups":[{"name":"opaque"}],
+                  "groups":[{"name":"opaque","type":"triangles"}],
                   "misses":[{"name":"sky"}],
                   "engine_record":["material_index","geometry_index"],
                   "record":[{"name":"tint","type":"vec4"}]
@@ -160,7 +160,7 @@ loadWp368Sidecar(bool runtime_shader_compiler_enabled,
             }
             if (reference == "bindings.json") {
                 return std::string{R"json({
-                  "schema":"pelican.ray_bindings","version":1,
+                  "schema":"pelican.ray_bindings","version":2,
                   "bindings":[{
                     "material":{"asset":"models/tree.glb","source_material_index":0},
                     "group":"opaque","record":{"tint":[1,0,0,1]}
@@ -175,10 +175,10 @@ loadWp368Sidecar(bool runtime_shader_compiler_enabled,
 
 RayGroupLayout wp369ProfileLayout() {
     return parseRayGroupLayout(R"json({
-      "schema":"pelican.ray_group_layout","version":1,
+      "schema":"pelican.ray_group_layout","version":3,
       "portable_profile":"material_alpha_v1",
       "ray_types":["primary"],"default_group":"opaque",
-      "groups":[{"name":"opaque"}],
+      "groups":[{"name":"opaque","type":"triangles"}],
       "misses":[{"name":"sky"}],
       "engine_record":["material_index","geometry_index"],
       "record":[]
@@ -194,7 +194,6 @@ nlohmann::json wp369TypedTask() {
           "traced_ray_types":["primary"],
           "misses":{"sky":"project://shaders/sky"},
           "hit_shaders":{"primary":{"opaque":{
-            "type":"triangles",
             "closesthit":"project://shaders/alpha_hit"
           }}}
         },
@@ -317,7 +316,7 @@ TEST_CASE(
     });
 
     const auto bindings = parseRayBindings(R"json({
-      "schema":"pelican.ray_bindings","version":1,"bindings":[{
+      "schema":"pelican.ray_bindings","version":2,"bindings":[{
         "material":{"document":"materials/mat.json"},
         "group":"opaque","record":{"tint":[0.25,0.5,0.75,1.0]}
       }]})json", two, "wp368-bindings.json");
@@ -370,9 +369,9 @@ TEST_CASE(
 
     SECTION("unknown duplicate and authored reserved names are named") {
         auto root = nlohmann::json::parse(R"json({
-          "schema":"pelican.ray_group_layout","version":1,
+          "schema":"pelican.ray_group_layout","version":3,
           "ray_types":["primary"],"default_group":"opaque",
-          "groups":[{"name":"opaque"}],
+          "groups":[{"name":"opaque","type":"triangles"}],
           "misses":[{"name":"sky"}],"record":[]
         })json");
         root["engine_record"] = {"texture_index"};
@@ -651,15 +650,15 @@ TEST_CASE(
     "WP368 table keys refine material identity without changing RT1b selectors",
     "[WP368][ray-tracing][rt2b][material][selector][canonical-key][production][mutation]") {
     const auto layout = parseRayGroupLayout(R"json({
-      "schema":"pelican.ray_group_layout","version":1,
+      "schema":"pelican.ray_group_layout","version":3,
       "ray_types":["primary"],"default_group":"opaque",
-      "groups":[{"name":"opaque"},{"name":"foliage"}],
+      "groups":[{"name":"opaque","type":"triangles"},{"name":"foliage","type":"triangles"}],
       "misses":[{"name":"sky"}],
       "engine_record":["material_index","geometry_index"],
       "record":[]
     })json");
     const auto bindings = parseRayBindings(R"json({
-      "schema":"pelican.ray_bindings","version":1,"bindings":[{
+      "schema":"pelican.ray_bindings","version":2,"bindings":[{
         "material":{"document":"materials/multi.json"},
         "group":"foliage","record":{}
       }]
@@ -1035,11 +1034,11 @@ TEST_CASE(
 
     RayTracingProjectConfig multi_project{
         .layout = parseRayGroupLayout(R"json({
-          "schema":"pelican.ray_group_layout","version":1,
+          "schema":"pelican.ray_group_layout","version":3,
           "portable_profile":"material_alpha_v1",
           "ray_types":["primary","secondary"],
           "default_group":"opaque",
-          "groups":[{"name":"opaque"},{"name":"foliage"}],
+          "groups":[{"name":"opaque","type":"triangles"},{"name":"foliage","type":"triangles"}],
           "misses":[{"name":"sky"}],
           "engine_record":["material_index","geometry_index"],
           "record":[]
@@ -1070,13 +1069,9 @@ TEST_CASE(
     // Material alpha belongs only to triangle rows. A procedural group has
     // no material index and may instead supply its own optional any-hit.
     auto mixed_project = multi_project;
-    mixed_project.layout.semantic_mode = RayLayoutSemanticMode::LayoutV3;
     mixed_project.layout.group_types[1] = RayGroupType::procedural;
     auto mixed_task = multi_task;
     for (const auto *ray_name : {"primary", "secondary"}) {
-        for (const auto *group_name : {"opaque", "foliage"})
-            mixed_task["compute_tasks"][0]["ray_tracing"]
-                      ["hit_shaders"][ray_name][group_name].erase("type");
         auto &group = mixed_task["compute_tasks"][0]["ray_tracing"]
                                 ["hit_shaders"][ray_name]["foliage"];
         group["intersection"] = "project://shaders/sphere";
@@ -1150,9 +1145,9 @@ TEST_CASE(
             ContainsSubstring("authored_filter"));
 
     auto absent_layout_json = nlohmann::json::parse(R"json({
-      "schema":"pelican.ray_group_layout","version":1,
+      "schema":"pelican.ray_group_layout","version":3,
       "ray_types":["primary"],"default_group":"opaque",
-      "groups":[{"name":"opaque"}],"misses":[{"name":"sky"}],
+      "groups":[{"name":"opaque","type":"triangles"}],"misses":[{"name":"sky"}],
       "engine_record":["material_index","geometry_index"],"record":[]
     })json");
     RayTracingProjectConfig absent{
@@ -1173,7 +1168,9 @@ TEST_CASE(
     CHECK(absent_include.size() == 4857);
     CHECK(picosha2::hash256_hex_string(
               absent_include.begin(), absent_include.end()) ==
-          "5a6297a886c4dc38bac1fef74693035b890193add47531c3d5e33f6bc0291e69");
+          // MG-2a: the include carries the layout digest, which is now the
+          // parsed-document digest (v1 hashed the raw bytes).
+          "71481b74ae0920b492b7ecadb9ea798eb837af9f5615aea14d03a7d7ed0414d2");
     CHECK_THROWS(makeMaterialAlphaAnyHitSource(absent.layout));
 
     auto partial = absent_layout_json;

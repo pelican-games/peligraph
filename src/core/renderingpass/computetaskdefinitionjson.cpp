@@ -582,15 +582,9 @@ RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
                     invalid_group();
                 }
             }
-            if (const auto type = group.find("type"); type != group.end()) {
-                if (layout.semantic_mode == RayLayoutSemanticMode::LayoutV3) {
-                    throw std::runtime_error(
-                        "pelican.ray_group_type_declared_in_task@1: layout v3 group type is declared only in ray_group_layout");
-                }
-                if (!type->is_string() ||
-                    type->get_ref<const std::string &>() != "triangles") {
-                    invalid_group();
-                }
+            if (group.contains("type")) {
+                throw std::runtime_error(
+                    "pelican.ray_group_type_declared_in_task@1: layout v3 group type is declared only in ray_group_layout");
             }
             if (const auto anyhit = group.find("anyhit"); anyhit != group.end() &&
                 (!anyhit->is_string() ||
@@ -605,10 +599,6 @@ RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
                         "pelican.procedural_group_requires_intersection@1: procedural hit group requires intersection and closesthit stages");
                 }
             } else if (intersection != group.end()) {
-                if (layout.semantic_mode !=
-                    RayLayoutSemanticMode::LayoutV3) {
-                    invalid_group();
-                }
                 throw std::runtime_error(
                     "pelican.ray_tracing.unsupported_shader_stage@1: triangles hit group cannot declare intersection");
             }

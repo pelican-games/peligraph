@@ -90,8 +90,10 @@ TEST_CASE("Procedural world coordinates require an explicit transform ABI",
     encoded["record"].push_back({{"name", "world_to_geometry_0"}, {"type", "vec4"}});
     CHECK_THROWS_WITH(parseRayGroupLayout(encoded.dump()), Catch::Matchers::ContainsSubstring("record name conflicts with engine field"));
     encoded["record"].erase(encoded["record"].end() - 1);
+    // MG-2a: an older version is refused as a version, not for what it lacks.
     encoded["version"] = 2;
-    CHECK_THROWS_WITH(parseRayGroupLayout(encoded.dump()), Catch::Matchers::ContainsSubstring("requires layout version 3"));
+    CHECK_THROWS_WITH(parseRayGroupLayout(encoded.dump()), Catch::Matchers::ContainsSubstring("pelican.ray_group_layout.version_unsupported@1"));
+    encoded["version"] = 3;
     const auto source = makeRayGroupLayoutVirtualInclude(world);
     CHECK(source.find("#define PELICAN_RAY_HAS_PROCEDURAL_TRANSFORM 1") != std::string::npos);
     CHECK(source.find("vec4 geometry_to_world_0;") != std::string::npos);
@@ -178,8 +180,6 @@ TEST_CASE("An authored transform-like name does not enable engine transform enco
 TEST_CASE("WP386a layout v3 and binding v2 resolve procedural rows without a material join",
           "[WP386a][ray-tracing][rt3-2a][cpu]") {
     const auto layout = parseRayGroupLayout(v3Layout().dump(), "layout.json");
-    REQUIRE(layout.semantic_mode == RayLayoutSemanticMode::LayoutV3);
-    REQUIRE(requiresRayLayoutV2(layout.semantic_mode));
     REQUIRE(layout.group_types.size() == 2);
     CHECK(layout.group_types[1] == RayGroupType::procedural);
     REQUIRE(layout.acceleration_structure);
@@ -190,7 +190,6 @@ TEST_CASE("WP386a layout v3 and binding v2 resolve procedural rows without a mat
       "schema":"pelican.ray_bindings","version":2,
       "bindings":[{"procedural":"sphere_asset","group":"sphere"}]
     })json", layout, "bindings.json");
-    REQUIRE(bindings.version == 2);
 
     const std::array inputs{RaySceneRowInput{
         .geometry_kind = RayGeometryKind::aabbs,

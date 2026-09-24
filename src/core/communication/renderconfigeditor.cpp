@@ -59,7 +59,8 @@ MaterialRouteDefault requestedMaterialRouteDefault(const Json &value,
 // back into a named rejection with fields.
 bool isCarriedRefusalCode(std::string_view code) {
     return code == materialRouteUnservedCode ||
-           code == materialRouteDefaultUnavailableCode;
+           code == materialRouteDefaultUnavailableCode ||
+           code == renderConfigLegacyTransactionDirCode;
 }
 
 // A readable message for a carried refusal; the fields stay structured.
@@ -248,10 +249,9 @@ GeometrySpaceDocument geometrySpaceDocument(
                                    : layout.acceleration_structure->triangle_world_space)
                                    ? "world" : "geometry";
         if (engine) result.info["reason"] = "Engine ray group layouts cannot be edited here.";
-        else if (procedural && (layout.version < 3 ||
-                 !layout.engineRecordOffset(RayEngineRecordField::procedural_transform)))
-            result.info["reason"] = "AABB space requires layout v3 with engine_record procedural_transform and shaders using the procedural transform helpers.";
-        else if (layout.version < 2) result.info["reason"] = "Triangle space requires ray group layout version 2 or 3.";
+        else if (procedural &&
+                 !layout.engineRecordOffset(RayEngineRecordField::procedural_transform))
+            result.info["reason"] = "AABB space requires engine_record procedural_transform and shaders using the procedural transform helpers.";
         else result.info["editable"] = true;
     } catch (const std::exception &error) {
         result.info["reason"] = error.what();

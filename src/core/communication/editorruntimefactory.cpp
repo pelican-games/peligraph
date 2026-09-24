@@ -1211,12 +1211,8 @@ EditorProjectionContext makeEditorProjectionContext(
             case RayLayoutSemanticMode::LegacyNoLayout:
                 layout_mode = EditorLayoutSemanticMode::Legacy;
                 break;
-            case RayLayoutSemanticMode::LayoutV1Q:
-                layout_mode = EditorLayoutSemanticMode::LayoutV1;
-                break;
-            case RayLayoutSemanticMode::LayoutV2:
             case RayLayoutSemanticMode::LayoutV3:
-                layout_mode = EditorLayoutSemanticMode::LayoutV2;
+                layout_mode = EditorLayoutSemanticMode::Layout;
                 break;
             }
         }

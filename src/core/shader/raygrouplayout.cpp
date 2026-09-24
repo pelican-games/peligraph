@@ -759,7 +759,7 @@ void RayLayoutRuntimeState::validate(RayLayoutSemanticMode mode) const {
 RayLayoutSemanticMode rayLayoutSemanticMode(
     const RayTracingProjectConfig *config) noexcept {
     return config == nullptr ? RayLayoutSemanticMode::LegacyNoLayout
-                             : config->layout.semantic_mode;
+                             : RayLayoutSemanticMode::LayoutV3;
 }
 
 std::uint32_t RayGroupLayout::rayTypeIndex(std::string_view name) const {
@@ -832,26 +832,20 @@ RayGroupLayout parseRayGroupLayout(
                          "portable_profile", "acceleration_structure"},
                         "layout", source_reference);
     if (!root.contains("schema") || root.at("schema") != "pelican.ray_group_layout" ||
-        !root.contains("version") || !root.at("version").is_number_integer() ||
-        (root.at("version") != 1 && root.at("version") != 2 &&
-         root.at("version") != 3)) {
+        !root.contains("version") || !root.at("version").is_number_integer()) {
         layoutError(source_reference,
-                    "schema must be pelican.ray_group_layout version 1, 2, or 3");
+                    "schema must be pelican.ray_group_layout with an integer version");
     }
-    const auto version = root.at("version").get<std::uint32_t>();
-    if (version < 3 && root.contains("acceleration_structure") &&
-        root.at("acceleration_structure").contains("procedural_space"))
-        layoutError(source_reference, "acceleration_structure.procedural_space requires layout version 3");
-    if (version == 1 && root.contains("acceleration_structure")) {
-        rayAsError("ray_as_declaration_requires_layout_v2", source_reference,
-                   "acceleration_structure requires layout version 2");
-    }
-    if (version < 3 && root.contains("acceleration_structure") &&
-        root.at("acceleration_structure").is_object() &&
-        root.at("acceleration_structure").contains(
-            "procedural_defaults")) {
+    // MG-2a: one version. Versions 1 and 2 are not read in their old meaning
+    // (v1's raw-byte digest and row-q custom index, v2's untyped groups); a
+    // project that still has one rewrites it as version 3.
+    if (root.at("version") != rayGroupLayoutVersion) {
         throw std::runtime_error(
-            "pelican.ray_group_type_requires_layout_v3@1: procedural_defaults requires layout version 3");
+            "pelican.ray_group_layout.version_unsupported@1: ray_group_layout version " +
+            root.at("version").dump() + " is not supported; this engine reads version " +
+            std::to_string(rayGroupLayoutVersion) + " only (groups carry a 'type')" +
+            (source_reference.empty() ? std::string{}
+                                      : " in '" + source_reference + "'"));
     }
     for (const auto required : {"ray_types", "default_group", "groups", "misses", "record"}) {
         if (!root.contains(required)) {
@@ -860,17 +854,7 @@ RayGroupLayout parseRayGroupLayout(
     }
     RayGroupLayout result;
     result.source_reference = std::move(source_reference);
-    result.version = version;
-    result.semantic_mode = version == 1
-                               ? RayLayoutSemanticMode::LayoutV1Q
-                               : version == 2
-                                     ? RayLayoutSemanticMode::LayoutV2
-                                     : RayLayoutSemanticMode::LayoutV3;
-    if (version == 1) {
-        // Preserve the exact v1 ABI/digest behavior byte-for-byte.
-        result.digest_sha256 =
-            picosha2::hash256_hex_string(raw_bytes.begin(), raw_bytes.end());
-    } else {
+    {
         // AS declarations are not shader/SBT inputs.  Hashing the layout with
         // that member removed makes the separation structural.
         auto sbt_root = root;
@@ -887,6 +871,8 @@ RayGroupLayout parseRayGroupLayout(
                 picosha2::hash256_hex_string(as_bytes.begin(),
                                              as_bytes.end());
         } else {
+            // The seed keeps its historical spelling so the digest of a layout
+            // without a declaration does not move.
             constexpr std::string_view default_as = "layout-v2-default-as";
             result.acceleration_structure_digest_sha256 =
                 picosha2::hash256_hex_string(default_as.begin(),
@@ -906,16 +892,11 @@ RayGroupLayout parseRayGroupLayout(
             RayPortableProfile::material_alpha_v1;
     }
     result.ray_types = parseNameStrings(root.at("ray_types"), "ray_types", result.source_reference);
-    if (version == 3) {
+    {
         auto [names, types] =
             parseTypedGroupObjects(root.at("groups"), result.source_reference);
         result.groups = std::move(names);
         result.group_types = std::move(types);
-    } else {
-        result.groups = parseNamedObjects(root.at("groups"), "groups",
-                                          result.source_reference);
-        result.group_types.assign(result.groups.size(),
-                                  RayGroupType::triangles);
     }
     result.misses = parseNamedObjects(root.at("misses"), "misses", result.source_reference);
     if (!root.at("default_group").is_string() ||
@@ -950,7 +931,6 @@ RayGroupLayout parseRayGroupLayout(
             } else if (name == "geometry_kind") {
                 field = RayEngineRecordField::geometry_kind;
             } else if (name == "procedural_transform") {
-                if (version < 3) layoutError(result.source_reference, "procedural_transform requires layout version 3");
                 field = RayEngineRecordField::procedural_transform;
             } else {
                 throw std::runtime_error(
@@ -1335,17 +1315,25 @@ RayBindings parseRayBindings(
         }
     }
     if (!root.contains("schema") || root.at("schema") != "pelican.ray_bindings" ||
-        !root.contains("version") || !root.at("version").is_number_integer() ||
-        (root.at("version") != 1 && root.at("version") != 2) ||
-        !root.contains("bindings") ||
-        !root.at("bindings").is_array()) {
+        !root.contains("version") || !root.at("version").is_number_integer()) {
         throw std::runtime_error(
-            "pelican.ray_bindings_invalid@1: schema must be pelican.ray_bindings version 1 or 2 with bindings array");
+            "pelican.ray_bindings_invalid@1: schema must be pelican.ray_bindings with an integer version");
     }
-    const auto version = root.at("version").get<std::uint32_t>();
+    // MG-2a: one version. A version 1 document is rewritten as version 2.
+    if (root.at("version") != rayBindingsVersion) {
+        throw std::runtime_error(
+            "pelican.ray_bindings.version_unsupported@1: ray_bindings version " +
+            root.at("version").dump() + " is not supported; this engine reads version " +
+            std::to_string(rayBindingsVersion) + " only" +
+            (source_reference.empty() ? std::string{}
+                                      : " in '" + source_reference + "'"));
+    }
+    if (!root.contains("bindings") || !root.at("bindings").is_array()) {
+        throw std::runtime_error(
+            "pelican.ray_bindings_invalid@1: schema must be pelican.ray_bindings version 2 with bindings array");
+    }
     RayBindings result;
     result.source_reference = std::move(source_reference);
-    result.version = version;
     result.digest_sha256 = picosha2::hash256_hex_string(raw_bytes.begin(), raw_bytes.end());
     std::set<std::string, std::less<>> procedural_selectors;
     for (const auto &entry : root.at("bindings")) {
@@ -1374,10 +1362,6 @@ RayBindings parseRayBindings(
         const auto group_index = layout.groupIndex(
             entry.at("group").get_ref<const std::string &>());
         if (has_procedural) {
-            if (version != 2) {
-                throw std::runtime_error(
-                    "pelican.ray_binding_selector_exactly_one@1: procedural selectors require ray_bindings version 2");
-            }
             if (entry.contains("record")) {
                 throw std::runtime_error(
                     "pelican.procedural_binding_record_forbidden@1: procedural record data is owned by asset_data");
@@ -1510,7 +1494,7 @@ loadRayTracingProjectConfig(
         load_document(layout_reference), layout_reference);
     if (const auto *runtime =
             FastModuleContainer::tryGet<RayLayoutRuntimeState>()) {
-        runtime->validate(result->layout.semantic_mode);
+        runtime->validate(RayLayoutSemanticMode::LayoutV3);
     }
     if (has_bindings) {
         if (!authored_root.at("ray_bindings").is_string() ||
@@ -1530,7 +1514,6 @@ loadRayTracingProjectConfig(
 RaySceneRowSnapshot resolveRaySceneRows(
     std::span<const RaySceneRowInput> inputs,
     const RayGroupLayout &layout, const RayBindings *bindings) {
-    const auto semantic_mode = layout.semantic_mode;
     const auto as_defaults = layout.acceleration_structure
                                  ? layout.acceleration_structure->defaults
                                  : rayAccelerationStructureCanonicalDefaults;
@@ -1544,16 +1527,6 @@ RaySceneRowSnapshot resolveRaySceneRows(
     std::vector<bool> binding_matched(bindings ? bindings->bindings.size() : 0, false);
     for (const auto &input : inputs) {
         const auto identity = materialRowIdentity(input);
-        if (input.geometry_kind == RayGeometryKind::aabbs &&
-            semantic_mode != RayLayoutSemanticMode::LayoutV3) {
-            throw std::runtime_error(
-                "pelican.ray_group_type_requires_layout_v3@1: procedural rows require ray_group_layout version 3");
-        }
-        if (!requiresRayLayoutV2(semantic_mode) &&
-            input.ray_instance) {
-            throw std::runtime_error(
-                "pelican.ray_instance_requires_layout_v2@1: pelican_ray_instance is only available with ray_group_layout version 2");
-        }
         const RayMaterialBinding *chosen = nullptr;
         if (bindings != nullptr) {
             for (std::size_t index = 0; index < bindings->bindings.size(); ++index) {
@@ -1589,7 +1562,6 @@ RaySceneRowSnapshot resolveRaySceneRows(
                       .geometry_flags
                 : as_defaults.geometry_flags;
         if (input.geometry_kind == RayGeometryKind::triangles &&
-            requiresRayLayoutV2(semantic_mode) &&
             !as_rules.empty()) {
             if (std::holds_alternative<MaterialRowIdentityUnavailable>(identity)) {
                 throw std::runtime_error(
@@ -1610,8 +1582,7 @@ RaySceneRowSnapshot resolveRaySceneRows(
                 sources.geometry_rule_index = static_cast<std::size_t>(matched - as_rules.data());
             }
         }
-        if (requiresRayLayoutV2(semantic_mode) &&
-            input.ray_instance) {
+        if (input.ray_instance) {
             if (input.ray_instance->mask) {
                 instance_mask = *input.ray_instance->mask;
                 sources.mask = "component";
@@ -1662,7 +1633,6 @@ RaySceneRowSnapshot resolveRaySceneRows(
         resolved.push_back(
             {.setting_sources = sources,
              .binding_index = chosen ? std::optional<std::size_t>(chosen - bindings->bindings.data()) : std::nullopt,
-             .semantic_mode = semantic_mode,
              .geometry_kind = input.geometry_kind,
              .source_index = input.source_index,
              .group_index = group_index,
@@ -1775,10 +1745,6 @@ RaySceneRowSnapshot resolveRaySceneRows(
                 "pelican.ray_row_count_limit@1: scene row q exceeds the 24-bit instance SBT offset domain");
         }
         resolved[index].q = static_cast<std::uint32_t>(index);
-        if (semantic_mode == RayLayoutSemanticMode::LayoutV1Q) {
-            resolved[index].instance_custom_index = resolved[index].q;
-            resolved[index].setting_sources.custom_index = "layout_v1_q";
-        }
         identity << resolved[index].scene_identity << '\0'
                  << resolved[index].geometry_identity << '\0'
                  << resolved[index].geometry_match_identity << '\0'
@@ -1794,7 +1760,6 @@ RaySceneRowSnapshot resolveRaySceneRows(
     result.layout_reference = layout.source_reference;
     result.bindings_reference = bindings ? bindings->source_reference : std::string{};
     result.group_names = layout.groups;
-    result.semantic_mode = semantic_mode;
     const auto encoded = identity.str();
     result.identity_digest_sha256 =
         picosha2::hash256_hex_string(encoded.begin(), encoded.end());

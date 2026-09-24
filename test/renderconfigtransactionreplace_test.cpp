@@ -689,26 +689,88 @@ TEST_CASE(
     REQUIRE(std::filesystem::is_directory(directory));
 }
 
-TEST_CASE(
-    "render authoring recovery still reads the committed status the previous format wrote",
-    "[render-config-transaction][committed-marker][recovery][crash][legacy][windows]") {
-    TemporaryDirectory project{"authoring-crash-legacy"};
-    seedCrashProject(project.root);
-    runCrashChild(project.root, 2);
-
-    const auto directory = renderConfigTransactionDirectory(project.root);
-    // Turn the real committed state into the shape the superseding writer left:
-    // no marker, and the decision written into manifest.json in place. Nothing
-    // produces this any more; recovery only has to keep reading it.
+// MG-2a: the directory the previous format left -- no marker, the decision
+// written into manifest.json as `status: "committed"` -- is not read any more.
+// Both readers stop on it by name, and neither rolls it back nor removes it.
+std::filesystem::path makeLegacyTransactionDirectory(
+    const std::filesystem::path &project_root) {
+    seedCrashProject(project_root);
+    runCrashChild(project_root, 2);
+    const auto directory = renderConfigTransactionDirectory(project_root);
     auto manifest = Json::parse(readBytes(directory / "manifest.json"));
     manifest["status"] = "committed";
     std::filesystem::remove(directory / "committed");
     writeBytes(directory / "manifest.json", manifest.dump(2) + "\n");
+    return directory;
+}
 
-    REQUIRE_NOTHROW(recoverRenderConfigDocumentTransaction(project.root));
+void requireLegacyDirectoryRefusal(
+    const RenderConfigLegacyTransactionDirectory &refused,
+    const std::filesystem::path &directory) {
+    const std::string message = refused.what();
+    INFO("refusal: " << message);
+    REQUIRE(message.starts_with("render_config.legacy_transaction_dir@1: "));
+    REQUIRE(std::filesystem::equivalent(refused.path(), directory));
+    const auto fields = refused.errorFields();
+    REQUIRE(fields.size() == 1);
+    REQUIRE(std::filesystem::equivalent(
+        std::filesystem::path{fields.at("path").get<std::string>()},
+        directory));
+    // The message says what to delete by hand.
+    const auto carried = Json::parse(
+        message.substr(std::string_view{"render_config.legacy_transaction_dir@1: "}.size()));
+    REQUIRE(carried.at("path") == fields.at("path"));
+    REQUIRE(carried.at("message").get<std::string>().find("delete this directory") !=
+            std::string::npos);
+}
+
+TEST_CASE(
+    "render authoring recovery stops by name on a directory the previous format wrote",
+    "[render-config-transaction][committed-marker][recovery][crash][legacy][MG-2a][windows]") {
+    TemporaryDirectory project{"authoring-crash-legacy"};
+    const auto directory = makeLegacyTransactionDirectory(project.root);
+    const auto manifest_before = readBytes(directory / "manifest.json");
+
+    bool refused = false;
+    try {
+        recoverRenderConfigDocumentTransaction(project.root);
+    } catch (const RenderConfigLegacyTransactionDirectory &error) {
+        refused = true;
+        requireLegacyDirectoryRefusal(error, directory);
+    }
+    REQUIRE(refused);
+    // Neither read as committed (which would remove the directory) nor rolled
+    // back (which would restore the original root): nothing moved.
+    REQUIRE(std::filesystem::is_directory(directory));
+    REQUIRE(readBytes(directory / "manifest.json") == manifest_before);
     REQUIRE(readBytes(crashRootDocument(project.root)) == crashCandidateRoot);
     REQUIRE(readBytes(crashFragmentDocument(project.root)) == crashFragment);
-    REQUIRE_FALSE(std::filesystem::exists(directory));
+
+    // Removed by hand, as the message says, the project recovers cleanly.
+    std::filesystem::remove_all(directory);
+    REQUIRE_NOTHROW(recoverRenderConfigDocumentTransaction(project.root));
+}
+
+TEST_CASE(
+    "render authoring commit stops by name on a directory the previous format wrote",
+    "[render-config-transaction][committed-marker][commit][legacy][MG-2a][windows]") {
+    TemporaryDirectory project{"authoring-commit-legacy"};
+    const auto directory = makeLegacyTransactionDirectory(project.root);
+    const auto manifest_before = readBytes(directory / "manifest.json");
+
+    bool refused = false;
+    try {
+        (void)commitRenderConfigCandidateDocuments(
+            project.root, crashCandidateSet(project.root));
+    } catch (const RenderConfigLegacyTransactionDirectory &error) {
+        refused = true;
+        requireLegacyDirectoryRefusal(error, directory);
+    }
+    REQUIRE(refused);
+    REQUIRE(std::filesystem::is_directory(directory));
+    REQUIRE(readBytes(directory / "manifest.json") == manifest_before);
+    REQUIRE(readBytes(crashRootDocument(project.root)) == crashCandidateRoot);
+    REQUIRE(readBytes(crashFragmentDocument(project.root)) == crashFragment);
 }
 #endif
 

@@ -91,10 +91,10 @@ using Catch::Matchers::ContainsSubstring;
 
 constexpr std::string_view layoutJson = R"json({
   "schema": "pelican.ray_group_layout",
-  "version": 1,
+  "version": 3,
   "ray_types": ["primary", "shadow"],
   "default_group": "opaque",
-  "groups": [{"name":"opaque"},{"name":"foliage"}],
+  "groups": [{"name":"opaque","type":"triangles"},{"name":"foliage","type":"triangles"}],
   "misses": [{"name":"sky"},{"name":"shadow_open"}],
   "record": [{"name":"tint","type":"vec3"},{"name":"flags","type":"f32"}]
 })json";
@@ -109,7 +109,7 @@ std::uint32_t readU32(std::span<const std::byte> bytes) {
 
 RayBindings bindingsFor(const RayGroupLayout &layout) {
     return parseRayBindings(R"json({
-      "schema":"pelican.ray_bindings","version":1,"bindings":[
+      "schema":"pelican.ray_bindings","version":2,"bindings":[
         {"material":{"document":"materials/leaf.mat.json"},
          "group":"foliage","record":{"tint":[0.2,0.8,0.4],"flags":7.0}},
         {"material":{"asset":"models/tree.glb","source_material_index":2},
@@ -139,7 +139,7 @@ std::shared_ptr<const RayTracingProjectConfig> loadRt1bSidecar(
             }
             if (reference == "bindings.json") {
                 return std::string{R"json({
-                  "schema":"pelican.ray_bindings","version":1,
+                  "schema":"pelican.ray_bindings","version":2,
                   "bindings":[]
                 })json"};
             }
@@ -248,7 +248,7 @@ TEST_CASE("WP367 typed triangle hit groups expose only optional anyhit",
           "traced_ray_types":["primary"],
           "misses":{"sky":"shaders/sky","shadow_open":"shaders/open"},
           "hit_shaders":{"primary":{
-            "opaque":{"type":"triangles","closesthit":"shaders/opaque","anyhit":"shaders/filter"},
+            "opaque":{"closesthit":"shaders/opaque","anyhit":"shaders/filter"},
             "foliage":{"closesthit":"shaders/foliage"}
           }}
         },
@@ -275,26 +275,34 @@ TEST_CASE("WP367 typed triangle hit groups expose only optional anyhit",
               ShaderSourceStage::anyhit, false) ==
           "shaders/filter.rahit");
 
-    SECTION("absent type remains the RT1b triangle form") {
-        auto absent = config;
-        absent["compute_tasks"][0]["ray_tracing"]["hit_shaders"]
-              ["primary"]["opaque"].erase("type");
-        CHECK_NOTHROW(parseComputeTaskDefinitionsFromConfigJson(
-            absent, project.get()));
+    // MG-2a: the layout (version 3) owns the group type. A task that still
+    // spells one -- the v1/v2 task grammar -- is refused by name, whatever
+    // the value.
+    SECTION("a task-declared group type is refused") {
+        for (const auto *type : {"triangles", "procedural"}) {
+            INFO("type " << type);
+            auto invalid = config;
+            invalid["compute_tasks"][0]["ray_tracing"]["hit_shaders"]
+                   ["primary"]["opaque"]["type"] = type;
+            CHECK_THROWS_WITH(
+                parseComputeTaskDefinitionsFromConfigJson(invalid, project.get()),
+                ContainsSubstring(
+                    "pelican.ray_group_type_declared_in_task@1"));
+        }
     }
-    SECTION("procedural is not a typed grammar value") {
+    SECTION("a triangles group cannot declare intersection") {
         auto invalid = config;
         invalid["compute_tasks"][0]["ray_tracing"]["hit_shaders"]
-               ["primary"]["opaque"]["type"] = "procedural";
+               ["primary"]["opaque"]["intersection"] = "shaders/nope";
         CHECK_THROWS_WITH(
             parseComputeTaskDefinitionsFromConfigJson(invalid, project.get()),
             ContainsSubstring(
-                "pelican.ray_tracing.ray_hit_group_invalid@1"));
+                "pelican.ray_tracing.unsupported_shader_stage@1"));
     }
     SECTION("unknown group fields use the one closed-grammar error") {
         auto invalid = config;
         invalid["compute_tasks"][0]["ray_tracing"]["hit_shaders"]
-               ["primary"]["opaque"]["intersection"] = "shaders/nope";
+               ["primary"]["opaque"]["shader"] = "shaders/nope";
         CHECK_THROWS_WITH(
             parseComputeTaskDefinitionsFromConfigJson(invalid, project.get()),
             ContainsSubstring(
@@ -478,10 +486,12 @@ TEST_CASE("WP366 layout schema and generated source are raw-digest bound",
     CHECK(include.find("GROUP_") == std::string::npos);
     CHECK(include.find("ROW_") == std::string::npos);
 
+    // MG-2a: the digest is of the parsed document (v1 alone hashed raw
+    // bytes), so whitespace leaves it and the generated source unchanged.
     const auto whitespace = parseRayGroupLayout(
         std::string{layoutJson} + "\n", "layout.json");
-    CHECK(whitespace.digest_sha256 != layout.digest_sha256);
-    CHECK(makeRayGroupLayoutVirtualInclude(whitespace) != include);
+    CHECK(whitespace.digest_sha256 == layout.digest_sha256);
+    CHECK(makeRayGroupLayoutVirtualInclude(whitespace) == include);
 
     auto reordered_json = nlohmann::json::parse(layoutJson);
     std::swap(reordered_json["groups"][0], reordered_json["groups"][1]);
@@ -585,8 +595,10 @@ TEST_CASE("WP366 generated include salt drives the real shader cache",
         std::string{layoutJson} + "\n"));
     INFO(whitespace.log);
     REQUIRE(whitespace.ok);
-    CHECK_FALSE(whitespace.cache_hit);
-    CHECK(whitespace.cache_key != base.cache_key);
+    // MG-2a: spelling is not part of the layout digest (v1 alone hashed its
+    // raw bytes), so the same include is a cache hit.
+    CHECK(whitespace.cache_hit);
+    CHECK(whitespace.cache_key == base.cache_key);
     CHECK(whitespace.cache_key != reordered.cache_key);
 
     const auto repeated = compile(base_layout);
@@ -618,7 +630,7 @@ TEST_CASE("WP366 root sidecar is single-load and drives the complete task gramma
             }
             ++binding_loads;
             return std::string{R"json({
-              "schema":"pelican.ray_bindings","version":1,"bindings":[]
+              "schema":"pelican.ray_bindings","version":2,"bindings":[]
             })json"};
         },
         true);
@@ -858,7 +870,7 @@ TEST_CASE("WP366 canonical std430 ABI mirrors binding bytes",
 
     SECTION("record member set is exact") {
         auto invalid = nlohmann::json::parse(R"json({
-          "schema":"pelican.ray_bindings","version":1,"bindings":[
+          "schema":"pelican.ray_bindings","version":2,"bindings":[
             {"material":{"document":"m"},"group":"opaque",
              "record":{"tint":[0,0,0]}}
           ]})json");
@@ -873,7 +885,7 @@ TEST_CASE("WP366 canonical std430 ABI mirrors binding bytes",
     }
     SECTION("record member types are exact") {
         auto invalid = nlohmann::json::parse(R"json({
-          "schema":"pelican.ray_bindings","version":1,"bindings":[
+          "schema":"pelican.ray_bindings","version":2,"bindings":[
             {"material":{"document":"m"},"group":"opaque",
              "record":{"tint":[0,0],"flags":"1"}}
           ]})json");
@@ -1023,7 +1035,9 @@ TEST_CASE("WP366 production AS lowering is publish-order independent",
         const auto &left = forward_tlas[q];
         const auto &right = reverse_tlas[q];
         CHECK(left.q == q);
-        CHECK(left.instance_custom_index == q);
+        // MG-2a: v1 wrote q here; a version 3 row takes the layout default.
+        CHECK(left.instance_custom_index ==
+              rayAccelerationStructureCanonicalDefaults.custom_index);
         CHECK(left.instance_sbt_record_offset == q * 2);
         CHECK(right.q == left.q);
         CHECK(right.instance_custom_index == left.instance_custom_index);
@@ -1076,7 +1090,7 @@ TEST_CASE("WP366 production AS lowering is publish-order independent",
             ambiguous[0].node_index + 5;
         ambiguous[1].world_transform = ambiguous[0].world_transform;
         project.bindings = parseRayBindings(R"json({
-          "schema":"pelican.ray_bindings","version":1,"bindings":[
+          "schema":"pelican.ray_bindings","version":2,"bindings":[
             {"material":{"document":"materials/leaf.mat.json"},
              "group":"opaque","record":{"tint":[1,0,0],"flags":1}},
             {"material":{"asset":"models/tree.glb","source_material_index":2},
@@ -1190,9 +1204,9 @@ TEST_CASE("WP366 q by r addressing packs every row from H of its logical group",
     }
     SECTION("all padding starts as zero") {
         const auto empty_layout = parseRayGroupLayout(R"json({
-          "schema":"pelican.ray_group_layout","version":1,
+          "schema":"pelican.ray_group_layout","version":3,
           "ray_types":["primary"],"default_group":"opaque",
-          "groups":[{"name":"opaque"}],"misses":[{"name":"sky"}],"record":[]
+          "groups":[{"name":"opaque","type":"triangles"}],"misses":[{"name":"sky"}],"record":[]
         })json");
         const std::array one_row{RaySceneRow{.q = 0, .group_index = 0}};
         const std::array<std::byte, 3> short_handle{

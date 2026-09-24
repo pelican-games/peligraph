@@ -473,13 +473,28 @@ void publishCommittedMarker(const std::filesystem::path &directory,
 
 enum class TransactionDecision { prepared, committed };
 
-// What a transaction directory decided, read from disk. The marker answers
-// first; a manifest that still carries the superseded-in-place `status:
-// "committed"` of the previous format is read -- and only read -- so a
-// directory written before this change still recovers.
+std::string utf8PathString(const std::filesystem::path &path) {
+    const auto encoded = path.generic_u8string();
+    return {reinterpret_cast<const char *>(encoded.data()), encoded.size()};
+}
+
+// MG-2a: the previous format wrote its decision into manifest.json as
+// `status: "committed"`. Such a directory is neither rolled back nor read as
+// committed; both readers stop on it by name and leave it in place.
+void rejectLegacyTransactionDirectory(const std::filesystem::path &directory,
+                                      const Json &manifest) {
+    if (manifest.is_object() &&
+        manifest.value("status", std::string{}) == "committed") {
+        throw RenderConfigLegacyTransactionDirectory{directory};
+    }
+}
+
+// What a transaction directory decided, read from disk. The marker is the
+// only record of a commit.
 TransactionDecision transactionDecision(
     const std::filesystem::path &directory, const Json &manifest,
     std::string_view manifest_bytes) {
+    rejectLegacyTransactionDirectory(directory, manifest);
     if (hasCommittedMarker(directory)) {
         const auto marker =
             Json::parse(readBytes(committedMarkerPath(directory)));
@@ -495,7 +510,6 @@ TransactionDecision transactionDecision(
         return TransactionDecision::committed;
     }
     const auto status = manifest.value("status", std::string{});
-    if (status == "committed") return TransactionDecision::committed;
     if (status != "prepared") {
         throw std::runtime_error(
             "render authoring recovery manifest has unknown status");
@@ -692,6 +706,26 @@ void removeTransactionDirectory(const std::filesystem::path &directory) {
 
 } // namespace
 
+RenderConfigLegacyTransactionDirectory::RenderConfigLegacyTransactionDirectory(
+    std::filesystem::path directory)
+    : std::runtime_error{[&directory] {
+          const auto path = utf8PathString(directory);
+          return std::string{renderConfigLegacyTransactionDirCode} + ": " +
+                 Json{{"path", path},
+                      {"message",
+                       "the render authoring transaction directory '" + path +
+                           "' was written by an engine older than v0 and is "
+                           "not read; its documents are already committed, so "
+                           "delete this directory by hand and open the project "
+                           "again"}}
+                     .dump();
+      }()},
+      path_{std::move(directory)} {}
+
+nlohmann::json RenderConfigLegacyTransactionDirectory::errorFields() const {
+    return {{"path", utf8PathString(path_)}};
+}
+
 std::filesystem::path renderConfigTransactionDirectory(
     const std::filesystem::path &project_root) {
     return project_root / ".pelican" / "render-authoring.transaction";
@@ -732,14 +766,16 @@ RenderConfigDocumentCommitReceipt commitRenderConfigCandidateDocuments(
         const bool has_manifest = std::filesystem::is_regular_file(
                                       existing_manifest, existing_error) &&
                                   !existing_error;
-        // The marker is the decision; the manifest's own status is read only
-        // for a directory written by the previous format. Recovery, not this
+        // The marker is the decision. A directory in the previous format stops
+        // here by name before anything else reads it. Recovery, not this
         // guard, verifies the marker's digest, so a mismatch surfaces here by
         // its name rather than as "another transaction is active".
-        if (has_manifest &&
-            (hasCommittedMarker(existing_directory) ||
-             Json::parse(readBytes(existing_manifest))
-                     .value("status", std::string{}) == "committed")) {
+        if (has_manifest) {
+            rejectLegacyTransactionDirectory(
+                existing_directory,
+                Json::parse(readBytes(existing_manifest)));
+        }
+        if (has_manifest && hasCommittedMarker(existing_directory)) {
             recoverRenderConfigDocumentTransaction(project_root);
         } else {
             throw std::runtime_error(

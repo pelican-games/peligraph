@@ -624,7 +624,7 @@ TEST_CASE("ray occurrence production RPC exposes inventory and tri-state resolut
     CHECK(default_binding.at("binding_reference").is_null());
     CHECK(default_binding.at("record_value_source") == "zero_default");
     CHECK(default_binding.at("setting_sources").at("mask") == "engine_default");
-    CHECK(default_binding.at("setting_sources").at("custom_index") == "layout_v1_q");
+    CHECK(default_binding.at("setting_sources").at("custom_index") == "engine_default");
     CHECK(default_binding.at("setting_sources").at("geometry_rule_index").is_null());
     CHECK(default_binding.at("setting_sources").at("override_row_id").is_null());
     CHECK(default_binding.at("mask") == 255);

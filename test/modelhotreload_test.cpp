@@ -410,7 +410,7 @@ TEST_CASE("HR2-G rig layout change advances compatibility and resets temporal st
     instances.setRayInstanceDeclaration(instance, 382, declaration);
     auto ray_candidate = instances.snapshotPreparedScene();
     auto ray_project = std::make_shared<RayTracingProjectConfig>();
-    ray_project->layout = RayTracingRt31Fixture::v2Layout();
+    ray_project->layout = RayTracingRt31Fixture::v3Layout();
     instances.prepareRayScenePlan(ray_candidate, ray_project);
     instances.publishPreparedScene(std::move(ray_candidate));
     const auto old_ray_plan = instances.rayAsPlan();
@@ -501,7 +501,7 @@ TEST_CASE("WP382c model reload rollback keeps the published occurrence catalog a
 
     auto ray_candidate = instances.snapshotPreparedScene();
     auto ray_project = std::make_shared<RayTracingProjectConfig>();
-    ray_project->layout = RayTracingRt31Fixture::v2Layout();
+    ray_project->layout = RayTracingRt31Fixture::v3Layout();
     instances.prepareRayScenePlan(ray_candidate, ray_project);
     instances.publishPreparedScene(std::move(ray_candidate));
     const auto old_ray_plan = instances.rayAsPlan();

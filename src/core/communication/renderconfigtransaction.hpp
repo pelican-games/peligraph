@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -16,6 +17,28 @@ class RenderConfigExternalModification final : public std::runtime_error {
   public:
     explicit RenderConfigExternalModification(const std::string &message)
         : std::runtime_error{message} {}
+};
+
+// MG-2a: a transaction directory in the format that recorded its decision as
+// `status: "committed"` inside manifest.json. Nothing writes that format any
+// more, and it is not read: recovery and a new commit stop on it by name and
+// leave the directory where it is, for the developer to remove by hand.
+//
+// what() is "render_config.legacy_transaction_dir@1: {JSON fields}", the shape
+// an edit ticket carries a named refusal in (splitCodedRefusalMessage); the
+// fields are {path, message}.
+inline constexpr std::string_view renderConfigLegacyTransactionDirCode =
+    "render_config.legacy_transaction_dir@1";
+
+class RenderConfigLegacyTransactionDirectory final : public std::runtime_error {
+    std::filesystem::path path_;
+
+  public:
+    explicit RenderConfigLegacyTransactionDirectory(
+        std::filesystem::path directory);
+    const std::filesystem::path &path() const noexcept { return path_; }
+    // {"path": <the directory, UTF-8>}
+    nlohmann::json errorFields() const;
 };
 
 struct RenderConfigDocumentCommitReceiptEntry {
@@ -63,8 +86,8 @@ void rollbackCommittedRenderConfigDocuments(
 // digests the prepared manifest; without the marker it is prepared and is
 // rolled back. A marker that does not match its manifest is rejected by name
 // (render_authoring_manifest_mismatch@1) instead of being read as either. A
-// manifest carrying the previous format's `status: "committed"` is still read
-// as committed; nothing writes that form any more.
+// manifest carrying the previous format's `status: "committed"` stops recovery
+// with RenderConfigLegacyTransactionDirectory and is left on disk.
 void recoverRenderConfigDocumentTransaction(
     const std::filesystem::path &project_root);
 

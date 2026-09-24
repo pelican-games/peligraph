@@ -850,7 +850,7 @@ TEST_CASE("WP382d imported variants retain every override in the shared ray plan
     auto &loader = GET_MODULE(GltfLoader);
     auto &instances = GET_MODULE(PolygonInstanceContainer);
     auto project = std::make_shared<RayTracingProjectConfig>();
-    project->layout = RayTracingRt31Fixture::v2Layout(std::nullopt);
+    project->layout = RayTracingRt31Fixture::v3Layout(std::nullopt);
     constexpr std::uint64_t object = 382;
     const nlohmann::ordered_json witness{
         {"type", "pelican_ray_instance"}, {"occurrence", 1},

@@ -79,17 +79,18 @@ void internal::validateResolvedSceneFeatureBindings(
     const auto ray_mode = ray_layout != nullptr && ray_layout->configured()
                               ? ray_layout->mode()
                               : RayLayoutSemanticMode::LegacyNoLayout;
+    // Without a ray group layout there is no procedural group and no layout
+    // owner for pelican_ray_instance. The codes keep the names they were
+    // published under; the only layout version is 3.
     if (ray_mode != RayLayoutSemanticMode::LayoutV3) {
         for (const auto &object : scene.objects) {
             for (const auto &component : object.components) {
                 if (component.name == "pelican_procedural_geometry") {
                     throw std::runtime_error(
-                        "pelican.ray_group_type_requires_layout_v3@1: procedural geometry requires layout version 3");
+                        "pelican.ray_group_type_requires_layout_v3@1: procedural geometry requires a ray_group_layout");
                 }
             }
         }
-    }
-    if (!requiresRayLayoutV2(ray_mode)) {
         bool external_owner = false;
         if (const auto *components =
                 FastModuleContainer::tryGet<ComponentInfoManager>()) {
@@ -109,7 +110,7 @@ void internal::validateResolvedSceneFeatureBindings(
                                            "pelican_ray_instance";
                                 })) {
                     throw std::runtime_error(
-                        "pelican.ray_instance_requires_layout_v2@1: builtin pelican_ray_instance declarations require ray_group_layout version 2");
+                        "pelican.ray_instance_requires_layout_v2@1: builtin pelican_ray_instance declarations require a ray_group_layout");
                 }
             }
         }
