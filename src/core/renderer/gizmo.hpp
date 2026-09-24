@@ -170,6 +170,10 @@ struct GizmoVertex {
     glm::vec4 color{1.0f};
 };
 
+// Uploaded to the GPU as raw bytes: the size is the sum of the members,
+// so the struct has no padding for stale bytes to hide in.
+static_assert(sizeof(GizmoVertex) == 32);
+
 DECLARE_MODULE(Gizmo) {
     // The device, descriptor pool, vertex buffer and pass table are the same
     // plumbing DebugDraw and DebugText need; only the handle geometry below

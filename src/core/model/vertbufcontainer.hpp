@@ -45,6 +45,10 @@ struct CommonSkinningVertStruct {
     glm::vec4 weight;
 };
 
+// Uploaded to the GPU as raw bytes: the size is the sum of the members,
+// so the struct has no padding for stale bytes to hide in.
+static_assert(sizeof(CommonSkinningVertStruct) == 88);
+
 DECLARE_MODULE(VertBufContainer) {
     struct FreeRange {
         uint32_t offset = 0;

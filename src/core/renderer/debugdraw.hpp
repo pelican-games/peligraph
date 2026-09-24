@@ -18,6 +18,10 @@ struct DebugDrawVertex {
     glm::vec4 color;
 };
 
+// Uploaded to the GPU as raw bytes: the size is the sum of the members,
+// so the struct has no padding for stale bytes to hide in.
+static_assert(sizeof(DebugDrawVertex) == 32);
+
 DECLARE_MODULE(DebugDraw) {
     // The device, descriptor pool, vertex buffer and pass table are the same
     // plumbing DebugText and Gizmo need; only the vertices below are ours.

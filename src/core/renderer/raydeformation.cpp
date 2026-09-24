@@ -38,6 +38,8 @@ struct DeformationJob {
 static_assert(offsetof(DeformationJob, vat) == 28);
 static_assert(offsetof(DeformationJob, vat_bounds_min_frame_count) == 32);
 static_assert(offsetof(DeformationJob, time) == 80);
+// Pushed as raw bytes (sizeof(job)): no tail padding after `time`.
+static_assert(sizeof(DeformationJob) == 84);
 
 // The frame's geometry snapshots retain this object until submission completes.
 // Keeping the pool and pipeline here also covers reload and aborted publication.

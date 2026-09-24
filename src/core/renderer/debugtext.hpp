@@ -24,6 +24,10 @@ struct DebugTextVertex {
     glm::vec2 _pad;
 };
 
+// Uploaded to the GPU as raw bytes: the size is the sum of the members,
+// so the struct has no padding for stale bytes to hide in.
+static_assert(sizeof(DebugTextVertex) == 48);
+
 DECLARE_MODULE(DebugText) {
     struct QueuedGlyph {
         ui::PositionedGlyph positioned;

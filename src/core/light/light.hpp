@@ -40,6 +40,12 @@ namespace Pelican
 		float intensity;
 	};
 
+	// Uploaded inside LightUBO as raw bytes: each size is the sum of the
+	// members, so no light record has padding for stale bytes to hide in.
+	static_assert(sizeof(DirectionalLight_UBO) == 32);
+	static_assert(sizeof(PointLight_UBO) == 32);
+	static_assert(sizeof(SpotLight_UBO) == 48);
+
 	struct DirectionalLight
 	{
 		std::string name;

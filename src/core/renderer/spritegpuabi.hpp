@@ -17,6 +17,10 @@ struct GpuVertex {
     std::uint32_t pixel_snap = 0;
 };
 
+// Uploaded to the GPU as raw bytes: the size is the sum of the members,
+// so the struct has no padding for stale bytes to hide in.
+static_assert(sizeof(GpuVertex) == 112);
+
 struct GpuVertexLayout {
     vk::VertexInputBindingDescription binding;
     std::array<vk::VertexInputAttributeDescription, 10> attributes;
