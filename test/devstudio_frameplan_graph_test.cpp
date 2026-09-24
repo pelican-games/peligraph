@@ -7764,6 +7764,80 @@ Json withRenderTargets(Json context, const std::string &owned = "f1_owned") {
 
 } // namespace
 
+TEST_CASE("F-4 a pass a direct root declares is refused as the root's, not a preset's",
+          "[devstudio][frame-plan][f4][canvas-edit]") {
+    // The shape a Blank pipeline project's context has: no pipeline_preset,
+    // config_kind "direct", and `present` declared by the root itself.
+    const Json present{
+        {"name", "present"},
+        {"type", "fullscreen"},
+        {"input", Json::array()},
+        {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+        {"shader", {{"vertex", "engine://fullscreen"},
+                    {"fragment", "project://shaders/present"}}}};
+    Json context{
+        {"source_reference", "project://passes/main_rendering_config.json"},
+        {"source_digest", {{"hex", RootDigest}}},
+        {"config_kind", "direct"},
+        {"graphs",
+         Json::array({Json{
+             {"name", "main_render"},
+             {"passes",
+              Json::array(
+                  {Json{{"name", "present"},
+                        {"declaration_index", 0},
+                        {"declaration", present},
+                        {"editable_preset_pass", false},
+                        {"editable_feature_pass", false},
+                        {"provenance", {{"source", "project"},
+                                        {"provider_feature", ""},
+                                        {"provider_reference", ""}}}},
+                   Json{{"name", "gizmo_pass"},
+                        {"declaration_index", 1},
+                        {"declaration", {{"name", "gizmo_pass"},
+                                         {"type", "gizmo"}}},
+                        {"editable_preset_pass", false},
+                        {"editable_feature_pass", false},
+                        {"provenance", {{"source", "engine"},
+                                        {"provider_feature", ""},
+                                        {"provider_reference", ""}}}}})},
+             {"anchor_candidates",
+              Json::array({Json{{"position", 0}, {"insert", "before:present"}},
+                           Json{{"position", 1}, {"insert", "after:present"}}})}}})}};
+
+    const auto direct = framePlanAuthoringFromContext(context);
+    REQUIRE(direct.received);
+    CHECK(direct.direct);
+    const auto refused = framePlanPassResourceRequest(
+        direct, "main_render", "present", {"scene_color"}, true);
+    CHECK_FALSE(refused.sendable());
+    CHECK(refused.refusal.find("present") != std::string::npos);
+    CHECK(refused.refusal.find("project://passes/main_rendering_config.json") !=
+          std::string::npos);
+    CHECK(refused.refusal.find("selects no preset") != std::string::npos);
+    // There is no preset in this project, so it cannot be told to fork one.
+    CHECK(refused.refusal.find("fork") == std::string::npos);
+    // A pass the engine adds to the same root is the engine's, not the file's.
+    const auto engine_pass = framePlanPassShaderRequest(
+        direct, "main_render", "gizmo_pass", "fragment", "project://shaders/x");
+    CHECK_FALSE(engine_pass.sendable());
+    CHECK(engine_pass.refusal.find("added by the engine") != std::string::npos);
+    CHECK(engine_pass.refusal.find("fork") == std::string::npos);
+
+    // The control: the same pass under an engine preset the project has not
+    // forked is still told to fork it.
+    context["config_kind"] = "preset";
+    context["pipeline_preset"] = {
+        {"reference", "engine://render_pipelines/hybrid_v1.json"},
+        {"source_digest", {{"hex", PresetDigest}}}};
+    const auto preset = framePlanAuthoringFromContext(context);
+    CHECK_FALSE(preset.direct);
+    const auto told_to_fork = framePlanPassResourceRequest(
+        preset, "main_render", "present", {"scene_color"}, true);
+    CHECK_FALSE(told_to_fork.sendable());
+    CHECK(told_to_fork.refusal.find("fork") != std::string::npos);
+}
+
 TEST_CASE("F-1 the render target form becomes the declaration the engine takes",
           "[devstudio][frame-plan][f1][render-targets]") {
     const auto authoring = framePlanAuthoringFromContext(

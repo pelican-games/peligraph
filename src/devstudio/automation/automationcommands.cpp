@@ -16,6 +16,7 @@
 #include <QAbstractSpinBox>
 #include <QAction>
 #include <QApplication>
+#include <QColor>
 #include <QComboBox>
 #include <QDir>
 #include <QElapsedTimer>
@@ -1622,6 +1623,28 @@ AutomationReply commandScreenshot(const AutomationHost &host,
                 QStringLiteral("no widget or drawn item is named \"%1\"")
                     .arg(name));
     }
+    // F-4: points to read back from the picture, each [x, y] as a fraction of
+    // its width and height, so a scenario can compare two pixels of what the
+    // engine drew -- "the same colour down one stripe" -- without knowing the
+    // size of the window it was given.
+    std::vector<QPointF> wanted_pixels;
+    if (request.contains(QStringLiteral("pixels"))) {
+        const QJsonValue pixels = request.value(QStringLiteral("pixels"));
+        if (!pixels.isArray())
+            return AutomationReply::failure(
+                BadRequest, QStringLiteral("pixels must be a list of [x, y]"));
+        for (const QJsonValue &entry : pixels.toArray()) {
+            const QJsonArray at = entry.toArray();
+            const double x = at.size() == 2 ? at.at(0).toDouble(-1.0) : -1.0;
+            const double y = at.size() == 2 ? at.at(1).toDouble(-1.0) : -1.0;
+            if (x < 0.0 || x > 1.0 || y < 0.0 || y > 1.0)
+                return AutomationReply::failure(
+                    BadRequest,
+                    QStringLiteral("each pixel is [x, y], fractions of the "
+                                   "picture between 0 and 1"));
+            wanted_pixels.emplace_back(x, y);
+        }
+    }
     QDir().mkpath(QFileInfo(path).absolutePath());
     // "widget" renders the Qt widget tree; the embedded engine window is a
     // foreign child and does not appear in it. "screen" reads the desktop
@@ -1662,13 +1685,25 @@ AutomationReply commandScreenshot(const AutomationHost &host,
         const auto *row = reinterpret_cast<const QRgb *>(image.constScanLine(y));
         for (int x = 0; x < image.width(); ++x) colors.insert(row[x]);
     }
-    return AutomationReply::success(QJsonObject{
+    QJsonObject reply{
         {QStringLiteral("path"), QFileInfo(path).absoluteFilePath()},
         {QStringLiteral("mode"), mode},
         {QStringLiteral("width"), pixmap.width()},
         {QStringLiteral("height"), pixmap.height()},
         {QStringLiteral("distinct_colors"), static_cast<int>(colors.size())},
-    });
+    };
+    if (!wanted_pixels.empty()) {
+        QJsonArray pixels;
+        for (const QPointF &at : wanted_pixels) {
+            const int x = std::clamp(static_cast<int>(at.x() * image.width()),
+                                     0, image.width() - 1);
+            const int y = std::clamp(static_cast<int>(at.y() * image.height()),
+                                     0, image.height() - 1);
+            pixels.append(QColor(image.pixel(x, y)).name());
+        }
+        reply.insert(QStringLiteral("pixels"), pixels);
+    }
+    return AutomationReply::success(reply);
 }
 
 } // namespace

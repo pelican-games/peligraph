@@ -203,7 +203,7 @@ window the desktop happens to have activated.
 | `wait_engine`  | `timeout_ms?`, `frames?` -- until the viewport answers editor RPC; with `frames`, until the engine has published that many frames (`get_status` `render.published_frames`) |
 | `rpc`          | `method`, `params?`, `timeout_ms?` -- straight to the engine   |
 | `open_project` | `dir`                                                         |
-| `screenshot`   | `path`, `name?`, `mode?` (`widget` \| `screen`)               |
+| `screenshot`   | `path`, `name?`, `mode?` (`widget` \| `screen`), `pixels?`    |
 | `quit`         | --                                                            |
 
 One example of each of the kinds Q-1b added:
@@ -270,7 +270,13 @@ Three things worth knowing before writing a scenario:
   mode needs the window to be unobstructed. The reply carries
   `distinct_colors`, the number of different colours in the picture, so a
   `result` step can ask whether the engine drew anything at all (a cleared
-  viewport is one colour). `new_blank_project` is the example.
+  viewport is one colour). `new_blank_project` is the example. With
+  `"pixels": [[x, y], ...]` -- each a fraction of the picture's width and
+  height -- the reply also carries `pixels`, the colour at each point as
+  `"#rrggbb"`, so a `result` step can `remember` one and compare another
+  against it: "the same colour down a stripe, a different one across it" is
+  how `render_pipeline_from_scratch` tells stripes from a gradient without
+  knowing what colour the output transform makes of them.
 * A dialog is filled in the way a panel is: it is shown with `open()`, not
   `exec()`, so its controls are named widgets like any other. File > New
   Project... is `pelican.newProjectDialog`, with `pelican.newProject.location`,
@@ -282,7 +288,9 @@ Three things worth knowing before writing a scenario:
 A third kind of step is done by the driver itself, not sent to Studio: a
 `file` step reads or writes one file in the project copy, the way a person
 does in an editor of their own between two gestures. The path has to be
-inside `{project}`; anything else fails the step.
+inside `{project}` or `{artifacts}` -- the two directories the run owns; a
+project a scenario makes with File > New Project lives under `{artifacts}`
+(`render_pipeline_from_scratch` is the example). Anything else fails the step.
 
     {"file": "write",    "path": "{project}/shaders/x.frag", "text": "..."}
     {"file": "replace",  "path": "{project}/shaders/x.frag", "old": "a", "new": "b"}

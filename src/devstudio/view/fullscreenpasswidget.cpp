@@ -213,6 +213,12 @@ struct FullscreenPassWidget::Impl {
     };
     std::map<std::string, std::vector<Anchor>, std::less<>> anchors;
     std::string source_digest, preset_digest;
+    // F-4: "direct" when the root declares its passes itself and selects no
+    // preset, which is what a Blank pipeline project is; with the reference of
+    // that root, so a refusal can name the file to edit instead.
+    std::string config_kind;
+    std::string root_reference;
+    std::set<std::pair<std::string, std::string>> root_declared_passes;
     std::map<std::pair<std::string, std::string>, Json> preset_passes;
     std::map<std::pair<std::string, std::string>, Json> feature_pass_info;
     std::optional<std::pair<std::string, std::string>> editing_preset_pass;
@@ -911,7 +917,11 @@ struct FullscreenPassWidget::Impl {
 
     bool preservesPresetDeclaration() const {
         const auto pass_type = original_preset_pass.value("type", std::string{});
-        return editing_preset_pass && pass_type != "fullscreen";
+        // A pass whose declaration was refused has none to preserve (F-4: the
+        // draft used to read a type out of the empty object and show that
+        // failure in place of the reason).
+        return editing_preset_pass && !pass_type.empty() &&
+               pass_type != "fullscreen";
     }
 
     bool editingAuxiliaryPass() const {
@@ -1608,10 +1618,11 @@ struct FullscreenPassWidget::Impl {
             remove_fragment->currentIndex() >= 0);
     }
 
-    void authoringError(const QString &message) {
+    void authoringError(const QString &message, const QString &line = {}) {
         authoring_status->setStyleSheet(
             QStringLiteral("color: #d94c3d;"));
-        setPanelNotice(authoring_status, owner.tr("authoring failed"),
+        setPanelNotice(authoring_status,
+                       line.isEmpty() ? owner.tr("authoring failed") : line,
                        owner.tr("Render authoring failed: %1").arg(message));
         updateAuthoringButtons();
     }
@@ -1782,6 +1793,22 @@ struct FullscreenPassWidget::Impl {
       }
       if (!preset_passes.contains(*editing_preset_pass)) {
         const auto found = feature_pass_info.find(*editing_preset_pass);
+        if (config_kind == "direct" &&
+            root_declared_passes.contains(*editing_preset_pass)) {
+          // F-4: the engine edits passes of a preset or a feature only, and
+          // a direct root has no preset -- there is nothing to fork either.
+          authoringError(
+              owner.tr("%1 is declared in the project's own rendering "
+                       "config%2, which selects no preset: Studio cannot "
+                       "edit a pass there yet. Edit that file by hand.")
+                  .arg(text(editing_preset_pass->second),
+                       root_reference.empty()
+                           ? QString{}
+                           : QStringLiteral(" (%1)").arg(text(root_reference))),
+              owner.tr("%1: not editable in a direct root")
+                  .arg(text(editing_preset_pass->second)));
+          return;
+        }
         authoringError(found != feature_pass_info.end()
             ? text(found->second.value("feature_edit_reason", std::string{"This feature node has no editable project pass declaration."}))
             : owner.tr("This node has no editable project preset or feature pass declaration."));
@@ -1928,6 +1955,7 @@ struct FullscreenPassWidget::Impl {
         decltype(authored_passes) next_passes;
         decltype(authored_pass_counts) next_counts;
         decltype(anchors) next_anchors;
+        decltype(root_declared_passes) next_root_declared;
         QStringList provenance_summary;
         for (const auto &graph_value : context.at("graphs")) {
             if (!graph_value.is_object() ||
@@ -1963,6 +1991,10 @@ struct FullscreenPassWidget::Impl {
                 if (pass_value.value("editable_preset_pass", false)) preset_passes.emplace(std::pair{graph_name, pass_name}, pass_value.at("preset_declaration"));
                 if (pass_value.contains("feature_edit_reason") || pass_value.value("editable_feature_pass", false))
                     feature_pass_info.emplace(std::pair{graph_name, pass_name}, pass_value);
+                if (const auto provenance = pass_value.find("provenance");
+                    provenance != pass_value.end() && provenance->is_object() &&
+                    provenance->value("source", std::string{}) == "project")
+                    next_root_declared.emplace(graph_name, pass_name);
                 if (pass_value.value("editable_feature_pass", false))
                     preset_passes.insert_or_assign(std::pair{graph_name, pass_name}, pass_value.at("feature_declaration"));
                 const Json &declaration =
@@ -2037,8 +2069,11 @@ struct FullscreenPassWidget::Impl {
         authored_passes = std::move(next_passes);
         authored_pass_counts = std::move(next_counts);
         anchors = std::move(next_anchors);
+        root_declared_passes = std::move(next_root_declared);
         authoring_available = true;
         const auto kind = context.value("config_kind", std::string{"direct"});
+        config_kind = kind;
+        root_reference = context.value("source_reference", std::string{});
         authoring_status->setStyleSheet({});
         setPanelNotice(
             authoring_status,

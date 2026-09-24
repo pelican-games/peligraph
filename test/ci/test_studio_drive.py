@@ -96,5 +96,37 @@ class StudioDriveShutdownTest(unittest.TestCase):
         self.assertNotIn("studio_exit_code_note", report)
 
 
+class StudioDriveFileStepTest(unittest.TestCase):
+    # F-4: a project made by File > New Project lives under the run's
+    # artifacts, not in the project copy, and a file step has to reach it.
+    # Anything outside the directories the run owns is still refused.
+    def test_file_steps_reach_the_project_copy_and_the_artifacts_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "run" / "project"
+            artifacts = root / "run" / "artifacts"
+            outside = root / "elsewhere"
+            for folder in (project, artifacts, outside):
+                folder.mkdir(parents=True)
+            run = studio_drive.Run({"name": "files"}, artifacts)
+            roots = [project, artifacts]
+            with contextlib.redirect_stdout(io.StringIO()):
+                for target, allowed in (
+                    (project / "a.txt", True),
+                    (artifacts / "new_project" / "shaders" / "b.frag", True),
+                    (outside / "c.txt", False),
+                    (artifacts / ".." / "elsewhere_too.txt", False),
+                ):
+                    with self.subTest(target=str(target)):
+                        ok = studio_drive.run_file_step(
+                            run,
+                            {"file": "write", "path": str(target), "text": "x"},
+                            "write",
+                            roots,
+                        )
+                        self.assertEqual(ok, allowed)
+                        self.assertEqual(target.resolve().is_file(), allowed)
+
+
 if __name__ == "__main__":
     unittest.main()

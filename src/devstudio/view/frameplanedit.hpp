@@ -71,6 +71,11 @@ struct FramePlanAuthoring {
     // The project forked the preset: without this, editing a preset pass is
     // refused by the engine, and the canvas should say so before sending.
     bool preset_forked = false;
+    // F-4: the root declares its passes itself (`config_kind` "direct", as a
+    // Blank pipeline project does). There is no preset to fork, and the engine
+    // edits no pass of such a root, so the refusal has to say that instead.
+    bool direct = false;
+    std::string source_reference;
     std::map<std::pair<std::string, std::string>, FramePlanAuthoringPass> passes;
     // graph -> the pass names in declaration order, and the insert tokens the
     // engine offers. "Add pass after this node" is a position in these.

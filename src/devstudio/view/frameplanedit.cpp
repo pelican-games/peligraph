@@ -120,6 +120,18 @@ std::string passRefusal(const FramePlanAuthoring &authoring,
         return pass.name +
                " comes from a feature: materialize the feature into the "
                "project before editing it here.";
+    // F-4: a direct root selects no preset, so there is nothing to fork.
+    if (authoring.direct && pass.provenance_source == "project")
+        return pass.name + " is declared in the project's own rendering " +
+               "config" +
+               (authoring.source_reference.empty()
+                    ? std::string{}
+                    : " (" + authoring.source_reference + ")") +
+               ", which selects no preset: Studio cannot edit a pass there "
+               "yet. Edit that file by hand.";
+    if (authoring.direct)
+        return pass.name + " is added by the engine; it has no declaration "
+                           "in the project to edit.";
     if (!authoring.preset_forked)
         return pass.name +
                " comes from a shared engine preset: fork the preset into the "
@@ -183,6 +195,8 @@ FramePlanAuthoring framePlanAuthoringFromContext(const Json &context) {
     authoring.preset_digest = textOr(objectOr(preset, "source_digest"), "hex");
     authoring.preset_forked =
         textOr(preset, "reference").starts_with("project://");
+    authoring.direct = textOr(context, "config_kind") == "direct";
+    authoring.source_reference = textOr(context, "source_reference");
     const auto graphs = context.find("graphs");
     if (graphs == context.end() || !graphs->is_array()) return authoring;
     for (const auto &graph : *graphs) {

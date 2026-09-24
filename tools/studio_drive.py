@@ -539,14 +539,17 @@ def run_command_step(run: Run, step: dict[str, Any], label: str) -> bool:
     return True
 
 
-def run_file_step(run: Run, step: dict[str, Any], label: str, project: Path) -> bool:
+def run_file_step(
+    run: Run, step: dict[str, Any], label: str, roots: list[Path]
+) -> bool:
     """A file in the project copy, touched or read the way an editor would.
 
     F-3's scenario has to do what a person does between two Studio gestures:
     edit the shader "New..." wrote, in an editor of their own.  Studio has no
     command for that and should not grow one, so the driver does it itself --
-    and only inside the project copy, which is the one directory a scenario is
-    allowed to change.
+    and only inside the directories this run owns: the project copy, and the
+    run's own artifacts, which is where a scenario that starts from File > New
+    Project puts the project it creates (F-4).
 
         {"file": "write",    "path": "{project}/x", "text": "..."}
         {"file": "replace",  "path": "{project}/x", "old": "...", "new": "..."}
@@ -559,9 +562,12 @@ def run_file_step(run: Run, step: dict[str, Any], label: str, project: Path) -> 
     request = {key: value for key, value in step.items() if key not in _META_KEYS}
     try:
         path = Path(str(step["path"])).resolve()
-        root = project.resolve()
-        if path != root and root not in path.parents:
-            raise ValueError(f"{path} is outside the project copy {root}")
+        owned = [root.resolve() for root in roots]
+        if not any(path == root or root in path.parents for root in owned):
+            raise ValueError(
+                f"{path} is outside the project copy and the run's artifacts "
+                f"({', '.join(str(root) for root in owned)})"
+            )
         if action == "write":
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(str(step["text"]).encode("utf-8"))
@@ -1049,7 +1055,9 @@ def main() -> int:
             if "expect" in step:
                 ok = run_expect_step(run, step, label)
             elif "file" in step:
-                ok = run_file_step(run, step, label, arguments.project)
+                ok = run_file_step(
+                    run, step, label, [arguments.project, artifacts]
+                )
             elif "cmd" in step:
                 ok = run_command_step(run, step, label)
             else:
