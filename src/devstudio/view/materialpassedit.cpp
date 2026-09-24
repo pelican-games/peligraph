@@ -138,6 +138,28 @@ std::vector<std::string> materialPassFillMissing(
     return targets;
 }
 
+std::vector<std::string> materialPassInitialTargets(
+    const FramePlanAuthoring &authoring, const std::string &contract) {
+    const auto slots = materialPassSlots(contract, materialPassHdr(authoring));
+    std::vector<std::string> declared;
+    for (const auto &[name, row] : authoring.render_targets) {
+        (void)row;
+        declared.push_back(name);
+    }
+    std::vector<std::string> targets(slots.size());
+    for (std::size_t index = 0; index < slots.size(); ++index) {
+        const auto *row = authoring.findRenderTarget(slots[index].default_name);
+        if (row == nullptr || !row->declaration.is_object()) continue;
+        const auto format = row->declaration.value("format", std::string{});
+        const auto format_class = row->declaration.value("format_class", std::string{});
+        const bool fits = !format.empty() ? format == slots[index].format
+                                          : !format_class.empty() &&
+                                                format_class == slots[index].format_class;
+        if (fits) targets[index] = slots[index].default_name;
+    }
+    return materialPassFillMissing(declared, contract, std::move(targets));
+}
+
 std::vector<std::size_t> materialPassNewSlots(
     const FramePlanAuthoring &authoring, const MaterialPassFormValues &values) {
     std::vector<std::size_t> outputs;

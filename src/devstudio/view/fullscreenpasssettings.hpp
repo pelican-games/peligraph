@@ -5,6 +5,7 @@
 #include <QString>
 #include <QWidget>
 
+#include <array>
 #include <functional>
 #include <map>
 #include <string>
@@ -70,6 +71,7 @@ class FullscreenOutputOpsEditor final : public QWidget {
     void rebuild(const std::vector<std::string> &targets);
     void rowChanged(std::size_t index);
     void showClearColor(std::size_t index);
+    void pickClearColor(std::size_t index);
 
   public:
     explicit FullscreenOutputOpsEditor(QWidget *parent = nullptr);
@@ -96,6 +98,14 @@ class FullscreenOutputOpsEditor final : public QWidget {
     // returned unchanged.
     static QString reconciledJson(const std::vector<std::string> &colors,
                                   const QString &json_text);
+
+    // T-1. The colour button beside a clear colour: what a picked colour is
+    // written into the field as ("r, g, b, a", each 0..1 to three places, a
+    // whole number without them), and the colour the picker opens on for the
+    // field's text (black for text that is not three or four numbers).
+    static QString clearColorText(double red, double green, double blue,
+                                  double alpha);
+    static std::array<double, 4> clearColorComponents(const QString &text);
 };
 
 } // namespace PelicanStudio

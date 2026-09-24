@@ -460,6 +460,13 @@ struct FramePlanWidget::Impl {
     // and a New render target... that arrived before any context at all.
     std::string pending_form_target;
     bool pending_new_target_form = false;
+    // T-1: the name New render target... opens on (empty: none), the target
+    // the form last created, and who is told once it commits.
+    std::string new_target_name;
+    std::string created_target;
+    // T-1: what a band's editor completes to, by field id.
+    std::function<QStringList(const QString &)> shader_choices;
+    std::function<void(const QString &)> render_target_created_action;
     // --- G-1: material passes. Save may be two changes: the targets first,
     // then -- from the context that names them -- the pass.
     MaterialPassForm *material_pass_form = nullptr;
@@ -668,6 +675,10 @@ struct FramePlanWidget::Impl {
                         text(field.field), text(field.label),
                         text(field.value)});
                 return bands;
+            };
+        logical_scene->inlineFieldChoices =
+            [this](const FramePlanNodeKey &, const QString &field) {
+                return shader_choices ? shader_choices(field) : QStringList{};
             };
         // Double-click is the way to the detailed editors: everything the
         // bands do not carry lives in the two forms that already exist.
@@ -1425,6 +1436,12 @@ struct FramePlanWidget::Impl {
             status->setStyleSheet({});
             if (submitted_method == "edit_render_targets" && !pending_material_pass)
                 pending_target_selection = submitted_target;
+            if (submitted_method == "edit_render_targets" && !pending_material_pass &&
+                !created_target.empty() && created_target == submitted_target) {
+                const auto made = std::exchange(created_target, {});
+                if (render_target_created_action)
+                    render_target_created_action(text(made));
+            }
             // G-1: the pass is added from the context that names the targets;
             // a reply already in flight was read before they were made.
             if (submitted_method == "edit_render_targets" && pending_material_pass) {
@@ -1659,15 +1676,17 @@ struct FramePlanWidget::Impl {
             render_target_form = new RenderTargetForm(&owner);
             render_target_form->setSubmit(
                 [this](const RenderTargetFormValues &values) -> QString {
+                    const bool create = render_target_form->mode() ==
+                                        RenderTargetForm::Mode::create;
                     const auto request =
-                        render_target_form->mode() ==
-                                RenderTargetForm::Mode::create
+                        create
                             ? framePlanRenderTargetAddRequest(authoring, values)
                             : framePlanRenderTargetReplaceRequest(
                                   authoring, render_target_form->editing(),
                                   values);
                     if (!request.sendable()) return text(request.refusal);
                     submit(request);
+                    created_target = create ? values.name : std::string{};
                     return {};
                 });
         }
@@ -1683,8 +1702,9 @@ struct FramePlanWidget::Impl {
                 "Reading the render authoring context..."));
             return;
         }
-        renderTargetForm().present(RenderTargetForm::Mode::create,
-                                   RenderTargetFormValues{},
+        RenderTargetFormValues values;
+        values.name = std::exchange(new_target_name, {});
+        renderTargetForm().present(RenderTargetForm::Mode::create, values,
                                    authoring.render_target_formats,
                                    authoring.render_target_usages);
     }
@@ -2875,6 +2895,21 @@ void FramePlanWidget::setShaderReloadLogAction(
 void FramePlanWidget::setEngineRestartAction(
     std::function<void(const QString &reason)> action) {
     impl_->engine_restart_action = std::move(action);
+}
+
+void FramePlanWidget::openNewRenderTarget(const QString &name) {
+    impl_->new_target_name = name.toStdString();
+    impl_->openNewRenderTarget();
+}
+
+void FramePlanWidget::setRenderTargetCreatedAction(
+    std::function<void(const QString &name)> action) {
+    impl_->render_target_created_action = std::move(action);
+}
+
+void FramePlanWidget::setInlineFieldChoices(
+    std::function<QStringList(const QString &field)> choices) {
+    impl_->shader_choices = std::move(choices);
 }
 
 void FramePlanWidget::engineRestartDeclined(const QString &message) {

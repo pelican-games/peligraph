@@ -11,6 +11,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QVBoxLayout>
 
@@ -50,11 +51,27 @@ QString templateLabel(Pelican::ProjectTemplate kind) {
     return {};
 }
 
+constexpr const char *LastLocationKey = "new_project/last_location";
+
 } // namespace
 
+QString nextFreeProjectName(const QString &location) {
+    const QDir directory{location};
+    for (int number = 1;; ++number) {
+        const QString candidate =
+            QStringLiteral("project_%1").arg(number, 3, 10, QLatin1Char('0'));
+        // Any entry of that name counts, even an empty folder: the person
+        // made it for something.
+        if (location.trimmed().isEmpty() || !directory.exists(candidate))
+            return candidate;
+    }
+}
+
 NewProjectDialog::NewProjectDialog(
-    QWidget *parent, std::function<void(const QString &)> created)
-    : QDialog(parent), created_(std::move(created)) {
+    QWidget *parent, std::function<void(const QString &)> created,
+    QString settings_directory)
+    : QDialog(parent), created_(std::move(created)),
+      settings_directory_(std::move(settings_directory)) {
     setObjectName(QStringLiteral("pelican.newProjectDialog"));
     setWindowTitle(tr("New Project"));
 
@@ -65,8 +82,13 @@ NewProjectDialog::NewProjectDialog(
     auto *location_row = new QHBoxLayout;
     location_ = new QLineEdit(this);
     location_->setObjectName(QStringLiteral("pelican.newProject.location"));
-    location_->setText(QDir::toNativeSeparators(QStandardPaths::writableLocation(
-        QStandardPaths::DocumentsLocation)));
+    QString start = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    if (const QString file = settingsFile(); !file.isEmpty()) {
+        const QString last =
+            QSettings{file, QSettings::IniFormat}.value(QLatin1String{LastLocationKey}).toString();
+        if (!last.isEmpty() && QDir{last}.exists()) start = last;
+    }
+    location_->setText(QDir::toNativeSeparators(start));
     auto *browse = new QPushButton(tr("Browse..."), this);
     browse->setObjectName(QStringLiteral("pelican.newProject.browse"));
     location_row->addWidget(location_, 1);
@@ -75,7 +97,7 @@ NewProjectDialog::NewProjectDialog(
 
     name_ = new QLineEdit(this);
     name_->setObjectName(QStringLiteral("pelican.newProject.name"));
-    name_->setText(QStringLiteral("NewProject"));
+    proposeName();
     form->addRow(tr("Name"), name_);
 
     template_ = new QComboBox(this);
@@ -108,8 +130,10 @@ NewProjectDialog::NewProjectDialog(
     layout->addWidget(buttons);
 
     connect(browse, &QPushButton::clicked, this, [this] { this->browse(); });
-    connect(location_, &QLineEdit::textChanged, this,
-            [this] { refreshPath(); });
+    connect(location_, &QLineEdit::textChanged, this, [this] {
+        proposeName();
+        refreshPath();
+    });
     connect(name_, &QLineEdit::textChanged, this, [this] { refreshPath(); });
     // Create is not wired to accept(): the dialog closes only once the
     // template is on disk, so a refusal leaves it open with the reason.
@@ -131,6 +155,18 @@ void NewProjectDialog::browse() {
         QFileDialog::ShowDirsOnly);
     if (!directory.isEmpty())
         location_->setText(QDir::toNativeSeparators(directory));
+}
+
+QString NewProjectDialog::settingsFile() const {
+    if (settings_directory_.isEmpty()) return {};
+    return QDir{settings_directory_}.filePath(QStringLiteral("new_project.ini"));
+}
+
+void NewProjectDialog::proposeName() {
+    const QString current = name_->text().trimmed();
+    if (!current.isEmpty() && current != proposed_name_) return;
+    proposed_name_ = nextFreeProjectName(location_->text().trimmed());
+    name_->setText(proposed_name_);
 }
 
 void NewProjectDialog::refreshPath() {
@@ -170,6 +206,13 @@ void NewProjectDialog::create() {
         // says what is wrong with it ("... is not empty: <path>").
         notice_->setText(QString::fromUtf8(error.what()));
         return;
+    }
+    if (const QString file = settingsFile(); !file.isEmpty()) {
+        QDir{}.mkpath(settings_directory_);
+        QSettings settings{file, QSettings::IniFormat};
+        settings.setValue(QLatin1String{LastLocationKey},
+                          QDir::fromNativeSeparators(location_->text().trimmed()));
+        settings.sync();
     }
     // Held before accept(): a dialog that deletes itself on close must not be
     // the owner of the call that opens the project.

@@ -148,6 +148,15 @@ struct FullscreenPassWidget::Impl {
     QLineEdit *name = nullptr;
     QLineEdit *vertex_shader = nullptr;
     QLineEdit *fragment_shader = nullptr;
+    // T-1: beside each stem, the shaders there are to pick from. A pick puts
+    // its stem in the field; the field still takes any text.
+    QWidget *vertex_row = nullptr;
+    QComboBox *vertex_choice = nullptr;
+    QComboBox *fragment_choice = nullptr;
+    // T-1: the colour output's "New target: <pass>_color..." entry, and the
+    // target it asked for, until the frame plan names it.
+    std::function<void(const QString &)> new_render_target_action;
+    QString pending_color_target;
     // F-3: the fragment row carries "New...", which writes a starting shader
     // into the project; the row under it asks for the file's name.
     QWidget *fragment_row = nullptr;
@@ -354,18 +363,28 @@ struct FullscreenPassWidget::Impl {
             QStringLiteral("pelican.fullscreenPass.name"));
         form->addRow(owner.tr("Name"), name);
 
-        vertex_shader = new QLineEdit(&owner);
+        vertex_row = new QWidget(&owner);
+        vertex_row->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.vertexRow"));
+        auto *vertex_layout = new QHBoxLayout(vertex_row);
+        vertex_layout->setContentsMargins(0, 0, 0, 0);
+        vertex_shader = new QLineEdit(vertex_row);
         vertex_shader->setObjectName(
             QStringLiteral("pelican.fullscreenPass.shader.vertex"));
         vertex_shader->setPlaceholderText(
             owner.tr("for example engine://fullscreen"));
-        form->addRow(owner.tr("Vertex"), vertex_shader);
+        vertex_layout->addWidget(vertex_shader, 1);
+        vertex_choice = makeShaderChoice(
+            vertex_row, "pelican.fullscreenPass.shader.vertexChoice",
+            vertex_shader);
+        vertex_layout->addWidget(vertex_choice);
+        form->addRow(owner.tr("Vertex"), vertex_row);
 
         fragment_shader = new QLineEdit(&owner);
         fragment_shader->setObjectName(
             QStringLiteral("pelican.fullscreenPass.shader.fragment"));
         fragment_shader->setPlaceholderText(
-            owner.tr("enter a stem; assets are not enumerated here"));
+            owner.tr("a stem, or pick one from the list beside it"));
         buildShaderTemplateRows();
         skinned_vertex_shader = new QLineEdit(&owner);
         skinned_vertex_shader->setObjectName("pelican.fullscreenPass.shader.skinnedVertex");
@@ -628,8 +647,13 @@ struct FullscreenPassWidget::Impl {
             updateDraft();
         });
         QObject::connect(ray_query_scene, &QLineEdit::textChanged, &owner, [this] { updateDraft(); });
-        QObject::connect(name, &QLineEdit::textChanged, &owner,
-                         [this] { updateDraft(); });
+        QObject::connect(name, &QLineEdit::textChanged, &owner, [this] {
+            updateNewColorTargetEntry();
+            updateDraft();
+        });
+        QObject::connect(color_candidate,
+                         qOverload<int>(&QComboBox::currentIndexChanged), &owner,
+                         [this](int index) { colorCandidatePicked(index); });
         QObject::connect(vertex_shader, &QLineEdit::textChanged, &owner,
                          [this] { updateDraft(); });
         QObject::connect(fragment_shader, &QLineEdit::textChanged, &owner,
@@ -691,6 +715,7 @@ struct FullscreenPassWidget::Impl {
         remove_authored->setEnabled(false);
         setPanelNotice(plan_status, owner.tr("no frame plan"),
                        owner.tr("Frame plan unavailable."));
+        refreshShaderChoices();
         updateDraft();
 
         frame_plan.result(
@@ -741,6 +766,10 @@ struct FullscreenPassWidget::Impl {
         auto *fragment_layout = new QHBoxLayout(fragment_row);
         fragment_layout->setContentsMargins(0, 0, 0, 0);
         fragment_layout->addWidget(fragment_shader, 1);
+        fragment_choice = makeShaderChoice(
+            fragment_row, "pelican.fullscreenPass.shader.fragmentChoice",
+            fragment_shader);
+        fragment_layout->addWidget(fragment_choice);
         new_fragment_shader =
             new QPushButton(owner.tr("New…"), fragment_row);
         new_fragment_shader->setObjectName(
@@ -796,6 +825,45 @@ struct FullscreenPassWidget::Impl {
                              open_existing_shader->hide();
                              setPanelNotice(shader_template_notice, {}, {});
                          });
+    }
+
+    // T-1: a list beside a stem field. Picking an entry puts it in the field
+    // and the list goes back to "Pick...", so the same entry can be picked
+    // again after the field was typed over.
+    QComboBox *makeShaderChoice(QWidget *parent, const char *object_name,
+                                QLineEdit *field) {
+        auto *choice = new QComboBox(parent);
+        choice->setObjectName(QString::fromLatin1(object_name));
+        choice->setInsertPolicy(QComboBox::NoInsert);
+        choice->setPlaceholderText(owner.tr("Pick..."));
+        choice->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+        choice->setToolTip(owner.tr(
+            "The project's shaders folder and the engine's fullscreen "
+            "shaders. Picking one puts its stem in the field."));
+        QObject::connect(
+            choice, qOverload<int>(&QComboBox::currentIndexChanged), &owner,
+            [choice, field](int index) {
+                if (index < 0) return;
+                const QString stem = choice->itemText(index);
+                {
+                    const QSignalBlocker blocker{choice};
+                    choice->setCurrentIndex(-1);
+                }
+                field->setText(stem);
+            });
+        return choice;
+    }
+
+    void refreshShaderChoices() {
+        for (const auto &[choice, stage] :
+             {std::pair{fragment_choice, FullscreenShaderStage::fragment},
+              std::pair{vertex_choice, FullscreenShaderStage::vertex}}) {
+            const QSignalBlocker blocker{choice};
+            choice->clear();
+            for (const auto &reference : fullscreenShaderChoices(stage, project_root))
+                choice->addItem(text(reference));
+            choice->setCurrentIndex(-1);
+        }
     }
 
     void updateShaderTemplateAvailability() {
@@ -922,6 +990,7 @@ struct FullscreenPassWidget::Impl {
                                true);
                 return;
             }
+            refreshShaderChoices();
             fragment_shader->setText(text(written.reference));
             templateNotice(owner.tr("created %1").arg(file),
                            owner.tr("Wrote %1 with %2 input(s) and put %3 in "
@@ -1008,7 +1077,22 @@ struct FullscreenPassWidget::Impl {
             fullscreenShaderTemplatePassSettings(selectedTemplateKind());
         interface_row->require(settings.uses_light_data,
                                settings.push_constants);
+        fillTemplateInputs();
         proposeTemplateNames();
+    }
+
+    // T-1: an empty input list takes the declared targets whose names say
+    // what the kind reads (Deferred lighting: G-1's G-buffer names). Inputs
+    // the author already chose are left as they are.
+    void fillTemplateInputs() {
+        if (inputs->count() > 0) return;
+        std::vector<std::string> declared;
+        for (int index = 0; index < input_candidate->count(); ++index)
+            declared.push_back(input_candidate->itemText(index).toStdString());
+        const auto filled = fullscreenTemplateInputFill(selectedTemplateKind(), declared);
+        if (filled.empty()) return;
+        for (const auto &resource : filled) inputs->addItem(text(resource));
+        updateDraft();
     }
 
     // A pass name that is not in the graph yet: the kind's own, then _2, _3...
@@ -1227,22 +1311,23 @@ struct FullscreenPassWidget::Impl {
 
     void showPresetFields(bool preserve_declaration) {
         type->setText(preserve_declaration ? text(original_preset_pass.at("type").get<std::string>()) : QStringLiteral("fullscreen"));
-        for (auto *field : std::array<QWidget *, 5>{position, location, vertex_shader, fragment_row, raster_state})
+        for (auto *field : std::array<QWidget *, 5>{position, location, vertex_row, fragment_row, raster_state})
             form->setRowVisible(field, !preserve_declaration);
         if (editingRasterPass()) {
-            for (auto *field : std::array<QWidget *, 3>{vertex_shader, fragment_row, raster_state})
+            for (auto *field : std::array<QWidget *, 3>{vertex_row, fragment_row, raster_state})
                 form->setRowVisible(field, true);
         }
         form->setRowVisible(draw, editingRasterPass());
         if (editingAuxiliaryPass()) {
-            form->setRowVisible(vertex_shader, true);
+            form->setRowVisible(vertex_row, true);
             form->setRowVisible(fragment_row, !editingShadowPass());
         }
         form->setRowVisible(shader_template_row, false);
         form->setRowVisible(interface_row, !preserve_declaration);
-        // The stem field is inside the row now; it still says for itself
-        // whether it is shown.
+        // The stem fields are inside their rows now; they still say for
+        // themselves whether they are shown.
         fragment_shader->setHidden(!form->isRowVisible(fragment_row));
+        vertex_shader->setHidden(!form->isRowVisible(vertex_row));
         form->setRowVisible(skinned_vertex_shader, editsSkinnedShader());
         auto *target_grid = qobject_cast<QGridLayout *>(targets->layout());
         const std::array visible_columns{!editingAuxiliaryPass(), !editingShadowPass(),
@@ -2539,11 +2624,101 @@ struct FullscreenPassWidget::Impl {
             *color_candidate,
             candidatesForRole(
                 Pelican::PassShapeResourceRole::color_output));
+        updateNewColorTargetEntry();
         populateCandidates(
             *depth,
             candidatesForRole(
                 Pelican::PassShapeResourceRole::depth_output));
         updateHistoryInputEnabled();
+    }
+
+    // --- T-1: a colour output that does not exist yet, made from here.
+
+    static constexpr const char *NewColorTargetMarker = "t1:new-color-target";
+
+    QString newColorTargetName() const {
+        std::vector<std::string> taken;
+        taken.reserve(resource_kinds.size());
+        for (const auto &[resource, kind] : resource_kinds) {
+            (void)kind;
+            taken.push_back(resource);
+        }
+        return text(proposedColorTargetName(name->text().trimmed().toStdString(), taken));
+    }
+
+    // The last entry of the colour list, named after the pass as it is now.
+    void updateNewColorTargetEntry() {
+        const QSignalBlocker blocker{color_candidate};
+        const int last = color_candidate->count() - 1;
+        const bool present =
+            last >= 0 && color_candidate->itemData(last).toString() ==
+                             QLatin1String{NewColorTargetMarker};
+        const QString target = newColorTargetName();
+        const QString label = owner.tr("New target: %1...").arg(target);
+        if (present) {
+            color_candidate->setItemText(last, label);
+            color_candidate->setItemData(last, target, Qt::UserRole + 1);
+            return;
+        }
+        const int index = color_candidate->currentIndex();
+        color_candidate->addItem(label, QString::fromLatin1(NewColorTargetMarker));
+        color_candidate->setItemData(color_candidate->count() - 1, target, Qt::UserRole + 1);
+        color_candidate->setItemData(
+            color_candidate->count() - 1,
+            owner.tr("Opens New render target with this name; once it is "
+                     "made it becomes this pass's next colour output."),
+            Qt::ToolTipRole);
+        color_candidate->setCurrentIndex(index);
+    }
+
+    void colorCandidatePicked(int index) {
+        if (index < 0 || color_candidate->itemData(index).toString() !=
+                             QLatin1String{NewColorTargetMarker})
+            return;
+        const QString target = color_candidate->itemData(index, Qt::UserRole + 1).toString();
+        {
+            const QSignalBlocker blocker{color_candidate};
+            color_candidate->setCurrentIndex(-1);
+        }
+        if (!new_render_target_action) {
+            authoringError(owner.tr("New render target is not available here."));
+            return;
+        }
+        pending_color_target = target;
+        new_render_target_action(target);
+    }
+
+    void renderTargetCreated(const QString &target) {
+        if (target.isEmpty() || target != pending_color_target) return;
+        // The context names the new target's digest; the plan names the
+        // target. The draft is kept across both (consumeResult).
+        requestAuthoringContext();
+        requestRefresh();
+    }
+
+    // Whether the plan changed only by gaining the target asked for here:
+    // then the draft is still the author's, and it stays.
+    bool onlyGainedPendingTarget(const PlanBinding &before,
+                                 const PlanBinding &after) const {
+        if (pending_color_target.isEmpty() || before.graph != after.graph ||
+            !after.resources.contains(pending_color_target.toStdString()))
+            return false;
+        for (const auto &[resource, kind] : before.resources) {
+            const auto found = after.resources.find(resource);
+            if (found == after.resources.end() || found->second != kind) return false;
+        }
+        return true;
+    }
+
+    void takePendingColorTarget() {
+        if (pending_color_target.isEmpty() ||
+            color_candidate->findText(pending_color_target, Qt::MatchExactly) < 0)
+            return;
+        const QString target = std::exchange(pending_color_target, {});
+        if (!colors->findItems(target, Qt::MatchExactly).isEmpty()) return;
+        colors->addItem(target);
+        reconcileColorAttachments();
+        updateDraft();
     }
 
     void removeSelected(QListWidget &sequence) {
@@ -2574,6 +2749,7 @@ struct FullscreenPassWidget::Impl {
         color_attachment_references->clear();
         inputs->clear();
         colors->clear();
+        pending_color_target.clear();
         depth->setCurrentIndex(-1);
         position->setValue(0);
         // F-3: a new draft starts without the last draft's shader log or its
@@ -2676,7 +2852,8 @@ struct FullscreenPassWidget::Impl {
                 .graph = next.graph,
                 .resources = next_kinds,
             };
-            const bool changed = binding && *binding != next_binding;
+            const bool changed = binding && *binding != next_binding &&
+                                 !onlyGainedPendingTarget(*binding, next_binding);
             const QString previous_depth = depth->currentText();
 
             plan = std::move(next);
@@ -2691,6 +2868,8 @@ struct FullscreenPassWidget::Impl {
                 depth->setCurrentIndex(
                     depth->findText(previous_depth, Qt::MatchExactly));
             }
+            takePendingColorTarget();
+            refreshShaderChoices();
             configurePosition();
             refresh->setEnabled(refresh_available);
             plan_status->setStyleSheet(
@@ -2949,6 +3128,16 @@ void FullscreenPassWidget::setProjectRoot(
     const std::filesystem::path &project_root) {
     impl_->project_root = project_root;
     impl_->updateShaderTemplateAvailability();
+    impl_->refreshShaderChoices();
+}
+
+void FullscreenPassWidget::setNewRenderTargetAction(
+    std::function<void(const QString &)> action) {
+    impl_->new_render_target_action = std::move(action);
+}
+
+void FullscreenPassWidget::renderTargetCreated(const QString &name) {
+    impl_->renderTargetCreated(name);
 }
 
 void FullscreenPassWidget::setShaderSourceOpenAction(

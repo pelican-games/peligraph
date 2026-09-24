@@ -344,4 +344,92 @@ ShaderTemplateWrite writeShaderTemplate(
     return result;
 }
 
+std::vector<std::string> fullscreenShaderChoices(
+    FullscreenShaderStage stage,
+    const std::optional<std::filesystem::path> &project_root) {
+    std::vector<std::string> result;
+    if (project_root) {
+        const std::string extension =
+            stage == FullscreenShaderStage::vertex ? ".vert" : ".frag";
+        std::vector<std::string> names;
+        std::error_code error;
+        for (std::filesystem::directory_iterator entry{*project_root / "shaders", error}, end;
+             !error && entry != end; entry.increment(error)) {
+            std::error_code type_error;
+            if (!entry->is_regular_file(type_error) ||
+                entry->path().extension().string() != extension)
+                continue;
+            const auto stem = entry->path().stem().string();
+            if (isValidShaderTemplateName(stem)) names.push_back(stem);
+        }
+        std::ranges::sort(names);
+        for (const auto &name : names) result.push_back(shaderTemplateReference(name));
+    }
+    // The fullscreen shaders the render compiler knows by name
+    // (vulkanrendercompilerprogram.cpp), and the one vertex they all draw.
+    if (stage == FullscreenShaderStage::vertex) {
+        result.emplace_back("engine://fullscreen");
+    } else {
+        for (const char *reference :
+             {"engine://fullscreen", "engine://scene_present",
+              "engine://output_transform", "engine://ssao", "engine://ssao_blur"})
+            result.emplace_back(reference);
+    }
+    return result;
+}
+
+std::string proposedColorTargetName(std::string_view pass_name,
+                                    const std::vector<std::string> &taken) {
+    std::string base;
+    for (const char value : pass_name) {
+        const auto byte = static_cast<unsigned char>(value);
+        base.push_back(std::isalnum(byte) != 0 ? value : '_');
+    }
+    if (base.empty()) base = "fullscreen_pass";
+    base += "_color";
+    std::string candidate = base;
+    for (int index = 2; std::ranges::find(taken, candidate) != taken.end(); ++index)
+        candidate = base + "_" + std::to_string(index);
+    return candidate;
+}
+
+std::vector<std::string> fullscreenTemplateInputFill(
+    FullscreenShaderTemplateKind kind,
+    const std::vector<std::string> &declared) {
+    struct RoleTarget {
+        std::string_view name;
+        std::array<std::string_view, 2> words;
+    };
+    // materialPassSlots' G-buffer names, in the order deferred_lighting_reads
+    // reads them.
+    static constexpr std::array deferred_targets{
+        RoleTarget{"gbuffer_albedo", {"albedo", ""}},
+        RoleTarget{"gbuffer_normal", {"normal", ""}},
+        RoleTarget{"gbuffer_material", {"material", ""}},
+        RoleTarget{"gbuffer_worldpos", {"worldpos", "world_position"}},
+        RoleTarget{"gbuffer_emissive", {"emissive", ""}},
+    };
+    std::vector<std::string> filled;
+    if (kind != FullscreenShaderTemplateKind::deferred_lighting) return filled;
+    for (const auto &role : deferred_targets) {
+        std::string chosen;
+        if (std::ranges::find(declared, role.name) != declared.end()) {
+            chosen = std::string{role.name};
+        } else {
+            std::vector<std::string> carrying;
+            for (const auto &name : declared)
+                for (const auto word : role.words)
+                    if (!word.empty() && name.find(word) != std::string::npos &&
+                        std::ranges::find(filled, name) == filled.end()) {
+                        carrying.push_back(name);
+                        break;
+                    }
+            if (carrying.size() == 1) chosen = carrying.front();
+        }
+        if (chosen.empty()) break;
+        filled.push_back(std::move(chosen));
+    }
+    return filled;
+}
+
 } // namespace PelicanStudio

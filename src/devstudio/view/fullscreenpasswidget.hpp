@@ -60,6 +60,13 @@ class FullscreenPassWidget final : public QWidget {
     // while the Pass Editor is open. Empty text takes down a log that a
     // reload put there (a reload that committed).
     void showShaderReloadLog(const QString &message);
+    // T-1. The colour output's list ends with "New target: <pass>_color...";
+    // picking it calls this action with that name (the main window opens the
+    // Frame Plan's New render target form on it). When the target it names
+    // is made, renderTargetCreated brings the frame plan in again and the
+    // target becomes the draft's next colour output.
+    void setNewRenderTargetAction(std::function<void(const QString &name)> action);
+    void renderTargetCreated(const QString &name);
     void receiveResult(const QByteArray &result_json);
     void receiveAuthoringConfig(const QByteArray &config_json);
 };

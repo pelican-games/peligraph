@@ -39,10 +39,12 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -84,6 +86,9 @@ struct InspectorWidget::Impl {
         InspectorWidgetKind kind = InspectorWidgetKind::FloatingPointDrag;
         std::vector<QDoubleSpinBox *> editors;
         bool active = false;
+        // T-1: three angles in degrees standing for a quaternion field. The
+        // value that travels is still the quaternion.
+        bool euler = false;
     };
 
     struct TextBinding {
@@ -146,6 +151,9 @@ struct InspectorWidget::Impl {
     std::uint64_t reported_save_completion = 0;
     std::vector<std::unique_ptr<NumericBinding>> numeric_bindings;
     std::vector<std::unique_ptr<TextBinding>> text_bindings;
+    // T-1: whether a rotation's quaternion fields are unfolded; kept across
+    // a rebuild of the panel.
+    bool rotation_details_shown = false;
     struct ModelChoice {
         QComboBox *choices = nullptr;
         std::string field_key;
@@ -443,22 +451,9 @@ struct InspectorWidget::Impl {
     }
 
     void reflectGizmoValue(std::string_view field_key, const Json &value) {
-        for (const auto &binding : numeric_bindings) {
-            if (binding->field_key != field_key) continue;
-            if (binding->editors.size() == 1 && value.is_number()) {
-                const QSignalBlocker blocker{binding->editors.front()};
-                binding->editors.front()->setValue(value.get<double>());
-            } else if (value.is_array() &&
-                       value.size() == binding->editors.size()) {
-                for (std::size_t index = 0; index < value.size(); ++index) {
-                    if (!value[index].is_number()) return;
-                    const QSignalBlocker blocker{binding->editors[index]};
-                    binding->editors[index]->setValue(
-                        value[index].get<double>());
-                }
-            }
-            return;
-        }
+        // A rotation has two bindings: its angles and its quaternion.
+        for (const auto &binding : numeric_bindings)
+            if (binding->field_key == field_key) setNumericEditors(*binding, value);
     }
 
     bool previewGizmoEdit(std::string_view field_key, Json value) {
@@ -548,7 +543,66 @@ struct InspectorWidget::Impl {
         dispatchRequests();
     }
 
+    static std::optional<std::array<double, 4>> quaternionOf(const Json &value) {
+        if (!value.is_array() || value.size() != 4) return std::nullopt;
+        std::array<double, 4> result{};
+        for (std::size_t index = 0; index < 4; ++index) {
+            if (!value[index].is_number()) return std::nullopt;
+            result[index] = value[index].get<double>();
+        }
+        return result;
+    }
+
+    // T-1: what the angle fields say, as the quaternion they stand for.
+    static Json eulerValue(const NumericBinding &binding) {
+        const auto quaternion = quaternionFromEulerDegrees(
+            {binding.editors[0]->value(), binding.editors[1]->value(),
+             binding.editors[2]->value()});
+        return Json::array({quaternion[0], quaternion[1], quaternion[2], quaternion[3]});
+    }
+
+    // Whether the fields already show `value`. The angle fields show a
+    // quaternion to their own precision, and a quaternion made back from them
+    // is that rotation, not those bits: they are compared as shown.
+    bool showsValue(const NumericBinding &binding, const Json &value) const {
+        // A field shows a value to its own decimals, and what it would send
+        // is that rounding: a stored 0.38268343 is what "0.3827" shows, not
+        // a change to send when focus leaves it.
+        const auto shown = [](const QDoubleSpinBox *editor, const Json &component) {
+            return component.is_number() &&
+                   editor->textFromValue(editor->value()) ==
+                       editor->textFromValue(component.get<double>());
+        };
+        if (!binding.euler) {
+            if (binding.editors.size() == 1) return shown(binding.editors.front(), value);
+            if (!value.is_array() || value.size() != binding.editors.size()) return false;
+            for (std::size_t index = 0; index < value.size(); ++index)
+                if (!shown(binding.editors[index], value[index])) return false;
+            return true;
+        }
+        const auto quaternion = quaternionOf(value);
+        if (!quaternion) return false;
+        const auto degrees = eulerDegreesFromQuaternion(*quaternion);
+        for (std::size_t index = 0; index < 3; ++index) {
+            const QDoubleSpinBox *editor = binding.editors[index];
+            if (editor->textFromValue(editor->value()) !=
+                editor->textFromValue(degrees[index]))
+                return false;
+        }
+        return true;
+    }
+
     void setNumericEditors(NumericBinding &binding, const Json &value) {
+        if (binding.euler) {
+            const auto quaternion = quaternionOf(value);
+            if (!quaternion || showsValue(binding, value)) return;
+            const auto degrees = eulerDegreesFromQuaternion(*quaternion);
+            for (std::size_t index = 0; index < 3; ++index) {
+                const QSignalBlocker blocker{binding.editors[index]};
+                binding.editors[index]->setValue(degrees[index]);
+            }
+            return;
+        }
         if (binding.editors.size() == 1 && value.is_number()) {
             const QSignalBlocker blocker{binding.editors.front()};
             binding.editors.front()->setValue(value.get<double>());
@@ -1745,8 +1799,89 @@ struct InspectorWidget::Impl {
         return editor;
     }
 
+    void connectNumericBinding(NumericBinding *binding_pointer) {
+        for (QDoubleSpinBox *editor : binding_pointer->editors) {
+            registerNumericEvents(editor, binding_pointer);
+            QObject::connect(
+                editor, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                &owner, [this, binding_pointer](double) {
+                    numericChanged(*binding_pointer);
+                });
+            QObject::connect(editor, &QDoubleSpinBox::editingFinished, &owner,
+                             [this, binding_pointer] {
+                                 finishNumeric(*binding_pointer, true);
+                             });
+        }
+    }
+
+    // T-1: a rotation is typed as three angles. The quaternion's own four
+    // fields stay, folded under "Quaternion", for a value the angles cannot
+    // say exactly or a person who wants the numbers.
+    QWidget *makeRotationEditor(QWidget *parent,
+                                const InspectorWidgetDescriptor &descriptor) {
+        auto *container = new QWidget(parent);
+        auto *column = new QVBoxLayout(container);
+        column->setContentsMargins(0, 0, 0, 0);
+        column->setSpacing(2);
+        auto *angles = new QWidget(container);
+        auto *row = new QHBoxLayout(angles);
+        row->setContentsMargins(0, 0, 0, 0);
+        row->setSpacing(3);
+        auto binding = std::make_unique<NumericBinding>();
+        binding->field_key = descriptor.field_key;
+        binding->kind = descriptor.kind;
+        binding->euler = true;
+        const auto quaternion = quaternionOf(descriptor.value);
+        const auto degrees = quaternion ? eulerDegreesFromQuaternion(*quaternion)
+                                        : std::array<double, 3>{};
+        static constexpr std::array axes{"X", "Y", "Z"};
+        for (std::size_t index = 0; index < 3; ++index) {
+            auto *editor = new QDoubleSpinBox(angles);
+            editor->setObjectName(
+                fieldObjectName("pelican.inspectorEuler", descriptor) +
+                QStringLiteral(".%1").arg(index));
+            editor->setRange(-360.0, 360.0);
+            editor->setDecimals(2);
+            editor->setSingleStep(1.0);
+            editor->setAccelerated(true);
+            editor->setKeyboardTracking(true);
+            editor->setSuffix(QString{QChar{0x00B0}});
+            editor->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            editor->setToolTip(owner.tr("Rotation about %1, in degrees (applied X, then Y, then Z)")
+                                   .arg(QLatin1String{axes[index]}));
+            editor->setValue(degrees[index]);
+            binding->editors.push_back(editor);
+            row->addWidget(editor, 1);
+        }
+        NumericBinding *binding_pointer = binding.get();
+        numeric_bindings.push_back(std::move(binding));
+        connectNumericBinding(binding_pointer);
+
+        auto *details = new QPushButton(owner.tr("Quaternion"), container);
+        details->setObjectName(
+            fieldObjectName("pelican.inspectorRotationDetails", descriptor));
+        details->setCheckable(true);
+        details->setFlat(true);
+        details->setToolTip(owner.tr("Show the stored quaternion x, y, z, w"));
+        row->addWidget(details);
+        column->addWidget(angles);
+        QWidget *raw = makeVectorEditor(container, descriptor, false);
+        raw->setVisible(rotation_details_shown);
+        details->setChecked(rotation_details_shown);
+        column->addWidget(raw);
+        QObject::connect(details, &QPushButton::toggled, &owner,
+                         [this, raw](bool shown) {
+                             rotation_details_shown = shown;
+                             raw->setVisible(shown);
+                         });
+        return container;
+    }
+
     QWidget *makeVectorEditor(QWidget *parent,
-                              const InspectorWidgetDescriptor &descriptor) {
+                              const InspectorWidgetDescriptor &descriptor,
+                              bool angles_for_rotation = true) {
+        if (angles_for_rotation && isEulerRotationField(descriptor))
+            return makeRotationEditor(parent, descriptor);
         auto binding = std::make_unique<NumericBinding>();
         binding->field_key = descriptor.field_key;
         binding->kind = descriptor.kind;
@@ -1766,18 +1901,7 @@ struct InspectorWidget::Impl {
         }
         NumericBinding *binding_pointer = binding.get();
         numeric_bindings.push_back(std::move(binding));
-        for (QDoubleSpinBox *editor : binding_pointer->editors) {
-            registerNumericEvents(editor, binding_pointer);
-            QObject::connect(
-                editor, qOverload<double>(&QDoubleSpinBox::valueChanged),
-                &owner, [this, binding_pointer](double) {
-                    numericChanged(*binding_pointer);
-                });
-            QObject::connect(editor, &QDoubleSpinBox::editingFinished, &owner,
-                             [this, binding_pointer] {
-                                 finishNumeric(*binding_pointer, true);
-                             });
-        }
+        connectNumericBinding(binding_pointer);
         return container;
     }
 
@@ -1800,6 +1924,7 @@ struct InspectorWidget::Impl {
     }
 
     Json numericValue(const NumericBinding &binding) const {
+        if (binding.euler) return eulerValue(binding);
         if (binding.editors.size() > 1) {
             Json result = Json::array();
             for (const QDoubleSpinBox *editor : binding.editors) {
@@ -1836,7 +1961,7 @@ struct InspectorWidget::Impl {
             if (!inspectorIdle()) return;
             // Return re-emits the value it already had: not an edit.
             const auto *descriptor = descriptorFor(binding.field_key);
-            if (descriptor != nullptr && descriptor->value == numericValue(binding)) return;
+            if (descriptor != nullptr && showsValue(binding, descriptor->value)) return;
         }
         beginNumeric(binding);
         if (!binding.active) {
@@ -1852,7 +1977,11 @@ struct InspectorWidget::Impl {
             return;
         }
         if (!binding.active) {
-            if (commit) commitHeldValue(binding.field_key, numericValue(binding));
+            const auto *descriptor = descriptorFor(binding.field_key);
+            // Angles that still show the stored rotation send nothing: made
+            // back into a quaternion they differ from it in the last bits.
+            if (commit && !(descriptor != nullptr && showsValue(binding, descriptor->value)))
+                commitHeldValue(binding.field_key, numericValue(binding));
             return;
         }
         binding.active = false;

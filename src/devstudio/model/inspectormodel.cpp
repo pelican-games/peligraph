@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <concepts>
 #include <stdexcept>
 #include <type_traits>
@@ -420,6 +421,7 @@ std::string_view addObjectBaseName(AddObjectKind kind) {
     case AddObjectKind::Cube: return "Cube";
     case AddObjectKind::Plane: return "Plane";
     case AddObjectKind::Sphere: return "Sphere";
+    case AddObjectKind::Floor: return "Floor";
     }
     throw std::invalid_argument("unknown AddObjectKind");
 }
@@ -440,18 +442,85 @@ std::string uniqueObjectName(std::string_view base,
 }
 
 nlohmann::json addObjectDeclaration(AddObjectKind kind, const std::string &name) {
+    const bool floor = kind == AddObjectKind::Floor;
     Json components = Json::array({
         {{"name", "transform"},
-         {"pos", Json::array({0.0, 0.0, 0.0})},
+         {"pos", Json::array({0.0, floor ? -0.5 : 0.0, 0.0})},
          {"rotation", Json::array({0.0, 0.0, 0.0, 1.0})},
-         {"scale", Json::array({1.0, 1.0, 1.0})}},
+         {"scale", floor ? Json::array({8.0, 1.0, 8.0}) : Json::array({1.0, 1.0, 1.0})}},
     });
     if (kind != AddObjectKind::Empty) {
-        const auto index = static_cast<std::size_t>(kind) - 1;
+        const auto shape = floor ? AddObjectKind::Plane : kind;
+        const auto index = static_cast<std::size_t>(shape) - 1;
         components.push_back({{"name", "simplemodelview"},
                               {"model", enginePrimitiveModelReferences().at(index)}});
     }
     return Json{{"name", name}, {"components", std::move(components)}};
+}
+
+namespace {
+
+constexpr double DegreesPerRadian = 57.295779513082320876798154814105;
+
+// (-180, 180]: -180 and 180 are one angle, and the field shows it as 180.
+double wrapDegrees(double degrees) {
+    double wrapped = std::fmod(degrees, 360.0);
+    if (wrapped <= -180.0) wrapped += 360.0;
+    else if (wrapped > 180.0) wrapped -= 360.0;
+    return wrapped;
+}
+
+} // namespace
+
+std::array<double, 3>
+eulerDegreesFromQuaternion(const std::array<double, 4> &quaternion) {
+    const double length = std::sqrt(quaternion[0] * quaternion[0] +
+                                    quaternion[1] * quaternion[1] +
+                                    quaternion[2] * quaternion[2] +
+                                    quaternion[3] * quaternion[3]);
+    if (!(length > 0.0) || !std::isfinite(length)) return {0.0, 0.0, 0.0};
+    const double x = quaternion[0] / length;
+    const double y = quaternion[1] / length;
+    const double z = quaternion[2] / length;
+    const double w = quaternion[3] / length;
+    const double sin_pitch = 2.0 * (w * y - z * x);
+    // Gimbal lock: only Z - X (at +90) or Z + X (at -90) is defined. X is 0.
+    if (std::abs(sin_pitch) >= 1.0 - 1.0e-12) {
+        const double yaw = 2.0 * std::atan2(z, w) * DegreesPerRadian;
+        return {0.0, sin_pitch > 0.0 ? 90.0 : -90.0, wrapDegrees(yaw)};
+    }
+    const double roll = std::atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y));
+    const double pitch = std::asin(sin_pitch);
+    const double yaw = std::atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z));
+    return {wrapDegrees(roll * DegreesPerRadian), pitch * DegreesPerRadian,
+            wrapDegrees(yaw * DegreesPerRadian)};
+}
+
+std::array<double, 4>
+quaternionFromEulerDegrees(const std::array<double, 3> &degrees) {
+    const double half = 0.5 / DegreesPerRadian;
+    const double cx = std::cos(degrees[0] * half), sx = std::sin(degrees[0] * half);
+    const double cy = std::cos(degrees[1] * half), sy = std::sin(degrees[1] * half);
+    const double cz = std::cos(degrees[2] * half), sz = std::sin(degrees[2] * half);
+    // q = qz * qy * qx: X is applied first.
+    std::array<double, 4> result{
+        sx * cy * cz - cx * sy * sz,
+        cx * sy * cz + sx * cy * sz,
+        cx * cy * sz - sx * sy * cz,
+        cx * cy * cz + sx * sy * sz,
+    };
+    if (result[3] < 0.0)
+        for (double &component : result) component = -component;
+    // What the old four fields showed for no rotation, exactly.
+    for (double &component : result)
+        if (std::abs(component) < 1.0e-15) component = 0.0;
+    return result;
+}
+
+bool isEulerRotationField(const InspectorWidgetDescriptor &descriptor) {
+    return descriptor.component_slot == "transform" &&
+           descriptor.field_name == "rotation" && descriptor.columns == 4 &&
+           descriptor.kind == InspectorWidgetKind::QuaternionDrag;
 }
 
 bool isModelReferenceField(const InspectorWidgetDescriptor &descriptor) {

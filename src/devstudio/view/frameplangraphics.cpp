@@ -7,6 +7,7 @@
 #include <QAction>
 #include <QBrush>
 #include <QColor>
+#include <QCompleter>
 #include <QFont>
 #include <QFontMetricsF>
 #include <QGraphicsEllipseItem>
@@ -3875,6 +3876,19 @@ bool FramePlanGraphicsScene::beginInlineEdit(const FramePlanNodeKey &node,
         QStringLiteral("pelican.framePlanInlineEditor"));
     editor->edit->setText(band->data(FramePlanInlineValueRole).toString());
     editor->edit->selectAll();
+    // T-1: a shader band completes to the shaders there are. The popup only
+    // borrows focus (InlineEditEventFilter lets it), and the text is still
+    // whatever is typed.
+    if (inlineFieldChoices) {
+        const QStringList choices = inlineFieldChoices(node, field);
+        if (!choices.isEmpty()) {
+            auto *completer = new QCompleter(choices, editor->edit);
+            completer->setCaseSensitivity(Qt::CaseInsensitive);
+            completer->setFilterMode(Qt::MatchContains);
+            completer->setCompletionMode(QCompleter::PopupCompletion);
+            editor->edit->setCompleter(completer);
+        }
+    }
     editor->proxy = addWidget(editor->edit);
     const QRectF bounds = band->sceneBoundingRect();
     editor->proxy->setGeometry(bounds);

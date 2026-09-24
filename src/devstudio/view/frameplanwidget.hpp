@@ -81,6 +81,14 @@ class FramePlanWidget final : public QWidget {
     // the plan the running engine now has.
     void setEngineRestartAction(std::function<void(const QString &reason)> action);
     void engineRestartDeclined(const QString &message);
+    // T-1. New render target..., opened with a name already in it (the Pass
+    // Editor's "New target: <pass>_color..."), and who hears that a target
+    // this panel's form created has committed.
+    void openNewRenderTarget(const QString &name);
+    void setRenderTargetCreatedAction(std::function<void(const QString &name)> action);
+    // T-1. What a node's band editor offers to complete to, by the band's
+    // field id ("shader.fragment", "shader.vertex"). Nothing without it.
+    void setInlineFieldChoices(std::function<QStringList(const QString &field)> choices);
     // The answer to a reload_shaders request, handed in the way the RPC
     // reply is (tests use it without an engine).
     void receiveShaderReloadOutcome(const ShaderReloadOutcome &outcome);

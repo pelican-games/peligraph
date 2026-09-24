@@ -16,7 +16,9 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -1803,6 +1805,95 @@ TEST_CASE("G-2 Add object spawns once, named by kind with Blender's numbering",
     CHECK(second.params.at("operations").at(0).at("object").at("name") == "Cube_001");
     CHECK(second.params.at("operations").at(0).at("object").at("components").at(1) ==
           Json{{"name", "simplemodelview"}, {"model", "engine://primitives/cube"}});
+}
+
+TEST_CASE("T-1 Add Object > Floor spawns a wide plane just under the origin",
+          "[devstudio][inspector][add-object][t1]") {
+    using PelicanStudio::AddObjectKind;
+    using PelicanStudio::addObjectBaseName;
+    using PelicanStudio::addObjectDeclaration;
+    using PelicanStudio::uniqueObjectName;
+
+    CHECK(std::string{addObjectBaseName(AddObjectKind::Floor)} == "Floor");
+    CHECK(addObjectDeclaration(AddObjectKind::Floor, "Floor") ==
+          Json::parse(R"({"name":"Floor","components":[
+              {"name":"transform","pos":[0,-0.5,0],"rotation":[0,0,0,1],"scale":[8,1,8]},
+              {"name":"simplemodelview","model":"engine://primitives/plane"}]})"));
+    // Numbered as every other kind is.
+    CHECK(uniqueObjectName(addObjectBaseName(AddObjectKind::Floor), {"Floor"}) == "Floor_001");
+    // The other kinds are where they were.
+    CHECK(addObjectDeclaration(AddObjectKind::Plane, "Plane").at("components").at(0).at("pos") ==
+          Json::array({0.0, 0.0, 0.0}));
+    CHECK(addObjectDeclaration(AddObjectKind::Sphere, "Sphere").at("components").at(1).at("model") ==
+          "engine://primitives/sphere");
+}
+
+TEST_CASE("T-1 rotation angles and the stored quaternion round trip",
+          "[devstudio][inspector][t1][euler]") {
+    using PelicanStudio::eulerDegreesFromQuaternion;
+    using PelicanStudio::quaternionFromEulerDegrees;
+    const auto near = [](double a, double b, double tolerance = 1.0e-9) {
+        return std::abs(a - b) <= tolerance;
+    };
+
+    // The rotation G-5 typed as two quaternion components: 45 degrees about Y.
+    const auto turned = quaternionFromEulerDegrees({0.0, 45.0, 0.0});
+    CHECK(turned[0] == 0.0);
+    CHECK(near(turned[1], 0.38268343236508984));
+    CHECK(turned[2] == 0.0);
+    CHECK(near(turned[3], 0.92387953251128674));
+    // No rotation is exactly what the four fields held before.
+    CHECK(quaternionFromEulerDegrees({0.0, 0.0, 0.0}) == std::array<double, 4>{0.0, 0.0, 0.0, 1.0});
+    CHECK(eulerDegreesFromQuaternion({0.0, 0.0, 0.0, 1.0}) == std::array<double, 3>{0.0, 0.0, 0.0});
+
+    // X is applied first: 90 about X then 90 about Z is Rz * Rx.
+    const auto order = quaternionFromEulerDegrees({90.0, 0.0, 90.0});
+    CHECK(near(order[0], 0.5));
+    CHECK(near(order[1], 0.5));
+    CHECK(near(order[2], 0.5));
+    CHECK(near(order[3], 0.5));
+
+    // Angles -> quaternion -> angles gives the angles back, over the range the
+    // fields show (X, Z in (-180, 180], Y in (-90, 90)).
+    for (const double x : {-179.0, -90.0, -33.5, 0.0, 12.25, 90.0, 179.5})
+        for (const double y : {-89.0, -45.0, 0.0, 30.0, 89.0})
+            for (const double z : {-170.0, -1.0, 0.0, 45.0, 135.0, 179.5}) {
+                const auto back = eulerDegreesFromQuaternion(quaternionFromEulerDegrees({x, y, z}));
+                INFO(x << ", " << y << ", " << z << " -> " << back[0] << ", " << back[1] << ", "
+                       << back[2]);
+                CHECK(near(back[0], x, 1.0e-7));
+                CHECK(near(back[1], y, 1.0e-7));
+                CHECK(near(back[2], z, 1.0e-7));
+            }
+
+    // Quaternion -> angles -> quaternion gives the stored value back (w >= 0),
+    // gimbal lock included.
+    const std::array<std::array<double, 4>, 6> stored{{
+        {0.0, 0.38268343236508984, 0.0, 0.92387953251128674},
+        {0.1, -0.2, 0.3, 0.9273618495495703},
+        {-0.5, 0.5, -0.5, 0.5},
+        {0.0, 0.70710678118654757, 0.0, 0.70710678118654757},   // Y = +90
+        {0.0, -0.70710678118654757, 0.0, 0.70710678118654757},  // Y = -90
+        {0.2705980500730985, 0.6532814824381882, 0.2705980500730985, 0.6532814824381883},
+    }};
+    for (const auto &quaternion : stored) {
+        const double length = std::sqrt(quaternion[0] * quaternion[0] + quaternion[1] * quaternion[1] +
+                                        quaternion[2] * quaternion[2] + quaternion[3] * quaternion[3]);
+        const auto back = quaternionFromEulerDegrees(eulerDegreesFromQuaternion(quaternion));
+        for (std::size_t index = 0; index < 4; ++index) {
+            INFO("component " << index);
+            CHECK(near(back[index], quaternion[index] / length, 1.0e-9));
+        }
+    }
+    // A quaternion stored unnormalised reads as the rotation it scales; a
+    // zero one as no rotation.
+    const auto scaled = eulerDegreesFromQuaternion({0.0, 0.76536686473017968, 0.0, 1.8477590650225735});
+    CHECK(near(scaled[1], 45.0, 1.0e-7));
+    CHECK(eulerDegreesFromQuaternion({0.0, 0.0, 0.0, 0.0}) == std::array<double, 3>{0.0, 0.0, 0.0});
+    // -q is q: read back with w >= 0.
+    const auto negated = quaternionFromEulerDegrees(eulerDegreesFromQuaternion({0.0, -0.38268343236508984, 0.0, -0.92387953251128674}));
+    CHECK(near(negated[1], 0.38268343236508984));
+    CHECK(near(negated[3], 0.92387953251128674));
 }
 
 TEST_CASE("Q-7 Add object during an edit waits for it and spawns once",

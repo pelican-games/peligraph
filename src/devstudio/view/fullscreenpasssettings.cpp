@@ -3,6 +3,8 @@
 #include <nlohmann/json.hpp>
 
 #include <QCheckBox>
+#include <QColor>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -10,9 +12,11 @@
 #include <QLineEdit>
 #include <QSignalBlocker>
 #include <QStringList>
+#include <QToolButton>
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <array>
 #include <optional>
 #include <stdexcept>
@@ -219,8 +223,46 @@ struct FullscreenOutputOpsEditor::Row {
     QLabel *target = nullptr;
     QComboBox *load = nullptr;
     QLineEdit *clear_color = nullptr;
+    // T-1: opens a colour picker for the field beside it.
+    QToolButton *pick_color = nullptr;
     QComboBox *store = nullptr;
 };
+
+QString FullscreenOutputOpsEditor::clearColorText(double red, double green,
+                                                  double blue, double alpha) {
+    QStringList parts;
+    for (const double value : {red, green, blue, alpha})
+        parts.push_back(QString::number(std::round(value * 1000.0) / 1000.0, 'g', 4));
+    return parts.join(QStringLiteral(", "));
+}
+
+std::array<double, 4> FullscreenOutputOpsEditor::clearColorComponents(const QString &text) {
+    std::array<double, 4> result{0.0, 0.0, 0.0, 1.0};
+    const auto parts = text.split(QLatin1Char(','), Qt::SkipEmptyParts);
+    if (parts.size() != 3 && parts.size() != 4) return result;
+    std::array<double, 4> read{0.0, 0.0, 0.0, 1.0};
+    for (qsizetype index = 0; index < parts.size(); ++index) {
+        bool number = false;
+        const double value = parts[index].trimmed().toDouble(&number);
+        if (!number) return result;
+        read[static_cast<std::size_t>(index)] = std::clamp(value, 0.0, 1.0);
+    }
+    return read;
+}
+
+void FullscreenOutputOpsEditor::pickClearColor(std::size_t index) {
+    if (index >= rows_.size()) return;
+    const auto current = clearColorComponents(rows_[index].clear_color->text());
+    const QColor chosen = QColorDialog::getColor(
+        QColor::fromRgbF(static_cast<float>(current[0]), static_cast<float>(current[1]),
+                         static_cast<float>(current[2]), static_cast<float>(current[3])),
+        this, tr("Clear colour of %1").arg(text(targets_[index])),
+        QColorDialog::ShowAlphaChannel);
+    // The rows may have been rebuilt while the picker was open.
+    if (!chosen.isValid() || index >= rows_.size()) return;
+    rows_[index].clear_color->setText(
+        clearColorText(chosen.redF(), chosen.greenF(), chosen.blueF(), chosen.alphaF()));
+}
 
 FullscreenOutputOpsEditor::FullscreenOutputOpsEditor(QWidget *parent)
     : QWidget(parent) {
@@ -256,6 +298,7 @@ void FullscreenOutputOpsEditor::rebuild(
         delete row.target;
         delete row.load;
         delete row.clear_color;
+        delete row.pick_color;
         delete row.store;
     }
     rows_.clear();
@@ -277,6 +320,13 @@ void FullscreenOutputOpsEditor::rebuild(
         row.clear_color->setToolTip(
             tr("Clear colour of %1: r, g, b[, a] (clear_colors)")
                 .arg(text(targets[index])));
+        row.pick_color = new QToolButton(this);
+        row.pick_color->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.outputClearColorPick.") + number);
+        row.pick_color->setText(tr("Colour..."));
+        row.pick_color->setToolTip(
+            tr("Pick the clear colour of %1; it is written into the field")
+                .arg(text(targets[index])));
         row.store = new QComboBox(this);
         row.store->setObjectName(
             QStringLiteral("pelican.fullscreenPass.outputStore.") + number);
@@ -286,7 +336,10 @@ void FullscreenOutputOpsEditor::rebuild(
         grid_->addWidget(row.target, line, 0);
         grid_->addWidget(row.load, line, 1);
         grid_->addWidget(row.clear_color, line, 2);
-        grid_->addWidget(row.store, line, 3);
+        grid_->addWidget(row.pick_color, line, 3);
+        grid_->addWidget(row.store, line, 4);
+        QObject::connect(row.pick_color, &QToolButton::clicked, this,
+                         [this, index] { pickClearColor(index); });
         QObject::connect(row.load,
                          qOverload<int>(&QComboBox::currentIndexChanged), this,
                          [this, index] { rowChanged(index); });
@@ -311,6 +364,7 @@ void FullscreenOutputOpsEditor::showClearColor(std::size_t index) {
     row.clear_color->setVisible(
         load == QStringLiteral("clear") ||
         (load.isEmpty() && !row.clear_color->text().trimmed().isEmpty()));
+    row.pick_color->setVisible(!row.clear_color->isHidden());
 }
 
 void FullscreenOutputOpsEditor::sync(const std::vector<std::string> &colors,

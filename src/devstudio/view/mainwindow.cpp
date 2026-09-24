@@ -2,6 +2,7 @@
 #include "frameplaneditcapability.hpp"
 #include "frameplanwidget.hpp"
 #include "fullscreenpasswidget.hpp"
+#include "fullscreenshadertemplate.hpp"
 #include "graphcanvaswidget.hpp"
 #include "inspectorwidget.hpp"
 #include "../model/inspectormodel.hpp"
@@ -54,6 +55,7 @@
 #include <algorithm>
 #include <exception>
 #include <filesystem>
+#include <optional>
 #include <limits>
 #include <stdexcept>
 #include <unordered_set>
@@ -311,6 +313,31 @@ void MainWindow::createWorkspace() {
         this, tr("Pass Editor"),
         QStringLiteral("pelican.fullscreenPassDock"), pass_editor_scroll);
     fullscreen_pass_->setCommittedAction([this] { frame_plan_->refresh(); });
+    // T-1: "New target: <pass>_color..." in the Pass Editor's colour output
+    // opens the Frame Plan's New render target form on that name; the
+    // target it makes comes back to the Pass Editor as that output.
+    fullscreen_pass_->setNewRenderTargetAction([this](const QString &name) {
+        frame_plan_->openNewRenderTarget(name);
+    });
+    frame_plan_->setRenderTargetCreatedAction([this](const QString &name) {
+        fullscreen_pass_->renderTargetCreated(name);
+    });
+    // T-1: a shader band on the canvas completes to the shaders the Pass
+    // Editor lists.
+    frame_plan_->setInlineFieldChoices([this](const QString &field) {
+        QStringList choices;
+        if (field != QLatin1String{"shader.fragment"} &&
+            field != QLatin1String{"shader.vertex"})
+            return choices;
+        std::optional<std::filesystem::path> root;
+        if (project_model_) root = project_model_->projectRoot();
+        for (const auto &reference : fullscreenShaderChoices(
+                 field == QLatin1String{"shader.vertex"} ? FullscreenShaderStage::vertex
+                                                         : FullscreenShaderStage::fragment,
+                 root))
+            choices.push_back(QString::fromStdString(reference));
+        return choices;
+    });
     // F-5: a shader reload's log also goes under the Pass Editor's form.
     frame_plan_->setShaderReloadLogAction([this](const QString &message) {
         fullscreen_pass_->showShaderReloadLog(message);
@@ -739,8 +766,10 @@ void MainWindow::chooseNewProject() {
         new_project_dialog_->activateWindow();
         return;
     }
+    // T-1: the folder the last Create used is kept beside the layouts.
     auto *dialog = new NewProjectDialog(
-        this, [this](const QString &root) { openProject(root); });
+        this, [this](const QString &root) { openProject(root); },
+        application_config_directory_);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     new_project_dialog_ = dialog;
     dialog->open();
@@ -988,12 +1017,14 @@ void MainWindow::createAddObjectMenu() {
         std::pair{AddObjectKind::Cube, QStringLiteral("cube")},
         std::pair{AddObjectKind::Plane, QStringLiteral("plane")},
         std::pair{AddObjectKind::Sphere, QStringLiteral("sphere")},
+        std::pair{AddObjectKind::Floor, QStringLiteral("floor")},
     };
     for (const auto &[kind, id] : entries) {
-        // The shapes read as the Inspector's model list reads them.
+        // The shapes read as the Inspector's model list reads them; an Empty
+        // and a Floor (a Plane already placed) by their own names.
         const auto base = addObjectBaseName(kind);
         const std::string label =
-            kind == AddObjectKind::Empty
+            kind == AddObjectKind::Empty || kind == AddObjectKind::Floor
                 ? std::string{base}
                 : builtinModelLabel(addObjectDeclaration(kind, std::string{base})
                                         .at("components").at(1).at("model")
@@ -1017,7 +1048,8 @@ void MainWindow::createAddObjectMenu() {
     auto *add_button = new QToolButton(scene_toolbar);
     add_button->setObjectName(QStringLiteral("pelican.outliner.addObjectButton"));
     add_button->setText(tr("Add Object"));
-    add_button->setToolTip(tr("Add an empty or a primitive shape at the origin"));
+    add_button->setToolTip(tr("Add an empty or a primitive shape at the origin, "
+                              "or a wide floor just under it"));
     add_button->setMenu(add_object_menu_);
     add_button->setPopupMode(QToolButton::InstantPopup);
     scene_toolbar->addWidget(add_button);

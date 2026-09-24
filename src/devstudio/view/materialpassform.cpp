@@ -185,6 +185,16 @@ void MaterialPassForm::layoutSlots() {
                 [this](const QString &) { updateSlotStates(); });
         ++row;
     }
+    // T-1: the slots are filled as they open -- the declared target of the
+    // role's name where its format fits, a new one otherwise -- so Save needs
+    // no click. Any of them can still be changed or cleared.
+    const auto initial = materialPassInitialTargets(
+        authoring_, contract_->currentData().toString().toStdString());
+    for (std::size_t index = 0; index < slot_targets_.size() && index < initial.size();
+         ++index) {
+        const QSignalBlocker block{slot_targets_[index]};
+        slot_targets_[index]->setEditText(text(initial[index]));
+    }
     updateSlotStates();
 }
 

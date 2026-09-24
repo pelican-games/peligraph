@@ -96,6 +96,14 @@ std::vector<std::string> materialPassFillMissing(
     const std::vector<std::string> &declared, const std::string &contract,
     std::vector<std::string> targets);
 
+// T-1: what the form's slots hold when it opens or the contract changes, so
+// Save works without a click. A slot whose default name is declared already
+// with the format the slot needs (its `format`, or no format and its
+// `format_class`) reuses that target; every other slot gets a new name as
+// Create missing targets would give it.
+std::vector<std::string> materialPassInitialTargets(
+    const FramePlanAuthoring &authoring, const std::string &contract);
+
 // The slots whose target no render target in the context declares: the ones
 // Save makes first.
 std::vector<std::size_t> materialPassNewSlots(

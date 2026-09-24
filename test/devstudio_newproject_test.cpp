@@ -21,6 +21,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QTemporaryDir>
 
@@ -178,6 +179,68 @@ TEST_CASE("F-2 New Project refuses a folder that already holds files, in initial
     REQUIRE(required<QLabel>(dialog, "pelican.newProject.notice").text().isEmpty());
     required<QPushButton>(dialog, "pelican.newProject.create").click();
     REQUIRE(called);
+}
+
+TEST_CASE("T-1 New Project starts on the last folder used and a free project_NNN",
+          "[devstudio][newproject][t1]") {
+    (void)application();
+    QTemporaryDir parent;
+    QTemporaryDir settings;
+    REQUIRE(parent.isValid());
+    REQUIRE(settings.isValid());
+
+    CHECK(PelicanStudio::nextFreeProjectName(parent.path()) == QStringLiteral("project_001"));
+    REQUIRE(QDir(parent.path()).mkdir(QStringLiteral("project_001")));
+    // Any entry counts, a plain file too; the lowest free number is taken.
+    {
+        QFile plain_file{QDir(parent.path()).filePath(QStringLiteral("project_002"))};
+        REQUIRE(plain_file.open(QIODevice::WriteOnly));
+    }
+    REQUIRE(QDir(parent.path()).mkdir(QStringLiteral("project_004")));
+    CHECK(PelicanStudio::nextFreeProjectName(parent.path()) == QStringLiteral("project_003"));
+    CHECK(PelicanStudio::nextFreeProjectName(QDir(parent.path()).filePath(QStringLiteral("absent"))) ==
+          QStringLiteral("project_001"));
+
+    const QString elsewhere = QDir(parent.path()).filePath(QStringLiteral("elsewhere"));
+    REQUIRE(QDir{}.mkpath(elsewhere));
+    std::optional<QString> opened;
+    {
+        NewProjectDialog dialog{nullptr, [&](const QString &root) { opened = root; },
+                                settings.path()};
+        auto &location = required<QLineEdit>(dialog, "pelican.newProject.location");
+        auto &name = required<QLineEdit>(dialog, "pelican.newProject.name");
+        // Never used: Documents, and a name nothing there has.
+        CHECK(QDir::cleanPath(location.text()) ==
+              QDir::cleanPath(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)));
+        CHECK(name.text().startsWith(QStringLiteral("project_")));
+        // The proposed name follows the folder...
+        location.setText(parent.path());
+        CHECK(name.text() == QStringLiteral("project_003"));
+        location.setText(elsewhere);
+        CHECK(name.text() == QStringLiteral("project_001"));
+        // ...until the person types one of their own.
+        name.setText(QStringLiteral("mine"));
+        location.setText(parent.path());
+        CHECK(name.text() == QStringLiteral("mine"));
+        name.clear();
+        location.setText(elsewhere);
+        CHECK(name.text() == QStringLiteral("project_001"));
+        required<QPushButton>(dialog, "pelican.newProject.create").click();
+    }
+    REQUIRE(opened.has_value());
+    std::error_code error;
+    CHECK(std::filesystem::equivalent(fsPath(*opened), fsPath(elsewhere) / "project_001", error));
+
+    // The next New Project starts where that one was made, on the next name.
+    NewProjectDialog again{nullptr, [](const QString &) {}, settings.path()};
+    CHECK(QDir::cleanPath(required<QLineEdit>(again, "pelican.newProject.location").text()) ==
+          QDir::cleanPath(elsewhere));
+    CHECK(required<QLineEdit>(again, "pelican.newProject.name").text() ==
+          QStringLiteral("project_002"));
+    // Without a settings directory nothing is remembered.
+    NewProjectDialog plain{nullptr, [](const QString &) {}};
+    CHECK(QDir::cleanPath(required<QLineEdit>(plain, "pelican.newProject.location").text()) ==
+          QDir::cleanPath(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)));
 }
 
 TEST_CASE("F-2 File > New Project... sits above Open Project... and opens what it wrote",

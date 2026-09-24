@@ -30,6 +30,7 @@
 #include <QPushButton>
 #include <QTest>
 
+#include <cmath>
 #include <deque>
 #include <functional>
 #include <map>
@@ -329,6 +330,61 @@ TEST_CASE("Q-7 focus holds nothing, and half-typed text survives a round trip",
     REQUIRE(scale_x);
     CHECK(scale_x->hasFocus());
     CHECK(scale_x->cleanText() == QStringLiteral("1."));
+}
+
+TEST_CASE("T-1 a rotation is typed as angles and stored as the quaternion",
+          "[devstudio][inspector][t1][euler]") {
+    Rig rig;
+    QPointer<QDoubleSpinBox> about_y = rig.field("pelican.inspectorEuler.transform.rotation.1");
+    QPointer<QDoubleSpinBox> quaternion_y =
+        rig.field("pelican.inspectorVector.transform.rotation.1");
+    auto *details = rig.inspector->findChild<QPushButton *>(
+        QStringLiteral("pelican.inspectorRotationDetails.transform.rotation"));
+    REQUIRE(about_y);
+    REQUIRE(quaternion_y);
+    REQUIRE(details != nullptr);
+    CHECK(rig.field("pelican.inspectorEuler.transform.rotation.3") == nullptr);
+    // The quaternion's own fields are folded away until asked for.
+    CHECK_FALSE(quaternion_y->isVisible());
+    CHECK(about_y->value() == 0.0);
+
+    // Return over angles that still show the stored rotation sends nothing.
+    const auto untouched = rig.engine.revision;
+    about_y->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(about_y, Qt::Key_Return);
+    rig.pumpFor(300);
+    CHECK(rig.engine.revision == untouched);
+
+    // 45 about Y, as the scenario types it.
+    about_y->selectAll();
+    QTest::keyClicks(about_y, QStringLiteral("45"));
+    QTest::keyClick(about_y, Qt::Key_Return);
+    REQUIRE(rig.pumpUntil([&] {
+        const auto &rotation = rig.engine.transform.at("rotation");
+        return std::abs(rotation.at(1).get<double>() - 0.38268343236508984) < 1.0e-9;
+    }));
+    rig.pumpFor(500);
+    const auto &rotation = rig.engine.transform.at("rotation");
+    CHECK(rotation.at(0).get<double>() == 0.0);
+    CHECK(rotation.at(2).get<double>() == 0.0);
+    CHECK(std::abs(rotation.at(3).get<double>() - 0.92387953251128674) < 1.0e-9);
+    CHECK_FALSE(rig.inspector->sceneEditPending());
+    REQUIRE(about_y);
+    CHECK(about_y->value() == 45.0);
+
+    // Unfolded, the quaternion shows what was stored; moving focus through
+    // the fields sends nothing more.
+    details->click();
+    rig.pumpFor(100);
+    REQUIRE(quaternion_y);
+    CHECK(quaternion_y->isVisible());
+    CHECK(quaternion_y->text() == QStringLiteral("0.3827"));
+    const auto committed = rig.engine.revision;
+    quaternion_y->setFocus(Qt::OtherFocusReason);
+    rig.pumpFor(100);
+    about_y->setFocus(Qt::OtherFocusReason);
+    rig.pumpFor(300);
+    CHECK(rig.engine.revision == committed);
 }
 
 } // namespace PelicanStudio

@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "deferred_loop_from_scratch",
-  "description": "G-5, story B: a deferred material loop built from a Blank pipeline with Studio alone. New Project (F-2); a Cube turned about the vertical so two faces meet the camera, and a Plane made a floor, both with the Inspector (G-2). Add material pass... adds Deferred geometry with Create missing (five G-buffer targets and depth, G-1). New render target... makes lit_color (F-1); Add fullscreen pass... after the geometry, reading the five targets, with New... > Deferred lighting (G-3), which turns on Uses scene lights and Camera position. present reads lit_color through a Tone map shader. The light paints the two faces in different colours; turning the light in the Inspector changes them.",
+  "description": "G-5, story B, with T-1's defaults: a deferred material loop built from a Blank pipeline with Studio alone. New Project (F-2) proposes the name; a Cube turned 45 degrees about the vertical, typed as one angle, so two faces meet the camera, and a Floor from Add Object (G-2 / T-1). Add material pass... adds Deferred geometry with its five G-buffer targets and depth filled as it opens (G-1 / T-1). Add fullscreen pass... after the geometry, New... > Deferred lighting (G-3), which fills the five inputs from the G-buffer names and turns on Uses scene lights and Camera position (T-1); its colour output is made from the output list's New target: deferred_lighting_color... (T-1). present reads it through a Tone map shader. The light paints the two faces in different colours; turning the light in the Inspector changes them.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -35,10 +35,10 @@
       "text": "{artifacts}"
     },
     {
-      "label": "the name",
-      "cmd": "type",
+      "label": "the name is proposed, with nothing typed",
+      "expect": "text_equals",
       "name": "pelican.newProject.name",
-      "text": "deferred_loop"
+      "value": "project_001"
     },
     {
       "label": "the Blank pipeline template",
@@ -129,170 +129,34 @@
       "timeout_ms": 60000
     },
     {
-      "label": "Add Object > Plane",
+      "label": "Add Object > Floor",
       "cmd": "action",
-      "name": "pelican.outliner.addObject.plane"
+      "name": "pelican.outliner.addObject.floor"
     },
     {
-      "label": "the engine has a fourth object, named Plane",
+      "label": "the engine has a fourth object, named Floor",
       "expect": "rpc_equals",
       "method": "scene_tree",
       "params": {
         "scene_id": "default_scene"
       },
       "path": "objects[3].name",
-      "value": "Plane",
+      "value": "Floor",
       "retry_ms": 60000
     },
     {
-      "label": "the Plane is the one selected",
+      "label": "the Floor is the one selected",
       "cmd": "wait",
       "name": "pelican.inspectorSelection",
-      "contains": "Plane\n",
+      "contains": "Floor\n",
       "timeout_ms": 30000
     },
     {
-      "label": "the Inspector has read the Plane",
-      "cmd": "wait",
-      "name": "pelican.inspectorModelChoice",
-      "text": "Plane (built-in)",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "its position is in the Inspector",
-      "cmd": "wait",
-      "name": "pelican.inspectorVector.transform.pos.1",
-      "visible": true,
-      "timeout_ms": 30000
-    },
-    {
-      "label": "let the Inspector settle",
-      "cmd": "wait",
-      "name": "pelican.inspectorNotice",
-      "contains": "zz-never-shown",
-      "timeout_ms": 1500,
-      "expect_error": "automation.wait_timeout@1"
-    },
-    {
-      "label": "the field is on screen and takes input",
-      "cmd": "wait",
-      "name": "pelican.inspectorVector.transform.pos.1",
-      "visible": true,
-      "enabled": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "the floor: under the box",
-      "cmd": "type",
-      "name": "pelican.inspectorVector.transform.pos.1",
-      "text": "-0.5"
-    },
-    {
-      "label": "commit it",
-      "cmd": "key",
-      "name": "pelican.inspectorVector.transform.pos.1",
-      "sequence": "Return"
-    },
-    {
-      "label": "let the commit land",
-      "cmd": "wait",
-      "name": "pelican.inspectorNotice",
-      "contains": "zz-never-shown",
-      "timeout_ms": 1500,
-      "expect_error": "automation.wait_timeout@1"
-    },
-    {
-      "label": "the field holds the value",
+      "label": "the Inspector has read the Floor: under the box, with nothing typed",
       "cmd": "wait",
       "name": "pelican.inspectorVector.transform.pos.1",
       "contains": "-0.5000",
-      "timeout_ms": 30000
-    },
-    {
-      "label": "let the Inspector settle",
-      "cmd": "wait",
-      "name": "pelican.inspectorNotice",
-      "contains": "zz-never-shown",
-      "timeout_ms": 1500,
-      "expect_error": "automation.wait_timeout@1"
-    },
-    {
-      "label": "the field is on screen and takes input",
-      "cmd": "wait",
-      "name": "pelican.inspectorVector.transform.scale.0",
-      "visible": true,
-      "enabled": true,
       "timeout_ms": 60000
-    },
-    {
-      "label": "wide: scale x",
-      "cmd": "type",
-      "name": "pelican.inspectorVector.transform.scale.0",
-      "text": "8"
-    },
-    {
-      "label": "commit it",
-      "cmd": "key",
-      "name": "pelican.inspectorVector.transform.scale.0",
-      "sequence": "Return"
-    },
-    {
-      "label": "let the commit land",
-      "cmd": "wait",
-      "name": "pelican.inspectorNotice",
-      "contains": "zz-never-shown",
-      "timeout_ms": 1500,
-      "expect_error": "automation.wait_timeout@1"
-    },
-    {
-      "label": "the field holds the value",
-      "cmd": "wait",
-      "name": "pelican.inspectorVector.transform.scale.0",
-      "contains": "8.0000",
-      "timeout_ms": 30000
-    },
-    {
-      "label": "let the Inspector settle",
-      "cmd": "wait",
-      "name": "pelican.inspectorNotice",
-      "contains": "zz-never-shown",
-      "timeout_ms": 1500,
-      "expect_error": "automation.wait_timeout@1"
-    },
-    {
-      "label": "the field is on screen and takes input",
-      "cmd": "wait",
-      "name": "pelican.inspectorVector.transform.scale.2",
-      "visible": true,
-      "enabled": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "and scale z",
-      "cmd": "type",
-      "name": "pelican.inspectorVector.transform.scale.2",
-      "text": "8"
-    },
-    {
-      "label": "commit it",
-      "cmd": "key",
-      "name": "pelican.inspectorVector.transform.scale.2",
-      "sequence": "Return"
-    },
-    {
-      "label": "let the commit land",
-      "cmd": "wait",
-      "name": "pelican.inspectorNotice",
-      "contains": "zz-never-shown",
-      "timeout_ms": 1500,
-      "expect_error": "automation.wait_timeout@1"
-    },
-    {
-      "label": "the field holds the value",
-      "cmd": "wait",
-      "name": "pelican.inspectorVector.transform.scale.2",
-      "contains": "8.0000",
-      "timeout_ms": 30000
     },
     {
       "label": "pick the Cube in the Outliner",
@@ -308,9 +172,9 @@
       "timeout_ms": 30000
     },
     {
-      "label": "the Cube's rotation is in the Inspector",
+      "label": "the Cube's rotation is in the Inspector, as angles",
       "cmd": "wait",
-      "name": "pelican.inspectorVector.transform.rotation.1",
+      "name": "pelican.inspectorEuler.transform.rotation.1",
       "visible": true,
       "timeout_ms": 30000
     },
@@ -325,21 +189,21 @@
     {
       "label": "the field is on screen and takes input",
       "cmd": "wait",
-      "name": "pelican.inspectorVector.transform.rotation.1",
+      "name": "pelican.inspectorEuler.transform.rotation.1",
       "visible": true,
       "enabled": true,
       "timeout_ms": 60000
     },
     {
-      "label": "turn the box about the vertical: rotation 1",
+      "label": "turn the box about the vertical: 45 degrees about Y",
       "cmd": "type",
-      "name": "pelican.inspectorVector.transform.rotation.1",
-      "text": "0.3827"
+      "name": "pelican.inspectorEuler.transform.rotation.1",
+      "text": "45"
     },
     {
       "label": "commit it",
       "cmd": "key",
-      "name": "pelican.inspectorVector.transform.rotation.1",
+      "name": "pelican.inspectorEuler.transform.rotation.1",
       "sequence": "Return"
     },
     {
@@ -351,53 +215,17 @@
       "expect_error": "automation.wait_timeout@1"
     },
     {
-      "label": "the field holds the value",
+      "label": "the field holds the angle",
+      "cmd": "wait",
+      "name": "pelican.inspectorEuler.transform.rotation.1",
+      "contains": "45.00",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "and the scene stores it as the quaternion it always did",
       "cmd": "wait",
       "name": "pelican.inspectorVector.transform.rotation.1",
       "contains": "0.3827",
-      "timeout_ms": 30000
-    },
-    {
-      "label": "let the Inspector settle",
-      "cmd": "wait",
-      "name": "pelican.inspectorNotice",
-      "contains": "zz-never-shown",
-      "timeout_ms": 1500,
-      "expect_error": "automation.wait_timeout@1"
-    },
-    {
-      "label": "the field is on screen and takes input",
-      "cmd": "wait",
-      "name": "pelican.inspectorVector.transform.rotation.3",
-      "visible": true,
-      "enabled": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "turn the box about the vertical: rotation 3",
-      "cmd": "type",
-      "name": "pelican.inspectorVector.transform.rotation.3",
-      "text": "0.9239"
-    },
-    {
-      "label": "commit it",
-      "cmd": "key",
-      "name": "pelican.inspectorVector.transform.rotation.3",
-      "sequence": "Return"
-    },
-    {
-      "label": "let the commit land",
-      "cmd": "wait",
-      "name": "pelican.inspectorNotice",
-      "contains": "zz-never-shown",
-      "timeout_ms": 1500,
-      "expect_error": "automation.wait_timeout@1"
-    },
-    {
-      "label": "the field holds the value",
-      "cmd": "wait",
-      "name": "pelican.inspectorVector.transform.rotation.3",
-      "contains": "0.9239",
       "timeout_ms": 30000
     },
     {
@@ -425,12 +253,7 @@
       "value": "deferred_geometry"
     },
     {
-      "label": "Create missing targets",
-      "cmd": "click",
-      "name": "pelican.materialPassForm.createMissing"
-    },
-    {
-      "label": "the albedo output is a new gbuffer_albedo",
+      "label": "the albedo output is a new gbuffer_albedo, filled as the form opened",
       "expect": "text_equals",
       "name": "pelican.materialPassForm.target.albedo",
       "value": "gbuffer_albedo"
@@ -513,46 +336,7 @@
       "value": "Restarting the engine"
     },
     {
-      "label": "step 4: New render target... for the lit colour",
-      "cmd": "action",
-      "name": "pelican.framePlan.newRenderTarget"
-    },
-    {
-      "label": "the form is open",
-      "cmd": "wait",
-      "name": "pelican.renderTargetForm.name",
-      "visible": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "type only a name",
-      "cmd": "type",
-      "name": "pelican.renderTargetForm.name",
-      "text": "lit_color"
-    },
-    {
-      "label": "OK",
-      "cmd": "click",
-      "name": "pelican.renderTargetForm.ok"
-    },
-    {
-      "label": "the engine declares lit_color",
-      "expect": "rpc_equals",
-      "method": "get_render_authoring_context",
-      "params": {},
-      "path": "render_targets[6].name",
-      "value": "lit_color",
-      "retry_ms": 60000
-    },
-    {
-      "label": "the new target is drawn as a node (the canvas turns to it)",
-      "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::resource_node#lit_color",
-      "visible": true,
-      "timeout_ms": 180000
-    },
-    {
-      "label": "look at the whole frame, where the geometry pass is drawn",
+      "label": "step 4: look at the whole frame, where the geometry pass is drawn",
       "cmd": "select",
       "name": "pelican.framePlanTarget",
       "text": "Whole frame"
@@ -594,72 +378,6 @@
       "timeout_ms": 180000
     },
     {
-      "label": "input 0: gbuffer_albedo",
-      "cmd": "select",
-      "name": "pelican.fullscreenPass.inputTarget",
-      "text": "gbuffer_albedo"
-    },
-    {
-      "label": "added",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.addInput"
-    },
-    {
-      "label": "input 1: gbuffer_normal",
-      "cmd": "select",
-      "name": "pelican.fullscreenPass.inputTarget",
-      "text": "gbuffer_normal"
-    },
-    {
-      "label": "added",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.addInput"
-    },
-    {
-      "label": "input 2: gbuffer_material",
-      "cmd": "select",
-      "name": "pelican.fullscreenPass.inputTarget",
-      "text": "gbuffer_material"
-    },
-    {
-      "label": "added",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.addInput"
-    },
-    {
-      "label": "input 3: gbuffer_worldpos",
-      "cmd": "select",
-      "name": "pelican.fullscreenPass.inputTarget",
-      "text": "gbuffer_worldpos"
-    },
-    {
-      "label": "added",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.addInput"
-    },
-    {
-      "label": "input 4: gbuffer_emissive",
-      "cmd": "select",
-      "name": "pelican.fullscreenPass.inputTarget",
-      "text": "gbuffer_emissive"
-    },
-    {
-      "label": "added",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.addInput"
-    },
-    {
-      "label": "write lit_color",
-      "cmd": "select",
-      "name": "pelican.fullscreenPass.colorTarget",
-      "text": "lit_color"
-    },
-    {
-      "label": "as colour output 0",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.addColor"
-    },
-    {
       "label": "New... beside the fragment stem",
       "cmd": "click",
       "name": "pelican.fullscreenPass.newFragmentShader"
@@ -678,6 +396,13 @@
       "timeout_ms": 10000
     },
     {
+      "label": "T-1: the five inputs filled themselves from the G-buffer names, in the order the shader reads them",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.json",
+      "contains": "\"gbuffer_albedo\",\n    \"gbuffer_normal\",\n    \"gbuffer_material\",\n    \"gbuffer_worldpos\",\n    \"gbuffer_emissive\"",
+      "timeout_ms": 10000
+    },
+    {
       "label": "Uses scene lights and Camera position are on: the pass asks for the camera position",
       "expect": "text_equals",
       "name": "pelican.fullscreenPass.pushConstants",
@@ -685,6 +410,52 @@
     },
     {
       "label": "the pass is named after what it is",
+      "expect": "text_equals",
+      "name": "pelican.fullscreenPass.name",
+      "value": "deferred_lighting"
+    },
+    {
+      "label": "T-1: the colour output is a new target, picked from the output list",
+      "cmd": "select",
+      "name": "pelican.fullscreenPass.colorTarget",
+      "text": "New target: deferred_lighting_color..."
+    },
+    {
+      "label": "New render target opens with the name in it",
+      "cmd": "wait",
+      "name": "pelican.renderTargetForm.name",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the pass's name and _color, with nothing typed",
+      "expect": "text_equals",
+      "name": "pelican.renderTargetForm.name",
+      "value": "deferred_lighting_color"
+    },
+    {
+      "label": "OK",
+      "cmd": "click",
+      "name": "pelican.renderTargetForm.ok"
+    },
+    {
+      "label": "the engine declares deferred_lighting_color",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "render_targets[6].name",
+      "value": "deferred_lighting_color",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and the Pass Editor's draft writes it, the rest of the draft as it was",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.json",
+      "contains": "\"deferred_lighting_color\"",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the name is still the pass's",
       "expect": "text_equals",
       "name": "pelican.fullscreenPass.name",
       "value": "deferred_lighting"
@@ -701,9 +472,21 @@
       "value": "project://shaders/deferred_lighting"
     },
     {
+      "label": "T-1: the fragment list offers it: picking it puts the same stem in the field",
+      "cmd": "select",
+      "name": "pelican.fullscreenPass.shader.fragmentChoice",
+      "text": "project://shaders/deferred_lighting"
+    },
+    {
+      "label": "the field holds the picked stem",
+      "expect": "text_equals",
+      "name": "pelican.fullscreenPass.shader.fragment",
+      "value": "project://shaders/deferred_lighting"
+    },
+    {
       "label": "the shader reads the world position at input 3",
       "file": "contains",
-      "path": "{artifacts}/deferred_loop/shaders/deferred_lighting.frag",
+      "path": "{artifacts}/project_001/shaders/deferred_lighting.frag",
       "text": "PELICAN_DECLARE_INPUT_3(in_gbuffer_worldpos);  // gbuffer_worldpos: world position",
       "value": true
     },
@@ -768,10 +551,10 @@
       "timeout_ms": 60000
     },
     {
-      "label": "present reads lit_color",
+      "label": "present reads deferred_lighting_color",
       "cmd": "select",
       "name": "pelican.fullscreenPass.inputTarget",
-      "text": "lit_color"
+      "text": "deferred_lighting_color"
     },
     {
       "label": "as input 0",
@@ -807,16 +590,16 @@
       "value": "project://shaders/present_tone_map"
     },
     {
-      "label": "the shader reads lit_color as the scene colour",
+      "label": "the shader reads deferred_lighting_color as the scene colour",
       "file": "contains",
-      "path": "{artifacts}/deferred_loop/shaders/present_tone_map.frag",
-      "text": "PELICAN_DECLARE_INPUT_0(in_lit_color);  // lit_color: scene colour",
+      "path": "{artifacts}/project_001/shaders/present_tone_map.frag",
+      "text": "PELICAN_DECLARE_INPUT_0(in_deferred_lighting_color);  // deferred_lighting_color: scene colour",
       "value": true
     },
     {
       "label": "the gradient present had is still on disk: New... does not overwrite",
       "file": "contains",
-      "path": "{artifacts}/deferred_loop/shaders/present.frag",
+      "path": "{artifacts}/project_001/shaders/present.frag",
       "text": "outColor = vec4(inUV.x, inUV.y, 0.5, 1.0);",
       "value": true
     },
@@ -833,12 +616,12 @@
       "name": "pelican.fullscreenPass.save"
     },
     {
-      "label": "the root's present reads lit_color",
+      "label": "the root's present reads deferred_lighting_color",
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
       "path": "graphs[0].passes[2].root_declaration.input[0]",
-      "value": "lit_color",
+      "value": "deferred_lighting_color",
       "retry_ms": 120000
     },
     {
@@ -849,7 +632,7 @@
     {
       "label": "the canvas draws the read",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node_socket#present/in:lit_color",
+      "name": "pelican.framePlanLogicalView::node_socket#present/in:deferred_lighting_color",
       "visible": true,
       "timeout_ms": 120000
     },

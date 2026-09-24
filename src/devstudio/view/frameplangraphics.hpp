@@ -7,6 +7,7 @@
 #include <QPointF>
 
 #include <QString>
+#include <QStringList>
 
 #include <map>
 #include <functional>
@@ -251,6 +252,10 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     // What bands a node offers. Asked once per node per draw.
     std::function<std::vector<FramePlanInlineBand>(const FramePlanNodeKey &)>
         inlineFieldProvider;
+    // T-1: what a band's editor offers to complete to (a shader band: the
+    // shaders there are), asked when the editor opens. Empty: none.
+    std::function<QStringList(const FramePlanNodeKey &, const QString &field)>
+        inlineFieldChoices;
     // A node was moved, or the placement was dropped. The owner writes it.
     std::function<void()> placementChanged;
     // F-1: double-click on the resource node, and Delete while it is picked.

@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -119,6 +120,9 @@ enum class AddObjectKind : std::uint8_t {
     Cube,
     Plane,
     Sphere,
+    // T-1: a Plane laid as a floor -- just under the origin and wide -- so a
+    // scene has somewhere to stand without typing a transform.
+    Floor,
 };
 
 // The model references GP-5 resolves without an asset. Studio lists them
@@ -126,7 +130,7 @@ enum class AddObjectKind : std::uint8_t {
 // engine's own catalogue says anything.
 [[nodiscard]] const std::vector<std::string> &enginePrimitiveModelReferences();
 
-// "Empty", "Cube", "Plane", "Sphere".
+// "Empty", "Cube", "Plane", "Sphere", "Floor".
 [[nodiscard]] std::string_view addObjectBaseName(AddObjectKind kind);
 
 // Blender's rule: the base name if it is free, else the lowest free
@@ -136,9 +140,24 @@ enum class AddObjectKind : std::uint8_t {
                                            const std::vector<std::string> &taken);
 
 // The `object` of one `spawn` op: a transform at the origin and, for a
-// shape, a simplemodelview naming its engine primitive.
+// shape, a simplemodelview naming its engine primitive. A Floor is the
+// plane primitive at (0, -0.5, 0), scaled 8 x 1 x 8.
 [[nodiscard]] nlohmann::json addObjectDeclaration(AddObjectKind kind,
                                                   const std::string &name);
+
+// T-1: the Inspector shows a transform's rotation as three angles in degrees,
+// X then Y then Z (each about the fixed axes, so the rotation is
+// Rz * Ry * Rx), and keeps storing the quaternion [x, y, z, w] it always did.
+// The angles come back as X and Z in (-180, 180], Y in [-90, 90]; at Y = +-90
+// X is 0 and Z carries the rest. A quaternion that is not unit is normalised
+// first; a zero one reads as no rotation. The quaternion made from angles has
+// w >= 0.
+[[nodiscard]] std::array<double, 3>
+eulerDegreesFromQuaternion(const std::array<double, 4> &quaternion);
+[[nodiscard]] std::array<double, 4>
+quaternionFromEulerDegrees(const std::array<double, 3> &degrees);
+// True for the field whose value is shown as angles: transform.rotation.
+[[nodiscard]] bool isEulerRotationField(const InspectorWidgetDescriptor &descriptor);
 
 // How a built-in model reads in a list: "Cube (built-in)". Empty for a
 // reference that is not under engine://primitives/.

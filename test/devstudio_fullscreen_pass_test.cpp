@@ -1,5 +1,6 @@
 #include "fullscreenpasswidget.hpp"
 #include "frameplanedit.hpp"
+#include "fullscreenpasssettings.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "fullscreenshadertemplate.hpp"
 #include "mainwindow.hpp"
@@ -305,9 +306,12 @@ StringSet resourceNames(const Json &plan) {
     return result;
 }
 
+// The declared resources a chooser offers. T-1's "New target: ..." entry at
+// the end of the colour chooser is not one of them.
 StringSet comboNames(const QComboBox &combo) {
     StringSet result;
     for (int index = 0; index < combo.count(); ++index) {
+        if (combo.itemText(index).startsWith(QStringLiteral("New target: "))) continue;
         result.insert(combo.itemText(index).toStdString());
     }
     return result;
@@ -3722,5 +3726,215 @@ TEST_CASE("G-6 a refused edit shows its code and the graph that refused it "
     CHECK(renderAuthoringRefusalLine(refusal) ==
           "The preview graph refused it: render_pipeline_preflight_failed: "
           "render feature pass insert anchor was not found: x");
+}
+
+// --- T-1: less to type in the Pass Editor.
+
+TEST_CASE("T-1 the shader fields offer the project's shaders, then the engine's",
+          "[devstudio][fullscreen-pass][t1][shader-choice]") {
+    (void)application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = filesystemPath(temporary.path());
+    std::filesystem::create_directories(root / "shaders");
+    for (const char *file : {"b_pass.frag", "a_pass.frag", "quad.vert", "notes.txt",
+                             "bad name.frag"})
+        std::ofstream{root / "shaders" / file} << "// x\n";
+
+    const std::vector<std::string> engine_fragments{
+        "engine://fullscreen", "engine://scene_present", "engine://output_transform",
+        "engine://ssao", "engine://ssao_blur"};
+    auto fragments = engine_fragments;
+    fragments.insert(fragments.begin(),
+                     {"project://shaders/a_pass", "project://shaders/b_pass"});
+    CHECK(fullscreenShaderChoices(FullscreenShaderStage::fragment, root) == fragments);
+    CHECK(fullscreenShaderChoices(FullscreenShaderStage::vertex, root) ==
+          std::vector<std::string>{"project://shaders/quad", "engine://fullscreen"});
+    // No project, or one without a shaders folder: the engine's alone.
+    CHECK(fullscreenShaderChoices(FullscreenShaderStage::fragment, std::nullopt) ==
+          engine_fragments);
+    CHECK(fullscreenShaderChoices(FullscreenShaderStage::fragment, root / "shaders") ==
+          engine_fragments);
+
+    // The Pass Editor: a pick puts the stem in the field, and the list goes
+    // back to "Pick..." so it can be picked again.
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    form.setShaderSourceOpenAction([](const std::filesystem::path &) { return true; });
+    authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
+    form.receiveResult(QByteArray::fromStdString(f3FramePlan().dump()));
+    auto &choice = required<QComboBox>(form, "pelican.fullscreenPass.shader.fragmentChoice");
+    auto &fragment = required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment");
+    CHECK(choice.findText(QStringLiteral("project://shaders/a_pass")) < 0);
+    form.setProjectRoot(root);
+    const int a_pass = choice.findText(QStringLiteral("project://shaders/a_pass"));
+    REQUIRE(a_pass >= 0);
+    choice.setCurrentIndex(a_pass);
+    CHECK(fragment.text() == QStringLiteral("project://shaders/a_pass"));
+    CHECK(choice.currentIndex() == -1);
+    fragment.setText(QStringLiteral("typed"));
+    choice.setCurrentIndex(a_pass);
+    CHECK(fragment.text() == QStringLiteral("project://shaders/a_pass"));
+    // The vertex field keeps its default and offers the same way.
+    auto &vertex = required<QLineEdit>(form, "pelican.fullscreenPass.shader.vertex");
+    CHECK(vertex.text() == QStringLiteral("engine://fullscreen"));
+    auto &vertex_choice =
+        required<QComboBox>(form, "pelican.fullscreenPass.shader.vertexChoice");
+    vertex_choice.setCurrentIndex(vertex_choice.findText(QStringLiteral("project://shaders/quad")));
+    CHECK(vertex.text() == QStringLiteral("project://shaders/quad"));
+    CHECK(outputJson(form).at("shader").at("vertex") == "project://shaders/quad");
+
+    // A shader New... writes is on the list at once.
+    required<QPushButton>(form, "pelican.fullscreenPass.newFragmentShader").click();
+    required<QLineEdit>(form, "pelican.fullscreenPass.shaderTemplateName")
+        .setText(QStringLiteral("c_pass"));
+    required<QPushButton>(form, "pelican.fullscreenPass.createFragmentShader").click();
+    CHECK(choice.findText(QStringLiteral("project://shaders/c_pass")) >= 0);
+}
+
+TEST_CASE("T-1 Deferred lighting fills its inputs with the G-buffer targets by name",
+          "[devstudio][fullscreen-pass][t1][input-fill]") {
+    const auto deferred = FullscreenShaderTemplateKind::deferred_lighting;
+    const std::vector<std::string> gbuffer{"scene_depth", "gbuffer_emissive", "gbuffer_worldpos",
+                                           "gbuffer_material", "gbuffer_normal", "gbuffer_albedo",
+                                           "lit_color"};
+    // Read by position: the order the template reads them in, whatever order
+    // the plan lists them in.
+    CHECK(fullscreenTemplateInputFill(deferred, gbuffer) ==
+          std::vector<std::string>{"gbuffer_albedo", "gbuffer_normal", "gbuffer_material",
+                                   "gbuffer_worldpos", "gbuffer_emissive"});
+    // The first role nothing matches ends the list: a hole would shift every
+    // input after it.
+    CHECK(fullscreenTemplateInputFill(deferred, {"gbuffer_albedo", "gbuffer_material"}) ==
+          std::vector<std::string>{"gbuffer_albedo"});
+    CHECK(fullscreenTemplateInputFill(deferred, {"lit_color"}).empty());
+    // Another name that carries the role's word, when it is the only one.
+    CHECK(fullscreenTemplateInputFill(deferred, {"my_albedo", "my_normal", "x"}) ==
+          std::vector<std::string>{"my_albedo", "my_normal"});
+    CHECK(fullscreenTemplateInputFill(deferred, {"a_albedo", "b_albedo"}).empty());
+    CHECK(fullscreenTemplateInputFill(deferred, {"g_albedo", "g_normal", "g_material",
+                                                 "g_world_position", "g_emissive"})
+              .size() == 5);
+    // Only Deferred lighting fills itself in.
+    CHECK(fullscreenTemplateInputFill(FullscreenShaderTemplateKind::tone_map, gbuffer).empty());
+    CHECK(fullscreenTemplateInputFill(FullscreenShaderTemplateKind::pass_through, gbuffer).empty());
+
+    (void)application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    form.setShaderSourceOpenAction([](const std::filesystem::path &) { return true; });
+    authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
+    Json resources = Json::array();
+    for (const auto &name : gbuffer) resources.push_back(resource(name));
+    form.receiveResult(QByteArray::fromStdString(minimalFramePlan("f3_graph", resources).dump()));
+    form.setProjectRoot(filesystemPath(temporary.path()));
+    auto &inputs = required<QListWidget>(form, "pelican.fullscreenPass.inputs");
+    auto &kind = required<QComboBox>(form, "pelican.fullscreenPass.shaderTemplateKind");
+    required<QPushButton>(form, "pelican.fullscreenPass.newFragmentShader").click();
+    REQUIRE(inputs.count() == 0);
+    selectData(kind, "deferred_lighting");
+    REQUIRE(inputs.count() == 5);
+    CHECK(inputs.item(0)->text() == QStringLiteral("gbuffer_albedo"));
+    CHECK(inputs.item(3)->text() == QStringLiteral("gbuffer_worldpos"));
+    CHECK(inputs.item(3)->toolTip() == QStringLiteral("world position"));
+    CHECK(outputJson(form).at("input") ==
+          Json::array({"gbuffer_albedo", "gbuffer_normal", "gbuffer_material",
+                       "gbuffer_worldpos", "gbuffer_emissive"}));
+    // Inputs the author already chose are theirs.
+    required<QPushButton>(form, "pelican.fullscreenPass.new").click();
+    chooseCandidate(form, "pelican.fullscreenPass.inputTarget",
+                    "pelican.fullscreenPass.addInput", "lit_color");
+    required<QPushButton>(form, "pelican.fullscreenPass.newFragmentShader").click();
+    selectData(kind, "deferred_lighting");
+    REQUIRE(inputs.count() == 1);
+    CHECK(inputs.item(0)->text() == QStringLiteral("lit_color"));
+}
+
+TEST_CASE("T-1 New target: <pass>_color... makes the output and puts it in the draft",
+          "[devstudio][fullscreen-pass][t1][new-target]") {
+    CHECK(proposedColorTargetName("deferred_lighting", {}) == "deferred_lighting_color");
+    CHECK(proposedColorTargetName("", {}) == "fullscreen_pass_color");
+    CHECK(proposedColorTargetName("tint pass", {"tint_pass_color"}) == "tint_pass_color_2");
+
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
+    form.receiveResult(QByteArray::fromStdString(f3FramePlan().dump()));
+    std::vector<QString> asked;
+    form.setNewRenderTargetAction([&](const QString &name) { asked.push_back(name); });
+
+    auto &name = required<QLineEdit>(form, "pelican.fullscreenPass.name");
+    name.setText(QStringLiteral("glow"));
+    chooseCandidate(form, "pelican.fullscreenPass.inputTarget",
+                    "pelican.fullscreenPass.addInput", "ssao_blur");
+    auto &choices = required<QComboBox>(form, "pelican.fullscreenPass.colorTarget");
+    auto &colors = required<QListWidget>(form, "pelican.fullscreenPass.colors");
+    const int entry = choices.findText(QStringLiteral("New target: glow_color..."));
+    REQUIRE(entry == choices.count() - 1);
+    choices.setCurrentIndex(entry);
+    REQUIRE(asked == std::vector<QString>{QStringLiteral("glow_color")});
+    CHECK(choices.currentIndex() == -1);
+    CHECK(colors.count() == 0);
+    // Renamed, the entry follows the pass; a name taken gets the next number.
+    name.setText(QStringLiteral("lit"));
+    CHECK(choices.itemText(choices.count() - 1) == QStringLiteral("New target: lit_color_2..."));
+    name.setText(QStringLiteral("glow"));
+
+    // Another target made elsewhere is not this one.
+    const auto before = refresh.requests.size();
+    form.renderTargetCreated(QStringLiteral("other"));
+    CHECK(refresh.requests.size() == before);
+    // The target committed: the plan is read again and gains it. The draft
+    // is still the author's, with the new target as its colour output.
+    form.renderTargetCreated(QStringLiteral("glow_color"));
+    REQUIRE(refresh.requests.size() == before + 1);
+    Json plan = f3FramePlan();
+    plan["resources"].push_back(resource("glow_color"));
+    form.receiveResult(QByteArray::fromStdString(plan.dump()));
+    REQUIRE(colors.count() == 1);
+    CHECK(colors.item(0)->text() == QStringLiteral("glow_color"));
+    CHECK(name.text() == QStringLiteral("glow"));
+    CHECK(required<QListWidget>(form, "pelican.fullscreenPass.inputs").count() == 1);
+    CHECK(outputJson(form).at("output").at("color") == Json::array({"glow_color"}));
+
+    // Only that gain keeps the draft: any other change of the plan still
+    // discards it, as it always did.
+    plan["resources"].push_back(resource("unrelated"));
+    form.receiveResult(QByteArray::fromStdString(plan.dump()));
+    CHECK(colors.count() == 0);
+    CHECK(name.text().isEmpty());
+}
+
+TEST_CASE("T-1 a clear colour is picked into its field",
+          "[devstudio][fullscreen-pass][t1][clear-color]") {
+    CHECK(FullscreenOutputOpsEditor::clearColorText(1.0, 0.5, 0.0, 1.0) ==
+          QStringLiteral("1, 0.5, 0, 1"));
+    CHECK(FullscreenOutputOpsEditor::clearColorText(0.2, 0.33333, 0.66666, 0.5) ==
+          QStringLiteral("0.2, 0.333, 0.667, 0.5"));
+    CHECK(FullscreenOutputOpsEditor::clearColorComponents(QStringLiteral("0.2, 0.4, 0.6")) ==
+          std::array<double, 4>{0.2, 0.4, 0.6, 1.0});
+    CHECK(FullscreenOutputOpsEditor::clearColorComponents(QStringLiteral("0, 0, 0, 0.25")) ==
+          std::array<double, 4>{0.0, 0.0, 0.0, 0.25});
+    CHECK(FullscreenOutputOpsEditor::clearColorComponents(QStringLiteral("red")) ==
+          std::array<double, 4>{0.0, 0.0, 0.0, 1.0});
+
+    (void)application();
+    FullscreenOutputOpsEditor editor;
+    editor.setJsonWriter([](const QString &) {});
+    editor.sync({"a"}, QStringLiteral(R"([{"target":"a","load_op":"clear"}])"));
+    auto &field = required<QLineEdit>(editor, "pelican.fullscreenPass.outputClearColor.0");
+    auto &pick = required<QToolButton>(editor, "pelican.fullscreenPass.outputClearColorPick.0");
+    // Beside the field, shown when the field is.
+    CHECK_FALSE(field.isHidden());
+    CHECK_FALSE(pick.isHidden());
+    editor.sync({"a"}, QStringLiteral(R"([{"target":"a","load_op":"load"}])"));
+    CHECK(field.isHidden());
+    CHECK(pick.isHidden());
 }
 } // namespace PelicanStudio

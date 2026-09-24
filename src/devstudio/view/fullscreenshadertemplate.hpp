@@ -6,6 +6,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace PelicanStudio {
 
@@ -101,6 +102,34 @@ struct ShaderTemplateWrite {
     // False when a file was already there. It is then left exactly as it was.
     bool created = false;
 };
+
+// T-1. What the Pass Editor's shader fields offer to pick from, so a stem is
+// chosen rather than spelled: the project's own shaders/<name>.frag (or
+// .vert), as project://shaders/<name> in name order, then the engine's
+// fullscreen shaders the render compiler knows by name. The fields still take
+// any text. A project without a shaders folder offers the engine's alone.
+enum class FullscreenShaderStage { vertex, fragment };
+std::vector<std::string> fullscreenShaderChoices(
+    FullscreenShaderStage stage,
+    const std::optional<std::filesystem::path> &project_root);
+
+// T-1. What a template reads fills itself in: for each role, in order, the
+// declared resource named as G-1 names that role's target (gbuffer_albedo,
+// gbuffer_normal, gbuffer_material, gbuffer_worldpos, gbuffer_emissive), else
+// the only declared name that carries the role's word. The inputs are read by
+// position, so the list stops at the first role nothing matches; an optional
+// role is never filled. Empty for a kind with no roles filled this way (only
+// Deferred lighting has them).
+std::vector<std::string> fullscreenTemplateInputFill(
+    FullscreenShaderTemplateKind kind,
+    const std::vector<std::string> &declared);
+
+// T-1. The target "New target:" in the colour output's list proposes:
+// <pass>_color, every character a target name cannot hold folded to '_'
+// ("fullscreen_pass_color" for a pass with no name yet), then _2, _3... past
+// the names already taken.
+std::string proposedColorTargetName(std::string_view pass_name,
+                                    const std::vector<std::string> &taken);
 
 // Writes `contents` to shaderTemplatePath() unless a file is already there.
 // Throws for an invalid name or a write that fails; never overwrites.

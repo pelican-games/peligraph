@@ -94,6 +94,8 @@ TEST_CASE("Studio RPC preserves record values or refuses lossy integer transport
 #include <QPen>
 #include <QLabel>
 #include <QLineEdit>
+#include <QCompleter>
+#include <QAbstractItemModel>
 #include <QPlainTextEdit>
 #include <QSpinBox>
 #include <QSignalSpy>
@@ -7316,6 +7318,34 @@ TEST_CASE("The Frame Plan raw JSON tab shows the reply it is opened on",
 // loop whenever the keyboard moves between the embedded engine viewport's
 // native window and the main window. Qt reports that blink as
 // FocusOut(ActiveWindowFocusReason).
+TEST_CASE("T-1 a shader band's editor completes to the shaders it is given",
+          "[devstudio][frame-plan][t1][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    std::vector<QString> asked;
+    fixture.widget.setInlineFieldChoices([&](const QString &field) {
+        asked.push_back(field);
+        return field == QLatin1String{"shader.fragment"}
+                   ? QStringList{QStringLiteral("project://shaders/tint"),
+                                 QStringLiteral("engine://fullscreen")}
+                   : QStringList{};
+    });
+    fixture.open();
+    auto &logical = fixture.logical();
+    clickBand(fixture, QStringLiteral("wp343_mixed_a"), QStringLiteral("shader.fragment"));
+    REQUIRE(logical.editingInline());
+    QLineEdit *editing = inlineEditorWidget(logical);
+    REQUIRE(editing != nullptr);
+    CHECK(asked == std::vector<QString>{QStringLiteral("shader.fragment")});
+    REQUIRE(editing->completer() != nullptr);
+    auto *model = editing->completer()->model();
+    REQUIRE(model != nullptr);
+    REQUIRE(model->rowCount() == 2);
+    CHECK(model->index(0, 0).data().toString() == QStringLiteral("project://shaders/tint"));
+    // Still a text field: what is typed is what is committed.
+    CHECK(editing->text() == logical.inlineEditText());
+}
+
 TEST_CASE("A Frame Plan band editor survives the window going inactive, and "
           "still ends when the focus really leaves it",
           "[devstudio][frame-plan][q4][canvas-edit]") {
@@ -8594,6 +8624,41 @@ Json g1Context(std::vector<std::string> features = {"hdr"}) {
 
 } // namespace
 
+TEST_CASE("T-1 Add material pass... opens with its outputs filled, reusing a "
+          "declared target of the role's name whose format fits",
+          "[devstudio][frame-plan][t1][material-pass]") {
+    FramePlanAuthoring authoring;
+    authoring.received = true;
+    authoring.enabled_features_known = true;
+    authoring.enabled_features = {"hdr"};
+    // Nothing declared: every output is a new target of its role's name.
+    CHECK(materialPassInitialTargets(authoring, "forward_opaque_v1") ==
+          std::vector<std::string>{"scene_color", "scene_depth"});
+    CHECK(materialPassInitialTargets(authoring, "deferred_geometry_v1") ==
+          std::vector<std::string>{"gbuffer_albedo", "gbuffer_normal", "gbuffer_material",
+                                   "gbuffer_worldpos", "gbuffer_emissive", "scene_depth"});
+
+    const auto declare = [&](const std::string &name, Json declaration) {
+        declaration["name"] = name;
+        authoring.render_targets[name] =
+            FramePlanRenderTarget{.name = name, .declaration = std::move(declaration)};
+    };
+    declare("scene_color", {{"format", "R16G16B16A16_SFLOAT"}});
+    declare("scene_depth", {{"format", "D16_UNORM"}});
+    declare("gbuffer_albedo", {{"format_class", "scene"}});
+    declare("gbuffer_normal", {{"format_class", "display"}});
+    declare("gbuffer_material", Json::object());
+    // scene_color fits and is reused; scene_depth's format does not, so the
+    // depth is a new scene_depth_2.
+    CHECK(materialPassInitialTargets(authoring, "forward_opaque_v1") ==
+          std::vector<std::string>{"scene_color", "scene_depth_2"});
+    // By class when the declaration names no format; a target that says
+    // neither is not reused.
+    CHECK(materialPassInitialTargets(authoring, "deferred_geometry_v1") ==
+          std::vector<std::string>{"gbuffer_albedo", "gbuffer_normal_2", "gbuffer_material_2",
+                                   "gbuffer_worldpos", "gbuffer_emissive", "scene_depth_2"});
+}
+
 TEST_CASE("G-1 a material contract lays out its outputs, and the missing "
           "targets are made with the formats it requires",
           "[devstudio][frame-plan][g1][material-pass]") {
@@ -8777,7 +8842,23 @@ TEST_CASE("G-1 Add material pass... makes the missing targets, then adds the "
                   QStringLiteral("pelican.materialPassForm.target.%1")
                       .arg(QLatin1String{slot})) != nullptr);
 
-    // Save with an empty output is refused inside the form: nothing is sent.
+    // T-1: the outputs are filled as the contract lays them out. The
+    // preset's gbuffer_albedo declares no format, so it is not reused.
+    const auto slot_text = [form](const char *slot) {
+        auto *target = form->findChild<QComboBox *>(
+            QStringLiteral("pelican.materialPassForm.target.%1").arg(QLatin1String{slot}));
+        REQUIRE(target != nullptr);
+        return target->currentText();
+    };
+    CHECK(slot_text("albedo") == QStringLiteral("gbuffer_albedo_2"));
+    CHECK(slot_text("normal") == QStringLiteral("gbuffer_normal"));
+    CHECK(slot_text("depth") == QStringLiteral("scene_depth"));
+
+    // Save with an output emptied is refused inside the form: nothing is sent.
+    auto *normal = form->findChild<QComboBox *>(
+        QStringLiteral("pelican.materialPassForm.target.normal"));
+    REQUIRE(normal != nullptr);
+    normal->setEditText(QString{});
     auto *ok = form->findChild<QPushButton *>(
         QStringLiteral("pelican.materialPassForm.ok"));
     REQUIRE(ok != nullptr);
@@ -8791,6 +8872,7 @@ TEST_CASE("G-1 Add material pass... makes the missing targets, then adds the "
     REQUIRE(missing != nullptr);
     QTest::mouseClick(missing, Qt::LeftButton);
     QApplication::processEvents();
+    CHECK(slot_text("normal") == QStringLiteral("gbuffer_normal"));
     auto *albedo_state = form->findChild<QLabel *>(
         QStringLiteral("pelican.materialPassForm.state.albedo"));
     REQUIRE(albedo_state != nullptr);
