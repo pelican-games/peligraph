@@ -175,7 +175,7 @@ modelReferenceChoices(std::string_view current,
 // What the description shows: "<sentence> (<code>)", or the code alone.
 [[nodiscard]] std::string componentUnavailableDescription(std::string_view code);
 // The short word after the name in the list: "not in this build",
-// "needs ray layout v2", or "unavailable" for a code Studio does not know.
+// "needs a ray layout", or "unavailable" for a code Studio does not know.
 [[nodiscard]] std::string componentUnavailableTag(std::string_view code);
 
 struct ComponentAddRow {
@@ -189,6 +189,14 @@ struct ComponentAddRow {
 // The Add component list: every candidate once, the addable ones first,
 // each group in the catalog's order.
 [[nodiscard]] std::vector<ComponentAddRow> componentAddRows(const nlohmann::json &catalog);
+
+// Q-7: what became of an Add object. A spawn asked for while an edit is in
+// flight waits for that edit and is sent after it; only one waits.
+enum class SpawnOutcome : std::uint8_t {
+    Refused,
+    Sent,
+    Queued,
+};
 
 // Qt-independent state machine for the public editor RPC surface. The view
 // dispatches takeRpcRequests() over any transport and feeds the replies back
@@ -253,8 +261,13 @@ class InspectorModel {
     bool addComponent(std::string_view key);
     bool addComponent(std::string_view key, const nlohmann::json &declaration);
     // G-2: one `edit` carrying one `spawn` op, on the scene revision last
-    // observed. Needs no selection; refused while another edit is in flight.
-    bool spawnObject(const std::string &scene_id, nlohmann::json object);
+    // observed. Needs no selection. Q-7: while another edit is in flight the
+    // spawn waits and goes out, on the revision that edit left, as soon as
+    // the Inspector is idle (takeRpcRequests sends it). One waits at a time:
+    // a second is refused with the reason in notice().
+    SpawnOutcome spawnObject(const std::string &scene_id, nlohmann::json object);
+    // The name of the object waiting to be added, if one is.
+    std::optional<std::string> queuedSpawnName() const;
     void abortActivePreview();
     void undo();
     void redo();

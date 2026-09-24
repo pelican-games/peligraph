@@ -8,6 +8,7 @@
 #include "../viewport/embeddedviewport.hpp"
 
 #include <QAbstractItemView>
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -147,9 +148,29 @@ struct InspectorWidget::Impl {
     std::vector<std::unique_ptr<TextBinding>> text_bindings;
     struct ModelChoice {
         QComboBox *choices = nullptr;
+        std::string field_key;
         std::string current;
     };
     std::vector<ModelChoice> model_choices;
+    // Q-7: what a new snapshot may change without the panel being built
+    // again. The last structure drawn, the editors whose value alone is
+    // replaced, and the runtime rows whose text alone is.
+    std::string rendered_structure;
+    struct DirectValue {
+        QWidget *editor = nullptr;
+        std::string field_key;
+        InspectorWidgetKind kind = InspectorWidgetKind::BooleanCheckbox;
+    };
+    std::vector<DirectValue> direct_values;
+    struct RuntimeRow {
+        QLabel *label = nullptr;
+        std::string component;
+        std::size_t component_index = 0;
+    };
+    std::vector<RuntimeRow> runtime_rows;
+    // Q-7: a value typed into a field while another edit was in flight. It
+    // is sent, as one edit, once the Inspector is idle.
+    std::optional<std::pair<std::string, Json>> deferred_commit;
     std::uint64_t shown_model_assets_revision = 0;
     std::vector<QWidget *> direct_editors;
     std::vector<std::pair<QPushButton *, std::size_t>> remove_buttons;
@@ -273,6 +294,7 @@ struct InspectorWidget::Impl {
             model.pollPendingOperations();
             synchronize();
             dispatchRequests();
+            flushDeferredCommit();
         });
         QObject::connect(watch_timer, &QTimer::timeout, &owner, [this] {
             model.pollExternalChanges();
@@ -322,6 +344,7 @@ struct InspectorWidget::Impl {
                         static_cast<std::size_t>(result_json.size())});
                 synchronize();
                 dispatchRequests();
+                flushDeferredCommit();
             });
         QObject::connect(
             &viewport, &EmbeddedViewport::inspectorRpcFailed, &owner,
@@ -461,14 +484,191 @@ struct InspectorWidget::Impl {
         return started;
     }
 
-    bool spawnObject(const std::string &scene_id, Json object,
-                     QString *error) {
-        const bool started = model.spawnObject(scene_id, std::move(object));
-        if (!started && error != nullptr)
+    SpawnOutcome spawnObject(const std::string &scene_id, Json object,
+                             QString *error) {
+        const auto outcome = model.spawnObject(scene_id, std::move(object));
+        if (outcome == SpawnOutcome::Refused && error != nullptr)
             *error = QString::fromStdString(model.notice().message);
         synchronize();
         dispatchRequests();
-        return started;
+        return outcome;
+    }
+
+    const InspectorWidgetDescriptor *descriptorFor(std::string_view field_key) const {
+        if (!model.snapshot()) return nullptr;
+        for (const auto &component : model.snapshot()->components)
+            for (const auto &widget : component.widgets)
+                if (widget.field_key == field_key) return &widget;
+        return nullptr;
+    }
+
+    // Focus as the window keeps it, whether or not the window is the active
+    // one: a field keeps its focus while another application is in front.
+    static bool holdsFocus(const QWidget *widget) {
+        const QWidget *window = widget->window();
+        const QWidget *focus = window != nullptr ? window->focusWidget() : nullptr;
+        return focus != nullptr && (focus == widget || widget->isAncestorOf(focus));
+    }
+
+    static bool holdsFocus(const NumericBinding &binding) {
+        return std::any_of(binding.editors.begin(), binding.editors.end(),
+                           [](const QDoubleSpinBox *editor) { return holdsFocus(editor); });
+    }
+
+    // Text a person is part-way through: what the box shows is not yet what
+    // its value reads as ("1." over 1.0000, "-" over 2.0000).
+    static bool typingInProgress(const NumericBinding &binding) {
+        return std::any_of(binding.editors.begin(), binding.editors.end(),
+                           [](const QDoubleSpinBox *editor) {
+                               return editor->cleanText() !=
+                                      editor->textFromValue(editor->value());
+                           });
+    }
+
+    bool deferredFor(const std::string &field_key) const {
+        return deferred_commit && deferred_commit->first == field_key;
+    }
+
+    bool inspectorIdle() const {
+        return model.canEdit() && !model.busy() && !model.refreshBlocked();
+    }
+
+    // A value typed while the Inspector was busy goes out as soon as it is
+    // not. The field it belongs to may have gone (another selection) or may
+    // already show it (someone else set the same value); then there is
+    // nothing to send.
+    void flushDeferredCommit() {
+        if (!deferred_commit || !inspectorIdle()) return;
+        auto [field_key, value] = std::move(*deferred_commit);
+        deferred_commit.reset();
+        const auto *descriptor = descriptorFor(field_key);
+        if (descriptor == nullptr || descriptor->value == value) return;
+        model.commitWidgetValue(field_key, std::move(value));
+        synchronize();
+        dispatchRequests();
+    }
+
+    void setNumericEditors(NumericBinding &binding, const Json &value) {
+        if (binding.editors.size() == 1 && value.is_number()) {
+            const QSignalBlocker blocker{binding.editors.front()};
+            binding.editors.front()->setValue(value.get<double>());
+        } else if (value.is_array() && value.size() == binding.editors.size()) {
+            for (std::size_t index = 0; index < value.size(); ++index) {
+                if (!value[index].is_number()) return;
+                const QSignalBlocker blocker{binding.editors[index]};
+                binding.editors[index]->setValue(value[index].get<double>());
+            }
+        }
+    }
+
+    // Everything the panel draws except the values in its editable fields
+    // and the runtime rows' text. Equal before and after a refresh, the panel
+    // keeps its widgets -- and with them focus and anything half typed -- and
+    // only the values move.
+    std::string structureSignature() const {
+        if (!model.selection()) return "none";
+        const auto &snapshot = model.snapshot();
+        if (!snapshot) return "loading";
+        Json structure{{"scene_id", snapshot->scene_id},
+                       {"object", snapshot->authoring_object_id},
+                       {"declaration", snapshot->declaration_index},
+                       {"prefab", snapshot->prefab_instance ? *snapshot->prefab_instance : Json{}}};
+        Json &parameters = structure["parameters"] = Json::array();
+        for (const auto &parameter : snapshot->prefab_parameters)
+            parameters.push_back({parameter.name, parameter.value_resolved, parameter.source});
+        Json &components = structure["components"] = Json::array();
+        for (const auto &component : snapshot->components) {
+            Json entry{{"name", component.name},
+                       {"index", component.component_index},
+                       {"title", component.title},
+                       {"editable", component.editable},
+                       {"pending", component.pending},
+                       {"schema", component.schema_available},
+                       {"read_only", component.read_only_reason},
+                       {"generated", component.generated},
+                       {"source", component.generated_source},
+                       {"runtime_shown", component.runtime_json.has_value() &&
+                                             *component.runtime_json != component.authored_json}};
+            if (component.widgets.empty() && component.lists.empty())
+                entry["authored"] = component.authored_json;
+            Json &widgets = entry["widgets"] = Json::array();
+            for (const auto &widget : component.widgets) {
+                Json field{{"key", widget.field_key},
+                           {"kind", static_cast<int>(widget.kind)},
+                           {"columns", widget.columns},
+                           {"authored", widget.authored},
+                           {"matches", widget.value_matches_schema},
+                           {"default", widget.default_available},
+                           {"unit", widget.unit},
+                           {"enum", widget.enum_values},
+                           {"min", widget.range_min ? Json(*widget.range_min) : Json{}},
+                           {"max", widget.range_max ? Json(*widget.range_max) : Json{}}};
+                // A field that is not an editor shows its state, not a value
+                // that can be replaced in place.
+                if (!widget.authored || !widget.value_matches_schema) field["value"] = widget.value;
+                widgets.push_back(std::move(field));
+            }
+            Json &lists = entry["lists"] = Json::array();
+            for (const auto &list : component.lists)
+                lists.push_back({list.key, list.path, list.schema, list.rows});
+            components.push_back(std::move(entry));
+        }
+        return structure.dump();
+    }
+
+    // Q-7: the values of a snapshot whose structure is the one on screen.
+    // A field being edited, holding a value that waits to be sent, or with
+    // text half typed keeps what it shows.
+    void applyValues() {
+        rebuilding = true;
+        for (const auto &binding : numeric_bindings) {
+            if (binding->active || deferredFor(binding->field_key) ||
+                typingInProgress(*binding))
+                continue;
+            if (const auto *descriptor = descriptorFor(binding->field_key))
+                setNumericEditors(*binding, descriptor->value);
+        }
+        for (const auto &binding : text_bindings) {
+            if (binding->active || deferredFor(binding->field_key) ||
+                binding->editor->isModified())
+                continue;
+            const auto *descriptor = descriptorFor(binding->field_key);
+            if (descriptor == nullptr || !descriptor->value.is_string()) continue;
+            const QString text = QString::fromStdString(descriptor->value.get<std::string>());
+            if (binding->editor->text() == text) continue;
+            const QSignalBlocker blocker{binding->editor};
+            binding->editor->setText(text);
+        }
+        for (const auto &direct : direct_values) {
+            const auto *descriptor = descriptorFor(direct.field_key);
+            if (descriptor == nullptr) continue;
+            const QSignalBlocker blocker{direct.editor};
+            if (auto *box = qobject_cast<QCheckBox *>(direct.editor);
+                box != nullptr && descriptor->value.is_boolean()) {
+                box->setChecked(descriptor->value.get<bool>());
+            } else if (auto *combo = qobject_cast<QComboBox *>(direct.editor);
+                       combo != nullptr && descriptor->value.is_string()) {
+                combo->setCurrentText(QString::fromStdString(descriptor->value.get<std::string>()));
+            }
+        }
+        for (auto &choice : model_choices) {
+            const auto *descriptor = descriptorFor(choice.field_key);
+            if (descriptor == nullptr || !descriptor->value.is_string()) continue;
+            choice.current = descriptor->value.get<std::string>();
+            fillModelChoice(*choice.choices, choice.current);
+        }
+        if (const auto &snapshot = model.snapshot()) {
+            for (const auto &row : runtime_rows) {
+                for (const auto &component : snapshot->components) {
+                    if (component.name != row.component ||
+                        component.component_index != row.component_index ||
+                        !component.runtime_json)
+                        continue;
+                    row.label->setText(QString::fromStdString(component.runtime_json->dump(2)));
+                }
+            }
+        }
+        rebuilding = false;
     }
 
     void dispatchRequests() {
@@ -791,7 +991,7 @@ struct InspectorWidget::Impl {
         layout->addWidget(ray_settings);
         // N-7 rule 1: three paragraphs, each on the control it is about.
         ray_entries->setToolTip(owner.tr(
-            "Select geometry to inspect its settings. Omitted fields inherit; an explicit zero overrides. Layout v1 uses row q as custom index."));
+            "Select geometry to inspect its settings. Omitted fields inherit; an explicit zero overrides."));
         ray_settings->setToolTip(owner.tr(
             "Record fields show resolved scene-plan values. Per-frame dynamic record updates are not shown."));
         auto *actions = new QHBoxLayout;
@@ -913,9 +1113,7 @@ struct InspectorWidget::Impl {
                     else if (source == "component") source_label = owner.tr("ray_instance component");
                     else if (source == "geometry_rule") source_label = owner.tr("Geometry rule %1 (0-based)").arg(display(sources.value("geometry_rule_index", Json{})));
                     else if (source == "occurrence_override") source_label = owner.tr("Occurrence override row %1").arg(display(sources.value("override_row_id", Json{})));
-                    else if (source == "layout_v1_q") source_label = owner.tr("Layout v1: row q");
-                    const auto priority = source == "layout_v1_q" ? owner.tr("Row q (layout v1)")
-                        : std::string_view{field} == "geometry_flags"
+                    const auto priority = std::string_view{field} == "geometry_flags"
                         ? owner.tr("Defaults → matching triangle geometry rule; procedural geometry uses its defaults")
                         : owner.tr("Defaults → component → occurrence override");
                     ray_settings->setItem(row, 0, new QTableWidgetItem(QString::fromLatin1(field)));
@@ -1000,19 +1198,31 @@ struct InspectorWidget::Impl {
         for (QWidget *editor : direct_editors) {
             editor->setEnabled(!field_interaction_locked);
         }
+        // Q-7: the field that has focus stays enabled while the Inspector is
+        // busy. Disabling it made Qt hand focus to the next field, and that
+        // focus used to begin an edit which nothing ever finished.
         for (const auto &binding : numeric_bindings) {
+            const bool keep = binding->active || holdsFocus(*binding);
             for (QDoubleSpinBox *editor : binding->editors) {
-                editor->setEnabled(!field_interaction_locked ||
-                                   binding->active);
+                editor->setEnabled(!field_interaction_locked || keep);
             }
         }
         for (const auto &binding : text_bindings) {
             binding->editor->setEnabled(!field_interaction_locked ||
-                                        binding->active);
+                                        binding->active ||
+                                        holdsFocus(binding->editor));
         }
 
         if (rendered_content_revision != model.contentRevision()) {
-            rebuildProperties();
+            // Q-7: a commit or a refresh that changes only values replaces
+            // the values; the panel is built again only when what it draws
+            // changes (another object, a component added or removed, ...).
+            if (model.snapshot() && structureSignature() == rendered_structure) {
+                rendered_content_revision = model.contentRevision();
+                applyValues();
+            } else {
+                rebuildProperties();
+            }
         }
         if (shown_model_assets_revision != model.modelAssetsRevision()) {
             shown_model_assets_revision = model.modelAssetsRevision();
@@ -1031,6 +1241,8 @@ struct InspectorWidget::Impl {
         numeric_bindings.clear();
         text_bindings.clear();
         model_choices.clear();
+        direct_values.clear();
+        runtime_rows.clear();
     }
 
     void rebuildProperties() {
@@ -1110,6 +1322,7 @@ struct InspectorWidget::Impl {
         layout->addStretch();
         scroll->setWidget(contents);
         rendered_content_revision = model.contentRevision();
+        rendered_structure = structureSignature();
         rebuilding = false;
     }
 
@@ -1166,6 +1379,7 @@ struct InspectorWidget::Impl {
                 QString::fromStdString(component.runtime_json->dump(2)), group);
             runtime->setObjectName(
                 QStringLiteral("pelican.inspectorRuntimeJson"));
+            runtime_rows.push_back({runtime, component.name, component.component_index});
             form->addRow(owner.tr("Runtime (read-only)"), runtime);
         }
         layout.addWidget(group);
@@ -1338,6 +1552,7 @@ struct InspectorWidget::Impl {
             editor->setObjectName(
                 QStringLiteral("pelican.inspectorBoolean"));
             direct_editors.push_back(editor);
+            direct_values.push_back({editor, descriptor.field_key, descriptor.kind});
             QObject::connect(editor, &QCheckBox::toggled, &owner,
                              [this, key = descriptor.field_key](bool value) {
                                  if (rebuilding) {
@@ -1354,6 +1569,7 @@ struct InspectorWidget::Impl {
             auto *editor = new QComboBox(parent);
             editor->setObjectName(QStringLiteral("pelican.inspectorEnum"));
             direct_editors.push_back(editor);
+            direct_values.push_back({editor, descriptor.field_key, descriptor.kind});
             for (const std::string &candidate : descriptor.enum_values) {
                 editor->addItem(QString::fromStdString(candidate));
             }
@@ -1392,6 +1608,11 @@ struct InspectorWidget::Impl {
                 binding_pointer->editor, &QLineEdit::textEdited, &owner,
                 [this, binding_pointer](const QString &value) {
                     if (rebuilding) {
+                        return;
+                    }
+                    // Q-7: typed while another edit is in flight, the text
+                    // waits in the field; finishing it sends it.
+                    if (!binding_pointer->active && !inspectorIdle()) {
                         return;
                     }
                     beginText(*binding_pointer);
@@ -1440,7 +1661,7 @@ struct InspectorWidget::Impl {
         const auto current = descriptor.value.get<std::string>();
         fillModelChoice(*choices, current);
         direct_editors.push_back(choices);
-        model_choices.push_back({choices, current});
+        model_choices.push_back({choices, descriptor.field_key, current});
         QObject::connect(
             choices, &QComboBox::currentIndexChanged, &owner,
             [this, choices, key = descriptor.field_key](int index) {
@@ -1597,7 +1818,8 @@ struct InspectorWidget::Impl {
     }
 
     void beginNumeric(NumericBinding &binding) {
-        if (binding.active || rebuilding) {
+        // Q-7: nothing begins while another edit is in flight.
+        if (binding.active || rebuilding || !inspectorIdle()) {
             return;
         }
         binding.active = model.beginWidgetEdit(binding.field_key);
@@ -1607,6 +1829,14 @@ struct InspectorWidget::Impl {
     void numericChanged(NumericBinding &binding) {
         if (rebuilding) {
             return;
+        }
+        if (!binding.active) {
+            // Q-7: typed while another edit is in flight, the value waits in
+            // the field; finishing it sends it (finishNumeric).
+            if (!inspectorIdle()) return;
+            // Return re-emits the value it already had: not an edit.
+            const auto *descriptor = descriptorFor(binding.field_key);
+            if (descriptor != nullptr && descriptor->value == numericValue(binding)) return;
         }
         beginNumeric(binding);
         if (!binding.active) {
@@ -1618,7 +1848,11 @@ struct InspectorWidget::Impl {
     }
 
     void finishNumeric(NumericBinding &binding, bool commit) {
-        if (!binding.active || rebuilding) {
+        if (rebuilding) {
+            return;
+        }
+        if (!binding.active) {
+            if (commit) commitHeldValue(binding.field_key, numericValue(binding));
             return;
         }
         binding.active = false;
@@ -1627,8 +1861,22 @@ struct InspectorWidget::Impl {
         dispatchRequests();
     }
 
+    // Q-7: a field finished without an edit of its own holds either what the
+    // model already has (nothing to do) or a value typed while the Inspector
+    // was busy. That value is committed now, or as soon as the Inspector is
+    // idle.
+    void commitHeldValue(const std::string &field_key, Json value) {
+        const auto *descriptor = descriptorFor(field_key);
+        if (descriptor == nullptr || !descriptor->authored ||
+            !descriptor->value_matches_schema || descriptor->value == value)
+            return;
+        deferred_commit = std::pair{field_key, std::move(value)};
+        flushDeferredCommit();
+    }
+
     void beginText(TextBinding &binding) {
-        if (binding.active || rebuilding) {
+        // Q-7: nothing begins while another edit is in flight.
+        if (binding.active || rebuilding || !inspectorIdle()) {
             return;
         }
         binding.active = model.beginWidgetEdit(binding.field_key);
@@ -1636,10 +1884,18 @@ struct InspectorWidget::Impl {
     }
 
     void finishText(TextBinding &binding, bool commit) {
-        if (!binding.active || rebuilding) {
+        if (rebuilding) {
+            return;
+        }
+        if (!binding.active) {
+            if (commit && binding.editor->isModified()) {
+                binding.editor->setModified(false);
+                commitHeldValue(binding.field_key, binding.editor->text().toStdString());
+            }
             return;
         }
         binding.active = false;
+        binding.editor->setModified(false);
         model.finishWidgetEdit(binding.field_key, commit);
         synchronize();
         dispatchRequests();
@@ -1650,11 +1906,24 @@ struct InspectorWidget::Impl {
             numeric != numeric_events.end()) {
             NumericBinding &binding = *numeric->second;
             switch (event->type()) {
-            case QEvent::FocusIn:
+            // Q-7: focus alone begins nothing. An edit begins when a value
+            // changes (numericChanged) or a button is pressed on the field;
+            // a field that merely has focus leaves Refresh, the other fields
+            // and the next Add object free.
             case QEvent::MouseButtonPress:
                 beginNumeric(binding);
                 break;
             case QEvent::FocusOut:
+                // Tab from x to y of one vector is still one edit.
+                if (const QWidget *next = QApplication::focusWidget();
+                    next != nullptr &&
+                    std::any_of(binding.editors.begin(), binding.editors.end(),
+                                [next](const QDoubleSpinBox *editor) {
+                                    return editor == next || editor->isAncestorOf(next);
+                                }))
+                    break;
+                finishNumeric(binding, true);
+                break;
             case QEvent::MouseButtonRelease:
                 finishNumeric(binding, true);
                 break;
@@ -1672,9 +1941,6 @@ struct InspectorWidget::Impl {
             text != text_events.end()) {
             TextBinding &binding = *text->second;
             switch (event->type()) {
-            case QEvent::FocusIn:
-                beginText(binding);
-                break;
             case QEvent::FocusOut:
                 finishText(binding, true);
                 break;
@@ -1738,8 +2004,8 @@ void InspectorWidget::finishGizmoEdit(std::string_view field_key,
 
 bool InspectorWidget::saveScene() { return impl_->saveScene(); }
 
-bool InspectorWidget::spawnObject(const std::string &scene_id,
-                                  nlohmann::json object, QString *error) {
+SpawnOutcome InspectorWidget::spawnObject(const std::string &scene_id,
+                                          nlohmann::json object, QString *error) {
     return impl_->spawnObject(scene_id, std::move(object), error);
 }
 

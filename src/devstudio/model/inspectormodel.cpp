@@ -515,8 +515,10 @@ constexpr std::array<UnavailableComponentText, 7> UnavailableComponentTexts{{
     {"xr.module_unavailable@1", "This build has no XR module", NotInThisBuild},
     {"vat.module_unavailable@1", "This build has no VAT module", NotInThisBuild},
     {"seqplayer.module_unavailable@1", "This build has no sequence player module", NotInThisBuild},
-    {"pelican.ray_instance_requires_layout_v2@1", "Ray instances need ray group layout v2",
-     "needs ray layout v2"},
+    // MG-2a: ray group layouts are v3 only. The code keeps its old name; what
+    // it means now is that the project declares no ray group layout at all.
+    {"pelican.ray_instance_requires_layout_v2@1", "This project has no ray group layout",
+     "needs a ray layout"},
 }};
 
 const UnavailableComponentText *findUnavailableComponentText(std::string_view code) {
@@ -694,6 +696,14 @@ struct InspectorModel::Impl {
     bool watch_poll_pending = false;
     bool watch_sync_pending = false;
 
+    // Q-7: the one Add object waiting for the edit in flight.
+    struct QueuedSpawn {
+        std::string scene_id;
+        Json object;
+        std::string name;
+    };
+    std::optional<QueuedSpawn> queued_spawn;
+
     void setNotice(InspectorNoticeKind kind, std::string message) {
         notice = {.kind = kind, .message = std::move(message)};
     }
@@ -742,6 +752,40 @@ struct InspectorModel::Impl {
             requests.begin(), requests.end(), [](const auto &request) {
                 return request.second.purpose == RequestPurpose::Save;
             });
+    }
+
+    bool busy() const noexcept {
+        return preview.has_value() || editPending() || saveInFlight();
+    }
+
+    bool spawnReady() const noexcept {
+        return connected && actor_id && current_scene_revision;
+    }
+
+    void sendSpawn(const std::string &scene_id, Json object,
+                   const std::string &name) {
+        invalidateRayOccurrences();
+        // No coalesce key: a new object is its own undo step, never folded
+        // into the property edit before it.
+        queue("edit",
+              Json{{"actor_id", *actor_id},
+                   {"base_revision", *current_scene_revision},
+                   {"operations", Json::array({Json{{"op", "spawn"},
+                                                    {"scene_id", scene_id},
+                                                    {"object", std::move(object)}}})}},
+              {.purpose = RequestPurpose::EditSubmit,
+               .selection_generation = selection_generation,
+               .description = "Add " + name});
+    }
+
+    // The waiting spawn goes out once nothing is in flight and no field is
+    // held, on the revision the finished edit left behind.
+    void flushQueuedSpawn() {
+        if (!queued_spawn || !spawnReady() || busy() || refreshBlocked()) return;
+        auto spawn = std::move(*queued_spawn);
+        queued_spawn.reset();
+        sendSpawn(spawn.scene_id, std::move(spawn.object), spawn.name);
+        setNotice(InspectorNoticeKind::Information, "Adding " + spawn.name + "...");
     }
 
     void abandonSessionOperations() {
@@ -1786,6 +1830,9 @@ void InspectorModel::startSession() {
     impl_->watch_request_in_flight = false;
     impl_->watch_poll_pending = false;
     impl_->watch_sync_pending = false;
+    // The engine the spawn was meant for is gone; the next one reads the
+    // scene from disk and the Outliner starts over.
+    impl_->queued_spawn.reset();
     impl_->resetModelAssets();
     impl_->clearSnapshot();
     impl_->setNotice(InspectorNoticeKind::Information,
@@ -1814,6 +1861,9 @@ void InspectorModel::stopSession(std::string message) {
     impl_->watch_request_in_flight = false;
     impl_->watch_poll_pending = false;
     impl_->watch_sync_pending = false;
+    // The engine the spawn was meant for is gone; the next one reads the
+    // scene from disk and the Outliner starts over.
+    impl_->queued_spawn.reset();
     impl_->resetModelAssets();
     impl_->clearSnapshot();
     impl_->setNotice(message.empty() ? InspectorNoticeKind::None
@@ -1838,6 +1888,7 @@ void InspectorModel::requestRefresh() {
 }
 
 std::vector<InspectorRpcRequest> InspectorModel::takeRpcRequests() {
+    impl_->flushQueuedSpawn();
     return std::exchange(impl_->outgoing, {});
 }
 
@@ -1934,8 +1985,15 @@ bool InspectorModel::beginWidgetEdit(std::string_view field_key) {
         !impl_->editing_widgets.contains(key);
     const bool another_preview_is_active =
         impl_->preview && impl_->preview->field_key != key;
+    // Q-7: an edit that has been let go (committing or aborting) is over for
+    // the panel. Beginning it again would hold the Inspector for an edit
+    // nobody is making: the view's focus moving on as a field is disabled
+    // did exactly that, and nothing ever finished it.
+    const bool preview_is_ending =
+        impl_->preview && impl_->preview->field_key == key &&
+        (impl_->preview->release_requested || impl_->preview->abort_requested);
     if (impl_->editPending() || another_widget_is_editing ||
-        another_preview_is_active) {
+        another_preview_is_active || preview_is_ending) {
         impl_->setNotice(
             InspectorNoticeKind::Error,
             "Finish the active inspector edit before editing another field.");
@@ -2287,31 +2345,36 @@ bool InspectorModel::addComponent(std::string_view key, const Json &declaration)
     return true;
 }
 
-bool InspectorModel::spawnObject(const std::string &scene_id, Json object) {
-    if (!impl_->connected || !impl_->actor_id || !impl_->current_scene_revision) {
+SpawnOutcome InspectorModel::spawnObject(const std::string &scene_id, Json object) {
+    if (!impl_->spawnReady()) {
         impl_->setNotice(InspectorNoticeKind::Error,
                          "The engine editor session is not ready.");
-        return false;
+        return SpawnOutcome::Refused;
     }
-    if (busy() || refreshBlocked()) {
-        impl_->setNotice(InspectorNoticeKind::Error,
-                         "Finish the active inspector edit before adding an object.");
-        return false;
-    }
+    // One waiting before this one goes first: this spawn's base revision is
+    // the one that spawn leaves.
+    impl_->flushQueuedSpawn();
     const std::string name = object.value("name", std::string{});
-    impl_->invalidateRayOccurrences();
-    // No coalesce key: a new object is its own undo step, never folded into
-    // the property edit before it.
-    impl_->queue("edit",
-                 Json{{"actor_id", *impl_->actor_id},
-                      {"base_revision", *impl_->current_scene_revision},
-                      {"operations", Json::array({Json{{"op", "spawn"},
-                                                       {"scene_id", scene_id},
-                                                       {"object", std::move(object)}}})}},
-                 {.purpose = Impl::RequestPurpose::EditSubmit,
-                  .selection_generation = impl_->selection_generation,
-                  .description = "Add " + name});
-    return true;
+    if (busy() || refreshBlocked()) {
+        if (impl_->queued_spawn) {
+            impl_->setNotice(InspectorNoticeKind::Error,
+                             impl_->queued_spawn->name +
+                                 " is already waiting to be added; add another once it is in.");
+            return SpawnOutcome::Refused;
+        }
+        impl_->queued_spawn = Impl::QueuedSpawn{
+            .scene_id = scene_id, .object = std::move(object), .name = name};
+        impl_->setNotice(InspectorNoticeKind::Information,
+                         "Adding " + name + " after the current edit.");
+        return SpawnOutcome::Queued;
+    }
+    impl_->sendSpawn(scene_id, std::move(object), name);
+    return SpawnOutcome::Sent;
+}
+
+std::optional<std::string> InspectorModel::queuedSpawnName() const {
+    if (!impl_->queued_spawn) return std::nullopt;
+    return impl_->queued_spawn->name;
 }
 
 void InspectorModel::abortActivePreview() {
@@ -2385,8 +2448,7 @@ bool InspectorModel::refreshBlocked() const noexcept {
 }
 
 bool InspectorModel::busy() const noexcept {
-    return impl_->preview.has_value() || impl_->editPending() ||
-           impl_->saveInFlight();
+    return impl_->busy();
 }
 
 bool InspectorModel::canEdit() const noexcept {

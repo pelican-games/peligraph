@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../model/gizmomodel.hpp"
+#include "../model/inspectormodel.hpp"
 #include "../model/project.hpp"
 
 #include <QWidget>
@@ -35,10 +36,11 @@ class InspectorWidget final : public QWidget {
     void finishGizmoEdit(std::string_view field_key, bool commit);
     bool saveScene();
     // G-2: Add object. One `spawn` through the Inspector's editor session, so
-    // it shares its actor, its revision and its undo stack. On refusal the
+    // it shares its actor, its revision and its undo stack. Q-7: asked while
+    // an edit is in flight, it waits for that edit (Queued). On refusal the
     // reason is in *error.
-    bool spawnObject(const std::string &scene_id, nlohmann::json object,
-                     QString *error);
+    SpawnOutcome spawnObject(const std::string &scene_id, nlohmann::json object,
+                             QString *error);
     bool hasUnsavedSceneChanges() const noexcept;
     bool sceneEditPending() const noexcept;
     bool sceneSaveInFlight() const noexcept;

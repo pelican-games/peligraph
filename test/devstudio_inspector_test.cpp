@@ -36,6 +36,7 @@ using PelicanStudio::InspectorRpcRequest;
 using PelicanStudio::InspectorWidgetDescriptor;
 using PelicanStudio::InspectorWidgetKind;
 using PelicanStudio::OutlinerObjectKey;
+using PelicanStudio::SpawnOutcome;
 
 Json componentResult(double position_x = 1.0,
                      std::uint64_t scene_revision = 1) {
@@ -1758,8 +1759,9 @@ TEST_CASE("G-2 Add object spawns once, named by kind with Blender's numbering",
     harness.reply(harness.take("open_editor_session"),
                   {{"actor_id", 9}, {"display_name", "Pelican Studio Inspector"}});
     REQUIRE(harness.model.takeRpcRequests().empty());
-    CHECK_FALSE(harness.model.spawnObject("default_scene",
-                                          addObjectDeclaration(AddObjectKind::Cube, "Cube")));
+    CHECK(harness.model.spawnObject("default_scene",
+                                    addObjectDeclaration(AddObjectKind::Cube, "Cube")) ==
+          SpawnOutcome::Refused);
     CHECK(harness.model.takeRpcRequests().empty());
     // The Outliner feeds the revision it read with scene_tree.
     harness.model.observeSceneRevision(3);
@@ -1769,7 +1771,8 @@ TEST_CASE("G-2 Add object spawns once, named by kind with Blender's numbering",
     std::vector<std::string> outliner{"Camera"};
     const auto add = [&](AddObjectKind kind) {
         const auto name = uniqueObjectName(addObjectBaseName(kind), outliner);
-        REQUIRE(harness.model.spawnObject("default_scene", addObjectDeclaration(kind, name)));
+        REQUIRE(harness.model.spawnObject("default_scene", addObjectDeclaration(kind, name)) ==
+                SpawnOutcome::Sent);
         return harness.take("edit");
     };
 
@@ -1783,23 +1786,125 @@ TEST_CASE("G-2 Add object spawns once, named by kind with Blender's numbering",
           Json{{"op", "spawn"},
                {"scene_id", "default_scene"},
                {"object", addObjectDeclaration(AddObjectKind::Cube, "Cube")}});
-    // One at a time: the next spawn would be stale against this one.
-    CHECK_FALSE(harness.model.spawnObject("default_scene",
-                                          addObjectDeclaration(AddObjectKind::Cube, "Cube_001")));
+    // One at a time: the next spawn would be stale against this one, so
+    // (Q-7) it waits for it and goes out on the revision it leaves.
+    CHECK(harness.model.spawnObject("default_scene",
+                                    addObjectDeclaration(AddObjectKind::Cube, "Cube_001")) ==
+          SpawnOutcome::Queued);
     CHECK(harness.model.takeRpcRequests().empty());
     harness.reply(first, {{"status", "accepted"}, {"ticket", "spawn:1"}});
     harness.model.pollPendingOperations();
     harness.reply(harness.take("get_edit_result"),
                   {{"status", "committed"}, {"committed_revision", 4}});
     CHECK(harness.model.notice().kind == InspectorNoticeKind::Success);
-    CHECK(harness.model.takeRpcRequests().empty());
-    outliner.push_back("Cube");
 
-    const auto second = add(AddObjectKind::Cube);
+    const auto second = harness.take("edit");
     CHECK(second.params.at("base_revision") == 4);
     CHECK(second.params.at("operations").at(0).at("object").at("name") == "Cube_001");
     CHECK(second.params.at("operations").at(0).at("object").at("components").at(1) ==
           Json{{"name", "simplemodelview"}, {"model", "engine://primitives/cube"}});
+}
+
+TEST_CASE("Q-7 Add object during an edit waits for it and spawns once",
+          "[devstudio][inspector][add-object][q7][negative-contrast]") {
+    using PelicanStudio::AddObjectKind;
+    using PelicanStudio::addObjectDeclaration;
+
+    InspectorHarness harness;
+    harness.open();
+    const std::string field_key = harness.field("transform", "pos").field_key;
+
+    // A transform edit is committing: a live preview, released.
+    REQUIRE(harness.model.previewWidgetValue(field_key, Json::array({4.0, 2.0, 3.0})));
+    const auto open = harness.take("open_preview");
+    harness.reply(open, {{"status", "accepted"},
+                         {"ticket", "preview:1"},
+                         {"request_id", "preview-request:open"}});
+    harness.model.pollPendingOperations();
+    harness.reply(harness.take("get_preview_result"), {{"status", "open"}});
+    REQUIRE(harness.model.finishWidgetEdit(field_key, true));
+    const auto commit = harness.take("commit_preview");
+    REQUIRE(harness.model.busy());
+
+    // Add object now does not refuse: it waits. Nothing goes out yet -- the
+    // spawn's base revision would be stale against the commit.
+    const auto cube = addObjectDeclaration(AddObjectKind::Cube, "Cube");
+    CHECK(harness.model.spawnObject("default_scene", cube) == PelicanStudio::SpawnOutcome::Queued);
+    CHECK(harness.model.queuedSpawnName() == std::optional<std::string>{"Cube"});
+    CHECK(harness.model.notice().kind == InspectorNoticeKind::Information);
+    CHECK(harness.model.takeRpcRequests().empty());
+
+    // One waits. The second is refused, and says which one is waiting.
+    CHECK(harness.model.spawnObject("default_scene",
+                                    addObjectDeclaration(AddObjectKind::Plane, "Plane")) ==
+          PelicanStudio::SpawnOutcome::Refused);
+    CHECK(harness.model.notice().kind == InspectorNoticeKind::Error);
+    CHECK(harness.model.notice().message.find("Cube is already waiting") != std::string::npos);
+    CHECK(harness.model.queuedSpawnName() == std::optional<std::string>{"Cube"});
+
+    // The commit lands at revision 2: the spawn goes out right after it, on
+    // that revision, next to the refresh the commit asks for.
+    harness.reply(commit, {{"status", "accepted"}, {"request_id", "preview-request:commit"}});
+    harness.model.pollPendingOperations();
+    harness.reply(harness.take("get_preview_result"),
+                  {{"status", "committed"}, {"committed_revision", 2}});
+    auto requests = harness.model.takeRpcRequests();
+    int spawns = 0;
+    for (const auto &request : requests) {
+        if (request.method != "edit") continue;
+        ++spawns;
+        CHECK(request.params.at("base_revision") == 2);
+        CHECK(request.params.at("operations") ==
+              Json::array({Json{{"op", "spawn"}, {"scene_id", "default_scene"}, {"object", cube}}}));
+        harness.reply(request, {{"status", "accepted"}, {"ticket", "spawn:1"}});
+    }
+    CHECK(spawns == 1);
+    CHECK_FALSE(harness.model.queuedSpawnName());
+    for (const auto &request : requests)
+        if (request.method == "scene_tree") harness.reply(request, sceneTreeResult(2));
+
+    // Once: nothing else is sent for it, however often the panel asks.
+    harness.model.pollPendingOperations();
+    requests = harness.model.takeRpcRequests();
+    for (const auto &request : requests) CHECK(request.method != "edit");
+
+    // An engine that stops takes a waiting spawn with it.
+    CHECK(harness.model.spawnObject("default_scene",
+                                    addObjectDeclaration(AddObjectKind::Sphere, "Sphere")) ==
+          PelicanStudio::SpawnOutcome::Queued);
+    harness.model.stopSession("engine stopped");
+    CHECK_FALSE(harness.model.queuedSpawnName());
+}
+
+TEST_CASE("Q-7 a released edit cannot be begun again while it commits",
+          "[devstudio][inspector][preview][q7][negative-contrast]") {
+    InspectorHarness harness;
+    harness.open();
+    const std::string field_key = harness.field("transform", "pos").field_key;
+
+    REQUIRE(harness.model.previewWidgetValue(field_key, Json::array({4.0, 2.0, 3.0})));
+    harness.reply(harness.take("open_preview"), {{"status", "accepted"},
+                                                 {"ticket", "preview:1"},
+                                                 {"request_id", "preview-request:open"}});
+    harness.model.pollPendingOperations();
+    harness.reply(harness.take("get_preview_result"), {{"status", "open"}});
+    REQUIRE(harness.model.finishWidgetEdit(field_key, true));
+    const auto commit = harness.take("commit_preview");
+
+    // The panel let go of the field. A begin now -- what focus arriving on
+    // the next column used to do -- would hold the Inspector for an edit
+    // nobody is making, and nothing would ever finish it.
+    CHECK_FALSE(harness.model.beginWidgetEdit(field_key));
+
+    harness.reply(commit, {{"status", "accepted"}, {"request_id", "preview-request:commit"}});
+    harness.model.pollPendingOperations();
+    harness.reply(harness.take("get_preview_result"),
+                  {{"status", "committed"}, {"committed_revision", 2}});
+    harness.completeRefresh(4.0, 2);
+    CHECK_FALSE(harness.model.busy());
+    CHECK_FALSE(harness.model.refreshBlocked());
+    // And afterwards the field begins as any field does.
+    CHECK(harness.model.beginWidgetEdit(field_key));
 }
 
 TEST_CASE("G-2 the simplemodelview model field offers the three primitives",
@@ -1918,8 +2023,9 @@ TEST_CASE("Q-6 a component this build cannot take reads as a sentence and its co
         {"xr.module_unavailable@1", "This build has no XR module", "not in this build"},
         {"vat.module_unavailable@1", "This build has no VAT module", "not in this build"},
         {"seqplayer.module_unavailable@1", "This build has no sequence player module", "not in this build"},
-        {"pelican.ray_instance_requires_layout_v2@1", "Ray instances need ray group layout v2",
-         "needs ray layout v2"},
+        // MG-2a: layouts are v3 only; the code now means "no layout at all".
+        {"pelican.ray_instance_requires_layout_v2@1", "This project has no ray group layout",
+         "needs a ray layout"},
     };
     for (const auto &entry : known) {
         CAPTURE(entry.code);
@@ -1979,7 +2085,9 @@ TEST_CASE("Q-6 a component this build cannot take reads as a sentence and its co
     CHECK(rows.at(3).label == "physics_body " + dash + " not in this build");
     CHECK_FALSE(rows.at(3).addable);
     CHECK(rows.at(3).blocked == "This build has no physics module (physics.module_unavailable@1)");
-    CHECK(rows.at(4).label == "pelican_ray_instance " + dash + " needs ray layout v2");
+    CHECK(rows.at(4).label == "pelican_ray_instance " + dash + " needs a ray layout");
+    CHECK(rows.at(4).blocked ==
+          "This project has no ray group layout (pelican.ray_instance_requires_layout_v2@1)");
     CHECK_FALSE(rows.at(4).addable);
     CHECK(rows.at(5).label == "animator " + dash + " unavailable");
     CHECK(rows.at(5).blocked == "teleport.module_unavailable@2");

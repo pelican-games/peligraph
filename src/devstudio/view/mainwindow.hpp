@@ -95,6 +95,8 @@ class MainWindow : public QMainWindow {
     std::array<QDockWidget *, DockCount> docks_{};
     QListWidget *project_list_ = nullptr;
     QTreeWidget *outliner_ = nullptr;
+    // Q-7: one line under the Outliner for what became of an Add object.
+    QLabel *outliner_notice_ = nullptr;
     EmbeddedViewport *viewport_ = nullptr;
     InspectorWidget *inspector_ = nullptr;
     FramePlanWidget *frame_plan_ = nullptr;

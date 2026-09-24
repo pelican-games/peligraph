@@ -1,0 +1,334 @@
+// Q-7: the Inspector on real Qt widgets, over the real RPC transport. A child
+// process (process_fixture_child rpc-hold) takes every request the panel sends
+// and writes it back on stderr; this test answers in the engine's place,
+// through the viewport's own reply signal. What the panel does with focus,
+// Return and a commit is then Qt's and the panel's own doing.
+//
+// The window is activated: focus events are delivered only to the active
+// window, and the lock Q-7 removes needed one. With the window in the
+// background the same run passed, which is why the scenario that found it
+// failed only some of the time.
+
+#include "inspectorwidget.hpp"
+
+// EmbeddedViewport is final and has no test seam. As in the frame-plan test,
+// this translation unit reaches its process and readiness members so the
+// widget runs over the viewport's real transport.
+#define private public
+#include "embeddedviewport.hpp"
+#undef private
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <nlohmann/json.hpp>
+
+#include <QApplication>
+#include <QCheckBox>
+#include <QDoubleSpinBox>
+#include <QElapsedTimer>
+#include <QPointer>
+#include <QPushButton>
+#include <QTest>
+
+#include <deque>
+#include <functional>
+#include <map>
+#include <string>
+
+#ifndef PELICAN_PROCESS_FIXTURE_PATH
+#error "PELICAN_PROCESS_FIXTURE_PATH must name the process fixture child"
+#endif
+
+namespace PelicanStudio {
+namespace {
+
+using Json = nlohmann::json;
+
+QApplication &application() {
+    static int argument_count = 1;
+    static char application_name[] = "pelican_inspector_widget_test";
+    static char *arguments[] = {application_name};
+    static QApplication instance{argument_count, arguments};
+    return instance;
+}
+
+// The engine, as far as the Inspector can tell: one object with a transform
+// and a flag, previews that open, update and commit, and edits that commit
+// on the next poll. Every commit moves the scene revision.
+class FakeEngine {
+  public:
+    explicit FakeEngine(EmbeddedViewport &viewport) : viewport_{viewport} {
+        QObject::connect(&viewport, &EmbeddedViewport::engineStandardErrorReceived,
+                         [this](const QString &text) { receive(text); });
+    }
+
+    Json transform{{"pos", Json::array({1.0, 2.0, 3.0})},
+                   {"rotation", Json::array({0.0, 0.0, 0.0, 1.0})},
+                   {"scale", Json::array({1.0, 1.0, 1.0})}};
+    Json flags{{"enabled", true}};
+    std::uint64_t revision = 1;
+    int spawns = 0;
+
+    // Answer everything the panel has asked so far.
+    void pump() {
+        QApplication::processEvents();
+        while (!pending_.empty()) {
+            const Json request = std::move(pending_.front());
+            pending_.pop_front();
+            const auto id = request.at("id").get<qint64>();
+            // The attached-graphs row beside the fields asks for graphs; the
+            // fixture project has none to give.
+            if (request.at("method").get<std::string>().starts_with("get_graph_")) {
+                emit viewport_.inspectorRpcFailed(id, QStringLiteral("no graphs here"));
+                QApplication::processEvents();
+                continue;
+            }
+            const Json result = answer(request.at("method").get<std::string>(),
+                                       request.value("params", Json::object()));
+            emit viewport_.inspectorRpcSucceeded(id, QByteArray::fromStdString(result.dump()));
+            QApplication::processEvents();
+        }
+    }
+
+  private:
+    EmbeddedViewport &viewport_;
+    QString buffer_;
+    std::deque<Json> pending_;
+    std::map<std::string, std::string> preview_kind_;
+    Json preview_operation_;
+    std::map<std::string, Json> edits_;
+    int next_ = 1;
+
+    void receive(const QString &text) {
+        buffer_ += text;
+        for (qsizetype end = buffer_.indexOf(QLatin1Char('\n')); end >= 0;
+             end = buffer_.indexOf(QLatin1Char('\n'))) {
+            const QString line = buffer_.left(end).trimmed();
+            buffer_.remove(0, end + 1);
+            const QString prefix = QStringLiteral("rpc-hold-request:");
+            if (line.startsWith(prefix))
+                pending_.push_back(Json::parse(line.mid(prefix.size()).toStdString()));
+        }
+    }
+
+    void apply(const Json &operation) {
+        const auto op = operation.value("op", std::string{});
+        if (op == "spawn") {
+            ++spawns;
+            return;
+        }
+        if (op != "set_component_value") return;
+        Json &component = operation.at("component_slot") == "transform" ? transform : flags;
+        component[Json::json_pointer{operation.at("field_path").get<std::string>()}] =
+            operation.at("value");
+    }
+
+    Json components() const {
+        const auto schema = [](Json fields) {
+            return Json{{"state", "available"}, {"fields", std::move(fields)}};
+        };
+        return {{"scene_revision", revision},
+                {"authoring_object_id", 41},
+                {"declaration_index", 2},
+                {"components",
+                 Json::array(
+                     {{{"name", "transform"},
+                       {"component_index", 0},
+                       {"authored_json", transform},
+                       {"runtime_json", transform},
+                       {"editable", true},
+                       {"pending", false},
+                       {"codec", {{"state", "registered"}}},
+                       {"schema", schema(Json::array({{{"name", "pos"}, {"type", "vec3"}},
+                                                      {{"name", "rotation"}, {"type", "quat"}},
+                                                      {{"name", "scale"}, {"type", "vec3"}}}))}},
+                      {{"name", "fixture_flags"},
+                       {"component_index", 1},
+                       {"authored_json", flags},
+                       {"editable", true},
+                       {"pending", false},
+                       {"codec", {{"state", "registered"}}},
+                       {"schema", schema(Json::array({{{"name", "enabled"}, {"type", "bool"}}}))}}})}};
+    }
+
+    Json answer(const std::string &method, const Json &params) {
+        if (method == "open_editor_session")
+            return {{"actor_id", 9}, {"display_name", "Pelican Studio Inspector"}};
+        if (method == "scene_tree")
+            return {{"scene_revision", revision},
+                    {"scene_id", "main"},
+                    {"objects", Json::array({{{"authoring_object_id", 41}, {"declaration_index", 2}}})}};
+        if (method == "get_components") return components();
+        if (method == "get_scene_revision")
+            return {{"scene_revision", revision}, {"preview_epoch", 0}};
+        if (method == "list_assets") return {{"assets", Json::array()}};
+        if (method == "open_preview" || method == "update_preview" ||
+            method == "commit_preview" || method == "abort_preview") {
+            const std::string request_id = "preview-request:" + std::to_string(next_++);
+            preview_kind_[request_id] = method;
+            if (params.contains("operations")) preview_operation_ = params.at("operations").at(0);
+            return {{"status", "accepted"}, {"ticket", "preview:1"}, {"request_id", request_id}};
+        }
+        if (method == "get_preview_result") {
+            const auto kind = preview_kind_.at(params.at("request_id").get<std::string>());
+            if (kind == "open_preview") return {{"status", "open"}};
+            if (kind == "update_preview") return {{"status", "updated"}};
+            if (kind == "abort_preview") return {{"status", "succeeded"}};
+            apply(preview_operation_);
+            return {{"status", "committed"}, {"committed_revision", ++revision}};
+        }
+        if (method == "edit") {
+            const std::string ticket = "edit:" + std::to_string(next_++);
+            edits_[ticket] = params.at("operations");
+            return {{"status", "accepted"}, {"ticket", ticket}};
+        }
+        if (method == "get_edit_result") {
+            for (const auto &operation : edits_.at(params.at("ticket").get<std::string>()))
+                apply(operation);
+            return {{"status", "committed"}, {"committed_revision", ++revision}};
+        }
+        FAIL("the Inspector asked the engine for " << method);
+        return {};
+    }
+};
+
+struct Rig {
+    // First: every widget below needs the application.
+    QApplication &app = application();
+    EmbeddedViewport viewport;
+    FakeEngine engine{viewport};
+    std::unique_ptr<InspectorWidget> inspector;
+
+    Rig() {
+        QString error;
+        REQUIRE(viewport.process_.start(
+            {QString::fromUtf8(PELICAN_PROCESS_FIXTURE_PATH), {QStringLiteral("rpc-hold")}, {}},
+            &error));
+        REQUIRE(viewport.process_.waitForStarted(5000));
+        viewport.rpc_ready_ = true;
+        inspector = std::make_unique<InspectorWidget>(&viewport);
+        inspector->resize(480, 720);
+        inspector->show();
+        inspector->activateWindow();
+        REQUIRE(QTest::qWaitForWindowActive(inspector.get()));
+        inspector->setSelection(OutlinerObjectKey{.scene_id = "main", .declaration_index = 2},
+                                QStringLiteral("Plane"));
+        REQUIRE(pumpUntil([&] { return field("pelican.inspectorVector.transform.pos.1") != nullptr; }));
+        pumpFor(300);
+    }
+
+    ~Rig() { inspector.reset(); }
+
+    void pumpFor(int milliseconds) {
+        QElapsedTimer clock;
+        clock.start();
+        while (clock.elapsed() < milliseconds) {
+            engine.pump();
+            QTest::qWait(5);
+        }
+    }
+
+    bool pumpUntil(const std::function<bool()> &done, int milliseconds = 5000) {
+        QElapsedTimer clock;
+        clock.start();
+        while (clock.elapsed() < milliseconds) {
+            engine.pump();
+            if (done()) return true;
+            QTest::qWait(5);
+        }
+        return done();
+    }
+
+    QDoubleSpinBox *field(const char *name) const {
+        return inspector->findChild<QDoubleSpinBox *>(QString::fromLatin1(name));
+    }
+    QPushButton *refresh() const {
+        return inspector->findChild<QPushButton *>(QStringLiteral("pelican.inspectorRefresh"));
+    }
+};
+
+} // namespace
+
+TEST_CASE("Q-7 a committed field gives the Inspector back",
+          "[devstudio][inspector][q7][busy][negative-contrast]") {
+    Rig rig;
+    QPointer<QDoubleSpinBox> position_y = rig.field("pelican.inspectorVector.transform.pos.1");
+    QPointer<QDoubleSpinBox> scale_x = rig.field("pelican.inspectorVector.transform.scale.0");
+    REQUIRE(position_y);
+    REQUIRE(scale_x);
+    REQUIRE(rig.refresh()->isEnabled());
+
+    // What the scenario's `type` and `key Return` do: focus, select, type,
+    // Return. Return commits the live preview; while it commits the other
+    // fields are locked.
+    position_y->setFocus(Qt::OtherFocusReason);
+    position_y->selectAll();
+    QTest::keyClicks(position_y, QStringLiteral("-0.5"));
+    QTest::keyClick(position_y, Qt::Key_Return);
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.transform.at("pos") == Json::array({1.0, -0.5, 3.0}); }));
+    rig.pumpFor(500);
+
+    // The commit is in and nothing is left holding the panel. Before Q-7 the
+    // lock moved focus to pos.2, that focus began an edit, and the Inspector
+    // stayed held: Refresh off, every other field off, Studio unable to close
+    // without asking about an edit in progress.
+    CHECK_FALSE(rig.inspector->sceneEditPending());
+    CHECK(rig.refresh()->isEnabled());
+    REQUIRE(scale_x);
+    CHECK(scale_x->isEnabled());
+
+    // Decision 3: the fields were not built again, and focus is where it was.
+    REQUIRE(position_y);
+    CHECK(position_y == rig.field("pelican.inspectorVector.transform.pos.1"));
+    CHECK(position_y->hasFocus());
+    CHECK(position_y->value() == -0.5);
+}
+
+TEST_CASE("Q-7 focus holds nothing, and half-typed text survives a round trip",
+          "[devstudio][inspector][q7][in-place][negative-contrast]") {
+    Rig rig;
+    QPointer<QDoubleSpinBox> position_x = rig.field("pelican.inspectorVector.transform.pos.0");
+    QPointer<QDoubleSpinBox> scale_x = rig.field("pelican.inspectorVector.transform.scale.0");
+    QPointer<QCheckBox> enabled =
+        rig.inspector->findChild<QCheckBox *>(QStringLiteral("pelican.inspectorBoolean"));
+    REQUIRE(position_x);
+    REQUIRE(scale_x);
+    REQUIRE(enabled);
+
+    // A field with focus is not an edit: Refresh stays pressable.
+    scale_x->setFocus(Qt::OtherFocusReason);
+    rig.pumpFor(200);
+    REQUIRE(scale_x->hasFocus());
+    CHECK_FALSE(rig.inspector->sceneEditPending());
+    CHECK(rig.refresh()->isEnabled());
+
+    // Half typed: "1." is not yet a new value.
+    scale_x->selectAll();
+    QTest::keyClicks(scale_x, QStringLiteral("1."));
+    REQUIRE(scale_x->cleanText() == QStringLiteral("1."));
+
+    // Another field commits (a click that does not take focus) and the
+    // engine answers with a new revision: the values change in place.
+    enabled->click();
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.flags.at("enabled") == false; }));
+    REQUIRE(rig.pumpUntil([&] { return !rig.inspector->sceneEditPending(); }));
+    rig.pumpFor(300);
+    REQUIRE(scale_x);
+    CHECK(scale_x == rig.field("pelican.inspectorVector.transform.scale.0"));
+    CHECK(scale_x->hasFocus());
+    CHECK(scale_x->cleanText() == QStringLiteral("1."));
+
+    // Another client moves the object; Refresh, pressed with the focus still
+    // in the half-typed field, brings the new position in beside it.
+    rig.engine.transform["pos"] = Json::array({5.0, 2.0, 3.0});
+    ++rig.engine.revision;
+    REQUIRE(rig.refresh()->isEnabled());
+    rig.refresh()->click();
+    REQUIRE(rig.pumpUntil([&] { return position_x && position_x->value() == 5.0; }));
+    CHECK(position_x == rig.field("pelican.inspectorVector.transform.pos.0"));
+    REQUIRE(scale_x);
+    CHECK(scale_x->hasFocus());
+    CHECK(scale_x->cleanText() == QStringLiteral("1."));
+}
+
+} // namespace PelicanStudio

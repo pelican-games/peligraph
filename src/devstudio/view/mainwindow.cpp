@@ -6,6 +6,7 @@
 #include "inspectorwidget.hpp"
 #include "../model/inspectormodel.hpp"
 #include "newprojectdialog.hpp"
+#include "panelhelp.hpp"
 #include "renderfeatureswidget.hpp"
 #include "studiotheme.hpp"
 #include "../viewport/embeddedviewport.hpp"
@@ -240,8 +241,20 @@ void MainWindow::createWorkspace() {
             [this](QTreeWidgetItem *current, QTreeWidgetItem *) {
                 selectOutlinerItem(current);
             });
-    docks_[OutlinerDock] =
-        makeDock(this, tr("Outliner"), QStringLiteral("pelican.outlinerDock"), outliner_);
+    // Q-7: Add object says here, under the tree it adds to, when its object
+    // has to wait for an edit or cannot be added.
+    auto *outliner_panel = new QWidget(this);
+    auto *outliner_layout = new QVBoxLayout(outliner_panel);
+    outliner_layout->setContentsMargins(0, 0, 0, 0);
+    outliner_layout->setSpacing(2);
+    outliner_layout->addWidget(outliner_, 1);
+    outliner_notice_ = new QLabel(outliner_panel);
+    outliner_notice_->setObjectName(QStringLiteral("pelican.outlinerNotice"));
+    applyPanelNoticeStyle(outliner_notice_);
+    outliner_notice_->hide();
+    outliner_layout->addWidget(outliner_notice_);
+    docks_[OutlinerDock] = makeDock(this, tr("Outliner"),
+                                    QStringLiteral("pelican.outlinerDock"), outliner_panel);
 
     inspector_ = new InspectorWidget(viewport_, this);
     docks_[InspectorDock] = makeDock(this, tr("Inspector"),
@@ -422,6 +435,8 @@ void MainWindow::createWorkspace() {
                 }
                 outliner_refresh_timer_->stop();
                 pending_outliner_request_ = 0;
+                // A spawn still waiting went with the engine (Q-7).
+                setPanelNotice(outliner_notice_, {});
                 pending_gizmo_requests_.clear();
                 gizmo_model_.stopSession();
                 dispatchGizmoModel();
@@ -1036,17 +1051,28 @@ void MainWindow::addObject(AddObjectKind kind) {
     const std::string name = uniqueObjectName(addObjectBaseName(kind), taken);
 
     QString error;
-    if (!inspector_->spawnObject(scene->scene_id, addObjectDeclaration(kind, name),
-                                 &error)) {
-        statusBar()->showMessage(tr("Could not add %1: %2")
-                                     .arg(QString::fromStdString(name), error),
-                                 8000);
+    const auto outcome = inspector_->spawnObject(
+        scene->scene_id, addObjectDeclaration(kind, name), &error);
+    const QString shown_name = QString::fromStdString(name);
+    if (outcome == SpawnOutcome::Refused) {
+        const QString message = tr("Could not add %1: %2").arg(shown_name, error);
+        statusBar()->showMessage(message, 8000);
+        setPanelNotice(outliner_notice_, oneLine(message), message);
         return;
     }
     pending_spawn_selection_ = std::pair{scene->scene_id, name};
     // Ask quickly: the new object is selected as soon as the Outliner has it.
     setOutlinerRefreshInterval(OutlinerRefreshMinimumIntervalMs);
-    statusBar()->showMessage(tr("Adding %1...").arg(QString::fromStdString(name)), 3000);
+    if (outcome == SpawnOutcome::Queued) {
+        // Q-7: an Inspector edit is being committed. The object goes in
+        // right after it, on the revision it leaves.
+        const QString message = tr("Adding %1 after the current edit.").arg(shown_name);
+        statusBar()->showMessage(message, 8000);
+        setPanelNotice(outliner_notice_, message);
+        return;
+    }
+    setPanelNotice(outliner_notice_, {});
+    statusBar()->showMessage(tr("Adding %1...").arg(shown_name), 3000);
 }
 
 void MainWindow::selectSpawnedObject() {
@@ -1057,6 +1083,7 @@ void MainWindow::selectSpawnedObject() {
         for (const auto &object : scene.objects) {
             if (object.display_name != name) continue;
             pending_spawn_selection_.reset();
+            setPanelNotice(outliner_notice_, {});
             const SelectionUpdate update = selection_model_.selectFromOutliner(object.key);
             if (update.kind == SelectionUpdateKind::failed) {
                 statusBar()->showMessage(QString::fromStdString(update.message), 5000);

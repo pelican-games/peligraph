@@ -639,6 +639,27 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     Qt6::Widgets
   )
 
+  # Q-7: the Inspector on real widgets over the real RPC transport, with the
+  # test answering for the engine: a committed field gives the panel back
+  # (no field left holding it), focus alone holds nothing, and a commit
+  # replaces values without building the fields again.
+  pelican_define_test(devstudio_inspector_widget_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+  target_compile_definitions(pelican_test_devstudio_inspector_widget_test PRIVATE
+    PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
+  )
+  add_dependencies(pelican_test_devstudio_inspector_widget_test
+    pelican_test_process_fixture_child)
+
   # F-2: File > New Project... -- the dialog writes the picked template
   # through the same function as `pelican_cli project init`, and the window
   # opens it through openProject.

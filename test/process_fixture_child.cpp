@@ -240,6 +240,17 @@ int main(int argc, char *argv[]) {
         }
         return 0;
     }
+    // Q-7: every request, whole, on stderr and never an answer. The test
+    // answers in its place, as the engine would, through the viewport's own
+    // reply signals -- so the widget under test runs on the real transport
+    // and the test decides what the engine says and when.
+    if (argc >= 2 && std::string_view{argv[1]} == "rpc-hold") {
+        std::string request;
+        while (std::getline(std::cin, request)) {
+            std::cerr << "rpc-hold-request:" << request << '\n' << std::flush;
+        }
+        return 0;
+    }
     // Q-2: replies shaped the way the single-pass envelope scanner has to
     // survive -- braces and brackets and an escaped quote inside a string,
     // spaces around every token, members in an order nobody promised, and a
