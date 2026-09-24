@@ -1,0 +1,34 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_sets.glsl"
+#include "pelican_view.glsl"
+
+// Fragment shader of the fullscreen pass "@PASS_NAME@": tone map.
+//
+// It reads the scene colour (input 0: scene-linear, possibly brighter than 1,
+// as the Deferred lighting template writes it) and writes display colour.
+// Give the pass the swapchain as its colour output. The scene gets one tone
+// curve, and this is where it is applied:
+// - the engine's output_transform after this pass only encodes for the
+//   display (sRGB). It does not tone map, so do not encode here either;
+// - with the project's hdr feature on, its hdr_tonemap pass tone maps what
+//   this pass writes, so the colour is passed through instead;
+// - the engine's own lighting (engine://fullscreen) already applies its curve
+//   when the hdr feature is off: do not read its colour here.
+
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+
+// Raise it to brighten the picture before the curve.
+const float EXPOSURE = 1.0;
+@INPUT_DECLARATIONS@
+void main() {
+@INPUT_READS@
+    vec3 exposed = max(scene_color * EXPOSURE, vec3(0.0));
+#if defined(PELICAN_FEATURE_HDR)
+    outColor = vec4(exposed, 1.0);
+#else
+    // Reinhard: [0, infinity) into [0, 1).
+    outColor = vec4(exposed / (exposed + vec3(1.0)), 1.0);
+#endif
+}

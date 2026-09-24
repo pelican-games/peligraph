@@ -4,6 +4,7 @@
 #include "../model/frameplanmodel.hpp"
 #include "../model/frameplanresourcekind.hpp"
 
+#include "fullscreenpasssettings.hpp"
 #include "fullscreenshadertemplate.hpp"
 #include "panelhelp.hpp"
 #include "shadercompilelogpanel.hpp"
@@ -155,6 +156,17 @@ struct FullscreenPassWidget::Impl {
     QPushButton *create_fragment_shader = nullptr;
     QPushButton *open_existing_shader = nullptr;
     QLabel *shader_template_notice = nullptr;
+    // G-3: which starting point "New..." writes; the pass's scene lights
+    // and push constants; each colour output's load, clear and store; and
+    // what a template reads each input as.
+    QComboBox *shader_template_kind = nullptr;
+    FullscreenPassInterfaceRow *interface_row = nullptr;
+    FullscreenOutputOpsEditor *output_ops = nullptr;
+    QLabel *input_roles = nullptr;
+    // The names "New..." filled in itself, so it may replace them when the
+    // kind changes but never replaces a name the author typed.
+    QString auto_pass_name;
+    QString auto_shader_name;
     ShaderCompileLogPanel *compile_log = nullptr;
     // F-5: what a shader reload failure put in the log, so a later commit
     // takes down that log and not an authoring rejection shown since.
@@ -502,6 +514,7 @@ struct FullscreenPassWidget::Impl {
             "order."));
         target_layout->addWidget(attachment_label, 6, 0, 1, 3);
         target_layout->addWidget(color_attachment_references, 7, 0, 1, 3);
+        buildPassSettings(*target_layout);
         layout->addWidget(targets);
 
         // N-7 rule 3: eight sentences were eight lines. They are now eight
@@ -807,6 +820,8 @@ struct FullscreenPassWidget::Impl {
         create_fragment_shader->show();
         setPanelNotice(shader_template_notice, {}, {});
         form->setRowVisible(shader_template_row, true);
+        auto_shader_name = proposed;
+        proposeTemplateNames();
         shader_template_name->setFocus();
         shader_template_name->selectAll();
     }
@@ -865,7 +880,8 @@ struct FullscreenPassWidget::Impl {
             const auto inputs_now = templateInputs();
             const auto written = writeShaderTemplate(
                 *project_root, shader_name,
-                fullscreenFragmentShaderTemplate(pass_name, inputs_now));
+                fullscreenFragmentShaderTemplate(pass_name, inputs_now,
+                                                 selectedTemplateKind()));
             const QString file =
                 QStringLiteral("shaders/%1.frag").arg(text(shader_name));
             if (!written.created) {
@@ -905,6 +921,175 @@ struct FullscreenPassWidget::Impl {
         open_existing_shader->hide();
         templateNotice(owner.tr("using %1").arg(reference), {}, false);
         openShaderFile(path, reference);
+    }
+
+    // --- G-3: the pass's settings, and the kind of shader "New..." writes.
+
+    void buildPassSettings(QGridLayout &target_layout) {
+        interface_row = new FullscreenPassInterfaceRow(&owner);
+        interface_row->setChangedAction([this] { updateDraft(); });
+        form->addRow(owner.tr("Frame data"), interface_row);
+
+        output_ops = new FullscreenOutputOpsEditor(targets);
+        output_ops->setJsonWriter([this](const QString &json_text) {
+            color_attachment_references->setPlainText(json_text);
+        });
+        output_ops->setChangedAction([this] { updateDraft(); });
+        target_layout.addWidget(output_ops, 9, 0, 1, 3);
+
+        input_roles = new QLabel(targets);
+        input_roles->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.inputRoles"));
+        applyPanelNoticeStyle(input_roles);
+        input_roles->setWordWrap(true);
+        input_roles->hide();
+        target_layout.addWidget(input_roles, 10, 0, 1, 3);
+
+        // Almost every fullscreen pass draws the engine's triangle, so a new
+        // draft starts with it rather than an empty field to type it into.
+        vertex_shader->setText(QString::fromLatin1(DefaultFullscreenVertex));
+
+        shader_template_kind = new QComboBox(shader_template_row);
+        shader_template_kind->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.shaderTemplateKind"));
+        for (const auto kind : FullscreenShaderTemplateKinds)
+            shader_template_kind->addItem(
+                text(fullscreenShaderTemplateKindLabel(kind)),
+                text(fullscreenShaderTemplateKindName(kind)));
+        shader_template_kind->setToolTip(owner.tr(
+            "What the new shader starts as. Deferred lighting also turns on "
+            "Uses scene lights and Camera position."));
+        qobject_cast<QHBoxLayout *>(shader_template_row->layout())
+            ->insertWidget(0, shader_template_kind);
+        QObject::connect(shader_template_kind,
+                         qOverload<int>(&QComboBox::currentIndexChanged),
+                         &owner, [this] { applyTemplateKind(); });
+    }
+
+    static constexpr const char *DefaultFullscreenVertex = "engine://fullscreen";
+
+    FullscreenShaderTemplateKind selectedTemplateKind() const {
+        return fullscreenShaderTemplateKindFromName(
+                   shader_template_kind->currentData().toString().toStdString())
+            .value_or(FullscreenShaderTemplateKind::pass_through);
+    }
+
+    // A kind whose shader needs the scene lights or the camera sets them on
+    // the pass as soon as it is chosen, and the inputs say what it reads.
+    void applyTemplateKind() {
+        const auto settings =
+            fullscreenShaderTemplatePassSettings(selectedTemplateKind());
+        interface_row->require(settings.uses_light_data,
+                               settings.push_constants);
+        proposeTemplateNames();
+    }
+
+    // A pass name that is not in the graph yet: the kind's own, then _2, _3...
+    QString unusedPassName(FullscreenShaderTemplateKind kind) const {
+        const std::string base =
+            kind == FullscreenShaderTemplateKind::pass_through
+                ? std::string{"fullscreen_pass"}
+                : std::string{fullscreenShaderTemplateKindName(kind)};
+        const auto taken = [&](const std::string &candidate) {
+            if (!plan) return false;
+            if (std::ranges::find(plan->nodes, candidate, &FramePlanNode::name) !=
+                plan->nodes.end())
+                return true;
+            const auto graph_passes = authored_passes.find(plan->graph);
+            return graph_passes != authored_passes.end() &&
+                   graph_passes->second.contains(candidate);
+        };
+        std::string candidate = base;
+        for (int index = 2; taken(candidate); ++index)
+            candidate = base + "_" + std::to_string(index);
+        return text(candidate);
+    }
+
+    // "New..." names what it makes: an empty pass name (or one it filled in
+    // itself) becomes the kind's, and the shader is named after the pass.
+    void proposeTemplateNames() {
+        if (!editing_preset_pass) {
+            const QString current = name->text().trimmed();
+            if (current.isEmpty() || current == auto_pass_name) {
+                auto_pass_name = unusedPassName(selectedTemplateKind());
+                name->setText(auto_pass_name);
+            }
+        }
+        const QString shader_current = shader_template_name->text().trimmed();
+        if (shader_current.isEmpty() || shader_current == auto_shader_name) {
+            auto_shader_name = text(suggestedShaderTemplateName(
+                name->text().trimmed().toStdString()));
+            const QSignalBlocker blocker{shader_template_name};
+            shader_template_name->setText(auto_shader_name);
+        }
+        refreshInputRoles();
+    }
+
+    void refreshInputRoles() {
+        const auto roles = form->isRowVisible(shader_template_row)
+                               ? fullscreenShaderTemplateInputRoles(
+                                     selectedTemplateKind())
+                               : std::span<const FullscreenShaderTemplateRole>{};
+        QStringList named;
+        for (std::size_t index = 0; index < roles.size(); ++index)
+            named.push_back(QStringLiteral("%1 %2%3")
+                                .arg(index)
+                                .arg(text(roles[index].name))
+                                .arg(roles[index].optional
+                                         ? owner.tr(" (optional)")
+                                         : QString{}));
+        setPanelNotice(input_roles,
+                       named.isEmpty() ? QString{}
+                                       : owner.tr("inputs: %1")
+                                             .arg(named.join(
+                                                 QStringLiteral(", "))),
+                       owner.tr("The template reads the inputs by position."));
+        for (int row = 0; row < inputs->count(); ++row)
+            inputs->item(row)->setToolTip(
+                static_cast<std::size_t>(row) < roles.size()
+                    ? text(roles[static_cast<std::size_t>(row)].name)
+                    : QString{});
+    }
+
+    void syncPassSettings() {
+        output_ops->sync(selectedSequence(*colors),
+                         color_attachment_references->toPlainText());
+        if (color_attachment_references->isHidden()) output_ops->hide();
+        refreshInputRoles();
+    }
+
+    void resetPassSettings() {
+        // clearDraft emptied it; a pass being edited gets its own back from
+        // its declaration right after.
+        vertex_shader->setText(QString::fromLatin1(DefaultFullscreenVertex));
+        auto_pass_name.clear();
+        auto_shader_name.clear();
+        interface_row->reset();
+        output_ops->reset();
+        const QSignalBlocker blocker{shader_template_kind};
+        shader_template_kind->setCurrentIndex(0);
+        refreshInputRoles();
+    }
+
+    // The output.color JSON follows the colour list: an output that stays
+    // keeps its attachment fields, a new one is a plain name.
+    void reconcileColorAttachments() {
+        const auto current = color_attachment_references->toPlainText();
+        const auto next = FullscreenOutputOpsEditor::reconciledJson(
+            selectedSequence(*colors), current);
+        if (next == current) return;
+        const QSignalBlocker blocker{color_attachment_references};
+        color_attachment_references->setPlainText(next);
+    }
+
+    // What edit_preset_pass sends for a fullscreen pass besides its input,
+    // output and shader: the interface fields and clear_colors, each only
+    // when it changed.
+    void addPassSettingsEditParams(const Json &draft, Json &params) const {
+        interface_row->addEditParams(original_preset_pass, params);
+        const auto clear = draft.value("clear_colors", Json(nullptr));
+        if (clear != original_preset_pass.value("clear_colors", Json(nullptr)))
+            params["clear_colors"] = clear;
     }
 
     // A rejected candidate. A shader that did not compile is shown whole,
@@ -1021,6 +1206,7 @@ struct FullscreenPassWidget::Impl {
             form->setRowVisible(fragment_row, !editingShadowPass());
         }
         form->setRowVisible(shader_template_row, false);
+        form->setRowVisible(interface_row, !preserve_declaration);
         // The stem field is inside the row now; it still says for itself
         // whether it is shown.
         fragment_shader->setHidden(!form->isRowVisible(fragment_row));
@@ -1164,6 +1350,11 @@ struct FullscreenPassWidget::Impl {
             if (contract.isEmpty()) draft.erase("material_contract");
             else draft["material_contract"] = contract.toStdString();
             if (editsPresetRouting()) (void)routingDraft();
+        }
+        if (!preserve_declaration) {
+            interface_row->apply(draft);
+            if (auto clear = output_ops->clearColors(); !clear.is_null())
+                draft["clear_colors"] = std::move(clear);
         }
         return draft;
     }
@@ -1398,6 +1589,7 @@ struct FullscreenPassWidget::Impl {
         if (updating) {
             return;
         }
+        syncPassSettings();
         Json draft;
         try {
             draft = draftJson();
@@ -1782,6 +1974,7 @@ struct FullscreenPassWidget::Impl {
             params["input"] = draft.at("input");
             params["output"] = std::move(output);
             params["shader"] = std::move(shader);
+            addPassSettingsEditParams(draft, params);
         }
         QString error;
         pending_authoring_kind = AuthoringRequest::edit;
@@ -1912,6 +2105,8 @@ struct FullscreenPassWidget::Impl {
           depth->addItem(target);
         depth->setCurrentText(target);
       }
+      if (!preserve_declaration) interface_row->load(declaration);
+      output_ops->loadClearColors(declaration);
       load_edit_requested = false;
       updating = false;
       save->setText(editingFeaturePass() ? owner.tr("Save feature") : owner.tr("Save preset"));
@@ -2261,6 +2456,7 @@ struct FullscreenPassWidget::Impl {
             selected += QStringLiteral("@history");
         }
         sequence.addItem(selected);
+        if (&sequence == colors) reconcileColorAttachments();
         candidate.setCurrentIndex(-1);
         updateDraft();
     }
@@ -2321,6 +2517,7 @@ struct FullscreenPassWidget::Impl {
         const int row = sequence.currentRow();
         if (row >= 0) {
             delete sequence.takeItem(row);
+            if (&sequence == colors) reconcileColorAttachments();
             updateDraft();
         }
     }
@@ -2350,6 +2547,7 @@ struct FullscreenPassWidget::Impl {
         // half-typed shader name.
         compile_log->clear();
         form->setRowVisible(shader_template_row, false);
+        resetPassSettings();
         updating = false;
     }
 

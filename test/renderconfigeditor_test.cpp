@@ -4447,6 +4447,46 @@ TEST_CASE("Project preset pass edits publish without changing the root document"
         request["ray_query"] = "true";
         CHECK_THROWS(service->editPresetPass(request));
     }
+    SECTION("G-3 scene lights, push constants and clear colours are set and "
+            "removed without replacing other pass settings") {
+        const Json clear_colors{
+            {"swapchain", Json::array({0.1, 0.2, 0.3, 1.0})}};
+        for (const bool enabled : {true, false}) {
+            const auto current = service->getRenderAuthoringContext(Json::object());
+            request["base_preset_digest"] = current.at("pipeline_preset").at("source_digest").at("hex");
+            request["uses_light_data"] = enabled ? Json(true) : Json(nullptr);
+            request["push_constants"] = enabled ? Json("camera_position") : Json(nullptr);
+            request["clear_colors"] = enabled ? clear_colors : Json(nullptr);
+            const auto accepted = service->editPresetPass(request);
+            INFO(accepted.dump());
+            REQUIRE(accepted.at("status") == "accepted");
+            service->commitPending();
+            const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+            INFO(result.dump());
+            REQUIRE(result.at("committed") == true);
+            for (const auto *key : {"input", "output", "shader"}) (*original)[key] = request.at(key);
+            for (const auto *key : {"uses_light_data", "push_constants", "clear_colors"}) {
+                if (enabled) (*original)[key] = request.at(key);
+                else original->erase(key);
+            }
+            // clear_color, which the request does not name, is still there.
+            CHECK(original->at("clear_color") == Json::array({0.2, 0.3, 0.4, 1.0}));
+            CHECK(Json::parse(readBytes(preset_path)) == preset);
+            CHECK(readBytes(project.render_config) == root_before);
+        }
+        // The engine's own reading refuses a value it cannot use, and the
+        // preset is left as it was.
+        const auto current = service->getRenderAuthoringContext(Json::object());
+        request["base_preset_digest"] = current.at("pipeline_preset").at("source_digest").at("hex");
+        request["uses_light_data"] = "yes";
+        const auto refused = service->editPresetPass(request);
+        REQUIRE(refused.at("status") == "accepted");
+        service->commitPending();
+        const auto refused_result = service->getResult({{"ticket", refused.at("ticket")}});
+        INFO(refused_result.dump());
+        CHECK(refused_result.at("committed") == false);
+        CHECK(Json::parse(readBytes(preset_path)) == preset);
+    }
     SECTION("generated and feature nodes cannot be edited as preset passes") {
         request["pass_name"] = "__anchor_tonemap";
         REQUIRE(service->editPresetPass(request).at("status") == "rejected");

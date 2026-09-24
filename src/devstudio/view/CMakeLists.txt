@@ -28,6 +28,8 @@ add_library(pelican_studio_view STATIC
     renderpassauthoringcapability.hpp
     fullscreenpasswidget.cpp
     fullscreenpasswidget.hpp
+    fullscreenpasssettings.cpp
+    fullscreenpasssettings.hpp
     fullscreenshadertemplate.cpp
     fullscreenshadertemplate.hpp
     shadercompilelogpanel.cpp

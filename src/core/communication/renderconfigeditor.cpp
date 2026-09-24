@@ -2628,10 +2628,17 @@ void applyEditablePassFields(const Json &params, OrderedJson &pass, OrderedJson 
             else (*routing_config)["material_routing"] = params.at("material_routing");
         }
     } else {
-        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "ray_query"}, method);
+        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "ray_query", "uses_light_data", "push_constants", "clear_colors"}, method);
         for (const auto *key : {"input", "output", "shader"}) {
             if (!params.contains(key)) throw std::invalid_argument(std::string{method} + " requires " + key);
             pass[key] = params.at(key);
+        }
+        // G-3: what the pass asks of the engine and what it clears its
+        // outputs to. Omitted keeps the value; null removes the member.
+        for (const auto *key : {"uses_light_data", "push_constants", "clear_colors"}) {
+            if (!params.contains(key)) continue;
+            if (params.at(key).is_null()) pass.erase(key);
+            else pass[key] = params.at(key);
         }
     }
     if (params.contains("ray_query")) pass["ray_query"] = params.at("ray_query");
@@ -2641,7 +2648,7 @@ void applyEditablePassFields(const Json &params, OrderedJson &pass, OrderedJson 
 
 OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
     constexpr auto method = "edit_preset_pass";
-    requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "draw", "raster_state", "ray_query", "material_settings", "material_routing"}, method);
+    requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "draw", "raster_state", "ray_query", "material_settings", "material_routing", "uses_light_data", "push_constants", "clear_colors"}, method);
     (void)parseRasterRayQuery(params);
     const auto base_digest = requireString(params, "base_source_digest", method);
     const bool feature_edit = params.contains("base_feature_digest");

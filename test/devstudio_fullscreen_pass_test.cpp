@@ -3244,4 +3244,337 @@ TEST_CASE("F-7 a pass the Pass Editor refuses does not show the previous "
     CHECK_FALSE(
         required<QPushButton>(form, "pelican.fullscreenPass.save").isEnabled());
 }
+
+// --- G-3: a lighting pass from Studio -- its settings, and its starting shader.
+
+namespace {
+
+Json requestParams(const AuthoringHarness &authoring) {
+    return Json::parse(
+        QJsonDocument(authoring.requests.back().params).toJson().toStdString());
+}
+
+void selectData(QComboBox &combo, const char *value) {
+    const int index = combo.findData(QString::fromLatin1(value));
+    REQUIRE(index >= 0);
+    combo.setCurrentIndex(index);
+}
+
+} // namespace
+
+TEST_CASE("G-3 Uses scene lights, Camera position and an output's load, "
+          "clear and store go into add_authored_pass",
+          "[devstudio][fullscreen-pass][g3][widget]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
+    form.receiveResult(QByteArray::fromStdString(f3FramePlan().dump()));
+    driveMinimalDraft(form, "lit", "project://shaders/lit", "lit_color",
+                      "tint_out");
+
+    required<QCheckBox>(form, "pelican.fullscreenPass.usesLightData")
+        .setChecked(true);
+    auto &push = required<QComboBox>(form, "pelican.fullscreenPass.pushConstants");
+    selectData(push, "camera_position");
+    CHECK(push.currentText() == QStringLiteral("Camera position"));
+
+    auto &attachments = required<QPlainTextEdit>(
+        form, "pelican.fullscreenPass.colorAttachmentReferences");
+    CHECK(attachments.toPlainText().isEmpty());
+    auto &load = required<QComboBox>(form, "pelican.fullscreenPass.outputLoad.0");
+    auto &store = required<QComboBox>(form, "pelican.fullscreenPass.outputStore.0");
+    auto &clear =
+        required<QLineEdit>(form, "pelican.fullscreenPass.outputClearColor.0");
+    CHECK(clear.isHidden());
+    selectData(load, "clear");
+    // The row writes the JSON field; the field is what the draft reads.
+    CHECK(Json::parse(attachments.toPlainText().toStdString()) ==
+          Json::array({{{"target", "tint_out"}, {"load_op", "clear"}}}));
+    CHECK_FALSE(clear.isHidden());
+    clear.setText(QStringLiteral("0.25, 0.5, 0.75"));
+    selectData(store, "store");
+
+    auto &save = required<QPushButton>(form, "pelican.fullscreenPass.save");
+    REQUIRE(save.isEnabled());
+    save.click();
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("add_authored_pass"));
+    const auto pass = requestParams(authoring).at("pass");
+    INFO(pass.dump());
+    CHECK(pass.at("uses_light_data") == true);
+    CHECK(pass.at("push_constants") == "camera_position");
+    CHECK(pass.at("output").at("color") ==
+          Json::array({{{"target", "tint_out"},
+                        {"load_op", "clear"},
+                        {"store_op", "store"}}}));
+    CHECK(pass.at("clear_colors") ==
+          Json{{"tint_out", Json::array({0.25, 0.5, 0.75, 1.0})}});
+    // The engine's own reading of the fields accepts what Studio wrote.
+    CHECK(Pelican::validatePassFieldOwnership(pass, {}, "g3") ==
+          Pelican::RenderPassType::fullscreen);
+
+    // The other way: JSON typed into the field is what the rows show, in the
+    // engine's other spellings too, and a field the rows do not show stays.
+    attachments.setPlainText(QStringLiteral(
+        R"([{"target":"tint_out","load_op":"DontCare","subresource":{"mip":0}}])"));
+    CHECK(load.currentData().toString() == QStringLiteral("dont_care"));
+    CHECK(store.currentData().toString().isEmpty());
+    CHECK(clear.isHidden());
+    selectData(load, "load");
+    CHECK(Json::parse(attachments.toPlainText().toStdString()) ==
+          Json::array({{{"target", "tint_out"},
+                        {"load_op", "load"},
+                        {"subresource", {{"mip", 0}}}}}));
+    // Back to Default everywhere: the entry is the output's name again.
+    attachments.setPlainText(QStringLiteral(R"([{"target":"tint_out","load_op":"load"}])"));
+    selectData(load, "");
+    CHECK(attachments.toPlainText().isEmpty());
+    // The clear colour typed earlier is still the pass's.
+    CHECK(outputJson(form).at("clear_colors") ==
+          Json{{"tint_out", Json::array({0.25, 0.5, 0.75, 1.0})}});
+    clear.setText(QStringLiteral("red"));
+    CHECK(required<QPlainTextEdit>(form, "pelican.fullscreenPass.json")
+              .toPlainText()
+              .contains(QStringLiteral("clear colour of tint_out")));
+    clear.clear();
+
+    // Turned off, the fields are absent, as the engine reads an absent one.
+    required<QCheckBox>(form, "pelican.fullscreenPass.usesLightData")
+        .setChecked(false);
+    selectData(push, "");
+    const auto draft = outputJson(form);
+    CHECK_FALSE(draft.contains("uses_light_data"));
+    CHECK_FALSE(draft.contains("push_constants"));
+    CHECK_FALSE(draft.contains("clear_colors"));
+}
+
+TEST_CASE("G-3 the settings of a fullscreen pass round-trip through "
+          "edit_preset_pass",
+          "[devstudio][fullscreen-pass][g3][preset-pass-edit][widget]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    const Json plain{
+        {"name", "plain"},
+        {"type", "fullscreen"},
+        {"input", Json::array({"input"})},
+        {"output", {{"color", Json::array({"output"})}, {"depth", nullptr}}},
+        {"shader",
+         {{"vertex", "engine://fullscreen"},
+          {"fragment", "project://shaders/plain"}}}};
+    Json lit = plain;
+    lit["name"] = "lit";
+    lit["uses_light_data"] = true;
+    lit["push_constants"] = "projection_view";
+    lit["output"]["color"] =
+        Json::array({{{"target", "output"}, {"load_op", "Clear"}}});
+    lit["clear_colors"] = {{"output", Json::array({0.0, 0.0, 0.5, 1.0})}};
+    Json graph{
+        {"name", "edit_graph"},
+        {"passes",
+         Json::array({{{"name", "plain"},
+                       {"declaration", plain},
+                       {"editable_preset_pass", true},
+                       {"preset_declaration", plain}},
+                      {{"name", "lit"},
+                       {"declaration", lit},
+                       {"editable_preset_pass", true},
+                       {"preset_declaration", lit}}})},
+        {"anchor_candidates",
+         Json::array({{{"position", 0}, {"insert", "before:plain"}}})}};
+    const Json context{
+        {"source_digest", {{"hex", std::string(64, 'a')}}},
+        {"pipeline_preset", {{"source_digest", {{"hex", std::string(64, 'b')}}}}},
+        {"graphs", Json::array({graph})}};
+    authoring.succeed(authoring.requests.back().id, context);
+    const auto plan = minimalFramePlan(
+        "edit_graph", Json::array({resource("input"), resource("output")}));
+    form.receiveResult(QByteArray::fromStdString(plan.dump()));
+    const auto open = [&](const char *pass_name) {
+        form.editPresetPass(QStringLiteral("edit_graph"),
+                            QString::fromLatin1(pass_name));
+        authoring.succeed(authoring.requests.back().id, context);
+        refresh.succeed(refresh.requests.back(),
+                        QByteArray::fromStdString(plan.dump()));
+        REQUIRE(required<QLineEdit>(form, "pelican.fullscreenPass.name").text() ==
+                QString::fromLatin1(pass_name));
+    };
+    auto &save = required<QPushButton>(form, "pelican.fullscreenPass.save");
+    const auto submit = [&] {
+        REQUIRE(save.isEnabled());
+        save.click();
+        REQUIRE(authoring.requests.back().method ==
+                QStringLiteral("edit_preset_pass"));
+        return requestParams(authoring);
+    };
+
+    SECTION("a plain pass is given the lighting settings") {
+        open("plain");
+        auto &uses = required<QCheckBox>(form, "pelican.fullscreenPass.usesLightData");
+        CHECK_FALSE(uses.isChecked());
+        uses.setChecked(true);
+        selectData(required<QComboBox>(form, "pelican.fullscreenPass.pushConstants"),
+                   "camera_position");
+        selectData(required<QComboBox>(form, "pelican.fullscreenPass.outputLoad.0"),
+                   "clear");
+        required<QLineEdit>(form, "pelican.fullscreenPass.outputClearColor.0")
+            .setText(QStringLiteral("1, 1, 1, 1"));
+        const auto params = submit();
+        INFO(params.dump());
+        CHECK(params.at("uses_light_data") == true);
+        CHECK(params.at("push_constants") == "camera_position");
+        CHECK(params.at("output").at("color") ==
+              Json::array({{{"target", "output"}, {"load_op", "clear"}}}));
+        CHECK(params.at("clear_colors") ==
+              Json{{"output", Json::array({1.0, 1.0, 1.0, 1.0})}});
+    }
+
+    SECTION("a lit pass shows its settings, and saving it unchanged sends "
+            "none of them") {
+        open("lit");
+        CHECK(required<QCheckBox>(form, "pelican.fullscreenPass.usesLightData")
+                  .isChecked());
+        CHECK(required<QComboBox>(form, "pelican.fullscreenPass.pushConstants")
+                  .currentData()
+                  .toString() == QStringLiteral("projection_view"));
+        CHECK(required<QComboBox>(form, "pelican.fullscreenPass.outputLoad.0")
+                  .currentData()
+                  .toString() == QStringLiteral("clear"));
+        CHECK(required<QLineEdit>(form, "pelican.fullscreenPass.outputClearColor.0")
+                  .text() == QStringLiteral("0.0, 0.0, 0.5, 1.0"));
+        auto params = submit();
+        INFO(params.dump());
+        CHECK(params.at("output") == lit.at("output"));
+        CHECK_FALSE(params.contains("uses_light_data"));
+        CHECK_FALSE(params.contains("push_constants"));
+        CHECK_FALSE(params.contains("clear_colors"));
+    }
+
+    SECTION("turning a lit pass's settings off removes them") {
+        open("lit");
+        required<QCheckBox>(form, "pelican.fullscreenPass.usesLightData")
+            .setChecked(false);
+        selectData(required<QComboBox>(form, "pelican.fullscreenPass.pushConstants"), "");
+        required<QLineEdit>(form, "pelican.fullscreenPass.outputClearColor.0").clear();
+        const auto params = submit();
+        INFO(params.dump());
+        CHECK(params.at("uses_light_data").is_null());
+        CHECK(params.at("push_constants").is_null());
+        CHECK(params.at("clear_colors").is_null());
+    }
+}
+
+TEST_CASE("G-3 New... offers the deferred lighting and tone map starting "
+          "points, and the lighting one sets the pass up for itself",
+          "[devstudio][fullscreen-pass][g3][shader-template][widget]") {
+    (void)application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = filesystemPath(temporary.path());
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    form.setShaderSourceOpenAction([](const std::filesystem::path &) { return true; });
+    authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
+    form.receiveResult(QByteArray::fromStdString(f3FramePlan().dump()));
+    form.setProjectRoot(root);
+    required<QLineEdit>(form, "pelican.fullscreenPass.name")
+        .setText(QStringLiteral("lit"));
+    chooseCandidate(form, "pelican.fullscreenPass.inputTarget",
+                    "pelican.fullscreenPass.addInput", "lit_color");
+
+    auto &uses = required<QCheckBox>(form, "pelican.fullscreenPass.usesLightData");
+    auto &push = required<QComboBox>(form, "pelican.fullscreenPass.pushConstants");
+    auto &roles = required<QLabel>(form, "pelican.fullscreenPass.inputRoles");
+    auto &kind = required<QComboBox>(form, "pelican.fullscreenPass.shaderTemplateKind");
+    required<QPushButton>(form, "pelican.fullscreenPass.newFragmentShader").click();
+    // Pass-through, F-3's, is where it starts, and it asks for nothing.
+    CHECK(kind.currentData().toString() == QStringLiteral("pass_through"));
+    CHECK_FALSE(uses.isChecked());
+    CHECK(roles.isHidden());
+
+    selectData(kind, "deferred_lighting");
+    CHECK(uses.isChecked());
+    CHECK(push.currentData().toString() == QStringLiteral("camera_position"));
+    CHECK_FALSE(roles.isHidden());
+    CHECK(roles.text().contains(QStringLiteral("0 albedo")));
+    CHECK(roles.text().contains(QStringLiteral("3 world position")));
+    CHECK(required<QListWidget>(form, "pelican.fullscreenPass.inputs")
+              .item(0)
+              ->toolTip() == QStringLiteral("albedo"));
+    required<QPushButton>(form, "pelican.fullscreenPass.createFragmentShader").click();
+    const auto written = readText(root / "shaders" / "lit.frag");
+    CHECK(written.find("#include \"pelican_lighting_v1.glsl\"") != std::string::npos);
+    CHECK(written.find("PELICAN_DECLARE_INPUT_0(in_lit_color);  // lit_color: albedo") !=
+          std::string::npos);
+    const auto draft = outputJson(form);
+    CHECK(draft.at("uses_light_data") == true);
+    CHECK(draft.at("push_constants") == "camera_position");
+
+    // The tone map reads one scene colour.
+    required<QPushButton>(form, "pelican.fullscreenPass.newFragmentShader").click();
+    selectData(kind, "tone_map");
+    CHECK(roles.text().contains(QStringLiteral("0 scene colour")));
+    required<QLineEdit>(form, "pelican.fullscreenPass.shaderTemplateName")
+        .setText(QStringLiteral("present"));
+    required<QPushButton>(form, "pelican.fullscreenPass.createFragmentShader").click();
+    const auto tone_map = readText(root / "shaders" / "present.frag");
+    CHECK(tone_map.find("vec3 scene_color = PELICAN_TEXTURE_2D_0(in_lit_color, inUV).rgb;") !=
+          std::string::npos);
+
+    // A new pass starts from pass-through again, asking for nothing.
+    required<QPushButton>(form, "pelican.fullscreenPass.new").click();
+    CHECK_FALSE(uses.isChecked());
+    CHECK(push.currentData().toString().isEmpty());
+    CHECK(kind.currentData().toString() == QStringLiteral("pass_through"));
+    CHECK(roles.isHidden());
+}
+
+TEST_CASE("G-3 a new pass needs no stem or name typed: the vertex stem is the "
+          "engine's triangle and New... names the pass and its shader",
+          "[devstudio][fullscreen-pass][g3][shader-template][widget]") {
+    (void)application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    form.setShaderSourceOpenAction([](const std::filesystem::path &) { return true; });
+    authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
+    form.receiveResult(QByteArray::fromStdString(f3FramePlan().dump()));
+    form.setProjectRoot(filesystemPath(temporary.path()));
+
+    auto &vertex = required<QLineEdit>(form, "pelican.fullscreenPass.shader.vertex");
+    CHECK(vertex.text() == QStringLiteral("engine://fullscreen"));
+    auto &name = required<QLineEdit>(form, "pelican.fullscreenPass.name");
+    auto &shader_name =
+        required<QLineEdit>(form, "pelican.fullscreenPass.shaderTemplateName");
+    auto &kind = required<QComboBox>(form, "pelican.fullscreenPass.shaderTemplateKind");
+    REQUIRE(name.text().isEmpty());
+    required<QPushButton>(form, "pelican.fullscreenPass.newFragmentShader").click();
+    CHECK(name.text() == QStringLiteral("fullscreen_pass"));
+    CHECK(shader_name.text() == QStringLiteral("fullscreen_pass"));
+    // A name "New..." chose follows the kind.
+    selectData(kind, "deferred_lighting");
+    CHECK(name.text() == QStringLiteral("deferred_lighting"));
+    CHECK(shader_name.text() == QStringLiteral("deferred_lighting"));
+    name.setText(QStringLiteral("base"));
+    selectData(kind, "tone_map");
+    // A name the author typed is theirs.
+    CHECK(name.text() == QStringLiteral("base"));
+    // The shader name "New..." chose follows the pass name.
+    CHECK(shader_name.text() == QStringLiteral("base"));
+    name.clear();
+    selectData(kind, "pass_through");
+    CHECK(name.text() == QStringLiteral("fullscreen_pass"));
+
+    // The "New pass" button starts over with the triangle again.
+    vertex.setText(QStringLiteral("project://shaders/mine"));
+    required<QPushButton>(form, "pelican.fullscreenPass.new").click();
+    CHECK(vertex.text() == QStringLiteral("engine://fullscreen"));
+    CHECK(name.text().isEmpty());
+}
 } // namespace PelicanStudio

@@ -7,9 +7,11 @@
 #include <fstream>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <stdexcept>
 #include <system_error>
+#include <vector>
 
 namespace PelicanStudio {
 namespace {
@@ -56,46 +58,123 @@ std::string inputIdentifier(std::string_view resource,
     return identifier;
 }
 
-std::string shippedTemplate() {
-    std::string text = b::embed<"fullscreen_pass.frag.in">().str();
-    // The checkout decides the resource's line ends; the shader this writes
-    // does not inherit them.
+// The checkout decides a resource's line ends; the shader "New..." writes does
+// not inherit them.
+std::string withoutCarriageReturns(std::string text) {
     std::erase(text, '\r');
     return text;
 }
 
-} // namespace
+std::string shippedTemplate(FullscreenShaderTemplateKind kind) {
+    switch (kind) {
+    case FullscreenShaderTemplateKind::deferred_lighting:
+        return withoutCarriageReturns(
+            b::embed<"fullscreen_lighting_pass.frag.in">().str());
+    case FullscreenShaderTemplateKind::tone_map:
+        return withoutCarriageReturns(
+            b::embed<"fullscreen_tonemap_pass.frag.in">().str());
+    case FullscreenShaderTemplateKind::pass_through:
+        break;
+    }
+    return withoutCarriageReturns(
+        b::embed<"fullscreen_pass.frag.in">().str());
+}
 
-std::string fullscreenFragmentShaderTemplate(
-    std::string_view pass_name,
-    std::span<const FullscreenShaderTemplateInput> inputs) {
+// How a role-reading template reads one role: the local it declares, the
+// components it keeps, and what it holds when the pass has no image there.
+struct RoleRead {
+    FullscreenShaderTemplateRole role;
+    std::string_view declaration;
+    std::string_view components;
+    std::string_view fallback;
+};
+
+constexpr std::array deferred_lighting_reads{
+    RoleRead{{"albedo"}, "vec3 albedo", ".rgb", "vec3(0.8)"},
+    RoleRead{{"normal"}, "vec3 normal_encoded", ".rgb", "vec3(0.5, 0.5, 1.0)"},
+    RoleRead{{"material"}, "vec4 material", "", "vec4(0.5, 0.0, 1.0, 0.0)"},
+    RoleRead{{"world position"}, "vec3 world_position", ".rgb", "vec3(0.0)"},
+    RoleRead{{"emissive"}, "vec3 emissive", ".rgb", "vec3(0.0)"},
+    RoleRead{{"ambient occlusion", true}, "float ambient_occlusion", ".r", "1.0"},
+};
+constexpr std::array tone_map_reads{
+    RoleRead{{"scene colour"}, "vec3 scene_color", ".rgb", "vec3(inUV, 0.5)"},
+};
+
+std::span<const RoleRead> roleReads(FullscreenShaderTemplateKind kind) {
+    switch (kind) {
+    case FullscreenShaderTemplateKind::deferred_lighting:
+        return deferred_lighting_reads;
+    case FullscreenShaderTemplateKind::tone_map:
+        return tone_map_reads;
+    case FullscreenShaderTemplateKind::pass_through:
+        break;
+    }
+    return {};
+}
+
+constexpr std::array deferred_lighting_roles{
+    deferred_lighting_reads[0].role, deferred_lighting_reads[1].role,
+    deferred_lighting_reads[2].role, deferred_lighting_reads[3].role,
+    deferred_lighting_reads[4].role, deferred_lighting_reads[5].role,
+};
+constexpr std::array tone_map_roles{tone_map_reads[0].role};
+
+// The declarations of every image input, in list order, and the identifier
+// each declared input got (none for a buffer or an input past the macros).
+struct DeclaredInputs {
+    std::string text;
+    std::vector<std::optional<std::string>> identifiers;
+};
+
+DeclaredInputs declareInputs(
+    std::span<const FullscreenShaderTemplateInput> inputs,
+    std::span<const RoleRead> reads) {
+    DeclaredInputs result;
     std::set<std::string> taken;
-    std::string declarations;
-    std::string body;
-    std::optional<std::size_t> first_image;
     for (std::size_t index = 0; index < inputs.size(); ++index) {
         const auto &input = inputs[index];
         const std::string number = std::to_string(index);
+        result.identifiers.emplace_back();
         if (!input.image) {
-            declarations += "// input " + number + " (" + input.resource +
-                            ") is a buffer: declare it yourself at set "
-                            "PELICAN_SET_PASS_INPUT, binding " +
-                            number + ".\n";
+            result.text += "// input " + number + " (" + input.resource +
+                           ") is a buffer: declare it yourself at set "
+                           "PELICAN_SET_PASS_INPUT, binding " +
+                           number + ".\n";
             continue;
         }
         if (index >= FullscreenShaderTemplateMacroInputs) {
-            declarations += "// input " + number + " (" + input.resource +
-                            "): pelican_view.glsl declares inputs 0-7 only; "
-                            "declare binding " +
-                            number + " yourself.\n";
+            result.text += "// input " + number + " (" + input.resource +
+                           "): pelican_view.glsl declares inputs 0-7 only; "
+                           "declare binding " +
+                           number + " yourself.\n";
             continue;
         }
         const std::string identifier =
             inputIdentifier(input.resource, taken);
-        declarations += "PELICAN_DECLARE_INPUT_" + number + "(" +
-                        identifier + ");  // " + input.resource + "\n";
+        std::string note = input.resource;
+        if (!reads.empty()) {
+            note += index < reads.size()
+                        ? ": " + std::string{reads[index].role.name}
+                        : std::string{": not read below"};
+        }
+        result.text += "PELICAN_DECLARE_INPUT_" + number + "(" + identifier +
+                       ");  // " + note + "\n";
+        result.identifiers.back() = identifier;
+    }
+    return result;
+}
+
+std::string passThroughBody(
+    std::span<const FullscreenShaderTemplateInput> inputs,
+    const DeclaredInputs &declared) {
+    std::string body;
+    std::optional<std::size_t> first_image;
+    for (std::size_t index = 0; index < inputs.size(); ++index) {
+        if (!declared.identifiers[index]) continue;
+        const std::string number = std::to_string(index);
         body += "    vec4 value" + number + " = PELICAN_TEXTURE_2D_" +
-                number + "(" + identifier + ", inUV);\n";
+                number + "(" + *declared.identifiers[index] + ", inUV);\n";
         if (!first_image) first_image = index;
     }
     if (first_image) {
@@ -105,10 +184,106 @@ std::string fullscreenFragmentShaderTemplate(
                 "the pass shows it runs.\n"
                 "    outColor = vec4(inUV, 0.0, 1.0);";
     }
-    std::string text = shippedTemplate();
+    return body;
+}
+
+// One local per role, read from the input at the role's position, or the
+// role's constant when the pass has no image there.
+std::string roleReadsText(std::span<const FullscreenShaderTemplateInput> inputs,
+                          const DeclaredInputs &declared,
+                          std::span<const RoleRead> reads) {
+    std::string text;
+    for (std::size_t index = 0; index < reads.size(); ++index) {
+        const auto &read = reads[index];
+        const std::string number = std::to_string(index);
+        text += "    " + std::string{read.declaration} + " = ";
+        if (index < inputs.size() && declared.identifiers[index]) {
+            text += "PELICAN_TEXTURE_2D_" + number + "(" +
+                    *declared.identifiers[index] + ", inUV)" +
+                    std::string{read.components} + ";\n";
+            continue;
+        }
+        const std::string_view why =
+            index < inputs.size() ? "not an image"
+            : read.role.optional  ? "optional, not in the input list"
+                                  : "not in the input list";
+        text += std::string{read.fallback} + ";  // input " + number + " (" +
+                std::string{read.role.name} + "): " + std::string{why} + "\n";
+    }
+    if (!text.empty()) text.pop_back();
+    return text;
+}
+
+} // namespace
+
+std::string_view fullscreenShaderTemplateKindName(
+    FullscreenShaderTemplateKind kind) {
+    switch (kind) {
+    case FullscreenShaderTemplateKind::deferred_lighting:
+        return "deferred_lighting";
+    case FullscreenShaderTemplateKind::tone_map:
+        return "tone_map";
+    case FullscreenShaderTemplateKind::pass_through:
+        break;
+    }
+    return "pass_through";
+}
+
+std::optional<FullscreenShaderTemplateKind>
+fullscreenShaderTemplateKindFromName(std::string_view name) {
+    for (const auto kind : FullscreenShaderTemplateKinds)
+        if (fullscreenShaderTemplateKindName(kind) == name) return kind;
+    return std::nullopt;
+}
+
+std::string_view fullscreenShaderTemplateKindLabel(
+    FullscreenShaderTemplateKind kind) {
+    switch (kind) {
+    case FullscreenShaderTemplateKind::deferred_lighting:
+        return "Deferred lighting";
+    case FullscreenShaderTemplateKind::tone_map:
+        return "Tone map";
+    case FullscreenShaderTemplateKind::pass_through:
+        break;
+    }
+    return "Pass-through";
+}
+
+std::span<const FullscreenShaderTemplateRole> fullscreenShaderTemplateInputRoles(
+    FullscreenShaderTemplateKind kind) {
+    switch (kind) {
+    case FullscreenShaderTemplateKind::deferred_lighting:
+        return deferred_lighting_roles;
+    case FullscreenShaderTemplateKind::tone_map:
+        return tone_map_roles;
+    case FullscreenShaderTemplateKind::pass_through:
+        break;
+    }
+    return {};
+}
+
+FullscreenShaderTemplatePassSettings fullscreenShaderTemplatePassSettings(
+    FullscreenShaderTemplateKind kind) {
+    if (kind == FullscreenShaderTemplateKind::deferred_lighting)
+        return {.uses_light_data = true, .push_constants = "camera_position"};
+    return {};
+}
+
+std::string fullscreenFragmentShaderTemplate(
+    std::string_view pass_name,
+    std::span<const FullscreenShaderTemplateInput> inputs,
+    FullscreenShaderTemplateKind kind) {
+    const auto reads = roleReads(kind);
+    const auto declared = declareInputs(inputs, reads);
+    std::string text = shippedTemplate(kind);
     replaceAll(text, "@PASS_NAME@", pass_name);
-    replaceAll(text, "@INPUT_DECLARATIONS@", declarations);
-    replaceAll(text, "@MAIN_BODY@", body);
+    replaceAll(text, "@INPUT_DECLARATIONS@", declared.text);
+    if (kind == FullscreenShaderTemplateKind::pass_through) {
+        replaceAll(text, "@MAIN_BODY@", passThroughBody(inputs, declared));
+    } else {
+        replaceAll(text, "@INPUT_READS@",
+                   roleReadsText(inputs, declared, reads));
+    }
     return text;
 }
 
