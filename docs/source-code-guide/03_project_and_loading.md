@@ -39,8 +39,8 @@ Runtime object
 
 [`ProjectEnvelope`](../../src/project/projectformat.hpp#L14) が持つのは `name` / `engine_min_version` / `requirements` / `basic_config` / `asset_stores` / `prefabs` の6つです。このうち `requirements` は P-2b で入った **`requires`** キーで（`requires` はC++のキーワードなのでフィールド名だけずらしてあります）、「このプロジェクトが無いと動かないビルド機能」を宣言します。
 
-- 語彙は [`knownProjectRequirements()`](../../src/project/projectformat.hpp#L51) の1箇所だけが持ち、現在は **`animation` の1語**です（`PELICAN_WITH_ANIMATION` のregistry名と同じ綴り）。知らない名前は黙って無視せず `project.requires_unknown@1` で拒否します（[`parseProjectRequirements()`](../../src/project/projectformat.cpp#L118)）。
-- このビルドが満たせない要求を書いたプロジェクトは、封筒のパースの時点で `animation.module_unavailable@1` を投げて止まります（[検査](../../src/project/projectformat.cpp#L189)）。ノードを1つずつ辿って「そんなopは知らない」と言われるより前に、名前で答えるためです。
+- 語彙は [`knownProjectRequirements()`](../../src/project/projectformat.hpp#L51) が返す表だけが持ち、現在は **`animation` / `audio` / `physics` / `xr` / `vat` / `seqplayer` の6語**です（PG-1。各語が `PELICAN_WITH_ANIMATION` / `_AUDIO` / `_PHYSICS` / `_OPENXR` / `_VAT` / `_SEQPLAYER` の1つを指す）。表の行は `src/project/projectrequirements.def` で、同じ行をCMake側のコーパス選別（`cmake/pelican_project_requirements.cmake`）、component codecの `required_feature`、package の `requires.capabilities` の検査も読みます。知らない名前は黙って無視せず `project.requires_unknown@1` で拒否します（[`parseProjectRequirements()`](../../src/project/projectformat.cpp#L118)）。
+- このビルドが満たせない要求を書いたプロジェクトは、封筒のパースの時点で `<語>.module_unavailable@1`（例: `animation.module_unavailable@1`）を投げて止まります（[検査](../../src/project/projectformat.cpp#L189)）。ノードを1つずつ辿って「そんなopは知らない」と言われるより前に、名前で答えるためです。
 - 失敗させずに「このビルドでは開けない」だけ知りたい呼び手（`projects/` を舐めるテスト等）のために、[`unsatisfiedProjectRequirement()`](../../src/project/projectformat.hpp#L72) が最初の未充足要求を返す形も用意されています。
 
 もう一つ、X-1で `project.json` に増えた **`packages`** キーは `ProjectEnvelope` には入りません。読むのは [`readInstalledPackagesJson()`](../../src/project/packagemanifest.hpp#L103) で、1エントリは `{namespace, package_version, sha256}` の [`InstalledPackage`](../../src/project/packagemanifest.hpp#L70) です（§3.16）。封筒のパーサとvendoringの台帳を別の関数に分けてあるので、package を知らない読み手は `packages` を素通りできます。
@@ -242,7 +242,7 @@ sceneは実装を追う価値の高い、純粋層とruntime層の典型です�
 [`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L290) はcomponentを四系統へ分けます。
 
 - `light`: ECSへ入れず`LightLoadEntry`へ
-- `collider`: `ColliderComponent`として検証し、後で`PhysWorld`へ。`PELICAN_WITH_PHYSICS` OFFのビルドでは、colliderを含むsceneは明示エラーです（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L151)）
+- `collider`: `ColliderComponent`として検証し、後で`PhysWorld`へ。`PELICAN_WITH_PHYSICS` OFFのビルドでは、colliderを含むsceneはprepareで `physics.module_unavailable@1` です（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L73)）。判定は codec の `required_feature`（collider は `physics`）を見る [`resolvedObjectFeatureRefusal()`](../../src/core/loader/resolvedscene.cpp#L78) で、animation と同じ検査を editor の `add_component` / `spawn` も通ります（PG-1。以前の散文の `BuildFeatureDisabledError` は scene 側から消えました）
 - `behavior`: ECSへ入れず、[`BehaviorAttachmentArena`](../../src/core/gamelogic/behaviorarena.hpp#L176) へ（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L367) で特別扱い）
 - その他: `ComponentInfoManager`で文字列名から`ComponentId`へ
 
@@ -1199,6 +1199,7 @@ manifest が持つのは名前空間と版、必要なengine / SDK、依存、�
 - feature 文書は vendor されると `<namespace>.<元の名前>` という名前を持ちます（[`qualifiedPackageFeatureName()`](../../src/project/packagemanifest.hpp#L93)）。名前を比較する箇所は全部「文書自身の `name`」を読むので、名前空間はカタログではなく文書の中に居る必要があります。
 - [`uninstallPackage()`](../../src/project/packagemanifest.hpp#L133) は、まだ参照が残っていれば `package_in_use` で何も消しません。誰が掴んでいるかは [`PackageError::names()`](../../src/project/packagemanifest.hpp#L37) が列挙します。
 - `requires.sdk_abi` は install 時に `PELICAN_GAME_LOGIC_ABI_VERSION` と突き合わせます（[`packageSdkAbiVersion()`](../../src/project/packagemanifest.hpp#L79)）。ただし**本当のgateはこれではなく**、DLLをロードするときにloaderが解決するepoch anchorです（[第1章 §1.2](01_architecture_and_build.md)）。manifestの数値は「早く気付くための印」で、強制ではありません。
+- `requires.capabilities` は project の `requires` と同じ6語の語彙で検査します（[capabilities の検査](../../src/project/packagemanifest.cpp#L635)、PG-1）。まず全要素が既知語かを見て、知らない語は `package.capability_unknown@1`（既知の一覧付き）、次にこのビルドがOFFにした語を `<語>.module_unavailable@1` で拒否します。どちらもコピーの前です。
 
 コードを持つ package のビルド（`pelican_package_sources()` / `pelican_packages()` と転送ヘッダSDK）は[第1章 §1.2](01_architecture_and_build.md)です。
 

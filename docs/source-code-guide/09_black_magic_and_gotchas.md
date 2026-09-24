@@ -479,7 +479,7 @@ scene の `components` 配列に見えても runtime binding は一様ではあ�
 |---|---|
 | `transform`, `simplemodelview`, `camera` | ComponentInfo 経由で ECS chunk へ作成 |
 | `light` | ECS へ入れず `LightLoadEntry` として `LightContainer::prepareLoad()` → `publishPrepared()`(scene load は 2 段を直接使い、`load()` は通らない) |
-| `collider` | ECS へ入れず `ColliderComponent` を parse し `PhysWorld::prepareSceneBindings()` → `publishPrepared()`。`PELICAN_WITH_PHYSICS` OFF の build では collider を含む scene は明示エラー([`throwBuildFeatureDisabled()`](../../src/core/loader/scene.cpp#L151)) |
+| `collider` | ECS へ入れず `ColliderComponent` を parse し `PhysWorld::prepareSceneBindings()` → `publishPrepared()`。`PELICAN_WITH_PHYSICS` OFF の build では collider を含む scene は prepare で `physics.module_unavailable@1`([`resolvedObjectFeatureRefusal()`](../../src/core/loader/resolvedscene.cpp#L78)。codec の `required_feature` を見る共有の検査で、editor の `add_component` / `spawn` も同じ関数を通る。PG-1) |
 | `behavior` | ECS へ入れず [`prepareSceneBehaviorAttachments()`](../../src/core/gamelogic/behaviorarena.cpp#L82) 経由で `BehaviorAttachmentArena` へ([`component_name == "behavior"`](../../src/core/loader/scene.cpp#L367))。`type` は非空文字列必須。game DLL 未ロードなら **pending** 扱いで警告のみ |
 
 `ColliderComponent` に `init/deinit` があっても、現在の scene loader は special case です。`ECSCoreTemplatePublic::tryComponent<ColliderComponent>()` で取れる通常 ECS component だとは考えないでください。behavior も同様で、ECS の component として問い合わせても見つかりません。

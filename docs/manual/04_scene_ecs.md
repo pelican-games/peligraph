@@ -203,7 +203,7 @@ CameraComponent 自体は**マーカー**です。マーカーコンポーネン
 | `layer` / `mask` | 任意 uint32(既定 `1` / `0xffffffff`)。query と reciprocal に一致した collider だけ対象 |
 | `trigger` / `one_way` | 任意 bool(既定 false)。query metadata。イベント/方向 policy 自体は別層 |
 
-旧名 `size` / `height` は半分値の新名を案内する hard error です。オブジェクトに `transform` があれば移動に追従します。クエリ(raycast / overlap / shapeCast)は [第8章](08_gameplay.md) を参照してください。なお `PELICAN_WITH_PHYSICS=OFF` ビルドでは collider を含むシーンは名指しエラーになります(パージ可能境界)。
+旧名 `size` / `height` は半分値の新名を案内する hard error です。オブジェクトに `transform` があれば移動に追従します。クエリ(raycast / overlap / shapeCast)は [第8章](08_gameplay.md) を参照してください。なお `PELICAN_WITH_PHYSICS=OFF` ビルドでは collider を含むシーンはロードの prepare 段で `physics.module_unavailable@1` になります(パージ可能境界。§4.3。✅PG-1)。
 
 ### animation(✅WP38)— スケルタルクリップ再生
 
@@ -354,7 +354,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 2〜9 の 8 段が [SceneLoadPhase](../../src/core/loader/sceneload.hpp#L27) の 8 値(`prepare` / `early_publish` / `publish` / `activate` / `commit_metadata` / `retire` / `flush` / `finish`)にそのまま対応します(1 は executor に入る前の解釈レイヤなので phase ではありません)。ロード結果に付く phase trace は内部の順序検証(と fault injection)のためのもので、rpc には出ていません。
 
-> **ビルドから外した機能を要求するシーンは prepare で止まります(✅AG-1b)。** `PELICAN_WITH_ANIMATION=OFF` のビルドで `animation` コンポーネントを含むシーンをロードすると、**2 の prepare 段**で `animation.module_unavailable@1`(オブジェクト名入り)になります([scene.cpp:74](../../src/core/loader/scene.cpp#L75))。commit 前なので**ロールバックの契約に乗り**、稼働中の旧シーンはそのまま残ります —— 「読めたが誰も評価しないので rest pose のまま動かない」という状態を作りません。コンポーネントの **codec は OFF でも残る**ので、ツールは同じビルドでシーンを読み書きできます(読めることと動かせることを分けています)。
+> **ビルドから外した機能を要求するシーンは prepare で止まります(✅AG-1b / ✅PG-1)。** `PELICAN_WITH_ANIMATION=OFF` のビルドで `animation` コンポーネントを含むシーンをロードすると、**2 の prepare 段**で `animation.module_unavailable@1`(オブジェクト名入り)になります。`PELICAN_WITH_PHYSICS=OFF` のビルドの `collider` も同じ形で `physics.module_unavailable@1` です。どのコンポーネントがどの機能を要るかは codec の `required_feature` が持ち、判定は [`resolvedObjectFeatureRefusal()`](../../src/core/loader/resolvedscene.cpp#L78) の 1 か所です。エディタの `add_component` / `spawn` も同じ関数を呼ぶので、ロードで拒否されるものは編集でも同じ名前で拒否されます。commit 前なので**ロールバックの契約に乗り**、稼働中の旧シーンはそのまま残ります —— 「読めたが誰も評価しないので rest pose のまま動かない」という状態を作りません。コンポーネントの **codec は OFF でも残る**ので、ツールは同じビルドでシーンを読み書きできます(読めることと動かせることを分けています)。
 
 ### ロード中の「作用」はトランザクションに溜まる(✅WP380b〜e)
 
@@ -499,6 +499,7 @@ DECLARE_COMPONENT(MyComponent, 61);   // 0..63 の空き番号(エンジンは 0
 | `field 'animation' requires exactly one of clip or graph` | `animation` に `clip` と `graph` を両方書いた / どちらも書かなかった(§4.2) |
 | `field 'animation.<鍵>' is clip-only; graph states define their playback clocks` | `graph` 装着に `speed` / `loop` / `start_time` を書いた。`<鍵>` は書いた鍵そのもの(§4.2) |
 | `animation.module_unavailable@1` | `PELICAN_WITH_ANIMATION=OFF` のビルドで、`animation` コンポーネントを含むシーンをロードした(§4.3)/ `requires: ["animation"]` のプロジェクトを開いた([第3章 §3.2](03_project_format.md)) |
+| `physics.module_unavailable@1` | `PELICAN_WITH_PHYSICS=OFF` のビルドで、`collider` コンポーネントを含むシーンをロードした(§4.3)/ `requires: ["physics"]` のプロジェクトを開いた([第3章 §3.2](03_project_format.md))。他の語(`audio` / `xr` / `vat` / `seqplayer`)も `requires` では同じ形の名前になります |
 | `project.requires_unknown@1` | `project.json` の `requires` に、このエンジンが知らない名前を書いた(既知の一覧がメッセージに付きます — [第3章 §3.2](03_project_format.md)) |
 | `pose.sink_conflict@1{owner, first, second}` | 同じオブジェクトに姿勢の writer が 2 つある(animation コンポーネント + `pose.skeletal`、または sink 2 本。§4.2) |
 | `pose.root_motion_no_transform@1{owner, node, object}` | `root_motion: "extract"` の装着先に `localtransform` が無い(§4.2 の localtransform) |

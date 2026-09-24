@@ -1,6 +1,6 @@
 # 第3章 プロジェクト形式
 
-対象: pelican2(HEAD=`82054c05`・2026-09-17。2026-07-21 に全域再確認、2026-09-04 に §3.7 の「エンジン先行」段落と §3.10(宣言スキーマ v3)を追記、2026-09-17 に §3.2 の `requires` と §3.12(共有部品)を追記)/ このマニュアルはコードを正とする
+対象: pelican2(HEAD=`82054c05`・2026-09-17。2026-07-21 に全域再確認、2026-09-04 に §3.7 の「エンジン先行」段落と §3.10(宣言スキーマ v3)を追記、2026-09-17 に §3.2 の `requires` と §3.12(共有部品)を追記、2026-09-24 に §3.2 の `requires` の語彙と §3.11 の `requires.capabilities` を PG-1(`533d8d6c`)に合わせて更新)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -92,7 +92,7 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
 | `name` | 実装上は任意 | `user://` スキームの project_id になる。無いと `user://` が使えない ※設計文書 [PF] §4 では必須と規定されているが、現行実装は検証しない |
 | `generator` | 任意 | パーサは読まない(生成元の記録用メタデータ) |
 | `engine_min_version` | 任意 | `"X.Y.Z"`。エンジン現行版(`0.1.0`)より新しければ起動拒否。`--ignore-engine-version` で WARN に降格可 |
-| `requires` | 任意 | **このプロジェクトが動くために必要なビルド機能ユニットの名前の配列**(下記「機能ユニットの要求」)。語彙は現在 `["animation"]` の 1 語だけ。未知の名前は `project.requires_unknown@1`、OFF ビルドで開くと `animation.module_unavailable@1` |
+| `requires` | 任意 | **このプロジェクトが動くために必要なビルド機能ユニットの名前の配列**(下記「機能ユニットの要求」)。語彙は `animation` / `audio` / `physics` / `xr` / `vat` / `seqplayer` の 6 語(✅PG-1)。未知の名前は `project.requires_unknown@1`、その機能を OFF にしたビルドで開くと `<語>.module_unavailable@1`(例: `animation.module_unavailable@1`) |
 | `basic_config` | 任意 | 省略したキーは既定値で埋まる(次節) |
 | `asset_stores` | 任意 | asset store 宣言(§3.4) |
 | `packages` | 任意 | install 済み package の記録 `{namespace, package_version, sha256}` の配列(§3.11)。`pelican_cli package install` が書く |
@@ -106,23 +106,37 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
   "requires": ["animation"] }
 ```
 
+語彙は次の 6 語です(✅PG-1 で `animation` 以外の 5 語が入りました)。行の正本は `src/project/projectrequirements.def` の 1 ファイルで、C++ 側の表・CMake 側のコーパス選別・コンポーネントの `required_feature`・package の `requires.capabilities` の検査が同じ行を読みます。
+
+| 語 | 指すビルドオプション | そのオプションを OFF にしたビルドで開くと |
+|---|---|---|
+| `animation` | `PELICAN_WITH_ANIMATION` | `animation.module_unavailable@1` |
+| `audio` | `PELICAN_WITH_AUDIO` | `audio.module_unavailable@1` |
+| `physics` | `PELICAN_WITH_PHYSICS`(物理クエリサービスと collider world) | `physics.module_unavailable@1` |
+| `xr` | `PELICAN_WITH_OPENXR` | `xr.module_unavailable@1` |
+| `vat` | `PELICAN_WITH_VAT` | `vat.module_unavailable@1` |
+| `seqplayer` | `PELICAN_WITH_SEQPLAYER` | `seqplayer.module_unavailable@1` |
+
+物理 provider の選択(`PELICAN_WITH_BUILTIN_PHYSICS` / `PELICAN_WITH_JOLT_PHYSICS`)は語彙にありません。`physics` が指すのはクエリサービスの有無だけです。
+
 読み方と規則:
 
 | 事項 | 中身 |
 |---|---|
-| 語彙 | **ビルド機能ユニットのレジストリに載っている名前**です。`animation` は `PELICAN_WITH_ANIMATION` を指します([第2章 §2.2](02_getting_started.md))。今日の表は 1 行だけ([projectformat.cpp:80](../../src/project/projectformat.cpp#L80))で、`knownProjectRequirements()` がその一覧を返します |
+| 語彙 | **ビルド機能ユニットのレジストリに載っている名前**です。各語が指すオプションは上の表のとおりです([第2章 §2.2](02_getting_started.md))。今日の表は 6 行([projectformat.cpp:80](../../src/project/projectformat.cpp#L80) が `.def` を展開)で、`knownProjectRequirements()` がその一覧を返します |
 | 検証の時 | **parse 時**。[parseProjectRequirements()](../../src/project/projectformat.cpp#L118)が配列であること・非空文字列であること・表にある名前であることを見ます |
-| 未知の名前 | `project.requires_unknown@1: project.json requires 'physics', which this engine does not know; known requirements: animation` —— **既知の一覧を添えて**拒否します |
-| 満たせないビルド | 名前は新設せず、そのユニットが既に使っている `animation.module_unavailable@1` を出します([projectformat.cpp:181](../../src/project/projectformat.cpp#L189))。`pelican_player` はこれを捕まえて 1 行表示して exit 1 します |
-| コーパス側 | **プロジェクト群を舐めるテスト・スモークも同じ値を読みます**。満たせない要求を持つプロジェクトは失敗ではなく**名前付きの skip**(`skip posegraph_demo: requires animation (PELICAN_WITH_ANIMATION=OFF)`)になります。OFF build では宣言した 3 つ分の行と、必要なら `skip editor lane: …`、最後に件数の要約が出ます([第2章 §2.2](02_getting_started.md)) |
-| 出荷での宣言 | `animgraph_demo` / `vrm_xr_demo` / `posegraph_demo` の 3 つ |
+| 未知の名前 | `project.requires_unknown@1: project.json requires 'network', which this engine does not know; known requirements: animation, audio, physics, xr, vat, seqplayer` —— **既知の一覧を添えて**拒否します(一覧の順は `.def` の行の順) |
+| 満たせないビルド | 名前は新設せず、その語の `<語>.module_unavailable@1` を出します([projectformat.cpp:181](../../src/project/projectformat.cpp#L189))。例: `physics.module_unavailable@1: this build has PELICAN_WITH_PHYSICS=OFF, so project.json's requires: ["physics"] cannot be satisfied`。全要素が既知語かを先に確かめてから、最初に満たせない語を報告します。`pelican_player` はこれを捕まえて 1 行表示して exit 1 します |
+| コーパス側 | **プロジェクト群を舐めるテスト・スモークも同じ値を読みます**。満たせない要求を持つプロジェクトは失敗ではなく**名前付きの skip**(`skip posegraph_demo: requires animation (PELICAN_WITH_ANIMATION=OFF)`)になります。`PELICAN_WITH_ANIMATION=OFF` build では `animation` を宣言した 3 つ分の行と、必要なら `skip editor lane: …`、最後に件数の要約が出ます([第2章 §2.2](02_getting_started.md))。`PELICAN_WITH_PHYSICS=OFF` build では `sprite_demo` が同じ形で飛ばされます |
+| 宣言しなくても止まるもの | `requires` はプロジェクトを開く時点の前倒しです。宣言が無くても、機能を外したビルドでその機能のコンポーネントを持つオブジェクトは、シーンロードの prepare と、エディタの `add_component` / `spawn` で同じ `<語>.module_unavailable@1` になります(今日対応付けがあるのは `collider` → `physics`、`animation` → `animation`。[第4章 §4.3](04_scene_ecs.md)) |
+| 出荷での宣言 | `animation`: `animgraph_demo` / `vrm_xr_demo` / `posegraph_demo`。`physics`: `sprite_demo`(PG-1)。`audio` / `xr` / `vat` / `seqplayer` を宣言した出荷プロジェクトはまだありません |
 
 > **3 つの `requires` は別物です(混同注意):**
 > 1. **project.json の `requires`**(この節)= **ビルド機能ユニット**の名前の配列。
-> 2. **package manifest の `requires`**(§3.11)= `{engine_min_version, sdk_abi, capabilities}` という object。エンジン版と SDK エポックの要求で、機能ユニットの名前ではありません。
+> 2. **package manifest の `requires`**(§3.11)= `{engine_min_version, sdk_abi, capabilities}` という object。エンジン版と SDK エポックの要求です。ただし中の `capabilities` だけは、project.json の `requires` と**同じ 6 語の語彙**で install 時に検査されます(✅PG-1)。
 > 3. **feature 文書の `integrations[].requires`**([第6章](06_rendering.md))= その統合を適用する条件としての**他の feature の名前**。
 >
-> 綴りが同じだけで、語彙も検証者も別です。
+> 綴りが同じだけで、形も検証者も別です(語彙を共有するのは 1 と、2 の中の `capabilities` だけ)。
 
 ### basic_config と「3 段合成」
 
@@ -477,7 +491,7 @@ struct CarrierParams {
 | `description` | 任意 | 文字列 |
 | `requires.engine_min_version` | **必須** | `"X.Y.Z"`。`project.json` と同じ規則で比較する([projectformat.cpp](../../src/project/projectformat.cpp) の `compareProjectVersions`) |
 | `requires.sdk_abi` | code を持つときのみ**必須** | 整数。engine の `PELICAN_GAME_LOGIC_ABI_VERSION`(現在 **2**)と一致しなければ install で拒否 |
-| `requires.capabilities` | 任意 | 文字列配列(記録のみ。GPU capability の強制は feature 側の `required_capabilities`) |
+| `requires.capabilities` | 任意 | 文字列配列。§3.2 の `requires` と同じ 6 語の語彙で install 時に検査します(✅PG-1)。知らない語は `package.capability_unknown@1`、このビルドが OFF にした機能の語は `<語>.module_unavailable@1`。GPU capability の強制はここではなく feature 側の `required_capabilities` |
 | `dependencies` | 任意 | `{namespace, package_version}` の配列。install 時に「その namespace が install 済みか」だけを見る |
 | `provides.features` / `graphs` / `components` | 任意 | package 内の**相対パス**。`..`・絶対・`\`・スキーム付きは名前付き拒否 |
 | `provides.code` | 任意 | `true` なら `code/CMakeLists.txt` を持つ |
@@ -504,6 +518,8 @@ pelican_cli package inspect <package dir>
 | `package_path_invalid` | `provides` のパスが相対でない / `..` を含む / スキーム付き |
 | `package_engine_too_new` | `requires.engine_min_version` が engine より新しい |
 | `package_sdk_abi_mismatch` | `requires.sdk_abi` が engine の SDK epoch と違う |
+| `package.capability_unknown@1` | `requires.capabilities` に §3.2 の語彙に無い語がある(既知の一覧をメッセージに添える。✅PG-1) |
+| `<語>.module_unavailable@1` | `requires.capabilities` の語が、このビルドで OFF の機能を指す(例: `PELICAN_WITH_AUDIO=OFF` で `audio`。未知語の検査を全要素について済ませてから出す。✅PG-1) |
 | `package_dependency_missing` | `dependencies` の namespace が未 install(列挙する) |
 | `package_feature_invalid` | `provides.features` の文書が `pelican.render_feature` v1 でない / `name` が無い / `name` が識別子でない / 名前が package 内で重複 |
 | `package_already_installed` | 同じ namespace がもう入っている |

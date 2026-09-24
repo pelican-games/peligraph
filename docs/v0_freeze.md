@@ -64,8 +64,10 @@ stdio JSON-RPC の枠組み(`jsonrpc` / `id` / `method` / `params`、名前付�
 
 ### 1.3 共通グラフ: module / op / 型 / sink
 
-登録 module は 4 本(`pelican.value` / `pelican.audio` / `pelican.render` / `pelican.pose`)で、いずれも module version 1。
-下の表は **`PELICAN_WITH_ANIMATION=ON` build の `pelican_cli graph-catalog` の出力**を展開したもの(op 27 本)。
+登録 module は最大 4 本(`pelican.value` / `pelican.audio` / `pelican.render` / `pelican.pose`)で、いずれも module version 1。
+`pelican.value` と `pelican.render` は常に登録され、`pelican.audio` は `PELICAN_WITH_AUDIO=ON`、`pelican.pose` は `PELICAN_WITH_ANIMATION=ON` の build でだけ登録される
+(`pelican.audio` の条件付き登録は PG-1 `533d8d6c` から。登録の `#if` は `src/project/graphmodule.cpp`)。
+下の表は **`PELICAN_WITH_ANIMATION=ON` かつ `PELICAN_WITH_AUDIO=ON` build の `pelican_cli graph-catalog` の出力**を展開したもの(4 module / op 27 本)。
 `change` は parameter を変えたときの既定の扱い(`value` = 値だけ / `rebuild` = 作り直し)、
 `ports: parameter_dependent` の op は port 一覧を宣言せず node 自身の `inputs` / `outputs` から決まる。
 `?` の付いた入力は任意。
@@ -75,6 +77,12 @@ catalog は 3 module / 21 op になり、下表の `pose.*` 6 本(`pose.blend` /
 `pose.retarget` / `pose.skeletal` / `pose.state_machine` / `pose.transform`)だけが消える。
 この関係は `test/run_devcli_graph_catalog.cmake` が「この表の op 集合 == ON の catalog、⊇ OFF の catalog」として検査する
 (表の範囲は下の 2 つのコメント行で区切る。行を足すときは ON の catalog に載る op だけ)。
+
+**`PELICAN_WITH_AUDIO=OFF` build では `pelican.audio` module が無い**。下表の `audio.*` 3 本(`audio.pitch` / `audio.playback` / `audio.volume`)が消え、
+catalog は 3 module / 24 op(animation も OFF なら 2 module / 18 op)になる。`audio.*` を書いた文書は `graph.operation_unregistered@1`。
+`event.playback` とその出力型 `pelican.event.playback_control@1` は `pelican.value` に属するので残る(PG-1 で型を `pelican.value` へ移した)。
+同じ test は `WITH_AUDIO` を受け取って `pelican.audio` と `audio.*` の有無を確かめるが、module 数の期待値(3、animation ON なら 4)と
+この表との照合は `pelican.audio` がある前提のままで、AUDIO=OFF build でこの test が通るかは未確認。
 
 <!-- graph-op-table:begin -->
 | op | module | domain | evaluation | change | sink | ports | inputs | outputs |
@@ -108,14 +116,15 @@ catalog は 3 module / 21 op になり、下表の `pose.*` 6 本(`pose.blend` /
 | `value.trigger_clock` | pelican.value | values | replay | value | — | declared | `paused`?, `reset`?, `time`, `trigger` | `value`: pelican.value.scalar@1 |
 <!-- graph-op-table:end -->
 
-登録されている型(semantic)は 11: `pelican.value.scalar@1` / `pelican.audio.voice@1` /
-`pelican.event.playback_control@1` / `pelican.render.*` 6 種(`storage_buffer` / `attribute` /
-`color_signal` / `depth` / `legacy_opaque_image` / `legacy_opaque_resource`) /
-`pelican.pose@1` / `pelican.rig@1`。値・姿勢・音の port を流れるのは前の 4 つで、
+catalog に module の型として載る型(semantic)は ON build で 11: `pelican.value` の `pelican.value.scalar@1` / `pelican.event.playback_control@1`、
+`pelican.audio` の `pelican.audio.voice@1`、`pelican.render` の `pelican.render.*` 6 種(`storage_buffer` / `attribute` /
+`color_signal` / `depth` / `legacy_opaque_image` / `legacy_opaque_resource`)、
+`pelican.pose` の `pelican.pose@1` / `pelican.rig@1`。AUDIO=OFF では `pelican.audio.voice@1` が、ANIMATION=OFF では pose の 2 つが catalog から消える
+(`pelican.audio.voice@1` は内部の組み込み型表 `makeBuiltinLogicalTypeRegistry()` には OFF でも残る)。値・姿勢・音の port を流れるのは render 6 種と rig を除く 4 つ(scalar / playback_control / voice / pose)で、
 `render.*` の op は解決時に `pelican.render.*` を自分の port に載せる(上表の parameter_dependent)。
 `pelican.rig@1` は登録だけで、どの port にも現れない(node の `parameters.rig` が指す同一性)。
 `pelican.pose@1` は **handle と layout 世代**が流れるのであって bytes ではない。
-sink は 5 本(`audio.pitch` / `audio.volume` / `render.scalar` / `pose.skeletal` / `pose.transform`)で、
+sink は ON build で 5 本(`audio.pitch` / `audio.volume` / `render.scalar` / `pose.skeletal` / `pose.transform`。OFF にした module の sink はその分減る)で、
 pose の sink は **owner 単位の単一 writer**(二重 writer は `pose.sink_conflict@1`)。
 
 ### 1.4 ABI と版
