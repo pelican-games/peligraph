@@ -61,7 +61,7 @@ dialog の Creates 欄にその path が出ます。雛形は **Standard 3D scen
   (`project init target directory is not empty: <path>`)を dialog の下に出し、何も書きません。
   名前が空・`/` や `\` を含む・`.` / `..` の場合も dialog の中で断ります。
 - **書いた project は Open Project と同じ経路で開きます**
-  ([接続](../../src/devstudio/view/mainwindow.cpp#L693))。シーンに未保存の編集があれば上の
+  ([接続](../../src/devstudio/view/mainwindow.cpp#L702))。シーンに未保存の編集があれば上の
   Save / Discard / Cancel が出ます。ただし雛形は**確認より前にディスクへ書かれている**ので、Cancel しても
   作ったフォルダは残ります(開かないだけです)。
 - **Browse...** は OS のフォルダ選択(modal の `QFileDialog`)です。自動化面からは操作できないので、
@@ -572,7 +572,7 @@ Inspector の導線(次節)は専用の RPC を持たず、**普通の `ops` を
 ### Studio のノードキャンバス(Graph タブ)
 
 **置き場所**: `View > Panels > Frame Plan` の dock(`pelican.framePlanDock`)にある 3 枚目のタブ「Graph」です
-([タブの追加](../../src/devstudio/view/mainwindow.cpp#L269))。dock は増えていません。起動時から開いておきたい場合は
+([タブの追加](../../src/devstudio/view/mainwindow.cpp#L274))。dock は増えていません。起動時から開いておきたい場合は
 `pelican_studio --project <dir> --tab graph`([第10章](10_tools.md) §10.7)。
 
 **上段の操作列**(左から): `Scope:` のコンボ(`root` と definition 名)、その右のパンくず、右端に
@@ -645,7 +645,7 @@ Logical graph も同じ view** です。**まだ見ていない scope は自動�
 キーボードを持ちます。[条件](../../src/devstudio/view/nodegraphics.cpp#L717))。
 
 **テーマはライトとダークの 2 つです(✅N-5)。**切り替えは **View ▸ Theme ▸ Light / Dark**
-([メニューの構築](../../src/devstudio/view/mainwindow.cpp#L487))で、**再起動は要りません** —— 選んだ名前は
+([メニューの構築](../../src/devstudio/view/mainwindow.cpp#L496))で、**再起動は要りません** —— 選んだ名前は
 QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L26) に残り、次に開いた窓は
 そのテーマで始まります。追随するのは **Graph タブと Frame Plan の両方のキャンバス**で、背景・grid・辺・
 ノードの body と縁・見出しの字・値の帯の色をテーマの表から引き直して描き直します。**ソケットの型別の色だけは
@@ -663,7 +663,7 @@ QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L26) に
 宣言し preset を選ばない(`config_kind` が `direct`)とき、engine の `edit_preset_pass` は fork された preset が無いので断ります。
 そのため Pass Editor はその pass(例: `present`)を開くと保存できない draft を読み込まず、notice 行に
 「`<pass>`: not editable in a direct root」と出し、tooltip に root の参照と「Edit that file by hand.」を出します
-([direct root の Pass Editor の拒否](../../src/devstudio/view/fullscreenpasswidget.cpp#L1808))。canvas の drag や帯の編集も
+([direct root の Pass Editor の拒否](../../src/devstudio/view/fullscreenpasswidget.cpp#L1811))。canvas の drag や帯の編集も
 同じ文で断り、engine が足した pass には「is added by the engine; it has no declaration in the project to edit.」と言います。
 どちらも fork は勧めません([direct root の canvas の拒否](../../src/devstudio/view/frameplanedit.cpp#L124))。今は root の文書を
 手で直してください。**この制限は F-6(direct root の pass の編集、着手中)で無くなる予定です。**
@@ -698,12 +698,12 @@ Open はそのファイルを使って開きます([書き込み](../../src/devs
 ある)と、form の下の折りたためる欄(`pelican.fullscreenPass.compileLog`)に log 全文が等幅で出ます。行番号が付き、
 log が名指す `file:line` は強調されます。notice 行は「shader compile failed; see the log below」だけで、**form に打った
 値はそのまま残る**ので、shader を直してもう一度 Save できます。成功すると欄は消えます
-([経路](../../src/devstudio/view/fullscreenpasswidget.cpp#L907))。canvas の帯で直接 stem を変えて compile で断られた
+([経路](../../src/devstudio/view/fullscreenpasswidget.cpp#L910))。canvas の帯で直接 stem を変えて compile で断られた
 ときは、今も status の 1 行だけです。
 
 **shader の reload 失敗の印と、今の Studio で出ない理由(F-3)**: Frame Plan は描いている node の shader file を監視し、
 **書かれたときだけ** engine の `get_status` を読みます(少し待って 1 回、以後 reading が動くまで最大 16 回。定期の
-timer は無いので、Q-2 の何もしない間の RPC は増えません。[回数の上限](../../src/devstudio/view/shaderreloadfollower.hpp#L40))。
+timer は無いので、Q-2 の何もしない間の RPC は増えません。[回数の上限](../../src/devstudio/view/shaderreloadfollower.hpp#L73))。
 `reload.runtime["pelican.shaders"].last_error` の path がある node の shader に当たれば、その node の見出しの右上に
 赤い印(`node_shader_error#<pass>`、tooltip に log の先頭行)を描き、当たらない失敗は Frame Plan の status 行に 1 行出します。
 **ただし Studio の下では印は出ません。**Studio は engine を `--rpc` で起こし、その reload gate は `rpc driver` を理由に
@@ -743,20 +743,20 @@ timer は無いので、Q-2 の何もしない間の RPC は増えません。[�
 チャネルは**逐次**で、命令の実行中に次の行が来たら `automation.busy@1` で断ります
 ([判定](../../src/devstudio/automation/automationserver.cpp#L102))。認証はありません(flag を付けたときだけ開く口です)。
 
-**命令は 20 個**です([一覧](../../src/devstudio/automation/automationcommands.cpp#L1711)):
+**命令は 20 個**です([一覧](../../src/devstudio/automation/automationcommands.cpp#L1802)):
 `list` / `click` / `double_click` / `drag` / `wheel` / `move` / `press` / `release` / `key` / `type` / `text` /
 `action` / `menu_list` / `view_state` / `wait` / `wait_engine` / `rpc` /
 `open_project` / `screenshot` / `quit`。`rpc` は `EmbeddedViewport` 経由で engine へ送り、応答をそのまま返します。
 イベントは `QTest` の合成なので、**窓が前面にあるかどうかに依存しません**。拒否は名前付きで、
 `automation.widget_missing@1` / `bad_request@1` / `unknown_command@1` / `engine_not_ready@1` / `rpc_failed@1` /
 `wait_timeout@1` / `screenshot_failed@1` / `project_failed@1` / `busy@1` / `command_threw@1` の 10 種です
-([定数](../../src/devstudio/automation/automationcommands.cpp#L64))。
+([定数](../../src/devstudio/automation/automationcommands.cpp#L139))。
 
 **指し方は objectName です。**キャンバスの中に描かれたもの(ノード、ソケット、値の帯、その場編集の editor)は
 widget ではないので、`<view の objectName>::<種類>#<ノード id>[/<port>]` の合成名で指します ——
-例: `pelican.graphCanvasView::graph_value_pill#left/gain`([名前の生成](../../src/devstudio/automation/automationcommands.cpp#L103))。
+例: `pelican.graphCanvasView::graph_value_pill#left/gain`([名前の生成](../../src/devstudio/automation/automationcommands.cpp#L178))。
 `list` は widget 名と合成名の両方を返すので、**ソースを読まずに一覧からシナリオを書けます**。
-`type` / `key` / `text` は item が抱えている埋め込み widget へ届きます。`select{name, text|index}` は item view の行を本物の click で、combo は index を直接置いて選び、`wait{enabled}` は有効化を待ちます(AG-3b)。出力 port の帯は `graph_value_band#<node>/<port>`([経路](../../src/devstudio/automation/automationcommands.cpp#L264))。
+`type` / `key` / `text` は item が抱えている埋め込み widget へ届きます。`select{name, text|index}` は item view の行を本物の click で、combo は index を直接置いて選び、`wait{enabled}` は有効化を待ちます(AG-3b)。出力 port の帯は `graph_value_band#<node>/<port>`([経路](../../src/devstudio/automation/automationcommands.cpp#L339))。
 
 **✅Q-1b で 7 個増えました** —— `wheel` / `move` / `press` / `release` と `action` / `menu_list` / `view_state` です
 (`drag` は `button` を取れるようになりました)。`press` / `move` / `release` は「いまどの button を押しているか」を
@@ -772,25 +772,25 @@ objectName が付いていて(`pelican.file.*` / `pelican.view.panels.*` / `peli
 **シナリオは JSON で、`test/studio_scenarios/<名前>.json` に置きます**(書式は
 [README](../../test/studio_scenarios/README.md#L55))。step は「命令をそのまま送るもの」か「期待」で、期待は
 `rpc_equals`(engine の応答の `path` が `value`)/ `result`(任意の命令を送り、応答の `path` を記録するか `value` と比べる)/
-`text_equals` / `visible` / `list_count` / `screenshot`(保存のみ)の 6 種です([判定](../../tools/studio_drive.py#L682))。`{project}` / `{artifacts}` と `--var NAME=VALUE` は step のすべての文字列に差し込まれます。
+`text_equals` / `visible` / `list_count` / `screenshot`(保存のみ)の 6 種です([判定](../../tools/studio_drive.py#L683))。`{project}` / `{artifacts}` と `--var NAME=VALUE` は step のすべての文字列に差し込まれます。
 3 つ目の種類の **`file` step**(✅F-3)は Studio へ送らず、driver 自身が run の持つ directory の中の file を 1 つ読み書きします ——
 人が Studio の操作の合間に自分のエディタで file を直す、の代わりです。`write` / `replace`(`old` がちょうど 1 か所のときだけ)/
 `contains` / `exists` の 4 つです。書ける範囲は **`{project}`(fixture の複製)と `{artifacts}`(その run の成果物の置き場)の
 2 つ**で、File > New Project でシナリオが作った project は `{artifacts}` の下にあるので、そこにも届きます(✅F-4)。
-それ以外の path(`..` で外へ出るものを含む)は step の失敗です([file step の範囲の検査](../../tools/studio_drive.py#L566))。
+それ以外の path(`..` で外へ出るものを含む)は step の失敗です([file step の範囲の検査](../../tools/studio_drive.py#L567))。
 driver の stdout / stderr は、cp932 の console で出せない文字があっても止まりません。
 `"probe_no_automation": true` を書くと、**先に flag 無しの Studio を起こして socket が無いことを確かめて**から本番を起動します。
 最初の失敗で run は止まります。
 
-**回し方**: [`tools/studio_drive.py`](../../tools/studio_drive.py#L966)(Python 3.11以上、標準ライブラリだけ)が Studio を
+**回し方**: [`tools/studio_drive.py`](../../tools/studio_drive.py#L980)(Python 3.11以上、標準ライブラリだけ)が Studio を
 `--automation --project --tab` で起動し、step を順に送り、`report.json` を書きます。ctest からは
-`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L2890)) —— **実物の窓が要るので
+`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L2899)) —— **実物の窓が要るので
 `QT_QPA_PLATFORM=offscreen` は掛けません**。fixture の project は temp に 2 つ複製されるので、シナリオは
 文書を書き換えてよく、「ディスクから読み直す」も試せます([複製](../../test/run_studio_scenario.cmake#L30))。
 CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが見つかった`AUTO`）が必要です。
 `uv`は不要で、完全なGPU gateは全scenarioの登録・実行を必須にします([CI運用](../ci.md))。
 
-**report.json は AI が読む形です**([組み立て](../../tools/studio_drive.py#L1112)): `verdict`(`green` / `red`)と
+**report.json は AI が読む形です**([組み立て](../../tools/studio_drive.py#L1134)): `verdict`(`green` / `red`)と
 `ok` / `failed_steps`、`summary`(step ごとに 1 行)、`failures`(送った命令・返ってきた応答・言葉での理由・
 **失敗した瞬間のスクリーンショット**)、`steps`(全文)、`studio_log`(Studio と engine の console 出力)。
 `studio_exit_code` と `studio_shutdown_forced` も記録します。最後の shutdown step は
@@ -835,10 +835,10 @@ target... で `scene_color` を名前だけで宣言し、Add fullscreen pass...
 (2) `screenshot` の既定(`widget` モード)は Qt の widget 木を描くので、**埋め込まれた engine の窓は写りません**
 (別 HWND です)。engine が描いた絵が要るときは `"mode": "screen"` を使い、窓が隠れていない必要があります。
 `screenshot` の応答は `path` / `mode` / `width` / `height` に加えて **`distinct_colors`**(絵に含まれる色の数)を返します
-(✅F-2、[screenshot の distinct_colors](../../src/devstudio/automation/automationcommands.cpp#L1693))。消去されただけの viewport は 1 色なので、
+(✅F-2、[screenshot の distinct_colors](../../src/devstudio/automation/automationcommands.cpp#L1784))。消去されただけの viewport は 1 色なので、
 `result` step で `distinct_colors` を読めば「engine が何か描いたか」を PNG を開かずに判定できます。
 **`"pixels": [[x, y], ...]`**(✅F-4)を付けると、応答にその各点の色が `"#rrggbb"` の配列 `pixels` で返ります
-([screenshot の pixels の読み取り](../../src/devstudio/automation/automationcommands.cpp#L1695))。x / y は絵の幅・高さに
+([screenshot の pixels の読み取り](../../src/devstudio/automation/automationcommands.cpp#L1786))。x / y は絵の幅・高さに
 対する 0〜1 の割合なので、窓の大きさを知らずに書けます。配列でない・2 要素でない・範囲外なら `automation.bad_request@1` です。
 `result` step の `remember` で 1 点の色を覚え、別の点を `value_of` と `op`(`eq` / `ne`)で比べれば「同じ縞の下も同じ色、隣の縞は違う色」の
 ように、output transform がどんな色にしても絵の形を判定できます。
@@ -877,7 +877,7 @@ properties は [:219](../../src/devstudio/view/inspectorwidget.cpp#L233) の `pe
 1. **Control with a curve** —— 前節のノード集合を作って繋ぎます(`edit_graph_document`)。
 2. **Connect to another output** —— `Connect input` ダイアログで別ノードの出力を選び、**Connect** で `set_input`。
 3. **Open the source** —— Graph タブを前に出し、その producer を選択します
-   ([繋ぎ込み](../../src/devstudio/view/mainwindow.cpp#L287))。接続されていない port で押すと
+   ([繋ぎ込み](../../src/devstudio/view/mainwindow.cpp#L296))。接続されていない port で押すと
    「これは開ける供給元を持たない、保存された値だ」と notice が出ます。
 4. **Disconnect** —— `set_input{null}`。**mode が `connected` のときだけ押せます**
    ([有効化](../../src/devstudio/view/graphattachmentwidget.cpp#L261))。他の 3 つは常に押せます。
@@ -1141,7 +1141,7 @@ scene のロードは 1 つのトランザクションになりました([第4�
 - 試行済みなら `reload.runtime.game_logic` の内容(`configured` / `loaded` / `reloading` /
   `pending` / `source_busy_retries` / `generation` / `systems` / `source` / `loaded_copy` /
   `domain_error` / `error_code` / `error_fields`)がそのまま入ります
-  ([reloadservice.cpp](../../src/core/watch/reloadservice.cpp#L624))。
+  ([reloadservice.cpp](../../src/core/watch/reloadservice.cpp#L656))。
 - 未試行なら `{error_code, error_fields}` の 2 鍵だけで、値は起動時に保存された失敗です。
   成功すると `error_code` は `null` に戻ります(clear される)。
 - `reload_game_logic` の失敗も同じ語彙で、`error.data` が `{error_code, error_fields}` です。

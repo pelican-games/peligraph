@@ -342,7 +342,7 @@ color attachment stateは「未指定」の空表現を保ちます。省略をo
 
 **stem(ステム)** はファイル名から拡張子を落とした部分のことです([用語集](14_glossary.md))。シェーダは**拡張子なしの stem** で参照します(例: `"shaders/lava"`、`"engine://ssao"`)。`.vert` / `.frag` / `.spv` などの拡張子を書くと「use an extensionless <stage> shader stem」エラーになります(WP63)。
 
-拡張子は stem ではなく、**その参照を書いた場所(どのシェーダステージか)**が決めます。`shader.vertex` に書いた `"shaders/lava"` なら `.vert`、`shader.fragment` なら `.frag`、compute の `shader` なら `.comp` です。そのうえで解決順は ① `<stem>.<ステージ拡張子>`(GLSL ソース → 実行時コンパイル)→ ② `<stem>.<ステージ拡張子>.spv`(ビルド済み SPIR-V)。つまり fragment に `"shaders/lava"` と書くと `shaders/lava.frag` → `shaders/lava.frag.spv` の順に探します。①の候補は**実行時コンパイラを含むビルドでのみ**列に入る(`PELICAN_RUNTIME_SHADER_COMPILER` — [第2章](02_getting_started.md))ので、配布ビルドでは実質 `.spv` だけです([shaderlibrary.cpp](../../src/core/shader/shaderlibrary.cpp#L545))。どちらも無ければ試行パス一覧付きエラー。
+拡張子は stem ではなく、**その参照を書いた場所(どのシェーダステージか)**が決めます。`shader.vertex` に書いた `"shaders/lava"` なら `.vert`、`shader.fragment` なら `.frag`、compute の `shader` なら `.comp` です。そのうえで解決順は ① `<stem>.<ステージ拡張子>`(GLSL ソース → 実行時コンパイル)→ ② `<stem>.<ステージ拡張子>.spv`(ビルド済み SPIR-V)。つまり fragment に `"shaders/lava"` と書くと `shaders/lava.frag` → `shaders/lava.frag.spv` の順に探します。①の候補は**実行時コンパイラを含むビルドでのみ**列に入る(`PELICAN_RUNTIME_SHADER_COMPILER` — [第2章](02_getting_started.md))ので、配布ビルドでは実質 `.spv` だけです([shaderlibrary.cpp](../../src/core/shader/shaderlibrary.cpp#L552))。どちらも無ければ試行パス一覧付きエラー。
 
 (**GLSL** は Vulkan/OpenGL 系のシェーダ言語、**SPIR-V** はそれをコンパイルした GPU 向け中間バイナリ形式です。)
 
@@ -2248,7 +2248,7 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 | `sprite feature requires a scene color and depth attachment before sprite anchor` | sprite anchor の前に color+depth を出すパスが無い |
 | snapshot 系エラー(2 個目・透明後・未定義名) | §6.8 の v1 制限違反 |
 | pixel policy の WARN | strict 条件不成立(silent fallback しない方針) |
-| `Shader defines and generated includes require GLSL source, not SPIR-V` | `.spv` しか無い環境で feature(defines)を使った。**生成 include**(`pelican_resource_ports.glsl`)を要るパスも同じ一文で断られます([shaderlibrary.cpp:344](../../src/core/shader/shaderlibrary.cpp#L344)、engine:// 側は [:528](../../src/core/shader/shaderlibrary.cpp#L528)) |
+| `Shader defines and generated includes require GLSL source, not SPIR-V` | `.spv` しか無い環境で feature(defines)を使った。**生成 include**(`pelican_resource_ports.glsl`)を要るパスも同じ一文で断られます([shaderlibrary.cpp:344](../../src/core/shader/shaderlibrary.cpp#L346)、engine:// 側は [:528](../../src/core/shader/shaderlibrary.cpp#L535)) |
 | `Shader descriptor binding mismatch` | vert/frag で同一 binding の型が不一致 |
 | `Shader/pipeline transaction failed; keeping the previous generation: ...` | ホットリロード失敗(旧版継続中。ソースを直せば次の保存で回復) |
 | `placeholder has no resolved binding` / parameter 名入り compose エラー | feature の `$名前` に対応する binding / default が無い(§6.5) |
