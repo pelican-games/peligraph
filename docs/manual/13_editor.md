@@ -984,6 +984,7 @@ Undoはノードの宣言順・設定・接続と配置を一緒に復元しま�
 受け取らないので、パレットは必須の scalar 入力ごとに `value.constant` を**同じ ops 列で先に**足し、そこへ繋いだ
 状態のノードを作ります([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L1280))。1 操作 1 チケットは保たれます。
 後で本物の producer を繋いでも、**この定数は自動では消えません**(手で消します)。
+例外は `audio.playback` の `time` で、定数ではなくシーンの時計に繋ぎます(✅Q-11。下の「`audio.playback` の欄」)。
 (2) **必須入力の切断は送られ、engine が断ります。**Studio は黙って定数を挿し直したりしません ——
 `set_input{null}` をそのまま送り、`unconnected graph input` の拒否を notice に出します。値を持つ instance の port は
 (戻り先の `parameters` が残っているので)切断できます。
@@ -1025,9 +1026,16 @@ Undoはノードの宣言順・設定・接続と配置を一緒に復元しま�
   - 選ぶか Enter で `set_node_parameters` 1 回です。既に効いている値(Bus / Wrap は、鍵が無ければ一覧の先頭の既定値)を選んでも何も送りません
     ([送る所](../../src/devstudio/view/graphcanvaswidget.cpp#L2702))。
 - **palette で置くと、project の最初の音声が `asset` に入ります**([置くときに asset を入れる所](../../src/devstudio/model/graphcanvasmodel.cpp#L1359))。
-  必須の `time` には上の (1) のとおり種の定数が繋がり、任意の `events` / `position` は空のままです。⚠ engine は `events` も `position` も
-  繋がっていない `audio.playback` を読み込まない(`audio playback requires events or a position: <id>`)ので、**置いただけでは
-  読み込まれません**。どちらかを繋いでください(一体版でも `events` を任意にし、未接続なら最初の frame で始める変更が engine 側の AU-3 として台帳に載っています。未着地)。
+  任意の `events` / `position` は空のままです。
+- **palette で置くと、必須の `time` はシーンの時計に繋がります(✅Q-11)。**上の (1) の種の定数(0)ではなく、今の scope に
+  `value.input{parameters:{name:"scene_time"}}` があればそれを使い回し、無ければ 1 つ足して(id は `scene_time`。その id が今の scope で使われていれば `scene_time_2` …)、
+  その `value` を `time` に繋ぎます([時計を繋ぐ所](../../src/devstudio/model/graphcanvasmodel.cpp#L1325) /
+  [scene_time を探す所](../../src/devstudio/model/graphcanvasmodel.cpp#L1047))。時計の追加と node の配置は**1 回の編集**で送るので、
+  **Undo 1 回で両方が戻ります**。AU-3 から engine は `events` も `position` も繋がっていない `audio.playback` を読み込み、owner の最初の
+  frame から鳴らすので、**置いただけで読み込まれ、鳴ります**。
+  - 使い回すのは**今の scope** の `scene_time` だけです。definition の中で置くと、root に `scene_time` があってもその definition に新しく 1 つ足します。
+    名前が `scene_time` でない `value.input`(たとえば `time`)は使いません。
+  - 足した `scene_time` の node は配置を持ちません(canvas の初期配置で描かれます)。
 - 音声の format の拒否(`audio.format_unsupported@1`)は、この tab の notice に Q-6 の表の文で出ます(§13.1「Studioでcomponentを追加する」)。
 
 **位置と折り畳みはセッション内の状態です。**`(scope, ノード id)` を鍵に覚えていて、**文書には書きません**。
@@ -1300,10 +1308,16 @@ debounce の間)は、notice が **「Saving the graph change...」** になり�
 
 **パネルの文字(✅N-7)**: 各パネルの既定状態に出るのは見出し・ラベル・値・1 行の状態だけです。仕組みの説明は control の tooltip か、パネル右上の `?`(この章の該当節を開く)にあります。検査の一覧は記号(✓ / ✗ / –)で、文は hover。notice は言うことが無いときは消えます。文字の大きさとフォントはテーマ表(`studio_themes.json` の `font`)から取り、`devstudio_paneltext_test` がパネルごとの可視文字の上限を固定します。
 
-**このタブが出せる RPC は 5 本だけです。**`GraphCanvasReadCapability`
+**このタブが出せる RPC は 9 本だけです。**`GraphCanvasReadCapability`
 ([定義](../../src/devstudio/view/graphcanvasreadcapability.hpp#L31))は「汎用の RPC メソッド」を表現できない形をしていて、
-`get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` / `get_edit_result` の
-5 つだけを名前で持ちます。それ以外を要求すると `The graph canvas cannot issue <method>.` になります
+次の 9 つだけを名前で持ちます。
+
+- 読み: `get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `get_graph_node_values` / `get_status`
+  (後の 2 つは AG-3b の観測。definition の中の値と、Timeline の軸になる scene time)
+- 文書の編集: `edit_graph_document` と、その結果を待つ `get_edit_result`
+- Timeline の scrub: `set_time` と `render_frame`(1 つの「scrub」にまとめず、2 本の RPC として名前で持ちます)
+
+それ以外を要求すると `The graph canvas cannot issue <method>.` になります
 ([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L2507))。キャンバスから preset を fork したり pass を触ったりは
 **できない**、というのが型で保証されています。
 
@@ -1400,11 +1414,12 @@ driver は run ごとに `{artifacts}/studio_config` を空にして作り、こ
 以前のシナリオは、前の run(や人が使った Studio)が利用者の設定 directory に残した dock の layout を復元し、自分の
 layout をそこに残していました。テーマの選択はこの directory ではなく `QSettings` に残るので、この変数の影響を受けません。
 
-⚠ **シナリオの間も音が鳴ります(Q-10 の時点)。**Studio に埋め込んだ player は headless ではないので、audio の backend に実物の
-device を選びます(`get_status` の `audio.backend` が `device`。headless の player だけが `offline`。
-[`preferredAudioBackend()`](../../src/core/audio/audio.cpp#L437))。シナリオの間だけ無音にする起動引数や環境変数はまだ無く、driver も
-何も渡しません。音を鳴らす project のシナリオは、回した機械の speaker から音が出ます。backend を起動時に選ぶ switch
-(`--audio-backend` と `PELICAN_AUDIO_BACKEND`)が engine 側の AU-3 として台帳に載っています(未着地)。
+**シナリオは無音です(✅Q-11)。**AU-3 から player は audio の backend を起動時に選べます(`--audio-backend device|offline|null` と
+環境変数 `PELICAN_AUDIO_BACKEND`。`null` は device を開きません)。Studio の QProcess は環境を継承するので、driver は Studio を起動する環境に
+`PELICAN_AUDIO_BACKEND=null` を入れます([無音にする所](../../tools/studio_drive.py#L1024))。呼び出し側が既に値を設定していれば
+(`device` / `offline` など)その値を尊重し、**空文字は未設定として扱って** `null` に置き換えます(player と同じ扱い)。シナリオ
+`graph_read` は `get_status` の `audio.backend` が `null` で、`audio` に `fallback_reason` が無い(鍵が `available` と `backend` の 2 つだけ)ことを確かめます。
+Q-10 の時点では、埋め込んだ player は窓があるので実物の device を選び、シナリオの間も speaker から音が出ていました。
 
 **report.json は AI が読む形です**([組み立て](../../tools/studio_drive.py#L1144)): `verdict`(`green` / `red`)と
 `ok` / `failed_steps`、`summary`(step ごとに 1 行)、`failures`(送った命令・返ってきた応答・言葉での理由・

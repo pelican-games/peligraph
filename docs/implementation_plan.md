@@ -25316,6 +25316,36 @@ engine の変更 / 移行の手順そのもの / 移行の取り消し(backup �
 - **テキスト入力の欄(受け入れ 3)**: 新しい欄のうち打てるのは Sound だけ(打つこともできる combo。project に音声があれば一覧から選べて打たずに済む。一覧に無い path も打てばそのまま送る)。Bus / Wrap は選ぶだけ
 - **穴**: シナリオの無音は engine の switch 待ち(AU-3)/ `render.compute` node から来た task も root の下に並ぶので、同じ root の文になる / Task Editor が root の reference を知るのは Render Features が `get_render_features` を読んだ後(それより前は engine の英語の理由のまま)/ palette で置いた `audio.playback` は `events` か `position` を繋ぐまで engine が読み込まない(`audio playback requires events or a position`。既定の扱いを別 session に確認、AU-3 の後半)/ 任意の数値の port は繋ぐことでしか値を入れられない(既存の挙動)
 
+### Q-11: AU-3 への追従 —— シナリオは無音、palette の audio.playback は置いてすぐ鳴る
+
+**下段(Studio + automation driver)。実装者: Claude(Opus)。**
+
+#### 前提(別 session の AU-3 = a8b03406)
+- player に `--audio-backend device|offline|null` と環境変数 `PELICAN_AUDIO_BACKEND`(引数が優先、空文字は未設定、未知は `audio.backend_unknown@1` で起動が止まる、`null` は device を開かない)。Studio の QProcess は環境を継承する
+- `audio.playback` は `events` と `position` の両方が無くても読み込める(owner の最初の frame から鳴る)。`time` は必須
+- Q-10 で palette から置いた `audio.playback` には Sound が入るが、`time` が未接続なので読み込めない(記録済みの穴)
+
+#### 決定
+1. `tools/studio_drive.py` が Studio を起動するときの環境に `PELICAN_AUDIO_BACKEND=null` を入れる(呼び出し側がすでに設定していれば、その値を尊重)。`test/ci/test_studio_drive.py` に 1 本
+2. Graph Canvas の palette から `audio.playback` を置いたとき、同じ scope に `scene_time` を出す node があればそれを、無ければ `value.scene_time`(catalog の op 名を確かめる)を 1 つ足して、その出力を `time` に 1 本つなぐ。**1 回の編集**(置く + つなぐ)で送る。undo 1 手で両方戻る
+3. 置いた直後に engine が読み込めること(Graph タブの状態が「読み込めない」でない)を確かめる
+
+#### 受け入れ
+1. driver の test: 起動環境に `PELICAN_AUDIO_BACKEND=null`、既に設定されていれば上書きしない
+2. scene test: palette から置くと、`audio.playback` と `scene_time` の edge が 1 回の編集に入る / 既にある `scene_time` を使い回す(対照: つながない変異で赤)
+3. 既存のシナリオを 1 本走らせ、`get_status` の `audio.backend` が `null` であること(report に出す)
+4. `-L studio_cpu -LE gpu` 緑。報告にテキスト入力の欄
+
+#### 着地(2026-09-25、d616e35a)
+- **決定 1**: driver は環境の `PELICAN_AUDIO_BACKEND` が無いか空文字のとき `null` を入れる([無音にする所](../tools/studio_drive.py#L1024))。空文字は player でも未設定なので、未設定と同じに置き換える。`device` / `offline` など呼び出し側が選んだ値はそのまま
+- **決定 2**: catalog に `value.scene_time` という op は無い。シーンの時計は `value.input` で `parameters.name = "scene_time"`(Inspector の「曲線で制御」と同じ形)。palette で `audio.playback` を置くと、今の scope の最初のそれを使い回し([scene_time を探す所](../src/devstudio/model/graphcanvasmodel.cpp#L1047))、無ければ `value.input{name:"scene_time"}` を 1 つ足して(id は `scene_time`、使われていれば `scene_time_2` …)、その `value` を `time` に繋ぐ([時計を繋ぐ所](../src/devstudio/model/graphcanvasmodel.cpp#L1325))。時計の `add_node` と node の `add_node` は同じ op 列 = 1 回の編集で、Undo 1 回で両方の `remove_node` が出る。Q-10 までの `time` の種の定数(`audio_playback__time`、値 0)は出なくなった。名前が `time` の `value.input` は使い回さない
+- **決定 3**: scene test の中で、置いた後の文書を `partitionGraphDocument`(engine の graph の分割・検証)に通して例外が出ないことを確かめた
+- **受け入れ 3**: 既存のシナリオ `graph_read.json` に step を 2 つ足した。`get_status` の `audio.backend` が `"null"`、`audio` の鍵が 2 つ(`available` / `backend`。`fallback_reason` が無い = 名指しした null が効いた)。commit の記録では graph_read は緑
+- **test**: `test_studio_drive.py` の `StudioDriveAudioBackendTest`(未設定 → `null` / 空文字 → `null` / `device`・`offline` はそのまま)、`devstudio_graphcanvas_scene_test` の `Q-11 a placed audio.playback reads a new scene clock, and one Undo takes both back`(新しい時計 + partition + Undo)と、Q-10 の palette の section の書き換え(既にある `scene_time` = `now` を使い回し、op は 1 つ)。変異(commit の記録): 設定しない / 常に上書き → driver の test が赤、定数に戻す → Q-11 と Q-10 が赤
+- **受け入れ 4**: commit の記録にあるのは上の test と graph_read の緑まで。`-L studio_cpu -LE gpu` の全数の記載は無い(未確認)
+- **テキスト入力の欄(受け入れ 4)**: 増やしていない。置いた `audio.playback` の `time` に種の定数(打てる値の pill)が付かなくなったので、打つ欄は 1 つ減った
+- **穴**: 決定 3 の確かめは `partitionGraphDocument` まで(必須の入力が繋がっていることと型だけ)。core の lowering(asset の読み込み、時計の食い違い)は GUI から走らせていない / 使い回すのは今の scope の `scene_time` だけで、definition の中で置くと root にあっても新しく 1 つ足す / 足した `scene_time` の node は配置を持たない(canvas の初期配置で描かれる)
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
