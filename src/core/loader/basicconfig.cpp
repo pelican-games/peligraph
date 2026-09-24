@@ -3,6 +3,7 @@
 #include "authoringsceneauthority.hpp"
 #include "../startup.hpp"
 #include "../log.hpp"
+#include "../model/engineprimitives.hpp"
 #include "../watch/contentdigest.hpp"
 #include "pathresolver.hpp"
 #include "projectsrc.hpp"
@@ -328,6 +329,9 @@ std::string rewriteAssetPaths(std::string data, PathResolver &resolver) {
 
     for (auto &model : json.at("models")) {
         if (model.is_object() && model.contains("path") && model.at("path").is_string()) {
+            // GP-5: an engine primitive has no file; ModelAssetContainer
+            // generates it from the reference itself.
+            if (isEnginePrimitiveReference(model.at("path").get<std::string>())) continue;
             model["path"] =
                 resolveExistingModelReferenceString(resolver, model.at("path").get<std::string>());
         }

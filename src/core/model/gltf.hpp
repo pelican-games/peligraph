@@ -11,6 +11,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace Pelican {
 
@@ -73,6 +74,11 @@ DECLARE_MODULE(GltfLoader) {
     PreparedGltf prepareGltf(std::string path,
                              std::optional<AssetFragmentRef> fragment = std::nullopt,
                              std::optional<CanonicalModelAssetKey> asset_key = std::nullopt) const;
+    // GP-5: an engine://primitives/<name> shape, generated in memory as a
+    // glTF document (engineprimitives.hpp). No file backs it, so dataFiles()
+    // is empty. Unknown names throw model.primitive_unknown@1.
+    PreparedGltf prepareEnginePrimitive(std::string_view reference,
+                                        std::optional<CanonicalModelAssetKey> asset_key = std::nullopt) const;
     // Runs fragment selection, accessor extraction, rig construction, and
     // primitive/material validation without allocating or uploading GPU
     // resources. The returned template contains candidate topology/rig data

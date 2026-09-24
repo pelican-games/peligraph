@@ -11,6 +11,7 @@
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../../project/gltfmateriallowering.hpp"
+#include "engineprimitives.hpp"
 #include "gltf.hpp"
 #include "gltfaccessorreader.hpp"
 #include "gltfimage.hpp"
@@ -270,10 +271,14 @@ struct PreparedGltf::Impl {
     VrmSemanticDecodeResult vrm;
     std::optional<CanonicalModelAssetKey> asset_key;
     std::map<int, std::filesystem::path> buffer_source_files;
+    // GP-5: built in memory from engineprimitives; source_path is the
+    // engine:// reference and no file backs it.
+    bool generated = false;
 };
 
 std::vector<std::filesystem::path> PreparedGltf::dataFiles() const {
     if (!impl) throw std::invalid_argument("cannot inspect data files of an empty prepared glTF");
+    if (impl->generated) return {};
     std::set<std::filesystem::path> files{std::filesystem::weakly_canonical(impl->source_path)};
     for (const auto &[index, file] : impl->buffer_source_files) files.insert(file);
     return {files.begin(), files.end()};
@@ -334,6 +339,99 @@ std::shared_ptr<PreparedGltf::Impl> prepareGltfImpl(std::string path,
     if (!prepared->fragment) {
         rejectVatModelIfDisabled(prepared->model);
     }
+    return prepared;
+}
+
+// GP-5: the generated shape as the glTF document a file holding it would
+// parse to -- one buffer, one mesh with one indexed triangle primitive, one
+// node, one scene, and one material (the engine's default grey, lowered like
+// any glTF material onto the OpenPBR base surface). Everything after this
+// point is the ordinary glTF path.
+std::shared_ptr<PreparedGltf::Impl> prepareEnginePrimitiveImpl(
+    std::string_view reference, std::optional<CanonicalModelAssetKey> asset_key) {
+    const auto mesh = generateEnginePrimitive(reference);
+    auto prepared = std::make_shared<PreparedGltf::Impl>();
+    prepared->source_path = std::string{reference};
+    prepared->asset_key = std::move(asset_key);
+    prepared->generated = true;
+    auto &model = prepared->model;
+    const auto name = std::string{reference.substr(enginePrimitivePrefix.size())};
+
+    tinygltf::Buffer buffer;
+    const auto append_view = [&](const void *data, std::size_t bytes, int target) {
+        const auto offset = buffer.data.size();
+        const auto *begin = static_cast<const unsigned char *>(data);
+        buffer.data.insert(buffer.data.end(), begin, begin + bytes);
+        tinygltf::BufferView view;
+        view.buffer = 0;
+        view.byteOffset = offset;
+        view.byteLength = bytes;
+        view.target = target;
+        model.bufferViews.push_back(std::move(view));
+        return static_cast<int>(model.bufferViews.size() - 1);
+    };
+    const auto append_accessor = [&](const std::vector<float> &values, int type, int width) {
+        tinygltf::Accessor accessor;
+        accessor.bufferView = append_view(values.data(), values.size() * sizeof(float),
+                                          TINYGLTF_TARGET_ARRAY_BUFFER);
+        accessor.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
+        accessor.type = type;
+        accessor.count = values.size() / static_cast<std::size_t>(width);
+        model.accessors.push_back(std::move(accessor));
+        return static_cast<int>(model.accessors.size() - 1);
+    };
+
+    tinygltf::Primitive primitive;
+    primitive.mode = TINYGLTF_MODE_TRIANGLES;
+    primitive.material = 0;
+    const auto position = append_accessor(mesh.positions, TINYGLTF_TYPE_VEC3, 3);
+    // glTF requires POSITION bounds.
+    auto &bounds = model.accessors.at(static_cast<std::size_t>(position));
+    bounds.minValues = {mesh.positions[0], mesh.positions[1], mesh.positions[2]};
+    bounds.maxValues = bounds.minValues;
+    for (std::size_t index = 0; index < mesh.positions.size(); ++index) {
+        bounds.minValues[index % 3] = std::min<double>(bounds.minValues[index % 3], mesh.positions[index]);
+        bounds.maxValues[index % 3] = std::max<double>(bounds.maxValues[index % 3], mesh.positions[index]);
+    }
+    primitive.attributes["POSITION"] = position;
+    primitive.attributes["NORMAL"] = append_accessor(mesh.normals, TINYGLTF_TYPE_VEC3, 3);
+    primitive.attributes["TEXCOORD_0"] = append_accessor(mesh.texcoords, TINYGLTF_TYPE_VEC2, 2);
+    primitive.attributes["TANGENT"] = append_accessor(mesh.tangents, TINYGLTF_TYPE_VEC4, 4);
+    {
+        tinygltf::Accessor indices;
+        indices.bufferView = append_view(mesh.indices.data(), mesh.indices.size() * sizeof(std::uint32_t),
+                                         TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER);
+        indices.componentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT;
+        indices.type = TINYGLTF_TYPE_SCALAR;
+        indices.count = mesh.indices.size();
+        model.accessors.push_back(std::move(indices));
+        primitive.indices = static_cast<int>(model.accessors.size() - 1);
+    }
+    buffer.name = name;
+    model.buffers.push_back(std::move(buffer));
+
+    tinygltf::Material material;
+    material.name = std::string{enginePrimitiveDefaultMaterialName};
+    material.pbrMetallicRoughness.baseColorFactor = {0.8, 0.8, 0.8, 1.0};
+    material.pbrMetallicRoughness.metallicFactor = 0.0;
+    material.pbrMetallicRoughness.roughnessFactor = 0.5;
+    model.materials.push_back(std::move(material));
+
+    tinygltf::Mesh gltf_mesh;
+    gltf_mesh.name = name;
+    gltf_mesh.primitives.push_back(std::move(primitive));
+    model.meshes.push_back(std::move(gltf_mesh));
+
+    tinygltf::Node node;
+    node.name = name;
+    node.mesh = 0;
+    model.nodes.push_back(std::move(node));
+    tinygltf::Scene scene;
+    scene.nodes.push_back(0);
+    model.scenes.push_back(std::move(scene));
+    model.defaultScene = 0;
+    model.asset.version = "2.0";
+    model.asset.generator = "pelican engine primitives";
     return prepared;
 }
 
@@ -2463,6 +2561,11 @@ PreparedGltf GltfLoader::prepareGltf(std::string path,
                                         false, std::move(asset_key))};
 }
 
+PreparedGltf GltfLoader::prepareEnginePrimitive(std::string_view reference,
+                                              std::optional<CanonicalModelAssetKey> asset_key) const {
+    return PreparedGltf{prepareEnginePrimitiveImpl(reference, std::move(asset_key))};
+}
+
 PreparedGltf GltfLoader::prepareGltfBinarySceneNode(std::string path,
                                                      AssetFragmentRef fragment,
                                                      std::optional<CanonicalModelAssetKey> asset_key) const {
@@ -2610,7 +2713,8 @@ GltfAttributeData GltfLoader::readAccessor(const PreparedGltf &prepared, int acc
         if (values.size() > (std::numeric_limits<std::size_t>::max)() / stride)
             throw std::overflow_error("glTF attribute byte size overflows");
         GltfAttributeData result{element, values.size(), std::vector<std::byte>(values.size() * stride)};
-        result.source_files.push_back(std::filesystem::weakly_canonical(prepared.impl->source_path));
+        if (!prepared.impl->generated)
+            result.source_files.push_back(std::filesystem::weakly_canonical(prepared.impl->source_path));
         const auto view = prepared.impl->model.accessors.at(accessor).bufferView;
         const auto buffer = prepared.impl->model.bufferViews.at(view).buffer;
         if (const auto found = prepared.impl->buffer_source_files.find(buffer);

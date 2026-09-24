@@ -1,0 +1,406 @@
+#include "../src/core/appflow/enginetime.hpp"
+#include "../src/core/asset/model.hpp"
+#include "../src/core/communication/rpcserver.hpp"
+#include "../src/core/container.hpp"
+#include "../src/core/ecs/predefined.hpp"
+#include "../src/core/launchconfig.hpp"
+#include "../src/core/loader/pathresolver.hpp"
+#include "../src/core/loader/projectsrc.hpp"
+#include "../src/core/log.hpp"
+#include "../src/core/material/projectmaterialasset.hpp"
+#include "../src/core/model/engineprimitives.hpp"
+#include "../src/core/vkcore/core.hpp"
+#include "../src/project/projecttemplate.hpp"
+#include "vulkan_test_support.hpp"
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <nlohmann/json.hpp>
+#include <sstream>
+#include <stb_image.h>
+#include <string>
+#include <vector>
+
+// GP-5. engine://primitives/{cube,plane,sphere} resolve as model references
+// with no asset_data entry. The shapes are generated in code, deterministically,
+// and reach the renderer through the ordinary glTF load path.
+
+namespace Pelican {
+namespace {
+
+using Json = nlohmann::json;
+
+std::uint64_t fnv1a(std::uint64_t hash, const void *data, std::size_t bytes) {
+    const auto *begin = static_cast<const unsigned char *>(data);
+    for (std::size_t index = 0; index < bytes; ++index) {
+        hash ^= begin[index];
+        hash *= 0x100000001b3ULL;
+    }
+    return hash;
+}
+
+// Every stream, in upload order, byte for byte.
+std::uint64_t meshDigest(const EnginePrimitiveMesh &mesh) {
+    auto hash = 0xcbf29ce484222325ULL;
+    const auto add = [&](const auto &values) {
+        const std::uint64_t count = values.size();
+        hash = fnv1a(hash, &count, sizeof(count));
+        hash = fnv1a(hash, values.data(), values.size() * sizeof(values[0]));
+    };
+    add(mesh.positions);
+    add(mesh.normals);
+    add(mesh.texcoords);
+    add(mesh.tangents);
+    add(mesh.indices);
+    return hash;
+}
+
+struct V3 {
+    double x, y, z;
+};
+V3 sub(V3 a, V3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+V3 cross(V3 a, V3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
+double dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+V3 at(const std::vector<float> &values, std::size_t vertex) {
+    return {values[vertex * 3], values[vertex * 3 + 1], values[vertex * 3 + 2]};
+}
+
+void writeFile(const std::filesystem::path &path, std::string_view contents) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream file{path, std::ios::binary | std::ios::trunc};
+    file << contents;
+}
+
+std::string readFile(const std::filesystem::path &path) {
+    std::ifstream file{path, std::ios::binary};
+    return {std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+}
+
+struct TempDir {
+    std::filesystem::path root;
+    ~TempDir() {
+        std::error_code ignored;
+        std::filesystem::remove_all(root, ignored);
+    }
+};
+
+TempDir makeTempDir(std::string_view name) {
+    const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    return TempDir{std::filesystem::temp_directory_path() /
+                   ("pelican_gp5_" + std::string{name} + "_" + std::to_string(suffix))};
+}
+
+// A project made by the blank template: asset_data has no models. The blank
+// frame is one fullscreen gradient pass that draws no geometry, so the
+// rendering section is taken from the standard template (the only other file
+// the two templates differ in) to have something that draws meshes.
+std::filesystem::path makeBlankProject(const std::filesystem::path &dir) {
+    const auto root = dir / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    const auto standard = dir / "standard";
+    initializeProjectTemplate(standard, ProjectTemplate::Standard);
+    std::filesystem::copy_file(standard / "passes/main_rendering_config.json",
+                               root / "passes/main_rendering_config.json",
+                               std::filesystem::copy_options::overwrite_existing);
+    const auto assets = Json::parse(readFile(root / "assets/asset_data.json"));
+    REQUIRE(assets.at("models").empty());
+    return root;
+}
+
+void configureHeadless(const std::filesystem::path &root) {
+    GET_MODULE(PathResolver).setup(root, false);
+    GET_MODULE(ProjectSource).setProjectData(readFile(root / "project.json"));
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.rpc = true;
+    launch.headless_extent = vk::Extent2D{64, 64};
+    launch.shader_hot_reload = false;
+    GET_MODULE(EngineTime).setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    TestSupport::requireVulkanDevice("GP-5 engine primitives");
+    GET_MODULE(ECSPredefinedRegistration).reg();
+}
+
+struct Rpc {
+    std::istringstream input;
+    std::ostringstream output;
+    EngineRpcEndpoint endpoint{input, output};
+    std::uint64_t next_id = 5000;
+
+    Json call(std::string_view method, Json params = Json::object()) {
+        return Json::parse(endpoint.processLine(
+            Json{{"jsonrpc", "2.0"}, {"id", ++next_id}, {"method", method}, {"params", std::move(params)}}
+                .dump()));
+    }
+    Json result(std::string_view method, Json params = Json::object()) {
+        const auto response = call(method, std::move(params));
+        INFO(response.dump(2));
+        REQUIRE(response.contains("result"));
+        return response.at("result");
+    }
+    std::vector<unsigned char> frame(const std::filesystem::path &capture) {
+        (void)result("render_frame");
+        std::filesystem::remove(capture);
+        (void)result("capture", {{"path", capture.generic_string()}});
+        int width = 0;
+        int height = 0;
+        int channels = 0;
+        stbi_uc *pixels = stbi_load(capture.string().c_str(), &width, &height, &channels, 4);
+        REQUIRE(pixels != nullptr);
+        std::vector<unsigned char> rgba(pixels, pixels + static_cast<std::size_t>(width) * height * 4);
+        stbi_image_free(pixels);
+        return rgba;
+    }
+    // Submits one edit and steps the frame that commits it.
+    Json edit(std::uint64_t actor, Json operations) {
+        const auto revision = result("get_scene_revision").at("scene_revision");
+        const auto accepted = result("edit", {{"actor_id", actor},
+                                              {"base_revision", revision},
+                                              {"operations", std::move(operations)}});
+        REQUIRE(accepted.at("status") == "accepted");
+        (void)result("step_frame");
+        return result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+    }
+};
+
+std::size_t differingPixels(const std::vector<unsigned char> &a, const std::vector<unsigned char> &b) {
+    REQUIRE(a.size() == b.size());
+    std::size_t count = 0;
+    for (std::size_t pixel = 0; pixel + 3 < a.size(); pixel += 4) {
+        int delta = 0;
+        for (std::size_t channel = 0; channel < 3; ++channel)
+            delta = std::max(delta, std::abs(int{a[pixel + channel]} - int{b[pixel + channel]}));
+        if (delta > 8) ++count;
+    }
+    return count;
+}
+
+Json spawnCube(std::string_view model, std::string_view name = "PrimitiveCube") {
+    return Json::array({{{"op", "spawn"},
+                         {"scene_id", "default_scene"},
+                         {"object",
+                          {{"name", name},
+                           {"components",
+                            Json::array({{{"name", "transform"},
+                                          {"pos", {0.0, 0.0, 0.0}},
+                                          {"rotation", {0.0, 0.0, 0.0, 1.0}},
+                                          {"scale", {1.0, 1.0, 1.0}}},
+                                         {{"name", "simplemodelview"}, {"model", model}}})}}}}});
+}
+
+std::size_t indexCount(const ModelTemplate &model) {
+    std::size_t count = 0;
+    for (const auto &group : model.material_primitives)
+        for (const auto &primitive : group.primitives) count += primitive.index_count;
+    return count;
+}
+
+} // namespace
+
+TEST_CASE("GP-5 engine primitives are generated deterministically, closed and outward-facing",
+          "[gp5][primitives]") {
+    struct Expected {
+        std::string_view reference;
+        std::size_t vertices;
+        std::size_t indices;
+        std::uint64_t digest;
+    };
+    constexpr auto segments = enginePrimitiveSphereSegments;
+    constexpr auto rings = enginePrimitiveSphereRings;
+    const std::array<Expected, 3> expected{{
+        {"engine://primitives/cube", 24, 36, 0x11de26020ec19ef1ULL},
+        {"engine://primitives/plane", 4, 6, 0xb4b5892b1b278759ULL},
+        {"engine://primitives/sphere", std::size_t{rings + 1} * (segments + 1),
+         std::size_t{segments} * (rings - 1) * 2 * 3, 0x6d51ad58aaee0ae7ULL},
+    }};
+    for (const auto &shape : expected) {
+        INFO(std::string{shape.reference});
+        const auto first = generateEnginePrimitive(shape.reference);
+        const auto second = generateEnginePrimitive(shape.reference);
+        const auto digest = meshDigest(first);
+        UNSCOPED_INFO("digest " << shape.reference << " = 0x" << std::hex << digest << std::dec);
+        CHECK(digest == meshDigest(second));
+        CHECK(digest == shape.digest);
+
+        const auto vertices = first.vertexCount();
+        CHECK(vertices == shape.vertices);
+        CHECK(first.normals.size() == vertices * 3);
+        CHECK(first.texcoords.size() == vertices * 2);
+        CHECK(first.tangents.size() == vertices * 4);
+        CHECK(first.indices.size() == shape.indices);
+        CHECK(std::all_of(first.indices.begin(), first.indices.end(),
+                          [&](std::uint32_t index) { return index < vertices; }));
+        for (std::size_t vertex = 0; vertex < vertices; ++vertex) {
+            const auto normal = at(first.normals, vertex);
+            const V3 tangent{first.tangents[vertex * 4], first.tangents[vertex * 4 + 1],
+                             first.tangents[vertex * 4 + 2]};
+            CHECK(std::abs(dot(normal, normal) - 1.0) < 1e-5);
+            CHECK(std::abs(dot(tangent, tangent) - 1.0) < 1e-5);
+            CHECK(std::abs(dot(normal, tangent)) < 1e-5);
+            CHECK(first.tangents[vertex * 4 + 3] == 1.0F);
+            CHECK(first.texcoords[vertex * 2] >= 0.0F);
+            CHECK(first.texcoords[vertex * 2] <= 1.0F);
+            CHECK(first.texcoords[vertex * 2 + 1] >= 0.0F);
+            CHECK(first.texcoords[vertex * 2 + 1] <= 1.0F);
+        }
+        // Counter-clockwise seen from where the normals point (glTF front faces).
+        for (std::size_t triangle = 0; triangle < first.indices.size(); triangle += 3) {
+            const auto a = at(first.positions, first.indices[triangle]);
+            const auto b = at(first.positions, first.indices[triangle + 1]);
+            const auto c = at(first.positions, first.indices[triangle + 2]);
+            const auto face = cross(sub(b, a), sub(c, a));
+            CHECK(dot(face, at(first.normals, first.indices[triangle])) > 0.0);
+        }
+    }
+
+    const auto cube = generateEnginePrimitive("engine://primitives/cube");
+    CHECK(*std::min_element(cube.positions.begin(), cube.positions.end()) == -0.5F);
+    CHECK(*std::max_element(cube.positions.begin(), cube.positions.end()) == 0.5F);
+    const auto plane = generateEnginePrimitive("engine://primitives/plane");
+    for (std::size_t vertex = 0; vertex < plane.vertexCount(); ++vertex) {
+        CHECK(plane.positions[vertex * 3 + 1] == 0.0F);
+        CHECK(std::abs(plane.positions[vertex * 3]) == 0.5F);
+        CHECK(std::abs(plane.positions[vertex * 3 + 2]) == 0.5F);
+        CHECK(plane.normals[vertex * 3 + 1] == 1.0F);
+    }
+    const auto sphere = generateEnginePrimitive("engine://primitives/sphere");
+    for (std::size_t vertex = 0; vertex < sphere.vertexCount(); ++vertex) {
+        const auto position = at(sphere.positions, vertex);
+        CHECK(std::abs(std::sqrt(dot(position, position)) - 0.5) < 1e-6);
+    }
+
+    for (const auto *unknown : {"engine://primitives/torus", "engine://primitives/", "engine://primitives/Cube",
+                                "engine://primitives/cube#mesh/cube"}) {
+        INFO(unknown);
+        CHECK(isEnginePrimitiveReference(unknown));
+        try {
+            (void)generateEnginePrimitive(unknown);
+            FAIL("an unknown primitive was generated");
+        } catch (const std::runtime_error &error) {
+            CHECK(std::string{error.what()}.starts_with("model.primitive_unknown@1: "));
+        }
+    }
+    CHECK_FALSE(isEnginePrimitiveReference("assets/models/cube.glb"));
+    CHECK_FALSE(isEnginePrimitiveReference("engine://surfaces/openpbr/opaque_single.surface"));
+}
+
+TEST_CASE("GP-5 a cube spawned over RPC into a blank project is drawn, saved and reopened",
+          "[gp5][primitives][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("spawn");
+    const auto root = makeBlankProject(dir.root);
+    const auto capture = dir.root / "capture.png";
+    std::vector<unsigned char> background;
+
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("step_frame");
+        background = rpc.frame(capture);
+
+        const auto actor = rpc.result("open_editor_session", {{"display_name", "GP-5"}}).at("actor_id")
+                               .get<std::uint64_t>();
+        const auto spawned = rpc.edit(actor, spawnCube("engine://primitives/cube"));
+        INFO(spawned.dump(2));
+        REQUIRE(spawned.at("status") == "committed");
+        const auto drawn = rpc.frame(capture);
+        CHECK(differingPixels(background, drawn) > 64);
+
+        // Every shape resolves with nothing declared, and they are distinct models.
+        auto &models = GET_MODULE(ModelAssetContainer);
+        const auto &cube = models.getModelTemplateByName("engine://primitives/cube");
+        const auto &plane = models.getModelTemplateByName("engine://primitives/plane");
+        const auto &sphere = models.getModelTemplateByName("engine://primitives/sphere");
+        CHECK(indexCount(cube) == 36);
+        CHECK(indexCount(plane) == 6);
+        CHECK(indexCount(sphere) ==
+              std::size_t{enginePrimitiveSphereSegments} * (enginePrimitiveSphereRings - 1) * 6);
+        CHECK(cube.asset_id != plane.asset_id);
+        CHECK(cube.asset_id != sphere.asset_id);
+        CHECK(cube.authored_asset_reference == "engine://primitives/cube");
+        // The default material: one grey OpenPBR base material, named so a
+        // material binding can address it.
+        REQUIRE(cube.material_primitives.size() == 1);
+        REQUIRE(cube.named_materials.size() == 1);
+        CHECK(cube.named_materials.front().name == std::string{enginePrimitiveDefaultMaterialName});
+        CHECK(cube.named_materials.front().routing.has_value());
+        CHECK(cube.material_primitives.front().material == cube.named_materials.front().material);
+        // Asking again returns the same template.
+        CHECK(&models.getModelTemplateByName("engine://primitives/cube") == &cube);
+
+        // An unknown name is refused by name, directly and through spawn.
+        try {
+            (void)models.getModelTemplateByName("engine://primitives/torus");
+            FAIL("an unknown primitive resolved");
+        } catch (const std::runtime_error &error) {
+            CHECK(std::string{error.what()}.starts_with("model.primitive_unknown@1: "));
+        }
+        const auto refused = rpc.edit(actor, spawnCube("engine://primitives/torus", "PrimitiveTorus"));
+        INFO(refused.dump(2));
+        CHECK(refused.at("status") == "failed");
+        CHECK(refused.dump().find("model.primitive_unknown@1") != std::string::npos);
+
+        const auto saved = rpc.result("save_scene");
+        CHECK(saved.at("byte_count").get<std::uint64_t>() != 0);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+
+    const auto scene_text = readFile(root / "scenes/main.scene.json");
+    CHECK(scene_text.find("\"engine://primitives/cube\"") != std::string::npos);
+    CHECK(scene_text.find("\"PrimitiveCube\"") != std::string::npos);
+    CHECK(scene_text.find("PrimitiveTorus") == std::string::npos);
+
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        const auto tree = rpc.result("scene_tree").dump();
+        CHECK(tree.find("PrimitiveCube") != std::string::npos);
+        // One game frame, as the player would run, before drawing.
+        (void)rpc.result("step_frame");
+        const auto reopened = rpc.frame(capture);
+        CHECK(differingPixels(background, reopened) > 64);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+}
+
+TEST_CASE("GP-5 a declared primitive takes its material from the existing material binding route",
+          "[gp5][primitives][material-binding][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("binding");
+    const auto root = makeBlankProject(dir.root);
+    writeFile(root / "materials/red.material.json",
+              R"json({"schema":"pelican.material","version":1,"materials":[{"name":"ProjectRed","surface":"engine://surfaces/openpbr/opaque_single.surface","base":{"baseColorFactor":[0.9,0.1,0.1,1.0]},"routing":{"alpha_mode":"opaque","double_sided":false}}]})json");
+    writeFile(root / "materials/floor.bindings.json",
+              R"json({"schema":"pelican.material_bindings","version":1,"model":"engine://primitives/plane","bindings":[{"usd_path":"/Floor","mesh":0,"primitive":0,"material":"ProjectRed","routing":{"alpha_mode":"opaque","double_sided":false}}]})json");
+    writeFile(root / "assets/asset_data.json",
+              R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"red_floor","path":"engine://primitives/plane","material_bindings":"materials/floor.bindings.json"}],"materials":[{"path":"materials/red.material.json"}]})json");
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    auto &models = GET_MODULE(ModelAssetContainer);
+    const auto &floor = models.getModelTemplateByName("red_floor");
+    const auto &project = GET_MODULE(ProjectMaterialAssetContainer).namedMaterials();
+    const auto red = std::find_if(project.begin(), project.end(),
+                                  [](const auto &material) { return material.name == "ProjectRed"; });
+    REQUIRE(red != project.end());
+    REQUIRE(floor.material_primitives.size() == 1);
+    CHECK(floor.material_primitives.front().material == red->material);
+    CHECK(indexCount(floor) == 6);
+    // The undeclared reference keeps the default material.
+    const auto &plain = models.getModelTemplateByName("engine://primitives/plane");
+    REQUIRE(plain.material_primitives.size() == 1);
+    CHECK_FALSE(plain.material_primitives.front().material == red->material);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+} // namespace Pelican

@@ -10,6 +10,7 @@
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../material/projectmaterialasset.hpp"
+#include "../model/engineprimitives.hpp"
 #include "../model/gltf.hpp"
 #include "../parallel_prepare.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
@@ -86,6 +87,9 @@ struct ModelDeclaration {
     watch::AssetKey container_key;
     bool ascii = false;
     bool scene_node_instance = false;
+    // GP-5: `reference` is engine://primitives/<name>; `path` is empty and
+    // the shape is generated, not read.
+    bool engine_primitive = false;
     std::optional<PrimitiveMaterialBindingDocument> material_bindings;
 };
 
@@ -139,6 +143,9 @@ PreparedGltf prepareDeclaration(const ModelDeclaration &declaration) {
     // the module graph for a first initialization while ModelAssetContainer's
     // constructor is waiting for those workers.
     GltfLoader loader;
+    if (declaration.engine_primitive)
+        return loader.prepareEnginePrimitive(declaration.reference,
+                                             declaration.asset_key);
     if (declaration.ascii)
         return loader.prepareGltf(declaration.path.string(), declaration.fragment,
                                   declaration.asset_key);
@@ -153,7 +160,8 @@ PreparedGltf prepareDeclaration(const ModelDeclaration &declaration) {
 
 PrimitiveMaterialBindingDocument loadMaterialBindings(std::string_view reference,
                                                        std::string_view model_name,
-                                                       const std::filesystem::path &model_path) {
+                                                       const std::filesystem::path &model_path,
+                                                       std::string_view primitive_reference = {}) {
     auto &resolver = GET_MODULE(PathResolver);
     const auto resolved = resolver.resolveExistingFileReference(reference);
     const auto *path = std::get_if<std::filesystem::path>(&resolved);
@@ -176,6 +184,14 @@ PrimitiveMaterialBindingDocument loadMaterialBindings(std::string_view reference
     }
     try {
         auto document = parsePrimitiveMaterialBindingJson(nlohmann::json::parse(input));
+        // GP-5: a generated primitive has no file to compare; the document
+        // names the same engine reference the asset declares.
+        if (!primitive_reference.empty()) {
+            if (document.model != primitive_reference)
+                throw std::runtime_error("declares model '" + document.model +
+                                         "' but asset is '" + std::string{primitive_reference} + "'");
+            return document;
+        }
         const auto declared_model = resolver.resolveExistingFile(document.model);
         std::error_code equivalent_error;
         if (!std::filesystem::equivalent(declared_model, model_path,
@@ -232,6 +248,24 @@ std::set<std::string> ambiguousOccurrenceIds(
 ModelDeclaration resolveDeclaration(std::string name, std::string reference,
                                     bool scene_node_instance,
                                     std::optional<std::string> material_bindings = std::nullopt) {
+    // GP-5: engine://primitives/<name> is claimed before the project file
+    // resolver sees it. The reference is its own identity: nothing is on disk,
+    // so nothing is watched and nothing reloads it.
+    if (isEnginePrimitiveReference(reference)) {
+        requireKnownEnginePrimitive(reference);
+        auto declaration = ModelDeclaration{
+            .name = std::move(name),
+            .reference = reference,
+            .container_key = watch::AssetKey{reference, {}},
+            .scene_node_instance = scene_node_instance,
+            .engine_primitive = true,
+        };
+        if (material_bindings) {
+            declaration.material_bindings = loadMaterialBindings(
+                *material_bindings, declaration.name, {}, declaration.reference);
+        }
+        return declaration;
+    }
     const auto parsed = parsePathReference(reference);
     auto &resolver = GET_MODULE(PathResolver);
     std::filesystem::path physical;
@@ -540,6 +574,27 @@ ModelAssetContainer::~ModelAssetContainer() = default;
 ModelTemplate &ModelAssetContainer::getModelTemplateByName(const std::string &name) {
     if (const auto found = impl_->records.find(name); found != impl_->records.end())
         return found->second.model;
+
+    // GP-5: engine://primitives/<name> resolves without an asset_data entry,
+    // on first use, like a fragment reference below. Scene load, editor
+    // spawn/edit and runtime spawn all reach models through this call.
+    if (isEnginePrimitiveReference(name)) {
+        auto declaration = resolveDeclaration(name, name, false);
+        auto prepared = prepareDeclaration(declaration);
+        auto dependencies = modelDependencies(declaration, prepared);
+        auto model = GET_MODULE(GltfLoader).commit(
+            std::move(prepared),
+            GltfAuthoredAssetReference{declaration.reference});
+        try {
+            applyDeclarationBindings(model, declaration);
+            impl_->add(std::move(declaration), std::move(model), std::move(dependencies));
+        } catch (...) {
+            ReleaseErrorSink::record("failed engine primitive release",
+                                     releaseModelGpuResources(model, false));
+            throw;
+        }
+        return impl_->records.at(name).model;
+    }
 
     const auto parsed = parsePathReference(name);
     if (!parsed.fragment) throw std::out_of_range("unknown model asset: " + name);

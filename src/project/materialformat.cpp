@@ -790,10 +790,13 @@ parsePrimitiveMaterialBindingJson(const nlohmann::json &document_json) {
                                  "' must be a whole GLB/glTF reference without a fragment");
     }
     const auto model_path = std::string_view{document.model};
-    if (!endsWith(model_path, ".glb") && !endsWith(model_path, ".gltf") &&
+    // GP-5: an engine primitive (engine://primitives/<name>) is a whole
+    // generated model; the loader checks it against the declaring asset.
+    if (!startsWith(model_path, "engine://primitives/") &&
+        !endsWith(model_path, ".glb") && !endsWith(model_path, ".gltf") &&
         !endsWith(model_path, ".vrm")) {
         throw std::runtime_error("material binding model '" + document.model +
-                                 "' must end in .glb, .gltf, or .vrm");
+                                 "' must end in .glb, .gltf, or .vrm, or be an engine://primitives/ reference");
     }
 
     const auto &bindings = requireMember(document_json, "bindings",
