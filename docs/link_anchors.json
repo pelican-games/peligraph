@@ -505,7 +505,7 @@
     "docs/manual/13_editor.md|../../src/devstudio/model/graphcanvasmodel.cpp|判定": "bool GraphCanvasModel::canConnect(std::string_view from_node, std::string_view from_port,",
     "docs/manual/13_editor.md|../../src/devstudio/model/graphcanvasmodel.cpp|生成": "Json GraphCanvasModel::addNodeOps(const std::string &op, const std::string &definition) const {",
     "docs/manual/13_editor.md|../../src/devstudio/model/graphcanvasmodel.cpp|配置だけの読みの判定": "const bool placement_only =",
-    "docs/manual/13_editor.md|../../src/devstudio/model/inspectormodel.cpp|`InspectorModel::spawnObject()`": "bool InspectorModel::spawnObject(const std::string &scene_id, Json object) {",
+    "docs/manual/13_editor.md|../../src/devstudio/model/inspectormodel.cpp|`InspectorModel::spawnObject()`": "SpawnOutcome InspectorModel::spawnObject(const std::string &scene_id, Json object) {",
     "docs/manual/13_editor.md|../../src/devstudio/model/inspectormodel.cpp|`addObjectDeclaration()`": "nlohmann::json addObjectDeclaration(AddObjectKind kind, const std::string &name) {",
     "docs/manual/13_editor.md|../../src/devstudio/model/inspectormodel.cpp|`isComponentUnavailableCode()`": "bool isComponentUnavailableCode(std::string_view reason) {",
     "docs/manual/13_editor.md|../../src/devstudio/model/inspectormodel.cpp|`uniqueObjectName()`": "std::string uniqueObjectName(std::string_view base,",
