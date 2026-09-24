@@ -68,7 +68,8 @@ stdio JSON-RPC の枠組み(`jsonrpc` / `id` / `method` / `params`、名前付�
 `pelican.value` と `pelican.render` と `pelican.ui`(GP-3、UI には build OFF の構成が無い)は常に登録され、`pelican.audio` は `PELICAN_WITH_AUDIO=ON`、`pelican.pose` は `PELICAN_WITH_ANIMATION=ON` の build でだけ登録される
 (`pelican.audio` の条件付き登録は PG-1 `533d8d6c` から。登録の `#if` は `src/project/graphmodule.cpp`)。
 下の表は **`PELICAN_WITH_ANIMATION=ON` かつ `PELICAN_WITH_AUDIO=ON` build の `pelican_cli graph-catalog` の出力**を展開したもの(5 module / op 29 本)。
-`change` は parameter を変えたときの既定の扱い(`value` = 値だけ / `rebuild` = 作り直し)、
+`change` は parameter を変えたときの既定の扱い(`value` = 値だけ / `rebuild` = 作り直し)で、
+parameter ごとに既定と違う扱い(catalog の `change.parameters`)があればかっこで添える(AU-1 `feca9dce` の時点で持つのは `audio.playback` だけ)。
 `ports: parameter_dependent` の op は port 一覧を宣言せず node 自身の `inputs` / `outputs` から決まる。
 `?` の付いた入力は任意。
 
@@ -89,7 +90,7 @@ build から外した unit の op(`audio.*` / `pose.*`)だけが欠けてよい�
 | op | module | domain | evaluation | change | sink | ports | inputs | outputs |
 |---|---|---|---|---|---|---|---|---|
 | `audio.pitch` | pelican.audio | values | direct | value | sink | declared | `value`, `voice`? | — |
-| `audio.playback` | pelican.audio | values | replay | value | — | declared | `events`, `time` | `voice`: pelican.audio.voice@1 |
+| `audio.playback` | pelican.audio | values | replay | value(`asset` / `bus` / `wrap` は rebuild) | — | declared | `delay`?, `events`?, `position`?, `source_begin`?, `source_end`?, `speed`?, `time` | `voice`: pelican.audio.voice@1 |
 | `audio.volume` | pelican.audio | values | direct | value | sink | declared | `value`, `voice`? | — |
 | `event.playback` | pelican.value | values | direct | value | — | declared | — | `events`: pelican.event.playback_control@1 |
 | `pose.blend` | pelican.pose | animation | direct | value | — | declared | `a`, `b`, `weight` | `pose`: pelican.pose@1 |

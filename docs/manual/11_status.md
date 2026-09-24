@@ -496,7 +496,7 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 | [design_physics_queries.md](../design_physics_queries.md) | ✅ P1/P2 + shapeCast/Provider ABI V2 + trigger events(WP107/179)。rpc P3/mesh/BVH/rigid simulation は未 | [第8章](08_gameplay.md) |
 | [design_camera_system.md](../design_camera_system.md) | ✅ C1/C2 + user-space 再編の追記 | [第8章](08_gameplay.md) |
 | [design_determinism_services.md](../design_determinism_services.md) | ✅ WP53 | [第8章](08_gameplay.md) |
-| [design_audio.md](../design_audio.md) | ✅ A1(A2/A3 は未) | [第8章](08_gameplay.md) |
+| [design_audio.md](../design_audio.md) | ✅ A1。A2 は AU-1 で共通グラフの `audio.playback` と `playSound(path, "bgm")` に置き換え(Ogg / streaming は AU-2)。A3 は未 | [第8章](08_gameplay.md) |
 | [design_persistence.md](../design_persistence.md) | ✅ WP55 + WP65(P1 実装済み) | [第3章](03_project_format.md)・[第8章](08_gameplay.md) |
 | [design_asset_format_policy.md](../design_asset_format_policy.md) | ✅(KTX2 = WP92 済。状態列は古い) | [第5章](05_assets.md) |
 | [design_asset_containers.md](../design_asset_containers.md) | ✅ K1〜K4(WP77/79/81/84) | [第5章](05_assets.md) |
@@ -556,7 +556,7 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 2. **hello-project(web サンプル)の camera が旧形式**: web で開けて pelican で開けない = サブセット原則違反の実例([第9章](09_web.md) §9.7)。
 3. **`--play-seq` / `--seq-mesh` の相対パスが cwd 基準**([PF] はプロジェクトルート基準と規定)。`--play-vat` は設計どおり。
 4. **project.json の `name` が必須になっていない**([PF] は必須)。欠落は黙って `user://` 無効化に落ちる。
-5. **audio の `playMusic` が存在しない**(設計の API 表にはある)。全 voice は se バス固定。
+5. **audio の `playMusic` は作らず、AU-1(2026-09-25、`feca9dce`)で置き換えた**。BGM とループは共通グラフの `audio.playback`(`bus: "bgm"`)、ゲームコードからは `playSound(path, "bgm")`([第8章](08_gameplay.md) §8.11)。Ogg / streaming は AU-2。
 6. **rpc `raycast` を2026-09-06に接続**。origin/direction/max_distanceから既存PhysWorldのclosest hitを返す。PhysicsContext(旧 GameContext 直下)/PhysWorldの`shapeCast` all/closestは既存WP107の範囲であり、今回RPCには追加しない。
 7. **`debugText` の色・倍率指定を2026-09-06に接続**。`debugText(x,y,text,color,scale)`。省略時は白・等倍(C-8 の facade 分割後は [`RenderContext::debugText`](../../src/core/userpublic/gamecontext.hpp#L159) = `ctx.render().debugText`)。
 8. **OpenXR のセッション再生成はループ未配線**: [design_openxr.md](../design_openxr.md) §9 は swapchain/session 喪失時の再生成を規定するが、現行ループは teardown 要求で終了する(unwind・判定までは実装済み)。

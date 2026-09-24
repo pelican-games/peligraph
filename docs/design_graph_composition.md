@@ -185,7 +185,7 @@ pause/resume/resetは消費して何もしない。これは端末の音声時�
 graphのtimeに到達したイベントをpublish時に反映する。時計consumerと音声sinkは同じeventを
 独立して受け取れる。
 
-Graphはasset参照と時刻の計算を保持し、publishのAudioEventWriterへnode名とcommandを渡す。
+Graphはasset参照と時刻の計算を保持し、publishのAudioEventWriterへnode名とcommandを渡す(2026-09-25 AU-1 で置き換え: publish は `AudioVoiceWriter` へ voice ごと・frame ごとの directive(phase / epoch / bus / position か写像)を渡す。[design_v0_production_gaps.md §9](design_v0_production_gaps.md))。
 成功したeventだけを消費し、false/例外になったeventとその後続を保持する。先に成功したeventを
 再配送しない。Graph::evaluateだけでは音声を操作しない。通常RendererはSceneLoaderのwriterへ
 接続し、描画候補の公開前にAudio::prepareSoundでassetを検査する。audioなしbuildは音声sinkを拒否する。

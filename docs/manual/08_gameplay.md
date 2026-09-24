@@ -157,7 +157,7 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 | ファサード | API | 備考 |
 |---|---|---|
 | [`physics()`](../../src/core/userpublic/gamecontext.hpp#L285) → [`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L48) | `raycastAll(ray, filter)` / `raycastClosest(ray, filter)` / `overlapAll(shape, filter)` / `shapeCastAll(shape, delta, filter)` / `shapeCastClosest(shape, delta, filter)` | §8.8。`filter` は省略可。`PELICAN_WITH_PHYSICS` 無しビルドでは全問い合わせが `BuildFeatureCallDisabledError`(`build_feature_disabled@1`)、provider が 0 本のビルドでは `phys::ProviderUnavailableError`(`physics.provider_unavailable@1`)。どちらも「何にも当たらなかった」とは答えません(下の「機能を外した build」) |
-| [`audio()`](../../src/core/userpublic/gamecontext.hpp#L286) → [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L83) | `playSound(path)`→SoundHandle / `stopSound(h)` / `setBusVolume(bus,v)` / `busVolume(bus)` / `isPlaying(h)` / `setSoundVolume(h,v)` / `setSoundPitch(h,p)` / `setSoundPaused(h,b)` / `soundState(h)`→optional | §8.11。`PELICAN_WITH_AUDIO` 無しビルドは `BuildFeatureCallDisabledError`(`build_feature_disabled@1`。下の「機能を外した build」) |
+| [`audio()`](../../src/core/userpublic/gamecontext.hpp#L286) → [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L83) | `playSound(path)` / `playSound(path, bus)`→SoundHandle / `stopSound(h)` / `setBusVolume(bus,v)` / `busVolume(bus)` / `isPlaying(h)` / `setSoundVolume(h,v)` / `setSoundPitch(h,p)` / `setSoundPaused(h,b)` / `soundState(h)`→optional | §8.11。`PELICAN_WITH_AUDIO` 無しビルドは `BuildFeatureCallDisabledError`(`build_feature_disabled@1`。下の「機能を外した build」) |
 | [`animation()`](../../src/core/userpublic/gamecontext.hpp#L287) → [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L113) | `setParameter(object, name, value)`→`Animation::Status` / `forceState(object, state)`→`Animation::Status` | **`animation` コンポーネントの `graph`**(`pelican.anim_graph`)に装着された評価器を動かす。初回装着の前と取り外し後は `not_found`、シーンのロード/破棄トランザクション中は `phase_order_error`([宣言](../../src/core/userpublic/gamecontext.hpp#L115)) |
 | [`save()`](../../src/core/userpublic/gamecontext.hpp#L288) → [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L122) | `saveData(slot, json)` / `loadData(slot)`→optional / `listSaves()`→`SlotInfo` 列 | §8.12(✅WP65) |
 | [`render()`](../../src/core/userpublic/gamecontext.hpp#L289) → [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L137) ライト | `setDirectionalLightDirection(name, dir)` / `setDirectionalLightIntensity(name, f)` / `setPointLightPosition(name, pos)` / `setSpotLightDirection(name, dir)` — いずれも→bool | ✅WP142。[第4章](04_scene_ecs.md) §4.2 の light をオブジェクト `name` で指す。未知名は例外ではなく **false** が返る |
@@ -180,7 +180,7 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 
 | 呼び出し | build | 返るもの |
 |---|---|---|
-| `ctx.audio()` の 9 本 | `PELICAN_WITH_AUDIO=OFF` | [`BuildFeatureCallDisabledError`](../../src/core/build_features.hpp#L45) を投げる。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_AUDIO"`、`what()` = `This binary was built with PELICAN_WITH_AUDIO=OFF: playSound is unavailable`(呼んだ関数名が入る) |
+| `ctx.audio()` の 9 関数(`playSound` の 2 つの overload を含む) | `PELICAN_WITH_AUDIO=OFF` | [`BuildFeatureCallDisabledError`](../../src/core/build_features.hpp#L45) を投げる。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_AUDIO"`、`what()` = `This binary was built with PELICAN_WITH_AUDIO=OFF: playSound is unavailable`(呼んだ関数名が入る) |
 | 同上を `onInit` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | `playSound` / `stopSound` / `setBusVolume` / `busVolume` / `isPlaying` は同じ例外を投げる。`setSoundVolume` / `setSoundPitch` / `setSoundPaused` は build を見る前に `false` を返す(ロード中は ON の build でも `false`) |
 | 同上を `onDestroy` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | 9 本とも例外にならず、空で答える: 無効な `SoundHandle` / `false` / `0.0` / `soundState` は `nullopt`(✅PG-2b。[`soundState` の包み](../../src/core/userpublic/gamecontext.cpp#L613))。拒否は記録に残る: scene のロード/破棄トランザクションの中ではロード結果の `effect_errors` に `build_feature_disabled@1`(`phase` は `destroy`)、トランザクションの無い `onDestroy`(プレイ中の object 削除、ゲーム DLL の解放、`deactivateAll`)では engine log に `build_feature_disabled@1 in a destruction callback: …`。トランザクションの中の `setSoundVolume` / `setSoundPitch` / `setSoundPaused` は、ON の build と同じく build を見る前に `false` を返すので何も記録されない |
 | `ctx.physics()` の 5 本を `onDestroy` の中で呼ぶ | `PELICAN_WITH_PHYSICS=OFF`、または provider が 0 本 | 例外にならず、空で答える: `raycastAll` / `overlapAll` / `shapeCastAll` は空の配列、`raycastClosest` / `shapeCastClosest` は `nullopt`(✅PG-2b)。これは「何にも当たらなかった」と同じ答えで、見分けられるのは記録だけです。記録は audio と同じ場所(トランザクションの中なら `effect_errors`、無ければ engine log)に、`build_feature_disabled@1` か `physics.provider_unavailable@1` で残る |
@@ -610,20 +610,195 @@ Builtin/Jolt/game DLL provider の交換、ゲーム独自 controller への置�
 
 ウィンドウモードの時刻は実測 dt(上限 0.1 秒でクランプ)なので、厳密なリプレイ互換が必要な検証はヘッドレスで行ってください。
 
-## 8.11 オーディオ(✅A1 = WP51)
+## 8.11 オーディオ(✅A1 = WP51、AU-1 `feca9dce`)
+
+音を鳴らす道は 2 本あります。ゲームコードから 1 回鳴らす `ctx.audio().playSound`(下の「ゲームコードから鳴らす」)と、共通グラフの `audio.playback` ノード(下の「グラフで鳴らす」)です。グラフの voice は「今どこを鳴らすか」をグラフの時計が決めるので、ループ・一時停止・シーンをまたぐ BGM・フェードをグラフの中で組めます。
+
+### ゲームコードから鳴らす
 
 ```cpp
-auto h = ctx.audio().playSound("assets/audio/shot.wav");  // WAV のみ。戻り値はハンドル
-ctx.audio().setBusVolume("se", 0.5f);                     // バスは master / bgm / se の 3 固定
+auto h = ctx.audio().playSound("assets/audio/shot.wav");     // WAV のみ。se バスで鳴る
+auto m = ctx.audio().playSound("assets/audio/theme.wav", "bgm"); // バスを名指し(AU-1)
+ctx.audio().setBusVolume("se", 0.5f);                        // バスは master / bgm / se の 3 固定
 bool playing = ctx.audio().isPlaying(h);
 ctx.audio().stopSound(h);
 ```
 
 - 対応フォーマットは **WAV のみ**(厳格なパーサ。規格逸脱ファイルは名指しで拒否)。再生バックエンドは miniaudio です。
-- ヘッドレス / rpc 実行では自動的に **null バックエンド**(無音・API は全部動く)になります。テストの決定性のためです。
+- `playSound(path)` は se バスで鳴ります。**`playSound(path, bus)`**([宣言](../../src/core/userpublic/gamecontext.hpp#L88))は `"se"` か `"bgm"` を受け、それ以外(`"master"` を含む)は `Unknown audio bus: <名前> (a voice plays on se or bgm)` で投げます。master は se と bgm の両方に掛かる音量で、voice を載せる先ではありません。実効音量は master × 各バスです。
+- **同じアセットの decode は 1 回です**(✅AU-1)。decode した結果はアセットの正規化した参照を鍵に保持し、ディスク上のファイルなら更新時刻とサイズも鍵に含めます(置き換えたファイルは decode し直す)。合計の上限は 256 MB で、超えたときは **どの voice も持っていないもの**から捨てます([`decodedCacheBudget`](../../src/core/audio/audio.cpp#L248))。`playSound`、グラフの voice、rendering config 登録時のアセット検査が同じ decode を共有します。
 - `PELICAN_WITH_AUDIO=OFF` ビルドで音 API を呼ぶと、どのフラグで無効化されたかを言うエラー(`BuildFeatureCallDisabledError`、`code()` = `build_feature_disabled@1`)になります。`onDestroy` の中だけは例外にならず `effect_errors` に積まれます(§8.4「機能を外した build」)。
-- ⚠️ 現状の制限: `playMusic`(ループ BGM)は未実装で、**すべての再生は se バス固定**です。`setBusVolume("bgm")` は受理されますが、bgm バスに音を載せる手段がまだありません。Ogg/ストリーミング/3D 音響も 📐未実装です。
 - **シーンロード中(behavior の `onInit` / `onDestroy`)に呼ぶと、再生・停止・バス音量はロードの成功後にまとめて適用されます**(§8.4 の囲み・[第4章 §4.3](04_scene_ecs.md))。`isPlaying` / `busVolume` はその予約を反映した値を返します。
+
+### どのバックエンドで鳴るか(✅AU-1)
+
+起動の形でバックエンドが決まります([`preferredAudioBackend`](../../src/core/audio/audio.cpp#L286)、[`Audio::Audio()`](../../src/core/audio/audio.cpp#L603))。
+
+| 起動の形 | バックエンド | 音 |
+|---|---|---|
+| 窓あり(Studio に埋め込んだ player を含む) | `device` | オーディオデバイスへ出る |
+| ヘッドレス(`--headless`) | `offline` | デバイスを開かないエンジンへ混ぜる。何も読み出さないので聞こえない |
+| 上のどちらかが開けなかったとき | `null` | 無音。API は全部動く。開けなかった理由が残る |
+
+AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは **rpc で動いていても窓があれば `device`** です(Studio の埋め込み player で音が出るのはこのため)。
+
+どれになったかは rpc の **`get_status` の `audio`** で読めます([`audioStatusJson()`](../../src/core/communication/rpcserver.cpp#L179))。
+
+```json
+"audio": {"available": true, "backend": "device"}
+"audio": {"available": true, "backend": "null", "fallback_reason": "device: <開けなかった理由>"}
+"audio": {"available": false}
+```
+
+- `backend` は `device` / `offline` / `null` のどれかです。`fallback_reason` は null へ退避したときだけ出て、「目指したバックエンド名: 理由」の形です。
+- `available: false` は `PELICAN_WITH_AUDIO=OFF` の build です。Audio module を作っていない host では `backend` が JSON の `null` になります。
+
+### グラフで鳴らす — `audio.playback`(✅AU-1)
+
+`audio.playback` は 1 ノードで 1 つの voice です。catalog の入力と parameter は次のとおりです([登録](../../src/project/graphmodule.cpp#L321))。
+
+| 種類 | 名前 | 意味 |
+|---|---|---|
+| 入力(必須) | `time` | このノードの時計。`events` を使うなら `scene_time` を繋ぐ(下記) |
+| 入力(任意) | `events` | 再生制御イベント(`event.playback` の出力) |
+| 入力(任意) | `position` | 分解版の「今鳴らす音源の秒」 |
+| 入力(任意) | `source_begin` / `source_end` / `speed` / `delay` | 一体版の写像を edge で駆動するとき |
+| parameter | `asset` | 鳴らす WAV(必須) |
+| parameter | `bus` | `se`(既定)/ `bgm` |
+| parameter | `wrap` | `once`(既定)/ `repeat` / `ping_pong` |
+| parameter | `source_begin` / `source_end` / `speed` / `delay` | 一体版の写像を固定値で書くとき |
+
+`asset` / `bus` / `wrap` を変えると **rebuild** です(voice を作るときに決まる値なので。catalog の `change.parameters`)。出力は `voice`(`pelican.audio.voice@1`)で、`audio.volume` / `audio.pitch` の `voice` 入力へ繋ぎます。
+
+組み方は **一体版** と **分解版** の 2 通りで、同じ写像を書けば **同じ音源時刻を指します**。違うのはループ点で途切れるかどうかだけです。
+
+#### 一体版 — 写像を parameter で渡す
+
+`value.playback` と同じ写像(`wrap` / `source_begin` / `source_end` / `speed` / `delay`)を `audio.playback` 自身に書きます。`source_end` を省くと音源の長さ、範囲の長さがそのまま 1 周の長さです(speed 1 で実時間)。一体版は **`events` が必須**で、無いと `unconnected graph input: <node>.events` で拒否されます。
+
+```json
+{"schema": "pelican.graph", "version": 1,
+ "definitions": {
+   "engine_hum": {
+     "nodes": [
+       {"id": "clock", "op": "value.input", "parameters": {"name": "scene_time"},
+        "outputs": ["value"]},
+       {"id": "cue", "op": "event.playback", "outputs": ["events"]},
+       {"id": "voice", "op": "audio.playback",
+        "parameters": {"asset": "project://assets/audio/hum.wav",
+                       "wrap": "repeat", "source_begin": 0.5, "source_end": 1.5},
+        "inputs": {"time": {"node": "clock", "port": "value"},
+                   "events": {"node": "cue", "port": "events"}},
+        "outputs": ["voice"]}
+     ],
+     "outputs": {}}},
+ "nodes": [
+   {"id": "car_hum", "op": "graph.instance", "definition": "engine_hum",
+    "owner": {"scene": "default_scene", "object": 1}}],
+ "outputs": {}}
+```
+
+(`rendering` など pass 文書の他のキーは省略しています。)ゲームコードからは `ctx.render().emitValueGraphEvent(object, "car_hum/cue", Animation::CurvePlaybackCommand::start)` で鳴らします(§8.4。`pause` / `resume` / `reset` も同じ口)。
+
+- `wrap` が `once` / `repeat` で、`speed` / 範囲 / `delay` が**固定値**かつ `speed > 0` のとき、voice は miniaudio のループ点で **sample 精度のネイティブループ**になります([判定](../../src/core/userpublic/valuegraph.cpp#L377))。voice は自分の時計で進み、フレームと mixer の普通のずれでは seek しません。**グラフの時刻と 0.25 s 以上離れたとき**(`set_time` で時刻が飛んだ、engine の時計がフレームを丸めた、など)だけ seek してグラフの時刻へ戻します([`nativeResyncSeconds`](../../src/core/loader/scenegraphruntime.cpp#L19))。
+- それ以外(`ping_pong`、負の `speed`、写像のどれかを edge で駆動)は、下の分解版と同じ追従で鳴ります。
+- `delay` の間と、`once` で範囲の終わりを過ぎた後は止まっています。
+
+#### 分解版 — `value.playback → position`
+
+写像は `value.playback`(あるいはどんなグラフでも)で計算し、その値を `position` に繋ぎます。`position` は「今鳴らす音源の秒」です。
+
+```json
+{"id": "map", "op": "value.playback",
+ "parameters": {"wrap": "repeat", "source_begin": 0.5, "source_end": 1.5, "duration": 1.0},
+ "inputs": {"elapsed": {"node": "clock", "port": "value"}},
+ "outputs": ["value"]},
+{"id": "voice", "op": "audio.playback",
+ "parameters": {"asset": "project://assets/audio/hum.wav"},
+ "inputs": {"time": {"node": "clock", "port": "value"},
+            "events": {"node": "cue", "port": "events"},
+            "position": {"node": "map", "port": "value"}},
+ "outputs": ["voice"]}
+```
+
+- voice は毎フレーム `position` に追従します。音源の長さを法として自分のカーソルと比べ、**`dt + 10 ms` を超えてずれたら seek** します([許容幅](../../src/core/loader/scenegraphruntime.cpp#L191))。`set_time` で時刻が飛べば 1 回 seek して付いていきます。
+- **`position` が前のフレームから動かないフレームでは voice は止まります**(時計を pause すれば音も止まる)。
+- `position` を繋いだノードでは **`events` は任意**です。`events` が無ければ、owner の最初のフレームで鳴り始めます。
+- `events` もあるときは、**voice 自身の pause イベントが `position` より優先**します(`position` が進み続けていても止まる)。resume すると、その時点の `position` へ 1 回 seek します。
+- 分解版は `value.playback` を通すので、ループ点では seek で戻ります(一体版のネイティブループと違い、そこで途切れうる)。
+
+#### 状態と拒否
+
+- 各ノードは **idle / playing / paused** の状態機械を持ちます。`start` で(もう一度 `start` すれば voice を作り直して)playing、`pause` で paused、`resume` で playing に戻り、`reset` で idle(voice を止める)。
+- `position` と写像(`wrap` / `source_begin` / `source_end` / `speed` / `delay` のどれか。parameter でも edge でも)を 1 ノードに同時に書くと **`audio.playback_mapping_conflict@1`** `{node, parameters}`([valuegraph.cpp](../../src/core/userpublic/valuegraph.cpp#L94))。
+- `events` と `position` を両方繋ぎ、`time` が読む時計と `position` が読む時計(上流の `value.input` の `time` / `scene_time`)が違うと **`audio.clock_mismatch@1`** `{node, events_clock, position_clock}`([valuegraph.cpp](../../src/core/userpublic/valuegraph.cpp#L108))。
+- `bus` が `se` / `bgm` 以外なら `unknown audio bus: <名前> (a voice plays on se or bgm)`。
+
+#### events を使うなら `time` に `scene_time`
+
+イベントは **シーン時刻**で刻印されます(`emitValueGraphEvent` はシーン開始からの経過時間を付けて積む)。ノードはそのイベントを `time` 入力の時刻と比べて取り出すので、**`events` を使うノードの `time` には `scene_time` を繋いでください**。`time`(アプリ時刻)を繋ぐと、`start` から数えた経過時間がシーン開始時刻の分だけ多くなり、再生位置がその分ずれます。
+
+⚠️ これは現時点では **規約**で、`events` があって `time` に `time` を繋いだ文書はまだ拒否されません(AU-2 で拒否にする予定)。`position` 側の時計が違う場合だけは上の `audio.clock_mismatch@1` で拒否されます。
+
+#### シーンをまたいで鳴り続ける BGM — `time` に繋いで events 無し
+
+**シーンの commit はそのシーンでグラフが鳴らした voice を全部止めます**([scene.cpp](../../src/core/loader/scene.cpp#L738))。シーンをまたいで同じ位置から鳴らしたい BGM は、位置を **アプリ時刻 `time`** から計算する分解版で組み、各シーンの owner に同じ定義を 1 つずつ付けます。
+
+```json
+{"schema": "pelican.graph", "version": 1,
+ "definitions": {
+   "bgm": {
+     "nodes": [
+       {"id": "now", "op": "value.input", "parameters": {"name": "time"}, "outputs": ["value"]},
+       {"id": "map", "op": "value.playback",
+        "parameters": {"wrap": "repeat", "source_begin": 0, "source_end": 120, "duration": 120},
+        "inputs": {"elapsed": {"node": "now", "port": "value"}},
+        "outputs": ["value"]},
+       {"id": "voice", "op": "audio.playback",
+        "parameters": {"asset": "project://assets/audio/theme.wav", "bus": "bgm"},
+        "inputs": {"time": {"node": "now", "port": "value"},
+                   "position": {"node": "map", "port": "value"}},
+        "outputs": ["voice"]}
+     ],
+     "outputs": {}}},
+ "nodes": [
+   {"id": "title_bgm", "op": "graph.instance", "definition": "bgm",
+    "owner": {"scene": "title", "object": 1}},
+   {"id": "stage_bgm", "op": "graph.instance", "definition": "bgm",
+    "owner": {"scene": "stage", "object": 3}}],
+ "outputs": {}}
+```
+
+(`source_end` / `duration` は音源の長さに合わせてください。`object` は各シーンでの authoring object id です。§6.17「`definitions` と `graph.instance`」。)
+
+- `events` が無いので、owner の最初のフレームで鳴り始めます。
+- シーンを切り替えると前のシーンの voice は止まり、次のシーンの owner の最初のフレームで新しい voice が **その時点の `time` から計算した位置**で鳴り始めます。アプリ時刻はシーンをまたいで連続しているので、曲は同じ位置から続きます(voice は作り直すので、切り替えの瞬間は途切れます)。
+- `scene_time` に繋ぐと、シーンごとに頭から鳴り直します。
+
+#### フェード — `value.curve → audio.volume`
+
+`audio.volume` の `voice` 入力に `audio.playback` の `voice` を繋ぎ、`value` に曲線を繋ぎます。
+
+```json
+{"id": "fade", "op": "value.curve",
+ "parameters": {"keys": [{"time": 0.0, "value": 0.0}, {"time": 2.0, "value": 1.0}]},
+ "inputs": {"time": {"node": "clock", "port": "value"}},
+ "outputs": ["value"]},
+{"id": "level", "op": "audio.volume",
+ "inputs": {"value": {"node": "fade", "port": "value"},
+            "voice": {"node": "voice", "port": "voice"}},
+ "outputs": []}
+```
+
+`audio.volume` の値は **そのフレームの長さ(dt)をかけて直線で寄せます**([`rampSoundVolume`](../../src/core/loader/scenegraphruntime.cpp#L262))。フレーム境界で段が付かず、曲線を折れ線でなぞる音量になります。最初のフレームはその値から始まります(上の例なら無音から)。`audio.pitch` は寄せずにその値を設定します。
+
+### 残した穴(AU-1 の時点)
+
+- **`ping_pong` と負の `speed`** はネイティブループにならず追従で鳴るので、**逆向きに進む区間では毎フレーム seek** になります。
+- **ヘッドレスの本番実行では voice が進みません。** `offline` バックエンドのエンジンを誰も回さない(PCM を読み出す呼び出し元がいない)ためです。音の書き出しは v1 です。
+- **窓付き player の実機で音を聞いての確認はまだです**(自動テストはデバイスを開けることの確認と、`offline` エンジンの PCM で行っています)。
+- 上の「events を使うなら `scene_time`」は規約で、`time` を繋いだ文書を拒否するのは AU-2 です。
+- Ogg / ストリーミングは AU-2、3D 音響は 📐未実装です。
 
 ## 8.12 永続化(✅WP65)
 

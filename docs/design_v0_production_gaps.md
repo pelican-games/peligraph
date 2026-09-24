@@ -270,7 +270,7 @@ GUI session の第二段階(forward / deferred の material ループを Studio 
   - `value.playback`: delay → `sample_interval` の量子化 → speed → **wrap(`once / repeat / ping_pong`、文字列 parameter)** → `source_begin..end`。音源の進む速さは `(end-begin)/duration*|speed|`。数値の 6 項目は literal か edge(lowering で区別できる: `valuegraph.cpp:252-257`)。
   - graph 入力の時計は `time` / `delta_time` / `scene_time`。
 - `audio.playback`(`{asset}`、入力 `events` 必須・`time` → `voice`): **time はイベントの到着判定だけ**。start は常に `playSound` で新しい voice(`scenegraphruntime.cpp:153-172`)。lowering は未知の parameter を拒否(`keys(parameters, {"asset"})`)。
-- **scene の commit は `graph_runtime.clear()` だけで voice を止めない**(`scene.cpp:722-725`。stopAll の類は src に無い)。前の scene の voice は管理外のまま鳴り続ける = **既存の不具合**。scene 内の owner の交代・消失では stop。
+- **scene の commit は `graph_runtime.clear()` だけで voice を止めない**(`scene.cpp:722-725`。stopAll の類は src に無い)。前の scene の voice は管理外のまま鳴り続ける = **既存の不具合**。scene 内の owner の交代・消失では stop。(**2026-09-25 注記: 実装時に誤りと判明**。`~GraphRuntime`(`scenegraphruntime.cpp`)が既に voice を止めていたので、`graph_runtime.clear()` で止まっていた。AU-1 `feca9dce` は commit に明示の停止(`loader.stopGraphVoices()`)を 1 行置いただけ)
 - イベントの時刻は scene 基準(`now - scene_start_time`)。
 - backend: voice は常に Se bus、WAV を全体 decode、start ごとに再 decode、looping / seek / fade 未使用。**headless と rpc は null backend**(cursor が無く「時計を捏造しない」方針: `audio.cpp:269-310, 450-453`)。Studio の player は rpc なので **Studio では音が鳴らない**。config 登録時の検査用 decode は全体 decode(`renderingpassconfigregistration.cpp:1028-1036`)。
 - [design_audio.md](design_audio.md) の A2 は `playMusic(path, loop)` と Ogg ストリーミングを予定していた(未実装)。本節がそれを置き換える。
@@ -278,7 +278,7 @@ GUI session の第二段階(forward / deferred の material ループを Studio 
 
 ### 9.2 決定(AU-1)
 
-1. **scene の commit で graph の voice を全部止める**(既存の不具合の修正。以下の前提)。
+1. **scene の commit で graph の voice を全部止める**(既存の不具合の修正。以下の前提)。(**2026-09-25 注記: 実装時に誤りと判明**。`~GraphRuntime`(`scenegraphruntime.cpp`)が既に voice を止めていたので、`graph_runtime.clear()` で止まっていた。AU-1 `feca9dce` は commit に明示の停止(`loader.stopGraphVoices()`)を 1 行置いただけ)
 
 2. **一体版と分解版**(原則 3: 同じ設定を表す最適化した一体版と、編集できる分解版):
    - **一体版**: `audio.playback` に `value.playback` と同じ時間写像の parameter を持たせる: `wrap`、`source_begin`、`source_end`、`speed`、`delay`(literal または edge)。`wrap: repeat` かつ速さの式が一定のとき、backend は **sample 精度のネイティブループ**(data source の loop point)で鳴らす。
@@ -357,7 +357,7 @@ GUI session の第二段階(forward / deferred の material ループを Studio 
 |---|---|---|---|
 | 1 | 致命 | MG-2 がサブセット原則を破る(web は v1・legacy root のみ)。規模も過小 | §2 を MG-2a / 2b に分割。2b は利用者の裁定待ち。規模を数え直した |
 | 2 | 致命 | `mouse/position` を axis2 にすると clamp と加算で px が壊れる。record の決定性も不成立 | §7.2: action ではなく pointer の状態。sequence に scale を記録 |
-| 3 | 致命 | scene 跨ぎで前の voice が止まらず BGM が二重。イベントと position の優先が未定 | §9.2-1 で既存の不具合を直す。状態機械を表で決めた。時計の基準の混在は拒否 |
+| 3 | 致命 | scene 跨ぎで前の voice が止まらず BGM が二重。イベントと position の優先が未定 | §9.2-1 で既存の不具合を直す。状態機械を表で決めた。時計の基準の混在は拒否(**2026-09-25 注記: 実装時に誤りと判明**。`~GraphRuntime`(`scenegraphruntime.cpp`)が既に voice を止めていたので、`graph_runtime.clear()` で止まっていた。AU-1 `feca9dce` は commit に明示の停止(`loader.stopGraphVoices()`)を 1 行置いただけ) |
 | 4 | 重い | ネイティブループの判定条件不足、剰余の比較、原則 3 の誤用 | §9.2-2: 一体版を明示の parameter にし、分解版との意味の契約を持たせた。比較は剰余 |
 | 5 | 重い | null backend では測れない。Studio で音が鳴らない。design_audio.md を無視 | §9.4 を device 無し engine に。§9.2-9 で Studio は実 device。A2 の置き換えを明記 |
 | 6 | 重い | `.def` で「provider 1 つ以上」を表せない。PG-2 と矛盾 | `physics` = WITH_PHYSICS のみ。provider 0 本は query 時 |

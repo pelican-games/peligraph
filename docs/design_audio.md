@@ -54,6 +54,20 @@ bool isPlaying(SoundHandle) const;
 | A2 | Ogg ストリーミング(BGM)+ フェードイン/アウト + 設定永続化連携 |
 | A3 | 距離減衰/パン + audio_source コンポーネント |
 
+### 4.1 A2 の置き換え(2026-09-25 AU-1 `feca9dce`)
+
+A2 の `playMusic(path, loop)`・BGM バス・フェードは、**AU-1 で次のものに置き換えた**。§2 の `playMusic` は実装しない。
+
+- BGM とループ: 共通グラフの `audio.playback`(parameter `bus: "bgm"`、`wrap: "repeat"` など)。
+  graph の時計が「今どこを鳴らすか」を決める(一体版 = 写像を parameter で持つ / 分解版 = `value.playback → position`)
+- ゲームコードから BGM バスへ: `AudioContext::playSound(path, "bgm")`(`src/core/userpublic/gamecontext.hpp`)
+- フェード: `value.curve → audio.volume`。音量は 1 frame かけて寄せる
+- **Ogg / ストリーミングは AU-2**(AU-1 の時点で対応形式は WAV だけ)
+
+あわせて §0 の「headless / rpc 駆動時は null バックエンド」も AU-1 で変わった: 窓あり(rpc で動く Studio の埋め込み player を含む)は device、
+headless は device を開かない offline エンジン、null は開けなかったときの退避先(理由は `get_status.audio.fallback_reason`)。
+利用者向けの説明は `docs/manual/08_gameplay.md` §8.11。
+
 ## 5. 未決事項
 
 1. Ogg デコーダ: miniaudio 同梱の stb_vorbis で足りるか(A2 で判断)

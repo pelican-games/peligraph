@@ -2780,7 +2780,7 @@ op は **module** が登録します。登録済み module はエンジンに最
 | | `value.trigger_clock` / `value.event_clock` | 状態を持つ時計(`replay`)。トリガ / イベント列で進む |
 | | `event.playback` | 再生制御イベント(`pelican.event.playback_control@1`)の発行口 |
 | | `value.morph_weight` | owner 付き instance の中でだけ使える読み口。`parameters.node` / `parameters.target`(どちらも glTF の index)が指すモーフターゲットの現在 weight を値として引き出す([valuegraph.cpp:180](../../src/core/userpublic/valuegraph.cpp#L280)) |
-| `pelican.audio` | `audio.playback` | イベント列と時刻からボイスを作る(`replay`) |
+| `pelican.audio` | `audio.playback` | ボイスを 1 本鳴らす(`replay`)。入力は `time`(必須)と、任意の `events` / `position` / `source_begin` / `source_end` / `speed` / `delay`。parameter は `asset` / `bus`(`se` / `bgm`)/ `wrap`(`once` / `repeat` / `ping_pong`)と、写像の 4 つの固定値。写像を parameter で持つ一体版と、`position` に従う分解版があり、`asset` / `bus` / `wrap` の変更は rebuild([第8章](08_gameplay.md) §8.11) |
 | | `audio.volume` / `audio.pitch` | **sink**。値をボイスへ渡す |
 | `pelican.render` | `render.buffer` / `render.attribute` / `render.image` | フレームグラフの資源をグラフ側から宣言する |
 | | `render.compute` / `render.fullscreen` / `render.raster` | パス種別をグラフ側から宣言する |

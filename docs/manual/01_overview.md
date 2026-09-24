@@ -97,7 +97,7 @@ pelican2/
 │   │   ├── os/           #   ウィンドウ(GLFW)、入力スナップショット、アクション層
 │   │   ├── phys/         #   物理クエリ(raycast/overlap/shapeCast、provider 境界)
 │   │   ├── playback/     #   SeqPlayer(transform_seq)、VatPlayer、カメラ焼き出し
-│   │   ├── audio/        #   WAV SE 再生(miniaudio)
+│   │   ├── audio/        #   WAV 再生(miniaudio。se / bgm バス)
 │   │   ├── animation/    #   スケルタル/グラフ評価の機構(ABI v1 jobs)
 │   │   ├── ui/           #   pelican.ui ランタイム(レイアウト・atlas)
 │   │   ├── imgui/        #   ImGui 開発 UI + Plan Viewer / Object Tree / Inspector(編集可)/ Asset Browser
