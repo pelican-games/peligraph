@@ -272,7 +272,7 @@
     "docs/manual/08_gameplay.md|../../src/core/appflow/enginetime.cpp|EngineTime::setTime": "void EngineTime::setTime(double t) {",
     "docs/manual/08_gameplay.md|../../src/core/appflow/enginetime.hpp|enginetime.hpp": "DECLARE_MODULE(EngineTime) {",
     "docs/manual/08_gameplay.md|../../src/core/appflow/teardown.hpp|runtime_teardown_order": "inline constexpr std::array runtime_teardown_order{",
-    "docs/manual/08_gameplay.md|../../src/core/audio/audio.cpp|`Audio::Audio()`": "Audio::Audio() {",
+    "docs/manual/08_gameplay.md|../../src/core/audio/audio.cpp|`Audio::Audio()`": "Audio::Audio() : streaming_threshold_seconds{defaultStreamingThresholdSeconds} {",
     "docs/manual/08_gameplay.md|../../src/core/audio/audio.cpp|`decodedCacheBudget`": "constexpr std::size_t decodedCacheBudget = 256u * 1024u * 1024u;",
     "docs/manual/08_gameplay.md|../../src/core/audio/audio.cpp|`preferredAudioBackend`": "AudioBackendKind preferredAudioBackend(bool headless) noexcept {",
     "docs/manual/08_gameplay.md|../../src/core/build_features.hpp|`BuildFeatureCallDisabledError`": "class BuildFeatureCallDisabledError final : public BuildFeatureDisabledError {",

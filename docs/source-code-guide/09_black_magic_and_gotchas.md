@@ -1971,7 +1971,7 @@ marker は自分が属する manifest に digest で縛られます。[`transact
 
 **実際は**: ports を authored parameters から作る factory は、**分類を引き上げることだけ**ができます。[`resolveOperation()`](../../src/project/graphmodule.cpp#L195) は factory の結果に対して `contract.evaluation = std::max(...)` を取り([該当行](../../src/project/graphmodule.cpp#L214))、`direct < replay < baked < recorded` の順で強い方を採ります。理由は AG-2 で現物が出ました — root motion を抽出する `pose.clip_sample` は前フレームの変位を保持するので `replay` で、抽出しない同じ op は `direct` です。`max` なので**カタログの宣言より弱くはなれず**、catalog と実際の node が食い違いません。[`domain`](../../src/project/graphmodule.cpp#L205) / [`parameter_change`](../../src/project/graphmodule.cpp#L215) / [`parameter_changes`](../../src/project/graphmodule.cpp#L216) の 3 つは、factory の値を捨てて登録側の値へ戻します。
 
-評価分類を実際に強制するのは値バックエンドで、状態を渡されずに replay 系の op を評価しようとすると [`graph.evaluation_requires_state@1` の送出](../../src/core/userpublic/valuegraph.cpp#L50) で拒否します。対象は `audio.playback` / `value.event_clock` / `value.trigger_clock` の 3 つ([拒否点](../../src/core/userpublic/valuegraph.cpp#L704))で、**op 名は authored 文書の綴り**で返ります(lowering がモジュール名前空間を落とすので、拒否を読む側がその事情を知らなくて済むように、という取り決めです)。
+評価分類を実際に強制するのは値バックエンドで、状態を渡されずに replay 系の op を評価しようとすると [`graph.evaluation_requires_state@1` の送出](../../src/core/userpublic/valuegraph.cpp#L50) で拒否します。対象は `audio.playback` / `value.event_clock` / `value.trigger_clock` の 3 つ([拒否点](../../src/core/userpublic/valuegraph.cpp#L715))で、**op 名は authored 文書の綴り**で返ります(lowering がモジュール名前空間を落とすので、拒否を読む側がその事情を知らなくて済むように、という取り決めです)。
 
 **不変条件**: factory で `evaluation` を下げないこと。分類の順序(`direct < replay < baked < recorded`)を [`graphcomposition.hpp`](../../src/project/graphcomposition.hpp#L132) の enum 順と別に持たないこと。拒否に lowering 後の綴りを載せないこと。
 
