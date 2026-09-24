@@ -143,8 +143,9 @@ Outliner の右クリックと **Scene** toolbar の **Add Object** は同じ 1 
 - **名前**: 種類の名前(`Empty` / `Cube` / `Plane` / `Sphere` / `Floor`)が空いていればそれ、使われていれば `Cube_001`、`Cube_002`…
   の最小の空き番号です([`uniqueObjectName()`](../../src/devstudio/model/inspectormodel.cpp#L429))。Blender は `Cube.001` と
   書きますが、scene の object 名は `[a-zA-Z0-9_]` だけなので `_` にしています。
-- **選択**: Outliner の読み直しを最短の間隔に縮め、新しい object が Outliner に出た時点でそれを選び、Inspector に出します
-  ([`MainWindow::selectSpawnedObject()`](../../src/devstudio/view/mainwindow.cpp#L1111))。
+- **選択**: Outliner の読み直しを最短の間隔に縮め、committed の応答の `created_objects` が名乗る object が Outliner に
+  出た時点でそれを選び、Inspector に出します([`MainWindow::selectCreatedObject()`](../../src/devstudio/view/mainwindow.cpp#L1154))。
+  ✅OL-1 から authoring id で選びます(それまでは名前で選び直していました)。
 - **Undo**: coalesce key を付けないので、Undo 1 回で Add 1 回が戻ります。
 - **Inspector の編集の途中で押した Add Object は待ちます(✅Q-7)**: Inspector の値の編集が進行中(commit の途中を含む)に
   押すと、spawn は 1 本だけ待ち、Inspector の手が空いた時点で、その編集が残した scene revision の上に送られます
@@ -205,6 +206,48 @@ quaternion の 4 欄(G-5 からの `pelican.inspectorVector.transform.rotation.<
 - G-6 までは、commit のたびに欄を作り直し、focus だけで編集が始まっていました。commit の間に止まった欄から Qt が focus を
   次の欄へ送り、その focus が始めた編集を誰も終わらせないので、Inspector が busy のまま残り(Refresh も他の欄も止まり、
   窓を閉じると未保存の問いが出る)、窓が active のときだけ起きる間欠の故障になっていました。
+
+### Studio の Outliner で複製・削除・付け替える(✅OL-1)
+
+Outliner の行の右クリックの menu の先頭に **Duplicate** と **Delete** があり、その下が Add Object です
+(何も選んでいないときは 2 つとも押せません)。送るのは scene の `edit` 1 回に op 1 つで、Undo 1 回で戻ります(§13.3 の
+`duplicate` / `destroy` / `reparent`)。object は**名前でも宣言の位置でもなく `authoring_object_id` で**指します
+([Outliner の edit の中身](../../src/devstudio/model/outlineredit.cpp#L21))。
+
+- **Duplicate(Ctrl+D)**: 選択中の object を子孫ごと複製します。copy の名前は engine が付けます(`Cube_copy1` など)。
+  複製の後は、committed の応答の `created_objects` のうち、`source_object_id` が複製元のもの(copy の根)を選びます
+  ([Duplicate を送る所](../../src/devstudio/view/mainwindow.cpp#L1203))。
+- **Delete(Del)**: 選択中の object を消します。子孫も一緒に消えます。**子孫があるときだけ** 1 回問います
+  (`Delete <名前>? The N objects under it are deleted too.`、既定の button は Cancel。自動化面の名前は
+  `pelican.outliner.deleteConfirm` と `.delete` / `.cancel`)。子孫が無ければ問わずに消します(Undo で戻せるので)。
+  消した後は親を、親が無ければ前に宣言された兄弟を選びます([Delete の確認](../../src/devstudio/view/mainwindow.cpp#L1217))。
+- Ctrl+D と Del は **Outliner に focus があるときだけ**効きます。Inspector の欄で押した Del は文字を消すだけです
+  ([Outliner の shortcut](../../src/devstudio/view/outlinertree.cpp#L57))。
+- **drag で親を付け替えます**。行を掴んで別の行の上で離すと([落とし先の判定](../../src/devstudio/view/outlinertree.cpp#L81)):
+  - **行の中ほど(上下 1/4 を除いた所)**: その行の object の子になります。画面上の位置は変わりません(`preserve: "world"`)。
+    **Alt** を押したまま離すと、書かれている transform をそのまま持って新しい親に付くので、親と一緒に動きます(`preserve: "local"`)。
+  - **行の上下 1/4(行と行の間)・scene の行の上・最後の行より下**: scene の root に移ります(`new_parent_id: null`)。
+  - **自分の上**・今の親の上・(root にいるときの)root には、何も送りません。
+  - **自分の子孫の上**は送る前に断ります。drag の間は赤い枠と禁止の cursor が出て、離すと
+    `<名前> cannot go under <子孫>: <子孫> is inside <名前>.` が出ます。別の scene の行の上も断ります。
+    Esc で drag をやめられます。
+  - Qt の drag and drop ではなく Outliner 自身の press / move / release なので、自動化面の `drag` で動かせます。
+- **選択と開いた行は authoring id で保ちます。**複製が前に入って宣言の位置がずれても、付け替え・Undo の後も、
+  同じ object が選ばれたまま・開いた行は開いたままです。選択は scene_tree を読み直すたびに id で引き直し、その object が
+  消えたときだけ外れます([id で選択を引き直す所](../../src/devstudio/model/selection.cpp#L71))。保存した scene を engine が
+  読み直したとき(engine の再起動)も、id が同じなので選択は残ります。**別の project を開くと選択は外れます**。
+  Undo / Redo で object が戻ってきたとき(Delete の Undo など)は、その応答の `created_objects` の object を選びます
+  ([committed の後に選ぶ所](../../src/devstudio/view/mainwindow.cpp#L1312))。
+- **断られたとき**は、status bar(8 秒)と Outliner の下の 1 行(`pelican.outlinerNotice`)に 1 文で出ます
+  ([断りの文](../../src/devstudio/model/inspectormodel.cpp#L634))。例: engine が `cycle_detected` で断った付け替えは `Cannot move <名前> under <親>: <親> is inside <名前>.`、
+  preview 中は `Cannot duplicate <名前> while a live preview is open; finish the preview first.`、physics の無い build で
+  collider を含む object の複製は Q-6 と同じ文で `Cannot duplicate <名前>: This build has no physics module (physics.module_unavailable@1).`、
+  もう無い object は `<名前> is no longer in the scene.` です。
+- **Inspector の編集が進行中(commit の途中を含む)のときは断ります。**待たせずに
+  `Finish the edit in progress first, then <操作> again.` を同じ 2 か所に出します
+  ([進行中なら断る所](../../src/devstudio/model/inspectormodel.cpp#L2562))。進行中の編集が同じ object を変えているかも
+  しれないためで、1 本だけ待たせる Add Object(✅Q-7)とは扱いが違います。
+- rename・複数選択の一括操作・scene をまたぐ移動はありません。
 
 ### 起動のしかた
 
@@ -1205,6 +1248,9 @@ widget ではないので、`<view の objectName>::<種類>#<ノード id>[/<po
 例: `pelican.graphCanvasView::graph_value_pill#left/gain`([名前の生成](../../src/devstudio/automation/automationcommands.cpp#L209))。
 `list` は widget 名と合成名の両方を返すので、**ソースを読まずに一覧からシナリオを書けます**。
 `type` / `key` / `text` は item が抱えている埋め込み widget へ届きます。`select{name, text|index}` は item view の行を本物の click で、combo は index を直接置いて選び、`wait{enabled}` は有効化を待ちます(AG-3b)。出力 port の帯は `graph_value_band#<node>/<port>`([経路](../../src/devstudio/automation/automationcommands.cpp#L409))。
+list や tree の行そのものは **`<view の objectName>::row#<表示の文字>`**(✅OL-1)で指します。対象は画面に出ている行だけで
+(閉じた枝の中の行は見つかりません)、view をその行まで scroll してから行の中央を押すので、`drag` の始点・終点や
+`wait{missing}` に使えます(例: `pelican.outliner::row#Floor`。[行の名前を引く所](../../src/devstudio/automation/automationcommands.cpp#L325))。
 
 **✅Q-1b で 7 個増えました** —— `wheel` / `move` / `press` / `release` と `action` / `menu_list` / `view_state` です
 (`drag` は `button` を取れるようになりました)。`press` / `move` / `release` は「いまどの button を押しているか」を
@@ -1255,7 +1301,7 @@ layout をそこに残していました。テーマの選択はこの directory
 `studio_exit_code` と `studio_shutdown_forced` も記録します。最後の shutdown step は
 **exit 0、強制終了なし**を要求し、異常終了・タイムアウトによる強制停止も report と driver の失敗になります。
 
-現在のシナリオは **20 本**です。
+現在のシナリオは **21 本**です。
 `graph_read` は fixture を Graph タブで開き、`list` が objectName を返すこと・無い名前が
 `automation.widget_missing@1` で断られること・キャンバスが描いたものが `get_graph_instances` の中身と合うことを見ます
 ([シナリオ](../../test/studio_scenarios/graph_read.json))。`graph_edit_roundtrip` は**実物の engine で**値の帯を
@@ -1325,6 +1371,16 @@ drag すると viewport の中央に背景とも前の gradient とも違う色�
 描かれず、Deferred geometry の pass で迂回していました。G-4 で理由が分かり(material pass が 1 つも無いうちに置いた cube は
 検査されず、forward の pass を足す編集も「前の世代が使っていた route の消失だけを断る」旧規則を通っていた)、forward に
 戻っています。
+✅OL-1 の `outliner_edit_roundtrip`(55 step)は、File > New Project... で Blank pipeline の project を作り、Add Object で
+Cube と Floor を置きます(どちらも置いた時点で選ばれることを見ます)。Cube の行を選んで Duplicate を action で発火し、copy の
+`Cube_copy1` が Cube の直後に宣言され(Floor が 1 つ下がる)、選ばれるのが Cube でも Floor の元の位置の object でもなく copy で
+あることを見ます。`Cube_copy1` の行を `Floor` の行へ `drag` すると engine の scene で Floor の子になり、選択は copy のまま、
+Inspector の Undo(`pelican.inspectorUndo`)で root に戻っても copy のままです。Delete は子孫が無いので問わずに消し、前の兄弟の
+Cube が選ばれ、copy の行が消えることを見ます。Save Scene の後、保存した scene に copy が無いことを `file` step で見て、Cube の
+authoring id を覚え、`pelican.viewportStop` / `pelican.viewportRestart` で engine を保存済みの scene で起動し直し、Cube が
+同じ authoring id で 3 つ目にあり、選択が Cube のままで、Inspector が新しい engine から Cube を読むことを確かめます
+([Outliner 編集のシナリオ](../../test/studio_scenarios/outliner_edit_roundtrip.json))。Alt の drag と行の間への drop は
+シナリオでは通さず、widget test(`devstudio_outliner_edit_test`)だけです。
 ✅G-5 の 2 本は、第二段階の筋書きを Blank pipeline から Studio の操作だけで追います。
 `forward_loop_from_scratch`(98 step)は File > New Project... で Blank pipeline の project を作り(名前は提案された
 `project_001` のまま)、Add Object で Cube と Floor を置きます(Floor が箱の下にあり広いことを Inspector の欄で見ます)。
@@ -1600,6 +1656,7 @@ with PelicanRpc(["pelican_player", "--headless", "--rpc", "--project", "mygame"]
 | Qt Studio からの編集 RPC 利用(D2) | ✅WP266/275。Inspector と gizmo が同じ preview lease / undo / save を利用 |
 | ID バッファピッキングの engine/RPC 基盤 | ✅WP262 |
 | Qt Studio の viewport / Outliner 選択同期 | ✅WP264 |
+| Qt Studio の Outliner の複製・削除・drag での付け替え(選択は authoring id で保つ) | ✅OL-1 `546a4e70` |
 | 汎用 gizmo feature/RPC と Qt Studio のドラッグ操作 | ✅WP274/275 |
 | 解決失敗を値で返す(`resolution_error`) | ✅WP378 |
 | `not_editable` / `component_unknown@1` の切り分け | ✅WP379/379a |

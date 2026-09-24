@@ -25164,6 +25164,49 @@ engine の変更 / physics の無い build での代わりの picking(GPU pickin
 - **test**(`devstudio_graphcanvas_scene_test`): `Q-8 a ui sink's node field lists the UI document, and the palette …` / `Q-8 without a UI document the field says why and the palette …` / `Q-8 the UI document's paths are the engine's: ids joined from the root`。変異(commit の記録): path を出さない → 赤 / 置くときに node を入れない → 赤
 - **テキスト入力の欄(受け入れ 5)**: #35 は、UI 文書に当てはまる node があれば打たずに済む(置いた時点で入り、別の node は一覧から選ぶ)。打つ欄は残る
 
+### OL-1(GUI): Outliner で object を複製・削除・付け替える —— key を authoring id に(engine 側は別 session の OL-1。利用者承認の分担)
+
+**中段(Studio のみ)。実装者: Claude(Opus)。engine の op は全部既存 / OL-1 engine で揃う。Studio は送るだけ。**engine 側の記録は V0-ADD の OL-1(`9645dc71`)。
+
+#### 前提(別 session からの契約、2026-09-25)
+- **duplicate**: `{"op":"duplicate","object_id":N}`(任意 `declaration_index`。省略で複製元の subtree の直後)。子孫もまとめて複製、subtree 内の parent 参照は新しい名前へ。名前は `<元>_copy<N>`(空いている最小の N)。prefab instance は instance ごと。undo 1 手。拒否: 知らない field `invalid_params` / 無い object `closure_unresolvable` / 範囲外 index `schema_violation` / preview 中 `editor_preview_unsupported@1` / physics OFF で collider を含む `physics.module_unavailable@1`
+- **destroy**: `{"op":"destroy","object_id":N}`。子孫はまとめて消える(拒否しない)。undo 1 手で子孫ごと戻る。無い object `closure_unresolvable`
+- **reparent**: `{"op":"reparent","object_id":N,"new_parent_id":M|null,"preserve":"world"|"local"}`(4 つとも必須。root へは `null`)。拒否: `preserve_missing` / `parent_not_found` / `schema_violation`(子に名前が無い)/ `cycle_detected` / `zero_scale` / `non_finite_transform` / `trs_unrepresentable`。undo 1 手で元の親と transform
+- `get_edit_result` の committed に `affected_authoring_ids` と `created_objects`(`object_id`, `scene_id`, `declaration_index`, `name`, `source_object_id`)
+- `scene_tree` の各 object に `authoring_object_id`。save → reopen で安定(例外: snapshot の import は振り直す)
+- 起票時の Studio の Outliner の key は declaration_index。G-2 の Add Object は作った object を名前で選び直していた
+
+#### 決定
+1. Outliner の key を `authoring_object_id` に。選択と展開の状態を id で保つ。declaration_index は表示順にだけ使う
+2. 右クリックと shortcut: Duplicate(Ctrl+D)、Delete(Del。子孫がいれば確認を 1 回、いなければ確認なし —— undo できるので)。複製後は `created_objects` の新しい object を選ぶ。削除後は親か前の兄弟を選ぶ
+3. D&D で付け替え: 行の上に落とすとその子に(`preserve: "world"`)、行の間に落とすと root へ(`new_parent_id: null`)。自分の子孫の上には落とせない(Studio 側で先に止める。engine の `cycle_detected` も名前で出す)。Alt で `preserve: "local"`
+4. 拒否は 1 行の文で Outliner の下の notice(Q-7 の `pelican.outlinerNotice`)に。physics OFF の複製の拒否は Q-6 と同じ文
+5. G-2 の Add Object も `created_objects` で新しい object を選ぶ(名前での選び直しをやめる)
+6. automation: シナリオ `outliner_edit_roundtrip`(blank project → Cube と Floor → Cube を Duplicate → `Cube_copy1` が選ばれる → Floor の子に D&D → Undo で戻る → Delete → 保存 → 開き直して選択が id で残る)
+
+#### 受け入れ
+1. model / widget test: 複製で送る edit の中身、`created_objects` の object が選ばれる、削除の確認は子がいるときだけ、D&D の 3 通り(子に / root へ / Alt で local)、自分の子孫の上に落とせない(対照: key を declaration_index に戻す変異で「複製後も元の object が選ばれている」test が赤)
+2. シナリオ `outliner_edit_roundtrip` 緑、既存の `add_primitive_object` も緑
+3. 触った面の既存 test 緑。非 GPU 全数は統合側
+4. 報告にテキスト入力の欄(増やさないこと。rename は範囲外)
+
+#### やらないこと
+rename / 複数選択の一括操作 / scene をまたぐ移動。
+
+#### 着地(2026-09-25、546a4e70)
+- **key**: Outliner の行は scene・declaration_index・authoring id の 3 つを持ち、展開の状態は authoring id で引き継ぐ([行に id を持たせる所](../src/devstudio/view/mainwindow.cpp#L1022))。選択は scene_tree を読み直すたびに id で引き直し、その object が消えたときだけ外す([id で選択を引き直す所](../src/devstudio/model/selection.cpp#L71))。declaration_index で選んだ(picking など)ときも、選択には authoring id ごと入る
+- **Duplicate / Delete**: 右クリックの menu の先頭と、tree に focus があるときだけの Ctrl+D / Del(Inspector の欄の Del は object を消さない)。何も選んでいなければ無効。Delete は子孫があるときだけ `Delete <名>? The N objects under it are deleted too.` を 1 回問う(既定は Cancel。[削除の確認](../src/devstudio/view/mainwindow.cpp#L1217))。複製の後は `created_objects` のうち `source_object_id` が複製元のものを選ぶ。削除の後は親、無ければ前の兄弟を選ぶ。**undo / redo で object が戻ったときも**、その応答の `created_objects` の object を選ぶ([committed の後に選ぶ所](../src/devstudio/view/mainwindow.cpp#L1312))
+- **D&D**: Qt の drag and drop(`QDrag` の modal loop)ではなく tree 自身の press / move / release。行の上下 1/4 は「行の間」で root へ。**scene の行の上と最後の行より下も root へ**。自分の上に落とすと何もしない(今の親の上・root にいて root へも同じ)。自分の子孫の上は送る前に断る(赤い枠と禁止の cursor)。別の scene の行の上も断る。Esc で drag をやめる([落とし先の判定](../src/devstudio/view/outlinertree.cpp#L81)、[送る edit を決める所](../src/devstudio/model/outlineredit.cpp#L53))
+- **進行中の編集があると断る(待たせない)**: Inspector の編集が進行中(commit の途中を含む)に Outliner の編集を押すと、`Finish the edit in progress first, then <操作> again.` で断る([断る所](../src/devstudio/model/inspectormodel.cpp#L2562))。進行中の編集が同じ object を変えているかもしれないため。Add Object(Q-7)は 1 本待たせるのと違う
+- **拒否の文**: engine の拒否 code を操作ごとの 1 文にして status bar と `pelican.outlinerNotice` に出す([拒否の文](../src/devstudio/model/inspectormodel.cpp#L634))。physics OFF は Q-6 の表の文(`Cannot duplicate <名>: This build has no physics module (physics.module_unavailable@1).`)
+- **G-2 の Add Object** は spawn の `created_objects` で新しい object を選ぶ([作った object を選ぶ所](../src/devstudio/view/mainwindow.cpp#L1154))。名前は次の Add の連番のためだけに持つ
+- **automation**: 合成名 `<list か tree の objectName>::row#<表示の文字>` を足した([行の名前を引く所](../src/devstudio/automation/automationcommands.cpp#L325))。閉じた枝の中の行は見つからない。`drag` の始点・終点と `wait{missing}` に使う
+- **「開き直して選択が残る」の確かめ方**: シナリオは保存の後に engine を止めて保存済みの scene で起動し直し、Cube の authoring id が同じで選択が Cube のままであることを見る。**別の project を開くと選択は外れる**(設計どおり。project を結び直すと選択は空になる)
+- **test**: `devstudio_outliner_test`(model: id で送る / Drop の 3 通り / `created_objects` から選ぶ / 前に copy が入っても選択が id で残る)、`devstudio_inspector_test`(edit が session の 1 手で、終わりが作った object を名乗る / spawn の終わり / 拒否の 1 文)、新しい `devstudio_outliner_edit_test`(本物の MainWindow を RPC の transport 越しに。既存の Inspector widget test と同じく `#define private public` で member に届く)。変異(commit の記録): 引き当てを index だけに → 複製の test が赤 / 子孫の検査を外す → 落とせない test が赤
+- **シナリオ** `outliner_edit_roundtrip`(55 step)緑。undo は Inspector の Undo で押す
+- **テキスト入力の欄(受け入れ 4)**: 増やしていない
+- **穴**: Alt の drag と「行の間」は widget test だけ(シナリオは行の上への drag 1 回)。physics OFF の拒否の文は model test だけ。`add_primitive_object` が G-4 の再起動の直後に 1 回赤(`wait_engine` は通り、次の step が `automation.engine_not_ready@1`)。OL-1 の外の、再起動の readiness の競合で、原因は未確認。後の修正に回す
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**

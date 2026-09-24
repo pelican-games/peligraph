@@ -2142,7 +2142,7 @@ standard / toon に続く**特権なしの standard library surface** として�
 ### 現状と重要な限界
 
 - レンダラ接続は ✅ — `.surface` → コンパイル → パイプライン → SSBO → 描画まで golden(`surface_toon` / `skeletal_toon` / `openpbr_coat_sphere`)で実証済みです。
-- project 宣言レーンは ✅WP240c — `.material.json` を起動時に読み込み、binding でモデルへ割り当てた OpenPBR を実 GPU golden まで検証しています。宣言例と strict `pelican.asset_data` v1 は [第5章](05_assets.md) §5.2 を参照してください。
+- project 宣言レーンは ✅WP240c — `.material.json` を起動時に読み込み、binding でモデルへ割り当てた OpenPBR を実 GPU golden まで検証しています。宣言例と strict `pelican.asset_data`(version 2 だけ。MG-2b から version 1 は `pelican.asset_data.version_unsupported@1` で断られます)は [第5章](05_assets.md) §5.2 を参照してください。
 - **per-instance マテリアルオーバーライド**(factor / UV の乗算 + material 別の絶対上書き)は ✅WP122/122b で renderer 機構として実装済みです。公開の書き込み面は VRM application service([第8章](08_gameplay.md) §8.13)経由で、GameContext API はありません。
 - **spv-link(M3b/WP80)は experimental**: build時に`PELICAN_WITH_SPIRV_LINK=ON`、実行時に環境変数 `PELICAN_SPV_LINK=experimental` の両方を明示した場合だけ SPIR-V リンクバックエンドに切り替わります。build unitの既定はOFF、runtimeの既定は常にソース経路です。
 - 設計文書 [../design_material_shading.md](../design_material_shading.md) は v1.2 のまま実装が追い越しています。**現行契約の正は [../shader_contract.md](../shader_contract.md)** です。
@@ -2245,7 +2245,7 @@ v1 の制限: snapshot は **1 個だけ・不透明描画後の 1 点のみ**(�
 
 `sprite.json` は RT もパスも足さない**純ゲート**で、参照すると canonical anchor(§6.5)の 8 個のうち先頭の `sprite` の位置(3D 不透明の後・ポスト処理の前)で、直近の scene color + depth に対して depth test ON / write OFF で描かれます(color/depth が無い構成では名指しエラー)。
 
-- **コンポーネント** `sprite_view`(scene v1・closed schema): `texture`(必須。`"demo_atlas#sprite/full"` 形式の atlas 参照)/ `size`(vec2)/ `pivot`(既定 [0.5,0.5])/ `color` / `flip`([flip_x, flip_y])/ `layer`(int16)/ `billboard`(`none|y_axis|full`)。スプライトは常に **XY 平面 + Z 法線**(2026-07-12 決定。床置きは Transform の回転で表現)。ランタイム生成は `GameContext::createSpriteObject(...)`([第8章](08_gameplay.md))。
+- **コンポーネント** `sprite_view`(scene v2・closed schema): `texture`(必須。`"demo_atlas#sprite/full"` 形式の atlas 参照)/ `size`(vec2)/ `pivot`(既定 [0.5,0.5])/ `color` / `flip`([flip_x, flip_y])/ `layer`(int16)/ `billboard`(`none|y_axis|full`)。スプライトは常に **XY 平面 + Z 法線**(2026-07-12 決定。床置きは Transform の回転で表現)。ランタイム生成は `GameContext::createSpriteObject(...)`([第8章](08_gameplay.md))。
 - **pixel policy**(✅WP106): `project.json` の `basic_config.sprite.pixels_per_unit`(既定 100.0)と、カメラの `sprite: {"pixel_perfect": "off"|"strict", "sort": "z"|"y_down"|"declaration"}`。`strict` の成立条件(正射影・整数ズーム・nearest・非 billboard 等)は、どれも「テクスチャの 1 テクセルが画面上のちょうど整数個のピクセルに落ちる」ために要るものです — 実際の判定は `zoom = (1 / pixels_per_unit) / (1 ピクセルあたりのワールド長)` を計算し、これが**整数・1 以上・縦横で同値**であることを確かめます([pixelpolicy.cpp](../../src/core/userpublic/sprite/pixelpolicy.cpp#L24))。満たされない場合は **silent fallback せず**理由付き WARN + `get_status.sprite` に状態が出ます。
 - **flipbook**(✅WP106): コンポーネントではなく公開 stdlib API `Pelican::sprite::FlipbookClip`(ゲームコードが決定的な local time を渡す)。実例: `projects/sprite_demo/code/flipbook_demo.cpp`。
 - 実例プロジェクト: [../../projects/sprite_demo](../../projects/sprite_demo)(WP109 の横スクロール vertical slice。操作系は [第8章](08_gameplay.md))。golden はスプライト系 9 ケースで回帰保護。
@@ -2870,7 +2870,7 @@ ANIMATION と AUDIO が ON の build では 5 module / 29 op。ANIMATION=OFF で
 
 ## 関連文書
 
-- [../v0_freeze.md](../v0_freeze.md) — v0 の凍結一覧。§1.3 が共通グラフの module / op / 型 / sink の表の正本(§6.17)、§1.6 が 2 つの root と 2 つの装着様式
+- [../v0_freeze.md](../v0_freeze.md) — v0 の凍結一覧。§1.3 が共通グラフの module / op / 型 / sink の表の正本(§6.17)、§1.6 が [rendering config の root と 2 つの装着様式](../v0_freeze.md#16-rendering-config-の-root-と-2-つの装着様式)
 - [../design_graph_composition.md](../design_graph_composition.md) — 共通グラフの合成(instance の入力 parameter、装着編集)の設計の正
 - [../shader_contract.md](../shader_contract.md) — シェーダ契約(set 規約・FrameUBO・.surface フック・snapshots)の正
 - [../design_color_pipeline.md](../design_color_pipeline.md) — カラーパイプライン(v4・実装済み)
