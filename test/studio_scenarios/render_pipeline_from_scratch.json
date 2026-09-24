@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "render_pipeline_from_scratch",
-  "description": "F-4: the first 'build it from zero' story, done with Studio. File > New Project... makes a Blank pipeline project, whose present draws a gradient to display. New render target... declares scene_color with only a name. Add fullscreen pass... puts draw_pattern before present, writing scene_color, with a fragment shader New... writes and the author's editor turns into stripes; saving the pass compiles it. Then present should read scene_color, and here Studio cannot follow: present is declared in the blank project's direct root, the engine edits passes of a preset or a feature only, and the Pass Editor says so (checked). The detour is the author's own editor, on the root and on present.frag, and a re-open so the engine reads them. The viewport then shows stripes -- a few colours, the same colour down a stripe, another across it -- and opening the project once more gives the same canvas and the same picture, because it is all in the document.",
+  "description": "F-4: the first 'build it from zero' story, done with Studio. File > New Project... makes a Blank pipeline project, whose present draws a gradient to display. New render target... declares scene_color with only a name. Add fullscreen pass... puts draw_pattern before present, writing scene_color, with a fragment shader New... writes and the author's editor turns into stripes; saving the pass compiles it. Then present reads scene_color: F-6 lets the Pass Editor edit a pass the blank project's direct root declares, so scene_color is added to present's inputs there and Save writes the root, after the author's editor turns present.frag into a pass-through. The viewport then shows stripes -- a few colours, the same colour down a stripe, another across it -- and opening the project once more gives the same canvas and the same picture, because it is all in the document.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -220,9 +220,9 @@
       "name": "pelican.framePlan.fitView"
     },
     {
-      "label": "pick present",
+      "label": "pick present by its heading (F-6: its middle is now the shader band, which a press edits)",
       "cmd": "click",
-      "name": "pelican.framePlanLogicalView::node#present"
+      "name": "pelican.framePlanLogicalView::node_header#present"
     },
     {
       "label": "Add fullscreen pass..., fired by name",
@@ -400,34 +400,41 @@
       "name": "pelican.framePlan.fitView"
     },
     {
-      "label": "open present in the Pass Editor, to add scene_color as its input",
+      "label": "open present in the Pass Editor by its heading, to add scene_color as its input",
       "cmd": "double_click",
-      "name": "pelican.framePlanLogicalView::node#present"
+      "name": "pelican.framePlanLogicalView::node_header#present"
     },
     {
-      "label": "HOLE: the Pass Editor refuses, because present is declared in a direct root and the engine does not edit those",
+      "label": "the Pass Editor holds present, declared in the blank project's own root",
       "cmd": "wait",
-      "name": "pelican.fullscreenPass.authoringStatus",
-      "contains": "present: not editable in a direct root",
+      "name": "pelican.fullscreenPass.name",
+      "text": "present",
       "timeout_ms": 60000
     },
     {
-      "label": "and the form does not blame its own JSON for the refusal (it read a type out of nothing before F-4)",
+      "label": "Save writes the root, not a preset",
       "expect": "text_equals",
-      "name": "pelican.fullscreenPass.axis.fieldOwnership",
-      "value": "\u2713 fields"
+      "name": "pelican.fullscreenPass.save",
+      "value": "Save"
     },
     {
-      "label": "a picture of the refusal",
-      "expect": "screenshot",
-      "path": "step4_refusal.png"
+      "label": "the engine offers present as the root's own pass",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].editable_root_pass",
+      "value": true
     },
     {
-      "label": "DETOUR: present reads scene_color, typed into the root in the author's own editor",
-      "file": "replace",
-      "path": "{artifacts}/blank_project/passes/main_rendering_config.json",
-      "old": "\"input\": []",
-      "new": "\"input\": [\"scene_color\"]"
+      "label": "choose scene_color among the inputs",
+      "cmd": "select",
+      "name": "pelican.fullscreenPass.inputTarget",
+      "text": "scene_color"
+    },
+    {
+      "label": "Add it as input 0",
+      "cmd": "click",
+      "name": "pelican.fullscreenPass.addInput"
     },
     {
       "label": "present.frag passes input 0 through, typed in the author's own editor",
@@ -436,25 +443,49 @@
       "text": "#version 460\n#extension GL_GOOGLE_include_directive : require\n#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\nPELICAN_DECLARE_INPUT_0(in_scene_color);  // scene_color\n\nvoid main() {\n    outColor = PELICAN_TEXTURE_2D_0(in_scene_color, inUV);\n}\n"
     },
     {
-      "label": "DETOUR, so the engine reads the hand edits: open another project (the untouched fixture copy), so the next open is a real one",
-      "cmd": "open_project",
-      "dir": "{other_project}"
+      "label": "Save is ready",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.save",
+      "enabled": true,
+      "timeout_ms": 60000
     },
     {
-      "label": "DETOUR, so the engine reads the hand edits: that engine answers",
-      "cmd": "wait_engine",
-      "timeout_ms": 180000
+      "label": "save present: edit_preset_pass on the root, whose preflight and pipeline rebuild compile the new present.frag",
+      "cmd": "click",
+      "name": "pelican.fullscreenPass.save"
     },
     {
-      "label": "DETOUR, so the engine reads the hand edits: open the new project again, which the engine reads from disk",
-      "cmd": "open_project",
-      "dir": "{artifacts}/blank_project"
+      "label": "the engine's present reads scene_color",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].declaration.input[0]",
+      "value": "scene_color",
+      "retry_ms": 60000
     },
     {
-      "label": "DETOUR, so the engine reads the hand edits: the re-read engine answers and has presented frames",
-      "cmd": "wait_engine",
-      "timeout_ms": 180000,
-      "frames": 30
+      "label": "and so does the root's declaration of it",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].root_declaration.input[0]",
+      "value": "scene_color"
+    },
+    {
+      "label": "the edit is in the root document itself",
+      "file": "contains",
+      "path": "{artifacts}/blank_project/passes/main_rendering_config.json",
+      "text": "\"scene_color\""
+    },
+    {
+      "label": "a picture of the saved Pass Editor",
+      "expect": "screenshot",
+      "path": "step4_saved.png"
+    },
+    {
+      "label": "close the Pass Editor (View > Panels) to look at the Frame Plan",
+      "cmd": "action",
+      "name": "pelican.view.panels.fullscreenPassDock"
     },
     {
       "label": "step 5: the viewport holds a handful of colours, not a gradient's thousands",

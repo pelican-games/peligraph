@@ -43,16 +43,43 @@ bool isEditablePassType(std::string_view type) {
            isEditableAuxiliaryPass(type);
 }
 
-OrderedJson *findPresetEditablePass(OrderedJson &preset, const std::string &graph_name,
-                                      const std::string &pass_name) {
-    for (auto &graph : preset.at("config").at("rendering_passes")) {
-        if (graph.at("name") != graph_name) continue;
-        for (auto &pass : graph.at("passes")) {
-            if (pass.value("name", std::string{}) == pass_name &&
+// One rule for "the editable declaration of this pass" in a
+// `rendering_passes` list, whichever document holds the list: a project
+// preset's `config` or, F-6, a direct root's own rendering section.
+OrderedJson *findEditablePassIn(OrderedJson &rendering_passes, const std::string &graph_name,
+                                const std::string &pass_name) {
+    if (!rendering_passes.is_array()) return nullptr;
+    for (auto &graph : rendering_passes) {
+        if (!graph.is_object() || graph.value("name", std::string{}) != graph_name) continue;
+        const auto passes = graph.find("passes");
+        if (passes == graph.end() || !passes->is_array()) continue;
+        for (auto &pass : *passes) {
+            if (pass.is_object() && pass.value("name", std::string{}) == pass_name &&
                 isEditablePassType(pass.value("type", std::string{}))) return &pass;
         }
     }
     return nullptr;
+}
+
+OrderedJson *findPresetEditablePass(OrderedJson &preset, const std::string &graph_name,
+                                      const std::string &pass_name) {
+    return findEditablePassIn(preset.at("config").at("rendering_passes"), graph_name, pass_name);
+}
+
+// F-6: the pass a direct root declares itself, found in the root's rendering
+// section. Null for a preset root's passes, and for anything the root does not
+// declare (a feature's pass, or what the engine adds such as output_transform).
+OrderedJson *findRootEditablePass(OrderedJson &root, const std::string &graph_name,
+                                  const std::string &pass_name) {
+    if (!root.is_object()) return nullptr;
+    OrderedJson *section = &root;
+    if (root.value("schema", std::string{}) == "pelican.graph") {
+        const auto rendering = root.find("rendering");
+        if (rendering == root.end() || !rendering->is_object()) return nullptr;
+        section = &*rendering;
+    }
+    const auto passes = section->find("rendering_passes");
+    return passes == section->end() ? nullptr : findEditablePassIn(*passes, graph_name, pass_name);
 }
 
 OrderedJson &featureSourceFragment(OrderedJson &feature, std::string_view provider) {
@@ -1694,6 +1721,16 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
         resolved.pipeline_preset->reference.starts_with("project://")) {
         editable_preset = OrderedJson::parse(*resolved.pipeline_preset_bytes);
     }
+    // F-6: a direct root edits the passes it declares itself; a preset root
+    // never does (its passes are the preset's).
+    std::optional<OrderedJson> editable_root;
+    if (!resolved.pipeline_preset) {
+        try {
+            editable_root = OrderedJson::parse(document_.bytes());
+        } catch (const std::exception &) {
+            editable_root.reset();
+        }
+    }
 
     std::unordered_map<std::string, const RenderPassProvenance *>
         provenance;
@@ -1736,6 +1773,11 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
                 : nullptr;
             encoded["editable_preset_pass"] = preset_pass != nullptr;
             if (preset_pass) encoded["preset_declaration"] = *preset_pass;
+            auto *root_pass = editable_root
+                ? findRootEditablePass(*editable_root, graph.at("name").get<std::string>(), name)
+                : nullptr;
+            encoded["editable_root_pass"] = root_pass != nullptr;
+            if (root_pass) encoded["root_declaration"] = *root_pass;
             const auto source = provenance.find(name);
             encoded["editable_feature_pass"] = false;
             if (source != provenance.end() && source->second->source == RenderPipelineProvenanceSource::feature) {
@@ -2445,6 +2487,87 @@ OrderedJson RenderConfigEditorService::editRegionReplacement(const Json &params)
     }
 }
 
+namespace {
+
+// The replacement rule edit_preset_pass applies to one editable declaration,
+// whichever document holds it (a project preset, a project feature or, F-6, a
+// direct root): each pass type has its own field set, an omitted field keeps
+// its value, and a raster pass's `raster_state: null` removes the member.
+// `routing_config` is the object that owns `material_routing`; only a preset
+// has one here.
+void applyEditablePassFields(const Json &params, OrderedJson &pass, OrderedJson *routing_config,
+                             const char *method) {
+    if (isEditableAuxiliaryPass(pass.at("type").get<std::string>())) {
+        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "output", "shader", "ray_query"}, method);
+        bool changed = false;
+        for (const auto *key : {"output", "shader", "ray_query"}) {
+            if (!params.contains(key)) continue;
+            changed = true;
+            if (std::string_view{key} == "shader") {
+                const auto type = pass.at("type").get<std::string>();
+                if (type == "shadow_depth") requireOnly(params.at(key), {"vertex"}, "shadow_depth shader");
+                else if (type == "velocity" || type == "picking")
+                    requireOnly(params.at(key), {"vertex", "fragment", "skinned_vertex"}, "geometry shader");
+                else requireOnly(params.at(key), {"vertex", "fragment"}, "auxiliary shader");
+                if (!pass.contains(key)) {
+                    pass[key] = {{"vertex", "engine://" + type}};
+                    if (type != "shadow_depth") pass[key]["fragment"] = "engine://" + type;
+                }
+                for (const auto &[field, value] : params.at(key).items()) {
+                    if (field == "skinned_vertex" && value.is_null()) pass[key].erase(field);
+                    else pass[key][field] = value;
+                }
+            } else pass[key] = params.at(key);
+        }
+        if (!changed) throw std::invalid_argument("Auxiliary pass editing requires at least one editable field");
+    } else if (pass.at("type") == "raster") {
+        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "draw", "raster_state", "ray_query"}, method);
+        bool changed = false;
+        for (const auto *key : {"input", "output", "shader", "draw", "raster_state", "ray_query"}) {
+            if (!params.contains(key)) continue;
+            changed = true;
+            if (std::string_view{key} == "raster_state" && params.at(key).is_null()) pass.erase(key);
+            else pass[key] = params.at(key);
+        }
+        if (!changed) throw std::invalid_argument("Raster pass editing requires at least one editable field");
+        const auto &output = pass.at("output");
+        const auto &color = output.at("color");
+        (void)parseRasterPassContract(Json(pass), color.is_array() ? color.size() : 1,
+            output.contains("depth") && !output.at("depth").is_null(), "edit_preset_pass");
+    } else if (pass.at("type") == "material") {
+        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "ray_query", "material_settings", "material_routing"}, method);
+        if (!params.contains("input") && !params.contains("output") && !params.contains("ray_query") &&
+            !params.contains("material_settings") && !params.contains("material_routing"))
+            throw std::invalid_argument("Material pass editing requires at least one editable field");
+        for (const auto *key : {"input", "output"})
+            if (params.contains(key)) pass[key] = params.at(key);
+        if (params.contains("material_settings")) {
+            const auto &settings = params.at("material_settings");
+            requireOnly(settings, {"material_range", "material_filter", "material_variant", "material_contract",
+                "gpu_draw_source", "material_outputs", "material_output_states", "screen_inputs",
+                "surface_resources", "material_resources"}, "material_settings");
+            for (const auto &[key, value] : settings.items()) {
+                if (value.is_null()) pass.erase(key);
+                else pass[key] = value;
+            }
+        }
+        if (params.contains("material_routing")) {
+            if (!routing_config) throw std::invalid_argument("Material routing belongs to the rendering preset");
+            if (params.at("material_routing").is_null()) routing_config->erase("material_routing");
+            else (*routing_config)["material_routing"] = params.at("material_routing");
+        }
+    } else {
+        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "ray_query"}, method);
+        for (const auto *key : {"input", "output", "shader"}) {
+            if (!params.contains(key)) throw std::invalid_argument(std::string{method} + " requires " + key);
+            pass[key] = params.at(key);
+        }
+    }
+    if (params.contains("ray_query")) pass["ray_query"] = params.at("ray_query");
+}
+
+} // namespace
+
 OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
     constexpr auto method = "edit_preset_pass";
     requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "draw", "raster_state", "ray_query", "material_settings", "material_routing"}, method);
@@ -2453,7 +2576,11 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
     const bool feature_edit = params.contains("base_feature_digest");
     if (feature_edit && params.contains("base_preset_digest"))
         throw std::invalid_argument("edit_preset_pass requires only the selected source document digest");
-    const auto preset_digest = requireString(params, feature_edit ? "base_feature_digest" : "base_preset_digest", method);
+    // F-6: with neither document digest the request names the root itself;
+    // base_source_digest is then the digest of the document being edited.
+    const bool root_edit = !feature_edit && !params.contains("base_preset_digest");
+    const auto preset_digest = root_edit ? base_digest
+        : requireString(params, feature_edit ? "base_feature_digest" : "base_preset_digest", method);
     const auto graph = requireString(params, "graph", method);
     const auto name = requireString(params, "pass_name", method);
     if (!isLowerHexDigest(base_digest) || !isLowerHexDigest(preset_digest))
@@ -2462,6 +2589,12 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
         return rejection("method_unavailable", "edit_preset_pass requires the project document resolver");
     try {
         const auto current = dependencies_.resolve_authoring_context(currentDocumentSet());
+        if (root_edit && !current.pipeline_preset)
+            return editRootPass(params, base_digest, graph, name, current);
+        // A preset root's passes live in the preset, which is edited by its
+        // own digest once forked; the root is never the place to write them.
+        if (root_edit)
+            return rejection("project_preset_required", "Fork the selected preset into the project before editing its passes");
         if (!feature_edit && (!current.pipeline_preset || !current.pipeline_preset_bytes ||
             !current.pipeline_preset->reference.starts_with("project://")))
             return rejection("project_preset_required", "Fork the selected preset into the project before editing its passes");
@@ -2497,72 +2630,7 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
         auto preset = OrderedJson::parse(bytes);
         auto *pass = feature_edit ? findFeatureEditablePass(preset, authored_name, provider) : findPresetEditablePass(preset, graph, name);
         if (!pass) return rejection("preset_pass_not_editable", "The selected node is not an editable pass in the project preset");
-        if (isEditableAuxiliaryPass(pass->at("type").get<std::string>())) {
-            requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "output", "shader", "ray_query"}, method);
-            bool changed = false;
-            for (const auto *key : {"output", "shader", "ray_query"}) {
-                if (!params.contains(key)) continue;
-                changed = true;
-                if (std::string_view{key} == "shader") {
-                    const auto type = pass->at("type").get<std::string>();
-                    if (type == "shadow_depth") requireOnly(params.at(key), {"vertex"}, "shadow_depth shader");
-                    else if (type == "velocity" || type == "picking")
-                        requireOnly(params.at(key), {"vertex", "fragment", "skinned_vertex"}, "geometry shader");
-                    else requireOnly(params.at(key), {"vertex", "fragment"}, "auxiliary shader");
-                    if (!pass->contains(key)) {
-                        (*pass)[key] = {{"vertex", "engine://" + type}};
-                        if (type != "shadow_depth") (*pass)[key]["fragment"] = "engine://" + type;
-                    }
-                    for (const auto &[field, value] : params.at(key).items()) {
-                        if (field == "skinned_vertex" && value.is_null()) (*pass)[key].erase(field);
-                        else (*pass)[key][field] = value;
-                    }
-                } else (*pass)[key] = params.at(key);
-            }
-            if (!changed) throw std::invalid_argument("Auxiliary pass editing requires at least one editable field");
-        } else if (pass->at("type") == "raster") {
-            requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "draw", "raster_state", "ray_query"}, method);
-            bool changed = false;
-            for (const auto *key : {"input", "output", "shader", "draw", "raster_state", "ray_query"}) {
-                if (!params.contains(key)) continue;
-                changed = true;
-                if (std::string_view{key} == "raster_state" && params.at(key).is_null()) pass->erase(key);
-                else (*pass)[key] = params.at(key);
-            }
-            if (!changed) throw std::invalid_argument("Raster pass editing requires at least one editable field");
-            const auto &output = pass->at("output");
-            const auto &color = output.at("color");
-            (void)parseRasterPassContract(Json(*pass), color.is_array() ? color.size() : 1,
-                output.contains("depth") && !output.at("depth").is_null(), "edit_preset_pass");
-        } else if (pass->at("type") == "material") {
-            requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "ray_query", "material_settings", "material_routing"}, method);
-            if (!params.contains("input") && !params.contains("output") && !params.contains("ray_query") &&
-                !params.contains("material_settings") && !params.contains("material_routing"))
-                throw std::invalid_argument("Material pass editing requires at least one editable field");
-            for (const auto *key : {"input", "output"})
-                if (params.contains(key)) (*pass)[key] = params.at(key);
-            if (params.contains("material_settings")) {
-                const auto &settings = params.at("material_settings");
-                requireOnly(settings, {"material_range", "material_filter", "material_variant", "material_contract",
-                    "gpu_draw_source", "material_outputs", "material_output_states", "screen_inputs",
-                    "surface_resources", "material_resources"}, "material_settings");
-                for (const auto &[key, value] : settings.items()) {
-                    if (value.is_null()) pass->erase(key);
-                    else (*pass)[key] = value;
-                }
-            }
-            if (params.contains("material_routing")) {
-                if (params.at("material_routing").is_null()) preset.at("config").erase("material_routing");
-                else preset.at("config")["material_routing"] = params.at("material_routing");
-            }
-        } else {
-            requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "ray_query"}, method);
-            for (const auto *key : {"input", "output", "shader"}) {
-                if (!params.contains(key)) throw std::invalid_argument(std::string{method} + " requires " + key);
-                (*pass)[key] = params.at(key);
-            }
-        }
-        if (params.contains("ray_query")) (*pass)["ray_query"] = params.at("ray_query");
+        applyEditablePassFields(params, *pass, feature_edit ? nullptr : &preset.at("config"), method);
         const std::array documents{RenderConfigCandidateDocument{
             .reference = reference,
             .normalized_reference = dependencies_.normalize_reference(reference),
@@ -2577,6 +2645,36 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
     } catch (const std::exception &error) {
         return rejection("render_pipeline_preflight_failed", error.what());
     }
+}
+
+OrderedJson RenderConfigEditorService::editRootPass(
+    const Json &params, const std::string &base_digest, const std::string &graph,
+    const std::string &pass_name, const ResolvedRenderConfigAuthoringContext &current) {
+    constexpr auto method = "edit_preset_pass";
+    if (params.contains("material_routing"))
+        return rejection("root_routing_not_editable",
+                         "Material routing belongs to a rendering preset; a direct root's routing is not edited through a pass",
+                         {{"graph", graph}, {"pass_name", pass_name}});
+    return queueRootEdit(base_digest, method,
+        [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+            auto root = OrderedJson::parse(candidate.bytes());
+            auto *pass = findRootEditablePass(root, graph, pass_name);
+            if (!pass) {
+                const auto source = std::find_if(current.pass_provenance.begin(), current.pass_provenance.end(),
+                    [&](const auto &entry) { return entry.name == pass_name; });
+                return rejection("root_pass_not_found",
+                    "The direct root declares no editable pass " + pass_name + " in " + graph +
+                        "; a feature's pass or one the engine adds is not the root's to edit",
+                    {{"graph", graph}, {"pass_name", pass_name},
+                     {"provenance", source == current.pass_provenance.end()
+                                        ? OrderedJson(nullptr)
+                                        : OrderedJson(provenanceSourceName(source->source))}});
+            }
+            applyEditablePassFields(params, *pass, nullptr, method);
+            candidate = candidate.withSectionValue(
+                "rendering_passes", renderingSectionOf(root).at("rendering_passes").dump(2));
+            return std::nullopt;
+        });
 }
 
 // The authored-pass tail shared by add_authored_pass and

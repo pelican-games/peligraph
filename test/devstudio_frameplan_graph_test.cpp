@@ -8076,6 +8076,78 @@ TEST_CASE("F-4 a pass a direct root declares is refused as the root's, not a pre
     CHECK(told_to_fork.refusal.find("fork") != std::string::npos);
 }
 
+TEST_CASE("F-6 the canvas edits a pass the direct root declares, in the root",
+          "[devstudio][frame-plan][f6][canvas-edit]") {
+    const Json present{
+        {"name", "present"},
+        {"type", "fullscreen"},
+        {"input", Json::array()},
+        {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+        {"shader", {{"vertex", "engine://fullscreen"},
+                    {"fragment", "project://shaders/present"}}}};
+    const Json context{
+        {"source_reference", "project://passes/main_rendering_config.json"},
+        {"source_digest", {{"hex", RootDigest}}},
+        {"config_kind", "direct"},
+        {"graphs",
+         Json::array({Json{
+             {"name", "main_render"},
+             {"passes",
+              Json::array(
+                  {Json{{"name", "present"},
+                        {"declaration_index", 0},
+                        {"declaration", present},
+                        {"editable_preset_pass", false},
+                        {"editable_feature_pass", false},
+                        {"editable_root_pass", true},
+                        {"root_declaration", present},
+                        {"provenance", {{"source", "project"},
+                                        {"provider_feature", ""},
+                                        {"provider_reference", ""}}}},
+                   Json{{"name", "gizmo_pass"},
+                        {"declaration_index", 1},
+                        {"declaration", {{"name", "gizmo_pass"},
+                                         {"type", "gizmo"}}},
+                        {"editable_preset_pass", false},
+                        {"editable_feature_pass", false},
+                        {"editable_root_pass", false},
+                        {"provenance", {{"source", "engine"},
+                                        {"provider_feature", ""},
+                                        {"provider_reference", ""}}}}})},
+             {"anchor_candidates",
+              Json::array({Json{{"position", 0}, {"insert", "before:present"}},
+                           Json{{"position", 1}, {"insert", "after:present"}}})}}})}};
+
+    const auto authoring = framePlanAuthoringFromContext(context);
+    REQUIRE(authoring.received);
+    // A drag connection: the root is named by base_source_digest alone.
+    const auto connect = framePlanPassResourceRequest(
+        authoring, "main_render", "present", {"scene_color"}, true);
+    INFO(connect.refusal);
+    REQUIRE(connect.sendable());
+    CHECK(connect.method == "edit_preset_pass");
+    CHECK(connect.params.at("base_source_digest") == RootDigest);
+    CHECK_FALSE(connect.params.contains("base_preset_digest"));
+    CHECK_FALSE(connect.params.contains("base_feature_digest"));
+    CHECK(connect.params.at("input") == Json::array({"scene_color"}));
+    CHECK(connect.params.at("output") == present.at("output"));
+    CHECK(connect.params.at("shader") == present.at("shader"));
+    // The in-place band, on the same rule.
+    CHECK_FALSE(framePlanInlineFields(authoring, {}, "main_render", "present", "").empty());
+    const auto band = framePlanPassShaderRequest(
+        authoring, "main_render", "present", "fragment", "project://shaders/stripes");
+    REQUIRE(band.sendable());
+    CHECK_FALSE(band.params.contains("base_preset_digest"));
+    CHECK(band.params.at("shader").at("fragment") == "project://shaders/stripes");
+    // What the engine adds to the same root is still the engine's.
+    const auto engine_pass = framePlanPassShaderRequest(
+        authoring, "main_render", "gizmo_pass", "fragment", "project://shaders/x");
+    CHECK_FALSE(engine_pass.sendable());
+    CHECK(engine_pass.refusal.find("added by the engine") != std::string::npos);
+    // Deleting a root pass is not part of F-6.
+    CHECK_FALSE(framePlanPassRemoveRequest(authoring, "main_render", "present").sendable());
+}
+
 TEST_CASE("F-1 the render target form becomes the declaration the engine takes",
           "[devstudio][frame-plan][f1][render-targets]") {
     const auto authoring = framePlanAuthoringFromContext(

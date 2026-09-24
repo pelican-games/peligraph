@@ -38,6 +38,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -6368,6 +6369,203 @@ TEST_CASE("F-1 edit_render_targets on a missing fragment creates it only with th
                      {{"op", "add"}, {"target", sceneTarget("display")}}}));
     CHECK(partial.at("error").at("code") == "render_target_reserved");
     CHECK(readBytes(harness.fragmentPath()) == fragment_before);
+}
+
+// --- F-6: a direct root edits the passes it declares itself.
+
+namespace {
+
+Json f6DrawPattern() {
+    return Json{{"name", "draw_pattern"},
+                {"type", "fullscreen"},
+                {"input", Json::array()},
+                {"output", {{"color", Json::array({"scene_color"})}, {"depth", nullptr}}},
+                {"shader", {{"vertex", "engine://fullscreen"},
+                            {"fragment", "engine://fullscreen"}}}};
+}
+
+// The blank template's `present`, with one member edit_preset_pass is never
+// sent, so "the other fields are kept" has something to keep.
+Json f6Present() {
+    return Json{{"name", "present"},
+                {"type", "fullscreen"},
+                {"input", Json::array()},
+                {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+                {"shader", {{"vertex", "engine://fullscreen"},
+                            {"fragment", "engine://fullscreen"}}},
+                {"clear_color", Json::array({0.1, 0.2, 0.3, 1.0})}};
+}
+
+// A Blank pipeline project after its first two steps: a graph root with no
+// `pipeline`, so config_kind is "direct", that declares scene_color and a pass
+// writing it before the template's present.
+Json f6DirectRoot() {
+    return Json{{"schema", "pelican.graph"},
+                {"version", 1},
+                {"definitions", Json::object()},
+                {"nodes", Json::array()},
+                {"outputs", Json::object()},
+                {"rendering",
+                 {{"render_targets", Json::array({sceneTarget("scene_color")})},
+                  {"rendering_passes",
+                   Json::array({{{"name", "main_render"},
+                                 {"passes", Json::array({f6DrawPattern(), f6Present()})}}})}}}};
+}
+
+const nlohmann::ordered_json *f6ContextPass(const nlohmann::ordered_json &context,
+                                            std::string_view name) {
+    for (const auto &graph : context.at("graphs"))
+        for (const auto &pass : graph.at("passes"))
+            if (pass.at("name") == std::string{name}) return &pass;
+    return nullptr;
+}
+
+// Every file of the project but the root, so "the root and nothing else" is a
+// comparison.
+std::map<std::string, std::string> f6FilesBesideRoot(const TemporaryAnimgraphProject &project) {
+    std::map<std::string, std::string> files;
+    for (const auto &entry : std::filesystem::recursive_directory_iterator{project.root}) {
+        if (!entry.is_regular_file() ||
+            std::filesystem::equivalent(entry.path(), project.render_config))
+            continue;
+        files.emplace(std::filesystem::relative(entry.path(), project.root).generic_string(),
+                      readBytes(entry.path()));
+    }
+    return files;
+}
+
+} // namespace
+
+TEST_CASE("F-6 edit_preset_pass writes a pass the direct root declares into the root",
+          "[render-config-editor][f6][root-pass-edit]") {
+    TemporaryAnimgraphProject project;
+    writeBytes(project.render_config, f6DirectRoot().dump(2) + "\n");
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto context = service->getRenderAuthoringContext(Json::object());
+    REQUIRE(context.at("config_kind") == "direct");
+
+    // Acceptance 2: the root's own passes are editable in the root, and carry
+    // the declaration as the root holds it; what the engine adds is not.
+    for (const auto *name : {"draw_pattern", "present"}) {
+        CAPTURE(name);
+        const auto *pass = f6ContextPass(context, name);
+        REQUIRE(pass != nullptr);
+        CHECK(pass->at("editable_root_pass") == true);
+        CHECK(pass->at("editable_preset_pass") == false);
+    }
+    CHECK(Json(f6ContextPass(context, "present")->at("root_declaration")) == f6Present());
+    const auto *engine_pass = f6ContextPass(context, "output_transform");
+    REQUIRE(engine_pass != nullptr);
+    CHECK(engine_pass->at("provenance").at("source") == "engine");
+    CHECK(engine_pass->at("editable_root_pass") == false);
+    CHECK_FALSE(engine_pass->contains("root_declaration"));
+
+    const auto root_before = readBytes(project.render_config);
+    const auto others_before = f6FilesBesideRoot(project);
+    Json request{{"base_source_digest", context.at("source_digest").at("hex")},
+                 {"graph", "main_render"},
+                 {"pass_name", "present"},
+                 {"input", Json::array({"scene_color"})},
+                 {"output", f6Present().at("output")},
+                 {"shader", f6Present().at("shader")}};
+
+    SECTION("present reads scene_color: the root changes, the other fields stay, nothing else is written") {
+        const auto accepted = service->editPresetPass(request);
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        CHECK(readBytes(project.render_config) == root_before);
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        const auto root_after = readBytes(project.render_config);
+        auto expected = f6DirectRoot();
+        expected["rendering"]["rendering_passes"][0]["passes"][1]["input"] =
+            Json::array({"scene_color"});
+        CHECK(Json::parse(root_after) == expected);
+        requireOnlySectionKeyChanged(root_before, root_after, "rendering_passes");
+        CHECK(f6FilesBesideRoot(project) == others_before);
+        const auto &nodes = runtime.frame_plan.at("nodes");
+        const auto node = std::find_if(nodes.begin(), nodes.end(), [](const auto &value) {
+            return value.at("name") == "present";
+        });
+        REQUIRE(node != nodes.end());
+        CHECK(node->at("reads") == Json::array({"scene_color"}));
+
+        // The digest the edit was made against named the old root.
+        const auto stale = service->editPresetPass(request);
+        CHECK(stale.at("error").at("code") == "external_modification");
+
+        service.reset();
+        service = makeProjectService(project, resolver, runtime);
+        const auto reopened = service->getRenderAuthoringContext(Json::object());
+        const auto *saved = f6ContextPass(reopened, "present");
+        REQUIRE(saved != nullptr);
+        CHECK(saved->at("editable_root_pass") == true);
+        CHECK(Json(saved->at("root_declaration")) ==
+              expected["rendering"]["rendering_passes"][0]["passes"][1]);
+    }
+    SECTION("a pass the engine adds is not the root's") {
+        request["pass_name"] = "output_transform";
+        const auto rejected = service->editPresetPass(request);
+        INFO(rejected.dump());
+        REQUIRE(rejected.at("status") == "rejected");
+        CHECK(rejected.at("error").at("code") == "root_pass_not_found");
+        CHECK(rejected.at("error").at("graph") == "main_render");
+        CHECK(rejected.at("error").at("pass_name") == "output_transform");
+        CHECK(rejected.at("error").at("provenance") == "engine");
+        request["pass_name"] = "nobody_declared_this";
+        const auto absent = service->editPresetPass(request);
+        CHECK(absent.at("error").at("code") == "root_pass_not_found");
+        CHECK(absent.at("error").at("provenance").is_null());
+        service->commitPending();
+        CHECK(readBytes(project.render_config) == root_before);
+    }
+    SECTION("the root digest is compared before anything is written") {
+        request["base_source_digest"] = std::string(64, '0');
+        const auto rejected = service->editPresetPass(request);
+        INFO(rejected.dump());
+        CHECK(rejected.at("error").at("code") == "external_modification");
+        service->commitPending();
+        CHECK(readBytes(project.render_config) == root_before);
+    }
+    SECTION("material routing is a preset's, and is not written into a root") {
+        request["material_routing"] = nullptr;
+        CHECK(service->editPresetPass(request).at("error").at("code") == "root_routing_not_editable");
+        CHECK(readBytes(project.render_config) == root_before);
+    }
+}
+
+TEST_CASE("F-6 a preset root still requires a fork before its passes are edited",
+          "[render-config-editor][f6][root-pass-edit]") {
+    // animgraph_demo selects the engine preset hybrid_v1: a request without a
+    // document digest is not a root edit there.
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto context = service->getRenderAuthoringContext(Json::object());
+    REQUIRE(context.at("config_kind") == "preset");
+    const auto *present = f6ContextPass(context, "scene_present");
+    REQUIRE(present != nullptr);
+    CHECK(present->at("editable_root_pass") == false);
+    const auto root_before = readBytes(project.render_config);
+    const Json request{{"base_source_digest", context.at("source_digest").at("hex")},
+                       {"graph", "main_render"},
+                       {"pass_name", "scene_present"},
+                       {"input", Json::array({"gbuffer_albedo"})},
+                       {"output", present->at("declaration").at("output")},
+                       {"shader", {{"vertex", "engine://fullscreen"},
+                                   {"fragment", "engine://fullscreen"}}}};
+    const auto rejected = service->editPresetPass(request);
+    INFO(rejected.dump());
+    CHECK(rejected.at("error").at("code") == "project_preset_required");
+    service->commitPending();
+    CHECK(readBytes(project.render_config) == root_before);
 }
 
 } // namespace Pelican

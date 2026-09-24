@@ -222,6 +222,9 @@ struct FullscreenPassWidget::Impl {
     std::string config_kind;
     std::string root_reference;
     std::set<std::pair<std::string, std::string>> root_declared_passes;
+    // F-6: the ones the engine offers to edit in the root itself
+    // (editable_root_pass); their declarations sit in preset_passes too.
+    std::set<std::pair<std::string, std::string>> root_passes;
     std::map<std::pair<std::string, std::string>, Json> preset_passes;
     std::map<std::pair<std::string, std::string>, Json> feature_pass_info;
     std::optional<std::pair<std::string, std::string>> editing_preset_pass;
@@ -964,9 +967,31 @@ struct FullscreenPassWidget::Impl {
             "anchor.");
     }
 
+    // F-6: a pass the direct root declares; edit_preset_pass then takes no
+    // document digest besides base_source_digest.
+    bool editingRootPass() const {
+        return editing_preset_pass && root_passes.contains(*editing_preset_pass);
+    }
+
+    // F-6: Save names the file it writes, which for a root pass is the root.
+    void showRootPassSave() {
+        save->setText(owner.tr("Save"));
+        save->setToolTip(
+            owner.tr("Calls edit_preset_pass on the pass %1 declares.")
+                .arg(root_reference.empty()
+                         ? owner.tr("the project's rendering config")
+                         : text(root_reference)));
+    }
+
+    // Only a preset owns a material_routing edit_preset_pass writes.
+    bool editsPresetRouting() const {
+        return !editingFeaturePass() && !editingRootPass();
+    }
+
     std::string passSourceDigest() const {
         if (editingFeaturePass())
             return feature_pass_info.at(*editing_preset_pass).value("feature_source_digest", Json::object()).value("hex", std::string{});
+        if (editingRootPass()) return source_digest;
         return preset_digest;
     }
 
@@ -1011,7 +1036,7 @@ struct FullscreenPassWidget::Impl {
             target_grid->itemAtPosition(row, 0)->widget()->setVisible(!editingShadowPass());
         for (auto *field : std::array<QWidget *, 3>{material_contract, material_settings, material_routing})
             form->setRowVisible(field, editingMaterialPass());
-        form->setRowVisible(material_routing, editingMaterialPass() && !editingFeaturePass());
+        form->setRowVisible(material_routing, editingMaterialPass() && editsPresetRouting());
         targets->setVisible(true);
         validation->setVisible(true);
     }
@@ -1138,7 +1163,7 @@ struct FullscreenPassWidget::Impl {
             const auto contract = material_contract->currentData().toString();
             if (contract.isEmpty()) draft.erase("material_contract");
             else draft["material_contract"] = contract.toStdString();
-            if (!editingFeaturePass()) (void)routingDraft();
+            if (editsPresetRouting()) (void)routingDraft();
         }
         return draft;
     }
@@ -1716,10 +1741,12 @@ struct FullscreenPassWidget::Impl {
       try {
         auto draft = draftJson();
         Json params{{"base_source_digest", source_digest},
-                    {editingFeaturePass() ? "base_feature_digest" : "base_preset_digest", passSourceDigest()},
                     {"graph", editing_preset_pass->first},
                     {"pass_name", editing_preset_pass->second},
                     {"ray_query", rayQueryDeclaration()}};
+        // F-6: the root's own pass is named by base_source_digest alone.
+        if (!editingRootPass())
+            params[editingFeaturePass() ? "base_feature_digest" : "base_preset_digest"] = passSourceDigest();
         if (preservesPresetDeclaration()) {
             if (editingMaterialPass()) {
                 auto settings = Json::object();
@@ -1731,7 +1758,7 @@ struct FullscreenPassWidget::Impl {
                 for (const auto *key : materialSettingKeys) collect(key);
                 collect("material_contract");
                 if (!settings.empty()) params["material_settings"] = std::move(settings);
-                if (!editingFeaturePass()) {
+                if (editsPresetRouting()) {
                     const auto routing = routingDraft();
                     if (routing != preset_material_routing) params["material_routing"] = routing;
                 }
@@ -1798,12 +1825,14 @@ struct FullscreenPassWidget::Impl {
         const auto found = feature_pass_info.find(*editing_preset_pass);
         if (config_kind == "direct" &&
             root_declared_passes.contains(*editing_preset_pass)) {
-          // F-4: the engine edits passes of a preset or a feature only, and
-          // a direct root has no preset -- there is nothing to fork either.
+          // F-4: a direct root has no preset -- there is nothing to fork.
+          // F-6: the passes it declares are edited in it (root_passes); this
+          // is a declaration the engine did not offer as editable.
           authoringError(
               owner.tr("%1 is declared in the project's own rendering "
-                       "config%2, which selects no preset: Studio cannot "
-                       "edit a pass there yet. Edit that file by hand.")
+                       "config%2, which selects no preset, and the engine "
+                       "offers no editable declaration of it. Edit that "
+                       "file by hand.")
                   .arg(text(editing_preset_pass->second),
                        root_reference.empty()
                            ? QString{}
@@ -1886,6 +1915,7 @@ struct FullscreenPassWidget::Impl {
           ? authoredPassSaveToolTip() + QStringLiteral("\n") +
                 owner.tr("Updates %1 wherever this feature is used.").arg(text(feature_pass_info.at(*editing_preset_pass).value("feature_source_reference", std::string{})))
           : authoredPassSaveToolTip());
+      if (editingRootPass()) showRootPassSave();
       updateDraft();
     }
 
@@ -1952,6 +1982,7 @@ struct FullscreenPassWidget::Impl {
         }
 
         preset_passes.clear();
+        root_passes.clear();
         feature_pass_info.clear();
         preset_material_routing = context.value("preset_material_routing", Json(nullptr));
         preset_digest = context.value("pipeline_preset", Json::object()).value("source_digest", Json::object()).value("hex", std::string{});
@@ -1992,6 +2023,10 @@ struct FullscreenPassWidget::Impl {
                 const auto pass_name =
                     pass_value.at("name").get<std::string>();
                 if (pass_value.value("editable_preset_pass", false)) preset_passes.emplace(std::pair{graph_name, pass_name}, pass_value.at("preset_declaration"));
+                if (pass_value.value("editable_root_pass", false)) {
+                    preset_passes.emplace(std::pair{graph_name, pass_name}, pass_value.at("root_declaration"));
+                    root_passes.emplace(graph_name, pass_name);
+                }
                 if (pass_value.contains("feature_edit_reason") || pass_value.value("editable_feature_pass", false))
                     feature_pass_info.emplace(std::pair{graph_name, pass_name}, pass_value);
                 if (const auto provenance = pass_value.find("provenance");

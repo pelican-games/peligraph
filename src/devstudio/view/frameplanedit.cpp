@@ -113,22 +113,24 @@ std::string join(const std::vector<std::string> &values) {
 // can. The order matters: a feature that said why outranks the generic answer.
 std::string passRefusal(const FramePlanAuthoring &authoring,
                         const FramePlanAuthoringPass &pass) {
-    if (pass.preset || pass.feature) return {};
+    if (pass.preset || pass.feature || pass.root) return {};
     if (!pass.feature_reason.empty())
         return pass.name + ": " + pass.feature_reason;
     if (pass.provenance_source == "feature")
         return pass.name +
                " comes from a feature: materialize the feature into the "
                "project before editing it here.";
-    // F-4: a direct root selects no preset, so there is nothing to fork.
+    // F-4: a direct root selects no preset, so there is nothing to fork. F-6:
+    // the passes it declares are edited in it (pass.root, above); what is left
+    // here is a declaration the engine did not offer as editable.
     if (authoring.direct && pass.provenance_source == "project")
         return pass.name + " is declared in the project's own rendering " +
                "config" +
                (authoring.source_reference.empty()
                     ? std::string{}
                     : " (" + authoring.source_reference + ")") +
-               ", which selects no preset: Studio cannot edit a pass there "
-               "yet. Edit that file by hand.";
+               ", which selects no preset, and the engine offers no editable "
+               "declaration of it. Edit that file by hand.";
     if (authoring.direct)
         return pass.name + " is added by the engine; it has no declaration "
                            "in the project to edit.";
@@ -145,6 +147,8 @@ std::string passRefusal(const FramePlanAuthoring &authoring,
 void addDigests(Json &params, const FramePlanAuthoring &authoring,
                 const FramePlanAuthoringPass &pass) {
     params["base_source_digest"] = authoring.source_digest;
+    // F-6: the root's own pass -- base_source_digest already names that file.
+    if (pass.root) return;
     if (pass.feature) params["base_feature_digest"] = pass.feature_digest;
     else params["base_preset_digest"] = authoring.preset_digest;
 }
@@ -219,10 +223,13 @@ FramePlanAuthoring framePlanAuthoringFromContext(const Json &context) {
                 row.feature_reason = textOr(pass, "feature_edit_reason");
                 row.feature_digest =
                     textOr(objectOr(pass, "feature_source_digest"), "hex");
+                row.root = pass.value("editable_root_pass", false);
                 if (row.feature)
                     row.editable_declaration = objectOr(pass, "feature_declaration");
                 else if (row.preset)
                     row.editable_declaration = objectOr(pass, "preset_declaration");
+                else if (row.root)
+                    row.editable_declaration = objectOr(pass, "root_declaration");
                 const auto provenance = objectOr(pass, "provenance");
                 row.provenance_source = textOr(provenance, "source");
                 row.provider_reference = textOr(provenance, "provider_reference");

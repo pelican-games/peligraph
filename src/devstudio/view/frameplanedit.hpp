@@ -43,6 +43,9 @@ struct FramePlanAuthoringPass {
     nlohmann::json editable_declaration = nlohmann::json::object();
     bool preset = false;
     bool feature = false;
+    // F-6: declared by a direct root itself; edit_preset_pass then takes no
+    // document digest but the root's own.
+    bool root = false;
     std::string feature_reason;
     std::string feature_digest;
     std::string provenance_source;
@@ -72,8 +75,8 @@ struct FramePlanAuthoring {
     // refused by the engine, and the canvas should say so before sending.
     bool preset_forked = false;
     // F-4: the root declares its passes itself (`config_kind` "direct", as a
-    // Blank pipeline project does). There is no preset to fork, and the engine
-    // edits no pass of such a root, so the refusal has to say that instead.
+    // Blank pipeline project does). There is no preset to fork; F-6: the passes
+    // the root declares are edited in the root (FramePlanAuthoringPass::root).
     bool direct = false;
     std::string source_reference;
     std::map<std::pair<std::string, std::string>, FramePlanAuthoringPass> passes;

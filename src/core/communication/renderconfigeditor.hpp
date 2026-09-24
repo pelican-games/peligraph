@@ -168,6 +168,12 @@ class RenderConfigEditorService {
     GateSnapshot gateSnapshot();
     nlohmann::ordered_json changeComputeTask(const nlohmann::json &params, bool remove);
     nlohmann::ordered_json materializeRenderFeature(const std::string &base_digest, const nlohmann::json &operation);
+    // F-6: edit_preset_pass's third destination, a pass the direct root
+    // declares itself. One root document, the ordinary root-edit ticket.
+    nlohmann::ordered_json editRootPass(
+        const nlohmann::json &params, const std::string &base_digest,
+        const std::string &graph, const std::string &pass_name,
+        const ResolvedRenderConfigAuthoringContext &current);
     nlohmann::ordered_json queueRootEdit(
         const std::string &base_digest, const std::string &operation,
         const std::function<std::optional<nlohmann::ordered_json>(AuthoredRenderConfigDocument &)> &transform,

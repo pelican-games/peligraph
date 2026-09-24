@@ -2863,6 +2863,80 @@ TEST_CASE("The Frame Plan canvas opens the Pass Editor after the node it names",
                     QByteArray::fromStdString(plan.dump()));
     CHECK(position.value() == end_of_graph);
 }
+
+TEST_CASE("F-6 the Pass Editor saves a direct root's own pass with the root digest alone",
+          "[devstudio][fullscreen-pass][preset-pass-edit][f6]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    // What a Blank pipeline project's context says about its present once the
+    // engine offers the root's passes for editing.
+    const Json present{{"name", "present"},
+                       {"type", "fullscreen"},
+                       {"input", Json::array()},
+                       {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+                       {"shader", {{"vertex", "engine://fullscreen"},
+                                   {"fragment", "project://shaders/present"}}}};
+    Json graph{{"name", "main_render"},
+               {"passes", Json::array({{{"name", "present"},
+                                        {"declaration", present},
+                                        {"editable_preset_pass", false},
+                                        {"editable_feature_pass", false},
+                                        {"editable_root_pass", true},
+                                        {"root_declaration", present},
+                                        {"provenance", {{"source", "project"},
+                                                        {"provider_feature", ""},
+                                                        {"provider_reference", ""}}}}})},
+               {"anchor_candidates", Json::array({{{"position", 0}, {"insert", "before:present"}},
+                                                  {{"position", 1}, {"insert", "after:present"}}})}};
+    const Json context{{"source_reference", "project://passes/main_rendering_config.json"},
+                       {"source_digest", {{"hex", std::string(64, 'a')}}},
+                       {"config_kind", "direct"},
+                       {"graphs", Json::array({graph})},
+                       {"managed_fragments", Json::array()}};
+    authoring.succeed(authoring.requests.back().id, context);
+    const auto plan = minimalFramePlan(
+        "main_render", Json::array({resource("scene_color"), resource("display")}));
+    form.receiveResult(QByteArray::fromStdString(plan.dump()));
+    form.editPresetPass(QStringLiteral("main_render"), QStringLiteral("present"));
+    authoring.succeed(authoring.requests.back().id, context);
+    refresh.succeed(refresh.requests.back(), QByteArray::fromStdString(plan.dump()));
+
+    auto &name = required<QLineEdit>(form, "pelican.fullscreenPass.name");
+    REQUIRE(name.text() == QStringLiteral("present"));
+    CHECK(name.isReadOnly());
+    // Not refused: before F-6 this said "not editable in a direct root".
+    CHECK_FALSE(required<QLabel>(form, "pelican.fullscreenPass.authoringStatus")
+                    .text()
+                    .contains(QStringLiteral("not editable")));
+    auto &candidate = required<QComboBox>(form, "pelican.fullscreenPass.inputTarget");
+    const auto scene_color = candidate.findText(QStringLiteral("scene_color"));
+    REQUIRE(scene_color >= 0);
+    candidate.setCurrentIndex(scene_color);
+    required<QPushButton>(form, "pelican.fullscreenPass.addInput").click();
+    auto &save = required<QPushButton>(form, "pelican.fullscreenPass.save");
+    CHECK(save.text() == QStringLiteral("Save"));
+    REQUIRE(save.isEnabled());
+    const auto before = authoring.requests.size();
+    save.click();
+    REQUIRE(authoring.requests.size() == before + 1);
+    REQUIRE(authoring.requests.back().method == QStringLiteral("edit_preset_pass"));
+    const auto params = Json::parse(
+        QJsonDocument(authoring.requests.back().params).toJson().toStdString());
+    INFO(params.dump());
+    // The root is named by base_source_digest; no preset or feature digest.
+    CHECK(params.at("base_source_digest") == std::string(64, 'a'));
+    CHECK_FALSE(params.contains("base_preset_digest"));
+    CHECK_FALSE(params.contains("base_feature_digest"));
+    CHECK_FALSE(params.contains("material_routing"));
+    CHECK(params.at("graph") == "main_render");
+    CHECK(params.at("pass_name") == "present");
+    CHECK(params.at("input") == Json::array({"scene_color"}));
+    CHECK(params.at("output") == present.at("output"));
+    CHECK(params.at("shader") == present.at("shader"));
+}
+
 // --- F-3: a fullscreen pass made shader and all.
 
 namespace {
