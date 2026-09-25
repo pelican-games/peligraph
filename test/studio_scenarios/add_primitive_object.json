@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "add_primitive_object",
-  "description": "G-2: a Blank pipeline project (F-2) gets a shape without an asset. Add Object > Cube sends one spawn of engine://primitives/cube; the Outliner shows Cube and selects it, and the Inspector's model field reads the primitive. Add material pass... (G-1, Create missing targets) adds a Forward opaque pass; the Blank pipeline has no pass for deferred materials and the primitive's default grey is automatic, so the form offers the forward default (G-4), checked, Save carries it with the pass and Studio restarts the engine on the same project. present reading the pass's output (F-6) then puts a grey box on screen. A second Cube is named Cube_001.",
+  "description": "G-2: a Blank pipeline project (F-2) gets a shape without an asset. Add Object > Cube sends one spawn of engine://primitives/cube; the Outliner shows Cube and selects it, and the Inspector's model field reads the primitive. Add material pass... (G-1, Create missing targets) adds a Forward opaque pass; the Blank pipeline has no pass for deferred materials and the primitive's default grey is automatic, so the form offers the forward default (G-4), checked, Save carries it with the pass and Studio restarts the engine on the same project. present reading the pass's output (F-6) through the Blank pipeline's engine://passthrough (VI-2), with no shader written, then puts a grey box on screen. A second Cube is named Cube_001.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -292,12 +292,6 @@
       "path": "objects[2].name",
       "value": "Cube",
       "retry_ms": 60000
-    },
-    {
-      "label": "present.frag passes input 0 through, typed in the author's own editor",
-      "file": "write",
-      "path": "{artifacts}/primitive_project/shaders/present.frag",
-      "text": "#version 460\n#extension GL_GOOGLE_include_directive : require\n#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\nPELICAN_DECLARE_INPUT_0(in_scene_color);  // scene_color\n\nvoid main() {\n    outColor = PELICAN_TEXTURE_2D_0(in_scene_color, inUV);\n}\n"
     },
     {
       "label": "show the whole graph so both ends of the drag are on screen",

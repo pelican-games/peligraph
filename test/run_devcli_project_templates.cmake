@@ -9,7 +9,8 @@
 #     `--template standard` is the same thing spelled out;
 #   * `--template blank` is a direct config -- no `pipeline`, no `features`,
 #     no `render_targets` -- with one fullscreen pass `present` writing
-#     `display`, and ships the shader that pass names;
+#     `display` through the engine's `engine://passthrough` (VI-2), and ships
+#     no shader of its own;
 #   * an unknown template is refused by name, and nothing is written.
 
 foreach(required IN ITEMS CLI OUT_DIR)
@@ -110,11 +111,13 @@ expect_files("${OUT_DIR}/standard_template" "${standard_digests}" "")
 # --- blank ------------------------------------------------------------------
 project_init(blank_template --template blank)
 set(blank_dir "${OUT_DIR}/blank_template")
-# Everything but the rendering config is the standard template's, and the one
-# file it adds is the shader its pass names.
-set(blank_expected ${standard_digests} "shaders/present.frag=")
-expect_files("${blank_dir}" "${blank_expected}"
-    "passes/main_rendering_config.json;shaders/present.frag")
+# Everything but the rendering config is the standard template's. VI-2: its
+# pass draws with an engine shader, so it adds no file -- no shaders/ at all.
+expect_files("${blank_dir}" "${standard_digests}"
+    "passes/main_rendering_config.json")
+if(EXISTS "${blank_dir}/shaders")
+    message(FATAL_ERROR "blank template wrote a shaders folder its pass does not use")
+endif()
 
 file(READ "${blank_dir}/passes/main_rendering_config.json" blank_config)
 string(JSON blank_schema ERROR_VARIABLE schema_error GET "${blank_config}" schema)
@@ -152,23 +155,17 @@ if(NOT pass_name STREQUAL "present" OR NOT pass_type STREQUAL "fullscreen" OR
    NOT pass_input_count EQUAL 0 OR NOT pass_output_count EQUAL 1 OR
    NOT pass_output STREQUAL "display" OR
    NOT pass_vertex STREQUAL "engine://fullscreen" OR
-   NOT pass_fragment STREQUAL "project://shaders/present")
+   NOT pass_fragment STREQUAL "engine://passthrough")
     message(FATAL_ERROR
         "blank rendering config's pass is not `present`, fullscreen, reading nothing and writing display "
-        "from project://shaders/present\n${blank_config}")
+        "from engine://passthrough\n${blank_config}")
 endif()
-
-file(READ "${blank_dir}/shaders/present.frag" present_frag)
-foreach(needle IN ITEMS "#version 460" "in vec2 inUV" "out vec4 outColor" "inUV.x" "inUV.y")
-    string(FIND "${present_frag}" "${needle}" needle_at)
-    if(needle_at EQUAL -1)
-        message(FATAL_ERROR "shaders/present.frag does not contain `${needle}`\n${present_frag}")
-    endif()
-endforeach()
-# It reads nothing, so it declares no input binding either.
-string(FIND "${present_frag}" "PELICAN_DECLARE_INPUT" input_at)
-if(NOT input_at EQUAL -1)
-    message(FATAL_ERROR "shaders/present.frag declares an input the pass does not have\n${present_frag}")
+# No defines: engine://passthrough shows input 0, the default, once present
+# is given an input.
+string(JSON pass_defines_type ERROR_VARIABLE defines_error
+    TYPE "${blank_config}" rendering rendering_passes 0 passes 0 shader defines)
+if(defines_error STREQUAL "NOTFOUND")
+    message(FATAL_ERROR "blank rendering config's present sets shader defines\n${blank_config}")
 endif()
 
 # --- an unknown template ----------------------------------------------------

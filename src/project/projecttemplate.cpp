@@ -220,6 +220,12 @@ constexpr std::string_view rendering_config_json = R"json({
 // canonical anchors and `output_transform` it always adds. `present` writes
 // `display`, the name `output_transform` reads -- which is also what lets the
 // HDR path find the scene's last pass.
+//
+// VI-2: `present` draws with the engine's own `engine://passthrough`, so the
+// template ships no shader. Every input of that shader is variadic: with none
+// it draws a UV gradient (a first frame that is not one flat colour says the
+// pass ran), and once the author gives present an input it shows input 0 --
+// no shader to write before a target reaches the screen.
 constexpr std::string_view blank_rendering_config_json = R"json({
   "schema": "pelican.graph",
   "version": 1,
@@ -243,7 +249,7 @@ constexpr std::string_view blank_rendering_config_json = R"json({
             },
             "shader": {
               "vertex": "engine://fullscreen",
-              "fragment": "project://shaders/present"
+              "fragment": "engine://passthrough"
             }
           }
         ]
@@ -252,18 +258,6 @@ constexpr std::string_view blank_rendering_config_json = R"json({
   }
 })json"
                                                          "\n";
-
-// Reads nothing, so it needs no bindings: a pixel's colour is where it sits on
-// the screen, and a first frame that is not one flat colour says the pass ran.
-constexpr std::string_view blank_present_frag = R"glsl(#version 460
-
-layout(location = 0) in vec2 inUV;
-layout(location = 0) out vec4 outColor;
-
-void main() {
-    outColor = vec4(inUV.x, inUV.y, 0.5, 1.0);
-}
-)glsl";
 
 std::string_view renderingConfigJson(ProjectTemplate kind) {
     return kind == ProjectTemplate::Blank ? blank_rendering_config_json
@@ -373,9 +367,6 @@ std::vector<TemplateFile> templateFiles(ProjectTemplate kind) {
         {".gitignore", gitignore},
         {"README.md", readme},
     };
-    if (kind == ProjectTemplate::Blank) {
-        files.push_back({"shaders/present.frag", blank_present_frag});
-    }
     return files;
 }
 

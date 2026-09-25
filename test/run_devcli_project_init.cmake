@@ -183,10 +183,12 @@ if(png_size EQUAL 0)
 endif()
 
 # F-2: the blank template draws its own frame. Its one pass, `present`, writes
-# `display` from a UV gradient and reads nothing, so a frame that came out as a
-# single flat colour means the pass did not run -- a black or cleared
-# swapchain would be exactly that. The file shape is checked by
-# run_devcli_project_templates.cmake; this is the part that needs the GPU.
+# `display` and reads nothing; VI-2 draws it with `engine://passthrough`, which
+# with no input draws a UV gradient. A frame that came out as a single flat
+# colour means the pass did not run -- a black or cleared swapchain would be
+# exactly that, and so would passthrough reading an input it was not given.
+# The file shape is checked by run_devcli_project_templates.cmake; this is the
+# part that needs the GPU.
 set(blank_dir "${OUT_DIR}/blank_project")
 execute_process(
     COMMAND "${CLI}" project init "${blank_dir}" --template blank
@@ -196,6 +198,12 @@ execute_process(
 )
 if(NOT blank_init_result EQUAL 0)
     message(FATAL_ERROR "project init --template blank failed with ${blank_init_result}\nstdout:\n${blank_init_stdout}\nstderr:\n${blank_init_stderr}")
+endif()
+# The frame below is the engine's shader's, not one the template wrote.
+file(READ "${blank_dir}/passes/main_rendering_config.json" blank_config)
+string(JSON blank_fragment GET "${blank_config}" rendering rendering_passes 0 passes 0 shader fragment)
+if(NOT blank_fragment STREQUAL "engine://passthrough" OR EXISTS "${blank_dir}/shaders")
+    message(FATAL_ERROR "blank project's present does not draw with engine://passthrough\n${blank_config}")
 endif()
 execute_process(
     COMMAND "${PLAYER}"

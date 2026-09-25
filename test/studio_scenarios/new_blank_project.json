@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "new_blank_project",
-  "description": "F-2: start from nothing. File > New Project... is filled in the way a person fills it -- a folder under this run's own artifacts, a name, the Blank pipeline template -- and Create writes the template and opens it through the window's ordinary Open Project. The engine that comes up runs the one pass the template authored, `present`, followed by the `output_transform` the engine always adds, and the viewport shows the gradient that pass draws rather than one flat colour.",
+  "description": "F-2: start from nothing. File > New Project... is filled in the way a person fills it -- a folder under this run's own artifacts, a name, the Blank pipeline template -- and Create writes the template and opens it through the window's ordinary Open Project. The engine that comes up runs the one pass the template authored, `present`, followed by the `output_transform` the engine always adds. VI-2: present draws with the engine's own engine://passthrough, so the template writes no shader; with no input that shader draws a gradient, and the viewport shows it rather than one flat colour.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -88,7 +88,15 @@
       "frames": 30
     },
     {
-      "label": "it is the gradient `present` draws, not one flat colour",
+      "label": "VI-2: present draws with the engine's pass-through, not a shader the template wrote",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[0].root_declaration.shader.fragment",
+      "value": "engine://passthrough"
+    },
+    {
+      "label": "it is the gradient engine://passthrough draws with no input, not one flat colour",
       "expect": "result",
       "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/new_blank_project_viewport.png"},
       "path": "distinct_colors",

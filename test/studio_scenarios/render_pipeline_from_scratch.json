@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "render_pipeline_from_scratch",
-  "description": "F-4: the first 'build it from zero' story, done with Studio. File > New Project... makes a Blank pipeline project, whose present draws a gradient to display. New render target... declares scene_color with only a name. Add fullscreen pass... puts draw_pattern before present, writing scene_color, with a fragment shader New... writes and the author's editor turns into stripes; saving the pass compiles it. Then present reads scene_color: F-6 lets the Pass Editor edit a pass the blank project's direct root declares, so scene_color is added to present's inputs there and Save writes the root, after the author's editor turns present.frag into a pass-through. The viewport then shows stripes -- a few colours, the same colour down a stripe, another across it -- and opening the project once more gives the same canvas and the same picture, because it is all in the document.",
+  "description": "F-4: the first 'build it from zero' story, done with Studio. File > New Project... makes a Blank pipeline project, whose present draws a gradient to display with the engine's engine://passthrough (VI-2). New render target... declares scene_color with only a name. Add fullscreen pass... puts draw_pattern before present, writing scene_color, with a fragment shader New... writes and the author's editor turns into stripes; saving the pass compiles it. Then present reads scene_color: F-6 lets the Pass Editor edit a pass the blank project's direct root declares, so scene_color is added to present's inputs there and Save writes the root; engine://passthrough shows its input 0, so no shader is written for present. The viewport then shows stripes -- a few colours, the same colour down a stripe, another across it -- and opening the project once more gives the same canvas and the same picture, because it is all in the document.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -437,12 +437,6 @@
       "name": "pelican.fullscreenPass.addInput"
     },
     {
-      "label": "present.frag passes input 0 through, typed in the author's own editor",
-      "file": "write",
-      "path": "{artifacts}/blank_project/shaders/present.frag",
-      "text": "#version 460\n#extension GL_GOOGLE_include_directive : require\n#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\nPELICAN_DECLARE_INPUT_0(in_scene_color);  // scene_color\n\nvoid main() {\n    outColor = PELICAN_TEXTURE_2D_0(in_scene_color, inUV);\n}\n"
-    },
-    {
       "label": "Save is ready",
       "cmd": "wait",
       "name": "pelican.fullscreenPass.save",
@@ -450,7 +444,7 @@
       "timeout_ms": 60000
     },
     {
-      "label": "save present: edit_preset_pass on the root, whose preflight and pipeline rebuild compile the new present.frag",
+      "label": "save present: edit_preset_pass on the root",
       "cmd": "click",
       "name": "pelican.fullscreenPass.save"
     },
@@ -470,6 +464,14 @@
       "params": {},
       "path": "graphs[0].passes[1].root_declaration.input[0]",
       "value": "scene_color"
+    },
+    {
+      "label": "still through the engine's pass-through, which shows input 0: no shader was written for present",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].root_declaration.shader.fragment",
+      "value": "engine://passthrough"
     },
     {
       "label": "the edit is in the root document itself",

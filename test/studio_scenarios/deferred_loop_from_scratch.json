@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "deferred_loop_from_scratch",
-  "description": "G-5, story B, with T-1's defaults: a deferred material loop built from a Blank pipeline with Studio alone. New Project (F-2) proposes the name; a Cube turned 45 degrees about the vertical, typed as one angle, so two faces meet the camera, and a Floor from Add Object (G-2 / T-1). Add material pass... adds Deferred geometry with its five G-buffer targets and depth filled as it opens (G-1 / T-1). Add fullscreen pass... after the geometry, New... > Deferred lighting (G-3), which fills the five inputs from the G-buffer names and turns on Uses scene lights and Camera position (T-1); its colour output is made from the output list's New target: deferred_lighting_color... (T-1). present reads it through a Tone map shader. The light paints the two faces in different colours; turning the light in the Inspector changes them.",
+  "description": "G-5, story B, with T-1's defaults: a deferred material loop built from a Blank pipeline with Studio alone. New Project (F-2) proposes the name; a Cube turned 45 degrees about the vertical, typed as one angle, so two faces meet the camera, and a Floor from Add Object (G-2 / T-1). Add material pass... adds Deferred geometry with its five G-buffer targets and depth filled as it opens (G-1 / T-1). Add fullscreen pass... after the geometry, New... > Deferred lighting (G-3), which fills the five inputs from the G-buffer names and turns on Uses scene lights and Camera position (T-1); its colour output is made from the output list's New target: deferred_lighting_color... (T-1). present reads it through a Tone map shader New... writes (G-3): the Blank pipeline's present draws with engine://passthrough (VI-2), so the proposal is the pass's own name, and the fragment list offers the new shader (T-1). The light paints the two faces in different colours; turning the light in the Inspector changes them.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -573,10 +573,10 @@
       "text": "Tone map"
     },
     {
-      "label": "present already reads shaders/present.frag, so the new shader gets a name of its own, with nothing typed",
+      "label": "present draws with engine://passthrough, so the new shader is named after the pass, with nothing typed",
       "expect": "text_equals",
       "name": "pelican.fullscreenPass.shaderTemplateName",
-      "value": "present_tone_map"
+      "value": "present"
     },
     {
       "label": "create the shader",
@@ -584,23 +584,28 @@
       "name": "pelican.fullscreenPass.createFragmentShader"
     },
     {
-      "label": "the fragment field holds its stem",
+      "label": "the fragment field holds present's new stem",
       "expect": "text_equals",
       "name": "pelican.fullscreenPass.shader.fragment",
-      "value": "project://shaders/present_tone_map"
+      "value": "project://shaders/present"
+    },
+    {
+      "label": "T-1: the fragment list offers it: picking it puts the same stem in the field",
+      "cmd": "select",
+      "name": "pelican.fullscreenPass.shader.fragmentChoice",
+      "text": "project://shaders/present"
+    },
+    {
+      "label": "the field holds the picked stem",
+      "expect": "text_equals",
+      "name": "pelican.fullscreenPass.shader.fragment",
+      "value": "project://shaders/present"
     },
     {
       "label": "the shader reads deferred_lighting_color as the scene colour",
       "file": "contains",
-      "path": "{artifacts}/project_001/shaders/present_tone_map.frag",
-      "text": "PELICAN_DECLARE_INPUT_0(in_deferred_lighting_color);  // deferred_lighting_color: scene colour",
-      "value": true
-    },
-    {
-      "label": "the gradient present had is still on disk: New... does not overwrite",
-      "file": "contains",
       "path": "{artifacts}/project_001/shaders/present.frag",
-      "text": "outColor = vec4(inUV.x, inUV.y, 0.5, 1.0);",
+      "text": "PELICAN_DECLARE_INPUT_0(in_deferred_lighting_color);  // deferred_lighting_color: scene colour",
       "value": true
     },
     {

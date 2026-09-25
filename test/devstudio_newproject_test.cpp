@@ -121,13 +121,16 @@ TEST_CASE("F-2 New Project writes the template that was picked and hands on its 
         std::error_code ec;
         REQUIRE(std::filesystem::equivalent(
             root, fsPath(parent.path()) / "blank_one", ec));
-        REQUIRE(std::filesystem::is_regular_file(root / "shaders" / "present.frag"));
         const auto config = readJson(root / "passes" / "main_rendering_config.json");
         const auto &rendering = config.at("rendering");
         REQUIRE_FALSE(rendering.contains("pipeline"));
         REQUIRE(rendering.at("rendering_passes").at(0).at("passes").size() == 1);
-        REQUIRE(rendering.at("rendering_passes").at(0).at("passes").at(0).at("name") ==
-                "present");
+        const auto &present = rendering.at("rendering_passes").at(0).at("passes").at(0);
+        REQUIRE(present.at("name") == "present");
+        // VI-2: present draws with the engine's pass-through, so the template
+        // ships no shader of its own.
+        REQUIRE(present.at("shader").at("fragment") == "engine://passthrough");
+        REQUIRE_FALSE(std::filesystem::exists(root / "shaders" / "present.frag"));
     }
 
     SECTION("Standard 3D scene") {
@@ -307,7 +310,7 @@ TEST_CASE("F-2 File > New Project... sits above Open Project... and opens what i
         create(QStringLiteral("guarded_blank"));
         // Written, but not opened behind the person's back.
         REQUIRE(QFile::exists(QDir(parent.path()).filePath(
-            QStringLiteral("guarded_blank/shaders/present.frag"))));
+            QStringLiteral("guarded_blank/passes/main_rendering_config.json"))));
         auto *prompt = window.findChild<QMessageBox *>(
             QStringLiteral("pelican.unsavedScenePrompt"));
         REQUIRE(prompt != nullptr);
