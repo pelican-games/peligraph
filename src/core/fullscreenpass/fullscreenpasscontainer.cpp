@@ -160,7 +160,11 @@ std::string resourceNameOrEmpty(Lookup &&lookup) noexcept {
 // supplies nothing at their binding. An image read through a sampler (2D,
 // 2D array or cube view), a sampler, or a storage buffer. An input
 // attachment, a storage image, a uniform or dynamic buffer, a texel buffer,
-// an acceleration structure, a 3D image or a runtime-sized array is not.
+// an acceleration structure or a 3D image is not. A runtime-sized array
+// reaches here with count 1 (shaderreflection.cpp's descriptorCount maps
+// SPIRV-Reflect's 0 to 1, and the set layout is built from the same count),
+// so it is filled like a one-element array; the count == 0 test below only
+// guards a reflection that stops doing that.
 bool fillablePassInput(const ReflectedBinding &reflected) {
     if (reflected.count == 0) return false;
     switch (reflected.type) {
