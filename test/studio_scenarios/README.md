@@ -180,6 +180,26 @@ the `frame_plan` member of the same root `layout` the Graph tab writes, so
 `get_graph_instances` carries it at `layout.frame_plan.<graph>.nodes.<pass>`;
 `frameplan_edit_roundtrip` is the example.
 
+VI-3a draws a fullscreen or raster pass's input sockets from its shader's
+declarations (`get_frame_plan` `nodes[].pass_inputs`), and a drop connects by
+binding number, so those sockets are named by binding:
+
+| name | what it is |
+|------|------------|
+| `node_socket#<pass>/in@<binding>` | one declaration, or one connected member of the variadic group; empty or fed |
+| `node_socket#<pass>/in:variadic` | the empty end of the variadic band, where a drop adds one input |
+| `node_socket#<pass>/in:<resource>` | still answers: the socket that resource is connected to (not listed by `list`); an input no declaration takes keeps this as its own name |
+| `node_row_label#<pass>/in@<binding>` | the row's text, `<declaration> ← <resource>` |
+| `node_socket_band#<pass>` | the variadic band itself (drawing only) |
+| `node_socket_warning#<pass>/in@<binding>` | the mark on a declaration named for another connected resource |
+
+A drop on such a pass's body (its heading, say) adds nothing. A pass whose
+shader declares no input at all, and a compute task, keep the N-8 drop onto the
+node. After a reload the engine refused for a pass, the status line names the
+binding it lost, beside `pelican.framePlan.reloadRefused.disconnect` and
+`pelican.framePlan.reloadRefused.openShader`. `sockets_from_shader` is the
+example.
+
 The editor the canvas opens over a pill or a heading is a real widget carried by
 a drawn item, and is named the same way:
 `pelican.graphCanvasView::graph_inline_editor#left/gain`. `type`, `key` and

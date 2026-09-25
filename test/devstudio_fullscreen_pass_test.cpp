@@ -3827,9 +3827,10 @@ TEST_CASE("T-1 the shader fields offer the project's shaders, then the engine's"
                              "bad name.frag"})
         std::ofstream{root / "shaders" / file} << "// x\n";
 
+    // VI-3a: engine://passthrough first -- it takes any number of inputs.
     const std::vector<std::string> engine_fragments{
-        "engine://fullscreen", "engine://scene_present", "engine://output_transform",
-        "engine://ssao", "engine://ssao_blur"};
+        "engine://passthrough", "engine://fullscreen", "engine://scene_present",
+        "engine://output_transform", "engine://ssao", "engine://ssao_blur"};
     auto fragments = engine_fragments;
     fragments.insert(fragments.begin(),
                      {"project://shaders/a_pass", "project://shaders/b_pass"});

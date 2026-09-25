@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <array>
+#include <iterator>
+#include <set>
 #include <string_view>
 
 namespace PelicanStudio {
@@ -482,6 +484,402 @@ FramePlanEditRequest framePlanPassRemoveRequest(
     request.params = Json{{"base_source_digest", authoring.source_digest},
                           {"fragment_reference", row->provider_reference}};
     return request;
+}
+
+// --- VI-3a: sockets from the shader's declarations, and connecting by number.
+
+namespace {
+
+constexpr std::string_view HistorySuffix = "@history";
+
+struct PassInput {
+    std::size_t index = 0; // position in `input`
+    std::string resource;  // without "@history"
+    bool history = false;
+};
+
+// The pass's inputs split the way the engine numbers them: texture inputs
+// (history ones included) count from binding 0, buffer inputs from the
+// buffer binding base.
+struct SplitInputs {
+    std::vector<PassInput> textures;
+    std::vector<PassInput> buffers;
+};
+
+std::pair<std::string, bool> bareResource(const std::string &input) {
+    if (input.size() > HistorySuffix.size() &&
+        input.ends_with(HistorySuffix))
+        return {input.substr(0, input.size() - HistorySuffix.size()), true};
+    return {input, false};
+}
+
+bool bufferResource(const FramePlanModel &model, const std::string &name) {
+    const auto found =
+        std::ranges::find(model.resources, name, &FramePlanResource::name);
+    return found != model.resources.end() && found->kind == "buffer";
+}
+
+SplitInputs splitInputs(const FramePlanModel &model,
+                        const std::vector<std::string> &inputs) {
+    SplitInputs split;
+    for (std::size_t index = 0; index < inputs.size(); ++index) {
+        auto [resource, history] = bareResource(inputs[index]);
+        const bool buffer = !history && bufferResource(model, resource);
+        (buffer ? split.buffers : split.textures)
+            .push_back(PassInput{index, std::move(resource), history});
+    }
+    return split;
+}
+
+// Without the authoring context the frame plan's reads stand in: the planner
+// appends a pass's texture inputs, then its buffer inputs, in `input` order.
+std::vector<std::string> readsAsInputs(const FramePlanModel &model,
+                                       const FramePlanNode &node) {
+    std::vector<std::string> inputs;
+    for (const auto &read : node.reads)
+        if (!bufferResource(model, read)) inputs.push_back(read);
+    for (const auto &read : node.history_reads)
+        inputs.push_back(read + std::string{HistorySuffix});
+    for (const auto &read : node.reads)
+        if (bufferResource(model, read)) inputs.push_back(read);
+    return inputs;
+}
+
+std::string connectedLabel(const std::string &resource, bool history) {
+    return history ? resource + " (history)" : resource;
+}
+
+const FramePlanNode *findNode(const FramePlanModel &model,
+                              const std::string &pass) {
+    const auto found =
+        std::ranges::find(model.nodes, pass, &FramePlanNode::name);
+    return found == model.nodes.end() ? nullptr : &*found;
+}
+
+std::string bindingRange(std::size_t from, std::size_t to_exclusive) {
+    return to_exclusive - from == 1
+               ? std::to_string(from)
+               : std::to_string(from) + ".." + std::to_string(to_exclusive - 1);
+}
+
+FramePlanEditRequest refuseLine(std::string line) {
+    FramePlanEditRequest request;
+    request.refusal = line;
+    request.line = std::move(line);
+    return request;
+}
+
+// Every check framePlanPassResourceRequest makes before it sends, and then
+// the same payload with `inputs` as the whole new list.
+FramePlanEditRequest passInputListRequest(const FramePlanAuthoring &authoring,
+                                          const std::string &graph,
+                                          const std::string &pass,
+                                          std::vector<std::string> inputs,
+                                          std::string notice = {}) {
+    if (!authoring.received)
+        return refuse("The render authoring context has not arrived yet.");
+    const auto *row = authoring.find(graph, pass);
+    if (row == nullptr)
+        return refuse(pass + " is not a pass of " + graph +
+                      " in the current authoring context.");
+    if (const auto reason = passRefusal(authoring, *row); !reason.empty())
+        return refuse(reason);
+    const auto &declaration = row->editable_declaration;
+    const auto type = textOr(declaration, "type");
+    if (type != "fullscreen" && type != "raster")
+        return refuse(pass + " is a " + (type.empty() ? "typeless" : type) +
+                      " pass and has no input list its shader declares.");
+    FramePlanEditRequest request;
+    request.method = "edit_preset_pass";
+    Json params = Json::object();
+    addDigests(params, authoring, *row);
+    params["graph"] = graph;
+    params["pass_name"] = pass;
+    params["input"] = std::move(inputs);
+    addDeclarationFields(params, declaration, type);
+    if (type == "fullscreen" &&
+        (!params.contains("output") || !params.contains("shader")))
+        return refuse(pass +
+                      " has no complete output and shader declaration to send "
+                      "back: edit it in the Pass Editor.");
+    request.params = std::move(params);
+    request.notice = std::move(notice);
+    return request;
+}
+
+// The pass's own `input`, as edit_preset_pass will replace it.
+std::optional<std::vector<std::string>> editableInputs(
+    const FramePlanAuthoring &authoring, const std::string &graph,
+    const std::string &pass) {
+    const auto *row = authoring.find(graph, pass);
+    if (!authoring.received || row == nullptr) return std::nullopt;
+    return declaredInputs(row->editable_declaration);
+}
+
+} // namespace
+
+bool framePlanNodeDeclaresInputs(const FramePlanNode &node) {
+    return node.pass_inputs && node.pass_inputs->declared() &&
+           (!node.pass_inputs->declarations.empty() ||
+            node.pass_inputs->variadic_range);
+}
+
+std::string FramePlanInputSocket::key() const {
+    if (kind == Kind::variadic_drop) return "in:variadic";
+    if (kind == Kind::undeclared || !binding) return {};
+    return "in@" + std::to_string(*binding);
+}
+
+std::optional<std::vector<std::string>> framePlanPassInputList(
+    const FramePlanAuthoring &authoring, const std::string &graph,
+    const std::string &pass) {
+    const auto *row = authoring.find(graph, pass);
+    if (!authoring.received || row == nullptr) return std::nullopt;
+    // What the engine composed and runs; the document's own list when the
+    // context left the composed one out.
+    if (row->declaration.contains("input"))
+        return declaredInputs(row->declaration);
+    return declaredInputs(row->editable_declaration);
+}
+
+FramePlanInputSockets framePlanInputSockets(
+    const FramePlanModel &model, const FramePlanNode &node,
+    const std::optional<std::vector<std::string>> &inputs) {
+    FramePlanInputSockets result;
+    if (!framePlanNodeDeclaresInputs(node)) return result;
+    const auto &declared = *node.pass_inputs;
+    result.declared = true;
+    result.variadic = declared.variadic_range;
+    const auto split =
+        splitInputs(model, inputs ? *inputs : readsAsInputs(model, node));
+
+    std::set<std::size_t> refused_bindings;
+    if (declared.reload_refused)
+        for (const auto &declaration : declared.reload_refused->declarations)
+            refused_bindings.insert(declaration.binding);
+    const auto mark = [&](FramePlanInputSocket &socket) {
+        socket.removed = declared.reload_refused && socket.connected() &&
+                         socket.binding &&
+                         !refused_bindings.contains(*socket.binding);
+    };
+    const auto connect = [](FramePlanInputSocket &socket,
+                            const PassInput &input) {
+        socket.resource = input.resource;
+        socket.history = input.history;
+        socket.input_index = input.index;
+    };
+
+    std::set<std::size_t> taken_textures;
+    std::set<std::size_t> taken_buffers;
+    bool variadic_drawn = false;
+    for (const auto &declaration : declared.declarations) {
+        if (declaration.variadic) {
+            if (variadic_drawn || !declared.variadic_range) continue;
+            variadic_drawn = true;
+            const auto [first, max] = *declared.variadic_range;
+            for (std::size_t slot = 0; slot < max; ++slot) {
+                const std::size_t ordinal = first + slot;
+                taken_textures.insert(ordinal);
+                if (ordinal >= split.textures.size()) continue;
+                FramePlanInputSocket socket;
+                socket.kind = FramePlanInputSocket::Kind::variadic;
+                socket.binding = ordinal;
+                connect(socket, split.textures[ordinal]);
+                socket.label = "← " +
+                               connectedLabel(socket.resource, socket.history);
+                mark(socket);
+                result.sockets.push_back(std::move(socket));
+            }
+            FramePlanInputSocket drop;
+            drop.kind = FramePlanInputSocket::Kind::variadic_drop;
+            drop.label = "+ input";
+            result.sockets.push_back(std::move(drop));
+            continue;
+        }
+        FramePlanInputSocket socket;
+        socket.kind = FramePlanInputSocket::Kind::declared;
+        socket.binding = declaration.binding;
+        socket.declaration = declaration.name;
+        socket.buffer = declaration.buffer();
+        if (socket.buffer) {
+            if (declaration.binding >= declared.buffer_binding_base) {
+                const std::size_t ordinal =
+                    declaration.binding - declared.buffer_binding_base;
+                taken_buffers.insert(ordinal);
+                if (ordinal < split.buffers.size())
+                    connect(socket, split.buffers[ordinal]);
+            }
+        } else {
+            taken_textures.insert(declaration.binding);
+            if (declaration.binding < split.textures.size())
+                connect(socket, split.textures[declaration.binding]);
+        }
+        socket.label =
+            socket.connected()
+                ? declaration.name + " ← " +
+                      connectedLabel(socket.resource, socket.history)
+                : declaration.name;
+        mark(socket);
+        result.sockets.push_back(std::move(socket));
+    }
+    // What the pass supplies and no declaration takes keeps a row of its own.
+    const auto extras = [&](const std::vector<PassInput> &list,
+                            const std::set<std::size_t> &taken, bool buffer) {
+        for (std::size_t ordinal = 0; ordinal < list.size(); ++ordinal) {
+            if (taken.contains(ordinal)) continue;
+            FramePlanInputSocket socket;
+            socket.kind = FramePlanInputSocket::Kind::undeclared;
+            socket.buffer = buffer;
+            connect(socket, list[ordinal]);
+            socket.label = connectedLabel(socket.resource, socket.history);
+            result.sockets.push_back(std::move(socket));
+        }
+    };
+    extras(split.textures, taken_textures, false);
+    extras(split.buffers, taken_buffers, true);
+
+    // Rule 5: a declaration named in_<X> that is fed something else while X
+    // is connected elsewhere on the same pass reads as a swapped order.
+    std::set<std::string> connected;
+    for (const auto &socket : result.sockets)
+        if (socket.connected()) connected.insert(socket.resource);
+    for (auto &socket : result.sockets) {
+        if (socket.kind != FramePlanInputSocket::Kind::declared ||
+            !socket.connected() || !socket.declaration.starts_with("in_"))
+            continue;
+        const std::string named = socket.declaration.substr(3);
+        if (named == socket.resource || !connected.contains(named)) continue;
+        socket.warning = "This declaration is named for " + named +
+                         ", but binding " + std::to_string(*socket.binding) +
+                         " is fed " + socket.resource + ".";
+    }
+    return result;
+}
+
+FramePlanEditRequest framePlanSocketConnectRequest(
+    const FramePlanAuthoring &authoring, const FramePlanModel &model,
+    const std::string &graph, const std::string &pass,
+    const std::string &resource, const FramePlanSocketDrop &drop) {
+    const FramePlanNode *node = findNode(model, pass);
+    if (node == nullptr || !framePlanNodeDeclaresInputs(*node))
+        return framePlanPassResourceRequest(authoring, graph, pass, {resource},
+                                            true);
+    if (drop.kind == FramePlanSocketDrop::Kind::body)
+        return refuseLine("Drop on a socket of " + pass +
+                          ": its inputs follow its shader's declarations.");
+    const auto current = editableInputs(authoring, graph, pass);
+    if (!current)
+        return passInputListRequest(authoring, graph, pass, {});
+    const auto &declared = *node->pass_inputs;
+    const auto split = splitInputs(model, *current);
+    const bool buffer = bufferResource(model, resource);
+    const auto fill_first = [&](std::size_t from, std::size_t to_exclusive) {
+        return refuseLine("Connect binding " + bindingRange(from, to_exclusive) +
+                          " of " + pass +
+                          " first: a pass's inputs fill the bindings in order.");
+    };
+    auto inputs = *current;
+
+    if (drop.kind == FramePlanSocketDrop::Kind::variadic) {
+        if (!declared.variadic_range)
+            return refuseLine(pass + "'s shader has no variadic group.");
+        if (buffer)
+            return refuseLine(resource + " is a buffer: " + pass +
+                              "'s variadic group takes images.");
+        const auto [first, max] = *declared.variadic_range;
+        if (split.textures.size() < first)
+            return fill_first(split.textures.size(), first);
+        if (split.textures.size() - first >= max)
+            return refuseLine(pass + "'s shader takes at most " +
+                              std::to_string(max) +
+                              " inputs in its variadic group.");
+        inputs.push_back(resource);
+        return passInputListRequest(authoring, graph, pass, std::move(inputs));
+    }
+
+    const auto declaration = std::ranges::find(
+        declared.declarations, drop.binding,
+        &FramePlanPassInputDeclaration::binding);
+    if (declaration == declared.declarations.end())
+        return refuseLine(pass + "'s shader declares no binding " +
+                          std::to_string(drop.binding) + ".");
+    if (declaration->buffer() != buffer)
+        return refuseLine(
+            resource + (buffer ? " is a buffer" : " is an image") +
+            ": binding " + std::to_string(drop.binding) + " of " + pass +
+            " takes " + (buffer ? "an image." : "a buffer."));
+    const auto &list = buffer ? split.buffers : split.textures;
+    std::size_t ordinal = drop.binding;
+    std::size_t base = 0;
+    if (buffer) {
+        base = declared.buffer_binding_base;
+        if (drop.binding < base)
+            return refuseLine(pass + "'s binding " +
+                              std::to_string(drop.binding) +
+                              " is below its buffer bindings.");
+        ordinal = drop.binding - base;
+    }
+    if (ordinal < list.size()) {
+        // In place of what is connected there: one input changes, nothing
+        // moves.
+        inputs[list[ordinal].index] = resource;
+        return passInputListRequest(authoring, graph, pass, std::move(inputs));
+    }
+    if (ordinal > list.size())
+        return fill_first(base + list.size(), drop.binding);
+    // The next binding: `input` counts textures and buffers apart, so the end
+    // of the whole list is the next one of either.
+    inputs.push_back(resource);
+    return passInputListRequest(authoring, graph, pass, std::move(inputs));
+}
+
+FramePlanEditRequest framePlanSocketDisconnectRequest(
+    const FramePlanAuthoring &authoring, const FramePlanModel &model,
+    const std::string &graph, const std::string &pass,
+    std::size_t input_index) {
+    const auto current = editableInputs(authoring, graph, pass);
+    if (!current)
+        return passInputListRequest(authoring, graph, pass, {});
+    if (input_index >= current->size())
+        return refuseLine(pass + " has no input " +
+                          std::to_string(input_index) + " to disconnect.");
+    const FramePlanNode *node = findNode(model, pass);
+    const auto split = splitInputs(model, *current);
+    std::string notice;
+    for (const bool buffer : {false, true}) {
+        const auto &list = buffer ? split.buffers : split.textures;
+        const auto found = std::ranges::find(list, input_index, &PassInput::index);
+        if (found == list.end()) continue;
+        const auto ordinal =
+            static_cast<std::size_t>(std::distance(list.begin(), found));
+        const std::size_t base =
+            buffer && node != nullptr && node->pass_inputs
+                ? node->pass_inputs->buffer_binding_base
+                : 0;
+        if (ordinal + 1 < list.size())
+            notice = pass + ": the inputs after binding " +
+                     std::to_string(base + ordinal) + " moved up by one.";
+    }
+    auto inputs = *current;
+    inputs.erase(inputs.begin() + static_cast<std::ptrdiff_t>(input_index));
+    return passInputListRequest(authoring, graph, pass, std::move(inputs),
+                                std::move(notice));
+}
+
+const FramePlanInputSocket *framePlanRemovedSocket(
+    const FramePlanInputSockets &sockets) {
+    for (const auto &socket : sockets.sockets)
+        if (socket.removed) return &socket;
+    return nullptr;
+}
+
+std::string framePlanReloadRefusalLine(const std::string &pass,
+                                       const FramePlanInputSocket &socket) {
+    return pass +
+           " keeps drawing with its previous shader: the new one no longer "
+           "declares binding " +
+           (socket.binding ? std::to_string(*socket.binding) : std::string{"?"}) +
+           " (" + socket.resource + ").";
 }
 
 bool framePlanTaskAtRoot(std::string_view source_reference,

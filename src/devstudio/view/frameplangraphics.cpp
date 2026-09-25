@@ -246,6 +246,42 @@ QGraphicsItem *findFramePlanSocket(QGraphicsScene &scene, const QString &graph,
     return nullptr;
 }
 
+// VI-3a: the input socket that stands for one position of the pass's `input`.
+QGraphicsItem *findFramePlanInputSocket(QGraphicsScene &scene,
+                                        const QString &graph,
+                                        const QString &node, int input_index) {
+    for (QGraphicsItem *item : scene.items()) {
+        if (item->data(FramePlanItemKindRole).toString() !=
+                QLatin1String{FramePlanSocketItem} ||
+            item->data(FramePlanGraphRole).toString() != graph ||
+            item->data(FramePlanNameRole).toString() != node ||
+            item->data(FramePlanSocketDirectionRole).toString() !=
+                QLatin1String{"input"})
+            continue;
+        const QVariant index = item->data(FramePlanInputIndexRole);
+        if (index.isValid() && index.toInt() == input_index) return item;
+    }
+    return nullptr;
+}
+
+// VI-3a: the arrow of the edge that ends on that input.
+QGraphicsItem *findFramePlanInputArrow(QGraphicsScene &scene,
+                                       const QString &graph,
+                                       const QString &from,
+                                       const QString &to, int input_index) {
+    for (QGraphicsItem *item : scene.items()) {
+        if (item->data(FramePlanItemKindRole).toString() !=
+                QLatin1String{FramePlanEdgeArrowItem} ||
+            item->data(FramePlanGraphRole).toString() != graph ||
+            item->data(FramePlanFromNameRole).toString() != from ||
+            item->data(FramePlanToNameRole).toString() != to)
+            continue;
+        const QVariant index = item->data(FramePlanInputIndexRole);
+        if (index.isValid() && index.toInt() == input_index) return item;
+    }
+    return nullptr;
+}
+
 // An edge runs socket centre to socket centre, for the resource the bundle is
 // about. A bundle whose ends draw no matching socket -- a collapsed group, a
 // boundary stub, an ordering dependency that names no resource -- falls back
@@ -264,12 +300,19 @@ void routeFramePlanBundle(QGraphicsScene &scene, QGraphicsPathItem &edge) {
 
     QGraphicsItem *from_socket = nullptr;
     QGraphicsItem *to_socket = nullptr;
+    // VI-3a: an edge that ends on one input of a declared pass is routed to
+    // that socket, whichever other socket is fed the same resource.
+    const QVariant input_index = edge.data(FramePlanInputIndexRole);
     for (const QString &resource :
          edge.data(FramePlanResourcesRole).toStringList()) {
         QGraphicsItem *out = findFramePlanSocket(
             scene, graph, from_name, resource, QStringLiteral("output"));
-        QGraphicsItem *in = findFramePlanSocket(
-            scene, graph, to_name, resource, QStringLiteral("input"));
+        QGraphicsItem *in =
+            input_index.isValid()
+                ? findFramePlanInputSocket(scene, graph, to_name,
+                                           input_index.toInt())
+                : findFramePlanSocket(scene, graph, to_name, resource,
+                                      QStringLiteral("input"));
         if (out != nullptr && in != nullptr) {
             from_socket = out;
             to_socket = in;
@@ -293,9 +336,13 @@ void routeFramePlanBundle(QGraphicsScene &scene, QGraphicsPathItem &edge) {
             : curveGeometry(from->sceneBoundingRect(),
                             to->sceneBoundingRect());
     edge.setPath(geometry.path);
-    if (auto *arrow = dynamic_cast<QGraphicsPolygonItem *>(
-            findEndpointArtifact(scene, framePlanKinds().arrow, graph,
-                                 from_name, to_name)))
+    QGraphicsItem *artifact =
+        input_index.isValid()
+            ? findFramePlanInputArrow(scene, graph, from_name, to_name,
+                                      input_index.toInt())
+            : findEndpointArtifact(scene, framePlanKinds().arrow, graph,
+                                   from_name, to_name);
+    if (auto *arrow = dynamic_cast<QGraphicsPolygonItem *>(artifact))
         arrow->setPolygon(geometry.arrow);
 }
 
@@ -1057,6 +1104,16 @@ struct DrawnRow {
     QString type;
     SocketStyle style;
     bool history = false;
+    // VI-3a: a row drawn from the shader's declarations. `label` is its text,
+    // `key` the port half of its name; `empty` draws the socket hollow.
+    bool declared = false;
+    QString label;
+    QString key;
+    std::optional<std::size_t> input_index;
+    std::optional<std::size_t> binding;
+    bool empty = false;
+    bool removed = false;
+    QString warning;
 };
 
 struct NodeBodyLayout {
@@ -1066,6 +1123,9 @@ struct NodeBodyLayout {
     std::vector<DrawnRow> inputs;
     // N-8: the retypeable fields, between the heading and the sockets.
     std::vector<FramePlanInlineBand> bands;
+    // VI-3a: the rows of the variadic group (its members and its drop end),
+    // as [first, last] indices into `inputs`.
+    std::optional<std::pair<std::size_t, std::size_t>> variadic_rows;
 };
 
 DrawnRow framePlanRow(const FramePlanModel &model,
@@ -1076,9 +1136,35 @@ DrawnRow framePlanRow(const FramePlanModel &model,
                     socketStyleFor(facts), history};
 }
 
+// VI-3a: one row of a node whose input sockets come from its shader.
+DrawnRow declaredRow(const FramePlanModel &model,
+                     const FramePlanInputSocket &socket) {
+    DrawnRow row;
+    if (socket.connected()) {
+        row = framePlanRow(model, socket.resource, socket.history);
+    } else {
+        // An empty declaration: the kind is the declaration's, not a
+        // resource's, and the socket is drawn hollow.
+        SocketTypeFacts facts;
+        facts.type = socket.buffer ? "frame_plan.buffer" : "frame_plan.image";
+        row.type = qtext(facts.type);
+        row.style = socketStyleFor(facts);
+        row.empty = true;
+    }
+    row.declared = true;
+    row.label = qtext(socket.label);
+    row.key = qtext(socket.key());
+    row.input_index = socket.input_index;
+    row.binding = socket.binding;
+    row.removed = socket.removed;
+    row.warning = qtext(socket.warning);
+    return row;
+}
+
 NodeBodyLayout nodeBodyLayout(const FramePlanModel &model,
                               const FramePlanNode &node,
-                              std::vector<FramePlanInlineBand> bands = {}) {
+                              std::vector<FramePlanInlineBand> bands = {},
+                              const FramePlanInputSockets *sockets = nullptr) {
     NodeBodyLayout layout;
     layout.bands = std::move(bands);
     // Sorted, not in declaration order: WP318 fixes that the scene ignores the
@@ -1087,15 +1173,32 @@ NodeBodyLayout nodeBodyLayout(const FramePlanModel &model,
     std::ranges::sort(written);
     for (const auto &resource : written)
         layout.outputs.push_back(framePlanRow(model, resource, false));
-    std::vector<std::string> read{node.reads.begin(), node.reads.end()};
-    std::ranges::sort(read);
-    for (const auto &resource : read)
-        layout.inputs.push_back(framePlanRow(model, resource, false));
-    std::vector<std::string> history{node.history_reads.begin(),
-                                     node.history_reads.end()};
-    std::ranges::sort(history);
-    for (const auto &resource : history)
-        layout.inputs.push_back(framePlanRow(model, resource, true));
+    if (sockets != nullptr && sockets->declared) {
+        // VI-3a: binding order, as the shader declares it -- the one place
+        // the order of the input array is scene geometry, because the order
+        // is the binding.
+        for (const auto &socket : sockets->sockets) {
+            if (socket.kind == FramePlanInputSocket::Kind::variadic ||
+                socket.kind == FramePlanInputSocket::Kind::variadic_drop) {
+                const std::size_t index = layout.inputs.size();
+                if (!layout.variadic_rows)
+                    layout.variadic_rows = std::pair{index, index};
+                else
+                    layout.variadic_rows->second = index;
+            }
+            layout.inputs.push_back(declaredRow(model, socket));
+        }
+    } else {
+        std::vector<std::string> read{node.reads.begin(), node.reads.end()};
+        std::ranges::sort(read);
+        for (const auto &resource : read)
+            layout.inputs.push_back(framePlanRow(model, resource, false));
+        std::vector<std::string> history{node.history_reads.begin(),
+                                         node.history_reads.end()};
+        std::ranges::sort(history);
+        for (const auto &resource : history)
+            layout.inputs.push_back(framePlanRow(model, resource, true));
+    }
 
     const QFontMetricsF heading_metrics{framePlanHeadingFont()};
     const QFontMetricsF row_metrics{framePlanRowFont()};
@@ -1107,7 +1210,10 @@ NodeBodyLayout nodeBodyLayout(const FramePlanModel &model,
             row_metrics.horizontalAdvance(kind) + 12.0);
     const auto widen = [&](const DrawnRow &row) {
         layout.width = std::max<qreal>(
-            layout.width, row_metrics.horizontalAdvance(row.resource) + 40.0);
+            layout.width,
+            row_metrics.horizontalAdvance(row.declared ? row.label
+                                                       : row.resource) +
+                40.0);
     };
     for (const auto &row : layout.outputs) widen(row);
     for (const auto &row : layout.inputs) widen(row);
@@ -1276,23 +1382,63 @@ void addNodeBody(QGraphicsPathItem &item, const FramePlanNode &node,
         *timing, gpu_timing, node.name,
         QPointF{14.0, FramePlanHeaderHeight + FramePlanSectionPadding + 2.0});
 
+    // VI-3a: what a declared row carries on every item that stands for it,
+    // so a gesture and a scenario can name the binding rather than the
+    // resource.
+    const auto declare = [](QGraphicsItem *child, const DrawnRow &row) {
+        if (!row.declared) return;
+        if (!row.key.isEmpty()) child->setData(FramePlanSocketKeyRole, row.key);
+        if (row.input_index)
+            child->setData(FramePlanInputIndexRole,
+                           static_cast<int>(*row.input_index));
+        if (row.binding)
+            child->setData(FramePlanSocketBindingRole,
+                           static_cast<int>(*row.binding));
+        child->setData(FramePlanSocketRemovedRole, row.removed);
+    };
+    const QColor removed_color{QStringLiteral("#d94c3d")};
     const auto socket = [&](const DrawnRow &row, const QPointF &centre,
                             const char *direction) {
         auto *dot = new QGraphicsPathItem(
             socketPath(row.style.shape, row.style.size), &item);
         dot->setPos(centre);
         dot->setZValue(1.0);
-        dot->setBrush(row.style.fill);
-        dot->setPen(QPen{row.style.outline, row.style.outline_width});
-        dot->setToolTip(row.type.isEmpty()
-                            ? QStringLiteral("%1 (kind not declared)")
-                                  .arg(row.resource)
-                            : QStringLiteral("%1 : %2")
-                                  .arg(row.resource, row.type));
+        if (row.removed) {
+            dot->setBrush(removed_color);
+            dot->setPen(QPen{removed_color.lighter(140), 1.8});
+        } else if (row.empty) {
+            // Nothing connected: the outline alone, in the kind's colour.
+            dot->setBrush(currentStudioTheme().canvas.node_body);
+            dot->setPen(QPen{row.style.fill, 1.6});
+        } else {
+            dot->setBrush(row.style.fill);
+            dot->setPen(QPen{row.style.outline, row.style.outline_width});
+        }
+        QString tooltip = row.type.isEmpty()
+                              ? QStringLiteral("%1 (kind not declared)")
+                                    .arg(row.resource)
+                              : QStringLiteral("%1 : %2")
+                                    .arg(row.resource, row.type);
+        if (row.declared) {
+            tooltip = row.binding
+                          ? QStringLiteral("binding %1: %2")
+                                .arg(static_cast<qulonglong>(*row.binding))
+                                .arg(row.label)
+                          : row.label;
+            if (!row.type.isEmpty())
+                tooltip += QStringLiteral(" : %1").arg(row.type);
+            if (row.removed)
+                tooltip += QStringLiteral(
+                    "\nThe reloaded shader no longer declares this binding.");
+            if (!row.warning.isEmpty())
+                tooltip += QStringLiteral("\n%1").arg(row.warning);
+        }
+        dot->setToolTip(tooltip);
         tag(dot, FramePlanSocketItem);
         dot->setData(FramePlanPortRole, row.resource);
         dot->setData(FramePlanSocketDirectionRole,
                      QString::fromLatin1(direction));
+        declare(dot, row);
     };
 
     qreal cursor_y = FramePlanHeaderHeight + FramePlanSectionPadding +
@@ -1342,20 +1488,69 @@ void addNodeBody(QGraphicsPathItem &item, const FramePlanNode &node,
         socket(row, QPointF{layout.width, centre_y}, "output");
         cursor_y += FramePlanSocketRowHeight;
     }
+    // VI-3a: the variadic group is one long socket -- the socket split in
+    // two, with a band between the halves that holds one socket per connected
+    // member and ends in an empty one to drop on.
+    if (layout.variadic_rows) {
+        const auto [first, last] = *layout.variadic_rows;
+        const qreal top = cursor_y +
+                          static_cast<qreal>(first) * FramePlanSocketRowHeight +
+                          2.0;
+        const qreal bottom = cursor_y +
+                             static_cast<qreal>(last + 1) *
+                                 FramePlanSocketRowHeight -
+                             2.0;
+        const qreal half = FramePlanSocketSize / 2.0 + 2.0;
+        QPainterPath capsule;
+        capsule.addRoundedRect(QRectF{-half, top, half * 2.0, bottom - top},
+                               half, half);
+        auto *band_item = new QGraphicsPathItem(capsule, &item);
+        const DrawnRow &sample = layout.inputs.at(last);
+        QColor band_fill = sample.style.fill;
+        band_fill.setAlpha(70);
+        band_item->setBrush(band_fill);
+        band_item->setPen(QPen{sample.style.fill, 1.4});
+        band_item->setZValue(0.8);
+        band_item->setToolTip(QStringLiteral(
+            "The shader's variadic inputs: drop an output on the empty end "
+            "to add one."));
+        tag(band_item, FramePlanSocketBandItem);
+    }
     for (const auto &row : layout.inputs) {
         const qreal centre_y = cursor_y + FramePlanSocketRowHeight / 2.0;
+        const QString shown =
+            row.declared  ? row.label
+            : row.history ? QStringLiteral("%1 (history)").arg(row.resource)
+                          : row.resource;
         const QString text = row_metrics.elidedText(
-            row.history ? QStringLiteral("%1 (history)").arg(row.resource)
-                        : row.resource,
-            Qt::ElideMiddle, layout.width - 30.0);
+            shown, Qt::ElideMiddle, layout.width - 30.0);
         auto *name = new QGraphicsSimpleTextItem(text, &item);
         name->setFont(row_font);
-        name->setBrush(QColor{QStringLiteral("#c6d3de")});
+        name->setBrush(row.removed ? removed_color.lighter(130)
+                       : row.empty ? QColor{QStringLiteral("#8d9aa6")}
+                                   : QColor{QStringLiteral("#c6d3de")});
         name->setPos(14.0, centre_y - row_metrics.height() / 2.0);
         tag(name, FramePlanRowLabelItem);
         name->setData(FramePlanPortRole, row.resource);
         name->setData(FramePlanSocketDirectionRole, QStringLiteral("input"));
+        declare(name, row);
         socket(row, QPointF{0.0, centre_y}, "input");
+        if (!row.warning.isEmpty()) {
+            // Rule 5: an amber mark after the row's text; the tooltip says
+            // which name and which resource disagree.
+            constexpr qreal diameter = 9.0;
+            auto *mark = new QGraphicsEllipseItem(
+                QRectF{14.0 + row_metrics.horizontalAdvance(text) + 5.0,
+                       centre_y - diameter / 2.0, diameter, diameter},
+                &item);
+            mark->setBrush(QColor{QStringLiteral("#e0a030")});
+            mark->setPen(QPen{QColor{QStringLiteral("#2b2118")}, 1.0});
+            mark->setZValue(1.2);
+            mark->setToolTip(row.warning);
+            tag(mark, FramePlanSocketWarningItem);
+            mark->setData(FramePlanReasonRole, row.warning);
+            declare(mark, row);
+        }
         cursor_y += FramePlanSocketRowHeight;
     }
 }
@@ -2211,6 +2406,26 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                          : std::vector<FramePlanInlineBand>{};
         return inline_bands.emplace(name, std::move(bands)).first->second;
     };
+    // VI-3a: a pass whose shader's declarations the engine published draws
+    // its input sockets from them. The order of its `input` array is the
+    // binding, and only the owner's authoring context has it.
+    std::map<std::string, FramePlanInputSockets, std::less<>> input_sockets;
+    declared_nodes_.clear();
+    for (const auto &node : model.nodes) {
+        if (!framePlanNodeDeclaresInputs(node)) continue;
+        auto sockets = framePlanInputSockets(
+            model, node,
+            passInputsProvider
+                ? passInputsProvider(FramePlanNodeKey{model.graph, node.name})
+                : std::nullopt);
+        declared_nodes_.insert(node.name);
+        input_sockets.emplace(node.name, std::move(sockets));
+    }
+    const auto socketsFor =
+        [&](const std::string &name) -> const FramePlanInputSockets * {
+        const auto found = input_sockets.find(name);
+        return found == input_sockets.end() ? nullptr : &found->second;
+    };
     const int normalized_depth = current_depth_;
     const std::vector<GroupDefinition> groups =
         discoverGroups(model, session_groups_);
@@ -2654,8 +2869,9 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         if (entity.group) return std::pair{GroupWidth, GroupHeight};
         if (entity.boundary_stub)
             return std::pair{BoundaryStubWidth, BoundaryStubHeight};
-        const NodeBodyLayout body = nodeBodyLayout(
-            model, *nodes_by_name.at(entity.key), bandsFor(entity.key));
+        const NodeBodyLayout body =
+            nodeBodyLayout(model, *nodes_by_name.at(entity.key),
+                           bandsFor(entity.key), socketsFor(entity.key));
         return std::pair{body.width, body.height};
     };
     std::vector<LayoutNode> layout_nodes;
@@ -2738,7 +2954,8 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                 entity->group || entity->boundary_stub
                     ? NodeBodyLayout{}
                     : nodeBodyLayout(model, *nodes_by_name.at(entity->key),
-                                     bandsFor(entity->key));
+                                     bandsFor(entity->key),
+                                     socketsFor(entity->key));
             const qreal width =
                 entity->group
                     ? GroupWidth
@@ -2971,66 +3188,99 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                 : has_fused_barrier
                       ? QColor{QStringLiteral("#8d72bd")}
                       : QColor{QStringLiteral("#3f83b5")};
-        auto *edge = addPath(QPainterPath{});
-        edge->setZValue(0.0);
-        QPen edge_pen{edge_color};
-        edge_pen.setWidthF(order_only ? 1.4 : 1.9);
-        if (order_only) {
-            edge_pen.setStyle(Qt::DashLine);
-        }
-        edge->setPen(edge_pen);
-        edge->setBrush(Qt::NoBrush);
-        annotateIdentity(*edge, FramePlanEdgeItem, model.graph,
-                         endpoints.first + "->" + endpoints.second);
-        annotateEndpoints(*edge, endpoints);
-        edge->setData(FramePlanBundleOrderRole,
-                      static_cast<qulonglong>(bundle_order));
-        edge->setData(FramePlanCurveRole, true);
-        // The lane the layout kept for a bundle that flies over a column, so
-        // it passes between those nodes rather than across them. An end the
-        // user has dragged loses the lane (rerouteFramePlanBundles clears it).
-        if (bundle_order < layout.bends.size() &&
-            !layout.bends[bundle_order].empty() &&
-            !session_node_positions_.contains(
-                std::tuple{model.graph, std::string{FramePlanNodeItem},
-                           endpoints.first}) &&
-            !session_node_positions_.contains(
-                std::tuple{model.graph, std::string{FramePlanNodeItem},
-                           endpoints.second})) {
-            QVector<QPointF> bends;
-            for (const LayoutPoint &point : layout.bends[bundle_order])
-                bends.push_back(QPointF{point.x, point.y});
-            setNodeGraphBends(*edge, bends);
-        }
-
         std::vector<std::string> identities;
         for (const auto &record : records) {
             identities.push_back(recordIdentity(record));
         }
         const std::vector<std::string> resources{
             summary.resources.begin(), summary.resources.end()};
-        const auto publish_dependency_data = [&](QGraphicsItem &item) {
-            item.setData(FramePlanEdgeRecordsRole, qlist(identities));
-            item.setData(FramePlanResourcesRole, qlist(resources));
-            item.setToolTip(summary.label);
-        };
-        publish_dependency_data(*edge);
+        // VI-3a: into a pass whose sockets come from its shader, one line per
+        // socket the bundle feeds -- two, when one resource feeds two
+        // bindings -- each ending on its own socket.
+        std::vector<const FramePlanInputSocket *> fed;
+        if (const FramePlanInputSockets *sockets =
+                declared_nodes_.contains(endpoints.second)
+                    ? socketsFor(endpoints.second)
+                    : nullptr) {
+            for (const auto &socket : sockets->sockets)
+                if (socket.connected() && socket.input_index &&
+                    summary.resources.contains(socket.resource))
+                    fed.push_back(&socket);
+        }
+        if (fed.empty()) fed.push_back(nullptr);
+        const QColor removed_color{QStringLiteral("#d94c3d")};
+        for (const FramePlanInputSocket *socket : fed) {
+            auto *edge = addPath(QPainterPath{});
+            edge->setZValue(0.0);
+            QPen edge_pen{edge_color};
+            edge_pen.setWidthF(order_only ? 1.4 : 1.9);
+            if (order_only) {
+                edge_pen.setStyle(Qt::DashLine);
+            }
+            edge->setPen(edge_pen);
+            edge->setBrush(Qt::NoBrush);
+            annotateIdentity(*edge, FramePlanEdgeItem, model.graph,
+                             endpoints.first + "->" + endpoints.second);
+            annotateEndpoints(*edge, endpoints);
+            edge->setData(FramePlanBundleOrderRole,
+                          static_cast<qulonglong>(bundle_order));
+            edge->setData(FramePlanCurveRole, true);
+            // The lane the layout kept for a bundle that flies over a column,
+            // so it passes between those nodes rather than across them. An end
+            // the user has dragged loses the lane (rerouteFramePlanBundles
+            // clears it).
+            if (bundle_order < layout.bends.size() &&
+                !layout.bends[bundle_order].empty() &&
+                !session_node_positions_.contains(
+                    std::tuple{model.graph, std::string{FramePlanNodeItem},
+                               endpoints.first}) &&
+                !session_node_positions_.contains(
+                    std::tuple{model.graph, std::string{FramePlanNodeItem},
+                               endpoints.second})) {
+                QVector<QPointF> bends;
+                for (const LayoutPoint &point : layout.bends[bundle_order])
+                    bends.push_back(QPointF{point.x, point.y});
+                setNodeGraphBends(*edge, bends);
+            }
 
-        auto *arrow = addPolygon(
-            QPolygonF{}, QPen{edge_color}, QBrush{edge_color});
-        arrow->setZValue(0.5);
-        annotateIdentity(*arrow, FramePlanEdgeArrowItem, model.graph,
-                         endpoints.first + "->" + endpoints.second);
-        annotateEndpoints(*arrow, endpoints);
-        arrow->setData(FramePlanBundleOrderRole,
-                       static_cast<qulonglong>(bundle_order));
-        publish_dependency_data(*arrow);
+            const auto publish_dependency_data = [&](QGraphicsItem &item) {
+                item.setData(FramePlanEdgeRecordsRole, qlist(identities));
+                item.setData(
+                    FramePlanResourcesRole,
+                    socket != nullptr
+                        ? QStringList{qtext(socket->resource)}
+                        : qlist(resources));
+                item.setToolTip(summary.label);
+                if (socket == nullptr) return;
+                item.setData(FramePlanInputIndexRole,
+                             static_cast<int>(*socket->input_index));
+                const auto key = socket->key();
+                if (!key.empty()) item.setData(FramePlanSocketKeyRole, qtext(key));
+                item.setData(FramePlanSocketRemovedRole, socket->removed);
+            };
+            publish_dependency_data(*edge);
 
-        // No edge label box any more (N-3): the resource names are on the
-        // node rows at both ends now, so a box in the middle of every line
-        // said the same thing a third time. The summary stays on the edge's
-        // tooltip, and the records stay on FramePlanEdgeRecordsRole.
-        routeFramePlanBundle(*this, *edge);
+            // VI-3a rule 4: the end of a line whose binding the reloaded
+            // shader no longer declares is red, like its socket.
+            const QColor arrow_color =
+                socket != nullptr && socket->removed ? removed_color
+                                                     : edge_color;
+            auto *arrow = addPolygon(
+                QPolygonF{}, QPen{arrow_color}, QBrush{arrow_color});
+            arrow->setZValue(0.5);
+            annotateIdentity(*arrow, FramePlanEdgeArrowItem, model.graph,
+                             endpoints.first + "->" + endpoints.second);
+            annotateEndpoints(*arrow, endpoints);
+            arrow->setData(FramePlanBundleOrderRole,
+                           static_cast<qulonglong>(bundle_order));
+            publish_dependency_data(*arrow);
+
+            // No edge label box any more (N-3): the resource names are on the
+            // node rows at both ends now, so a box in the middle of every line
+            // said the same thing a third time. The summary stays on the
+            // edge's tooltip, and the records stay on FramePlanEdgeRecordsRole.
+            routeFramePlanBundle(*this, *edge);
+        }
         ++bundle_order;
     }
 
@@ -3543,13 +3793,18 @@ void FramePlanGraphicsScene::applyEdgeSelection() {
         for (const QString &resource :
              edge->data(FramePlanResourcesRole).toStringList())
             resources.push_back(resource.toStdString());
+        std::optional<std::size_t> input_index;
+        if (const QVariant index = edge->data(FramePlanInputIndexRole);
+            index.isValid())
+            input_index = static_cast<std::size_t>(index.toInt());
         const bool picked =
             selected_edge_.has_value() &&
             edge->data(FramePlanGraphRole).toString().toStdString() ==
                 selected_edge_->graph &&
             edge->data(FramePlanToNameRole).toString().toStdString() ==
                 selected_edge_->to_node &&
-            resources == selected_edge_->resources;
+            resources == selected_edge_->resources &&
+            input_index == selected_edge_->input_index;
         const bool already = edge->data(FramePlanEdgePickedRole).toBool();
         if (picked == already) continue;
         QPen pen = edge->pen();
@@ -3738,21 +3993,70 @@ struct SocketHit {
     FramePlanNodeKey node;
     std::string resource;
     bool output = true;
+    // VI-3a: a socket drawn from the shader's declarations.
+    QString key;
+    std::optional<std::size_t> input_index;
+    std::optional<std::size_t> binding;
 };
+
+SocketHit socketHit(const QGraphicsItem &item) {
+    SocketHit hit{
+        FramePlanNodeKey{
+            item.data(FramePlanGraphRole).toString().toStdString(),
+            item.data(FramePlanNameRole).toString().toStdString()},
+        item.data(FramePlanPortRole).toString().toStdString(),
+        item.data(FramePlanSocketDirectionRole).toString() ==
+            QLatin1String{"output"}};
+    hit.key = item.data(FramePlanSocketKeyRole).toString();
+    if (const QVariant index = item.data(FramePlanInputIndexRole);
+        index.isValid())
+        hit.input_index = static_cast<std::size_t>(index.toInt());
+    if (const QVariant binding = item.data(FramePlanSocketBindingRole);
+        binding.isValid())
+        hit.binding = static_cast<std::size_t>(binding.toInt());
+    return hit;
+}
 
 std::optional<SocketHit> socketAt(QGraphicsScene &scene, QPointF point) {
     for (QGraphicsItem *item : scene.items(point, Qt::IntersectsItemShape,
                                            Qt::DescendingOrder)) {
         if (itemKind(*item) != QLatin1String{FramePlanSocketItem}) continue;
-        return SocketHit{
-            FramePlanNodeKey{
-                item->data(FramePlanGraphRole).toString().toStdString(),
-                item->data(FramePlanNameRole).toString().toStdString()},
-            item->data(FramePlanPortRole).toString().toStdString(),
-            item->data(FramePlanSocketDirectionRole).toString() ==
-                QLatin1String{"output"}};
+        return socketHit(*item);
     }
     return std::nullopt;
+}
+
+// VI-3a. Where a drop on a declared pass landed. A socket is small, so the
+// left part of its row counts as the socket; the rest of the node is its body.
+FramePlanSocketDrop socketDropAt(QGraphicsScene &scene, QPointF point,
+                                 const FramePlanNodeKey &node) {
+    const auto aimed = [&](const SocketHit &hit) -> std::optional<FramePlanSocketDrop> {
+        if (hit.output || hit.node != node) return std::nullopt;
+        if (hit.key == QLatin1String{"in:variadic"})
+            return FramePlanSocketDrop{FramePlanSocketDrop::Kind::variadic, 0};
+        if (hit.binding)
+            return FramePlanSocketDrop{FramePlanSocketDrop::Kind::socket,
+                                       *hit.binding};
+        return std::nullopt;
+    };
+    if (const auto hit = socketAt(scene, point))
+        if (const auto drop = aimed(*hit)) return *drop;
+    for (QGraphicsItem *item : scene.items()) {
+        if (itemKind(*item) != QLatin1String{FramePlanSocketItem} ||
+            item->parentItem() == nullptr)
+            continue;
+        const SocketHit hit = socketHit(*item);
+        const auto drop = aimed(hit);
+        if (!drop) continue;
+        const QRectF body = item->parentItem()->sceneBoundingRect();
+        const QPointF centre = item->sceneBoundingRect().center();
+        const QRectF row{body.left() - FramePlanSocketSize,
+                         centre.y() - FramePlanSocketRowHeight / 2.0,
+                         body.width() * 0.4 + FramePlanSocketSize,
+                         FramePlanSocketRowHeight};
+        if (row.contains(point)) return *drop;
+    }
+    return FramePlanSocketDrop{};
 }
 
 QGraphicsItem *inlineFieldAt(QGraphicsScene &scene, QPointF point) {
@@ -3776,6 +4080,9 @@ std::optional<FramePlanEdgeSelection> edgeAt(QGraphicsScene &scene,
              item->data(FramePlanResourcesRole).toStringList())
             edge.resources.push_back(resource.toStdString());
         if (edge.resources.empty()) continue; // an ordering-only dependency
+        if (const QVariant index = item->data(FramePlanInputIndexRole);
+            index.isValid())
+            edge.input_index = static_cast<std::size_t>(index.toInt());
         return edge;
     }
     return std::nullopt;
@@ -3998,12 +4305,16 @@ void FramePlanGraphicsScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
                 beginInlineEdit(node, field);
                 return;
             }
-            if (const auto socket = socketAt(*this, event->scenePos())) {
+            // VI-3a: an empty socket (a declaration nothing feeds, the
+            // variadic band's end) has nothing to cut; a press on it is a
+            // press on its node.
+            if (const auto socket = socketAt(*this, event->scenePos());
+                socket && (socket->output || !socket->resource.empty())) {
                 clearConnectionGesture();
                 connection_gesture_ = true;
                 socket_gesture_ =
                     SocketGesture{socket->node, socket->resource,
-                                  socket->output};
+                                  socket->output, socket->input_index};
                 connection_source_ = socket->node;
                 connection_line_ = addLine(
                     QLineF(event->scenePos(), event->scenePos()),
@@ -4070,6 +4381,13 @@ void FramePlanGraphicsScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) 
         const QStringList resources{qtext(socket->resource)};
         if (socket->output) {
             if (to && to->graph == socket->node.graph &&
+                *to != socket->node && declared_nodes_.contains(to->name) &&
+                socketDropRequested) {
+                // VI-3a: the drop is aimed at a socket, and the socket is a
+                // binding number.
+                socketDropRequested(*to, qtext(socket->resource),
+                                    socketDropAt(*this, event->scenePos(), *to));
+            } else if (to && to->graph == socket->node.graph &&
                 *to != socket->node) {
                 resourceEdgeRequested(*to, resources, true);
             } else if (connectionFeedback) {
@@ -4084,6 +4402,10 @@ void FramePlanGraphicsScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) 
         // dropped back on the node it belongs to does nothing, because that is
         // how a gesture is abandoned.
         if (to && *to == socket->node) return;
+        if (socket->input_index && socketCutRequested) {
+            socketCutRequested(socket->node, *socket->input_index);
+            return;
+        }
         resourceEdgeRequested(socket->node, resources, false);
         return;
     }
@@ -4163,6 +4485,24 @@ void FramePlanGraphicsScene::keyPressEvent(QKeyEvent *event) {
     if ((event->key() == Qt::Key_Delete ||
          event->key() == Qt::Key_Backspace) &&
         !editingInline()) {
+        if (selected_edge_ && selected_edge_->input_index &&
+            socketCutRequested) {
+            // VI-3a: the edge ends on one input; that input goes.
+            const FramePlanNodeKey consumer{selected_edge_->graph,
+                                            selected_edge_->to_node};
+            const std::size_t input_index = *selected_edge_->input_index;
+            selected_edge_.reset();
+            applyEdgeSelection();
+            event->accept();
+            QMetaObject::invokeMethod(
+                this,
+                [this, consumer, input_index] {
+                    if (socketCutRequested)
+                        socketCutRequested(consumer, input_index);
+                },
+                Qt::QueuedConnection);
+            return;
+        }
         if (selected_edge_ && resourceEdgeRequested) {
             const FramePlanNodeKey consumer{selected_edge_->graph,
                                             selected_edge_->to_node};

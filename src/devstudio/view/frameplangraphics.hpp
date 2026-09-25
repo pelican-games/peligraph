@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../model/frameplanmodel.hpp"
+#include "frameplanedit.hpp"
 #include "nodegraphics.hpp"
 
 #include <QGraphicsScene>
@@ -89,6 +90,20 @@ inline constexpr int FramePlanInlineValueRole = Qt::UserRole + 3112;
 // The edge the user picked. Delete acts on it, so it has to be visible as a
 // fact about the item and not only as a thicker line.
 inline constexpr int FramePlanEdgePickedRole = Qt::UserRole + 3113;
+// VI-3a. A socket drawn from the shader's declarations carries the port half
+// of its automation name ("in@<binding>", "in:variadic"); an edge that ends
+// on one carries it too, so the edge is routed to that socket and not to the
+// first one fed the same resource.
+inline constexpr int FramePlanSocketKeyRole = Qt::UserRole + 3114;
+// Where the socket's resource sits in the pass's `input` array (an int), on
+// the socket, its row label and the edge that ends on it. Absent: the socket
+// is not one input (an output, an empty declaration, the band's drop end).
+inline constexpr int FramePlanInputIndexRole = Qt::UserRole + 3115;
+// True on a socket, and on the edge and arrow that end on it, whose binding a
+// refused shader reload no longer declares.
+inline constexpr int FramePlanSocketRemovedRole = Qt::UserRole + 3116;
+// The binding a declared socket stands for (an int).
+inline constexpr int FramePlanSocketBindingRole = Qt::UserRole + 3117;
 // Nothing else is published: a socket's type, shape and a node's kind are
 // what the canvas DRAWS (the socket path, its colour, the kind text), and a
 // role restating them would be a second answer nothing reads.
@@ -127,6 +142,11 @@ inline constexpr auto FramePlanNodeShaderErrorItem = "node_shader_error";
 // F-1: the selected target drawn as a node of its own, beside the passes that
 // touch it. Double-click opens its declaration; Delete asks to remove it.
 inline constexpr auto FramePlanResourceNodeItem = "resource_node";
+// VI-3a: the variadic group's band, between its split socket's two halves.
+inline constexpr auto FramePlanSocketBandItem = "node_socket_band";
+// VI-3a rule 5: the mark beside a socket whose declaration is named for
+// another connected resource. Its tooltip says which.
+inline constexpr auto FramePlanSocketWarningItem = "node_socket_warning";
 
 // A node's height follows its resource count rather than a constant, so the
 // numbers the scene draws with are published for the scene test to name.
@@ -162,6 +182,9 @@ struct FramePlanEdgeSelection {
     std::string graph;
     std::string to_node;
     std::vector<std::string> resources;
+    // VI-3a: the edge ends on one input of a pass whose sockets come from its
+    // shader; Delete takes out exactly that input.
+    std::optional<std::size_t> input_index;
 
     auto operator<=>(const FramePlanEdgeSelection &) const = default;
 };
@@ -236,6 +259,21 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     std::function<void(const FramePlanNodeKey &consumer,
                        const QStringList &resources, bool connect)>
         resourceEdgeRequested;
+    // VI-3a. On a pass whose sockets come from its shader's declarations
+    // (framePlanNodeDeclaresInputs), a drop is aimed at a socket and a cut at
+    // one input: these replace resourceEdgeRequested for such a pass.
+    std::function<void(const FramePlanNodeKey &consumer,
+                       const QString &resource,
+                       const FramePlanSocketDrop &drop)>
+        socketDropRequested;
+    std::function<void(const FramePlanNodeKey &consumer,
+                       std::size_t input_index)>
+        socketCutRequested;
+    // The pass's `input` array in order, which only the owner's authoring
+    // context knows. nullopt: the frame plan's reads stand in.
+    std::function<std::optional<std::vector<std::string>>(
+        const FramePlanNodeKey &)>
+        passInputsProvider;
     // Delete on a picked node.
     std::function<void(const FramePlanNodeKey &)> nodeRemoveRequested;
     // Double-click on a node body: the detailed editor for everything the
@@ -393,7 +431,11 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
         FramePlanNodeKey node;
         std::string resource;
         bool output = true;
+        // VI-3a: the input a drag off a declared socket takes out.
+        std::optional<std::size_t> input_index;
     };
+    // VI-3a: the passes drawn with sockets from their shader, this draw.
+    std::set<std::string, std::less<>> declared_nodes_;
     std::optional<SocketGesture> socket_gesture_;
     std::optional<FramePlanEdgeSelection> selected_edge_;
     struct InlineEditor;

@@ -881,6 +881,80 @@ FramePlanShaderResolution parseShaderResolution(
 
 } // namespace
 
+namespace {
+
+// VI-3a: the set-1 declarations get_frame_plan publishes for a pass.
+std::vector<FramePlanPassInputDeclaration> parsePassInputDeclarations(
+    const Json &object, std::string_view field, const std::string &context) {
+    std::vector<FramePlanPassInputDeclaration> declarations;
+    const auto found = object.find(field);
+    if (found == object.end() || found->is_null()) return declarations;
+    if (!found->is_array())
+        throw invalid(context + "." + std::string{field} +
+                      " must be an array");
+    for (std::size_t index = 0; index < found->size(); ++index) {
+        const auto &entry = found->at(index);
+        const std::string entry_context = context + "." + std::string{field} +
+                                          "[" + std::to_string(index) + "]";
+        if (!entry.is_object())
+            throw invalid(entry_context + " must be an object");
+        declarations.push_back(FramePlanPassInputDeclaration{
+            .binding = requireSizeField(entry, "binding", entry_context),
+            .type = optionalStringField(entry, "type", entry_context),
+            .name = optionalStringField(entry, "name", entry_context),
+            .variadic = optionalBoolField(entry, "variadic", entry_context)
+                            .value_or(false),
+        });
+    }
+    std::ranges::sort(declarations, {},
+                      &FramePlanPassInputDeclaration::binding);
+    return declarations;
+}
+
+FramePlanPassInputs parsePassInputs(const Json &value,
+                                    const std::string &context) {
+    if (!value.is_object()) throw invalid(context + " must be an object");
+    FramePlanPassInputs inputs;
+    inputs.state = requireStringField(value, "state", context);
+    inputs.fragment = optionalStringField(value, "fragment", context);
+    inputs.reason = optionalStringField(value, "reason", context);
+    inputs.declarations =
+        parsePassInputDeclarations(value, "declarations", context);
+    if (const auto range = value.find("variadic_range");
+        range != value.end() && !range->is_null()) {
+        const std::string range_context = context + ".variadic_range";
+        if (!range->is_object())
+            throw invalid(range_context + " must be an object or null");
+        inputs.variadic_range = FramePlanVariadicRange{
+            .first = requireSizeField(*range, "first", range_context),
+            .max = requireSizeField(*range, "max", range_context),
+        };
+    }
+    inputs.pass_texture_inputs =
+        optionalSizeField(value, "pass_texture_inputs", context).value_or(0);
+    inputs.pass_buffer_inputs =
+        optionalSizeField(value, "pass_buffer_inputs", context).value_or(0);
+    inputs.buffer_binding_base =
+        optionalSizeField(value, "buffer_binding_base", context).value_or(0);
+    if (const auto refused = value.find("reload_refused");
+        refused != value.end() && !refused->is_null()) {
+        const std::string refused_context = context + ".reload_refused";
+        if (!refused->is_object())
+            throw invalid(refused_context + " must be an object");
+        FramePlanReloadRefusal refusal;
+        refusal.reason = optionalStringField(*refused, "reason", refused_context);
+        if (const auto mismatch = refused->find("shader_input_mismatch");
+            mismatch != refused->end() && !mismatch->is_null())
+            refusal.shader_input_mismatch = mismatch->dump();
+        refusal.declarations = parsePassInputDeclarations(
+            *refused, "declarations", refused_context);
+        inputs.reload_refused = std::move(refusal);
+    }
+    return inputs;
+}
+
+} // namespace
+
 FramePlanModel buildFramePlanModel(std::string_view response_json) {
     Json root;
     try {
@@ -978,6 +1052,11 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
             filter != value.end()) {
             node.material_filter =
                 parseMaterialFilter(*filter, context + ".material_filter");
+        }
+        if (const auto pass_inputs = value.find("pass_inputs");
+            pass_inputs != value.end() && !pass_inputs->is_null()) {
+            node.pass_inputs =
+                parsePassInputs(*pass_inputs, context + ".pass_inputs");
         }
         node.color_load_op =
             optionalStringField(value, "color_load_op", context);

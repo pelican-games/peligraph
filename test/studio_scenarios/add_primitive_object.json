@@ -306,13 +306,20 @@
       "timeout_ms": 60000
     },
     {
-      "label": "drag scene_color from forward_opaque onto present: one edit_preset_pass on the root",
+      "label": "present's engine://passthrough takes variadic inputs: its socket is the band's empty end (VI-3a)",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#present/in:variadic",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "drag scene_color from forward_opaque onto present's band: one edit_preset_pass on the root",
       "cmd": "drag",
       "from": {
         "name": "pelican.framePlanLogicalView::node_socket#forward_opaque/out:scene_color"
       },
       "to": {
-        "name": "pelican.framePlanLogicalView::node#present"
+        "name": "pelican.framePlanLogicalView::node_socket#present/in:variadic"
       },
       "steps": 8
     },

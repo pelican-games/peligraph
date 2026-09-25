@@ -110,6 +110,61 @@ struct FramePlanCallableRecord {
     bool operator==(const FramePlanCallableRecord &) const = default;
 };
 
+// VI-3a. One set-1 declaration of the shader a fullscreen / raster pass draws
+// with (get_frame_plan nodes[].pass_inputs.declarations).
+struct FramePlanPassInputDeclaration {
+    std::size_t binding = 0;
+    std::string type;
+    std::string name;
+    bool variadic = false;
+
+    [[nodiscard]] bool buffer() const noexcept {
+        return type.find("buffer") != std::string::npos;
+    }
+
+    bool operator==(const FramePlanPassInputDeclaration &) const = default;
+};
+
+struct FramePlanVariadicRange {
+    std::size_t first = 0;
+    std::size_t max = 0;
+
+    bool operator==(const FramePlanVariadicRange &) const = default;
+};
+
+// VI-1b: a reload whose shader no longer matched the pass's inputs. The pass
+// keeps drawing with its previous shader; `declarations` are the refused
+// shader's.
+struct FramePlanReloadRefusal {
+    std::string reason;
+    // The engine's shader_input_mismatch object, as it arrived.
+    std::string shader_input_mismatch;
+    std::vector<FramePlanPassInputDeclaration> declarations;
+
+    bool operator==(const FramePlanReloadRefusal &) const = default;
+};
+
+// VI-1: what the pass's running pipeline declares at set 1, whether or not
+// the pass supplies each binding. Only a fullscreen / raster pass carries it.
+struct FramePlanPassInputs {
+    // "declared" | "unavailable" (no pipeline; `reason` says why).
+    std::string state;
+    std::string fragment;
+    std::string reason;
+    std::vector<FramePlanPassInputDeclaration> declarations;
+    std::optional<FramePlanVariadicRange> variadic_range;
+    std::size_t pass_texture_inputs = 0;
+    std::size_t pass_buffer_inputs = 0;
+    std::size_t buffer_binding_base = 0;
+    std::optional<FramePlanReloadRefusal> reload_refused;
+
+    [[nodiscard]] bool declared() const noexcept {
+        return state == "declared";
+    }
+
+    bool operator==(const FramePlanPassInputs &) const = default;
+};
+
 struct FramePlanNode {
     std::string name;
     std::string authored_name;
@@ -131,6 +186,9 @@ struct FramePlanNode {
     FramePlanShaderResolution shader_resolution;
     std::string callable_record_source;
     std::vector<FramePlanCallableRecord> callable_records;
+    // VI-3a: absent for a compute task, and for a pass the engine published
+    // no pipeline declaration for.
+    std::optional<FramePlanPassInputs> pass_inputs;
 
     // The public response may publish these directly. Current runtime output
     // carries the same high-level facts in physical_target_plan.attachments;

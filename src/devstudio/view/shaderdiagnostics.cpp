@@ -144,6 +144,9 @@ ShaderReloadReading readShaderReloadStatus(const nlohmann::json &status) {
     if (const auto error = shaders->find("last_error");
         error != shaders->end() && error->is_string())
         reading.last_error = error->get<std::string>();
+    if (const auto code = shaders->find("error_code");
+        code != shaders->end() && code->is_string())
+        reading.error_code = code->get<std::string>();
     if (const auto details = shaders->find("details");
         details != shaders->end() && details->is_object()) {
         reading.enabled = details->value("enabled", false);

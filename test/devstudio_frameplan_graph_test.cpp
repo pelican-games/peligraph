@@ -7024,6 +7024,8 @@ struct EditingFixture {
     // Q-10: the rendering document the authoring context names, when a test
     // needs the canvas to know it.
     std::string root_reference;
+    // VI-3a: a change to the authoring context before it is handed over.
+    std::function<void(Json &)> tweak_context;
 
     void open() {
         widget.resize(1400, 900);
@@ -7037,6 +7039,7 @@ struct EditingFixture {
         REQUIRE(recorder.result);
         auto context = mixedAuthoringContext(graph);
         if (!root_reference.empty()) context["source_reference"] = root_reference;
+        if (tweak_context) tweak_context(context);
         recorder.result(recorder.context_id,
                         QByteArray::fromStdString(context.dump()));
         recorder.result(recorder.task_id,
@@ -7167,6 +7170,516 @@ TEST_CASE("N-8 a plain drag between sockets edits the declaration through one RP
         CHECK(sent.at("task").at("shader") == "project://shaders/consume.comp");
         CHECK(sent.at("task").at("dispatch") ==
               Json{{"groups", Json::array({1, 1, 1})}});
+    }
+}
+
+// --- VI-3a: a pass's input sockets come from its shader's declarations, and
+// a drop connects by binding number.
+
+namespace {
+
+constexpr auto Vi3aPass = "wp343_mixed_a";
+
+Json vi3aDeclaration(std::size_t binding, const std::string &name,
+                     bool variadic = false,
+                     const std::string &type = "sampled_image") {
+    return Json{{"binding", binding},
+                {"type", type},
+                {"name", name},
+                {"variadic", variadic}};
+}
+
+// VI-1's example 2: three fixed inputs, a variadic group (3, 8), and a
+// storage buffer after the group's last binding.
+Json vi3aPassInputs() {
+    auto declarations = Json::array();
+    for (const char *name : {"in_a", "in_b", "in_c"})
+        declarations.push_back(vi3aDeclaration(declarations.size(), name));
+    for (std::size_t slot = 0; slot < 8; ++slot)
+        declarations.push_back(vi3aDeclaration(
+            3 + slot, "pelican_variadic_input_" + std::to_string(slot), true));
+    declarations.push_back(
+        vi3aDeclaration(11, "vi1_value", false, "storage_buffer"));
+    return Json{{"state", "declared"},
+                {"fragment", "project://shaders/vi"},
+                {"declarations", std::move(declarations)},
+                {"variadic_range", {{"first", 3}, {"max", 8}}},
+                {"pass_texture_inputs", 0},
+                {"pass_buffer_inputs", 0},
+                {"buffer_binding_base", 11}};
+}
+
+Json vi3aFixedInputs(std::vector<std::string> names) {
+    auto declarations = Json::array();
+    for (const auto &name : names)
+        declarations.push_back(vi3aDeclaration(declarations.size(), name));
+    return Json{{"state", "declared"},
+                {"fragment", "project://shaders/vi"},
+                {"declarations", std::move(declarations)},
+                {"variadic_range", nullptr},
+                {"pass_texture_inputs", 0},
+                {"pass_buffer_inputs", 0},
+                {"buffer_binding_base", names.size()}};
+}
+
+void setVi3aPassInputs(Json &wire, const Json &pass_inputs) {
+    for (auto &node : wire["nodes"])
+        if (node.at("name") == Vi3aPass) node["pass_inputs"] = pass_inputs;
+}
+
+// The WP343 editing wire with `a` drawing through a shader that publishes
+// `pass_inputs`, and two buffers the plan declares.
+FramePlanModel vi3aModel(const Json &pass_inputs = vi3aPassInputs()) {
+    Json wire = mixedEditingWire();
+    setVi3aPassInputs(wire, pass_inputs);
+    auto model = buildFramePlanModel(wire.dump());
+    for (const char *name : {"vi_buffer", "vi_buffer2"}) {
+        FramePlanResource buffer;
+        buffer.name = name;
+        buffer.kind = "buffer";
+        model.resources.push_back(std::move(buffer));
+    }
+    return model;
+}
+
+const FramePlanNode &vi3aNode(const FramePlanModel &model,
+                              std::string_view name = Vi3aPass) {
+    const auto found =
+        std::ranges::find(model.nodes, std::string{name}, &FramePlanNode::name);
+    REQUIRE(found != model.nodes.end());
+    return *found;
+}
+
+// `a`'s input list, in the composed declaration and the preset's own.
+void setVi3aInputs(Json &context, const std::vector<std::string> &inputs) {
+    for (auto &graph : context["graphs"])
+        for (auto &pass : graph["passes"])
+            if (pass.at("name") == Vi3aPass) {
+                pass["declaration"]["input"] = inputs;
+                pass["preset_declaration"]["input"] = inputs;
+            }
+}
+
+FramePlanAuthoring vi3aAuthoring(const std::string &graph,
+                                 const std::vector<std::string> &inputs) {
+    auto context = mixedAuthoringContext(graph);
+    setVi3aInputs(context, inputs);
+    return framePlanAuthoringFromContext(context);
+}
+
+using Vi3aRow = std::tuple<std::string, std::string, std::optional<std::size_t>,
+                           bool>;
+
+std::vector<Vi3aRow> vi3aRows(const FramePlanInputSockets &sockets) {
+    std::vector<Vi3aRow> rows;
+    for (const auto &socket : sockets.sockets)
+        rows.emplace_back(socket.key(), socket.label, socket.input_index,
+                          socket.buffer);
+    return rows;
+}
+
+QGraphicsItem *declaredSocket(QGraphicsScene &value, const QString &node,
+                              const QString &key) {
+    for (QGraphicsItem *item : itemsOfKind(value, FramePlanSocketItem))
+        if (item->data(FramePlanNameRole).toString() == node &&
+            item->data(FramePlanSocketKeyRole).toString() == key)
+            return item;
+    return nullptr;
+}
+
+} // namespace
+
+TEST_CASE("VI-3a a pass's input sockets come from its shader's declarations, "
+          "in binding order; a pass without them keeps its rows",
+          "[devstudio][frame-plan][vi3a][sockets]") {
+    const auto model = vi3aModel();
+    const auto &node = vi3aNode(model);
+    REQUIRE(node.pass_inputs);
+    CHECK(node.pass_inputs->declared());
+    CHECK(node.pass_inputs->declarations.size() == 12);
+    CHECK(node.pass_inputs->variadic_range ==
+          FramePlanVariadicRange{.first = 3, .max = 8});
+    CHECK(node.pass_inputs->buffer_binding_base == 11);
+    CHECK(framePlanNodeDeclaresInputs(node));
+
+    // Textures count from binding 0 (history among them), buffers from 11.
+    const std::vector<std::string> inputs{"t_a",  "t_b",       "t_c@history",
+                                          "t_v0", "vi_buffer", "t_v1"};
+    const auto sockets = framePlanInputSockets(model, node, inputs);
+    REQUIRE(sockets.declared);
+    CHECK(vi3aRows(sockets) ==
+          std::vector<Vi3aRow>{
+              {"in@0", "in_a ← t_a", 0, false},
+              {"in@1", "in_b ← t_b", 1, false},
+              {"in@2", "in_c ← t_c (history)", 2, false},
+              {"in@3", "← t_v0", 3, false},
+              {"in@4", "← t_v1", 5, false},
+              {"in:variadic", "+ input", std::nullopt, false},
+              {"in@11", "vi1_value ← vi_buffer", 4, true}});
+
+    SECTION("what is not fed is an empty socket, and the band only its end") {
+        const auto few = framePlanInputSockets(model, node,
+                                               std::vector<std::string>{"t_a"});
+        CHECK(vi3aRows(few) ==
+              std::vector<Vi3aRow>{
+                  {"in@0", "in_a ← t_a", 0, false},
+                  {"in@1", "in_b", std::nullopt, false},
+                  {"in@2", "in_c", std::nullopt, false},
+                  {"in:variadic", "+ input", std::nullopt, false},
+                  {"in@11", "vi1_value", std::nullopt, true}});
+    }
+
+    SECTION("an input no declaration takes keeps a row of its own, at the end") {
+        const auto one = vi3aModel(vi3aFixedInputs({"in_a"}));
+        const auto rows = framePlanInputSockets(
+            one, vi3aNode(one), std::vector<std::string>{"t_a", "t_b"});
+        CHECK(vi3aRows(rows) ==
+              std::vector<Vi3aRow>{{"in@0", "in_a ← t_a", 0, false},
+                                   {"", "t_b", 1, false}});
+    }
+
+    SECTION("rule 5: a declaration named for another connected resource") {
+        const auto swapped = vi3aModel(vi3aFixedInputs({"in_t_b", "in_t_a"}));
+        const auto rows = framePlanInputSockets(
+            swapped, vi3aNode(swapped), std::vector<std::string>{"t_a", "t_b"});
+        REQUIRE(rows.sockets.size() == 2);
+        CHECK(rows.sockets[0].warning ==
+              "This declaration is named for t_b, but binding 0 is fed t_a.");
+        CHECK(rows.sockets[1].warning ==
+              "This declaration is named for t_a, but binding 1 is fed t_b.");
+        // A name that points at nothing connected is not judged.
+        const auto other = framePlanInputSockets(
+            swapped, vi3aNode(swapped), std::vector<std::string>{"t_a", "t_x"});
+        CHECK(other.sockets[0].warning.empty());
+    }
+
+    SECTION("the control: no declarations, no sockets from them") {
+        CHECK_FALSE(vi3aNode(model, "wp343_mixed_c").pass_inputs);
+        CHECK_FALSE(framePlanInputSockets(model, vi3aNode(model, "wp343_mixed_c"),
+                                          std::nullopt)
+                        .declared);
+        auto unavailable = Json{{"state", "unavailable"}, {"reason", "no pipeline"}};
+        const auto none = vi3aModel(unavailable);
+        CHECK_FALSE(framePlanNodeDeclaresInputs(vi3aNode(none)));
+        // A shader that declares no input at all has nothing to drop on.
+        const auto empty = vi3aModel(vi3aFixedInputs({}));
+        CHECK_FALSE(framePlanNodeDeclaresInputs(vi3aNode(empty)));
+    }
+
+    SECTION("the canvas draws them top to bottom, the band around the group") {
+        application();
+        FramePlanGraphicsScene canvas;
+        canvas.passInputsProvider = [&](const FramePlanNodeKey &key)
+            -> std::optional<std::vector<std::string>> {
+            if (key.name == Vi3aPass) return inputs;
+            return std::nullopt;
+        };
+        canvas.populateWholeFrame(model);
+        std::vector<std::pair<qreal, QString>> rows;
+        for (QGraphicsItem *item : itemsOfKind(canvas, FramePlanSocketItem))
+            if (item->data(FramePlanNameRole).toString() ==
+                    QLatin1String{Vi3aPass} &&
+                item->data(FramePlanSocketDirectionRole).toString() ==
+                    QLatin1String{"input"})
+                rows.emplace_back(item->sceneBoundingRect().center().y(),
+                                  item->data(FramePlanSocketKeyRole).toString());
+        std::ranges::sort(rows);
+        QStringList keys;
+        for (const auto &[y, key] : rows) keys.push_back(key);
+        CHECK(keys == QStringList{"in@0", "in@1", "in@2", "in@3", "in@4",
+                                  "in:variadic", "in@11"});
+        // The band holds the group's members and its end, and nothing else.
+        QGraphicsItem *band = nullptr;
+        for (QGraphicsItem *item : itemsOfKind(canvas, FramePlanSocketBandItem))
+            if (item->data(FramePlanNameRole).toString() ==
+                QLatin1String{Vi3aPass})
+                band = item;
+        REQUIRE(band != nullptr);
+        const QRectF span = band->sceneBoundingRect();
+        REQUIRE(rows.size() == 7);
+        CHECK(span.top() < rows[3].first);
+        CHECK(span.bottom() > rows[5].first);
+        CHECK(span.top() > rows[2].first);
+        CHECK(span.bottom() < rows[6].first);
+        // The label says what feeds each declaration.
+        QStringList labels;
+        for (QGraphicsItem *item : itemsOfKind(canvas, FramePlanRowLabelItem))
+            if (item->data(FramePlanNameRole).toString() ==
+                    QLatin1String{Vi3aPass} &&
+                item->data(FramePlanSocketKeyRole).toString() ==
+                    QLatin1String{"in@2"})
+                labels.push_back(
+                    static_cast<QGraphicsSimpleTextItem *>(item)->text());
+        CHECK(labels == QStringList{QStringLiteral("in_c ← t_c (history)")});
+        // The control: a pass without declarations names its rows by
+        // resource, and carries no binding.
+        QGraphicsItem *plain = socketItem(canvas, QStringLiteral("wp343_mixed_c"),
+                                          QStringLiteral("wp343_mixed_b_output"),
+                                          QStringLiteral("input"));
+        REQUIRE(plain != nullptr);
+        CHECK_FALSE(plain->data(FramePlanSocketKeyRole).isValid());
+        CHECK_FALSE(plain->data(FramePlanInputIndexRole).isValid());
+    }
+}
+
+TEST_CASE("VI-3a a drop connects by number: at the next binding, in place, or "
+          "not at all with the line that says why",
+          "[devstudio][frame-plan][vi3a][connect]") {
+    const auto model = vi3aModel();
+    const std::string graph = model.graph;
+    using Kind = FramePlanSocketDrop::Kind;
+    const auto request = [&](const std::vector<std::string> &current,
+                             const std::string &resource,
+                             FramePlanSocketDrop drop) {
+        return framePlanSocketConnectRequest(vi3aAuthoring(graph, current),
+                                             model, graph, Vi3aPass, resource,
+                                             drop);
+    };
+    const auto sent = [](const FramePlanEditRequest &made) {
+        REQUIRE(made.sendable());
+        CHECK(made.method == "edit_preset_pass");
+        CHECK(made.params.at("pass_name") == Vi3aPass);
+        return made.params.at("input");
+    };
+    const std::string fill_first =
+        " of wp343_mixed_a first: a pass's inputs fill the bindings in order.";
+
+    SECTION("an empty socket at the next binding: added at the end") {
+        CHECK(sent(request({"t_a"}, "t_b", {Kind::socket, 1})) ==
+              Json::array({"t_a", "t_b"}));
+        // Buffers are counted apart from images.
+        CHECK(sent(request({"t_a", "vi_buffer"}, "t_b", {Kind::socket, 1})) ==
+              Json::array({"t_a", "vi_buffer", "t_b"}));
+    }
+    SECTION("past it: refused, nothing sent") {
+        auto made = request({"t_a"}, "t_c", {Kind::socket, 2});
+        CHECK_FALSE(made.sendable());
+        CHECK(made.refusal == "Connect binding 1" + fill_first);
+        made = request({}, "t_c", {Kind::socket, 2});
+        CHECK(made.refusal == "Connect binding 0..1" + fill_first);
+    }
+    SECTION("a connected socket: that input is replaced, nothing moves") {
+        CHECK(sent(request({"t_a", "t_b"}, "t_x", {Kind::socket, 0})) ==
+              Json::array({"t_x", "t_b"}));
+        CHECK(sent(request({"t_a", "t_b@history"}, "t_x", {Kind::socket, 1})) ==
+              Json::array({"t_a", "t_x"}));
+    }
+    SECTION("the band: added at the end once every fixed socket is fed") {
+        CHECK(sent(request({"t_a", "t_b", "t_c"}, "t_v", {Kind::variadic})) ==
+              Json::array({"t_a", "t_b", "t_c", "t_v"}));
+        CHECK(request({"t_a"}, "t_v", {Kind::variadic}).refusal ==
+              "Connect binding 1..2" + fill_first);
+    }
+    SECTION("a full band refuses") {
+        std::vector<std::string> full{"t_a", "t_b", "t_c"};
+        for (int slot = 0; slot < 8; ++slot)
+            full.push_back("t_v" + std::to_string(slot));
+        const auto made = request(full, "t_x", {Kind::variadic});
+        CHECK_FALSE(made.sendable());
+        CHECK(made.refusal ==
+              "wp343_mixed_a's shader takes at most 8 inputs in its variadic "
+              "group.");
+    }
+    SECTION("the buffer socket counts buffers only") {
+        CHECK(sent(request({"t_a"}, "vi_buffer", {Kind::socket, 11})) ==
+              Json::array({"t_a", "vi_buffer"}));
+        CHECK(sent(request({"vi_buffer", "t_a"}, "vi_buffer2",
+                           {Kind::socket, 11})) ==
+              Json::array({"vi_buffer2", "t_a"}));
+        CHECK(request({"t_a"}, "t_b", {Kind::socket, 11}).refusal ==
+              "t_b is an image: binding 11 of wp343_mixed_a takes a buffer.");
+    }
+    SECTION("the body adds nothing") {
+        const auto made = request({"t_a"}, "t_b", {Kind::body});
+        CHECK_FALSE(made.sendable());
+        CHECK(made.refusal == "Drop on a socket of wp343_mixed_a: its inputs "
+                              "follow its shader's declarations.");
+        // The control: a pass without declarations still takes it.
+        const auto plain = vi3aModel(Json(nullptr));
+        const auto old = framePlanSocketConnectRequest(
+            vi3aAuthoring(graph, {"t_a"}), plain, graph, Vi3aPass, "t_b",
+            {Kind::body});
+        CHECK(sent(old) == Json::array({"t_a", "t_b"}));
+    }
+    SECTION("disconnect: what follows moves up a binding, and says so") {
+        const auto cut = [&](const std::vector<std::string> &current,
+                             std::size_t index) {
+            return framePlanSocketDisconnectRequest(
+                vi3aAuthoring(graph, current), model, graph, Vi3aPass, index);
+        };
+        auto made = cut({"t_a", "t_b", "t_c"}, 1);
+        CHECK(sent(made) == Json::array({"t_a", "t_c"}));
+        CHECK(made.notice ==
+              "wp343_mixed_a: the inputs after binding 1 moved up by one.");
+        made = cut({"t_a", "t_b", "t_c"}, 2);
+        CHECK(sent(made) == Json::array({"t_a", "t_b"}));
+        CHECK(made.notice.empty());
+        made = cut({"t_a", "vi_buffer", "vi_buffer2"}, 1);
+        CHECK(sent(made) == Json::array({"t_a", "vi_buffer2"}));
+        CHECK(made.notice ==
+              "wp343_mixed_a: the inputs after binding 11 moved up by one.");
+    }
+}
+
+TEST_CASE("VI-3a on the canvas a drop aims at a socket; the body is refused",
+          "[devstudio][frame-plan][vi3a][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    setVi3aPassInputs(fixture.wire, vi3aPassInputs());
+    fixture.tweak_context = [](Json &context) {
+        setVi3aInputs(context, {"t_a", "t_b", "t_c"});
+    };
+    fixture.open();
+    auto &logical = fixture.logical();
+    REQUIRE(nodeItem(logical, Vi3aPass) != nullptr);
+    const auto sentInputs = [&] {
+        return Json::parse(
+                   QJsonDocument(fixture.recorder.params).toJson().toStdString())
+            .at("input");
+    };
+
+    SECTION("the body: nothing is sent, and the line says where to drop") {
+        fixture.dragSocket(QStringLiteral("wp343_mixed_d"),
+                           QStringLiteral("wp343_mixed_d_output"),
+                           QStringLiteral("output"),
+                           nodeItem(logical, Vi3aPass));
+        CHECK(fixture.recorder.submits == 0);
+        CHECK(statusText(fixture.widget) ==
+              QStringLiteral("Drop on a socket of wp343_mixed_a: its inputs "
+                             "follow its shader's declarations."));
+    }
+    SECTION("the band's end: one more input") {
+        QGraphicsItem *end = declaredSocket(logical, QString::fromLatin1(Vi3aPass),
+                                            QStringLiteral("in:variadic"));
+        REQUIRE(end != nullptr);
+        fixture.dragSocket(QStringLiteral("wp343_mixed_d"),
+                           QStringLiteral("wp343_mixed_d_output"),
+                           QStringLiteral("output"), end);
+        REQUIRE(fixture.recorder.submits == 1);
+        CHECK(sentInputs() ==
+              Json::array({"t_a", "t_b", "t_c", "wp343_mixed_d_output"}));
+    }
+    SECTION("a connected socket: in its place") {
+        QGraphicsItem *second = declaredSocket(
+            logical, QString::fromLatin1(Vi3aPass), QStringLiteral("in@1"));
+        REQUIRE(second != nullptr);
+        fixture.dragSocket(QStringLiteral("wp343_mixed_d"),
+                           QStringLiteral("wp343_mixed_d_output"),
+                           QStringLiteral("output"), second);
+        REQUIRE(fixture.recorder.submits == 1);
+        CHECK(sentInputs() ==
+              Json::array({"t_a", "wp343_mixed_d_output", "t_c"}));
+    }
+    SECTION("an input dragged away: that one goes, and what follows moves up") {
+        fixture.dragSocket(QString::fromLatin1(Vi3aPass), QStringLiteral("t_a"),
+                           QStringLiteral("input"), nullptr);
+        REQUIRE(fixture.recorder.submits == 1);
+        CHECK(sentInputs() == Json::array({"t_b", "t_c"}));
+        fixture.recorder.result(
+            fixture.recorder.submit_id,
+            QByteArray::fromStdString(
+                Json{{"status", "accepted"}, {"ticket", "t-1"}}.dump()));
+        QApplication::processEvents();
+        fixture.recorder.result(
+            fixture.recorder.ticket_id,
+            QByteArray::fromStdString(
+                Json{{"status", "committed"}, {"committed", true}}.dump()));
+        QApplication::processEvents();
+        CHECK(statusText(fixture.widget) ==
+              QStringLiteral(
+                  "wp343_mixed_a: the inputs after binding 0 moved up by one."));
+    }
+}
+
+TEST_CASE("VI-3a a reload refused for a pass is a failure: its lost binding is "
+          "red, and the line offers Disconnect",
+          "[devstudio][frame-plan][vi3a][shader-reload]") {
+    application();
+
+    SECTION("the follower reads refused_passes, not committed alone") {
+        std::vector<qint64> reloads;
+        std::vector<ShaderReloadOutcome> outcomes;
+        ShaderReloadFollower follower{ShaderReloadFollower::Hooks{
+            .request_status = [](QString *) { return qint64{0}; },
+            .apply = [](const ShaderReloadMarks &, const ShaderReloadReading &,
+                        bool) {},
+            .request_reload =
+                [&](QString *) {
+                    reloads.push_back(static_cast<qint64>(reloads.size()) + 7100);
+                    return reloads.back();
+                },
+            .reloaded =
+                [&](const ShaderReloadOutcome &outcome) {
+                    outcomes.push_back(outcome);
+                },
+        }};
+        const auto reload = [&](const char *answer) {
+            follower.sourceChanged();
+            QTest::qWait(ShaderReloadFollower::ReloadDebounceMs + 150);
+            REQUIRE(!reloads.empty());
+            REQUIRE(follower.receive(reloads.back(), QByteArray{answer}));
+            REQUIRE(!outcomes.empty());
+            return outcomes.back();
+        };
+        const auto refused = reload(
+            R"({"committed":true,"changed":["project://shaders/present2.frag"],"refused_passes":[{"pass":"present","fragment":"project://shaders/present2","reason":"pass 'present' input 1 ('vi_green') ...","declarations":[{"binding":0,"type":"sampled_image","name":"in_a","variadic":false}]}]})");
+        CHECK(refused.kind == ShaderReloadOutcome::Kind::refused);
+        CHECK(refused.refused_passes == QStringList{QStringLiteral("present")});
+        CHECK(refused.message.contains(QStringLiteral("vi_green")));
+        // An empty list is a commit, and so is a reply that carries none.
+        CHECK(reload(R"({"committed":true,"changed":[],"refused_passes":[]})")
+                  .kind == ShaderReloadOutcome::Kind::committed);
+        CHECK(reload(R"({"committed":false,"attempted":false})").kind ==
+              ShaderReloadOutcome::Kind::unchanged);
+    }
+
+    SECTION("the canvas marks the binding and offers the way out") {
+        EditingFixture fixture;
+        auto pass_inputs = vi3aFixedInputs({"in_a", "in_b"});
+        pass_inputs["reload_refused"] = {
+            {"reason", "the new shader no longer declares binding 1"},
+            {"shader_input_mismatch",
+             {{"pass", Vi3aPass}, {"direction", "pass_input_undeclared"},
+              {"binding", 1}, {"resource", "t_b"}}},
+            {"declarations", Json::array({vi3aDeclaration(0, "in_a")})}};
+        setVi3aPassInputs(fixture.wire, pass_inputs);
+        fixture.tweak_context = [](Json &context) {
+            setVi3aInputs(context, {"t_a", "t_b"});
+        };
+        fixture.open();
+        auto &logical = fixture.logical();
+        QGraphicsItem *kept = declaredSocket(
+            logical, QString::fromLatin1(Vi3aPass), QStringLiteral("in@0"));
+        QGraphicsItem *lost = declaredSocket(
+            logical, QString::fromLatin1(Vi3aPass), QStringLiteral("in@1"));
+        REQUIRE(kept != nullptr);
+        REQUIRE(lost != nullptr);
+        CHECK(lost->data(FramePlanSocketRemovedRole).toBool());
+        CHECK(static_cast<QGraphicsPathItem *>(lost)->brush().color() ==
+              QColor{QStringLiteral("#d94c3d")});
+        // The control: the binding the new shader still declares.
+        CHECK_FALSE(kept->data(FramePlanSocketRemovedRole).toBool());
+
+        auto *disconnect = fixture.widget.findChild<QPushButton *>(
+            QStringLiteral("pelican.framePlan.reloadRefused.disconnect"));
+        REQUIRE(disconnect != nullptr);
+        fixture.widget.receiveShaderReloadOutcome(ShaderReloadOutcome{
+            .kind = ShaderReloadOutcome::Kind::refused,
+            .message = QStringLiteral("refused"),
+            .refused_passes = {QString::fromLatin1(Vi3aPass)}});
+        QApplication::processEvents();
+        CHECK(statusText(fixture.widget) ==
+              QStringLiteral("wp343_mixed_a keeps drawing with its previous "
+                             "shader: the new one no longer declares binding "
+                             "1 (t_b)."));
+        CHECK_FALSE(disconnect->isHidden());
+        disconnect->click();
+        REQUIRE(fixture.recorder.submits == 1);
+        CHECK(Json::parse(QJsonDocument(fixture.recorder.params)
+                              .toJson()
+                              .toStdString())
+                  .at("input") == Json::array({"t_a"}));
+        CHECK(disconnect->isHidden());
     }
 }
 

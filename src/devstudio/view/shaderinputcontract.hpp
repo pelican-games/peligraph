@@ -11,9 +11,10 @@
 
 namespace PelicanStudio {
 
-// Q-14. A fullscreen pass is given an input its shader does not read (the
-// Blank pipeline's present, which reads nothing, and a G-buffer dragged onto
-// it). The engine's preflight refuses that correctly -- the pass's inputs and
+// Q-14. A fullscreen pass is given an input its shader does not read (a pass
+// whose project shader reads nothing, and a G-buffer dragged onto it; the
+// Blank pipeline's present draws with engine://passthrough since VI-2, which
+// takes any input). The engine's preflight refuses that correctly -- the pass's inputs and
 // the shader's sampler declarations disagree -- but its sentence does not say
 // what to do. These functions turn that one refusal into a line that says it,
 // and name the two ways to fix it on the spot. They are pure, so a test reads

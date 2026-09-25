@@ -109,7 +109,8 @@ void ShaderReloadFollower::finishReload(const ShaderReloadOutcome &outcome) {
     // The marks follow the engine's own status: a commit has cleared its
     // last error, a failure has written it.
     if (outcome.kind == ShaderReloadOutcome::Kind::committed ||
-        outcome.kind == ShaderReloadOutcome::Kind::failed)
+        outcome.kind == ShaderReloadOutcome::Kind::failed ||
+        outcome.kind == ShaderReloadOutcome::Kind::refused)
         readOnce();
     if (std::exchange(reload_again_, false)) sendReload();
 }
@@ -159,6 +160,21 @@ bool ShaderReloadFollower::receive(qint64 request_id,
                         outcome.changed.push_back(QString::fromStdString(
                             reference.get<std::string>()));
             }
+            // VI-1b: a commit can still have been refused for some passes,
+            // which keep their previous shader. Absent reads as none.
+            if (const auto refused = result.find("refused_passes");
+                refused != result.end() && refused->is_array()) {
+                for (const auto &pass : *refused) {
+                    if (!pass.is_object()) continue;
+                    outcome.refused_passes.push_back(QString::fromStdString(
+                        pass.value("pass", std::string{})));
+                    if (outcome.message.isEmpty())
+                        outcome.message = QString::fromStdString(
+                            pass.value("reason", std::string{}));
+                }
+            }
+            if (!outcome.refused_passes.isEmpty())
+                outcome.kind = ShaderReloadOutcome::Kind::refused;
         } catch (const std::exception &error) {
             outcome.kind = ShaderReloadOutcome::Kind::error;
             outcome.message = QString::fromUtf8(error.what());

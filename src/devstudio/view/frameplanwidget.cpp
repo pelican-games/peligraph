@@ -418,6 +418,17 @@ struct FramePlanWidget::Impl {
     // The status line a shader reload put up, so a later success takes down
     // that line and nothing else.
     QString shown_reload_notice;
+    // VI-3a: what the edit in flight says once it has committed, and what
+    // the last committed one said; it outlasts the refreshed plan's summary
+    // until the next edit is sent.
+    QString submitted_notice;
+    QString commit_notice;
+    // VI-3a rule 4: a reload was refused for a pass; say so once the plan
+    // that shows it arrives, and keep saying it while it stands.
+    bool announce_reload_refusal = false;
+    QString shown_refusal_line;
+    QPushButton *refusal_disconnect = nullptr;
+    QPushButton *refusal_open_shader = nullptr;
     std::function<void(const QString &, const QString &)> preset_pass_edit_action;
     std::function<void(const QString &)> task_edit_action;
     FramePlanWidget::GraphNodeOpenAction graph_node_open_action;
@@ -694,6 +705,28 @@ struct FramePlanWidget::Impl {
         QObject::connect(contract_open_shader, &QPushButton::clicked, &owner,
                          [this] { openContractShader(); });
         status_row->addWidget(contract_open_shader);
+        // VI-3a rule 4: the two ways out of a reload that no longer declares
+        // a binding the pass feeds.
+        refusal_disconnect = new QPushButton(owner.tr("Disconnect"), &owner);
+        refusal_disconnect->setObjectName(
+            QStringLiteral("pelican.framePlan.reloadRefused.disconnect"));
+        refusal_disconnect->setToolTip(owner.tr(
+            "Takes the input the new shader no longer declares out of the "
+            "pass, so the pass draws with the new shader."));
+        refusal_disconnect->hide();
+        QObject::connect(refusal_disconnect, &QPushButton::clicked, &owner,
+                         [this] { disconnectRefusedInput(); });
+        status_row->addWidget(refusal_disconnect);
+        refusal_open_shader =
+            new QPushButton(owner.tr("Open the shader"), &owner);
+        refusal_open_shader->setObjectName(
+            QStringLiteral("pelican.framePlan.reloadRefused.openShader"));
+        refusal_open_shader->setToolTip(owner.tr(
+            "Opens the pass's shader, to declare the binding again."));
+        refusal_open_shader->hide();
+        QObject::connect(refusal_open_shader, &QPushButton::clicked, &owner,
+                         [this] { openRefusedShader(); });
+        status_row->addWidget(refusal_open_shader);
         layout->addLayout(status_row);
 
         tabs = new QTabWidget(&owner);
@@ -751,6 +784,22 @@ struct FramePlanWidget::Impl {
                         text(field.field), text(field.label),
                         text(field.value)});
                 return bands;
+            };
+        // VI-3a: sockets from the shader's declarations. The order of the
+        // pass's inputs is the binding, and it is the authoring context's.
+        logical_scene->passInputsProvider =
+            [this](const FramePlanNodeKey &node) {
+                return framePlanPassInputList(authoring, node.graph,
+                                              node.name);
+            };
+        logical_scene->socketDropRequested =
+            [this](const FramePlanNodeKey &consumer, const QString &resource,
+                   const FramePlanSocketDrop &drop) {
+                dropOnSocket(consumer, resource.toStdString(), drop);
+            };
+        logical_scene->socketCutRequested =
+            [this](const FramePlanNodeKey &consumer, std::size_t input_index) {
+                cutSocketInput(consumer, input_index);
             };
         logical_scene->inlineFieldChoices =
             [this](const FramePlanNodeKey &, const QString &field) {
@@ -994,7 +1043,11 @@ struct FramePlanWidget::Impl {
         QObject::connect(refresh, &QPushButton::clicked, &owner,
                          [this] { requestRefresh(); });
         QObject::connect(logical_scene, &QGraphicsScene::selectionChanged,
-                         &owner, [this] { populateLogicalDetails(); },
+                         &owner,
+                         [this] {
+                             populateLogicalDetails();
+                             updateReloadRefusal();
+                         },
                          Qt::QueuedConnection);
         QObject::connect(filter, &QLineEdit::textChanged, &owner,
                          [this](const QString &needle) {
@@ -1237,7 +1290,11 @@ struct FramePlanWidget::Impl {
         // The panel's own status line: it is where the marks are. F-5: a
         // shut file watch is no longer news here -- Studio asks the engine
         // itself, and says so only when the engine refuses (see below).
-        if (!marks.unmatched.empty()) {
+        // VI-3a: a reload refused for a pass is said on that pass, with its
+        // way out (updateReloadRefusal), not as a failure no node reads.
+        if (reading.error_code == "shader_reload_refused@1") {
+            clearReloadNotice();
+        } else if (!marks.unmatched.empty()) {
             showReloadNotice(owner.tr("Shader reload failed: %1")
                                  .arg(text(marks.unmatched.front())),
                              text(reading.last_error));
@@ -1255,6 +1312,17 @@ struct FramePlanWidget::Impl {
             clearReloadNotice();
             logical_scene->setShaderErrorMarks({});
             if (shader_reload_log_action) shader_reload_log_action({});
+            // VI-3a: the sockets are the shader's declarations, which the
+            // reload may have changed; and a refusal it lifted comes down.
+            if (viewport.rpcReady()) requestRefresh();
+            break;
+        case Kind::refused:
+            // VI-1b: not a success. The pass keeps its previous shader; the
+            // plan that says so is read, and the canvas marks the socket.
+            announce_reload_refusal = true;
+            if (shader_reload_log_action) shader_reload_log_action(outcome.message);
+            if (viewport.rpcReady()) requestRefresh();
+            else updateReloadRefusal();
             break;
         case Kind::unchanged:
             break;
@@ -1515,6 +1583,11 @@ struct FramePlanWidget::Impl {
         submitted_retried = false;
         reload_authoring->hide();
         hideShaderContract();
+        refusal_disconnect->hide();
+        refusal_open_shader->hide();
+        shown_refusal_line.clear();
+        submitted_notice = text(request.notice);
+        commit_notice.clear();
         submitted_request = request;
         submitted_method = request.method;
         submitted_target = submittedTargetName(request);
@@ -1857,7 +1930,10 @@ struct FramePlanWidget::Impl {
             requestTaskAuthoring();
             requestRefresh();
             status->setStyleSheet({});
-            showStatus(owner.tr("Canvas change committed."));
+            commit_notice = std::exchange(submitted_notice, {});
+            showStatus(commit_notice.isEmpty()
+                           ? owner.tr("Canvas change committed.")
+                           : commit_notice);
         } catch (const std::exception &error) {
             pending_ticket.clear();
             const QString message = QString::fromUtf8(error.what());
@@ -2013,6 +2089,127 @@ struct FramePlanWidget::Impl {
                        : framePlanTaskResourceRequest(task_authoring, task,
                                                       names, connect);
         });
+    }
+
+    // VI-3a: a drop on a pass whose sockets come from its shader.
+    void dropOnSocket(const FramePlanNodeKey &consumer,
+                      const std::string &resource,
+                      const FramePlanSocketDrop &drop) {
+        if (!model || consumer.graph != model->graph) return;
+        submitBuilt([this, graph = model->graph, pass = consumer.name,
+                     resource, drop] {
+            return model ? framePlanSocketConnectRequest(authoring, *model,
+                                                         graph, pass,
+                                                         resource, drop)
+                         : FramePlanEditRequest{};
+        });
+    }
+
+    // VI-3a: one input of such a pass taken out -- a socket dragged away,
+    // Delete on its edge, or Disconnect after a refused reload.
+    void cutSocketInput(const FramePlanNodeKey &consumer,
+                        std::size_t input_index) {
+        if (!model || consumer.graph != model->graph) return;
+        submitBuilt([this, graph = model->graph, pass = consumer.name,
+                     input_index] {
+            return model ? framePlanSocketDisconnectRequest(
+                               authoring, *model, graph, pass, input_index)
+                         : FramePlanEditRequest{};
+        });
+    }
+
+    // --- VI-3a rule 4. A reload the engine refused for a pass because the
+    // new shader no longer declares a binding the pass feeds: the pass keeps
+    // its previous shader, its socket and line end are red, and the status
+    // line says so with the two ways out. Shown right after the reload, and
+    // again whenever that pass is picked, for as long as the refusal stands.
+    struct ReloadRefusalFix {
+        std::string graph;
+        std::string pass;
+        std::string fragment;
+        std::size_t input_index = 0;
+        std::string line;
+    };
+    std::optional<ReloadRefusalFix> reload_refusal_fix;
+
+    std::optional<ReloadRefusalFix> reloadRefusalFor(const FramePlanNode &node) {
+        if (!model || !node.pass_inputs || !node.pass_inputs->reload_refused)
+            return std::nullopt;
+        const auto sockets = framePlanInputSockets(
+            *model, node, framePlanPassInputList(authoring, model->graph,
+                                                 node.name));
+        const auto *removed = framePlanRemovedSocket(sockets);
+        if (removed == nullptr || !removed->input_index) return std::nullopt;
+        return ReloadRefusalFix{
+            .graph = model->graph,
+            .pass = node.name,
+            .fragment = node.pass_inputs->fragment,
+            .input_index = *removed->input_index,
+            .line = framePlanReloadRefusalLine(node.name, *removed),
+        };
+    }
+
+    void updateReloadRefusal() {
+        std::optional<ReloadRefusalFix> fix;
+        if (model) {
+            const auto &selected = logical_scene->selectedNode();
+            if (selected && selected->graph == model->graph) {
+                const auto node = std::ranges::find(
+                    model->nodes, selected->name, &FramePlanNode::name);
+                if (node != model->nodes.end()) fix = reloadRefusalFor(*node);
+            }
+            if (!fix && announce_reload_refusal)
+                for (const auto &node : model->nodes)
+                    if ((fix = reloadRefusalFor(node))) break;
+        }
+        if (!fix) {
+            // Only once nothing is refused any more does the next reload
+            // stop being news.
+            if (model && std::ranges::none_of(model->nodes, [](const auto &node) {
+                    return node.pass_inputs && node.pass_inputs->reload_refused;
+                }))
+                announce_reload_refusal = false;
+            const bool shown = reload_refusal_fix.has_value();
+            reload_refusal_fix.reset();
+            refusal_disconnect->hide();
+            refusal_open_shader->hide();
+            if (shown && status->text() == shown_refusal_line) {
+                status->setStyleSheet({});
+                showStatus({});
+            }
+            shown_refusal_line.clear();
+            return;
+        }
+        shown_refusal_line = text(fix->line);
+        status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+        showStatus(shown_refusal_line);
+        refusal_disconnect->show();
+        refusal_open_shader->show();
+        refusal_open_shader->setEnabled(
+            project_root.has_value() &&
+            projectFragmentSourcePath(*project_root, fix->fragment).has_value());
+        reload_refusal_fix = std::move(fix);
+    }
+
+    void disconnectRefusedInput() {
+        if (!reload_refusal_fix) return;
+        const auto fix = *reload_refusal_fix;
+        cutSocketInput(FramePlanNodeKey{fix.graph, fix.pass}, fix.input_index);
+    }
+
+    // Q-14's Open, for a project:// shader: the file, in the desktop's editor.
+    void openRefusedShader() {
+        if (!reload_refusal_fix || !project_root) return;
+        const auto &fix = *reload_refusal_fix;
+        const auto path = projectFragmentSourcePath(*project_root, fix.fragment);
+        if (!path) {
+            showStatus(owner.tr("%1 is not a file of this project.")
+                           .arg(text(fix.fragment)));
+            return;
+        }
+        if (!shader_source_open_action || !shader_source_open_action(*path))
+            showStatus(owner.tr("The desktop could not open %1.")
+                           .arg(QString::fromStdWString(path->wstring())));
     }
 
     void commitInlineField(const FramePlanNodeKey &node, const QString &field,
@@ -2559,6 +2756,10 @@ struct FramePlanWidget::Impl {
         // G-5: a restart the user declined outlives the plan it refreshed.
         if (!restart_declined_notice.isEmpty())
             showStatus(std::exchange(restart_declined_notice, {}));
+        // VI-3a: what the last canvas edit moved, then a refused reload,
+        // which outranks it.
+        if (!commit_notice.isEmpty()) showStatus(commit_notice);
+        updateReloadRefusal();
     }
 
     // Q-4. The reply, laid out for reading, is built only while somebody is

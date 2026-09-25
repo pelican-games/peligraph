@@ -24,6 +24,12 @@ struct ShaderReloadOutcome {
         committed,
         // Nothing the engine compiles had moved.
         unchanged,
+        // VI-1b: the reload committed, but the engine refused it for one or
+        // more passes whose inputs the new shader no longer matches; those
+        // keep drawing with their previous shader. `refused_passes` names
+        // them and `message` is the first one's reason. A failure, not a
+        // commit: whether it worked is whether refused_passes is empty.
+        refused,
         // A shader did not compile; `message` is the engine's log, the same
         // text reload status keeps as last_error.
         failed,
@@ -36,6 +42,7 @@ struct ShaderReloadOutcome {
     Kind kind = Kind::error;
     QString message;
     QStringList changed;
+    QStringList refused_passes;
 };
 
 // F-3 / F-5. Follows the shader files the drawn nodes read. A write to one

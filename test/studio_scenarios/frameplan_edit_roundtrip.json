@@ -64,13 +64,20 @@
       "timeout_ms": 10000
     },
     {
-      "label": "drag the ssao_blur output socket onto the authored pass",
+      "label": "its shader (engine://fullscreen) declares binding 1 as well, which lit_color does not feed (VI-3a)",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#n8_probe_pass/in@1",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "drag the ssao_blur output socket onto the authored pass's binding 1, the next one",
       "cmd": "drag",
       "from": {
         "name": "pelican.framePlanLogicalView::node_socket#ssao_blur_pass/out:ssao_blur"
       },
       "to": {
-        "name": "pelican.framePlanLogicalView::node#n8_probe_pass"
+        "name": "pelican.framePlanLogicalView::node_socket#n8_probe_pass/in@1"
       },
       "steps": 8
     },

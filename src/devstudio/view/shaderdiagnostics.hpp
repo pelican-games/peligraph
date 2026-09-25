@@ -58,6 +58,10 @@ struct ShaderReloadReading {
     std::uint64_t applied = 0;
     std::uint64_t failed = 0;
     std::string last_error;
+    // VI-3a: "shader_reload_refused@1" when the last reload was refused for a
+    // pass whose inputs the new shader no longer matches (VI-1b). The Frame
+    // Plan canvas says that on the pass itself.
+    std::string error_code;
 
     bool operator==(const ShaderReloadReading &) const = default;
 };

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../model/frameplanmodel.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <array>
@@ -31,6 +33,10 @@ struct FramePlanEditRequest {
     // The engine's two-sentence reason for a graph node's task is the line
     // as a whole; the refusal (the tooltip) names the task and the way there.
     std::string line;
+    // VI-3a: what the status line says once the edit has committed, when the
+    // edit did something the gesture alone does not show ("the inputs after
+    // binding 1 moved up by one").
+    std::string notice;
 
     [[nodiscard]] bool sendable() const noexcept {
         return refusal.empty() && !method.empty();
@@ -190,6 +196,107 @@ FramePlanEditRequest framePlanPassInputsAndShaderRequest(
 FramePlanEditRequest framePlanPassRemoveRequest(
     const FramePlanAuthoring &authoring, const std::string &graph,
     const std::string &pass);
+
+// --- VI-3a: a pass's input sockets come from its shader's declarations.
+
+// Whether the node's input sockets are drawn from the shader: the engine
+// published the pass's set-1 declarations and there is at least one to draw.
+// Everything else -- a compute task, a pass without a pipeline, a shader that
+// declares no input at all -- keeps the name-ordered rows and the drops that
+// go with them.
+[[nodiscard]] bool framePlanNodeDeclaresInputs(const FramePlanNode &node);
+
+// One input socket of a node whose sockets come from its shader.
+struct FramePlanInputSocket {
+    enum class Kind {
+        // One fixed declaration: one socket, connected or empty.
+        declared,
+        // One connected member of the variadic group, inside the band.
+        variadic,
+        // The empty drop target at the lower end of the variadic band.
+        variadic_drop,
+        // An input the pass supplies that no declaration takes (after a
+        // refused edit, say). Drawn in the old way, so its line has an end.
+        undeclared,
+    };
+    Kind kind = Kind::declared;
+    std::optional<std::size_t> binding;
+    // The declaration's variable name ("" for variadic members and extras).
+    std::string declaration;
+    // The resource connected here, without "@history"; "" when empty.
+    std::string resource;
+    bool history = false;
+    bool buffer = false;
+    // Where the connected resource sits in the pass's `input` array.
+    std::optional<std::size_t> input_index;
+    // A reload the engine refused no longer declares this binding.
+    bool removed = false;
+    // Rule 5: the declaration's name points at another connected resource.
+    std::string warning;
+    std::string label;
+
+    [[nodiscard]] bool connected() const noexcept { return !resource.empty(); }
+    // The automation name's port half: "in@<binding>", "in:variadic", or ""
+    // for an extra row (which is named by its resource, as before).
+    [[nodiscard]] std::string key() const;
+};
+
+struct FramePlanInputSockets {
+    // False: the node keeps its name-ordered rows (framePlanNodeDeclaresInputs).
+    bool declared = false;
+    // Top to bottom: fixed declarations and the variadic group in binding
+    // order, the variadic group's connected members then its drop target,
+    // the buffer declarations, and last any input no declaration takes.
+    std::vector<FramePlanInputSocket> sockets;
+    std::optional<FramePlanVariadicRange> variadic;
+};
+
+// The pass's `input` array as the authoring context composed it, or nullopt
+// when the context does not name the pass.
+std::optional<std::vector<std::string>> framePlanPassInputList(
+    const FramePlanAuthoring &authoring, const std::string &graph,
+    const std::string &pass);
+
+// The sockets of one node. `inputs` is the pass's `input` array in order; the
+// frame plan's reads stand in for it (in the order the plan lists them) when
+// the authoring context has not named the pass yet.
+FramePlanInputSockets framePlanInputSockets(
+    const FramePlanModel &model, const FramePlanNode &node,
+    const std::optional<std::vector<std::string>> &inputs);
+
+// Where an output socket was dropped on a node whose sockets come from its
+// shader.
+struct FramePlanSocketDrop {
+    enum class Kind { socket, variadic, body };
+    Kind kind = Kind::body;
+    // For Kind::socket: the binding of the socket it landed on.
+    std::size_t binding = 0;
+};
+
+// Connect by number: the drop decides where in `input` the resource goes --
+// the end (the next binding), in place of the one connected there, or
+// nowhere, with the one line that says why. A node without declarations is
+// answered by framePlanPassResourceRequest, as before.
+FramePlanEditRequest framePlanSocketConnectRequest(
+    const FramePlanAuthoring &authoring, const FramePlanModel &model,
+    const std::string &graph, const std::string &pass,
+    const std::string &resource, const FramePlanSocketDrop &drop);
+
+// Take the input at `input_index` out of the pass's `input`. When the inputs
+// after it move up a binding, the request carries a notice that says so.
+FramePlanEditRequest framePlanSocketDisconnectRequest(
+    const FramePlanAuthoring &authoring, const FramePlanModel &model,
+    const std::string &graph, const std::string &pass,
+    std::size_t input_index);
+
+// The first connected socket a refused reload no longer declares, or nullptr.
+const FramePlanInputSocket *framePlanRemovedSocket(
+    const FramePlanInputSockets &sockets);
+
+// "<pass> keeps drawing with its previous shader: the new one no longer
+// declares binding <b> (<resource>)."
+std::string framePlanReloadRefusalLine(const std::string &pass,
+                                       const FramePlanInputSocket &socket);
 
 FramePlanEditRequest framePlanTaskResourceRequest(
     const FramePlanTaskAuthoring &authoring, const std::string &task,

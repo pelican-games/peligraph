@@ -215,6 +215,9 @@ QString sceneItemName(const QGraphicsView &view, const QGraphicsItem &item,
     // N-8: a Frame Plan socket belongs to a resource AND to a side -- one pass
     // can read and write the same target -- so the side travels in the port
     // half of the name. A band names the field it retypes.
+    // VI-3a: a socket drawn from the shader's declarations is named by its
+    // binding ("in@0") or as the variadic band's end ("in:variadic").
+    if (port.isEmpty()) port = item.data(FramePlanSocketKeyRole).toString();
     if (port.isEmpty()) {
         const QString resource = item.data(FramePlanPortRole).toString();
         if (!resource.isEmpty()) {
@@ -244,6 +247,23 @@ QString sceneItemName(const QGraphicsView &view, const QGraphicsItem &item,
         identity = QStringLiteral("@") + QString::number(fallback_index);
     return view.objectName() + QString::fromLatin1(SceneSeparator) + kind +
            QStringLiteral("#") + identity;
+}
+
+// VI-3a: the name a declared socket answered to before it was named by its
+// binding -- `.../in:<resource>` for the socket that resource is connected
+// to -- so a scenario that waits for a read keeps working. `list` does not
+// publish it; only resolving a name falls back to it.
+QString sceneItemAlias(const QGraphicsView &view, const QGraphicsItem &item) {
+    if (item.data(FramePlanSocketKeyRole).toString().isEmpty()) return {};
+    const QString resource = item.data(FramePlanPortRole).toString();
+    if (resource.isEmpty() ||
+        item.data(FramePlanSocketDirectionRole).toString() !=
+            QLatin1String{"input"})
+        return {};
+    const QString identity = item.data(NodeGraphNameRole).toString();
+    return view.objectName() + QString::fromLatin1(SceneSeparator) +
+           itemKind(item) + QStringLiteral("#") + identity +
+           QStringLiteral("/in:") + resource;
 }
 
 std::vector<QWidget *> namedWidgets() {
@@ -375,7 +395,8 @@ Target resolveTarget(const AutomationHost &host, const QString &name) {
     // the number as its child, and both carry the same identity. The one that
     // can answer `text` is the one a scenario means, and either of them sits at
     // the same place for a click.
-    for (const auto &[candidate, item] : sceneItems(*view)) {
+    const auto items = sceneItems(*view);
+    for (const auto &[candidate, item] : items) {
         if (candidate != name) continue;
         if (target.item == nullptr || itemText(*item).isEmpty() == false) {
             target.view = view;
@@ -384,6 +405,17 @@ Target resolveTarget(const AutomationHost &host, const QString &name) {
             target.owner = view;
             if (!itemText(*item).isEmpty()) break;
         }
+    }
+    if (target.item != nullptr) return target;
+    // VI-3a: the resource-named socket is the declared one it feeds.
+    for (const auto &[candidate, item] : items) {
+        (void)candidate;
+        if (sceneItemAlias(*view, *item) != name) continue;
+        target.view = view;
+        target.item = item;
+        target.widget = view->viewport();
+        target.owner = view;
+        break;
     }
     return target;
 }

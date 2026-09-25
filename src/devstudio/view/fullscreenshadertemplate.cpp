@@ -309,8 +309,9 @@ std::string fullscreenShaderInputSnippet(
                  "(" + *declared.identifiers[input] + ", inUV);\n";
     }
     if (declarations.empty()) return {};
-    // A shader that reads nothing (the Blank pipeline's present) has no
-    // includes yet, and the macros come from them.
+    // A shader that reads nothing (one written without inputs, like the
+    // gradient a project starts a pass with) has no includes yet, and the
+    // macros come from them.
     std::string text =
         "// The macros need these after #version, if the shader lacks them:\n"
         "//   #extension GL_GOOGLE_include_directive : require\n"
@@ -405,9 +406,12 @@ std::vector<std::string> fullscreenShaderChoices(
     if (stage == FullscreenShaderStage::vertex) {
         result.emplace_back("engine://fullscreen");
     } else {
+        // VI-3a: engine://passthrough takes any number of inputs and shows
+        // one of them (the Blank pipeline's present draws with it).
         for (const char *reference :
-             {"engine://fullscreen", "engine://scene_present",
-              "engine://output_transform", "engine://ssao", "engine://ssao_blur"})
+             {"engine://passthrough", "engine://fullscreen",
+              "engine://scene_present", "engine://output_transform",
+              "engine://ssao", "engine://ssao_blur"})
             result.emplace_back(reference);
     }
     return result;
