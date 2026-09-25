@@ -25570,6 +25570,52 @@ engine の変更 / 移行の手順そのもの / 移行の取り消し(backup �
 #### やらないこと(VI-3b で)
 ソケットの固定化(shader の書き換え)、engine の shader の project への複製、passthrough の ○ をクリックして出す入力を選ぶ、Q-14 の Make a pass-through shader の置き換え
 
+#### 着地(2026-09-25、2d9e30ba)
+- **決定 1**: `FramePlanNode::pass_inputs`([型](../src/devstudio/model/frameplanmodel.hpp#L149))を `buildFramePlanModel()` が読む([`pass_inputs` を読む所](../src/devstudio/model/frameplanmodel.cpp#L914))。宣言は binding の昇順に並べ直す。`reload_refused` は `reason`・`shader_input_mismatch`(届いた JSON を文字列のまま)・`declarations` を持つ。ソケットを宣言から描くかは `framePlanNodeDeclaresInputs()`([判定](../src/devstudio/view/frameplanedit.cpp#L621)): `state` が `"declared"` で、宣言か `variadic_range` があるとき(下の「外れた所」1)
+- **決定 2**: `framePlanInputSockets()`([ソケットを組む所](../src/devstudio/view/frameplanedit.cpp#L645))がノードのソケットを上から並べ、`nodeBodyLayout()` がそれを行にする([binding の順の行](../src/devstudio/view/frameplangraphics.cpp#L1177))
+  - 入力の順は authoring context の pass の `input`(合成後の `declaration`、無ければ文書の宣言)。context がまだその pass を持たないときは frame plan の `reads` で代える(texture → history → buffer の順)
+  - 固定の ○: ラベルは変数名、つながれば `<変数名> ← <resource>`(history は `<resource> (history)`)。つながっていない ○ は輪郭だけで字は灰色。tooltip は `binding <b>: <ラベル> : <型>`
+  - 可変の組: つながっている分の ○(`← <resource>`)と空の落とし先 `+ input` を半透明の帯が囲む([帯を描く所](../src/devstudio/view/frameplangraphics.cpp#L1491))。帯の tooltip は `The shader's variadic inputs: drop an output on the empty end to add one.`
+  - buffer の宣言は buffer だけで数え、`buffer_binding_base` から当てる。宣言が取らない入力は末尾に今の形の行で残る(名前は `in:<resource>`。[末尾の行](../src/devstudio/view/frameplanedit.cpp#L725))
+  - 線はつながっている ○ ごとに 1 本(同じ resource が 2 つの binding にあれば 2 本)。線と矢印は `input` の位置(`FramePlanInputIndexRole`)を持ち、その ○ へ引かれる([○ ごとの線](../src/devstudio/view/frameplangraphics.cpp#L3197))
+  - 空の ○(つながっていない宣言、帯の端)を押しても切る gesture にはならず、ノードを押したのと同じ([押した所](../src/devstudio/view/frameplangraphics.cpp#L4308))
+- **決定 3**: 落とし先は `socketDropAt()`([落とし先の判定](../src/devstudio/view/frameplangraphics.cpp#L4031))、要求は `framePlanSocketConnectRequest()`([番号でつなぐ要求](../src/devstudio/view/frameplanedit.cpp#L759))。送るのはどれも `input` を丸ごと持つ `edit_preset_pass` 1 回
+  - 空の固定の ○ で binding が次の番号なら末尾に足す。先の番号なら送らず `Connect binding <n>..<b-1> of <pass> first: a pass's inputs fill the bindings in order.`(1 つだけなら `Connect binding <n> of ...`)
+  - つながっている ○ はその位置を置き換える([置き換え](../src/devstudio/view/frameplanedit.cpp#L823))
+  - 帯は、固定が全部つながっていれば末尾に足し、足りなければ同じ 1 行、満杯なら `<pass>'s shader takes at most <max> inputs in its variadic group.`
+  - 型の食い違い: `<resource> is a buffer: <pass>'s variadic group takes images.` / `<resource> is an image: binding <b> of <pass> takes a buffer.`(逆も)
+  - 本体は `Drop on a socket of <pass>: its inputs follow its shader's declarations.`([本体の拒否](../src/devstudio/view/frameplanedit.cpp#L767))。宣言の無いノードは `framePlanPassResourceRequest()` へ渡し、今のまま足す
+  - 外す(○ を外へ drag / 線を選んで Delete)は、その `input` の位置 1 つを外す([外す要求](../src/devstudio/view/frameplanedit.cpp#L836)、[drag で外す所](../src/devstudio/view/frameplangraphics.cpp#L4405)、[Delete で外す所](../src/devstudio/view/frameplangraphics.cpp#L4490))。後ろが詰まるときは、commit の後の status 行が `Canvas change committed.` の代わりに `<pass>: the inputs after binding <b> moved up by one.`([commit の後の行](../src/devstudio/view/frameplanwidget.cpp#L1933))
+  - Shift+drag の経路は、この commit では触っていない
+- **決定 4**: `reload_refused.declarations` に無い binding につながっている ○ を赤(`#d94c3d`)、ラベルを薄い赤にし、tooltip に `The reloaded shader no longer declares this binding.`。その線の矢印も赤([矢印の赤](../src/devstudio/view/frameplangraphics.cpp#L3263))。status 行(赤字)は `<pass> keeps drawing with its previous shader: the new one no longer declares binding <b> (<resource>).`([行を作る所](../src/devstudio/view/frameplanedit.cpp#L876))で、横に **Disconnect**(`pelican.framePlan.reloadRefused.disconnect`)と **Open the shader**(`pelican.framePlan.reloadRefused.openShader`)([行とボタンを出す所](../src/devstudio/view/frameplanwidget.cpp#L2152))。Disconnect は決定 3 の「外す」と同じ要求。Open the shader は fragment が project の file のときだけ押せる
+  - `ShaderReloadFollower` が `refused_passes` を読み、空でなければ新しい `Kind::refused`([読む所](../src/devstudio/view/shaderreloadfollower.cpp#L165))。`committed` / `failed` と同じく reload status を 1 回読む。Frame Plan は frame plan を読み直し、Pass Editor の log 欄に最初の pass の `reason` を渡す([refused の扱い](../src/devstudio/view/frameplanwidget.cpp#L1319))。reload status の `error_code` も読むようにした([`error_code` を読む所](../src/devstudio/view/shaderdiagnostics.cpp#L147))
+  - 描くのは今描いている shader の `declarations` なので、増えた宣言は断りが解けた後の読み直しで空の ○ として出る
+- **決定 5**: `in_<X>` の宣言に別の resource がつながり、X が同じ pass の別の ○ につながっているとき、行の字の後に琥珀色の丸(`node_socket_warning#<pass>/in@<b>`)。tooltip は `This declaration is named for <X>, but binding <b> is fed <Y>.`([判定](../src/devstudio/view/frameplanedit.cpp#L741)、[印](../src/devstudio/view/frameplangraphics.cpp#L1539))
+- **決定 6**: Fragment の一覧の engine の shader の先頭に `engine://passthrough`([一覧](../src/devstudio/view/fullscreenshadertemplate.cpp#L409))。古いコメント 2 か所(`shaderinputcontract.hpp`、`fullscreenshadertemplate.cpp`)を直した
+- **決定 7**: `node_socket#<pass>/in@<binding>` と `node_socket#<pass>/in:variadic`([名前の生成](../src/devstudio/automation/automationcommands.cpp#L220))。旧名 `in:<resource>` は名前の解決でだけ、その resource がつながっている ○ に当たる([旧名で引く所](../src/devstudio/automation/automationcommands.cpp#L410))。`test/studio_scenarios/README.md` の表に、ほかに `node_row_label#<pass>/in@<b>`・`node_socket_band#<pass>`・`node_socket_warning#<pass>/in@<b>` を足した
+- **仕様から外れた所(実装者の判断)**:
+  1. 宣言も可変の組も無い shader の pass は、今の動作のまま(名前順の行、本体に落とすと足す)。VI-3b で置き換える
+  2. reload が成功したとき(`committed`)も frame plan を読み直す(ソケットは宣言から描くので)([成功の扱い](../src/devstudio/view/frameplanwidget.cpp#L1315))
+  3. ソケットの行の左 4 割も drop を受ける(○ が 11px なので)([行の範囲](../src/devstudio/view/frameplangraphics.cpp#L4055))
+  4. 同じ resource がすでにつながっていても、別の binding なら断らない
+  5. 断られた reload の 1 行は、断りが残る間、frame plan を読み直すたびに出し直す([読み直しの最後](../src/devstudio/view/frameplanwidget.cpp#L2759))
+  6. 「後ろが 1 つ前にずれた」注意は、次の編集を送るまで残る(読み直しの後も出し直す)
+  7. 断られた reload では汎用の「Shader reload failed…」を出さない(reload status の `error_code` が `shader_reload_refused@1` のとき。[汎用の行を出さない所](../src/devstudio/view/frameplanwidget.cpp#L1295))。Open the shader はファイルを開くだけで、Q-14 の Open と違い clipboard には何も入れない
+- **test**: `devstudio_frameplan_graph_test` に 4 本
+  - `VI-3a a pass's input sockets come from its shader's declarations, in binding order; a pass without them keeps its rows`([test](../test/devstudio_frameplan_graph_test.cpp#L7292)): 固定 3 + 可変(3, 8)+ buffer(binding 11)のノードで行の並び・ラベル・`input` の位置、空の ○、宣言が取らない入力の行、決定 5 の印、canvas での上下の並びと帯の範囲。対照は `pass_inputs` の無いノード・`unavailable`・宣言 0 のノード
+  - `VI-3a a drop connects by number: at the next binding, in place, or not at all with the line that says why`([test](../test/devstudio_frameplan_graph_test.cpp#L7425)): 末尾追加 / 飛ばしの拒否 / 置き換え / 帯への追加と拒否 / 満杯 / buffer / 本体(対照: 宣言の無いノードは本体でも足す)/ 外すときの注意
+  - `VI-3a on the canvas a drop aims at a socket; the body is refused`([test](../test/devstudio_frameplan_graph_test.cpp#L7524)): 本物の canvas と widget で、本体への drop は送らず 1 行、帯の端・つながっている ○ への drop、○ を外へ drag して外すと commit の後の注意
+  - `VI-3a a reload refused for a pass is a failure: its lost binding is red, and the line offers Disconnect`([test](../test/devstudio_frameplan_graph_test.cpp#L7594)): follower が `refused_passes` で `refused` になり、空の配列と無い答えは `committed`。canvas の赤い ○(対照: 宣言の残る ○ は赤くない)、1 行、Disconnect の送る `input`
+  - `devstudio_fullscreen_pass_test` の T-1 の一覧の期待に `engine://passthrough` を足した
+- **変異**(実装者の報告。1 本ずつ入れて赤、戻して緑): canvas が宣言を無視して名前順に戻す / `pass_inputs` があれば全部を宣言ありと見なす(対照の宣言の無いノードが赤)/ buffer を texture と一緒に数える → 受け入れ 1 が赤。本体に落とすと足す今の分岐に戻す(2 本とも赤)/ 飛ばした binding を末尾に足す / 満杯の帯にも足す → 受け入れ 2 が赤。`committed` だけを見る / 赤くしない / widget が断りを知らせない → 受け入れ 3 が赤。シナリオでは、旧名 `in:<resource>` を解決しない → step 47、線を束に 1 本へ戻す → step 74、`committed` だけを見る → step 76 が赤
+- **シナリオ(受け入れ 4 / 5)**: 新しい `sockets_from_shader`(93 step、[シナリオ](../test/studio_scenarios/sockets_from_shader.json))。仕様の筋に沿い、`gbuffer_normal` を見出し(`node_header#present`)に落として本体を試す。固定 2 つの shader は `file` step で `shaders/two.frag` に書く。赤は画面の screenshot だけで、rpc では `reload_refused.declarations` の数と `declarations` の数を見る
+  - 直した既存のシナリオ: `frameplan_edit_roundtrip`(`n8_probe_pass` の node → `in@1`。shader の `engine://fullscreen` が binding 1 も宣言する)、`add_primitive_object`(`present` の node → `in:variadic`)、`material_pass_authoring`(`present` の node → 読み直した `present.frag` の `in@0`)。どれも待つ step を 1 つ足した
+  - `input_needs_shader` は直していない(`gradient.frag` が入力を宣言しないので、`present` は今の行と今の drop のまま)。C++ の既存の test も直していない(fixture の wire が `pass_inputs` を持たないので、ノード宛ての drag は今の分岐を通る)
+  - GPU シナリオは `-j1` で 1 本ずつ 9 本緑: `sockets_from_shader`、直した 3 本、挙動が変わりうる `input_needs_shader` / `fullscreen_pass_from_template` / `forward_loop_from_scratch` / `deferred_loop_from_scratch` / `render_pipeline_from_scratch`
+- **受け入れ 6**: `-L studio_cpu -LE gpu` 363/363 緑
+- **テキスト入力の欄(受け入れ 7)**: 入力欄は増やしていない。足したのはボタン 2 つ(Disconnect / Open the shader)。新しいシナリオで打つのはフォルダだけ(shader は `file` step で書く)
+- **穴**: 同じ resource の 2 本の線と、矢印の先の赤は C++ で検査していない(test が見るのは ○ の赤だけ。シナリオの 2 本は別の resource)/ 可変の組が無い pass では `buffer_binding_base` が texture の入力の数なので、texture を外すと buffer の binding もずれるが、注意の 1 行はそれに触れない / 旧名 `in:<resource>` は `list` に出ない(名前の解決でだけ当たる)
+
 ### VI-3b: ソケットの固定化・engine の shader の複製・passthrough の出す入力・Q-14 の置き換え(VI-3 の 2 本目。VI-3a の上)
 
 **下段(Studio のみ)。実装者: Claude(Opus)。契約は 13 章(VI-1 / VI-1b)、VI-3a の仕様は上の節、設計は `docs/design_v0_production_gaps.md` §8b.1 の 10。**
