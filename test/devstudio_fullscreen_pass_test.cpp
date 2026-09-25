@@ -4163,6 +4163,135 @@ TEST_CASE("Q-14 the input contract refusal reads as one line with two ways out, 
     }
 }
 
+// --- Q-15: Q-14f's other direction, the shader declaring an input the pass
+// cannot supply.
+
+namespace {
+
+// Q-14f's shape: the pass supplies one input; its shader declares a second
+// (a sampled image, which the engine fills) and a third, an input attachment
+// at binding 2, which nothing fills.
+Json q15UnsuppliedRefusal(const std::string &pass = "present",
+                          const std::string &fragment = "project://shaders/present") {
+    return {{"code", "render_pipeline_preflight_failed"},
+            {"message",
+             "Fullscreen shader declares a pass input the pass does not "
+             "supply: pass '" + pass + "' supplies 1 pass input, but fragment '" +
+                 fragment + "' declares an input attachment at set 1 binding 2 "
+                            "(shader declares 3 pass inputs)"},
+            {"shader_input_mismatch",
+             {{"pass", pass},
+              {"fragment", fragment},
+              {"direction", "shader_input_unsupplied"},
+              {"kind", "texture"},
+              {"binding", 2},
+              {"expected", "none"},
+              {"pass_texture_inputs", 1},
+              {"pass_buffer_inputs", 0},
+              {"shader_pass_inputs",
+               Json::array({{{"binding", 0}, {"type", "sampled_image"}},
+                            {{"binding", 1}, {"type", "sampled_image"}},
+                            {{"binding", 2}, {"type", "input_attachment"}}})}}}};
+}
+
+} // namespace
+
+TEST_CASE("Q-15 the refusal's direction decides the line and the ways out",
+          "[devstudio][fullscreen-pass][q15][shader-contract][negative-contrast]") {
+    const std::vector<std::string> both{"make_pass_through", "open_shader"};
+    const std::vector<std::string> open_only{"open_shader"};
+    const std::string unsupplied_line =
+        "present's shader (present) declares an input the pass cannot supply "
+        "(input attachment at binding 2). Remove that declaration from the "
+        "shader.";
+
+    SECTION("shader_input_unsupplied: remove the declaration; only Open the "
+            "shader") {
+        const auto notice = shaderInputContractNotice(
+            q15UnsuppliedRefusal(), "sent_name", "project://shaders/other", 0);
+        REQUIRE(notice.matched);
+        CHECK(notice.direction == "shader_input_unsupplied");
+        CHECK(notice.pass == "present");
+        REQUIRE(notice.binding);
+        CHECK(*notice.binding == 2);
+        CHECK(notice.declared_type == "input attachment");
+        CHECK(notice.line == unsupplied_line);
+        CHECK(notice.line.find("reads") == std::string::npos);
+        CHECK(q14ActionIds(notice) == open_only);
+        CHECK_FALSE(shaderInputContractOffers(notice, ShaderInputContractMakePassThrough));
+        CHECK(shaderInputContractOffers(notice, ShaderInputContractOpenShader));
+        CHECK(notice.can_open);
+    }
+
+    SECTION("the type comes from the message when the object has none") {
+        auto refusal = q15UnsuppliedRefusal();
+        refusal["message"] =
+            "Fullscreen shader declares a pass input the pass does not supply: "
+            "pass 'present' supplies 1 pass input, but fragment "
+            "'project://shaders/present' declares a storage image at set 1 "
+            "binding 2 (shader declares 3 pass inputs)";
+        auto &declared = refusal["shader_input_mismatch"]["shader_pass_inputs"];
+        declared.erase(2);
+        const auto notice = shaderInputContractNotice(
+            refusal, "present", "project://shaders/present");
+        CHECK(notice.declared_type == "storage image");
+        CHECK(notice.line ==
+              "present's shader (present) declares an input the pass cannot "
+              "supply (storage image at binding 2). Remove that declaration "
+              "from the shader.");
+        CHECK(q14ActionIds(notice) == open_only);
+
+        // The object's type, when it has one, is the one said.
+        refusal["shader_input_mismatch"]["shader_pass_inputs"].push_back(
+            {{"binding", 2}, {"type", "uniform_buffer"}});
+        CHECK(shaderInputContractNotice(refusal, "present",
+                                        "project://shaders/present")
+                  .declared_type == "uniform buffer");
+    }
+
+    SECTION("the sentence alone, without the object, says the direction") {
+        auto sentence_only = q15UnsuppliedRefusal();
+        sentence_only.erase("shader_input_mismatch");
+        const auto notice = shaderInputContractNotice(
+            sentence_only, "present", "project://shaders/present", 0);
+        REQUIRE(notice.matched);
+        CHECK(notice.direction == "shader_input_unsupplied");
+        CHECK(notice.line == unsupplied_line);
+        CHECK(q14ActionIds(notice) == open_only);
+    }
+
+    SECTION("control: pass_input_undeclared, and no direction, read as Q-14") {
+        auto undeclared = q14StructuredRefusal(1);
+        undeclared["shader_input_mismatch"]["direction"] = "pass_input_undeclared";
+        for (const auto &refusal : std::vector<Json>{undeclared, q14StructuredRefusal(1)}) {
+            const auto notice = shaderInputContractNotice(
+                refusal, "present", "project://shaders/present");
+            REQUIRE(notice.matched);
+            CHECK(notice.direction == "pass_input_undeclared");
+            CHECK(notice.line ==
+                  "present's shader (present) reads only 1 input. To change "
+                  "its inputs, change the shader too.");
+            CHECK(q14ActionIds(notice) == both);
+            CHECK(notice.declared_type.empty());
+        }
+    }
+
+    SECTION("the lines alone") {
+        CHECK(shaderInputUnsuppliedLine("p", "engine://fullscreen", "", std::nullopt) ==
+              "p's shader (fullscreen) declares an input the pass cannot "
+              "supply. Remove that declaration from the shader.");
+        CHECK(shaderInputUnsuppliedLine("p", "project://shaders/p", "", 4) ==
+              "p's shader (p) declares an input the pass cannot supply "
+              "(binding 4). Remove that declaration from the shader.");
+        CHECK(shaderInputUnsuppliedOpenedLine(2) ==
+              "Remove the pass-input declaration at binding 2 from the shader "
+              "and save it, and it reloads by itself.");
+        CHECK(shaderInputUnsuppliedOpenedLine(std::nullopt) ==
+              "Remove the pass-input declaration from the shader and save it, "
+              "and it reloads by itself.");
+    }
+}
+
 TEST_CASE("Q-14 the simple check counts a fragment's declaration lines",
           "[devstudio][fullscreen-pass][q14][shader-contract]") {
     const std::string source =
@@ -4317,6 +4446,77 @@ TEST_CASE("Q-14 the Pass Editor says what to do when a Save gives a pass an "
                          {"message", "The editor gate is closed"}}}});
     CHECK(after.isHidden());
     CHECK(status.text().contains(QStringLiteral("gate_closed")));
+}
+
+TEST_CASE("Q-15 the Pass Editor, refused for a declaration the pass cannot "
+          "supply, offers Open the shader alone and copies nothing",
+          "[devstudio][fullscreen-pass][q15][shader-contract][widget]") {
+    (void)application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = filesystemPath(temporary.path());
+    std::filesystem::create_directories(root / "shaders");
+    std::ofstream{root / "shaders" / "tint.frag", std::ios::binary}
+        << "#version 460\nlayout(location = 0) out vec4 outColor;\n"
+           "void main() { outColor = vec4(1.0); }\n";
+
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    std::vector<std::filesystem::path> opened;
+    form.setShaderSourceOpenAction([&opened](const std::filesystem::path &path) {
+        opened.push_back(path);
+        return true;
+    });
+    authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
+    form.receiveResult(QByteArray::fromStdString(f3FramePlan().dump()));
+    form.setProjectRoot(root);
+    driveMinimalDraft(form, "tint", "project://shaders/tint", "lit_color",
+                      "tint_out");
+
+    auto &after = required<QWidget>(form, "pelican.fullscreenPass.shaderContract");
+    auto &after_line =
+        required<QLabel>(form, "pelican.fullscreenPass.shaderContract.line");
+    auto &pass_through = required<QPushButton>(
+        form, "pelican.fullscreenPass.shaderContract.makePassThrough");
+    auto &open_shader = required<QPushButton>(
+        form, "pelican.fullscreenPass.shaderContract.openShader");
+    auto &save = required<QPushButton>(form, "pelican.fullscreenPass.save");
+
+    REQUIRE(save.isEnabled());
+    save.click();
+    REQUIRE(authoring.requests.back().method == QStringLiteral("add_authored_pass"));
+    authoring.succeed(authoring.requests.back().id,
+                      {{"status", "rejected"},
+                       {"committed", false},
+                       {"error", q15UnsuppliedRefusal("tint", "project://shaders/tint")}});
+    REQUIRE_FALSE(after.isHidden());
+    CHECK(after_line.text() ==
+          QStringLiteral("tint's shader (tint) declares an input the pass "
+                         "cannot supply (input attachment at binding 2). "
+                         "Remove that declaration from the shader."));
+    CHECK(pass_through.isHidden());
+    CHECK_FALSE(open_shader.isHidden());
+    REQUIRE(open_shader.isEnabled());
+
+    // Open the shader: the file, and nothing to add on the clipboard.
+    QApplication::clipboard()->setText(QStringLiteral("q15-untouched"));
+    open_shader.click();
+    REQUIRE(opened.size() == 1);
+    CHECK(opened.back() == root / "shaders" / "tint.frag");
+    CHECK(QApplication::clipboard()->text() == QStringLiteral("q15-untouched"));
+    CHECK(after_line.text().contains(
+        QStringLiteral("Remove the pass-input declaration at binding 2")));
+
+    // Control: the other direction offers the pass-through shader again.
+    save.click();
+    authoring.succeed(authoring.requests.back().id,
+                      {{"status", "rejected"},
+                       {"committed", false},
+                       {"error", q14LegacyRefusal()}});
+    REQUIRE_FALSE(after.isHidden());
+    CHECK_FALSE(pass_through.isHidden());
+    CHECK(after_line.text().contains(QStringLiteral("reads no inputs")));
 }
 
 } // namespace PelicanStudio

@@ -189,6 +189,10 @@ struct FullscreenPassWidget::Impl {
         QLabel *line = nullptr;
         QPushButton *pass_through = nullptr;
         QPushButton *open_shader = nullptr;
+        // Q-15: the refusal said the shader declares an input the pass
+        // cannot supply (at `binding`): Open the shader copies nothing.
+        bool unsupplied = false;
+        std::optional<std::size_t> binding;
     };
     ContractRow refusal_contract;
     ContractRow input_contract;
@@ -864,11 +868,12 @@ struct FullscreenPassWidget::Impl {
     }
 
     void showContractRow(ContractRow &row, const std::string &line,
-                         bool can_open) {
+                         bool can_open, bool offer_pass_through = true) {
         if (row.row == nullptr) return;
         row.line->setStyleSheet(QStringLiteral("color: #d94c3d;"));
         row.line->setText(text(line));
         row.line->setToolTip(text(line));
+        row.pass_through->setVisible(offer_pass_through);
         row.open_shader->setEnabled(can_open && project_root.has_value());
         row.row->show();
     }
@@ -916,7 +921,12 @@ struct FullscreenPassWidget::Impl {
             fragmentDeclarationCount());
         if (!notice.matched) return false;
         hideContractRow(input_contract);
-        showContractRow(refusal_contract, notice.line, notice.can_open);
+        refusal_contract.unsupplied =
+            notice.direction == ShaderInputContractShaderInputUnsupplied;
+        refusal_contract.binding = notice.binding;
+        showContractRow(refusal_contract, notice.line, notice.can_open,
+                        shaderInputContractOffers(
+                            notice, ShaderInputContractMakePassThrough));
         authoringError(responseError(response), oneLine(text(notice.line)));
         return true;
     }
@@ -963,6 +973,18 @@ struct FullscreenPassWidget::Impl {
         if (!path) {
             row.line->setText(owner.tr("%1 is not a file of this project.")
                                   .arg(text(fragment)));
+            return;
+        }
+        if (row.unsupplied) {
+            // Q-15: nothing to add -- the declaration is what goes.
+            if (!shader_open_action || !shader_open_action(*path)) {
+                row.line->setText(owner.tr("The desktop could not open %1.")
+                                      .arg(QString::fromStdWString(path->wstring())));
+                return;
+            }
+            row.line->setStyleSheet({});
+            row.line->setText(text(shaderInputUnsuppliedOpenedLine(row.binding)) +
+                              owner.tr(" Then press Save again."));
             return;
         }
         const auto inputs_now = templateInputs();

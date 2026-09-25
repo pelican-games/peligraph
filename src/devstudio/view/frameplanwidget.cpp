@@ -505,6 +505,10 @@ struct FramePlanWidget::Impl {
         std::string pass;
         std::string fragment;
         std::vector<std::string> inputs;
+        // Q-15: the shader declares an input the pass cannot supply, at
+        // `binding` when the engine said.
+        bool unsupplied = false;
+        std::optional<std::size_t> binding;
     };
     std::optional<ShaderContractFix> contract_fix;
     QPushButton *contract_pass_through = nullptr;
@@ -1654,9 +1658,14 @@ struct FramePlanWidget::Impl {
         const auto notice =
             shaderInputContractNotice(*error, fix.pass, fix.fragment, declared);
         if (!notice.matched) return false;
+        // Q-15: a declaration the pass cannot supply is removed, not fed.
+        fix.unsupplied =
+            notice.direction == ShaderInputContractShaderInputUnsupplied;
+        fix.binding = notice.binding;
         contract_fix = std::move(fix);
         showStatus(text(notice.line), message);
-        contract_pass_through->show();
+        contract_pass_through->setVisible(shaderInputContractOffers(
+            notice, ShaderInputContractMakePassThrough));
         contract_open_shader->show();
         contract_open_shader->setEnabled(notice.can_open && project_root.has_value());
         return true;
@@ -1735,6 +1744,18 @@ struct FramePlanWidget::Impl {
         if (!path) {
             showStatus(owner.tr("%1 is not a file of this project.")
                            .arg(text(fix.fragment)));
+            return;
+        }
+        if (fix.unsupplied) {
+            // Q-15: nothing to add -- the declaration is what goes.
+            if (!shader_source_open_action || !shader_source_open_action(*path)) {
+                showStatus(owner.tr("The desktop could not open %1.")
+                               .arg(QString::fromStdWString(path->wstring())));
+                return;
+            }
+            status->setStyleSheet({});
+            showStatus(text(shaderInputUnsuppliedOpenedLine(fix.binding)) +
+                       owner.tr(" Then connect the input again."));
             return;
         }
         std::size_t first = 0;

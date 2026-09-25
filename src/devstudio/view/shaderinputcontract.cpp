@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <fstream>
 #include <iterator>
 #include <regex>
@@ -31,6 +32,43 @@ bool fullscreenInputContractMessage(std::string_view message) {
     return message.find("Fullscreen pass input") != std::string_view::npos &&
            message.find("does not match shader reflection") !=
                std::string_view::npos;
+}
+
+// Q-14f: the other direction's sentence. It is not one of the above.
+constexpr std::string_view UnsuppliedSentence =
+    "Fullscreen shader declares a pass input the pass does not supply";
+
+bool unsuppliedInputMessage(std::string_view message) {
+    return message.find(UnsuppliedSentence) != std::string_view::npos;
+}
+
+// "sampled_image" -> "sampled image". "none" and the unnamed "pass input"
+// are no type.
+std::string typeWords(std::string type) {
+    std::ranges::replace(type, '_', ' ');
+    return type == "none" || type == "pass input" ? std::string{} : type;
+}
+
+// "... but fragment '<f>' declares an input attachment at set 1 binding 2 ..."
+struct UnsuppliedDeclaration {
+    std::string type;
+    std::optional<std::size_t> binding;
+};
+UnsuppliedDeclaration unsuppliedFromMessage(const std::string &message) {
+    static const std::regex pattern{
+        R"(declares (?:an? )?(.+?) at set \d+ binding (\d+))"};
+    UnsuppliedDeclaration found;
+    const auto sentence = message.find(UnsuppliedSentence);
+    if (sentence == std::string::npos) return found;
+    const auto rest = message.substr(sentence + UnsuppliedSentence.size());
+    std::smatch match;
+    if (!std::regex_search(rest, match, pattern)) return found;
+    found.type = typeWords(match[1].str());
+    try {
+        found.binding = static_cast<std::size_t>(std::stoul(match[2].str()));
+    } catch (const std::exception &) {
+    }
+    return found;
 }
 
 // "(shader declares N pass inputs)", the engine's planned tail (Q-14e).
@@ -65,12 +103,47 @@ std::string_view trimmed(std::string_view line) {
 
 } // namespace
 
-std::vector<ShaderInputContractAction> shaderInputContractActions() {
-    return {
-        {std::string{ShaderInputContractMakePassThrough},
-         "Make a pass-through shader"},
-        {std::string{ShaderInputContractOpenShader}, "Open the shader"},
-    };
+std::vector<ShaderInputContractAction> shaderInputContractActions(
+    std::string_view direction) {
+    std::vector<ShaderInputContractAction> actions;
+    // A pass-through shader reads what the pass gives. It cannot make the
+    // pass give what the engine has no way to fill.
+    if (direction != ShaderInputContractShaderInputUnsupplied)
+        actions.push_back({std::string{ShaderInputContractMakePassThrough},
+                           "Make a pass-through shader"});
+    actions.push_back(
+        {std::string{ShaderInputContractOpenShader}, "Open the shader"});
+    return actions;
+}
+
+bool shaderInputContractOffers(const ShaderInputContractNotice &notice,
+                               std::string_view action) {
+    return std::ranges::any_of(notice.actions, [action](const auto &offered) {
+        return offered.id == action;
+    });
+}
+
+std::string shaderInputUnsuppliedLine(std::string_view pass,
+                                      std::string_view fragment,
+                                      std::string_view type,
+                                      std::optional<std::size_t> binding) {
+    std::string line = std::string{pass} + "'s shader (" + stemOf(fragment) +
+                       ") declares an input the pass cannot supply";
+    std::string where{type};
+    if (binding) {
+        if (!where.empty()) where += ' ';
+        where += (where.empty() ? "binding " : "at binding ") +
+                 std::to_string(*binding);
+    }
+    if (!where.empty()) line += " (" + where + ")";
+    line += ". Remove that declaration from the shader.";
+    return line;
+}
+
+std::string shaderInputUnsuppliedOpenedLine(std::optional<std::size_t> binding) {
+    return "Remove the pass-input declaration" +
+           (binding ? " at binding " + std::to_string(*binding) : std::string{}) +
+           " from the shader and save it, and it reloads by itself.";
 }
 
 std::string shaderInputContractLine(std::string_view pass,
@@ -101,12 +174,24 @@ ShaderInputContractNotice shaderInputContractNotice(
     const auto structured = error.find("shader_input_mismatch");
     const bool has_structured =
         structured != error.end() && structured->is_object();
-    if (!has_structured && !fullscreenInputContractMessage(message))
+    if (!has_structured && !fullscreenInputContractMessage(message) &&
+        !unsuppliedInputMessage(message))
         return notice;
 
     notice.matched = true;
     notice.pass = std::string{pass};
     notice.fragment = std::string{fragment};
+    // Q-15: the engine's direction when it gives one. Without the object, the
+    // sentence says which; without a direction, it is the Q-14e one.
+    if (has_structured) {
+        if (const auto direction = textOr(*structured, "direction");
+            !direction.empty())
+            notice.direction = direction;
+    } else if (unsuppliedInputMessage(message)) {
+        notice.direction = std::string{ShaderInputContractShaderInputUnsupplied};
+    }
+    const bool unsupplied =
+        notice.direction == ShaderInputContractShaderInputUnsupplied;
     if (has_structured) {
         // Q-14e: the engine's own account of the mismatch.
         if (const auto named = textOr(*structured, "pass"); !named.empty())
@@ -114,16 +199,39 @@ ShaderInputContractNotice shaderInputContractNotice(
         if (const auto named = textOr(*structured, "fragment"); !named.empty())
             notice.fragment = named;
         notice.resource = textOr(*structured, "resource");
+        const auto binding = structured->find("binding");
+        if (binding != structured->end() && binding->is_number_integer() &&
+            binding->get<std::int64_t>() >= 0)
+            notice.binding = binding->get<std::size_t>();
         const auto inputs = structured->find("shader_pass_inputs");
-        if (inputs != structured->end() && inputs->is_array())
+        if (inputs != structured->end() && inputs->is_array()) {
             notice.declared = inputs->size();
+            // Q-15: the type of the declaration the pass cannot supply.
+            if (unsupplied && notice.binding)
+                for (const auto &input : *inputs)
+                    if (input.is_object() && input.value("binding", Json{}) ==
+                                                 Json(*notice.binding))
+                        notice.declared_type = typeWords(textOr(input, "type"));
+        }
+    }
+    if (unsupplied) {
+        // What the object did not say, the sentence may.
+        const auto from_message = unsuppliedFromMessage(message);
+        if (!notice.binding) notice.binding = from_message.binding;
+        if (notice.declared_type.empty() &&
+            (!from_message.binding || from_message.binding == notice.binding))
+            notice.declared_type = from_message.type;
     }
     if (!notice.declared) notice.declared = declaredFromMessage(message);
     if (!notice.declared) notice.declared = declared_in_file;
     notice.fragment_stem = stemOf(notice.fragment);
-    notice.line = shaderInputContractLine(notice.pass, notice.fragment,
-                                          notice.declared);
-    notice.actions = shaderInputContractActions();
+    notice.line = unsupplied
+                      ? shaderInputUnsuppliedLine(notice.pass, notice.fragment,
+                                                  notice.declared_type,
+                                                  notice.binding)
+                      : shaderInputContractLine(notice.pass, notice.fragment,
+                                                notice.declared);
+    notice.actions = shaderInputContractActions(notice.direction);
     notice.can_open = notice.fragment.starts_with("project://");
     return notice;
 }

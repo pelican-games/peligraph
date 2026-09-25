@@ -41,6 +41,7 @@
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <optional>
 #include <functional>
 #include <utility>
@@ -775,11 +776,7 @@ private:
                           .arg(responseError(response)));
       return true;
     }
-    for (const auto &entry : tasks) {
-      const auto name = entry.toObject().value("name").toString();
-      if (drafts.value(name).text != original_declarations.value(name))
-        retained_drafts.insert(name, drafts.value(name));
-    }
+    retainEditedDrafts();
     retry_pending = true;
     notice->setText(tr("The document changed since this editor read it; "
                        "reading it again..."));
@@ -801,6 +798,66 @@ private:
       notice->setText(tr("The document changed outside this editor. Press "
                          "Refresh to read it again."));
   }
+  // --- Q-15. The digest the other panels share (Q-13): what this editor
+  // reads it says, and when another panel's commit moves the document it
+  // reads it again at once, keeping every draft, as the Pass Editor does.
+  std::shared_ptr<RenderConfigDigest> digest_hub;
+  // A move told while a request was out; followed when it comes back.
+  bool reread_when_idle = false;
+  // The read in flight was for a move: the drafts it keeps are sent against
+  // the revision it reads (each task's own digest still guards the task).
+  bool rebase_on_read = false;
+  void retainEditedDrafts() {
+    for (const auto &entry : tasks) {
+      const auto name = entry.toObject().value("name").toString();
+      if (drafts.value(name).text != original_declarations.value(name))
+        retained_drafts.insert(name, drafts.value(name));
+    }
+  }
+  // Another panel read or committed the document at `digest`.
+  void documentMoved(const std::string &digest) {
+    if (root_digest.isEmpty() || root_digest == QString::fromStdString(digest))
+      return;
+    if (request_id != 0 || !ticket.isEmpty() || retry_pending) {
+      reread_when_idle = true;
+      return;
+    }
+    retainEditedDrafts();
+    rebase_on_read = true;
+    notice->setText(tr("Another panel changed the document; reading it "
+                       "again. Your edits are kept."));
+    read();
+  }
+  void followWhenIdle() {
+    if (!reread_when_idle || request_id != 0 || !ticket.isEmpty() ||
+        retry_pending)
+      return;
+    reread_when_idle = false;
+    if (digest_hub)
+      documentMoved(digest_hub->current());
+  }
+  void rebaseRetainedDrafts() {
+    for (auto it = retained_drafts.cbegin(); it != retained_drafts.cend(); ++it)
+      if (drafts.contains(it.key()))
+        drafts[it.key()].root_digest = root_digest;
+    for (int index = 0; index < 2; ++index)
+      if (new_dirty[index])
+        new_drafts[index].root_digest = root_digest;
+  }
+
+public:
+  void setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> hub) {
+    digest_hub = std::move(hub);
+    if (!digest_hub)
+      return;
+    digest_hub->subscribe(this, [this](const std::string &moved) {
+      documentMoved(moved);
+    });
+    if (!root_digest.isEmpty())
+      digest_hub->publish(root_digest.toStdString(), this);
+  }
+
+private:
   void removeTask() {
     const auto task = selected();
     if (!editableRow(task))
@@ -822,7 +879,7 @@ private:
     const auto response = decodeObject(bytes, &error);
     if (!response) {
       if (request_kind == Request::Read)
-        discard_new_drafts_on_read = false;
+        discard_new_drafts_on_read = rebase_on_read = false;
       poll.stop();
       notice->setText(error);
       controls();
@@ -833,6 +890,7 @@ private:
           response->value("source_digest").toObject().value("hex").toString();
       if (digest.isEmpty() || !response->value("tasks").isArray()) {
         discard_new_drafts_on_read = false;
+        rebase_on_read = false;
         notice->setText(
             tr("The engine returned an invalid task authoring context."));
       } else {
@@ -879,12 +937,26 @@ private:
           if (index >= 0)
             task_box->setCurrentIndex(index);
         }
+        if (std::exchange(rebase_on_read, false))
+          rebaseRetainedDrafts();
         retained_drafts.clear();
+        // Q-15: a read for another panel's move keeps the caret where the
+        // author left it, when the draft under it is the same text.
+        const auto text_before = editor->toPlainText();
+        const auto caret = editor->textCursor().position();
         showTask();
+        if (editor->toPlainText() == text_before) {
+          auto cursor = editor->textCursor();
+          cursor.setPosition(std::min(caret, int(text_before.size())));
+          editor->setTextCursor(cursor);
+        }
         if (!requested_task.isEmpty() && task_box->findText(requested_task) < 0)
           notice->setText(tr("Select the authored task corresponding to %1.")
                               .arg(requested_task));
         requested_task.clear();
+        // Q-15: what this editor read, the other panels are told.
+        if (digest_hub)
+          digest_hub->publish(root_digest.toStdString(), this);
         if (retry_pending) {
           controls();
           resumeRetry();
@@ -923,6 +995,7 @@ private:
         notice->setText(responseError(*response));
     }
     controls();
+    followWhenIdle();
   }
 
 public:
@@ -1096,7 +1169,7 @@ public:
                 return;
               request_id = 0;
               if (request_kind == Request::Read)
-                discard_new_drafts_on_read = false;
+                discard_new_drafts_on_read = rebase_on_read = false;
               poll.stop();
               notice->setText(error);
               controls();
@@ -2827,6 +2900,8 @@ void RenderFeaturesWidget::editComputeTaskConnection(const QString &name, const 
         emit renderConfigCommitted();
     }, outputs, [this] { return impl_->root_reference; });
     dialog->setGraphNodeOpenAction(impl_->graph_node_open_action);
+    // Q-15: the Task Editor follows the other panels' commits too.
+    dialog->setRenderConfigDigest(impl_->digest_hub);
     dialog->show();
 }
 

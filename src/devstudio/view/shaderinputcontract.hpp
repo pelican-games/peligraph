@@ -24,6 +24,19 @@ inline constexpr std::string_view ShaderInputContractMakePassThrough =
     "make_pass_through";
 inline constexpr std::string_view ShaderInputContractOpenShader = "open_shader";
 
+// Q-15 (after Q-14f): which way round the pass and its shader disagree, as
+// the engine's shader_input_mismatch.direction names it.
+// The pass lists an input the shader does not declare (Q-14e). A refusal with
+// no direction is read as this one: it is what an engine before Q-14f meant.
+inline constexpr std::string_view ShaderInputContractPassInputUndeclared =
+    "pass_input_undeclared";
+// The shader declares a pass input the pass does not supply, of a type the
+// engine cannot fill for it (an input attachment, a storage image, a uniform
+// buffer, ...). Giving the pass more inputs does not help: the declaration
+// has to go.
+inline constexpr std::string_view ShaderInputContractShaderInputUnsupplied =
+    "shader_input_unsupplied";
+
 struct ShaderInputContractAction {
     std::string id;
     std::string label;
@@ -32,6 +45,9 @@ struct ShaderInputContractAction {
 struct ShaderInputContractNotice {
     // False for every other refusal: nothing below is then shown.
     bool matched = false;
+    // ShaderInputContractPassInputUndeclared or
+    // ShaderInputContractShaderInputUnsupplied.
+    std::string direction{ShaderInputContractPassInputUndeclared};
     std::string pass;
     // The fragment reference as the pass names it, and the stem the line
     // shows ("project://shaders/present" -> "present").
@@ -43,6 +59,11 @@ struct ShaderInputContractNotice {
     std::optional<std::size_t> declared;
     // The input that did not match, when the engine named it.
     std::string resource;
+    // The binding the engine named. For shader_input_unsupplied, that of the
+    // declaration the pass cannot supply, and its type in words ("input
+    // attachment"), from the engine's shader_pass_inputs, else its message.
+    std::optional<std::size_t> binding;
+    std::string declared_type;
     // The one line the status row shows.
     std::string line;
     std::vector<ShaderInputContractAction> actions;
@@ -64,9 +85,26 @@ std::string shaderInputContractLine(std::string_view pass,
                                     std::string_view fragment,
                                     std::optional<std::size_t> declared);
 
-// The actions the line offers. Both are always there; can_open says whether
-// Open the shader has a project file to open.
-std::vector<ShaderInputContractAction> shaderInputContractActions();
+// Q-15. The line for shader_input_unsupplied: the shader declares an input
+// the pass cannot supply, and the declaration is what to remove. `type` is in
+// words ("input attachment"); either part may be unknown.
+std::string shaderInputUnsuppliedLine(std::string_view pass,
+                                      std::string_view fragment,
+                                      std::string_view type,
+                                      std::optional<std::size_t> binding);
+
+// What the line says once Open the shader opened it for
+// shader_input_unsupplied: nothing is copied, the declaration is removed.
+std::string shaderInputUnsuppliedOpenedLine(std::optional<std::size_t> binding);
+
+// The actions the line offers. Both are there for pass_input_undeclared (and
+// with no direction); for shader_input_unsupplied only Open the shader, since
+// no pass input fills a type the engine cannot. can_open says whether Open
+// the shader has a project file to open.
+std::vector<ShaderInputContractAction> shaderInputContractActions(
+    std::string_view direction = ShaderInputContractPassInputUndeclared);
+bool shaderInputContractOffers(const ShaderInputContractNotice &notice,
+                               std::string_view action);
 
 // The simple check before Save: the pass-input indices a fragment source
 // declares, counted from its lines, not from reflection. A line counts when,
