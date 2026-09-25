@@ -25466,6 +25466,42 @@ engine の変更 / 移行の手順そのもの / 移行の取り消し(backup �
 - **テキスト入力の欄**: 増やしていない。足したのは行とボタン 2 つ(Frame Plan と Pass Editor の 2 か所ずつ)。新しいシナリオで打つのはフォルダだけ
 - **穴**: Save の前の検査は宣言行の数え上げで、reflection ではない(`/* */` の注釈も `#include` の中も見ず、型も見ない)/ buffer の入力にも同じボタンが出るが、Pass-through の雛形は buffer を宣言しない / Open the shader の clipboard は宣言の番号が 0 から詰まっていると仮定する / Frame Plan の Make a pass-through は送る前に shader の file を書くので、送信が断られても file は残る
 
+### Q-15: Q-14f への追従(逆向きの文)と Task Editor の共有 digest(小穴 2 つ)
+
+**下段(Studio のみ)。実装者: Claude(Opus)。**
+
+#### 前提
+- Q-14f(別 session、8638a3bf): `shader_input_mismatch` に `direction`
+  - `"pass_input_undeclared"`(Q-14e の向き。pass の入力を shader が宣言していない)は今までどおり
+  - `"shader_input_unsupplied"`: shader が set 1 に宣言していて pass が渡さない binding のうち、engine が埋められない型(input_attachment / storage_image / 3D など / uniform buffer / dynamic buffer / texel buffer / acceleration structure / runtime 長の配列)。`binding` は埋められない最小のもの、`kind` は texture / buffer / other、`expected` は `"none"`、`resource` 無し。message は `Fullscreen shader declares a pass input the pass does not supply: pass '<p>' supplies <M> pass input(s), but fragment '<f>' declares a <型> at set 1 binding <b> (shader declares <N> pass inputs)`
+  - 埋められる型(sampled image / separate image / sampler / storage buffer)の余りは engine が既定の資源で埋め、LOG_WARNING だけで編集は成功する
+- Studio の `shaderinputcontract`(Q-14)は向きを見ずに `<pass>'s shader (<fragment>) reads N inputs...` を出す
+- Q-13 の共有 digest(`renderconfigdigest.hpp`)を Task Editor(`ComputeTaskDialog`、`renderfeatureswidget.cpp`)が購読していない(他の panel の commit で読み直さない。拒否の後に 1 回だけ読み直して送り直す)
+
+#### 決定
+1. `shaderinputcontract` が `direction` を見て文を分ける: `shader_input_unsupplied` なら「`<pass>`'s shader (`<fragment>`) declares an input the pass cannot supply (`<型>` at binding `<b>`). Remove that declaration from the shader.」相当。動作は **Open the shader** だけ(Make a pass-through shader は出さない —— pass の入力を増やしても埋められない型なので)。`direction` が無い・`pass_input_undeclared` は今までどおり。型の名前は、field に無ければ message から取る
+2. Task Editor を共有 digest に購読させる(他の panel の commit で、下書きを残したまま読み直す。Q-13 の Pass Editor と同じ形)
+
+#### 受け入れ
+1. 純関数 test: 2 つの向きと direction 無しで文と動作が分かれる(対照: 向きを見ない変異で逆向きが「reads N inputs」になって赤)
+2. Task Editor: 他の panel の commit の通知で読み直す(widget test が作れなければ、購読の登録の純粋な部分を test し、報告に書く)
+3. `-L studio_cpu -LE gpu` 緑。GPU シナリオは `input_needs_shader` だけ(回帰の確認)
+4. 報告にテキスト入力の欄
+
+#### 着地(2026-09-25、2b332ef4)
+- **決定 1**: `shaderInputContractNotice` が `direction` を読む([向きを読む所](../src/devstudio/view/shaderinputcontract.cpp#L184))。`shader_input_mismatch` があればその `direction`、無ければ message が `Fullscreen shader declares a pass input the pass does not supply` を含むときに逆向きとする(**object の無い、message だけの逆向きの拒否も当たる**。[逆向きの文を見る所](../src/devstudio/view/shaderinputcontract.cpp#L41))。`direction` が無い・`pass_input_undeclared` は Q-14 の行のまま([向きの 2 つの値](../src/devstudio/view/shaderinputcontract.hpp#L31))
+  - 逆向きの行: `<pass>'s shader (<stem>) declares an input the pass cannot supply (<型> at binding <b>). Remove that declaration from the shader.`([逆向きの行を作る所](../src/devstudio/view/shaderinputcontract.cpp#L126))。型は冠詞なしの語(`input attachment at binding 2`。`_` は空白に)。型は `shader_pass_inputs` のうち `binding` が同じ要素の `type`、無ければ message の `declares a <型> at set 1 binding <b>` から取る。片方が分からなければ `(binding <b>)` / `(<型>)`、両方無ければ括弧ごと出さない
+  - 動作は **Open the shader** だけ。Make a pass-through shader は出さない([向きごとの動作](../src/devstudio/view/shaderinputcontract.cpp#L106))。Frame Plan は status 行の横のボタンを隠し([Frame Plan の行](../src/devstudio/view/frameplanwidget.cpp#L1662))、Pass Editor は拒否の行のボタンを隠す([Pass Editor の行](../src/devstudio/view/fullscreenpasswidget.cpp#L924))
+  - 逆向きの Open the shader は file を desktop で開くだけで、clipboard には何も入れない。status は `Remove the pass-input declaration at binding <b> from the shader and save it, and it reloads by itself. Then connect the input again.`(Pass Editor は最後が `Then press Save again.`)([開いた後の行](../src/devstudio/view/shaderinputcontract.cpp#L143)、[Frame Plan の Open the shader](../src/devstudio/view/frameplanwidget.cpp#L1749)、[Pass Editor の Open the shader](../src/devstudio/view/fullscreenpasswidget.cpp#L978))
+- **決定 2**: Task Editor が共有の digest を購読する。Render Features が Task Editor を開くときに共有の digest を渡す([渡す所](../src/devstudio/view/renderfeatureswidget.cpp#L2903))
+  - 読んだ root の digest を他の panel に知らせる([読んだ digest を知らせる所](../src/devstudio/view/renderfeatureswidget.cpp#L957))
+  - 他の panel の commit を知らされると、変えた下書きを残して読み直す。notice は `Another panel changed the document; reading it again. Your edits are kept.`。残した下書きは読み直した root の digest で送り、task 自身の digest はそのまま(task を守る)([知らされる所](../src/devstudio/view/renderfeatureswidget.cpp#L818))。読み直しで editor の文が同じなら caret の位置を保つ
+  - 要求の最中(読み・編集の ticket・Q-13 の送り直しの途中)に知らされたら、応答の後に読み直す([応答の後に追う所](../src/devstudio/view/renderfeatureswidget.cpp#L998))
+- **test**: `devstudio_fullscreen_pass_test` の `Q-15 the refusal's direction decides the line and the ways out`(変異(commit の記録): 向きを見ない → 逆向きが `reads only 3 inputs` になって赤)と `Q-15 the Pass Editor, refused for a declaration the pass cannot supply, offers Open the shader alone and copies nothing`。新しい `devstudio_task_editor_digest_test` の `Q-15 the Task Editor reads the document again when another panel commits, keeping its draft` は、本物の widget と本物の RPC の経路(fixture の子 process が要求を受け、test が engine の代わりに答える)で、読んだ digest が共有の digest に載ること、通知が無ければ読まないこと(対照)、通知で読み直して下書きが残ること、次の編集が新しい root の digest と task 自身の digest で出ること、編集の最中の通知が応答の後に追われることを見る。Task Editor 側の変異の記載は commit の記録に無い
+- **受け入れ 3**: commit の記録では `input_needs_shader` 緑。`-L studio_cpu -LE gpu` の全数の記載は無い(未確認)
+- **テキスト入力の欄(受け入れ 4)**: 増やしていない。ボタンも増やしていない(逆向きでは既存の Make a pass-through shader を隠すだけ)
+- **穴**: Frame Plan の逆向きの分岐(pass-through を隠す、clipboard に入れない)には test が無い(test は Pass Editor の側だけ)/ Task Editor の要求が失敗したとき(`inspectorRpcFailed`、応答が decode できないとき)は、最中に知らされた読み直しを拾わない。次の応答か Refresh まで残る / 読み直しは `setPlainText` で editor に入れるので、editor の undo の履歴は消える / engine が埋められる宣言を埋めたときは LOG_WARNING だけで、Studio は何も出さない
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
