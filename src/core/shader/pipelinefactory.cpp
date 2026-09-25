@@ -1879,7 +1879,8 @@ PipelineRebuildResult PipelineFactory::rebuildPrepared(
     PreparedShaderReload prepared,
     const std::function<void()> &before_publish,
     std::span<const GraphicsPipelineReloadOverride>
-        graphics_overrides) {
+        graphics_overrides,
+    const PipelineReplacementCheck &check) {
     const auto affected_shaders = prepared.affectedBundleIds();
     PipelineRebuildResult result{.dirty_shaders = affected_shaders.size()};
     if (affected_shaders.empty() &&
@@ -1982,6 +1983,19 @@ PipelineRebuildResult PipelineFactory::rebuildPrepared(
                               }
                           },
                           record.desc);
+            // VI-1b: a graphics candidate the check refuses stays out; its
+            // pipeline keeps drawing with the record it has.
+            if (check &&
+                std::holds_alternative<GraphicsPipelineDesc>(
+                    replacement.desc)) {
+                try {
+                    check(handle, replacement.reflection);
+                } catch (const std::exception &error) {
+                    result.refused.push_back(PipelineReplacementRefusal{
+                        handle, error.what(), std::current_exception()});
+                    continue;
+                }
+            }
             replacements.push_back({handle, std::move(replacement)});
         }
         for (const auto &override :
@@ -2000,6 +2014,7 @@ PipelineRebuildResult PipelineFactory::rebuildPrepared(
         }
     } catch (const std::exception &error) {
         replacements.clear();
+        result.refused.clear();
         shader_library.activatePrepared(prepared);
         discard_new_layouts();
         result.failed_pipelines = std::max<std::size_t>(1, result.attempted_pipelines);
@@ -2010,6 +2025,7 @@ PipelineRebuildResult PipelineFactory::rebuildPrepared(
         return result;
     } catch (...) {
         replacements.clear();
+        result.refused.clear();
         shader_library.activatePrepared(prepared);
         discard_new_layouts();
         result.failed_pipelines = std::max<std::size_t>(1, result.attempted_pipelines);
@@ -2026,12 +2042,14 @@ PipelineRebuildResult PipelineFactory::rebuildPrepared(
         if (before_publish) before_publish();
     } catch (const std::exception &error) {
         replacements.clear();
+        result.refused.clear();
         discard_new_layouts();
         result.failed_pipelines = 1;
         result.last_error = error.what();
         return result;
     } catch (...) {
         replacements.clear();
+        result.refused.clear();
         discard_new_layouts();
         result.failed_pipelines = 1;
         result.last_error = "unknown cross-domain shader reload failure";
@@ -2043,6 +2061,7 @@ PipelineRebuildResult PipelineFactory::rebuildPrepared(
     for (auto &replacement : replacements) {
         replacePipeline(replacement.handle, std::move(replacement.replacement));
         ++result.rebuilt_pipelines;
+        result.replaced.push_back(replacement.handle);
     }
     result.committed = true;
     return result;

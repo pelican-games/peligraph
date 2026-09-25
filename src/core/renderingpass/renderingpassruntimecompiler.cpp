@@ -2491,6 +2491,11 @@ PassId compileFullscreenPass(
         pass_id = registerFullscreenPipeline(
             pass_def, dependencies, view, rendering,
             resource_interface.bindings);
+        // VI-1b: a shader reload is checked against this pass's inputs, and
+        // a refusal is named by it.
+        dependencies.fullscreen_pass_container.labelPass(
+            pass_id, pass_def.name, pass_def.fullscreenInfo().frag_shader.ref,
+            true);
         dependencies.fullscreen_pass_container.setInputResources(
             pass_id,
             fullscreenPassInputs(
@@ -2545,6 +2550,15 @@ PassId compileGenericRasterPass(
         const auto &frag = pass_def.genericRasterInfo().frag_shader;
         throw mismatch.inPass(pass_def.name,
                               frag ? frag->ref : std::string{});
+    }
+    // VI-1b: a raster pass without inputs is not bound or checked here, and
+    // a shader reload leaves it the same.
+    {
+        const auto &frag = pass_def.genericRasterInfo().frag_shader;
+        dependencies.fullscreen_pass_container.labelPass(
+            pass_id, pass_def.name, frag ? frag->ref : std::string{},
+            !pass_def.input_targets.empty() ||
+                !pass_def.input_buffers.empty());
     }
     if (!pass_def.input_targets.empty() ||
         !pass_def.input_buffers.empty()) {

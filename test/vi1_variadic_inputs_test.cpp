@@ -29,11 +29,13 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <sstream>
 #include <stb_image.h>
 #include <string>
+#include <utility>
 #include <vector>
 
 // VI-1. Variadic pass inputs (PELICAN_DECLARE_VARIADIC_INPUTS), the buffer
@@ -72,7 +74,9 @@ TempDir makeTempDir(std::string_view name) {
                    ("pelican_vi1_" + std::string{name} + "_" + std::to_string(suffix))};
 }
 
-void configureHeadless(const std::filesystem::path &root) {
+// `debug_utils` turns VK_EXT_debug_utils on (the gpu_labels launch option),
+// so a test can count what the validation layer reports (ValidationCounter).
+void configureHeadless(const std::filesystem::path &root, bool debug_utils = false) {
     GET_MODULE(PathResolver).setup(root, false);
     GET_MODULE(ProjectSource).setProjectData(readFile(root / "project.json"));
     auto &launch = GET_MODULE(EngineLaunchConfig);
@@ -80,6 +84,7 @@ void configureHeadless(const std::filesystem::path &root) {
     launch.rpc = true;
     launch.headless_extent = vk::Extent2D{64, 64};
     launch.shader_hot_reload = false;
+    launch.gpu_labels = debug_utils;
     GET_MODULE(EngineTime).setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
     TestSupport::requireVulkanDevice("VI-1 variadic pass inputs");
     GET_MODULE(ECSPredefinedRegistration).reg();
@@ -425,6 +430,167 @@ ShaderReflection fixed3Variadic8() {
         ReflectedBinding{.set = 0, .binding = 0, .type = vk::DescriptorType::eUniformBuffer, .name = "frame"});
     return reflection;
 }
+
+// VI-1b: what the validation layer reports as an error while this lives,
+// through a VK_EXT_debug_utils messenger on the engine's instance (the
+// engine installs none of its own). Inactive -- and its counts meaningless --
+// when the layer or the extension is off, as in a build without the layer.
+class ValidationCounter {
+  public:
+    ValidationCounter() {
+        auto &vulkan = GET_MODULE(VulkanManageCore);
+        instance_ = vulkan.getInstance();
+        if (!vulkan.getVulkanValidationStatus().enabled || !vulkan.getDebugUtils().getStatus().enabled) return;
+        const auto create = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
+            vkGetInstanceProcAddr(instance_, "vkCreateDebugUtilsMessengerEXT"));
+        destroy_ = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+            vkGetInstanceProcAddr(instance_, "vkDestroyDebugUtilsMessengerEXT"));
+        if (create == nullptr || destroy_ == nullptr) return;
+        VkDebugUtilsMessengerCreateInfoEXT info{};
+        info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+        info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                           VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                           VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        info.pfnUserCallback = &ValidationCounter::received;
+        info.pUserData = this;
+        active_ = create(instance_, &info, nullptr, &messenger_) == VK_SUCCESS;
+    }
+    ~ValidationCounter() {
+        if (active_) destroy_(instance_, messenger_, nullptr);
+    }
+    ValidationCounter(const ValidationCounter &) = delete;
+    ValidationCounter &operator=(const ValidationCounter &) = delete;
+
+    [[nodiscard]] bool active() const noexcept { return active_; }
+    // The message ids reported since the last call.
+    std::vector<std::string> take() {
+        std::lock_guard lock{mutex_};
+        return std::exchange(ids_, {});
+    }
+
+  private:
+    static VKAPI_ATTR VkBool32 VKAPI_CALL received(VkDebugUtilsMessageSeverityFlagBitsEXT,
+                                                   VkDebugUtilsMessageTypeFlagsEXT,
+                                                   const VkDebugUtilsMessengerCallbackDataEXT *data,
+                                                   void *user) {
+        auto *self = static_cast<ValidationCounter *>(user);
+        std::lock_guard lock{self->mutex_};
+        self->ids_.push_back(data != nullptr && data->pMessageIdName != nullptr ? data->pMessageIdName
+                                                                                : "(unnamed)");
+        return VK_FALSE;
+    }
+
+    VkInstance instance_ = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT messenger_ = VK_NULL_HANDLE;
+    PFN_vkDestroyDebugUtilsMessengerEXT destroy_ = nullptr;
+    bool active_ = false;
+    std::mutex mutex_;
+    std::vector<std::string> ids_;
+};
+
+std::string joined(const std::vector<std::string> &ids) {
+    std::string result;
+    for (const auto &id : ids) result += (result.empty() ? "" : ", ") + id;
+    return result;
+}
+
+// VI-1b shaders for `present` with inputs [vi_red, vi_green].
+// Reads both: red from 0, green from 1 -> yellow.
+constexpr std::string_view reads_two_frag = R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_sets.glsl"
+#include "pelican_view.glsl"
+
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+PELICAN_DECLARE_INPUT_0(in_a);
+PELICAN_DECLARE_INPUT_1(in_b);
+
+void main() {
+    outColor = vec4(PELICAN_TEXTURE_2D_0(in_a, inUV).r, PELICAN_TEXTURE_2D_1(in_b, inUV).g, 0.0, 1.0);
+}
+)glsl";
+
+// Declares a third and reads it: the default (0, 0, 0, 0) makes blue 1 ->
+// white; a bound render target (alpha 1) would make it yellow.
+constexpr std::string_view reads_three_frag = R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_sets.glsl"
+#include "pelican_view.glsl"
+
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+PELICAN_DECLARE_INPUT_0(in_a);
+PELICAN_DECLARE_INPUT_1(in_b);
+PELICAN_DECLARE_INPUT_2(in_c);
+
+void main() {
+    outColor = vec4(PELICAN_TEXTURE_2D_0(in_a, inUV).r, PELICAN_TEXTURE_2D_1(in_b, inUV).g,
+                    1.0 - PELICAN_TEXTURE_2D_2(in_c, inUV).a, 1.0);
+}
+)glsl";
+
+// The fixed inputs become a variadic group of `max`, read the same way:
+// white while the group's unsupplied slots read the default.
+std::string readsVariadicFrag(int max) {
+    return R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_sets.glsl"
+#include "pelican_view.glsl"
+
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+PELICAN_DECLARE_VARIADIC_INPUTS(0, )glsl" +
+           std::to_string(max) + R"glsl();
+
+void main() {
+    outColor = vec4(PELICAN_VARIADIC_TEXTURE(0, inUV).r, PELICAN_VARIADIC_TEXTURE(1, inUV).g,
+                    1.0 - PELICAN_VARIADIC_TEXTURE(2, inUV).a, 1.0);
+}
+)glsl";
+}
+
+// A second group that reflection sees (the macro once, and a declaration
+// named like the group's at another binding): no compile error, the rule
+// refuses it.
+constexpr std::string_view reflected_two_groups_frag = R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_sets.glsl"
+#include "pelican_view.glsl"
+
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+PELICAN_DECLARE_VARIADIC_INPUTS(0, 2);
+layout(set = PELICAN_SET_PASS_INPUT, binding = 6) uniform sampler2D pelican_variadic_input_3;
+
+void main() {
+    outColor = PELICAN_VARIADIC_TEXTURE(0, inUV) + texture(pelican_variadic_input_3, inUV);
+}
+)glsl";
+
+// For a `present` with no inputs: declares nothing, then binding 0 (read as
+// the default: red).
+constexpr std::string_view declares_none_frag = R"glsl(#version 460
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() { outColor = vec4(0.0, 0.0, 1.0, 1.0); }
+)glsl";
+
+constexpr std::string_view declares_one_default_frag = R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_sets.glsl"
+#include "pelican_view.glsl"
+
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+PELICAN_DECLARE_INPUT_0(in_a);
+
+void main() { outColor = vec4(1.0 - PELICAN_TEXTURE_2D_0(in_a, inUV).a, 0.0, 0.0, 1.0); }
+)glsl";
+
+constexpr Rgb yellow{255, 255, 0};
+constexpr Rgb white{255, 255, 255};
 
 template <class Body>
 FullscreenInputBindingMismatchInfo refusedLayout(Body &&body) {
@@ -855,98 +1021,378 @@ TEST_CASE("VI-1 two variadic groups, and a fixed input after the group, are refu
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
-TEST_CASE("VI-1 measurement: reloading a shader that drops a declaration its pass supplies",
-          "[vi1][shader-reload][rpc][gpu]") {
-    setupLogger(true);
-    const auto dir = makeTempDir("reload");
-    const auto root = dir.root / "project";
-    writeProject(root, {{"vi_red", red}, {"vi_green", green}},
-                 Json{{"input", Json::array({"vi_red", "vi_green"})}, {"shader", projectShader("present2")}});
-    // Declares both and shows the second.
-    writeFile(root / "shaders/present2.frag", fixed_two_frag);
-    const auto capture = dir.root / "capture.png";
+// VI-1b. A shader reload is checked against each fullscreen pass's inputs by
+// the rule edit and load use. One the pass's inputs disagree with is refused
+// for that pass, which keeps drawing with the pipeline and descriptor sets it
+// had; one that passes has its descriptor sets rebuilt with the new set-1
+// layout. The validation layer's errors are counted through a debug-utils
+// messenger (ValidationCounter).
 
+namespace {
+
+// The project the VI-1b cases share: `present` reads `inputs` through
+// project://shaders/present2, first `first`.
+struct ReloadFixture {
+    TempDir dir;
+    std::filesystem::path root;
+    std::filesystem::path shader;
+    std::filesystem::path capture;
+
+    explicit ReloadFixture(std::string_view name, const Json &inputs = Json::array({"vi_red", "vi_green"}),
+                           std::string_view first = reads_two_frag)
+        : dir{makeTempDir(name)}, root{dir.root / "project"}, shader{root / "shaders/present2.frag"},
+          capture{dir.root / "capture.png"} {
+        writeProject(root, {{"vi_red", red}, {"vi_green", green}},
+                     Json{{"input", inputs}, {"shader", projectShader("present2")}});
+        writeFile(shader, first);
+    }
+};
+
+Json shaderReloadStatus(Rpc &rpc) {
+    return rpc.result("get_status").at("reload").at("runtime").at(std::string{watch::shaderReloadParticipantName});
+}
+
+// Every one of `frames` step_frame calls succeeds.
+void requireFramesRun(Rpc &rpc, int frames) {
+    for (int frame = 0; frame < frames; ++frame) {
+        const auto step = rpc.call("step_frame");
+        INFO("frame " << frame << ": " << step.dump(2));
+        REQUIRE(step.contains("result"));
+    }
+}
+
+// No validation error since the last take (when the layer is on).
+void requireNoValidationErrors(ValidationCounter &validation) {
+    const auto ids = validation.take();
+    INFO("validation errors: " << joined(ids));
+    CHECK(ids.empty());
+}
+
+void warnWithoutValidation(const ValidationCounter &validation) {
+    if (!validation.active()) {
+        WARN("the Vulkan validation layer or VK_EXT_debug_utils is off: validation errors are not counted");
+    }
+}
+
+} // namespace
+
+TEST_CASE("VI-1b a reload that drops a declaration the pass supplies is refused, and the pass keeps drawing "
+          "the shader it had",
+          "[vi1b][shader-reload][rpc][gpu]") {
+    setupLogger(true);
+    ReloadFixture fixture{"vi1b_drop"};
     FastModuleContainer modules;
-    configureHeadless(root);
+    configureHeadless(fixture.root, true);
+    ValidationCounter validation;
+    warnWithoutValidation(validation);
     Rpc rpc;
     (void)rpc.result("load_scene", {{"name", "default_scene"}});
     (void)rpc.result("step_frame");
-    REQUIRE(every(rpc.frame(capture), green));
-    const auto generation_before = rpc.result("get_frame_plan").at("runtime_generation");
+    REQUIRE(every(rpc.frame(fixture.capture), yellow));
+    requireNoValidationErrors(validation);
+    const auto two = Json::array({declaration(0, "sampled_image", "in_a", false),
+                                  declaration(1, "sampled_image", "in_b", false)});
+    const auto one = Json::array({declaration(0, "sampled_image", "in_a", false)});
 
     // The shader now declares binding 0 only; the pass still gives two.
-    writeFile(root / "shaders/present2.frag", fixed_one_frag);
-    const auto reload = rpc.call("reload_shaders");
-    std::cout << "VI-1 reload measurement: reload_shaders -> " << reload.dump() << "\n";
-    // Frame by frame: what each step answers, what the frame plan says the
-    // pipeline declares, and what a capture shows.
-    std::vector<Json> steps;
-    for (int frame = 0; frame < 3; ++frame) {
-        steps.push_back(rpc.call("step_frame"));
-        std::cout << "VI-1 reload measurement: step_frame " << frame << " -> " << steps.back().dump()
-                  << "\n";
-    }
-    const auto plan = rpc.call("get_frame_plan");
-    Json pass_inputs;
-    if (plan.contains("result")) {
-        for (const auto &node : plan.at("result").at("nodes"))
-            if (node.value("name", std::string{}) == "present") pass_inputs = node.value("pass_inputs", Json{});
-    }
-    std::cout << "VI-1 reload measurement: pass_inputs after = " << pass_inputs.dump()
-              << ", runtime_generation " << generation_before << " -> "
-              << (plan.contains("result") ? plan.at("result").at("runtime_generation") : plan) << "\n";
-    const auto rendered = rpc.call("render_frame");
-    std::cout << "VI-1 reload measurement: render_frame -> " << rendered.dump() << "\n";
-    std::filesystem::remove(capture);
-    const auto captured = rpc.call("capture", {{"path", capture.generic_string()}});
-    std::cout << "VI-1 reload measurement: capture -> " << captured.dump() << "\n";
-    std::optional<Rgb> center;
-    if (captured.contains("result") && std::filesystem::exists(capture)) {
-        int width = 0, height = 0, channels = 0;
-        if (stbi_uc *pixels = stbi_load(capture.string().c_str(), &width, &height, &channels, 4)) {
-            std::vector<unsigned char> rgba(pixels, pixels + static_cast<std::size_t>(width) * height * 4);
-            stbi_image_free(pixels);
-            center = pixel(rgba, 32, 32);
-            std::cout << "VI-1 reload measurement: centre pixel = (" << center->r << "," << center->g << ","
-                      << center->b << ")\n";
-        }
-    }
-    const auto status = rpc.call("get_status");
-    std::cout << "VI-1 reload measurement: get_status -> "
-              << (status.contains("result") ? status.at("result").value("shader_reload", status.at("result")).dump()
-                                            : status.dump())
-              << "\n";
+    writeFile(fixture.shader, fixed_one_frag);
+    const auto reloaded = rpc.result("reload_shaders");
+    INFO(reloaded.dump(2));
+    CHECK(reloaded.at("committed") == true);
+    CHECK(reloaded.at("changed") == Json::array({"project://shaders/present2.frag"}));
+    REQUIRE(reloaded.at("refused_passes").size() == 1);
+    const auto refused = reloaded.at("refused_passes").at(0);
+    CHECK(refused.at("pass") == "present");
+    CHECK(refused.at("fragment") == "project://shaders/present2");
+    CHECK(refused.at("declarations") == one);
+    const std::string reason =
+        "Fullscreen pass input texture/local-read contract does not match shader reflection: pass 'present' "
+        "input 1 ('vi_green') expects a sampled image at set 1 binding 1, but fragment "
+        "'project://shaders/present2' declares no pass input at that binding (shader declares 1 pass input)";
+    CHECK(refused.at("reason") == reason);
+    const auto mismatch = refused.at("shader_input_mismatch");
+    CHECK(mismatch.at("pass") == "present");
+    CHECK(mismatch.at("direction") == "pass_input_undeclared");
+    CHECK(mismatch.at("kind") == "texture");
+    CHECK(mismatch.at("binding") == 1);
+    CHECK(mismatch.at("resource") == "vi_green");
+    CHECK(mismatch.at("shader_pass_inputs") == one);
 
-    // What is recorded (the VI-1 report), measured 2026-09-25:
-    // - reload_shaders commits (the module compiles) and the pipeline is
-    //   replaced; the reload status records no failure;
-    // - the first frame after it fails at the pass's descriptor rebind with
-    //   the Q-14e refusal naming the input the shader no longer declares, and
-    //   step_frame returns that as its error;
-    // - later frames run: the new pipeline is bound with the descriptor sets
-    //   made for the old set-1 layout (the validation layer reports
-    //   VUID-vkCmdBindDescriptorSets-pDescriptorSets-00358 every frame), and
-    //   the frame plan shows the new declaration. What is drawn is not
-    //   defined, so it is not checked here.
-    INFO(reload.dump(2));
-    REQUIRE(reload.contains("result"));
-    CHECK(reload.at("result").at("committed") == true);
-    REQUIRE(steps.size() == 3);
+    // Ten frames run, and draw the shader from before the reload.
+    requireFramesRun(rpc, 10);
+    CHECK(every(rpc.frame(fixture.capture), yellow));
     {
-        INFO(steps.front().dump(2));
-        REQUIRE(steps.front().contains("error"));
-        CHECK_THAT(steps.front().at("error").at("message").get<std::string>(),
-                   Catch::Matchers::StartsWith(
-                       "Fullscreen pass input texture/local-read contract does not match shader reflection: "
-                       "input 1 ('vi_green') expects a sampled image at set 1 binding 1"));
+        const auto node = presentNode(rpc);
+        INFO(node.dump(2));
+        const auto &pass_inputs = node.at("pass_inputs");
+        CHECK(pass_inputs.at("state") == "declared");
+        CHECK(pass_inputs.at("declarations") == two);
+        REQUIRE(pass_inputs.contains("reload_refused"));
+        CHECK(pass_inputs.at("reload_refused") ==
+              Json{{"reason", reason}, {"shader_input_mismatch", mismatch}, {"declarations", one}});
     }
-    for (std::size_t index = 1; index < steps.size(); ++index) {
-        INFO(steps[index].dump(2));
-        CHECK(steps[index].contains("result"));
+    {
+        // Reload status keeps it as a failure, and names the pass.
+        const auto status = shaderReloadStatus(rpc);
+        INFO(status.dump(2));
+        CHECK(status.at("failed") == 1);
+        CHECK(status.at("error_code") == "shader_reload_refused@1");
+        CHECK(status.at("last_error") ==
+              "Shader reload refused for pass 'present', which keeps drawing with its previous shader: " +
+                  reason);
+        CHECK(status.at("error_fields").at("refused_passes") == Json::array({refused}));
+        CHECK(status.at("details").at("refused_passes") == Json::array({refused}));
     }
-    CHECK(center.has_value());
-    CHECK(pass_inputs.at("declarations").size() == 1);
+    auto &container = GET_MODULE(FullscreenPassContainer);
+    CHECK(container.inputDescriptorSetLayoutForTesting(presentPassId()) ==
+          container.pipelineInputSetLayoutForTesting(presentPassId()));
     GET_MODULE(VulkanManageCore).waitIdle();
+    requireNoValidationErrors(validation);
+
+    // The declaration back: taken, and the refusal is gone.
+    writeFile(fixture.shader, reads_two_frag);
+    const auto restored = rpc.result("reload_shaders");
+    INFO(restored.dump(2));
+    CHECK(restored.at("committed") == true);
+    CHECK(restored.at("refused_passes") == Json::array());
+    requireFramesRun(rpc, 3);
+    CHECK(every(rpc.frame(fixture.capture), yellow));
+    {
+        const auto node = presentNode(rpc);
+        INFO(node.dump(2));
+        CHECK(node.at("pass_inputs").at("declarations") == two);
+        CHECK_FALSE(node.at("pass_inputs").contains("reload_refused"));
+        const auto status = shaderReloadStatus(rpc);
+        CHECK(status.at("last_error").is_null());
+        CHECK(status.at("details").at("refused_passes") == Json::array());
+    }
+    GET_MODULE(VulkanManageCore).waitIdle();
+    requireNoValidationErrors(validation);
+}
+
+TEST_CASE("VI-1b one reload that a pass refuses still publishes the other passes' shaders",
+          "[vi1b][shader-reload][rpc][gpu]") {
+    setupLogger(true);
+    ReloadFixture fixture{"vi1b_partial"};
+    FastModuleContainer modules;
+    configureHeadless(fixture.root, true);
+    ValidationCounter validation;
+    warnWithoutValidation(validation);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    REQUIRE(every(rpc.frame(fixture.capture), yellow));
+
+    // One reload: vi_red's pass now draws blue, and present's shader drops
+    // binding 1. present keeps its shader (red from input 0, green from
+    // input 1): (0, 255, 0). Had it taken the new one (input 0 as it is),
+    // it would draw blue; had the whole reload been rolled back, yellow.
+    writeFile(fixture.root / "shaders/solid_vi_red.frag", solidFrag(blue));
+    writeFile(fixture.shader, fixed_one_frag);
+    const auto reloaded = rpc.result("reload_shaders");
+    INFO(reloaded.dump(2));
+    CHECK(reloaded.at("committed") == true);
+    CHECK(reloaded.at("changed").size() == 2);
+    REQUIRE(reloaded.at("refused_passes").size() == 1);
+    CHECK(reloaded.at("refused_passes").at(0).at("pass") == "present");
+    requireFramesRun(rpc, 3);
+    CHECK(every(rpc.frame(fixture.capture), green));
+    GET_MODULE(VulkanManageCore).waitIdle();
+    requireNoValidationErrors(validation);
+}
+
+TEST_CASE("VI-1b a reload that adds, widens or turns declarations variadic rebuilds the pass's descriptor "
+          "sets with the new layout",
+          "[vi1b][shader-reload][rpc][gpu]") {
+    setupLogger(true);
+    ReloadFixture fixture{"vi1b_add"};
+    FastModuleContainer modules;
+    configureHeadless(fixture.root, true);
+    ValidationCounter validation;
+    warnWithoutValidation(validation);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    REQUIRE(every(rpc.frame(fixture.capture), yellow));
+    auto &container = GET_MODULE(FullscreenPassContainer);
+    const auto layout_before = container.inputDescriptorSetLayoutForTesting(presentPassId());
+    REQUIRE(layout_before);
+    CHECK(container.filledDescriptorWritesForTesting(presentPassId()) == 0);
+
+    const auto reload = [&](std::string_view source) {
+        writeFile(fixture.shader, source);
+        const auto reloaded = rpc.result("reload_shaders");
+        INFO(reloaded.dump(2));
+        CHECK(reloaded.at("committed") == true);
+        CHECK(reloaded.at("refused_passes") == Json::array());
+        requireFramesRun(rpc, 3);
+    };
+    const auto filledBindings = [&] {
+        std::vector<std::uint32_t> bindings;
+        for (const auto &entry : container.filledPassInputs(presentPassId())) bindings.push_back(entry.binding);
+        return bindings;
+    };
+
+    // Binding 2 added and read: the default (alpha 0) makes blue 1 -> white.
+    reload(reads_three_frag);
+    CHECK(every(rpc.frame(fixture.capture), white));
+    CHECK(filledBindings() == std::vector<std::uint32_t>{2});
+    // One default write per descriptor set (one variant, two parities), into
+    // sets allocated with the pipeline's new set-1 layout.
+    CHECK(container.filledDescriptorWritesForTesting(presentPassId()) == 2);
+    const auto layout_three = container.pipelineInputSetLayoutForTesting(presentPassId());
+    CHECK(layout_three != layout_before);
+    CHECK(container.inputDescriptorSetLayoutForTesting(presentPassId()) == layout_three);
+    CHECK(presentNode(rpc).at("pass_inputs").at("declarations").size() == 3);
+    GET_MODULE(VulkanManageCore).waitIdle();
+    requireNoValidationErrors(validation);
+
+    // The fixed inputs become a variadic group of four, then eight.
+    for (const int max : {4, 8}) {
+        INFO("variadic group of " << max);
+        reload(readsVariadicFrag(max));
+        CHECK(every(rpc.frame(fixture.capture), white));
+        std::vector<std::uint32_t> expected;
+        for (int binding = 2; binding < max; ++binding) expected.push_back(static_cast<std::uint32_t>(binding));
+        CHECK(filledBindings() == expected);
+        CHECK(container.filledDescriptorWritesForTesting(presentPassId()) == 2 * expected.size());
+        CHECK(container.inputDescriptorSetLayoutForTesting(presentPassId()) ==
+              container.pipelineInputSetLayoutForTesting(presentPassId()));
+        CHECK_FALSE(container.filledPassInputReport(presentPassId()).has_value());
+        const auto node = presentNode(rpc);
+        INFO(node.dump(2));
+        CHECK(node.at("pass_inputs").at("variadic_range") == Json{{"first", 0}, {"max", max}});
+        CHECK_FALSE(node.at("pass_inputs").contains("reload_refused"));
+        GET_MODULE(VulkanManageCore).waitIdle();
+        requireNoValidationErrors(validation);
+    }
+}
+
+TEST_CASE("VI-1b a reload that gives a pass without inputs a declaration binds the default for it",
+          "[vi1b][shader-reload][rpc][gpu]") {
+    setupLogger(true);
+    ReloadFixture fixture{"vi1b_none", Json::array(), declares_none_frag};
+    FastModuleContainer modules;
+    configureHeadless(fixture.root, true);
+    ValidationCounter validation;
+    warnWithoutValidation(validation);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    REQUIRE(every(rpc.frame(fixture.capture), blue));
+    auto &container = GET_MODULE(FullscreenPassContainer);
+    CHECK_FALSE(container.inputDescriptorSetLayoutForTesting(presentPassId()));
+
+    writeFile(fixture.shader, declares_one_default_frag);
+    const auto reloaded = rpc.result("reload_shaders");
+    INFO(reloaded.dump(2));
+    CHECK(reloaded.at("refused_passes") == Json::array());
+    requireFramesRun(rpc, 3);
+    // Binding 0 reads the default (alpha 0): red. Unbound, it read black.
+    CHECK(every(rpc.frame(fixture.capture), red));
+    CHECK(container.filledPassInputs(presentPassId()).size() == 1);
+    CHECK(container.filledDescriptorWritesForTesting(presentPassId()) == 2);
+    CHECK(container.inputDescriptorSetLayoutForTesting(presentPassId()) ==
+          container.pipelineInputSetLayoutForTesting(presentPassId()));
+    GET_MODULE(VulkanManageCore).waitIdle();
+    requireNoValidationErrors(validation);
+}
+
+TEST_CASE("VI-1b a reload to two variadic groups is refused, and the pass keeps drawing the shader it had",
+          "[vi1b][shader-reload][rpc][gpu]") {
+    setupLogger(true);
+    ReloadFixture fixture{"vi1b_groups"};
+    FastModuleContainer modules;
+    configureHeadless(fixture.root, true);
+    ValidationCounter validation;
+    warnWithoutValidation(validation);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    REQUIRE(every(rpc.frame(fixture.capture), yellow));
+
+    // The macro twice does not compile: the whole reload fails as a compile
+    // does, and says what the pass compiler would have.
+    writeFile(fixture.shader, two_groups_frag);
+    {
+        const auto failed = rpc.call("reload_shaders");
+        INFO(failed.dump(2));
+        REQUIRE(failed.contains("error"));
+        const auto &data = failed.at("error").at("data");
+        CHECK(data.at("error_code") == "shader_reload_failed@1");
+        CHECK(data.at("error_fields").at("shader_input_mismatch").at("direction") == "variadic_layout_invalid");
+        CHECK(data.at("error_fields").at("shader_input_mismatch").at("variadic_rule") ==
+              "multiple_variadic_groups");
+    }
+    requireFramesRun(rpc, 10);
+    CHECK(every(rpc.frame(fixture.capture), yellow));
+    GET_MODULE(VulkanManageCore).waitIdle();
+    requireNoValidationErrors(validation);
+
+    // A second group reflection sees: it compiles, and the rule refuses it
+    // for the pass.
+    writeFile(fixture.shader, reflected_two_groups_frag);
+    const auto reloaded = rpc.result("reload_shaders");
+    INFO(reloaded.dump(2));
+    CHECK(reloaded.at("committed") == true);
+    REQUIRE(reloaded.at("refused_passes").size() == 1);
+    const auto mismatch = reloaded.at("refused_passes").at(0).at("shader_input_mismatch");
+    CHECK(mismatch.at("pass") == "present");
+    CHECK(mismatch.at("direction") == "variadic_layout_invalid");
+    CHECK(mismatch.at("variadic_rule") == "multiple_variadic_groups");
+    CHECK(mismatch.at("binding") == 6);
+    requireFramesRun(rpc, 10);
+    CHECK(every(rpc.frame(fixture.capture), yellow));
+    const auto node = presentNode(rpc);
+    INFO(node.dump(2));
+    CHECK(node.at("pass_inputs").at("declarations").size() == 2);
+    CHECK(node.at("pass_inputs").at("reload_refused").at("declarations") ==
+          Json::array({declaration(0, "sampled_image", "pelican_variadic_input_0", true),
+                       declaration(1, "sampled_image", "pelican_variadic_input_1", true),
+                       declaration(6, "sampled_image", "pelican_variadic_input_3", true)}));
+    GET_MODULE(VulkanManageCore).waitIdle();
+    requireNoValidationErrors(validation);
+}
+
+TEST_CASE("VI-1b the file watch's shader reload refuses a pass the same way, and reload status keeps it",
+          "[vi1b][shader-reload][rpc][gpu]") {
+    setupLogger(true);
+    ReloadFixture fixture{"vi1b_watch"};
+    FastModuleContainer modules;
+    configureHeadless(fixture.root, true);
+    ValidationCounter validation;
+    warnWithoutValidation(validation);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    REQUIRE(every(rpc.frame(fixture.capture), yellow));
+
+    // What the file watch hands the reload service for the write: the
+    // shader participant's batch, billed at the next render boundary.
+    writeFile(fixture.shader, fixed_one_frag);
+    const std::array requests{
+        watch::ReloadRequest{watch::makeAssetKey("shaders/present2.frag"), watch::ReloadKind::modified, {}, 1}};
+    CHECK(GET_MODULE(watch::ReloadService).applyRequestsForTesting(requests) == std::vector<bool>{true});
+    requireFramesRun(rpc, 10);
+    CHECK(every(rpc.frame(fixture.capture), yellow));
+    {
+        const auto status = shaderReloadStatus(rpc);
+        INFO(status.dump(2));
+        CHECK(status.at("failed") == 1);
+        CHECK(status.at("error_code") == "shader_reload_refused@1");
+        CHECK_THAT(status.at("last_error").get<std::string>(),
+                   Catch::Matchers::StartsWith("Shader reload refused for pass 'present'"));
+        REQUIRE(status.at("error_fields").at("refused_passes").size() == 1);
+        CHECK(status.at("error_fields").at("refused_passes").at(0).at("shader_input_mismatch").at("binding") == 1);
+        CHECK(status.at("details").at("refused_passes").size() == 1);
+    }
+    const auto node = presentNode(rpc);
+    INFO(node.dump(2));
+    CHECK(node.at("pass_inputs").at("declarations").size() == 2);
+    CHECK(node.at("pass_inputs").at("reload_refused").at("declarations") ==
+          Json::array({declaration(0, "sampled_image", "in_a", false)}));
+    GET_MODULE(VulkanManageCore).waitIdle();
+    requireNoValidationErrors(validation);
 }
 
 } // namespace Pelican

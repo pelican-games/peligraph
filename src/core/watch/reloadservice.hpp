@@ -37,6 +37,13 @@ inline constexpr std::string_view shaderReloadFailedErrorCode =
     "shader_reload_failed@1";
 inline constexpr std::string_view shaderReloadUnavailableErrorCode =
     "shader_reload_unavailable@1";
+// VI-1b. A committed shader reload that one or more fullscreen / raster
+// passes refused: the reloaded shader's pass-input set disagrees with the
+// pass's inputs, so the pass keeps drawing with its current pipeline.
+// error_fields.refused_passes names them. reload_shaders answers it as a
+// result, not an error; reload status keeps it as a failure.
+inline constexpr std::string_view shaderReloadRefusedErrorCode =
+    "shader_reload_refused@1";
 inline constexpr std::string_view gameLogicReloadParticipantName = "pelican.game_logic";
 inline constexpr std::string_view modelReloadParticipantName = "pelican.models";
 inline constexpr std::string_view renderPipelineReloadParticipantName =

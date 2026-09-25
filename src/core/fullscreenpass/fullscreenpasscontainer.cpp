@@ -11,6 +11,7 @@
 #include "../vkcore/util.hpp"
 #include <algorithm>
 #include <array>
+#include <exception>
 #include <limits>
 #include <optional>
 #include <span>
@@ -715,21 +716,128 @@ FullscreenPassInputReport FullscreenPassContainer::passInputReport(
         report.texture_inputs = found->second.inputs.size();
         report.buffer_inputs = found->second.input_buffer_ids.size();
     }
-    try {
-        auto layout = readPassInputLayout(
-            GET_MODULE(PipelineFactory).reflection(handle));
-        report.declarations = std::move(layout.declarations);
-        report.variadic = layout.variadic;
-    } catch (const FullscreenInputBindingMismatch &refused) {
-        // A shader reload can publish a module that breaks the rule the
-        // pass compiler would have refused.
-        report.declarations = refused.info().shader_pass_inputs;
-        report.variadic = refused.info().variadic_range;
-        report.layout_refusal = refused.what();
-    }
+    // VI-1b: a reload whose shader breaks the variadic layout rule is
+    // refused (checkReloadCandidate), so the pipeline a pass draws with has
+    // passed the rule; VI-1's "refused" report of a published shader that
+    // broke it is gone with that.
+    auto layout = readPassInputLayout(
+        GET_MODULE(PipelineFactory).reflection(handle));
+    report.declarations = std::move(layout.declarations);
+    report.variadic = layout.variadic;
     report.buffer_binding_base =
         passBufferInputBinding(report.texture_inputs, report.variadic, 0);
+    report.reload_refused = reloadRefusal(pass_id);
     return report;
+}
+
+std::optional<FullscreenPassContainer::PipelineId>
+FullscreenPassContainer::pipelineIdOf(PipelineHandle handle) const {
+    for (const auto &[id, candidate] : pipelines) {
+        if (candidate == handle) return id;
+    }
+    return std::nullopt;
+}
+
+void FullscreenPassContainer::labelPass(PassId pass_id, std::string pass,
+                                        std::string fragment,
+                                        bool binds_inputs) {
+    const auto id = requireFullscreenPipelineId(pass_id);
+    (void)requirePipelineHandle(pass_id, pipelines);
+    labels[id] = PassLabel{std::move(pass), std::move(fragment), binds_inputs};
+}
+
+void FullscreenPassContainer::checkReloadCandidate(
+    PipelineHandle handle, const ShaderReflection &candidate) const {
+    const auto id = pipelineIdOf(handle);
+    if (!id) return;
+    const auto label = labels.find(*id);
+    if (label == labels.end() || !label->second.binds_inputs) return;
+    std::vector<FullscreenPassInput> inputs;
+    std::vector<FrameGraphBufferId> buffers;
+    if (const auto found = input_textures.find(static_cast<int>(id->value));
+        found != input_textures.end()) {
+        inputs = found->second.inputs;
+        buffers = found->second.input_buffer_ids;
+    }
+    // The same check setInputResourcesById makes at load and edit: the
+    // pass's inputs against the candidate's declarations, the variadic
+    // layout rule, its capacity, and what a default cannot stand in for.
+    try {
+        (void)requireInputBindings(
+            candidate, inputs, buffers,
+            RenderTargetImageViewResolver{GET_MODULE(RenderTargetContainer)},
+            GET_MODULE(FrameGraphResourceContainer));
+    } catch (const FullscreenInputBindingMismatch &mismatch) {
+        throw mismatch.inPass(label->second.pass, label->second.fragment);
+    }
+}
+
+void FullscreenPassContainer::recordReloadOutcome(
+    std::span<const PipelineHandle> replaced,
+    std::span<const PipelineReplacementRefusal> refused) {
+    for (const auto handle : replaced) {
+        if (const auto id = pipelineIdOf(handle)) reload_refusals.erase(*id);
+    }
+    for (const auto &refusal : refused) {
+        const auto id = pipelineIdOf(refusal.handle);
+        if (!id) continue;
+        FullscreenReloadRefusal recorded;
+        recorded.reason = refusal.error;
+        try {
+            if (refusal.exception) std::rethrow_exception(refusal.exception);
+        } catch (const FullscreenInputBindingMismatch &mismatch) {
+            recorded.mismatch = mismatch.info();
+        } catch (...) {
+        }
+        if (recorded.mismatch.pass.empty()) {
+            if (const auto label = labels.find(*id); label != labels.end()) {
+                recorded.mismatch.pass = label->second.pass;
+                recorded.mismatch.fragment = label->second.fragment;
+            }
+        }
+        reload_refusals[*id] = std::move(recorded);
+    }
+}
+
+std::optional<FullscreenReloadRefusal>
+FullscreenPassContainer::reloadRefusal(PassId pass_id) const {
+    if (pass_id.value < 0) return std::nullopt;
+    const auto found = reload_refusals.find(
+        PipelineId{static_cast<uint32_t>(pass_id.value)});
+    if (found == reload_refusals.end()) return std::nullopt;
+    return found->second;
+}
+
+std::vector<FullscreenReloadRefusal>
+FullscreenPassContainer::reloadRefusals() const {
+    std::vector<FullscreenReloadRefusal> result;
+    for (const auto id : registration_order) {
+        if (const auto found = reload_refusals.find(id);
+            found != reload_refusals.end()) {
+            result.push_back(found->second);
+        }
+    }
+    return result;
+}
+
+vk::DescriptorSetLayout
+FullscreenPassContainer::inputDescriptorSetLayoutForTesting(
+    PassId pass_id) const {
+    const auto found = input_textures.find(pass_id.value);
+    return found == input_textures.end() ? vk::DescriptorSetLayout{}
+                                         : found->second.layout;
+}
+
+vk::DescriptorSetLayout
+FullscreenPassContainer::pipelineInputSetLayoutForTesting(
+    PassId pass_id) const {
+    return GET_MODULE(PipelineFactory).descriptorSetLayout(
+        requirePipelineHandle(pass_id, pipelines), PELICAN_SET_PASS_INPUT);
+}
+
+void FullscreenPassContainer::forgetRegistration(PipelineId id) noexcept {
+    labels.erase(id);
+    reload_refusals.erase(id);
 }
 
 FullscreenPassContainer::FullscreenPassContainer()
@@ -974,6 +1082,7 @@ void FullscreenPassContainer::setInputResourcesById(
     info.filled = std::move(check.filled);
     info.fill_report = std::move(check.fill_report);
     info.variadic = check.variadic;
+    info.layout = layout;
     if (!info.filled.empty()) (void)defaultPassInputResources();
     if (std::any_of(
             inputs.begin(), inputs.end(),
@@ -1145,7 +1254,19 @@ void FullscreenPassContainer::rebindInputResources(
     const RenderTargetImageViewResolver &rt_views,
     const FrameGraphResourceContainer &frame_graph_resources) {
     const auto found = input_textures.find(pass_id.value);
-    if (found == input_textures.end()) return;
+    if (found == input_textures.end()) {
+        // VI-1b: a pass with no inputs whose shader declared nothing has no
+        // set. A reload may have given its pipeline declarations, which read
+        // the defaults (Q-14f) like at load; without a set bound the draw
+        // reads an unbound set (VUID-vkCmdDraw-None-08600).
+        const auto label = labels.find(requireFullscreenPipelineId(pass_id));
+        if (label == labels.end() || !label->second.binds_inputs) return;
+        const auto handle = requirePipelineHandle(pass_id, pipelines);
+        setInputResourcesById(
+            pass_id, {}, {}, rt_views, frame_graph_resources,
+            GET_MODULE(PipelineFactory).graphicsDesc(handle).view);
+        return;
+    }
     const auto inputs = found->second.inputs;
     const auto input_buffers =
         found->second.input_buffer_ids;
@@ -1254,6 +1375,7 @@ void FullscreenPassContainer::rollbackRegistrations(
            checkpoint.registration_count) {
         const auto id = registration_order.back();
         input_textures.erase(static_cast<int>(id.value));
+        forgetRegistration(id);
         pipelines.erase(id);
         registration_order.pop_back();
     }
@@ -1296,6 +1418,7 @@ void FullscreenPassContainer::retireRegistrations(
             } catch (...) {
             }
         }
+        forgetRegistration(id);
         pipelines.erase(id);
         std::erase(registration_order, id);
     }

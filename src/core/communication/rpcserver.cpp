@@ -1299,7 +1299,13 @@ void configureShaderReloadRpcHandler(
                         {"error_fields", fields},
                     });
             }
-            if (result.failed()) {
+            // VI-1b: a committed reload that some passes refused is answered
+            // as a result: the rest of it draws now. The refused passes keep
+            // their previous shader and are named in refused_passes.
+            const bool passes_refused =
+                result.committed &&
+                result.error_code == watch::shaderReloadRefusedErrorCode;
+            if (result.failed() && !passes_refused) {
                 // The message is the compile log as the reload service wrote
                 // it, which is also what reload status keeps as last_error.
                 throw JsonRpcHandlerError(
@@ -1321,11 +1327,23 @@ void configureShaderReloadRpcHandler(
             for (const auto &key : changes.changed) {
                 changed.push_back(watch::assetKeyString(key));
             }
+            // VI-1b: `committed` keeps its meaning (the reload was published:
+            // the shader library holds what compiled, and every pipeline no
+            // pass refused draws it); refused_passes is empty unless a pass
+            // refused its new shader and draws the previous one.
+            auto refused_passes = nlohmann::json::array();
+            if (passes_refused) {
+                if (const auto found = fields.find("refused_passes");
+                    found != fields.end() && found->is_array()) {
+                    refused_passes = nlohmann::json(*found);
+                }
+            }
             return nlohmann::json{
                 {"committed", true},
                 {"changed", std::move(changed)},
                 {"cache_hits", changes.cache_hits},
                 {"cache_misses", changes.cache_misses},
+                {"refused_passes", std::move(refused_passes)},
             };
         });
 }

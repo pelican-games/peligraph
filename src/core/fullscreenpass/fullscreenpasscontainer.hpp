@@ -64,19 +64,32 @@ struct FullscreenFilledPassInput {
     bool variadic = false;
 };
 
+// VI-1b: a shader reload the pass refused. The reloaded shader's pass-input
+// set disagreed with the inputs the pass supplies, by the rule edit and load
+// check (Q-14e / Q-14f / VI-1), so the pass kept drawing with the pipeline
+// and descriptor sets it had.
+struct FullscreenReloadRefusal {
+    // Named by the pass (pass and fragment set); shader_pass_inputs are the
+    // refused shader's declarations.
+    FullscreenInputBindingMismatchInfo mismatch;
+    // The refusal's message.
+    std::string reason;
+};
+
 // VI-1: a pass's pass-input set as its pipeline's shader declares it, and
 // how many inputs the pass supplies (get_frame_plan's pass_inputs).
 struct FullscreenPassInputReport {
-    // Binding order.
+    // Binding order. VI-1b: the shader the pass draws with, which after a
+    // refused reload is the one before it.
     std::vector<FullscreenShaderPassInput> declarations;
     std::optional<PassVariadicInputRange> variadic;
     std::size_t texture_inputs = 0;
     std::size_t buffer_inputs = 0;
     // Where the pass's buffer inputs start (passBufferInputBinding).
     std::uint32_t buffer_binding_base = 0;
-    // Set when the published shader breaks the variadic layout rule (after
-    // a shader reload): the refusal the pass compiler would give.
-    std::optional<std::string> layout_refusal;
+    // VI-1b: set while the last shader reload that reached this pass was
+    // refused; cleared by one it takes, and gone with the registration.
+    std::optional<FullscreenReloadRefusal> reload_refused;
 };
 
 DECLARE_MODULE(FullscreenPassContainer) {
@@ -120,9 +133,25 @@ DECLARE_MODULE(FullscreenPassContainer) {
         std::optional<PassVariadicInputRange> variadic;
         // Descriptor writes of defaults, over every variant and parity.
         std::size_t filled_descriptor_writes = 0;
+        // VI-1b: the set-1 layout the descriptor sets were allocated with.
+        vk::DescriptorSetLayout layout;
     };
     std::unordered_map<int, InputTextureInfo> input_textures;
     uint64_t next_binding_revision = 1;
+
+    // VI-1b: who a pipeline draws for, so a reload refusal can be named, and
+    // whether the pass compiler checked and bound its inputs (a raster pass
+    // with no inputs is not), so a reload is checked and rebound the same.
+    struct PassLabel {
+        std::string pass;
+        std::string fragment;
+        bool binds_inputs = true;
+    };
+    std::unordered_map<PipelineId, PassLabel, PipelineId::Hash> labels;
+    std::unordered_map<PipelineId, FullscreenReloadRefusal, PipelineId::Hash>
+        reload_refusals;
+    std::optional<PipelineId> pipelineIdOf(PipelineHandle handle) const;
+    void forgetRegistration(PipelineId id) noexcept;
 
     // Descriptor-set construction for one pass: one set per (variant,
     // history parity) over the already validated input list.
@@ -206,8 +235,40 @@ DECLARE_MODULE(FullscreenPassContainer) {
         PassId pass_id) const;
     std::size_t filledDescriptorWritesForTesting(PassId pass_id) const;
     // VI-1: the pass's pipeline's pass-input declarations and the inputs
-    // the pass supplies. Throws when the pass has no pipeline.
+    // the pass supplies. Throws when the pass has no pipeline, or (which a
+    // pipeline that passed load, edit and reload does not do) when its
+    // shader breaks the variadic layout rule.
     FullscreenPassInputReport passInputReport(PassId pass_id) const;
+
+    // VI-1b: the pass a pipeline draws for. The pass compiler labels every
+    // fullscreen / raster pass it registers; `binds_inputs` is whether it
+    // checked and bound the pass's inputs. An unlabelled pipeline (the XR
+    // mirror's output transform) is not checked on reload.
+    void labelPass(PassId pass_id, std::string pass, std::string fragment,
+                   bool binds_inputs);
+    // VI-1b: a shader reload's candidate for `handle`, checked against the
+    // inputs the pass supplies by the rule edit and load use
+    // (requireInputBindings). Throws the FullscreenInputBindingMismatch,
+    // named by the pass, that keeps the pass on its current pipeline.
+    void checkReloadCandidate(PipelineHandle handle,
+                              const ShaderReflection &candidate) const;
+    // VI-1b: what a committed reload did to this container's pipelines. A
+    // replaced pipeline's refusal is cleared (its descriptor sets are
+    // rebuilt at the next frame's rebind, with the new layout); a refused
+    // one's is recorded.
+    void recordReloadOutcome(
+        std::span<const PipelineHandle> replaced,
+        std::span<const PipelineReplacementRefusal> refused);
+    std::optional<FullscreenReloadRefusal> reloadRefusal(
+        PassId pass_id) const;
+    // Every pass whose last reload was refused, in registration order.
+    std::vector<FullscreenReloadRefusal> reloadRefusals() const;
+    // VI-1b: the set-1 layout the pass's descriptor sets were made with, and
+    // the one its pipeline's layout has; null when there is none.
+    vk::DescriptorSetLayout inputDescriptorSetLayoutForTesting(
+        PassId pass_id) const;
+    vk::DescriptorSetLayout pipelineInputSetLayoutForTesting(
+        PassId pass_id) const;
     std::vector<vk::ImageView> boundInputImageViewsForTesting(
         PassId pass_id,
         std::uint32_t view_index = 0) const;

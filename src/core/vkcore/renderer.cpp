@@ -27,6 +27,7 @@
 #include "../loader/pathresolver.hpp"
 #include "../loader/renderconfigcandidate.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
+#include "../fullscreenpass/shaderinputmismatchjson.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../material/standardmaterialresource.hpp"
 #include "../renderer/debugdraw.hpp"
@@ -2696,9 +2697,11 @@ void rebindFullscreenInputs(RenderFrameModules &modules) {
         const auto &compiled_pass =
             program->rendering_pass;
         for (const auto &pass : compiled_pass.passes) {
-            if ((pass.definition.isFullscreen() ||
-                 pass.definition.isGenericRaster()) &&
-                (!pass.definition.input_targets.empty() || !pass.definition.input_buffers.empty())) {
+            // VI-1b: a pass without inputs too. A shader reload can give its
+            // pipeline declarations that read the defaults; the container
+            // knows which passes it binds (labelPass).
+            if (pass.definition.isFullscreen() ||
+                pass.definition.isGenericRaster()) {
                 modules.fullscreen_pass_container
                     .rebindInputResources(
                         pass.pass_id, rt_views,
@@ -3910,17 +3913,14 @@ nlohmann::json passInputsFramePlanJson(
                 {"fragment", fragment},
                 {"reason", error.what()}};
     }
-    auto declarations = nlohmann::json::array();
-    for (const auto &declared : report.declarations) {
-        declarations.push_back({{"binding", declared.binding},
-                                {"type", declared.type},
-                                {"name", declared.name},
-                                {"variadic", declared.variadic}});
-    }
+    // VI-1b: the declarations of the shader the pass draws with, which after
+    // a refused reload is the one before it; the refused one is told in
+    // reload_refused.
     nlohmann::json result{
-        {"state", report.layout_refusal ? "refused" : "declared"},
+        {"state", "declared"},
         {"fragment", fragment},
-        {"declarations", std::move(declarations)},
+        {"declarations", nlohmann::json(passInputDeclarationsJson(
+                             report.declarations))},
         {"variadic_range",
          report.variadic
              ? nlohmann::json{{"first", report.variadic->first},
@@ -3930,7 +3930,10 @@ nlohmann::json passInputsFramePlanJson(
         {"pass_buffer_inputs", report.buffer_inputs},
         {"buffer_binding_base", report.buffer_binding_base},
     };
-    if (report.layout_refusal) result["reason"] = *report.layout_refusal;
+    if (report.reload_refused) {
+        result["reload_refused"] = nlohmann::json(
+            reloadRefusalJson(*report.reload_refused, false));
+    }
     return result;
 }
 

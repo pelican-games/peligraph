@@ -10,6 +10,7 @@
 #include "../resourcecontainer.hpp"
 #include "../vkcore/raytracingpipelinedispatch.hpp"
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <limits>
@@ -211,6 +212,22 @@ struct GraphicsPipelineReloadOverride {
     GraphicsPipelineDesc desc;
 };
 
+// VI-1b: a candidate pipeline a reload built and did not publish, because
+// the reload's PipelineReplacementCheck refused it. The pipeline keeps its
+// current record; the rest of the reload publishes.
+struct PipelineReplacementRefusal {
+    PipelineHandle handle;
+    std::string error;
+    // What the check threw.
+    std::exception_ptr exception;
+};
+
+// VI-1b: asked of every graphics candidate a reload builds, with the
+// candidate's reflection, before anything is published. Throwing refuses
+// that one candidate (PipelineRebuildResult::refused).
+using PipelineReplacementCheck =
+    std::function<void(PipelineHandle, const ShaderReflection &)>;
+
 struct PipelineRebuildResult {
     size_t dirty_shaders = 0;
     size_t attempted_pipelines = 0;
@@ -218,6 +235,10 @@ struct PipelineRebuildResult {
     size_t failed_pipelines = 0;
     bool committed = false;
     std::string last_error;
+    // VI-1b: rebuildPrepared only. The pipelines whose record the committed
+    // reload replaced, and the candidates its check refused.
+    std::vector<PipelineHandle> replaced;
+    std::vector<PipelineReplacementRefusal> refused;
 };
 
 // Set 0 is engine-owned. The six-binding form is the stable non-ray ABI;
@@ -389,12 +410,15 @@ DECLARE_MODULE(PipelineFactory) {
 
     // Builds every dependent pipeline while prepared shader bundles are only
     // temporarily visible. Publication happens once, after all candidates and
-    // the optional cross-domain callback have succeeded.
+    // the optional cross-domain callback have succeeded. VI-1b: a graphics
+    // candidate `check` refuses is left out -- its pipeline keeps the current
+    // record -- and the rest publish.
     PipelineRebuildResult rebuildPrepared(
         PreparedShaderReload prepared,
         const std::function<void()> &before_publish = {},
         std::span<const GraphicsPipelineReloadOverride>
-            graphics_overrides = {});
+            graphics_overrides = {},
+        const PipelineReplacementCheck &check = {});
     PipelineRebuildResult rebuildDirty();
 
     RegistrationCheckpoint checkpointRegistrations() const;

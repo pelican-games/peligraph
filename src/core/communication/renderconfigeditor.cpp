@@ -12,6 +12,7 @@
 #include "renderconfigtransaction.hpp"
 
 #include "../fullscreenpass/fullscreeninputbindingmismatch.hpp"
+#include "../fullscreenpass/shaderinputmismatchjson.hpp"
 #include "../renderingpass/passshaderdefines.hpp"
 #include "../loader/engineresources.hpp"
 #include "../renderingpass/frameplanner.hpp"
@@ -74,39 +75,10 @@ OrderedJson withPreflightRefusalFields(OrderedJson details,
                                        const std::exception &error) {
     if (const auto *mismatch =
             dynamic_cast<const FullscreenInputBindingMismatch *>(&error)) {
-        const auto &info = mismatch->info();
-        auto declared = OrderedJson::array();
-        for (const auto &input : info.shader_pass_inputs) {
-            // VI-1: the name and whether it is variadic, as get_frame_plan's
-            // pass_inputs.declarations tells them.
-            declared.push_back(OrderedJson{{"binding", input.binding},
-                                           {"type", input.type},
-                                           {"name", input.name},
-                                           {"variadic", input.variadic}});
-        }
-        OrderedJson field{{"pass", info.pass},
-                          {"fragment", info.fragment},
-                          // Q-14f: which way round they disagree.
-                          {"direction", info.direction},
-                          {"kind", info.kind},
-                          {"binding", info.binding}};
-        if (!info.resource.empty()) field["resource"] = info.resource;
-        field["expected"] = info.expected;
-        field["pass_texture_inputs"] = info.pass_texture_inputs;
-        field["pass_buffer_inputs"] = info.pass_buffer_inputs;
-        field["shader_pass_inputs"] = std::move(declared);
-        // VI-1: the shader's variadic group and, for a layout refusal, the
-        // rule it breaks.
-        field["variadic_range"] =
-            info.variadic_range
-                ? OrderedJson{{"first", info.variadic_range->first},
-                              {"max", info.variadic_range->max}}
-                : OrderedJson(nullptr);
-        if (!info.variadic_rule.empty()) {
-            field["variadic_rule"] = info.variadic_rule;
-        }
+        // VI-1b: the one shape a reload's refused passes carry too.
         if (details.is_null()) details = OrderedJson::object();
-        details["shader_input_mismatch"] = std::move(field);
+        details["shader_input_mismatch"] =
+            shaderInputMismatchJson(mismatch->info());
     }
     if (const auto *define =
             dynamic_cast<const PassShaderDefineError *>(&error)) {

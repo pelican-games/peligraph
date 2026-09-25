@@ -1,6 +1,9 @@
 #include "reloadservice.hpp"
 
 #include "../asset/model.hpp"
+#include "../fullscreenpass/fullscreenpasscontainer.hpp"
+#include "../fullscreenpass/passinputlayout.hpp"
+#include "../fullscreenpass/shaderinputmismatchjson.hpp"
 #include "../gamelogic/gamelogicreload.hpp"
 #include "../launchconfig.hpp"
 #include "../loader/pathresolver.hpp"
@@ -19,6 +22,78 @@ namespace Pelican::watch {
 namespace {
 thread_local RenderPipelineCompanionReloadObserver
     render_pipeline_companion_reload_observer;
+
+// VI-1b: every shader reload checks each fullscreen / raster candidate
+// against its pass's inputs by the rule edit and load use; a candidate that
+// disagrees is left out and its pass keeps drawing.
+PipelineReplacementCheck passInputReloadCheck() {
+    auto *container = FastModuleContainer::tryGet<FullscreenPassContainer>();
+    if (container == nullptr) return {};
+    return [container](PipelineHandle handle, const ShaderReflection &candidate) {
+        container->checkReloadCandidate(handle, candidate);
+    };
+}
+
+// VI-1b: what a committed reload did, told to the pass container (which
+// keeps the refusals get_frame_plan reports) and, when a pass refused, to
+// the result: a failure the reload status keeps, with the refused passes.
+void takePassInputReloadOutcome(const PipelineRebuildResult &rebuilt,
+                                RuntimeReloadResult &runtime) {
+    auto *container = FastModuleContainer::tryGet<FullscreenPassContainer>();
+    if (container != nullptr) {
+        container->recordReloadOutcome(rebuilt.replaced, rebuilt.refused);
+    }
+    if (rebuilt.refused.empty()) return;
+    auto passes = nlohmann::ordered_json::array();
+    std::string message;
+    for (const auto &refused : rebuilt.refused) {
+        FullscreenReloadRefusal refusal;
+        refusal.reason = refused.error;
+        try {
+            if (refused.exception) std::rethrow_exception(refused.exception);
+        } catch (const FullscreenInputBindingMismatch &mismatch) {
+            refusal.mismatch = mismatch.info();
+        } catch (...) {
+        }
+        passes.push_back(reloadRefusalJson(refusal, true));
+        if (!message.empty()) message += "\n";
+        message += "Shader reload refused for pass '" + refusal.mismatch.pass +
+                   "', which keeps drawing with its previous shader: " +
+                   refused.error;
+    }
+    runtime.error = std::move(message);
+    runtime.error_code = std::string{shaderReloadRefusedErrorCode};
+    if (!runtime.error_fields.is_object()) {
+        runtime.error_fields = nlohmann::ordered_json::object();
+    }
+    runtime.error_fields["refused_passes"] = std::move(passes);
+}
+
+// VI-1b: PELICAN_DECLARE_VARIADIC_INPUTS twice does not compile, so the
+// whole reload fails as a compile does; the failure carries the refusal the
+// pass compiler would have given (without the pass: the compile names none).
+void addCompileRefusalFields(RuntimeReloadResult &runtime) {
+    if (!compileLogShowsMultipleVariadicGroups(runtime.error)) return;
+    if (!runtime.error_fields.is_object()) {
+        runtime.error_fields = nlohmann::ordered_json::object();
+    }
+    runtime.error_fields["shader_input_mismatch"] =
+        shaderInputMismatchJson(multipleVariadicGroupsCompileMismatch().info());
+}
+
+void appendReloadErrorFields(nlohmann::ordered_json &pending,
+                             const nlohmann::ordered_json &fields) {
+    if (!fields.is_object()) return;
+    if (!pending.is_object()) pending = nlohmann::ordered_json::object();
+    for (const auto &[key, value] : fields.items()) {
+        if (key == "refused_passes" && pending.contains(key) &&
+            pending[key].is_array() && value.is_array()) {
+            for (const auto &entry : value) pending[key].push_back(entry);
+            continue;
+        }
+        pending[key] = value;
+    }
+}
 }
 
 ScopedRenderPipelineCompanionReloadObserver::
@@ -275,6 +350,9 @@ void ReloadService::mergeShaderRuntimeResult(RuntimeReloadResult result) {
     pending.attempted = pending.attempted || result.attempted;
     pending.committed = pending.committed || result.committed;
     appendReloadError(pending.error, std::move(result.error));
+    // VI-1b: a refusal's code and refused passes ride along.
+    if (pending.error_code.empty()) pending.error_code = std::move(result.error_code);
+    appendReloadErrorFields(pending.error_fields, result.error_fields);
 }
 
 bool ReloadService::applyShaderReloadBatch(
@@ -302,12 +380,17 @@ bool ReloadService::applyShaderReloadBatch(
                     prepared.surface_documents, material_documents);
             }
             const auto rebuilt = pipelines->rebuildPrepared(
-                std::move(prepared), material_commit);
+                std::move(prepared), material_commit, {},
+                passInputReloadCheck());
             runtime.committed = rebuilt.committed;
             if (!rebuilt.committed) {
                 runtime.error = rebuilt.last_error.empty()
                                     ? "shader/pipeline candidate transaction failed"
                                     : rebuilt.last_error;
+            } else {
+                // VI-1b: the file watch's reload refuses a pass the same way
+                // reload_shaders does, and the status keeps it.
+                takePassInputReloadOutcome(rebuilt, runtime);
             }
         }
     } catch (const std::exception &error) {
@@ -315,7 +398,10 @@ bool ReloadService::applyShaderReloadBatch(
     } catch (...) {
         runtime.error = "unknown shader reload transaction failure";
     }
-    if (!runtime.committed) library->recordReloadFailure(changed_keys, runtime.error);
+    if (!runtime.committed) {
+        library->recordReloadFailure(changed_keys, runtime.error);
+        addCompileRefusalFields(runtime);
+    }
     mergeShaderRuntimeResult(runtime);
     return runtime.committed;
 }
@@ -440,7 +526,8 @@ void ReloadService::applyRenderPipelineCompanionReload(
             pipelines->rebuildPrepared(
                 std::move(prepared),
                 coordinated_commit,
-                material_plan.pipeline_overrides);
+                material_plan.pipeline_overrides,
+                passInputReloadCheck());
         if (!rebuilt.committed) {
             throw std::runtime_error(
                 rebuilt.last_error.empty()
@@ -450,6 +537,8 @@ void ReloadService::applyRenderPipelineCompanionReload(
         }
         runtime.committed =
             runtime.attempted;
+        // VI-1b.
+        takePassInputReloadOutcome(rebuilt, runtime);
     } catch (const std::exception &error) {
         runtime.error = error.what();
         if (!recorded_keys.empty()) {
@@ -506,20 +595,30 @@ RuntimeReloadResult ReloadService::forceShaderReload() {
             material_commit = materials->prepareSurfaceMaterialReload(
                 prepared.surface_documents, {});
         }
-        const auto rebuilt = pipelines->rebuildPrepared(std::move(prepared), material_commit);
+        const auto rebuilt = pipelines->rebuildPrepared(
+            std::move(prepared), material_commit, {}, passInputReloadCheck());
         runtime.committed = rebuilt.committed;
         if (!rebuilt.committed) {
             runtime.error = rebuilt.last_error.empty()
                                 ? "forced shader/pipeline transaction failed"
                                 : rebuilt.last_error;
+        } else {
+            // VI-1b: the passes that refused keep drawing; the result names
+            // them (reload_shaders answers it, reload status keeps it).
+            takePassInputReloadOutcome(rebuilt, runtime);
         }
     } catch (const std::exception &error) {
-        runtime.error = error.what();
+        if (!runtime.committed) runtime.error = error.what();
     } catch (...) {
-        runtime.error = "unknown forced shader reload failure";
+        if (!runtime.committed) runtime.error = "unknown forced shader reload failure";
     }
     if (runtime.committed) {
         shader_publication_pending_ = true;
+        if (runtime.error_code == shaderReloadRefusedErrorCode) {
+            auto changed = nlohmann::ordered_json::array();
+            for (const auto &key : changed_keys) changed.push_back(assetKeyString(key));
+            runtime.error_fields["changed"] = std::move(changed);
+        }
         return runtime;
     }
     library->recordReloadFailure(changed_keys, runtime.error);
@@ -527,6 +626,7 @@ RuntimeReloadResult ReloadService::forceShaderReload() {
     for (const auto &key : changed_keys) changed.push_back(assetKeyString(key));
     runtime.error_code = std::string{shaderReloadFailedErrorCode};
     runtime.error_fields = {{"changed", std::move(changed)}};
+    addCompileRefusalFields(runtime);
     return runtime;
 }
 
@@ -622,6 +722,17 @@ void ReloadService::ensureBuiltInParticipants() {
                                             ? nlohmann::json(nullptr)
                                             : nlohmann::json(gate_status.reason)},
                     };
+                    // VI-1b: every pass still drawing with the shader before
+                    // a reload it refused, whichever reload that was (a later
+                    // reload of another shader clears last_error, not this).
+                    auto refused = nlohmann::json::array();
+                    if (const auto *container =
+                            FastModuleContainer::tryGet<FullscreenPassContainer>()) {
+                        for (const auto &refusal : container->reloadRefusals()) {
+                            refused.push_back(nlohmann::json(reloadRefusalJson(refusal, true)));
+                        }
+                    }
+                    output["refused_passes"] = std::move(refused);
                 },
             },
         });
