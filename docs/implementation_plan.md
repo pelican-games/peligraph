@@ -25502,6 +25502,27 @@ engine の変更 / 移行の手順そのもの / 移行の取り消し(backup �
 - **テキスト入力の欄(受け入れ 4)**: 増やしていない。ボタンも増やしていない(逆向きでは既存の Make a pass-through shader を隠すだけ)
 - **穴**: Frame Plan の逆向きの分岐(pass-through を隠す、clipboard に入れない)には test が無い(test は Pass Editor の側だけ)/ Task Editor の要求が失敗したとき(`inspectorRpcFailed`、応答が decode できないとき)は、最中に知らされた読み直しを拾わない。次の応答か Refresh まで残る / 読み直しは `setPlainText` で editor に入れるので、editor の undo の履歴は消える / engine が埋められる宣言を埋めたときは LOG_WARNING だけで、Studio は何も出さない
 
+### VI-2: blank 雛形の present を `engine://passthrough` に(可変入力と passthrough の 2 本目。VI-1 の上)
+
+**下段(雛形 + シナリオ)。実装者: Claude(Opus)。GUI session が持つ。**
+
+#### 決定
+1. blank の `present` の fragment を `engine://passthrough` にする。`shaders/present.frag` は雛形から外す。入力は `[]`(passthrough は入力 0 でグラデーションを出すので、最初の画面は今と同じ)
+2. blank の前提に依るシナリオを直す。present.frag を書き換える `file` step や Tone map の雛形で present を作り直す step は、passthrough で済むなら外す
+3. `devcli_project_templates` の blank の形の検査と、`devcli_project_init_command` の headless 描画を新しい形に
+
+#### 着地(2026-09-25、92a225cd)
+- 雛形: `blank_present_frag` を消し、blank は `shaders/` を書かない([blank の present](../src/project/projecttemplate.cpp#L229))
+- シナリオ:
+  - `new_blank_project`: fragment が `engine://passthrough` であることを見る rpc を足した。グラデーションの期待はそのまま
+  - `render_pipeline_from_scratch` / `add_primitive_object`: present.frag を pass-through に書き換える `file` step を外した
+  - `forward_loop_from_scratch`: Tone map の New... から tone_map.frag の確認までの 9 step を外し、passthrough のまま三色の画素を見る
+  - `deferred_loop_from_scratch`: 照明の HDR をそのまま出すと二面の色の差が保証できないので Tone map を残す。提案名は `present` になる。T-1 の fragmentChoice の検査は forward からここへ移した
+  - `input_needs_shader`: passthrough は可変なので入力を足しても断られない。先頭で `shaders/gradient.frag`(入力を読まない)を書き、Pass Editor の fragmentChoice で present に選んでから、前と同じ筋(拒否 → 1 行 → Make a pass-through shader)を通す
+- test: `devcli_project_templates`(blank に `shaders/` が無く、fragment が passthrough で defines が無い)、`devcli_project_init_command`(同じ形を見てから headless で描き、一様でない)、`devstudio_newproject_test` の F-2。変異(雛形の fragment を `project://shaders/present` に戻す)で、この 3 本と `new_blank_project` が赤になる
+- 着地前に、blank 雛形を読む engine 側の test(`Q-14|VI-1|G-4|GP-5|engine_primitives|vi1_variadic`、38 本、GPU 16 本)を -j1 で回して緑
+- 残り(VI-3): Studio の fragment 候補に `engine://passthrough` が無い。「Blank の present は何も読まない」というコメントが `shaderinputcontract.hpp` と `fullscreenshadertemplate.cpp` に残る
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**

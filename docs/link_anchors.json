@@ -27,6 +27,7 @@
     "docs/manual/02_getting_started.md|../../src/player/main.cpp|parseStartFrame()": "std::uint64_t parseStartFrame(const std::string &text, double fps) {",
     "docs/manual/02_getting_started.md|../../src/project/graphmodule.cpp|makeBuiltinGraphModuleRegistry()": "GraphModuleRegistry makeBuiltinGraphModuleRegistry() {",
     "docs/manual/02_getting_started.md|../../src/project/projecttemplate.cpp|projecttemplate.cpp:266": "\"pelican_game_sources(game.cpp)\\n\"",
+    "docs/manual/02_getting_started.md|../../src/project/projecttemplate.cpp|projecttemplate.cpp:276": "\"pelican_game_sources(game.cpp)\\n\"",
     "docs/manual/02_getting_started.md|../../src/project/projecttemplate.cpp|renderingConfigJson()": "std::string_view renderingConfigJson(ProjectTemplate kind) {",
     "docs/manual/02_getting_started.md|../../test/run_project_catalog_smoke.cmake|:316": "message(NOTICE",
     "docs/manual/02_getting_started.md|../../test/run_project_catalog_smoke.cmake|:317": "\"skip editor lane: ${skipped_editor_project} requires \"",

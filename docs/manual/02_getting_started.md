@@ -242,8 +242,8 @@ mygame/
 
 生成されるファイルは全 16 エントリで、一覧は [projecttemplate.cpp](../../src/project/projecttemplate.cpp) の `templateFiles()` が正本です(F-2 で `pelican_cli` から `pelican_project` へ移り、Studio の File > New Project... も同じ関数で書きます)。2 点だけ、生成物の形に約束があります(✅P-2a-4b / X-1):
 
-- **`passes/main_rendering_config.json` は `pelican.graph` root で生成されます** —— 最上位が `{"schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {}, "rendering": { … }}` で、pipeline preset と features は `rendering` 節の中です([renderingConfigJson()](../../src/project/projecttemplate.cpp#L268) は graph root をそのまま書いた文字列を返します。包み関数 `wrapLegacyRenderingConfig` は MG-2b で撤去されました)。rendering config の root はこの形だけで、rendering のキーを最上位に直接並べた旧い形は `render_config.legacy_root@1` で拒否されます([第3章 §3.2](03_project_format.md))。
-- **`code/CMakeLists.txt` は 2 行**です —— `pelican_game_sources(game.cpp)` の**後に** `pelican_packages()`([projecttemplate.cpp:266](../../src/project/projecttemplate.cpp#L282))。`pelican_packages()` は `packages/*/` に複製済みで code を持つ package を build してゲームロジック DLL に合流させるので、**順序が意味を持ちます**(合流先の DLL が先に定義されている必要があります)。package を使わないうちは何もしません。
+- **`passes/main_rendering_config.json` は `pelican.graph` root で生成されます** —— 最上位が `{"schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {}, "rendering": { … }}` で、pipeline preset と features は `rendering` 節の中です([renderingConfigJson()](../../src/project/projecttemplate.cpp#L262) は graph root をそのまま書いた文字列を返します。包み関数 `wrapLegacyRenderingConfig` は MG-2b で撤去されました)。rendering config の root はこの形だけで、rendering のキーを最上位に直接並べた旧い形は `render_config.legacy_root@1` で拒否されます([第3章 §3.2](03_project_format.md))。
+- **`code/CMakeLists.txt` は 2 行**です —— `pelican_game_sources(game.cpp)` の**後に** `pelican_packages()`([projecttemplate.cpp:276](../../src/project/projecttemplate.cpp#L276))。`pelican_packages()` は `packages/*/` に複製済みで code を持つ package を build してゲームロジック DLL に合流させるので、**順序が意味を持ちます**(合流先の DLL が先に定義されている必要があります)。package を使わないうちは何もしません。
 
 生成される `project.json`(実物・`src/project/projecttemplate.cpp` が出力):
 
@@ -277,9 +277,11 @@ mygame/
 各フィールドの意味は [第3章](03_project_format.md) で詳しく説明します。
 
 **描画パイプラインを 0 から組みたいときは `--template blank`** です(✅F-2。既定は上の `standard`)。
-`pelican_cli project init mygame --template blank` は上と同じファイルに `shaders/present.frag` を加えた 17 エントリを書きますが、
+`pelican_cli project init mygame --template blank` は上と同じ 16 エントリを書きますが、
 `passes/main_rendering_config.json` の `rendering` 節は preset も features も `render_targets` も持たず、
 fullscreen pass `present` 1 本が `display` に UV の gradient を描くだけです。
+`present` の fragment は engine 同梱の `engine://passthrough` なので、雛形は shader を 1 本も書きません(`shaders/` もありません。✅VI-2)。
+この shader は入力が無ければ gradient を描き、`present` に入力を足すとその 0 番目をそのまま出します。
 起動すると画面全体に gradient が出ます。
 Studio からは File > New Project... で同じ雛形を選べます([第13章](13_editor.md)「Studio で新しい project を作る」)。
 オプションの詳細は [第10章 §10.4](10_tools.md) にあります。
