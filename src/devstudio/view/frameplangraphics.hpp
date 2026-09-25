@@ -273,6 +273,11 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     // G-1: "Add material pass..." -- after the node under the cursor, or at the
     // start of the graph from open canvas.
     void setMaterialPassAction(QAction *action);
+    // Q-12: "Open in Graph" -- offered on a right-click over a node only when
+    // `openInGraphOffered` says the node is a task a graph node made. The
+    // entry is named, like the insert ones, and acts on insertAnchor().
+    void setOpenInGraphAction(QAction *action);
+    std::function<bool(const FramePlanNodeKey &)> openInGraphOffered;
     // The node the last right-click landed on, or the current selection.
     [[nodiscard]] std::optional<FramePlanNodeKey> insertAnchor() const;
 
@@ -406,6 +411,7 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     QAction *add_task_action_ = nullptr;
     QAction *render_target_action_ = nullptr;
     QAction *material_pass_action_ = nullptr;
+    QAction *open_in_graph_action_ = nullptr;
     // F-1: the resource node the user clicked. Delete acts on it.
     std::optional<FramePlanNodeKey> picked_resource_;
     void applyResourcePick();

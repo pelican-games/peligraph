@@ -3,6 +3,7 @@
 #include <QWidget>
 #include <QStringList>
 
+#include <functional>
 #include <memory>
 
 class QByteArray;
@@ -32,6 +33,12 @@ class RenderFeaturesWidget final : public QWidget {
     void editComputeTask(const QString &name);
     void editComputeTaskConnection(const QString &name, const QStringList &outputs);
     void receiveCatalogResult(const QByteArray &result_json);
+    // Q-12. The Task Editor's "Open in Graph" for a task a render.compute
+    // node made: (scope, node, instance) as get_compute_task_authoring's
+    // graph_node names them. False when the Graph tab could not show it.
+    using GraphNodeOpenAction = std::function<bool(
+        const QString &scope, const QString &node, const QString &instance)>;
+    void setGraphNodeOpenAction(GraphNodeOpenAction action);
 
   signals:
     void renderConfigCommitted();

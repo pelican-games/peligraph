@@ -25,6 +25,7 @@
 #include <QKeyEvent>
 #include <QRectF>
 #include <QScrollBar>
+#include <QTabWidget>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QLabel>
@@ -3142,4 +3143,118 @@ TEST_CASE("Q-10 the project's sounds: .wav and .ogg in any case, outside dot fol
     std::filesystem::remove_all(empty, ignored);
     CHECK(silent.assets.empty());
     CHECK(silent.error == "no .wav or .ogg file in the project");
+}
+
+// Q-12. "Open in Graph" on a task a render.compute node made: the Graph tab
+// becomes the current one, the scope MG-3b's graph_node names is open --
+// reached through the instance that placed the node, so the trail and the
+// watched instance are that instance's -- and the node is picked and on
+// screen. A node the document does not hold leaves everything where it was.
+TEST_CASE("Q-12 Open in Graph switches to the Graph tab and picks the node in its scope",
+          "[devstudio][graph-canvas][scene][q12]") {
+    (void)application();
+    RecordedCapability transport;
+    QTabWidget tabs;
+    auto *frame_plan = new QWidget;
+    tabs.addTab(frame_plan, QStringLiteral("Frame Plan"));
+    auto *graph = new PelicanStudio::GraphCanvasWidget{transport.capability()};
+    tabs.addTab(graph, QStringLiteral("Graph"));
+    tabs.resize(900, 600);
+    tabs.show();
+    QCoreApplication::processEvents();
+
+    const auto deliver = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        REQUIRE(transport.deliver);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    };
+    // The fixture, and one level deeper: `wrap` places `outer`, whose body
+    // places gain_curve again as `inner`.
+    auto document = fixtureDocument();
+    document["definitions"]["outer"] = {
+        {"nodes", Json::array({{{"id", "inner"}, {"op", "graph.instance"},
+                                {"definition", "gain_curve"},
+                                {"parameters", {{"gain", 1}, {"bias", 0}}}}})},
+        {"outputs", Json::object()}};
+    document["nodes"].push_back({{"id", "wrap"}, {"op", "graph.instance"},
+                                 {"definition", "outer"},
+                                 {"owner", {{"scene", "main"}, {"object", 42}}}});
+    deliver(QStringLiteral("get_graph_instances"), context(document));
+    deliver(QStringLiteral("get_graph_catalog"), visualCatalog());
+
+    auto &model = graph->model();
+    auto &scene = graph->scene();
+    QGraphicsView *view = nullptr;
+    for (auto *candidate : graph->findChildren<QGraphicsView *>())
+        if (dynamic_cast<PelicanStudio::NodeCanvasView *>(candidate) != nullptr)
+            view = candidate;
+    REQUIRE(view != nullptr);
+    REQUIRE(tabs.currentWidget() == frame_plan);
+    REQUIRE(model.currentScope().empty());
+    const auto on_screen = [&](const QString &node) {
+        QGraphicsItem *item = nodeItem(scene, node);
+        REQUIRE(item != nullptr);
+        const QRectF visible =
+            view->mapToScene(view->viewport()->rect()).boundingRect();
+        return visible.contains(item->sceneBoundingRect().center());
+    };
+
+    SECTION("a node inside a root instance") {
+        REQUIRE(PelicanStudio::openGraphNodeInTabs(
+            tabs, *graph, QStringLiteral("gain_curve"), QStringLiteral("sum"),
+            QStringLiteral("left")));
+        CHECK(tabs.currentWidget() == graph);
+        CHECK(model.currentScope() == "gain_curve");
+        CHECK(model.breadcrumb() == std::vector<std::string>{"", "gain_curve"});
+        CHECK(model.watchedInstance() == "left");
+        REQUIRE(scene.selectedNode().has_value());
+        CHECK(*scene.selectedNode() == "sum");
+        CHECK(on_screen(QStringLiteral("sum")));
+    }
+
+    SECTION("a node two instances down: the trail runs through both") {
+        REQUIRE(PelicanStudio::openGraphNodeInTabs(
+            tabs, *graph, QStringLiteral("gain_curve"), QStringLiteral("buffer"),
+            QStringLiteral("wrap/inner")));
+        CHECK(tabs.currentWidget() == graph);
+        CHECK(model.breadcrumb() ==
+              std::vector<std::string>{"", "outer", "gain_curve"});
+        CHECK(model.watchedInstance() == "wrap");
+        REQUIRE(scene.selectedNode().has_value());
+        CHECK(*scene.selectedNode() == "buffer");
+        CHECK(on_screen(QStringLiteral("buffer")));
+    }
+
+    SECTION("a node of the root document") {
+        REQUIRE(PelicanStudio::openGraphNodeInTabs(
+            tabs, *graph, QStringLiteral("root"), QStringLiteral("clock"), {}));
+        CHECK(tabs.currentWidget() == graph);
+        CHECK(model.currentScope().empty());
+        REQUIRE(scene.selectedNode().has_value());
+        CHECK(*scene.selectedNode() == "clock");
+        CHECK(on_screen(QStringLiteral("clock")));
+    }
+
+    SECTION("an instance path that does not lead there opens the scope itself") {
+        REQUIRE(PelicanStudio::openGraphNodeInTabs(
+            tabs, *graph, QStringLiteral("gain_curve"), QStringLiteral("sum"),
+            QStringLiteral("gone")));
+        CHECK(model.breadcrumb() == std::vector<std::string>{"", "gain_curve"});
+        REQUIRE(scene.selectedNode().has_value());
+        CHECK(*scene.selectedNode() == "sum");
+    }
+
+    SECTION("a node the document does not hold changes nothing") {
+        CHECK_FALSE(PelicanStudio::openGraphNodeInTabs(
+            tabs, *graph, QStringLiteral("gain_curve"), QStringLiteral("step"),
+            QStringLiteral("left")));
+        CHECK_FALSE(PelicanStudio::openGraphNodeInTabs(
+            tabs, *graph, QStringLiteral("smooth"), QStringLiteral("sum"),
+            QStringLiteral("left")));
+        CHECK(tabs.currentWidget() == frame_plan);
+        CHECK(model.currentScope().empty());
+        CHECK_FALSE(scene.selectedNode().has_value());
+    }
 }

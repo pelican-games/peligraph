@@ -7269,6 +7269,242 @@ TEST_CASE("Q-10 a task at the rendering document's root is refused by name; a ne
     }
 }
 
+namespace {
+
+// Q-12 (MG-3b). The authored task, as a render.compute node's task: listed
+// against the rendering document even when the root names a preset (so the
+// Q-10 test alone would call it a root task), with the node that made it.
+Json graphNodeTaskCatalog(const std::string &root) {
+    auto catalog = authoredTaskCatalog();
+    auto &row = catalog.at("tasks").at(0);
+    row["origin"] = "graph_node";
+    row["source_reference"] = root;
+    row["editable"] = false;
+    row["graph_node"] = {{"scope", "smooth"}, {"node", "step"}, {"instance", "left"}};
+    row["read_only_reason"] = std::string{PelicanStudio::FramePlanGraphNodeTaskReason};
+    return catalog;
+}
+
+// The entries a right-click over `item` offers, read off the popup and closed.
+QStringList contextMenuTexts(FramePlanGraphicsScene &scene, QGraphicsItem &item) {
+    QStringList texts;
+    QTimer reader;
+    reader.setInterval(0);
+    QObject::connect(&reader, &QTimer::timeout, &scene, [&] {
+        for (QWidget *widget : QApplication::topLevelWidgets()) {
+            auto *menu = qobject_cast<QMenu *>(widget);
+            if (menu == nullptr || !menu->isVisible()) continue;
+            for (QAction *action : menu->actions())
+                if (!action->isSeparator()) texts.push_back(action->text());
+            menu->close();
+        }
+    });
+    reader.start();
+    QGraphicsSceneContextMenuEvent event{QEvent::GraphicsSceneContextMenu};
+    event.setScenePos(item.sceneBoundingRect().center());
+    event.setScreenPos(QPoint{100, 100});
+    QApplication::sendEvent(&scene, &event);
+    reader.stop();
+    QApplication::processEvents();
+    return texts;
+}
+
+} // namespace
+
+// Q-12. MG-3b says where a task came from. A task a render.compute node made
+// is refused with the engine's own sentence -- never Q-10's root sentence,
+// even when it is listed against the root -- and the root sentence is kept
+// for origin "root" and for a catalog that carries no origin.
+TEST_CASE("Q-12 the origin is read before the root test: a graph node's task says so",
+          "[devstudio][frame-plan][q12][canvas-edit]") {
+    using PelicanStudio::ComputeTaskEditorSubmit;
+    using PelicanStudio::computeTaskEditorRequest;
+    using PelicanStudio::FramePlanGraphNodeRef;
+    using PelicanStudio::FramePlanGraphNodeTaskReason;
+    using PelicanStudio::FramePlanTaskLock;
+    using PelicanStudio::framePlanGraphNodeTaskReason;
+    using PelicanStudio::framePlanRootTaskRefusal;
+    using PelicanStudio::framePlanTaskAuthoringFromCatalog;
+    using PelicanStudio::framePlanTaskGraphNode;
+    using PelicanStudio::framePlanTaskLock;
+    using PelicanStudio::framePlanTaskOrigin;
+    const std::string root = "project://rendering.json";
+    const std::string reason{FramePlanGraphNodeTaskReason};
+    CHECK(reason ==
+          "This task is made by a render.compute node in the graph. Edit the "
+          "node in the Graph tab.");
+
+    // The four values, and a row from an engine that does not say.
+    for (const auto *origin : {"feature", "graph_node", "preset", "root"})
+        CHECK(framePlanTaskOrigin(Json{{"name", "t"}, {"origin", origin}}) == origin);
+    CHECK(framePlanTaskOrigin(Json{{"name", "t"}}).empty());
+
+    // The decision, origin first.
+    CHECK(framePlanTaskLock("feature", true, root, "gpu_particles", root) ==
+          FramePlanTaskLock::none);
+    CHECK(framePlanTaskLock("feature", false, "project://features/a.json", "a", root) ==
+          FramePlanTaskLock::read_only);
+    // A node's task under a preset root: listed against the root, no feature.
+    CHECK(framePlanTaskLock("graph_node", false, root, "", root) ==
+          FramePlanTaskLock::graph_node);
+    CHECK(framePlanTaskLock("graph_node", true, root, "", root) ==
+          FramePlanTaskLock::graph_node);
+    CHECK(framePlanTaskLock("preset", false, "engine://render_pipelines/hybrid_v1.json",
+                            "", root) == FramePlanTaskLock::read_only);
+    CHECK(framePlanTaskLock("preset", true, "project://pipeline.json", "", root) ==
+          FramePlanTaskLock::none);
+    CHECK(framePlanTaskLock("root", false, root, "", root) == FramePlanTaskLock::root);
+    // The engine says root even where Studio has not been told the reference.
+    CHECK(framePlanTaskLock("root", false, root, "", "") == FramePlanTaskLock::root);
+    // No origin: Q-10's test, unchanged.
+    CHECK(framePlanTaskLock("", true, root, "", root) == FramePlanTaskLock::root);
+    CHECK(framePlanTaskLock("", true, "project://passes/task.json", "", root) ==
+          FramePlanTaskLock::none);
+    CHECK(framePlanTaskLock("", false, "project://passes/task.json", "", root) ==
+          FramePlanTaskLock::read_only);
+    CHECK(framePlanTaskLock("", true, root, "", "") == FramePlanTaskLock::none);
+
+    // Where the node is: only for a graph_node row that names scope and node.
+    const auto catalog = graphNodeTaskCatalog(root);
+    const auto &row = catalog.at("tasks").at(0);
+    CHECK(framePlanTaskGraphNode(row) == FramePlanGraphNodeRef{"smooth", "step", "left"});
+    auto no_instance = row;
+    no_instance["graph_node"].erase("instance");
+    CHECK(framePlanTaskGraphNode(no_instance) == FramePlanGraphNodeRef{"smooth", "step", ""});
+    auto no_node = row;
+    no_node["graph_node"].erase("node");
+    CHECK_FALSE(framePlanTaskGraphNode(no_node).has_value());
+    auto feature = row;
+    feature["origin"] = "feature";
+    CHECK_FALSE(framePlanTaskGraphNode(feature).has_value());
+    CHECK(framePlanGraphNodeTaskReason("") == reason);
+    CHECK(framePlanGraphNodeTaskReason("Edit it elsewhere.") == "Edit it elsewhere.");
+
+    // The canvas, from the catalog as it arrives: the node's sentence, not
+    // the root's, for every gesture that edits the task.
+    auto authoring = framePlanTaskAuthoringFromCatalog(catalog);
+    authoring.root_reference = root;
+    const auto *task = authoring.find("authored_consumer");
+    REQUIRE(task != nullptr);
+    CHECK(task->origin == "graph_node");
+    CHECK(task->graph_node == std::optional{FramePlanGraphNodeRef{"smooth", "step", "left"}});
+    const std::string refusal = "authored_consumer: " + reason +
+                                " Right-click the task and choose Open in Graph.";
+    for (const auto &request :
+         {PelicanStudio::framePlanTaskResourceRequest(
+              authoring, "authored_consumer", {"wp343_mixed_a_output"}, true),
+          PelicanStudio::framePlanTaskDispatchRequest(
+              authoring, "authored_consumer", R"({"groups":[2,1,1]})"),
+          PelicanStudio::framePlanTaskRemoveRequest(authoring, "authored_consumer")}) {
+        CHECK_FALSE(request.sendable());
+        CHECK(request.line == reason);
+        CHECK(request.refusal == refusal);
+        CHECK(request.refusal != framePlanRootTaskRefusal("authored_consumer"));
+    }
+    // The control: the same row from an engine that does not say where the
+    // task came from gets Q-10's sentence.
+    auto old_catalog = catalog;
+    old_catalog.at("tasks").at(0).erase("origin");
+    old_catalog.at("tasks").at(0).erase("graph_node");
+    auto old_authoring = framePlanTaskAuthoringFromCatalog(old_catalog);
+    old_authoring.root_reference = root;
+    CHECK(PelicanStudio::framePlanTaskRemoveRequest(old_authoring, "authored_consumer")
+              .refusal == framePlanRootTaskRefusal("authored_consumer"));
+
+    // The Task Editor: the engine's sentence, before the root test.
+    const Json declaration{{"name", "authored_consumer"}};
+    ComputeTaskEditorSubmit edit;
+    edit.base_source_digest = RootDigest;
+    edit.task_name = "authored_consumer";
+    edit.task_source_digest = TaskDigest;
+    edit.source_reference = root;
+    edit.root_reference = root;
+    edit.origin = "graph_node";
+    edit.read_only_reason = reason;
+    const auto refused = computeTaskEditorRequest(edit, declaration);
+    CHECK_FALSE(refused.sendable());
+    CHECK(refused.refusal == reason);
+    edit.origin.clear();
+    CHECK(computeTaskEditorRequest(edit, declaration).refusal ==
+          framePlanRootTaskRefusal("authored_consumer"));
+}
+
+// Q-12. On the canvas: the gestures say the node's sentence, and a
+// right-click on the task offers Open in Graph, which hands the node MG-3b
+// named to whoever opens the Graph tab.
+TEST_CASE("Q-12 a graph node's task on the canvas: its sentence, and Open in Graph",
+          "[devstudio][frame-plan][q12][canvas-edit]") {
+    application();
+    const std::string root = "project://rendering.json";
+    const QString reason =
+        QString::fromUtf8(PelicanStudio::FramePlanGraphNodeTaskReason.data(),
+                          static_cast<qsizetype>(
+                              PelicanStudio::FramePlanGraphNodeTaskReason.size()));
+    EditingFixture fixture;
+    fixture.catalog = graphNodeTaskCatalog(root);
+    fixture.root_reference = root;
+    fixture.open();
+    auto &logical = fixture.logical();
+    auto *status = fixture.widget.findChild<QLabel *>(
+        QStringLiteral("pelican.framePlanStatus"));
+    REQUIRE(status != nullptr);
+
+    // A drag onto it sends nothing; the line is the engine's, whole.
+    fixture.dragSocket(QStringLiteral("wp343_mixed_a"),
+                       QStringLiteral("wp343_mixed_a_output"),
+                       QStringLiteral("output"),
+                       nodeItem(logical, "wp343_mixed_b"));
+    CHECK(fixture.recorder.submits == 0);
+    CHECK(statusText(fixture.widget) == reason);
+    CHECK(status->toolTip() ==
+          QStringLiteral("authored_consumer: ") + reason +
+              QStringLiteral(" Right-click the task and choose Open in Graph."));
+    // No band to retype.
+    CHECK(bandItem(logical, QStringLiteral("wp343_mixed_b"),
+                   QStringLiteral("dispatch")) == nullptr);
+
+    QGraphicsItem *task = nodeItem(logical, "wp343_mixed_b");
+    QGraphicsItem *pass = nodeItem(logical, "wp343_mixed_a");
+    REQUIRE(task != nullptr);
+    REQUIRE(pass != nullptr);
+
+    // Delete on it: the same sentence, nothing sent.
+    status->clear();
+    task->setSelected(true);
+    QApplication::processEvents();
+    REQUIRE(logical.selectedNode().has_value());
+    auto &view = logicalView(fixture.widget);
+    view.setFocus();
+    QTest::keyClick(&view, Qt::Key_Delete);
+    QApplication::processEvents();
+    CHECK(fixture.recorder.submits == 0);
+    CHECK(statusText(fixture.widget) == reason);
+
+    // Offered on the task only.
+    CHECK(contextMenuTexts(logical, *task).contains(QStringLiteral("Open in Graph")));
+    CHECK_FALSE(contextMenuTexts(logical, *pass).contains(QStringLiteral("Open in Graph")));
+
+    // Chosen: the node MG-3b named goes to the Graph tab's reveal.
+    QStringList opened;
+    bool shown = true;
+    fixture.widget.setGraphNodeOpenAction(
+        [&](const QString &scope, const QString &node, const QString &instance) {
+            opened = {scope, node, instance};
+            return shown;
+        });
+    triggerContextAction(logical, *task, QStringLiteral("Open in Graph"));
+    CHECK(opened == QStringList{QStringLiteral("smooth"), QStringLiteral("step"),
+                                QStringLiteral("left")});
+
+    // A Graph tab that cannot show it: the status line says which node.
+    opened.clear();
+    shown = false;
+    triggerContextAction(logical, *task, QStringLiteral("Open in Graph"));
+    CHECK(opened.size() == 3);
+    CHECK(statusText(fixture.widget) ==
+          QStringLiteral("The Graph tab has no node step in smooth yet: refresh it."));
+}
+
 TEST_CASE("N-8 Delete on a picked edge cuts every resource it carries in one RPC",
           "[devstudio][frame-plan][n8][canvas-edit]") {
     application();

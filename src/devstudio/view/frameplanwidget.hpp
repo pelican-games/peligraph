@@ -47,6 +47,13 @@ class FramePlanWidget final : public QWidget {
     void setTaskConnectionAction(std::function<void(const QString &, const QStringList &)> action);
     void setPresetPassConnectionAction(std::function<void(const QString &, const QString &, const QStringList &)> action);
     void setTaskEditAction(std::function<void(const QString &)> action);
+    // Q-12. "Open in Graph" on a task a render.compute node made: the scope
+    // ("root" or a definition), the node id written there and the instance
+    // path (MG-3b's graph_node). Answers false when the Graph tab could not
+    // show that node, and the status line then says so.
+    using GraphNodeOpenAction = std::function<bool(
+        const QString &scope, const QString &node, const QString &instance)>;
+    void setGraphNodeOpenAction(GraphNodeOpenAction action);
     void setPresetPassEditAction(std::function<void(const QString &, const QString &)> action);
     // N-8. What the canvas is allowed to change, and where its placement is
     // kept. Without these the canvas is exactly the read-only projection it was

@@ -373,6 +373,21 @@ void MainWindow::createWorkspace() {
             render_tabs->setCurrentWidget(graph_canvas_);
             graph_canvas_->revealNode(node);
         });
+    // Q-12. "Open in Graph" on a task a render.compute node made -- from the
+    // Frame Plan's right-click and from the Task Editor -- lands on that node
+    // in the Graph tab, in the scope and instance MG-3b's graph_node names.
+    const auto open_graph_node = [this, render_tabs](const QString &scope,
+                                                     const QString &node,
+                                                     const QString &instance) {
+        if (!openGraphNodeInTabs(*render_tabs, *graph_canvas_, scope, node,
+                                 instance))
+            return false;
+        docks_[FramePlanDock]->show();
+        docks_[FramePlanDock]->raise();
+        return true;
+    };
+    frame_plan_->setGraphNodeOpenAction(open_graph_node);
+    render_features_->setGraphNodeOpenAction(open_graph_node);
     inspector_->setRayGroupAction([this, render_tabs](const QString &group) {
         docks_[FramePlanDock]->show();
         docks_[FramePlanDock]->raise();

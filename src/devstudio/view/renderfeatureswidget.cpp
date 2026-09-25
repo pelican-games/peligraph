@@ -292,6 +292,8 @@ class ComputeTaskDialog final : public QDialog {
   QPushButton *new_compute;
   QPushButton *new_ray_tracing;
   QPushButton *remove;
+  // Q-12: beside the notice, for a task a render.compute node made.
+  QPushButton *open_in_graph;
   QLineEdit *destination;
   QComboBox *dispatch_mode;
   std::array<QLineEdit *, 3> dispatch_axes;
@@ -377,17 +379,56 @@ class ComputeTaskDialog final : public QDialog {
   QString rootReference() const {
     return root_reference ? root_reference() : QString{};
   }
-  // Q-10 (MG-2b): a task at the rendering document's root has no declaration
-  // to write back, whatever the catalog row says.
-  bool atRoot(const QJsonObject &task) const {
-    return !task.isEmpty() &&
-           framePlanTaskAtRoot(task.value("source_reference").toString().toStdString(),
-                               task.value("provider_feature").toString().toStdString(),
-                               rootReference().toStdString());
+  // Q-12 (MG-3b) before Q-10 (MG-2b): a task a render.compute node made is
+  // edited in the Graph tab; a task at the rendering document's root has no
+  // declaration to write back, whatever the catalog row says.
+  FramePlanTaskLock lock(const QJsonObject &task) const {
+    if (task.isEmpty())
+      return FramePlanTaskLock::read_only;
+    return framePlanTaskLock(
+        task.value("origin").toString().toStdString(),
+        task.value("editable").toBool(),
+        task.value("source_reference").toString().toStdString(),
+        task.value("provider_feature").toString().toStdString(),
+        rootReference().toStdString());
+  }
+  std::optional<FramePlanGraphNodeRef> graphNode(const QJsonObject &task) const {
+    if (task.isEmpty())
+      return std::nullopt;
+    return framePlanTaskGraphNode(Json::parse(
+        QJsonDocument(task).toJson(QJsonDocument::Compact).toStdString(),
+        nullptr, false));
   }
   bool editableRow(const QJsonObject &task) const {
-    return task.value("editable").toBool() && !atRoot(task);
+    return lock(task) == FramePlanTaskLock::none;
   }
+  void openInGraph() {
+    const auto source = creationIndex() < 0 ? graphNode(selected())
+                                            : std::nullopt;
+    if (!source || !open_graph_node)
+      return;
+    if (!open_graph_node(QString::fromStdString(source->scope),
+                         QString::fromStdString(source->node),
+                         QString::fromStdString(source->instance)))
+      notice->setText(
+          tr("The Graph tab has no node %1 in %2 yet: refresh it.")
+              .arg(QString::fromStdString(source->node),
+                   source->scope == "root"
+                       ? tr("the root")
+                       : QString::fromStdString(source->scope)));
+  }
+
+  // Q-12: the Graph tab's reveal (scope, node, instance); false when it could
+  // not show that node.
+  RenderFeaturesWidget::GraphNodeOpenAction open_graph_node;
+
+public:
+  void setGraphNodeOpenAction(RenderFeaturesWidget::GraphNodeOpenAction action) {
+    open_graph_node = std::move(action);
+    controls();
+  }
+
+private:
   void loadDispatch() {
     const auto task =
         Json::parse(editor->toPlainText().toStdString(), nullptr, false);
@@ -592,6 +633,9 @@ class ComputeTaskDialog final : public QDialog {
     apply->setEnabled(idle && viewport.rpcReady() && editable &&
                       !root_digest.isEmpty());
     refresh->setEnabled(viewport.rpcReady() && request_id == 0);
+    const bool from_node = !creating && graphNode(selected()).has_value();
+    open_in_graph->setVisible(from_node);
+    open_in_graph->setEnabled(from_node && static_cast<bool>(open_graph_node));
   }
   void showTask() {
     const auto task = selected();
@@ -616,11 +660,15 @@ class ComputeTaskDialog final : public QDialog {
                         .arg(task.value("name").toString(),
                              task.value("kind").toString(),
                              task.value("source_reference").toString()));
+    const auto locked = lock(task);
     notice->setText(
-        atRoot(task)
+        locked == FramePlanTaskLock::graph_node
+            ? QString::fromStdString(framePlanGraphNodeTaskReason(
+                  task.value("read_only_reason").toString().toStdString()))
+        : locked == FramePlanTaskLock::root
             ? QString::fromStdString(framePlanRootTaskRefusal(
                   task.value("name").toString().toStdString()))
-        : task.value("editable").toBool()
+        : locked == FramePlanTaskLock::none
             ? tr("Edit the task declaration. Keep its name unchanged.")
             : task.value("read_only_reason")
                   .toString(tr("This task source is read-only.")));
@@ -684,6 +732,9 @@ class ComputeTaskDialog final : public QDialog {
           task.value("provider_feature").toString().toStdString();
       submission.editable = task.value("editable").toBool();
       submission.root_reference = rootReference().toStdString();
+      submission.origin = task.value("origin").toString().toStdString();
+      submission.read_only_reason =
+          task.value("read_only_reason").toString().toStdString();
     }
     QJsonObject params;
     try {
@@ -908,7 +959,21 @@ public:
     connect(update_connections, &QPushButton::clicked, this, [this] { updateConnections(); });
     notice = new QLabel(this);
     notice->setWordWrap(true);
-    layout->addWidget(notice);
+    // Q-12: the way to where a node's task is edited sits on the line that
+    // says so.
+    open_in_graph = new QPushButton(tr("Open in Graph"), this);
+    open_in_graph->setObjectName(
+        QStringLiteral("pelican.computeTasks.openInGraph"));
+    open_in_graph->setToolTip(
+        tr("Show the render.compute node that makes this task in the Graph "
+           "tab."));
+    open_in_graph->hide();
+    auto *notice_row = new QHBoxLayout;
+    notice_row->addWidget(notice, 1);
+    notice_row->addWidget(open_in_graph, 0, Qt::AlignTop);
+    layout->addLayout(notice_row);
+    connect(open_in_graph, &QPushButton::clicked, this,
+            [this] { openInGraph(); });
     auto *buttons = new QHBoxLayout;
     refresh = new QPushButton(tr("Refresh"), this);
     apply = new QPushButton(tr("Apply task"), this);
@@ -1828,6 +1893,8 @@ struct RenderFeaturesWidget::Impl {
     // Q-10: get_render_features' source_reference, the rendering document
     // itself. The Task Editor refuses a task declared there by name.
     QString root_reference;
+    // Q-12: handed to each Task Editor it opens.
+    RenderFeaturesWidget::GraphNodeOpenAction graph_node_open_action;
     QListWidget *current = nullptr;
     QTreeWidget *catalog = nullptr;
     QPushButton *add = nullptr;
@@ -2611,6 +2678,7 @@ void RenderFeaturesWidget::editComputeTaskConnection(const QString &name, const 
         impl_->requestRefresh();
         emit renderConfigCommitted();
     }, outputs, [this] { return impl_->root_reference; });
+    dialog->setGraphNodeOpenAction(impl_->graph_node_open_action);
     dialog->show();
 }
 
@@ -2625,6 +2693,10 @@ void RenderFeaturesWidget::editFrameNodeOrder(const QString &graph, const QStrin
 void RenderFeaturesWidget::receiveCatalogResult(
     const QByteArray &result_json) {
     impl_->receiveCatalogResult(result_json);
+}
+
+void RenderFeaturesWidget::setGraphNodeOpenAction(GraphNodeOpenAction action) {
+    impl_->graph_node_open_action = std::move(action);
 }
 
 } // namespace PelicanStudio

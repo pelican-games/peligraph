@@ -18,6 +18,7 @@
 #include <vector>
 
 class QAction;
+class QTabWidget;
 class QTimer;
 class QGraphicsSceneContextMenuEvent;
 class QGraphicsSceneMouseEvent;
@@ -451,6 +452,20 @@ class GraphCanvasWidget final : public QWidget {
     // Show one node of the root document: the Inspector's "Open the source"
     // names a producer, and this is where it lands.
     bool revealNode(const QString &node);
+    // Q-12. Show the render.compute node that made a task, as
+    // get_compute_task_authoring's graph_node names it: `scope` is "root" or
+    // a definition, `node` the id written there, `instance` the instance path
+    // that placed it ("outer/left"; "" in the root scope). The scope is
+    // reached through that instance when the path leads there -- the trail and
+    // the watched instance are then the instance's -- and opened directly
+    // otherwise. The node is selected and brought to the middle of the view.
+    // False, with nothing changed, when the document holds no such node.
+    bool revealGraphNode(const QString &scope, const QString &node,
+                         const QString &instance);
+    // Whether the document the tab holds has that node, without moving
+    // anything.
+    [[nodiscard]] bool canRevealGraphNode(const QString &scope,
+                                          const QString &node) const;
     // The same ingestion boundary the production RPC callback uses.
     void receiveResult(qint64 request_id, const QByteArray &result_json);
     void receiveFailure(qint64 request_id, const QString &message);
@@ -462,5 +477,12 @@ class GraphCanvasWidget final : public QWidget {
     GraphCanvasModel &model();
     GraphCanvasScene &scene();
 };
+
+// Q-12. "Open in Graph": reveal the node, and only when it is there make the
+// Graph tab the current one of `tabs`. A node the Graph tab cannot show
+// leaves the tab the user was on, where the caller says why.
+bool openGraphNodeInTabs(QTabWidget &tabs, GraphCanvasWidget &graph,
+                         const QString &scope, const QString &node,
+                         const QString &instance);
 
 } // namespace PelicanStudio

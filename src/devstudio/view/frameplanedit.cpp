@@ -316,6 +316,8 @@ FramePlanTaskAuthoring framePlanTaskAuthoringFromCatalog(const Json &catalog) {
         row.read_only_reason = textOr(task, "read_only_reason");
         row.source_reference = textOr(task, "source_reference");
         row.provider_feature = textOr(task, "provider_feature");
+        row.origin = framePlanTaskOrigin(task);
+        row.graph_node = framePlanTaskGraphNode(task);
         authoring.tasks.insert_or_assign(row.name, std::move(row));
     }
     authoring.received = true;
@@ -461,20 +463,65 @@ std::string framePlanRootTaskRefusal(std::string_view task) {
            std::string{FramePlanRootTaskCode} + ").";
 }
 
+std::string framePlanTaskOrigin(const Json &row) {
+    return textOr(row, "origin");
+}
+
+std::optional<FramePlanGraphNodeRef> framePlanTaskGraphNode(const Json &row) {
+    if (framePlanTaskOrigin(row) != "graph_node") return std::nullopt;
+    const auto source = objectOr(row, "graph_node");
+    FramePlanGraphNodeRef ref{textOr(source, "scope"), textOr(source, "node"),
+                              textOr(source, "instance")};
+    if (ref.scope.empty() || ref.node.empty()) return std::nullopt;
+    return ref;
+}
+
+FramePlanTaskLock framePlanTaskLock(std::string_view origin, bool editable,
+                                    std::string_view source_reference,
+                                    std::string_view provider_feature,
+                                    std::string_view root_reference) {
+    if (origin == "graph_node") return FramePlanTaskLock::graph_node;
+    // The Q-10 sentence belongs to a task the engine credits to the root, and
+    // to a row from an engine that does not say (the test Q-10 made).
+    if (origin == "root" ||
+        (origin.empty() &&
+         framePlanTaskAtRoot(source_reference, provider_feature, root_reference)))
+        return FramePlanTaskLock::root;
+    return editable ? FramePlanTaskLock::none : FramePlanTaskLock::read_only;
+}
+
+std::string framePlanGraphNodeTaskReason(std::string_view read_only_reason) {
+    return std::string{read_only_reason.empty() ? FramePlanGraphNodeTaskReason
+                                                : read_only_reason};
+}
+
 namespace {
 
-// Why a task cannot be changed from here, or empty when it can. A root task
-// is refused by name even if a stale catalog still calls it editable.
-std::string lockedTaskReason(const FramePlanTaskAuthoring &authoring,
-                             const FramePlanTaskAuthoring::Task &row,
-                             const char *fallback) {
-    if (framePlanTaskAtRoot(row.source_reference, row.provider_feature,
-                            authoring.root_reference))
-        return framePlanRootTaskRefusal(row.name);
-    if (row.editable) return {};
-    return row.name + ": " +
-           (row.read_only_reason.empty() ? std::string{fallback}
-                                         : row.read_only_reason);
+// Why a task cannot be changed from here, or an empty refusal when it can. A
+// node's task says so first; a root task is refused by name even if a stale
+// catalog still calls it editable.
+FramePlanEditRequest lockedTask(const FramePlanTaskAuthoring &authoring,
+                                const FramePlanTaskAuthoring::Task &row,
+                                const char *fallback) {
+    switch (framePlanTaskLock(row.origin, row.editable, row.source_reference,
+                              row.provider_feature, authoring.root_reference)) {
+    case FramePlanTaskLock::graph_node: {
+        auto request = refuse(row.name + ": " +
+                              framePlanGraphNodeTaskReason(row.read_only_reason) +
+                              " Right-click the task and choose Open in Graph.");
+        request.line = framePlanGraphNodeTaskReason(row.read_only_reason);
+        return request;
+    }
+    case FramePlanTaskLock::root:
+        return refuse(framePlanRootTaskRefusal(row.name));
+    case FramePlanTaskLock::read_only:
+        return refuse(row.name + ": " +
+                      (row.read_only_reason.empty() ? std::string{fallback}
+                                                    : row.read_only_reason));
+    case FramePlanTaskLock::none:
+        break;
+    }
+    return {};
 }
 
 } // namespace
@@ -491,11 +538,20 @@ FramePlanEditRequest computeTaskEditorRequest(const ComputeTaskEditorSubmit &sub
     }
     if (!task.is_object() || task.value("name", Json{}) != Json(submit.task_name))
         return refuse("The task name cannot be changed.");
-    if (framePlanTaskAtRoot(submit.source_reference, submit.provider_feature,
-                            submit.root_reference))
+    switch (framePlanTaskLock(submit.origin, submit.editable,
+                              submit.source_reference, submit.provider_feature,
+                              submit.root_reference)) {
+    case FramePlanTaskLock::graph_node:
+        // The Task Editor shows the task's name above, and Open in Graph
+        // beside this line.
+        return refuse(framePlanGraphNodeTaskReason(submit.read_only_reason));
+    case FramePlanTaskLock::root:
         return refuse(framePlanRootTaskRefusal(submit.task_name));
-    if (!submit.editable)
+    case FramePlanTaskLock::read_only:
         return refuse(submit.task_name + ": this task cannot be edited here.");
+    case FramePlanTaskLock::none:
+        break;
+    }
     request.method = "edit_compute_task";
     request.params = Json{{"base_source_digest", submit.base_source_digest},
                           {"base_task_source_digest", submit.task_source_digest},
@@ -512,10 +568,10 @@ FramePlanEditRequest framePlanTaskResourceRequest(
     const auto *row = authoring.find(task);
     if (row == nullptr)
         return refuse(task + " is not a task in the current catalog.");
-    if (auto reason = lockedTaskReason(authoring, *row,
-                                       "this task cannot be edited here.");
-        !reason.empty())
-        return refuse(std::move(reason));
+    if (auto locked = lockedTask(authoring, *row,
+                                 "this task cannot be edited here.");
+        !locked.refusal.empty())
+        return locked;
     const auto change =
         applyResources(declaredReads(row->declaration), resources, connect);
     if (!change.changed)
@@ -540,10 +596,10 @@ FramePlanEditRequest framePlanTaskDispatchRequest(
     const auto *row = authoring.find(task);
     if (row == nullptr)
         return refuse(task + " is not a task in the current catalog.");
-    if (auto reason = lockedTaskReason(authoring, *row,
-                                       "this task cannot be edited here.");
-        !reason.empty())
-        return refuse(std::move(reason));
+    if (auto locked = lockedTask(authoring, *row,
+                                 "this task cannot be edited here.");
+        !locked.refusal.empty())
+        return locked;
     auto dispatch = Json::parse(dispatch_json, nullptr, false);
     if (dispatch.is_discarded() || !dispatch.is_object())
         return refuse(task + ": the dispatch must be a JSON object.");
@@ -567,10 +623,10 @@ FramePlanEditRequest framePlanTaskRemoveRequest(
     const auto *row = authoring.find(task);
     if (row == nullptr)
         return refuse(task + " is not a task in the current catalog.");
-    if (auto reason = lockedTaskReason(authoring, *row,
-                                       "this task cannot be removed here.");
-        !reason.empty())
-        return refuse(std::move(reason));
+    if (auto locked = lockedTask(authoring, *row,
+                                 "this task cannot be removed here.");
+        !locked.refusal.empty())
+        return locked;
     FramePlanEditRequest request;
     request.method = "remove_compute_task";
     request.params = Json{{"base_source_digest", authoring.source_digest},
@@ -587,7 +643,7 @@ std::vector<FramePlanInlineField> framePlanInlineFields(
     if (!authored_task.empty()) {
         const auto *row = tasks.find(authored_task);
         if (row == nullptr ||
-            !lockedTaskReason(tasks, *row, "").empty())
+            !lockedTask(tasks, *row, "").refusal.empty())
             return fields;
         const auto dispatch = objectOr(row->declaration, "dispatch");
         if (dispatch.empty()) return fields;

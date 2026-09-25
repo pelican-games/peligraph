@@ -3595,6 +3595,13 @@ void FramePlanGraphicsScene::contextMenuEvent(
         // N-8: the two insert entries act after the node under the cursor, so
         // the cursor's node is remembered for the named actions as well.
         context_node_ = clicked;
+        // Q-12: a graph node's task is edited where the node is, so the way
+        // there comes first.
+        if (open_in_graph_action_ != nullptr && openInGraphOffered &&
+            openInGraphOffered(clicked)) {
+            menu.addAction(open_in_graph_action_);
+            menu.addSeparator();
+        }
         if (add_pass_action_ != nullptr) menu.addAction(add_pass_action_);
         if (material_pass_action_ != nullptr)
             menu.addAction(material_pass_action_);
@@ -4292,6 +4299,10 @@ void FramePlanGraphicsScene::setRenderTargetAction(QAction *action) {
 
 void FramePlanGraphicsScene::setMaterialPassAction(QAction *action) {
     material_pass_action_ = action;
+}
+
+void FramePlanGraphicsScene::setOpenInGraphAction(QAction *action) {
+    open_in_graph_action_ = action;
 }
 
 void FramePlanGraphicsScene::applyResourcePick() {

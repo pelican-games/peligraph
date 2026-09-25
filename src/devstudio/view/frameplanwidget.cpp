@@ -415,6 +415,7 @@ struct FramePlanWidget::Impl {
     QString shown_reload_notice;
     std::function<void(const QString &, const QString &)> preset_pass_edit_action;
     std::function<void(const QString &)> task_edit_action;
+    FramePlanWidget::GraphNodeOpenAction graph_node_open_action;
     std::function<void(const QString &, const QStringList &)> task_connection_action;
     std::function<void(const QString &, const QString &, const QStringList &)> pass_connection_action;
     std::function<void(const QString &, const QStringList &, quint64)> node_order_action;
@@ -773,6 +774,21 @@ struct FramePlanWidget::Impl {
                     true);
         });
         logical_scene->setInsertActions(add_pass, add_task);
+        // Q-12: a task a render.compute node made is edited in the Graph
+        // tab. Named like the others; offered on a right-click over such a
+        // task only.
+        auto *open_in_graph = new QAction(
+            QStringLiteral("Open in Graph"), &owner);
+        open_in_graph->setObjectName(
+            QStringLiteral("pelican.framePlan.openInGraph"));
+        owner.addAction(open_in_graph);
+        QObject::connect(open_in_graph, &QAction::triggered, &owner,
+                         [this] { openInGraph(logical_scene->insertAnchor()); });
+        logical_scene->setOpenInGraphAction(open_in_graph);
+        logical_scene->openInGraphOffered =
+            [this](const FramePlanNodeKey &node) {
+                return graphNodeOf(node) != nullptr;
+            };
         // F-1: named like the insert entries, and offered on a right-click
         // over open canvas and on the toolbar.
         auto *add_target = new QAction(
@@ -1275,7 +1291,9 @@ struct FramePlanWidget::Impl {
             const QString reason = text(request.refusal.empty()
                                             ? std::string{"Nothing to change."}
                                             : request.refusal);
-            showStatus(oneLine(reason), reason);
+            showStatus(request.line.empty() ? oneLine(reason)
+                                            : text(request.line),
+                       reason);
             return;
         }
         if (pending_edit_request != 0 || !pending_ticket.isEmpty()) {
@@ -1738,6 +1756,35 @@ struct FramePlanWidget::Impl {
             owner.tr("Read-only: %1.")
                 .arg(text(framePlanRenderTargetOrigin(row->source, name,
                                                       authoring.preset_name))));
+    }
+
+    // Q-12. The node that made this Frame Plan node's task, when a
+    // render.compute node made it.
+    const FramePlanGraphNodeRef *graphNodeOf(const FramePlanNodeKey &node) const {
+        if (!model || node.graph != model->graph) return nullptr;
+        const auto task = authoredTask(node.name);
+        if (task.empty()) return nullptr;
+        const auto *row = task_authoring.find(task);
+        return row != nullptr && row->graph_node ? &*row->graph_node : nullptr;
+    }
+
+    void openInGraph(const std::optional<FramePlanNodeKey> &node) {
+        const auto *source = node ? graphNodeOf(*node) : nullptr;
+        if (source == nullptr) {
+            showStatus(owner.tr("Select a task a graph node made first."));
+            return;
+        }
+        if (!graph_node_open_action) {
+            showStatus(owner.tr("Opening the Graph tab is unavailable."));
+            return;
+        }
+        if (!graph_node_open_action(text(source->scope), text(source->node),
+                                    text(source->instance))) {
+            const auto where =
+                source->scope == "root" ? std::string{"the root"} : source->scope;
+            showStatus(owner.tr("The Graph tab has no node %1 in %2 yet: refresh it.")
+                           .arg(text(source->node), text(where)));
+        }
     }
 
     void removeNode(const FramePlanNodeKey &node) {
@@ -2973,6 +3020,10 @@ void FramePlanWidget::setTaskConnectionAction(std::function<void(const QString &
 
 void FramePlanWidget::setPresetPassConnectionAction(std::function<void(const QString &, const QString &, const QStringList &)> action) {
     impl_->pass_connection_action = std::move(action);
+}
+
+void FramePlanWidget::setGraphNodeOpenAction(GraphNodeOpenAction action) {
+    impl_->graph_node_open_action = std::move(action);
 }
 
 void FramePlanWidget::setTaskEditAction(std::function<void(const QString &)> action) {

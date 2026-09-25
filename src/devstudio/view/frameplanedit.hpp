@@ -27,6 +27,10 @@ struct FramePlanEditRequest {
     std::string method;
     nlohmann::json params;
     std::string refusal;
+    // Q-12: the status line, when it is not the refusal's first sentence.
+    // The engine's two-sentence reason for a graph node's task is the line
+    // as a whole; the refusal (the tooltip) names the task and the way there.
+    std::string line;
 
     [[nodiscard]] bool sendable() const noexcept {
         return refusal.empty() && !method.empty();
@@ -109,6 +113,20 @@ struct FramePlanAuthoring {
 
 FramePlanAuthoring framePlanAuthoringFromContext(const nlohmann::json &context);
 
+// Q-12 (MG-3b): where the render.compute node that made a task is authored.
+// `scope` is the token the graph edit ops take ("root", or the definition
+// whose body holds the node), `node` the id written in that scope, and
+// `instance` the instance path that placed it ("" in the root scope, no
+// trailing "/").
+struct FramePlanGraphNodeRef {
+    std::string scope;
+    std::string node;
+    std::string instance;
+
+    friend bool operator==(const FramePlanGraphNodeRef &,
+                           const FramePlanGraphNodeRef &) = default;
+};
+
 // One compute or ray-tracing task of get_compute_task_authoring.
 struct FramePlanTaskAuthoring {
     struct Task {
@@ -122,6 +140,10 @@ struct FramePlanTaskAuthoring {
         // it (empty for anything no feature provides).
         std::string source_reference;
         std::string provider_feature;
+        // Q-12: MG-3b's origin ("" for a catalog that predates it), and the
+        // node that made the task when the origin is "graph_node".
+        std::string origin;
+        std::optional<FramePlanGraphNodeRef> graph_node;
     };
     bool received = false;
     std::string source_digest;
@@ -193,6 +215,39 @@ inline constexpr std::string_view FramePlanRootTaskCode = "compute_task_not_edit
 // one that carries the code.
 [[nodiscard]] std::string framePlanRootTaskRefusal(std::string_view task);
 
+// --- Q-12: a task a render.compute node made (MG-3b).
+
+// get_compute_task_authoring says where each task came from: `origin` is
+// "feature" | "graph_node" | "preset" | "root". A node's task is listed
+// against the root document even when the root names a preset, so the Q-10
+// test above would call it a root task; the origin is read first.
+inline constexpr std::string_view FramePlanGraphNodeTaskReason =
+    "This task is made by a render.compute node in the graph. Edit the node "
+    "in the Graph tab.";
+
+// The row's origin, or "" for a row that carries none (an engine before
+// MG-3b).
+[[nodiscard]] std::string framePlanTaskOrigin(const nlohmann::json &row);
+// The node that made the task: only for origin "graph_node", and only when
+// the row names a scope and a node (a missing instance reads as "").
+[[nodiscard]] std::optional<FramePlanGraphNodeRef> framePlanTaskGraphNode(
+    const nlohmann::json &row);
+
+// Why a task cannot be edited here, decided by origin first:
+//   graph_node -- the node's task, whatever else the row says;
+//   root       -- origin "root", or no origin and the Q-10 test holds;
+//   read_only  -- the row says it is not editable;
+//   none       -- it can be edited.
+enum class FramePlanTaskLock { none, graph_node, root, read_only };
+[[nodiscard]] FramePlanTaskLock framePlanTaskLock(
+    std::string_view origin, bool editable, std::string_view source_reference,
+    std::string_view provider_feature, std::string_view root_reference);
+
+// The line a node's task gets: the engine's read_only_reason as it wrote it,
+// or FramePlanGraphNodeTaskReason when the row carries none.
+[[nodiscard]] std::string framePlanGraphNodeTaskReason(
+    std::string_view read_only_reason);
+
 // Q-10. What the Task Editor sends for Apply / Create task. The decision lives
 // here so a test can read it without the dialog: a new task still goes out as
 // add_compute_task into the project:// feature it names, whatever the catalog
@@ -208,6 +263,10 @@ struct ComputeTaskEditorSubmit {
     std::string provider_feature;
     bool editable = false;
     std::string root_reference;
+    // Q-12: the row's origin and read_only_reason. A node's task is refused
+    // with the engine's reason before the Q-10 root test is asked.
+    std::string origin;
+    std::string read_only_reason;
 };
 
 FramePlanEditRequest computeTaskEditorRequest(const ComputeTaskEditorSubmit &submit,

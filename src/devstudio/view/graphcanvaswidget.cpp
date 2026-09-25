@@ -42,6 +42,7 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSplitter>
+#include <QTabWidget>
 #include <QStringList>
 #include <QTimer>
 #include <QTreeWidget>
@@ -3030,6 +3031,95 @@ bool GraphCanvasWidget::revealNode(const QString &node) {
     impl_->syncValueControls();
     impl_->showDetails();
     return true;
+}
+
+namespace {
+
+// The engine spells the root document "root" (the token its edit ops take);
+// the canvas files it under the empty id.
+std::string canvasScopeId(const QString &scope) {
+    auto token = scope.toStdString();
+    return token == "root" ? std::string{} : token;
+}
+
+} // namespace
+
+bool GraphCanvasWidget::canRevealGraphNode(const QString &scope,
+                                           const QString &node) const {
+    const auto &model = impl_->model;
+    const auto target = canvasScopeId(scope);
+    const auto id = node.toStdString();
+    if (!target.empty() &&
+        std::ranges::none_of(model.scopes(), [&](const GraphCanvasScope &known) {
+            return known.id == target;
+        }))
+        return false;
+    return std::ranges::any_of(model.nodes(target), [&](const GraphCanvasNode &drawn) {
+        return drawn.id == id;
+    });
+}
+
+bool GraphCanvasWidget::revealGraphNode(const QString &scope,
+                                        const QString &node,
+                                        const QString &instance) {
+    if (!canRevealGraphNode(scope, node)) return false;
+    auto &model = impl_->model;
+    const auto target = canvasScopeId(scope);
+    const auto id = node.toStdString();
+
+    // The instance's context: descend the path from the root, the way a
+    // double-click on each instance does, so the breadcrumb and the watched
+    // instance are the ones that placed the node. A path that does not lead
+    // to the scope opens the scope directly instead.
+    bool through_instance = false;
+    const auto path = instance.toStdString();
+    if (!path.empty() && !target.empty()) {
+        model.selectScope({});
+        through_instance = true;
+        std::string_view rest{path};
+        while (through_instance && !rest.empty()) {
+            const auto slash = rest.find('/');
+            const auto step = rest.substr(0, slash);
+            rest = slash == std::string_view::npos ? std::string_view{}
+                                                   : rest.substr(slash + 1);
+            through_instance = model.enterInstance(step);
+        }
+        through_instance = through_instance && model.currentScope() == target;
+    }
+    if (!through_instance) {
+        model.selectScope(target);
+        // Still the instance whose generation fed this body, when the Values
+        // from control offers it.
+        const auto root_instance = path.substr(0, path.find('/'));
+        const auto offered = model.valueInstances();
+        if (!target.empty() && !root_instance.empty() &&
+            std::ranges::find(offered, root_instance) != offered.end())
+            model.watchInstance(root_instance);
+    }
+    impl_->scene->repopulate();
+    impl_->scene->selectNode(id);
+    impl_->syncScopeControls();
+    impl_->syncValueControls();
+    impl_->showDetails();
+    impl_->dispatch();
+    for (QGraphicsItem *item : impl_->scene->items()) {
+        if (item->data(NodeGraphItemKindRole).toString() !=
+                QLatin1String{GraphCanvasNodeItem} ||
+            item->data(NodeGraphNameRole).toString() != node)
+            continue;
+        impl_->canvas->centerOn(item);
+        break;
+    }
+    return true;
+}
+
+bool openGraphNodeInTabs(QTabWidget &tabs, GraphCanvasWidget &graph,
+                         const QString &scope, const QString &node,
+                         const QString &instance) {
+    if (!graph.canRevealGraphNode(scope, node)) return false;
+    // The tab first, so the view the node is centred in is the one on screen.
+    tabs.setCurrentWidget(&graph);
+    return graph.revealGraphNode(scope, node, instance);
 }
 
 void GraphCanvasWidget::setConnected(bool connected) {
