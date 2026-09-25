@@ -261,6 +261,46 @@ GUI session の第二段階(forward / deferred の material ループを Studio 
 2. asset_data に何も無い project で参照が解決する。未知の primitive 名は `model.primitive_unknown@1`。
 3. 生成した頂点列の digest が実行ごとに一致する。
 
+## 8b. 可変入力と passthrough(VI-1 / VI-2 / VI-3)
+
+利用者の実用から(2026-09-25)。blank の `present` は何も読まない自前の shader なので、G-buffer を読ませるには入力の追加と shader の差し替えを同時に行う必要があり、片方だけだと preflight で断られた(Q-14 / Q-14e)。Frame Plan で線をノードに落とすと入力が勝手に足される動きも、どこに何が入るのかが見えない。利用者の案: 任意の数の入力を取る長いソケット(○ を上下に割って間に帯を挟んだ形)を持つ既定のノードを用意し、つなぐたびに入力が増え、固定すると n 個の ○ になる。
+
+Q-14f(`8638a3bf`)で「shader が宣言し pass が渡さない sampled image / storage buffer は engine が 0 で埋める」ようになったので、多めに宣言して渡された分だけ使う shader が安全に書ける。
+
+### 8b.1 決定(利用者と合意、2026-09-25)
+
+1. **ソケットは常に shader の宣言から作る**。保存形式にソケットやロックの状態を持たない。宣言と保存物が食い違う状態を作らないため(Q-14 の食い違いの根を断つ)。
+2. **可変入力は shader の宣言で表す**。`PELICAN_DECLARE_VARIADIC_INPUTS(first, max)` で set 1 の binding `first`〜`first+max-1` を宣言する。engine は reflection の変数名の規約(マクロが付ける接頭辞)で可変の枠を見分ける。専用の metadata ファイルは作らない。
+3. **並べ方の規則**: 固定の入力が先、可変の組は最後に 1 組だけ。可変の組が 2 つ以上、または可変の組の後ろに固定の texture 入力がある shader は名前付きで断る。可変の組があると、つないだ数でそれ以降の番号が動くため。
+4. **buffer の番号の予約**: 可変の組がある pass では、buffer 入力の binding を「可変の組の最大数の後ろ」(`first+max` から)に固定する。可変の組が無い pass の番号は今と同じ(texture の数 + i)。resource port の生成 include も同じ規則に従う。
+5. **つながっている数を shader に渡す**: engine は fragment の compile に `PELICAN_PASS_TEXTURE_INPUT_COUNT`(pass が渡す texture 入力の数)を define で入れる。マクロ側が可変部分の数 `PELICAN_VARIADIC_INPUT_COUNT` を導く。可変の枠のうち渡されない分は Q-14f の既定の資源で埋まる。これは意図した動きなので、可変の枠を埋めても警告は出さない(固定の宣言を埋めたときは従来どおり警告)。
+6. **pass ごとの `shader.defines`**: fullscreen pass の `shader` に string 配列 `defines` を足す(書式は root の `shader_defines` と同じ)。pipeline の cache key に入る。`PELICAN_PASS_TEXTURE_INPUT_COUNT` など engine が入れる名前を利用者が定義すると名前付きで断る。
+7. **`engine://passthrough`**: engine 付属の fragment。入力はすべて可変(`first = 0`)。`PELICAN_PASSTHROUGH_INPUT`(既定 0)番の入力をそのまま出す。入力が 1 つも無いときは今の blank と同じ UV のグラデーションを出す(pass が動いていることが見える)。整数の target・配列・cube は読めない(Q-14e と同じ形で断る)。
+8. **宣言を常に返す**: Studio がソケットを描けるよう、engine は各 pass の shader の set 1 の宣言(binding・型・名前・固定か可変か・可変の範囲)を、Frame Plan / Pass Editor が読む authoring 情報に常に載せる。今は拒否のとき(`shader_input_mismatch.shader_pass_inputs`)にしか出ていない。
+9. **blank 雛形**: `present` の fragment を `engine://passthrough` にし、`shaders/present.frag` を書かない(VI-2)。
+10. **Studio(VI-3、GUI session)**:
+    - 固定の宣言は ○(名前は宣言の変数名)、可変の組は長いソケット。つなぐと ○ が 1 つずつ増える。線は binding の番号でつなぐ。
+    - 「ソケットを固定」は shader の書き換え: 可変マクロを、今つながっている n 個の固定の宣言に置き換える(可変部分だけ。固定の宣言はそのまま)。逆に可変マクロへ戻すとソケットも戻る。
+    - `engine://` の shader を編集するときは project に複製する。複製には可変マクロが残り、ソケットは可変のまま。
+    - 外部エディタで宣言が変わったら、reload で描き直す。宣言を足すと空の ○、つないでいない宣言を消すと ○ が消える。つないでいる宣言を消した場合は、線を残したまま端を赤くし、「線を外す / shader を開く」を出す。宣言の順を入れ替えると線は番号についていくので、つながっている target と変数名が食い違って見えたら注意を出す。
+    - passthrough では ○ をクリックすると「この入力を出す」(`PELICAN_PASSTHROUGH_INPUT` を書く)。
+    - 線をノードの上に落とすと入力が勝手に足される今の動き(N-8 / F-7)はやめ、ソケットに落とす。
+
+### 8b.2 受け入れ
+
+1. VI-1: `engine://passthrough` の pass に入力を 0 / 1 / 3 個渡し、`PELICAN_PASSTHROUGH_INPUT` を 0 / 2 にしたとき、headless capture の画素が指定した入力の色になる(0 個はグラデーション)。対照: define を入れない変異で赤。
+2. VI-1: 固定 3 + 可変(3, 8)の shader で、texture 入力を 3〜11 個渡しても compile が通り、buffer 入力は binding 11 に置かれる。可変の組を 2 つ宣言した shader と、可変の組の後ろに固定の宣言がある shader は、それぞれ名前付きで断られる。
+3. VI-1: authoring 情報に、pass ごとの宣言(固定 / 可変、範囲)が載る。可変の枠を埋めても警告が出ず、固定の枠を埋めると出る。
+4. VI-1: つないでいる宣言を shader から消して reload したときの engine の挙動(直前の pipeline で描き続けるか、pass が止まるか)を実測して記録する。VI-3 はそれに合わせる。
+5. VI-2: blank から作った project は、何もつながないとグラデーション、`gbuffer_albedo` を `present` につなぐだけで albedo が写る(shader の作成なし)。GUI session のシナリオの期待値の更新と同じ着地で直列に。
+6. VI-3: GUI session の受け入れ(シナリオ)。
+
+### 8b.3 やらないこと
+
+- 可変の組を複数持つ shader、名前でつなぐ線(GLSL の変数名は保存形式の中で安定した識別子ではない)
+- material pass の set 1(`pelican_lighting_v1.glsl` の forward shadow など)への可変入力
+- web: `engine://passthrough` と `shader.defines` を知らない。サブセット原則により pelican だけが持つのは許される。web 側は名前付きで断る(WEB-1 に足す)
+
 ## 9. BGM とループ(AU-1 / AU-2)
 
 ### 9.1 前提

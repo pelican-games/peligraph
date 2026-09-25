@@ -25566,6 +25566,9 @@ transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復
 | GP-2 | `ctx.spawn`(collider・behavior 付き、runtime の attachment 識別子) | §5 | GP-1、PG-1 |
 | GP-2b | GP-2 の穴(docs 追従で発見、2026-09-25。コードの読みからの推論): 利用者が spawn に `spawn:3.0` のような名前を付けると、engine が名前なしの spawn に付ける `spawn:<境界>.<番号>` と衝突し、後の spawn が境界で「Duplicate collider object name」で失敗しうる。`spawn:` の接頭辞を予約して名前付きで拒否する | §5 | GP-2 |
 | MG-3b | MG-3 の残り(2026-09-25、GUI session と合意): (1) `findRootEditablePass` の非 graph root の枝(`section = &root`)を消す(F-6 の約束は graph root の root pass まで)。(2) `get_compute_task_authoring` の各 task に出所の種類を返す(例 `origin: "graph_node"` と `graph_node: {scope, node}`、既存の feature / preset / root と別の値)。graph の `render.compute` node が作った task が、direct root では「root に task は置けない」、preset root では preset の read-only と誤って出るのを、Studio が「Graph タブで node を編集」と案内できるようにする | §2 | MG-3 |
+| VI-1 | 可変入力と passthrough の engine 側(2026-09-25 利用者と合意): `PELICAN_DECLARE_VARIADIC_INPUTS(first, max)`、並べ方の規則(固定が先・可変は最後に 1 組)と名前付き拒否、可変の組がある pass の buffer 番号の予約、`PELICAN_PASS_TEXTURE_INPUT_COUNT` の define、pass ごとの `shader.defines`、`engine://passthrough`、各 pass の set 1 の宣言を authoring 情報に常に載せる、宣言を消した shader の reload 挙動の実測 | §8b | Q-14f |
+| VI-2 | blank 雛形の `present` を `engine://passthrough` にする(`shaders/present.frag` を書かない)。GUI session のシナリオ 6 本の期待値の更新と直列 | §8b | VI-1 |
+| VI-3 | Studio のソケット(固定 ○ / 可変の長いソケット、番号でつなぐ、固定化 = shader の書き換え、宣言が消えた線を赤く、passthrough の出す入力の選択)、N-8 / F-7 の「ノードに落とすと足す」接続の撤去。GUI session が持つ | §8b | VI-1 |
 
 着地の順(案): GP-5 → MG-2a → MG-2b → PG-1 → GP-1 →(PG-2 / MG-1 / GP-3 を並行)→ GP-4 → OL-1 → AU-1 → AU-2 → GP-2。WEB-1 は MG-2b の後、別 repo で。(着地済み: GP-5 / GP-5b / PG-1 / MG-2a / GP-1 / PG-2 / GP-3 / PG-2b / MG-2b / OL-1 / AU-1 / MG-1 / AU-2 / GP-4 / GP-2 / MG-1b / AU-3 / GP-2b / MG-3 / MG-3b)
 
