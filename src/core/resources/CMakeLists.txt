@@ -151,6 +151,9 @@ b_embed(pelican_resources surfaces/openpbr/blend_single.surface)
 b_embed(pelican_resources surfaces/openpbr/blend_double.surface)
 b_embed(pelican_resources fullscreen.vert)
 b_embed(pelican_resources fullscreen.frag)
+# VI-1: source only. Its variadic input count is a define the engine sets
+# per pass, so there is no build-time SPIR-V.
+b_embed(pelican_resources passthrough.frag)
 b_embed(pelican_resources scene_present.frag)
 b_embed(pelican_resources rt_shadow_mask.frag)
 b_embed(pelican_resources rt_shadow_mask_pipeline.rgen)

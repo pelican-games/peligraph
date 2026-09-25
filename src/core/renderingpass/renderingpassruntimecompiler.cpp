@@ -6,6 +6,8 @@
 #include "../../project/targetrenderplanning.hpp"
 #include "../fullscreenpass/fullscreeninputbindingmismatch.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
+#include "../fullscreenpass/passinputlayout.hpp"
+#include "passshaderdefines.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../log.hpp"
 #include "../profiler.hpp"
@@ -2013,13 +2015,13 @@ compileFullscreenResourceInterface(
                 "' (resource '" + port->resource +
                 "') requires storage access for a buffer");
         }
+        // VI-1: provisional; registerPassShaders moves it past a variadic
+        // group once the shader's reflection shows one.
         result.bindings.push_back(
             ShaderResourceInterfaceBinding{
                 .port = *port,
-                .binding =
-                    static_cast<std::uint32_t>(
-                        pass.input_targets.size() +
-                        input),
+                .binding = passBufferInputBinding(
+                    pass.input_targets.size(), std::nullopt, input),
                 .descriptor =
                     ShaderResourceDescriptorKind::
                         storage_buffer,
@@ -2091,6 +2093,95 @@ makeRasterResourceVirtualIncludes(
     return result;
 }
 
+// VI-1: what the engine and the pass add to a fullscreen / raster pass's
+// shader compile: the pass's own shader.defines, and how many texture
+// inputs it supplies (pelican_view.glsl derives
+// PELICAN_VARIADIC_INPUT_COUNT from it).
+void appendPassShaderDefines(std::vector<std::string> &defines,
+                             const PassDefinition &pass_def,
+                             const std::vector<std::string> &pass_defines) {
+    defines.insert(defines.end(), pass_defines.begin(), pass_defines.end());
+    defines.push_back(std::string{passTextureInputCountDefine} + "=" +
+                      std::to_string(pass_def.input_targets.size()));
+}
+
+std::vector<ShaderReflection> passShaderStageReflections(
+    const ShaderLibrary &library, ShaderBundleId vert,
+    std::optional<ShaderBundleId> frag) {
+    std::vector<ShaderReflection> stages{library.get(vert).reflection};
+    if (frag) stages.push_back(library.get(*frag).reflection);
+    return stages;
+}
+
+// VI-1: registers a fullscreen / raster pass's shaders and checks their
+// pass-input layout before a pipeline is made of them. The resource-port
+// include was generated with the buffers after the texture inputs; when the
+// shader turns out to declare a variadic group that ends elsewhere, the
+// buffers move to the group's end (passBufferInputBinding) and the shaders
+// are registered again with that include, the first registration rolled
+// back. `register_shaders(bindings)` registers; `vert` / `frag` name the
+// modules it returned.
+template <class Register, class Vert, class Frag>
+auto registerPassShaders(
+    ShaderLibrary &library, std::size_t texture_inputs,
+    std::vector<ShaderResourceInterfaceBinding> &resource_interface,
+    Register &&register_shaders, Vert &&vert, Frag &&frag) {
+    const auto registered = [&] {
+        try {
+            return register_shaders(
+                std::span<const ShaderResourceInterfaceBinding>{
+                    resource_interface});
+        } catch (const std::exception &error) {
+            // PELICAN_DECLARE_VARIADIC_INPUTS twice does not compile.
+            if (compileLogShowsMultipleVariadicGroups(error.what())) {
+                throw multipleVariadicGroupsCompileMismatch();
+            }
+            throw;
+        }
+    };
+    const bool buffer_ports = std::any_of(
+        resource_interface.begin(), resource_interface.end(),
+        [](const ShaderResourceInterfaceBinding &binding) {
+            return binding.descriptor ==
+                   ShaderResourceDescriptorKind::storage_buffer;
+        });
+    std::optional<ShaderLibrary::RegistrationCheckpoint> checkpoint;
+    if (buffer_ports) checkpoint = library.checkpointRegistrations();
+    auto modules = registered();
+    if (buffer_ports) {
+        // Stage by stage: the provisional buffer may share a binding with a
+        // variadic input, which the stages' merge would refuse.
+        std::optional<PassVariadicInputRange> variadic;
+        for (const auto &stage : passShaderStageReflections(
+                 library, vert(modules), frag(modules))) {
+            if (!variadic) variadic = findPassVariadicInputRange(stage);
+        }
+        if (variadic && variadic->end() != texture_inputs) {
+            for (auto &binding : resource_interface) {
+                if (binding.descriptor !=
+                    ShaderResourceDescriptorKind::storage_buffer) {
+                    continue;
+                }
+                const auto index = binding.binding -
+                                   passBufferInputBinding(
+                                       texture_inputs, std::nullopt, 0);
+                binding.binding =
+                    passBufferInputBinding(texture_inputs, variadic, index);
+            }
+            library.rollbackRegistrations(*checkpoint);
+            modules = registered();
+        }
+    }
+    // Each stage first, so a declaration that shares a binding with the
+    // group is refused by the rule rather than by the stages' merge; then
+    // the stages together, as the pipeline layout will see them.
+    const auto stages =
+        passShaderStageReflections(library, vert(modules), frag(modules));
+    for (const auto &stage : stages) (void)readPassInputLayout(stage);
+    (void)readPassInputLayout(merge(stages));
+    return modules;
+}
+
 FullscreenShaderModules registerFullscreenShaders(
     const FullscreenPassInfo &fullscreen_info,
     FullscreenRuntimeDependencies dependencies,
@@ -2157,7 +2248,7 @@ PassId registerFullscreenPipeline(
     GraphicsPipelineViewContract view,
     const CompiledPassRenderingContract
         &rendering,
-    std::span<const ShaderResourceInterfaceBinding>
+    std::vector<ShaderResourceInterfaceBinding>
         resource_interface) {
     const auto &fullscreen_info =
         pass_def.fullscreenInfo();
@@ -2189,9 +2280,21 @@ PassId registerFullscreenPipeline(
     appendLocalReadShaderDefines(
         dependencies.shader_defines, pass_def,
         rendering);
-    const auto shaders = registerFullscreenShaders(
-        fullscreen_info, dependencies,
-        resource_interface);
+    appendPassShaderDefines(dependencies.shader_defines, pass_def,
+                            fullscreen_info.shader_defines);
+    const auto shaders = registerPassShaders(
+        dependencies.shader_library, pass_def.input_targets.size(),
+        resource_interface,
+        [&](std::span<const ShaderResourceInterfaceBinding> bindings) {
+            return registerFullscreenShaders(fullscreen_info, dependencies,
+                                             bindings);
+        },
+        [](const FullscreenShaderModules &modules) {
+            return modules.vert_shader;
+        },
+        [](const FullscreenShaderModules &modules) {
+            return std::optional{modules.frag_shader};
+        });
     if (fullscreen_info.raster_state) {
         GraphicsPipelineDesc desc;
         desc.allow_ray_query = pass_def.ray_query;
@@ -2253,7 +2356,7 @@ PassId registerGenericRasterPipeline(
     FullscreenRuntimeDependencies dependencies,
     GraphicsPipelineViewContract view,
     const CompiledPassRenderingContract &rendering,
-    std::span<const ShaderResourceInterfaceBinding>
+    std::vector<ShaderResourceInterfaceBinding>
         resource_interface) {
     validateRasterColorAttachmentNumericClasses(
         pass_def.genericRasterInfo()
@@ -2275,10 +2378,21 @@ PassId registerGenericRasterPipeline(
     appendLocalReadShaderDefines(
         dependencies.shader_defines,
         pass_def, rendering);
-    const auto shaders =
-        registerGenericRasterShaders(
-            pass_def.genericRasterInfo(),
-            dependencies, resource_interface);
+    appendPassShaderDefines(dependencies.shader_defines, pass_def,
+                            pass_def.genericRasterInfo().shader_defines);
+    const auto shaders = registerPassShaders(
+        dependencies.shader_library, pass_def.input_targets.size(),
+        resource_interface,
+        [&](std::span<const ShaderResourceInterfaceBinding> bindings) {
+            return registerGenericRasterShaders(
+                pass_def.genericRasterInfo(), dependencies, bindings);
+        },
+        [](const GenericRasterShaderModules &modules) {
+            return modules.vert_shader;
+        },
+        [](const GenericRasterShaderModules &modules) {
+            return modules.frag_shader;
+        });
 
     GraphicsPipelineDesc desc;
     desc.allow_ray_query = pass_def.ray_query;
@@ -2343,6 +2457,8 @@ void warnFilledPassInputs(const FullscreenPassContainer &container,
     const auto filled = container.filledPassInputs(pass_id);
     std::string bindings;
     for (const auto &entry : filled) {
+        // VI-1: an unconnected variadic input is filled by design.
+        if (entry.variadic) continue;
         if (!bindings.empty()) bindings += ", ";
         bindings += std::to_string(entry.binding);
     }
@@ -2365,16 +2481,16 @@ PassId compileFullscreenPass(
             pass_def, dependencies, view,
             logical_view_count,
             rendering);
-    const auto pass_id =
-        registerFullscreenPipeline(
-            pass_def, dependencies, view,
-            rendering,
-            resource_interface.bindings);
-
+    PassId pass_id{};
     // Q-14f: a pass with no inputs goes through here too, so a shader that
     // declares pass inputs it would never receive gets them filled with
     // defaults (or, for a type that cannot be, is refused by name).
     try {
+        // VI-1: registering reads the shader's pass-input layout and may
+        // refuse it; the refusal is named by the pass like the others.
+        pass_id = registerFullscreenPipeline(
+            pass_def, dependencies, view, rendering,
+            resource_interface.bindings);
         dependencies.fullscreen_pass_container.setInputResources(
             pass_id,
             fullscreenPassInputs(
@@ -2420,11 +2536,16 @@ PassId compileGenericRasterPass(
         compileFullscreenResourceInterface(
             pass_def, dependencies, view,
             logical_view_count, rendering);
-    const auto pass_id =
-        registerGenericRasterPipeline(
-            pass_def, dependencies, view,
-            rendering,
+    PassId pass_id{};
+    try {
+        pass_id = registerGenericRasterPipeline(
+            pass_def, dependencies, view, rendering,
             resource_interface.bindings);
+    } catch (const FullscreenInputBindingMismatch &mismatch) {
+        const auto &frag = pass_def.genericRasterInfo().frag_shader;
+        throw mismatch.inPass(pass_def.name,
+                              frag ? frag->ref : std::string{});
+    }
     if (!pass_def.input_targets.empty() ||
         !pass_def.input_buffers.empty()) {
         try {

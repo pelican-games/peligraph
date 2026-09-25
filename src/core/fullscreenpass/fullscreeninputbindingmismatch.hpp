@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -15,6 +16,21 @@ struct FullscreenShaderPassInput {
     // "sampled_image" (a combined image sampler), "input_attachment",
     // "storage_buffer", or another descriptor type's snake_case name.
     std::string type;
+    // VI-1: the declaration's variable name as reflection reads it (empty
+    // when the SPIR-V carries no name), and whether it is one of the
+    // shader's variadic inputs (PELICAN_DECLARE_VARIADIC_INPUTS).
+    std::string name;
+    bool variadic = false;
+};
+
+// VI-1: the set-1 bindings PELICAN_DECLARE_VARIADIC_INPUTS(first, max)
+// declares: first .. first + max - 1.
+struct PassVariadicInputRange {
+    std::uint32_t first = 0;
+    std::uint32_t max = 0;
+
+    [[nodiscard]] std::uint32_t end() const noexcept { return first + max; }
+    bool operator==(const PassVariadicInputRange &) const = default;
 };
 
 // The two ways a pass's inputs and its shader's pass-input set disagree.
@@ -29,6 +45,30 @@ inline constexpr const char *fullscreenInputPassInputUndeclared =
 // pass compiler logs this refusal's words as a warning.
 inline constexpr const char *fullscreenInputShaderInputUnsupplied =
     "shader_input_unsupplied";
+// VI-1: the shader's pass-input declarations break the variadic layout rule
+// (fixed inputs first, one variadic group last, buffers after the group);
+// `variadic_rule` says which part.
+inline constexpr const char *fullscreenInputVariadicLayoutInvalid =
+    "variadic_layout_invalid";
+// VI-1: the pass supplies more texture inputs than the shader's variadic
+// group ends at (first + max).
+inline constexpr const char *fullscreenInputVariadicCapacityExceeded =
+    "variadic_capacity_exceeded";
+
+// VI-1: the values of variadic_rule.
+// PELICAN_DECLARE_VARIADIC_INPUTS is used more than once (the shader does
+// not compile), or two stages declare different groups.
+inline constexpr const char *passVariadicRuleMultipleGroups =
+    "multiple_variadic_groups";
+// A texture declaration at or past the group's first binding that is not
+// one of the group, or a buffer inside the group's bindings.
+inline constexpr const char *passVariadicRuleDeclarationAfterGroup =
+    "declaration_after_variadic_group";
+// A declaration named like the group's (pelican_variadic_input_<k>) that the
+// macro did not make: not a 2D sampled image, not at first + k, or with a
+// gap in k.
+inline constexpr const char *passVariadicRuleMalformed =
+    "variadic_group_malformed";
 
 // Q-14e / Q-14f: a fullscreen / raster pass's inputs and its shader's
 // pass-input set (PELICAN_SET_PASS_INPUT) disagree. Pass inputs bind in
@@ -60,6 +100,11 @@ struct FullscreenInputBindingMismatchInfo {
     std::size_t pass_buffer_inputs = 0;
     // Binding order.
     std::vector<FullscreenShaderPassInput> shader_pass_inputs;
+    // VI-1: the shader's variadic group, when it declares one (for a
+    // multiple_variadic_groups refusal, the lowest).
+    std::optional<PassVariadicInputRange> variadic_range;
+    // VI-1: variadic_layout_invalid only; one of passVariadicRule*.
+    std::string variadic_rule;
 };
 
 // pass_input_undeclared: what() starts with the sentence this refusal has

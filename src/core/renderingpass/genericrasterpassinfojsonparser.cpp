@@ -1,4 +1,5 @@
 #include "genericrasterpassinfojsonparser.hpp"
+#include "passshaderdefines.hpp"
 
 #include "renderingpassjsonhelpers.hpp"
 #include "../../project/logicalrendertype.hpp"
@@ -126,7 +127,7 @@ GenericRasterPassInfo parseGenericRasterPassInfoFromJson(
     }
     static const std::set<std::string, std::less<>>
         allowed_shader_fields{
-            "implementation", "vertex", "fragment"};
+            "implementation", "vertex", "fragment", "defines"};
     for (const auto &[key, value] : shader.items()) {
         (void)value;
         if (!allowed_shader_fields.contains(key)) {
@@ -158,6 +159,8 @@ GenericRasterPassInfo parseGenericRasterPassInfoFromJson(
     requireVersionedId(
         result.shader_implementation,
         "Raster pass shader implementation");
+    result.shader_defines =
+        parsePassShaderDefines(shader, pass_name);
 
     result.vert_shader =
         makeShaderReference(

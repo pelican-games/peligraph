@@ -7289,7 +7289,9 @@ TEST_CASE("Q-14e a pass input the shader does not declare comes back as shader_i
                    {"expected", "sampled_image"},
                    {"pass_texture_inputs", 1},
                    {"pass_buffer_inputs", 0},
-                   {"shader_pass_inputs", Json::array()}});
+                   {"shader_pass_inputs", Json::array()},
+                   // VI-1: no variadic group.
+                   {"variadic_range", nullptr}});
         CHECK(error.at("message") ==
               "Fullscreen pass input texture/local-read contract does not match shader "
               "reflection: pass 'present' input 0 ('gbuffer_albedo') expects a sampled image "
@@ -7312,9 +7314,10 @@ TEST_CASE("Q-14e a pass input the shader does not declare comes back as shader_i
         CHECK(mismatch.at("kind") == "buffer");
         CHECK(mismatch.at("binding") == 1);
         CHECK_FALSE(mismatch.contains("resource"));
+        // VI-1: each declaration carries its name and whether it is variadic.
         CHECK(Json::parse(mismatch.at("shader_pass_inputs").dump()) ==
-              Json::array({{{"binding", 0}, {"type", "sampled_image"}},
-                           {{"binding", 1}, {"type", "uniform_buffer"}}}));
+              Json::array({{{"binding", 0}, {"type", "sampled_image"}, {"name", ""}, {"variadic", false}},
+                           {{"binding", 1}, {"type", "uniform_buffer"}, {"name", ""}, {"variadic", false}}}));
         CHECK(result.at("error").at("message") ==
               "Fullscreen pass input buffer does not match shader reflection: input 1 "
               "expects a storage buffer at set 1 binding 1, but the shader declares a "
@@ -7345,8 +7348,9 @@ TEST_CASE("Q-14e a pass input the shader does not declare comes back as shader_i
                    {"pass_texture_inputs", 1},
                    {"pass_buffer_inputs", 0},
                    {"shader_pass_inputs",
-                    Json::array({{{"binding", 0}, {"type", "sampled_image"}},
-                                 {{"binding", 1}, {"type", "storage_buffer"}}})}});
+                    Json::array({{{"binding", 0}, {"type", "sampled_image"}, {"name", ""}, {"variadic", false}},
+                                 {{"binding", 1}, {"type", "storage_buffer"}, {"name", ""}, {"variadic", false}}})},
+                   {"variadic_range", nullptr}});
         CHECK(error.at("message") ==
               "Fullscreen shader declares a pass input the pass does not supply: pass "
               "'present' supplies 1 pass input, but fragment 'project://shaders/present' "

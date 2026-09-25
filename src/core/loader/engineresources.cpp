@@ -73,6 +73,7 @@ constexpr auto registered_ids =
     "fullscreen.frag.spv",
     "fullscreen.vert",
     "fullscreen.vert.spv",
+    "passthrough.frag",
     "scene_present.frag",
     "scene_present.frag.spv",
     "rt_shadow_mask.frag",
@@ -248,6 +249,7 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("fullscreen.frag.spv")
     PELICAN_ENGINE_RESOURCE("fullscreen.vert")
     PELICAN_ENGINE_RESOURCE("fullscreen.vert.spv")
+    PELICAN_ENGINE_RESOURCE("passthrough.frag")
     PELICAN_ENGINE_RESOURCE("scene_present.frag")
     PELICAN_ENGINE_RESOURCE("scene_present.frag.spv")
     PELICAN_ENGINE_RESOURCE("rt_shadow_mask.frag")

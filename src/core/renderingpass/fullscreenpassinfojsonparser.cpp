@@ -1,5 +1,6 @@
 #include "fullscreenpassinfojsonparser.hpp"
 #include "passfieldownershipcapabilities.hpp"
+#include "passshaderdefines.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include <set>
 #include <span>
@@ -218,6 +219,8 @@ FullscreenPassInfo parseFullscreenPassInfoFromJson(const nlohmann::json &pass_js
     if (!shader.at("vertex").is_string() || !shader.at("fragment").is_string()) {
         throw std::runtime_error("Fullscreen pass shader paths must be strings: " + pass_name);
     }
+    fullscreen_info.shader_defines =
+        parsePassShaderDefines(shader, pass_name);
 
     fullscreen_info.vert_shader =
         makeShaderReference(shader.at("vertex").get<std::string>(), ShaderStage::vertex);

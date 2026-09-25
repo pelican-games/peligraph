@@ -1,5 +1,6 @@
 #include "shaderlibrary.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
+#include "../renderingpass/passshaderdefines.hpp"
 #include "shadercompiler.hpp"
 #include "../loader/engineresources.hpp"
 #include "../loader/fileio.hpp"
@@ -330,6 +331,18 @@ void ShaderLibrary::rebuildReverseDependencies() {
     }
 }
 
+// VI-1: the pass compiler defines PELICAN_PASS_TEXTURE_INPUT_COUNT for every
+// fullscreen / raster shader, so pelican_view.glsl's variadic count follows
+// the pass. A prebuilt SPIR-V module was compiled without it and cannot
+// read it; that define alone is no reason to refuse the module.
+static bool definesNeedGlslSource(const std::vector<std::string> &defines) {
+    const auto engine_count = std::string{passTextureInputCountDefine} + "=";
+    return std::any_of(defines.begin(), defines.end(),
+                       [&](const std::string &define) {
+                           return !define.starts_with(engine_count);
+                       });
+}
+
 ShaderBundle ShaderLibrary::buildFromFile(const std::filesystem::path &path,
                                           ShaderStage expected_stage,
                                            uint64_t version,
@@ -341,7 +354,7 @@ ShaderBundle ShaderLibrary::buildFromFile(const std::filesystem::path &path,
         diagnostic_uri = path.generic_string();
     }
     if (lowerExtension(path) == ".spv") {
-        if (!defines.empty() || !virtual_includes.empty()) {
+        if (definesNeedGlslSource(defines) || !virtual_includes.empty()) {
             throw std::runtime_error(
                 "Shader defines and generated includes require GLSL source, not SPIR-V: " +
                 path.string());
@@ -530,7 +543,7 @@ ShaderBundleId ShaderLibrary::loadResolvedReference(const ResolvedRef &resolved,
     const auto resource = engineResourceOrThrow(engine_id);
     ShaderBundle bundle;
     if (lowerExtension(engine_id) == ".spv") {
-        if (!defines.empty() || !virtual_includes.empty()) {
+        if (definesNeedGlslSource(defines) || !virtual_includes.empty()) {
             throw std::runtime_error(
                 "Shader defines and generated includes require GLSL source, not SPIR-V: engine://" +
                 engine_id);

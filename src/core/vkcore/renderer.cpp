@@ -3890,6 +3890,52 @@ const TemporalViewFamilyHistory &Renderer::activeTemporalHistory() const {
                : xr_temporal_history;
 }
 
+namespace {
+
+// VI-1: get_frame_plan's nodes[].pass_inputs for a fullscreen / raster pass.
+nlohmann::json passInputsFramePlanJson(
+    const FullscreenPassContainer &container, const CompiledPass &compiled) {
+    const auto &definition = compiled.definition;
+    std::string fragment;
+    if (definition.isFullscreen()) {
+        fragment = definition.fullscreenInfo().frag_shader.ref;
+    } else if (const auto &frag = definition.genericRasterInfo().frag_shader) {
+        fragment = frag->ref;
+    }
+    FullscreenPassInputReport report;
+    try {
+        report = container.passInputReport(compiled.pass_id);
+    } catch (const std::exception &error) {
+        return {{"state", "unavailable"},
+                {"fragment", fragment},
+                {"reason", error.what()}};
+    }
+    auto declarations = nlohmann::json::array();
+    for (const auto &declared : report.declarations) {
+        declarations.push_back({{"binding", declared.binding},
+                                {"type", declared.type},
+                                {"name", declared.name},
+                                {"variadic", declared.variadic}});
+    }
+    nlohmann::json result{
+        {"state", report.layout_refusal ? "refused" : "declared"},
+        {"fragment", fragment},
+        {"declarations", std::move(declarations)},
+        {"variadic_range",
+         report.variadic
+             ? nlohmann::json{{"first", report.variadic->first},
+                              {"max", report.variadic->max}}
+             : nlohmann::json(nullptr)},
+        {"pass_texture_inputs", report.texture_inputs},
+        {"pass_buffer_inputs", report.buffer_inputs},
+        {"buffer_binding_base", report.buffer_binding_base},
+    };
+    if (report.layout_refusal) result["reason"] = *report.layout_refusal;
+    return result;
+}
+
+} // namespace
+
 nlohmann::json Renderer::currentFramePlanJson() const {
     const auto *frame_graph_runtime = FastModuleContainer::tryGet<FrameGraphRuntimeContainer>();
     const auto generation =
@@ -3934,6 +3980,26 @@ nlohmann::json Renderer::currentFramePlanJson() const {
                 if (node.at("kind") == "compute" && node.at("name") == compiled.definition.name) {
                     node["runtime_callable_records"] = {{"source", "runtime_cpu_settings"},
                         {"records", std::move(records)}};
+                    break;
+                }
+            }
+        }
+    }
+    // VI-1: every fullscreen / raster pass's pass-input set (set 1) as its
+    // published pipeline's shader declares it, whether or not the pass
+    // supplies each binding, so a socket can be drawn per declaration.
+    if (const auto *fullscreen =
+            FastModuleContainer::tryGet<FullscreenPassContainer>()) {
+        for (const auto &compiled : program->rendering_pass.passes) {
+            const auto &definition = compiled.definition;
+            if (!definition.isFullscreen() && !definition.isGenericRaster()) {
+                continue;
+            }
+            auto field = passInputsFramePlanJson(*fullscreen, compiled);
+            for (auto &node : result["nodes"]) {
+                if (node.value("kind", std::string{}) != "compute" &&
+                    node.value("name", std::string{}) == definition.name) {
+                    node["pass_inputs"] = std::move(field);
                     break;
                 }
             }

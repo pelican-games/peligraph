@@ -980,7 +980,9 @@ TEST_CASE("Q-14e a present that reads nothing refuses an added input by binding,
                {"expected", "sampled_image"},
                {"pass_texture_inputs", 1},
                {"pass_buffer_inputs", 0},
-               {"shader_pass_inputs", Json::array()}});
+               {"shader_pass_inputs", Json::array()},
+               // VI-1: no variadic group.
+               {"variadic_range", nullptr}});
     CHECK(readFile(rendering_path) == root_before);
 
     // A refusal for another reason carries no shader_input_mismatch.
@@ -1018,9 +1020,11 @@ TEST_CASE("Q-14e a present that reads two inputs refuses a third at binding 2, t
     CHECK(mismatch.at("binding") == 2);
     CHECK(mismatch.at("resource") == "q14e_c");
     CHECK(mismatch.at("pass_texture_inputs") == 3);
+    // VI-1: each declaration carries its variable name and whether it is
+    // variadic.
     CHECK(mismatch.at("shader_pass_inputs") ==
-          Json::array({{{"binding", 0}, {"type", "sampled_image"}},
-                       {{"binding", 1}, {"type", "sampled_image"}}}));
+          Json::array({{{"binding", 0}, {"type", "sampled_image"}, {"name", "in_a"}, {"variadic", false}},
+                       {{"binding", 1}, {"type", "sampled_image"}, {"name", "in_b"}, {"variadic", false}}}));
     CHECK_THAT(error.at("message").get<std::string>(),
                Catch::Matchers::ContainsSubstring(
                    "input 2 ('q14e_c') expects a sampled image at set 1 binding 2") &&
@@ -1134,8 +1138,9 @@ TEST_CASE("Q-14f a present that supplies one input refuses a uniform buffer its 
                {"pass_texture_inputs", 1},
                {"pass_buffer_inputs", 0},
                {"shader_pass_inputs",
-                Json::array({{{"binding", 0}, {"type", "sampled_image"}},
-                             {{"binding", 1}, {"type", "uniform_buffer"}}})}});
+                Json::array({{{"binding", 0}, {"type", "sampled_image"}, {"name", "in_a"}, {"variadic", false}},
+                             {{"binding", 1}, {"type", "uniform_buffer"}, {"name", "q14f_tint"}, {"variadic", false}}})},
+               {"variadic_range", nullptr}});
     CHECK(readFile(rendering_path) == root_before);
     GET_MODULE(VulkanManageCore).waitIdle();
 }

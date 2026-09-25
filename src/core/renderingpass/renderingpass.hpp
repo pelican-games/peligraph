@@ -262,6 +262,9 @@ struct FullscreenPassInfo {
     // Optional typed annotations over input/input@history. Inputs without an
     // entry keep the existing raw set/binding shader ABI.
     std::vector<ShaderResourcePortDefinition> resource_ports;
+    // VI-1: `shader.defines`, "NAME" / "NAME=VALUE" added to this pass's
+    // shader compile after the root's shader_defines.
+    std::vector<std::string> shader_defines;
 };
 
 // One extensible raster entry replaces the need for a new engine-owned pass
@@ -279,6 +282,8 @@ struct GenericRasterPassInfo {
     std::optional<ShaderReference> frag_shader;
     std::vector<ShaderResourcePortDefinition>
         resource_ports;
+    // VI-1: `shader.defines`, as a fullscreen pass's.
+    std::vector<std::string> shader_defines;
 };
 
 struct DebugDrawPassInfo {

@@ -12,6 +12,7 @@
 #include "renderconfigtransaction.hpp"
 
 #include "../fullscreenpass/fullscreeninputbindingmismatch.hpp"
+#include "../renderingpass/passshaderdefines.hpp"
 #include "../loader/engineresources.hpp"
 #include "../renderingpass/frameplanner.hpp"
 #include "../renderingpass/passdefinitionjsonparser.hpp"
@@ -76,8 +77,12 @@ OrderedJson withPreflightRefusalFields(OrderedJson details,
         const auto &info = mismatch->info();
         auto declared = OrderedJson::array();
         for (const auto &input : info.shader_pass_inputs) {
-            declared.push_back(
-                OrderedJson{{"binding", input.binding}, {"type", input.type}});
+            // VI-1: the name and whether it is variadic, as get_frame_plan's
+            // pass_inputs.declarations tells them.
+            declared.push_back(OrderedJson{{"binding", input.binding},
+                                           {"type", input.type},
+                                           {"name", input.name},
+                                           {"variadic", input.variadic}});
         }
         OrderedJson field{{"pass", info.pass},
                           {"fragment", info.fragment},
@@ -90,8 +95,28 @@ OrderedJson withPreflightRefusalFields(OrderedJson details,
         field["pass_texture_inputs"] = info.pass_texture_inputs;
         field["pass_buffer_inputs"] = info.pass_buffer_inputs;
         field["shader_pass_inputs"] = std::move(declared);
+        // VI-1: the shader's variadic group and, for a layout refusal, the
+        // rule it breaks.
+        field["variadic_range"] =
+            info.variadic_range
+                ? OrderedJson{{"first", info.variadic_range->first},
+                              {"max", info.variadic_range->max}}
+                : OrderedJson(nullptr);
+        if (!info.variadic_rule.empty()) {
+            field["variadic_rule"] = info.variadic_rule;
+        }
         if (details.is_null()) details = OrderedJson::object();
         details["shader_input_mismatch"] = std::move(field);
+    }
+    if (const auto *define =
+            dynamic_cast<const PassShaderDefineError *>(&error)) {
+        const auto &info = define->info();
+        if (details.is_null()) details = OrderedJson::object();
+        details["pass_shader_define"] = OrderedJson{
+            {"pass", info.pass},     {"define", info.define},
+            {"name", info.name},     {"index", info.index},
+            {"reason", info.reason},
+        };
     }
     return details;
 }

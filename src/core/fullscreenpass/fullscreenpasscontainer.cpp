@@ -1,5 +1,6 @@
 #include "fullscreenpasscontainer.hpp"
 #include "fullscreeninputbindingmismatch.hpp"
+#include "passinputlayout.hpp"
 #include "../renderingpass/computetask.hpp"
 #include "../renderingpass/rendertargetimageviewresolver.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
@@ -24,7 +25,10 @@ namespace {
 
 // Descriptor-pool sizing estimate, not a per-pass ABI limit. A pass may use
 // more bindings; the selected device/pipeline layout owns the real limit.
-constexpr uint32_t estimatedInputBindingsPerPass = 8;
+// VI-1: a variadic group is filled to its declared size whatever the pass
+// supplies (engine://passthrough declares 8), so the estimate covers a group
+// at the macro's limit rather than the eight fixed input macros.
+constexpr uint32_t estimatedInputBindingsPerPass = passVariadicInputLimit;
 
 FullscreenPassContainer::PipelineId requireFullscreenPipelineId(PassId pass_id) {
     if (pass_id.value < 0) {
@@ -72,79 +76,6 @@ bool hasStorageBufferBinding(const ShaderReflection &reflection, uint32_t bindin
     return false;
 }
 
-// The words FullscreenInputBindingMismatch reports a descriptor type in.
-std::string descriptorTypeName(vk::DescriptorType type) {
-    switch (type) {
-    case vk::DescriptorType::eCombinedImageSampler:
-        return "sampled_image";
-    case vk::DescriptorType::eInputAttachment:
-        return "input_attachment";
-    case vk::DescriptorType::eStorageBuffer:
-        return "storage_buffer";
-    case vk::DescriptorType::eStorageBufferDynamic:
-        return "storage_buffer_dynamic";
-    case vk::DescriptorType::eUniformBuffer:
-        return "uniform_buffer";
-    case vk::DescriptorType::eUniformBufferDynamic:
-        return "uniform_buffer_dynamic";
-    case vk::DescriptorType::eSampledImage:
-        return "separate_image";
-    case vk::DescriptorType::eSampler:
-        return "sampler";
-    case vk::DescriptorType::eStorageImage:
-        return "storage_image";
-    case vk::DescriptorType::eUniformTexelBuffer:
-        return "uniform_texel_buffer";
-    case vk::DescriptorType::eStorageTexelBuffer:
-        return "storage_texel_buffer";
-    case vk::DescriptorType::eAccelerationStructureKHR:
-        return "acceleration_structure";
-    default:
-        return "other";
-    }
-}
-
-// Q-14f: the kind a shader_input_unsupplied refusal reports for the
-// declaration no input fills.
-std::string declaredInputKind(vk::DescriptorType type) {
-    switch (type) {
-    case vk::DescriptorType::eCombinedImageSampler:
-    case vk::DescriptorType::eInputAttachment:
-    case vk::DescriptorType::eSampledImage:
-    case vk::DescriptorType::eStorageImage:
-    case vk::DescriptorType::eSampler:
-        return "texture";
-    case vk::DescriptorType::eStorageBuffer:
-    case vk::DescriptorType::eStorageBufferDynamic:
-    case vk::DescriptorType::eUniformBuffer:
-    case vk::DescriptorType::eUniformBufferDynamic:
-    case vk::DescriptorType::eUniformTexelBuffer:
-    case vk::DescriptorType::eStorageTexelBuffer:
-        return "buffer";
-    default:
-        return "other";
-    }
-}
-
-std::vector<FullscreenShaderPassInput> shaderPassInputs(
-    const ShaderReflection &reflection) {
-    std::vector<FullscreenShaderPassInput> declared;
-    for (const auto &reflected : reflection.bindings) {
-        if (reflected.set != PELICAN_SET_PASS_INPUT) continue;
-        declared.push_back(FullscreenShaderPassInput{
-            .binding = reflected.binding,
-            .type = descriptorTypeName(reflected.type),
-        });
-    }
-    std::stable_sort(
-        declared.begin(), declared.end(),
-        [](const FullscreenShaderPassInput &a,
-           const FullscreenShaderPassInput &b) {
-            return a.binding < b.binding;
-        });
-    return declared;
-}
-
 // Q-14e: names the input a refusal is about. A lookup that fails leaves the
 // name out instead of replacing the mismatch with its own error.
 template <class Lookup>
@@ -184,15 +115,19 @@ bool fillablePassInput(const ReflectedBinding &reflected) {
     }
 }
 
-// Returns the declared bindings past the supplied inputs that are bound to
+// Returns the declared bindings the pass does not supply that are bound to
 // a default resource (Q-14f); throws FullscreenInputBindingMismatch for a
 // declaration that cannot be (and, Q-14e, for an input the shader does not
-// declare).
+// declare; VI-1, for a shader that breaks the variadic layout rule or a pass
+// with more textures than its variadic group ends at).
 struct PassInputBindingCheck {
     std::vector<FullscreenFilledPassInput> filled;
-    // Set when `filled` is not empty: the lowest filled binding, told the
-    // way a refusal would tell it.
+    // Set when a fixed (not variadic) declaration is filled: the lowest such
+    // binding, told the way a refusal would tell it. Filling variadic
+    // bindings is what they are for, and is not reported.
     std::optional<FullscreenInputBindingMismatchInfo> fill_report;
+    // VI-1: the shader's variadic group, which places the buffer inputs.
+    std::optional<PassVariadicInputRange> variadic;
 };
 
 PassInputBindingCheck requireInputBindings(
@@ -201,50 +136,89 @@ PassInputBindingCheck requireInputBindings(
     std::span<const FrameGraphBufferId> buffers,
     const RenderTargetImageViewResolver &rt_views,
     const FrameGraphResourceContainer &frame_graph_resources) {
-    const auto input_count = inputs.size() + buffers.size();
-    for (uint32_t binding = 0; binding < input_count; ++binding) {
-        const bool texture = binding < inputs.size();
-        if (texture ? hasInputBinding(
-                          reflection, binding,
-                          inputs[binding].local_read)
-                    : hasStorageBufferBinding(reflection, binding)) {
-            continue;
-        }
-        FullscreenInputBindingMismatchInfo info{
-            .kind = texture ? "texture" : "buffer",
+    auto layout = readPassInputLayout(reflection);
+    const auto &variadic = layout.variadic;
+    const auto textureName = [&](std::size_t index) {
+        const auto target = inputs[index].target;
+        return isConcreteRenderTarget(target)
+                   ? resourceNameOrEmpty(
+                         [&] { return rt_views.name(target); })
+                   : std::string{};
+    };
+    // VI-1: a texture past the variadic group has no binding: the next
+    // one along is the first buffer's.
+    if (variadic && inputs.size() > variadic->end()) {
+        const auto binding = variadic->end();
+        throw FullscreenInputBindingMismatch{FullscreenInputBindingMismatchInfo{
+            .direction = fullscreenInputVariadicCapacityExceeded,
+            .kind = "texture",
             .binding = binding,
-            .expected = !texture ? "storage_buffer"
-                        : inputs[binding].local_read
-                            ? "input_attachment"
-                            : "sampled_image",
+            .resource = textureName(binding),
+            .expected = "sampled_image",
             .pass_texture_inputs = inputs.size(),
             .pass_buffer_inputs = buffers.size(),
-            .shader_pass_inputs = shaderPassInputs(reflection),
-        };
-        if (texture) {
-            const auto target = inputs[binding].target;
-            if (isConcreteRenderTarget(target)) {
-                info.resource = resourceNameOrEmpty(
-                    [&] { return rt_views.name(target); });
-            }
-        } else {
-            const auto buffer = buffers[binding - inputs.size()];
-            info.resource = resourceNameOrEmpty([&] {
-                return frame_graph_resources.definition(buffer).name;
-            });
-        }
-        throw FullscreenInputBindingMismatch{std::move(info)};
+            .shader_pass_inputs = layout.declarations,
+            .variadic_range = variadic,
+        }};
     }
-    // Q-14f: the other way round. A pass-input binding past the inputs the
-    // pass supplies would otherwise be bound unwritten (or, with no inputs,
-    // the set would not be bound at all). Reflection lists a declaration
-    // whether or not the shader reads it. A binding a default resource can
-    // stand in for is filled with one; any other is refused by name.
+    const auto mismatch = [&](FullscreenInputBindingMismatchInfo info) {
+        info.pass_texture_inputs = inputs.size();
+        info.pass_buffer_inputs = buffers.size();
+        info.shader_pass_inputs = layout.declarations;
+        info.variadic_range = variadic;
+        return FullscreenInputBindingMismatch{std::move(info)};
+    };
+    for (uint32_t binding = 0; binding < inputs.size(); ++binding) {
+        if (hasInputBinding(reflection, binding,
+                            inputs[binding].local_read)) {
+            continue;
+        }
+        throw mismatch(FullscreenInputBindingMismatchInfo{
+            .kind = "texture",
+            .binding = binding,
+            .resource = textureName(binding),
+            .expected = inputs[binding].local_read ? "input_attachment"
+                                                   : "sampled_image",
+        });
+    }
+    for (std::size_t index = 0; index < buffers.size(); ++index) {
+        const auto binding =
+            passBufferInputBinding(inputs.size(), variadic, index);
+        if (hasStorageBufferBinding(reflection, binding)) continue;
+        throw mismatch(FullscreenInputBindingMismatchInfo{
+            .kind = "buffer",
+            .binding = binding,
+            .resource = resourceNameOrEmpty([&] {
+                return frame_graph_resources.definition(buffers[index]).name;
+            }),
+            .expected = "storage_buffer",
+        });
+    }
+    const auto supplied = [&](std::uint32_t binding) {
+        if (binding < inputs.size()) return true;
+        const auto first_buffer =
+            passBufferInputBinding(inputs.size(), variadic, 0);
+        return binding >= first_buffer &&
+               binding < first_buffer + buffers.size();
+    };
+    const auto isVariadic = [&](std::uint32_t binding) {
+        return std::any_of(layout.declarations.begin(),
+                           layout.declarations.end(),
+                           [&](const FullscreenShaderPassInput &declared) {
+                               return declared.binding == binding &&
+                                      declared.variadic;
+                           });
+    };
+    // Q-14f: the other way round. A pass-input binding the pass does not
+    // supply would otherwise be bound unwritten (or, with no inputs, the set
+    // would not be bound at all). Reflection lists a declaration whether or
+    // not the shader reads it. A binding a default resource can stand in
+    // for is filled with one; any other is refused by name.
     std::vector<FullscreenFilledPassInput> filled;
     const ReflectedBinding *refused = nullptr;
     for (const auto &reflected : reflection.bindings) {
         if (reflected.set != PELICAN_SET_PASS_INPUT ||
-            reflected.binding < input_count) {
+            supplied(reflected.binding)) {
             continue;
         }
         if (!fillablePassInput(reflected)) {
@@ -265,19 +239,16 @@ PassInputBindingCheck requireInputBindings(
             .type = reflected.type,
             .count = reflected.count,
             .image_view_dimension = reflected.image_view_dimension,
+            .variadic = isVariadic(reflected.binding),
         });
     }
     if (refused != nullptr) {
-        throw FullscreenInputBindingMismatch{
-            FullscreenInputBindingMismatchInfo{
-                .direction = fullscreenInputShaderInputUnsupplied,
-                .kind = declaredInputKind(refused->type),
-                .binding = refused->binding,
-                .expected = "none",
-                .pass_texture_inputs = inputs.size(),
-                .pass_buffer_inputs = buffers.size(),
-                .shader_pass_inputs = shaderPassInputs(reflection),
-            }};
+        throw mismatch(FullscreenInputBindingMismatchInfo{
+            .direction = fullscreenInputShaderInputUnsupplied,
+            .kind = passInputDeclarationKind(refused->type),
+            .binding = refused->binding,
+            .expected = "none",
+        });
     }
     std::sort(filled.begin(), filled.end(),
               [](const FullscreenFilledPassInput &a,
@@ -285,24 +256,24 @@ PassInputBindingCheck requireInputBindings(
                   return a.binding < b.binding;
               });
     PassInputBindingCheck check;
-    if (!filled.empty()) {
-        const auto lowest = std::find_if(
-            reflection.bindings.begin(), reflection.bindings.end(),
-            [&](const ReflectedBinding &reflected) {
-                return reflected.set == PELICAN_SET_PASS_INPUT &&
-                       reflected.binding == filled.front().binding;
-            });
-        check.fill_report = FullscreenInputBindingMismatchInfo{
-            .direction = fullscreenInputShaderInputUnsupplied,
-            .kind = declaredInputKind(lowest->type),
-            .binding = lowest->binding,
-            .expected = "none",
-            .pass_texture_inputs = inputs.size(),
-            .pass_buffer_inputs = buffers.size(),
-            .shader_pass_inputs = shaderPassInputs(reflection),
-        };
+    const auto lowest_fixed = std::find_if(
+        filled.begin(), filled.end(),
+        [](const FullscreenFilledPassInput &entry) {
+            return !entry.variadic;
+        });
+    if (lowest_fixed != filled.end()) {
+        check.fill_report = mismatch(FullscreenInputBindingMismatchInfo{
+                                         .direction =
+                                             fullscreenInputShaderInputUnsupplied,
+                                         .kind = passInputDeclarationKind(
+                                             lowest_fixed->type),
+                                         .binding = lowest_fixed->binding,
+                                         .expected = "none",
+                                     })
+                                .info();
     }
     check.filled = std::move(filled);
+    check.variadic = variadic;
     return check;
 }
 
@@ -735,6 +706,32 @@ FullscreenPassContainer::filledPassInputReport(PassId pass_id) const {
     return found->second.fill_report;
 }
 
+FullscreenPassInputReport FullscreenPassContainer::passInputReport(
+    PassId pass_id) const {
+    const auto handle = requirePipelineHandle(pass_id, pipelines);
+    FullscreenPassInputReport report;
+    if (const auto found = input_textures.find(pass_id.value);
+        found != input_textures.end()) {
+        report.texture_inputs = found->second.inputs.size();
+        report.buffer_inputs = found->second.input_buffer_ids.size();
+    }
+    try {
+        auto layout = readPassInputLayout(
+            GET_MODULE(PipelineFactory).reflection(handle));
+        report.declarations = std::move(layout.declarations);
+        report.variadic = layout.variadic;
+    } catch (const FullscreenInputBindingMismatch &refused) {
+        // A shader reload can publish a module that breaks the rule the
+        // pass compiler would have refused.
+        report.declarations = refused.info().shader_pass_inputs;
+        report.variadic = refused.info().variadic_range;
+        report.layout_refusal = refused.what();
+    }
+    report.buffer_binding_base =
+        passBufferInputBinding(report.texture_inputs, report.variadic, 0);
+    return report;
+}
+
 FullscreenPassContainer::FullscreenPassContainer()
     : device{GET_MODULE(VulkanManageCore).getDevice()},
       desc_pool{createDescPool(device)} {
@@ -976,6 +973,7 @@ void FullscreenPassContainer::setInputResourcesById(
     info.binding_revision = next_binding_revision++;
     info.filled = std::move(check.filled);
     info.fill_report = std::move(check.fill_report);
+    info.variadic = check.variadic;
     if (!info.filled.empty()) (void)defaultPassInputResources();
     if (std::any_of(
             inputs.begin(), inputs.end(),
@@ -1127,7 +1125,8 @@ void FullscreenPassContainer::buildInputDescriptorVariants(
                         request, rt_views));
             }
             for (uint32_t i = 0; i < input_buffers.size(); ++i) {
-                const auto binding = static_cast<uint32_t>(inputs.size()) + i;
+                const auto binding = passBufferInputBinding(
+                    inputs.size(), info.variadic, i);
                 writes.appendBuffer(
                     binding,
                     frame_graph_resources.descriptorInfo(

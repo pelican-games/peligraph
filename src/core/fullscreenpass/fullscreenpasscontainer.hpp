@@ -9,6 +9,7 @@
 #include <array>
 #include <memory>
 #include <optional>
+#include <string>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -58,6 +59,24 @@ struct FullscreenFilledPassInput {
     std::uint32_t count = 1;
     ReflectedImageViewDimension image_view_dimension =
         ReflectedImageViewDimension::none;
+    // VI-1: one of the shader's variadic inputs. Filling it is what an
+    // unconnected variadic input is for, so it is not warned about.
+    bool variadic = false;
+};
+
+// VI-1: a pass's pass-input set as its pipeline's shader declares it, and
+// how many inputs the pass supplies (get_frame_plan's pass_inputs).
+struct FullscreenPassInputReport {
+    // Binding order.
+    std::vector<FullscreenShaderPassInput> declarations;
+    std::optional<PassVariadicInputRange> variadic;
+    std::size_t texture_inputs = 0;
+    std::size_t buffer_inputs = 0;
+    // Where the pass's buffer inputs start (passBufferInputBinding).
+    std::uint32_t buffer_binding_base = 0;
+    // Set when the published shader breaks the variadic layout rule (after
+    // a shader reload): the refusal the pass compiler would give.
+    std::optional<std::string> layout_refusal;
 };
 
 DECLARE_MODULE(FullscreenPassContainer) {
@@ -97,6 +116,8 @@ DECLARE_MODULE(FullscreenPassContainer) {
         // Q-14f: declared bindings past the inputs, bound to defaults.
         std::vector<FullscreenFilledPassInput> filled;
         std::optional<FullscreenInputBindingMismatchInfo> fill_report;
+        // VI-1: the shader's variadic group; it places the buffer inputs.
+        std::optional<PassVariadicInputRange> variadic;
         // Descriptor writes of defaults, over every variant and parity.
         std::size_t filled_descriptor_writes = 0;
     };
@@ -184,6 +205,9 @@ DECLARE_MODULE(FullscreenPassContainer) {
     std::optional<FullscreenInputBindingMismatchInfo> filledPassInputReport(
         PassId pass_id) const;
     std::size_t filledDescriptorWritesForTesting(PassId pass_id) const;
+    // VI-1: the pass's pipeline's pass-input declarations and the inputs
+    // the pass supplies. Throws when the pass has no pipeline.
+    FullscreenPassInputReport passInputReport(PassId pass_id) const;
     std::vector<vk::ImageView> boundInputImageViewsForTesting(
         PassId pass_id,
         std::uint32_t view_index = 0) const;

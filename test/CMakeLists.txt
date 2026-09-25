@@ -1955,6 +1955,14 @@ target_link_libraries(pelican_test_engine_primitives_test PRIVATE pelican_shader
 if(COMMAND pelican_copy_shaderc_runtime)
     pelican_copy_test_shaderc_runtime(pelican_test_engine_primitives_test)
 endif()
+# VI-1: variadic pass inputs, shader.defines and engine://passthrough. The
+# layout / define cases are CPU-only; the rest edit present over RPC.
+pelican_define_test(vi1_variadic_inputs_test MIXED_GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
+target_include_directories(pelican_test_vi1_variadic_inputs_test PRIVATE ${stb_SOURCE_DIR})
+target_link_libraries(pelican_test_vi1_variadic_inputs_test PRIVATE pelican_shaderc)
+if(COMMAND pelican_copy_shaderc_runtime)
+    pelican_copy_test_shaderc_runtime(pelican_test_vi1_variadic_inputs_test)
+endif()
 endif()
 endif()
 if(PELICAN_WITH_EXR)
