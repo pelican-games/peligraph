@@ -138,7 +138,7 @@ free-camera preset は overlay 側を選ぶため、両者は併用できます�
 - batch・notification 非対応。エラーコードは標準 + アプリケーションエラー -32000、RenderDoc capture -32010。ハンドラ内例外は応答に変換されプロセスは落ちません。EOF で正常終了。
 - 1 プロセス 1 クライアント。**ゲーム DLL リロード中は全メソッドがアプリケーションエラーで拒否**されます。
 
-> **設計決定(決定性):** 同一の RPC スクリプトを 2 回実行したとき、応答列は(instance_id を除き)**バイト単位で完全一致**しなければならない。CI で検証済み。`instance_id` だけが除外されるのは、それが RPC エンドポイント生成時に振られる UUID v4 で、起動ごとに必ず変わる値だからです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L2123))。
+> **設計決定(決定性):** 同一の RPC スクリプトを 2 回実行したとき、応答列は(instance_id を除き)**バイト単位で完全一致**しなければならない。CI で検証済み。`instance_id` だけが除外されるのは、それが RPC エンドポイント生成時に振られる UUID v4 で、起動ごとに必ず変わる値だからです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L2141))。
 
 ### 基盤メソッド一覧
 
@@ -151,7 +151,7 @@ free-camera preset は overlay 側を選ぶため、両者は併用できます�
 | `render_frame` | `{}` | 時刻を進めず描画のみ |
 | `capture_gpu` | `{}` | `render_frame` と同じcurrent-time描画を1回だけ**RenderDoc**(GPU に送った描画コマンドを 1 フレーム分丸ごと記録して後から追える外部デバッガ)で captureし、実際に増えたindexのcanonical `.rdc` pathを返す |
 | `capture` | `{path}` | 直近フレームを PNG 保存(sRGB。応答に `encoding:"srgb"`) |
-| `get_frame_plan` | `{}` | フレームプラン JSON |
+| `get_frame_plan` | `{}` | フレームプラン JSON(fullscreen / raster pass の node には shader の set 1 の宣言 `pass_inputs` が付く。✅VI-1 / VI-1b。形は[第 13 章](13_editor.md) §13.5) |
 | `pick_object` | `{x, y}` | 最後に完了した **ID バッファ**(色ではなく「そのピクセルに写っているオブジェクトの ID」を書き出す描画出力。`picking` feature が宣言する `R32_UINT` のレンダーターゲット `picking_id` — [picking.json](../../src/core/resources/features/picking.json))の 1 ピクセルを同期読み出し。`engine://features/picking.json` が必要 |
 | `set_gizmo` | `{selection:GizmoSelection\|null, mode}` | 選択 transform のギズモ表示を設定/解除。`engine://features/gizmo.json` が必要 |
 | `query_gizmo_handle` | `{selection:GizmoSelection, mode, x, y}` | 指定した選択・mode・物理 pixel にある handle を状態なしで問い合わせ。同 feature が必要 |
@@ -163,7 +163,7 @@ free-camera preset は overlay 側を選ぶため、両者は併用できます�
 | `inject_input` | `{events:[...]}` | 入力注入。`key_*` / `mouse_*` / `axis` + **`gamepadButtonDown` / `gamepadUp` / `gamepadAxis`**(リプレイ中は拒否)。`mouse_move` の `x` / `y` は**窓座標**で、OS からの移動と同じ event になる。`ctx.input().pointer()` と UI の入力ルータがフレームの換算で framebuffer ピクセルにする(headless は 1 倍。✅GP-4、[注入の受け口](../../src/core/communication/rpcserver.cpp#L868)) |
 | `inject_event` | `{type, payload}` | 登録済みゲームイベントの emit。payload は EventPayloadSchema で事前検証(✅WP71) |
 | `reload_game_logic` | `{}` | ゲームロジック DLL を即時リロード(✅WP90) |
-| `reload_shaders` | `{}` | shader を読み直して公開する(✅F-5。file watch が閉じている `--rpc` の下でも、明示の要求は通る。返り値とエラーは[第 13 章](13_editor.md)の表) |
+| `reload_shaders` | `{}` | shader を読み直して公開する(✅F-5。file watch が閉じている `--rpc` の下でも、明示の要求は通る。入力と宣言が合わなくなった pass はその pass だけ前の shader で描き続け、`refused_passes` に名が出る。✅VI-1b。返り値とエラーは[第 13 章](13_editor.md)の表) |
 | `set_input_profile` | `{name}` | 入力プロファイル切替(✅WP91) |
 | `start_input_record` | `{path}` | input_seq 収録開始(✅WP89。v2 で書く) |
 | `stop_input_record` | `{}` | 収録停止。`{path, frames, events}` |
@@ -304,14 +304,14 @@ selection の硬いエラーは `error.data.code` でも判別できます。宣
 `import_scene_snapshot` の result に `committed` / `effect_errors`、`get_components` の各
 component に `resolution_error`。
 
-2026-09 の追加(GP-4、`c095493c`): `get_status` の `input` に `cursor {requested, effective, embedded}`([組み立て](../../src/core/communication/rpcserver.cpp#L1521))。`requested` はゲームコードが `ctx.input().setCursorMode` で頼んだモード、`effective` は窓に適用したモード(`normal` / `hidden` / `locked`)、`embedded` は窓が別の窓に埋め込まれているか(`--rpc` かつ `WS_CHILD`。Windows だけで判定)。埋め込みでは `locked` を頼んでも `effective` は `normal` です。headless は窓が無いので `effective` は常に `normal`、`embedded` は `false`。
+2026-09 の追加(GP-4、`c095493c`): `get_status` の `input` に `cursor {requested, effective, embedded}`([組み立て](../../src/core/communication/rpcserver.cpp#L1539))。`requested` はゲームコードが `ctx.input().setCursorMode` で頼んだモード、`effective` は窓に適用したモード(`normal` / `hidden` / `locked`)、`embedded` は窓が別の窓に埋め込まれているか(`--rpc` かつ `WS_CHILD`。Windows だけで判定)。埋め込みでは `locked` を頼んでも `effective` は `normal` です。headless は窓が無いので `effective` は常に `normal`、`embedded` は `false`。
 
-2026-09 の追加(AG-3a、`32d9a20b`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L2535)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L168))。読み取り専用で `edit_*` の CAS には乗らない。
+2026-09 の追加(AG-3a、`32d9a20b`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L2507)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L168))。読み取り専用で `edit_*` の CAS には乗らない。
 
 **`get_graph_values` と `get_graph_node_values` は問いが違います。**前者は `instance` 必須で、その
 **instance の入力 port だけ**を `{port, value, source, connected|parameter}` として返します(`source` は
 `connected` / `parameter` / `default` / `override`)。後者は**展開木のノードを全部**並べ、各ノードの出力値を
-`outputs` に入れます([実装](../../src/core/communication/renderconfigeditor.cpp#L2454))。両方とも
+`outputs` に入れます([実装](../../src/core/communication/renderconfigeditor.cpp#L2426))。両方とも
 **同じ publish snapshot を読むだけ**で再評価しません —— 再評価は graph の時計を進め event を二重に消費するためです。
 `source: "rendering"` は「これは描画側の評価が使った値だ」という明示で、animation phase は同じ文書を
 自分の state で評価するため、event や trigger で駆動される文書では両者が恒久的に違いうることを表します。
@@ -328,7 +328,7 @@ component に `resolution_error`。
 `pelican_cli project migrate` の RPC 版です(流れと名前は [第3章 §3.13](03_project_format.md))。失敗は application error(-32000)で、
 `error.data` が `{error_code, error_fields}`(例: `error_code: "project.migration_plan_stale@1"`、`error_fields: {expected, actual}`)です。
 
-- **ふつうに動いている engine** も 2 つに答えます([登録](../../src/core/communication/rpcserver.cpp#L1577))。移行の要る project はそもそも入口で止まるので、ここに来るのは空の plan(`required: false`)です(動いている間に文書が前の版に戻された場合を除く)。
+- **ふつうに動いている engine** も 2 つに答えます([登録](../../src/core/communication/rpcserver.cpp#L1595))。移行の要る project はそもそも入口で止まるので、ここに来るのは空の plan(`required: false`)です(動いている間に文書が前の版に戻された場合を除く)。
 - **移行専用 endpoint**: `--rpc` の player が開くときの入口で `project.migration_required@1` に当たると、engine を起動せずに
   この 2 method **だけ**に答える JSON-RPC endpoint になります([`runProjectMigrationRpcServer()`](../../src/core/communication/projectmigrationrpc.cpp#L98)、
   [player 側](../../src/player/main.cpp#L693))。ほかの method は application error で、message は入口が出した

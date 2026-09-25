@@ -445,7 +445,7 @@ TLAS の各 instance は `VkGeometryInstanceFlagsKHR` を持ち、`FORCE_OPAQUE`
 
 GPU に投入したコマンドバッファは、対応する fence が signal されるまで「まだ実行中かもしれない」ものです。そのコマンドバッファが参照している資源(バッファ・イメージ・acceleration structure・SBT・descriptor set)は、その間は破棄も上書きもできません。CPU が先へ進むために同じ資源を N セット用意して添字で回すのが in-flight frame で、この N はスワップチェーンのイメージ枚数とは**別の数**です。破棄を「fence 完了後」まで遅らせる仕組み(遅延解放キュー)と、フレームが掴んだ資源を型を消して握っておく仕組み(lease)を組むのが定型になります。
 
-**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L4777) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
+**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L4846) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
 
 ## 10.2 glTF / 3D アセット形式の仕様
 
@@ -615,13 +615,13 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 「いま実行中のトランザクション」「いま登録中のオブザーバ」のような、呼び出しの深いところまで届けたい文脈を、引数で引き回さずに参照するためのイディオムです。名前空間スコープの `thread_local` なポインタに現在値を置き、その差し替えを RAII クラス(コンストラクタで `std::exchange` して旧値を保存、デストラクタで書き戻す)に閉じ込めます。RAII にしておけば例外で抜けても必ず前の値に戻り、入れ子も正しく動きます。`thread_local` なのでスレッドごとに独立し、別スレッドの実行中トランザクションを踏むことがありません。素の大域変数 + 手書きの復元にすると、途中の `return` や例外で復元を飛ばした瞬間に「終わったはずのトランザクションが実行中に見える」壊れ方をします。
 
-**使用場所**: [PendingSceneTransactionScope](../../src/core/loader/scene.cpp#L225) / [thread_local な active_effect_transaction の宣言](../../src/core/loader/effecttransaction.cpp#L20) / [ScopedRenderPipelineCompanionReloadObserver のコンストラクタ](../../src/core/watch/reloadservice.cpp#L24)
+**使用場所**: [PendingSceneTransactionScope](../../src/core/loader/scene.cpp#L225) / [thread_local な active_effect_transaction の宣言](../../src/core/loader/effecttransaction.cpp#L20) / [ScopedRenderPipelineCompanionReloadObserver のコンストラクタ](../../src/core/watch/reloadservice.cpp#L99)
 
 ### スコープガード(巻き戻しをデストラクタに置き、成功時に無効化する)
 
 「途中で失敗したら、それまでの副作用を取り消す」を例外安全に書く定型です。ローカルなガード型のデストラクタに巻き戻し処理を書き、正常系の最後で「もう巻き戻さない」印(commit / dismiss と呼ばれることが多い)を立ててガードを無効化します。こうすると、途中のどの `throw` からでも巻き戻しが走り、成功経路でだけ走りません(`std::scope_exit` / `scope_fail` は C++ 標準ライブラリ拡張の同種の道具です)。ガードに「そもそも何もしていない」状態を表す番兵(世代番号が 0、ハンドルが無効など)を持たせて、staging 前に抜けたときに巻き戻しを飛ばす形もよく使われます。
 
-**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3019) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3046) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L390)(`catch (...)` で確保済みの範囲を返す)
+**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3022) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3049) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L390)(`catch (...)` で確保済みの範囲を返す)
 
 ### double-checked locking と acquire / release
 

@@ -46,7 +46,7 @@ class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport�
 [[nodiscard]] bool setSpotLightDirection(std::string_view name, vec3 direction) const;
 ```
 
-setterは対象ライトのstructを書き換えるだけです（[`LightContainer::setDirectionalLightDirection()`](../../src/core/light/lightcontainer.cpp#L380)）。GPUへ渡るのはframeごとで、[`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L491) がその時点の現在値をlight UBOへ詰め、shadow用のview-projectionとsky ambientと併せて `LightContainer::update()` を呼びます。ここでの shadow 用 view-projection は、directional shadow の view family に属する各 view（ライト × cascade）の `projection * view` 行列を並べたもので、shading 側が world 座標を shadow map の座標へ写すために使います（組み立ては同関数内の [`view_projections.push_back()`](../../src/core/vkcore/renderer.cpp#L541) の周辺）。ゲームSystemの`update()`から呼べばそのframeの描画に載る、という順序です。
+setterは対象ライトのstructを書き換えるだけです（[`LightContainer::setDirectionalLightDirection()`](../../src/core/light/lightcontainer.cpp#L380)）。GPUへ渡るのはframeごとで、[`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L492) がその時点の現在値をlight UBOへ詰め、shadow用のview-projectionとsky ambientと併せて `LightContainer::update()` を呼びます。ここでの shadow 用 view-projection は、directional shadow の view family に属する各 view（ライト × cascade）の `projection * view` 行列を並べたもので、shading 側が world 座標を shadow map の座標へ写すために使います（組み立ては同関数内の [`view_projections.push_back()`](../../src/core/vkcore/renderer.cpp#L542) の周辺）。ゲームSystemの`update()`から呼べばそのframeの描画に載る、という順序です。
 
 > **設計決定:** ライトの時間変化は**ユーザー空間の責務**です。engine側にライト名（`"KeyLight"`など）を見て時刻から値を書き換える経路はありません。[`LightContainer`](../../src/core/light/lightcontainer.hpp) が持つのは現在値の配列と名前→indexのmapだけで、時刻を受け取るAPIも、scene読み込み時の原本値を控える配列もありません。従ってsetterで上書きした値を元へ戻したければ、ユーザーコード側で覚えておく必要があります。実例は [`updateLightAnimation()`](../../projects/example/code/playercontrol.cpp#L31) で、`ctx.time()`から毎フレーム**絶対値を計算して**4本のsetterへ渡しています。移行時の注意は[第9章](09_black_magic_and_gotchas.md)を参照してください。
 
@@ -293,7 +293,7 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 - active camera名
 - optional orbit/follow/fly controller定義
 
-加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L112) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L117) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1525)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L587)）です。
+加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L112) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L117) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1526)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L587)）です。
 
 GP-4 の [`rayThroughPixel()`](../../src/core/renderer/camera.cpp#L391) は、framebuffer ピクセルの位置を projection と view の逆行列（double で計算）で world の ray にします。NDC は `2 × px ÷ viewport − 1` で y を反転せず（平面描画のフレームが NDC を framebuffer へ写す向き。コメントは gizmo の `projectPoint` を参照）、深度 0（near 面）と 1（far 面）の2点を戻して、起点を near 面上の点、方向をその差の正規化にします。公開面は `RenderContext::screenRay()` で、XR 中の拒否と有限性の検査はそちらが持ちます。
 
@@ -1089,7 +1089,7 @@ outboxのentryは呼び出しごとに1件ではありません。
 - mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L170)）
 - manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L177)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3468)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3476)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 

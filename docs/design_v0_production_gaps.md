@@ -291,7 +291,7 @@ Q-14f(`8638a3bf`)で「shader が宣言し pass が渡さない sampled image / 
 1. VI-1: `engine://passthrough` の pass に入力を 0 / 1 / 3 個渡し、`PELICAN_PASSTHROUGH_INPUT` を 0 / 2 にしたとき、headless capture の画素が指定した入力の色になる(0 個はグラデーション)。対照: define を入れない変異で赤。
 2. VI-1: 固定 3 + 可変(3, 8)の shader で、texture 入力を 3〜11 個渡しても compile が通り、buffer 入力は binding 11 に置かれる。可変の組を 2 つ宣言した shader と、可変の組の後ろに固定の宣言がある shader は、それぞれ名前付きで断られる。
 3. VI-1: authoring 情報に、pass ごとの宣言(固定 / 可変、範囲)が載る。可変の枠を埋めても警告が出ず、固定の枠を埋めると出る。
-4. VI-1: つないでいる宣言を shader から消して reload したときの engine の挙動(直前の pipeline で描き続けるか、pass が止まるか)を実測して記録する。VI-3 はそれに合わせる。
+4. VI-1: つないでいる宣言を shader から消して reload したときの engine の挙動(直前の pipeline で描き続けるか、pass が止まるか)を実測して記録する。VI-3 はそれに合わせる。(**2026-09-25 注記: 実測はどちらでもなかった**(`8cd374a5` の commit message)。reload は新しい pipeline を公開し、次の 1 frame が Q-14e の error で失敗し、その後の frame は古い set 1 の layout で作った descriptor set で描き続けた(validation の VUID 00358 / 08600、出力は未定義)。入力の無い pass の shader が宣言を足した場合は set 1 が bind されなかった。**VI-1b `8cd374a5` でこれを「その pass だけ新しい shader を断り、前の pipeline と descriptor set で描き続ける。同じ reload のほかの pass は公開する」に変えた**。照合は編集・load と同じ規則(Q-14e / Q-14f / 可変の規則)。断ったことは `reload_shaders` の `refused_passes`、reload status の `shader_reload_refused@1`、`get_frame_plan` の `pass_inputs.reload_refused`(断った新しい shader の宣言つき)で見える。disk と shader library は新しい shader のままなので、その pass の次の編集・load は断られる。VI-3 はこの挙動に合わせる。manual 13 章 §13.5「shader を読み直させる」)
 5. VI-2: blank から作った project は、何もつながないとグラデーション、`gbuffer_albedo` を `present` につなぐだけで albedo が写る(shader の作成なし)。GUI session のシナリオの期待値の更新と同じ着地で直列に。
 6. VI-3: GUI session の受け入れ(シナリオ)。
 
