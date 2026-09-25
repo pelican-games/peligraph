@@ -25346,6 +25346,42 @@ engine の変更 / 移行の手順そのもの / 移行の取り消し(backup �
 - **テキスト入力の欄(受け入れ 4)**: 増やしていない。置いた `audio.playback` の `time` に種の定数(打てる値の pill)が付かなくなったので、打つ欄は 1 つ減った
 - **穴**: 決定 3 の確かめは `partitionGraphDocument` まで(必須の入力が繋がっていることと型だけ)。core の lowering(asset の読み込み、時計の食い違い)は GUI から走らせていない / 使い回すのは今の scope の `scene_time` だけで、definition の中で置くと root にあっても新しく 1 つ足す / 足した `scene_time` の node は配置を持たない(canvas の初期配置で描かれる)
 
+### Q-12: graph node が作った task は「Graph タブで編集」と、その node へ移るボタン(別 session の MG-3b への追従)
+
+**下段(Studio のみ)。実装者: Claude(Opus)。**
+
+#### 前提(別 session の MG-3b = a846bc6b)
+- `get_compute_task_authoring` の `tasks[]` の各要素に `origin`: `"feature"` | `"graph_node"` | `"preset"` | `"root"`(この順で判定。`root` は本番では出ない)
+- `origin == "graph_node"` のとき `graph_node: {scope, node, instance}`。`scope` は `"root"` か definition の名前(graph 編集 op の scope と同じ書き方、Studio の `scopeToken()` と揃えてある)、`node` はその scope で書いた node id、`instance` は instance の path(末尾 `/` なし、root scope では `""`)。task の `name` は展開後の id(例 `left/step`)
+- 例: `{"name":"left/step","origin":"graph_node","source_reference":"passes/main.json","editable":false,"graph_node":{"scope":"smooth","node":"step","instance":"left"},"read_only_reason":"This task is made by a render.compute node in the graph. Edit the node in the Graph tab."}`
+- **挙動の変化**: graph_node の task の `source_reference` は常に root 文書になった(以前は preset root では preset)。Studio が `origin` を読むまで、preset root の node task にも Q-10 の「root に task は置けない」が出てしまう
+- Q-10 の `framePlanTaskAtRoot` / `framePlanRootTaskRefusal`(`src/devstudio/view/frameplanedit.{hpp,cpp}`)と Task Editor(`renderfeatureswidget.cpp`)が root の task を判定している
+
+#### 決定
+1. **origin を先に見る**: Frame Plan canvas の task の編集(drag / 帯 / Delete)と Task Editor は、`origin == "graph_node"` なら、Q-10 の root の判定より先に「This task is made by a render.compute node in the graph. Edit the node in the Graph tab.」(engine の `read_only_reason` をそのまま使う)の 1 行と、**「Open in Graph」ボタン**(Task Editor)/ 右クリックの「Open in Graph」(Frame Plan)を出す。Q-10 の root の文は `origin == "root"` のとき(と、origin が無い古い応答)だけ
+2. **Open in Graph**: Graph タブに切り替え、`graph_node.scope` の scope を開き、`graph_node.node` の node を選んで表示の中央に持ってくる(`instance` が空でなければ、その instance の文脈で —— Graph タブが instance の選択を持っていればそれも合わせる。持っていなければ scope と node までで、報告に書く)
+3. origin の読み取りは `frameplanedit` の純関数に(N-8 / Q-10 と同じ形)
+
+#### 受け入れ
+1. 純関数 test: origin の 4 値と、origin が無い応答の判定 / graph_node の task は root の文ではなく node の文になる(対照: origin を見ない変異で、preset root の node task が root の文になって赤)
+2. widget / scene test: Open in Graph で Graph タブに切り替わり、scope と node が選ばれる
+3. `-L studio_cpu -LE gpu` 緑。報告にテキスト入力の欄
+
+#### 着地(2026-09-25、03689885)
+- **決定 1 / 3**: 純関数 `framePlanTaskLock` が origin を先に読み、graph_node → root(`origin == "root"`、または origin が無く Q-10 の判定に当たる)→ read_only(`editable: false`)→ none の順に決める([錠の順](../src/devstudio/view/frameplanedit.cpp#L479))。`origin` と `graph_node` は catalog の行から `framePlanTaskOrigin` / `framePlanTaskGraphNode` で読む(`graph_node` は scope と node の両方があるときだけ。instance が無ければ `""`)。canvas の drag / 帯 / Delete([canvas の断り](../src/devstudio/view/frameplanedit.cpp#L503))と Task Editor の Apply([Task Editor の錠](../src/devstudio/view/renderfeatureswidget.cpp#L385))が同じ関数を通る
+  - `origin == "root"` は、Studio がまだ root の reference を知らなくても root の文になる(engine がそう言っているので)。origin の無い古い応答は Q-10 の判定のまま
+  - **Frame Plan の status 行**: `FramePlanEditRequest` に `line` を足した([status 行の欄](../src/devstudio/view/frameplanedit.hpp#L33))。既存の `oneLine` は最初の 1 文で切るので、engine の 2 文の文を丸ごと出すため。`line` があれば status 行はそれを出し([line を使う所](../src/devstudio/view/frameplanwidget.cpp#L1294))、tooltip は `<task>: <engine の文> Right-click the task and choose Open in Graph.`。dispatch の帯は出ない
+  - **Frame Plan の右クリック**: node の task の上でだけ、先頭に「Open in Graph」(`pelican.framePlan.openInGraph`、[右クリックに足す所](../src/devstudio/view/frameplangraphics.cpp#L3600))
+  - **Task Editor**: notice に engine の `read_only_reason`(無ければ同じ文の定数)、その横に「Open in Graph」ボタン(`pelican.computeTasks.openInGraph`。既存の task で `graph_node` がある行を選んだときだけ見える)
+- **決定 2**: MainWindow が Frame Plan と Task Editor の両方に同じ `openGraphNodeInTabs` を渡す([両方に渡す所](../src/devstudio/view/mainwindow.cpp#L379))。Graph タブがその scope に node を持っていなければ何も動かさず false([tab を切り替える所](../src/devstudio/view/graphcanvaswidget.cpp#L3116))、持っていれば Graph タブを前に出してから `revealGraphNode`([node を見せる所](../src/devstudio/view/graphcanvaswidget.cpp#L3062))
+  - instance の path は root から 1 段ずつ降りる(instance をダブルクリックするのと同じ)ので、Graph タブの「Values from」とパンくずがそれに従う。2 段下(`wrap/inner`)ではパンくずが `root → outer → gain_curve`、Values from は root の instance `wrap`
+  - path が scope に届かないときは scope を直接開き、path の最初の instance が Values from の一覧にあればそれを選ぶ([届かないとき](../src/devstudio/view/graphcanvaswidget.cpp#L3089))
+  - node を選び、view の中央に置く。Graph タブが node を持っていないと、status 行(Task Editor では notice)に `The Graph tab has no node <node> in <scope> yet: refresh it.`(root scope は `the root`)
+- **test**: `devstudio_frameplan_graph_test` の `Q-12 the origin is read before the root test: a graph node's task says so`(origin の 4 値と origin の無い行、錠の順、`origin == "root"` で root の reference が空でも root、canvas の 3 つの要求と Task Editor の断り、対照: origin を消した同じ行は Q-10 の文)と `Q-12 a graph node's task on the canvas: its sentence, and Open in Graph`(drag と Delete が何も送らず status 行が engine の文、右クリックは task の上だけ、Open in Graph が `smooth` / `step` / `left` を渡す、Graph タブが持っていないときの文)、`devstudio_graphcanvas_scene_test` の `Q-12 Open in Graph switches to the Graph tab and picks the node in its scope`(root の instance の中 / 2 段下 / root の node / 届かない path / 無い node は何も変えない)。変異(commit の記録): origin を見ない → preset root の node task が root の文になって赤
+- **受け入れ 3**: commit の記録にあるのは上の test と変異まで。`-L studio_cpu -LE gpu` の全数の記載は無い(未確認)
+- **テキスト入力の欄(受け入れ 3)**: 増やしていない。足したのはボタンと右クリックの項目だけ
+- **穴**: tab の切り替えの test は同じ関数を `QTabWidget` で包んだもので、MainWindow 全体を RPC 越しに動かしてはいない / Task Editor のボタンには widget test が無い(その dialog に RPC の継ぎ目が無い。Q-10 と同じ)/ Graph タブがまだ文書を読んでいないと、Open in Graph は「refresh it」の 1 行で止まる / `root` という名前の definition は root scope と見分けられない(engine 自身の scope の書き方)
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**

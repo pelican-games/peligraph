@@ -552,7 +552,7 @@ replay と `--strict-assets` の engine は今までどおり断ります([越�
 | `fork_render_pipeline` | `base_source_digest`・`base_preset_digest`・`destination_reference`で選択中presetを新しいprojectファイルへコピーし、rootの参照先も切り替える |
 | `edit_region_replacement` | `base_source_digest`・`base_preset_digest`・`graph`・`region`でproject presetのタグ付き領域を指定。`provider`に登録済みprovider名を指定するとコンパイル時の差し替えを選択し、`null`なら差し替え要求を除去して元のノード構成を使用する。元のpass・設定・接続は保持する。現在の指定は`get_render_authoring_context`の各graphの`region_replacements`で取得できる。標準feature全体の展開操作ではない |
 | `edit_preset_pass` | `base_source_digest`・`base_preset_digest`・`graph`・`pass_name`でproject presetのpassを指定。fullscreenは`input`・`output`・`shader`と任意の`ray_query`・`uses_light_data`・`push_constants`・`clear_colors`(後の 3 つは ✅G-3。省略は保持、`null` で削除。[G-3 の 3 field の受け取り](../../src/core/communication/renderconfigeditor.cpp#L2763))、materialは`input`・`output`・`ray_query`の1項目以上。rasterはさらに`shader`・`draw`・`raster_state`を部分編集できる。省略項目は保持、rasterの`raster_state: null`は既定状態へ戻す。書き先は 3 つ: project preset(`base_preset_digest`)/ project feature(`base_feature_digest`)/ **direct root 自身**(✅F-6。root が preset を選ばず、要求がどちらの digest も持たないとき。`base_source_digest` が root の digest を兼ね、root の `rendering.rendering_passes` の pass を編集する)。置換規則は 3 つとも同じ関数です([direct root の書き先](../../src/core/communication/renderconfigeditor.cpp#L2855)) |
-| `get_compute_task_authoring` | compute/RT taskの元宣言・編集可否・保存先とdigestを取得する |
+| `get_compute_task_authoring` | compute/RT taskの元宣言・編集可否・保存先とdigestを取得する。各 task に出所の `origin`、graph node が作った task には `graph_node` が付く(✅MG-3b。下の「task の出所」) |
 | `edit_compute_task` | `base_source_digest`・`base_task_source_digest`・`task_name`・`task`でtask宣言を置換する。名前は保持する |
 | `add_compute_task` | `base_source_digest`・`destination_reference`・`task`で新規project featureにtaskを作り、rootのfeaturesへ追加する |
 | `remove_compute_task` | `base_source_digest`・`base_task_source_digest`・`task_name`で元文書からtaskを削除する |
@@ -723,9 +723,32 @@ task切替や失敗時には入力を保持し、**Refresh**で破棄・再取�
 他の保存が先行した場合は古い入力のまま上書きせず競合になります。
 共有engine文書は読み取り専用です。Frame PlanのEdit taskはcompilerが公開する`authored_name`で元taskを選び、XR用の実行時名からも同じ宣言を開きます。
 
+**task の出所(✅MG-3b)。**`get_compute_task_authoring` の `tasks[]` の各要素に `origin` が付きます。値は `"feature"` |
+`"graph_node"` | `"preset"` | `"root"` の 4 つで、**この順に**決まります —— feature が供給した task、graph の `render.compute` node が
+作った task、preset root の preset の task、それ以外([origin を決める所](../../src/core/communication/renderconfigeditor.cpp#L2179))。
+`"root"` は本番では出ません。rendering 文書の root は task を宣言できず(MG-2b)、node の task は `graph_node` として先に拾われるので、
+本番の resolver が root に帰す task は残りません。`"root"` は fake の resolver のための受け皿です。
+
+`origin` が `"graph_node"` の task にだけ `graph_node: {scope, node, instance}` が付きます([graph_node を組む所](../../src/core/communication/renderconfigeditor.cpp#L2192))。
+
+- `scope`: `"root"` か definition の名前。graph 編集 op の `scope` と同じ書き方です。
+- `node`: その scope に書かれている node の id。
+- `instance`: その node を置いた instance の path。末尾の `/` は付かず、root scope では `""` です。
+- task の `name` は展開後の id です(例: definition `smooth` の node `step` を instance `left` が置くと `left/step`)。
+
+graph node の task の `source_reference` は、root が preset を選んでいても**常に rendering 文書(root)**です(node が書かれているのは
+root で、preset ではないため)。`read_only_reason` は「Graph タブで node を編集して」という文です。`editable: false` と、
+edit / remove を送ったときの `compute_task_not_editable` は変わりません。
+
+```json
+{"name":"left/step","origin":"graph_node","source_reference":"passes/main.json","editable":false,"graph_node":{"scope":"smooth","node":"step","instance":"left"},"read_only_reason":"This task is made by a render.compute node in the graph. Edit the node in the Graph tab."}
+```
+
 **rendering 文書の root の task は名前付きで断ります(✅Q-10)。**MG-2b から rendering は `pelican.graph` root だけで、その root の
 `rendering` 節には `compute_tasks` を書けません。engine は root の task を一覧に載せたまま、code の無い「編集できない」
-(`editable: false` と英語の理由)として返し、実際に edit / remove を送ると `compute_task_not_editable` で断ります。Studio は、
+(`editable: false` と英語の理由)として返し、実際に edit / remove を送ると `compute_task_not_editable` で断ります。
+**この文が出るのは、`origin` が `"root"` の task と、`origin` を持たない古い応答だけです**(Q-12。graph node の task は下の段落の文になります)。
+`origin` が `"root"` なら Studio がまだ root の reference を知らなくても root の task です(engine がそう言っているので)。`origin` が無い応答では
 catalog の行の `source_reference` が rendering 文書そのもので `provider_feature` が空の task を root の task とみなし
 ([判定](../../src/devstudio/view/frameplanedit.cpp#L449))、**何も送らずに**次の文で断ります(着地前は engine の英語の理由がそのまま出ていました):
 `<task>: rendering root holds no tasks; use a feature or a render.compute node. The engine refuses an edit of it (compute_task_not_editable).`
@@ -736,12 +759,36 @@ catalog の行の `source_reference` が rendering 文書そのもので `provid
   ([1 行にする規則 `oneLine()`](../../src/devstudio/view/panelhelp.hpp#L92))。rendering 文書の reference は authoring context の
   `source_reference` から取ります([root の reference を入れる所](../../src/devstudio/view/frameplanwidget.cpp#L1360))。
 - **Task Editor**(Render Features の Tasks... / Frame Plan の Edit task...): root の task を選ぶと、下の notice に全文(code まで)が出て、
-  宣言欄は読み取り専用、**Apply task**・**Delete task**・接続表・dispatch フォームは押せません([root の task を見分ける所](../../src/devstudio/view/renderfeatureswidget.cpp#L382))。
+  宣言欄は読み取り専用、**Apply task**・**Delete task**・接続表・dispatch フォームは押せません([Task Editor の錠](../../src/devstudio/view/renderfeatureswidget.cpp#L385))。
   送る中身(add / edit / 断り)は [`computeTaskEditorRequest()`](../../src/devstudio/view/frameplanedit.cpp#L529) が決めます。
 - **新しい task は今までどおり**です。New compute / New ray tracing は `add_compute_task` で、指定した `project://` の feature に作ります。
-- **分かっている穴**(着地時の記録): `render.compute` node から来た task も root の下に並ぶので、同じ「root の task」の文になります
-  (文は「`render.compute` node で」と言いますが、その task は既に node から来ています)。Task Editor が root の reference を知るのは
+- **分かっている穴**(着地時の記録): `origin` を持たない古い応答では、Task Editor が root の reference を知るのは
   Render Features が `get_render_features` の応答を読んだ後で、それより前は engine の「編集できない」と英語の理由のままです。
+  (Q-10 の時点では `render.compute` node から来た task も同じ root の文になっていましたが、Q-12 で node の文に分かれました。)
+
+**graph node が作った task は「Graph タブで編集」と言い、その node へ移れます(✅Q-12)。**Studio は task の錠を **origin を先に読んで**
+決めます([錠の順](../../src/devstudio/view/frameplanedit.cpp#L479)): `origin` が `"graph_node"` → root(`origin` が `"root"`、または
+`origin` が無く上の判定に当たる)→ 読み取り専用(`editable: false`)→ 編集できる。Frame Plan の drag・帯・Delete も Task Editor の
+Apply も、この 1 つの関数を通ります。graph node の task には、root の文ではなく engine の `read_only_reason` がそのまま出ます:
+`This task is made by a render.compute node in the graph. Edit the node in the Graph tab.`
+
+- **Frame Plan**: その task への接続・切断、dispatch、Delete はこの文で止まり、dispatch の帯も出ません。**status 行にはこの 2 文が丸ごと**
+  出ます(`oneLine()` は最初の 1 文で切るので、断りに status 行用の 1 行を別に持たせています。[status 行用の 1 行](../../src/devstudio/view/frameplanedit.hpp#L30))。
+  tooltip は `<task>: <上の文> Right-click the task and choose Open in Graph.` です。その task の上で右クリックすると、メニューの先頭に
+  **Open in Graph** が出ます(graph node の task の上でだけ。[右クリックに足す所](../../src/devstudio/view/frameplangraphics.cpp#L3600))。
+- **Task Editor**: graph node の task を選ぶと、notice に上の文が出て、その横に **Open in Graph** ボタンが出ます(既存の task で
+  `graph_node` を持つ行を選んだときだけ見えます)。宣言欄と Apply task などは root の task と同じく止まります。
+- **Open in Graph** は Graph タブを前に出し、`graph_node` の scope を開いて node を選び、view の中央に置きます([node を見せる所](../../src/devstudio/view/graphcanvaswidget.cpp#L3062))。
+  `instance` があれば root から 1 段ずつその instance へ降ります(instance をダブルクリックして降りるのと同じ)ので、パンくずと
+  `Values from:` がその instance に合います。2 段下(`wrap/inner` など)では、パンくずが 2 つの definition を通り、`Values from:` は
+  root の instance(`wrap`)です。path が scope に届かないときは scope を直接開き、path の最初の instance が `Values from:` の一覧に
+  あればそれを選びます。
+- Graph タブがまだその node を持っていない(文書を読んでいない、または古い)ときは、tab を切り替えず何も変えずに
+  `The Graph tab has no node <node> in <scope> yet: refresh it.`(root scope は `the root`)を、Frame Plan では status 行、Task Editor では
+  notice に出します([tab を切り替える所](../../src/devstudio/view/graphcanvaswidget.cpp#L3116))。
+- **分かっている穴**(着地時の記録): tab の切り替えの test は同じ関数を `QTabWidget` で包んだもので、MainWindow 全体を RPC 越しに
+  動かしてはいません。Task Editor のボタンには widget test がありません。`root` という名前の definition は root scope と見分けられません
+  (engine の scope の書き方のままなので)。
 
 Frame Planのtask詳細にある **Callable record settings** は、取得時点のCPU側実行時設定です。
 同じ情報はRaw JSONの`runtime_callable_records`にも含まれます。
