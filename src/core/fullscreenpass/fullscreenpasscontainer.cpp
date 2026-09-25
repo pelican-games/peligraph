@@ -7,6 +7,7 @@
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
+#include "../vkcore/util.hpp"
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -103,6 +104,28 @@ std::string descriptorTypeName(vk::DescriptorType type) {
     }
 }
 
+// Q-14f: the kind a shader_input_unsupplied refusal reports for the
+// declaration no input fills.
+std::string declaredInputKind(vk::DescriptorType type) {
+    switch (type) {
+    case vk::DescriptorType::eCombinedImageSampler:
+    case vk::DescriptorType::eInputAttachment:
+    case vk::DescriptorType::eSampledImage:
+    case vk::DescriptorType::eStorageImage:
+    case vk::DescriptorType::eSampler:
+        return "texture";
+    case vk::DescriptorType::eStorageBuffer:
+    case vk::DescriptorType::eStorageBufferDynamic:
+    case vk::DescriptorType::eUniformBuffer:
+    case vk::DescriptorType::eUniformBufferDynamic:
+    case vk::DescriptorType::eUniformTexelBuffer:
+    case vk::DescriptorType::eStorageTexelBuffer:
+        return "buffer";
+    default:
+        return "other";
+    }
+}
+
 std::vector<FullscreenShaderPassInput> shaderPassInputs(
     const ShaderReflection &reflection) {
     std::vector<FullscreenShaderPassInput> declared;
@@ -133,7 +156,42 @@ std::string resourceNameOrEmpty(Lookup &&lookup) noexcept {
     }
 }
 
-void requireInputBindings(
+// Q-14f: the declarations a default resource can stand in for when the pass
+// supplies nothing at their binding. An image read through a sampler (2D,
+// 2D array or cube view), a sampler, or a storage buffer. An input
+// attachment, a storage image, a uniform or dynamic buffer, a texel buffer,
+// an acceleration structure, a 3D image or a runtime-sized array is not.
+bool fillablePassInput(const ReflectedBinding &reflected) {
+    if (reflected.count == 0) return false;
+    switch (reflected.type) {
+    case vk::DescriptorType::eCombinedImageSampler:
+    case vk::DescriptorType::eSampledImage:
+        return reflected.image_view_dimension ==
+                   ReflectedImageViewDimension::two_d ||
+               reflected.image_view_dimension ==
+                   ReflectedImageViewDimension::two_d_array ||
+               reflected.image_view_dimension ==
+                   ReflectedImageViewDimension::cube;
+    case vk::DescriptorType::eSampler:
+    case vk::DescriptorType::eStorageBuffer:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Returns the declared bindings past the supplied inputs that are bound to
+// a default resource (Q-14f); throws FullscreenInputBindingMismatch for a
+// declaration that cannot be (and, Q-14e, for an input the shader does not
+// declare).
+struct PassInputBindingCheck {
+    std::vector<FullscreenFilledPassInput> filled;
+    // Set when `filled` is not empty: the lowest filled binding, told the
+    // way a refusal would tell it.
+    std::optional<FullscreenInputBindingMismatchInfo> fill_report;
+};
+
+PassInputBindingCheck requireInputBindings(
     const ShaderReflection &reflection,
     std::span<const FullscreenPassInput> inputs,
     std::span<const FrameGraphBufferId> buffers,
@@ -173,11 +231,80 @@ void requireInputBindings(
         }
         throw FullscreenInputBindingMismatch{std::move(info)};
     }
+    // Q-14f: the other way round. A pass-input binding past the inputs the
+    // pass supplies would otherwise be bound unwritten (or, with no inputs,
+    // the set would not be bound at all). Reflection lists a declaration
+    // whether or not the shader reads it. A binding a default resource can
+    // stand in for is filled with one; any other is refused by name.
+    std::vector<FullscreenFilledPassInput> filled;
+    const ReflectedBinding *refused = nullptr;
+    for (const auto &reflected : reflection.bindings) {
+        if (reflected.set != PELICAN_SET_PASS_INPUT ||
+            reflected.binding < input_count) {
+            continue;
+        }
+        if (!fillablePassInput(reflected)) {
+            if (refused == nullptr ||
+                reflected.binding < refused->binding) {
+                refused = &reflected;
+            }
+            continue;
+        }
+        const auto same = std::find_if(
+            filled.begin(), filled.end(),
+            [&](const FullscreenFilledPassInput &entry) {
+                return entry.binding == reflected.binding;
+            });
+        if (same != filled.end()) continue;
+        filled.push_back(FullscreenFilledPassInput{
+            .binding = reflected.binding,
+            .type = reflected.type,
+            .count = reflected.count,
+            .image_view_dimension = reflected.image_view_dimension,
+        });
+    }
+    if (refused != nullptr) {
+        throw FullscreenInputBindingMismatch{
+            FullscreenInputBindingMismatchInfo{
+                .direction = fullscreenInputShaderInputUnsupplied,
+                .kind = declaredInputKind(refused->type),
+                .binding = refused->binding,
+                .expected = "none",
+                .pass_texture_inputs = inputs.size(),
+                .pass_buffer_inputs = buffers.size(),
+                .shader_pass_inputs = shaderPassInputs(reflection),
+            }};
+    }
+    std::sort(filled.begin(), filled.end(),
+              [](const FullscreenFilledPassInput &a,
+                 const FullscreenFilledPassInput &b) {
+                  return a.binding < b.binding;
+              });
+    PassInputBindingCheck check;
+    if (!filled.empty()) {
+        const auto lowest = std::find_if(
+            reflection.bindings.begin(), reflection.bindings.end(),
+            [&](const ReflectedBinding &reflected) {
+                return reflected.set == PELICAN_SET_PASS_INPUT &&
+                       reflected.binding == filled.front().binding;
+            });
+        check.fill_report = FullscreenInputBindingMismatchInfo{
+            .direction = fullscreenInputShaderInputUnsupplied,
+            .kind = declaredInputKind(lowest->type),
+            .binding = lowest->binding,
+            .expected = "none",
+            .pass_texture_inputs = inputs.size(),
+            .pass_buffer_inputs = buffers.size(),
+            .shader_pass_inputs = shaderPassInputs(reflection),
+        };
+    }
+    check.filled = std::move(filled);
+    return check;
 }
 
 vk::UniqueDescriptorPool createDescPool(vk::Device device,
                                         uint32_t maxSets = 1024) {
-    std::array<vk::DescriptorPoolSize, 3> pool_sizes{
+    std::array<vk::DescriptorPoolSize, 5> pool_sizes{
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
                                maxSets * estimatedInputBindingsPerPass},
         vk::DescriptorPoolSize{
@@ -185,6 +312,10 @@ vk::UniqueDescriptorPool createDescPool(vk::Device device,
             maxSets * estimatedInputBindingsPerPass},
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer,
                                maxSets * estimatedInputBindingsPerPass},
+        // Q-14f: a separate image or sampler is only ever a default fill.
+        vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage,
+                               maxSets},
+        vk::DescriptorPoolSize{vk::DescriptorType::eSampler, maxSets},
     };
 
     vk::DescriptorPoolCreateInfo ci{};
@@ -451,7 +582,154 @@ void validateResolvedPassInputs(
     }
 }
 
+// Q-14f: the size of the zero-filled storage buffer an unsupplied storage
+// buffer binding reads. A block whose fixed part is larger than this is not
+// detected (reflection does not carry block sizes).
+constexpr vk::DeviceSize defaultPassInputBufferBytes = 64 * 1024;
+
+vk::UniqueImageView createDefaultInputView(
+    vk::Device device, const ImageWrapper &image,
+    vk::ImageViewType type, std::uint32_t layer_count) {
+    vk::ImageViewCreateInfo info;
+    info.image = image.image.get();
+    info.viewType = type;
+    info.format = image.format;
+    info.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0,
+                             layer_count};
+    return device.createImageViewUnique(info);
+}
+
 } // namespace
+
+struct FullscreenPassContainer::DefaultPassInputResources {
+    // Six layers so the same image also has a cube view.
+    ImageWrapper image;
+    vk::UniqueImageView view_2d;
+    vk::UniqueImageView view_2d_array;
+    vk::UniqueImageView view_cube;
+    BufferWrapper buffer;
+};
+
+const FullscreenPassContainer::DefaultPassInputResources &
+FullscreenPassContainer::defaultPassInputResources() {
+    if (default_inputs) return *default_inputs;
+    auto &vkcore = GET_MODULE(VulkanManageCore);
+    auto resources = std::make_unique<DefaultPassInputResources>();
+    constexpr std::uint32_t layers = 6;
+    resources->image = vkcore.allocImage(
+        vk::Extent3D{1, 1, 1}, vk::Format::eR8G8B8A8Unorm,
+        vk::ImageUsageFlagBits::eSampled |
+            vk::ImageUsageFlagBits::eTransferDst,
+        vma::MemoryUsage::eAutoPreferDevice, {},
+        VulkanProcessType::graphics, {}, 1,
+        vk::SampleCountFlagBits::e1, layers, {},
+        vk::ImageCreateFlagBits::eCubeCompatible);
+    const std::array<std::uint8_t, 4 * layers> zeros{};
+    vk::BufferImageCopy region;
+    region.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0,
+                               layers};
+    region.imageExtent = vk::Extent3D{1, 1, 1};
+    GET_MODULE(VulkanUtils).safeTransferMemoryToImageLevels(
+        resources->image, zeros.data(), zeros.size(),
+        std::span<const vk::BufferImageCopy>{&region, 1},
+        VulkanUtils::ImageTransferInfo{
+            .old_layout = vk::ImageLayout::eUndefined,
+            .new_layout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            .dst_stage = vk::PipelineStageFlagBits::eVertexShader |
+                         vk::PipelineStageFlagBits::eFragmentShader,
+            .dst_access = vk::AccessFlagBits::eShaderRead,
+        });
+    resources->view_2d = createDefaultInputView(
+        device, resources->image, vk::ImageViewType::e2D, 1);
+    resources->view_2d_array = createDefaultInputView(
+        device, resources->image, vk::ImageViewType::e2DArray, 1);
+    resources->view_cube = createDefaultInputView(
+        device, resources->image, vk::ImageViewType::eCube, layers);
+    resources->buffer = vkcore.allocBuf(
+        defaultPassInputBufferBytes,
+        vk::BufferUsageFlagBits::eStorageBuffer,
+        vma::MemoryUsage::eAuto,
+        vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+    const std::vector<std::uint8_t> zero_bytes(
+        static_cast<std::size_t>(defaultPassInputBufferBytes), 0);
+    vkcore.writeBuf(resources->buffer, zero_bytes.data(), 0,
+                    defaultPassInputBufferBytes);
+    default_inputs = std::move(resources);
+    return *default_inputs;
+}
+
+std::size_t FullscreenPassContainer::writeFilledPassInputs(
+    vk::DescriptorSet set,
+    std::span<const FullscreenFilledPassInput> filled) const {
+    if (filled.empty()) return 0;
+    const auto &defaults = *default_inputs;
+    const auto sampler =
+        input_samplers.at(samplerIndex(FullscreenInputSampling{})).get();
+    std::vector<std::vector<vk::DescriptorImageInfo>> image_infos;
+    std::vector<std::vector<vk::DescriptorBufferInfo>> buffer_infos;
+    image_infos.reserve(filled.size());
+    buffer_infos.reserve(filled.size());
+    std::vector<vk::WriteDescriptorSet> writes;
+    writes.reserve(filled.size());
+    for (const auto &entry : filled) {
+        vk::WriteDescriptorSet write{set, entry.binding, 0, entry.count,
+                                     entry.type};
+        if (entry.type == vk::DescriptorType::eStorageBuffer) {
+            buffer_infos.emplace_back(
+                entry.count,
+                vk::DescriptorBufferInfo{defaults.buffer.buffer.get(), 0,
+                                         VK_WHOLE_SIZE});
+            write.pBufferInfo = buffer_infos.back().data();
+        } else {
+            const auto view =
+                entry.type == vk::DescriptorType::eSampler
+                    ? vk::ImageView{}
+                : entry.image_view_dimension ==
+                        ReflectedImageViewDimension::two_d_array
+                    ? defaults.view_2d_array.get()
+                : entry.image_view_dimension ==
+                        ReflectedImageViewDimension::cube
+                    ? defaults.view_cube.get()
+                    : defaults.view_2d.get();
+            const auto layout =
+                entry.type == vk::DescriptorType::eSampler
+                    ? vk::ImageLayout::eUndefined
+                    : vk::ImageLayout::eShaderReadOnlyOptimal;
+            const auto entry_sampler =
+                entry.type == vk::DescriptorType::eSampledImage
+                    ? vk::Sampler{}
+                    : sampler;
+            image_infos.emplace_back(
+                entry.count,
+                vk::DescriptorImageInfo{entry_sampler, view, layout});
+            write.pImageInfo = image_infos.back().data();
+        }
+        writes.push_back(write);
+    }
+    device.updateDescriptorSets(writes, {});
+    return writes.size();
+}
+
+std::vector<FullscreenFilledPassInput>
+FullscreenPassContainer::filledPassInputs(PassId pass_id) const {
+    const auto found = input_textures.find(pass_id.value);
+    if (found == input_textures.end()) return {};
+    return found->second.filled;
+}
+
+std::size_t FullscreenPassContainer::filledDescriptorWritesForTesting(
+    PassId pass_id) const {
+    const auto found = input_textures.find(pass_id.value);
+    if (found == input_textures.end()) return 0;
+    return found->second.filled_descriptor_writes;
+}
+
+std::optional<FullscreenInputBindingMismatchInfo>
+FullscreenPassContainer::filledPassInputReport(PassId pass_id) const {
+    const auto found = input_textures.find(pass_id.value);
+    if (found == input_textures.end()) return std::nullopt;
+    return found->second.fill_report;
+}
 
 FullscreenPassContainer::FullscreenPassContainer()
     : device{GET_MODULE(VulkanManageCore).getDevice()},
@@ -641,7 +919,7 @@ void FullscreenPassContainer::setInputResourcesById(
     std::uint32_t logical_view_count) {
     const auto pipeline_handle = requirePipelineHandle(pass_id, pipelines);
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
-    requireInputBindings(
+    auto check = requireInputBindings(
         pipeline_factory.reflection(
             pipeline_handle),
         inputs, input_buffers, rt_views,
@@ -660,7 +938,9 @@ void FullscreenPassContainer::setInputResourcesById(
     }
 
     const auto input_count = inputs.size() + input_buffers.size();
-    if (input_count == 0) {
+    // Q-14f: a pass with no inputs still gets a set when its shader
+    // declares pass inputs; they read the defaults.
+    if (input_count == 0 && check.filled.empty()) {
         const auto existing =
             input_textures.find(pass_id.value);
         if (existing != input_textures.end()) {
@@ -690,6 +970,9 @@ void FullscreenPassContainer::setInputResourcesById(
     }
     info.logical_view_count = logical_view_count;
     info.binding_revision = next_binding_revision++;
+    info.filled = std::move(check.filled);
+    info.fill_report = std::move(check.fill_report);
+    if (!info.filled.empty()) (void)defaultPassInputResources();
     if (std::any_of(
             inputs.begin(), inputs.end(),
             [](const FullscreenPassInput &input) {
@@ -847,6 +1130,9 @@ void FullscreenPassContainer::buildInputDescriptorVariants(
                         input_buffers[i]));
             }
             writes.submit(device);
+            info.filled_descriptor_writes += writeFilledPassInputs(
+                descriptor_variant.descsets[parity].get(),
+                info.filled);
         }
     }
 }

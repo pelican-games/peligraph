@@ -21,8 +21,49 @@ std::string describedDescriptor(std::string_view type) {
     return (vowel_sound ? "an " : "a ") + words;
 }
 
+std::string declaredCountTail(
+    const FullscreenInputBindingMismatchInfo &info) {
+    const auto count = info.shader_pass_inputs.size();
+    return " (shader declares " + std::to_string(count) +
+           (count == 1 ? " pass input)" : " pass inputs)");
+}
+
+// Q-14f: the shader declares a binding past the inputs the pass supplies.
+std::string unsuppliedMessage(
+    const FullscreenInputBindingMismatchInfo &info) {
+    const auto supplied =
+        info.pass_texture_inputs + info.pass_buffer_inputs;
+    std::string message =
+        "Fullscreen shader declares a pass input the pass does not "
+        "supply: ";
+    message += info.pass.empty() ? std::string{"the pass"}
+                                 : "pass '" + info.pass + "'";
+    message += " supplies " + std::to_string(supplied) +
+               (supplied == 1 ? " pass input" : " pass inputs") + ", but ";
+    message += info.fragment.empty()
+                   ? std::string{"the shader"}
+                   : "fragment '" + info.fragment + "'";
+    const FullscreenShaderPassInput *declared = nullptr;
+    for (const auto &input : info.shader_pass_inputs) {
+        if (input.binding == info.binding) {
+            declared = &input;
+            break;
+        }
+    }
+    message += " declares " +
+               (declared == nullptr ? std::string{"a pass input"}
+                                    : describedDescriptor(declared->type)) +
+               " at set " + std::to_string(PELICAN_SET_PASS_INPUT) +
+               " binding " + std::to_string(info.binding);
+    message += declaredCountTail(info);
+    return message;
+}
+
 std::string mismatchMessage(
     const FullscreenInputBindingMismatchInfo &info) {
+    if (info.direction == fullscreenInputShaderInputUnsupplied) {
+        return unsuppliedMessage(info);
+    }
     std::string message =
         info.kind == "buffer"
             ? "Fullscreen pass input buffer does not match shader reflection"
@@ -50,9 +91,7 @@ std::string mismatchMessage(
                    ? std::string{" declares no pass input at that binding"}
                    : " declares " + describedDescriptor(declared->type) +
                          " there";
-    const auto count = info.shader_pass_inputs.size();
-    message += " (shader declares " + std::to_string(count) +
-               (count == 1 ? " pass input)" : " pass inputs)");
+    message += declaredCountTail(info);
     return message;
 }
 

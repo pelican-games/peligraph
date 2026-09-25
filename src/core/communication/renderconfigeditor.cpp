@@ -81,6 +81,8 @@ OrderedJson withPreflightRefusalFields(OrderedJson details,
         }
         OrderedJson field{{"pass", info.pass},
                           {"fragment", info.fragment},
+                          // Q-14f: which way round they disagree.
+                          {"direction", info.direction},
                           {"kind", info.kind},
                           {"binding", info.binding}};
         if (!info.resource.empty()) field["resource"] = info.resource;

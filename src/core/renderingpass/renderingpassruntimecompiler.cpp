@@ -2330,6 +2330,29 @@ PassId registerGenericRasterPipeline(
         pipeline_id.value);
 }
 
+// Q-14f: a pass-input binding the shader declares and the pass does not
+// supply is bound to a default resource, not refused; say so once per
+// compile, in the words the refusal would use.
+void warnFilledPassInputs(const FullscreenPassContainer &container,
+                          PassId pass_id, const std::string &pass,
+                          const std::string &fragment) {
+    auto report = container.filledPassInputReport(pass_id);
+    if (!report) return;
+    report->pass = pass;
+    report->fragment = fragment;
+    const auto filled = container.filledPassInputs(pass_id);
+    std::string bindings;
+    for (const auto &entry : filled) {
+        if (!bindings.empty()) bindings += ", ";
+        bindings += std::to_string(entry.binding);
+    }
+    LOG_WARNING(logger,
+                "{}; the engine binds a default resource (zeros) at set 1 "
+                "binding(s) {}",
+                FullscreenInputBindingMismatch{std::move(*report)}.what(),
+                bindings);
+}
+
 PassId compileFullscreenPass(
     const PassDefinition &pass_def,
     FullscreenRuntimeDependencies dependencies,
@@ -2348,26 +2371,30 @@ PassId compileFullscreenPass(
             rendering,
             resource_interface.bindings);
 
-    if (!pass_def.input_targets.empty() || !pass_def.input_buffers.empty()) {
-        try {
-            dependencies.fullscreen_pass_container.setInputResources(
-                pass_id,
-                fullscreenPassInputs(
-                    pass_def, resource_interface,
-                    localReadInputMask(
-                        pass_def, rendering)),
-                pass_def.input_buffers,
-                dependencies.render_target_views,
-                dependencies.frame_graph_resources,
-                view,
-                logical_view_count);
-        } catch (const FullscreenInputBindingMismatch &mismatch) {
-            // Q-14e: the container knows the binding; the pass knows its name.
-            throw mismatch.inPass(
-                pass_def.name,
-                pass_def.fullscreenInfo().frag_shader.ref);
-        }
+    // Q-14f: a pass with no inputs goes through here too, so a shader that
+    // declares pass inputs it would never receive gets them filled with
+    // defaults (or, for a type that cannot be, is refused by name).
+    try {
+        dependencies.fullscreen_pass_container.setInputResources(
+            pass_id,
+            fullscreenPassInputs(
+                pass_def, resource_interface,
+                localReadInputMask(
+                    pass_def, rendering)),
+            pass_def.input_buffers,
+            dependencies.render_target_views,
+            dependencies.frame_graph_resources,
+            view,
+            logical_view_count);
+    } catch (const FullscreenInputBindingMismatch &mismatch) {
+        // Q-14e: the container knows the binding; the pass knows its name.
+        throw mismatch.inPass(
+            pass_def.name,
+            pass_def.fullscreenInfo().frag_shader.ref);
     }
+    warnFilledPassInputs(dependencies.fullscreen_pass_container, pass_id,
+                         pass_def.name,
+                         pass_def.fullscreenInfo().frag_shader.ref);
 
     return pass_id;
 }
@@ -2419,6 +2446,10 @@ PassId compileGenericRasterPass(
             throw mismatch.inPass(
                 pass_def.name, frag ? frag->ref : std::string{});
         }
+        const auto &frag = pass_def.genericRasterInfo().frag_shader;
+        warnFilledPassInputs(dependencies.fullscreen_pass_container, pass_id,
+                             pass_def.name,
+                             frag ? frag->ref : std::string{});
     }
     if (indexed) dependencies.fullscreen_pass_container.setIndexBuffer(pass_id,
         dependencies.frame_graph_resources.getBufferIdByName(indexed->index_buffer));

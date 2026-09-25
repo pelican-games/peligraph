@@ -12,6 +12,8 @@
 #include "../src/core/material/materialcontainer.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/engineprimitives.hpp"
+#include "../src/core/fullscreenpass/fullscreenpasscontainer.hpp"
+#include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
 #include "../src/project/projecttemplate.hpp"
@@ -836,8 +838,9 @@ void writeQ14eProject(const std::filesystem::path &root, const Json &present_inp
     writeFile(root / "shaders/present.frag", present_frag);
 }
 
-// Studio's edit of `present`'s inputs, and the ticket's terminal result.
-Json editPresentInputs(Rpc &rpc, const Json &inputs) {
+// Studio's edit of `present`'s inputs (and, Q-14f, its shader), and the
+// ticket's terminal result.
+Json editPresent(Rpc &rpc, const Json &inputs, const Json &shader) {
     const auto context = rpc.result("get_render_authoring_context");
     const auto sent = rpc.result("edit_preset_pass",
                                  {{"base_source_digest", context.at("source_digest").at("hex")},
@@ -845,7 +848,7 @@ Json editPresentInputs(Rpc &rpc, const Json &inputs) {
                                   {"pass_name", "present"},
                                   {"input", inputs},
                                   {"output", q14e_present_output},
-                                  {"shader", q14e_present_shader}});
+                                  {"shader", shader}});
     if (sent.value("status", std::string{}) != "accepted") return sent;
     for (int attempt = 0; attempt < 8; ++attempt) {
         (void)rpc.result("step_frame");
@@ -856,8 +859,88 @@ Json editPresentInputs(Rpc &rpc, const Json &inputs) {
     return Json{};
 }
 
+Json editPresentInputs(Rpc &rpc, const Json &inputs) {
+    return editPresent(rpc, inputs, q14e_present_shader);
+}
+
 constexpr std::string_view q14e_texture_lead =
     "Fullscreen pass input texture/local-read contract does not match shader reflection";
+
+// Q-14f: shaders that declare more pass inputs than present supplies. Each
+// writes what it reads with alpha 1, so a default (zero) input reads black.
+// Declares bindings 0 and 1 and reads 1.
+constexpr std::string_view q14f_reads_second_frag =
+    "#version 460\n#extension GL_GOOGLE_include_directive : require\n"
+    "#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\n"
+    "layout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n"
+    "PELICAN_DECLARE_INPUT_0(in_a);\nPELICAN_DECLARE_INPUT_1(in_b);\n\n"
+    "void main() {\n"
+    "    outColor = vec4(PELICAN_TEXTURE_2D_1(in_b, inUV).rgb, 1.0);\n"
+    "}\n";
+
+// Declares and reads binding 0.
+constexpr std::string_view q14f_reads_one_frag =
+    "#version 460\n#extension GL_GOOGLE_include_directive : require\n"
+    "#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\n"
+    "layout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n"
+    "PELICAN_DECLARE_INPUT_0(in_a);\n\n"
+    "void main() {\n"
+    "    outColor = vec4(PELICAN_TEXTURE_2D_0(in_a, inUV).rgb, 1.0);\n"
+    "}\n";
+
+// Reads binding 0 and declares a uniform buffer at binding 1: a type the
+// engine does not fill.
+constexpr std::string_view q14f_uniform_second_frag =
+    "#version 460\n#extension GL_GOOGLE_include_directive : require\n"
+    "#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\n"
+    "layout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n"
+    "PELICAN_DECLARE_INPUT_0(in_a);\n"
+    "layout(set = PELICAN_SET_PASS_INPUT, binding = 1) uniform Q14fTint { vec4 tint; } q14f_tint;\n\n"
+    "void main() {\n"
+    "    outColor = vec4(PELICAN_TEXTURE_2D_0(in_a, inUV).rgb * q14f_tint.tint.rgb, 1.0);\n"
+    "}\n";
+
+Json q14fPresentShader(std::string_view stem) {
+    return Json{{"vertex", "engine://fullscreen"},
+                {"fragment", "project://shaders/" + std::string{stem}}};
+}
+
+// How many pixels of a capture are not black.
+std::size_t q14fLitPixels(const std::vector<unsigned char> &rgba) {
+    std::size_t lit = 0;
+    for (std::size_t pixel = 0; pixel + 3 < rgba.size(); pixel += 4) {
+        if (rgba[pixel] > 2 || rgba[pixel + 1] > 2 || rgba[pixel + 2] > 2) ++lit;
+    }
+    return lit;
+}
+
+PassId q14fPresentPassId() {
+    const auto &passes = GET_MODULE(RenderingPassContainer);
+    std::optional<PassId> present;
+    for (const auto id : passes.getRegisteredPassIds()) {
+        for (const auto &pass : passes.getCompiledRenderingPass(id).passes) {
+            if (pass.definition.name == "present") present = pass.pass_id;
+        }
+    }
+    REQUIRE(present.has_value());
+    return *present;
+}
+
+// The running present pass's default-filled bindings.
+std::vector<std::uint32_t> q14fPresentFilledBindings() {
+    std::vector<std::uint32_t> bindings;
+    for (const auto &entry :
+         GET_MODULE(FullscreenPassContainer).filledPassInputs(q14fPresentPassId()))
+        bindings.push_back(entry.binding);
+    return bindings;
+}
+
+// The default descriptors written into present's sets: one per filled
+// binding in each of the two history-parity sets of its one variant.
+std::size_t q14fPresentFilledDescriptorWrites() {
+    return GET_MODULE(FullscreenPassContainer)
+        .filledDescriptorWritesForTesting(q14fPresentPassId());
+}
 
 } // namespace
 
@@ -890,6 +973,7 @@ TEST_CASE("Q-14e a present that reads nothing refuses an added input by binding,
     CHECK(error.at("shader_input_mismatch") ==
           Json{{"pass", "present"},
                {"fragment", "project://shaders/present"},
+               {"direction", "pass_input_undeclared"},
                {"kind", "texture"},
                {"binding", 0},
                {"resource", "q14e_a"},
@@ -930,6 +1014,7 @@ TEST_CASE("Q-14e a present that reads two inputs refuses a third at binding 2, t
     CHECK(error.at("message").get<std::string>().rfind(q14e_texture_lead, 0) == 0);
     REQUIRE(error.contains("shader_input_mismatch"));
     const auto &mismatch = error.at("shader_input_mismatch");
+    CHECK(mismatch.at("direction") == "pass_input_undeclared");
     CHECK(mismatch.at("binding") == 2);
     CHECK(mismatch.at("resource") == "q14e_c");
     CHECK(mismatch.at("pass_texture_inputs") == 3);
@@ -945,6 +1030,113 @@ TEST_CASE("Q-14e a present that reads two inputs refuses a third at binding 2, t
     const auto kept = editPresentInputs(rpc, Json::array({"q14e_b", "q14e_a"}));
     INFO(kept.dump(2));
     CHECK(kept.at("committed") == true);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+TEST_CASE("Q-14f a present that supplies one input fills a second binding its shader reads with black, through the running renderer",
+          "[q14f][render-config-editor][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("q14f_one");
+    const auto root = dir.root / "project";
+    writeQ14eProject(root, Json::array({"q14e_a"}), q14f_reads_one_frag);
+    writeFile(root / "shaders/q14f_reads_second.frag", q14f_reads_second_frag);
+    const auto capture = dir.root / "capture.png";
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    // The control: present reads q14e_a's pattern, which is lit everywhere.
+    const auto pattern = rpc.frame(capture);
+    REQUIRE(q14fLitPixels(pattern) == pattern.size() / 4);
+    CHECK(q14fPresentFilledBindings().empty());
+
+    // Binding 1 is read and no input supplies it: the edit commits and the
+    // engine binds its default (zeros) there.
+    const auto edited =
+        editPresent(rpc, Json::array({"q14e_a"}), q14fPresentShader("q14f_reads_second"));
+    INFO(edited.dump(2));
+    REQUIRE(edited.at("status") == "committed");
+    CHECK(edited.at("committed") == true);
+    CHECK(q14fPresentFilledBindings() == std::vector<std::uint32_t>{1});
+    CHECK(q14fPresentFilledDescriptorWrites() == 2);
+    const auto filled = rpc.frame(capture);
+    CHECK(q14fLitPixels(filled) == 0);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+TEST_CASE("Q-14f a present with no inputs fills the binding its shader reads with black, through the running renderer",
+          "[q14f][render-config-editor][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("q14f_none");
+    const auto root = dir.root / "project";
+    writeQ14eProject(root, Json::array(), q14e_pattern_frag);
+    writeFile(root / "shaders/q14f_reads_one.frag", q14f_reads_one_frag);
+    const auto capture = dir.root / "capture.png";
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    // The control: the blank present's gradient is lit everywhere.
+    const auto gradient = rpc.frame(capture);
+    REQUIRE(q14fLitPixels(gradient) == gradient.size() / 4);
+
+    const auto edited =
+        editPresent(rpc, Json::array(), q14fPresentShader("q14f_reads_one"));
+    INFO(edited.dump(2));
+    REQUIRE(edited.at("status") == "committed");
+    CHECK(edited.at("committed") == true);
+    CHECK(q14fPresentFilledBindings() == std::vector<std::uint32_t>{0});
+    CHECK(q14fPresentFilledDescriptorWrites() == 2);
+    const auto filled = rpc.frame(capture);
+    CHECK(q14fLitPixels(filled) == 0);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+TEST_CASE("Q-14f a present that supplies one input refuses a uniform buffer its shader declares past it, through the running renderer",
+          "[q14f][render-config-editor][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("q14f_uniform");
+    const auto root = dir.root / "project";
+    writeQ14eProject(root, Json::array({"q14e_a"}), q14f_reads_one_frag);
+    writeFile(root / "shaders/q14f_uniform_second.frag", q14f_uniform_second_frag);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    const auto root_before = readFile(rendering_path);
+
+    const auto refused =
+        editPresent(rpc, Json::array({"q14e_a"}), q14fPresentShader("q14f_uniform_second"));
+    INFO(refused.dump(2));
+    REQUIRE(refused.at("status") == "rejected");
+    CHECK(refused.at("committed") == false);
+    const auto &error = refused.at("error");
+    CHECK(error.at("code") == "render_pipeline_preflight_failed");
+    CHECK(error.at("message") ==
+          "Fullscreen shader declares a pass input the pass does not supply: pass 'present' "
+          "supplies 1 pass input, but fragment 'project://shaders/q14f_uniform_second' declares "
+          "a uniform buffer at set 1 binding 1 (shader declares 2 pass inputs)");
+    REQUIRE(error.contains("shader_input_mismatch"));
+    CHECK(error.at("shader_input_mismatch") ==
+          Json{{"pass", "present"},
+               {"fragment", "project://shaders/q14f_uniform_second"},
+               {"direction", "shader_input_unsupplied"},
+               {"kind", "buffer"},
+               {"binding", 1},
+               {"expected", "none"},
+               {"pass_texture_inputs", 1},
+               {"pass_buffer_inputs", 0},
+               {"shader_pass_inputs",
+                Json::array({{{"binding", 0}, {"type", "sampled_image"}},
+                             {{"binding", 1}, {"type", "uniform_buffer"}}})}});
+    CHECK(readFile(rendering_path) == root_before);
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 

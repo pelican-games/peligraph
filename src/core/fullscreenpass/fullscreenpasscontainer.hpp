@@ -1,12 +1,15 @@
 #pragma once
 
 #include "../container.hpp"
+#include "fullscreeninputbindingmismatch.hpp"
 #include "../renderingpass/passinputdescriptorvariant.hpp"
 #include "../renderingpass/renderingpass.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include <cstdint>
 #include <array>
+#include <memory>
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.hpp>
@@ -47,12 +50,34 @@ struct FullscreenPassInput {
     }
 };
 
+// Q-14f: a pass-input binding the shader declares and the pass does not
+// supply, bound to one of the container's default resources instead.
+struct FullscreenFilledPassInput {
+    std::uint32_t binding = 0;
+    vk::DescriptorType type = vk::DescriptorType::eCombinedImageSampler;
+    std::uint32_t count = 1;
+    ReflectedImageViewDimension image_view_dimension =
+        ReflectedImageViewDimension::none;
+};
+
 DECLARE_MODULE(FullscreenPassContainer) {
   public:
     PELICAN_DEFINE_HANDLE(PipelineId, uint32_t)
 
   private:
     vk::Device device;
+
+    // Q-14f: what an unsupplied pass-input binding reads: a 1x1 image of
+    // zeros (0,0,0,0) seen as 2D, 2D array and cube, and a zero-filled
+    // storage buffer. Created the first time a pass needs them.
+    struct DefaultPassInputResources;
+    std::unique_ptr<DefaultPassInputResources> default_inputs;
+    const DefaultPassInputResources &defaultPassInputResources();
+    // Writes the defaults into `set` and returns how many descriptor writes
+    // it submitted; defaultPassInputResources() must have been called first.
+    std::size_t writeFilledPassInputs(
+        vk::DescriptorSet set,
+        std::span<const FullscreenFilledPassInput> filled) const;
 
     std::array<vk::UniqueSampler, 6> input_samplers;
     vk::UniqueDescriptorPool desc_pool;
@@ -69,6 +94,11 @@ DECLARE_MODULE(FullscreenPassContainer) {
         GraphicsPipelineViewContract view;
         std::uint32_t logical_view_count = 1;
         uint64_t binding_revision = 0;
+        // Q-14f: declared bindings past the inputs, bound to defaults.
+        std::vector<FullscreenFilledPassInput> filled;
+        std::optional<FullscreenInputBindingMismatchInfo> fill_report;
+        // Descriptor writes of defaults, over every variant and parity.
+        std::size_t filled_descriptor_writes = 0;
     };
     std::unordered_map<int, InputTextureInfo> input_textures;
     uint64_t next_binding_revision = 1;
@@ -143,6 +173,17 @@ DECLARE_MODULE(FullscreenPassContainer) {
         PassId pass_id,
         const RenderTargetImageViewResolver &rt_views,
         const FrameGraphResourceContainer &frame_graph_resources);
+    // Q-14f: the bindings of the pass's shader that no input supplies and
+    // that are bound to a default resource instead, in binding order. Empty
+    // when the shader declares only what the pass supplies.
+    std::vector<FullscreenFilledPassInput> filledPassInputs(
+        PassId pass_id) const;
+    // The lowest filled binding, in the words a shader_input_unsupplied
+    // refusal would use (without the pass and fragment, which the pass
+    // compiler adds); nullopt when nothing is filled.
+    std::optional<FullscreenInputBindingMismatchInfo> filledPassInputReport(
+        PassId pass_id) const;
+    std::size_t filledDescriptorWritesForTesting(PassId pass_id) const;
     std::vector<vk::ImageView> boundInputImageViewsForTesting(
         PassId pass_id,
         std::uint32_t view_index = 0) const;

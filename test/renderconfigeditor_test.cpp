@@ -7282,6 +7282,7 @@ TEST_CASE("Q-14e a pass input the shader does not declare comes back as shader_i
         CHECK(Json::parse(error.at("shader_input_mismatch").dump()) ==
               Json{{"pass", "present"},
                    {"fragment", "project://shaders/present"},
+                   {"direction", "pass_input_undeclared"},
                    {"kind", "texture"},
                    {"binding", 0},
                    {"resource", "gbuffer_albedo"},
@@ -7307,6 +7308,7 @@ TEST_CASE("Q-14e a pass input the shader does not declare comes back as shader_i
             }};
         });
         const auto &mismatch = result.at("error").at("shader_input_mismatch");
+        CHECK(mismatch.at("direction") == "pass_input_undeclared");
         CHECK(mismatch.at("kind") == "buffer");
         CHECK(mismatch.at("binding") == 1);
         CHECK_FALSE(mismatch.contains("resource"));
@@ -7317,6 +7319,55 @@ TEST_CASE("Q-14e a pass input the shader does not declare comes back as shader_i
               "Fullscreen pass input buffer does not match shader reflection: input 1 "
               "expects a storage buffer at set 1 binding 1, but the shader declares a "
               "uniform buffer there (shader declares 2 pass inputs)");
+    }
+    SECTION("Q-14f: a declaration past the inputs the pass supplies") {
+        const auto result = refuse([] {
+            throw FullscreenInputBindingMismatch{FullscreenInputBindingMismatchInfo{
+                .pass = "present",
+                .fragment = "project://shaders/present",
+                .direction = fullscreenInputShaderInputUnsupplied,
+                .kind = "buffer",
+                .binding = 1,
+                .expected = "none",
+                .pass_texture_inputs = 1,
+                .pass_buffer_inputs = 0,
+                .shader_pass_inputs = {{0, "sampled_image"}, {1, "storage_buffer"}},
+            }};
+        });
+        const auto &error = result.at("error");
+        CHECK(Json::parse(error.at("shader_input_mismatch").dump()) ==
+              Json{{"pass", "present"},
+                   {"fragment", "project://shaders/present"},
+                   {"direction", "shader_input_unsupplied"},
+                   {"kind", "buffer"},
+                   {"binding", 1},
+                   {"expected", "none"},
+                   {"pass_texture_inputs", 1},
+                   {"pass_buffer_inputs", 0},
+                   {"shader_pass_inputs",
+                    Json::array({{{"binding", 0}, {"type", "sampled_image"}},
+                                 {{"binding", 1}, {"type", "storage_buffer"}}})}});
+        CHECK(error.at("message") ==
+              "Fullscreen shader declares a pass input the pass does not supply: pass "
+              "'present' supplies 1 pass input, but fragment 'project://shaders/present' "
+              "declares a storage buffer at set 1 binding 1 (shader declares 2 pass inputs)");
+    }
+    SECTION("Q-14f: with no pass named and no inputs supplied") {
+        const auto result = refuse([] {
+            throw FullscreenInputBindingMismatch{FullscreenInputBindingMismatchInfo{
+                .direction = fullscreenInputShaderInputUnsupplied,
+                .kind = "texture",
+                .binding = 0,
+                .expected = "none",
+                .shader_pass_inputs = {{0, "input_attachment"}},
+            }};
+        });
+        CHECK(result.at("error").at("shader_input_mismatch").at("direction") ==
+              "shader_input_unsupplied");
+        CHECK(result.at("error").at("message") ==
+              "Fullscreen shader declares a pass input the pass does not supply: the pass "
+              "supplies 0 pass inputs, but the shader declares an input attachment at set 1 "
+              "binding 0 (shader declares 1 pass input)");
     }
     SECTION("any other preflight refusal carries no shader_input_mismatch") {
         const auto result = refuse([] {
