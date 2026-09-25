@@ -25382,6 +25382,90 @@ engine の変更 / 移行の手順そのもの / 移行の取り消し(backup �
 - **テキスト入力の欄(受け入れ 3)**: 増やしていない。足したのはボタンと右クリックの項目だけ
 - **穴**: tab の切り替えの test は同じ関数を `QTabWidget` で包んだもので、MainWindow 全体を RPC 越しに動かしてはいない / Task Editor のボタンには widget test が無い(その dialog に RPC の継ぎ目が無い。Q-10 と同じ)/ Graph タブがまだ文書を読んでいないと、Open in Graph は「refresh it」の 1 行で止まる / `root` という名前の definition は root scope と見分けられない(engine 自身の scope の書き方)
 
+### Q-13: Frame Plan で node を動かした後の編集が `external_modification` で断られる(利用者の実用で発見、2026-09-25)
+
+**中段(Studio のみ)。実装者: Claude(Opus)。最優先。**
+
+#### 症状(別 session の診断)
+- blank project → Frame Plan で node を動かす(配置が `edit_graph_document` の `set_layout` で保存される)→ Add material pass… → Deferred geometry → OK → status 行に `external_modification: render config base digest no longer matches the engine-owned document`。render target も pass もできない。form を開き直しても同じ
+- 原因: engine は layout だけの commit で `document_` を更新し、応答に新しい `source_digest` を返す。しかし Frame Plan の widget は layout だけの commit の後に `authoring` context(`source_digest` を持つ)を読み直さない。`materialPassTargetsRequest(authoring, …)` が古い digest を送り、CAS で断られる
+- 同じ `authoring` を使う他の編集も同じ: Add fullscreen pass、render target の作成・編集・削除、辺の接続・切断、帯、Delete など。Graph タブ・Pass Editor・Render Features など、digest を覚えている他の panel も、別の panel の commit(layout を含む)の後に古い digest を持っていないか確認する
+- 回避策(利用者に伝え済み): project を開き直す
+
+#### 決定
+1. **commit のたびに、digest を覚えている全ての panel が新しい digest を知る**: どの panel の commit(layout だけの `source_only` を含む)でも、応答の `source_digest`(または commit 後の文書の digest)を Studio 全体に配る(MainWindow か共有の model に「現在の render config の digest」を 1 つ持ち、変わったら各 panel が自分の context を更新 or 読み直す)。panel ごとの digest の複製をやめられるならやめる(第二の流儀を作らない)
+2. **`external_modification` で断られたら、1 回だけ context を読み直し、要求を作り直して送り直す**(前の要求の byte をそのまま再送しない)。2 回目も断られたら、status 行に「文書が外で変わりました」+ **Reload** の動作(context を読み直す)
+3. 他の panel(Graph タブの `set_layout`、Pass Editor、Render Features、Task Editor)で同じ種類の「古い digest」が起きる経路を探して同じ仕組みに乗せる
+
+#### 受け入れ
+1. 再現 test(widget / scene、fake の RPC): Frame Plan で `set_layout` の commit の応答(新しい digest)を受けた後、Add material pass… の要求が新しい digest で出る(対照: 配らない変異で古い digest → 赤)
+2. `external_modification` の応答で、context の読み直しと要求の作り直しが 1 回だけ起き、2 回目の拒否で Reload の表示
+3. シナリオ(新規 `frameplan_layout_then_edit`): blank project → Frame Plan の node を drag → Add material pass… → Deferred geometry → OK → pass と target ができる。Graph タブで node を動かした後の Frame Plan の編集も 1 本
+4. 既存の Frame Plan / Pass Editor / Graph の test とシナリオ(`frameplan_edit_roundtrip`、`material_pass_authoring`、`render_target_authoring`、`graph_reroute_tie`)緑
+5. 報告にテキスト入力の欄(増やさない)
+
+#### 着地(2026-09-25、3737c1e7)
+- **決定 1**: Studio に共有の `RenderConfigDigest` を 1 つ置いた([共有の digest](../src/devstudio/view/renderconfigdigest.hpp#L25))。MainWindow が作って Frame Plan・Pass Editor・Graph タブ・Render Features に渡す([MainWindow が配る所](../src/devstudio/view/mainwindow.cpp#L421))。panel は自分が読んだ digest と commit した digest を `publish` し、publish した panel 以外の全員が知らされる。空の digest と今と同じ digest は誰にも知らせない
+  - **panel ごとの digest は残した**(決定 1 の「複製をやめる」はしなかった): 共有の方が持つのは「今の版」と通知だけ。要求は、その中身を組んだ context の digest で送る。共有の digest だけで送ると、古い context から組んだ中身が新しい版として通り、他の panel の変更を上書きしうるため
+  - 知らされた panel は自分の context を読み直す: Frame Plan は authoring context と task の authoring を(読んでいる最中なら、終わった後にもう 1 回)([Frame Plan が知らされる所](../src/devstudio/view/frameplanwidget.cpp#L1370))、Pass Editor は form の下書きを残したまま([Pass Editor が知らされる所](../src/devstudio/view/fullscreenpasswidget.cpp#L2726))、Graph タブは文書を読み直し(編集中なら終わってから)、Render Features は Refresh(編集の ticket が残っていれば終わってから)
+- **決定 2**: Frame Plan は編集(辺の接続・切断、帯、Delete、render target の作成・編集・削除、material pass の 2 段)を「context から要求を組む関数」として持つ。`external_modification` で断られると context を 1 回読み直し、同じ関数で要求を組み直して送る。断られた byte は再送しない([組み直す所](../src/devstudio/view/frameplanwidget.cpp#L1392))。2 回目の拒否では status 行が `The document changed outside this panel. Press Reload to read it again.` になり、横に **Reload**(`pelican.framePlan.reloadAuthoring`)が出る([Reload を出す所](../src/devstudio/view/frameplanwidget.cpp#L1437))。Reload は context を読み直すだけで、変更は利用者がもう一度行う
+  - Pass Editor も同じ形: form を残して context を読み直し、Save / Remove を 1 回組み直す。2 回目は authoring の notice に同じ意味の文と **Reload**(`pelican.fullscreenPass.reloadAuthoring`)([Pass Editor の組み直し](../src/devstudio/view/fullscreenpasswidget.cpp#L2747))
+- **決定 3**: Graph タブは、断られた編集の op が全部 `set_layout` のときだけ、次の読みの後に同じ op 列を 1 回送り直す。配置は canvas 自身のものなので、組み直しても同じ op 列になる。ほかの gesture は今までどおり捨てて notice を出し、読み直す([送り直す配置を覚える所](../src/devstudio/model/graphcanvasmodel.cpp#L514))
+  - Render Features は staged の編集を覚えておき、読み直した `source_digest` で 1 回送り直す。2 回目は `The document changed outside this panel. Press Refresh to read it again.`([Render Features の送り直し](../src/devstudio/view/renderfeatureswidget.cpp#L2685))
+  - Task Editor(`ComputeTaskDialog`)は、変えた下書きを残して読み直し、root の digest だけを新しくして 1 回送り直す(task 自身の digest はそのままで、task を守る)。2 回目は `Press Refresh`([Task Editor の送り直し](../src/devstudio/view/renderfeatureswidget.cpp#L768))
+  - Render Features と Task Editor は新しいボタンを作らず、既存の **Refresh** を Reload として使う
+  - Task Editor 自身は共有の digest を購読していない。Task Editor の commit は Render Features の Refresh を経て他の panel に届き、他の panel の commit は Task Editor に届かない(拒否されてから読み直す)。commit の記録は「Task Editor も通知で読み直す」と書いているが、コードで確かめられたのは送り直しだけ
+- **作業中に直した後退**: Pass Editor の裏の読み直し(文書が動いたための読み)が、Add fullscreen pass で選んだ挿入位置を form から奪っていた。動いた文書のための読みでは位置を保ち、pass の読み込み直しもしない([位置を保つ所](../src/devstudio/view/fullscreenpasswidget.cpp#L2708))
+- **test**: `devstudio_frameplan_graph_test` の `Q-13 a placement another panel committed reaches the Frame Plan before its next edit` と `Q-13 an edit refused for a moved document is built again once from a fresh context, and the second refusal offers Reload`、`devstudio_fullscreen_pass_test` の `Q-13 the Pass Editor reads the document again when another panel moved it, and builds a refused Save once more from that`、`devstudio_graphcanvas_test` の `Q-13 a placement refused for a moved document is written once more against the revision read next`。変異(commit の記録): 共有しない → 赤、送り直さない → 赤
+  - 既存の G-6 の test(`G-6 a refused edit shows its code and the graph that refused it ...`)は、「variant の無い拒否は code を行に残す」例の code を `external_modification` から `gate_closed` に替えた。`external_modification` は今は先に読み直しに入るため
+- **受け入れ 3**: 新しいシナリオ `frameplan_layout_then_edit`(41 step、[シナリオ](../test/studio_scenarios/frameplan_layout_then_edit.json))。fixture で Graph タブの instance `left` を drag して配置が保存された後、Frame Plan の New render target... で `q13_after_graph` ができる。続けて Blank pipeline の project で Frame Plan の `present` を drag し、配置の保存の後に Add material pass... → Deferred geometry → OK で pass と target 6 枚ができ、配置も残る。status 行が一度も `external_modification` を言わないことも見る。commit の記録では、両方の修正を外すと利用者が見たとおり赤
+- **受け入れ 4**: commit の記録では `frameplan_edit_roundtrip`、`material_pass_authoring`、`render_target_authoring`、`graph_reroute_tie` が緑。`-L studio_cpu -LE gpu` の全数の記載は無い(未確認)
+- **テキスト入力の欄(受け入れ 5)**: 増やしていない。足したのは Frame Plan と Pass Editor の Reload ボタンだけ。新しいシナリオで打つのは target の名前とフォルダの 2 つ
+- **穴**: `GraphAttachmentModel`、`ProceduralAssetDialog`、Render Features の小さな dialog 4 つ(`FrameNodeOrderDialog` / `PresetEditDialog` / `CallableRecordsDialog` / `SceneAccelerationStructuresDialog`)は共有の digest に乗っていない(開いたときに読む短命の dialog)/ 隠れている Frame Plan は通知では読まず、表に出たとき(`showEvent`)に読む / Render Features と Task Editor の新しい挙動には専用の test が無い
+
+### Q-14: shader が読んでいない入力を pass に足すと、何をすればよいか分からない拒否になる(利用者の実用で発見、2026-09-25)
+
+**中段(Studio のみ。engine の文言の改善は別 session に依頼)。実装者: Claude(Opus)。最優先。**
+
+#### 症状(別 session の診断)
+- blank 雛形(`present.frag` は何も読まない)+ Add material pass → Deferred geometry の project で、`present` に `gbuffer_albedo` を読ませようとした(canvas で `gbuffer_albedo` の socket から `present` へ drag、または Pass Editor の Inputs > Add)→ `{"committed":false,"error":{"code":"render_pipeline_preflight_failed",...}}`。player.log は「Fullscreen pass input texture/local-read contract does not match shader reflection」
+- 原因: 要求は shader を変えずに送られる。pass の入力の数と shader の sampler の宣言が食い違い、preflight が断る。正しい拒否だが、利用者には次に何をすればよいか分からない
+- 利用者への暫定の案内(別 session から): 入力を足してから New... > Pass-through を選び、1 回 Save する
+
+#### 決定
+1. **拒否を読める 1 行に**: preflight の拒否の message に「does not match shader reflection」(fullscreen の入力の契約の不一致)が含まれるとき、Frame Plan の status 行と Pass Editor の log 欄に「`<pass>` の shader(`<fragment の stem>`)は入力を `<N>` 個しか読んでいません。入力を変えるなら shader も変えてください。」相当の 1 行(N は engine の message から取れるなら使い、取れなければ数を言わない)。英語の Studio の画面なら英語で同じ意味
+2. **その場で直せる 2 つの動作**を、その行の横に:
+   - **Make a pass-through shader**: 今の入力(足そうとした入力を含む)で F-3 / G-3 の Pass-through の雛形から新しい shader を書き(既存ファイルは上書きしない。名前は T-1 の規則 `<pass>_pass_through` など)、fragment をそれに替え、入力の変更と shader の変更を 1 回の要求で送り直す
+   - **Open the shader**: 今の fragment の file を外部エディタで開き、足すべき宣言と sample の行を clipboard に入れ、1 行で「宣言を足して保存すると F-5 の reload で反映されます。その後もう一度つないでください」
+3. **先回り(可能なら)**: Pass Editor で Inputs を Add したとき、fragment が project の shader で、その file の `PELICAN_DECLARE_INPUT_` の数が足した後の入力数より少ないなら、Save の前に form の中に同じ注意と 2 つの動作を出す(file を読むだけの簡易判定)。canvas の drag は送ってから拒否を受ける今の流れのままでよい
+4. シナリオ `input_needs_shader`: blank → Deferred geometry → present に gbuffer_albedo を drag → 拒否の行と 2 つのボタン → Make a pass-through shader → commit され、画面が gbuffer_albedo の色になる
+
+#### 受け入れ
+1. 純関数: reflection の不一致の拒否 → 読める行と 2 つの動作 / 他の拒否には出さない(対照: 判定を外す変異で赤)
+2. Make a pass-through shader の要求: 入力と fragment が 1 回の要求に乗る(widget test)
+3. シナリオ `input_needs_shader` 緑。既存の `render_pipeline_from_scratch`、`forward_loop_from_scratch`、`deferred_loop_from_scratch`、`frameplan_edit_roundtrip` 緑
+4. `-L studio_cpu -LE gpu` 緑。報告にテキスト入力の欄
+
+#### 着地(2026-09-25、9a0c52c0。engine 側は別 session の Q-14e = f8030dda)
+- **engine 側(Q-14e、別 session、f8030dda)**: 入力の契約の拒否が型付きの例外 `FullscreenInputBindingMismatch` になり、`render_pipeline_preflight_failed` の `error` に **`shader_input_mismatch`** `{pass, fragment, kind, binding, resource(任意), expected, pass_texture_inputs, pass_buffer_inputs, shader_pass_inputs[{binding, type}]}` が付く([field を足す所](../src/core/communication/renderconfigeditor.cpp#L72))。message は前からの文の後に `: pass '<pass>' input <binding> ('<resource>') expects a sampled image at set 1 binding <binding>, but fragment '<fragment>' declares no pass input at that binding (shader declares <N> pass inputs)` が続く([文を組む所](../src/core/fullscreenpass/fullscreeninputbindingmismatch.cpp#L24))。Studio の編集では `edit_preset_pass` 自体は受け付けられ、拒否は `get_edit_result` の最終の `error` に来る(別 session の報告)。書式の詳細は第13章 §13.5 と第6章 §6.4
+- **Studio が先に着地した**: Studio の commit の時点で Q-14e はまだ途中で、Studio は両方の形を読む。`shader_input_mismatch` があればそれを優先し(pass と fragment も engine の名指しを使う)、無ければ message の文で判定する
+- **決定 1**: 純関数 `shaderInputContractNotice`([拒否を読む所](../src/devstudio/view/shaderinputcontract.cpp#L92))。code が `render_pipeline_preflight_failed`(か空)で、`error` に `shader_input_mismatch` の object があるか、message に `Fullscreen pass input` と `does not match shader reflection` の両方があるときだけ当たる。material の descriptor や raster の vertex layout の同じ句の拒否は当たらない
+  - 行は英語: `<pass>'s shader (<fragment の stem>) reads only N inputs. To change its inputs, change the shader too.`(N = 0 なら `reads no inputs.`、1 なら `reads only 1 input.`、分からなければ `does not read the inputs the pass lists.`)([行を作る所](../src/devstudio/view/shaderinputcontract.cpp#L76))
+  - **N の出所の順**: `shader_input_mismatch.shader_pass_inputs` の要素数 → message の `(shader declares N pass input…)` → fragment の file の宣言行の数(下の決定 3 と同じ数え方) → 言わない
+  - Frame Plan: status 行に行、横に **Make a pass-through shader**(`pelican.framePlan.shaderContract.makePassThrough`)と **Open the shader**(`pelican.framePlan.shaderContract.openShader`)。status 行の tooltip は engine の全文。出すのは、送った要求が `edit_preset_pass` で `shader.fragment` と `input` を持つときだけ([Frame Plan の行とボタン](../src/devstudio/view/frameplanwidget.cpp#L1633))
+  - Pass Editor: compile log の欄の下に行と 2 つのボタン(`pelican.fullscreenPass.shaderContract`)。authoring の notice も同じ行
+- **決定 2**: Make a pass-through shader は `<pass>_pass_through`(T-1 の畳み方。file があれば `_2`、`_3`…。既存の file は上書きしない)([名前を決める所](../src/devstudio/view/shaderinputcontract.cpp#L192))に、今の入力で Pass-through の雛形を書く。Frame Plan は入力の一覧と `shader.fragment` を 1 回の `edit_preset_pass` で送る([1 回の要求](../src/devstudio/view/frameplanedit.cpp#L420))。Pass Editor の拒否の後は fragment 欄に入れてすぐ保存する(Save と同じ経路で、入力と shader が 1 回の要求)
+  - Open the shader は fragment の file を desktop で開き、clipboard に、今の宣言数の番号から先の入力の `PELICAN_DECLARE_INPUT_<i>(<名前>);` と main 用の `vec4 value<i> = PELICAN_TEXTURE_2D_<i>(<名前>, inUV);` を入れる。先頭に「shader に無ければ `#version` の後に足す」3 行(`#extension GL_GOOGLE_include_directive` と `pelican_sets.glsl` / `pelican_view.glsl` の include)が注釈で付く([clipboard の中身](../src/devstudio/view/fullscreenshadertemplate.cpp#L290))。status は `The declarations are on the clipboard: add them to the shader and save, and it reloads by itself. Then connect the input again.`(Pass Editor は最後が `Then press Save again.`)。`project://` でない fragment では押せない
+- **決定 3**: Pass Editor の Save の前の検査([Save の前の検査](../src/devstudio/view/fullscreenpasswidget.cpp#L891))。fragment が project の file で読めるとき、その宣言行の数が入力の数より少なければ、入力の欄の下(`pelican.fullscreenPass.inputContract`)に同じ行と 2 つのボタンを出す。ここでの Make a pass-through は fragment 欄を埋めるだけで、送るのは利用者の Save
+  - 数え方は reflection ではなく行の数え上げ([宣言行を数える所](../src/devstudio/view/shaderinputcontract.cpp#L131)): `//` より前の `PELICAN_DECLARE_INPUT_<i>(` と、手書きの `set = PELICAN_SET_PASS_INPUT, binding = <i>`。`#` で始まる行は数えない。同じ番号は 1 つ
+  - canvas の drag は送ってから拒否を受ける流れのまま
+- **決定 4 / 受け入れ 3**: 新しいシナリオ `input_needs_shader`(59 step、[シナリオ](../test/studio_scenarios/input_needs_shader.json))。Blank pipeline → Cube → Deferred geometry → `gbuffer_albedo` を `present` へ drag → status 行が `present's shader (present) reads no inputs. To change its inputs, change the shader too.`、2 つのボタンが出て押せる → engine の `present` の入力は 0 のまま → Make a pass-through shader → `present` が `gbuffer_albedo` を `project://shaders/present_pass_through` で読む。新しい file は `PELICAN_DECLARE_INPUT_0(in_gbuffer_albedo);` を持ち、`present.frag` は書き換わらない。viewport は gradient でなくなり、箱の albedo が背景と違う色
+  - commit の記録では、既存の 3 本の from-scratch シナリオと `frameplan_edit_roundtrip` が緑
+- **test**: `devstudio_fullscreen_pass_test` の `Q-14 the input contract refusal reads as one line with two ways out, and no other refusal does` / `Q-14 the simple check counts a fragment's declaration lines` / `Q-14 the Pass Editor says what to do when a Save gives a pass an input its shader does not read, and fixes it in one request`、`devstudio_frameplan_graph_test` の `Q-14 the inputs and the fragment of a pass travel in one request` / `Q-14 a drag its shader cannot read is refused with a line that says what to do, and Make a pass-through shader sends inputs and shader together`。変異(commit の記録): 常に当たる → 赤、入力を落とす → 赤
+- **受け入れ 4**: `-L studio_cpu -LE gpu` の全数の記載は commit の記録に無い(未確認)
+- **テキスト入力の欄**: 増やしていない。足したのは行とボタン 2 つ(Frame Plan と Pass Editor の 2 か所ずつ)。新しいシナリオで打つのはフォルダだけ
+- **穴**: Save の前の検査は宣言行の数え上げで、reflection ではない(`/* */` の注釈も `#include` の中も見ず、型も見ない)/ buffer の入力にも同じボタンが出るが、Pass-through の雛形は buffer を宣言しない / Open the shader の clipboard は宣言の番号が 0 から詰まっていると仮定する / Frame Plan の Make a pass-through は送る前に shader の file を書くので、送信が断られても file は残る
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
