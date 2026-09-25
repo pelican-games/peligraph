@@ -223,6 +223,8 @@ GraphCanvasModel::takeRead(std::uint64_t id) {
 void GraphCanvasModel::clearContext() {
     clearHistory();
     digest_.clear();
+    layout_retry_.reset();
+    layout_retrying_ = false;
     nodes_ = Json::array();
     definitions_ = Json::object();
     layout_ = Json::object();
@@ -509,6 +511,21 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                 // gesture is discarded, the reason is shown, and the canvas
                 // reads the document again rather than keeping a stale one.
                 ticket_.clear();
+                // Q-13: a placement refused for a moved document goes again
+                // once the document is read (see layout_retry_).
+                const auto &error = response.at("error");
+                const bool moved =
+                    error.is_object() &&
+                    error.value("code", std::string{}) == "external_modification";
+                if (moved && !std::exchange(layout_retrying_, false) &&
+                    pending_history_ &&
+                    pending_history_->action == HistoryAction::Edit &&
+                    std::ranges::all_of(pending_history_->entry.forward,
+                                        [](const Json &op) {
+                                            return op.value("op", std::string{}) ==
+                                                   "set_layout";
+                                        }))
+                    layout_retry_ = pending_history_->entry.forward;
                 pending_history_.reset();
                 edit_notice_ = {InspectorNoticeKind::Error, diagnostic(response)};
                 refresh();
@@ -532,10 +549,12 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             if (status != "committed")
                 throw std::invalid_argument("The graph edit did not commit: " + status);
             commitHistory(response);
+            layout_retrying_ = false;
             edit_notice_ = {InspectorNoticeKind::Success, "Graph change saved."};
             refresh();
         } catch (const std::exception &error) {
             ticket_.clear();
+            layout_retrying_ = false;
             pending_history_.reset();
             edit_notice_ = {InspectorNoticeKind::Error, error.what()};
             refresh();
@@ -593,6 +612,9 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             clearHistory();
         context_received_ = true;
         failure_ = {};
+        // Q-13: the placement a moved document refused, against this one.
+        if (auto retry = std::exchange(layout_retry_, std::nullopt))
+            layout_retrying_ = submitOps(std::move(*retry));
         if (placement_only) {
             // The nodes, their ports and the scopes are the ones already
             // drawn, so the values reported against them still stand: asking

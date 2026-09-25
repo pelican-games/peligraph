@@ -26,6 +26,8 @@ class QKeyEvent;
 
 namespace PelicanStudio {
 
+class RenderConfigDigest;
+
 // Data roles make the rendered canvas inspectable without coupling callers to
 // private QGraphicsItem subclasses. Identity is the scope plus the node id,
 // which is exactly the key a retained position is filed under.
@@ -473,6 +475,10 @@ class GraphCanvasWidget final : public QWidget {
     // Q-8. The project whose UI document names the nodes a ui.* sink can
     // write. Read again whenever the list is about to be offered.
     void setProjectRoot(const std::filesystem::path &project_root);
+    // Q-13. The rendering document's digest, shared with the other panels
+    // that edit it: the tab says which revision it read, and reads the
+    // document again when another panel's commit moved it.
+    void setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> digest);
 
     GraphCanvasModel &model();
     GraphCanvasScene &scene();

@@ -1,0 +1,300 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "frameplan_layout_then_edit",
+  "description": "Q-13: moving a node saves its placement with set_layout, which is a commit of the rendering document like any other and moves its digest. The panel that edits next must send the new digest. On the fixture, a node dragged in the Graph tab is followed by New render target... on the Frame Plan; on a Blank pipeline project, the Frame Plan's own present node is dragged and Add material pass... > Deferred geometry > OK then makes the pass and its targets, where it used to be refused as external_modification until the project was opened again.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout: the panel layout is the desktop's, saved by whichever Studio closed last",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "the fixture's frame plan arrives, so the Frame Plan has read the document",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#gbuffer_pass",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the document holds no placement yet",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "layout.$len",
+      "value": 0
+    },
+    {
+      "label": "Ctrl+Tab to the Features tab",
+      "cmd": "key",
+      "name": "pelican.renderTools",
+      "sequence": "Ctrl+Tab"
+    },
+    {
+      "label": "and on to the Graph tab",
+      "cmd": "key",
+      "name": "pelican.renderTools",
+      "sequence": "Ctrl+Tab"
+    },
+    {
+      "label": "the Graph tab draws the root's instance",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "drag the instance by its heading to a place on the canvas",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_node_header#left"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_node_header#left",
+        "scene": [
+          420,
+          260
+        ]
+      },
+      "steps": 6
+    },
+    {
+      "label": "the placement is saved: a commit of the rendering document",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "layout.nodes.left.$len",
+      "value": 2,
+      "retry_ms": 60000
+    },
+    {
+      "label": "Ctrl+Tab back round to the Frame Plan",
+      "cmd": "key",
+      "name": "pelican.renderTools",
+      "sequence": "Ctrl+Tab"
+    },
+    {
+      "label": "the Frame Plan is in front again",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#gbuffer_pass",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "New render target..., after the Graph tab's commit",
+      "cmd": "action",
+      "name": "pelican.framePlan.newRenderTarget"
+    },
+    {
+      "label": "the form is open",
+      "cmd": "wait",
+      "name": "pelican.renderTargetForm.name",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "a name",
+      "cmd": "type",
+      "name": "pelican.renderTargetForm.name",
+      "text": "q13_after_graph"
+    },
+    {
+      "label": "OK",
+      "cmd": "click",
+      "name": "pelican.renderTargetForm.ok"
+    },
+    {
+      "label": "the target is made and drawn",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::resource_node#q13_after_graph",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "it is in the editor's fragment on disk",
+      "file": "contains",
+      "path": "{project}/passes/authoring/render-targets.json",
+      "text": "q13_after_graph",
+      "value": true
+    },
+    {
+      "label": "and the Frame Plan never said external_modification",
+      "expect": "result",
+      "command": {"cmd": "text", "name": "pelican.framePlanStatus"},
+      "path": "text",
+      "op": "excludes",
+      "value": "external_modification"
+    },
+    {
+      "label": "File > New Project...",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts, never the repository",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the new project's frame plan has its one pass",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine answers editor RPC and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the new project holds no placement yet",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "layout.$len",
+      "value": 0,
+      "retry_ms": 60000
+    },
+    {
+      "label": "drag present by its heading to the corner of the canvas",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.framePlanLogicalView::node_header#present"
+      },
+      "to": {
+        "name": "pelican.framePlanLogicalView::node_header#present",
+        "point": [
+          60,
+          60
+        ]
+      },
+      "steps": 8
+    },
+    {
+      "label": "the placement is saved through set_layout, after the debounce",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "layout.frame_plan.main_render.nodes.present.$len",
+      "value": 2,
+      "retry_ms": 60000
+    },
+    {
+      "label": "Add material pass..., right after the placement's commit",
+      "cmd": "action",
+      "name": "pelican.framePlan.addMaterialPass"
+    },
+    {
+      "label": "the form is open",
+      "cmd": "wait",
+      "name": "pelican.materialPassForm.name",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Deferred geometry",
+      "cmd": "select",
+      "name": "pelican.materialPassForm.contract",
+      "text": "Deferred geometry (G-buffer)"
+    },
+    {
+      "label": "the pass is named after it, with nothing typed",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.name",
+      "value": "deferred_geometry"
+    },
+    {
+      "label": "OK: the six targets, then the pass",
+      "cmd": "click",
+      "name": "pelican.materialPassForm.ok"
+    },
+    {
+      "label": "the form closed",
+      "cmd": "wait",
+      "name": "pelican.materialPassForm.name",
+      "visible": false,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the engine runs deferred_geometry after present, the node the drag picked",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].name",
+      "value": "deferred_geometry",
+      "retry_ms": 120000
+    },
+    {
+      "label": "with its six targets declared, beside the display the engine provides",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "render_targets.$len",
+      "value": 7
+    },
+    {
+      "label": "the canvas draws it",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#deferred_geometry",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the Frame Plan never said external_modification",
+      "expect": "result",
+      "command": {"cmd": "text", "name": "pelican.framePlanStatus"},
+      "path": "text",
+      "op": "excludes",
+      "value": "external_modification"
+    },
+    {
+      "label": "and the placement is still the one dragged",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "layout.frame_plan.main_render.nodes.present.$len",
+      "value": 2
+    },
+    {
+      "label": "a picture of the Frame Plan for the reader of this report",
+      "expect": "screenshot",
+      "name": "pelican.framePlan",
+      "path": "frameplan_layout_then_edit_canvas.png"
+    }
+  ]
+}

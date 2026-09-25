@@ -18,6 +18,7 @@ class QString;
 namespace PelicanStudio {
 
 class EmbeddedViewport;
+class RenderConfigDigest;
 struct ShaderReloadOutcome;
 
 class FramePlanWidget final : public QWidget {
@@ -68,6 +69,10 @@ class FramePlanWidget final : public QWidget {
     // The bands, the notices and the placement all want a fresh authoring
     // context; this is the one place that asks for it.
     void refreshAuthoringContext();
+    // Q-13. The rendering document's current digest, shared with every panel
+    // that edits it: this panel says what it read and committed, and reads its
+    // context again when another panel's commit moved the document.
+    void setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> digest);
     void setProjectRoot(const std::filesystem::path &project_root);
     void setShaderSourceOpenAction(ShaderSourceOpenAction action);
     // F-3. A get_status result: its shader reload failures become marks on

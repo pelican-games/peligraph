@@ -11,6 +11,7 @@
 #include "newprojectdialog.hpp"
 #include "panelhelp.hpp"
 #include "projectmigrationwidget.hpp"
+#include "renderconfigdigest.hpp"
 #include "renderfeatureswidget.hpp"
 #include "studiotheme.hpp"
 #include "../viewport/embeddedviewport.hpp"
@@ -412,6 +413,17 @@ void MainWindow::createWorkspace() {
     // through that tab's debounce, because `set_layout` replaces the whole
     // object and two writers would erase each other.
     frame_plan_->setEditCapability(framePlanEditCapability(*viewport_));
+    // Q-13. One digest for the rendering document, shared by every panel
+    // that edits it: a commit in any of them -- a node's placement included --
+    // is news to the others, which read their context again rather than send
+    // the revision they read before it.
+    {
+        auto digest = std::make_shared<RenderConfigDigest>();
+        frame_plan_->setRenderConfigDigest(digest);
+        fullscreen_pass_->setRenderConfigDigest(digest);
+        graph_canvas_->setRenderConfigDigest(digest);
+        render_features_->setRenderConfigDigest(digest);
+    }
     frame_plan_->setLayoutCapability(FramePlanLayoutCapability{
         .read = [this] { return graph_canvas_->scene().layoutMember("frame_plan"); },
         .write = [this](const nlohmann::json &frame_plan, QString *reason) {

@@ -12,6 +12,7 @@ class QString;
 namespace PelicanStudio {
 
 class EmbeddedViewport;
+class RenderConfigDigest;
 
 // RPC-only Studio surface for the engine-owned authored config features[].
 // It deliberately has no pelican_core types or feature-name constants.
@@ -39,6 +40,10 @@ class RenderFeaturesWidget final : public QWidget {
     using GraphNodeOpenAction = std::function<bool(
         const QString &scope, const QString &node, const QString &instance)>;
     void setGraphNodeOpenAction(GraphNodeOpenAction action);
+    // Q-13. The rendering document's digest, shared with the other panels
+    // that edit it: the panel refreshes when another panel's commit moved
+    // the document, and sends an edit refused for that once more.
+    void setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> digest);
 
   signals:
     void renderConfigCommitted();

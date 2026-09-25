@@ -9,6 +9,7 @@ add_library(pelican_studio_view STATIC
     frameplanedit.hpp
     frameplaneditcapability.cpp
     frameplaneditcapability.hpp
+    renderconfigdigest.hpp
     rendertargetform.cpp
     rendertargetform.hpp
     materialpassedit.cpp

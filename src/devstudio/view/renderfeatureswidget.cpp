@@ -1,6 +1,7 @@
 #include "renderfeatureswidget.hpp"
 #include "frameplanedit.hpp"
 #include "panelhelp.hpp"
+#include "renderconfigdigest.hpp"
 #include "proceduralassetdialog.hpp"
 #include "jsonrpcrequest.hpp"
 #include "taskresourceconnections.hpp"
@@ -687,6 +688,8 @@ private:
         discard_new_drafts_on_read = false;
       poll.stop();
       notice->setText(error);
+    } else if (kind == Request::Submit) {
+      submitted_retried = std::exchange(retrying, false);
     }
     controls();
   }
@@ -745,6 +748,7 @@ private:
         return;
       }
       params = exactJsonRpcObject(outgoing.params);
+      submitted_remove = false;
       submitted_creation = creation;
       submitted_name = document.object().value("name").toString();
       request(Request::Submit, QString::fromStdString(outgoing.method), params);
@@ -752,10 +756,56 @@ private:
       notice->setText(QString::fromUtf8(error.what()));
     }
   }
+  // --- Q-13. Another panel's commit moved the rendering document since this
+  // editor read it, and the engine refused the edit for that. The drafts are
+  // kept through one more read, the edit is sent once more against the root
+  // revision read -- its task's own digest still guards the task -- and a
+  // second refusal leaves it to Refresh.
+  bool submitted_remove = false;
+  bool submitted_retried = false;
+  bool retrying = false;
+  bool retry_pending = false;
+  bool refusedForMovedDocument(const QJsonObject &response) {
+    if (response.value("error").toObject().value("code").toString() !=
+        QStringLiteral("external_modification"))
+      return false;
+    if (submitted_retried) {
+      notice->setText(tr("The document changed outside this editor. Press "
+                         "Refresh to read it again. (%1)")
+                          .arg(responseError(response)));
+      return true;
+    }
+    for (const auto &entry : tasks) {
+      const auto name = entry.toObject().value("name").toString();
+      if (drafts.value(name).text != original_declarations.value(name))
+        retained_drafts.insert(name, drafts.value(name));
+    }
+    retry_pending = true;
+    notice->setText(tr("The document changed since this editor read it; "
+                       "reading it again..."));
+    read();
+    return true;
+  }
+  void resumeRetry() {
+    retry_pending = false;
+    if (submitted_creation >= 0)
+      new_drafts[submitted_creation].root_digest = root_digest;
+    else if (drafts.contains(submitted_name))
+      drafts[submitted_name].root_digest = root_digest;
+    retrying = true;
+    if (submitted_remove)
+      removeTask();
+    else
+      submit();
+    if (std::exchange(retrying, false) && request_id == 0)
+      notice->setText(tr("The document changed outside this editor. Press "
+                         "Refresh to read it again."));
+  }
   void removeTask() {
     const auto task = selected();
     if (!editableRow(task))
       return;
+    submitted_remove = true;
     submitted_creation = -1;
     submitted_name = task.value("name").toString();
     const auto draft = drafts.value(submitted_name);
@@ -835,6 +885,10 @@ private:
           notice->setText(tr("Select the authored task corresponding to %1.")
                               .arg(requested_task));
         requested_task.clear();
+        if (retry_pending) {
+          controls();
+          resumeRetry();
+        }
       }
     } else if (request_kind == Request::Submit) {
       if (response->value("status").toString() == "accepted") {
@@ -844,7 +898,7 @@ private:
           result();
         } else
           notice->setText(tr("The engine returned no edit ticket."));
-      } else
+      } else if (!refusedForMovedDocument(*response))
         notice->setText(responseError(*response));
     } else if (response->value("status").toString() != "pending") {
       poll.stop();
@@ -865,7 +919,7 @@ private:
         }
         committed();
         read();
-      } else
+      } else if (!refusedForMovedDocument(*response))
         notice->setText(responseError(*response));
     }
     controls();
@@ -1913,6 +1967,16 @@ struct RenderFeaturesWidget::Impl {
     bool can_edit = false;
     bool have_current = false;
     bool have_catalog = false;
+    // --- Q-13: the digest every panel that edits the document shares.
+    std::shared_ptr<RenderConfigDigest> digest_hub;
+    // Another panel moved the document while an edit here was in flight.
+    bool refresh_when_idle = false;
+    // The edit in flight, kept until it commits: a refusal for a moved
+    // document refreshes and sends it once more against the new revision.
+    std::optional<StagedOperation> submitted_staged;
+    bool submitted_retried = false;
+    bool retrying = false;
+    bool retry_pending = false;
 
     Impl(RenderFeaturesWidget &widget,
          EmbeddedViewport &embedded_viewport)
@@ -2402,6 +2466,8 @@ struct RenderFeaturesWidget::Impl {
         if (request(RequestKind::Submit,
                     QStringLiteral("edit_render_features"),
                     params) != 0) {
+            submitted_staged = staged;
+            submitted_retried = std::exchange(retrying, false);
             showInformation(owner.tr(
                 "Submitting the render feature edit..."));
             updateControls();
@@ -2458,6 +2524,7 @@ struct RenderFeaturesWidget::Impl {
             consumeResult(*decoded);
             break;
         }
+        followWhenIdle();
         updateControls();
     }
 
@@ -2495,6 +2562,7 @@ struct RenderFeaturesWidget::Impl {
             QStringLiteral("source_digest")).toObject();
         source_digest = digest.value(
             QStringLiteral("hex")).toString();
+        if (digest_hub) digest_hub->publish(source_digest.toStdString(), &owner);
         root_reference = response.value(
             QStringLiteral("source_reference")).toString();
         current->clear();
@@ -2510,6 +2578,7 @@ struct RenderFeaturesWidget::Impl {
         }
         have_current = true;
         if (have_catalog) applyCatalogNamesToCurrent();
+        resumeRetry();
     }
 
     void receiveCatalogResult(const QByteArray &result_json) {
@@ -2583,9 +2652,77 @@ struct RenderFeaturesWidget::Impl {
         }
     }
 
+    // --- Q-13.
+    bool submitting() const {
+        for (auto it = pending.cbegin(); it != pending.cend(); ++it)
+            if (it->kind == RequestKind::Submit) return true;
+        return false;
+    }
+
+    // Another panel read or committed the document at `digest`.
+    void documentMoved(const std::string &digest) {
+        if (source_digest.isEmpty() ||
+            source_digest == QString::fromStdString(digest))
+            return;
+        if (!active_ticket.isEmpty() || submitting()) {
+            refresh_when_idle = true;
+            return;
+        }
+        requestRefresh();
+    }
+
+    void followWhenIdle() {
+        if (!refresh_when_idle || !active_ticket.isEmpty() || submitting() ||
+            retry_pending)
+            return;
+        refresh_when_idle = false;
+        requestRefresh();
+    }
+
+    // The engine refused the edit because the document moved since this
+    // panel read it: read it again and send the edit once more against the
+    // new revision. The second refusal says so and leaves it to Refresh.
+    bool refusedForMovedDocument(const QJsonObject &response) {
+        if (response.value(QStringLiteral("error")).toObject()
+                .value(QStringLiteral("code")).toString() !=
+            QStringLiteral("external_modification") ||
+            !submitted_staged)
+            return false;
+        if (submitted_retried) {
+            submitted_staged.reset();
+            showError(owner.tr("The document changed outside this panel. "
+                               "Press Refresh to read it again. (%1)")
+                          .arg(responseError(response)));
+            return true;
+        }
+        retry_pending = true;
+        showInformation(owner.tr("The document changed since this panel read "
+                                 "it; reading it again..."));
+        requestRefresh();
+        return true;
+    }
+
+    void resumeRetry() {
+        if (!retry_pending || !have_current) return;
+        retry_pending = false;
+        auto again = std::exchange(submitted_staged, std::nullopt);
+        if (!again) return;
+        // The instance edits carry the revision they were staged against;
+        // this is the one they are now built on.
+        again->base_digest = source_digest;
+        staged = std::move(again);
+        retrying = true;
+        submit();
+        if (std::exchange(retrying, false))
+            showError(owner.tr("The document changed outside this panel. "
+                               "Press Refresh to read it again."));
+    }
+
     void consumeSubmit(const QJsonObject &response) {
         if (response.value(QStringLiteral("status")).toString() !=
             QStringLiteral("accepted")) {
+            if (refusedForMovedDocument(response)) return;
+            submitted_staged.reset();
             showError(responseError(response));
             return;
         }
@@ -2612,9 +2749,20 @@ struct RenderFeaturesWidget::Impl {
         if (status != QStringLiteral("committed") ||
             !response.value(QStringLiteral("committed"))
                  .toBool(false)) {
+            if (refusedForMovedDocument(response)) return;
+            submitted_staged.reset();
             showError(responseError(response));
             return;
         }
+        submitted_staged.reset();
+        // Q-13: every other panel learns the revision this commit made.
+        if (digest_hub)
+            digest_hub->publish(response.value(QStringLiteral("source_digest"))
+                                    .toObject()
+                                    .value(QStringLiteral("hex"))
+                                    .toString()
+                                    .toStdString(),
+                                &owner);
         const auto generation = response.value(
             QStringLiteral("published_generation"))
                                     .toVariant()
@@ -2693,6 +2841,15 @@ void RenderFeaturesWidget::editFrameNodeOrder(const QString &graph, const QStrin
 void RenderFeaturesWidget::receiveCatalogResult(
     const QByteArray &result_json) {
     impl_->receiveCatalogResult(result_json);
+}
+
+void RenderFeaturesWidget::setRenderConfigDigest(
+    std::shared_ptr<RenderConfigDigest> digest) {
+    impl_->digest_hub = std::move(digest);
+    if (impl_->digest_hub)
+        impl_->digest_hub->subscribe(this, [impl = impl_.get()](const std::string &moved) {
+            impl->documentMoved(moved);
+        });
 }
 
 void RenderFeaturesWidget::setGraphNodeOpenAction(GraphNodeOpenAction action) {

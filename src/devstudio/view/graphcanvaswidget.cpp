@@ -3,6 +3,7 @@
 
 #include "inlineediteventfilter.hpp"
 #include "panelhelp.hpp"
+#include "renderconfigdigest.hpp"
 
 #include "nodelayout.hpp"
 #include "studiotheme.hpp"
@@ -2092,6 +2093,10 @@ struct GraphCanvasWidget::Impl {
     GraphCanvasWidget &view;
     GraphCanvasReadCapability graph;
     GraphCanvasModel model;
+    // Q-13: the digest the panels that edit the document share, and whether
+    // another panel moved the document while this tab was busy.
+    std::shared_ptr<RenderConfigDigest> digest_hub;
+    bool document_reread = false;
     GraphCanvasScene *scene = nullptr;
     NodeCanvasView *canvas = nullptr;
     QComboBox *scopes = nullptr;
@@ -2493,6 +2498,29 @@ struct GraphCanvasWidget::Impl {
             model_id,
             std::string_view(result_json.constData(),
                              static_cast<std::size_t>(result_json.size())));
+        followDocument();
+        dispatch();
+    }
+
+    // Q-13. Whatever revision the tab now holds, the other panels hear of;
+    // a move it could not follow while busy is followed now.
+    void followDocument() {
+        if (digest_hub) digest_hub->publish(model.digest(), &view);
+        if (document_reread && model.canRefresh()) {
+            document_reread = false;
+            model.refresh();
+        }
+    }
+
+    void documentMoved(const std::string &digest) {
+        if (!model.contextReceived() || model.digest() == digest) return;
+        // Busy with a read that may predate the move, or with an edit that
+        // reads the document again when it ends: either way, once more after.
+        if (!model.canRefresh()) {
+            document_reread = true;
+            return;
+        }
+        model.refresh();
         dispatch();
     }
 
@@ -2502,6 +2530,7 @@ struct GraphCanvasWidget::Impl {
         const auto model_id = found.value();
         transport_requests.erase(found);
         model.receiveRpcFailure(model_id, message.toStdString());
+        followDocument();
         dispatch();
     }
 
@@ -3143,6 +3172,15 @@ void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root
     impl_->reloadAudioAssets();
     impl_->audio_row_node.clear();
     impl_->showDetails();
+}
+
+void GraphCanvasWidget::setRenderConfigDigest(
+    std::shared_ptr<RenderConfigDigest> digest) {
+    impl_->digest_hub = std::move(digest);
+    if (impl_->digest_hub)
+        impl_->digest_hub->subscribe(this, [impl = impl_.get()](const std::string &moved) {
+            impl->documentMoved(moved);
+        });
 }
 
 GraphCanvasModel &GraphCanvasWidget::model() { return impl_->model; }

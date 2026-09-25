@@ -12,6 +12,7 @@
 #include "rendertargetform.hpp"
 #include "materialpassedit.hpp"
 #include "materialpassform.hpp"
+#include "renderconfigdigest.hpp"
 #include "shadersourceresolver.hpp"
 
 #include <QAbstractItemView>
@@ -478,6 +479,19 @@ struct FramePlanWidget::Impl {
     bool material_context_stale = false;
     // The targets Save made for the pass in flight: they stay if it is refused.
     std::vector<std::string> material_targets_made;
+    // --- Q-13: the digest every panel that edits the document shares.
+    std::shared_ptr<RenderConfigDigest> digest_hub;
+    // Another panel moved the document while a read was already on its way:
+    // that answer may predate the move, so the read is asked for again.
+    bool authoring_reread = false;
+    bool task_reread = false;
+    // The edit in flight, as the gesture that built it. An external_modification
+    // refusal reads the context again and builds it once more from that.
+    std::function<FramePlanEditRequest()> submitted_build;
+    bool submitted_retried = false;
+    bool retry_pending = false;
+    // Shown when the rebuilt edit is refused as well: reads the context again.
+    QPushButton *reload_authoring = nullptr;
 
     Impl(FramePlanWidget &widget, EmbeddedViewport &embedded_viewport)
         : owner{widget}, viewport{embedded_viewport} {
@@ -619,7 +633,21 @@ struct FramePlanWidget::Impl {
         status->setTextInteractionFlags(Qt::TextSelectableByMouse);
         applyPanelNoticeStyle(status);
         status->hide();
-        layout->addWidget(status);
+        // Q-13: the status row, and Reload beside it for the one refusal a
+        // second try did not get past.
+        auto *status_row = new QHBoxLayout;
+        status_row->setContentsMargins(0, 0, 0, 0);
+        status_row->addWidget(status, 1);
+        reload_authoring = new QPushButton(owner.tr("Reload"), &owner);
+        reload_authoring->setObjectName(
+            QStringLiteral("pelican.framePlan.reloadAuthoring"));
+        reload_authoring->setToolTip(owner.tr(
+            "Read the rendering document again, then repeat the change."));
+        reload_authoring->hide();
+        QObject::connect(reload_authoring, &QPushButton::clicked, &owner,
+                         [this] { reloadAuthoring(); });
+        status_row->addWidget(reload_authoring);
+        layout->addLayout(status_row);
 
         tabs = new QTabWidget(&owner);
         tabs->setObjectName(QStringLiteral("pelican.framePlanTabs"));
@@ -819,8 +847,9 @@ struct FramePlanWidget::Impl {
             };
         logical_scene->resourceRemoveRequested =
             [this](const FramePlanNodeKey &resource) {
-                submit(framePlanRenderTargetRemoveRequest(authoring,
-                                                          resource.name));
+                submitBuilt([this, name = resource.name] {
+                    return framePlanRenderTargetRemoveRequest(authoring, name);
+                });
             };
         auto *leave_group = new QAction(&owner);
         leave_group->setObjectName(
@@ -1276,9 +1305,9 @@ struct FramePlanWidget::Impl {
             showStatus(oneLine(error), error);
     }
 
-    void requestTaskAuthoring() {
+    void requestTaskAuthoring(bool even_hidden = false) {
         if (!edit.requestTaskAuthoring || pending_task_request != 0 ||
-            !owner.isVisible())
+            (!owner.isVisible() && !even_hidden))
             return;
         QString error;
         pending_task_request = edit.requestTaskAuthoring(&error);
@@ -1286,7 +1315,112 @@ struct FramePlanWidget::Impl {
             showStatus(oneLine(error), error);
     }
 
-    void submit(const FramePlanEditRequest &request) {
+    // --- Q-13. Every read and every commit of the document says which digest
+    // it saw; a digest another panel saw moves this panel's context.
+    void publishDigest(const std::string &digest) {
+        if (digest_hub) digest_hub->publish(digest, &owner);
+    }
+
+    // Another panel read or committed the document at `digest`. A context
+    // built from any other revision would send a base digest the engine no
+    // longer holds, so both reads are asked for again.
+    void documentMoved(const std::string &digest) {
+        if (authoring.received && authoring.source_digest != digest) {
+            if (pending_authoring_request != 0) authoring_reread = true;
+            else requestAuthoringContext();
+        }
+        if (task_authoring.received && task_authoring.source_digest != digest) {
+            if (pending_task_request != 0) task_reread = true;
+            else requestTaskAuthoring();
+        }
+    }
+
+    static std::string errorCode(const Json &response) {
+        const auto error = response.find("error");
+        return error != response.end() && error->is_object()
+                   ? error->value("code", std::string{})
+                   : std::string{};
+    }
+
+    // The engine refused the edit in flight because the document is not the
+    // one its context was read from. Once per edit, the context is read again
+    // and the edit is built again from it (resumeRetry). The bytes that were
+    // refused are never sent a second time: they name the old revision.
+    bool retryAfterExternalModification(const Json &response) {
+        if (errorCode(response) != "external_modification" || !submitted_build ||
+            submitted_retried)
+            return false;
+        retry_pending = true;
+        status->setStyleSheet({});
+        showStatus(owner.tr("The document changed since this panel read it; "
+                            "reading it again..."));
+        if (pending_authoring_request != 0) authoring_reread = true;
+        else requestAuthoringContext(true);
+        if (edit.requestTaskAuthoring) {
+            if (pending_task_request != 0) task_reread = true;
+            else requestTaskAuthoring(true);
+        }
+        return true;
+    }
+
+    void resumeRetry() {
+        if (!retry_pending || pending_authoring_request != 0 ||
+            pending_task_request != 0)
+            return;
+        retry_pending = false;
+        auto build = std::move(submitted_build);
+        submitted_build = {};
+        if (!build || !authoring.received) {
+            offerReload(owner.tr("The document changed outside this panel, and "
+                                 "its context could not be read again."));
+            return;
+        }
+        const auto request = build();
+        // G-1: the targets Save wanted are there after all; the pass is next.
+        if (!request.sendable() && request.refusal.empty() &&
+            request.method == "edit_render_targets" && pending_material_pass) {
+            submitMaterialPass();
+            return;
+        }
+        if (submit(request)) {
+            submitted_build = std::move(build);
+            submitted_retried = true;
+        } else {
+            pending_material_pass.reset();
+        }
+    }
+
+    // The second refusal: say so, and offer to read the document again.
+    void offerReload(const QString &message) {
+        pending_material_pass.reset();
+        material_context_stale = false;
+        status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+        showStatus(owner.tr("The document changed outside this panel. Press "
+                            "Reload to read it again."),
+                   message);
+        reload_authoring->show();
+    }
+
+    void reloadAuthoring() {
+        reload_authoring->hide();
+        status->setStyleSheet({});
+        showStatus(owner.tr("Reading the render authoring context..."));
+        if (pending_authoring_request != 0) authoring_reread = true;
+        else requestAuthoringContext(true);
+        if (pending_task_request != 0) task_reread = true;
+        else requestTaskAuthoring(true);
+        requestRefresh();
+    }
+
+    // One gesture, kept as the function that builds its request from the
+    // context, so a refusal for a moved document can build it once more.
+    void submitBuilt(std::function<FramePlanEditRequest()> build) {
+        if (!submit(build())) return;
+        submitted_build = std::move(build);
+        submitted_retried = false;
+    }
+
+    bool submit(const FramePlanEditRequest &request) {
         if (!request.sendable()) {
             const QString reason = text(request.refusal.empty()
                                             ? std::string{"Nothing to change."}
@@ -1294,11 +1428,11 @@ struct FramePlanWidget::Impl {
             showStatus(request.line.empty() ? oneLine(reason)
                                             : text(request.line),
                        reason);
-            return;
+            return false;
         }
         if (pending_edit_request != 0 || !pending_ticket.isEmpty()) {
             showStatus(owner.tr("Wait for the current change to finish."));
-            return;
+            return false;
         }
         const auto method = text(request.method);
         const auto sender =
@@ -1311,7 +1445,7 @@ struct FramePlanWidget::Impl {
                                                       : nullptr;
         if (!sender) {
             showStatus(owner.tr("Canvas editing is unavailable: %1").arg(method));
-            return;
+            return false;
         }
         QJsonObject params;
         try {
@@ -1319,18 +1453,24 @@ struct FramePlanWidget::Impl {
         } catch (const std::exception &error) {
             const QString message = QString::fromUtf8(error.what());
             showStatus(oneLine(message), message);
-            return;
+            return false;
         }
         QString error;
         pending_edit_request = sender(params, &error);
         if (pending_edit_request == 0) {
             showStatus(oneLine(error), error);
-            return;
+            return false;
         }
+        // Q-13: an edit sent without its builder is not rebuilt; submitBuilt
+        // puts the builder back once this returns.
+        submitted_build = {};
+        submitted_retried = false;
+        reload_authoring->hide();
         submitted_method = request.method;
         submitted_target = submittedTargetName(request);
         status->setStyleSheet({});
         showStatus(owner.tr("%1: submitting...").arg(method));
+        return true;
     }
 
     void requestTicketResult() {
@@ -1358,7 +1498,15 @@ struct FramePlanWidget::Impl {
             // Q-10: the catalog names each task's document; only the
             // context names the root one.
             task_authoring.root_reference = authoring.source_reference;
+            if (authoring.received) publishDigest(authoring.source_digest);
             if (model) populate();
+            // Q-13: the document moved while this read was on its way.
+            if (std::exchange(authoring_reread, false))
+                requestAuthoringContext(true);
+            if (retry_pending) {
+                resumeRetry();
+                return true;
+            }
             if (std::exchange(pending_new_target_form, false) &&
                 authoring.received)
                 openNewRenderTarget();
@@ -1391,7 +1539,10 @@ struct FramePlanWidget::Impl {
                 task_authoring = {};
             }
             task_authoring.root_reference = authoring.source_reference;
+            if (task_authoring.received) publishDigest(task_authoring.source_digest);
             if (model) populate();
+            if (std::exchange(task_reread, false)) requestTaskAuthoring(true);
+            resumeRetry();
             return true;
         }
         if (request_id != 0 && request_id == pending_edit_request) {
@@ -1415,6 +1566,21 @@ struct FramePlanWidget::Impl {
         return text(response.dump());
     }
 
+    // An edit the engine did not take. Q-13: a document that moved under it
+    // is read again and the edit rebuilt once; the second time, Reload.
+    void refuse(const Json &response) {
+        if (retryAfterExternalModification(response)) return;
+        const bool moved = errorCode(response) == "external_modification";
+        const QString message = rejectionText(response) + materialFailureNote();
+        submitted_build = {};
+        if (moved) {
+            offerReload(message);
+            return;
+        }
+        status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+        showStatus(oneLine(message), message);
+    }
+
     void consumeSubmission(const QByteArray &bytes) {
         try {
             const Json response = Json::parse(
@@ -1422,9 +1588,7 @@ struct FramePlanWidget::Impl {
             const auto status_text = response.value("status", std::string{});
             if (status_text != "accepted" || !response.contains("ticket") ||
                 !response.at("ticket").is_string()) {
-                const QString message = rejectionText(response) + materialFailureNote();
-                status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
-                showStatus(oneLine(message), message);
+                refuse(response);
                 return;
             }
             pending_ticket = text(response.at("ticket").get<std::string>());
@@ -1450,11 +1614,13 @@ struct FramePlanWidget::Impl {
             pending_ticket.clear();
             if (status_text != "committed" ||
                 !response.value("committed", false)) {
-                const QString message = rejectionText(response) + materialFailureNote();
-                status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
-                showStatus(oneLine(message), message);
+                refuse(response);
                 return;
             }
+            submitted_build = {};
+            // Q-13: every other panel learns the revision this commit made.
+            publishDigest(response.value("source_digest", Json::object())
+                              .value("hex", std::string{}));
             status->setStyleSheet({});
             if (submitted_method == "edit_render_targets" && !pending_material_pass)
                 pending_target_selection = submitted_target;
@@ -1533,15 +1699,21 @@ struct FramePlanWidget::Impl {
                         const auto pass = materialPassAddRequest(authoring, values);
                         if (!pass.sendable()) return text(pass.refusal);
                         material_targets_made.clear();
-                        submit(pass);
+                        submitBuilt([this, values] {
+                            return materialPassAddRequest(authoring, values);
+                        });
                         return {};
                     }
                     pending_material_pass = values;
                     material_context_stale = false;
-                    material_targets_made.clear();
-                    for (const auto index : materialPassNewSlots(authoring, values))
-                        material_targets_made.push_back(values.targets[index]);
-                    submit(targets);
+                    // Q-13: built again from a fresh context after a refusal
+                    // for a moved document, and so are the names it makes.
+                    submitBuilt([this, values] {
+                        material_targets_made.clear();
+                        for (const auto index : materialPassNewSlots(authoring, values))
+                            material_targets_made.push_back(values.targets[index]);
+                        return materialPassTargetsRequest(authoring, values);
+                    });
                     if (pending_edit_request == 0) {
                         pending_material_pass.reset();
                         material_targets_made.clear();
@@ -1595,7 +1767,7 @@ struct FramePlanWidget::Impl {
             showStatus(oneLine(message), message);
             return;
         }
-        submit(request);
+        submitBuilt([this, values] { return materialPassAddRequest(authoring, values); });
     }
 
     bool receiveEditFailure(qint64 request_id, const QString &message) {
@@ -1603,11 +1775,15 @@ struct FramePlanWidget::Impl {
         if (request_id == pending_authoring_request) {
             pending_authoring_request = 0;
             authoring = {};
+            authoring_reread = false;
+            resumeRetry();
             return true;
         }
         if (request_id == pending_task_request) {
             pending_task_request = 0;
             task_authoring = {};
+            task_reread = false;
+            resumeRetry();
             return true;
         }
         if (request_id != pending_edit_request &&
@@ -1629,11 +1805,14 @@ struct FramePlanWidget::Impl {
         for (const QString &resource : resources)
             names.push_back(resource.toStdString());
         const auto task = authoredTask(consumer.name);
-        submit(task.empty()
-                   ? framePlanPassResourceRequest(authoring, model->graph,
-                                                  consumer.name, names, connect)
-                   : framePlanTaskResourceRequest(task_authoring, task, names,
-                                                  connect));
+        submitBuilt([this, graph = model->graph, pass = consumer.name, task,
+                     names, connect] {
+            return task.empty()
+                       ? framePlanPassResourceRequest(authoring, graph, pass,
+                                                      names, connect)
+                       : framePlanTaskResourceRequest(task_authoring, task,
+                                                      names, connect);
+        });
     }
 
     void commitInlineField(const FramePlanNodeKey &node, const QString &field,
@@ -1641,16 +1820,21 @@ struct FramePlanWidget::Impl {
         if (!model || node.graph != model->graph) return;
         const auto task = authoredTask(node.name);
         if (!task.empty()) {
-            submit(framePlanTaskDispatchRequest(task_authoring, task,
-                                                value.toStdString()));
+            submitBuilt([this, task, dispatch = value.toStdString()] {
+                return framePlanTaskDispatchRequest(task_authoring, task,
+                                                    dispatch);
+            });
             return;
         }
         const auto stage = field.startsWith(QStringLiteral("shader."))
                                ? field.mid(7).toStdString()
                                : std::string{};
         if (stage.empty()) return;
-        submit(framePlanPassShaderRequest(authoring, model->graph, node.name,
-                                          stage, value.toStdString()));
+        submitBuilt([this, graph = model->graph, pass = node.name, stage,
+                     reference = value.toStdString()] {
+            return framePlanPassShaderRequest(authoring, graph, pass, stage,
+                                              reference);
+        });
     }
 
     // --- F-1: render targets.
@@ -1700,14 +1884,16 @@ struct FramePlanWidget::Impl {
                 [this](const RenderTargetFormValues &values) -> QString {
                     const bool create = render_target_form->mode() ==
                                         RenderTargetForm::Mode::create;
-                    const auto request =
-                        create
-                            ? framePlanRenderTargetAddRequest(authoring, values)
-                            : framePlanRenderTargetReplaceRequest(
-                                  authoring, render_target_form->editing(),
-                                  values);
+                    const auto build = [this, create, values,
+                                        editing = render_target_form->editing()] {
+                        return create
+                                   ? framePlanRenderTargetAddRequest(authoring, values)
+                                   : framePlanRenderTargetReplaceRequest(
+                                         authoring, editing, values);
+                    };
+                    const auto request = build();
                     if (!request.sendable()) return text(request.refusal);
-                    submit(request);
+                    submitBuilt(build);
                     created_target = create ? values.name : std::string{};
                     return {};
                 });
@@ -1790,10 +1976,11 @@ struct FramePlanWidget::Impl {
     void removeNode(const FramePlanNodeKey &node) {
         if (!model || node.graph != model->graph) return;
         const auto task = authoredTask(node.name);
-        submit(task.empty()
-                   ? framePlanPassRemoveRequest(authoring, model->graph,
-                                                node.name)
-                   : framePlanTaskRemoveRequest(task_authoring, task));
+        submitBuilt([this, graph = model->graph, pass = node.name, task] {
+            return task.empty()
+                       ? framePlanPassRemoveRequest(authoring, graph, pass)
+                       : framePlanTaskRemoveRequest(task_authoring, task);
+        });
     }
 
     // --- The placement. One member of the document's root `layout`, written
@@ -3054,6 +3241,15 @@ void FramePlanWidget::setPassInsertAction(
 
 void FramePlanWidget::setTaskInsertAction(std::function<void()> action) {
     impl_->task_insert_action = std::move(action);
+}
+
+void FramePlanWidget::setRenderConfigDigest(
+    std::shared_ptr<RenderConfigDigest> digest) {
+    impl_->digest_hub = std::move(digest);
+    if (impl_->digest_hub)
+        impl_->digest_hub->subscribe(this, [impl = impl_.get()](const std::string &moved) {
+            impl->documentMoved(moved);
+        });
 }
 
 void FramePlanWidget::refreshAuthoringContext() {

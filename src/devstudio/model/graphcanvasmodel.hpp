@@ -311,6 +311,13 @@ class GraphCanvasModel {
     std::vector<HistoryEntry> undo_;
     std::vector<HistoryEntry> redo_;
     std::optional<PendingHistory> pending_history_;
+    // Q-13. A placement refused because another panel's commit moved the
+    // document is written again, once, against the document read next. The
+    // placement is the canvas's own (the document only keeps it), so the same
+    // op list is what it would build again; any other gesture is dropped as
+    // before, because it was built from the nodes the old revision held.
+    std::optional<nlohmann::json> layout_retry_;
+    bool layout_retrying_ = false;
     // History belongs to exactly one committed document. A refresh showing
     // another writer's revision invalidates it instead of overwriting them.
     std::string history_digest_;

@@ -1,4 +1,5 @@
 #include "fullscreenpasswidget.hpp"
+#include "renderconfigdigest.hpp"
 #include "frameplanedit.hpp"
 #include "fullscreenpasssettings.hpp"
 #include "render_graph_root_test_support.hpp"
@@ -3711,21 +3712,104 @@ TEST_CASE("G-6 a refused edit shows its code and the graph that refused it "
                        {"error", xr_refusal}});
     CHECK(status.text().contains(QStringLiteral("xr graph")));
 
-    // A refusal no variant made keeps its code on the line.
+    // A refusal no variant made keeps its code on the line. (Q-13: not
+    // external_modification, which reads the document again first.)
     save.click();
     authoring.succeed(authoring.requests.back().id,
                       {{"status", "rejected"},
                        {"committed", false},
                        {"error",
-                        {{"code", "external_modification"},
-                         {"message", "Source changed"}}}});
-    CHECK(status.text().contains(QStringLiteral("external_modification")));
+                        {{"code", "gate_closed"},
+                         {"message", "The editor gate is closed"}}}});
+    CHECK(status.text().contains(QStringLiteral("gate_closed")));
     CHECK_FALSE(status.text().contains(QStringLiteral("graph refused")));
 
     // The line itself is one function's.
     CHECK(renderAuthoringRefusalLine(refusal) ==
           "The preview graph refused it: render_pipeline_preflight_failed: "
           "render feature pass insert anchor was not found: x");
+}
+
+TEST_CASE("Q-13 the Pass Editor reads the document again when another panel "
+          "moved it, and builds a refused Save once more from that",
+          "[devstudio][fullscreen-pass][q13][widget]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    const auto digest = std::make_shared<RenderConfigDigest>();
+    form.setRenderConfigDigest(digest);
+    authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
+    CHECK(digest->current() == std::string(64, 'a'));
+    form.receiveResult(QByteArray::fromStdString(f3FramePlan().dump()));
+    driveMinimalDraft(form, "tint", "project://shaders/tint", "lit_color",
+                      "tint_out");
+    auto &save = required<QPushButton>(form, "pelican.fullscreenPass.save");
+    auto &reload =
+        required<QPushButton>(form, "pelican.fullscreenPass.reloadAuthoring");
+    auto &status =
+        required<QLabel>(form, "pelican.fullscreenPass.authoringStatus");
+    const auto context = [](char digit) {
+        auto moved = f3AuthoringContext();
+        moved["source_digest"]["hex"] = std::string(64, digit);
+        return moved;
+    };
+    const auto sent_digest = [&authoring] {
+        return authoring.requests.back()
+            .params.value(QStringLiteral("base_source_digest"))
+            .toString()
+            .toStdString();
+    };
+    const auto sent_name = [&authoring] {
+        return authoring.requests.back()
+            .params.value(QStringLiteral("pass"))
+            .toObject()
+            .value(QStringLiteral("name"))
+            .toString();
+    };
+    const Json moved_refusal{
+        {"status", "rejected"},
+        {"committed", false},
+        {"error",
+         {{"code", "external_modification"},
+          {"message", "render config base digest no longer matches the "
+                      "engine-owned document"}}}};
+
+    // Another panel's commit: the context is read again, the form kept.
+    digest->publish(std::string(64, 'b'));
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("get_render_authoring_context"));
+    authoring.succeed(authoring.requests.back().id, context('b'));
+    REQUIRE(save.isEnabled());
+    save.click();
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("add_authored_pass"));
+    CHECK(sent_digest() == std::string(64, 'b'));
+    CHECK(sent_name() == QStringLiteral("tint"));
+
+    // Refused for a moved document: read again, then the same form once more.
+    const auto sent = authoring.requests.size();
+    authoring.succeed(authoring.requests.back().id, moved_refusal);
+    REQUIRE(authoring.requests.size() == sent + 1);
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("get_render_authoring_context"));
+    authoring.succeed(authoring.requests.back().id, context('c'));
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("add_authored_pass"));
+    CHECK(sent_digest() == std::string(64, 'c'));
+    CHECK(sent_name() == QStringLiteral("tint"));
+    CHECK(reload.isHidden());
+
+    // The second refusal: said so, and Reload offered; nothing more is sent.
+    const auto again = authoring.requests.size();
+    authoring.succeed(authoring.requests.back().id, moved_refusal);
+    CHECK(authoring.requests.size() == again);
+    CHECK(status.text().contains(QStringLiteral("changed outside this panel")));
+    CHECK_FALSE(reload.isHidden());
+    reload.click();
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("get_render_authoring_context"));
+    CHECK(reload.isHidden());
 }
 
 // --- T-1: less to type in the Pass Editor.

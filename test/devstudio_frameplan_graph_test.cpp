@@ -24,6 +24,7 @@
 #include "frameplaneditcapability.hpp"
 #include "frameplangraphics.hpp"
 #include "frameplanwidget.hpp"
+#include "renderconfigdigest.hpp"
 #include "materialpassedit.hpp"
 #include "materialpassform.hpp"
 #include "shaderreloadfollower.hpp"
@@ -9419,6 +9420,176 @@ TEST_CASE("G-4 a material_route_unserved@1 refusal names the materials and the f
     CHECK(notice.find("deferred_geometry route") != std::string::npos);
     CHECK(notice.find("To fix: set material_route_default") != std::string::npos);
     CHECK(materialRouteUnservedNotice(Json{{"code", "render_pipeline_preflight_failed"}}).empty());
+}
+
+// --- Q-13. A commit in another panel -- a node's placement included -- moves
+// the rendering document's digest; the Frame Plan's next edit carries the new
+// one, and a refusal for a moved document is rebuilt once.
+
+namespace {
+
+constexpr auto MovedDigest =
+    "5555555555555555555555555555555555555555555555555555555555555555";
+
+Json movedContext(const std::string &graph, const char *digest) {
+    auto context = withRenderTargets(mixedAuthoringContext(graph));
+    context["source_digest"]["hex"] = digest;
+    return context;
+}
+
+Json movedCatalog(const char *digest) {
+    auto catalog = authoredTaskCatalog();
+    catalog["source_digest"]["hex"] = digest;
+    return catalog;
+}
+
+Json sentParams(const FramePlanEditRecorder &recorder) {
+    return Json::parse(QJsonDocument(recorder.params).toJson().toStdString());
+}
+
+// Opens Add material pass... and presses OK on what it offers.
+void saveMaterialPass(FramePlanWidget &widget) {
+    auto *action = widget.findChild<QAction *>(
+        QStringLiteral("pelican.framePlan.addMaterialPass"));
+    REQUIRE(action != nullptr);
+    action->trigger();
+    QApplication::processEvents();
+    auto *form = widget.findChild<QWidget *>(
+        QStringLiteral("pelican.materialPassForm"));
+    REQUIRE(form != nullptr);
+    REQUIRE(form->isVisible());
+    auto *ok = form->findChild<QPushButton *>(
+        QStringLiteral("pelican.materialPassForm.ok"));
+    REQUIRE(ok != nullptr);
+    QTest::mouseClick(ok, Qt::LeftButton);
+    QApplication::processEvents();
+}
+
+QByteArray movedRefusal() {
+    return QByteArray::fromStdString(
+        Json{{"status", "rejected"},
+             {"committed", false},
+             {"error",
+              {{"code", "external_modification"},
+               {"message", "render config base digest no longer matches the "
+                           "engine-owned document"}}}}
+            .dump());
+}
+
+} // namespace
+
+TEST_CASE("Q-13 a placement another panel committed reaches the Frame Plan "
+          "before its next edit",
+          "[devstudio][frame-plan][q13][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    const auto digest = std::make_shared<RenderConfigDigest>();
+    fixture.widget.setRenderConfigDigest(digest);
+    fixture.open();
+    // What the Frame Plan read is what the others are told.
+    CHECK(digest->current() == RootDigest);
+
+    // The Graph tab's set_layout committed: a new revision of the document.
+    const auto context_before = fixture.recorder.context_id;
+    const auto task_before = fixture.recorder.task_id;
+    digest->publish(MovedDigest);
+    QApplication::processEvents();
+    REQUIRE(fixture.recorder.context_id != context_before);
+    REQUIRE(fixture.recorder.task_id != task_before);
+    fixture.recorder.result(
+        fixture.recorder.context_id,
+        QByteArray::fromStdString(movedContext(fixture.graph, MovedDigest).dump()));
+    fixture.recorder.result(
+        fixture.recorder.task_id,
+        QByteArray::fromStdString(movedCatalog(MovedDigest).dump()));
+    QApplication::processEvents();
+
+    saveMaterialPass(fixture.widget);
+    REQUIRE(fixture.recorder.submits == 1);
+    CHECK(fixture.recorder.method == QStringLiteral("edit_render_targets"));
+    CHECK(sentParams(fixture.recorder).at("base_source_digest") == MovedDigest);
+
+    // A panel's own read is not news to itself: nothing more is asked.
+    const auto context_after = fixture.recorder.context_id;
+    digest->publish(MovedDigest, &fixture.widget);
+    QApplication::processEvents();
+    CHECK(fixture.recorder.context_id == context_after);
+}
+
+TEST_CASE("Q-13 an edit refused for a moved document is built again once from "
+          "a fresh context, and the second refusal offers Reload",
+          "[devstudio][frame-plan][q13][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    fixture.widget.resize(1400, 900);
+    fixture.widget.show();
+    fixture.widget.setEditCapability(fixture.recorder.capability());
+    fixture.widget.receiveResult(QByteArray::fromStdString(fixture.wire.dump()));
+    fixture.graph = fixture.wire.at("graph").get<std::string>();
+    QApplication::processEvents();
+    REQUIRE(fixture.recorder.result);
+    fixture.recorder.result(
+        fixture.recorder.context_id,
+        QByteArray::fromStdString(movedContext(fixture.graph, RootDigest).dump()));
+    fixture.recorder.result(
+        fixture.recorder.task_id,
+        QByteArray::fromStdString(movedCatalog(RootDigest).dump()));
+    QApplication::processEvents();
+
+    auto *reload = fixture.widget.findChild<QPushButton *>(
+        QStringLiteral("pelican.framePlan.reloadAuthoring"));
+    REQUIRE(reload != nullptr);
+    CHECK_FALSE(reload->isVisible());
+
+    saveMaterialPass(fixture.widget);
+    REQUIRE(fixture.recorder.submits == 1);
+    CHECK(sentParams(fixture.recorder).at("base_source_digest") == RootDigest);
+
+    // Refused: the context is read again, and nothing is sent until it is here.
+    const auto context_before = fixture.recorder.context_id;
+    const auto task_before = fixture.recorder.task_id;
+    fixture.recorder.result(fixture.recorder.submit_id, movedRefusal());
+    QApplication::processEvents();
+    REQUIRE(fixture.recorder.context_id != context_before);
+    CHECK(fixture.recorder.task_id != task_before);
+    CHECK(fixture.recorder.submits == 1);
+    fixture.recorder.result(
+        fixture.recorder.context_id,
+        QByteArray::fromStdString(movedContext(fixture.graph, MovedDigest).dump()));
+    QApplication::processEvents();
+    CHECK(fixture.recorder.submits == 1);
+    fixture.recorder.result(
+        fixture.recorder.task_id,
+        QByteArray::fromStdString(movedCatalog(MovedDigest).dump()));
+    QApplication::processEvents();
+
+    // Built again from the new context, not the refused bytes sent again.
+    REQUIRE(fixture.recorder.submits == 2);
+    CHECK(fixture.recorder.method == QStringLiteral("edit_render_targets"));
+    CHECK(sentParams(fixture.recorder).at("base_source_digest") == MovedDigest);
+    CHECK_FALSE(reload->isVisible());
+
+    // Refused again, after the engine took it: once is all it is rebuilt.
+    const auto context_second = fixture.recorder.context_id;
+    fixture.recorder.result(
+        fixture.recorder.submit_id,
+        QByteArray::fromStdString(
+            Json{{"status", "accepted"}, {"ticket", "q13-targets"}}.dump()));
+    QApplication::processEvents();
+    fixture.recorder.result(fixture.recorder.ticket_id, movedRefusal());
+    QApplication::processEvents();
+    CHECK(fixture.recorder.submits == 2);
+    CHECK(fixture.recorder.context_id == context_second);
+    CHECK(statusText(fixture.widget).contains(
+        QStringLiteral("changed outside this panel")));
+    CHECK(reload->isVisible());
+
+    // Reload reads the context again.
+    QTest::mouseClick(reload, Qt::LeftButton);
+    QApplication::processEvents();
+    CHECK(fixture.recorder.context_id != context_second);
+    CHECK_FALSE(reload->isVisible());
+    CHECK(fixture.recorder.submits == 2);
 }
 
 } // namespace PelicanStudio

@@ -19,6 +19,8 @@ struct PassShapePolicy;
 
 namespace PelicanStudio {
 
+class RenderConfigDigest;
+
 class FullscreenPassWidget final : public QWidget {
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -69,6 +71,12 @@ class FullscreenPassWidget final : public QWidget {
     void renderTargetCreated(const QString &name);
     void receiveResult(const QByteArray &result_json);
     void receiveAuthoringConfig(const QByteArray &config_json);
+    // Q-13. The rendering document's digest, shared with the other panels
+    // that edit it. Another panel's commit reads the context again and keeps
+    // the form as the author left it; an edit refused for a moved document is
+    // built again from that context once, and the second refusal offers
+    // Reload.
+    void setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> digest);
 };
 
 } // namespace PelicanStudio

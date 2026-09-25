@@ -8,6 +8,7 @@
 #include "fullscreenpasssettings.hpp"
 #include "fullscreenshadertemplate.hpp"
 #include "panelhelp.hpp"
+#include "renderconfigdigest.hpp"
 #include "shadercompilelogpanel.hpp"
 #include "shaderdiagnostics.hpp"
 #include "passfieldownership.hpp"
@@ -269,6 +270,22 @@ struct FullscreenPassWidget::Impl {
     AuthoringRequest pending_authoring_kind = AuthoringRequest::none;
     qint64 pending_authoring_request = 0;
     QString pending_ticket;
+    // --- Q-13: the digest every panel that edits the document shares.
+    std::shared_ptr<RenderConfigDigest> digest_hub;
+    // Another panel moved the document while this one was busy: read the
+    // context again once it is idle.
+    bool context_reread = false;
+    // The context in flight was asked for because the document moved, not by
+    // the author: it keeps the form as the author left it.
+    bool keep_draft_on_context = false;
+    // The edit in flight, so a refusal for a moved document can build it once
+    // more from the context read after it.
+    AuthoringRequest submitted_kind = AuthoringRequest::none;
+    QString submitted_fragment;
+    bool submitted_retried = false;
+    bool retrying = false;
+    bool retry_pending = false;
+    QPushButton *reload_authoring = nullptr;
 
     Impl(FullscreenPassWidget &widget, FramePlanReadCapability capability,
          RenderPassAuthoringCapability authoring_capability,
@@ -318,6 +335,23 @@ struct FullscreenPassWidget::Impl {
         toolbar->addWidget(refresh);
         toolbar->addWidget(plan_status);
         toolbar->addWidget(authoring_status, 1);
+        reload_authoring = new QPushButton(owner.tr("Reload"), &owner);
+        reload_authoring->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.reloadAuthoring"));
+        reload_authoring->setToolTip(owner.tr(
+            "Read the rendering document again. The form keeps what you "
+            "entered; Save sends it against the document read."));
+        reload_authoring->hide();
+        QObject::connect(reload_authoring, &QPushButton::clicked, &owner,
+                         [this] {
+                             reload_authoring->hide();
+                             if (pending_authoring_request != 0 ||
+                                 !pending_ticket.isEmpty())
+                                 context_reread = true;
+                             else
+                                 requestAuthoringContext(true);
+                         });
+        toolbar->addWidget(reload_authoring);
         toolbar->addWidget(makePanelHelpButton(
             &owner, "pelican.fullscreenPass.help", ManualPassEditorAnchor,
             owner.tr("Save sends this draft to the engine. The engine owns "
@@ -1206,6 +1240,8 @@ struct FullscreenPassWidget::Impl {
     // under the form, and the form keeps every value it holds; the notice row
     // says only that it happened.
     void rejectAuthoring(const Json &response) {
+        if (refusedForMovedDocument(response)) return;
+        submitted_kind = AuthoringRequest::none;
         const QString message = responseError(response);
         if (compile_log->showMessage(message)) {
             authoringError(owner.tr("shader compile failed; see the log "
@@ -1976,7 +2012,19 @@ struct FullscreenPassWidget::Impl {
         return QStringLiteral("engine rejected the authoring request");
     }
 
-    void requestAuthoringContext() {
+    // Q-13: a read because the document moved is not the author's request;
+    // what the author asks for next takes it over.
+    bool busyForAuthor() const {
+        return (pending_authoring_request != 0 &&
+                !(pending_authoring_kind == AuthoringRequest::context &&
+                  keep_draft_on_context)) ||
+               !pending_ticket.isEmpty();
+    }
+
+    void requestAuthoringContext(bool keep_draft = false) {
+        if (pending_authoring_request != 0 &&
+            pending_authoring_kind == AuthoringRequest::context && !keep_draft)
+            keep_draft_on_context = false;
         if (!authoring_rpc_available || pending_authoring_request != 0) {
             return;
         }
@@ -1988,6 +2036,7 @@ struct FullscreenPassWidget::Impl {
             authoringError(error);
             return;
         }
+        keep_draft_on_context = keep_draft;
         authoring_status->setStyleSheet({});
         setPanelNotice(
             authoring_status, owner.tr("requesting context..."),
@@ -2038,6 +2087,7 @@ struct FullscreenPassWidget::Impl {
             authoringError(error);
             return;
         }
+        noteSubmitted(AuthoringRequest::add);
         authoring_status->setStyleSheet({});
         setPanelNotice(
             authoring_status, owner.tr("submitting..."),
@@ -2102,6 +2152,8 @@ struct FullscreenPassWidget::Impl {
             &error);
         if (!pending_authoring_request)
           authoringError(error);
+        else
+          noteSubmitted(AuthoringRequest::edit);
         updateAuthoringButtons();
       } catch (const std::exception &error) {
         authoringError(QString::fromUtf8(error.what()));
@@ -2110,7 +2162,7 @@ struct FullscreenPassWidget::Impl {
 
     void beginPresetPassEdit(const QString &graph_name, const QString &pass_name,
                              std::optional<QStringList> outputs) {
-        if (pending_authoring_request || !pending_ticket.isEmpty()) {
+        if (busyForAuthor()) {
             authoringError(owner.tr("Finish the current request before selecting a pass."));
             return;
         }
@@ -2255,6 +2307,8 @@ struct FullscreenPassWidget::Impl {
         authoringError(error);
         return;
       }
+      noteSubmitted(AuthoringRequest::remove);
+      submitted_fragment = reference;
       authoring_status->setStyleSheet({});
       setPanelNotice(authoring_status, owner.tr("submitting removal..."),
                      owner.tr("Submitting the managed-fragment removal..."));
@@ -2391,6 +2445,7 @@ struct FullscreenPassWidget::Impl {
         }
 
         const QSignalBlocker blocker{remove_fragment};
+        const auto kept_fragment = remove_fragment->currentData().toString();
         remove_fragment->clear();
         if (const auto fragments = context.find("managed_fragments");
             fragments != context.end()) {
@@ -2418,9 +2473,13 @@ struct FullscreenPassWidget::Impl {
                 remove_fragment->addItem(label, text(reference));
             }
         }
-        remove_fragment->setCurrentIndex(-1);
+        remove_fragment->setCurrentIndex(
+            keep_draft_on_context && !kept_fragment.isEmpty()
+                ? remove_fragment->findData(kept_fragment)
+                : -1);
 
         source_digest = next_digest;
+        if (digest_hub) digest_hub->publish(source_digest, &owner);
         authored_passes = std::move(next_passes);
         authored_pass_counts = std::move(next_counts);
         anchors = std::move(next_anchors);
@@ -2447,13 +2506,111 @@ struct FullscreenPassWidget::Impl {
                      : owner.tr("Resolved pass provenance: %1")
                            .arg(provenance_summary.join(
                                QStringLiteral(", ")))));
+        // Q-13: a read because the document moved keeps what the author
+        // chose; only a read the author asked for loads the pass again.
+        const bool keep = std::exchange(keep_draft_on_context, false);
+        const int kept_position = position->value();
         configurePosition();
-        if (editing_preset_pass) load_edit_requested = true;
+        if (keep && kept_position <= position->maximum())
+            position->setValue(kept_position);
+        if (editing_preset_pass && !keep) load_edit_requested = true;
         loadPresetPass();
         updateDraft();
     }
 
+    // --- Q-13.
+    void noteSubmitted(AuthoringRequest kind) {
+        submitted_kind = kind;
+        submitted_retried = std::exchange(retrying, false);
+        reload_authoring->hide();
+    }
+
+    // Another panel read or committed the document at `digest`.
+    void documentMoved(const std::string &digest) {
+        if (!authoring_available || source_digest.empty() ||
+            source_digest == digest)
+            return;
+        if (pending_authoring_request != 0 || !pending_ticket.isEmpty()) {
+            context_reread = true;
+            return;
+        }
+        requestAuthoringContext(true);
+    }
+
+    static std::string errorCode(const Json &response) {
+        const auto error = response.find("error");
+        return error != response.end() && error->is_object()
+                   ? error->value("code", std::string{})
+                   : std::string{};
+    }
+
+    // The engine refused the edit because the document is not the one the
+    // context was read from. Once, the context is read again (keeping the
+    // form) and the edit is built again from it; the second time, Reload.
+    bool refusedForMovedDocument(const Json &response) {
+        if (errorCode(response) != "external_modification" ||
+            submitted_kind == AuthoringRequest::none)
+            return false;
+        if (!submitted_retried) {
+            retry_pending = true;
+            authoring_status->setStyleSheet({});
+            setPanelNotice(authoring_status, owner.tr("reading again..."),
+                           owner.tr("The document changed since this panel "
+                                    "read it; reading it again..."));
+            requestAuthoringContext(true);
+            return true;
+        }
+        submitted_kind = AuthoringRequest::none;
+        offerReload(responseError(response));
+        return true;
+    }
+
+    void offerReload(const QString &message) {
+        retry_pending = false;
+        authoringError(message, owner.tr("The document changed outside this "
+                                         "panel. Press Reload to read it "
+                                         "again."));
+        reload_authoring->show();
+    }
+
+    void resumeRetry() {
+        retry_pending = false;
+        const auto kind = std::exchange(submitted_kind, AuthoringRequest::none);
+        retrying = true;
+        if (kind == AuthoringRequest::remove) {
+            const int index = remove_fragment->findData(submitted_fragment);
+            if (index >= 0) remove_fragment->setCurrentIndex(index);
+            updateAuthoringButtons();
+            if (index >= 0) requestRemoveAuthoredPass();
+        } else {
+            updateAuthoringButtons();
+            requestAddAuthoredPass();
+        }
+        if (std::exchange(retrying, false))
+            offerReload(owner.tr("The change could not be built again from the "
+                                 "document read after it was refused."));
+    }
+
+    // After any answer: a move seen while busy is followed once idle.
+    void afterAuthoringAnswer(AuthoringRequest completed) {
+        if (pending_authoring_request != 0 || !pending_ticket.isEmpty()) return;
+        if (std::exchange(context_reread, false)) {
+            requestAuthoringContext(true);
+            return;
+        }
+        if (retry_pending && completed == AuthoringRequest::context)
+            resumeRetry();
+    }
+
     void receiveAuthoringResult(qint64 request_id,
+                                const QByteArray &result_json) {
+        if (request_id != pending_authoring_request) return;
+        const auto completed = pending_authoring_kind;
+        receiveAuthoringAnswer(request_id, result_json);
+        afterAuthoringAnswer(completed);
+    }
+
+    void receiveAuthoringAnswer(qint64 request_id,
                                 const QByteArray &result_json) {
         if (request_id != pending_authoring_request) return;
         const auto completed_kind = pending_authoring_kind;
@@ -2507,6 +2664,12 @@ struct FullscreenPassWidget::Impl {
                     return;
                 }
                 pending_ticket.clear();
+                submitted_kind = AuthoringRequest::none;
+                // Q-13: every other panel learns the revision this made.
+                if (digest_hub)
+                    digest_hub->publish(response.value("source_digest", Json::object())
+                                            .value("hex", std::string{}),
+                                        &owner);
                 compile_log->clear();
                 authoring_status->setStyleSheet({});
                 setPanelNotice(authoring_status, owner.tr("committed"),
@@ -2530,10 +2693,17 @@ struct FullscreenPassWidget::Impl {
     void receiveAuthoringFailure(qint64 request_id,
                                  const QString &message) {
         if (request_id != pending_authoring_request) return;
+        const auto completed = pending_authoring_kind;
         pending_authoring_request = 0;
         pending_authoring_kind = AuthoringRequest::none;
         pending_ticket.clear();
+        keep_draft_on_context = false;
+        if (std::exchange(retry_pending, false)) {
+            offerReload(message);
+            return;
+        }
         authoringError(message);
+        afterAuthoringAnswer(completed);
     }
 
     void setAuthoringRpcAvailable(bool available,
@@ -2791,7 +2961,7 @@ struct FullscreenPassWidget::Impl {
 
     void beginAuthoredPassInsert(const QString &graph_name,
                                  const QString &after_pass) {
-        if (pending_authoring_request || !pending_ticket.isEmpty()) {
+        if (busyForAuthor()) {
             authoringError(owner.tr(
                 "Finish the current request before adding a pass."));
             return;
@@ -3172,6 +3342,15 @@ void FullscreenPassWidget::receiveResult(const QByteArray &result_json) {
 void FullscreenPassWidget::receiveAuthoringConfig(
     const QByteArray &config_json) {
     impl_->consumeAuthoringConfig(config_json);
+}
+
+void FullscreenPassWidget::setRenderConfigDigest(
+    std::shared_ptr<RenderConfigDigest> digest) {
+    impl_->digest_hub = std::move(digest);
+    if (impl_->digest_hub)
+        impl_->digest_hub->subscribe(this, [impl = impl_.get()](const std::string &moved) {
+            impl->documentMoved(moved);
+        });
 }
 
 } // namespace PelicanStudio

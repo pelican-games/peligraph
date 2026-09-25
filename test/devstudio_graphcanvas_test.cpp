@@ -839,6 +839,56 @@ struct GraphHistoryHarness {
 };
 }
 
+// Q-13. A placement is a commit like any other, and so is every other panel's
+// edit: the digest a debounced set_layout carries can be one revision behind.
+// The placement is the canvas's own, so it goes once more against the next
+// read; a gesture built from the old nodes does not.
+TEST_CASE("Q-13 a placement refused for a moved document is written once more "
+          "against the revision read next",
+          "[studio][graph-canvas][q13]") {
+    GraphHistoryHarness h;
+    h.open();
+    const Json moved{{"status", "rejected"},
+                     {"committed", false},
+                     {"error",
+                      {{"code", "external_modification"},
+                       {"message", "render config base digest no longer "
+                                   "matches the engine-owned document"}}}};
+    const auto edits = [&h] {
+        auto requests = h.client.model.takeRpcRequests();
+        return std::ranges::count(requests, std::string{"edit_graph_document"},
+                                  &PelicanStudio::InspectorRpcRequest::method);
+    };
+
+    SECTION("a placement") {
+        const Json placement{{"nodes", {{"left", {{"x", 70}, {"y", 80}}}}}};
+        REQUIRE(h.client.model.setLayout("", placement));
+        const auto first = h.client.take("edit_graph_document");
+        CHECK(first.params.at("base_source_digest") == h.digest());
+        // Another panel's commit landed first.
+        ++h.generation;
+        h.client.reply(first, moved);
+        h.refresh();
+        const auto again = h.client.take("edit_graph_document");
+        CHECK(again.params.at("base_source_digest") == h.digest());
+        CHECK(again.params.at("ops") == first.params.at("ops"));
+        // Refused a second time: once is all it goes again.
+        ++h.generation;
+        h.client.reply(again, moved);
+        h.refresh();
+        CHECK(edits() == 0);
+    }
+
+    SECTION("a node edit is dropped, as it always was") {
+        REQUIRE(h.client.model.setNodeLabel("clock", "Scene clock"));
+        const auto first = h.client.take("edit_graph_document");
+        ++h.generation;
+        h.client.reply(first, moved);
+        h.refresh();
+        CHECK(edits() == 0);
+    }
+}
+
 TEST_CASE("Graph Undo restores deleted nodes, order and placement together",
           "[studio][graph-canvas][graph-history]") {
     GraphHistoryHarness h;
