@@ -109,17 +109,16 @@ OrderedJson *findPresetEditablePass(OrderedJson &preset, const std::string &grap
 // F-6: the pass a direct root declares itself, found in the root's rendering
 // section. Null for a preset root's passes, and for anything the root does not
 // declare (a feature's pass, or what the engine adds such as output_transform).
+// The root is a pelican.graph root (MG-2b: anything else is refused as
+// render_config.legacy_root@1 before it becomes the editor's document), so its
+// passes are only ever in its `rendering` section (MG-3b).
 OrderedJson *findRootEditablePass(OrderedJson &root, const std::string &graph_name,
                                   const std::string &pass_name) {
     if (!root.is_object()) return nullptr;
-    OrderedJson *section = &root;
-    if (root.value("schema", std::string{}) == "pelican.graph") {
-        const auto rendering = root.find("rendering");
-        if (rendering == root.end() || !rendering->is_object()) return nullptr;
-        section = &*rendering;
-    }
-    const auto passes = section->find("rendering_passes");
-    return passes == section->end() ? nullptr : findEditablePassIn(*passes, graph_name, pass_name);
+    const auto rendering = root.find("rendering");
+    if (rendering == root.end() || !rendering->is_object()) return nullptr;
+    const auto passes = rendering->find("rendering_passes");
+    return passes == rendering->end() ? nullptr : findEditablePassIn(*passes, graph_name, pass_name);
 }
 
 OrderedJson &featureSourceFragment(OrderedJson &feature, std::string_view provider) {
@@ -2146,6 +2145,23 @@ OrderedJson RenderConfigEditorService::getComputeTaskAuthoring(const Json &param
     if (!dependencies_.resolve_authoring_context)
         throw std::logic_error("render authoring context resolver is unavailable");
     const auto context = dependencies_.resolve_authoring_context(currentDocumentSet());
+    // MG-3b: the tasks a render.compute node made. The lowering names each
+    // task after the expanded id of the node that made it (a `name` parameter
+    // is refused there), so the root document's own expansion -- the one the
+    // lowering above partitioned -- says which listed tasks are the graph's,
+    // and where the node that made each one is authored. The composition
+    // appends these after the preset's tasks and refuses a feature task that
+    // reuses one of their names, so a match is the node's task.
+    std::map<std::string, GraphNodeOrigin, std::less<>> graph_tasks;
+    {
+        const auto expanded = expandGraphDocument(Json::parse(document_.bytes()));
+        for (const auto &node : expanded.nodes) {
+            if (node.at("op") != "render.compute") continue;
+            const auto id = node.at("id").get<std::string>();
+            if (const auto origin = expanded.origins.find(id); origin != expanded.origins.end())
+                graph_tasks.emplace(id, origin->second);
+        }
+    }
     auto tasks = OrderedJson::array();
     for (const auto &task : context.config.value("compute_tasks", Json::array())) {
         const auto name = task.at("name").get<std::string>();
@@ -2153,20 +2169,41 @@ OrderedJson RenderConfigEditorService::getComputeTaskAuthoring(const Json &param
             [&](const auto &entry) { return entry.name == name; });
         const bool from_feature = provenance != context.pass_provenance.end() &&
             provenance->source == RenderPipelineProvenanceSource::feature;
-        const bool from_preset = !from_feature && context.pipeline_preset.has_value();
+        const auto graph_node = from_feature ? graph_tasks.end() : graph_tasks.find(name);
+        const bool from_graph = graph_node != graph_tasks.end();
+        const bool from_preset = !from_feature && !from_graph && context.pipeline_preset.has_value();
+        // A node's task is authored in the root document even when the root
+        // names a preset: the node is there, not in the preset.
         const auto reference = from_feature ? provenance->provider_reference
             : from_preset ? context.pipeline_preset->reference : dependencies_.source_reference;
+        const auto *origin = from_feature ? "feature" : from_graph ? "graph_node" : from_preset ? "preset" : "root";
         OrderedJson entry{{"name", name}, {"kind", task.contains("ray_tracing") ? "ray_tracing" : "compute"},
-                          {"source_reference", reference}, {"editable", false}, {"declaration", task}};
+                          {"origin", origin}, {"source_reference", reference}, {"editable", false},
+                          {"declaration", task}};
         if (from_feature) entry["provider_feature"] = provenance->provider_feature;
-        if (reference.starts_with("engine://")) {
+        if (from_graph) {
+            // Where the Graph tab finds the node: `scope` is the token the
+            // graph edit ops take ("root", or the definition whose body holds
+            // the node), `node` the id authored in that scope, and `instance`
+            // the instance path that placed it ("" in the root scope).
+            const auto &source = graph_node->second;
+            auto instance = source.instance_path;
+            if (instance.ends_with('/')) instance.pop_back();
+            entry["graph_node"] = OrderedJson{{"scope", source.definition.empty() ? "root" : source.definition},
+                                              {"node", source.node},
+                                              {"instance", std::move(instance)}};
+            entry["read_only_reason"] =
+                "This task is made by a render.compute node in the graph. Edit the node in the Graph tab.";
+        } else if (reference.starts_with("engine://")) {
             entry["read_only_reason"] = "This task belongs to a shared engine document. Copy it into the project to edit it.";
         } else if (reference == dependencies_.source_reference) {
             // MG-2b: the rendering root is a pelican.graph root, and its
             // `rendering` section cannot declare tasks (the lowering refuses
-            // `compute_tasks` there, and it ran in the resolver above). A task
-            // the root is credited with was derived -- from a render.compute
-            // node, say -- so it is listed, read-only, and never edited here.
+            // `compute_tasks` there, and it ran in the resolver above). A
+            // render.compute node's task is caught above (MG-3b), so the
+            // production resolver credits nothing else to the root; a task a
+            // resolver does credit to it was still derived, so it is listed
+            // with origin "root", read-only, and never edited here.
             entry["read_only_reason"] = "The task is generated, not declared in this document";
         } else {
             try {

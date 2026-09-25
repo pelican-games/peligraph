@@ -4300,7 +4300,12 @@ TEST_CASE("MG-3 a task credited to the rendering root is listed read-only and re
     REQUIRE(probe != tasks.end());
     CHECK(probe->at("source_reference") == "passes/main.json");
     CHECK(probe->at("editable") == false);
-    CHECK(probe->at("read_only_reason") == "The task is generated, not declared in this document");
+    // MG-3b: the task the root is credited with is the render.compute node's,
+    // and says so -- where the node is, and where to edit it.
+    CHECK(probe->at("origin") == "graph_node");
+    CHECK(Json::parse(probe->at("graph_node").dump()) == Json{{"scope", "root"}, {"node", "probe"}, {"instance", ""}});
+    CHECK(probe->at("read_only_reason") ==
+          "This task is made by a render.compute node in the graph. Edit the node in the Graph tab.");
     CHECK_FALSE(probe->contains("provider_feature"));
 
     Json task = probe->at("declaration");
@@ -4323,6 +4328,143 @@ TEST_CASE("MG-3 a task credited to the rendering root is listed read-only and re
 
     service->commitPending();
     CHECK(readBytes(project.render_config) == root_before);
+}
+
+// MG-3b: a task a render.compute node makes names that node. The lowering
+// names each task after the node's expanded id, so a node inside a definition
+// placed by a graph.instance makes `<instance>/<node>`; the catalog says which
+// scope the node is authored in (the scope token the graph edit ops take),
+// the id it has there and the instance that placed it, so the Graph tab can
+// go to it. The task stays read-only and is refused by name.
+TEST_CASE("MG-3b a render.compute node's task names its node, in the root and in a definition",
+          "[render-config-editor][compute-task-edit][mg3b]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    const auto compute = [](const char *id, const char *buffer) {
+        return Json{{"id", id}, {"op", "render.compute"},
+                    {"parameters", {{"shader", "project://shaders/probe"}, {"dispatch", {{"groups", {1, 1, 1}}}},
+                                    {"ports", {{"values", {{"access", "write"}, {"element", "float"}}}}}}},
+                    {"inputs", {{"values", {{"node", buffer}, {"port", "resource"}}}}},
+                    {"outputs", {"values"}}};
+    };
+    const auto buffer = [](const char *id) {
+        return Json{{"id", id}, {"op", "render.buffer"},
+                    {"parameters", {{"size", 16}, {"element", "float"}}}, {"outputs", {"resource"}}};
+    };
+    // The blank template's shape, as in the MG-3 test above.
+    auto root = Pelican::TestSupport::renderGraphRoot(Json{
+        {"rendering_passes",
+         Json::array({{{"name", "main_render"},
+                       {"passes", Json::array({{{"name", "present"},
+                                                {"type", "fullscreen"},
+                                                {"input", Json::array()},
+                                                {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+                                                {"shader", {{"vertex", "engine://fullscreen"},
+                                                            {"fragment", "engine://fullscreen"}}}}})}}})}});
+    root["definitions"] = {{"smooth", {{"nodes", Json::array({buffer("data"), compute("step", "data")})},
+                                       {"outputs", Json::object()}}}};
+    root["nodes"] = Json::array({buffer("probe_data"), compute("probe", "probe_data"),
+                                 {{"id", "left"}, {"op", "graph.instance"}, {"definition", "smooth"}}});
+    writeBytes(project.render_config, root.dump(2));
+    const auto root_before = readBytes(project.render_config);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+
+    const auto catalog = service->getComputeTaskAuthoring(Json::object());
+    INFO(catalog.dump());
+    const auto &tasks = catalog.at("tasks");
+    const auto find = [&](const char *name) {
+        const auto found = std::find_if(tasks.begin(), tasks.end(), [&](const auto &entry) {
+            return entry.at("name") == name;
+        });
+        REQUIRE(found != tasks.end());
+        return *found;
+    };
+    const std::string reason =
+        "This task is made by a render.compute node in the graph. Edit the node in the Graph tab.";
+    const auto probe = find("probe");
+    CHECK(probe.at("origin") == "graph_node");
+    CHECK(Json::parse(probe.at("graph_node").dump()) == Json{{"scope", "root"}, {"node", "probe"}, {"instance", ""}});
+    CHECK(probe.at("source_reference") == "passes/main.json");
+    CHECK(probe.at("editable") == false);
+    CHECK(probe.at("read_only_reason") == reason);
+    const auto step = find("left/step");
+    CHECK(step.at("origin") == "graph_node");
+    CHECK(Json::parse(step.at("graph_node").dump()) == Json{{"scope", "smooth"}, {"node", "step"}, {"instance", "left"}});
+    CHECK(step.at("source_reference") == "passes/main.json");
+    CHECK(step.at("editable") == false);
+    CHECK(step.at("read_only_reason") == reason);
+    CHECK_FALSE(step.contains("provider_feature"));
+
+    Json task = step.at("declaration");
+    task["dispatch"] = {{"groups", {2, 1, 1}}};
+    const auto edited = service->editComputeTask({{"base_source_digest", catalog.at("source_digest").at("hex")},
+                                                  {"base_task_source_digest", std::string(64, '0')},
+                                                  {"task_name", "left/step"},
+                                                  {"task", task}});
+    INFO(edited.dump());
+    REQUIRE(edited.at("status") == "rejected");
+    CHECK(edited.at("error").at("code") == "compute_task_not_editable");
+    service->commitPending();
+    CHECK(readBytes(project.render_config) == root_before);
+}
+
+// MG-3b: a root that names a preset still authors its render.compute nodes
+// itself. Their tasks are the graph's -- not the preset's, whether the preset
+// is the project's or the engine's -- while a task the preset declares stays
+// the preset's and editable.
+TEST_CASE("MG-3b in a preset root a render.compute node's task is the graph's, the preset's task the preset's",
+          "[render-config-editor][compute-task-edit][mg3b]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    auto preset = Json::parse(resolver.loadText("engine://render_pipelines/hybrid_v1.json"));
+    const Json owned{{"name", "owned_compute"}, {"shader", "project://shaders/probe"},
+                     {"dispatch", {{"groups", {1, 1, 1}}}}, {"schedule", "per_frame"}};
+    preset["config"]["compute_tasks"] = Json::array({owned});
+    writeBytes(project.root / "passes" / "owned.json", preset.dump(2));
+    const auto nodes = Json::array({
+        {{"id", "probe_data"}, {"op", "render.buffer"},
+         {"parameters", {{"size", 16}, {"element", "float"}}}, {"outputs", {"resource"}}},
+        {{"id", "probe"}, {"op", "render.compute"},
+         {"parameters", {{"shader", "project://shaders/probe"}, {"dispatch", {{"groups", {1, 1, 1}}}},
+                         {"ports", {{"values", {{"access", "write"}, {"element", "float"}}}}}}},
+         {"inputs", {{"values", {{"node", "probe_data"}, {"port", "resource"}}}}},
+         {"outputs", {"values"}}}});
+    const std::string reason =
+        "This task is made by a render.compute node in the graph. Edit the node in the Graph tab.";
+    for (const std::string reference : {"project://passes/owned.json", "engine://render_pipelines/hybrid_v1.json"}) {
+        INFO(reference);
+        auto root = Pelican::TestSupport::renderGraphRoot(Json{{"pipeline", {{"preset", reference}}}});
+        root["nodes"] = nodes;
+        writeBytes(project.render_config, root.dump(2));
+        ActualCpuRenderRuntime runtime;
+        auto service = makeProjectService(project, resolver, runtime);
+        const auto catalog = service->getComputeTaskAuthoring(Json::object());
+        INFO(catalog.dump());
+        const auto &tasks = catalog.at("tasks");
+        const auto probe = std::find_if(tasks.begin(), tasks.end(), [](const auto &entry) {
+            return entry.at("name") == "probe";
+        });
+        REQUIRE(probe != tasks.end());
+        CHECK(probe->at("origin") == "graph_node");
+        CHECK(Json::parse(probe->at("graph_node").dump()) == Json{{"scope", "root"}, {"node", "probe"}, {"instance", ""}});
+        CHECK(probe->at("source_reference") == "passes/main.json");
+        CHECK(probe->at("editable") == false);
+        CHECK(probe->at("read_only_reason") == reason);
+        if (reference.starts_with("project://")) {
+            const auto preset_task = std::find_if(tasks.begin(), tasks.end(), [](const auto &entry) {
+                return entry.at("name") == "owned_compute";
+            });
+            REQUIRE(preset_task != tasks.end());
+            CHECK(preset_task->at("origin") == "preset");
+            CHECK(preset_task->at("source_reference") == reference);
+            CHECK(preset_task->at("editable") == true);
+            CHECK_FALSE(preset_task->contains("graph_node"));
+            CHECK_FALSE(preset_task->contains("read_only_reason"));
+        }
+    }
 }
 
 TEST_CASE("Procedural asset edits reject a gate that closed and reopened before publication",
@@ -4438,6 +4580,9 @@ TEST_CASE("Compute task source edits preserve other declarations and reject conf
     REQUIRE(catalog.at("tasks").size() == 1);
     const auto &selected = catalog.at("tasks").at(0);
     REQUIRE(selected.at("editable") == true);
+    // MG-3b: a feature's task says it is the feature's, and names no node.
+    CHECK(selected.at("origin") == "feature");
+    CHECK_FALSE(selected.contains("graph_node"));
     REQUIRE(selected.at("declaration") == task);
     REQUIRE(Json::parse(selected.at("declaration_json").get<std::string>()) == task);
     SECTION("connection catalog contains composed images and both buffer declaration forms") {
