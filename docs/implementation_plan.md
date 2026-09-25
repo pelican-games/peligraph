@@ -25523,6 +25523,89 @@ engine の変更 / 移行の手順そのもの / 移行の取り消し(backup �
 - 着地前に、blank 雛形を読む engine 側の test(`Q-14|VI-1|G-4|GP-5|engine_primitives|vi1_variadic`、38 本、GPU 16 本)を -j1 で回して緑
 - 残り(VI-3): Studio の fragment 候補に `engine://passthrough` が無い。「Blank の present は何も読まない」というコメントが `shaderinputcontract.hpp` と `fullscreenshadertemplate.cpp` に残る
 
+### VI-3a: ソケットを shader の宣言から描き、番号でつなぐ(VI-3 の 1 本目。VI-1 / VI-1b の上)
+
+**下段(Studio のみ)。実装者: Claude(Opus)。契約は 13 章の `get_frame_plan` の `pass_inputs` と `reload_shaders` の `refused_passes`(VI-1 / VI-1b)。設計は `docs/design_v0_production_gaps.md` の §8b(特に 8b.1 の 10)。**
+
+#### 前提(調査済み。file:line は develop 8cd374a5 時点)
+- canvas の pass ノードのソケットは `nodeBodyLayout()`(`src/devstudio/view/frameplangraphics.cpp:1079`)が frame plan の `reads` / `reads_history` / `writes` から**名前順**で作る。宣言・binding はどこにも出ない。Studio は `pass_inputs` をまだ読んでいない(`src/devstudio/model/frameplanmodel.{hpp,cpp}` の `FramePlanNode` / `buildFramePlanModel()`)
+- drop-to-add(N-8 / F-7): 出力ソケットをノードの上に落とすと `resourceEdgeRequested(to, {resource}, true)`(`frameplangraphics.cpp:4071-4081`)→ `changeResourceEdge()`(`frameplanwidget.cpp:2001`)→ `framePlanPassResourceRequest()`(`frameplanedit.cpp:327`)が `input` の**末尾に** push する。落とした先のソケットは区別しない。入力ソケットを外へ drag すると外れる(`:4083-4088`)、Delete で edge の resource を外す(`:4160-4183`)
+- 入力の binding は `input` 配列の位置で決まる: texture の入力(history を含む)は texture だけを数えた順に binding 0, 1, …、buffer の入力は `buffer_binding_base` + buffer だけを数えた順(VI-1 の契約)
+- reload: `ShaderReloadFollower`(`src/devstudio/view/shaderreloadfollower.cpp`)は `reload_shaders` の返りの `committed` / `changed` しか読まない。VI-1b から、断った pass があっても `committed:true` で返り、`refused_passes` が付く(**成否は `refused_passes` が空かどうか**)。`get_frame_plan` の `pass_inputs` に `reload_refused` が付く
+- `fullscreenShaderChoices()`(`src/devstudio/view/fullscreenshadertemplate.cpp:382-414`)に `engine://passthrough` が無い。「Blank の present は何も読まない」という古いコメントが `shaderinputcontract.hpp` と `fullscreenshadertemplate.cpp` にある
+
+#### 決定
+1. **model が `pass_inputs` を読む**: `FramePlanNode` に宣言(binding・type・name・variadic)、`variadic_range`、`buffer_binding_base`、`reload_refused`(reason・shader_input_mismatch・declarations)を持たせる。`state` が `"declared"` 以外、または `pass_inputs` が無いノード(compute task、pipeline 無し)は**今の名前順の行と今の操作のまま**(後退させない)
+2. **入力ソケットを宣言から描く**(`pass_inputs` があるノードだけ):
+   - 固定の宣言 1 つ = ○ 1 つ。binding の順に上から並べる。行ラベルは宣言の変数名。つながっていれば `<変数名> ← <resource>`(history は `<resource> (history)`)。つながっていない ○ は中を抜いた形
+   - 可変の組 = **長いソケット**: ○ を上下に割り、その間に帯を挟んだ形。帯の中に、つながっている分の ○ を 1 つずつ並べる(ラベルは `← <resource>`)。帯の下端は空の落とし先(ラベル `+ input`)。つながっていない可変の枠(max まで)は描かない
+   - buffer の宣言も ○(buffer の形・色は今の `framePlanSocketFacts()` に従う)
+   - 宣言に無いのに pass が渡している入力(拒否の後など)は、末尾に今の形の行で残す(消さない。線の行き先が無くならないように)
+   - 出力ソケットは今のまま
+   - edge は「その resource がつながっている ○」に着く(同じ resource が 2 つの binding にあれば 2 本)
+3. **番号でつなぐ**(ドロップの先はソケット):
+   - 出力ソケットを**つながっていない固定の ○(binding b)**に落とす: b がちょうど「今の texture 入力の数」なら末尾に足す。b がそれより大きいなら送らず、status 行に `Connect binding <n>..<b-1> of <pass> first: a pass's inputs fill the bindings in order.` 相当の 1 行
+   - **つながっている ○**に落とす: その位置の入力を置き換える(1 回の `edit_preset_pass`)
+   - **可変の帯**に落とす: 固定の宣言が全部つながっていれば末尾に足す。そうでなければ上と同じ 1 行で断る。可変の枠が max まで埋まっていれば `<pass>'s shader takes at most <max> inputs in its variadic group.` 相当で断る
+   - buffer の ○ も同じ規則(buffer だけで数える)
+   - **ノードの本体に落とした場合(ソケット以外)**: 宣言のあるノードでは入力を足さない。status 行に `Drop on a socket of <pass>: its inputs follow its shader's declarations.` 相当の 1 行。宣言の無いノード(決定 1 の対象外)は今のまま足す
+   - 入力を外す(○ を外へ drag / Delete): 外した位置より後ろの入力が 1 つ前にずれる場合は、送ったうえで status 行に `<pass>: the inputs after binding <b> moved up by one.` 相当の注意
+   - Shift+drag(Pass Editor を開く経路)は今のまま
+4. **宣言が消えた線を赤く**: `reload_refused` があるノードで、`reload_refused.declarations` に無い binding につながっている ○ と、その edge の端を赤くする(今の赤い印の色)。そのノードを選ぶか reload の直後に、status 行に `<pass> keeps drawing with its previous shader: the new one no longer declares binding <b> (<resource>).` 相当の 1 行と、**Disconnect**(その入力を外す。3 の外す操作と同じ)/ **Open the shader**(Q-14 の Open と同じ。`project://` だけ)の 2 つのボタン。`reload_refused` が消えたら赤とボタンも消える
+   - `ShaderReloadFollower` は `refused_passes` を読み、空でなければ**失敗として**扱う(今の「committed なら成功」の分岐を直す)。そのうえで frame plan を読み直す
+   - `reload_refused.declarations` に**増えた**宣言は、読み直した後の `declarations`(照合に通った reload の後)で空の ○ として出る。断られている間は前の shader の宣言で描く
+5. **順を入れ替えたときの注意**: つながっている ○ の変数名が `in_<X>` の形で、X が同じ pass の**別の**つながっている resource の名前なら、その ○ に注意の印(tooltip に `This declaration is named for <X>, but binding <b> is fed <Y>.`)。それ以外の名前は判定しない
+6. `fullscreenShaderChoices()` に `engine://passthrough` を足す。古いコメント 2 か所を直す
+7. **automation の名前**: 宣言の ○ は `node_socket#<pass>/in@<binding>`、可変の帯の落とし先は `node_socket#<pass>/in:variadic`。今の `node_socket#<pass>/in:<resource>` は「その resource がつながっている ○」に解決し続ける(既存シナリオの待ちを壊さない)。`test/studio_scenarios/README.md` の名前の表に足す
+
+#### 受け入れ
+1. 純粋な test(GPU 無し。fake の `get_frame_plan` JSON): 固定 3 + 可変(3, 8)+ buffer のノードで、○ の並び・ラベル・可変の帯・buffer の ○ の位置が決まる。`pass_inputs` の無いノードは今の名前順のまま(対照)
+2. 番号でつなぐ規則の純粋な test: 固定の ○ への末尾追加 / 飛ばしの拒否 / 置き換え / 帯への追加 / 帯が満杯 / 本体に落としても足さない、の各 payload(送るなら `input` 配列の中身)。対照: ノードに落とすと足す今の分岐に戻す変異で「本体に落としても足さない」が赤
+3. reload の test: `refused_passes` が空でない返りを失敗として扱う(対照: `committed` だけ見る変異で赤)。`reload_refused` のあるノードで、宣言に無い binding の ○ が赤くなる(対照: 赤くしない変異)
+4. **新しい GPU シナリオ `sockets_from_shader`**(blank から): Cube と Deferred の geometry pass を足す(`input_needs_shader` の手順を流用してよい)→ `present` に可変の帯があり ○ が無い → `gbuffer_albedo` を帯に落とすと `present` の `input` が `[gbuffer_albedo]` になり、○ `in@0` が出て、viewport がグラデーションでなくなる → 本体に落としても入力が増えない(rpc で確認)→ `file` step で固定 2 つ(binding 0 / 1)の project shader を書き、Pass Editor の fragmentChoice で選んで Save → `gbuffer_normal` を `in@1` に落とす → `file` step で binding 1 の宣言を消す → 赤と Disconnect が出る(rpc で `reload_refused` を確認)→ Disconnect → `reload_refused` が消え、`input` が 1 つになる。`distinct_colors` などの画素の期待は今のシナリオの形に合わせる
+5. drop-to-add を前提にしている既存シナリオ(`frameplan_edit_roundtrip`、`add_primitive_object`、`material_pass_authoring`、`input_needs_shader`)と C++ の test(`devstudio_frameplan_graph_test` の `dragSocket` をノード宛てに使うもの)を、**宣言のあるノードではソケット宛て**に直す。宣言の無いノード宛てのものはそのまま。直したものを一覧で報告
+6. `-L studio_cpu -LE gpu` 緑。GPU シナリオは新しい 1 本と、5 で直したものを `-j1` で(隣の worktree とぶつからないよう、1 本ずつ)
+7. 報告にテキスト入力の欄
+
+#### やらないこと(VI-3b で)
+ソケットの固定化(shader の書き換え)、engine の shader の project への複製、passthrough の ○ をクリックして出す入力を選ぶ、Q-14 の Make a pass-through shader の置き換え
+
+### VI-3b: ソケットの固定化・engine の shader の複製・passthrough の出す入力・Q-14 の置き換え(VI-3 の 2 本目。VI-3a の上)
+
+**下段(Studio のみ)。実装者: Claude(Opus)。契約は 13 章(VI-1 / VI-1b)、VI-3a の仕様は上の節、設計は `docs/design_v0_production_gaps.md` §8b.1 の 10。**
+
+#### 前提
+- VI-3a で canvas の入力ソケットが宣言から描かれ(固定 ○、可変の帯)、番号でつなぐようになっている
+- 可変マクロ(`src/core/resources/shaders/include/pelican_view.glsl` の `PELICAN_DECLARE_VARIADIC_INPUTS`)は、`pelican_variadic_input_<k>`(raw の `sampler2D`、binding `first+k`)の宣言と、関数 `pelican_variadic_texture(int, vec2)`、定数 `pelican_variadic_input_count` を作る。`PELICAN_VARIADIC_TEXTURE(k, uv)` と `PELICAN_VARIADIC_INPUT_COUNT` はそれを呼ぶ/指すマクロで、include が常に定義している
+- 固定のマクロ `PELICAN_DECLARE_INPUT_<i>` は 0〜7 だけ
+- Studio は engine の shader の source を読めない(`pelican_core` をリンクしていない。`engine://` は `source_open_ref` を持たない)。engine の shader の実体は `src/core/resources/`(`passthrough.frag` など)
+- Q-14 の `shaderinputcontract`: 拒否の後の **Make a pass-through shader** は入力を固定で宣言する project の shader を書いて、入力と fragment を 1 回の編集で送る。送る前の検査(Pass Editor の `updateInputContract()`)と拒否の数は、shader のファイルの行を正規表現で数える近似(`shaderInputDeclaredIndices()`)
+- passthrough は `PELICAN_PASSTHROUGH_INPUT`(pass の `shader.defines`、既定 0)番の入力を出す
+
+#### 決定
+1. **ソケットの固定化**(可変の帯の右クリックか帯の横のボタン **Fix sockets**。Pass Editor にも同じ動作): project の shader(`project://`)の `PELICAN_DECLARE_VARIADIC_INPUTS(first, max);` の 1 行を、次で置き換えて保存する(外部エディタで保存したのと同じ扱い。reload で描き直す)
+   - 今つながっている n 個分: `layout(set = PELICAN_SET_PASS_INPUT, binding = <first+k>) uniform sampler2D in_<resource>;`(k = 0..n-1。変数名は resource 名を識別子に直したもの。重複すれば `_2` などを付ける)。**raw の layout 行にするので 8 個を超えても固定できる**(固定マクロの 0〜7 の制限を受けない。型は可変の組と同じ `sampler2D`)
+   - 本文が `PELICAN_VARIADIC_TEXTURE` / `PELICAN_VARIADIC_INPUT_COUNT` を使っていても compile が通るよう、同じ名前の関数 `pelican_variadic_texture(int, vec2)`(k ごとに `in_<resource>` を返し、範囲外は `vec4(0)`)と `const int pelican_variadic_input_count = n;` も書く
+   - 置き換えた部分を `// pelican: fixed sockets, was PELICAN_DECLARE_VARIADIC_INPUTS(<first>, <max>)` と `// pelican: end fixed sockets` の 2 行で囲む
+   - n = 0 なら断る(`Connect at least one input before fixing the sockets.` 相当)
+2. **可変に戻す**(固定化した組の ○ の右クリック **Make sockets variadic**): 囲んだ部分を元の 1 行に戻す。囲みが無い shader には出さない(手で書いた固定の宣言は触らない)
+3. **engine の shader の複製**: 固定化 / Open the shader を `engine://passthrough` の pass で行うと、先に project に複製する(`shaders/<pass>.frag`、既にあれば `<pass>_2.frag` など。既存ファイルは上書きしない)。複製したら fragment を `project://shaders/<stem>` に替える編集を 1 回送り、`shader.defines` はそのまま残す。複製の source は Studio が build 時に `src/core/resources/passthrough.frag` を**同じファイルから**埋め込んで持つ(内容の写しを repo に置かない)。v1 で複製できるのは `engine://passthrough` だけ。それ以外の `engine://` では今どおり「開けない」と言う
+4. **passthrough の出す入力**: fragment が `engine://passthrough` の pass で、つながっている ○ をクリック(drag しない)すると、`shader.defines` の `PELICAN_PASSTHROUGH_INPUT=<k>` を書く `edit_preset_pass` を送る(k = 可変の中の番号。0 なら define を消す)。今出している ○ に印(塗りつぶし + ラベル末尾に `(shown)`)。今の値は宣言の `shader.defines` から読む。Pass Editor で fragment を passthrough 以外に替えて Save するときは `PELICAN_PASSTHROUGH_INPUT` を defines から落とす
+5. **Q-14 の置き換え**:
+   - 拒否の後の **Make a pass-through shader** を **Use engine://passthrough** に替える(入力と `fragment: engine://passthrough` を 1 回の編集で送る。ファイルを書かない)。ボタンの automation 名は新しくする
+   - 送る前の検査と拒否の行の数は、`pass_inputs` の宣言(VI-3a の model)から取る。正規表現で数える近似(`shaderInputDeclaredIndices()` とファイルを数える fallback)は消す。`pass_inputs` が無いときは送る前の検査をしない(engine の拒否に任せる)。Pass Editor の下書きの fragment が今の fragment と違うときも検査しない(宣言は今の shader のものなので)
+   - 可変の組がある shader は、入力を足しても「読まない」ことにならない(max まで)。検査はそれに従う
+
+#### 受け入れ
+1. 固定化の純粋な test: 可変(0, 8)の passthrough の複製に 3 つつながった状態で、書き換えた source が期待どおり(囲み・layout 行 3 つ・関数・定数)で、**glslang で compile が通る**(既存の `devstudio_shadertemplate_compile_test` の形で)。10 個つながった状態でも通る(8 を超える)。可変に戻すと元の source と byte 一致。対照: 関数と定数を書かない変異で compile が赤
+2. 複製の test: `engine://passthrough` の複製の中身が `src/core/resources/passthrough.frag` と byte 一致(埋め込みの経路で。対照: 埋め込みを別ファイルにすると赤、は不要。一致の検査だけでよい)。既存の名前を避ける
+3. passthrough の ○ のクリックの payload test: `PELICAN_PASSTHROUGH_INPUT=1` を書く、0 で消す、他の defines を保つ。fragment を替えた Save で落ちる
+4. Q-14 の置き換え: 既存の Q-14 / Q-15 の test を新しいボタンと宣言由来の数に直す。対照: 正規表現の近似に戻す変異で、宣言と行の数が食い違う fixture が赤
+5. **VI-3a の GPU シナリオ `sockets_from_shader` を伸ばすか、新しいシナリオ `sockets_fix_and_show`**: blank → Cube + Deferred geometry → `gbuffer_albedo` と `gbuffer_normal` を `present` の帯へ → ○ `in@1` をクリック → viewport の色が変わる(rpc で `defines` に `PELICAN_PASSTHROUGH_INPUT=1`)→ Fix sockets → `shaders/present.frag` ができ、fragment が `project://shaders/present`、ソケットの名前が `in_gbuffer_albedo` / `in_gbuffer_normal`、viewport の色は前と同じ → Make sockets variadic → 帯に戻る
+6. `input_needs_shader` は Use engine://passthrough の流れに直す
+7. `-L studio_cpu -LE gpu` 緑。GPU シナリオは新しい / 直したものだけ `-j1` で 1 本ずつ
+8. 報告にテキスト入力の欄(shader の手打ちが減るはず)
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
