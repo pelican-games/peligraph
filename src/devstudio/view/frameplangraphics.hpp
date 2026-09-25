@@ -104,6 +104,9 @@ inline constexpr int FramePlanInputIndexRole = Qt::UserRole + 3115;
 inline constexpr int FramePlanSocketRemovedRole = Qt::UserRole + 3116;
 // The binding a declared socket stands for (an int).
 inline constexpr int FramePlanSocketBindingRole = Qt::UserRole + 3117;
+// VI-3b: true on the socket (and its row label) of the input
+// engine://passthrough shows.
+inline constexpr int FramePlanSocketShownRole = Qt::UserRole + 3118;
 // Nothing else is published: a socket's type, shape and a node's kind are
 // what the canvas DRAWS (the socket path, its colour, the kind text), and a
 // role restating them would be a second answer nothing reads.
@@ -147,6 +150,9 @@ inline constexpr auto FramePlanSocketBandItem = "node_socket_band";
 // VI-3a rule 5: the mark beside a socket whose declaration is named for
 // another connected resource. Its tooltip says which.
 inline constexpr auto FramePlanSocketWarningItem = "node_socket_warning";
+// VI-3b: the Fix button beside the variadic band's end. A press on it asks
+// for the group's sockets to be fixed (socketsFixRequested).
+inline constexpr auto FramePlanSocketFixItem = "node_socket_fix";
 
 // A node's height follows its resource count rather than a constant, so the
 // numbers the scene draws with are published for the scene test to name.
@@ -274,6 +280,22 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     std::function<std::optional<std::vector<std::string>>(
         const FramePlanNodeKey &)>
         passInputsProvider;
+    // VI-3b. Which member of the variadic group engine://passthrough shows
+    // for a pass (nullopt: the pass does not draw with it).
+    std::function<std::optional<std::size_t>(const FramePlanNodeKey &)>
+        passthroughShownProvider;
+    // A click -- a press and a release in place -- on a connected declared
+    // socket: the socket's binding.
+    std::function<void(const FramePlanNodeKey &, std::size_t binding)>
+        socketClicked;
+    // Fix sockets (the band's Fix button, or the menu entry) and Make
+    // sockets variadic (the menu entry, offered when `fixedSocketsOffered`
+    // says the pass's shader holds sockets Fix sockets wrote).
+    std::function<void(const FramePlanNodeKey &)> socketsFixRequested;
+    std::function<void(const FramePlanNodeKey &)> socketsVariadicRequested;
+    std::function<bool(const FramePlanNodeKey &)> fixedSocketsOffered;
+    // The two named entries for them; both act on insertAnchor().
+    void setSocketActions(QAction *fix, QAction *variadic);
     // Delete on a picked node.
     std::function<void(const FramePlanNodeKey &)> nodeRemoveRequested;
     // Double-click on a node body: the detailed editor for everything the
@@ -433,9 +455,15 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
         bool output = true;
         // VI-3a: the input a drag off a declared socket takes out.
         std::optional<std::size_t> input_index;
+        // VI-3b: where the press landed, and the socket's binding, so a
+        // release in place is a click on it.
+        QPointF pressed_at;
+        std::optional<std::size_t> binding;
     };
     // VI-3a: the passes drawn with sockets from their shader, this draw.
     std::set<std::string, std::less<>> declared_nodes_;
+    // VI-3b: those of them whose shader declares a variadic group.
+    std::set<std::string, std::less<>> variadic_nodes_;
     std::optional<SocketGesture> socket_gesture_;
     std::optional<FramePlanEdgeSelection> selected_edge_;
     struct InlineEditor;
@@ -454,6 +482,8 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     QAction *render_target_action_ = nullptr;
     QAction *material_pass_action_ = nullptr;
     QAction *open_in_graph_action_ = nullptr;
+    QAction *fix_sockets_action_ = nullptr;
+    QAction *variadic_sockets_action_ = nullptr;
     // F-1: the resource node the user clicked. Delete acts on it.
     std::optional<FramePlanNodeKey> picked_resource_;
     void applyResourcePick();

@@ -182,12 +182,12 @@ struct FullscreenPassWidget::Impl {
     ShaderCompileLogPanel *compile_log = nullptr;
     // Q-14: a pass whose shader does not read the inputs it lists. The
     // engine's refusal gets a line and two buttons under the log; the same
-    // line and buttons stand under the inputs before Save, when the fragment
-    // file's declaration lines are fewer than the inputs.
+    // line and buttons stand under the inputs before Save, when the pass's
+    // published declarations (VI-3b) take fewer inputs than the list holds.
     struct ContractRow {
         QWidget *row = nullptr;
         QLabel *line = nullptr;
-        QPushButton *pass_through = nullptr;
+        QPushButton *use_passthrough = nullptr;
         QPushButton *open_shader = nullptr;
         // Q-15: the refusal said the shader declares an input the pass
         // cannot supply (at `binding`): Open the shader copies nothing.
@@ -196,6 +196,10 @@ struct FullscreenPassWidget::Impl {
     };
     ContractRow refusal_contract;
     ContractRow input_contract;
+    // VI-3b: Fix sockets, beside the fragment, for a pass whose shader has a
+    // variadic group; the Frame Plan does the rewrite.
+    QPushButton *fix_sockets = nullptr;
+    std::function<void(const QString &graph, const QString &pass)> fix_sockets_action;
     // F-5: what a shader reload failure put in the log, so a later commit
     // takes down that log and not an authoring rejection shown since.
     QString reload_log_text;
@@ -825,19 +829,17 @@ struct FullscreenPassWidget::Impl {
         made.line->setTextInteractionFlags(Qt::TextSelectableByMouse);
         made.line->setStyleSheet(QStringLiteral("color: #d94c3d;"));
         const auto actions = shaderInputContractActions();
-        made.pass_through =
+        made.use_passthrough =
             new QPushButton(owner.tr(actions[0].label.c_str()), made.row);
-        made.pass_through->setObjectName(base + QStringLiteral(".makePassThrough"));
-        made.pass_through->setToolTip(
+        made.use_passthrough->setObjectName(base + QStringLiteral(".usePassthrough"));
+        made.use_passthrough->setToolTip(
             after_refusal
-                ? owner.tr("Writes a new shader that reads the inputs and "
-                           "shows the first one, puts it in the fragment "
-                           "field and saves the inputs and the shader "
-                           "together.")
-                : owner.tr("Writes a new shader that reads the inputs and "
-                           "shows the first one, and puts it in the fragment "
-                           "field. Save sends the inputs and the shader "
-                           "together."));
+                ? owner.tr("Puts engine://passthrough, which takes any number "
+                           "of inputs, in the fragment field and saves the "
+                           "inputs and the shader together.")
+                : owner.tr("Puts engine://passthrough, which takes any number "
+                           "of inputs, in the fragment field. Save sends the "
+                           "inputs and the shader together."));
         made.open_shader =
             new QPushButton(owner.tr(actions[1].label.c_str()), made.row);
         made.open_shader->setObjectName(base + QStringLiteral(".openShader"));
@@ -845,12 +847,12 @@ struct FullscreenPassWidget::Impl {
             "Opens the fragment shader and copies the lines that declare and "
             "read the inputs."));
         row_layout->addWidget(made.line, 1);
-        row_layout->addWidget(made.pass_through);
+        row_layout->addWidget(made.use_passthrough);
         row_layout->addWidget(made.open_shader);
         made.row->hide();
-        QObject::connect(made.pass_through, &QPushButton::clicked, &owner,
+        QObject::connect(made.use_passthrough, &QPushButton::clicked, &owner,
                          [this, after_refusal] {
-                             makePassThroughShader(after_refusal);
+                             useEnginePassthrough(after_refusal);
                          });
         QObject::connect(made.open_shader, &QPushButton::clicked, &owner,
                          [this, after_refusal] {
@@ -873,7 +875,7 @@ struct FullscreenPassWidget::Impl {
         row.line->setStyleSheet(QStringLiteral("color: #d94c3d;"));
         row.line->setText(text(line));
         row.line->setToolTip(text(line));
-        row.pass_through->setVisible(offer_pass_through);
+        row.use_passthrough->setVisible(offer_pass_through);
         row.open_shader->setEnabled(can_open && project_root.has_value());
         row.row->show();
     }
@@ -882,32 +884,52 @@ struct FullscreenPassWidget::Impl {
         if (row.row != nullptr) row.row->hide();
     }
 
-    // The fragment file's declaration lines, when it is a project file that
-    // can be read.
-    std::optional<std::size_t> fragmentDeclarationCount() const {
-        if (!project_root) return std::nullopt;
-        return projectFragmentDeclarationCount(
-            *project_root, fragment_shader->text().trimmed().toStdString());
+    // VI-3b: the declarations get_frame_plan published for the pass being
+    // edited -- its running shader's. None for a new pass.
+    const FramePlanPassInputs *currentPassInputs() const {
+        if (!editing_preset_pass || !plan ||
+            plan->graph != editing_preset_pass->first)
+            return nullptr;
+        const auto node = std::ranges::find(
+            plan->nodes, editing_preset_pass->second, &FramePlanNode::name);
+        return node == plan->nodes.end() || !node->pass_inputs
+                   ? nullptr
+                   : &*node->pass_inputs;
     }
 
-    // The check before Save. A simple one: the fragment file's
-    // PELICAN_DECLARE_INPUT_ lines (and hand-written pass-input bindings) are
-    // counted, not reflected, against the inputs the list now holds.
+    // How many inputs the fragment in the field takes, when the published
+    // declarations are that fragment's.
+    std::optional<std::size_t> fragmentDeclaredCount() const {
+        return shaderInputDeclaredFor(
+            currentPassInputs(), fragment_shader->text().trimmed().toStdString());
+    }
+
+    // The check before Save, from the declarations the engine published for
+    // the pass (VI-3b; no longer the file's lines). A new pass, or a draft
+    // that names another fragment, is not checked: the engine answers.
     void updateInputContract() {
         if (input_contract.row == nullptr || fragment_shader == nullptr) return;
+        updateFixSockets();
         const bool fullscreen = !preservesPresetDeclaration();
-        const auto fragment = fragment_shader->text().trimmed().toStdString();
-        const auto declared = fullscreen ? fragmentDeclarationCount()
-                                         : std::nullopt;
-        const auto listed = static_cast<std::size_t>(inputs->count());
-        if (!declared || *declared >= listed) {
+        const auto line =
+            fullscreen ? shaderInputPreSaveLine(
+                             contractPassName().toStdString(),
+                             fragment_shader->text().trimmed().toStdString(),
+                             static_cast<std::size_t>(inputs->count()),
+                             currentPassInputs())
+                       : std::string{};
+        if (line.empty()) {
             hideContractRow(input_contract);
             return;
         }
-        showContractRow(input_contract,
-                        shaderInputContractLine(contractPassName().toStdString(),
-                                                fragment, declared),
-                        true);
+        showContractRow(input_contract, line, true);
+    }
+
+    void updateFixSockets() {
+        if (fix_sockets == nullptr) return;
+        const auto *current = currentPassInputs();
+        fix_sockets->setVisible(current != nullptr &&
+                                current->variadic_range.has_value());
     }
 
     // The engine's refusal of a Save: the readable line, and the two ways
@@ -918,7 +940,7 @@ struct FullscreenPassWidget::Impl {
         const auto notice = shaderInputContractNotice(
             *error, contractPassName().toStdString(),
             fragment_shader->text().trimmed().toStdString(),
-            fragmentDeclarationCount());
+            fragmentDeclaredCount());
         if (!notice.matched) return false;
         hideContractRow(input_contract);
         refusal_contract.unsupplied =
@@ -926,39 +948,17 @@ struct FullscreenPassWidget::Impl {
         refusal_contract.binding = notice.binding;
         showContractRow(refusal_contract, notice.line, notice.can_open,
                         shaderInputContractOffers(
-                            notice, ShaderInputContractMakePassThrough));
+                            notice, ShaderInputContractUsePassthrough));
         authoringError(responseError(response), oneLine(text(notice.line)));
         return true;
     }
 
-    // Make a pass-through shader: a new file for the inputs in the list, put
-    // in the fragment field. After a refusal it is saved at once, the inputs
-    // and the shader in one request; before Save, Save does that.
-    void makePassThroughShader(bool save_now) {
-        if (!project_root) {
-            templateNotice(owner.tr("open a project first"),
-                           owner.tr("The shader is written into the "
-                                    "project's shaders folder."),
-                           true);
-            return;
-        }
-        auto &row = save_now ? refusal_contract : input_contract;
-        const auto pass_name = contractPassName().toStdString();
-        try {
-            const auto shader_name = passThroughShaderName(*project_root, pass_name);
-            const auto written = writeShaderTemplate(
-                *project_root, shader_name,
-                fullscreenFragmentShaderTemplate(pass_name, templateInputs()));
-            if (!written.created)
-                throw std::runtime_error(written.path.string() +
-                                         " is already there");
-            refreshShaderChoices();
-            fragment_shader->setText(text(written.reference));
-        } catch (const std::exception &error) {
-            row.line->setText(owner.tr("Could not write the shader: %1")
-                                  .arg(QString::fromUtf8(error.what())));
-            return;
-        }
+    // VI-3b. Use engine://passthrough: that fragment in the field, whose
+    // inputs are all variadic. After a refusal it is saved at once, the
+    // inputs and the shader in one request; before Save, Save does that. No
+    // file is written.
+    void useEnginePassthrough(bool save_now) {
+        fragment_shader->setText(text(std::string{EnginePassthroughFragment}));
         hideContractRow(refusal_contract);
         hideContractRow(input_contract);
         updateDraft();
@@ -969,6 +969,37 @@ struct FullscreenPassWidget::Impl {
     void openContractShader(ContractRow &row) {
         if (!project_root) return;
         const auto fragment = fragment_shader->text().trimmed().toStdString();
+        if (fragment == EnginePassthroughFragment) {
+            // VI-3b: the engine's shader is copied into the project first;
+            // the copy goes in the field, and Save draws with it.
+            try {
+                const auto name =
+                    engineShaderCopyName(*project_root, contractPassName().toStdString());
+                const auto written = writeShaderTemplate(
+                    *project_root, name, *engineFragmentSource(fragment));
+                if (!written.created)
+                    throw std::runtime_error(written.path.string() +
+                                             " is already there");
+                refreshShaderChoices();
+                fragment_shader->setText(text(written.reference));
+                updateDraft();
+                if (!shader_open_action || !shader_open_action(written.path)) {
+                    row.line->setText(owner.tr("The desktop could not open %1.")
+                                          .arg(QString::fromStdWString(
+                                              written.path.wstring())));
+                    return;
+                }
+                row.line->setStyleSheet({});
+                row.line->setText(owner.tr("Copied engine://passthrough to "
+                                           "shaders/%1.frag and opened it. "
+                                           "Save draws the pass with the copy.")
+                                      .arg(text(name)));
+            } catch (const std::exception &error) {
+                row.line->setText(owner.tr("Could not write the shader: %1")
+                                      .arg(QString::fromUtf8(error.what())));
+            }
+            return;
+        }
         const auto path = projectFragmentSourcePath(*project_root, fragment);
         if (!path) {
             row.line->setText(owner.tr("%1 is not a file of this project.")
@@ -988,8 +1019,15 @@ struct FullscreenPassWidget::Impl {
             return;
         }
         const auto inputs_now = templateInputs();
-        QApplication::clipboard()->setText(text(fullscreenShaderInputSnippet(
-            inputs_now, fragmentDeclarationCount().value_or(0))));
+        // The lines start after the fixed image declarations the pass's
+        // shader publishes (none known: from input 0).
+        const auto *current = currentPassInputs();
+        const std::size_t first =
+            current != nullptr && shaderInputDeclarationsAreFor(*current, fragment)
+                ? shaderInputFixedImageCount(*current)
+                : 0;
+        QApplication::clipboard()->setText(
+            text(fullscreenShaderInputSnippet(inputs_now, first)));
         if (!shader_open_action || !shader_open_action(*path)) {
             row.line->setText(owner.tr("The desktop could not open %1.")
                                   .arg(QString::fromStdWString(path->wstring())));
@@ -1024,6 +1062,18 @@ struct FullscreenPassWidget::Impl {
         new_fragment_shader->setObjectName(
             QStringLiteral("pelican.fullscreenPass.newFragmentShader"));
         fragment_layout->addWidget(new_fragment_shader);
+        fix_sockets = new QPushButton(owner.tr("Fix sockets"), fragment_row);
+        fix_sockets->setObjectName(QStringLiteral("pelican.fullscreenPass.fixSockets"));
+        fix_sockets->setToolTip(owner.tr(
+            "The shader declares each connected input by name instead of its "
+            "variadic group (the Frame Plan's Fix, on this pass)."));
+        fix_sockets->hide();
+        QObject::connect(fix_sockets, &QPushButton::clicked, &owner, [this] {
+            if (editing_preset_pass && fix_sockets_action)
+                fix_sockets_action(text(editing_preset_pass->first),
+                                   text(editing_preset_pass->second));
+        });
+        fragment_layout->addWidget(fix_sockets);
         form->addRow(owner.tr("Fragment"), fragment_row);
 
         shader_template_row = new QWidget(&owner);
@@ -2355,6 +2405,11 @@ struct FullscreenPassWidget::Impl {
             output["color"] = draft.at("output").at("color");
             output["depth"] = draft.at("output").at("depth");
             auto shader = original_preset_pass.value("shader", Json::object());
+            // VI-3b: off engine://passthrough, its define means nothing.
+            if (shader.value("fragment", std::string{}) == EnginePassthroughFragment &&
+                draft.at("shader").value("fragment", std::string{}) !=
+                    EnginePassthroughFragment)
+                shader = framePlanShaderWithoutPassthroughInput(std::move(shader));
             shader["vertex"] = draft.at("shader").at("vertex");
             shader["fragment"] = draft.at("shader").at("fragment");
             params["input"] = draft.at("input");
@@ -3513,6 +3568,11 @@ void FullscreenPassWidget::editPresetPassConnection(const QString &graph, const 
 void FullscreenPassWidget::insertAuthoredPassAfter(const QString &graph,
                                                    const QString &after_pass) {
     impl_->beginAuthoredPassInsert(graph, after_pass);
+}
+
+void FullscreenPassWidget::setFixSocketsAction(
+    std::function<void(const QString &graph, const QString &pass)> action) {
+    impl_->fix_sockets_action = std::move(action);
 }
 
 void FullscreenPassWidget::setProjectRoot(

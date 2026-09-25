@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "input_needs_shader",
-  "description": "Q-14: a pass given an input its shader does not read. On a Blank pipeline project, present is first given a project shader that reads nothing: the author's editor writes shaders/gradient.frag and the Pass Editor picks it from the fragment list (VI-2: the template's own present draws with engine://passthrough, whose inputs are variadic, so it takes any input and is never refused). With a Cube and a Deferred geometry pass, gbuffer_albedo is dragged onto present, whose shader reads nothing. The engine refuses it (the pass's inputs and the shader's declarations disagree); the Frame Plan's status line says so in one line that says what to do, with Make a pass-through shader and Open the shader beside it. Make a pass-through shader writes shaders/present_pass_through.frag for the inputs and sends the inputs and the new shader in one edit: present then reads gbuffer_albedo and the viewport shows the G-buffer's colour.",
+  "description": "Q-14, as VI-3b answers it: a pass given an input its shader does not read. On a Blank pipeline project, present is first given a project shader that reads nothing: the author's editor writes shaders/gradient.frag and the Pass Editor picks it from the fragment list (VI-2: the template's own present draws with engine://passthrough, whose inputs are variadic, so it takes any input and is never refused). With a Cube and a Deferred geometry pass, gbuffer_albedo is dragged onto present, whose shader declares no input. Nothing is sent: the Frame Plan's status line says present's shader declares no inputs, with Use engine://passthrough and Open the shader beside it. Use engine://passthrough sends the input and that fragment in one edit, and writes no file: present then reads gbuffer_albedo and the viewport shows the G-buffer's colour.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -331,11 +331,11 @@
     {
       "label": "nothing offers a fix yet",
       "expect": "visible",
-      "name": "pelican.framePlan.shaderContract.makePassThrough",
+      "name": "pelican.framePlan.shaderContract.usePassthrough",
       "value": false
     },
     {
-      "label": "drag gbuffer_albedo onto present, whose shader reads nothing",
+      "label": "drag gbuffer_albedo onto present, whose shader declares no input",
       "cmd": "drag",
       "from": {
         "name": "pelican.framePlanLogicalView::node_socket#deferred_geometry/out:gbuffer_albedo"
@@ -346,16 +346,16 @@
       "steps": 8
     },
     {
-      "label": "the engine refuses it, and the status line says what to do",
+      "label": "nothing is sent, and the status line says why",
       "cmd": "wait",
       "name": "pelican.framePlanStatus",
-      "contains": "present's shader (gradient) reads no inputs. To change its inputs, change the shader too.",
+      "contains": "present's shader declares no inputs.",
       "timeout_ms": 120000
     },
     {
-      "label": "Make a pass-through shader is offered",
+      "label": "Use engine://passthrough is offered",
       "cmd": "wait",
-      "name": "pelican.framePlan.shaderContract.makePassThrough",
+      "name": "pelican.framePlan.shaderContract.usePassthrough",
       "visible": true,
       "enabled": true,
       "timeout_ms": 10000
@@ -369,7 +369,7 @@
       "timeout_ms": 10000
     },
     {
-      "label": "present still reads nothing: the refused edit changed nothing",
+      "label": "present still reads nothing: no edit was sent",
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
@@ -377,9 +377,9 @@
       "value": 0
     },
     {
-      "label": "Make a pass-through shader",
+      "label": "Use engine://passthrough",
       "cmd": "click",
-      "name": "pelican.framePlan.shaderContract.makePassThrough"
+      "name": "pelican.framePlan.shaderContract.usePassthrough"
     },
     {
       "label": "present reads gbuffer_albedo",
@@ -391,20 +391,19 @@
       "retry_ms": 120000
     },
     {
-      "label": "through the new shader, sent in the same edit",
+      "label": "through engine://passthrough, sent in the same edit",
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
       "path": "graphs[0].passes[1].root_declaration.shader.fragment",
-      "value": "project://shaders/present_pass_through",
+      "value": "engine://passthrough",
       "retry_ms": 60000
     },
     {
-      "label": "the new shader declares input 0",
-      "file": "contains",
+      "label": "no shader is written for it",
+      "file": "exists",
       "path": "{artifacts}/project_001/shaders/present_pass_through.frag",
-      "text": "PELICAN_DECLARE_INPUT_0(in_gbuffer_albedo);",
-      "value": true
+      "value": false
     },
     {
       "label": "the gradient present had is still on disk: nothing is overwritten",
@@ -414,14 +413,14 @@
       "value": true
     },
     {
-      "label": "the buttons went with the refusal",
+      "label": "the buttons went once it was sent",
       "cmd": "wait",
-      "name": "pelican.framePlan.shaderContract.makePassThrough",
+      "name": "pelican.framePlan.shaderContract.usePassthrough",
       "visible": false,
       "timeout_ms": 60000
     },
     {
-      "label": "the canvas draws the read",
+      "label": "the canvas draws the read, in the band of engine://passthrough",
       "cmd": "wait",
       "name": "pelican.framePlanLogicalView::node_socket#present/in:gbuffer_albedo",
       "visible": true,

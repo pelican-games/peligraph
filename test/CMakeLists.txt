@@ -607,7 +607,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
       ${CMAKE_SOURCE_DIR}/src/devstudio/view)
     target_compile_definitions(
       pelican_test_devstudio_shadertemplate_compile_test PRIVATE
-      PELICAN_RUNTIME_SHADER_COMPILER=1)
+      PELICAN_RUNTIME_SHADER_COMPILER=1
+      PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     if(COMMAND pelican_copy_shaderc_runtime)
       pelican_copy_test_shaderc_runtime(
         pelican_test_devstudio_shadertemplate_compile_test)

@@ -333,6 +333,11 @@ void MainWindow::createWorkspace() {
     // T-1: "New target: <pass>_color..." in the Pass Editor's colour output
     // opens the Frame Plan's New render target form on that name; the
     // target it makes comes back to the Pass Editor as that output.
+    // VI-3b: the Pass Editor's Fix sockets is the Frame Plan's.
+    fullscreen_pass_->setFixSocketsAction(
+        [this](const QString &graph, const QString &pass) {
+            frame_plan_->fixSockets(graph, pass);
+        });
     fullscreen_pass_->setNewRenderTargetAction([this](const QString &name) {
         frame_plan_->openNewRenderTarget(name);
     });

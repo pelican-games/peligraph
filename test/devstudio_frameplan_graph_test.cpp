@@ -24,6 +24,7 @@
 #include "frameplaneditcapability.hpp"
 #include "frameplangraphics.hpp"
 #include "frameplanwidget.hpp"
+#include "fullscreenshadertemplate.hpp"
 #include "renderconfigdigest.hpp"
 #include "materialpassedit.hpp"
 #include "materialpassform.hpp"
@@ -10106,8 +10107,8 @@ TEST_CASE("Q-13 an edit refused for a moved document is built again once from "
 }
 
 // --- Q-14. A resource dragged onto a pass whose shader does not read it: the
-// refusal says what to do, and Make a pass-through shader sends the inputs and
-// a new shader in one edit_preset_pass.
+// refusal says what to do, and Use engine://passthrough (VI-3b) sends the
+// inputs and that fragment in one edit_preset_pass.
 
 TEST_CASE("Q-14 the inputs and the fragment of a pass travel in one request",
           "[devstudio][frame-plan][q14][canvas-edit]") {
@@ -10135,7 +10136,7 @@ TEST_CASE("Q-14 the inputs and the fragment of a pass travel in one request",
 }
 
 TEST_CASE("Q-14 a drag its shader cannot read is refused with a line that says "
-          "what to do, and Make a pass-through shader sends inputs and shader "
+          "what to do, and Use engine://passthrough sends inputs and shader "
           "together",
           "[devstudio][frame-plan][q14][canvas-edit]") {
     application();
@@ -10154,7 +10155,7 @@ TEST_CASE("Q-14 a drag its shader cannot read is refused with a line that says "
     fixture.open();
     auto &logical = fixture.logical();
     auto *pass_through = fixture.widget.findChild<QPushButton *>(
-        QStringLiteral("pelican.framePlan.shaderContract.makePassThrough"));
+        QStringLiteral("pelican.framePlan.shaderContract.usePassthrough"));
     auto *open_shader = fixture.widget.findChild<QPushButton *>(
         QStringLiteral("pelican.framePlan.shaderContract.openShader"));
     REQUIRE(pass_through != nullptr);
@@ -10199,17 +10200,12 @@ TEST_CASE("Q-14 a drag its shader cannot read is refused with a line that says "
         const auto sent = sentParams(fixture.recorder);
         CHECK(sent.at("pass_name") == "wp343_mixed_a");
         CHECK(sent.at("input") == Json::array({"wp343_mixed_d_output"}));
-        CHECK(sent.at("shader").at("fragment") ==
-              "project://shaders/wp343_mixed_a_pass_through");
+        CHECK(sent.at("shader").at("fragment") == "engine://passthrough");
         CHECK(sent.at("shader").at("vertex") == "engine://fullscreen");
         CHECK(sent.at("output") == mixedPassDeclaration(0).at("output"));
         CHECK(sent.at("base_source_digest") == RootDigest);
-        std::ifstream written{root / "shaders" / "wp343_mixed_a_pass_through.frag"};
-        REQUIRE(written);
-        const std::string source{std::istreambuf_iterator<char>{written},
-                                 std::istreambuf_iterator<char>{}};
-        CHECK(source.find("PELICAN_DECLARE_INPUT_0(in_wp343_mixed_d_output);") !=
-              std::string::npos);
+        // No file is written.
+        CHECK_FALSE(std::filesystem::exists(root / "shaders"));
         CHECK(pass_through->isHidden());
         CHECK(open_shader->isHidden());
     }
@@ -10227,4 +10223,373 @@ TEST_CASE("Q-14 a drag its shader cannot read is refused with a line that says "
     }
 }
 
+
+// --- VI-3b: engine://passthrough shows the input whose socket is clicked; a
+// shader that declares no input is not given one; Fix sockets and Make
+// sockets variadic rewrite the shader.
+
+namespace {
+
+// engine://passthrough as get_frame_plan publishes it: every input variadic.
+Json vi3bPassthroughInputs(const std::string &fragment = "engine://passthrough") {
+    auto declarations = Json::array();
+    for (std::size_t slot = 0; slot < 8; ++slot)
+        declarations.push_back(vi3aDeclaration(
+            slot, "pelican_variadic_input_" + std::to_string(slot), true));
+    return Json{{"state", "declared"},
+                {"fragment", fragment},
+                {"declarations", std::move(declarations)},
+                {"variadic_range", {{"first", 0}, {"max", 8}}},
+                {"pass_texture_inputs", 0},
+                {"pass_buffer_inputs", 0},
+                {"buffer_binding_base", 8}};
+}
+
+// `a`'s shader object, in the composed declaration and the preset's own.
+void setVi3bShader(Json &context, const Json &shader) {
+    for (auto &graph : context["graphs"])
+        for (auto &pass : graph["passes"])
+            if (pass.at("name") == Vi3aPass) {
+                pass["declaration"]["shader"] = shader;
+                pass["preset_declaration"]["shader"] = shader;
+            }
+}
+
+Json vi3bPassthroughShader(Json defines = nullptr) {
+    Json shader{{"vertex", "engine://fullscreen"},
+                {"fragment", "engine://passthrough"}};
+    if (!defines.is_null()) shader["defines"] = std::move(defines);
+    return shader;
+}
+
+FramePlanAuthoring vi3bAuthoring(const std::string &graph,
+                                 const std::vector<std::string> &inputs,
+                                 const Json &shader) {
+    auto context = mixedAuthoringContext(graph);
+    setVi3aInputs(context, inputs);
+    setVi3bShader(context, shader);
+    return framePlanAuthoringFromContext(context);
+}
+
+std::filesystem::path vi3bProjectRoot(const QTemporaryDir &temporary) {
+    const auto root = std::filesystem::path{temporary.path().toStdWString()};
+    std::ofstream project{root / "project.json", std::ios::binary};
+    project << Json{{"schema", "pelican.project"},
+                    {"version", 1},
+                    {"name", "vi3b-sockets"}}
+                   .dump();
+    return root;
+}
+
+std::string vi3bRead(const std::filesystem::path &path) {
+    std::ifstream input{path, std::ios::binary};
+    REQUIRE(input);
+    return std::string{std::istreambuf_iterator<char>{input},
+                       std::istreambuf_iterator<char>{}};
+}
+
+void vi3bCommit(EditingFixture &fixture) {
+    fixture.recorder.result(
+        fixture.recorder.submit_id,
+        QByteArray::fromStdString(
+            Json{{"status", "accepted"}, {"ticket", "t-1"}}.dump()));
+    QApplication::processEvents();
+    fixture.recorder.result(
+        fixture.recorder.ticket_id,
+        QByteArray::fromStdString(
+            Json{{"status", "committed"}, {"committed", true}}.dump()));
+    QApplication::processEvents();
+}
+
+} // namespace
+
+TEST_CASE("VI-3b a click on a passthrough socket writes PELICAN_PASSTHROUGH_INPUT "
+          "and keeps the other defines",
+          "[devstudio][frame-plan][vi3b][passthrough]") {
+    const auto model = vi3aModel(vi3bPassthroughInputs());
+    const std::string graph = model.graph;
+    const std::vector<std::string> inputs{"t_a", "t_b", "t_c"};
+    const auto request = [&](const Json &shader, std::size_t binding) {
+        return framePlanPassthroughInputRequest(vi3bAuthoring(graph, inputs, shader),
+                                                model, graph, Vi3aPass, binding);
+    };
+
+    SECTION("input 1: the define is written, the others kept, nothing else moves") {
+        const auto made =
+            request(vi3bPassthroughShader(Json::array({"TINT=2"})), 1);
+        REQUIRE(made.sendable());
+        CHECK(made.method == "edit_preset_pass");
+        CHECK(made.params.at("shader").at("defines") ==
+              Json::array({"TINT=2", "PELICAN_PASSTHROUGH_INPUT=1"}));
+        CHECK(made.params.at("shader").at("fragment") == "engine://passthrough");
+        CHECK(made.params.at("input") == Json::array({"t_a", "t_b", "t_c"}));
+        CHECK(made.params.at("output") == mixedPassDeclaration(0).at("output"));
+        CHECK(made.notice == "wp343_mixed_a shows t_b.");
+    }
+    SECTION("an existing value is replaced, not repeated") {
+        const auto made = request(
+            vi3bPassthroughShader(Json::array({"PELICAN_PASSTHROUGH_INPUT=2", "TINT=2"})), 1);
+        REQUIRE(made.sendable());
+        CHECK(made.params.at("shader").at("defines") ==
+              Json::array({"TINT=2", "PELICAN_PASSTHROUGH_INPUT=1"}));
+    }
+    SECTION("input 0: the define goes (0 is its default), the others stay") {
+        auto made = request(
+            vi3bPassthroughShader(Json::array({"PELICAN_PASSTHROUGH_INPUT=2", "TINT=2"})), 0);
+        REQUIRE(made.sendable());
+        CHECK(made.params.at("shader").at("defines") == Json::array({"TINT=2"}));
+        // With nothing else defined, `defines` goes with it.
+        made = request(vi3bPassthroughShader(Json::array({"PELICAN_PASSTHROUGH_INPUT=2"})), 0);
+        REQUIRE(made.sendable());
+        CHECK_FALSE(made.params.at("shader").contains("defines"));
+    }
+    SECTION("refusals: the input already shown, a binding nothing feeds, another shader") {
+        CHECK(request(vi3bPassthroughShader(), 0).refusal ==
+              "wp343_mixed_a already shows t_a.");
+        CHECK(request(vi3bPassthroughShader(), 5).refusal ==
+              "wp343_mixed_a has no input connected at binding 5.");
+        CHECK_FALSE(request(Json{{"vertex", "engine://fullscreen"},
+                                 {"fragment", "project://shaders/vi"}},
+                            1)
+                        .sendable());
+    }
+    SECTION("the shown member is read from the defines, and marked") {
+        CHECK(framePlanPassthroughShown(
+                  vi3bAuthoring(graph, inputs, vi3bPassthroughShader()), graph,
+                  Vi3aPass) == 0u);
+        const auto authoring = vi3bAuthoring(
+            graph, inputs,
+            vi3bPassthroughShader(Json::array({"PELICAN_PASSTHROUGH_INPUT=2"})));
+        const auto shown = framePlanPassthroughShown(authoring, graph, Vi3aPass);
+        CHECK(shown == 2u);
+        CHECK_FALSE(framePlanPassthroughShown(
+            vi3bAuthoring(graph, inputs,
+                          Json{{"vertex", "engine://fullscreen"},
+                               {"fragment", "project://shaders/vi"}}),
+            graph, Vi3aPass));
+        const auto sockets = framePlanInputSockets(model, vi3aNode(model), inputs, shown);
+        REQUIRE(sockets.sockets.size() == 4);
+        CHECK(sockets.sockets[2].shown);
+        CHECK(sockets.sockets[2].label == "← t_c (shown)");
+        CHECK_FALSE(sockets.sockets[0].shown);
+        CHECK(sockets.sockets[0].label == "← t_a");
+    }
+    SECTION("the Pass Editor's helper drops the define alone") {
+        CHECK(framePlanShaderWithoutPassthroughInput(vi3bPassthroughShader(
+                  Json::array({"PELICAN_PASSTHROUGH_INPUT", "A=1"})))
+                  .at("defines") == Json::array({"A=1"}));
+        CHECK_FALSE(framePlanShaderWithoutPassthroughInput(vi3bPassthroughShader(
+                        Json::array({"PELICAN_PASSTHROUGH_INPUT=3"})))
+                        .contains("defines"));
+    }
+}
+
+TEST_CASE("VI-3b on the canvas a click on a passthrough socket sends the define "
+          "and the shown socket is marked",
+          "[devstudio][frame-plan][vi3b][passthrough][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    setVi3aPassInputs(fixture.wire, vi3bPassthroughInputs());
+    fixture.tweak_context = [](Json &context) {
+        setVi3aInputs(context, {"t_a", "t_b"});
+        setVi3bShader(context, vi3bPassthroughShader());
+    };
+    fixture.open();
+    auto &logical = fixture.logical();
+    QGraphicsItem *first = declaredSocket(logical, QString::fromLatin1(Vi3aPass),
+                                          QStringLiteral("in@0"));
+    QGraphicsItem *second = declaredSocket(logical, QString::fromLatin1(Vi3aPass),
+                                           QStringLiteral("in@1"));
+    REQUIRE(first != nullptr);
+    REQUIRE(second != nullptr);
+    CHECK(first->data(FramePlanSocketShownRole).toBool());
+    CHECK_FALSE(second->data(FramePlanSocketShownRole).toBool());
+
+    auto &view = logicalView(fixture.widget);
+    view.fitInView(nodeItem(logical, Vi3aPass)->sceneBoundingRect().adjusted(-40, -40, 40, 40),
+                   Qt::KeepAspectRatio);
+    QApplication::processEvents();
+    const QPoint at = view.mapFromScene(second->sceneBoundingRect().center());
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, at);
+    QApplication::processEvents();
+    REQUIRE(fixture.recorder.submits == 1);
+    CHECK(sentParams(fixture.recorder).at("shader").at("defines") ==
+          Json::array({"PELICAN_PASSTHROUGH_INPUT=1"}));
+    CHECK(sentParams(fixture.recorder).at("input") == Json::array({"t_a", "t_b"}));
+}
+
+TEST_CASE("VI-3b a drop on a pass whose shader declares no input is not sent; "
+          "Use engine://passthrough sends the input and that fragment",
+          "[devstudio][frame-plan][vi3b][no-inputs][canvas-edit]") {
+    application();
+    SECTION("the request: a line and the inputs to offer") {
+        const auto model = vi3aModel(vi3aFixedInputs({}));
+        CHECK(framePlanNodeDeclaresNoInputs(vi3aNode(model)));
+        CHECK_FALSE(framePlanNodeDeclaresNoInputs(vi3aNode(vi3aModel())));
+        const auto made = framePlanSocketConnectRequest(
+            vi3aAuthoring(model.graph, {"t_a"}), model, model.graph, Vi3aPass,
+            "t_b", FramePlanSocketDrop{});
+        CHECK_FALSE(made.sendable());
+        CHECK(made.line == "wp343_mixed_a's shader declares no inputs.");
+        REQUIRE(made.passthrough_inputs);
+        CHECK(*made.passthrough_inputs == std::vector<std::string>{"t_a", "t_b"});
+        CHECK(made.fragment == "project://shaders/vi");
+    }
+    SECTION("the canvas: nothing sent, the line and the two buttons") {
+        QTemporaryDir temporary;
+        REQUIRE(temporary.isValid());
+        EditingFixture fixture;
+        fixture.widget.setProjectRoot(vi3bProjectRoot(temporary));
+        setVi3aPassInputs(fixture.wire, vi3aFixedInputs({}));
+        fixture.open();
+        auto &logical = fixture.logical();
+        auto *use = fixture.widget.findChild<QPushButton *>(
+            QStringLiteral("pelican.framePlan.shaderContract.usePassthrough"));
+        auto *open_shader = fixture.widget.findChild<QPushButton *>(
+            QStringLiteral("pelican.framePlan.shaderContract.openShader"));
+        REQUIRE(use != nullptr);
+        REQUIRE(open_shader != nullptr);
+        fixture.dragSocket(QStringLiteral("wp343_mixed_d"),
+                           QStringLiteral("wp343_mixed_d_output"),
+                           QStringLiteral("output"), nodeItem(logical, Vi3aPass));
+        CHECK(fixture.recorder.submits == 0);
+        CHECK(statusText(fixture.widget) ==
+              QStringLiteral("wp343_mixed_a's shader declares no inputs."));
+        CHECK_FALSE(use->isHidden());
+        CHECK_FALSE(open_shader->isHidden());
+        CHECK(open_shader->isEnabled());
+        // No socket is drawn for a shader that declares nothing.
+        CHECK(declaredSocket(logical, QString::fromLatin1(Vi3aPass),
+                             QStringLiteral("in:variadic")) == nullptr);
+        QTest::mouseClick(use, Qt::LeftButton);
+        QApplication::processEvents();
+        REQUIRE(fixture.recorder.submits == 1);
+        const auto sent = sentParams(fixture.recorder);
+        CHECK(sent.at("pass_name") == "wp343_mixed_a");
+        CHECK(sent.at("input") == Json::array({"wp343_mixed_d_output"}));
+        CHECK(sent.at("shader").at("fragment") == "engine://passthrough");
+        CHECK(use->isHidden());
+    }
+}
+
+TEST_CASE("VI-3b Fix sockets: why it cannot, and what it rewrites",
+          "[devstudio][frame-plan][vi3b][fix-sockets]") {
+    application();
+    SECTION("the plan: the group's connected members, or why not") {
+        const auto model = vi3aModel();
+        const std::string graph = model.graph;
+        auto fix = framePlanSocketFix(vi3aAuthoring(graph, {"t_a", "t_b", "t_c"}),
+                                      model, graph, Vi3aPass);
+        // A buffer after the group would move once the group is fixed.
+        CHECK(fix.refusal.find("buffer") != std::string::npos);
+        auto no_buffer = vi3aPassInputs();
+        no_buffer["declarations"].erase(11);
+        const auto plain = vi3aModel(no_buffer);
+        fix = framePlanSocketFix(vi3aAuthoring(graph, {"t_a", "t_b", "t_c"}),
+                                 plain, graph, Vi3aPass);
+        CHECK(fix.refusal == "Connect at least one input before fixing the sockets.");
+        fix = framePlanSocketFix(
+            vi3aAuthoring(graph, {"t_a", "t_b", "t_c", "t_v@history", "t_w"}),
+            plain, graph, Vi3aPass);
+        CHECK(fix.refusal.empty());
+        CHECK(fix.first == 3);
+        CHECK(fix.inputs == std::vector<std::string>{"t_v@history", "t_w"});
+        CHECK(fix.taken == std::vector<std::string>{"in_a", "in_b", "in_c"});
+        CHECK(fix.fragment == "project://shaders/vi");
+        // An engine shader other than engine://passthrough is not copied.
+        const auto other = vi3aModel(vi3bPassthroughInputs("engine://fullscreen"));
+        CHECK(framePlanSocketFix(vi3aAuthoring(graph, {"t_a"}), other, graph,
+                                 Vi3aPass)
+                  .refusal.find("cannot open or copy") != std::string::npos);
+    }
+
+    SECTION("engine://passthrough: copied fixed, and the pass moved onto the copy") {
+        QTemporaryDir temporary;
+        REQUIRE(temporary.isValid());
+        const auto root = vi3bProjectRoot(temporary);
+        EditingFixture fixture;
+        fixture.widget.setProjectRoot(root);
+        setVi3aPassInputs(fixture.wire, vi3bPassthroughInputs());
+        fixture.tweak_context = [](Json &context) {
+            setVi3aInputs(context, {"t_a", "t_b"});
+            setVi3bShader(context, vi3bPassthroughShader(
+                                       Json::array({"PELICAN_PASSTHROUGH_INPUT=1"})));
+        };
+        fixture.open();
+        // A file already under the pass's name is never overwritten.
+        std::filesystem::create_directories(root / "shaders");
+        std::ofstream{root / "shaders" / "wp343_mixed_a.frag", std::ios::binary}
+            << "// mine\n";
+        fixture.widget.fixSockets(QString::fromStdString(fixture.graph),
+                                  QString::fromLatin1(Vi3aPass));
+        QApplication::processEvents();
+        REQUIRE(fixture.recorder.submits == 1);
+        const auto sent = sentParams(fixture.recorder);
+        CHECK(sent.at("shader").at("fragment") ==
+              "project://shaders/wp343_mixed_a_2");
+        // The pass keeps showing what it showed.
+        CHECK(sent.at("shader").at("defines") ==
+              Json::array({"PELICAN_PASSTHROUGH_INPUT=1"}));
+        CHECK(sent.at("input") == Json::array({"t_a", "t_b"}));
+        CHECK(vi3bRead(root / "shaders" / "wp343_mixed_a.frag") == "// mine\n");
+        const auto copy = vi3bRead(root / "shaders" / "wp343_mixed_a_2.frag");
+        const auto expected = fixShaderSockets(
+            *engineFragmentSource(EnginePassthroughFragment), 0, {"t_a", "t_b"});
+        REQUIRE(expected.ok());
+        CHECK(copy == expected.source);
+        CHECK(copy.find("uniform sampler2D in_t_b;") != std::string::npos);
+    }
+
+    SECTION("a project shader: rewritten in place, and made variadic again") {
+        QTemporaryDir temporary;
+        REQUIRE(temporary.isValid());
+        const auto root = vi3bProjectRoot(temporary);
+        std::filesystem::create_directories(root / "shaders");
+        const std::string original =
+            "#version 460\n"
+            "PELICAN_DECLARE_VARIADIC_INPUTS(0, 8);\n"
+            "void main() {}\n";
+        std::ofstream{root / "shaders" / "vi.frag", std::ios::binary} << original;
+        EditingFixture fixture;
+        fixture.widget.setProjectRoot(root);
+        setVi3aPassInputs(fixture.wire, vi3bPassthroughInputs("project://shaders/vi"));
+        fixture.tweak_context = [](Json &context) {
+            setVi3aInputs(context, {"t_a", "t_b"});
+        };
+        fixture.open();
+        auto *fix_action = fixture.widget.findChild<QAction *>(
+            QStringLiteral("pelican.framePlan.fixSockets"));
+        auto *variadic_action = fixture.widget.findChild<QAction *>(
+            QStringLiteral("pelican.framePlan.makeSocketsVariadic"));
+        REQUIRE(fix_action != nullptr);
+        REQUIRE(variadic_action != nullptr);
+        auto &logical = fixture.logical();
+        // The Fix button stands beside the band's end.
+        bool button = false;
+        for (QGraphicsItem *item : itemsOfKind(logical, FramePlanSocketFixItem))
+            button = button || item->data(FramePlanNameRole).toString() ==
+                                   QLatin1String{Vi3aPass};
+        CHECK(button);
+        // Picked by its heading, as a person does before the menu entry.
+        logical.clearSelection();
+        nodeItem(logical, Vi3aPass)->setSelected(true);
+        QApplication::processEvents();
+        fix_action->trigger();
+        QApplication::processEvents();
+        CHECK(fixture.recorder.submits == 0);
+        const auto fixed = vi3bRead(root / "shaders" / "vi.frag");
+        CHECK(fixed == fixShaderSockets(original, 0, {"t_a", "t_b"}).source);
+        CHECK(statusText(fixture.widget).contains(QStringLiteral("Fixed")));
+
+        variadic_action->trigger();
+        QApplication::processEvents();
+        CHECK(vi3bRead(root / "shaders" / "vi.frag") == original);
+        // A second time: nothing Fix sockets wrote is left, and it says so.
+        variadic_action->trigger();
+        QApplication::processEvents();
+        CHECK(statusText(fixture.widget) ==
+              QStringLiteral("wp343_mixed_a's shader has no sockets Studio fixed."));
+        CHECK(vi3bRead(root / "shaders" / "vi.frag") == original);
+    }
+}
 } // namespace PelicanStudio

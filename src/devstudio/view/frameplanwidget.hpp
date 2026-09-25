@@ -104,6 +104,11 @@ class FramePlanWidget final : public QWidget {
     // The answer to a reload_shaders request, handed in the way the RPC
     // reply is (tests use it without an engine).
     void receiveShaderReloadOutcome(const ShaderReloadOutcome &outcome);
+    // VI-3b. Fix sockets on one pass, as the band's Fix button does: the
+    // variadic group of its shader becomes one fixed declaration per
+    // connected input (engine://passthrough is copied into the project
+    // first). The Pass Editor's Fix sockets comes here.
+    void fixSockets(const QString &graph, const QString &pass);
 
     ToolLayoutSnapshot toolLayoutSnapshot() const;
 

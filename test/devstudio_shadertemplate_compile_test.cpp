@@ -12,6 +12,10 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -263,4 +267,194 @@ TEST_CASE("G-3 the kinds have stable names and the pass-through is F-3's",
               .empty());
 }
 
+
+// --- VI-3b: Fix sockets rewrites a variadic group into raw layout lines, and
+// the result still compiles with the engine's includes -- past the eight
+// inputs the PELICAN_DECLARE_INPUT_<i> macros stop at. Making the sockets
+// variadic again gives the source back byte for byte.
+
+namespace {
+
+std::string readFile(const std::filesystem::path &path) {
+    std::ifstream input{path, std::ios::binary};
+    REQUIRE(input);
+    return std::string{std::istreambuf_iterator<char>{input},
+                       std::istreambuf_iterator<char>{}};
+}
+
+std::vector<std::string> numberedInputs(std::size_t count) {
+    std::vector<std::string> inputs;
+    for (std::size_t index = 0; index < count; ++index)
+        inputs.push_back("t" + std::to_string(index));
+    return inputs;
+}
+
+std::string passthroughSource() {
+    const auto source = engineFragmentSource(EnginePassthroughFragment);
+    REQUIRE(source);
+    return std::string{*source};
+}
+
+} // namespace
+
+TEST_CASE("VI-3b Studio carries engine://passthrough as the engine's own file",
+          "[devstudio][vi3b][shader-template][passthrough-copy]") {
+    // The embedded copy is the file the engine compiles, byte for byte.
+    const auto engine_file = readFile(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                                      "src" / "core" / "resources" /
+                                      "passthrough.frag");
+    CHECK(passthroughSource() == engine_file);
+    CHECK(passthroughSource().find("PELICAN_DECLARE_VARIADIC_INPUTS(0, 8);") !=
+          std::string::npos);
+    // Only engine://passthrough is carried.
+    CHECK_FALSE(engineFragmentSource("engine://fullscreen"));
+    CHECK_FALSE(engineFragmentSource("project://shaders/passthrough"));
+
+    // The copy's name avoids every file already there.
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_vi3b_copy_" + std::to_string(std::rand()));
+    std::filesystem::remove_all(root);
+    CHECK(engineShaderCopyName(root, "present") == "present");
+    const auto first = writeShaderTemplate(root, "present", passthroughSource());
+    REQUIRE(first.created);
+    CHECK(readFile(first.path) == engine_file);
+    CHECK(engineShaderCopyName(root, "present") == "present_2");
+    std::ofstream{root / "shaders" / "present_2.frag"} << "// mine\n";
+    CHECK(engineShaderCopyName(root, "present") == "present_3");
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("VI-3b fixed sockets are raw layout lines plus the variadic "
+          "function and count, and they compile",
+          "[devstudio][vi3b][shader-template][fix-sockets]") {
+    const auto source = passthroughSource();
+
+    SECTION("three inputs") {
+        const auto fixed = fixShaderSockets(
+            source, 0, {"gbuffer_albedo", "gbuffer_normal", "lit@history"});
+        REQUIRE(fixed.ok());
+        const auto &text = fixed.source;
+        const std::string eol = source.find("\r\n") != std::string::npos ? "\r\n" : "\n";
+        CHECK(text.find("// pelican: fixed sockets, was "
+                        "PELICAN_DECLARE_VARIADIC_INPUTS(0, 8);" + eol) !=
+              std::string::npos);
+        CHECK(text.find("// pelican: end fixed sockets" + eol) != std::string::npos);
+        CHECK(occurrences(text, eol + "PELICAN_DECLARE_VARIADIC_INPUTS") == 0);
+        CHECK(text.find("layout(set = PELICAN_SET_PASS_INPUT, binding = 0) "
+                        "uniform sampler2D in_gbuffer_albedo;") != std::string::npos);
+        CHECK(text.find("layout(set = PELICAN_SET_PASS_INPUT, binding = 1) "
+                        "uniform sampler2D in_gbuffer_normal;") != std::string::npos);
+        CHECK(text.find("layout(set = PELICAN_SET_PASS_INPUT, binding = 2) "
+                        "uniform sampler2D in_lit_history;") != std::string::npos);
+        CHECK(occurrences(text, "layout(set = PELICAN_SET_PASS_INPUT") == 3);
+        CHECK(text.find("vec4 pelican_variadic_texture(int pelican_variadic_index, "
+                        "vec2 pelican_variadic_uv) {") != std::string::npos);
+        CHECK(text.find("if (pelican_variadic_index == 1) return "
+                        "texture(in_gbuffer_normal, pelican_variadic_uv);") !=
+              std::string::npos);
+        CHECK(text.find("const int pelican_variadic_input_count = 3;") !=
+              std::string::npos);
+        // The file keeps one kind of line end.
+        if (eol == "\r\n")
+            CHECK(occurrences(text, "\n") == occurrences(text, "\r\n"));
+
+        const auto compiled = compileFragment(
+            text, "vi3b_fixed_3.frag",
+            {"PELICAN_PASS_TEXTURE_INPUT_COUNT=3", "PELICAN_PASSTHROUGH_INPUT=1"});
+        INFO(compiled.log);
+        REQUIRE(compiled.ok);
+        const auto reflection = Pelican::reflect(compiled.spirv);
+        for (std::uint32_t binding = 0; binding < 3; ++binding) {
+            INFO("binding " << binding);
+            const auto *input = findBinding(reflection, 1, binding);
+            REQUIRE(input != nullptr);
+            CHECK(input->type == vk::DescriptorType::eCombinedImageSampler);
+            // No variadic member is left for the engine to recognise.
+            CHECK(input->name.find("pelican_variadic_input_") == std::string::npos);
+        }
+        CHECK(findBinding(reflection, 1, 3) == nullptr);
+
+        // Back to variadic: the engine's file again, byte for byte.
+        const auto back = variadicShaderSockets(text);
+        REQUIRE(back.ok());
+        CHECK(back.source == source);
+        CHECK(shaderHasFixedSockets(text));
+        CHECK_FALSE(shaderHasFixedSockets(source));
+    }
+
+    SECTION("ten inputs: past what the fixed input macros reach") {
+        const auto fixed = fixShaderSockets(source, 0, numberedInputs(10));
+        REQUIRE(fixed.ok());
+        CHECK(occurrences(fixed.source, "layout(set = PELICAN_SET_PASS_INPUT") == 10);
+        CHECK(fixed.source.find("const int pelican_variadic_input_count = 10;") !=
+              std::string::npos);
+        const auto compiled = compileFragment(
+            fixed.source, "vi3b_fixed_10.frag",
+            {"PELICAN_PASS_TEXTURE_INPUT_COUNT=10", "PELICAN_PASSTHROUGH_INPUT=9"});
+        INFO(compiled.log);
+        REQUIRE(compiled.ok);
+        const auto reflection = Pelican::reflect(compiled.spirv);
+        REQUIRE(findBinding(reflection, 1, 9) != nullptr);
+        CHECK(findBinding(reflection, 1, 9)->name == "in_t9");
+        CHECK(variadicShaderSockets(fixed.source).source == source);
+    }
+
+    SECTION("a group after fixed inputs, indented, on a file with LF ends and "
+            "no final newline") {
+        const std::string shader =
+            "#version 460\n"
+            "#extension GL_GOOGLE_include_directive : require\n"
+            "#include \"pelican_sets.glsl\"\n"
+            "#include \"pelican_view.glsl\"\n"
+            "layout(location = 0) in vec2 inUV;\n"
+            "layout(location = 0) out vec4 outColor;\n"
+            "PELICAN_DECLARE_INPUT_0(in_base);\n"
+            "  PELICAN_DECLARE_VARIADIC_INPUTS(1, 4);  // the layers\n"
+            "void main() {\n"
+            "    vec4 sum = PELICAN_TEXTURE_2D_0(in_base, inUV);\n"
+            "    for (int k = 0; k < PELICAN_VARIADIC_INPUT_COUNT; ++k)\n"
+            "        sum += PELICAN_VARIADIC_TEXTURE(k, inUV);\n"
+            "    outColor = sum;\n"
+            "}";
+        // A name the shader already uses is not taken twice.
+        const auto fixed = fixShaderSockets(shader, 1, {"base", "layer"}, {"in_base"});
+        REQUIRE(fixed.ok());
+        CHECK(fixed.source.find('\r') == std::string::npos);
+        CHECK(fixed.source.find("  layout(set = PELICAN_SET_PASS_INPUT, binding = 1) "
+                                "uniform sampler2D in_base_2;") != std::string::npos);
+        CHECK(fixed.source.find("  layout(set = PELICAN_SET_PASS_INPUT, binding = 2) "
+                                "uniform sampler2D in_layer;") != std::string::npos);
+        CHECK(fixed.source.find("  // pelican: fixed sockets, was "
+                                "PELICAN_DECLARE_VARIADIC_INPUTS(1, 4);  // the layers\n") !=
+              std::string::npos);
+        const auto compiled = compileFragment(fixed.source, "vi3b_fixed_after.frag",
+                                              {"PELICAN_PASS_TEXTURE_INPUT_COUNT=3"});
+        INFO(compiled.log);
+        REQUIRE(compiled.ok);
+        CHECK(variadicShaderSockets(fixed.source).source == shader);
+        // The control: the variadic original compiles as well.
+        CHECK(compileFragment(shader, "vi3b_variadic_after.frag",
+                              {"PELICAN_PASS_TEXTURE_INPUT_COUNT=3"})
+                  .ok);
+    }
+
+    SECTION("refusals: nothing connected, no group, two groups, no block") {
+        CHECK(fixShaderSockets(source, 0, {}).refusal ==
+              "Connect at least one input before fixing the sockets.");
+        const std::string plain =
+            "PELICAN_DECLARE_INPUT_0(in_a);\n"
+            "// PELICAN_DECLARE_VARIADIC_INPUTS(1, 4);\n";
+        CHECK(fixShaderSockets(plain, 0, {"a"}).refusal ==
+              "The shader has no PELICAN_DECLARE_VARIADIC_INPUTS line to fix.");
+        CHECK(fixShaderSockets("PELICAN_DECLARE_VARIADIC_INPUTS(0, 2);\n"
+                               "PELICAN_DECLARE_VARIADIC_INPUTS(2, 2);\n",
+                               0, {"a"})
+                  .refusal == "The shader has more than one "
+                              "PELICAN_DECLARE_VARIADIC_INPUTS line.");
+        // A declaration written by hand is never made variadic.
+        CHECK_FALSE(shaderHasFixedSockets(plain));
+        CHECK(variadicShaderSockets(plain).refusal ==
+              "The shader has no sockets Studio fixed.");
+    }
+}
 } // namespace PelicanStudio

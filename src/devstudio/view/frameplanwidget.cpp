@@ -522,7 +522,9 @@ struct FramePlanWidget::Impl {
         std::optional<std::size_t> binding;
     };
     std::optional<ShaderContractFix> contract_fix;
-    QPushButton *contract_pass_through = nullptr;
+    // VI-3b: the pass a drop on a no-input shader was aimed at.
+    std::string last_drop_pass;
+    QPushButton *contract_use_passthrough = nullptr;
     QPushButton *contract_open_shader = nullptr;
     std::optional<std::filesystem::path> project_root;
 
@@ -683,17 +685,20 @@ struct FramePlanWidget::Impl {
         // Q-14: the two ways out of a pass whose shader does not read the
         // inputs it was given.
         const auto actions = shaderInputContractActions();
-        contract_pass_through =
+        // VI-3b: engine://passthrough takes any number of inputs, so it is
+        // the way out that writes no file.
+        contract_use_passthrough =
             new QPushButton(owner.tr(actions[0].label.c_str()), &owner);
-        contract_pass_through->setObjectName(
-            QStringLiteral("pelican.framePlan.shaderContract.makePassThrough"));
-        contract_pass_through->setToolTip(owner.tr(
-            "Writes a new shader that reads the pass's inputs and shows the "
-            "first one, and sends the inputs and the shader together."));
-        contract_pass_through->hide();
-        QObject::connect(contract_pass_through, &QPushButton::clicked, &owner,
-                         [this] { makePassThroughShader(); });
-        status_row->addWidget(contract_pass_through);
+        contract_use_passthrough->setObjectName(
+            QStringLiteral("pelican.framePlan.shaderContract.usePassthrough"));
+        contract_use_passthrough->setToolTip(owner.tr(
+            "Draws the pass with engine://passthrough, which takes any number "
+            "of inputs and shows one of them: the inputs and the shader go in "
+            "one change."));
+        contract_use_passthrough->hide();
+        QObject::connect(contract_use_passthrough, &QPushButton::clicked,
+                         &owner, [this] { useEnginePassthrough(); });
+        status_row->addWidget(contract_use_passthrough);
         contract_open_shader =
             new QPushButton(owner.tr(actions[1].label.c_str()), &owner);
         contract_open_shader->setObjectName(
@@ -801,6 +806,25 @@ struct FramePlanWidget::Impl {
             [this](const FramePlanNodeKey &consumer, std::size_t input_index) {
                 cutSocketInput(consumer, input_index);
             };
+        // VI-3b: engine://passthrough shows the input whose socket is
+        // clicked; the variadic group can be fixed and made variadic again.
+        logical_scene->passthroughShownProvider =
+            [this](const FramePlanNodeKey &node) {
+                return framePlanPassthroughShown(authoring, node.graph,
+                                                 node.name);
+            };
+        logical_scene->socketClicked = [this](const FramePlanNodeKey &node,
+                                              std::size_t binding) {
+            showPassthroughInput(node, binding);
+        };
+        logical_scene->socketsFixRequested =
+            [this](const FramePlanNodeKey &node) { fixSockets(node); };
+        logical_scene->socketsVariadicRequested =
+            [this](const FramePlanNodeKey &node) { makeSocketsVariadic(node); };
+        logical_scene->fixedSocketsOffered =
+            [this](const FramePlanNodeKey &node) {
+                return fixedSocketsSource(node).has_value();
+            };
         logical_scene->inlineFieldChoices =
             [this](const FramePlanNodeKey &, const QString &field) {
                 return shader_choices ? shader_choices(field) : QStringList{};
@@ -901,6 +925,28 @@ struct FramePlanWidget::Impl {
         // Q-12: a task a render.compute node made is edited in the Graph
         // tab. Named like the others; offered on a right-click over such a
         // task only.
+        // VI-3b: Fix sockets / Make sockets variadic, named like the insert
+        // entries and acting on the node right-clicked (or picked).
+        auto *fix_sockets = new QAction(QStringLiteral("Fix sockets"), &owner);
+        fix_sockets->setObjectName(QStringLiteral("pelican.framePlan.fixSockets"));
+        owner.addAction(fix_sockets);
+        QObject::connect(fix_sockets, &QAction::triggered, &owner, [this] {
+            if (const auto node = logical_scene->insertAnchor()) fixSockets(*node);
+            else showStatus(owner.tr("Select the pass whose sockets to fix first."));
+        });
+        auto *variadic_sockets =
+            new QAction(QStringLiteral("Make sockets variadic"), &owner);
+        variadic_sockets->setObjectName(
+            QStringLiteral("pelican.framePlan.makeSocketsVariadic"));
+        owner.addAction(variadic_sockets);
+        QObject::connect(variadic_sockets, &QAction::triggered, &owner, [this] {
+            if (const auto node = logical_scene->insertAnchor())
+                makeSocketsVariadic(*node);
+            else
+                showStatus(owner.tr("Select the pass whose sockets to make "
+                                    "variadic first."));
+        });
+        logical_scene->setSocketActions(fix_sockets, variadic_sockets);
         auto *open_in_graph = new QAction(
             QStringLiteral("Open in Graph"), &owner);
         open_in_graph->setObjectName(
@@ -1544,6 +1590,18 @@ struct FramePlanWidget::Impl {
             showStatus(request.line.empty() ? oneLine(reason)
                                             : text(request.line),
                        reason);
+            // VI-3b: a shader that declares no input -- the two ways out.
+            if (request.passthrough_inputs && model) {
+                ShaderContractFix fix;
+                fix.graph = model->graph;
+                fix.pass = request.params.is_object()
+                               ? request.params.value("pass_name", std::string{})
+                               : std::string{};
+                if (fix.pass.empty()) fix.pass = last_drop_pass;
+                fix.fragment = request.fragment;
+                fix.inputs = *request.passthrough_inputs;
+                offerContractButtons(std::move(fix), true);
+            }
             return false;
         }
         if (pending_edit_request != 0 || !pending_ticket.isEmpty()) {
@@ -1725,28 +1783,47 @@ struct FramePlanWidget::Impl {
         fix.fragment = shader->at("fragment").get<std::string>();
         for (const auto &input : *inputs)
             if (input.is_string()) fix.inputs.push_back(input.get<std::string>());
-        const auto declared =
-            project_root ? projectFragmentDeclarationCount(*project_root, fix.fragment)
-                         : std::nullopt;
-        const auto notice =
-            shaderInputContractNotice(*error, fix.pass, fix.fragment, declared);
+        // VI-3b: the count the pass's published declarations give, when they
+        // are the fragment the refused edit named.
+        const auto notice = shaderInputContractNotice(
+            *error, fix.pass, fix.fragment,
+            shaderInputDeclaredFor(passInputsOf(fix.pass), fix.fragment));
         if (!notice.matched) return false;
         // Q-15: a declaration the pass cannot supply is removed, not fed.
         fix.unsupplied =
             notice.direction == ShaderInputContractShaderInputUnsupplied;
         fix.binding = notice.binding;
-        contract_fix = std::move(fix);
         showStatus(text(notice.line), message);
-        contract_pass_through->setVisible(shaderInputContractOffers(
-            notice, ShaderInputContractMakePassThrough));
-        contract_open_shader->show();
-        contract_open_shader->setEnabled(notice.can_open && project_root.has_value());
+        offerContractButtons(std::move(fix),
+                             shaderInputContractOffers(
+                                 notice, ShaderInputContractUsePassthrough));
         return true;
+    }
+
+    void offerContractButtons(ShaderContractFix fix, bool use_passthrough) {
+        const bool can_open =
+            project_root.has_value() &&
+            (fix.fragment.starts_with("project://") ||
+             fix.fragment == EnginePassthroughFragment);
+        contract_fix = std::move(fix);
+        contract_use_passthrough->setVisible(use_passthrough);
+        contract_open_shader->show();
+        contract_open_shader->setEnabled(can_open);
+    }
+
+    // VI-3b: the declarations get_frame_plan published for a pass.
+    const FramePlanPassInputs *passInputsOf(const std::string &pass) const {
+        if (!model) return nullptr;
+        const auto node =
+            std::ranges::find(model->nodes, pass, &FramePlanNode::name);
+        return node == model->nodes.end() || !node->pass_inputs
+                   ? nullptr
+                   : &*node->pass_inputs;
     }
 
     void hideShaderContract() {
         contract_fix.reset();
-        if (contract_pass_through) contract_pass_through->hide();
+        if (contract_use_passthrough) contract_use_passthrough->hide();
         if (contract_open_shader) contract_open_shader->hide();
     }
 
@@ -1767,52 +1844,197 @@ struct FramePlanWidget::Impl {
         return result;
     }
 
-    // Make a pass-through shader: a new file for the inputs the pass was
-    // given, and one edit that sends the inputs and the shader together.
-    void makePassThroughShader() {
+    // VI-3b. Use engine://passthrough: the inputs the pass was given and that
+    // fragment, in one edit. No file is written.
+    void useEnginePassthrough() {
         if (!contract_fix) return;
-        if (!project_root) {
-            showStatus(owner.tr("Open a project first: the shader is written "
-                                "into its shaders folder."));
-            return;
-        }
         const auto fix = *contract_fix;
-        std::string reference;
-        QString file;
+        hideShaderContract();
+        submitBuilt([this, fix] {
+            return framePlanPassInputsAndShaderRequest(
+                authoring, fix.graph, fix.pass, fix.inputs,
+                std::string{EnginePassthroughFragment});
+        });
+        if (pending_edit_request != 0)
+            showStatus(owner.tr("Sending the inputs and engine://passthrough "
+                                "together..."));
+    }
+
+    // VI-3b. engine://passthrough copied into the project's shaders folder,
+    // with `source` as its text (the engine's own, or it with its sockets
+    // fixed), and the edit that makes the pass draw with the copy. The
+    // pass's shader.defines stay as they are. Returns the file written.
+    std::optional<QString> copyEngineShader(const std::string &graph,
+                                            const std::string &pass,
+                                            std::string_view source) {
         try {
-            const auto name = passThroughShaderName(*project_root, fix.pass);
-            const auto inputs = contractTemplateInputs(fix);
-            const auto written = writeShaderTemplate(
-                *project_root, name,
-                fullscreenFragmentShaderTemplate(fix.pass, inputs));
+            const auto name = engineShaderCopyName(*project_root, pass);
+            const auto written = writeShaderTemplate(*project_root, name, source);
             if (!written.created)
                 throw std::runtime_error(written.path.string() +
                                          " is already there");
-            reference = written.reference;
-            file = QStringLiteral("shaders/%1.frag").arg(text(name));
+            submitBuilt([this, graph, pass, reference = written.reference] {
+                return framePlanPassShaderRequest(authoring, graph, pass,
+                                                  "fragment", reference);
+            });
+            return QStringLiteral("shaders/%1.frag").arg(text(name));
         } catch (const std::exception &error) {
             const QString message = QString::fromUtf8(error.what());
             status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
             showStatus(owner.tr("Could not write the shader: %1").arg(oneLine(message)),
                        message);
+            return std::nullopt;
+        }
+    }
+
+    std::optional<std::string> readProjectShader(const std::filesystem::path &path) {
+        std::ifstream input{path, std::ios::binary};
+        if (!input) return std::nullopt;
+        return std::string{std::istreambuf_iterator<char>{input},
+                           std::istreambuf_iterator<char>{}};
+    }
+
+    bool writeProjectShader(const std::filesystem::path &path,
+                            const std::string &source) {
+        std::ofstream output{path, std::ios::binary | std::ios::trunc};
+        output.write(source.data(), static_cast<std::streamsize>(source.size()));
+        output.close();
+        if (!output) {
+            status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+            showStatus(owner.tr("Could not write %1.")
+                           .arg(QString::fromStdWString(path.wstring())));
+            return false;
+        }
+        // The watcher would see it too; this does not wait for it.
+        reload_follower->sourceChanged();
+        return true;
+    }
+
+    // --- VI-3b. Fix sockets: the variadic group becomes one fixed
+    // declaration per connected input, in the pass's shader file.
+    void fixSockets(const FramePlanNodeKey &node) {
+        if (!model || node.graph != model->graph) return;
+        const auto fix = framePlanSocketFix(authoring, *model, node.graph, node.name);
+        if (!fix.refusal.empty()) {
+            status->setStyleSheet({});
+            showStatus(text(fix.refusal));
             return;
         }
-        hideShaderContract();
-        submitBuilt([this, fix, reference] {
-            return framePlanPassInputsAndShaderRequest(authoring, fix.graph,
-                                                       fix.pass, fix.inputs,
-                                                       reference);
+        if (!project_root) {
+            showStatus(owner.tr("Open a project first: the shader is written "
+                                "into its shaders folder."));
+            return;
+        }
+        if (fix.fragment == EnginePassthroughFragment) {
+            const auto rewritten = fixShaderSockets(
+                *engineFragmentSource(fix.fragment), fix.first, fix.inputs,
+                fix.taken);
+            if (!rewritten.ok()) {
+                showStatus(text(node.name + ": " + rewritten.refusal));
+                return;
+            }
+            const auto file = copyEngineShader(node.graph, node.name,
+                                               rewritten.source);
+            if (file && pending_edit_request != 0)
+                showStatus(owner.tr("Copied engine://passthrough to %1 with "
+                                    "its sockets fixed; sending the new "
+                                    "fragment...")
+                               .arg(*file));
+            return;
+        }
+        const auto path = projectFragmentSourcePath(*project_root, fix.fragment);
+        const auto source = path ? readProjectShader(*path) : std::nullopt;
+        if (!source) {
+            showStatus(owner.tr("Could not read %1.").arg(text(fix.fragment)));
+            return;
+        }
+        const auto rewritten =
+            fixShaderSockets(*source, fix.first, fix.inputs, fix.taken);
+        if (!rewritten.ok()) {
+            showStatus(text(node.name + ": " + rewritten.refusal));
+            return;
+        }
+        if (!writeProjectShader(*path, rewritten.source)) return;
+        status->setStyleSheet({});
+        showStatus(owner.tr("Fixed %1's sockets in %2; the shader reloads.")
+                       .arg(text(node.name), text(fix.fragment)));
+    }
+
+    // The source of a pass's project shader when it holds sockets Fix
+    // sockets wrote.
+    std::optional<std::pair<std::filesystem::path, std::string>>
+    fixedSocketsSource(const FramePlanNodeKey &node) {
+        if (!project_root) return std::nullopt;
+        const auto *inputs = passInputsOf(node.name);
+        if (inputs == nullptr) return std::nullopt;
+        const auto path = projectFragmentSourcePath(*project_root, inputs->fragment);
+        if (!path) return std::nullopt;
+        auto source = readProjectShader(*path);
+        if (!source || !shaderHasFixedSockets(*source)) return std::nullopt;
+        return std::pair{*path, std::move(*source)};
+    }
+
+    // Make sockets variadic: the block Fix sockets wrote, back to the line it
+    // replaced. A declaration written by hand is never touched.
+    void makeSocketsVariadic(const FramePlanNodeKey &node) {
+        if (!model || node.graph != model->graph) return;
+        const auto found = fixedSocketsSource(node);
+        if (!found) {
+            showStatus(owner.tr("%1's shader has no sockets Studio fixed.")
+                           .arg(text(node.name)));
+            return;
+        }
+        const auto rewritten = variadicShaderSockets(found->second);
+        if (!rewritten.ok()) {
+            showStatus(text(node.name + ": " + rewritten.refusal));
+            return;
+        }
+        if (!writeProjectShader(found->first, rewritten.source)) return;
+        status->setStyleSheet({});
+        showStatus(owner.tr("Made %1's sockets variadic again; the shader "
+                            "reloads.")
+                       .arg(text(node.name)));
+    }
+
+    // VI-3b. A click on a connected socket of a pass that draws with
+    // engine://passthrough: show that input. On any other pass a click does
+    // nothing.
+    void showPassthroughInput(const FramePlanNodeKey &node, std::size_t binding) {
+        if (!model || node.graph != model->graph ||
+            !framePlanPassthroughShown(authoring, node.graph, node.name))
+            return;
+        submitBuilt([this, graph = node.graph, pass = node.name, binding] {
+            return model ? framePlanPassthroughInputRequest(authoring, *model,
+                                                            graph, pass, binding)
+                         : FramePlanEditRequest{};
         });
-        if (pending_edit_request != 0)
-            showStatus(owner.tr("Wrote %1; sending the inputs and the shader "
-                                "together...")
-                           .arg(file));
     }
 
     // Open the shader: the file, and on the clipboard the lines to add.
     void openContractShader() {
         if (!contract_fix || !project_root) return;
         const auto &fix = *contract_fix;
+        if (fix.fragment == EnginePassthroughFragment) {
+            // VI-3b: the engine's shader is copied into the project first,
+            // and the pass is moved onto the copy; the copy is what opens.
+            const auto graph = fix.graph;
+            const auto pass = fix.pass;
+            const auto name = engineShaderCopyName(*project_root, pass);
+            hideShaderContract();
+            const auto file = copyEngineShader(
+                graph, pass, *engineFragmentSource(EnginePassthroughFragment));
+            if (!file) return;
+            const auto path = shaderTemplatePath(*project_root, name);
+            if (!shader_source_open_action || !shader_source_open_action(path)) {
+                showStatus(owner.tr("The desktop could not open %1.")
+                               .arg(QString::fromStdWString(path.wstring())));
+                return;
+            }
+            status->setStyleSheet({});
+            showStatus(owner.tr("Copied engine://passthrough to %1 and opened it.")
+                           .arg(*file));
+            return;
+        }
         const auto path = projectFragmentSourcePath(*project_root, fix.fragment);
         if (!path) {
             showStatus(owner.tr("%1 is not a file of this project.")
@@ -1831,15 +2053,12 @@ struct FramePlanWidget::Impl {
                        owner.tr(" Then connect the input again."));
             return;
         }
+        // VI-3b: the lines start after the fixed image declarations the pass's
+        // shader publishes (none known: from input 0).
         std::size_t first = 0;
-        {
-            std::ifstream input{*path, std::ios::binary};
-            if (input) {
-                const std::string source{std::istreambuf_iterator<char>{input},
-                                         std::istreambuf_iterator<char>{}};
-                first = shaderInputDeclarationCount(source);
-            }
-        }
+        if (const auto *inputs = passInputsOf(fix.pass);
+            inputs != nullptr && shaderInputDeclarationsAreFor(*inputs, fix.fragment))
+            first = shaderInputFixedImageCount(*inputs);
         const auto inputs = contractTemplateInputs(fix);
         QApplication::clipboard()->setText(
             text(fullscreenShaderInputSnippet(inputs, first)));
@@ -2081,6 +2300,18 @@ struct FramePlanWidget::Impl {
         for (const QString &resource : resources)
             names.push_back(resource.toStdString());
         const auto task = authoredTask(consumer.name);
+        // VI-3b: a pass whose shader declares no input takes none; the drop
+        // is answered with the way out instead of being sent.
+        if (task.empty() && connect && names.size() == 1) {
+            const auto node = std::ranges::find(model->nodes, consumer.name,
+                                                &FramePlanNode::name);
+            if (node != model->nodes.end() &&
+                framePlanNodeDeclaresNoInputs(*node)) {
+                last_drop_pass = consumer.name;
+                dropOnSocket(consumer, names.front(), FramePlanSocketDrop{});
+                return;
+            }
+        }
         submitBuilt([this, graph = model->graph, pass = consumer.name, task,
                      names, connect] {
             return task.empty()
@@ -3525,6 +3756,10 @@ void FramePlanWidget::receiveShaderReloadStatus(const QByteArray &status_json) {
 void FramePlanWidget::receiveShaderReloadOutcome(
     const ShaderReloadOutcome &outcome) {
     impl_->applyShaderReloadOutcome(outcome);
+}
+
+void FramePlanWidget::fixSockets(const QString &graph, const QString &pass) {
+    impl_->fixSockets(FramePlanNodeKey{graph.toStdString(), pass.toStdString()});
 }
 
 void FramePlanWidget::setShaderReloadLogAction(

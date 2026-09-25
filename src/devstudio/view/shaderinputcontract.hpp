@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../model/frameplanmodel.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
@@ -20,9 +22,12 @@ namespace PelicanStudio {
 // and name the two ways to fix it on the spot. They are pure, so a test reads
 // the decision without a window or an engine.
 
-// The two ways out, in the order they are offered.
-inline constexpr std::string_view ShaderInputContractMakePassThrough =
-    "make_pass_through";
+// The two ways out, in the order they are offered. VI-3b: the first is no
+// longer a shader written for the inputs but engine://passthrough, whose
+// inputs are all variadic -- the inputs and that fragment go in one edit, and
+// no file is written.
+inline constexpr std::string_view ShaderInputContractUsePassthrough =
+    "use_passthrough";
 inline constexpr std::string_view ShaderInputContractOpenShader = "open_shader";
 
 // Q-15 (after Q-14f): which way round the pass and its shader disagree, as
@@ -56,7 +61,7 @@ struct ShaderInputContractNotice {
     std::string fragment_stem;
     // How many inputs the shader declares, when it is known: from the
     // engine's shader_input_mismatch first, then from its message, then from
-    // counting the file's declaration lines (the caller's count).
+    // the pass's published declarations (the caller's count, VI-3b).
     std::optional<std::size_t> declared;
     // The input that did not match, when the engine named it.
     std::string resource;
@@ -68,18 +73,19 @@ struct ShaderInputContractNotice {
     // The one line the status row shows.
     std::string line;
     std::vector<ShaderInputContractAction> actions;
-    // Open the shader can only open a file of the project.
+    // Open the shader can only open a file of the project -- or, VI-3b,
+    // engine://passthrough, which it copies into the project first.
     bool can_open = false;
 };
 
 // Reads an engine refusal's `error` object. `pass` and `fragment` are what the
 // panel sent; the engine's shader_input_mismatch, when it carries them, wins.
-// `declared_in_file` is the caller's count of the fragment file's declaration
-// lines (shaderInputDeclarationCount), used only when the engine gave none.
+// `declared_by_shader` is the caller's count from the pass's published
+// declarations (shaderInputDeclaredFor), used only when the engine gave none.
 ShaderInputContractNotice shaderInputContractNotice(
     const nlohmann::json &error, std::string_view pass,
     std::string_view fragment,
-    std::optional<std::size_t> declared_in_file = std::nullopt);
+    std::optional<std::size_t> declared_by_shader = std::nullopt);
 
 // The line alone, for the Pass Editor's check before Save (no refusal yet).
 std::string shaderInputContractLine(std::string_view pass,
@@ -107,13 +113,34 @@ std::vector<ShaderInputContractAction> shaderInputContractActions(
 bool shaderInputContractOffers(const ShaderInputContractNotice &notice,
                                std::string_view action);
 
-// The simple check before Save: the pass-input indices a fragment source
-// declares, counted from its lines, not from reflection. A line counts when,
-// outside a // comment, it calls PELICAN_DECLARE_INPUT_<i>( or declares
-// `set = PELICAN_SET_PASS_INPUT, binding = <i>` by hand. #define lines do not.
-// Distinct indices, in ascending order.
-std::vector<std::size_t> shaderInputDeclaredIndices(std::string_view source);
-std::size_t shaderInputDeclarationCount(std::string_view source);
+// --- VI-3b: the counts come from the declarations the engine published for
+// the pass (get_frame_plan nodes[].pass_inputs), not from the file's lines.
+
+// How many inputs the pass's shader takes: its fixed declarations, and up to
+// the variadic group's max -- giving a variadic shader another input does not
+// make it an input the shader "does not read".
+std::size_t shaderInputCapacity(const FramePlanPassInputs &inputs);
+// Its fixed image declarations: where the lines Open the shader copies start.
+std::size_t shaderInputFixedImageCount(const FramePlanPassInputs &inputs);
+
+// Whether the declarations are `fragment`'s: they describe the shader the
+// pass runs now, and say nothing about another one. A trailing ".frag" is
+// not a difference.
+bool shaderInputDeclarationsAreFor(const FramePlanPassInputs &inputs,
+                                   std::string_view fragment);
+
+// The count a line about `fragment` may say: the capacity, when `inputs` are
+// declared and are that fragment's; nothing otherwise.
+std::optional<std::size_t> shaderInputDeclaredFor(
+    const FramePlanPassInputs *inputs, std::string_view fragment);
+
+// The Pass Editor's check before Save. Empty -- nothing to say -- when the
+// pass has no published declarations (a new pass), when the draft names a
+// fragment other than the one they describe, or when `listed` fits.
+std::string shaderInputPreSaveLine(std::string_view pass,
+                                   std::string_view draft_fragment,
+                                   std::size_t listed,
+                                   const FramePlanPassInputs *current);
 
 // Where a project fragment reference lives: project://<path> is
 // <project_root>/<path>, with .frag added when the reference has no
@@ -121,15 +148,5 @@ std::size_t shaderInputDeclarationCount(std::string_view source);
 // path that would leave the project.
 std::optional<std::filesystem::path> projectFragmentSourcePath(
     const std::filesystem::path &project_root, std::string_view fragment);
-
-// The file's declaration count, or nothing when it cannot be read.
-std::optional<std::size_t> projectFragmentDeclarationCount(
-    const std::filesystem::path &project_root, std::string_view fragment);
-
-// The shader name Make a pass-through shader writes: <pass>_pass_through
-// (T-1's folding of the pass name), then _2, _3... past every file already in
-// <project_root>/shaders, which is never overwritten.
-std::string passThroughShaderName(const std::filesystem::path &project_root,
-                                  std::string_view pass);
 
 } // namespace PelicanStudio

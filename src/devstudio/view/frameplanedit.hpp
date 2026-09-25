@@ -37,6 +37,12 @@ struct FramePlanEditRequest {
     // edit did something the gesture alone does not show ("the inputs after
     // binding 1 moved up by one").
     std::string notice;
+    // VI-3b: a drop on a pass whose shader declares no input is not sent.
+    // The canvas offers Use engine://passthrough with these inputs instead --
+    // the pass's own and the dropped one, with that fragment, in one edit --
+    // and Open the shader for `fragment`, the pass's current one.
+    std::optional<std::vector<std::string>> passthrough_inputs;
+    std::string fragment;
 
     [[nodiscard]] bool sendable() const noexcept {
         return refusal.empty() && !method.empty();
@@ -181,7 +187,7 @@ FramePlanEditRequest framePlanPassShaderRequest(
     const std::string &pass, const std::string &stage,
     const std::string &reference);
 
-// Q-14. Make a pass-through shader: a fullscreen pass's input list and its
+// Q-14 (VI-3b: Use engine://passthrough): a fullscreen pass's input list and its
 // fragment shader, changed together in one edit_preset_pass, because either
 // one alone is refused by the engine's input contract. `inputs` is the whole
 // new list; every other field travels as the declaration holds it.
@@ -233,6 +239,8 @@ struct FramePlanInputSocket {
     bool removed = false;
     // Rule 5: the declaration's name points at another connected resource.
     std::string warning;
+    // VI-3b: engine://passthrough shows this member (PELICAN_PASSTHROUGH_INPUT).
+    bool shown = false;
     std::string label;
 
     [[nodiscard]] bool connected() const noexcept { return !resource.empty(); }
@@ -259,10 +267,14 @@ std::optional<std::vector<std::string>> framePlanPassInputList(
 
 // The sockets of one node. `inputs` is the pass's `input` array in order; the
 // frame plan's reads stand in for it (in the order the plan lists them) when
-// the authoring context has not named the pass yet.
+// the authoring context has not named the pass yet. VI-3b: `shown` is the
+// member of the variadic group engine://passthrough shows (its number in the
+// group), when the pass draws with it; that socket is marked and its label
+// ends in " (shown)".
 FramePlanInputSockets framePlanInputSockets(
     const FramePlanModel &model, const FramePlanNode &node,
-    const std::optional<std::vector<std::string>> &inputs);
+    const std::optional<std::vector<std::string>> &inputs,
+    std::optional<std::size_t> shown = std::nullopt);
 
 // Where an output socket was dropped on a node whose sockets come from its
 // shader.
@@ -297,6 +309,53 @@ const FramePlanInputSocket *framePlanRemovedSocket(
 // declares binding <b> (<resource>)."
 std::string framePlanReloadRefusalLine(const std::string &pass,
                                        const FramePlanInputSocket &socket);
+
+// --- VI-3b.
+
+// A pass whose shader the engine published and which declares no input at
+// all -- no declaration and no variadic group. A drop on it is not sent
+// (framePlanSocketConnectRequest says why and offers engine://passthrough).
+[[nodiscard]] bool framePlanNodeDeclaresNoInputs(const FramePlanNode &node);
+
+// Which member of the variadic group engine://passthrough shows for this
+// pass: PELICAN_PASSTHROUGH_INPUT from the declaration's shader.defines, 0
+// when it is not defined. Nothing when the pass does not draw with
+// engine://passthrough.
+std::optional<std::size_t> framePlanPassthroughShown(
+    const FramePlanAuthoring &authoring, const std::string &graph,
+    const std::string &pass);
+
+// A click on the connected socket at `binding` of a pass that draws with
+// engine://passthrough: show that input. The pass's shader goes back with
+// shader.defines' PELICAN_PASSTHROUGH_INPUT=<k> (k its number in the group),
+// or without the define for k = 0; every other define and field travels as
+// the declaration holds it.
+FramePlanEditRequest framePlanPassthroughInputRequest(
+    const FramePlanAuthoring &authoring, const FramePlanModel &model,
+    const std::string &graph, const std::string &pass, std::size_t binding);
+
+// A pass's shader object without PELICAN_PASSTHROUGH_INPUT in its defines
+// (and without `defines` once it is empty): what the Pass Editor saves when
+// it moves a pass off engine://passthrough.
+nlohmann::json framePlanShaderWithoutPassthroughInput(nlohmann::json shader);
+
+// Fix sockets on one pass: what the rewrite needs, or why it cannot be done.
+struct FramePlanSocketFix {
+    std::string refusal;
+    // The fragment the pass draws with now (project:// or
+    // engine://passthrough, which is copied into the project first).
+    std::string fragment;
+    // The group's first binding, and its connected members in order as the
+    // pass's `input` names them.
+    std::size_t first = 0;
+    std::vector<std::string> inputs;
+    // The variable names the shader already declares.
+    std::vector<std::string> taken;
+};
+FramePlanSocketFix framePlanSocketFix(const FramePlanAuthoring &authoring,
+                                      const FramePlanModel &model,
+                                      const std::string &graph,
+                                      const std::string &pass);
 
 FramePlanEditRequest framePlanTaskResourceRequest(
     const FramePlanTaskAuthoring &authoring, const std::string &task,

@@ -471,4 +471,210 @@ std::vector<std::string> fullscreenTemplateInputFill(
     return filled;
 }
 
+
+// --- VI-3b.
+
+// The bytes of src/core/resources/passthrough.frag, written at build time by
+// src/devstudio/resources/embed_engine_shader.cmake.
+extern const unsigned char EnginePassthroughFragmentBytes[];
+extern const std::size_t EnginePassthroughFragmentSize;
+
+namespace {
+
+// One line of a source: [begin, content_end) is its text, [content_end, end)
+// its line ending ("\r\n", "\n", or nothing on a last line without one).
+struct SourceLine {
+    std::size_t begin = 0;
+    std::size_t content_end = 0;
+    std::size_t end = 0;
+};
+
+std::vector<SourceLine> sourceLines(std::string_view source) {
+    std::vector<SourceLine> lines;
+    std::size_t begin = 0;
+    while (begin < source.size()) {
+        const auto newline = source.find('\n', begin);
+        SourceLine line;
+        line.begin = begin;
+        if (newline == std::string_view::npos) {
+            line.content_end = line.end = source.size();
+        } else {
+            line.end = newline + 1;
+            line.content_end =
+                newline > begin && source[newline - 1] == '\r' ? newline - 1
+                                                               : newline;
+        }
+        lines.push_back(line);
+        begin = line.end;
+    }
+    return lines;
+}
+
+std::string_view lineText(std::string_view source, const SourceLine &line) {
+    return source.substr(line.begin, line.content_end - line.begin);
+}
+
+std::size_t indentLength(std::string_view content) {
+    std::size_t length = 0;
+    while (length < content.size() &&
+           (content[length] == ' ' || content[length] == '\t'))
+        ++length;
+    return length;
+}
+
+std::string_view trimmedRight(std::string_view text) {
+    while (!text.empty() &&
+           std::isspace(static_cast<unsigned char>(text.back())) != 0)
+        text.remove_suffix(1);
+    return text;
+}
+
+// `PELICAN_DECLARE_VARIADIC_INPUTS(` at the start of the line (after its
+// indentation). A line that is a comment does not start with it.
+bool variadicMacroLine(std::string_view content) {
+    constexpr std::string_view macro = "PELICAN_DECLARE_VARIADIC_INPUTS";
+    content.remove_prefix(indentLength(content));
+    if (!content.starts_with(macro)) return false;
+    content.remove_prefix(macro.size());
+    content.remove_prefix(indentLength(content));
+    return content.starts_with('(');
+}
+
+struct FixedBlock {
+    std::size_t begin_line = 0;
+    std::size_t end_line = 0;
+};
+
+std::optional<FixedBlock> findFixedBlock(std::string_view source,
+                                         const std::vector<SourceLine> &lines) {
+    for (std::size_t index = 0; index < lines.size(); ++index) {
+        auto opening = lineText(source, lines[index]);
+        opening.remove_prefix(indentLength(opening));
+        if (!opening.starts_with(FixedSocketsBegin)) continue;
+        for (std::size_t end = index + 1; end < lines.size(); ++end) {
+            auto closing = lineText(source, lines[end]);
+            closing.remove_prefix(indentLength(closing));
+            if (trimmedRight(closing) == FixedSocketsEnd)
+                return FixedBlock{index, end};
+        }
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
+std::optional<std::string_view> engineFragmentSource(std::string_view reference) {
+    if (reference != EnginePassthroughFragment) return std::nullopt;
+    return std::string_view{
+        reinterpret_cast<const char *>(EnginePassthroughFragmentBytes),
+        EnginePassthroughFragmentSize};
+}
+
+std::string engineShaderCopyName(const std::filesystem::path &project_root,
+                                 std::string_view pass) {
+    auto base = suggestedShaderTemplateName(pass);
+    if (base.empty()) base = "fullscreen_pass";
+    std::string candidate = base;
+    std::error_code error;
+    for (int index = 2;
+         std::filesystem::exists(shaderTemplatePath(project_root, candidate), error);
+         ++index)
+        candidate = base + "_" + std::to_string(index);
+    return candidate;
+}
+
+ShaderSocketRewrite fixShaderSockets(std::string_view source, std::size_t first,
+                                     const std::vector<std::string> &inputs,
+                                     const std::vector<std::string> &taken) {
+    ShaderSocketRewrite result;
+    if (inputs.empty()) {
+        result.refusal = "Connect at least one input before fixing the sockets.";
+        return result;
+    }
+    const auto lines = sourceLines(source);
+    std::optional<std::size_t> found;
+    for (std::size_t index = 0; index < lines.size(); ++index) {
+        if (!variadicMacroLine(lineText(source, lines[index]))) continue;
+        if (found) {
+            result.refusal = "The shader has more than one "
+                             "PELICAN_DECLARE_VARIADIC_INPUTS line.";
+            return result;
+        }
+        found = index;
+    }
+    if (!found) {
+        result.refusal =
+            "The shader has no PELICAN_DECLARE_VARIADIC_INPUTS line to fix.";
+        return result;
+    }
+    const auto &line = lines[*found];
+    const auto content = lineText(source, line);
+    const std::string indent{content.substr(0, indentLength(content))};
+    const auto text = content.substr(indent.size());
+    const std::string eol{
+        source.substr(line.content_end, line.end - line.content_end)};
+    // Inside the block every line ends the way the file's lines do.
+    const std::string newline =
+        !eol.empty() ? eol
+                     : (source.find("\r\n") != std::string_view::npos ? "\r\n"
+                                                                     : "\n");
+    std::set<std::string> names{taken.begin(), taken.end()};
+    std::vector<std::string> identifiers;
+    for (const auto &input : inputs)
+        identifiers.push_back(inputIdentifier(input, names));
+
+    std::string block = indent + std::string{FixedSocketsBegin} +
+                        std::string{text} + newline;
+    for (std::size_t k = 0; k < identifiers.size(); ++k)
+        block += indent + "layout(set = PELICAN_SET_PASS_INPUT, binding = " +
+                 std::to_string(first + k) + ") uniform sampler2D " +
+                 identifiers[k] + ";" + newline;
+    // What PELICAN_DECLARE_VARIADIC_INPUTS made besides the declarations, so
+    // PELICAN_VARIADIC_TEXTURE and PELICAN_VARIADIC_INPUT_COUNT still mean
+    // the same thing to the body.
+    block += indent +
+             "vec4 pelican_variadic_texture(int pelican_variadic_index, vec2 "
+             "pelican_variadic_uv) {" +
+             newline;
+    for (std::size_t k = 0; k < identifiers.size(); ++k)
+        block += indent + "    if (pelican_variadic_index == " +
+                 std::to_string(k) + ") return texture(" + identifiers[k] +
+                 ", pelican_variadic_uv);" + newline;
+    block += indent + "    return vec4(0.0);" + newline;
+    block += indent + "}" + newline;
+    block += indent + "const int pelican_variadic_input_count = " +
+             std::to_string(identifiers.size()) + ";" + newline;
+    block += indent + std::string{FixedSocketsEnd} + eol;
+
+    result.source = std::string{source.substr(0, line.begin)} + block +
+                    std::string{source.substr(line.end)};
+    return result;
+}
+
+ShaderSocketRewrite variadicShaderSockets(std::string_view source) {
+    ShaderSocketRewrite result;
+    const auto lines = sourceLines(source);
+    const auto block = findFixedBlock(source, lines);
+    if (!block) {
+        result.refusal = "The shader has no sockets Studio fixed.";
+        return result;
+    }
+    const auto &opening = lines[block->begin_line];
+    const auto &closing = lines[block->end_line];
+    const auto content = lineText(source, opening);
+    const auto indent = content.substr(0, indentLength(content));
+    const auto was = content.substr(indent.size() + FixedSocketsBegin.size());
+    result.source = std::string{source.substr(0, opening.begin)} +
+                    std::string{indent} + std::string{was} +
+                    std::string{source.substr(
+                        closing.content_end, closing.end - closing.content_end)} +
+                    std::string{source.substr(closing.end)};
+    return result;
+}
+
+bool shaderHasFixedSockets(std::string_view source) {
+    return findFixedBlock(source, sourceLines(source)).has_value();
+}
+
 } // namespace PelicanStudio

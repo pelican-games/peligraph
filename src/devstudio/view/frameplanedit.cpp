@@ -1,5 +1,7 @@
 #include "frameplanedit.hpp"
 
+#include "fullscreenshadertemplate.hpp"
+
 #include <algorithm>
 #include <array>
 #include <iterator>
@@ -644,7 +646,8 @@ std::optional<std::vector<std::string>> framePlanPassInputList(
 
 FramePlanInputSockets framePlanInputSockets(
     const FramePlanModel &model, const FramePlanNode &node,
-    const std::optional<std::vector<std::string>> &inputs) {
+    const std::optional<std::vector<std::string>> &inputs,
+    std::optional<std::size_t> shown) {
     FramePlanInputSockets result;
     if (!framePlanNodeDeclaresInputs(node)) return result;
     const auto &declared = *node.pass_inputs;
@@ -687,6 +690,11 @@ FramePlanInputSockets framePlanInputSockets(
                 connect(socket, split.textures[ordinal]);
                 socket.label = "← " +
                                connectedLabel(socket.resource, socket.history);
+                // VI-3b: the member engine://passthrough shows.
+                if (shown && *shown == slot) {
+                    socket.shown = true;
+                    socket.label += " (shown)";
+                }
                 mark(socket);
                 result.sockets.push_back(std::move(socket));
             }
@@ -761,6 +769,17 @@ FramePlanEditRequest framePlanSocketConnectRequest(
     const std::string &graph, const std::string &pass,
     const std::string &resource, const FramePlanSocketDrop &drop) {
     const FramePlanNode *node = findNode(model, pass);
+    // VI-3b: a shader that declares no input takes none, wherever it lands.
+    // Nothing is sent; the line offers engine://passthrough with the input.
+    if (node != nullptr && framePlanNodeDeclaresNoInputs(*node)) {
+        auto request = refuseLine(pass + "'s shader declares no inputs.");
+        auto inputs = editableInputs(authoring, graph, pass)
+                          .value_or(std::vector<std::string>{});
+        inputs.push_back(resource);
+        request.passthrough_inputs = std::move(inputs);
+        request.fragment = node->pass_inputs->fragment;
+        return request;
+    }
     if (node == nullptr || !framePlanNodeDeclaresInputs(*node))
         return framePlanPassResourceRequest(authoring, graph, pass, {resource},
                                             true);
@@ -880,6 +899,160 @@ std::string framePlanReloadRefusalLine(const std::string &pass,
            "declares binding " +
            (socket.binding ? std::to_string(*socket.binding) : std::string{"?"}) +
            " (" + socket.resource + ").";
+}
+
+// --- VI-3b.
+
+namespace {
+
+std::string defineName(std::string_view define) {
+    return std::string{define.substr(0, define.find('='))};
+}
+
+// The pass's shader object as the document holds it (the composed one when
+// the document's own has none).
+Json passShader(const FramePlanAuthoringPass &row) {
+    auto shader = objectOr(row.editable_declaration, "shader");
+    if (shader.empty()) shader = objectOr(row.declaration, "shader");
+    return shader;
+}
+
+} // namespace
+
+bool framePlanNodeDeclaresNoInputs(const FramePlanNode &node) {
+    return node.pass_inputs && node.pass_inputs->declared() &&
+           node.pass_inputs->declarations.empty() &&
+           !node.pass_inputs->variadic_range;
+}
+
+std::optional<std::size_t> framePlanPassthroughShown(
+    const FramePlanAuthoring &authoring, const std::string &graph,
+    const std::string &pass) {
+    const auto *row = authoring.find(graph, pass);
+    if (!authoring.received || row == nullptr) return std::nullopt;
+    const auto shader = passShader(*row);
+    if (textOr(shader, "fragment") != EnginePassthroughFragment)
+        return std::nullopt;
+    const auto defines = shader.find("defines");
+    if (defines == shader.end() || !defines->is_array()) return 0;
+    for (const auto &define : *defines) {
+        if (!define.is_string()) continue;
+        const auto text = define.get<std::string>();
+        if (defineName(text) != PassthroughInputDefine) continue;
+        const auto equals = text.find('=');
+        if (equals == std::string::npos) return 0;
+        try {
+            return static_cast<std::size_t>(std::stoul(text.substr(equals + 1)));
+        } catch (const std::exception &) {
+            return 0;
+        }
+    }
+    return 0;
+}
+
+Json framePlanShaderWithoutPassthroughInput(Json shader) {
+    if (!shader.is_object()) return shader;
+    const auto defines = shader.find("defines");
+    if (defines == shader.end() || !defines->is_array()) return shader;
+    Json kept = Json::array();
+    for (const auto &define : *defines)
+        if (!define.is_string() ||
+            defineName(define.get<std::string>()) != PassthroughInputDefine)
+            kept.push_back(define);
+    if (kept.empty()) shader.erase("defines");
+    else shader["defines"] = std::move(kept);
+    return shader;
+}
+
+FramePlanEditRequest framePlanPassthroughInputRequest(
+    const FramePlanAuthoring &authoring, const FramePlanModel &model,
+    const std::string &graph, const std::string &pass, std::size_t binding) {
+    const auto shown = framePlanPassthroughShown(authoring, graph, pass);
+    if (!shown)
+        return refuseLine(pass + " does not draw with " +
+                          std::string{EnginePassthroughFragment} +
+                          ": a click on its socket shows nothing.");
+    const FramePlanNode *node = findNode(model, pass);
+    if (node == nullptr || !framePlanNodeDeclaresInputs(*node) ||
+        !node->pass_inputs->variadic_range)
+        return refuseLine(pass + "'s shader has no variadic group.");
+    const auto sockets = framePlanInputSockets(
+        model, *node, framePlanPassInputList(authoring, graph, pass));
+    const auto socket = std::ranges::find_if(
+        sockets.sockets, [binding](const FramePlanInputSocket &entry) {
+            return entry.kind == FramePlanInputSocket::Kind::variadic &&
+                   entry.binding == binding;
+        });
+    if (socket == sockets.sockets.end())
+        return refuseLine(pass + " has no input connected at binding " +
+                          std::to_string(binding) + ".");
+    const std::size_t k = binding - node->pass_inputs->variadic_range->first;
+    if (k == *shown)
+        return refuseLine(pass + " already shows " +
+                          connectedLabel(socket->resource, socket->history) +
+                          ".");
+    const auto *row = authoring.find(graph, pass);
+    auto shader = framePlanShaderWithoutPassthroughInput(passShader(*row));
+    if (k != 0) {
+        auto defines = shader.value("defines", Json::array());
+        defines.push_back(std::string{PassthroughInputDefine} + "=" +
+                          std::to_string(k));
+        shader["defines"] = std::move(defines);
+    }
+    auto request = passInputListRequest(
+        authoring, graph, pass,
+        editableInputs(authoring, graph, pass).value_or(std::vector<std::string>{}),
+        pass + " shows " + connectedLabel(socket->resource, socket->history) +
+            ".");
+    if (!request.sendable()) return request;
+    request.params["shader"] = std::move(shader);
+    return request;
+}
+
+FramePlanSocketFix framePlanSocketFix(const FramePlanAuthoring &authoring,
+                                      const FramePlanModel &model,
+                                      const std::string &graph,
+                                      const std::string &pass) {
+    FramePlanSocketFix fix;
+    const FramePlanNode *node = findNode(model, pass);
+    if (node == nullptr || !framePlanNodeDeclaresInputs(*node) ||
+        !node->pass_inputs->variadic_range) {
+        fix.refusal = pass + "'s shader has no variadic group to fix.";
+        return fix;
+    }
+    const auto &declared = *node->pass_inputs;
+    fix.fragment = declared.fragment;
+    if (!fix.fragment.starts_with("project://") &&
+        fix.fragment != EnginePassthroughFragment) {
+        fix.refusal = pass + " draws with " + fix.fragment +
+                      ", an engine shader Studio cannot open or copy.";
+        return fix;
+    }
+    // A buffer's binding follows the group's max; once the group is fixed it
+    // would follow the fixed inputs instead, and the shader's buffer
+    // declarations would no longer match.
+    if (std::ranges::any_of(declared.declarations,
+                            &FramePlanPassInputDeclaration::buffer)) {
+        fix.refusal = pass +
+                      "'s shader declares a buffer after its variadic group: "
+                      "fixing the sockets would move its binding. Edit the "
+                      "shader by hand.";
+        return fix;
+    }
+    fix.first = declared.variadic_range->first;
+    const auto sockets = framePlanInputSockets(
+        model, *node, framePlanPassInputList(authoring, graph, pass));
+    for (const auto &socket : sockets.sockets) {
+        if (socket.kind == FramePlanInputSocket::Kind::variadic)
+            fix.inputs.push_back(socket.history
+                                     ? socket.resource + std::string{HistorySuffix}
+                                     : socket.resource);
+    }
+    for (const auto &declaration : declared.declarations)
+        if (!declaration.variadic) fix.taken.push_back(declaration.name);
+    if (fix.inputs.empty())
+        fix.refusal = "Connect at least one input before fixing the sockets.";
+    return fix;
 }
 
 bool framePlanTaskAtRoot(std::string_view source_reference,

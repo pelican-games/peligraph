@@ -1114,6 +1114,8 @@ struct DrawnRow {
     bool empty = false;
     bool removed = false;
     QString warning;
+    // VI-3b: the input engine://passthrough shows.
+    bool shown = false;
 };
 
 struct NodeBodyLayout {
@@ -1158,6 +1160,7 @@ DrawnRow declaredRow(const FramePlanModel &model,
     row.binding = socket.binding;
     row.removed = socket.removed;
     row.warning = qtext(socket.warning);
+    row.shown = socket.shown;
     return row;
 }
 
@@ -1395,6 +1398,7 @@ void addNodeBody(QGraphicsPathItem &item, const FramePlanNode &node,
             child->setData(FramePlanSocketBindingRole,
                            static_cast<int>(*row.binding));
         child->setData(FramePlanSocketRemovedRole, row.removed);
+        child->setData(FramePlanSocketShownRole, row.shown);
     };
     const QColor removed_color{QStringLiteral("#d94c3d")};
     const auto socket = [&](const DrawnRow &row, const QPointF &centre,
@@ -1410,6 +1414,11 @@ void addNodeBody(QGraphicsPathItem &item, const FramePlanNode &node,
             // Nothing connected: the outline alone, in the kind's colour.
             dot->setBrush(currentStudioTheme().canvas.node_body);
             dot->setPen(QPen{row.style.fill, 1.6});
+        } else if (row.shown) {
+            // VI-3b: the input engine://passthrough shows -- filled, and
+            // ringed in white so it stands out from the other members.
+            dot->setBrush(row.style.fill.lighter(125));
+            dot->setPen(QPen{QColor{QStringLiteral("#ffffff")}, 2.2});
         } else {
             dot->setBrush(row.style.fill);
             dot->setPen(QPen{row.style.outline, row.style.outline_width});
@@ -1432,6 +1441,12 @@ void addNodeBody(QGraphicsPathItem &item, const FramePlanNode &node,
                     "\nThe reloaded shader no longer declares this binding.");
             if (!row.warning.isEmpty())
                 tooltip += QStringLiteral("\n%1").arg(row.warning);
+            if (row.shown)
+                tooltip += QStringLiteral(
+                    "\nengine://passthrough shows this input.");
+            else if (row.key.startsWith(QStringLiteral("in@")) && !row.empty)
+                tooltip += QStringLiteral(
+                    "\nOn engine://passthrough, click to show this input.");
         }
         dot->setToolTip(tooltip);
         tag(dot, FramePlanSocketItem);
@@ -1535,6 +1550,32 @@ void addNodeBody(QGraphicsPathItem &item, const FramePlanNode &node,
         name->setData(FramePlanSocketDirectionRole, QStringLiteral("input"));
         declare(name, row);
         socket(row, QPointF{0.0, centre_y}, "input");
+        if (row.key == QLatin1String{"in:variadic"}) {
+            // VI-3b: Fix sockets, beside the band's end -- the group becomes
+            // one fixed declaration per connected input.
+            const QString caption = QStringLiteral("Fix");
+            const qreal pill_width = row_metrics.horizontalAdvance(caption) + 12.0;
+            const qreal pill_height = row_metrics.height() + 2.0;
+            QPainterPath pill;
+            pill.addRoundedRect(QRectF{layout.width - pill_width - 8.0,
+                                       centre_y - pill_height / 2.0,
+                                       pill_width, pill_height},
+                                pill_height / 2.0, pill_height / 2.0);
+            auto *fix = new QGraphicsPathItem(pill, &item);
+            fix->setBrush(QColor{QStringLiteral("#2f4a5f")});
+            fix->setPen(QPen{QColor{QStringLiteral("#6f9fc2")}, 1.0});
+            fix->setZValue(1.1);
+            fix->setToolTip(QStringLiteral(
+                "Fix sockets: the shader declares each connected input by "
+                "name instead of the variadic group."));
+            tag(fix, FramePlanSocketFixItem);
+            auto *fix_text = new QGraphicsSimpleTextItem(caption, fix);
+            fix_text->setFont(row_font);
+            fix_text->setBrush(QColor{QStringLiteral("#dbe8f2")});
+            fix_text->setPos(layout.width - pill_width - 2.0,
+                             centre_y - row_metrics.height() / 2.0);
+            fix_text->setAcceptedMouseButtons(Qt::NoButton);
+        }
         if (!row.warning.isEmpty()) {
             // Rule 5: an amber mark after the row's text; the tooltip says
             // which name and which resource disagree.
@@ -2411,14 +2452,17 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
     // binding, and only the owner's authoring context has it.
     std::map<std::string, FramePlanInputSockets, std::less<>> input_sockets;
     declared_nodes_.clear();
+    variadic_nodes_.clear();
     for (const auto &node : model.nodes) {
         if (!framePlanNodeDeclaresInputs(node)) continue;
+        const FramePlanNodeKey key{model.graph, node.name};
         auto sockets = framePlanInputSockets(
             model, node,
-            passInputsProvider
-                ? passInputsProvider(FramePlanNodeKey{model.graph, node.name})
-                : std::nullopt);
+            passInputsProvider ? passInputsProvider(key) : std::nullopt,
+            passthroughShownProvider ? passthroughShownProvider(key)
+                                     : std::nullopt);
         declared_nodes_.insert(node.name);
+        if (sockets.variadic) variadic_nodes_.insert(node.name);
         input_sockets.emplace(node.name, std::move(sockets));
     }
     const auto socketsFor =
@@ -3754,6 +3798,11 @@ void FramePlanGraphicsScene::setInsertActions(QAction *add_pass,
     add_task_action_ = add_task;
 }
 
+void FramePlanGraphicsScene::setSocketActions(QAction *fix, QAction *variadic) {
+    fix_sockets_action_ = fix;
+    variadic_sockets_action_ = variadic;
+}
+
 std::optional<FramePlanNodeKey> FramePlanGraphicsScene::insertAnchor() const {
     return context_node_ ? context_node_ : selected_node_;
 }
@@ -3857,6 +3906,20 @@ void FramePlanGraphicsScene::contextMenuEvent(
             menu.addAction(open_in_graph_action_);
             menu.addSeparator();
         }
+        // VI-3b: a variadic group can be fixed; sockets Fix sockets wrote
+        // can be made variadic again.
+        bool socket_entries = false;
+        if (fix_sockets_action_ != nullptr &&
+            variadic_nodes_.contains(clicked.name)) {
+            menu.addAction(fix_sockets_action_);
+            socket_entries = true;
+        }
+        if (variadic_sockets_action_ != nullptr && fixedSocketsOffered &&
+            fixedSocketsOffered(clicked)) {
+            menu.addAction(variadic_sockets_action_);
+            socket_entries = true;
+        }
+        if (socket_entries) menu.addSeparator();
         if (add_pass_action_ != nullptr) menu.addAction(add_pass_action_);
         if (material_pass_action_ != nullptr)
             menu.addAction(material_pass_action_);
@@ -4305,6 +4368,24 @@ void FramePlanGraphicsScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
                 beginInlineEdit(node, field);
                 return;
             }
+            // VI-3b: the band's Fix button.
+            for (QGraphicsItem *hit : items(event->scenePos(),
+                                            Qt::IntersectsItemShape,
+                                            Qt::DescendingOrder)) {
+                if (itemKind(*hit) != QLatin1String{FramePlanSocketFixItem})
+                    continue;
+                const FramePlanNodeKey node{
+                    hit->data(FramePlanGraphRole).toString().toStdString(),
+                    hit->data(FramePlanNameRole).toString().toStdString()};
+                event->accept();
+                QMetaObject::invokeMethod(
+                    this,
+                    [this, node] {
+                        if (socketsFixRequested) socketsFixRequested(node);
+                    },
+                    Qt::QueuedConnection);
+                return;
+            }
             // VI-3a: an empty socket (a declaration nothing feeds, the
             // variadic band's end) has nothing to cut; a press on it is a
             // press on its node.
@@ -4315,6 +4396,8 @@ void FramePlanGraphicsScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
                 socket_gesture_ =
                     SocketGesture{socket->node, socket->resource,
                                   socket->output, socket->input_index};
+                socket_gesture_->pressed_at = event->scenePos();
+                socket_gesture_->binding = socket->binding;
                 connection_source_ = socket->node;
                 connection_line_ = addLine(
                     QLineF(event->scenePos(), event->scenePos()),
@@ -4401,7 +4484,24 @@ void FramePlanGraphicsScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) 
         // An input socket dragged away from its node cuts the connection; one
         // dropped back on the node it belongs to does nothing, because that is
         // how a gesture is abandoned.
-        if (to && *to == socket->node) return;
+        if (to && *to == socket->node) {
+            // VI-3b: released where it was pressed, it is a click on the
+            // socket (engine://passthrough shows that input).
+            constexpr qreal click_slop = 4.0;
+            if (socket->binding && socketClicked &&
+                QLineF{socket->pressed_at, event->scenePos()}.length() <=
+                    click_slop) {
+                const FramePlanNodeKey node = socket->node;
+                const std::size_t binding = *socket->binding;
+                QMetaObject::invokeMethod(
+                    this,
+                    [this, node, binding] {
+                        if (socketClicked) socketClicked(node, binding);
+                    },
+                    Qt::QueuedConnection);
+            }
+            return;
+        }
         if (socket->input_index && socketCutRequested) {
             socketCutRequested(socket->node, *socket->input_index);
             return;

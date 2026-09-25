@@ -1,0 +1,879 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "sockets_fix_and_show",
+  "description": "VI-3b: on a Blank pipeline project, present draws with engine://passthrough. With a Cube and a Deferred geometry pass, gbuffer_albedo and gbuffer_normal are dropped on present's variadic band. A click on binding 1's socket writes PELICAN_PASSTHROUGH_INPUT=1 into present's shader.defines, and the viewport shows the normals; the socket is marked (shown). Fix sockets copies engine://passthrough into shaders/present.frag with its variadic line replaced by one declaration per connected input, and moves present onto the copy, defines kept: the sockets are named in_gbuffer_albedo and in_gbuffer_normal and the viewport shows the same colour. Make sockets variadic puts the line back, and the band returns.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up, so the switch to the new project is something that happens",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout: the panel layout is the desktop's, saved by whichever Studio closed last",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "step 1: File > New Project...",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts, never the repository",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name is proposed, with nothing typed",
+      "expect": "text_equals",
+      "name": "pelican.newProject.name",
+      "value": "project_001"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed, because the template is on disk",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the new project's frame plan has its one pass",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine answers editor RPC and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "fit the graph",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
+    },
+    {
+      "label": "present draws with engine://passthrough, whose inputs are all variadic: the band's empty end is its only socket",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#present/in:variadic",
+      "timeout_ms": 60000,
+      "visible": true
+    },
+    {
+      "label": "and no socket of a binding yet: nothing is connected",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#present/in@0",
+      "timeout_ms": 10000,
+      "missing": true
+    },
+    {
+      "label": "before: passthrough with no input draws the gradient",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/before_gradient.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.5,
+            0.92
+          ],
+          [
+            0.5,
+            0.06
+          ],
+          [
+            0.46,
+            0.5
+          ],
+          [
+            0.54,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "remember": "gradient_middle"
+    },
+    {
+      "label": "Add Object > Cube, so the G-buffer holds a shape",
+      "cmd": "action",
+      "name": "pelican.outliner.addObject.cube"
+    },
+    {
+      "label": "the engine has a third object, named Cube",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects[2].name",
+      "value": "Cube",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the Inspector has read the Cube",
+      "cmd": "wait",
+      "name": "pelican.inspectorModelChoice",
+      "text": "Cube (built-in)",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Add material pass...",
+      "cmd": "action",
+      "name": "pelican.framePlan.addMaterialPass"
+    },
+    {
+      "label": "the form is open",
+      "cmd": "wait",
+      "name": "pelican.materialPassForm.name",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Deferred geometry",
+      "cmd": "select",
+      "name": "pelican.materialPassForm.contract",
+      "text": "Deferred geometry (G-buffer)"
+    },
+    {
+      "label": "the pass is named after it, with nothing typed",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.name",
+      "value": "deferred_geometry"
+    },
+    {
+      "label": "the albedo output is a new gbuffer_albedo, filled as the form opened",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.target.albedo",
+      "value": "gbuffer_albedo"
+    },
+    {
+      "label": "the normal output is a new gbuffer_normal",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.target.normal",
+      "value": "gbuffer_normal"
+    },
+    {
+      "label": "the material output is a new gbuffer_material",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.target.material",
+      "value": "gbuffer_material"
+    },
+    {
+      "label": "the world_position output is a new gbuffer_worldpos",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.target.world_position",
+      "value": "gbuffer_worldpos"
+    },
+    {
+      "label": "the emissive output is a new gbuffer_emissive",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.target.emissive",
+      "value": "gbuffer_emissive"
+    },
+    {
+      "label": "and the depth output a new scene_depth",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.target.depth",
+      "value": "scene_depth"
+    },
+    {
+      "label": "a deferred pass takes deferred materials: no forward default is offered",
+      "cmd": "wait",
+      "name": "pelican.materialPassForm.forwardDefault",
+      "visible": false,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Save: the six targets, then the pass",
+      "cmd": "click",
+      "name": "pelican.materialPassForm.ok"
+    },
+    {
+      "label": "the form closed",
+      "cmd": "wait",
+      "name": "pelican.materialPassForm.name",
+      "visible": false,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the engine runs deferred_geometry first",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[0].name",
+      "value": "deferred_geometry",
+      "retry_ms": 120000
+    },
+    {
+      "label": "as a material pass of the deferred geometry contract",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[0].declaration.material_contract",
+      "value": "deferred_geometry_v1"
+    },
+    {
+      "label": "the automatic materials already go to a deferred pass: no restart was asked for",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.viewportStatus"
+      },
+      "path": "text",
+      "op": "excludes",
+      "value": "Restarting the engine"
+    },
+    {
+      "label": "look at the whole frame, where the geometry pass and its targets are drawn",
+      "cmd": "select",
+      "name": "pelican.framePlanTarget",
+      "text": "Whole frame"
+    },
+    {
+      "label": "deferred_geometry is drawn",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#deferred_geometry",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "present is drawn",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit the graph so both ends of the drag are on screen",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
+    },
+    {
+      "label": "the gbuffer_albedo output socket the drag starts from",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#deferred_geometry/out:gbuffer_albedo",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "present is the frame plan's second node, after deferred_geometry (the rpc checks below read it there)",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[1].name",
+      "value": "present"
+    },
+    {
+      "label": "its shader declares the variadic group (0, 8)",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[1].pass_inputs.variadic_range.max",
+      "value": 8
+    },
+    {
+      "label": "drop gbuffer_albedo on the band's empty end",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.framePlanLogicalView::node_socket#deferred_geometry/out:gbuffer_albedo"
+      },
+      "to": {
+        "name": "pelican.framePlanLogicalView::node_socket#present/in:variadic"
+      },
+      "steps": 8
+    },
+    {
+      "label": "present reads gbuffer_albedo",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].root_declaration.input[0]",
+      "value": "gbuffer_albedo",
+      "retry_ms": 120000
+    },
+    {
+      "label": "and only it",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].root_declaration.input.$len",
+      "value": 1
+    },
+    {
+      "label": "the band holds one socket now, binding 0",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#present/in@0",
+      "timeout_ms": 120000,
+      "visible": true
+    },
+    {
+      "label": "the name a read had before VI-3a still reaches it",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#present/in:gbuffer_albedo",
+      "timeout_ms": 60000,
+      "visible": true
+    },
+    {
+      "label": "fit the graph again",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
+    },
+    {
+      "label": "drop gbuffer_normal on the band's empty end",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.framePlanLogicalView::node_socket#deferred_geometry/out:gbuffer_normal"
+      },
+      "to": {
+        "name": "pelican.framePlanLogicalView::node_socket#present/in:variadic"
+      },
+      "steps": 8
+    },
+    {
+      "label": "present reads gbuffer_normal second",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].root_declaration.input[1]",
+      "value": "gbuffer_normal",
+      "retry_ms": 120000
+    },
+    {
+      "label": "the band holds two sockets, bindings 0 and 1",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#present/in@1",
+      "timeout_ms": 120000,
+      "visible": true
+    },
+    {
+      "label": "engine://passthrough shows input 0 until told otherwise, and binding 0 says so",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_row_label#present/in@0",
+      "timeout_ms": 60000,
+      "text": "← gbuffer_albedo (shown)"
+    },
+    {
+      "label": "pick the camera in the Outliner, so no gizmo is drawn over the box",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "MainCamera"
+    },
+    {
+      "label": "the Inspector holds the camera",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "timeout_ms": 30000,
+      "contains": "MainCamera\n"
+    },
+    {
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/shows_albedo.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.5,
+            0.92
+          ],
+          [
+            0.5,
+            0.06
+          ],
+          [
+            0.46,
+            0.5
+          ],
+          [
+            0.54,
+            0.5
+          ]
+        ]
+      },
+      "label": "the viewport holds the G-buffer's flat colours, not the gradient",
+      "path": "distinct_colors",
+      "op": "le",
+      "value": 64,
+      "retry_ms": 120000
+    },
+    {
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/shows_albedo.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.5,
+            0.92
+          ],
+          [
+            0.5,
+            0.06
+          ],
+          [
+            0.46,
+            0.5
+          ],
+          [
+            0.54,
+            0.5
+          ]
+        ]
+      },
+      "label": "the middle is not the gradient any more",
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "gradient_middle",
+      "retry_ms": 120000
+    },
+    {
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/shows_albedo.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.5,
+            0.92
+          ],
+          [
+            0.5,
+            0.06
+          ],
+          [
+            0.46,
+            0.5
+          ],
+          [
+            0.54,
+            0.5
+          ]
+        ]
+      },
+      "label": "the box's albedo, read in the middle",
+      "path": "pixels[0]",
+      "remember": "albedo_middle"
+    },
+    {
+      "label": "fit the graph again",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
+    },
+    {
+      "label": "click binding 1's socket: show gbuffer_normal",
+      "cmd": "click",
+      "name": "pelican.framePlanLogicalView::node_socket#present/in@1"
+    },
+    {
+      "label": "the click wrote PELICAN_PASSTHROUGH_INPUT=1 into present's shader.defines",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].root_declaration.shader.defines[0]",
+      "value": "PELICAN_PASSTHROUGH_INPUT=1",
+      "retry_ms": 120000
+    },
+    {
+      "label": "and only it",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].root_declaration.shader.defines.$len",
+      "value": 1
+    },
+    {
+      "label": "the inputs did not move",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].root_declaration.input.$len",
+      "value": 2
+    },
+    {
+      "label": "binding 1 is the one shown now",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_row_label#present/in@1",
+      "timeout_ms": 120000,
+      "text": "← gbuffer_normal (shown)"
+    },
+    {
+      "label": "and binding 0 is not",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_row_label#present/in@0",
+      "timeout_ms": 60000,
+      "text": "← gbuffer_albedo"
+    },
+    {
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/shows_normal.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.5,
+            0.92
+          ],
+          [
+            0.5,
+            0.06
+          ],
+          [
+            0.46,
+            0.5
+          ],
+          [
+            0.54,
+            0.5
+          ]
+        ]
+      },
+      "label": "the viewport's colour changed: the normals, not the albedo",
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "albedo_middle",
+      "retry_ms": 120000
+    },
+    {
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/shows_normal.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.5,
+            0.92
+          ],
+          [
+            0.5,
+            0.06
+          ],
+          [
+            0.46,
+            0.5
+          ],
+          [
+            0.54,
+            0.5
+          ]
+        ]
+      },
+      "label": "the normals, read in the middle",
+      "path": "pixels[0]",
+      "remember": "normal_middle"
+    },
+    {
+      "label": "zoom in on present",
+      "cmd": "wheel",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "delta": 960
+    },
+    {
+      "label": "a picture of the band with binding 1 shown, for the reader of this report",
+      "expect": "screenshot",
+      "name": "pelican.framePlanLogicalView",
+      "path": "present_shown.png"
+    },
+    {
+      "label": "fit the graph again",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
+    },
+    {
+      "label": "the Fix button stands beside the band's end",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket_fix#present",
+      "timeout_ms": 30000,
+      "visible": true
+    },
+    {
+      "label": "Fix sockets",
+      "cmd": "click",
+      "name": "pelican.framePlanLogicalView::node_socket_fix#present"
+    },
+    {
+      "label": "present draws with a copy of engine://passthrough in the project",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].root_declaration.shader.fragment",
+      "value": "project://shaders/present",
+      "retry_ms": 120000
+    },
+    {
+      "label": "which keeps showing input 1",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].root_declaration.shader.defines[0]",
+      "value": "PELICAN_PASSTHROUGH_INPUT=1"
+    },
+    {
+      "label": "the copy is shaders/present.frag, its variadic line replaced",
+      "file": "contains",
+      "path": "{artifacts}/project_001/shaders/present.frag",
+      "text": "// pelican: fixed sockets, was PELICAN_DECLARE_VARIADIC_INPUTS(0, 8);",
+      "value": true
+    },
+    {
+      "label": "by one declaration per connected input, named for it",
+      "file": "contains",
+      "path": "{artifacts}/project_001/shaders/present.frag",
+      "text": "layout(set = PELICAN_SET_PASS_INPUT, binding = 1) uniform sampler2D in_gbuffer_normal;",
+      "value": true
+    },
+    {
+      "label": "the sockets are the fixed declarations now",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_row_label#present/in@0",
+      "timeout_ms": 120000,
+      "text": "in_gbuffer_albedo ← gbuffer_albedo"
+    },
+    {
+      "label": "binding 1 is named in_gbuffer_normal",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_row_label#present/in@1",
+      "timeout_ms": 60000,
+      "text": "in_gbuffer_normal ← gbuffer_normal"
+    },
+    {
+      "label": "no band: the group is fixed",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#present/in:variadic",
+      "missing": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the engine reads two fixed declarations",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[1].pass_inputs.declarations.$len",
+      "value": 2,
+      "retry_ms": 60000
+    },
+    {
+      "label": "the second named in_gbuffer_normal",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[1].pass_inputs.declarations[1].name",
+      "value": "in_gbuffer_normal"
+    },
+    {
+      "label": "with no variadic group",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[1].pass_inputs.variadic_range",
+      "value": null
+    },
+    {
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/fixed.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.5,
+            0.92
+          ],
+          [
+            0.5,
+            0.06
+          ],
+          [
+            0.46,
+            0.5
+          ],
+          [
+            0.54,
+            0.5
+          ]
+        ]
+      },
+      "label": "the viewport shows what it showed before: the normals",
+      "path": "pixels[0]",
+      "op": "eq",
+      "value_of": "normal_middle",
+      "retry_ms": 120000
+    },
+    {
+      "label": "fit the graph again",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
+    },
+    {
+      "label": "pick present by its heading",
+      "cmd": "click",
+      "name": "pelican.framePlanLogicalView::node_header#present"
+    },
+    {
+      "label": "Make sockets variadic (the menu entry on present)",
+      "cmd": "action",
+      "name": "pelican.framePlan.makeSocketsVariadic"
+    },
+    {
+      "label": "the variadic line is back in the file",
+      "file": "contains",
+      "path": "{artifacts}/project_001/shaders/present.frag",
+      "text": "PELICAN_DECLARE_VARIADIC_INPUTS(0, 8);",
+      "value": true
+    },
+    {
+      "label": "and the fixed block is gone",
+      "file": "contains",
+      "path": "{artifacts}/project_001/shaders/present.frag",
+      "text": "pelican: fixed sockets",
+      "value": false
+    },
+    {
+      "label": "the band is back",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#present/in:variadic",
+      "timeout_ms": 120000,
+      "visible": true
+    },
+    {
+      "label": "the engine reads the variadic group again",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[1].pass_inputs.variadic_range.max",
+      "value": 8,
+      "retry_ms": 120000
+    },
+    {
+      "label": "both inputs stay in the band",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_row_label#present/in@1",
+      "timeout_ms": 60000,
+      "text": "← gbuffer_normal"
+    },
+    {
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/variadic_again.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.5,
+            0.92
+          ],
+          [
+            0.5,
+            0.06
+          ],
+          [
+            0.46,
+            0.5
+          ],
+          [
+            0.54,
+            0.5
+          ]
+        ]
+      },
+      "label": "and the viewport still shows the normals",
+      "path": "pixels[0]",
+      "op": "eq",
+      "value_of": "normal_middle",
+      "retry_ms": 120000
+    },
+    {
+      "label": "a picture of the window",
+      "expect": "screenshot",
+      "path": "after_window.png"
+    },
+    {
+      "label": "the Inspector is idle",
+      "cmd": "wait",
+      "name": "pelican.inspectorRefresh",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "File > Save Scene, so closing Studio has nothing to ask",
+      "cmd": "action",
+      "name": "pelican.file.saveScene"
+    },
+    {
+      "label": "the save is done",
+      "cmd": "wait",
+      "name": "pelican.inspectorNotice",
+      "contains": "Scene saved",
+      "timeout_ms": 60000
+    }
+  ]
+}

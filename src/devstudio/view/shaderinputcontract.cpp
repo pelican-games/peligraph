@@ -1,15 +1,8 @@
 #include "shaderinputcontract.hpp"
 
-#include "fullscreenshadertemplate.hpp"
-
 #include <algorithm>
-#include <cctype>
 #include <cstdint>
-#include <fstream>
-#include <iterator>
 #include <regex>
-#include <set>
-#include <system_error>
 
 namespace PelicanStudio {
 namespace {
@@ -95,22 +88,16 @@ std::string stemOf(std::string_view fragment) {
     return rest.empty() ? std::string{fragment} : std::string{rest};
 }
 
-std::string_view trimmed(std::string_view line) {
-    while (!line.empty() && std::isspace(static_cast<unsigned char>(line.front())))
-        line.remove_prefix(1);
-    return line;
-}
-
 } // namespace
 
 std::vector<ShaderInputContractAction> shaderInputContractActions(
     std::string_view direction) {
     std::vector<ShaderInputContractAction> actions;
-    // A pass-through shader reads what the pass gives. It cannot make the
+    // engine://passthrough reads what the pass gives. It cannot make the
     // pass give what the engine has no way to fill.
     if (direction != ShaderInputContractShaderInputUnsupplied)
-        actions.push_back({std::string{ShaderInputContractMakePassThrough},
-                           "Make a pass-through shader"});
+        actions.push_back({std::string{ShaderInputContractUsePassthrough},
+                           "Use engine://passthrough"});
     actions.push_back(
         {std::string{ShaderInputContractOpenShader}, "Open the shader"});
     return actions;
@@ -164,7 +151,7 @@ std::string shaderInputContractLine(std::string_view pass,
 
 ShaderInputContractNotice shaderInputContractNotice(
     const Json &error, std::string_view pass, std::string_view fragment,
-    std::optional<std::size_t> declared_in_file) {
+    std::optional<std::size_t> declared_by_shader) {
     ShaderInputContractNotice notice;
     if (!error.is_object()) return notice;
     const auto code = textOr(error, "code");
@@ -223,7 +210,7 @@ ShaderInputContractNotice shaderInputContractNotice(
             notice.declared_type = from_message.type;
     }
     if (!notice.declared) notice.declared = declaredFromMessage(message);
-    if (!notice.declared) notice.declared = declared_in_file;
+    if (!notice.declared) notice.declared = declared_by_shader;
     notice.fragment_stem = stemOf(notice.fragment);
     notice.line = unsupplied
                       ? shaderInputUnsuppliedLine(notice.pass, notice.fragment,
@@ -232,43 +219,52 @@ ShaderInputContractNotice shaderInputContractNotice(
                       : shaderInputContractLine(notice.pass, notice.fragment,
                                                 notice.declared);
     notice.actions = shaderInputContractActions(notice.direction);
-    notice.can_open = notice.fragment.starts_with("project://");
+    notice.can_open = notice.fragment.starts_with("project://") ||
+                      notice.fragment == "engine://passthrough";
     return notice;
 }
 
-std::vector<std::size_t> shaderInputDeclaredIndices(std::string_view source) {
-    static const std::regex macro{R"(PELICAN_DECLARE_INPUT_(\d+)\s*\()"};
-    static const std::regex manual{
-        R"(set\s*=\s*PELICAN_SET_PASS_INPUT\s*,\s*binding\s*=\s*(\d+))"};
-    std::set<std::size_t> indices;
-    std::size_t start = 0;
-    while (start <= source.size()) {
-        const auto end = source.find('\n', start);
-        std::string_view line = source.substr(
-            start, end == std::string_view::npos ? std::string_view::npos
-                                                 : end - start);
-        start = end == std::string_view::npos ? source.size() + 1 : end + 1;
-        line = trimmed(line);
-        if (line.starts_with("#") || line.starts_with("//")) continue;
-        if (const auto comment = line.find("//"); comment != std::string_view::npos)
-            line = line.substr(0, comment);
-        const std::string text{line};
-        for (const auto *pattern : {&macro, &manual}) {
-            for (std::sregex_iterator match{text.begin(), text.end(), *pattern}, last;
-                 match != last; ++match) {
-                try {
-                    indices.insert(
-                        static_cast<std::size_t>(std::stoul((*match)[1].str())));
-                } catch (const std::exception &) {
-                }
-            }
-        }
-    }
-    return {indices.begin(), indices.end()};
+std::size_t shaderInputCapacity(const FramePlanPassInputs &inputs) {
+    std::size_t capacity = 0;
+    for (const auto &declaration : inputs.declarations)
+        if (!declaration.variadic) ++capacity;
+    if (inputs.variadic_range) capacity += inputs.variadic_range->max;
+    return capacity;
 }
 
-std::size_t shaderInputDeclarationCount(std::string_view source) {
-    return shaderInputDeclaredIndices(source).size();
+std::size_t shaderInputFixedImageCount(const FramePlanPassInputs &inputs) {
+    return static_cast<std::size_t>(std::ranges::count_if(
+        inputs.declarations, [](const FramePlanPassInputDeclaration &entry) {
+            return !entry.variadic && !entry.buffer();
+        }));
+}
+
+bool shaderInputDeclarationsAreFor(const FramePlanPassInputs &inputs,
+                                   std::string_view fragment) {
+    const auto bare = [](std::string_view reference) {
+        constexpr std::string_view extension = ".frag";
+        if (reference.ends_with(extension))
+            reference.remove_suffix(extension.size());
+        return reference;
+    };
+    return !fragment.empty() && bare(inputs.fragment) == bare(fragment);
+}
+
+std::optional<std::size_t> shaderInputDeclaredFor(
+    const FramePlanPassInputs *inputs, std::string_view fragment) {
+    if (inputs == nullptr || !inputs->declared() ||
+        !shaderInputDeclarationsAreFor(*inputs, fragment))
+        return std::nullopt;
+    return shaderInputCapacity(*inputs);
+}
+
+std::string shaderInputPreSaveLine(std::string_view pass,
+                                   std::string_view draft_fragment,
+                                   std::size_t listed,
+                                   const FramePlanPassInputs *current) {
+    const auto declared = shaderInputDeclaredFor(current, draft_fragment);
+    if (!declared || *declared >= listed) return {};
+    return shaderInputContractLine(pass, draft_fragment, declared);
 }
 
 std::optional<std::filesystem::path> projectFragmentSourcePath(
@@ -284,31 +280,6 @@ std::optional<std::filesystem::path> projectFragmentSourcePath(
     auto path = project_root / relative;
     if (!relative.has_extension()) path += ".frag";
     return path;
-}
-
-std::optional<std::size_t> projectFragmentDeclarationCount(
-    const std::filesystem::path &project_root, std::string_view fragment) {
-    const auto path = projectFragmentSourcePath(project_root, fragment);
-    if (!path) return std::nullopt;
-    std::ifstream input{*path, std::ios::binary};
-    if (!input) return std::nullopt;
-    const std::string source{std::istreambuf_iterator<char>{input},
-                             std::istreambuf_iterator<char>{}};
-    return shaderInputDeclarationCount(source);
-}
-
-std::string passThroughShaderName(const std::filesystem::path &project_root,
-                                  std::string_view pass) {
-    auto base = suggestedShaderTemplateName(pass);
-    if (base.empty()) base = "fullscreen_pass";
-    base += "_pass_through";
-    std::string candidate = base;
-    std::error_code error;
-    for (int index = 2;
-         std::filesystem::exists(shaderTemplatePath(project_root, candidate), error);
-         ++index)
-        candidate = base + "_" + std::to_string(index);
-    return candidate;
 }
 
 } // namespace PelicanStudio

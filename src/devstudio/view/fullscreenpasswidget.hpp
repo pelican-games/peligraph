@@ -56,6 +56,10 @@ class FullscreenPassWidget final : public QWidget {
     // F-3. "New..." beside the fragment stem writes <root>/shaders/<name>.frag
     // and opens it with this action (the desktop's own by default).
     void setProjectRoot(const std::filesystem::path &project_root);
+    // VI-3b. Fix sockets beside the fragment, shown for a pass whose shader
+    // has a variadic group: the Frame Plan rewrites the shader.
+    void setFixSocketsAction(
+        std::function<void(const QString &graph, const QString &pass)> action);
     void setShaderSourceOpenAction(
         std::function<bool(const std::filesystem::path &)> action);
     // F-5. A shader reload the engine refused: its log goes under the form

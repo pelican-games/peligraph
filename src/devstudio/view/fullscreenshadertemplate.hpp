@@ -147,4 +147,65 @@ ShaderTemplateWrite writeShaderTemplate(
     const std::filesystem::path &project_root, std::string_view name,
     std::string_view contents);
 
+// --- VI-3b: fixing a variadic group's sockets, and the engine's passthrough
+// copied into a project.
+
+// The engine fragment whose inputs are all variadic (VI-1), and the define
+// that picks which one it shows (pass shader.defines, default 0).
+inline constexpr std::string_view EnginePassthroughFragment =
+    "engine://passthrough";
+inline constexpr std::string_view PassthroughInputDefine =
+    "PELICAN_PASSTHROUGH_INPUT";
+
+// The source of an engine fragment Studio carries, byte for byte the file the
+// engine compiles (embedded at build time from src/core/resources). Only
+// engine://passthrough in v1; nothing for any other reference.
+std::optional<std::string_view> engineFragmentSource(std::string_view reference);
+
+// The name a copy of an engine shader takes in <project>/shaders: the pass's
+// name (as suggestedShaderTemplateName folds it), then _2, _3... past every
+// file already there, which is never overwritten.
+std::string engineShaderCopyName(const std::filesystem::path &project_root,
+                                 std::string_view pass);
+
+// The two lines that bracket what Fix sockets wrote in place of the
+// PELICAN_DECLARE_VARIADIC_INPUTS line. The first one carries the line it
+// replaced, verbatim, after "was ".
+inline constexpr std::string_view FixedSocketsBegin =
+    "// pelican: fixed sockets, was ";
+inline constexpr std::string_view FixedSocketsEnd =
+    "// pelican: end fixed sockets";
+
+struct ShaderSocketRewrite {
+    std::string source;
+    // Why nothing was rewritten; empty when `source` is the new text.
+    std::string refusal;
+    [[nodiscard]] bool ok() const noexcept { return refusal.empty(); }
+};
+
+// Fix sockets: the one PELICAN_DECLARE_VARIADIC_INPUTS(first, max); line of
+// `source` becomes, between the two bracket lines, one raw layout line per
+// connected input -- `layout(set = PELICAN_SET_PASS_INPUT, binding =
+// <first+k>) uniform sampler2D in_<resource>;` -- and the function and the
+// constant the variadic macros would have made
+// (pelican_variadic_texture(int, vec2), pelican_variadic_input_count = n), so
+// a body that reads PELICAN_VARIADIC_TEXTURE / PELICAN_VARIADIC_INPUT_COUNT
+// still compiles. Raw layout lines, not PELICAN_DECLARE_INPUT_<i>, so more
+// than eight inputs can be fixed. `inputs` are the connected members of the
+// group in order, as the pass's `input` names them ("x@history" too);
+// `taken` the variable names the shader already declares. The line ending is
+// the replaced line's. Refused when there is no such line or more than one,
+// and when no input is connected.
+ShaderSocketRewrite fixShaderSockets(std::string_view source, std::size_t first,
+                                     const std::vector<std::string> &inputs,
+                                     const std::vector<std::string> &taken = {});
+
+// Make sockets variadic: the bracketed block back to the line it replaced,
+// byte for byte. Refused for a source without the brackets -- a declaration
+// written by hand is never touched.
+ShaderSocketRewrite variadicShaderSockets(std::string_view source);
+
+// Whether `source` holds a block Fix sockets wrote.
+bool shaderHasFixedSockets(std::string_view source);
+
 } // namespace PelicanStudio

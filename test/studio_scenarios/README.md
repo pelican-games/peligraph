@@ -200,6 +200,23 @@ binding it lost, beside `pelican.framePlan.reloadRefused.disconnect` and
 `pelican.framePlan.reloadRefused.openShader`. `sockets_from_shader` is the
 example.
 
+VI-3b adds these:
+
+| name | what it is |
+|------|------------|
+| `node_socket_fix#<pass>` | the Fix button beside the variadic band's end: Fix sockets |
+| `pelican.framePlan.fixSockets` | the same, as a named menu entry acting on the picked node |
+| `pelican.framePlan.makeSocketsVariadic` | the menu entry that puts back the line Fix sockets replaced (offered only when the shader holds that block) |
+| `pelican.framePlan.shaderContract.usePassthrough` | Use engine://passthrough: the inputs and that fragment in one edit (it replaced `...makePassThrough`) |
+| `pelican.fullscreenPass.fixSockets` | the Pass Editor's Fix sockets, beside the fragment |
+
+A `click` on a connected socket of a pass that draws with
+`engine://passthrough` writes `PELICAN_PASSTHROUGH_INPUT` into its
+`shader.defines`; that socket's row label ends in ` (shown)`. A drop on a pass
+whose shader declares no input is not sent: the status line says
+`<pass>'s shader declares no inputs.` beside Use engine://passthrough and Open
+the shader. `sockets_fix_and_show` is the example.
+
 The editor the canvas opens over a pill or a heading is a real widget carried by
 a drawn item, and is named the same way:
 `pelican.graphCanvasView::graph_inline_editor#left/gain`. `type`, `key` and
