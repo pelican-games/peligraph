@@ -33,6 +33,8 @@ add_library(pelican_studio_view STATIC
     fullscreenpasssettings.hpp
     fullscreenshadertemplate.cpp
     fullscreenshadertemplate.hpp
+    shaderinputcontract.cpp
+    shaderinputcontract.hpp
     shadercompilelogpanel.cpp
     shadercompilelogpanel.hpp
     shaderdiagnostics.cpp

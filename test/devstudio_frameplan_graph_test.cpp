@@ -9592,4 +9592,126 @@ TEST_CASE("Q-13 an edit refused for a moved document is built again once from "
     CHECK(fixture.recorder.submits == 2);
 }
 
+// --- Q-14. A resource dragged onto a pass whose shader does not read it: the
+// refusal says what to do, and Make a pass-through shader sends the inputs and
+// a new shader in one edit_preset_pass.
+
+TEST_CASE("Q-14 the inputs and the fragment of a pass travel in one request",
+          "[devstudio][frame-plan][q14][canvas-edit]") {
+    const auto authoring =
+        framePlanAuthoringFromContext(mixedAuthoringContext("g"));
+    const auto request = framePlanPassInputsAndShaderRequest(
+        authoring, "g", "wp343_mixed_a", {"wp343_mixed_d_output"},
+        "project://shaders/wp343_mixed_a_pass_through");
+    REQUIRE(request.sendable());
+    CHECK(request.method == "edit_preset_pass");
+    const auto declaration = mixedPassDeclaration(0);
+    CHECK(request.params.at("input") == Json::array({"wp343_mixed_d_output"}));
+    CHECK(request.params.at("shader").at("fragment") ==
+          "project://shaders/wp343_mixed_a_pass_through");
+    CHECK(request.params.at("shader").at("vertex") ==
+          declaration.at("shader").at("vertex"));
+    CHECK(request.params.at("output") == declaration.at("output"));
+    CHECK(request.params.at("base_source_digest") == RootDigest);
+    CHECK(request.params.at("base_preset_digest") == PresetDigest);
+    // A pass the canvas cannot edit is refused by name, as every gesture is.
+    const auto refused = framePlanPassInputsAndShaderRequest(
+        authoring, "g", "wp343_mixed_d", {"x"}, "project://shaders/x");
+    CHECK_FALSE(refused.sendable());
+    CHECK(refused.refusal.find("wp343_mixed_d") != std::string::npos);
+}
+
+TEST_CASE("Q-14 a drag its shader cannot read is refused with a line that says "
+          "what to do, and Make a pass-through shader sends inputs and shader "
+          "together",
+          "[devstudio][frame-plan][q14][canvas-edit]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = std::filesystem::path{temporary.path().toStdWString()};
+    {
+        std::ofstream project{root / "project.json", std::ios::binary};
+        project << Json{{"schema", "pelican.project"},
+                        {"version", 1},
+                        {"name", "q14-contract"}}
+                       .dump();
+    }
+    EditingFixture fixture;
+    fixture.widget.setProjectRoot(root);
+    fixture.open();
+    auto &logical = fixture.logical();
+    auto *pass_through = fixture.widget.findChild<QPushButton *>(
+        QStringLiteral("pelican.framePlan.shaderContract.makePassThrough"));
+    auto *open_shader = fixture.widget.findChild<QPushButton *>(
+        QStringLiteral("pelican.framePlan.shaderContract.openShader"));
+    REQUIRE(pass_through != nullptr);
+    REQUIRE(open_shader != nullptr);
+    CHECK(pass_through->isHidden());
+    CHECK(open_shader->isHidden());
+
+    fixture.dragSocket(QStringLiteral("wp343_mixed_d"),
+                       QStringLiteral("wp343_mixed_d_output"),
+                       QStringLiteral("output"),
+                       nodeItem(logical, "wp343_mixed_a"));
+    REQUIRE(fixture.recorder.submits == 1);
+    const auto refusal = [](std::string message) {
+        return QByteArray::fromStdString(
+            Json{{"status", "rejected"},
+                 {"committed", false},
+                 {"error",
+                  {{"code", "render_pipeline_preflight_failed"},
+                   {"message", std::move(message)}}}}
+                .dump());
+    };
+
+    SECTION("the contract refusal: the line, and the two buttons") {
+        fixture.recorder.result(
+            fixture.recorder.submit_id,
+            refusal("Fullscreen pass input texture/local-read contract does "
+                    "not match shader reflection"));
+        QApplication::processEvents();
+        CHECK(statusText(fixture.widget) ==
+              QStringLiteral("wp343_mixed_a's shader (fullscreen) does not read "
+                             "the inputs the pass lists. To change its inputs, "
+                             "change the shader too."));
+        CHECK_FALSE(pass_through->isHidden());
+        CHECK_FALSE(open_shader->isHidden());
+        // An engine shader has no project file to open.
+        CHECK_FALSE(open_shader->isEnabled());
+
+        QTest::mouseClick(pass_through, Qt::LeftButton);
+        QApplication::processEvents();
+        REQUIRE(fixture.recorder.submits == 2);
+        CHECK(fixture.recorder.method == QStringLiteral("edit_preset_pass"));
+        const auto sent = sentParams(fixture.recorder);
+        CHECK(sent.at("pass_name") == "wp343_mixed_a");
+        CHECK(sent.at("input") == Json::array({"wp343_mixed_d_output"}));
+        CHECK(sent.at("shader").at("fragment") ==
+              "project://shaders/wp343_mixed_a_pass_through");
+        CHECK(sent.at("shader").at("vertex") == "engine://fullscreen");
+        CHECK(sent.at("output") == mixedPassDeclaration(0).at("output"));
+        CHECK(sent.at("base_source_digest") == RootDigest);
+        std::ifstream written{root / "shaders" / "wp343_mixed_a_pass_through.frag"};
+        REQUIRE(written);
+        const std::string source{std::istreambuf_iterator<char>{written},
+                                 std::istreambuf_iterator<char>{}};
+        CHECK(source.find("PELICAN_DECLARE_INPUT_0(in_wp343_mixed_d_output);") !=
+              std::string::npos);
+        CHECK(pass_through->isHidden());
+        CHECK(open_shader->isHidden());
+    }
+
+    SECTION("control: any other refusal keeps its line and offers nothing") {
+        fixture.recorder.result(
+            fixture.recorder.submit_id,
+            refusal("render feature pass insert anchor was not found: x"));
+        QApplication::processEvents();
+        CHECK(statusText(fixture.widget).contains(
+            QStringLiteral("render_pipeline_preflight_failed")));
+        CHECK(pass_through->isHidden());
+        CHECK(open_shader->isHidden());
+        CHECK_FALSE(std::filesystem::exists(root / "shaders"));
+    }
+}
+
 } // namespace PelicanStudio

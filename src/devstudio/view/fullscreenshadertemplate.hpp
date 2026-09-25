@@ -80,6 +80,16 @@ std::string fullscreenFragmentShaderTemplate(
     FullscreenShaderTemplateKind kind =
         FullscreenShaderTemplateKind::pass_through);
 
+// Q-14. The lines "Open the shader" puts on the clipboard: for each image
+// input from `first` on, its declaration (for the top of the file) and its read
+// (for main), named exactly as the template above names them.
+//   PELICAN_DECLARE_INPUT_0(in_gbuffer_albedo);
+//   vec4 value0 = PELICAN_TEXTURE_2D_0(in_gbuffer_albedo, inUV);
+// An input the macros cannot declare (a buffer, or past input 7) gets the
+// same comment the template writes for it.
+std::string fullscreenShaderInputSnippet(
+    std::span<const FullscreenShaderTemplateInput> inputs, std::size_t first);
+
 // A name that can only land in <project>/shaders: letters, digits, '_' and
 // '-', starting with a letter, digit or '_'. No separator, no dot, no drive.
 bool isValidShaderTemplateName(std::string_view name);

@@ -465,6 +465,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/shaderdiagnostics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/shaderreloadfollower.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/shaderinputcontract.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/rendertargetform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/materialpassedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/materialpassform.cpp
@@ -508,6 +510,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   target_sources(pelican_test_devstudio_frameplan_graph_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanwidget.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/shaderinputcontract.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/rendertargetform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/materialpassedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/materialpassform.cpp

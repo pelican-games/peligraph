@@ -287,6 +287,41 @@ std::string fullscreenFragmentShaderTemplate(
     return text;
 }
 
+std::string fullscreenShaderInputSnippet(
+    std::span<const FullscreenShaderTemplateInput> inputs, std::size_t first) {
+    // Declared over the whole list, so each input keeps the identifier the
+    // template would give it; only the lines from `first` on are kept.
+    const auto declared = declareInputs(inputs, {});
+    std::string declarations;
+    std::string reads;
+    std::size_t line_start = 0;
+    std::size_t index = 0;
+    for (std::size_t at = declared.text.find('\n'); at != std::string::npos;
+         at = declared.text.find('\n', line_start), ++index) {
+        if (index >= first)
+            declarations += declared.text.substr(line_start, at - line_start + 1);
+        line_start = at + 1;
+    }
+    for (std::size_t input = first; input < inputs.size(); ++input) {
+        if (!declared.identifiers[input]) continue;
+        const std::string number = std::to_string(input);
+        reads += "    vec4 value" + number + " = PELICAN_TEXTURE_2D_" + number +
+                 "(" + *declared.identifiers[input] + ", inUV);\n";
+    }
+    if (declarations.empty()) return {};
+    // A shader that reads nothing (the Blank pipeline's present) has no
+    // includes yet, and the macros come from them.
+    std::string text =
+        "// The macros need these after #version, if the shader lacks them:\n"
+        "//   #extension GL_GOOGLE_include_directive : require\n"
+        "//   #include \"pelican_sets.glsl\"\n"
+        "//   #include \"pelican_view.glsl\"\n"
+        "// Add after them:\n" +
+        declarations;
+    if (!reads.empty()) text += "// and in main():\n" + reads;
+    return text;
+}
+
 bool isValidShaderTemplateName(std::string_view name) {
     if (name.empty() || name.size() > 128 || name.front() == '-') return false;
     return std::ranges::all_of(name, shaderNameCharacter);

@@ -10,6 +10,7 @@
 #include "panelhelp.hpp"
 #include "renderconfigdigest.hpp"
 #include "shadercompilelogpanel.hpp"
+#include "shaderinputcontract.hpp"
 #include "shaderdiagnostics.hpp"
 #include "passfieldownership.hpp"
 #include "renderconfigsection.hpp"
@@ -179,6 +180,18 @@ struct FullscreenPassWidget::Impl {
     QString auto_pass_name;
     QString auto_shader_name;
     ShaderCompileLogPanel *compile_log = nullptr;
+    // Q-14: a pass whose shader does not read the inputs it lists. The
+    // engine's refusal gets a line and two buttons under the log; the same
+    // line and buttons stand under the inputs before Save, when the fragment
+    // file's declaration lines are fewer than the inputs.
+    struct ContractRow {
+        QWidget *row = nullptr;
+        QLabel *line = nullptr;
+        QPushButton *pass_through = nullptr;
+        QPushButton *open_shader = nullptr;
+    };
+    ContractRow refusal_contract;
+    ContractRow input_contract;
     // F-5: what a shader reload failure put in the log, so a later commit
     // takes down that log and not an authoring rejection shown since.
     QString reload_log_text;
@@ -569,6 +582,9 @@ struct FullscreenPassWidget::Impl {
         target_layout->addWidget(attachment_label, 6, 0, 1, 3);
         target_layout->addWidget(color_attachment_references, 7, 0, 1, 3);
         buildPassSettings(*target_layout);
+        input_contract =
+            makeContractRow(targets, "pelican.fullscreenPass.inputContract", false);
+        target_layout->addWidget(input_contract.row, 11, 0, 1, 3);
         layout->addWidget(targets);
 
         // N-7 rule 3: eight sentences were eight lines. They are now eight
@@ -639,6 +655,9 @@ struct FullscreenPassWidget::Impl {
         compile_log->setObjectName(
             QStringLiteral("pelican.fullscreenPass.compileLog"));
         layout->addWidget(compile_log);
+        refusal_contract =
+            makeContractRow(&owner, "pelican.fullscreenPass.shaderContract", true);
+        layout->addWidget(refusal_contract.row);
 
         auto *authoring_controls = new QHBoxLayout;
         save = new QPushButton(owner.tr("Save"), &owner);
@@ -784,6 +803,180 @@ struct FullscreenPassWidget::Impl {
             [this](bool available, const QString &reason) {
                 setAuthoringRpcAvailable(available, reason);
             });
+    }
+
+    // --- Q-14: a pass's inputs and its shader's declarations disagree.
+
+    ContractRow makeContractRow(QWidget *parent, const char *prefix,
+                                bool after_refusal) {
+        ContractRow made;
+        const QString base = QString::fromLatin1(prefix);
+        made.row = new QWidget(parent);
+        made.row->setObjectName(base);
+        auto *row_layout = new QHBoxLayout(made.row);
+        row_layout->setContentsMargins(0, 0, 0, 0);
+        made.line = new QLabel(made.row);
+        made.line->setObjectName(base + QStringLiteral(".line"));
+        made.line->setWordWrap(true);
+        made.line->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        made.line->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+        const auto actions = shaderInputContractActions();
+        made.pass_through =
+            new QPushButton(owner.tr(actions[0].label.c_str()), made.row);
+        made.pass_through->setObjectName(base + QStringLiteral(".makePassThrough"));
+        made.pass_through->setToolTip(
+            after_refusal
+                ? owner.tr("Writes a new shader that reads the inputs and "
+                           "shows the first one, puts it in the fragment "
+                           "field and saves the inputs and the shader "
+                           "together.")
+                : owner.tr("Writes a new shader that reads the inputs and "
+                           "shows the first one, and puts it in the fragment "
+                           "field. Save sends the inputs and the shader "
+                           "together."));
+        made.open_shader =
+            new QPushButton(owner.tr(actions[1].label.c_str()), made.row);
+        made.open_shader->setObjectName(base + QStringLiteral(".openShader"));
+        made.open_shader->setToolTip(owner.tr(
+            "Opens the fragment shader and copies the lines that declare and "
+            "read the inputs."));
+        row_layout->addWidget(made.line, 1);
+        row_layout->addWidget(made.pass_through);
+        row_layout->addWidget(made.open_shader);
+        made.row->hide();
+        QObject::connect(made.pass_through, &QPushButton::clicked, &owner,
+                         [this, after_refusal] {
+                             makePassThroughShader(after_refusal);
+                         });
+        QObject::connect(made.open_shader, &QPushButton::clicked, &owner,
+                         [this, after_refusal] {
+                             openContractShader(after_refusal ? refusal_contract
+                                                              : input_contract);
+                         });
+        return made;
+    }
+
+    QString contractPassName() const {
+        const auto typed = name->text().trimmed();
+        if (!typed.isEmpty()) return typed;
+        return editing_preset_pass ? text(editing_preset_pass->second)
+                                   : QStringLiteral("fullscreen_pass");
+    }
+
+    void showContractRow(ContractRow &row, const std::string &line,
+                         bool can_open) {
+        if (row.row == nullptr) return;
+        row.line->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+        row.line->setText(text(line));
+        row.line->setToolTip(text(line));
+        row.open_shader->setEnabled(can_open && project_root.has_value());
+        row.row->show();
+    }
+
+    void hideContractRow(ContractRow &row) {
+        if (row.row != nullptr) row.row->hide();
+    }
+
+    // The fragment file's declaration lines, when it is a project file that
+    // can be read.
+    std::optional<std::size_t> fragmentDeclarationCount() const {
+        if (!project_root) return std::nullopt;
+        return projectFragmentDeclarationCount(
+            *project_root, fragment_shader->text().trimmed().toStdString());
+    }
+
+    // The check before Save. A simple one: the fragment file's
+    // PELICAN_DECLARE_INPUT_ lines (and hand-written pass-input bindings) are
+    // counted, not reflected, against the inputs the list now holds.
+    void updateInputContract() {
+        if (input_contract.row == nullptr || fragment_shader == nullptr) return;
+        const bool fullscreen = !preservesPresetDeclaration();
+        const auto fragment = fragment_shader->text().trimmed().toStdString();
+        const auto declared = fullscreen ? fragmentDeclarationCount()
+                                         : std::nullopt;
+        const auto listed = static_cast<std::size_t>(inputs->count());
+        if (!declared || *declared >= listed) {
+            hideContractRow(input_contract);
+            return;
+        }
+        showContractRow(input_contract,
+                        shaderInputContractLine(contractPassName().toStdString(),
+                                                fragment, declared),
+                        true);
+    }
+
+    // The engine's refusal of a Save: the readable line, and the two ways
+    // out, when it is the input contract that refused.
+    bool offerShaderContract(const Json &response) {
+        const auto error = response.find("error");
+        if (error == response.end() || !error->is_object()) return false;
+        const auto notice = shaderInputContractNotice(
+            *error, contractPassName().toStdString(),
+            fragment_shader->text().trimmed().toStdString(),
+            fragmentDeclarationCount());
+        if (!notice.matched) return false;
+        hideContractRow(input_contract);
+        showContractRow(refusal_contract, notice.line, notice.can_open);
+        authoringError(responseError(response), oneLine(text(notice.line)));
+        return true;
+    }
+
+    // Make a pass-through shader: a new file for the inputs in the list, put
+    // in the fragment field. After a refusal it is saved at once, the inputs
+    // and the shader in one request; before Save, Save does that.
+    void makePassThroughShader(bool save_now) {
+        if (!project_root) {
+            templateNotice(owner.tr("open a project first"),
+                           owner.tr("The shader is written into the "
+                                    "project's shaders folder."),
+                           true);
+            return;
+        }
+        auto &row = save_now ? refusal_contract : input_contract;
+        const auto pass_name = contractPassName().toStdString();
+        try {
+            const auto shader_name = passThroughShaderName(*project_root, pass_name);
+            const auto written = writeShaderTemplate(
+                *project_root, shader_name,
+                fullscreenFragmentShaderTemplate(pass_name, templateInputs()));
+            if (!written.created)
+                throw std::runtime_error(written.path.string() +
+                                         " is already there");
+            refreshShaderChoices();
+            fragment_shader->setText(text(written.reference));
+        } catch (const std::exception &error) {
+            row.line->setText(owner.tr("Could not write the shader: %1")
+                                  .arg(QString::fromUtf8(error.what())));
+            return;
+        }
+        hideContractRow(refusal_contract);
+        hideContractRow(input_contract);
+        updateDraft();
+        if (save_now) requestAddAuthoredPass();
+    }
+
+    // Open the shader: the file, and on the clipboard the lines to add.
+    void openContractShader(ContractRow &row) {
+        if (!project_root) return;
+        const auto fragment = fragment_shader->text().trimmed().toStdString();
+        const auto path = projectFragmentSourcePath(*project_root, fragment);
+        if (!path) {
+            row.line->setText(owner.tr("%1 is not a file of this project.")
+                                  .arg(text(fragment)));
+            return;
+        }
+        const auto inputs_now = templateInputs();
+        QApplication::clipboard()->setText(text(fullscreenShaderInputSnippet(
+            inputs_now, fragmentDeclarationCount().value_or(0))));
+        if (!shader_open_action || !shader_open_action(*path)) {
+            row.line->setText(owner.tr("The desktop could not open %1.")
+                                  .arg(QString::fromStdWString(path->wstring())));
+            return;
+        }
+        row.line->setStyleSheet({});
+        row.line->setText(owner.tr(
+            "The declarations are on the clipboard: add them to the shader "
+            "and save, and it reloads by itself. Then press Save again."));
     }
 
     // --- F-3: a fullscreen pass is made shader and all.
@@ -1249,6 +1442,8 @@ struct FullscreenPassWidget::Impl {
             return;
         }
         compile_log->clear();
+        // Q-14: the pass's inputs and its shader disagree -- say what to do.
+        if (offerShaderContract(response)) return;
         // G-6: the refusal's own line is what the panel shows -- its code,
         // and the graph variant that refused it -- not "authoring failed".
         const auto error = response.find("error");
@@ -1744,6 +1939,7 @@ struct FullscreenPassWidget::Impl {
             return;
         }
         syncPassSettings();
+        updateInputContract();
         Json draft;
         try {
             draft = draftJson();
@@ -2523,6 +2719,7 @@ struct FullscreenPassWidget::Impl {
         submitted_kind = kind;
         submitted_retried = std::exchange(retrying, false);
         reload_authoring->hide();
+        hideContractRow(refusal_contract);
     }
 
     // Another panel read or committed the document at `digest`.
@@ -2925,6 +3122,8 @@ struct FullscreenPassWidget::Impl {
         // F-3: a new draft starts without the last draft's shader log or its
         // half-typed shader name.
         compile_log->clear();
+        hideContractRow(refusal_contract);
+        hideContractRow(input_contract);
         form->setRowVisible(shader_template_row, false);
         resetPassSettings();
         updating = false;

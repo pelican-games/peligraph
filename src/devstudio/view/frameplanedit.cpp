@@ -417,6 +417,44 @@ FramePlanEditRequest framePlanPassShaderRequest(
     return request;
 }
 
+FramePlanEditRequest framePlanPassInputsAndShaderRequest(
+    const FramePlanAuthoring &authoring, const std::string &graph,
+    const std::string &pass, const std::vector<std::string> &inputs,
+    const std::string &fragment) {
+    if (!authoring.received)
+        return refuse("The render authoring context has not arrived yet.");
+    const auto *row = authoring.find(graph, pass);
+    if (row == nullptr)
+        return refuse(pass + " is not a pass of " + graph +
+                      " in the current authoring context.");
+    if (const auto reason = passRefusal(authoring, *row); !reason.empty())
+        return refuse(reason);
+    if (fragment.empty())
+        return refuse(pass + ": a shader reference must not be empty.");
+    const auto &declaration = row->editable_declaration;
+    if (textOr(declaration, "type") != "fullscreen")
+        return refuse(pass + " is not a fullscreen pass: its shader does not "
+                             "read the pass's input list.");
+    auto shader = objectOr(declaration, "shader");
+    if (!declaration.contains("output") || !shader.contains("vertex"))
+        return refuse(pass +
+                      " has no complete output and shader declaration to send "
+                      "back: edit it in the Pass Editor.");
+    shader["fragment"] = fragment;
+
+    FramePlanEditRequest request;
+    request.method = "edit_preset_pass";
+    Json params = Json::object();
+    addDigests(params, authoring, *row);
+    params["graph"] = graph;
+    params["pass_name"] = pass;
+    params["input"] = inputs;
+    addDeclarationFields(params, declaration, "fullscreen");
+    params["shader"] = std::move(shader);
+    request.params = std::move(params);
+    return request;
+}
+
 FramePlanEditRequest framePlanPassRemoveRequest(
     const FramePlanAuthoring &authoring, const std::string &graph,
     const std::string &pass) {

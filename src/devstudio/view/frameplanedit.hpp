@@ -175,6 +175,15 @@ FramePlanEditRequest framePlanPassShaderRequest(
     const std::string &pass, const std::string &stage,
     const std::string &reference);
 
+// Q-14. Make a pass-through shader: a fullscreen pass's input list and its
+// fragment shader, changed together in one edit_preset_pass, because either
+// one alone is refused by the engine's input contract. `inputs` is the whole
+// new list; every other field travels as the declaration holds it.
+FramePlanEditRequest framePlanPassInputsAndShaderRequest(
+    const FramePlanAuthoring &authoring, const std::string &graph,
+    const std::string &pass, const std::vector<std::string> &inputs,
+    const std::string &fragment);
+
 // Delete a node. Only an authored fragment can go; everything else is refused
 // by name, because the engine has no delete for it and inventing one here
 // would be a second way to author.

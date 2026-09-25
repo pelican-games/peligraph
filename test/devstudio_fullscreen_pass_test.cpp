@@ -4,6 +4,7 @@
 #include "fullscreenpasssettings.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "fullscreenshadertemplate.hpp"
+#include "shaderinputcontract.hpp"
 #include "mainwindow.hpp"
 #include "renderfeatureswidget.hpp"
 #include "graphattachmentwidget.hpp"
@@ -28,6 +29,7 @@
 
 #include <QApplication>
 #include <QByteArray>
+#include <QClipboard>
 #include <QComboBox>
 #include <QCheckBox>
 #include <QGroupBox>
@@ -4021,4 +4023,300 @@ TEST_CASE("T-1 a clear colour is picked into its field",
     CHECK(field.isHidden());
     CHECK(pick.isHidden());
 }
+// --- Q-14: a pass given an input its shader does not read.
+
+namespace {
+
+// The engine's refusal as it reads before Q-14e: its sentence alone.
+Json q14LegacyRefusal() {
+    return {{"code", "render_pipeline_preflight_failed"},
+            {"message", "Fullscreen pass input texture/local-read contract does "
+                        "not match shader reflection"}};
+}
+
+// Q-14e's shape: the same code, a longer sentence and the engine's own
+// account of the mismatch.
+Json q14StructuredRefusal(std::size_t declared) {
+    auto inputs = Json::array();
+    for (std::size_t binding = 0; binding < declared; ++binding)
+        inputs.push_back({{"binding", binding}, {"type", "sampled_image"}});
+    return {{"code", "render_pipeline_preflight_failed"},
+            {"message",
+             "Fullscreen pass input texture/local-read contract does not match "
+             "shader reflection: pass 'present' input 0 ('gbuffer_albedo') "
+             "expects sampled_image, but fragment 'project://shaders/present' "
+             "declares nothing at binding 0 (shader declares " +
+                 std::to_string(declared) + " pass inputs)"},
+            {"shader_input_mismatch",
+             {{"pass", "present"},
+              {"fragment", "project://shaders/present"},
+              {"kind", "texture"},
+              {"binding", 0},
+              {"resource", "gbuffer_albedo"},
+              {"expected", "sampled_image"},
+              {"pass_texture_inputs", 1},
+              {"pass_buffer_inputs", 0},
+              {"shader_pass_inputs", std::move(inputs)}}}};
+}
+
+std::vector<std::string> q14ActionIds(const ShaderInputContractNotice &notice) {
+    std::vector<std::string> ids;
+    for (const auto &action : notice.actions) ids.push_back(action.id);
+    return ids;
+}
+
+} // namespace
+
+TEST_CASE("Q-14 the input contract refusal reads as one line with two ways out, "
+          "and no other refusal does",
+          "[devstudio][fullscreen-pass][q14][shader-contract]") {
+    const std::vector<std::string> both{"make_pass_through", "open_shader"};
+
+    SECTION("before Q-14e: the sentence, and the file's declaration lines") {
+        const auto notice = shaderInputContractNotice(
+            q14LegacyRefusal(), "present", "project://shaders/present", 0);
+        REQUIRE(notice.matched);
+        CHECK(notice.line ==
+              "present's shader (present) reads no inputs. To change its "
+              "inputs, change the shader too.");
+        CHECK(q14ActionIds(notice) == both);
+        CHECK(notice.can_open);
+        CHECK(notice.fragment_stem == "present");
+
+        // Nothing counted: the line does not say a number.
+        const auto unknown = shaderInputContractNotice(
+            q14LegacyRefusal(), "present", "project://shaders/present");
+        REQUIRE(unknown.matched);
+        CHECK_FALSE(unknown.declared);
+        CHECK(unknown.line ==
+              "present's shader (present) does not read the inputs the pass "
+              "lists. To change its inputs, change the shader too.");
+
+        // An engine shader has no project file to open.
+        const auto engine = shaderInputContractNotice(
+            q14LegacyRefusal(), "tint", "engine://fullscreen");
+        REQUIRE(engine.matched);
+        CHECK_FALSE(engine.can_open);
+        CHECK(q14ActionIds(engine) == both);
+
+        // The buffer half of the same contract.
+        auto buffer = q14LegacyRefusal();
+        buffer["message"] =
+            "Fullscreen pass input buffer does not match shader reflection";
+        CHECK(shaderInputContractNotice(buffer, "p", "project://shaders/p").matched);
+    }
+
+    SECTION("Q-14e: the engine's account wins over the panel's guess") {
+        const auto notice = shaderInputContractNotice(
+            q14StructuredRefusal(0), "sent_name", "project://shaders/other", 5);
+        REQUIRE(notice.matched);
+        CHECK(notice.pass == "present");
+        CHECK(notice.fragment == "project://shaders/present");
+        CHECK(notice.resource == "gbuffer_albedo");
+        REQUIRE(notice.declared);
+        CHECK(*notice.declared == 0);
+        CHECK(notice.line ==
+              "present's shader (present) reads no inputs. To change its "
+              "inputs, change the shader too.");
+        CHECK(q14ActionIds(notice) == both);
+
+        const auto one = shaderInputContractNotice(
+            q14StructuredRefusal(1), "present", "project://shaders/present");
+        CHECK(one.line ==
+              "present's shader (present) reads only 1 input. To change its "
+              "inputs, change the shader too.");
+
+        // The same sentence without the object: the number in the message.
+        auto sentence_only = q14StructuredRefusal(2);
+        sentence_only.erase("shader_input_mismatch");
+        const auto from_message = shaderInputContractNotice(
+            sentence_only, "present", "project://shaders/present", 7);
+        REQUIRE(from_message.declared);
+        CHECK(*from_message.declared == 2);
+        CHECK(from_message.line.find("reads only 2 inputs.") != std::string::npos);
+    }
+
+    SECTION("control: every other refusal gets no line and no buttons") {
+        const std::vector<Json> others{
+            {{"code", "render_pipeline_preflight_failed"},
+             {"message", "Material descriptor binding 'albedo' does not match "
+                         "shader reflection"}},
+            {{"code", "render_pipeline_preflight_failed"},
+             {"message", "GraphicsPipelineDesc custom vertex layout does not "
+                         "match shader reflection"}},
+            {{"code", "render_pipeline_preflight_failed"},
+             {"message", "render feature pass insert anchor was not found: x"}},
+            {{"code", "external_modification"},
+             {"message", "Fullscreen pass input texture/local-read contract "
+                         "does not match shader reflection"}},
+            {{"code", "gate_closed"}, {"message", "The editor gate is closed"}},
+            Json::object(),
+            Json(nullptr),
+        };
+        for (const auto &error : others) {
+            const auto notice = shaderInputContractNotice(
+                error, "present", "project://shaders/present", 0);
+            CHECK_FALSE(notice.matched);
+            CHECK(notice.line.empty());
+            CHECK(notice.actions.empty());
+        }
+    }
+}
+
+TEST_CASE("Q-14 the simple check counts a fragment's declaration lines",
+          "[devstudio][fullscreen-pass][q14][shader-contract]") {
+    const std::string source =
+        "#version 460\n"
+        "#define PELICAN_DECLARE_INPUT_5(name) nothing\n"
+        "PELICAN_DECLARE_INPUT_0(in_a);  // a\n"
+        "// PELICAN_DECLARE_INPUT_1(in_b);\n"
+        "   layout(set = PELICAN_SET_PASS_INPUT, binding = 2) uniform sampler2D c;\n"
+        "PELICAN_DECLARE_INPUT_0(in_a_again);\n"
+        "void main() { vec4 v = PELICAN_TEXTURE_2D_0(in_a, inUV); }\n";
+    CHECK(shaderInputDeclaredIndices(source) == std::vector<std::size_t>{0, 2});
+    CHECK(shaderInputDeclarationCount(source) == 2);
+    CHECK(shaderInputDeclarationCount("void main() {}\n") == 0);
+
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = filesystemPath(temporary.path());
+    CHECK(projectFragmentSourcePath(root, "project://shaders/present") ==
+          root / "shaders" / "present.frag");
+    CHECK(projectFragmentSourcePath(root, "project://shaders/p.frag") ==
+          root / "shaders" / "p.frag");
+    CHECK_FALSE(projectFragmentSourcePath(root, "engine://fullscreen"));
+    CHECK_FALSE(projectFragmentSourcePath(root, "project://../outside"));
+    CHECK_FALSE(projectFragmentDeclarationCount(root, "project://shaders/present"));
+
+    // The name Make a pass-through shader writes, never over a file.
+    CHECK(passThroughShaderName(root, "present") == "present_pass_through");
+    std::filesystem::create_directories(root / "shaders");
+    std::ofstream{root / "shaders" / "present_pass_through.frag"} << "// mine\n";
+    CHECK(passThroughShaderName(root, "present") == "present_pass_through_2");
+    std::ofstream{root / "shaders" / "present.frag"} << source;
+    CHECK(projectFragmentDeclarationCount(root, "project://shaders/present") == 2u);
+
+    // The lines Open the shader copies: from the first undeclared input on.
+    const std::vector<FullscreenShaderTemplateInput> inputs{
+        {.resource = "lit_color"}, {.resource = "gbuffer_albedo"},
+        {.resource = "light_list", .image = false}};
+    const auto snippet = fullscreenShaderInputSnippet(inputs, 1);
+    CHECK(snippet.find("PELICAN_DECLARE_INPUT_1(in_gbuffer_albedo);") !=
+          std::string::npos);
+    CHECK(snippet.find("PELICAN_TEXTURE_2D_1(in_gbuffer_albedo, inUV)") !=
+          std::string::npos);
+    CHECK(snippet.find("#include \"pelican_view.glsl\"") != std::string::npos);
+    CHECK(snippet.find("input 2 (light_list) is a buffer") != std::string::npos);
+    CHECK(snippet.find("_0(") == std::string::npos);
+    CHECK(fullscreenShaderInputSnippet(inputs, 3).empty());
+}
+
+TEST_CASE("Q-14 the Pass Editor says what to do when a Save gives a pass an "
+          "input its shader does not read, and fixes it in one request",
+          "[devstudio][fullscreen-pass][q14][shader-contract][widget]") {
+    (void)application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = filesystemPath(temporary.path());
+    std::filesystem::create_directories(root / "shaders");
+    std::ofstream{root / "shaders" / "tint.frag", std::ios::binary}
+        << "#version 460\nlayout(location = 0) out vec4 outColor;\n"
+           "void main() { outColor = vec4(1.0); }\n";
+
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    std::vector<std::filesystem::path> opened;
+    form.setShaderSourceOpenAction([&opened](const std::filesystem::path &path) {
+        opened.push_back(path);
+        return true;
+    });
+    authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
+    form.receiveResult(QByteArray::fromStdString(f3FramePlan().dump()));
+    form.setProjectRoot(root);
+
+    auto &before = required<QWidget>(form, "pelican.fullscreenPass.inputContract");
+    auto &before_line =
+        required<QLabel>(form, "pelican.fullscreenPass.inputContract.line");
+    auto &after = required<QWidget>(form, "pelican.fullscreenPass.shaderContract");
+    auto &after_line =
+        required<QLabel>(form, "pelican.fullscreenPass.shaderContract.line");
+    auto &status = required<QLabel>(form, "pelican.fullscreenPass.authoringStatus");
+    auto &fragment = required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment");
+    auto &save = required<QPushButton>(form, "pelican.fullscreenPass.save");
+    CHECK(before.isHidden());
+    CHECK(after.isHidden());
+
+    // Before Save: the input is added, and the shader reads none.
+    driveMinimalDraft(form, "tint", "project://shaders/tint", "lit_color",
+                      "tint_out");
+    REQUIRE_FALSE(before.isHidden());
+    CHECK(before_line.text() ==
+          QStringLiteral("tint's shader (tint) reads no inputs. To change its "
+                         "inputs, change the shader too."));
+    // Control: an engine shader's file is not read, and nothing is said.
+    fragment.setText(QStringLiteral("engine://fullscreen"));
+    CHECK(before.isHidden());
+    fragment.setText(QStringLiteral("project://shaders/tint"));
+    REQUIRE_FALSE(before.isHidden());
+
+    // Open the shader: the file, and the lines to add on the clipboard.
+    required<QPushButton>(form, "pelican.fullscreenPass.inputContract.openShader")
+        .click();
+    REQUIRE(opened.size() == 1);
+    CHECK(opened.back() == root / "shaders" / "tint.frag");
+    const auto copied = QApplication::clipboard()->text();
+    CHECK(copied.contains(QStringLiteral("PELICAN_DECLARE_INPUT_0(in_lit_color);")));
+    CHECK(copied.contains(QStringLiteral("PELICAN_TEXTURE_2D_0(in_lit_color, inUV)")));
+    CHECK(before_line.text().contains(QStringLiteral("clipboard")));
+
+    // Save anyway: the engine refuses it, and the refusal says what to do.
+    REQUIRE(save.isEnabled());
+    save.click();
+    REQUIRE(authoring.requests.back().method == QStringLiteral("add_authored_pass"));
+    authoring.succeed(authoring.requests.back().id,
+                      {{"status", "rejected"},
+                       {"committed", false},
+                       {"error", q14LegacyRefusal()}});
+    REQUIRE_FALSE(after.isHidden());
+    CHECK(before.isHidden());
+    CHECK(after_line.text() ==
+          QStringLiteral("tint's shader (tint) reads no inputs. To change its "
+                         "inputs, change the shader too."));
+    CHECK(status.text().contains(QStringLiteral("reads no inputs")));
+    CHECK(status.toolTip().contains(QStringLiteral("does not match shader reflection")));
+
+    // Make a pass-through shader: written, and sent with the inputs at once.
+    const auto sent = authoring.requests.size();
+    required<QPushButton>(form, "pelican.fullscreenPass.shaderContract.makePassThrough")
+        .click();
+    REQUIRE(authoring.requests.size() == sent + 1);
+    REQUIRE(authoring.requests.back().method == QStringLiteral("add_authored_pass"));
+    const auto pass = Json::parse(
+        QJsonDocument(authoring.requests.back().params.value("pass").toObject())
+            .toJson()
+            .toStdString());
+    CHECK(pass.at("input") == Json::array({"lit_color"}));
+    CHECK(pass.at("shader").at("fragment") == "project://shaders/tint_pass_through");
+    CHECK(pass.at("shader").at("vertex") == "engine://fullscreen");
+    CHECK(fragment.text() == QStringLiteral("project://shaders/tint_pass_through"));
+    const auto written = readText(root / "shaders" / "tint_pass_through.frag");
+    CHECK(written.find("PELICAN_DECLARE_INPUT_0(in_lit_color);") != std::string::npos);
+    CHECK(written.find("outColor = value0;") != std::string::npos);
+    // The author's shader is left as it was.
+    CHECK(readText(root / "shaders" / "tint.frag").find("vec4(1.0)") != std::string::npos);
+    CHECK(after.isHidden());
+    CHECK(before.isHidden());
+
+    // Control: another refusal keeps its own line and offers nothing.
+    authoring.succeed(authoring.requests.back().id,
+                      {{"status", "rejected"},
+                       {"committed", false},
+                       {"error",
+                        {{"code", "gate_closed"},
+                         {"message", "The editor gate is closed"}}}});
+    CHECK(after.isHidden());
+    CHECK(status.text().contains(QStringLiteral("gate_closed")));
+}
+
 } // namespace PelicanStudio

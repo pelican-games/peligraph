@@ -2,6 +2,8 @@
 
 #include "frameplanedit.hpp"
 #include "frameplangraphics.hpp"
+#include "fullscreenshadertemplate.hpp"
+#include "shaderinputcontract.hpp"
 #include "jsonrpcrequest.hpp"
 #include "panelhelp.hpp"
 #include "../model/frameplanmodel.hpp"
@@ -17,6 +19,8 @@
 
 #include <QAbstractItemView>
 #include <QAction>
+#include <QApplication>
+#include <QClipboard>
 #include <QByteArray>
 #include <QColor>
 #include <QComboBox>
@@ -492,6 +496,20 @@ struct FramePlanWidget::Impl {
     bool retry_pending = false;
     // Shown when the rebuilt edit is refused as well: reads the context again.
     QPushButton *reload_authoring = nullptr;
+    // --- Q-14: a pass given an input its shader does not read. The edit in
+    // flight as it was sent, so its refusal can name the pass and its shader;
+    // and the two ways out, beside the status line.
+    FramePlanEditRequest submitted_request;
+    struct ShaderContractFix {
+        std::string graph;
+        std::string pass;
+        std::string fragment;
+        std::vector<std::string> inputs;
+    };
+    std::optional<ShaderContractFix> contract_fix;
+    QPushButton *contract_pass_through = nullptr;
+    QPushButton *contract_open_shader = nullptr;
+    std::optional<std::filesystem::path> project_root;
 
     Impl(FramePlanWidget &widget, EmbeddedViewport &embedded_viewport)
         : owner{widget}, viewport{embedded_viewport} {
@@ -647,6 +665,31 @@ struct FramePlanWidget::Impl {
         QObject::connect(reload_authoring, &QPushButton::clicked, &owner,
                          [this] { reloadAuthoring(); });
         status_row->addWidget(reload_authoring);
+        // Q-14: the two ways out of a pass whose shader does not read the
+        // inputs it was given.
+        const auto actions = shaderInputContractActions();
+        contract_pass_through =
+            new QPushButton(owner.tr(actions[0].label.c_str()), &owner);
+        contract_pass_through->setObjectName(
+            QStringLiteral("pelican.framePlan.shaderContract.makePassThrough"));
+        contract_pass_through->setToolTip(owner.tr(
+            "Writes a new shader that reads the pass's inputs and shows the "
+            "first one, and sends the inputs and the shader together."));
+        contract_pass_through->hide();
+        QObject::connect(contract_pass_through, &QPushButton::clicked, &owner,
+                         [this] { makePassThroughShader(); });
+        status_row->addWidget(contract_pass_through);
+        contract_open_shader =
+            new QPushButton(owner.tr(actions[1].label.c_str()), &owner);
+        contract_open_shader->setObjectName(
+            QStringLiteral("pelican.framePlan.shaderContract.openShader"));
+        contract_open_shader->setToolTip(owner.tr(
+            "Opens the pass's shader and copies the lines that declare and "
+            "read the inputs."));
+        contract_open_shader->hide();
+        QObject::connect(contract_open_shader, &QPushButton::clicked, &owner,
+                         [this] { openContractShader(); });
+        status_row->addWidget(contract_open_shader);
         layout->addLayout(status_row);
 
         tabs = new QTabWidget(&owner);
@@ -1403,6 +1446,7 @@ struct FramePlanWidget::Impl {
 
     void reloadAuthoring() {
         reload_authoring->hide();
+        hideShaderContract();
         status->setStyleSheet({});
         showStatus(owner.tr("Reading the render authoring context..."));
         if (pending_authoring_request != 0) authoring_reread = true;
@@ -1466,6 +1510,8 @@ struct FramePlanWidget::Impl {
         submitted_build = {};
         submitted_retried = false;
         reload_authoring->hide();
+        hideShaderContract();
+        submitted_request = request;
         submitted_method = request.method;
         submitted_target = submittedTargetName(request);
         status->setStyleSheet({});
@@ -1578,7 +1624,140 @@ struct FramePlanWidget::Impl {
             return;
         }
         status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+        if (offerShaderContract(response, message)) return;
         showStatus(oneLine(message), message);
+    }
+
+    // --- Q-14. The pass's inputs and its shader's declarations disagree:
+    // one line that says what to do, and the two ways to do it.
+    bool offerShaderContract(const Json &response, const QString &message) {
+        const auto error = response.find("error");
+        if (error == response.end() || !error->is_object() ||
+            submitted_request.method != "edit_preset_pass")
+            return false;
+        const auto &params = submitted_request.params;
+        const auto shader = params.find("shader");
+        const auto inputs = params.find("input");
+        if (shader == params.end() || !shader->is_object() ||
+            !shader->contains("fragment") || !shader->at("fragment").is_string() ||
+            inputs == params.end() || !inputs->is_array())
+            return false;
+        ShaderContractFix fix;
+        fix.graph = params.value("graph", std::string{});
+        fix.pass = params.value("pass_name", std::string{});
+        fix.fragment = shader->at("fragment").get<std::string>();
+        for (const auto &input : *inputs)
+            if (input.is_string()) fix.inputs.push_back(input.get<std::string>());
+        const auto declared =
+            project_root ? projectFragmentDeclarationCount(*project_root, fix.fragment)
+                         : std::nullopt;
+        const auto notice =
+            shaderInputContractNotice(*error, fix.pass, fix.fragment, declared);
+        if (!notice.matched) return false;
+        contract_fix = std::move(fix);
+        showStatus(text(notice.line), message);
+        contract_pass_through->show();
+        contract_open_shader->show();
+        contract_open_shader->setEnabled(notice.can_open && project_root.has_value());
+        return true;
+    }
+
+    void hideShaderContract() {
+        contract_fix.reset();
+        if (contract_pass_through) contract_pass_through->hide();
+        if (contract_open_shader) contract_open_shader->hide();
+    }
+
+    std::vector<FullscreenShaderTemplateInput> contractTemplateInputs(
+        const ShaderContractFix &fix) const {
+        std::vector<FullscreenShaderTemplateInput> result;
+        for (const auto &input : fix.inputs) {
+            const auto name = input.substr(0, input.find('@'));
+            bool image = true;
+            if (model) {
+                const auto found = std::ranges::find(
+                    model->resources, name, &FramePlanResource::name);
+                if (found != model->resources.end() && found->kind == "buffer")
+                    image = false;
+            }
+            result.push_back({.resource = input, .image = image});
+        }
+        return result;
+    }
+
+    // Make a pass-through shader: a new file for the inputs the pass was
+    // given, and one edit that sends the inputs and the shader together.
+    void makePassThroughShader() {
+        if (!contract_fix) return;
+        if (!project_root) {
+            showStatus(owner.tr("Open a project first: the shader is written "
+                                "into its shaders folder."));
+            return;
+        }
+        const auto fix = *contract_fix;
+        std::string reference;
+        QString file;
+        try {
+            const auto name = passThroughShaderName(*project_root, fix.pass);
+            const auto inputs = contractTemplateInputs(fix);
+            const auto written = writeShaderTemplate(
+                *project_root, name,
+                fullscreenFragmentShaderTemplate(fix.pass, inputs));
+            if (!written.created)
+                throw std::runtime_error(written.path.string() +
+                                         " is already there");
+            reference = written.reference;
+            file = QStringLiteral("shaders/%1.frag").arg(text(name));
+        } catch (const std::exception &error) {
+            const QString message = QString::fromUtf8(error.what());
+            status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+            showStatus(owner.tr("Could not write the shader: %1").arg(oneLine(message)),
+                       message);
+            return;
+        }
+        hideShaderContract();
+        submitBuilt([this, fix, reference] {
+            return framePlanPassInputsAndShaderRequest(authoring, fix.graph,
+                                                       fix.pass, fix.inputs,
+                                                       reference);
+        });
+        if (pending_edit_request != 0)
+            showStatus(owner.tr("Wrote %1; sending the inputs and the shader "
+                                "together...")
+                           .arg(file));
+    }
+
+    // Open the shader: the file, and on the clipboard the lines to add.
+    void openContractShader() {
+        if (!contract_fix || !project_root) return;
+        const auto &fix = *contract_fix;
+        const auto path = projectFragmentSourcePath(*project_root, fix.fragment);
+        if (!path) {
+            showStatus(owner.tr("%1 is not a file of this project.")
+                           .arg(text(fix.fragment)));
+            return;
+        }
+        std::size_t first = 0;
+        {
+            std::ifstream input{*path, std::ios::binary};
+            if (input) {
+                const std::string source{std::istreambuf_iterator<char>{input},
+                                         std::istreambuf_iterator<char>{}};
+                first = shaderInputDeclarationCount(source);
+            }
+        }
+        const auto inputs = contractTemplateInputs(fix);
+        QApplication::clipboard()->setText(
+            text(fullscreenShaderInputSnippet(inputs, first)));
+        if (!shader_source_open_action || !shader_source_open_action(*path)) {
+            showStatus(owner.tr("The desktop could not open %1.")
+                           .arg(QString::fromStdWString(path->wstring())));
+            return;
+        }
+        status->setStyleSheet({});
+        showStatus(owner.tr("The declarations are on the clipboard: add them to "
+                            "the shader and save, and it reloads by itself. "
+                            "Then connect the input again."));
     }
 
     void consumeSubmission(const QByteArray &bytes) {
@@ -3111,6 +3290,7 @@ void FramePlanWidget::setProjectRoot(
     Pelican::ProjectPathResolver resolver;
     resolver.setup(project_root, false, parsed.envelope);
     impl_->project_resolver = std::move(resolver);
+    impl_->project_root = project_root;
     impl_->followShaderSources();
 }
 

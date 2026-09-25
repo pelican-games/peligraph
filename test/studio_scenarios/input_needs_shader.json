@@ -1,0 +1,547 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "input_needs_shader",
+  "description": "Q-14: a pass given an input its shader does not read. On a Blank pipeline project with a Cube and a Deferred geometry pass, gbuffer_albedo is dragged onto present, whose shader reads nothing. The engine refuses it (the pass's inputs and the shader's declarations disagree); the Frame Plan's status line says so in one line that says what to do, with Make a pass-through shader and Open the shader beside it. Make a pass-through shader writes shaders/present_pass_through.frag for the inputs and sends the inputs and the new shader in one edit: present then reads gbuffer_albedo and the viewport shows the G-buffer's colour.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up, so the switch to the new project is something that happens",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout: the panel layout is the desktop's, saved by whichever Studio closed last",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "step 1: File > New Project...",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts, never the repository",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name is proposed, with nothing typed",
+      "expect": "text_equals",
+      "name": "pelican.newProject.name",
+      "value": "project_001"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed, because the template is on disk",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the new project's frame plan has its one pass",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine answers editor RPC and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "before: present's gradient, read where the box will stand",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/before_gradient.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.5,
+            0.92
+          ],
+          [
+            0.5,
+            0.06
+          ],
+          [
+            0.46,
+            0.5
+          ],
+          [
+            0.54,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "remember": "gradient_middle"
+    },
+    {
+      "label": "Add Object > Cube, so the G-buffer holds a shape",
+      "cmd": "action",
+      "name": "pelican.outliner.addObject.cube"
+    },
+    {
+      "label": "the engine has a third object, named Cube",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects[2].name",
+      "value": "Cube",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the Inspector has read the Cube",
+      "cmd": "wait",
+      "name": "pelican.inspectorModelChoice",
+      "text": "Cube (built-in)",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Add material pass...",
+      "cmd": "action",
+      "name": "pelican.framePlan.addMaterialPass"
+    },
+    {
+      "label": "the form is open",
+      "cmd": "wait",
+      "name": "pelican.materialPassForm.name",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Deferred geometry",
+      "cmd": "select",
+      "name": "pelican.materialPassForm.contract",
+      "text": "Deferred geometry (G-buffer)"
+    },
+    {
+      "label": "the pass is named after it, with nothing typed",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.name",
+      "value": "deferred_geometry"
+    },
+    {
+      "label": "the albedo output is a new gbuffer_albedo, filled as the form opened",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.target.albedo",
+      "value": "gbuffer_albedo"
+    },
+    {
+      "label": "the normal output is a new gbuffer_normal",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.target.normal",
+      "value": "gbuffer_normal"
+    },
+    {
+      "label": "the material output is a new gbuffer_material",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.target.material",
+      "value": "gbuffer_material"
+    },
+    {
+      "label": "the world_position output is a new gbuffer_worldpos",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.target.world_position",
+      "value": "gbuffer_worldpos"
+    },
+    {
+      "label": "the emissive output is a new gbuffer_emissive",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.target.emissive",
+      "value": "gbuffer_emissive"
+    },
+    {
+      "label": "and the depth output a new scene_depth",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.target.depth",
+      "value": "scene_depth"
+    },
+    {
+      "label": "a deferred pass takes deferred materials: no forward default is offered",
+      "cmd": "wait",
+      "name": "pelican.materialPassForm.forwardDefault",
+      "visible": false,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Save: the six targets, then the pass",
+      "cmd": "click",
+      "name": "pelican.materialPassForm.ok"
+    },
+    {
+      "label": "the form closed",
+      "cmd": "wait",
+      "name": "pelican.materialPassForm.name",
+      "visible": false,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the engine runs deferred_geometry first",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[0].name",
+      "value": "deferred_geometry",
+      "retry_ms": 120000
+    },
+    {
+      "label": "as a material pass of the deferred geometry contract",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[0].declaration.material_contract",
+      "value": "deferred_geometry_v1"
+    },
+    {
+      "label": "the automatic materials already go to a deferred pass: no restart was asked for",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.viewportStatus"
+      },
+      "path": "text",
+      "op": "excludes",
+      "value": "Restarting the engine"
+    },
+    {
+      "label": "look at the whole frame, where the geometry pass and its targets are drawn",
+      "cmd": "select",
+      "name": "pelican.framePlanTarget",
+      "text": "Whole frame"
+    },
+    {
+      "label": "deferred_geometry is drawn",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#deferred_geometry",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "present is drawn",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit the graph so both ends of the drag are on screen",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
+    },
+    {
+      "label": "the gbuffer_albedo output socket the drag starts from",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#deferred_geometry/out:gbuffer_albedo",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "nothing offers a fix yet",
+      "expect": "visible",
+      "name": "pelican.framePlan.shaderContract.makePassThrough",
+      "value": false
+    },
+    {
+      "label": "drag gbuffer_albedo onto present, whose shader reads nothing",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.framePlanLogicalView::node_socket#deferred_geometry/out:gbuffer_albedo"
+      },
+      "to": {
+        "name": "pelican.framePlanLogicalView::node#present"
+      },
+      "steps": 8
+    },
+    {
+      "label": "the engine refuses it, and the status line says what to do",
+      "cmd": "wait",
+      "name": "pelican.framePlanStatus",
+      "contains": "present's shader (present) reads no inputs. To change its inputs, change the shader too.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Make a pass-through shader is offered",
+      "cmd": "wait",
+      "name": "pelican.framePlan.shaderContract.makePassThrough",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "and Open the shader, beside it",
+      "cmd": "wait",
+      "name": "pelican.framePlan.shaderContract.openShader",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "present still reads nothing: the refused edit changed nothing",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].root_declaration.input.$len",
+      "value": 0
+    },
+    {
+      "label": "Make a pass-through shader",
+      "cmd": "click",
+      "name": "pelican.framePlan.shaderContract.makePassThrough"
+    },
+    {
+      "label": "present reads gbuffer_albedo",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].root_declaration.input[0]",
+      "value": "gbuffer_albedo",
+      "retry_ms": 120000
+    },
+    {
+      "label": "through the new shader, sent in the same edit",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].root_declaration.shader.fragment",
+      "value": "project://shaders/present_pass_through",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the new shader declares input 0",
+      "file": "contains",
+      "path": "{artifacts}/project_001/shaders/present_pass_through.frag",
+      "text": "PELICAN_DECLARE_INPUT_0(in_gbuffer_albedo);",
+      "value": true
+    },
+    {
+      "label": "the gradient present had is still on disk: nothing is overwritten",
+      "file": "contains",
+      "path": "{artifacts}/project_001/shaders/present.frag",
+      "text": "outColor = vec4(inUV.x, inUV.y, 0.5, 1.0);",
+      "value": true
+    },
+    {
+      "label": "the buttons went with the refusal",
+      "cmd": "wait",
+      "name": "pelican.framePlan.shaderContract.makePassThrough",
+      "visible": false,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the canvas draws the read",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#present/in:gbuffer_albedo",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "pick the camera in the Outliner, so no gizmo is drawn over the box",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "MainCamera"
+    },
+    {
+      "label": "the Inspector holds the camera",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "MainCamera\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the viewport holds the G-buffer's flat colours, not the gradient's thousands",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/after_albedo.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.5,
+            0.92
+          ],
+          [
+            0.5,
+            0.06
+          ],
+          [
+            0.46,
+            0.5
+          ],
+          [
+            0.54,
+            0.5
+          ]
+        ]
+      },
+      "path": "distinct_colors",
+      "op": "le",
+      "value": 64,
+      "retry_ms": 120000
+    },
+    {
+      "label": "the middle is not the gradient any more",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/after_albedo.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.5,
+            0.92
+          ],
+          [
+            0.5,
+            0.06
+          ],
+          [
+            0.46,
+            0.5
+          ],
+          [
+            0.54,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "gradient_middle"
+    },
+    {
+      "label": "the background, read above the box",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/after_albedo.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.5,
+            0.92
+          ],
+          [
+            0.5,
+            0.06
+          ],
+          [
+            0.46,
+            0.5
+          ],
+          [
+            0.54,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[2]",
+      "remember": "background"
+    },
+    {
+      "label": "the box's albedo is not the background",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/after_albedo.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.5,
+            0.92
+          ],
+          [
+            0.5,
+            0.06
+          ],
+          [
+            0.46,
+            0.5
+          ],
+          [
+            0.54,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "background"
+    },
+    {
+      "label": "a picture of the window",
+      "expect": "screenshot",
+      "path": "after_window.png"
+    },
+    {
+      "label": "the Inspector is idle",
+      "cmd": "wait",
+      "name": "pelican.inspectorRefresh",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "File > Save Scene, so closing Studio has nothing to ask",
+      "cmd": "action",
+      "name": "pelican.file.saveScene"
+    },
+    {
+      "label": "the save is done",
+      "cmd": "wait",
+      "name": "pelican.inspectorNotice",
+      "contains": "Scene saved",
+      "timeout_ms": 60000
+    }
+  ]
+}
