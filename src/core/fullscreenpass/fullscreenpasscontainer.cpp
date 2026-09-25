@@ -1,4 +1,5 @@
 #include "fullscreenpasscontainer.hpp"
+#include "fullscreeninputbindingmismatch.hpp"
 #include "../renderingpass/computetask.hpp"
 #include "../renderingpass/rendertargetimageviewresolver.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
@@ -70,23 +71,107 @@ bool hasStorageBufferBinding(const ShaderReflection &reflection, uint32_t bindin
     return false;
 }
 
+// The words FullscreenInputBindingMismatch reports a descriptor type in.
+std::string descriptorTypeName(vk::DescriptorType type) {
+    switch (type) {
+    case vk::DescriptorType::eCombinedImageSampler:
+        return "sampled_image";
+    case vk::DescriptorType::eInputAttachment:
+        return "input_attachment";
+    case vk::DescriptorType::eStorageBuffer:
+        return "storage_buffer";
+    case vk::DescriptorType::eStorageBufferDynamic:
+        return "storage_buffer_dynamic";
+    case vk::DescriptorType::eUniformBuffer:
+        return "uniform_buffer";
+    case vk::DescriptorType::eUniformBufferDynamic:
+        return "uniform_buffer_dynamic";
+    case vk::DescriptorType::eSampledImage:
+        return "separate_image";
+    case vk::DescriptorType::eSampler:
+        return "sampler";
+    case vk::DescriptorType::eStorageImage:
+        return "storage_image";
+    case vk::DescriptorType::eUniformTexelBuffer:
+        return "uniform_texel_buffer";
+    case vk::DescriptorType::eStorageTexelBuffer:
+        return "storage_texel_buffer";
+    case vk::DescriptorType::eAccelerationStructureKHR:
+        return "acceleration_structure";
+    default:
+        return "other";
+    }
+}
+
+std::vector<FullscreenShaderPassInput> shaderPassInputs(
+    const ShaderReflection &reflection) {
+    std::vector<FullscreenShaderPassInput> declared;
+    for (const auto &reflected : reflection.bindings) {
+        if (reflected.set != PELICAN_SET_PASS_INPUT) continue;
+        declared.push_back(FullscreenShaderPassInput{
+            .binding = reflected.binding,
+            .type = descriptorTypeName(reflected.type),
+        });
+    }
+    std::stable_sort(
+        declared.begin(), declared.end(),
+        [](const FullscreenShaderPassInput &a,
+           const FullscreenShaderPassInput &b) {
+            return a.binding < b.binding;
+        });
+    return declared;
+}
+
+// Q-14e: names the input a refusal is about. A lookup that fails leaves the
+// name out instead of replacing the mismatch with its own error.
+template <class Lookup>
+std::string resourceNameOrEmpty(Lookup &&lookup) noexcept {
+    try {
+        return std::string{lookup()};
+    } catch (...) {
+        return {};
+    }
+}
+
 void requireInputBindings(
     const ShaderReflection &reflection,
     std::span<const FullscreenPassInput> inputs,
-    size_t buffer_count) {
-    const auto input_count = inputs.size() + buffer_count;
+    std::span<const FrameGraphBufferId> buffers,
+    const RenderTargetImageViewResolver &rt_views,
+    const FrameGraphResourceContainer &frame_graph_resources) {
+    const auto input_count = inputs.size() + buffers.size();
     for (uint32_t binding = 0; binding < input_count; ++binding) {
-        if (binding < inputs.size()) {
-            if (!hasInputBinding(
-                    reflection, binding,
-                    inputs[binding].local_read)) {
-                throw std::runtime_error(
-                    "Fullscreen pass input texture/local-read contract "
-                    "does not match shader reflection");
-            }
-        } else if (!hasStorageBufferBinding(reflection, binding)) {
-            throw std::runtime_error("Fullscreen pass input buffer does not match shader reflection");
+        const bool texture = binding < inputs.size();
+        if (texture ? hasInputBinding(
+                          reflection, binding,
+                          inputs[binding].local_read)
+                    : hasStorageBufferBinding(reflection, binding)) {
+            continue;
         }
+        FullscreenInputBindingMismatchInfo info{
+            .kind = texture ? "texture" : "buffer",
+            .binding = binding,
+            .expected = !texture ? "storage_buffer"
+                        : inputs[binding].local_read
+                            ? "input_attachment"
+                            : "sampled_image",
+            .pass_texture_inputs = inputs.size(),
+            .pass_buffer_inputs = buffers.size(),
+            .shader_pass_inputs = shaderPassInputs(reflection),
+        };
+        if (texture) {
+            const auto target = inputs[binding].target;
+            if (isConcreteRenderTarget(target)) {
+                info.resource = resourceNameOrEmpty(
+                    [&] { return rt_views.name(target); });
+            }
+        } else {
+            const auto buffer = buffers[binding - inputs.size()];
+            info.resource = resourceNameOrEmpty([&] {
+                return frame_graph_resources.definition(buffer).name;
+            });
+        }
+        throw FullscreenInputBindingMismatch{std::move(info)};
     }
 }
 
@@ -559,7 +644,8 @@ void FullscreenPassContainer::setInputResourcesById(
     requireInputBindings(
         pipeline_factory.reflection(
             pipeline_handle),
-        inputs, input_buffers.size());
+        inputs, input_buffers, rt_views,
+        frame_graph_resources);
     if (view.execution ==
             GraphicsPipelineViewExecution::multiview &&
         std::any_of(

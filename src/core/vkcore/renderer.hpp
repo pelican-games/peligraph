@@ -13,6 +13,7 @@
 #include <glm/glm.hpp>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <map>
 #include <memory>
@@ -35,6 +36,9 @@ struct RenderPipelineAuthoringApplyResult {
     std::uint64_t published_generation = 0;
     std::string error;
     std::string post_commit_error;
+    // Q-14e: what `error` was read from, so a typed refusal keeps its type
+    // on the way to the editor. Empty when the error was not an exception.
+    std::exception_ptr exception;
 };
 using RenderPipelineAuthoringCompletion =
     std::function<void(RenderPipelineAuthoringApplyResult)>;

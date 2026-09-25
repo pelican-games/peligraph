@@ -246,7 +246,9 @@ AuthoredRuntimeReloadResult ReloadService::applyAuthoredCandidate(
         result.attempted = true;
         return result;
     } catch (const std::exception &error) {
-        return {.attempted = true, .error = error.what()};
+        return {.attempted = true,
+                .error = error.what(),
+                .exception = std::current_exception()};
     } catch (...) {
         return {
             .attempted = true,

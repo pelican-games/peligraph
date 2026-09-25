@@ -11,6 +11,7 @@
 #include "../../project/renderconfigsection.hpp"
 #include "renderconfigtransaction.hpp"
 
+#include "../fullscreenpass/fullscreeninputbindingmismatch.hpp"
 #include "../loader/engineresources.hpp"
 #include "../renderingpass/frameplanner.hpp"
 #include "../renderingpass/passdefinitionjsonparser.hpp"
@@ -62,6 +63,47 @@ bool isCarriedRefusalCode(std::string_view code) {
     return code == materialRouteUnservedCode ||
            code == materialRouteDefaultUnavailableCode ||
            code == renderConfigLegacyTransactionDirCode;
+}
+
+// Q-14e: the fields a typed render_pipeline_preflight_failed refusal carries,
+// added beside the ones a call site already has. Every refusal with that code
+// that is built from an exception goes through here, whichever way the
+// exception came (a catch in this file, or the renderer's apply result).
+OrderedJson withPreflightRefusalFields(OrderedJson details,
+                                       const std::exception &error) {
+    if (const auto *mismatch =
+            dynamic_cast<const FullscreenInputBindingMismatch *>(&error)) {
+        const auto &info = mismatch->info();
+        auto declared = OrderedJson::array();
+        for (const auto &input : info.shader_pass_inputs) {
+            declared.push_back(
+                OrderedJson{{"binding", input.binding}, {"type", input.type}});
+        }
+        OrderedJson field{{"pass", info.pass},
+                          {"fragment", info.fragment},
+                          {"kind", info.kind},
+                          {"binding", info.binding}};
+        if (!info.resource.empty()) field["resource"] = info.resource;
+        field["expected"] = info.expected;
+        field["pass_texture_inputs"] = info.pass_texture_inputs;
+        field["pass_buffer_inputs"] = info.pass_buffer_inputs;
+        field["shader_pass_inputs"] = std::move(declared);
+        if (details.is_null()) details = OrderedJson::object();
+        details["shader_input_mismatch"] = std::move(field);
+    }
+    return details;
+}
+
+OrderedJson withPreflightRefusalFields(OrderedJson details,
+                                       const std::exception_ptr &error) {
+    if (!error) return details;
+    try {
+        std::rethrow_exception(error);
+    } catch (const std::exception &caught) {
+        return withPreflightRefusalFields(std::move(details), caught);
+    } catch (...) {
+    }
+    return details;
 }
 
 // A readable message for a carried refusal; the fields stay structured.
@@ -895,6 +937,12 @@ OrderedJson RenderConfigEditorService::rejection(
             {"error", std::move(details)}};
 }
 
+OrderedJson RenderConfigEditorService::preflightRejection(
+    const std::exception &error, OrderedJson details) const {
+    return rejection("render_pipeline_preflight_failed", error.what(),
+                     withPreflightRefusalFields(std::move(details), error));
+}
+
 std::optional<OrderedJson> RenderConfigEditorService::preflightGraphVariants(
     const RenderConfigCandidateDocumentSet &candidate,
     OrderedJson details) const {
@@ -904,8 +952,7 @@ std::optional<OrderedJson> RenderConfigEditorService::preflightGraphVariants(
     } catch (const GraphVariantCompositionError &error) {
         details["variant"] =
             std::string{renderPipelineGraphVariantName(error.variant())};
-        return rejection("render_pipeline_preflight_failed", error.what(),
-                         std::move(details));
+        return preflightRejection(error, std::move(details));
     }
     return std::nullopt;
 }
@@ -1163,7 +1210,7 @@ OrderedJson RenderConfigEditorService::materializeRenderFeature(const std::strin
     } catch (const RenderConfigSectionUnlocated &error) {
         return rejection("render_config_section_unlocated", error.what());
     } catch (const std::exception &error) {
-        return rejection("render_pipeline_preflight_failed", error.what());
+        return preflightRejection(error);
     }
 }
 
@@ -1232,7 +1279,7 @@ OrderedJson RenderConfigEditorService::exportRenderFeature(const Json &params) {
     } catch (const RenderComponentError &error) {
         return rejection(error.code(), error.what());
     } catch (const std::exception &error) {
-        return rejection("render_pipeline_preflight_failed", error.what());
+        return preflightRejection(error);
     }
 }
 
@@ -1327,7 +1374,7 @@ OrderedJson RenderConfigEditorService::importRenderFeature(const Json &params) {
     } catch (const RenderComponentError &error) {
         return rejection(error.code(), error.what());
     } catch (const std::exception &error) {
-        return rejection("render_pipeline_preflight_failed", error.what());
+        return preflightRejection(error);
     }
 }
 
@@ -2136,7 +2183,7 @@ OrderedJson RenderConfigEditorService::forkRenderPipeline(const Json &params) {
     } catch (const RenderConfigSectionUnlocated &error) {
         return rejection("render_config_section_unlocated", error.what());
     } catch (const std::exception &error) {
-        return rejection("render_pipeline_preflight_failed", error.what());
+        return preflightRejection(error);
     }
 }
 
@@ -2568,7 +2615,7 @@ OrderedJson RenderConfigEditorService::addComputeTask(const Json &params) {
                 return std::nullopt;
             }, documents);
     } catch (const std::exception &error) {
-        return rejection("render_pipeline_preflight_failed", error.what());
+        return preflightRejection(error);
     }
 }
 
@@ -2613,7 +2660,7 @@ OrderedJson RenderConfigEditorService::changeComputeTask(const Json &params, boo
         return queueRootEdit(base_digest, method,
             [](AuthoredRenderConfigDocument &) -> std::optional<OrderedJson> { return std::nullopt; }, documents);
     } catch (const std::exception &error) {
-        return rejection("render_pipeline_preflight_failed", error.what());
+        return preflightRejection(error);
     }
 }
 
@@ -2681,7 +2728,7 @@ OrderedJson RenderConfigEditorService::editRegionReplacement(const Json &params)
             [](AuthoredRenderConfigDocument &) -> std::optional<OrderedJson> { return std::nullopt; },
             documents, preset_digest);
     } catch (const std::exception &error) {
-        return rejection("render_pipeline_preflight_failed", error.what());
+        return preflightRejection(error);
     }
 }
 
@@ -2848,7 +2895,7 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
             [](AuthoredRenderConfigDocument &) -> std::optional<OrderedJson> { return std::nullopt; },
             documents, feature_edit ? std::nullopt : std::optional{preset_digest});
     } catch (const std::exception &error) {
-        return rejection("render_pipeline_preflight_failed", error.what());
+        return preflightRejection(error);
     }
 }
 
@@ -2898,9 +2945,9 @@ OrderedJson RenderConfigEditorService::enqueueAuthoredPassTicket(
             dependencies_.resolve_authoring_context(candidate_documents);
         if (check) check(candidate);
     } catch (const std::exception &error) {
-        return rejection("render_pipeline_preflight_failed", error.what(),
-                         {{"participant", "pelican.render_pipeline"},
-                          {"fragment_reference", reference}});
+        return preflightRejection(error,
+                                  {{"participant", "pelican.render_pipeline"},
+                                   {"fragment_reference", reference}});
     }
     // G-6: the same candidate, by every variant the engine will compose it
     // with when it publishes.
@@ -3040,8 +3087,8 @@ OrderedJson RenderConfigEditorService::addAuthoredPass(
                 {{"graph", graph}, {"insert", insert}});
         }
     } catch (const std::exception &error) {
-        return rejection("render_pipeline_preflight_failed", error.what(),
-                         {{"participant", "pelican.render_pipeline"}});
+        return preflightRejection(error,
+                                  {{"participant", "pelican.render_pipeline"}});
     }
 
     const auto id = authoredPassId(
@@ -3361,9 +3408,9 @@ OrderedJson RenderConfigEditorService::editRenderTargets(const Json &params) {
         if (fragment_exists)
             targets = fragmentRenderTargets(managed->second.bytes);
     } catch (const std::exception &error) {
-        return rejection("render_pipeline_preflight_failed", error.what(),
-                         {{"participant", "pelican.render_pipeline"},
-                          {"fragment_reference", reference}});
+        return preflightRejection(error,
+                                  {{"participant", "pelican.render_pipeline"},
+                                   {"fragment_reference", reference}});
     }
     auto origins = renderTargetOrigins(current, document_.bytes(), targets);
     std::set<std::string, std::less<>> declared;
@@ -3447,9 +3494,9 @@ OrderedJson RenderConfigEditorService::editRenderTargets(const Json &params) {
         try {
             users = renderTargetUsers(current.config);
         } catch (const std::exception &error) {
-            return rejection("render_pipeline_preflight_failed", error.what(),
-                             {{"participant", "pelican.render_pipeline"},
-                              {"fragment_reference", reference}});
+            return preflightRejection(error,
+                                      {{"participant", "pelican.render_pipeline"},
+                                       {"fragment_reference", reference}});
         }
         for (const auto &name : dropped) {
             const auto found = users.find(name);
@@ -3469,9 +3516,9 @@ OrderedJson RenderConfigEditorService::editRenderTargets(const Json &params) {
         (void)parseRenderTargetDefinitionsFromJson(
             Json{{"render_targets", Json(targets)}});
     } catch (const std::exception &error) {
-        return rejection("render_pipeline_preflight_failed", error.what(),
-                         {{"participant", "pelican.render_targets"},
-                          {"fragment_reference", reference}});
+        return preflightRejection(error,
+                                  {{"participant", "pelican.render_targets"},
+                                   {"fragment_reference", reference}});
     }
 
     const auto fragment_bytes = renderTargetFragmentBytes(
@@ -3609,6 +3656,10 @@ void RenderConfigEditorService::completeCommitTransaction(
                     return;
                 }
             }
+            if (rollback_error.empty()) {
+                details = withPreflightRefusalFields(std::move(details),
+                                                     applied.exception);
+            }
             finish(rejection(
                 rollback_error.empty()
                     ? "render_pipeline_preflight_failed"
@@ -3688,14 +3739,17 @@ void RenderConfigEditorService::completeCommitTransaction(
         finish(std::move(completed));
     } catch (const std::exception &caught) {
         const auto rollback_error = rollback_source();
+        OrderedJson details{{"ticket", transaction->ticket.id},
+                            {"participant", "pelican.render_pipeline"},
+                            {"rollback_error", rollback_error}};
+        if (rollback_error.empty()) {
+            details = withPreflightRefusalFields(std::move(details), caught);
+        }
         finish(rejection(
             rollback_error.empty()
                 ? "render_pipeline_preflight_failed"
                 : "render_config_rollback_failed",
-            caught.what(),
-            {{"ticket", transaction->ticket.id},
-             {"participant", "pelican.render_pipeline"},
-             {"rollback_error", rollback_error}}));
+            caught.what(), std::move(details)));
     } catch (...) {
         (void)rollback_source();
         finish(rejection(
@@ -3900,12 +3954,12 @@ void RenderConfigEditorService::commitPending() noexcept {
                     transaction,
                     RenderConfigRuntimeApplyResult{
                         .error = error.what(),
+                        .exception = std::current_exception(),
                     });
             } else if (!transaction) {
-                finish(rejection(
-                    "render_pipeline_preflight_failed", error.what(),
-                    {{"ticket", ticket.id},
-                     {"participant", "pelican.render_pipeline"}}));
+                finish(preflightRejection(
+                    error, {{"ticket", ticket.id},
+                            {"participant", "pelican.render_pipeline"}}));
             }
         } catch (...) {
             if (transaction && !transaction->completion_arrived) {

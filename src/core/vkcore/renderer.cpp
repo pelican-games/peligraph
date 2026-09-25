@@ -3305,6 +3305,8 @@ void Renderer::installRenderPipelineReloadParticipant() {
                                             std::move(completed.error),
                                         .post_commit_error =
                                             std::move(completed.post_commit_error),
+                                        .exception =
+                                            std::move(completed.exception),
                                     });
                             });
                     return watch::AuthoredRuntimeReloadResult{
@@ -3318,6 +3320,7 @@ void Renderer::installRenderPipelineReloadParticipant() {
                         .error = applied.error,
                         .post_commit_error =
                             applied.post_commit_error,
+                        .exception = applied.exception,
                     };
                 },
             },
@@ -3776,6 +3779,7 @@ Renderer::applyRenderPipelineAuthoringCandidate(
         return *transaction->outcome;
     } catch (const std::exception &caught) {
         result.error = caught.what();
+        result.exception = std::current_exception();
     } catch (...) {
         result.error =
             "unknown render pipeline authoring apply failure";

@@ -8,6 +8,7 @@
 #include "../vkcore/renderer_config.hpp"
 
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -57,6 +58,10 @@ struct RenderConfigRuntimeApplyResult {
     std::uint64_t published_generation = 0;
     std::string error;
     std::string post_commit_error;
+    // Q-14e: the exception `error` was read from, when there was one. The
+    // editor reads a typed refusal's fields from it
+    // (render_pipeline_preflight_failed's shader_input_mismatch).
+    std::exception_ptr exception;
 };
 
 using RenderConfigSourceCommit = std::function<void()>;
@@ -221,6 +226,12 @@ class RenderConfigEditorService {
         bool restart_required = false);
     nlohmann::ordered_json rejection(
         std::string code, std::string message,
+        nlohmann::ordered_json details = nlohmann::ordered_json::object()) const;
+    // render_pipeline_preflight_failed in the exception's words, with the
+    // fields a typed refusal carries (Q-14e: shader_input_mismatch) added to
+    // `details`.
+    nlohmann::ordered_json preflightRejection(
+        const std::exception &error,
         nlohmann::ordered_json details = nlohmann::ordered_json::object()) const;
     // G-6: the candidate through preflight_graph_variants. Returns the
     // refusal naming the variant that could not compose it, or nullopt.

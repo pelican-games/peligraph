@@ -2053,6 +2053,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                                     .published_generation = completed.published_generation,
                                                     .error = std::move(completed.error),
                                                     .post_commit_error = std::move(completed.post_commit_error),
+                                                    .exception = std::move(completed.exception),
                                                 });
                                         });
                             return RenderConfigRuntimeApplyResult{
@@ -2065,6 +2066,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                 .error = applied.error,
                                 .post_commit_error =
                                     applied.post_commit_error,
+                                .exception = applied.exception,
                             };
                         },
                     .resolve_authoring_context =

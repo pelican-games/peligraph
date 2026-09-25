@@ -7,6 +7,7 @@
 #include "../src/core/communication/proceduralasseteditor.hpp"
 #include "../src/core/communication/renderconfigtransaction.hpp"
 #include "../src/core/communication/rpcserver.hpp"
+#include "../src/core/fullscreenpass/fullscreeninputbindingmismatch.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/pathresolver.hpp"
@@ -412,7 +413,9 @@ struct ActualCpuRenderRuntime {
             try {
                 validate_candidate(documents);
             } catch (const std::exception &error) {
-                return {.error = error.what()};
+                // As the renderer does: the text, and what it was read from.
+                return {.error = error.what(),
+                        .exception = std::current_exception()};
             }
         }
         source_commit();
@@ -7236,6 +7239,92 @@ TEST_CASE("G-4 the renderer's material_route_unserved@1 comes back as a named re
     // Nothing was written.
     CHECK(readBytes(harness.project.render_config) == root_before);
     CHECK(g4AuthoringFileCount(harness) == files_before);
+}
+
+// Q-14e: the renderer's typed input/shader mismatch reaches the ticket's
+// rejection as one structured field; the code and the message stay as they
+// were. The running renderer's own case is in engine_primitives_test.
+TEST_CASE("Q-14e a pass input the shader does not declare comes back as shader_input_mismatch",
+          "[render-config-editor][q14e][rejection]") {
+    RenderTargetHarness harness{true};
+    const auto root_before = readBytes(harness.project.render_config);
+    const auto refuse = [&](std::function<void()> thrower) {
+        harness.runtime.validate_candidate =
+            [thrower = std::move(thrower)](const RenderConfigCandidateDocumentSet &) { thrower(); };
+        const auto accepted = harness.edit(addOp(sceneTarget("q14e_color")));
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        harness.service->commitPending();
+        auto result = harness.service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "rejected");
+        CHECK(result.at("committed") == false);
+        CHECK(result.at("error").at("code") == "render_pipeline_preflight_failed");
+        CHECK(result.at("error").at("participant") == "pelican.render_pipeline");
+        CHECK(readBytes(harness.project.render_config) == root_before);
+        return result;
+    };
+
+    SECTION("a texture input at a binding the shader leaves empty") {
+        const auto result = refuse([] {
+            throw FullscreenInputBindingMismatch{FullscreenInputBindingMismatchInfo{
+                .pass = "present",
+                .fragment = "project://shaders/present",
+                .kind = "texture",
+                .binding = 0,
+                .resource = "gbuffer_albedo",
+                .expected = "sampled_image",
+                .pass_texture_inputs = 1,
+                .pass_buffer_inputs = 0,
+            }};
+        });
+        const auto &error = result.at("error");
+        CHECK(Json::parse(error.at("shader_input_mismatch").dump()) ==
+              Json{{"pass", "present"},
+                   {"fragment", "project://shaders/present"},
+                   {"kind", "texture"},
+                   {"binding", 0},
+                   {"resource", "gbuffer_albedo"},
+                   {"expected", "sampled_image"},
+                   {"pass_texture_inputs", 1},
+                   {"pass_buffer_inputs", 0},
+                   {"shader_pass_inputs", Json::array()}});
+        CHECK(error.at("message") ==
+              "Fullscreen pass input texture/local-read contract does not match shader "
+              "reflection: pass 'present' input 0 ('gbuffer_albedo') expects a sampled image "
+              "at set 1 binding 0, but fragment 'project://shaders/present' declares no pass "
+              "input at that binding (shader declares 0 pass inputs)");
+    }
+    SECTION("a buffer input where the shader declares something else") {
+        const auto result = refuse([] {
+            throw FullscreenInputBindingMismatch{FullscreenInputBindingMismatchInfo{
+                .kind = "buffer",
+                .binding = 1,
+                .expected = "storage_buffer",
+                .pass_texture_inputs = 1,
+                .pass_buffer_inputs = 1,
+                .shader_pass_inputs = {{0, "sampled_image"}, {1, "uniform_buffer"}},
+            }};
+        });
+        const auto &mismatch = result.at("error").at("shader_input_mismatch");
+        CHECK(mismatch.at("kind") == "buffer");
+        CHECK(mismatch.at("binding") == 1);
+        CHECK_FALSE(mismatch.contains("resource"));
+        CHECK(Json::parse(mismatch.at("shader_pass_inputs").dump()) ==
+              Json::array({{{"binding", 0}, {"type", "sampled_image"}},
+                           {{"binding", 1}, {"type", "uniform_buffer"}}}));
+        CHECK(result.at("error").at("message") ==
+              "Fullscreen pass input buffer does not match shader reflection: input 1 "
+              "expects a storage buffer at set 1 binding 1, but the shader declares a "
+              "uniform buffer there (shader declares 2 pass inputs)");
+    }
+    SECTION("any other preflight refusal carries no shader_input_mismatch") {
+        const auto result = refuse([] {
+            throw std::runtime_error(
+                "Fullscreen pass input texture/local-read contract does not match shader reflection");
+        });
+        CHECK_FALSE(result.at("error").contains("shader_input_mismatch"));
+    }
 }
 
 #if PELICAN_RUNTIME_SHADER_COMPILER

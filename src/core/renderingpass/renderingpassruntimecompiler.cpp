@@ -4,6 +4,7 @@
 #include "rendertargetmetadataresolver.hpp"
 #include "rasterpassvulkanadapter.hpp"
 #include "../../project/targetrenderplanning.hpp"
+#include "../fullscreenpass/fullscreeninputbindingmismatch.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../log.hpp"
@@ -2348,17 +2349,24 @@ PassId compileFullscreenPass(
             resource_interface.bindings);
 
     if (!pass_def.input_targets.empty() || !pass_def.input_buffers.empty()) {
-        dependencies.fullscreen_pass_container.setInputResources(
-            pass_id,
-            fullscreenPassInputs(
-                pass_def, resource_interface,
-                localReadInputMask(
-                    pass_def, rendering)),
-            pass_def.input_buffers,
-            dependencies.render_target_views,
-            dependencies.frame_graph_resources,
-            view,
-            logical_view_count);
+        try {
+            dependencies.fullscreen_pass_container.setInputResources(
+                pass_id,
+                fullscreenPassInputs(
+                    pass_def, resource_interface,
+                    localReadInputMask(
+                        pass_def, rendering)),
+                pass_def.input_buffers,
+                dependencies.render_target_views,
+                dependencies.frame_graph_resources,
+                view,
+                logical_view_count);
+        } catch (const FullscreenInputBindingMismatch &mismatch) {
+            // Q-14e: the container knows the binding; the pass knows its name.
+            throw mismatch.inPass(
+                pass_def.name,
+                pass_def.fullscreenInfo().frag_shader.ref);
+        }
     }
 
     return pass_id;
@@ -2392,18 +2400,25 @@ PassId compileGenericRasterPass(
             resource_interface.bindings);
     if (!pass_def.input_targets.empty() ||
         !pass_def.input_buffers.empty()) {
-        dependencies.fullscreen_pass_container
-            .setInputResources(
-                pass_id,
-                fullscreenPassInputs(
-                    pass_def, resource_interface,
-                    localReadInputMask(
-                        pass_def, rendering)),
-                pass_def.input_buffers,
-                dependencies.render_target_views,
-                dependencies.frame_graph_resources,
-                view,
-                logical_view_count);
+        try {
+            dependencies.fullscreen_pass_container
+                .setInputResources(
+                    pass_id,
+                    fullscreenPassInputs(
+                        pass_def, resource_interface,
+                        localReadInputMask(
+                            pass_def, rendering)),
+                    pass_def.input_buffers,
+                    dependencies.render_target_views,
+                    dependencies.frame_graph_resources,
+                    view,
+                    logical_view_count);
+        } catch (const FullscreenInputBindingMismatch &mismatch) {
+            const auto &frag =
+                pass_def.genericRasterInfo().frag_shader;
+            throw mismatch.inPass(
+                pass_def.name, frag ? frag->ref : std::string{});
+        }
     }
     if (indexed) dependencies.fullscreen_pass_container.setIndexBuffer(pass_id,
         dependencies.frame_graph_resources.getBufferIdByName(indexed->index_buffer));

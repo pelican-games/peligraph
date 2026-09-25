@@ -780,4 +780,172 @@ TEST_CASE("G-4 an edit that leaves the engine's materials without a pass is refu
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
+namespace {
+
+// Q-14e: the blank template's direct root with three targets `present` can
+// read, each drawn by its own fullscreen pass before it.
+constexpr std::string_view q14e_pattern_frag =
+    "#version 460\nlayout(location = 0) in vec2 inUV;\n"
+    "layout(location = 0) out vec4 outColor;\n"
+    "void main() { outColor = vec4(inUV.x, inUV.y, 0.5, 1.0); }\n";
+
+// Reads two pass inputs, at bindings 0 and 1.
+constexpr std::string_view q14e_two_inputs_frag =
+    "#version 460\n#extension GL_GOOGLE_include_directive : require\n"
+    "#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\n"
+    "layout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n"
+    "PELICAN_DECLARE_INPUT_0(in_a);\nPELICAN_DECLARE_INPUT_1(in_b);\n\n"
+    "void main() {\n"
+    "    outColor = PELICAN_TEXTURE_2D_0(in_a, inUV) + PELICAN_TEXTURE_2D_1(in_b, inUV);\n"
+    "}\n";
+
+const Json q14e_present_output{{"color", {"display"}}, {"depth", nullptr}};
+const Json q14e_present_shader{{"vertex", "engine://fullscreen"},
+                               {"fragment", "project://shaders/present"}};
+
+void writeQ14eProject(const std::filesystem::path &root, const Json &present_input,
+                      std::string_view present_frag) {
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    auto targets = Json::array();
+    auto passes = Json::array();
+    for (const auto *name : {"q14e_a", "q14e_b", "q14e_c"}) {
+        targets.push_back({{"name", name},
+                           {"extent_scale", 1.0},
+                           {"format", "R16G16B16A16_SFLOAT"},
+                           {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+                           {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}});
+        passes.push_back({{"name", std::string{"draw_"} + name},
+                          {"type", "fullscreen"},
+                          {"input", Json::array()},
+                          {"output", {{"color", {name}}, {"depth", nullptr}}},
+                          {"shader",
+                           {{"vertex", "engine://fullscreen"},
+                            {"fragment", "project://shaders/q14e_pattern"}}}});
+    }
+    passes.push_back({{"name", "present"},
+                      {"type", "fullscreen"},
+                      {"input", present_input},
+                      {"output", q14e_present_output},
+                      {"shader", q14e_present_shader}});
+    const Json rendering{{"render_targets", std::move(targets)},
+                         {"rendering_passes",
+                          Json::array({{{"name", "main_render"}, {"passes", std::move(passes)}}})}};
+    writeFile(root / "passes/main_rendering_config.json",
+              Pelican::TestSupport::renderGraphRoot(rendering).dump(2));
+    writeFile(root / "shaders/q14e_pattern.frag", q14e_pattern_frag);
+    writeFile(root / "shaders/present.frag", present_frag);
+}
+
+// Studio's edit of `present`'s inputs, and the ticket's terminal result.
+Json editPresentInputs(Rpc &rpc, const Json &inputs) {
+    const auto context = rpc.result("get_render_authoring_context");
+    const auto sent = rpc.result("edit_preset_pass",
+                                 {{"base_source_digest", context.at("source_digest").at("hex")},
+                                  {"graph", "main_render"},
+                                  {"pass_name", "present"},
+                                  {"input", inputs},
+                                  {"output", q14e_present_output},
+                                  {"shader", q14e_present_shader}});
+    if (sent.value("status", std::string{}) != "accepted") return sent;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        (void)rpc.result("step_frame");
+        auto result = rpc.result("get_edit_result", {{"ticket", sent.at("ticket")}});
+        if (result.value("status", std::string{}) != "pending") return result;
+    }
+    FAIL("the present edit ticket stayed pending");
+    return Json{};
+}
+
+constexpr std::string_view q14e_texture_lead =
+    "Fullscreen pass input texture/local-read contract does not match shader reflection";
+
+} // namespace
+
+TEST_CASE("Q-14e a present that reads nothing refuses an added input by binding, through the running renderer",
+          "[q14e][render-config-editor][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("q14e_none");
+    const auto root = dir.root / "project";
+    // The blank template's present.frag: it reads nothing.
+    writeQ14eProject(root, Json::array(), q14e_pattern_frag);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    const auto root_before = readFile(rendering_path);
+
+    const auto refused = editPresentInputs(rpc, Json::array({"q14e_a"}));
+    INFO(refused.dump(2));
+    REQUIRE(refused.at("status") == "rejected");
+    CHECK(refused.at("committed") == false);
+    const auto &error = refused.at("error");
+    CHECK(error.at("code") == "render_pipeline_preflight_failed");
+    const auto message = error.at("message").get<std::string>();
+    CHECK(message.rfind(q14e_texture_lead, 0) == 0);
+    CHECK_THAT(message, Catch::Matchers::ContainsSubstring("pass 'present'"));
+    REQUIRE(error.contains("shader_input_mismatch"));
+    CHECK(error.at("shader_input_mismatch") ==
+          Json{{"pass", "present"},
+               {"fragment", "project://shaders/present"},
+               {"kind", "texture"},
+               {"binding", 0},
+               {"resource", "q14e_a"},
+               {"expected", "sampled_image"},
+               {"pass_texture_inputs", 1},
+               {"pass_buffer_inputs", 0},
+               {"shader_pass_inputs", Json::array()}});
+    CHECK(readFile(rendering_path) == root_before);
+
+    // A refusal for another reason carries no shader_input_mismatch.
+    const auto unknown = editPresentInputs(rpc, Json::array({"q14e_nobody_declared"}));
+    INFO(unknown.dump(2));
+    REQUIRE(unknown.at("status") == "rejected");
+    CHECK(unknown.at("error").at("code") == "render_pipeline_preflight_failed");
+    CHECK_FALSE(unknown.at("error").contains("shader_input_mismatch"));
+    CHECK(readFile(rendering_path) == root_before);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+TEST_CASE("Q-14e a present that reads two inputs refuses a third at binding 2, through the running renderer",
+          "[q14e][render-config-editor][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("q14e_two");
+    const auto root = dir.root / "project";
+    writeQ14eProject(root, Json::array({"q14e_a", "q14e_b"}), q14e_two_inputs_frag);
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+
+    const auto refused = editPresentInputs(rpc, Json::array({"q14e_a", "q14e_b", "q14e_c"}));
+    INFO(refused.dump(2));
+    REQUIRE(refused.at("status") == "rejected");
+    const auto &error = refused.at("error");
+    CHECK(error.at("code") == "render_pipeline_preflight_failed");
+    CHECK(error.at("message").get<std::string>().rfind(q14e_texture_lead, 0) == 0);
+    REQUIRE(error.contains("shader_input_mismatch"));
+    const auto &mismatch = error.at("shader_input_mismatch");
+    CHECK(mismatch.at("binding") == 2);
+    CHECK(mismatch.at("resource") == "q14e_c");
+    CHECK(mismatch.at("pass_texture_inputs") == 3);
+    CHECK(mismatch.at("shader_pass_inputs") ==
+          Json::array({{{"binding", 0}, {"type", "sampled_image"}},
+                       {{"binding", 1}, {"type", "sampled_image"}}}));
+    CHECK_THAT(error.at("message").get<std::string>(),
+               Catch::Matchers::ContainsSubstring(
+                   "input 2 ('q14e_c') expects a sampled image at set 1 binding 2") &&
+                   Catch::Matchers::ContainsSubstring("(shader declares 2 pass inputs)"));
+
+    // The two it reads are still accepted.
+    const auto kept = editPresentInputs(rpc, Json::array({"q14e_b", "q14e_a"}));
+    INFO(kept.dump(2));
+    CHECK(kept.at("committed") == true);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
 } // namespace Pelican

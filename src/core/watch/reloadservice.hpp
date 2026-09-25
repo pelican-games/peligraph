@@ -8,6 +8,7 @@
 
 #include <functional>
 #include <cstdint>
+#include <exception>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -78,6 +79,8 @@ struct AuthoredRuntimeReloadResult {
     std::uint64_t published_generation = 0;
     std::string error;
     std::string post_commit_error;
+    // Q-14e: the exception `error` was read from, when there was one.
+    std::exception_ptr exception;
 };
 
 using RenderPipelineCompanionReloadObserver =
