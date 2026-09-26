@@ -779,6 +779,12 @@ struct FramePlanWidget::Impl {
                    const QString &value) {
                 commitInlineField(node, field, value);
             };
+        // LP-4b: the View menu of a node's right-click.
+        logical_scene->viewSelectRequested =
+            [this](const FramePlanNodeKey &node, const std::string &axis,
+                   std::optional<std::uint64_t> value) {
+                pickView(node, axis, value);
+            };
         logical_scene->inlineFieldProvider =
             [this](const FramePlanNodeKey &node) {
                 std::vector<FramePlanInlineBand> bands;
@@ -2466,6 +2472,26 @@ struct FramePlanWidget::Impl {
         });
     }
 
+    // LP-4b: a pick in a node's View menu is one edit: edit_preset_pass for
+    // a pass, edit_compute_task (the whole declaration) for a task.
+    void pickView(const FramePlanNodeKey &node, const std::string &axis,
+                  std::optional<std::uint64_t> value) {
+        if (!model || node.graph != model->graph) return;
+        const auto task = authoredTask(node.name);
+        if (!task.empty()) {
+            submitBuilt([this, task, axis, value] {
+                return framePlanTaskViewSelectRequest(task_authoring, task,
+                                                      axis, value);
+            });
+            return;
+        }
+        submitBuilt([this, graph = model->graph, pass = node.name, axis,
+                     value] {
+            return framePlanPassViewSelectRequest(authoring, graph, pass, axis,
+                                                  value);
+        });
+    }
+
     // --- F-1: render targets.
 
     static std::string submittedTargetName(const FramePlanEditRequest &request) {
@@ -3190,7 +3216,9 @@ struct FramePlanWidget::Impl {
             // LP-4a: the views of the family the node runs for.
             if (!node.view_select.empty())
                 addFact(facts, owner.tr("View select"),
-                        text(framePlanViewSelectLine(node.view_select).substr(6)));
+                        text(framePlanViewSelectLine(node.view_select,
+                                                     node.view_axes)
+                                 .substr(6)));
             if (const auto idle = framePlanNoSelectedViewNotice(node);
                 !idle.empty())
                 addFact(facts, owner.tr("This frame"), text(idle));
@@ -3774,6 +3802,16 @@ void FramePlanWidget::receiveShaderReloadOutcome(
 
 void FramePlanWidget::fixSockets(const QString &graph, const QString &pass) {
     impl_->fixSockets(FramePlanNodeKey{graph.toStdString(), pass.toStdString()});
+}
+
+std::vector<FramePlanViewAxis> FramePlanWidget::taskViewAxes(
+    const QString &task) const {
+    if (!impl_->model || task.isEmpty()) return {};
+    const auto name = task.toStdString();
+    for (const auto &node : impl_->model->nodes)
+        if (node.kind == "compute" && node.authored_name == name)
+            return node.view_axes;
+    return {};
 }
 
 void FramePlanWidget::setShaderReloadLogAction(

@@ -167,6 +167,42 @@ std::vector<FramePlanViewSelectAxis> optionalViewSelect(
     return axes;
 }
 
+// LP-4b: `view_axes` as get_frame_plan writes it on render, compute and
+// snapshot_copy nodes -- [{axis, length, runtime, labels?}], length null for
+// an axis decided each frame. Absent reads as empty.
+std::vector<FramePlanViewAxis> optionalViewAxes(const Json &object,
+                                                std::string_view context) {
+    std::vector<FramePlanViewAxis> axes;
+    const auto found = object.find("view_axes");
+    if (found == object.end() || found->is_null()) return axes;
+    const std::string where = std::string{context} + ".view_axes";
+    if (!found->is_array()) throw invalid(where + " must be an array");
+    for (std::size_t index = 0; index < found->size(); ++index) {
+        const auto &entry = found->at(index);
+        const std::string at = where + "[" + std::to_string(index) + "]";
+        if (!entry.is_object()) throw invalid(at + " must be an object");
+        FramePlanViewAxis axis;
+        axis.axis = requireStringField(entry, "axis", at);
+        if (axis.axis.empty()) throw invalid(at + ".axis must not be empty");
+        if (const auto length = entry.find("length");
+            length != entry.end() && !length->is_null())
+            axis.length = unsignedInteger(*length, at + ".length");
+        axis.runtime = optionalBoolField(entry, "runtime", at).value_or(false);
+        if (const auto labels = entry.find("labels");
+            labels != entry.end() && !labels->is_null()) {
+            if (!labels->is_array())
+                throw invalid(at + ".labels must be an array");
+            for (const auto &label : *labels) {
+                if (!label.is_string())
+                    throw invalid(at + ".labels must hold strings");
+                axis.labels.push_back(label.get<std::string>());
+            }
+        }
+        axes.push_back(std::move(axis));
+    }
+    return axes;
+}
+
 std::size_t requireSizeField(const Json &object, std::string_view field,
                              std::string_view context) {
     const auto found = object.find(field);
@@ -1045,6 +1081,7 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         node.writes = stringArray(value, "writes", context, true);
         node.view_family = optionalStringField(value, "view_family", context);
         node.view_select = optionalViewSelect(value, context);
+        node.view_axes = optionalViewAxes(value, context);
         node.no_selected_view =
             optionalBoolField(value, "no_selected_view", context)
                 .value_or(false);

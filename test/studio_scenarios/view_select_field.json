@@ -1,0 +1,152 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "view_select_field",
+  "description": "LP-4b: the Pass Editor's View field comes from the engine's view_axes. The fixture carries the cube_capture feature as a project feature, so its passes can be edited. cube_capture_ssao_blur is opened by its heading: its View field is one combo for the cube's face, named by the engine's labels, and nothing is typed. Picking 2 (+Y) and saving sends view_select, get_frame_plan reports it on the node and the canvas draws 'view: face 2 (+Y)' under the heading; All views and Save take it out again, and the line goes.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the engine viewport answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the first frame plan has arrived",
+      "cmd": "wait",
+      "name": "pelican.framePlanStatus",
+      "timeout_ms": 180000,
+      "contains": "main_render"
+    },
+    {
+      "label": "look at the whole frame",
+      "cmd": "select",
+      "name": "pelican.framePlanTarget",
+      "text": "Whole frame"
+    },
+    {
+      "label": "the cube capture's blur pass is drawn",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#cube_capture_ssao_blur",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the engine reports the cube's face axis on it, with labels",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[2].view_axes[0].labels[2]",
+      "value": "+Y"
+    },
+    {
+      "label": "fit the graph so the pass can be picked",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
+    },
+    {
+      "label": "open cube_capture_ssao_blur in the Pass Editor by its heading",
+      "cmd": "double_click",
+      "name": "pelican.framePlanLogicalView::node_header#cube_capture_ssao_blur"
+    },
+    {
+      "label": "the Pass Editor holds the pass",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.name",
+      "text": "cube_capture_ssao_blur",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "its View field has the face, every view to begin with",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.view.face",
+      "visible": true,
+      "text": "All views",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick face 2, named by the engine's label",
+      "cmd": "select",
+      "name": "pelican.fullscreenPass.view.face",
+      "text": "2 (+Y)"
+    },
+    {
+      "label": "Save is ready",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.save",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "save: edit_preset_pass with view_select",
+      "cmd": "click",
+      "name": "pelican.fullscreenPass.save"
+    },
+    {
+      "label": "the frame plan's node runs for face 2",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[2].view_select.face",
+      "value": 2,
+      "retry_ms": 120000
+    },
+    {
+      "label": "the canvas draws the line under the heading",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_view_select#cube_capture_ssao_blur",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the Pass Editor read the pass again, face 2 chosen",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.view.face",
+      "text": "2 (+Y)",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "a picture of the window with the view line",
+      "expect": "screenshot",
+      "path": "view_face_2.png"
+    },
+    {
+      "label": "back to All views",
+      "cmd": "select",
+      "name": "pelican.fullscreenPass.view.face",
+      "text": "All views"
+    },
+    {
+      "label": "Save is ready again",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.save",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "save: view_select null takes the member out",
+      "cmd": "click",
+      "name": "pelican.fullscreenPass.save"
+    },
+    {
+      "label": "the frame plan's node runs for every view again",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.nodes[2]",
+      "op": "excludes",
+      "value": "view_select",
+      "retry_ms": 120000
+    },
+    {
+      "label": "and the line is gone",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_view_select#cube_capture_ssao_blur",
+      "missing": true,
+      "timeout_ms": 120000
+    }
+  ]
+}

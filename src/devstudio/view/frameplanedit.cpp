@@ -1515,12 +1515,15 @@ std::string renderAuthoringRefusalLine(const Json &error) {
 }
 
 std::string framePlanViewSelectLine(
-    const std::vector<FramePlanViewSelectAxis> &axes) {
+    const std::vector<FramePlanViewSelectAxis> &axes,
+    const std::vector<FramePlanViewAxis> &view_axes) {
     if (axes.empty()) return {};
     std::string line = "view: ";
     for (std::size_t index = 0; index < axes.size(); ++index) {
         if (index != 0) line += ", ";
-        line += axes[index].axis + " " + std::to_string(axes[index].value);
+        line += axes[index].axis + " " +
+                framePlanViewValueText(view_axes, axes[index].axis,
+                                       axes[index].value);
     }
     return line;
 }
@@ -1531,6 +1534,199 @@ std::string framePlanNoSelectedViewNotice(const FramePlanNode &node) {
            (node.view_family.empty() ? std::string{"its view family"}
                                      : node.view_family) +
            " matches view_select this frame.";
+}
+
+// --- LP-4b.
+
+std::string framePlanViewValueText(const std::vector<FramePlanViewAxis> &axes,
+                                   const std::string &axis,
+                                   std::uint64_t value) {
+    std::string shown = std::to_string(value);
+    const auto found = std::ranges::find(axes, axis, &FramePlanViewAxis::axis);
+    if (found != axes.end() && value < found->labels.size() &&
+        !found->labels[value].empty())
+        shown += " (" + found->labels[value] + ")";
+    return shown;
+}
+
+std::vector<FramePlanViewFieldRow> framePlanViewFieldRows(
+    const std::vector<FramePlanViewAxis> &view_axes,
+    const std::vector<FramePlanViewSelectAxis> &view_select,
+    const std::string &family) {
+    std::vector<FramePlanViewFieldRow> rows;
+    if (view_axes.empty()) return rows;
+    const std::string family_name =
+        family.empty() ? std::string{"This view family"} : family;
+    const auto selectedValue =
+        [&](const std::string &axis) -> std::optional<std::uint64_t> {
+        const auto found = std::ranges::find(view_select, axis,
+                                             &FramePlanViewSelectAxis::axis);
+        if (found == view_select.end()) return std::nullopt;
+        return found->value;
+    };
+    for (const auto &axis : view_axes) {
+        FramePlanViewFieldRow row;
+        row.axis = axis.axis;
+        row.selected = selectedValue(axis.axis);
+        if (axis.runtime || !axis.length) {
+            row.kind = FramePlanViewFieldRow::Kind::runtime;
+            row.text = axis.axis + ": every view, decided each frame";
+            rows.push_back(std::move(row));
+            continue;
+        }
+        row.kind = FramePlanViewFieldRow::Kind::choice;
+        for (std::uint64_t value = 0; value < *axis.length; ++value)
+            row.values.push_back(
+                framePlanViewValueText(view_axes, axis.axis, value));
+        if (row.selected && *row.selected >= *axis.length)
+            row.text = axis.axis + " " + std::to_string(*row.selected) +
+                       " is outside its " + std::to_string(*axis.length) +
+                       " views" +
+                       (*axis.length == 0
+                            ? std::string{" (it has none)"}
+                            : " (0.." + std::to_string(*axis.length - 1) +
+                                  ")") +
+                       ": the engine will refuse it.";
+        rows.push_back(std::move(row));
+    }
+    for (const auto &selected : view_select) {
+        if (std::ranges::find(view_axes, selected.axis,
+                              &FramePlanViewAxis::axis) != view_axes.end())
+            continue;
+        FramePlanViewFieldRow row;
+        row.kind = FramePlanViewFieldRow::Kind::unknown;
+        row.axis = selected.axis;
+        row.selected = selected.value;
+        row.text = family_name + " has no view axis named " + selected.axis +
+                   ": the engine will refuse it. Remove it.";
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+std::vector<FramePlanViewSelectAxis> framePlanViewSelectWith(
+    std::vector<FramePlanViewSelectAxis> view_select, const std::string &axis,
+    std::optional<std::uint64_t> value) {
+    const auto found =
+        std::ranges::find(view_select, axis, &FramePlanViewSelectAxis::axis);
+    if (!value) {
+        if (found != view_select.end()) view_select.erase(found);
+    } else if (found != view_select.end()) {
+        found->value = *value;
+    } else {
+        view_select.push_back(FramePlanViewSelectAxis{axis, *value});
+    }
+    return view_select;
+}
+
+Json framePlanViewSelectJson(
+    const std::vector<FramePlanViewSelectAxis> &view_select) {
+    if (view_select.empty()) return nullptr;
+    Json object = Json::object();
+    for (const auto &axis : view_select) object[axis.axis] = axis.value;
+    return object;
+}
+
+std::vector<FramePlanViewSelectAxis> framePlanDeclaredViewSelect(
+    const Json &declaration) {
+    std::vector<FramePlanViewSelectAxis> axes;
+    if (!declaration.is_object()) return axes;
+    const auto found = declaration.find("view_select");
+    if (found == declaration.end() || !found->is_object()) return axes;
+    for (const auto &[axis, value] : found->items()) {
+        if (value.is_number_unsigned())
+            axes.push_back({axis, value.get<std::uint64_t>()});
+        else if (value.is_number_integer() && value.get<std::int64_t>() >= 0)
+            axes.push_back(
+                {axis, static_cast<std::uint64_t>(value.get<std::int64_t>())});
+    }
+    return axes;
+}
+
+namespace {
+
+// The same axes and values, whatever order they are listed in.
+bool sameViewSelect(const std::vector<FramePlanViewSelectAxis> &left,
+                    const std::vector<FramePlanViewSelectAxis> &right) {
+    return framePlanViewSelectJson(left) == framePlanViewSelectJson(right);
+}
+
+std::string viewPickText(const std::string &axis,
+                         std::optional<std::uint64_t> value) {
+    return axis + " " +
+           (value ? std::to_string(*value) : std::string{FramePlanAllViewsText});
+}
+
+} // namespace
+
+FramePlanEditRequest framePlanPassViewSelectRequest(
+    const FramePlanAuthoring &authoring, const std::string &graph,
+    const std::string &pass, const std::string &axis,
+    std::optional<std::uint64_t> value) {
+    if (!authoring.received)
+        return refuse("The render authoring context has not arrived yet.");
+    const auto *row = authoring.find(graph, pass);
+    if (row == nullptr)
+        return refuse(pass + " is not a pass of " + graph +
+                      " in the current authoring context.");
+    if (const auto reason = passRefusal(authoring, *row); !reason.empty())
+        return refuse(reason);
+    const auto &declaration = row->editable_declaration;
+    const auto current = framePlanDeclaredViewSelect(declaration);
+    const auto next = framePlanViewSelectWith(current, axis, value);
+    if (sameViewSelect(current, next))
+        return refuse(pass + " already runs for " + viewPickText(axis, value) +
+                      ".");
+    const auto type = textOr(declaration, "type");
+
+    FramePlanEditRequest request;
+    request.method = "edit_preset_pass";
+    Json params = Json::object();
+    addDigests(params, authoring, *row);
+    params["graph"] = graph;
+    params["pass_name"] = pass;
+    // A fullscreen edit requires input, output and shader; they go back as
+    // the declaration holds them. Every other type takes view_select alone.
+    if (type == "fullscreen") {
+        params["input"] = declaredInputs(declaration);
+        addDeclarationFields(params, declaration, type);
+        if (!params.contains("output") || !params.contains("shader"))
+            return refuse(pass +
+                          " has no complete output and shader declaration to "
+                          "send back: edit it in the Pass Editor.");
+    }
+    params["view_select"] = framePlanViewSelectJson(next);
+    request.params = std::move(params);
+    return request;
+}
+
+FramePlanEditRequest framePlanTaskViewSelectRequest(
+    const FramePlanTaskAuthoring &authoring, const std::string &task,
+    const std::string &axis, std::optional<std::uint64_t> value) {
+    if (!authoring.received)
+        return refuse("The compute task catalog has not arrived yet.");
+    const auto *row = authoring.find(task);
+    if (row == nullptr)
+        return refuse(task + " is not a task in the current catalog.");
+    if (auto locked = lockedTask(authoring, *row,
+                                 "this task cannot be edited here.");
+        !locked.refusal.empty())
+        return locked;
+    const auto current = framePlanDeclaredViewSelect(row->declaration);
+    const auto next = framePlanViewSelectWith(current, axis, value);
+    if (sameViewSelect(current, next))
+        return refuse(task + " already runs for " + viewPickText(axis, value) +
+                      ".");
+    auto declaration = row->declaration;
+    if (next.empty()) declaration.erase("view_select");
+    else declaration["view_select"] = framePlanViewSelectJson(next);
+    FramePlanEditRequest request;
+    request.method = "edit_compute_task";
+    request.params = Json{{"base_source_digest", authoring.source_digest},
+                          {"base_task_source_digest", row->digest},
+                          {"task_name", task},
+                          {"task", std::move(declaration)}};
+    return request;
 }
 
 } // namespace PelicanStudio

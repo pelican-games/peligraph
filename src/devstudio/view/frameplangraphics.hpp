@@ -25,6 +25,7 @@ class QAction;
 class QGraphicsSceneContextMenuEvent;
 class QGraphicsSceneMouseEvent;
 class QKeyEvent;
+class QMenu;
 
 namespace PelicanStudio {
 
@@ -342,6 +343,18 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     // entry is named, like the insert ones, and acts on insertAnchor().
     void setOpenInGraphAction(QAction *action);
     std::function<bool(const FramePlanNodeKey &)> openInGraphOffered;
+    // LP-4b: "View" on a node's right-click, for a node whose family has
+    // view axes (view_axes): per axis, All views and each value as radio
+    // entries, the node's view_select checked; an axis decided each frame is
+    // one disabled line. A pick asks for that axis to be set (nothing: All
+    // views).
+    std::function<void(const FramePlanNodeKey &, const std::string &axis,
+                       std::optional<std::uint64_t> value)>
+        viewSelectRequested;
+    // The entries of that submenu, put in `menu`. False, and nothing put,
+    // when the node is not drawn or its family has no axes. The context menu
+    // fills its View submenu with this; a test reads and fires the entries.
+    bool fillViewMenu(QMenu &menu, const FramePlanNodeKey &node);
     // The node the last right-click landed on, or the current selection.
     [[nodiscard]] std::optional<FramePlanNodeKey> insertAnchor() const;
 

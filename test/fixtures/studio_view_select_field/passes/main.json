@@ -1,0 +1,13 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "pipeline": { "preset": "engine://render_pipelines/hybrid_v1.json" },
+    "features": [
+      "project://features/cube_capture.json"
+    ]
+  }
+}

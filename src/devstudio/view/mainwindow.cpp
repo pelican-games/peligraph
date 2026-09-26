@@ -369,6 +369,11 @@ void MainWindow::createWorkspace() {
         render_features_->editFrameNodeOrder(graph, names, generation);
     });
     frame_plan_->setTaskEditAction([this](const QString &task) { render_features_->editComputeTask(task); });
+    // LP-4b: the Task Editor's View field reads the task's axes from the
+    // frame plan this panel holds.
+    render_features_->setTaskViewAxesProvider([this](const QString &task) {
+        return frame_plan_->taskViewAxes(task);
+    });
     frame_plan_->setEngineRestartAction([this](const QString &reason) { requestEngineRestart(reason); });
     // "Open the source" in the Inspector lands on the same node in the Graph
     // tab: the producer it names is a root node of the common graph.

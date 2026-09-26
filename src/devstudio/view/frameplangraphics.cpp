@@ -5,6 +5,7 @@
 #include "studiotheme.hpp"
 
 #include <QAction>
+#include <QActionGroup>
 #include <QBrush>
 #include <QColor>
 #include <QCompleter>
@@ -1173,7 +1174,9 @@ NodeBodyLayout nodeBodyLayout(const FramePlanModel &model,
                               const FramePlanInputSockets *sockets = nullptr) {
     NodeBodyLayout layout;
     layout.bands = std::move(bands);
-    layout.view_line = qtext(framePlanViewSelectLine(node.view_select));
+    // LP-4b: named by the engine's labels where it gives them (face 2 (+Y)).
+    layout.view_line =
+        qtext(framePlanViewSelectLine(node.view_select, node.view_axes));
     // Sorted, not in declaration order: WP318 fixes that the scene ignores the
     // order of every input array, and a row's y position is scene geometry.
     std::vector<std::string> written{node.writes.begin(), node.writes.end()};
@@ -3912,6 +3915,63 @@ void FramePlanGraphicsScene::selectEdge(const FramePlanEdgeSelection &edge) {
     applyEdgeSelection();
 }
 
+bool FramePlanGraphicsScene::fillViewMenu(QMenu &menu,
+                                          const FramePlanNodeKey &key) {
+    if (!current_model_ || key.graph != current_model_->graph) return false;
+    const auto node = std::ranges::find(current_model_->nodes, key.name,
+                                        &FramePlanNode::name);
+    if (node == current_model_->nodes.end()) return false;
+    const auto rows = framePlanViewFieldRows(node->view_axes, node->view_select,
+                                             node->view_family);
+    if (rows.empty()) return false;
+    const auto pick = [this, key](const std::string &axis,
+                                  std::optional<std::uint64_t> value) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, key, axis, value] {
+                if (viewSelectRequested) viewSelectRequested(key, axis, value);
+            },
+            Qt::QueuedConnection);
+    };
+    for (const auto &row : rows) {
+        menu.addSection(qtext(row.axis));
+        if (row.kind == FramePlanViewFieldRow::Kind::runtime) {
+            menu.addAction(qtext(row.text))->setEnabled(false);
+            continue;
+        }
+        auto *group = new QActionGroup(&menu);
+        group->setExclusive(true);
+        const auto entry = [&](const QString &label,
+                               std::optional<std::uint64_t> value) {
+            QAction *action = menu.addAction(label);
+            action->setCheckable(true);
+            action->setChecked(row.selected == value);
+            action->setData(QStringLiteral("%1=%2").arg(
+                qtext(row.axis),
+                value ? QString::number(static_cast<qulonglong>(*value))
+                      : QStringLiteral("*")));
+            group->addAction(action);
+            connect(action, &QAction::triggered, this,
+                    [pick, axis = row.axis, value] { pick(axis, value); });
+        };
+        entry(qtext(std::string{FramePlanAllViewsText}), std::nullopt);
+        if (row.kind == FramePlanViewFieldRow::Kind::unknown) {
+            // Not an axis of the family: the value is shown as written, and
+            // All views takes it out.
+            entry(QString::number(static_cast<qulonglong>(
+                      row.selected.value_or(0))),
+                  row.selected);
+            continue;
+        }
+        for (std::size_t value = 0; value < row.values.size(); ++value)
+            entry(qtext(row.values[value]), value);
+        if (row.selected && *row.selected >= row.values.size())
+            entry(QString::number(static_cast<qulonglong>(*row.selected)),
+                  row.selected);
+    }
+    return true;
+}
+
 void FramePlanGraphicsScene::contextMenuEvent(
     QGraphicsSceneContextMenuEvent *event) {
     QGraphicsItem *semantic_item = itemAt(event->scenePos(), QTransform{});
@@ -3963,6 +4023,17 @@ void FramePlanGraphicsScene::contextMenuEvent(
             socket_entries = true;
         }
         if (socket_entries) menu.addSeparator();
+        // LP-4b: which views of its family the node runs for.
+        {
+            auto *view = new QMenu(QStringLiteral("View"), &menu);
+            view->setObjectName(QStringLiteral("pelican.framePlan.viewMenu"));
+            if (fillViewMenu(*view, clicked)) {
+                menu.addMenu(view);
+                menu.addSeparator();
+            } else {
+                delete view;
+            }
+        }
         if (add_pass_action_ != nullptr) menu.addAction(add_pass_action_);
         if (material_pass_action_ != nullptr)
             menu.addAction(material_pass_action_);

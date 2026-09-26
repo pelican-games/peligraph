@@ -175,6 +175,20 @@ struct FramePlanViewSelectAxis {
     bool operator==(const FramePlanViewSelectAxis &) const = default;
 };
 
+// LP-4b: one view axis of the node's view family, as get_frame_plan lists
+// it (LP-Va2's view_axes). `length` is the count of views along the axis in
+// the current generation, and is empty for an axis decided each frame
+// (`runtime`), which cannot be selected. `labels`, when the engine gives
+// them, name each value ("+X" for face 0).
+struct FramePlanViewAxis {
+    std::string axis;
+    std::optional<std::uint64_t> length;
+    bool runtime = false;
+    std::vector<std::string> labels;
+
+    bool operator==(const FramePlanViewAxis &) const = default;
+};
+
 struct FramePlanNode {
     std::string name;
     std::string authored_name;
@@ -190,6 +204,10 @@ struct FramePlanNode {
     std::vector<std::string> writes;
     std::string view_family;
     std::vector<FramePlanViewSelectAxis> view_select;
+    // LP-4b: the axes of the node's view family; empty for a family without
+    // axes ($main, planar, an author's family) and for a plan that predates
+    // view_axes.
+    std::vector<FramePlanViewAxis> view_axes;
     // LP-4a: the frame ran no view the node's view_select matches (the
     // engine's execution trace says so); the node recorded nothing.
     bool no_selected_view = false;

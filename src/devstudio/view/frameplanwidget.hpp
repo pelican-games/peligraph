@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../model/frameplanmodel.hpp"
 #include "../toollayoutpreset.hpp"
 #include "frameplaneditcapability.hpp"
 
@@ -109,6 +110,11 @@ class FramePlanWidget final : public QWidget {
     // connected input (engine://passthrough is copied into the project
     // first). The Pass Editor's Fix sockets comes here.
     void fixSockets(const QString &graph, const QString &pass);
+    // LP-4b. The view axes (view_axes) of the node that runs `task` in the
+    // current frame plan, for the Task Editor's View field. Empty when the
+    // plan holds no such task or its family has no axes.
+    [[nodiscard]] std::vector<FramePlanViewAxis> taskViewAxes(
+        const QString &task) const;
 
     ToolLayoutSnapshot toolLayoutSnapshot() const;
 

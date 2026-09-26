@@ -528,14 +528,90 @@ std::string renderAuthoringRefusalLine(const nlohmann::json &error);
 
 // The line under a node's heading when the node runs only for some views of
 // its family: "view: cascade 2", several axes joined by ", " in the order the
-// frame plan lists them. Empty for a node without view_select. The value is
-// the number; naming it (face +X) waits for the engine's axis labels.
+// frame plan lists them. Empty for a node without view_select. LP-4b: a value
+// of an axis `view_axes` gives labels to is named by it too ("view: face 2
+// (+Y)").
 std::string framePlanViewSelectLine(
-    const std::vector<FramePlanViewSelectAxis> &axes);
+    const std::vector<FramePlanViewSelectAxis> &axes,
+    const std::vector<FramePlanViewAxis> &view_axes = {});
 
 // What a node that ran no view this frame says when pointed at:
 // "No view of <family> matches view_select this frame." Empty for a node
 // that ran.
 std::string framePlanNoSelectedViewNotice(const FramePlanNode &node);
+
+// --- LP-4b: the View field, drawn from the engine's view_axes (LP-Va2).
+
+// A value as the field, the menu and the canvas name it: "2 (+Y)" when the
+// axis has a label for it, "2" otherwise.
+std::string framePlanViewValueText(const std::vector<FramePlanViewAxis> &axes,
+                                   const std::string &axis,
+                                   std::uint64_t value);
+
+// The first entry of every selectable axis: the axis is not narrowed.
+inline constexpr std::string_view FramePlanAllViewsText = "All views";
+
+// One row of the View field (the Pass Editor's, the Task Editor's) and of the
+// canvas's View menu.
+struct FramePlanViewFieldRow {
+    enum class Kind {
+        // runtime:false: "All views", then one entry per value 0..length-1.
+        choice,
+        // runtime:true: decided each frame, shown and not selectable.
+        runtime,
+        // view_select names an axis the family does not have. The value is
+        // kept as written, with a warning, until it is removed.
+        unknown,
+    };
+    Kind kind = Kind::choice;
+    std::string axis;
+    // choice: the entries after "All views", the one for value i at index i.
+    std::vector<std::string> values;
+    // The value view_select holds for the axis; nothing is "All views".
+    std::optional<std::uint64_t> selected;
+    // runtime: "<axis>: every view, decided each frame". unknown, and a
+    // choice whose value is past the axis's length: the warning.
+    std::string text;
+
+    bool operator==(const FramePlanViewFieldRow &) const = default;
+};
+
+// The rows: one per axis of `view_axes`, in its order, then one per axis of
+// `view_select` that `view_axes` does not name. Empty -- the field is not
+// shown at all -- when `view_axes` is empty ($main and the other families
+// without axes). `family` names the family in the warnings.
+std::vector<FramePlanViewFieldRow> framePlanViewFieldRows(
+    const std::vector<FramePlanViewAxis> &view_axes,
+    const std::vector<FramePlanViewSelectAxis> &view_select,
+    const std::string &family = {});
+
+// `view_select` with `axis` set to `value`, or taken out for nothing (All
+// views). The other axes keep their order; a new one goes last.
+std::vector<FramePlanViewSelectAxis> framePlanViewSelectWith(
+    std::vector<FramePlanViewSelectAxis> view_select, const std::string &axis,
+    std::optional<std::uint64_t> value);
+
+// What an edit carries: an object of the chosen axes, or null when every
+// axis is All views (edit_preset_pass then removes the member).
+nlohmann::json framePlanViewSelectJson(
+    const std::vector<FramePlanViewSelectAxis> &view_select);
+
+// A declaration's view_select as the field reads it. Absent, or not an
+// object, is empty; an entry that is not a non-negative integer is skipped.
+std::vector<FramePlanViewSelectAxis> framePlanDeclaredViewSelect(
+    const nlohmann::json &declaration);
+
+// The canvas's View menu: one pick, one RPC. A pass sends edit_preset_pass
+// with view_select (null once every axis is All views) and, for a fullscreen
+// pass, the input, output and shader the engine requires with it; a task
+// sends its whole declaration with view_select changed (and without it once
+// every axis is All views). A pick that changes nothing is not sent.
+FramePlanEditRequest framePlanPassViewSelectRequest(
+    const FramePlanAuthoring &authoring, const std::string &graph,
+    const std::string &pass, const std::string &axis,
+    std::optional<std::uint64_t> value);
+FramePlanEditRequest framePlanTaskViewSelectRequest(
+    const FramePlanTaskAuthoring &authoring, const std::string &task,
+    const std::string &axis, std::optional<std::uint64_t> value);
 
 } // namespace PelicanStudio

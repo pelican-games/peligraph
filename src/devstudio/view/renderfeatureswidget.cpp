@@ -7,6 +7,7 @@
 #include "taskresourceconnections.hpp"
 #include "taskconnectiongraphics.hpp"
 #include "inspectormodel.hpp"
+#include "viewselectfield.hpp"
 
 #include "../viewport/embeddedviewport.hpp"
 
@@ -310,6 +311,11 @@ class ComputeTaskDialog final : public QDialog {
   QLineEdit *dispatch_offset;
   QPushButton *update_dispatch;
   QWidget *dispatch_form;
+  // LP-4b: which views of its family the task runs for. The axes are the
+  // frame plan's (view_axes of the task's node); a pick is written into the
+  // JSON draft, which Apply sends whole.
+  ViewSelectField *view_field;
+  RenderFeaturesWidget::TaskViewAxesProvider view_axes;
   TaskConnectionGraphics *connection_graph;
   std::vector<TaskConnectionGraphics::Resource> resource_catalog;
   QTableWidget *connections;
@@ -436,8 +442,55 @@ public:
     open_graph_node = std::move(action);
     controls();
   }
+  void setViewAxesProvider(RenderFeaturesWidget::TaskViewAxesProvider provider) {
+    view_axes = std::move(provider);
+    loadView();
+    controls();
+  }
 
 private:
+  // LP-4b: the View field for the draft in the editor. Hidden for a new
+  // task (it has no node yet) and for a family without axes.
+  void loadView() {
+    const auto task =
+        Json::parse(editor->toPlainText().toStdString(), nullptr, false);
+    std::vector<FramePlanViewAxis> axes;
+    if (creationIndex() < 0 && task.is_object() && view_axes)
+      axes = view_axes(selected().value("name").toString());
+    const bool shown =
+        task.is_object() &&
+        view_field->load(axes, framePlanDeclaredViewSelect(task),
+                         task.value("view_family", std::string{}));
+    if (!shown) view_field->clear();
+    view_field->setVisible(shown);
+  }
+  // The draft was retyped: the field follows it unless it already says the
+  // same (a pick below wrote it).
+  void followDraftView() {
+    const auto task =
+        Json::parse(editor->toPlainText().toStdString(), nullptr, false);
+    if (task.is_object() && view_field->hasRows() &&
+        framePlanViewSelectJson(framePlanDeclaredViewSelect(task)) ==
+            framePlanViewSelectJson(view_field->selection()))
+      return;
+    loadView();
+  }
+  // A pick in the field: the draft's view_select, and nothing else, changes.
+  void viewPicked() {
+    auto task =
+        Json::parse(editor->toPlainText().toStdString(), nullptr, false);
+    if (!task.is_object()) {
+      notice->setText(tr("Fix the task JSON before choosing views."));
+      return;
+    }
+    const auto chosen = view_field->selection();
+    if (chosen.empty())
+      task.erase("view_select");
+    else
+      task["view_select"] = framePlanViewSelectJson(chosen);
+    editor->setPlainText(QString::fromStdString(task.dump(2)));
+    notice->setText(tr("View updated in the JSON draft. Apply task to save."));
+  }
   void loadDispatch() {
     const auto task =
         Json::parse(editor->toPlainText().toStdString(), nullptr, false);
@@ -639,6 +692,7 @@ private:
         idle && editable &&
         Json::parse(editor->toPlainText().toStdString(), nullptr, false)
             .is_object());
+    view_field->setEnabled(dispatch_form->isEnabled());
     apply->setEnabled(idle && viewport.rpcReady() && editable &&
                       !root_digest.isEmpty());
     refresh->setEnabled(viewport.rpcReady() && request_id == 0);
@@ -661,6 +715,7 @@ private:
                          "the project ray group layout."));
       loadDispatch();
       loadConnections();
+      loadView();
       controls();
       return;
     }
@@ -683,6 +738,7 @@ private:
                   .toString(tr("This task source is read-only.")));
     loadDispatch();
     loadConnections();
+    loadView();
     controls();
   }
   void request(Request kind, const QString &method, QJsonObject params = {}) {
@@ -1058,6 +1114,10 @@ public:
     update_dispatch->setObjectName("pelican.computeTasks.updateDispatch");
     dispatch_layout->addRow(update_dispatch);
     layout->addWidget(dispatch_form);
+    view_field = new ViewSelectField(QStringLiteral("pelican.computeTasks"), this);
+    view_field->hide();
+    view_field->changed = [this] { viewPicked(); };
+    layout->addWidget(view_field);
     connect(dispatch_mode, &QComboBox::currentIndexChanged, this,
             [this] { dispatchFields(); });
     connect(update_dispatch, &QPushButton::clicked, this,
@@ -1137,6 +1197,7 @@ public:
     connect(editor, &QPlainTextEdit::textChanged, this, [this] {
       loadDispatch();
       loadConnections();
+      followDraftView();
       controls();
       if (const int index = creationIndex(); index >= 0) {
         new_drafts[index].text = editor->toPlainText();
@@ -2030,6 +2091,8 @@ struct RenderFeaturesWidget::Impl {
     QString root_reference;
     // Q-12: handed to each Task Editor it opens.
     RenderFeaturesWidget::GraphNodeOpenAction graph_node_open_action;
+    // LP-4b: handed to each Task Editor it opens.
+    RenderFeaturesWidget::TaskViewAxesProvider task_view_axes;
     QListWidget *current = nullptr;
     QTreeWidget *catalog = nullptr;
     QPushButton *add = nullptr;
@@ -2908,6 +2971,7 @@ void RenderFeaturesWidget::editComputeTaskConnection(const QString &name, const 
         emit renderConfigCommitted();
     }, outputs, [this] { return impl_->root_reference; });
     dialog->setGraphNodeOpenAction(impl_->graph_node_open_action);
+    dialog->setViewAxesProvider(impl_->task_view_axes);
     // Q-15: the Task Editor follows the other panels' commits too.
     dialog->setRenderConfigDigest(impl_->digest_hub);
     dialog->show();
@@ -2937,6 +3001,10 @@ void RenderFeaturesWidget::setRenderConfigDigest(
 
 void RenderFeaturesWidget::setGraphNodeOpenAction(GraphNodeOpenAction action) {
     impl_->graph_node_open_action = std::move(action);
+}
+
+void RenderFeaturesWidget::setTaskViewAxesProvider(TaskViewAxesProvider provider) {
+    impl_->task_view_axes = std::move(provider);
 }
 
 } // namespace PelicanStudio

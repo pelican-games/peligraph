@@ -4892,4 +4892,196 @@ TEST_CASE("LP-4a the Pass Editor's Save keeps a pass's view_select, and a "
     CHECK(status.toolTip().contains(sentence));
     CHECK_FALSE(status.text().contains(QStringLiteral("{")));
 }
+
+namespace {
+
+// LP-4b: the Pass Editor opened on one fullscreen pass whose frame plan node
+// carries `view_axes`, with `view_select` (or none) in its declaration.
+struct Lp4bPassForm {
+    // First: the widgets below need the application.
+    QApplication &app = application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+
+    void open(const Json &view_axes, const Json &view_select,
+              const std::string &family) {
+        Json original{
+            {"name", "sun_mask"}, {"type", "fullscreen"},
+            {"view_family", family},
+            {"input", Json::array({"input"})},
+            {"output", {{"color", Json::array({"output"})}, {"depth", nullptr}}},
+            {"shader", {{"vertex", "engine://fullscreen"},
+                        {"fragment", "engine://fullscreen"}}}};
+        if (!view_select.is_null()) original["view_select"] = view_select;
+        Json graph{{"name", "edit_graph"},
+                   {"passes", Json::array({{{"name", "sun_mask"},
+                                            {"declaration", original},
+                                            {"editable_preset_pass", true},
+                                            {"preset_declaration", original}}})},
+                   {"anchor_candidates",
+                    Json::array({{{"position", 0}, {"insert", "before:sun_mask"}}})}};
+        Json context{{"source_digest", {{"hex", std::string(64, 'a')}}},
+                     {"pipeline_preset",
+                      {{"source_digest", {{"hex", std::string(64, 'b')}}}}},
+                     {"graphs", Json::array({graph})}};
+        authoring.succeed(authoring.requests.back().id, context);
+        auto plan = minimalFramePlan(
+            "edit_graph", Json::array({resource("input"), resource("output")}));
+        Json node{{"name", "sun_mask"},
+                  {"kind", "render"},
+                  {"declaration_index", 0},
+                  {"order", 0},
+                  {"level", 0},
+                  {"reads", Json::array({"input"})},
+                  {"writes", Json::array({"output"})},
+                  {"view_family", family}};
+        if (!view_axes.is_null()) node["view_axes"] = view_axes;
+        if (!view_select.is_null()) node["view_select"] = view_select;
+        plan["nodes"] = Json::array({node});
+        addRuntimeShaderContract(plan);
+        form.receiveResult(QByteArray::fromStdString(plan.dump()));
+        form.editPresetPass(QStringLiteral("edit_graph"), QStringLiteral("sun_mask"));
+        authoring.succeed(authoring.requests.back().id, context);
+        refresh.succeed(refresh.requests.back(),
+                        QByteArray::fromStdString(plan.dump()));
+        REQUIRE(required<QLineEdit>(form, "pelican.fullscreenPass.name").text() ==
+                QStringLiteral("sun_mask"));
+    }
+
+    QWidget &field() { return required<QWidget>(form, "pelican.fullscreenPass.view"); }
+
+    Json save() {
+        auto &button = required<QPushButton>(form, "pelican.fullscreenPass.save");
+        REQUIRE(button.isEnabled());
+        button.click();
+        REQUIRE(authoring.requests.back().method ==
+                QStringLiteral("edit_preset_pass"));
+        return Json::parse(
+            QJsonDocument(authoring.requests.back().params).toJson().toStdString());
+    }
+};
+
+const Json Lp4bDirectional = Json::array(
+    {{{"axis", "light"}, {"length", nullptr}, {"runtime", true}},
+     {{"axis", "cascade"}, {"length", 3}, {"runtime", false}}});
+const Json Lp4bCube = Json::array(
+    {{{"axis", "face"},
+      {"length", 6},
+      {"runtime", false},
+      {"labels", Json::array({"+X", "-X", "+Y", "-Y", "+Z", "-Z"})}}});
+
+QStringList comboTexts(const QComboBox &combo) {
+    QStringList texts;
+    for (int index = 0; index < combo.count(); ++index)
+        texts.push_back(combo.itemText(index));
+    return texts;
+}
+
+} // namespace
+
+TEST_CASE("LP-4b the Pass Editor's View field: one row per axis the engine "
+          "reports, and Save sends view_select only when it changed",
+          "[devstudio][fullscreen-pass][lp4b][view-select]") {
+    Lp4bPassForm fixture;
+
+    SECTION("a directional shadow: light is shown, cascade is a combo") {
+        fixture.open(Lp4bDirectional, nullptr, "$shadow/directional");
+        CHECK_FALSE(fixture.field().isHidden());
+        auto &light = required<QLabel>(fixture.form, "pelican.fullscreenPass.view.light");
+        CHECK(light.text() == QStringLiteral("light: every view, decided each frame"));
+        CHECK_FALSE(light.isEnabled());
+        auto &cascade =
+            required<QComboBox>(fixture.form, "pelican.fullscreenPass.view.cascade");
+        CHECK(comboTexts(cascade) == QStringList{QStringLiteral("All views"),
+                                                 QStringLiteral("0"),
+                                                 QStringLiteral("1"),
+                                                 QStringLiteral("2")});
+        CHECK(cascade.currentText() == QStringLiteral("All views"));
+
+        // cascade 1 goes out as the object of the chosen axes.
+        cascade.setCurrentIndex(cascade.findText(QStringLiteral("1")));
+        const auto params = fixture.save();
+        INFO(params.dump());
+        CHECK(params.at("view_select") == Json{{"cascade", 1}});
+    }
+
+    SECTION("back to All views: view_select null") {
+        fixture.open(Lp4bDirectional, Json{{"cascade", 1}}, "$shadow/directional");
+        auto &cascade =
+            required<QComboBox>(fixture.form, "pelican.fullscreenPass.view.cascade");
+        CHECK(cascade.currentText() == QStringLiteral("1"));
+        // The field carries it: the draft's "omitted" line does not name it.
+        const auto omitted =
+            required<QLabel>(fixture.form, "pelican.fullscreenPass.omittedKeys")
+                .property("pelicanOmittedKeys")
+                .toStringList();
+        CHECK(omitted.contains(QStringLiteral("view_family")));
+        CHECK_FALSE(omitted.contains(QStringLiteral("view_select")));
+        cascade.setCurrentIndex(0);
+        const auto params = fixture.save();
+        INFO(params.dump());
+        REQUIRE(params.contains("view_select"));
+        CHECK(params.at("view_select").is_null());
+    }
+
+    SECTION("the field left alone: Save sends no view_select") {
+        fixture.open(Lp4bDirectional, Json{{"cascade", 1}}, "$shadow/directional");
+        required<QLineEdit>(fixture.form, "pelican.fullscreenPass.shader.fragment")
+            .setText(QStringLiteral("project://shaders/sun_mask"));
+        const auto params = fixture.save();
+        INFO(params.dump());
+        CHECK(params.at("shader").at("fragment") == "project://shaders/sun_mask");
+        CHECK_FALSE(params.contains("view_select"));
+    }
+
+    SECTION("a cube capture: the faces by the engine's labels") {
+        fixture.open(Lp4bCube, Json{{"face", 2}}, "$capture/cube");
+        auto &face = required<QComboBox>(fixture.form, "pelican.fullscreenPass.view.face");
+        CHECK(comboTexts(face) ==
+              QStringList{QStringLiteral("All views"), QStringLiteral("0 (+X)"),
+                          QStringLiteral("1 (-X)"), QStringLiteral("2 (+Y)"),
+                          QStringLiteral("3 (-Y)"), QStringLiteral("4 (+Z)"),
+                          QStringLiteral("5 (-Z)")});
+        CHECK(face.currentText() == QStringLiteral("2 (+Y)"));
+        face.setCurrentIndex(face.findText(QStringLiteral("5 (-Z)")));
+        const auto params = fixture.save();
+        CHECK(params.at("view_select") == Json{{"face", 5}});
+    }
+
+    SECTION("[] -- the main view -- has no field") {
+        fixture.open(Json::array(), nullptr, "$main");
+        CHECK(fixture.field().isHidden());
+        CHECK(fixture.form.findChild<QComboBox *>(
+                  QStringLiteral("pelican.fullscreenPass.view.cascade")) == nullptr);
+        const auto params = fixture.save();
+        CHECK_FALSE(params.contains("view_select"));
+    }
+
+    SECTION("an axis the family lacks: a warning row, kept until Remove") {
+        fixture.open(Lp4bDirectional, Json{{"cascade", 1}, {"face", 3}},
+                     "$shadow/directional");
+        auto &warning =
+            required<QLabel>(fixture.form, "pelican.fullscreenPass.view.face.warning");
+        CHECK(warning.text() ==
+              QStringLiteral("$shadow/directional has no view axis named face: "
+                             "the engine will refuse it. Remove it."));
+        CHECK(required<QLabel>(fixture.form, "pelican.fullscreenPass.view.face").text() ==
+              QStringLiteral("face 3"));
+        // Changing another axis keeps it as written.
+        auto &cascade =
+            required<QComboBox>(fixture.form, "pelican.fullscreenPass.view.cascade");
+        cascade.setCurrentIndex(cascade.findText(QStringLiteral("2")));
+        SECTION("kept") {
+            const auto params = fixture.save();
+            CHECK(params.at("view_select") == Json{{"cascade", 2}, {"face", 3}});
+        }
+        SECTION("removed") {
+            required<QPushButton>(fixture.form, "pelican.fullscreenPass.view.face.remove")
+                .click();
+            const auto params = fixture.save();
+            CHECK(params.at("view_select") == Json{{"cascade", 2}});
+        }
+    }
+}
 } // namespace PelicanStudio

@@ -17,6 +17,7 @@
 #include "passshapepolicy.hpp"
 #include "rasterpass.hpp"
 #include "inspectormodel.hpp"
+#include "viewselectfield.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -149,6 +150,9 @@ struct FullscreenPassWidget::Impl {
     QSpinBox *position = nullptr;
     QLabel *location = nullptr;
     QLineEdit *name = nullptr;
+    // LP-4b: which views of its family the pass runs for, from the frame
+    // plan's view_axes. Hidden for a family without axes.
+    ViewSelectField *view_field = nullptr;
     QLineEdit *vertex_shader = nullptr;
     QLineEdit *fragment_shader = nullptr;
     // T-1: beside each stem, the shaders there are to pick from. A pick puts
@@ -418,6 +422,11 @@ struct FullscreenPassWidget::Impl {
         name->setObjectName(
             QStringLiteral("pelican.fullscreenPass.name"));
         form->addRow(owner.tr("Name"), name);
+
+        view_field = new ViewSelectField(QStringLiteral("pelican.fullscreenPass"),
+                                         &owner);
+        form->addRow(owner.tr("View"), view_field);
+        form->setRowVisible(view_field, false);
 
         vertex_row = new QWidget(&owner);
         vertex_row->setObjectName(
@@ -1898,6 +1907,8 @@ struct FullscreenPassWidget::Impl {
                 missing.insert(key);
             }
         }
+        // LP-4b: the View field carries view_select, beside the JSON.
+        if (view_field->hasRows()) missing.erase("view_select");
         const QStringList reported = stringList(missing);
         omitted->setProperty("pelicanOmittedKeys", reported);
         setPanelNotice(
@@ -2370,6 +2381,35 @@ struct FullscreenPassWidget::Impl {
         updateAuthoringButtons();
     }
 
+    // LP-4b: the View field of the pass being edited: the axes are the frame
+    // plan node's, the values the declaration's.
+    void loadViewField(const Json &declaration) {
+      const FramePlanNode *node = nullptr;
+      if (plan && editing_preset_pass)
+        for (const auto &candidate : plan->nodes)
+          if (candidate.name == editing_preset_pass->second)
+            node = &candidate;
+      const bool shown =
+          node != nullptr &&
+          view_field->load(node->view_axes,
+                           framePlanDeclaredViewSelect(declaration),
+                           declaration.value("view_family", node->view_family));
+      if (!shown) view_field->clear();
+      form->setRowVisible(view_field, shown);
+    }
+
+    // LP-4b: the View field changed the pass's view_select: what Save sends
+    // for it (null once every axis is All views). Nothing when the field was
+    // left as the declaration has it -- edit_preset_pass keeps the member.
+    std::optional<Json> editedViewSelect() const {
+      if (!view_field->hasRows()) return std::nullopt;
+      const auto chosen = framePlanViewSelectJson(view_field->selection());
+      if (chosen == framePlanViewSelectJson(
+                        framePlanDeclaredViewSelect(original_preset_pass)))
+        return std::nullopt;
+      return chosen;
+    }
+
     void requestEditPresetPass() {
       if (!authoring.editPresetPass || !editing_preset_pass)
         return;
@@ -2424,6 +2464,8 @@ struct FullscreenPassWidget::Impl {
             params["shader"] = std::move(shader);
             addPassSettingsEditParams(draft, params);
         }
+        if (auto view_select = editedViewSelect())
+            params["view_select"] = std::move(*view_select);
         QString error;
         pending_authoring_kind = AuthoringRequest::edit;
         pending_authoring_request = authoring.editPresetPass(
@@ -2557,6 +2599,7 @@ struct FullscreenPassWidget::Impl {
       }
       if (!preserve_declaration) interface_row->load(declaration);
       output_ops->loadClearColors(declaration);
+      loadViewField(declaration);
       load_edit_requested = false;
       updating = false;
       save->setText(editingFeaturePass() ? owner.tr("Save feature") : owner.tr("Save preset"));
@@ -3203,6 +3246,8 @@ struct FullscreenPassWidget::Impl {
         pending_color_target.clear();
         depth->setCurrentIndex(-1);
         position->setValue(0);
+        view_field->clear();
+        form->setRowVisible(view_field, false);
         // F-3: a new draft starts without the last draft's shader log or its
         // half-typed shader name.
         compile_log->clear();

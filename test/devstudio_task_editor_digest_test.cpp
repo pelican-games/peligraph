@@ -23,6 +23,7 @@
 #include "viewportgeometry.hpp"
 
 #include <QApplication>
+#include <QComboBox>
 #include <QDialog>
 #include <QElapsedTimer>
 #include <QLabel>
@@ -268,6 +269,105 @@ TEST_CASE("LP-4a the Task Editor's Apply keeps a task's view_select, and a "
           QStringLiteral("blur: light of $shadow/directional is decided each "
                          "frame and cannot be selected "
                          "(graph.view_select_runtime_axis@1)."));
+}
+
+TEST_CASE("LP-4b the Task Editor's View field writes view_select into the "
+          "declaration Apply sends",
+          "[devstudio][task-editor][lp4b][view-select][widget]") {
+    Rig rig;
+    // The frame plan's view_axes for the task's node: a directional shadow.
+    QStringList asked;
+    std::vector<FramePlanViewAxis> axes{{"light", std::nullopt, true, {}},
+                                        {"cascade", 3, false, {}}};
+    rig.features->setTaskViewAxesProvider([&](const QString &task) {
+        asked.push_back(task);
+        return axes;
+    });
+    const auto open = [&](const Json &view_select) -> QDialog * {
+        rig.features->editComputeTask(QStringLiteral("blur"));
+        const auto read = rig.next("get_compute_task_authoring");
+        REQUIRE(read);
+        auto context = taskContext(RootA);
+        auto &task = context["tasks"][0];
+        task["declaration"]["view_family"] = "$shadow/directional";
+        if (!view_select.is_null())
+            task["declaration"]["view_select"] = view_select;
+        task["declaration_json"] = task.at("declaration").dump(2);
+        rig.answer(*read, context);
+        return rig.editor();
+    };
+    const auto apply = [&](QDialog &dialog) {
+        auto &button = required<QPushButton>(dialog, "pelican.computeTasks.apply");
+        REQUIRE(button.isEnabled());
+        button.click();
+        const auto edit = rig.next("edit_compute_task");
+        REQUIRE(edit);
+        return edit->at("params").at("task");
+    };
+
+    SECTION("cascade 1 goes out in the declaration") {
+        QDialog *dialog = open(nullptr);
+        REQUIRE(dialog != nullptr);
+        CHECK(asked.contains(QStringLiteral("blur")));
+        CHECK(required<QLabel>(*dialog, "pelican.computeTasks.view.light").text() ==
+              QStringLiteral("light: every view, decided each frame"));
+        auto &cascade = required<QComboBox>(*dialog, "pelican.computeTasks.view.cascade");
+        CHECK(cascade.currentText() == QStringLiteral("All views"));
+        CHECK(cascade.count() == 4);
+        cascade.setCurrentIndex(cascade.findText(QStringLiteral("1")));
+        // The draft says so before Apply.
+        const auto draft = Json::parse(
+            required<QPlainTextEdit>(*dialog, "pelican.computeTasks.declaration")
+                .toPlainText()
+                .toStdString());
+        CHECK(draft.at("view_select") == Json{{"cascade", 1}});
+        const auto sent = apply(*dialog);
+        INFO(sent.dump());
+        CHECK(sent.at("view_select") == Json{{"cascade", 1}});
+        CHECK(sent.at("view_family") == "$shadow/directional");
+        CHECK(sent.at("dispatch") == Json{{"groups", Json::array({1, 1, 1})}});
+    }
+
+    SECTION("back to All views: the declaration goes out without view_select") {
+        QDialog *dialog = open(Json{{"cascade", 1}});
+        REQUIRE(dialog != nullptr);
+        auto &cascade = required<QComboBox>(*dialog, "pelican.computeTasks.view.cascade");
+        CHECK(cascade.currentText() == QStringLiteral("1"));
+        cascade.setCurrentIndex(0);
+        const auto sent = apply(*dialog);
+        INFO(sent.dump());
+        CHECK_FALSE(sent.contains("view_select"));
+        CHECK(sent.at("view_family") == "$shadow/directional");
+    }
+
+    SECTION("the field left alone: view_select goes back as declared") {
+        QDialog *dialog = open(Json{{"cascade", 2}});
+        REQUIRE(dialog != nullptr);
+        const auto sent = apply(*dialog);
+        CHECK(sent.at("view_select") == Json{{"cascade", 2}});
+    }
+
+    SECTION("retyping the JSON moves the field with it") {
+        QDialog *dialog = open(nullptr);
+        REQUIRE(dialog != nullptr);
+        auto &editor =
+            required<QPlainTextEdit>(*dialog, "pelican.computeTasks.declaration");
+        auto task = Json::parse(editor.toPlainText().toStdString());
+        task["view_select"] = {{"cascade", 2}};
+        editor.setPlainText(QString::fromStdString(task.dump(2)));
+        QApplication::processEvents();
+        CHECK(required<QComboBox>(*dialog, "pelican.computeTasks.view.cascade")
+                  .currentText() == QStringLiteral("2"));
+    }
+
+    SECTION("a family without axes: no field") {
+        axes.clear();
+        QDialog *dialog = open(nullptr);
+        REQUIRE(dialog != nullptr);
+        CHECK(required<QWidget>(*dialog, "pelican.computeTasks.view").isHidden());
+        CHECK(dialog->findChild<QComboBox *>(
+                  QStringLiteral("pelican.computeTasks.view.cascade")) == nullptr);
+    }
 }
 
 } // namespace PelicanStudio

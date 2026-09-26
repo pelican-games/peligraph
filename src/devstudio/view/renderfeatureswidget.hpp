@@ -1,10 +1,13 @@
 #pragma once
 
+#include "../model/frameplanmodel.hpp"
+
 #include <QWidget>
 #include <QStringList>
 
 #include <functional>
 #include <memory>
+#include <vector>
 
 class QByteArray;
 class QString;
@@ -40,6 +43,13 @@ class RenderFeaturesWidget final : public QWidget {
     using GraphNodeOpenAction = std::function<bool(
         const QString &scope, const QString &node, const QString &instance)>;
     void setGraphNodeOpenAction(GraphNodeOpenAction action);
+    // LP-4b. The view axes of a task's node in the current frame plan (the
+    // engine's view_axes), for the Task Editor's View field. Empty -- no
+    // field -- for a task whose family has none, or that the plan does not
+    // hold.
+    using TaskViewAxesProvider =
+        std::function<std::vector<FramePlanViewAxis>(const QString &task)>;
+    void setTaskViewAxesProvider(TaskViewAxesProvider provider);
     // Q-13. The rendering document's digest, shared with the other panels
     // that edit it: the panel refreshes when another panel's commit moved
     // the document, and sends an edit refused for that once more.

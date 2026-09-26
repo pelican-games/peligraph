@@ -10949,4 +10949,332 @@ TEST_CASE("LP-4a an edit on the canvas keeps a pass's and a task's view_select",
         CHECK(sent.at("task").at("view_family") == "$shadow/directional");
     }
 }
+
+// --- LP-4b: the View field and the canvas's View menu, from the engine's
+// view_axes (LP-Va2).
+
+namespace {
+
+const Json Lp4bCubeAxes = Json::array(
+    {{{"axis", "face"},
+      {"length", 6},
+      {"runtime", false},
+      {"labels", Json::array({"+X", "-X", "+Y", "-Y", "+Z", "-Z"})}}});
+const Json Lp4bDirectionalAxes = Json::array(
+    {{{"axis", "light"}, {"length", nullptr}, {"runtime", true}},
+     {{"axis", "cascade"}, {"length", 3}, {"runtime", false}}});
+
+// The WP343 editing fixture with view_axes the way get_frame_plan writes them:
+// `a` draws a cube capture and runs for face 2, the task `b` runs for every
+// view of a directional shadow (light decided each frame, 3 cascades), `c`
+// draws the main view ([]), and `d` predates view_axes (no member).
+Json lp4bWire() {
+    Json wire = mixedEditingWire();
+    for (auto &node : wire["nodes"]) {
+        const auto name = node.at("name").get<std::string>();
+        if (name == "wp343_mixed_a") {
+            node["view_family"] = "$capture/cube";
+            node["view_select"] = {{"face", 2}};
+            node["view_axes"] = Lp4bCubeAxes;
+        } else if (name == "wp343_mixed_b") {
+            node["view_family"] = "$shadow/directional";
+            node["view_axes"] = Lp4bDirectionalAxes;
+        } else if (name == "wp343_mixed_c") {
+            node["view_family"] = "$main";
+            node["view_axes"] = Json::array();
+        }
+    }
+    return wire;
+}
+
+// A menu's entries as "text", "[x] text" for a checked radio, "(off) text"
+// for a disabled one; sections and separators left out.
+QStringList lp4bMenuEntries(const QMenu &menu) {
+    QStringList entries;
+    for (QAction *action : menu.actions()) {
+        if (action->isSeparator()) continue;
+        QString entry = action->text();
+        if (!action->isEnabled()) entry = QStringLiteral("(off) ") + entry;
+        else if (action->isChecked()) entry = QStringLiteral("[x] ") + entry;
+        entries.push_back(entry);
+    }
+    return entries;
+}
+
+QAction *lp4bMenuAction(const QMenu &menu, const QString &text) {
+    for (QAction *action : menu.actions())
+        if (!action->isSeparator() && action->text() == text) return action;
+    return nullptr;
+}
+
+} // namespace
+
+TEST_CASE("LP-4b the View field's rows come from the engine's view_axes",
+          "[devstudio][frame-plan][lp4b][view-select]") {
+    const auto model = buildFramePlanModel(lp4bWire().dump());
+    const auto &a = vi3aNode(model, "wp343_mixed_a");
+    const auto &b = vi3aNode(model, "wp343_mixed_b");
+    const auto &c = vi3aNode(model, "wp343_mixed_c");
+    const auto &d = vi3aNode(model, "wp343_mixed_d");
+
+    // The model reads them.
+    REQUIRE(a.view_axes.size() == 1);
+    CHECK(a.view_axes[0] ==
+          FramePlanViewAxis{"face", 6, false, {"+X", "-X", "+Y", "-Y", "+Z", "-Z"}});
+    REQUIRE(b.view_axes.size() == 2);
+    CHECK(b.view_axes[0] == FramePlanViewAxis{"light", std::nullopt, true, {}});
+    CHECK(b.view_axes[1] == FramePlanViewAxis{"cascade", 3, false, {}});
+    CHECK(c.view_axes.empty());
+    CHECK(d.view_axes.empty());
+
+    using Kind = FramePlanViewFieldRow::Kind;
+    SECTION("a cube capture: one combo, named by the engine's labels") {
+        const auto rows =
+            framePlanViewFieldRows(a.view_axes, a.view_select, a.view_family);
+        REQUIRE(rows.size() == 1);
+        CHECK(rows[0].kind == Kind::choice);
+        CHECK(rows[0].axis == "face");
+        CHECK(rows[0].values ==
+              std::vector<std::string>{"0 (+X)", "1 (-X)", "2 (+Y)", "3 (-Y)",
+                                       "4 (+Z)", "5 (-Z)"});
+        CHECK(rows[0].selected == 2u);
+        CHECK(rows[0].text.empty());
+        // The canvas line and the details name the value too.
+        CHECK(framePlanViewSelectLine(a.view_select, a.view_axes) ==
+              "view: face 2 (+Y)");
+    }
+
+    SECTION("a directional shadow: light is not selectable, cascade is") {
+        const auto rows =
+            framePlanViewFieldRows(b.view_axes, b.view_select, b.view_family);
+        REQUIRE(rows.size() == 2);
+        CHECK(rows[0].kind == Kind::runtime);
+        CHECK(rows[0].axis == "light");
+        CHECK(rows[0].text == "light: every view, decided each frame");
+        CHECK(rows[0].values.empty());
+        CHECK(rows[1].kind == Kind::choice);
+        CHECK(rows[1].values == std::vector<std::string>{"0", "1", "2"});
+        CHECK_FALSE(rows[1].selected.has_value());
+    }
+
+    SECTION("no axes: no field") {
+        CHECK(framePlanViewFieldRows(c.view_axes, c.view_select, c.view_family)
+                  .empty());
+        CHECK(framePlanViewFieldRows(d.view_axes, d.view_select, d.view_family)
+                  .empty());
+        // Even when view_select names an axis: $main has none to show.
+        CHECK(framePlanViewFieldRows({}, {{"cascade", 1}}, "$main").empty());
+    }
+
+    SECTION("an axis view_select names but the family lacks: a warning row") {
+        const auto rows = framePlanViewFieldRows(
+            a.view_axes, {{"cascade", 1}, {"face", 4}}, a.view_family);
+        REQUIRE(rows.size() == 2);
+        CHECK(rows[0].axis == "face");
+        CHECK(rows[0].selected == 4u);
+        CHECK(rows[1].kind == Kind::unknown);
+        CHECK(rows[1].axis == "cascade");
+        CHECK(rows[1].selected == 1u);
+        CHECK(rows[1].text ==
+              "$capture/cube has no view axis named cascade: the engine will "
+              "refuse it. Remove it.");
+        // A value past the axis is kept, and warned about.
+        const auto past =
+            framePlanViewFieldRows(b.view_axes, {{"cascade", 5}}, b.view_family);
+        REQUIRE(past.size() == 2);
+        CHECK(past[1].selected == 5u);
+        CHECK(past[1].text ==
+              "cascade 5 is outside its 3 views (0..2): the engine will refuse "
+              "it.");
+    }
+
+    SECTION("what an edit carries") {
+        CHECK(framePlanViewSelectJson({}).is_null());
+        CHECK(framePlanViewSelectJson({{"cascade", 1}}) == Json{{"cascade", 1}});
+        CHECK(framePlanViewSelectWith({{"light", 0}}, "cascade", 1) ==
+              std::vector<FramePlanViewSelectAxis>{{"light", 0}, {"cascade", 1}});
+        CHECK(framePlanViewSelectWith({{"cascade", 2}}, "cascade", std::nullopt)
+                  .empty());
+        CHECK(framePlanDeclaredViewSelect(
+                  Json{{"view_select", {{"cascade", 1}}}}) ==
+              std::vector<FramePlanViewSelectAxis>{{"cascade", 1}});
+        CHECK(framePlanDeclaredViewSelect(Json::object()).empty());
+    }
+}
+
+TEST_CASE("LP-4b the canvas: labels on the view line, and a View menu that "
+          "sends one edit",
+          "[devstudio][frame-plan][lp4b][view-select][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    fixture.wire = lp4bWire();
+    // The declarations say what the plan says: `a` runs for face 2.
+    fixture.tweak_context = [](Json &context) {
+        for (auto &graph : context["graphs"])
+            for (auto &pass : graph["passes"])
+                if (pass.at("name") == "wp343_mixed_a")
+                    for (const char *key : {"declaration", "preset_declaration"}) {
+                        pass[key]["view_family"] = "$capture/cube";
+                        pass[key]["view_select"] = {{"face", 2}};
+                    }
+    };
+    fixture.catalog["tasks"][0]["declaration"]["view_family"] =
+        "$shadow/directional";
+    fixture.open();
+    auto &logical = fixture.logical();
+
+    SECTION("the line and the details name the face") {
+        CHECK(lp4aViewLines(logical) ==
+              std::map<std::string, QString>{
+                  {"wp343_mixed_a", QStringLiteral("view: face 2 (+Y)")}});
+        QStringList selects;
+        for (auto *tree : fixture.widget.findChildren<QTreeWidget *>())
+            for (const auto *item : tree->findItems(
+                     QStringLiteral("View select"),
+                     Qt::MatchExactly | Qt::MatchRecursive, 1))
+                selects.push_back(item->text(2));
+        CHECK(selects == QStringList{QStringLiteral("face 2 (+Y)")});
+        // The Task Editor's View field asks the panel for its task's axes.
+        const auto task_axes =
+            fixture.widget.taskViewAxes(QStringLiteral("authored_consumer"));
+        REQUIRE(task_axes.size() == 2);
+        CHECK(task_axes[0].runtime);
+        CHECK(task_axes[1] == FramePlanViewAxis{"cascade", 3, false, {}});
+        CHECK(fixture.widget.taskViewAxes(QStringLiteral("no_such_task")).empty());
+    }
+
+    SECTION("View is offered on a node with axes, and nowhere else") {
+        CHECK(contextMenuTexts(logical, *nodeItem(logical, "wp343_mixed_a"))
+                  .contains(QStringLiteral("View")));
+        CHECK(contextMenuTexts(logical, *nodeItem(logical, "wp343_mixed_b"))
+                  .contains(QStringLiteral("View")));
+        // The control: [] and a node without view_axes get no View.
+        CHECK_FALSE(contextMenuTexts(logical, *nodeItem(logical, "wp343_mixed_c"))
+                        .contains(QStringLiteral("View")));
+        CHECK_FALSE(contextMenuTexts(logical, *nodeItem(logical, "wp343_mixed_d"))
+                        .contains(QStringLiteral("View")));
+        QMenu none;
+        CHECK_FALSE(logical.fillViewMenu(
+            none, FramePlanNodeKey{fixture.graph, "wp343_mixed_c"}));
+        CHECK(none.actions().isEmpty());
+    }
+
+    SECTION("the entries: All views and each value, the current one checked") {
+        QMenu cube;
+        REQUIRE(logical.fillViewMenu(
+            cube, FramePlanNodeKey{fixture.graph, "wp343_mixed_a"}));
+        CHECK(lp4bMenuEntries(cube) ==
+              QStringList{QStringLiteral("All views"), QStringLiteral("0 (+X)"),
+                          QStringLiteral("1 (-X)"), QStringLiteral("[x] 2 (+Y)"),
+                          QStringLiteral("3 (-Y)"), QStringLiteral("4 (+Z)"),
+                          QStringLiteral("5 (-Z)")});
+        QMenu directional;
+        REQUIRE(logical.fillViewMenu(
+            directional, FramePlanNodeKey{fixture.graph, "wp343_mixed_b"}));
+        CHECK(lp4bMenuEntries(directional) ==
+              QStringList{QStringLiteral("(off) light: every view, decided each "
+                                         "frame"),
+                          QStringLiteral("[x] All views"), QStringLiteral("0"),
+                          QStringLiteral("1"), QStringLiteral("2")});
+    }
+
+    const auto pick = [&](const char *node, const char *entry) {
+        QMenu menu;
+        REQUIRE(logical.fillViewMenu(menu,
+                                     FramePlanNodeKey{fixture.graph, node}));
+        QAction *action = lp4bMenuAction(menu, QString::fromLatin1(entry));
+        REQUIRE(action != nullptr);
+        action->trigger();
+        QApplication::processEvents();
+    };
+    const auto sent = [&] {
+        return Json::parse(
+            QJsonDocument(fixture.recorder.params).toJson().toStdString());
+    };
+
+    SECTION("a pass: a face goes out as edit_preset_pass with view_select") {
+        pick("wp343_mixed_a", "1 (-X)");
+        REQUIRE(fixture.recorder.submits == 1);
+        REQUIRE(fixture.recorder.method == QStringLiteral("edit_preset_pass"));
+        const auto params = sent();
+        INFO(params.dump());
+        CHECK(params.at("pass_name") == "wp343_mixed_a");
+        CHECK(params.at("view_select") == Json{{"face", 1}});
+        // A fullscreen edit carries what the engine requires with it, as
+        // the declaration holds it.
+        const auto declaration = mixedPassDeclaration(0);
+        CHECK(params.at("output") == declaration.at("output"));
+        CHECK(params.at("shader") == declaration.at("shader"));
+        CHECK(params.at("input") == Json::array());
+        const std::set<std::string> accepted{
+            "base_source_digest", "base_preset_digest", "base_feature_digest",
+            "graph", "pass_name", "input", "output", "shader", "ray_query",
+            "uses_light_data", "push_constants", "clear_colors", "view_select"};
+        for (const auto &[key, value] : params.items()) {
+            INFO(key);
+            CHECK(accepted.contains(key));
+        }
+    }
+
+    SECTION("a pass: All views sends view_select null") {
+        pick("wp343_mixed_a", "All views");
+        REQUIRE(fixture.recorder.submits == 1);
+        const auto params = sent();
+        INFO(params.dump());
+        REQUIRE(params.contains("view_select"));
+        CHECK(params.at("view_select").is_null());
+    }
+
+    SECTION("the value it already has is not sent") {
+        pick("wp343_mixed_a", "2 (+Y)");
+        CHECK(fixture.recorder.submits == 0);
+        CHECK(statusText(fixture.widget) ==
+              QStringLiteral("wp343_mixed_a already runs for face 2."));
+    }
+
+    SECTION("a task: the whole declaration goes back with view_select") {
+        pick("wp343_mixed_b", "1");
+        REQUIRE(fixture.recorder.submits == 1);
+        REQUIRE(fixture.recorder.method == QStringLiteral("edit_compute_task"));
+        const auto task = sent().at("task");
+        INFO(task.dump());
+        CHECK(task.at("view_select") == Json{{"cascade", 1}});
+        CHECK(task.at("view_family") == "$shadow/directional");
+        CHECK(task.at("dispatch") ==
+              fixture.catalog["tasks"][0]["declaration"].at("dispatch"));
+        CHECK(task.at("name") == "authored_consumer");
+    }
+}
+
+TEST_CASE("LP-4b a task's View menu back to All views drops view_select from "
+          "the declaration",
+          "[devstudio][frame-plan][lp4b][view-select][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    fixture.wire = lp4bWire();
+    for (auto &node : fixture.wire["nodes"])
+        if (node.at("name") == "wp343_mixed_b")
+            node["view_select"] = {{"cascade", 1}};
+    fixture.catalog["tasks"][0]["declaration"]["view_family"] =
+        "$shadow/directional";
+    fixture.catalog["tasks"][0]["declaration"]["view_select"] = {{"cascade", 1}};
+    fixture.open();
+    auto &logical = fixture.logical();
+    QMenu menu;
+    REQUIRE(logical.fillViewMenu(
+        menu, FramePlanNodeKey{fixture.graph, "wp343_mixed_b"}));
+    CHECK(lp4bMenuEntries(menu).contains(QStringLiteral("[x] 1")));
+    QAction *all = lp4bMenuAction(menu, QStringLiteral("All views"));
+    REQUIRE(all != nullptr);
+    all->trigger();
+    QApplication::processEvents();
+    REQUIRE(fixture.recorder.submits == 1);
+    REQUIRE(fixture.recorder.method == QStringLiteral("edit_compute_task"));
+    const auto task =
+        Json::parse(QJsonDocument(fixture.recorder.params).toJson().toStdString())
+            .at("task");
+    INFO(task.dump());
+    CHECK_FALSE(task.contains("view_select"));
+    CHECK(task.at("view_family") == "$shadow/directional");
+}
 } // namespace PelicanStudio
