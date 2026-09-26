@@ -24,6 +24,7 @@
 #include <QGraphicsSimpleTextItem>
 #include <QGraphicsView>
 #include <QKeyEvent>
+#include <QLineF>
 #include <QRectF>
 #include <QScrollBar>
 #include <QTabWidget>
@@ -3545,6 +3546,8 @@ struct ZoneHarness {
     GraphCanvasScene scene;
     Json document;
     int generation = 0;
+    // LP-4d2: what get_frame_plan's loops[] says, when a test gives one.
+    Json loops = Json::array();
 
     explicit ZoneHarness(Json initial = zoneDocument()) : document(std::move(initial)) {}
 
@@ -3564,6 +3567,8 @@ struct ZoneHarness {
                 model.receiveRpcResult(request.request_id, snapshot().dump());
             else if (request.method == "get_graph_catalog")
                 model.receiveRpcResult(request.request_id, visualCatalog().dump());
+            else if (request.method == "get_frame_plan")
+                model.receiveRpcResult(request.request_id, Json{{"loops", loops}}.dump());
             else if (request.method == "edit_graph_document")
                 edits.push_back(request);
         }
@@ -3960,4 +3965,496 @@ TEST_CASE("LP-4d1 Undo and Redo take a zone's edits and its move back, byte for 
         h.commit();
     }
     CHECK(h.document.dump() == after);
+}
+
+// --- LP-4d2: lines across a zone's edge, the carry, the expansion.
+
+namespace {
+
+// zoneDocument() with both branches running `first`: one definition, shared.
+Json sharedBodyDocument() {
+    auto document = zoneDocument();
+    document["nodes"][2]["parameters"]["branches"] =
+        Json::array({{{"when", {{"element", 0}}}, {"body", "first"}}, {{"body", "first"}}});
+    return document;
+}
+
+// zoneDocument() whose else body `rest` also has a `sum` (value.add of its
+// boundary and `c`): the same wiring the body a copy was made from has.
+Json twinBodyDocument() {
+    auto document = zoneDocument();
+    document["definitions"]["rest"]["nodes"].push_back(
+        {{"id", "sum"}, {"op", "value.add"},
+         {"inputs", {{"a", {{"node", "target"}, {"port", "value"}}},
+                     {"b", {{"node", "c"}, {"port", "value"}}}}},
+         {"outputs", Json::array({"value"})}});
+    return document;
+}
+
+QGraphicsItem *zoneSlot(QGraphicsScene &scene, const char *slot) {
+    return scopedItem(scene, PelicanStudio::GraphCanvasZoneSocketItem, QString{},
+                      QStringLiteral("steps"), QString::fromLatin1(slot));
+}
+
+QGraphicsItem *socketOf(QGraphicsScene &scene, const QString &scope, const char *node,
+                        const char *port, const char *direction) {
+    return scopedItem(scene, PelicanStudio::GraphCanvasSocketItem, scope,
+                      QString::fromLatin1(node), QString::fromLatin1(port),
+                      QString::fromLatin1(direction));
+}
+
+Json graphInput(const char *scope, const char *id) {
+    return {{"op", "add_node"}, {"scope", scope}, {"node", {{"id", id}, {"op", "graph.input"}}}};
+}
+
+} // namespace
+
+TEST_CASE("LP-4d2 a line from outside into a zone is a loop input and a boundary in every body, "
+          "in one list",
+          "[devstudio][graph-canvas][scene][lp4d2]") {
+    (void)application();
+
+    SECTION("dropped on the left edge's slot: an input named after the port, in both bodies") {
+        ZoneHarness h;
+        h.open();
+        QGraphicsItem *curve = socketOf(h.scene, QString{}, "curve", "value", "output");
+        QGraphicsItem *slot = zoneSlot(h.scene, "in:+");
+        REQUIRE(curve != nullptr);
+        REQUIRE(slot != nullptr);
+        // The slot is on the left edge, under the loop's own input.
+        QGraphicsItem *frame = scopedNode(h.scene, QString{}, QStringLiteral("steps"));
+        CHECK(std::abs(centreOf(slot).x() - frame->sceneBoundingRect().left()) < 8.0);
+        drag(h.scene, centreOf(curve), centreOf(slot));
+        const auto ops = h.commit();
+        CHECK(ops == Json::array({graphInput("first", "value"), graphInput("rest", "value"),
+                                  {{"op", "set_input"}, {"scope", "root"}, {"node", "steps"},
+                                   {"port", "value"},
+                                   {"source", {{"node", "curve"}, {"port", "value"}}}}}));
+        // The engine took it: the loop reads curve, and both bodies have it.
+        CHECK(h.document.at("nodes")[2].at("inputs").at("value") ==
+              Json{{"node", "curve"}, {"port", "value"}});
+        // Drawn: a row of the left edge, the loop's socket outside and the
+        // boundary inside.
+        CHECK(socketOf(h.scene, QString{}, "steps", "value", "input") != nullptr);
+        CHECK(socketOf(h.scene, QStringLiteral("first"), "value", "value", "output") != nullptr);
+        // A second line from the same port is given a name of its own.
+        CHECK(h.model.suggestLoopInputName("steps", "value") == "value_2");
+    }
+
+    SECTION("dropped on a body node's input: the same, and that input reads it") {
+        ZoneHarness h;
+        h.open();
+        QGraphicsItem *root_a = socketOf(h.scene, QString{}, "a", "value", "output");
+        QGraphicsItem *sum_b = socketOf(h.scene, QStringLiteral("first"), "sum", "b", "input");
+        REQUIRE(root_a != nullptr);
+        REQUIRE(sum_b != nullptr);
+        drag(h.scene, centreOf(root_a), centreOf(sum_b));
+        const auto ops = h.commit();
+        CHECK(ops == Json::array({graphInput("first", "value"), graphInput("rest", "value"),
+                                  {{"op", "set_input"}, {"scope", "root"}, {"node", "steps"},
+                                   {"port", "value"},
+                                   {"source", {{"node", "a"}, {"port", "value"}}}},
+                                  {{"op", "set_input"}, {"scope", "first"}, {"node", "sum"},
+                                   {"port", "b"},
+                                   {"source", {{"node", "value"}, {"port", "value"}}}}}));
+        CHECK(scopedEdge(h.scene, QStringLiteral("first"), QStringLiteral("value"),
+                         QStringLiteral("value"), QStringLiteral("sum"),
+                         QStringLiteral("b")) != nullptr);
+    }
+
+    SECTION("dropped on an input the loop already has: that edge is replaced, nothing else") {
+        ZoneHarness h;
+        h.open();
+        QGraphicsItem *curve = socketOf(h.scene, QString{}, "curve", "value", "output");
+        QGraphicsItem *target = socketOf(h.scene, QString{}, "steps", "target", "input");
+        REQUIRE(curve != nullptr);
+        REQUIRE(target != nullptr);
+        drag(h.scene, centreOf(curve), centreOf(target));
+        CHECK(h.commit() == Json::array({{{"op", "set_input"}, {"scope", "root"},
+                                          {"node", "steps"}, {"port", "target"},
+                                          {"source", {{"node", "curve"}, {"port", "value"}}}}}));
+    }
+
+    SECTION("two branches running one definition: its boundary is added once") {
+        ZoneHarness h{sharedBodyDocument()};
+        h.open();
+        QGraphicsItem *curve = socketOf(h.scene, QString{}, "curve", "value", "output");
+        QGraphicsItem *slot = zoneSlot(h.scene, "in:+");
+        REQUIRE(curve != nullptr);
+        REQUIRE(slot != nullptr);
+        drag(h.scene, centreOf(curve), centreOf(slot));
+        CHECK(h.commit() == Json::array({graphInput("first", "value"),
+                                         {{"op", "set_input"}, {"scope", "root"},
+                                          {"node", "steps"}, {"port", "value"},
+                                          {"source", {{"node", "curve"}, {"port", "value"}}}}}));
+    }
+}
+
+TEST_CASE("LP-4d2 a body output drawn to the right edge is an output of every body and the loop's p",
+          "[devstudio][graph-canvas][scene][lp4d2]") {
+    (void)application();
+
+    SECTION("every body gives it from its node of that id: one list, set_outputs each") {
+        ZoneHarness h{twinBodyDocument()};
+        h.open();
+        QGraphicsItem *sum = socketOf(h.scene, QStringLiteral("first"), "sum", "value", "output");
+        QGraphicsItem *slot = zoneSlot(h.scene, "out:+");
+        REQUIRE(sum != nullptr);
+        REQUIRE(slot != nullptr);
+        drag(h.scene, centreOf(sum), centreOf(slot));
+        const auto ops = h.commit();
+        auto loop = twinBodyDocument().at("nodes")[2];
+        loop["outputs"] = Json::array({"out", "out[]", "value"});
+        CHECK(ops == Json::array({
+                         {{"op", "set_outputs"}, {"scope", "first"},
+                          {"outputs", {{"out", {{"node", "sum"}, {"port", "value"}}},
+                                       {"value", {{"node", "sum"}, {"port", "value"}}}}}},
+                         {{"op", "set_outputs"}, {"scope", "rest"},
+                          {"outputs", {{"out", {{"node", "c"}, {"port", "value"}}},
+                                       {"value", {{"node", "sum"}, {"port", "value"}}}}}},
+                         {{"op", "replace_node"}, {"scope", "root"}, {"node", loop}}}));
+        // The engine took it, and the zone draws the new row: the body's end
+        // inside, the loop's p outside.
+        CHECK(h.document.at("definitions").at("rest").at("outputs").at("value") ==
+              Json{{"node", "sum"}, {"port", "value"}});
+        CHECK(scopedItem(h.scene, PelicanStudio::GraphCanvasZoneSocketItem, QString{},
+                         QStringLiteral("steps"), QStringLiteral("out:value")) != nullptr);
+        CHECK(socketOf(h.scene, QString{}, "steps", "value", "output") != nullptr);
+    }
+
+    SECTION("a body without that node: nothing is sent, and the notice says which") {
+        ZoneHarness h;
+        h.open();
+        QGraphicsItem *sum = socketOf(h.scene, QStringLiteral("first"), "sum", "value", "output");
+        QGraphicsItem *slot = zoneSlot(h.scene, "out:+");
+        REQUIRE(sum != nullptr);
+        REQUIRE(slot != nullptr);
+        drag(h.scene, centreOf(sum), centreOf(slot));
+        CHECK(h.answerReads().empty());
+        CHECK(h.model.notice().message ==
+              "Branch 1 of loop steps runs rest, which has no sum.value to give value from: "
+              "add the output there first.");
+    }
+}
+
+TEST_CASE("LP-4d2 a carry is drawn from a body output back to a boundary input, and Delete takes it "
+          "out",
+          "[devstudio][graph-canvas][scene][lp4d2]") {
+    (void)application();
+    ZoneHarness h;
+    h.open();
+    auto &scene = h.scene;
+    const auto parameters = h.document.at("nodes")[2].at("parameters");
+
+    QGraphicsItem *out = scopedItem(scene, PelicanStudio::GraphCanvasZoneSocketItem, QString{},
+                                    QStringLiteral("steps"), QStringLiteral("out:out"));
+    QGraphicsItem *target = socketOf(scene, QStringLiteral("first"), "target", "value", "output");
+    REQUIRE(out != nullptr);
+    REQUIRE(target != nullptr);
+    drag(scene, centreOf(out), centreOf(target));
+    auto carried = parameters;
+    carried["carry"] = Json::array({{{"from", "out"}, {"to", "target"}}});
+    CHECK(h.commit() == Json::array({{{"op", "set_node_parameters"}, {"scope", "root"},
+                                      {"node", "steps"}, {"parameters", carried}}}));
+
+    // The arrow runs round the bottom of the frame, below the body.
+    auto *arrow = dynamic_cast<QGraphicsPathItem *>(
+        scopedItem(scene, PelicanStudio::GraphCanvasZoneCarryItem, QString{},
+                   QStringLiteral("steps"), QStringLiteral("out/target")));
+    REQUIRE(arrow != nullptr);
+    REQUIRE_FALSE(arrow->path().isEmpty());
+    QGraphicsItem *sum = scopedNode(scene, QStringLiteral("first"), QStringLiteral("sum"));
+    QGraphicsItem *frame = scopedNode(scene, QString{}, QStringLiteral("steps"));
+    REQUIRE(sum != nullptr);
+    CHECK(arrow->sceneBoundingRect().bottom() > sum->sceneBoundingRect().bottom());
+    // (The line as drawn: its bounding box is the wider shape a press picks.)
+    CHECK(frame->sceneBoundingRect().contains(arrow->mapRectToScene(arrow->path().boundingRect())));
+    // target is fed by the loop's edge from a: no warning.
+    CHECK(scopedItem(scene, PelicanStudio::GraphCanvasZoneCarryMarkItem, QString{},
+                     QStringLiteral("steps"), QStringLiteral("out/target")) == nullptr);
+
+    // Picked by a press on it, taken out by Delete.
+    const QPointF on = arrow->mapToScene(arrow->path().pointAtPercent(0.5));
+    click(scene, on);
+    REQUIRE(scene.selectedCarry().has_value());
+    CHECK(*scene.selectedCarry() ==
+          PelicanStudio::GraphCanvasScene::CarryPick{"steps", "out", "target"});
+    CHECK_FALSE(scene.selectedNode().has_value());
+    pressKey(scene, Qt::Key_Delete);
+    CHECK(h.commit() == Json::array({{{"op", "set_node_parameters"}, {"scope", "root"},
+                                      {"node", "steps"}, {"parameters", parameters}}}));
+    CHECK(scopedItem(scene, PelicanStudio::GraphCanvasZoneCarryItem, QString{},
+                     QStringLiteral("steps"), QStringLiteral("out/target")) == nullptr);
+
+    // A carry into an input the loop feeds nothing: the arrow is marked, with
+    // the Loop fields' sentence.
+    auto unfed = zoneDocument();
+    unfed["nodes"][2].erase("inputs");
+    unfed["nodes"][2]["parameters"]["carry"] = Json::array({{{"from", "out"}, {"to", "target"}}});
+    ZoneHarness warned{unfed};
+    warned.open();
+    QGraphicsItem *mark = scopedItem(warned.scene, PelicanStudio::GraphCanvasZoneCarryMarkItem,
+                                     QString{}, QStringLiteral("steps"),
+                                     QStringLiteral("out/target"));
+    REQUIRE(mark != nullptr);
+    CHECK(mark->toolTip() ==
+          QStringLiteral("target has no loop input: connect one for the first element to start from."));
+}
+
+TEST_CASE("LP-4d2 a line reading one element of a p[] is dashed and says which element",
+          "[devstudio][graph-canvas][scene][lp4d2]") {
+    (void)application();
+    auto document = zoneDocument();
+    document["nodes"].push_back({{"id", "other"}, {"op", "graph.loop"},
+                                 {"parameters", {{"over", {{"range", {{"count", 2}}}}},
+                                                 {"branches", Json::array({{{"body", "rest"}}})}}},
+                                 {"inputs", {{"target", {{"node", "a"}, {"port", "value"}}}}},
+                                 {"outputs", Json::array({"out", "out[]"})}});
+    document["nodes"][2]["inputs"]["target"] = {
+        {"node", "other"}, {"port", "out[]"}, {"element", {{"$expr", "element"}}}};
+    ZoneHarness h{document};
+    h.open();
+    auto *line = dynamic_cast<QGraphicsPathItem *>(
+        scopedEdge(h.scene, QString{}, QStringLiteral("other"), QStringLiteral("out[]"),
+                   QStringLiteral("steps"), QStringLiteral("target")));
+    REQUIRE(line != nullptr);
+    CHECK(line->pen().style() == Qt::DashLine);
+    CHECK(line->data(PelicanStudio::GraphCanvasEdgeElementRole).toString() ==
+          QStringLiteral("element"));
+    auto *label = dynamic_cast<QGraphicsSimpleTextItem *>(
+        scopedItem(h.scene, PelicanStudio::GraphCanvasEdgeLabelItem, QString{},
+                   QStringLiteral("steps"), QStringLiteral("target")));
+    REQUIRE(label != nullptr);
+    CHECK(label->text() == QStringLiteral("[element]"));
+    // Over the middle of its line.
+    const QPointF middle = line->mapToScene(line->path().pointAtPercent(0.5));
+    CHECK(QLineF{label->sceneBoundingRect().center(), middle}.length() < 30.0);
+    // Picking it keeps it dashed.
+    h.scene.selectEdge(std::string{}, PelicanStudio::GraphCanvasEdge{"other", "out[]", "steps", "target"},
+                       false);
+    CHECK(line->pen().style() == Qt::DashLine);
+    // An ordinary line is neither.
+    auto *plain = dynamic_cast<QGraphicsPathItem *>(
+        scopedEdge(h.scene, QString{}, QStringLiteral("a"), QStringLiteral("value"),
+                   QStringLiteral("other"), QStringLiteral("target")));
+    REQUIRE(plain != nullptr);
+    CHECK(plain->pen().style() == Qt::SolidLine);
+    CHECK(scopedItem(h.scene, PelicanStudio::GraphCanvasEdgeLabelItem, QString{},
+                     QStringLiteral("other"), QStringLiteral("target")) == nullptr);
+}
+
+TEST_CASE("LP-4d2 Undo and Redo take a zone's input, output and carry back, byte for byte",
+          "[devstudio][graph-canvas][scene][lp4d2]") {
+    (void)application();
+    ZoneHarness h{twinBodyDocument()};
+    h.open();
+    auto &scene = h.scene;
+    const auto before = h.document.dump();
+
+    // Decision 1: root a into the body's sum.b.
+    drag(scene, centreOf(socketOf(scene, QString{}, "a", "value", "output")),
+         centreOf(socketOf(scene, QStringLiteral("first"), "sum", "b", "input")));
+    h.commit();
+    // Decision 2: sum's value out of every body.
+    drag(scene, centreOf(socketOf(scene, QStringLiteral("first"), "sum", "value", "output")),
+         centreOf(zoneSlot(scene, "out:+")));
+    CHECK(h.commit().at(0).at("op") == "set_outputs");
+    // Decision 3: carried back into the new input.
+    drag(scene,
+         centreOf(scopedItem(scene, PelicanStudio::GraphCanvasZoneSocketItem, QString{},
+                             QStringLiteral("steps"), QStringLiteral("out:value"))),
+         centreOf(socketOf(scene, QStringLiteral("first"), "value", "value", "output")));
+    h.commit();
+    const auto after = h.document.dump();
+    REQUIRE(h.document.at("nodes")[2].at("parameters").at("carry") ==
+            Json::array({{{"from", "value"}, {"to", "value"}}}));
+
+    for (int step = 0; step < 3; ++step) {
+        REQUIRE(h.model.canUndo());
+        scene.undoEdit();
+        h.commit();
+    }
+    CHECK(h.document.dump() == before);
+    for (int step = 0; step < 3; ++step) {
+        REQUIRE(h.model.canRedo());
+        scene.redoEdit();
+        h.commit();
+    }
+    CHECK(h.document.dump() == after);
+}
+
+TEST_CASE("LP-4d2 a zone says what the loop became, and a draw_loop's tabs how many materials each",
+          "[devstudio][graph-canvas][scene][lp4d2]") {
+    (void)application();
+    ZoneHarness h;
+    h.loops = Json::array({{{"node", "steps"}, {"tier", "expand"}, {"count", 2},
+                            {"elements", Json::array({{{"element", 0}, {"index", 0}, {"branch", 0}},
+                                                      {{"element", 1}, {"index", 1}, {"branch", 1}}})},
+                            {"unmatched_branches", Json::array()}}});
+    h.open();
+    h.answerReads();
+    h.scene.repopulate();
+    auto *line = dynamic_cast<QGraphicsSimpleTextItem *>(
+        scopedItem(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QString{},
+                   QStringLiteral("steps"), QStringLiteral("expansion")));
+    REQUIRE(line != nullptr);
+    CHECK(line->text() == QStringLiteral("×2 copies"));
+    QGraphicsItem *frame = scopedNode(h.scene, QString{}, QStringLiteral("steps"));
+    CHECK(frame->sceneBoundingRect().contains(line->sceneBoundingRect()));
+    // Its button asks the owner to show the loop in the Frame Plan.
+    QGraphicsItem *button = scopedItem(h.scene, PelicanStudio::GraphCanvasZoneButtonItem, QString{},
+                                       QStringLiteral("steps"), QStringLiteral("frame_plan"));
+    REQUIRE(button != nullptr);
+    std::string asked;
+    h.scene.showInFramePlanRequested = [&](const std::string &loop) { asked = loop; };
+    click(h.scene, centreOf(button));
+    CHECK(asked == "steps");
+    CHECK(h.answerReads().empty());
+
+    // A draw_loop: its materials, and each tab's share of them. No button:
+    // a draw_loop makes no copies.
+    auto document = zoneDocument();
+    auto &loop = document["nodes"][2];
+    loop["parameters"] = {{"over", {{"draw_items", {{"contract", "forward_opaque_v1"}}}}},
+                          {"branches", Json::array({{{"when", {{"material", "m#a"}}}, {"body", "first"}},
+                                                    {{"body", "rest"}}})}};
+    ZoneHarness draws{document};
+    draws.loops = Json::array({{{"node", "steps"}, {"tier", "draw_loop"}, {"count", 3}, {"total", 3},
+                                {"elements", Json::array({{{"element", "m#a"}, {"index", 0}, {"branch", 0}},
+                                                          {{"element", "m#b"}, {"index", 1}, {"branch", 1}},
+                                                          {{"element", "m#c"}, {"index", 2}, {"branch", 1}}})},
+                                {"unmatched_branches", Json::array()}}});
+    draws.open();
+    draws.answerReads();
+    draws.scene.repopulate();
+    auto *materials = dynamic_cast<QGraphicsSimpleTextItem *>(
+        scopedItem(draws.scene, PelicanStudio::GraphCanvasZoneLabelItem, QString{},
+                   QStringLiteral("steps"), QStringLiteral("expansion")));
+    REQUIRE(materials != nullptr);
+    CHECK(materials->text() == QStringLiteral("3 materials"));
+    CHECK(scopedItem(draws.scene, PelicanStudio::GraphCanvasZoneButtonItem, QString{},
+                     QStringLiteral("steps"), QStringLiteral("frame_plan")) == nullptr);
+    const auto tabs = zoneTabs(draws.scene);
+    REQUIRE(tabs.size() == 2);
+    CHECK(tabs[0].second == QStringLiteral("if m#a (1)"));
+    CHECK(tabs[1].second == QStringLiteral("else (2)"));
+}
+
+TEST_CASE("LP-4d2 the frame follows a body node while it is dragged, and a long pill keeps to its node",
+          "[devstudio][graph-canvas][scene][lp4d2]") {
+    (void)application();
+    auto document = zoneDocument();
+    // A fullscreen pass's parameters, which no catalog here declares: its
+    // shader is a pill of JSON.
+    document["definitions"]["first"]["nodes"].push_back(
+        {{"id", "pass"}, {"op", "render.fullscreen"},
+         {"parameters", {{"shader", {{"vertex", "engine://fullscreen"},
+                                     {"fragment", "engine://passthrough_with_a_long_name"}}}}},
+         {"outputs", Json::array({"color"})}});
+    ZoneHarness h{document};
+    h.open();
+    auto &scene = h.scene;
+
+    // The pill is cut to the node, and says the whole of it when hovered.
+    QGraphicsItem *pass = scopedNode(scene, QStringLiteral("first"), QStringLiteral("pass"));
+    REQUIRE(pass != nullptr);
+    QGraphicsSimpleTextItem *pill_text = nullptr;
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+                QLatin1String{PelicanStudio::GraphCanvasValuePillItem} &&
+            item->data(PelicanStudio::GraphCanvasScopeRole).toString() == QStringLiteral("first") &&
+            item->data(PelicanStudio::NodeGraphNameRole).toString() == QStringLiteral("pass"))
+            if (auto *text = dynamic_cast<QGraphicsSimpleTextItem *>(item)) pill_text = text;
+    REQUIRE(pill_text != nullptr);
+    CHECK(pill_text->text().endsWith(QChar{0x2026}));
+    CHECK(pill_text->toolTip().contains(QStringLiteral("engine://passthrough_with_a_long_name")));
+    CHECK(pass->sceneBoundingRect().contains(pill_text->parentItem()->sceneBoundingRect()));
+
+    // A body node taken past the frame: the frame is already round it, and
+    // the right edge's sockets with it -- before the hand lets go, and
+    // without the frame being drawn again.
+    QGraphicsItem *frame = scopedNode(scene, QString{}, QStringLiteral("steps"));
+    QGraphicsItem *sum = scopedNode(scene, QStringLiteral("first"), QStringLiteral("sum"));
+    QGraphicsItem *out = socketOf(scene, QString{}, "steps", "out", "output");
+    REQUIRE(frame != nullptr);
+    REQUIRE(sum != nullptr);
+    REQUIRE(out != nullptr);
+    const qreal right_before = frame->sceneBoundingRect().right();
+    sum->setPos(sum->pos() + QPointF{500.0, 300.0});
+    CHECK(scopedNode(scene, QString{}, QStringLiteral("steps")) == frame);
+    CHECK(frame->sceneBoundingRect().contains(sum->sceneBoundingRect()));
+    CHECK(frame->sceneBoundingRect().right() > right_before + 400.0);
+    CHECK(std::abs(centreOf(out).x() - frame->sceneBoundingRect().right()) < 8.0);
+    // And the heading's hotspot is still on the heading.
+    const QVariant spot = frame->data(PelicanStudio::NodeGraphHotspotRole);
+    const auto under = scene.items(frame->mapToScene(spot.toPointF()));
+    REQUIRE_FALSE(under.isEmpty());
+    CHECK(under.front()->data(PelicanStudio::GraphCanvasHeadingRole).toBool());
+}
+
+TEST_CASE("LP-4d2 Show in Frame Plan asks the owner, and Open in Graph on a loop's copy picks the "
+          "body node in the root's zone",
+          "[devstudio][graph-canvas][scene][lp4d2]") {
+    (void)application();
+    RecordedCapability transport;
+    auto seam = transport.capability();
+    // A fake frame plan: loops[] only, two elements, the second taking the
+    // else.
+    seam.requestFramePlan = [&transport](QString *) {
+        transport.calls.push_back(RecordedCapability::Call{QStringLiteral("get_frame_plan")});
+        return transport.next++;
+    };
+    PelicanStudio::GraphCanvasWidget widget{seam};
+    widget.show();
+    QCoreApplication::processEvents();
+    const auto answerRpc = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    };
+    answerRpc(QStringLiteral("get_graph_instances"), context(zoneDocument()));
+    answerRpc(QStringLiteral("get_graph_catalog"), visualCatalog());
+    answerRpc(QStringLiteral("get_frame_plan"),
+              Json{{"loops", Json::array({{{"node", "steps"}, {"tier", "expand"}, {"count", 2},
+                                           {"elements", Json::array({
+                                               {{"element", 0}, {"index", 0}, {"branch", 0}},
+                                               {{"element", 1}, {"index", 1}, {"branch", 1}}})},
+                                           {"unmatched_branches", Json::array()}}})}});
+    auto &scene = widget.scene();
+    REQUIRE(scene.zones() == std::map<std::string, std::string>{{"steps", "first"}});
+
+    // Decision 5: the zone's button is the owner's Show in Frame Plan.
+    QString asked;
+    widget.setFramePlanLoopAction([&](const QString &loop) {
+        asked = loop;
+        return true;
+    });
+    QGraphicsItem *button = scopedItem(scene, PelicanStudio::GraphCanvasZoneButtonItem, QString{},
+                                       QStringLiteral("steps"), QStringLiteral("frame_plan"));
+    REQUIRE(button != nullptr);
+    click(scene, centreOf(button));
+    CHECK(asked == QStringLiteral("steps"));
+
+    // Decision 6: element 1 ran the else. The canvas stays on the root, the
+    // zone's tab goes to the else, and c is picked inside it.
+    REQUIRE(widget.revealLoopOrigin(QStringLiteral("steps"), 1, QStringLiteral("c")));
+    CHECK(widget.model().currentScope().empty());
+    CHECK(widget.model().breadcrumb().size() == 1);
+    CHECK(scene.zones() == std::map<std::string, std::string>{{"steps", "rest"}});
+    CHECK(scene.selectedScope() == "rest");
+    REQUIRE(scene.selectedNode().has_value());
+    CHECK(*scene.selectedNode() == "c");
+    CHECK(scopedNode(scene, QStringLiteral("rest"), QStringLiteral("c")) != nullptr);
+
+    // A folded zone opens for it; element 0 is the first branch's.
+    scene.setCollapsed(std::string{}, "steps", true);
+    REQUIRE(scene.zones().empty());
+    REQUIRE(widget.revealLoopOrigin(QStringLiteral("steps"), 0, QStringLiteral("sum")));
+    CHECK(scene.zones() == std::map<std::string, std::string>{{"steps", "first"}});
+    CHECK(scene.selectedScope() == "first");
+    CHECK(*scene.selectedNode() == "sum");
+    // A node that body does not hold: nothing moves.
+    CHECK_FALSE(widget.revealLoopOrigin(QStringLiteral("steps"), 0, QStringLiteral("c")));
+    CHECK(*scene.selectedNode() == "sum");
 }

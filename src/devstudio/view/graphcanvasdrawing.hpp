@@ -9,6 +9,9 @@
 #include <QString>
 #include <QStringList>
 
+#include <QPainterPath>
+#include <QRectF>
+
 #include <functional>
 #include <vector>
 
@@ -77,6 +80,29 @@ struct ZoneTab {
     bool runs = true;
 };
 
+// LP-4d2, decision 3: one pair of the loop's `carry`, drawn as an arrow
+// round the bottom of the frame from the body output `from` (right edge,
+// inside) back to the boundary input `to` (left edge, inside). `unbound` is
+// LP-4c's warning: `to` has no loop input edge to start from.
+struct ZoneCarry {
+    QString from;
+    QString to;
+    bool unbound = false;
+    QString warning;
+    bool selected = false;
+};
+
+// What the frame is drawn around besides its body: the body's origin in the
+// frame item, the least the frame may be (heading, tabs, edge rows, footer),
+// and the footer's height. Kept by the scene, so a frame can follow its body
+// while one of its nodes is being dragged (decision 7).
+struct ZoneFrameMetrics {
+    QPointF origin;
+    qreal min_width = 0.0;
+    qreal min_height = 0.0;
+    qreal footer = 0.0;
+};
+
 struct Zone {
     // The loop, drawn the way its node is: heading, badge, sockets.
     Node node;
@@ -86,6 +112,16 @@ struct Zone {
     std::vector<ZoneTab> tabs;
     std::vector<ZoneRow> inputs;
     std::vector<ZoneRow> outputs;
+    // LP-4d2, decision 1 and 2: an empty slot at the end of each edge, where
+    // a line is dropped to make a new loop input (left, `in:+`) or a new body
+    // output (right, `out:+`). Only while the document can be edited.
+    bool edge_slots = false;
+    std::vector<ZoneCarry> carries;
+    // Decision 5: one line along the bottom of the frame -- `×N copies` for
+    // an expand loop (with Show in Frame Plan), `N materials` for a
+    // draw_loop. Empty before a report.
+    QString expansion;
+    bool frame_plan_button = false;
     // The body's extent in its own coordinates (null for an empty body).
     QRectF content;
     // Computed by layoutZone: the frame in the item's coordinates (its
@@ -93,6 +129,7 @@ struct Zone {
     // above its origin), and where the body's origin is in them.
     QRectF frame;
     QPointF origin;
+    ZoneFrameMetrics metrics;
 };
 
 // The frame around `zone.content`, and the body's origin, with room for the
@@ -100,6 +137,21 @@ struct Zone {
 // `zone.node` so the root placement makes room for all of it.
 void layoutZone(Zone &zone, const QFontMetricsF &heading_metrics,
                 const QFontMetricsF &row_metrics);
+// The frame around a body of this extent (its own coordinates), in the
+// frame item's: what layoutZone computes once the least size is known.
+QRectF zoneFrame(const ZoneFrameMetrics &metrics, const QRectF &content);
+// Decision 7: draw an existing frame item again at another size without
+// rebuilding it -- its outline, the inside, the heading band, and every
+// thing on its edges and its bottom moved with the edge it stands on. The
+// body inside does not move.
+void refitZoneFrame(QGraphicsPathItem &frame, const QRectF &from, const QRectF &to);
+// The path of one carry's arrow: down from the output's inside socket to
+// `lane_y` (under the body), across, and up to the input's. In the frame
+// item's coordinates.
+QPainterPath zoneCarryPath(const QPointF &from, const QPointF &to, qreal lane_y);
+// Draws one carry arrow (graph_zone_carry, a child of its frame) between the
+// two sockets it joins, in its lane above the frame's bottom line.
+void routeZoneCarry(QGraphicsPathItem &carry);
 
 class Builder {
   public:
@@ -116,6 +168,8 @@ class Builder {
     // The frame, its heading, tabs, marks and edge sockets. Returns the item
     // the body is drawn in (positioned at the body's origin).
     QGraphicsItem *addZone(const Zone &zone, int column, const QPointF &position, Moved moved);
+    // LP-4d2, decision 4: an edge that reads one element of a `p[]` is drawn
+    // dashed, with the element on a small label (graph_edge_label).
     QGraphicsPathItem *addEdge(const GraphCanvasEdge &edge, const QVector<QPointF> &bends);
     // A body output's line: from the port that makes it to the frame's inside
     // socket for it. Drawing only.

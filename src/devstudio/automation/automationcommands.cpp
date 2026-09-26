@@ -261,6 +261,23 @@ QString sceneItemName(const QGraphicsView &view, const QGraphicsItem &item,
 // to -- so a scenario that waits for a read keeps working. `list` does not
 // publish it; only resolving a name falls back to it.
 QString sceneItemAlias(const QGraphicsView &view, const QGraphicsItem &item) {
+    // LP-4d2: a graph node can have an input and an output of one name (a
+    // fullscreen pass's `color`), which `graph_socket#<id>/<port>` cannot tell
+    // apart; `.../in:<port>` and `.../out:<port>` can. Resolving only.
+    if (itemKind(item) == QLatin1String{GraphCanvasSocketItem}) {
+        const QString port = item.data(GraphCanvasPortRole).toString();
+        const QString direction = item.data(GraphCanvasSocketDirectionRole).toString();
+        const QString node = item.data(NodeGraphNameRole).toString();
+        if (port.isEmpty() || node.isEmpty() || direction.isEmpty()) return {};
+        QString identity = node + QStringLiteral("/") +
+                           (direction == QLatin1String{"output"} ? QStringLiteral("out:")
+                                                                 : QStringLiteral("in:")) +
+                           port;
+        const QString zone = item.data(GraphCanvasZoneScopeRole).toString();
+        if (!zone.isEmpty()) identity = zone + QStringLiteral("/") + identity;
+        return view.objectName() + QString::fromLatin1(SceneSeparator) + itemKind(item) +
+               QStringLiteral("#") + identity;
+    }
     if (item.data(FramePlanSocketKeyRole).toString().isEmpty()) return {};
     const QString resource = item.data(FramePlanPortRole).toString();
     if (resource.isEmpty() ||

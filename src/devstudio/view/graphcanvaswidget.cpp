@@ -180,6 +180,22 @@ void routeGraphCanvasEdge(QGraphicsScene &scene, QGraphicsPathItem &edge) {
     if (auto *arrow = dynamic_cast<QGraphicsPolygonItem *>(findEndpointArtifact(
             scene, graphCanvasKinds().arrow, scope, from_name, to_name)))
         arrow->setPolygon(arrow->mapFromScene(geometry.arrow));
+    // LP-4d2, decision 4: the element a dashed line reads sits over its
+    // middle, and goes where the line goes.
+    if (edge.data(GraphCanvasEdgeElementRole).toString().isEmpty()) return;
+    const QString to_port = edge.data(GraphCanvasToPortRole).toString();
+    for (QGraphicsItem *item : scene.items()) {
+        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasEdgeLabelItem} ||
+            item->data(GraphCanvasScopeRole).toString() != scope ||
+            item->data(NodeGraphNameRole).toString() != to_name ||
+            item->data(GraphCanvasPortRole).toString() != to_port)
+            continue;
+        const QPointF middle = geometry.path.pointAtPercent(0.5);
+        const QRectF box = item->boundingRect();
+        const QPointF at{middle.x() - box.width() / 2.0, middle.y() - box.height() - 2.0};
+        item->setPos(item->parentItem() != nullptr ? item->parentItem()->mapFromScene(at) : at);
+        break;
+    }
 }
 
 // LP-4d1: a body output's line, from the port that makes it to the inside
@@ -848,6 +864,7 @@ void GraphCanvasScene::selectReroute(const GraphCanvasEdgeKey &edge,
 
 void GraphCanvasScene::selectReroute(const std::string &scope, const GraphCanvasEdgeKey &edge,
                                      std::size_t index, bool additive) {
+    selected_carry_.reset();
     if (scope != selection_scope_) additive = false;
     enterSelectionScope(scope);
     selected_ties_.clear();
@@ -874,6 +891,7 @@ void GraphCanvasScene::selectTie(std::size_t index, bool additive) {
 }
 
 void GraphCanvasScene::selectTie(const std::string &scope, std::size_t index, bool additive) {
+    selected_carry_.reset();
     if (scope != selection_scope_) additive = false;
     enterSelectionScope(scope);
     selected_reroutes_.clear();
@@ -1125,6 +1143,7 @@ void GraphCanvasScene::repopulate() {
     clear();
     zone_content_.clear();
     zone_content_rect_.clear();
+    zone_geometry_.clear();
     zones_.clear();
     drawn_scopes_.clear();
     selected_node_.reset();
@@ -1271,6 +1290,8 @@ void GraphCanvasScene::repopulate() {
             const auto uses = model_->definitionUseCount(plan->second.body);
             if (uses > 1)
                 zone.shared = QObject::tr("shared (%1 users)").arg(static_cast<qulonglong>(uses));
+            const bool draw_loop_report =
+                loop && loop->reported && loop->reported_tier == "draw_loop";
             if (loop && loop->branches.size() > 1) {
                 const std::size_t shown = model_->loopBranch(node.id);
                 for (std::size_t index = 0; index < loop->branches.size(); ++index) {
@@ -1280,6 +1301,11 @@ void GraphCanvasScene::repopulate() {
                     tab.text = last ? QObject::tr("else")
                                     : (index == 0 ? QObject::tr("if %1") : QObject::tr("elif %1"))
                                           .arg(zoneCondition(branch));
+                    // LP-4d2, decision 5: a draw_loop's tab says how many of
+                    // the materials it drew.
+                    if (draw_loop_report)
+                        tab.text += QStringLiteral(" (%1)").arg(
+                            static_cast<qulonglong>(branch.matched_materials.size()));
                     tab.branch = index;
                     tab.runs = !branch.nothing && !branch.body.empty();
                     tab.current = tab.runs && index == shown;
@@ -1340,6 +1366,42 @@ void GraphCanvasScene::repopulate() {
                 row.outer = qtext(output.port);
                 row.outer_row = *outer;
                 zone.outputs.push_back(std::move(row));
+            }
+            // LP-4d2. The edges' empty slots, for a document that can be
+            // edited (decisions 1, 2); the carry's arrows (decision 3); and
+            // what the loop became, along the bottom (decision 5).
+            zone.edge_slots = !model_->digest().empty();
+            if (loop) {
+                for (const auto &carry : loop->carry) {
+                    GraphCanvasDrawing::ZoneCarry drawn_carry;
+                    drawn_carry.from = qtext(carry.from);
+                    drawn_carry.to = qtext(carry.to);
+                    drawn_carry.unbound = carry.to_unbound;
+                    // The Loop fields' warning, word for word.
+                    if (carry.to_unbound)
+                        drawn_carry.warning =
+                            GraphCanvasLoopFields::tr(
+                                "%1 has no loop input: connect one for the first element to "
+                                "start from.")
+                                .arg(qtext(carry.to));
+                    drawn_carry.selected =
+                        selected_carry_ && selected_carry_->loop == node.id &&
+                        selected_carry_->from == carry.from && selected_carry_->to == carry.to;
+                    zone.carries.push_back(std::move(drawn_carry));
+                }
+                if (draw_loop_report) {
+                    const auto materials = loop->reported_total > 0
+                                               ? loop->reported_total
+                                               : static_cast<std::size_t>(std::max<std::int64_t>(
+                                                     loop->reported_count, 0));
+                    zone.expansion = materials == 1
+                                         ? QObject::tr("1 material")
+                                         : QObject::tr("%1 materials")
+                                               .arg(static_cast<qulonglong>(materials));
+                } else if (loop->reported) {
+                    zone.expansion = QObject::tr("×%1 copies").arg(loop->reported_count);
+                    zone.frame_plan_button = true;
+                }
             }
             zone.content = plan->second.content;
             GraphCanvasDrawing::layoutZone(zone, drawing.headingMetrics(), drawing.rowMetrics());
@@ -1418,6 +1480,15 @@ void GraphCanvasScene::repopulate() {
             const auto &body = plans.at(node.id).body;
             zone_content_[body] = content;
             zone_content_rect_[body] = plans.at(node.id).content;
+            const auto &metrics = zone->second.metrics;
+            zone_geometry_[body] = ZoneGeometry{metrics.origin, metrics.min_width,
+                                                metrics.min_height, metrics.footer,
+                                                zone->second.frame};
+            // LP-4d2: the carry's arrows, now that both their ends are drawn.
+            for (QGraphicsItem *child : content->parentItem()->childItems())
+                if (nodeGraphItemKind(*child) == QLatin1String{GraphCanvasZoneCarryItem})
+                    if (auto *carry = dynamic_cast<QGraphicsPathItem *>(child))
+                        GraphCanvasDrawing::routeZoneCarry(*carry);
             zones_[node.id] = body;
             zone_bodies.emplace_back(node.id, content);
         } else {
@@ -1505,8 +1576,10 @@ void GraphCanvasScene::repopulate() {
                     placement(key.first).layout.nodes[key.second] = moved;
                     noteLayoutChange(key.first);
                     rerouteGraphCanvasEdges(*this, key.first, key.second);
-                    // The frame is drawn around its body again once the
-                    // hand lets go.
+                    // LP-4d2, decision 7: the frame keeps round its body
+                    // while the node is dragged, and is drawn around it
+                    // again once the hand lets go.
+                    refitZoneLive(key.first);
                     scheduleZoneRefit();
                     scheduleSceneRectUpdate();
                 });
@@ -1583,6 +1656,15 @@ void GraphCanvasScene::repopulate() {
     });
     setProperty("pelicanGraphSelectedNode",
                 selected_node_ ? qtext(*selected_node_) : QString{});
+    // LP-4d2: a picked carry stays picked while its arrow is still drawn.
+    if (selected_carry_ &&
+        std::ranges::none_of(items(), [&](const QGraphicsItem *item) {
+            return nodeGraphItemKind(*item) == QLatin1String{GraphCanvasZoneCarryItem} &&
+                   item->data(NodeGraphNameRole).toString() == qtext(selected_carry_->loop) &&
+                   item->data(GraphCanvasFromPortRole).toString() == qtext(selected_carry_->from) &&
+                   item->data(GraphCanvasToPortRole).toString() == qtext(selected_carry_->to);
+        }))
+        selected_carry_.reset();
     applyEdgeEmphasis();
 
     QStringList trail;
@@ -1660,6 +1742,90 @@ void GraphCanvasScene::scheduleZoneRefit() {
     });
 }
 
+void GraphCanvasScene::refitZoneLive(const std::string &body) {
+    const auto content = zone_content_.find(body);
+    const auto geometry = zone_geometry_.find(body);
+    if (content == zone_content_.end() || geometry == zone_geometry_.end()) return;
+    auto *frame = dynamic_cast<QGraphicsPathItem *>(content->second->parentItem());
+    if (frame == nullptr) return;
+    // The drawn boxes of the body's nodes, as the frame was drawn around
+    // them (scheduleZoneRefit reads them the same way).
+    QRectF extent;
+    for (QGraphicsItem *child : content->second->childItems()) {
+        if (nodeGraphItemKind(*child) != QLatin1String{GraphCanvasNodeItem}) continue;
+        const auto *node = dynamic_cast<const QGraphicsPathItem *>(child);
+        if (node == nullptr) continue;
+        const QRectF box = child->mapRectToParent(node->path().boundingRect());
+        extent = extent.isValid() ? extent.united(box) : box;
+    }
+    GraphCanvasDrawing::ZoneFrameMetrics metrics;
+    metrics.origin = geometry->second.origin;
+    metrics.min_width = geometry->second.min_width;
+    metrics.min_height = geometry->second.min_height;
+    metrics.footer = geometry->second.footer;
+    const QRectF to = GraphCanvasDrawing::zoneFrame(metrics, extent);
+    const QRectF from = geometry->second.frame;
+    if (to == from) return;
+    GraphCanvasDrawing::refitZoneFrame(*frame, from, to);
+    geometry->second.frame = to;
+    // What hangs off the frame's edges goes with them: the root's lines into
+    // the loop and out of it, the body outputs' lines, the carry's arrows.
+    const std::string loop = zoneLoopOf(body);
+    const std::string root = model_ != nullptr ? model_->currentScope() : std::string{};
+    if (!loop.empty()) rerouteGraphCanvasEdges(*this, root, loop);
+    for (QGraphicsItem *item : items()) {
+        const QString kind = nodeGraphItemKind(*item);
+        if (kind == QLatin1String{GraphCanvasZoneLinkItem} &&
+            item->data(GraphCanvasScopeRole).toString() == qtext(body)) {
+            if (auto *link = dynamic_cast<QGraphicsPathItem *>(item)) routeZoneLink(*this, *link);
+        } else if (kind == QLatin1String{GraphCanvasZoneCarryItem} && item->parentItem() == frame) {
+            if (auto *carry = dynamic_cast<QGraphicsPathItem *>(item))
+                GraphCanvasDrawing::routeZoneCarry(*carry);
+        }
+    }
+}
+
+std::string GraphCanvasScene::zoneLoopOf(const std::string &body) const {
+    for (const auto &[loop, drawn] : zones_)
+        if (drawn == body) return loop;
+    return {};
+}
+
+void GraphCanvasScene::selectCarry(const std::string &loop, const std::string &from,
+                                   const std::string &to) {
+    const std::string root = model_ != nullptr ? model_->currentScope() : std::string{};
+    enterSelectionScope(root);
+    selected_node_.reset();
+    selected_edge_.reset();
+    selected_edges_.clear();
+    clearControlSelection();
+    selected_carry_ = CarryPick{loop, from, to};
+    setProperty("pelicanGraphSelectedNode", QString{});
+    for (QGraphicsItem *item : items()) {
+        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasZoneCarryItem}) continue;
+        auto *arrow = dynamic_cast<QGraphicsPathItem *>(item);
+        if (arrow == nullptr) continue;
+        const bool picked = item->data(NodeGraphNameRole).toString() == qtext(loop) &&
+                            item->data(GraphCanvasFromPortRole).toString() == qtext(from) &&
+                            item->data(GraphCanvasToPortRole).toString() == qtext(to);
+        QPen pen = arrow->pen();
+        pen.setWidthF(picked ? 3.0 : 1.8);
+        arrow->setPen(pen);
+    }
+    applyEdgeEmphasis();
+    if (selectionChanged) selectionChanged();
+}
+
+void GraphCanvasScene::beginCarry(const QGraphicsItem &socket, const std::string &loop,
+                                  const std::string &output) {
+    beginConnection(socket);
+    if (!pending_connection_) return;
+    pending_connection_->carry_loop = loop;
+    pending_connection_->node = output;
+    pending_connection_->from_output = true;
+    pending_connection_->scope = zones_.contains(loop) ? zones_.at(loop) : std::string{};
+}
+
 QPointF GraphCanvasScene::toScopePoint(const std::string &scope, const QPointF &at) const {
     const auto content = zone_content_.find(scope);
     if (content == zone_content_.end()) return at;
@@ -1734,8 +1900,13 @@ void GraphCanvasScene::applyEdgeEmphasis() {
                               : touches ? theme.canvas.heading_text
                                         : theme.canvas.edge;
         if (edge) {
-            if (auto *line = dynamic_cast<QGraphicsPathItem *>(item))
-                line->setPen(QPen{colour, picked ? 3.0 : touches ? 2.2 : 1.6});
+            if (auto *line = dynamic_cast<QGraphicsPathItem *>(item)) {
+                QPen pen{colour, picked ? 3.0 : touches ? 2.2 : 1.6};
+                // LP-4d2, decision 4: a line reading one element stays dashed.
+                if (!item->data(GraphCanvasEdgeElementRole).toString().isEmpty())
+                    pen.setStyle(Qt::DashLine);
+                line->setPen(pen);
+            }
         } else if (auto *head = dynamic_cast<QGraphicsPolygonItem *>(item)) {
             head->setBrush(colour);
         }
@@ -1773,6 +1944,7 @@ void GraphCanvasScene::selectNode(const std::string &id) {
 }
 
 void GraphCanvasScene::selectNode(const std::string &scope, const std::string &id) {
+    selected_carry_.reset();
     enterSelectionScope(scope);
     selected_node_ = id;
     selected_edge_.reset();
@@ -1789,6 +1961,7 @@ void GraphCanvasScene::selectEdge(const GraphCanvasEdge &edge, bool additive) {
 
 void GraphCanvasScene::selectEdge(const std::string &scope, const GraphCanvasEdge &edge,
                                   bool additive) {
+    selected_carry_.reset();
     const auto same = [&](const GraphCanvasEdge &other) {
         return other.from_node == edge.from_node &&
                other.from_port == edge.from_port &&
@@ -1868,15 +2041,71 @@ void GraphCanvasScene::finishConnection(const QPointF &position) {
     }
     const auto pending = *pending_connection_;
     clearPendingConnection();
+    // LP-4d2, decision 3: from a body output's inside end to a boundary
+    // input's (the left edge's inside socket): the loop carries it.
+    if (!pending.carry_loop.empty()) {
+        for (QGraphicsItem *item : items(position)) {
+            if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasSocketItem}) continue;
+            if (itemScope(*item) != pending.scope ||
+                item->data(GraphCanvasZoneScopeRole).toString().isEmpty() ||
+                item->data(GraphCanvasSocketDirectionRole).toString() != QLatin1String{"output"} ||
+                item->data(GraphCanvasPortRole).toString() != QLatin1String{"value"} ||
+                item->parentItem() == nullptr ||
+                nodeGraphItemKind(*item->parentItem()) != QLatin1String{GraphCanvasNodeItem} ||
+                item->parentItem()->data(NodeGraphNameRole).toString() != qtext(pending.carry_loop))
+                continue;
+            afterEdit(model_->addLoopCarry(pending.carry_loop, pending.node,
+                                           item->data(NodeGraphNameRole).toString().toStdString()));
+            return;
+        }
+        return;
+    }
     const QString wanted = pending.from_output ? QStringLiteral("input")
                                                : QStringLiteral("output");
+    const std::string current = model_->currentScope();
     for (QGraphicsItem *item : items(position)) {
+        // LP-4d2, decisions 1 and 2: the empty slot at the end of a zone's
+        // edge. Left, a root output there is a new loop input; right, a body
+        // output there is a new output of every body.
+        if (nodeGraphItemKind(*item) == QLatin1String{GraphCanvasZoneSocketItem}) {
+            const auto slot = item->data(GraphCanvasPortRole).toString();
+            const auto loop = item->data(NodeGraphNameRole).toString().toStdString();
+            if (!pending.from_output) return;
+            if (slot == QLatin1String{"in:+"} && current.empty() && pending.scope.empty()) {
+                afterEdit(model_->addZoneInput(loop, pending.node, pending.port));
+                return;
+            }
+            if (slot == QLatin1String{"out:+"} && zones_.contains(loop) &&
+                zones_.at(loop) == pending.scope) {
+                const bool submitted =
+                    model_->addZoneOutput(loop, pending.scope, pending.node, pending.port);
+                afterEdit(submitted);
+                if (!submitted && noticeChanged) noticeChanged();
+                return;
+            }
+            continue;
+        }
         if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasSocketItem}) continue;
         if (item->data(GraphCanvasSocketDirectionRole).toString() != wanted) continue;
         // LP-4d1: an edge stays in one scope. A zone's body and the root
-        // around it are two documents' worth of nodes (LP-4d2 is where a
-        // line across the edge becomes a loop input).
-        if (itemScope(*item) != pending.scope) continue;
+        // around it are two documents' worth of nodes. LP-4d2, decision 1: a
+        // root output dropped on a body node's input inside a zone is the
+        // one exception -- a new loop input, its graph.input in every body,
+        // and the input reading it, in one list.
+        if (itemScope(*item) != pending.scope) {
+            const auto body = itemScope(*item);
+            const auto loop = zoneLoopOf(body);
+            if (pending.from_output && pending.scope.empty() && current.empty() &&
+                !loop.empty() && !item->data(GraphCanvasZoneScopeRole).toString().isEmpty() &&
+                !item->data(GraphCanvasPortRole).toString().isEmpty()) {
+                afterEdit(model_->addZoneInput(
+                    loop, pending.node, pending.port, body,
+                    item->data(NodeGraphNameRole).toString().toStdString(),
+                    item->data(GraphCanvasPortRole).toString().toStdString()));
+                return;
+            }
+            continue;
+        }
         const auto port = item->data(GraphCanvasPortRole).toString();
         if (port.isEmpty()) return; // A folded node names no single port.
         const auto node = item->data(NodeGraphNameRole).toString().toStdString();
@@ -1922,6 +2151,39 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
                 QMetaObject::invokeMethod(
                     this, [this, loop, branch] { showLoopBranch(loop, branch); },
                     Qt::QueuedConnection);
+                return;
+            }
+            // LP-4d2, decision 3: a line from a body output's inside end on
+            // the right edge is a carry on its way to a boundary input.
+            if (kind == QLatin1String{GraphCanvasZoneSocketItem}) {
+                const auto port = item->data(GraphCanvasPortRole).toString();
+                if (port.startsWith(QLatin1String{"out:"}) && port != QLatin1String{"out:+"}) {
+                    event->accept();
+                    const auto loop = item->data(NodeGraphNameRole).toString().toStdString();
+                    selectNode(scope, loop);
+                    beginCarry(*item, loop, port.mid(4).toStdString());
+                    return;
+                }
+            }
+            // Decision 5: Show in Frame Plan, from the event loop -- the
+            // owner switches tabs.
+            if (kind == QLatin1String{GraphCanvasZoneButtonItem}) {
+                event->accept();
+                const auto loop = item->data(NodeGraphNameRole).toString().toStdString();
+                QMetaObject::invokeMethod(
+                    this,
+                    [this, loop] {
+                        if (showInFramePlanRequested) showInFramePlanRequested(loop);
+                    },
+                    Qt::QueuedConnection);
+                return;
+            }
+            if (kind == QLatin1String{GraphCanvasZoneCarryItem} ||
+                kind == QLatin1String{GraphCanvasZoneCarryMarkItem}) {
+                event->accept();
+                selectCarry(item->data(NodeGraphNameRole).toString().toStdString(),
+                            item->data(GraphCanvasFromPortRole).toString().toStdString(),
+                            item->data(GraphCanvasToPortRole).toString().toStdString());
                 return;
             }
             if (kind == QLatin1String{GraphCanvasCollapseItem}) {
@@ -2499,6 +2761,10 @@ void GraphCanvasScene::setAddActions(QAction *add_loop, QAction *add_fullscreen)
 
 bool GraphCanvasScene::deleteSelection() {
     if (model_ == nullptr) return false;
+    // LP-4d2, decision 3: a picked carry arrow leaves the loop's carry.
+    if (selected_carry_)
+        return model_->removeLoopCarry(selected_carry_->loop, selected_carry_->from,
+                                       selected_carry_->to);
     if (selected_edge_)
         return model_->disconnectInput(selection_scope_, selected_edge_->to_node,
                                        selected_edge_->to_port);
@@ -2828,6 +3094,8 @@ struct GraphCanvasWidget::Impl {
     QLabel *shared_mark = nullptr;
     QAction *add_loop_action = nullptr;
     QAction *add_fullscreen_action = nullptr;
+    // LP-4d2, decision 5: what Show in Frame Plan does (the owner's).
+    std::function<bool(const QString &)> frame_plan_loop_action;
     QLineEdit *label_edit = nullptr;
     QPushButton *apply_label = nullptr;
     QPushButton *add_node = nullptr;
@@ -3173,6 +3441,15 @@ struct GraphCanvasWidget::Impl {
         // when the wait before sending it runs out. Only the label: this runs
         // from inside a drag and from inside a rebuild.
         scene->placementChanged = [this] { showNotice(); };
+        // LP-4d2: a zone gesture refused before it was sent says why.
+        scene->noticeChanged = [this] { showNotice(); };
+        // Decision 5: the owner brings the Frame Plan forward.
+        scene->showInFramePlanRequested = [this](const std::string &loop) {
+            if (!frame_plan_loop_action || !frame_plan_loop_action(qtext(loop))) {
+                notice->setText(QObject::tr("The Frame Plan cannot show loop %1.").arg(qtext(loop)));
+                return;
+            }
+        };
         scene->addNodeRequested = [this](const QPointF &) { openPalette(); };
         scene->perIterationRequested = [this](const std::string &node,
                                               const std::string &port) {
@@ -4116,8 +4393,37 @@ bool GraphCanvasWidget::revealGraphNode(const QString &scope,
 bool GraphCanvasWidget::revealLoopOrigin(const QString &loop, qint64 element,
                                          const QString &node) {
     auto &model = impl_->model;
+    auto &scene = *impl_->scene;
     const auto id = node.toStdString();
-    if (!model.enterLoopOrigin(loop.toStdString(), element, id)) return false;
+    const auto loop_id = loop.toStdString();
+    // LP-4d2, decision 6: on the root canvas, in the zone, with the tab on
+    // the branch that element ran.
+    if (const auto body = model.showLoopOrigin(loop_id, element, id); !body.empty()) {
+        if (scene.collapsed(std::string{}, loop_id))
+            scene.setCollapsed(std::string{}, loop_id, false);
+        scene.repopulate();
+        const auto zone = scene.zones().find(loop_id);
+        if (zone != scene.zones().end() && zone->second == body) {
+            scene.selectNode(body, id);
+            impl_->syncScopeControls();
+            impl_->syncValueControls();
+            impl_->showDetails();
+            impl_->dispatch();
+            for (QGraphicsItem *item : scene.items()) {
+                if (item->data(NodeGraphItemKindRole).toString() !=
+                        QLatin1String{GraphCanvasNodeItem} ||
+                    item->data(GraphCanvasScopeRole).toString() != QString::fromStdString(body) ||
+                    item->data(NodeGraphNameRole).toString() != node)
+                    continue;
+                impl_->canvas->centerOn(item);
+                break;
+            }
+            return true;
+        }
+    }
+    // A body no zone on the root canvas shows (another loop's zone draws a
+    // definition they share): entered through the loop, as LP-4c did.
+    if (!model.enterLoopOrigin(loop_id, element, id)) return false;
     impl_->scene->repopulate();
     impl_->scene->selectNode(id);
     impl_->syncScopeControls();
@@ -4135,6 +4441,10 @@ bool GraphCanvasWidget::revealLoopOrigin(const QString &loop, qint64 element,
         break;
     }
     return true;
+}
+
+void GraphCanvasWidget::setFramePlanLoopAction(std::function<bool(const QString &loop)> action) {
+    impl_->frame_plan_loop_action = std::move(action);
 }
 
 bool openGraphNodeInTabs(QTabWidget &tabs, GraphCanvasWidget &graph,

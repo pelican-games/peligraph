@@ -3708,6 +3708,38 @@ bool FramePlanGraphicsScene::enterGroup(const QString &group_id) {
     return true;
 }
 
+bool FramePlanGraphicsScene::selectLoopGroup(const std::string &loop) {
+    if (!current_model_ || loop.empty()) {
+        return false;
+    }
+    const FramePlanModel &model = *current_model_;
+    std::set<FramePlanNodeKey> copies;
+    for (const auto &node : model.nodes) {
+        if (node.loop_origin && node.loop_origin->loop == loop) {
+            copies.insert(FramePlanNodeKey{model.graph, node.name});
+        }
+    }
+    if (copies.empty()) {
+        return false;
+    }
+    // The group LP-4c folds the copies into is opened, so the copies can
+    // be picked; the canvas comes out of a group it was inside.
+    current_group_scope_.reset();
+    const auto groups = discoverGroups(model, session_groups_);
+    for (const auto &group : groups) {
+        if (group.key == "loop:" + loop) {
+            collapsed_groups_.erase(group.state_key);
+            seen_loop_groups_.insert(group.state_key);
+        }
+    }
+    selected_nodes_ = copies;
+    selected_node_ = *copies.begin();
+    selected_resource_.reset();
+    group_feedback_.clear();
+    renderCurrentGraph();
+    return true;
+}
+
 bool FramePlanGraphicsScene::leaveGroup() {
     if (!current_model_ || !current_group_scope_) {
         return false;

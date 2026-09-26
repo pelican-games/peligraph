@@ -117,6 +117,10 @@ struct GraphCanvasEdge {
     std::string from_port;
     std::string to_node;
     std::string to_port;
+    // LP-4d2, decision 4: an edge that reads one element of a loop's `p[]`
+    // says which, as the label on its line shows it ("element", "2");
+    // empty for an ordinary edge.
+    std::string element = {};
 };
 
 // LP-4d1: one output of a definition body -- its name and the port inside
@@ -939,6 +943,56 @@ class GraphCanvasModel {
     bool connectPerIteration(const std::string &node, const std::string &port,
                              const std::string &source_node, const std::string &source_port,
                              const std::string &expression = "element");
+
+    // --- LP-4d2: lines across a loop zone's edge.
+
+    // The name a new loop input or body output is given, proposed from the
+    // port whose line made it (dots and slashes become `_`, a `[]` goes):
+    // an input's is no input of the loop and no node of any body its
+    // branches run; an output's is no output of any of those bodies and
+    // nothing the loop declares.
+    [[nodiscard]] std::string suggestLoopInputName(std::string_view loop,
+                                                   std::string_view base) const;
+    [[nodiscard]] std::string suggestLoopOutputName(std::string_view loop,
+                                                    std::string_view base) const;
+    // Decision 1. A root node's output drawn into a root loop's zone: a new
+    // loop input it feeds (root `set_input`), and a graph.input of that id in
+    // every definition the branches run (each once), in one list. With a
+    // target -- a node's input in `body`, one of those definitions -- that
+    // input reads the new graph.input in the same list. Empty when it cannot
+    // be sent.
+    [[nodiscard]] nlohmann::json zoneInputOps(std::string_view loop,
+                                              const std::string &source_node,
+                                              const std::string &source_port,
+                                              const std::string &body = {},
+                                              const std::string &target_node = {},
+                                              const std::string &target_port = {}) const;
+    bool addZoneInput(const std::string &loop, const std::string &source_node,
+                      const std::string &source_port, const std::string &body = {},
+                      const std::string &target_node = {}, const std::string &target_port = {});
+    // Decision 2. A body node's output drawn to the zone's right edge: the
+    // output in every definition the branches run (DO-1's set_outputs, each
+    // body's whole outputs), and `p` declared on the loop (replace_node), in
+    // one list. Every other body has to give the same output from a node of
+    // the same id and port -- a set_outputs endpoint names a node, so an
+    // output cannot be left unconnected there -- and when one cannot, the
+    // list is empty and `refusal` says which body, in one line.
+    [[nodiscard]] nlohmann::json zoneOutputOps(std::string_view loop, const std::string &body,
+                                               const std::string &node, const std::string &port,
+                                               std::string *refusal = nullptr) const;
+    // Sends it, or, refused, puts the line in the edit notice and sends
+    // nothing.
+    bool addZoneOutput(const std::string &loop, const std::string &body,
+                       const std::string &node, const std::string &port);
+    // Decision 3. One pair more (or less) in the loop's `carry`: the payload
+    // the Loop fields' carry rows send.
+    bool addLoopCarry(const std::string &loop, const std::string &from, const std::string &to);
+    bool removeLoopCarry(const std::string &loop, const std::string &from, const std::string &to);
+    // Decision 6. Show the body node a loop's copy came from on the root
+    // canvas: the root scope, with the loop's tab on the branch that element
+    // ran. Answers the definition the node stands in, or empty -- with
+    // nothing changed -- when the loop, the branch or the node is not there.
+    std::string showLoopOrigin(std::string_view loop, std::int64_t element, std::string_view node);
 
     // Decision 9. What the last refused edit pointed at; cleared by the next
     // edit that commits.

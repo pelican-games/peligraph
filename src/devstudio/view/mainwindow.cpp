@@ -413,6 +413,15 @@ void MainWindow::createWorkspace() {
             docks_[FramePlanDock]->raise();
             return true;
         });
+    // LP-4d2, decision 5: a zone's Show in Frame Plan brings the Frame Plan
+    // forward with the loop's copies picked.
+    graph_canvas_->setFramePlanLoopAction([this, render_tabs](const QString &loop) {
+        render_tabs->setCurrentWidget(frame_plan_);
+        docks_[FramePlanDock]->show();
+        docks_[FramePlanDock]->raise();
+        frame_plan_->showLoopGroup(loop);
+        return true;
+    });
     // LP-4e: a decomposed material pass is edited as its loop, so the Graph
     // tab comes to the front with that loop selected.
     frame_plan_->setLoopDecomposedAction([this, render_tabs](const QString &loop) {

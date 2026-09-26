@@ -242,6 +242,31 @@ With the zone (or a node inside it) picked, `pelican.graphCanvas.addFullscreenPa
 and the palette add to its body; the canvas menu opened inside the frame does the
 same. `loop_zone_edit` is the example.
 
+LP-4d2 draws lines across the zone's edge. A root output dropped on the left
+edge's empty slot (`graph_zone_socket#<loop>/in:+`) makes a loop input, named
+after the port, and a `graph.input` of that name in every body the branches run
+-- one edit; dropped on a body node's input inside the zone, the same edit also
+connects that input. A body output dropped on the right edge's slot
+(`graph_zone_socket#<loop>/out:+`) is declared by every body (`set_outputs`)
+and handed on by the loop as `p`; when another branch's body has no node of
+that id to give it from, nothing is sent and the notice says which body. A line
+from a body output's inside end (`graph_zone_socket#<loop>/out:<output>`) to a
+boundary input's inside end is a carry.
+
+| name | what it is |
+|------|------------|
+| `graph_zone_socket#<loop>/in:+`, `.../out:+` | the empty slot at the end of the left and the right edge |
+| `graph_zone_carry#<loop>/<from>/<to>` | one pair of the loop's carry: an arrow round the bottom of the frame (a click picks it, Delete removes it) |
+| `graph_zone_carry_mark#<loop>/<from>/<to>` | the warning beside it when `<to>` has no loop input edge |
+| `graph_zone_label#<loop>/expansion` | what the loop became, along the bottom: `×N copies`, `N materials` |
+| `graph_zone_button#<loop>/frame_plan` | Show in Frame Plan: the Frame Plan comes forward with the loop's copies picked |
+| `graph_edge_label#<node>/<port>` | the element a dashed line reads of another loop's `p[]` (`[element]`) |
+
+A graph node can have an input and an output of one name (a fullscreen pass's
+`color`), which `graph_socket#<id>/<port>` does not tell apart:
+`graph_socket#<id>/in:<port>` and `.../out:<port>` do (resolving only; `list`
+publishes the plain name). `loop_zone_wire` is the example.
+
 The editor the canvas opens over a pill or a heading is a real widget carried by
 a drawn item, and is named the same way:
 `pelican.graphCanvasView::graph_inline_editor#left/gain`. `type`, `key` and

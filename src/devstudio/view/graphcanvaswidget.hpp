@@ -74,6 +74,24 @@ inline constexpr int GraphCanvasRefusalRole = Qt::UserRole + 3142;
 inline constexpr int GraphCanvasZoneScopeRole = Qt::UserRole + 3143;
 // A zone's tab: the branch it shows (an index into the loop's branches).
 inline constexpr int GraphCanvasBranchRole = Qt::UserRole + 3144;
+// LP-4d2. Which edge of its frame a thing on a zone's frame stands on, so the
+// frame can follow its body during a drag without being drawn again
+// (decision 7): GraphCanvasZoneAnchor below.
+inline constexpr int GraphCanvasZoneAnchorRole = Qt::UserRole + 3145;
+// Decision 4: the element a line into a loop reads of another loop's `p[]`
+// ("element", "2"); empty on an ordinary edge. Such a line is dashed.
+inline constexpr int GraphCanvasEdgeElementRole = Qt::UserRole + 3146;
+// How tall the line along a zone's bottom is, on the carry arrows that run
+// above it.
+inline constexpr int GraphCanvasZoneFooterRole = Qt::UserRole + 3147;
+enum class GraphCanvasZoneAnchor : int {
+    none = 0,
+    left = 1,
+    right = 2,
+    bottom = 3,
+    // A mark in the heading band that keeps to its right end.
+    band_right = 4,
+};
 inline constexpr int GraphCanvasScopeRole = NodeGraphGraphRole;
 
 inline constexpr auto GraphCanvasNodeItem = "graph_node";
@@ -115,6 +133,19 @@ inline constexpr auto GraphCanvasZoneTabItem = "graph_zone_tab";
 inline constexpr auto GraphCanvasZoneSocketItem = "graph_zone_socket";
 inline constexpr auto GraphCanvasZoneLinkItem = "graph_zone_link";
 inline constexpr auto GraphCanvasZoneLabelItem = "graph_zone_label";
+// LP-4d2. `graph_zone_socket#<loop>/in:+` and `.../out:+` are the empty
+// slots at the end of the two edges (decisions 1 and 2);
+// `graph_zone_carry#<loop>/<from>/<to>` one pair of the loop's carry, an
+// arrow round the bottom of the frame (picked, Delete removes it), with
+// `graph_zone_carry_mark#...` beside it when `to` has no loop input edge;
+// `graph_zone_label#<loop>/expansion` the line along the bottom (`×N
+// copies`, `N materials`) and `graph_zone_button#<loop>/frame_plan` its Show
+// in Frame Plan; `graph_edge_label#<node>/<port>` the element a dashed line
+// reads.
+inline constexpr auto GraphCanvasZoneCarryItem = "graph_zone_carry";
+inline constexpr auto GraphCanvasZoneCarryMarkItem = "graph_zone_carry_mark";
+inline constexpr auto GraphCanvasZoneButtonItem = "graph_zone_button";
+inline constexpr auto GraphCanvasEdgeLabelItem = "graph_edge_label";
 
 // The node is a heading band over two socket sections, so its height follows
 // its port count rather than a constant. The numbers are here so the scene
@@ -147,6 +178,10 @@ inline constexpr qreal GraphCanvasZonePadding = 24.0;
 inline constexpr qreal GraphCanvasZoneTabHeight = 24.0;
 inline constexpr qreal GraphCanvasZoneMinimumWidth = 420.0;
 inline constexpr qreal GraphCanvasZoneMinimumContentHeight = 96.0;
+// LP-4d2: the line along the bottom of a reported zone, and the lanes its
+// carry arrows run in above it.
+inline constexpr qreal GraphCanvasZoneFooterHeight = 26.0;
+inline constexpr qreal GraphCanvasZoneCarryLane = 7.0;
 
 // N-6. One edge, named by the input end it lands on. That end is unique -- one
 // port of one node takes at most one edge -- and it is how the document's
@@ -366,6 +401,25 @@ class GraphCanvasScene final : public QGraphicsScene {
     // branch that runs nothing.
     bool showLoopBranch(const std::string &loop, std::size_t branch);
 
+    // LP-4d2, decision 3: one pair of a loop's carry, picked by a press on
+    // its arrow; Delete takes it out of the loop's carry.
+    struct CarryPick {
+        std::string loop;
+        std::string from;
+        std::string to;
+
+        friend bool operator==(const CarryPick &, const CarryPick &) = default;
+    };
+    [[nodiscard]] const std::optional<CarryPick> &selectedCarry() const noexcept {
+        return selected_carry_;
+    }
+    void selectCarry(const std::string &loop, const std::string &from, const std::string &to);
+    // Decision 5: a zone's Show in Frame Plan was pressed.
+    std::function<void(const std::string &loop)> showInFramePlanRequested;
+    // A gesture was refused before anything was sent, and the model's notice
+    // says why (decision 2's other body without the output).
+    std::function<void()> noticeChanged;
+
     // Delete: an edge clears the input it lands on, a node is removed.
     bool deleteSelection();
 
@@ -429,6 +483,18 @@ class GraphCanvasScene final : public QGraphicsScene {
         std::string port;
         bool from_output = true;
         QPointF origin;
+        // LP-4d2, decision 3: a line from a body output's inside end on a
+        // zone's right edge, which lands on a boundary input as a carry.
+        std::string carry_loop;
+    };
+    // Decision 7: what a zone's frame is drawn around, per body, so the
+    // frame can follow a body node through a drag.
+    struct ZoneGeometry {
+        QPointF origin;
+        qreal min_width = 0.0;
+        qreal min_height = 0.0;
+        qreal footer = 0.0;
+        QRectF frame;
     };
     struct InlineEditor;
     // An open in-place editor, said in terms that outlive the items it sits
@@ -479,6 +545,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     std::map<std::string, std::string> zones_;
     std::map<std::string, QGraphicsItem *> zone_content_;
     std::map<std::string, QRectF> zone_content_rect_;
+    std::map<std::string, ZoneGeometry> zone_geometry_;
+    std::optional<CarryPick> selected_carry_;
     bool zone_refit_queued_ = false;
     // Which scope the canvas menu was opened over, while it is open, and the
     // one its "Add node..." asked the palette about.
@@ -565,6 +633,13 @@ class GraphCanvasScene final : public QGraphicsScene {
     // A body node moved: the frame is drawn again around it once the hand
     // lets go.
     void scheduleZoneRefit();
+    // LP-4d2, decision 7: and follows it while the hand is still on it --
+    // the frame's items are moved, nothing is drawn again.
+    void refitZoneLive(const std::string &body);
+    // The loop whose zone draws this body, or empty.
+    [[nodiscard]] std::string zoneLoopOf(const std::string &body) const;
+    void beginCarry(const QGraphicsItem &socket, const std::string &loop,
+                    const std::string &output);
 };
 
 // The Graph tab of the render tools dock.
@@ -602,7 +677,15 @@ class GraphCanvasWidget final : public QWidget {
     // from (get_frame_plan's loop_origin): the loop's body for that element's
     // branch, entered through the loop, with the node selected. False, with
     // nothing changed, when the document holds no such loop, branch or node.
+    // LP-4d2, decision 6: on the root canvas, in the loop's zone -- its tab
+    // on that element's branch, the node picked there -- rather than entered
+    // through the loop. A body the zone cannot show (a folded zone opens; a
+    // definition another loop's zone draws) is entered as before.
     bool revealLoopOrigin(const QString &loop, qint64 element, const QString &node);
+    // Decision 5: what a zone's Show in Frame Plan does -- the owner brings
+    // the Frame Plan forward with the loop's copies picked. False when it
+    // could not.
+    void setFramePlanLoopAction(std::function<bool(const QString &loop)> action);
     // LP-4e. Show a root node another panel's edit just made (Decompose into
     // loop's graph.loop): the document is read again, and the node is
     // selected as soon as a document that holds it arrives -- at once when

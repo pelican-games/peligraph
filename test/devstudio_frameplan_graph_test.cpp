@@ -11338,6 +11338,53 @@ TEST_CASE("LP-4c a loop's copies are one folded group named with the loop's coun
     CHECK(strings(singleGroupItem(bare)->data(FramePlanMembersRole)) == members);
 }
 
+TEST_CASE("LP-4d2 Show in Frame Plan opens a loop's group with its copies picked",
+          "[devstudio][frame-plan][grouping][lp4d2]") {
+    (void)application();
+    // The same fake plan as LP-4c's: the bloom pair told it is the two
+    // elements of one loop.
+    Json wire = regionGroupingBaselineFramePlan();
+    const StringSet members{"HorizontalBlur_0", "VerticalBlur_0"};
+    std::int64_t element = 0;
+    for (auto &node : wire.at("nodes"))
+        if (members.contains(node.at("name").get<std::string>()))
+            node["loop_origin"] = {{"loop", "bloom_loop"}, {"element", element++},
+                                   {"node", "blur"}};
+    REQUIRE(element == 2);
+    wire["loops"] = Json::array({{{"node", "bloom_loop"}, {"tier", "expand"}, {"count", 2},
+                                  {"elements", Json::array({
+                                      {{"element", 0}, {"index", 0}, {"branch", 0}},
+                                      {{"element", 1}, {"index", 1}, {"branch", 0}}})},
+                                  {"unmatched_branches", Json::array()}}});
+    const FramePlanModel model = buildFramePlanModel(wire.dump());
+
+    FramePlanGraphicsScene scene;
+    scene.populate(model, FramePlanNodeKey{model.graph, "swapchain"}, 64);
+    // Folded on first sight, as LP-4c draws it.
+    REQUIRE(singleGroupItem(scene) != nullptr);
+    for (const auto &member : members) REQUIRE(nodeItem(scene, member) == nullptr);
+
+    // The group opens and both copies are picked, drawn as picked.
+    REQUIRE(scene.selectLoopGroup("bloom_loop"));
+    CHECK(itemsOfKind(scene, FramePlanGroupItem).empty());
+    std::set<std::string> picked;
+    for (const auto &node : scene.selectedNodes()) picked.insert(node.name);
+    CHECK(picked == std::set<std::string>{members.begin(), members.end()});
+    for (const auto &member : members) {
+        QGraphicsItem *copy = nodeItem(scene, member);
+        REQUIRE(copy != nullptr);
+        CHECK(copy->isSelected());
+    }
+    // A read of the same plan keeps it open and picked.
+    scene.populate(model, FramePlanNodeKey{model.graph, "swapchain"}, 64);
+    CHECK(itemsOfKind(scene, FramePlanGroupItem).empty());
+    CHECK(scene.selectedNodes().size() == 2);
+
+    // A loop the plan has no copies of: nothing moves.
+    CHECK_FALSE(scene.selectLoopGroup("other_loop"));
+    CHECK(scene.selectedNodes().size() == 2);
+}
+
 TEST_CASE("LP-4c a loop's or a definition's refusal reads as its sentence, "
           "and a graph variant is named whatever the code",
           "[devstudio][frame-plan][lp4c][refusal]") {
@@ -11367,11 +11414,10 @@ TEST_CASE("LP-4c a loop's or a definition's refusal reads as its sentence, "
                                       {"definition", "loop_body"}}) ==
           "A definition named loop_body already exists (graph.definition_duplicate@1).");
     // LP-2: a draw-loop refusal comes back with its own code and fields, the
-    // message still "<code>: <fields>". graph.loop_variant_missing@1's own
-    // `variant` is the material variant, not a graph variant; in the preview
-    // graph's preflight the graph variant takes `variant` and the material
-    // variant stays in the message.
-    const Json fields{{"node", "draws"}, {"material", "box"}, {"variant", "outline"}};
+    // message still "<code>: <fields>". LP-4d2: graph.loop_variant_missing@1
+    // names the material's variant material_variant (engine 5e246063); in the
+    // preview graph's preflight the graph variant takes `variant`.
+    const Json fields{{"node", "draws"}, {"material", "box"}, {"material_variant", "outline"}};
     Json main_graph = fields;
     main_graph["participant"] = "pelican.render_pipeline";
     main_graph["code"] = "graph.loop_variant_missing@1";

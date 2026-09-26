@@ -793,7 +793,10 @@ constexpr std::array<GraphLoopRefusalText, 25> GraphLoopRefusalTexts{{
     {"graph.loop_expansion_referenced@1",
      "{name} is a name a loop makes, which cannot be referred to; name the loop ({pointer})"},
     {"graph.loop_contract_unsupported@1", "Loop {node} draws with {contract}, which its stage does not take"},
-    {"graph.loop_variant_missing@1", "Loop {node}: material {material} has no {variant} variant"},
+    // LP-4d2, decision 8 (engine 5e246063): the material's variant is
+    // `material_variant`; `variant` is only ever a graph variant.
+    {"graph.loop_variant_missing@1",
+     "Loop {node}: material {material} has no {material_variant} variant"},
     {"graph.loop_phase_crossing@1", "Loop {node}: material {material} draws in another phase"},
     {"graph.loop_override_interface@1", "Loop {node}: material {material} has no binding {binding}"},
     {"graph.loop_override_needs_compiler@1",
@@ -887,9 +890,8 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error) {
             fields = error;
         // A refusal may also quote its fields after its code; what it quotes
         // is its own, and wins over a member beside the code of the same
-        // name. In a graph variant's preflight `variant` beside the code is
-        // the graph variant, and graph.loop_variant_missing@1's own (the
-        // material variant) is only in the message (LP-2).
+        // name. (LP-4d2: none of them is called `variant` any more -- that
+        // name beside the code is the graph variant, always.)
         if (auto quoted = graphFieldsAfterCode(message, candidate.code))
             for (auto member = quoted->begin(); member != quoted->end(); ++member)
                 fields[member.key()] = member.value();
@@ -928,14 +930,10 @@ std::string graphRefusalVariant(const nlohmann::json &error) {
     if (!error.is_object()) return {};
     const auto member = error.find("variant");
     if (member == error.end() || !member->is_string()) return {};
-    const auto variant = member->get<std::string>();
-    const auto code = error.value("code", std::string{});
-    const auto message = error.value("message", std::string{});
-    if (!code.empty())
-        if (const auto quoted = graphFieldsAfterCode(message, code);
-            quoted && quoted->contains("variant") && quoted->at("variant") == variant)
-            return {};
-    return variant;
+    // LP-4d2, decision 8: `variant` beside the code is the graph variant
+    // whatever the refusal quotes -- the one refusal that had a field of that
+    // name (graph.loop_variant_missing@1) calls it material_variant now.
+    return member->get<std::string>();
 }
 
 std::string componentUnavailableTag(std::string_view code) {

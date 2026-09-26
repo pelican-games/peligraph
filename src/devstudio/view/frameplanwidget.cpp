@@ -406,6 +406,23 @@ struct FramePlanWidget::Impl {
     bool raw_json_stale = true;
     std::optional<FramePlanModel> model;
     QString requested_hit_group;
+    // LP-4d2: a loop whose copies are picked once the plan read for it is in.
+    QString requested_loop_group;
+    void showRequestedLoopGroup() {
+        const auto loop = std::exchange(requested_loop_group, QString{});
+        if (loop.isEmpty()) return;
+        if (!logical_scene->selectLoopGroup(loop.toStdString())) {
+            showStatus(owner.tr("The frame plan has no copies of loop %1.").arg(loop));
+            return;
+        }
+        // The copies in the middle of the view.
+        QRectF picked;
+        for (QGraphicsItem *item : logical_scene->selectedItems())
+            picked = picked.isValid() ? picked.united(item->sceneBoundingRect())
+                                      : item->sceneBoundingRect();
+        if (picked.isValid()) logical->centerOn(picked.center());
+        showStatus(owner.tr("Loop %1: its copies are picked.").arg(loop));
+    }
     std::optional<Pelican::ProjectPathResolver> project_resolver;
     FramePlanWidget::ShaderSourceOpenAction shader_source_open_action;
     // F-3: the engine's shader reload status, read after a shader file a node
@@ -1322,6 +1339,7 @@ struct FramePlanWidget::Impl {
 
     void showFailure(const QString &message) {
         requested_hit_group.clear();
+        requested_loop_group.clear();
         refresh->setEnabled(viewport.rpcReady());
         tabs->setEnabled(model.has_value());
         status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
@@ -3036,6 +3054,7 @@ struct FramePlanWidget::Impl {
                 const auto group = std::exchange(requested_hit_group, QString{});
                 owner.openTasksForHitGroup(group);
             }
+            showRequestedLoopGroup();
         } catch (const std::exception &error) {
             showFailure(QString::fromUtf8(error.what()));
         }
@@ -4144,6 +4163,12 @@ void FramePlanWidget::setPresetPassConnectionAction(std::function<void(const QSt
 
 void FramePlanWidget::setGraphNodeOpenAction(GraphNodeOpenAction action) {
     impl_->graph_node_open_action = std::move(action);
+}
+
+void FramePlanWidget::showLoopGroup(const QString &loop) {
+    if (loop.isEmpty()) return;
+    impl_->requested_loop_group = loop;
+    impl_->requestRefresh();
 }
 
 void FramePlanWidget::setGraphLoopNodeOpenAction(GraphLoopNodeOpenAction action) {

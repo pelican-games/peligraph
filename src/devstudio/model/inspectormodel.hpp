@@ -223,12 +223,10 @@ modelReferenceChoices(std::string_view current,
 // "<sentence> (<code>).", or empty for any other refusal.
 [[nodiscard]] std::string graphLoopRefusalDescription(const nlohmann::json &error);
 // LP-0d: the graph variant (preview, XR) that refused an edit, named by
-// `variant` beside the code; empty when the main graph did. The draw-loop
-// refusals (LP-2) come back with their own fields beside the code as well, and
-// graph.loop_variant_missing@1's own `variant` is the material variant it
-// looked for: a `variant` the message quotes as the refusal's own field
-// ("<code>: {...}") is not a graph variant. In a variant's preflight the
-// graph variant takes the member, and the refusal's own stays in the message.
+// `variant` beside the code; empty when the main graph did. LP-4d2: always --
+// graph.loop_variant_missing@1 names the material's variant
+// `material_variant` (engine 5e246063), so no refusal's own field is called
+// `variant` any more.
 [[nodiscard]] std::string graphRefusalVariant(const nlohmann::json &error);
 
 struct ComponentAddRow {

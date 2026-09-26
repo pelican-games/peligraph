@@ -482,7 +482,19 @@ void Builder::addNodeRows(QGraphicsPathItem *item, const Node &entry) {
         socket(drawn, QPointF{0.0, centre_y}, "input");
 
         if (drawn.value.shown()) {
-            const QString text = pillText(drawn.value);
+            QString text = pillText(drawn.value);
+            // LP-4d2, decision 7: inside a zone a render node's parameters
+            // (a shader, its ports) read as long JSON; the pill keeps to the
+            // node and the whole of it is the tooltip.
+            QString full;
+            if (container_ != nullptr) {
+                const qreal room = width - 10.0 - 14.0 - 14.0 - 8.0 -
+                                   row_metrics_.horizontalAdvance(drawn.label);
+                if (room > 24.0 && row_metrics_.horizontalAdvance(text) > room) {
+                    full = text;
+                    text = row_metrics_.elidedText(text, Qt::ElideRight, room);
+                }
+            }
             const qreal pill_height = GraphCanvasSocketRowHeight - 6.0;
             const qreal pill_width =
                 row_metrics_.horizontalAdvance(text) + 14.0;
@@ -498,12 +510,14 @@ void Builder::addNodeRows(QGraphicsPathItem *item, const Node &entry) {
             pill->setData(GraphCanvasPortRole, drawn.port);
             pill->setData(GraphCanvasValueTextRole, drawn.value.text);
             pill->setData(GraphCanvasValueSourceRole, drawn.value.source);
+            if (!full.isEmpty()) pill->setToolTip(full);
             auto *value = new QGraphicsSimpleTextItem(text, pill);
             value->setFont(detail_font_);
             value->setBrush(theme_.canvas.heading_text);
             value->setPos(7.0, (pill_height - row_metrics_.height()) / 2.0);
             tag(value, GraphCanvasValuePillItem);
             value->setData(GraphCanvasPortRole, drawn.port);
+            if (!full.isEmpty()) value->setToolTip(full);
         }
         cursor_y += GraphCanvasSocketRowHeight;
     }
@@ -543,6 +557,31 @@ QGraphicsPathItem *Builder::addEdge(const GraphCanvasEdge &edge,
         QObject::tr("%1.%2 -> %3.%4  (select and press Delete to cut)")
             .arg(qtext(edge.from_node), qtext(edge.from_port),
                  qtext(edge.to_node), qtext(edge.to_port)));
+
+    // LP-4d2, decision 4: a line that reads one element of a `p[]` each
+    // time round is dashed, and says which element on a label over it.
+    if (!edge.element.empty()) {
+        const QString element = qtext(edge.element);
+        line->setData(GraphCanvasEdgeElementRole, element);
+        QPen pen = line->pen();
+        pen.setStyle(Qt::DashLine);
+        line->setPen(pen);
+        const QString text = QStringLiteral("[%1]").arg(element);
+        auto *label = new QGraphicsSimpleTextItem(text);
+        place(label);
+        label->setFont(detail_font_);
+        label->setBrush(theme_.canvas.heading_text);
+        label->setZValue(1.2);
+        label->setData(NodeGraphItemKindRole, QString::fromLatin1(GraphCanvasEdgeLabelItem));
+        tag(label);
+        label->setData(NodeGraphNameRole, qtext(edge.to_node));
+        label->setData(GraphCanvasPortRole, qtext(edge.to_port));
+        label->setData(NodeGraphFromNameRole, qtext(edge.from_node));
+        label->setData(NodeGraphToNameRole, qtext(edge.to_node));
+        label->setData(GraphCanvasEdgeElementRole, element);
+        label->setToolTip(QObject::tr("Each element reads element %1 of %2.%3")
+                              .arg(element, qtext(edge.from_node), qtext(edge.from_port)));
+    }
     return line;
 }
 
@@ -609,19 +648,31 @@ void Builder::addTie(const GraphCanvasTie &tie, std::size_t index, Moved moved) 
                         .arg(tie.edges.size()));
 }
 
+namespace {
+
+// LP-4d2: the Show in Frame Plan button's text, and its padding.
+QString framePlanButtonText() { return QObject::tr("Show in Frame Plan"); }
+
+// How many rows each edge draws: its rows, and the empty slot at its end.
+std::size_t zoneRowCount(const Zone &zone) {
+    const std::size_t slot = zone.edge_slots ? 1 : 0;
+    return std::max(zone.inputs.size() + slot, zone.outputs.size() + slot);
+}
+
+qreal zoneExpansionHeight(const Zone &zone) {
+    return zone.expansion.isEmpty() ? 0.0 : GraphCanvasZoneFooterHeight;
+}
+
+} // namespace
+
 void layoutZone(Zone &zone, const QFontMetricsF &heading_metrics,
                 const QFontMetricsF &row_metrics) {
     const qreal header =
         GraphCanvasHeaderHeight + (zone.tabs.empty() ? 0.0 : GraphCanvasZoneTabHeight);
-    const auto rows = static_cast<qreal>(std::max(zone.inputs.size(), zone.outputs.size()));
+    const auto rows = static_cast<qreal>(zoneRowCount(zone));
     const qreal rows_height =
         2.0 * GraphCanvasSectionPadding + rows * GraphCanvasSocketRowHeight;
-    const QRectF content = zone.content.isValid() ? zone.content : QRectF{};
     zone.origin = QPointF{GraphCanvasZoneContentLeft, header + GraphCanvasZonePadding};
-    // The body can reach left of or above its origin (a node dragged there):
-    // the frame grows that way rather than moving what is inside it.
-    const qreal left = std::min<qreal>(0.0, content.left());
-    const qreal top = std::min<qreal>(0.0, content.top());
     const GraphCanvasNode &node = *zone.node.node;
     const qreal heading = 18.0 + heading_metrics.horizontalAdvance(qtext(node.heading())) + 24.0 +
                           row_metrics.horizontalAdvance(zone.stage) + 18.0 +
@@ -631,17 +682,99 @@ void layoutZone(Zone &zone, const QFontMetricsF &heading_metrics,
     qreal tabs = 12.0;
     for (const ZoneTab &tab : zone.tabs)
         tabs += row_metrics.horizontalAdvance(tab.text) + 22.0;
-    const qreal right = std::max({zone.origin.x() + content.right() + GraphCanvasZoneContentLeft,
-                                  left + GraphCanvasZoneMinimumWidth, left + heading,
-                                  left + tabs});
-    const qreal bottom =
-        std::max({zone.origin.y() + content.bottom() + GraphCanvasZonePadding,
-                  top + header + rows_height,
-                  top + header + 2.0 * GraphCanvasZonePadding +
-                      GraphCanvasZoneMinimumContentHeight});
-    zone.frame = QRectF{QPointF{left, top}, QPointF{right, bottom}};
+    // LP-4d2: the bottom line, and the carry arrows' lanes above it.
+    qreal footer_width = 0.0;
+    if (!zone.expansion.isEmpty())
+        footer_width = 24.0 + row_metrics.horizontalAdvance(zone.expansion) +
+                       (zone.frame_plan_button
+                            ? 18.0 + row_metrics.horizontalAdvance(framePlanButtonText()) + 18.0
+                            : 0.0);
+    zone.metrics.origin = zone.origin;
+    zone.metrics.footer = zoneExpansionHeight(zone) +
+                          static_cast<qreal>(zone.carries.size()) * GraphCanvasZoneCarryLane;
+    zone.metrics.min_width =
+        std::max({GraphCanvasZoneMinimumWidth, heading, tabs, footer_width});
+    zone.metrics.min_height =
+        std::max(header + rows_height,
+                 header + 2.0 * GraphCanvasZonePadding + GraphCanvasZoneMinimumContentHeight) +
+        zone.metrics.footer;
+    zone.frame = zoneFrame(zone.metrics, zone.content);
     zone.node.width = zone.frame.width();
     zone.node.height = zone.frame.height();
+}
+
+QRectF zoneFrame(const ZoneFrameMetrics &metrics, const QRectF &extent) {
+    const QRectF content = extent.isValid() ? extent : QRectF{};
+    // The body can reach left of or above its origin (a node dragged there):
+    // the frame grows that way rather than moving what is inside it.
+    const qreal left = std::min<qreal>(0.0, content.left());
+    const qreal top = std::min<qreal>(0.0, content.top());
+    const qreal right = std::max(metrics.origin.x() + content.right() + GraphCanvasZoneContentLeft,
+                                 left + metrics.min_width);
+    const qreal bottom = std::max(metrics.origin.y() + content.bottom() + GraphCanvasZonePadding +
+                                      metrics.footer,
+                                  top + metrics.min_height);
+    return QRectF{QPointF{left, top}, QPointF{right, bottom}};
+}
+
+QPainterPath zoneCarryPath(const QPointF &from, const QPointF &to, qreal lane_y) {
+    // Out of the output's socket to the right, down to the lane, back along
+    // it under the body, and up into the input's socket from the left.
+    const qreal reach = 14.0;
+    QPainterPath path{from};
+    path.lineTo(from.x() + reach, from.y());
+    path.lineTo(from.x() + reach, lane_y);
+    path.lineTo(to.x() - reach, lane_y);
+    path.lineTo(to.x() - reach, to.y());
+    path.lineTo(to.x() - GraphCanvasSocketSize / 2.0, to.y());
+    return path;
+}
+
+void refitZoneFrame(QGraphicsPathItem &frame, const QRectF &from, const QRectF &to) {
+    if (from == to) return;
+    QPainterPath outline =
+        roundedEntityPath(to.width(), to.height(), GraphCanvasNodeCornerRadius);
+    outline.translate(to.topLeft());
+    frame.setPath(outline);
+    const qreal left = to.left() - from.left();
+    const qreal top = to.top() - from.top();
+    const qreal right = to.right() - from.right();
+    const qreal bottom = to.bottom() - from.bottom();
+    for (QGraphicsItem *child : frame.childItems()) {
+        const auto anchor = static_cast<GraphCanvasZoneAnchor>(
+            child->data(GraphCanvasZoneAnchorRole).toInt());
+        const QString kind = child->data(NodeGraphItemKindRole).toString();
+        if (kind == QLatin1String{GraphCanvasZoneItem}) {
+            if (auto *area = dynamic_cast<QGraphicsRectItem *>(child)) {
+                const QRectF was = area->rect();
+                area->setRect(QRectF{to.left(), was.top() + top, to.width(),
+                                     was.height() + bottom - top});
+            }
+            continue;
+        }
+        if (kind == QLatin1String{GraphCanvasNodeHeaderItem} &&
+            anchor == GraphCanvasZoneAnchor::left) {
+            if (auto *band = dynamic_cast<QGraphicsPathItem *>(child)) {
+                band->setPath(headerBandPath(to.width(), GraphCanvasHeaderHeight,
+                                             GraphCanvasNodeCornerRadius));
+                band->setPos(to.topLeft());
+                for (QGraphicsItem *mark : band->childItems())
+                    if (static_cast<GraphCanvasZoneAnchor>(
+                            mark->data(GraphCanvasZoneAnchorRole).toInt()) ==
+                        GraphCanvasZoneAnchor::band_right)
+                        mark->moveBy(right - left, 0.0);
+            }
+            continue;
+        }
+        switch (anchor) {
+        case GraphCanvasZoneAnchor::left: child->moveBy(left, top); break;
+        case GraphCanvasZoneAnchor::right: child->moveBy(right, top); break;
+        case GraphCanvasZoneAnchor::bottom: child->moveBy(left, bottom); break;
+        default: break;
+        }
+    }
+    // A click meant for the loop still lands on its heading.
+    frame.setData(NodeGraphHotspotRole, QPointF{to.center().x(), to.top() + 6.0});
 }
 
 QGraphicsItem *Builder::addZone(const Zone &zone, int column, const QPointF &position,
@@ -672,6 +805,11 @@ QGraphicsItem *Builder::addZone(const Zone &zone, int column, const QPointF &pos
         tag(child);
         child->setData(NodeGraphNameRole, loop);
     };
+    // LP-4d2, decision 7: which edge each thing on the frame keeps to, so the
+    // frame can be drawn larger around a body node being dragged.
+    const auto anchored = [](QGraphicsItem *child, GraphCanvasZoneAnchor anchor) {
+        child->setData(GraphCanvasZoneAnchorRole, static_cast<int>(anchor));
+    };
 
     // The inside of the frame, where the body is drawn: what `graph_zone`
     // names, and what a press between the body's nodes lands on.
@@ -690,6 +828,7 @@ QGraphicsItem *Builder::addZone(const Zone &zone, int column, const QPointF &pos
     band->setPen(Qt::NoPen);
     tagged(band, GraphCanvasNodeHeaderItem);
     band->setData(GraphCanvasHeadingRole, true);
+    anchored(band, GraphCanvasZoneAnchor::left);
 
     // The same triangle a node folds with: here it folds the zone into the
     // loop's node, the way LP-4c drew it.
@@ -728,6 +867,7 @@ QGraphicsItem *Builder::addZone(const Zone &zone, int column, const QPointF &pos
     stage->setData(GraphCanvasPortRole, QStringLiteral("stage"));
     stage->setData(GraphCanvasOpRole, qtext(node.op));
     stage->setData(GraphCanvasHeadingRole, true);
+    anchored(stage, GraphCanvasZoneAnchor::band_right);
     if (!zone.shared.isEmpty()) {
         auto *shared = new QGraphicsSimpleTextItem(zone.shared, band);
         shared->setFont(detail_font_);
@@ -740,6 +880,7 @@ QGraphicsItem *Builder::addZone(const Zone &zone, int column, const QPointF &pos
         shared->setToolTip(QObject::tr(
             "Other instances or loops run %1 too: an edit here changes them all.")
                                .arg(zone.definition));
+        anchored(shared, GraphCanvasZoneAnchor::band_right);
     }
 
     // The branches' tabs, under the heading: if / elif / else.
@@ -760,6 +901,7 @@ QGraphicsItem *Builder::addZone(const Zone &zone, int column, const QPointF &pos
         chip->setData(GraphCanvasLabelRole, tab.text);
         chip->setToolTip(tab.runs ? QObject::tr("Show this branch's body")
                                   : QObject::tr("This branch runs nothing"));
+        anchored(chip, GraphCanvasZoneAnchor::left);
         auto *text = new QGraphicsSimpleTextItem(tab.text, chip);
         text->setFont(detail_font_);
         text->setBrush(theme_.canvas.heading_text);
@@ -800,13 +942,43 @@ QGraphicsItem *Builder::addZone(const Zone &zone, int column, const QPointF &pos
         name->setData(GraphCanvasPortRole, port);
         return name;
     };
+    // LP-4d2, decisions 1 and 2: the empty slot at the end of an edge. A line
+    // dropped on it makes a new loop input (left) or body output (right).
+    const auto slot = [&](const QPointF &centre, const QString &port, const QString &tooltip,
+                          GraphCanvasZoneAnchor anchor) {
+        auto *dot = new QGraphicsPathItem(socketPath(SocketShape::circle, GraphCanvasSocketSize + 3.0),
+                                          item);
+        dot->setPos(centre);
+        dot->setZValue(2.0);
+        dot->setBrush(Qt::NoBrush);
+        QPen pen{tint, 1.3};
+        pen.setStyle(Qt::DashLine);
+        dot->setPen(pen);
+        dot->setToolTip(tooltip);
+        tagged(dot, GraphCanvasZoneSocketItem);
+        dot->setData(GraphCanvasPortRole, port);
+        dot->setData(GraphCanvasSocketDirectionRole, QStringLiteral("input"));
+        anchored(dot, anchor);
+        auto *plus = new QGraphicsSimpleTextItem(QStringLiteral("+"), dot);
+        plus->setFont(detail_font_);
+        plus->setBrush(tint);
+        plus->setPos(-row_metrics_.horizontalAdvance(QStringLiteral("+")) / 2.0,
+                     -row_metrics_.height() / 2.0);
+        tagged(plus, GraphCanvasZoneSocketItem);
+        plus->setData(GraphCanvasPortRole, port);
+        plus->setData(GraphCanvasSocketDirectionRole, QStringLiteral("input"));
+        return dot;
+    };
     const qreal rows_top = frame.top() + header + GraphCanvasSectionPadding;
     for (std::size_t index = 0; index < zone.inputs.size(); ++index) {
         const ZoneRow &row = zone.inputs[index];
         const qreal y = rows_top + (static_cast<qreal>(index) + 0.5) * GraphCanvasSocketRowHeight;
         if (!row.outer.isEmpty())
-            socket(row.outer_row, QPointF{frame.left(), y}, row.outer, "input");
-        label(row.label, QPointF{frame.left() + 12.0, y}, row.outer.isEmpty() ? row.inner : row.outer);
+            anchored(socket(row.outer_row, QPointF{frame.left(), y}, row.outer, "input"),
+                     GraphCanvasZoneAnchor::left);
+        anchored(label(row.label, QPointF{frame.left() + 12.0, y},
+                       row.outer.isEmpty() ? row.inner : row.outer),
+                 GraphCanvasZoneAnchor::left);
         if (!row.inner.isEmpty()) {
             // The body's boundary input: its graph.input's `value`, which is
             // what the body's edges from it name.
@@ -825,15 +997,25 @@ QGraphicsItem *Builder::addZone(const Zone &zone, int column, const QPointF &pos
             inner->setData(GraphCanvasPortRole, QStringLiteral("value"));
             inner->setData(GraphCanvasSocketDirectionRole, QStringLiteral("output"));
             inner->setData(GraphCanvasSocketShapeRole, static_cast<int>(SocketShape::circle));
+            anchored(inner, GraphCanvasZoneAnchor::left);
         }
+    }
+    if (zone.edge_slots) {
+        const qreal y = rows_top + (static_cast<qreal>(zone.inputs.size()) + 0.5) *
+                                       GraphCanvasSocketRowHeight;
+        slot(QPointF{frame.left(), y}, QStringLiteral("in:+"),
+             QObject::tr("Drop a line from outside here for a new loop input"),
+             GraphCanvasZoneAnchor::left);
     }
     for (std::size_t index = 0; index < zone.outputs.size(); ++index) {
         const ZoneRow &row = zone.outputs[index];
         const qreal y = rows_top + (static_cast<qreal>(index) + 0.5) * GraphCanvasSocketRowHeight;
         if (!row.outer.isEmpty())
-            socket(row.outer_row, QPointF{frame.right(), y}, row.outer, "output");
-        label(row.label, QPointF{frame.right() - GraphCanvasZoneColumn + 12.0, y},
-              row.outer.isEmpty() ? row.inner : row.outer);
+            anchored(socket(row.outer_row, QPointF{frame.right(), y}, row.outer, "output"),
+                     GraphCanvasZoneAnchor::right);
+        anchored(label(row.label, QPointF{frame.right() - GraphCanvasZoneColumn + 12.0, y},
+                       row.outer.isEmpty() ? row.inner : row.outer),
+                 GraphCanvasZoneAnchor::right);
         if (!row.inner.isEmpty()) {
             auto *inner = new QGraphicsPathItem(socketPath(SocketShape::circle, GraphCanvasSocketSize),
                                                 item);
@@ -841,10 +1023,90 @@ QGraphicsItem *Builder::addZone(const Zone &zone, int column, const QPointF &pos
             inner->setZValue(2.0);
             inner->setBrush(theme_.canvas.pill_bg);
             inner->setPen(QPen{tint, 1.4});
-            inner->setToolTip(QObject::tr("The body's output %1").arg(row.inner));
+            // LP-4d2, decision 3: dragged back to a boundary input, a carry.
+            inner->setToolTip(
+                QObject::tr("The body's output %1 (drag to a boundary input to carry it)")
+                    .arg(row.inner));
             tagged(inner, GraphCanvasZoneSocketItem);
             inner->setData(GraphCanvasPortRole, QStringLiteral("out:") + row.inner);
             inner->setData(GraphCanvasSocketDirectionRole, QStringLiteral("input"));
+            anchored(inner, GraphCanvasZoneAnchor::right);
+        }
+    }
+    if (zone.edge_slots) {
+        const qreal y = rows_top + (static_cast<qreal>(zone.outputs.size()) + 0.5) *
+                                       GraphCanvasSocketRowHeight;
+        slot(QPointF{frame.right() - GraphCanvasZoneColumn, y}, QStringLiteral("out:+"),
+             QObject::tr("Drop a body node's output here for a new loop output"),
+             GraphCanvasZoneAnchor::right);
+    }
+
+    // Decision 3: the carry, each pair an arrow round the bottom of the frame
+    // from the output back to the input. Routed by the scene, which knows
+    // where both sockets are once the frame is drawn.
+    for (std::size_t index = 0; index < zone.carries.size(); ++index) {
+        const ZoneCarry &carry = zone.carries[index];
+        auto *arrow_item = new GraphEdgeItem;
+        arrow_item->setParentItem(item);
+        arrow_item->setZValue(2.2);
+        const QColor ink = carry.unbound ? QColor{QStringLiteral("#e67e22")} : tint;
+        arrow_item->setPen(QPen{ink, carry.selected ? 3.0 : 1.8});
+        arrow_item->setBrush(Qt::NoBrush);
+        tagged(arrow_item, GraphCanvasZoneCarryItem);
+        arrow_item->setData(GraphCanvasPortRole, carry.from + QStringLiteral("/") + carry.to);
+        arrow_item->setData(GraphCanvasFromPortRole, carry.from);
+        arrow_item->setData(GraphCanvasToPortRole, carry.to);
+        arrow_item->setData(GraphCanvasControlIndexRole, static_cast<qulonglong>(index));
+        arrow_item->setData(GraphCanvasZoneFooterRole, zoneExpansionHeight(zone));
+        arrow_item->setData(GraphCanvasRefusalRole, carry.warning);
+        arrow_item->setToolTip(
+            carry.warning.isEmpty()
+                ? QObject::tr("%1 carries into %2 (select and press Delete to remove)")
+                      .arg(carry.from, carry.to)
+                : carry.warning);
+        if (carry.unbound) {
+            auto *mark = new QGraphicsSimpleTextItem(QStringLiteral("!"), arrow_item);
+            mark->setFont(heading_font_);
+            mark->setBrush(ink);
+            tagged(mark, GraphCanvasZoneCarryMarkItem);
+            mark->setData(GraphCanvasPortRole, carry.from + QStringLiteral("/") + carry.to);
+            mark->setData(GraphCanvasFromPortRole, carry.from);
+            mark->setData(GraphCanvasToPortRole, carry.to);
+            mark->setToolTip(carry.warning);
+        }
+    }
+
+    // Decision 5: what the loop became, along the bottom.
+    if (!zone.expansion.isEmpty()) {
+        const qreal y = frame.bottom() - GraphCanvasZoneFooterHeight / 2.0;
+        auto *line = new QGraphicsSimpleTextItem(zone.expansion, item);
+        line->setFont(detail_font_);
+        line->setBrush(theme_.canvas.heading_text);
+        line->setPos(frame.left() + 12.0, y - row_metrics_.height() / 2.0);
+        line->setZValue(2.0);
+        tagged(line, GraphCanvasZoneLabelItem);
+        line->setData(GraphCanvasPortRole, QStringLiteral("expansion"));
+        anchored(line, GraphCanvasZoneAnchor::bottom);
+        if (zone.frame_plan_button) {
+            const QString text = framePlanButtonText();
+            const qreal width = row_metrics_.horizontalAdvance(text) + 16.0;
+            const qreal height = GraphCanvasZoneFooterHeight - 8.0;
+            auto *button = new QGraphicsPathItem(roundedEntityPath(width, height, 5.0), item);
+            button->setPos(frame.left() + 12.0 + row_metrics_.horizontalAdvance(zone.expansion) + 18.0,
+                           y - height / 2.0);
+            button->setZValue(2.0);
+            button->setBrush(theme_.canvas.pill_bg);
+            button->setPen(QPen{tint, 1.0});
+            button->setToolTip(QObject::tr("Open the Frame Plan with this loop's copies picked"));
+            tagged(button, GraphCanvasZoneButtonItem);
+            button->setData(GraphCanvasPortRole, QStringLiteral("frame_plan"));
+            anchored(button, GraphCanvasZoneAnchor::bottom);
+            auto *caption = new QGraphicsSimpleTextItem(text, button);
+            caption->setFont(detail_font_);
+            caption->setBrush(theme_.canvas.heading_text);
+            caption->setPos(8.0, (height - row_metrics_.height()) / 2.0);
+            tagged(caption, GraphCanvasZoneButtonItem);
+            caption->setData(GraphCanvasPortRole, QStringLiteral("frame_plan"));
         }
     }
 
@@ -854,6 +1116,44 @@ QGraphicsItem *Builder::addZone(const Zone &zone, int column, const QPointF &pos
     content->setPos(zone.origin);
     content->setZValue(1.0);
     return content;
+}
+
+void routeZoneCarry(QGraphicsPathItem &carry) {
+    QGraphicsItem *frame = carry.parentItem();
+    if (frame == nullptr) return;
+    const QString from = QStringLiteral("out:") + carry.data(GraphCanvasFromPortRole).toString();
+    const QString to = carry.data(GraphCanvasToPortRole).toString();
+    const QGraphicsItem *out = nullptr;
+    const QGraphicsItem *in = nullptr;
+    for (QGraphicsItem *child : frame->childItems()) {
+        const QString kind = child->data(NodeGraphItemKindRole).toString();
+        if (kind == QLatin1String{GraphCanvasZoneSocketItem} &&
+            child->data(GraphCanvasPortRole).toString() == from)
+            out = child;
+        else if (kind == QLatin1String{GraphCanvasSocketItem} &&
+                 !child->data(GraphCanvasZoneScopeRole).toString().isEmpty() &&
+                 child->data(NodeGraphNameRole).toString() == to)
+            in = child;
+    }
+    if (out == nullptr || in == nullptr) {
+        carry.setPath(QPainterPath{});
+        return;
+    }
+    const auto *outline = dynamic_cast<const QGraphicsPathItem *>(frame);
+    const qreal bottom = outline != nullptr ? outline->path().boundingRect().bottom()
+                                            : frame->boundingRect().bottom();
+    const auto lane = static_cast<qreal>(carry.data(GraphCanvasControlIndexRole).toULongLong());
+    const qreal lane_y = bottom - carry.data(GraphCanvasZoneFooterRole).toReal() -
+                         (lane + 0.5) * GraphCanvasZoneCarryLane;
+    QPainterPath path = zoneCarryPath(out->pos(), in->pos(), lane_y);
+    // The head, pointing into the input.
+    const QPointF tip = in->pos() - QPointF{GraphCanvasSocketSize / 2.0, 0.0};
+    path.moveTo(tip + QPointF{-7.0, -4.0});
+    path.lineTo(tip);
+    path.lineTo(tip + QPointF{-7.0, 4.0});
+    carry.setPath(path);
+    for (QGraphicsItem *mark : carry.childItems())
+        mark->setPos((out->pos().x() + in->pos().x()) / 2.0, lane_y - 18.0);
 }
 
 QGraphicsPathItem *Builder::addZoneLink(const QString &loop, const QString &output,

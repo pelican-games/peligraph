@@ -1927,8 +1927,9 @@ namespace {
 // LP-2 (engine 992225fb): a draw-loop refusal as the render edit service
 // returns it -- its own code, its fields beside ticket and participant, and a
 // message that is still "<code>: <fields JSON>". In a graph variant's
-// preflight `variant` beside the code is the graph variant, and a field of
-// the refusal's own that has the same name stays only in the message.
+// preflight `variant` beside the code is the graph variant. (LP-4d2: since
+// engine 5e246063 no refusal's own field is called `variant`;
+// graph.loop_variant_missing@1 names the material's `material_variant`.)
 Json lp2DrawLoopRefusal(const std::string &code, const Json &fields,
                         const std::string &graph_variant = {}) {
     Json error{{"participant", "pelican.render_pipeline"}, {"ticket", "t-lp2"}};
@@ -1948,7 +1949,8 @@ TEST_CASE("LP-2 the draw-loop refusals the engine names read as sentences, a gra
     const auto sentence = [](const Json &error) {
         return PelicanStudio::graphLoopRefusalDescription(error);
     };
-    const Json variant_missing{{"node", "draws"}, {"material", "box"}, {"variant", "outline"}};
+    const Json variant_missing{{"node", "draws"}, {"material", "box"},
+                               {"material_variant", "outline"}};
     CHECK(sentence(lp2DrawLoopRefusal("graph.loop_phase_crossing@1",
                                       {{"node", "draws"}, {"material", "box"}})) ==
           "Loop draws: material box draws in another phase (graph.loop_phase_crossing@1).");
@@ -1967,17 +1969,32 @@ TEST_CASE("LP-2 the draw-loop refusals the engine names read as sentences, a gra
                                       {{"node", "draws"}, {"count", 17}, {"limit", 16}})) ==
           "Loop draws needs 17 shader compiles; the limit is 16 "
           "(graph.loop_override_compile_limit@1).");
-    // In the preview graph's preflight: the material variant comes from the
-    // message, not from the `variant` the graph variant took.
+    // In the preview graph's preflight: the material variant is the
+    // refusal's material_variant, never the `variant` the graph variant
+    // took (LP-4d2, decision 8; a sentence that read `variant` would say
+    // "preview" here, and "?" in the main graph's).
     const auto in_preview =
         lp2DrawLoopRefusal("graph.loop_variant_missing@1", variant_missing, "preview");
     REQUIRE(in_preview.at("variant") == "preview");
     CHECK(sentence(in_preview) ==
           "Loop draws: material box has no outline variant (graph.loop_variant_missing@1).");
-    // The refusal's own `variant` is not a graph variant; the preview's is.
+    // The same when the fields travel as error_fields, the message says
+    // nothing, and `variant` is the graph's.
+    const Json relayed{{"code", "graph.loop_variant_missing@1"},
+                       {"variant", "xr"},
+                       {"error_fields", variant_missing}};
+    CHECK(sentence(relayed) ==
+          "Loop draws: material box has no outline variant (graph.loop_variant_missing@1).");
+    // `variant` beside the code is the graph variant, whatever the message
+    // quotes -- even a message that quotes a `variant` of its own.
     CHECK(PelicanStudio::graphRefusalVariant(
               lp2DrawLoopRefusal("graph.loop_variant_missing@1", variant_missing)).empty());
     CHECK(PelicanStudio::graphRefusalVariant(in_preview) == "preview");
+    Json quoting = in_preview;
+    quoting["message"] = std::string{"graph.loop_variant_missing@1: "} +
+                         Json{{"node", "draws"}, {"variant", "preview"}}.dump();
+    CHECK(PelicanStudio::graphRefusalVariant(quoting) == "preview");
+    CHECK(PelicanStudio::graphRefusalVariant(relayed) == "xr");
     CHECK(PelicanStudio::graphRefusalVariant(lp2DrawLoopRefusal(
               "graph.loop_phase_crossing@1", {{"node", "draws"}, {"material", "box"}}, "xr")) ==
           "xr");
@@ -1987,7 +2004,8 @@ TEST_CASE("LP-2 the draw-loop refusals the engine names read as sentences, a gra
     SECTION("the main graph's refusal: the sentence alone, and the loop is marked") {
         REQUIRE(h.client.model.setLoopCount("steps", 100));
         h.refuse(lp2DrawLoopRefusal("graph.loop_variant_missing@1",
-                                    {{"node", "steps"}, {"material", "box"}, {"variant", "outline"}}));
+                                    {{"node", "steps"}, {"material", "box"},
+                                     {"material_variant", "outline"}}));
         CHECK(h.client.model.notice().message ==
               "Loop steps: material box has no outline variant (graph.loop_variant_missing@1).");
         CHECK(h.client.node("steps").refused);

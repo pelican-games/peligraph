@@ -62,6 +62,11 @@ class FramePlanWidget final : public QWidget {
     using GraphLoopNodeOpenAction = std::function<bool(
         const QString &loop, qint64 element, const QString &node)>;
     void setGraphLoopNodeOpenAction(GraphLoopNodeOpenAction action);
+    // LP-4d2, decision 5: the Graph tab's Show in Frame Plan. The plan is read
+    // again (the loop was just edited), and once it is here the loop's group
+    // is opened with its copies picked. The status line says so when the
+    // plan has no copies of that loop.
+    void showLoopGroup(const QString &loop);
     // LP-4e. "Decompose into loop..." on a material pass -- the Frame Plan's
     // entry and the Pass Editor's button both come here: the confirmation,
     // then decompose_material_pass. Once it commits, `action` hears the loop

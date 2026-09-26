@@ -397,6 +397,11 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     bool expandGroup(const QString &group_id);
     bool enterGroup(const QString &group_id);
     bool leaveGroup();
+    // LP-4d2, decision 5: the copies one graph.loop expanded, shown and
+    // picked -- the loop's group opened (out of any group the canvas had
+    // descended into) and every copy selected. False when the plan on
+    // screen has no copies of that loop.
+    bool selectLoopGroup(const std::string &loop);
 
     // A session group is made from the live WP349 selection and never leaves
     // this scene. A non-convex selection records a visible convex-hull
