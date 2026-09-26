@@ -39,6 +39,17 @@ inline bool isViewSelectRefusalCode(std::string_view code) noexcept {
            code == viewSelectPrimaryFamilyCode;
 }
 
+// VF-1: every raster pass of one secondary view family draws at one extent,
+// because the renderer sizes the family's views from the targets its passes
+// write. {family, pass, target, extent, expected_pass, expected_target,
+// expected_extent[, loop_origin][, expected_loop_origin]}: `pass` writes
+// `target` at `extent` where `expected_pass`, earlier in the frame, writes
+// `expected_target` at `expected_extent`. An extent is [width, height] for a
+// fixed-size target and {"output_scale": s} for one sized relative to the
+// output. A loop copy carries its loop_origin {loop, element, node}.
+inline constexpr std::string_view viewFamilyExtentMismatchCode =
+    "render.view_family_extent_mismatch@1";
+
 inline std::string viewSelectRefusalMessage(
     std::string_view code, const nlohmann::json &fields) {
     return std::string{code} + ": " + fields.dump();

@@ -768,6 +768,8 @@ resolveViewFamilyRasterExtent(
             if (!result) {
                 result = extent;
             } else if (*result != extent) {
+                // Last resort: the compiler refuses such a family by name
+                // first (render.view_family_extent_mismatch@1, VF-1).
                 throw std::runtime_error(
                     "render view family '" +
                     std::string{family_id} +

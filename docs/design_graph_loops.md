@@ -707,6 +707,7 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | `graph.view_select_primary_family@1` | 組み直し | `{pass, family}`(`$main` など二次でない family。LP-Va) |
 | `graph.view_select_runtime_axis@1` | 組み直し | `{pass, family, axis}` |
 | `graph.view_select_needs_target_plan@1` | 組み直し | `{pass}` |
+| `render.view_family_extent_mismatch@1` | 組み直し(compile) | `{family, pass, target, extent, expected_pass, expected_target, expected_extent, loop_origin?, expected_loop_origin?}`。1 つの二次 family の raster pass の出力の大きさが食い違う(extent は固定なら `[w,h]`、画面相対なら `{output_scale}`)。以前は実行時に player が fatal で落ちていた(VF-1) |
 | `view_axis` の拒否(LP-Vb) | 組み直し / 編集 | 実行時の軸は `graph.loop_tier_unsupported@1 {node, reason: set_unsupported}`、無い軸は `graph.view_select_axis_unknown@1 {pass: <loop id>, family, axis}`、body に value node があれば `graph.loop_expression_invalid@1 {reason: not_static}` |
 | `render_feature.pass_replacement_unknown@1` | 組み直し | `{feature, pass}` |
 | `graph.node_missing@1`(置き換え先) | 組み直し | `{node, feature, pass}`(LP-0d) |

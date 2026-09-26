@@ -168,6 +168,22 @@ void validateRenderViewSelects(
     const RenderViewFamilyProviderRegistry &providers =
         renderViewFamilyProviderRegistry());
 
+struct RenderTargetDefinition;
+
+// VF-1: recompile-time check that the raster passes of each secondary family
+// (not `$main`) write targets of one extent, the condition the renderer's
+// per-frame family sizing assumes. Targets are compared as authored: the
+// same fixed [width, height], or the same output-relative scale. Attachments
+// naming no definition (the swapchain, frame targets) are not compared, as
+// the renderer does not. Throws render.view_family_extent_mismatch@1
+// (project/viewselect.hpp) as "<code>: <JSON>" naming the first pass that
+// disagrees with the family's first pass, in declaration order; a loop copy
+// on either side carries its loop_origin from the pipeline's provenance.
+void validateRenderViewFamilyExtents(
+    std::span<const FrameGraphDefinition> graphs,
+    std::span<const RenderTargetDefinition> targets,
+    const CompiledRenderPipeline &pipeline);
+
 RenderViewFamilies resolveRuntimeRenderViewFamilies(
     const RenderViewFamilies &authored,
     const RenderViewFamilyProviderContext

@@ -3,13 +3,16 @@
 #include "directionalshadowviewprovider.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../renderingpass/frameplanner.hpp"
+#include "../renderingpass/rendertargetdefinition.hpp"
 #include "../../project/viewselect.hpp"
 #if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
 #include "../render_algorithms/standardrenderalgorithms.hpp"
 #endif
 
 #include <algorithm>
+#include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -309,6 +312,109 @@ void validateRenderViewSelects(
                     }
                     break;
                 }
+            }
+        }
+    }
+}
+
+namespace {
+
+// VF-1: one raster attachment of a secondary-family pass, with the extent
+// its target is declared at.
+struct ViewFamilyRasterWrite {
+    std::string pass;
+    std::string target;
+    std::optional<vk::Extent2D> fixed_extent;
+    float extent_scale = 1.0f;
+};
+
+bool sameDeclaredExtent(const ViewFamilyRasterWrite &left,
+                        const ViewFamilyRasterWrite &right) {
+    if (left.fixed_extent || right.fixed_extent) {
+        return left.fixed_extent && right.fixed_extent &&
+               *left.fixed_extent == *right.fixed_extent;
+    }
+    return left.extent_scale == right.extent_scale;
+}
+
+nlohmann::json declaredExtentJson(const ViewFamilyRasterWrite &write) {
+    if (write.fixed_extent) {
+        return nlohmann::json::array({write.fixed_extent->width,
+                                      write.fixed_extent->height});
+    }
+    return {{"output_scale", write.extent_scale}};
+}
+
+const RenderLoopOrigin *passLoopOrigin(
+    const CompiledRenderPipeline &pipeline, std::string_view pass) {
+    for (const auto &provenance : pipeline.pass_provenance) {
+        if (provenance.name == pass && provenance.loop_origin) {
+            return &*provenance.loop_origin;
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
+void validateRenderViewFamilyExtents(
+    std::span<const FrameGraphDefinition> graphs,
+    std::span<const RenderTargetDefinition> targets,
+    const CompiledRenderPipeline &pipeline) {
+    std::map<std::string, const RenderTargetDefinition *, std::less<>>
+        definitions;
+    for (const auto &target : targets) {
+        definitions.emplace(target.name, &target);
+    }
+    std::map<std::string, ViewFamilyRasterWrite, std::less<>> first_write;
+    for (const auto &graph : graphs) {
+        for (const auto &node : graph.nodes) {
+            if (node.kind != FramePlanNodeKind::render ||
+                node.view_family == mainRenderViewFamilyId) {
+                continue;
+            }
+            for (const auto &attachment : node.attachments) {
+                const auto found = definitions.find(attachment.resource);
+                if (found == definitions.end()) {
+                    continue;
+                }
+                ViewFamilyRasterWrite write{
+                    .pass = node.name,
+                    .target = attachment.resource,
+                    .fixed_extent = found->second->fixed_extent,
+                    .extent_scale = found->second->extent_scale,
+                };
+                const auto [expected, inserted] =
+                    first_write.try_emplace(node.view_family, write);
+                if (inserted ||
+                    sameDeclaredExtent(expected->second, write)) {
+                    continue;
+                }
+                nlohmann::json fields{
+                    {"family", node.view_family},
+                    {"pass", write.pass},
+                    {"target", write.target},
+                    {"extent", declaredExtentJson(write)},
+                    {"expected_pass", expected->second.pass},
+                    {"expected_target", expected->second.target},
+                    {"expected_extent",
+                     declaredExtentJson(expected->second)},
+                };
+                const auto originJson = [](const RenderLoopOrigin &origin) {
+                    return nlohmann::json{{"loop", origin.loop},
+                                          {"element", origin.element},
+                                          {"node", origin.node}};
+                };
+                if (const auto *origin =
+                        passLoopOrigin(pipeline, write.pass)) {
+                    fields["loop_origin"] = originJson(*origin);
+                }
+                if (const auto *origin = passLoopOrigin(
+                        pipeline, expected->second.pass)) {
+                    fields["expected_loop_origin"] = originJson(*origin);
+                }
+                throw std::runtime_error(viewSelectRefusalMessage(
+                    viewFamilyExtentMismatchCode, fields));
             }
         }
     }

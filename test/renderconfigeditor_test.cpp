@@ -18,6 +18,8 @@
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/renderer/viewfamilyproviderregistry.hpp"
 #include "../src/core/renderingpass/previewgraph.hpp"
+#include "../src/core/renderingpass/graphtransformregistry.hpp"
+#include "../src/core/renderingpass/renderstrategyregistry.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
 #include "../src/core/shader/raygrouplayout.hpp"
@@ -8108,6 +8110,153 @@ TEST_CASE("LP-Va2 edit_preset_pass writes and reads back view_select",
     commit(request(nullptr));
     CHECK(rootPass() == declared);
     CHECK_FALSE(planNode().contains("view_select"));
+}
+
+// VF-1: the cube capture decomposed into the shipped loop over the face axis
+// (GT-1's cube_capture_loop), as a direct root.
+Json vf1CubeLoopRoot() {
+    const Json root{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", Json::object()},
+                    {"nodes", Json::array()}, {"outputs", Json::object()},
+                    {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+                                   {"features", Json::array({"engine://features/cube_capture.json"})}}}};
+    return TestSupport::lp1cApplyDecomposition(
+        root, Json::parse(engineResourceOrThrow("graphs/cube_capture_loop.json")));
+}
+
+// VF-1: the candidate compiled as the running renderer compiles it -- the
+// production Vulkan program, at a 1280x720 output -- without a device.
+void vf1CompileAsRenderer(const RenderConfigCandidateDocumentSet &documents, const PathResolver &resolver) {
+    const auto config = Json::parse(documents.rootDocument().bytes);
+    const GraphTransformRegistrySnapshot transforms;
+    const RenderStrategyRegistrySnapshot strategies;
+    const SubgraphReplacementRegistrySnapshot replacements;
+    const VulkanRenderCompilerBackendContext backend{
+        vk::Format::eB8G8R8A8Srgb, vk::Extent2D{1280, 720}, {}, {}, {},
+        VulkanRenderCompilerDevicePlanningMode::compiler_only};
+    const std::array variants{RenderCompilerProgramVariantRequest{.graph_variant = RenderPipelineGraphVariant::flat}};
+    (void)runRenderCompilerProgram(
+        defaultVulkanRenderCompilerProgram(),
+        RenderCompilerProgramInput{
+            .rendering_config = config,
+            .source_name = "VF-1 renderer compile",
+            .path_resolver = resolver,
+            .load_document = [&](std::string_view reference) {
+                return loadRenderConfigCandidateText(documents, resolver, reference);
+            },
+            .runtime_shader_compiler_enabled = PELICAN_RUNTIME_SHADER_COMPILER != 0,
+            .graph_transforms = transforms,
+            .render_strategies = strategies,
+            .subgraph_replacements = replacements,
+            .backend_context = backend,
+            .variants = variants,
+        });
+}
+
+// VF-1 (reported from Studio): a loop over the cube's face axis whose body's
+// fullscreen pass writes a screen-sized image made the player stop at its
+// per-frame family sizing. The edit is refused by name instead, from the
+// renderer's compile, and nothing is written.
+TEST_CASE("VF-1 a cube face loop whose body writes a screen-sized image is refused by name",
+          "[render-config-editor][view-family][vf1][lpvb][cube]") {
+    TemporaryAnimgraphProject project;
+    writeBytes(project.render_config, vf1CubeLoopRoot().dump(2) + "\n");
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    // The shipped loop, correctly sized, compiles as the renderer compiles it.
+    REQUIRE_NOTHROW(vf1CompileAsRenderer(
+        RenderConfigCandidateDocumentSet{
+            "test://root",
+            {{.reference = "test://root",
+              .normalized_reference = "test://root",
+              .path = "main.json",
+              .operation = RenderConfigDocumentOperation::replace,
+              .expected = {.existence = RenderConfigDocumentExistence::present,
+                           .digest = renderConfigSourceDigest(readBytes(project.render_config))},
+              .bytes = readBytes(project.render_config)}}},
+        resolver));
+    auto service = makeProjectService(project, resolver, runtime);
+    runtime.validate_candidate = [&](const RenderConfigCandidateDocumentSet &documents) {
+        vf1CompileAsRenderer(documents, resolver);
+    };
+    const auto edit = [&](Json ops) {
+        const auto context = service->getRenderAuthoringContext(Json::object());
+        const auto accepted = service->editGraphDocument(
+            {{"base_source_digest", context.at("source_digest").at("hex")}, {"ops", std::move(ops)}});
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        return Json(result);
+    };
+
+    // A correctly sized body still passes: an edit of the loop's body lands.
+    {
+        const auto result = edit(Json::array(
+            {{{"op", "set_node_label"}, {"scope", "cube_capture_face"}, {"node", "ssao"}, {"label", "AO"}}}));
+        REQUIRE(result.at("committed") == true);
+    }
+
+    // The body gains a fullscreen pass, on the face, that writes a
+    // screen-sized image.
+    const auto before = readBytes(project.render_config);
+    const auto apply_calls = runtime.apply_calls;
+    const auto result = edit(Json::array({
+        {{"op", "add_node"},
+         {"scope", "cube_capture_face"},
+         {"node",
+          {{"id", "screen_ao"},
+           {"op", "render.image"},
+           {"parameters",
+            {{"type", {{"semantic", "pelican.render.legacy_opaque_image@1"}, {"arguments", Json::object()}}},
+             {"format", "R8_UNORM"},
+             {"extent_scale", 1.0},
+             {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}}},
+           {"outputs", Json::array({"resource"})}}}},
+        {{"op", "add_node"},
+         {"scope", "cube_capture_face"},
+         {"node",
+          {{"id", "screen_fill"},
+           {"op", "render.fullscreen"},
+           {"parameters",
+            {{"pass_set", "main_render"},
+             {"view_family", "$capture/cube"},
+             {"view_select", {{"face", {{"$expr", "element"}}}}},
+             {"after", Json::array({"ssao"})},
+             {"resolution_domain", "independent"},
+             {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
+             {"ports",
+              {{"color",
+                {{"kind", "image"},
+                 {"type", {{"semantic", "pelican.render.legacy_opaque_image@1"}, {"arguments", Json::object()}}},
+                 {"access", "write"},
+                 {"attachment", "color"},
+                 {"location", 0}}}}}}},
+           {"inputs", {{"color", {{"node", "screen_ao"}, {"port", "resource"}}}}},
+           {"outputs", Json::array({"color"})}}}},
+    }));
+    CHECK(runtime.apply_calls == apply_calls + 1);
+    REQUIRE(result.at("status") == "rejected");
+    CHECK(result.at("committed") == false);
+    const auto &error = result.at("error");
+    CHECK(error.at("code") == "render.view_family_extent_mismatch@1");
+    CHECK(error.at("participant") == "pelican.render_pipeline");
+    CHECK(error.at("family") == "$capture/cube");
+    // The first face's copy, against the first face's geometry (the
+    // cube's 256 x 256 targets).
+    CHECK(error.at("pass") == "cube_capture_faces/0/screen_fill");
+    CHECK(error.at("extent") == Json{{"output_scale", 1.0}});
+    CHECK(error.at("loop_origin") == Json{{"loop", "cube_capture_faces"}, {"element", 0}, {"node", "screen_fill"}});
+    CHECK(error.at("expected_pass") == "cube_capture_faces/0/geometry");
+    CHECK(error.at("expected_extent") == Json::array({256, 256}));
+    CHECK(error.at("expected_loop_origin") ==
+          Json{{"loop", "cube_capture_faces"}, {"element", 0}, {"node", "geometry"}});
+    CHECK(error.at("target") == "cube_capture_faces/0/screen_ao");
+    CHECK(error.at("expected_target") == "cube_capture_albedo");
+    CHECK_THAT(error.at("message").get<std::string>(),
+               Catch::Matchers::StartsWith("render.view_family_extent_mismatch@1: "));
+    CHECK(readBytes(project.render_config) == before);
 }
 #endif
 

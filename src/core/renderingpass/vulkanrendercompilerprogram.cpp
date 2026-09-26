@@ -757,6 +757,14 @@ compileDefaultVulkanVariant(
     validateRenderViewSelects(
         graph_definitions,
         logical.compiled_pipeline);
+    // VF-1: the raster passes of one secondary view family write targets of
+    // one extent, which the renderer sizes the family's views from; a pass
+    // that does not is refused here by name rather than by the renderer's
+    // per-frame check (resolveViewFamilyRasterExtent).
+    validateRenderViewFamilyExtents(
+        graph_definitions,
+        render_target_definitions,
+        logical.compiled_pipeline);
     if (input.ray_tracing_project &&
         input.ray_tracing_project->layout.usesRayTables()) {
         std::vector<std::string> graph_names;

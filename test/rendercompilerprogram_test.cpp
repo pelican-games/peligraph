@@ -1263,6 +1263,91 @@ TEST_CASE("LP-Va view_select refusals are named at recompile time",
     }
 }
 
+// VF-1: two fullscreen passes on the cube family; the second writes
+// `second_target`. The renderer sizes the family's views from the targets
+// its passes write, so they must agree.
+nlohmann::json vf1CubeFamilyConfig(std::string second_target) {
+    const auto cube_pass = [](std::string name, std::string target) {
+        return nlohmann::json{
+            {"name", std::move(name)},
+            {"type", "fullscreen"},
+            {"view_family", "$capture/cube"},
+            {"output", {{"color", nlohmann::json::array({std::move(target)})},
+                        {"depth", nullptr}}},
+            {"shader", {{"vertex", "engine://fullscreen"},
+                        {"fragment", "engine://fullscreen"}}},
+        };
+    };
+    const auto target = [](std::string name, nlohmann::json size) {
+        nlohmann::json declaration{
+            {"name", std::move(name)},
+            {"extent_scale", 1.0},
+            {"format", "R8_UNORM"},
+            {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})}};
+        declaration.update(size);
+        return declaration;
+    };
+    return Pelican::TestSupport::renderGraphRoot(nlohmann::json{
+        {"render_targets",
+         nlohmann::json::array({
+             target("cube_ao", {{"width", 16}, {"height", 16}, {"layers", 6}}),
+             target("cube_ao_second", {{"width", 16}, {"height", 16}, {"layers", 6}}),
+             target("cube_small", {{"width", 8}, {"height", 8}, {"layers", 6}}),
+             // Sized from the output: the screen.
+             target("screen_ao", nlohmann::json::object()),
+         })},
+        {"rendering_passes",
+         nlohmann::json::array({
+             {{"name", "main"},
+              {"passes",
+               nlohmann::json::array({
+                   cube_pass("cube_first", "cube_ao"),
+                   cube_pass("cube_second", std::move(second_target)),
+                   {{"name", "present"},
+                    {"type", "fullscreen"},
+                    {"output", {{"color", "swapchain"},
+                                {"depth", nullptr}}},
+                    {"shader", {{"vertex", "engine://fullscreen"},
+                                {"fragment", "engine://fullscreen"}}}},
+               })}},
+         })},
+    });
+}
+
+TEST_CASE("VF-1 a view family's passes at different extents are refused by name at compile",
+          "[rendercompiler][view-family][vf1][diagnostic]") {
+    SECTION("a cube-family pass writing a screen-sized target") {
+        const auto refusal = lpvaCompileRefusal(vf1CubeFamilyConfig("screen_ao"));
+        CHECK(refusal.code == "render.view_family_extent_mismatch@1");
+        CHECK(refusal.fields ==
+              nlohmann::json{{"family", "$capture/cube"},
+                             {"pass", "cube_second"},
+                             {"target", "screen_ao"},
+                             {"extent", {{"output_scale", 1.0}}},
+                             {"expected_pass", "cube_first"},
+                             {"expected_target", "cube_ao"},
+                             {"expected_extent", {16, 16}}});
+    }
+    SECTION("a cube-family pass writing a fixed target of another size") {
+        const auto refusal = lpvaCompileRefusal(vf1CubeFamilyConfig("cube_small"));
+        CHECK(refusal.code == "render.view_family_extent_mismatch@1");
+        CHECK(refusal.fields.at("pass") == "cube_second");
+        CHECK(refusal.fields.at("extent") == nlohmann::json{8, 8});
+        CHECK(refusal.fields.at("expected_extent") == nlohmann::json{16, 16});
+        CHECK_FALSE(refusal.fields.contains("loop_origin"));
+    }
+    SECTION("passes whose targets agree compile") {
+        ProgramInputFixture fixture;
+        fixture.config = vf1CubeFamilyConfig("cube_ao_second");
+        fixture.backend_context = VulkanRenderCompilerBackendContext{
+            vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
+            VulkanRenderCompilerDevicePlanningMode::compiler_only};
+        fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat}};
+        CHECK_NOTHROW(runRenderCompilerProgram(
+            defaultVulkanRenderCompilerProgram(), fixture.input()));
+    }
+}
+
 // LP-Va2: get_frame_plan's nodes carry their family's axes, read from the
 // providers against the pipeline the production compiler composed, so the
 // cascade length is the feature's cascade_count and not a fixed number.

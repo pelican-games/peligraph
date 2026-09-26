@@ -72,6 +72,8 @@ bool isCarriedRefusalCode(std::string_view code) {
            code == renderConfigLegacyTransactionDirCode ||
            // LP-Va: recompile-time view_select refusals.
            isViewSelectRefusalCode(code) ||
+           // VF-1: a secondary view family's passes at different extents.
+           code == viewFamilyExtentMismatchCode ||
            // LP-2: the refusals raised while the draw-loop tables are
            // built (the steps are judged against the loaded materials).
            isMaterialDrawLoopRefusalCode(code);
