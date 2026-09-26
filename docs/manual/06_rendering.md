@@ -532,13 +532,13 @@ feature は**パラメータ化**できます。`features` 配列は文字列の
 入力configには、そのfeatureの合成位置で参照できるresource宣言を渡します。
 戻り値は通常の`pelican.render_feature`として保存・再読込できます。**`parameters` 宣言は残ります**(✅P-2a-1c で変わりました。以前の版の「宣言を除去する」という記述は誤りでした):
 
-- **`parameters` の宣言はそのまま残り、選ばれた値は `bound_parameters` オブジェクトに記録されます**([featurecompose.cpp:2859](../../src/project/featurecompose.cpp#L2876))。materialize 済み feature の parameter を後から編集できるのはこのためです
+- **`parameters` の宣言はそのまま残り、選ばれた値は `bound_parameters` オブジェクトに記録されます**([featurecompose.cpp:2859](../../src/project/featurecompose.cpp#L2889))。materialize 済み feature の parameter を後から編集できるのはこのためです
 - **ただし残るのは `scalars` の宣言だけです。**`render_targets` と `shader_assets` の宣言は materialize が**食べてしまい**、展開後の文書には転記されません([featurecompose.cpp:1633](../../src/project/featurecompose.cpp#L1650))。束縛済みの値は `bound_parameters` 経由で runtime から見えます([featurecompose.cpp:1465](../../src/project/featurecompose.cpp#L1482))が、**「どの RT / シェーダを選べるか」という選択肢は派生の時点で固定**されます。
-- **スカラーの値付き define は焼き込みません。** 宣言が残っているので、合成のたびに **その時点で効いている値から define が作り直されます**([featurecompose.cpp:2850](../../src/project/featurecompose.cpp#L2867))。焼き込むと古い `PELICAN_FEATURE_<F>_<N>=<旧値>` が新しい方の隣に残ってしまうためです。`shader_defines` に保存されるのは feature が自分で書いていた define だけです。
+- **スカラーの値付き define は焼き込みません。** 宣言が残っているので、合成のたびに **その時点で効いている値から define が作り直されます**([featurecompose.cpp:2850](../../src/project/featurecompose.cpp#L2880))。焼き込むと古い `PELICAN_FEATURE_<F>_<N>=<旧値>` が新しい方の隣に残ってしまうためです。`shader_defines` に保存されるのは feature が自分で書いていた define だけです。
 - **`$名前` プレースホルダも展開しません。** `"width": "$resolution"` のような**物理宣言側の `$名前` は文字列のまま残り**、後の編集が define だけでなく物理フィールドにも届きます(✅P-2a-1c の逸脱裁定)。
 - **値の優先順位は `instance parameters` > `bound_parameters` > 宣言の `default`** です([featurecompose.cpp:1393](../../src/project/featurecompose.cpp#L1410))。つまり **`bound_parameters` は「派生 feature 自身の既定値」**であって、インスタンス側の上書きを禁じるものではありません(以前の版の「併記と instance 上書きは拒否」という記述は誤りでした)。
-- 拒否されるのは **2 度目の materialize** です。`bound_parameters` を既に持つ文書をもう一度展開しようとすると `Render feature '<名前>' is already materialized and cannot be materialized again` になります([featurecompose.cpp:2874](../../src/project/featurecompose.cpp#L2891))。
-- 一方、**展開前の**パラメータ付き feature の pass を直接編集することはできません(`Parameterized feature passes must be edited in their source document.`)。materialize 済みなら pass は束縛済みなので、その場で編集できます([renderconfigeditor.cpp:76](../../src/core/communication/renderconfigeditor.cpp#L186))。
+- 拒否されるのは **2 度目の materialize** です。`bound_parameters` を既に持つ文書をもう一度展開しようとすると `Render feature '<名前>' is already materialized and cannot be materialized again` になります([featurecompose.cpp:2874](../../src/project/featurecompose.cpp#L2904))。
+- 一方、**展開前の**パラメータ付き feature の pass を直接編集することはできません(`Parameterized feature passes must be edited in their source document.`)。materialize 済みなら pass は束縛済みなので、その場で編集できます([renderconfigeditor.cpp:76](../../src/core/communication/renderconfigeditor.cpp#L204))。
 
 展開後はノード宣言やshader define、必要ならprovider用の`bound_parameters`を直接編集します。
 `edit_render_features`の`materialize`操作は、この展開文書の新規保存と選択instanceの参照切替を
@@ -554,7 +554,7 @@ StudioではRender featuresで対象を選び、**Make editable...**で新しい
 他の領域の指定は保持します。差し替え指定の保存先がengine presetの場合は先にFork presetしてください。
 一般的なコンパイラ最適化は維持します。XR/preview向けの実行variantを独立した文書へ変換する操作ではありません。
 
-**materialize した派生 feature は、プロジェクトの外へ「共有部品」として持ち出せます(✅P-2a-3)。** `export_render_feature{scope, index}` は `features` 配列の 1 インスタンスを 1 ディレクトリ `user://components/<feature の name>/`(`component.json` + `feature.json`)として書き出し、`import_render_feature` が別プロジェクトの `project://` へ取り込みます([renderconfigeditor.cpp:893](../../src/core/communication/renderconfigeditor.cpp#L1216))。持ち出せるのは **`project://` を一文字も含まない** feature だけで(含んでいれば `render_component_project_reference`)、`engine://` の同梱 feature は「既に共有されている」として `render_component_engine_reference` で断られます —— まず派生を作ってから、という順序です([rendercomponent.cpp:212](../../src/project/rendercomponent.cpp#L212)、`project://` 走査は [:240](../../src/project/rendercomponent.cpp#L240))。部品が要求する RT は `component.json` の `requires.render_targets` に並びます —— **「パスが使っている名前」から「feature 自身が `render_targets` / `buffers` で宣言した名前」を引いた差**なので、`bloom` を派生させて書き出すと `lit_color` と `swapchain` の 2 つが入り、feature 自身が宣言する `Bloom_*` と `bloom.intensity` は入りません([rendercomponent.cpp:163](../../src/project/rendercomponent.cpp#L163))。`swapchain` はエンジン所有なので、取り込み先で「無い」と言われることはありません。**形式・拒否 8 種・取り込み先の規則の本文は [第3章 §3.12](03_project_format.md)** にあります。ここで覚えておくことは 1 つだけ —— **共有できるのは「プロジェクトを指していない派生 feature」**です。
+**materialize した派生 feature は、プロジェクトの外へ「共有部品」として持ち出せます(✅P-2a-3)。** `export_render_feature{scope, index}` は `features` 配列の 1 インスタンスを 1 ディレクトリ `user://components/<feature の name>/`(`component.json` + `feature.json`)として書き出し、`import_render_feature` が別プロジェクトの `project://` へ取り込みます([renderconfigeditor.cpp:893](../../src/core/communication/renderconfigeditor.cpp#L1234))。持ち出せるのは **`project://` を一文字も含まない** feature だけで(含んでいれば `render_component_project_reference`)、`engine://` の同梱 feature は「既に共有されている」として `render_component_engine_reference` で断られます —— まず派生を作ってから、という順序です([rendercomponent.cpp:212](../../src/project/rendercomponent.cpp#L212)、`project://` 走査は [:240](../../src/project/rendercomponent.cpp#L240))。部品が要求する RT は `component.json` の `requires.render_targets` に並びます —— **「パスが使っている名前」から「feature 自身が `render_targets` / `buffers` で宣言した名前」を引いた差**なので、`bloom` を派生させて書き出すと `lit_color` と `swapchain` の 2 つが入り、feature 自身が宣言する `Bloom_*` と `bloom.intensity` は入りません([rendercomponent.cpp:163](../../src/project/rendercomponent.cpp#L163))。`swapchain` はエンジン所有なので、取り込み先で「無い」と言われることはありません。**形式・拒否 8 種・取り込み先の規則の本文は [第3章 §3.12](03_project_format.md)** にあります。ここで覚えておくことは 1 つだけ —— **共有できるのは「プロジェクトを指していない派生 feature」**です。
 
 > **同じ綴りの別語に注意。** ここの **component** は `pelican.render_component`(feature 1 本を包んだ共有部品)で、[第4章](04_scene_ecs.md) の ECS の component とも、package の `provides.components` とも **別の語**です。同じく **requires** も 3 か所で別物で、`component.json` の `requires.render_targets`(この部品が要求する RT)/ feature の `integrations[].requires`(そのフラグメントを適用する条件の feature 名)/ `project.json` の `requires`(ビルド機能ユニットの要求。[第3章](03_project_format.md))は互いに無関係です([用語集](14_glossary.md))。
 
@@ -2110,7 +2110,7 @@ rendering 文書の root に `material_route_default` を置くと、automatic �
   `render feature cannot declare material_route_default`)。値が `"auto"` / `"forward"` 以外なら
   `rendering config material_route_default must be "auto" or "forward"` です
   ([`readMaterialRouteDefault()`](../../src/project/renderpipeline.cpp#L654))。合成した config には残りません。
-- **engine は起動時に 1 回だけ読みます**(renderer を作るとき。[起動時の snapshot](../../src/core/vkcore/renderer.cpp#L3088))。
+- **engine は起動時に 1 回だけ読みます**(renderer を作るとき。[起動時の snapshot](../../src/core/vkcore/renderer.cpp#L3136))。
   起動後に文書を書き換えても、編集 RPC で変えても、engine を起動し直すまで効きません。編集 RPC は `restart_required: true` を返し、
   Studio はそれを受けて engine を再起動します([第13章](13_editor.md) §13.5)。renderer を持たない構成(loader や tool の test)では
   `"auto"` と読みます。
@@ -2328,14 +2328,14 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 | `preview graph '<列名>' rejects authored pass '<パス名>': <理由>` | 同上(理由は `unsafe pass type/name <type>` / `history read` / `history write`)|
 | `preview graph config requires rendering_passes` | 合成後の config に `rendering_passes` が無い(§6.13) |
 | `golden inventory: FAIL` + `- <issue>` | `test/golden/inventory.json` と `test/golden/` の実体が食い違う(§6.10) |
-| `render_config_section_unlocated`(RPC の拒否コード) | `pelican.graph` root なのに `rendering` 節が無い(あるいは object でない)文書を authoring RPC が編集しようとした。**黙って root にキーを作らない**([renderconfigeditor.cpp:887](../../src/core/communication/renderconfigeditor.cpp#L1210)。§6.16) |
+| `render_config_section_unlocated`(RPC の拒否コード) | `pelican.graph` root なのに `rendering` 節が無い(あるいは object でない)文書を authoring RPC が編集しようとした。**黙って root にキーを作らない**([renderconfigeditor.cpp:887](../../src/core/communication/renderconfigeditor.cpp#L1228)。§6.16) |
 | `render_config.section_unlocated@1` | 同じ理由で `--feature-overlay` の適用先が見つからない([renderfeatureoverlay.cpp:142](../../src/project/renderfeatureoverlay.cpp#L144)) |
-| `graph.operation_unregistered@1` `{node, op}` | ノードの `op` をどの module も登録していない。綴り間違いのほか、**`PELICAN_WITH_ANIMATION=OFF` の build で `pose.*` を書いた**ときもこれ([graphmodule.cpp:199](../../src/project/graphmodule.cpp#L199)。§6.17) |
-| `graph.operation_unexecutable@1` `{backend, op, node}` | op は登録されているのに、それを実行する backend がこの build に無い。rendering 側は `backend: "pelican.render"` で、lowering できる 6 op 以外を rendering 区画に置いたときに出ます([rendergraphcomposition.cpp:58](../../src/project/rendergraphcomposition.cpp#L58))。姿勢側・値側にも同名の拒否があります([posegraph.cpp:91](../../src/core/animation/posegraph.cpp#L91) / [valuegraph.cpp:289](../../src/core/userpublic/valuegraph.cpp#L455)) |
-| `graph.node_duplicate@1` / `graph.node_missing@1` / `graph.input_unknown@1` / `graph.input_referenced@1` / `graph.output_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1` / `graph.definition_immutable@1` / `graph.layout_invalid@1` | `edit_graph_document` の **9 つ**の名前付き拒否(重複 id / 不在 node / 不明な入力 port / まだ供給されている `graph.input` の削除 / まだ参照されている node の削除 / definition の中の `graph.instance` / root の `graph.input` / 編集できない scope)。正は [`editGraphDocument()` の宣言コメント](../../src/project/graphcomposition.hpp#L90)(9 つ全部を列挙しています。9 つ目 `graph.layout_invalid@1` は N-6 の `set_layout`)と throw 箇所([graphcomposition.cpp:363](../../src/project/graphcomposition.cpp#L364) 〜 [:534](../../src/project/graphcomposition.cpp#L828))。一覧は [第13章](13_editor.md) |
+| `graph.operation_unregistered@1` `{node, op}` | ノードの `op` をどの module も登録していない。綴り間違いのほか、**`PELICAN_WITH_ANIMATION=OFF` の build で `pose.*` を書いた**ときもこれ([graphmodule.cpp:257](../../src/project/graphmodule.cpp#L257)。§6.17) |
+| `graph.operation_unexecutable@1` `{backend, op, node}` | op は登録されているのに、それを実行する backend がこの build に無い。rendering 側は `backend: "pelican.render"` で、lowering できる 6 op 以外を rendering 区画に置いたときに出ます([rendergraphcomposition.cpp:58](../../src/project/rendergraphcomposition.cpp#L77))。姿勢側・値側にも同名の拒否があります([posegraph.cpp:91](../../src/core/animation/posegraph.cpp#L91) / [valuegraph.cpp:289](../../src/core/userpublic/valuegraph.cpp#L455)) |
+| `graph.node_duplicate@1` / `graph.node_missing@1` / `graph.input_unknown@1` / `graph.input_referenced@1` / `graph.output_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1` / `graph.definition_immutable@1` / `graph.layout_invalid@1` | `edit_graph_document` の **9 つ**の名前付き拒否(重複 id / 不在 node / 不明な入力 port / まだ供給されている `graph.input` の削除 / まだ参照されている node の削除 / definition の中の `graph.instance` / root の `graph.input` / 編集できない scope)。正は [`editGraphDocument()` の宣言コメント](../../src/project/graphcomposition.hpp#L126)(9 つ全部を列挙しています。9 つ目 `graph.layout_invalid@1` は N-6 の `set_layout`)と throw 箇所([graphcomposition.cpp:363](../../src/project/graphcomposition.cpp#L365) 〜 [:534](../../src/project/graphcomposition.cpp#L1087))。一覧は [第13章](13_editor.md) |
 | `graph.override_shadowed@1` `{parameter}` | edge が供給している入力に `setGraphParameter` で実行時の上書きをかけた。**黙って消えない**([scenegraphruntime.cpp:123](../../src/core/loader/scenegraphruntime.cpp#L129)。§6.17) |
-| `unconnected graph input: <node>.<port>` / `unconnected subgraph input: <名前>` | 必須入力に edge も `parameters` も `default` も無い([graphcomposition.cpp:323](../../src/project/graphcomposition.cpp#L324)、[:59](../../src/project/graphcomposition.cpp#L60)) |
-| `unknown graph definition: <名前>` / `recursive graph definition: <名前>` / `cyclic subgraph connection: <id>` | `graph.instance.definition` の綴り違い / 定義の再帰 / インスタンス同士の循環([graphcomposition.cpp:93](../../src/project/graphcomposition.cpp#L94) / [:108](../../src/project/graphcomposition.cpp#L109) / [:90](../../src/project/graphcomposition.cpp#L91)) |
+| `unconnected graph input: <node>.<port>` / `unconnected subgraph input: <名前>` | 必須入力に edge も `parameters` も `default` も無い([graphcomposition.cpp:323](../../src/project/graphcomposition.cpp#L325)、[:59](../../src/project/graphcomposition.cpp#L61)) |
+| `unknown graph definition: <名前>` / `recursive graph definition: <名前>` / `cyclic subgraph connection: <id>` | `graph.instance.definition` の綴り違い / 定義の再帰 / インスタンス同士の循環([graphcomposition.cpp:93](../../src/project/graphcomposition.cpp#L95) / [:108](../../src/project/graphcomposition.cpp#L110) / [:90](../../src/project/graphcomposition.cpp#L92)) |
 
 ## 6.12 OpenXR ステレオレンダリング(✅WP125〜138 / WP203a〜c実装済み)
 
@@ -2734,7 +2734,7 @@ rendering config のファイルは **`pelican.graph` root** です。最上位�
 }
 ```
 
-**規則は 1 つだけです**: `schema` / `version` / `definitions` / `nodes` / `outputs`(と `layout`)は共通グラフが所有し、**それ以外の rendering config のキーは全部 `rendering` 節に属します**。エンジンは composer の入口でこの文書を平らな rendering config へ lower してからパスを組みます([lowerRenderGraphDocument()](../../src/project/rendergraphcomposition.cpp#L21))。`rendering` 節は、旧い legacy root(下)を最上位に置いたときと同じ意味で読まれます。
+**規則は 1 つだけです**: `schema` / `version` / `definitions` / `nodes` / `outputs`(と `layout`)は共通グラフが所有し、**それ以外の rendering config のキーは全部 `rendering` 節に属します**。エンジンは composer の入口でこの文書を平らな rendering config へ lower してからパスを組みます([lowerRenderGraphDocument()](../../src/project/rendergraphcomposition.cpp#L348))。`rendering` 節は、旧い legacy root(下)を最上位に置いたときと同じ意味で読まれます。
 
 - **旧い legacy root は読めません(MG-2b)。**§6.2 の表のキーを最上位に直接並べた形は、起動時の読み込み([読み込みで legacy root を断る所](../../src/core/renderingpass/renderingpassconfigloader.cpp#L24))、`--feature-overlay` の重ね合わせ、レイトレの設定の読み出し、Studio / RPC の編集文書のどれもが `render_config.legacy_root@1` で断ります([`RenderConfigLegacyRoot`](../../src/project/renderconfigdocument.hpp#L37))。v0 は形式ごとに版を 1 つだけ持ち、旧い形は変換せず書き直す方針です。直すには、旧いファイル全体を `rendering` の値にして上の 5 キーを足します(`{"schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {}, "rendering": <旧い root>}`)。MG-2b は出荷の legacy root 5 本(`animgraph_demo` / `sprite_demo` / `vrm_xr_demo` / `raytracing_demo` / `pathtrace_demo`)をこの手で包みました。
 - `buffers` と `compute_tasks` は **グラフが所有します**。lowering は `render.buffer` / `render.compute` などのノードの接続からこの 2 つを作るので、`rendering` 節に書くと `render graph derives field from connections: buffers` のように名前付きで拒否します。buffer と compute task は graph node か task feature で書きます。
@@ -2753,7 +2753,7 @@ rendering config のファイルは **`pelican.graph` root** です。最上位�
 
 ### module — 語彙の単位
 
-op は **module** が登録します。登録済み module はエンジンに最大 5 本で、どれも module version 1 です([graphmodule.cpp:286](../../src/project/graphmodule.cpp#L287))。
+op は **module** が登録します。登録済み module はエンジンに最大 5 本で、どれも module version 1 です([graphmodule.cpp:286](../../src/project/graphmodule.cpp#L345))。
 
 | module | 内容 | op |
 |---|---|---|
@@ -2763,24 +2763,24 @@ op は **module** が登録します。登録済み module はエンジンに最
 | `pelican.pose` | 骨格姿勢(クリップ標本化・ブレンド・ステートマシン)と単一 writer の sink | 6 |
 | `pelican.ui` | UI の node の値と表示を書く sink(`ui.value` / `ui.visible`。parameter `node` = UI node の path) | 2 |
 
-合計 **29 op**(5 module)。`PELICAN_WITH_ANIMATION=OFF` の build では **`pelican.pose` module がそもそも登録されない**ので 4 module / 23 op、`PELICAN_WITH_AUDIO=OFF` では `pelican.audio` が無く 4 module / 26 op、両方 OFF で 3 module / 20 op になります(正本は [docs/v0_freeze.md](../v0_freeze.md) §1.3)([graphmodule.cpp:340](../../src/project/graphmodule.cpp#L375))。module の登録の仕方はエンジンが持ってくる場合も同じで、**「エンジンの特権」ではなく「登録契約」**です(feature が機構語彙に対してそうであるように。§6.5)。
+合計 **29 op**(5 module)。`PELICAN_WITH_ANIMATION=OFF` の build では **`pelican.pose` module がそもそも登録されない**ので 4 module / 23 op、`PELICAN_WITH_AUDIO=OFF` では `pelican.audio` が無く 4 module / 26 op、両方 OFF で 3 module / 20 op になります(正本は [docs/v0_freeze.md](../v0_freeze.md) §1.3)([graphmodule.cpp:340](../../src/project/graphmodule.cpp#L434))。module の登録の仕方はエンジンが持ってくる場合も同じで、**「エンジンの特権」ではなく「登録契約」**です(feature が機構語彙に対してそうであるように。§6.5)。
 
 - 登録が無い `op` を書いた文書は **`graph.operation_unregistered@1` `{node, op}`**。OFF build で `pose.*` を書いたときもこれです。
 - op は登録されているのに、それを実行する backend がいない場合は **`graph.operation_unexecutable@1` `{backend, op, node}`**。
 
 ### op の契約 — `domain` / `evaluation` / `change`
 
-どの op も、ポートの型のほかに 3 つの分類を宣言します(それぞれ別の enum です: [domain](../../src/project/graphcomposition.hpp#L128) / [evaluation](../../src/project/graphcomposition.hpp#L132) / [change](../../src/project/graphcomposition.hpp#L136))。
+どの op も、ポートの型のほかに 3 つの分類を宣言します(それぞれ別の enum です: [domain](../../src/project/graphcomposition.hpp#L144) / [evaluation](../../src/project/graphcomposition.hpp#L148) / [change](../../src/project/graphcomposition.hpp#L152))。
 
 | 分類 | 値 | 意味 |
 |---|---|---|
-| `domain` | `values` / `rendering` / `animation` | **どの実行段が評価するか**。`animation` は同じフレームの中で `values` より **1 段早く**走ります。だから **姿勢の op は「今フレームのスカラー」を読めて、逆向きは無い**(一方向)([graphcomposition.hpp:102](../../src/project/graphcomposition.hpp#L123)) |
+| `domain` | `values` / `rendering` / `animation` | **どの実行段が評価するか**。`animation` は同じフレームの中で `values` より **1 段早く**走ります。だから **姿勢の op は「今フレームのスカラー」を読めて、逆向きは無い**(一方向)([graphcomposition.hpp:102](../../src/project/graphcomposition.hpp#L139)) |
 | `evaluation` | `direct` / `replay` / `baked` / `recorded` | **評価をまたいで結果がどう作られるか**。`direct` は毎回同じ入力から同じ出力。`replay` は状態を持ち、「ここまでの経過」が要る(時計、ステートマシン、root motion の抽出) |
 | `change` | `value` / `recompile` / `rebuild` | **ノードの `parameters` を変えたときの代償**。`value` は値が変わるだけ、`rebuild` はノードを作り直す |
 
 `evaluation` はノード単位で **強い方へ上げられます**(引き下げは採られません)。実物は `pose.clip_sample` で、`root_motion: "extract"` を書いたノードだけが `direct` → `replay` に上がります([posegraphmodule.cpp:179](../../src/project/posegraphmodule.cpp#L179))。v0 で実際に現れるのは `direct` と `replay` の 2 つだけで、`baked` / `recorded` を宣言する同梱 op はありません。
 
-`ports` は `declared`(op が固定のポート一覧を持つ)か `parameter_dependent`(ノード自身の書きぶりから決まる)です。catalog が `parameter_dependent` と書く条件は「factory を持ち、**かつ宣言コントラクトの `inputs` / `outputs` が両方とも空**」で([graphmodule.cpp:123](../../src/project/graphmodule.cpp#L123))、これに当たるのは **`render.*` の 6 本だけ**です。`pose.state_machine` は包む文書に従ってポートが増えますが、`pose` 出力を宣言しているので catalog の `ports` は **`declared`** です —— 増えた入力ポートは解決後にしか見えません。Studio のキャンバスもこのフィールドで分岐します([graphcanvasmodel.cpp:434](../../src/devstudio/model/graphcanvasmodel.cpp#L914))。
+`ports` は `declared`(op が固定のポート一覧を持つ)か `parameter_dependent`(ノード自身の書きぶりから決まる)です。catalog が `parameter_dependent` と書く条件は「factory を持ち、**かつ宣言コントラクトの `inputs` / `outputs` が両方とも空**」で([graphmodule.cpp:123](../../src/project/graphmodule.cpp#L181))、これに当たるのは **`render.*` の 6 本だけ**です。`pose.state_machine` は包む文書に従ってポートが増えますが、`pose` 出力を宣言しているので catalog の `ports` は **`declared`** です —— 増えた入力ポートは解決後にしか見えません。Studio のキャンバスもこのフィールドで分岐します([graphcanvasmodel.cpp:434](../../src/devstudio/model/graphcanvasmodel.cpp#L914))。
 
 ### op 一覧
 
@@ -2808,11 +2808,11 @@ op は **module** が登録します。登録済み module はエンジンに最
 | | `pose.skeletal` | **sink**。owner 個体の姿勢としてコミットする |
 | | `pose.transform` | **sink**。catalog には載りますが、**v0 では装着時に必ず拒否されます**(`pose.transform has no root writer yet`。[posegraphruntime.cpp:374](../../src/core/animation/posegraphruntime.cpp#L433))。root motion は `pose.clip_sample` の parameter として運ばれます |
 
-登録されている **semantic 型は 11 個**です: `pelican.value.scalar@1`([logicalrendertype.cpp:557](../../src/project/logicalrendertype.cpp#L560))、`pelican.audio.voice@1` / `pelican.event.playback_control@1`([:562](../../src/project/logicalrendertype.cpp#L567))、6 つの `pelican.render.*`(`storage_buffer` / `attribute` / `color_signal` / `depth` / `legacy_opaque_image` / `legacy_opaque_resource`。[:580](../../src/project/logicalrendertype.cpp#L583) 〜 [:627](../../src/project/logicalrendertype.cpp#L630))、`pelican.pose@1` / `pelican.rig@1`([posegraphmodule.cpp:74](../../src/project/posegraphmodule.cpp#L74))。スカラーの経路を流れるのは `pelican.value.scalar@1` ですが、`render.*` のノードも型付きのポートを持ちます —— `render.buffer` / `render.attribute` は `outputs["resource"]` を、`render.image` は宣言から作った resource 型を、`render.compute` / `render.fullscreen` / `render.raster` は `parameters.ports` の各ポートを `pelican.render.*` で型付けします([graphmodule.cpp:65](../../src/project/graphmodule.cpp#L65))。`pelican.pose@1` は **opaque** で、グラフを流れるのは姿勢の bytes ではなく **staged pose のハンドル + レイアウト世代 + フレーム改訂**です(この約束の正はヘッダのコメント [posegraphmodule.hpp:11](../../src/project/posegraphmodule.hpp#L11))。だからグラフはジョイントを読みません。`pelican.rig@1` は登録されているだけで、**どのポートにも現れません**([第8章](08_gameplay.md) §8.13)。
+登録されている **semantic 型は 11 個**です: `pelican.value.scalar@1`([logicalrendertype.cpp:557](../../src/project/logicalrendertype.cpp#L560))、`pelican.audio.voice@1` / `pelican.event.playback_control@1`([:562](../../src/project/logicalrendertype.cpp#L567))、6 つの `pelican.render.*`(`storage_buffer` / `attribute` / `color_signal` / `depth` / `legacy_opaque_image` / `legacy_opaque_resource`。[:580](../../src/project/logicalrendertype.cpp#L583) 〜 [:627](../../src/project/logicalrendertype.cpp#L630))、`pelican.pose@1` / `pelican.rig@1`([posegraphmodule.cpp:74](../../src/project/posegraphmodule.cpp#L74))。スカラーの経路を流れるのは `pelican.value.scalar@1` ですが、`render.*` のノードも型付きのポートを持ちます —— `render.buffer` / `render.attribute` は `outputs["resource"]` を、`render.image` は宣言から作った resource 型を、`render.compute` / `render.fullscreen` / `render.raster` は `parameters.ports` の各ポートを `pelican.render.*` で型付けします([graphmodule.cpp:65](../../src/project/graphmodule.cpp#L66))。`pelican.pose@1` は **opaque** で、グラフを流れるのは姿勢の bytes ではなく **staged pose のハンドル + レイアウト世代 + フレーム改訂**です(この約束の正はヘッダのコメント [posegraphmodule.hpp:11](../../src/project/posegraphmodule.hpp#L11))。だからグラフはジョイントを読みません。`pelican.rig@1` は登録されているだけで、**どのポートにも現れません**([第8章](08_gameplay.md) §8.13)。
 
 ### `definitions` と `graph.instance`
 
-`definitions` は **名前 → 部分グラフ文書**(`{nodes, outputs}`)の辞書です。部分グラフの入力口は `graph.input` という特別なノードで、`default` を書けます。root の `nodes` に置いた **`graph.instance`** がそれを 1 つ実体化します([graphcomposition.cpp:88](../../src/project/graphcomposition.cpp#L89))。
+`definitions` は **名前 → 部分グラフ文書**(`{nodes, outputs}`)の辞書です。部分グラフの入力口は `graph.input` という特別なノードで、`default` を書けます。root の `nodes` に置いた **`graph.instance`** がそれを 1 つ実体化します([graphcomposition.cpp:88](../../src/project/graphcomposition.cpp#L90))。
 
 ```json
 {"id": "hero_walk_run", "op": "graph.instance", "definition": "walk_run",
@@ -2822,7 +2822,7 @@ op は **module** が登録します。登録済み module はエンジンに最
 ```
 
 - 展開後のノード id は **`<instance id>/<定義内の id>`**(上なら `hero_walk_run/mix`)。エラーメッセージにはこの展開後の名前が出ます。
-- `owner` は **`scene` と `object` のちょうど 2 キー**で、`object` は **正の整数の authoring object id** です。この id は `scene.json` には書かれておらず、**宣言順に振られる通し番号**です(既定では 1 始まりですが、**文書内のシーンをまたいで連番**なので 2 つ目のシーンの先頭は 1 ではありません — [第4章](04_scene_ecs.md) §4.1。[graphcomposition.cpp:100](../../src/project/graphcomposition.cpp#L101))。**並べ替えると指す個体が変わります** —— 永続 id は v0 の穴として記録されています。存在しない id は **inactive**(装着が効かないだけで、ロードは止まりません)。ただし**無音ではなく**、そのシーンで初めて解決できなかった scope をまとめた `LOG_WARNING` が 1 回出ます([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L66)。[第4章](04_scene_ecs.md) §4.1)。存在する別の個体を指すと装着の解決が名前付きで失敗します。
+- `owner` は **`scene` と `object` のちょうど 2 キー**で、`object` は **正の整数の authoring object id** です。この id は `scene.json` には書かれておらず、**宣言順に振られる通し番号**です(既定では 1 始まりですが、**文書内のシーンをまたいで連番**なので 2 つ目のシーンの先頭は 1 ではありません — [第4章](04_scene_ecs.md) §4.1。[graphcomposition.cpp:100](../../src/project/graphcomposition.cpp#L102))。**並べ替えると指す個体が変わります** —— 永続 id は v0 の穴として記録されています。存在しない id は **inactive**(装着が効かないだけで、ロードは止まりません)。ただし**無音ではなく**、そのシーンで初めて解決できなかった scope をまとめた `LOG_WARNING` が 1 回出ます([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L66)。[第4章](04_scene_ecs.md) §4.1)。存在する別の個体を指すと装着の解決が名前付きで失敗します。
 - `definition` の綴り違いは `unknown graph definition`、定義の再帰は `recursive graph definition`、インスタンス同士の循環は `cyclic subgraph connection` です。
 - `definitions` の中のノードと、インスタンス経路越しのノードは **`edit_graph_document` では編集できません**(`graph.definition_immutable@1`)。[第13章](13_editor.md) を参照してください。
 
@@ -2837,7 +2837,7 @@ instance の入力ポート 1 本ごとに、値がどこから来ているか�
 | `default` | 定義側の `graph.input` ノードの **`default`** |
 | `override` | 実行時の上書き(`RenderContext::setValueGraphParameter` = `ctx.render().setValueGraphParameter` / RPC) |
 
-**優先順位は `edge > parameters > default`** です([graphcomposition.cpp:48](../../src/project/graphcomposition.cpp#L49))。以前の「edge と `parameters` の二重指定は拒否」は P-1 で**優先順に緩められました** —— 上の posegraph_demo の実物が、edge を張ったうえで `parameters.weight: 0.0` を残しているのはそのためです。**`parameters` は「接続を外したときに戻る値」**なので、消さずに残すのが正しい形です(そして `default` を持たない入力も外せるようになりました)。
+**優先順位は `edge > parameters > default`** です([graphcomposition.cpp:48](../../src/project/graphcomposition.cpp#L50))。以前の「edge と `parameters` の二重指定は拒否」は P-1 で**優先順に緩められました** —— 上の posegraph_demo の実物が、edge を張ったうえで `parameters.weight: 0.0` を残しているのはそのためです。**`parameters` は「接続を外したときに戻る値」**なので、消さずに残すのが正しい形です(そして `default` を持たない入力も外せるようになりました)。
 
 実行時の `override` は 4 つ目の mode として由来に出ます。ただし **edge が供給しているポートを上書きしようとすると `graph.override_shadowed@1`** になります —— 展開が `value.parameter` ノードを作っていないので上書きの着地点が無く、**黙って消えるのではなく名前で断ります**([scenegraphruntime.cpp:123](../../src/core/loader/scenegraphruntime.cpp#L129))。
 

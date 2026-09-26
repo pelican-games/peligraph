@@ -852,7 +852,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 ### グラフで鳴らす — `audio.playback`(✅AU-1)
 
-`audio.playback` は 1 ノードで 1 つの voice です。catalog の入力と parameter は次のとおりです([登録](../../src/project/graphmodule.cpp#L322))。
+`audio.playback` は 1 ノードで 1 つの voice です。catalog の入力と parameter は次のとおりです([登録](../../src/project/graphmodule.cpp#L380))。
 
 | 種類 | 名前 | 意味 |
 |---|---|---|

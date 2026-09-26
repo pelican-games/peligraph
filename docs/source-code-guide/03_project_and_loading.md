@@ -21,7 +21,7 @@ Runtime object
 | project.json封筒 | [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L237) | [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L639) |
 | path参照 | [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) | [`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)（module寿命、ログ、engine resource注入） |
 | scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L268) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1646) |
-| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2922) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1526) |
+| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2935) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1526) |
 | JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L55) |
 | asset manifest | [`parse/generate/verify`](../../src/project/assetsmanifest.hpp#L60) | [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L11) |
 | material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) | runtime接続済み（WP116〜117, 122）。`.surface`は [`surfacecompiler`](../../src/core/shader/surfacecompiler.cpp) でGLSL/SPIR-V化されpipelineへ。`.material.json`は [`lowerMaterial()`](../../src/project/materiallowering.hpp#L160) → [`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L343) |
@@ -424,7 +424,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 > ctest wp380c_... : dumpbin /symbols で「入っていないこと」を検査
 > ```
 >
-> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L2187) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L29)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[SOURCES 内の TU 照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[production header の列挙](../../test/run_wp380c_no_production_fault_setter.cmake#L87)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
+> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L2191) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L29)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[SOURCES 内の TU 照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[production header の列挙](../../test/run_wp380c_no_production_fault_setter.cmake#L87)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
 >
 > **不変条件**: setterの定義をヘッダへ書かない（inlineでも）。test-onlyのTUを `pelican_core` のソースへ足さない。`default_fault_injector_for_testing` の既定値をnullptr以外にしない。
 
@@ -631,12 +631,12 @@ instances.publishModelInstance(std::move(staged_instance));
 |---|---|---|---|
 | `pelican.project` | 1 | [`projectformat.cpp`](../../src/project/projectformat.cpp#L237) | `project.json`。`engine_min_version` と `requires`（§3.2） |
 | `pelican.scene` | 1〜2 | [`sceneformat.cpp`](../../src/project/sceneformat.cpp#L268) | 保存は元の版を維持。prefabはv2が前提。永続IDは両版で受理 |
-| `pelican.graph` | 1 | [`graphcomposition.cpp`](../../src/project/graphcomposition.cpp#L173) | 共通グラフ。`definitions` / `nodes` / `outputs`（§3.15） |
-| `pelican.render_feature` | 1 | [`featurecompose.cpp`](../../src/project/featurecompose.cpp#L2922) | 本節「render feature」 |
+| `pelican.graph` | 1 | [`graphcomposition.cpp`](../../src/project/graphcomposition.cpp#L174) | 共通グラフ。`definitions` / `nodes` / `outputs`（§3.15） |
+| `pelican.render_feature` | 1 | [`featurecompose.cpp`](../../src/project/featurecompose.cpp#L2935) | 本節「render feature」 |
 | `pelican.render_pipeline` | 1 | [`renderpipeline.cpp`](../../src/project/renderpipeline.cpp#L836) | preset（`hybrid_v1` など） |
 | `pelican.render_component` | 1 | [`rendercomponent.hpp`](../../src/project/rendercomponent.hpp#L16) | export / import される描画部品（§3.16） |
 | `pelican.package` | 1 | [`packagemanifest.hpp`](../../src/project/packagemanifest.hpp#L19) | vendoringされるディレクトリの封筒（§3.16） |
-| `pelican.graph_catalog` | 1 | [`graphmodule.cpp`](../../src/project/graphmodule.cpp#L228) | `pelican_cli graph-catalog` の出力（module / op / 型の一覧） |
+| `pelican.graph_catalog` | 1 | [`graphmodule.cpp`](../../src/project/graphmodule.cpp#L286) | `pelican_cli graph-catalog` の出力（module / op / 型の一覧） |
 | `pelican.material` / `pelican.material_bindings` | 1 | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744) / [`parsePrimitiveMaterialBindingJson()`](../../src/project/materialformat.cpp#L767) | 本節「material / surface」 |
 | `pelican.import` / `pelican.import_rules` | 1 | [`importmanifest.cpp`](../../src/project/importmanifest.cpp#L250) / [`parseImportRulesJson()`](../../src/project/importrules.cpp#L196) | 本節「import manifest / import rules」 |
 
@@ -682,7 +682,7 @@ instances.publishModelInstance(std::move(staged_instance));
 
 ### render feature
 
-[`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2922) はfeature JSONを順番に読み、render target、buffer、pass、compute taskを追加し、限定的なoverrideを適用します。名前衝突、曖昧anchor、未知override fieldは即時エラーです。shader defineも重複排除して集約します。
+[`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2935) はfeature JSONを順番に読み、render target、buffer、pass、compute taskを追加し、限定的なoverrideを適用します。名前衝突、曖昧anchor、未知override fieldは即時エラーです。shader defineも重複排除して集約します。
 
 runtime側の入口は [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1526) です。[`loadRenderGraphVariantsFromConfigData()`](../../src/core/vkcore/renderer_config.cpp#L450) が `ProjectBasicConfig::renderingConfigJson()` の文字列と起動ターゲットの実extentを渡し、flat（OpenXR有効時は `#xr` も）とpreviewを **1回の登録トランザクション** として受け取ります。
 
@@ -1113,7 +1113,7 @@ P-2a-4b までは、`rendering` 相当の中身を最上位に直接書く **leg
 
 **包む関数はもうありません。** P-2a-4b では `wrapLegacyRenderingConfig()` が5キーを付けて legacy 設定を `rendering` へ入れる唯一の場所でしたが、読み手が graph root しか受けなくなったので MG-2b で撤去されました。雛形の [`rendering_config_json`](../../src/project/projecttemplate.cpp#L200) と [`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L229) は graph root の全文を直接書いています(blank の `present` の fragment は VI-2 から `engine://passthrough` で、雛形は shader を書きません)。
 
-**`rendering` 節には `buffers` / `compute_tasks` を書けません。** graph root の lowering（[`lowerRenderGraphDocument()`](../../src/project/rendergraphcomposition.cpp#L21)）が、この2つを graph node（`render.buffer` / `render.compute`）の接続から作るため、節にあれば `render graph derives field from connections: <key>` で拒否します。この規則は MG-2b より前からあります。legacy root には lowering が無かったので根に書けましたが、legacy root が無くなったことでその書き方も無くなりました。テストで根に宣言していたものは task feature へ移されています。エディタの「root scope で compute_tasks / buffers を編集する」経路はこれで到達不能になり、後の掃除の WP（台帳の MG-3）に回っています。
+**`rendering` 節には `buffers` / `compute_tasks` を書けません。** graph root の lowering（[`lowerRenderGraphDocument()`](../../src/project/rendergraphcomposition.cpp#L348)）が、この2つを graph node（`render.buffer` / `render.compute`）の接続から作るため、節にあれば `render graph derives field from connections: <key>` で拒否します。この規則は MG-2b より前からあります。legacy root には lowering が無かったので根に書けましたが、legacy root が無くなったことでその書き方も無くなりました。テストで根に宣言していたものは task feature へ移されています。エディタの「root scope で compute_tasks / buffers を編集する」経路はこれで到達不能になり、後の掃除の WP（台帳の MG-3）に回っています。
 
 編集側の唯一の書き手は [`AuthoredRenderConfigDocument::withSectionValue()`](../../src/project/renderconfigdocument.cpp#L654) で、graph root 自身の5キー（`schema` / `version` / `definitions` / `nodes` / `outputs`）と editor の `layout` は根へ、それ以外は `rendering.<key>` へ書きます。この関数はJSONを組み直さず、元のバイト列の中で該当メンバの範囲を差し替えます（[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288)）。理由は digest がファイル全体のバイト列に対して取られるためで、詳細は[第6章](06_rendering_vulkan_shader.md)にあります。
 
@@ -1129,7 +1129,7 @@ P-2a-4b までは、`rendering` 相当の中身を最上位に直接書く **leg
 - `definitions` — 名前付きの部分グラフ。中に `graph.input`（境界ポート）を置けます。
 - `graph.instance` — 定義を根へ1個体として置くノード。`definition` と `owner`（`{scene, object}`）を持ちます。
 
-この2つの構造用opは置ける側が決まっていて、`graph.instance` を定義の中へ入れると `graph.nested_instance@1`、`graph.input` を根へ置くと `graph.input_scope@1` で拒否されます（[`editGraphDocument()` 内](../../src/project/graphcomposition.cpp#L789)）。
+この2つの構造用opは置ける側が決まっていて、`graph.instance` を定義の中へ入れると `graph.nested_instance@1`、`graph.input` を根へ置くと `graph.input_scope@1` で拒否されます（[`editGraphDocument()` 内](../../src/project/graphcomposition.cpp#L1045)）。
 
 ### 展開 — `expandGraphDocument()`
 
@@ -1139,24 +1139,24 @@ instance の入力ポートがどこから値を取るかは `edge > parameters 
 
 ### 編集 — `editGraphDocument()`
 
-[`editGraphDocument()`](../../src/project/graphcomposition.hpp#L110) は op の並びを1本の候補文書へ順に適用し、**最後に1回だけ展開**します。途中で1つでも落ちれば候補ごと捨てられ、呼び手の文書は無傷です。受け付ける op は5種で、**宣言の上のコメントがその5種と8つの名前付き拒否を列挙しています**（`40099e3f` で `set_node_label` と残りの拒否名が追記され、コメントと実装が揃いました）。
+[`editGraphDocument()`](../../src/project/graphcomposition.hpp#L126) は op の並びを1本の候補文書へ順に適用し、**最後に1回だけ展開**します。途中で1つでも落ちれば候補ごと捨てられ、呼び手の文書は無傷です。受け付ける op は5種で、**宣言の上のコメントがその5種と8つの名前付き拒否を列挙しています**（`40099e3f` で `set_node_label` と残りの拒否名が追記され、コメントと実装が揃いました）。
 
 | op | 実装 | 断り方 |
 |---|---|---|
-| `add_node` | [.cpp](../../src/project/graphcomposition.cpp#L777) | `graph.node_duplicate@1` / `graph.nested_instance@1` / `graph.input_scope@1` |
-| `remove_node` | [.cpp](../../src/project/graphcomposition.cpp#L814) | `graph.output_referenced@1`（出力や他ノードがまだ指している） |
-| `set_input` | [.cpp](../../src/project/graphcomposition.cpp#L842) | `source` は `{node, port}` ちょうど2キー、または `null`（切断） |
-| `set_node_parameters` | [.cpp](../../src/project/graphcomposition.cpp#L862) | 空オブジェクトは `parameters` キーごと削除 |
-| `set_node_label` | [.cpp](../../src/project/graphcomposition.cpp#L873) | 人が付ける表示名。識別子ではないので、消すのは空文字列で表す |
-| `set_layout` | [.cpp](../../src/project/graphcomposition.cpp#L755) | scope の editor 用 `layout`(node 位置 / reroute / tie)を丸ごと置換。`null` で消す。名指した node / 辺が無い、座標が非有限、未知 key は `graph.layout_invalid@1`。layout だけの op 列は再 compose しない(N-6) |
+| `add_node` | [.cpp](../../src/project/graphcomposition.cpp#L1033) | `graph.node_duplicate@1` / `graph.nested_instance@1` / `graph.input_scope@1` |
+| `remove_node` | [.cpp](../../src/project/graphcomposition.cpp#L1070) | `graph.output_referenced@1`（出力や他ノードがまだ指している） |
+| `set_input` | [.cpp](../../src/project/graphcomposition.cpp#L1101) | `source` は `{node, port}` ちょうど2キー、または `null`（切断） |
+| `set_node_parameters` | [.cpp](../../src/project/graphcomposition.cpp#L1135) | 空オブジェクトは `parameters` キーごと削除 |
+| `set_node_label` | [.cpp](../../src/project/graphcomposition.cpp#L1148) | 人が付ける表示名。識別子ではないので、消すのは空文字列で表す |
+| `set_layout` | [.cpp](../../src/project/graphcomposition.cpp#L1178) | scope の editor 用 `layout`(node 位置 / reroute / tie)を丸ごと置換。`null` で消す。名指した node / 辺が無い、座標が非有限、未知 key は `graph.layout_invalid@1`。layout だけの op 列は再 compose しない(N-6) |
 
-各opは任意で **`scope`** を取ります。省略（または根の名前）なら根の `nodes`、定義名なら `definitions.<名前>.nodes` を編集対象にします（[`resolveEditScope()`](../../src/project/graphcomposition.cpp#L386)）。scope は op ごとに解決し直します —— 同じ並びの前のopが定義の中身を変えている可能性があるからです。定義の中に居る id を根から触ろうとすると `graph.definition_immutable@1` です。
+各opは任意で **`scope`** を取ります。省略（または根の名前）なら根の `nodes`、定義名なら `definitions.<名前>.nodes` を編集対象にします（[`resolveEditScope()`](../../src/project/graphcomposition.cpp#L387)）。scope は op ごとに解決し直します —— 同じ並びの前のopが定義の中身を変えている可能性があるからです。定義の中に居る id を根から触ろうとすると `graph.definition_immutable@1` です。
 
-[`editGraphInstances()`](../../src/project/graphcomposition.hpp#L116)（instance の着脱）は、自分で文書を触らず**上のopへ翻訳してから** `editGraphDocument()` を呼びます。2つの入口が「何が妥当な編集か」で食い違えないようにするためです。
+[`editGraphInstances()`](../../src/project/graphcomposition.hpp#L132)（instance の着脱）は、自分で文書を触らず**上のopへ翻訳してから** `editGraphDocument()` を呼びます。2つの入口が「何が妥当な編集か」で食い違えないようにするためです。
 
 ### 分割 — `partitionGraphDocument()`
 
-[`partitionGraphDocument()`](../../src/project/graphpartition.hpp#L28) は文書全体を検証してから、[`GraphExecutionPartitions`](../../src/project/graphpartition.hpp#L7) の3つへ分けます。どのopがどの領域かは、opを登録したモジュールが宣言します（[`GraphExecutionDomain`](../../src/project/graphcomposition.hpp#L128)）。CPUのスカラopを1つ足しても、分割側に新しいop名を教える必要はありません。
+[`partitionGraphDocument()`](../../src/project/graphpartition.hpp#L28) は文書全体を検証してから、[`GraphExecutionPartitions`](../../src/project/graphpartition.hpp#L7) の3つへ分けます。どのopがどの領域かは、opを登録したモジュールが宣言します（[`GraphExecutionDomain`](../../src/project/graphcomposition.hpp#L144)）。CPUのスカラopを1つ足しても、分割側に新しいop名を教える必要はありません。
 
 ```text
 values     … CPUのスカラ評価（value.* / audio.* / render.scalar）

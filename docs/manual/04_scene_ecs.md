@@ -104,7 +104,7 @@
 
 | 事項 | 中身 |
 |---|---|
-| 形 | `{scene: <シーン ID の文字列>, object: <正の整数>}` の **2 キーちょうど**。欠けても増えても `graph owner requires scene and positive authoring object id`([graphcomposition.cpp:97](../../src/project/graphcomposition.cpp#L98)) |
+| 形 | `{scene: <シーン ID の文字列>, object: <正の整数>}` の **2 キーちょうど**。欠けても増えても `graph owner requires scene and positive authoring object id`([graphcomposition.cpp:97](../../src/project/graphcomposition.cpp#L99)) |
 | `object` の正体 | **authoring object id**。保存時に各 object の `authoring_object_id` として記録され、削除・並べ替え・保存・再読込を跨いでも同じ対象を指します。ID のない旧文書は従来どおり文書全体の宣言順で採番され、最初の保存で永続化されます。ID は `scene_tree` で確認してください([authoringscenedocument.cpp](../../src/core/loader/authoringscenedocument.cpp)) |
 | 解決 | ロード後の束縛表を線形に走査し、その id を持つ生きたオブジェクトを探します([SceneLoader::graphOwnerObject()](../../src/core/loader/scenegraphruntime.cpp#L40)) |
 | 見つからないとき | **エラーではなく inactive**。その instance の scope は評価されず、`LOG_WARNING` が出ます(`graph instance owner does not match any object in this scene: <scope>, <scope>, …`)。**1 行にまとまります** —— そのとき初めて報告する scope を `", "` で連ねて 1 回だけ出し、同じ scope は二度言いません([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L66))。「言った」という記憶は**シーンのロードで消えます**([scene.cpp:730](../../src/core/loader/scene.cpp#L744))ので、次のシーンでは同じ scope がまた 1 回報告されます。姿勢では「rest pose のまま動かない」に見えます |
