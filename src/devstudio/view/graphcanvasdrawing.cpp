@@ -668,7 +668,8 @@ qreal zoneExpansionHeight(const Zone &zone) {
 void layoutZone(Zone &zone, const QFontMetricsF &heading_metrics,
                 const QFontMetricsF &row_metrics) {
     const qreal header =
-        GraphCanvasHeaderHeight + (zone.tabs.empty() ? 0.0 : GraphCanvasZoneTabHeight);
+        GraphCanvasHeaderHeight +
+        (zone.tabs.empty() && zone.axis_labels.empty() ? 0.0 : GraphCanvasZoneTabHeight);
     const auto rows = static_cast<qreal>(zoneRowCount(zone));
     const qreal rows_height =
         2.0 * GraphCanvasSectionPadding + rows * GraphCanvasSocketRowHeight;
@@ -682,6 +683,8 @@ void layoutZone(Zone &zone, const QFontMetricsF &heading_metrics,
     qreal tabs = 12.0;
     for (const ZoneTab &tab : zone.tabs)
         tabs += row_metrics.horizontalAdvance(tab.text) + 22.0;
+    for (const QString &label : zone.axis_labels)
+        tabs += row_metrics.horizontalAdvance(label) + 10.0;
     // LP-4d2: the bottom line, and the carry arrows' lanes above it.
     qreal footer_width = 0.0;
     if (!zone.expansion.isEmpty())
@@ -798,7 +801,8 @@ QGraphicsItem *Builder::addZone(const Zone &zone, int column, const QPointF &pos
     item->setData(NodeGraphHotspotRole,
                   QPointF{frame.center().x(), frame.top() + 6.0});
     const qreal header =
-        GraphCanvasHeaderHeight + (zone.tabs.empty() ? 0.0 : GraphCanvasZoneTabHeight);
+        GraphCanvasHeaderHeight +
+        (zone.tabs.empty() && zone.axis_labels.empty() ? 0.0 : GraphCanvasZoneTabHeight);
 
     const auto tagged = [&](QGraphicsItem *child, const char *kind) {
         child->setData(NodeGraphItemKindRole, QString::fromLatin1(kind));
@@ -910,6 +914,23 @@ QGraphicsItem *Builder::addZone(const Zone &zone, int column, const QPointF &pos
         text->setData(GraphCanvasPortRole, QString::number(static_cast<qulonglong>(tab.branch)));
         text->setData(GraphCanvasBranchRole, static_cast<qulonglong>(tab.branch));
         tab_x += width + 4.0;
+    }
+    // LP-4f1: the views of a loop over a view axis, read only and small.
+    for (std::size_t index = 0; index < zone.axis_labels.size(); ++index) {
+        const QString &label = zone.axis_labels[index];
+        auto *text = new QGraphicsSimpleTextItem(label, item);
+        text->setFont(detail_font_);
+        text->setBrush(theme_.canvas.heading_text);
+        text->setOpacity(0.75);
+        text->setPos(tab_x, frame.top() + GraphCanvasHeaderHeight +
+                                (GraphCanvasZoneTabHeight - row_metrics_.height()) / 2.0);
+        tagged(text, GraphCanvasZoneLabelItem);
+        text->setData(GraphCanvasPortRole,
+                      QStringLiteral("axis%1").arg(static_cast<qulonglong>(index)));
+        text->setToolTip(QObject::tr("Element %1 runs for this view")
+                             .arg(static_cast<qulonglong>(index)));
+        anchored(text, GraphCanvasZoneAnchor::left);
+        tab_x += row_metrics_.horizontalAdvance(label) + 10.0;
     }
 
     // The edges: the loop's own sockets outside, the body's inside, one row

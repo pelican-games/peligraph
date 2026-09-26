@@ -49,7 +49,8 @@ void ViewSelectField::clear() {
 bool ViewSelectField::load(
     const std::vector<FramePlanViewAxis> &axes,
     const std::vector<FramePlanViewSelectAxis> &view_select,
-    const std::string &family) {
+    const std::string &family, const std::string &element_axis,
+    bool element_chosen) {
     clear();
     for (const auto &field : framePlanViewFieldRows(axes, view_select, family)) {
         Row row;
@@ -78,11 +79,18 @@ bool ViewSelectField::load(
                 row.combo->addItem(
                     QString::number(static_cast<qulonglong>(*field.selected)),
                     QVariant::fromValue<qulonglong>(*field.selected));
+            // LP-4f1: the loop's axis, run for the element of each copy.
+            if (!element_axis.empty() && field.axis == element_axis)
+                row.combo->addItem(text(std::string{ViewSelectEachElementText}),
+                                   QStringLiteral("element"));
             row.combo->setCurrentIndex(
                 field.selected
                     ? row.combo->findData(
                           QVariant::fromValue<qulonglong>(*field.selected))
                     : 0);
+            if (element_chosen && field.axis == element_axis)
+                row.combo->setCurrentIndex(
+                    row.combo->findData(QStringLiteral("element")));
             line->addWidget(row.combo, 1);
             QObject::connect(row.combo, &QComboBox::currentIndexChanged, this,
                              [this] {
@@ -139,6 +147,7 @@ std::vector<FramePlanViewSelectAxis> ViewSelectField::selection() const {
         std::optional<std::uint64_t> value = row.kept;
         if (row.combo != nullptr) {
             const QVariant data = row.combo->currentData();
+            if (data.typeId() == QMetaType::QString) continue;
             value = data.isValid()
                         ? std::optional<std::uint64_t>{data.toULongLong()}
                         : std::nullopt;
@@ -146,6 +155,14 @@ std::vector<FramePlanViewSelectAxis> ViewSelectField::selection() const {
         if (value) axes.push_back(FramePlanViewSelectAxis{row.axis, *value});
     }
     return axes;
+}
+
+std::optional<std::string> ViewSelectField::elementAxis() const {
+    for (const auto &row : rows_)
+        if (!row.removed && row.combo != nullptr &&
+            row.combo->currentData().typeId() == QMetaType::QString)
+            return row.axis;
+    return std::nullopt;
 }
 
 } // namespace PelicanStudio

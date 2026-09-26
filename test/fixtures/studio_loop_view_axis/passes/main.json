@@ -1,0 +1,85 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {
+    "cube_face": {
+      "nodes": [
+        {
+          "id": "face_color",
+          "op": "render.image",
+          "parameters": {
+            "type": {
+              "semantic": "pelican.render.color_signal@1",
+              "arguments": {
+                "reference": "scene",
+                "transfer": "linear",
+                "range": "extended"
+              }
+            },
+            "format": "R8G8B8A8_UNORM",
+            "extent_scale": 1.0,
+            "width": 256,
+            "height": 256,
+            "layers": 6,
+            "usage": [
+              "COLOR_ATTACHMENT",
+              "SAMPLED"
+            ]
+          },
+          "outputs": [
+            "resource"
+          ]
+        },
+        {
+          "id": "face_pass",
+          "op": "render.fullscreen",
+          "parameters": {
+            "pass_set": "main_render",
+            "view_family": "$capture/cube",
+            "resolution_domain": "independent",
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://passthrough"
+            },
+            "ports": {
+              "color": {
+                "kind": "image",
+                "type": {
+                  "semantic": "pelican.render.color_signal@1",
+                  "arguments": {
+                    "reference": "scene",
+                    "transfer": "linear",
+                    "range": "extended"
+                  }
+                },
+                "access": "write",
+                "attachment": "color",
+                "location": 0
+              }
+            }
+          },
+          "inputs": {
+            "color": {
+              "node": "face_color",
+              "port": "resource"
+            }
+          },
+          "outputs": [
+            "color"
+          ]
+        }
+      ],
+      "outputs": {}
+    }
+  },
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "pipeline": {
+      "preset": "engine://render_pipelines/hybrid_v1.json"
+    },
+    "features": [
+      "project://features/cube_capture.json"
+    ]
+  }
+}

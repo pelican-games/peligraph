@@ -1,5 +1,6 @@
 #pragma once
 
+#include "frameplanmodel.hpp"
 #include "inspectormodel.hpp"
 
 #include <nlohmann/json.hpp>
@@ -301,6 +302,46 @@ struct GraphCanvasLoop {
     // `material` choices), and how many the report says there are.
     std::vector<std::string> materials;
     std::size_t reported_total = 0;
+
+    // LP-4f1: a loop over a view axis (over.view_axis): the family and the
+    // axis, and the axis as the frame plan lists it on a pass of that family
+    // (its length and labels), when one does.
+    std::string view_family;
+    std::string view_axis;
+    std::optional<FramePlanViewAxis> view_axis_info;
+    // How many elements the loop is known to run over before a report: an
+    // integer count, or the view axis's length. Empty for an expression, a
+    // draw_loop, or an axis the frame plan does not list.
+    std::optional<std::int64_t> known_count;
+};
+
+// LP-4f1: one view family a pass of the frame plan runs in, with the axes
+// get_frame_plan lists on it (LP-Va2's view_axes, the same on every node of
+// the family). Only families with axes are kept.
+struct GraphCanvasViewFamily {
+    std::string family;
+    std::vector<FramePlanViewAxis> axes;
+
+    bool operator==(const GraphCanvasViewFamily &) const = default;
+};
+
+// LP-4f1, decision 2: what a render node's View field shows. `axes` are the
+// axes of `family`; `view_select` the node's integer choices; a node in the
+// body of a loop over a view axis also gets `element_axis` -- the axis whose
+// row offers "Each element (loop)" -- and `element_chosen` when its
+// view_select already says `{"$expr": "element"}` there. `writes_family` is
+// set when the node does not name `family` itself: a choice then writes it
+// too, since a pass that names none runs in the first family of the frame.
+struct GraphCanvasViewField {
+    std::string family;
+    std::vector<FramePlanViewAxis> axes;
+    std::vector<FramePlanViewSelectAxis> view_select;
+    std::string loop;
+    std::string element_axis;
+    bool element_chosen = false;
+    bool writes_family = false;
+
+    bool operator==(const GraphCanvasViewField &) const = default;
 };
 
 // LP-4c, decision 9: where a refused edit points. A loop refused by name
@@ -501,6 +542,14 @@ class GraphCanvasModel {
     // with a root graph.loop arrives.
     nlohmann::json loop_reports_ = nlohmann::json::object();
     bool loop_reports_received_ = false;
+    // LP-4f1: read off the same get_frame_plan -- the view families its
+    // passes run in (with their axes), each node's family and axes by name,
+    // and the render targets `mip_levels_of` / `layers_of` can name.
+    std::vector<GraphCanvasViewFamily> view_families_;
+    std::map<std::string, GraphCanvasViewFamily, std::less<>> plan_node_views_;
+    std::vector<std::string> plan_targets_;
+    void readPlanViews(const nlohmann::json &plan);
+    [[nodiscard]] const std::vector<FramePlanViewAxis> *familyAxes(std::string_view family) const;
     void requestLoopReports();
     // LP-4e: a draw_loop's report holds its first page of materials. The
     // rest are asked for a page at a time, one loop after another, until each
@@ -872,6 +921,39 @@ class GraphCanvasModel {
     // the outputs, one replace_node).
     bool setLoopCount(const std::string &id, std::int64_t count);
     bool setLoopCountExpression(const std::string &id, const std::string &expression);
+    // LP-4f1, decision 1: over one view axis of one family
+    // (`over: {view_axis: {family, axis}}`); the rest of the parameters stay.
+    bool setLoopViewAxis(const std::string &id, const std::string &family,
+                         const std::string &axis);
+    // The view families a pass of the last frame plan runs in, with their
+    // axes: what the Loop fields' View axis offers. Families without axes
+    // ($main, planar, an author's) are not in it.
+    [[nodiscard]] const std::vector<GraphCanvasViewFamily> &viewFamilies() const noexcept {
+        return view_families_;
+    }
+    // The render targets of the last frame plan, for the count
+    // expression's mip_levels_of / layers_of.
+    [[nodiscard]] const std::vector<std::string> &planTargets() const noexcept {
+        return plan_targets_;
+    }
+
+    // --- LP-4f1, decision 2: a render node's View field.
+
+    // The operations that take view_select (a pass, a task, a copy).
+    [[nodiscard]] static bool takesViewSelect(std::string_view op) noexcept;
+    // What the field shows for a node, or nothing when it is not shown: an
+    // operation that takes no view_select, or no axes to show. A node in
+    // the body of a loop over a view axis gets the loop's family; a root
+    // node the family the frame plan lists it in; otherwise the family it
+    // names, when the frame plan lists that one.
+    [[nodiscard]] std::optional<GraphCanvasViewField> viewField(std::string_view scope,
+                                                                std::string_view node) const;
+    // One gesture: the node's view_select replaced by `view_select` (an
+    // object of axis -> integer or {"$expr": ...}; empty takes the member
+    // out), and, with `family` set and the node naming no view_family, that
+    // family written beside it.
+    bool setViewSelect(std::string_view scope, const std::string &node,
+                       const nlohmann::json &view_select, const std::string &family = {});
     bool setLoopDescending(const std::string &id, bool descending);
     bool setLoopLimit(const std::string &id, std::optional<std::int64_t> limit);
     // "" (automatic), "expand" or "draw_loop".

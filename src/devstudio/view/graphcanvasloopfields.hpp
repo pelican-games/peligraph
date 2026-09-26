@@ -25,6 +25,8 @@ class QVBoxLayout;
 
 namespace PelicanStudio {
 
+class ViewSelectField;
+
 // LP-4c, decisions 3 and 4: the Loop fields beside the Graph tab's canvas, for
 // the root graph.loop that is selected. The loop's parameters are edited here
 // and nowhere else on the canvas: they are not ports, and no JSON is shown.
@@ -53,12 +55,28 @@ class GraphCanvasLoopFields final : public QWidget {
     // LP-4e: "metal, glass" / "metal glass" -> {"metal", "glass"}.
     static std::vector<std::string> parseNames(const QString &text);
     static QString namesText(const std::vector<std::string> &names);
+    // LP-4f1: a list of elements is offered as checks, one per element,
+    // while the loop's count is known and at most this; past it (or for an
+    // expression) the line of integers stays.
+    static constexpr std::int64_t CheckLimit = 64;
+    // How an element is named on its check: "2", or "2 (+Y)" for a view
+    // axis the engine labels.
+    static QString elementText(const GraphCanvasLoop &loop, std::int64_t element);
 
   private:
     void rebuild(const GraphCanvasLoop &loop);
     void clearRows();
     void after(bool submitted);
     void commitCount();
+    // LP-4f1, decision 1: what the loop runs over (Count / View axis), and
+    // the family and axis of a view axis.
+    void commitOver();
+    void commitViewAxis(bool family_changed);
+    void fillViewAxes(const std::string &family, const std::string &axis);
+    // Decision 4: mip_levels_of("<target>") / layers_of("<target>") into
+    // the count expression.
+    void insertCountFunction(const QString &function);
+    void rebuildWhereChecks(const GraphCanvasLoop &loop, bool editable);
     void commitWhere();
     void commitLimit();
     void commitCarry();
@@ -83,6 +101,19 @@ class GraphCanvasLoopFields final : public QWidget {
     QSpinBox *count_ = nullptr;
     QToolButton *count_expression_toggle_ = nullptr;
     QLineEdit *count_expression_ = nullptr;
+    // LP-4f1.
+    QComboBox *over_ = nullptr;
+    QWidget *count_insert_row_ = nullptr;
+    QComboBox *count_target_ = nullptr;
+    QPushButton *insert_mips_ = nullptr;
+    QPushButton *insert_layers_ = nullptr;
+    QWidget *view_row_ = nullptr;
+    QComboBox *view_family_ = nullptr;
+    QComboBox *view_axis_ = nullptr;
+    QLabel *view_count_ = nullptr;
+    QLabel *view_note_ = nullptr;
+    QWidget *where_checks_ = nullptr;
+    std::vector<QCheckBox *> where_boxes_;
     QComboBox *order_ = nullptr;
     QCheckBox *limit_enabled_ = nullptr;
     QSpinBox *limit_ = nullptr;
@@ -114,6 +145,10 @@ class GraphCanvasLoopFields final : public QWidget {
     struct BranchRow {
         QComboBox *when = nullptr;
         QLineEdit *values = nullptr;
+        // LP-4f1, decision 4: `element =` is a spin, `element in` / `not in`
+        // a check per element while the count is known.
+        QSpinBox *value = nullptr;
+        std::vector<QCheckBox *> checks;
         QComboBox *body = nullptr;
         // LP-4e: a draw_loop branch's condition, one field per attribute.
         QComboBox *material = nullptr;
@@ -123,6 +158,48 @@ class GraphCanvasLoopFields final : public QWidget {
         QComboBox *has_variant = nullptr;
     };
     std::vector<BranchRow> branch_rows_;
+};
+
+// LP-4f1, decision 4: which element of another loop's p[] an input reads, per
+// element of its own loop -- `element`, `element - 1`, `element + 1`, or,
+// behind Custom..., any expression. The combo is named `object_name`, the
+// custom line `<object_name>.custom`.
+class GraphCanvasElementChoice final : public QWidget {
+  public:
+    explicit GraphCanvasElementChoice(const QString &object_name, QWidget *parent = nullptr);
+    // The expression the choice says; `element` for an empty custom line.
+    [[nodiscard]] QString expression() const;
+    // A preset when it is one, else Custom... with the text.
+    void setExpression(const QString &expression);
+
+  private:
+    QComboBox *choice_ = nullptr;
+    QLineEdit *custom_ = nullptr;
+};
+
+// LP-4f1, decision 2: the View field of the selected render node (a pass, a
+// task, a copy), beside the Graph tab's canvas -- LP-4b's ViewSelectField,
+// named `pelican.graphCanvasRender.view.<axis>`. In the body of a loop over a
+// view axis its axis also offers Each element (loop). Each pick is one
+// gesture (set_node_parameters), and `submitted` is called after it.
+class GraphCanvasViewFields final : public QWidget {
+  public:
+    GraphCanvasViewFields(GraphCanvasModel &model, std::function<void()> submitted,
+                          QWidget *parent = nullptr);
+    // The node to show and the scope it stands in, or null to hide.
+    void showNode(const GraphCanvasNode *node, const std::string &scope);
+
+  private:
+    void commit();
+
+    GraphCanvasModel &model_;
+    std::function<void()> submitted_;
+    std::string node_;
+    std::string scope_;
+    std::string shown_;
+    std::optional<GraphCanvasViewField> field_;
+    QLabel *heading_ = nullptr;
+    ViewSelectField *view_ = nullptr;
 };
 
 // LP-4e, decisions 2 and 4: the fields of the selected render.material_pass

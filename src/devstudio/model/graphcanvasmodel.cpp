@@ -408,6 +408,9 @@ void GraphCanvasModel::clearContext() {
     entered_loop_.clear();
     loop_reports_ = Json::object();
     loop_reports_received_ = false;
+    view_families_.clear();
+    plan_node_views_.clear();
+    plan_targets_.clear();
     refusal_marks_.clear();
     values_received_ = false;
     values_published_ = false;
@@ -510,10 +513,17 @@ void GraphCanvasModel::requestObservation() {
 
 void GraphCanvasModel::requestLoopReports() {
     // Only a document with a loop has anything in loops[]: a frame plan read
-    // for any other would be the whole plan for nothing.
-    if (!connected_ || std::ranges::none_of(nodes_, isLoop)) {
+    // for any other would be the whole plan for nothing. LP-4f1: or a root
+    // render node, whose View field reads its axes off the plan.
+    const auto wanted = [](const Json &node) {
+        return isLoop(node) || (node.is_object() && takesViewSelect(text(node, "op")));
+    };
+    if (!connected_ || std::ranges::none_of(nodes_, wanted)) {
         loop_reports_ = Json::object();
         loop_reports_received_ = false;
+        view_families_.clear();
+        plan_node_views_.clear();
+        plan_targets_.clear();
         return;
     }
     read(RequestKind::Loops, "get_frame_plan", Json::object());
@@ -719,6 +729,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                             reports[text(loop, "node")] = loop;
                 loop_reports_ = std::move(reports);
                 loop_reports_received_ = true;
+                readPlanViews(response);
                 // LP-4e: a fresh report starts every loop's pages over.
                 loop_pages_done_.clear();
                 loop_page_node_.clear();
@@ -2294,11 +2305,26 @@ std::optional<GraphCanvasLoop> GraphCanvasModel::loop(std::string_view id) const
     if (range.is_object() && count != range.end()) {
         if (count->is_number_integer()) {
             loop.count = count->get<std::int64_t>();
+            loop.known_count = loop.count;
         } else if (count->is_object() && count->contains("$expr")) {
             loop.count_expression = true;
             loop.count_text = text(*count, "$expr");
         }
     }
+    // LP-4f1: over one view axis; its length is the frame plan's.
+    if (over.is_object())
+        if (const auto view_axis = over.find("view_axis");
+            view_axis != over.end() && view_axis->is_object()) {
+            loop.view_family = text(*view_axis, "family");
+            loop.view_axis = text(*view_axis, "axis");
+            if (const auto *axes = familyAxes(loop.view_family))
+                if (const auto axis = std::ranges::find(*axes, loop.view_axis, &FramePlanViewAxis::axis);
+                    axis != axes->end()) {
+                    loop.view_axis_info = *axis;
+                    if (axis->length && !axis->runtime)
+                        loop.known_count = static_cast<std::int64_t>(*axis->length);
+                }
+        }
     const auto order = parameters.find("order");
     loop.descending = order != parameters.end() && order->is_object() &&
                       text(*order, "direction") == "descending";
@@ -2452,6 +2478,163 @@ bool GraphCanvasModel::setLoopCountExpression(const std::string &id,
     auto parameters = loopParameters(id);
     parameters["over"] = Json{{"range", Json{{"count", Json{{"$expr", expression}}}}}};
     return setLoopParameters(id, std::move(parameters));
+}
+
+// --- LP-4f1: view axes.
+
+namespace {
+
+// `view_axes` as get_frame_plan writes it, read leniently: an entry the
+// field cannot use is skipped rather than failing the whole plan (the
+// Frame Plan tab is where a malformed plan is reported).
+std::vector<FramePlanViewAxis> planViewAxes(const Json &node) {
+    std::vector<FramePlanViewAxis> axes;
+    const auto found = node.find("view_axes");
+    if (found == node.end() || !found->is_array()) return axes;
+    for (const auto &entry : *found) {
+        if (!entry.is_object()) continue;
+        FramePlanViewAxis axis;
+        axis.axis = text(entry, "axis");
+        if (axis.axis.empty()) continue;
+        if (const auto length = entry.find("length");
+            length != entry.end() && length->is_number_unsigned())
+            axis.length = length->get<std::uint64_t>();
+        axis.runtime = entry.value("runtime", false);
+        if (const auto labels = entry.find("labels"); labels != entry.end() && labels->is_array())
+            for (const auto &label : *labels)
+                if (label.is_string()) axis.labels.push_back(label.get<std::string>());
+        axes.push_back(std::move(axis));
+    }
+    return axes;
+}
+
+bool isElementExpression(const Json &value) {
+    return value.is_object() && value.size() == 1 && text(value, "$expr") == "element";
+}
+
+} // namespace
+
+void GraphCanvasModel::readPlanViews(const Json &plan) {
+    view_families_.clear();
+    plan_node_views_.clear();
+    plan_targets_.clear();
+    if (const auto nodes = plan.find("nodes"); nodes != plan.end() && nodes->is_array())
+        for (const auto &node : *nodes) {
+            if (!node.is_object()) continue;
+            const auto family = text(node, "view_family");
+            auto axes = planViewAxes(node);
+            if (family.empty() || axes.empty()) continue;
+            if (const auto name = text(node, "name"); !name.empty())
+                plan_node_views_[name] = GraphCanvasViewFamily{family, axes};
+            // The axes are the family's, the same on every node of it
+            // (LP-Va2): the first node that lists them names them.
+            if (std::ranges::none_of(view_families_, [&](const auto &known) {
+                    return known.family == family;
+                }))
+                view_families_.push_back(GraphCanvasViewFamily{family, std::move(axes)});
+        }
+    if (const auto resources = plan.find("resources");
+        resources != plan.end() && resources->is_array())
+        for (const auto &resource : *resources)
+            if (resource.is_object() && text(resource, "kind") == "render_target" &&
+                !text(resource, "name").empty())
+                plan_targets_.push_back(text(resource, "name"));
+    std::ranges::sort(plan_targets_);
+    plan_targets_.erase(std::unique(plan_targets_.begin(), plan_targets_.end()),
+                        plan_targets_.end());
+}
+
+const std::vector<FramePlanViewAxis> *GraphCanvasModel::familyAxes(std::string_view family) const {
+    const auto found = std::ranges::find(view_families_, family, &GraphCanvasViewFamily::family);
+    return found == view_families_.end() ? nullptr : &found->axes;
+}
+
+bool GraphCanvasModel::takesViewSelect(std::string_view op) noexcept {
+    return op == "render.fullscreen" || op == "render.raster" || op == "render.compute" ||
+           op == "render.material_pass" || op == "render.shadow_depth" ||
+           op == "render.snapshot_copy";
+}
+
+bool GraphCanvasModel::setLoopViewAxis(const std::string &id, const std::string &family,
+                                       const std::string &axis) {
+    if (family.empty() || axis.empty()) return false;
+    auto parameters = loopParameters(id);
+    parameters["over"] = Json{{"view_axis", Json{{"family", family}, {"axis", axis}}}};
+    return setLoopParameters(id, std::move(parameters));
+}
+
+std::optional<GraphCanvasViewField> GraphCanvasModel::viewField(std::string_view scope,
+                                                                std::string_view id) const {
+    const auto *node = findNode(scope, id);
+    if (node == nullptr || !takesViewSelect(text(*node, "op"))) return std::nullopt;
+    const auto parameters = node->value("parameters", Json::object());
+    const auto own = parameters.is_object() ? text(parameters, "view_family") : std::string{};
+    GraphCanvasViewField field;
+    const auto select = parameters.is_object() ? parameters.value("view_select", Json::object())
+                                               : Json::object();
+    if (select.is_object())
+        for (const auto &[axis, value] : select.items()) {
+            if (value.is_number_unsigned())
+                field.view_select.push_back(
+                    FramePlanViewSelectAxis{axis, value.get<std::uint64_t>()});
+            else if (value.is_number_integer() && value.get<std::int64_t>() >= 0)
+                field.view_select.push_back(FramePlanViewSelectAxis{
+                    axis, static_cast<std::uint64_t>(value.get<std::int64_t>())});
+        }
+    // In a body a loop over a view axis runs: that loop's family, and
+    // "Each element" on its axis -- unless the node names another family.
+    if (!scope.empty())
+        for (const auto &candidate : nodes_) {
+            if (!isLoop(candidate)) continue;
+            const auto bodies = loopBranchBodies(candidate);
+            if (std::ranges::find(bodies, scope) == bodies.end()) continue;
+            const auto loop_parameters = candidate.value("parameters", Json::object());
+            const auto over = loop_parameters.is_object()
+                                  ? loop_parameters.value("over", Json::object())
+                                  : Json::object();
+            const auto view_axis = over.is_object() ? over.value("view_axis", Json::object())
+                                                    : Json::object();
+            const auto family = view_axis.is_object() ? text(view_axis, "family") : std::string{};
+            if (family.empty() || (!own.empty() && own != family)) continue;
+            field.family = family;
+            field.loop = text(candidate, "id");
+            field.element_axis = text(view_axis, "axis");
+            break;
+        }
+    if (field.family.empty() && scope.empty())
+        if (const auto planned = plan_node_views_.find(id); planned != plan_node_views_.end()) {
+            field.family = planned->second.family;
+            field.axes = planned->second.axes;
+        }
+    if (field.family.empty()) field.family = own;
+    if (field.family.empty()) return std::nullopt;
+    if (field.axes.empty())
+        if (const auto *axes = familyAxes(field.family)) field.axes = *axes;
+    if (field.axes.empty()) return std::nullopt;
+    field.writes_family = own.empty();
+    if (!field.element_axis.empty() && select.is_object())
+        if (const auto chosen = select.find(field.element_axis); chosen != select.end())
+            field.element_chosen = isElementExpression(*chosen);
+    return field;
+}
+
+bool GraphCanvasModel::setViewSelect(std::string_view scope, const std::string &node,
+                                     const Json &view_select, const std::string &family) {
+    if (!canEdit() || findNode(scope, node) == nullptr) return false;
+    if (!view_select.is_object()) return false;
+    auto parameters = nodeParameters(scope, node);
+    const auto before = parameters;
+    if (view_select.empty()) {
+        parameters.erase("view_select");
+    } else {
+        parameters["view_select"] = view_select;
+        if (!family.empty() && text(parameters, "view_family").empty())
+            parameters["view_family"] = family;
+    }
+    if (parameters == before) return false;
+    return submitOps(Json::array({Json{
+        {"op", "set_node_parameters"}, {"scope", scopeToken(scope)}, {"node", node},
+        {"parameters", std::move(parameters)}}}));
 }
 
 bool GraphCanvasModel::setLoopDescending(const std::string &id, bool descending) {

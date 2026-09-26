@@ -1287,6 +1287,25 @@ void GraphCanvasScene::repopulate() {
             } else {
                 zone.stage = QObject::tr("loop");
             }
+            // LP-4f1, decision 3: a loop over a view axis says how many views
+            // and along which axis -- `×6 (face)` -- and, with one branch,
+            // names the views where the tabs would be.
+            if (loop && !loop->view_family.empty()) {
+                const auto count = loop->reported ? std::optional<std::int64_t>{loop->reported_count}
+                                                  : loop->known_count;
+                zone.stage = count ? QObject::tr("×%1 (%2)").arg(*count).arg(qtext(loop->view_axis))
+                                   : QObject::tr("loop (%1)").arg(qtext(loop->view_axis));
+                if (loop->branches.size() <= 1 && loop->known_count && *loop->known_count > 0 &&
+                    *loop->known_count <= 32)
+                    for (std::int64_t element = 0; element < *loop->known_count; ++element) {
+                        const auto &labels = loop->view_axis_info ? loop->view_axis_info->labels
+                                                                  : std::vector<std::string>{};
+                        zone.axis_labels.push_back(
+                            static_cast<std::size_t>(element) < labels.size()
+                                ? qtext(labels[static_cast<std::size_t>(element)])
+                                : QString::number(element));
+                    }
+            }
             const auto uses = model_->definitionUseCount(plan->second.body);
             if (uses > 1)
                 zone.shared = QObject::tr("shared (%1 users)").arg(static_cast<qulonglong>(uses));
@@ -2690,21 +2709,30 @@ bool GraphCanvasScene::commitInlineEdit() {
     return submitted;
 }
 
-void GraphCanvasScene::placeNewNode(const std::string &scope, const std::string &id) {
+void GraphCanvasScene::placeNewNode(const std::string &scope, const std::string &id,
+                                    const std::string &op) {
     if (model_ == nullptr || id.empty()) return;
     const std::string current = model_->currentScope();
+    // A box drawn on the canvas, in the scope's own coordinates (a zone's
+    // body is drawn inside an item).
+    const auto scopeRect = [&](const QGraphicsItem &item) {
+        const QRectF drawn = item.sceneBoundingRect();
+        return QRectF{toScopePoint(scope, drawn.topLeft()), toScopePoint(scope, drawn.bottomRight())};
+    };
     // Beside the selected node when there is one, otherwise where the canvas
     // was right-clicked. Either way it is session state, like every position.
     QPointF position = toScopePoint(scope, context_position_);
     const bool from_menu = menu_scope_.has_value() || palette_scope_.has_value();
     if (selected_node_ && selection_scope_ == scope) {
-        if (const auto found = session_node_positions_.find({scope, *selected_node_});
-            found != session_node_positions_.end()) {
+        // LP-4f1, decision 5: past the selected node's real right edge -- a
+        // zone's frame is as wide as its body, not a node's 240.
+        if (QGraphicsItem *item = findNodeItem(*this, graphCanvasKinds(), qtext(scope),
+                                               qtext(*selected_node_))) {
+            const QRectF box = scopeRect(*item);
+            position = QPointF{box.right() + NodeGraphHorizontalGap, box.top()};
+        } else if (const auto found = session_node_positions_.find({scope, *selected_node_});
+                   found != session_node_positions_.end()) {
             position = found->second +
-                       QPointF{NodeGraphNodeWidth + NodeGraphHorizontalGap, 0.0};
-        } else if (QGraphicsItem *item = findNodeItem(
-                       *this, graphCanvasKinds(), qtext(scope), qtext(*selected_node_))) {
-            position = item->pos() +
                        QPointF{NodeGraphNodeWidth + NodeGraphHorizontalGap, 0.0};
         }
     } else if (scope != current && !from_menu) {
@@ -2712,7 +2740,41 @@ void GraphCanvasScene::placeNewNode(const std::string &scope, const std::string 
         // place, it is placed inside the frame with the rest of the body.
         return;
     }
-    session_node_positions_[{scope, id}] = position;
+    // The boxes already drawn in the scope: the new one is moved down past
+    // any it would land on. Its own size is not known until it is drawn, so
+    // it is taken as a node of a few rows, or a zone's least frame.
+    // Those the automatic placement put where they are stay there: a new
+    // node takes a column of its own in that placement and would push the
+    // rest aside, into the place it was given.
+    std::vector<QRectF> boxes;
+    const GraphCanvasLayout &placed = layout(scope);
+    for (QGraphicsItem *item : items()) {
+        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeItem} ||
+            item->data(GraphCanvasScopeRole).toString() != qtext(scope))
+            continue;
+        const auto name = item->data(NodeGraphNameRole).toString().toStdString();
+        if (name == id) continue;
+        boxes.push_back(scopeRect(*item));
+        if (!placed.nodes.contains(name)) session_node_positions_.try_emplace({scope, name}, item->pos());
+    }
+    const QSizeF size =
+        op == "graph.loop"
+            ? QSizeF{GraphCanvasZoneMinimumWidth,
+                     GraphCanvasHeaderHeight + 2.0 * GraphCanvasZonePadding +
+                         GraphCanvasZoneMinimumContentHeight}
+            : QSizeF{GraphCanvasNodeMinimumWidth, GraphCanvasHeaderHeight +
+                                                      2.0 * GraphCanvasSectionPadding +
+                                                      4.0 * GraphCanvasSocketRowHeight};
+    QRectF box{position, size};
+    const qreal margin = GraphCanvasSectionPadding;
+    for (std::size_t guard = 0; guard <= boxes.size(); ++guard) {
+        const auto hit = std::ranges::find_if(boxes, [&](const QRectF &other) {
+            return box.adjusted(-margin, -margin, margin, margin).intersects(other);
+        });
+        if (hit == boxes.end()) break;
+        box.moveTop(hit->bottom() + NodeGraphVerticalGap / 2.0);
+    }
+    session_node_positions_[{scope, id}] = box.topLeft();
 }
 
 bool GraphCanvasScene::addFromPalette(const std::string &op,
@@ -2738,7 +2800,7 @@ bool GraphCanvasScene::addFromPalette(const std::string &scope, const std::strin
             added_scope = token == "root" ? std::string{} : token;
         }
     if (!model_->addNodeIn(scope, op, definition)) return false;
-    placeNewNode(added_scope, added);
+    placeNewNode(added_scope, added, added_scope == scope ? op : std::string{});
     afterEdit(true);
     return true;
 }
@@ -2749,7 +2811,7 @@ bool GraphCanvasScene::addLoop(const std::string &body, const std::string &new_d
     if (ops.empty()) return false;
     const auto &added = ops.back();
     if (!model_->addLoop(body, new_definition)) return false;
-    placeNewNode({}, added.at("node").value("id", std::string{}));
+    placeNewNode({}, added.at("node").value("id", std::string{}), "graph.loop");
     afterEdit(true);
     return true;
 }
@@ -3090,6 +3152,8 @@ struct GraphCanvasWidget::Impl {
     GraphCanvasLoopFields *loop_fields = nullptr;
     // LP-4e: a material pass's contract, a draw step's variant or override.
     GraphCanvasDrawFields *draw_fields = nullptr;
+    // LP-4f1: a render node's View field.
+    GraphCanvasViewFields *view_fields = nullptr;
     QComboBox *loop_branch = nullptr;
     QLabel *shared_mark = nullptr;
     QAction *add_loop_action = nullptr;
@@ -3373,6 +3437,8 @@ struct GraphCanvasWidget::Impl {
         side_layout->addWidget(loop_fields);
         draw_fields = new GraphCanvasDrawFields(model, [this] { dispatch(); }, side);
         side_layout->addWidget(draw_fields);
+        view_fields = new GraphCanvasViewFields(model, [this] { dispatch(); }, side);
+        side_layout->addWidget(view_fields);
         details = new QTreeWidget(side);
         details->setObjectName(QStringLiteral("pelican.graphCanvasDetails"));
         details->setColumnCount(2);
@@ -3749,11 +3815,9 @@ struct GraphCanvasWidget::Impl {
         for (const auto &[loop, output] : sources)
             source->addItem(QStringLiteral("%1.%2").arg(qtext(loop), qtext(output)));
         layout->addRow(QObject::tr("Reads"), source);
-        auto *element = new QLineEdit(QStringLiteral("element"), &dialog);
-        element->setObjectName(QStringLiteral("pelican.graphCanvasPerIteration.element"));
-        element->setToolTip(QObject::tr(
-            "Which element it reads, per element of %1: `element` is that element.")
-                                .arg(qtext(node)));
+        // LP-4f1, decision 4: element, element - 1, element + 1, or Custom...
+        auto *element = new GraphCanvasElementChoice(
+            QStringLiteral("pelican.graphCanvasPerIteration.element"), &dialog);
         layout->addRow(QObject::tr("Element"), element);
         auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
                                              &dialog);
@@ -3763,9 +3827,9 @@ struct GraphCanvasWidget::Impl {
         if (dialog.exec() != QDialog::Accepted) return;
         const auto index = static_cast<std::size_t>(source->currentIndex());
         if (index >= sources.size()) return;
-        const auto expression = element->text().trimmed().toStdString();
+        const auto expression = element->expression().toStdString();
         if (model.connectPerIteration(node, port, sources[index].first, sources[index].second,
-                                      expression.empty() ? std::string{"element"} : expression))
+                                      expression))
             dispatch();
     }
 
@@ -4073,6 +4137,7 @@ struct GraphCanvasWidget::Impl {
             syncAudioRow(nullptr);
             loop_fields->showLoop({});
             draw_fields->showNode(nullptr);
+            view_fields->showNode(nullptr, {});
             return;
         }
         // LP-4d1: the node is looked for in the scope it was picked in -- a
@@ -4086,6 +4151,7 @@ struct GraphCanvasWidget::Impl {
             syncAudioRow(nullptr);
             loop_fields->showLoop({});
             draw_fields->showNode(nullptr);
+            view_fields->showNode(nullptr, {});
             return;
         }
         label_edit->setText(qtext(found->label));
@@ -4095,6 +4161,8 @@ struct GraphCanvasWidget::Impl {
         loop_fields->showLoop(found->loop ? found->id : std::string{});
         // LP-4e: and so are a material pass's and a draw step's.
         draw_fields->showNode(&*found, scope);
+        // LP-4f1: and a render node's views.
+        view_fields->showNode(&*found, scope);
         const auto row = [this](const QString &field, const QString &value) {
             auto *item = new QTreeWidgetItem(details);
             item->setText(0, field);

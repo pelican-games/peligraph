@@ -622,7 +622,11 @@ class GraphCanvasScene final : public QGraphicsScene {
     // The two halves of carrying an editor across a rebuild.
     [[nodiscard]] std::optional<CarriedInlineEdit> carryInlineEdit() const;
     void restoreInlineEdit(const CarriedInlineEdit &carried);
-    void placeNewNode(const std::string &scope, const std::string &id);
+    // LP-4f1, decision 5: beside the picked node (a zone's frame, for a
+    // loop), at its real width, and clear of every box already drawn in the
+    // scope. `op` says how large the new one will be (a loop is a zone).
+    void placeNewNode(const std::string &scope, const std::string &id,
+                      const std::string &op = {});
     void afterEdit(bool submitted);
     // LP-4d1. A scene position in a scope's own coordinates: a zone's body is
     // drawn inside an item, the scope on screen is not.

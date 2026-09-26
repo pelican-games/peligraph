@@ -547,6 +547,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
 
   pelican_define_test(devstudio_graphcanvas_scene_test QT QT_OFFSCREEN
     pelican_studio_inspector_model
+    # LP-4f1: the Graph tab's View field is LP-4b's ViewSelectField.
+    pelican_studio_frame_plan
     pelican_project
     Qt6::Core
     Qt6::Widgets
@@ -555,6 +557,9 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaswidget.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasdrawing.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasloopfields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodelayout.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/studiotheme.cpp

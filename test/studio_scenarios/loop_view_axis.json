@@ -1,0 +1,356 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "loop_view_axis",
+  "description": "LP-4f1: a loop over the cube's faces, built on the Graph tab with Studio's controls only. The fixture carries the cube_capture feature, so the frame plan lists passes of the $capture/cube family with the face axis. Add loop puts a loop over a new, empty body in the root; its Loop fields' Over is set to View axis, and the family and the axis are chosen from what the frame plan lists ($capture/cube, face) -- nothing typed. Its count is the axis's length, read only (x6 (face)), and the zone's heading says so. The body is chosen from the branch table's list: the fixture's cube_face, a fullscreen pass of the $capture/cube family drawing into an image of the cube's size (Studio's Add fullscreen pass draws into a screen-sized image, and the engine stops a family that spans two raster extents). The pass's View field offers Each element (loop), which writes view_select face {$expr: element}. The engine expands the loop six times, one copy a face: the frame plan's copies run for faces 0 to 5, and the Frame Plan shows them as one group of six.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the engine viewport answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the first frame plan has arrived",
+      "cmd": "wait",
+      "name": "pelican.framePlanStatus",
+      "timeout_ms": 180000,
+      "contains": "main_render"
+    },
+    {
+      "label": "the Graph tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the root graph starts empty",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes.$len",
+      "value": 0
+    },
+    {
+      "label": "the canvas has read the document and can edit it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Add loop: a loop over a new, empty body Studio names",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.addLoop"
+    },
+    {
+      "label": "the loop stands in the root, over a count to begin with",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.over.range.count",
+      "value": 1,
+      "retry_ms": 60000
+    },
+    {
+      "label": "the loop is drawn as a zone",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone#loop",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick the zone by its heading",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#loop"
+    },
+    {
+      "label": "the Loop fields say what it runs over",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.over",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the frame plan has been read for the loop (its families with axes come with it)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.summary",
+      "contains": "expand ×1",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Over: View axis",
+      "cmd": "select",
+      "name": "pelican.graphCanvasLoop.over",
+      "text": "View axis"
+    },
+    {
+      "label": "the loop runs over a view axis now",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.over.view_axis.$len",
+      "value": 2,
+      "retry_ms": 60000
+    },
+    {
+      "label": "the family is chosen from the frame plan's",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.viewFamily",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the cube's family",
+      "cmd": "select",
+      "name": "pelican.graphCanvasLoop.viewFamily",
+      "text": "$capture/cube"
+    },
+    {
+      "label": "the document names the cube's family",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.over.view_axis.family",
+      "value": "$capture/cube",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and its face axis",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.over.view_axis.axis",
+      "value": "face",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the count is the axis's length, read only",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.viewCount",
+      "text": "×6 (face)",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the body is chosen from a list: the fixture's cube_face, a pass of the cube's family drawing into an image of the cube's size",
+      "cmd": "select",
+      "name": "pelican.graphCanvasLoop.branch0.body",
+      "text": "cube_face"
+    },
+    {
+      "label": "the loop runs cube_face",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.branches[0].body",
+      "value": "cube_face",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the pass is drawn inside the zone",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#cube_face/face_pass",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick the pass",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node_header#cube_face/face_pass"
+    },
+    {
+      "label": "its View field has the loop's face axis",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasRender.view.face",
+      "visible": true,
+      "text": "All views",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Each element (loop): each copy runs for its own face",
+      "cmd": "select",
+      "name": "pelican.graphCanvasRender.view.face",
+      "text": "Each element (loop)"
+    },
+    {
+      "label": "the pass says so with the element",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.cube_face.nodes[1].parameters.view_select.face.$expr",
+      "value": "element",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and in the loop's family, which it named already",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.cube_face.nodes[1].parameters.view_family",
+      "value": "$capture/cube"
+    },
+    {
+      "label": "the engine expands the loop once a face",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].count",
+      "value": 6,
+      "retry_ms": 120000
+    },
+    {
+      "label": "as the expand tier",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].tier",
+      "value": "expand"
+    },
+    {
+      "label": "the copies stand in the frame plan in element order: copy 0 is loop/0/face_pass",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[16].name",
+      "value": "loop/0/face_pass"
+    },
+    {
+      "label": "and runs for face 0 only",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[16].view_select.face",
+      "value": 0
+    },
+    {
+      "label": "copy 1 is loop/1/face_pass",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[17].name",
+      "value": "loop/1/face_pass"
+    },
+    {
+      "label": "and runs for face 1 only",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[17].view_select.face",
+      "value": 1
+    },
+    {
+      "label": "copy 2 is loop/2/face_pass",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[18].name",
+      "value": "loop/2/face_pass"
+    },
+    {
+      "label": "and runs for face 2 only",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[18].view_select.face",
+      "value": 2
+    },
+    {
+      "label": "copy 3 is loop/3/face_pass",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[19].name",
+      "value": "loop/3/face_pass"
+    },
+    {
+      "label": "and runs for face 3 only",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[19].view_select.face",
+      "value": 3
+    },
+    {
+      "label": "copy 4 is loop/4/face_pass",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[20].name",
+      "value": "loop/4/face_pass"
+    },
+    {
+      "label": "and runs for face 4 only",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[20].view_select.face",
+      "value": 4
+    },
+    {
+      "label": "copy 5 is loop/5/face_pass",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[21].name",
+      "value": "loop/5/face_pass"
+    },
+    {
+      "label": "and runs for face 5 only",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[21].view_select.face",
+      "value": 5
+    },
+    {
+      "label": "the zone's heading says how many views along which axis",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone_label#loop/stage",
+      "contains": "×6 (face)",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "and names the views",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone_label#loop/axis2",
+      "contains": "+Y",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "a picture of the Graph tab with the zone over the faces",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "loop_view_axis_graph.png"
+    },
+    {
+      "label": "the Frame Plan tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "the Frame Plan is a snapshot: read it again after the Graph tab's edits",
+      "cmd": "click",
+      "name": "pelican.framePlanRefresh"
+    },
+    {
+      "label": "the six copies are one group",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::group#__pelican_group__:loop:loop",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "named after the loop, with its count",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::group_label#__pelican_group__:loop:loop",
+      "contains": "loop loop ×6",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "a picture of the Frame Plan with the loop's group",
+      "expect": "screenshot",
+      "name": "pelican.framePlan",
+      "path": "loop_view_axis_frame_plan.png"
+    }
+  ]
+}

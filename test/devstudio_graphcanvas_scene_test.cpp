@@ -1,3 +1,4 @@
+#include "graphcanvasloopfields.hpp"
 #include "graphcanvaswidget.hpp"
 #include "graphcomposition.hpp"
 #include "graphmodule.hpp"
@@ -31,6 +32,8 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QSpinBox>
+#include <QStandardItemModel>
+#include <QToolButton>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
@@ -3548,6 +3551,8 @@ struct ZoneHarness {
     int generation = 0;
     // LP-4d2: what get_frame_plan's loops[] says, when a test gives one.
     Json loops = Json::array();
+    // LP-4f1: the rest of the plan (its nodes' view axes, its resources).
+    Json plan = Json::object();
 
     explicit ZoneHarness(Json initial = zoneDocument()) : document(std::move(initial)) {}
 
@@ -3567,8 +3572,11 @@ struct ZoneHarness {
                 model.receiveRpcResult(request.request_id, snapshot().dump());
             else if (request.method == "get_graph_catalog")
                 model.receiveRpcResult(request.request_id, visualCatalog().dump());
-            else if (request.method == "get_frame_plan")
-                model.receiveRpcResult(request.request_id, Json{{"loops", loops}}.dump());
+            else if (request.method == "get_frame_plan") {
+                auto reply = plan;
+                reply["loops"] = loops;
+                model.receiveRpcResult(request.request_id, reply.dump());
+            }
             else if (request.method == "edit_graph_document")
                 edits.push_back(request);
         }
@@ -4457,4 +4465,391 @@ TEST_CASE("LP-4d2 Show in Frame Plan asks the owner, and Open in Graph on a loop
     // A node that body does not hold: nothing moves.
     CHECK_FALSE(widget.revealLoopOrigin(QStringLiteral("steps"), 0, QStringLiteral("c")));
     CHECK(*scene.selectedNode() == "sum");
+}
+
+// --- LP-4f1: loops over a view axis, the Graph tab's View field, and the
+// fields that no longer ask for typing.
+
+namespace {
+
+// What get_frame_plan lists on its passes: the cube's face (labelled), the
+// directional shadow's light (decided each frame) and cascade, and $main,
+// which has no axes.
+Json lp4f1PlanNodes() {
+    const Json face{{"axis", "face"},
+                    {"length", 6},
+                    {"runtime", false},
+                    {"labels", Json::array({"+X", "-X", "+Y", "-Y", "+Z", "-Z"})}};
+    return Json::array({
+        {{"name", "cube_capture_ssao"}, {"kind", "render"}, {"view_family", "$capture/cube"},
+         {"view_axes", Json::array({face})}},
+        {{"name", "shadow_depth"},
+         {"kind", "render"},
+         {"view_family", "$shadow/directional"},
+         {"view_axes", Json::array({{{"axis", "light"}, {"length", nullptr}, {"runtime", true}},
+                                    {{"axis", "cascade"}, {"length", 3}, {"runtime", false}}})}},
+        {{"name", "present"}, {"kind", "render"}, {"view_family", "$main"},
+         {"view_axes", Json::array()}},
+        {{"name", "outside"}, {"kind", "render"}, {"view_family", "$capture/cube"},
+         {"view_axes", Json::array({face})}}});
+}
+
+Json lp4f1Plan() {
+    return Json{{"nodes", lp4f1PlanNodes()},
+                {"resources", Json::array({{{"name", "bloom_chain"}, {"kind", "render_target"}},
+                                           {{"name", "scratch"}, {"kind", "buffer"}}})}};
+}
+
+// A loop over the cube's faces running `faces`, a loop over a count running
+// `counted_body`, both bodies one fullscreen pass, and a fullscreen pass in
+// the root the frame plan lists in the cube's family.
+Json lp4f1Document() {
+    const Json pass{{"id", "pass"},
+                    {"op", "render.fullscreen"},
+                    {"parameters",
+                     {{"shader", {{"vertex", "engine://fullscreen"},
+                                  {"fragment", "engine://passthrough"}}}}},
+                    {"outputs", Json::array({"color"})}};
+    Json outside = pass;
+    outside["id"] = "outside";
+    outside["parameters"]["view_family"] = "$capture/cube";
+    return Json{{"schema", "pelican.graph"},
+                {"version", 1},
+                {"outputs", Json::object()},
+                {"definitions",
+                 {{"faces", {{"nodes", Json::array({pass})}, {"outputs", Json::object()}}},
+                  {"counted_body", {{"nodes", Json::array({pass})}, {"outputs", Json::object()}}}}},
+                {"nodes",
+                 Json::array({{{"id", "faces_loop"},
+                               {"op", "graph.loop"},
+                               {"parameters",
+                                {{"over", {{"view_axis", {{"family", "$capture/cube"},
+                                                          {"axis", "face"}}}}},
+                                 {"branches", Json::array({{{"body", "faces"}}})}}},
+                               {"outputs", Json::array()}},
+                              {{"id", "counted"},
+                               {"op", "graph.loop"},
+                               {"parameters", {{"over", {{"range", {{"count", 2}}}}},
+                                               {"branches", Json::array({{{"body", "counted_body"}}})}}},
+                               {"outputs", Json::array()}},
+                              outside})}};
+}
+
+PelicanStudio::GraphCanvasNode lp4f1Node(const GraphCanvasModel &model, const std::string &scope,
+                                          const std::string &id) {
+    const auto nodes = model.nodes(scope);
+    const auto found = std::ranges::find(nodes, id, &PelicanStudio::GraphCanvasNode::id);
+    REQUIRE(found != nodes.end());
+    return *found;
+}
+
+template <typename T> T *lp4f1Field(QWidget &fields, const char *name) {
+    auto *found = fields.findChild<T *>(QString::fromLatin1(name));
+    REQUIRE(found != nullptr);
+    return found;
+}
+
+} // namespace
+
+TEST_CASE("LP-4f1 the Loop fields run over a view axis the frame plan lists, never one "
+          "decided each frame",
+          "[devstudio][graph-canvas][scene][lp4f1]") {
+    (void)application();
+    ZoneHarness h;
+    h.plan = lp4f1Plan();
+    h.open();
+    h.answerReads();
+    PelicanStudio::GraphCanvasLoopFields fields{h.model, [] {}, {}};
+    fields.showLoop("steps");
+    auto *over = lp4f1Field<QComboBox>(fields, "pelican.graphCanvasLoop.over");
+    CHECK(over->currentData().toString() == QStringLiteral("range"));
+    // The candidates are the families a pass of the plan runs in, with
+    // axes: $main has none and is not one.
+    REQUIRE(h.model.viewFamilies().size() == 2);
+
+    // View axis: the first family's first axis a loop can run over, in one
+    // edit that keeps the rest of the loop.
+    over->setCurrentIndex(over->findData(QStringLiteral("view_axis")));
+    auto ops = h.commit();
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0].at("op") == "set_node_parameters");
+    CHECK(ops[0].at("parameters").at("over") ==
+          Json{{"view_axis", {{"family", "$capture/cube"}, {"axis", "face"}}}});
+    CHECK(ops[0].at("parameters").at("branches") ==
+          zoneDocument().at("nodes")[2].at("parameters").at("branches"));
+    fields.showLoop("steps");
+    auto *family = lp4f1Field<QComboBox>(fields, "pelican.graphCanvasLoop.viewFamily");
+    auto *axis = lp4f1Field<QComboBox>(fields, "pelican.graphCanvasLoop.viewAxis");
+    auto *length = lp4f1Field<QLabel>(fields, "pelican.graphCanvasLoop.viewCount");
+    REQUIRE(family->count() == 2);
+    CHECK(family->itemData(0).toString() == QStringLiteral("$capture/cube"));
+    CHECK(family->itemData(1).toString() == QStringLiteral("$shadow/directional"));
+    CHECK(family->findData(QStringLiteral("$main")) < 0);
+    CHECK(axis->currentData().toString() == QStringLiteral("face"));
+    // The count is the axis's length, read only; the count field goes.
+    CHECK(length->text() == QStringLiteral("×6 (face)"));
+    CHECK(length->isVisibleTo(&fields));
+    CHECK_FALSE(lp4f1Field<QSpinBox>(fields, "pelican.graphCanvasLoop.count")->isVisibleTo(&fields));
+    // One line under the field says why a family is not there.
+    CHECK(lp4f1Field<QLabel>(fields, "pelican.graphCanvasLoop.viewAxisNote")->isVisibleTo(&fields));
+
+    // Another family: its first axis a loop can run over (cascade, not light).
+    family->setCurrentIndex(1);
+    ops = h.commit();
+    CHECK(ops[0].at("parameters").at("over") ==
+          Json{{"view_axis", {{"family", "$shadow/directional"}, {"axis", "cascade"}}}});
+    fields.showLoop("steps");
+    REQUIRE(axis->count() == 2);
+    const auto *items = qobject_cast<QStandardItemModel *>(axis->model());
+    REQUIRE(items != nullptr);
+    CHECK(axis->itemData(0).toString() == QStringLiteral("light"));
+    CHECK_FALSE(items->item(0)->isEnabled());
+    CHECK(axis->itemText(0).contains(QStringLiteral("decided each frame")));
+    CHECK(items->item(1)->isEnabled());
+    CHECK(axis->currentData().toString() == QStringLiteral("cascade"));
+    CHECK(length->text() == QStringLiteral("×3 (cascade)"));
+    // Forced onto the axis decided each frame, nothing is sent.
+    axis->setCurrentIndex(0);
+    CHECK(h.answerReads().empty());
+
+    // Back to a count: as many elements as the axis had.
+    fields.showLoop("steps");
+    over->setCurrentIndex(over->findData(QStringLiteral("range")));
+    ops = h.commit();
+    CHECK(ops[0].at("parameters").at("over") == Json{{"range", {{"count", 3}}}});
+}
+
+TEST_CASE("LP-4f1 a plan without a family with axes offers no view axis, and says so",
+          "[devstudio][graph-canvas][scene][lp4f1]") {
+    (void)application();
+    ZoneHarness h;
+    h.plan = Json{{"nodes", Json::array({lp4f1PlanNodes()[2]})}};
+    h.open();
+    h.answerReads();
+    PelicanStudio::GraphCanvasLoopFields fields{h.model, [] {}, {}};
+    fields.showLoop("steps");
+    auto *over = lp4f1Field<QComboBox>(fields, "pelican.graphCanvasLoop.over");
+    over->setCurrentIndex(over->findData(QStringLiteral("view_axis")));
+    CHECK(h.answerReads().empty());
+    CHECK(over->currentData().toString() == QStringLiteral("range"));
+    auto *note = lp4f1Field<QLabel>(fields, "pelican.graphCanvasLoop.viewAxisNote");
+    CHECK(note->isVisibleTo(&fields));
+    CHECK_FALSE(note->text().isEmpty());
+}
+
+TEST_CASE("LP-4f1 where, the branch conditions and the count are chosen, not typed",
+          "[devstudio][graph-canvas][scene][lp4f1]") {
+    (void)application();
+    ZoneHarness h;
+    h.plan = lp4f1Plan();
+    h.open();
+    h.answerReads();
+    PelicanStudio::GraphCanvasLoopFields fields{h.model, [] {}, {}};
+    fields.showLoop("steps");
+
+    // Where: over a count of 2, a check per element instead of a line.
+    CHECK_FALSE(lp4f1Field<QLineEdit>(fields, "pelican.graphCanvasLoop.whereValues")->isVisibleTo(&fields));
+    auto *kind = lp4f1Field<QComboBox>(fields, "pelican.graphCanvasLoop.whereKind");
+    auto *second = lp4f1Field<QCheckBox>(fields, "pelican.graphCanvasLoop.whereValue1");
+    CHECK(second->text() == QStringLiteral("1"));
+    CHECK_FALSE(second->isEnabled());
+    // "element in" with nothing checked yet sends nothing; the check does.
+    kind->setCurrentIndex(kind->findData(QStringLiteral("element_in")));
+    CHECK(h.answerReads().empty());
+    CHECK(second->isEnabled());
+    second->setChecked(true);
+    auto ops = h.commit();
+    CHECK(ops[0].at("parameters").at("where") == Json{{"element_in", {1}}});
+
+    // The branch table: `element =` is a spin.
+    fields.showLoop("steps");
+    CHECK(fields.findChild<QLineEdit *>(QStringLiteral("pelican.graphCanvasLoop.branch0.values")) ==
+          nullptr);
+    auto *value = lp4f1Field<QSpinBox>(fields, "pelican.graphCanvasLoop.branch0.value");
+    CHECK(value->value() == 0);
+    CHECK(value->maximum() == 1);
+    value->setValue(1);
+    ops = h.commit();
+    CHECK(ops[0].at("parameters").at("branches")[0].at("when") == Json{{"element", 1}});
+    // `element in`: the spin's value is the first check, and a check adds one.
+    fields.showLoop("steps");
+    auto *when = lp4f1Field<QComboBox>(fields, "pelican.graphCanvasLoop.branch0.when");
+    when->setCurrentIndex(when->findData(QStringLiteral("element_in")));
+    ops = h.commit();
+    CHECK(ops[0].at("parameters").at("branches")[0].at("when") == Json{{"element_in", {1}}});
+    fields.showLoop("steps");
+    CHECK(lp4f1Field<QCheckBox>(fields, "pelican.graphCanvasLoop.branch0.check1")->isChecked());
+    auto *first = lp4f1Field<QCheckBox>(fields, "pelican.graphCanvasLoop.branch0.check0");
+    CHECK_FALSE(first->isChecked());
+    first->setChecked(true);
+    ops = h.commit();
+    CHECK(ops[0].at("parameters").at("branches")[0].at("when") == Json{{"element_in", {0, 1}}});
+
+    // The count expression: a target of the plan (render targets only), and
+    // its mip levels put in with a button.
+    fields.showLoop("steps");
+    auto *toggle = lp4f1Field<QToolButton>(fields, "pelican.graphCanvasLoop.countExpressionToggle");
+    auto *insert_row = lp4f1Field<QPushButton>(fields, "pelican.graphCanvasLoop.insertMipLevels");
+    CHECK_FALSE(insert_row->isVisibleTo(&fields));
+    toggle->setChecked(true);
+    CHECK(insert_row->isVisibleTo(&fields));
+    auto *target = lp4f1Field<QComboBox>(fields, "pelican.graphCanvasLoop.countTarget");
+    REQUIRE(target->count() == 1);
+    CHECK(target->itemText(0) == QStringLiteral("bloom_chain"));
+    insert_row->click();
+    ops = h.commit();
+    CHECK(ops[0].at("parameters").at("over") ==
+          Json{{"range", {{"count", {{"$expr", "mip_levels_of(\"bloom_chain\")"}}}}}});
+    // Into an expression already there, it goes where the cursor is.
+    fields.showLoop("steps");
+    auto *expression = lp4f1Field<QLineEdit>(fields, "pelican.graphCanvasLoop.countExpression");
+    expression->setText(QStringLiteral(" - 1"));
+    expression->setCursorPosition(0);
+    lp4f1Field<QPushButton>(fields, "pelican.graphCanvasLoop.insertLayers")->click();
+    ops = h.commit();
+    CHECK(ops[0].at("parameters").at("over") ==
+          Json{{"range", {{"count", {{"$expr", "layers_of(\"bloom_chain\") - 1"}}}}}});
+
+    // Per iteration: element, element - 1, element + 1, or Custom... .
+    PelicanStudio::GraphCanvasElementChoice choice{QStringLiteral("choice")};
+    auto *combo = lp4f1Field<QComboBox>(choice, "choice");
+    auto *custom = lp4f1Field<QLineEdit>(choice, "choice.custom");
+    CHECK(choice.expression() == QStringLiteral("element"));
+    combo->setCurrentIndex(1);
+    CHECK(choice.expression() == QStringLiteral("element - 1"));
+    combo->setCurrentIndex(2);
+    CHECK(choice.expression() == QStringLiteral("element + 1"));
+    CHECK_FALSE(custom->isVisibleTo(&choice));
+    combo->setCurrentIndex(3);
+    CHECK(custom->isVisibleTo(&choice));
+    CHECK(choice.expression() == QStringLiteral("element"));
+    custom->setText(QStringLiteral("element * 2"));
+    CHECK(choice.expression() == QStringLiteral("element * 2"));
+    choice.setExpression(QStringLiteral("element + 1"));
+    CHECK(combo->currentIndex() == 2);
+}
+
+TEST_CASE("LP-4f1 a view-axis loop's body offers Each element on its axis, and nothing else does",
+          "[devstudio][graph-canvas][scene][lp4f1]") {
+    (void)application();
+    ZoneHarness h{lp4f1Document()};
+    h.plan = lp4f1Plan();
+    h.open();
+    h.answerReads();
+    int submitted = 0;
+    PelicanStudio::GraphCanvasViewFields view{h.model, [&] { ++submitted; }};
+
+    // In the body of the loop over the cube's faces.
+    auto pass = lp4f1Node(h.model, "faces", "pass");
+    view.showNode(&pass, "faces");
+    CHECK_FALSE(view.isHidden());
+    auto *face = lp4f1Field<QComboBox>(view, "pelican.graphCanvasRender.view.face");
+    CHECK(face->currentText() == QStringLiteral("All views"));
+    CHECK(face->findText(QStringLiteral("2 (+Y)")) >= 0);
+    const int each = face->findText(QStringLiteral("Each element (loop)"));
+    REQUIRE(each >= 0);
+    face->setCurrentIndex(each);
+    CHECK(submitted == 1);
+    auto ops = h.commit();
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0].at("op") == "set_node_parameters");
+    CHECK(ops[0].at("scope") == "faces");
+    CHECK(ops[0].at("node") == "pass");
+    CHECK(ops[0].at("parameters").at("view_select") == Json{{"face", {{"$expr", "element"}}}});
+    // The pass named no family: the loop's is written with it.
+    CHECK(ops[0].at("parameters").at("view_family") == "$capture/cube");
+    CHECK(ops[0].at("parameters").at("shader") ==
+          lp4f1Document().at("definitions").at("faces").at("nodes")[0].at("parameters").at("shader"));
+
+    // Read back, Each element is what the field shows; a value replaces it.
+    pass = lp4f1Node(h.model, "faces", "pass");
+    view.showNode(&pass, "faces");
+    face = lp4f1Field<QComboBox>(view, "pelican.graphCanvasRender.view.face");
+    CHECK(face->currentText() == QStringLiteral("Each element (loop)"));
+    face->setCurrentIndex(face->findText(QStringLiteral("2 (+Y)")));
+    ops = h.commit();
+    CHECK(ops[0].at("parameters").at("view_select") == Json{{"face", 2}});
+    // All views takes the member out.
+    pass = lp4f1Node(h.model, "faces", "pass");
+    view.showNode(&pass, "faces");
+    face = lp4f1Field<QComboBox>(view, "pelican.graphCanvasRender.view.face");
+    face->setCurrentIndex(0);
+    ops = h.commit();
+    CHECK_FALSE(ops[0].at("parameters").contains("view_select"));
+
+    // Outside the loop: the root pass the plan lists in the cube's family
+    // has its View field, without Each element.
+    auto outside = lp4f1Node(h.model, "", "outside");
+    view.showNode(&outside, "");
+    CHECK_FALSE(view.isHidden());
+    face = lp4f1Field<QComboBox>(view, "pelican.graphCanvasRender.view.face");
+    CHECK(face->findText(QStringLiteral("Each element (loop)")) < 0);
+    CHECK(face->findText(QStringLiteral("5 (-Z)")) >= 0);
+    // In the body of a loop over a count, a pass with no family: no field.
+    auto counted = lp4f1Node(h.model, "counted_body", "pass");
+    view.showNode(&counted, "counted_body");
+    CHECK(view.isHidden());
+    // Nor for a node that takes no view_select.
+    view.showNode(nullptr, {});
+    CHECK(view.isHidden());
+}
+
+TEST_CASE("LP-4f1 a view-axis zone says how many views along which axis, and names them",
+          "[devstudio][graph-canvas][scene][lp4f1]") {
+    (void)application();
+    ZoneHarness h{lp4f1Document()};
+    h.plan = lp4f1Plan();
+    h.open();
+    h.answerReads();
+    h.scene.repopulate();
+    auto *stage = dynamic_cast<QGraphicsSimpleTextItem *>(
+        scopedItem(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QString{},
+                   QStringLiteral("faces_loop"), QStringLiteral("stage")));
+    REQUIRE(stage != nullptr);
+    CHECK(stage->text() == QStringLiteral("×6 (face)"));
+    CHECK(zoneTabs(h.scene).empty());
+    const QStringList expected{QStringLiteral("+X"), QStringLiteral("-X"), QStringLiteral("+Y"),
+                               QStringLiteral("-Y"), QStringLiteral("+Z"), QStringLiteral("-Z")};
+    QGraphicsItem *frame = scopedNode(h.scene, QString{}, QStringLiteral("faces_loop"));
+    REQUIRE(frame != nullptr);
+    for (int index = 0; index < expected.size(); ++index) {
+        auto *label = dynamic_cast<QGraphicsSimpleTextItem *>(
+            scopedItem(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QString{},
+                       QStringLiteral("faces_loop"), QStringLiteral("axis%1").arg(index)));
+        REQUIRE(label != nullptr);
+        CHECK(label->text() == expected[index]);
+        CHECK(frame->sceneBoundingRect().contains(label->sceneBoundingRect()));
+    }
+    // The loop over a count keeps its old heading, and names nothing.
+    CHECK(scopedItem(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QString{},
+                     QStringLiteral("counted"), QStringLiteral("axis0")) == nullptr);
+}
+
+TEST_CASE("LP-4f1 a node added beside a zone lands clear of its frame and of every other box",
+          "[devstudio][graph-canvas][scene][lp4f1]") {
+    (void)application();
+    ZoneHarness h;
+    h.open();
+    h.answerReads();
+    h.scene.repopulate();
+    QGraphicsItem *frame = scopedNode(h.scene, QString{}, QStringLiteral("steps"));
+    REQUIRE(frame != nullptr);
+    // The frame is wider than a node: the old 240 would land inside it.
+    REQUIRE(frame->sceneBoundingRect().width() > PelicanStudio::NodeGraphNodeWidth +
+                                                     PelicanStudio::NodeGraphHorizontalGap);
+    h.scene.selectNode(std::string{}, "steps");
+    REQUIRE(h.scene.addFromPalette(std::string{}, "value.constant", std::string{}));
+    const auto ops = h.commit();
+    const std::string added = ops.back().at("node").at("id").get<std::string>();
+    QGraphicsItem *node = scopedNode(h.scene, QString{}, QString::fromStdString(added));
+    REQUIRE(node != nullptr);
+    frame = scopedNode(h.scene, QString{}, QStringLiteral("steps"));
+    REQUIRE(frame != nullptr);
+    CHECK(node->sceneBoundingRect().left() >= frame->sceneBoundingRect().right());
+    for (QGraphicsItem *item : h.scene.items())
+        if (item != node &&
+            item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+                QLatin1String{PelicanStudio::GraphCanvasNodeItem} &&
+            item->data(PelicanStudio::GraphCanvasScopeRole).toString().isEmpty())
+            CHECK_FALSE(node->sceneBoundingRect().intersects(item->sceneBoundingRect()));
 }

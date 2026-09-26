@@ -1,6 +1,8 @@
 #include "graphcanvasloopfields.hpp"
 
+#include "frameplanedit.hpp"
 #include "studiotheme.hpp"
+#include "viewselectfield.hpp"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -14,6 +16,7 @@
 #include <QRegularExpression>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QStandardItemModel>
 #include <QStringList>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -92,10 +95,40 @@ QString signature(const GraphCanvasLoop &loop, const std::vector<std::string> &c
     for (const auto &input : loop.body_inputs) parts << qtext(input);
     for (const auto &output : loop.body_outputs) parts << qtext(output);
     for (const auto &choice : choices) parts << qtext(choice);
+    // LP-4f1: what the loop runs over, and what the frame plan offers.
+    parts << qtext(loop.view_family) << qtext(loop.view_axis)
+          << (loop.known_count ? QString::number(*loop.known_count) : QStringLiteral("?"));
     return parts.join(QChar{0x1f});
 }
 
+QString viewSignature(const GraphCanvasModel &model) {
+    QStringList parts;
+    for (const auto &family : model.viewFamilies()) {
+        parts << qtext(family.family);
+        for (const auto &axis : family.axes) {
+            parts << qtext(axis.axis)
+                  << (axis.length ? QString::number(*axis.length) : QStringLiteral("-"))
+                  << (axis.runtime ? QStringLiteral("r") : QString{});
+            for (const auto &label : axis.labels) parts << qtext(label);
+        }
+    }
+    parts << QStringLiteral("\x1etargets");
+    for (const auto &target : model.planTargets()) parts << qtext(target);
+    return parts.join(QChar{0x1f});
+}
+
+bool selectableAxis(const FramePlanViewAxis &axis) {
+    return !axis.runtime && axis.length.has_value();
+}
+
 } // namespace
+
+QString GraphCanvasLoopFields::elementText(const GraphCanvasLoop &loop, std::int64_t element) {
+    if (loop.view_axis_info && element >= 0)
+        return qtext(framePlanViewValueText({*loop.view_axis_info}, loop.view_axis,
+                                            static_cast<std::uint64_t>(element)));
+    return QString::number(element);
+}
 
 std::optional<std::vector<std::int64_t>> GraphCanvasLoopFields::parseIntegers(const QString &text) {
     std::vector<std::int64_t> values;
@@ -165,6 +198,17 @@ GraphCanvasLoopFields::GraphCanvasLoopFields(
         return label;
     };
 
+    // LP-4f1, decision 1: what the loop runs over -- 0 up to a count, or the
+    // views along one axis of a view family.
+    over_ = new QComboBox(this);
+    over_->setObjectName(fieldName(QStringLiteral("over")));
+    over_->addItem(tr("Count"), QStringLiteral("range"));
+    over_->addItem(tr("View axis"), QStringLiteral("view_axis"));
+    over_->setToolTip(tr("Run over 0 up to a count, or over the views along one axis of a view "
+                         "family (a cube's faces, a shadow's cascades)."));
+    form->addRow(caption(tr("Over")), over_);
+    connect(over_, &QComboBox::currentIndexChanged, this, [this] { commitOver(); });
+
     // How many elements: an integer, or -- behind the f button -- an
     // expression over the constants known when the pipeline is composed.
     auto *count_row = new QHBoxLayout;
@@ -189,14 +233,67 @@ GraphCanvasLoopFields::GraphCanvasLoopFields(
     count_row->addWidget(count_expression_toggle_);
     form->addRow(caption(tr("Count")), count_row);
     count_row_ = count_row;
+    // LP-4f1, decision 4: a target's mip levels or layers into the
+    // expression, the target chosen from the frame plan's.
+    count_insert_row_ = new QWidget(this);
+    auto *insert_layout = new QHBoxLayout(count_insert_row_);
+    insert_layout->setContentsMargins(0, 0, 0, 0);
+    count_target_ = new QComboBox(count_insert_row_);
+    count_target_->setObjectName(fieldName(QStringLiteral("countTarget")));
+    count_target_->setToolTip(tr("A render target of the frame plan"));
+    insert_layout->addWidget(count_target_, 1);
+    insert_mips_ = new QPushButton(QStringLiteral("mip_levels_of"), count_insert_row_);
+    insert_mips_->setObjectName(fieldName(QStringLiteral("insertMipLevels")));
+    insert_mips_->setToolTip(tr("Put the target's mip level count into the expression"));
+    insert_layout->addWidget(insert_mips_);
+    insert_layers_ = new QPushButton(QStringLiteral("layers_of"), count_insert_row_);
+    insert_layers_->setObjectName(fieldName(QStringLiteral("insertLayers")));
+    insert_layers_->setToolTip(tr("Put the target's layer count into the expression"));
+    insert_layout->addWidget(insert_layers_);
+    form->addRow(QString{}, count_insert_row_);
+    connect(insert_mips_, &QPushButton::clicked, this,
+            [this] { insertCountFunction(QStringLiteral("mip_levels_of")); });
+    connect(insert_layers_, &QPushButton::clicked, this,
+            [this] { insertCountFunction(QStringLiteral("layers_of")); });
     connect(count_, &QSpinBox::editingFinished, this, [this] { commitCount(); });
     connect(count_expression_, &QLineEdit::returnPressed, this, [this] { commitCount(); });
     connect(count_expression_toggle_, &QToolButton::toggled, this, [this](bool expression) {
         count_->setVisible(!expression);
         count_expression_->setVisible(expression);
+        if (form_ != nullptr) form_->setRowVisible(count_insert_row_, expression);
         if (expression && count_expression_->text().isEmpty())
             count_expression_->setText(QString::number(count_->value()));
     });
+
+    // LP-4f1, decision 1: the family and the axis a view-axis loop runs
+    // over, and its count, which is the axis's length (read only).
+    view_row_ = new QWidget(this);
+    auto *view_layout = new QHBoxLayout(view_row_);
+    view_layout->setContentsMargins(0, 0, 0, 0);
+    view_family_ = new QComboBox(view_row_);
+    view_family_->setObjectName(fieldName(QStringLiteral("viewFamily")));
+    view_family_->setToolTip(tr("The view family whose views the loop runs over"));
+    view_layout->addWidget(view_family_, 1);
+    view_axis_ = new QComboBox(view_row_);
+    view_axis_->setObjectName(fieldName(QStringLiteral("viewAxis")));
+    view_axis_->setToolTip(tr("The axis of the family: one element per view along it"));
+    view_layout->addWidget(view_axis_, 1);
+    view_count_ = new QLabel(view_row_);
+    view_count_->setObjectName(fieldName(QStringLiteral("viewCount")));
+    view_count_->setFont(studioSmallFont());
+    view_count_->setToolTip(tr("How many elements: the axis's length, known when the pipeline "
+                               "is composed"));
+    view_layout->addWidget(view_count_);
+    form->addRow(caption(tr("View")), view_row_);
+    view_note_ = new QLabel(this);
+    view_note_->setObjectName(fieldName(QStringLiteral("viewAxisNote")));
+    view_note_->setFont(studioSmallFont());
+    view_note_->setWordWrap(true);
+    form->addRow(QString{}, view_note_);
+    connect(view_family_, &QComboBox::currentIndexChanged, this,
+            [this] { commitViewAxis(true); });
+    connect(view_axis_, &QComboBox::currentIndexChanged, this,
+            [this] { commitViewAxis(false); });
 
     order_ = new QComboBox(this);
     order_->setObjectName(fieldName(QStringLiteral("order")));
@@ -261,6 +358,14 @@ GraphCanvasLoopFields::GraphCanvasLoopFields(
     where_values_->setObjectName(fieldName(QStringLiteral("whereValues")));
     where_values_->setPlaceholderText(tr("1, 4"));
     where_row->addWidget(where_values_, 1);
+    // LP-4f1, decision 4: one check per element while the count is known.
+    where_checks_ = new QWidget(this);
+    where_checks_->setObjectName(fieldName(QStringLiteral("whereChecks")));
+    auto *checks_layout = new QGridLayout(where_checks_);
+    checks_layout->setContentsMargins(0, 0, 0, 0);
+    checks_layout->setHorizontalSpacing(6);
+    checks_layout->setVerticalSpacing(1);
+    where_row->addWidget(where_checks_, 1);
     form->addRow(caption(tr("Where")), where_row);
     where_row_ = where_row;
     connect(where_kind_, &QComboBox::currentIndexChanged, this, [this] { commitWhere(); });
@@ -318,7 +423,9 @@ void GraphCanvasLoopFields::showLoop(const std::string &id) {
         return;
     }
     const auto choices = model_.loopBodyChoices(id);
-    const auto shown = signature(*loop, choices, model_.canEdit()).toStdString();
+    const auto shown = (signature(*loop, choices, model_.canEdit()) + QChar{0x1d} +
+                        viewSignature(model_))
+                           .toStdString();
     loop_ = id;
     current_ = loop;
     if (shown != shown_) {
@@ -405,21 +512,69 @@ void GraphCanvasLoopFields::rebuild(const GraphCanvasLoop &loop) {
         where_values_->setText(integersText(loop.where_values));
         where_values_->setEnabled(editable && !loop.where.empty());
     }
+    // LP-4f1: over a count or a view axis.
+    const bool view = !loop.view_family.empty();
+    {
+        const QSignalBlocker block{over_};
+        over_->setCurrentIndex(view ? 1 : 0);
+    }
+    {
+        const QSignalBlocker block{count_target_};
+        const auto kept = count_target_->currentText();
+        count_target_->clear();
+        for (const auto &target : model_.planTargets()) count_target_->addItem(qtext(target));
+        count_target_->setCurrentIndex(std::max(0, count_target_->findText(kept)));
+    }
+    insert_mips_->setEnabled(editable && count_target_->count() > 0);
+    insert_layers_->setEnabled(editable && count_target_->count() > 0);
+    count_target_->setEnabled(editable);
+    if (view) {
+        {
+            const QSignalBlocker block{view_family_};
+            view_family_->clear();
+            for (const auto &family : model_.viewFamilies())
+                view_family_->addItem(qtext(family.family), qtext(family.family));
+            // A family the frame plan does not list stays, as written.
+            if (view_family_->findData(qtext(loop.view_family)) < 0)
+                view_family_->addItem(tr("%1 (not in the frame plan)").arg(qtext(loop.view_family)),
+                                      qtext(loop.view_family));
+            view_family_->setCurrentIndex(view_family_->findData(qtext(loop.view_family)));
+        }
+        fillViewAxes(loop.view_family, loop.view_axis);
+        view_count_->setText(loop.known_count
+                                 ? tr("×%1 (%2)").arg(*loop.known_count).arg(qtext(loop.view_axis))
+                                 : tr("×? (%1)").arg(qtext(loop.view_axis)));
+    }
+    view_note_->setText(model_.viewFamilies().empty()
+                            ? tr("No pass of the frame plan runs in a view family with axes.")
+                            : tr("Families no pass of the frame plan runs in are not listed."));
     for (QWidget *field : std::initializer_list<QWidget *>{
              count_, count_expression_, count_expression_toggle_, order_, limit_enabled_,
-             tier_, where_kind_})
+             tier_, where_kind_, over_, view_family_, view_axis_})
         field->setEnabled(editable);
     // LP-4e: a draw_loop takes no count, order, limit, place or element
     // `where` (the engine refuses a limit or a carry there, and its order is
     // the phase's); it has a contract and a tag `where` instead.
     const bool draw = loop.draw_items;
-    form_->setRowVisible(count_row_, !draw);
+    rebuildWhereChecks(loop, editable);
+    form_->setRowVisible(over_, !draw);
+    form_->setRowVisible(count_row_, !draw && !view);
+    form_->setRowVisible(count_insert_row_, !draw && !view && loop.count_expression);
+    form_->setRowVisible(view_row_, !draw && view);
+    form_->setRowVisible(view_note_, !draw && view);
     form_->setRowVisible(order_, !draw);
     form_->setRowVisible(limit_row_, !draw);
     form_->setRowVisible(place_, !draw);
     form_->setRowVisible(where_row_, !draw);
     form_->setRowVisible(contract_, draw);
     form_->setRowVisible(tags_row_, draw);
+    // A row shown again shows every widget in it: the one of each pair the
+    // loop does not use goes again.
+    count_->setVisible(!draw && !view && !loop.count_expression);
+    count_expression_->setVisible(!draw && !view && loop.count_expression);
+    const bool checks = !where_boxes_.empty();
+    where_values_->setVisible(!draw && !checks);
+    where_checks_->setVisible(!draw && checks);
     if (draw) {
         contract_->setText(loop.pass.empty()
                                ? qtext(loop.contract)
@@ -556,16 +711,55 @@ void GraphCanvasLoopFields::rebuild(const GraphCanvasLoop &loop) {
                 branch.when == "other" ? QString{} : qtext(branch.when));
             drawn.when->setCurrentIndex(when_index < 0 ? 0 : when_index);
             drawn.when->setEnabled(editable);
-            drawn.values = new QLineEdit(integersText(branch.values), rows_);
-            drawn.values->setObjectName(branchFieldName(index, "values"));
-            drawn.values->setPlaceholderText(QStringLiteral("0"));
-            drawn.values->setEnabled(editable && branch.when != "other");
             grid->addWidget(drawn.when, row, 0);
-            grid->addWidget(drawn.values, row, 1);
             connect(drawn.when, &QComboBox::currentIndexChanged, this,
                     [this, index] { commitBranchWhen(index); });
-            connect(drawn.values, &QLineEdit::returnPressed, this,
-                    [this, index] { commitBranchWhen(index); });
+            // LP-4f1, decision 4: nothing to type while the count is known --
+            // `element =` is a spin, `element in` / `not in` a check per
+            // element; an expression count keeps the line of integers.
+            const auto known = loop.known_count;
+            const bool checks = known && *known > 0 && *known <= CheckLimit;
+            if (branch.when == "element") {
+                drawn.value = new QSpinBox(rows_);
+                drawn.value->setObjectName(branchFieldName(index, "value"));
+                const std::int64_t current = branch.values.empty() ? 0 : branch.values.front();
+                const std::int64_t top =
+                    std::max<std::int64_t>(known ? *known - 1 : 4095, current);
+                drawn.value->setRange(0, static_cast<int>(std::clamp<std::int64_t>(top, 0, 1 << 20)));
+                drawn.value->setValue(static_cast<int>(std::max<std::int64_t>(current, 0)));
+                drawn.value->setKeyboardTracking(false);
+                drawn.value->setEnabled(editable);
+                drawn.value->setToolTip(tr("The element this branch is for"));
+                grid->addWidget(drawn.value, row, 1);
+                connect(drawn.value, &QSpinBox::valueChanged, this,
+                        [this, index] { commitBranchWhen(index); });
+            } else if (checks && branch.when != "other") {
+                auto *boxes = new QWidget(rows_);
+                boxes->setObjectName(branchFieldName(index, "checks"));
+                auto *box_grid = new QGridLayout(boxes);
+                box_grid->setContentsMargins(0, 0, 0, 0);
+                box_grid->setHorizontalSpacing(6);
+                box_grid->setVerticalSpacing(1);
+                for (std::int64_t element = 0; element < *known; ++element) {
+                    auto *box = new QCheckBox(elementText(loop, element), boxes);
+                    box->setObjectName(branchFieldName(index, "check") + QString::number(element));
+                    box->setChecked(std::ranges::find(branch.values, element) != branch.values.end());
+                    box->setEnabled(editable);
+                    box_grid->addWidget(box, static_cast<int>(element / 8),
+                                        static_cast<int>(element % 8));
+                    connect(box, &QCheckBox::toggled, this, [this, index] { commitBranchWhen(index); });
+                    drawn.checks.push_back(box);
+                }
+                grid->addWidget(boxes, row, 1);
+            } else {
+                drawn.values = new QLineEdit(integersText(branch.values), rows_);
+                drawn.values->setObjectName(branchFieldName(index, "values"));
+                drawn.values->setPlaceholderText(QStringLiteral("0"));
+                drawn.values->setEnabled(editable && branch.when != "other");
+                grid->addWidget(drawn.values, row, 1);
+                connect(drawn.values, &QLineEdit::returnPressed, this,
+                        [this, index] { commitBranchWhen(index); });
+            }
         }
         drawn.body = new QComboBox(rows_);
         drawn.body->setObjectName(branchFieldName(index, "body"));
@@ -673,12 +867,135 @@ void GraphCanvasLoopFields::commitCount() {
     after(model_.setLoopCount(loop_, value));
 }
 
+void GraphCanvasLoopFields::commitOver() {
+    if (!current_ || loop_.empty()) return;
+    const auto over = over_->currentData().toString();
+    const bool view = !current_->view_family.empty();
+    if (over == QLatin1String{"range"}) {
+        // Back to a count: as many as the axis had, so the copies stay.
+        if (view) after(model_.setLoopCount(loop_, current_->known_count.value_or(1)));
+        return;
+    }
+    if (view) return;
+    for (const auto &family : model_.viewFamilies())
+        for (const auto &axis : family.axes)
+            if (selectableAxis(axis)) {
+                after(model_.setLoopViewAxis(loop_, family.family, axis.axis));
+                return;
+            }
+    // Nothing to run over: the loop stays over its count, and says why.
+    {
+        const QSignalBlocker block{over_};
+        over_->setCurrentIndex(0);
+    }
+    view_note_->setText(tr("No pass of the frame plan runs in a view family with an axis a loop "
+                           "can run over."));
+    form_->setRowVisible(view_note_, true);
+}
+
+void GraphCanvasLoopFields::fillViewAxes(const std::string &family, const std::string &chosen) {
+    const QSignalBlocker block{view_axis_};
+    view_axis_->clear();
+    auto *items = qobject_cast<QStandardItemModel *>(view_axis_->model());
+    const auto &families = model_.viewFamilies();
+    const auto found = std::ranges::find(families, family, &GraphCanvasViewFamily::family);
+    if (found != families.end())
+        for (const auto &axis : found->axes) {
+            if (selectableAxis(axis)) {
+                view_axis_->addItem(tr("%1 ×%2").arg(qtext(axis.axis)).arg(*axis.length),
+                                    qtext(axis.axis));
+                continue;
+            }
+            // Decided each frame: shown, never chosen.
+            view_axis_->addItem(tr("%1 (decided each frame)").arg(qtext(axis.axis)),
+                                qtext(axis.axis));
+            const int index = view_axis_->count() - 1;
+            if (items != nullptr) items->item(index)->setEnabled(false);
+            view_axis_->setItemData(index,
+                                    tr("The engine decides this axis each frame: a loop cannot "
+                                       "run over it."),
+                                    Qt::ToolTipRole);
+        }
+    if (!chosen.empty() && view_axis_->findData(qtext(chosen)) < 0)
+        view_axis_->addItem(tr("%1 (not in the frame plan)").arg(qtext(chosen)), qtext(chosen));
+    int index = chosen.empty() ? -1 : view_axis_->findData(qtext(chosen));
+    for (int candidate = 0; index < 0 && candidate < view_axis_->count(); ++candidate)
+        if (items == nullptr || items->item(candidate)->isEnabled()) index = candidate;
+    view_axis_->setCurrentIndex(index < 0 ? 0 : index);
+}
+
+void GraphCanvasLoopFields::commitViewAxis(bool family_changed) {
+    if (!current_ || loop_.empty()) return;
+    const auto family = view_family_->currentData().toString().toStdString();
+    if (family.empty()) return;
+    if (family_changed) fillViewAxes(family, {});
+    const int index = view_axis_->currentIndex();
+    if (index < 0) return;
+    const auto *items = qobject_cast<QStandardItemModel *>(view_axis_->model());
+    if (items != nullptr && !items->item(index)->isEnabled()) {
+        view_note_->setText(tr("Every axis of %1 is decided each frame: a loop cannot run over it.")
+                                .arg(qtext(family)));
+        return;
+    }
+    const auto axis = view_axis_->itemData(index).toString().toStdString();
+    if (family == current_->view_family && axis == current_->view_axis) return;
+    after(model_.setLoopViewAxis(loop_, family, axis));
+}
+
+void GraphCanvasLoopFields::insertCountFunction(const QString &function) {
+    if (!current_ || loop_.empty()) return;
+    const auto target = count_target_->currentText();
+    if (target.isEmpty()) return;
+    const auto call = QStringLiteral("%1(\"%2\")").arg(function, target);
+    // Over nothing, or over a plain integer, the call is the expression;
+    // otherwise it goes where the cursor is.
+    const auto text = count_expression_->text().trimmed();
+    bool integer = false;
+    (void)text.toLongLong(&integer);
+    if (text.isEmpty() || integer) count_expression_->setText(call);
+    else count_expression_->insert(call);
+    commitCount();
+}
+
+void GraphCanvasLoopFields::rebuildWhereChecks(const GraphCanvasLoop &loop, bool editable) {
+    for (QCheckBox *box : where_boxes_) {
+        box->hide();
+        box->setObjectName(QString{});
+        box->deleteLater();
+    }
+    where_boxes_.clear();
+    const auto known = loop.known_count;
+    if (loop.draw_items || !known || *known <= 0 || *known > CheckLimit) return;
+    auto *grid = static_cast<QGridLayout *>(where_checks_->layout());
+    for (std::int64_t element = 0; element < *known; ++element) {
+        auto *box = new QCheckBox(elementText(loop, element), where_checks_);
+        box->setObjectName(fieldName(QStringLiteral("whereValue%1").arg(element)));
+        box->setChecked(std::ranges::find(loop.where_values, element) != loop.where_values.end());
+        box->setEnabled(editable && !loop.where.empty());
+        grid->addWidget(box, static_cast<int>(element / 8), static_cast<int>(element % 8));
+        connect(box, &QCheckBox::toggled, this, [this] { commitWhere(); });
+        where_boxes_.push_back(box);
+    }
+}
+
 void GraphCanvasLoopFields::commitWhere() {
     if (!current_ || loop_.empty()) return;
     const auto kind = where_kind_->currentData().toString().toStdString();
     where_values_->setEnabled(model_.canEdit() && !kind.empty());
+    for (QCheckBox *box : where_boxes_) box->setEnabled(model_.canEdit() && !kind.empty());
     if (kind.empty()) {
         after(model_.setLoopWhere(loop_, {}, {}));
+        return;
+    }
+    // LP-4f1: the checked elements. None checked yet is not sent: the next
+    // check says which.
+    if (!where_boxes_.empty()) {
+        std::vector<std::int64_t> checked;
+        for (std::size_t element = 0; element < where_boxes_.size(); ++element)
+            if (where_boxes_[element]->isChecked())
+                checked.push_back(static_cast<std::int64_t>(element));
+        if (checked.empty()) return;
+        after(model_.setLoopWhere(loop_, kind, checked));
         return;
     }
     const auto values = parseIntegers(where_values_->text());
@@ -1057,12 +1374,25 @@ void GraphCanvasDrawFields::commitOverride() {
 void GraphCanvasLoopFields::commitBranchWhen(std::size_t branch) {
     if (!current_ || loop_.empty() || branch >= branch_rows_.size()) return;
     const auto &row = branch_rows_[branch];
-    if (row.when == nullptr || row.values == nullptr) return;
+    if (row.when == nullptr) return;
     const auto when = row.when->currentData().toString().toStdString();
     if (when.empty()) return;
-    auto values = parseIntegers(row.values->text());
-    if (!values) {
-        row.values->setToolTip(tr("Integers, separated by commas"));
+    // LP-4f1: the spin's one value, the checked elements, or the line.
+    std::optional<std::vector<std::int64_t>> values;
+    if (row.value != nullptr) {
+        values = std::vector<std::int64_t>{static_cast<std::int64_t>(row.value->value())};
+    } else if (!row.checks.empty()) {
+        values.emplace();
+        for (std::size_t element = 0; element < row.checks.size(); ++element)
+            if (row.checks[element]->isChecked())
+                values->push_back(static_cast<std::int64_t>(element));
+    } else if (row.values != nullptr) {
+        values = parseIntegers(row.values->text());
+        if (!values) {
+            row.values->setToolTip(tr("Integers, separated by commas"));
+            return;
+        }
+    } else {
         return;
     }
     // "element =" takes exactly one; the list keeps its first, or 0.
@@ -1071,6 +1401,131 @@ void GraphCanvasLoopFields::commitBranchWhen(std::size_t branch) {
         values = std::vector<std::int64_t>{first};
     }
     after(model_.setLoopBranchWhen(loop_, branch, when, *values));
+}
+
+// --- LP-4f1, decision 4: the element another loop's p[] is read at.
+
+namespace {
+constexpr const char *ElementPresets[] = {"element", "element - 1", "element + 1"};
+} // namespace
+
+GraphCanvasElementChoice::GraphCanvasElementChoice(const QString &object_name, QWidget *parent)
+    : QWidget{parent} {
+    auto *layout = new QHBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    choice_ = new QComboBox(this);
+    choice_->setObjectName(object_name);
+    for (const char *preset : ElementPresets)
+        choice_->addItem(QString::fromLatin1(preset), QString::fromLatin1(preset));
+    choice_->addItem(tr("Custom…"), QString{});
+    choice_->setToolTip(tr("Which element it reads, per element of its own loop: `element` is "
+                           "that element, `element - 1` the one before it."));
+    layout->addWidget(choice_, 1);
+    custom_ = new QLineEdit(this);
+    custom_->setObjectName(object_name + QStringLiteral(".custom"));
+    custom_->setPlaceholderText(QStringLiteral("element * 2"));
+    custom_->hide();
+    layout->addWidget(custom_, 1);
+    connect(choice_, &QComboBox::currentIndexChanged, this, [this] {
+        custom_->setVisible(choice_->currentData().toString().isEmpty());
+    });
+}
+
+QString GraphCanvasElementChoice::expression() const {
+    if (const auto preset = choice_->currentData().toString(); !preset.isEmpty()) return preset;
+    const auto typed = custom_->text().trimmed();
+    return typed.isEmpty() ? QStringLiteral("element") : typed;
+}
+
+void GraphCanvasElementChoice::setExpression(const QString &expression) {
+    const auto wanted = expression.trimmed();
+    const int preset = wanted.isEmpty() ? -1 : choice_->findData(wanted);
+    if (preset >= 0) {
+        choice_->setCurrentIndex(preset);
+        return;
+    }
+    custom_->setText(wanted);
+    choice_->setCurrentIndex(choice_->count() - 1);
+}
+
+// --- LP-4f1, decision 2: a render node's View field on the Graph tab.
+
+GraphCanvasViewFields::GraphCanvasViewFields(GraphCanvasModel &model,
+                                             std::function<void()> submitted, QWidget *parent)
+    : QWidget{parent}, model_{model}, submitted_{std::move(submitted)} {
+    setObjectName(QStringLiteral("pelican.graphCanvasRender"));
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 4, 0, 4);
+    heading_ = new QLabel(this);
+    heading_->setObjectName(QStringLiteral("pelican.graphCanvasRender.heading"));
+    heading_->setFont(studioSmallFont());
+    heading_->setWordWrap(true);
+    layout->addWidget(heading_);
+    view_ = new ViewSelectField(QStringLiteral("pelican.graphCanvasRender"), this);
+    layout->addWidget(view_);
+    view_->changed = [this] { commit(); };
+    hide();
+}
+
+void GraphCanvasViewFields::showNode(const GraphCanvasNode *node, const std::string &scope) {
+    field_ = node == nullptr ? std::nullopt : model_.viewField(scope, node->id);
+    if (!field_) {
+        node_.clear();
+        scope_.clear();
+        shown_.clear();
+        view_->clear();
+        hide();
+        return;
+    }
+    node_ = node->id;
+    scope_ = scope;
+    QStringList parts{qtext(scope), qtext(node_), qtext(field_->family), qtext(field_->loop),
+                      qtext(field_->element_axis),
+                      field_->element_chosen ? QStringLiteral("e") : QString{},
+                      model_.canEdit() ? QStringLiteral("w") : QStringLiteral("r")};
+    for (const auto &axis : field_->axes) {
+        parts << qtext(axis.axis)
+              << (axis.length ? QString::number(*axis.length) : QStringLiteral("-"))
+              << (axis.runtime ? QStringLiteral("r") : QString{});
+        for (const auto &label : axis.labels) parts << qtext(label);
+    }
+    for (const auto &chosen : field_->view_select)
+        parts << qtext(chosen.axis) << QString::number(chosen.value);
+    const auto shown = parts.join(QChar{0x1f}).toStdString();
+    if (shown != shown_) {
+        shown_ = shown;
+        heading_->setText(field_->loop.empty()
+                              ? tr("View (%1)").arg(qtext(field_->family))
+                              : tr("View (%1) · in loop %2")
+                                    .arg(qtext(field_->family), qtext(field_->loop)));
+        view_->load(field_->axes, field_->view_select, field_->family, field_->element_axis,
+                    field_->element_chosen);
+    }
+    view_->setEnabled(model_.canEdit());
+    show();
+}
+
+void GraphCanvasViewFields::commit() {
+    if (!field_ || node_.empty()) return;
+    // What the field does not show -- an expression other than `element` --
+    // is kept; everything it shows is written from it.
+    auto parameters = model_.nodeParameters(scope_, node_);
+    auto select = parameters.is_object() ? parameters.value("view_select", nlohmann::json::object())
+                                         : nlohmann::json::object();
+    if (!select.is_object()) select = nlohmann::json::object();
+    for (auto entry = select.begin(); entry != select.end();) {
+        const bool shown = entry->is_number_integer() ||
+                           (entry->is_object() && entry->size() == 1 &&
+                            entry->value("$expr", std::string{}) == "element");
+        entry = shown ? select.erase(entry) : std::next(entry);
+    }
+    for (const auto &chosen : view_->selection()) select[chosen.axis] = chosen.value;
+    if (const auto axis = view_->elementAxis())
+        select[*axis] = nlohmann::json{{"$expr", "element"}};
+    if (model_.setViewSelect(scope_, node_, select,
+                             field_->writes_family ? field_->family : std::string{}) &&
+        submitted_)
+        submitted_();
 }
 
 } // namespace PelicanStudio

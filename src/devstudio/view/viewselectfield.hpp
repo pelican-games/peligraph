@@ -26,21 +26,33 @@ namespace PelicanStudio {
 // Object names hang off the prefix: "<prefix>.view.<axis>" (the combo, or the
 // line of an axis decided each frame), "<prefix>.view.<axis>.warning",
 // "<prefix>.view.<axis>.remove".
+//
+// LP-4f1: in the body of a loop over a view axis, that axis's combo also
+// offers "Each element (loop)" -- the pass runs, in each copy, for the view
+// the copy's element names (`{"$expr": "element"}`).
+inline constexpr std::string_view ViewSelectEachElementText = "Each element (loop)";
+
 class ViewSelectField final : public QWidget {
   public:
     explicit ViewSelectField(QString object_prefix, QWidget *parent = nullptr);
 
     // Shows the rows framePlanViewFieldRows gives. False -- and no row --
     // when the family has no axes; the owner then hides the field.
+    // LP-4f1: `element_axis` is the axis whose combo offers Each element,
+    // chosen already when `element_chosen`.
     bool load(const std::vector<FramePlanViewAxis> &axes,
               const std::vector<FramePlanViewSelectAxis> &view_select,
-              const std::string &family = {});
+              const std::string &family = {}, const std::string &element_axis = {},
+              bool element_chosen = false);
     void clear();
     [[nodiscard]] bool hasRows() const noexcept { return !rows_.empty(); }
     // The view_select the rows say: the chosen value of each selectable
     // axis, the kept value of any other axis that was not removed, in row
     // order.
     [[nodiscard]] std::vector<FramePlanViewSelectAxis> selection() const;
+    // LP-4f1: the axis whose combo is on Each element, or nothing. That
+    // axis is not in selection().
+    [[nodiscard]] std::optional<std::string> elementAxis() const;
 
     // A person changed a row (a pick, or Remove).
     std::function<void()> changed;

@@ -110,6 +110,9 @@ struct Zone {
     QString stage;
     QString shared;
     std::vector<ZoneTab> tabs;
+    // LP-4f1, decision 3: a loop over a view axis with one branch names its
+    // views (+X, -X, ...) small, where the tabs would be.
+    std::vector<QString> axis_labels;
     std::vector<ZoneRow> inputs;
     std::vector<ZoneRow> outputs;
     // LP-4d2, decision 1 and 2: an empty slot at the end of each edge, where
